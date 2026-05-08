@@ -83,65 +83,34 @@ grep -n "TODO" README.md
 
 ## FFI API
 
-WinuxCmd provides a C Foreign Function Interface (FFI) for integration with other languages and applications.
+FFI is kept in the tree for future experimentation, but it is not part of the
+default build or release path right now.
 
-### Available Functions
+- Default builds keep `BUILD_FFI=OFF`
+- Release-oriented modes force FFI off
+- No FFI binary is shipped in the current release flow
 
-- `winux_execute()` - Execute commands via daemon with zero start-up overhead
-- `winux_get_all_commands()` - Retrieve all available command names
-- `winux_is_daemon_available()` - Check if daemon is running
-- `winux_get_version()` - Get WinuxCmd version string
-- `winux_free_buffer()` - Free allocated memory
-- `winux_free_commands_array()` - Free command array allocated by winux_get_all_commands()
+The headers and example remain in the repo for reference, but treat them as
+inactive unless you are explicitly reviving that path locally.
 
-### Example Usage
+## Workspace Integration
 
-```c
-#include "ffi.h"
+Use the repository-local activation scripts when you want WinuxCmd available
+inside this folder without touching global `PATH`:
 
-int main() {
-    // Check daemon availability
-    if (!winux_is_daemon_available()) {
-        printf("Daemon not available\n");
-        return 1;
-    }
-
-    // Get all available commands
-    char** commands = NULL;
-    int count = 0;
-    if (winux_get_all_commands(&commands, &count) == 0) {
-        printf("Available commands:\n");
-        for (int i = 0; i < count; i++) {
-            printf("  %s\n", commands[i]);
-        }
-        winux_free_commands_array(commands, count);
-    }
-
-    // Execute a command
-    char* output = NULL;
-    char* error = NULL;
-    size_t output_size = 0;
-    size_t error_size = 0;
-
-    int exit_code = winux_execute("ls", NULL, 0, NULL,
-                                  &output, &error,
-                                  &output_size, &error_size);
-
-    if (output) {
-        fwrite(output, 1, output_size, stdout);
-        winux_free_buffer(output);
-    }
-    if (error) {
-        winux_free_buffer(error);
-    }
-
-    return 0;
-}
+```powershell
+.\scripts\activate-workspace.ps1
+man.exe ls
+winuxcmd.exe help
 ```
 
-### Building with FFI
+For persistent interactive shells, install the optional user profile hook:
 
-See `examples/ffi/ffi_example.c` for a complete example. The FFI library (`winuxcore.dll`) is built when `BUILD_FFI=ON` is set.
+```powershell
+.\scripts\install-workspace-profile-hook.ps1
+```
+
+The local guidance for AI usage lives in `skills/winuxcmd/SKILL.md`.
 
 ## PowerShell Auto-Enter (Interactive)
 

@@ -107,65 +107,32 @@ opt|git|pull|Fetch from and integrate with another repository
 
 ## 🔌 FFI API
 
-WinuxCmd 提供 C 语言 FFI（Foreign Function Interface），支持与其他语言和应用集成。
+FFI 代码暂时保留在仓库里，作为后续实验入口；但当前默认构建和 release
+都不包含 FFI。
 
-### 可用函数
+- 默认构建保持 `BUILD_FFI=OFF`
+- release 相关构建模式会强制关闭 FFI
+- 当前 release 流程不发布 FFI 二进制产物
 
-- `winux_execute()` - 通过 daemon 执行命令，零启动开销
-- `winux_get_all_commands()` - 获取所有可用命令名称
-- `winux_is_daemon_available()` - 检查 daemon 是否运行
-- `winux_get_version()` - 获取 WinuxCmd 版本字符串
-- `winux_free_buffer()` - 释放分配的内存
-- `winux_free_commands_array()` - 释放 winux_get_all_commands() 分配的命令数组
+`src/ffi` 和示例代码可以继续作为参考，但除非明确恢复这条路线，否则先视为未启用。
 
-### 使用示例
+## 工作区集成
 
-```c
-#include "ffi.h"
+如果希望 WinuxCmd 只在当前仓库内可用，不污染全局 `PATH`，使用仓库本地激活脚本：
 
-int main() {
-    // 检查 daemon 可用性
-    if (!winux_is_daemon_available()) {
-        printf("Daemon 不可用\n");
-        return 1;
-    }
-
-    // 获取所有可用命令
-    char** commands = NULL;
-    int count = 0;
-    if (winux_get_all_commands(&commands, &count) == 0) {
-        printf("可用命令：\n");
-        for (int i = 0; i < count; i++) {
-            printf("  %s\n", commands[i]);
-        }
-        winux_free_commands_array(commands, count);
-    }
-
-    // 执行命令
-    char* output = NULL;
-    char* error = NULL;
-    size_t output_size = 0;
-    size_t error_size = 0;
-
-    int exit_code = winux_execute("ls", NULL, 0, NULL,
-                                  &output, &error,
-                                  &output_size, &error_size);
-
-    if (output) {
-        fwrite(output, 1, output_size, stdout);
-        winux_free_buffer(output);
-    }
-    if (error) {
-        winux_free_buffer(error);
-    }
-
-    return 0;
-}
+```powershell
+.\scripts\activate-workspace.ps1
+man.exe ls
+winuxcmd.exe help
 ```
 
-### 构建 FFI
+如果希望在这个仓库中新开的交互式 PowerShell 也自动生效，可以安装可选 profile hook：
 
-完整示例见 `examples/ffi/ffi_example.c`。设置 `BUILD_FFI=ON` 时会自动构建 FFI 库（`winuxcore.dll`）。
+```powershell
+.\scripts\install-workspace-profile-hook.ps1
+```
+
+面向 AI 的本地使用说明在 `skills/winuxcmd/SKILL.md`。
 
 ---
 

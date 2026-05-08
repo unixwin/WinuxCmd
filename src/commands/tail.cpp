@@ -58,6 +58,8 @@ using cmd::meta::OptionType;
  * - @a -F: Same as --follow=name --retry [NOT SUPPORT]
  * - @a -n, @a --lines: Output the last NUM lines, instead of the last 10; or
  *   use -n +NUM to skip NUM-1 lines at the start [IMPLEMENTED]
+ * - @a -NUM: Obsolete GNU-compatible shorthand for -n NUM [IMPLEMENTED]
+ * - @a +NUM: Obsolete compatibility shorthand for -n +NUM [IMPLEMENTED]
  * - @a --max-unchanged-stats: With --follow=name, reopen a FILE which has not changed
  *   size after N iterations to see if it has been renamed [NOT SUPPORT]
  * - @a --pid: With -f, terminate after process ID, PID dies [NOT SUPPORT]
@@ -371,7 +373,9 @@ REGISTER_COMMAND(
     "With no FILE, or when FILE is -, read standard input.",
     "  tail file.txt\n"
     "  tail -n 20 file.txt\n"
+    "  tail -20 file.txt\n"
     "  tail -n +5 file.txt\n"
+    "  tail +5 file.txt\n"
     "  tail -c 64 file.txt\n"
     "  tail -v a.txt b.txt",
     "head(1), cat(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", TAIL_OPTIONS) {

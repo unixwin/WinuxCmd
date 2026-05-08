@@ -354,6 +354,74 @@ TEST(ls, ls_reverse_sort) {
   EXPECT_GT(bbb_pos, ccc_pos);
 }
 
+TEST(ls, ls_extension_sort) {
+  TempDir tmp;
+  tmp.write("README", "readme");
+  tmp.write("alpha.log", "log");
+  tmp.write("beta.txt", "txt");
+  tmp.write("gamma.txt", "txt2");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ls.exe", {L"-1", L"-X"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  size_t readme_pos = r.stdout_text.find("README");
+  size_t log_pos = r.stdout_text.find("alpha.log");
+  size_t beta_pos = r.stdout_text.find("beta.txt");
+  size_t gamma_pos = r.stdout_text.find("gamma.txt");
+  EXPECT_TRUE(readme_pos != std::string::npos);
+  EXPECT_TRUE(log_pos != std::string::npos);
+  EXPECT_TRUE(beta_pos != std::string::npos);
+  EXPECT_TRUE(gamma_pos != std::string::npos);
+  EXPECT_LT(readme_pos, log_pos);
+  EXPECT_LT(log_pos, beta_pos);
+  EXPECT_LT(beta_pos, gamma_pos);
+}
+
+TEST(ls, ls_ignore_pattern) {
+  TempDir tmp;
+  tmp.write("keep.txt", "keep");
+  tmp.write("skip.tmp", "skip");
+  tmp.write("also.txt", "also");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ls.exe", {L"-1", L"-I", L"*.tmp"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("keep.txt") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("also.txt") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("skip.tmp") == std::string::npos);
+}
+
+TEST(ls, ls_version_sort) {
+  TempDir tmp;
+  tmp.write("file1.txt", "1");
+  tmp.write("file10.txt", "10");
+  tmp.write("file2.txt", "2");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ls.exe", {L"-1", L"-v"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  size_t file1_pos = r.stdout_text.find("file1.txt");
+  size_t file2_pos = r.stdout_text.find("file2.txt");
+  size_t file10_pos = r.stdout_text.find("file10.txt");
+  EXPECT_TRUE(file1_pos != std::string::npos);
+  EXPECT_TRUE(file2_pos != std::string::npos);
+  EXPECT_TRUE(file10_pos != std::string::npos);
+  EXPECT_LT(file1_pos, file2_pos);
+  EXPECT_LT(file2_pos, file10_pos);
+}
+
 TEST(ls, ls_long_with_file) {
   TempDir tmp;
   tmp.write("testfile.txt", "test content for long format");

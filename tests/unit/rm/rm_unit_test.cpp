@@ -160,3 +160,24 @@ TEST(rm, rm_wildcard) {
   EXPECT_TRUE(!txt2_exists);
   EXPECT_TRUE(log_exists);
 }
+
+TEST(rm, rm_interactive_once_declines_bulk_remove) {
+  TempDir tmp;
+  tmp.write("file1.txt", "content1");
+  tmp.write("file2.txt", "content2");
+  tmp.write("file3.txt", "content3");
+  tmp.write("file4.txt", "content4");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("n\n");
+  p.add(L"rm.exe", {L"-I", L"file1.txt", L"file2.txt", L"file3.txt", L"file4.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "file1.txt"));
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "file2.txt"));
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "file3.txt"));
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "file4.txt"));
+}

@@ -59,6 +59,7 @@ auto constexpr SORT_OPTIONS = std::array{
            "compare as month names [NOT SUPPORT]"),
     OPTION("-m", "--merge", "merge already sorted files [NOT SUPPORT]"),
     OPTION("-n", "--numeric-sort", "compare according to string numerical value"),
+    OPTION("-V", "--version-sort", "compare version numbers naturally"),
     OPTION("-R", "--random-sort", "shuffle [NOT SUPPORT]"),
     OPTION("-r", "--reverse", "reverse the result of comparisons"),
     OPTION("-s", "--stable",
@@ -66,6 +67,8 @@ auto constexpr SORT_OPTIONS = std::array{
     OPTION("-u", "--unique", "output only the first of equal runs"),
     OPTION("-z", "--zero-terminated", "line delimiter is NUL, not newline"),
     OPTION("-o", "--output", "write result to FILE instead of standard output",
+           STRING_TYPE),
+    OPTION("", "--sort", "set sort order; 'version' enables version sort",
            STRING_TYPE),
     OPTION("-t", "--field-separator",
            "use SEP instead of non-blank to blank transition", STRING_TYPE),
@@ -84,6 +87,7 @@ struct Config {
   bool ignore_leading_blanks = false;
   bool ignore_case = false;
   bool numeric_sort = false;
+  bool version_sort = false;
   bool human_numeric = false;
   bool general_numeric = false;
   bool reverse = false;
@@ -268,12 +272,78 @@ auto parse_human_readable(std::string_view s) -> double {
   }
 }
 
+auto compare_version_strings(std::string_view a, std::string_view b) -> int {
+  size_t i = 0;
+  size_t j = 0;
+
+  auto is_digit = [](unsigned char c) { return std::isdigit(c) != 0; };
+
+  while (i < a.size() || j < b.size()) {
+    bool a_digit = i < a.size() && is_digit(static_cast<unsigned char>(a[i]));
+    bool b_digit = j < b.size() && is_digit(static_cast<unsigned char>(b[j]));
+
+    if (a_digit && b_digit) {
+      size_t a_start = i;
+      size_t b_start = j;
+      while (i < a.size() && is_digit(static_cast<unsigned char>(a[i]))) ++i;
+      while (j < b.size() && is_digit(static_cast<unsigned char>(b[j]))) ++j;
+
+      while (a_start < i && a[a_start] == '0') ++a_start;
+      while (b_start < j && b[b_start] == '0') ++b_start;
+
+      size_t a_len = i - a_start;
+      size_t b_len = j - b_start;
+      if (a_len < b_len) return -1;
+      if (a_len > b_len) return 1;
+
+      for (size_t k = 0; k < a_len; ++k) {
+        unsigned char ac = static_cast<unsigned char>(a[a_start + k]);
+        unsigned char bc = static_cast<unsigned char>(b[b_start + k]);
+        if (ac < bc) return -1;
+        if (ac > bc) return 1;
+      }
+      continue;
+    }
+
+    if (a_digit != b_digit) {
+      return a_digit ? -1 : 1;
+    }
+
+    while (i < a.size() && !is_digit(static_cast<unsigned char>(a[i])) &&
+           j < b.size() && !is_digit(static_cast<unsigned char>(b[j]))) {
+      unsigned char ac = static_cast<unsigned char>(a[i]);
+      unsigned char bc = static_cast<unsigned char>(b[j]);
+      if (ac == bc) {
+        ++i;
+        ++j;
+        continue;
+      }
+
+      if (std::tolower(ac) < std::tolower(bc)) return -1;
+      if (std::tolower(ac) > std::tolower(bc)) return 1;
+      if (ac < bc) return -1;
+      if (ac > bc) return 1;
+    }
+
+    if (i < a.size() && j < b.size()) {
+      continue;
+    }
+    if (i < a.size()) return 1;
+    if (j < b.size()) return -1;
+  }
+
+  return 0;
+}
+
 auto compare_records(std::string_view a, std::string_view b, const Config& cfg)
     -> int {
   auto key_a = extract_key(a, cfg);
   auto key_b = extract_key(b, cfg);
 
-  if (cfg.numeric_sort) {
+  if (cfg.version_sort) {
+    int cmp = compare_version_strings(key_a, key_b);
+    if (cmp != 0) return cmp;
+  } else if (cfg.numeric_sort) {
     auto n_a = parse_double_strict(key_a);
     auto n_b = parse_double_strict(key_b);
     if (n_a.has_value() && n_b.has_value()) {
@@ -335,6 +405,8 @@ auto build_config(const CommandContext<SORT_OPTIONS.size()>& ctx)
       ctx.get<bool>("--ignore-case", false) || ctx.get<bool>("-f", false);
   cfg.numeric_sort =
       ctx.get<bool>("--numeric-sort", false) || ctx.get<bool>("-n", false);
+  cfg.version_sort =
+      ctx.get<bool>("--version-sort", false) || ctx.get<bool>("-V", false);
   cfg.human_numeric =
       ctx.get<bool>("--human-numeric-sort", false) || ctx.get<bool>("-h", false);
   cfg.general_numeric =
@@ -364,7 +436,15 @@ auto build_config(const CommandContext<SORT_OPTIONS.size()>& ctx)
   if (!key) return std::unexpected(key.error());
   cfg.key = *key;
 
-for (auto p : ctx.positionals) {
+  std::string sort_mode = ctx.get<std::string>("--sort", "");
+  if (!sort_mode.empty()) {
+    auto lowered = to_lower_ascii(sort_mode);
+    if (lowered == "version" || lowered == "version-sort") {
+      cfg.version_sort = true;
+    }
+  }
+
+  for (auto p : ctx.positionals) {
     std::string file_arg(p);
     if (contains_wildcard(file_arg)) {
       auto glob_result = glob_expand(file_arg);

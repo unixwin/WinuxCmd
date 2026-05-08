@@ -59,6 +59,27 @@ TEST(tail, tail_plus_lines_and_bytes) {
   EXPECT_EQ_TEXT(r2.stdout_text, "pha\nbeta\ngamma\n");
 }
 
+TEST(tail, tail_legacy_count_shorthand) {
+  TempDir tmp;
+  tmp.write("a.txt", "alpha\nbeta\ngamma\n");
+
+  Pipeline p1;
+  p1.set_cwd(tmp.wpath());
+  p1.add(L"tail.exe", {L"-2", L"a.txt"});
+  auto r1 = p1.run();
+
+  EXPECT_EQ(r1.exit_code, 0);
+  EXPECT_EQ_TEXT(r1.stdout_text, "beta\ngamma\n");
+
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.add(L"tail.exe", {L"+2", L"a.txt"});
+  auto r2 = p2.run();
+
+  EXPECT_EQ(r2.exit_code, 0);
+  EXPECT_EQ_TEXT(r2.stdout_text, "beta\ngamma\n");
+}
+
 TEST(tail, tail_follow_option_recognized) {
   // Verify that -f flag is recognized and doesn't error out
   // (actual follow mode is a long-running operation tested manually)

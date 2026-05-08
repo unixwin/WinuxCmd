@@ -49,6 +49,7 @@ using cmd::meta::OptionType;
  *   print all but the last NUM bytes [IMPLEMENTED]
  * - @a -n, @a --lines: Print the first NUM lines instead of the first 10; with the
  *   leading '-', print all but the last NUM lines [IMPLEMENTED]
+ * - @a -NUM: Obsolete GNU-compatible shorthand for -n NUM [IMPLEMENTED]
  * - @a -q, @a --quiet: Never print headers giving file names for multiple files [IMPLEMENTED]
  * - @a --silent: Never print headers giving file names for multiple files [IMPLEMENTED]
  * - @a -v, @a --verbose: Always print headers giving file names for multiple files [IMPLEMENTED]
@@ -258,6 +259,7 @@ REGISTER_COMMAND(
     "With no FILE, or when FILE is -, read standard input.",
     "  head file.txt\n"
     "  head -n 20 file.txt\n"
+    "  head -20 file.txt\n"
     "  head -c 64 file.txt\n"
     "  head -n -5 file.txt\n"
     "  head -v a.txt b.txt",

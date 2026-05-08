@@ -117,3 +117,35 @@ TEST(mv, mv_move_multiple_files) {
   EXPECT_TRUE(dest1_exists);
   EXPECT_TRUE(dest2_exists);
 }
+
+TEST(mv, mv_target_directory_option) {
+  TempDir tmp;
+  tmp.write("file.txt", "content");
+  std::filesystem::create_directory(tmp.path / "dest_dir");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"mv.exe", {L"-t", L"dest_dir", L"file.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(!std::filesystem::exists(tmp.path / "file.txt"));
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "dest_dir" / "file.txt"));
+}
+
+TEST(mv, mv_no_clobber_keeps_existing_destination) {
+  TempDir tmp;
+  tmp.write("source.txt", "new content");
+  tmp.write("dest.txt", "old content");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"mv.exe", {L"-n", L"source.txt", L"dest.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "source.txt"));
+  EXPECT_EQ(tmp.read("dest.txt"), "old content");
+}

@@ -58,6 +58,9 @@ opt|<command>|<option>|<description>
 
 - Build modes: [build_modes_en.md](build_modes_en.md)
 - Testing: [testing_framework_en.md](testing_framework_en.md)
+- Workspace integration: [workspace_integration.md](workspace_integration.md)
+- AI usage guide: [../../skills/winuxcmd/SKILL.md](../../skills/winuxcmd/SKILL.md)
+- GNU coreutils parity audit: [gnu_coreutils_parity.md](gnu_coreutils_parity.md)
 
 ## Contribution Reality
 

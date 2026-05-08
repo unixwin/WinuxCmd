@@ -59,6 +59,19 @@ TEST(head, head_n_and_c_options) {
   EXPECT_EQ_TEXT(r2.stdout_text, "alpha");
 }
 
+TEST(head, head_legacy_count_shorthand) {
+  TempDir tmp;
+  tmp.write("a.txt", "alpha\nbeta\ngamma\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"head.exe", {L"-2", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "alpha\nbeta\n");
+}
+
 TEST(head, head_verbose_header_multi_files) {
   TempDir tmp;
   tmp.write("a.txt", "A1\nA2\n");

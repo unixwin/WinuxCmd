@@ -78,6 +78,19 @@ TEST(sort, sort_output_file_option) {
   EXPECT_EQ_TEXT(tmp.read("out.txt"), "x\ny\nz\n");
 }
 
+TEST(sort, sort_version_sort) {
+  TempDir tmp;
+  tmp.write("v.txt", "1.2.10\n1.2.2\n1.10.0\n1.2.0\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sort.exe", {L"-V", L"v.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "1.2.0\n1.2.2\n1.2.10\n1.10.0\n");
+}
+
 TEST(sort, sort_unsupported_merge) {
   TempDir tmp;
   tmp.write("a.txt", "x\n");
