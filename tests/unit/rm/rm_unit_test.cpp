@@ -171,7 +171,8 @@ TEST(rm, rm_interactive_once_declines_bulk_remove) {
   Pipeline p;
   p.set_cwd(tmp.wpath());
   p.set_stdin("n\n");
-  p.add(L"rm.exe", {L"-I", L"file1.txt", L"file2.txt", L"file3.txt", L"file4.txt"});
+  p.add(L"rm.exe",
+        {L"-I", L"file1.txt", L"file2.txt", L"file3.txt", L"file4.txt"});
 
   auto r = p.run();
 

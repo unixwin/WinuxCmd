@@ -38,7 +38,8 @@ TEST(sha1sum, sha1sum_basic_file) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_FALSE(r.stdout_text.empty());
   // SHA1 of "hello\n" is: f572d396fae9206628714fb2ce00f72e94f2258f
-  EXPECT_TRUE(r.stdout_text.find("f572d396fae9206628714fb2ce00f72e94f2258f") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("f572d396fae9206628714fb2ce00f72e94f2258f") !=
+              std::string::npos);
 }
 
 TEST(sha1sum, sha1sum_stdin) {
@@ -49,7 +50,8 @@ TEST(sha1sum, sha1sum_stdin) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.find("f572d396fae9206628714fb2ce00f72e94f2258f") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("f572d396fae9206628714fb2ce00f72e94f2258f") !=
+              std::string::npos);
 }
 
 TEST(sha1sum, sha1sum_empty_file) {
@@ -64,5 +66,6 @@ TEST(sha1sum, sha1sum_empty_file) {
 
   EXPECT_EQ(r.exit_code, 0);
   // SHA1 of empty string is: da39a3ee5e6b4b0d3255bfef95601890afd80709
-  EXPECT_TRUE(r.stdout_text.find("da39a3ee5e6b4b0d3255bfef95601890afd80709") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("da39a3ee5e6b4b0d3255bfef95601890afd80709") !=
+              std::string::npos);
 }

@@ -25,7 +25,7 @@
  */
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -46,19 +46,22 @@ using cmd::meta::OptionType;
  *
  * - @a -a: Change only the access time [IMPLEMENTED]
  * - @a -c, @a --no-create: Do not create any files [IMPLEMENTED]
- * - @a -d, @a --date: Parse STRING and use it instead of current time [NOT SUPPORT]
+ * - @a -d, @a --date: Parse STRING and use it instead of current time [NOT
+ * SUPPORT]
  * - @a -f: (ignored) [IMPLEMENTED]
- * - @a -h, @a --no-dereference: Affect symbolic link instead of referenced file [NOT SUPPORT]
+ * - @a -h, @a --no-dereference: Affect symbolic link instead of referenced file
+ * [NOT SUPPORT]
  * - @a -m: Change only the modification time [IMPLEMENTED]
- * - @a -r, @a --reference: Use this file's times instead of current time [IMPLEMENTED]
+ * - @a -r, @a --reference: Use this file's times instead of current time
+ * [IMPLEMENTED]
  * - @a -t: Use [[CC]YY]MMDDhhmm[.ss] instead of current time [NOT SUPPORT]
- * - @a --time: Change the specified time (access/atime/use/modify/mtime) [IMPLEMENTED]
+ * - @a --time: Change the specified time (access/atime/use/modify/mtime)
+ * [IMPLEMENTED]
  */
 auto constexpr TOUCH_OPTIONS = std::array{
     OPTION("-a", "", "change only the access time"),
     OPTION("-c", "--no-create", "do not create any files"),
-    OPTION("-d", "--date",
-           "parse STRING and use it instead of current time",
+    OPTION("-d", "--date", "parse STRING and use it instead of current time",
            STRING_TYPE),
     OPTION("-f", "", "(ignored)"),
     OPTION("-h", "--no-dereference",
@@ -66,8 +69,7 @@ auto constexpr TOUCH_OPTIONS = std::array{
     OPTION("-m", "", "change only the modification time"),
     OPTION("-r", "--reference", "use this file's times instead of current time",
            STRING_TYPE),
-    OPTION("-t", "",
-           "use [[CC]YY]MMDDhhmm[.ss] instead of current time",
+    OPTION("-t", "", "use [[CC]YY]MMDDhhmm[.ss] instead of current time",
            STRING_TYPE),
     OPTION("", "--time",
            "change the specified time (access/atime/use/modify/mtime)",
@@ -86,10 +88,9 @@ struct TimePair {
  * @param date_str Date string to parse
  * @return FILETIME or nullopt if parsing fails
  */
-auto parse_date_string(const std::string& date_str)
-    -> std::optional<FILETIME> {
+auto parse_date_string(const std::string& date_str) -> std::optional<FILETIME> {
   std::string s = date_str;
-  
+
   // Remove any leading/trailing whitespace
   size_t start = s.find_first_not_of(" \t");
   size_t end = s.find_last_not_of(" \t");
@@ -98,18 +99,18 @@ auto parse_date_string(const std::string& date_str)
   } else {
     return std::nullopt;
   }
-  
+
   // Parse format: [[CC]YY]MMDDhhmm[.ss]
   // Minimum length: MMDDhhmm = 8 characters
   // Maximum length: CCYYMMDDhhmm.ss = 15 characters
   if (s.length() < 8 || s.length() > 15) {
     return std::nullopt;
   }
-  
+
   // Handle optional century (CC) and year (YY)
   size_t pos = 0;
   int year = 0;
-  
+
   if (s.length() >= 12) {
     // Format includes century and year: CCYYMMDDhhmm
     if (s.length() >= 12) {
@@ -131,35 +132,35 @@ auto parse_date_string(const std::string& date_str)
     year = (yy_val >= 70) ? 1900 + yy_val : 2000 + yy_val;
     pos = 2;
   }
-  
+
   // Parse month (MM)
   if (pos + 2 > s.length()) return std::nullopt;
   std::string mm = s.substr(pos, 2);
   if (!std::all_of(mm.begin(), mm.end(), ::isdigit)) return std::nullopt;
   int month = std::stoi(mm);
   pos += 2;
-  
+
   // Parse day (DD)
   if (pos + 2 > s.length()) return std::nullopt;
   std::string dd = s.substr(pos, 2);
   if (!std::all_of(dd.begin(), dd.end(), ::isdigit)) return std::nullopt;
   int day = std::stoi(dd);
   pos += 2;
-  
+
   // Parse hour (hh)
   if (pos + 2 > s.length()) return std::nullopt;
   std::string hh = s.substr(pos, 2);
   if (!std::all_of(hh.begin(), hh.end(), ::isdigit)) return std::nullopt;
   int hour = std::stoi(hh);
   pos += 2;
-  
+
   // Parse minute (mm)
   if (pos + 2 > s.length()) return std::nullopt;
   std::string min = s.substr(pos, 2);
   if (!std::all_of(min.begin(), min.end(), ::isdigit)) return std::nullopt;
   int minute = std::stoi(min);
   pos += 2;
-  
+
   // Parse optional second (.ss)
   int second = 0;
   if (pos < s.length() && s[pos] == '.') {
@@ -170,14 +171,14 @@ auto parse_date_string(const std::string& date_str)
     second = std::stoi(ss);
     pos += 2;
   }
-  
+
   // Validate ranges
   if (month < 1 || month > 12) return std::nullopt;
   if (day < 1 || day > 31) return std::nullopt;
   if (hour < 0 || hour > 23) return std::nullopt;
   if (minute < 0 || minute > 59) return std::nullopt;
   if (second < 0 || second > 59) return std::nullopt;
-  
+
   // Create local SYSTEMTIME (input is interpreted as local time)
   SYSTEMTIME st_local{};
   st_local.wYear = year;
@@ -187,22 +188,22 @@ auto parse_date_string(const std::string& date_str)
   st_local.wMinute = minute;
   st_local.wSecond = second;
   st_local.wMilliseconds = 0;
-  
+
   // Convert local time to UTC using time zone API
   TIME_ZONE_INFORMATION tzi{};
   GetTimeZoneInformation(&tzi);
-  
+
   SYSTEMTIME st_utc{};
   if (!TzSpecificLocalTimeToSystemTime(&tzi, &st_local, &st_utc)) {
     return std::nullopt;
   }
-  
+
   // Convert UTC SYSTEMTIME to FILETIME
   FILETIME ft{};
   if (!SystemTimeToFileTime(&st_utc, &ft)) {
     return std::nullopt;
   }
-  
+
   return ft;
 }
 
@@ -367,8 +368,8 @@ auto process_command(const CommandContext<TOUCH_OPTIONS.size()>& ctx)
       expanded.push_back(file_arg);
     }
     for (const auto& f : expanded) {
-      if (!apply_touch_one(f, ctx, update_access, update_modify,
-                           no_create, ref_times, date_times)) {
+      if (!apply_touch_one(f, ctx, update_access, update_modify, no_create,
+                           ref_times, date_times)) {
         all_ok = false;
       }
     }

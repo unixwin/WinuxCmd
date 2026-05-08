@@ -29,8 +29,8 @@
 /// @License: MIT
 /// @Copyright: Copyright © 2026 WinuxCmd
 
-#include "pch/pch.h"
 #include "core/command_macros.h"
+#include "pch/pch.h"
 
 import std;
 import core;
@@ -44,81 +44,94 @@ using cmd::meta::OptionType;
 // Options (constexpr)
 // ======================================================
 
-auto constexpr NUMFMT_OPTIONS =
-    std::array{OPTION("-d", "--delimiter", "use X instead of whitespace for field delimiter", STRING_TYPE),
-               OPTION("", "--from", "autoconvert from X", STRING_TYPE),
-               OPTION("", "--to", "autoconvert to X", STRING_TYPE),
-               OPTION("", "--round", "use METHOD for rounding", STRING_TYPE),
-               OPTION("", "--padding", "pad numbers to width N", INT_TYPE)};
+auto constexpr NUMFMT_OPTIONS = std::array{
+    OPTION("-d", "--delimiter",
+           "use X instead of whitespace for field delimiter", STRING_TYPE),
+    OPTION("", "--from", "autoconvert from X", STRING_TYPE),
+    OPTION("", "--to", "autoconvert to X", STRING_TYPE),
+    OPTION("", "--round", "use METHOD for rounding", STRING_TYPE),
+    OPTION("", "--padding", "pad numbers to width N", INT_TYPE)};
 
 // ======================================================
 // Helper functions
 // ======================================================
 
 namespace {
-  // Parse number with SI suffixes (K, M, G, T, P)
-  bool parse_number(const std::string& s, long long& result) {
-    std::string num_str;
-    char suffix = 0;
-    
-    // Extract numeric part and suffix
-    for (size_t i = 0; i < s.size(); ++i) {
-      if (std::isdigit(s[i]) || s[i] == '.' || s[i] == '-') {
-        num_str += s[i];
-      } else {
-        suffix = std::toupper(s[i]);
-        break;
-      }
-    }
-    
-    try {
-      double num = std::stod(num_str);
-      
-      // Apply suffix multiplier
-      switch (suffix) {
-        case 'K': num *= 1024; break;
-        case 'M': num *= 1024 * 1024; break;
-        case 'G': num *= 1024 * 1024 * 1024; break;
-        case 'T': num *= 1024LL * 1024 * 1024 * 1024; break;
-        case 'P': num *= 1024LL * 1024 * 1024 * 1024 * 1024; break;
-        case 0: break;
-        default: return false;
-      }
-      
-      result = static_cast<long long>(num);
-      return true;
-    } catch (...) {
-      return false;
+// Parse number with SI suffixes (K, M, G, T, P)
+bool parse_number(const std::string& s, long long& result) {
+  std::string num_str;
+  char suffix = 0;
+
+  // Extract numeric part and suffix
+  for (size_t i = 0; i < s.size(); ++i) {
+    if (std::isdigit(s[i]) || s[i] == '.' || s[i] == '-') {
+      num_str += s[i];
+    } else {
+      suffix = std::toupper(s[i]);
+      break;
     }
   }
-  
-  // Format number with SI suffix
-  std::string format_number(long long num, const std::string& unit = "") {
-    const char* suffixes[] = {"", "K", "M", "G", "T", "P"};
-    int suffix_index = 0;
-    double value = static_cast<double>(num);
-    
-    while (value >= 1024 && suffix_index < 5) {
-      value /= 1024;
-      suffix_index++;
+
+  try {
+    double num = std::stod(num_str);
+
+    // Apply suffix multiplier
+    switch (suffix) {
+      case 'K':
+        num *= 1024;
+        break;
+      case 'M':
+        num *= 1024 * 1024;
+        break;
+      case 'G':
+        num *= 1024 * 1024 * 1024;
+        break;
+      case 'T':
+        num *= 1024LL * 1024 * 1024 * 1024;
+        break;
+      case 'P':
+        num *= 1024LL * 1024 * 1024 * 1024 * 1024;
+        break;
+      case 0:
+        break;
+      default:
+        return false;
     }
-    
-    char buffer[64];
-    if (suffix_index == 0) {
-      sprintf_s(buffer, sizeof(buffer), "%lld", num);
-    } else {
-      sprintf_s(buffer, sizeof(buffer), "%.2f", value);
-    }
-    
-    std::string result = buffer;
-    result += suffixes[suffix_index];
-    if (!unit.empty()) {
-      result += unit;
-    }
-    
-    return result;
+
+    result = static_cast<long long>(num);
+    return true;
+  } catch (...) {
+    return false;
   }
 }
+
+// Format number with SI suffix
+std::string format_number(long long num, const std::string& unit = "") {
+  const char* suffixes[] = {"", "K", "M", "G", "T", "P"};
+  int suffix_index = 0;
+  double value = static_cast<double>(num);
+
+  while (value >= 1024 && suffix_index < 5) {
+    value /= 1024;
+    suffix_index++;
+  }
+
+  char buffer[64];
+  if (suffix_index == 0) {
+    sprintf_s(buffer, sizeof(buffer), "%lld", num);
+  } else {
+    sprintf_s(buffer, sizeof(buffer), "%.2f", value);
+  }
+
+  std::string result = buffer;
+  result += suffixes[suffix_index];
+  if (!unit.empty()) {
+    result += unit;
+  }
+
+  return result;
+}
+}  // namespace
 
 // ======================================================
 // Main command implementation
@@ -140,7 +153,6 @@ REGISTER_COMMAND(
     /* author */ "WinuxCmd",
     /* copyright */ "Copyright © 2026 WinuxCmd",
     /* options */ NUMFMT_OPTIONS) {
-
   std::string to_unit = ctx.get<std::string>("--to", "");
   bool to_si = to_unit == "si";
   bool to_iec = to_unit == "iec";
@@ -167,7 +179,8 @@ REGISTER_COMMAND(
     }
   } else {
     std::string input;
-    input.assign(std::istreambuf_iterator<char>(std::cin), std::istreambuf_iterator<char>());
+    input.assign(std::istreambuf_iterator<char>(std::cin),
+                 std::istreambuf_iterator<char>());
     std::istringstream iss(input);
     std::string line;
     while (std::getline(iss, line)) {

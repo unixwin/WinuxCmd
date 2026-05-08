@@ -38,7 +38,8 @@ TEST(cksum, cksum_basic) {
   EXPECT_EQ(r.exit_code, 0);
   // Should output checksum and byte count
   EXPECT_FALSE(r.stdout_text.empty());
-  EXPECT_TRUE(r.stdout_text.find("6") != std::string::npos); // byte count of "hello\n"
+  EXPECT_TRUE(r.stdout_text.find("6") !=
+              std::string::npos);  // byte count of "hello\n"
 }
 
 TEST(cksum, cksum_stdin) {

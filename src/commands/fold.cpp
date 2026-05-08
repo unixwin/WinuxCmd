@@ -32,7 +32,7 @@
 // *** SIMPLIFIED IMPLEMENTATION - Some features may not be fully supported ***
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -63,8 +63,10 @@ struct Config {
 auto build_config(const CommandContext<FOLD_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
   Config cfg;
-  cfg.count_bytes = ctx.get<bool>("--bytes", false) || ctx.get<bool>("-b", false);
-  cfg.break_at_spaces = ctx.get<bool>("--spaces", false) || ctx.get<bool>("-s", false);
+  cfg.count_bytes =
+      ctx.get<bool>("--bytes", false) || ctx.get<bool>("-b", false);
+  cfg.break_at_spaces =
+      ctx.get<bool>("--spaces", false) || ctx.get<bool>("-s", false);
 
   auto width_opt = ctx.get<std::string>("--width", "");
   if (width_opt.empty()) {
@@ -103,7 +105,8 @@ auto build_config(const CommandContext<FOLD_OPTIONS.size()>& ctx)
 }
 
 // Fold a single line
-auto fold_line(const std::string& line, int width, bool count_bytes, bool break_at_spaces) -> std::string {
+auto fold_line(const std::string& line, int width, bool count_bytes,
+               bool break_at_spaces) -> std::string {
   if (line.empty()) {
     return "\n";
   }
@@ -119,11 +122,13 @@ auto fold_line(const std::string& line, int width, bool count_bytes, bool break_
     // Find where to break
     while (pos < line.size()) {
       char c = line[pos];
-      int char_width = count_bytes ? 1 : 1;  // Simplified: assume 1 column per char
+      int char_width =
+          count_bytes ? 1 : 1;  // Simplified: assume 1 column per char
 
       if (current_length + char_width > width) {
         // Need to break
-        if (break_at_spaces && last_space_pos != std::string::npos && last_space_pos > start_pos) {
+        if (break_at_spaces && last_space_pos != std::string::npos &&
+            last_space_pos > start_pos) {
           // Break at last space
           result.append(line.substr(start_pos, last_space_pos - start_pos));
           result += "\n";
@@ -151,7 +156,8 @@ auto fold_line(const std::string& line, int width, bool count_bytes, bool break_
       result.append(line.substr(start_pos));
     }
 
-    // If original line ended with newline, add it (but check if result already has one)
+    // If original line ended with newline, add it (but check if result already
+    // has one)
     if (!line.empty() && line.back() == '\n') {
       if (!result.empty() && result.back() != '\n') {
         result += "\n";
@@ -171,7 +177,8 @@ auto run(const Config& cfg) -> int {
       std::string line;
       while (std::getline(std::cin, line)) {
         line += "\n";  // Preserve line ending
-        auto folded = fold_line(line, cfg.width, cfg.count_bytes, cfg.break_at_spaces);
+        auto folded =
+            fold_line(line, cfg.width, cfg.count_bytes, cfg.break_at_spaces);
         safePrint(folded);
       }
     } else {
@@ -197,7 +204,8 @@ auto run(const Config& cfg) -> int {
         }
         first_line = false;
         line += "\n";  // Preserve line ending
-        auto folded = fold_line(line, cfg.width, cfg.count_bytes, cfg.break_at_spaces);
+        auto folded =
+            fold_line(line, cfg.width, cfg.count_bytes, cfg.break_at_spaces);
         safePrint(folded);
       }
 
@@ -215,22 +223,23 @@ auto run(const Config& cfg) -> int {
 
 }  // namespace fold_pipeline
 
-REGISTER_COMMAND(fold, "fold",
-                 "fold [OPTION]... [FILE]...",
+REGISTER_COMMAND(fold, "fold", "fold [OPTION]... [FILE]...",
                  "Wrap input lines to fit specified width.\n"
                  "\n"
-                 "Write each FILE to standard output, wrapping input lines to fit in width columns.\n"
+                 "Write each FILE to standard output, wrapping input lines to "
+                 "fit in width columns.\n"
                  "With no FILE, or when FILE is -, read standard input.\n"
                  "\n"
                  "Note: This implementation supports basic folding.\n"
-                 "Advanced features like multi-byte character width calculation are not implemented.",
+                 "Advanced features like multi-byte character width "
+                 "calculation are not implemented.",
                  "  fold file.txt\n"
                  "  fold -w 60 file.txt\n"
                  "  fold -s file.txt\n"
                  "  fold -b file.txt\n"
                  "  echo 'very long line' | fold -w 10",
-                 "fmt(1)", "WinuxCmd",
-                 "Copyright © 2026 WinuxCmd", FOLD_OPTIONS) {
+                 "fmt(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd",
+                 FOLD_OPTIONS) {
   using namespace fold_pipeline;
 
   auto cfg_result = build_config(ctx);

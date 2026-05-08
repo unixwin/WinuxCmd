@@ -6,7 +6,7 @@
 /// @License: MIT
 /// @Copyright: Copyright © 2026 WinuxCmd
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -19,10 +19,14 @@ using cmd::meta::OptionType;
 
 auto constexpr ENV_OPTIONS = std::array{
     OPTION("-i", "--ignore-environment", "start with an empty environment"),
-    OPTION("-u", "--unset", "remove variable from the environment", STRING_TYPE),
+    OPTION("-u", "--unset", "remove variable from the environment",
+           STRING_TYPE),
     OPTION("-0", "--null", "end each output line with NUL, not newline"),
-    OPTION("-S", "--split-string", "process and split S into separate arguments [NOT SUPPORT]", STRING_TYPE),
-    OPTION("-C", "--chdir", "change working directory [NOT SUPPORT]", STRING_TYPE)};
+    OPTION("-S", "--split-string",
+           "process and split S into separate arguments [NOT SUPPORT]",
+           STRING_TYPE),
+    OPTION("-C", "--chdir", "change working directory [NOT SUPPORT]",
+           STRING_TYPE)};
 
 namespace env_pipeline {
 namespace cp = core::pipeline;
@@ -152,14 +156,15 @@ auto run(const Config& cfg) -> int {
 
 }  // namespace env_pipeline
 
-REGISTER_COMMAND(env, "env", "env [OPTION]... [NAME=VALUE]... [COMMAND [ARG]...]",
-                 "Set each NAME to VALUE in the environment and print the\n"
-                 "resulting environment. Running COMMAND is currently [NOT SUPPORT].",
-                 "  env\n"
-                 "  env -i FOO=bar\n"
-                 "  env -u PATH",
-                 "printenv(1), which(1)", "WinuxCmd",
-                 "Copyright © 2026 WinuxCmd", ENV_OPTIONS) {
+REGISTER_COMMAND(
+    env, "env", "env [OPTION]... [NAME=VALUE]... [COMMAND [ARG]...]",
+    "Set each NAME to VALUE in the environment and print the\n"
+    "resulting environment. Running COMMAND is currently [NOT SUPPORT].",
+    "  env\n"
+    "  env -i FOO=bar\n"
+    "  env -u PATH",
+    "printenv(1), which(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd",
+    ENV_OPTIONS) {
   using namespace env_pipeline;
 
   if (auto unsupported = is_unsupported_used(ctx); unsupported.has_value()) {

@@ -1,26 +1,26 @@
 /*
  *  Copyright © 2026 WinuxCmd
  */
-#include "pch/pch.h"
 #include "core/command_macros.h"
+#include "pch/pch.h"
 import std;
 import core;
 import utils;
 import container;
 
-auto constexpr PINKY_OPTIONS = std::array{OPTION("-l", "", "long format", BOOL_TYPE),
-                                                   OPTION("-b", "", "omit host and user info", BOOL_TYPE)};
+auto constexpr PINKY_OPTIONS =
+    std::array{OPTION("-l", "", "long format", BOOL_TYPE),
+               OPTION("-b", "", "omit host and user info", BOOL_TYPE)};
 
-REGISTER_COMMAND(
-    pinky,
-    /* cmd_name */ "pinky",
-    /* cmd_synopsis */ "pinky [OPTION] [USER]...",
-    /* cmd_desc */ "A lightweight 'finger' client.",
-    /* examples */ "pinky\npinky john",
-    /* see_also */ "finger",
-    /* author */ "WinuxCmd",
-    /* copyright */ "Copyright © 2026 WinuxCmd",
-    /* options */ PINKY_OPTIONS) {
+REGISTER_COMMAND(pinky,
+                 /* cmd_name */ "pinky",
+                 /* cmd_synopsis */ "pinky [OPTION] [USER]...",
+                 /* cmd_desc */ "A lightweight 'finger' client.",
+                 /* examples */ "pinky\npinky john",
+                 /* see_also */ "finger",
+                 /* author */ "WinuxCmd",
+                 /* copyright */ "Copyright © 2026 WinuxCmd",
+                 /* options */ PINKY_OPTIONS) {
   bool long_format = ctx.get<bool>("-l", false);
   bool brief = ctx.get<bool>("-b", false);
 

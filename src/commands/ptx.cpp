@@ -31,7 +31,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -43,25 +43,28 @@ using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
 auto constexpr PTX_OPTIONS = std::array{
-    OPTION("-A", "--auto-reference", "output automatically generated references", BOOL_TYPE),
+    OPTION("-A", "--auto-reference",
+           "output automatically generated references", BOOL_TYPE),
     OPTION("-C", "--copyright", "display copyright and version", BOOL_TYPE),
     OPTION("-G", "--traditional", "behave more like System V 'ptx'", BOOL_TYPE),
-    OPTION("-F", "--flag-truncation", "truncate words flagged by 'g'", STRING_TYPE),
+    OPTION("-F", "--flag-truncation", "truncate words flagged by 'g'",
+           STRING_TYPE),
     OPTION("-M", "--macro-name", "macro name for missing file", STRING_TYPE),
     OPTION("-O", "--format", "roff format for output", BOOL_TYPE),
-    OPTION("-R", "--right-side-refs", "put references in right margin", BOOL_TYPE),
+    OPTION("-R", "--right-side-refs", "put references in right margin",
+           BOOL_TYPE),
     OPTION("-S", "--sentence-regexp", "regexp for sentence ends", STRING_TYPE),
     OPTION("-T", "--tabs", "tabs in output", STRING_TYPE),
     OPTION("-W", "--word-regexp", "regexp for words", STRING_TYPE),
     OPTION("-b", "--break", "file break character", STRING_TYPE),
-    OPTION("-f", "--ignore-case", "fold lower case to upper case for sorting", BOOL_TYPE),
+    OPTION("-f", "--ignore-case", "fold lower case to upper case for sorting",
+           BOOL_TYPE),
     OPTION("-g", "--gap-size", "gap size for output", STRING_TYPE),
     OPTION("-i", "--ignore-file", "ignore file", STRING_TYPE),
     OPTION("-o", "--only-file", "output only file", BOOL_TYPE),
     OPTION("-r", "--references", "first field is reference", BOOL_TYPE),
     OPTION("-t", "--typeset-mode", "output for troff/nroff", BOOL_TYPE),
-    OPTION("-w", "--width", "output width", STRING_TYPE)
-};
+    OPTION("-w", "--width", "output width", STRING_TYPE)};
 
 namespace ptx_pipeline {
 namespace cp = core::pipeline;
@@ -98,15 +101,24 @@ struct Config {
 auto build_config(const CommandContext<PTX_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
   Config cfg;
-  cfg.auto_reference = ctx.get<bool>("--auto-reference", false) || ctx.get<bool>("-A", false);
-  cfg.copyright = ctx.get<bool>("--copyright", false) || ctx.get<bool>("-C", false);
-  cfg.traditional = ctx.get<bool>("--traditional", false) || ctx.get<bool>("-G", false);
-  cfg.roff_format = ctx.get<bool>("--format", false) || ctx.get<bool>("-O", false);
-  cfg.right_side_refs = ctx.get<bool>("--right-side-refs", false) || ctx.get<bool>("-R", false);
-  cfg.ignore_case = ctx.get<bool>("--ignore-case", false) || ctx.get<bool>("-f", false);
-  cfg.only_file = ctx.get<bool>("--only-file", false) || ctx.get<bool>("-o", false);
-  cfg.references = ctx.get<bool>("--references", false) || ctx.get<bool>("-r", false);
-  cfg.typeset_mode = ctx.get<bool>("--typeset-mode", false) || ctx.get<bool>("-t", false);
+  cfg.auto_reference =
+      ctx.get<bool>("--auto-reference", false) || ctx.get<bool>("-A", false);
+  cfg.copyright =
+      ctx.get<bool>("--copyright", false) || ctx.get<bool>("-C", false);
+  cfg.traditional =
+      ctx.get<bool>("--traditional", false) || ctx.get<bool>("-G", false);
+  cfg.roff_format =
+      ctx.get<bool>("--format", false) || ctx.get<bool>("-O", false);
+  cfg.right_side_refs =
+      ctx.get<bool>("--right-side-refs", false) || ctx.get<bool>("-R", false);
+  cfg.ignore_case =
+      ctx.get<bool>("--ignore-case", false) || ctx.get<bool>("-f", false);
+  cfg.only_file =
+      ctx.get<bool>("--only-file", false) || ctx.get<bool>("-o", false);
+  cfg.references =
+      ctx.get<bool>("--references", false) || ctx.get<bool>("-r", false);
+  cfg.typeset_mode =
+      ctx.get<bool>("--typeset-mode", false) || ctx.get<bool>("-t", false);
 
   auto trunc_opt = ctx.get<std::string>("--flag-truncation", "");
   if (trunc_opt.empty()) {
@@ -189,9 +201,10 @@ auto build_config(const CommandContext<PTX_OPTIONS.size()>& ctx)
   return cfg;
 }
 
-auto read_file_content(const std::string& filename) -> std::vector<std::string> {
+auto read_file_content(const std::string& filename)
+    -> std::vector<std::string> {
   std::vector<std::string> lines;
-  
+
   if (filename == "-") {
     // Read from stdin
     std::string line;
@@ -205,64 +218,69 @@ auto read_file_content(const std::string& filename) -> std::vector<std::string> 
     // Read from file
     lines = read_file_lines(filename);
   }
-  
+
   return lines;
 }
 
-auto extract_words(const std::vector<std::string>& lines, bool ignore_case) -> std::vector<WordEntry> {
+auto extract_words(const std::vector<std::string>& lines, bool ignore_case)
+    -> std::vector<WordEntry> {
   std::vector<WordEntry> entries;
-  
+
   for (size_t line_num = 0; line_num < lines.size(); ++line_num) {
     const std::string& line = lines[line_num];
     std::string word;
-    
+
     for (size_t i = 0; i <= line.size(); ++i) {
-      if (i < line.size() && std::isalpha(static_cast<unsigned char>(line[i]))) {
+      if (i < line.size() &&
+          std::isalpha(static_cast<unsigned char>(line[i]))) {
         word += line[i];
       } else {
         if (!word.empty()) {
           std::string word_key = word;
           if (ignore_case) {
-            std::transform(word_key.begin(), word_key.end(), word_key.begin(), ::tolower);
+            std::transform(word_key.begin(), word_key.end(), word_key.begin(),
+                           ::tolower);
           }
-          
+
           WordEntry entry;
           entry.word = word_key;
           entry.line_number = static_cast<int>(line_num + 1);
           entry.line_context = line;
           entry.position = static_cast<int>(i) - static_cast<int>(word.size());
-          
+
           entries.push_back(entry);
           word.clear();
         }
       }
     }
   }
-  
+
   return entries;
 }
 
-auto compare_entries(const WordEntry& a, const WordEntry& b, bool ignore_case) -> bool {
+auto compare_entries(const WordEntry& a, const WordEntry& b, bool ignore_case)
+    -> bool {
   std::string a_word = a.word;
   std::string b_word = b.word;
-  
+
   if (ignore_case) {
     std::transform(a_word.begin(), a_word.end(), a_word.begin(), ::tolower);
     std::transform(b_word.begin(), b_word.end(), b_word.begin(), ::tolower);
   }
-  
+
   if (a_word != b_word) {
     return a_word < b_word;
   }
-  
+
   // If words are equal, sort by line number
   return a.line_number < b.line_number;
 }
 
-auto format_output(const std::vector<WordEntry>& entries, const Config& cfg) -> void {
+auto format_output(const std::vector<WordEntry>& entries, const Config& cfg)
+    -> void {
   for (const auto& entry : entries) {
     std::string output;
-    
+
     if (cfg.right_side_refs) {
       // Word context, then reference on right
       output = entry.line_context;
@@ -272,50 +290,50 @@ auto format_output(const std::vector<WordEntry>& entries, const Config& cfg) -> 
       output = "(" + std::to_string(entry.line_number) + ")\t";
       output += entry.line_context;
     }
-    
+
     safePrintLn(output);
   }
 }
 
 auto run(const Config& cfg) -> int {
   std::vector<WordEntry> all_entries;
-  
+
   for (const auto& file : cfg.files) {
     auto lines = read_file_content(file);
     if (lines.empty()) {
       continue;
     }
-    
+
     auto entries = extract_words(lines, cfg.ignore_case);
     all_entries.insert(all_entries.end(), entries.begin(), entries.end());
   }
-  
+
   // Sort entries
-  std::sort(all_entries.begin(), all_entries.end(), 
-    [&cfg](const WordEntry& a, const WordEntry& b) {
-      return compare_entries(a, b, cfg.ignore_case);
-    });
-  
+  std::sort(all_entries.begin(), all_entries.end(),
+            [&cfg](const WordEntry& a, const WordEntry& b) {
+              return compare_entries(a, b, cfg.ignore_case);
+            });
+
   // Output
   format_output(all_entries, cfg);
-  
+
   return 0;
 }
 
 }  // namespace ptx_pipeline
 
-REGISTER_COMMAND(ptx, "ptx",
-                 "ptx [OPTION]... [FILE]...",
-                 "Produce a permuted index of file contents.\n"
-                 "\n"
-                 "Output a permuted index, including context, of the words in the given files.\n"
-                 "\n"
-                 "Note: This is an advanced command. Full implementation is not provided\n"
-                 "due to its complexity. This is mainly used for building book indexes.",
-                 "  ptx file.txt\n"
-                 "  ptx -w file.txt",
-                 "grep(1), sort(1)", "WinuxCmd",
-                 "Copyright © 2026 WinuxCmd", PTX_OPTIONS) {
+REGISTER_COMMAND(
+    ptx, "ptx", "ptx [OPTION]... [FILE]...",
+    "Produce a permuted index of file contents.\n"
+    "\n"
+    "Output a permuted index, including context, of the words in the given "
+    "files.\n"
+    "\n"
+    "Note: This is an advanced command. Full implementation is not provided\n"
+    "due to its complexity. This is mainly used for building book indexes.",
+    "  ptx file.txt\n"
+    "  ptx -w file.txt",
+    "grep(1), sort(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", PTX_OPTIONS) {
   using namespace ptx_pipeline;
 
   auto cfg_result = build_config(ctx);

@@ -43,7 +43,8 @@ TEST(watch, watch_no_title) {
   Pipeline p;
   p.add(L"watch.exe", {L"-n", L"1", L"-c", L"1", L"-t", L"echo", L"test"});
 
-  TEST_LOG_CMD_LIST("watch.exe", L"-n", L"1", L"-c", L"1", L"-t", L"echo", L"test");
+  TEST_LOG_CMD_LIST("watch.exe", L"-n", L"1", L"-c", L"1", L"-t", L"echo",
+                    L"test");
 
   auto r = p.run();
 

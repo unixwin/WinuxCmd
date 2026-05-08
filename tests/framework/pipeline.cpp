@@ -250,7 +250,8 @@ CommandResult Pipeline::run() {
         }
       };
 
-      // Start from current environment to ensure required variables stay present.
+      // Start from current environment to ensure required variables stay
+      // present.
       std::map<std::wstring, std::wstring, ci_less> vars;
       if (LPWCH raw = GetEnvironmentStringsW()) {
         const wchar_t *p = raw;
@@ -291,8 +292,7 @@ CommandResult Pipeline::run() {
     }
 
     if (!CreateProcessW(nullptr, cmdline.data(), nullptr, nullptr, TRUE,
-                        creation_flags,
-                        env_ptr, cwd, &si, &procs[i])) {
+                        creation_flags, env_ptr, cwd, &si, &procs[i])) {
       DWORD err = GetLastError();
       throw std::runtime_error("CreateProcessW failed: " + std::to_string(err));
     }

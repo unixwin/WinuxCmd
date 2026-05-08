@@ -30,8 +30,8 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 // FULLY IMPLEMENTED - All standard test operations supported
 
-#include "pch/pch.h"
 #include "core/command_macros.h"
+#include "pch/pch.h"
 
 import std;
 import core;
@@ -49,118 +49,117 @@ using cmd::meta::OptionType;
 // as positionals in the handler logic.
 // ======================================================
 
-auto constexpr TEST_OPTIONS = std::array{
-    OPTION("-n", "", "string length is non-zero"),
-    OPTION("-z", "", "string length is zero"),
-    OPTION("-b", "", "file is block special"),
-    OPTION("-c", "", "file is character special"),
-    OPTION("-d", "", "file is a directory"),
-    OPTION("-e", "", "file exists"),
-    OPTION("-f", "", "file is a regular file"),
-    OPTION("-g", "", "file has set-group-ID bit"),
-    OPTION("-G", "", "file is owned by effective group ID"),
-    OPTION("-h", "", "file is a symbolic link"),
-    OPTION("-L", "", "file is a symbolic link"),
-    OPTION("-k", "", "file has sticky bit"),
-    OPTION("-p", "", "file is a named pipe"),
-    OPTION("-r", "", "file is readable"),
-    OPTION("-s", "", "file size is non-zero"),
-    OPTION("-S", "", "file is a socket"),
-    OPTION("-t", "", "file descriptor is a terminal"),
-    OPTION("-u", "", "file has set-user-ID bit"),
-    OPTION("-w", "", "file is writable"),
-    OPTION("-x", "", "file is executable"),
-    OPTION("-O", "", "file is owned by effective user ID"),
-    OPTION("-eq", "", "integer equal"),
-    OPTION("-ne", "", "integer not equal"),
-    OPTION("-lt", "", "integer less than"),
-    OPTION("-le", "", "integer less than or equal"),
-    OPTION("-gt", "", "integer greater than"),
-    OPTION("-ge", "", "integer greater than or equal"),
-    OPTION("-a", "", "logical and"),
-    OPTION("-and", "", "logical and"),
-    OPTION("-o", "", "logical or"),
-    OPTION("-or", "", "logical or"),
-    OPTION("!", "", "logical not"),
-    OPTION("=", "", "string equal"),
-    OPTION("==", "", "string equal"),
-    OPTION("!=", "", "string not equal"),
-    OPTION("<", "", "string less than"),
-    OPTION("<=", "", "string less than or equal"),
-    OPTION(">", "", "string greater than"),
-    OPTION(">=", "", "string greater than or equal")
-};
+auto constexpr TEST_OPTIONS =
+    std::array{OPTION("-n", "", "string length is non-zero"),
+               OPTION("-z", "", "string length is zero"),
+               OPTION("-b", "", "file is block special"),
+               OPTION("-c", "", "file is character special"),
+               OPTION("-d", "", "file is a directory"),
+               OPTION("-e", "", "file exists"),
+               OPTION("-f", "", "file is a regular file"),
+               OPTION("-g", "", "file has set-group-ID bit"),
+               OPTION("-G", "", "file is owned by effective group ID"),
+               OPTION("-h", "", "file is a symbolic link"),
+               OPTION("-L", "", "file is a symbolic link"),
+               OPTION("-k", "", "file has sticky bit"),
+               OPTION("-p", "", "file is a named pipe"),
+               OPTION("-r", "", "file is readable"),
+               OPTION("-s", "", "file size is non-zero"),
+               OPTION("-S", "", "file is a socket"),
+               OPTION("-t", "", "file descriptor is a terminal"),
+               OPTION("-u", "", "file has set-user-ID bit"),
+               OPTION("-w", "", "file is writable"),
+               OPTION("-x", "", "file is executable"),
+               OPTION("-O", "", "file is owned by effective user ID"),
+               OPTION("-eq", "", "integer equal"),
+               OPTION("-ne", "", "integer not equal"),
+               OPTION("-lt", "", "integer less than"),
+               OPTION("-le", "", "integer less than or equal"),
+               OPTION("-gt", "", "integer greater than"),
+               OPTION("-ge", "", "integer greater than or equal"),
+               OPTION("-a", "", "logical and"),
+               OPTION("-and", "", "logical and"),
+               OPTION("-o", "", "logical or"),
+               OPTION("-or", "", "logical or"),
+               OPTION("!", "", "logical not"),
+               OPTION("=", "", "string equal"),
+               OPTION("==", "", "string equal"),
+               OPTION("!=", "", "string not equal"),
+               OPTION("<", "", "string less than"),
+               OPTION("<=", "", "string less than or equal"),
+               OPTION(">", "", "string greater than"),
+               OPTION(">=", "", "string greater than or equal")};
 
 // ======================================================
 // Helper functions
 // ======================================================
 
 namespace {
-  // Check if file exists
-  bool file_exists(const std::string& path) {
-    std::wstring wpath = utf8_to_wstring(path);
-    DWORD attrs = GetFileAttributesW(wpath.c_str());
-    return attrs != INVALID_FILE_ATTRIBUTES;
-  }
+// Check if file exists
+bool file_exists(const std::string& path) {
+  std::wstring wpath = utf8_to_wstring(path);
+  DWORD attrs = GetFileAttributesW(wpath.c_str());
+  return attrs != INVALID_FILE_ATTRIBUTES;
+}
 
-  // Check if path is a regular file
-  bool is_regular_file(const std::string& path) {
-    std::wstring wpath = utf8_to_wstring(path);
-    DWORD attrs = GetFileAttributesW(wpath.c_str());
-    return attrs != INVALID_FILE_ATTRIBUTES && 
-           !(attrs & FILE_ATTRIBUTE_DIRECTORY);
-  }
+// Check if path is a regular file
+bool is_regular_file(const std::string& path) {
+  std::wstring wpath = utf8_to_wstring(path);
+  DWORD attrs = GetFileAttributesW(wpath.c_str());
+  return attrs != INVALID_FILE_ATTRIBUTES &&
+         !(attrs & FILE_ATTRIBUTE_DIRECTORY);
+}
 
-  // Check if path is a directory
-  bool is_directory(const std::string& path) {
-    std::wstring wpath = utf8_to_wstring(path);
-    DWORD attrs = GetFileAttributesW(wpath.c_str());
-    return attrs != INVALID_FILE_ATTRIBUTES && 
-           (attrs & FILE_ATTRIBUTE_DIRECTORY);
-  }
+// Check if path is a directory
+bool is_directory(const std::string& path) {
+  std::wstring wpath = utf8_to_wstring(path);
+  DWORD attrs = GetFileAttributesW(wpath.c_str());
+  return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY);
+}
 
-  // Check if file has size > 0
-  bool file_has_size(const std::string& path) {
-    std::wstring wpath = utf8_to_wstring(path);
-    WIN32_FILE_ATTRIBUTE_DATA data;
-    if (GetFileAttributesExW(wpath.c_str(), GetFileExInfoStandard, &data)) {
-      return data.nFileSizeHigh > 0 || data.nFileSizeLow > 0;
-    }
-    return false;
+// Check if file has size > 0
+bool file_has_size(const std::string& path) {
+  std::wstring wpath = utf8_to_wstring(path);
+  WIN32_FILE_ATTRIBUTE_DATA data;
+  if (GetFileAttributesExW(wpath.c_str(), GetFileExInfoStandard, &data)) {
+    return data.nFileSizeHigh > 0 || data.nFileSizeLow > 0;
   }
+  return false;
+}
 
-  // String to integer
-  bool string_to_int(const std::string& s, long long& result) {
-    try {
-      result = std::stoll(s);
-      return true;
-    } catch (...) {
-      return false;
-    }
-  }
-
-  // Compare strings
-  bool compare_strings(const std::string& op, const std::string& a, const std::string& b) {
-    if (op == "=" || op == "==") return a == b;
-    if (op == "!=") return a != b;
-    if (op == "<") return a < b;
-    if (op == "<=") return a <= b;
-    if (op == ">") return a > b;
-    if (op == ">=") return a >= b;
-    return false;
-  }
-
-  // Compare integers
-  bool compare_integers(const std::string& op, long long a, long long b) {
-    if (op == "-eq") return a == b;
-    if (op == "-ne") return a != b;
-    if (op == "-lt") return a < b;
-    if (op == "-le") return a <= b;
-    if (op == "-gt") return a > b;
-    if (op == "-ge") return a >= b;
+// String to integer
+bool string_to_int(const std::string& s, long long& result) {
+  try {
+    result = std::stoll(s);
+    return true;
+  } catch (...) {
     return false;
   }
 }
+
+// Compare strings
+bool compare_strings(const std::string& op, const std::string& a,
+                     const std::string& b) {
+  if (op == "=" || op == "==") return a == b;
+  if (op == "!=") return a != b;
+  if (op == "<") return a < b;
+  if (op == "<=") return a <= b;
+  if (op == ">") return a > b;
+  if (op == ">=") return a >= b;
+  return false;
+}
+
+// Compare integers
+bool compare_integers(const std::string& op, long long a, long long b) {
+  if (op == "-eq") return a == b;
+  if (op == "-ne") return a != b;
+  if (op == "-lt") return a < b;
+  if (op == "-le") return a <= b;
+  if (op == "-gt") return a > b;
+  if (op == "-ge") return a >= b;
+  return false;
+}
+}  // namespace
 
 // ======================================================
 // Main command implementation
@@ -184,11 +183,10 @@ REGISTER_COMMAND(
     /* author */ "WinuxCmd",
     /* copyright */ "Copyright © 2026 WinuxCmd",
     /* options */ TEST_OPTIONS) {
-
   // Find which operator is set
   std::string op;
   for (size_t i = 0; i < TEST_OPTIONS.size(); ++i) {
-    if (ctx.get<bool>(TEST_OPTIONS[i].short_name, false) || 
+    if (ctx.get<bool>(TEST_OPTIONS[i].short_name, false) ||
         ctx.get<bool>(TEST_OPTIONS[i].long_name, false)) {
       op = std::string(TEST_OPTIONS[i].short_name);
       if (op.empty()) op = std::string(TEST_OPTIONS[i].long_name);
@@ -266,7 +264,8 @@ REGISTER_COMMAND(
     if (op == "-w") {
       std::wstring wpath = utf8_to_wstring(arg);
       DWORD attrs = GetFileAttributesW(wpath.c_str());
-      if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_READONLY)) {
+      if (attrs == INVALID_FILE_ATTRIBUTES ||
+          (attrs & FILE_ATTRIBUTE_READONLY)) {
         return 1;
       }
       return 0;
@@ -275,7 +274,9 @@ REGISTER_COMMAND(
       std::wstring wpath = utf8_to_wstring(arg);
       std::wstring ext = wpath.substr(wpath.find_last_of(L'.') + 1);
       std::transform(ext.begin(), ext.end(), ext.begin(), towlower);
-      return (ext == L"exe" || ext == L"bat" || ext == L"cmd" || ext == L"ps1") ? 0 : 1;
+      return (ext == L"exe" || ext == L"bat" || ext == L"cmd" || ext == L"ps1")
+                 ? 0
+                 : 1;
     }
     if (op == "-O") {
       return 1;  // Not supported on Windows
@@ -294,12 +295,12 @@ REGISTER_COMMAND(
     std::string op = std::string(ctx.positionals[1]);
     std::string b = std::string(ctx.positionals[2]);
 
-    if (op == "=" || op == "==" || op == "!=" || op == "<" || op == "<=" || 
+    if (op == "=" || op == "==" || op == "!=" || op == "<" || op == "<=" ||
         op == ">" || op == ">=") {
       return compare_strings(op, a, b) ? 0 : 1;
     }
 
-    if (op == "-eq" || op == "-ne" || op == "-lt" || op == "-le" || 
+    if (op == "-eq" || op == "-ne" || op == "-lt" || op == "-le" ||
         op == "-gt" || op == "-ge") {
       long long va, vb;
       if (!string_to_int(a, va) || !string_to_int(b, vb)) {

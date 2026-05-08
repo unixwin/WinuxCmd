@@ -32,8 +32,8 @@
 /// @License: MIT
 /// @Copyright: Copyright © 2026 WinuxCmd
 
-#include "pch/pch.h"
 #include "core/command_macros.h"
+#include "pch/pch.h"
 
 #pragma comment(lib, "advapi32.lib")
 import std;
@@ -57,7 +57,8 @@ using cmd::meta::OptionType;
  * - @a +FORMAT: Output formatted date string [IMPLEMENTED]
  */
 auto constexpr DATE_OPTIONS = std::array{
-    OPTION("-d", "--date", "display time described by STRING, not 'now'", STRING_TYPE),
+    OPTION("-d", "--date", "display time described by STRING, not 'now'",
+           STRING_TYPE),
     OPTION("-u", "--utc", "Coordinated Universal Time (UTC)"),
     OPTION("-R", "--rfc-2822", "output RFC 2822 compliant date string")};
 
@@ -70,7 +71,8 @@ namespace cp = core::pipeline;
  * @param format Format string (supports common format specifiers)
  * @return Formatted date/time string
  */
-auto format_time(const SYSTEMTIME &st, const std::string &format) -> std::string {
+auto format_time(const SYSTEMTIME &st, const std::string &format)
+    -> std::string {
   std::string result;
   result.reserve(format.size() * 2);
 
@@ -97,7 +99,8 @@ auto format_time(const SYSTEMTIME &st, const std::string &format) -> std::string
           result += buf;
           break;
         case 'I':  // Hour (01-12)
-          snprintf(buf, sizeof(buf), "%02d", (st.wHour % 12 == 0) ? 12 : st.wHour % 12);
+          snprintf(buf, sizeof(buf), "%02d",
+                   (st.wHour % 12 == 0) ? 12 : st.wHour % 12);
           result += buf;
           break;
         case 'M':  // Minute (00-59)
@@ -114,9 +117,9 @@ auto format_time(const SYSTEMTIME &st, const std::string &format) -> std::string
         case 'a':  // Abbreviated weekday name
         case 'A':  // Full weekday name
         {
-          static const char *weekday_names[] = {"Sunday", "Monday", "Tuesday",
-                                                "Wednesday", "Thursday",
-                                                "Friday", "Saturday"};
+          static const char *weekday_names[] = {
+              "Sunday",   "Monday", "Tuesday", "Wednesday",
+              "Thursday", "Friday", "Saturday"};
           static const char *weekday_abbr[] = {"Sun", "Mon", "Tue", "Wed",
                                                "Thu", "Fri", "Sat"};
           int day_of_week = st.wDayOfWeek;
@@ -128,11 +131,12 @@ auto format_time(const SYSTEMTIME &st, const std::string &format) -> std::string
         case 'B':  // Full month name
         {
           static const char *month_names[] = {
-              "January", "February", "March", "April", "May", "June",
-              "July", "August", "September", "October", "November", "December"};
-          static const char *month_abbr[] = {
-              "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-              "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+              "January",   "February", "March",    "April",
+              "May",       "June",     "July",     "August",
+              "September", "October",  "November", "December"};
+          static const char *month_abbr[] = {"Jan", "Feb", "Mar", "Apr",
+                                             "May", "Jun", "Jul", "Aug",
+                                             "Sep", "Oct", "Nov", "Dec"};
           result += (spec == 'b') ? month_abbr[st.wMonth - 1]
                                   : month_names[st.wMonth - 1];
           break;
@@ -171,36 +175,35 @@ auto get_current_time(bool use_utc) -> SYSTEMTIME {
 
 }  // namespace date_pipeline
 
-REGISTER_COMMAND(date, "date",
-                 "print or set the system date and time",
-                 "Display the current time in the given FORMAT, or set the system date.\n"
-                 "\n"
-                 "FORMAT controls the output. Interpreted sequences are:\n"
-                 "  %Y   Year (4 digits)\n"
-                 "  %y   Year (2 digits)\n"
-                 "  %m   Month (01-12)\n"
-                 "  %d   Day (01-31)\n"
-                 "  %H   Hour (00-23)\n"
-                 "  %I   Hour (01-12)\n"
-                 "  %M   Minute (00-59)\n"
-                 "  %S   Second (00-60)\n"
-                 "  %p   AM/PM\n"
-                 "  %a   Abbreviated weekday name\n"
-                 "  %A   Full weekday name\n"
-                 "  %b   Abbreviated month name\n"
-                 "  %B   Full month name",
-                 "  date                    Display current date and time\n"
-                 "  date +'%Y-%m-%d'        Display date in YYYY-MM-DD format\n"
-                 "  date +'%H:%M:%S'        Display time in HH:MM:SS format\n"
-                 "  date -u                 Display UTC time\n"
-                 "  date -R                 Display RFC 2822 format",
-                 "cal(1)", "caomengxuan666",
-                 "Copyright © 2026 WinuxCmd", DATE_OPTIONS) {
+REGISTER_COMMAND(
+    date, "date", "print or set the system date and time",
+    "Display the current time in the given FORMAT, or set the system date.\n"
+    "\n"
+    "FORMAT controls the output. Interpreted sequences are:\n"
+    "  %Y   Year (4 digits)\n"
+    "  %y   Year (2 digits)\n"
+    "  %m   Month (01-12)\n"
+    "  %d   Day (01-31)\n"
+    "  %H   Hour (00-23)\n"
+    "  %I   Hour (01-12)\n"
+    "  %M   Minute (00-59)\n"
+    "  %S   Second (00-60)\n"
+    "  %p   AM/PM\n"
+    "  %a   Abbreviated weekday name\n"
+    "  %A   Full weekday name\n"
+    "  %b   Abbreviated month name\n"
+    "  %B   Full month name",
+    "  date                    Display current date and time\n"
+    "  date +'%Y-%m-%d'        Display date in YYYY-MM-DD format\n"
+    "  date +'%H:%M:%S'        Display time in HH:MM:SS format\n"
+    "  date -u                 Display UTC time\n"
+    "  date -R                 Display RFC 2822 format",
+    "cal(1)", "caomengxuan666", "Copyright © 2026 WinuxCmd", DATE_OPTIONS) {
   using namespace date_pipeline;
 
   bool use_utc = ctx.get<bool>("-u", false) || ctx.get<bool>("--utc", false);
-  bool rfc2822 = ctx.get<bool>("-R", false) ||
-                  ctx.get<bool>("--rfc-2822", false);
+  bool rfc2822 =
+      ctx.get<bool>("-R", false) || ctx.get<bool>("--rfc-2822", false);
 
   SYSTEMTIME st = get_current_time(use_utc);
 

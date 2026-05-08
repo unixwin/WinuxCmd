@@ -29,8 +29,8 @@
 /// @License: MIT
 /// @Copyright: Copyright © 2026 WinuxCmd
 
-#include "pch/pch.h"
 #include "core/command_macros.h"
+#include "pch/pch.h"
 
 import std;
 import core;
@@ -52,37 +52,37 @@ auto constexpr HOSTID_OPTIONS =
 // ======================================================
 
 namespace {
-  // Get machine GUID from registry
-  std::string get_machine_guid() {
-    HKEY hKey;
-    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, 
-                     L"SOFTWARE\\Microsoft\\Cryptography", 
-                     0, KEY_READ, &hKey) != ERROR_SUCCESS) {
-      return "0";
-    }
+// Get machine GUID from registry
+std::string get_machine_guid() {
+  HKEY hKey;
+  if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Cryptography", 0,
+                    KEY_READ, &hKey) != ERROR_SUCCESS) {
+    return "0";
+  }
 
-    wchar_t buffer[256];
-    DWORD size = sizeof(buffer);
-    if (RegGetValueW(hKey, nullptr, L"MachineGuid", 
-                     RRF_RT_REG_SZ, nullptr, buffer, &size) != ERROR_SUCCESS) {
-      RegCloseKey(hKey);
-      return "0";
-    }
-
+  wchar_t buffer[256];
+  DWORD size = sizeof(buffer);
+  if (RegGetValueW(hKey, nullptr, L"MachineGuid", RRF_RT_REG_SZ, nullptr,
+                   buffer, &size) != ERROR_SUCCESS) {
     RegCloseKey(hKey);
-    
-    // Convert GUID to numeric ID
-      std::string guid = wstring_to_utf8(buffer);
-      std::hash<std::string> hasher;
-      size_t hash = hasher(guid);
-    
-      // Take lower 32 bits and convert to hex string
-      unsigned int id = static_cast<unsigned int>(hash & 0xFFFFFFFF);
-      char hex[16];
-      sprintf_s(hex, sizeof(hex), "%08x", id);
-    
-      return hex;
-    }}
+    return "0";
+  }
+
+  RegCloseKey(hKey);
+
+  // Convert GUID to numeric ID
+  std::string guid = wstring_to_utf8(buffer);
+  std::hash<std::string> hasher;
+  size_t hash = hasher(guid);
+
+  // Take lower 32 bits and convert to hex string
+  unsigned int id = static_cast<unsigned int>(hash & 0xFFFFFFFF);
+  char hex[16];
+  sprintf_s(hex, sizeof(hex), "%08x", id);
+
+  return hex;
+}
+}  // namespace
 
 // ======================================================
 // Main command implementation
@@ -103,7 +103,6 @@ REGISTER_COMMAND(
     /* author */ "WinuxCmd",
     /* copyright */ "Copyright © 2026 WinuxCmd",
     /* options */ HOSTID_OPTIONS) {
-
   std::string hex_id = get_machine_guid();
 
   safePrintLn(hex_id);

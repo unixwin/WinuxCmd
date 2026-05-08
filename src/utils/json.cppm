@@ -15,11 +15,10 @@ using ::nlohmann::ordered_map;
 
 NLOHMANN_JSON_NAMESPACE_BEGIN
 
-namespace detail
-{
+namespace detail {
 export using NLOHMANN_JSON_NAMESPACE::detail::json_sax_dom_callback_parser;
 export using NLOHMANN_JSON_NAMESPACE::detail::unknown_size;
-} // namespace detail
+}  // namespace detail
 
 export using NLOHMANN_JSON_NAMESPACE::adl_serializer;
 export using NLOHMANN_JSON_NAMESPACE::basic_json;

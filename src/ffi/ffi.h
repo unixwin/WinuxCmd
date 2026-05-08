@@ -10,8 +10,8 @@
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
  *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
  *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
@@ -50,13 +50,16 @@ extern "C" {
  * @param args Array of arguments (NULL-terminated, can be NULL)
  * @param arg_count Number of arguments
  * @param cwd Current working directory (NULL to use current directory)
- * @param output Output buffer (allocated by FFI, must be freed with winux_free_buffer)
- * @param error Error buffer (allocated by FFI, must be freed with winux_free_buffer)
+ * @param output Output buffer (allocated by FFI, must be freed with
+ * winux_free_buffer)
+ * @param error Error buffer (allocated by FFI, must be freed with
+ * winux_free_buffer)
  * @param output_size Output size in bytes
  * @param error_size Error size in bytes
  * @return Exit code (0 on success, non-zero on error)
  *
- * @note All output and error buffers are allocated by the FFI and must be freed using winux_free_buffer()
+ * @note All output and error buffers are allocated by the FFI and must be freed
+ * using winux_free_buffer()
  */
 WINUX_API int winux_execute(const char* command, const char** args,
                             int arg_count, const char* cwd, char** output,
@@ -84,7 +87,8 @@ WINUX_API const char* winux_get_version(void);
 
 /**
  * @brief Get all available command names
- * @param commands Array of command names (allocated by FFI, must be freed with winux_free_commands_array)
+ * @param commands Array of command names (allocated by FFI, must be freed with
+ * winux_free_commands_array)
  * @param count Number of commands
  * @return 0 on success, non-zero on error
  */

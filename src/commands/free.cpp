@@ -31,7 +31,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -48,23 +48,18 @@ auto constexpr FREE_OPTIONS = std::array{
     OPTION("-m", "--mega", "display amount of memory in megabytes", BOOL_TYPE),
     OPTION("-g", "--giga", "display amount of memory in gigabytes", BOOL_TYPE),
     OPTION("-h", "--human", "show human-readable output", BOOL_TYPE),
-    OPTION("-l", "--lohi", "show detailed low and high memory statistics", BOOL_TYPE),
+    OPTION("-l", "--lohi", "show detailed low and high memory statistics",
+           BOOL_TYPE),
     OPTION("-t", "--total", "display a line showing the totals", BOOL_TYPE),
-    OPTION("-s", "--seconds", "continuously display memory statistics with delay", INT_TYPE),
+    OPTION("-s", "--seconds",
+           "continuously display memory statistics with delay", INT_TYPE),
     OPTION("-c", "--count", "repeat the display COUNT times", INT_TYPE),
-    OPTION("-w", "--wide", "wide output", BOOL_TYPE)
-};
+    OPTION("-w", "--wide", "wide output", BOOL_TYPE)};
 
 namespace free_pipeline {
 namespace cp = core::pipeline;
 
-enum class Unit {
-  Bytes,
-  Kilo,
-  Mega,
-  Giga,
-  Human
-};
+enum class Unit { Bytes, Kilo, Mega, Giga, Human };
 
 struct Config {
   Unit unit = Unit::Mega;
@@ -114,17 +109,21 @@ auto format_size(unsigned long long bytes, Unit unit) -> std::string {
       snprintf(buf, sizeof(buf), "%llu", bytes / (1024 * 1024));
       break;
     case Unit::Giga:
-      snprintf(buf, sizeof(buf), "%.1f", static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0));
+      snprintf(buf, sizeof(buf), "%.1f",
+               static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0));
       break;
     case Unit::Human:
       if (bytes < 1024) {
         snprintf(buf, sizeof(buf), "%lluB", bytes);
       } else if (bytes < 1024 * 1024) {
-        snprintf(buf, sizeof(buf), "%.1fK", static_cast<double>(bytes) / 1024.0);
+        snprintf(buf, sizeof(buf), "%.1fK",
+                 static_cast<double>(bytes) / 1024.0);
       } else if (bytes < 1024 * 1024 * 1024) {
-        snprintf(buf, sizeof(buf), "%.1fM", static_cast<double>(bytes) / (1024.0 * 1024.0));
+        snprintf(buf, sizeof(buf), "%.1fM",
+                 static_cast<double>(bytes) / (1024.0 * 1024.0));
       } else {
-        snprintf(buf, sizeof(buf), "%.1fG", static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0));
+        snprintf(buf, sizeof(buf), "%.1fG",
+                 static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0));
       }
       break;
   }
@@ -146,12 +145,14 @@ auto run(const Config& cfg) -> int {
   unsigned long long total = mem_status.ullTotalPhys;
   unsigned long long available = mem_status.ullAvailPhys;
   unsigned long long used = total - available;
-  unsigned long long cached = 0;  // Windows doesn't provide this directly
+  unsigned long long cached = 0;   // Windows doesn't provide this directly
   unsigned long long buffers = 0;  // Windows doesn't provide this directly
 
   // Print header
   if (cfg.wide) {
-    safePrint("              total        used        free      shared    buffers      cached   available\n");
+    safePrint(
+        "              total        used        free      shared    buffers    "
+        "  cached   available\n");
   } else {
     safePrint("              total        used        free      available\n");
   }
@@ -220,8 +221,7 @@ auto run(const Config& cfg) -> int {
 
 }  // namespace free_pipeline
 
-REGISTER_COMMAND(free, "free",
-                 "free [OPTION]",
+REGISTER_COMMAND(free, "free", "free [OPTION]",
                  "Display amount of free and used memory in the system.\n"
                  "\n"
                  "This is a Windows implementation of the Linux free command.\n"
@@ -230,8 +230,8 @@ REGISTER_COMMAND(free, "free",
                  "  free -h\n"
                  "  free -m -t\n"
                  "  free -g",
-                 "vmstat(1), top(1)", "WinuxCmd",
-                 "Copyright © 2026 WinuxCmd", FREE_OPTIONS) {
+                 "vmstat(1), top(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd",
+                 FREE_OPTIONS) {
   using namespace free_pipeline;
 
   auto cfg_result = build_config(ctx);

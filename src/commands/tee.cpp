@@ -32,8 +32,8 @@
 /// @License: MIT
 /// @Copyright: Copyright © 2026 WinuxCmd
 
-#include "pch/pch.h"
 #include "core/command_macros.h"
+#include "pch/pch.h"
 
 #pragma comment(lib, "advapi32.lib")
 import std;
@@ -52,7 +52,8 @@ using cmd::meta::OptionType;
  * The implementation status is also indicated for each option.
  *
  * @par Options:
- * - @a -a, @a --append: Append to the given FILEs, do not overwrite [IMPLEMENTED]
+ * - @a -a, @a --append: Append to the given FILEs, do not overwrite
+ * [IMPLEMENTED]
  * - @a -i, @a --ignore-interrupts: Ignore interrupt signals [NOT SUPPORT]
  * - @a -p, @a --diagnose: Write errors to standard error [NOT SUPPORT]
  */
@@ -61,16 +62,16 @@ auto constexpr TEE_OPTIONS = std::array{
     OPTION("-i", "--ignore-interrupts", "ignore interrupt signals"),
     OPTION("-p", "--diagnose", "write errors to standard error")};
 
-REGISTER_COMMAND(tee, "tee",
-                 "read from standard input and write to standard output and files",
-                 "Copy standard input to each FILE, and also to standard output.\n"
-                 "\n"
-                 "If a FILE is -, copy to standard output.",
-                 "  echo 'Hello' | tee output.txt       Save output to file\n"
-                 "  echo 'World' | tee -a output.txt    Append to file\n"
-                 "  cat file.txt | tee backup.txt       Create backup while viewing",
-                 "cat(1)", "caomengxuan666",
-                 "Copyright © 2026 WinuxCmd", TEE_OPTIONS) {
+REGISTER_COMMAND(
+    tee, "tee",
+    "read from standard input and write to standard output and files",
+    "Copy standard input to each FILE, and also to standard output.\n"
+    "\n"
+    "If a FILE is -, copy to standard output.",
+    "  echo 'Hello' | tee output.txt       Save output to file\n"
+    "  echo 'World' | tee -a output.txt    Append to file\n"
+    "  cat file.txt | tee backup.txt       Create backup while viewing",
+    "cat(1)", "caomengxuan666", "Copyright © 2026 WinuxCmd", TEE_OPTIONS) {
   using namespace core::pipeline;
 
   bool append = ctx.get<bool>("-a", false) || ctx.get<bool>("--append", false);
@@ -82,7 +83,7 @@ REGISTER_COMMAND(tee, "tee",
     if (contains_wildcard(file_arg)) {
       auto glob_result = glob_expand(file_arg);
       if (glob_result.expanded) {
-        for (const auto& file : glob_result.files) {
+        for (const auto &file : glob_result.files) {
           output_files.push_back(wstring_to_utf8(file));
         }
         continue;

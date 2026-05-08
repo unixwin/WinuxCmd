@@ -31,7 +31,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -42,9 +42,8 @@ import container;
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
-auto constexpr ARCH_OPTIONS = std::array{
-    OPTION("", "", "print machine hardware name", STRING_TYPE)
-};
+auto constexpr ARCH_OPTIONS =
+    std::array{OPTION("", "", "print machine hardware name", STRING_TYPE)};
 
 namespace arch_pipeline {
 namespace cp = core::pipeline;
@@ -93,16 +92,15 @@ auto run(const Config& cfg) -> int {
 
 }  // namespace arch_pipeline
 
-REGISTER_COMMAND(arch, "arch",
-                 "arch",
-                 "Print machine architecture.\n"
-                 "\n"
-                 "Print machine hardware name.\n"
-                 "\n"
-                 "Note: This implementation displays the Windows processor architecture.",
-                 "  arch",
-                 "uname -m", "WinuxCmd",
-                 "Copyright © 2026 WinuxCmd", ARCH_OPTIONS) {
+REGISTER_COMMAND(
+    arch, "arch", "arch",
+    "Print machine architecture.\n"
+    "\n"
+    "Print machine hardware name.\n"
+    "\n"
+    "Note: This implementation displays the Windows processor architecture.",
+    "  arch", "uname -m", "WinuxCmd", "Copyright © 2026 WinuxCmd",
+    ARCH_OPTIONS) {
   using namespace arch_pipeline;
 
   auto cfg_result = build_config(ctx);

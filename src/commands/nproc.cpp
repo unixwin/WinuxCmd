@@ -30,7 +30,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 import std;
 import core;
@@ -39,11 +39,10 @@ import utils;
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
-auto constexpr NPROC_OPTIONS = std::array{
-    OPTION("", "--all", "print number of all installed processors"),
-    OPTION("", "--ignore", "ignore N processors", STRING_TYPE),
-    OPTION("", "", "print number of processing units", STRING_TYPE)
-};
+auto constexpr NPROC_OPTIONS =
+    std::array{OPTION("", "--all", "print number of all installed processors"),
+               OPTION("", "--ignore", "ignore N processors", STRING_TYPE),
+               OPTION("", "", "print number of processing units", STRING_TYPE)};
 
 REGISTER_COMMAND(
     nproc_cmd,
@@ -52,24 +51,21 @@ REGISTER_COMMAND(
 
     /* synopsis */
     "nproc [OPTION]...",
-"Print the number of processing units available.\n"
+    "Print the number of processing units available.\n"
     "\n"
     "This is useful for scripts that need to know how many parallel\n"
     "processes can be started.",
-"  nproc\n"
+    "  nproc\n"
     "  nproc --all\n"
     "  nproc --ignore 1",
 
     /* see also */
-    "sysconf(3)",
-"WinuxCmd",
-"Copyright © 2026 WinuxCmd",
-NPROC_OPTIONS) {
+    "sysconf(3)", "WinuxCmd", "Copyright © 2026 WinuxCmd", NPROC_OPTIONS) {
   SYSTEM_INFO sysInfo;
   GetSystemInfo(&sysInfo);
-  
+
   DWORD numProcessors = sysInfo.dwNumberOfProcessors;
-  
+
   if (ctx.get<bool>("--all", false)) {
     // On Windows, all processors are always available
     safePrintLn(std::to_string(numProcessors));
@@ -84,6 +80,6 @@ NPROC_OPTIONS) {
     }
     safePrintLn(std::to_string(available));
   }
-  
+
   return 0;
 }

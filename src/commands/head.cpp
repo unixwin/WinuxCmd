@@ -25,7 +25,7 @@
  */
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -45,15 +45,22 @@ using cmd::meta::OptionType;
  *
  * @par Options:
  *
- * - @a -c, @a --bytes: Print the first NUM bytes of each file; with the leading '-',
- *   print all but the last NUM bytes [IMPLEMENTED]
- * - @a -n, @a --lines: Print the first NUM lines instead of the first 10; with the
+ * - @a -c, @a --bytes: Print the first NUM bytes of each file; with the leading
+ * '-', print all but the last NUM bytes [IMPLEMENTED]
+ * - @a -n, @a --lines: Print the first NUM lines instead of the first 10; with
+ * the
  *   leading '-', print all but the last NUM lines [IMPLEMENTED]
- * - @a -NUM: Obsolete GNU-compatible shorthand for -n NUM [IMPLEMENTED]
- * - @a -q, @a --quiet: Never print headers giving file names for multiple files [IMPLEMENTED]
- * - @a --silent: Never print headers giving file names for multiple files [IMPLEMENTED]
- * - @a -v, @a --verbose: Always print headers giving file names for multiple files [IMPLEMENTED]
- * - @a -z, @a --zero-terminated: Line delimiter is NUL, not newline [IMPLEMENTED]
+ * - @a
+ * -NUM: Obsolete GNU-compatible shorthand for -n NUM [IMPLEMENTED]
+ * - @a -q,
+ * @a --quiet: Never print headers giving file names for multiple files
+ * [IMPLEMENTED]
+ * - @a --silent: Never print headers giving file names for
+ * multiple files [IMPLEMENTED]
+ * - @a -v, @a --verbose: Always print headers giving file names for multiple
+ * files [IMPLEMENTED]
+ * - @a -z, @a --zero-terminated: Line delimiter is NUL, not newline
+ * [IMPLEMENTED]
  */
 auto constexpr HEAD_OPTIONS = std::array{
     OPTION("-c", "--bytes",
@@ -271,7 +278,7 @@ REGISTER_COMMAND(
     cp::report_error(config_result, L"head");
     return 1;
   }
-auto config = *config_result;
+  auto config = *config_result;
 
   // Use SmallVector for files (max 64 files) - all stack-allocated
   SmallVector<std::string, 64> files{};

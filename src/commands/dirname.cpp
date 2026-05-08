@@ -31,7 +31,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -42,9 +42,8 @@ import container;
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
-auto constexpr DIRNAME_OPTIONS = std::array{
-    OPTION("-z", "--zero", "separate output with NUL rather than newline", BOOL_TYPE)
-};
+auto constexpr DIRNAME_OPTIONS = std::array{OPTION(
+    "-z", "--zero", "separate output with NUL rather than newline", BOOL_TYPE)};
 
 namespace dirname_pipeline {
 namespace cp = core::pipeline;
@@ -125,15 +124,16 @@ auto run(const Config& cfg) -> int {
 
 }  // namespace dirname_pipeline
 
-REGISTER_COMMAND(dirname, "dirname",
-                 "dirname [OPTION] NAME...",
-                 "Output each NAME with its last non-slash component and trailing slashes\n"
-                 "removed; if NAME contains no /'s, output '.' (meaning the current directory).",
-                 "  dirname /path/to/file.txt\n"
-                 "  dirname dir1/file1 dir2/file2\n"
-                 "  dirname /foo/bar/",
-                 "basename(1), realpath(1)", "WinuxCmd",
-                 "Copyright © 2026 WinuxCmd", DIRNAME_OPTIONS) {
+REGISTER_COMMAND(
+    dirname, "dirname", "dirname [OPTION] NAME...",
+    "Output each NAME with its last non-slash component and trailing slashes\n"
+    "removed; if NAME contains no /'s, output '.' (meaning the current "
+    "directory).",
+    "  dirname /path/to/file.txt\n"
+    "  dirname dir1/file1 dir2/file2\n"
+    "  dirname /foo/bar/",
+    "basename(1), realpath(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd",
+    DIRNAME_OPTIONS) {
   using namespace dirname_pipeline;
 
   auto cfg_result = build_config(ctx);

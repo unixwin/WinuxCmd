@@ -11,7 +11,7 @@ class ConstexprMap {
   };
   std::array<Pair, N> data_;
 
-  //constexpr insert sort
+  // constexpr insert sort
   constexpr void sort_data() noexcept {
     for (std::size_t i = 1; i < N; ++i) {
       Pair tmp = data_[i];
@@ -23,7 +23,6 @@ class ConstexprMap {
       data_[j] = tmp;
     }
   }
-
 
  public:
   using key_type = Key;
@@ -81,7 +80,7 @@ class ConstexprMap {
       data_[i].first = arr[i].first;
       data_[i].second = arr[i].second;
     }
-    //Sort,then we could use binary search
+    // Sort,then we could use binary search
     sort_data();
   }
 

@@ -6,7 +6,7 @@
 /// @License: MIT
 /// @Copyright: Copyright © 2026 WinuxCmd
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -62,16 +62,16 @@ auto parse_range_token(std::string_view tok) -> cp::Result<Range> {
   int end = std::numeric_limits<int>::max();
 
   if (!left.empty()) {
-    auto [ptr, ec] = std::from_chars(left.data(), left.data() + left.size(),
-                                     start);
+    auto [ptr, ec] =
+        std::from_chars(left.data(), left.data() + left.size(), start);
     if (ec != std::errc() || ptr != left.data() + left.size() || start <= 0) {
       return std::unexpected("invalid range");
     }
   }
 
   if (!right.empty()) {
-    auto [ptr, ec] = std::from_chars(right.data(), right.data() + right.size(),
-                                     end);
+    auto [ptr, ec] =
+        std::from_chars(right.data(), right.data() + right.size(), end);
     if (ec != std::errc() || ptr != right.data() + right.size() || end <= 0) {
       return std::unexpected("invalid range");
     }
@@ -209,7 +209,7 @@ auto cut_line(std::string_view line, const Config& cfg) -> std::string {
   return out;
 }
 
-  auto run_file(const std::string& path, const Config& cfg) -> int {
+auto run_file(const std::string& path, const Config& cfg) -> int {
   auto content = read_source(path);
   if (!content) {
     cp::report_error(content, L"cut");
@@ -232,7 +232,8 @@ auto cut_line(std::string_view line, const Config& cfg) -> std::string {
 
   for (const auto& rec : records) {
     auto out = cut_line(rec, cfg);
-    if (out.empty() && cfg.only_delimited && rec.find(cfg.delimiter) == std::string::npos) {
+    if (out.empty() && cfg.only_delimited &&
+        rec.find(cfg.delimiter) == std::string::npos) {
       continue;
     }
     safePrint(out);

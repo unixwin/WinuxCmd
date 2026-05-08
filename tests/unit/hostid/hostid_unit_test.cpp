@@ -38,5 +38,5 @@ TEST(hostid, hostid_basic) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_FALSE(r.stdout_text.empty());
-  EXPECT_EQ(r.stdout_text.length(), 9); // 8 hex chars + newline
+  EXPECT_EQ(r.stdout_text.length(), 9);  // 8 hex chars + newline
 }

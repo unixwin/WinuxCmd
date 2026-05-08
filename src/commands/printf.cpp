@@ -30,7 +30,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 import std;
 import core;
@@ -39,42 +39,38 @@ import utils;
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
-auto constexpr PRINTF_OPTIONS = std::array{
-    OPTION("", "", "format and print data", STRING_TYPE)
-};
+auto constexpr PRINTF_OPTIONS =
+    std::array{OPTION("", "", "format and print data", STRING_TYPE)};
 
-REGISTER_COMMAND(
-    printf_cmd,
-    /* name */
-    "printf",
+REGISTER_COMMAND(printf_cmd,
+                 /* name */
+                 "printf",
 
-    /* synopsis */
-    "printf FORMAT [ARGUMENT]...",
-"Format and print data.\n"
-    "\n"
-    "Print ARGUMENT(s) according to FORMAT.\n"
-    "\n"
-    "Supported format specifiers:\n"
-    "  %%      Literal '%'\n"
-    "  %c      Character\n"
-    "  %s      String\n"
-    "  %d, %i  Integer\n"
-    "  %u      Unsigned integer\n"
-    "  %x, %X  Hexadecimal (lowercase/uppercase)\n"
-    "  %o      Octal\n"
-    "  %f      Floating point\n"
-    "  %e, %E  Scientific notation\n"
-    "  %g, %G  %f or %e depending on value\n"
-    "  %b      Interpret backslash escapes (like echo -e)\n",
-"  printf 'Hello %s!\\n' 'World'\n"
-    "  printf 'Decimal: %d, Hex: %x\\n' 255 255\n"
-    "  printf 'Value: %.2f\\n' 3.14159",
+                 /* synopsis */
+                 "printf FORMAT [ARGUMENT]...",
+                 "Format and print data.\n"
+                 "\n"
+                 "Print ARGUMENT(s) according to FORMAT.\n"
+                 "\n"
+                 "Supported format specifiers:\n"
+                 "  %%      Literal '%'\n"
+                 "  %c      Character\n"
+                 "  %s      String\n"
+                 "  %d, %i  Integer\n"
+                 "  %u      Unsigned integer\n"
+                 "  %x, %X  Hexadecimal (lowercase/uppercase)\n"
+                 "  %o      Octal\n"
+                 "  %f      Floating point\n"
+                 "  %e, %E  Scientific notation\n"
+                 "  %g, %G  %f or %e depending on value\n"
+                 "  %b      Interpret backslash escapes (like echo -e)\n",
+                 "  printf 'Hello %s!\\n' 'World'\n"
+                 "  printf 'Decimal: %d, Hex: %x\\n' 255 255\n"
+                 "  printf 'Value: %.2f\\n' 3.14159",
 
-    /* see also */
-    "echo(1), sprintf(3)",
-"WinuxCmd",
-"Copyright © 2026 WinuxCmd",
-PRINTF_OPTIONS) {
+                 /* see also */
+                 "echo(1), sprintf(3)", "WinuxCmd", "Copyright © 2026 WinuxCmd",
+                 PRINTF_OPTIONS) {
   if (ctx.positionals.empty()) {
     safeErrorPrintLn("printf: missing format argument");
     return 1;
@@ -90,10 +86,11 @@ PRINTF_OPTIONS) {
       char type = format[i];
 
       // Handle precision/width flags (basic support)
-      while (i + 1 < format.size() && 
+      while (i + 1 < format.size() &&
              (format[i + 1] == '-' || format[i + 1] == '+' ||
               format[i + 1] == ' ' || format[i + 1] == '0' ||
-              format[i + 1] == '#' || std::isdigit(static_cast<unsigned char>(format[i + 1])))) {
+              format[i + 1] == '#' ||
+              std::isdigit(static_cast<unsigned char>(format[i + 1])))) {
         ++i;
       }
       type = format[i];
@@ -134,7 +131,8 @@ PRINTF_OPTIONS) {
           try {
             auto val = std::stoull(std::string(ctx.positionals[arg_index++]));
             char buf[32];
-            snprintf(buf, sizeof(buf), "%llx", static_cast<unsigned long long>(val));
+            snprintf(buf, sizeof(buf), "%llx",
+                     static_cast<unsigned long long>(val));
             result += buf;
           } catch (...) {
             result += "0";
@@ -145,7 +143,8 @@ PRINTF_OPTIONS) {
           try {
             auto val = std::stoull(std::string(ctx.positionals[arg_index++]));
             char buf[32];
-            snprintf(buf, sizeof(buf), "%llX", static_cast<unsigned long long>(val));
+            snprintf(buf, sizeof(buf), "%llX",
+                     static_cast<unsigned long long>(val));
             result += buf;
           } catch (...) {
             result += "0";
@@ -156,7 +155,8 @@ PRINTF_OPTIONS) {
           try {
             auto val = std::stoull(std::string(ctx.positionals[arg_index++]));
             char buf[32];
-            snprintf(buf, sizeof(buf), "%llo", static_cast<unsigned long long>(val));
+            snprintf(buf, sizeof(buf), "%llo",
+                     static_cast<unsigned long long>(val));
             result += buf;
           } catch (...) {
             result += "0";
@@ -224,19 +224,36 @@ PRINTF_OPTIONS) {
             if (arg[j] == '\\' && j + 1 < arg.size()) {
               ++j;
               switch (arg[j]) {
-                case 'n': processed += '\n'; break;
-                case 't': processed += '\t'; break;
-                case 'r': processed += '\r'; break;
-                case '\\': processed += '\\'; break;
-                case 'a': processed += '\a'; break;
-                case 'b': processed += '\b'; break;
-                case 'f': processed += '\f'; break;
-                case 'v': processed += '\v'; break;
+                case 'n':
+                  processed += '\n';
+                  break;
+                case 't':
+                  processed += '\t';
+                  break;
+                case 'r':
+                  processed += '\r';
+                  break;
+                case '\\':
+                  processed += '\\';
+                  break;
+                case 'a':
+                  processed += '\a';
+                  break;
+                case 'b':
+                  processed += '\b';
+                  break;
+                case 'f':
+                  processed += '\f';
+                  break;
+                case 'v':
+                  processed += '\v';
+                  break;
                 case '0': {
                   int value = 0;
                   size_t k = j + 1;
                   for (; k < j + 4 && k < arg.size() &&
-                         std::isdigit(static_cast<unsigned char>(arg[k])); ++k) {
+                         std::isdigit(static_cast<unsigned char>(arg[k]));
+                       ++k) {
                     value = value * 8 + (arg[k] - '0');
                   }
                   if (k > j + 1) {
@@ -247,7 +264,9 @@ PRINTF_OPTIONS) {
                   }
                   break;
                 }
-                default: processed += arg[j]; break;
+                default:
+                  processed += arg[j];
+                  break;
               }
             } else {
               processed += arg[j];
@@ -264,11 +283,21 @@ PRINTF_OPTIONS) {
       // Handle backslash escapes in format string
       ++i;
       switch (format[i]) {
-        case 'n': result += '\n'; break;
-        case 't': result += '\t'; break;
-        case 'r': result += '\r'; break;
-        case '\\': result += '\\'; break;
-        default: result += format[i]; break;
+        case 'n':
+          result += '\n';
+          break;
+        case 't':
+          result += '\t';
+          break;
+        case 'r':
+          result += '\r';
+          break;
+        case '\\':
+          result += '\\';
+          break;
+        default:
+          result += format[i];
+          break;
       }
     } else {
       result += format[i];

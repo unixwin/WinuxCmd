@@ -36,7 +36,8 @@ import utils;
 /// A single completion item shown in the suggestion popup.
 export struct CompletionItem {
   std::string text;  ///< Full text to insert (e.g. "kill -9")
-  std::string hint;  ///< Short description shown to the right (e.g. "强制杀死进程")
+  std::string
+      hint;  ///< Short description shown to the right (e.g. "强制杀死进程")
 };
 
 /// Callback that returns completions for the current input buffer.
@@ -48,18 +49,18 @@ export using Completer =
 // ──────────────────────────────────────────────────────────────────────────────
 namespace {
 
-constexpr int  MAX_COMPLETIONS  = 8;    // max rows shown in popup
-constexpr int  CMD_COLUMN_WIDTH = 24;   // column at which hint text starts
+constexpr int MAX_COMPLETIONS = 8;    // max rows shown in popup
+constexpr int CMD_COLUMN_WIDTH = 24;  // column at which hint text starts
 // Win32 colour attributes
-constexpr WORD ATTR_SUGGESTION  = FOREGROUND_GREEN | FOREGROUND_BLUE |
-                                   FOREGROUND_INTENSITY;   // bright cyan
-constexpr WORD ATTR_SELECTED    = BACKGROUND_BLUE  |
-                                   FOREGROUND_RED   | FOREGROUND_GREEN |
-                                   FOREGROUND_BLUE  | FOREGROUND_INTENSITY;
+constexpr WORD ATTR_SUGGESTION =
+    FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY;  // bright cyan
+constexpr WORD ATTR_SELECTED = BACKGROUND_BLUE | FOREGROUND_RED |
+                               FOREGROUND_GREEN | FOREGROUND_BLUE |
+                               FOREGROUND_INTENSITY;
 
 struct RenderState {
   COORD input_start{0, 0};  // cursor position right after the prompt
-  int   prev_lines = 0;     // how many completion rows were drawn last time
+  int prev_lines = 0;       // how many completion rows were drawn last time
 };
 
 // Move to the previous UTF-8 code-point boundary.
@@ -108,7 +109,7 @@ void scrollUp(HANDLE hOut, SHORT width, SHORT height, SHORT lines,
       static_cast<SHORT>(width - 1),
       static_cast<SHORT>(height - 1),
   };
-  COORD     dst{0, 0};
+  COORD dst{0, 0};
   CHAR_INFO fill{};
   fill.Char.UnicodeChar = L' ';
   fill.Attributes = fillAttr;
@@ -135,13 +136,13 @@ void writeAt(HANDLE hOut, COORD pos, const std::wstring& text,
   std::vector<CHAR_INFO> cells(text.size());
   for (size_t i = 0; i < text.size(); ++i) {
     cells[i].Char.UnicodeChar = text[i];
-    cells[i].Attributes       = attr;
+    cells[i].Attributes = attr;
   }
-  COORD     bufSize{static_cast<SHORT>(text.size()), 1};
-  COORD     bufCoord{0, 0};
-  SMALL_RECT region{pos.X, pos.Y,
-                    static_cast<SHORT>(pos.X + static_cast<SHORT>(text.size()) - 1),
-                    pos.Y};
+  COORD bufSize{static_cast<SHORT>(text.size()), 1};
+  COORD bufCoord{0, 0};
+  SMALL_RECT region{
+      pos.X, pos.Y,
+      static_cast<SHORT>(pos.X + static_cast<SHORT>(text.size()) - 1), pos.Y};
   WriteConsoleOutputW(hOut, cells.data(), bufSize, bufCoord, &region);
 }
 
@@ -153,13 +154,12 @@ void redraw(HANDLE hOut, RenderState& state, const std::string& buffer,
   GetConsoleScreenBufferInfo(hOut, &csbi);
   const SHORT W = csbi.dwSize.X;
   const SHORT H = csbi.dwSize.Y;
-  const WORD  defaultAttr = csbi.wAttributes;
+  const WORD defaultAttr = csbi.wAttributes;
 
   // ── 1. Clear previous input text (from input_start to end-of-line) ──
   {
     DWORD clear = (DWORD)(W - state.input_start.X);
-    if (clear > 0)
-      eraseChars(hOut, state.input_start, clear, defaultAttr);
+    if (clear > 0) eraseChars(hOut, state.input_start, clear, defaultAttr);
   }
 
   // ── 2. Clear previous completion rows ──
@@ -177,14 +177,15 @@ void redraw(HANDLE hOut, RenderState& state, const std::string& buffer,
     if (availableBelow < desiredRows) {
       SHORT need = static_cast<SHORT>(desiredRows - availableBelow);
       scrollUp(hOut, W, H, need, defaultAttr);
-      state.input_start.Y = static_cast<SHORT>(
-          std::max(0, (int)state.input_start.Y - (int)need));
+      state.input_start.Y =
+          static_cast<SHORT>(std::max(0, (int)state.input_start.Y - (int)need));
     }
   }
 
   // ── 3. Write buffer text at input_start ──
   moveTo(hOut, state.input_start.X, state.input_start.Y);
-  const std::wstring wbuf = utf8_to_wstring(buffer);  // converted once, reused in step 5
+  const std::wstring wbuf =
+      utf8_to_wstring(buffer);  // converted once, reused in step 5
   if (!wbuf.empty()) {
     DWORD written = 0;
     WriteConsoleW(hOut, wbuf.c_str(), (DWORD)wbuf.size(), &written, nullptr);
@@ -201,10 +202,12 @@ void redraw(HANDLE hOut, RenderState& state, const std::string& buffer,
     // Build display string: "  <text><padding><hint>"
     std::wstring line;
     line.reserve(static_cast<size_t>(W));
-    line  = L"  ";
+    line = L"  ";
     line += utf8_to_wstring(completions[i].text);
     if (static_cast<int>(line.size()) < CMD_COLUMN_WIDTH)
-      line.append(static_cast<size_t>(CMD_COLUMN_WIDTH - static_cast<int>(line.size())), L' ');
+      line.append(
+          static_cast<size_t>(CMD_COLUMN_WIDTH - static_cast<int>(line.size())),
+          L' ');
     if (!completions[i].hint.empty())
       line += utf8_to_wstring(completions[i].hint);
 
@@ -224,8 +227,7 @@ void redraw(HANDLE hOut, RenderState& state, const std::string& buffer,
   if (!wbuf.empty() && cursor_bytes > 0) {
     int wchar_cursor = MultiByteToWideChar(
         CP_UTF8, 0, buffer.c_str(),
-        static_cast<int>(std::min(cursor_bytes, buffer.size())),
-        nullptr, 0);
+        static_cast<int>(std::min(cursor_bytes, buffer.size())), nullptr, 0);
     if (wchar_cursor > 0) {
       DWORD written = 0;
       WriteConsoleW(hOut, wbuf.c_str(), static_cast<DWORD>(wchar_cursor),
@@ -242,13 +244,14 @@ void redraw(HANDLE hOut, RenderState& state, const std::string& buffer,
 
 /// Read one line interactively, showing a completion popup as the user types.
 ///
-/// @param prompt     Wide-string prompt shown before the cursor (e.g. L"winux> ")
+/// @param prompt     Wide-string prompt shown before the cursor (e.g. L"winux>
+/// ")
 /// @param completer  Callback `vector<CompletionItem>(string_view input)` that
 ///                   returns relevant suggestions for the current buffer.
 /// @returns The accepted UTF-8 string, or "" on Ctrl+C / EOF.
 export std::string readInteractiveLine(const std::wstring& prompt,
-                                       const Completer&    completer) {
-  HANDLE hIn  = GetStdHandle(STD_INPUT_HANDLE);
+                                       const Completer& completer) {
+  HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
   HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
 
   // ── Verify we are attached to a real console ──
@@ -264,7 +267,7 @@ export std::string readInteractiveLine(const std::wstring& prompt,
 
   // ── Save original console modes ──
   DWORD inModeOrig = 0, outModeOrig = 0;
-  GetConsoleMode(hIn,  &inModeOrig);
+  GetConsoleMode(hIn, &inModeOrig);
   GetConsoleMode(hOut, &outModeOrig);
 
   // Raw-ish key input: keep most existing flags and only disable line/echo
@@ -272,8 +275,8 @@ export std::string readInteractiveLine(const std::wstring& prompt,
   DWORD inModeInteractive = inModeOrig;
   // Disable processed input so Ctrl+C is delivered as a key event instead of
   // a process-level CTRL_C_EVENT that terminates winuxcmd.
-  inModeInteractive &= ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT |
-                         ENABLE_PROCESSED_INPUT);
+  inModeInteractive &=
+      ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT);
   inModeInteractive |= (ENABLE_EXTENDED_FLAGS | ENABLE_WINDOW_INPUT);
   SetConsoleMode(hIn, inModeInteractive);
   // Enable virtual-terminal processing so ANSI codes work in the host.
@@ -294,14 +297,14 @@ export std::string readInteractiveLine(const std::wstring& prompt,
     state.input_start = csbi.dwCursorPosition;
   }
 
-  std::string                 buffer;
-  size_t                      cursor = 0;
-  int                         selected = -1;
+  std::string buffer;
+  size_t cursor = 0;
+  int selected = -1;
   std::vector<CompletionItem> completions;
-  bool                        completions_dirty = true;
+  bool completions_dirty = true;
   static std::vector<std::string> history;
-  std::optional<size_t>      history_index;
-  std::string                history_draft;
+  std::optional<size_t> history_index;
+  std::string history_draft;
   auto historyUp = [&]() {
     if (history.empty()) return;
     if (!history_index.has_value()) {
@@ -346,17 +349,15 @@ export std::string readInteractiveLine(const std::wstring& prompt,
     // Read one raw input event.
     INPUT_RECORD ir;
     DWORD nread = 0;
-    if (!ReadConsoleInputW(hIn, &ir, 1, &nread) || nread == 0)
-      continue;
+    if (!ReadConsoleInputW(hIn, &ir, 1, &nread) || nread == 0) continue;
 
     // Ignore everything except key-down events.
-    if (ir.EventType != KEY_EVENT || !ir.Event.KeyEvent.bKeyDown)
-      continue;
+    if (ir.EventType != KEY_EVENT || !ir.Event.KeyEvent.bKeyDown) continue;
 
-    const auto& ke   = ir.Event.KeyEvent;
-    WORD        vk   = ke.wVirtualKeyCode;
-    wchar_t     ch   = ke.uChar.UnicodeChar;
-    DWORD       ctrl = ke.dwControlKeyState;
+    const auto& ke = ir.Event.KeyEvent;
+    WORD vk = ke.wVirtualKeyCode;
+    wchar_t ch = ke.uChar.UnicodeChar;
+    DWORD ctrl = ke.dwControlKeyState;
 
     // ── Enter: confirm ──
     if (vk == VK_RETURN) {
@@ -429,7 +430,7 @@ export std::string readInteractiveLine(const std::wstring& prompt,
     if (vk == VK_TAB) {
       if (!completions.empty()) {
         int idx = (selected >= 0) ? selected : 0;
-        buffer  = completions[idx].text + " ";
+        buffer = completions[idx].text + " ";
         cursor = buffer.size();
         selected = -1;
         history_index.reset();
@@ -451,8 +452,7 @@ export std::string readInteractiveLine(const std::wstring& prompt,
       continue;
     }
 
-    if ((vk == 'V' &&
-         (ctrl & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED))) ||
+    if ((vk == 'V' && (ctrl & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED))) ||
         (vk == VK_INSERT && (ctrl & SHIFT_PRESSED))) {
       auto clip = readClipboardUtf8SingleLine();
       if (clip.has_value() && !clip->empty()) {
@@ -466,8 +466,7 @@ export std::string readInteractiveLine(const std::wstring& prompt,
     }
 
     // ── Ctrl+C: abort ──
-    if (vk == 'C' &&
-        (ctrl & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED)) &&
+    if (vk == 'C' && (ctrl & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED)) &&
         (ctrl & (SHIFT_PRESSED | LEFT_ALT_PRESSED | RIGHT_ALT_PRESSED)) == 0) {
       redraw(hOut, state, "", 0, {}, -1);
       DWORD written = 0;
@@ -478,8 +477,7 @@ export std::string readInteractiveLine(const std::wstring& prompt,
     }
 
     // ── Ctrl+D: EOF / exit ──
-    if (vk == 'D' &&
-        (ctrl & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED))) {
+    if (vk == 'D' && (ctrl & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED))) {
       if (buffer.empty()) {
         redraw(hOut, state, "", 0, {}, -1);
         DWORD written = 0;
@@ -495,7 +493,7 @@ export std::string readInteractiveLine(const std::wstring& prompt,
     if (ch >= 0x20 && ch != 0x7F) {
       // Convert wchar_t → UTF-8 and append.
       char mb[4] = {};
-      int  len =
+      int len =
           WideCharToMultiByte(CP_UTF8, 0, &ch, 1, mb, 4, nullptr, nullptr);
       buffer.insert(cursor, mb, static_cast<size_t>(len));
       cursor += static_cast<size_t>(len);
@@ -507,7 +505,7 @@ export std::string readInteractiveLine(const std::wstring& prompt,
   }
 
   // ── Restore console modes ──
-  SetConsoleMode(hIn,  inModeOrig);
+  SetConsoleMode(hIn, inModeOrig);
   SetConsoleMode(hOut, outModeOrig);
   return buffer;
 }

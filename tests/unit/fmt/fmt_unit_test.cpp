@@ -27,7 +27,9 @@
 
 TEST(fmt, fmt_basic) {
   TempDir tmp;
-  tmp.write("test.txt", "This is a long line that should be formatted to fit within a specified width.\n");
+  tmp.write("test.txt",
+            "This is a long line that should be formatted to fit within a "
+            "specified width.\n");
 
   Pipeline p;
   p.set_cwd(tmp.wpath());

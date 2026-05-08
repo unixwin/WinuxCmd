@@ -27,7 +27,7 @@
 
 TEST(xargs, xargs_basic) {
   TempDir tmp;
-  
+
   Pipeline p;
   p.set_cwd(tmp.wpath());
   p.add(L"xargs.exe", {});
@@ -48,7 +48,7 @@ TEST(xargs, xargs_basic) {
 
 TEST(xargs, xargs_max_args) {
   TempDir tmp;
-  
+
   Pipeline p;
   p.set_cwd(tmp.wpath());
   p.add(L"xargs.exe", {L"-n", L"2"});
@@ -72,7 +72,7 @@ TEST(xargs, xargs_max_args) {
 
 TEST(xargs, xargs_no_run_if_empty) {
   TempDir tmp;
-  
+
   Pipeline p;
   p.set_cwd(tmp.wpath());
   p.add(L"xargs.exe", {L"-r"});
@@ -91,7 +91,7 @@ TEST(xargs, xargs_no_run_if_empty) {
 
 TEST(xargs, xargs_default_echo) {
   TempDir tmp;
-  
+
   Pipeline p;
   p.set_cwd(tmp.wpath());
   p.add(L"xargs.exe", {});
@@ -111,7 +111,7 @@ TEST(xargs, xargs_default_echo) {
 
 TEST(xargs, xargs_verbose) {
   TempDir tmp;
-  
+
   Pipeline p;
   p.set_cwd(tmp.wpath());
   p.add(L"xargs.exe", {L"-t"});

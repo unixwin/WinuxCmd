@@ -15,4 +15,4 @@ export using ::WinuxCmd::BUILD_TYPE;
 export using ::WinuxCmd::BUILD_TIMESTAMP;
 export using ::WinuxCmd::COMPILER_ID;
 export using ::WinuxCmd::COMPILER_VERSION;
-}
+}  // namespace WinuxCmd

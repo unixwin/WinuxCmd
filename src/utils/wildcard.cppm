@@ -37,7 +37,8 @@ namespace wildcard_impl {
 
 /**
  * @brief Check if a character matches a character class pattern
- * @param char_class The character class string (e.g., "[abc]", "[a-z]", "[^0-9]")
+ * @param char_class The character class string (e.g., "[abc]", "[a-z]",
+ * "[^0-9]")
  * @param c The character to check
  * @return true if the character matches the class, false otherwise
  */
@@ -47,7 +48,8 @@ static bool match_char_class(std::wstring_view char_class, wchar_t c) {
   // Check for negation [^...]
   bool negate = (char_class[1] == L'^');
   size_t start = negate ? 2 : 1;
-  size_t end = static_cast<size_t>(char_class.size()) - 1;  // Exclude closing ']'
+  size_t end =
+      static_cast<size_t>(char_class.size()) - 1;  // Exclude closing ']'
 
   if (start >= end) return false;
 
@@ -78,14 +80,17 @@ static bool match_char_class(std::wstring_view char_class, wchar_t c) {
  * @param text The text to match against
  * @return true if text matches pattern, false otherwise
  */
-static bool wildcard_match_impl(std::wstring_view pattern, std::wstring_view text) {
+static bool wildcard_match_impl(std::wstring_view pattern,
+                                std::wstring_view text) {
   size_t pi = 0, ti = 0;
   while (pi < static_cast<size_t>(pattern.size())) {
     if (pattern[pi] == L'*') {
-      while (pi < static_cast<size_t>(pattern.size()) && pattern[pi] == L'*') ++pi;
+      while (pi < static_cast<size_t>(pattern.size()) && pattern[pi] == L'*')
+        ++pi;
       if (pi == static_cast<size_t>(pattern.size())) return true;
       while (ti <= static_cast<size_t>(text.size())) {
-        if (wildcard_match_impl(pattern.substr(pi), text.substr(ti))) return true;
+        if (wildcard_match_impl(pattern.substr(pi), text.substr(ti)))
+          return true;
         if (ti == static_cast<size_t>(text.size())) break;
         ++ti;
       }
@@ -100,7 +105,8 @@ static bool wildcard_match_impl(std::wstring_view pattern, std::wstring_view tex
     } else if (pattern[pi] == L'[') {
       // Find matching ']'
       size_t bracket_end = pi + 1;
-      while (bracket_end < static_cast<size_t>(pattern.size()) && pattern[bracket_end] != L']') {
+      while (bracket_end < static_cast<size_t>(pattern.size()) &&
+             pattern[bracket_end] != L']') {
         bracket_end++;
       }
 
@@ -135,10 +141,13 @@ static bool wildcard_match_impl(std::wstring_view pattern, std::wstring_view tex
  * @brief Enhanced wildcard matching with support for *, ?, and []
  * @param pattern The wildcard pattern
  * @param text The text to match against
- * @param case_sensitive Whether to perform case-sensitive matching (default: false)
+ * @param case_sensitive Whether to perform case-sensitive matching (default:
+ * false)
  * @return true if text matches pattern, false otherwise
  */
-export bool wildcard_match(const std::wstring &pattern, const std::wstring &text, bool case_sensitive = false) {
+export bool wildcard_match(const std::wstring &pattern,
+                           const std::wstring &text,
+                           bool case_sensitive = false) {
   if (case_sensitive) {
     return wildcard_impl::wildcard_match_impl(pattern, text);
   }
@@ -181,7 +190,7 @@ export bool contains_wildcard(std::wstring_view str) {
  */
 export struct GlobResult {
   std::vector<std::wstring> files;  // Matched file list
-  bool expanded;                     // Whether expansion was performed
+  bool expanded;                    // Whether expansion was performed
 };
 
 /**
@@ -195,13 +204,14 @@ export struct GlobResult {
  * 3. If expansion fails, returns the original pattern as a literal value
  *
  * This approach works correctly in all environments:
- * - PowerShell: expanded parameters don't contain wildcards, used as literal paths
+ * - PowerShell: expanded parameters don't contain wildcards, used as literal
+ * paths
  * - cmd.exe/REPL: parameters with wildcards are expanded
  * - Supports literal filenames like "*.txt" (a file actually named "*.txt")
  */
 export GlobResult glob_expand(std::wstring_view pattern) {
   GlobResult result;
-  
+
   // 1. First try as literal file path
   std::error_code ec;
   if (std::filesystem::exists(pattern, ec)) {
@@ -209,10 +219,11 @@ export GlobResult glob_expand(std::wstring_view pattern) {
     result.expanded = false;  // Not expanded, literal path
     return result;
   }
-  
-  // Check if pattern contains [...] character class (not supported by FindFirstFileW)
+
+  // Check if pattern contains [...] character class (not supported by
+  // FindFirstFileW)
   bool has_char_class = (pattern.find(L'[') != std::wstring_view::npos);
-  
+
   if (has_char_class) {
     // Use custom wildcard matching for [...] patterns
     // Extract directory part from pattern
@@ -227,10 +238,11 @@ export GlobResult glob_expand(std::wstring_view pattern) {
       dir = L".";
       file_pattern = pattern_str;
     }
-    
+
     // Enumerate directory and match with wildcard_match
     std::error_code iter_ec;
-    for (const auto& entry : std::filesystem::directory_iterator(dir, iter_ec)) {
+    for (const auto &entry :
+         std::filesystem::directory_iterator(dir, iter_ec)) {
       std::wstring filename = entry.path().filename().wstring();
       if (wildcard_match(file_pattern, filename)) {
         if (!dir.empty() && dir != L".") {
@@ -241,7 +253,7 @@ export GlobResult glob_expand(std::wstring_view pattern) {
       }
     }
     result.expanded = !result.files.empty();
-    
+
     // If no files matched, return original pattern as literal
     if (result.files.empty()) {
       result.files.push_back(std::wstring(pattern));
@@ -251,7 +263,7 @@ export GlobResult glob_expand(std::wstring_view pattern) {
     // Use FindFirstFileW for * and ? patterns (faster)
     WIN32_FIND_DATAW find_data;
     HANDLE hFind = FindFirstFileW(pattern.data(), &find_data);
-    
+
     if (hFind != INVALID_HANDLE_VALUE) {
       // Extract directory part from pattern
       std::wstring pattern_str(pattern);
@@ -260,7 +272,7 @@ export GlobResult glob_expand(std::wstring_view pattern) {
       if (last_sep != std::wstring::npos) {
         dir = pattern_str.substr(0, last_sep + 1);
       }
-      
+
       do {
         std::wstring filename = find_data.cFileName;
         // Skip . and .. entries
@@ -274,7 +286,7 @@ export GlobResult glob_expand(std::wstring_view pattern) {
       } while (FindNextFileW(hFind, &find_data) != 0);
       FindClose(hFind);
       result.expanded = true;
-      
+
       // If no files matched, return original pattern as literal
       if (result.files.empty()) {
         result.files.push_back(std::wstring(pattern));
@@ -286,7 +298,7 @@ export GlobResult glob_expand(std::wstring_view pattern) {
       result.expanded = false;
     }
   }
-  
+
   return result;
 }
 
@@ -304,10 +316,12 @@ export GlobResult glob_expand(std::string_view pattern) {
  * @brief Enhanced wildcard matching for narrow strings (UTF-8)
  * @param pattern The wildcard pattern
  * @param text The text to match against
- * @param case_sensitive Whether to perform case-sensitive matching (default: false)
+ * @param case_sensitive Whether to perform case-sensitive matching (default:
+ * false)
  * @return true if text matches pattern, false otherwise
  */
-export bool wildcard_match(const std::string &pattern, const std::string &text, bool case_sensitive = false) {
+export bool wildcard_match(const std::string &pattern, const std::string &text,
+                           bool case_sensitive = false) {
   std::wstring wpattern = utf8_to_wstring(pattern);
   std::wstring wtext = utf8_to_wstring(text);
   return wildcard_match(wpattern, wtext, case_sensitive);

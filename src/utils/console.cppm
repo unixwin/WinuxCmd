@@ -85,7 +85,8 @@ bool isBrokenPipeError(DWORD err) {
 }  // namespace
 
 // Exported function to set output capture handles
-export void set_output_capture_handles(HANDLE stdout_handle, HANDLE stderr_handle, bool active) {
+export void set_output_capture_handles(HANDLE stdout_handle,
+                                       HANDLE stderr_handle, bool active) {
   g_capture_stdout_write = stdout_handle;
   g_capture_stderr_write = stderr_handle;
   g_capture_active = active;
@@ -132,7 +133,6 @@ bool isStderrConsole() {
   }
   return g_stderr_is_console;
 }
-
 
 export bool writeConsole(const std::wstring_view& wstr) {
   HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);

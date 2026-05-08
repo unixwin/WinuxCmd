@@ -29,8 +29,8 @@
 /// @License: MIT
 /// @Copyright: Copyright © 2026 WinuxCmd
 
-#include "pch/pch.h"
 #include "core/command_macros.h"
+#include "pch/pch.h"
 
 import std;
 import core;
@@ -53,63 +53,65 @@ auto constexpr PATHCHK_OPTIONS =
 // ======================================================
 
 namespace {
-  // Check if path is valid for Windows
-  bool is_valid_windows_path(const std::string& path) {
-    if (path.empty()) return false;
-    
-    // Check for invalid characters
-    const std::string invalid_chars = "<>:\"|?*";
-    for (char c : path) {
-      if (invalid_chars.find(c) != std::string::npos) {
-        return false;
-      }
+// Check if path is valid for Windows
+bool is_valid_windows_path(const std::string& path) {
+  if (path.empty()) return false;
+
+  // Check for invalid characters
+  const std::string invalid_chars = "<>:\"|?*";
+  for (char c : path) {
+    if (invalid_chars.find(c) != std::string::npos) {
+      return false;
     }
-    
-    // Check for reserved names
-    std::string basename = path;
-    size_t last_slash = path.find_last_of("/\\");
-    if (last_slash != std::string::npos) {
-      basename = path.substr(last_slash + 1);
-    }
-    
-    // Remove extension
-    size_t last_dot = basename.find_last_of('.');
-    if (last_dot != std::string::npos) {
-      basename = basename.substr(0, last_dot);
-    }
-    
-    // Check for reserved names (case-insensitive)
-    std::transform(basename.begin(), basename.end(), basename.begin(), ::toupper);
-    const std::vector<std::string> reserved = {"CON", "PRN", "AUX", "NUL"};
-    for (const auto& res : reserved) {
-      if (basename == res || (basename.length() == 4 && basename.substr(0, 3) == res && basename[3] >= '1' && basename[3] <= '9')) {
-        return false;
-      }
-    }
-    
-    return true;
   }
-  
-  // Check for POSIX portability
-  bool is_posix_portable(const std::string& path) {
-    if (path.empty()) return false;
-    
-    // POSIX allows only: a-z, A-Z, 0-9, '.', '_', '-'
-    for (char c : path) {
-      if (!std::isalnum(c) && c != '.' && c != '_' && c != '-' && c != '/') {
-        return false;
-      }
-    }
-    
-    // Path should not start with '-'
-    if (path[0] == '-') return false;
-    
-    // Check length (POSIX limits to 255 bytes)
-    if (path.length() > 255) return false;
-    
-    return true;
+
+  // Check for reserved names
+  std::string basename = path;
+  size_t last_slash = path.find_last_of("/\\");
+  if (last_slash != std::string::npos) {
+    basename = path.substr(last_slash + 1);
   }
+
+  // Remove extension
+  size_t last_dot = basename.find_last_of('.');
+  if (last_dot != std::string::npos) {
+    basename = basename.substr(0, last_dot);
+  }
+
+  // Check for reserved names (case-insensitive)
+  std::transform(basename.begin(), basename.end(), basename.begin(), ::toupper);
+  const std::vector<std::string> reserved = {"CON", "PRN", "AUX", "NUL"};
+  for (const auto& res : reserved) {
+    if (basename == res ||
+        (basename.length() == 4 && basename.substr(0, 3) == res &&
+         basename[3] >= '1' && basename[3] <= '9')) {
+      return false;
+    }
+  }
+
+  return true;
 }
+
+// Check for POSIX portability
+bool is_posix_portable(const std::string& path) {
+  if (path.empty()) return false;
+
+  // POSIX allows only: a-z, A-Z, 0-9, '.', '_', '-'
+  for (char c : path) {
+    if (!std::isalnum(c) && c != '.' && c != '_' && c != '-' && c != '/') {
+      return false;
+    }
+  }
+
+  // Path should not start with '-'
+  if (path[0] == '-') return false;
+
+  // Check length (POSIX limits to 255 bytes)
+  if (path.length() > 255) return false;
+
+  return true;
+}
+}  // namespace
 
 // ======================================================
 // Main command implementation
@@ -131,8 +133,8 @@ REGISTER_COMMAND(
     /* author */ "WinuxCmd",
     /* copyright */ "Copyright © 2026 WinuxCmd",
     /* options */ PATHCHK_OPTIONS) {
-
-  bool check_portability = ctx.get<bool>("-p", false) || ctx.get<bool>("--portability", false);
+  bool check_portability =
+      ctx.get<bool>("-p", false) || ctx.get<bool>("--portability", false);
   bool check_leading_dash = ctx.get<bool>("-P", false);
 
   if (ctx.positionals.empty()) {

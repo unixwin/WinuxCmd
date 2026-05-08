@@ -31,7 +31,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -42,9 +42,8 @@ import container;
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
-auto constexpr SLEEP_OPTIONS = std::array{
-    OPTION("", "", "pause for NUMBER seconds", STRING_TYPE)
-};
+auto constexpr SLEEP_OPTIONS =
+    std::array{OPTION("", "", "pause for NUMBER seconds", STRING_TYPE)};
 
 namespace sleep_pipeline {
 namespace cp = core::pipeline;
@@ -65,7 +64,7 @@ auto parse_duration(const std::string& duration) -> cp::Result<int64_t> {
     int64_t multiplier = 1;
     if (s.size() > 1) {
       char suffix = s.back();
-      
+
       switch (suffix) {
         case 's':
         case 'S':
@@ -91,7 +90,8 @@ auto parse_duration(const std::string& duration) -> cp::Result<int64_t> {
     }
 
     double value = std::stod(s);
-    return static_cast<int64_t>(value * multiplier * 1000);  // Convert to milliseconds
+    return static_cast<int64_t>(value * multiplier *
+                                1000);  // Convert to milliseconds
   } catch (...) {
     return std::unexpected("invalid duration format");
   }
@@ -135,23 +135,22 @@ auto run(const Config& cfg) -> int {
 
 }  // namespace sleep_pipeline
 
-REGISTER_COMMAND(sleep, "sleep",
-                 "sleep NUMBER[SUFFIX]...",
-                 "Pause for NUMBER seconds.\n"
-                 "\n"
-                 "SUFFIX may be 's' for seconds (the default), 'm' for minutes,\n"
-                 "'h' for hours or 'd' for days.\n"
-                 "\n"
-                 "Unlike most implementations that require NUMBER be an integer,\n"
-                 "here NUMBER may be an arbitrary floating point number.\n"
-                 "\n"
-                 "Note: This implementation supports floating point numbers.",
-                 "  sleep 1\n"
-                 "  sleep 2.5\n"
-                 "  sleep 1m 30s\n"
-                 "  sleep 0.5h",
-                 "pause(1)", "WinuxCmd",
-                 "Copyright © 2026 WinuxCmd", SLEEP_OPTIONS) {
+REGISTER_COMMAND(
+    sleep, "sleep", "sleep NUMBER[SUFFIX]...",
+    "Pause for NUMBER seconds.\n"
+    "\n"
+    "SUFFIX may be 's' for seconds (the default), 'm' for minutes,\n"
+    "'h' for hours or 'd' for days.\n"
+    "\n"
+    "Unlike most implementations that require NUMBER be an integer,\n"
+    "here NUMBER may be an arbitrary floating point number.\n"
+    "\n"
+    "Note: This implementation supports floating point numbers.",
+    "  sleep 1\n"
+    "  sleep 2.5\n"
+    "  sleep 1m 30s\n"
+    "  sleep 0.5h",
+    "pause(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", SLEEP_OPTIONS) {
   using namespace sleep_pipeline;
 
   auto cfg_result = build_config(ctx);

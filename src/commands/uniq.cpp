@@ -1,5 +1,5 @@
 /*
-*  Copyright © 2026 [caomengxuan666]
+ *  Copyright © 2026 [caomengxuan666]
  *
  *  Permission is hereby granted, free of charge, to any person obtaining a copy
  *  of this software and associated documentation files (the “Software”), to
@@ -32,7 +32,7 @@
 /// @License: MIT
 /// @Copyright: Copyright © 2026 WinuxCmd
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 import std;
 import core;
@@ -56,17 +56,20 @@ using cmd::meta::OptionType;
  * - @a -D, @a --all-repeated: Print all duplicate lines [IMPLEMENTED]
  * - @a -f, @a --skip-fields: Avoid comparing the first N fields [IMPLEMENTED]
  * - @a -i, @a --ignore-case: Ignore differences in case [IMPLEMENTED]
- * - @a -s, @a --skip-chars: Avoid comparing the first N characters [IMPLEMENTED]
+ * - @a -s, @a --skip-chars: Avoid comparing the first N characters
+ * [IMPLEMENTED]
  * - @a -u, @a --unique: Only print unique lines [IMPLEMENTED]
  * - @a -w, @a --check-chars: Compare no more than N characters [IMPLEMENTED]
- * - @a -z, @a --zero-terminated: Line delimiter is NUL, not newline [IMPLEMENTED]
+ * - @a -z, @a --zero-terminated: Line delimiter is NUL, not newline
+ * [IMPLEMENTED]
  * - @a --group: Show all items, separating groups [NOT SUPPORT]
  */
 auto constexpr UNIQ_OPTIONS = std::array{
     OPTION("-c", "--count", "prefix lines by the number of occurrences"),
     OPTION("-d", "--repeated", "only print duplicate lines"),
     OPTION("-D", "--all-repeated", "print all duplicate lines"),
-    OPTION("-f", "--skip-fields", "avoid comparing the first N fields", INT_TYPE),
+    OPTION("-f", "--skip-fields", "avoid comparing the first N fields",
+           INT_TYPE),
     OPTION("-i", "--ignore-case", "ignore differences in case"),
     OPTION("-s", "--skip-chars", "avoid comparing the first N characters",
            INT_TYPE),
@@ -93,9 +96,7 @@ struct Config {
   std::string output = "-";
 };
 
-auto read_all(std::istream& in) -> std::string {
-  return read_text_stream(in);
-}
+auto read_all(std::istream& in) -> std::string { return read_text_stream(in); }
 
 auto read_source(std::string_view path) -> cp::Result<std::string> {
   if (path == "-") return read_all(std::cin);
@@ -154,7 +155,8 @@ auto skip_n_fields(std::string_view line, int n) -> std::string_view {
 
 auto comparison_key(std::string_view line, const Config& cfg) -> std::string {
   auto key = skip_n_fields(line, cfg.skip_fields);
-  size_t start = std::min<size_t>(key.size(), static_cast<size_t>(cfg.skip_chars));
+  size_t start =
+      std::min<size_t>(key.size(), static_cast<size_t>(cfg.skip_chars));
   key = key.substr(start);
   if (cfg.check_chars >= 0) {
     key = key.substr(0, static_cast<size_t>(cfg.check_chars));
@@ -165,8 +167,7 @@ auto comparison_key(std::string_view line, const Config& cfg) -> std::string {
 
 auto is_unsupported_used(const CommandContext<UNIQ_OPTIONS.size()>& ctx)
     -> std::optional<std::string_view> {
-  if (ctx.get<bool>("--group", false))
-    return "--group is [NOT SUPPORT]";
+  if (ctx.get<bool>("--group", false)) return "--group is [NOT SUPPORT]";
   return std::nullopt;
 }
 
@@ -174,12 +175,14 @@ auto build_config(const CommandContext<UNIQ_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
   Config cfg;
 
-  cfg.show_count = ctx.get<bool>("--count", false) || ctx.get<bool>("-c", false);
+  cfg.show_count =
+      ctx.get<bool>("--count", false) || ctx.get<bool>("-c", false);
   cfg.repeated_only =
       ctx.get<bool>("--repeated", false) || ctx.get<bool>("-d", false);
   cfg.all_repeated =
       ctx.get<bool>("--all-repeated", false) || ctx.get<bool>("-D", false);
-  cfg.unique_only = ctx.get<bool>("--unique", false) || ctx.get<bool>("-u", false);
+  cfg.unique_only =
+      ctx.get<bool>("--unique", false) || ctx.get<bool>("-u", false);
   cfg.ignore_case =
       ctx.get<bool>("--ignore-case", false) || ctx.get<bool>("-i", false);
 
@@ -276,14 +279,14 @@ auto run(const Config& cfg) -> int {
 
 }  // namespace uniq_pipeline
 
-REGISTER_COMMAND(uniq, "uniq", "uniq [OPTION]... [INPUT [OUTPUT]]",
-                 "Filter adjacent matching lines from INPUT (or standard input),\n"
-                 "writing to OUTPUT (or standard output).",
-                 "  uniq data.txt\n"
-                 "  sort a.txt | uniq -c\n"
-                 "  uniq -i -d words.txt",
-                 "sort(1), grep(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd",
-                 UNIQ_OPTIONS) {
+REGISTER_COMMAND(
+    uniq, "uniq", "uniq [OPTION]... [INPUT [OUTPUT]]",
+    "Filter adjacent matching lines from INPUT (or standard input),\n"
+    "writing to OUTPUT (or standard output).",
+    "  uniq data.txt\n"
+    "  sort a.txt | uniq -c\n"
+    "  uniq -i -d words.txt",
+    "sort(1), grep(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", UNIQ_OPTIONS) {
   using namespace uniq_pipeline;
 
   if (auto unsupported = is_unsupported_used(ctx); unsupported.has_value()) {

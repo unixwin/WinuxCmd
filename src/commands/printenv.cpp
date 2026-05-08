@@ -31,7 +31,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -41,9 +41,8 @@ import utils;
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
-auto constexpr PRINTENV_OPTIONS = std::array{
-    OPTION("", "", "print environment variables", STRING_TYPE)
-};
+auto constexpr PRINTENV_OPTIONS =
+    std::array{OPTION("", "", "print environment variables", STRING_TYPE)};
 
 REGISTER_COMMAND(
     printenv,
@@ -52,7 +51,7 @@ REGISTER_COMMAND(
 
     /* synopsis */
     "printenv [OPTION]... [VARIABLE]...",
-"Print all or part of environment.\n"
+    "Print all or part of environment.\n"
     "\n"
     "If no VARIABLE is specified, print all environment variables.\n"
     "If one or more VARIABLE names are specified, print the values of those\n"
@@ -60,24 +59,24 @@ REGISTER_COMMAND(
     "\n"
     "Options:\n"
     "  -0, --null    end each output line with NUL, not newline",
-"  printenv\n"
+    "  printenv\n"
     "  printenv PATH\n"
     "  printenv HOME USER\n"
     "  printenv -0 | xargs -0 ...",
 
     /* see also */
-    "env(1), set(1)",
-"WinuxCmd",
-"Copyright © 2026 WinuxCmd",
-PRINTENV_OPTIONS) {
+    "env(1), set(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd",
+    PRINTENV_OPTIONS) {
   namespace cp = core::pipeline;
 
-  bool null_terminated = ctx.get<bool>("--null", false) || ctx.get<bool>("-0", false);
+  bool null_terminated =
+      ctx.get<bool>("--null", false) || ctx.get<bool>("-0", false);
 
   if (ctx.positionals.empty()) {
     // Print all environment variables
     std::vector<std::string> env_vars;
-    for (wchar_t* env = GetEnvironmentStringsW(); *env; env += wcslen(env) + 1) {
+    for (wchar_t* env = GetEnvironmentStringsW(); *env;
+         env += wcslen(env) + 1) {
       std::wstring wenv(env);
       std::string utf8_env = wstring_to_utf8(wenv);
       env_vars.push_back(utf8_env);

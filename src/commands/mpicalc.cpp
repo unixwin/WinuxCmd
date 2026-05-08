@@ -29,8 +29,8 @@
 /// @License: MIT
 /// @Copyright: Copyright © 2026 WinuxCmd
 
-#include "pch/pch.h"
 #include "core/command_macros.h"
+#include "pch/pch.h"
 
 import std;
 import core;
@@ -52,133 +52,155 @@ auto constexpr MPICALC_OPTIONS =
 // ======================================================
 
 namespace {
-  // Simple expression evaluator
-  double evaluate_expression(const std::string& expr, size_t& pos) {
-    double result = 0.0;
-    
-    // Handle parentheses
-    if (pos < expr.length() && expr[pos] == '(') {
-      pos++; // Skip '('
-      result = evaluate_expression(expr, pos);
-      if (pos < expr.length() && expr[pos] == ')') {
-        pos++; // Skip ')'
-      }
-      return result;
+// Simple expression evaluator
+double evaluate_expression(const std::string& expr, size_t& pos) {
+  double result = 0.0;
+
+  // Handle parentheses
+  if (pos < expr.length() && expr[pos] == '(') {
+    pos++;  // Skip '('
+    result = evaluate_expression(expr, pos);
+    if (pos < expr.length() && expr[pos] == ')') {
+      pos++;  // Skip ')'
     }
-    
-    // Handle unary operators
-    if (pos < expr.length() && (expr[pos] == '+' || expr[pos] == '-')) {
-      double sign = (expr[pos] == '-') ? -1.0 : 1.0;
+    return result;
+  }
+
+  // Handle unary operators
+  if (pos < expr.length() && (expr[pos] == '+' || expr[pos] == '-')) {
+    double sign = (expr[pos] == '-') ? -1.0 : 1.0;
+    pos++;
+    return sign * evaluate_expression(expr, pos);
+  }
+
+  // Handle numbers
+  std::string num_str;
+  while (pos < expr.length() && (std::isdigit(expr[pos]) || expr[pos] == '.')) {
+    num_str += expr[pos++];
+  }
+
+  if (!num_str.empty()) {
+    result = std::stod(num_str);
+  } else {
+    // Handle functions
+    std::string func;
+    while (pos < expr.length() && std::isalpha(expr[pos])) {
+      func += expr[pos++];
+    }
+
+    if (func == "sin" || func == "cos" || func == "tan" || func == "sqrt" ||
+        func == "log" || func == "ln" || func == "exp" || func == "abs" ||
+        func == "floor" || func == "ceil") {
+      if (pos < expr.length() && expr[pos] == '(') {
+        pos++;  // Skip '('
+        double arg = evaluate_expression(expr, pos);
+        if (pos < expr.length() && expr[pos] == ')') {
+          pos++;  // Skip ')'
+        }
+
+        if (func == "sin")
+          result = std::sin(arg);
+        else if (func == "cos")
+          result = std::cos(arg);
+        else if (func == "tan")
+          result = std::tan(arg);
+        else if (func == "sqrt")
+          result = std::sqrt(arg);
+        else if (func == "log")
+          result = std::log10(arg);
+        else if (func == "ln")
+          result = std::log(arg);
+        else if (func == "exp")
+          result = std::exp(arg);
+        else if (func == "abs")
+          result = std::abs(arg);
+        else if (func == "floor")
+          result = std::floor(arg);
+        else if (func == "ceil")
+          result = std::ceil(arg);
+      }
+    }
+  }
+
+  // Handle binary operators (left to right)
+  while (pos < expr.length()) {
+    char op = expr[pos];
+
+    if (op == '+' || op == '-' || op == '*' || op == '/' || op == '%' ||
+        op == '^') {
       pos++;
-      return sign * evaluate_expression(expr, pos);
-    }
-    
-    // Handle numbers
-    std::string num_str;
-    while (pos < expr.length() && (std::isdigit(expr[pos]) || expr[pos] == '.')) {
-      num_str += expr[pos++];
-    }
-    
-    if (!num_str.empty()) {
-      result = std::stod(num_str);
+      double right = evaluate_expression(expr, pos);
+
+      switch (op) {
+        case '+':
+          result += right;
+          break;
+        case '-':
+          result -= right;
+          break;
+        case '*':
+          result *= right;
+          break;
+        case '/':
+          if (right != 0)
+            result /= right;
+          else
+            result = std::numeric_limits<double>::infinity();
+          break;
+        case '%':
+          result = std::fmod(result, right);
+          break;
+        case '^':
+          result = std::pow(result, right);
+          break;
+      }
+    } else if (op == ')') {
+      break;
+    } else if (!std::isspace(op)) {
+      pos++;
     } else {
-      // Handle functions
-      std::string func;
-      while (pos < expr.length() && std::isalpha(expr[pos])) {
-        func += expr[pos++];
-      }
-      
-      if (func == "sin" || func == "cos" || func == "tan" ||
-          func == "sqrt" || func == "log" || func == "ln" ||
-          func == "exp" || func == "abs" || func == "floor" || func == "ceil") {
-        
-        if (pos < expr.length() && expr[pos] == '(') {
-          pos++; // Skip '('
-          double arg = evaluate_expression(expr, pos);
-          if (pos < expr.length() && expr[pos] == ')') {
-            pos++; // Skip ')'
-          }
-          
-          if (func == "sin") result = std::sin(arg);
-          else if (func == "cos") result = std::cos(arg);
-          else if (func == "tan") result = std::tan(arg);
-          else if (func == "sqrt") result = std::sqrt(arg);
-          else if (func == "log") result = std::log10(arg);
-          else if (func == "ln") result = std::log(arg);
-          else if (func == "exp") result = std::exp(arg);
-          else if (func == "abs") result = std::abs(arg);
-          else if (func == "floor") result = std::floor(arg);
-          else if (func == "ceil") result = std::ceil(arg);
-        }
-      }
+      pos++;
     }
-    
-    // Handle binary operators (left to right)
-    while (pos < expr.length()) {
-      char op = expr[pos];
-      
-      if (op == '+' || op == '-' || op == '*' || op == '/' || op == '%' || op == '^') {
-        pos++;
-        double right = evaluate_expression(expr, pos);
-        
-        switch (op) {
-          case '+': result += right; break;
-          case '-': result -= right; break;
-          case '*': result *= right; break;
-          case '/': 
-            if (right != 0) result /= right; 
-            else result = std::numeric_limits<double>::infinity();
-            break;
-          case '%': result = std::fmod(result, right); break;
-          case '^': result = std::pow(result, right); break;
-        }
-      } else if (op == ')') {
-        break;
-      } else if (!std::isspace(op)) {
-        pos++;
-      } else {
-        pos++;
-      }
-    }
-    
-    return result;
   }
-  
-  // Format result
-  std::string format_result(double value) {
-    if (std::isinf(value)) {
-      return (value > 0) ? "Infinity" : "-Infinity";
-    }
-    if (std::isnan(value)) {
-      return "NaN";
-    }
-    
-    // Check if result is close to an integer
-    double int_part;
-    if (std::modf(value, &int_part) < 1e-10) {
-      return std::to_string(static_cast<long long>(int_part));
-    }
-    
-    // Format with appropriate precision
-    char buffer[128];
-    sprintf_s(buffer, sizeof(buffer), "%.10g", value);
-    
-    // Remove trailing zeros
-    std::string result = buffer;
-    size_t dot_pos = result.find('.');
-    if (dot_pos != std::string::npos) {
-      size_t last_non_zero = result.find_last_not_of('0');
-      if (last_non_zero != std::string::npos) {
-        result = result.substr(0, last_non_zero + 1);
-      }
-      if (result.back() == '.') {
-        result.pop_back();
-      }
-    }
-    
-    return result;
-  }
+
+  return result;
 }
+
+// Format result
+std::string format_result(double value) {
+  if (std::isinf(value)) {
+    return (value > 0) ? "Infinity" : "-Infinity";
+  }
+  if (std::isnan(value)) {
+    return "NaN";
+  }
+
+  // Check if result is close to an integer
+  double int_part;
+  if (std::modf(value, &int_part) < 1e-10) {
+    return std::to_string(static_cast<long long>(int_part));
+  }
+
+  // Format with appropriate precision
+  char buffer[128];
+  sprintf_s(buffer, sizeof(buffer), "%.10g", value);
+
+  // Remove trailing zeros
+  std::string result = buffer;
+  size_t dot_pos = result.find('.');
+  if (dot_pos != std::string::npos) {
+    size_t last_non_zero = result.find_last_not_of('0');
+    if (last_non_zero != std::string::npos) {
+      result = result.substr(0, last_non_zero + 1);
+    }
+    if (result.back() == '.') {
+      result.pop_back();
+    }
+  }
+
+  return result;
+}
+}  // namespace
 
 // ======================================================
 // Main command implementation
@@ -203,13 +225,13 @@ REGISTER_COMMAND(
     /* author */ "WinuxCmd",
     /* copyright */ "Copyright © 2026 WinuxCmd",
     /* options */ MPICALC_OPTIONS) {
-
   if (ctx.positionals.empty()) {
     safeErrorPrintLn("mpicalc: missing expression");
     safePrintLn("Usage: mpicalc [EXPRESSION]");
     safePrintLn("");
     safePrintLn("Supported operators:");
-    safePrintLn("  + - * / % ^ (add, subtract, multiply, divide, modulo, power)");
+    safePrintLn(
+        "  + - * / % ^ (add, subtract, multiply, divide, modulo, power)");
     safePrintLn("");
     safePrintLn("Supported functions:");
     safePrintLn("  sin, cos, tan - trigonometric functions");
@@ -227,7 +249,7 @@ REGISTER_COMMAND(
   }
 
   std::string expr = std::string(ctx.positionals[0]);
-  
+
   // Replace common constants
   size_t pos;
   while ((pos = expr.find("pi")) != std::string::npos) {
@@ -242,18 +264,19 @@ REGISTER_COMMAND(
   while ((pos = expr.find("E")) != std::string::npos) {
     expr.replace(pos, 1, std::to_string(2.71828182845904523536));
   }
-  
+
   try {
     size_t pos = 0;
     double result = evaluate_expression(expr, pos);
     safePrintLn(format_result(result));
   } catch (const std::exception& e) {
-    safeErrorPrintLn("mpicalc: error evaluating expression - " + std::string(e.what()));
+    safeErrorPrintLn("mpicalc: error evaluating expression - " +
+                     std::string(e.what()));
     return 1;
   } catch (...) {
     safeErrorPrintLn("mpicalc: error evaluating expression");
     return 1;
   }
-  
+
   return 0;
 }

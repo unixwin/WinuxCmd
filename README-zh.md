@@ -133,6 +133,8 @@ winuxcmd.exe help
 ```
 
 面向 AI 的本地使用说明在 `skills/winuxcmd/SKILL.md`。
+GitHub release 还会附带独立的 `WinuxCmd-skill-v<version>.zip` 包，和
+Windows 二进制一起发布。
 
 ---
 

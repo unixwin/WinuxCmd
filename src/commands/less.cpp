@@ -31,7 +31,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -45,53 +45,67 @@ using cmd::meta::OptionType;
 auto constexpr LESS_OPTIONS = std::array{
     OPTION("-e", "--quit-at-eof", "quit after second EOF", BOOL_TYPE),
     OPTION("-E", "--QUIT-AT-EOF", "quit after first EOF", BOOL_TYPE),
-    OPTION("-F", "--quit-if-one-screen", "quit if entire file fits on first screen", BOOL_TYPE),
-    OPTION("-i", "--ignore-case", "ignore case in searches that do not contain uppercase", BOOL_TYPE),
+    OPTION("-F", "--quit-if-one-screen",
+           "quit if entire file fits on first screen", BOOL_TYPE),
+    OPTION("-i", "--ignore-case",
+           "ignore case in searches that do not contain uppercase", BOOL_TYPE),
     OPTION("-I", "--IGNORE-CASE", "ignore case in all searches", BOOL_TYPE),
-    OPTION("-n", "--line-numbers", "display line number at start of each line", BOOL_TYPE),
-    OPTION("-N", "--LINE-NUMBERS", "display line number at start of each line", BOOL_TYPE),
-    OPTION("-S", "--chop-long-lines", "chop long lines (do not wrap)", BOOL_TYPE),
+    OPTION("-n", "--line-numbers", "display line number at start of each line",
+           BOOL_TYPE),
+    OPTION("-N", "--LINE-NUMBERS", "display line number at start of each line",
+           BOOL_TYPE),
+    OPTION("-S", "--chop-long-lines", "chop long lines (do not wrap)",
+           BOOL_TYPE),
     OPTION("-q", "--quiet", "silence the terminal bell", BOOL_TYPE),
     OPTION("-Q", "--QUIET", "never ring the terminal bell", BOOL_TYPE),
-    OPTION("-r", "--raw-control-chars", "display \"raw\" control characters", BOOL_TYPE),
-    OPTION("-R", "--RAW-CONTROL-CHARS", "display \"raw\" control characters and ANSI colors", BOOL_TYPE)
-};
+    OPTION("-r", "--raw-control-chars", "display \"raw\" control characters",
+           BOOL_TYPE),
+    OPTION("-R", "--RAW-CONTROL-CHARS",
+           "display \"raw\" control characters and ANSI colors", BOOL_TYPE)};
 
 namespace less_pipeline {
 namespace cp = core::pipeline;
 
 struct Config {
-  bool quit_at_eof = false;      // -e
-  bool quit_first_eof = false;   // -E
-  bool quit_one_screen = false;  // -F
-  bool ignore_case = false;      // -i
-  bool ignore_case_all = false;  // -I
-  bool show_line_numbers = false;// -n, -N
-  bool chop_long_lines = false;  // -S
-  bool quiet = false;            // -q
-  bool never_bell = false;       // -Q
-  bool raw_control = false;      // -r
-  bool raw_control_color = false;// -R
+  bool quit_at_eof = false;        // -e
+  bool quit_first_eof = false;     // -E
+  bool quit_one_screen = false;    // -F
+  bool ignore_case = false;        // -i
+  bool ignore_case_all = false;    // -I
+  bool show_line_numbers = false;  // -n, -N
+  bool chop_long_lines = false;    // -S
+  bool quiet = false;              // -q
+  bool never_bell = false;         // -Q
+  bool raw_control = false;        // -r
+  bool raw_control_color = false;  // -R
   SmallVector<std::string, 16> files;
 };
 
 auto build_config(const CommandContext<LESS_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
   Config cfg;
-  cfg.quit_at_eof = ctx.get<bool>("--quit-at-eof", false) || ctx.get<bool>("-e", false);
-  cfg.quit_first_eof = ctx.get<bool>("--QUIT-AT-EOF", false) || ctx.get<bool>("-E", false);
-  cfg.quit_one_screen = ctx.get<bool>("--quit-if-one-screen", false) || ctx.get<bool>("-F", false);
-  cfg.ignore_case = ctx.get<bool>("--ignore-case", false) || ctx.get<bool>("-i", false);
-  cfg.ignore_case_all = ctx.get<bool>("--IGNORE-CASE", false) || ctx.get<bool>("-I", false);
-  cfg.show_line_numbers = ctx.get<bool>("--line-numbers", false) ||
-                          ctx.get<bool>("-n", false) ||
-                          ctx.get<bool>("--LINE-NUMBERS", false) ||
-                          ctx.get<bool>("-N", false);
-  cfg.chop_long_lines = ctx.get<bool>("--chop-long-lines", false) || ctx.get<bool>("-S", false);
+  cfg.quit_at_eof =
+      ctx.get<bool>("--quit-at-eof", false) || ctx.get<bool>("-e", false);
+  cfg.quit_first_eof =
+      ctx.get<bool>("--QUIT-AT-EOF", false) || ctx.get<bool>("-E", false);
+  cfg.quit_one_screen = ctx.get<bool>("--quit-if-one-screen", false) ||
+                        ctx.get<bool>("-F", false);
+  cfg.ignore_case =
+      ctx.get<bool>("--ignore-case", false) || ctx.get<bool>("-i", false);
+  cfg.ignore_case_all =
+      ctx.get<bool>("--IGNORE-CASE", false) || ctx.get<bool>("-I", false);
+  cfg.show_line_numbers =
+      ctx.get<bool>("--line-numbers", false) || ctx.get<bool>("-n", false) ||
+      ctx.get<bool>("--LINE-NUMBERS", false) || ctx.get<bool>("-N", false);
+  cfg.chop_long_lines =
+      ctx.get<bool>("--chop-long-lines", false) || ctx.get<bool>("-S", false);
   cfg.quiet = ctx.get<bool>("--quiet", false) || ctx.get<bool>("-q", false);
-  cfg.never_bell = ctx.get<bool>("--QUIET", false) || ctx.get<bool>("-Q", false);
-  cfg.raw_control = ctx.get<bool>("--raw-control-chars", false) || ctx.get<bool>("-r", false);
-  cfg.raw_control_color = ctx.get<bool>("--RAW-CONTROL-CHARS", false) || ctx.get<bool>("-R", false);
+  cfg.never_bell =
+      ctx.get<bool>("--QUIET", false) || ctx.get<bool>("-Q", false);
+  cfg.raw_control =
+      ctx.get<bool>("--raw-control-chars", false) || ctx.get<bool>("-r", false);
+  cfg.raw_control_color =
+      ctx.get<bool>("--RAW-CONTROL-CHARS", false) || ctx.get<bool>("-R", false);
 
   for (auto arg : ctx.positionals) {
     std::string file_arg(arg);
@@ -128,7 +142,8 @@ auto read_file_content(const std::string& filename) -> cp::Result<std::string> {
     // Read from file
     std::ifstream file(filename, std::ios::binary);
     if (!file) {
-      return std::unexpected(std::string("cannot open '") + filename + "' for reading");
+      return std::unexpected(std::string("cannot open '") + filename +
+                             "' for reading");
     }
     content.assign(std::istreambuf_iterator<char>(file),
                    std::istreambuf_iterator<char>());
@@ -169,7 +184,7 @@ auto simple_pager(const Config& cfg, const std::string& content) -> int {
     term_height = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
   }
 
-  int page_size = term_height - 1; // Leave one line for prompt
+  int page_size = term_height - 1;  // Leave one line for prompt
 
   // Check if content fits on one screen
   if (cfg.quit_one_screen && lines.size() <= static_cast<size_t>(page_size)) {
@@ -246,18 +261,17 @@ auto run(const Config& cfg) -> int {
 
 }  // namespace less_pipeline
 
-REGISTER_COMMAND(less, "less",
-                 "less [OPTION]... [FILE]...",
-                 "A pager for viewing files, similar to more but with more features.\n"
-                 "Allows backward movement in the file as well as forward movement.\n"
-                 "\n"
-                 "This is a simplified implementation of less with core features.",
-                 "  less file.txt\n"
-                 "  less -N file.txt          # Show line numbers\n"
-                 "  less -E file.txt          # Quit at end of file\n"
-                 "  less -F file.txt          # Quit if fits on one screen",
-                 "more(1), most(1)", "WinuxCmd",
-                 "Copyright © 2026 WinuxCmd", LESS_OPTIONS) {
+REGISTER_COMMAND(
+    less, "less", "less [OPTION]... [FILE]...",
+    "A pager for viewing files, similar to more but with more features.\n"
+    "Allows backward movement in the file as well as forward movement.\n"
+    "\n"
+    "This is a simplified implementation of less with core features.",
+    "  less file.txt\n"
+    "  less -N file.txt          # Show line numbers\n"
+    "  less -E file.txt          # Quit at end of file\n"
+    "  less -F file.txt          # Quit if fits on one screen",
+    "more(1), most(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", LESS_OPTIONS) {
   using namespace less_pipeline;
 
   auto cfg_result = build_config(ctx);

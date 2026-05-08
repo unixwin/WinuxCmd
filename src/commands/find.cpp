@@ -1,5 +1,5 @@
 /*
-*  Copyright © 2026 WinuxCmd
+ *  Copyright © 2026 WinuxCmd
  *
  *  Permission is hereby granted, free of charge, to any person obtaining a copy
  *  of this software and associated documentation files (the "Software"), to
@@ -30,7 +30,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -50,15 +50,21 @@ using cmd::meta::OptionType;
  *
  * @par Options:
  *
- * - @a -name: Base of file name (the path with the leading directories removed) matches shell pattern PATTERN [IMPLEMENTED]
+ * - @a -name: Base of file name (the path with the leading directories removed)
+ * matches shell pattern PATTERN [IMPLEMENTED]
  * - @a -iname: Like -name, but the match is case insensitive [IMPLEMENTED]
- * - @a -type: File is of type c: b,d,p,f,l,s,D [only d,f,l are supported] [IMPLEMENTED]
- * - @a -mindepth: Descend at least LEVELS levels of directories before tests [IMPLEMENTED]
- * - @a -maxdepth: Descend at most LEVELS levels of directories below starting-points [IMPLEMENTED]
+ * - @a -type: File is of type c: b,d,p,f,l,s,D [only d,f,l are supported]
+ * [IMPLEMENTED]
+ * - @a -mindepth: Descend at least LEVELS levels of directories before tests
+ * [IMPLEMENTED]
+ * - @a -maxdepth: Descend at most LEVELS levels of directories below
+ * starting-points [IMPLEMENTED]
  * - @a -print: Print the full file name on the standard output [IMPLEMENTED]
- * - @a -print0: Print the full file name on the standard output, followed by a null character [IMPLEMENTED]
+ * - @a -print0: Print the full file name on the standard output, followed by a
+ * null character [IMPLEMENTED]
  * - @a -L: Follow symbolic links [NOT SUPPORT]
- * - @a -H: Do not follow symbolic links, except while processing command line arguments [NOT SUPPORT]
+ * - @a -H: Do not follow symbolic links, except while processing command line
+ * arguments [NOT SUPPORT]
  * - @a -P: Never follow symbolic links (default) [IMPLEMENTED]
  * - @a -delete: Delete files [NOT SUPPORT]
  * - @a -exec: Execute command [NOT SUPPORT]
@@ -68,19 +74,34 @@ using cmd::meta::OptionType;
  * - @a -quit: Exit immediately [IMPLEMENTED]
  */
 auto constexpr FIND_OPTIONS = std::array{
-    OPTION("-name", "", "base of file name (the path with the leading directories removed) matches shell pattern PATTERN", STRING_TYPE),
-    OPTION("-iname", "", "like -name, but the match is case insensitive", STRING_TYPE),
-    OPTION("-type", "", "file is of type c: b,d,p,f,l,s,D [only d,f,l are supported]", STRING_TYPE),
-    OPTION("-mindepth", "", "descend at least LEVELS levels of directories before tests", INT_TYPE),
-    OPTION("-maxdepth", "", "descend at most LEVELS levels of directories below starting-points", INT_TYPE),
+    OPTION("-name", "",
+           "base of file name (the path with the leading directories removed) "
+           "matches shell pattern PATTERN",
+           STRING_TYPE),
+    OPTION("-iname", "", "like -name, but the match is case insensitive",
+           STRING_TYPE),
+    OPTION("-type", "",
+           "file is of type c: b,d,p,f,l,s,D [only d,f,l are supported]",
+           STRING_TYPE),
+    OPTION("-mindepth", "",
+           "descend at least LEVELS levels of directories before tests",
+           INT_TYPE),
+    OPTION("-maxdepth", "",
+           "descend at most LEVELS levels of directories below starting-points",
+           INT_TYPE),
     OPTION("-print", "", "print the full file name on the standard output"),
-    OPTION("-print0", "", "print the full file name on the standard output, followed by a null character"),
+    OPTION("-print0", "",
+           "print the full file name on the standard output, followed by a "
+           "null character"),
     OPTION("-L", "", "follow symbolic links [NOT SUPPORT]"),
-    OPTION("-H", "", "do not follow symbolic links, except while processing command line arguments [NOT SUPPORT]"),
+    OPTION("-H", "",
+           "do not follow symbolic links, except while processing command line "
+           "arguments [NOT SUPPORT]"),
     OPTION("-P", "", "never follow symbolic links (default)"),
     OPTION("-delete", "", "delete files [NOT SUPPORT]"),
     OPTION("-exec", "", "execute command [NOT SUPPORT]", STRING_TYPE),
-    OPTION("-ok", "", "execute command after confirmation [NOT SUPPORT]", STRING_TYPE),
+    OPTION("-ok", "", "execute command after confirmation [NOT SUPPORT]",
+           STRING_TYPE),
     OPTION("-printf", "", "print format [NOT SUPPORT]", STRING_TYPE),
     OPTION("-prune", "", "prune tree [NOT SUPPORT]"),
     OPTION("-quit", "", "exit immediately")};
@@ -123,8 +144,7 @@ auto is_unsupported_used(const CommandContext<FIND_OPTIONS.size()>& ctx)
   if (ctx.get<bool>("-delete", false)) return "-delete is [NOT SUPPORT]";
   if (!ctx.get<std::string>("-exec", "").empty())
     return "-exec is [NOT SUPPORT]";
-  if (!ctx.get<std::string>("-ok", "").empty())
-    return "-ok is [NOT SUPPORT]";
+  if (!ctx.get<std::string>("-ok", "").empty()) return "-ok is [NOT SUPPORT]";
   if (!ctx.get<std::string>("-printf", "").empty())
     return "-printf is [NOT SUPPORT]";
   if (ctx.get<bool>("-prune", false)) return "-prune is [NOT SUPPORT]";
@@ -153,8 +173,8 @@ auto build_config(const CommandContext<FIND_OPTIONS.size()>& ctx)
     return std::unexpected("cannot use both -name and -iname");
   }
 
-  if (!cfg.type_filter.empty() && cfg.type_filter != "f" && cfg.type_filter != "d" &&
-      cfg.type_filter != "l") {
+  if (!cfg.type_filter.empty() && cfg.type_filter != "f" &&
+      cfg.type_filter != "d" && cfg.type_filter != "l") {
     return std::unexpected("-type currently supports only f,d,l");
   }
 
@@ -199,8 +219,8 @@ auto path_display(const std::filesystem::path& p) -> std::string {
 }
 
 auto entry_matches(const Config& cfg, const std::filesystem::path& p,
-                   const std::filesystem::directory_entry& e,
-                   int depth) -> bool {
+                   const std::filesystem::directory_entry& e, int depth)
+    -> bool {
   if (depth < cfg.mindepth || depth > cfg.maxdepth) return false;
 
   auto filename = p.filename().string();
@@ -295,15 +315,14 @@ auto process(Config& cfg) -> int {
 
 }  // namespace find_pipeline
 
-REGISTER_COMMAND(
-    find, "find", "find [path...] [expression]",
-    "Search for files in a directory hierarchy.\n"
-    "If no path is given, '.' is used.",
-    "  find . -name '*.cpp'\n"
-    "  find src -type f -maxdepth 2\n"
-    "  find . -iname 'readme*'",
-    "grep(1), ls(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd",
-    FIND_OPTIONS) {
+REGISTER_COMMAND(find, "find", "find [path...] [expression]",
+                 "Search for files in a directory hierarchy.\n"
+                 "If no path is given, '.' is used.",
+                 "  find . -name '*.cpp'\n"
+                 "  find src -type f -maxdepth 2\n"
+                 "  find . -iname 'readme*'",
+                 "grep(1), ls(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd",
+                 FIND_OPTIONS) {
   using namespace find_pipeline;
 
   auto cfg = build_config(ctx);

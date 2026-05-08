@@ -31,7 +31,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -83,7 +83,8 @@ auto build_config(const CommandContext<TAC_OPTIONS.size()>& ctx)
 }
 
 auto run(const Config& cfg) -> int {
-  // Use std::vector to avoid stack overflow (SmallVector with 1024 capacity is too large for stack)
+  // Use std::vector to avoid stack overflow (SmallVector with 1024 capacity is
+  // too large for stack)
   std::vector<std::string> all_lines;
 
   for (const auto& file : cfg.files) {
@@ -133,19 +134,18 @@ auto run(const Config& cfg) -> int {
 
 }  // namespace tac_pipeline
 
-REGISTER_COMMAND(tac, "tac",
-                 "tac [OPTION]... [FILE]...",
-                 "Concatenate and print files in reverse.\n"
-                 "\n"
-                 "Write each FILE to standard output, last line first.\n"
-                 "With no FILE, or when FILE is -, read standard input.\n"
-                 "\n"
-                 "Note: This is the reverse of 'cat'.\n"
-                 "Advanced features like custom separators are not implemented.",
-                 "  tac file.txt\n"
-                 "  echo -e 'line1\\nline2\\nline3' | tac",
-                 "cat(1), rev(1)", "WinuxCmd",
-                 "Copyright © 2026 WinuxCmd", TAC_OPTIONS) {
+REGISTER_COMMAND(
+    tac, "tac", "tac [OPTION]... [FILE]...",
+    "Concatenate and print files in reverse.\n"
+    "\n"
+    "Write each FILE to standard output, last line first.\n"
+    "With no FILE, or when FILE is -, read standard input.\n"
+    "\n"
+    "Note: This is the reverse of 'cat'.\n"
+    "Advanced features like custom separators are not implemented.",
+    "  tac file.txt\n"
+    "  echo -e 'line1\\nline2\\nline3' | tac",
+    "cat(1), rev(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", TAC_OPTIONS) {
   using namespace tac_pipeline;
 
   auto cfg_result = build_config(ctx);

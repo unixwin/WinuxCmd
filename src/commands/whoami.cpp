@@ -31,10 +31,11 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
-#include "core/command_macros.h"
+// include other header after pch.h
 #include <lmcons.h>
 #include <windows.h>
+
+#include "core/command_macros.h"
 
 import std;
 import core;
@@ -88,19 +89,19 @@ auto run(const Config& cfg) -> int {
 
 }  // namespace whoami_pipeline
 
-REGISTER_COMMAND(whoami, "whoami",
-                 "whoami [OPTION]",
-                 "Print effective userid.\n"
-                 "\n"
-                 "Print the user name associated with the current effective user ID.\n"
-                 "Same as id -un.\n"
-                 "\n"
-                 "Note: This implementation only supports basic username printing.\n"
-                 "Advanced features are not implemented.",
-                 "  whoami\n"
-                 "  id -un",
-                 "id(1), logname(1)", "WinuxCmd",
-                 "Copyright © 2026 WinuxCmd", WHOAMI_OPTIONS) {
+REGISTER_COMMAND(
+    whoami, "whoami", "whoami [OPTION]",
+    "Print effective userid.\n"
+    "\n"
+    "Print the user name associated with the current effective user ID.\n"
+    "Same as id -un.\n"
+    "\n"
+    "Note: This implementation only supports basic username printing.\n"
+    "Advanced features are not implemented.",
+    "  whoami\n"
+    "  id -un",
+    "id(1), logname(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd",
+    WHOAMI_OPTIONS) {
   using namespace whoami_pipeline;
 
   auto cfg_result = build_config(ctx);

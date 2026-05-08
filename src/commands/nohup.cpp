@@ -59,7 +59,8 @@ REGISTER_COMMAND(
     "Run a command immune to hangups.\n"
     "Run COMMAND, ignoring hangup signals. If standard output is a terminal,\n"
     "append output to 'nohup.out'. If standard error is a terminal, redirect\n"
-    "it to standard output. To save output to FILE, use 'nohup COMMAND > FILE'.",
+    "it to standard output. To save output to FILE, use 'nohup COMMAND > "
+    "FILE'.",
     /* examples */
     "  nohup make &\n"
     "  nohup ./myscript.sh > myscript.log 2>&1 &\n"

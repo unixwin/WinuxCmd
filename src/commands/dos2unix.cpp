@@ -31,7 +31,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -42,47 +42,46 @@ using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
 auto constexpr DOS2UNIX_OPTIONS = std::array{
-    OPTION("-v", "--verbose", "print a message for each file", BOOL_TYPE)
-};
+    OPTION("-v", "--verbose", "print a message for each file", BOOL_TYPE)};
 
-REGISTER_COMMAND(
-    dos2unix,
-    /* name */
-    "dos2unix",
+REGISTER_COMMAND(dos2unix,
+                 /* name */
+                 "dos2unix",
 
-    /* synopsis */
-    "dos2unix [OPTION]... [FILE]...",
-"Convert DOS line endings to Unix line endings.\n"
-    "\n"
-    "Replace CRLF (\\r\\n) with LF (\\n) in each specified file.\n"
-    "This is an alias for the d2u command.\n"
-    "\n"
-    "Options:\n"
-    "  -v, --verbose  print a message for each file",
-"  dos2unix file.txt\n"
-    "  dos2unix -v *.txt\n"
-    "  cat dos_file.txt | dos2unix > unix_file.txt",
+                 /* synopsis */
+                 "dos2unix [OPTION]... [FILE]...",
+                 "Convert DOS line endings to Unix line endings.\n"
+                 "\n"
+                 "Replace CRLF (\\r\\n) with LF (\\n) in each specified file.\n"
+                 "This is an alias for the d2u command.\n"
+                 "\n"
+                 "Options:\n"
+                 "  -v, --verbose  print a message for each file",
+                 "  dos2unix file.txt\n"
+                 "  dos2unix -v *.txt\n"
+                 "  cat dos_file.txt | dos2unix > unix_file.txt",
 
-    /* see also */
-    "unix2dos(1), d2u(1), u2d(1)",
-"WinuxCmd",
-"Copyright © 2026 WinuxCmd",
-DOS2UNIX_OPTIONS) {
+                 /* see also */
+                 "unix2dos(1), d2u(1), u2d(1)", "WinuxCmd",
+                 "Copyright © 2026 WinuxCmd", DOS2UNIX_OPTIONS) {
   namespace cp = core::pipeline;
 
-  bool verbose = ctx.get<bool>("--verbose", false) || ctx.get<bool>("-v", false);
+  bool verbose =
+      ctx.get<bool>("--verbose", false) || ctx.get<bool>("-v", false);
 
-  auto process_file = [&](const std::string& filename, bool modify_in_place) -> bool {
+  auto process_file = [&](const std::string& filename,
+                          bool modify_in_place) -> bool {
     std::wstring wfilename = utf8_to_wstring(filename);
     std::ifstream input(wfilename, std::ios::binary);
     if (!input) {
-      safeErrorPrintLn("dos2unix: cannot open '" + filename + "': No such file or directory");
+      safeErrorPrintLn("dos2unix: cannot open '" + filename +
+                       "': No such file or directory");
       return false;
     }
 
     // Read entire file
     std::string content((std::istreambuf_iterator<char>(input)),
-                       std::istreambuf_iterator<char>());
+                        std::istreambuf_iterator<char>());
     input.close();
 
     // Convert CRLF to LF

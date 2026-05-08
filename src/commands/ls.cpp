@@ -34,7 +34,7 @@
 // *** SIMPLIFIED IMPLEMENTATION - Some features may not be fully supported ***
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 #pragma comment(lib, "advapi32.lib")
@@ -234,9 +234,10 @@ auto is_executable_name(const std::wstring &name) -> bool {
 }
 
 auto should_ignore_backup(const std::wstring &name,
-                          const CommandContext<LS_OPTIONS.size()> &ctx) -> bool {
-  const bool ignore_backups = ctx.get<bool>("-B", false) ||
-                              ctx.get<bool>("--ignore-backups", false);
+                          const CommandContext<LS_OPTIONS.size()> &ctx)
+    -> bool {
+  const bool ignore_backups =
+      ctx.get<bool>("-B", false) || ctx.get<bool>("--ignore-backups", false);
   return ignore_backups && !name.empty() && name.back() == L'~';
 }
 
@@ -249,15 +250,16 @@ auto get_ignore_pattern(const CommandContext<LS_OPTIONS.size()> &ctx)
   return pattern;
 }
 
-auto should_ignore_pattern(const std::wstring &name, const std::wstring &pattern)
-    -> bool {
+auto should_ignore_pattern(const std::wstring &name,
+                           const std::wstring &pattern) -> bool {
   if (pattern.empty()) {
     return false;
   }
   return wildcard_match(pattern, name, true);
 }
 
-auto should_show_entry(const std::wstring &name, const WIN32_FIND_DATAW &find_data,
+auto should_show_entry(const std::wstring &name,
+                       const WIN32_FIND_DATAW &find_data,
                        const CommandContext<LS_OPTIONS.size()> &ctx,
                        const std::wstring &ignore_pattern) -> bool {
   const bool show_all = ctx.get<bool>("-a", false) ||
@@ -311,8 +313,8 @@ auto get_indicator_suffix(const std::wstring &name,
     -> std::wstring {
   const bool classify =
       ctx.get<bool>("-F", false) || ctx.get<bool>("--classify", false);
-  const bool slash_indicator =
-      ctx.get<bool>("-p", false) || ctx.get<bool>("--indicator-style=slash", false);
+  const bool slash_indicator = ctx.get<bool>("-p", false) ||
+                               ctx.get<bool>("--indicator-style=slash", false);
 
   if (classify) {
     if (find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
@@ -327,7 +329,8 @@ auto get_indicator_suffix(const std::wstring &name,
     return {};
   }
 
-  if (slash_indicator && (find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+  if (slash_indicator &&
+      (find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
     return L"/";
   }
 
@@ -349,15 +352,33 @@ auto escape_display_name(const std::wstring &name) -> std::wstring {
 
   for (wchar_t ch : name) {
     switch (ch) {
-      case L'\a': rendered += L"\\a"; break;
-      case L'\b': rendered += L"\\b"; break;
-      case L'\t': rendered += L"\\t"; break;
-      case L'\n': rendered += L"\\n"; break;
-      case L'\v': rendered += L"\\v"; break;
-      case L'\f': rendered += L"\\f"; break;
-      case L'\r': rendered += L"\\r"; break;
-      case L'\\': rendered += L"\\\\"; break;
-      case L'"': rendered += L"\\\""; break;
+      case L'\a':
+        rendered += L"\\a";
+        break;
+      case L'\b':
+        rendered += L"\\b";
+        break;
+      case L'\t':
+        rendered += L"\\t";
+        break;
+      case L'\n':
+        rendered += L"\\n";
+        break;
+      case L'\v':
+        rendered += L"\\v";
+        break;
+      case L'\f':
+        rendered += L"\\f";
+        break;
+      case L'\r':
+        rendered += L"\\r";
+        break;
+      case L'\\':
+        rendered += L"\\\\";
+        break;
+      case L'"':
+        rendered += L"\\\"";
+        break;
       default:
         if (ch >= 0x20 && ch < 0x7f && std::iswprint(static_cast<wint_t>(ch))) {
           rendered.push_back(ch);
@@ -385,7 +406,8 @@ auto render_display_name(const std::wstring &name,
     // keep literal name
   } else if (ctx.get<bool>("-b", false) || ctx.get<bool>("--escape", false)) {
     rendered = escape_display_name(rendered);
-  } else if (ctx.get<bool>("-q", false) || ctx.get<bool>("--hide-control-chars", false)) {
+  } else if (ctx.get<bool>("-q", false) ||
+             ctx.get<bool>("--hide-control-chars", false)) {
     for (auto &ch : rendered) {
       if (!std::iswprint(static_cast<wint_t>(ch))) {
         ch = L'?';
@@ -406,7 +428,9 @@ auto compare_version_strings(std::wstring_view a, std::wstring_view b) -> int {
   size_t i = 0;
   size_t j = 0;
 
-  auto is_digit = [](wchar_t ch) { return std::iswdigit(static_cast<wint_t>(ch)) != 0; };
+  auto is_digit = [](wchar_t ch) {
+    return std::iswdigit(static_cast<wint_t>(ch)) != 0;
+  };
 
   while (i < a.size() || j < b.size()) {
     const bool a_digit = i < a.size() && is_digit(a[i]);
@@ -657,9 +681,10 @@ auto get_file_owner_and_group(bool use_numeric = false)
         LPWSTR sidStr = nullptr;
         if (ConvertSidToStringSidW(pTokenUser->User.Sid, &sidStr)) {
           // Extract numeric part from SID (simulate UID 197121)
-          std::wstring sid(sidStr, wcslen(sidStr));  // Construct from known length
+          std::wstring sid(sidStr,
+                           wcslen(sidStr));  // Construct from known length
           LocalFree(sidStr);
-          
+
           size_t lastDash = sid.find_last_of(L'-');
           std::wstring uid_wstr = (lastDash != std::wstring::npos)
                                       ? sid.substr(lastDash + 1)
@@ -790,7 +815,8 @@ auto print_columns(const std::vector<EntryInfo> &entries,
   std::vector<std::wstring> display_names;
   display_names.reserve(entries.size());
   for (const auto &entry : entries) {
-    display_names.push_back(render_display_name(entry.name, entry.find_data, ctx));
+    display_names.push_back(
+        render_display_name(entry.name, entry.find_data, ctx));
   }
 
   // Check if color is enabled based on --color option
@@ -901,8 +927,8 @@ auto list_directory(const std::string &path,
   std::wstring wpath = utf8_to_wstring(path);
 
   // Check -d option: list directories themselves, not their contents
-  bool list_dir_only = ctx.get<bool>("-d", false) ||
-                       ctx.get<bool>("--directory", false);
+  bool list_dir_only =
+      ctx.get<bool>("-d", false) || ctx.get<bool>("--directory", false);
 
   if (list_dir_only) {
     // Get directory attributes
@@ -950,7 +976,8 @@ auto list_directory(const std::string &path,
   bool sort_by_extension =
       ctx.get<bool>("-X", false) || ctx.get<bool>("--sort=extension", false);
   bool version_sort = ctx.get<bool>("-v", false);
-  bool reverse_sort = ctx.get<bool>("-r", false) || ctx.get<bool>("--reverse", false);
+  bool reverse_sort =
+      ctx.get<bool>("-r", false) || ctx.get<bool>("--reverse", false);
 
   if (file_order) {
     no_sort = true;
@@ -967,10 +994,12 @@ auto list_directory(const std::string &path,
       // Sort by file size (largest first), then by name for deterministic order
       std::sort(entries.begin(), entries.end(),
                 [](const EntryInfo &a, const EntryInfo &b) {
-                  uint64_t size_a = static_cast<uint64_t>(a.find_data.nFileSizeLow) |
-                                   (static_cast<uint64_t>(a.find_data.nFileSizeHigh) << 32);
-                  uint64_t size_b = static_cast<uint64_t>(b.find_data.nFileSizeLow) |
-                                   (static_cast<uint64_t>(b.find_data.nFileSizeHigh) << 32);
+                  uint64_t size_a =
+                      static_cast<uint64_t>(a.find_data.nFileSizeLow) |
+                      (static_cast<uint64_t>(a.find_data.nFileSizeHigh) << 32);
+                  uint64_t size_b =
+                      static_cast<uint64_t>(b.find_data.nFileSizeLow) |
+                      (static_cast<uint64_t>(b.find_data.nFileSizeHigh) << 32);
                   if (size_a != size_b) {
                     return size_a > size_b;
                   }
@@ -1253,8 +1282,7 @@ auto list_file(const std::string &path,
  */
 auto list_directory_recursive(const std::string &path,
                               const CommandContext<LS_OPTIONS.size()> &ctx,
-                              int depth = 0)
-    -> cp::Result<bool> {
+                              int depth = 0) -> cp::Result<bool> {
   // Print header for subdirectories
   if (depth > 0) {
     safePrintLn(std::wstring(path.begin(), path.end()) + L":");
@@ -1340,7 +1368,7 @@ auto process_paths(const std::vector<std::string> &paths,
     if (attr == INVALID_FILE_ATTRIBUTES) {
       // Use smart glob expansion from utils:wildcard module
       auto glob_result = glob_expand(wpath);
-      
+
       if (glob_result.expanded && !glob_result.files.empty()) {
         // Pattern matched, process each match
         std::vector<std::string> matched_files;
@@ -1354,9 +1382,9 @@ auto process_paths(const std::vector<std::string> &paths,
             // Single file, display it directly
             auto result = list_file(matched_files[0], ctx);
             if (!result) {
-              safePrintLn(std::wstring(L"ls: ") +
-                          std::wstring(result.error().begin(),
-                                       result.error().end()));
+              safePrintLn(
+                  std::wstring(L"ls: ") +
+                  std::wstring(result.error().begin(), result.error().end()));
               success = false;
             }
           } else {
@@ -1414,37 +1442,37 @@ auto process_paths(const std::vector<std::string> &paths,
       }
     } else if (attr & FILE_ATTRIBUTE_DIRECTORY) {
       // Path is a directory
-      bool directory_only = ctx.get<bool>("-d", false) ||
-                            ctx.get<bool>("--directory", false);
+      bool directory_only =
+          ctx.get<bool>("-d", false) || ctx.get<bool>("--directory", false);
       if (directory_only) {
         auto result = list_file(path, ctx);
         if (!result) {
-          safePrintLn(std::wstring(L"ls: ") +
-                      std::wstring(result.error().begin(),
-                                   result.error().end()));
+          safePrintLn(
+              std::wstring(L"ls: ") +
+              std::wstring(result.error().begin(), result.error().end()));
           success = false;
         }
       } else {
-        bool recursive = ctx.get<bool>("-R", false) ||
-                         ctx.get<bool>("--recursive", false);
+        bool recursive =
+            ctx.get<bool>("-R", false) || ctx.get<bool>("--recursive", false);
 
         if (recursive) {
           // Recursive listing
           auto result =
               list_directory_recursive(path, ctx, paths.size() > 1 ? 1 : 0);
           if (!result) {
-            safePrintLn(std::wstring(L"ls: ") +
-                        std::wstring(result.error().begin(),
-                                     result.error().end()));
+            safePrintLn(
+                std::wstring(L"ls: ") +
+                std::wstring(result.error().begin(), result.error().end()));
             success = false;
           }
         } else {
           // Normal directory listing
           auto result = list_directory(path, ctx);
           if (!result) {
-            safePrintLn(std::wstring(L"ls: ") +
-                        std::wstring(result.error().begin(),
-                                     result.error().end()));
+            safePrintLn(
+                std::wstring(L"ls: ") +
+                std::wstring(result.error().begin(), result.error().end()));
             success = false;
           }
         }

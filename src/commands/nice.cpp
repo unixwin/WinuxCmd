@@ -29,8 +29,8 @@
 /// @License: MIT
 /// @Copyright: Copyright © 2026 WinuxCmd
 
-#include "pch/pch.h"
 #include "core/command_macros.h"
+#include "pch/pch.h"
 
 import std;
 import core;
@@ -68,8 +68,7 @@ REGISTER_COMMAND(
     /* author */ "WinuxCmd",
     /* copyright */ "Copyright © 2026 WinuxCmd",
     /* options */ NICE_OPTIONS) {
-
-  int adjustment = 10; // Default adjustment
+  int adjustment = 10;  // Default adjustment
 
   // Parse adjustment option
   if (ctx.get<bool>("-n", false)) {
@@ -103,7 +102,7 @@ REGISTER_COMMAND(
   }
 
   // Execute command with adjusted priority
-  STARTUPINFOW si = { sizeof(si) };
+  STARTUPINFOW si = {sizeof(si)};
   PROCESS_INFORMATION pi;
 
   std::wstring wcmd = utf8_to_wstring(cmd);
@@ -118,27 +117,19 @@ REGISTER_COMMAND(
     priority_class = IDLE_PRIORITY_CLASS;
   }
 
-  if (!CreateProcessW(
-        nullptr,
-        const_cast<wchar_t*>(wcmd.c_str()),
-        nullptr,
-        nullptr,
-        FALSE,
-        priority_class,
-        nullptr,
-        nullptr,
-        &si,
-        &pi)) {
+  if (!CreateProcessW(nullptr, const_cast<wchar_t*>(wcmd.c_str()), nullptr,
+                      nullptr, FALSE, priority_class, nullptr, nullptr, &si,
+                      &pi)) {
     safeErrorPrintLn("nice: failed to execute command");
     return 1;
   }
 
   // Wait for process to complete
   WaitForSingleObject(pi.hProcess, INFINITE);
-  
+
   DWORD exit_code;
   GetExitCodeProcess(pi.hProcess, &exit_code);
-  
+
   CloseHandle(pi.hProcess);
   CloseHandle(pi.hThread);
 

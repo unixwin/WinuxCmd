@@ -31,7 +31,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -69,7 +69,7 @@ auto run(const Config& cfg) -> int {
   // Note: In a real implementation, this would run indefinitely
   // For safety, we'll limit to 1000 iterations
   const int MAX_ITERATIONS = 1000;
-  
+
   for (int i = 0; i < MAX_ITERATIONS; ++i) {
     safePrintLn(cfg.output);
   }
@@ -79,17 +79,16 @@ auto run(const Config& cfg) -> int {
 
 }  // namespace yes_pipeline
 
-REGISTER_COMMAND(yes, "yes",
-                 "yes [STRING]...",
-                 "Repeatedly output a line with all specified STRING(s), or 'y'.\n"
-                 "\n"
-                 "Note: This implementation limits output to 1000 iterations\n"
-                 "for safety. The actual yes command runs indefinitely.",
-                 "  yes\n"
-                 "  yes please\n"
-                 "  yes 'do something'",
-                 "", "WinuxCmd",
-                 "Copyright © 2026 WinuxCmd", YES_OPTIONS) {
+REGISTER_COMMAND(
+    yes, "yes", "yes [STRING]...",
+    "Repeatedly output a line with all specified STRING(s), or 'y'.\n"
+    "\n"
+    "Note: This implementation limits output to 1000 iterations\n"
+    "for safety. The actual yes command runs indefinitely.",
+    "  yes\n"
+    "  yes please\n"
+    "  yes 'do something'",
+    "", "WinuxCmd", "Copyright © 2026 WinuxCmd", YES_OPTIONS) {
   using namespace yes_pipeline;
 
   auto cfg_result = build_config(ctx);

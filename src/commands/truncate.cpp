@@ -31,7 +31,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -44,7 +44,8 @@ using cmd::meta::OptionType;
 
 auto constexpr TRUNCATE_OPTIONS = std::array{
     OPTION("-c", "--no-create", "do not create files", BOOL_TYPE),
-    OPTION("-s", "--size", "set or adjust the file size by SIZE bytes", STRING_TYPE),
+    OPTION("-s", "--size", "set or adjust the file size by SIZE bytes",
+           STRING_TYPE),
     OPTION("-r", "--reference", "base size on RFILE", STRING_TYPE)
     // -o, --io-blocks (not implemented - treat SIZE as number of IO blocks)
 };
@@ -143,7 +144,8 @@ auto parse_size(const std::string& size_str) -> cp::Result<int64_t> {
 auto build_config(const CommandContext<TRUNCATE_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
   Config cfg;
-  cfg.no_create = ctx.get<bool>("--no-create", false) || ctx.get<bool>("-c", false);
+  cfg.no_create =
+      ctx.get<bool>("--no-create", false) || ctx.get<bool>("-c", false);
 
   auto size_opt = ctx.get<std::string>("--size", "");
   if (size_opt.empty()) {
@@ -198,9 +200,11 @@ auto run(const Config& cfg) -> int {
 
     // If using reference file, get its size
     if (!cfg.reference_file.empty()) {
-      std::ifstream ref_file(cfg.reference_file, std::ios::binary | std::ios::ate);
+      std::ifstream ref_file(cfg.reference_file,
+                             std::ios::binary | std::ios::ate);
       if (!ref_file) {
-        auto err = std::string("cannot open reference file '") + cfg.reference_file + "'";
+        auto err = std::string("cannot open reference file '") +
+                   cfg.reference_file + "'";
         cp::Result<int> result = std::unexpected(std::string_view(err));
         cp::report_error(result, L"truncate");
         all_ok = false;
@@ -289,26 +293,26 @@ auto run(const Config& cfg) -> int {
 
 }  // namespace truncate_pipeline
 
-REGISTER_COMMAND(truncate, "truncate",
-                 "truncate OPTION... FILE...",
-                 "Shrink or extend the size of each FILE to the specified size.\n"
-                 "\n"
-                 "A FILE argument that does not exist is created.\n"
-                 "\n"
-                 "Mandatory arguments to long options are mandatory for short options too.\n"
-                 "\n"
-                 "SIZE is an integer and optional unit (example: 10M is 10*1024*1024).\n"
-                 "Units are K, M, G, T, P, E, Z, Y (powers of 1024) or KB, MB,... (powers of 1000).\n"
-                 "\n"
-                 "Note: This implementation supports basic truncation.\n"
-                 "Advanced features like IO blocks are not implemented.",
-                 "  truncate -s 0 file.txt          # empty file\n"
-                 "  truncate -s 1K file.txt         # 1KB file\n"
-                 "  truncate -s +100 file.txt      # extend by 100 bytes\n"
-                 "  truncate -s -50 file.txt       # shrink by 50 bytes\n"
-                 "  truncate -s 1M newfile.txt     # create 1MB file",
-                 "dd(1)", "WinuxCmd",
-                 "Copyright © 2026 WinuxCmd", TRUNCATE_OPTIONS) {
+REGISTER_COMMAND(
+    truncate, "truncate", "truncate OPTION... FILE...",
+    "Shrink or extend the size of each FILE to the specified size.\n"
+    "\n"
+    "A FILE argument that does not exist is created.\n"
+    "\n"
+    "Mandatory arguments to long options are mandatory for short options too.\n"
+    "\n"
+    "SIZE is an integer and optional unit (example: 10M is 10*1024*1024).\n"
+    "Units are K, M, G, T, P, E, Z, Y (powers of 1024) or KB, MB,... (powers "
+    "of 1000).\n"
+    "\n"
+    "Note: This implementation supports basic truncation.\n"
+    "Advanced features like IO blocks are not implemented.",
+    "  truncate -s 0 file.txt          # empty file\n"
+    "  truncate -s 1K file.txt         # 1KB file\n"
+    "  truncate -s +100 file.txt      # extend by 100 bytes\n"
+    "  truncate -s -50 file.txt       # shrink by 50 bytes\n"
+    "  truncate -s 1M newfile.txt     # create 1MB file",
+    "dd(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", TRUNCATE_OPTIONS) {
   using namespace truncate_pipeline;
 
   auto cfg_result = build_config(ctx);

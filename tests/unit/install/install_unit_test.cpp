@@ -81,7 +81,8 @@ TEST(install, install_create_leading_dirs) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(std::filesystem::exists(tmp.path / "nested" / "dir" / "dest.txt"));
+  EXPECT_TRUE(
+      std::filesystem::exists(tmp.path / "nested" / "dir" / "dest.txt"));
 }
 
 TEST(install, install_no_target_directory) {

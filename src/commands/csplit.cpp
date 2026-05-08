@@ -32,7 +32,7 @@
 // *** SIMPLIFIED IMPLEMENTATION - Some features may not be fully supported ***
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -45,10 +45,13 @@ using cmd::meta::OptionType;
 
 auto constexpr CSPLIT_OPTIONS = std::array{
     OPTION("-f", "--prefix", "use PREFIX instead of 'xx'", STRING_TYPE),
-    OPTION("-b", "--suffix-format", "use sprintf FORMAT instead of %02d", STRING_TYPE),
+    OPTION("-b", "--suffix-format", "use sprintf FORMAT instead of %02d",
+           STRING_TYPE),
     OPTION("-n", "--digits", "use specified number of digits", STRING_TYPE),
-    OPTION("-k", "--keep-files", "do not remove output files on errors", BOOL_TYPE),
-    OPTION("-s", "--quiet", "do not print counts of output file sizes", BOOL_TYPE),
+    OPTION("-k", "--keep-files", "do not remove output files on errors",
+           BOOL_TYPE),
+    OPTION("-s", "--quiet", "do not print counts of output file sizes",
+           BOOL_TYPE),
     OPTION("-z", "--elide-empty-files", "remove empty output files", BOOL_TYPE)
     // --suppress-matched (not implemented)
 };
@@ -99,9 +102,11 @@ auto build_config(const CommandContext<CSPLIT_OPTIONS.size()>& ctx)
     }
   }
 
-  cfg.keep_files = ctx.get<bool>("--keep-files", false) || ctx.get<bool>("-k", false);
+  cfg.keep_files =
+      ctx.get<bool>("--keep-files", false) || ctx.get<bool>("-k", false);
   cfg.quiet = ctx.get<bool>("--quiet", false) || ctx.get<bool>("-s", false);
-  cfg.elide_empty = ctx.get<bool>("--elide-empty-files", false) || ctx.get<bool>("-z", false);
+  cfg.elide_empty =
+      ctx.get<bool>("--elide-empty-files", false) || ctx.get<bool>("-z", false);
 
   // Get input file and patterns from positionals
   if (!ctx.positionals.empty()) {
@@ -116,7 +121,7 @@ auto build_config(const CommandContext<CSPLIT_OPTIONS.size()>& ctx)
     } else {
       cfg.input_file = file_arg;
     }
-    
+
     for (size_t i = 1; i < ctx.positionals.size(); ++i) {
       cfg.patterns.push_back(std::string(ctx.positionals[i]));
     }
@@ -133,7 +138,8 @@ auto build_config(const CommandContext<CSPLIT_OPTIONS.size()>& ctx)
   return cfg;
 }
 
-auto read_lines(const std::string& filename) -> cp::Result<SmallVector<std::string, 1024>> {
+auto read_lines(const std::string& filename)
+    -> cp::Result<SmallVector<std::string, 1024>> {
   SmallVector<std::string, 1024> lines;
 
   if (filename == "-") {
@@ -144,7 +150,8 @@ auto read_lines(const std::string& filename) -> cp::Result<SmallVector<std::stri
   } else {
     std::ifstream f(filename, std::ios::binary);
     if (!f) {
-      return std::unexpected(std::string("cannot open '") + filename + "' for reading");
+      return std::unexpected(std::string("cannot open '") + filename +
+                             "' for reading");
     }
 
     std::string line;
@@ -167,10 +174,11 @@ auto read_lines(const std::string& filename) -> cp::Result<SmallVector<std::stri
   return lines;
 }
 
-auto match_pattern(const std::string& line, const std::string& pattern) -> bool {
+auto match_pattern(const std::string& line, const std::string& pattern)
+    -> bool {
   // Simple pattern matching (supports exact match and wildcards)
   if (pattern.empty()) return false;
-  
+
   // Check if pattern is a number (line number)
   try {
     int line_num = std::stoi(pattern);
@@ -198,7 +206,7 @@ auto run(const Config& cfg) -> int {
   const auto& lines = *lines_result;
   SmallVector<std::string, 64> output_files;
   SmallVector<SmallVector<size_t, 1024>, 64> file_ranges;
-  
+
   size_t current_start = 0;
   file_ranges.push_back({});
 
@@ -206,7 +214,7 @@ auto run(const Config& cfg) -> int {
   for (size_t i = 0; i < cfg.patterns.size(); ++i) {
     const auto& pattern = cfg.patterns[i];
     bool pattern_found = false;
-    
+
     for (size_t line_idx = current_start; line_idx < lines.size(); ++line_idx) {
       if (match_pattern(lines[line_idx], pattern)) {
         // Found pattern, split here
@@ -217,7 +225,7 @@ auto run(const Config& cfg) -> int {
         break;
       }
     }
-    
+
     if (!pattern_found && i < cfg.patterns.size() - 1) {
       // Pattern not found (not last one)
       if (!cfg.quiet) {
@@ -228,23 +236,23 @@ auto run(const Config& cfg) -> int {
       return 1;
     }
   }
-  
+
   // Add remaining lines
   for (size_t line_idx = current_start; line_idx < lines.size(); ++line_idx) {
     file_ranges.back().push_back(line_idx);
   }
-  
+
   // Write output files
   char filename_buf[256];
   int file_count = 0;
-  
+
   for (const auto& range : file_ranges) {
     if (range.empty() && cfg.elide_empty) {
       continue;
     }
-    
-    snprintf(filename_buf, sizeof(filename_buf), "%s%0*d",
-             cfg.prefix.c_str(), cfg.digits, file_count);
+
+    snprintf(filename_buf, sizeof(filename_buf), "%s%0*d", cfg.prefix.c_str(),
+             cfg.digits, file_count);
     std::string filename(filename_buf);
 
     std::ofstream out(filename, std::ios::binary);
@@ -258,40 +266,41 @@ auto run(const Config& cfg) -> int {
     for (size_t line_idx : range) {
       out << lines[line_idx] << "\n";
     }
-    
+
     out.close();
-    
+
     if (!cfg.quiet) {
       if (!cfg.elide_empty || !range.empty()) {
         safePrint(filename);
         safePrint("\n");
       }
     }
-    
+
     file_count++;
   }
-  
+
   return 0;
 }
 
 }  // namespace csplit_pipeline
 
-REGISTER_COMMAND(csplit, "csplit",
-                 "csplit [OPTION]... FILE PATTERN...",
-                 "Output pieces of FILE separated by PATTERN(s) to files 'xx00', 'xx01', ...\n"
-                 "\n"
-                 "Mandatory arguments to long options are mandatory for short options too.\n"
-                 "\n"
-                 "PATTERN is a line number, or a /regex/ pattern.\n"
-                 "\n"
-                 "Note: This is a basic implementation. Advanced pattern matching\n"
-                 "features like line numbers and skip/repeat modifiers are not fully supported.",
-                 "  csplit file.txt '/pattern/'\n"
-                 "  csplit -f chapter file.txt '/Chapter/'\n"
-                 "  csplit -n 3 file.txt 100\n"
-                 "  csplit -z file.txt '/^Header$/' '/^Footer$/'",
-                 "split(1)", "WinuxCmd",
-                 "Copyright © 2026 WinuxCmd", CSPLIT_OPTIONS) {
+REGISTER_COMMAND(
+    csplit, "csplit", "csplit [OPTION]... FILE PATTERN...",
+    "Output pieces of FILE separated by PATTERN(s) to files 'xx00', 'xx01', "
+    "...\n"
+    "\n"
+    "Mandatory arguments to long options are mandatory for short options too.\n"
+    "\n"
+    "PATTERN is a line number, or a /regex/ pattern.\n"
+    "\n"
+    "Note: This is a basic implementation. Advanced pattern matching\n"
+    "features like line numbers and skip/repeat modifiers are not fully "
+    "supported.",
+    "  csplit file.txt '/pattern/'\n"
+    "  csplit -f chapter file.txt '/Chapter/'\n"
+    "  csplit -n 3 file.txt 100\n"
+    "  csplit -z file.txt '/^Header$/' '/^Footer$/'",
+    "split(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", CSPLIT_OPTIONS) {
   using namespace csplit_pipeline;
 
   auto cfg_result = build_config(ctx);

@@ -31,7 +31,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -41,36 +41,34 @@ import utils;
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
-auto constexpr UNLINK_OPTIONS = std::array{
-    OPTION("-v", "--verbose", "print a message for each action"),
-    OPTION("", "", "remove single file", STRING_TYPE)
-};
+auto constexpr UNLINK_OPTIONS =
+    std::array{OPTION("-v", "--verbose", "print a message for each action"),
+               OPTION("", "", "remove single file", STRING_TYPE)};
 
-REGISTER_COMMAND(
-    unlink,
-    /* name */
-    "unlink",
+REGISTER_COMMAND(unlink,
+                 /* name */
+                 "unlink",
 
-    /* synopsis */
-    "unlink [OPTION]... FILE...",
-"Remove a specified file.\n"
-    "\n"
-    "Unlink the file named FILE. If FILE is a symbolic link, the symbolic link\n"
-    "is removed, not the file it points to.\n"
-    "\n"
-    "Options:\n"
-    "  -v, --verbose  print a message for each action",
-"  unlink file.txt\n"
-    "  unlink -v file.txt",
+                 /* synopsis */
+                 "unlink [OPTION]... FILE...",
+                 "Remove a specified file.\n"
+                 "\n"
+                 "Unlink the file named FILE. If FILE is a symbolic link, the "
+                 "symbolic link\n"
+                 "is removed, not the file it points to.\n"
+                 "\n"
+                 "Options:\n"
+                 "  -v, --verbose  print a message for each action",
+                 "  unlink file.txt\n"
+                 "  unlink -v file.txt",
 
-    /* see also */
-    "rm(1), link(1)",
-"WinuxCmd",
-"Copyright © 2026 WinuxCmd",
-UNLINK_OPTIONS) {
+                 /* see also */
+                 "rm(1), link(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd",
+                 UNLINK_OPTIONS) {
   namespace cp = core::pipeline;
 
-  bool verbose = ctx.get<bool>("--verbose", false) || ctx.get<bool>("-v", false);
+  bool verbose =
+      ctx.get<bool>("--verbose", false) || ctx.get<bool>("-v", false);
 
   if (ctx.positionals.empty()) {
     safeErrorPrintLn("unlink: missing operand");
@@ -104,7 +102,8 @@ UNLINK_OPTIONS) {
       BOOL result = DeleteFileW(wfilename.c_str());
       if (!result) {
         DWORD error = GetLastError();
-        safeErrorPrintLn("unlink: cannot remove '" + exp + "': " + std::to_string(error));
+        safeErrorPrintLn("unlink: cannot remove '" + exp +
+                         "': " + std::to_string(error));
         success = false;
       }
     }

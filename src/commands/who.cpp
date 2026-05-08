@@ -31,7 +31,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -49,14 +49,15 @@ auto constexpr WHO_OPTIONS = std::array{
     OPTION("-H", "--heading", "print line of column headings", BOOL_TYPE),
     OPTION("-l", "--login", "print system login processes", BOOL_TYPE),
     OPTION("-m", "", "only hostname and user associated with stdin", BOOL_TYPE),
-    OPTION("-p", "--process", "print active processes spawned by init", BOOL_TYPE),
-    OPTION("-q", "--count", "all login names and number of users logged on", BOOL_TYPE),
+    OPTION("-p", "--process", "print active processes spawned by init",
+           BOOL_TYPE),
+    OPTION("-q", "--count", "all login names and number of users logged on",
+           BOOL_TYPE),
     OPTION("-r", "--runlevel", "print current runlevel", BOOL_TYPE),
     OPTION("-s", "--short", "print only name, line, and time", BOOL_TYPE),
     OPTION("-t", "--time", "print last system clock change", BOOL_TYPE),
     OPTION("-T", "", "add user's message status as +, - or ?", BOOL_TYPE),
-    OPTION("-u", "--users", "list users logged in", BOOL_TYPE)
-};
+    OPTION("-u", "--users", "list users logged in", BOOL_TYPE)};
 
 namespace who_pipeline {
 namespace cp = core::pipeline;
@@ -71,7 +72,8 @@ auto build_config(const CommandContext<WHO_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
   Config cfg;
   cfg.heading = ctx.get<bool>("--heading", false) || ctx.get<bool>("-H", false);
-  cfg.short_format = ctx.get<bool>("--short", false) || ctx.get<bool>("-s", false);
+  cfg.short_format =
+      ctx.get<bool>("--short", false) || ctx.get<bool>("-s", false);
   cfg.count = ctx.get<bool>("--count", false) || ctx.get<bool>("-q", false);
   return cfg;
 }
@@ -80,21 +82,21 @@ auto run(const Config& cfg) -> int {
   // Get current user
   WCHAR username[256];
   DWORD username_size = 256;
-  
+
   if (!GetUserNameW(username, &username_size)) {
     return 1;
   }
-  
+
   std::wstring ws(username);
   std::string user_str(ws.begin(), ws.end());
 
   // Get current time
   SYSTEMTIME st;
   GetLocalTime(&st);
-  
+
   char time_buf[32];
-  sprintf_s(time_buf, "%04d-%02d-%02d %02d:%02d", 
-           st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute);
+  sprintf_s(time_buf, "%04d-%02d-%02d %02d:%02d", st.wYear, st.wMonth, st.wDay,
+            st.wHour, st.wMinute);
 
   if (cfg.heading) {
     safePrintLn("NAME     LINE         TIME             COMMENT");
@@ -121,18 +123,17 @@ auto run(const Config& cfg) -> int {
 
 }  // namespace who_pipeline
 
-REGISTER_COMMAND(who, "who",
-                 "who [OPTION]... [ FILE | ARG1 ARG2 ]",
-                 "Print information about users who are currently logged in.\n"
-                 "\n"
-                 "Note: This is a Windows implementation. Windows doesn't have\n"
-                 "the same multi-user concept as Unix, so this command mainly\n"
-                 "displays the current interactive user.",
-                 "  who\n"
-                 "  who -H\n"
-                 "  who -q",
-                 "w(1), users(1)", "WinuxCmd",
-                 "Copyright © 2026 WinuxCmd", WHO_OPTIONS) {
+REGISTER_COMMAND(
+    who, "who", "who [OPTION]... [ FILE | ARG1 ARG2 ]",
+    "Print information about users who are currently logged in.\n"
+    "\n"
+    "Note: This is a Windows implementation. Windows doesn't have\n"
+    "the same multi-user concept as Unix, so this command mainly\n"
+    "displays the current interactive user.",
+    "  who\n"
+    "  who -H\n"
+    "  who -q",
+    "w(1), users(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", WHO_OPTIONS) {
   using namespace who_pipeline;
 
   auto cfg_result = build_config(ctx);

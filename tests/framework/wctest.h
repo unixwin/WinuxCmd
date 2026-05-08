@@ -237,11 +237,11 @@ inline void expect_eq_impl(const std::string &a, const std::string &b,
  *
  * Boolean assertion that checks expression is false.
  */
-#define EXPECT_FALSE(x)                                               \
-  do {                                                                \
-    if (x) {                                                          \
+#define EXPECT_FALSE(x)                                                \
+  do {                                                                 \
+    if (x) {                                                           \
       wctest::fail(__FILE__, __LINE__, "EXPECT_FALSE(" #x ") failed"); \
-    }                                                                 \
+    }                                                                  \
   } while (0)
 
 /**
@@ -309,11 +309,11 @@ inline std::string normalize_newlines(std::string s) {
  *
  * Generic inequality assertion that reports failure if values are equal.
  */
-#define EXPECT_NE(a, b)                                               \
-  do {                                                                 \
-    if ((a) == (b)) {                                                 \
+#define EXPECT_NE(a, b)                                                     \
+  do {                                                                      \
+    if ((a) == (b)) {                                                       \
       wctest::fail(__FILE__, __LINE__, "EXPECT_NE(" #a ", " #b ") failed"); \
-    }                                                                  \
+    }                                                                       \
   } while (0)
 
 /**
@@ -321,15 +321,15 @@ inline std::string normalize_newlines(std::string s) {
  *
  * Generic less-than assertion that reports failure if lhs >= rhs.
  */
-#define EXPECT_LT(a, b)                                               \
-  do {                                                                 \
-    if (!((a) < (b))) {                                               \
-      std::ostringstream oss;                                         \
-      oss << "EXPECT_LT(" #a ", " #b ") failed\n"                     \
-          << "      lhs: [" << (a) << "]\n"                           \
-          << "      rhs: [" << (b) << "]";                            \
-      wctest::fail(__FILE__, __LINE__, oss.str());                   \
-    }                                                                  \
+#define EXPECT_LT(a, b)                            \
+  do {                                             \
+    if (!((a) < (b))) {                            \
+      std::ostringstream oss;                      \
+      oss << "EXPECT_LT(" #a ", " #b ") failed\n"  \
+          << "      lhs: [" << (a) << "]\n"        \
+          << "      rhs: [" << (b) << "]";         \
+      wctest::fail(__FILE__, __LINE__, oss.str()); \
+    }                                              \
   } while (0)
 
 /**
@@ -337,15 +337,15 @@ inline std::string normalize_newlines(std::string s) {
  *
  * Generic greater-than assertion that reports failure if lhs <= rhs.
  */
-#define EXPECT_GT(a, b)                                               \
-  do {                                                                 \
-    if (!((a) > (b))) {                                               \
-      std::ostringstream oss;                                         \
-      oss << "EXPECT_GT(" #a ", " #b ") failed\n"                     \
-          << "      lhs: [" << (a) << "]\n"                           \
-          << "      rhs: [" << (b) << "]";                            \
-      wctest::fail(__FILE__, __LINE__, oss.str());                   \
-    }                                                                  \
+#define EXPECT_GT(a, b)                            \
+  do {                                             \
+    if (!((a) > (b))) {                            \
+      std::ostringstream oss;                      \
+      oss << "EXPECT_GT(" #a ", " #b ") failed\n"  \
+          << "      lhs: [" << (a) << "]\n"        \
+          << "      rhs: [" << (b) << "]";         \
+      wctest::fail(__FILE__, __LINE__, oss.str()); \
+    }                                              \
   } while (0)
 
 /**

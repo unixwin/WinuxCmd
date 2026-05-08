@@ -31,7 +31,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -45,8 +45,10 @@ using cmd::meta::OptionType;
 auto constexpr SPLIT_OPTIONS = std::array{
     OPTION("-b", "--bytes", "put SIZE bytes per output file", STRING_TYPE),
     OPTION("-l", "--lines", "put NUMBER lines per output file", STRING_TYPE),
-    OPTION("-d", "--numeric-suffixes", "use numeric suffixes instead of alphabetic", BOOL_TYPE),
-    OPTION("-a", "--suffix-length", "use suffixes of length N (default 2)", STRING_TYPE)
+    OPTION("-d", "--numeric-suffixes",
+           "use numeric suffixes instead of alphabetic", BOOL_TYPE),
+    OPTION("-a", "--suffix-length", "use suffixes of length N (default 2)",
+           STRING_TYPE)
     // -n, --number (not implemented - split into N chunks)
     // -C, --line-bytes (not implemented - split by bytes with line integrity)
 };
@@ -161,7 +163,8 @@ auto build_config(const CommandContext<SPLIT_OPTIONS.size()>& ctx)
     }
   }
 
-  cfg.numeric_suffixes = ctx.get<bool>("--numeric-suffixes", false) || ctx.get<bool>("-d", false);
+  cfg.numeric_suffixes =
+      ctx.get<bool>("--numeric-suffixes", false) || ctx.get<bool>("-d", false);
 
   auto suffix_opt = ctx.get<std::string>("--suffix-length", "");
   if (suffix_opt.empty()) {
@@ -191,7 +194,7 @@ auto build_config(const CommandContext<SPLIT_OPTIONS.size()>& ctx)
     } else {
       cfg.input_file = file_arg;
     }
-    
+
     if (ctx.positionals.size() > 1) {
       cfg.prefix = std::string(ctx.positionals[1]);
     }
@@ -230,7 +233,7 @@ auto run(const Config& cfg) -> int {
   if (cfg.input_file.empty() || cfg.input_file == "-") {
     // Read from stdin
     input.assign(std::istreambuf_iterator<char>(std::cin),
-                  std::istreambuf_iterator<char>());
+                 std::istreambuf_iterator<char>());
     if (std::cin.fail() && !std::cin.eof()) {
       cp::Result<int> result = std::unexpected("error reading from file");
       cp::report_error(result, L"split");
@@ -240,13 +243,14 @@ auto run(const Config& cfg) -> int {
     // Read from file
     std::ifstream f(cfg.input_file, std::ios::binary);
     if (!f) {
-      auto err = std::string("cannot open '") + cfg.input_file + "' for reading";
+      auto err =
+          std::string("cannot open '") + cfg.input_file + "' for reading";
       cp::Result<int> result = std::unexpected(std::string_view(err));
       cp::report_error(result, L"split");
       return 1;
     }
     input.assign(std::istreambuf_iterator<char>(f),
-                  std::istreambuf_iterator<char>());
+                 std::istreambuf_iterator<char>());
     if (f.fail() && !f.eof()) {
       cp::Result<int> result = std::unexpected("error reading from file");
       cp::report_error(result, L"split");
@@ -277,7 +281,9 @@ auto run(const Config& cfg) -> int {
 
     int part_num = 0;
     for (size_t i = 0; i < lines.size(); i += cfg.chunk_lines) {
-      std::string filename = cfg.prefix + generate_suffix(part_num, cfg.numeric_suffixes, cfg.suffix_length);
+      std::string filename =
+          cfg.prefix +
+          generate_suffix(part_num, cfg.numeric_suffixes, cfg.suffix_length);
       part_num++;
 
       std::ofstream out(filename, std::ios::binary);
@@ -296,7 +302,9 @@ auto run(const Config& cfg) -> int {
     // Split by bytes
     int part_num = 0;
     for (size_t i = 0; i < input.size(); i += cfg.chunk_size) {
-      std::string filename = cfg.prefix + generate_suffix(part_num, cfg.numeric_suffixes, cfg.suffix_length);
+      std::string filename =
+          cfg.prefix +
+          generate_suffix(part_num, cfg.numeric_suffixes, cfg.suffix_length);
       part_num++;
 
       std::ofstream out(filename, std::ios::binary);
@@ -317,24 +325,25 @@ auto run(const Config& cfg) -> int {
 
 }  // namespace split_pipeline
 
-REGISTER_COMMAND(split, "split",
-                 "split [OPTION]... [INPUT [PREFIX]]",
-                 "Output fixed-size pieces of INPUT to PREFIXaa, PREFIXab, ...\n"
-                 "\n"
-                 "By default, split puts 1000 lines of INPUT (or stdin) into each output file.\n"
-                 "\n"
-                 "Mandatory arguments to long options are mandatory for short options too.\n"
-                 "\n"
-                 "SIZE may have a multiplier suffix: b for 512, K for 1K, M for 1M, G for 1G, etc.\n"
-                 "\n"
-                 "Note: This implementation supports basic line and byte splitting.\n"
-                 "Advanced features like -C (line-bytes) are not implemented.",
-                 "  split -l 1000 largefile.txt\n"
-                 "  split -b 100M largefile.txt\n"
-                 "  split -d -a 3 largefile.txt part\n"
-                 "  split -b 1M -d -a 3 input.dat output",
-                 "csplit(1)", "WinuxCmd",
-                 "Copyright © 2026 WinuxCmd", SPLIT_OPTIONS) {
+REGISTER_COMMAND(
+    split, "split", "split [OPTION]... [INPUT [PREFIX]]",
+    "Output fixed-size pieces of INPUT to PREFIXaa, PREFIXab, ...\n"
+    "\n"
+    "By default, split puts 1000 lines of INPUT (or stdin) into each output "
+    "file.\n"
+    "\n"
+    "Mandatory arguments to long options are mandatory for short options too.\n"
+    "\n"
+    "SIZE may have a multiplier suffix: b for 512, K for 1K, M for 1M, G for "
+    "1G, etc.\n"
+    "\n"
+    "Note: This implementation supports basic line and byte splitting.\n"
+    "Advanced features like -C (line-bytes) are not implemented.",
+    "  split -l 1000 largefile.txt\n"
+    "  split -b 100M largefile.txt\n"
+    "  split -d -a 3 largefile.txt part\n"
+    "  split -b 1M -d -a 3 input.dat output",
+    "csplit(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", SPLIT_OPTIONS) {
   using namespace split_pipeline;
 
   auto cfg_result = build_config(ctx);

@@ -31,7 +31,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -42,9 +42,8 @@ import container;
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
-auto constexpr CKSUM_OPTIONS = std::array{
-    OPTION("", "", "compute and check CRC checksums", STRING_TYPE)
-};
+auto constexpr CKSUM_OPTIONS =
+    std::array{OPTION("", "", "compute and check CRC checksums", STRING_TYPE)};
 
 namespace cksum_pipeline {
 namespace cp = core::pipeline;
@@ -78,7 +77,8 @@ auto build_config(const CommandContext<CKSUM_OPTIONS.size()>& ctx)
   return cfg;
 }
 
-auto calculate_crc32(const std::string& filename, uint32_t& byte_count) -> cp::Result<uint32_t> {
+auto calculate_crc32(const std::string& filename, uint32_t& byte_count)
+    -> cp::Result<uint32_t> {
   std::vector<char> data;
 
   if (filename == "-" || filename.empty()) {
@@ -89,7 +89,8 @@ auto calculate_crc32(const std::string& filename, uint32_t& byte_count) -> cp::R
     // Read from file
     std::ifstream f(filename, std::ios::binary);
     if (!f) {
-      return std::unexpected(std::string("cannot open '") + filename + "' for reading");
+      return std::unexpected(std::string("cannot open '") + filename +
+                             "' for reading");
     }
     data.assign(std::istreambuf_iterator<char>(f),
                 std::istreambuf_iterator<char>());
@@ -122,7 +123,7 @@ auto run(const Config& cfg) -> int {
   for (const auto& file : cfg.files) {
     uint32_t byte_count = 0;
     auto crc_result = calculate_crc32(file, byte_count);
-    
+
     if (!crc_result) {
       cp::report_error(crc_result, L"cksum");
       return 1;
@@ -131,7 +132,7 @@ auto run(const Config& cfg) -> int {
     char buf[64];
     snprintf(buf, sizeof(buf), "%u %u", *crc_result, byte_count);
     safePrint(buf);
-    
+
     if (file != "-") {
       safePrint(" ");
       safePrint(file);
@@ -144,8 +145,7 @@ auto run(const Config& cfg) -> int {
 
 }  // namespace cksum_pipeline
 
-REGISTER_COMMAND(cksum, "cksum",
-                 "cksum [FILE]...",
+REGISTER_COMMAND(cksum, "cksum", "cksum [FILE]...",
                  "Print CRC checksum and byte counts of each FILE.\n"
                  "\n"
                  "With no FILE, or when FILE is -, read standard input.\n"

@@ -31,7 +31,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -43,10 +43,11 @@ using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
 auto constexpr PASTE_OPTIONS = std::array{
-    OPTION("-d", "--delimiters", "reuse characters from LIST instead of TAB", STRING_TYPE),
-    OPTION("-s", "--serial", "paste one file at a time instead of in parallel", BOOL_TYPE),
-    OPTION("-z", "--zero-terminated", "line delimiter is NUL, not newline")
-};
+    OPTION("-d", "--delimiters", "reuse characters from LIST instead of TAB",
+           STRING_TYPE),
+    OPTION("-s", "--serial", "paste one file at a time instead of in parallel",
+           BOOL_TYPE),
+    OPTION("-z", "--zero-terminated", "line delimiter is NUL, not newline")};
 
 namespace paste_pipeline {
 namespace cp = core::pipeline;
@@ -95,7 +96,8 @@ auto build_config(const CommandContext<PASTE_OPTIONS.size()>& ctx)
 }
 
 // Read all lines from a file
-auto read_lines(const std::string& filename, char delimiter = '\n') -> cp::Result<SmallVector<std::string, 1024>> {
+auto read_lines(const std::string& filename, char delimiter = '\n')
+    -> cp::Result<SmallVector<std::string, 1024>> {
   SmallVector<std::string, 1024> lines;
 
   if (filename == "-") {
@@ -120,7 +122,8 @@ auto read_lines(const std::string& filename, char delimiter = '\n') -> cp::Resul
     // Read from file
     std::ifstream f(filename, std::ios::binary);
     if (!f) {
-      return std::unexpected(std::string("cannot open '") + filename + "' for reading");
+      return std::unexpected(std::string("cannot open '") + filename +
+                             "' for reading");
     }
 
     std::string content((std::istreambuf_iterator<char>(f)),
@@ -175,7 +178,8 @@ auto run(const Config& cfg) -> int {
     }
   } else {
     // Parallel mode: merge lines from all files
-    // Use std::vector to avoid stack overflow (SmallVector was allocating too much on stack)
+    // Use std::vector to avoid stack overflow (SmallVector was allocating too
+    // much on stack)
     std::vector<SmallVector<std::string, 1024>> all_lines;
 
     // Read all files
@@ -224,23 +228,22 @@ auto run(const Config& cfg) -> int {
 
 }  // namespace paste_pipeline
 
-REGISTER_COMMAND(paste, "paste",
-                 "paste [OPTION]... [FILE]...",
-                 "Merge lines of files.\n"
-                 "\n"
-                 "Write lines consisting of the sequentially corresponding lines\n"
-                 "from each FILE, separated by TABs, to standard output.\n"
-                 "With no FILE, or when FILE is -, read standard input.\n"
-                 "\n"
-                 "Mandatory arguments to long options are mandatory for short options too.\n"
-                 "\n"
-                 "Note: This implementation supports basic paste functionality.",
-                 "  paste file1 file2\n"
-                 "  paste -d '|' file1 file2    # use pipe as delimiter\n"
-                 "  paste -s file                # serial mode (one file at a time)\n"
-                 "  paste -d '\\n' file          # use newline as delimiter",
-                 "cut(1)", "WinuxCmd",
-                 "Copyright © 2026 WinuxCmd", PASTE_OPTIONS) {
+REGISTER_COMMAND(
+    paste, "paste", "paste [OPTION]... [FILE]...",
+    "Merge lines of files.\n"
+    "\n"
+    "Write lines consisting of the sequentially corresponding lines\n"
+    "from each FILE, separated by TABs, to standard output.\n"
+    "With no FILE, or when FILE is -, read standard input.\n"
+    "\n"
+    "Mandatory arguments to long options are mandatory for short options too.\n"
+    "\n"
+    "Note: This implementation supports basic paste functionality.",
+    "  paste file1 file2\n"
+    "  paste -d '|' file1 file2    # use pipe as delimiter\n"
+    "  paste -s file                # serial mode (one file at a time)\n"
+    "  paste -d '\\n' file          # use newline as delimiter",
+    "cut(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", PASTE_OPTIONS) {
   using namespace paste_pipeline;
 
   auto cfg_result = build_config(ctx);

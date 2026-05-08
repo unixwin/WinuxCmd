@@ -31,7 +31,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -43,10 +43,14 @@ using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
 auto constexpr NL_OPTIONS = std::array{
-    OPTION("-b", "--body-numbering", "use STYLE for numbering body lines", STRING_TYPE),
-    OPTION("-i", "line-increment", "line number increment at each line", STRING_TYPE),
-    OPTION("-s", "number-separator", "add STRING after (possible) line number", STRING_TYPE),
-    OPTION("-v", "starting-line-number", "first line number on each logical page", STRING_TYPE),
+    OPTION("-b", "--body-numbering", "use STYLE for numbering body lines",
+           STRING_TYPE),
+    OPTION("-i", "line-increment", "line number increment at each line",
+           STRING_TYPE),
+    OPTION("-s", "number-separator", "add STRING after (possible) line number",
+           STRING_TYPE),
+    OPTION("-v", "starting-line-number",
+           "first line number on each logical page", STRING_TYPE),
     OPTION("-w", "line-number-width", "width of line numbers", STRING_TYPE)
     // -n, --number-format (not implemented)
     // -p, --no-renumber (not implemented)
@@ -70,14 +74,15 @@ struct Config {
 auto build_config(const CommandContext<NL_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
   Config cfg;
-  
+
   auto body_opt = ctx.get<std::string>("--body-numbering", "");
   if (body_opt.empty()) {
     body_opt = ctx.get<std::string>("-b", "");
   }
   if (!body_opt.empty()) {
     cfg.body_numbering = body_opt;
-    if (cfg.body_numbering != "t" && cfg.body_numbering != "a" && cfg.body_numbering != "n") {
+    if (cfg.body_numbering != "t" && cfg.body_numbering != "a" &&
+        cfg.body_numbering != "n") {
       return std::unexpected("invalid body numbering style");
     }
   }
@@ -178,7 +183,8 @@ auto run(const Config& cfg) -> int {
         if (should_number) {
           // Format line number with specified width
           char num_buf[32];
-          snprintf(num_buf, sizeof(num_buf), "%*d", cfg.number_width, line_number);
+          snprintf(num_buf, sizeof(num_buf), "%*d", cfg.number_width,
+                   line_number);
           safePrint(num_buf);
           safePrint(cfg.separator);
           safePrintLn(line);
@@ -219,7 +225,8 @@ auto run(const Config& cfg) -> int {
 
         if (should_number) {
           char num_buf[32];
-          snprintf(num_buf, sizeof(num_buf), "%*d", cfg.number_width, line_number);
+          snprintf(num_buf, sizeof(num_buf), "%*d", cfg.number_width,
+                   line_number);
           safePrint(num_buf);
           safePrint(cfg.separator);
           safePrintLn(line);
@@ -242,25 +249,24 @@ auto run(const Config& cfg) -> int {
 
 }  // namespace nl_pipeline
 
-REGISTER_COMMAND(nl, "nl",
-                 "nl [OPTION]... [FILE]...",
-                 "Number lines of files.\n"
-                 "\n"
-                 "Write each FILE to standard output, with line numbers added.\n"
-                 "With no FILE, or when FILE is -, read standard input.\n"
-                 "\n"
-                 "Mandatory arguments to long options are mandatory for short options too.\n"
-                 "\n"
-                 "Note: This implementation supports basic numbering.\n"
-                 "Advanced features like section delimiters are not implemented.",
-                 "  nl file.txt\n"
-                 "  nl -b a file.txt          # number all lines\n"
-                 "  nl -i 5 file.txt          # increment by 5\n"
-                 "  nl -s ': ' file.txt       # use custom separator\n"
-                 "  nl -v 10 file.txt         # start from 10\n"
-                 "  nl -w 3 file.txt         # 3-digit numbers",
-                 "cat(1)", "WinuxCmd",
-                 "Copyright © 2026 WinuxCmd", NL_OPTIONS) {
+REGISTER_COMMAND(
+    nl, "nl", "nl [OPTION]... [FILE]...",
+    "Number lines of files.\n"
+    "\n"
+    "Write each FILE to standard output, with line numbers added.\n"
+    "With no FILE, or when FILE is -, read standard input.\n"
+    "\n"
+    "Mandatory arguments to long options are mandatory for short options too.\n"
+    "\n"
+    "Note: This implementation supports basic numbering.\n"
+    "Advanced features like section delimiters are not implemented.",
+    "  nl file.txt\n"
+    "  nl -b a file.txt          # number all lines\n"
+    "  nl -i 5 file.txt          # increment by 5\n"
+    "  nl -s ': ' file.txt       # use custom separator\n"
+    "  nl -v 10 file.txt         # start from 10\n"
+    "  nl -w 3 file.txt         # 3-digit numbers",
+    "cat(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", NL_OPTIONS) {
   using namespace nl_pipeline;
 
   auto cfg_result = build_config(ctx);

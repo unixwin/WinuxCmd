@@ -31,7 +31,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -44,11 +44,13 @@ using cmd::meta::OptionType;
 
 auto constexpr WATCH_OPTIONS = std::array{
     OPTION("-n", "--interval", "seconds to wait between updates", INT_TYPE),
-    OPTION("-d", "--differences", "highlight changes between updates", BOOL_TYPE),
-    OPTION("-t", "--no-title", "turn off header showing interval and command", BOOL_TYPE),
+    OPTION("-d", "--differences", "highlight changes between updates",
+           BOOL_TYPE),
+    OPTION("-t", "--no-title", "turn off header showing interval and command",
+           BOOL_TYPE),
     OPTION("-b", "--beep", "beep if command has a non-zero exit", BOOL_TYPE),
-    OPTION("-c", "--count", "number of times to run the command (for testing)", INT_TYPE)
-};
+    OPTION("-c", "--count", "number of times to run the command (for testing)",
+           INT_TYPE)};
 
 namespace watch_pipeline {
 namespace cp = core::pipeline;
@@ -70,8 +72,10 @@ auto build_config(const CommandContext<WATCH_OPTIONS.size()>& ctx)
     return std::unexpected("interval cannot be negative");
   }
 
-  cfg.differences = ctx.get<bool>("--differences", false) || ctx.get<bool>("-d", false);
-  cfg.no_title = ctx.get<bool>("--no-title", false) || ctx.get<bool>("-t", false);
+  cfg.differences =
+      ctx.get<bool>("--differences", false) || ctx.get<bool>("-d", false);
+  cfg.no_title =
+      ctx.get<bool>("--no-title", false) || ctx.get<bool>("-t", false);
   cfg.beep = ctx.get<bool>("--beep", false) || ctx.get<bool>("-b", false);
   cfg.count = ctx.get<int>("--count", 0);  // Default to infinite
 
@@ -93,7 +97,7 @@ auto build_config(const CommandContext<WATCH_OPTIONS.size()>& ctx)
 auto clear_screen() -> void {
   // Use Windows API to clear screen
   HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
-  COORD coordScreen = { 0, 0 };
+  COORD coordScreen = {0, 0};
   DWORD cCharsWritten;
   CONSOLE_SCREEN_BUFFER_INFO csbi;
   DWORD dwConSize;
@@ -105,9 +109,11 @@ auto clear_screen() -> void {
   }
 
   dwConSize = csbi.dwSize.X * csbi.dwSize.Y;
-  FillConsoleOutputCharacter(hConsole, (TCHAR)' ', dwConSize, coordScreen, &cCharsWritten);
+  FillConsoleOutputCharacter(hConsole, (TCHAR)' ', dwConSize, coordScreen,
+                             &cCharsWritten);
   GetConsoleScreenBufferInfo(hConsole, &csbi);
-  FillConsoleOutputAttribute(hConsole, csbi.wAttributes, dwConSize, coordScreen, &cCharsWritten);
+  FillConsoleOutputAttribute(hConsole, csbi.wAttributes, dwConSize, coordScreen,
+                             &cCharsWritten);
   SetConsoleCursorPosition(hConsole, coordScreen);
 }
 
@@ -132,7 +138,7 @@ auto run(const Config& cfg) -> int {
       GetLocalTime(&st);
       char time_buf[64];
       sprintf_s(time_buf, "%02d:%02d:%02d", st.wHour, st.wMinute, st.wSecond);
-      
+
       safePrint("Every ");
       safePrint(cfg.interval);
       if (cfg.interval == 1) {
@@ -149,7 +155,8 @@ auto run(const Config& cfg) -> int {
     // Execute command and capture output
     std::string output;
     std::array<char, 128> buffer;
-    std::unique_ptr<FILE, decltype(&_pclose)> pipe(_popen(cfg.command.c_str(), "r"), _pclose);
+    std::unique_ptr<FILE, decltype(&_pclose)> pipe(
+        _popen(cfg.command.c_str(), "r"), _pclose);
 
     if (!pipe) {
       cp::report_custom_error(L"watch", L"failed to execute command");
@@ -179,17 +186,16 @@ auto run(const Config& cfg) -> int {
 
 }  // namespace watch_pipeline
 
-REGISTER_COMMAND(watch, "watch",
-                 "watch [OPTION]... COMMAND",
-                 "Execute a program periodically, showing output fullscreen.\n"
-                 "\n"
-                 "Runs COMMAND repeatedly, displaying its output and errors.\n"
-                 "This allows you to watch the program output change over time.",
-                 "  watch -n 1 'ls -l'\n"
-                 "  watch -d ls -l\n"
-                 "  watch -n 5 date",
-                 "ps(1)", "WinuxCmd",
-                 "Copyright © 2026 WinuxCmd", WATCH_OPTIONS) {
+REGISTER_COMMAND(
+    watch, "watch", "watch [OPTION]... COMMAND",
+    "Execute a program periodically, showing output fullscreen.\n"
+    "\n"
+    "Runs COMMAND repeatedly, displaying its output and errors.\n"
+    "This allows you to watch the program output change over time.",
+    "  watch -n 1 'ls -l'\n"
+    "  watch -d ls -l\n"
+    "  watch -n 5 date",
+    "ps(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", WATCH_OPTIONS) {
   using namespace watch_pipeline;
 
   auto cfg_result = build_config(ctx);

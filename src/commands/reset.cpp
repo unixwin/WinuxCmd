@@ -31,7 +31,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -41,10 +41,10 @@ import utils;
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
-auto constexpr RESET_OPTIONS = std::array{
-    OPTION("-I", "--initialize", "reset terminal to its default mode", BOOL_TYPE),
-    OPTION("-q", "--quiet", "be quiet", BOOL_TYPE)
-};
+auto constexpr RESET_OPTIONS =
+    std::array{OPTION("-I", "--initialize",
+                      "reset terminal to its default mode", BOOL_TYPE),
+               OPTION("-q", "--quiet", "be quiet", BOOL_TYPE)};
 
 REGISTER_COMMAND(
     reset,
@@ -53,7 +53,7 @@ REGISTER_COMMAND(
 
     /* synopsis */
     "reset [OPTION]...",
-"Reset terminal to its default state.\n"
+    "Reset terminal to its default state.\n"
     "\n"
     "This command resets the terminal to a sane state.\n"
     "On Windows, this sends ANSI escape codes to reset the terminal.\n"
@@ -61,18 +61,17 @@ REGISTER_COMMAND(
     "Options:\n"
     "  -I, --initialize  reset terminal to its default mode\n"
     "  -q, --quiet       be quiet",
-"  reset\n"
+    "  reset\n"
     "  reset -q",
 
     /* see also */
-    "tput(1), clear(1)",
-"WinuxCmd",
-"Copyright © 2026 WinuxCmd",
-RESET_OPTIONS) {
+    "tput(1), clear(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd",
+    RESET_OPTIONS) {
   namespace cp = core::pipeline;
 
   bool quiet = ctx.get<bool>("--quiet", false) || ctx.get<bool>("-q", false);
-  bool initialize = ctx.get<bool>("--initialize", false) || ctx.get<bool>("-I", false);
+  bool initialize =
+      ctx.get<bool>("--initialize", false) || ctx.get<bool>("-I", false);
 
   if (!quiet) {
     // Send ANSI escape codes to reset terminal

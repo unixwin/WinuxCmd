@@ -31,7 +31,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -43,14 +43,18 @@ using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
 auto constexpr JQ_OPTIONS = std::array{
-    OPTION("-r", "--raw-output", "output raw strings, not JSON quotes", BOOL_TYPE),
-    OPTION("-c", "--compact-output", "compact instead of pretty-printed output", BOOL_TYPE),
+    OPTION("-r", "--raw-output", "output raw strings, not JSON quotes",
+           BOOL_TYPE),
+    OPTION("-c", "--compact-output", "compact instead of pretty-printed output",
+           BOOL_TYPE),
     OPTION("-C", "--color-output", "colorize JSON output", BOOL_TYPE),
-    OPTION("-M", "--monochrome-output", "monochrome (don't colorize JSON)", BOOL_TYPE),
-    OPTION("-S", "--sort-keys", "sort keys of each object alphabetically", BOOL_TYPE),
+    OPTION("-M", "--monochrome-output", "monochrome (don't colorize JSON)",
+           BOOL_TYPE),
+    OPTION("-S", "--sort-keys", "sort keys of each object alphabetically",
+           BOOL_TYPE),
     OPTION("-f", "--from-file", "read filter from file", STRING_TYPE),
-    OPTION("-n", "--null-input", "use `null` as the single input value", BOOL_TYPE)
-};
+    OPTION("-n", "--null-input", "use `null` as the single input value",
+           BOOL_TYPE)};
 
 namespace jq_pipeline {
 namespace cp = core::pipeline;
@@ -70,13 +74,19 @@ struct Config {
 auto build_config(const CommandContext<JQ_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
   Config cfg;
-  cfg.raw_output = ctx.get<bool>("--raw-output", false) || ctx.get<bool>("-r", false);
-  cfg.compact_output = ctx.get<bool>("--compact-output", false) || ctx.get<bool>("-c", false);
-  cfg.color_output = ctx.get<bool>("--color-output", false) || ctx.get<bool>("-C", false);
-  cfg.monochrome_output = ctx.get<bool>("--monochrome-output", false) || ctx.get<bool>("-M", false);
-  cfg.sort_keys = ctx.get<bool>("--sort-keys", false) || ctx.get<bool>("-S", false);
+  cfg.raw_output =
+      ctx.get<bool>("--raw-output", false) || ctx.get<bool>("-r", false);
+  cfg.compact_output =
+      ctx.get<bool>("--compact-output", false) || ctx.get<bool>("-c", false);
+  cfg.color_output =
+      ctx.get<bool>("--color-output", false) || ctx.get<bool>("-C", false);
+  cfg.monochrome_output =
+      ctx.get<bool>("--monochrome-output", false) || ctx.get<bool>("-M", false);
+  cfg.sort_keys =
+      ctx.get<bool>("--sort-keys", false) || ctx.get<bool>("-S", false);
   cfg.filter_file = ctx.get<std::string>("--from-file", "");
-  cfg.null_input = ctx.get<bool>("--null-input", false) || ctx.get<bool>("-n", false);
+  cfg.null_input =
+      ctx.get<bool>("--null-input", false) || ctx.get<bool>("-n", false);
 
   for (auto arg : ctx.positionals) {
     std::string file_arg(arg);
@@ -133,7 +143,8 @@ auto read_json(const std::string& filename) -> cp::Result<std::string> {
     // Read from file
     std::ifstream file(filename, std::ios::binary);
     if (!file) {
-      return std::unexpected(std::string("cannot open '") + filename + "' for reading");
+      return std::unexpected(std::string("cannot open '") + filename +
+                             "' for reading");
     }
     content.assign(std::istreambuf_iterator<char>(file),
                    std::istreambuf_iterator<char>());
@@ -209,26 +220,27 @@ auto run(const Config& cfg) -> int {
 
 }  // namespace jq_pipeline
 
-REGISTER_COMMAND(jq, "jq",
-                 "jq [OPTIONS]... FILTER [FILES...]",
-                 "jq is a command-line JSON processor powered by nlohmann/json.\n"
-                 "\n"
-                 "Features:\n"
-                 "- Parse and format JSON with nlohmann/json library\n"
-                 "- Support for JSON comments (// and /* */)\n"
-                 "- Pretty-printed or compact output\n"
-                 "- Raw string output mode\n"
-                 "- Sort keys alphabetically\n"
-                 "\n"
-                 "Note: This is a formatter with basic comment support.\n"
-                 "For full jq query language features, use official jq from https://jqlang.org/.",
-                 "  echo '{\"name\":\"John\",\"age\":30}' | jq\n"
-                 "  echo '{\"name\":\"John\"}' | jq '.'\n"
-                 "  echo '[1,2,3]' | jq -c\n"
-                 "  cat file.json | jq -S\n"
-                 "  cat config.json | jq  # Supports // and /* */ comments",
-                 "https://jqlang.org/manual/", "WinuxCmd",
-                 "Copyright © 2026 WinuxCmd", JQ_OPTIONS) {
+REGISTER_COMMAND(
+    jq, "jq", "jq [OPTIONS]... FILTER [FILES...]",
+    "jq is a command-line JSON processor powered by nlohmann/json.\n"
+    "\n"
+    "Features:\n"
+    "- Parse and format JSON with nlohmann/json library\n"
+    "- Support for JSON comments (// and /* */)\n"
+    "- Pretty-printed or compact output\n"
+    "- Raw string output mode\n"
+    "- Sort keys alphabetically\n"
+    "\n"
+    "Note: This is a formatter with basic comment support.\n"
+    "For full jq query language features, use official jq from "
+    "https://jqlang.org/.",
+    "  echo '{\"name\":\"John\",\"age\":30}' | jq\n"
+    "  echo '{\"name\":\"John\"}' | jq '.'\n"
+    "  echo '[1,2,3]' | jq -c\n"
+    "  cat file.json | jq -S\n"
+    "  cat config.json | jq  # Supports // and /* */ comments",
+    "https://jqlang.org/manual/", "WinuxCmd", "Copyright © 2026 WinuxCmd",
+    JQ_OPTIONS) {
   using namespace jq_pipeline;
 
   auto cfg_result = build_config(ctx);

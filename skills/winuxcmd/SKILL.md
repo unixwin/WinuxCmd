@@ -1,17 +1,15 @@
 ---
 name: winuxcmd
-description: Use when working in the WinuxCmd repository and needing repository-local command activation, GNU-like command usage on Windows, PowerShell alias collision handling, man.exe help lookup, or Visual Studio build/test commands.
-metadata:
-  short-description: Activate and use WinuxCmd in-repo
+description: Repository-local WinuxCmd workflow for AI agents: download and integrate released WinuxCmd builds, activate .winuxcmd/bin, avoid PowerShell alias collisions, use man.exe, run MSVC builds/tests, and package the skill for release. Use when working in this repository or preparing WinuxCmd release assets and the skill bundle.
 ---
 
 # WinuxCmd
 
-Use this workspace-local guide when interacting with the WinuxCmd repository.
+Use this skill when working inside the WinuxCmd repository.
 
-## What to do first
+## Start Here
 
-1. Activate the repository-local command directory for the current shell only:
+1. Activate the repository-local command directory for the current shell:
 
 ```powershell
 .\scripts\activate-workspace.ps1
@@ -23,7 +21,7 @@ Use this workspace-local guide when interacting with the WinuxCmd repository.
 scripts\activate-workspace.cmd
 ```
 
-3. Prefer explicit command names with `.exe` in PowerShell to avoid aliases:
+3. Prefer explicit command names with `.exe` in PowerShell when you need unambiguous behavior:
 
 ```powershell
 man.exe ls
@@ -40,37 +38,50 @@ winuxcmd.exe help sort
 - If a command exists both as a PowerShell alias and as a WinuxCmd executable,
   always call the executable with `.exe`.
 
-## Repository-local activation
+## Workspace Activation
 
 - `scripts/setup-workspace-bin.ps1` creates `.winuxcmd/bin`.
 - `scripts/activate-workspace.ps1` prepends that directory to the current
   PowerShell session PATH and clears common alias collisions for the session.
 - `scripts/activate-workspace.cmd` does the same for CMD sessions.
+- `scripts/install-workspace-profile-hook.ps1` updates the current user's
+  PowerShell 7 and Windows PowerShell 5.1 profiles so new shells started in this
+  repository auto-activate the workspace.
+- If you are integrating a downloaded WinuxCmd release, pass
+  `-WinuxCmdPath <path-to-winuxcmd.exe>` to `scripts/setup-workspace-bin.ps1`
+  before activating the workspace.
 
-## Visual Studio build
+## Build and Test
 
 - Use `scripts/build-with-vs.ps1` when you need an MSVC build/test run.
 - Default target: `winuxcmd-tests`.
 - Default build directory: `build-vs`.
 - Default environment script: `vcvars64.bat`.
 
-## Persistent PowerShell activation
+## Command Guidance
 
-- If you need bare `ls`/`man`/`cp` to keep working in new PowerShell sessions
-  started from this repository, install the optional profile hook with
-  `scripts/install-workspace-profile-hook.ps1`.
-- The hook updates both the PowerShell 7 profile and the Windows PowerShell
-  5.1 profile for the current user, and backs up each file before editing.
-- Remove it with `-Remove` when you want to restore the default shell.
+- After activation, bare `ls`, `cp`, `mv`, `rm`, and similar common commands
+  should resolve to WinuxCmd in the current session.
+- Use the repo's GNU-parity flags when they reduce AI mistakes:
+  - `ls`: `-d`, `-b`, `-f`, `-I`, `-U`, `-X`, `-v`
+  - `cp`: `-t`, `-T`, `-n`, `-u`
+  - `mv`: `-t`, `-T`, `-n`, `-u`, `-b`
+  - `install`: `-D`, `-t`, `-T`
+  - `sort`: `-V`
+- If a command is already available as a WinuxCmd executable, prefer it over a
+  PowerShell alias or external fallback.
 
-## Bare-command behavior
+## Release Packaging
 
-- After PowerShell activation, bare `ls`, `cp`, `mv`, `rm`, and similar common
-  commands should resolve to WinuxCmd in the current session.
-- Use `man.exe` when you want the safest unambiguous help lookup.
+- When packaging the skill, load `references/release-packaging.md` first.
+- The release asset should ship the standalone skill bundle together with the
+  Windows binaries.
+- Keep the skill bundle rooted at `skills/winuxcmd` with `SKILL.md` at the top
+  level of the archive.
 
-## Useful references
+## References
 
-- `DOCS/en/workspace_integration.md`
-- `DOCS/en/commands_implementation_en.md`
-- `DOCS/en/overview.md`
+- `references/workspace-integration.md`
+- `references/download-and-integrate.md`
+- `references/command-guidance.md`
+- `references/release-packaging.md`

@@ -66,16 +66,14 @@ struct CommandEntryErased {
 
 auto is_legacy_line_count(std::string_view arg) -> bool {
   if (arg.size() < 2 || arg[0] != '-' || arg[1] == '-') return false;
-  return std::ranges::all_of(arg.substr(1), [](unsigned char ch) {
-    return std::isdigit(ch) != 0;
-  });
+  return std::ranges::all_of(
+      arg.substr(1), [](unsigned char ch) { return std::isdigit(ch) != 0; });
 }
 
 auto is_legacy_tail_from_start_count(std::string_view arg) -> bool {
   if (arg.size() < 2 || arg[0] != '+') return false;
-  return std::ranges::all_of(arg.substr(1), [](unsigned char ch) {
-    return std::isdigit(ch) != 0;
-  });
+  return std::ranges::all_of(
+      arg.substr(1), [](unsigned char ch) { return std::isdigit(ch) != 0; });
 }
 
 auto legacy_count_value(std::string_view arg) -> std::string {
@@ -224,8 +222,7 @@ class RegistryImpl {
     std::vector<OptionInfo> result;
     result.reserve(opts.size());
     for (const auto &opt : opts) {
-      result.push_back({std::string(opt.short_name),
-                        std::string(opt.long_name),
+      result.push_back({std::string(opt.short_name), std::string(opt.long_name),
                         std::string(opt.description)});
     }
     return result;
@@ -275,9 +272,8 @@ export class CommandRegistry {
   // Check whether a command is registered.
   static bool hasCommand(std::string_view cmdName) noexcept {
     auto all = getImpl().list();
-    return std::ranges::any_of(all, [cmdName](const auto &item) {
-      return item.first == cmdName;
-    });
+    return std::ranges::any_of(
+        all, [cmdName](const auto &item) { return item.first == cmdName; });
   }
 
   // Print man page for a command

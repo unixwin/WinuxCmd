@@ -31,7 +31,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -41,9 +41,8 @@ import utils;
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
-auto constexpr LOGNAME_OPTIONS = std::array{
-    OPTION("", "", "print user's login name", STRING_TYPE)
-};
+auto constexpr LOGNAME_OPTIONS =
+    std::array{OPTION("", "", "print user's login name", STRING_TYPE)};
 
 REGISTER_COMMAND(
     logname,
@@ -52,17 +51,15 @@ REGISTER_COMMAND(
 
     /* synopsis */
     "logname",
-"Print the name of the current user.\n"
+    "Print the name of the current user.\n"
     "\n"
     "Print the login name of the user that is currently logged in.\n"
     "On Windows, this returns the current Windows username.",
-"  logname",
+    "  logname",
 
     /* see also */
-    "whoami(1), id(1)",
-"WinuxCmd",
-"Copyright © 2026 WinuxCmd",
-LOGNAME_OPTIONS) {
+    "whoami(1), id(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd",
+    LOGNAME_OPTIONS) {
   namespace cp = core::pipeline;
 
   // Get current username

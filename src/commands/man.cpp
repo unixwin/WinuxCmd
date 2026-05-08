@@ -27,8 +27,8 @@
 /// @License: MIT
 /// @Copyright: Copyright © 2026 WinuxCmd
 
-#include "pch/pch.h"
 #include "core/command_macros.h"
+#include "pch/pch.h"
 import std;
 import core;
 import utils;
@@ -40,16 +40,15 @@ auto constexpr MAN_OPTIONS = std::array{
     OPTION("-l", "--list", "list all available commands"),
 };
 
-REGISTER_COMMAND(
-    man,
-    /* cmd_name */ "man",
-    /* cmd_synopsis */ "man [OPTION]... [COMMAND]...",
-    /* cmd_desc */ "Display manual page for a WinuxCmd command.",
-    /* examples */ "man ls\nman grep\nman --list",
-    /* see_also */ "help(1)",
-    /* author */ "WinuxCmd",
-    /* copyright */ "Copyright © 2026 WinuxCmd",
-    /* options */ MAN_OPTIONS) {
+REGISTER_COMMAND(man,
+                 /* cmd_name */ "man",
+                 /* cmd_synopsis */ "man [OPTION]... [COMMAND]...",
+                 /* cmd_desc */ "Display manual page for a WinuxCmd command.",
+                 /* examples */ "man ls\nman grep\nman --list",
+                 /* see_also */ "help(1)",
+                 /* author */ "WinuxCmd",
+                 /* copyright */ "Copyright © 2026 WinuxCmd",
+                 /* options */ MAN_OPTIONS) {
   bool list_mode = ctx.get<bool>("-l", false) || ctx.get<bool>("--list", false);
 
   if (list_mode) {

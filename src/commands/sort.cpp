@@ -1,5 +1,5 @@
 /*
-*  Copyright © 2026 [caomengxuan666]
+ *  Copyright © 2026 [caomengxuan666]
  *
  *  Permission is hereby granted, free of charge, to any person obtaining a copy
  *  of this software and associated documentation files (the “Software”), to
@@ -32,7 +32,7 @@
 /// @License: MIT
 /// @Copyright: Copyright © 2026 WinuxCmd
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -44,8 +44,7 @@ using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
 auto constexpr SORT_OPTIONS = std::array{
-    OPTION("-b", "--ignore-leading-blanks",
-           "ignore leading blanks"),
+    OPTION("-b", "--ignore-leading-blanks", "ignore leading blanks"),
     OPTION("-d", "--dictionary-order",
            "consider only blanks and alphanumeric characters [NOT SUPPORT]"),
     OPTION("-f", "--ignore-case", "fold lower case to upper case"),
@@ -55,10 +54,10 @@ auto constexpr SORT_OPTIONS = std::array{
            "consider only printable characters [NOT SUPPORT]"),
     OPTION("-h", "--human-numeric-sort",
            "compare human readable numbers (e.g., 1K, 2M)"),
-    OPTION("-M", "--month-sort",
-           "compare as month names [NOT SUPPORT]"),
+    OPTION("-M", "--month-sort", "compare as month names [NOT SUPPORT]"),
     OPTION("-m", "--merge", "merge already sorted files [NOT SUPPORT]"),
-    OPTION("-n", "--numeric-sort", "compare according to string numerical value"),
+    OPTION("-n", "--numeric-sort",
+           "compare according to string numerical value"),
     OPTION("-V", "--version-sort", "compare version numbers naturally"),
     OPTION("-R", "--random-sort", "shuffle [NOT SUPPORT]"),
     OPTION("-r", "--reverse", "reverse the result of comparisons"),
@@ -72,8 +71,8 @@ auto constexpr SORT_OPTIONS = std::array{
            STRING_TYPE),
     OPTION("-t", "--field-separator",
            "use SEP instead of non-blank to blank transition", STRING_TYPE),
-    OPTION("-k", "--key",
-           "sort via a key; KEYDEF has form F[.C][,F[.C]]", STRING_TYPE)};
+    OPTION("-k", "--key", "sort via a key; KEYDEF has form F[.C][,F[.C]]",
+           STRING_TYPE)};
 
 namespace sort_pipeline {
 namespace cp = core::pipeline;
@@ -96,12 +95,11 @@ struct Config {
   std::optional<char> field_separator;
   std::string output_file;
   KeySpec key;
-  SmallVector<std::string, 64> files{};  // SmallVector for paths, stack-allocated
+  SmallVector<std::string, 64>
+      files{};  // SmallVector for paths, stack-allocated
 };
 
-auto read_all(std::istream& in) -> std::string {
-  return read_text_stream(in);
-}
+auto read_all(std::istream& in) -> std::string { return read_text_stream(in); }
 
 auto read_source(std::string_view path) -> cp::Result<std::string> {
   if (path == "-") return read_all(std::cin);
@@ -141,8 +139,7 @@ auto to_lower_ascii(std::string_view s) -> std::string {
 
 auto ltrim_ascii(std::string_view s) -> std::string_view {
   size_t i = 0;
-  while (i < s.size() &&
-         std::isspace(static_cast<unsigned char>(s[i])) != 0) {
+  while (i < s.size() && std::isspace(static_cast<unsigned char>(s[i])) != 0) {
     ++i;
   }
   return s.substr(i);
@@ -219,7 +216,8 @@ auto extract_key(std::string_view line, const Config& cfg) -> std::string_view {
 
   std::string_view key;
   if (cfg.field_separator.has_value()) {
-    key = get_field_by_separator(line, cfg.key.start_field, *cfg.field_separator);
+    key =
+        get_field_by_separator(line, cfg.key.start_field, *cfg.field_separator);
   } else {
     key = get_field_by_whitespace(line, cfg.key.start_field);
   }
@@ -252,13 +250,26 @@ auto parse_human_readable(std::string_view s) -> double {
       num_str += c;
     } else {
       switch (std::tolower(static_cast<unsigned char>(c))) {
-        case 'k': multiplier = 1024.0; break;
-        case 'm': multiplier = 1024.0 * 1024.0; break;
-        case 'g': multiplier = 1024.0 * 1024.0 * 1024.0; break;
-        case 't': multiplier = 1024.0 * 1024.0 * 1024.0 * 1024.0; break;
-        case 'p': multiplier = 1024.0 * 1024.0 * 1024.0 * 1024.0 * 1024.0; break;
-        case 'e': multiplier = 1024.0 * 1024.0 * 1024.0 * 1024.0 * 1024.0 * 1024.0; break;
-        default: break;
+        case 'k':
+          multiplier = 1024.0;
+          break;
+        case 'm':
+          multiplier = 1024.0 * 1024.0;
+          break;
+        case 'g':
+          multiplier = 1024.0 * 1024.0 * 1024.0;
+          break;
+        case 't':
+          multiplier = 1024.0 * 1024.0 * 1024.0 * 1024.0;
+          break;
+        case 'p':
+          multiplier = 1024.0 * 1024.0 * 1024.0 * 1024.0 * 1024.0;
+          break;
+        case 'e':
+          multiplier = 1024.0 * 1024.0 * 1024.0 * 1024.0 * 1024.0 * 1024.0;
+          break;
+        default:
+          break;
       }
       break;
     }
@@ -357,8 +368,14 @@ auto compare_records(std::string_view a, std::string_view b, const Config& cfg)
     if (a_val > b_val) return 1;
   } else if (cfg.general_numeric) {
     double a_val = 0.0, b_val = 0.0;
-    try { a_val = std::stod(std::string(key_a)); } catch (...) {}
-    try { b_val = std::stod(std::string(key_b)); } catch (...) {}
+    try {
+      a_val = std::stod(std::string(key_a));
+    } catch (...) {
+    }
+    try {
+      b_val = std::stod(std::string(key_b));
+    } catch (...) {
+    }
     if (a_val < b_val) return -1;
     if (a_val > b_val) return 1;
   }
@@ -382,7 +399,8 @@ auto is_unsupported_used(const CommandContext<SORT_OPTIONS.size()>& ctx)
     -> std::optional<std::string_view> {
   if (ctx.get<bool>("--dictionary-order", false) || ctx.get<bool>("-d", false))
     return "--dictionary-order is [NOT SUPPORT]";
-  if (ctx.get<bool>("--ignore-nonprinting", false) || ctx.get<bool>("-i", false))
+  if (ctx.get<bool>("--ignore-nonprinting", false) ||
+      ctx.get<bool>("-i", false))
     return "--ignore-nonprinting is [NOT SUPPORT]";
   if (ctx.get<bool>("--month-sort", false) || ctx.get<bool>("-M", false))
     return "--month-sort is [NOT SUPPORT]";
@@ -407,10 +425,10 @@ auto build_config(const CommandContext<SORT_OPTIONS.size()>& ctx)
       ctx.get<bool>("--numeric-sort", false) || ctx.get<bool>("-n", false);
   cfg.version_sort =
       ctx.get<bool>("--version-sort", false) || ctx.get<bool>("-V", false);
-  cfg.human_numeric =
-      ctx.get<bool>("--human-numeric-sort", false) || ctx.get<bool>("-h", false);
-  cfg.general_numeric =
-      ctx.get<bool>("--general-numeric-sort", false) || ctx.get<bool>("-g", false);
+  cfg.human_numeric = ctx.get<bool>("--human-numeric-sort", false) ||
+                      ctx.get<bool>("-h", false);
+  cfg.general_numeric = ctx.get<bool>("--general-numeric-sort", false) ||
+                        ctx.get<bool>("-g", false);
   cfg.reverse = ctx.get<bool>("--reverse", false) || ctx.get<bool>("-r", false);
   cfg.unique = ctx.get<bool>("--unique", false) || ctx.get<bool>("-u", false);
   cfg.delimiter =
@@ -476,11 +494,12 @@ auto run(const Config& cfg) -> int {
     }
   }
 
-  std::stable_sort(records.begin(), records.end(), [&](const auto& a, const auto& b) {
-    int cmp = compare_records(a, b, cfg);
-    if (cfg.reverse) return cmp > 0;
-    return cmp < 0;
-  });
+  std::stable_sort(records.begin(), records.end(),
+                   [&](const auto& a, const auto& b) {
+                     int cmp = compare_records(a, b, cfg);
+                     if (cfg.reverse) return cmp > 0;
+                     return cmp < 0;
+                   });
 
   if (cfg.unique) {
     std::vector<std::string> unique_records;

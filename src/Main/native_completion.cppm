@@ -21,7 +21,7 @@ struct UserOptionItem {
 
 struct UserCompletionData {
   std::vector<NativeCompletionItem> commands;
-  std::vector<UserOptionItem>       options;
+  std::vector<UserOptionItem> options;
 };
 
 struct BuiltinOptionDef {
@@ -75,25 +75,26 @@ constexpr std::pair<std::string_view, std::string_view> kBuiltinCommands[] = {
     {"xcopy", "Copy files and directory trees"},
 };
 
-constexpr std::pair<std::string_view, std::string_view> kPowerShellCommands[] = {
-    {"Get-Process", "Get processes on local/remote machine"},
-    {"Get-Service", "Get services on local/remote machine"},
-    {"Get-Command", "Get all available commands"},
-    {"Get-ChildItem", "List files/directories (PowerShell)"},
-    {"Get-Content", "Read file content"},
-    {"Set-Content", "Write content to file"},
-    {"Set-Location", "Change current location"},
-    {"Select-String", "Search text patterns"},
-    {"Where-Object", "Filter objects by script block"},
-    {"Select-Object", "Select object properties"},
-    {"Sort-Object", "Sort objects"},
-    {"ForEach-Object", "Process each pipeline object"},
-    {"Measure-Object", "Compute count/sum/avg/min/max"},
-    {"Start-Process", "Start one or more processes"},
-    {"Stop-Process", "Stop one or more running processes"},
-    {"Test-Path", "Check whether path exists"},
-    {"Out-File", "Send output to file"},
-    {"Tee-Object", "Write output to file and pipeline"},
+constexpr std::pair<std::string_view, std::string_view> kPowerShellCommands[] =
+    {
+        {"Get-Process", "Get processes on local/remote machine"},
+        {"Get-Service", "Get services on local/remote machine"},
+        {"Get-Command", "Get all available commands"},
+        {"Get-ChildItem", "List files/directories (PowerShell)"},
+        {"Get-Content", "Read file content"},
+        {"Set-Content", "Write content to file"},
+        {"Set-Location", "Change current location"},
+        {"Select-String", "Search text patterns"},
+        {"Where-Object", "Filter objects by script block"},
+        {"Select-Object", "Select object properties"},
+        {"Sort-Object", "Sort objects"},
+        {"ForEach-Object", "Process each pipeline object"},
+        {"Measure-Object", "Compute count/sum/avg/min/max"},
+        {"Start-Process", "Start one or more processes"},
+        {"Stop-Process", "Stop one or more running processes"},
+        {"Test-Path", "Check whether path exists"},
+        {"Out-File", "Send output to file"},
+        {"Tee-Object", "Write output to file and pipeline"},
 };
 
 constexpr BuiltinOptionDef kBuiltinOptions[] = {
@@ -190,7 +191,7 @@ constexpr BuiltinOptionDef kPowerShellOptions[] = {
     {"tee-object", "-FilePath", "File to tee output"},
 };
 
-constexpr uint32_t kCacheMagic   = 0x57434331u;  // WCC1
+constexpr uint32_t kCacheMagic = 0x57434331u;  // WCC1
 constexpr uint32_t kCacheVersion = 1u;
 
 static std::string toLowerAscii(std::string s) {
@@ -227,9 +228,10 @@ static std::string trimAscii(std::string s) {
   return s;
 }
 
-static std::vector<std::string> splitString(std::string_view s, char delimiter) {
+static std::vector<std::string> splitString(std::string_view s,
+                                            char delimiter) {
   std::vector<std::string> out;
-  size_t                   pos = 0;
+  size_t pos = 0;
   while (pos <= s.size()) {
     size_t next = s.find(delimiter, pos);
     if (next == std::string_view::npos) next = s.size();
@@ -278,7 +280,7 @@ static bool readString(std::ifstream& in, std::string& s) {
 static UserCompletionData parseUserCompletionFile(
     const std::filesystem::path& path) {
   UserCompletionData data;
-  std::ifstream      in(path);
+  std::ifstream in(path);
   if (!in.is_open()) return data;
 
   std::string line;
@@ -341,8 +343,7 @@ static bool loadUserCompletionCache(const std::filesystem::path& cachePath,
 }
 
 static void saveUserCompletionCache(const std::filesystem::path& cachePath,
-                                    uint64_t sourceMtime,
-                                    uint64_t sourceSize,
+                                    uint64_t sourceMtime, uint64_t sourceSize,
                                     const UserCompletionData& data) {
   std::error_code ec;
   std::filesystem::create_directories(cachePath.parent_path(), ec);
@@ -383,7 +384,7 @@ static void saveUserCompletionCache(const std::filesystem::path& cachePath,
 
 static UserCompletionData loadUserCompletionDataFromCacheOrText() {
   UserCompletionData data;
-  auto               sourcePath = getUserCompletionFilePath();
+  auto sourcePath = getUserCompletionFilePath();
   if (sourcePath.empty()) return data;
 
   std::error_code ec;
@@ -408,17 +409,17 @@ static UserCompletionData loadUserCompletionDataFromCacheOrText() {
 }
 
 static const UserCompletionData& getUserCompletionData() {
-  static const UserCompletionData data = loadUserCompletionDataFromCacheOrText();
+  static const UserCompletionData data =
+      loadUserCompletionDataFromCacheOrText();
   return data;
 }
 
 }  // namespace
 
-export std::vector<NativeCompletionItem>
-queryNativeCommandCompletionsForShell(std::string_view prefix,
-                                      bool includePowerShell) noexcept {
+export std::vector<NativeCompletionItem> queryNativeCommandCompletionsForShell(
+    std::string_view prefix, bool includePowerShell) noexcept {
   std::vector<NativeCompletionItem> items;
-  std::unordered_set<std::string>   seenLower;
+  std::unordered_set<std::string> seenLower;
   seenLower.reserve(128);
 
   auto tryAdd = [&](std::string_view cmd, std::string_view hint) {
@@ -438,12 +439,11 @@ queryNativeCommandCompletionsForShell(std::string_view prefix,
   return items;
 }
 
-export std::vector<NativeCompletionItem>
-queryNativeOptionCompletionsForShell(std::string_view command,
-                                     std::string_view prefix,
-                                     bool includePowerShell) noexcept {
+export std::vector<NativeCompletionItem> queryNativeOptionCompletionsForShell(
+    std::string_view command, std::string_view prefix,
+    bool includePowerShell) noexcept {
   std::vector<NativeCompletionItem> items;
-  std::unordered_set<std::string>   seenLower;
+  std::unordered_set<std::string> seenLower;
   seenLower.reserve(64);
 
   std::string commandLower = toLowerAscii(std::string(command));
@@ -472,14 +472,12 @@ queryNativeOptionCompletionsForShell(std::string_view command,
   return items;
 }
 
-export std::vector<NativeCompletionItem>
-queryNativeCommandCompletions(std::string_view prefix) noexcept {
+export std::vector<NativeCompletionItem> queryNativeCommandCompletions(
+    std::string_view prefix) noexcept {
   return queryNativeCommandCompletionsForShell(prefix, false);
 }
 
-export std::vector<NativeCompletionItem>
-queryNativeOptionCompletions(std::string_view command,
-                             std::string_view prefix) noexcept {
+export std::vector<NativeCompletionItem> queryNativeOptionCompletions(
+    std::string_view command, std::string_view prefix) noexcept {
   return queryNativeOptionCompletionsForShell(command, prefix, false);
 }
-

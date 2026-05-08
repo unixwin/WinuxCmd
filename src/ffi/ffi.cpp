@@ -10,8 +10,8 @@
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
  *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
  *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
@@ -26,8 +26,9 @@
  *  - CopyrightYear: 2026
  */
 
-#include <windows.h>
 #include "ffi.h"
+
+#include <windows.h>
 
 import std;
 import core;
@@ -112,7 +113,8 @@ class OutputCapture {
 
     char temp[4096];
     DWORD bytesRead;
-    while (ReadFile(hPipe, temp, sizeof(temp), &bytesRead, NULL) && bytesRead > 0) {
+    while (ReadFile(hPipe, temp, sizeof(temp), &bytesRead, NULL) &&
+           bytesRead > 0) {
       buffer.append(temp, bytesRead);
     }
   }
@@ -209,9 +211,7 @@ void winux_free_commands_array(char** commands, int count) {
   delete[] commands;
 }
 
-const char* winux_get_version() {
-  return WinuxCmd::VERSION_STRING;
-}
+const char* winux_get_version() { return WinuxCmd::VERSION_STRING; }
 
 int winux_get_all_commands(char*** commands, int* count) {
   if (commands) *commands = nullptr;
@@ -225,7 +225,8 @@ int winux_get_all_commands(char*** commands, int* count) {
 
     char** cmd_array = new char*[cmd_list.size()];
     for (size_t i = 0; i < cmd_list.size(); ++i) {
-      cmd_array[i] = copy_string_to_buffer(std::string(cmd_list[i].first), nullptr);
+      cmd_array[i] =
+          copy_string_to_buffer(std::string(cmd_list[i].first), nullptr);
     }
 
     if (commands) *commands = cmd_array;
