@@ -108,6 +108,11 @@ jobs:
       version: ${{ steps.final_version.outputs.version }}
 
     steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
       - name: Extract Version from Tag
         id: final_version
         run: |
