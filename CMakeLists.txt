@@ -48,7 +48,8 @@ set_property(CACHE BUILD_MODE PROPERTY STRINGS "DEV" "RELEASE" "DEBUG_RELEASE" "
 option(ENABLE_TESTS "Enable tests" ON)
 
 # Option to enable FFI library
-option(BUILD_FFI "Build FFI library for external integration" ON)
+option(BUILD_FFI "Build FFI library for external integration" OFF)
+set(BUILD_FFI OFF CACHE BOOL "Build FFI library for external integration" FORCE)
 
 # Option to enable UPX compression
 option(ENABLE_UPX "Enable UPX compression for executables" OFF)
@@ -106,6 +107,13 @@ if(NOT DEFINED ENABLE_UNITY_BUILD_USER_VALUE)
 endif()
 if(NOT DEFINED ENABLE_UPX_USER_VALUE)
     set(ENABLE_UPX ${ENABLE_UPX_DEFAULT} CACHE BOOL "Enable UPX compression for executables" FORCE)
+endif()
+
+if(BUILD_MODE STREQUAL "RELEASE" OR BUILD_MODE STREQUAL "RELEASE_EXAMPLES")
+    if(BUILD_FFI)
+        message(STATUS "Disabling FFI for release-oriented build mode")
+    endif()
+    set(BUILD_FFI OFF CACHE BOOL "Build FFI library for external integration" FORCE)
 endif()
 
 if (USE_STATIC_CRT)
@@ -876,8 +884,5 @@ if (BUILD_MODE STREQUAL "DEV" OR BUILD_MODE STREQUAL "DEBUG_RELEASE")
 else ()
     message(STATUS "Benchmarks: DISABLED (only available in DEV and DEBUG_RELEASE mode)")
 endif ()
-
-# ========== FFI Component Configuration ==========
-# FFI files are now included in the main package in the ffi directory
 
 include(CPack)

@@ -78,12 +78,29 @@ auto is_legacy_tail_from_start_count(std::string_view arg) -> bool {
   });
 }
 
+auto legacy_count_value(std::string_view arg) -> std::string {
+  if (arg.empty()) return {};
+  if ((arg[0] == '-' || arg[0] == '+') && arg.size() > 1) {
+    return std::string(arg.substr(1));
+  }
+  return std::string(arg);
+}
+
 auto needs_head_tail_count_rewrite(std::string_view cmdName,
-                                   std::span<std::string_view> args) -> bool {
-  if (args.empty()) return false;
-  if ((cmdName == "head" || cmdName == "tail") && is_legacy_line_count(args[0]))
-    return true;
-  return cmdName == "tail" && is_legacy_tail_from_start_count(args[0]);
+                                   std::span<std::string_view> args)
+    -> std::optional<std::string> {
+  if (args.empty()) return std::nullopt;
+
+  if ((cmdName == "head" || cmdName == "tail") &&
+      is_legacy_line_count(args[0])) {
+    return legacy_count_value(args[0]);
+  }
+
+  if (cmdName == "tail" && is_legacy_tail_from_start_count(args[0])) {
+    return std::string(args[0]);
+  }
+
+  return std::nullopt;
 }
 
 // Internal registry implementation class
@@ -124,10 +141,10 @@ class RegistryImpl {
     std::vector<std::string_view> rewritten_views;
     std::span<std::string_view> effective_args = args;
 
-    if (needs_head_tail_count_rewrite(cmdName, args)) {
+    if (auto legacy_count = needs_head_tail_count_rewrite(cmdName, args)) {
       rewritten_storage.reserve(args.size() + 1);
       rewritten_storage.emplace_back("-n");
-      rewritten_storage.emplace_back(args[0]);
+      rewritten_storage.emplace_back(*legacy_count);
       for (size_t i = 1; i < args.size(); ++i) {
         rewritten_storage.emplace_back(args[i]);
       }

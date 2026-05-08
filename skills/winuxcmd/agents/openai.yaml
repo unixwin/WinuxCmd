@@ -1,0 +1,7 @@
+interface:
+  display_name: "WinuxCmd Workspace"
+  short_description: "Local WinuxCmd repo activation and usage"
+  default_prompt: "Use $winuxcmd to activate the repository-local WinuxCmd workspace, then run WinuxCmd commands directly and prefer man.exe when you need command help."
+
+policy:
+  allow_implicit_invocation: true

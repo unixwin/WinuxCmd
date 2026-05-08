@@ -54,3 +54,46 @@ TEST(install, install_directory) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(std::filesystem::exists(tmp.path / "newdir"));
 }
+
+TEST(install, install_target_directory) {
+  TempDir tmp;
+  tmp.write("source.txt", "hello\n");
+  std::filesystem::create_directory(tmp.path / "dest_dir");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"install.exe", {L"-t", L"dest_dir", L"source.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "dest_dir" / "source.txt"));
+}
+
+TEST(install, install_create_leading_dirs) {
+  TempDir tmp;
+  tmp.write("source.txt", "hello\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"install.exe", {L"-D", L"source.txt", L"nested\\dir\\dest.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "nested" / "dir" / "dest.txt"));
+}
+
+TEST(install, install_no_target_directory) {
+  TempDir tmp;
+  tmp.write("source.txt", "hello\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"install.exe", {L"-T", L"source.txt", L"dest.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "dest.txt"));
+}
