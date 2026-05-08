@@ -335,36 +335,6 @@ auto compare_version_strings(std::string_view a, std::string_view b) -> int {
   return 0;
 }
 
-auto parse_human_readable(std::string_view s) -> double {
-  std::string num_str;
-  double multiplier = 1.0;
-
-  for (char c : s) {
-    if (std::isdigit(static_cast<unsigned char>(c)) || c == '.' || c == '-' ||
-        c == '+') {
-      num_str += c;
-    } else {
-      switch (std::tolower(static_cast<unsigned char>(c))) {
-        case 'k': multiplier = 1024.0; break;
-        case 'm': multiplier = 1024.0 * 1024.0; break;
-        case 'g': multiplier = 1024.0 * 1024.0 * 1024.0; break;
-        case 't': multiplier = 1024.0 * 1024.0 * 1024.0 * 1024.0; break;
-        case 'p': multiplier = 1024.0 * 1024.0 * 1024.0 * 1024.0 * 1024.0; break;
-        case 'e': multiplier = 1024.0 * 1024.0 * 1024.0 * 1024.0 * 1024.0 * 1024.0; break;
-        default: break;
-      }
-      break;
-    }
-  }
-
-  if (num_str.empty()) return 0.0;
-  try {
-    return std::stod(num_str) * multiplier;
-  } catch (...) {
-    return 0.0;
-  }
-}
-
 auto compare_records(std::string_view a, std::string_view b, const Config& cfg)
     -> int {
   auto key_a = extract_key(a, cfg);
