@@ -113,7 +113,7 @@ auto constexpr CP_OPTIONS = std::array{
     OPTION("-t", "--target-directory",
            "copy all SOURCE arguments into DIRECTORY", STRING_TYPE),
     OPTION("-T", "--no-target-directory", "treat DEST as a normal file"),
-    OPTION("-u", "", "equivalent to --update[=older]"),
+    OPTION("-u", "--update", "equivalent to --update[=older]"),
     OPTION("-v", "--verbose", "explain what is being done"),
     OPTION("-x", "--one-file-system", "stay on this file system"),
     OPTION("-Z", "",
@@ -135,6 +135,9 @@ auto validate_arguments(const CommandContext<CP_OPTIONS.size()>& ctx)
 
   // Get target directory if specified
   std::string target_dir = ctx.get<std::string>("--target-directory", "");
+  if (target_dir.empty()) {
+    target_dir = ctx.get<std::string>("-t", "");
+  }
   if (!target_dir.empty()) {
     destPath = target_dir;
     for (auto arg : ctx.positionals) {
@@ -163,13 +166,14 @@ auto validate_arguments(const CommandContext<CP_OPTIONS.size()>& ctx)
 // 2. Check if destination is directory
 // ----------------------------------------------
 auto check_destination(
-    const std::pair<std::vector<std::string>, std::string>& paths)
+    const std::pair<std::vector<std::string>, std::string>& paths,
+    bool no_target_directory)
     -> cp::Result<std::tuple<std::vector<std::string>, std::string, bool>> {
   const auto& [sourcePaths, destPath] = paths;
 
   std::wstring wdestPath = utf8_to_wstring(destPath);
   DWORD attr = GetFileAttributesW(wdestPath.c_str());
-  bool destIsDir =
+  bool destIsDir = !no_target_directory &&
       (attr != INVALID_FILE_ATTRIBUTES) && (attr & FILE_ATTRIBUTE_DIRECTORY);
 
   if (sourcePaths.size() > 1 && !destIsDir) {
@@ -235,6 +239,26 @@ auto copy_file(const std::string& srcPath, const std::string& destPath,
     -> cp::Result<bool> {
   bool interactive = ctx.get<bool>("--interactive", false);
   bool verbose = ctx.get<bool>("--verbose", false);
+  bool no_clobber =
+      ctx.get<bool>("--no-clobber", false) || ctx.get<bool>("-n", false);
+  bool update = ctx.get<bool>("-u", false) || ctx.get<bool>("--update", false);
+
+  if (no_clobber && std::filesystem::exists(destPath)) {
+    return true;
+  }
+
+  if (update && std::filesystem::exists(destPath)) {
+    WIN32_FILE_ATTRIBUTE_DATA src_data{};
+    WIN32_FILE_ATTRIBUTE_DATA dest_data{};
+    std::wstring wsrc = utf8_to_wstring(srcPath);
+    std::wstring wdst = utf8_to_wstring(destPath);
+    if (GetFileAttributesExW(wsrc.c_str(), GetFileExInfoStandard, &src_data) &&
+        GetFileAttributesExW(wdst.c_str(), GetFileExInfoStandard, &dest_data)) {
+      if (CompareFileTime(&src_data.ftLastWriteTime, &dest_data.ftLastWriteTime) <= 0) {
+        return true;
+      }
+    }
+  }
 
   if (interactive) {
     std::ifstream destTest(destPath);
@@ -501,9 +525,11 @@ auto process_source_paths(
 // ----------------------------------------------
 template <size_t N>
 auto process_command(const CommandContext<N>& ctx) -> cp::Result<bool> {
+  bool no_target_directory =
+      ctx.get<bool>("-T", false) || ctx.get<bool>("--no-target-directory", false);
   return validate_arguments(ctx)
       .and_then([&](std::pair<std::vector<std::string>, std::string> paths) {
-        return check_destination(paths);
+        return check_destination(paths, no_target_directory);
       })
       .and_then([&](std::tuple<std::vector<std::string>, std::string, bool>
                         pathsAndDir) {

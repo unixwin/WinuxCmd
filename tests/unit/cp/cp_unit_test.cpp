@@ -184,3 +184,33 @@ TEST(cp, cp_target_directory) {
   EXPECT_EQ(dest1_content, "content1");
   EXPECT_EQ(dest2_content, "content2");
 }
+
+TEST(cp, cp_no_clobber) {
+  TempDir tmp;
+  tmp.write("source.txt", "new content");
+  tmp.write("dest.txt", "old content");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"-n", L"source.txt", L"dest.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(tmp.read("dest.txt"), "old content");
+}
+
+TEST(cp, cp_update_skips_newer_destination) {
+  TempDir tmp;
+  tmp.write("source.txt", "source content");
+  tmp.write("dest.txt", "newer destination");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"-u", L"source.txt", L"dest.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(tmp.read("dest.txt"), "newer destination");
+}

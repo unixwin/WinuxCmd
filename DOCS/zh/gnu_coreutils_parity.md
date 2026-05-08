@@ -18,11 +18,11 @@
 | `chmod` | [chmod invocation](https://www.gnu.org/software/coreutils/manual/html_node/chmod-invocation.html) | `-c`、`-f`、`-v`、`-R` 已有 | `--reference`、`-H`、`-L`、`-P`、根目录保护参数 |
 | `mkdir` | [mkdir invocation](https://www.gnu.org/software/coreutils/manual/html_node/mkdir-invocation.html) | `-p`、`-v` 已有 | `-m`、`-Z` |
 | `touch` | [touch invocation](https://www.gnu.org/software/coreutils/manual/html_node/touch-invocation.html) | `-a`、`-c`、`-d`、`-m`、`-r`、`-t`、`--time` 现状不一 | `-h`、`--time=access|modify`、更严格的 GNU 日期解析 |
-| `ls` | [ls invocation](https://www.gnu.org/software/coreutils/manual/html_node/ls-invocation.html) | 常用显示参数外加 `-B`、`-F`、`-p`、`-Q`、`-q`、`-R` 已更完整 | 余下缺口：`-b`、`-L`、`-I`、`-U`、`-X`、`-v`、`--time-style` |
+| `ls` | [ls invocation](https://www.gnu.org/software/coreutils/manual/html_node/ls-invocation.html) | 常用显示参数外加 `-B`、`-b`、`-d`、`-f`、`-F`、`-I`、`-p`、`-Q`、`-q`、`-R`、`-U`、`-v`、`-X` 已更完整 | 余下缺口：`-L`、`--time-style`、inode/block/context 列以及 GNU 引号边界语义 |
 | `head` | [head invocation](https://www.gnu.org/software/coreutils/manual/html_node/head-invocation.html) | `-c`、`-n`、`-q`、`-v`、`-z` 已有，另外兼容传统 `-NUM` 写法 | 负数计数和多文件模式的 GNU 精确行为 |
 | `tail` | [tail invocation](https://www.gnu.org/software/coreutils/manual/html_node/tail-invocation.html) | `-c`、`-n`、`-q`、`-v`、`-z` 已有，另外兼容传统 `-NUM` / `+NUM` 写法 | `-f`、`-F`、`--pid`、`--retry`、`--sleep-interval` |
-| `sort` | [sort invocation](https://www.gnu.org/software/coreutils/manual/html_node/sort-invocation.html) | 基础排序已有，另外加入了 `-V` 版本号排序 | `-k`、`-t`、`-S`、`-R`、`-o` |
-| `uniq` | [uniq invocation](https://www.gnu.org/software/coreutils/manual/html_node/uniq-invocation.html) | 基础去重已有 | `-D`、`--group`、`--all-repeated`、`-f`、`-s`、`-w`、`-z` |
+| `sort` | [sort invocation](https://www.gnu.org/software/coreutils/manual/html_node/sort-invocation.html) | `-b`、`-f`、`-g`、`-h`、`-k`、`-n`、`-o`、`-t`、`-u`、`-V`、`-z` 已覆盖常见 AI 使用场景 | `-d`、`-i`、`-M`、`-m`、`-R`、`-S`、`-s`、以及 locale 相关排序边界 |
+| `uniq` | [uniq invocation](https://www.gnu.org/software/coreutils/manual/html_node/uniq-invocation.html) | `-c`、`-d`、`-D`、`-f`、`-i`、`-s`、`-u`、`-w`、`-z` 已纳入第一批 | `--group` 以及 GNU 分组分隔符的精确行为 |
 | `cut` | [cut invocation](https://www.gnu.org/software/coreutils/manual/html_node/cut-invocation.html) | 分隔符/字段模式已有 | byte/char/line 模式和 `--complement` |
 | `tr` | [tr invocation](https://www.gnu.org/software/coreutils/manual/html_node/tr.html) | 基础替换/删除已有 | `-c`、`-d`、`-s`、`-t`、字符类边界情况 |
 | `du` | [du invocation](https://www.gnu.org/software/coreutils/manual/html_node/du-invocation.html) | 有基础支持 | `-a`、`-c`、`-h`、`-L`、`-P`、`-x`、`--inodes`、`--time` |

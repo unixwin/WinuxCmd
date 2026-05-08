@@ -58,6 +58,9 @@ opt|<command>|<option>|<description>
 
 - 构建模式：[build_modes.md](build_modes.md)
 - 测试框架：[testing_framework.md](testing_framework.md)
+- 工作区集成：[workspace_integration.md](workspace_integration.md)
+- AI 使用指南：[../../skills/winuxcmd/SKILL.md](../../skills/winuxcmd/SKILL.md)
+- GNU coreutils 兼容性审计：[gnu_coreutils_parity.md](gnu_coreutils_parity.md)
 
 ## 贡献现状
 
