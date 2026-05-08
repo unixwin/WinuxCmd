@@ -23,6 +23,7 @@
  *  - CopyrightYear: 2026
  */
 #include <filesystem>
+#include <regex>
 
 #include "framework/winuxtest.h"
 
@@ -71,6 +72,28 @@ TEST(ls, ls_long_format) {
   EXPECT_EQ(r.exit_code, 0);
   // Verify the output contains the expected file in long format
   EXPECT_TRUE(r.stdout_text.find("file1.txt") != std::string::npos);
+}
+
+TEST(ls, ls_long_format_reports_hardlink_count) {
+  TempDir tmp;
+  tmp.write("original.txt", "content");
+
+  std::filesystem::path original = tmp.path / "original.txt";
+  std::filesystem::path alias = tmp.path / "alias.txt";
+  bool created = CreateHardLinkW(alias.wstring().c_str(),
+                                 original.wstring().c_str(), nullptr) != FALSE;
+  EXPECT_TRUE(created);
+  if (!created) return;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ls.exe", {L"-l", L"original.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(
+      std::regex_search(r.stdout_text, std::regex(R"([dl-][rwx-]{9}\s+2\s+)")));
 }
 
 TEST(ls, ls_all) {

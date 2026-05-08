@@ -91,6 +91,57 @@ TEST(grep, grep_recursive_search) {
   EXPECT_TRUE(r.stdout_text.find("b.txt") != std::string::npos);
 }
 
+TEST(grep, grep_recursive_alias_R) {
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "d1");
+  tmp.write("d1/a.txt", "needle\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"grep.exe", {L"-R", L"needle", L"d1"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("needle") != std::string::npos);
+}
+
+TEST(grep, grep_exclude_dir_skips_nested_directory) {
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "keep" / "skipme");
+  tmp.write("keep/a.txt", "needle-keep\n");
+  tmp.write("keep/skipme/b.txt", "needle-skip\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"grep.exe", {L"-r", L"--exclude-dir", L"skipme", L"needle", L"keep"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("needle-keep") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("needle-skip") == std::string::npos);
+}
+
+TEST(grep, grep_basic_and_extended_regex_semantics) {
+  TempDir tmp;
+  tmp.write("a.txt", "aaa\na+\n");
+
+  Pipeline basic;
+  basic.set_cwd(tmp.wpath());
+  basic.add(L"grep.exe", {L"a+", L"a.txt"});
+  auto basic_result = basic.run();
+
+  EXPECT_EQ(basic_result.exit_code, 0);
+  EXPECT_EQ_TEXT(basic_result.stdout_text, "a+\n");
+
+  Pipeline extended;
+  extended.set_cwd(tmp.wpath());
+  extended.add(L"grep.exe", {L"-E", L"a+", L"a.txt"});
+  auto extended_result = extended.run();
+
+  EXPECT_EQ(extended_result.exit_code, 0);
+  EXPECT_EQ_TEXT(extended_result.stdout_text, "aaa\na+\n");
+}
+
 TEST(grep, grep_only_matching) {
   TempDir tmp;
   tmp.write("a.txt", "abc123def123\n");

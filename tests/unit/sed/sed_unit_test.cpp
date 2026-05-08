@@ -54,6 +54,22 @@ TEST(sed, script_file_and_quiet) {
   EXPECT_EQ_TEXT(r.stdout_text, "bar\n");
 }
 
+TEST(sed, in_place_edit) {
+  TempDir tmp;
+  tmp.write("a.txt", "foo\nbar\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sed.exe", {L"-i", L"s/foo/baz/", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "");
+
+  auto content = tmp.read("a.txt");
+  EXPECT_EQ_TEXT(content, "baz\nbar\n");
+}
+
 TEST(sed, extended_regex_option) {
   TempDir tmp;
   tmp.write("a.txt", "a1\nb2\n");

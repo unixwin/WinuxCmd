@@ -52,7 +52,8 @@ using cmd::meta::OptionType;
  *
  * - @a -c, @a --bytes: Output the last NUM bytes; or use -c +NUM to output
  *   starting with byte NUM of each file [IMPLEMENTED]
- * - @a -f, @a --follow: Output appended data as the file grows [NOT SUPPORT]
+ * - @a -f, @a --follow: Output appended data as the file grows [IMPLEMENTED]
+ *
  * - @a -F: Same as --follow=name --retry [NOT SUPPORT]
  * - @a -n, @a --lines: Output the last NUM lines, instead of the last 10; or
  *
@@ -71,8 +72,10 @@ using cmd::meta::OptionType;
  * - @a --silent: Never output headers giving file names [IMPLEMENTED]
  * - @a --retry: Keep trying to open a file if it is inaccessible [NOT SUPPORT]
  * - @a -s, @a --sleep-interval: With -f, sleep for approximately N seconds
- * between iterations [NOT SUPPORT]
- * - @a -v, @a --verbose: Always output headers giving file names [IMPLEMENTED]
+ *
+ * between iterations [IMPLEMENTED]
+ * - @a -v, @a --verbose: Always output
+ * headers giving file names [IMPLEMENTED]
  * - @a -z, @a --zero-terminated: Line delimiter is NUL, not newline
  * [IMPLEMENTED]
  */
@@ -100,8 +103,7 @@ auto constexpr TAIL_OPTIONS = std::array{
     OPTION("", "--retry",
            "keep trying to open a file if it is inaccessible [NOT SUPPORT]"),
     OPTION("-s", "--sleep-interval",
-           "with -f, sleep for approximately N seconds between iterations\n"
-           "[NOT SUPPORT]",
+           "with -f, sleep for approximately N seconds between iterations",
            STRING_TYPE),
     OPTION("-v", "--verbose", "always output headers giving file names"),
     OPTION("-z", "--zero-terminated", "line delimiter is NUL, not newline")};
@@ -122,6 +124,7 @@ struct TailConfig {
   bool follow = false;
   bool stdin_mode = false;
   char delimiter = '\n';
+  std::chrono::milliseconds sleep_interval{1000};
 };
 
 auto stream_all(std::istream& in) -> void {
@@ -240,6 +243,21 @@ auto parse_count_spec(std::string spec_text, std::string_view opt_name)
   return spec;
 }
 
+auto parse_sleep_interval(std::string_view text)
+    -> std::optional<std::chrono::milliseconds> {
+  if (text.empty()) return std::nullopt;
+  std::string s(text);
+  char* end = nullptr;
+  errno = 0;
+  double seconds = std::strtod(s.c_str(), &end);
+  if (errno != 0 || end != s.c_str() + s.size() || seconds <= 0.0) {
+    return std::nullopt;
+  }
+  auto millis = static_cast<long long>(seconds * 1000.0);
+  if (millis <= 0) millis = 1;
+  return std::chrono::milliseconds(millis);
+}
+
 auto output_tail(std::istream& in, const TailConfig& config) -> void {
   if (config.by_bytes) {
     size_t n = static_cast<size_t>(config.spec.value);
@@ -336,10 +354,6 @@ auto check_unsupported(const CommandContext<N>& ctx) -> cp::Result<void> {
   if (ctx.get<bool>("--retry", false)) {
     return std::unexpected("--retry is [NOT SUPPORT]");
   }
-  if (!ctx.get<std::string>("--sleep-interval", "").empty() ||
-      !ctx.get<std::string>("-s", "").empty()) {
-    return std::unexpected("--sleep-interval is [NOT SUPPORT]");
-  }
   return {};
 }
 
@@ -352,6 +366,16 @@ auto build_config(const CommandContext<N>& ctx) -> cp::Result<TailConfig> {
   config.delimiter = ctx.get<bool>("--zero-terminated", false) ? '\0' : '\n';
   config.follow =
       ctx.get<bool>("-f", false) || ctx.get<bool>("--follow", false);
+
+  std::string sleep_arg = ctx.get<std::string>("--sleep-interval", "");
+  if (sleep_arg.empty()) sleep_arg = ctx.get<std::string>("-s", "");
+  if (!sleep_arg.empty()) {
+    auto parsed_sleep = parse_sleep_interval(sleep_arg);
+    if (!parsed_sleep) {
+      return std::unexpected("invalid sleep interval");
+    }
+    config.sleep_interval = *parsed_sleep;
+  }
 
   auto unsupported = check_unsupported(ctx);
   if (!unsupported) return std::unexpected(unsupported.error());
@@ -476,7 +500,7 @@ REGISTER_COMMAND(
         } else {
           monitor_file.seekg(0, std::ios::end);
           while (true) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            std::this_thread::sleep_for(config.sleep_interval);
             auto current_pos = monitor_file.tellg();
             monitor_file.seekg(0, std::ios::end);
             auto end_pos = monitor_file.tellg();

@@ -91,13 +91,16 @@ using cmd::meta::OptionType;
  * [IMPLEMENTED]
  * - @a -D, @a --devices: How to handle devices/FIFOs/sockets [NOT SUPPORT]
  * - @a -r, @a --recursive: Like --directories=recurse [IMPLEMENTED]
- * - @a -R, @a --dereference-recursive: Like -r but follow symlinks [NOT
- * SUPPORT]
- * - @a --include: Search only files that match GLOB [IMPLEMENTED]
+ * - @a -R, @a --dereference-recursive: Like -r but follow symlinks
+ *
+ * [IMPLEMENTED]
+ * - @a --include: Search only files that match GLOB
+ * [IMPLEMENTED]
  * - @a --exclude: Skip files that match GLOB [IMPLEMENTED]
  * - @a --exclude-from: Skip files from patterns in FILE [NOT SUPPORT]
- * - @a --exclude-dir: Skip directories that match GLOB [NOT SUPPORT]
- * - @a -L, @a --files-without-match: Print only names of FILEs with no selected
+ * - @a --exclude-dir: Skip directories that match GLOB [IMPLEMENTED]
+ * - @a
+ * -L, @a --files-without-match: Print only names of FILEs with no selected
  * lines [IMPLEMENTED]
  * - @a -l, @a --files-with-matches: Print only names of FILEs with selected
  * lines [IMPLEMENTED]
@@ -155,14 +158,13 @@ auto constexpr GREP_OPTIONS = std::array{
     OPTION("-D", "--devices",
            "how to handle devices/FIFOs/sockets [NOT SUPPORT]", STRING_TYPE),
     OPTION("-r", "--recursive", "like --directories=recurse"),
-    OPTION("-R", "--dereference-recursive",
-           "like -r but follow symlinks [NOT SUPPORT]"),
+    OPTION("-R", "--dereference-recursive", "like -r but follow symlinks"),
     OPTION("", "--include", "search only files that match GLOB", STRING_TYPE),
     OPTION("", "--exclude", "skip files that match GLOB", STRING_TYPE),
     OPTION("", "--exclude-from",
            "skip files from patterns in FILE [NOT SUPPORT]", STRING_TYPE),
-    OPTION("", "--exclude-dir",
-           "skip directories that match GLOB [NOT SUPPORT]", STRING_TYPE),
+    OPTION("", "--exclude-dir", "skip directories that match GLOB",
+           STRING_TYPE),
     OPTION("-L", "--files-without-match",
            "print only names of FILEs with no selected lines"),
     OPTION("-l", "--files-with-matches",
@@ -226,6 +228,7 @@ struct Config {
   bool count_only = false;
   bool null_after_filename = false;
   bool recursive = false;
+  bool dereference_recursive = false;
   SmallVector<Pattern, 32> patterns;
   SmallVector<std::string, 64> files;
   bool has_error = false;
@@ -234,6 +237,7 @@ struct Config {
   bool color = false;
   std::string include;
   std::string exclude;
+  std::string exclude_dir;
   std::string group_separator = "--";
   bool no_group_separator = false;
   bool initial_tab = false;
@@ -302,7 +306,9 @@ auto compile_pattern(PatternMode mode, bool ignore_case, std::string_view raw)
   if (mode == PatternMode::Fixed) return p;
 
   try {
-    auto flags = std::regex::ECMAScript;
+    auto flags = mode == PatternMode::ExtendedRegex
+                     ? std::regex_constants::extended
+                     : std::regex_constants::basic;
     if (ignore_case) flags |= std::regex::icase;
     p.regex.emplace(p.raw, flags);
   } catch (const std::regex_error&) {
@@ -335,12 +341,8 @@ auto is_unsupported_used(const CommandContext<GREP_OPTIONS.size()>& ctx)
   if (!ctx.get<std::string>("--devices", "").empty() ||
       !ctx.get<std::string>("-D", "").empty())
     return "--devices is [NOT SUPPORT]";
-  if (ctx.get<bool>("--dereference-recursive", false) ||
-      ctx.get<bool>("-R", false))
-    return "--dereference-recursive is [NOT SUPPORT]";
-  if (!ctx.get<std::string>("--exclude-from", "").empty() ||
-      !ctx.get<std::string>("--exclude-dir", "").empty())
-    return "exclude-from/exclude-dir options are [NOT SUPPORT]";
+  if (!ctx.get<std::string>("--exclude-from", "").empty())
+    return "--exclude-from is [NOT SUPPORT]";
   return std::nullopt;
 }
 
@@ -398,8 +400,12 @@ auto build_config(const CommandContext<GREP_OPTIONS.size()>& ctx)
   cfg.null_after_filename =
       ctx.get<bool>("--null", false) || ctx.get<bool>("-Z", false);
 
-  cfg.recursive =
-      ctx.get<bool>("--recursive", false) || ctx.get<bool>("-r", false);
+  cfg.recursive = ctx.get<bool>("--recursive", false) ||
+                  ctx.get<bool>("-r", false) ||
+                  ctx.get<bool>("--dereference-recursive", false) ||
+                  ctx.get<bool>("-R", false);
+  cfg.dereference_recursive = ctx.get<bool>("--dereference-recursive", false) ||
+                              ctx.get<bool>("-R", false);
   cfg.directories = ctx.get<std::string>("--directories", "");
   if (cfg.directories.empty()) cfg.directories = ctx.get<std::string>("-d", "");
   if (cfg.directories.empty())
@@ -419,6 +425,7 @@ auto build_config(const CommandContext<GREP_OPTIONS.size()>& ctx)
 
   cfg.include = ctx.get<std::string>("--include", "");
   cfg.exclude = ctx.get<std::string>("--exclude", "");
+  cfg.exclude_dir = ctx.get<std::string>("--exclude-dir", "");
 
   cfg.group_separator = ctx.get<std::string>("--group-separator", "--");
   cfg.no_group_separator = ctx.get<bool>("--no-group-separator", false);
@@ -909,7 +916,22 @@ auto gather_files_for_input(const Config& cfg, std::vector<std::string>& out)
     if (cfg.directories == "skip") continue;
 
     if (cfg.directories == "recurse") {
-      for (const auto& e : std::filesystem::recursive_directory_iterator(f)) {
+      auto options = std::filesystem::directory_options::skip_permission_denied;
+      if (cfg.dereference_recursive) {
+        options |= std::filesystem::directory_options::follow_directory_symlink;
+      }
+      std::filesystem::recursive_directory_iterator it(f, options);
+      const std::filesystem::recursive_directory_iterator end;
+      for (; it != end; ++it) {
+        const auto& e = *it;
+        if (e.is_directory()) {
+          std::string dirname = e.path().filename().string();
+          if (!cfg.exclude_dir.empty() &&
+              wildcard_match(cfg.exclude_dir, dirname)) {
+            it.disable_recursion_pending();
+          }
+          continue;
+        }
         if (e.is_regular_file()) {
           std::string filepath = e.path().string();
           std::string filename = e.path().filename().string();

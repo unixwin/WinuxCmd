@@ -59,6 +59,19 @@ TEST(head, head_n_and_c_options) {
   EXPECT_EQ_TEXT(r2.stdout_text, "alpha");
 }
 
+TEST(head, head_count_suffixes) {
+  TempDir tmp;
+  tmp.write("a.txt", "0123456789abcdef");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"head.exe", {L"-c", L"1K", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "0123456789abcdef");
+}
+
 TEST(head, head_legacy_count_shorthand) {
   TempDir tmp;
   tmp.write("a.txt", "alpha\nbeta\ngamma\n");
