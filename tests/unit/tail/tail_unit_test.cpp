@@ -95,6 +95,19 @@ TEST(tail, tail_follow_option_recognized) {
   EXPECT_TRUE(r.stdout_text.find("--follow") != std::string::npos);
 }
 
+TEST(tail, tail_sleep_interval_option_is_accepted) {
+  TempDir tmp;
+  tmp.write("a.txt", "1\n2\n3\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"tail.exe", {L"--sleep-interval", L"0.1", L"-n", L"1", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "3\n");
+}
+
 TEST(tail, tail_wildcard) {
   TempDir tmp;
   tmp.write("file1.txt", "line1\nline2\nline3\n");

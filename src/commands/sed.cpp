@@ -22,6 +22,7 @@ using cmd::meta::OptionType;
 auto constexpr SED_OPTIONS = std::array{
     OPTION("-n", "--quiet", "suppress automatic printing of pattern space"),
     OPTION("", "--silent", "alias for -n"),
+    OPTION("-i", "--in-place", "edit files in place"),
     OPTION("-e", "--expression",
            "add the script to the commands to be executed", STRING_TYPE),
     OPTION("-f", "--file", "add the script from FILE", STRING_TYPE),
@@ -53,6 +54,7 @@ struct Script {
 
 struct Config {
   bool suppress_output = false;
+  bool in_place = false;
   SmallVector<Script, 32> scripts;
   SmallVector<std::string, 64> files;
   std::regex_constants::syntax_option_type regex_syntax =
@@ -413,6 +415,8 @@ auto build_config(const CommandContext<SED_OPTIONS.size()>& ctx)
   cfg.suppress_output = ctx.get<bool>("--quiet", false) ||
                         ctx.get<bool>("-n", false) ||
                         ctx.get<bool>("--silent", false);
+  cfg.in_place =
+      ctx.get<bool>("--in-place", false) || ctx.get<bool>("-i", false);
 
   if (ctx.get<bool>("--regexp-extended", false) || ctx.get<bool>("-E", false) ||
       ctx.get<bool>("-r", false)) {
@@ -603,9 +607,84 @@ auto apply_scripts(std::string_view line, const std::vector<Script>& scripts,
   return !out_line.empty();
 }
 
-auto process_files(const Config& cfg) -> int {
+auto process_stream(std::istream& in, const Config& cfg, std::string* capture)
+    -> bool {
   const char delim = '\n';
+  size_t line_no = 1;
+  std::vector<ScriptState> states(cfg.scripts.size());
+  std::vector<Script> scripts_vec(cfg.scripts.begin(), cfg.scripts.end());
+  std::string line;
+  while (std::getline(in, line)) {
+    std::string out_line;
+    bool matched_any = false;
+    bool should_quit = false;
+    bool is_last = false;
+    if (in.peek() == EOF) is_last = true;
+    bool should_print =
+        apply_scripts(line, scripts_vec, states, line_no, cfg.suppress_output,
+                      is_last, out_line, matched_any, should_quit);
+    if (should_print) {
+      if (capture) {
+        capture->append(out_line);
+        capture->push_back(delim);
+      } else {
+        safePrint(out_line);
+        safePrint(std::string_view(&delim, 1));
+      }
+    }
+    if (should_quit) return true;
+    ++line_no;
+  }
+  return false;
+}
 
+auto replace_file_atomically(const std::string& path,
+                             const std::string& content) -> bool {
+  auto original = std::filesystem::path(path);
+  auto suffix =
+      std::string(".winuxtmp.") + std::to_string(GetCurrentProcessId());
+  auto temp = std::filesystem::path(path + suffix);
+  auto backup = std::filesystem::path(path + suffix + ".bak");
+
+  {
+    std::ofstream out(temp, std::ios::binary | std::ios::trunc);
+    if (!out.is_open()) {
+      safeErrorPrint("sed: cannot create temporary file for '" + path + "'\n");
+      return false;
+    }
+    out.write(content.data(), static_cast<std::streamsize>(content.size()));
+    if (!out.good()) {
+      safeErrorPrint("sed: cannot write temporary file for '" + path + "'\n");
+      std::error_code cleanup_ec;
+      std::filesystem::remove(temp, cleanup_ec);
+      return false;
+    }
+  }
+
+  std::error_code ec;
+  std::filesystem::remove(backup, ec);
+  ec.clear();
+  std::filesystem::rename(original, backup, ec);
+  if (ec) {
+    safeErrorPrint("sed: cannot replace '" + path + "'\n");
+    std::error_code cleanup_ec;
+    std::filesystem::remove(temp, cleanup_ec);
+    return false;
+  }
+
+  std::filesystem::rename(temp, original, ec);
+  if (ec) {
+    std::error_code restore_ec;
+    std::filesystem::rename(backup, original, restore_ec);
+    safeErrorPrint("sed: cannot replace '" + path + "'\n");
+    return false;
+  }
+
+  std::filesystem::remove(backup, ec);
+  return true;
+}
+
+auto process_files(const Config& cfg) -> int {
   // Expand wildcards in file arguments
   std::vector<std::string> expanded_files;
   for (const auto& f : cfg.files) {
@@ -630,7 +709,14 @@ auto process_files(const Config& cfg) -> int {
     expanded_files.push_back(f);
   }
 
+  bool any_error = false;
   for (const auto& f : expanded_files) {
+    if (cfg.in_place && f == "-") {
+      safeErrorPrint("sed: cannot edit standard input in place\n");
+      any_error = true;
+      continue;
+    }
+
     std::ifstream file;
     std::istream* in = nullptr;
     if (f == "-") {
@@ -639,34 +725,26 @@ auto process_files(const Config& cfg) -> int {
       file.open(f, std::ios::binary);
       if (!file.is_open()) {
         safeErrorPrint("sed: cannot open '" + f + "'\n");
+        any_error = true;
         continue;
       }
       in = &file;
     }
 
-    size_t line_no = 1;
-    std::vector<ScriptState> states(cfg.scripts.size());
-    std::string line;
-    while (std::getline(*in, line)) {
-      std::string out_line;
-      bool matched_any = false;
-      bool should_quit = false;
-      bool is_last = false;
-      if (in->peek() == EOF) is_last = true;
-      // Convert SmallVector to std::vector for apply_scripts
-      std::vector<Script> scripts_vec(cfg.scripts.begin(), cfg.scripts.end());
-      bool should_print =
-          apply_scripts(line, scripts_vec, states, line_no, cfg.suppress_output,
-                        is_last, out_line, matched_any, should_quit);
-      if (should_print) {
-        safePrint(out_line);
-        safePrint(std::string_view(&delim, 1));
+    if (cfg.in_place) {
+      std::string output;
+      bool should_quit = process_stream(*in, cfg, &output);
+      file.close();
+      if (!replace_file_atomically(f, output)) {
+        any_error = true;
       }
-      if (should_quit) return 0;
-      ++line_no;
+      if (should_quit) break;
+      continue;
     }
+
+    if (process_stream(*in, cfg, nullptr)) return any_error ? 1 : 0;
   }
-  return 0;
+  return any_error ? 1 : 0;
 }
 
 }  // namespace sed_pipeline

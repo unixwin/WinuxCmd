@@ -106,6 +106,90 @@ auto parse_uint(std::string_view text) -> std::optional<std::uintmax_t> {
   return value;
 }
 
+auto suffix_multiplier(std::string_view suffix)
+    -> std::optional<std::uintmax_t> {
+  static constexpr auto kMultipliers =
+      make_constexpr_map<std::string_view, std::uintmax_t>(
+          std::array<std::pair<std::string_view, std::uintmax_t>, 25>{
+              std::pair{std::string_view{"b"}, 512ULL},
+              std::pair{std::string_view{"kB"}, 1000ULL},
+              std::pair{std::string_view{"K"}, 1024ULL},
+              std::pair{std::string_view{"KiB"}, 1024ULL},
+              std::pair{std::string_view{"MB"}, 1000ULL * 1000ULL},
+              std::pair{std::string_view{"M"}, 1024ULL * 1024ULL},
+              std::pair{std::string_view{"MiB"}, 1024ULL * 1024ULL},
+              std::pair{std::string_view{"GB"}, 1000ULL * 1000ULL * 1000ULL},
+              std::pair{std::string_view{"G"}, 1024ULL * 1024ULL * 1024ULL},
+              std::pair{std::string_view{"GiB"}, 1024ULL * 1024ULL * 1024ULL},
+              std::pair{std::string_view{"TB"},
+                        1000ULL * 1000ULL * 1000ULL * 1000ULL},
+              std::pair{std::string_view{"T"},
+                        1024ULL * 1024ULL * 1024ULL * 1024ULL},
+              std::pair{std::string_view{"TiB"},
+                        1024ULL * 1024ULL * 1024ULL * 1024ULL},
+              std::pair{std::string_view{"PB"},
+                        1000ULL * 1000ULL * 1000ULL * 1000ULL * 1000ULL},
+              std::pair{std::string_view{"P"},
+                        1024ULL * 1024ULL * 1024ULL * 1024ULL * 1024ULL},
+              std::pair{std::string_view{"PiB"},
+                        1024ULL * 1024ULL * 1024ULL * 1024ULL * 1024ULL},
+              std::pair{
+                  std::string_view{"EB"},
+                  1000ULL * 1000ULL * 1000ULL * 1000ULL * 1000ULL * 1000ULL},
+              std::pair{std::string_view{"E"}, 1024ULL * 1024ULL * 1024ULL *
+                                                   1024ULL * 1024ULL * 1024ULL},
+              std::pair{
+                  std::string_view{"EiB"},
+                  1024ULL * 1024ULL * 1024ULL * 1024ULL * 1024ULL * 1024ULL},
+              std::pair{std::string_view{"Z"}, 1024ULL * 1024ULL * 1024ULL *
+                                                   1024ULL * 1024ULL * 1024ULL *
+                                                   1024ULL},
+              std::pair{std::string_view{"Y"}, 1024ULL * 1024ULL * 1024ULL *
+                                                   1024ULL * 1024ULL * 1024ULL *
+                                                   1024ULL * 1024ULL},
+              std::pair{std::string_view{"R"}, 0ULL},
+              std::pair{std::string_view{"Q"}, 0ULL},
+              std::pair{std::string_view{"ZB"}, 0ULL},
+              std::pair{std::string_view{"YB"}, 0ULL}});
+
+  if (suffix.empty()) return 1;
+
+  if (auto it = kMultipliers.find(suffix); it != kMultipliers.end()) {
+    auto mult = it->second;
+    if (mult == 0ULL) return std::nullopt;
+    return mult;
+  }
+  if (suffix == "RB" || suffix == "QB") {
+    return std::nullopt;
+  }
+
+  return std::nullopt;
+}
+
+auto parse_numeric_with_suffix(std::string_view text)
+    -> std::optional<std::uintmax_t> {
+  if (text.empty()) return std::nullopt;
+
+  size_t i = 0;
+  while (i < text.size() && std::isdigit(static_cast<unsigned char>(text[i]))) {
+    ++i;
+  }
+  if (i == 0) return std::nullopt;
+
+  auto parsed = parse_uint(text.substr(0, i));
+  if (!parsed.has_value()) return std::nullopt;
+
+  auto mult = suffix_multiplier(text.substr(i));
+  if (!mult.has_value()) return std::nullopt;
+
+  if (*mult != 0 &&
+      *parsed > (std::numeric_limits<std::uintmax_t>::max() / *mult)) {
+    return std::nullopt;
+  }
+
+  return *parsed * *mult;
+}
+
 auto parse_count_spec(std::string spec_text, std::string_view opt_name)
     -> cp::Result<CountSpec> {
   if (spec_text.empty()) {
@@ -121,7 +205,7 @@ auto parse_count_spec(std::string spec_text, std::string_view opt_name)
     }
   }
 
-  auto parsed = parse_uint(spec_text);
+  auto parsed = parse_numeric_with_suffix(spec_text);
   if (!parsed.has_value()) {
     return std::unexpected("invalid number of " + std::string(opt_name));
   }

@@ -633,10 +633,44 @@ auto get_file_size_string(const WIN32_FIND_DATAW &find_data,
   return std::string(buf);
 }
 
+auto get_link_count(const std::wstring &path, const WIN32_FIND_DATAW &find_data,
+                    const CommandContext<LS_OPTIONS.size()> &ctx)
+    -> unsigned long {
+  DWORD flags = 0;
+  if (find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+    flags |= FILE_FLAG_BACKUP_SEMANTICS;
+  }
+
+  const bool dereference =
+      ctx.get<bool>("-L", false) || ctx.get<bool>("--dereference", false);
+  if ((find_data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) &&
+      !dereference) {
+    flags |= FILE_FLAG_OPEN_REPARSE_POINT;
+  }
+
+  HANDLE handle =
+      CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES,
+                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                  nullptr, OPEN_EXISTING, flags, nullptr);
+  if (handle == INVALID_HANDLE_VALUE) {
+    return 1;
+  }
+
+  BY_HANDLE_FILE_INFORMATION info{};
+  DWORD link_count = 1;
+  if (GetFileInformationByHandle(handle, &info)) {
+    link_count = std::max<DWORD>(info.nNumberOfLinks, 1);
+  }
+  CloseHandle(handle);
+  return static_cast<unsigned long>(link_count);
+}
+
 /**
  * @brief Get file modification time string (improved: timezone support)
+ *
  * @param find_data WIN32_FIND_DATAW structure
- * @param use_utc Whether to use UTC time (default: false = local time)
+ * @param use_utc Whether to use
+ * UTC time (default: false = local time)
  * @return Modification time string
  */
 auto get_modification_time_string(const WIN32_FIND_DATAW &find_data,
@@ -1038,6 +1072,7 @@ auto list_directory(const std::string &path,
       std::wstring name;
       WIN32_FIND_DATAW find_data;
       std::string perms;
+      std::string link_count;
       std::string size;
       std::string mtime;
       std::string owner;
@@ -1051,6 +1086,9 @@ auto list_directory(const std::string &path,
       info.name = entry.name;
       info.find_data = entry.find_data;
       info.perms = get_permissions_string(entry.find_data);
+      std::wstring full_path = wpath + L"\\" + entry.name;
+      info.link_count =
+          std::to_string(get_link_count(full_path, entry.find_data, ctx));
       info.size = get_file_size_string(entry.find_data, ctx);
       info.mtime = get_modification_time_string(entry.find_data);
 
@@ -1065,16 +1103,19 @@ auto list_directory(const std::string &path,
     // Calculate maximum widths for alignment
     size_t max_owner_len = 0;
     size_t max_group_len = 0;
+    size_t max_link_len = 0;
     size_t max_size_len = 0;
     for (const auto &file : files) {
       max_owner_len = std::max(max_owner_len, file.owner.length());
       max_group_len = std::max(max_group_len, file.group.length());
+      max_link_len = std::max(max_link_len, file.link_count.length());
       max_size_len = std::max(max_size_len, file.size.length());
     }
 
     // Set minimum widths to avoid empty values
     if (max_owner_len == 0) max_owner_len = 1;
     if (max_group_len == 0) max_group_len = 1;
+    if (max_link_len == 0) max_link_len = 1;
     if (max_size_len == 0) max_size_len = 1;
 
     // Long format output
@@ -1085,7 +1126,12 @@ auto list_directory(const std::string &path,
       // 1. Permissions and link count
       safePrint(std::string_view(file_info.perms));
       safePrint(" ");
-      safePrint("1");  // Windows always has 1 link
+      int link_padding = static_cast<int>(max_link_len) -
+                         static_cast<int>(file_info.link_count.length());
+      for (int i = 0; i < link_padding; i++) {
+        safePrint(" ");
+      }
+      safePrint(std::string_view(file_info.link_count));
       safePrint(" ");
 
       // 2. Owner (left-aligned)
@@ -1201,6 +1247,7 @@ auto list_file(const std::string &path,
   if (long_format) {
     // Long format output for single file
     auto perms = get_permissions_string(find_data);
+    auto link_count = std::to_string(get_link_count(wpath, find_data, ctx));
     auto size = get_file_size_string(find_data, ctx);
     auto mtime = get_modification_time_string(find_data);
     auto [owner, group] = get_file_owner_and_group(use_numeric);
@@ -1208,7 +1255,7 @@ auto list_file(const std::string &path,
     // 1. Permissions and link count
     safePrint(std::string_view(perms));
     safePrint(" ");
-    safePrint("1");  // Windows always has 1 link
+    safePrint(std::string_view(link_count));
     safePrint(" ");
 
     // 2. Owner (left-aligned, with padding to match column width)
