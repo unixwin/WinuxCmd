@@ -31,7 +31,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -42,8 +42,7 @@ using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
 auto constexpr SYNC_OPTIONS = std::array{
-    OPTION("", "", "synchronize cached writes to disk", STRING_TYPE)
-};
+    OPTION("", "", "synchronize cached writes to disk", STRING_TYPE)};
 
 REGISTER_COMMAND(
     sync,
@@ -52,25 +51,23 @@ REGISTER_COMMAND(
 
     /* synopsis */
     "sync [OPTION]... [FILE]...",
-"Synchronize cached writes to persistent storage.\n"
+    "Synchronize cached writes to persistent storage.\n"
     "\n"
     "If one or more files are specified, sync only those files.\n"
     "Otherwise, all file system buffers are synchronized.\n"
     "\n"
     "Note: On Windows, this uses FlushFileBuffers to flush file buffers.",
-"  sync\n"
+    "  sync\n"
     "  sync -d file.txt\n"
     "  sync file1.txt file2.txt",
 
     /* see also */
-    "fsync(2)",
-"WinuxCmd",
-"Copyright © 2026 WinuxCmd",
-SYNC_OPTIONS) {
+    "fsync(2)", "WinuxCmd", "Copyright © 2026 WinuxCmd", SYNC_OPTIONS) {
   namespace cp = core::pipeline;
 
   bool sync_data = ctx.get<bool>("--data", false) || ctx.get<bool>("-d", false);
-  bool sync_fs = ctx.get<bool>("--file-system", false) || ctx.get<bool>("-f", false);
+  bool sync_fs =
+      ctx.get<bool>("--file-system", false) || ctx.get<bool>("-f", false);
 
   if (ctx.positionals.empty()) {
     // Sync all file systems - Windows doesn't have a direct equivalent
@@ -96,13 +93,9 @@ SYNC_OPTIONS) {
     }
     for (const auto& exp : expanded) {
       std::wstring wpath = utf8_to_wstring(exp);
-      HANDLE hFile = CreateFileW(wpath.c_str(),
-                                 GENERIC_WRITE,
-                                 FILE_SHARE_READ | FILE_SHARE_WRITE,
-                                 nullptr,
-                                 OPEN_EXISTING,
-                                 FILE_ATTRIBUTE_NORMAL,
-                                 nullptr);
+      HANDLE hFile = CreateFileW(wpath.c_str(), GENERIC_WRITE,
+                                 FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                                 OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
 
       if (hFile == INVALID_HANDLE_VALUE) {
         auto err = std::string("sync: failed to open '") + exp + "'";

@@ -31,7 +31,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -50,9 +50,10 @@ auto constexpr UNAME_OPTIONS = std::array{
     OPTION("-v", "--kernel-version", "print the kernel version", BOOL_TYPE),
     OPTION("-m", "--machine", "print the machine hardware name", BOOL_TYPE),
     OPTION("-p", "--processor", "print the processor type", BOOL_TYPE),
-    OPTION("-i", "--hardware-platform", "print the hardware platform", BOOL_TYPE),
-    OPTION("-o", "--operating-system", "print the operating system", BOOL_TYPE)
-};
+    OPTION("-i", "--hardware-platform", "print the hardware platform",
+           BOOL_TYPE),
+    OPTION("-o", "--operating-system", "print the operating system",
+           BOOL_TYPE)};
 
 namespace uname_pipeline {
 namespace cp = core::pipeline;
@@ -73,18 +74,26 @@ auto build_config(const CommandContext<UNAME_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
   Config cfg;
   cfg.all = ctx.get<bool>("--all", false) || ctx.get<bool>("-a", false);
-  cfg.kernel_name = ctx.get<bool>("--kernel-name", false) || ctx.get<bool>("-s", false);
-  cfg.nodename = ctx.get<bool>("--nodename", false) || ctx.get<bool>("-n", false);
-  cfg.kernel_release = ctx.get<bool>("--kernel-release", false) || ctx.get<bool>("-r", false);
-  cfg.kernel_version = ctx.get<bool>("--kernel-version", false) || ctx.get<bool>("-v", false);
+  cfg.kernel_name =
+      ctx.get<bool>("--kernel-name", false) || ctx.get<bool>("-s", false);
+  cfg.nodename =
+      ctx.get<bool>("--nodename", false) || ctx.get<bool>("-n", false);
+  cfg.kernel_release =
+      ctx.get<bool>("--kernel-release", false) || ctx.get<bool>("-r", false);
+  cfg.kernel_version =
+      ctx.get<bool>("--kernel-version", false) || ctx.get<bool>("-v", false);
   cfg.machine = ctx.get<bool>("--machine", false) || ctx.get<bool>("-m", false);
-  cfg.processor = ctx.get<bool>("--processor", false) || ctx.get<bool>("-p", false);
-  cfg.hardware_platform = ctx.get<bool>("--hardware-platform", false) || ctx.get<bool>("-i", false);
-  cfg.operating_system = ctx.get<bool>("--operating-system", false) || ctx.get<bool>("-o", false);
+  cfg.processor =
+      ctx.get<bool>("--processor", false) || ctx.get<bool>("-p", false);
+  cfg.hardware_platform =
+      ctx.get<bool>("--hardware-platform", false) || ctx.get<bool>("-i", false);
+  cfg.operating_system =
+      ctx.get<bool>("--operating-system", false) || ctx.get<bool>("-o", false);
 
   // If no option specified, print kernel name
-  if (!cfg.all && !cfg.kernel_name && !cfg.nodename && !cfg.kernel_release && 
-      !cfg.kernel_version && !cfg.machine && !cfg.processor && !cfg.hardware_platform && !cfg.operating_system) {
+  if (!cfg.all && !cfg.kernel_name && !cfg.nodename && !cfg.kernel_release &&
+      !cfg.kernel_version && !cfg.machine && !cfg.processor &&
+      !cfg.hardware_platform && !cfg.operating_system) {
     cfg.kernel_name = true;
   }
 
@@ -157,7 +166,8 @@ auto run(const Config& cfg) -> int {
   if (local_cfg.processor) {
     SYSTEM_INFO si;
     GetNativeSystemInfo(&si);
-    outputs.push_back("unknown");  // Detailed processor info not easily accessible
+    outputs.push_back(
+        "unknown");  // Detailed processor info not easily accessible
   }
 
   // Hardware platform
@@ -184,19 +194,19 @@ auto run(const Config& cfg) -> int {
 
 }  // namespace uname_pipeline
 
-REGISTER_COMMAND(uname, "uname",
-                 "uname [OPTION]...",
-                 "Print certain system information.\n"
-                 "\n"
-                 "With no OPTION, same as -s.\n"
-                 "\n"
-                 "Note: This implementation provides Windows-specific information.",
-                 "  uname -a\n"
-                 "  uname -m\n"
-                 "  uname -r\n"
-                 "  uname -n",
-                 "arch(1), hostname(1)", "WinuxCmd",
-                 "Copyright © 2026 WinuxCmd", UNAME_OPTIONS) {
+REGISTER_COMMAND(
+    uname, "uname", "uname [OPTION]...",
+    "Print certain system information.\n"
+    "\n"
+    "With no OPTION, same as -s.\n"
+    "\n"
+    "Note: This implementation provides Windows-specific information.",
+    "  uname -a\n"
+    "  uname -m\n"
+    "  uname -r\n"
+    "  uname -n",
+    "arch(1), hostname(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd",
+    UNAME_OPTIONS) {
   using namespace uname_pipeline;
 
   auto cfg_result = build_config(ctx);

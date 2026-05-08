@@ -30,7 +30,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 import std;
 import core;
@@ -39,13 +39,13 @@ import utils;
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
-auto constexpr EXPR_OPTIONS = std::array{
-    OPTION("", "", "evaluate expressions", STRING_TYPE)
-};
+auto constexpr EXPR_OPTIONS =
+    std::array{OPTION("", "", "evaluate expressions", STRING_TYPE)};
 
 // Simple expression evaluator for basic arithmetic
 namespace {
-auto evaluate_expr(std::span<const std::string_view> args) -> std::expected<long long, std::string> {
+auto evaluate_expr(std::span<const std::string_view> args)
+    -> std::expected<long long, std::string> {
   if (args.empty()) {
     return std::unexpected("expr: missing operand");
   }
@@ -110,35 +110,33 @@ auto evaluate_expr(std::span<const std::string_view> args) -> std::expected<long
 
 }  // namespace
 
-REGISTER_COMMAND(
-    expr_cmd,
-    /* name */
-    "expr",
+REGISTER_COMMAND(expr_cmd,
+                 /* name */
+                 "expr",
 
-    /* synopsis */
-    "expr EXPRESSION",
-"Evaluate expressions.\n"
-    "\n"
-    "Print the value of EXPRESSION to standard output.\n"
-    "\n"
-    "Supported operators:\n"
-    "  +, -      Addition, subtraction\n"
-    "  *, /, %   Multiplication, division, modulus\n"
-    "  <, <=, =, !=, >=, >  Comparison\n"
-    "  &, |      Logical AND, OR\n"
-    "\n"
-    "Note: This is a basic implementation supporting simple two-operand expressions.",
-"  expr 2 + 3\n"
-    "  expr 5 \\* 10\n"
-    "  expr 10 / 2\n"
-    "  expr 5 % 3\n"
-    "  expr 2 \\\< 5",
+                 /* synopsis */
+                 "expr EXPRESSION",
+                 "Evaluate expressions.\n"
+                 "\n"
+                 "Print the value of EXPRESSION to standard output.\n"
+                 "\n"
+                 "Supported operators:\n"
+                 "  +, -      Addition, subtraction\n"
+                 "  *, /, %   Multiplication, division, modulus\n"
+                 "  <, <=, =, !=, >=, >  Comparison\n"
+                 "  &, |      Logical AND, OR\n"
+                 "\n"
+                 "Note: This is a basic implementation supporting simple "
+                 "two-operand expressions.",
+                 "  expr 2 + 3\n"
+                 "  expr 5 \\* 10\n"
+                 "  expr 10 / 2\n"
+                 "  expr 5 % 3\n"
+                 "  expr 2 \\\< 5",
 
-    /* see also */
-    "test(1), let(1)",
-"WinuxCmd",
-"Copyright © 2026 WinuxCmd",
-EXPR_OPTIONS) {
+                 /* see also */
+                 "test(1), let(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd",
+                 EXPR_OPTIONS) {
   auto result = evaluate_expr(ctx.positionals);
   if (!result) {
     safeErrorPrintLn(result.error());
@@ -146,7 +144,7 @@ EXPR_OPTIONS) {
   }
 
   safePrintLn(std::to_string(*result));
-  
+
   // Return non-zero if result is 0 (for logical expressions)
   return *result == 0 ? 1 : 0;
 }

@@ -31,7 +31,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -43,23 +43,33 @@ using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
 auto constexpr COLUMN_OPTIONS = std::array{
-    OPTION("-c", "--columns", "output is formatted for a display width", INT_TYPE),
-    OPTION("-t", "--table", "determine the number of columns the input contains", BOOL_TYPE),
-    OPTION("-s", "--separator", "specify the possible input item delimiters", STRING_TYPE),
-    OPTION("-o", "output-separator", "specify the columns separator for table output", STRING_TYPE),
-    OPTION("-n", "table-name", "specify the table name for JSON or XML output", STRING_TYPE),
-    OPTION("-x", "output-fields", "specify which columns to include in JSON or XML output", STRING_TYPE),
+    OPTION("-c", "--columns", "output is formatted for a display width",
+           INT_TYPE),
+    OPTION("-t", "--table",
+           "determine the number of columns the input contains", BOOL_TYPE),
+    OPTION("-s", "--separator", "specify the possible input item delimiters",
+           STRING_TYPE),
+    OPTION("-o", "output-separator",
+           "specify the columns separator for table output", STRING_TYPE),
+    OPTION("-n", "table-name", "specify the table name for JSON or XML output",
+           STRING_TYPE),
+    OPTION("-x", "output-fields",
+           "specify which columns to include in JSON or XML output",
+           STRING_TYPE),
     OPTION("-r", "table-right", "right align text in table columns", BOOL_TYPE),
-    OPTION("-R", "table-right-columns", "columns to right align in table output", STRING_TYPE),
+    OPTION("-R", "table-right-columns",
+           "columns to right align in table output", STRING_TYPE),
     OPTION("-H", "table-hide", "don't print header in table output", BOOL_TYPE),
-    OPTION("-e", "table-empty", "don't use empty lines in table output", BOOL_TYPE),
-    OPTION("-N", "table-no-trunc", "don't truncate text in table output", BOOL_TYPE),
-    OPTION("-E", "table-noescape", "don't escape newline, tab, backslash in table output", BOOL_TYPE),
+    OPTION("-e", "table-empty", "don't use empty lines in table output",
+           BOOL_TYPE),
+    OPTION("-N", "table-no-trunc", "don't truncate text in table output",
+           BOOL_TYPE),
+    OPTION("-E", "table-noescape",
+           "don't escape newline, tab, backslash in table output", BOOL_TYPE),
     OPTION("-J", "json", "use JSON output format for table", BOOL_TYPE),
     OPTION("-O", "output-width", "maximum display width", INT_TYPE),
     OPTION("-V", "version", "output version information and exit", BOOL_TYPE),
-    OPTION("-h", "help", "display this help and exit", BOOL_TYPE)
-};
+    OPTION("-h", "help", "display this help and exit", BOOL_TYPE)};
 
 namespace column_pipeline {
 namespace cp = core::pipeline;
@@ -86,7 +96,8 @@ auto build_config(const CommandContext<COLUMN_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
   Config cfg;
   cfg.columns = ctx.get<int>("--columns", 0);
-  cfg.table_mode = ctx.get<bool>("--table", false) || ctx.get<bool>("-t", false);
+  cfg.table_mode =
+      ctx.get<bool>("--table", false) || ctx.get<bool>("-t", false);
   cfg.separator = ctx.get<std::string>("--separator", "");
   cfg.output_separator = ctx.get<std::string>("-o", "");
   cfg.table_name = ctx.get<std::string>("-n", "");
@@ -138,21 +149,22 @@ auto read_input(const std::string& filename) -> cp::Result<std::string> {
     // Read from file
     std::ifstream file(filename, std::ios::binary);
     if (!file.is_open()) {
-      return std::unexpected(std::string("cannot open '") + filename + "' for reading");
+      return std::unexpected(std::string("cannot open '") + filename +
+                             "' for reading");
     }
-    
+
     // Get file size
     file.seekg(0, std::ios::end);
     size_t file_size = file.tellg();
     file.seekg(0, std::ios::beg);
-    
+
     if (file_size > 0) {
       content.resize(file_size);
       if (!file.read(&content[0], file_size)) {
         return std::unexpected("error reading from file");
       }
     }
-    
+
     if (file.bad() && !file.eof()) {
       return std::unexpected("error reading from file");
     }
@@ -256,7 +268,8 @@ auto run(const Config& cfg) -> int {
           safePrint(cfg.output_separator.empty() ? " " : cfg.output_separator);
         }
 
-        size_t width = (col_idx < col_widths.size()) ? col_widths[col_idx] : row[col_idx].size();
+        size_t width = (col_idx < col_widths.size()) ? col_widths[col_idx]
+                                                     : row[col_idx].size();
 
         if (cfg.table_right) {
           // Right align
@@ -284,8 +297,7 @@ auto run(const Config& cfg) -> int {
 
 }  // namespace column_pipeline
 
-REGISTER_COMMAND(column, "column",
-                 "column [options] [file...]",
+REGISTER_COMMAND(column, "column", "column [options] [file...]",
                  "Columnate lists.\n"
                  "\n"
                  "The column utility formats its input into multiple columns.\n"

@@ -1,27 +1,25 @@
 /*
  *  Copyright © 2026 WinuxCmd
  */
-#include "pch/pch.h"
 #include "core/command_macros.h"
+#include "pch/pch.h"
 import std;
 import core;
 import utils;
 import container;
 
-auto constexpr TPUT_OPTIONS = std::array{
-    OPTION("", "", "terminal capabilities", STRING_TYPE)
-};
+auto constexpr TPUT_OPTIONS =
+    std::array{OPTION("", "", "terminal capabilities", STRING_TYPE)};
 
-REGISTER_COMMAND(
-    tput,
-    /* cmd_name */ "tput",
-    /* cmd_synopsis */ "tput [CAPNAME]",
-    /* cmd_desc */ "Initialize a terminal or query terminfo.",
-    /* examples */ "tput clear",
-    /* see_also */ "reset",
-    /* author */ "WinuxCmd",
-    /* copyright */ "Copyright © 2026 WinuxCmd",
-    /* options */ TPUT_OPTIONS) {
+REGISTER_COMMAND(tput,
+                 /* cmd_name */ "tput",
+                 /* cmd_synopsis */ "tput [CAPNAME]",
+                 /* cmd_desc */ "Initialize a terminal or query terminfo.",
+                 /* examples */ "tput clear",
+                 /* see_also */ "reset",
+                 /* author */ "WinuxCmd",
+                 /* copyright */ "Copyright © 2026 WinuxCmd",
+                 /* options */ TPUT_OPTIONS) {
   if (ctx.positionals.empty()) {
     safeErrorPrintLn("tput: missing capability name");
     return 1;

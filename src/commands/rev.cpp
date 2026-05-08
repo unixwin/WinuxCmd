@@ -30,7 +30,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 import std;
 import core;
@@ -39,9 +39,8 @@ import utils;
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
-auto constexpr REV_OPTIONS = std::array{
-    OPTION("", "", "reverse lines of a file", STRING_TYPE)
-};
+auto constexpr REV_OPTIONS =
+    std::array{OPTION("", "", "reverse lines of a file", STRING_TYPE)};
 
 REGISTER_COMMAND(
     rev_cmd,
@@ -50,19 +49,16 @@ REGISTER_COMMAND(
 
     /* synopsis */
     "rev [FILE]...",
-"Reverse lines characterwise.\n"
+    "Reverse lines characterwise.\n"
     "\n"
     "Print each specified line in reverse order, character by character.\n"
     "If no FILE is specified, read from standard input.",
-"  echo 'hello' | rev\n"
+    "  echo 'hello' | rev\n"
     "  rev input.txt\n"
     "  rev file1.txt file2.txt",
 
     /* see also */
-    "tac(1)",
-"WinuxCmd",
-"Copyright © 2026 WinuxCmd",
-REV_OPTIONS) {
+    "tac(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", REV_OPTIONS) {
   std::vector<std::string> files;
   for (const auto& arg : ctx.positionals) {
     std::string file_arg(arg);
@@ -98,7 +94,8 @@ REV_OPTIONS) {
       auto wfile = utf8_to_wstring(file);
       std::ifstream ifs(wfile, std::ios::binary);
       if (!ifs) {
-        safeErrorPrintLn("rev: cannot open '" + file + "': No such file or directory");
+        safeErrorPrintLn("rev: cannot open '" + file +
+                         "': No such file or directory");
         return 1;
       }
       process_stream(ifs);

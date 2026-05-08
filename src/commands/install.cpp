@@ -30,8 +30,8 @@
 /// @License: MIT
 /// @Copyright: Copyright ? 2026 WinuxCmd
 
-#include "pch/pch.h"
 #include "core/command_macros.h"
+#include "pch/pch.h"
 
 import std;
 import core;
@@ -41,24 +41,37 @@ import container;
 using cmd::meta::OptionType;
 
 auto constexpr INSTALL_OPTIONS = std::array{
-    OPTION("-b", "--backup", "make a backup of each existing destination file", BOOL_TYPE),
-    OPTION("-c", "", "ignored (for compatibility with old Unix versions)", BOOL_TYPE),
-    OPTION("-C", "", "ignored (for compatibility with old Unix versions)", BOOL_TYPE),
-    OPTION("-d", "--directory", "treat all arguments as directory names", BOOL_TYPE),
-    OPTION("-D", "", "create all leading components of DEST except the last", BOOL_TYPE),
+    OPTION("-b", "--backup", "make a backup of each existing destination file",
+           BOOL_TYPE),
+    OPTION("-c", "", "ignored (for compatibility with old Unix versions)",
+           BOOL_TYPE),
+    OPTION("-C", "", "ignored (for compatibility with old Unix versions)",
+           BOOL_TYPE),
+    OPTION("-d", "--directory", "treat all arguments as directory names",
+           BOOL_TYPE),
+    OPTION("-D", "", "create all leading components of DEST except the last",
+           BOOL_TYPE),
     OPTION("-g", "--group", "set group ownership", STRING_TYPE),
     OPTION("-m", "--mode", "set permission mode", STRING_TYPE),
     OPTION("-o", "--owner", "set ownership", STRING_TYPE),
-    OPTION("-p", "--preserve-timestamps", "apply access/modification times of SOURCE files", BOOL_TYPE),
+    OPTION("-p", "--preserve-timestamps",
+           "apply access/modification times of SOURCE files", BOOL_TYPE),
     OPTION("-s", "--strip", "strip symbol tables", BOOL_TYPE),
-    OPTION("", "--strip-program", "program used to strip binaries", STRING_TYPE),
+    OPTION("", "--strip-program", "program used to strip binaries",
+           STRING_TYPE),
     OPTION("-S", "--suffix", "override the usual backup suffix", STRING_TYPE),
-    OPTION("-t", "--target-directory", "specify the destination directory", STRING_TYPE),
-    OPTION("-T", "--no-target-directory", "do not treat the last operand specially when it is a directory", BOOL_TYPE),
-    OPTION("-v", "--verbose", "print the name of each directory as it is created", BOOL_TYPE),
-    OPTION("", "--preserve-context", "preserve SELinux security context", BOOL_TYPE),
-    OPTION("-Z", "", "set SELinux security context of destination files to default", BOOL_TYPE)
-};
+    OPTION("-t", "--target-directory", "specify the destination directory",
+           STRING_TYPE),
+    OPTION("-T", "--no-target-directory",
+           "do not treat the last operand specially when it is a directory",
+           BOOL_TYPE),
+    OPTION("-v", "--verbose",
+           "print the name of each directory as it is created", BOOL_TYPE),
+    OPTION("", "--preserve-context", "preserve SELinux security context",
+           BOOL_TYPE),
+    OPTION("-Z", "",
+           "set SELinux security context of destination files to default",
+           BOOL_TYPE)};
 
 namespace install_pipeline {
 namespace cp = core::pipeline;
@@ -193,9 +206,9 @@ auto run(const Config& cfg) -> int {
   }
 
   DWORD attrs = GetFileAttributesA(target.c_str());
-  bool target_is_dir =
-      !cfg.no_target_directory &&
-      (attrs != INVALID_FILE_ATTRIBUTES) && (attrs & FILE_ATTRIBUTE_DIRECTORY);
+  bool target_is_dir = !cfg.no_target_directory &&
+                       (attrs != INVALID_FILE_ATTRIBUTES) &&
+                       (attrs & FILE_ATTRIBUTE_DIRECTORY);
   if (!target_is_dir && sources.size() > 1) {
     target_is_dir = true;
   }
@@ -205,9 +218,9 @@ auto run(const Config& cfg) -> int {
 
     if (target_is_dir) {
       size_t last_slash = source.find_last_of("/\\");
-      std::string filename =
-          (last_slash != std::string::npos) ? source.substr(last_slash + 1)
-                                            : source;
+      std::string filename = (last_slash != std::string::npos)
+                                 ? source.substr(last_slash + 1)
+                                 : source;
       if (!dest.empty() && dest.back() != '\\' && dest.back() != '/') {
         dest += "\\";
       }
@@ -259,21 +272,21 @@ auto run(const Config& cfg) -> int {
 
 }  // namespace install_pipeline
 
-REGISTER_COMMAND(install, "install",
-                 "install [OPTION]... [-T] SOURCE DEST\n"
-                 "  install [OPTION]... SOURCE... DIRECTORY\n"
-                 "  install [OPTION]... -t DIRECTORY SOURCE...",
-                 "Copy files and set attributes.\n"
-                 "\n"
-                 "Note: This is a simplified Windows implementation.\n"
-                 "Advanced features like mode, owner, group, strip, and SELinux\n"
-                 "context handling are tracked but not fully supported on Windows.",
-                 "  install source.txt dest.txt\n"
-                 "  install -b file.txt backup/\n"
-                 "  install -v src/*.txt /target/\n"
-                 "  install -d /tmp/dir",
-                 "cp(1), mv(1)", "WinuxCmd",
-                 "Copyright ? 2026 WinuxCmd", INSTALL_OPTIONS) {
+REGISTER_COMMAND(
+    install, "install",
+    "install [OPTION]... [-T] SOURCE DEST\n"
+    "  install [OPTION]... SOURCE... DIRECTORY\n"
+    "  install [OPTION]... -t DIRECTORY SOURCE...",
+    "Copy files and set attributes.\n"
+    "\n"
+    "Note: This is a simplified Windows implementation.\n"
+    "Advanced features like mode, owner, group, strip, and SELinux\n"
+    "context handling are tracked but not fully supported on Windows.",
+    "  install source.txt dest.txt\n"
+    "  install -b file.txt backup/\n"
+    "  install -v src/*.txt /target/\n"
+    "  install -d /tmp/dir",
+    "cp(1), mv(1)", "WinuxCmd", "Copyright ? 2026 WinuxCmd", INSTALL_OPTIONS) {
   using namespace install_pipeline;
 
   auto cfg_result = build_config(ctx);

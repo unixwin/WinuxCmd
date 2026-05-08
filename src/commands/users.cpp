@@ -31,7 +31,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -64,14 +64,14 @@ auto run(const Config& cfg) -> int {
   // Get current user
   WCHAR username[256];
   DWORD username_size = 256;
-  
+
   if (!GetUserNameW(username, &username_size)) {
     return 1;
   }
-  
+
   std::wstring ws(username);
   std::string user_str(ws.begin(), ws.end());
-  
+
   safePrintLn(user_str);
 
   return 0;
@@ -79,16 +79,15 @@ auto run(const Config& cfg) -> int {
 
 }  // namespace users_pipeline
 
-REGISTER_COMMAND(users, "users",
-                 "users [OPTION]...",
-                 "Print the user names of users currently logged in to the current host.\n"
-                 "\n"
-                 "Note: This is a Windows implementation. Windows doesn't have\n"
-                 "the same multi-user concept as Unix, so this command displays\n"
-                 "only the current interactive user.",
-                 "  users",
-                 "who(1)", "WinuxCmd",
-                 "Copyright © 2026 WinuxCmd", USERS_OPTIONS) {
+REGISTER_COMMAND(
+    users, "users", "users [OPTION]...",
+    "Print the user names of users currently logged in to the current host.\n"
+    "\n"
+    "Note: This is a Windows implementation. Windows doesn't have\n"
+    "the same multi-user concept as Unix, so this command displays\n"
+    "only the current interactive user.",
+    "  users", "who(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd",
+    USERS_OPTIONS) {
   using namespace users_pipeline;
 
   auto cfg_result = build_config(ctx);

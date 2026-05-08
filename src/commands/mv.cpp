@@ -70,7 +70,7 @@
  * file or when the destination file is missing [TODO]
  * - @a --verbose: Explain what is being done [IMPLEMENTED]
  * - @a --context: Set SELinux security context of destination file to default
-*/
+ */
 
 #include "pch/pch.h"
 #pragma comment(lib, "shlwapi.lib")
@@ -263,8 +263,8 @@ auto move_single_path(const std::string& src_path, const std::string& dest_path,
   std::wstring wsrc_path = utf8_to_wstring(src_path);
   std::wstring wdest_path = utf8_to_wstring(dest_path);
 
-  bool dest_exists = GetFileAttributesW(wdest_path.c_str()) !=
-                     INVALID_FILE_ATTRIBUTES;
+  bool dest_exists =
+      GetFileAttributesW(wdest_path.c_str()) != INVALID_FILE_ATTRIBUTES;
   bool no_clobber =
       ctx.get<bool>("--no-clobber", false) || ctx.get<bool>("-n", false);
   if (no_clobber && dest_exists) {

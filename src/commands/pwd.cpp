@@ -34,7 +34,7 @@
 /// @Copyright: Copyright  2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -49,7 +49,8 @@ import utils;
  *
  * @par Options:
  *
- * - @a -L, @a --logical: Use PWD from environment, even if it contains symlinks [IMPLEMENTED]
+ * - @a -L, @a --logical: Use PWD from environment, even if it contains symlinks
+ * [IMPLEMENTED]
  * - @a -P, @a --physical: Avoid all symlinks [IMPLEMENTED]
  */
 
@@ -60,9 +61,10 @@ using cmd::meta::OptionType;
 // Options (constexpr)
 // ======================================================
 
-auto constexpr PWD_OPTIONS = std::array{
-    OPTION("-L", "--logical", "use PWD from environment, even if it contains symlinks"),
-    OPTION("-P", "--physical", "avoid all symlinks")};
+auto constexpr PWD_OPTIONS =
+    std::array{OPTION("-L", "--logical",
+                      "use PWD from environment, even if it contains symlinks"),
+               OPTION("-P", "--physical", "avoid all symlinks")};
 
 // ======================================================
 // Pipeline components
@@ -113,10 +115,8 @@ auto print_directory(const std::string& path) -> cp::Result<bool> {
 // ----------------------------------------------
 template <size_t N>
 auto process_command(const CommandContext<N>& ctx) -> cp::Result<bool> {
-  return get_current_directory(ctx)
-      .and_then([](const std::string& path) {
-        return print_directory(path);
-      });
+  return get_current_directory(ctx).and_then(
+      [](const std::string& path) { return print_directory(path); });
 }
 
 }  // namespace pwd_pipeline

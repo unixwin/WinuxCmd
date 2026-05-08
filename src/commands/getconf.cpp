@@ -31,7 +31,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -41,10 +41,9 @@ import utils;
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
-auto constexpr GETCONF_OPTIONS = std::array{
-    OPTION("-a", "--all", "display all configuration variables"),
-    OPTION("", "", "get system configuration values", STRING_TYPE)
-};
+auto constexpr GETCONF_OPTIONS =
+    std::array{OPTION("-a", "--all", "display all configuration variables"),
+               OPTION("", "", "get system configuration values", STRING_TYPE)};
 
 REGISTER_COMMAND(
     getconf,
@@ -53,22 +52,19 @@ REGISTER_COMMAND(
 
     /* synopsis */
     "getconf [OPTION]... [VARIABLE_NAME]...",
-"Display configuration variable values.\n"
+    "Display configuration variable values.\n"
     "\n"
     "If no VARIABLE_NAME is specified, display system-dependent limit values.\n"
     "On Windows, this provides limited system configuration information.\n"
     "\n"
     "Options:\n"
     "  -a, --all  display all configuration variables",
-"  getconf\n"
+    "  getconf\n"
     "  getconf PATH_MAX\n"
     "  getconf -a",
 
     /* see also */
-    "sysconf(3)",
-"WinuxCmd",
-"Copyright © 2026 WinuxCmd",
-GETCONF_OPTIONS) {
+    "sysconf(3)", "WinuxCmd", "Copyright © 2026 WinuxCmd", GETCONF_OPTIONS) {
   namespace cp = core::pipeline;
 
   bool all = ctx.get<bool>("--all", false) || ctx.get<bool>("-a", false);
@@ -79,27 +75,33 @@ GETCONF_OPTIONS) {
   if (all || ctx.positionals.empty()) {
     // Display all available configuration values
     safePrintLn("System configuration:");
-    safePrintLn("  NPROCESSORS_ONLN: " + std::to_string(sysInfo.dwNumberOfProcessors));
+    safePrintLn("  NPROCESSORS_ONLN: " +
+                std::to_string(sysInfo.dwNumberOfProcessors));
     safePrintLn("  PAGE_SIZE: " + std::to_string(sysInfo.dwPageSize));
-    safePrintLn("  MACHINE_TYPE: " + std::to_string(sysInfo.wProcessorArchitecture));
-    
+    safePrintLn("  MACHINE_TYPE: " +
+                std::to_string(sysInfo.wProcessorArchitecture));
+
     MEMORYSTATUS memStatus;
     memStatus.dwLength = sizeof(memStatus);
     GlobalMemoryStatus(&memStatus);
-    safePrintLn("  PHYS_PAGES: " + std::to_string(memStatus.dwTotalPhys / sysInfo.dwPageSize));
-    safePrintLn("  AVPHYS_PAGES: " + std::to_string(memStatus.dwAvailPhys / sysInfo.dwPageSize));
-    
+    safePrintLn("  PHYS_PAGES: " +
+                std::to_string(memStatus.dwTotalPhys / sysInfo.dwPageSize));
+    safePrintLn("  AVPHYS_PAGES: " +
+                std::to_string(memStatus.dwAvailPhys / sysInfo.dwPageSize));
+
     return 0;
   }
 
   // Display specific configuration values
   for (auto var : ctx.positionals) {
     std::string var_name = std::string(var);
-    std::transform(var_name.begin(), var_name.end(), var_name.begin(), ::tolower);
+    std::transform(var_name.begin(), var_name.end(), var_name.begin(),
+                   ::tolower);
 
     if (var_name == "path_max" || var_name == "name_max") {
       safePrintLn("260");  // MAX_PATH on Windows
-    } else if (var_name == "nprocessors_onln" || var_name == "nprocessors_conf") {
+    } else if (var_name == "nprocessors_onln" ||
+               var_name == "nprocessors_conf") {
       safePrintLn(std::to_string(sysInfo.dwNumberOfProcessors));
     } else if (var_name == "page_size") {
       safePrintLn(std::to_string(sysInfo.dwPageSize));
@@ -114,7 +116,8 @@ GETCONF_OPTIONS) {
       GlobalMemoryStatus(&memStatus);
       safePrintLn(std::to_string(memStatus.dwAvailPhys / sysInfo.dwPageSize));
     } else {
-      safeErrorPrint("getconf: '" + var_name + "' is not available on Windows\n");
+      safeErrorPrint("getconf: '" + var_name +
+                     "' is not available on Windows\n");
     }
   }
 

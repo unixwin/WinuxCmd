@@ -34,7 +34,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #pragma comment(lib, "shlwapi.lib")
 #include "core/command_macros.h"
 
@@ -173,8 +173,8 @@ auto check_destination(
 
   std::wstring wdestPath = utf8_to_wstring(destPath);
   DWORD attr = GetFileAttributesW(wdestPath.c_str());
-  bool destIsDir = !no_target_directory &&
-      (attr != INVALID_FILE_ATTRIBUTES) && (attr & FILE_ATTRIBUTE_DIRECTORY);
+  bool destIsDir = !no_target_directory && (attr != INVALID_FILE_ATTRIBUTES) &&
+                   (attr & FILE_ATTRIBUTE_DIRECTORY);
 
   if (sourcePaths.size() > 1 && !destIsDir) {
     return std::unexpected("target is not a directory");
@@ -254,7 +254,8 @@ auto copy_file(const std::string& srcPath, const std::string& destPath,
     std::wstring wdst = utf8_to_wstring(destPath);
     if (GetFileAttributesExW(wsrc.c_str(), GetFileExInfoStandard, &src_data) &&
         GetFileAttributesExW(wdst.c_str(), GetFileExInfoStandard, &dest_data)) {
-      if (CompareFileTime(&src_data.ftLastWriteTime, &dest_data.ftLastWriteTime) <= 0) {
+      if (CompareFileTime(&src_data.ftLastWriteTime,
+                          &dest_data.ftLastWriteTime) <= 0) {
         return true;
       }
     }
@@ -525,8 +526,8 @@ auto process_source_paths(
 // ----------------------------------------------
 template <size_t N>
 auto process_command(const CommandContext<N>& ctx) -> cp::Result<bool> {
-  bool no_target_directory =
-      ctx.get<bool>("-T", false) || ctx.get<bool>("--no-target-directory", false);
+  bool no_target_directory = ctx.get<bool>("-T", false) ||
+                             ctx.get<bool>("--no-target-directory", false);
   return validate_arguments(ctx)
       .and_then([&](std::pair<std::vector<std::string>, std::string> paths) {
         return check_destination(paths, no_target_directory);

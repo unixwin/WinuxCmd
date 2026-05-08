@@ -32,7 +32,7 @@
 // *** SIMPLIFIED IMPLEMENTATION - Some features may not be fully supported ***
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -46,8 +46,10 @@ using cmd::meta::OptionType;
 auto constexpr JOIN_OPTIONS = std::array{
     OPTION("-1", "", "join on this FIELD of file 1", STRING_TYPE),
     OPTION("-2", "", "join on this FIELD of file 2", STRING_TYPE),
-    OPTION("-t", "", "use CHAR as input and output field separator", STRING_TYPE),
-    OPTION("-e", "--empty", "replace missing input fields with EMPTY", STRING_TYPE),
+    OPTION("-t", "", "use CHAR as input and output field separator",
+           STRING_TYPE),
+    OPTION("-e", "--empty", "replace missing input fields with EMPTY",
+           STRING_TYPE),
     OPTION("-o", "--output", "use specified output format", STRING_TYPE),
     OPTION("-j", "", "equivalent to -1 FIELD -2 FIELD", STRING_TYPE)
     // -a, --check-order (not implemented)
@@ -66,10 +68,11 @@ struct Config {
   SmallVector<std::string, 64> files;
 };
 
-auto split_line(const std::string& line, char sep, int field_num) -> std::string {
+auto split_line(const std::string& line, char sep, int field_num)
+    -> std::string {
   std::string result;
   int current_field = 1;
-  
+
   for (size_t i = 0; i < line.size(); ++i) {
     if (line[i] == sep) {
       current_field++;
@@ -80,18 +83,21 @@ auto split_line(const std::string& line, char sep, int field_num) -> std::string
       result += line[i];
     }
   }
-  
+
   return result;
 }
 
-auto split_all_fields(const std::string& line, char sep) -> SmallVector<std::string, 64> {
+auto split_all_fields(const std::string& line, char sep)
+    -> SmallVector<std::string, 64> {
   SmallVector<std::string, 64> fields;
   std::string current;
 
   for (char c : line) {
     if (c == sep) {
       // Trim trailing whitespace from current field
-      while (!current.empty() && (current.back() == ' ' || current.back() == '\t' || current.back() == '\n' || current.back() == '\r')) {
+      while (!current.empty() &&
+             (current.back() == ' ' || current.back() == '\t' ||
+              current.back() == '\n' || current.back() == '\r')) {
         current.pop_back();
       }
       if (!current.empty()) {
@@ -104,7 +110,9 @@ auto split_all_fields(const std::string& line, char sep) -> SmallVector<std::str
   }
 
   // Trim trailing whitespace from last field
-  while (!current.empty() && (current.back() == ' ' || current.back() == '\t' || current.back() == '\n' || current.back() == '\r')) {
+  while (!current.empty() &&
+         (current.back() == ' ' || current.back() == '\t' ||
+          current.back() == '\n' || current.back() == '\r')) {
     current.pop_back();
   }
   if (!current.empty()) {
@@ -183,7 +191,9 @@ auto build_config(const CommandContext<JOIN_OPTIONS.size()>& ctx)
   }
 
   if (cfg.files.size() < 2) {
-    return std::unexpected("missing operand after '" + (cfg.files.empty() ? std::string() : cfg.files[0]) + "'");
+    return std::unexpected("missing operand after '" +
+                           (cfg.files.empty() ? std::string() : cfg.files[0]) +
+                           "'");
   }
   if (cfg.files.size() > 2) {
     return std::unexpected("extra operand '" + cfg.files[2] + "'");
@@ -192,7 +202,8 @@ auto build_config(const CommandContext<JOIN_OPTIONS.size()>& ctx)
   return cfg;
 }
 
-auto read_lines(const std::string& filename) -> cp::Result<SmallVector<std::string, 1024>> {
+auto read_lines(const std::string& filename)
+    -> cp::Result<SmallVector<std::string, 1024>> {
   SmallVector<std::string, 1024> lines;
 
   if (filename == "-") {
@@ -203,7 +214,8 @@ auto read_lines(const std::string& filename) -> cp::Result<SmallVector<std::stri
   } else {
     std::ifstream f(filename, std::ios::binary);
     if (!f) {
-      return std::unexpected(std::string("cannot open '") + filename + "' for reading");
+      return std::unexpected(std::string("cannot open '") + filename +
+                             "' for reading");
     }
 
     std::string line;
@@ -255,7 +267,7 @@ auto run(const Config& cfg) -> int {
   // Join lines
   for (const auto& line1 : lines1) {
     std::string key = split_line(line1, cfg.separator, cfg.field1);
-    
+
     auto it = file2_index.find(key);
     if (it != file2_index.end()) {
       // Found matches
@@ -263,21 +275,22 @@ auto run(const Config& cfg) -> int {
         if (cfg.output_format.empty()) {
           // Default format: key + rest of line1 + rest of line2
           safePrint(key);
-          
-          // Get remaining fields from line1 (skip the key field at index field1-1)
+
+          // Get remaining fields from line1 (skip the key field at index
+          // field1-1)
           auto fields1 = split_all_fields(line1, cfg.separator);
           for (size_t i = cfg.field1; i < fields1.size(); ++i) {
             safePrint(cfg.separator);
             safePrint(fields1[i]);
           }
-          
+
           // Get all fields from line2 (skip the key field at index field2-1)
           auto fields2 = split_all_fields(lines2[idx], cfg.separator);
           for (size_t i = cfg.field2; i < fields2.size(); ++i) {
             safePrint(cfg.separator);
             safePrint(fields2[i]);
           }
-          
+
           safePrintLn("");
         } else {
           // Custom output format (not fully implemented)
@@ -292,19 +305,21 @@ auto run(const Config& cfg) -> int {
 
 }  // namespace join_pipeline
 
-REGISTER_COMMAND(join, "join",
-                 "join [OPTION]... FILE1 FILE2",
-                 "For each pair of input lines with identical join fields, write a line to\n"
-                 "standard output. The default join field is the first, delimited by blanks.\n"
-                 "\n"
-                 "Note: This is a basic implementation. Advanced features like -o format\n"
-                 "are not fully supported.",
-                 "  join file1 file2\n"
-                 "  join -j 1 file1 file2        # join on first field\n"
-                 "  join -t ',' file1 file2     # use comma as separator\n"
-                 "  join -1 2 -2 1 file1 file2  # join on field 2 of file1 and field 1 of file2",
-                 "comm(1), paste(1)", "WinuxCmd",
-                 "Copyright © 2026 WinuxCmd", JOIN_OPTIONS) {
+REGISTER_COMMAND(
+    join, "join", "join [OPTION]... FILE1 FILE2",
+    "For each pair of input lines with identical join fields, write a line to\n"
+    "standard output. The default join field is the first, delimited by "
+    "blanks.\n"
+    "\n"
+    "Note: This is a basic implementation. Advanced features like -o format\n"
+    "are not fully supported.",
+    "  join file1 file2\n"
+    "  join -j 1 file1 file2        # join on first field\n"
+    "  join -t ',' file1 file2     # use comma as separator\n"
+    "  join -1 2 -2 1 file1 file2  # join on field 2 of file1 and field 1 of "
+    "file2",
+    "comm(1), paste(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd",
+    JOIN_OPTIONS) {
   using namespace join_pipeline;
 
   auto cfg_result = build_config(ctx);

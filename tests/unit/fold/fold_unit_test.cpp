@@ -27,7 +27,9 @@
 
 TEST(fold, fold_basic) {
   TempDir tmp;
-  tmp.write("test.txt", "This is a very long line that should be wrapped at a certain width\n");
+  tmp.write(
+      "test.txt",
+      "This is a very long line that should be wrapped at a certain width\n");
 
   Pipeline p;
   p.set_cwd(tmp.wpath());

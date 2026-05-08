@@ -32,8 +32,8 @@
 /// @License: MIT
 /// @Copyright: Copyright © 2026 WinuxCmd
 
-#include "pch/pch.h"
 #include "core/command_macros.h"
+#include "pch/pch.h"
 
 #pragma comment(lib, "advapi32.lib")
 import std;
@@ -55,14 +55,17 @@ using cmd::meta::OptionType;
  * - @a -u, @a --unified: Output unified diff format [IMPLEMENTED]
  * - @a -y, @a --side-by-side: Output in two columns [IMPLEMENTED]
  * - @a -w, @a --ignore-all-space: Ignore all white space [NOT SUPPORT]
- * - @a -B, @a --ignore-blank-lines: Ignore changes whose lines are all blank [NOT SUPPORT]
+ * - @a -B, @a --ignore-blank-lines: Ignore changes whose lines are all blank
+ * [NOT SUPPORT]
  */
-auto constexpr DIFF_OPTIONS = std::array{
-    OPTION("-q", "--brief", "report only when files differ"),
-    OPTION("-u", "--unified", "output NUM (default 3) lines of unified context"),
-    OPTION("-y", "--side-by-side", "output in two columns"),
-    OPTION("-w", "--ignore-all-space", "ignore all white space"),
-    OPTION("-B", "--ignore-blank-lines", "ignore changes whose lines are all blank")};
+auto constexpr DIFF_OPTIONS =
+    std::array{OPTION("-q", "--brief", "report only when files differ"),
+               OPTION("-u", "--unified",
+                      "output NUM (default 3) lines of unified context"),
+               OPTION("-y", "--side-by-side", "output in two columns"),
+               OPTION("-w", "--ignore-all-space", "ignore all white space"),
+               OPTION("-B", "--ignore-blank-lines",
+                      "ignore changes whose lines are all blank")};
 
 namespace diff_pipeline {
 namespace cp = core::pipeline;
@@ -102,7 +105,7 @@ auto is_identical(const std::vector<std::string> &lines1,
  * @return LCS matrix
  */
 auto compute_lcs_optimized(const std::vector<std::string> &lines1,
-                            const std::vector<std::string> &lines2)
+                           const std::vector<std::string> &lines2)
     -> std::vector<std::vector<size_t>> {
   size_t m = lines1.size();
   size_t n = lines2.size();
@@ -121,7 +124,7 @@ auto compute_lcs_optimized(const std::vector<std::string> &lines1,
   std::vector<size_t> hash2;
   hash1.reserve(m);
   hash2.reserve(n);
-  
+
   for (const auto &line : lines1) {
     hash1.push_back(std::hash<std::string>{}(line));
   }
@@ -154,8 +157,8 @@ auto compute_lcs_optimized(const std::vector<std::string> &lines1,
  * @return Vector of edit operations
  */
 auto backtrack_lcs(const std::vector<std::vector<size_t>> &lcs,
-                    const std::vector<std::string> &lines1,
-                    const std::vector<std::string> &lines2)
+                   const std::vector<std::string> &lines1,
+                   const std::vector<std::string> &lines2)
     -> std::vector<Edit> {
   std::vector<Edit> edits;
   size_t i = lines1.size();
@@ -186,8 +189,7 @@ auto backtrack_lcs(const std::vector<std::vector<size_t>> &lcs,
  * @return Vector of edit operations
  */
 auto compute_diff(const std::vector<std::string> &lines1,
-                  const std::vector<std::string> &lines2)
-    -> std::vector<Edit> {
+                  const std::vector<std::string> &lines2) -> std::vector<Edit> {
   // Fast path: identical files
   if (is_identical(lines1, lines2)) {
     return {};
@@ -285,9 +287,9 @@ auto compare_files(const std::string &path1, const std::string &path2,
  * @param context Number of context lines
  */
 auto output_unified_diff(const std::string &path1, const std::string &path2,
-                          const std::vector<std::string> &lines1,
-                          const std::vector<std::string> &lines2,
-                          int context) -> void {
+                         const std::vector<std::string> &lines1,
+                         const std::vector<std::string> &lines2, int context)
+    -> void {
   auto edits = compute_diff(lines1, lines2);
 
   // Group edits into hunks
@@ -296,21 +298,27 @@ auto output_unified_diff(const std::string &path1, const std::string &path2,
     size_t hunk_start = 0;
     for (size_t i = 1; i < edits.size(); ++i) {
       size_t distance = 0;
-      
+
       // Calculate distance in terms of line numbers
-      size_t prev_line1 = (edits[i-1].type != EditType::INS) ? edits[i-1].line1_index : 
-                         (edits[i-1].line1_index);
-      size_t curr_line1 = (edits[i].type != EditType::INS) ? edits[i].line1_index : 
-                         (edits[i].line1_index);
-      size_t prev_line2 = (edits[i-1].type != EditType::DEL) ? edits[i-1].line2_index :
-                         (edits[i-1].line2_index);
-      size_t curr_line2 = (edits[i].type != EditType::DEL) ? edits[i].line2_index :
-                         (edits[i].line2_index);
-      
-      distance = std::max(
-          (curr_line1 > prev_line1 + context) ? curr_line1 - prev_line1 - context : 0,
-          (curr_line2 > prev_line2 + context) ? curr_line2 - prev_line2 - context : 0
-      );
+      size_t prev_line1 = (edits[i - 1].type != EditType::INS)
+                              ? edits[i - 1].line1_index
+                              : (edits[i - 1].line1_index);
+      size_t curr_line1 = (edits[i].type != EditType::INS)
+                              ? edits[i].line1_index
+                              : (edits[i].line1_index);
+      size_t prev_line2 = (edits[i - 1].type != EditType::DEL)
+                              ? edits[i - 1].line2_index
+                              : (edits[i - 1].line2_index);
+      size_t curr_line2 = (edits[i].type != EditType::DEL)
+                              ? edits[i].line2_index
+                              : (edits[i].line2_index);
+
+      distance = std::max((curr_line1 > prev_line1 + context)
+                              ? curr_line1 - prev_line1 - context
+                              : 0,
+                          (curr_line2 > prev_line2 + context)
+                              ? curr_line2 - prev_line2 - context
+                              : 0);
 
       if (distance > context * 2) {
         hunks.push_back({hunk_start, i});
@@ -344,7 +352,7 @@ auto output_unified_diff(const std::string &path1, const std::string &path2,
 
     for (size_t i = hunk_start; i < hunk_end; ++i) {
       const auto &edit = edits[i];
-      
+
       if (edit.type == EditType::KEEP) {
         context_start = std::min(context_start, edit.line1_index);
         context_end = std::max(context_end, edit.line1_index + 1);
@@ -358,9 +366,11 @@ auto output_unified_diff(const std::string &path1, const std::string &path2,
     }
 
     // Add context lines
-    file1_start = std::max((ptrdiff_t)file1_start - (ptrdiff_t)context, (ptrdiff_t)0);
+    file1_start =
+        std::max((ptrdiff_t)file1_start - (ptrdiff_t)context, (ptrdiff_t)0);
     file1_end = std::min(file1_end + context, lines1.size());
-    file2_start = std::max((ptrdiff_t)file2_start - (ptrdiff_t)context, (ptrdiff_t)0);
+    file2_start =
+        std::max((ptrdiff_t)file2_start - (ptrdiff_t)context, (ptrdiff_t)0);
     file2_end = std::min(file2_end + context, lines2.size());
 
     // Output hunk header
@@ -377,10 +387,10 @@ auto output_unified_diff(const std::string &path1, const std::string &path2,
     // Output hunk content
     size_t i1 = file1_start;
     size_t i2 = file2_start;
-    
+
     for (size_t i = hunk_start; i < hunk_end; ++i) {
       const auto &edit = edits[i];
-      
+
       if (edit.type == EditType::KEEP) {
         while (i1 < edit.line1_index && i1 < file1_end) {
           safePrint(" ");
@@ -440,8 +450,8 @@ auto output_unified_diff(const std::string &path1, const std::string &path2,
  * @param lines2 Lines from second file
  */
 auto output_side_by_side(const std::string &path1, const std::string &path2,
-                          const std::vector<std::string> &lines1,
-                          const std::vector<std::string> &lines2) -> void {
+                         const std::vector<std::string> &lines1,
+                         const std::vector<std::string> &lines2) -> void {
   auto edits = compute_diff(lines1, lines2);
 
   if (edits.empty()) {
@@ -468,13 +478,15 @@ auto output_side_by_side(const std::string &path1, const std::string &path2,
         safePrint("  ");
         print_padded(lines2[i2], col_width);
         safePrint("\n");
-        ++i1; ++i2;
+        ++i1;
+        ++i2;
       }
       print_padded(lines1[edit.line1_index], col_width);
       safePrint("  ");
       print_padded(lines2[edit.line2_index], col_width);
       safePrint("\n");
-      ++i1; ++i2;
+      ++i1;
+      ++i2;
     } else if (edit.type == EditType::DEL) {
       print_padded(lines1[edit.line1_index], col_width);
       safePrint(" +");
@@ -508,24 +520,24 @@ auto output_side_by_side(const std::string &path1, const std::string &path2,
 
 }  // namespace diff_pipeline
 
-REGISTER_COMMAND(diff, "diff",
-                 "compare files line by line",
-                 "Compare files line by line and report differences.\n"
-                 "\n"
-                 "This is a simplified implementation of the Unix diff utility.\n"
-                 "It supports basic comparison and unified diff output.",
-                 "  diff file1 file2         Compare two files\n"
-                 "  diff -q file1 file2      Only report if files differ\n"
-                 "  diff -u file1 file2      Show unified diff format",
-                 "cmp(1), patch(1)", "caomengxuan666",
-                 "Copyright © 2026 WinuxCmd", DIFF_OPTIONS) {
+REGISTER_COMMAND(
+    diff, "diff", "compare files line by line",
+    "Compare files line by line and report differences.\n"
+    "\n"
+    "This is a simplified implementation of the Unix diff utility.\n"
+    "It supports basic comparison and unified diff output.",
+    "  diff file1 file2         Compare two files\n"
+    "  diff -q file1 file2      Only report if files differ\n"
+    "  diff -u file1 file2      Show unified diff format",
+    "cmp(1), patch(1)", "caomengxuan666", "Copyright © 2026 WinuxCmd",
+    DIFF_OPTIONS) {
   using namespace diff_pipeline;
 
   bool brief = ctx.get<bool>("-q", false) || ctx.get<bool>("--brief", false);
-  bool unified = ctx.get<bool>("-u", false) ||
-                 ctx.get<bool>("--unified", false);
-  bool side_by_side = ctx.get<bool>("-y", false) ||
-                      ctx.get<bool>("--side-by-side", false);
+  bool unified =
+      ctx.get<bool>("-u", false) || ctx.get<bool>("--unified", false);
+  bool side_by_side =
+      ctx.get<bool>("-y", false) || ctx.get<bool>("--side-by-side", false);
   int context = 3;  // Default context lines for unified diff
 
   // Need exactly two files
@@ -576,7 +588,7 @@ REGISTER_COMMAND(diff, "diff",
   } else {
     // Simple comparison using LCS
     auto edits = compute_diff(lines1, lines2);
-    
+
     bool has_diffs = false;
     for (const auto &edit : edits) {
       if (edit.type == EditType::DEL) {

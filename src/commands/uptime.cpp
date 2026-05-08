@@ -31,7 +31,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -44,8 +44,7 @@ using cmd::meta::OptionType;
 
 auto constexpr UPTIME_OPTIONS = std::array{
     OPTION("-p", "--pretty", "show uptime in pretty format", BOOL_TYPE),
-    OPTION("-s", "--since", "system up since", BOOL_TYPE)
-};
+    OPTION("-s", "--since", "system up since", BOOL_TYPE)};
 
 namespace uptime_pipeline {
 namespace cp = core::pipeline;
@@ -83,7 +82,7 @@ auto format_uptime(std::chrono::seconds uptime) -> std::string {
     result += std::to_string(minutes.count()) + " minute";
     if (minutes.count() != 1) result += "s";
   }
-  
+
   return result;
 }
 
@@ -125,17 +124,16 @@ auto run(const Config& cfg) -> int {
 
 }  // namespace uptime_pipeline
 
-REGISTER_COMMAND(uptime, "uptime",
-                 "uptime [OPTION]...",
-                 "Tell how long the system has been running.\n"
-                 "\n"
-                 "Note: This implementation provides Windows-specific information.\n"
-                 "Load average is not available on Windows.",
-                 "  uptime\n"
-                 "  uptime -p\n"
-                 "  uptime -s",
-                 "w(1)", "WinuxCmd",
-                 "Copyright © 2026 WinuxCmd", UPTIME_OPTIONS) {
+REGISTER_COMMAND(
+    uptime, "uptime", "uptime [OPTION]...",
+    "Tell how long the system has been running.\n"
+    "\n"
+    "Note: This implementation provides Windows-specific information.\n"
+    "Load average is not available on Windows.",
+    "  uptime\n"
+    "  uptime -p\n"
+    "  uptime -s",
+    "w(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", UPTIME_OPTIONS) {
   using namespace uptime_pipeline;
 
   auto cfg_result = build_config(ctx);

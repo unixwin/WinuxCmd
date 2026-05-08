@@ -31,7 +31,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -43,13 +43,16 @@ using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
 auto constexpr ID_OPTIONS = std::array{
-    OPTION("-a", "", "ignore, for compatibility with other versions", BOOL_TYPE),
+    OPTION("-a", "", "ignore, for compatibility with other versions",
+           BOOL_TYPE),
     OPTION("-g", "--group", "print only the effective group ID", BOOL_TYPE),
     OPTION("-G", "--groups", "print all group IDs", BOOL_TYPE),
     OPTION("-n", "--name", "print a name instead of a number", BOOL_TYPE),
-    OPTION("-r", "--real", "print the real ID instead of the effective ID", BOOL_TYPE),
+    OPTION("-r", "--real", "print the real ID instead of the effective ID",
+           BOOL_TYPE),
     OPTION("-u", "--user", "print only the effective user ID", BOOL_TYPE),
-    OPTION("-Z", "--context", "print only the security context (not implemented)", BOOL_TYPE)
+    OPTION("-Z", "--context",
+           "print only the security context (not implemented)", BOOL_TYPE)
     // --zero (not implemented)
 };
 
@@ -67,8 +70,10 @@ struct Config {
 auto build_config(const CommandContext<ID_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
   Config cfg;
-  cfg.print_group = ctx.get<bool>("--group", false) || ctx.get<bool>("-g", false);
-  cfg.print_groups = ctx.get<bool>("--groups", false) || ctx.get<bool>("-G", false);
+  cfg.print_group =
+      ctx.get<bool>("--group", false) || ctx.get<bool>("-g", false);
+  cfg.print_groups =
+      ctx.get<bool>("--groups", false) || ctx.get<bool>("-G", false);
   cfg.print_name = ctx.get<bool>("--name", false) || ctx.get<bool>("-n", false);
   cfg.print_user = ctx.get<bool>("--user", false) || ctx.get<bool>("-u", false);
 
@@ -83,17 +88,17 @@ auto run(const Config& cfg) -> int {
   // Get current user info
   WCHAR username[256];
   DWORD username_size = 256;
-  
+
   if (!GetUserNameW(username, &username_size)) {
     return 1;
   }
-  
+
   std::wstring ws(username);
   std::string user_str(ws.begin(), ws.end());
 
   // Windows doesn't have POSIX UIDs/GIDs, so we use SIDs
   // For simplicity, we'll just print the username
-  
+
   if (cfg.print_user) {
     // Print uid=0(username) format when -u option is used
     safePrint("uid=0(");
@@ -103,7 +108,7 @@ auto run(const Config& cfg) -> int {
     safePrintLn("unknown");  // Windows doesn't have POSIX groups
   } else if (cfg.print_groups) {
     safePrint(user_str);
-    safePrint(" ");  // Primary group
+    safePrint(" ");   // Primary group
     safePrintLn("");  // No additional groups on Windows
   } else {
     // Print all info
@@ -121,20 +126,20 @@ auto run(const Config& cfg) -> int {
 
 }  // namespace id_pipeline
 
-REGISTER_COMMAND(id, "id",
-                 "id [OPTION]... [USER]",
-                 "Print user and group information for the specified USER,\n"
-                 "or (when USER omitted) for the current user.\n"
-                 "\n"
-                 "Note: This is a Windows implementation. Windows doesn't have\n"
-                 "POSIX UIDs/GIDs, so this command provides limited functionality.\n"
-                 "It mainly displays the username.",
-                 "  id\n"
-                 "  id -u\n"
-                 "  id -g\n"
-                 "  id -G",
-                 "groups(1), whoami(1)", "WinuxCmd",
-                 "Copyright © 2026 WinuxCmd", ID_OPTIONS) {
+REGISTER_COMMAND(
+    id, "id", "id [OPTION]... [USER]",
+    "Print user and group information for the specified USER,\n"
+    "or (when USER omitted) for the current user.\n"
+    "\n"
+    "Note: This is a Windows implementation. Windows doesn't have\n"
+    "POSIX UIDs/GIDs, so this command provides limited functionality.\n"
+    "It mainly displays the username.",
+    "  id\n"
+    "  id -u\n"
+    "  id -g\n"
+    "  id -G",
+    "groups(1), whoami(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd",
+    ID_OPTIONS) {
   using namespace id_pipeline;
 
   auto cfg_result = build_config(ctx);

@@ -538,7 +538,8 @@ static void runReplMode() noexcept {
         } else if (c == '"' && !in_single_quote) {
           in_double_quote = !in_double_quote;
           was_quoted = true;
-        } else if (std::isspace(static_cast<unsigned char>(c)) && !in_single_quote && !in_double_quote) {
+        } else if (std::isspace(static_cast<unsigned char>(c)) &&
+                   !in_single_quote && !in_double_quote) {
           if (!tok.empty()) {
             if (was_quoted) {
               tokens.push_back("\x01" + tok);

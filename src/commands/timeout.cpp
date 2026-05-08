@@ -31,7 +31,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -43,11 +43,14 @@ using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
 auto constexpr TIMEOUT_OPTIONS = std::array{
-    OPTION("-s", "--signal", "specify the signal to be sent on timeout", STRING_TYPE),
-    OPTION("-k", "--kill-after", "also send a KILL signal if COMMAND still running", STRING_TYPE),
-    OPTION("", "--foreground", "when not running timeout directly from a shell prompt", BOOL_TYPE),
-    OPTION("", "--preserve-status", "exit with the same status as COMMAND", BOOL_TYPE)
-};
+    OPTION("-s", "--signal", "specify the signal to be sent on timeout",
+           STRING_TYPE),
+    OPTION("-k", "--kill-after",
+           "also send a KILL signal if COMMAND still running", STRING_TYPE),
+    OPTION("", "--foreground",
+           "when not running timeout directly from a shell prompt", BOOL_TYPE),
+    OPTION("", "--preserve-status", "exit with the same status as COMMAND",
+           BOOL_TYPE)};
 
 namespace timeout_pipeline {
 namespace cp = core::pipeline;
@@ -74,7 +77,7 @@ auto parse_duration(const std::string& duration) -> cp::Result<int64_t> {
     int64_t multiplier = 1;
     if (s.size() > 1) {
       char suffix = s.back();
-      
+
       switch (suffix) {
         case 's':
         case 'S':
@@ -100,7 +103,8 @@ auto parse_duration(const std::string& duration) -> cp::Result<int64_t> {
     }
 
     double value = std::stod(s);
-    return static_cast<int64_t>(value * multiplier * 1000);  // Convert to milliseconds
+    return static_cast<int64_t>(value * multiplier *
+                                1000);  // Convert to milliseconds
   } catch (...) {
     return std::unexpected("invalid duration format");
   }
@@ -172,30 +176,30 @@ auto run(const Config& cfg) -> int {
     std::wstring wcmd_line(cmd_line.begin(), cmd_line.end());
 
     // Create process
-    STARTUPINFOW si = { sizeof(si) };
+    STARTUPINFOW si = {sizeof(si)};
     PROCESS_INFORMATION pi;
     si.dwFlags = STARTF_USESTDHANDLES;
     si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
     si.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
     si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
 
-    if (!CreateProcessW(
-        NULL,                   // No module name
-        &wcmd_line[0],          // Command line
-        NULL,                   // Process handle not inheritable
-        NULL,                   // Thread handle not inheritable
-        TRUE,                   // Set handle inheritance to TRUE
-        0,                      // No creation flags
-        NULL,                   // Use parent's environment block
-        NULL,                   // Use parent's starting directory
-        &si,                    // Pointer to STARTUPINFO structure
-        &pi                     // Pointer to PROCESS_INFORMATION structure
-    )) {
+    if (!CreateProcessW(NULL,           // No module name
+                        &wcmd_line[0],  // Command line
+                        NULL,           // Process handle not inheritable
+                        NULL,           // Thread handle not inheritable
+                        TRUE,           // Set handle inheritance to TRUE
+                        0,              // No creation flags
+                        NULL,           // Use parent's environment block
+                        NULL,           // Use parent's starting directory
+                        &si,            // Pointer to STARTUPINFO structure
+                        &pi  // Pointer to PROCESS_INFORMATION structure
+                        )) {
       return 1;
     }
 
     // Wait for process to finish or timeout
-    DWORD wait_result = WaitForSingleObject(pi.hProcess, static_cast<DWORD>(cfg.duration_ms));
+    DWORD wait_result =
+        WaitForSingleObject(pi.hProcess, static_cast<DWORD>(cfg.duration_ms));
 
     if (wait_result == WAIT_TIMEOUT) {
       // Process timed out, kill it
@@ -219,23 +223,23 @@ auto run(const Config& cfg) -> int {
 
 }  // namespace timeout_pipeline
 
-REGISTER_COMMAND(timeout, "timeout",
-                 "timeout [OPTION] DURATION COMMAND [ARG]...",
-                 "Start COMMAND, and kill it if still running after DURATION.\n"
-                 "\n"
-                 "Mandatory arguments to long options are mandatory for short options too.\n"
-                 "\n"
-                 "DURATION is a floating point number with an optional suffix:\n"
-                 "'s' for seconds (default), 'm' for minutes, 'h' for hours or 'd' for days.\n"
-                 "\n"
-                 "Note: This is a simplified implementation. It doesn't actually\n"
-                 "execute the command. It's provided for API compatibility only.\n"
-                 "Full implementation would require process management on Windows.",
-                 "  timeout 5s command\n"
-                 "  timeout 1m command args\n"
-                 "  timeout -k 10s 30s command",
-                 "kill(1)", "WinuxCmd",
-                 "Copyright © 2026 WinuxCmd", TIMEOUT_OPTIONS) {
+REGISTER_COMMAND(
+    timeout, "timeout", "timeout [OPTION] DURATION COMMAND [ARG]...",
+    "Start COMMAND, and kill it if still running after DURATION.\n"
+    "\n"
+    "Mandatory arguments to long options are mandatory for short options too.\n"
+    "\n"
+    "DURATION is a floating point number with an optional suffix:\n"
+    "'s' for seconds (default), 'm' for minutes, 'h' for hours or 'd' for "
+    "days.\n"
+    "\n"
+    "Note: This is a simplified implementation. It doesn't actually\n"
+    "execute the command. It's provided for API compatibility only.\n"
+    "Full implementation would require process management on Windows.",
+    "  timeout 5s command\n"
+    "  timeout 1m command args\n"
+    "  timeout -k 10s 30s command",
+    "kill(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", TIMEOUT_OPTIONS) {
   using namespace timeout_pipeline;
 
   auto cfg_result = build_config(ctx);

@@ -31,7 +31,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -41,9 +41,8 @@ import utils;
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
-auto constexpr CLEAR_OPTIONS = std::array{
-    OPTION("", "", "clear terminal screen", STRING_TYPE)
-};
+auto constexpr CLEAR_OPTIONS =
+    std::array{OPTION("", "", "clear terminal screen", STRING_TYPE)};
 
 REGISTER_COMMAND(
     clear,
@@ -52,17 +51,15 @@ REGISTER_COMMAND(
 
     /* synopsis */
     "clear",
-"Clear the terminal screen.\n"
+    "Clear the terminal screen.\n"
     "\n"
     "Clears the terminal screen by sending ANSI escape sequences.\n"
-    "This works on Windows Terminal, modern terminals, and terminals that support ANSI escape codes.",
-"  clear",
+    "This works on Windows Terminal, modern terminals, and terminals that "
+    "support ANSI escape codes.",
+    "  clear",
 
     /* see also */
-    "reset(1)",
-"WinuxCmd",
-"Copyright © 2026 WinuxCmd",
-CLEAR_OPTIONS) {
+    "reset(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", CLEAR_OPTIONS) {
   namespace cp = core::pipeline;
 
   // Send ANSI escape sequence to clear screen and move cursor to home

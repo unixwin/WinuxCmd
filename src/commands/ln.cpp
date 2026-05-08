@@ -32,8 +32,8 @@
 /// @License: MIT
 /// @Copyright: Copyright © 2026 WinuxCmd
 
-#include "pch/pch.h"
 #include "core/command_macros.h"
+#include "pch/pch.h"
 
 #pragma comment(lib, "advapi32.lib")
 import std;
@@ -51,16 +51,20 @@ using cmd::meta::OptionType;
  * The implementation status is also indicated for each option.
  *
  * @par Options:
- * - @a -s, @a --symbolic: Make symbolic links instead of hard links [IMPLEMENTED]
+ * - @a -s, @a --symbolic: Make symbolic links instead of hard links
+ * [IMPLEMENTED]
  * - @a -f, @a --force: Remove existing destination files [IMPLEMENTED]
  * - @a -v, @a --verbose: Print name of each linked file [IMPLEMENTED]
- * - @a -n, @a --no-dereference: Treat LINK_NAME as a normal file if it is a symbolic link to a directory [NOT SUPPORT]
+ * - @a -n, @a --no-dereference: Treat LINK_NAME as a normal file if it is a
+ * symbolic link to a directory [NOT SUPPORT]
  */
 auto constexpr LN_OPTIONS = std::array{
     OPTION("-s", "--symbolic", "make symbolic links instead of hard links"),
     OPTION("-f", "--force", "remove existing destination files"),
     OPTION("-v", "--verbose", "print name of each linked file"),
-    OPTION("-n", "--no-dereference", "treat LINK_NAME as a normal file if it is a symbolic link to a directory")};
+    OPTION("-n", "--no-dereference",
+           "treat LINK_NAME as a normal file if it is a symbolic link to a "
+           "directory")};
 
 namespace ln_pipeline {
 namespace cp = core::pipeline;
@@ -89,8 +93,8 @@ auto create_hardlink(const std::string &source, const std::string &target,
   }
 
   DWORD error = GetLastError();
-  return std::unexpected("failed to create hard link '" + target + "': " +
-                        std::to_string(error));
+  return std::unexpected("failed to create hard link '" + target +
+                         "': " + std::to_string(error));
 }
 
 /**
@@ -126,8 +130,8 @@ auto create_symlink(const std::string &source, const std::string &target,
   }
 
   DWORD error = GetLastError();
-  return std::unexpected("failed to create symbolic link '" + target + "': " +
-                        std::to_string(error));
+  return std::unexpected("failed to create symbolic link '" + target +
+                         "': " + std::to_string(error));
 }
 
 /**
@@ -165,31 +169,31 @@ auto remove_existing(const std::string &path) -> cp::Result<void> {
   }
 
   DWORD error = GetLastError();
-  return std::unexpected("failed to remove '" + path + "': " +
-                        std::to_string(error));
+  return std::unexpected("failed to remove '" + path +
+                         "': " + std::to_string(error));
 }
 
 }  // namespace ln_pipeline
 
-REGISTER_COMMAND(ln, "ln",
-                 "make links between files",
-                 "Create links between files. By default, make hard links.\n"
-                 "\n"
-                 "On Windows, hard links and symbolic links are supported.\n"
-                 "Note: Creating symbolic links may require administrator privileges.",
-                 "  ln source link         Create a hard link\n"
-                 "  ln -s source link      Create a symbolic link\n"
-                 "  ln -sf source link     Force create, overwrite if exists\n"
-                 "  ln -sv source link     Verbose symbolic link creation",
-                 "link(1), symlink(1)", "caomengxuan666",
-                 "Copyright © 2026 WinuxCmd", LN_OPTIONS) {
+REGISTER_COMMAND(
+    ln, "ln", "make links between files",
+    "Create links between files. By default, make hard links.\n"
+    "\n"
+    "On Windows, hard links and symbolic links are supported.\n"
+    "Note: Creating symbolic links may require administrator privileges.",
+    "  ln source link         Create a hard link\n"
+    "  ln -s source link      Create a symbolic link\n"
+    "  ln -sf source link     Force create, overwrite if exists\n"
+    "  ln -sv source link     Verbose symbolic link creation",
+    "link(1), symlink(1)", "caomengxuan666", "Copyright © 2026 WinuxCmd",
+    LN_OPTIONS) {
   using namespace ln_pipeline;
 
-  bool symbolic = ctx.get<bool>("-s", false) ||
-                  ctx.get<bool>("--symbolic", false);
+  bool symbolic =
+      ctx.get<bool>("-s", false) || ctx.get<bool>("--symbolic", false);
   bool force = ctx.get<bool>("-f", false) || ctx.get<bool>("--force", false);
-  bool verbose = ctx.get<bool>("-v", false) ||
-                 ctx.get<bool>("--verbose", false);
+  bool verbose =
+      ctx.get<bool>("-v", false) || ctx.get<bool>("--verbose", false);
 
   // Need at least source and one target
   if (ctx.positionals.size() < 2) {
@@ -199,14 +203,15 @@ REGISTER_COMMAND(ln, "ln",
   }
 
   std::string source = std::string(ctx.positionals[0]);
-  
+
   // Batch mode: first param is source, rest are targets
   size_t target_count = ctx.positionals.size() - 1;
   size_t success_count = 0;
   size_t error_count = 0;
 
   if (verbose && target_count > 1) {
-    safePrint("ln: creating " + std::to_string(target_count) + " links from '" + source + "'...\n");
+    safePrint("ln: creating " + std::to_string(target_count) + " links from '" +
+              source + "'...\n");
   }
 
   for (size_t i = 1; i < ctx.positionals.size(); ++i) {
@@ -225,9 +230,8 @@ REGISTER_COMMAND(ln, "ln",
     }
 
     // Create the link
-    auto result = symbolic
-                    ? create_symlink(source, target, verbose)
-                    : create_hardlink(source, target, verbose);
+    auto result = symbolic ? create_symlink(source, target, verbose)
+                           : create_hardlink(source, target, verbose);
 
     if (!result) {
       safeErrorPrint("ln: ");
@@ -240,7 +244,8 @@ REGISTER_COMMAND(ln, "ln",
   }
 
   if (verbose) {
-    safePrint("ln: " + std::to_string(success_count) + " links created, " + std::to_string(error_count) + " errors\n");
+    safePrint("ln: " + std::to_string(success_count) + " links created, " +
+              std::to_string(error_count) + " errors\n");
   }
 
   return (error_count > 0) ? 1 : 0;

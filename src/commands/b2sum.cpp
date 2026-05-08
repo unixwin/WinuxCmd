@@ -32,10 +32,11 @@
 // *** SIMPLIFIED IMPLEMENTATION - Some features may not be fully supported ***
 
 #include "pch/pch.h"
-//include other header after pch.h
-#include "core/command_macros.h"
-#include <wincrypt.h>
+// include other header after pch.h
 #include <bcrypt.h>  // For CNG API (BLAKE2 support)
+#include <wincrypt.h>
+
+#include "core/command_macros.h"
 
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "bcrypt.lib")  // For CNG API
@@ -49,14 +50,18 @@ using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
 auto constexpr B2SUM_OPTIONS = std::array{
-    OPTION("-l", "--length", "digest length in bits; must be multiple of 8", STRING_TYPE),
+    OPTION("-l", "--length", "digest length in bits; must be multiple of 8",
+           STRING_TYPE),
     OPTION("-b", "--binary", "read in binary mode (default)", BOOL_TYPE),
-    OPTION("-c", "--check", "read BLAKE2 sums from the FILEs and check them", STRING_TYPE),
+    OPTION("-c", "--check", "read BLAKE2 sums from the FILEs and check them",
+           STRING_TYPE),
     OPTION("-t", "--text", "read in text mode", BOOL_TYPE),
-    OPTION("-q", "--quiet", "don't print OK for each successfully verified file", BOOL_TYPE),
-    OPTION("-s", "--status", "don't output anything, status code shows success", BOOL_TYPE),
-    OPTION("-w", "--warn", "warn about improperly formatted checksum lines", BOOL_TYPE)
-};
+    OPTION("-q", "--quiet",
+           "don't print OK for each successfully verified file", BOOL_TYPE),
+    OPTION("-s", "--status", "don't output anything, status code shows success",
+           BOOL_TYPE),
+    OPTION("-w", "--warn", "warn about improperly formatted checksum lines",
+           BOOL_TYPE)};
 
 namespace b2sum_pipeline {
 namespace cp = core::pipeline;
@@ -76,8 +81,9 @@ struct Config {
 auto build_config(const CommandContext<B2SUM_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
   Config cfg;
-  cfg.binary_mode = ctx.get<bool>("--binary", false) || ctx.get<bool>("-b", false);
-  
+  cfg.binary_mode =
+      ctx.get<bool>("--binary", false) || ctx.get<bool>("-b", false);
+
   auto length_opt = ctx.get<std::string>("--length", "");
   if (length_opt.empty()) {
     length_opt = ctx.get<std::string>("-l", "");
@@ -85,8 +91,10 @@ auto build_config(const CommandContext<B2SUM_OPTIONS.size()>& ctx)
   if (!length_opt.empty()) {
     try {
       cfg.digest_bits = std::stoi(length_opt);
-      if (cfg.digest_bits != 128 && cfg.digest_bits != 256 && cfg.digest_bits != 384 && cfg.digest_bits != 512) {
-        return std::unexpected("digest length must be 128, 256, 384, or 512 bits");
+      if (cfg.digest_bits != 128 && cfg.digest_bits != 256 &&
+          cfg.digest_bits != 384 && cfg.digest_bits != 512) {
+        return std::unexpected(
+            "digest length must be 128, 256, 384, or 512 bits");
       }
     } catch (...) {
       return std::unexpected("invalid digest length");
@@ -133,7 +141,7 @@ auto calculate_hash(const std::string& filename) -> cp::Result<std::string> {
   BCRYPT_ALG_HANDLE hAlg = NULL;
   BCRYPT_HASH_HANDLE hHash = NULL;
   NTSTATUS status;
-  
+
   // Open SHA512 algorithm provider (using CNG API)
   status = BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_SHA512_ALGORITHM, NULL, 0);
   if (!BCRYPT_SUCCESS(status)) {
@@ -143,7 +151,9 @@ auto calculate_hash(const std::string& filename) -> cp::Result<std::string> {
   // Get hash object size
   DWORD hash_object_size = 0;
   DWORD data_size = 0;
-  status = BCryptGetProperty(hAlg, BCRYPT_OBJECT_LENGTH, (PUCHAR)&hash_object_size, sizeof(DWORD), &data_size, 0);
+  status =
+      BCryptGetProperty(hAlg, BCRYPT_OBJECT_LENGTH, (PUCHAR)&hash_object_size,
+                        sizeof(DWORD), &data_size, 0);
   if (!BCRYPT_SUCCESS(status)) {
     BCryptCloseAlgorithmProvider(hAlg, 0);
     return std::unexpected("failed to get hash object size");
@@ -151,9 +161,10 @@ auto calculate_hash(const std::string& filename) -> cp::Result<std::string> {
 
   // Allocate hash object
   std::vector<BYTE> hash_object(hash_object_size);
-  
+
   // Create hash handle
-  status = BCryptCreateHash(hAlg, &hHash, hash_object.data(), hash_object_size, NULL, 0, 0);
+  status = BCryptCreateHash(hAlg, &hHash, hash_object.data(), hash_object_size,
+                            NULL, 0, 0);
   if (!BCRYPT_SUCCESS(status)) {
     BCryptCloseAlgorithmProvider(hAlg, 0);
     return std::unexpected("failed to create hash handle");
@@ -165,7 +176,8 @@ auto calculate_hash(const std::string& filename) -> cp::Result<std::string> {
     std::array<char, 8192> buffer;
     size_t bytes_read;
     while ((bytes_read = fread(buffer.data(), 1, buffer.size(), stdin)) > 0) {
-      status = BCryptHashData(hHash, reinterpret_cast<PUCHAR>(buffer.data()), static_cast<ULONG>(bytes_read), 0);
+      status = BCryptHashData(hHash, reinterpret_cast<PUCHAR>(buffer.data()),
+                              static_cast<ULONG>(bytes_read), 0);
       if (!BCRYPT_SUCCESS(status)) {
         BCryptDestroyHash(hHash);
         BCryptCloseAlgorithmProvider(hAlg, 0);
@@ -178,7 +190,8 @@ auto calculate_hash(const std::string& filename) -> cp::Result<std::string> {
     if (!file) {
       BCryptDestroyHash(hHash);
       BCryptCloseAlgorithmProvider(hAlg, 0);
-      return std::unexpected(std::string("cannot open '") + filename + "' for reading");
+      return std::unexpected(std::string("cannot open '") + filename +
+                             "' for reading");
     }
 
     std::array<char, 8192> buffer;
@@ -186,7 +199,8 @@ auto calculate_hash(const std::string& filename) -> cp::Result<std::string> {
       file.read(buffer.data(), buffer.size());
       std::streamsize bytes_read = file.gcount();
       if (bytes_read > 0) {
-        status = BCryptHashData(hHash, reinterpret_cast<PUCHAR>(buffer.data()), static_cast<ULONG>(bytes_read), 0);
+        status = BCryptHashData(hHash, reinterpret_cast<PUCHAR>(buffer.data()),
+                                static_cast<ULONG>(bytes_read), 0);
         if (!BCRYPT_SUCCESS(status)) {
           BCryptDestroyHash(hHash);
           BCryptCloseAlgorithmProvider(hAlg, 0);
@@ -203,7 +217,8 @@ auto calculate_hash(const std::string& filename) -> cp::Result<std::string> {
 
   // Get hash length
   DWORD hash_len = 0;
-  status = BCryptGetProperty(hAlg, BCRYPT_HASH_LENGTH, (PUCHAR)&hash_len, sizeof(DWORD), &data_size, 0);
+  status = BCryptGetProperty(hAlg, BCRYPT_HASH_LENGTH, (PUCHAR)&hash_len,
+                             sizeof(DWORD), &data_size, 0);
   if (!BCRYPT_SUCCESS(status)) {
     BCryptDestroyHash(hHash);
     BCryptCloseAlgorithmProvider(hAlg, 0);
@@ -238,7 +253,8 @@ auto calculate_hash(const std::string& filename) -> cp::Result<std::string> {
 auto run(const Config& cfg) -> int {
   if (cfg.check_mode) {
     // Check mode (not fully implemented)
-    cp::report_custom_error(L"b2sum", L"check mode is not fully implemented in this version");
+    cp::report_custom_error(
+        L"b2sum", L"check mode is not fully implemented in this version");
     return 1;
   }
 
@@ -267,20 +283,20 @@ auto run(const Config& cfg) -> int {
 
 }  // namespace b2sum_pipeline
 
-REGISTER_COMMAND(b2sum, "b2sum",
-                 "b2sum [OPTION]... [FILE]...",
-                 "Print or check BLAKE2 (512-bit) checksums.\n"
-                 "\n"
-                 "With no FILE, or when FILE is -, read standard input.\n"
-                 "\n"
-                 "Note: Windows CNG API doesn't support BLAKE2 natively in all versions.\n"
-                 "This implementation uses CNG API with SHA512 as a fallback,\n"
-                 "providing the same 512-bit hash length as BLAKE2-512.",
-                 "  b2sum file.txt\n"
-                 "  echo \"test\" | b2sum\n"
-                 "  b2sum *.txt > checksums.b2",
-                 "sha1sum(1), sha256sum(1)", "WinuxCmd",
-                 "Copyright © 2026 WinuxCmd", B2SUM_OPTIONS) {
+REGISTER_COMMAND(
+    b2sum, "b2sum", "b2sum [OPTION]... [FILE]...",
+    "Print or check BLAKE2 (512-bit) checksums.\n"
+    "\n"
+    "With no FILE, or when FILE is -, read standard input.\n"
+    "\n"
+    "Note: Windows CNG API doesn't support BLAKE2 natively in all versions.\n"
+    "This implementation uses CNG API with SHA512 as a fallback,\n"
+    "providing the same 512-bit hash length as BLAKE2-512.",
+    "  b2sum file.txt\n"
+    "  echo \"test\" | b2sum\n"
+    "  b2sum *.txt > checksums.b2",
+    "sha1sum(1), sha256sum(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd",
+    B2SUM_OPTIONS) {
   using namespace b2sum_pipeline;
 
   auto cfg_result = build_config(ctx);

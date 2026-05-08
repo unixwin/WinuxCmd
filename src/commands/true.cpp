@@ -31,7 +31,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -41,9 +41,8 @@ import utils;
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
-auto constexpr TRUE_OPTIONS = std::array{
-    OPTION("", "", "do nothing, successfully", STRING_TYPE)
-};
+auto constexpr TRUE_OPTIONS =
+    std::array{OPTION("", "", "do nothing, successfully", STRING_TYPE)};
 
 REGISTER_COMMAND(
     true_cmd,
@@ -52,19 +51,16 @@ REGISTER_COMMAND(
 
     /* synopsis */
     "true",
-"Do nothing, successfully.\n"
+    "Do nothing, successfully.\n"
     "\n"
     "Exit with a status code indicating success.\n"
     "This command is often used in shell scripts where a command is required\n"
     "but no action is needed.",
-"  true\n"
+    "  true\n"
     "  while true; do echo 'Press Ctrl+C to stop'; sleep 1; done",
 
     /* see also */
-    "false(1)",
-"WinuxCmd",
-"Copyright © 2026 WinuxCmd",
-TRUE_OPTIONS) {
+    "false(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", TRUE_OPTIONS) {
   // Do nothing, just return 0 (success)
   return 0;
 }

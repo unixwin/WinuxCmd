@@ -29,8 +29,8 @@
 /// @License: MIT
 /// @Copyright: Copyright © 2026 WinuxCmd
 
-#include "pch/pch.h"
 #include "core/command_macros.h"
+#include "pch/pch.h"
 
 import std;
 import core;
@@ -45,99 +45,96 @@ using cmd::meta::OptionType;
 // ======================================================
 
 auto constexpr LOCALE_OPTIONS =
-    std::array{
-        OPTION("-a", "--all", "print all available locales"),
-        OPTION("-m", "--charmaps", "print available character maps"),
-        OPTION("", "", "print locale information", STRING_TYPE)
-    };
+    std::array{OPTION("-a", "--all", "print all available locales"),
+               OPTION("-m", "--charmaps", "print available character maps"),
+               OPTION("", "", "print locale information", STRING_TYPE)};
 
 // ======================================================
 // Helper functions
 // ======================================================
 
 namespace {
-  // Get system locale
-  std::string get_system_locale() {
-    wchar_t locale[LOCALE_NAME_MAX_LENGTH];
-    if (GetUserDefaultLocaleName(locale, LOCALE_NAME_MAX_LENGTH)) {
-      return wstring_to_utf8(locale);
-    }
-    return "C";
+// Get system locale
+std::string get_system_locale() {
+  wchar_t locale[LOCALE_NAME_MAX_LENGTH];
+  if (GetUserDefaultLocaleName(locale, LOCALE_NAME_MAX_LENGTH)) {
+    return wstring_to_utf8(locale);
   }
-
-  // Get all available locales
-  std::vector<std::string> get_available_locales() {
-    std::vector<std::string> locales;
-    
-    // Common locales
-    locales.push_back("C");
-    locales.push_back("C.UTF-8");
-    locales.push_back("POSIX");
-    locales.push_back("en_US.UTF-8");
-    locales.push_back("en_US");
-    locales.push_back("en_GB.UTF-8");
-    locales.push_back("en_GB");
-    locales.push_back("zh_CN.UTF-8");
-    locales.push_back("zh_CN");
-    locales.push_back("zh_TW.UTF-8");
-    locales.push_back("zh_TW");
-    locales.push_back("ja_JP.UTF-8");
-    locales.push_back("ja_JP");
-    locales.push_back("ko_KR.UTF-8");
-    locales.push_back("ko_KR");
-    locales.push_back("fr_FR.UTF-8");
-    locales.push_back("fr_FR");
-    locales.push_back("de_DE.UTF-8");
-    locales.push_back("de_DE");
-    locales.push_back("es_ES.UTF-8");
-    locales.push_back("es_ES");
-    
-    return locales;
-  }
-
-  // Print locale categories
-  void print_locale_categories() {
-    std::string sys_locale = get_system_locale();
-    
-    safePrintLn("LANG=" + sys_locale);
-    safePrintLn("LC_CTYPE=\"" + sys_locale + "\"");
-    safePrintLn("LC_NUMERIC=\"" + sys_locale + "\"");
-    safePrintLn("LC_TIME=\"" + sys_locale + "\"");
-    safePrintLn("LC_COLLATE=\"" + sys_locale + "\"");
-    safePrintLn("LC_MONETARY=\"" + sys_locale + "\"");
-    safePrintLn("LC_MESSAGES=\"" + sys_locale + "\"");
-    safePrintLn("LC_PAPER=\"" + sys_locale + "\"");
-    safePrintLn("LC_NAME=\"" + sys_locale + "\"");
-    safePrintLn("LC_ADDRESS=\"" + sys_locale + "\"");
-    safePrintLn("LC_TELEPHONE=\"" + sys_locale + "\"");
-    safePrintLn("LC_MEASUREMENT=\"" + sys_locale + "\"");
-    safePrintLn("LC_IDENTIFICATION=\"" + sys_locale + "\"");
-    safePrintLn("LC_ALL=");
-  }
+  return "C";
 }
+
+// Get all available locales
+std::vector<std::string> get_available_locales() {
+  std::vector<std::string> locales;
+
+  // Common locales
+  locales.push_back("C");
+  locales.push_back("C.UTF-8");
+  locales.push_back("POSIX");
+  locales.push_back("en_US.UTF-8");
+  locales.push_back("en_US");
+  locales.push_back("en_GB.UTF-8");
+  locales.push_back("en_GB");
+  locales.push_back("zh_CN.UTF-8");
+  locales.push_back("zh_CN");
+  locales.push_back("zh_TW.UTF-8");
+  locales.push_back("zh_TW");
+  locales.push_back("ja_JP.UTF-8");
+  locales.push_back("ja_JP");
+  locales.push_back("ko_KR.UTF-8");
+  locales.push_back("ko_KR");
+  locales.push_back("fr_FR.UTF-8");
+  locales.push_back("fr_FR");
+  locales.push_back("de_DE.UTF-8");
+  locales.push_back("de_DE");
+  locales.push_back("es_ES.UTF-8");
+  locales.push_back("es_ES");
+
+  return locales;
+}
+
+// Print locale categories
+void print_locale_categories() {
+  std::string sys_locale = get_system_locale();
+
+  safePrintLn("LANG=" + sys_locale);
+  safePrintLn("LC_CTYPE=\"" + sys_locale + "\"");
+  safePrintLn("LC_NUMERIC=\"" + sys_locale + "\"");
+  safePrintLn("LC_TIME=\"" + sys_locale + "\"");
+  safePrintLn("LC_COLLATE=\"" + sys_locale + "\"");
+  safePrintLn("LC_MONETARY=\"" + sys_locale + "\"");
+  safePrintLn("LC_MESSAGES=\"" + sys_locale + "\"");
+  safePrintLn("LC_PAPER=\"" + sys_locale + "\"");
+  safePrintLn("LC_NAME=\"" + sys_locale + "\"");
+  safePrintLn("LC_ADDRESS=\"" + sys_locale + "\"");
+  safePrintLn("LC_TELEPHONE=\"" + sys_locale + "\"");
+  safePrintLn("LC_MEASUREMENT=\"" + sys_locale + "\"");
+  safePrintLn("LC_IDENTIFICATION=\"" + sys_locale + "\"");
+  safePrintLn("LC_ALL=");
+}
+}  // namespace
 
 // ======================================================
 // Main command implementation
 // ======================================================
 
-REGISTER_COMMAND(
-    locale,
-    /* cmd_name */ "locale",
-    /* cmd_synopsis */ "locale [OPTION]",
-    /* cmd_desc */
-    "Get locale-specific information.\n"
-    "Write locale-specific information to standard output.",
-    /* examples */
-    "  locale\n"
-    "  locale -a\n"
-    "  locale -m",
-    /* see_also */ "localedef, setlocale",
-    /* author */ "WinuxCmd",
-    /* copyright */ "Copyright © 2026 WinuxCmd",
-    /* options */ LOCALE_OPTIONS) {
-
+REGISTER_COMMAND(locale,
+                 /* cmd_name */ "locale",
+                 /* cmd_synopsis */ "locale [OPTION]",
+                 /* cmd_desc */
+                 "Get locale-specific information.\n"
+                 "Write locale-specific information to standard output.",
+                 /* examples */
+                 "  locale\n"
+                 "  locale -a\n"
+                 "  locale -m",
+                 /* see_also */ "localedef, setlocale",
+                 /* author */ "WinuxCmd",
+                 /* copyright */ "Copyright © 2026 WinuxCmd",
+                 /* options */ LOCALE_OPTIONS) {
   bool show_all = ctx.get<bool>("-a", false) || ctx.get<bool>("--all", false);
-  bool show_charmaps = ctx.get<bool>("-m", false) || ctx.get<bool>("--charmaps", false);
+  bool show_charmaps =
+      ctx.get<bool>("-m", false) || ctx.get<bool>("--charmaps", false);
 
   if (show_charmaps) {
     // Print available character maps

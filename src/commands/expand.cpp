@@ -31,7 +31,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -43,9 +43,10 @@ using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
 auto constexpr EXPAND_OPTIONS = std::array{
-    OPTION("-t", "--tabs", "specify tab stop positions (default: 8)", STRING_TYPE),
-    OPTION("-i", "--initial", "only convert tabs at the beginning of lines", BOOL_TYPE)
-};
+    OPTION("-t", "--tabs", "specify tab stop positions (default: 8)",
+           STRING_TYPE),
+    OPTION("-i", "--initial", "only convert tabs at the beginning of lines",
+           BOOL_TYPE)};
 
 namespace expand_pipeline {
 namespace cp = core::pipeline;
@@ -59,7 +60,8 @@ struct Config {
 auto build_config(const CommandContext<EXPAND_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
   Config cfg;
-  cfg.initial_only = ctx.get<bool>("--initial", false) || ctx.get<bool>("-i", false);
+  cfg.initial_only =
+      ctx.get<bool>("--initial", false) || ctx.get<bool>("-i", false);
 
   auto tabs_opt = ctx.get<std::string>("--tabs", "");
   if (tabs_opt.empty()) {
@@ -67,7 +69,8 @@ auto build_config(const CommandContext<EXPAND_OPTIONS.size()>& ctx)
   }
 
   if (!tabs_opt.empty()) {
-    // Parse tab width (can be comma-separated list, but we only support single value)
+    // Parse tab width (can be comma-separated list, but we only support single
+    // value)
     try {
       cfg.tab_width = std::stoi(tabs_opt);
       if (cfg.tab_width <= 0) {
@@ -100,7 +103,8 @@ auto build_config(const CommandContext<EXPAND_OPTIONS.size()>& ctx)
 }
 
 // Expand tabs to spaces in a single line
-auto expand_line(const std::string& line, int tab_width, bool initial_only) -> std::string {
+auto expand_line(const std::string& line, int tab_width, bool initial_only)
+    -> std::string {
   std::string result;
   result.reserve(line.size() * 2);
   size_t column = 0;
@@ -116,7 +120,8 @@ auto expand_line(const std::string& line, int tab_width, bool initial_only) -> s
       if (c == '\n') {
         column = 0;
       } else if (!initial_only || column == 0) {
-        // Only count column if not in initial_only mode or if we're still at start
+        // Only count column if not in initial_only mode or if we're still at
+        // start
         column++;
       }
     }
@@ -174,7 +179,8 @@ auto run(const Config& cfg) -> int {
         result += expand_line(line, cfg.tab_width, cfg.initial_only);
         break;
       } else {
-        line = content.substr(line_start, line_end - line_start + 1);  // Include newline
+        line = content.substr(line_start,
+                              line_end - line_start + 1);  // Include newline
         result += expand_line(line, cfg.tab_width, cfg.initial_only);
         line_start = line_end + 1;
       }
@@ -188,21 +194,20 @@ auto run(const Config& cfg) -> int {
 
 }  // namespace expand_pipeline
 
-REGISTER_COMMAND(expand, "expand",
-                 "expand [OPTION]... [FILE]...",
-                 "Convert tabs to spaces.\n"
-                 "\n"
-                 "Convert each tab character to one or more spaces.\n"
-                 "By default, tabs are converted to 8 spaces.\n"
-                 "\n"
-                 "Note: This implementation supports basic tab expansion.\n"
-                 "Advanced features like comma-separated tab positions are not implemented.",
-                 "  expand file.txt\n"
-                 "  expand -t 4 file.txt\n"
-                 "  expand -i file.txt\n"
-                 "  echo -e 'hello\tworld' | expand",
-                 "unexpand(1)", "WinuxCmd",
-                 "Copyright © 2026 WinuxCmd", EXPAND_OPTIONS) {
+REGISTER_COMMAND(
+    expand, "expand", "expand [OPTION]... [FILE]...",
+    "Convert tabs to spaces.\n"
+    "\n"
+    "Convert each tab character to one or more spaces.\n"
+    "By default, tabs are converted to 8 spaces.\n"
+    "\n"
+    "Note: This implementation supports basic tab expansion.\n"
+    "Advanced features like comma-separated tab positions are not implemented.",
+    "  expand file.txt\n"
+    "  expand -t 4 file.txt\n"
+    "  expand -i file.txt\n"
+    "  echo -e 'hello\tworld' | expand",
+    "unexpand(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", EXPAND_OPTIONS) {
   using namespace expand_pipeline;
 
   auto cfg_result = build_config(ctx);

@@ -42,7 +42,7 @@ TEST(realpath, realpath_basic) {
   EXPECT_EQ(r.exit_code, 0);
   // Output should be an absolute path
   EXPECT_TRUE(r.stdout_text.find("file.txt") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find(":\\") != std::string::npos || 
+  EXPECT_TRUE(r.stdout_text.find(":\\") != std::string::npos ||
               r.stdout_text.find(":/") != std::string::npos);
 }
 
@@ -62,7 +62,7 @@ TEST(realpath, realpath_current_dir) {
 
   EXPECT_EQ(r.exit_code, 0);
   // Should output absolute path of current directory
-  EXPECT_TRUE(r.stdout_text.find(":\\") != std::string::npos || 
+  EXPECT_TRUE(r.stdout_text.find(":\\") != std::string::npos ||
               r.stdout_text.find(":/") != std::string::npos);
 }
 

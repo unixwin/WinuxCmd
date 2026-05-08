@@ -6,7 +6,7 @@
 /// @License: MIT
 /// @Copyright: Copyright © 2026 WinuxCmd
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 import std;
 import core;
@@ -18,10 +18,14 @@ using cmd::meta::OptionType;
 
 auto constexpr WHICH_OPTIONS = std::array{
     OPTION("-a", "--all", "print all matching pathnames of each argument"),
-    OPTION("-s", "--skip-dot", "skip directories in PATH that start with a dot [NOT SUPPORT]"),
-    OPTION("", "--skip-tilde", "skip directories in PATH that start with a tilde [NOT SUPPORT]"),
-    OPTION("", "--show-dot", "if a directory in PATH starts with a dot, print it [NOT SUPPORT]"),
-    OPTION("", "--show-tilde", "output a tilde for HOME directory [NOT SUPPORT]")};
+    OPTION("-s", "--skip-dot",
+           "skip directories in PATH that start with a dot [NOT SUPPORT]"),
+    OPTION("", "--skip-tilde",
+           "skip directories in PATH that start with a tilde [NOT SUPPORT]"),
+    OPTION("", "--show-dot",
+           "if a directory in PATH starts with a dot, print it [NOT SUPPORT]"),
+    OPTION("", "--show-tilde",
+           "output a tilde for HOME directory [NOT SUPPORT]")};
 
 namespace which_pipeline {
 namespace cp = core::pipeline;
@@ -71,11 +75,13 @@ auto get_pathext_entries() -> std::vector<std::string> {
     return std::vector<std::string>{".exe", ".cmd", ".bat", ".com"};
   }
   auto exts = split_semicolon(*ext_env);
-  if (exts.empty()) exts = std::vector<std::string>{".exe", ".cmd", ".bat", ".com"};
+  if (exts.empty())
+    exts = std::vector<std::string>{".exe", ".cmd", ".bat", ".com"};
   for (auto& ext : exts) {
     if (!ext.empty() && ext.front() != '.') ext.insert(ext.begin(), '.');
-    std::transform(ext.begin(), ext.end(), ext.begin(),
-                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char ch) {
+      return static_cast<char>(std::tolower(ch));
+    });
   }
   return exts;
 }
@@ -90,8 +96,7 @@ auto exists_regular(const fs::path& p) -> bool {
   return fs::exists(p, ec) && fs::is_regular_file(p, ec);
 }
 
-auto with_extensions(const fs::path& base,
-                     const std::vector<std::string>& exts)
+auto with_extensions(const fs::path& base, const std::vector<std::string>& exts)
     -> std::vector<fs::path> {
   std::vector<fs::path> out;
   out.push_back(base);
@@ -148,8 +153,7 @@ auto is_unsupported_used(const CommandContext<WHICH_OPTIONS.size()>& ctx)
     return "--skip-dot is [NOT SUPPORT]";
   if (ctx.get<bool>("--skip-tilde", false))
     return "--skip-tilde is [NOT SUPPORT]";
-  if (ctx.get<bool>("--show-dot", false))
-    return "--show-dot is [NOT SUPPORT]";
+  if (ctx.get<bool>("--show-dot", false)) return "--show-dot is [NOT SUPPORT]";
   if (ctx.get<bool>("--show-tilde", false))
     return "--show-tilde is [NOT SUPPORT]";
   return std::nullopt;

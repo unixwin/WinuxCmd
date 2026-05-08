@@ -33,7 +33,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 import std;
 import core;
@@ -100,19 +100,19 @@ auto validate_arguments(const CommandContext<CAT_OPTIONS.size()> &ctx,
     -> cp::Result<void> {
   for (auto arg : ctx.positionals) {
     std::string file_arg(arg);
-    
+
     // Smart glob expansion for wildcard patterns
     if (contains_wildcard(file_arg)) {
       auto glob_result = glob_expand(file_arg);
       if (glob_result.expanded) {
         // Pattern was expanded, add all matched files
-        for (const auto& file : glob_result.files) {
+        for (const auto &file : glob_result.files) {
           out_files.push_back(wstring_to_utf8(file));
         }
         continue;
       }
     }
-    
+
     // Not a wildcard or expansion failed, use as-is
     out_files.push_back(file_arg);
   }
@@ -145,18 +145,13 @@ REGISTER_COMMAND(cat, "cat",
   const bool fast_passthrough =
       !ctx.get<bool>("--show-all", false) &&
       !ctx.get<bool>("--number-nonblank", false) &&
-      !ctx.get<bool>("-b", false) &&
-      !ctx.get<bool>("--show-ends", false) &&
-      !ctx.get<bool>("-E", false) &&
-      !ctx.get<bool>("--number", false) &&
-      !ctx.get<bool>("-n", false) &&
-      !ctx.get<bool>("--squeeze-blank", false) &&
-      !ctx.get<bool>("-s", false) &&
-      !ctx.get<bool>("--show-tabs", false) &&
+      !ctx.get<bool>("-b", false) && !ctx.get<bool>("--show-ends", false) &&
+      !ctx.get<bool>("-E", false) && !ctx.get<bool>("--number", false) &&
+      !ctx.get<bool>("-n", false) && !ctx.get<bool>("--squeeze-blank", false) &&
+      !ctx.get<bool>("-s", false) && !ctx.get<bool>("--show-tabs", false) &&
       !ctx.get<bool>("-T", false) &&
       !ctx.get<bool>("--show-nonprinting", false) &&
-      !ctx.get<bool>("-v", false) &&
-      !ctx.get<bool>("-e", false) &&
+      !ctx.get<bool>("-v", false) && !ctx.get<bool>("-e", false) &&
       !ctx.get<bool>("-t", false);
 
   // ----------------------------------------------

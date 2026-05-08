@@ -22,8 +22,9 @@
  *  - File: tree_unit_test.cpp
  *  - CopyrightYear: 2026
  */
-#include "framework/winuxtest.h"
 #include <filesystem>
+
+#include "framework/winuxtest.h"
 
 TEST(tree, tree_basic) {
   TempDir tmp;

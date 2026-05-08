@@ -31,7 +31,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -43,10 +43,12 @@ using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
 auto constexpr BASENAME_OPTIONS = std::array{
-    OPTION("-a", "--multiple", "support multiple arguments and treat each as a NAME", BOOL_TYPE),
-    OPTION("-s", "--suffix", "remove a trailing SUFFIX; implies -a", STRING_TYPE),
-    OPTION("-z", "--zero", "end each output line with NUL, not newline", BOOL_TYPE)
-};
+    OPTION("-a", "--multiple",
+           "support multiple arguments and treat each as a NAME", BOOL_TYPE),
+    OPTION("-s", "--suffix", "remove a trailing SUFFIX; implies -a",
+           STRING_TYPE),
+    OPTION("-z", "--zero", "end each output line with NUL, not newline",
+           BOOL_TYPE)};
 
 namespace basename_pipeline {
 namespace cp = core::pipeline;
@@ -61,7 +63,8 @@ struct Config {
 auto build_config(const CommandContext<BASENAME_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
   Config cfg;
-  cfg.multiple = ctx.get<bool>("--multiple", false) || ctx.get<bool>("-a", false);
+  cfg.multiple =
+      ctx.get<bool>("--multiple", false) || ctx.get<bool>("-a", false);
   cfg.suffix = ctx.get<std::string>("--suffix", "");
   cfg.zero = ctx.get<bool>("--zero", false) || ctx.get<bool>("-z", false);
 
@@ -72,7 +75,8 @@ auto build_config(const CommandContext<BASENAME_OPTIONS.size()>& ctx)
   return cfg;
 }
 
-auto get_basename(std::string_view path, std::string_view suffix) -> std::string {
+auto get_basename(std::string_view path, std::string_view suffix)
+    -> std::string {
   std::string result = std::string(path);
 
   // Remove trailing slashes

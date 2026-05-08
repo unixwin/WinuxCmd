@@ -34,7 +34,7 @@
 /// @Copyright: Copyright  2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -147,7 +147,8 @@ auto list_signals(bool table_format) -> cp::Result<bool> {
       char buffer[256];
       snprintf(buffer, sizeof(buffer), "%-7d %-7.*s %.*s\n", sig.number,
                static_cast<int>(sig.name.size()), sig.name.data(),
-               static_cast<int>(sig.description.size()), sig.description.data());
+               static_cast<int>(sig.description.size()),
+               sig.description.data());
       safePrint(buffer);
     }
   } else {

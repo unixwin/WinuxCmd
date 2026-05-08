@@ -31,7 +31,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -44,11 +44,12 @@ using cmd::meta::OptionType;
 
 auto constexpr SHUF_OPTIONS = std::array{
     OPTION("-e", "--echo", "treat each ARG as an input line", BOOL_TYPE),
-    OPTION("-i", "--input-range", "treat each number LO through HI as an input line", STRING_TYPE),
+    OPTION("-i", "--input-range",
+           "treat each number LO through HI as an input line", STRING_TYPE),
     OPTION("-n", "--head-count", "output at most COUNT lines", STRING_TYPE),
     OPTION("-r", "--repeat", "output lines can be repeated", BOOL_TYPE),
-    OPTION("-z", "--zero-terminated", "line delimiter is NUL, not newline", BOOL_TYPE)
-};
+    OPTION("-z", "--zero-terminated", "line delimiter is NUL, not newline",
+           BOOL_TYPE)};
 
 namespace shuf_pipeline {
 namespace cp = core::pipeline;
@@ -68,7 +69,8 @@ auto build_config(const CommandContext<SHUF_OPTIONS.size()>& ctx)
   Config cfg;
   cfg.echo_mode = ctx.get<bool>("--echo", false) || ctx.get<bool>("-e", false);
   cfg.repeat = ctx.get<bool>("--repeat", false) || ctx.get<bool>("-r", false);
-  cfg.zero_terminated = ctx.get<bool>("--zero-terminated", false) || ctx.get<bool>("-z", false);
+  cfg.zero_terminated =
+      ctx.get<bool>("--zero-terminated", false) || ctx.get<bool>("-z", false);
 
   auto range_opt = ctx.get<std::string>("--input-range", "");
   if (range_opt.empty()) {
@@ -189,7 +191,7 @@ auto run(const Config& cfg) -> int {
   // Shuffle using Fisher-Yates algorithm
   std::random_device rd;
   std::mt19937 g(rd());
-  
+
   for (int i = lines.size() - 1; i > 0; --i) {
     std::uniform_int_distribution<int> dist(0, i);
     int j = dist(g);
@@ -197,9 +199,10 @@ auto run(const Config& cfg) -> int {
   }
 
   // Output shuffled lines
-  int output_count = (cfg.head_count >= 0) ? 
-                     std::min(cfg.head_count, static_cast<int>(lines.size())) : 
-                     static_cast<int>(lines.size());
+  int output_count =
+      (cfg.head_count >= 0)
+          ? std::min(cfg.head_count, static_cast<int>(lines.size()))
+          : static_cast<int>(lines.size());
 
   for (int i = 0; i < output_count; ++i) {
     safePrint(lines[i]);
@@ -215,22 +218,21 @@ auto run(const Config& cfg) -> int {
 
 }  // namespace shuf_pipeline
 
-REGISTER_COMMAND(shuf, "shuf",
-                 "shuf [OPTION]... [FILE]",
-                 "Shuffle randomize lines.\n"
-                 "\n"
-                 "Write a random permutation of the input lines to standard output.\n"
-                 "\n"
-                 "Mandatory arguments to long options are mandatory for short options too.\n"
-                 "\n"
-                 "Note: This implementation uses the Mersenne Twister PRNG\n"
-                 "from the C++ standard library.",
-                 "  shuf file.txt\n"
-                 "  shuf -n 5 file.txt\n"
-                 "  shuf -e a b c d e\n"
-                 "  shuf -i 1-10",
-                 "sort(1)", "WinuxCmd",
-                 "Copyright © 2026 WinuxCmd", SHUF_OPTIONS) {
+REGISTER_COMMAND(
+    shuf, "shuf", "shuf [OPTION]... [FILE]",
+    "Shuffle randomize lines.\n"
+    "\n"
+    "Write a random permutation of the input lines to standard output.\n"
+    "\n"
+    "Mandatory arguments to long options are mandatory for short options too.\n"
+    "\n"
+    "Note: This implementation uses the Mersenne Twister PRNG\n"
+    "from the C++ standard library.",
+    "  shuf file.txt\n"
+    "  shuf -n 5 file.txt\n"
+    "  shuf -e a b c d e\n"
+    "  shuf -i 1-10",
+    "sort(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", SHUF_OPTIONS) {
   using namespace shuf_pipeline;
 
   auto cfg_result = build_config(ctx);

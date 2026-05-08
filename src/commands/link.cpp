@@ -31,7 +31,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -41,10 +41,9 @@ import utils;
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
-auto constexpr LINK_OPTIONS = std::array{
-    OPTION("-v", "--verbose", "print a message for each action"),
-    OPTION("", "", "create link to file", STRING_TYPE)
-};
+auto constexpr LINK_OPTIONS =
+    std::array{OPTION("-v", "--verbose", "print a message for each action"),
+               OPTION("", "", "create link to file", STRING_TYPE)};
 
 REGISTER_COMMAND(
     link,
@@ -53,24 +52,22 @@ REGISTER_COMMAND(
 
     /* synopsis */
     "link [OPTION]... FILE LINKNAME",
-"Create a hard link to FILE named LINKNAME.\n"
+    "Create a hard link to FILE named LINKNAME.\n"
     "\n"
     "On Windows, this creates a hard link using CreateHardLink API.\n"
     "Note: Hard links only work on NTFS file systems.\n"
     "\n"
     "Options:\n"
     "  -v, --verbose  print a message for each action",
-"  link file.txt link_to_file.txt\n"
+    "  link file.txt link_to_file.txt\n"
     "  link -v file.txt link_to_file.txt",
 
     /* see also */
-    "ln(1), unlink(1)",
-"WinuxCmd",
-"Copyright © 2026 WinuxCmd",
-LINK_OPTIONS) {
+    "ln(1), unlink(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", LINK_OPTIONS) {
   namespace cp = core::pipeline;
 
-  bool verbose = ctx.get<bool>("--verbose", false) || ctx.get<bool>("-v", false);
+  bool verbose =
+      ctx.get<bool>("--verbose", false) || ctx.get<bool>("-v", false);
 
   if (ctx.positionals.size() != 2) {
     safeErrorPrintLn("link: missing file operand");
@@ -91,7 +88,8 @@ LINK_OPTIONS) {
   BOOL result = CreateHardLinkW(wlinkname.c_str(), wfile.c_str(), nullptr);
   if (!result) {
     DWORD error = GetLastError();
-    safeErrorPrintLn("link: cannot create link '" + linkname + "': " + std::to_string(error));
+    safeErrorPrintLn("link: cannot create link '" + linkname +
+                     "': " + std::to_string(error));
     return 1;
   }
 

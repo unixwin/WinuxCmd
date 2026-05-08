@@ -31,7 +31,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -41,9 +41,8 @@ import utils;
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
-auto constexpr TTY_OPTIONS = std::array{
-    OPTION("-s", "--silent", "print nothing, just return exit status", BOOL_TYPE)
-};
+auto constexpr TTY_OPTIONS = std::array{OPTION(
+    "-s", "--silent", "print nothing, just return exit status", BOOL_TYPE)};
 
 REGISTER_COMMAND(
     tty,
@@ -52,21 +51,18 @@ REGISTER_COMMAND(
 
     /* synopsis */
     "tty [OPTION]...",
-"Print the file name of the terminal connected to standard input.\n"
+    "Print the file name of the terminal connected to standard input.\n"
     "\n"
     "If standard input is not a terminal, print \"not a tty\" and exit with\n"
     "non-zero status.\n"
     "\n"
     "Options:\n"
     "  -s, --silent    print nothing, just return exit status",
-"  tty\n"
+    "  tty\n"
     "  tty -s  # silent mode, only check exit status",
 
     /* see also */
-    "isatty(3)",
-"WinuxCmd",
-"Copyright © 2026 WinuxCmd",
-TTY_OPTIONS) {
+    "isatty(3)", "WinuxCmd", "Copyright © 2026 WinuxCmd", TTY_OPTIONS) {
   namespace cp = core::pipeline;
 
   bool silent = ctx.get<bool>("--silent", false) || ctx.get<bool>("-s", false);
@@ -75,7 +71,7 @@ TTY_OPTIONS) {
   HANDLE hStdIn = GetStdHandle(STD_INPUT_HANDLE);
 
   // Check if stdout is connected to a console
-  bool is_console = (GetConsoleMode(hStdOut, nullptr) != 0) || 
+  bool is_console = (GetConsoleMode(hStdOut, nullptr) != 0) ||
                     (GetConsoleMode(hStdIn, nullptr) != 0);
 
   if (silent) {

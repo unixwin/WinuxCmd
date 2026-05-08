@@ -32,7 +32,7 @@
 // *** SIMPLIFIED IMPLEMENTATION - Some features may not be fully supported ***
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -45,11 +45,13 @@ using cmd::meta::OptionType;
 
 auto constexpr STAT_OPTIONS = std::array{
     OPTION("-L", "dereference", "follow symbolic links", BOOL_TYPE),
-    OPTION("-f", "file-system", "display file system status instead of file status", BOOL_TYPE),
-    OPTION("-c", "format", "use the specified FORMAT instead of the default", STRING_TYPE),
+    OPTION("-f", "file-system",
+           "display file system status instead of file status", BOOL_TYPE),
+    OPTION("-c", "format", "use the specified FORMAT instead of the default",
+           STRING_TYPE),
     OPTION("-t", "terse", "print the information in terse form", BOOL_TYPE),
-    OPTION("", "printf", "like --format, but interpret backslash escapes", STRING_TYPE)
-};
+    OPTION("", "printf", "like --format, but interpret backslash escapes",
+           STRING_TYPE)};
 
 namespace stat_pipeline {
 namespace cp = core::pipeline;
@@ -66,8 +68,10 @@ struct Config {
 auto build_config(const CommandContext<STAT_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
   Config cfg;
-  cfg.dereference = ctx.get<bool>("-dereference", false) || ctx.get<bool>("-L", false);
-  cfg.file_system = ctx.get<bool>("-file-system", false) || ctx.get<bool>("-f", false);
+  cfg.dereference =
+      ctx.get<bool>("-dereference", false) || ctx.get<bool>("-L", false);
+  cfg.file_system =
+      ctx.get<bool>("-file-system", false) || ctx.get<bool>("-f", false);
   cfg.format = ctx.get<std::string>("--format", "");
   cfg.terse = ctx.get<bool>("--terse", false) || ctx.get<bool>("-t", false);
 
@@ -103,9 +107,8 @@ auto format_timestamp(FILETIME ft) -> std::string {
   FileTimeToSystemTime(&ft, &st);
 
   char buf[64];
-  snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d",
-           st.wYear, st.wMonth, st.wDay,
-           st.wHour, st.wMinute, st.wSecond);
+  snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d", st.wYear,
+           st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
   return std::string(buf);
 }
 
@@ -168,7 +171,8 @@ auto print_stat(const std::string& filename, const Config& cfg) -> int {
     // Terse format
     safePrint(filename);
     safePrint(" ");
-    safePrint(data.nFileSizeLow + (static_cast<uint64_t>(data.nFileSizeHigh) << 32));
+    safePrint(data.nFileSizeLow +
+              (static_cast<uint64_t>(data.nFileSizeHigh) << 32));
     safePrint(" ");
     safePrint(format_timestamp(data.ftLastWriteTime));
     safePrint("\n");
@@ -182,10 +186,13 @@ auto print_stat(const std::string& filename, const Config& cfg) -> int {
     safePrint(filename);
     safePrint("\n");
     safePrint("  Size: ");
-    safePrint(format_size(data.nFileSizeLow + (static_cast<uint64_t>(data.nFileSizeHigh) << 32)));
+    safePrint(format_size(data.nFileSizeLow +
+                          (static_cast<uint64_t>(data.nFileSizeHigh) << 32)));
     safePrint("\t");
     safePrint("Blocks: ");
-    safePrint((data.nFileSizeLow + (static_cast<uint64_t>(data.nFileSizeHigh) << 32)) / 512);
+    safePrint((data.nFileSizeLow +
+               (static_cast<uint64_t>(data.nFileSizeHigh) << 32)) /
+              512);
     safePrint("\t");
     safePrint("IO Block: ");
     safePrint(4096);
@@ -228,14 +235,13 @@ auto run(const Config& cfg) -> int {
 
 }  // namespace stat_pipeline
 
-REGISTER_COMMAND(stat, "stat",
-                 "stat [OPTION]... FILE...",
+REGISTER_COMMAND(stat, "stat", "stat [OPTION]... FILE...",
                  "Display file or file system status.",
                  "  stat file.txt\n"
                  "  stat -t file.txt\n"
                  "  stat -c %s file.txt",
-                 "ls(1), find(1)", "WinuxCmd",
-                 "Copyright © 2026 WinuxCmd", STAT_OPTIONS) {
+                 "ls(1), find(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd",
+                 STAT_OPTIONS) {
   using namespace stat_pipeline;
 
   auto cfg_result = build_config(ctx);

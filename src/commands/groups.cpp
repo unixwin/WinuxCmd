@@ -31,7 +31,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -42,9 +42,8 @@ import container;
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
-auto constexpr GROUPS_OPTIONS = std::array{
-    OPTION("", "", "print the groups a user is in", STRING_TYPE)
-};
+auto constexpr GROUPS_OPTIONS =
+    std::array{OPTION("", "", "print the groups a user is in", STRING_TYPE)};
 
 namespace groups_pipeline {
 namespace cp = core::pipeline;
@@ -67,15 +66,15 @@ auto build_config(const CommandContext<GROUPS_OPTIONS.size()>& ctx)
 auto run(const Config& cfg) -> int {
   // Get current user if no users specified
   std::string user_str;
-  
+
   if (cfg.users.empty()) {
     WCHAR username[256];
     DWORD username_size = 256;
-    
+
     if (!GetUserNameW(username, &username_size)) {
       return 1;
     }
-    
+
     std::wstring ws(username);
     user_str = std::string(ws.begin(), ws.end());
   } else {
@@ -91,17 +90,16 @@ auto run(const Config& cfg) -> int {
 
 }  // namespace groups_pipeline
 
-REGISTER_COMMAND(groups, "groups",
-                 "groups [OPTION]... [USERNAME]...",
-                 "Print a list of the groups a user is in.\n"
-                 "\n"
-                 "Note: This is a Windows implementation. Windows doesn't have\n"
-                 "POSIX groups in the same way. This command is provided for\n"
-                 "compatibility and shows limited information.",
-                 "  groups\n"
-                 "  groups username",
-                 "id(1)", "WinuxCmd",
-                 "Copyright © 2026 WinuxCmd", GROUPS_OPTIONS) {
+REGISTER_COMMAND(
+    groups, "groups", "groups [OPTION]... [USERNAME]...",
+    "Print a list of the groups a user is in.\n"
+    "\n"
+    "Note: This is a Windows implementation. Windows doesn't have\n"
+    "POSIX groups in the same way. This command is provided for\n"
+    "compatibility and shows limited information.",
+    "  groups\n"
+    "  groups username",
+    "id(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", GROUPS_OPTIONS) {
   using namespace groups_pipeline;
 
   auto cfg_result = build_config(ctx);

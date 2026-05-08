@@ -6,7 +6,8 @@
 TEST(patch, patch_basic) {
   TempDir tmp;
   tmp.write("file.txt", "hello\n");
-  std::string patch_data = "--- a/file.txt\n+++ b/file.txt\n@@ -1,1 +1,1 @@\n-hello\n+world\n";
+  std::string patch_data =
+      "--- a/file.txt\n+++ b/file.txt\n@@ -1,1 +1,1 @@\n-hello\n+world\n";
 
   Pipeline p;
   p.set_cwd(tmp.wpath());

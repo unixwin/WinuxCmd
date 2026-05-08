@@ -27,8 +27,8 @@
 /// @License: MIT
 /// @Copyright: Copyright © 2026 WinuxCmd
 
-#include "pch/pch.h"
 #include "core/command_macros.h"
+#include "pch/pch.h"
 
 import std;
 import core;
@@ -57,7 +57,8 @@ struct Config {
 auto build_config(const CommandContext<CHOWN_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
   Config cfg;
-  cfg.recursive = ctx.get<bool>("-R", false) || ctx.get<bool>("--recursive", false);
+  cfg.recursive =
+      ctx.get<bool>("-R", false) || ctx.get<bool>("--recursive", false);
   cfg.verbose = ctx.get<bool>("-v", false);
 
   if (ctx.positionals.empty()) {
@@ -100,12 +101,14 @@ auto process_file(const std::string& path, const Config& cfg) -> int {
 
   DWORD attr = GetFileAttributesW(wpath.c_str());
   if (attr == INVALID_FILE_ATTRIBUTES) {
-    safeErrorPrint("chown: cannot access '" + path + "': No such file or directory\n");
+    safeErrorPrint("chown: cannot access '" + path +
+                   "': No such file or directory\n");
     return 1;
   }
 
   // On Windows, chown requires administrator privileges
-  // Report the current state and note that actual ownership change is not supported
+  // Report the current state and note that actual ownership change is not
+  // supported
   if (cfg.verbose) {
     if (cfg.has_group && !cfg.group.empty()) {
       safePrint("changing ownership of '" + path + "'");
@@ -128,7 +131,8 @@ auto process_recursive(const std::string& path, const Config& cfg) -> int {
 
   DWORD attr = GetFileAttributesW(wpath.c_str());
   if (attr == INVALID_FILE_ATTRIBUTES) {
-    safeErrorPrint("chown: cannot access '" + path + "': No such file or directory\n");
+    safeErrorPrint("chown: cannot access '" + path +
+                   "': No such file or directory\n");
     return 1;
   }
 
@@ -163,9 +167,7 @@ auto process_recursive(const std::string& path, const Config& cfg) -> int {
 }  // namespace chown_pipeline
 
 REGISTER_COMMAND(
-    chown,
-    "chown",
-    "change file owner and group",
+    chown, "chown", "change file owner and group",
     "Change the owner and/or group of each FILE.\n"
     "\n"
     "Note: On Windows, chown is limited. Without administrator privileges,\n"
@@ -175,8 +177,8 @@ REGISTER_COMMAND(
     "  chown user:group file.txt     Change owner and group\n"
     "  chown -R user dir/            Recursively change owner\n"
     "  chown user *.txt              Change owner of all .txt files",
-    "chgrp(1), chmod(1)", "WinuxCmd",
-    "Copyright © 2026 WinuxCmd", CHOWN_OPTIONS) {
+    "chgrp(1), chmod(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd",
+    CHOWN_OPTIONS) {
   using namespace chown_pipeline;
 
   auto cfg_result = build_config(ctx);

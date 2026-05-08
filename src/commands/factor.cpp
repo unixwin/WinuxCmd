@@ -30,7 +30,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 import std;
 import core;
@@ -39,24 +39,23 @@ import utils;
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
-auto constexpr FACTOR_OPTIONS = std::array{
-    OPTION("", "", "factor numbers", STRING_TYPE)
-};
+auto constexpr FACTOR_OPTIONS =
+    std::array{OPTION("", "", "factor numbers", STRING_TYPE)};
 
 namespace {
 auto factorize(long long n) -> std::vector<long long> {
   std::vector<long long> factors;
-  
+
   if (n < 2) {
     return {n};
   }
-  
+
   // Extract 2s
   while (n % 2 == 0) {
     factors.push_back(2);
     n /= 2;
   }
-  
+
   // Extract odd factors
   for (long long i = 3; i * i <= n; i += 2) {
     while (n % i == 0) {
@@ -64,39 +63,36 @@ auto factorize(long long n) -> std::vector<long long> {
       n /= i;
     }
   }
-  
+
   // If n is a prime greater than 2
   if (n > 1) {
     factors.push_back(n);
   }
-  
+
   return factors;
 }
 
 }  // namespace
 
-REGISTER_COMMAND(
-    factor_cmd,
-    /* name */
-    "factor",
+REGISTER_COMMAND(factor_cmd,
+                 /* name */
+                 "factor",
 
-    /* synopsis */
-    "factor [NUMBER]...",
-"Print the prime factors of each specified integer NUMBER.\n"
-    "\n"
-    "If no NUMBER is specified, read from standard input.",
-"  factor 12\n"
-    "  factor 100\n"
-    "  factor 17\n"
-    "  echo '24' | factor",
+                 /* synopsis */
+                 "factor [NUMBER]...",
+                 "Print the prime factors of each specified integer NUMBER.\n"
+                 "\n"
+                 "If no NUMBER is specified, read from standard input.",
+                 "  factor 12\n"
+                 "  factor 100\n"
+                 "  factor 17\n"
+                 "  echo '24' | factor",
 
-    /* see also */
-    "primes(1)",
-"WinuxCmd",
-"Copyright © 2026 WinuxCmd",
-FACTOR_OPTIONS) {
+                 /* see also */
+                 "primes(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd",
+                 FACTOR_OPTIONS) {
   std::vector<long long> numbers;
-  
+
   if (ctx.positionals.empty()) {
     // Read from stdin
     std::string line;
@@ -112,11 +108,12 @@ FACTOR_OPTIONS) {
       try {
         numbers.push_back(std::stoll(std::string(arg)));
       } catch (...) {
-        safeErrorPrintLn("factor: '" + std::string(arg) + "' is not a valid integer");
+        safeErrorPrintLn("factor: '" + std::string(arg) +
+                         "' is not a valid integer");
       }
     }
   }
-  
+
   for (auto num : numbers) {
     auto factors = factorize(num);
     safePrint(std::to_string(num) + ":");
@@ -125,6 +122,6 @@ FACTOR_OPTIONS) {
     }
     safePrintLn("");
   }
-  
+
   return 0;
 }

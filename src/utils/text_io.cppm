@@ -31,7 +31,8 @@ import :utf8;
 namespace {
 enum class EncodingHint { Utf8, Utf16Le, Utf16Be };
 
-auto guess_utf16_from_nuls(std::string_view bytes) -> std::optional<EncodingHint> {
+auto guess_utf16_from_nuls(std::string_view bytes)
+    -> std::optional<EncodingHint> {
   if (bytes.size() < 2) return std::nullopt;
 
   size_t even_nul = 0;
@@ -45,8 +46,10 @@ auto guess_utf16_from_nuls(std::string_view bytes) -> std::optional<EncodingHint
   }
 
   const size_t threshold = bytes.size() / 4;
-  if (odd_nul > threshold && odd_nul > even_nul * 2) return EncodingHint::Utf16Le;
-  if (even_nul > threshold && even_nul > odd_nul * 2) return EncodingHint::Utf16Be;
+  if (odd_nul > threshold && odd_nul > even_nul * 2)
+    return EncodingHint::Utf16Le;
+  if (even_nul > threshold && even_nul > odd_nul * 2)
+    return EncodingHint::Utf16Be;
   return std::nullopt;
 }
 
@@ -58,12 +61,16 @@ auto decode_utf16(std::string_view bytes, bool little_endian) -> std::string {
   while (i + 1 < bytes.size()) {
     const std::uint8_t b0 = static_cast<std::uint8_t>(bytes[i]);
     const std::uint8_t b1 = static_cast<std::uint8_t>(bytes[i + 1]);
-    const std::uint16_t u16 = little_endian
-                                  ? static_cast<std::uint16_t>(b0 | (static_cast<std::uint16_t>(b1) << 8))
-                                  : static_cast<std::uint16_t>((static_cast<std::uint16_t>(b0) << 8) | b1);
+    const std::uint16_t u16 =
+        little_endian
+            ? static_cast<std::uint16_t>(b0 |
+                                         (static_cast<std::uint16_t>(b1) << 8))
+            : static_cast<std::uint16_t>((static_cast<std::uint16_t>(b0) << 8) |
+                                         b1);
     i += 2;
 
-    if (u16 == 0xFEFF) continue;  // Drop BOM markers, including repeated per-line BOMs.
+    if (u16 == 0xFEFF)
+      continue;  // Drop BOM markers, including repeated per-line BOMs.
     wide.push_back(static_cast<wchar_t>(u16));
   }
 

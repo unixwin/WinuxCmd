@@ -31,7 +31,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -43,7 +43,8 @@ using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
 auto constexpr MKTEMP_OPTIONS = std::array{
-    OPTION("-d", "--directory", "make a directory instead of a file", BOOL_TYPE),
+    OPTION("-d", "--directory", "make a directory instead of a file",
+           BOOL_TYPE),
     OPTION("-u", "--dry-run", "do not actually create anything", BOOL_TYPE),
     OPTION("-q", "--quiet", "suppress diagnostics", BOOL_TYPE),
     OPTION("-t", "--tmpdir", "interpret TEMPLATE relative to DIR", STRING_TYPE)
@@ -64,7 +65,8 @@ struct Config {
 auto build_config(const CommandContext<MKTEMP_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
   Config cfg;
-  cfg.make_directory = ctx.get<bool>("--directory", false) || ctx.get<bool>("-d", false);
+  cfg.make_directory =
+      ctx.get<bool>("--directory", false) || ctx.get<bool>("-d", false);
   cfg.dry_run = ctx.get<bool>("--dry-run", false) || ctx.get<bool>("-u", false);
   cfg.quiet = ctx.get<bool>("--quiet", false) || ctx.get<bool>("-q", false);
 
@@ -97,7 +99,7 @@ auto run(const Config& cfg) -> int {
 
   // Process template
   std::string template_str = cfg.template_str;
-  
+
   // Find the XXXXXX pattern and replace with random characters
   size_t xxx_pos = template_str.find("XXXXXX");
   if (xxx_pos == std::string::npos) {
@@ -114,7 +116,7 @@ auto run(const Config& cfg) -> int {
     // Generate random characters for XXXXXX
     std::string filename = template_str;
     const char charset[] = "abcdefghijklmnopqrstuvwxyz0123456789";
-    
+
     for (size_t i = 0; i < 6; ++i) {
       filename[xxx_pos + i] = charset[rand() % (sizeof(charset) - 1)];
     }
@@ -132,14 +134,15 @@ auto run(const Config& cfg) -> int {
       // File doesn't exist, we can use this name
       break;
     }
-    
+
     // File exists, try again
     temp_file.clear();
   }
 
   if (temp_file.empty()) {
     if (!cfg.quiet) {
-      cp::Result<int> result2 = std::unexpected("failed to create unique filename");
+      cp::Result<int> result2 =
+          std::unexpected("failed to create unique filename");
       cp::report_error(result2, L"mktemp");
     }
     return 1;
@@ -150,7 +153,8 @@ auto run(const Config& cfg) -> int {
     if (cfg.make_directory) {
       if (!CreateDirectoryA(temp_file.c_str(), NULL)) {
         if (!cfg.quiet) {
-          cp::Result<int> result2 = std::unexpected("failed to create temporary directory");
+          cp::Result<int> result2 =
+              std::unexpected("failed to create temporary directory");
           cp::report_error(result2, L"mktemp");
         }
         return 1;
@@ -160,7 +164,8 @@ auto run(const Config& cfg) -> int {
       std::ofstream f(temp_file, std::ios::binary);
       if (!f) {
         if (!cfg.quiet) {
-          cp::Result<int> result2 = std::unexpected("failed to create temporary file");
+          cp::Result<int> result2 =
+              std::unexpected("failed to create temporary file");
           cp::report_error(result2, L"mktemp");
         }
         return 1;
@@ -171,32 +176,32 @@ auto run(const Config& cfg) -> int {
 
   // Print just the filename (not full path)
   size_t last_slash = temp_file.find_last_of("/\\");
-  std::string filename_only = (last_slash != std::string::npos) ? 
-                              temp_file.substr(last_slash + 1) : temp_file;
+  std::string filename_only = (last_slash != std::string::npos)
+                                  ? temp_file.substr(last_slash + 1)
+                                  : temp_file;
   safePrintLn(filename_only);
   return 0;
 }
 
 }  // namespace mktemp_pipeline
 
-REGISTER_COMMAND(mktemp, "mktemp",
-                 "mktemp [OPTION]... [TEMPLATE]",
-                 "Create a temporary file or directory, safely, and print its name.\n"
-                 "\n"
-                 "TEMPLATE must contain at least 3 consecutive 'X's in last component.\n"
-                 "If TEMPLATE is not specified, use tmp.XXXXXXXXXX instead.\n"
-                 "\n"
-                 "Mandatory arguments to long options are mandatory for short options too.\n"
-                 "\n"
-                 "Note: This implementation uses Windows GetTempFileName API.\n"
-                 "Custom templates are partially supported.",
-                 "  mktemp                          # create temp file\n"
-                 "  mktemp -d                        # create temp directory\n"
-                 "  mktemp -u                        # just print name\n"
-                 "  mktemp -t /tmp                   # use specific directory\n"
-                 "  mktemp --quiet                   # suppress errors",
-                 "tempfile(1)", "WinuxCmd",
-                 "Copyright © 2026 WinuxCmd", MKTEMP_OPTIONS) {
+REGISTER_COMMAND(
+    mktemp, "mktemp", "mktemp [OPTION]... [TEMPLATE]",
+    "Create a temporary file or directory, safely, and print its name.\n"
+    "\n"
+    "TEMPLATE must contain at least 3 consecutive 'X's in last component.\n"
+    "If TEMPLATE is not specified, use tmp.XXXXXXXXXX instead.\n"
+    "\n"
+    "Mandatory arguments to long options are mandatory for short options too.\n"
+    "\n"
+    "Note: This implementation uses Windows GetTempFileName API.\n"
+    "Custom templates are partially supported.",
+    "  mktemp                          # create temp file\n"
+    "  mktemp -d                        # create temp directory\n"
+    "  mktemp -u                        # just print name\n"
+    "  mktemp -t /tmp                   # use specific directory\n"
+    "  mktemp --quiet                   # suppress errors",
+    "tempfile(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", MKTEMP_OPTIONS) {
   using namespace mktemp_pipeline;
 
   auto cfg_result = build_config(ctx);

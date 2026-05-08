@@ -30,67 +30,68 @@ import container;
 using namespace std::string_view_literals;
 
 // Test data for benchmarks - use string_view instead of string
-static constexpr auto test_extensions = std::to_array<std::pair<std::string_view, std::string_view>>({
-    {".txt"sv, "ASCII text"sv},
-    {".md"sv, "UTF-8 Unicode text"sv},
-    {".json"sv, "JSON data"sv},
-    {".xml"sv, "XML document text"sv},
-    {".html"sv, "HTML document text"sv},
-    {".htm"sv, "HTML document text"sv},
-    {".css"sv, "Cascading Style Sheet text"sv},
-    {".js"sv, "JavaScript source text"sv},
-    {".ts"sv, "TypeScript source text"sv},
-    {".py"sv, "Python script text"sv},
-    {".cpp"sv, "C++ source text"sv},
-    {".h"sv, "C header text"sv},
-    {".hpp"sv, "C++ header text"sv},
-    {".c"sv, "C source text"sv},
-    {".exe"sv, "PE32 executable"sv},
-    {".dll"sv, "PE32+ executable (DLL)"sv},
-    {".pdf"sv, "PDF document"sv},
-    {".zip"sv, "ZIP archive"sv},
-    {".tar"sv, "TAR archive"sv},
-    {".gz"sv, "GZIP compressed"sv},
-});
+static constexpr auto test_extensions =
+    std::to_array<std::pair<std::string_view, std::string_view>>({
+        {".txt"sv, "ASCII text"sv},
+        {".md"sv, "UTF-8 Unicode text"sv},
+        {".json"sv, "JSON data"sv},
+        {".xml"sv, "XML document text"sv},
+        {".html"sv, "HTML document text"sv},
+        {".htm"sv, "HTML document text"sv},
+        {".css"sv, "Cascading Style Sheet text"sv},
+        {".js"sv, "JavaScript source text"sv},
+        {".ts"sv, "TypeScript source text"sv},
+        {".py"sv, "Python script text"sv},
+        {".cpp"sv, "C++ source text"sv},
+        {".h"sv, "C header text"sv},
+        {".hpp"sv, "C++ header text"sv},
+        {".c"sv, "C source text"sv},
+        {".exe"sv, "PE32 executable"sv},
+        {".dll"sv, "PE32+ executable (DLL)"sv},
+        {".pdf"sv, "PDF document"sv},
+        {".zip"sv, "ZIP archive"sv},
+        {".tar"sv, "TAR archive"sv},
+        {".gz"sv, "GZIP compressed"sv},
+    });
 
 // Build ConstexprMap at compile time
 constexpr auto constexpr_ext_map = make_constexpr_map(test_extensions);
 
 // Test search strings - use string_view to match ConstexprMap key type
-static constexpr auto search_strings = std::to_array<std::string_view>({
-    ".txt"sv, ".pdf"sv, ".exe"sv, ".dll"sv
-});
+static constexpr auto search_strings =
+    std::to_array<std::string_view>({".txt"sv, ".pdf"sv, ".exe"sv, ".dll"sv});
 
 // ConstexprMap benchmarks
 // =========================
 static void BM_ConstexprMapLookup(benchmark::State& state) {
-    for (auto _ : state) {
-        for (const auto& key : search_strings) {
-            auto result = constexpr_ext_map.get_or(key, ""sv);
-            const volatile size_t count = result.size();
-            benchmark::DoNotOptimize(count);
-        }
+  for (auto _ : state) {
+    for (const auto& key : search_strings) {
+      auto result = constexpr_ext_map.get_or(key, ""sv);
+      const volatile size_t count = result.size();
+      benchmark::DoNotOptimize(count);
     }
-    state.SetItemsProcessed(state.iterations() * search_strings.size());
+  }
+  state.SetItemsProcessed(state.iterations() * search_strings.size());
 }
 BENCHMARK(BM_ConstexprMapLookup);
 
 static void BM_ConstexprMapIterate(benchmark::State& state) {
-    for (auto _ : state) {
-        const volatile size_t count = constexpr_ext_map.size();
-        benchmark::DoNotOptimize(count);
-        for (const auto& [key, value] : constexpr_ext_map) {
-            (void)key;
-            (void)value;
-        }
+  for (auto _ : state) {
+    const volatile size_t count = constexpr_ext_map.size();
+    benchmark::DoNotOptimize(count);
+    for (const auto& [key, value] : constexpr_ext_map) {
+      (void)key;
+      (void)value;
     }
-    state.SetItemsProcessed(state.iterations() * constexpr_ext_map.size());
+  }
+  state.SetItemsProcessed(state.iterations() * constexpr_ext_map.size());
 }
 BENCHMARK(BM_ConstexprMapIterate);
 
 // std::unordered_map benchmarks
 // ============================================
-// Note: unordered_map uses std::string keys, so we need to use different test data
+// Note: unordered_map uses std::string keys, so we need to use different test
+// data
 
 static std::unordered_map<std::string, std::string> unordered_ext_map = {
     {".txt", "ASCII text"},
@@ -116,67 +117,66 @@ static std::unordered_map<std::string, std::string> unordered_ext_map = {
 };
 
 static const std::vector<std::string> unordered_search_strings = {
-    ".txt", ".pdf", ".exe", ".dll"
-};
+    ".txt", ".pdf", ".exe", ".dll"};
 
 static void BM_UnorderedMapLookup(benchmark::State& state) {
-    for (auto _ : state) {
-        for (const auto& key : unordered_search_strings) {
-            auto it = unordered_ext_map.find(key);
-            const volatile bool found = (it != unordered_ext_map.end());
-            benchmark::DoNotOptimize(found);
-        }
+  for (auto _ : state) {
+    for (const auto& key : unordered_search_strings) {
+      auto it = unordered_ext_map.find(key);
+      const volatile bool found = (it != unordered_ext_map.end());
+      benchmark::DoNotOptimize(found);
     }
-    state.SetItemsProcessed(state.iterations() * unordered_search_strings.size());
+  }
+  state.SetItemsProcessed(state.iterations() * unordered_search_strings.size());
 }
 BENCHMARK(BM_UnorderedMapLookup);
 
 static void BM_UnorderedMapInsert(benchmark::State& state) {
-    for (auto _ : state) {
-        std::unordered_map<std::string, std::string> temp;
-        temp.reserve(test_extensions.size());
-        for (const auto& [key, value] : test_extensions) {
-            temp[std::string(key)] = std::string(value);
-        }
-        size_t total_size = 0;
-        for (const auto& [key, value] : temp) {
-            total_size += key.size() + value.size();
-        }
-        const volatile size_t count = total_size;
-        benchmark::DoNotOptimize(count);
+  for (auto _ : state) {
+    std::unordered_map<std::string, std::string> temp;
+    temp.reserve(test_extensions.size());
+    for (const auto& [key, value] : test_extensions) {
+      temp[std::string(key)] = std::string(value);
     }
-    state.SetItemsProcessed(state.iterations() * test_extensions.size());
+    size_t total_size = 0;
+    for (const auto& [key, value] : temp) {
+      total_size += key.size() + value.size();
+    }
+    const volatile size_t count = total_size;
+    benchmark::DoNotOptimize(count);
+  }
+  state.SetItemsProcessed(state.iterations() * test_extensions.size());
 }
 BENCHMARK(BM_UnorderedMapInsert);
 
 // std::vector benchmarks
 // ==============================
 static void BM_StdVectorPushBack(benchmark::State& state) {
-    for (auto _ : state) {
-        std::vector<int> vec;
-        vec.reserve(state.range(0));
-        for (int i = 0; i < state.range(0); ++i) {
-            vec.push_back(i);
-        }
-        const volatile size_t count = vec.size();
-        benchmark::DoNotOptimize(count);
+  for (auto _ : state) {
+    std::vector<int> vec;
+    vec.reserve(state.range(0));
+    for (int i = 0; i < state.range(0); ++i) {
+      vec.push_back(i);
     }
+    const volatile size_t count = vec.size();
+    benchmark::DoNotOptimize(count);
+  }
 }
 BENCHMARK(BM_StdVectorPushBack)->Range(4, 64);
 
 static void BM_StdVectorIteration(benchmark::State& state) {
-    std::vector<int> vec;
-    for (int i = 0; i < 100; ++i) {
-        vec.push_back(i);
+  std::vector<int> vec;
+  for (int i = 0; i < 100; ++i) {
+    vec.push_back(i);
+  }
+  for (auto _ : state) {
+    size_t sum = 0;
+    for (const auto& val : vec) {
+      sum += val;
     }
-    for (auto _ : state) {
-        size_t sum = 0;
-        for (const auto& val : vec) {
-            sum += val;
-        }
-        const volatile size_t count = sum;
-        benchmark::DoNotOptimize(count);
-    }
+    const volatile size_t count = sum;
+    benchmark::DoNotOptimize(count);
+  }
 }
 BENCHMARK(BM_StdVectorIteration);
 
@@ -224,4 +224,4 @@ static void BM_SmallVectorEmplaceBack(benchmark::State& state) {
 BENCHMARK(BM_SmallVectorEmplaceBack)->Range(4, 64);
 
 // Run benchmarks
-//BENCHMARK_MAIN();
+// BENCHMARK_MAIN();

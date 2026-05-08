@@ -22,7 +22,7 @@
  *  - File: lsof.cpp
  *  - Username: Administrator
  *  - CopyrightYear: 2026
- * 
+ *
  */
 /// @contributors:
 ///   - @contributor1 arookieofc 2128194521@qq.com
@@ -33,10 +33,10 @@
 /// @License: MIT
 /// @Copyright: Copyright © 2026 WinuxCmd
 
-#include "pch/pch.h"
-#include "core/command_macros.h"
-
 #include <iphlpapi.h>
+
+#include "core/command_macros.h"
+#include "pch/pch.h"
 #pragma comment(lib, "iphlpapi.lib")
 
 import std;
@@ -49,16 +49,21 @@ using cmd::meta::OptionType;
 auto constexpr LSOF_OPTIONS = std::array{
     OPTION("-p", "--pid", "list files opened by process id", INT_TYPE),
     OPTION("-a", "--all", "include non-file handles and unnamed entries"),
-    OPTION("-i", "--internet", "show internet connections; optional spec ':PORT', 'PROTO', 'PROTO:PORT'"),
+    OPTION("-i", "--internet",
+           "show internet connections; optional spec ':PORT', 'PROTO', "
+           "'PROTO:PORT'"),
     OPTION("-F", "--field", "machine-readable field output"),
     OPTION("-n", "--numeric", "do not convert native paths to DOS paths"),
     OPTION("", "--no-headers", "print no header line"),
-    OPTION("-t", "--timeout-ms", "NtQueryObject timeout in milliseconds", INT_TYPE)};
+    OPTION("-t", "--timeout-ms", "NtQueryObject timeout in milliseconds",
+           INT_TYPE)};
 
 namespace lsof_pipeline {
 
-constexpr NTSTATUS STATUS_INFO_LENGTH_MISMATCH_NT = static_cast<NTSTATUS>(0xC0000004L);
-constexpr NTSTATUS STATUS_BUFFER_OVERFLOW_NT = static_cast<NTSTATUS>(0x80000005L);
+constexpr NTSTATUS STATUS_INFO_LENGTH_MISMATCH_NT =
+    static_cast<NTSTATUS>(0xC0000004L);
+constexpr NTSTATUS STATUS_BUFFER_OVERFLOW_NT =
+    static_cast<NTSTATUS>(0x80000005L);
 constexpr ULONG SYSTEM_EXTENDED_HANDLE_INFORMATION_CLASS = 64;
 constexpr ULONG OBJECT_NAME_INFORMATION_CLASS = 1;
 constexpr ULONG OBJECT_TYPE_INFORMATION_CLASS = 2;
@@ -75,8 +80,8 @@ struct HandleCloser {
 };
 using unique_handle = std::unique_ptr<HANDLE, HandleCloser>;
 
-using NtQuerySystemInformationFn =
-    NTSTATUS(NTAPI*)(ULONG, PVOID, ULONG, PULONG);
+using NtQuerySystemInformationFn = NTSTATUS(NTAPI*)(ULONG, PVOID, ULONG,
+                                                    PULONG);
 using NtQueryObjectFn = NTSTATUS(NTAPI*)(HANDLE, ULONG, PVOID, ULONG, PULONG);
 
 struct SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX_LOCAL {
@@ -198,8 +203,8 @@ auto load_ntdll_functions()
 
   auto query_sys = reinterpret_cast<NtQuerySystemInformationFn>(
       GetProcAddress(ntdll, "NtQuerySystemInformation"));
-  auto query_obj = reinterpret_cast<NtQueryObjectFn>(
-      GetProcAddress(ntdll, "NtQueryObject"));
+  auto query_obj =
+      reinterpret_cast<NtQueryObjectFn>(GetProcAddress(ntdll, "NtQueryObject"));
   if (!query_sys || !query_obj) return std::nullopt;
   return std::make_pair(query_sys, query_obj);
 }
@@ -215,7 +220,8 @@ auto query_system_handles(NtQuerySystemInformationFn query_sys)
     if (nt_success(st)) {
       return buffer;
     }
-    if (st != STATUS_INFO_LENGTH_MISMATCH_NT && st != STATUS_BUFFER_OVERFLOW_NT) {
+    if (st != STATUS_INFO_LENGTH_MISMATCH_NT &&
+        st != STATUS_BUFFER_OVERFLOW_NT) {
       return std::nullopt;
     }
     size = return_len ? (return_len + (1UL << 16)) : (size * 2);
@@ -242,7 +248,8 @@ auto build_process_name_map() -> std::unordered_map<DWORD, std::wstring> {
   return names;
 }
 
-auto build_dos_device_map() -> std::vector<std::pair<std::wstring, std::wstring>> {
+auto build_dos_device_map()
+    -> std::vector<std::pair<std::wstring, std::wstring>> {
   std::vector<std::pair<std::wstring, std::wstring>> map;
   map.reserve(26);
 
@@ -268,8 +275,9 @@ auto starts_with(const std::wstring& text, const std::wstring& prefix) -> bool {
   return std::equal(prefix.begin(), prefix.end(), text.begin());
 }
 
-auto normalize_path(std::wstring path, bool numeric,
-                    const std::vector<std::pair<std::wstring, std::wstring>>& dos_map)
+auto normalize_path(
+    std::wstring path, bool numeric,
+    const std::vector<std::pair<std::wstring, std::wstring>>& dos_map)
     -> std::wstring {
   if (numeric) return path;
 
@@ -340,9 +348,9 @@ DWORD WINAPI nt_query_object_worker(LPVOID param) {
   return 4;
 }
 
-auto query_object_text_with_timeout(HANDLE dup_handle, NtQueryObjectFn query_obj,
-                                    ULONG info_class, DWORD timeout_ms)
-    -> QueryResult {
+auto query_object_text_with_timeout(HANDLE dup_handle,
+                                    NtQueryObjectFn query_obj, ULONG info_class,
+                                    DWORD timeout_ms) -> QueryResult {
   QueryCtx ctx;
   ctx.dup_handle = dup_handle;
   ctx.query_fn = query_obj;
@@ -385,7 +393,8 @@ auto parse_inet_spec(std::string_view spec) -> InternetFilter {
       try {
         int v = std::stoi(std::string(port_str.begin(), port_str.end()));
         if (v > 0 && v <= 65535) f.port = static_cast<unsigned short>(v);
-      } catch (...) {}
+      } catch (...) {
+      }
     }
   } else {
     auto colon = ws.find(L':');
@@ -398,7 +407,8 @@ auto parse_inet_spec(std::string_view spec) -> InternetFilter {
         try {
           int v = std::stoi(std::string(port_str.begin(), port_str.end()));
           if (v > 0 && v <= 65535) f.port = static_cast<unsigned short>(v);
-        } catch (...) {}
+        } catch (...) {
+        }
       }
     }
   }
@@ -415,7 +425,8 @@ auto parse_config(const CommandContext<LSOF_OPTIONS.size()>& ctx)
   cfg.show_all = ctx.get<bool>("--all", false) || ctx.get<bool>("-a", false);
   cfg.internet_only =
       ctx.get<bool>("--internet", false) || ctx.get<bool>("-i", false);
-  cfg.field_mode = ctx.get<bool>("--field", false) || ctx.get<bool>("-F", false);
+  cfg.field_mode =
+      ctx.get<bool>("--field", false) || ctx.get<bool>("-F", false);
   cfg.numeric = ctx.get<bool>("--numeric", false) || ctx.get<bool>("-n", false);
   cfg.no_headers = ctx.get<bool>("--no-headers", false);
 
@@ -439,8 +450,8 @@ auto parse_config(const CommandContext<LSOF_OPTIONS.size()>& ctx)
 
 auto is_internet_like_name(const std::wstring& object_name) -> bool {
   constexpr std::wstring_view prefixes[] = {
-      L"\\Device\\Afd", L"\\Device\\Tcp", L"\\Device\\Udp",
-      L"\\Device\\RawIp", L"\\Device\\Ip"};
+      L"\\Device\\Afd", L"\\Device\\Tcp", L"\\Device\\Udp", L"\\Device\\RawIp",
+      L"\\Device\\Ip"};
   for (const auto& p : prefixes) {
     if (object_name.size() >= p.size() &&
         std::equal(p.begin(), p.end(), object_name.begin())) {
@@ -452,10 +463,9 @@ auto is_internet_like_name(const std::wstring& object_name) -> bool {
 
 auto format_row(const LsofEntry& e) -> std::wstring {
   std::wostringstream oss;
-  oss << std::left << std::setw(24) << e.command.substr(0, 24)
-      << std::right << std::setw(8) << e.pid << L" "
-      << std::left << std::setw(8) << e.type.substr(0, 8) << L" "
-      << e.name;
+  oss << std::left << std::setw(24) << e.command.substr(0, 24) << std::right
+      << std::setw(8) << e.pid << L" " << std::left << std::setw(8)
+      << e.type.substr(0, 8) << L" " << e.name;
   return oss.str();
 }
 
@@ -482,7 +492,7 @@ auto parse_port(DWORD be_port) -> unsigned short {
 
 auto format_ipv4(DWORD addr) -> std::wstring {
   if (addr == 0) return L"*";
-  unsigned int b1 = (addr)&0xFF;
+  unsigned int b1 = (addr) & 0xFF;
   unsigned int b2 = (addr >> 8) & 0xFF;
   unsigned int b3 = (addr >> 16) & 0xFF;
   unsigned int b4 = (addr >> 24) & 0xFF;
@@ -549,7 +559,8 @@ auto tcp_state_name(DWORD state) -> std::wstring {
 
 auto collect_internet_entries(
     const Config& cfg,
-    const std::unordered_map<DWORD, std::wstring>& proc_names) -> std::vector<LsofEntry> {
+    const std::unordered_map<DWORD, std::wstring>& proc_names)
+    -> std::vector<LsofEntry> {
   std::vector<LsofEntry> rows;
   rows.reserve(1024);
 
@@ -559,11 +570,12 @@ auto collect_internet_entries(
   if (rc == ERROR_INSUFFICIENT_BUFFER && size > 0) {
     std::vector<std::byte> buf(size);
     auto* table = reinterpret_cast<MIB_TCPTABLE_OWNER_PID*>(buf.data());
-    if (GetExtendedTcpTable(table, &size, TRUE, IPV4_FAMILY, TCP_TABLE_OWNER_PID_ALL,
-                            0) == NO_ERROR) {
+    if (GetExtendedTcpTable(table, &size, TRUE, IPV4_FAMILY,
+                            TCP_TABLE_OWNER_PID_ALL, 0) == NO_ERROR) {
       for (DWORD i = 0; i < table->dwNumEntries; ++i) {
         const auto& r = table->table[i];
-        if (cfg.pid_filter.has_value() && r.dwOwningPid != *cfg.pid_filter) continue;
+        if (cfg.pid_filter.has_value() && r.dwOwningPid != *cfg.pid_filter)
+          continue;
         if (cfg.inet_filter) {
           const auto& f = *cfg.inet_filter;
           if (f.protocol && *f.protocol != L"TCP") continue;
@@ -587,21 +599,24 @@ auto collect_internet_entries(
         std::wstring name =
             local + L"->" + remote + L" (" + tcp_state_name(r.dwState) + L")";
 
-        rows.push_back({std::move(cmd), r.dwOwningPid, L"TCP", std::move(name)});
+        rows.push_back(
+            {std::move(cmd), r.dwOwningPid, L"TCP", std::move(name)});
       }
     }
   }
 
   size = 0;
-  rc = GetExtendedUdpTable(nullptr, &size, TRUE, IPV4_FAMILY, UDP_TABLE_OWNER_PID, 0);
+  rc = GetExtendedUdpTable(nullptr, &size, TRUE, IPV4_FAMILY,
+                           UDP_TABLE_OWNER_PID, 0);
   if (rc == ERROR_INSUFFICIENT_BUFFER && size > 0) {
     std::vector<std::byte> buf(size);
     auto* table = reinterpret_cast<MIB_UDPTABLE_OWNER_PID*>(buf.data());
-    if (GetExtendedUdpTable(table, &size, TRUE, IPV4_FAMILY, UDP_TABLE_OWNER_PID, 0) ==
-        NO_ERROR) {
+    if (GetExtendedUdpTable(table, &size, TRUE, IPV4_FAMILY,
+                            UDP_TABLE_OWNER_PID, 0) == NO_ERROR) {
       for (DWORD i = 0; i < table->dwNumEntries; ++i) {
         const auto& r = table->table[i];
-        if (cfg.pid_filter.has_value() && r.dwOwningPid != *cfg.pid_filter) continue;
+        if (cfg.pid_filter.has_value() && r.dwOwningPid != *cfg.pid_filter)
+          continue;
         if (cfg.inet_filter) {
           const auto& f = *cfg.inet_filter;
           if (f.protocol && *f.protocol != L"UDP") continue;
@@ -614,9 +629,10 @@ auto collect_internet_entries(
           cmd = it->second;
         }
 
-        std::wstring name =
-            format_ipv4(r.dwLocalAddr) + L":" + std::to_wstring(parse_port(r.dwLocalPort));
-        rows.push_back({std::move(cmd), r.dwOwningPid, L"UDP", std::move(name)});
+        std::wstring name = format_ipv4(r.dwLocalAddr) + L":" +
+                            std::to_wstring(parse_port(r.dwLocalPort));
+        rows.push_back(
+            {std::move(cmd), r.dwOwningPid, L"UDP", std::move(name)});
       }
     }
   }
@@ -631,7 +647,8 @@ auto collect_internet_entries(
                             TCP_TABLE_OWNER_PID_ALL, 0) == NO_ERROR) {
       for (DWORD i = 0; i < table->dwNumEntries; ++i) {
         const auto& r = table->table[i];
-        if (cfg.pid_filter.has_value() && r.dwOwningPid != *cfg.pid_filter) continue;
+        if (cfg.pid_filter.has_value() && r.dwOwningPid != *cfg.pid_filter)
+          continue;
         if (cfg.inet_filter) {
           const auto& f = *cfg.inet_filter;
           if (f.protocol && *f.protocol != L"TCP6") continue;
@@ -648,29 +665,32 @@ auto collect_internet_entries(
           cmd = it->second;
         }
 
-        std::wstring local = format_ipv6(r.ucLocalAddr, r.dwLocalScopeId) + L":" +
-                             std::to_wstring(parse_port(r.dwLocalPort));
-        std::wstring remote =
-            format_ipv6(r.ucRemoteAddr, r.dwRemoteScopeId) + L":" +
-            std::to_wstring(parse_port(r.dwRemotePort));
+        std::wstring local = format_ipv6(r.ucLocalAddr, r.dwLocalScopeId) +
+                             L":" + std::to_wstring(parse_port(r.dwLocalPort));
+        std::wstring remote = format_ipv6(r.ucRemoteAddr, r.dwRemoteScopeId) +
+                              L":" +
+                              std::to_wstring(parse_port(r.dwRemotePort));
         std::wstring name =
             local + L"->" + remote + L" (" + tcp_state_name(r.dwState) + L")";
 
-        rows.push_back({std::move(cmd), r.dwOwningPid, L"TCP6", std::move(name)});
+        rows.push_back(
+            {std::move(cmd), r.dwOwningPid, L"TCP6", std::move(name)});
       }
     }
   }
 
   size = 0;
-  rc = GetExtendedUdpTable(nullptr, &size, TRUE, IPV6_FAMILY, UDP_TABLE_OWNER_PID, 0);
+  rc = GetExtendedUdpTable(nullptr, &size, TRUE, IPV6_FAMILY,
+                           UDP_TABLE_OWNER_PID, 0);
   if (rc == ERROR_INSUFFICIENT_BUFFER && size > 0) {
     std::vector<std::byte> buf(size);
     auto* table = reinterpret_cast<MIB_UDP6TABLE_OWNER_PID_LOCAL*>(buf.data());
-    if (GetExtendedUdpTable(table, &size, TRUE, IPV6_FAMILY, UDP_TABLE_OWNER_PID,
-                            0) == NO_ERROR) {
+    if (GetExtendedUdpTable(table, &size, TRUE, IPV6_FAMILY,
+                            UDP_TABLE_OWNER_PID, 0) == NO_ERROR) {
       for (DWORD i = 0; i < table->dwNumEntries; ++i) {
         const auto& r = table->table[i];
-        if (cfg.pid_filter.has_value() && r.dwOwningPid != *cfg.pid_filter) continue;
+        if (cfg.pid_filter.has_value() && r.dwOwningPid != *cfg.pid_filter)
+          continue;
         if (cfg.inet_filter) {
           const auto& f = *cfg.inet_filter;
           if (f.protocol && *f.protocol != L"UDP6") continue;
@@ -683,10 +703,10 @@ auto collect_internet_entries(
           cmd = it->second;
         }
 
-        std::wstring name =
-            format_ipv6(r.ucLocalAddr, r.dwLocalScopeId) + L":" +
-            std::to_wstring(parse_port(r.dwLocalPort));
-        rows.push_back({std::move(cmd), r.dwOwningPid, L"UDP6", std::move(name)});
+        std::wstring name = format_ipv6(r.ucLocalAddr, r.dwLocalScopeId) +
+                            L":" + std::to_wstring(parse_port(r.dwLocalPort));
+        rows.push_back(
+            {std::move(cmd), r.dwOwningPid, L"UDP6", std::move(name)});
       }
     }
   }
@@ -710,8 +730,9 @@ auto run(const Config& cfg) -> int {
     return 1;
   }
 
-  auto* all_handles = reinterpret_cast<const SYSTEM_HANDLE_INFORMATION_EX_LOCAL*>(
-      handles_blob->data());
+  auto* all_handles =
+      reinterpret_cast<const SYSTEM_HANDLE_INFORMATION_EX_LOCAL*>(
+          handles_blob->data());
   if (!all_handles) {
     safeErrorPrintLn(L"lsof: invalid system handle data");
     return 1;
@@ -812,15 +833,18 @@ auto run(const Config& cfg) -> int {
     }
 
     std::wstring cmd = L"?";
-    if (auto it = proc_names.find(pid); it != proc_names.end() && !it->second.empty()) {
+    if (auto it = proc_names.find(pid);
+        it != proc_names.end() && !it->second.empty()) {
       cmd = it->second;
     }
 
     if (is_file && !cfg.internet_only) {
-      object_name = normalize_path(std::move(object_name), cfg.numeric, dos_map);
+      object_name =
+          normalize_path(std::move(object_name), cfg.numeric, dos_map);
     }
 
-    rows.push_back({std::move(cmd), pid, std::move(type_name), std::move(object_name)});
+    rows.push_back(
+        {std::move(cmd), pid, std::move(type_name), std::move(object_name)});
   }
 
   for (auto& [_, ph] : process_handles) {
@@ -836,8 +860,7 @@ auto run(const Config& cfg) -> int {
 
   if (cfg.internet_only) {
     auto internet_rows = collect_internet_entries(cfg, proc_names);
-    rows.insert(rows.end(),
-                std::make_move_iterator(internet_rows.begin()),
+    rows.insert(rows.end(), std::make_move_iterator(internet_rows.begin()),
                 std::make_move_iterator(internet_rows.end()));
     std::ranges::sort(rows, [](const LsofEntry& a, const LsofEntry& b) {
       if (a.pid != b.pid) return a.pid < b.pid;
@@ -885,24 +908,23 @@ auto run(const Config& cfg) -> int {
 
 }  // namespace lsof_pipeline
 
-REGISTER_COMMAND(
-    lsof,
-    "lsof",
-    "lsof [options]",
-    "List open files for running processes on Windows.\n"
-    "This command enumerates kernel handles and prints entries that map to files.\n"
-    "Some handles may require elevated privileges and some object queries can timeout.",
-    "  lsof\n"
-    "  lsof -p 1234\n"
-    "  lsof --no-headers --pid 4321\n"
-    "  lsof -a --timeout-ms 120\n"
-    "  lsof -i\n"
-    "  lsof -i :8080\n"
-    "  lsof -i tcp\n"
-    "  lsof -i tcp:8080\n"
-    "  lsof -i -F",
-    "ps(1), handle.exe", "WinuxCmd", "Copyright (c) 2026 WinuxCmd",
-    LSOF_OPTIONS) {
+REGISTER_COMMAND(lsof, "lsof", "lsof [options]",
+                 "List open files for running processes on Windows.\n"
+                 "This command enumerates kernel handles and prints entries "
+                 "that map to files.\n"
+                 "Some handles may require elevated privileges and some object "
+                 "queries can timeout.",
+                 "  lsof\n"
+                 "  lsof -p 1234\n"
+                 "  lsof --no-headers --pid 4321\n"
+                 "  lsof -a --timeout-ms 120\n"
+                 "  lsof -i\n"
+                 "  lsof -i :8080\n"
+                 "  lsof -i tcp\n"
+                 "  lsof -i tcp:8080\n"
+                 "  lsof -i -F",
+                 "ps(1), handle.exe", "WinuxCmd", "Copyright (c) 2026 WinuxCmd",
+                 LSOF_OPTIONS) {
   using namespace lsof_pipeline;
 
   auto cfg = parse_config(ctx);

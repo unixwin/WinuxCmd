@@ -26,18 +26,18 @@
 
 TEST(pwd, pwd_basic) {
   TempDir tmp;
-  
+
   Pipeline p;
   p.set_cwd(tmp.wpath());
   p.add(L"pwd.exe", {});
-  
+
   TEST_LOG_CMD_LIST("pwd.exe");
-  
+
   auto r = p.run();
-  
+
   TEST_LOG_EXIT_CODE(r);
   TEST_LOG("pwd.exe output", r.stdout_text);
-  
+
   EXPECT_EQ(r.exit_code, 0);
   // Should output the current working directory
   EXPECT_FALSE(r.stdout_text.empty());
@@ -49,18 +49,18 @@ TEST(pwd, pwd_basic) {
 
 TEST(pwd, pwd_logical) {
   TempDir tmp;
-  
+
   Pipeline p;
   p.set_cwd(tmp.wpath());
   p.add(L"pwd.exe", {L"-L"});
-  
+
   TEST_LOG_CMD_LIST("pwd.exe", L"-L");
-  
+
   auto r = p.run();
-  
+
   TEST_LOG_EXIT_CODE(r);
   TEST_LOG("pwd.exe -L output", r.stdout_text);
-  
+
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_FALSE(r.stdout_text.empty());
   EXPECT_TRUE(r.stdout_text.find(tmp.path.string()) != std::string::npos);
@@ -68,18 +68,18 @@ TEST(pwd, pwd_logical) {
 
 TEST(pwd, pwd_physical) {
   TempDir tmp;
-  
+
   Pipeline p;
   p.set_cwd(tmp.wpath());
   p.add(L"pwd.exe", {L"-P"});
-  
+
   TEST_LOG_CMD_LIST("pwd.exe", L"-P");
-  
+
   auto r = p.run();
-  
+
   TEST_LOG_EXIT_CODE(r);
   TEST_LOG("pwd.exe -P output", r.stdout_text);
-  
+
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_FALSE(r.stdout_text.empty());
   EXPECT_TRUE(r.stdout_text.find(tmp.path.string()) != std::string::npos);
@@ -87,18 +87,18 @@ TEST(pwd, pwd_physical) {
 
 TEST(pwd, pwd_long_option_logical) {
   TempDir tmp;
-  
+
   Pipeline p;
   p.set_cwd(tmp.wpath());
   p.add(L"pwd.exe", {L"--logical"});
-  
+
   TEST_LOG_CMD_LIST("pwd.exe", L"--logical");
-  
+
   auto r = p.run();
-  
+
   TEST_LOG_EXIT_CODE(r);
   TEST_LOG("pwd.exe --logical output", r.stdout_text);
-  
+
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_FALSE(r.stdout_text.empty());
   EXPECT_TRUE(r.stdout_text.find(tmp.path.string()) != std::string::npos);
@@ -106,18 +106,18 @@ TEST(pwd, pwd_long_option_logical) {
 
 TEST(pwd, pwd_long_option_physical) {
   TempDir tmp;
-  
+
   Pipeline p;
   p.set_cwd(tmp.wpath());
   p.add(L"pwd.exe", {L"--physical"});
-  
+
   TEST_LOG_CMD_LIST("pwd.exe", L"--physical");
-  
+
   auto r = p.run();
-  
+
   TEST_LOG_EXIT_CODE(r);
   TEST_LOG("pwd.exe --physical output", r.stdout_text);
-  
+
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_FALSE(r.stdout_text.empty());
   EXPECT_TRUE(r.stdout_text.find(tmp.path.string()) != std::string::npos);
@@ -147,36 +147,36 @@ TEST(pwd, pwd_help) {
 
 TEST(pwd, pwd_invalid_option) {
   TempDir tmp;
-  
+
   Pipeline p;
   p.set_cwd(tmp.wpath());
   p.add(L"pwd.exe", {L"--invalid-option"});
-  
+
   TEST_LOG_CMD_LIST("pwd.exe", L"--invalid-option");
-  
+
   auto r = p.run();
-  
+
   TEST_LOG_EXIT_CODE(r);
   TEST_LOG("pwd.exe --invalid-option output", r.stderr_text);
-  
+
   // Should fail with invalid option
   EXPECT_NE(r.exit_code, 0);
 }
 
 TEST(pwd, pwd_multiple_options) {
   TempDir tmp;
-  
+
   Pipeline p;
   p.set_cwd(tmp.wpath());
   p.add(L"pwd.exe", {L"-L", L"-P"});
-  
+
   TEST_LOG_CMD_LIST("pwd.exe", L"-L", L"-P");
-  
+
   auto r = p.run();
-  
+
   TEST_LOG_EXIT_CODE(r);
   TEST_LOG("pwd.exe -L -P output", r.stdout_text);
-  
+
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_FALSE(r.stdout_text.empty());
   // Physical option should take precedence
@@ -185,21 +185,21 @@ TEST(pwd, pwd_multiple_options) {
 
 TEST(pwd, pwd_empty_directory) {
   TempDir tmp;
-  
+
   // Create an empty subdirectory
   std::filesystem::create_directory(tmp.path / "empty_dir");
-  
+
   Pipeline p;
   p.set_cwd((tmp.path / "empty_dir").wstring());
   p.add(L"pwd.exe", {});
-  
+
   TEST_LOG_CMD_LIST("pwd.exe");
-  
+
   auto r = p.run();
-  
+
   TEST_LOG_EXIT_CODE(r);
   TEST_LOG("pwd.exe in empty directory output", r.stdout_text);
-  
+
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_FALSE(r.stdout_text.empty());
   // Should output the empty directory path

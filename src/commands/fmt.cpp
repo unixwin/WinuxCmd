@@ -31,7 +31,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -43,14 +43,18 @@ using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
 auto constexpr FMT_OPTIONS = std::array{
-    OPTION("-c", "--crown-margin", "preserve indentation of the first two lines", BOOL_TYPE),
-    OPTION("-p", "--prefix", "reformat only lines beginning with STRING", STRING_TYPE),
-    OPTION("-s", "--split-only", "split long lines, but do not refill", BOOL_TYPE),
-    OPTION("-t", "--tagged-paragraph", "expect indentation in first 2 lines", BOOL_TYPE),
-    OPTION("-u", "--uniform-spacing", "one space between words, two after sentences", BOOL_TYPE),
+    OPTION("-c", "--crown-margin",
+           "preserve indentation of the first two lines", BOOL_TYPE),
+    OPTION("-p", "--prefix", "reformat only lines beginning with STRING",
+           STRING_TYPE),
+    OPTION("-s", "--split-only", "split long lines, but do not refill",
+           BOOL_TYPE),
+    OPTION("-t", "--tagged-paragraph", "expect indentation in first 2 lines",
+           BOOL_TYPE),
+    OPTION("-u", "--uniform-spacing",
+           "one space between words, two after sentences", BOOL_TYPE),
     OPTION("-w", "--width", "maximum line width (default 75)", STRING_TYPE),
-    OPTION("-g", "--goal", "goal width (default 93% of width)", STRING_TYPE)
-};
+    OPTION("-g", "--goal", "goal width (default 93% of width)", STRING_TYPE)};
 
 namespace fmt_pipeline {
 namespace cp = core::pipeline;
@@ -69,10 +73,14 @@ struct Config {
 auto build_config(const CommandContext<FMT_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
   Config cfg;
-  cfg.crown_margin = ctx.get<bool>("--crown-margin", false) || ctx.get<bool>("-c", false);
-  cfg.split_only = ctx.get<bool>("--split-only", false) || ctx.get<bool>("-s", false);
-  cfg.tagged_paragraph = ctx.get<bool>("--tagged-paragraph", false) || ctx.get<bool>("-t", false);
-  cfg.uniform_spacing = ctx.get<bool>("--uniform-spacing", false) || ctx.get<bool>("-u", false);
+  cfg.crown_margin =
+      ctx.get<bool>("--crown-margin", false) || ctx.get<bool>("-c", false);
+  cfg.split_only =
+      ctx.get<bool>("--split-only", false) || ctx.get<bool>("-s", false);
+  cfg.tagged_paragraph =
+      ctx.get<bool>("--tagged-paragraph", false) || ctx.get<bool>("-t", false);
+  cfg.uniform_spacing =
+      ctx.get<bool>("--uniform-spacing", false) || ctx.get<bool>("-u", false);
 
   auto prefix_opt = ctx.get<std::string>("--prefix", "");
   if (prefix_opt.empty()) {
@@ -141,7 +149,8 @@ auto read_input(const std::string& filename) -> cp::Result<std::string> {
     // Read from file
     std::ifstream f(filename, std::ios::binary);
     if (!f) {
-      return std::unexpected(std::string("cannot open '") + filename + "' for reading");
+      return std::unexpected(std::string("cannot open '") + filename +
+                             "' for reading");
     }
     // Read file content
     content.assign(std::istreambuf_iterator<char>(f),
@@ -150,8 +159,7 @@ auto read_input(const std::string& filename) -> cp::Result<std::string> {
       return std::unexpected("error reading from file");
     }
     // Skip UTF-8 BOM if present at the beginning
-    if (content.size() >= 3 &&
-        static_cast<unsigned char>(content[0]) == 0xEF &&
+    if (content.size() >= 3 && static_cast<unsigned char>(content[0]) == 0xEF &&
         static_cast<unsigned char>(content[1]) == 0xBB &&
         static_cast<unsigned char>(content[2]) == 0xBF) {
       content = content.substr(3);
@@ -172,7 +180,7 @@ auto run(const Config& cfg) -> int {
     }
 
     const std::string& content = *content_result;
-    
+
     if (cfg.split_only) {
       // Just split long lines, don't reflow
       std::string line;
@@ -243,19 +251,18 @@ auto run(const Config& cfg) -> int {
 
 }  // namespace fmt_pipeline
 
-REGISTER_COMMAND(fmt, "fmt",
-                 "fmt [OPTION]... [FILE]...",
-                 "Reformat paragraphs.\n"
-                 "\n"
-                 "With no FILE, or when FILE is -, read standard input.\n"
-                 "\n"
-                 "Note: This is a simplified implementation. Advanced features\n"
-                 "like crown margin and tagged paragraphs are not fully supported.",
-                 "  fmt file.txt\n"
-                 "  fmt -w 60 file.txt\n"
-                 "  fmt -s file.txt",
-                 "fold(1)", "WinuxCmd",
-                 "Copyright © 2026 WinuxCmd", FMT_OPTIONS) {
+REGISTER_COMMAND(
+    fmt, "fmt", "fmt [OPTION]... [FILE]...",
+    "Reformat paragraphs.\n"
+    "\n"
+    "With no FILE, or when FILE is -, read standard input.\n"
+    "\n"
+    "Note: This is a simplified implementation. Advanced features\n"
+    "like crown margin and tagged paragraphs are not fully supported.",
+    "  fmt file.txt\n"
+    "  fmt -w 60 file.txt\n"
+    "  fmt -s file.txt",
+    "fold(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", FMT_OPTIONS) {
   using namespace fmt_pipeline;
 
   auto cfg_result = build_config(ctx);

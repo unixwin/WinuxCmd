@@ -1,6 +1,6 @@
 ---
 name: winuxcmd
-description: Repository-local WinuxCmd workflow for AI agents: activate .winuxcmd/bin, avoid PowerShell alias collisions, use man.exe, run MSVC builds/tests, and package the skill for release. Use when working in this repository or preparing WinuxCmd release assets and the skill bundle.
+description: Repository-local WinuxCmd workflow for AI agents: download and integrate released WinuxCmd builds, activate .winuxcmd/bin, avoid PowerShell alias collisions, use man.exe, run MSVC builds/tests, and package the skill for release. Use when working in this repository or preparing WinuxCmd release assets and the skill bundle.
 ---
 
 # WinuxCmd
@@ -47,6 +47,9 @@ winuxcmd.exe help sort
 - `scripts/install-workspace-profile-hook.ps1` updates the current user's
   PowerShell 7 and Windows PowerShell 5.1 profiles so new shells started in this
   repository auto-activate the workspace.
+- If you are integrating a downloaded WinuxCmd release, pass
+  `-WinuxCmdPath <path-to-winuxcmd.exe>` to `scripts/setup-workspace-bin.ps1`
+  before activating the workspace.
 
 ## Build and Test
 
@@ -79,5 +82,6 @@ winuxcmd.exe help sort
 ## References
 
 - `references/workspace-integration.md`
+- `references/download-and-integrate.md`
 - `references/command-guidance.md`
 - `references/release-packaging.md`

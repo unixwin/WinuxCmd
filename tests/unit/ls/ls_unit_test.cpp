@@ -22,8 +22,9 @@
  *  - File: ls_unit_test.cpp
  *  - CopyrightYear: 2026
  */
-#include "framework/winuxtest.h"
 #include <filesystem>
+
+#include "framework/winuxtest.h"
 
 TEST(ls, ls_basic) {
   TempDir tmp;

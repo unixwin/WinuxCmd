@@ -31,7 +31,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -41,9 +41,8 @@ import utils;
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
-auto constexpr FALSE_OPTIONS = std::array{
-    OPTION("", "", "do nothing, unsuccessfully", STRING_TYPE)
-};
+auto constexpr FALSE_OPTIONS =
+    std::array{OPTION("", "", "do nothing, unsuccessfully", STRING_TYPE)};
 
 REGISTER_COMMAND(
     false_cmd,
@@ -52,19 +51,16 @@ REGISTER_COMMAND(
 
     /* synopsis */
     "false",
-"Do nothing, unsuccessfully.\n"
+    "Do nothing, unsuccessfully.\n"
     "\n"
     "Exit with a status code indicating failure.\n"
     "This command is often used in shell scripts where a command is required\n"
     "to fail unconditionally.",
-"  false\n"
+    "  false\n"
     "  while false; do echo 'This will never execute'; done",
 
     /* see also */
-    "true(1)",
-"WinuxCmd",
-"Copyright © 2026 WinuxCmd",
-FALSE_OPTIONS) {
+    "true(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", FALSE_OPTIONS) {
   // Do nothing, just return 1 (failure)
   return 1;
 }

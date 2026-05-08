@@ -91,7 +91,7 @@
         std::string_view(cmd_name), std::string_view(cmd_synopsis),            \
         std::string_view(cmd_desc), options, std::string_view(examples),       \
         std::string_view(see_also), std::string_view(author),                  \
-        std::string_view(copyright), std::string_view(cmd_synopsis));           \
+        std::string_view(copyright), std::string_view(cmd_synopsis));          \
   }                                                                            \
                                                                                \
   template <size_t N>                                                          \
@@ -105,15 +105,15 @@
           cmd_name, command_##name##_internal::meta, execute##name<N>);        \
     }                                                                          \
   };                                                                           \
-    _Registrar_##name _registrar_instance_##name;                                \
-    }                                                                            \
-                                                                                 \
-    template <size_t N>                                                          \
-      int execute##name(CommandContext<N>& ctx) noexcept
-    
-    #define BOOL_TYPE cmd::meta::OptionType::Bool
-    #define INT_TYPE cmd::meta::OptionType::Int
-    #define STRING_TYPE cmd::meta::OptionType::String
+  _Registrar_##name _registrar_instance_##name;                                \
+  }                                                                            \
+                                                                               \
+  template <size_t N>                                                          \
+  int execute##name(CommandContext<N>& ctx) noexcept
+
+#define BOOL_TYPE cmd::meta::OptionType::Bool
+#define INT_TYPE cmd::meta::OptionType::Int
+#define STRING_TYPE cmd::meta::OptionType::String
 #undef OPTION_TYPE
 #define OPTION_TYPE(...) OPTION_TYPE_IMPL(__VA_ARGS__, BOOL_TYPE)
 

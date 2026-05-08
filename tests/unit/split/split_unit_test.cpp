@@ -37,7 +37,8 @@ TEST(split, split_by_lines) {
 
   EXPECT_EQ(r.exit_code, 0);
   // Check that split files were created
-  EXPECT_TRUE(std::filesystem::exists(tmp.path / "partaa") || std::filesystem::exists(tmp.path / "partaa.txt"));
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "partaa") ||
+              std::filesystem::exists(tmp.path / "partaa.txt"));
 }
 
 TEST(split, split_by_bytes) {
@@ -51,7 +52,8 @@ TEST(split, split_by_bytes) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(std::filesystem::exists(tmp.path / "partaa") || std::filesystem::exists(tmp.path / "partaa.txt"));
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "partaa") ||
+              std::filesystem::exists(tmp.path / "partaa.txt"));
 }
 
 TEST(split, split_stdin) {

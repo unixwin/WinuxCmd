@@ -30,15 +30,15 @@
  */
 
 #ifndef PCH_H
-#pragma warning(disable: 4530)
-#pragma warning(disable: 4541)  // Disable typeid warning with /GR-
-#pragma warning(disable: 4129)
+#pragma warning(disable : 4530)
+#pragma warning(disable : 4541)  // Disable typeid warning with /GR-
+#pragma warning(disable : 4129)
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #define STRICT
 #define _CRT_SECURE_NO_WARNINGS
+#include <windows.h>   // For basic windows functions
 #include <winsock2.h>  // Must be before windows.h to avoid conflicts
-#include <windows.h>  // For basic windows functions
 // Include these headers after windows.h
 // Fuck clang-format.
 #include <fcntl.h>       // For _setmode
@@ -55,7 +55,7 @@
 
 #include <cctype>   // For isspace
 #include <cstdint>  // For uint64_t
-//#include <cstdio>   // For printf, fflush
+// #include <cstdio>   // For printf, fflush
 #include <cstdlib>  // For basic functions
 #include <cstring>  // For strlen
 #include <cwchar>   // For wprintf, fwprintf

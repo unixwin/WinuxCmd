@@ -31,7 +31,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -43,10 +43,11 @@ using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
 auto constexpr SEQ_OPTIONS = std::array{
-    OPTION("-f", "--format", "use printf style floating-point FORMAT", STRING_TYPE),
+    OPTION("-f", "--format", "use printf style floating-point FORMAT",
+           STRING_TYPE),
     OPTION("-s", "--separator", "use STRING to separate numbers", STRING_TYPE),
-    OPTION("-w", "--equal-width", "equalize width by padding with leading zeroes", BOOL_TYPE)
-};
+    OPTION("-w", "--equal-width",
+           "equalize width by padding with leading zeroes", BOOL_TYPE)};
 
 namespace seq_pipeline {
 namespace cp = core::pipeline;
@@ -67,7 +68,8 @@ auto build_config(const CommandContext<SEQ_OPTIONS.size()>& ctx)
   Config cfg;
   cfg.format = ctx.get<std::string>("--format", "");
   cfg.separator = ctx.get<std::string>("--separator", "\n");
-  cfg.equal_width = ctx.get<bool>("--equal-width", false) || ctx.get<bool>("-w", false);
+  cfg.equal_width =
+      ctx.get<bool>("--equal-width", false) || ctx.get<bool>("-w", false);
 
   // Parse positionals
   size_t num_args = ctx.positionals.size();
@@ -98,7 +100,8 @@ auto build_config(const CommandContext<SEQ_OPTIONS.size()>& ctx)
   return cfg;
 }
 
-auto format_number(double value, const std::string& fmt, bool equal_width, int max_width) -> std::string {
+auto format_number(double value, const std::string& fmt, bool equal_width,
+                   int max_width) -> std::string {
   char buf[128];
 
   if (!fmt.empty()) {
@@ -163,12 +166,14 @@ auto run(const Config& cfg) -> int {
   int count = 0;
   const int MAX_COUNT = 1000000;  // Prevent infinite loops
 
-  while ((increasing && current <= cfg.last) || (!increasing && current >= cfg.last)) {
+  while ((increasing && current <= cfg.last) ||
+         (!increasing && current >= cfg.last)) {
     if (count >= MAX_COUNT) {
       break;
     }
 
-    results.push_back(format_number(current, cfg.format, cfg.equal_width, max_width));
+    results.push_back(
+        format_number(current, cfg.format, cfg.equal_width, max_width));
     current += cfg.increment;
     count++;
   }
@@ -204,8 +209,8 @@ REGISTER_COMMAND(seq, "seq",
                  "  seq 1 2 10\n"
                  "  seq -s ' ' 5 10\n"
                  "  seq -w 1 10",
-                 "printf(1)", "WinuxCmd",
-                 "Copyright © 2026 WinuxCmd", SEQ_OPTIONS) {
+                 "printf(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd",
+                 SEQ_OPTIONS) {
   using namespace seq_pipeline;
 
   auto cfg_result = build_config(ctx);

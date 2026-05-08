@@ -29,7 +29,6 @@ export module utils:encoding;
 
 import std;
 
-
 export namespace encoding {
 
 // ===== Base64 =====

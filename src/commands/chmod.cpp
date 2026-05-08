@@ -32,8 +32,8 @@
 /// @License: MIT
 /// @Copyright: Copyright © 2026 WinuxCmd
 
-#include "pch/pch.h"
 #include "core/command_macros.h"
+#include "pch/pch.h"
 
 #pragma comment(lib, "advapi32.lib")
 import std;
@@ -51,19 +51,24 @@ using cmd::meta::OptionType;
  * The implementation status is also indicated for each option.
  *
  * @par Options:
- * - @a -c, @a --changes: Like verbose but report only when a change is made [IMPLEMENTED]
+ * - @a -c, @a --changes: Like verbose but report only when a change is made
+ * [IMPLEMENTED]
  * - @a -f, @a --silent, @a --quiet: Suppress most error messages [IMPLEMENTED]
- * - @a -v, @a --verbose: Output a diagnostic for every file processed [IMPLEMENTED]
- * - @a -R, @a --recursive: Change files and directories recursively [IMPLEMENTED]
+ * - @a -v, @a --verbose: Output a diagnostic for every file processed
+ * [IMPLEMENTED]
+ * - @a -R, @a --recursive: Change files and directories recursively
+ * [IMPLEMENTED]
  * - @a --reference: Use RFILE's mode instead of MODE values [NOT SUPPORT]
  */
 auto constexpr CHMOD_OPTIONS = std::array{
-    OPTION("-c", "--changes", "like verbose but report only when a change is made"),
+    OPTION("-c", "--changes",
+           "like verbose but report only when a change is made"),
     OPTION("-f", "--silent", "suppress most error messages"),
     OPTION("-v", "--verbose", "output a diagnostic for every file processed"),
     OPTION("-R", "--recursive", "change files and directories recursively"),
     OPTION("", "--quiet", "suppress most error messages"),
-    OPTION("", "--reference", "use RFILE's mode instead of MODE values", STRING_TYPE)};
+    OPTION("", "--reference", "use RFILE's mode instead of MODE values",
+           STRING_TYPE)};
 
 namespace chmod_pipeline {
 namespace cp = core::pipeline;
@@ -83,7 +88,7 @@ auto parse_symbolic_mode(std::string_view mode_str)
 
   // Parse who (u/g/o/a)
   while (i < mode_str.size() && (mode_str[i] == 'u' || mode_str[i] == 'g' ||
-                                  mode_str[i] == 'o' || mode_str[i] == 'a')) {
+                                 mode_str[i] == 'o' || mode_str[i] == 'a')) {
     who += mode_str[i];
     i++;
   }
@@ -93,8 +98,8 @@ auto parse_symbolic_mode(std::string_view mode_str)
   }
 
   // Parse operator (+/-/=)
-  if (i >= mode_str.size() || (mode_str[i] != '+' && mode_str[i] != '-' &&
-                                mode_str[i] != '=')) {
+  if (i >= mode_str.size() ||
+      (mode_str[i] != '+' && mode_str[i] != '-' && mode_str[i] != '=')) {
     return std::unexpected("Invalid mode operator");
   }
   op = mode_str[i];
@@ -111,7 +116,8 @@ auto parse_symbolic_mode(std::string_view mode_str)
 }
 
 /**
- * @brief Convert numeric mode to permissions string (e.g., "755" -> "rwxr-xr-x")
+ * @brief Convert numeric mode to permissions string (e.g., "755" ->
+ * "rwxr-xr-x")
  * @param mode Numeric mode (e.g., 755)
  * @return Permissions string
  */
@@ -154,8 +160,7 @@ auto apply_symbolic_mode(const std::string &path, const std::string &who,
   std::wstring wpath = utf8_to_wstring(path);
 
   WIN32_FILE_ATTRIBUTE_DATA attr_data;
-  if (!GetFileAttributesExW(wpath.c_str(), GetFileExInfoStandard,
-                            &attr_data)) {
+  if (!GetFileAttributesExW(wpath.c_str(), GetFileExInfoStandard, &attr_data)) {
     return std::unexpected("cannot access '" + path + "'");
   }
 
@@ -206,13 +211,11 @@ auto apply_symbolic_mode(const std::string &path, const std::string &who,
  * @param mode Numeric mode (e.g., 755)
  * @return Result with success status
  */
-auto apply_numeric_mode(const std::string &path, int mode)
-    -> cp::Result<bool> {
+auto apply_numeric_mode(const std::string &path, int mode) -> cp::Result<bool> {
   std::wstring wpath = utf8_to_wstring(path);
 
   WIN32_FILE_ATTRIBUTE_DATA attr_data;
-  if (!GetFileAttributesExW(wpath.c_str(), GetFileExInfoStandard,
-                            &attr_data)) {
+  if (!GetFileAttributesExW(wpath.c_str(), GetFileExInfoStandard, &attr_data)) {
     return std::unexpected("cannot access '" + path + "'");
   }
 
@@ -223,8 +226,8 @@ auto apply_numeric_mode(const std::string &path, int mode)
 
   // Extract write permission from mode
   // User write (mode 0x002), Group write (mode 0x020), Other write (mode 0x200)
-  bool has_write = ((mode & 0x2) != 0) || ((mode & 0x20) != 0) ||
-                   ((mode & 0x200) != 0);
+  bool has_write =
+      ((mode & 0x2) != 0) || ((mode & 0x20) != 0) || ((mode & 0x200) != 0);
 
   DWORD new_attrs = attrs;
   if (!has_write) {
@@ -285,10 +288,10 @@ auto parse_mode(std::string_view mode_str)
 auto process_file(const std::string &path, std::string_view mode_str,
                   const CommandContext<CHMOD_OPTIONS.size()> &ctx)
     -> cp::Result<bool> {
-  bool verbose = ctx.get<bool>("-v", false) ||
-                 ctx.get<bool>("--verbose", false);
-  bool changes = ctx.get<bool>("-c", false) ||
-                 ctx.get<bool>("--changes", false);
+  bool verbose =
+      ctx.get<bool>("-v", false) || ctx.get<bool>("--verbose", false);
+  bool changes =
+      ctx.get<bool>("-c", false) || ctx.get<bool>("--changes", false);
   bool silent = ctx.get<bool>("-f", false) ||
                 ctx.get<bool>("--silent", false) ||
                 ctx.get<bool>("--quiet", false);
@@ -356,10 +359,8 @@ auto process_recursive(const std::string &path, std::string_view mode_str,
   std::wstring wpath = utf8_to_wstring(path);
 
   WIN32_FILE_ATTRIBUTE_DATA attr_data;
-  if (!GetFileAttributesExW(wpath.c_str(), GetFileExInfoStandard,
-                            &attr_data)) {
-    if (!ctx.get<bool>("-f", false) &&
-        !ctx.get<bool>("--silent", false) &&
+  if (!GetFileAttributesExW(wpath.c_str(), GetFileExInfoStandard, &attr_data)) {
+    if (!ctx.get<bool>("-f", false) && !ctx.get<bool>("--silent", false) &&
         !ctx.get<bool>("--quiet", false)) {
       safeErrorPrint("chmod: cannot access '");
       safeErrorPrint(path);
@@ -368,13 +369,13 @@ auto process_recursive(const std::string &path, std::string_view mode_str,
     return std::unexpected("cannot access path");
   }
 
-  bool is_directory = (attr_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+  bool is_directory =
+      (attr_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
 
   // Process the current path
   auto result = process_file(path, mode_str, ctx);
   if (!result && !ctx.get<bool>("-f", false) &&
-      !ctx.get<bool>("--silent", false) &&
-      !ctx.get<bool>("--quiet", false)) {
+      !ctx.get<bool>("--silent", false) && !ctx.get<bool>("--quiet", false)) {
     safeErrorPrint("chmod: ");
     safeErrorPrint(result.error());
     safeErrorPrint("\n");
@@ -417,25 +418,24 @@ auto process_recursive(const std::string &path, std::string_view mode_str,
 
 }  // namespace chmod_pipeline
 
-REGISTER_COMMAND(chmod, "chmod",
-                 "change file mode bits",
-                 "Change the mode of each FILE to MODE.\n"
-                 "\n"
-                 "Each MODE is of the form '[ugoa]*([-+=]([rwxXst]*|[ugo]))+'.\n"
-                 "\n"
-                 "Note: On Windows, this command simulates Unix permissions using\n"
-                 "file attributes. Write permission is mapped to the read-only attribute.",
-                 "  chmod 755 script.sh        Set permissions to rwxr-xr-x\n"
-                 "  chmod 644 file.txt        Set permissions to rw-r--r--\n"
-                 "  chmod u+x script.sh       Add execute for user\n"
-                 "  chmod go-w file.txt       Remove write for group and other\n"
-                 "  chmod -R 755 dir/         Recursively set permissions",
-                 "chown(1)", "caomengxuan666",
-                 "Copyright © 2026 WinuxCmd", CHMOD_OPTIONS) {
+REGISTER_COMMAND(
+    chmod, "chmod", "change file mode bits",
+    "Change the mode of each FILE to MODE.\n"
+    "\n"
+    "Each MODE is of the form '[ugoa]*([-+=]([rwxXst]*|[ugo]))+'.\n"
+    "\n"
+    "Note: On Windows, this command simulates Unix permissions using\n"
+    "file attributes. Write permission is mapped to the read-only attribute.",
+    "  chmod 755 script.sh        Set permissions to rwxr-xr-x\n"
+    "  chmod 644 file.txt        Set permissions to rw-r--r--\n"
+    "  chmod u+x script.sh       Add execute for user\n"
+    "  chmod go-w file.txt       Remove write for group and other\n"
+    "  chmod -R 755 dir/         Recursively set permissions",
+    "chown(1)", "caomengxuan666", "Copyright © 2026 WinuxCmd", CHMOD_OPTIONS) {
   using namespace chmod_pipeline;
 
-  bool recursive = ctx.get<bool>("-R", false) ||
-                   ctx.get<bool>("--recursive", false);
+  bool recursive =
+      ctx.get<bool>("-R", false) || ctx.get<bool>("--recursive", false);
 
   // Get mode and files from positional arguments
   if (ctx.positionals.size() < 2) {

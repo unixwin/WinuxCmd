@@ -69,10 +69,14 @@ using namespace core::pipeline;
  * - @a --interactive: Prompt according to WHEN: never, once (-I), or always
  * (-i) [IMPLEMENTED]
  * - @a --one-file-system: When removing a hierarchy recursively, skip any
+ *
  * directory that is on a file system different from that of the corresponding
- * command line argument [APPROXIMATE ON WINDOWS]
- * - @a --no-preserve-root: Do not treat '/' specially [IMPLEMENTED]
- * - @a --preserve-root: Do not remove '/' (default) [IMPLEMENTED]
+
+ * * command line argument [APPROXIMATE ON WINDOWS]
+ * - @a --no-preserve-root:
+ * Do not treat '/' specially [IMPLEMENTED]
+ * - @a --preserve-root: Do not
+ * remove '/' (default) [IMPLEMENTED]
  */
 // clang-format off
 constexpr auto RM_OPTIONS = std::array{
@@ -126,14 +130,14 @@ auto get_system_error_message(DWORD error) -> std::wstring {
 /**
  * @brief Convert a path to Windows extended-length path (\\?\) format.
  *
- * This bypasses reserved device name resolution (nul, con, prn, aux, com*, lpt*)
- * and also removes the MAX_PATH limit. The path is first resolved to an
+ * This bypasses reserved device name resolution (nul, con, prn, aux, com*,
+ * lpt*) and also removes the MAX_PATH limit. The path is first resolved to an
  * absolute path via GetFullPathNameW, then prefixed with "\\?\\\\". If
  * resolution fails the original path is returned unchanged.
  */
 auto to_extended_path(const std::wstring& path) -> std::wstring {
   // Already in extended form
-  if (path.size() >= 4 && path.compare(0, 4, L"\\\\?\\" ) == 0) {
+  if (path.size() >= 4 && path.compare(0, 4, L"\\\\?\\") == 0) {
     return path;
   }
   wchar_t abs_buf[32768];
@@ -162,9 +166,8 @@ auto is_root_path(std::string_view path) -> bool {
     return true;
   }
 
-  if (path.size() >= 3 &&
-      std::isalpha(static_cast<unsigned char>(path[0])) && path[1] == ':' &&
-      (path[2] == '\\' || path[2] == '/')) {
+  if (path.size() >= 3 && std::isalpha(static_cast<unsigned char>(path[0])) &&
+      path[1] == ':' && (path[2] == '\\' || path[2] == '/')) {
     for (size_t i = 3; i < path.size(); ++i) {
       if (path[i] != '\\' && path[i] != '/') {
         return false;
@@ -198,8 +201,10 @@ auto confirm_bulk_remove(size_t path_count, bool recursive) -> bool {
 /**
  * @brief Remove a file or directory
  * @param path Path to remove
- * @param ctx Command context with options
- * @return true if removal was successful, false on error
+ * @param
+ * ctx Command context with options
+ * @return true if removal was successful,
+ * false on error
  */
 auto remove_path(const std::string& path,
                  const CommandContext<RM_OPTIONS.size()>& ctx) -> bool {
@@ -218,7 +223,8 @@ auto remove_path(const std::string& path,
       ctx.get<bool>("--verbose", false) || ctx.get<bool>("-v", false);
   bool one_file_system = ctx.get<bool>("--one-file-system", false);
   bool no_preserve_root = ctx.get<bool>("--no-preserve-root", false);
-  bool preserve_root = ctx.get<bool>("--preserve-root", false) || !no_preserve_root;
+  bool preserve_root =
+      ctx.get<bool>("--preserve-root", false) || !no_preserve_root;
 
   if (preserve_root && is_root_path(path)) {
     safeErrorPrint("rm: it is dangerous to operate recursively on root '");
@@ -443,14 +449,15 @@ auto process_command(const CommandContext<RM_OPTIONS.size()>& ctx)
     paths.push_back(file_arg);
   }
 
-  return check_paths(paths).and_then([&](const std::vector<std::string>& valid_paths) {
-    if (ask_once && (recursive || valid_paths.size() > 3)) {
-      if (!confirm_bulk_remove(valid_paths.size(), recursive)) {
-        return cp::Result<bool>{true};
-      }
-    }
-    return process_paths(valid_paths, ctx);
-  });
+  return check_paths(paths).and_then(
+      [&](const std::vector<std::string>& valid_paths) {
+        if (ask_once && (recursive || valid_paths.size() > 3)) {
+          if (!confirm_bulk_remove(valid_paths.size(), recursive)) {
+            return cp::Result<bool>{true};
+          }
+        }
+        return process_paths(valid_paths, ctx);
+      });
 }
 }  // namespace rm_pipeline
 

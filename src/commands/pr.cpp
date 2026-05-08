@@ -31,7 +31,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
+// include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -43,23 +43,26 @@ using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
 auto constexpr PR_OPTIONS = std::array{
-    OPTION("+PAGE", "", "begin printing with page PAGE [default 1]", STRING_TYPE),
+    OPTION("+PAGE", "", "begin printing with page PAGE [default 1]",
+           STRING_TYPE),
     OPTION("-COLUMN", "", "produce COLUMN-column output", STRING_TYPE),
     OPTION("-a", "", "produce multi-column output", BOOL_TYPE),
     OPTION("-d", "", "double-space the output", BOOL_TYPE),
     OPTION("-e", "--expand", "expand input TABs", STRING_TYPE),
-    OPTION("-f", "--form-feed", "use form feeds instead of newlines", BOOL_TYPE),
+    OPTION("-f", "--form-feed", "use form feeds instead of newlines",
+           BOOL_TYPE),
     OPTION("-h", "--header", "use a centered HEADER", STRING_TYPE),
     OPTION("-l", "--length", "set page length", STRING_TYPE),
     OPTION("-n", "--number-lines", "number lines", STRING_TYPE),
     OPTION("-o", "--indent", "offset each line", STRING_TYPE),
-    OPTION("-r", "--no-file-warnings", "omit warning when a file cannot be opened", BOOL_TYPE),
+    OPTION("-r", "--no-file-warnings",
+           "omit warning when a file cannot be opened", BOOL_TYPE),
     OPTION("-s", "--separator", "separate columns by characters", STRING_TYPE),
     OPTION("-t", "--omit-header", "omit page headers and trailers", BOOL_TYPE),
-    OPTION("-T", "--omit-pagination", "omit page headers and trailers", BOOL_TYPE),
+    OPTION("-T", "--omit-pagination", "omit page headers and trailers",
+           BOOL_TYPE),
     OPTION("-w", "--width", "set page width", STRING_TYPE),
-    OPTION("-W", "--page-width", "set page width (default 72)", STRING_TYPE)
-};
+    OPTION("-W", "--page-width", "set page width (default 72)", STRING_TYPE)};
 
 namespace pr_pipeline {
 namespace cp = core::pipeline;
@@ -85,7 +88,7 @@ struct Config {
 auto build_config(const CommandContext<PR_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
   Config cfg;
-  
+
   // Parse +PAGE option
   for (auto arg : ctx.positionals) {
     std::string arg_str(arg);
@@ -110,10 +113,14 @@ auto build_config(const CommandContext<PR_OPTIONS.size()>& ctx)
   }
 
   cfg.double_space = ctx.get<bool>("-d", false);
-  cfg.form_feed = ctx.get<bool>("--form-feed", false) || ctx.get<bool>("-f", false);
-  cfg.no_file_warnings = ctx.get<bool>("--no-file-warnings", false) || ctx.get<bool>("-r", false);
-  cfg.omit_header = ctx.get<bool>("--omit-header", false) || ctx.get<bool>("-t", false);
-  cfg.omit_pagination = ctx.get<bool>("--omit-pagination", false) || ctx.get<bool>("-T", false);
+  cfg.form_feed =
+      ctx.get<bool>("--form-feed", false) || ctx.get<bool>("-f", false);
+  cfg.no_file_warnings =
+      ctx.get<bool>("--no-file-warnings", false) || ctx.get<bool>("-r", false);
+  cfg.omit_header =
+      ctx.get<bool>("--omit-header", false) || ctx.get<bool>("-t", false);
+  cfg.omit_pagination =
+      ctx.get<bool>("--omit-pagination", false) || ctx.get<bool>("-T", false);
 
   auto expand_opt = ctx.get<std::string>("--expand", "");
   if (expand_opt.empty()) {
@@ -198,7 +205,8 @@ auto build_config(const CommandContext<PR_OPTIONS.size()>& ctx)
   return cfg;
 }
 
-auto read_lines(const std::string& filename) -> cp::Result<SmallVector<std::string, 1024>> {
+auto read_lines(const std::string& filename)
+    -> cp::Result<SmallVector<std::string, 1024>> {
   SmallVector<std::string, 1024> lines;
 
   if (filename == "-") {
@@ -209,7 +217,8 @@ auto read_lines(const std::string& filename) -> cp::Result<SmallVector<std::stri
   } else {
     std::ifstream f(filename, std::ios::binary);
     if (!f) {
-      return std::unexpected(std::string("cannot open '") + filename + "' for reading");
+      return std::unexpected(std::string("cannot open '") + filename +
+                             "' for reading");
     }
 
     std::string line;
@@ -263,18 +272,18 @@ auto run(const Config& cfg) -> int {
   int line_num = 1;
   for (const auto& line : all_lines) {
     std::string output = indent_str;
-    
+
     // Add line numbers if requested
     if (!cfg.number_lines.empty()) {
       char buf[32];
       snprintf(buf, sizeof(buf), "%6d  ", line_num++);
       output += buf;
     }
-    
+
     output += line;
-    
+
     safePrintLn(output);
-    
+
     if (cfg.double_space) {
       safePrintLn("");
     }
@@ -285,19 +294,18 @@ auto run(const Config& cfg) -> int {
 
 }  // namespace pr_pipeline
 
-REGISTER_COMMAND(pr, "pr",
-                 "pr [OPTION]... [FILE]...",
-                 "Convert text files for printing.\n"
-                 "\n"
-                 "Note: This is a simplified implementation. Advanced features\n"
-                 "like multi-column layout and complex pagination are not fully\n"
-                 "supported.",
-                 "  pr file.txt\n"
-                 "  pr -n file.txt\n"
-                 "  pr -o 4 file.txt\n"
-                 "  pr -l 60 file.txt",
-                 "lp(1)", "WinuxCmd",
-                 "Copyright © 2026 WinuxCmd", PR_OPTIONS) {
+REGISTER_COMMAND(
+    pr, "pr", "pr [OPTION]... [FILE]...",
+    "Convert text files for printing.\n"
+    "\n"
+    "Note: This is a simplified implementation. Advanced features\n"
+    "like multi-column layout and complex pagination are not fully\n"
+    "supported.",
+    "  pr file.txt\n"
+    "  pr -n file.txt\n"
+    "  pr -o 4 file.txt\n"
+    "  pr -l 60 file.txt",
+    "lp(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", PR_OPTIONS) {
   using namespace pr_pipeline;
 
   auto cfg_result = build_config(ctx);

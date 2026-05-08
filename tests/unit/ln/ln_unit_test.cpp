@@ -73,7 +73,8 @@ TEST(ln, ln_symlink) {
   // Creating symbolic links on Windows requires administrator privileges
   // If the test fails, skip it (assuming it's a permission issue)
   if (r.exit_code != 0) {
-    std::cout << "  SKIPPED (requires administrator privileges for symbolic links)\n";
+    std::cout
+        << "  SKIPPED (requires administrator privileges for symbolic links)\n";
     return;
   }
 

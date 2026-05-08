@@ -27,7 +27,7 @@
 
 TEST(unexpand, unexpand_basic) {
   TempDir tmp;
-  tmp.write("test.txt", "hello        world\n"); // 8 spaces between words
+  tmp.write("test.txt", "hello        world\n");  // 8 spaces between words
 
   Pipeline p;
   p.set_cwd(tmp.wpath());

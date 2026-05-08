@@ -31,10 +31,11 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
-#include "core/command_macros.h"
-#include <winsock2.h>
+// include other header after pch.h
 #include <winsock.h>
+#include <winsock2.h>
+
+#include "core/command_macros.h"
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -48,7 +49,8 @@ using cmd::meta::OptionType;
 
 auto constexpr HOSTNAME_OPTIONS = std::array{
     OPTION("-i", "--ip-address", "addresses for the hostname", BOOL_TYPE),
-    OPTION("-I", "--all-ip-addresses", "all addresses for the hostname", BOOL_TYPE),
+    OPTION("-I", "--all-ip-addresses", "all addresses for the hostname",
+           BOOL_TYPE),
     OPTION("-s", "--short", "short host name", BOOL_TYPE),
     OPTION("-f", "--fqdn", "long host name (FQDN)", BOOL_TYPE)
     // -a, --alias (not implemented)
@@ -71,9 +73,12 @@ struct Config {
 auto build_config(const CommandContext<HOSTNAME_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
   Config cfg;
-  cfg.show_ip = ctx.get<bool>("--ip-address", false) || ctx.get<bool>("-i", false);
-  cfg.show_all_ips = ctx.get<bool>("--all-ip-addresses", false) || ctx.get<bool>("-I", false);
-  cfg.short_name = ctx.get<bool>("--short", false) || ctx.get<bool>("-s", false);
+  cfg.show_ip =
+      ctx.get<bool>("--ip-address", false) || ctx.get<bool>("-i", false);
+  cfg.show_all_ips =
+      ctx.get<bool>("--all-ip-addresses", false) || ctx.get<bool>("-I", false);
+  cfg.short_name =
+      ctx.get<bool>("--short", false) || ctx.get<bool>("-s", false);
   cfg.fqdn = ctx.get<bool>("--fqdn", false) || ctx.get<bool>("-f", false);
   return cfg;
 }
@@ -137,8 +142,7 @@ auto run(const Config& cfg) -> int {
 
 }  // namespace hostname_pipeline
 
-REGISTER_COMMAND(hostname, "hostname",
-                 "hostname [OPTION]...",
+REGISTER_COMMAND(hostname, "hostname", "hostname [OPTION]...",
                  "Print or set system name.\n"
                  "\n"
                  "Print the name of the current host.\n"
@@ -150,8 +154,8 @@ REGISTER_COMMAND(hostname, "hostname",
                  "  hostname -I\n"
                  "  hostname -s\n"
                  "  hostname -f",
-                 "dnsdomainname(1), ypdomainname(1), nisdomainname(1)", "WinuxCmd",
-                 "Copyright © 2026 WinuxCmd", HOSTNAME_OPTIONS) {
+                 "dnsdomainname(1), ypdomainname(1), nisdomainname(1)",
+                 "WinuxCmd", "Copyright © 2026 WinuxCmd", HOSTNAME_OPTIONS) {
   using namespace hostname_pipeline;
 
   auto cfg_result = build_config(ctx);

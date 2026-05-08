@@ -4,9 +4,9 @@
  *  Permission is hereby granted, free of charge, to any person obtaining a copy
  *  of this software and associated documentation files (the "Software"), to
  *  deal in the Software without restriction, including without limitation the
- *  rights to to use, copy, modify, merge, publish, distribute, sublicense, and/or
- *  sell copies of the Software, and to permit persons to whom the Software
- *  is furnished to do so, subject to the following conditions:
+ *  rights to to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
  *
  *  The above copyright notice and this permission notice shall be included in
  *  all copies or substantial portions of the Software.
@@ -30,9 +30,7 @@ import std;
 import std.compat;
 
 // Runtime check
-[[noreturn]] inline void sv_terminate(const char* msg) {
-  std::abort();
-}
+[[noreturn]] inline void sv_terminate(const char* msg) { std::abort(); }
 
 #define SV_ASSERT(cond, msg) \
   do {                       \
@@ -363,9 +361,7 @@ class SmallVectorImpl : public SmallVectorTemplateBase<T> {
     this->Size += NumInputs;
   }
 
-  void append(std::initializer_list<T> IL) {
-    append(IL.begin(), IL.end());
-  }
+  void append(std::initializer_list<T> IL) { append(IL.begin(), IL.end()); }
 
   void assign(size_type count, const T& value) {
     clear();

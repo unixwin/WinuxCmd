@@ -37,7 +37,8 @@ TEST(csplit, csplit_basic) {
 
   EXPECT_EQ(r.exit_code, 0);
   // Should create split files
-  EXPECT_TRUE(std::filesystem::exists(tmp.path / "xx00") || std::filesystem::exists(tmp.path / "xx00.txt"));
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "xx00") ||
+              std::filesystem::exists(tmp.path / "xx00.txt"));
 }
 
 TEST(csplit, csplit_pattern) {
@@ -51,5 +52,6 @@ TEST(csplit, csplit_pattern) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(std::filesystem::exists(tmp.path / "xx00") || std::filesystem::exists(tmp.path / "xx00.txt"));
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "xx00") ||
+              std::filesystem::exists(tmp.path / "xx00.txt"));
 }

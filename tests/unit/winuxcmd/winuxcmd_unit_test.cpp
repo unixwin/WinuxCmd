@@ -31,8 +31,9 @@ TEST(winuxcmd, winuxcmd_help_alias_shows_toplevel_help) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stdout_text.find("WinuxCmd - Windows Compatible Linux Command Set") !=
-              std::string::npos);
+  EXPECT_TRUE(
+      r.stdout_text.find("WinuxCmd - Windows Compatible Linux Command Set") !=
+      std::string::npos);
 }
 
 TEST(winuxcmd, winuxcmd_help_command_topic_shows_command_help) {

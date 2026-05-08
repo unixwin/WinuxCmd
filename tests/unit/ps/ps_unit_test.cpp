@@ -26,18 +26,18 @@
 
 TEST(ps, ps_basic) {
   TempDir tmp;
-  
+
   Pipeline p;
   p.set_cwd(tmp.wpath());
   p.add(L"ps.exe", {});
-  
+
   TEST_LOG_CMD_LIST("ps.exe");
-  
+
   auto r = p.run();
-  
+
   TEST_LOG_EXIT_CODE(r);
   TEST_LOG("ps.exe output", r.stdout_text);
-  
+
   EXPECT_EQ(r.exit_code, 0);
   // Should show some process information
   EXPECT_FALSE(r.stdout_text.empty());
@@ -47,18 +47,18 @@ TEST(ps, ps_basic) {
 
 TEST(ps, ps_all_processes) {
   TempDir tmp;
-  
+
   Pipeline p;
   p.set_cwd(tmp.wpath());
   p.add(L"ps.exe", {L"-e"});
-  
+
   TEST_LOG_CMD_LIST("ps.exe", L"-e");
-  
+
   auto r = p.run();
-  
+
   TEST_LOG_EXIT_CODE(r);
   TEST_LOG("ps.exe -e output", r.stdout_text);
-  
+
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_FALSE(r.stdout_text.empty());
   // Should contain more processes than default
@@ -67,18 +67,18 @@ TEST(ps, ps_all_processes) {
 
 TEST(ps, ps_full_format) {
   TempDir tmp;
-  
+
   Pipeline p;
   p.set_cwd(tmp.wpath());
   p.add(L"ps.exe", {L"-f"});
-  
+
   TEST_LOG_CMD_LIST("ps.exe", L"-f");
-  
+
   auto r = p.run();
-  
+
   TEST_LOG_EXIT_CODE(r);
   TEST_LOG("ps.exe -f output", r.stdout_text);
-  
+
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_FALSE(r.stdout_text.empty());
   // Full format should show more columns
@@ -88,18 +88,18 @@ TEST(ps, ps_full_format) {
 
 TEST(ps, ps_no_headers) {
   TempDir tmp;
-  
+
   Pipeline p;
   p.set_cwd(tmp.wpath());
   p.add(L"ps.exe", {L"--no-headers"});
-  
+
   TEST_LOG_CMD_LIST("ps.exe", L"--no-headers");
-  
+
   auto r = p.run();
-  
+
   TEST_LOG_EXIT_CODE(r);
   TEST_LOG("ps.exe --no-headers output", r.stdout_text);
-  
+
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_FALSE(r.stdout_text.empty());
   // Should not contain header line
@@ -108,54 +108,54 @@ TEST(ps, ps_no_headers) {
 
 TEST(ps, ps_sort_by_pid) {
   TempDir tmp;
-  
+
   Pipeline p;
   p.set_cwd(tmp.wpath());
   p.add(L"ps.exe", {L"--sort", L"+pid"});
-  
+
   TEST_LOG_CMD_LIST("ps.exe", L"--sort", L"+pid");
-  
+
   auto r = p.run();
-  
+
   TEST_LOG_EXIT_CODE(r);
   TEST_LOG("ps.exe --sort +pid output", r.stdout_text);
-  
+
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_FALSE(r.stdout_text.empty());
 }
 
 TEST(ps, ps_sort_by_memory) {
   TempDir tmp;
-  
+
   Pipeline p;
   p.set_cwd(tmp.wpath());
   p.add(L"ps.exe", {L"--sort", L"-mem"});
-  
+
   TEST_LOG_CMD_LIST("ps.exe", L"--sort", L"-mem");
-  
+
   auto r = p.run();
-  
+
   TEST_LOG_EXIT_CODE(r);
   TEST_LOG("ps.exe --sort -mem output", r.stdout_text);
-  
+
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_FALSE(r.stdout_text.empty());
 }
 
 TEST(ps, ps_invalid_option) {
   TempDir tmp;
-  
+
   Pipeline p;
   p.set_cwd(tmp.wpath());
   p.add(L"ps.exe", {L"--invalid-option"});
-  
+
   TEST_LOG_CMD_LIST("ps.exe", L"--invalid-option");
-  
+
   auto r = p.run();
-  
+
   TEST_LOG_EXIT_CODE(r);
   TEST_LOG("ps.exe --invalid-option output", r.stderr_text);
-  
+
   // Should fail with invalid option
   EXPECT_NE(r.exit_code, 0);
 }

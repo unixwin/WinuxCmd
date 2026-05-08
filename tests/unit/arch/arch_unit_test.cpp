@@ -39,6 +39,7 @@ TEST(arch, arch_basic) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_FALSE(r.stdout_text.empty());
   std::string arch = r.stdout_text;
-  arch.pop_back(); // remove newline
-  EXPECT_TRUE(arch == "x86_64" || arch == "i386" || arch == "arm" || arch == "aarch64" || arch == "ia64" || arch == "unknown");
+  arch.pop_back();  // remove newline
+  EXPECT_TRUE(arch == "x86_64" || arch == "i386" || arch == "arm" ||
+              arch == "aarch64" || arch == "ia64" || arch == "unknown");
 }

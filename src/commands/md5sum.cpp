@@ -32,9 +32,10 @@
 // *** SIMPLIFIED IMPLEMENTATION - Some features may not be fully supported ***
 
 #include "pch/pch.h"
-//include other header after pch.h
-#include "core/command_macros.h"
+// include other header after pch.h
 #include <wincrypt.h>
+
+#include "core/command_macros.h"
 
 #pragma comment(lib, "advapi32.lib")
 
@@ -48,12 +49,15 @@ using cmd::meta::OptionType;
 
 auto constexpr MD5SUM_OPTIONS = std::array{
     OPTION("-b", "--binary", "read in binary mode (default)", BOOL_TYPE),
-    OPTION("-c", "--check", "read MD5 sums from the FILEs and check them", STRING_TYPE),
+    OPTION("-c", "--check", "read MD5 sums from the FILEs and check them",
+           STRING_TYPE),
     OPTION("-t", "--text", "read in text mode", BOOL_TYPE),
-    OPTION("-q", "--quiet", "don't print OK for each successfully verified file", BOOL_TYPE),
-    OPTION("-s", "--status", "don't output anything, status code shows success", BOOL_TYPE),
-    OPTION("-w", "--warn", "warn about improperly formatted checksum lines", BOOL_TYPE)
-};
+    OPTION("-q", "--quiet",
+           "don't print OK for each successfully verified file", BOOL_TYPE),
+    OPTION("-s", "--status", "don't output anything, status code shows success",
+           BOOL_TYPE),
+    OPTION("-w", "--warn", "warn about improperly formatted checksum lines",
+           BOOL_TYPE)};
 
 namespace md5sum_pipeline {
 namespace cp = core::pipeline;
@@ -72,9 +76,11 @@ struct Config {
 auto build_config(const CommandContext<MD5SUM_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
   Config cfg;
-  cfg.binary_mode = ctx.get<bool>("--binary", false) || ctx.get<bool>("-b", false);
+  cfg.binary_mode =
+      ctx.get<bool>("--binary", false) || ctx.get<bool>("-b", false);
   auto check_opt = ctx.get<std::string>("--check", "");
-  cfg.check_mode = !check_opt.empty() || !ctx.get<std::string>("-c", "").empty();
+  cfg.check_mode =
+      !check_opt.empty() || !ctx.get<std::string>("-c", "").empty();
   cfg.text_mode = ctx.get<bool>("--text", false) || ctx.get<bool>("-t", false);
   cfg.quiet = ctx.get<bool>("--quiet", false) || ctx.get<bool>("-q", false);
   cfg.status = ctx.get<bool>("--status", false) || ctx.get<bool>("-s", false);
@@ -114,7 +120,8 @@ auto calculate_md5(const std::string& filename) -> cp::Result<std::string> {
   HCRYPTHASH hHash = 0;
 
   // Open cryptographic provider
-  if (!CryptAcquireContext(&hProv, NULL, NULL, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT)) {
+  if (!CryptAcquireContext(&hProv, NULL, NULL, PROV_RSA_FULL,
+                           CRYPT_VERIFYCONTEXT)) {
     return std::unexpected("failed to acquire cryptographic context");
   }
 
@@ -145,7 +152,8 @@ auto calculate_md5(const std::string& filename) -> cp::Result<std::string> {
     if (!file) {
       CryptDestroyHash(hHash);
       CryptReleaseContext(hProv, 0);
-      return std::unexpected(std::string("cannot open '") + filename + "' for reading");
+      return std::unexpected(std::string("cannot open '") + filename +
+                             "' for reading");
     }
 
     std::array<char, 8192> buffer;
@@ -192,7 +200,8 @@ auto calculate_md5(const std::string& filename) -> cp::Result<std::string> {
 auto run(const Config& cfg) -> int {
   if (cfg.check_mode) {
     // Check mode (not fully implemented)
-    cp::report_custom_error(L"md5sum", L"check mode is not fully implemented in this version");
+    cp::report_custom_error(
+        L"md5sum", L"check mode is not fully implemented in this version");
     return 1;
   }
 
@@ -221,8 +230,7 @@ auto run(const Config& cfg) -> int {
 
 }  // namespace md5sum_pipeline
 
-REGISTER_COMMAND(md5sum, "md5sum",
-                 "md5sum [OPTION]... [FILE]...",
+REGISTER_COMMAND(md5sum, "md5sum", "md5sum [OPTION]... [FILE]...",
                  "Compute and check MD5 message digest.\n"
                  "\n"
                  "With no FILE, or when FILE is -, read standard input.",

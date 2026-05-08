@@ -32,8 +32,8 @@
 /// @License: MIT
 /// @Copyright: Copyright © 2026 WinuxCmd
 
-#include "pch/pch.h"
 #include "core/command_macros.h"
+#include "pch/pch.h"
 
 #pragma comment(lib, "advapi32.lib")
 import std;
@@ -52,20 +52,32 @@ using cmd::meta::OptionType;
  * The implementation status is also indicated for each option.
  *
  * @par Options:
- * - @a -n, --max-args: Use at most max-args arguments per command line [IMPLEMENTED]
- * - @a -I: Replace occurrences of replace-str in the initial-arguments with names [IMPLEMENTED]
+ * - @a -n, --max-args: Use at most max-args arguments per command line
+ * [IMPLEMENTED]
+ * - @a -I: Replace occurrences of replace-str in the initial-arguments with
+ * names [IMPLEMENTED]
  * - @a -0, --null: Input items are terminated by a null character [IMPLEMENTED]
- * - @a -t, --verbose: Print the command line on the standard error before executing it [IMPLEMENTED]
- * - @a -r, --no-run-if-empty: If the standard input does not contain any nonblanks, do not run the command [IMPLEMENTED]
+ * - @a -t, --verbose: Print the command line on the standard error before
+ * executing it [IMPLEMENTED]
+ * - @a -r, --no-run-if-empty: If the standard input does not contain any
+ * nonblanks, do not run the command [IMPLEMENTED]
  * - @a -P, --max-procs: Run up to max-procs processes at a time [NOT SUPPORT]
  */
 auto constexpr XARGS_OPTIONS = std::array{
-    OPTION("-n", "--max-args", "use at most max-args arguments per command line", INT_TYPE),
-    OPTION("-I", "", "replace occurrences of replace-str in the initial-arguments with names", STRING_TYPE),
+    OPTION("-n", "--max-args",
+           "use at most max-args arguments per command line", INT_TYPE),
+    OPTION("-I", "",
+           "replace occurrences of replace-str in the initial-arguments with "
+           "names",
+           STRING_TYPE),
     OPTION("-0", "--null", "input items are terminated by a null character"),
-    OPTION("-t", "--verbose", "print the command line on the standard error before executing it"),
-    OPTION("-r", "--no-run-if-empty", "if the standard input does not contain any nonblanks, do not run the command"),
-    OPTION("-P", "--max-procs", "run up to max-procs processes at a time", INT_TYPE)};
+    OPTION("-t", "--verbose",
+           "print the command line on the standard error before executing it"),
+    OPTION("-r", "--no-run-if-empty",
+           "if the standard input does not contain any nonblanks, do not run "
+           "the command"),
+    OPTION("-P", "--max-procs", "run up to max-procs processes at a time",
+           INT_TYPE)};
 
 namespace xargs_pipeline {
 namespace cp = core::pipeline;
@@ -80,7 +92,7 @@ auto parse_arguments(char delimiter, const std::string &replace_str)
     -> std::vector<std::string> {
   SmallVector<std::string, 256> args;
   std::string arg;
-  
+
   char c;
   while (std::cin.get(c)) {
     if (c == delimiter || c == '\n' || c == '\r') {
@@ -97,12 +109,12 @@ auto parse_arguments(char delimiter, const std::string &replace_str)
       arg += c;
     }
   }
-  
+
   // Add last argument if not empty
   if (!arg.empty()) {
     args.push_back(arg);
   }
-  
+
   return std::vector<std::string>(args.begin(), args.end());
 }
 
@@ -119,23 +131,23 @@ auto parse_arguments(char delimiter, const std::string &replace_str)
 auto execute_command(const std::string &command,
                      const std::vector<std::string> &base_args,
                      const std::vector<std::string> &input_args,
-                     const std::string &replace_str,
-                     int max_args,
-                     bool verbose) -> int {
+                     const std::string &replace_str, int max_args, bool verbose)
+    -> int {
   int exit_code = 0;
-  
+
   if (max_args <= 0) {
     max_args = input_args.size();
   }
-  
+
   // Split input_args into batches
   for (size_t i = 0; i < input_args.size(); i += max_args) {
     SmallVector<std::string, 256> all_args;
     size_t end = std::min(i + max_args, input_args.size());
-    
+
     // Add base arguments
     for (const auto &base_arg : base_args) {
-      if (!replace_str.empty() && base_arg.find(replace_str) != std::string::npos) {
+      if (!replace_str.empty() &&
+          base_arg.find(replace_str) != std::string::npos) {
         // Replace all occurrences with the entire batch
         std::string replaced = base_arg;
         size_t pos = 0;
@@ -153,14 +165,14 @@ auto execute_command(const std::string &command,
         all_args.push_back(base_arg);
       }
     }
-    
+
     // Add input arguments for this batch (only if not using -I)
     if (replace_str.empty()) {
       for (size_t j = i; j < end; ++j) {
         all_args.push_back(input_args[j]);
       }
     }
-    
+
     // Print command if verbose
     if (verbose) {
       safeErrorPrint(command);
@@ -170,13 +182,14 @@ auto execute_command(const std::string &command,
       }
       safeErrorPrint("\n");
     }
-    
+
     // Build command line for CreateProcess
     std::wstring cmd_line = utf8_to_wstring(command);
     for (const auto &arg : all_args) {
       cmd_line += L" ";
       std::wstring warg = utf8_to_wstring(arg);
-      if (warg.find(L' ') != std::wstring::npos || warg.find(L'\t') != std::wstring::npos) {
+      if (warg.find(L' ') != std::wstring::npos ||
+          warg.find(L'\t') != std::wstring::npos) {
         cmd_line += L"\"";
         cmd_line += warg;
         cmd_line += L"\"";
@@ -184,24 +197,15 @@ auto execute_command(const std::string &command,
         cmd_line += warg;
       }
     }
-    
+
     // Execute command using CreateProcess
     STARTUPINFOW si = {sizeof(si)};
     PROCESS_INFORMATION pi;
-    
-    BOOL success = CreateProcessW(
-      nullptr,
-      cmd_line.data(),
-      nullptr,
-      nullptr,
-      FALSE,
-      CREATE_UNICODE_ENVIRONMENT,
-      nullptr,
-      nullptr,
-      &si,
-      &pi
-    );
-    
+
+    BOOL success =
+        CreateProcessW(nullptr, cmd_line.data(), nullptr, nullptr, FALSE,
+                       CREATE_UNICODE_ENVIRONMENT, nullptr, nullptr, &si, &pi);
+
     if (success) {
       WaitForSingleObject(pi.hProcess, INFINITE);
       DWORD result;
@@ -216,29 +220,31 @@ auto execute_command(const std::string &command,
       exit_code = 127;
     }
   }
-  
+
   return exit_code;
 }
 
 }  // namespace xargs_pipeline
 
-REGISTER_COMMAND(xargs, "xargs",
-                 "build and execute command lines from standard input",
-                 "Build and execute command lines from standard input.\n"
-                 "\n"
-                 "Items are separated by blanks. The result command line is executed\n"
-                 "after each group of max-args items is read.",
-                 "  find . -name '*.cpp' | xargs rm -f     Delete all cpp files\n"
-                 "  echo file1 file2 | xargs cat         Concatenate files\n"
-                 "  find . -name '*.txt' | xargs -n1 grep 'pattern'  Search one file at a time",
-                 "find(1), grep(1), sed(1)", "caomengxuan666",
-                 "Copyright © 2026 WinuxCmd", XARGS_OPTIONS) {
+REGISTER_COMMAND(
+    xargs, "xargs", "build and execute command lines from standard input",
+    "Build and execute command lines from standard input.\n"
+    "\n"
+    "Items are separated by blanks. The result command line is executed\n"
+    "after each group of max-args items is read.",
+    "  find . -name '*.cpp' | xargs rm -f     Delete all cpp files\n"
+    "  echo file1 file2 | xargs cat         Concatenate files\n"
+    "  find . -name '*.txt' | xargs -n1 grep 'pattern'  Search one file at a "
+    "time",
+    "find(1), grep(1), sed(1)", "caomengxuan666", "Copyright © 2026 WinuxCmd",
+    XARGS_OPTIONS) {
   using namespace xargs_pipeline;
 
   bool use_null = ctx.get<bool>("-0", false) || ctx.get<bool>("--null", false);
-  bool verbose = ctx.get<bool>("-t", false) || ctx.get<bool>("--verbose", false);
-  bool no_run_if_empty = ctx.get<bool>("-r", false) || 
-                         ctx.get<bool>("--no-run-if-empty", false);
+  bool verbose =
+      ctx.get<bool>("-t", false) || ctx.get<bool>("--verbose", false);
+  bool no_run_if_empty =
+      ctx.get<bool>("-r", false) || ctx.get<bool>("--no-run-if-empty", false);
   int max_args = ctx.get<int>("-n", 0);
   std::string replace_str = ctx.get<std::string>("-I", "");
 
@@ -246,12 +252,13 @@ REGISTER_COMMAND(xargs, "xargs",
   if (ctx.positionals.empty()) {
     // Default to echo if no command specified
     auto input_args_vec = parse_arguments(' ', replace_str);
-    SmallVector<std::string, 256> input_args(input_args_vec.begin(), input_args_vec.end());
-    
+    SmallVector<std::string, 256> input_args(input_args_vec.begin(),
+                                             input_args_vec.end());
+
     if (no_run_if_empty && input_args.empty()) {
       return 0;
     }
-    
+
     if (verbose) {
       safeErrorPrint("echo");
       for (const auto &arg : input_args) {
@@ -260,7 +267,7 @@ REGISTER_COMMAND(xargs, "xargs",
       }
       safeErrorPrint("\n");
     }
-    
+
     for (const auto &arg : input_args) {
       safePrint(arg);
       safePrint(" ");
@@ -271,7 +278,7 @@ REGISTER_COMMAND(xargs, "xargs",
 
   std::string command = std::string(ctx.positionals[0]);
   SmallVector<std::string, 32> base_args;
-  
+
   for (size_t i = 1; i < ctx.positionals.size(); ++i) {
     base_args.push_back(std::string(ctx.positionals[i]));
   }
@@ -279,8 +286,9 @@ REGISTER_COMMAND(xargs, "xargs",
   // Parse arguments from stdin
   char delimiter = use_null ? '\0' : ' ';
   auto input_args_vec = parse_arguments(delimiter, replace_str);
-  SmallVector<std::string, 256> input_args(input_args_vec.begin(), input_args_vec.end());
-  
+  SmallVector<std::string, 256> input_args(input_args_vec.begin(),
+                                           input_args_vec.end());
+
   // If no input arguments, check if we should skip execution
   if (input_args.empty()) {
     // Skip if -r (no-run-if-empty) is specified
@@ -297,7 +305,11 @@ REGISTER_COMMAND(xargs, "xargs",
     }
   }
 
-  // Execute command with arguments - convert SmallVector to std::vector for compatibility
+  // Execute command with arguments - convert SmallVector to std::vector for
+  // compatibility
   std::vector<std::string> base_args_vec(base_args.begin(), base_args.end());
-  return execute_command(command, base_args_vec, std::vector<std::string>(input_args.begin(), input_args.end()), replace_str, max_args, verbose);
+  return execute_command(
+      command, base_args_vec,
+      std::vector<std::string>(input_args.begin(), input_args.end()),
+      replace_str, max_args, verbose);
 }

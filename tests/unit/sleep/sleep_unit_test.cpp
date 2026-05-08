@@ -23,9 +23,10 @@
  *  - Username: Administrator
  *  - CopyrightYear: 2026
  */
-#include "framework/winuxtest.h"
 #include <chrono>
 #include <thread>
+
+#include "framework/winuxtest.h"
 
 TEST(sleep, sleep_zero) {
   Pipeline p;
@@ -46,7 +47,8 @@ TEST(sleep, sleep_short) {
 
   EXPECT_EQ(r.exit_code, 0);
   // Should sleep for at least 0.1 seconds
-  auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-  EXPECT_TRUE(duration.count() >= 90); // Allow some tolerance
-  EXPECT_TRUE(duration.count() <= 200); // But not too long
+  auto duration =
+      std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+  EXPECT_TRUE(duration.count() >= 90);   // Allow some tolerance
+  EXPECT_TRUE(duration.count() <= 200);  // But not too long
 }
