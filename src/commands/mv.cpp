@@ -90,23 +90,23 @@ auto constexpr MV_OPTIONS =
                OPTION("-f", "--force", "do not prompt before overwriting"),
                OPTION("-i", "", "prompt before overwrite"),
                OPTION("-n", "--no-clobber", "do not overwrite an existing file"),
-               OPTION("--strip-trailing-slashes", "", "remove any trailing slashes from each SOURCE argument"),
-               OPTION("-S", "--suffix", "override the usual backup suffix"),
-               OPTION("-t", "--target-directory", "move all SOURCE arguments into DIRECTORY"),
+               OPTION("", "--strip-trailing-slashes", "remove any trailing slashes from each SOURCE argument"),
+               OPTION("-S", "--suffix", "override the usual backup suffix", STRING_TYPE),
+               OPTION("-t", "--target-directory", "move all SOURCE arguments into DIRECTORY", STRING_TYPE),
                OPTION("-T", "--no-target-directory", "treat DEST as a normal file"),
-               OPTION("-u", "", "move only when the SOURCE file is newer than the destination file or when the destination file is missing"),
+               OPTION("-u", "--update", "move only when the SOURCE file is newer than the destination file or when the destination file is missing"),
                OPTION("-v", "--verbose", "explain what is being done"),
                OPTION("-Z", "--context", "set SELinux security context of destination file to default type"),
-               OPTION("--backup", "", "make a backup of each existing destination file"),
-               OPTION("--force", "", "do not prompt before overwriting"),
-               OPTION("--interactive", "", "prompt according to WHEN: never, once (-I), or always (-i)"),
-               OPTION("--no-clobber", "", "do not overwrite an existing file"),
-               OPTION("--suffix", "", "override the usual backup suffix"),
-               OPTION("--target-directory", "", "move all SOURCE arguments into DIRECTORY"),
-               OPTION("--no-target-directory", "", "treat DEST as a normal file"),
-               OPTION("--update", "", "move only when the SOURCE file is newer than the destination file or when the destination file is missing"),
-               OPTION("--verbose", "", "explain what is being done"),
-               OPTION("--context", "", "set SELinux security context of destination file to default type")};
+               OPTION("", "--backup", "make a backup of each existing destination file"),
+               OPTION("", "--force", "do not prompt before overwriting"),
+               OPTION("", "--interactive", "prompt according to WHEN: never, once (-I), or always (-i)"),
+               OPTION("", "--no-clobber", "do not overwrite an existing file"),
+               OPTION("", "--suffix", "override the usual backup suffix", STRING_TYPE),
+               OPTION("", "--target-directory", "move all SOURCE arguments into DIRECTORY", STRING_TYPE),
+               OPTION("", "--no-target-directory", "treat DEST as a normal file"),
+               OPTION("", "--update", "move only when the SOURCE file is newer than the destination file or when the destination file is missing"),
+               OPTION("", "--verbose", "explain what is being done"),
+               OPTION("", "--context", "set SELinux security context of destination file to default type")};
 // clang-format on
 
 // ======================================================
@@ -120,16 +120,31 @@ struct MoveContext {
   std::string dest_path;
 };
 
+auto strip_trailing_slashes(std::string path) -> std::string {
+  while (path.size() > 1 && (path.back() == '\\' || path.back() == '/')) {
+    if (path.size() == 3 && path[1] == ':') break;
+    path.pop_back();
+  }
+  return path;
+}
+
 auto parse_arguments(const CommandContext<MV_OPTIONS.size()>& ctx)
     -> cp::Result<MoveContext> {
   MoveContext move_ctx;
 
   // Get target directory if specified
-  bool has_target_dir = ctx.get<bool>("--target-directory", false);
-  if (has_target_dir) {
-    move_ctx.dest_path = ctx.get<std::string>("--target-directory", "");
+  std::string target_dir = ctx.get<std::string>("--target-directory", "");
+  if (target_dir.empty()) {
+    target_dir = ctx.get<std::string>("-t", "");
+  }
+
+  bool strip_slashes = ctx.get<bool>("--strip-trailing-slashes", false);
+  if (!target_dir.empty()) {
+    move_ctx.dest_path = target_dir;
     for (auto arg : ctx.positionals) {
-      move_ctx.source_paths.push_back(std::string(arg));
+      auto src = std::string(arg);
+      if (strip_slashes) src = strip_trailing_slashes(std::move(src));
+      move_ctx.source_paths.push_back(std::move(src));
     }
   } else {
     // Regular case: last argument is destination
@@ -138,7 +153,9 @@ auto parse_arguments(const CommandContext<MV_OPTIONS.size()>& ctx)
     }
 
     for (size_t i = 0; i < ctx.positionals.size() - 1; ++i) {
-      move_ctx.source_paths.push_back(std::string(ctx.positionals[i]));
+      auto src = std::string(ctx.positionals[i]);
+      if (strip_slashes) src = strip_trailing_slashes(std::move(src));
+      move_ctx.source_paths.push_back(std::move(src));
     }
     move_ctx.dest_path = std::string(ctx.positionals.back());
   }
@@ -203,11 +220,61 @@ auto confirm_overwrite(const std::string& dest_path) -> cp::Result<bool> {
   return response == 'y' || response == 'Y';
 }
 
+auto is_source_newer(const std::wstring& src_path,
+                     const std::wstring& dest_path) -> bool {
+  WIN32_FILE_ATTRIBUTE_DATA src_data{};
+  WIN32_FILE_ATTRIBUTE_DATA dest_data{};
+  if (!GetFileAttributesExW(src_path.c_str(), GetFileExInfoStandard,
+                            &src_data)) {
+    return true;
+  }
+  if (!GetFileAttributesExW(dest_path.c_str(), GetFileExInfoStandard,
+                            &dest_data)) {
+    return true;
+  }
+  return CompareFileTime(&src_data.ftLastWriteTime,
+                         &dest_data.ftLastWriteTime) > 0;
+}
+
+auto backup_existing_destination(const std::wstring& dest_path,
+                                 const CommandContext<MV_OPTIONS.size()>& ctx)
+    -> cp::Result<bool> {
+  bool backup = ctx.get<bool>("-b", false) || ctx.get<bool>("--backup", false);
+  if (!backup) return true;
+  if (GetFileAttributesW(dest_path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+    return true;
+  }
+
+  std::string suffix = ctx.get<std::string>("--suffix", "");
+  if (suffix.empty()) suffix = ctx.get<std::string>("-S", "");
+  if (suffix.empty()) suffix = "~";
+
+  std::wstring backup_path = dest_path + utf8_to_wstring(suffix);
+  if (!MoveFileExW(dest_path.c_str(), backup_path.c_str(),
+                   MOVEFILE_REPLACE_EXISTING)) {
+    return std::unexpected("cannot create backup for destination");
+  }
+  return true;
+}
+
 auto move_single_path(const std::string& src_path, const std::string& dest_path,
                       const CommandContext<MV_OPTIONS.size()>& ctx)
     -> cp::Result<bool> {
   std::wstring wsrc_path = utf8_to_wstring(src_path);
   std::wstring wdest_path = utf8_to_wstring(dest_path);
+
+  bool dest_exists = GetFileAttributesW(wdest_path.c_str()) !=
+                     INVALID_FILE_ATTRIBUTES;
+  bool no_clobber =
+      ctx.get<bool>("--no-clobber", false) || ctx.get<bool>("-n", false);
+  if (no_clobber && dest_exists) {
+    return true;
+  }
+
+  bool update = ctx.get<bool>("--update", false) || ctx.get<bool>("-u", false);
+  if (update && dest_exists && !is_source_newer(wsrc_path, wdest_path)) {
+    return true;
+  }
 
   bool interactive =
       ctx.get<bool>("--interactive", false) || ctx.get<bool>("-i", false);
@@ -226,6 +293,9 @@ auto move_single_path(const std::string& src_path, const std::string& dest_path,
       }
     }
   }
+
+  auto backup_result = backup_existing_destination(wdest_path, ctx);
+  if (!backup_result) return backup_result;
 
   // Try to rename first
   if (!MoveFileExW(wsrc_path.c_str(), wdest_path.c_str(),

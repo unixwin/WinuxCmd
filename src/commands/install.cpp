@@ -1,5 +1,5 @@
 /*
- *  Copyright © 2026 [caomengxuan666]
+ *  Copyright ? 2026 WinuxCmd
  *
  *  Permission is hereby granted, free of charge, to any person obtaining a copy
  *  of this software and associated documentation files (the "Software"), to
@@ -28,11 +28,9 @@
 /// @Description: Implementation for install.
 /// @Version: 0.1.0
 /// @License: MIT
-/// @Copyright: Copyright © 2026 WinuxCmd
-// *** SIMPLIFIED IMPLEMENTATION - Some features may not be fully supported ***
+/// @Copyright: Copyright ? 2026 WinuxCmd
 
 #include "pch/pch.h"
-//include other header after pch.h
 #include "core/command_macros.h"
 
 import std;
@@ -40,7 +38,6 @@ import core;
 import utils;
 import container;
 
-using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
 auto constexpr INSTALL_OPTIONS = std::array{
@@ -54,9 +51,13 @@ auto constexpr INSTALL_OPTIONS = std::array{
     OPTION("-o", "--owner", "set ownership", STRING_TYPE),
     OPTION("-p", "--preserve-timestamps", "apply access/modification times of SOURCE files", BOOL_TYPE),
     OPTION("-s", "--strip", "strip symbol tables", BOOL_TYPE),
+    OPTION("", "--strip-program", "program used to strip binaries", STRING_TYPE),
     OPTION("-S", "--suffix", "override the usual backup suffix", STRING_TYPE),
-    OPTION("-v", "--verbose", "print the name of each directory as it is created", BOOL_TYPE)
-    // --target-directory (not implemented)
+    OPTION("-t", "--target-directory", "specify the destination directory", STRING_TYPE),
+    OPTION("-T", "--no-target-directory", "do not treat the last operand specially when it is a directory", BOOL_TYPE),
+    OPTION("-v", "--verbose", "print the name of each directory as it is created", BOOL_TYPE),
+    OPTION("", "--preserve-context", "preserve SELinux security context", BOOL_TYPE),
+    OPTION("-Z", "", "set SELinux security context of destination files to default", BOOL_TYPE)
 };
 
 namespace install_pipeline {
@@ -68,23 +69,34 @@ struct Config {
   bool preserve_timestamps = false;
   bool strip = false;
   bool verbose = false;
+  bool create_leading_dirs = false;
+  bool no_target_directory = false;
+  bool preserve_context = false;
+  bool default_context = false;
   std::string backup_suffix = "~";
   std::string group;
   std::string mode;
   std::string owner;
+  std::string strip_program;
   std::string target_dir;
   SmallVector<std::string, 64> sources;
-  SmallVector<std::string, 64> targets;
 };
 
 auto build_config(const CommandContext<INSTALL_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
   Config cfg;
   cfg.backup = ctx.get<bool>("--backup", false) || ctx.get<bool>("-b", false);
-  cfg.directory_mode = ctx.get<bool>("--directory", false) || ctx.get<bool>("-d", false);
-  cfg.preserve_timestamps = ctx.get<bool>("--preserve-timestamps", false) || ctx.get<bool>("-p", false);
+  cfg.directory_mode =
+      ctx.get<bool>("--directory", false) || ctx.get<bool>("-d", false);
+  cfg.preserve_timestamps = ctx.get<bool>("--preserve-timestamps", false) ||
+                            ctx.get<bool>("-p", false);
   cfg.strip = ctx.get<bool>("--strip", false) || ctx.get<bool>("-s", false);
   cfg.verbose = ctx.get<bool>("--verbose", false) || ctx.get<bool>("-v", false);
+  cfg.create_leading_dirs = ctx.get<bool>("-D", false);
+  cfg.no_target_directory = ctx.get<bool>("-T", false) ||
+                            ctx.get<bool>("--no-target-directory", false);
+  cfg.preserve_context = ctx.get<bool>("--preserve-context", false);
+  cfg.default_context = ctx.get<bool>("-Z", false);
 
   auto group_opt = ctx.get<std::string>("--group", "");
   if (group_opt.empty()) {
@@ -112,6 +124,14 @@ auto build_config(const CommandContext<INSTALL_OPTIONS.size()>& ctx)
     cfg.backup_suffix = suffix_opt;
   }
 
+  cfg.strip_program = ctx.get<std::string>("--strip-program", "");
+
+  auto target_opt = ctx.get<std::string>("--target-directory", "");
+  if (target_opt.empty()) {
+    target_opt = ctx.get<std::string>("-t", "");
+  }
+  cfg.target_dir = target_opt;
+
   for (auto arg : ctx.positionals) {
     std::string file_arg(arg);
     if (contains_wildcard(file_arg)) {
@@ -130,147 +150,85 @@ auto build_config(const CommandContext<INSTALL_OPTIONS.size()>& ctx)
     return std::unexpected("missing file operand");
   }
 
+  if (!cfg.target_dir.empty()) {
+    cfg.sources.push_back(cfg.target_dir);
+  }
+
   return cfg;
 }
 
 auto run(const Config& cfg) -> int {
-
-
-
-  // If directory mode, create all specified directories
-
   if (cfg.directory_mode) {
-
     for (const auto& dir : cfg.sources) {
-
       if (cfg.verbose) {
-
         safePrint("install: creating directory '");
-
         safePrint(dir);
-
         safePrintLn("'");
-
       }
 
       if (!CreateDirectoryA(dir.c_str(), NULL)) {
-
         DWORD error = GetLastError();
-
         if (error != ERROR_ALREADY_EXISTS) {
-
           safePrint("install: cannot create directory '");
-
           safePrint(dir);
-
           safePrintLn("'");
-
           return 1;
-
         }
-
       }
-
     }
-
     return 0;
-
   }
 
+  if (cfg.sources.size() < 2) {
+    return 1;
+  }
 
+  SmallVector<std::string, 64> sources = cfg.sources;
+  std::string target = sources.back();
+  sources.pop_back();
 
-  // Determine last argument as target
+  if (cfg.no_target_directory && sources.size() > 1) {
+    safePrintLn("install: too many sources for -T/--no-target-directory");
+    return 1;
+  }
 
+  DWORD attrs = GetFileAttributesA(target.c_str());
+  bool target_is_dir =
+      !cfg.no_target_directory &&
+      (attrs != INVALID_FILE_ATTRIBUTES) && (attrs & FILE_ATTRIBUTE_DIRECTORY);
+  if (!target_is_dir && sources.size() > 1) {
+    target_is_dir = true;
+  }
 
-
-  
-
-
-
-    if (cfg.sources.size() < 2) {
-
-
-
-      return 1;
-
-
-
-    }
-
-
-
-  
-
-
-
-    SmallVector<std::string, 64> sources = cfg.sources;
-
-
-
-    std::string target = sources.back();
-
-
-
-    sources.pop_back();
-
-
-
-  
-
-
-
-    // Check if target is a directory or file
-
-
-
-    DWORD attrs = GetFileAttributesA(target.c_str());
-
-
-
-    bool target_is_dir = (attrs != INVALID_FILE_ATTRIBUTES) && (attrs & FILE_ATTRIBUTE_DIRECTORY);
-
-
-
-  
-
-
-
-    // If target is not a directory and we have multiple sources, assume target is a directory
-
-
-
-    if (!target_is_dir && sources.size() > 1) {
-
-
-
-      target_is_dir = true;
-
-
-
-    }
-
-  // Copy files
   for (const auto& source : sources) {
     std::string dest = target;
-    
+
     if (target_is_dir) {
-      // Append source filename to target directory
       size_t last_slash = source.find_last_of("/\\");
-      std::string filename = (last_slash != std::string::npos) ? 
-                            source.substr(last_slash + 1) : source;
-      
-      if (dest.back() != '\\' && dest.back() != '/') {
+      std::string filename =
+          (last_slash != std::string::npos) ? source.substr(last_slash + 1)
+                                            : source;
+      if (!dest.empty() && dest.back() != '\\' && dest.back() != '/') {
         dest += "\\";
       }
       dest += filename;
     }
 
-    // Create backup if file exists and backup requested
+    if (cfg.create_leading_dirs) {
+      std::filesystem::path dest_path(dest);
+      auto parent = dest_path.parent_path();
+      if (!parent.empty()) {
+        std::error_code ec;
+        std::filesystem::create_directories(parent, ec);
+      }
+    }
+
     if (cfg.backup) {
       DWORD dest_attrs = GetFileAttributesA(dest.c_str());
       if (dest_attrs != INVALID_FILE_ATTRIBUTES) {
         std::string backup_path = dest + cfg.backup_suffix;
-        if (MoveFileExA(dest.c_str(), backup_path.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+        if (MoveFileExA(dest.c_str(), backup_path.c_str(),
+                        MOVEFILE_REPLACE_EXISTING)) {
           if (cfg.verbose) {
             safePrint("created backup: ");
             safePrintLn(backup_path);
@@ -279,7 +237,6 @@ auto run(const Config& cfg) -> int {
       }
     }
 
-    // Copy file
     if (cfg.verbose) {
       safePrint("installing: ");
       safePrint(source);
@@ -309,14 +266,14 @@ REGISTER_COMMAND(install, "install",
                  "Copy files and set attributes.\n"
                  "\n"
                  "Note: This is a simplified Windows implementation.\n"
-                 "Advanced features like mode, owner, group, and strip are\n"
-                 "not fully supported on Windows.",
+                 "Advanced features like mode, owner, group, strip, and SELinux\n"
+                 "context handling are tracked but not fully supported on Windows.",
                  "  install source.txt dest.txt\n"
                  "  install -b file.txt backup/\n"
                  "  install -v src/*.txt /target/\n"
                  "  install -d /tmp/dir",
                  "cp(1), mv(1)", "WinuxCmd",
-                 "Copyright © 2026 WinuxCmd", INSTALL_OPTIONS) {
+                 "Copyright ? 2026 WinuxCmd", INSTALL_OPTIONS) {
   using namespace install_pipeline;
 
   auto cfg_result = build_config(ctx);
