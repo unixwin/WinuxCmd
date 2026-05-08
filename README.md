@@ -111,6 +111,8 @@ For persistent interactive shells, install the optional user profile hook:
 ```
 
 The local guidance for AI usage lives in `skills/winuxcmd/SKILL.md`.
+GitHub releases also publish a standalone `WinuxCmd-skill-v<version>.zip`
+bundle alongside the Windows binaries.
 
 ## PowerShell Auto-Enter (Interactive)
 
