@@ -138,8 +138,9 @@ static std::vector<CompletionItem> getPathCompletions(
     } else {
       candidate = name;
     }
-    if (entry.is_directory(ec) && !ec) candidate += "\\";
-    items.push_back({candidate, entry.is_directory(ec) ? "Directory" : "File"});
+    bool is_dir = entry.is_directory(ec) && !ec;
+    if (is_dir) candidate += "\\";
+    items.push_back({candidate, is_dir ? "Directory" : "File"});
   }
 
   std::ranges::sort(items, {}, &CompletionItem::text);
