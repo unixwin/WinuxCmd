@@ -54,9 +54,10 @@ using cmd::meta::OptionType;
  * - @a -q, @a --brief: Report only when files differ [IMPLEMENTED]
  * - @a -u, @a --unified: Output unified diff format [IMPLEMENTED]
  * - @a -y, @a --side-by-side: Output in two columns [IMPLEMENTED]
- * - @a -w, @a --ignore-all-space: Ignore all white space [NOT SUPPORT]
- * - @a -B, @a --ignore-blank-lines: Ignore changes whose lines are all blank
- * [NOT SUPPORT]
+ * - @a -w, @a --ignore-all-space: Ignore all white space [IMPLEMENTED]
+ * - @a
+ * -B, @a --ignore-blank-lines: Ignore changes whose lines are all blank [NOT
+ * SUPPORT]
  */
 auto constexpr DIFF_OPTIONS =
     std::array{OPTION("-q", "--brief", "report only when files differ"),
@@ -69,6 +70,35 @@ auto constexpr DIFF_OPTIONS =
 
 namespace diff_pipeline {
 namespace cp = core::pipeline;
+
+auto resolve_files(const CommandContext<DIFF_OPTIONS.size()> &ctx)
+    -> cp::Result<std::vector<std::string>> {
+  std::vector<std::string> files;
+
+  for (const auto &positional : ctx.positionals) {
+    std::string file_arg = std::string(positional);
+    if (contains_wildcard(file_arg)) {
+      auto glob_result = glob_expand(file_arg);
+      if (glob_result.expanded && !glob_result.files.empty()) {
+        for (const auto &file : glob_result.files) {
+          files.push_back(wstring_to_utf8(file));
+        }
+        continue;
+      }
+    }
+
+    files.push_back(file_arg);
+  }
+
+  if (files.size() < 2) {
+    return std::unexpected("missing operand");
+  }
+  if (files.size() > 2) {
+    return std::unexpected("too many operands");
+  }
+
+  return files;
+}
 
 /**
  * @brief Edit operation type for diff
@@ -224,6 +254,31 @@ auto read_file_lines_result(const std::string &path)
   return lines;
 }
 
+auto normalize_line_for_compare(const std::string &line, bool ignore_all_space)
+    -> std::string {
+  if (!ignore_all_space) return line;
+  std::string normalized;
+  normalized.reserve(line.size());
+  for (char ch : line) {
+    if (!std::isspace(static_cast<unsigned char>(ch))) {
+      normalized.push_back(ch);
+    }
+  }
+  return normalized;
+}
+
+auto normalize_lines_for_compare(const std::vector<std::string> &lines,
+                                 bool ignore_all_space)
+    -> std::vector<std::string> {
+  if (!ignore_all_space) return lines;
+  std::vector<std::string> normalized;
+  normalized.reserve(lines.size());
+  for (const auto &line : lines) {
+    normalized.push_back(normalize_line_for_compare(line, true));
+  }
+  return normalized;
+}
+
 /**
  * @brief Compare two files
  * @param path1 First file path
@@ -232,7 +287,7 @@ auto read_file_lines_result(const std::string &path)
  * @return Result with true if files are equal
  */
 auto compare_files(const std::string &path1, const std::string &path2,
-                   bool brief) -> cp::Result<bool> {
+                   bool brief, bool ignore_all_space) -> cp::Result<bool> {
   auto lines1_result = read_file_lines_result(path1);
   if (!lines1_result) {
     return std::unexpected(lines1_result.error());
@@ -245,9 +300,11 @@ auto compare_files(const std::string &path1, const std::string &path2,
 
   auto &lines1 = lines1_result.value();
   auto &lines2 = lines2_result.value();
+  auto compare_lines1 = normalize_lines_for_compare(lines1, ignore_all_space);
+  auto compare_lines2 = normalize_lines_for_compare(lines2, ignore_all_space);
 
   // Quick check: compare line counts
-  if (lines1.size() != lines2.size()) {
+  if (compare_lines1.size() != compare_lines2.size()) {
     if (brief) {
       safePrint("Files ");
       safePrint(path1);
@@ -260,8 +317,8 @@ auto compare_files(const std::string &path1, const std::string &path2,
 
   // Check if all lines are equal
   bool equal = true;
-  for (size_t i = 0; i < lines1.size(); ++i) {
-    if (lines1[i] != lines2[i]) {
+  for (size_t i = 0; i < compare_lines1.size(); ++i) {
+    if (compare_lines1[i] != compare_lines2[i]) {
       equal = false;
       break;
     }
@@ -287,10 +344,12 @@ auto compare_files(const std::string &path1, const std::string &path2,
  * @param context Number of context lines
  */
 auto output_unified_diff(const std::string &path1, const std::string &path2,
+                         const std::vector<std::string> &compare_lines1,
+                         const std::vector<std::string> &compare_lines2,
                          const std::vector<std::string> &lines1,
                          const std::vector<std::string> &lines2, int context)
     -> void {
-  auto edits = compute_diff(lines1, lines2);
+  auto edits = compute_diff(compare_lines1, compare_lines2);
 
   // Group edits into hunks
   std::vector<std::pair<size_t, size_t>> hunks;  // (start_index, end_index)
@@ -450,9 +509,11 @@ auto output_unified_diff(const std::string &path1, const std::string &path2,
  * @param lines2 Lines from second file
  */
 auto output_side_by_side(const std::string &path1, const std::string &path2,
+                         const std::vector<std::string> &compare_lines1,
+                         const std::vector<std::string> &compare_lines2,
                          const std::vector<std::string> &lines1,
                          const std::vector<std::string> &lines2) -> void {
-  auto edits = compute_diff(lines1, lines2);
+  auto edits = compute_diff(compare_lines1, compare_lines2);
 
   if (edits.empty()) {
     return;  // Files are identical
@@ -538,20 +599,23 @@ REGISTER_COMMAND(
       ctx.get<bool>("-u", false) || ctx.get<bool>("--unified", false);
   bool side_by_side =
       ctx.get<bool>("-y", false) || ctx.get<bool>("--side-by-side", false);
+  bool ignore_all_space =
+      ctx.get<bool>("-w", false) || ctx.get<bool>("--ignore-all-space", false);
   int context = 3;  // Default context lines for unified diff
 
-  // Need exactly two files
-  if (ctx.positionals.size() < 2) {
-    safeErrorPrint("diff: missing operand\n");
+  auto files_result = resolve_files(ctx);
+  if (!files_result) {
+    safeErrorPrint("diff: ");
+    safeErrorPrintLn(files_result.error());
     safeErrorPrint("Try 'diff --help' for more information.\n");
     return 1;
   }
 
-  std::string file1 = std::string(ctx.positionals[0]);
-  std::string file2 = std::string(ctx.positionals[1]);
+  std::string file1 = (*files_result)[0];
+  std::string file2 = (*files_result)[1];
 
   if (brief) {
-    auto result = compare_files(file1, file2, true);
+    auto result = compare_files(file1, file2, true, ignore_all_space);
     if (!result) {
       safeErrorPrint("diff: ");
       safeErrorPrint(result.error());
@@ -580,14 +644,22 @@ REGISTER_COMMAND(
 
   auto &lines1 = lines1_result.value();
   auto &lines2 = lines2_result.value();
+  auto compare_lines1 = normalize_lines_for_compare(lines1, ignore_all_space);
+  auto compare_lines2 = normalize_lines_for_compare(lines2, ignore_all_space);
+
+  if (compare_lines1 == compare_lines2) {
+    return 0;
+  }
 
   if (unified) {
-    output_unified_diff(file1, file2, lines1, lines2, context);
+    output_unified_diff(file1, file2, compare_lines1, compare_lines2, lines1,
+                        lines2, context);
   } else if (side_by_side) {
-    output_side_by_side(file1, file2, lines1, lines2);
+    output_side_by_side(file1, file2, compare_lines1, compare_lines2, lines1,
+                        lines2);
   } else {
     // Simple comparison using LCS
-    auto edits = compute_diff(lines1, lines2);
+    auto edits = compute_diff(compare_lines1, compare_lines2);
 
     bool has_diffs = false;
     for (const auto &edit : edits) {

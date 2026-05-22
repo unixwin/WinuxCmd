@@ -56,3 +56,18 @@ TEST(link, link_missing_operand) {
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_FALSE(r.stderr_text.empty());
 }
+
+TEST(link, link_extra_operand) {
+  Pipeline p;
+  p.add(L"link.exe", {L"a", L"b", L"c"});
+
+  TEST_LOG_CMD_LIST("link.exe", L"a", L"b", L"c");
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("link stderr", r.stderr_text);
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_FALSE(r.stderr_text.empty());
+}

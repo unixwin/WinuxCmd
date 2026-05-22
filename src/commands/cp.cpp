@@ -51,7 +51,7 @@ import utils;
  * @par Options:
  *
  * - @a -a, @a --archive: Same as -dR --preserve=all [TODO]
- * - @a -b: Like --backup but does not accept an argument [TODO]
+ * - @a -b: Like --backup but does not accept an argument [IMPLEMENTED]
  * - @a -d: Same as --no-dereference --preserve=links [TODO]
  * - @a -f, @a --force: If an existing destination file cannot be opened, remove
  * it and try again [TODO]
@@ -66,7 +66,7 @@ import utils;
  * - @a -R, @a --recursive: Copy directories recursively [IMPLEMENTED]
  * - @a -r, @a --recursive: Copy directories recursively [IMPLEMENTED]
  * - @a -s, @a --symbolic-link: Make symbolic links instead of copying [TODO]
- * - @a -S, @a --suffix: Override the usual backup suffix [TODO]
+ * - @a -S, @a --suffix: Override the usual backup suffix [IMPLEMENTED]
  * - @a -t, @a --target-directory: Copy all SOURCE arguments into DIRECTORY
  * [IMPLEMENTED]
  * - @a -T, @a --no-target-directory: Treat DEST as a normal file [TODO]
@@ -94,6 +94,8 @@ constexpr char DEFAULT_BACKUP_SUFFIX[] = "~";
 auto constexpr CP_OPTIONS = std::array{
     OPTION("-a", "--archive", "same as -dR --preserve=all"),
     OPTION("-b", "", "like --backup but does not accept an argument"),
+    OPTION("", "--backup", "make a backup of each existing destination file",
+           OPTIONAL_STRING_TYPE),
     OPTION("-d", "", "same as --no-dereference --preserve=links"),
     OPTION("-f", "--force",
            "if an existing destination file cannot be opened, remove it and "
@@ -125,6 +127,21 @@ auto constexpr CP_OPTIONS = std::array{
 namespace cp_pipeline {
 namespace cp = core::pipeline;
 
+auto append_expanded_source(std::vector<std::string>& source_paths,
+                            std::string_view arg) -> void {
+  std::string source(arg);
+  if (contains_wildcard(source)) {
+    auto glob_result = glob_expand(source);
+    if (glob_result.expanded) {
+      for (const auto& file : glob_result.files) {
+        source_paths.push_back(wstring_to_utf8(file));
+      }
+      return;
+    }
+  }
+  source_paths.push_back(std::move(source));
+}
+
 // ----------------------------------------------
 // 1. Validate arguments
 // ----------------------------------------------
@@ -139,9 +156,22 @@ auto validate_arguments(const CommandContext<CP_OPTIONS.size()>& ctx)
     target_dir = ctx.get<std::string>("-t", "");
   }
   if (!target_dir.empty()) {
+    bool no_target_directory = ctx.get<bool>("-T", false) ||
+                               ctx.get<bool>("--no-target-directory", false);
+    if (no_target_directory) {
+      return std::unexpected(
+          "cannot combine --target-directory and --no-target-directory");
+    }
+
+    DWORD attr = GetFileAttributesW(utf8_to_wstring(target_dir).c_str());
+    if (attr == INVALID_FILE_ATTRIBUTES ||
+        !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
+      return std::unexpected("target is not a directory");
+    }
+
     destPath = target_dir;
     for (auto arg : ctx.positionals) {
-      sourcePaths.push_back(std::string(arg));
+      append_expanded_source(sourcePaths, arg);
     }
   } else {
     // Regular case: last argument is destination
@@ -150,7 +180,7 @@ auto validate_arguments(const CommandContext<CP_OPTIONS.size()>& ctx)
     }
 
     for (size_t i = 0; i < ctx.positionals.size() - 1; ++i) {
-      sourcePaths.push_back(std::string(ctx.positionals[i]));
+      append_expanded_source(sourcePaths, ctx.positionals[i]);
     }
     destPath = std::string(ctx.positionals.back());
   }
@@ -231,17 +261,121 @@ auto path_exists_and_is_directory(const std::string& path) -> cp::Result<bool> {
   return (attr != INVALID_FILE_ATTRIBUTES) && (attr & FILE_ATTRIBUTE_DIRECTORY);
 }
 
+auto archive_enabled(const CommandContext<CP_OPTIONS.size()>& ctx) -> bool {
+  return ctx.get<bool>("--archive", false) || ctx.get<bool>("-a", false);
+}
+
+auto preserve_metadata_enabled(const CommandContext<CP_OPTIONS.size()>& ctx)
+    -> bool {
+  return archive_enabled(ctx) || ctx.get<bool>("-p", false);
+}
+
+auto preserve_metadata(const std::string& srcPath, const std::string& destPath)
+    -> cp::Result<bool> {
+  std::wstring wsrc = utf8_to_wstring(srcPath);
+  std::wstring wdest = utf8_to_wstring(destPath);
+
+  WIN32_FILE_ATTRIBUTE_DATA src_data{};
+  if (!GetFileAttributesExW(wsrc.c_str(), GetFileExInfoStandard, &src_data)) {
+    return std::unexpected("cannot read source metadata");
+  }
+
+  const DWORD flags = (src_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+                          ? FILE_FLAG_BACKUP_SEMANTICS
+                          : 0;
+  HANDLE handle =
+      CreateFileW(wdest.c_str(), FILE_WRITE_ATTRIBUTES,
+                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                  nullptr, OPEN_EXISTING, flags, nullptr);
+  if (handle == INVALID_HANDLE_VALUE) {
+    return std::unexpected("cannot write destination metadata");
+  }
+
+  BOOL time_ok =
+      SetFileTime(handle, &src_data.ftCreationTime, &src_data.ftLastAccessTime,
+                  &src_data.ftLastWriteTime);
+  CloseHandle(handle);
+  if (!time_ok) {
+    return std::unexpected("cannot preserve timestamps");
+  }
+
+  if (!SetFileAttributesW(wdest.c_str(), src_data.dwFileAttributes)) {
+    return std::unexpected("cannot preserve attributes");
+  }
+  return true;
+}
+
+auto backup_enabled(const CommandContext<CP_OPTIONS.size()>& ctx) -> bool {
+  return ctx.get<bool>("-b", false) || ctx.has("--backup");
+}
+
+auto backup_suffix(const CommandContext<CP_OPTIONS.size()>& ctx)
+    -> std::string {
+  auto suffix = ctx.get<std::string>("--suffix", "");
+  if (suffix.empty()) {
+    suffix = ctx.get<std::string>("-S", "");
+  }
+  if (suffix.empty()) {
+    suffix = cp_constants::DEFAULT_BACKUP_SUFFIX;
+  }
+  return suffix;
+}
+
+auto backup_existing_destination(const std::string& destPath,
+                                 const CommandContext<CP_OPTIONS.size()>& ctx)
+    -> cp::Result<bool> {
+  if (!backup_enabled(ctx)) {
+    return true;
+  }
+
+  std::wstring wdest = utf8_to_wstring(destPath);
+  if (GetFileAttributesW(wdest.c_str()) == INVALID_FILE_ATTRIBUTES) {
+    return true;
+  }
+
+  std::wstring backup_path = wdest + utf8_to_wstring(backup_suffix(ctx));
+  if (!MoveFileExW(wdest.c_str(), backup_path.c_str(),
+                   MOVEFILE_REPLACE_EXISTING)) {
+    return std::unexpected("cannot create backup for destination");
+  }
+  return true;
+}
+
+auto copy_self_with_backup(const std::string& path,
+                           const CommandContext<CP_OPTIONS.size()>& ctx)
+    -> cp::Result<bool> {
+  bool force = ctx.get<bool>("--force", false) || ctx.get<bool>("-f", false);
+  if (!force || !backup_enabled(ctx)) {
+    return std::unexpected("source and destination are the same file");
+  }
+
+  std::wstring wpath = utf8_to_wstring(path);
+  std::wstring backup_path = wpath + utf8_to_wstring(backup_suffix(ctx));
+  if (!CopyFileW(wpath.c_str(), backup_path.c_str(), FALSE)) {
+    return std::unexpected("cannot create backup for destination");
+  }
+  return true;
+}
+
 // ----------------------------------------------
 // 6. Copy a single file
 // ----------------------------------------------
 auto copy_file(const std::string& srcPath, const std::string& destPath,
                const CommandContext<CP_OPTIONS.size()>& ctx)
     -> cp::Result<bool> {
-  bool interactive = ctx.get<bool>("--interactive", false);
+  bool interactive =
+      ctx.get<bool>("--interactive", false) || ctx.get<bool>("-i", false);
   bool verbose = ctx.get<bool>("--verbose", false);
   bool no_clobber =
       ctx.get<bool>("--no-clobber", false) || ctx.get<bool>("-n", false);
   bool update = ctx.get<bool>("-u", false) || ctx.get<bool>("--update", false);
+
+  std::error_code equivalent_ec;
+  if (std::filesystem::exists(srcPath) && std::filesystem::exists(destPath) &&
+      std::filesystem::equivalent(srcPath, destPath, equivalent_ec) &&
+      !equivalent_ec) {
+    return copy_self_with_backup(srcPath, ctx);
+  }
 
   if (no_clobber && std::filesystem::exists(destPath)) {
     return true;
@@ -276,26 +410,32 @@ auto copy_file(const std::string& srcPath, const std::string& destPath,
     }
   }
 
+  auto backupResult = backup_existing_destination(destPath, ctx);
+  if (!backupResult) {
+    return backupResult;
+  }
+
   // Check if source file exists and is readable
   std::ifstream src(srcPath, std::ios::binary);
   if (!src) {
     return std::unexpected("cannot open for reading");
   }
 
-  // Create destination directory if it doesn't exist
-  size_t lastSlash = destPath.find_last_of('\\');
-  if (lastSlash != std::string::npos) {
-    std::string destDir = destPath.substr(0, lastSlash);
-    auto createDirResult = create_directory_recursive(destDir);
-    if (!createDirResult) {
-      return createDirResult;
-    }
-  }
-
   // Open destination file
   std::ofstream dest(destPath, std::ios::binary);
   if (!dest) {
-    return std::unexpected("cannot open for writing");
+    bool force = ctx.get<bool>("--force", false) || ctx.get<bool>("-f", false);
+    if (!force) {
+      return std::unexpected("cannot open for writing");
+    }
+
+    std::wstring wdest = utf8_to_wstring(destPath);
+    SetFileAttributesW(wdest.c_str(), FILE_ATTRIBUTE_NORMAL);
+    DeleteFileW(wdest.c_str());
+    dest.open(destPath, std::ios::binary);
+    if (!dest) {
+      return std::unexpected("cannot open for writing");
+    }
   }
 
   // Copy file content
@@ -308,6 +448,11 @@ auto copy_file(const std::string& srcPath, const std::string& destPath,
   dest.flush();
   dest.close();
   src.close();
+
+  if (preserve_metadata_enabled(ctx)) {
+    auto preserveResult = preserve_metadata(srcPath, destPath);
+    if (!preserveResult) return preserveResult;
+  }
 
   if (verbose) {
     // OPTIMIZED: Avoid wstring concatenation
@@ -423,6 +568,12 @@ auto copy_directory_helper(const std::string& srcPath,
   } while (FindNextFileW(hFind, &findData));
 
   FindClose(hFind);
+
+  if (success && preserve_metadata_enabled(ctx)) {
+    auto preserveResult = preserve_metadata(srcPath, destPath);
+    if (!preserveResult) return preserveResult;
+  }
+
   return success;
 }
 
@@ -443,6 +594,7 @@ auto process_source_paths(
   bool recursive = ctx.get<bool>("--recursive", false);
   recursive |= ctx.get<bool>("-r", false);
   recursive |= ctx.get<bool>("-R", false);
+  recursive |= archive_enabled(ctx);
   bool success = true;
 
   for (const auto& srcPath : sourcePaths) {
@@ -526,6 +678,12 @@ auto process_source_paths(
 // ----------------------------------------------
 template <size_t N>
 auto process_command(const CommandContext<N>& ctx) -> cp::Result<bool> {
+  bool no_clobber =
+      ctx.get<bool>("--no-clobber", false) || ctx.get<bool>("-n", false);
+  if (no_clobber && backup_enabled(ctx)) {
+    return std::unexpected("options --backup and --no-clobber are mutually exclusive");
+  }
+
   bool no_target_directory = ctx.get<bool>("-T", false) ||
                              ctx.get<bool>("--no-target-directory", false);
   return validate_arguments(ctx)

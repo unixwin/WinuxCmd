@@ -79,17 +79,7 @@ REGISTER_COMMAND(
   // Get output files from positional arguments
   SmallVector<std::string, 32> output_files;
   for (auto arg : ctx.positionals) {
-    std::string file_arg(arg);
-    if (contains_wildcard(file_arg)) {
-      auto glob_result = glob_expand(file_arg);
-      if (glob_result.expanded) {
-        for (const auto &file : glob_result.files) {
-          output_files.push_back(wstring_to_utf8(file));
-        }
-        continue;
-      }
-    }
-    output_files.push_back(file_arg);
+    output_files.push_back(std::string(arg));
   }
 
   if (output_files.empty()) {

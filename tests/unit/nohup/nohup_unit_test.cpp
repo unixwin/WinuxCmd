@@ -36,7 +36,7 @@ TEST(nohup, nohup_missing_operand) {
   TEST_LOG_EXIT_CODE(r);
   TEST_LOG("nohup stderr", r.stderr_text);
 
-  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ(r.exit_code, 125);
   EXPECT_FALSE(r.stderr_text.empty());
 }
 
@@ -55,5 +55,5 @@ TEST(nohup, nohup_basic) {
   TEST_LOG("nohup stdout", r.stdout_text);
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.find("nohup.out") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("test") != std::string::npos);
 }

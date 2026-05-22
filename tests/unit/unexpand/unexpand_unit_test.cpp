@@ -51,3 +51,72 @@ TEST(unexpand, unexpand_stdin) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_FALSE(r.stdout_text.empty());
 }
+
+TEST(unexpand, unexpand_default_only_converts_leading_blanks) {
+  Pipeline p;
+  p.set_stdin("        x        y\n");
+  p.add(L"unexpand.exe", {});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "\tx        y\n");
+}
+
+TEST(unexpand, unexpand_tabs_option_implies_all) {
+  Pipeline p;
+  p.set_stdin("ab  cd\n");
+  p.add(L"unexpand.exe", {L"-t", L"4"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "ab\tcd\n");
+}
+
+TEST(unexpand, unexpand_first_only_overrides_tabs_all) {
+  Pipeline p;
+  p.set_stdin("    x    y\n");
+  p.add(L"unexpand.exe", {L"-t", L"4", L"--first-only"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "\tx    y\n");
+}
+
+TEST(unexpand, unexpand_tab_list) {
+  Pipeline p;
+  p.set_stdin("a  b\n");
+  p.add(L"unexpand.exe", {L"-t", L"3,5"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "a\tb\n");
+}
+
+TEST(unexpand, unexpand_tab_list_slash_repeat) {
+  Pipeline p;
+  p.set_stdin("a  b    c\n");
+  p.add(L"unexpand.exe", {L"-t", L"3,/4"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "a\tb\tc\n");
+}
+
+TEST(unexpand, unexpand_tabs_option_keeps_glob_literal) {
+  TempDir tmp;
+  tmp.write("4.txt", "ignored\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("a  b\n");
+  p.add(L"unexpand.exe", {L"-t", L"*.txt"});
+
+  auto r = p.run();
+
+  EXPECT_NE(r.exit_code, 0);
+}

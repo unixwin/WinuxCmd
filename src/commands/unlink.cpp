@@ -42,72 +42,65 @@ using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
 auto constexpr UNLINK_OPTIONS =
-    std::array{OPTION("-v", "--verbose", "print a message for each action"),
-               OPTION("", "", "remove single file", STRING_TYPE)};
+    std::array{OPTION("", "", "remove single file", STRING_TYPE)};
 
 REGISTER_COMMAND(unlink,
                  /* name */
                  "unlink",
 
                  /* synopsis */
-                 "unlink [OPTION]... FILE...",
+                 "unlink FILE",
                  "Remove a specified file.\n"
                  "\n"
                  "Unlink the file named FILE. If FILE is a symbolic link, the "
                  "symbolic link\n"
-                 "is removed, not the file it points to.\n"
-                 "\n"
-                 "Options:\n"
-                 "  -v, --verbose  print a message for each action",
-                 "  unlink file.txt\n"
-                 "  unlink -v file.txt",
+                 "is removed, not the file it points to.",
+                 "  unlink file.txt",
 
                  /* see also */
                  "rm(1), link(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd",
                  UNLINK_OPTIONS) {
   namespace cp = core::pipeline;
 
-  bool verbose =
-      ctx.get<bool>("--verbose", false) || ctx.get<bool>("-v", false);
-
   if (ctx.positionals.empty()) {
     safeErrorPrintLn("unlink: missing operand");
     safePrintLn("Try 'unlink --help' for more information.");
     return 1;
   }
+  if (ctx.positionals.size() > 1) {
+    safeErrorPrintLn("unlink: extra operand");
+    safePrintLn("Try 'unlink --help' for more information.");
+    return 1;
+  }
 
-  bool success = true;
-  for (auto file : ctx.positionals) {
-    std::string filename = std::string(file);
-    std::vector<std::string> expanded;
-    if (contains_wildcard(filename)) {
-      auto glob_result = glob_expand(filename);
-      if (glob_result.expanded) {
-        for (const auto& f : glob_result.files) {
-          expanded.push_back(wstring_to_utf8(f));
-        }
-      } else {
-        expanded.push_back(filename);
+  std::string filename = std::string(ctx.positionals[0]);
+  std::vector<std::string> expanded;
+  if (contains_wildcard(filename)) {
+    auto glob_result = glob_expand(filename);
+    if (glob_result.expanded) {
+      for (const auto& f : glob_result.files) {
+        expanded.push_back(wstring_to_utf8(f));
       }
     } else {
       expanded.push_back(filename);
     }
-    for (const auto& exp : expanded) {
-      std::wstring wfilename = utf8_to_wstring(exp);
-
-      if (verbose) {
-        safePrint("unlink: removing '" + exp + "'\n");
-      }
-
-      BOOL result = DeleteFileW(wfilename.c_str());
-      if (!result) {
-        DWORD error = GetLastError();
-        safeErrorPrintLn("unlink: cannot remove '" + exp +
-                         "': " + std::to_string(error));
-        success = false;
-      }
-    }
+  } else {
+    expanded.push_back(filename);
   }
 
-  return success ? 0 : 1;
+  if (expanded.size() != 1) {
+    safeErrorPrintLn("unlink: too many operands");
+    return 1;
+  }
+
+  std::wstring wfilename = utf8_to_wstring(expanded[0]);
+  BOOL result = DeleteFileW(wfilename.c_str());
+  if (!result) {
+    DWORD error = GetLastError();
+    safeErrorPrintLn("unlink: cannot remove '" + expanded[0] +
+                     "': " + std::to_string(error));
+    return 1;
+  }
+
+  return 0;
 }

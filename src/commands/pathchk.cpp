@@ -44,72 +44,109 @@ using cmd::meta::OptionType;
 // Options (constexpr)
 // ======================================================
 
-auto constexpr PATHCHK_OPTIONS =
-    std::array{OPTION("-p", "--portability", "check for all POSIX systems"),
-               OPTION("-P", "", "check for empty names and leading \"-\"")};
+auto constexpr PATHCHK_OPTIONS = std::array{
+    OPTION("-p", "--portability", "check for all POSIX systems"),
+    OPTION("-P", "--posix", "check for empty names and leading \"-\"")};
 
 // ======================================================
 // Helper functions
 // ======================================================
 
 namespace {
+constexpr size_t kPosixPathMax = 256;
+constexpr size_t kPosixNameMax = 14;
+constexpr size_t kWindowsComponentMax = 255;
+
+auto split_components(const std::string& path, bool windows_separators)
+    -> std::vector<std::string> {
+  std::vector<std::string> components;
+  std::string current;
+  for (char c : path) {
+    bool separator = c == '/' || (windows_separators && c == '\\');
+    if (separator) {
+      components.push_back(current);
+      current.clear();
+    } else {
+      current.push_back(c);
+    }
+  }
+  components.push_back(current);
+  return components;
+}
+
+bool has_empty_or_leading_dash_component(const std::string& path) {
+  if (path.empty()) return true;
+
+  auto components = split_components(path, true);
+  for (size_t i = 0; i < components.size(); ++i) {
+    const auto& component = components[i];
+    if (component.empty()) {
+      bool leading_root =
+          i == 0 && !path.empty() && (path[0] == '/' || path[0] == '\\');
+      if (!leading_root) return true;
+      continue;
+    }
+    if (component.front() == '-') return true;
+  }
+  return false;
+}
+
 // Check if path is valid for Windows
-bool is_valid_windows_path(const std::string& path) {
-  if (path.empty()) return false;
+auto windows_path_error(const std::string& path) -> std::optional<std::string> {
+  if (path.empty()) return "empty file name";
 
   // Check for invalid characters
   const std::string invalid_chars = "<>:\"|?*";
   for (char c : path) {
     if (invalid_chars.find(c) != std::string::npos) {
-      return false;
+      return "invalid Windows filename";
     }
   }
 
-  // Check for reserved names
-  std::string basename = path;
-  size_t last_slash = path.find_last_of("/\\");
-  if (last_slash != std::string::npos) {
-    basename = path.substr(last_slash + 1);
-  }
+  const std::array<std::string_view, 22> reserved = {
+      "CON",  "PRN",  "AUX",  "NUL",  "COM1", "COM2", "COM3", "COM4",
+      "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3",
+      "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"};
 
-  // Remove extension
-  size_t last_dot = basename.find_last_of('.');
-  if (last_dot != std::string::npos) {
-    basename = basename.substr(0, last_dot);
-  }
+  for (auto component : split_components(path, true)) {
+    if (component.empty()) continue;
+    if (component.size() > kWindowsComponentMax) return "file name too long";
+    while (!component.empty() &&
+           (component.back() == '.' || component.back() == ' ')) {
+      component.pop_back();
+    }
+    size_t last_dot = component.find('.');
+    if (last_dot != std::string::npos) component.resize(last_dot);
 
-  // Check for reserved names (case-insensitive)
-  std::transform(basename.begin(), basename.end(), basename.begin(), ::toupper);
-  const std::vector<std::string> reserved = {"CON", "PRN", "AUX", "NUL"};
-  for (const auto& res : reserved) {
-    if (basename == res ||
-        (basename.length() == 4 && basename.substr(0, 3) == res &&
-         basename[3] >= '1' && basename[3] <= '9')) {
-      return false;
+    std::transform(
+        component.begin(), component.end(), component.begin(),
+        [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+    for (auto name : reserved) {
+      if (component == name) return "invalid Windows filename";
     }
   }
 
-  return true;
+  return std::nullopt;
 }
 
-// Check for POSIX portability
-bool is_posix_portable(const std::string& path) {
-  if (path.empty()) return false;
+auto posix_portable_error(const std::string& path)
+    -> std::optional<std::string> {
+  if (path.empty()) return "empty file name";
+  if (path.size() >= kPosixPathMax) return "path name too long";
 
-  // POSIX allows only: a-z, A-Z, 0-9, '.', '_', '-'
   for (char c : path) {
-    if (!std::isalnum(c) && c != '.' && c != '_' && c != '-' && c != '/') {
-      return false;
+    unsigned char uc = static_cast<unsigned char>(c);
+    if (!std::isalnum(uc) && c != '.' && c != '_' && c != '-' && c != '/') {
+      return "contains nonportable character";
     }
   }
 
-  // Path should not start with '-'
-  if (path[0] == '-') return false;
+  for (const auto& component : split_components(path, false)) {
+    if (component.empty()) continue;
+    if (component.size() > kPosixNameMax) return "file name too long";
+  }
 
-  // Check length (POSIX limits to 255 bytes)
-  if (path.length() > 255) return false;
-
-  return true;
+  return std::nullopt;
 }
 }  // namespace
 
@@ -135,7 +172,13 @@ REGISTER_COMMAND(
     /* options */ PATHCHK_OPTIONS) {
   bool check_portability =
       ctx.get<bool>("-p", false) || ctx.get<bool>("--portability", false);
-  bool check_leading_dash = ctx.get<bool>("-P", false);
+  bool check_leading_dash = ctx.get<bool>("-P", false) ||
+                            ctx.get<bool>("--posix", false) ||
+                            ctx.get<bool>("--portability", false);
+  if (!check_portability && !check_leading_dash &&
+      std::getenv("POSIXLY_CORRECT") == nullptr) {
+    check_leading_dash = true;
+  }
 
   if (ctx.positionals.empty()) {
     safeErrorPrintLn("pathchk: missing operand");
@@ -146,30 +189,23 @@ REGISTER_COMMAND(
   int exit_code = 0;
 
   for (const auto& path : ctx.positionals) {
-    bool valid = true;
-    std::string error_msg;
     std::string path_str(path);
+    std::optional<std::string> error_msg;
 
-    // Check for leading dash
-    if (check_leading_dash && !path_str.empty() && path_str[0] == '-') {
-      valid = false;
-      error_msg = "leading '-'";
+    if (check_leading_dash && has_empty_or_leading_dash_component(path_str)) {
+      error_msg = "empty file name or leading '-'";
     }
 
-    // Check portability
-    if (valid && check_portability && !is_posix_portable(path_str)) {
-      valid = false;
-      error_msg = "not POSIX portable";
+    if (!error_msg && check_portability) {
+      error_msg = posix_portable_error(path_str);
     }
 
-    // Check Windows validity
-    if (valid && !is_valid_windows_path(path_str)) {
-      valid = false;
-      error_msg = "invalid Windows filename";
+    if (!error_msg) {
+      error_msg = windows_path_error(path_str);
     }
 
-    if (!valid) {
-      safeErrorPrintLn("pathchk: '" + path_str + "' - " + error_msg);
+    if (error_msg) {
+      safeErrorPrintLn("pathchk: '" + path_str + "' - " + *error_msg);
       exit_code = 1;
     }
   }

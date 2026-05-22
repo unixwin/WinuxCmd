@@ -113,7 +113,7 @@ auto run(const Config& cfg) -> int {
     std::string result = get_dirname(name);
     if (cfg.zero) {
       safePrint(result);
-      safePrint("\0");
+      safePrint(char{'\0'});
     } else {
       safePrintLn(result);
     }

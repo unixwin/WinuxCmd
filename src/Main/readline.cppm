@@ -430,11 +430,11 @@ export std::string readInteractiveLine(const std::wstring& prompt,
     if (vk == VK_TAB) {
       if (!completions.empty()) {
         int idx = (selected >= 0) ? selected : 0;
-        buffer  = completions[idx].text;
+        buffer = completions[idx].text;
         const std::string& hint = completions[idx].hint;
         bool is_path_completion =
-            (hint == "Directory" || hint == "File" ||
-             buffer.ends_with("\\") || buffer.ends_with("/"));
+            (hint == "Directory" || hint == "File" || buffer.ends_with("\\") ||
+             buffer.ends_with("/"));
         if (!is_path_completion) {
           buffer += " ";
         }

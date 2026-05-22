@@ -104,6 +104,48 @@ TEST(wc, wc_with_options) {
   EXPECT_EQ_TEXT(r4.stdout_text, "5\n");
 }
 
+TEST(wc, wc_chars_count_utf8_codepoints_not_bytes) {
+  Pipeline chars;
+  chars.set_stdin(std::string("\xC3\xA9\n", 3));
+  chars.add(L"wc.exe", {L"-m"});
+  auto chars_result = chars.run();
+
+  Pipeline bytes;
+  bytes.set_stdin(std::string("\xC3\xA9\n", 3));
+  bytes.add(L"wc.exe", {L"-c"});
+  auto bytes_result = bytes.run();
+
+  EXPECT_EQ(chars_result.exit_code, 0);
+  EXPECT_EQ(bytes_result.exit_code, 0);
+  EXPECT_EQ_TEXT(chars_result.stdout_text, "2\n");
+  EXPECT_EQ_TEXT(bytes_result.stdout_text, "3\n");
+}
+
+TEST(wc, wc_max_line_length_expands_tabs) {
+  Pipeline p;
+  p.set_stdin("a\tb\n");
+  p.add(L"wc.exe", {L"-L"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "9\n");
+}
+
+TEST(wc, wc_debug_reports_counting_path_without_changing_stdout) {
+  Pipeline p;
+  p.set_stdin("alpha\nbeta\n");
+  p.add(L"wc.exe", {L"--debug", L"-l"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "2\n");
+  EXPECT_TRUE(r.stderr_text.find("wc: debug:") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("line count implementation") !=
+              std::string::npos);
+}
+
 TEST(wc, wc_combined_options) {
   Pipeline p;
   p.set_stdin("hello\nworld\n");
@@ -189,4 +231,38 @@ TEST(wc, wc_files0_from_reads_nul_terminated_names) {
   EXPECT_TRUE(r.stdout_text.find("2 a.txt") != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("3 b.txt") != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("5 total") != std::string::npos);
+}
+
+TEST(wc, wc_files0_from_stdin_reads_nul_terminated_names) {
+  TempDir tmp;
+  tmp.write("a.txt", "one\n");
+  tmp.write("b.txt", "two\nthree\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin(std::string("a.txt\0b.txt\0", 12));
+  p.add(L"wc.exe", {L"-l", L"--files0-from", L"-"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("1 a.txt") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("2 b.txt") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("3 total") != std::string::npos);
+}
+
+TEST(wc, wc_files0_from_rejects_named_operands) {
+  TempDir tmp;
+  tmp.write("a.txt", "one\n");
+  tmp.write_bytes("list.bin", {'a', '.', 't', 'x', 't', '\0'});
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"wc.exe", {L"--files0-from", L"list.bin", L"a.txt"});
+
+  auto r = p.run();
+
+  EXPECT_NE(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.find("--files0-from disallows") !=
+              std::string::npos);
 }

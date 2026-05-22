@@ -57,9 +57,14 @@ namespace wc_constants {
  * - @a -c, @a --bytes: Print the byte counts [IMPLEMENTED]
  * - @a -m, @a --chars: Print the character counts [IMPLEMENTED]
  * - @a -l, @a --lines: Print the newline counts [IMPLEMENTED]
- * - @a --files0-from=F: Read input from the files specified by NUL-terminated
- * names in file F [TODO]
- * - @a -L, @a --max-line-length: Print the maximum display width [IMPLEMENTED]
+ * - @a --debug:
+ * Print line-count implementation diagnostics [IMPLEMENTED]
+ * - @a
+ * --files0-from=F: Read input from the files specified by NUL-terminated
+ *
+ * names in file F [IMPLEMENTED]
+ * - @a -L, @a --max-line-length: Print the
+ * maximum display width [IMPLEMENTED]
  * - @a -w, @a --words: Print the word counts [IMPLEMENTED]
  * - @a --total=WHEN: When to print a line with total counts [IMPLEMENTED]
  * - @a --version: Output version information and exit [IMPLEMENTED]
@@ -68,6 +73,7 @@ auto constexpr WC_OPTIONS = std::array{
     OPTION("-c", "--bytes", "print the byte counts"),
     OPTION("-m", "--chars", "print the character counts"),
     OPTION("-l", "--lines", "print the newline counts"),
+    OPTION("", "--debug", "print line-count implementation diagnostics"),
     OPTION(
         "", "--files0-from",
         "read input from the files specified by NUL-terminated names in file F",
@@ -102,6 +108,11 @@ struct CountResult {
 struct CountBatch {
   std::vector<CountResult> results;
   bool any_error = false;
+};
+
+struct DecodedChar {
+  char32_t codepoint = 0;
+  size_t bytes = 1;
 };
 
 // ----------------------------------------------
@@ -163,11 +174,65 @@ auto read_files0_from(const std::string& path)
 // ----------------------------------------------
 // 3. Count file contents
 // ----------------------------------------------
+auto decode_utf8_char(std::string_view text, size_t pos) -> DecodedChar {
+  unsigned char first = static_cast<unsigned char>(text[pos]);
+  if (first < 0x80) return {first, 1};
+
+  auto continuation = [&](size_t index) {
+    return index < text.size() &&
+           (static_cast<unsigned char>(text[index]) & 0xC0) == 0x80;
+  };
+
+  if ((first & 0xE0) == 0xC0 && continuation(pos + 1)) {
+    char32_t cp = ((first & 0x1F) << 6) |
+                  (static_cast<unsigned char>(text[pos + 1]) & 0x3F);
+    if (cp >= 0x80) return {cp, 2};
+  }
+
+  if ((first & 0xF0) == 0xE0 && continuation(pos + 1) &&
+      continuation(pos + 2)) {
+    char32_t cp = ((first & 0x0F) << 12) |
+                  ((static_cast<unsigned char>(text[pos + 1]) & 0x3F) << 6) |
+                  (static_cast<unsigned char>(text[pos + 2]) & 0x3F);
+    if (cp >= 0x800 && !(cp >= 0xD800 && cp <= 0xDFFF)) return {cp, 3};
+  }
+
+  if ((first & 0xF8) == 0xF0 && continuation(pos + 1) &&
+      continuation(pos + 2) && continuation(pos + 3)) {
+    char32_t cp = ((first & 0x07) << 18) |
+                  ((static_cast<unsigned char>(text[pos + 1]) & 0x3F) << 12) |
+                  ((static_cast<unsigned char>(text[pos + 2]) & 0x3F) << 6) |
+                  (static_cast<unsigned char>(text[pos + 3]) & 0x3F);
+    if (cp >= 0x10000 && cp <= 0x10FFFF) return {cp, 4};
+  }
+
+  return {first, 1};
+}
+
+auto is_ascii_space(char32_t cp) -> bool {
+  return cp <= 0x7F && std::isspace(static_cast<unsigned char>(cp)) != 0;
+}
+
+auto is_wide_codepoint(char32_t cp) -> bool {
+  return (cp >= 0x1100 && cp <= 0x115F) || (cp >= 0x2329 && cp <= 0x232A) ||
+         (cp >= 0x2E80 && cp <= 0xA4CF) || (cp >= 0xAC00 && cp <= 0xD7A3) ||
+         (cp >= 0xF900 && cp <= 0xFAFF) || (cp >= 0xFE10 && cp <= 0xFE19) ||
+         (cp >= 0xFE30 && cp <= 0xFE6F) || (cp >= 0xFF00 && cp <= 0xFF60) ||
+         (cp >= 0xFFE0 && cp <= 0xFFE6) || (cp >= 0x1F300 && cp <= 0x1FAFF) ||
+         (cp >= 0x20000 && cp <= 0x3FFFD);
+}
+
+auto display_width(char32_t cp) -> std::uintmax_t {
+  if (cp < 0x20 || (cp >= 0x7F && cp < 0xA0)) return 0;
+  return is_wide_codepoint(cp) ? 2 : 1;
+}
+
 /**
  * @brief Count lines, words, chars, bytes, and max line length in a file
- *
- * This function reads a file and counts the number of lines, words, characters,
- * bytes, and the maximum line length.
+
+ * *
+ * This function reads a file and counts the number of lines, words,
+ * characters, bytes, and the maximum line length.
  *
  * @param path Path to the file to count
  * @return A Result containing the count result
@@ -178,26 +243,34 @@ auto count_stream(std::istream& input, std::string filename,
   result.filename = std::move(filename);
   result.display_filename = display_filename;
 
+  std::string data((std::istreambuf_iterator<char>(input)),
+                   std::istreambuf_iterator<char>());
+  result.bytes = data.size();
+
   std::uintmax_t current_line_length = 0;
   bool in_word = false;
 
-  char c;
-  while (input.get(c)) {
-    result.bytes++;
+  for (size_t i = 0; i < data.size();) {
+    DecodedChar decoded = decode_utf8_char(data, i);
+    i += decoded.bytes;
     result.chars++;
+    char32_t cp = decoded.codepoint;
 
-    if (c == '\n') {
+    if (cp == U'\n') {
       result.lines++;
       if (current_line_length > result.max_line_length) {
         result.max_line_length = current_line_length;
       }
       current_line_length = 0;
       in_word = false;
-    } else if (std::isspace(static_cast<unsigned char>(c))) {
-      current_line_length++;
+    } else if (cp == U'\t') {
+      current_line_length += 8 - (current_line_length % 8);
+      in_word = false;
+    } else if (is_ascii_space(cp)) {
+      current_line_length += display_width(cp);
       in_word = false;
     } else {
-      current_line_length++;
+      current_line_length += display_width(cp);
       if (!in_word) {
         result.words++;
         in_word = true;
@@ -365,6 +438,11 @@ REGISTER_COMMAND(
 
   auto batch = *result;
   auto count_results = batch.results;
+
+  if (ctx.get<bool>("--debug", false)) {
+    safeErrorPrint(
+        "wc: debug: line count implementation: portable byte scan\n");
+  }
 
   // Determine which counts to print
   bool print_lines =

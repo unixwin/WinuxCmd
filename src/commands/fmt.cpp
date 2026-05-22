@@ -66,9 +66,22 @@ struct Config {
   bool uniform_spacing = false;
   int width = 75;
   int goal = 0;  // Will be calculated as 93% of width
+  bool width_set = false;
   std::string prefix;
   SmallVector<std::string, 64> files;
 };
+
+auto parse_positive_int(std::string_view value, std::string_view name)
+    -> cp::Result<int> {
+  int parsed = 0;
+  auto [ptr, ec] =
+      std::from_chars(value.data(), value.data() + value.size(), parsed);
+  if (ec != std::errc() || ptr != value.data() + value.size() || parsed <= 0) {
+    return std::unexpected(std::string("invalid ") + std::string(name) +
+                           " value");
+  }
+  return parsed;
+}
 
 auto build_config(const CommandContext<FMT_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
@@ -93,14 +106,10 @@ auto build_config(const CommandContext<FMT_OPTIONS.size()>& ctx)
     width_opt = ctx.get<std::string>("-w", "");
   }
   if (!width_opt.empty()) {
-    try {
-      cfg.width = std::stoi(width_opt);
-      if (cfg.width < 10) {
-        return std::unexpected("width must be at least 10");
-      }
-    } catch (...) {
-      return std::unexpected("invalid width value");
-    }
+    auto width = parse_positive_int(width_opt, "width");
+    if (!width) return std::unexpected(width.error());
+    cfg.width = *width;
+    cfg.width_set = true;
   }
 
   auto goal_opt = ctx.get<std::string>("--goal", "");
@@ -108,10 +117,11 @@ auto build_config(const CommandContext<FMT_OPTIONS.size()>& ctx)
     goal_opt = ctx.get<std::string>("-g", "");
   }
   if (!goal_opt.empty()) {
-    try {
-      cfg.goal = std::stoi(goal_opt);
-    } catch (...) {
-      return std::unexpected("invalid goal value");
+    auto goal = parse_positive_int(goal_opt, "goal");
+    if (!goal) return std::unexpected(goal.error());
+    cfg.goal = *goal;
+    if (!cfg.width_set) {
+      cfg.width = cfg.goal + 10;
     }
   }
 
@@ -140,11 +150,8 @@ auto read_input(const std::string& filename) -> cp::Result<std::string> {
   std::string content;
 
   if (filename == "-") {
-    // Read from stdin line by line (like cat and fold)
-    std::string line;
-    while (std::getline(std::cin, line)) {
-      content += line + "\n";
-    }
+    content.assign(std::istreambuf_iterator<char>(std::cin),
+                   std::istreambuf_iterator<char>());
   } else {
     // Read from file
     std::ifstream f(filename, std::ios::binary);
@@ -169,84 +176,292 @@ auto read_input(const std::string& filename) -> cp::Result<std::string> {
   return content;
 }
 
+struct Line {
+  std::string text;
+  bool has_newline = false;
+};
+
+auto split_lines(std::string_view content) -> std::vector<Line> {
+  std::vector<Line> lines;
+  size_t start = 0;
+  while (start < content.size()) {
+    size_t end = content.find('\n', start);
+    if (end == std::string_view::npos) {
+      std::string text(content.substr(start));
+      if (!text.empty() && text.back() == '\r') text.pop_back();
+      lines.push_back(Line{std::move(text), false});
+      return lines;
+    }
+
+    std::string text(content.substr(start, end - start));
+    if (!text.empty() && text.back() == '\r') text.pop_back();
+    lines.push_back(Line{std::move(text), true});
+    start = end + 1;
+  }
+
+  if (content.empty()) return lines;
+  return lines;
+}
+
+auto leading_blank_count(std::string_view line) -> size_t {
+  size_t count = 0;
+  while (count < line.size() && (line[count] == ' ' || line[count] == '\t')) {
+    ++count;
+  }
+  return count;
+}
+
+auto is_blank_line(std::string_view line) -> bool {
+  return leading_blank_count(line) == line.size();
+}
+
+auto indentation_of(std::string_view line) -> std::string {
+  return std::string(line.substr(0, leading_blank_count(line)));
+}
+
+auto prefix_match(std::string_view line, std::string_view prefix)
+    -> std::optional<size_t> {
+  size_t blanks = leading_blank_count(line);
+  if (prefix.empty()) return 0;
+  if (line.substr(blanks, prefix.size()) != prefix) return std::nullopt;
+  return blanks + prefix.size();
+}
+
+auto collect_words(std::string_view text, std::vector<std::string>& words) {
+  size_t pos = 0;
+  while (pos < text.size()) {
+    while (pos < text.size() &&
+           (text[pos] == ' ' || text[pos] == '\t' || text[pos] == '\r')) {
+      ++pos;
+    }
+    size_t start = pos;
+    while (pos < text.size() && text[pos] != ' ' && text[pos] != '\t' &&
+           text[pos] != '\r') {
+      ++pos;
+    }
+    if (start < pos) words.emplace_back(text.substr(start, pos - start));
+  }
+}
+
+auto ends_sentence(std::string_view word) -> bool {
+  while (!word.empty()) {
+    char c = word.back();
+    if (c == ')' || c == ']' || c == '}' || c == '"' || c == '\'') {
+      word.remove_suffix(1);
+      continue;
+    }
+    return c == '.' || c == '?' || c == '!';
+  }
+  return false;
+}
+
+auto append_wrapped_words(std::string& out,
+                          const std::vector<std::string>& words,
+                          std::string_view first_indent,
+                          std::string_view rest_indent, const Config& cfg) {
+  if (words.empty()) {
+    out.append(first_indent);
+    out.push_back('\n');
+    return;
+  }
+
+  int preferred_width = cfg.goal > 0 ? cfg.goal : (cfg.width * 93 / 100);
+  preferred_width = std::max(1, std::min(preferred_width, cfg.width));
+
+  std::string line;
+  std::string_view indent = first_indent;
+  bool previous_sentence = false;
+
+  auto available = [&](std::string_view active_indent, int width) -> size_t {
+    size_t indent_width = active_indent.size();
+    return indent_width >= static_cast<size_t>(width)
+               ? 1
+               : static_cast<size_t>(width) - indent_width;
+  };
+
+  for (const auto& word : words) {
+    std::string separator;
+    if (!line.empty()) {
+      separator.assign(cfg.uniform_spacing && previous_sentence ? 2 : 1, ' ');
+    }
+
+    size_t preferred = available(indent, preferred_width);
+    size_t maximum = available(indent, cfg.width);
+    size_t candidate = line.size() + separator.size() + word.size();
+    bool should_break =
+        !line.empty() && candidate > preferred && candidate <= maximum;
+    if (!line.empty() && candidate > maximum) should_break = true;
+
+    if (should_break) {
+      out.append(indent);
+      out.append(line);
+      out.push_back('\n');
+      indent = rest_indent;
+      line.clear();
+      separator.clear();
+    }
+
+    if (!separator.empty()) line += separator;
+    line += word;
+    previous_sentence = cfg.uniform_spacing && ends_sentence(word);
+  }
+
+  if (!line.empty()) {
+    out.append(indent);
+    out.append(line);
+    out.push_back('\n');
+  }
+}
+
+auto format_group(std::span<const Line> group, const Config& cfg,
+                  std::string_view prefix_attachment) -> std::string {
+  std::string out;
+  if (group.empty()) return out;
+
+  std::string first_indent(prefix_attachment);
+  std::string rest_indent(prefix_attachment);
+  bool crown_like = cfg.crown_margin || cfg.tagged_paragraph;
+
+  if (prefix_attachment.empty()) {
+    first_indent = indentation_of(group.front().text);
+    rest_indent = first_indent;
+    if (crown_like && group.size() > 1) {
+      rest_indent = indentation_of(group[1].text);
+    }
+  }
+
+  std::vector<std::string> words;
+  for (size_t i = 0; i < group.size(); ++i) {
+    std::string_view text = group[i].text;
+    if (!prefix_attachment.empty()) {
+      auto stripped = prefix_match(text, cfg.prefix);
+      text.remove_prefix(stripped.value_or(0));
+    } else if (crown_like) {
+      text.remove_prefix(std::min(leading_blank_count(text), text.size()));
+    } else {
+      auto indent_size = first_indent.size();
+      if (text.substr(0, indent_size) == first_indent) {
+        text.remove_prefix(indent_size);
+      } else {
+        text.remove_prefix(std::min(leading_blank_count(text), text.size()));
+      }
+    }
+    collect_words(text, words);
+  }
+
+  append_wrapped_words(out, words, first_indent, rest_indent, cfg);
+  return out;
+}
+
+auto split_only_line(std::string_view line, const Config& cfg,
+                     std::string_view prefix_attachment,
+                     std::optional<size_t> prefix_strip) -> std::string {
+  std::string indent(prefix_attachment);
+  std::string text(line);
+  if (prefix_strip) {
+    text.erase(0, *prefix_strip);
+  } else {
+    indent = indentation_of(text);
+    text.erase(0, indent.size());
+  }
+
+  std::vector<std::string> words;
+  collect_words(text, words);
+  std::string out;
+  append_wrapped_words(out, words, indent, indent, cfg);
+  return out;
+}
+
+auto format_content(const std::string& content, const Config& cfg)
+    -> std::string {
+  auto lines = split_lines(content);
+  std::string out;
+  std::vector<Line> paragraph;
+  std::string paragraph_indent;
+  std::string paragraph_prefix;
+
+  auto flush = [&]() {
+    if (paragraph.empty()) return;
+
+    if (cfg.tagged_paragraph && paragraph.size() > 1 && cfg.prefix.empty() &&
+        indentation_of(paragraph[0].text) ==
+            indentation_of(paragraph[1].text)) {
+      out += format_group(std::span<const Line>(paragraph.data(), 1), cfg, "");
+      out += format_group(
+          std::span<const Line>(paragraph.data() + 1, paragraph.size() - 1),
+          cfg, "");
+    } else {
+      out += format_group(paragraph, cfg, paragraph_prefix);
+    }
+
+    paragraph.clear();
+    paragraph_indent.clear();
+    paragraph_prefix.clear();
+  };
+
+  for (const auto& line : lines) {
+    auto strip_prefix = prefix_match(line.text, cfg.prefix);
+    if (!cfg.prefix.empty() && !strip_prefix) {
+      flush();
+      out += line.text;
+      if (line.has_newline) out.push_back('\n');
+      continue;
+    }
+
+    if (is_blank_line(line.text)) {
+      flush();
+      out += line.text;
+      if (line.has_newline) out.push_back('\n');
+      continue;
+    }
+
+    std::string current_prefix;
+    if (!cfg.prefix.empty()) {
+      current_prefix = line.text.substr(0, *strip_prefix);
+    }
+
+    if (cfg.split_only) {
+      flush();
+      out += split_only_line(line.text, cfg, current_prefix, strip_prefix);
+      continue;
+    }
+
+    std::string current_indent =
+        cfg.prefix.empty() || cfg.crown_margin || cfg.tagged_paragraph
+            ? indentation_of(line.text)
+            : current_prefix;
+
+    bool starts_new_paragraph = !paragraph.empty() && cfg.prefix.empty() &&
+                                !cfg.crown_margin && !cfg.tagged_paragraph &&
+                                current_indent != paragraph_indent;
+    if (starts_new_paragraph) flush();
+
+    if (paragraph.empty()) {
+      paragraph_indent = current_indent;
+      paragraph_prefix = current_prefix;
+    }
+    paragraph.push_back(line);
+  }
+
+  flush();
+  return out;
+}
+
 auto run(const Config& cfg) -> int {
-  int effective_goal = (cfg.goal > 0) ? cfg.goal : (cfg.width * 93 / 100);
+  bool all_ok = true;
 
   for (const auto& file : cfg.files) {
     auto content_result = read_input(file);
     if (!content_result) {
       cp::report_error(content_result, L"fmt");
-      return 1;
+      all_ok = false;
+      continue;
     }
 
-    const std::string& content = *content_result;
-
-    if (cfg.split_only) {
-      // Just split long lines, don't reflow
-      std::string line;
-      for (char c : content) {
-        if (c == '\n') {
-          safePrintLn(line);
-          line.clear();
-        } else if (c != '\r') {
-          if (!line.empty() && static_cast<int>(line.length()) >= cfg.width) {
-            safePrintLn(line);
-            line.clear();
-          }
-          line += c;
-        }
-      }
-      if (!line.empty()) {
-        safePrintLn(line);
-      }
-    } else {
-      // Simple paragraph formatting
-      std::string word;
-      std::string line;
-      int line_len = 0;
-
-      for (char c : content) {
-        if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
-          if (!word.empty()) {
-            if (line.empty()) {
-              line = word;
-              line_len = static_cast<int>(word.length());
-            } else {
-              if (line_len + 1 + static_cast<int>(word.length()) > cfg.width) {
-                safePrintLn(line);
-                line = word;
-                line_len = static_cast<int>(word.length());
-              } else {
-                line += ' ';
-                line += word;
-                line_len += 1 + static_cast<int>(word.length());
-              }
-            }
-            word.clear();
-          }
-        } else {
-          word += c;
-        }
-      }
-
-      // Handle last word
-      if (!word.empty()) {
-        if (line.empty()) {
-          line = word;
-        } else {
-          line += ' ';
-          line += word;
-        }
-      }
-
-      // Output last line
-      if (!line.empty()) {
-        safePrintLn(line);
-      }
-    }
+    safePrint(format_content(*content_result, cfg));
   }
 
-  return 0;
+  return all_ok ? 0 : 1;
 }
 
 }  // namespace fmt_pipeline

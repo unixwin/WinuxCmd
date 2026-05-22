@@ -96,3 +96,57 @@ TEST(uniq, uniq_all_repeated) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "a\na\nc\nc\n");
 }
+
+TEST(uniq, uniq_group_default_keeps_input_operand) {
+  TempDir tmp;
+  tmp.write("a.txt", "a\na\nb\nc\nc\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"uniq.exe", {L"--group", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "a\na\n\nb\n\nc\nc\n");
+}
+
+TEST(uniq, uniq_group_prepend_method) {
+  TempDir tmp;
+  tmp.write("a.txt", "a\na\nb\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"uniq.exe", {L"--group=prepend", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "\na\na\n\nb\n");
+}
+
+TEST(uniq, uniq_all_repeated_append_method) {
+  TempDir tmp;
+  tmp.write("a.txt", "a\na\nb\nc\nc\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"uniq.exe", {L"--all-repeated=append", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "a\na\n\nc\nc\n\n");
+}
+
+TEST(uniq, uniq_group_rejects_invalid_method) {
+  TempDir tmp;
+  tmp.write("a.txt", "a\na\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"uniq.exe", {L"--group=bad", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_NE(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("invalid grouping method") !=
+              std::string::npos);
+}

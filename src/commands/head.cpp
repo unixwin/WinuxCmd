@@ -95,6 +95,12 @@ struct HeadConfig {
   char delimiter = '\n';
 };
 
+auto option_matches(const OptionMeta& meta, std::string_view short_name,
+                    std::string_view long_name) -> bool {
+  return (!short_name.empty() && meta.short_name == short_name) ||
+         (!long_name.empty() && meta.long_name == long_name);
+}
+
 auto parse_uint(std::string_view text) -> std::optional<std::uintmax_t> {
   if (text.empty()) return std::nullopt;
   std::uintmax_t value = 0;
@@ -106,61 +112,53 @@ auto parse_uint(std::string_view text) -> std::optional<std::uintmax_t> {
   return value;
 }
 
-auto suffix_multiplier(std::string_view suffix)
+struct CountSuffix {
+  std::string_view suffix;
+  std::uintmax_t base;
+  unsigned power;
+};
+
+auto checked_pow(std::uintmax_t base, unsigned power)
     -> std::optional<std::uintmax_t> {
-  static constexpr auto kMultipliers =
-      make_constexpr_map<std::string_view, std::uintmax_t>(
-          std::array<std::pair<std::string_view, std::uintmax_t>, 25>{
-              std::pair{std::string_view{"b"}, 512ULL},
-              std::pair{std::string_view{"kB"}, 1000ULL},
-              std::pair{std::string_view{"K"}, 1024ULL},
-              std::pair{std::string_view{"KiB"}, 1024ULL},
-              std::pair{std::string_view{"MB"}, 1000ULL * 1000ULL},
-              std::pair{std::string_view{"M"}, 1024ULL * 1024ULL},
-              std::pair{std::string_view{"MiB"}, 1024ULL * 1024ULL},
-              std::pair{std::string_view{"GB"}, 1000ULL * 1000ULL * 1000ULL},
-              std::pair{std::string_view{"G"}, 1024ULL * 1024ULL * 1024ULL},
-              std::pair{std::string_view{"GiB"}, 1024ULL * 1024ULL * 1024ULL},
-              std::pair{std::string_view{"TB"},
-                        1000ULL * 1000ULL * 1000ULL * 1000ULL},
-              std::pair{std::string_view{"T"},
-                        1024ULL * 1024ULL * 1024ULL * 1024ULL},
-              std::pair{std::string_view{"TiB"},
-                        1024ULL * 1024ULL * 1024ULL * 1024ULL},
-              std::pair{std::string_view{"PB"},
-                        1000ULL * 1000ULL * 1000ULL * 1000ULL * 1000ULL},
-              std::pair{std::string_view{"P"},
-                        1024ULL * 1024ULL * 1024ULL * 1024ULL * 1024ULL},
-              std::pair{std::string_view{"PiB"},
-                        1024ULL * 1024ULL * 1024ULL * 1024ULL * 1024ULL},
-              std::pair{
-                  std::string_view{"EB"},
-                  1000ULL * 1000ULL * 1000ULL * 1000ULL * 1000ULL * 1000ULL},
-              std::pair{std::string_view{"E"}, 1024ULL * 1024ULL * 1024ULL *
-                                                   1024ULL * 1024ULL * 1024ULL},
-              std::pair{
-                  std::string_view{"EiB"},
-                  1024ULL * 1024ULL * 1024ULL * 1024ULL * 1024ULL * 1024ULL},
-              std::pair{std::string_view{"Z"}, 1024ULL * 1024ULL * 1024ULL *
-                                                   1024ULL * 1024ULL * 1024ULL *
-                                                   1024ULL},
-              std::pair{std::string_view{"Y"}, 1024ULL * 1024ULL * 1024ULL *
-                                                   1024ULL * 1024ULL * 1024ULL *
-                                                   1024ULL * 1024ULL},
-              std::pair{std::string_view{"R"}, 0ULL},
-              std::pair{std::string_view{"Q"}, 0ULL},
-              std::pair{std::string_view{"ZB"}, 0ULL},
-              std::pair{std::string_view{"YB"}, 0ULL}});
-
-  if (suffix.empty()) return 1;
-
-  if (auto it = kMultipliers.find(suffix); it != kMultipliers.end()) {
-    auto mult = it->second;
-    if (mult == 0ULL) return std::nullopt;
-    return mult;
+  std::uintmax_t result = 1;
+  for (unsigned i = 0; i < power; ++i) {
+    if (result > std::numeric_limits<std::uintmax_t>::max() / base) {
+      return std::nullopt;
+    }
+    result *= base;
   }
-  if (suffix == "RB" || suffix == "QB") {
-    return std::nullopt;
+  return result;
+}
+
+auto apply_suffix_multiplier(std::uintmax_t value, std::string_view suffix)
+    -> std::optional<std::uintmax_t> {
+  static constexpr std::array suffixes{
+      CountSuffix{"", 1, 0},       CountSuffix{"b", 512, 1},
+      CountSuffix{"K", 1024, 1},   CountSuffix{"KB", 1000, 1},
+      CountSuffix{"KiB", 1024, 1}, CountSuffix{"M", 1024, 2},
+      CountSuffix{"MB", 1000, 2},  CountSuffix{"MiB", 1024, 2},
+      CountSuffix{"G", 1024, 3},   CountSuffix{"GB", 1000, 3},
+      CountSuffix{"GiB", 1024, 3}, CountSuffix{"T", 1024, 4},
+      CountSuffix{"TB", 1000, 4},  CountSuffix{"TiB", 1024, 4},
+      CountSuffix{"P", 1024, 5},   CountSuffix{"PB", 1000, 5},
+      CountSuffix{"PiB", 1024, 5}, CountSuffix{"E", 1024, 6},
+      CountSuffix{"EB", 1000, 6},  CountSuffix{"EiB", 1024, 6},
+      CountSuffix{"Z", 1024, 7},   CountSuffix{"ZB", 1000, 7},
+      CountSuffix{"ZiB", 1024, 7}, CountSuffix{"Y", 1024, 8},
+      CountSuffix{"YB", 1000, 8},  CountSuffix{"YiB", 1024, 8},
+      CountSuffix{"R", 1024, 9},   CountSuffix{"RB", 1000, 9},
+      CountSuffix{"RiB", 1024, 9}, CountSuffix{"Q", 1024, 10},
+      CountSuffix{"QB", 1000, 10}, CountSuffix{"QiB", 1024, 10}};
+
+  for (const auto& entry : suffixes) {
+    if (entry.suffix != suffix) continue;
+    auto multiplier = checked_pow(entry.base, entry.power);
+    if (!multiplier)
+      return value == 0 ? std::optional<std::uintmax_t>{0} : std::nullopt;
+    if (value > std::numeric_limits<std::uintmax_t>::max() / *multiplier) {
+      return std::nullopt;
+    }
+    return value * *multiplier;
   }
 
   return std::nullopt;
@@ -179,15 +177,7 @@ auto parse_numeric_with_suffix(std::string_view text)
   auto parsed = parse_uint(text.substr(0, i));
   if (!parsed.has_value()) return std::nullopt;
 
-  auto mult = suffix_multiplier(text.substr(i));
-  if (!mult.has_value()) return std::nullopt;
-
-  if (*mult != 0 &&
-      *parsed > (std::numeric_limits<std::uintmax_t>::max() / *mult)) {
-    return std::nullopt;
-  }
-
-  return *parsed * *mult;
+  return apply_suffix_multiplier(*parsed, text.substr(i));
 }
 
 auto parse_count_spec(std::string spec_text, std::string_view opt_name)
@@ -309,31 +299,41 @@ auto output_head(std::istream& in, const HeadConfig& config) -> void {
 template <size_t N>
 auto build_config(const CommandContext<N>& ctx) -> cp::Result<HeadConfig> {
   HeadConfig config;
-  config.quiet =
-      ctx.get<bool>("--quiet", false) || ctx.get<bool>("--silent", false);
-  config.verbose = ctx.get<bool>("--verbose", false);
   config.delimiter = ctx.get<bool>("--zero-terminated", false) ? '\0' : '\n';
 
-  const std::string bytes_arg = ctx.get<std::string>("--bytes", "");
-  const std::string bytes_short = ctx.get<std::string>("-c", "");
-  const std::string lines_arg = ctx.get<std::string>("--lines", "");
-  const std::string lines_short = ctx.get<std::string>("-n", "");
+  for (const auto& occurrence : ctx.options.occurrences()) {
+    if (!ctx.metas || occurrence.index >= N) continue;
+    const auto& meta = (*ctx.metas)[occurrence.index];
 
-  std::string bytes_spec = bytes_arg.empty() ? bytes_short : bytes_arg;
-  std::string lines_spec = lines_arg.empty() ? lines_short : lines_arg;
+    if (option_matches(meta, "-q", "--quiet") ||
+        option_matches(meta, "", "--silent")) {
+      config.quiet = true;
+      config.verbose = false;
+      continue;
+    }
+    if (option_matches(meta, "-v", "--verbose")) {
+      config.verbose = true;
+      config.quiet = false;
+      continue;
+    }
 
-  if (!bytes_spec.empty()) {
-    auto spec = parse_count_spec(bytes_spec, "bytes");
-    if (!spec) return std::unexpected(spec.error());
-    config.by_bytes = true;
-    config.spec = *spec;
-    return config;
-  }
+    auto value = std::get_if<std::string>(&occurrence.value);
+    if (!value) continue;
 
-  if (!lines_spec.empty()) {
-    auto spec = parse_count_spec(lines_spec, "lines");
-    if (!spec) return std::unexpected(spec.error());
-    config.spec = *spec;
+    if (option_matches(meta, "-c", "--bytes")) {
+      auto spec = parse_count_spec(*value, "bytes");
+      if (!spec) return std::unexpected(spec.error());
+      config.by_bytes = true;
+      config.spec = *spec;
+      continue;
+    }
+    if (option_matches(meta, "-n", "--lines")) {
+      auto spec = parse_count_spec(*value, "lines");
+      if (!spec) return std::unexpected(spec.error());
+      config.by_bytes = false;
+      config.spec = *spec;
+      continue;
+    }
   }
 
   return config;
@@ -388,13 +388,13 @@ REGISTER_COMMAND(
   for (size_t i = 0; i < files.size(); ++i) {
     const auto& file = files[i];
 
-    bool show_header =
-        (config.verbose || (multi && !config.quiet)) && file != "-";
+    bool show_header = config.verbose || (multi && !config.quiet);
     if (show_header) {
-      if (!first_print) safePrint("\n");
+      if (!first_print) safePrint(std::string(1, config.delimiter));
       safePrint("==> ");
-      safePrint(file);
-      safePrint(" <==\n");
+      safePrint(file == "-" ? "standard input" : file);
+      safePrint(" <==");
+      safePrint(std::string(1, config.delimiter));
     }
 
     if (file == "-") {

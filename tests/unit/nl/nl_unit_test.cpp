@@ -66,3 +66,90 @@ TEST(nl, nl_empty_file) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.empty() || r.stdout_text == "\n");
 }
+
+TEST(nl, nl_number_format_and_negative_increment) {
+  TempDir tmp;
+  tmp.write("test.txt", "line1\nline2\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"nl.exe", {L"-n", L"rz", L"-w", L"3", L"-v", L"-1", L"-i", L"-2",
+                    L"-s", L":", L"test.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(r.stdout_text, "-01:line1\n-03:line2\n");
+}
+
+TEST(nl, nl_numbers_logical_page_sections) {
+  TempDir tmp;
+  tmp.write("test.txt", "\\:\\:\\:\nheader\n\\:\\:\nbody\n\\:\nfooter\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"nl.exe",
+        {L"-h", L"a", L"-f", L"a", L"-w", L"1", L"-s", L":", L"test.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(r.stdout_text, "\n1:header\n\n1:body\n\n1:footer\n");
+}
+
+TEST(nl, nl_no_renumber_keeps_count_across_sections) {
+  TempDir tmp;
+  tmp.write("test.txt", "\\:\\:\\:\nheader\n\\:\\:\nbody\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"nl.exe", {L"-p", L"-h", L"a", L"-w", L"1", L"-s", L":", L"test.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(r.stdout_text, "\n1:header\n\n2:body\n");
+}
+
+TEST(nl, nl_join_blank_lines_numbers_only_group_boundary) {
+  TempDir tmp;
+  tmp.write("test.txt", "line1\n\n\n\nline2\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"nl.exe",
+        {L"-b", L"a", L"-l", L"2", L"-w", L"1", L"-s", L":", L"test.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(r.stdout_text, "1:line1\n:\n2:\n:\n3:line2\n");
+}
+
+TEST(nl, nl_pattern_body_numbering) {
+  TempDir tmp;
+  tmp.write("test.txt", "ERR first\nok\nERR second\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"nl.exe", {L"-b", L"p^ERR", L"-w", L"1", L"-s", L":", L"test.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(r.stdout_text, "1:ERR first\n:ok\n2:ERR second\n");
+}
+
+TEST(nl, nl_empty_number_separator) {
+  TempDir tmp;
+  tmp.write("test.txt", "line\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"nl.exe", {L"-w", L"1", L"-s", L"", L"test.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(r.stdout_text, "1line\n");
+}

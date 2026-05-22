@@ -38,6 +38,7 @@ TEST(nice, nice_no_command) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_FALSE(r.stdout_text.empty());
+  EXPECT_EQ(r.stdout_text.find("Current priority class"), std::string::npos);
 }
 
 TEST(nice, nice_with_adjustment) {
@@ -50,6 +51,19 @@ TEST(nice, nice_with_adjustment) {
 
   TEST_LOG_EXIT_CODE(r);
   TEST_LOG("nice output", r.stdout_text);
+
+  EXPECT_EQ(r.exit_code, 0);
+}
+
+TEST(nice, nice_with_attached_adjustment) {
+  Pipeline p;
+  p.add(L"nice.exe", {L"-n5", L"echo.exe", L"hello"});
+
+  TEST_LOG_CMD_LIST("nice.exe", L"-n5", L"echo.exe", L"hello");
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
 
   EXPECT_EQ(r.exit_code, 0);
 }

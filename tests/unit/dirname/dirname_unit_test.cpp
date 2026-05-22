@@ -69,3 +69,18 @@ TEST(dirname, dirname_no_slash) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, ".\n");
 }
+
+TEST(dirname, dirname_zero_terminates_each_result) {
+  Pipeline p;
+  p.add(L"dirname.exe",
+        {L"-z", L"C:\\Users\\test\\file.txt", L"/home/user/test/file.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  std::string expected("C:\\Users\\test", 13);
+  expected.push_back('\0');
+  expected += "/home/user/test";
+  expected.push_back('\0');
+  EXPECT_EQ(r.stdout_text, expected);
+}

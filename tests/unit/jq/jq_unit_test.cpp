@@ -84,3 +84,18 @@ TEST(jq, jq_compact_output) {
 
   EXPECT_EQ(r.exit_code, 0);
 }
+
+TEST(jq, jq_filter_operand_is_literal_not_glob) {
+  TempDir tmp;
+  tmp.write(".a", "not json\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("{\"abc\":1}\n");
+  p.add(L"jq.exe", {L".[abc]"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_NE(r.stdout_text.find("\"abc\""), std::string::npos);
+}

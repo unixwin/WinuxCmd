@@ -41,8 +41,10 @@ import utils;
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
-auto constexpr TTY_OPTIONS = std::array{OPTION(
-    "-s", "--silent", "print nothing, just return exit status", BOOL_TYPE)};
+auto constexpr TTY_OPTIONS =
+    std::array{OPTION("-s", "--silent",
+                      "print nothing, just return exit status", BOOL_TYPE),
+               OPTION("", "--quiet", "same as --silent", BOOL_TYPE)};
 
 REGISTER_COMMAND(
     tty,
@@ -57,7 +59,7 @@ REGISTER_COMMAND(
     "non-zero status.\n"
     "\n"
     "Options:\n"
-    "  -s, --silent    print nothing, just return exit status",
+    "  -s, --silent, --quiet    print nothing, just return exit status",
     "  tty\n"
     "  tty -s  # silent mode, only check exit status",
 
@@ -65,33 +67,28 @@ REGISTER_COMMAND(
     "isatty(3)", "WinuxCmd", "Copyright © 2026 WinuxCmd", TTY_OPTIONS) {
   namespace cp = core::pipeline;
 
-  bool silent = ctx.get<bool>("--silent", false) || ctx.get<bool>("-s", false);
+  if (!ctx.positionals.empty()) {
+    safeErrorPrintLn("tty: extra operand");
+    safePrintLn("Try 'tty --help' for more information.");
+    return 2;
+  }
 
-  HANDLE hStdOut = GetStdHandle(STD_OUTPUT_HANDLE);
+  bool silent = ctx.get<bool>("--silent", false) ||
+                ctx.get<bool>("--quiet", false) || ctx.get<bool>("-s", false);
   HANDLE hStdIn = GetStdHandle(STD_INPUT_HANDLE);
 
-  // Check if stdout is connected to a console
-  bool is_console = (GetConsoleMode(hStdOut, nullptr) != 0) ||
-                    (GetConsoleMode(hStdIn, nullptr) != 0);
+  DWORD mode = 0;
+  bool is_console = GetConsoleMode(hStdIn, &mode) != 0;
 
   if (silent) {
     return is_console ? 0 : 1;
   }
 
   if (is_console) {
-    wchar_t title[256] = L"";
-    GetConsoleTitleW(title, 256);
-    if (wcslen(title) > 0) {
-      safePrintLn(std::wstring_view(title));
-    } else {
-      safePrintLn(L"con");
-    }
+    safePrintLn("con");
     return 0;
   } else {
     safePrintLn("not a tty");
     return 1;
   }
-
-  safePrint("\n");
-  return 0;
 }

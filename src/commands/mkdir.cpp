@@ -53,20 +53,21 @@ using namespace core::pipeline;
  *
  * @par Options:
  *
- * - @a -m, @a --mode: Set file mode (as in chmod), not a=rwx - umask [TODO]
+ * - @a -m, @a --mode: Set file mode (as in chmod), not a=rwx - umask
+ * [IMPLEMENTED]
  * - @a -p, @a --parents: No error if existing, make parent directories as
  * needed [IMPLEMENTED]
  * - @a -v, @a --verbose: Print a message for each created directory
  * [IMPLEMENTED]
- * - @a -Z: Set SELinux security context of each created directory to the
- * default type [TODO]
+ * - @a -Z, @a --context: Accept SELinux security context option as a
+ * Windows-compatible no-op [IMPLEMENTED]
  */
 // clang-format off
 auto constexpr MKDIR_OPTIONS =
-    std::array{OPTION("-m", "--mode", "set file mode (as in chmod), not a=rwx - umask"),
+    std::array{OPTION("-m", "--mode", "set file mode (as in chmod), not a=rwx - umask", STRING_TYPE),
                OPTION("-p", "--parents", "no error if existing, make parent directories as needed"),
                OPTION("-v", "--verbose", "print a message for each created directory"),
-               OPTION("-Z", "", "set SELinux security context of each created directory to the default type")};
+               OPTION("-Z", "--context", "set SELinux security context of each created directory", OPTIONAL_STRING_TYPE)};
 // clang-format on
 
 // ======================================================
@@ -74,6 +75,12 @@ auto constexpr MKDIR_OPTIONS =
 // ======================================================
 namespace mkdir_pipeline {
 namespace cp = core::pipeline;
+
+struct Config {
+  bool parents = false;
+  bool verbose = false;
+  std::optional<std::string> mode;
+};
 
 /**
  * @brief Check if paths are provided
@@ -98,15 +105,79 @@ auto create_directory_recursive(const std::wstring& wpath) -> bool {
   return path::create_directories(utf8_path);
 }
 
-auto create_directory(const std::string& path,
-                      const CommandContext<MKDIR_OPTIONS.size()>& ctx) -> bool {
-  std::wstring wpath = utf8_to_wstring(path);
-  bool parents =
-      ctx.get<bool>("--parents", false) || ctx.get<bool>("-p", false);
-  bool verbose =
-      ctx.get<bool>("--verbose", false) || ctx.get<bool>("-v", false);
+auto mode_allows_write(std::string_view mode) -> cp::Result<bool> {
+  if (mode.empty()) return std::unexpected("invalid mode");
 
-  if (parents) {
+  bool numeric = true;
+  for (char ch : mode) {
+    if (ch < '0' || ch > '7') {
+      numeric = false;
+      break;
+    }
+  }
+  if (numeric) {
+    int value = 0;
+    auto [ptr, ec] =
+        std::from_chars(mode.data(), mode.data() + mode.size(), value, 8);
+    if (ec != std::errc() || ptr != mode.data() + mode.size()) {
+      return std::unexpected("invalid mode");
+    }
+    return (value & 0222) != 0;
+  }
+
+  if (mode.find('=') != std::string_view::npos) {
+    size_t op = mode.find('=');
+    return mode.substr(op + 1).find('w') != std::string_view::npos;
+  }
+  if (mode.find("+w") != std::string_view::npos) return true;
+  if (mode.find("-w") != std::string_view::npos) return false;
+  return std::unexpected("unsupported mode");
+}
+
+auto apply_directory_mode(const std::string& path, std::string_view mode)
+    -> cp::Result<void> {
+  auto writable = mode_allows_write(mode);
+  if (!writable) return std::unexpected(writable.error());
+
+  std::wstring wpath = utf8_to_wstring(path);
+  DWORD attrs = GetFileAttributesW(wpath.c_str());
+  if (attrs == INVALID_FILE_ATTRIBUTES) {
+    return std::unexpected("cannot read directory attributes");
+  }
+
+  if (*writable) {
+    attrs &= ~FILE_ATTRIBUTE_READONLY;
+  } else {
+    attrs |= FILE_ATTRIBUTE_READONLY;
+  }
+  if (!SetFileAttributesW(wpath.c_str(), attrs)) {
+    return std::unexpected("cannot set directory mode");
+  }
+  return {};
+}
+
+auto build_config(const CommandContext<MKDIR_OPTIONS.size()>& ctx)
+    -> cp::Result<Config> {
+  Config cfg;
+  cfg.parents = ctx.get<bool>("--parents", false) || ctx.get<bool>("-p", false);
+  cfg.verbose = ctx.get<bool>("--verbose", false) || ctx.get<bool>("-v", false);
+  if (ctx.has("--mode") || ctx.has("-m")) {
+    std::string mode = ctx.get<std::string>("--mode", "");
+    if (mode.empty()) mode = ctx.get<std::string>("-m", "");
+    if (mode.empty()) return std::unexpected("invalid mode");
+    auto writable = mode_allows_write(mode);
+    if (!writable) return std::unexpected(writable.error());
+    cfg.mode = mode;
+  }
+  return cfg;
+}
+
+auto create_directory(const std::string& path, const Config& config) -> bool {
+  std::wstring wpath = utf8_to_wstring(path);
+  bool existed_before =
+      std::filesystem::is_directory(std::filesystem::path(path));
+
+  if (config.parents) {
     if (!create_directory_recursive(wpath)) {
       // OPTIMIZED: Use string literals instead of wstring concatenation
       safeErrorPrint("mkdir: cannot create directory '");
@@ -114,7 +185,18 @@ auto create_directory(const std::string& path,
       safeErrorPrint("': No such file or directory\n");
       return false;
     }
-    if (verbose) {
+    if (config.mode && !existed_before) {
+      auto mode_result = apply_directory_mode(path, *config.mode);
+      if (!mode_result) {
+        safeErrorPrint("mkdir: ");
+        safeErrorPrint(mode_result.error());
+        safeErrorPrint(": '");
+        safeErrorPrint(path);
+        safeErrorPrint("'\n");
+        return false;
+      }
+    }
+    if (config.verbose) {
       safePrint("mkdir: created directory '");
       safePrint(path);
       safePrint("'\n");
@@ -134,7 +216,18 @@ auto create_directory(const std::string& path,
         return false;
       }
     }
-    if (verbose) {
+    if (config.mode) {
+      auto mode_result = apply_directory_mode(path, *config.mode);
+      if (!mode_result) {
+        safeErrorPrint("mkdir: ");
+        safeErrorPrint(mode_result.error());
+        safeErrorPrint(": '");
+        safeErrorPrint(path);
+        safeErrorPrint("'\n");
+        return false;
+      }
+    }
+    if (config.verbose) {
       safePrint("mkdir: created directory '");
       safePrint(path);
       safePrint("'\n");
@@ -149,12 +242,11 @@ auto create_directory(const std::string& path,
  * @param ctx Command context with options
  * @return Result with success status
  */
-auto process_paths(const std::vector<std::string>& paths,
-                   const CommandContext<MKDIR_OPTIONS.size()>& ctx)
+auto process_paths(const std::vector<std::string>& paths, const Config& config)
     -> cp::Result<bool> {
   bool success = true;
   for (const auto& path : paths) {
-    if (!create_directory(path, ctx)) {
+    if (!create_directory(path, config)) {
       success = false;
     }
   }
@@ -168,6 +260,9 @@ auto process_paths(const std::vector<std::string>& paths,
  */
 auto process_command(const CommandContext<MKDIR_OPTIONS.size()>& ctx)
     -> cp::Result<bool> {
+  auto config = build_config(ctx);
+  if (!config) return std::unexpected(config.error());
+
   std::vector<std::string> paths;
   for (auto arg : ctx.positionals) {
     paths.push_back(std::string(arg));
@@ -175,7 +270,7 @@ auto process_command(const CommandContext<MKDIR_OPTIONS.size()>& ctx)
 
   return check_paths(paths).and_then(
       [&](const std::vector<std::string>& valid_paths) {
-        return process_paths(valid_paths, ctx);
+        return process_paths(valid_paths, *config);
       });
 }
 }  // namespace mkdir_pipeline

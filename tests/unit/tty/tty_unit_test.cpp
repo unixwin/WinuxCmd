@@ -56,3 +56,33 @@ TEST(tty, tty_silent) {
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_TRUE(r.stdout_text.empty());
 }
+
+TEST(tty, tty_quiet_alias) {
+  Pipeline p;
+  p.add(L"tty.exe", {L"--quiet"});
+
+  TEST_LOG_CMD_LIST("tty.exe", L"--quiet");
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("tty output", r.stdout_text);
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+}
+
+TEST(tty, tty_rejects_operand) {
+  Pipeline p;
+  p.add(L"tty.exe", {L"extra"});
+
+  TEST_LOG_CMD_LIST("tty.exe", L"extra");
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("tty stderr", r.stderr_text);
+
+  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_FALSE(r.stderr_text.empty());
+}

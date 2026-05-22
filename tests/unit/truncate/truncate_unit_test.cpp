@@ -68,3 +68,94 @@ TEST(truncate, truncate_empty) {
   std::string content = tmp.read("test.txt");
   EXPECT_TRUE(content.empty());
 }
+
+TEST(truncate, truncate_no_create_skips_missing_file) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"truncate.exe", {L"-c", L"-s", L"100", L"missing.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "missing.txt"));
+}
+
+TEST(truncate, truncate_relative_extend) {
+  TempDir tmp;
+  tmp.write("test.txt", "abc");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"truncate.exe", {L"-s", L"+2", L"test.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(std::filesystem::file_size(tmp.path / "test.txt"), 5);
+  EXPECT_EQ(tmp.read("test.txt").substr(0, 3), "abc");
+}
+
+TEST(truncate, truncate_round_up) {
+  TempDir tmp;
+  tmp.write("test.txt", "abcde");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"truncate.exe", {L"-s", L"%4", L"test.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(std::filesystem::file_size(tmp.path / "test.txt"), 8);
+}
+
+TEST(truncate, truncate_size_overrides_reference) {
+  TempDir tmp;
+  tmp.write("reference.txt", "1234567890");
+  tmp.write("test.txt", "abc");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"truncate.exe",
+        {L"--reference", L"reference.txt", L"--size", L"4", L"test.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(std::filesystem::file_size(tmp.path / "test.txt"), 4);
+}
+
+TEST(truncate, truncate_reference_operand_is_literal_not_globbed) {
+  TempDir tmp;
+  tmp.write("ref-a.txt", "12345");
+  tmp.write("test.txt", "abc");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"truncate.exe", {L"--reference", L"ref-*.txt", L"test.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ(std::filesystem::file_size(tmp.path / "test.txt"), 3);
+}
+
+TEST(truncate, truncate_file_operand_glob_expands) {
+  TempDir tmp;
+  tmp.write("a.txt", "abc");
+  tmp.write("b.txt", "defg");
+  tmp.write("c.log", "hello");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"truncate.exe", {L"-s", L"1", L"*.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(std::filesystem::file_size(tmp.path / "a.txt"), 1);
+  EXPECT_EQ(std::filesystem::file_size(tmp.path / "b.txt"), 1);
+  EXPECT_EQ(std::filesystem::file_size(tmp.path / "c.log"), 5);
+}

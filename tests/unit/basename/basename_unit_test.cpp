@@ -69,3 +69,24 @@ TEST(basename, basename_with_suffix) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "file\n");
 }
+
+TEST(basename, basename_multiple_with_suffix_option) {
+  Pipeline p;
+  p.add(L"basename.exe",
+        {L"--suffix=.h", L"include\\stdio.h", L"include\\stdlib.h"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "stdio\nstdlib\n");
+}
+
+TEST(basename, basename_zero_terminates_each_result) {
+  Pipeline p;
+  p.add(L"basename.exe", {L"-z", L"-a", L"C:\\tmp\\one", L"/tmp/two"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(r.stdout_text, std::string("one\0two\0", 8));
+}

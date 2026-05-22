@@ -53,8 +53,11 @@ using cmd::meta::OptionType;
  *
  * - @a -c, @a --count: Prefix lines by the number of occurrences [IMPLEMENTED]
  * - @a -d, @a --repeated: Only print duplicate lines [IMPLEMENTED]
- * - @a -D, @a --all-repeated: Print all duplicate lines [IMPLEMENTED]
- * - @a -f, @a --skip-fields: Avoid comparing the first N fields [IMPLEMENTED]
+ * - @a -D, @a --all-repeated[=METHOD]: Print all duplicate lines
+ *
+ * [IMPLEMENTED]
+ * - @a -f, @a --skip-fields: Avoid comparing the first N
+ * fields [IMPLEMENTED]
  * - @a -i, @a --ignore-case: Ignore differences in case [IMPLEMENTED]
  * - @a -s, @a --skip-chars: Avoid comparing the first N characters
  * [IMPLEMENTED]
@@ -62,12 +65,13 @@ using cmd::meta::OptionType;
  * - @a -w, @a --check-chars: Compare no more than N characters [IMPLEMENTED]
  * - @a -z, @a --zero-terminated: Line delimiter is NUL, not newline
  * [IMPLEMENTED]
- * - @a --group: Show all items, separating groups [NOT SUPPORT]
+ * - @a --group[=METHOD]: Show all items, separating groups [IMPLEMENTED]
  */
 auto constexpr UNIQ_OPTIONS = std::array{
     OPTION("-c", "--count", "prefix lines by the number of occurrences"),
     OPTION("-d", "--repeated", "only print duplicate lines"),
-    OPTION("-D", "--all-repeated", "print all duplicate lines"),
+    OPTION("-D", "--all-repeated", "print all duplicate lines",
+           OPTIONAL_STRING_TYPE),
     OPTION("-f", "--skip-fields", "avoid comparing the first N fields",
            INT_TYPE),
     OPTION("-i", "--ignore-case", "ignore differences in case"),
@@ -77,10 +81,13 @@ auto constexpr UNIQ_OPTIONS = std::array{
     OPTION("-w", "--check-chars", "compare no more than N characters",
            INT_TYPE),
     OPTION("-z", "--zero-terminated", "line delimiter is NUL, not newline"),
-    OPTION("", "--group", "show all items, separating groups [NOT SUPPORT]")};
+    OPTION("", "--group", "show all items, separating groups",
+           OPTIONAL_STRING_TYPE)};
 
 namespace uniq_pipeline {
 namespace cp = core::pipeline;
+
+enum class GroupMode { none, separate, prepend, append, both };
 
 struct Config {
   bool show_count = false;
@@ -88,6 +95,8 @@ struct Config {
   bool all_repeated = false;
   bool unique_only = false;
   bool ignore_case = false;
+  bool group_all = false;
+  GroupMode group_mode = GroupMode::none;
   int skip_fields = 0;
   int skip_chars = 0;
   int check_chars = -1;
@@ -167,8 +176,19 @@ auto comparison_key(std::string_view line, const Config& cfg) -> std::string {
 
 auto is_unsupported_used(const CommandContext<UNIQ_OPTIONS.size()>& ctx)
     -> std::optional<std::string_view> {
-  if (ctx.get<bool>("--group", false)) return "--group is [NOT SUPPORT]";
   return std::nullopt;
+}
+
+auto parse_group_mode(std::string_view method, GroupMode default_mode,
+                      bool allow_none = false) -> cp::Result<GroupMode> {
+  if (method.empty()) return default_mode;
+  if (allow_none && method == "none") return GroupMode::none;
+  if (method == "separate") return GroupMode::separate;
+  if (method == "prepend") return GroupMode::prepend;
+  if (method == "append") return GroupMode::append;
+  if (method == "both") return GroupMode::both;
+  return std::unexpected("invalid grouping method '" + std::string(method) +
+                         "'");
 }
 
 auto build_config(const CommandContext<UNIQ_OPTIONS.size()>& ctx)
@@ -179,8 +199,7 @@ auto build_config(const CommandContext<UNIQ_OPTIONS.size()>& ctx)
       ctx.get<bool>("--count", false) || ctx.get<bool>("-c", false);
   cfg.repeated_only =
       ctx.get<bool>("--repeated", false) || ctx.get<bool>("-d", false);
-  cfg.all_repeated =
-      ctx.get<bool>("--all-repeated", false) || ctx.get<bool>("-D", false);
+  cfg.all_repeated = ctx.has("--all-repeated") || ctx.has("-D");
   cfg.unique_only =
       ctx.get<bool>("--unique", false) || ctx.get<bool>("-u", false);
   cfg.ignore_case =
@@ -204,6 +223,19 @@ auto build_config(const CommandContext<UNIQ_OPTIONS.size()>& ctx)
     return std::unexpected("negative counts are not allowed");
   }
 
+  if (ctx.has("--group")) {
+    auto group_mode = parse_group_mode(ctx.get<std::string>("--group", ""),
+                                       GroupMode::separate);
+    if (!group_mode) return std::unexpected(group_mode.error());
+    cfg.group_all = true;
+    cfg.group_mode = *group_mode;
+  } else if (ctx.has("--all-repeated")) {
+    auto group_mode = parse_group_mode(
+        ctx.get<std::string>("--all-repeated", ""), GroupMode::none, true);
+    if (!group_mode) return std::unexpected(group_mode.error());
+    cfg.group_mode = *group_mode;
+  }
+
   if (ctx.positionals.size() > 2) {
     return std::unexpected("extra operand '" + std::string(ctx.positionals[2]) +
                            "'");
@@ -215,6 +247,7 @@ auto build_config(const CommandContext<UNIQ_OPTIONS.size()>& ctx)
 }
 
 auto should_emit(size_t count, const Config& cfg) -> bool {
+  if (cfg.group_all) return true;
   if (!cfg.repeated_only && !cfg.unique_only && !cfg.all_repeated) return true;
   if (cfg.repeated_only && count > 1) return true;
   if (cfg.all_repeated && count > 1) return true;
@@ -228,6 +261,10 @@ auto emit_one(std::ostream& out, std::string_view line, size_t count,
     out << std::setw(7) << count << " ";
   }
   out << line;
+  out << cfg.delimiter;
+}
+
+auto emit_group_separator(std::ostream& out, const Config& cfg) -> void {
   out << cfg.delimiter;
 }
 
@@ -262,12 +299,26 @@ auto run(const Config& cfg) -> int {
 
     const size_t count = j - i;
     if (should_emit(count, cfg)) {
-      if (cfg.all_repeated && count > 1) {
+      if (cfg.group_mode == GroupMode::separate && i != 0) {
+        emit_group_separator(*out, cfg);
+      }
+      if (cfg.group_mode == GroupMode::prepend ||
+          cfg.group_mode == GroupMode::both) {
+        emit_group_separator(*out, cfg);
+      }
+
+      if ((cfg.all_repeated || cfg.group_mode != GroupMode::none) &&
+          count > 1) {
         for (size_t k = i; k < j; ++k) {
           emit_one(*out, records[k], count, cfg, true);
         }
       } else {
         emit_one(*out, records[i], count, cfg);
+      }
+
+      if (cfg.group_mode == GroupMode::append ||
+          cfg.group_mode == GroupMode::both) {
+        emit_group_separator(*out, cfg);
       }
     }
     i = j;

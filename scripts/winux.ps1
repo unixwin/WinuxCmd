@@ -16,171 +16,171 @@ $ScriptDir = $PSScriptRoot
 # Note: echo, cp, where are excluded because they have AllScope option and cannot be removed
 $ConflictedAliases = @(
     "cat", "clear", "diff", "group", "kill", "ls", 
-    "mv", "ps", "pwd", "rm", "rmdir", "sleep", "sort", "tee", "type"
+    "mv", "ps", "pwd", "rm", "rmdir", "sleep", "sort", "tee", "type", "man"
 )
 
 # Aliases with AllScope that cannot be removed - users must use .exe extension
 $AllScopeAliases = @("echo", "cp", "where")
 
 $CommandMap = @{
-    "ls"     = "ls.exe"
-    "cat"    = "cat.exe"
-    "cp"     = "cp.exe"
-    "mv"     = "mv.exe"
-    "rm"     = "rm.exe"
-    "mkdir"  = "mkdir.exe"
-    "rmdir"  = "rmdir.exe"
-    "touch"  = "touch.exe"
-    "echo"   = "echo.exe"
-    "head"   = "head.exe"
-    "tail"   = "tail.exe"
-    "find"   = "find.exe"
-    "grep"   = "grep.exe"
-    "sort"   = "sort.exe"
-    "uniq"   = "uniq.exe"
-    "cut"    = "cut.exe"
-    "wc"     = "wc.exe"
-    "which"  = "which.exe"
-    "env"    = "env.exe"
-    "sed"    = "sed.exe"
-    "chmod"  = "chmod.exe"
-    "date"   = "date.exe"
-    "diff"   = "diff.exe"
-    "ln"     = "ln.exe"
-    "ps"     = "ps.exe"
-    "pwd"    = "pwd.exe"
-    "tee"    = "tee.exe"
-    "xargs"  = "xargs.exe"
-    "file"   = "file.exe"
-    "realpath" = "realpath.exe"
-    "df"     = "df.exe"
-    "du"     = "du.exe"
-    "kill"   = "kill.exe"
-    "tree"   = "tree.exe"
-    "lsof"   = "lsof.exe"
+    "ls"        = "ls.exe"
+    "cat"       = "cat.exe"
+    "cp"        = "cp.exe"
+    "mv"        = "mv.exe"
+    "rm"        = "rm.exe"
+    "mkdir"     = "mkdir.exe"
+    "rmdir"     = "rmdir.exe"
+    "touch"     = "touch.exe"
+    "echo"      = "echo.exe"
+    "head"      = "head.exe"
+    "tail"      = "tail.exe"
+    "find"      = "find.exe"
+    "grep"      = "grep.exe"
+    "sort"      = "sort.exe"
+    "uniq"      = "uniq.exe"
+    "cut"       = "cut.exe"
+    "wc"        = "wc.exe"
+    "which"     = "which.exe"
+    "env"       = "env.exe"
+    "sed"       = "sed.exe"
+    "chmod"     = "chmod.exe"
+    "date"      = "date.exe"
+    "diff"      = "diff.exe"
+    "ln"        = "ln.exe"
+    "ps"        = "ps.exe"
+    "pwd"       = "pwd.exe"
+    "tee"       = "tee.exe"
+    "xargs"     = "xargs.exe"
+    "file"      = "file.exe"
+    "realpath"  = "realpath.exe"
+    "df"        = "df.exe"
+    "du"        = "du.exe"
+    "kill"      = "kill.exe"
+    "tree"      = "tree.exe"
+    "lsof"      = "lsof.exe"
     # New commands added in v0.5.3
-    "base64" = "base64.exe"
-    "tr"     = "tr.exe"
-    "less"   = "less.exe"
-    "watch"  = "watch.exe"
-    "jq"     = "jq.exe"
-    "md5sum" = "md5sum.exe"
+    "base64"    = "base64.exe"
+    "tr"        = "tr.exe"
+    "less"      = "less.exe"
+    "watch"     = "watch.exe"
+    "jq"        = "jq.exe"
+    "md5sum"    = "md5sum.exe"
     "sha256sum" = "sha256sum.exe"
-    "basename" = "basename.exe"
-    "dirname" = "dirname.exe"
-    "free"   = "free.exe"
-    "column" = "column.exe"
-    "seq"    = "seq.exe"
-    "stat"   = "stat.exe"
+    "basename"  = "basename.exe"
+    "dirname"   = "dirname.exe"
+    "free"      = "free.exe"
+    "column"    = "column.exe"
+    "seq"       = "seq.exe"
+    "stat"      = "stat.exe"
     # New commands added in v0.7.0 - Hash tools
-    "sha1sum" = "sha1sum.exe"
+    "sha1sum"   = "sha1sum.exe"
     "sha224sum" = "sha224sum.exe"
     "sha384sum" = "sha384sum.exe"
     "sha512sum" = "sha512sum.exe"
-    "b2sum" = "b2sum.exe"
+    "b2sum"     = "b2sum.exe"
     # New commands added in v0.7.0 - Text processing
-    "paste" = "paste.exe"
-    "join" = "join.exe"
-    "comm" = "comm.exe"
-    "split" = "split.exe"
-    "csplit" = "csplit.exe"
-    "cmp" = "cmp.exe"
-    "nl" = "nl.exe"
-    "fold" = "fold.exe"
-    "fmt" = "fmt.exe"
+    "paste"     = "paste.exe"
+    "join"      = "join.exe"
+    "comm"      = "comm.exe"
+    "split"     = "split.exe"
+    "csplit"    = "csplit.exe"
+    "cmp"       = "cmp.exe"
+    "nl"        = "nl.exe"
+    "fold"      = "fold.exe"
+    "fmt"       = "fmt.exe"
     # New commands added in v0.7.0 - Text conversion
-    "expand" = "expand.exe"
-    "unexpand" = "unexpand.exe"
-    "tac" = "tac.exe"
+    "expand"    = "expand.exe"
+    "unexpand"  = "unexpand.exe"
+    "tac"       = "tac.exe"
     # New commands added in v0.7.0 - System information
-    "hostname" = "hostname.exe"
-    "whoami" = "whoami.exe"
-    "arch" = "arch.exe"
-    "uname" = "uname.exe"
-    "id" = "id.exe"
-    "who" = "who.exe"
-    "users" = "users.exe"
-    "groups" = "groups.exe"
+    "hostname"  = "hostname.exe"
+    "whoami"    = "whoami.exe"
+    "arch"      = "arch.exe"
+    "uname"     = "uname.exe"
+    "id"        = "id.exe"
+    "who"       = "who.exe"
+    "users"     = "users.exe"
+    "groups"    = "groups.exe"
     # New commands added in v0.7.0 - File operations
-    "truncate" = "truncate.exe"
-    "mktemp" = "mktemp.exe"
-    "install" = "install.exe"
-    "readlink" = "readlink.exe"
-    "cksum" = "cksum.exe"
-    "sum" = "sum.exe"
+    "truncate"  = "truncate.exe"
+    "mktemp"    = "mktemp.exe"
+    "install"   = "install.exe"
+    "readlink"  = "readlink.exe"
+    "cksum"     = "cksum.exe"
+    "sum"       = "sum.exe"
     # New commands added in v0.7.0 - Other tools
-    "sleep" = "sleep.exe"
-    "timeout" = "timeout.exe"
-    "uptime" = "uptime.exe"
-    "shuf" = "shuf.exe"
-    "pr" = "pr.exe"
-    "yes" = "yes.exe"
-    "ptx" = "ptx.exe"
+    "sleep"     = "sleep.exe"
+    "timeout"   = "timeout.exe"
+    "uptime"    = "uptime.exe"
+    "shuf"      = "shuf.exe"
+    "pr"        = "pr.exe"
+    "yes"       = "yes.exe"
+    "ptx"       = "ptx.exe"
     # New commands added in v0.7.0 - Basic utilities
-    "clear" = "clear.exe"
-    "true" = "true.exe"
-    "false" = "false.exe"
-    "tty" = "tty.exe"
-    "sync" = "sync.exe"
-    "reset" = "reset.exe"
-    "logname" = "logname.exe"
-    "printenv" = "printenv.exe"
+    "clear"     = "clear.exe"
+    "true"      = "true.exe"
+    "false"     = "false.exe"
+    "tty"       = "tty.exe"
+    "sync"      = "sync.exe"
+    "reset"     = "reset.exe"
+    "logname"   = "logname.exe"
+    "printenv"  = "printenv.exe"
     # New commands added in v0.7.0 - Text processing
-    "rev" = "rev.exe"
-    "d2u" = "d2u.exe"
-    "u2d" = "u2d.exe"
-    "dos2unix" = "dos2unix.exe"
-    "unix2dos" = "unix2dos.exe"
-    "base32" = "base32.exe"
-    "basenc" = "basenc.exe"
-    "cygpath" = "cygpath.exe"
-    "pathchk" = "pathchk.exe"
+    "rev"       = "rev.exe"
+    "d2u"       = "d2u.exe"
+    "u2d"       = "u2d.exe"
+    "dos2unix"  = "dos2unix.exe"
+    "unix2dos"  = "unix2dos.exe"
+    "base32"    = "base32.exe"
+    "basenc"    = "basenc.exe"
+    "cygpath"   = "cygpath.exe"
+    "pathchk"   = "pathchk.exe"
     # New commands added in v0.7.0 - Programming tools
-    "printf" = "printf.exe"
-    "expr" = "expr.exe"
-    "test" = "test.exe"
-    "[" = "[.exe"
+    "printf"    = "printf.exe"
+    "expr"      = "expr.exe"
+    "test"      = "test.exe"
+    "["         = "[.exe"
     # New commands added in v0.7.0 - Binary tools
-    "od" = "od.exe"
-    "xxd" = "xxd.exe"
-    "dd" = "dd.exe"
-    "shred" = "shred.exe"
+    "od"        = "od.exe"
+    "xxd"       = "xxd.exe"
+    "dd"        = "dd.exe"
+    "shred"     = "shred.exe"
     # New commands added in v0.7.0 - System utilities
-    "numfmt" = "numfmt.exe"
-    "hmac256" = "hmac256.exe"
-    "nice" = "nice.exe"
-    "nohup" = "nohup.exe"
-    "stdbuf" = "stdbuf.exe"
+    "numfmt"    = "numfmt.exe"
+    "hmac256"   = "hmac256.exe"
+    "nice"      = "nice.exe"
+    "nohup"     = "nohup.exe"
+    "stdbuf"    = "stdbuf.exe"
     # New commands added in v0.7.0 - Development tools
-    "patch" = "patch.exe"
-    "diff3" = "diff3.exe"
-    "sdiff" = "sdiff.exe"
+    "patch"     = "patch.exe"
+    "diff3"     = "diff3.exe"
+    "sdiff"     = "sdiff.exe"
     # New commands added in v0.7.0 - Calendar and sorting
-    "cal" = "cal.exe"
-    "tsort" = "tsort.exe"
+    "cal"       = "cal.exe"
+    "tsort"     = "tsort.exe"
     # New commands added in v0.7.0 - Terminal tools
-    "tput" = "tput.exe"
-    "infocmp" = "infocmp.exe"
-    "tic" = "tic.exe"
-    "toe" = "toe.exe"
-    "top" = "top.exe"
+    "tput"      = "tput.exe"
+    "infocmp"   = "infocmp.exe"
+    "tic"       = "tic.exe"
+    "toe"       = "toe.exe"
+    "top"       = "top.exe"
     # New commands added in v0.7.0 - System information
-    "hostid" = "hostid.exe"
-    "locale" = "locale.exe"
-    "tzset" = "tzset.exe"
-    "pinky" = "pinky.exe"
-    "mpicalc" = "mpicalc.exe"
+    "hostid"    = "hostid.exe"
+    "locale"    = "locale.exe"
+    "tzset"     = "tzset.exe"
+    "pinky"     = "pinky.exe"
+    "mpicalc"   = "mpicalc.exe"
     # New commands added in v0.7.0 - Archive tools
-    "cpio" = "cpio.exe"
+    "cpio"      = "cpio.exe"
     # New commands added in v0.7.0 - System utilities
-    "nproc" = "nproc.exe"
-    "getconf" = "getconf.exe"
-    "link" = "link.exe"
-    "unlink" = "unlink.exe"
-    "factor" = "factor.exe"
+    "nproc"     = "nproc.exe"
+    "getconf"   = "getconf.exe"
+    "link"      = "link.exe"
+    "unlink"    = "unlink.exe"
+    "factor"    = "factor.exe"
     # New commands added in v0.9.0 - Coreutils
-    "man" = "man.exe"
-    "chown" = "chown.exe"
+    "man"       = "man.exe"
+    "chown"     = "chown.exe"
 }
 
 # ========== Functions ==========
@@ -193,7 +193,7 @@ function Save-ConflictedAliases {
         if ($alias) {
             $global:Winux_SavedAliases[$aliasName] = @{
                 Definition = $alias.Definition
-                Options = $alias.Options -join ","
+                Options    = $alias.Options -join ","
             }
         }
     }
@@ -222,12 +222,12 @@ function Restore-ConflictedAliases {
     Remove-Variable Winux_SavedAliases -Scope Global -ErrorAction SilentlyContinue
 }
 
-    foreach ($aliasName in $global:Winux_SavedAliases.Keys) {
-        $saved = $global:Winux_SavedAliases[$aliasName]
-        Set-Alias -Name $aliasName -Value $saved.Definition -Scope Global -Force
-    }
+foreach ($aliasName in $global:Winux_SavedAliases.Keys) {
+    $saved = $global:Winux_SavedAliases[$aliasName]
+    Set-Alias -Name $aliasName -Value $saved.Definition -Scope Global -Force
+}
 
-    Remove-Variable Winux_SavedAliases -Scope Global -ErrorAction SilentlyContinue
+Remove-Variable Winux_SavedAliases -Scope Global -ErrorAction SilentlyContinue
 
 
 function Show-CommandList {
@@ -255,7 +255,8 @@ function Show-Status {
         Write-Host "Status: ACTIVE" -ForegroundColor Green
         Write-Host "Directory: $ScriptDir" -ForegroundColor Gray
         Write-Host "Commands: $($CommandMap.Count) available" -ForegroundColor Yellow
-    } else {
+    }
+    else {
         Write-Host "Status: INACTIVE" -ForegroundColor Gray
         Write-Host "Run '.\winux.ps1 activate' to enable" -ForegroundColor Gray
     }
@@ -305,11 +306,11 @@ function Invoke-Deactivate {
 # ========== Main Logic ==========
 
 switch ($Action) {
-    "activate"   { Invoke-Activate }
+    "activate" { Invoke-Activate }
     "deactivate" { Invoke-Deactivate }
-    "status"     { Show-Status }
-    "list"       { Show-CommandList }
-    default      { Invoke-Activate }
+    "status" { Show-Status }
+    "list" { Show-CommandList }
+    default { Invoke-Activate }
 }
 
 # Cleanup on exit

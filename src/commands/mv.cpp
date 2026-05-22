@@ -118,7 +118,24 @@ namespace cp = core::pipeline;
 struct MoveContext {
   SmallVector<std::string, 64> source_paths;
   std::string dest_path;
+  bool target_directory_option = false;
+  bool no_target_directory = false;
 };
+
+auto append_expanded_source(SmallVector<std::string, 64>& source_paths,
+                            std::string_view arg) -> void {
+  std::string source(arg);
+  if (contains_wildcard(source)) {
+    auto glob_result = glob_expand(source);
+    if (glob_result.expanded) {
+      for (const auto& file : glob_result.files) {
+        source_paths.push_back(wstring_to_utf8(file));
+      }
+      return;
+    }
+  }
+  source_paths.push_back(std::move(source));
+}
 
 auto strip_trailing_slashes(std::string path) -> std::string {
   while (path.size() > 1 && (path.back() == '\\' || path.back() == '/')) {
@@ -137,14 +154,21 @@ auto parse_arguments(const CommandContext<MV_OPTIONS.size()>& ctx)
   if (target_dir.empty()) {
     target_dir = ctx.get<std::string>("-t", "");
   }
+  move_ctx.no_target_directory = ctx.get<bool>("-T", false) ||
+                                 ctx.get<bool>("--no-target-directory", false);
+  if (!target_dir.empty() && move_ctx.no_target_directory) {
+    return std::unexpected(
+        "cannot combine --target-directory and --no-target-directory");
+  }
 
   bool strip_slashes = ctx.get<bool>("--strip-trailing-slashes", false);
   if (!target_dir.empty()) {
+    move_ctx.target_directory_option = true;
     move_ctx.dest_path = target_dir;
     for (auto arg : ctx.positionals) {
       auto src = std::string(arg);
       if (strip_slashes) src = strip_trailing_slashes(std::move(src));
-      move_ctx.source_paths.push_back(std::move(src));
+      append_expanded_source(move_ctx.source_paths, src);
     }
   } else {
     // Regular case: last argument is destination
@@ -155,7 +179,7 @@ auto parse_arguments(const CommandContext<MV_OPTIONS.size()>& ctx)
     for (size_t i = 0; i < ctx.positionals.size() - 1; ++i) {
       auto src = std::string(ctx.positionals[i]);
       if (strip_slashes) src = strip_trailing_slashes(std::move(src));
-      move_ctx.source_paths.push_back(std::move(src));
+      append_expanded_source(move_ctx.source_paths, src);
     }
     move_ctx.dest_path = std::string(ctx.positionals.back());
   }
@@ -375,6 +399,11 @@ auto process_command(const CommandContext<N>& ctx) -> cp::Result<bool> {
             return std::unexpected(is_dir.error());
           }
           dest_is_dir = *is_dir;
+        }
+        if ((move_ctx.target_directory_option ||
+             move_ctx.source_paths.size() > 1) &&
+            !dest_is_dir) {
+          return std::unexpected("target is not a directory");
         }
         bool success = true;
         for (const auto& src_path : move_ctx.source_paths) {

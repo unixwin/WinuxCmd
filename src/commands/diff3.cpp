@@ -183,6 +183,35 @@ std::vector<std::string> merge_files(const std::vector<std::string>& mine,
 namespace diff3_pipeline {
 namespace cp = core::pipeline;
 
+auto resolve_files(const CommandContext<DIFF3_OPTIONS.size()>& ctx)
+    -> cp::Result<std::tuple<std::string, std::string, std::string>> {
+  std::vector<std::string> files;
+
+  for (const auto& positional : ctx.positionals) {
+    std::string file_arg = std::string(positional);
+    if (contains_wildcard(file_arg)) {
+      auto glob_result = glob_expand(file_arg);
+      if (glob_result.expanded && !glob_result.files.empty()) {
+        for (const auto& file : glob_result.files) {
+          files.push_back(wstring_to_utf8(file));
+        }
+        continue;
+      }
+    }
+
+    files.push_back(file_arg);
+  }
+
+  if (files.size() < 3) {
+    return std::unexpected("missing file operands");
+  }
+  if (files.size() > 3) {
+    return std::unexpected("too many file operands");
+  }
+
+  return std::make_tuple(files[0], files[1], files[2]);
+}
+
 struct Config {
   bool merged_output = false;
   bool ed_script = false;
@@ -204,13 +233,14 @@ auto build_config(const CommandContext<DIFF3_OPTIONS.size()>& ctx)
   cfg.overwrite_overlapping = ctx.get<bool>("-A", false);
   cfg.treat_as_text = ctx.get<bool>("-a", false);
 
-  if (ctx.positionals.size() < 3) {
-    return std::unexpected("missing file operands");
+  auto files_result = resolve_files(ctx);
+  if (!files_result) {
+    return std::unexpected(files_result.error());
   }
 
-  cfg.mine_file = std::string(ctx.positionals[0]);
-  cfg.older_file = std::string(ctx.positionals[1]);
-  cfg.yours_file = std::string(ctx.positionals[2]);
+  cfg.mine_file = std::get<0>(*files_result);
+  cfg.older_file = std::get<1>(*files_result);
+  cfg.yours_file = std::get<2>(*files_result);
 
   return cfg;
 }

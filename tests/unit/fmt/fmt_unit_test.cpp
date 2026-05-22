@@ -51,3 +51,84 @@ TEST(fmt, fmt_stdin) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_FALSE(r.stdout_text.empty());
 }
+
+TEST(fmt, fmt_preserves_blank_lines_and_indentation) {
+  Pipeline p;
+  p.set_stdin("  alpha beta gamma delta epsilon zeta\n\nnext para words\n");
+  p.add(L"fmt.exe", {L"-w", L"16"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text,
+                 "  alpha beta\n"
+                 "  gamma delta\n"
+                 "  epsilon zeta\n"
+                 "\n"
+                 "next para\n"
+                 "words\n");
+}
+
+TEST(fmt, fmt_split_only_does_not_refill) {
+  Pipeline p;
+  p.set_stdin("alpha beta\ngamma delta\n");
+  p.add(L"fmt.exe", {L"-s", L"-w", L"8"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "alpha\nbeta\ngamma\ndelta\n");
+}
+
+TEST(fmt, fmt_prefix_only_formats_matching_lines) {
+  Pipeline p;
+  p.set_stdin("> alpha beta gamma\nplain * line\n> delta epsilon\n");
+  p.add(L"fmt.exe", {L"-p", L">", L"-w", L"12"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text,
+                 ">alpha beta\n"
+                 ">gamma\n"
+                 "plain * line\n"
+                 ">delta\n"
+                 ">epsilon\n");
+}
+
+TEST(fmt, fmt_uniform_spacing_adds_two_spaces_after_sentences) {
+  Pipeline p;
+  p.set_stdin("Hi. There now.\n");
+  p.add(L"fmt.exe", {L"-u", L"-w", L"30"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "Hi.  There now.\n");
+}
+
+TEST(fmt, fmt_crown_margin_uses_second_line_indent) {
+  Pipeline p;
+  p.set_stdin(
+      "  item one two three\n"
+      "      continuation words more words\n");
+  p.add(L"fmt.exe", {L"-c", L"-w", L"30"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text,
+                 "  item one two three\n"
+                 "      continuation words\n"
+                 "      more words\n");
+}
+
+TEST(fmt, fmt_rejects_trailing_junk_width) {
+  Pipeline p;
+  p.set_stdin("alpha beta\n");
+  p.add(L"fmt.exe", {L"-w", L"10x"});
+
+  auto r = p.run();
+
+  EXPECT_NE(r.exit_code, 0);
+}

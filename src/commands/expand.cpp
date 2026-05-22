@@ -52,10 +52,113 @@ namespace expand_pipeline {
 namespace cp = core::pipeline;
 
 struct Config {
-  int tab_width = 8;
+  struct TabStops {
+    enum class RepeatMode { every_multiple, after_last, none };
+
+    SmallVector<size_t, 16> stops;
+    size_t interval = 8;
+    RepeatMode repeat_mode = RepeatMode::every_multiple;
+  };
+
+  TabStops tab_stops;
   bool initial_only = false;
   SmallVector<std::string, 64> files;
 };
+
+auto parse_tab_stops(const std::string& spec) -> cp::Result<Config::TabStops> {
+  Config::TabStops tab_stops;
+  if (spec.empty()) {
+    return tab_stops;
+  }
+
+  std::string normalized = spec;
+  for (char& c : normalized) {
+    if (c == ',') c = ' ';
+  }
+
+  std::istringstream input(normalized);
+  std::vector<std::string> tokens;
+  for (std::string token; input >> token;) {
+    tokens.push_back(token);
+  }
+  if (tokens.empty()) {
+    return std::unexpected("invalid tab stops");
+  }
+
+  auto parse_positive = [](std::string_view value) -> std::optional<size_t> {
+    if (value.empty()) return std::nullopt;
+    size_t parsed = 0;
+    auto [ptr, ec] =
+        std::from_chars(value.data(), value.data() + value.size(), parsed);
+    if (ec != std::errc() || ptr != value.data() + value.size() ||
+        parsed == 0) {
+      return std::nullopt;
+    }
+    return parsed;
+  };
+
+  bool repeat_specified = false;
+  for (size_t i = 0; i < tokens.size(); ++i) {
+    const std::string& token = tokens[i];
+    if (token[0] == '/' || token[0] == '+') {
+      if (i + 1 != tokens.size()) {
+        return std::unexpected("repeat tab stop must be last");
+      }
+      auto interval = parse_positive(std::string_view(token).substr(1));
+      if (!interval) {
+        return std::unexpected("invalid tab stop");
+      }
+      tab_stops.interval = *interval;
+      tab_stops.repeat_mode = token[0] == '/'
+                                  ? Config::TabStops::RepeatMode::every_multiple
+                                  : Config::TabStops::RepeatMode::after_last;
+      repeat_specified = true;
+      continue;
+    }
+
+    auto stop = parse_positive(token);
+    if (!stop) {
+      return std::unexpected("invalid tab stop");
+    }
+    if (!tab_stops.stops.empty() && *stop <= tab_stops.stops.back()) {
+      return std::unexpected("tab stops must be increasing");
+    }
+    tab_stops.stops.push_back(*stop);
+  }
+
+  if (tab_stops.stops.size() == 1 && !repeat_specified &&
+      tab_stops.repeat_mode == Config::TabStops::RepeatMode::every_multiple) {
+    tab_stops.interval = tab_stops.stops.front();
+    tab_stops.stops.clear();
+  } else if (tab_stops.stops.size() > 1 &&
+             tab_stops.repeat_mode ==
+                 Config::TabStops::RepeatMode::every_multiple) {
+    tab_stops.repeat_mode = Config::TabStops::RepeatMode::none;
+  }
+
+  return tab_stops;
+}
+
+auto next_tab_stop(size_t column, const Config::TabStops& tab_stops) -> size_t {
+  for (size_t stop : tab_stops.stops) {
+    if (stop > column) return stop;
+  }
+
+  switch (tab_stops.repeat_mode) {
+    case Config::TabStops::RepeatMode::every_multiple:
+      return ((column / tab_stops.interval) + 1) * tab_stops.interval;
+    case Config::TabStops::RepeatMode::after_last: {
+      size_t anchor = tab_stops.stops.empty() ? 0 : tab_stops.stops.back();
+      if (column < anchor) return anchor;
+      return anchor + (((column - anchor) / tab_stops.interval) + 1) *
+                          tab_stops.interval;
+    }
+    case Config::TabStops::RepeatMode::none:
+      return column + 1;
+  }
+
+  return column + 1;
+}
 
 auto build_config(const CommandContext<EXPAND_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
@@ -69,16 +172,9 @@ auto build_config(const CommandContext<EXPAND_OPTIONS.size()>& ctx)
   }
 
   if (!tabs_opt.empty()) {
-    // Parse tab width (can be comma-separated list, but we only support single
-    // value)
-    try {
-      cfg.tab_width = std::stoi(tabs_opt);
-      if (cfg.tab_width <= 0) {
-        return std::unexpected("tab width must be positive");
-      }
-    } catch (...) {
-      return std::unexpected("invalid tab width");
-    }
+    auto tab_stops = parse_tab_stops(tabs_opt);
+    if (!tab_stops) return std::unexpected(tab_stops.error());
+    cfg.tab_stops = *tab_stops;
   }
 
   for (auto arg : ctx.positionals) {
@@ -103,27 +199,35 @@ auto build_config(const CommandContext<EXPAND_OPTIONS.size()>& ctx)
 }
 
 // Expand tabs to spaces in a single line
-auto expand_line(const std::string& line, int tab_width, bool initial_only)
-    -> std::string {
+auto expand_line(const std::string& line, const Config::TabStops& tab_stops,
+                 bool initial_only) -> std::string {
   std::string result;
   result.reserve(line.size() * 2);
   size_t column = 0;
+  bool before_non_blank = true;
 
   for (char c : line) {
     if (c == '\t') {
-      // Calculate spaces needed to reach next tab stop
-      int spaces_needed = tab_width - (column % tab_width);
-      result.append(spaces_needed, ' ');
-      column += spaces_needed;
+      size_t next_stop = next_tab_stop(column, tab_stops);
+      if (!initial_only || before_non_blank) {
+        size_t spaces_needed = next_stop - column;
+        result.append(spaces_needed, ' ');
+      } else {
+        result += c;
+      }
+      column = next_stop;
+    } else if (c == '\n') {
+      result += c;
+      column = 0;
+      before_non_blank = true;
+    } else if (c == '\b') {
+      result += c;
+      if (column > 0) --column;
+      before_non_blank = false;
     } else {
       result += c;
-      if (c == '\n') {
-        column = 0;
-      } else if (!initial_only || column == 0) {
-        // Only count column if not in initial_only mode or if we're still at
-        // start
-        column++;
-      }
+      ++column;
+      if (c != ' ') before_non_blank = false;
     }
   }
 
@@ -176,12 +280,12 @@ auto run(const Config& cfg) -> int {
 
       if (line_end == std::string::npos) {
         line = content.substr(line_start);
-        result += expand_line(line, cfg.tab_width, cfg.initial_only);
+        result += expand_line(line, cfg.tab_stops, cfg.initial_only);
         break;
       } else {
         line = content.substr(line_start,
                               line_end - line_start + 1);  // Include newline
-        result += expand_line(line, cfg.tab_width, cfg.initial_only);
+        result += expand_line(line, cfg.tab_stops, cfg.initial_only);
         line_start = line_end + 1;
       }
     }
@@ -201,8 +305,7 @@ REGISTER_COMMAND(
     "Convert each tab character to one or more spaces.\n"
     "By default, tabs are converted to 8 spaces.\n"
     "\n"
-    "Note: This implementation supports basic tab expansion.\n"
-    "Advanced features like comma-separated tab positions are not implemented.",
+    "Supports GNU tab lists, including /N and +N repeat tab stops.",
     "  expand file.txt\n"
     "  expand -t 4 file.txt\n"
     "  expand -i file.txt\n"

@@ -38,8 +38,22 @@ using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
 auto constexpr CHOWN_OPTIONS = std::array{
+    OPTION("-c", "--changes",
+           "like verbose but report only when a change is made"),
+    OPTION("-f", "--silent", "suppress most error messages"),
+    OPTION("", "--quiet", "suppress most error messages"),
+    OPTION("", "--dereference", "affect referent of each symbolic link"),
+    OPTION("-h", "--no-dereference",
+           "affect symbolic links instead of referenced files"),
+    OPTION("", "--from", "change only from current owner/group", STRING_TYPE),
+    OPTION("-H", "", "traverse command-line symlinks to directories"),
+    OPTION("-L", "", "traverse every symlink to a directory"),
+    OPTION("-P", "", "do not traverse any symbolic links"),
     OPTION("-R", "--recursive", "operate on files and directories recursively"),
+    OPTION("", "--reference", "use RFILE's owner and group", STRING_TYPE),
     OPTION("-v", "--verbose", "output a diagnostic for every file processed"),
+    OPTION("", "--preserve-root", "fail to operate recursively on '/'"),
+    OPTION("", "--no-preserve-root", "do not treat '/' specially"),
 };
 
 namespace chown_pipeline {
@@ -48,35 +62,21 @@ namespace cp = core::pipeline;
 struct Config {
   bool recursive = false;
   bool verbose = false;
+  bool changes = false;
+  bool quiet = false;
+  bool has_reference = false;
   std::string owner;
   std::string group;
+  std::string reference_file;
+  std::string from_spec;
   bool has_group = false;
   std::vector<std::string> files;
 };
 
-auto build_config(const CommandContext<CHOWN_OPTIONS.size()>& ctx)
-    -> cp::Result<Config> {
-  Config cfg;
-  cfg.recursive =
-      ctx.get<bool>("-R", false) || ctx.get<bool>("--recursive", false);
-  cfg.verbose = ctx.get<bool>("-v", false);
-
-  if (ctx.positionals.empty()) {
-    return std::unexpected("missing operand");
-  }
-
-  std::string owner_group(ctx.positionals[0]);
-  size_t colon_pos = owner_group.find(':');
-  if (colon_pos != std::string::npos) {
-    cfg.owner = owner_group.substr(0, colon_pos);
-    cfg.group = owner_group.substr(colon_pos + 1);
-    cfg.has_group = true;
-  } else {
-    cfg.owner = owner_group;
-  }
-
-  for (size_t i = 1; i < ctx.positionals.size(); ++i) {
-    std::string file_arg(ctx.positionals[i]);
+auto add_file_args(Config& cfg, std::span<const std::string_view> args)
+    -> void {
+  for (auto arg : args) {
+    std::string file_arg(arg);
     if (contains_wildcard(file_arg)) {
       auto glob_result = glob_expand(file_arg);
       if (glob_result.expanded) {
@@ -88,9 +88,67 @@ auto build_config(const CommandContext<CHOWN_OPTIONS.size()>& ctx)
     }
     cfg.files.push_back(file_arg);
   }
+}
+
+auto build_config(const CommandContext<CHOWN_OPTIONS.size()>& ctx)
+    -> cp::Result<Config> {
+  Config cfg;
+  cfg.recursive =
+      ctx.get<bool>("-R", false) || ctx.get<bool>("--recursive", false);
+  cfg.verbose = ctx.get<bool>("-v", false);
+  cfg.changes = ctx.get<bool>("-c", false) || ctx.get<bool>("--changes", false);
+  cfg.quiet = ctx.get<bool>("-f", false) || ctx.get<bool>("--silent", false) ||
+              ctx.get<bool>("--quiet", false);
+  cfg.reference_file = ctx.get<std::string>("--reference", "");
+  cfg.has_reference = !cfg.reference_file.empty();
+  cfg.from_spec = ctx.get<std::string>("--from", "");
+
+  (void)ctx.get<bool>("--dereference", false);
+  (void)ctx.get<bool>("-h", false);
+  (void)ctx.get<bool>("--no-dereference", false);
+  (void)ctx.get<bool>("-H", false);
+  (void)ctx.get<bool>("-L", false);
+  (void)ctx.get<bool>("-P", false);
+  (void)ctx.get<bool>("--preserve-root", false);
+  (void)ctx.get<bool>("--no-preserve-root", false);
+
+  if (cfg.has_reference) {
+    std::wstring wref = utf8_to_wstring(cfg.reference_file);
+    if (GetFileAttributesW(wref.c_str()) == INVALID_FILE_ATTRIBUTES) {
+      return std::unexpected("failed to get attributes of '" +
+                             cfg.reference_file + "'");
+    }
+    add_file_args(cfg, std::span<const std::string_view>(
+                           ctx.positionals.data(), ctx.positionals.size()));
+  } else {
+    if (ctx.positionals.empty()) {
+      return std::unexpected("missing operand");
+    }
+
+    std::string owner_group(ctx.positionals[0]);
+    size_t colon_pos = owner_group.find(':');
+    if (colon_pos == std::string::npos) {
+      colon_pos = owner_group.find('.');
+    }
+    if (colon_pos != std::string::npos) {
+      cfg.owner = owner_group.substr(0, colon_pos);
+      cfg.group = owner_group.substr(colon_pos + 1);
+      cfg.has_group = true;
+    } else {
+      cfg.owner = owner_group;
+    }
+
+    add_file_args(
+        cfg, std::span<const std::string_view>(ctx.positionals.data() + 1,
+                                               ctx.positionals.size() - 1));
+  }
 
   if (cfg.files.empty()) {
-    return std::unexpected("missing operand after '" + owner_group + "'");
+    if (cfg.has_reference) {
+      return std::unexpected("missing file operand");
+    }
+    return std::unexpected("missing operand after '" +
+                           std::string(ctx.positionals[0]) + "'");
   }
 
   return cfg;
@@ -101,8 +159,10 @@ auto process_file(const std::string& path, const Config& cfg) -> int {
 
   DWORD attr = GetFileAttributesW(wpath.c_str());
   if (attr == INVALID_FILE_ATTRIBUTES) {
-    safeErrorPrint("chown: cannot access '" + path +
-                   "': No such file or directory\n");
+    if (!cfg.quiet) {
+      safeErrorPrint("chown: cannot access '" + path +
+                     "': No such file or directory\n");
+    }
     return 1;
   }
 
@@ -131,8 +191,10 @@ auto process_recursive(const std::string& path, const Config& cfg) -> int {
 
   DWORD attr = GetFileAttributesW(wpath.c_str());
   if (attr == INVALID_FILE_ATTRIBUTES) {
-    safeErrorPrint("chown: cannot access '" + path +
-                   "': No such file or directory\n");
+    if (!cfg.quiet) {
+      safeErrorPrint("chown: cannot access '" + path +
+                     "': No such file or directory\n");
+    }
     return 1;
   }
 

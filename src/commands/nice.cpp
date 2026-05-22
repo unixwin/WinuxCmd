@@ -47,6 +47,42 @@ using cmd::meta::OptionType;
 auto constexpr NICE_OPTIONS =
     std::array{OPTION("-n", "--adjustment", "adjust increment", INT_TYPE)};
 
+namespace {
+auto current_niceness() -> int {
+  switch (GetPriorityClass(GetCurrentProcess())) {
+    case HIGH_PRIORITY_CLASS:
+      return -10;
+    case ABOVE_NORMAL_PRIORITY_CLASS:
+      return -5;
+    case BELOW_NORMAL_PRIORITY_CLASS:
+      return 10;
+    case IDLE_PRIORITY_CLASS:
+      return 19;
+    case NORMAL_PRIORITY_CLASS:
+    default:
+      return 0;
+  }
+}
+
+auto priority_class_for_niceness(int niceness) -> DWORD {
+  if (niceness <= -10) return HIGH_PRIORITY_CLASS;
+  if (niceness < 0) return ABOVE_NORMAL_PRIORITY_CLASS;
+  if (niceness >= 19) return IDLE_PRIORITY_CLASS;
+  if (niceness >= 10) return BELOW_NORMAL_PRIORITY_CLASS;
+  return NORMAL_PRIORITY_CLASS;
+}
+
+auto command_status_from_create_error(DWORD error) -> int {
+  switch (error) {
+    case ERROR_FILE_NOT_FOUND:
+    case ERROR_PATH_NOT_FOUND:
+      return 127;
+    default:
+      return 126;
+  }
+}
+}  // namespace
+
 // ======================================================
 // Main command implementation
 // ======================================================
@@ -71,26 +107,18 @@ REGISTER_COMMAND(
   int adjustment = 10;  // Default adjustment
 
   // Parse adjustment option
-  if (ctx.get<bool>("-n", false)) {
-    try {
-      adjustment = std::stoi(ctx.get<std::string>("-n", ""));
-    } catch (...) {
-      safeErrorPrintLn("nice: invalid adjustment value");
-      return 1;
-    }
-  } else if (ctx.get<bool>("--adjustment", false)) {
-    try {
-      adjustment = std::stoi(ctx.get<std::string>("--adjustment", ""));
-    } catch (...) {
-      safeErrorPrintLn("nice: invalid adjustment value");
-      return 1;
-    }
+  constexpr int kNoAdjustment = std::numeric_limits<int>::min();
+  int parsed_adjustment = ctx.get<int>("-n", kNoAdjustment);
+  if (parsed_adjustment == kNoAdjustment) {
+    parsed_adjustment = ctx.get<int>("--adjustment", kNoAdjustment);
+  }
+  if (parsed_adjustment != kNoAdjustment) {
+    adjustment = parsed_adjustment;
   }
 
   // If no command provided, print current priority
   if (ctx.positionals.empty()) {
-    DWORD priority = GetPriorityClass(GetCurrentProcess());
-    safePrintLn("Current priority class: " + std::to_string(priority));
+    safePrintLn(std::to_string(current_niceness()));
     return 0;
   }
 
@@ -108,20 +136,16 @@ REGISTER_COMMAND(
   std::wstring wcmd = utf8_to_wstring(cmd);
 
   // Determine priority class based on adjustment
-  DWORD priority_class = NORMAL_PRIORITY_CLASS;
-  if (adjustment < -5) {
-    priority_class = HIGH_PRIORITY_CLASS;
-  } else if (adjustment > 10) {
-    priority_class = BELOW_NORMAL_PRIORITY_CLASS;
-  } else if (adjustment > 15) {
-    priority_class = IDLE_PRIORITY_CLASS;
-  }
+  int target_niceness = std::clamp(current_niceness() + adjustment, -20, 19);
+  DWORD priority_class = priority_class_for_niceness(target_niceness);
 
   if (!CreateProcessW(nullptr, const_cast<wchar_t*>(wcmd.c_str()), nullptr,
                       nullptr, FALSE, priority_class, nullptr, nullptr, &si,
                       &pi)) {
-    safeErrorPrintLn("nice: failed to execute command");
-    return 1;
+    DWORD error = GetLastError();
+    safeErrorPrintLn("nice: failed to execute command: " +
+                     std::string(ctx.positionals[0]));
+    return command_status_from_create_error(error);
   }
 
   // Wait for process to complete

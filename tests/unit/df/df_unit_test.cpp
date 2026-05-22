@@ -101,3 +101,143 @@ TEST(df, df_si) {
   // Should show SI units (1000-based)
   EXPECT_TRUE(r.stdout_text.length() > 0);
 }
+
+TEST(df, df_block_size_bytes) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"df.exe", {L"-B", L"1"});
+
+  TEST_LOG_CMD_LIST("df.exe", L"-B", L"1");
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("df.exe -B 1 output", r.stdout_text);
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_NE(r.stdout_text.find("1B-blocks"), std::string::npos);
+  EXPECT_NE(r.stdout_text.find("Used"), std::string::npos);
+  EXPECT_NE(r.stdout_text.find("Available"), std::string::npos);
+  EXPECT_NE(r.stdout_text.find("Mounted on"), std::string::npos);
+}
+
+TEST(df, df_block_size_human_readable_alias) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"df.exe", {L"--block-size=human-readable"});
+
+  TEST_LOG_CMD_LIST("df.exe", L"--block-size=human-readable");
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("df.exe --block-size=human-readable output", r.stdout_text);
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_NE(r.stdout_text.find("Size"), std::string::npos);
+  EXPECT_NE(r.stdout_text.find("Available"), std::string::npos);
+  EXPECT_NE(r.stdout_text.find("Capacity"), std::string::npos);
+}
+
+TEST(df, df_total_row_shape) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"df.exe", {L"--total", L"-k"});
+
+  TEST_LOG_CMD_LIST("df.exe", L"--total", L"-k");
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("df.exe --total -k output", r.stdout_text);
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_NE(r.stdout_text.find("1K-blocks"), std::string::npos);
+  EXPECT_NE(r.stdout_text.find("\ntotal"), std::string::npos);
+  EXPECT_NE(r.stdout_text.find(" total\n"), std::string::npos);
+}
+
+TEST(df, df_accepts_all_sync_no_sync) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"df.exe", {L"-a", L"--sync", L"--no-sync"});
+
+  TEST_LOG_CMD_LIST("df.exe", L"-a", L"--sync", L"--no-sync");
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("df.exe -a --sync --no-sync output", r.stdout_text);
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_NE(r.stdout_text.find("Filesystem"), std::string::npos);
+  EXPECT_NE(r.stdout_text.find("Mounted on"), std::string::npos);
+}
+
+TEST(df, df_print_type) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"df.exe", {L"-T"});
+
+  TEST_LOG_CMD_LIST("df.exe", L"-T");
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("df.exe -T output", r.stdout_text);
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_NE(r.stdout_text.find("Type"), std::string::npos);
+  EXPECT_NE(r.stdout_text.find("Mounted on"), std::string::npos);
+}
+
+TEST(df, df_inodes_shape) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"df.exe", {L"-i"});
+
+  TEST_LOG_CMD_LIST("df.exe", L"-i");
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("df.exe -i output", r.stdout_text);
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_NE(r.stdout_text.find("Inodes"), std::string::npos);
+  EXPECT_NE(r.stdout_text.find("IUsed"), std::string::npos);
+  EXPECT_NE(r.stdout_text.find("IFree"), std::string::npos);
+  EXPECT_NE(r.stdout_text.find("IUse%"), std::string::npos);
+}
+
+TEST(df, df_wildcard_operands_expand) {
+  TempDir tmp;
+  tmp.write("sample.txt", "abc");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"df.exe", {L"*.txt"});
+
+  TEST_LOG_CMD_LIST("df.exe", L"*.txt");
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("df.exe wildcard output", r.stdout_text);
+  TEST_LOG("df.exe wildcard stderr", r.stderr_text);
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_NE(r.stdout_text.find("Filesystem"), std::string::npos);
+}

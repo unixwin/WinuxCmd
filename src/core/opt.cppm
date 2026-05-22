@@ -28,19 +28,26 @@ export module core:opt;
 import std;
 import :cmd_meta;
 
-using OptionValue = std::variant<bool, int, std::string>;
+export using OptionValue = std::variant<bool, int, std::string>;
+
+export struct OptionOccurrence {
+  size_t index = 0;
+  OptionValue value;
+};
 
 export template <size_t N>
 class ParsedOptions {
  private:
   std::array<OptionValue, N> values_{};
   std::bitset<N> present_;
+  std::vector<OptionOccurrence> occurrences_;
 
  public:
   constexpr ParsedOptions() = default;
 
   // Simple set method
   void set(size_t index, OptionValue v) {
+    occurrences_.push_back(OptionOccurrence{index, v});
     values_[index] = std::move(v);
     present_.set(index);
   }
@@ -55,6 +62,20 @@ class ParsedOptions {
 
     return default_value;
   }
+
+  template <typename T>
+  std::vector<T> get_all(size_t index) const {
+    std::vector<T> values;
+    for (const auto& occurrence : occurrences_) {
+      if (occurrence.index != index) continue;
+      if (auto p = std::get_if<T>(&occurrence.value)) {
+        values.push_back(*p);
+      }
+    }
+    return values;
+  }
+
+  std::span<const OptionOccurrence> occurrences() const { return occurrences_; }
 };
 
 export template <size_t N>
@@ -73,6 +94,17 @@ ParseResult<N> parse_command(
 
   bool end_of_options = false;
 
+  auto take_terminated_string = [&](size_t& i) -> std::string {
+    std::string value;
+    while (i + 1 < args.size()) {
+      std::string_view part = args[++i];
+      if (!value.empty()) value.push_back(' ');
+      value.append(part.data(), part.size());
+      if (part == ";" || part == "+") break;
+    }
+    return value;
+  };
+
   for (size_t i = 0; i < args.size(); ++i) {
     std::string_view arg = args[i];
 
@@ -89,7 +121,8 @@ ParseResult<N> parse_command(
       std::string_view name = arg;
 
       size_t eq_pos = arg.find('=');
-      if (eq_pos != std::string_view::npos) {
+      bool has_inline_value = eq_pos != std::string_view::npos;
+      if (has_inline_value) {
         name = arg.substr(0, eq_pos);
         value = arg.substr(eq_pos + 1);
       }
@@ -154,6 +187,38 @@ ParseResult<N> parse_command(
           }
           break;
         }
+
+        case OptionType::OptionalInt: {
+          if (!has_inline_value) {
+            result.options.set(idx, -1);
+            break;
+          }
+
+          int v = 0;
+          std::string str(value);
+          auto [ptr, ec] =
+              std::from_chars(str.data(), str.data() + str.size(), v);
+          if (ec != std::errc() || ptr != str.data() + str.size()) {
+            result.ok = false;
+            return result;
+          }
+
+          result.options.set(idx, v);
+          break;
+        }
+
+        case OptionType::OptionalString:
+          result.options.set(
+              idx, has_inline_value ? std::string(value) : std::string());
+          break;
+
+        case OptionType::TerminatedString:
+          if (!value.empty()) {
+            result.options.set(idx, std::string(value));
+          } else {
+            result.options.set(idx, take_terminated_string(i));
+          }
+          break;
       }
 
       continue;
@@ -166,7 +231,8 @@ ParseResult<N> parse_command(
       std::string_view exact_value;
       std::string_view exact_name = arg;
       size_t exact_eq_pos = arg.find('=');
-      if (exact_eq_pos != std::string_view::npos) {
+      bool exact_has_inline_value = exact_eq_pos != std::string_view::npos;
+      if (exact_has_inline_value) {
         exact_name = arg.substr(0, exact_eq_pos);
         exact_value = arg.substr(exact_eq_pos + 1);
       }
@@ -218,6 +284,36 @@ ParseResult<N> parse_command(
               result.options.set(idx, std::string(args[++i]));
             }
             break;
+          case OptionType::OptionalInt: {
+            if (!exact_has_inline_value) {
+              result.options.set(idx, -1);
+              break;
+            }
+
+            int v = 0;
+            std::string str(exact_value);
+            auto [ptr, ec] =
+                std::from_chars(str.data(), str.data() + str.size(), v);
+            if (ec != std::errc() || ptr != str.data() + str.size()) {
+              result.ok = false;
+              return result;
+            }
+
+            result.options.set(idx, v);
+            break;
+          }
+          case OptionType::OptionalString:
+            result.options.set(idx, exact_has_inline_value
+                                        ? std::string(exact_value)
+                                        : std::string());
+            break;
+          case OptionType::TerminatedString:
+            if (!exact_value.empty()) {
+              result.options.set(idx, std::string(exact_value));
+            } else {
+              result.options.set(idx, take_terminated_string(i));
+            }
+            break;
         }
 
         continue;
@@ -253,20 +349,20 @@ ParseResult<N> parse_command(
           // ----- value option -----
           case OptionType::Int:
           case OptionType::String: {
-            // value option MUST be last in group
-            if (pos != arg.size() - 1) {
-              result.ok = false;
-              return result;
-            }
+            std::string str;
 
-            if (i + 1 >= args.size()) {
-              result.ok = false;
-              return result;
+            if (pos + 1 < arg.size()) {
+              str = std::string(arg.substr(pos + 1));
+            } else {
+              if (i + 1 >= args.size()) {
+                result.ok = false;
+                return result;
+              }
+              str = std::string(args[++i]);
             }
 
             if (meta->type == OptionType::Int) {
               int v = 0;
-              std::string str = std::string(args[++i]);
               auto [ptr, ec] =
                   std::from_chars(str.data(), str.data() + str.size(), v);
 
@@ -277,9 +373,53 @@ ParseResult<N> parse_command(
 
               result.options.set(idx, v);
             } else {
-              result.options.set(idx, std::string(args[++i]));
+              result.options.set(idx, str);
             }
 
+            pos = arg.size();
+            break;
+          }
+
+          case OptionType::OptionalInt: {
+            if (pos + 1 >= arg.size()) {
+              result.options.set(idx, -1);
+              pos = arg.size();
+              break;
+            }
+
+            std::string str(arg.substr(pos + 1));
+            int v = 0;
+            auto [ptr, ec] =
+                std::from_chars(str.data(), str.data() + str.size(), v);
+            if (ec != std::errc() || ptr != str.data() + str.size()) {
+              result.ok = false;
+              return result;
+            }
+
+            result.options.set(idx, v);
+            pos = arg.size();
+            break;
+          }
+
+          case OptionType::OptionalString: {
+            std::string str;
+            if (pos + 1 < arg.size()) {
+              str = std::string(arg.substr(pos + 1));
+            }
+            result.options.set(idx, std::move(str));
+            pos = arg.size();
+            break;
+          }
+
+          case OptionType::TerminatedString: {
+            std::string str;
+            if (pos + 1 < arg.size()) {
+              str = std::string(arg.substr(pos + 1));
+            } else {
+              str = take_terminated_string(i);
+            }
+            result.options.set(idx, std::move(str));
+            pos = arg.size();
             break;
           }
         }

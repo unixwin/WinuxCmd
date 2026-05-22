@@ -42,28 +42,132 @@ import container;
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
-auto constexpr UNEXPAND_OPTIONS = std::array{
-    OPTION("-t", "--tabs", "specify tab stop positions (default: 8)",
-           STRING_TYPE),
-    OPTION("-a", "--all", "convert all spaces, not just leading ones",
-           BOOL_TYPE)
-    // --help (not implemented)
-    // --version (not implemented)
-};
+auto constexpr UNEXPAND_OPTIONS =
+    std::array{OPTION("-t", "--tabs", "specify tab stop positions (default: 8)",
+                      STRING_TYPE),
+               OPTION("-a", "--all",
+                      "convert all spaces, not just leading ones", BOOL_TYPE),
+               OPTION("", "--first-only",
+                      "convert only leading sequences of blanks", BOOL_TYPE)};
 
 namespace unexpand_pipeline {
 namespace cp = core::pipeline;
 
 struct Config {
-  int tab_width = 8;
+  struct TabStops {
+    enum class RepeatMode { every_multiple, after_last, none };
+
+    SmallVector<size_t, 16> stops;
+    size_t interval = 8;
+    RepeatMode repeat_mode = RepeatMode::every_multiple;
+  };
+
+  TabStops tab_stops;
   bool all_spaces = false;
+  bool first_only = true;
   SmallVector<std::string, 64> files;
 };
+
+auto parse_tab_stops(const std::string& spec) -> cp::Result<Config::TabStops> {
+  Config::TabStops tab_stops;
+  if (spec.empty()) {
+    return tab_stops;
+  }
+
+  std::string normalized = spec;
+  for (char& c : normalized) {
+    if (c == ',') c = ' ';
+  }
+
+  std::istringstream input(normalized);
+  std::vector<std::string> tokens;
+  for (std::string token; input >> token;) {
+    tokens.push_back(token);
+  }
+  if (tokens.empty()) {
+    return std::unexpected("invalid tab stops");
+  }
+
+  auto parse_positive = [](std::string_view value) -> std::optional<size_t> {
+    if (value.empty()) return std::nullopt;
+    size_t parsed = 0;
+    auto [ptr, ec] =
+        std::from_chars(value.data(), value.data() + value.size(), parsed);
+    if (ec != std::errc() || ptr != value.data() + value.size() ||
+        parsed == 0) {
+      return std::nullopt;
+    }
+    return parsed;
+  };
+
+  bool repeat_specified = false;
+  for (size_t i = 0; i < tokens.size(); ++i) {
+    const std::string& token = tokens[i];
+    if (token[0] == '/' || token[0] == '+') {
+      if (i + 1 != tokens.size()) {
+        return std::unexpected("repeat tab stop must be last");
+      }
+      auto interval = parse_positive(std::string_view(token).substr(1));
+      if (!interval) {
+        return std::unexpected("invalid tab stop");
+      }
+      tab_stops.interval = *interval;
+      tab_stops.repeat_mode = token[0] == '/'
+                                  ? Config::TabStops::RepeatMode::every_multiple
+                                  : Config::TabStops::RepeatMode::after_last;
+      repeat_specified = true;
+      continue;
+    }
+
+    auto stop = parse_positive(token);
+    if (!stop) {
+      return std::unexpected("invalid tab stop");
+    }
+    if (!tab_stops.stops.empty() && *stop <= tab_stops.stops.back()) {
+      return std::unexpected("tab stops must be increasing");
+    }
+    tab_stops.stops.push_back(*stop);
+  }
+
+  if (tab_stops.stops.size() == 1 && !repeat_specified &&
+      tab_stops.repeat_mode == Config::TabStops::RepeatMode::every_multiple) {
+    tab_stops.interval = tab_stops.stops.front();
+    tab_stops.stops.clear();
+  } else if (tab_stops.stops.size() > 1 &&
+             tab_stops.repeat_mode ==
+                 Config::TabStops::RepeatMode::every_multiple) {
+    tab_stops.repeat_mode = Config::TabStops::RepeatMode::none;
+  }
+
+  return tab_stops;
+}
+
+auto next_tab_stop(size_t column, const Config::TabStops& tab_stops) -> size_t {
+  for (size_t stop : tab_stops.stops) {
+    if (stop > column) return stop;
+  }
+
+  switch (tab_stops.repeat_mode) {
+    case Config::TabStops::RepeatMode::every_multiple:
+      return ((column / tab_stops.interval) + 1) * tab_stops.interval;
+    case Config::TabStops::RepeatMode::after_last: {
+      size_t anchor = tab_stops.stops.empty() ? 0 : tab_stops.stops.back();
+      if (column < anchor) return anchor;
+      return anchor + (((column - anchor) / tab_stops.interval) + 1) *
+                          tab_stops.interval;
+    }
+    case Config::TabStops::RepeatMode::none:
+      return column + 1;
+  }
+
+  return column + 1;
+}
 
 auto build_config(const CommandContext<UNEXPAND_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
   Config cfg;
   cfg.all_spaces = ctx.get<bool>("--all", false) || ctx.get<bool>("-a", false);
+  cfg.first_only = ctx.get<bool>("--first-only", false);
 
   auto tabs_opt = ctx.get<std::string>("--tabs", "");
   if (tabs_opt.empty()) {
@@ -71,16 +175,13 @@ auto build_config(const CommandContext<UNEXPAND_OPTIONS.size()>& ctx)
   }
 
   if (!tabs_opt.empty()) {
-    // Parse tab width (can be comma-separated list, but we only support single
-    // value)
-    try {
-      cfg.tab_width = std::stoi(tabs_opt);
-      if (cfg.tab_width <= 0) {
-        return std::unexpected("tab width must be positive");
-      }
-    } catch (...) {
-      return std::unexpected("invalid tab width");
-    }
+    auto tab_stops = parse_tab_stops(tabs_opt);
+    if (!tab_stops) return std::unexpected(tab_stops.error());
+    cfg.tab_stops = *tab_stops;
+    cfg.all_spaces = true;
+  }
+  if (cfg.first_only) {
+    cfg.all_spaces = false;
   }
 
   for (auto arg : ctx.positionals) {
@@ -104,51 +205,79 @@ auto build_config(const CommandContext<UNEXPAND_OPTIONS.size()>& ctx)
   return cfg;
 }
 
-// Convert spaces to tabs in a single line
-auto unexpand_line(const std::string& line, int tab_width, bool all_spaces)
-    -> std::string {
+auto append_unexpanded_blanks(std::string& result, std::string_view blanks,
+                              size_t start_column, size_t end_column,
+                              const Config::TabStops& tab_stops,
+                              bool allow_single_char_tab) {
+  if (blanks.size() < 2 && blanks.find('\t') == std::string_view::npos) {
+    result.append(blanks);
+    return;
+  }
+
+  size_t column = start_column;
+  std::string replacement;
+  while (column < end_column) {
+    size_t next_stop = next_tab_stop(column, tab_stops);
+    if (next_stop > end_column || next_stop == column) break;
+    if (allow_single_char_tab || next_stop - column > 1) {
+      replacement += '\t';
+      column = next_stop;
+    } else {
+      break;
+    }
+  }
+  replacement.append(end_column - column, ' ');
+
+  if (replacement.size() < blanks.size()) {
+    result += replacement;
+  } else {
+    result.append(blanks);
+  }
+}
+
+// Convert spaces and tabs to the shortest equivalent tab/space sequence.
+auto unexpand_line(const std::string& line, const Config::TabStops& tab_stops,
+                   bool all_spaces) -> std::string {
   std::string result;
   result.reserve(line.size());
-  size_t pos = 0;
+  size_t column = 0;
+  bool before_non_blank = true;
 
-  while (pos < line.size()) {
-    if (line[pos] == ' ') {
-      // Count consecutive spaces
-      size_t space_count = 0;
-      while (pos < line.size() && line[pos] == ' ') {
-        space_count++;
-        pos++;
-      }
-
-      // Convert spaces to tabs if possible
-      // Only convert if we're at the beginning of line (not all_spaces mode)
-      // or if we're in all_spaces mode
-      bool convert_to_tabs = all_spaces || result.empty();
-
-      if (convert_to_tabs && space_count >= 2) {
-        // Try to convert to tabs
-        int tabs = 0;
-        int remaining_spaces = space_count;
-
-        // Calculate how many tabs we can use
-        while (remaining_spaces >= tab_width) {
-          tabs++;
-          remaining_spaces -= tab_width;
-        }
-
-        // Only use tabs if we can save at least 1 space
-        if (tabs > 0 && (tabs * tab_width) > remaining_spaces) {
-          result.append(tabs, '\t');
-          result.append(remaining_spaces, ' ');
+  for (size_t pos = 0; pos < line.size();) {
+    char c = line[pos];
+    if (c == ' ' || c == '\t') {
+      size_t blank_start = pos;
+      size_t start_column = column;
+      while (pos < line.size() && (line[pos] == ' ' || line[pos] == '\t')) {
+        if (line[pos] == '\t') {
+          column = next_tab_stop(column, tab_stops);
         } else {
-          result.append(space_count, ' ');
+          ++column;
         }
-      } else {
-        result.append(space_count, ' ');
+        ++pos;
       }
+
+      std::string_view blanks(line.data() + blank_start, pos - blank_start);
+      if (all_spaces || before_non_blank) {
+        append_unexpanded_blanks(result, blanks, start_column, column,
+                                 tab_stops, before_non_blank);
+      } else {
+        result.append(blanks);
+      }
+      continue;
+    }
+
+    result += c;
+    ++pos;
+    if (c == '\n') {
+      column = 0;
+      before_non_blank = true;
+    } else if (c == '\b') {
+      if (column > 0) --column;
+      before_non_blank = false;
     } else {
-      result += line[pos];
-      pos++;
+      ++column;
+      before_non_blank = false;
     }
   }
 
@@ -201,12 +330,12 @@ auto run(const Config& cfg) -> int {
 
       if (line_end == std::string::npos) {
         line = content.substr(line_start);
-        result += unexpand_line(line, cfg.tab_width, cfg.all_spaces);
+        result += unexpand_line(line, cfg.tab_stops, cfg.all_spaces);
         break;
       } else {
         line = content.substr(line_start,
                               line_end - line_start + 1);  // Include newline
-        result += unexpand_line(line, cfg.tab_width, cfg.all_spaces);
+        result += unexpand_line(line, cfg.tab_stops, cfg.all_spaces);
         line_start = line_end + 1;
       }
     }
@@ -226,8 +355,7 @@ REGISTER_COMMAND(
     "Convert spaces to tabs. By default, only convert leading spaces to tabs.\n"
     "Use -a to convert all spaces.\n"
     "\n"
-    "Note: This implementation supports basic space-to-tab conversion.\n"
-    "Advanced features like comma-separated tab positions are not implemented.",
+    "Supports GNU tab lists, including /N and +N repeat tab stops.",
     "  unexpand file.txt\n"
     "  unexpand -t 4 file.txt\n"
     "  unexpand -a file.txt\n"

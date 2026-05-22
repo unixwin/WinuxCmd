@@ -25,8 +25,7 @@ auto constexpr ENV_OPTIONS = std::array{
     OPTION("-S", "--split-string",
            "process and split S into separate arguments [NOT SUPPORT]",
            STRING_TYPE),
-    OPTION("-C", "--chdir", "change working directory [NOT SUPPORT]",
-           STRING_TYPE)};
+    OPTION("-C", "--chdir", "change working directory", STRING_TYPE)};
 
 namespace env_pipeline {
 namespace cp = core::pipeline;
@@ -34,8 +33,9 @@ namespace cp = core::pipeline;
 struct Config {
   bool ignore_environment = false;
   bool null_terminated = false;
-  std::string unset_name;
+  std::vector<std::string> unset_names;
   std::map<std::string, std::string> assignments;
+  std::string chdir;
   SmallVector<std::string, 32> command;
 };
 
@@ -77,10 +77,6 @@ auto is_unsupported_used(const CommandContext<ENV_OPTIONS.size()>& ctx)
       !ctx.get<std::string>("-S", "").empty()) {
     return "--split-string is [NOT SUPPORT]";
   }
-  if (!ctx.get<std::string>("--chdir", "").empty() ||
-      !ctx.get<std::string>("-C", "").empty()) {
-    return "--chdir is [NOT SUPPORT]";
-  }
   return std::nullopt;
 }
 
@@ -91,8 +87,13 @@ auto build_config(const CommandContext<ENV_OPTIONS.size()>& ctx)
                            ctx.get<bool>("-i", false);
   cfg.null_terminated =
       ctx.get<bool>("--null", false) || ctx.get<bool>("-0", false);
-  cfg.unset_name = ctx.get<std::string>("--unset", "");
-  if (cfg.unset_name.empty()) cfg.unset_name = ctx.get<std::string>("-u", "");
+  cfg.unset_names = ctx.get_all<std::string>("--unset");
+  auto short_unsets = ctx.get_all<std::string>("-u");
+  cfg.unset_names.insert(cfg.unset_names.end(), short_unsets.begin(),
+                         short_unsets.end());
+
+  cfg.chdir = ctx.get<std::string>("--chdir", "");
+  if (cfg.chdir.empty()) cfg.chdir = ctx.get<std::string>("-C", "");
 
   bool in_command = false;
   for (auto p : ctx.positionals) {
@@ -128,19 +129,75 @@ auto print_env(const std::map<std::string, std::string>& vars,
   }
 }
 
-auto run(const Config& cfg) -> int {
-  if (!cfg.command.empty()) {
-    cp::report_custom_error(L"env", L"running command is [NOT SUPPORT]");
-    return 2;
-  }
+auto quote_arg(const std::wstring& arg) -> std::wstring {
+  if (arg.empty()) return L"\"\"";
 
+  bool need_quote = arg.find_first_of(L" \t\"") != std::wstring::npos;
+  if (!need_quote) return arg;
+
+  std::wstring out = L"\"";
+  size_t backslashes = 0;
+  for (wchar_t c : arg) {
+    if (c == L'\\') {
+      ++backslashes;
+    } else if (c == L'"') {
+      out.append(backslashes * 2 + 1, L'\\');
+      out.push_back(L'"');
+      backslashes = 0;
+    } else {
+      out.append(backslashes, L'\\');
+      backslashes = 0;
+      out.push_back(c);
+    }
+  }
+  out.append(backslashes * 2, L'\\');
+  out.push_back(L'"');
+  return out;
+}
+
+auto build_command_line(const SmallVector<std::string, 32>& command)
+    -> std::wstring {
+  std::wstring out = quote_arg(utf8_to_wstring(command.front()));
+  for (size_t i = 1; i < command.size(); ++i) {
+    out.push_back(L' ');
+    out += quote_arg(utf8_to_wstring(command[i]));
+  }
+  return out;
+}
+
+auto build_environment_block(const std::map<std::string, std::string>& vars)
+    -> std::vector<wchar_t> {
+  std::vector<wchar_t> block;
+  for (const auto& [key, value] : vars) {
+    auto entry = utf8_to_wstring(key + "=" + value);
+    block.insert(block.end(), entry.begin(), entry.end());
+    block.push_back(L'\0');
+  }
+  block.push_back(L'\0');
+  return block;
+}
+
+auto make_working_directory_arg(const std::string& chdir, std::wstring& storage)
+    -> LPCWSTR {
+  if (chdir.empty()) return nullptr;
+  storage = utf8_to_wstring(chdir);
+  DWORD attrs = GetFileAttributesW(storage.c_str());
+  if (attrs == INVALID_FILE_ATTRIBUTES ||
+      (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+    return nullptr;
+  }
+  return storage.c_str();
+}
+
+auto materialize_environment(const Config& cfg)
+    -> std::map<std::string, std::string> {
   std::map<std::string, std::string> vars;
   if (!cfg.ignore_environment) {
     vars = parse_env_block();
   }
 
-  if (!cfg.unset_name.empty()) {
-    auto it = vars.find(cfg.unset_name);
+  for (const auto& unset_name : cfg.unset_names) {
+    auto it = vars.find(unset_name);
     if (it != vars.end()) {
       vars.erase(it);
     }
@@ -150,21 +207,77 @@ auto run(const Config& cfg) -> int {
     vars[k] = v;
   }
 
+  return vars;
+}
+
+auto run_command(const Config& cfg,
+                 const std::map<std::string, std::string>& vars) -> int {
+  auto cmd_line = build_command_line(cfg.command);
+  auto env_block = build_environment_block(vars);
+  std::wstring working_directory;
+  LPCWSTR working_directory_arg =
+      make_working_directory_arg(cfg.chdir, working_directory);
+  if (!cfg.chdir.empty() && working_directory_arg == nullptr) {
+    cp::report_custom_error(L"env", L"cannot change directory");
+    return 125;
+  }
+
+  STARTUPINFOW si{sizeof(si)};
+  si.dwFlags = STARTF_USESTDHANDLES;
+  si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+  si.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+  si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+
+  PROCESS_INFORMATION pi{};
+  BOOL ok = CreateProcessW(nullptr, cmd_line.data(), nullptr, nullptr, TRUE,
+                           CREATE_UNICODE_ENVIRONMENT, env_block.data(),
+                           working_directory_arg, &si, &pi);
+  if (!ok) {
+    cp::report_custom_error(L"env", L"failed to execute command");
+    return 127;
+  }
+
+  WaitForSingleObject(pi.hProcess, INFINITE);
+  DWORD exit_code = 1;
+  GetExitCodeProcess(pi.hProcess, &exit_code);
+  CloseHandle(pi.hProcess);
+  CloseHandle(pi.hThread);
+  return static_cast<int>(exit_code);
+}
+
+auto run(const Config& cfg) -> int {
+  auto vars = materialize_environment(cfg);
+
+  if (!cfg.command.empty()) {
+    return run_command(cfg, vars);
+  }
+
+  if (!cfg.chdir.empty()) {
+    std::wstring working_directory;
+    LPCWSTR working_directory_arg =
+        make_working_directory_arg(cfg.chdir, working_directory);
+    if (working_directory_arg == nullptr ||
+        !SetCurrentDirectoryW(working_directory_arg)) {
+      cp::report_custom_error(L"env", L"cannot change directory");
+      return 125;
+    }
+  }
+
   print_env(vars, cfg.null_terminated);
   return 0;
 }
 
 }  // namespace env_pipeline
 
-REGISTER_COMMAND(
-    env, "env", "env [OPTION]... [NAME=VALUE]... [COMMAND [ARG]...]",
-    "Set each NAME to VALUE in the environment and print the\n"
-    "resulting environment. Running COMMAND is currently [NOT SUPPORT].",
-    "  env\n"
-    "  env -i FOO=bar\n"
-    "  env -u PATH",
-    "printenv(1), which(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd",
-    ENV_OPTIONS) {
+REGISTER_COMMAND(env, "env",
+                 "env [OPTION]... [NAME=VALUE]... [COMMAND [ARG]...]",
+                 "Set each NAME to VALUE in the environment and print the\n"
+                 "resulting environment, or run COMMAND in that environment.",
+                 "  env\n"
+                 "  env -i FOO=bar\n"
+                 "  env -u PATH",
+                 "printenv(1), which(1)", "WinuxCmd",
+                 "Copyright © 2026 WinuxCmd", ENV_OPTIONS) {
   using namespace env_pipeline;
 
   if (auto unsupported = is_unsupported_used(ctx); unsupported.has_value()) {

@@ -66,6 +66,12 @@ auto build_config(const CommandContext<BASENAME_OPTIONS.size()>& ctx)
   cfg.multiple =
       ctx.get<bool>("--multiple", false) || ctx.get<bool>("-a", false);
   cfg.suffix = ctx.get<std::string>("--suffix", "");
+  if (cfg.suffix.empty()) {
+    cfg.suffix = ctx.get<std::string>("-s", "");
+  }
+  if (!cfg.suffix.empty()) {
+    cfg.multiple = true;
+  }
   cfg.zero = ctx.get<bool>("--zero", false) || ctx.get<bool>("-z", false);
 
   for (auto arg : ctx.positionals) {
@@ -114,7 +120,7 @@ auto run(const Config& cfg) -> int {
     std::string result = get_basename(name, suffix);
     if (cfg.zero) {
       safePrint(result);
-      safePrint("\0");
+      safePrint(char{'\0'});
     } else {
       safePrintLn(result);
     }
@@ -124,7 +130,7 @@ auto run(const Config& cfg) -> int {
       std::string result = get_basename(name, cfg.suffix);
       if (cfg.zero) {
         safePrint(result);
-        safePrint("\0");
+        safePrint(char{'\0'});
       } else {
         safePrintLn(result);
       }

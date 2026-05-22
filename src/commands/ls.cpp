@@ -83,10 +83,12 @@ using cmd::meta::OptionType;
  * [IMPLEMENTED]
  * - @a -N, @a --literal: Print entry names without quoting [TODO]
  * - @a -o: Like -l, but do not list group information [IMPLEMENTED]
- * - @a -p, @a --indicator-style=slash: Append / indicator to directories
+ * - @a -p, @a --indicator-style=WORD: Append /, file-type, or classify
+ *
+ * suffixes to entries
  * [IMPLEMENTED]
- * - @a -q, @a --hide-control-chars: Print ? instead of nongraphic characters
- * [IMPLEMENTED]
+ * - @a -q, @a --hide-control-chars:
+ * Print ? instead of nongraphic characters [IMPLEMENTED]
  * - @a -Q, @a --quote-name: Enclose entry names in double quotes
  * [IMPLEMENTED]
  * - @a -r, @a --reverse: Reverse order while sorting [IMPLEMENTED]
@@ -138,8 +140,7 @@ auto constexpr LS_OPTIONS = std::array{
            "like -l, but list numeric user and group IDs"),
     OPTION("-N", "--literal", "print entry names without quoting"),
     OPTION("-o", "", "like -l, but do not list group information"),
-    OPTION("-p", "--indicator-style=slash",
-           "append / indicator to directories"),
+    OPTION("-p", "", "append / indicator to directories"),
     OPTION("-q", "--hide-control-chars",
            "print ? instead of nongraphic characters"),
     OPTION("-Q", "--quote-name", "enclose entry names in double quotes"),
@@ -159,11 +160,17 @@ auto constexpr LS_OPTIONS = std::array{
     OPTION("-w", "--width", "set output width to COLS. 0 means no limit",
            INT_TYPE),
     OPTION("-x", "", "list entries by lines instead of by columns"),
-    OPTION("-X", "--sort=extension", "sort alphabetically by entry extension"),
+    OPTION("-X", "", "sort alphabetically by entry extension"),
     OPTION("-Z", "--context", "print any security context of each file"),
     OPTION("", "--sort", "sort entries by WORD", STRING_TYPE),
     OPTION("", "--format", "set output format", STRING_TYPE),
     OPTION("", "--time", "change time style", STRING_TYPE),
+    OPTION("", "--block-size", "scale sizes by SIZE", STRING_TYPE),
+    OPTION("", "--quoting-style", "use quoting style WORD", STRING_TYPE),
+    OPTION("", "--show-control-chars",
+           "show nongraphic characters as-is in file names"),
+    OPTION("", "--indicator-style", "append indicator using WORD", STRING_TYPE),
+    OPTION("", "--file-type", "append file type indicators, without *"),
     OPTION("", "--color",
            "colorize the output; WHEN can be 'always', 'auto', or 'never'",
            STRING_TYPE),
@@ -202,10 +209,32 @@ namespace ls_pipeline {
 namespace cp = core::pipeline;
 
 enum class SortMode { Name, Size, Time, Version, Extension, None };
+enum class IndicatorStyle { None, Slash, FileType, Classify };
 enum class TimeMode { Modification, Access, Status, Birth };
 enum class FormatMode { Columns, Across, Commas, OnePerLine, Long };
+enum class SizeMode { Bytes, Blocks, Human, SI };
+enum class QuotingMode {
+  Literal,
+  Escape,
+  HideControl,
+  C,
+  CMaybe,
+  Shell,
+  ShellAlways,
+  ShellEscape,
+  ShellEscapeAlways
+};
+
+struct SizeConfig {
+  SizeMode file_mode = SizeMode::Bytes;
+  SizeMode block_mode = SizeMode::Blocks;
+  uint64_t file_block_size = 1;
+  uint64_t block_size = 1024;
+};
 
 auto get_terminal_width() -> int;
+auto parse_indicator_style(std::string_view value)
+    -> std::optional<IndicatorStyle>;
 auto build_listing_prefix(const std::wstring &path,
                           const WIN32_FIND_DATAW &find_data,
                           const CommandContext<LS_OPTIONS.size()> &ctx)
@@ -330,27 +359,41 @@ auto get_indicator_suffix(const std::wstring &name,
                           const WIN32_FIND_DATAW &find_data,
                           const CommandContext<LS_OPTIONS.size()> &ctx)
     -> std::wstring {
-  const bool classify =
-      ctx.get<bool>("-F", false) || ctx.get<bool>("--classify", false);
-  const bool slash_indicator = ctx.get<bool>("-p", false) ||
-                               ctx.get<bool>("--indicator-style=slash", false);
-
-  if (classify) {
-    if (find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-      return L"/";
+  IndicatorStyle style = IndicatorStyle::None;
+  const std::string indicator_option =
+      ctx.get<std::string>("--indicator-style", "");
+  if (!indicator_option.empty()) {
+    if (auto parsed = parse_indicator_style(indicator_option)) {
+      style = *parsed;
     }
-    if (find_data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
-      return L"@";
-    }
-    if (is_executable_name(name)) {
-      return L"*";
-    }
-    return {};
+  } else if (ctx.get<bool>("-F", false) || ctx.get<bool>("--classify", false)) {
+    style = IndicatorStyle::Classify;
+  } else if (ctx.get<bool>("--file-type", false)) {
+    style = IndicatorStyle::FileType;
+  } else if (ctx.get<bool>("-p", false)) {
+    style = IndicatorStyle::Slash;
   }
 
-  if (slash_indicator &&
-      (find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
-    return L"/";
+  auto file_type_suffix = [&]() -> std::wstring {
+    if (find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) return L"/";
+    if (find_data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) return L"@";
+    return {};
+  };
+
+  switch (style) {
+    case IndicatorStyle::None:
+      return {};
+    case IndicatorStyle::Slash:
+      return (find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? L"/"
+                                                                     : L"";
+    case IndicatorStyle::FileType:
+      return file_type_suffix();
+    case IndicatorStyle::Classify: {
+      std::wstring suffix = file_type_suffix();
+      if (!suffix.empty()) return suffix;
+      if (is_executable_name(name)) return L"*";
+      return {};
+    }
   }
 
   return {};
@@ -415,30 +458,152 @@ auto escape_display_name(const std::wstring &name) -> std::wstring {
   return rendered;
 }
 
+auto parse_quoting_mode(std::string_view value) -> std::optional<QuotingMode> {
+  if (value == "literal") return QuotingMode::Literal;
+  if (value == "escape") return QuotingMode::Escape;
+  if (value == "c") return QuotingMode::C;
+  if (value == "c-maybe") return QuotingMode::CMaybe;
+  if (value == "shell") return QuotingMode::Shell;
+  if (value == "shell-always") return QuotingMode::ShellAlways;
+  if (value == "shell-escape") return QuotingMode::ShellEscape;
+  if (value == "shell-escape-always") return QuotingMode::ShellEscapeAlways;
+  return std::nullopt;
+}
+
+auto resolve_quoting_mode(const CommandContext<LS_OPTIONS.size()> &ctx)
+    -> cp::Result<QuotingMode> {
+  QuotingMode mode = QuotingMode::Literal;
+  for (const auto &occurrence : ctx.options.occurrences()) {
+    if (occurrence.index >= LS_OPTIONS.size()) continue;
+    const auto &meta = LS_OPTIONS[occurrence.index];
+
+    if (meta.short_name == "-N" || meta.long_name == "--literal" ||
+        meta.long_name == "--show-control-chars") {
+      mode = QuotingMode::Literal;
+      continue;
+    }
+
+    if (meta.short_name == "-b" || meta.long_name == "--escape") {
+      mode = QuotingMode::Escape;
+      continue;
+    }
+
+    if (meta.short_name == "-q" || meta.long_name == "--hide-control-chars") {
+      mode = QuotingMode::HideControl;
+      continue;
+    }
+
+    if (meta.short_name == "-Q" || meta.long_name == "--quote-name") {
+      mode = QuotingMode::C;
+      continue;
+    }
+
+    if (meta.long_name == "--quoting-style") {
+      auto value = std::get_if<std::string>(&occurrence.value);
+      if (!value) return std::unexpected("invalid quoting style");
+      auto parsed = parse_quoting_mode(*value);
+      if (!parsed) return std::unexpected("invalid quoting style");
+      mode = *parsed;
+    }
+  }
+  return mode;
+}
+
+auto needs_shell_quote(wchar_t ch) -> bool {
+  if (std::iswspace(static_cast<wint_t>(ch)) != 0) return true;
+  switch (ch) {
+    case L'\'':
+    case L'"':
+    case L'\\':
+    case L'$':
+    case L'&':
+    case L';':
+    case L'(':
+    case L')':
+    case L'<':
+    case L'>':
+    case L'|':
+    case L'*':
+    case L'?':
+    case L'[':
+    case L']':
+    case L'{':
+    case L'}':
+    case L'~':
+    case L'#':
+      return true;
+    default:
+      return !std::iswprint(static_cast<wint_t>(ch));
+  }
+}
+
+auto shell_quote_display_name(const std::wstring &name, bool always)
+    -> std::wstring {
+  bool quote = always;
+  for (wchar_t ch : name) {
+    if (needs_shell_quote(ch)) {
+      quote = true;
+      break;
+    }
+  }
+  if (!quote) return name;
+
+  std::wstring rendered;
+  rendered.reserve(name.size() + 2);
+  rendered.push_back(L'\'');
+  for (wchar_t ch : name) {
+    if (ch == L'\'') {
+      rendered += L"'\\''";
+    } else {
+      rendered.push_back(ch);
+    }
+  }
+  rendered.push_back(L'\'');
+  return rendered;
+}
+
 auto render_display_name(const std::wstring &name,
                          const WIN32_FIND_DATAW &find_data,
                          const CommandContext<LS_OPTIONS.size()> &ctx)
     -> std::wstring {
   std::wstring rendered = name;
+  auto quoting_result = resolve_quoting_mode(ctx);
+  QuotingMode quoting = quoting_result ? *quoting_result : QuotingMode::Literal;
 
-  if (ctx.get<bool>("-N", false) || ctx.get<bool>("--literal", false)) {
-    // keep literal name
-  } else if (ctx.get<bool>("-b", false) || ctx.get<bool>("--escape", false)) {
-    rendered = escape_display_name(rendered);
-  } else if (ctx.get<bool>("-q", false) ||
-             ctx.get<bool>("--hide-control-chars", false)) {
-    for (auto &ch : rendered) {
-      if (!std::iswprint(static_cast<wint_t>(ch))) {
-        ch = L'?';
+  switch (quoting) {
+    case QuotingMode::Literal:
+      break;
+    case QuotingMode::Escape:
+      rendered = escape_display_name(rendered);
+      break;
+    case QuotingMode::HideControl:
+      for (auto &ch : rendered) {
+        if (!std::iswprint(static_cast<wint_t>(ch))) {
+          ch = L'?';
+        }
       }
+      break;
+    case QuotingMode::C:
+      rendered = L"\"" + escape_display_name(rendered) + L"\"";
+      break;
+    case QuotingMode::CMaybe: {
+      auto escaped = escape_display_name(rendered);
+      if (escaped != rendered) {
+        rendered = L"\"" + std::move(escaped) + L"\"";
+      }
+      break;
     }
+    case QuotingMode::Shell:
+    case QuotingMode::ShellEscape:
+      rendered = shell_quote_display_name(rendered, false);
+      break;
+    case QuotingMode::ShellAlways:
+    case QuotingMode::ShellEscapeAlways:
+      rendered = shell_quote_display_name(rendered, true);
+      break;
   }
 
   rendered += get_indicator_suffix(name, find_data, ctx);
-
-  if (ctx.get<bool>("-Q", false) || ctx.get<bool>("--quote-name", false)) {
-    rendered = L"\"" + rendered + L"\"";
-  }
 
   return rendered;
 }
@@ -557,6 +722,105 @@ auto parse_format_mode(std::string_view value) -> std::optional<FormatMode> {
     return FormatMode::Long;
   }
   return std::nullopt;
+}
+
+auto parse_indicator_style(std::string_view value)
+    -> std::optional<IndicatorStyle> {
+  if (value.empty() || value == "none") return IndicatorStyle::None;
+  if (value == "slash") return IndicatorStyle::Slash;
+  if (value == "file-type") return IndicatorStyle::FileType;
+  if (value == "classify") return IndicatorStyle::Classify;
+  return std::nullopt;
+}
+
+struct TimeSelection {
+  TimeMode mode = TimeMode::Modification;
+  bool explicit_time = false;
+};
+
+auto resolve_time_mode(const CommandContext<LS_OPTIONS.size()> &ctx)
+    -> cp::Result<TimeSelection> {
+  TimeSelection selection;
+  for (const auto &occurrence : ctx.options.occurrences()) {
+    if (occurrence.index >= LS_OPTIONS.size()) continue;
+    const auto &meta = LS_OPTIONS[occurrence.index];
+
+    if (meta.long_name == "--time") {
+      auto value = std::get_if<std::string>(&occurrence.value);
+      if (!value) return std::unexpected("invalid time value");
+      auto parsed = parse_time_mode(*value);
+      if (!parsed) return std::unexpected("invalid time value");
+      selection.mode = *parsed;
+      selection.explicit_time = true;
+      continue;
+    }
+
+    if (meta.short_name == "-u") {
+      selection.mode = TimeMode::Access;
+      selection.explicit_time = true;
+      continue;
+    }
+
+    if (meta.short_name == "-c") {
+      selection.mode = TimeMode::Status;
+      selection.explicit_time = true;
+    }
+  }
+  return selection;
+}
+
+struct SortSelection {
+  SortMode mode = SortMode::Name;
+  bool explicit_sort = false;
+};
+
+auto resolve_sort_mode(const CommandContext<LS_OPTIONS.size()> &ctx)
+    -> cp::Result<SortSelection> {
+  SortSelection selection;
+  for (const auto &occurrence : ctx.options.occurrences()) {
+    if (occurrence.index >= LS_OPTIONS.size()) continue;
+    const auto &meta = LS_OPTIONS[occurrence.index];
+
+    if (meta.long_name == "--sort") {
+      auto value = std::get_if<std::string>(&occurrence.value);
+      if (!value) return std::unexpected("invalid sort value");
+      auto parsed = parse_sort_mode(*value);
+      if (!parsed) return std::unexpected("invalid sort value");
+      selection.mode = *parsed;
+      selection.explicit_sort = true;
+      continue;
+    }
+
+    if (meta.short_name == "-U" || meta.short_name == "-f") {
+      selection.mode = SortMode::None;
+      selection.explicit_sort = true;
+      continue;
+    }
+
+    if (meta.short_name == "-S") {
+      selection.mode = SortMode::Size;
+      selection.explicit_sort = true;
+      continue;
+    }
+
+    if (meta.short_name == "-t") {
+      selection.mode = SortMode::Time;
+      selection.explicit_sort = true;
+      continue;
+    }
+
+    if (meta.short_name == "-v") {
+      selection.mode = SortMode::Version;
+      selection.explicit_sort = true;
+      continue;
+    }
+
+    if (meta.short_name == "-X") {
+      selection.mode = SortMode::Extension;
+      selection.explicit_sort = true;
+    }
+  }
+  return selection;
 }
 
 auto get_entry_time(const WIN32_FIND_DATAW &find_data, TimeMode mode)
@@ -811,40 +1075,182 @@ auto get_permissions_string(const WIN32_FIND_DATAW &find_data) -> std::string {
   return std::string(perms, 10);
 }
 
+auto ceil_div(uint64_t value, uint64_t divisor) -> uint64_t {
+  if (value == 0) return 0;
+  return 1 + ((value - 1) / divisor);
+}
+
+auto pow_u64(uint64_t base, int exponent) -> std::optional<uint64_t> {
+  uint64_t value = 1;
+  for (int i = 0; i < exponent; ++i) {
+    if (value > std::numeric_limits<uint64_t>::max() / base) {
+      return std::nullopt;
+    }
+    value *= base;
+  }
+  return value;
+}
+
+auto parse_block_size(std::string_view text) -> std::optional<uint64_t> {
+  if (text.empty()) return std::nullopt;
+
+  struct Unit {
+    std::string_view suffix;
+    uint64_t multiplier;
+  };
+
+  const std::array units{Unit{"KiB", *pow_u64(1024, 1)},
+                         Unit{"MiB", *pow_u64(1024, 2)},
+                         Unit{"GiB", *pow_u64(1024, 3)},
+                         Unit{"TiB", *pow_u64(1024, 4)},
+                         Unit{"PiB", *pow_u64(1024, 5)},
+                         Unit{"EiB", *pow_u64(1024, 6)},
+                         Unit{"KB", *pow_u64(1000, 1)},
+                         Unit{"MB", *pow_u64(1000, 2)},
+                         Unit{"GB", *pow_u64(1000, 3)},
+                         Unit{"TB", *pow_u64(1000, 4)},
+                         Unit{"PB", *pow_u64(1000, 5)},
+                         Unit{"EB", *pow_u64(1000, 6)},
+                         Unit{"K", *pow_u64(1024, 1)},
+                         Unit{"M", *pow_u64(1024, 2)},
+                         Unit{"G", *pow_u64(1024, 3)},
+                         Unit{"T", *pow_u64(1024, 4)},
+                         Unit{"P", *pow_u64(1024, 5)},
+                         Unit{"E", *pow_u64(1024, 6)},
+                         Unit{"k", *pow_u64(1024, 1)},
+                         Unit{"m", *pow_u64(1024, 2)},
+                         Unit{"g", *pow_u64(1024, 3)},
+                         Unit{"t", *pow_u64(1024, 4)},
+                         Unit{"p", *pow_u64(1024, 5)},
+                         Unit{"e", *pow_u64(1024, 6)},
+                         Unit{"b", 512},
+                         Unit{"B", 1}};
+
+  uint64_t multiplier = 1;
+  std::string_view number = text;
+  bool suffix_matched = false;
+  for (const auto &unit : units) {
+    if (text.size() >= unit.suffix.size() &&
+        text.substr(text.size() - unit.suffix.size()) == unit.suffix) {
+      multiplier = unit.multiplier;
+      number = text.substr(0, text.size() - unit.suffix.size());
+      suffix_matched = true;
+      break;
+    }
+  }
+
+  uint64_t value = 1;
+  if (!number.empty()) {
+    auto [ptr, ec] =
+        std::from_chars(number.data(), number.data() + number.size(), value);
+    if (ec != std::errc() || ptr != number.data() + number.size()) {
+      return std::nullopt;
+    }
+  } else if (!suffix_matched) {
+    return std::nullopt;
+  }
+
+  if (value == 0 || value > std::numeric_limits<uint64_t>::max() / multiplier) {
+    return std::nullopt;
+  }
+  return value * multiplier;
+}
+
+auto configure_sizes(const CommandContext<LS_OPTIONS.size()> &ctx)
+    -> cp::Result<SizeConfig> {
+  SizeConfig cfg;
+  for (const auto &occurrence : ctx.options.occurrences()) {
+    if (occurrence.index >= LS_OPTIONS.size()) continue;
+    const auto &meta = LS_OPTIONS[occurrence.index];
+
+    if (meta.short_name == "-k" || meta.long_name == "--kibibytes") {
+      cfg.block_mode = SizeMode::Blocks;
+      cfg.block_size = 1024;
+      continue;
+    }
+
+    if (meta.short_name == "-h" || meta.long_name == "--human-readable") {
+      cfg.file_mode = SizeMode::Human;
+      cfg.block_mode = SizeMode::Human;
+      continue;
+    }
+
+    if (meta.long_name == "--block-size") {
+      auto value = std::get_if<std::string>(&occurrence.value);
+      if (!value) return std::unexpected("invalid block size");
+
+      if (*value == "human-readable") {
+        cfg.file_mode = SizeMode::Human;
+        cfg.block_mode = SizeMode::Human;
+        continue;
+      }
+      if (*value == "si") {
+        cfg.file_mode = SizeMode::SI;
+        cfg.block_mode = SizeMode::SI;
+        continue;
+      }
+
+      auto parsed = parse_block_size(*value);
+      if (!parsed) return std::unexpected("invalid block size");
+      cfg.file_mode = SizeMode::Blocks;
+      cfg.block_mode = SizeMode::Blocks;
+      cfg.file_block_size = *parsed;
+      cfg.block_size = *parsed;
+    }
+  }
+  return cfg;
+}
+
+auto format_human_size(uint64_t size, bool si) -> std::string {
+  const char *units = si ? "BKMGTPE" : "BKMGTP";
+  const double base = si ? 1000.0 : 1024.0;
+  int unit_index = 0;
+  double value = static_cast<double>(size);
+
+  while (value >= base && unit_index < 6) {
+    value /= base;
+    ++unit_index;
+  }
+
+  char buf[32];
+  if (unit_index == 0) {
+    snprintf(buf, sizeof(buf), "%.0f", value);
+  } else if (value < 10.0) {
+    snprintf(buf, sizeof(buf), "%.1f%c", value, units[unit_index]);
+  } else {
+    snprintf(buf, sizeof(buf), "%.0f%c", value, units[unit_index]);
+  }
+  return std::string(buf);
+}
+
+auto format_scaled_size(uint64_t size, SizeMode mode, uint64_t block_size)
+    -> std::string {
+  switch (mode) {
+    case SizeMode::Bytes:
+      return std::to_string(size);
+    case SizeMode::Blocks:
+      return std::to_string(ceil_div(size, block_size));
+    case SizeMode::Human:
+      return format_human_size(size, false);
+    case SizeMode::SI:
+      return format_human_size(size, true);
+  }
+  return std::to_string(size);
+}
+
 /**
  * @brief Get file size string
- * @param find_data WIN32_FIND_DATAW structure
+ * @param find_data WIN32_FIND_DATAW
+ * structure
  * @param ctx Command context
  * @return File size string
  */
 auto get_file_size_string(const WIN32_FIND_DATAW &find_data,
-                          const CommandContext<LS_OPTIONS.size()> &ctx)
-    -> std::string {
+                          const SizeConfig &size_cfg) -> std::string {
   uint64_t fileSize = static_cast<uint64_t>(find_data.nFileSizeLow) |
                       (static_cast<uint64_t>(find_data.nFileSizeHigh) << 32);
-
-  char buf[32];
-
-  if (ctx.get<bool>("-h", false) || ctx.get<bool>("--human-readable", false)) {
-    const char *units[] = {"B", "K", "M", "G", "T"};
-    int unitIndex = 0;
-    double size = static_cast<double>(fileSize);
-
-    while (size >= 1024.0 && unitIndex < 4) {
-      size /= 1024.0;
-      ++unitIndex;
-    }
-
-    if (size < 10.0) {
-      snprintf(buf, sizeof(buf), "%.1f%s", size, units[unitIndex]);
-    } else {
-      snprintf(buf, sizeof(buf), "%.0f%s", size, units[unitIndex]);
-    }
-  } else {
-    snprintf(buf, sizeof(buf), "%llu", fileSize);
-  }
-
-  return std::string(buf);
+  return format_scaled_size(fileSize, size_cfg.file_mode,
+                            size_cfg.file_block_size);
 }
 
 auto get_file_index_string(const std::wstring &path,
@@ -914,11 +1320,8 @@ auto get_link_count(const std::wstring &path, const WIN32_FIND_DATAW &find_data,
   return static_cast<unsigned long>(link_count);
 }
 
-auto get_allocated_blocks_string(const std::wstring &path,
-                                 const WIN32_FIND_DATAW &find_data,
-                                 const CommandContext<LS_OPTIONS.size()> &ctx)
-    -> std::string {
-  (void)ctx;
+auto get_allocated_size_bytes(const std::wstring &path,
+                              const WIN32_FIND_DATAW &find_data) -> uint64_t {
   ULARGE_INTEGER allocated{};
   DWORD high = 0;
   DWORD low = GetCompressedFileSizeW(path.c_str(), &high);
@@ -932,14 +1335,28 @@ auto get_allocated_blocks_string(const std::wstring &path,
     allocated.HighPart = high;
   }
 
-  uint64_t blocks = (allocated.QuadPart + 1023ULL) / 1024ULL;
-  return std::to_string(blocks);
+  return allocated.QuadPart;
+}
+
+auto get_allocated_block_count(const std::wstring &path,
+                               const WIN32_FIND_DATAW &find_data,
+                               const SizeConfig &size_cfg) -> uint64_t {
+  return ceil_div(get_allocated_size_bytes(path, find_data),
+                  size_cfg.block_size);
+}
+
+auto get_allocated_blocks_string(const std::wstring &path,
+                                 const WIN32_FIND_DATAW &find_data,
+                                 const SizeConfig &size_cfg) -> std::string {
+  return format_scaled_size(get_allocated_size_bytes(path, find_data),
+                            size_cfg.block_mode, size_cfg.block_size);
 }
 
 auto build_listing_prefix(const std::wstring &path,
                           const WIN32_FIND_DATAW &find_data,
                           const CommandContext<LS_OPTIONS.size()> &ctx)
     -> std::string {
+  auto size_cfg = configure_sizes(ctx).value_or(SizeConfig{});
   std::string prefix;
   if (ctx.get<bool>("-i", false) || ctx.get<bool>("--inode", false)) {
     prefix = get_file_index_string(path, find_data, ctx);
@@ -948,7 +1365,7 @@ auto build_listing_prefix(const std::wstring &path,
     }
   }
   if (ctx.get<bool>("-s", false) || ctx.get<bool>("--size", false)) {
-    prefix += get_allocated_blocks_string(path, find_data, ctx);
+    prefix += get_allocated_blocks_string(path, find_data, size_cfg);
     prefix.push_back(' ');
   }
   return prefix;
@@ -1295,9 +1712,16 @@ auto list_directory(const std::string &path,
 
   FindClose(hFind);
 
-  std::string sort_option = ctx.get<std::string>("--sort", "");
   std::string format_option = ctx.get<std::string>("--format", "");
-  std::string time_option = ctx.get<std::string>("--time", "");
+  auto size_cfg_result = configure_sizes(ctx);
+  if (!size_cfg_result) return std::unexpected(size_cfg_result.error());
+  SizeConfig size_cfg = *size_cfg_result;
+  auto time_selection = resolve_time_mode(ctx);
+  if (!time_selection) return std::unexpected(time_selection.error());
+  auto sort_selection = resolve_sort_mode(ctx);
+  if (!sort_selection) return std::unexpected(sort_selection.error());
+  auto quoting_mode = resolve_quoting_mode(ctx);
+  if (!quoting_mode) return std::unexpected(quoting_mode.error());
 
   FormatMode format_mode = FormatMode::Columns;
   if (!format_option.empty()) {
@@ -1318,45 +1742,10 @@ auto list_directory(const std::string &path,
     format_mode = FormatMode::Long;
   }
 
-  TimeMode time_mode = TimeMode::Modification;
-  if (!time_option.empty()) {
-    auto parsed = parse_time_mode(time_option);
-    if (parsed) {
-      time_mode = *parsed;
-    }
-  } else if (ctx.get<bool>("-u", false)) {
-    time_mode = TimeMode::Access;
-  } else if (ctx.get<bool>("-c", false)) {
-    time_mode = TimeMode::Status;
-  }
-
-  SortMode sort_mode = SortMode::Name;
-  bool explicit_sort = false;
-  if (!sort_option.empty()) {
-    auto parsed = parse_sort_mode(sort_option);
-    if (parsed) {
-      sort_mode = *parsed;
-      explicit_sort = true;
-    }
-  } else if (ctx.get<bool>("-U", false) || ctx.get<bool>("-f", false)) {
-    sort_mode = SortMode::None;
-    explicit_sort = true;
-  } else if (ctx.get<bool>("-S", false)) {
-    sort_mode = SortMode::Size;
-    explicit_sort = true;
-  } else if (ctx.get<bool>("-t", false)) {
-    sort_mode = SortMode::Time;
-    explicit_sort = true;
-  } else if (ctx.get<bool>("-v", false)) {
-    sort_mode = SortMode::Version;
-    explicit_sort = true;
-  } else if (ctx.get<bool>("-X", false)) {
-    sort_mode = SortMode::Extension;
-    explicit_sort = true;
-  }
-
-  if (!explicit_sort && format_mode != FormatMode::Long &&
-      time_mode != TimeMode::Modification) {
+  TimeMode time_mode = time_selection->mode;
+  SortMode sort_mode = sort_selection->mode;
+  if (!sort_selection->explicit_sort && format_mode != FormatMode::Long &&
+      time_selection->explicit_time) {
     sort_mode = SortMode::Time;
   }
 
@@ -1436,6 +1825,7 @@ auto list_directory(const std::string &path,
 
     // Collect file information (we already have find_data from entries)
     std::vector<FileInfo> files;
+    uint64_t total_blocks = 0;
     for (const auto &entry : entries) {
       FileInfo info;
       info.name = entry.name;
@@ -1447,12 +1837,14 @@ auto list_directory(const std::string &path,
             get_file_index_string(entry.full_path, entry.find_data, ctx);
       }
       if (show_blocks) {
-        info.blocks =
-            get_allocated_blocks_string(entry.full_path, entry.find_data, ctx);
+        info.blocks = get_allocated_blocks_string(entry.full_path,
+                                                  entry.find_data, size_cfg);
       }
+      total_blocks +=
+          get_allocated_block_count(entry.full_path, entry.find_data, size_cfg);
       info.link_count =
           std::to_string(get_link_count(entry.full_path, entry.find_data, ctx));
-      info.size = get_file_size_string(entry.find_data, ctx);
+      info.size = get_file_size_string(entry.find_data, size_cfg);
       info.mtime = get_time_string(entry.find_data, time_mode);
 
       // Get owner and group
@@ -1490,6 +1882,20 @@ auto list_directory(const std::string &path,
     if (show_blocks && max_blocks_len == 0) max_blocks_len = 1;
     if (max_link_len == 0) max_link_len = 1;
     if (max_size_len == 0) max_size_len = 1;
+
+    safePrint("total ");
+    if (size_cfg.block_mode == SizeMode::Blocks) {
+      safePrint(std::to_string(total_blocks));
+    } else {
+      uint64_t total_allocated_bytes = 0;
+      for (const auto &file : files) {
+        total_allocated_bytes +=
+            get_allocated_size_bytes(file.full_path, file.find_data);
+      }
+      safePrint(format_scaled_size(total_allocated_bytes, size_cfg.block_mode,
+                                   size_cfg.block_size));
+    }
+    safePrintLn(L"");
 
     // Long format output
     for (const auto &file_info : files) {
@@ -1620,7 +2026,13 @@ auto list_file(const std::string &path,
   FindClose(hFind);
 
   std::string format_option = ctx.get<std::string>("--format", "");
-  std::string time_option = ctx.get<std::string>("--time", "");
+  auto size_cfg_result = configure_sizes(ctx);
+  if (!size_cfg_result) return std::unexpected(size_cfg_result.error());
+  SizeConfig size_cfg = *size_cfg_result;
+  auto time_selection = resolve_time_mode(ctx);
+  if (!time_selection) return std::unexpected(time_selection.error());
+  auto quoting_mode = resolve_quoting_mode(ctx);
+  if (!quoting_mode) return std::unexpected(quoting_mode.error());
 
   FormatMode format_mode = FormatMode::Columns;
   if (!format_option.empty()) {
@@ -1639,17 +2051,7 @@ auto list_file(const std::string &path,
     format_mode = FormatMode::Long;
   }
 
-  TimeMode time_mode = TimeMode::Modification;
-  if (!time_option.empty()) {
-    auto parsed = parse_time_mode(time_option);
-    if (parsed) {
-      time_mode = *parsed;
-    }
-  } else if (ctx.get<bool>("-u", false)) {
-    time_mode = TimeMode::Access;
-  } else if (ctx.get<bool>("-c", false)) {
-    time_mode = TimeMode::Status;
-  }
+  TimeMode time_mode = time_selection->mode;
 
   bool long_format = format_mode == FormatMode::Long;
   bool use_numeric =
@@ -1663,10 +2065,11 @@ auto list_file(const std::string &path,
     // Long format output for single file
     auto perms = get_permissions_string(find_data);
     auto inode = show_inode ? get_file_index_string(wpath, find_data, ctx) : "";
-    auto blocks =
-        show_blocks ? get_allocated_blocks_string(wpath, find_data, ctx) : "";
+    auto blocks = show_blocks
+                      ? get_allocated_blocks_string(wpath, find_data, size_cfg)
+                      : "";
     auto link_count = std::to_string(get_link_count(wpath, find_data, ctx));
-    auto size = get_file_size_string(find_data, ctx);
+    auto size = get_file_size_string(find_data, size_cfg);
     auto mtime = get_time_string(find_data, time_mode);
     auto [owner, group] = get_file_owner_and_group(use_numeric);
     std::wstring display_name = render_display_name(filename, find_data, ctx);
@@ -1796,157 +2199,113 @@ auto list_directory_recursive(const std::string &path,
   return true;
 }
 
+auto print_ls_error(const std::string &message) -> void {
+  safePrintLn(std::wstring(L"ls: ") +
+              std::wstring(message.begin(), message.end()));
+}
+
+auto directory_only_requested(const CommandContext<LS_OPTIONS.size()> &ctx)
+    -> bool {
+  return ctx.get<bool>("-d", false) || ctx.get<bool>("--directory", false);
+}
+
+auto recursive_requested(const CommandContext<LS_OPTIONS.size()> &ctx) -> bool {
+  return ctx.get<bool>("-R", false) || ctx.get<bool>("--recursive", false);
+}
+
+auto expand_path_operands(const std::vector<std::string> &paths)
+    -> std::pair<std::vector<std::string>, bool> {
+  std::vector<std::string> expanded_paths;
+  bool success = true;
+
+  for (const auto &path : paths) {
+    std::wstring wpath = utf8_to_wstring(path);
+    DWORD attr = GetFileAttributesW(wpath.c_str());
+    if (attr != INVALID_FILE_ATTRIBUTES) {
+      expanded_paths.push_back(path);
+      continue;
+    }
+
+    auto glob_result = glob_expand(wpath);
+    if (glob_result.expanded && !glob_result.files.empty()) {
+      for (const auto &file : glob_result.files) {
+        expanded_paths.push_back(wstring_to_utf8(file));
+      }
+      continue;
+    }
+
+    safePrintLn(std::wstring(L"ls: cannot access '") +
+                std::wstring(path.begin(), path.end()) +
+                L"': No such file or directory");
+    success = false;
+  }
+
+  return {expanded_paths, success};
+}
+
 /**
  * @brief Process all paths
  * @param paths Paths to process
- * @param ctx Command context
+ * @param ctx
+ * Command context
  * @return Result with success status
  */
 auto process_paths(const std::vector<std::string> &paths,
                    const CommandContext<LS_OPTIONS.size()> &ctx)
     -> cp::Result<bool> {
-  bool success = true;
-  for (size_t i = 0; i < paths.size(); ++i) {
-    const auto &path = paths[i];
+  auto [expanded_paths, success] = expand_path_operands(paths);
+  bool printed_any = false;
+  const bool multiple_operands = expanded_paths.size() > 1;
 
+  for (const auto &path : expanded_paths) {
     // Check if path exists and determine its type
     DWORD attr = INVALID_FILE_ATTRIBUTES;
     std::wstring wpath = utf8_to_wstring(path);
     attr = GetFileAttributesW(wpath.c_str());
 
-    // Print path header if multiple paths
-    if (paths.size() > 1) {
-      safePrintLn(std::wstring(path.begin(), path.end()) + L":");
+    if (attr == INVALID_FILE_ATTRIBUTES) {
+      success = false;
+      continue;
     }
 
-    // If path doesn't exist, try to treat it as a pattern
-    if (attr == INVALID_FILE_ATTRIBUTES) {
-      // Use smart glob expansion from utils:wildcard module
-      auto glob_result = glob_expand(wpath);
+    const bool is_directory = (attr & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    const bool treat_as_directory =
+        is_directory && !directory_only_requested(ctx);
 
-      if (glob_result.expanded && !glob_result.files.empty()) {
-        // Pattern matched, process each match
-        std::vector<std::string> matched_files;
-        for (const auto &file : glob_result.files) {
-          matched_files.push_back(wstring_to_utf8(file));
-        }
-
-        // Process matched files
-        if (!matched_files.empty()) {
-          if (matched_files.size() == 1) {
-            // Single file, display it directly
-            auto result = list_file(matched_files[0], ctx);
-            if (!result) {
-              safePrintLn(
-                  std::wstring(L"ls: ") +
-                  std::wstring(result.error().begin(), result.error().end()));
-              success = false;
-            }
-          } else {
-            // Multiple files, determine if they're all in same directory
-            bool all_same_dir = true;
-            std::wstring first_dir;
-            for (const auto &f : matched_files) {
-              std::wstring fw = utf8_to_wstring(f);
-              size_t last_sep = fw.find_last_of(L"\\/");
-              std::wstring dir;
-              if (last_sep != std::wstring::npos) {
-                dir = fw.substr(0, last_sep);
-              } else {
-                dir = L".";
-              }
-              if (first_dir.empty()) {
-                first_dir = dir;
-              } else if (dir != first_dir) {
-                all_same_dir = false;
-                break;
-              }
-            }
-
-            if (all_same_dir && !first_dir.empty()) {
-              // All files in same directory, list each file individually
-              for (const auto &f : matched_files) {
-                auto result = list_file(f, ctx);
-                if (!result) {
-                  safePrintLn(std::wstring(L"ls: ") +
-                              std::wstring(result.error().begin(),
-                                           result.error().end()));
-                  success = false;
-                }
-              }
-            } else {
-              // Files in different directories, list each one
-              for (const auto &f : matched_files) {
-                auto result = list_file(f, ctx);
-                if (!result) {
-                  safePrintLn(std::wstring(L"ls: ") +
-                              std::wstring(result.error().begin(),
-                                           result.error().end()));
-                  success = false;
-                }
-              }
-            }
-          }
-        }
-      } else {
-        // Not a pattern and doesn't exist, or pattern didn't match
-        safePrintLn(std::wstring(L"ls: cannot access '") +
-                    std::wstring(path.begin(), path.end()) +
-                    L"': No such file or directory");
-        success = false;
+    if (treat_as_directory) {
+      if (printed_any) {
+        safePrintLn(L"");
       }
-    } else if (attr & FILE_ATTRIBUTE_DIRECTORY) {
-      // Path is a directory
-      bool directory_only =
-          ctx.get<bool>("-d", false) || ctx.get<bool>("--directory", false);
-      if (directory_only) {
-        auto result = list_file(path, ctx);
+
+      if (recursive_requested(ctx)) {
+        auto result =
+            list_directory_recursive(path, ctx, multiple_operands ? 1 : 0);
         if (!result) {
-          safePrintLn(
-              std::wstring(L"ls: ") +
-              std::wstring(result.error().begin(), result.error().end()));
+          print_ls_error(std::string(result.error()));
           success = false;
         }
       } else {
-        bool recursive =
-            ctx.get<bool>("-R", false) || ctx.get<bool>("--recursive", false);
+        if (multiple_operands) {
+          safePrintLn(std::wstring(path.begin(), path.end()) + L":");
+        }
 
-        if (recursive) {
-          // Recursive listing
-          auto result =
-              list_directory_recursive(path, ctx, paths.size() > 1 ? 1 : 0);
-          if (!result) {
-            safePrintLn(
-                std::wstring(L"ls: ") +
-                std::wstring(result.error().begin(), result.error().end()));
-            success = false;
-          }
-        } else {
-          // Normal directory listing
-          auto result = list_directory(path, ctx);
-          if (!result) {
-            safePrintLn(
-                std::wstring(L"ls: ") +
-                std::wstring(result.error().begin(), result.error().end()));
-            success = false;
-          }
+        auto result = list_directory(path, ctx);
+        if (!result) {
+          print_ls_error(std::string(result.error()));
+          success = false;
         }
       }
     } else {
-      // Path is a file, list it
       auto result = list_file(path, ctx);
       if (!result) {
-        safePrintLn(std::wstring(L"ls: ") +
-                    std::wstring(result.error().begin(), result.error().end()));
+        print_ls_error(std::string(result.error()));
         success = false;
       }
     }
 
-    // Add newline between paths
-    if (i < paths.size() - 1) {
-      safePrintLn(L"");
-    }
+    printed_any = true;
   }
+
   return success;
 }
 

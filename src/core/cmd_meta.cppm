@@ -31,7 +31,14 @@ import utils;
 
 namespace cmd::meta {
 // OptionMeta with constexpr support
-export enum class OptionType { Bool, Int, String };
+export enum class OptionType {
+  Bool,
+  Int,
+  String,
+  OptionalInt,
+  OptionalString,
+  TerminatedString
+};
 
 export struct OptionMeta {
   std::string_view short_name;

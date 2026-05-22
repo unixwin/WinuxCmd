@@ -57,56 +57,122 @@ auto constexpr STDBUF_OPTIONS =
 // ======================================================
 
 namespace {
-// Parse buffer size string
-size_t parse_buffer_size(const std::string& str) {
-  if (str == "0" || str == "L" || str == "0L") {
-    return 0;  // Unbuffered
-  }
-  if (str == "1" || str == "line" || str == "1L") {
-    return 1;  // Line buffered
-  }
+struct BufferSizeSuffix {
+  std::string_view suffix;
+  std::size_t base;
+  unsigned power;
+};
 
-  try {
-    size_t multiplier = 1;
-    std::string num_str = str;
-
-    // Check for suffix
-    if (!num_str.empty()) {
-      char suffix = toupper(num_str.back());
-      if (suffix == 'K') {
-        multiplier = 1024;
-        num_str.pop_back();
-      } else if (suffix == 'M') {
-        multiplier = 1024 * 1024;
-        num_str.pop_back();
-      } else if (suffix == 'G') {
-        multiplier = 1024LL * 1024 * 1024;
-        num_str.pop_back();
-      } else if (suffix == 'B') {
-        num_str.pop_back();
-      }
+auto checked_pow(std::size_t base, unsigned power) -> std::optional<size_t> {
+  std::size_t result = 1;
+  for (unsigned i = 0; i < power; ++i) {
+    if (result > std::numeric_limits<std::size_t>::max() / base) {
+      return std::nullopt;
     }
-
-    size_t size = static_cast<size_t>(std::stoull(num_str));
-    return size * multiplier;
-  } catch (...) {
-    return 4096;  // Default buffer size
+    result *= base;
   }
+  return result;
+}
+
+auto parse_buffer_suffix(std::string_view suffix) -> std::optional<size_t> {
+  static constexpr std::array suffixes{
+      BufferSizeSuffix{"", 1, 0},       BufferSizeSuffix{"K", 1024, 1},
+      BufferSizeSuffix{"KB", 1000, 1},  BufferSizeSuffix{"kB", 1000, 1},
+      BufferSizeSuffix{"KiB", 1024, 1}, BufferSizeSuffix{"M", 1024, 2},
+      BufferSizeSuffix{"MB", 1000, 2},  BufferSizeSuffix{"MiB", 1024, 2},
+      BufferSizeSuffix{"G", 1024, 3},   BufferSizeSuffix{"GB", 1000, 3},
+      BufferSizeSuffix{"GiB", 1024, 3}, BufferSizeSuffix{"T", 1024, 4},
+      BufferSizeSuffix{"TB", 1000, 4},  BufferSizeSuffix{"TiB", 1024, 4},
+      BufferSizeSuffix{"P", 1024, 5},   BufferSizeSuffix{"PB", 1000, 5},
+      BufferSizeSuffix{"PiB", 1024, 5}, BufferSizeSuffix{"E", 1024, 6},
+      BufferSizeSuffix{"EB", 1000, 6},  BufferSizeSuffix{"EiB", 1024, 6},
+      BufferSizeSuffix{"Z", 1024, 7},   BufferSizeSuffix{"ZB", 1000, 7},
+      BufferSizeSuffix{"ZiB", 1024, 7}, BufferSizeSuffix{"Y", 1024, 8},
+      BufferSizeSuffix{"YB", 1000, 8},  BufferSizeSuffix{"YiB", 1024, 8},
+      BufferSizeSuffix{"R", 1024, 9},   BufferSizeSuffix{"RB", 1000, 9},
+      BufferSizeSuffix{"RiB", 1024, 9}, BufferSizeSuffix{"Q", 1024, 10},
+      BufferSizeSuffix{"QB", 1000, 10}, BufferSizeSuffix{"QiB", 1024, 10}};
+
+  for (const auto& entry : suffixes) {
+    if (entry.suffix != suffix) continue;
+    return checked_pow(entry.base, entry.power);
+  }
+  return std::nullopt;
+}
+
+// Parse buffer size string
+auto parse_buffer_size(const std::string& str) -> std::optional<size_t> {
+  if (str.empty()) return std::nullopt;
+
+  size_t digits = 0;
+  while (digits < str.size() &&
+         std::isdigit(static_cast<unsigned char>(str[digits])) != 0) {
+    ++digits;
+  }
+
+  std::uint64_t value = 1;
+  if (digits > 0) {
+    value = 0;
+    auto number = std::string_view(str).substr(0, digits);
+    auto [ptr, ec] =
+        std::from_chars(number.data(), number.data() + number.size(), value);
+    if (ec != std::errc() || ptr != number.data() + number.size()) {
+      return std::nullopt;
+    }
+  }
+
+  std::string suffix = str.substr(digits);
+  auto multiplier = parse_buffer_suffix(suffix);
+  if (!multiplier.has_value()) {
+    return std::nullopt;
+  }
+
+  if (value > std::numeric_limits<size_t>::max() / *multiplier) {
+    return std::nullopt;
+  }
+
+  return static_cast<size_t>(value * *multiplier);
+}
+
+auto validate_buffer_mode(std::string_view stream_name, const std::string& mode)
+    -> bool {
+  if (mode.empty()) return true;
+  if (mode == "0") return true;
+  if (mode == "L") return stream_name != "standard input";
+  auto size = parse_buffer_size(mode);
+  return size.has_value() && *size > 0;
 }
 
 // Set buffering mode for a stream
-void set_stream_buffering(FILE* stream, const std::string& mode) {
-  if (mode.empty() || mode == "0" || mode == "L" || mode == "0L") {
+auto set_stream_buffering(FILE* stream, const std::string& mode) -> bool {
+  if (mode.empty()) {
+    return true;
+  }
+  if (mode == "0") {
     setvbuf(stream, nullptr, _IONBF, 0);  // Unbuffered
-  } else if (mode == "1" || mode == "line" || mode == "1L") {
+    return true;
+  }
+  if (mode == "L") {
     setvbuf(stream, nullptr, _IOLBF, 0);  // Line buffered
-  } else {
-    size_t size = parse_buffer_size(mode);
-    if (size == 0) {
-      setvbuf(stream, nullptr, _IONBF, 0);
-    } else {
-      setvbuf(stream, nullptr, _IOFBF, size);  // Fully buffered
-    }
+    return true;
+  }
+
+  auto size = parse_buffer_size(mode);
+  if (!size.has_value() || *size == 0) {
+    return false;
+  }
+
+  setvbuf(stream, nullptr, _IOFBF, *size);  // Fully buffered
+  return true;
+}
+
+auto command_status_from_create_error(DWORD error) -> int {
+  switch (error) {
+    case ERROR_FILE_NOT_FOUND:
+    case ERROR_PATH_NOT_FOUND:
+      return 127;
+    default:
+      return 126;
   }
 }
 }  // namespace
@@ -140,10 +206,19 @@ REGISTER_COMMAND(
   std::string output_mode = ctx.get<std::string>("-o", "");
   std::string error_mode = ctx.get<std::string>("-e", "");
 
-  // Parse buffering modes
-  std::string parsed_input = !input_mode.empty() ? input_mode : "4096";
-  std::string parsed_output = !output_mode.empty() ? output_mode : "4096";
-  std::string parsed_error = !error_mode.empty() ? error_mode : "4096";
+  if (!validate_buffer_mode("standard input", input_mode)) {
+    safeErrorPrintLn("stdbuf: invalid mode for standard input: " + input_mode);
+    return 1;
+  }
+  if (!validate_buffer_mode("standard output", output_mode)) {
+    safeErrorPrintLn("stdbuf: invalid mode for standard output: " +
+                     output_mode);
+    return 1;
+  }
+  if (!validate_buffer_mode("standard error", error_mode)) {
+    safeErrorPrintLn("stdbuf: invalid mode for standard error: " + error_mode);
+    return 1;
+  }
 
   // Build command string
   std::string cmd;
@@ -154,11 +229,18 @@ REGISTER_COMMAND(
 
   // For Windows, we'll just execute the command directly
   // and set the parent process buffering
-  if (!output_mode.empty()) {
-    set_stream_buffering(stdout, output_mode);
+  if (!set_stream_buffering(stdin, input_mode)) {
+    safeErrorPrintLn("stdbuf: invalid mode for standard input: " + input_mode);
+    return 1;
   }
-  if (!error_mode.empty()) {
-    set_stream_buffering(stderr, error_mode);
+  if (!set_stream_buffering(stdout, output_mode)) {
+    safeErrorPrintLn("stdbuf: invalid mode for standard output: " +
+                     output_mode);
+    return 1;
+  }
+  if (!set_stream_buffering(stderr, error_mode)) {
+    safeErrorPrintLn("stdbuf: invalid mode for standard error: " + error_mode);
+    return 1;
   }
 
   // Execute command
@@ -169,9 +251,10 @@ REGISTER_COMMAND(
 
   if (!CreateProcessW(nullptr, const_cast<wchar_t*>(wcmd.c_str()), nullptr,
                       nullptr, TRUE, 0, nullptr, nullptr, &si, &pi)) {
+    DWORD error = GetLastError();
     safeErrorPrintLn("stdbuf: failed to execute command: " +
                      std::string(ctx.positionals[0]));
-    return 1;
+    return command_status_from_create_error(error);
   }
 
   // Wait for process to complete

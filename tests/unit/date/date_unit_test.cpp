@@ -98,3 +98,65 @@ TEST(date, date_rfc2822) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_FALSE(r.stdout_text.empty());
 }
+
+TEST(date, date_date_option_formats_fixed_utc_time) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"date.exe", {L"-u", L"--date", L"2024-01-02 03:04:05 UTC",
+                      L"+%Y-%m-%dT%H:%M:%S%z"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(r.stdout_text, "2024-01-02T03:04:05+0000\n");
+}
+
+TEST(date, date_common_format_specifiers) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"date.exe", {L"-u", L"--date", L"@0", L"+%F %T %s %j %u"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(r.stdout_text, "1970-01-01 00:00:00 0 001 4\n");
+}
+
+TEST(date, date_iso8601_seconds) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"date.exe", {L"-u", L"--date", L"@0", L"--iso-8601=seconds"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(r.stdout_text, "1970-01-01T00:00:00+00:00\n");
+}
+
+TEST(date, date_rfc3339_seconds) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"date.exe",
+        {L"-u", L"--date", L"2024-01-02 03:04:05 UTC", L"--rfc-3339=seconds"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(r.stdout_text, "2024-01-02 03:04:05+00:00\n");
+}
+
+TEST(date, date_rfc_email_fixed_utc_time) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"date.exe", {L"-u", L"-R", L"--date", L"2024-01-02 03:04:05 UTC"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(r.stdout_text, "Tue, 02 Jan 2024 03:04:05 +0000\n");
+}

@@ -44,91 +44,163 @@ using cmd::meta::OptionType;
 
 auto constexpr SPLIT_OPTIONS = std::array{
     OPTION("-b", "--bytes", "put SIZE bytes per output file", STRING_TYPE),
+    OPTION("-C", "--line-bytes",
+           "put at most SIZE bytes of complete lines per output file",
+           STRING_TYPE),
     OPTION("-l", "--lines", "put NUMBER lines per output file", STRING_TYPE),
     OPTION("-d", "--numeric-suffixes",
-           "use numeric suffixes instead of alphabetic", BOOL_TYPE),
+           "use numeric suffixes instead of alphabetic", OPTIONAL_STRING_TYPE),
+    OPTION("-x", "--hex-suffixes", "use hexadecimal suffixes",
+           OPTIONAL_STRING_TYPE),
     OPTION("-a", "--suffix-length", "use suffixes of length N (default 2)",
+           STRING_TYPE),
+    OPTION("", "--additional-suffix", "append SUFFIX to output file names",
            STRING_TYPE)
     // -n, --number (not implemented - split into N chunks)
-    // -C, --line-bytes (not implemented - split by bytes with line integrity)
 };
 
 namespace split_pipeline {
 namespace cp = core::pipeline;
 
+auto resolve_input_file(const CommandContext<SPLIT_OPTIONS.size()>& ctx)
+    -> cp::Result<std::string> {
+  if (ctx.positionals.empty()) {
+    return "-";
+  }
+
+  std::string file_arg = std::string(ctx.positionals[0]);
+  if (contains_wildcard(file_arg)) {
+    auto glob_result = glob_expand(file_arg);
+    if (glob_result.expanded && !glob_result.files.empty()) {
+      if (glob_result.files.size() != 1) {
+        return std::unexpected("wildcard input must match exactly one file");
+      }
+      return wstring_to_utf8(glob_result.files[0]);
+    }
+  }
+
+  return file_arg;
+}
+
 struct Config {
+  enum class Mode { Lines, Bytes, LineBytes };
+  enum class SuffixKind { Alpha, Numeric, Hex };
+
+  Mode mode = Mode::Lines;
   int64_t chunk_size = 0;
-  int chunk_lines = 1000;  // Default: 1000 lines per file
-  bool numeric_suffixes = false;
+  int64_t chunk_lines = 1000;  // Default: 1000 lines per file
+  SuffixKind suffix_kind = SuffixKind::Alpha;
   int suffix_length = 2;
+  bool suffix_length_explicit = false;
+  uint64_t suffix_start = 0;
+  bool suffix_start_explicit = false;
+  std::string additional_suffix;
   std::string prefix = "x";
   std::string input_file;
 };
 
+auto checked_mul(int64_t value, int64_t multiplier) -> cp::Result<int64_t> {
+  if (value <= 0 || multiplier <= 0 ||
+      value > std::numeric_limits<int64_t>::max() / multiplier) {
+    return std::unexpected("invalid size");
+  }
+  return value * multiplier;
+}
+
 auto parse_size(const std::string& size_str) -> cp::Result<int64_t> {
   try {
-    // Support: N, NKB, NMB, NG, NT, NP, NE, etc.
     std::string s = size_str;
-
-    if (s.empty()) {
-      return std::unexpected("invalid size");
-    }
+    if (s.empty()) return std::unexpected("invalid size");
 
     int64_t multiplier = 1;
-    if (s.size() > 2) {
-      std::string suffix = s.substr(s.size() - 2);
-      std::transform(suffix.begin(), suffix.end(), suffix.begin(), ::tolower);
-
-      if (suffix == "kb") {
-        multiplier = 1024;
-        s = s.substr(0, s.size() - 2);
-      } else if (suffix == "mb") {
-        multiplier = 1024 * 1024;
-        s = s.substr(0, s.size() - 2);
-      } else if (suffix == "gb") {
-        multiplier = 1024LL * 1024 * 1024;
-        s = s.substr(0, s.size() - 2);
-      } else if (suffix == "tb") {
-        multiplier = 1024LL * 1024 * 1024 * 1024;
-        s = s.substr(0, s.size() - 2);
-      } else if (suffix == "pb") {
-        multiplier = 1024LL * 1024 * 1024 * 1024 * 1024;
-        s = s.substr(0, s.size() - 2);
-      } else if (suffix == "eb") {
-        multiplier = 1024LL * 1024 * 1024 * 1024 * 1024 * 1024;
-        s = s.substr(0, s.size() - 2);
-      } else if (s.size() > 1) {
-        suffix = s.substr(s.size() - 1);
-        std::transform(suffix.begin(), suffix.end(), suffix.begin(), ::tolower);
-
-        if (suffix == "k") {
-          multiplier = 1024;
-          s = s.substr(0, s.size() - 1);
-        } else if (suffix == "m") {
-          multiplier = 1024 * 1024;
-          s = s.substr(0, s.size() - 1);
-        } else if (suffix == "g") {
-          multiplier = 1024LL * 1024 * 1024;
-          s = s.substr(0, s.size() - 1);
-        } else if (suffix == "t") {
-          multiplier = 1024LL * 1024 * 1024 * 1024;
-          s = s.substr(0, s.size() - 1);
-        } else if (suffix == "p") {
-          multiplier = 1024LL * 1024 * 1024 * 1024 * 1024;
-          s = s.substr(0, s.size() - 1);
-        } else if (suffix == "e") {
-          multiplier = 1024LL * 1024 * 1024 * 1024 * 1024 * 1024;
-          s = s.substr(0, s.size() - 1);
-        }
+    auto consume_suffix = [&](std::string_view suffix, int64_t factor) {
+      if (s.size() < suffix.size()) return false;
+      if (std::string_view(s).substr(s.size() - suffix.size()) != suffix) {
+        return false;
       }
+      multiplier = factor;
+      s.resize(s.size() - suffix.size());
+      return true;
+    };
+
+    struct Suffix {
+      std::string_view text;
+      int64_t factor;
+    };
+    constexpr int64_t k1000 = 1000;
+    constexpr int64_t k1024 = 1024;
+    const std::array<Suffix, 31> suffixes = {
+        Suffix{"KiB", k1024},
+        Suffix{"kiB", k1024},
+        Suffix{"MiB", k1024 * k1024},
+        Suffix{"miB", k1024 * k1024},
+        Suffix{"GiB", k1024 * k1024 * k1024},
+        Suffix{"giB", k1024 * k1024 * k1024},
+        Suffix{"TiB", k1024 * k1024 * k1024 * k1024},
+        Suffix{"tiB", k1024 * k1024 * k1024 * k1024},
+        Suffix{"PiB", k1024 * k1024 * k1024 * k1024 * k1024},
+        Suffix{"piB", k1024 * k1024 * k1024 * k1024 * k1024},
+        Suffix{"EiB", k1024 * k1024 * k1024 * k1024 * k1024 * k1024},
+        Suffix{"eiB", k1024 * k1024 * k1024 * k1024 * k1024 * k1024},
+        Suffix{"KB", k1000},
+        Suffix{"MB", k1000 * k1000},
+        Suffix{"GB", k1000 * k1000 * k1000},
+        Suffix{"TB", k1000 * k1000 * k1000 * k1000},
+        Suffix{"PB", k1000 * k1000 * k1000 * k1000 * k1000},
+        Suffix{"EB", k1000 * k1000 * k1000 * k1000 * k1000 * k1000},
+        Suffix{"K", k1024},
+        Suffix{"M", k1024 * k1024},
+        Suffix{"G", k1024 * k1024 * k1024},
+        Suffix{"T", k1024 * k1024 * k1024 * k1024},
+        Suffix{"P", k1024 * k1024 * k1024 * k1024 * k1024},
+        Suffix{"E", k1024 * k1024 * k1024 * k1024 * k1024 * k1024},
+        Suffix{"k", k1024},
+        Suffix{"m", k1024 * k1024},
+        Suffix{"g", k1024 * k1024 * k1024},
+        Suffix{"t", k1024 * k1024 * k1024 * k1024},
+        Suffix{"p", k1024 * k1024 * k1024 * k1024 * k1024},
+        Suffix{"e", k1024 * k1024 * k1024 * k1024 * k1024 * k1024},
+        Suffix{"b", 512},
+    };
+
+    for (const auto& suffix : suffixes) {
+      if (consume_suffix(suffix.text, suffix.factor)) break;
     }
 
+    if (s.empty()) return std::unexpected("invalid size");
     int64_t value = std::stoll(s);
-    value *= multiplier;
-
-    return value;
+    return checked_mul(value, multiplier);
   } catch (...) {
     return std::unexpected("invalid size format");
+  }
+}
+
+auto parse_positive_i64(const std::string& value, std::string_view name)
+    -> cp::Result<int64_t> {
+  try {
+    size_t consumed = 0;
+    int64_t parsed = std::stoll(value, &consumed);
+    if (consumed != value.size() || parsed <= 0) {
+      return std::unexpected(std::string(name) + " must be positive");
+    }
+    return parsed;
+  } catch (...) {
+    return std::unexpected(std::string("invalid ") + std::string(name));
+  }
+}
+
+auto parse_suffix_start(const std::string& value, int base)
+    -> cp::Result<uint64_t> {
+  if (value.empty()) return 0;
+  try {
+    size_t consumed = 0;
+    uint64_t parsed = std::stoull(value, &consumed, base);
+    if (consumed != value.size()) {
+      return std::unexpected("invalid suffix start");
+    }
+    return parsed;
+  } catch (...) {
+    return std::unexpected("invalid suffix start");
   }
 }
 
@@ -137,34 +209,66 @@ auto build_config(const CommandContext<SPLIT_OPTIONS.size()>& ctx)
   Config cfg;
 
   auto bytes_opt = ctx.get<std::string>("--bytes", "");
-  if (bytes_opt.empty()) {
-    bytes_opt = ctx.get<std::string>("-b", "");
+  if (bytes_opt.empty()) bytes_opt = ctx.get<std::string>("-b", "");
+  auto line_bytes_opt = ctx.get<std::string>("--line-bytes", "");
+  if (line_bytes_opt.empty()) {
+    line_bytes_opt = ctx.get<std::string>("-C", "");
   }
+  auto lines_opt = ctx.get<std::string>("--lines", "");
+  if (lines_opt.empty()) lines_opt = ctx.get<std::string>("-l", "");
+
+  int split_modes = 0;
+  if (!bytes_opt.empty()) ++split_modes;
+  if (!line_bytes_opt.empty()) ++split_modes;
+  if (!lines_opt.empty()) ++split_modes;
+  if (split_modes > 1) {
+    return std::unexpected("cannot split in more than one way");
+  }
+
   if (!bytes_opt.empty()) {
     auto size_result = parse_size(bytes_opt);
     if (!size_result) {
       return std::unexpected(size_result.error());
     }
     cfg.chunk_size = *size_result;
+    cfg.mode = Config::Mode::Bytes;
   }
 
-  auto lines_opt = ctx.get<std::string>("--lines", "");
-  if (lines_opt.empty()) {
-    lines_opt = ctx.get<std::string>("-l", "");
-  }
-  if (!lines_opt.empty()) {
-    try {
-      cfg.chunk_lines = std::stoi(lines_opt);
-      if (cfg.chunk_lines <= 0) {
-        return std::unexpected("line count must be positive");
-      }
-    } catch (...) {
-      return std::unexpected("invalid line count");
+  if (!line_bytes_opt.empty()) {
+    auto size_result = parse_size(line_bytes_opt);
+    if (!size_result) {
+      return std::unexpected(size_result.error());
     }
+    cfg.chunk_size = *size_result;
+    cfg.mode = Config::Mode::LineBytes;
   }
 
-  cfg.numeric_suffixes =
-      ctx.get<bool>("--numeric-suffixes", false) || ctx.get<bool>("-d", false);
+  if (!lines_opt.empty()) {
+    auto lines_result = parse_positive_i64(lines_opt, "line count");
+    if (!lines_result) return std::unexpected(lines_result.error());
+    cfg.chunk_lines = *lines_result;
+    cfg.mode = Config::Mode::Lines;
+  }
+
+  if (ctx.has("--numeric-suffixes") || ctx.has("-d")) {
+    cfg.suffix_kind = Config::SuffixKind::Numeric;
+    auto start = ctx.get<std::string>("--numeric-suffixes", "");
+    if (start.empty()) start = ctx.get<std::string>("-d", "");
+    auto start_result = parse_suffix_start(start, 10);
+    if (!start_result) return std::unexpected(start_result.error());
+    cfg.suffix_start = *start_result;
+    cfg.suffix_start_explicit = !start.empty();
+  }
+
+  if (ctx.has("--hex-suffixes") || ctx.has("-x")) {
+    cfg.suffix_kind = Config::SuffixKind::Hex;
+    auto start = ctx.get<std::string>("--hex-suffixes", "");
+    if (start.empty()) start = ctx.get<std::string>("-x", "");
+    auto start_result = parse_suffix_start(start, 16);
+    if (!start_result) return std::unexpected(start_result.error());
+    cfg.suffix_start = *start_result;
+    cfg.suffix_start_explicit = !start.empty();
+  }
 
   auto suffix_opt = ctx.get<std::string>("--suffix-length", "");
   if (suffix_opt.empty()) {
@@ -173,57 +277,121 @@ auto build_config(const CommandContext<SPLIT_OPTIONS.size()>& ctx)
   if (!suffix_opt.empty()) {
     try {
       cfg.suffix_length = std::stoi(suffix_opt);
-      if (cfg.suffix_length < 1 || cfg.suffix_length > 10) {
-        return std::unexpected("suffix length must be between 1 and 10");
+      if (cfg.suffix_length < 0 || cfg.suffix_length > 32) {
+        return std::unexpected("suffix length must be between 0 and 32");
       }
+      cfg.suffix_length_explicit = cfg.suffix_length != 0;
+      if (cfg.suffix_length == 0) cfg.suffix_length = 2;
     } catch (...) {
       return std::unexpected("invalid suffix length");
     }
   }
 
-  // Get input file and prefix from positionals
-  if (!ctx.positionals.empty()) {
-    std::string file_arg(ctx.positionals[0]);
-    if (contains_wildcard(file_arg)) {
-      auto glob_result = glob_expand(file_arg);
-      if (glob_result.expanded && !glob_result.files.empty()) {
-        cfg.input_file = wstring_to_utf8(glob_result.files[0]);
-      } else {
-        cfg.input_file = file_arg;
-      }
-    } else {
-      cfg.input_file = file_arg;
-    }
+  cfg.additional_suffix = ctx.get<std::string>("--additional-suffix", "");
+  if (cfg.additional_suffix.find('/') != std::string::npos ||
+      cfg.additional_suffix.find('\\') != std::string::npos) {
+    return std::unexpected("additional suffix must not contain slash");
+  }
 
-    if (ctx.positionals.size() > 1) {
-      cfg.prefix = std::string(ctx.positionals[1]);
-    }
+  auto input_result = resolve_input_file(ctx);
+  if (!input_result) {
+    return std::unexpected(input_result.error());
+  }
+  cfg.input_file = *input_result;
+
+  if (ctx.positionals.size() > 1) {
+    cfg.prefix = std::string(ctx.positionals[1]);
   }
 
   return cfg;
 }
 
-auto generate_suffix(int part_num, bool numeric, int length) -> std::string {
-  if (numeric) {
-    char buf[32];
-    snprintf(buf, sizeof(buf), "%0*d", length, part_num);
-    return buf;
-  } else {
-    // Alphabetic suffix (a, b, ..., z, aa, ab, ...)
-    std::string result;
-    int n = part_num;
-    while (n >= 0 && result.size() < static_cast<size_t>(length)) {
-      result = static_cast<char>('a' + (n % 26)) + result;
-      n = n / 26 - 1;
+auto convert_unsigned(uint64_t value, uint32_t base) -> std::string {
+  constexpr std::string_view digits = "0123456789abcdefghijklmnopqrstuvwxyz";
+  std::string result;
+  do {
+    result.push_back(digits[value % base]);
+    value /= base;
+  } while (value != 0);
+  std::reverse(result.begin(), result.end());
+  return result;
+}
+
+auto alpha_suffix(uint64_t value, int length) -> cp::Result<std::string> {
+  uint64_t capacity = 1;
+  for (int i = 0; i < length; ++i) {
+    if (capacity > std::numeric_limits<uint64_t>::max() / 26) {
+      return std::unexpected("output file suffixes exhausted");
     }
-    while (result.size() < static_cast<size_t>(length)) {
-      result = 'a' + result;
-    }
-    if (result.size() > static_cast<size_t>(length)) {
-      result = result.substr(result.size() - length);
+    capacity *= 26;
+  }
+  if (value >= capacity) {
+    return std::unexpected("output file suffixes exhausted");
+  }
+
+  std::string result(static_cast<size_t>(length), 'a');
+  for (int i = length - 1; i >= 0; --i) {
+    result[static_cast<size_t>(i)] = static_cast<char>('a' + value % 26);
+    value /= 26;
+  }
+  return result;
+}
+
+auto generate_suffix(const Config& cfg, uint64_t part_num)
+    -> cp::Result<std::string> {
+  uint64_t value = cfg.suffix_start + part_num;
+  if (value < cfg.suffix_start) {
+    return std::unexpected("output file suffixes exhausted");
+  }
+
+  if (cfg.suffix_kind == Config::SuffixKind::Alpha) {
+    int length = cfg.suffix_length;
+    auto result = alpha_suffix(value, length);
+    while (!result && !cfg.suffix_length_explicit && length < 32) {
+      length += 2;
+      result = alpha_suffix(value, length);
     }
     return result;
   }
+
+  uint32_t base = cfg.suffix_kind == Config::SuffixKind::Hex ? 16 : 10;
+  std::string suffix = convert_unsigned(value, base);
+  int length = cfg.suffix_length;
+  if (suffix.size() > static_cast<size_t>(length)) {
+    if (cfg.suffix_length_explicit || cfg.suffix_start_explicit) {
+      return std::unexpected("output file suffixes exhausted");
+    }
+    length = static_cast<int>(suffix.size());
+  }
+  if (suffix.size() < static_cast<size_t>(length)) {
+    suffix.insert(suffix.begin(), static_cast<size_t>(length) - suffix.size(),
+                  '0');
+  }
+  return suffix;
+}
+
+auto make_filename(const Config& cfg, uint64_t part_num)
+    -> cp::Result<std::string> {
+  auto suffix = generate_suffix(cfg, part_num);
+  if (!suffix) return std::unexpected(suffix.error());
+  return cfg.prefix + *suffix + cfg.additional_suffix;
+}
+
+auto write_chunk(const Config& cfg, uint64_t part_num, std::string_view chunk)
+    -> cp::Result<int> {
+  auto filename_result = make_filename(cfg, part_num);
+  if (!filename_result) return std::unexpected(filename_result.error());
+  const auto& filename = *filename_result;
+
+  std::ofstream out(filename, std::ios::binary);
+  if (!out) {
+    return std::unexpected(std::string("cannot create '") + filename + "'");
+  }
+  out.write(chunk.data(), static_cast<std::streamsize>(chunk.size()));
+  if (!out) {
+    return std::unexpected(std::string("error writing '") + filename + "'");
+  }
+  return 0;
 }
 
 auto run(const Config& cfg) -> int {
@@ -262,61 +430,70 @@ auto run(const Config& cfg) -> int {
     return 0;  // Nothing to split
   }
 
-  // Determine split mode
-  bool by_lines = (cfg.chunk_size == 0);
-
-  if (by_lines) {
-    // Split by lines
-    std::vector<std::string> lines;
+  uint64_t part_num = 0;
+  if (cfg.mode == Config::Mode::Lines) {
     size_t start = 0;
-    while (start < input.size()) {
-      size_t end = input.find('\n', start);
-      if (end == std::string::npos) {
-        lines.push_back(input.substr(start));
-        break;
+    int64_t lines_in_chunk = 0;
+    for (size_t pos = 0; pos < input.size();) {
+      size_t next = input.find('\n', pos);
+      size_t record_end = next == std::string::npos ? input.size() : next + 1;
+      ++lines_in_chunk;
+      pos = record_end;
+
+      if (lines_in_chunk == cfg.chunk_lines || pos == input.size()) {
+        auto result = write_chunk(
+            cfg, part_num++,
+            std::string_view(input.data() + start, record_end - start));
+        if (!result) {
+          cp::report_error(result, L"split");
+          return 1;
+        }
+        start = record_end;
+        lines_in_chunk = 0;
       }
-      lines.push_back(input.substr(start, end - start + 1));  // Include newline
-      start = end + 1;
     }
-
-    int part_num = 0;
-    for (size_t i = 0; i < lines.size(); i += cfg.chunk_lines) {
-      std::string filename =
-          cfg.prefix +
-          generate_suffix(part_num, cfg.numeric_suffixes, cfg.suffix_length);
-      part_num++;
-
-      std::ofstream out(filename, std::ios::binary);
-      if (!out) {
-        auto err = std::string("cannot create '") + filename + "'";
-        cp::Result<int> result = std::unexpected(std::string_view(err));
+  } else if (cfg.mode == Config::Mode::Bytes) {
+    for (size_t pos = 0; pos < input.size();) {
+      size_t chunk_size = static_cast<size_t>(std::min<int64_t>(
+          cfg.chunk_size, static_cast<int64_t>(input.size() - pos)));
+      auto result = write_chunk(
+          cfg, part_num++, std::string_view(input.data() + pos, chunk_size));
+      if (!result) {
         cp::report_error(result, L"split");
         return 1;
       }
-
-      for (size_t j = i; j < i + cfg.chunk_lines && j < lines.size(); ++j) {
-        out << lines[j];
-      }
+      pos += chunk_size;
     }
   } else {
-    // Split by bytes
-    int part_num = 0;
-    for (size_t i = 0; i < input.size(); i += cfg.chunk_size) {
-      std::string filename =
-          cfg.prefix +
-          generate_suffix(part_num, cfg.numeric_suffixes, cfg.suffix_length);
-      part_num++;
+    for (size_t pos = 0; pos < input.size();) {
+      size_t start = pos;
+      size_t used = 0;
 
-      std::ofstream out(filename, std::ios::binary);
-      if (!out) {
-        auto err = std::string("cannot create '") + filename + "'";
-        cp::Result<int> result = std::unexpected(std::string_view(err));
+      while (pos < input.size()) {
+        size_t next = input.find('\n', pos);
+        size_t record_end = next == std::string::npos ? input.size() : next + 1;
+        size_t record_size = record_end - pos;
+
+        if (record_size > static_cast<size_t>(cfg.chunk_size)) {
+          if (used == 0) pos += static_cast<size_t>(cfg.chunk_size);
+          break;
+        }
+        if (used != 0 &&
+            used + record_size > static_cast<size_t>(cfg.chunk_size)) {
+          break;
+        }
+
+        used += record_size;
+        pos = record_end;
+        if (used == static_cast<size_t>(cfg.chunk_size)) break;
+      }
+
+      auto result = write_chunk(
+          cfg, part_num++, std::string_view(input.data() + start, pos - start));
+      if (!result) {
         cp::report_error(result, L"split");
         return 1;
       }
-
-      size_t chunk_end = std::min(i + cfg.chunk_size, input.size());
-      out.write(input.data() + i, chunk_end - i);
     }
   }
 
@@ -337,12 +514,13 @@ REGISTER_COMMAND(
     "SIZE may have a multiplier suffix: b for 512, K for 1K, M for 1M, G for "
     "1G, etc.\n"
     "\n"
-    "Note: This implementation supports basic line and byte splitting.\n"
-    "Advanced features like -C (line-bytes) are not implemented.",
+    "Note: This implementation supports common GNU line, byte, line-byte, "
+    "and suffix options.",
     "  split -l 1000 largefile.txt\n"
     "  split -b 100M largefile.txt\n"
+    "  split -C 64K log.txt chunk-\n"
     "  split -d -a 3 largefile.txt part\n"
-    "  split -b 1M -d -a 3 input.dat output",
+    "  split -b 1M -x --additional-suffix=.bin input.dat output",
     "csplit(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", SPLIT_OPTIONS) {
   using namespace split_pipeline;
 
