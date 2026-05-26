@@ -166,7 +166,7 @@ auto set_stream_buffering(FILE* stream, const std::string& mode) -> bool {
   return true;
 }
 
-auto command_status_from_create_error(DWORD error) -> int {
+auto stdbuf_command_status_from_create_error(DWORD error) -> int {
   switch (error) {
     case ERROR_FILE_NOT_FOUND:
     case ERROR_PATH_NOT_FOUND:
@@ -254,7 +254,7 @@ REGISTER_COMMAND(
     DWORD error = GetLastError();
     safeErrorPrintLn("stdbuf: failed to execute command: " +
                      std::string(ctx.positionals[0]));
-    return command_status_from_create_error(error);
+    return stdbuf_command_status_from_create_error(error);
   }
 
   // Wait for process to complete

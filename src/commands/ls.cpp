@@ -197,7 +197,7 @@ const std::array<const wchar_t *, 10> SCRIPT_EXTS = {
  * @param stream Stream to check
  * @return True if stream is a terminal
  */
-bool is_terminal(FILE *stream) {
+bool ls_is_terminal(FILE *stream) {
   DWORD mode;
   return GetConsoleMode((HANDLE)_get_osfhandle(_fileno(stream)), &mode) != 0;
 }
@@ -869,7 +869,7 @@ auto resolve_color_enabled(const CommandContext<LS_OPTIONS.size()> &ctx)
   std::string color_option = ctx.get<std::string>("--color", "auto");
   if (color_option == "never") return false;
   if (color_option == "always") return true;
-  return is_terminal(stdout);
+  return ls_is_terminal(stdout);
 }
 
 struct RenderedEntry {
@@ -1564,7 +1564,7 @@ auto print_columns(const std::vector<EntryInfo> &entries,
   if (color_option == "never") {
     color_enabled = false;
   } else if (color_option == "auto") {
-    color_enabled = is_terminal(stdout);
+    color_enabled = ls_is_terminal(stdout);
   }
 
   // Get terminal width or use specified width

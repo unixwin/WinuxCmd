@@ -50,7 +50,7 @@ auto constexpr NOHUP_OPTIONS =
     std::array{OPTION("", "", "command to run", STRING_TYPE)};
 
 namespace {
-auto command_status_from_create_error(DWORD error) -> int {
+auto nohup_command_status_from_create_error(DWORD error) -> int {
   switch (error) {
     case ERROR_FILE_NOT_FOUND:
     case ERROR_PATH_NOT_FOUND:
@@ -60,7 +60,7 @@ auto command_status_from_create_error(DWORD error) -> int {
   }
 }
 
-auto is_terminal(FILE* stream) -> bool {
+auto nohup_is_terminal(FILE* stream) -> bool {
   int fd = _fileno(stream);
   return fd >= 0 && _isatty(fd) != 0;
 }
@@ -118,7 +118,7 @@ REGISTER_COMMAND(
 
   std::vector<HANDLE> owned_handles;
 
-  if (is_terminal(stdin)) {
+  if (nohup_is_terminal(stdin)) {
     HANDLE nul = open_inheritable_file(L"NUL", GENERIC_READ, OPEN_EXISTING);
     if (nul == INVALID_HANDLE_VALUE) {
       safeErrorPrintLn("nohup: failed to redirect input");
@@ -129,7 +129,7 @@ REGISTER_COMMAND(
   }
 
   bool stdout_redirected = false;
-  if (is_terminal(stdout)) {
+  if (nohup_is_terminal(stdout)) {
     HANDLE out =
         open_inheritable_file(L"nohup.out", FILE_APPEND_DATA, OPEN_ALWAYS);
     if (out == INVALID_HANDLE_VALUE) {
@@ -144,7 +144,7 @@ REGISTER_COMMAND(
         "'nohup.out'");
   }
 
-  if (is_terminal(stderr)) {
+  if (nohup_is_terminal(stderr)) {
     si.hStdError = si.hStdOutput;
     if (stdout_redirected) {
       safeErrorPrintLn("nohup: redirecting stderr to stdout");
@@ -163,7 +163,7 @@ REGISTER_COMMAND(
       CloseHandle(handle);
     }
     safeErrorPrintLn("nohup: failed to execute command");
-    return command_status_from_create_error(error);
+    return nohup_command_status_from_create_error(error);
   }
 
   WaitForSingleObject(pi.hProcess, INFINITE);
