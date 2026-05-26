@@ -43,7 +43,7 @@ import container;
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
-static auto is_terminal(FILE* stream) -> bool {
+static auto grep_is_terminal(FILE* stream) -> bool {
   int fd = _fileno(stream);
   return fd >= 0 && _isatty(fd) != 0;
 }
@@ -545,7 +545,7 @@ auto build_config(const CommandContext<GREP_OPTIONS.size()>& ctx)
     if (*color_opt == "always") {
       cfg.color = true;
     } else if (*color_opt == "auto") {
-      cfg.color = is_terminal(stdout);
+      cfg.color = grep_is_terminal(stdout);
     } else if (*color_opt == "never") {
       cfg.color = false;
     } else {

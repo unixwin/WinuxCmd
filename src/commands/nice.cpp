@@ -72,7 +72,7 @@ auto priority_class_for_niceness(int niceness) -> DWORD {
   return NORMAL_PRIORITY_CLASS;
 }
 
-auto command_status_from_create_error(DWORD error) -> int {
+auto nice_command_status_from_create_error(DWORD error) -> int {
   switch (error) {
     case ERROR_FILE_NOT_FOUND:
     case ERROR_PATH_NOT_FOUND:
@@ -145,7 +145,7 @@ REGISTER_COMMAND(
     DWORD error = GetLastError();
     safeErrorPrintLn("nice: failed to execute command: " +
                      std::string(ctx.positionals[0]));
-    return command_status_from_create_error(error);
+    return nice_command_status_from_create_error(error);
   }
 
   // Wait for process to complete
