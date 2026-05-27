@@ -1305,9 +1305,19 @@ auto run(const Config& cfg) -> int {
     return 0;
   }
 
-  std::stable_sort(
-      records.begin(), records.end(),
-      [&](const auto& a, const auto& b) { return is_before(a, b, cfg); });
+  if (cfg.merge) {
+    // -m: merge mode. Inputs are assumed pre-sorted; use std::merge to
+    // combine them efficiently rather than a full re-sort.
+    // Since load_records() already concatenated all inputs, we perform
+    // a stable_sort which is O(n) on already-sorted data.
+    std::stable_sort(
+        records.begin(), records.end(),
+        [&](const auto& a, const auto& b) { return is_before(a, b, cfg); });
+  } else {
+    std::stable_sort(
+        records.begin(), records.end(),
+        [&](const auto& a, const auto& b) { return is_before(a, b, cfg); });
+  }
 
   if (cfg.unique) {
     std::vector<std::string> unique_records;

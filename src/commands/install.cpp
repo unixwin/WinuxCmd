@@ -73,7 +73,10 @@ auto constexpr INSTALL_OPTIONS = std::array{
            BOOL_TYPE),
     OPTION("-Z", "",
            "set SELinux security context of destination files to default",
-           BOOL_TYPE)};
+           BOOL_TYPE),
+    OPTION("", "--context",
+           "set SELinux security context of destination files",
+           OPTIONAL_STRING_TYPE)};
 
 namespace install_pipeline {
 namespace cp = core::pipeline;
@@ -89,6 +92,7 @@ struct Config {
   bool no_target_directory = false;
   bool preserve_context = false;
   bool default_context = false;
+  std::string selinux_context;
   std::string backup_suffix = "~";
   std::string group;
   std::string mode;
@@ -128,6 +132,7 @@ auto build_config(const CommandContext<INSTALL_OPTIONS.size()>& ctx)
                             ctx.get<bool>("--no-target-directory", false);
   cfg.preserve_context = ctx.get<bool>("--preserve-context", false);
   cfg.default_context = ctx.get<bool>("-Z", false);
+  cfg.selinux_context = ctx.get<std::string>("--context", "");
 
   auto group_opt = ctx.get<std::string>("--group", "");
   if (group_opt.empty()) {
@@ -267,6 +272,24 @@ auto preserve_timestamps(const std::string& source, const std::string& dest)
 }
 
 auto run(const Config& cfg) -> int {
+  // Warn about unsupported features on Windows
+  if (!cfg.group.empty()) {
+    safeErrorPrint("install: warning: --group is not supported on Windows\n");
+  }
+  if (!cfg.owner.empty()) {
+    safeErrorPrint("install: warning: --owner is not supported on Windows\n");
+  }
+  if (cfg.preserve_context || cfg.default_context ||
+      !cfg.selinux_context.empty()) {
+    safeErrorPrint(
+        "install: warning: SELinux context options are not supported on "
+        "Windows\n");
+  }
+  if (cfg.strip && !cfg.strip_program.empty()) {
+    safeErrorPrint("install: warning: --strip-program is not supported on "
+                   "Windows\n");
+  }
+
   if (cfg.directory_mode) {
     for (const auto& dir : cfg.sources) {
       if (cfg.verbose) {
@@ -390,6 +413,42 @@ auto run(const Config& cfg) -> int {
       safePrint(dest);
       safePrintLn("'");
       return 1;
+    }
+
+    // Set file mode (read-only attribute) if requested
+    if (!cfg.mode.empty()) {
+      DWORD dest_attrs = GetFileAttributesA(dest.c_str());
+      if (dest_attrs != INVALID_FILE_ATTRIBUTES) {
+        // Simple mode handling: if mode contains 'w', make writable; otherwise
+        // read-only
+        bool make_readonly = cfg.mode.find('w') == std::string::npos &&
+                             cfg.mode.find('W') == std::string::npos;
+        if (make_readonly) {
+          SetFileAttributesA(dest.c_str(),
+                             dest_attrs | FILE_ATTRIBUTE_READONLY);
+        } else {
+          SetFileAttributesA(dest.c_str(),
+                             dest_attrs & ~FILE_ATTRIBUTE_READONLY);
+        }
+        if (cfg.verbose) {
+          safePrint("install: set mode '");
+          safePrint(cfg.mode);
+          safePrint("' on '");
+          safePrint(dest);
+          safePrintLn("'");
+        }
+      }
+    }
+
+    // Strip symbol tables if requested (Windows: call strip.exe if available)
+    if (cfg.strip) {
+      std::string strip_cmd = "strip \"" + dest + "\"";
+      int ret = std::system(strip_cmd.c_str());
+      if (ret != 0 && cfg.verbose) {
+        safePrint("install: warning: strip failed for '");
+        safePrint(dest);
+        safePrintLn("'");
+      }
     }
   }
 

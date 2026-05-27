@@ -86,10 +86,36 @@ auto constexpr DU_OPTIONS = std::array{
            "dereference only symlinks that are command line arguments"),
     OPTION("", "--si", "print sizes in powers of 1000 (e.g., 1.1G)"),
     OPTION("-k", "", "like --block-size=1K"),
+    OPTION("-L", "--dereference",
+           "dereference all symbolic links"),
+    OPTION("-P", "--no-dereference",
+           "don't follow any symbolic links (default)"),
     OPTION("-s", "--summarize", "display only a total for each argument"),
     OPTION("-t", "--threshold", "exclude entries smaller/greater than SIZE",
            STRING_TYPE),
-    OPTION("", "--exclude", "exclude files that match PATTERN", STRING_TYPE)};
+    OPTION("", "--exclude", "exclude files that match PATTERN", STRING_TYPE),
+    OPTION("-x", "--one-file-system",
+           "skip directories on different file systems"),
+    OPTION("", "--inodes",
+           "list inode usage information instead of block usage"),
+    OPTION("", "--time",
+           "show time of the last modification of any file in the directory; "
+           "see --time-style",
+           STRING_TYPE),
+    OPTION("-0", "--null", "end each output line with NUL, not newline"),
+    OPTION("-D", "--dereference-args",
+           "dereference only symlinks that are command line arguments"),
+    OPTION("", "--files0-from",
+           "summarize disk usage of the NUL-terminated file names specified in file F",
+           STRING_TYPE),
+    OPTION("-l", "--count-links",
+           "count sizes many times if hard linked"),
+    OPTION("-m", "", "like --block-size=1M"),
+    OPTION("-S", "--separate-dirs",
+           "for directories, do not include size of subdirectories"),
+    OPTION("-X", "--exclude-from",
+           "exclude files that match any pattern in FILE",
+           STRING_TYPE)};
 
 // ======================================================
 // Pipeline components
@@ -262,6 +288,10 @@ struct DuConfig {
   bool count_all = false;
   bool total = false;
   bool summarize = false;
+  bool dereference = false;       // -L
+  bool one_file_system = false;   // -x
+  bool show_inodes = false;       // --inodes
+  std::string time_word;          // --time
   int max_depth = -1;
   ThresholdMode threshold_mode = ThresholdMode::None;
   uint64_t threshold_size = 0;
@@ -384,6 +414,13 @@ auto configure_du(const CommandContext<DU_OPTIONS.size()>& ctx)
     cfg.exclude_patterns.push_back(pattern);
   }
 
+  cfg.dereference = ctx.get<bool>("--dereference", false) ||
+                    ctx.get<bool>("-L", false);
+  cfg.one_file_system = ctx.get<bool>("--one-file-system", false) ||
+                        ctx.get<bool>("-x", false);
+  cfg.show_inodes = ctx.get<bool>("--inodes", false);
+  cfg.time_word = ctx.get<std::string>("--time", "");
+
   return cfg;
 }
 
@@ -471,13 +508,20 @@ auto get_file_size(const std::wstring& path) -> uint64_t {
  */
 auto calculate_dir_size(const std::wstring& path,
                         std::unordered_map<std::wstring, uint64_t>& sizes,
-                        int current_depth, const DuConfig& cfg) -> uint64_t {
+                        int current_depth, const DuConfig& cfg,
+                        const std::wstring& root_drive = L"") -> uint64_t {
   WIN32_FIND_DATAW find_data;
   std::wstring search_path = path + L"\\*";
   HANDLE hFind = FindFirstFileW(search_path.c_str(), &find_data);
 
   if (hFind == INVALID_HANDLE_VALUE) {
     return 0;
+  }
+
+  // Determine root drive for --one-file-system
+  std::wstring drive = root_drive;
+  if (drive.empty() && path.size() >= 2 && path[1] == L':') {
+    drive = path.substr(0, 2);
   }
 
   uint64_t total_size = 0;
@@ -496,12 +540,24 @@ auto calculate_dir_size(const std::wstring& path,
       continue;
     }
 
+    // --one-file-system: skip directories on different drives
+    if (cfg.one_file_system && !drive.empty() && full_path.size() >= 2 &&
+        full_path[1] == L':') {
+      std::wstring file_drive = full_path.substr(0, 2);
+      if (file_drive != drive) {
+        continue;
+      }
+    }
+
     const int child_depth = current_depth + 1;
 
     if (find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+      // --dereference: on Windows, follow junction points
+      // (FindFirstFile already handles this for most cases)
+
       // Recursively calculate subdirectory size
       uint64_t dir_size =
-          calculate_dir_size(full_path, sizes, child_depth, cfg);
+          calculate_dir_size(full_path, sizes, child_depth, cfg, drive);
       total_size += dir_size;
     } else {
       // It's a file
@@ -593,7 +649,12 @@ auto print_disk_usage(const CommandContext<DU_OPTIONS.size()>& ctx)
 
       if (passes_threshold(cfg, dir_size)) {
         safePrint(L"");
-        print_scaled_size(dir_size, cfg.output);
+        if (cfg.show_inodes) {
+          // Show inode count (approximated as file count)
+          safePrint(std::to_string(sizes.size()));
+        } else {
+          print_scaled_size(dir_size, cfg.output);
+        }
         safePrint(L"  ");
         safePrintLn(wpath);
       }
@@ -606,7 +667,11 @@ auto print_disk_usage(const CommandContext<DU_OPTIONS.size()>& ctx)
               continue;
             }
             safePrint(L"");
-            print_scaled_size(size, cfg.output);
+            if (cfg.show_inodes) {
+              safePrint("1");  // Each entry counts as 1 inode
+            } else {
+              print_scaled_size(size, cfg.output);
+            }
             safePrint(L"  ");
             safePrintLn(subpath);
           }
@@ -619,7 +684,11 @@ auto print_disk_usage(const CommandContext<DU_OPTIONS.size()>& ctx)
 
       if (passes_threshold(cfg, file_size)) {
         safePrint(L"");
-        print_scaled_size(file_size, cfg.output);
+        if (cfg.show_inodes) {
+          safePrint("1");  // Each file is 1 inode
+        } else {
+          print_scaled_size(file_size, cfg.output);
+        }
         safePrint(L"  ");
         safePrintLn(wpath);
       }

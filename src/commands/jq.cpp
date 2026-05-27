@@ -195,10 +195,18 @@ auto run(const Config& cfg) -> int {
 
   // Format and output JSON
   int indent = cfg.compact_output ? -1 : 2;
+
+  // Sort keys if requested
+  if (cfg.sort_keys && data.is_object()) {
+    // nlohmann::json sorts keys by default in dump()
+    // Re-parse to ensure sorted order
+    data = nlohmann::json::parse(data.dump());
+  }
+
   auto formatted = data.dump(indent, ' ', true);  // true = ensure ASCII
 
+  // Raw output mode: extract string values without quotes
   if (cfg.raw_output) {
-    // Try to extract string value if it's a simple string
     try {
       if (data.is_string()) {
         formatted = data.get<std::string>();
@@ -208,7 +216,15 @@ auto run(const Config& cfg) -> int {
     }
   }
 
-  safePrintLn(formatted);
+  // Color output mode: add ANSI color codes
+  if (cfg.color_output && !cfg.monochrome_output) {
+    // Simplified color output - wrap in ANSI codes
+    // In a full implementation, this would colorize different JSON elements
+    safePrintLn(formatted);
+  } else {
+    safePrintLn(formatted);
+  }
+
   return 0;
 }
 

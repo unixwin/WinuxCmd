@@ -263,29 +263,84 @@ auto run(const Config& cfg) -> int {
       }
 
       const auto& row = table[row_idx];
+      std::string line_output;
+
       for (size_t col_idx = 0; col_idx < row.size(); ++col_idx) {
         if (col_idx > 0) {
-          safePrint(cfg.output_separator.empty() ? " " : cfg.output_separator);
+          line_output += cfg.output_separator.empty() ? " " : cfg.output_separator;
         }
 
         size_t width = (col_idx < col_widths.size()) ? col_widths[col_idx]
                                                      : row[col_idx].size();
 
-        if (cfg.table_right) {
+        // Check if this column should be right-aligned
+        bool right_align = cfg.table_right;
+        if (!cfg.table_right_columns.empty()) {
+          // Parse column numbers for right alignment (comma-separated)
+          std::string col_spec = cfg.table_right_columns;
+          size_t pos = 0;
+          while (pos < col_spec.size()) {
+            size_t comma = col_spec.find(',', pos);
+            std::string token = (comma == std::string::npos)
+                                    ? col_spec.substr(pos)
+                                    : col_spec.substr(pos, comma - pos);
+            try {
+              int col_num = std::stoi(token);
+              if (static_cast<size_t>(col_num) == col_idx + 1) {
+                right_align = true;
+                break;
+              }
+            } catch (...) {
+            }
+            if (comma == std::string::npos) break;
+            pos = comma + 1;
+          }
+        }
+
+        if (right_align) {
           // Right align
           for (size_t i = 0; i < width - row[col_idx].size(); ++i) {
-            safePrint(' ');
+            line_output += ' ';
           }
-          safePrint(row[col_idx]);
+          line_output += row[col_idx];
         } else {
           // Left align
-          safePrint(row[col_idx]);
+          line_output += row[col_idx];
           for (size_t i = 0; i < width - row[col_idx].size(); ++i) {
-            safePrint(' ');
+            line_output += ' ';
           }
         }
       }
-      safePrintLn("");
+
+      // Apply output width limit
+      if (cfg.output_width > 0 &&
+          static_cast<int>(line_output.size()) > cfg.output_width) {
+        line_output = line_output.substr(0, cfg.output_width);
+      }
+
+      safePrintLn(line_output);
+    }
+
+    // JSON output mode
+    if (cfg.json_output) {
+      safePrintLn("[");
+      for (size_t row_idx = (cfg.table_hide ? 1 : 0); row_idx < table.size();
+           ++row_idx) {
+        const auto& row = table[row_idx];
+        safePrint("  {");
+        for (size_t col_idx = 0; col_idx < row.size(); ++col_idx) {
+          if (col_idx > 0) safePrint(",");
+          // Use header as key if available
+          std::string key = "col" + std::to_string(col_idx + 1);
+          if (!table.empty() && col_idx < table[0].size()) {
+            key = table[0][col_idx];
+          }
+          safePrint("\"" + key + "\":\"" + row[col_idx] + "\"");
+        }
+        safePrintLn("}" +
+                     std::string(row_idx < table.size() - 1 ? "," : ""));
+      }
+      safePrintLn("]");
     }
   } else {
     // Simple column output mode

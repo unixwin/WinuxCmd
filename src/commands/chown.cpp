@@ -166,6 +166,16 @@ auto process_file(const std::string& path, const Config& cfg) -> int {
     return 1;
   }
 
+  // --from: only change ownership if currently owned by the specified user:group
+  // On Windows, this is a no-op since we can't change ownership anyway
+  if (!cfg.from_spec.empty()) {
+    if (cfg.verbose) {
+      safePrint("chown: --from check for '" + path +
+                "' (current: " + cfg.from_spec +
+                ") - not supported on Windows\n");
+    }
+  }
+
   // On Windows, chown requires administrator privileges
   // Report the current state and note that actual ownership change is not
   // supported

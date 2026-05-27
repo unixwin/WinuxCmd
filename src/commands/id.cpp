@@ -52,9 +52,9 @@ auto constexpr ID_OPTIONS = std::array{
            BOOL_TYPE),
     OPTION("-u", "--user", "print only the effective user ID", BOOL_TYPE),
     OPTION("-Z", "--context",
-           "print only the security context (not implemented)", BOOL_TYPE)
-    // --zero (not implemented)
-};
+           "print only the security context (not implemented)", BOOL_TYPE),
+    OPTION("", "--zero",
+           "delimit entries with NUL, not whitespace", BOOL_TYPE)};
 
 namespace id_pipeline {
 namespace cp = core::pipeline;
@@ -64,6 +64,7 @@ struct Config {
   bool print_groups = false;
   bool print_name = false;
   bool print_user = false;
+  bool zero = false;
   SmallVector<std::string, 64> users;
 };
 
@@ -76,6 +77,7 @@ auto build_config(const CommandContext<ID_OPTIONS.size()>& ctx)
       ctx.get<bool>("--groups", false) || ctx.get<bool>("-G", false);
   cfg.print_name = ctx.get<bool>("--name", false) || ctx.get<bool>("-n", false);
   cfg.print_user = ctx.get<bool>("--user", false) || ctx.get<bool>("-u", false);
+  cfg.zero = ctx.get<bool>("--zero", false);
 
   for (auto arg : ctx.positionals) {
     cfg.users.push_back(std::string(arg));
@@ -99,26 +101,25 @@ auto run(const Config& cfg) -> int {
   // Windows doesn't have POSIX UIDs/GIDs, so we use SIDs
   // For simplicity, we'll just print the username
 
+  const char* term = cfg.zero ? "\0" : "\n";
+
   if (cfg.print_user) {
-    // Print uid=0(username) format when -u option is used
-    safePrint("uid=0(");
-    safePrint(user_str);
-    safePrintLn(")");
+    if (cfg.print_name) {
+      safePrint(user_str + term);
+    } else {
+      safePrint("uid=0(" + user_str + ")" + term);
+    }
   } else if (cfg.print_group) {
-    safePrintLn("unknown");  // Windows doesn't have POSIX groups
+    if (cfg.print_name) {
+      safePrint(user_str + term);
+    } else {
+      safePrint(std::string("unknown") + term);
+    }
   } else if (cfg.print_groups) {
-    safePrint(user_str);
-    safePrint(" ");   // Primary group
-    safePrintLn("");  // No additional groups on Windows
+    safePrint(user_str + term);
   } else {
-    // Print all info
-    safePrint("uid=0(");
-    safePrint(user_str);
-    safePrint(") gid=0(");
-    safePrint(user_str);
-    safePrint(") groups=0(");
-    safePrint(user_str);
-    safePrintLn(")");
+    safePrint("uid=0(" + user_str + ") gid=0(" + user_str +
+              ") groups=0(" + user_str + ")" + term);
   }
 
   return 0;

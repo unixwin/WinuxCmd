@@ -64,7 +64,28 @@ auto constexpr LN_OPTIONS = std::array{
     OPTION("-v", "--verbose", "print name of each linked file"),
     OPTION("-n", "--no-dereference",
            "treat LINK_NAME as a normal file if it is a symbolic link to a "
-           "directory")};
+           "directory"),
+    OPTION("-i", "--interactive",
+           "prompt whether to remove destinations"),
+    OPTION("-L", "--logical",
+           "dereference TARGETs that are symbolic links"),
+    OPTION("-P", "--physical",
+           "make hard links directly to symbolic links"),
+    OPTION("", "--dereference",
+           "dereference TARGETs that are symbolic links"),
+    OPTION("-b", "--backup",
+           "make a backup of each existing destination file"),
+    OPTION("-S", "--suffix",
+           "override the usual backup suffix", STRING_TYPE),
+    OPTION("-r", "--relative",
+           "with -s, create links relative to link location"),
+    OPTION("-t", "--target-directory",
+           "specify the DIRECTORY in which to create the links", STRING_TYPE),
+    OPTION("-T", "--no-target-directory",
+           "treat LINK_NAME as a normal file always"),
+    OPTION("-d", "--directory",
+           "allow the hard link to be a directory (privileged)"),
+    OPTION("-F", "", "allow hard link to directory (alias for -d)")};
 
 namespace ln_pipeline {
 namespace cp = core::pipeline;
@@ -179,12 +200,23 @@ REGISTER_COMMAND(
     ln, "ln", "make links between files",
     "Create links between files. By default, make hard links.\n"
     "\n"
+    "  -s, --symbolic         make symbolic links instead of hard links\n"
+    "  -f, --force            remove existing destination files\n"
+    "  -i, --interactive      prompt whether to remove destinations\n"
+    "  -b, --backup           make a backup of each existing destination\n"
+    "  -S, --suffix=SUFFIX    override the usual backup suffix\n"
+    "  -t, --target-directory=DIRECTORY  specify the target directory\n"
+    "  -T, --no-target-directory  treat LINK_NAME as a normal file\n"
+    "  -r, --relative         create links relative to link location\n"
+    "\n"
     "On Windows, hard links and symbolic links are supported.\n"
     "Note: Creating symbolic links may require administrator privileges.",
     "  ln source link         Create a hard link\n"
     "  ln -s source link      Create a symbolic link\n"
     "  ln -sf source link     Force create, overwrite if exists\n"
-    "  ln -sv source link     Verbose symbolic link creation",
+    "  ln -sv source link     Verbose symbolic link creation\n"
+    "  ln -t dir/ src1 src2   Create links in dir/\n"
+    "  ln -b source link      Backup existing link before creating",
     "link(1), symlink(1)", "caomengxuan666", "Copyright © 2026 WinuxCmd",
     LN_OPTIONS) {
   using namespace ln_pipeline;
@@ -194,18 +226,57 @@ REGISTER_COMMAND(
   bool force = ctx.get<bool>("-f", false) || ctx.get<bool>("--force", false);
   bool verbose =
       ctx.get<bool>("-v", false) || ctx.get<bool>("--verbose", false);
+  bool interactive =
+      ctx.get<bool>("-i", false) || ctx.get<bool>("--interactive", false);
+  bool backup = ctx.get<bool>("-b", false) || ctx.get<bool>("--backup", false);
+  std::string backup_suffix = ctx.get<std::string>("--suffix", "");
+  if (backup_suffix.empty()) backup_suffix = ctx.get<std::string>("-S", "");
+  if (backup && backup_suffix.empty()) backup_suffix = "~";
+  std::string target_dir = ctx.get<std::string>("--target-directory", "");
+  if (target_dir.empty()) target_dir = ctx.get<std::string>("-t", "");
+  bool no_target_dir =
+      ctx.get<bool>("-T", false) || ctx.get<bool>("--no-target-directory", false);
 
-  // Need at least source and one target
-  if (ctx.positionals.size() < 2) {
+  // Determine source and targets
+  std::string source;
+  std::vector<std::string> targets;
+
+  if (!target_dir.empty()) {
+    // -t mode: all positionals are sources, target_dir is the destination
+    if (ctx.positionals.empty()) {
+      safeErrorPrint("ln: missing operand\n");
+      safeErrorPrint("Try 'ln --help' for more information.\n");
+      return 1;
+    }
+    // Check if target_dir exists and is a directory
+    std::wstring wtd = utf8_to_wstring(target_dir);
+    DWORD td_attrs = GetFileAttributesW(wtd.c_str());
+    if (td_attrs == INVALID_FILE_ATTRIBUTES ||
+        !(td_attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+      safeErrorPrint("ln: target '" + target_dir + "' is not a directory\n");
+      return 1;
+    }
+    for (auto arg : ctx.positionals) {
+      std::string s(arg);
+      // Extract filename from source path
+      std::string filename = s;
+      size_t sep = filename.find_last_of("/\\");
+      if (sep != std::string::npos) filename = filename.substr(sep + 1);
+      targets.push_back(target_dir + "\\" + filename);
+    }
+    source = std::string(ctx.positionals[0]);
+  } else if (ctx.positionals.size() < 2) {
     safeErrorPrint("ln: missing operand\n");
     safeErrorPrint("Try 'ln --help' for more information.\n");
     return 1;
+  } else {
+    source = std::string(ctx.positionals[0]);
+    for (size_t i = 1; i < ctx.positionals.size(); ++i) {
+      targets.push_back(std::string(ctx.positionals[i]));
+    }
   }
 
-  std::string source = std::string(ctx.positionals[0]);
-
-  // Batch mode: first param is source, rest are targets
-  size_t target_count = ctx.positionals.size() - 1;
+  size_t target_count = targets.size();
   size_t success_count = 0;
   size_t error_count = 0;
 
@@ -214,18 +285,65 @@ REGISTER_COMMAND(
               source + "'...\n");
   }
 
-  for (size_t i = 1; i < ctx.positionals.size(); ++i) {
-    std::string target = std::string(ctx.positionals[i]);
+  for (const auto& target : targets) {
+    // Check if target exists
+    std::wstring wtarget = utf8_to_wstring(target);
+    DWORD target_attrs = GetFileAttributesW(wtarget.c_str());
+    bool target_exists = (target_attrs != INVALID_FILE_ATTRIBUTES);
 
-    // Remove existing target if force is set
-    if (force) {
-      auto result = remove_existing(target);
-      if (!result) {
-        safeErrorPrint("ln: ");
-        safeErrorPrint(result.error());
-        safeErrorPrint("\n");
-        error_count++;
-        continue;
+    if (target_exists) {
+      if (interactive && !force) {
+        // Prompt user
+        safePrint("ln: replace '" + target + "'? ");
+        std::string response;
+        std::getline(std::cin, response);
+        if (response.empty() || (response[0] != 'y' && response[0] != 'Y')) {
+          continue;
+        }
+      }
+
+      // Backup if requested
+      if (backup && target_exists) {
+        std::string backup_name = target + backup_suffix;
+        std::wstring wbackup = utf8_to_wstring(backup_name);
+        // Remove existing backup if any
+        DeleteFileW(wbackup.c_str());
+        RemoveDirectoryW(wbackup.c_str());
+        if (!MoveFileW(wtarget.c_str(), wbackup.c_str())) {
+          safeErrorPrint("ln: cannot backup '" + target + "'\n");
+          error_count++;
+          continue;
+        }
+        if (verbose) {
+          safePrint("'" + target + "' -> '" + backup_name + "' (backup)\n");
+        }
+      } else if (force) {
+        // Remove existing target if force is set
+        auto result = remove_existing(target);
+        if (!result) {
+          safeErrorPrint("ln: ");
+          safeErrorPrint(result.error());
+          safeErrorPrint("\n");
+          error_count++;
+          continue;
+        }
+      } else if (!backup) {
+        // No force, no backup, no interactive - error
+        if (!no_target_dir ||
+            (target_attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+          safeErrorPrint("ln: '" + target + "' exists\n");
+          error_count++;
+          continue;
+        }
+        // With -T, try to overwrite
+        auto result = remove_existing(target);
+        if (!result) {
+          safeErrorPrint("ln: ");
+          safeErrorPrint(result.error());
+          safeErrorPrint("\n");
+          error_count++;
+          continue;
+        }
       }
     }
 

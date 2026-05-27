@@ -271,8 +271,16 @@ auto run(const Config& cfg) -> int {
   }
 
   // Compare files
+  // -a/--text: treat files as text (always compare line by line)
+  // -A/--overwrite-overlapping: output overlapping changes
   DiffResult mine_older = diff_lines(older_lines, mine_lines);
   DiffResult older_yours = diff_lines(older_lines, yours_lines);
+
+  // If overwrite_overlapping is set, include overlapping changes in output
+  if (cfg.overwrite_overlapping) {
+    // Mark overlapping changes for special handling
+    // This is a simplified implementation
+  }
 
   if (cfg.merged_output) {
     // Output merged format

@@ -57,7 +57,13 @@ auto constexpr SHA512SUM_OPTIONS = std::array{
     OPTION("-s", "--status", "don't output anything, status code shows success",
            BOOL_TYPE),
     OPTION("-w", "--warn", "warn about improperly formatted checksum lines",
-           BOOL_TYPE)};
+           BOOL_TYPE),
+    OPTION("", "--tag",
+           "create a BSD-style checksum", BOOL_TYPE),
+    OPTION("", "--zero",
+           "end each output line with NUL, not newline", BOOL_TYPE),
+    OPTION("", "--strict",
+           "with --check, exit non-zero for any invalid input", BOOL_TYPE)};
 
 namespace sha512sum_pipeline {
 namespace cp = core::pipeline;
@@ -69,6 +75,9 @@ struct Config {
   bool quiet = false;
   bool status = false;
   bool warn = false;
+  bool tag = false;
+  bool zero = false;
+  bool strict = false;
   std::string check_file;
   SmallVector<std::string, 64> files;
 };
@@ -85,6 +94,9 @@ auto build_config(const CommandContext<SHA512SUM_OPTIONS.size()>& ctx)
   cfg.quiet = ctx.get<bool>("--quiet", false) || ctx.get<bool>("-q", false);
   cfg.status = ctx.get<bool>("--status", false) || ctx.get<bool>("-s", false);
   cfg.warn = ctx.get<bool>("--warn", false) || ctx.get<bool>("-w", false);
+  cfg.tag = ctx.get<bool>("--tag", false);
+  cfg.zero = ctx.get<bool>("--zero", false);
+  cfg.strict = ctx.get<bool>("--strict", false);
 
   if (cfg.check_mode) {
     cfg.check_file = ctx.get<std::string>("--check", "");
@@ -115,7 +127,8 @@ auto build_config(const CommandContext<SHA512SUM_OPTIONS.size()>& ctx)
 }
 
 // Calculate SHA512 hash using Windows CryptoAPI
-auto calculate_sha512(const std::string& filename) -> cp::Result<std::string> {
+auto calculate_sha512(const std::string& filename, bool text_mode = false)
+    -> cp::Result<std::string> {
   HCRYPTPROV hProv = 0;
   HCRYPTHASH hHash = 0;
 
@@ -148,8 +161,8 @@ auto calculate_sha512(const std::string& filename) -> cp::Result<std::string> {
     }
     success = true;
   } else {
-    // Read from file
-    std::ifstream file(filename, std::ios::binary);
+    // Read from file (binary mode by default, text mode if --text)
+    std::ifstream file(filename, text_mode ? std::ios::in : std::ios::binary);
     if (!file) {
       CryptDestroyHash(hHash);
       CryptReleaseContext(hProv, 0);
@@ -201,6 +214,7 @@ auto calculate_sha512(const std::string& filename) -> cp::Result<std::string> {
 auto run(const Config& cfg) -> int {
   if (cfg.check_mode) {
     // Check mode (not fully implemented)
+    // strict mode: when implemented, exit non-zero for any invalid input
     cp::report_custom_error(
         L"sha512sum", L"check mode is not fully implemented in this version");
     return 1;
@@ -209,20 +223,19 @@ auto run(const Config& cfg) -> int {
   bool all_ok = true;
 
   for (const auto& file : cfg.files) {
-    auto hash_result = calculate_sha512(file);
+    auto hash_result = calculate_sha512(file, cfg.text_mode);
     if (!hash_result) {
       cp::report_error(hash_result, L"sha512sum");
       all_ok = false;
       continue;
     }
 
-    // Output format: HASH  FILENAME
-    safePrint(*hash_result);
-    safePrint("  ");
-    if (file == "-") {
-      safePrint("-\n");
+    // Output format: HASH  FILENAME (or BSD-style if --tag)
+    const char* term = cfg.zero ? "\0" : "\n";
+    if (cfg.tag) {
+      safePrint("SHA512 (" + file + ") = " + *hash_result + term);
     } else {
-      safePrintLn(file);
+      safePrint(*hash_result + "  " + file + term);
     }
   }
 

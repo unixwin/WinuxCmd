@@ -449,6 +449,17 @@ auto render_format(std::string_view format, const std::string& filename,
         out +=
             std::to_string(filetime_to_unix_seconds(stat.attrs.ftCreationTime));
         break;
+      case 'm': {
+        // Mount point
+        wchar_t volume[MAX_PATH];
+        std::wstring wfilename = utf8_to_wstring(filename);
+        if (GetVolumePathNameW(wfilename.c_str(), volume, MAX_PATH)) {
+          out += wstring_to_utf8(volume);
+        } else {
+          out += "/";
+        }
+        break;
+      }
       default:
         out.push_back('%');
         out.push_back(code);

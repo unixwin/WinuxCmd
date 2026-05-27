@@ -258,7 +258,23 @@ auto run(const Config& cfg) -> int {
                          std::to_string(cfg.signal) + " to command '" +
                          cfg.command + "'");
       }
-      TerminateProcess(pi.hProcess, timeout_status);
+
+      // --foreground: don't send signal to background processes
+      // On Windows, this is less relevant but we can check process group
+      if (!cfg.foreground) {
+        TerminateProcess(pi.hProcess, timeout_status);
+      }
+
+      // --kill-after: if specified, wait additional time then force kill
+      if (cfg.kill_after_ms > 0) {
+        DWORD kill_wait = static_cast<DWORD>(cfg.kill_after_ms);
+        DWORD kill_result = WaitForSingleObject(pi.hProcess, kill_wait);
+        if (kill_result == WAIT_TIMEOUT) {
+          // Force kill after kill-after duration
+          TerminateProcess(pi.hProcess, timeout_status);
+        }
+      }
+
       WaitForSingleObject(pi.hProcess, INFINITE);
       CloseHandle(pi.hProcess);
       CloseHandle(pi.hThread);

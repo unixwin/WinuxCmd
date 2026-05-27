@@ -119,6 +119,24 @@ auto constexpr CP_OPTIONS = std::array{
     OPTION("-v", "--verbose", "explain what is being done"),
     OPTION("-x", "--one-file-system", "stay on this file system"),
     OPTION("-Z", "",
+           "set SELinux security context of destination file to default type"),
+    OPTION("", "--remove-destination",
+           "remove each existing destination file before attempting to open it"),
+    OPTION("", "--attributes-only",
+           "don't copy the file data, just the attributes"),
+    OPTION("", "--parents",
+           "use full source file name under DIRECTORY"),
+    OPTION("", "--sparse",
+           "control creation of sparse files", STRING_TYPE),
+    OPTION("", "--reflink",
+           "control clone/CoW copies", OPTIONAL_STRING_TYPE),
+    OPTION("", "--preserve",
+           "preserve the specified attributes", STRING_TYPE),
+    OPTION("", "--no-preserve",
+           "don't preserve the specified attributes", STRING_TYPE),
+    OPTION("", "--copy-contents",
+           "copy contents of special files when recursive"),
+    OPTION("-c", "--context",
            "set SELinux security context of destination file to default type")};
 
 // ======================================================
@@ -267,7 +285,14 @@ auto archive_enabled(const CommandContext<CP_OPTIONS.size()>& ctx) -> bool {
 
 auto preserve_metadata_enabled(const CommandContext<CP_OPTIONS.size()>& ctx)
     -> bool {
-  return archive_enabled(ctx) || ctx.get<bool>("-p", false);
+  // --no-preserve without argument disables all preservation
+  if (ctx.has("--no-preserve") &&
+      ctx.get<std::string>("--no-preserve", "").empty()) {
+    return false;
+  }
+  if (archive_enabled(ctx) || ctx.get<bool>("-p", false)) return true;
+  if (ctx.has("--preserve")) return true;
+  return false;
 }
 
 auto preserve_metadata(const std::string& srcPath, const std::string& destPath)
@@ -369,6 +394,8 @@ auto copy_file(const std::string& srcPath, const std::string& destPath,
   bool no_clobber =
       ctx.get<bool>("--no-clobber", false) || ctx.get<bool>("-n", false);
   bool update = ctx.get<bool>("-u", false) || ctx.get<bool>("--update", false);
+  bool remove_dest = ctx.has("--remove-destination");
+  bool attrs_only = ctx.has("--attributes-only");
 
   std::error_code equivalent_ec;
   if (std::filesystem::exists(srcPath) && std::filesystem::exists(destPath) &&
@@ -410,9 +437,39 @@ auto copy_file(const std::string& srcPath, const std::string& destPath,
     }
   }
 
+  // --remove-destination: remove existing dest before opening
+  if (remove_dest) {
+    std::wstring wdest = utf8_to_wstring(destPath);
+    DWORD dest_attrs = GetFileAttributesW(wdest.c_str());
+    if (dest_attrs != INVALID_FILE_ATTRIBUTES) {
+      if (dest_attrs & FILE_ATTRIBUTE_DIRECTORY) {
+        RemoveDirectoryW(wdest.c_str());
+      } else {
+        SetFileAttributesW(wdest.c_str(), FILE_ATTRIBUTE_NORMAL);
+        DeleteFileW(wdest.c_str());
+      }
+    }
+  }
+
   auto backupResult = backup_existing_destination(destPath, ctx);
   if (!backupResult) {
     return backupResult;
+  }
+
+  if (attrs_only) {
+    // --attributes-only: copy only metadata, not file data
+    if (preserve_metadata_enabled(ctx) || true) {
+      auto preserveResult = preserve_metadata(srcPath, destPath);
+      if (!preserveResult) return preserveResult;
+    }
+    if (verbose) {
+      safePrint("'");
+      safePrint(srcPath);
+      safePrint("' -> '");
+      safePrint(destPath);
+      safePrint("' (attributes only)\n");
+    }
+    return true;
   }
 
   // Check if source file exists and is readable
@@ -619,25 +676,41 @@ auto process_source_paths(
     bool srcIsDir = *isDirResult;
     std::string finalDestPath = destPath;
 
+    bool parents = ctx.has("--parents");
     if (destIsDir) {
-      // If destination is a directory, append source filename
-      std::wstring wsrcPath = utf8_to_wstring(srcPath);
-      LPWSTR fileName = PathFindFileNameW(wsrcPath.c_str());
-
-      // OPTIMIZED: Use stack buffer
-      char fileNameBuf[MAX_PATH * 3];
-      int fileNameLength =
-          WideCharToMultiByte(CP_UTF8, 0, fileName, -1, fileNameBuf,
-                              sizeof(fileNameBuf), NULL, NULL);
-
-      if (fileNameLength > 0 && fileNameLength < sizeof(fileNameBuf)) {
-        finalDestPath += "\\" + std::string(fileNameBuf);
+      if (parents) {
+        // --parents: use relative source path under destination
+        // e.g., cp --parents a/b/c dest/ -> dest/a/b/c
+        finalDestPath = destPath + "\\" + srcPath;
+        // Create intermediate directories
+        size_t pos = 0;
+        while ((pos = finalDestPath.find('\\', pos)) != std::string::npos) {
+          std::string partial = finalDestPath.substr(0, pos);
+          if (!partial.empty() && partial != destPath) {
+            (void)create_directory_recursive(partial);
+          }
+          pos++;
+        }
       } else {
-        // Fallback to dynamic allocation if needed
-        std::string fileNameStr(fileNameLength, 0);
-        WideCharToMultiByte(CP_UTF8, 0, fileName, -1, &fileNameStr[0],
-                            fileNameLength, NULL, NULL);
-        finalDestPath += "\\" + fileNameStr;
+        // If destination is a directory, append source filename
+        std::wstring wsrcPath = utf8_to_wstring(srcPath);
+        LPWSTR fileName = PathFindFileNameW(wsrcPath.c_str());
+
+        // OPTIMIZED: Use stack buffer
+        char fileNameBuf[MAX_PATH * 3];
+        int fileNameLength =
+            WideCharToMultiByte(CP_UTF8, 0, fileName, -1, fileNameBuf,
+                                sizeof(fileNameBuf), NULL, NULL);
+
+        if (fileNameLength > 0 && fileNameLength < sizeof(fileNameBuf)) {
+          finalDestPath += "\\" + std::string(fileNameBuf);
+        } else {
+          // Fallback to dynamic allocation if needed
+          std::string fileNameStr(fileNameLength, 0);
+          WideCharToMultiByte(CP_UTF8, 0, fileName, -1, &fileNameStr[0],
+                              fileNameLength, NULL, NULL);
+          finalDestPath += "\\" + fileNameStr;
+        }
       }
     }
 
