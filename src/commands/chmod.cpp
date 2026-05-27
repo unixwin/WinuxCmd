@@ -68,7 +68,19 @@ auto constexpr CHMOD_OPTIONS = std::array{
     OPTION("-R", "--recursive", "change files and directories recursively"),
     OPTION("", "--quiet", "suppress most error messages"),
     OPTION("", "--reference", "use RFILE's mode instead of MODE values",
-           STRING_TYPE)};
+           STRING_TYPE),
+    OPTION("-H", "",
+           "traverse command-line symlinks to directories"),
+    OPTION("-L", "",
+           "traverse every symlink to a directory"),
+    OPTION("-P", "",
+           "do not traverse any symbolic links (default)"),
+    OPTION("", "--dereference",
+           "affect the referent of each symbolic link"),
+    OPTION("", "--preserve-root",
+           "fail to operate recursively on '/'"),
+    OPTION("", "--no-preserve-root",
+           "do not treat '/' specially")};
 
 namespace chmod_pipeline {
 namespace cp = core::pipeline;
@@ -445,6 +457,10 @@ REGISTER_COMMAND(
     "Change the mode of each FILE to MODE.\n"
     "\n"
     "Each MODE is of the form '[ugoa]*([-+=]([rwxXst]*|[ugo]))+'.\n"
+    "\n"
+    "  -H  traverse command-line symlinks to directories\n"
+    "  -L  traverse every symlink to a directory\n"
+    "  -P  do not traverse any symbolic links (default)\n"
     "\n"
     "Note: On Windows, this command simulates Unix permissions using\n"
     "file attributes. Write permission is mapped to the read-only attribute.",

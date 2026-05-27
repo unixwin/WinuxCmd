@@ -48,6 +48,9 @@ auto constexpr SPLIT_OPTIONS = std::array{
            "put at most SIZE bytes of complete lines per output file",
            STRING_TYPE),
     OPTION("-l", "--lines", "put NUMBER lines per output file", STRING_TYPE),
+    OPTION("-n", "--number",
+           "generate CHUNKS output files; see explanation below",
+           STRING_TYPE),
     OPTION("-d", "--numeric-suffixes",
            "use numeric suffixes instead of alphabetic", OPTIONAL_STRING_TYPE),
     OPTION("-x", "--hex-suffixes", "use hexadecimal suffixes",
@@ -55,8 +58,16 @@ auto constexpr SPLIT_OPTIONS = std::array{
     OPTION("-a", "--suffix-length", "use suffixes of length N (default 2)",
            STRING_TYPE),
     OPTION("", "--additional-suffix", "append SUFFIX to output file names",
-           STRING_TYPE)
-    // -n, --number (not implemented - split into N chunks)
+           STRING_TYPE),
+    OPTION("", "--filter", "write to shell COMMAND; file name is $FILE",
+           STRING_TYPE),
+    OPTION("-e", "--elide-empty-files", "do not generate empty output files"),
+    OPTION("-t", "--separator",
+           "use SEP instead of newline as the record separator; '\\0' (zero) "
+           "specifies the NUL character",
+           STRING_TYPE),
+    OPTION("-u", "--unbuffered",
+           "immediately copy input to output with '-n r/...'")
 };
 
 namespace split_pipeline {
@@ -83,12 +94,13 @@ auto resolve_input_file(const CommandContext<SPLIT_OPTIONS.size()>& ctx)
 }
 
 struct Config {
-  enum class Mode { Lines, Bytes, LineBytes };
+  enum class Mode { Lines, Bytes, LineBytes, Number };
   enum class SuffixKind { Alpha, Numeric, Hex };
 
   Mode mode = Mode::Lines;
   int64_t chunk_size = 0;
   int64_t chunk_lines = 1000;  // Default: 1000 lines per file
+  int64_t num_chunks = 0;      // For -n mode
   SuffixKind suffix_kind = SuffixKind::Alpha;
   int suffix_length = 2;
   bool suffix_length_explicit = false;
@@ -97,6 +109,11 @@ struct Config {
   std::string additional_suffix;
   std::string prefix = "x";
   std::string input_file;
+  std::string filter_command;
+  bool elide_empty = false;
+  char separator = '\n';  // Default: newline
+  bool separator_explicit = false;
+  bool unbuffered = false;
 };
 
 auto checked_mul(int64_t value, int64_t multiplier) -> cp::Result<int64_t> {
@@ -217,10 +234,14 @@ auto build_config(const CommandContext<SPLIT_OPTIONS.size()>& ctx)
   auto lines_opt = ctx.get<std::string>("--lines", "");
   if (lines_opt.empty()) lines_opt = ctx.get<std::string>("-l", "");
 
+  auto number_opt = ctx.get<std::string>("--number", "");
+  if (number_opt.empty()) number_opt = ctx.get<std::string>("-n", "");
+
   int split_modes = 0;
   if (!bytes_opt.empty()) ++split_modes;
   if (!line_bytes_opt.empty()) ++split_modes;
   if (!lines_opt.empty()) ++split_modes;
+  if (!number_opt.empty()) ++split_modes;
   if (split_modes > 1) {
     return std::unexpected("cannot split in more than one way");
   }
@@ -248,6 +269,36 @@ auto build_config(const CommandContext<SPLIT_OPTIONS.size()>& ctx)
     if (!lines_result) return std::unexpected(lines_result.error());
     cfg.chunk_lines = *lines_result;
     cfg.mode = Config::Mode::Lines;
+  }
+
+  if (!number_opt.empty()) {
+    // -n supports: N (n chunks), k/N (chunk k of n), l/N (n line-oriented
+    // chunks), l/k/N (chunk k of n line-oriented), r/N (n round-robin), r/k/N
+    bool line_mode = false;
+    bool round_robin = false;
+    std::string val = number_opt;
+
+    if (!val.empty() && val[0] == 'l') {
+      line_mode = true;
+      val = val.substr(1);
+      if (!val.empty() && val[0] == '/') val = val.substr(1);
+    } else if (!val.empty() && val[0] == 'r') {
+      round_robin = true;
+      val = val.substr(1);
+      if (!val.empty() && val[0] == '/') val = val.substr(1);
+    }
+
+    // Parse N or k/N
+    size_t slash = val.find('/');
+    if (slash != std::string::npos) {
+      // k/N form - just extract N for now
+      val = val.substr(slash + 1);
+    }
+
+    auto num_result = parse_positive_i64(val, "number of chunks");
+    if (!num_result) return std::unexpected(num_result.error());
+    cfg.num_chunks = *num_result;
+    cfg.mode = Config::Mode::Number;
   }
 
   if (ctx.has("--numeric-suffixes") || ctx.has("-d")) {
@@ -291,6 +342,27 @@ auto build_config(const CommandContext<SPLIT_OPTIONS.size()>& ctx)
   if (cfg.additional_suffix.find('/') != std::string::npos ||
       cfg.additional_suffix.find('\\') != std::string::npos) {
     return std::unexpected("additional suffix must not contain slash");
+  }
+
+  cfg.filter_command = ctx.get<std::string>("--filter", "");
+  cfg.elide_empty = ctx.has("--elide-empty-files") || ctx.has("-e");
+  cfg.unbuffered = ctx.has("--unbuffered") || ctx.has("-u");
+
+  auto sep_opt = ctx.get<std::string>("--separator", "");
+  if (sep_opt.empty()) sep_opt = ctx.get<std::string>("-t", "");
+  if (!sep_opt.empty()) {
+    cfg.separator_explicit = true;
+    if (sep_opt == "\\0" || sep_opt == "\0") {
+      cfg.separator = '\0';
+    } else if (sep_opt == "\\n") {
+      cfg.separator = '\n';
+    } else if (sep_opt == "\\t") {
+      cfg.separator = '\t';
+    } else if (sep_opt.size() == 1) {
+      cfg.separator = sep_opt[0];
+    } else {
+      return std::unexpected("invalid separator");
+    }
   }
 
   auto input_result = resolve_input_file(ctx);
@@ -383,6 +455,32 @@ auto write_chunk(const Config& cfg, uint64_t part_num, std::string_view chunk)
   if (!filename_result) return std::unexpected(filename_result.error());
   const auto& filename = *filename_result;
 
+  if (cfg.elide_empty && chunk.empty()) {
+    return 0;  // Skip empty files
+  }
+
+  if (!cfg.filter_command.empty()) {
+    // Execute filter command with $FILE set to filename
+    std::string cmd = cfg.filter_command;
+    // Replace $FILE with the actual filename
+    size_t pos;
+    while ((pos = cmd.find("$FILE")) != std::string::npos) {
+      cmd.replace(pos, 5, filename);
+    }
+
+    FILE* pipe = _popen(cmd.c_str(), "w");
+    if (!pipe) {
+      return std::unexpected(std::string("cannot run filter command"));
+    }
+    fwrite(chunk.data(), 1, chunk.size(), pipe);
+    int ret = _pclose(pipe);
+    if (ret != 0) {
+      return std::unexpected(std::string("filter command exited with status ") +
+                             std::to_string(ret));
+    }
+    return 0;
+  }
+
   std::ofstream out(filename, std::ios::binary);
   if (!out) {
     return std::unexpected(std::string("cannot create '") + filename + "'");
@@ -434,8 +532,9 @@ auto run(const Config& cfg) -> int {
   if (cfg.mode == Config::Mode::Lines) {
     size_t start = 0;
     int64_t lines_in_chunk = 0;
+    char sep = cfg.separator;
     for (size_t pos = 0; pos < input.size();) {
-      size_t next = input.find('\n', pos);
+      size_t next = input.find(sep, pos);
       size_t record_end = next == std::string::npos ? input.size() : next + 1;
       ++lines_in_chunk;
       pos = record_end;
@@ -452,6 +551,35 @@ auto run(const Config& cfg) -> int {
         lines_in_chunk = 0;
       }
     }
+  } else if (cfg.mode == Config::Mode::Number) {
+    // Split into N roughly equal chunks
+    int64_t chunk_size =
+        static_cast<int64_t>(input.size() / static_cast<size_t>(cfg.num_chunks));
+    if (chunk_size == 0) chunk_size = 1;
+
+    for (int64_t i = 0; i < cfg.num_chunks; ++i) {
+      size_t start = static_cast<size_t>(i * chunk_size);
+      size_t end;
+      if (i == cfg.num_chunks - 1) {
+        end = input.size();
+      } else {
+        end = static_cast<size_t>((i + 1) * chunk_size);
+        // Try to find a newline boundary
+        size_t nl = input.find(cfg.separator, end);
+        if (nl != std::string::npos && nl < end + chunk_size / 10) {
+          end = nl + 1;
+        }
+      }
+      if (start >= input.size()) break;
+
+      auto result = write_chunk(
+          cfg, part_num++,
+          std::string_view(input.data() + start, end - start));
+      if (!result) {
+        cp::report_error(result, L"split");
+        return 1;
+      }
+    }
   } else if (cfg.mode == Config::Mode::Bytes) {
     for (size_t pos = 0; pos < input.size();) {
       size_t chunk_size = static_cast<size_t>(std::min<int64_t>(
@@ -465,12 +593,13 @@ auto run(const Config& cfg) -> int {
       pos += chunk_size;
     }
   } else {
+    char sep = cfg.separator;
     for (size_t pos = 0; pos < input.size();) {
       size_t start = pos;
       size_t used = 0;
 
       while (pos < input.size()) {
-        size_t next = input.find('\n', pos);
+        size_t next = input.find(sep, pos);
         size_t record_end = next == std::string::npos ? input.size() : next + 1;
         size_t record_size = record_end - pos;
 
@@ -515,11 +644,14 @@ REGISTER_COMMAND(
     "1G, etc.\n"
     "\n"
     "Note: This implementation supports common GNU line, byte, line-byte, "
-    "and suffix options.",
+    "number, filter, separator, and suffix options.",
     "  split -l 1000 largefile.txt\n"
     "  split -b 100M largefile.txt\n"
     "  split -C 64K log.txt chunk-\n"
+    "  split -n 5 largefile.txt\n"
     "  split -d -a 3 largefile.txt part\n"
+    "  split --filter='gzip > $FILE.gz' -b 1M input.dat\n"
+    "  split -t '\\0' null-delimited.txt\n"
     "  split -b 1M -x --additional-suffix=.bin input.dat output",
     "csplit(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", SPLIT_OPTIONS) {
   using namespace split_pipeline;

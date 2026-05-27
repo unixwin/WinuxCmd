@@ -90,7 +90,7 @@ constexpr auto RM_OPTIONS = std::array{
     OPTION("", "--interactive", "prompt according to WHEN: never, once (-I), or always (-i)", OPTIONAL_STRING_TYPE),
     OPTION("", "--one-file-system", "when removing a hierarchy recursively, skip any directory that is on a file system different from that of the corresponding command line argument"),
     OPTION("", "--no-preserve-root", "do not treat '/' specially"),
-    OPTION("", "--preserve-root", "do not remove '/' (default)")};
+    OPTION("", "--preserve-root", "do not remove '/' (default)", OPTIONAL_STRING_TYPE)};
 // clang-format on
 
 // ======================================================
@@ -110,6 +110,7 @@ struct RmConfig {
   bool one_file_system = false;
   bool no_preserve_root = false;
   bool preserve_root = true;
+  bool preserve_root_all = false;
 };
 
 auto get_system_error_message(DWORD error) -> std::wstring {
@@ -235,8 +236,14 @@ auto build_config(const CommandContext<RM_OPTIONS.size()>& ctx)
   cfg.verbose = ctx.get<bool>("--verbose", false) || ctx.get<bool>("-v", false);
   cfg.one_file_system = ctx.get<bool>("--one-file-system", false);
   cfg.no_preserve_root = ctx.get<bool>("--no-preserve-root", false);
-  cfg.preserve_root =
-      ctx.get<bool>("--preserve-root", false) || !cfg.no_preserve_root;
+  std::string preserve_val = ctx.get<std::string>("--preserve-root", "");
+  bool explicit_preserve = ctx.has("--preserve-root");
+  if (explicit_preserve) {
+    cfg.preserve_root = true;
+    cfg.preserve_root_all = (preserve_val == "all");
+  } else {
+    cfg.preserve_root = !cfg.no_preserve_root;
+  }
 
   if (!ctx.metas) {
     return cfg;
@@ -292,6 +299,30 @@ auto remove_path(const std::string& path, const RmConfig& cfg) -> bool {
     safeErrorPrint(path);
     safeErrorPrint("'\n");
     return false;
+  }
+
+  // --preserve-root=all: also protect mount points
+  if (cfg.preserve_root_all && cfg.recursive) {
+    std::wstring wvol = get_volume_root(wpath);
+    if (!wvol.empty()) {
+      // Normalize: ensure trailing backslash for comparison
+      std::wstring norm_path = wpath;
+      if (!norm_path.empty() && norm_path.back() != L'\\' && norm_path.back() != L'/') {
+        norm_path += L'\\';
+      }
+      std::wstring norm_vol = wvol;
+      if (!norm_vol.empty() && norm_vol.back() != L'\\' && norm_vol.back() != L'/') {
+        norm_vol += L'\\';
+      }
+      if (_wcsicmp(norm_path.c_str(), norm_vol.c_str()) == 0) {
+        safeErrorPrint("rm: it is dangerous to operate recursively on '");
+        safeErrorPrint(path);
+        safeErrorPrint("' (same as '");
+        safeErrorPrint(wstring_to_utf8(wvol));
+        safeErrorPrint("')\n");
+        return false;
+      }
+    }
   }
 
   if (attr == INVALID_FILE_ATTRIBUTES) {

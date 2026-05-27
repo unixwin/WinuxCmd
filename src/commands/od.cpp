@@ -51,7 +51,9 @@ auto constexpr OD_OPTIONS =
                OPTION("-N", "", "limit bytes", STRING_TYPE),
                OPTION("-t", "", "select output type", STRING_TYPE),
                OPTION("-v", "", "write all input data"),
-               OPTION("-x", "", "select hexadecimal 2-byte units")};
+               OPTION("-x", "", "select hexadecimal 2-byte units"),
+               OPTION("", "--traditional",
+                      "accept arguments in traditional form (e.g., od -x file)")};
 
 // ======================================================
 // Helper functions
@@ -191,17 +193,30 @@ std::string format_double(const unsigned char* data) {
   return buf;
 }
 
+// Get address format string based on base
+const char* get_address_format(const std::string& base) {
+  if (base == "x") return "%07zx";
+  if (base == "d") return "%07zd";
+  if (base == "o") return "%07zo";
+  if (base == "n") return "";
+  return "%07zo";  // default: octal
+}
+
 // Dump data using specified format
 void dump_data(const std::vector<unsigned char>& data, size_t offset,
-               const std::vector<OutputType>& types, bool show_all) {
+               const std::vector<OutputType>& types, bool show_all,
+               const std::string& address_base = "o") {
   const size_t bytes_per_line = 16;
+  const char* addr_fmt = get_address_format(address_base);
   size_t pos = 0;
 
   while (pos < data.size()) {
     // Print offset
-    char offset_buf[16];
-    sprintf_s(offset_buf, sizeof(offset_buf), "%07zx", offset + pos);
-    safePrint(offset_buf);
+    if (addr_fmt[0] != '\0') {
+      char offset_buf[16];
+      sprintf_s(offset_buf, sizeof(offset_buf), addr_fmt, offset + pos);
+      safePrint(offset_buf);
+    }
 
     // Print bytes in hex
     for (size_t i = 0; i < bytes_per_line; ++i) {
@@ -240,18 +255,27 @@ void dump_data(const std::vector<unsigned char>& data, size_t offset,
       }
 
       if (next_pos > pos) {
-        char buf[32];
-        sprintf_s(buf, sizeof(buf), "*\n%07zx\n", offset + next_pos);
-        safePrint(buf);
+        if (addr_fmt[0] != '\0') {
+          char buf[32];
+          sprintf_s(buf, sizeof(buf), "*\n", addr_fmt, offset + next_pos);
+          safePrint(buf);
+          char addr_buf[16];
+          sprintf_s(addr_buf, sizeof(addr_buf), addr_fmt, offset + next_pos);
+          safePrint(addr_buf);
+          safePrint("\n");
+        }
         pos = next_pos;
       }
     }
   }
 
   // Print final offset
-  char final_buf[16];
-  sprintf_s(final_buf, sizeof(final_buf), "%07zx\n", offset + data.size());
-  safePrint(final_buf);
+  if (addr_fmt[0] != '\0') {
+    char final_buf[16];
+    sprintf_s(final_buf, sizeof(final_buf), addr_fmt, offset + data.size());
+    safePrint(final_buf);
+    safePrint("\n");
+  }
 }
 
 // Parse offset string
@@ -369,11 +393,15 @@ REGISTER_COMMAND(
 
   // Dump data
   if (data.empty()) {
-    char buf[16];
-    sprintf_s(buf, sizeof(buf), "%07zx\n", skip_bytes);
-    safePrint(buf);
+    const char* addr_fmt = get_address_format(input_base);
+    if (addr_fmt[0] != '\0') {
+      char buf[16];
+      sprintf_s(buf, sizeof(buf), addr_fmt, skip_bytes);
+      safePrint(buf);
+      safePrint("\n");
+    }
   } else {
-    dump_data(data, skip_bytes, types, show_all);
+    dump_data(data, skip_bytes, types, show_all, input_base);
   }
 
   return 0;

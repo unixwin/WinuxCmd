@@ -47,9 +47,11 @@ auto constexpr MKTEMP_OPTIONS = std::array{
            BOOL_TYPE),
     OPTION("-u", "--dry-run", "do not actually create anything", BOOL_TYPE),
     OPTION("-q", "--quiet", "suppress diagnostics", BOOL_TYPE),
-    OPTION("-t", "--tmpdir", "interpret TEMPLATE relative to DIR", STRING_TYPE)
-    // -p, --tmpdir (not implemented - same as -t)
-};
+    OPTION("-t", "--tmpdir", "interpret TEMPLATE relative to DIR", STRING_TYPE),
+    OPTION("-p", "--tmpdir",
+           "interpret TEMPLATE relative to DIR; if DIR is not specified, use "
+           "$TMPDIR",
+           STRING_TYPE)};
 
 namespace mktemp_pipeline {
 namespace cp = core::pipeline;
@@ -73,6 +75,9 @@ auto build_config(const CommandContext<MKTEMP_OPTIONS.size()>& ctx)
   auto tmpdir_opt = ctx.get<std::string>("--tmpdir", "");
   if (tmpdir_opt.empty()) {
     tmpdir_opt = ctx.get<std::string>("-t", "");
+  }
+  if (tmpdir_opt.empty()) {
+    tmpdir_opt = ctx.get<std::string>("-p", "");
   }
   if (!tmpdir_opt.empty()) {
     cfg.tmpdir = tmpdir_opt;

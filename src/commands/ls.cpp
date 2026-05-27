@@ -174,7 +174,29 @@ auto constexpr LS_OPTIONS = std::array{
     OPTION("", "--color",
            "colorize the output; WHEN can be 'always', 'auto', or 'never'",
            STRING_TYPE),
-    OPTION("-1", "", "list one file per line")};
+    OPTION("-1", "", "list one file per line"),
+    OPTION("-D", "--dired",
+           "generate output designed for Emacs dired mode"),
+    OPTION("-G", "--no-group",
+           "in a long listing, don't print group names"),
+    OPTION("", "--group-directories-first",
+           "group directories before files"),
+    OPTION("-H", "--dereference-command-line",
+           "follow symlinks listed on the command line"),
+    OPTION("", "--dereference-command-line-symlinks-to-dir",
+           "follow each command-line symlink to a directory"),
+    OPTION("", "--hide",
+           "do not list implied entries matching PATTERN", STRING_TYPE),
+    OPTION("", "--hyperlink",
+           "hyperlink file names when outputting to a terminal",
+           OPTIONAL_STRING_TYPE),
+    OPTION("", "--si",
+           "like -h, but use powers of 1000 not 1024"),
+    OPTION("", "--time-style",
+           "time/date format with -l (e.g. full-iso, long-iso, iso, locale, +FORMAT)",
+           STRING_TYPE),
+    OPTION("", "--zero",
+           "end each output line with NUL instead of newline")};
 
 // ======================================================
 // Constants

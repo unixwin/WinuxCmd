@@ -138,7 +138,7 @@ Windows 二进制一起发布。
 
 ---
 
-## 📦 已实现命令（139 个）
+## 📦 已实现命令（148 个）
 
 > 完整参数列表见 [命令实现文档](DOCS/zh/commands_implementation.md)
 
@@ -157,6 +157,8 @@ Windows 二进制一起发布。
 | `chmod` / `ln` / `touch` | 文件系统 | `df` / `du` / `diff` | 磁盘/比较 |
 | `echo` / `env` / `which` | 工具类 | `pwd` / `realpath` / `tree` | 路径工具 |
 | `date` / `tee` / `xargs` | 实用命令 | `file` | 文件类型识别 |
+| `more` / `hexdump` / `strings` | 查看/分析 | `col` / `stty` | 终端工具 |
+| `dir` / `vdir` / `dircolors` | 目录/颜色 | `chgrp` | 文件权限 |
 
 ---
 

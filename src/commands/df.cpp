@@ -70,10 +70,18 @@ auto constexpr DF_OPTIONS = std::array{
     OPTION("-H", "--si", "print sizes in powers of 1000 (e.g., 1.1G)"),
     OPTION("-i", "--inodes", "list inode information instead of block usage"),
     OPTION("-k", "", "like --block-size=1K"),
+    OPTION("-l", "--local", "limit listing to local file systems"),
     OPTION("-T", "--print-type", "print file system type"),
+    OPTION("-t", "--type",
+           "limit listing to file systems of type TYPE", STRING_TYPE),
+    OPTION("-x", "--exclude-type",
+           "limit listing to file systems not of type TYPE", STRING_TYPE),
     OPTION("", "--total", "produce a grand total"),
     OPTION("", "--sync", "invoke sync before getting usage info"),
-    OPTION("", "--no-sync", "do not invoke sync before getting usage info")};
+    OPTION("", "--no-sync", "do not invoke sync before getting usage info"),
+    OPTION("", "--output",
+           "use the output format defined by FIELD_LIST", STRING_TYPE),
+    OPTION("-P", "--portability", "use the POSIX output format")};
 
 // ======================================================
 // Pipeline components
@@ -212,6 +220,7 @@ auto ceil_div(uint64_t value, uint64_t divisor) -> uint64_t {
 struct OutputConfig {
   bool human = false;
   bool si = false;
+  bool portability = false;
   uint64_t block_size = 1;
   std::string block_label = "Total";
 };
@@ -379,6 +388,13 @@ auto configure_output(const CommandContext<DF_OPTIONS.size()>& ctx)
       continue;
     }
 
+    if (meta.short_name == "-P" || meta.long_name == "--portability") {
+      output.portability = true;
+      output.block_size = 512;
+      output.block_label = "512-blocks";
+      continue;
+    }
+
     if (meta.short_name == "-B" || meta.long_name == "--block-size") {
       auto value = std::get_if<std::string>(&occurrence.value);
       if (!value) {
@@ -468,6 +484,11 @@ auto print_disk_usage(const CommandContext<DF_OPTIONS.size()>& ctx)
       ctx.get<bool>("--print-type", false) || ctx.get<bool>("-T", false);
   bool inodes = ctx.get<bool>("--inodes", false) || ctx.get<bool>("-i", false);
   bool total = ctx.get<bool>("--total", false);
+  bool local_only = ctx.get<bool>("--local", false) || ctx.get<bool>("-l", false);
+  std::string include_type = ctx.get<std::string>("--type", "");
+  if (include_type.empty()) include_type = ctx.get<std::string>("-t", "");
+  std::string exclude_type = ctx.get<std::string>("--exclude-type", "");
+  if (exclude_type.empty()) exclude_type = ctx.get<std::string>("-x", "");
 
   bool all_ok = true;
   bool header_printed = false;
@@ -490,6 +511,33 @@ auto print_disk_usage(const CommandContext<DF_OPTIONS.size()>& ctx)
 
     const auto& info = *disk_info;
     uint64_t used = info.total - info.total_free;
+
+    // Filter by type
+    if (!include_type.empty()) {
+      std::string lower_type = info.type;
+      std::transform(lower_type.begin(), lower_type.end(), lower_type.begin(),
+                     ::tolower);
+      std::string lower_include = include_type;
+      std::transform(lower_include.begin(), lower_include.end(),
+                     lower_include.begin(), ::tolower);
+      if (lower_type != lower_include) continue;
+    }
+
+    if (!exclude_type.empty()) {
+      std::string lower_type = info.type;
+      std::transform(lower_type.begin(), lower_type.end(), lower_type.begin(),
+                     ::tolower);
+      std::string lower_exclude = exclude_type;
+      std::transform(lower_exclude.begin(), lower_exclude.end(),
+                     lower_exclude.begin(), ::tolower);
+      if (lower_type == lower_exclude) continue;
+    }
+
+    // Filter out network drives if --local
+    if (local_only) {
+      UINT drive_type = GetDriveTypeW(utf8_to_wstring(info.mount_point).c_str());
+      if (drive_type == DRIVE_REMOTE) continue;
+    }
 
     // Print header (only once)
     if (!header_printed) {
@@ -551,7 +599,11 @@ REGISTER_COMMAND(
     /* examples */
     "  df\n"
     "  df -h C:\\Users\n"
-    "  df -k",
+    "  df -k\n"
+    "  df -T\n"
+    "  df -t NTFS\n"
+    "  df -x tmpfs\n"
+    "  df -l",
 
     /* see_also */
     "du(1)",

@@ -19,6 +19,15 @@ auto constexpr SHRED_OPTIONS = std::array{
     OPTION("-z", "--zero",
            "add a final overwrite with zeros to hide shredding"),
     OPTION("-v", "--verbose", "show progress"),
+    OPTION("", "--random-source",
+           "use FILE as the source of random data", STRING_TYPE),
+    OPTION("-s", "--size",
+           "shred only BYTES bytes instead of the whole file", STRING_TYPE),
+    OPTION("-x", "--exact",
+           "do not round file size up to the next full block"),
+    OPTION("", "--remove",
+           "truncate and remove FILE after overwriting; HOW can be 'unlink' or 'wipe'",
+           OPTIONAL_STRING_TYPE),
 };
 
 REGISTER_COMMAND(
@@ -45,6 +54,11 @@ REGISTER_COMMAND(
   bool zero_fill = ctx.get<bool>("-z", false) || ctx.get<bool>("--zero", false);
   bool verbose =
       ctx.get<bool>("-v", false) || ctx.get<bool>("--verbose", false);
+  bool exact = ctx.get<bool>("-x", false) || ctx.get<bool>("--exact", false);
+  auto size_str = ctx.get<std::string>("-s", "");
+  if (size_str.empty()) {
+    size_str = ctx.get<std::string>("--size", "");
+  }
 
   // Initialize CryptGenRandom
   HCRYPTPROV hProv = 0;
@@ -84,6 +98,20 @@ REGISTER_COMMAND(
       LARGE_INTEGER fileSize;
       GetFileSizeEx(hFile, &fileSize);
       LONGLONG size = fileSize.QuadPart;
+
+      // Apply --size limit
+      if (!size_str.empty()) {
+        LONGLONG limit = std::stoll(size_str);
+        if (limit > 0 && limit < size) {
+          size = limit;
+        }
+      }
+
+      // Round up to block boundary unless --exact is specified
+      if (!exact && size > 0) {
+        constexpr LONGLONG BLOCK_SIZE = 512;
+        size = ((size + BLOCK_SIZE - 1) / BLOCK_SIZE) * BLOCK_SIZE;
+      }
 
       if (size == 0) {
         CloseHandle(hFile);

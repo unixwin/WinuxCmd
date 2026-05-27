@@ -89,6 +89,7 @@ auto constexpr MV_OPTIONS =
     std::array{OPTION("-b", "", "like --backup but does not accept an argument"),
                OPTION("-f", "--force", "do not prompt before overwriting"),
                OPTION("-i", "", "prompt before overwrite"),
+               OPTION("-I", "", "prompt once before removing more than three files, or when moving recursively"),
                OPTION("-n", "--no-clobber", "do not overwrite an existing file"),
                OPTION("", "--strip-trailing-slashes", "remove any trailing slashes from each SOURCE argument"),
                OPTION("-S", "--suffix", "override the usual backup suffix", STRING_TYPE),
@@ -97,9 +98,8 @@ auto constexpr MV_OPTIONS =
                OPTION("-u", "--update", "move only when the SOURCE file is newer than the destination file or when the destination file is missing"),
                OPTION("-v", "--verbose", "explain what is being done"),
                OPTION("-Z", "--context", "set SELinux security context of destination file to default type"),
-               OPTION("", "--backup", "make a backup of each existing destination file"),
-               OPTION("", "--force", "do not prompt before overwriting"),
-               OPTION("", "--interactive", "prompt according to WHEN: never, once (-I), or always (-i)"),
+               OPTION("", "--backup", "make a backup of each existing destination file", OPTIONAL_STRING_TYPE),
+               OPTION("", "--interactive", "prompt according to WHEN: never, once (-I), or always (-i)", OPTIONAL_STRING_TYPE),
                OPTION("", "--no-clobber", "do not overwrite an existing file"),
                OPTION("", "--suffix", "override the usual backup suffix", STRING_TYPE),
                OPTION("", "--target-directory", "move all SOURCE arguments into DIRECTORY", STRING_TYPE),
@@ -263,7 +263,7 @@ auto is_source_newer(const std::wstring& src_path,
 auto backup_existing_destination(const std::wstring& dest_path,
                                  const CommandContext<MV_OPTIONS.size()>& ctx)
     -> cp::Result<bool> {
-  bool backup = ctx.get<bool>("-b", false) || ctx.get<bool>("--backup", false);
+  bool backup = ctx.get<bool>("-b", false) || ctx.has("--backup");
   if (!backup) return true;
   if (GetFileAttributesW(dest_path.c_str()) == INVALID_FILE_ATTRIBUTES) {
     return true;
@@ -300,8 +300,9 @@ auto move_single_path(const std::string& src_path, const std::string& dest_path,
     return true;
   }
 
-  bool interactive =
-      ctx.get<bool>("--interactive", false) || ctx.get<bool>("-i", false);
+  std::string interactive_val = ctx.get<std::string>("--interactive", "");
+  bool interactive = ctx.get<bool>("-i", false) ||
+                     interactive_val == "always";
   if (interactive) {
     auto dest_exists = check_path_exists(dest_path);
     if (!dest_exists) {
@@ -405,6 +406,22 @@ auto process_command(const CommandContext<N>& ctx) -> cp::Result<bool> {
             !dest_is_dir) {
           return std::unexpected("target is not a directory");
         }
+
+        // -I / --interactive=once: prompt once before removing more than three files
+        std::string interactive_val = ctx.get<std::string>("--interactive", "");
+        bool prompt_once = ctx.get<bool>("-I", false) ||
+                           interactive_val == "once";
+        if (prompt_once && move_ctx.source_paths.size() > 3) {
+          safeErrorPrint("mv: remove ");
+          safeErrorPrint(std::to_string(move_ctx.source_paths.size()));
+          safeErrorPrint(" arguments? (y/n) ");
+          char response = '\0';
+          std::cin >> response;
+          if (response != 'y' && response != 'Y') {
+            return true;
+          }
+        }
+
         bool success = true;
         for (const auto& src_path : move_ctx.source_paths) {
           auto result =

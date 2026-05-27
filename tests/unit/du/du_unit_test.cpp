@@ -445,3 +445,85 @@ TEST(du, du_invalid_block_size_fails) {
 
   EXPECT_NE(r.exit_code, 0);
 }
+
+TEST(du, du_inodes) {
+  TempDir tmp;
+  tmp.write("file1.txt", "abc");
+  tmp.write("file2.txt", "def");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"du.exe", {L"--inodes", L"."});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // --inodes should show file count instead of size
+  EXPECT_FALSE(r.stdout_text.empty());
+}
+
+TEST(du, du_one_file_system) {
+  TempDir tmp;
+  tmp.write("file.txt", "abc");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"du.exe", {L"-x", L"."});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // -x should stay on same filesystem
+  EXPECT_FALSE(r.stdout_text.empty());
+}
+
+TEST(du, du_separate_dirs) {
+  TempDir tmp;
+  tmp.write("file.txt", "abc");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"du.exe", {L"-S", L"."});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // -S should not include subdirectory sizes
+}
+
+TEST(du, du_dereference) {
+  TempDir tmp;
+  tmp.write("file.txt", "abc");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"du.exe", {L"-L", L"."});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // -L should follow symlinks
+}
+
+TEST(du, du_time) {
+  TempDir tmp;
+  tmp.write("file.txt", "abc");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"du.exe", {L"--time", L"."});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // --time should show timestamps
+  EXPECT_FALSE(r.stdout_text.empty());
+}
+
+TEST(du, du_null_separator) {
+  TempDir tmp;
+  tmp.write("file.txt", "abc");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"du.exe", {L"-0", L"."});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // -0 should use NUL separator
+}

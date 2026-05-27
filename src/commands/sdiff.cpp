@@ -76,15 +76,32 @@ std::string remove_whitespace(const std::string& s) {
   return result;
 }
 
+// Expand tabs to spaces
+std::string expand_tabs(const std::string& s) {
+  std::string result;
+  for (char c : s) {
+    if (c == '\t') {
+      result += "        ";  // 8 spaces per tab
+    } else {
+      result += c;
+    }
+  }
+  return result;
+}
+
 // Compare lines with options
 bool lines_equal(const std::string& line1, const std::string& line2,
-                 bool ignore_whitespace, bool ignore_all_whitespace) {
+                 bool ignore_whitespace, bool ignore_all_whitespace,
+                 bool ignore_tab_expansion = false) {
+  std::string l1 = ignore_tab_expansion ? expand_tabs(line1) : line1;
+  std::string l2 = ignore_tab_expansion ? expand_tabs(line2) : line2;
+
   if (ignore_all_whitespace) {
-    return remove_whitespace(line1) == remove_whitespace(line2);
+    return remove_whitespace(l1) == remove_whitespace(l2);
   } else if (ignore_whitespace) {
-    return trim_whitespace(line1) == trim_whitespace(line2);
+    return trim_whitespace(l1) == trim_whitespace(l2);
   } else {
-    return line1 == line2;
+    return l1 == l2;
   }
 }
 
@@ -187,7 +204,8 @@ REGISTER_COMMAND(
         continue;
       }
 
-      if (lines_equal(line1, line2, ignore_whitespace, ignore_all_whitespace)) {
+      if (lines_equal(line1, line2, ignore_whitespace, ignore_all_whitespace,
+                      ignore_tab_expansion)) {
         // Lines are equal
         output.push_back(format_line(line1, col_width) + "  " +
                          format_line(line2, col_width));

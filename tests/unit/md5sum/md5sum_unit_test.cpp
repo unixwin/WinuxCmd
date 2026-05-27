@@ -97,3 +97,88 @@ TEST(md5sum, md5sum_wildcard) {
   EXPECT_TRUE(r.stdout_text.find("file2.txt") != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("other.log") == std::string::npos);
 }
+
+TEST(md5sum, md5sum_text_mode) {
+  Pipeline p;
+  p.set_stdin("hello world\n");
+  p.add(L"md5sum.exe", {L"-t"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // Text mode should produce valid hash
+  EXPECT_TRUE(r.stdout_text.find("md5sum") == std::string::npos);
+}
+
+TEST(md5sum, md5sum_tag) {
+  Pipeline p;
+  p.set_stdin("hello world\n");
+  p.add(L"md5sum.exe", {L"--tag"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // --tag should output in BSD-style format
+  EXPECT_TRUE(r.stdout_text.find("MD5") != std::string::npos);
+}
+
+TEST(md5sum, md5sum_quiet) {
+  TempDir tmp;
+  tmp.write("test.txt", "hello");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"md5sum.exe", {L"-q", L"test.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // Quiet mode: only hash, no filename
+  EXPECT_TRUE(r.stdout_text.find("test.txt") == std::string::npos);
+}
+
+TEST(md5sum, md5sum_check_valid) {
+  TempDir tmp;
+  tmp.write("check.txt", "hello world\n");
+  // Get the hash first
+  Pipeline p1;
+  p1.set_cwd(tmp.wpath());
+  p1.add(L"md5sum.exe", {L"check.txt"});
+  auto r1 = p1.run();
+  EXPECT_EQ(r1.exit_code, 0);
+
+  // Write hash to check file
+  std::string hash_line = r1.stdout_text.substr(0, 32) + "  check.txt";
+  tmp.write("check.md5", hash_line);
+
+  // Verify
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.add(L"md5sum.exe", {L"-c", L"check.md5"});
+  auto r2 = p2.run();
+
+  EXPECT_EQ(r2.exit_code, 0);
+}
+
+TEST(md5sum, md5sum_check_invalid) {
+  TempDir tmp;
+  tmp.write("check.txt", "hello world\n");
+  tmp.write("check.md5", "00000000000000000000000000000000  check.txt");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"md5sum.exe", {L"-c", L"check.md5"});
+  auto r = p.run();
+
+  // Should fail with mismatched hash
+  EXPECT_NE(r.exit_code, 0);
+}
+
+TEST(md5sum, md5sum_strict) {
+  TempDir tmp;
+  tmp.write("strict.txt", "hello");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"md5sum.exe", {L"--strict", L"strict.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+}

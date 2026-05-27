@@ -52,12 +52,18 @@ auto constexpr HOSTNAME_OPTIONS = std::array{
     OPTION("-I", "--all-ip-addresses", "all addresses for the hostname",
            BOOL_TYPE),
     OPTION("-s", "--short", "short host name", BOOL_TYPE),
-    OPTION("-f", "--fqdn", "long host name (FQDN)", BOOL_TYPE)
-    // -a, --alias (not implemented)
-    // -A, --all-fqdns (not implemented)
-    // -d, --domain (not implemented)
-    // -y, --yp (not implemented)
-    // -n, --node (not implemented)
+    OPTION("-f", "--fqdn", "long host name (FQDN)", BOOL_TYPE),
+    OPTION("-a", "--alias", "host alias names (not supported on Windows)",
+           BOOL_TYPE),
+    OPTION("-A", "--all-fqdns", "all FQDNs of the host (not supported on Windows)",
+           BOOL_TYPE),
+    OPTION("-d", "--domain", "DNS domain name", BOOL_TYPE),
+    OPTION("-F", "--file",
+           "read host name or NIS domain name from FILE", STRING_TYPE),
+    OPTION("-y", "--yp", "NIS/YP domain name (not supported on Windows)",
+           BOOL_TYPE),
+    OPTION("-n", "--node",
+           "network node hostname (not supported on Windows)", BOOL_TYPE)
 };
 
 namespace hostname_pipeline {
@@ -68,6 +74,8 @@ struct Config {
   bool show_all_ips = false;
   bool short_name = false;
   bool fqdn = false;
+  bool domain = false;
+  std::string file;
 };
 
 auto build_config(const CommandContext<HOSTNAME_OPTIONS.size()>& ctx)
@@ -80,6 +88,11 @@ auto build_config(const CommandContext<HOSTNAME_OPTIONS.size()>& ctx)
   cfg.short_name =
       ctx.get<bool>("--short", false) || ctx.get<bool>("-s", false);
   cfg.fqdn = ctx.get<bool>("--fqdn", false) || ctx.get<bool>("-f", false);
+  cfg.domain = ctx.get<bool>("--domain", false) || ctx.get<bool>("-d", false);
+  auto file_opt = ctx.get<std::string>("--file", "");
+  if (!file_opt.empty()) {
+    cfg.file = file_opt;
+  }
   return cfg;
 }
 
@@ -101,7 +114,21 @@ auto run(const Config& cfg) -> int {
     return 1;
   }
 
-  if (cfg.show_ip || cfg.show_all_ips) {
+  if (!cfg.file.empty()) {
+    // Read hostname from file
+    std::ifstream ifs(cfg.file);
+    if (!ifs) {
+      WSACleanup();
+      cp::Result<int> result =
+          std::unexpected("cannot open file '" + cfg.file + "'");
+      cp::report_error(result, L"hostname");
+      return 1;
+    }
+    std::string line;
+    if (std::getline(ifs, line)) {
+      safePrintLn(line);
+    }
+  } else if (cfg.show_ip || cfg.show_all_ips) {
     // Get host info
     hostent* host_info = gethostbyname(hostname);
     if (!host_info) {
@@ -120,8 +147,16 @@ auto run(const Config& cfg) -> int {
         break;  // Only show first IP address
       }
     }
+  } else if (cfg.domain) {
+    // Print DNS domain name
+    std::string host_str = hostname;
+    size_t dot_pos = host_str.find('.');
+    if (dot_pos != std::string::npos) {
+      safePrintLn(host_str.substr(dot_pos + 1));
+    } else {
+      safePrintLn("(none)");
+    }
   } else if (cfg.fqdn) {
-    // Try to get FQDN (Windows doesn't provide this directly)
     safePrintLn(hostname);
   } else if (cfg.short_name) {
     // Print only the short name (first part before dot)
