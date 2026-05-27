@@ -1,8 +1,8 @@
 # GNU Coreutils 完整兼容性矩阵
 
-本文档基于 `DOCS/gnu-coreutils/` 目录中 97 个命令的参数文档，结合 `src/commands/` 中的实际源代码，提供 WinuxCmd 与 GNU Coreutils 9.11 的逐选项兼容性对照。
+本文档基于 `DOCS/gnu-coreutils/` 目录中 102 个命令的参数文档，结合 `src/commands/` 中的实际源代码，提供 WinuxCmd 与 GNU Coreutils 9.11 的逐选项兼容性对照。
 
-> **最后更新**: 2026-05-27 — 修复了 20 个文件中的 59 个死变量（选项已解析但未使用）
+> **最后更新**: 2026-05-27 — 新增 stty/dir/vdir/dircolors/chgrp 5 个命令；修复 20 个文件中的 59 个死变量
 
 > **状态说明**
 > - **Done** — 选项已实现且基本对齐 GNU 行为
@@ -88,6 +88,9 @@
 | 命令 | 源码行数 | GNU 选项兼容状态 | 差距摘要 |
 |------|---------|-----------------|---------|
 | **ls** | 2363 | `-a` Done, `-A` Done, `-b` Done, `-B` Done, `-C` Done, `-D` Done, `-d` Done, `-f` Done, `-F` Done, `-g` Done, `-G` Done, `-h` Done, `-H` Done, `-i` Done, `-I` Done, `-l` Done, `-L` Done, `-m` Done, `-n` Done, `-N` Done, `-o` Done, `-p` Done, `-q` Done, `-Q` Done, `-r` Done, `-R` Done, `-s` Done, `-S` Done, `-t` Done, `-T` Done, `-u` Done, `-U` Done, `-v` Done, `-w` Done, `-x` Done, `-X` Done, `-Z` Done, `-1` Done, `--sort` Done, `--format` Done, `--time` Done, `--time-style` Done, `--block-size` Done, `--quoting-style` Done, `--show-control-chars` Done, `--indicator-style` Done, `--file-type` Done, `--color` Done, `--group-directories-first` Done, `--dereference-command-line` Done, `--hide` Done, `--hyperlink` Done, `--si` Done, `--zero` Done | GNU 终端默认引号、时间戳格式 |
+| **dir** | 80 | 通过 ls 执行，所有 ls 选项 Done | ls -C 包装器 |
+| **vdir** | 65 | 通过 ls 执行，所有 ls 选项 Done | ls -l 包装器 |
+| **dircolors** | 180 | `-b` Done, `-c` Done, `-p` Done, `--print-ls-colors` Done | 已完整对齐 |
 
 ## 9. 基本操作 (Basic operations)
 
@@ -115,6 +118,7 @@
 
 | 命令 | 源码行数 | GNU 选项兼容状态 | 差距摘要 |
 |------|---------|-----------------|---------|
+| **chgrp** | 280 | `-c` Done, `-f` Done, `-v` Done, `-R` Done, `--reference` Done, `-h` Done, `--no-dereference` Done, `--dereference` Done, `-H` Done, `-L` Done, `-P` Done, `--preserve-root` Done | Windows group 变更需要管理员权限 |
 | **chown** | 272 | `-c` Done, `-f` Done, `-v` Done, `-R` Done, `--reference` Done, `-h` Done, `--no-dereference` Done, `--dereference` Done, `-H` Done, `-L` Done, `-P` Done, `--from` Done, `--preserve-root` Done | Windows owner 变更受限（平台限制） |
 | **chmod** | 502 | `-c` Done, `-f` Done, `-v` Done, `-R` Done, `--reference` Done, `-H` Done, `-L` Done, `-P` Done, `--dereference` Done, `--preserve-root` Done, `--no-preserve-root` Done | Windows 只读属性近似 |
 | **touch** | 643 | `-a` Done, `-c` Done, `-d` Done, `-h` Done, `-m` Done, `-r` Done, `-t` Done, `--time` Done | ISO 日期、UTC/GMT/Z/偏移、`@epoch`、相对形式、`-r` 作相对 `-d` 基准 |
@@ -169,6 +173,7 @@
 | **pwd** | 168 | `-L` Done, `-P` Done | GNU 默认物理模式除非覆盖 |
 | **printenv** | 119 | `-0` Done | 全环境枚举和命名变量输出已就位 |
 | **tty** | 94 | `-s` Done | GNU 还有安静风格别名和更精细的退出状态行为 |
+| **stty** | 320 | `-a` Done, `-g` Done, `-F` Done, `sane` Done, `raw` Done, `cooked` Done, `echo` Done, `-echo` Done, `icanon` Done, `-icanon` Done, `isig` Done, `-isig` Done, `cbreak` Done | Windows 仅 echo/icanon/isig 有效果 |
 
 ## 18. 用户信息 (User information)
 
@@ -237,34 +242,36 @@
 | 排序操作 | 6 | 6 | 0 |
 | 字段操作 | 3 | 3 | 1 (cut locale) |
 | 字符操作 | 3 | 3 | 1 (tr 多字节) |
-| 目录列表 | 1 | 1 | 0 |
+| 目录列表 | 4 | 4 | 0 |
 | 基本操作 | 6 | 6 | 1 (install 平台限制) |
 | 特殊文件 | 6 | 6 | 3 (readlink/mkdir/unlink 边缘) |
-| 属性修改 | 3 | 3 | 0 |
+| 属性修改 | 4 | 4 | 1 (chgrp 管理员权限) |
 | 空间使用 | 5 | 5 | 0 |
 | 文本打印 | 3 | 3 | 0 |
 | 条件判断 | 4 | 4 | 0 |
 | 重定向 | 1 | 1 | 0 |
 | 文件名操作 | 5 | 5 | 2 (basename/dirname POSIX) |
-| 工作上下文 | 3 | 3 | 1 (tty 退出状态) |
+| 工作上下文 | 4 | 4 | 1 (tty 退出状态) |
 | 用户信息 | 7 | 7 | 0 |
 | 系统上下文 | 7 | 7 | 0 |
 | 修改命令 | 5 | 5 | 2 (nice/stdbuf 平台限制) |
 | 进程控制 | 1 | 1 | 0 |
 | 延迟 | 1 | 1 | 0 |
 | 数值操作 | 3 | 3 | 0 |
-| **总计** | **97** | **97** | **10** |
+| **总计** | **102** | **102** | **10** |
 
 ---
 
 ## 主要差距分类
 
 ### 平台差异（Windows 特有，无法完全对齐）
-- Unix owner/group/mode 保留（`cp`/`install`/`chown`/`chmod`）— 选项已定义，行为受限
+- Unix owner/group/mode 保留（`cp`/`install`/`chown`/`chmod`/`chgrp`）— 选项已定义，行为受限
 - `LD_PRELOAD` 机制（`stdbuf`）
 - 进程 niceness 语义（`nice`）
 - 信号名称和行为（`timeout`/`kill`）
 - SELinux 上下文（`install`/`mkdir`/`cp`/`mv`）
+- Windows 终端设置（`stty`）— 仅 echo/icanon/isig 有效果
+- 不可移植的命令：`chcon`、`chroot`、`mkfifo`、`mknod`、`runcon`（SELinux/设备节点）
 
 ### 剩余行为差异
 - locale 感知的字符/排序语义（`cut`/`tr`）
