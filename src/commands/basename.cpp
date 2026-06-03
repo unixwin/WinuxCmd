@@ -90,6 +90,12 @@ auto get_basename(std::string_view path, std::string_view suffix)
     result.pop_back();
   }
 
+  // GNU basename preserves a single root separator for inputs like "/" or
+  // "///" (with "//" remaining implementation-defined).
+  if (result.empty() && !path.empty()) {
+    return std::string(1, path.back());
+  }
+
   // Find last separator
   size_t last_sep = result.find_last_of("/\\");
   if (last_sep != std::string::npos) {

@@ -90,3 +90,23 @@ TEST(basename, basename_zero_terminates_each_result) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ(r.stdout_text, std::string("one\0two\0", 8));
 }
+
+TEST(basename, basename_root_slash_is_preserved) {
+  Pipeline p;
+  p.add(L"basename.exe", {L"/"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "/\n");
+}
+
+TEST(basename, basename_repeated_root_slashes_collapse_to_single_slash) {
+  Pipeline p;
+  p.add(L"basename.exe", {L"///"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "/\n");
+}
