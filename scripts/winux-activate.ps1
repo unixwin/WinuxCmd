@@ -513,7 +513,7 @@ if (Install-WinuxToProfile -BinDir $binDir) {
     Write-Host "  - Works with multiple installed versions"
     Write-Host ""
     Write-Color "Cyan" "Next steps:"
-    Write-Host "1. RESTART PowerShell or run: . `$PROFILE"
+    Write-Host "1. RESTART PowerShell or run: . `$PROFILE.CurrentUserAllHosts"
     Write-Host "2. Test with: winux"
     Write-Host "3. If you have winux.ps1, copy it to WinuxCmd bin directory"
     Write-Host "4. Optional: winux activate (if winux.ps1 exists)"
