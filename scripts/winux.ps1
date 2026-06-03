@@ -19,7 +19,7 @@ $ConflictedAliases = @(
     "mv", "ps", "pwd", "rm", "rmdir", "sleep", "sort", "tee", "type", "man"
 )
 
-# Aliases with AllScope that cannot be removed - users must use .exe extension
+# Aliases intentionally left to PowerShell because overriding them is surprising
 $AllScopeAliases = @("echo", "cp", "where")
 
 $CommandMap = @{
@@ -305,9 +305,9 @@ function Invoke-Activate {
     Write-Host "Directory: $ScriptDir" -ForegroundColor Gray
     Write-Host ""
 
-    # Show warning for AllScope aliases
+    # Show note for aliases intentionally left to PowerShell
     if ($AllScopeAliases.Count -gt 0) {
-        Write-Host "Note: The following commands have AllScope option and cannot be overridden:" -ForegroundColor Yellow
+        Write-Host "Note: The following command names are kept as PowerShell aliases:" -ForegroundColor Yellow
         Write-Host "  $($AllScopeAliases -join ', ')" -ForegroundColor Magenta
         Write-Host "  Use `.exe` extension to run WinuxCmd version, e.g.:" -ForegroundColor Cyan
         Write-Host "  echo.exe, cp.exe, where.exe" -ForegroundColor Green

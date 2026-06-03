@@ -84,6 +84,38 @@ if ($Host.Name -eq 'ConsoleHost' -and -not $isNonInteractiveLaunch `
 
 ![Windows Terminal](DOCS/images/WindowsTerminal.png)
 
+### PowerShell 命令名激活
+
+PowerShell 自带的 alias 会遮住部分 GNU 命令名，比如 `ls`、`cat`、`rm`、
+`man`。在当前会话运行：
+
+```powershell
+winux activate
+```
+
+之后这些裸命令会指向 WinuxCmd 的 `.exe`，Windows PowerShell 5.1 也适用：
+
+```powershell
+rm old.txt
+cat README.md
+man ls
+```
+
+需要恢复 PowerShell 原始 alias 时运行：
+
+```powershell
+winux deactivate
+```
+
+如果希望每次打开交互式 PowerShell 都自动激活，先安装 `winux` profile
+wrapper，然后把下面这段放在 `$PROFILE` 里 wrapper 之后：
+
+```powershell
+if (Get-Command winux -ErrorAction SilentlyContinue) {
+    winux activate 6>$null
+}
+```
+
 ### 自动补全
 
 ![自动补全演示](DOCS/images/auto.gif)
