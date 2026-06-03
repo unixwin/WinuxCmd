@@ -208,9 +208,21 @@ function Save-ConflictedAliases {
     }
 }
 
-function Remove-ConflictedAliases {
+function Set-WinuxAliases {
     foreach ($aliasName in $ConflictedAliases) {
-        Remove-Item -Path "Alias:\$aliasName" -Force -ErrorAction SilentlyContinue
+        if (-not $CommandMap.ContainsKey($aliasName)) { continue }
+
+        $commandPath = Join-Path $ScriptDir $CommandMap[$aliasName]
+        if (-not (Test-Path $commandPath)) { continue }
+
+        $alias = Get-Alias -Name $aliasName -ErrorAction SilentlyContinue
+        $options = if ($alias) {
+            [System.Management.Automation.ScopedItemOptions]$alias.Options
+        } else {
+            [System.Management.Automation.ScopedItemOptions]::None
+        }
+
+        Set-Alias -Name $aliasName -Value $commandPath -Scope Global -Option $options -Force
     }
 }
 
@@ -221,7 +233,8 @@ function Restore-ConflictedAliases {
         $saved = $global:Winux_SavedAliases[$aliasName]
         
         try {
-            Set-Alias -Name $aliasName -Value $saved.Definition -Scope Global -Force
+            $options = [System.Management.Automation.ScopedItemOptions]$saved.Options
+            Set-Alias -Name $aliasName -Value $saved.Definition -Scope Global -Option $options -Force
         }
         catch {
             # If restore fails, ignore it
@@ -233,7 +246,8 @@ function Restore-ConflictedAliases {
 
 foreach ($aliasName in $global:Winux_SavedAliases.Keys) {
     $saved = $global:Winux_SavedAliases[$aliasName]
-    Set-Alias -Name $aliasName -Value $saved.Definition -Scope Global -Force
+    $options = [System.Management.Automation.ScopedItemOptions]$saved.Options
+    Set-Alias -Name $aliasName -Value $saved.Definition -Scope Global -Option $options -Force
 }
 
 Remove-Variable Winux_SavedAliases -Scope Global -ErrorAction SilentlyContinue
@@ -278,7 +292,7 @@ function Invoke-Activate {
     Write-Host "Activating WinuxCmd..." -ForegroundColor Green
 
     Save-ConflictedAliases
-    Remove-ConflictedAliases
+    Set-WinuxAliases
 
     # Add WinuxCmd bin directory to PATH
     if ($env:PATH -notlike "$ScriptDir*") {
