@@ -201,6 +201,26 @@ TEST(df, df_print_type) {
   EXPECT_NE(r.stdout_text.find("Mounted on"), std::string::npos);
 }
 
+TEST(df, df_type_filter_no_matches_keeps_header) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"df.exe", {L"-t", L"definitely-not-a-real-fs-type"});
+
+  TEST_LOG_CMD_LIST("df.exe", L"-t", L"definitely-not-a-real-fs-type");
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("df.exe -t no-match output", r.stdout_text);
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_NE(r.stdout_text.find("Filesystem"), std::string::npos);
+  EXPECT_NE(r.stdout_text.find("Mounted on"), std::string::npos);
+  EXPECT_EQ(r.stdout_text.find("\ntotal"), std::string::npos);
+}
+
 TEST(df, df_inodes_shape) {
   TempDir tmp;
 

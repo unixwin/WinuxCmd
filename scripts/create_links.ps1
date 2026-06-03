@@ -140,8 +140,8 @@ function Remove-CommandLinks {
         
         try {
             # Use winuxcmd rm to remove the file
-            $process = Start-Process -FilePath $WinuxCmdPath -ArgumentList @("rm", "-f", $cmdPath) -Wait -NoNewWindow -PassThru
-            if ($process.ExitCode -eq 0) {
+            & $WinuxCmdPath @("rm", "-f", $cmdPath)
+            if ($LASTEXITCODE -eq 0) {
                 Write-ColorOutput "Green" "  [Removed] $cmd.exe"
                 $removedCount++
             }
@@ -247,16 +247,16 @@ function New-CommandLinks {
         $lnArgs += $allTargets       # All targets
         
         # Create all links in a single process call
-        $process = Start-Process -FilePath $WinuxCmdPath -ArgumentList $lnArgs -Wait -NoNewWindow -PassThru
+        & $WinuxCmdPath @lnArgs
         
-        if ($process.ExitCode -eq 0) {
+        if ($LASTEXITCODE -eq 0) {
             # All links created successfully
             Write-ColorOutput "Green" "  [Batch Created] $($Script:Commands.Count) command links"
             $createdCount = $Script:Commands.Count
         }
         else {
             # Batch creation failed, show error
-            Write-ColorOutput "Red" "  [Batch Failed] winuxcmd ln returned exit code $($process.ExitCode)"
+            Write-ColorOutput "Red" "  [Batch Failed] winuxcmd ln returned exit code $LASTEXITCODE"
             $errorsCount = $Script:Commands.Count
         }
     }
