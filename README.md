@@ -75,6 +75,29 @@ ls -la
 grep -n "TODO" README.md
 ```
 
+### 3) PowerShell alias activation
+
+PowerShell aliases such as `ls`, `cat`, `rm`, and `man` can shadow the linked
+GNU commands, especially in Windows PowerShell 5.1. Use `winux activate` in the
+current session to point those names at WinuxCmd, and `winux deactivate` to
+restore the original aliases:
+
+```powershell
+winux activate
+rm old.txt
+cat README.md
+man ls
+```
+
+To auto-activate in new interactive PowerShell sessions, install the `winux`
+profile wrapper and add this after it in `$PROFILE`:
+
+```powershell
+if (Get-Command winux -ErrorAction SilentlyContinue) {
+    winux activate 6>$null
+}
+```
+
 ## Shell-Aware Fallback (cmd / PowerShell)
 
 - Entered from `PowerShell/pwsh`: unknown commands fallback through PowerShell
