@@ -227,7 +227,7 @@ function global:winux {
 
     # Get the first argument as the command
     $Command = $Arguments[0]
-    $RemainingArgs = $Arguments[1..$($Arguments.Count-1)]
+    $RemainingArgs = if ($Arguments.Count -gt 1) { $Arguments[1..($Arguments.Count - 1)] } else { @() }
 
     # Management commands that go to winux.ps1
     $managementCommands = @("activate", "deactivate", "status", "list", "help", "version")
