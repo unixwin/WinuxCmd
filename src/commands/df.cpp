@@ -572,6 +572,10 @@ auto print_disk_usage(const CommandContext<DF_OPTIONS.size()>& ctx)
     ++printed_rows;
   }
 
+  if (!header_printed && all_ok) {
+    print_usage_header(*output, print_type, inodes);
+  }
+
   if (total && header_printed && printed_rows > 0) {
     print_total_row(total_size, total_used, total_available, *output,
                     print_type, inodes);
