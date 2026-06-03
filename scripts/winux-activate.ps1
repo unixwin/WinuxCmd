@@ -49,19 +49,18 @@ function Get-WinuxBinDir {
     # Priority 4: Check $env:LOCALAPPDATA\WinuxCmd (traditional installation)
     $baseDir = "$env:LOCALAPPDATA\WinuxCmd"
     if (Test-Path $baseDir) {
-        $versionDir = Get-ChildItem -Path $baseDir -Directory -Filter "WinuxCmd-*" |
-                      Sort-Object -Property @{
-                          Expression = {
-                              if ($_.Name -match 'WinuxCmd-(\d+\.\d+\.\d+)') {
-                                  [Version]$Matches[1]
-                              } else {
-                                  [Version]"0.0.0"
-                              }
-                          }
-                          Descending = $true
-                      } |
-                      Select-Object -First 1
-        if ($versionDir) {
+        $versionDirs = Get-ChildItem -Path $baseDir -Directory -Filter "WinuxCmd-*" |
+                       Sort-Object -Property @{
+                           Expression = {
+                               if ($_.Name -match 'WinuxCmd-(\d+\.\d+\.\d+)') {
+                                   [Version]$Matches[1]
+                               } else {
+                                   [Version]"0.0.0"
+                               }
+                           }
+                           Descending = $true
+                       }
+        foreach ($versionDir in $versionDirs) {
             $binDir = Join-Path $versionDir.FullName "bin"
             if (-not (Test-Path $binDir)) {
                 $exeFile = Get-ChildItem -Path $versionDir.FullName -Filter "winuxcmd.exe" -Recurse -File |
