@@ -43,9 +43,13 @@ $CommandMap = @{
     "which"     = "which.exe"
     "env"       = "env.exe"
     "sed"       = "sed.exe"
+    "chgrp"     = "chgrp.exe"
     "chmod"     = "chmod.exe"
     "date"      = "date.exe"
     "diff"      = "diff.exe"
+    "dir"       = "dir.exe"
+    "vdir"      = "vdir.exe"
+    "dircolors" = "dircolors.exe"
     "ln"        = "ln.exe"
     "ps"        = "ps.exe"
     "pwd"       = "pwd.exe"
@@ -70,6 +74,7 @@ $CommandMap = @{
     "dirname"   = "dirname.exe"
     "free"      = "free.exe"
     "column"    = "column.exe"
+    "col"       = "col.exe"
     "seq"       = "seq.exe"
     "stat"      = "stat.exe"
     # New commands added in v0.7.0 - Hash tools
@@ -88,6 +93,7 @@ $CommandMap = @{
     "nl"        = "nl.exe"
     "fold"      = "fold.exe"
     "fmt"       = "fmt.exe"
+    "more"      = "more.exe"
     # New commands added in v0.7.0 - Text conversion
     "expand"    = "expand.exe"
     "unexpand"  = "unexpand.exe"
@@ -170,6 +176,9 @@ $CommandMap = @{
     "tzset"     = "tzset.exe"
     "pinky"     = "pinky.exe"
     "mpicalc"   = "mpicalc.exe"
+    "strings"   = "strings.exe"
+    "stty"      = "stty.exe"
+    "hexdump"   = "hexdump.exe"
     # New commands added in v0.7.0 - Archive tools
     "cpio"      = "cpio.exe"
     # New commands added in v0.7.0 - System utilities

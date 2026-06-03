@@ -47,21 +47,21 @@ function Escape-WildcardChars {
 # Available commands list (auto-generated from src/commands/*.cpp)
 $Script:Commands = @(
     "arch", "b2sum", "base32", "base64", "basename", "basenc", "cal", "cat",
-    "chmod", "chown", "cksum", "clear", "cmp", "column", "comm", "cp", "cpio", "csplit",
+    "chgrp", "chmod", "chown", "cksum", "clear", "cmp", "col", "column", "comm", "cp", "cpio", "csplit",
     "cut", "cygpath", "d2u", "date", "dd", "df", "diff", "diff3", "dirname",
-    "dos2unix", "du", "echo", "env", "expand", "expr", "factor", "false", "file",
-    "find", "fmt", "fold", "free", "getconf", "grep", "groups", "head",
+    "dir", "dircolors", "dos2unix", "du", "echo", "env", "expand", "expr", "factor", "false", "file",
+    "find", "fmt", "fold", "free", "getconf", "grep", "groups", "head", "hexdump",
     "hmac256", "hostid", "hostname", "id", "infocmp", "install", "join", "jq",
     "kill", "less", "link", "ln", "locale", "logname", "ls", "lsof", "man", "md5sum",
-    "mkdir", "mktemp", "mpicalc", "mv", "nice", "nl", "nohup",
+    "mkdir", "mktemp", "more", "mpicalc", "mv", "nice", "nl", "nohup",
     "nproc", "numfmt", "od", "paste", "patch", "pathchk", "pinky", "pr",
     "printenv", "printf", "ps", "ptx", "pwd", "readlink", "realpath", "reset",
     "rev", "rm", "rmdir", "sdiff", "sed", "seq", "sha1sum", "sha224sum",
     "sha256sum", "sha384sum", "sha512sum", "shred", "shuf", "sleep", "sort",
-    "split", "stat", "stdbuf", "sum", "sync", "tac", "tail", "tee", "test",
+    "split", "stat", "stdbuf", "strings", "stty", "sum", "sync", "tac", "tail", "tee", "test",
     "[", "tic", "timeout", "toe", "top", "touch", "tput", "tr", "tree", "true",
     "truncate", "tsort", "tty", "tzset", "u2d", "uname", "unexpand", "uniq",
-    "unix2dos", "unlink", "uptime", "users", "watch", "wc", "which", "who",
+    "unix2dos", "unlink", "uptime", "users", "vdir", "watch", "wc", "which", "who",
     "whoami", "xargs", "xxd", "yes"
 )
 
