@@ -50,6 +50,16 @@ function Get-WinuxBinDir {
     $baseDir = "$env:LOCALAPPDATA\WinuxCmd"
     if (Test-Path $baseDir) {
         $versionDir = Get-ChildItem -Path $baseDir -Directory -Filter "WinuxCmd-*" |
+                      Sort-Object -Property @{
+                          Expression = {
+                              if ($_.Name -match 'WinuxCmd-(\d+\.\d+\.\d+)') {
+                                  [Version]$Matches[1]
+                              } else {
+                                  [Version]"0.0.0"
+                              }
+                          }
+                          Descending = $true
+                      } |
                       Select-Object -First 1
         if ($versionDir) {
             $binDir = Join-Path $versionDir.FullName "bin"
