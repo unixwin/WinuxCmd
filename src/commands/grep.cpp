@@ -343,13 +343,13 @@ auto compile_pattern(PatternMode mode, bool ignore_case, std::string_view raw)
 
 auto load_patterns_from_file(const std::string& path)
     -> cp::Result<std::vector<std::string>> {
-  std::ifstream in(path, std::ios::binary);
+  std::ifstream in(std::filesystem::path(utf8_to_wstring(path)),
+                   std::ios::binary);
   if (!in.is_open()) {
     return std::unexpected("cannot open pattern file '" + path + "'");
   }
 
-  std::string buf((std::istreambuf_iterator<char>(in)),
-                  std::istreambuf_iterator<char>());
+  std::string buf = read_text_stream(in);
   if (buf.empty()) {
     return std::vector<std::string>{};
   }
@@ -1036,12 +1036,39 @@ auto scan_stream(std::istream& in, std::string_view display_name,
 }
 
 auto read_file_binary(const std::string& path) -> cp::Result<std::string> {
-  std::ifstream in(path, std::ios::binary);
+  std::ifstream in(std::filesystem::path(utf8_to_wstring(path)),
+                   std::ios::binary);
   if (!in.is_open()) {
     return std::unexpected("cannot open '" + path + "'");
   }
   return std::string((std::istreambuf_iterator<char>(in)),
                      std::istreambuf_iterator<char>());
+}
+
+auto read_file_text(const std::string& path) -> cp::Result<std::string> {
+  std::ifstream in(std::filesystem::path(utf8_to_wstring(path)),
+                   std::ios::binary);
+  if (!in.is_open()) {
+    return std::unexpected("cannot open '" + path + "'");
+  }
+  return read_text_stream(in);
+}
+
+auto has_text_bom(std::string_view bytes) -> bool {
+  return (bytes.size() >= 3 &&
+          static_cast<std::uint8_t>(bytes[0]) == 0xEF &&
+          static_cast<std::uint8_t>(bytes[1]) == 0xBB &&
+          static_cast<std::uint8_t>(bytes[2]) == 0xBF) ||
+         (bytes.size() >= 2 &&
+          ((static_cast<std::uint8_t>(bytes[0]) == 0xFF &&
+            static_cast<std::uint8_t>(bytes[1]) == 0xFE) ||
+           (static_cast<std::uint8_t>(bytes[0]) == 0xFE &&
+            static_cast<std::uint8_t>(bytes[1]) == 0xFF)));
+}
+
+auto decode_text_bytes(const std::string& bytes) -> std::string {
+  std::istringstream in(bytes);
+  return read_text_stream(in);
 }
 
 auto contains_binary_bytes(std::string_view text, const Config& cfg) -> bool {
@@ -1240,16 +1267,25 @@ auto process(Config& cfg) -> int {
       if (cfg.binary_mode == BinaryMode::Binary) {
         std::string content((std::istreambuf_iterator<char>(std::cin)),
                             std::istreambuf_iterator<char>());
-        scan_result =
-            scan_binary_default(content, display_name, show_filename, cfg);
+        if (has_text_bom(content)) {
+          scan_result = scan_text(decode_text_bytes(content), display_name,
+                                  show_filename, cfg);
+        } else {
+          scan_result =
+              scan_binary_default(content, display_name, show_filename, cfg);
+        }
       } else if (cfg.binary_mode == BinaryMode::WithoutMatch) {
         std::string content((std::istreambuf_iterator<char>(std::cin)),
                             std::istreambuf_iterator<char>());
         if (!contains_binary_bytes(content, cfg)) {
-          scan_result = scan_text(content, display_name, show_filename, cfg);
+          std::istringstream decoded(content);
+          scan_result = scan_text(read_text_stream(decoded), display_name,
+                                  show_filename, cfg);
         }
       } else {
-        scan_result = scan_stream(std::cin, display_name, show_filename, cfg);
+        scan_result =
+            scan_text(read_text_stream(std::cin), display_name, show_filename,
+                      cfg);
       }
     } else if (cfg.binary_mode == BinaryMode::WithoutMatch) {
       auto content = read_file_binary(input);
@@ -1263,7 +1299,9 @@ auto process(Config& cfg) -> int {
         continue;
       }
       if (!contains_binary_bytes(*content, cfg)) {
-        scan_result = scan_text(*content, display_name, show_filename, cfg);
+        std::istringstream decoded(*content);
+        scan_result = scan_text(read_text_stream(decoded), display_name,
+                                show_filename, cfg);
       }
     } else if (cfg.binary_mode == BinaryMode::Binary) {
       auto content = read_file_binary(input);
@@ -1276,11 +1314,16 @@ auto process(Config& cfg) -> int {
         }
         continue;
       }
-      scan_result =
-          scan_binary_default(*content, display_name, show_filename, cfg);
+      if (has_text_bom(*content)) {
+        scan_result = scan_text(decode_text_bytes(*content), display_name,
+                                show_filename, cfg);
+      } else {
+        scan_result =
+            scan_binary_default(*content, display_name, show_filename, cfg);
+      }
     } else if (use_context) {
       // Read entire file for context support
-      auto content = read_file_binary(input);
+      auto content = read_file_text(input);
       if (!content) {
         cfg.has_error = true;
         if (!cfg.no_messages && !cfg.quiet) {
@@ -1292,17 +1335,17 @@ auto process(Config& cfg) -> int {
       }
       scan_result = scan_text(*content, display_name, show_filename, cfg);
     } else {
-      std::ifstream in(input, std::ios::binary);
-      if (!in.is_open()) {
+      auto content = read_file_text(input);
+      if (!content) {
         cfg.has_error = true;
         if (!cfg.no_messages && !cfg.quiet) {
           safeErrorPrint("grep: ");
-          safeErrorPrint("cannot open '" + input + "'");
+          safeErrorPrint(content.error());
           safeErrorPrint("\n");
         }
         continue;
       }
-      scan_result = scan_stream(in, display_name, show_filename, cfg);
+      scan_result = scan_text(*content, display_name, show_filename, cfg);
     }
 
     auto [any_selected, selected_count] = scan_result;

@@ -37,6 +37,7 @@
 import std;
 import core;
 import utils;
+import container;
 
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;

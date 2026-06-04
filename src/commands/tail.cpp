@@ -455,6 +455,16 @@ auto output_tail(std::istream& in, const TailConfig& config) -> void {
   for (const auto& rec : trailing_records) safePrint(rec);
 }
 
+auto open_input_file(const std::string& file) -> std::ifstream {
+  return std::ifstream(std::filesystem::path(utf8_to_wstring(file)),
+                       std::ios::binary);
+}
+
+auto output_text_tail(std::istream& in, const TailConfig& config) -> void {
+  std::istringstream decoded(read_text_stream(in));
+  output_tail(decoded, config);
+}
+
 template <size_t N>
 auto check_unsupported(const CommandContext<N>&) -> cp::Result<void> {
   return {};
@@ -545,7 +555,7 @@ auto build_config(const CommandContext<N>& ctx) -> cp::Result<TailConfig> {
 auto open_file_with_retry(const std::string& file, const TailConfig& config)
     -> std::optional<std::ifstream> {
   while (true) {
-    std::ifstream input(file, std::ios::binary);
+    std::ifstream input = open_input_file(file);
     if (input.is_open()) return input;
     if (!config.retry || should_stop_follow(config)) return std::nullopt;
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
@@ -554,7 +564,7 @@ auto open_file_with_retry(const std::string& file, const TailConfig& config)
 
 auto follow_descriptor(const std::string& file, const TailConfig& config)
     -> bool {
-  std::ifstream monitor_file(file, std::ios::binary);
+  std::ifstream monitor_file = open_input_file(file);
   if (!monitor_file.is_open()) {
     safeErrorPrint("tail: cannot open '");
     safeErrorPrint(file);
@@ -621,7 +631,7 @@ auto follow_name(const std::string& file, const TailConfig& config,
       unchanged_stats = 0;
     }
 
-    std::ifstream current(file, std::ios::binary);
+    std::ifstream current = open_input_file(file);
     if (!current.is_open()) {
       if (config.retry) continue;
       safeErrorPrint("tail: cannot open '");
@@ -679,7 +689,7 @@ auto debug_follow_start(const TailConfig& config, size_t file_count) -> void {
 auto follow_descriptor_target(FollowTarget& target, const TailConfig& config,
                               bool multi) -> bool {
   if (!target.descriptor.is_open()) {
-    target.descriptor.open(target.file, std::ios::binary);
+    target.descriptor = open_input_file(target.file);
     if (!target.descriptor.is_open()) {
       safeErrorPrint("tail: cannot open '");
       safeErrorPrint(target.file);
@@ -739,7 +749,7 @@ auto follow_name_target(FollowTarget& target, const TailConfig& config,
     target.unchanged_stats = 0;
   }
 
-  std::ifstream current(target.file, std::ios::binary);
+  std::ifstream current = open_input_file(target.file);
   if (!current.is_open()) {
     if (config.retry) return true;
     safeErrorPrint("tail: cannot open '");
@@ -847,7 +857,11 @@ REGISTER_COMMAND(
 
     if (file == "-") {
       config.stdin_mode = true;
-      output_tail(std::cin, config);
+      if (config.by_bytes || config.delimiter == '\0') {
+        output_tail(std::cin, config);
+      } else {
+        output_text_tail(std::cin, config);
+      }
       if (std::cin.bad()) {
         safeErrorPrint("tail: error reading '-'\n");
         any_error = true;
@@ -862,7 +876,11 @@ REGISTER_COMMAND(
         continue;
       }
 
-      output_tail(*input, config);
+      if (config.by_bytes || config.delimiter == '\0') {
+        output_tail(*input, config);
+      } else {
+        output_text_tail(*input, config);
+      }
       if (input->bad()) {
         safeErrorPrint("tail: error reading '");
         safeErrorPrint(file);
