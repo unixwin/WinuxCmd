@@ -80,6 +80,36 @@ TEST(tail, tail_legacy_count_shorthand) {
   EXPECT_EQ_TEXT(r2.stdout_text, "beta\ngamma\n");
 }
 
+TEST(tail, tail_strips_utf8_bom_in_line_mode) {
+  TempDir tmp;
+  tmp.write("a.txt", "\xEF\xBB\xBFhello\nsecond\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"tail.exe", {L"-n", L"2", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "hello\nsecond\n");
+}
+
+TEST(tail, tail_decodes_utf16le_input) {
+  TempDir tmp;
+  tmp.write_bytes("a.txt",
+                  {static_cast<char>(0xFF), static_cast<char>(0xFE),
+                   'h', '\0', 'e', '\0', 'l', '\0', 'l', '\0', 'o',
+                   '\0', '\n', '\0', 's', '\0', 'e', '\0', 'c', '\0',
+                   'o', '\0', 'n', '\0', 'd', '\0', '\n', '\0'});
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"tail.exe", {L"-n", L"1", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "second\n");
+}
+
 TEST(tail, tail_follow_option_recognized) {
   // Verify that -f flag is recognized and doesn't error out
   // (actual follow mode is a long-running operation tested manually)

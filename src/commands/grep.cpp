@@ -320,13 +320,13 @@ auto compile_pattern(PatternMode mode, bool ignore_case, std::string_view raw)
 
 auto load_patterns_from_file(const std::string& path)
     -> cp::Result<std::vector<std::string>> {
-  std::ifstream in(path, std::ios::binary);
+  std::ifstream in(std::filesystem::path(utf8_to_wstring(path)),
+                   std::ios::binary);
   if (!in.is_open()) {
     return std::unexpected("cannot open pattern file '" + path + "'");
   }
 
-  std::string buf((std::istreambuf_iterator<char>(in)),
-                  std::istreambuf_iterator<char>());
+  std::string buf = read_text_stream(in);
   return split_lines(buf);
 }
 
@@ -859,13 +859,13 @@ auto scan_stream(std::istream& in, std::string_view display_name,
   return {any_selected, selected_count};
 }
 
-auto read_file_binary(const std::string& path) -> cp::Result<std::string> {
-  std::ifstream in(path, std::ios::binary);
+auto read_file_text(const std::string& path) -> cp::Result<std::string> {
+  std::ifstream in(std::filesystem::path(utf8_to_wstring(path)),
+                   std::ios::binary);
   if (!in.is_open()) {
     return std::unexpected("cannot open '" + path + "'");
   }
-  return std::string((std::istreambuf_iterator<char>(in)),
-                     std::istreambuf_iterator<char>());
+  return read_text_stream(in);
 }
 
 auto gather_files_for_input(const Config& cfg, std::vector<std::string>& out)
@@ -982,10 +982,12 @@ auto process(Config& cfg) -> int {
                        !cfg.files_without_match;
 
     if (input == "-") {
-      scan_result = scan_stream(std::cin, display_name, show_filename, cfg);
+      scan_result =
+          scan_text(read_text_stream(std::cin), display_name, show_filename,
+                    cfg);
     } else if (use_context) {
       // Read entire file for context support
-      auto content = read_file_binary(input);
+      auto content = read_file_text(input);
       if (!content) {
         cfg.has_error = true;
         if (!cfg.no_messages && !cfg.quiet) {
@@ -997,17 +999,17 @@ auto process(Config& cfg) -> int {
       }
       scan_result = scan_text(*content, display_name, show_filename, cfg);
     } else {
-      std::ifstream in(input, std::ios::binary);
-      if (!in.is_open()) {
+      auto content = read_file_text(input);
+      if (!content) {
         cfg.has_error = true;
         if (!cfg.no_messages && !cfg.quiet) {
           safeErrorPrint("grep: ");
-          safeErrorPrint("cannot open '" + input + "'");
+          safeErrorPrint(content.error());
           safeErrorPrint("\n");
         }
         continue;
       }
-      scan_result = scan_stream(in, display_name, show_filename, cfg);
+      scan_result = scan_text(*content, display_name, show_filename, cfg);
     }
 
     auto [any_selected, selected_count] = scan_result;

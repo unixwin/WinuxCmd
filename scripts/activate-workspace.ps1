@@ -36,6 +36,11 @@ if ($pathParts -notcontains $binPath) {
 }
 $env:WINUXCMD_HOME = $binPath
 
+$utf8NoBom = New-Object System.Text.UTF8Encoding $false
+[Console]::InputEncoding = $utf8NoBom
+[Console]::OutputEncoding = $utf8NoBom
+$global:OutputEncoding = $utf8NoBom
+
 $aliasNames = @(
     "ls",
     "cat",

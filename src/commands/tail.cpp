@@ -340,6 +340,16 @@ auto output_tail(std::istream& in, const TailConfig& config) -> void {
   for (const auto& rec : trailing_records) safePrint(rec);
 }
 
+auto open_input_file(const std::string& file) -> std::ifstream {
+  return std::ifstream(std::filesystem::path(utf8_to_wstring(file)),
+                       std::ios::binary);
+}
+
+auto output_text_tail(std::istream& in, const TailConfig& config) -> void {
+  std::istringstream decoded(read_text_stream(in));
+  output_tail(decoded, config);
+}
+
 template <size_t N>
 auto check_unsupported(const CommandContext<N>& ctx) -> cp::Result<void> {
   if (ctx.get<bool>("-F", false)) {
@@ -466,13 +476,17 @@ REGISTER_COMMAND(
 
     if (file == "-") {
       config.stdin_mode = true;
-      output_tail(std::cin, config);
+      if (config.by_bytes) {
+        output_tail(std::cin, config);
+      } else {
+        output_text_tail(std::cin, config);
+      }
       if (std::cin.bad()) {
         safeErrorPrint("tail: error reading '-'\n");
         any_error = true;
       }
     } else {
-      std::ifstream input(file, std::ios::binary);
+      std::ifstream input = open_input_file(file);
       if (!input.is_open()) {
         safeErrorPrint("tail: cannot open '");
         safeErrorPrint(file);
@@ -481,7 +495,11 @@ REGISTER_COMMAND(
         continue;
       }
 
-      output_tail(input, config);
+      if (config.by_bytes) {
+        output_tail(input, config);
+      } else {
+        output_text_tail(input, config);
+      }
       if (input.bad()) {
         safeErrorPrint("tail: error reading '");
         safeErrorPrint(file);
@@ -491,7 +509,7 @@ REGISTER_COMMAND(
       input.close();
 
       if (config.follow && !config.stdin_mode) {
-        std::ifstream monitor_file(file, std::ios::binary);
+        std::ifstream monitor_file = open_input_file(file);
         if (!monitor_file.is_open()) {
           safeErrorPrint("tail: cannot open '");
           safeErrorPrint(file);
