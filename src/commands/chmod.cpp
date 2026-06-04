@@ -68,10 +68,44 @@ auto constexpr CHMOD_OPTIONS = std::array{
     OPTION("-R", "--recursive", "change files and directories recursively"),
     OPTION("", "--quiet", "suppress most error messages"),
     OPTION("", "--reference", "use RFILE's mode instead of MODE values",
-           STRING_TYPE)};
+           STRING_TYPE),
+    OPTION("-H", "",
+           "traverse command-line symlinks to directories"),
+    OPTION("-L", "",
+           "traverse every symlink to a directory"),
+    OPTION("-P", "",
+           "do not traverse any symbolic links (default)"),
+    OPTION("", "--dereference",
+           "affect the referent of each symbolic link"),
+    OPTION("", "--preserve-root",
+           "fail to operate recursively on '/'"),
+    OPTION("", "--no-preserve-root",
+           "do not treat '/' specially")};
 
 namespace chmod_pipeline {
 namespace cp = core::pipeline;
+
+auto expand_file_operands(const CommandContext<CHMOD_OPTIONS.size()> &ctx,
+                          size_t first_index) -> std::vector<std::string> {
+  std::vector<std::string> files;
+
+  for (size_t i = first_index; i < ctx.positionals.size(); ++i) {
+    std::string file_arg = std::string(ctx.positionals[i]);
+    if (contains_wildcard(file_arg)) {
+      auto glob_result = glob_expand(file_arg);
+      if (glob_result.expanded && !glob_result.files.empty()) {
+        for (const auto &file : glob_result.files) {
+          files.push_back(wstring_to_utf8(file));
+        }
+        continue;
+      }
+    }
+
+    files.push_back(file_arg);
+  }
+
+  return files;
+}
 
 /**
  * @brief Parse symbolic mode (e.g., "u+rwx", "go-w", "a=rx")
@@ -424,6 +458,10 @@ REGISTER_COMMAND(
     "\n"
     "Each MODE is of the form '[ugoa]*([-+=]([rwxXst]*|[ugo]))+'.\n"
     "\n"
+    "  -H  traverse command-line symlinks to directories\n"
+    "  -L  traverse every symlink to a directory\n"
+    "  -P  do not traverse any symbolic links (default)\n"
+    "\n"
     "Note: On Windows, this command simulates Unix permissions using\n"
     "file attributes. Write permission is mapped to the read-only attribute.",
     "  chmod 755 script.sh        Set permissions to rwxr-xr-x\n"
@@ -445,12 +483,11 @@ REGISTER_COMMAND(
   }
 
   std::string_view mode_str = ctx.positionals[0];
+  std::vector<std::string> files = expand_file_operands(ctx, 1);
 
   int exit_code = 0;
 
-  for (size_t i = 1; i < ctx.positionals.size(); ++i) {
-    std::string path = std::string(ctx.positionals[i]);
-
+  for (const auto &path : files) {
     if (recursive) {
       auto result = process_recursive(path, mode_str, ctx);
       if (!result) {

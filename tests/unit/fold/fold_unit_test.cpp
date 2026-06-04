@@ -66,3 +66,79 @@ TEST(fold, fold_short_line) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "short\n");
 }
+
+TEST(fold, fold_preserves_missing_final_newline) {
+  Pipeline p;
+  p.set_stdin("abcdef");
+  p.add(L"fold.exe", {L"-w", L"3"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "abc\ndef");
+}
+
+TEST(fold, fold_tabs_count_to_next_tab_stop) {
+  Pipeline p;
+  p.set_stdin("a\tb\n");
+  p.add(L"fold.exe", {L"-w", L"8"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "a\t\nb\n");
+}
+
+TEST(fold, fold_bytes_counts_control_bytes) {
+  Pipeline p;
+  p.set_stdin("ab\bcd\n");
+  p.add(L"fold.exe", {L"-b", L"-w", L"3"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "ab\b\ncd\n");
+}
+
+TEST(fold, fold_columns_account_for_backspace) {
+  Pipeline p;
+  p.set_stdin("ab\bcd\n");
+  p.add(L"fold.exe", {L"-w", L"3"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "ab\bcd\n");
+}
+
+TEST(fold, fold_characters_option) {
+  Pipeline p;
+  p.set_stdin("abcd\n");
+  p.add(L"fold.exe", {L"-c", L"-w", L"2"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "ab\ncd\n");
+}
+
+TEST(fold, fold_rejects_trailing_junk_width) {
+  Pipeline p;
+  p.set_stdin("abcd\n");
+  p.add(L"fold.exe", {L"-w", L"2x"});
+
+  auto r = p.run();
+
+  EXPECT_NE(r.exit_code, 0);
+}
+
+TEST(fold, fold_spaces_breaks_at_last_blank) {
+  Pipeline p;
+  p.set_stdin("aa bb cc\n");
+  p.add(L"fold.exe", {L"-s", L"-w", L"5"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "aa \nbb cc\n");
+}

@@ -45,26 +45,39 @@ using cmd::meta::OptionType;
 
 auto constexpr FOLD_OPTIONS = std::array{
     OPTION("-b", "--bytes", "count bytes rather than columns", BOOL_TYPE),
+    OPTION("-c", "--characters", "count characters rather than columns",
+           BOOL_TYPE),
     OPTION("-s", "--spaces", "break at spaces", BOOL_TYPE),
-    OPTION("-w", "--width", "use WIDTH columns instead of 80", STRING_TYPE)
-    // -c, --columns (not implemented - same as bytes)
-};
+    OPTION("-w", "--width", "use WIDTH columns instead of 80", STRING_TYPE)};
 
 namespace fold_pipeline {
 namespace cp = core::pipeline;
 
 struct Config {
   bool count_bytes = false;
+  bool count_characters = false;
   bool break_at_spaces = false;
   int width = 80;
   SmallVector<std::string, 64> files;
 };
+
+auto parse_width(std::string_view value) -> cp::Result<int> {
+  int parsed = 0;
+  auto [ptr, ec] =
+      std::from_chars(value.data(), value.data() + value.size(), parsed);
+  if (ec != std::errc() || ptr != value.data() + value.size() || parsed <= 0) {
+    return std::unexpected("invalid width");
+  }
+  return parsed;
+}
 
 auto build_config(const CommandContext<FOLD_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
   Config cfg;
   cfg.count_bytes =
       ctx.get<bool>("--bytes", false) || ctx.get<bool>("-b", false);
+  cfg.count_characters =
+      ctx.get<bool>("--characters", false) || ctx.get<bool>("-c", false);
   cfg.break_at_spaces =
       ctx.get<bool>("--spaces", false) || ctx.get<bool>("-s", false);
 
@@ -73,14 +86,9 @@ auto build_config(const CommandContext<FOLD_OPTIONS.size()>& ctx)
     width_opt = ctx.get<std::string>("-w", "");
   }
   if (!width_opt.empty()) {
-    try {
-      cfg.width = std::stoi(width_opt);
-      if (cfg.width <= 0) {
-        return std::unexpected("width must be positive");
-      }
-    } catch (...) {
-      return std::unexpected("invalid width");
-    }
+    auto width = parse_width(width_opt);
+    if (!width) return std::unexpected(width.error());
+    cfg.width = *width;
   }
 
   for (auto arg : ctx.positionals) {
@@ -104,67 +112,81 @@ auto build_config(const CommandContext<FOLD_OPTIONS.size()>& ctx)
   return cfg;
 }
 
-// Fold a single line
-auto fold_line(const std::string& line, int width, bool count_bytes,
-               bool break_at_spaces) -> std::string {
-  if (line.empty()) {
-    return "\n";
+auto next_column(char c, size_t column, bool count_bytes, bool count_characters)
+    -> size_t {
+  if (count_bytes || count_characters) {
+    return column + 1;
   }
+  if (c == '\t') {
+    return ((column / 8) + 1) * 8;
+  }
+  if (c == '\b') {
+    return column == 0 ? 0 : column - 1;
+  }
+  if (c == '\r') {
+    return 0;
+  }
+  return column + 1;
+}
 
+auto display_column(std::string_view text, bool count_bytes,
+                    bool count_characters) -> size_t {
+  size_t column = 0;
+  for (char c : text) {
+    column = next_column(c, column, count_bytes, count_characters);
+  }
+  return column;
+}
+
+// Fold content while preserving existing line endings, including a final line
+// without a trailing newline.
+auto fold_content(const std::string& content, int width, bool count_bytes,
+                  bool count_characters, bool break_at_spaces) -> std::string {
   std::string result;
-  size_t pos = 0;
+  std::string current;
+  size_t column = 0;
+  size_t last_blank = std::string::npos;
 
-  while (pos < line.size()) {
-    int current_length = 0;
-    size_t start_pos = pos;
-    size_t last_space_pos = std::string::npos;
+  auto append_line_break = [&]() {
+    result += current;
+    result += '\n';
+    current.clear();
+    column = 0;
+    last_blank = std::string::npos;
+  };
 
-    // Find where to break
-    while (pos < line.size()) {
-      char c = line[pos];
-      int char_width =
-          count_bytes ? 1 : 1;  // Simplified: assume 1 column per char
+  auto break_at_last_blank = [&]() {
+    result.append(current.substr(0, last_blank + 1));
+    result += '\n';
+    current.erase(0, last_blank + 1);
+    column = display_column(current, count_bytes, count_characters);
+    last_blank = current.find_last_of(" \t");
+  };
 
-      if (current_length + char_width > width) {
-        // Need to break
-        if (break_at_spaces && last_space_pos != std::string::npos &&
-            last_space_pos > start_pos) {
-          // Break at last space
-          result.append(line.substr(start_pos, last_space_pos - start_pos));
-          result += "\n";
-          pos = last_space_pos + 1;  // Skip the space
-        } else {
-          // Break at current position
-          result.append(line.substr(start_pos, pos - start_pos));
-          result += "\n";
-          // Don't increment pos, we'll process this character in next line
-        }
-        current_length = 0;
-        start_pos = pos;
-        last_space_pos = std::string::npos;
+  for (char c : content) {
+    if (c == '\n') {
+      append_line_break();
+      continue;
+    }
+
+    size_t next = next_column(c, column, count_bytes, count_characters);
+    while (!current.empty() && next > static_cast<size_t>(width)) {
+      if (break_at_spaces && last_blank != std::string::npos) {
+        break_at_last_blank();
       } else {
-        if (c == ' ') {
-          last_space_pos = pos;
-        }
-        current_length += char_width;
-        pos++;
+        append_line_break();
       }
+      next = next_column(c, column, count_bytes, count_characters);
     }
 
-    // Add remaining text
-    if (pos > start_pos) {
-      result.append(line.substr(start_pos));
-    }
-
-    // If original line ended with newline, add it (but check if result already
-    // has one)
-    if (!line.empty() && line.back() == '\n') {
-      if (!result.empty() && result.back() != '\n') {
-        result += "\n";
-      }
+    current += c;
+    column = next;
+    if (c == ' ' || c == '\t') {
+      last_blank = current.size() - 1;
     }
   }
 
+  result += current;
   return result;
 }
 
@@ -172,15 +194,10 @@ auto run(const Config& cfg) -> int {
   bool all_ok = true;
 
   for (const auto& file : cfg.files) {
+    std::string content;
     if (file == "-") {
-      // Read from stdin
-      std::string line;
-      while (std::getline(std::cin, line)) {
-        line += "\n";  // Preserve line ending
-        auto folded =
-            fold_line(line, cfg.width, cfg.count_bytes, cfg.break_at_spaces);
-        safePrint(folded);
-      }
+      content.assign(std::istreambuf_iterator<char>(std::cin),
+                     std::istreambuf_iterator<char>());
     } else {
       // Read from file
       std::ifstream f(file, std::ios::binary);
@@ -192,30 +209,25 @@ auto run(const Config& cfg) -> int {
         continue;
       }
 
-      bool first_line = true;
-      std::string line;
-      while (std::getline(f, line)) {
-        // Skip UTF-8 BOM if present at the beginning of the first line
-        if (first_line && line.size() >= 3 &&
-            static_cast<unsigned char>(line[0]) == 0xEF &&
-            static_cast<unsigned char>(line[1]) == 0xBB &&
-            static_cast<unsigned char>(line[2]) == 0xBF) {
-          line = line.substr(3);
-        }
-        first_line = false;
-        line += "\n";  // Preserve line ending
-        auto folded =
-            fold_line(line, cfg.width, cfg.count_bytes, cfg.break_at_spaces);
-        safePrint(folded);
-      }
-
+      content.assign(std::istreambuf_iterator<char>(f),
+                     std::istreambuf_iterator<char>());
       if (f.fail() && !f.eof()) {
         cp::Result<int> result = std::unexpected("error reading from file");
         cp::report_error(result, L"fold");
         all_ok = false;
         continue;
       }
+      if (content.size() >= 3 &&
+          static_cast<unsigned char>(content[0]) == 0xEF &&
+          static_cast<unsigned char>(content[1]) == 0xBB &&
+          static_cast<unsigned char>(content[2]) == 0xBF) {
+        content = content.substr(3);
+      }
     }
+
+    auto folded = fold_content(content, cfg.width, cfg.count_bytes,
+                               cfg.count_characters, cfg.break_at_spaces);
+    safePrint(folded);
   }
 
   return all_ok ? 0 : 1;
@@ -237,6 +249,7 @@ REGISTER_COMMAND(fold, "fold", "fold [OPTION]... [FILE]...",
                  "  fold -w 60 file.txt\n"
                  "  fold -s file.txt\n"
                  "  fold -b file.txt\n"
+                 "  fold -c file.txt\n"
                  "  echo 'very long line' | fold -w 10",
                  "fmt(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd",
                  FOLD_OPTIONS) {

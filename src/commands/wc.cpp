@@ -57,9 +57,14 @@ namespace wc_constants {
  * - @a -c, @a --bytes: Print the byte counts [IMPLEMENTED]
  * - @a -m, @a --chars: Print the character counts [IMPLEMENTED]
  * - @a -l, @a --lines: Print the newline counts [IMPLEMENTED]
- * - @a --files0-from=F: Read input from the files specified by NUL-terminated
- * names in file F [TODO]
- * - @a -L, @a --max-line-length: Print the maximum display width [IMPLEMENTED]
+ * - @a --debug:
+ * Print line-count implementation diagnostics [IMPLEMENTED]
+ * - @a
+ * --files0-from=F: Read input from the files specified by NUL-terminated
+ *
+ * names in file F [IMPLEMENTED]
+ * - @a -L, @a --max-line-length: Print the
+ * maximum display width [IMPLEMENTED]
  * - @a -w, @a --words: Print the word counts [IMPLEMENTED]
  * - @a --total=WHEN: When to print a line with total counts [IMPLEMENTED]
  * - @a --version: Output version information and exit [IMPLEMENTED]
@@ -68,13 +73,14 @@ auto constexpr WC_OPTIONS = std::array{
     OPTION("-c", "--bytes", "print the byte counts"),
     OPTION("-m", "--chars", "print the character counts"),
     OPTION("-l", "--lines", "print the newline counts"),
+    OPTION("", "--debug", "print line-count implementation diagnostics"),
     OPTION(
-        "--files0-from", "",
+        "", "--files0-from",
         "read input from the files specified by NUL-terminated names in file F",
         STRING_TYPE),
     OPTION("-L", "--max-line-length", "print the maximum display width"),
     OPTION("-w", "--words", "print the word counts"),
-    OPTION("--total", "", "when to print a line with total counts",
+    OPTION("", "--total", "when to print a line with total counts",
            STRING_TYPE)};
 
 // ======================================================
@@ -96,6 +102,17 @@ struct CountResult {
   std::uintmax_t bytes = 0;
   std::uintmax_t max_line_length = 0;
   std::string filename;
+  bool display_filename = true;
+};
+
+struct CountBatch {
+  std::vector<CountResult> results;
+  bool any_error = false;
+};
+
+struct DecodedChar {
+  char32_t codepoint = 0;
+  size_t bytes = 1;
 };
 
 // ----------------------------------------------
@@ -130,48 +147,130 @@ auto validate_arguments(std::span<const std::string_view> args)
   return paths;
 }
 
+auto read_files0_from(const std::string& path)
+    -> cp::Result<std::vector<std::string>> {
+  std::istream* input = nullptr;
+  std::ifstream file;
+  if (path == "-") {
+    input = &std::cin;
+  } else {
+    file.open(path, std::ios::binary);
+    if (!file) {
+      return std::unexpected("cannot open file list '" + path + "'");
+    }
+    input = &file;
+  }
+
+  std::vector<std::string> paths;
+  std::string name;
+  while (std::getline(*input, name, '\0')) {
+    if (!name.empty()) {
+      paths.push_back(name);
+    }
+  }
+  return paths;
+}
+
 // ----------------------------------------------
 // 3. Count file contents
 // ----------------------------------------------
+auto decode_utf8_char(std::string_view text, size_t pos) -> DecodedChar {
+  unsigned char first = static_cast<unsigned char>(text[pos]);
+  if (first < 0x80) return {first, 1};
+
+  auto continuation = [&](size_t index) {
+    return index < text.size() &&
+           (static_cast<unsigned char>(text[index]) & 0xC0) == 0x80;
+  };
+
+  if ((first & 0xE0) == 0xC0 && continuation(pos + 1)) {
+    char32_t cp = ((first & 0x1F) << 6) |
+                  (static_cast<unsigned char>(text[pos + 1]) & 0x3F);
+    if (cp >= 0x80) return {cp, 2};
+  }
+
+  if ((first & 0xF0) == 0xE0 && continuation(pos + 1) &&
+      continuation(pos + 2)) {
+    char32_t cp = ((first & 0x0F) << 12) |
+                  ((static_cast<unsigned char>(text[pos + 1]) & 0x3F) << 6) |
+                  (static_cast<unsigned char>(text[pos + 2]) & 0x3F);
+    if (cp >= 0x800 && !(cp >= 0xD800 && cp <= 0xDFFF)) return {cp, 3};
+  }
+
+  if ((first & 0xF8) == 0xF0 && continuation(pos + 1) &&
+      continuation(pos + 2) && continuation(pos + 3)) {
+    char32_t cp = ((first & 0x07) << 18) |
+                  ((static_cast<unsigned char>(text[pos + 1]) & 0x3F) << 12) |
+                  ((static_cast<unsigned char>(text[pos + 2]) & 0x3F) << 6) |
+                  (static_cast<unsigned char>(text[pos + 3]) & 0x3F);
+    if (cp >= 0x10000 && cp <= 0x10FFFF) return {cp, 4};
+  }
+
+  return {first, 1};
+}
+
+auto is_ascii_space(char32_t cp) -> bool {
+  return cp <= 0x7F && std::isspace(static_cast<unsigned char>(cp)) != 0;
+}
+
+auto is_wide_codepoint(char32_t cp) -> bool {
+  return (cp >= 0x1100 && cp <= 0x115F) || (cp >= 0x2329 && cp <= 0x232A) ||
+         (cp >= 0x2E80 && cp <= 0xA4CF) || (cp >= 0xAC00 && cp <= 0xD7A3) ||
+         (cp >= 0xF900 && cp <= 0xFAFF) || (cp >= 0xFE10 && cp <= 0xFE19) ||
+         (cp >= 0xFE30 && cp <= 0xFE6F) || (cp >= 0xFF00 && cp <= 0xFF60) ||
+         (cp >= 0xFFE0 && cp <= 0xFFE6) || (cp >= 0x1F300 && cp <= 0x1FAFF) ||
+         (cp >= 0x20000 && cp <= 0x3FFFD);
+}
+
+auto display_width(char32_t cp) -> std::uintmax_t {
+  if (cp < 0x20 || (cp >= 0x7F && cp < 0xA0)) return 0;
+  return is_wide_codepoint(cp) ? 2 : 1;
+}
+
 /**
  * @brief Count lines, words, chars, bytes, and max line length in a file
- *
- * This function reads a file and counts the number of lines, words, characters,
- * bytes, and the maximum line length.
+
+ * *
+ * This function reads a file and counts the number of lines, words,
+ * characters, bytes, and the maximum line length.
  *
  * @param path Path to the file to count
  * @return A Result containing the count result
  */
-auto count_file(const std::string& path) -> cp::Result<CountResult> {
+auto count_stream(std::istream& input, std::string filename,
+                  bool display_filename) -> cp::Result<CountResult> {
   CountResult result;
-  result.filename = path;
+  result.filename = std::move(filename);
+  result.display_filename = display_filename;
 
-  std::ifstream file(path, std::ios::binary);
-  if (!file) {
-    return std::unexpected("cannot open file '" + path + "'");
-  }
+  std::string data((std::istreambuf_iterator<char>(input)),
+                   std::istreambuf_iterator<char>());
+  result.bytes = data.size();
 
-  std::string line;
   std::uintmax_t current_line_length = 0;
   bool in_word = false;
 
-  char c;
-  while (file.get(c)) {
-    result.bytes++;
+  for (size_t i = 0; i < data.size();) {
+    DecodedChar decoded = decode_utf8_char(data, i);
+    i += decoded.bytes;
     result.chars++;
+    char32_t cp = decoded.codepoint;
 
-    if (c == '\n') {
+    if (cp == U'\n') {
       result.lines++;
       if (current_line_length > result.max_line_length) {
         result.max_line_length = current_line_length;
       }
       current_line_length = 0;
       in_word = false;
-    } else if (std::isspace(static_cast<unsigned char>(c))) {
-      current_line_length++;
+    } else if (cp == U'\t') {
+      current_line_length += 8 - (current_line_length % 8);
+      in_word = false;
+    } else if (is_ascii_space(cp)) {
+      current_line_length += display_width(cp);
       in_word = false;
     } else {
-      current_line_length++;
+      current_line_length += display_width(cp);
       if (!in_word) {
         result.words++;
         in_word = true;
@@ -179,15 +278,28 @@ auto count_file(const std::string& path) -> cp::Result<CountResult> {
     }
   }
 
-  // Check for final line without newline
-  if (current_line_length > 0) {
-    result.lines++;
-    if (current_line_length > result.max_line_length) {
-      result.max_line_length = current_line_length;
-    }
+  if (current_line_length > result.max_line_length) {
+    result.max_line_length = current_line_length;
   }
 
   return result;
+}
+
+auto count_stdin(bool explicit_stdin) -> cp::Result<CountResult> {
+  return count_stream(std::cin, "-", explicit_stdin);
+}
+
+auto count_file(const std::string& path) -> cp::Result<CountResult> {
+  if (path == "-") {
+    return count_stdin(true);
+  }
+
+  std::ifstream file(path, std::ios::binary);
+  if (!file) {
+    return std::unexpected("cannot open file '" + path + "'");
+  }
+
+  return count_stream(file, path, true);
 }
 
 // ----------------------------------------------
@@ -201,48 +313,6 @@ auto count_file(const std::string& path) -> cp::Result<CountResult> {
  *
  * @return A Result containing the count result
  */
-auto count_stdin() -> cp::Result<CountResult> {
-  CountResult result;
-  result.filename = "-";
-
-  std::uintmax_t current_line_length = 0;
-  bool in_word = false;
-
-  char c;
-  while (std::cin.get(c)) {
-    result.bytes++;
-    result.chars++;
-
-    if (c == '\n') {
-      result.lines++;
-      if (current_line_length > result.max_line_length) {
-        result.max_line_length = current_line_length;
-      }
-      current_line_length = 0;
-      in_word = false;
-    } else if (std::isspace(static_cast<unsigned char>(c))) {
-      current_line_length++;
-      in_word = false;
-    } else {
-      current_line_length++;
-      if (!in_word) {
-        result.words++;
-        in_word = true;
-      }
-    }
-  }
-
-  // Check for final line without newline
-  if (current_line_length > 0) {
-    result.lines++;
-    if (current_line_length > result.max_line_length) {
-      result.max_line_length = current_line_length;
-    }
-  }
-
-  return result;
-}
-
 // ----------------------------------------------
 // 5. Main pipeline
 // ----------------------------------------------
@@ -258,33 +328,45 @@ auto count_stdin() -> cp::Result<CountResult> {
  * @return A Result containing the list of count results
  */
 template <size_t N>
-auto process_command(const CommandContext<N>& ctx)
-    -> cp::Result<std::vector<CountResult>> {
-  return validate_arguments(ctx.positionals)
-      .and_then([](std::vector<std::string> paths)
-                    -> cp::Result<std::vector<CountResult>> {
-        SmallVector<CountResult, 64> results;
+auto process_command(const CommandContext<N>& ctx) -> cp::Result<CountBatch> {
+  std::vector<std::string> paths;
+  const std::string files0_from =
+      ctx.template get<std::string>("--files0-from", "");
+  if (!files0_from.empty()) {
+    if (!ctx.positionals.empty()) {
+      return std::unexpected(
+          "--files0-from disallows processing files named on the command line");
+    }
+    auto file_list = read_files0_from(files0_from);
+    if (!file_list) return std::unexpected(file_list.error());
+    paths = std::move(*file_list);
+  } else {
+    auto validated = validate_arguments(ctx.positionals);
+    if (!validated) return std::unexpected(validated.error());
+    paths = std::move(*validated);
+  }
 
-        if (paths.empty()) {
-          // Read from stdin
-          auto stdin_result = count_stdin();
-          if (!stdin_result) {
-            return std::unexpected(stdin_result.error());
-          }
-          results.push_back(*stdin_result);
-        } else {
-          // Read from files
-          for (const auto& path : paths) {
-            auto file_result = count_file(path);
-            if (!file_result) {
-              return std::unexpected(file_result.error());
-            }
-            results.push_back(*file_result);
-          }
-        }
+  CountBatch batch;
+  if (paths.empty() && files0_from.empty()) {
+    auto stdin_result = count_stdin(false);
+    if (!stdin_result) return std::unexpected(stdin_result.error());
+    batch.results.push_back(*stdin_result);
+    return batch;
+  }
 
-        return std::vector<CountResult>(results.begin(), results.end());
-      });
+  for (const auto& path : paths) {
+    auto file_result = count_file(path);
+    if (!file_result) {
+      safeErrorPrint("wc: ");
+      safeErrorPrint(file_result.error());
+      safeErrorPrint("\n");
+      batch.any_error = true;
+      continue;
+    }
+    batch.results.push_back(*file_result);
+  }
+
+  return batch;
 }
 
 }  // namespace wc_pipeline
@@ -354,7 +436,13 @@ REGISTER_COMMAND(
     return 1;
   }
 
-  auto count_results = *result;
+  auto batch = *result;
+  auto count_results = batch.results;
+
+  if (ctx.get<bool>("--debug", false)) {
+    safeErrorPrint(
+        "wc: debug: line count implementation: portable byte scan\n");
+  }
 
   // Determine which counts to print
   bool print_lines =
@@ -386,8 +474,13 @@ REGISTER_COMMAND(
     print_total = false;
   } else if (total_when == "only") {
     print_total = true;
-  } else {  // auto
+  } else if (total_when == "auto") {
     print_total = count_results.size() > 1;
+  } else {
+    safeErrorPrint("wc: invalid --total value '");
+    safeErrorPrint(total_when);
+    safeErrorPrint("'\n");
+    return 1;
   }
 
   // Calculate total
@@ -405,7 +498,7 @@ REGISTER_COMMAND(
   }
 
   // Print results
-  auto print_result = [&](const CountResult& result) {
+  auto print_result = [&](const CountResult& result, bool show_filename) {
     // OPTIMIZED: Use snprintf instead of to_wstring and avoid wstring
     // concatenation
     char buf[256];
@@ -443,7 +536,7 @@ REGISTER_COMMAND(
       offset--;
     }
 
-    if (!(result.filename == "-" && count_results.size() == 1)) {
+    if (show_filename) {
       if (offset > 0) {
         buf[offset++] = ' ';
       }
@@ -460,16 +553,16 @@ REGISTER_COMMAND(
   };
 
   if (total_when == "only") {
-    print_result(total_result);
+    print_result(total_result, false);
   } else {
     for (const auto& result : count_results) {
-      print_result(result);
+      print_result(result, result.display_filename);
     }
 
     if (print_total) {
-      print_result(total_result);
+      print_result(total_result, true);
     }
   }
 
-  return 0;
+  return batch.any_error ? 1 : 0;
 }

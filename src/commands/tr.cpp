@@ -90,8 +90,8 @@ auto parse_escape_sequence(std::string_view& str) -> char {
     case '6':
     case '7': {
       // Parse octal \NNN
-      int value = 0;
-      int digits = 0;
+      int value = c - '0';
+      int digits = 1;
       while (digits < 3 && !str.empty() && str[0] >= '0' && str[0] <= '7') {
         value = value * 8 + (str[0] - '0');
         str = str.substr(1);
@@ -104,28 +104,102 @@ auto parse_escape_sequence(std::string_view& str) -> char {
   }
 }
 
+auto ascii_class(std::string_view name) -> std::optional<std::string> {
+  if (name == "lower") return std::string("abcdefghijklmnopqrstuvwxyz");
+  if (name == "upper") return std::string("ABCDEFGHIJKLMNOPQRSTUVWXYZ");
+  if (name == "digit") return std::string("0123456789");
+  if (name == "blank") return std::string(" \t");
+  if (name == "space") return std::string(" \t\n\r\v\f");
+  if (name == "alpha") {
+    return std::string("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz");
+  }
+  if (name == "alnum") {
+    return std::string(
+        "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz");
+  }
+  if (name == "xdigit") return std::string("0123456789ABCDEFabcdef");
+  if (name == "cntrl") {
+    std::string chars;
+    for (int i = 0; i < 32; ++i) chars += static_cast<char>(i);
+    chars += static_cast<char>(127);
+    return chars;
+  }
+  if (name == "print") {
+    std::string chars;
+    for (char c = ' '; c <= '~'; ++c) chars += c;
+    return chars;
+  }
+  if (name == "graph") {
+    std::string chars;
+    for (char c = '!'; c <= '~'; ++c) chars += c;
+    return chars;
+  }
+  if (name == "punct") {
+    return std::string("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~");
+  }
+
+  return std::nullopt;
+}
+
+auto parse_set_atom(std::string_view& str) -> cp::Result<std::string> {
+  if (str.empty()) return std::unexpected("missing character");
+
+  if (str[0] == '\\') {
+    str = str.substr(1);
+    if (str.empty()) return std::string("\\");
+    return std::string(1, parse_escape_sequence(str));
+  }
+
+  if (str.size() >= 4 && str[0] == '[' && str[1] == ':') {
+    size_t close = str.find(":]");
+    if (close != std::string_view::npos) {
+      std::string_view name = str.substr(2, close - 2);
+      auto chars = ascii_class(name);
+      if (!chars) {
+        return std::unexpected(std::string("invalid character class '") +
+                               std::string(name) + "'");
+      }
+      str = str.substr(close + 2);
+      return *chars;
+    }
+  }
+
+  char c = str[0];
+  str = str.substr(1);
+  return std::string(1, c);
+}
+
 // Parse a character set string
-auto parse_set(std::string_view str) -> std::string {
+auto parse_set(std::string_view str) -> cp::Result<std::string> {
   std::string result;
   result.reserve(str.size());
 
   while (!str.empty()) {
-    if (str[0] == '\\') {
-      str = str.substr(1);
-      if (!str.empty()) {
-        result += parse_escape_sequence(str);
+    auto atom = parse_set_atom(str);
+    if (!atom) return std::unexpected(atom.error());
+
+    if (atom->size() == 1 && str.size() >= 2 && str[0] == '-') {
+      std::string_view range_tail = str.substr(1);
+      auto end_atom = parse_set_atom(range_tail);
+      if (!end_atom) return std::unexpected(end_atom.error());
+
+      if (end_atom->size() == 1) {
+        unsigned char start = static_cast<unsigned char>((*atom)[0]);
+        unsigned char end = static_cast<unsigned char>((*end_atom)[0]);
+        if (start > end) {
+          return std::unexpected("range-endpoints of invalid range order");
+        }
+        for (unsigned int c = start; c <= end; ++c) {
+          result += static_cast<char>(c);
+        }
+        str = range_tail;
+      } else {
+        result += *atom;
+        result += '-';
+        str = str.substr(1);
       }
-    } else if (str.size() >= 3 && str[1] == '-') {
-      // Range: A-Z
-      char start = str[0];
-      char end = str[2];
-      for (char c = start; c <= end; ++c) {
-        result += c;
-      }
-      str = str.substr(3);
     } else {
-      result += str[0];
-      str = str.substr(1);
+      result += *atom;
     }
   }
 
@@ -246,12 +320,16 @@ auto build_config(const CommandContext<TR_OPTIONS.size()>& ctx)
     return std::unexpected("missing operand");
   }
 
-  cfg.set1 = parse_set(ctx.positionals[0]);
+  auto set1 = parse_set(ctx.positionals[0]);
+  if (!set1) return std::unexpected(set1.error());
+  cfg.set1 = *set1;
 
   // In -ds mode, the second argument is SET2 (set to squeeze), not SET2
   // (translation)
   if (ctx.positionals.size() > 1) {
-    cfg.set2 = parse_set(ctx.positionals[1]);
+    auto set2 = parse_set(ctx.positionals[1]);
+    if (!set2) return std::unexpected(set2.error());
+    cfg.set2 = *set2;
   } else {
     cfg.set2 = "";  // Default empty set
   }
@@ -277,17 +355,14 @@ auto run(const Config& cfg) -> int {
   }
 
   if (cfg.squeeze) {
-    // When using -ds, use SET2 for squeeze; otherwise use SET1
-    if (cfg.delete_mode && !cfg.set2.empty()) {
+    // GNU squeezes repeated characters from the last specified set after
+    // deletion or translation has been applied.
+    if (!cfg.set2.empty()) {
       squeeze_set = build_squeeze_set(cfg.set2, false);
     } else {
       squeeze_set = build_squeeze_set(cfg.set1, cfg.complement);
     }
   }
-
-  // Check if we're in -ds mode (delete + squeeze with SET2)
-  bool is_delete_squeeze_mode =
-      cfg.delete_mode && cfg.squeeze && !cfg.set2.empty();
 
   // Read from stdin and process
   std::string input;
@@ -300,7 +375,8 @@ auto run(const Config& cfg) -> int {
   char prev_char = '\0';
   bool prev_was_squeezed = false;
 
-  for (char c : input) {
+  for (size_t pos = 0; pos < input.size(); ++pos) {
+    char c = input[pos];
     unsigned char uc = static_cast<unsigned char>(c);
 
     // Check delete (SET1 in delete mode)
@@ -310,40 +386,22 @@ auto run(const Config& cfg) -> int {
 
     // Translate
     char translated = cfg.delete_mode ? c : trans_table[uc];
+    unsigned char translated_uc = static_cast<unsigned char>(translated);
 
     // Squeeze
     bool should_output = true;
-    if (cfg.squeeze && squeeze_set[uc]) {
+    if (cfg.squeeze && squeeze_set[translated_uc]) {
       // This character is in the squeeze set
       // If it's a repeat of the previous character, skip it
       if (prev_was_squeezed && translated == prev_char) {
         should_output = false;
-      }
-      // In -ds mode, also delete single non-repeated characters in SET2
-      if (is_delete_squeeze_mode && should_output && !prev_was_squeezed) {
-        // Look ahead to see if this character repeats
-        bool has_repeat = false;
-        for (size_t i = &c - input.data() + 1; i < input.size(); ++i) {
-          unsigned char next_uc = static_cast<unsigned char>(input[i]);
-          if (!cfg.delete_mode || !delete_set[next_uc]) {
-            char next_translated =
-                cfg.delete_mode ? input[i] : trans_table[next_uc];
-            if (squeeze_set[next_uc] && next_translated == translated) {
-              has_repeat = true;
-              break;
-            }
-          }
-        }
-        if (!has_repeat) {
-          should_output = false;
-        }
       }
     }
 
     if (should_output) {
       output += translated;
       prev_char = translated;
-      prev_was_squeezed = (cfg.squeeze && squeeze_set[uc]);
+      prev_was_squeezed = (cfg.squeeze && squeeze_set[translated_uc]);
     }
     // Note: If we skip a character (should_output = false), we keep
     // prev_was_squeezed = true to continue skipping subsequent same characters
@@ -371,7 +429,9 @@ REGISTER_COMMAND(
     "  \\r    return\n"
     "  \\t    horizontal tab\n"
     "  \\v    vertical tab\n"
-    "CHAR1-CHAR2  all characters from CHAR1 to CHAR2 in ascending order",
+    "CHAR1-CHAR2  all characters from CHAR1 to CHAR2 in ascending order\n"
+    "[:CLASS:]    ASCII classes: alnum, alpha, blank, cntrl, digit,\n"
+    "             graph, lower, print, punct, space, upper, xdigit",
     "  echo 'hello' | tr 'a-z' 'A-Z'\n"
     "  echo 'hello   world' | tr -s ' '\n"
     "  echo 'Hello World' | tr -d 'a-z'\n"

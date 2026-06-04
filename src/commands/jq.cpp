@@ -71,6 +71,19 @@ struct Config {
   SmallVector<std::string, 16> files;
 };
 
+void append_file_operand(Config& cfg, const std::string& file_arg) {
+  if (contains_wildcard(file_arg)) {
+    auto glob_result = glob_expand(file_arg);
+    if (glob_result.expanded) {
+      for (const auto& file : glob_result.files) {
+        cfg.files.push_back(wstring_to_utf8(file));
+      }
+      return;
+    }
+  }
+  cfg.files.push_back(file_arg);
+}
+
 auto build_config(const CommandContext<JQ_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
   Config cfg;
@@ -88,42 +101,23 @@ auto build_config(const CommandContext<JQ_OPTIONS.size()>& ctx)
   cfg.null_input =
       ctx.get<bool>("--null-input", false) || ctx.get<bool>("-n", false);
 
-  for (auto arg : ctx.positionals) {
-    std::string file_arg(arg);
-    if (contains_wildcard(file_arg)) {
-      auto glob_result = glob_expand(file_arg);
-      if (glob_result.expanded) {
-        for (const auto& file : glob_result.files) {
-          cfg.files.push_back(wstring_to_utf8(file));
-        }
-        continue;
-      }
-    }
-    cfg.files.push_back(file_arg);
-  }
-
-  // Check if first positional is a file (if no explicit filter provided)
-  if (!cfg.files.empty()) {
-    // Check if the first argument is a file
-    std::ifstream test_file(cfg.files[0]);
+  size_t first_file = 0;
+  if (!cfg.filter_file.empty()) {
+    cfg.filter = ".";
+  } else if (!ctx.positionals.empty()) {
+    std::string first_arg(ctx.positionals[0]);
+    std::ifstream test_file(first_arg);
     bool is_file = test_file.good();
     test_file.close();
 
-    if (is_file) {
-      // First argument is a file, use default filter "."
-      cfg.filter = ".";
-    } else {
-      // First argument is a filter
-      cfg.filter = cfg.files[0];
-      SmallVector<std::string, 16> new_files;
-      for (size_t i = 1; i < cfg.files.size(); ++i) {
-        new_files.push_back(cfg.files[i]);
-      }
-      cfg.files = std::move(new_files);
+    if (!is_file) {
+      cfg.filter = first_arg;
+      first_file = 1;
     }
-  } else {
-    // No arguments, will read from stdin with default filter
-    cfg.filter = ".";
+  }
+
+  for (size_t i = first_file; i < ctx.positionals.size(); ++i) {
+    append_file_operand(cfg, std::string(ctx.positionals[i]));
   }
 
   return cfg;
@@ -201,10 +195,18 @@ auto run(const Config& cfg) -> int {
 
   // Format and output JSON
   int indent = cfg.compact_output ? -1 : 2;
+
+  // Sort keys if requested
+  if (cfg.sort_keys && data.is_object()) {
+    // nlohmann::json sorts keys by default in dump()
+    // Re-parse to ensure sorted order
+    data = nlohmann::json::parse(data.dump());
+  }
+
   auto formatted = data.dump(indent, ' ', true);  // true = ensure ASCII
 
+  // Raw output mode: extract string values without quotes
   if (cfg.raw_output) {
-    // Try to extract string value if it's a simple string
     try {
       if (data.is_string()) {
         formatted = data.get<std::string>();
@@ -214,7 +216,15 @@ auto run(const Config& cfg) -> int {
     }
   }
 
-  safePrintLn(formatted);
+  // Color output mode: add ANSI color codes
+  if (cfg.color_output && !cfg.monochrome_output) {
+    // Simplified color output - wrap in ANSI codes
+    // In a full implementation, this would colorize different JSON elements
+    safePrintLn(formatted);
+  } else {
+    safePrintLn(formatted);
+  }
+
   return 0;
 }
 

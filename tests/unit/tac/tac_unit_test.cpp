@@ -41,6 +41,77 @@ TEST(tac, tac_basic_file) {
   EXPECT_TRUE(r.stdout_text.find("line2") < r.stdout_text.find("line1"));
 }
 
+TEST(tac, tac_reverses_each_file_independently) {
+  TempDir tmp;
+  tmp.write("a.txt", "a1\na2\n");
+  tmp.write("b.txt", "b1\nb2\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"tac.exe", {L"a.txt", L"b.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "a2\na1\nb2\nb1\n");
+}
+
+TEST(tac, tac_custom_separator) {
+  TempDir tmp;
+  tmp.write("colon.txt", "one:two:three:");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"tac.exe", {L"-s", L":", L"colon.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "three:two:one:");
+}
+
+TEST(tac, tac_before_attaches_separator_to_next_record) {
+  TempDir tmp;
+  tmp.write("colon.txt", "one:two:three:");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"tac.exe", {L"-b", L"-s", L":", L"colon.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "::three:twoone");
+}
+
+TEST(tac, tac_empty_separator_uses_nul) {
+  TempDir tmp;
+  tmp.write_bytes("nul.bin", {'a', '\0', 'b', '\0', 'c', '\0'});
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"tac.exe", {L"-s", L"", L"nul.bin"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(r.stdout_text, std::string("c\0b\0a\0", 6));
+}
+
+TEST(tac, tac_regex_separator) {
+  TempDir tmp;
+  tmp.write("digits.txt", "aa11bb22cc33");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"tac.exe", {L"-r", L"-s", L"[0-9]+", L"digits.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "cc33bb22aa11");
+}
+
 TEST(tac, tac_stdin) {
   Pipeline p;
   p.set_stdin("line1\nline2\nline3\n");

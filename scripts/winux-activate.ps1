@@ -49,9 +49,18 @@ function Get-WinuxBinDir {
     # Priority 4: Check $env:LOCALAPPDATA\WinuxCmd (traditional installation)
     $baseDir = "$env:LOCALAPPDATA\WinuxCmd"
     if (Test-Path $baseDir) {
-        $versionDir = Get-ChildItem -Path $baseDir -Directory -Filter "WinuxCmd-*" |
-                      Select-Object -First 1
-        if ($versionDir) {
+        $versionDirs = Get-ChildItem -Path $baseDir -Directory -Filter "WinuxCmd-*" |
+                       Sort-Object -Property @{
+                           Expression = {
+                               if ($_.Name -match 'WinuxCmd-(\d+\.\d+\.\d+)') {
+                                   [Version]$Matches[1]
+                               } else {
+                                   [Version]"0.0.0"
+                               }
+                           }
+                           Descending = $true
+                       }
+        foreach ($versionDir in $versionDirs) {
             $binDir = Join-Path $versionDir.FullName "bin"
             if (-not (Test-Path $binDir)) {
                 $exeFile = Get-ChildItem -Path $versionDir.FullName -Filter "winuxcmd.exe" -Recurse -File |
@@ -227,7 +236,7 @@ function global:winux {
 
     # Get the first argument as the command
     $Command = $Arguments[0]
-    $RemainingArgs = $Arguments[1..$($Arguments.Count-1)]
+    $RemainingArgs = if ($Arguments.Count -gt 1) { $Arguments[1..($Arguments.Count - 1)] } else { @() }
 
     # Management commands that go to winux.ps1
     $managementCommands = @("activate", "deactivate", "status", "list", "help", "version")
@@ -513,16 +522,16 @@ if (Install-WinuxToProfile -BinDir $binDir) {
     Write-Host "  - Works with multiple installed versions"
     Write-Host ""
     Write-Color "Cyan" "Next steps:"
-    Write-Host "1. RESTART PowerShell or run: . `$PROFILE"
+    Write-Host "1. RESTART PowerShell or run: . `$PROFILE.CurrentUserAllHosts"
     Write-Host "2. Test with: winux"
     Write-Host "3. If you have winux.ps1, copy it to WinuxCmd bin directory"
-    Write-Host "4. Optional: winux activate (if winux.ps1 exists)"
+    Write-Host "4. Optional: winux activate (enables bare ls/rm/cat in PowerShell)"
     Write-Host ""
     Write-Color "Cyan" "Usage after restart:"
     Write-Host "  > winux                     # Show help and version info"
     Write-Host "  > winux ls -la              # Use GNU ls directly"
-    Write-Host "  > winux activate            # Activate (if winux.ps1 exists)"
-    Write-Host "  > winuxcmd --help           # Direct alias toe winuxcmd.exe"
+    Write-Host "  > winux activate            # Override common PowerShell aliases"
+    Write-Host "  > winuxcmd --help           # Direct alias to winuxcmd.exe"
     Write-Host ""
     Write-Host "Note: Future WinuxCmd updates will be automatically detected!"
 } else {

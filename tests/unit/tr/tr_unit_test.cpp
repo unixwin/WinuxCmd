@@ -57,6 +57,54 @@ TEST(tr, tr_delete_characters) {
   EXPECT_EQ_TEXT(r.stdout_text, "helloworld");
 }
 
+TEST(tr, tr_translate_character_classes) {
+  Pipeline p;
+  p.set_stdin("abc xyz 123");
+  p.add(L"tr.exe", {L"[:lower:]", L"[:upper:]"});
+
+  TEST_LOG_CMD_LIST("tr.exe", L"[:lower:]", L"[:upper:]");
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("tr class translate output", r.stdout_text);
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "ABC XYZ 123");
+}
+
+TEST(tr, tr_octal_escape_uses_all_digits) {
+  Pipeline p;
+  p.set_stdin("abc");
+  p.add(L"tr.exe", {L"\\141", L"X"});
+
+  TEST_LOG_CMD_LIST("tr.exe", L"\\141", L"X");
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("tr octal escape output", r.stdout_text);
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "Xbc");
+}
+
+TEST(tr, tr_delete_digit_class) {
+  Pipeline p;
+  p.set_stdin("a1b23c456");
+  p.add(L"tr.exe", {L"-d", L"[:digit:]"});
+
+  TEST_LOG_CMD_LIST("tr.exe", L"-d", L"[:digit:]");
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("tr digit class delete output", r.stdout_text);
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "abc");
+}
+
 TEST(tr, tr_squeeze_repeats) {
   Pipeline p;
   p.set_stdin("hello    world");
@@ -73,6 +121,38 @@ TEST(tr, tr_squeeze_repeats) {
   EXPECT_EQ_TEXT(r.stdout_text, "hello world");
 }
 
+TEST(tr, tr_squeeze_space_class) {
+  Pipeline p;
+  p.set_stdin("a   b\t\tc\n\n");
+  p.add(L"tr.exe", {L"-s", L"[:space:]"});
+
+  TEST_LOG_CMD_LIST("tr.exe", L"-s", L"[:space:]");
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("tr space class squeeze output", r.stdout_text);
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "a b\tc\n");
+}
+
+TEST(tr, tr_translate_then_squeeze_last_set) {
+  Pipeline p;
+  p.set_stdin("aaabbbccc");
+  p.add(L"tr.exe", {L"-s", L"[:lower:]", L"[:upper:]"});
+
+  TEST_LOG_CMD_LIST("tr.exe", L"-s", L"[:lower:]", L"[:upper:]");
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("tr translate squeeze output", r.stdout_text);
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "ABC");
+}
+
 TEST(tr, tr_delete_and_squeeze) {
   Pipeline p;
   p.set_stdin("aabbcc123  456");
@@ -86,5 +166,21 @@ TEST(tr, tr_delete_and_squeeze) {
   TEST_LOG("tr delete and squeeze output", r.stdout_text);
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "aabbcc");
+  EXPECT_EQ_TEXT(r.stdout_text, "aabbcc ");
+}
+
+TEST(tr, tr_delete_and_squeeze_preserves_single_squeeze_char) {
+  Pipeline p;
+  p.set_stdin("a1 b");
+  p.add(L"tr.exe", {L"-ds", L"[:digit:]", L" "});
+
+  TEST_LOG_CMD_LIST("tr.exe", L"-ds", L"[:digit:]", L" ");
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("tr delete and squeeze single output", r.stdout_text);
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "a b");
 }

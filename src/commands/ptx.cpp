@@ -278,17 +278,63 @@ auto compare_entries(const WordEntry& a, const WordEntry& b, bool ignore_case)
 
 auto format_output(const std::vector<WordEntry>& entries, const Config& cfg)
     -> void {
+  // Determine gap size
+  int gap = 3;  // default gap
+  if (!cfg.gap_size.empty()) {
+    try {
+      gap = std::stoi(cfg.gap_size);
+    } catch (...) {
+    }
+  }
+
+  // Determine tab character
+  std::string tab = "\t";
+  if (!cfg.tabs.empty()) {
+    tab = cfg.tabs;
+  }
+
+  // Break character for line breaks
+  char break_char = ' ';
+  if (!cfg.break_char.empty()) {
+    break_char = cfg.break_char[0];
+  }
+
   for (const auto& entry : entries) {
     std::string output;
+    std::string ref_str;
 
+    // Build reference
+    if (cfg.auto_reference) {
+      ref_str = "(" + std::to_string(entry.line_number) + ":" +
+                std::to_string(entry.position) + ")";
+    } else if (cfg.references) {
+      ref_str = "(" + std::to_string(entry.line_number) + ")";
+    }
+
+    // Format based on right_side_refs
     if (cfg.right_side_refs) {
       // Word context, then reference on right
       output = entry.line_context;
-      output += "\t(" + std::to_string(entry.line_number) + ")";
+      if (!ref_str.empty()) {
+        output += tab + ref_str;
+      }
     } else {
       // Reference, then word context
-      output = "(" + std::to_string(entry.line_number) + ")\t";
+      if (!ref_str.empty()) {
+        output = ref_str + tab;
+      }
       output += entry.line_context;
+    }
+
+    // Apply width limit
+    if (cfg.width > 0 && static_cast<int>(output.size()) > cfg.width) {
+      output = output.substr(0, cfg.width);
+    }
+
+    // Typeset mode: wrap in roff macros
+    if (cfg.typeset_mode || cfg.roff_format) {
+      std::string macro = cfg.macro_name.empty() ? ".xx" : cfg.macro_name;
+      output = macro + " " + output;
     }
 
     safePrintLn(output);
@@ -296,7 +342,43 @@ auto format_output(const std::vector<WordEntry>& entries, const Config& cfg)
 }
 
 auto run(const Config& cfg) -> int {
+  // Display copyright if requested
+  if (cfg.copyright) {
+    safePrintLn("ptx (WinuxCmd) 0.1.0");
+    safePrintLn("Copyright © 2026 WinuxCmd");
+    safePrintLn("License MIT: GNU GPL compatible");
+    return 0;
+  }
+
   std::vector<WordEntry> all_entries;
+
+  // Load ignore file if specified
+  std::set<std::string> ignore_words;
+  if (!cfg.ignore_file.empty()) {
+    auto ignore_lines = read_file_content(cfg.ignore_file);
+    for (const auto& line : ignore_lines) {
+      std::string word;
+      for (char c : line) {
+        if (std::isalpha(static_cast<unsigned char>(c))) {
+          word += c;
+        } else {
+          if (!word.empty()) {
+            if (cfg.ignore_case) {
+              std::transform(word.begin(), word.end(), word.begin(), ::tolower);
+            }
+            ignore_words.insert(word);
+            word.clear();
+          }
+        }
+      }
+      if (!word.empty()) {
+        if (cfg.ignore_case) {
+          std::transform(word.begin(), word.end(), word.begin(), ::tolower);
+        }
+        ignore_words.insert(word);
+      }
+    }
+  }
 
   for (const auto& file : cfg.files) {
     auto lines = read_file_content(file);
@@ -305,6 +387,18 @@ auto run(const Config& cfg) -> int {
     }
 
     auto entries = extract_words(lines, cfg.ignore_case);
+
+    // Filter out ignored words
+    if (!ignore_words.empty()) {
+      std::vector<WordEntry> filtered;
+      for (const auto& entry : entries) {
+        if (ignore_words.find(entry.word) == ignore_words.end()) {
+          filtered.push_back(entry);
+        }
+      }
+      entries = std::move(filtered);
+    }
+
     all_entries.insert(all_entries.end(), entries.begin(), entries.end());
   }
 

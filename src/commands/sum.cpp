@@ -43,23 +43,35 @@ using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
 auto constexpr SUM_OPTIONS = std::array{
-    OPTION("-r", "--sysv", "use System V sum algorithm (512-byte blocks)",
+    OPTION("-r", "--bsd", "use BSD sum algorithm (1024-byte blocks)",
            BOOL_TYPE),
-    OPTION("-s", "--bsd", "use BSD sum algorithm (1024-byte blocks)",
+    OPTION("-s", "--sysv", "use System V sum algorithm (512-byte blocks)",
            BOOL_TYPE)};
 
 namespace sum_pipeline {
 namespace cp = core::pipeline;
 
 struct Config {
-  bool use_sysv = false;
+  enum class Algorithm { Bsd, Sysv };
+
+  Algorithm algorithm = Algorithm::Bsd;
   SmallVector<std::string, 64> files;
 };
+
+auto choose_algorithm(const CommandContext<SUM_OPTIONS.size()>& ctx)
+    -> Config::Algorithm {
+  auto algorithm = Config::Algorithm::Bsd;
+  for (auto arg : ctx.raw_args) {
+    if (arg == "-r" || arg == "--bsd") algorithm = Config::Algorithm::Bsd;
+    if (arg == "-s" || arg == "--sysv") algorithm = Config::Algorithm::Sysv;
+  }
+  return algorithm;
+}
 
 auto build_config(const CommandContext<SUM_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
   Config cfg;
-  cfg.use_sysv = ctx.get<bool>("--sysv", false) || ctx.get<bool>("-r", false);
+  cfg.algorithm = choose_algorithm(ctx);
 
   for (auto arg : ctx.positionals) {
     std::string file_arg(arg);
@@ -83,7 +95,7 @@ auto build_config(const CommandContext<SUM_OPTIONS.size()>& ctx)
 }
 
 auto calculate_checksum(const std::string& filename, uint32_t& block_count,
-                        bool use_sysv) -> cp::Result<uint16_t> {
+                        Config::Algorithm algorithm) -> cp::Result<uint16_t> {
   std::vector<char> data;
 
   if (filename == "-" || filename.empty()) {
@@ -103,25 +115,34 @@ auto calculate_checksum(const std::string& filename, uint32_t& block_count,
   }
 
   // Calculate block count
-  int block_size = use_sysv ? 512 : 1024;
+  int block_size = algorithm == Config::Algorithm::Sysv ? 512 : 1024;
   block_count =
       (static_cast<uint32_t>(data.size()) + block_size - 1) / block_size;
 
-  // Simple checksum algorithm (BSD)
-  uint16_t checksum = 0;
+  if (algorithm == Config::Algorithm::Sysv) {
+    uint32_t sum = 0;
+    for (unsigned char byte : data) {
+      sum += byte;
+    }
+    uint32_t folded = (sum & 0xffffU) + (sum >> 16U);
+    folded = (folded & 0xffffU) + (folded >> 16U);
+    return static_cast<uint16_t>(folded);
+  }
+
+  uint32_t checksum = 0;
   for (unsigned char byte : data) {
     checksum = (checksum >> 1) + ((checksum & 1) << 15);
     checksum += byte;
     checksum &= 0xFFFF;
   }
 
-  return checksum;
+  return static_cast<uint16_t>(checksum);
 }
 
 auto run(const Config& cfg) -> int {
   for (const auto& file : cfg.files) {
     uint32_t block_count = 0;
-    auto checksum_result = calculate_checksum(file, block_count, cfg.use_sysv);
+    auto checksum_result = calculate_checksum(file, block_count, cfg.algorithm);
 
     if (!checksum_result) {
       cp::report_error(checksum_result, L"sum");
@@ -144,19 +165,17 @@ auto run(const Config& cfg) -> int {
 
 }  // namespace sum_pipeline
 
-REGISTER_COMMAND(
-    sum, "sum", "sum [OPTION]... [FILE]...",
-    "Checksum and count the blocks in a file.\n"
-    "\n"
-    "With no FILE, or when FILE is -, read standard input.\n"
-    "\n"
-    "Note: This is a simplified implementation. The BSD algorithm\n"
-    "is used by default (1024-byte blocks).",
-    "  sum file.txt\n"
-    "  echo \"test\" | sum\n"
-    "  sum -r file.txt",
-    "cksum(1), md5sum(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd",
-    SUM_OPTIONS) {
+REGISTER_COMMAND(sum, "sum", "sum [OPTION]... [FILE]...",
+                 "Checksum and count the blocks in a file.\n"
+                 "\n"
+                 "With no FILE, or when FILE is -, read standard input.\n"
+                 "\n"
+                 "The BSD algorithm is used by default (1024-byte blocks).\n",
+                 "  sum file.txt\n"
+                 "  echo \"test\" | sum\n"
+                 "  sum -r file.txt",
+                 "cksum(1), md5sum(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd",
+                 SUM_OPTIONS) {
   using namespace sum_pipeline;
 
   auto cfg_result = build_config(ctx);

@@ -66,3 +66,92 @@ TEST(paste, paste_stdin) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "a\nb\nc\n");
 }
+
+TEST(paste, paste_delimiter_escapes) {
+  TempDir tmp;
+  tmp.write("file1.txt", "a\nb\n");
+  tmp.write("file2.txt", "1\n2\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"paste.exe", {L"-d", L"\\0", L"file1.txt", L"file2.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "a1\nb2\n");
+}
+
+TEST(paste, paste_gnu_control_delimiter_escapes) {
+  TempDir tmp;
+  tmp.write("file1.txt", "a\n");
+  tmp.write("file2.txt", "b\n");
+  tmp.write("file3.txt", "c\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"paste.exe",
+        {L"-d", L"\\r\\v", L"file1.txt", L"file2.txt", L"file3.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(r.stdout_text, std::string("a\rb\vc\n", 6));
+}
+
+TEST(paste, paste_empty_delimiter_list_uses_no_delimiters) {
+  TempDir tmp;
+  tmp.write("file1.txt", "a\n");
+  tmp.write("file2.txt", "b\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"paste.exe", {L"-d", L"", L"file1.txt", L"file2.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "ab\n");
+}
+
+TEST(paste, paste_serial_replaces_newlines_with_delimiters) {
+  TempDir tmp;
+  tmp.write("file1.txt", "one\ntwo\nthree\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"paste.exe", {L"-s", L"-d", L",\\n", L"file1.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "one,two\nthree\n");
+}
+
+TEST(paste, paste_parallel_stdin_is_consumed_sequentially) {
+  Pipeline p;
+  p.set_stdin("1\n2\n3\n4\n");
+  p.add(L"paste.exe", {L"-d", L" ", L"-", L"-"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "1 2\n3 4\n");
+}
+
+TEST(paste, paste_zero_terminated_records) {
+  TempDir tmp;
+  tmp.write("file1.bin", std::string("a\0b\0", 4));
+  tmp.write("file2.bin", std::string("1\0"
+                                     "2\0",
+                                     4));
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"paste.exe", {L"-z", L"-d", L",", L"file1.bin", L"file2.bin"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(r.stdout_text, std::string("a,1\0b,2\0", 8));
+}

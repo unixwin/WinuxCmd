@@ -11,6 +11,8 @@ build-*/
 
 .vscode/
 
+.claude/
+
 .cache/
 
 .winuxcmd/

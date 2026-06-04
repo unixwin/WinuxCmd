@@ -46,15 +46,15 @@ using cmd::meta::OptionType;
  *
  * - @a -a: Change only the access time [IMPLEMENTED]
  * - @a -c, @a --no-create: Do not create any files [IMPLEMENTED]
- * - @a -d, @a --date: Parse STRING and use it instead of current time [NOT
- * SUPPORT]
+ * - @a -d, @a --date: Parse STRING and use it instead of current time
+ * [IMPLEMENTED]
  * - @a -f: (ignored) [IMPLEMENTED]
  * - @a -h, @a --no-dereference: Affect symbolic link instead of referenced file
  * [NOT SUPPORT]
  * - @a -m: Change only the modification time [IMPLEMENTED]
  * - @a -r, @a --reference: Use this file's times instead of current time
  * [IMPLEMENTED]
- * - @a -t: Use [[CC]YY]MMDDhhmm[.ss] instead of current time [NOT SUPPORT]
+ * - @a -t: Use [[CC]YY]MMDDhhmm[.ss] instead of current time [IMPLEMENTED]
  * - @a --time: Change the specified time (access/atime/use/modify/mtime)
  * [IMPLEMENTED]
  */
@@ -83,128 +83,354 @@ struct TimePair {
   FILETIME mtime{};
 };
 
-/**
- * @brief Parse date string in format [[CC]YY]MMDDhhmm[.ss]
- * @param date_str Date string to parse
- * @return FILETIME or nullopt if parsing fails
- */
-auto parse_date_string(const std::string& date_str) -> std::optional<FILETIME> {
-  std::string s = date_str;
+auto trim_copy(std::string s) -> std::string {
+  auto first = s.find_first_not_of(" \t\r\n");
+  if (first == std::string::npos) return {};
+  auto last = s.find_last_not_of(" \t\r\n");
+  return s.substr(first, last - first + 1);
+}
 
-  // Remove any leading/trailing whitespace
-  size_t start = s.find_first_not_of(" \t");
-  size_t end = s.find_last_not_of(" \t");
-  if (start != std::string::npos && end != std::string::npos) {
-    s = s.substr(start, end - start + 1);
-  } else {
-    return std::nullopt;
+auto lower_copy(std::string s) -> std::string {
+  std::ranges::transform(s, s.begin(), [](unsigned char ch) {
+    return static_cast<char>(std::tolower(ch));
+  });
+  return s;
+}
+
+auto is_digits(std::string_view s) -> bool {
+  return !s.empty() && std::ranges::all_of(s, [](unsigned char ch) {
+    return std::isdigit(ch) != 0;
+  });
+}
+
+auto parse_int(std::string_view s) -> std::optional<int> {
+  if (s.starts_with('+')) s.remove_prefix(1);
+  int value = 0;
+  auto [ptr, ec] = std::from_chars(s.data(), s.data() + s.size(), value);
+  if (ec != std::errc() || ptr != s.data() + s.size()) return std::nullopt;
+  return value;
+}
+
+auto days_in_month(int year, int month) -> int {
+  static constexpr int days[] = {31, 28, 31, 30, 31, 30,
+                                 31, 31, 30, 31, 30, 31};
+  if (month != 2) return days[month - 1];
+  bool leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+  return leap ? 29 : 28;
+}
+
+auto valid_system_time(const SYSTEMTIME& st) -> bool {
+  if (st.wYear < 1601 || st.wMonth < 1 || st.wMonth > 12) return false;
+  if (st.wDay < 1 || st.wDay > days_in_month(st.wYear, st.wMonth)) {
+    return false;
   }
+  return st.wHour <= 23 && st.wMinute <= 59 && st.wSecond <= 59;
+}
 
-  // Parse format: [[CC]YY]MMDDhhmm[.ss]
-  // Minimum length: MMDDhhmm = 8 characters
-  // Maximum length: CCYYMMDDhhmm.ss = 15 characters
-  if (s.length() < 8 || s.length() > 15) {
-    return std::nullopt;
-  }
+auto filetime_to_ticks(const FILETIME& ft) -> unsigned long long {
+  ULARGE_INTEGER uli{};
+  uli.LowPart = ft.dwLowDateTime;
+  uli.HighPart = ft.dwHighDateTime;
+  return uli.QuadPart;
+}
 
-  // Handle optional century (CC) and year (YY)
-  size_t pos = 0;
-  int year = 0;
+auto ticks_to_filetime(unsigned long long ticks) -> FILETIME {
+  ULARGE_INTEGER uli{};
+  uli.QuadPart = ticks;
+  return FILETIME{uli.LowPart, uli.HighPart};
+}
 
-  if (s.length() >= 12) {
-    // Format includes century and year: CCYYMMDDhhmm
-    if (s.length() >= 12) {
-      std::string ccyy = s.substr(0, 4);
-      if (!std::all_of(ccyy.begin(), ccyy.end(), ::isdigit)) {
-        return std::nullopt;
-      }
-      year = std::stoi(ccyy);
-      pos = 4;
-    }
-  } else {
-    // Format includes only year: YYMMDDhhmm
-    std::string yy = s.substr(0, 2);
-    if (!std::all_of(yy.begin(), yy.end(), ::isdigit)) {
-      return std::nullopt;
-    }
-    int yy_val = std::stoi(yy);
-    // Assume 1970-2069 range
-    year = (yy_val >= 70) ? 1900 + yy_val : 2000 + yy_val;
-    pos = 2;
-  }
+auto add_seconds(FILETIME ft, long long seconds) -> FILETIME {
+  constexpr long long ticks_per_second = 10000000LL;
+  auto ticks = static_cast<long long>(filetime_to_ticks(ft));
+  ticks += seconds * ticks_per_second;
+  return ticks_to_filetime(static_cast<unsigned long long>(ticks));
+}
 
-  // Parse month (MM)
-  if (pos + 2 > s.length()) return std::nullopt;
-  std::string mm = s.substr(pos, 2);
-  if (!std::all_of(mm.begin(), mm.end(), ::isdigit)) return std::nullopt;
-  int month = std::stoi(mm);
-  pos += 2;
+auto local_system_time_to_filetime(const SYSTEMTIME& local)
+    -> std::optional<FILETIME> {
+  if (!valid_system_time(local)) return std::nullopt;
 
-  // Parse day (DD)
-  if (pos + 2 > s.length()) return std::nullopt;
-  std::string dd = s.substr(pos, 2);
-  if (!std::all_of(dd.begin(), dd.end(), ::isdigit)) return std::nullopt;
-  int day = std::stoi(dd);
-  pos += 2;
-
-  // Parse hour (hh)
-  if (pos + 2 > s.length()) return std::nullopt;
-  std::string hh = s.substr(pos, 2);
-  if (!std::all_of(hh.begin(), hh.end(), ::isdigit)) return std::nullopt;
-  int hour = std::stoi(hh);
-  pos += 2;
-
-  // Parse minute (mm)
-  if (pos + 2 > s.length()) return std::nullopt;
-  std::string min = s.substr(pos, 2);
-  if (!std::all_of(min.begin(), min.end(), ::isdigit)) return std::nullopt;
-  int minute = std::stoi(min);
-  pos += 2;
-
-  // Parse optional second (.ss)
-  int second = 0;
-  if (pos < s.length() && s[pos] == '.') {
-    pos++;
-    if (pos + 2 > s.length()) return std::nullopt;
-    std::string ss = s.substr(pos, 2);
-    if (!std::all_of(ss.begin(), ss.end(), ::isdigit)) return std::nullopt;
-    second = std::stoi(ss);
-    pos += 2;
-  }
-
-  // Validate ranges
-  if (month < 1 || month > 12) return std::nullopt;
-  if (day < 1 || day > 31) return std::nullopt;
-  if (hour < 0 || hour > 23) return std::nullopt;
-  if (minute < 0 || minute > 59) return std::nullopt;
-  if (second < 0 || second > 59) return std::nullopt;
-
-  // Create local SYSTEMTIME (input is interpreted as local time)
-  SYSTEMTIME st_local{};
-  st_local.wYear = year;
-  st_local.wMonth = month;
-  st_local.wDay = day;
-  st_local.wHour = hour;
-  st_local.wMinute = minute;
-  st_local.wSecond = second;
-  st_local.wMilliseconds = 0;
-
-  // Convert local time to UTC using time zone API
   TIME_ZONE_INFORMATION tzi{};
   GetTimeZoneInformation(&tzi);
 
-  SYSTEMTIME st_utc{};
-  if (!TzSpecificLocalTimeToSystemTime(&tzi, &st_local, &st_utc)) {
+  SYSTEMTIME utc{};
+  if (!TzSpecificLocalTimeToSystemTime(&tzi, &local, &utc)) {
     return std::nullopt;
   }
 
-  // Convert UTC SYSTEMTIME to FILETIME
   FILETIME ft{};
-  if (!SystemTimeToFileTime(&st_utc, &ft)) {
+  if (!SystemTimeToFileTime(&utc, &ft)) return std::nullopt;
+  return ft;
+}
+
+auto utc_system_time_to_filetime(const SYSTEMTIME& utc)
+    -> std::optional<FILETIME> {
+  if (!valid_system_time(utc)) return std::nullopt;
+  FILETIME ft{};
+  if (!SystemTimeToFileTime(&utc, &ft)) return std::nullopt;
+  return ft;
+}
+
+auto filetime_to_local_system_time(const FILETIME& ft)
+    -> std::optional<SYSTEMTIME> {
+  FILETIME local_ft{};
+  SYSTEMTIME st{};
+  if (!FileTimeToLocalFileTime(&ft, &local_ft)) return std::nullopt;
+  if (!FileTimeToSystemTime(&local_ft, &st)) return std::nullopt;
+  return st;
+}
+
+auto parse_epoch_time(std::string_view s) -> std::optional<FILETIME> {
+  if (s.empty() || s.front() != '@') return std::nullopt;
+  long long seconds = 0;
+  auto rest = s.substr(1);
+  auto [ptr, ec] =
+      std::from_chars(rest.data(), rest.data() + rest.size(), seconds);
+  if (ec != std::errc() || ptr != rest.data() + rest.size())
+    return std::nullopt;
+
+  SYSTEMTIME epoch{};
+  epoch.wYear = 1970;
+  epoch.wMonth = 1;
+  epoch.wDay = 1;
+  auto ft = utc_system_time_to_filetime(epoch);
+  if (!ft) return std::nullopt;
+  return add_seconds(*ft, seconds);
+}
+
+auto parse_timezone_suffix(std::string& s) -> std::optional<int> {
+  std::string lowered = lower_copy(s);
+  if (lowered.ends_with(" utc") || lowered.ends_with(" gmt")) {
+    s = trim_copy(s.substr(0, s.size() - 4));
+    return 0;
+  }
+  if (lowered.ends_with("z") && s.size() > 1 &&
+      std::isdigit(static_cast<unsigned char>(s[s.size() - 2]))) {
+    s = trim_copy(s.substr(0, s.size() - 1));
+    return 0;
+  }
+  if (s.size() < 5) return std::nullopt;
+
+  size_t pos = s.size() - 5;
+  if (s[pos] == '+' || s[pos] == '-') {
+    std::string_view hh{s.data() + pos + 1, 2};
+    std::string_view mm{s.data() + pos + 3, 2};
+    if (is_digits(hh) && is_digits(mm)) {
+      int hours = *parse_int(hh);
+      int minutes = *parse_int(mm);
+      if (hours <= 23 && minutes <= 59) {
+        int sign = s[pos] == '-' ? -1 : 1;
+        s = trim_copy(s.substr(0, pos));
+        return sign * (hours * 60 + minutes);
+      }
+    }
+  }
+
+  if (s.size() >= 6) {
+    pos = s.size() - 6;
+    if ((s[pos] == '+' || s[pos] == '-') && s[pos + 3] == ':') {
+      std::string_view hh{s.data() + pos + 1, 2};
+      std::string_view mm{s.data() + pos + 4, 2};
+      if (is_digits(hh) && is_digits(mm)) {
+        int hours = *parse_int(hh);
+        int minutes = *parse_int(mm);
+        if (hours <= 23 && minutes <= 59) {
+          int sign = s[pos] == '-' ? -1 : 1;
+          s = trim_copy(s.substr(0, pos));
+          return sign * (hours * 60 + minutes);
+        }
+      }
+    }
+  }
+
+  return std::nullopt;
+}
+
+auto parse_fixed_date_time(std::string input) -> std::optional<FILETIME> {
+  input = trim_copy(input);
+  if (auto epoch = parse_epoch_time(input)) return epoch;
+
+  auto tz_offset = parse_timezone_suffix(input);
+  std::ranges::replace(input, 'T', ' ');
+
+  std::string date_part = input;
+  std::string time_part;
+  if (auto space = input.find(' '); space != std::string::npos) {
+    date_part = input.substr(0, space);
+    time_part = trim_copy(input.substr(space + 1));
+  }
+
+  int year = 0;
+  int month = 0;
+  int day = 0;
+  if (date_part.size() == 10 && (date_part[4] == '-' || date_part[4] == '/') &&
+      date_part[7] == date_part[4]) {
+    auto y = parse_int(std::string_view(date_part).substr(0, 4));
+    auto m = parse_int(std::string_view(date_part).substr(5, 2));
+    auto d = parse_int(std::string_view(date_part).substr(8, 2));
+    if (!y || !m || !d) return std::nullopt;
+    year = *y;
+    month = *m;
+    day = *d;
+  } else if (date_part.size() == 8 && is_digits(date_part)) {
+    year = *parse_int(std::string_view(date_part).substr(0, 4));
+    month = *parse_int(std::string_view(date_part).substr(4, 2));
+    day = *parse_int(std::string_view(date_part).substr(6, 2));
+  } else {
     return std::nullopt;
   }
 
-  return ft;
+  int hour = 0;
+  int minute = 0;
+  int second = 0;
+  if (!time_part.empty()) {
+    std::vector<std::string_view> pieces;
+    std::string_view tv = time_part;
+    while (true) {
+      auto colon = tv.find(':');
+      pieces.push_back(tv.substr(0, colon));
+      if (colon == std::string_view::npos) break;
+      tv.remove_prefix(colon + 1);
+    }
+    if (pieces.size() < 2 || pieces.size() > 3) return std::nullopt;
+    auto h = parse_int(pieces[0]);
+    auto m = parse_int(pieces[1]);
+    auto sec =
+        pieces.size() == 3 ? parse_int(pieces[2]) : std::optional<int>{0};
+    if (!h || !m || !sec) return std::nullopt;
+    hour = *h;
+    minute = *m;
+    second = *sec;
+  }
+
+  SYSTEMTIME st{};
+  st.wYear = static_cast<WORD>(year);
+  st.wMonth = static_cast<WORD>(month);
+  st.wDay = static_cast<WORD>(day);
+  st.wHour = static_cast<WORD>(hour);
+  st.wMinute = static_cast<WORD>(minute);
+  st.wSecond = static_cast<WORD>(second);
+
+  if (tz_offset) {
+    auto ft = utc_system_time_to_filetime(st);
+    if (!ft) return std::nullopt;
+    return add_seconds(*ft, -static_cast<long long>(*tz_offset) * 60);
+  }
+  return local_system_time_to_filetime(st);
+}
+
+auto parse_relative_date(std::string input, const FILETIME& base)
+    -> std::optional<FILETIME> {
+  input = lower_copy(trim_copy(input));
+  if (input == "now") return base;
+  if (input == "yesterday") return add_seconds(base, -24LL * 60 * 60);
+  if (input == "tomorrow") return add_seconds(base, 24LL * 60 * 60);
+  if (input == "today") {
+    auto st = filetime_to_local_system_time(base);
+    if (!st) return std::nullopt;
+    st->wHour = 0;
+    st->wMinute = 0;
+    st->wSecond = 0;
+    st->wMilliseconds = 0;
+    return local_system_time_to_filetime(*st);
+  }
+
+  bool ago = false;
+  if (input.ends_with(" ago")) {
+    ago = true;
+    input = trim_copy(input.substr(0, input.size() - 4));
+  }
+
+  std::istringstream iss(input);
+  std::string amount_word;
+  std::string unit;
+  if (!(iss >> amount_word >> unit)) return std::nullopt;
+  std::string trailing;
+  if (iss >> trailing) return std::nullopt;
+
+  int amount = 0;
+  if (amount_word == "next") {
+    amount = 1;
+  } else if (amount_word == "last") {
+    amount = -1;
+  } else {
+    auto parsed = parse_int(amount_word);
+    if (!parsed) return std::nullopt;
+    amount = *parsed;
+  }
+  if (ago) amount = -amount;
+
+  long long scale = 0;
+  if (unit == "second" || unit == "seconds" || unit == "sec" ||
+      unit == "secs") {
+    scale = 1;
+  } else if (unit == "minute" || unit == "minutes" || unit == "min" ||
+             unit == "mins") {
+    scale = 60;
+  } else if (unit == "hour" || unit == "hours") {
+    scale = 60 * 60;
+  } else if (unit == "day" || unit == "days") {
+    scale = 24 * 60 * 60;
+  } else if (unit == "week" || unit == "weeks") {
+    scale = 7 * 24 * 60 * 60;
+  } else {
+    return std::nullopt;
+  }
+
+  return add_seconds(base, static_cast<long long>(amount) * scale);
+}
+
+auto parse_gnu_date_string(const std::string& input, const FILETIME& base)
+    -> std::optional<FILETIME> {
+  if (auto fixed = parse_fixed_date_time(input)) return fixed;
+  return parse_relative_date(input, base);
+}
+
+auto parse_touch_timestamp(const std::string& input)
+    -> std::optional<FILETIME> {
+  std::string s = trim_copy(input);
+  auto dot = s.find('.');
+  std::string main = dot == std::string::npos ? s : s.substr(0, dot);
+  std::string seconds_part = dot == std::string::npos ? "" : s.substr(dot + 1);
+
+  if (!(main.size() == 8 || main.size() == 10 || main.size() == 12)) {
+    return std::nullopt;
+  }
+  if (!is_digits(main)) return std::nullopt;
+  if (!seconds_part.empty() &&
+      (seconds_part.size() != 2 || !is_digits(seconds_part))) {
+    return std::nullopt;
+  }
+
+  SYSTEMTIME now{};
+  GetLocalTime(&now);
+
+  size_t pos = 0;
+  int year = now.wYear;
+  if (main.size() == 12) {
+    year = *parse_int(std::string_view(main).substr(0, 4));
+    pos = 4;
+  } else if (main.size() == 10) {
+    int yy = *parse_int(std::string_view(main).substr(0, 2));
+    year = yy >= 69 ? 1900 + yy : 2000 + yy;
+    pos = 2;
+  }
+
+  int month = *parse_int(std::string_view(main).substr(pos, 2));
+  int day = *parse_int(std::string_view(main).substr(pos + 2, 2));
+  int hour = *parse_int(std::string_view(main).substr(pos + 4, 2));
+  int minute = *parse_int(std::string_view(main).substr(pos + 6, 2));
+  int second = seconds_part.empty() ? 0 : *parse_int(seconds_part);
+
+  SYSTEMTIME st{};
+  st.wYear = static_cast<WORD>(year);
+  st.wMonth = static_cast<WORD>(month);
+  st.wDay = static_cast<WORD>(day);
+  st.wHour = static_cast<WORD>(hour);
+  st.wMinute = static_cast<WORD>(minute);
+  st.wSecond = static_cast<WORD>(second);
+  return local_system_time_to_filetime(st);
 }
 
 auto read_times_from_file(const std::wstring& wpath)
@@ -306,6 +532,11 @@ auto process_command(const CommandContext<TOUCH_OPTIONS.size()>& ctx)
     } else if (time_word == "modify" || time_word == "mtime") {
       flag_a = false;
       flag_m = true;
+    } else {
+      safeErrorPrint("touch: invalid argument '");
+      safeErrorPrint(time_word);
+      safeErrorPrint("' for '--time'\n");
+      return std::unexpected("invalid time argument");
     }
   }
 
@@ -319,25 +550,6 @@ auto process_command(const CommandContext<TOUCH_OPTIONS.size()>& ctx)
   bool no_create =
       ctx.get<bool>("--no-create", false) || ctx.get<bool>("-c", false);
 
-  // Parse --date or -t option
-  std::optional<TimePair> date_times = std::nullopt;
-  std::string date_str = ctx.get<std::string>("--date", "");
-  if (date_str.empty()) date_str = ctx.get<std::string>("-t", "");
-  if (!date_str.empty()) {
-    auto ft = parse_date_string(date_str);
-    if (!ft.has_value()) {
-      safeErrorPrint("touch: invalid date format '");
-      safeErrorPrint(date_str);
-      safeErrorPrint("'\n");
-      return std::unexpected("invalid date format");
-    }
-    date_times = TimePair{*ft, *ft};
-  }
-
-  (void)ctx.get<bool>("--no-dereference", false);
-  (void)ctx.get<bool>("-h", false);
-  (void)ctx.get<bool>("-f", false);
-
   std::optional<TimePair> ref_times = std::nullopt;
   std::string ref_path = ctx.get<std::string>("--reference", "");
   if (ref_path.empty()) ref_path = ctx.get<std::string>("-r", "");
@@ -350,6 +562,36 @@ auto process_command(const CommandContext<TOUCH_OPTIONS.size()>& ctx)
       return std::unexpected("reference file error");
     }
   }
+
+  std::optional<TimePair> date_times = std::nullopt;
+  FILETIME base_time{};
+  if (ref_times.has_value()) {
+    base_time = ref_times->mtime;
+  } else {
+    GetSystemTimeAsFileTime(&base_time);
+  }
+
+  for (const auto& occurrence :
+       ctx.string_occurrences({"--date", "-d", "-t"})) {
+    std::optional<FILETIME> ft;
+    if (occurrence.short_name == "-t") {
+      ft = parse_touch_timestamp(occurrence.value);
+    } else {
+      ft = parse_gnu_date_string(occurrence.value, base_time);
+    }
+    if (!ft.has_value()) {
+      safeErrorPrint("touch: invalid date format '");
+      safeErrorPrint(occurrence.value);
+      safeErrorPrint("'\n");
+      return std::unexpected("invalid date format");
+    }
+    date_times = TimePair{*ft, *ft};
+    base_time = *ft;
+  }
+
+  (void)ctx.get<bool>("--no-dereference", false);
+  (void)ctx.get<bool>("-h", false);
+  (void)ctx.get<bool>("-f", false);
 
   bool all_ok = true;
   for (auto p : ctx.positionals) {

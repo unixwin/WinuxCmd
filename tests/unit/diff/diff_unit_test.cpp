@@ -104,3 +104,70 @@ TEST(diff, diff_unified) {
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_TRUE(r.stdout_text.find("@@") != std::string::npos);
 }
+
+TEST(diff, diff_side_by_side) {
+  TempDir tmp;
+  tmp.write("file1.txt", "left\nsame\n");
+  tmp.write("file2.txt", "right\nsame\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"diff.exe", {L"-y", L"file1.txt", L"file2.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_FALSE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stdout_text.find("left") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("right") != std::string::npos);
+}
+
+TEST(diff, diff_ignore_all_space_unified) {
+  TempDir tmp;
+  tmp.write("file1.txt", "alpha beta\nsame\n");
+  tmp.write("file2.txt", "alphabeta\nsame\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"diff.exe", {L"-w", L"-u", L"file1.txt", L"file2.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.empty());
+}
+
+TEST(diff, diff_ignore_all_space_side_by_side) {
+  TempDir tmp;
+  tmp.write("file1.txt", "alpha beta\nsame\n");
+  tmp.write("file2.txt", "alphabeta\nsame\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"diff.exe", {L"-w", L"-y", L"file1.txt", L"file2.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.empty());
+}
+
+TEST(diff, diff_wildcard_pair_expands) {
+  TempDir tmp;
+  tmp.write("a.txt", "same\n");
+  tmp.write("b.txt", "same\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"diff.exe", {L"*.txt"});
+
+  TEST_LOG_CMD_LIST("diff.exe", L"*.txt");
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("diff wildcard output", r.stdout_text);
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.empty());
+}

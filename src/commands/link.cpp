@@ -42,8 +42,7 @@ using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
 auto constexpr LINK_OPTIONS =
-    std::array{OPTION("-v", "--verbose", "print a message for each action"),
-               OPTION("", "", "create link to file", STRING_TYPE)};
+    std::array{OPTION("", "", "create link to file", STRING_TYPE)};
 
 REGISTER_COMMAND(
     link,
@@ -57,20 +56,22 @@ REGISTER_COMMAND(
     "On Windows, this creates a hard link using CreateHardLink API.\n"
     "Note: Hard links only work on NTFS file systems.\n"
     "\n"
-    "Options:\n"
-    "  -v, --verbose  print a message for each action",
+    "This command has no options other than --help and --version.",
     "  link file.txt link_to_file.txt\n"
-    "  link -v file.txt link_to_file.txt",
+    "  link existing new_link",
 
     /* see also */
     "ln(1), unlink(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", LINK_OPTIONS) {
   namespace cp = core::pipeline;
 
-  bool verbose =
-      ctx.get<bool>("--verbose", false) || ctx.get<bool>("-v", false);
-
-  if (ctx.positionals.size() != 2) {
+  if (ctx.positionals.size() < 2) {
     safeErrorPrintLn("link: missing file operand");
+    safePrintLn("Try 'link --help' for more information.");
+    return 1;
+  }
+  if (ctx.positionals.size() > 2) {
+    safeErrorPrintLn("link: extra operand '" + std::string(ctx.positionals[2]) +
+                     "'");
     safePrintLn("Try 'link --help' for more information.");
     return 1;
   }
@@ -80,10 +81,6 @@ REGISTER_COMMAND(
 
   std::wstring wfile = utf8_to_wstring(file);
   std::wstring wlinkname = utf8_to_wstring(linkname);
-
-  if (verbose) {
-    safePrint("link: '" + linkname + "' -> '" + file + "'\n");
-  }
 
   BOOL result = CreateHardLinkW(wlinkname.c_str(), wfile.c_str(), nullptr);
   if (!result) {

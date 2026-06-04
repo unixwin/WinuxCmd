@@ -134,6 +134,36 @@ TEST(mv, mv_target_directory_option) {
   EXPECT_TRUE(std::filesystem::exists(tmp.path / "dest_dir" / "file.txt"));
 }
 
+TEST(mv, mv_target_directory_requires_existing_directory) {
+  TempDir tmp;
+  tmp.write("file.txt", "content");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"mv.exe", {L"-t", L"missing_dir", L"file.txt"});
+
+  auto r = p.run();
+
+  EXPECT_NE(r.exit_code, 0);
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "file.txt"));
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "missing_dir"));
+}
+
+TEST(mv, mv_target_directory_and_no_target_directory_conflict) {
+  TempDir tmp;
+  tmp.write("file.txt", "content");
+  std::filesystem::create_directory(tmp.path / "dest_dir");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"mv.exe", {L"-t", L"dest_dir", L"-T", L"file.txt"});
+
+  auto r = p.run();
+
+  EXPECT_NE(r.exit_code, 0);
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "file.txt"));
+}
+
 TEST(mv, mv_no_clobber_keeps_existing_destination) {
   TempDir tmp;
   tmp.write("source.txt", "new content");
@@ -148,4 +178,57 @@ TEST(mv, mv_no_clobber_keeps_existing_destination) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(std::filesystem::exists(tmp.path / "source.txt"));
   EXPECT_EQ(tmp.read("dest.txt"), "old content");
+}
+
+TEST(mv, mv_wildcard_sources_expand) {
+  TempDir tmp;
+  tmp.write("a.txt", "alpha");
+  tmp.write("b.txt", "beta");
+  std::filesystem::create_directory(tmp.path / "dest_dir");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"mv.exe", {L"*.txt", L"dest_dir"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "a.txt"));
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "b.txt"));
+  EXPECT_EQ(tmp.read("dest_dir/a.txt"), "alpha");
+  EXPECT_EQ(tmp.read("dest_dir/b.txt"), "beta");
+}
+
+TEST(mv, mv_multiple_sources_require_existing_directory) {
+  TempDir tmp;
+  tmp.write("file1.txt", "content1");
+  tmp.write("file2.txt", "content2");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"mv.exe", {L"file1.txt", L"file2.txt", L"missing_dir"});
+
+  auto r = p.run();
+
+  EXPECT_NE(r.exit_code, 0);
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "file1.txt"));
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "file2.txt"));
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "missing_dir"));
+}
+
+TEST(mv, mv_wildcard_multiple_sources_require_existing_directory) {
+  TempDir tmp;
+  tmp.write("a.txt", "alpha");
+  tmp.write("b.txt", "beta");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"mv.exe", {L"*.txt", L"missing_dir"});
+
+  auto r = p.run();
+
+  EXPECT_NE(r.exit_code, 0);
+  EXPECT_EQ(tmp.read("a.txt"), "alpha");
+  EXPECT_EQ(tmp.read("b.txt"), "beta");
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "missing_dir"));
 }

@@ -135,6 +135,7 @@
   - [x] -i (ignore environment)
   - [x] -u (unset)
   - [x] -0 (null separator)
+  - [x] -C/--chdir (change working directory)
 
 ## Future Enhancements (Phase 3 - Planned)
 
@@ -143,7 +144,8 @@
 - [x] xargs (build and execute command lines from standard input)
 - [x] tee (read from standard input and write to standard output and files)
 - [x] find (basic search functionality)
-- [ ] find advanced features (-exec, -ok, -printf)
+- [ ] find full GNU expression grammar and remaining advanced features (`-H`,
+      complete `-printf`, exact action ordering)
 - [x] date (basic formatting)
 - [ ] date advanced formatting
 - [ ] time (measure command execution time)

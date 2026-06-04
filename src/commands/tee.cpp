@@ -60,7 +60,10 @@ using cmd::meta::OptionType;
 auto constexpr TEE_OPTIONS = std::array{
     OPTION("-a", "--append", "append to the given FILEs, do not overwrite"),
     OPTION("-i", "--ignore-interrupts", "ignore interrupt signals"),
-    OPTION("-p", "--diagnose", "write errors to standard error")};
+    OPTION("-p", "--diagnose", "write errors to standard error"),
+    OPTION("", "--output-error",
+           "set behavior on write error: 'warn' (default), 'warn-nopipe', 'exit', 'exit-nopipe'",
+           STRING_TYPE)};
 
 REGISTER_COMMAND(
     tee, "tee",
@@ -75,21 +78,12 @@ REGISTER_COMMAND(
   using namespace core::pipeline;
 
   bool append = ctx.get<bool>("-a", false) || ctx.get<bool>("--append", false);
+  auto output_error = ctx.get<std::string>("--output-error", "warn");
 
   // Get output files from positional arguments
   SmallVector<std::string, 32> output_files;
   for (auto arg : ctx.positionals) {
-    std::string file_arg(arg);
-    if (contains_wildcard(file_arg)) {
-      auto glob_result = glob_expand(file_arg);
-      if (glob_result.expanded) {
-        for (const auto &file : glob_result.files) {
-          output_files.push_back(wstring_to_utf8(file));
-        }
-        continue;
-      }
-    }
-    output_files.push_back(file_arg);
+    output_files.push_back(std::string(arg));
   }
 
   if (output_files.empty()) {
@@ -139,7 +133,9 @@ REGISTER_COMMAND(
       file << line << '\n';
       if (file.fail()) {
         safeErrorPrint("tee: write error\n");
-        return 1;
+        if (output_error == "exit" || output_error == "exit-nopipe") {
+          return 1;
+        }
       }
     }
   }

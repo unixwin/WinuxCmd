@@ -53,6 +53,7 @@ opt|<command>|<option>|<description>
 ## 命令矩阵
 
 - [命令兼容性矩阵](commands_implementation.md)
+- [GNU Coreutils 兼容性审计](gnu_coreutils_parity.md) 这里包含 GNU 官方手册页的参数对照和通配符展开规则。
 
 ## 构建与测试
 

@@ -56,3 +56,24 @@ TEST(unlink, unlink_missing_operand) {
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_FALSE(r.stderr_text.empty());
 }
+
+TEST(unlink, unlink_rejects_multiple_operands) {
+  TempDir tmp;
+  tmp.write("one.txt", "one");
+  tmp.write("two.txt", "two");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"unlink.exe", {L"one.txt", L"two.txt"});
+
+  TEST_LOG_CMD_LIST("unlink.exe", L"one.txt", L"two.txt");
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("unlink stderr", r.stderr_text);
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "one.txt"));
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "two.txt"));
+}

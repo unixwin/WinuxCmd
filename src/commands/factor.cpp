@@ -39,8 +39,8 @@ import utils;
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
-auto constexpr FACTOR_OPTIONS =
-    std::array{OPTION("", "", "factor numbers", STRING_TYPE)};
+auto constexpr FACTOR_OPTIONS = std::array{
+    OPTION("", "--exponents", "print repeated factors in exponent form")};
 
 namespace {
 auto factorize(long long n) -> std::vector<long long> {
@@ -82,9 +82,12 @@ REGISTER_COMMAND(factor_cmd,
                  "factor [NUMBER]...",
                  "Print the prime factors of each specified integer NUMBER.\n"
                  "\n"
-                 "If no NUMBER is specified, read from standard input.",
+                 "If no NUMBER is specified, read from standard input.\n"
+                 "\n"
+                 "  --exponents   print repeated factors in exponent form",
                  "  factor 12\n"
                  "  factor 100\n"
+                 "  factor --exponents 72\n"
                  "  factor 17\n"
                  "  echo '24' | factor",
 
@@ -114,11 +117,29 @@ REGISTER_COMMAND(factor_cmd,
     }
   }
 
+  bool exponents = ctx.has("--exponents");
+
   for (auto num : numbers) {
     auto factors = factorize(num);
     safePrint(std::to_string(num) + ":");
-    for (auto f : factors) {
-      safePrint(" " + std::to_string(f));
+    if (exponents) {
+      // Group repeated factors: 2 2 2 3 -> 2^3 3
+      for (size_t i = 0; i < factors.size();) {
+        long long f = factors[i];
+        size_t count = 1;
+        while (i + count < factors.size() && factors[i + count] == f) {
+          ++count;
+        }
+        safePrint(" " + std::to_string(f));
+        if (count > 1) {
+          safePrint("^" + std::to_string(count));
+        }
+        i += count;
+      }
+    } else {
+      for (auto f : factors) {
+        safePrint(" " + std::to_string(f));
+      }
     }
     safePrintLn("");
   }

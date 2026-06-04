@@ -44,98 +44,197 @@ using cmd::meta::OptionType;
 
 auto constexpr TRUNCATE_OPTIONS = std::array{
     OPTION("-c", "--no-create", "do not create files", BOOL_TYPE),
+    OPTION("-o", "--io-blocks", "treat SIZE as number of IO blocks", BOOL_TYPE),
     OPTION("-s", "--size", "set or adjust the file size by SIZE bytes",
            STRING_TYPE),
-    OPTION("-r", "--reference", "base size on RFILE", STRING_TYPE)
-    // -o, --io-blocks (not implemented - treat SIZE as number of IO blocks)
-};
+    OPTION("-r", "--reference", "base size on RFILE", STRING_TYPE)};
 
 namespace truncate_pipeline {
 namespace cp = core::pipeline;
 
+enum class SizeMode {
+  Absolute,
+  Add,
+  Subtract,
+  AtMost,
+  AtLeast,
+  RoundDown,
+  RoundUp
+};
+
+struct SizeSpec {
+  SizeMode mode = SizeMode::Absolute;
+  int64_t value = 0;
+};
+
 struct Config {
   bool no_create = false;
-  int64_t size = 0;
+  bool io_blocks = false;
+  SizeSpec size;
   std::string reference_file;
   SmallVector<std::string, 64> files;
 };
 
-auto parse_size(const std::string& size_str) -> cp::Result<int64_t> {
-  try {
-    // Support: +N, -N, N, NKB, NMB, NG, etc.
-    std::string s = size_str;
-    bool relative = false;
-    bool negative = false;
+auto pow_ld(long double base, int exponent) -> long double {
+  long double value = 1.0L;
+  for (int i = 0; i < exponent; ++i) {
+    value *= base;
+  }
+  return value;
+}
 
-    if (!s.empty() && s[0] == '+') {
-      relative = true;
-      s = s.substr(1);
-    } else if (!s.empty() && s[0] == '-') {
-      relative = true;
-      negative = true;
-      s = s.substr(1);
+auto match_suffix(std::string& text) -> long double {
+  struct Unit {
+    const char* suffix;
+    long double multiplier;
+  };
+
+  const std::array units{Unit{"QiB", pow_ld(1024.0L, 10)},
+                         Unit{"RiB", pow_ld(1024.0L, 9)},
+                         Unit{"YiB", pow_ld(1024.0L, 8)},
+                         Unit{"ZiB", pow_ld(1024.0L, 7)},
+                         Unit{"EiB", pow_ld(1024.0L, 6)},
+                         Unit{"PiB", pow_ld(1024.0L, 5)},
+                         Unit{"TiB", pow_ld(1024.0L, 4)},
+                         Unit{"GiB", pow_ld(1024.0L, 3)},
+                         Unit{"MiB", pow_ld(1024.0L, 2)},
+                         Unit{"KiB", pow_ld(1024.0L, 1)},
+                         Unit{"qib", pow_ld(1024.0L, 10)},
+                         Unit{"rib", pow_ld(1024.0L, 9)},
+                         Unit{"yib", pow_ld(1024.0L, 8)},
+                         Unit{"zib", pow_ld(1024.0L, 7)},
+                         Unit{"eib", pow_ld(1024.0L, 6)},
+                         Unit{"pib", pow_ld(1024.0L, 5)},
+                         Unit{"tib", pow_ld(1024.0L, 4)},
+                         Unit{"gib", pow_ld(1024.0L, 3)},
+                         Unit{"mib", pow_ld(1024.0L, 2)},
+                         Unit{"kib", pow_ld(1024.0L, 1)},
+                         Unit{"QB", pow_ld(1000.0L, 10)},
+                         Unit{"RB", pow_ld(1000.0L, 9)},
+                         Unit{"YB", pow_ld(1000.0L, 8)},
+                         Unit{"ZB", pow_ld(1000.0L, 7)},
+                         Unit{"EB", pow_ld(1000.0L, 6)},
+                         Unit{"PB", pow_ld(1000.0L, 5)},
+                         Unit{"TB", pow_ld(1000.0L, 4)},
+                         Unit{"GB", pow_ld(1000.0L, 3)},
+                         Unit{"MB", pow_ld(1000.0L, 2)},
+                         Unit{"KB", pow_ld(1000.0L, 1)},
+                         Unit{"qb", pow_ld(1000.0L, 10)},
+                         Unit{"rb", pow_ld(1000.0L, 9)},
+                         Unit{"yb", pow_ld(1000.0L, 8)},
+                         Unit{"zb", pow_ld(1000.0L, 7)},
+                         Unit{"eb", pow_ld(1000.0L, 6)},
+                         Unit{"pb", pow_ld(1000.0L, 5)},
+                         Unit{"tb", pow_ld(1000.0L, 4)},
+                         Unit{"gb", pow_ld(1000.0L, 3)},
+                         Unit{"mb", pow_ld(1000.0L, 2)},
+                         Unit{"kb", pow_ld(1000.0L, 1)},
+                         Unit{"Q", pow_ld(1024.0L, 10)},
+                         Unit{"R", pow_ld(1024.0L, 9)},
+                         Unit{"Y", pow_ld(1024.0L, 8)},
+                         Unit{"Z", pow_ld(1024.0L, 7)},
+                         Unit{"E", pow_ld(1024.0L, 6)},
+                         Unit{"P", pow_ld(1024.0L, 5)},
+                         Unit{"T", pow_ld(1024.0L, 4)},
+                         Unit{"G", pow_ld(1024.0L, 3)},
+                         Unit{"M", pow_ld(1024.0L, 2)},
+                         Unit{"K", pow_ld(1024.0L, 1)},
+                         Unit{"q", pow_ld(1024.0L, 10)},
+                         Unit{"r", pow_ld(1024.0L, 9)},
+                         Unit{"y", pow_ld(1024.0L, 8)},
+                         Unit{"z", pow_ld(1024.0L, 7)},
+                         Unit{"e", pow_ld(1024.0L, 6)},
+                         Unit{"p", pow_ld(1024.0L, 5)},
+                         Unit{"t", pow_ld(1024.0L, 4)},
+                         Unit{"g", pow_ld(1024.0L, 3)},
+                         Unit{"m", pow_ld(1024.0L, 2)},
+                         Unit{"k", pow_ld(1024.0L, 1)},
+                         Unit{"b", 512.0L},
+                         Unit{"B", 1.0L}};
+
+  for (const auto& unit : units) {
+    std::string_view suffix(unit.suffix);
+    if (text.size() >= suffix.size() &&
+        text.compare(text.size() - suffix.size(), suffix.size(), suffix) == 0) {
+      text.resize(text.size() - suffix.size());
+      return unit.multiplier;
+    }
+  }
+
+  return 1.0L;
+}
+
+auto scale_size(int64_t value, long double multiplier) -> cp::Result<int64_t> {
+  long double scaled = static_cast<long double>(value) * multiplier;
+  if (scaled < 0.0L ||
+      scaled > static_cast<long double>(std::numeric_limits<int64_t>::max())) {
+    return std::unexpected("size overflow");
+  }
+  return static_cast<int64_t>(scaled);
+}
+
+auto parse_size(const std::string& size_str) -> cp::Result<SizeSpec> {
+  try {
+    std::string s = size_str;
+    SizeSpec spec;
+
+    if (!s.empty()) {
+      switch (s[0]) {
+        case '+':
+          spec.mode = SizeMode::Add;
+          s.erase(0, 1);
+          break;
+        case '-':
+          spec.mode = SizeMode::Subtract;
+          s.erase(0, 1);
+          break;
+        case '<':
+          spec.mode = SizeMode::AtMost;
+          s.erase(0, 1);
+          break;
+        case '>':
+          spec.mode = SizeMode::AtLeast;
+          s.erase(0, 1);
+          break;
+        case '/':
+          spec.mode = SizeMode::RoundDown;
+          s.erase(0, 1);
+          break;
+        case '%':
+          spec.mode = SizeMode::RoundUp;
+          s.erase(0, 1);
+          break;
+        default:
+          break;
+      }
     }
 
     if (s.empty()) {
       return std::unexpected("invalid size");
     }
 
-    int64_t multiplier = 1;
-    if (s.size() > 2) {
-      std::string suffix = s.substr(s.size() - 2);
-      std::transform(suffix.begin(), suffix.end(), suffix.begin(), ::tolower);
-
-      if (suffix == "kb") {
-        multiplier = 1024;
-        s = s.substr(0, s.size() - 2);
-      } else if (suffix == "mb") {
-        multiplier = 1024 * 1024;
-        s = s.substr(0, s.size() - 2);
-      } else if (suffix == "gb") {
-        multiplier = 1024LL * 1024 * 1024;
-        s = s.substr(0, s.size() - 2);
-      } else if (suffix == "tb") {
-        multiplier = 1024LL * 1024 * 1024 * 1024;
-        s = s.substr(0, s.size() - 2);
-      } else if (suffix == "pb") {
-        multiplier = 1024LL * 1024 * 1024 * 1024 * 1024;
-        s = s.substr(0, s.size() - 2);
-      } else if (suffix == "eb") {
-        multiplier = 1024LL * 1024 * 1024 * 1024 * 1024 * 1024;
-        s = s.substr(0, s.size() - 2);
-      } else if (s.size() > 1) {
-        suffix = s.substr(s.size() - 1);
-        std::transform(suffix.begin(), suffix.end(), suffix.begin(), ::tolower);
-
-        if (suffix == "k") {
-          multiplier = 1024;
-          s = s.substr(0, s.size() - 1);
-        } else if (suffix == "m") {
-          multiplier = 1024 * 1024;
-          s = s.substr(0, s.size() - 1);
-        } else if (suffix == "g") {
-          multiplier = 1024LL * 1024 * 1024;
-          s = s.substr(0, s.size() - 1);
-        } else if (suffix == "t") {
-          multiplier = 1024LL * 1024 * 1024 * 1024;
-          s = s.substr(0, s.size() - 1);
-        } else if (suffix == "p") {
-          multiplier = 1024LL * 1024 * 1024 * 1024 * 1024;
-          s = s.substr(0, s.size() - 1);
-        } else if (suffix == "e") {
-          multiplier = 1024LL * 1024 * 1024 * 1024 * 1024 * 1024;
-          s = s.substr(0, s.size() - 1);
-        }
-      }
+    long double multiplier = match_suffix(s);
+    if (s.empty()) {
+      return std::unexpected("invalid size");
     }
 
-    int64_t value = std::stoll(s);
-    if (negative) {
-      value = -value;
+    size_t consumed = 0;
+    int64_t base_value = std::stoll(s, &consumed);
+    if (consumed != s.size() || base_value < 0) {
+      return std::unexpected("invalid size format");
     }
-    value *= multiplier;
 
-    return value;
+    auto scaled = scale_size(base_value, multiplier);
+    if (!scaled) {
+      return std::unexpected(scaled.error());
+    }
+    spec.value = *scaled;
+    if ((spec.mode == SizeMode::RoundDown || spec.mode == SizeMode::RoundUp) &&
+        spec.value == 0) {
+      return std::unexpected("division by zero size");
+    }
+
+    return spec;
   } catch (...) {
     return std::unexpected("invalid size format");
   }
@@ -146,6 +245,8 @@ auto build_config(const CommandContext<TRUNCATE_OPTIONS.size()>& ctx)
   Config cfg;
   cfg.no_create =
       ctx.get<bool>("--no-create", false) || ctx.get<bool>("-c", false);
+  cfg.io_blocks =
+      ctx.get<bool>("--io-blocks", false) || ctx.get<bool>("-o", false);
 
   auto size_opt = ctx.get<std::string>("--size", "");
   if (size_opt.empty()) {
@@ -192,99 +293,163 @@ auto build_config(const CommandContext<TRUNCATE_OPTIONS.size()>& ctx)
   return cfg;
 }
 
+auto get_file_size(const std::string& file) -> cp::Result<int64_t> {
+  std::error_code ec;
+  auto size = std::filesystem::file_size(file, ec);
+  if (ec) {
+    return std::unexpected("cannot get file size");
+  }
+  if (size > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+    return std::unexpected("file too large");
+  }
+  return static_cast<int64_t>(size);
+}
+
+auto io_block_size_for(const std::string& file) -> uint64_t {
+  std::filesystem::path p(file);
+  auto dir = p.has_parent_path() ? p.parent_path() : std::filesystem::path(".");
+  std::error_code ec;
+  auto abs = std::filesystem::absolute(dir, ec);
+  if (ec) {
+    abs = dir;
+  }
+
+  wchar_t root[MAX_PATH];
+  DWORD sectors_per_cluster = 0;
+  DWORD bytes_per_sector = 0;
+  DWORD free_clusters = 0;
+  DWORD total_clusters = 0;
+
+  auto wdir = abs.wstring();
+  if (!GetVolumePathNameW(wdir.c_str(), root, MAX_PATH)) {
+    return 512;
+  }
+  if (!GetDiskFreeSpaceW(root, &sectors_per_cluster, &bytes_per_sector,
+                         &free_clusters, &total_clusters)) {
+    return 512;
+  }
+  uint64_t block_size =
+      static_cast<uint64_t>(sectors_per_cluster) * bytes_per_sector;
+  return block_size == 0 ? 512 : block_size;
+}
+
+auto apply_size_mode(int64_t current_size, SizeSpec spec,
+                     uint64_t io_block_size) -> cp::Result<int64_t> {
+  if (io_block_size != 1) {
+    auto scaled =
+        scale_size(spec.value, static_cast<long double>(io_block_size));
+    if (!scaled) {
+      return std::unexpected(scaled.error());
+    }
+    spec.value = *scaled;
+  }
+
+  int64_t target = spec.value;
+  switch (spec.mode) {
+    case SizeMode::Absolute:
+      break;
+    case SizeMode::Add:
+      if (spec.value > std::numeric_limits<int64_t>::max() - current_size) {
+        return std::unexpected("size overflow");
+      }
+      target = current_size + spec.value;
+      break;
+    case SizeMode::Subtract:
+      target = current_size > spec.value ? current_size - spec.value : 0;
+      break;
+    case SizeMode::AtMost:
+      target = std::min(current_size, spec.value);
+      break;
+    case SizeMode::AtLeast:
+      target = std::max(current_size, spec.value);
+      break;
+    case SizeMode::RoundDown:
+      target = (current_size / spec.value) * spec.value;
+      break;
+    case SizeMode::RoundUp:
+      if (current_size % spec.value == 0) {
+        target = current_size;
+      } else {
+        int64_t multiplier = (current_size / spec.value) + 1;
+        if (multiplier > std::numeric_limits<int64_t>::max() / spec.value) {
+          return std::unexpected("size overflow");
+        }
+        target = multiplier * spec.value;
+      }
+      break;
+  }
+
+  return target;
+}
+
+auto set_file_size(const std::string& file, int64_t target_size) -> bool {
+  HANDLE hFile =
+      CreateFileA(file.c_str(), GENERIC_WRITE,
+                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                  nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (hFile == INVALID_HANDLE_VALUE) {
+    return false;
+  }
+
+  LARGE_INTEGER distance;
+  distance.QuadPart = target_size;
+  bool ok = SetFilePointerEx(hFile, distance, nullptr, FILE_BEGIN) != 0 &&
+            SetEndOfFile(hFile) != 0;
+  CloseHandle(hFile);
+  return ok;
+}
+
 auto run(const Config& cfg) -> int {
   bool all_ok = true;
+  std::optional<int64_t> reference_size;
+
+  if (!cfg.reference_file.empty()) {
+    auto ref_size = get_file_size(cfg.reference_file);
+    if (!ref_size) {
+      safeErrorPrintLn("truncate: cannot stat reference file '" +
+                       cfg.reference_file + "'");
+      return 1;
+    }
+    reference_size = *ref_size;
+  }
 
   for (const auto& file : cfg.files) {
-    int64_t target_size = cfg.size;
-
-    // If using reference file, get its size
-    if (!cfg.reference_file.empty()) {
-      std::ifstream ref_file(cfg.reference_file,
-                             std::ios::binary | std::ios::ate);
-      if (!ref_file) {
-        auto err = std::string("cannot open reference file '") +
-                   cfg.reference_file + "'";
-        cp::Result<int> result = std::unexpected(std::string_view(err));
-        cp::report_error(result, L"truncate");
-        all_ok = false;
+    std::error_code ec;
+    bool exists = std::filesystem::exists(file, ec);
+    if (!exists) {
+      if (cfg.no_create) {
         continue;
       }
-      target_size = ref_file.tellg();
     }
 
-    // Check if file exists
-    std::ifstream check_file(file, std::ios::binary);
-    if (!check_file) {
-      // File doesn't exist
-      if (cfg.no_create) {
-        // Skip this file
-        continue;
-      }
-
-      // Create new file with specified size
-      std::ofstream new_file(file, std::ios::binary);
-      if (!new_file) {
-        auto err = std::string("cannot create '") + file + "'";
-        cp::Result<int> result = std::unexpected(std::string_view(err));
-        cp::report_error(result, L"truncate");
+    int64_t current_size = 0;
+    if (exists) {
+      auto current = get_file_size(file);
+      if (!current) {
+        safeErrorPrintLn("truncate: cannot get size of '" + file + "'");
         all_ok = false;
         continue;
       }
+      current_size = *current;
+    }
 
-      if (target_size > 0) {
-        new_file.seekp(target_size - 1);
-        new_file.put('\0');
-      }
-      new_file.close();
-    } else {
-      // File exists, truncate or extend it
-      check_file.close();
-
-      // Read current file content
-      std::ifstream in_file(file, std::ios::binary | std::ios::ate);
-      if (!in_file) {
-        auto err = std::string("cannot open '") + file + "' for reading";
-        cp::Result<int> result = std::unexpected(std::string_view(err));
-        cp::report_error(result, L"truncate");
+    int64_t target_size = reference_size.value_or(0);
+    if (!reference_size) {
+      auto applied = apply_size_mode(
+          current_size, cfg.size,
+          cfg.io_blocks ? io_block_size_for(file) : static_cast<uint64_t>(1));
+      if (!applied) {
+        safeErrorPrintLn("truncate: " + std::string(applied.error()));
         all_ok = false;
         continue;
       }
+      target_size = *applied;
+    }
 
-      int64_t current_size = in_file.tellg();
-      in_file.seekg(0);
-
-      // Read content to preserve
-      std::string content;
-      if (target_size > 0) {
-        content.resize(std::min(current_size, target_size));
-        if (!content.empty()) {
-          in_file.read(&content[0], content.size());
-        }
-      }
-      in_file.close();
-
-      // Write back with new size
-      std::ofstream out_file(file, std::ios::binary | std::ios::trunc);
-      if (!out_file) {
-        auto err = std::string("cannot open '") + file + "' for writing";
-        cp::Result<int> result = std::unexpected(std::string_view(err));
-        cp::report_error(result, L"truncate");
-        all_ok = false;
-        continue;
-      }
-
-      if (!content.empty()) {
-        out_file.write(content.data(), content.size());
-      }
-
-      // Extend file if needed
-      if (target_size > static_cast<int64_t>(content.size())) {
-        out_file.seekp(target_size - 1);
-        out_file.put('\0');
-      }
-
-      out_file.close();
+    if (!set_file_size(file, target_size)) {
+      safeErrorPrintLn("truncate: cannot resize '" + file + "'");
+      all_ok = false;
+      continue;
     }
   }
 
@@ -305,8 +470,9 @@ REGISTER_COMMAND(
     "Units are K, M, G, T, P, E, Z, Y (powers of 1024) or KB, MB,... (powers "
     "of 1000).\n"
     "\n"
-    "Note: This implementation supports basic truncation.\n"
-    "Advanced features like IO blocks are not implemented.",
+    "SIZE may also be prefixed with +, -, <, >, /, or % for GNU-style\n"
+    "relative, clamp, and rounding adjustments. -o treats SIZE as file-system\n"
+    "I/O blocks.",
     "  truncate -s 0 file.txt          # empty file\n"
     "  truncate -s 1K file.txt         # 1KB file\n"
     "  truncate -s +100 file.txt      # extend by 100 bytes\n"

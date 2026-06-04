@@ -123,6 +123,47 @@ TEST(cp, cp_recursive_copy) {
   EXPECT_EQ(dest2_content, "content2");
 }
 
+TEST(cp, cp_archive_copies_directories_recursively) {
+  TempDir tmp;
+
+  std::filesystem::create_directory(tmp.path / "src_dir");
+  std::filesystem::create_directory(tmp.path / "src_dir/sub_dir");
+  tmp.write("src_dir/file1.txt", "content1");
+  tmp.write("src_dir/sub_dir/file2.txt", "content2");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"-a", L"src_dir", L"dest_dir"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(std::filesystem::is_directory(tmp.path / "dest_dir"));
+  EXPECT_TRUE(std::filesystem::is_directory(tmp.path / "dest_dir/sub_dir"));
+  EXPECT_EQ(tmp.read("dest_dir/file1.txt"), "content1");
+  EXPECT_EQ(tmp.read("dest_dir/sub_dir/file2.txt"), "content2");
+}
+
+TEST(cp, cp_preserve_timestamps_with_p) {
+  TempDir tmp;
+  tmp.write("source.txt", "content");
+
+  auto old_time =
+      std::filesystem::file_time_type::clock::now() - std::chrono::hours(24);
+  std::filesystem::last_write_time(tmp.path / "source.txt", old_time);
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"-p", L"source.txt", L"dest.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  auto source_time = std::filesystem::last_write_time(tmp.path / "source.txt");
+  auto dest_time = std::filesystem::last_write_time(tmp.path / "dest.txt");
+  auto delta = source_time > dest_time ? source_time - dest_time
+                                       : dest_time - source_time;
+  EXPECT_TRUE(delta <= std::chrono::seconds(2));
+}
+
 TEST(cp, cp_verbose) {
   TempDir tmp;
   tmp.write("source.txt", "content");
@@ -185,6 +226,35 @@ TEST(cp, cp_target_directory) {
   EXPECT_EQ(dest2_content, "content2");
 }
 
+TEST(cp, cp_target_directory_requires_directory) {
+  TempDir tmp;
+  tmp.write("source.txt", "content");
+  tmp.write("not_dir", "plain file");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"-t", L"not_dir", L"source.txt"});
+
+  auto r = p.run();
+
+  EXPECT_NE(r.exit_code, 0);
+  EXPECT_EQ(tmp.read("not_dir"), "plain file");
+}
+
+TEST(cp, cp_target_directory_and_no_target_directory_conflict) {
+  TempDir tmp;
+  tmp.write("source.txt", "content");
+  std::filesystem::create_directory(tmp.path / "dest_dir");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"-t", L"dest_dir", L"-T", L"source.txt"});
+
+  auto r = p.run();
+
+  EXPECT_NE(r.exit_code, 0);
+}
+
 TEST(cp, cp_no_clobber) {
   TempDir tmp;
   tmp.write("source.txt", "new content");
@@ -200,6 +270,81 @@ TEST(cp, cp_no_clobber) {
   EXPECT_EQ(tmp.read("dest.txt"), "old content");
 }
 
+TEST(cp, cp_backup_creates_tilde_file) {
+  TempDir tmp;
+  tmp.write("source.txt", "new content");
+  tmp.write("dest.txt", "old content");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"-b", L"source.txt", L"dest.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(tmp.read("dest.txt"), "new content");
+  EXPECT_EQ(tmp.read("dest.txt~"), "old content");
+}
+
+TEST(cp, cp_backup_suffix_uses_custom_suffix) {
+  TempDir tmp;
+  tmp.write("source.txt", "new content");
+  tmp.write("dest.txt", "old content");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"--backup", L"-S", L".bak", L"source.txt", L"dest.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(tmp.read("dest.txt"), "new content");
+  EXPECT_EQ(tmp.read("dest.txt.bak"), "old content");
+}
+
+TEST(cp, cp_refuses_copy_onto_self) {
+  TempDir tmp;
+  tmp.write("file.txt", "content");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"file.txt", L"file.txt"});
+
+  auto r = p.run();
+
+  EXPECT_NE(r.exit_code, 0);
+  EXPECT_EQ(tmp.read("file.txt"), "content");
+}
+
+TEST(cp, cp_force_backup_allows_self_backup) {
+  TempDir tmp;
+  tmp.write("file.txt", "content");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"--force", L"--backup", L"file.txt", L"file.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(tmp.read("file.txt"), "content");
+  EXPECT_EQ(tmp.read("file.txt~"), "content");
+}
+
+TEST(cp, cp_missing_dest_parent_fails) {
+  TempDir tmp;
+  tmp.write("source.txt", "content");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"source.txt", L"missing\\dest.txt"});
+
+  auto r = p.run();
+
+  EXPECT_NE(r.exit_code, 0);
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "missing" / "dest.txt"));
+}
+
 TEST(cp, cp_update_skips_newer_destination) {
   TempDir tmp;
   tmp.write("source.txt", "source content");
@@ -213,4 +358,21 @@ TEST(cp, cp_update_skips_newer_destination) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ(tmp.read("dest.txt"), "newer destination");
+}
+
+TEST(cp, cp_wildcard_sources_expand) {
+  TempDir tmp;
+  tmp.write("a.txt", "alpha");
+  tmp.write("b.txt", "beta");
+  std::filesystem::create_directory(tmp.path / "dest_dir");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"*.txt", L"dest_dir"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(tmp.read("dest_dir/a.txt"), "alpha");
+  EXPECT_EQ(tmp.read("dest_dir/b.txt"), "beta");
 }

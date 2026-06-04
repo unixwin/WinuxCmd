@@ -377,7 +377,8 @@ auto sort_processes(std::vector<ProcessInfo>& processes,
 }
 
 // Print processes in simple format
-auto print_simple(const std::vector<ProcessInfo>& processes, bool no_headers)
+auto print_simple(const std::vector<ProcessInfo>& processes, bool no_headers,
+                  bool wide_output = true)
     -> void {
   if (!no_headers) {
     safePrintLn(L"  PID TTY          TIME CMD");
@@ -412,8 +413,12 @@ auto print_simple(const std::vector<ProcessInfo>& processes, bool no_headers)
     line += time_buf;
     line += L" ";
 
-    // CMD
-    line += proc.name;
+    // CMD (truncate if not wide output)
+    if (!wide_output && proc.name.size() > 80) {
+      line += proc.name.substr(0, 77) + L"...";
+    } else {
+      line += proc.name;
+    }
 
     safePrintLn(line);
   }
@@ -579,7 +584,7 @@ auto run(const Config& cfg) -> int {
   } else if (cfg.user_format || cfg.long_format) {
     print_user(processes, cfg.no_headers);
   } else {
-    print_simple(processes, cfg.no_headers);
+    print_simple(processes, cfg.no_headers, cfg.wide_output);
   }
 
   return 0;

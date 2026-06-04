@@ -114,6 +114,9 @@
 #define BOOL_TYPE cmd::meta::OptionType::Bool
 #define INT_TYPE cmd::meta::OptionType::Int
 #define STRING_TYPE cmd::meta::OptionType::String
+#define OPTIONAL_INT_TYPE cmd::meta::OptionType::OptionalInt
+#define OPTIONAL_STRING_TYPE cmd::meta::OptionType::OptionalString
+#define TERMINATED_STRING_TYPE cmd::meta::OptionType::TerminatedString
 #undef OPTION_TYPE
 #define OPTION_TYPE(...) OPTION_TYPE_IMPL(__VA_ARGS__, BOOL_TYPE)
 

@@ -1,16 +1,16 @@
 # Download and Integrate WinuxCmd
 
-Use this when you need to install a released WinuxCmd binary and make it
-available inside the current repository without changing global `PATH`.
+Use this when you need a released WinuxCmd binary inside the current
+repository without changing global `PATH`.
 
 ## Download
 
-- Download the matching release archive from the GitHub release page.
+- Download the matching release archive from GitHub Releases.
 - Extract it to a local folder.
 
 ## Integrate into the workspace
 
-If you have a `winuxcmd.exe` path from a release or local build, point the
+If you have a `winuxcmd.exe` path from a release or a local build, point the
 workspace setup script at it:
 
 ```powershell
@@ -19,7 +19,9 @@ workspace setup script at it:
 ```
 
 If you are already inside the extracted release folder, you can also generate
-the command links there with `create_links.ps1`.
+the command links there with `scripts\create_links.ps1`.
+
+Use `-UseSymbolicLinks` if hardlinks are not available on that filesystem.
 
 ## Persistent shells
 
@@ -30,4 +32,5 @@ the profile hook:
 .\scripts\install-workspace-profile-hook.ps1
 ```
 
-Use `-Remove` to uninstall it later.
+The hook backs up the profile files before editing them. Use `-Remove` to
+uninstall it later.

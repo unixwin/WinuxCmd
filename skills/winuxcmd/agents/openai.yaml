@@ -1,7 +1,7 @@
 interface:
   display_name: "WinuxCmd Workspace"
-  short_description: "Repo-local WinuxCmd install and usage"
-  default_prompt: "Use $winuxcmd to activate the repository-local WinuxCmd workspace or integrate a downloaded WinuxCmd build, then run WinuxCmd commands directly and prefer man.exe for help."
+  short_description: "Repo-local WinuxCmd activation, download integration, and usage"
+  default_prompt: "Use $winuxcmd to activate the repository-local WinuxCmd workspace, or run scripts/setup-workspace-bin.ps1 -WinuxCmdPath <path-to-winuxcmd.exe> and scripts/activate-workspace.ps1 to integrate a downloaded WinuxCmd build. Run WinuxCmd commands directly from .winuxcmd/bin, and prefer man.exe on Windows."
 
 policy:
   allow_implicit_invocation: true

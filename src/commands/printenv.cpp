@@ -41,8 +41,18 @@ import utils;
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
-auto constexpr PRINTENV_OPTIONS =
-    std::array{OPTION("", "", "print environment variables", STRING_TYPE)};
+auto constexpr PRINTENV_OPTIONS = std::array{
+    OPTION("-0", "--null", "end each output line with NUL, not newline")};
+
+namespace {
+void print_separator(bool null_terminated) {
+  if (null_terminated) {
+    safePrint(std::string_view("\0", 1));
+  } else {
+    safePrint("\n");
+  }
+}
+}  // namespace
 
 REGISTER_COMMAND(
     printenv,
@@ -74,25 +84,19 @@ REGISTER_COMMAND(
 
   if (ctx.positionals.empty()) {
     // Print all environment variables
-    std::vector<std::string> env_vars;
-    for (wchar_t* env = GetEnvironmentStringsW(); *env;
-         env += wcslen(env) + 1) {
+    wchar_t* env_block = GetEnvironmentStringsW();
+    if (!env_block) {
+      safeErrorPrintLn("printenv: cannot read environment");
+      return 1;
+    }
+
+    for (wchar_t* env = env_block; *env; env += wcslen(env) + 1) {
       std::wstring wenv(env);
       std::string utf8_env = wstring_to_utf8(wenv);
-      env_vars.push_back(utf8_env);
+      safePrint(utf8_env);
+      print_separator(null_terminated);
     }
-
-    // Sort alphabetically
-    std::sort(env_vars.begin(), env_vars.end());
-
-    for (const auto& var : env_vars) {
-      safePrint(var);
-      if (null_terminated) {
-        safePrint("\0");
-      } else {
-        safePrint("\n");
-      }
-    }
+    FreeEnvironmentStringsW(env_block);
   } else {
     // Print specified environment variables
     bool all_found = true;
@@ -101,14 +105,8 @@ REGISTER_COMMAND(
       wchar_t* value = _wgetenv(wvar.c_str());
 
       if (value) {
-        safePrint(std::string(var));
-        safePrint("=");
         safePrint(wstring_to_utf8(std::wstring(value)));
-        if (null_terminated) {
-          safePrint("\0");
-        } else {
-          safePrint("\n");
-        }
+        print_separator(null_terminated);
       } else {
         all_found = false;
       }

@@ -171,3 +171,22 @@ TEST(chmod, chmod_changes) {
 
   EXPECT_EQ(r.exit_code, 0);
 }
+
+TEST(chmod, chmod_wildcard_multiple_files) {
+  TempDir tmp;
+  tmp.write("a.txt", "alpha\n");
+  tmp.write("b.txt", "beta\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"chmod.exe", {L"644", L"*.txt"});
+
+  TEST_LOG_CMD_LIST("chmod.exe", L"644", L"*.txt");
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("chmod wildcard output", r.stdout_text);
+
+  EXPECT_EQ(r.exit_code, 0);
+}

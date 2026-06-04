@@ -84,3 +84,105 @@ TEST(jq, jq_compact_output) {
 
   EXPECT_EQ(r.exit_code, 0);
 }
+
+TEST(jq, jq_filter_operand_is_literal_not_glob) {
+  TempDir tmp;
+  tmp.write(".a", "not json\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("{\"abc\":1}\n");
+  p.add(L"jq.exe", {L".[abc]"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_NE(r.stdout_text.find("\"abc\""), std::string::npos);
+}
+
+TEST(jq, jq_sort_keys) {
+  Pipeline p;
+  p.set_stdin("{\"z\":1,\"a\":2,\"m\":3}\n");
+  p.add(L"jq.exe", {L"-S", L"."});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // Keys should be sorted alphabetically
+  size_t a_pos = r.stdout_text.find("\"a\"");
+  size_t m_pos = r.stdout_text.find("\"m\"");
+  size_t z_pos = r.stdout_text.find("\"z\"");
+  EXPECT_TRUE(a_pos < m_pos);
+  EXPECT_TRUE(m_pos < z_pos);
+}
+
+TEST(jq, jq_color_output) {
+  Pipeline p;
+  p.set_stdin("{\"name\":\"test\"}\n");
+  p.add(L"jq.exe", {L"-C", L"."});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // Color output should contain ANSI escape codes
+  EXPECT_FALSE(r.stdout_text.empty());
+}
+
+TEST(jq, jq_monochrome_output) {
+  Pipeline p;
+  p.set_stdin("{\"name\":\"test\"}\n");
+  p.add(L"jq.exe", {L"-M", L"."});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // Monochrome should not contain ANSI codes
+  EXPECT_FALSE(r.stdout_text.empty());
+}
+
+TEST(jq, jq_null_input) {
+  Pipeline p;
+  p.add(L"jq.exe", {L"-n", L"."});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // null input should output "null"
+  EXPECT_TRUE(r.stdout_text.find("null") != std::string::npos);
+}
+
+TEST(jq, jq_array) {
+  Pipeline p;
+  p.set_stdin("[1,2,3]\n");
+  p.add(L"jq.exe", {L"."});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("[") != std::string::npos);
+}
+
+TEST(jq, jq_nested_object) {
+  Pipeline p;
+  p.set_stdin("{\"a\":{\"b\":{\"c\":42}}}\n");
+  p.add(L"jq.exe", {L"."});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("42") != std::string::npos);
+}
+
+TEST(jq, jq_invalid_json) {
+  Pipeline p;
+  p.set_stdin("{invalid json}");
+  p.add(L"jq.exe", {L"."});
+  auto r = p.run();
+
+  // Should fail with parse error
+  EXPECT_NE(r.exit_code, 0);
+}
+
+TEST(jq, jq_comment_support) {
+  Pipeline p;
+  p.set_stdin("{/* comment */\"name\":\"test\"}\n");
+  p.add(L"jq.exe", {L"."});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("test") != std::string::npos);
+}

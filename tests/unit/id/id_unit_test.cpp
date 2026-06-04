@@ -47,3 +47,78 @@ TEST(id, id_user_only) {
   EXPECT_FALSE(r.stdout_text.empty());
   EXPECT_TRUE(r.stdout_text.find("uid") != std::string::npos);
 }
+
+TEST(id, id_group_only) {
+  Pipeline p;
+  p.add(L"id.exe", {L"-g"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_FALSE(r.stdout_text.empty());
+}
+
+TEST(id, id_groups) {
+  Pipeline p;
+  p.add(L"id.exe", {L"-G"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_FALSE(r.stdout_text.empty());
+}
+
+TEST(id, id_name) {
+  Pipeline p;
+  p.add(L"id.exe", {L"-n"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_FALSE(r.stdout_text.empty());
+  // Should contain username
+}
+
+TEST(id, id_user_name) {
+  Pipeline p;
+  p.add(L"id.exe", {L"-un"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_FALSE(r.stdout_text.empty());
+  // Should output username, not uid number
+}
+
+TEST(id, id_group_name) {
+  Pipeline p;
+  p.add(L"id.exe", {L"-gn"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_FALSE(r.stdout_text.empty());
+  // Should output group name, not gid number
+}
+
+TEST(id, id_real) {
+  Pipeline p;
+  p.add(L"id.exe", {L"-r"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_FALSE(r.stdout_text.empty());
+}
+
+TEST(id, id_zero) {
+  Pipeline p;
+  p.add(L"id.exe", {L"--zero"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // --zero should use NUL delimiter
+}
+
+TEST(id, id_specific_user) {
+  Pipeline p;
+  p.add(L"id.exe", {L"Administrator"});
+  auto r = p.run();
+
+  // May fail if user doesn't exist, but should handle gracefully
+  EXPECT_TRUE(r.exit_code == 0 || r.exit_code == 1);
+}

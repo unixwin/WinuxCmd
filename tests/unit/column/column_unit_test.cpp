@@ -74,3 +74,72 @@ TEST(column, column_file_input) {
 
   EXPECT_EQ(r.exit_code, 0);
 }
+
+TEST(column, column_json_output) {
+  Pipeline p;
+  p.set_stdin("name\tage\tcity\nAlice\t30\tNY\nBob\t25\tLA\n");
+  p.add(L"column.exe", {L"-t", L"--json"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // JSON output should contain array
+  EXPECT_TRUE(r.stdout_text.find("[") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("]") != std::string::npos);
+}
+
+TEST(column, column_output_width) {
+  Pipeline p;
+  p.set_stdin("name\tage\tcity\nAlice\t30\tNY\nBob\t25\tLA\n");
+  p.add(L"column.exe", {L"-t", L"--output-width", L"40"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // Output should be truncated to 40 columns
+}
+
+TEST(column, column_right_align) {
+  Pipeline p;
+  p.set_stdin("name\tage\tcity\nAlice\t30\tNY\nBob\t25\tLA\n");
+  p.add(L"column.exe", {L"-t", L"--table-right", L"2"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // Column 2 (age) should be right-aligned
+}
+
+TEST(column, column_right_columns) {
+  Pipeline p;
+  p.set_stdin("name\tage\tscore\nAlice\t30\t95\nBob\t25\t87\n");
+  p.add(L"column.exe", {L"-t", L"--table-right", L"2,3"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // Columns 2 and 3 should be right-aligned
+}
+
+TEST(column, column_empty_input) {
+  Pipeline p;
+  p.set_stdin("");
+  p.add(L"column.exe", {L"-t"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+}
+
+TEST(column, column_single_column) {
+  Pipeline p;
+  p.set_stdin("hello\nworld\n");
+  p.add(L"column.exe", {});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+}
+
+TEST(column, column_fill_columns) {
+  Pipeline p;
+  p.set_stdin("a\nb\nc\nd\ne\nf\n");
+  p.add(L"column.exe", {L"-c", L"30"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+}

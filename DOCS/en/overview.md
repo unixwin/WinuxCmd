@@ -53,6 +53,7 @@ opt|<command>|<option>|<description>
 ## Command Matrix
 
 - [Command Compatibility Matrix](commands_implementation_en.md)
+- [GNU Coreutils Parity Audit](gnu_coreutils_parity.md) This includes GNU manual-based option mapping and wildcard expansion rules.
 
 ## Build and Test
 

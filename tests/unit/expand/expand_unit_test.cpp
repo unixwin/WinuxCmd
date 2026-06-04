@@ -56,6 +56,75 @@ TEST(expand, expand_custom_tab) {
   EXPECT_TRUE(r.stdout_text.find("\t") == std::string::npos);
 }
 
+TEST(expand, expand_tab_list) {
+  Pipeline p;
+  p.set_stdin("a\tb\tc\n");
+  p.add(L"expand.exe", {L"-t", L"3,5"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "a  b c\n");
+}
+
+TEST(expand, expand_tab_list_plus_repeat) {
+  Pipeline p;
+  p.set_stdin("a\tb\tc\n");
+  p.add(L"expand.exe", {L"-t", L"3,+4"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "a  b   c\n");
+}
+
+TEST(expand, expand_tab_list_slash_repeat) {
+  Pipeline p;
+  p.set_stdin("a\tb\tc\n");
+  p.add(L"expand.exe", {L"-t", L"3,/4"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "a  b    c\n");
+}
+
+TEST(expand, expand_initial_preserves_later_tabs) {
+  Pipeline p;
+  p.set_stdin(" \ta\tb\n");
+  p.add(L"expand.exe", {L"-i"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "        a\tb\n");
+}
+
+TEST(expand, expand_backspace_decrements_column) {
+  Pipeline p;
+  p.set_stdin("ab\b\tc\n");
+  p.add(L"expand.exe", {});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "ab\b       c\n");
+}
+
+TEST(expand, expand_tabs_option_keeps_glob_literal) {
+  TempDir tmp;
+  tmp.write("4.txt", "ignored\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("a\tb\n");
+  p.add(L"expand.exe", {L"-t", L"*.txt"});
+
+  auto r = p.run();
+
+  EXPECT_NE(r.exit_code, 0);
+}
+
 TEST(expand, expand_stdin) {
   Pipeline p;
   p.set_stdin("hello\tworld\n");

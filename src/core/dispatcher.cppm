@@ -64,12 +64,6 @@ struct CommandEntryErased {
       : meta(std::move(m)), handler(std::move(h)), brief_desc(brief) {}
 };
 
-auto is_legacy_line_count(std::string_view arg) -> bool {
-  if (arg.size() < 2 || arg[0] != '-' || arg[1] == '-') return false;
-  return std::ranges::all_of(
-      arg.substr(1), [](unsigned char ch) { return std::isdigit(ch) != 0; });
-}
-
 auto is_legacy_tail_from_start_count(std::string_view arg) -> bool {
   if (arg.size() < 2 || arg[0] != '+') return false;
   return std::ranges::all_of(
@@ -84,20 +78,144 @@ auto legacy_count_value(std::string_view arg) -> std::string {
   return std::string(arg);
 }
 
-auto needs_head_tail_count_rewrite(std::string_view cmdName,
-                                   std::span<std::string_view> args)
-    -> std::optional<std::string> {
+auto append_remaining_args(std::vector<std::string> &out,
+                           std::span<std::string_view> args, size_t start)
+    -> void {
+  for (size_t i = start; i < args.size(); ++i) {
+    out.emplace_back(args[i]);
+  }
+}
+
+auto parse_decimal_prefix(std::string_view arg, size_t start) -> size_t {
+  size_t pos = start;
+  while (pos < arg.size() &&
+         std::isdigit(static_cast<unsigned char>(arg[pos])) != 0) {
+    ++pos;
+  }
+  return pos;
+}
+
+auto rewrite_head_obsolete_args(std::span<std::string_view> args)
+    -> std::optional<std::vector<std::string>> {
   if (args.empty()) return std::nullopt;
+  std::string_view first = args[0];
+  if (first.size() < 2 || first[0] != '-' || first[1] == '-')
+    return std::nullopt;
 
-  if ((cmdName == "head" || cmdName == "tail") &&
-      is_legacy_line_count(args[0])) {
-    return legacy_count_value(args[0]);
+  size_t suffix_pos = parse_decimal_prefix(first, 1);
+  if (suffix_pos == 1) return std::nullopt;
+
+  std::string count(first.substr(1, suffix_pos - 1));
+  std::string mode = "-n";
+  std::string value = count;
+  std::vector<std::string> flags;
+
+  for (size_t i = suffix_pos; i < first.size(); ++i) {
+    switch (first[i]) {
+      case 'l':
+        mode = "-n";
+        value = count;
+        break;
+      case 'c':
+        mode = "-c";
+        value = count;
+        break;
+      case 'b':
+        mode = "-c";
+        value = count + "b";
+        break;
+      case 'k':
+        mode = "-c";
+        value = count + "K";
+        break;
+      case 'm':
+        mode = "-c";
+        value = count + "M";
+        break;
+      case 'q':
+        flags.emplace_back("-q");
+        break;
+      case 'v':
+        flags.emplace_back("-v");
+        break;
+      default:
+        return std::nullopt;
+    }
   }
 
-  if (cmdName == "tail" && is_legacy_tail_from_start_count(args[0])) {
-    return std::string(args[0]);
+  std::vector<std::string> rewritten;
+  rewritten.reserve(args.size() + flags.size() + 1);
+  rewritten.emplace_back(mode);
+  rewritten.emplace_back(value);
+  for (const auto &flag : flags) rewritten.emplace_back(flag);
+  append_remaining_args(rewritten, args, 1);
+  return rewritten;
+}
+
+auto rewrite_tail_obsolete_args(std::span<std::string_view> args)
+    -> std::optional<std::vector<std::string>> {
+  if (args.empty()) return std::nullopt;
+  std::string_view first = args[0];
+
+  if (is_legacy_tail_from_start_count(first)) {
+    std::vector<std::string> rewritten;
+    rewritten.reserve(args.size() + 1);
+    rewritten.emplace_back("-n");
+    rewritten.emplace_back(std::string(first));
+    append_remaining_args(rewritten, args, 1);
+    return rewritten;
   }
 
+  if (first.size() < 2 || first[0] != '-' || first[1] == '-')
+    return std::nullopt;
+
+  size_t suffix_pos = parse_decimal_prefix(first, 1);
+  if (suffix_pos == 1) return std::nullopt;
+
+  bool has_compact_suffix = suffix_pos < first.size();
+  if (has_compact_suffix && args.size() > 2) return std::nullopt;
+
+  std::string count(first.substr(1, suffix_pos - 1));
+  std::string mode = "-n";
+  std::string value = count;
+  bool follow = false;
+
+  for (size_t i = suffix_pos; i < first.size(); ++i) {
+    switch (first[i]) {
+      case 'l':
+        mode = "-n";
+        value = count;
+        break;
+      case 'c':
+        mode = "-c";
+        value = count;
+        break;
+      case 'b':
+        mode = "-c";
+        value = count + "b";
+        break;
+      case 'f':
+        follow = true;
+        break;
+      default:
+        return std::nullopt;
+    }
+  }
+
+  std::vector<std::string> rewritten;
+  rewritten.reserve(args.size() + 2);
+  rewritten.emplace_back(mode);
+  rewritten.emplace_back(value);
+  if (follow) rewritten.emplace_back("-f");
+  append_remaining_args(rewritten, args, 1);
+  return rewritten;
+}
+
+auto rewrite_head_tail_count_args(std::string_view cmdName,
+                                  std::span<std::string_view> args)
+    -> std::optional<std::vector<std::string>> {
+  if (cmdName == "head") return rewrite_head_obsolete_args(args);
+  if (cmdName == "tail") return rewrite_tail_obsolete_args(args);
   return std::nullopt;
 }
 
@@ -139,14 +257,8 @@ class RegistryImpl {
     std::vector<std::string_view> rewritten_views;
     std::span<std::string_view> effective_args = args;
 
-    if (auto legacy_count = needs_head_tail_count_rewrite(cmdName, args)) {
-      rewritten_storage.reserve(args.size() + 1);
-      rewritten_storage.emplace_back("-n");
-      rewritten_storage.emplace_back(*legacy_count);
-      for (size_t i = 1; i < args.size(); ++i) {
-        rewritten_storage.emplace_back(args[i]);
-      }
-
+    if (auto rewritten = rewrite_head_tail_count_args(cmdName, args)) {
+      rewritten_storage = std::move(*rewritten);
       rewritten_views.reserve(rewritten_storage.size());
       for (const auto &arg : rewritten_storage) {
         rewritten_views.emplace_back(arg);

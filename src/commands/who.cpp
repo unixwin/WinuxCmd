@@ -57,7 +57,11 @@ auto constexpr WHO_OPTIONS = std::array{
     OPTION("-s", "--short", "print only name, line, and time", BOOL_TYPE),
     OPTION("-t", "--time", "print last system clock change", BOOL_TYPE),
     OPTION("-T", "", "add user's message status as +, - or ?", BOOL_TYPE),
-    OPTION("-u", "--users", "list users logged in", BOOL_TYPE)};
+    OPTION("-u", "--users", "list users logged in", BOOL_TYPE),
+    OPTION("-w", "--mesg", "add user's message status as +, - or ?",
+           BOOL_TYPE),
+    OPTION("", "--lookup",
+           "attempt to canonicalize hostnames via DNS", BOOL_TYPE)};
 
 namespace who_pipeline {
 namespace cp = core::pipeline;
@@ -66,6 +70,8 @@ struct Config {
   bool heading = false;
   bool short_format = false;
   bool count = false;
+  bool mesg = false;
+  bool lookup = false;
 };
 
 auto build_config(const CommandContext<WHO_OPTIONS.size()>& ctx)
@@ -75,10 +81,15 @@ auto build_config(const CommandContext<WHO_OPTIONS.size()>& ctx)
   cfg.short_format =
       ctx.get<bool>("--short", false) || ctx.get<bool>("-s", false);
   cfg.count = ctx.get<bool>("--count", false) || ctx.get<bool>("-q", false);
+  cfg.mesg = ctx.get<bool>("--mesg", false) || ctx.get<bool>("-w", false);
+  cfg.lookup = ctx.get<bool>("--lookup", false);
   return cfg;
 }
 
 auto run(const Config& cfg) -> int {
+  // --lookup: attempt to canonicalize hostnames via DNS (no-op on Windows)
+  // Windows doesn't have the same hostname resolution concept for who output
+
   // Get current user
   WCHAR username[256];
   DWORD username_size = 256;
@@ -106,13 +117,15 @@ auto run(const Config& cfg) -> int {
     safePrint("# users=");
     safePrintLn("1");
   } else {
+    std::string mesg_status = cfg.mesg ? " + " : " - ";
     if (cfg.short_format) {
       safePrint(user_str);
       safePrint(" pts/0  ");
       safePrintLn(time_buf);
     } else {
       safePrint(user_str);
-      safePrint("  pts/0        ");
+      safePrint(mesg_status);
+      safePrint("pts/0        ");
       safePrint(time_buf);
       safePrintLn("  (console)");
     }
