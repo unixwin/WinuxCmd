@@ -857,7 +857,7 @@ REGISTER_COMMAND(
 
     if (file == "-") {
       config.stdin_mode = true;
-      if (config.by_bytes) {
+      if (config.by_bytes || config.delimiter == '\0') {
         output_tail(std::cin, config);
       } else {
         output_text_tail(std::cin, config);
@@ -876,7 +876,7 @@ REGISTER_COMMAND(
         continue;
       }
 
-      if (config.by_bytes) {
+      if (config.by_bytes || config.delimiter == '\0') {
         output_tail(*input, config);
       } else {
         output_text_tail(*input, config);

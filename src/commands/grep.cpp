@@ -1054,6 +1054,23 @@ auto read_file_text(const std::string& path) -> cp::Result<std::string> {
   return read_text_stream(in);
 }
 
+auto has_text_bom(std::string_view bytes) -> bool {
+  return (bytes.size() >= 3 &&
+          static_cast<std::uint8_t>(bytes[0]) == 0xEF &&
+          static_cast<std::uint8_t>(bytes[1]) == 0xBB &&
+          static_cast<std::uint8_t>(bytes[2]) == 0xBF) ||
+         (bytes.size() >= 2 &&
+          ((static_cast<std::uint8_t>(bytes[0]) == 0xFF &&
+            static_cast<std::uint8_t>(bytes[1]) == 0xFE) ||
+           (static_cast<std::uint8_t>(bytes[0]) == 0xFE &&
+            static_cast<std::uint8_t>(bytes[1]) == 0xFF)));
+}
+
+auto decode_text_bytes(const std::string& bytes) -> std::string {
+  std::istringstream in(bytes);
+  return read_text_stream(in);
+}
+
 auto contains_binary_bytes(std::string_view text, const Config& cfg) -> bool {
   return !cfg.null_data && text.find('\0') != std::string_view::npos;
 }
@@ -1250,8 +1267,13 @@ auto process(Config& cfg) -> int {
       if (cfg.binary_mode == BinaryMode::Binary) {
         std::string content((std::istreambuf_iterator<char>(std::cin)),
                             std::istreambuf_iterator<char>());
-        scan_result =
-            scan_binary_default(content, display_name, show_filename, cfg);
+        if (has_text_bom(content)) {
+          scan_result = scan_text(decode_text_bytes(content), display_name,
+                                  show_filename, cfg);
+        } else {
+          scan_result =
+              scan_binary_default(content, display_name, show_filename, cfg);
+        }
       } else if (cfg.binary_mode == BinaryMode::WithoutMatch) {
         std::string content((std::istreambuf_iterator<char>(std::cin)),
                             std::istreambuf_iterator<char>());
@@ -1292,8 +1314,13 @@ auto process(Config& cfg) -> int {
         }
         continue;
       }
-      scan_result =
-          scan_binary_default(*content, display_name, show_filename, cfg);
+      if (has_text_bom(*content)) {
+        scan_result = scan_text(decode_text_bytes(*content), display_name,
+                                show_filename, cfg);
+      } else {
+        scan_result =
+            scan_binary_default(*content, display_name, show_filename, cfg);
+      }
     } else if (use_context) {
       // Read entire file for context support
       auto content = read_file_text(input);

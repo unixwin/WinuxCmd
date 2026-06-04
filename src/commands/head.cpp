@@ -408,7 +408,7 @@ REGISTER_COMMAND(
     }
 
     if (file == "-") {
-      if (config.by_bytes) {
+      if (config.by_bytes || config.delimiter == '\0') {
         output_head(std::cin, config);
       } else {
         output_text_head(std::cin, config);
@@ -427,7 +427,7 @@ REGISTER_COMMAND(
         continue;
       }
 
-      if (config.by_bytes) {
+      if (config.by_bytes || config.delimiter == '\0') {
         output_head(input, config);
       } else {
         output_text_head(input, config);
