@@ -27,7 +27,6 @@ WinuxCmd is built for one practical goal: make common Linux command workflows wo
 | Windows × Linux pipeline interoperability | `netstat -ano \| grep 8080` works out of the box |
 | Small footprint | ~900KB single executable with on-demand links |
 | Fast execution | Millisecond-level command execution in common workflows |
-| Smart completion | Built-in commands + Windows command whitelist + user-defined entries |
 | Shell-aware fallback | Parent shell detection (`cmd` vs `PowerShell/pwsh`) |
 
 ## Quick Start
@@ -102,7 +101,6 @@ if (Get-Command winux -ErrorAction SilentlyContinue) {
 
 - Entered from `PowerShell/pwsh`: unknown commands fallback through PowerShell
 - Entered from `cmd`: unknown commands fallback through cmd
-- PowerShell completion entries (for example `Get-Process`, `Where-Object`) are enabled only in PowerShell sessions
 
 ## FFI API
 
@@ -137,66 +135,6 @@ The local guidance for AI usage lives in `skills/winuxcmd/SKILL.md`.
 GitHub releases also publish a standalone `WinuxCmd-skill-v<version>.zip`
 bundle alongside the Windows binaries.
 
-## PowerShell Auto-Enter (Interactive)
-
-Add this to your PowerShell profile (`$PROFILE`) to auto-enter WinuxCmd for interactive terminal sessions:
-
-```powershell
-# Automatically entering winuxcmd REPL env.
-$cliArgs = [Environment]::GetCommandLineArgs() | ForEach-Object { $_.ToLowerInvariant() }
-$isNonInteractiveLaunch = ($cliArgs -contains '-command') -or ($cliArgs -contains '-c') -or ($cliArgs -contains '-file') -or ($cliArgs -contains '-f')
-$isRealTerminal = $env:WT_SESSION -or $env:TERM_PROGRAM
-if ($Host.Name -eq 'ConsoleHost' -and -not $isNonInteractiveLaunch `
-    -and $env:WINUXCMD_BOOTSTRAPPED -ne '1' -and $isRealTerminal) {
-    $env:WINUXCMD_BOOTSTRAPPED = '1'
-    $winuxExe = (Get-Command winuxcmd -ErrorAction SilentlyContinue).Source
-    if (-not $winuxExe) {
-        $devExe = 'your\winuxcmd.exe\path'  # replace with your local path
-        if (Test-Path $devExe) {
-            $winuxExe = $devExe
-        }
-    }
-    if ($winuxExe -and (Test-Path $winuxExe)) {
-        & $winuxExe
-    }
-}
-```
-
-Replace `$devExe` with the actual local path to your `winuxcmd.exe`.
-
-## Entering WinuxCmd from cmd (Interactive)
-
-Using a registry `AutoRun` hook for cmd is risky: it also affects background usages such as `cmd /c` and Run dialog launches, and can force unexpected interactive WinuxCmd sessions.
-
-Recommended approach:
-
-- If you entered from plain cmd, manually run `winuxcmd` to enter the completion-enabled interactive environment.
-- Avoid cmd `AutoRun` registry hooks: they also affect non-interactive/background calls such as `cmd /c`.
-- Prefer Windows Terminal, and launch cmd with:
-
-`%SystemRoot%\System32\cmd.exe /k winuxcmd`
-
-![Windows Terminal](DOCS/images/WindowsTerminal.png)
-
-## Completion and Environment Variables
-
-WinuxCmd supports user-defined completion entries.
-
-![Auto Completion Demo](DOCS/images/auto.gif)
-
-- Default file: `%USERPROFILE%\.winuxcmd\completions\user-completions.txt`
-- Override path via env var: `WINUXCMD_COMPLETION_FILE`
-
-Example format:
-
-```text
-cmd|git|Distributed version control
-opt|git|pull|Fetch from and integrate with another repository
-```
-
-Template file:
-
-- `scripts/user-completions.sample.txt`
 
 ## Pipeline Examples
 
@@ -256,7 +194,6 @@ Benchmark details and notes:
 
 ### Phase 2: Shell and Tooling
 
-- Better completion relevance and ranking
 - More compatibility fixes for mixed Windows/Linux pipelines
 - Improved test coverage for shell-edge scenarios
 
@@ -275,10 +212,6 @@ A: No. WinuxCmd complements PowerShell. Use whichever syntax is best for the tas
 ### Q: Why do some commands fallback to cmd or PowerShell?
 
 A: Unknown commands are intentionally routed to the parent shell environment for compatibility.
-
-### Q: Can I customize completion entries?
-
-A: Yes. Use `%USERPROFILE%\.winuxcmd\completions\user-completions.txt` or set `WINUXCMD_COMPLETION_FILE`.
 
 ### Q: Why does output sometimes show access-denied warnings (for example in lsof)?
 
