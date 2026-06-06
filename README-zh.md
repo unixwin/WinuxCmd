@@ -223,7 +223,6 @@ cmake --build build-dev
 ### 阶段 1：核心与兼容性
 
 - 稳定 Linux 风格核心命令在 Windows 上的行为
-- 强化 REPL 在 cmd/PowerShell 下的回退正确性
 - 继续优化体积与启动性能
 
 ### 阶段 2：Shell 与工具链
@@ -256,14 +255,10 @@ cmake --build build-dev
 A：WSL 是完整 Linux 子系统；WinuxCmd 是原生 Windows 可执行文件，直接支持 Linux 风格命令语法。
 
 **Q：会影响原生 Windows 命令吗？**
-A：不会。WinuxCmd 无法识别的命令会按当前父 Shell 环境回退执行。
+A：不会。WinuxCmd 只执行自身已实现的命令；其他命令由当前 Shell 自己解析和执行。
 
 **Q：为什么 lsof 可能出现 access denied / partial warning？**
 A：Windows 对句柄可见性受权限限制。WinuxCmd 会降级处理并输出警告，而不是直接崩溃。
-
-**Q: 具有sudo提权吗?**
-A: 使用Windows 11自带的sudo命令,我们会转换逻辑,即sudo ls为被解析为sudo winuxcmd ls确保没有链接任然可以正确运行
----
 
 ## 📚 文档
 

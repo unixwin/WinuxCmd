@@ -45,3 +45,15 @@ TEST(winuxcmd, winuxcmd_help_command_topic_shows_command_help) {
   EXPECT_TRUE(r.stdout_text.find("Usage: sort [OPTION]... [FILE]...") !=
               std::string::npos);
 }
+
+TEST(winuxcmd, winuxcmd_unknown_command_does_not_fallback_to_shell) {
+  Pipeline p;
+  p.add(L"winuxcmd.exe", {L"definitely-not-a-winuxcmd-command"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 127);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find(
+                  "winuxcmd: command not found: definitely-not-a-winuxcmd-command") !=
+              std::string::npos);
+}
