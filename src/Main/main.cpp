@@ -56,6 +56,11 @@ static bool startsWithCaseInsensitive(std::string_view text,
   return true;
 }
 
+struct CompletionItem {
+  std::string text;
+  std::string hint;
+};
+
 static std::vector<CompletionItem> getCommandCompletions(
     std::string_view prefix) {
   std::vector<CompletionItem> items;
@@ -94,56 +99,6 @@ static std::vector<CompletionItem> getWindowsOptionCompletions(
   for (const auto &item : native) {
     items.push_back({item.text, item.hint});
   }
-  return items;
-}
-
-static std::vector<CompletionItem> getPathCompletions(
-    std::string_view token_prefix) {
-  std::vector<CompletionItem> items;
-  std::string prefix(token_prefix);
-
-  std::filesystem::path base_dir = ".";
-  std::string name_prefix = prefix;
-  bool has_dir_part = false;
-
-  // Support both '/' and '\' separators on Windows input.
-  size_t slash_pos = prefix.find_last_of("/\\");
-  if (slash_pos != std::string::npos) {
-    has_dir_part = true;
-    std::string dir_part = prefix.substr(0, slash_pos + 1);
-    name_prefix = prefix.substr(slash_pos + 1);
-    std::error_code ec;
-    std::filesystem::path p = std::filesystem::path(dir_part);
-    if (p.empty())
-      base_dir = ".";
-    else
-      base_dir = p;
-    if (!std::filesystem::exists(base_dir, ec) || ec) return items;
-  }
-
-  std::error_code ec;
-  if (!std::filesystem::exists(base_dir, ec) || ec) return items;
-  if (!std::filesystem::is_directory(base_dir, ec) || ec) return items;
-
-  for (const auto &entry : std::filesystem::directory_iterator(
-           base_dir, std::filesystem::directory_options::skip_permission_denied,
-           ec)) {
-    if (ec) break;
-    auto name = entry.path().filename().string();
-    if (!startsWithCaseInsensitive(name, name_prefix)) continue;
-
-    std::string candidate;
-    if (has_dir_part) {
-      candidate = prefix.substr(0, slash_pos + 1) + name;
-    } else {
-      candidate = name;
-    }
-    bool is_dir = entry.is_directory(ec) && !ec;
-    if (is_dir) candidate += "\\";
-    items.push_back({candidate, is_dir ? "Directory" : "File"});
-  }
-
-  std::ranges::sort(items, {}, &CompletionItem::text);
   return items;
 }
 
@@ -411,91 +366,15 @@ static std::string rewritePipeBuiltinsLine(const std::string &line) {
 // Interactive REPL
 // -----------------------------------------------------------------------------
 
-/// Build a completer function that suggests command names (prefix match) and
-/// command options (after a space).
-static Completer makeCompleter() {
-  return [](std::string_view input) -> std::vector<CompletionItem> {
-    // Complete only the segment after the last pipe.
-    std::string full_input(input);
-    size_t seg_start = 0;
-    if (auto pipe_pos = full_input.rfind('|'); pipe_pos != std::string::npos) {
-      seg_start = pipe_pos + 1;
-      while (seg_start < full_input.size() && full_input[seg_start] == ' ')
-        ++seg_start;
-    }
-
-    std::string prefix_before = full_input.substr(0, seg_start);
-    std::string segment = full_input.substr(seg_start);
-    auto space = segment.find(' ');
-
-    if (space == std::string::npos) {
-      auto items = getCommandCompletions(segment);
-      for (auto &item : items) item.text = prefix_before + item.text;
-      return items;
-    }
-
-    std::string cmd_name = segment.substr(0, space);
-    std::string rest = segment.substr(space + 1);
-    while (!rest.empty() && rest.front() == ' ') rest.erase(rest.begin());
-
-    size_t token_start_in_rest = 0;
-    if (auto pos = rest.find_last_of(" \t"); pos != std::string::npos)
-      token_start_in_rest = pos + 1;
-    std::string current_token = rest.substr(token_start_in_rest);
-
-    auto buildFullText = [&](std::string_view replacement) {
-      std::string replaced = segment.substr(0, space + 1);
-      replaced += rest.substr(0, token_start_in_rest);
-      replaced += replacement;
-      return prefix_before + replaced;
-    };
-
-    std::vector<CompletionItem> items;
-    std::unordered_set<std::string> seen;
-    auto addItem = [&](std::string text, std::string hint) {
-      std::string key = toLowerAscii(text);
-      if (seen.insert(std::move(key)).second)
-        items.push_back({std::move(text), std::move(hint)});
-    };
-
-    auto opts = CommandRegistry::getCommandOptions(cmd_name);
-    for (auto &opt : opts) {
-      for (const std::string *form : {&opt.short_name, &opt.long_name}) {
-        if (form->empty()) continue;
-        if (current_token.empty() || form->starts_with(current_token)) {
-          addItem(buildFullText(*form), opt.description);
-        }
-      }
-    }
-
-    auto nativeOpts = getWindowsOptionCompletions(cmd_name, current_token);
-    for (auto &opt : nativeOpts) {
-      addItem(buildFullText(opt.text), opt.hint);
-    }
-
-    // File/dir completion should not be overshadowed by option completion.
-    auto pathItems = getPathCompletions(current_token);
-    for (auto &p : pathItems) {
-      addItem(buildFullText(p.text), p.hint);
-    }
-
-    std::ranges::sort(items, {}, &CompletionItem::text);
-    return items;
-  };
-}
 /// Run WinuxCmd in interactive REPL mode.
 static void runReplMode() noexcept {
   safePrintLn(
       L"WinuxCmd " + utf8_to_wstring(WinuxCmd::VERSION_STRING) +
       L"  (interactive)  Type 'exit' to quit, '--help' for command list.");
-  safePrintLn(
-      L"Use Tab for completions; \u2191\u2193 for history; \u2190\u2192 to "
-      L"move cursor.\n");
-
-  auto completer = makeCompleter();
+  safePrintLn(L"Use Up/Down for history; Left/Right to move cursor.\n");
 
   while (true) {
-    std::string line = readInteractiveLine(buildReplPrompt(), completer);
+    std::string line = readInteractiveLine(buildReplPrompt());
 
     // Ctrl+D sentinel
     if (!line.empty() && line[0] == '\x04') break;
