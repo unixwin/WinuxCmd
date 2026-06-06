@@ -398,7 +398,7 @@ Write-Host ""
 
 # ── New: --install flag for one-shot permanent setup ──────────────────────────
 if ($Install) {
-    Write-Color "Yellow" "Permanent installation: PATH + Tab completion..."
+    Write-Color "Yellow" "Permanent installation: PATH..."
     Write-Host ""
 
     $binDir = Get-WinuxBinDir
@@ -421,41 +421,9 @@ if ($Install) {
     # Also add to current session
     $env:PATH = "$binDir;$env:PATH"
 
-    # 2. Dot-source completion script from $PROFILE
-    $completionScript = Join-Path $binDir "winuxcmd-completions.ps1"
-    if (-not (Test-Path $completionScript)) {
-        # Try script directory
-        $completionScript = Join-Path (Split-Path $MyInvocation.MyCommand.Path) "winuxcmd-completions.ps1"
-    }
-    if (Test-Path $completionScript) {
-        $marker  = "# WinuxCmd Tab Completion"
-        $profPath = $PROFILE.CurrentUserCurrentHost
-        $profDir  = Split-Path $profPath
-        if ($profDir -and -not (Test-Path $profDir)) {
-            New-Item $profDir -ItemType Directory -Force | Out-Null
-        }
-        if (-not (Test-Path $profPath)) {
-            New-Item $profPath -ItemType File -Force | Out-Null
-        }
-        $content = Get-Content $profPath -Raw -ErrorAction SilentlyContinue
-        if ($content -notlike "*$marker*") {
-            Add-Content $profPath "`r`n$marker`r`. '$completionScript'`r`n"
-            Write-Color "Green" "Tab completion added to: $profPath"
-        } else {
-            Write-Color "Green" "Tab completion already in profile."
-        }
-        # Load immediately in this session
-        . $completionScript
-        Write-Color "Green" "Tab completion active in this session NOW."
-    } else {
-        Write-Color "Yellow" "winuxcmd-completions.ps1 not found - skipping Tab completion setup."
-        Write-Host "       Copy winuxcmd-completions.ps1 next to winuxcmd.exe and re-run."
-    }
-
     Write-Host ""
     Write-Color "Green" "Installation complete!"
     Write-Host "  - Open a new PowerShell window: ls, grep, tree etc. are on PATH"
-    Write-Host "  - Tab completes commands and their options with descriptions"
     Write-Host "  - No need to run this script again"
     exit 0
 }
@@ -471,7 +439,7 @@ if ($Uninstall) {
             Write-Color "Green" "Removed from user PATH registry."
         }
     }
-    # Remove completion line from profile
+    # Remove legacy completion lines from profile if an older install added them.
     foreach ($prof in @($PROFILE.CurrentUserCurrentHost, $PROFILE.CurrentUserAllHosts)) {
         if (-not $prof -or -not (Test-Path $prof)) { continue }
         $lines = Get-Content $prof | Where-Object {

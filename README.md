@@ -27,7 +27,6 @@ WinuxCmd is built for one practical goal: make common Linux command workflows wo
 | Windows × Linux pipeline interoperability | `netstat -ano \| grep 8080` works out of the box |
 | Small footprint | ~900KB single executable with on-demand links |
 | Fast execution | Millisecond-level command execution in common workflows |
-| Shell-aware fallback | Parent shell detection (`cmd` vs `PowerShell/pwsh`) |
 
 ## Quick Start
 
@@ -96,11 +95,6 @@ if (Get-Command winux -ErrorAction SilentlyContinue) {
     winux activate 6>$null
 }
 ```
-
-## Shell-Aware Fallback (cmd / PowerShell)
-
-- Entered from `PowerShell/pwsh`: unknown commands fallback through PowerShell
-- Entered from `cmd`: unknown commands fallback through cmd
 
 ## FFI API
 
@@ -189,7 +183,6 @@ Benchmark details and notes:
 ### Phase 1: Core and Compatibility
 
 - Stabilize Linux-style core commands on Windows
-- Improve REPL fallback correctness for cmd/PowerShell
 - Keep binary size and startup performance targets
 
 ### Phase 2: Shell and Tooling
@@ -209,10 +202,6 @@ Benchmark details and notes:
 
 A: No. WinuxCmd complements PowerShell. Use whichever syntax is best for the task.
 
-### Q: Why do some commands fallback to cmd or PowerShell?
-
-A: Unknown commands are intentionally routed to the parent shell environment for compatibility.
-
 ### Q: Why does output sometimes show access-denied warnings (for example in lsof)?
 
 A: Windows handle/process visibility depends on privilege level. WinuxCmd degrades gracefully and reports partial-result warnings instead of crashing.
@@ -226,7 +215,7 @@ A: Windows handle/process visibility depends on privilege level. WinuxCmd degrad
 If you want to help, the most valuable areas are:
 
 1. Bug fixes for shell compatibility
-2. Test coverage for REPL/fallback behavior
+2. Test coverage for command behavior on Windows
 3. Documentation clarity and examples
 
 ## Contributing
