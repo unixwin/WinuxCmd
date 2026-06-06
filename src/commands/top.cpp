@@ -886,6 +886,33 @@ auto check_help_version(const CommandContext<TOP_OPTIONS.size()>& ctx)
   return false;  // Continue
 }
 
+auto parse_priority_class(std::string value) -> std::optional<DWORD> {
+  std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+
+  if (value == "idle") return IDLE_PRIORITY_CLASS;
+  if (value == "below" || value == "below_normal")
+    return BELOW_NORMAL_PRIORITY_CLASS;
+  if (value == "normal") return NORMAL_PRIORITY_CLASS;
+  if (value == "above" || value == "above_normal")
+    return ABOVE_NORMAL_PRIORITY_CLASS;
+  if (value == "high") return HIGH_PRIORITY_CLASS;
+  if (value == "realtime" || value == "real-time")
+    return REALTIME_PRIORITY_CLASS;
+
+  char* end = nullptr;
+  const long numeric = std::strtol(value.c_str(), &end, 10);
+  if (end == value.c_str()) return std::nullopt;
+
+  if (numeric <= 3) return IDLE_PRIORITY_CLASS;
+  if (numeric <= 6) return BELOW_NORMAL_PRIORITY_CLASS;
+  if (numeric <= 10) return NORMAL_PRIORITY_CLASS;
+  if (numeric <= 13) return ABOVE_NORMAL_PRIORITY_CLASS;
+  if (numeric <= 23) return HIGH_PRIORITY_CLASS;
+  return REALTIME_PRIORITY_CLASS;
+}
+
 // 3. Run top main loop
 auto run_top(TopConfig& cfg) -> cp::Result<bool> {
   ProcessEnumerator enumerator;
@@ -1007,13 +1034,20 @@ auto run_top(TopConfig& cfg) -> cp::Result<bool> {
               char input[32];
               if (fgets(input, sizeof(input), stdin)) {
                 DWORD pid = atoi(input);
-                safePrint("Enter priority (0-31, lower is higher): ");
+                safePrint("Enter priority (idle, below, normal, above, high, "
+                          "realtime, or 0-31): ");
                 if (fgets(input, sizeof(input), stdin)) {
-                  int priority = atoi(input);
+                  input[strcspn(input, "\n")] = '\0';
+                  auto priority = parse_priority_class(input);
+                  if (!priority) {
+                    safePrint("Invalid priority.\n");
+                    Sleep(2000);
+                    break;
+                  }
                   HANDLE hProcess =
                       OpenProcess(PROCESS_SET_INFORMATION, FALSE, pid);
                   if (hProcess) {
-                    if (SetPriorityClass(hProcess, priority)) {
+                    if (SetPriorityClass(hProcess, *priority)) {
                       safePrint("Priority changed successfully.\n");
                     } else {
                       safePrint("Failed to change priority.\n");
