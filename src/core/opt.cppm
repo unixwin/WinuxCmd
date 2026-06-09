@@ -83,6 +83,7 @@ struct ParseResult {
   ParsedOptions<N> options;
   std::vector<std::string_view> positionals;
   bool ok = true;
+  std::string error_message;
 };
 
 export template <size_t N>
@@ -103,6 +104,24 @@ ParseResult<N> parse_command(
       if (part == ";" || part == "+") break;
     }
     return value;
+  };
+
+  auto set_unrecognized_option = [&](std::string_view option) -> void {
+    result.ok = false;
+    result.error_message = "unrecognized option '" + std::string(option) + "'";
+  };
+
+  auto set_missing_argument = [&](std::string_view option) -> void {
+    result.ok = false;
+    result.error_message =
+        "option '" + std::string(option) + "' requires an argument";
+  };
+
+  auto set_invalid_argument = [&](std::string_view option,
+                                  std::string_view value) -> void {
+    result.ok = false;
+    result.error_message = "invalid argument '" + std::string(value) +
+                           "' for '" + std::string(option) + "'";
   };
 
   for (size_t i = 0; i < args.size(); ++i) {
@@ -135,7 +154,7 @@ ParseResult<N> parse_command(
       }
 
       if (!meta) {
-        result.ok = false;
+        set_unrecognized_option(name);
         return result;
       }
 
@@ -156,7 +175,7 @@ ParseResult<N> parse_command(
           } else {
             // --int 123
             if (i + 1 >= args.size()) {
-              result.ok = false;
+              set_missing_argument(name);
               return result;
             }
             str = std::string(args[++i]);
@@ -165,7 +184,7 @@ ParseResult<N> parse_command(
           auto [ptr, ec] =
               std::from_chars(str.data(), str.data() + str.size(), v);
           if (ec != std::errc() || ptr != str.data() + str.size()) {
-            result.ok = false;
+            set_invalid_argument(name, str);
             return result;
           }
 
@@ -174,13 +193,13 @@ ParseResult<N> parse_command(
         }
 
         case OptionType::String: {
-          if (!value.empty()) {
-            // --string=value
+          if (has_inline_value) {
+            // --string=value (including an explicit empty value)
             result.options.set(idx, std::string(value));
           } else {
             // --string value
             if (i + 1 >= args.size()) {
-              result.ok = false;
+              set_missing_argument(name);
               return result;
             }
             result.options.set(idx, std::string(args[++i]));
@@ -199,7 +218,7 @@ ParseResult<N> parse_command(
           auto [ptr, ec] =
               std::from_chars(str.data(), str.data() + str.size(), v);
           if (ec != std::errc() || ptr != str.data() + str.size()) {
-            result.ok = false;
+            set_invalid_argument(name, str);
             return result;
           }
 
@@ -213,7 +232,7 @@ ParseResult<N> parse_command(
           break;
 
         case OptionType::TerminatedString:
-          if (!value.empty()) {
+          if (has_inline_value) {
             result.options.set(idx, std::string(value));
           } else {
             result.options.set(idx, take_terminated_string(i));
@@ -257,7 +276,7 @@ ParseResult<N> parse_command(
               str = std::string(exact_value);
             } else {
               if (i + 1 >= args.size()) {
-                result.ok = false;
+                set_missing_argument(exact_name);
                 return result;
               }
               str = std::string(args[++i]);
@@ -266,7 +285,7 @@ ParseResult<N> parse_command(
             auto [ptr, ec] =
                 std::from_chars(str.data(), str.data() + str.size(), v);
             if (ec != std::errc() || ptr != str.data() + str.size()) {
-              result.ok = false;
+              set_invalid_argument(exact_name, str);
               return result;
             }
 
@@ -274,11 +293,11 @@ ParseResult<N> parse_command(
             break;
           }
           case OptionType::String:
-            if (!exact_value.empty()) {
+            if (exact_has_inline_value) {
               result.options.set(idx, std::string(exact_value));
             } else {
               if (i + 1 >= args.size()) {
-                result.ok = false;
+                set_missing_argument(exact_name);
                 return result;
               }
               result.options.set(idx, std::string(args[++i]));
@@ -295,7 +314,7 @@ ParseResult<N> parse_command(
             auto [ptr, ec] =
                 std::from_chars(str.data(), str.data() + str.size(), v);
             if (ec != std::errc() || ptr != str.data() + str.size()) {
-              result.ok = false;
+              set_invalid_argument(exact_name, str);
               return result;
             }
 
@@ -308,7 +327,7 @@ ParseResult<N> parse_command(
                                         : std::string());
             break;
           case OptionType::TerminatedString:
-            if (!exact_value.empty()) {
+            if (exact_has_inline_value) {
               result.options.set(idx, std::string(exact_value));
             } else {
               result.options.set(idx, take_terminated_string(i));
@@ -334,7 +353,8 @@ ParseResult<N> parse_command(
         }
 
         if (!meta) {
-          result.ok = false;
+          std::array<char, 3> short_name = {'-', ch, '\0'};
+          set_unrecognized_option(std::string_view(short_name.data(), 2));
           return result;
         }
 
@@ -355,7 +375,8 @@ ParseResult<N> parse_command(
               str = std::string(arg.substr(pos + 1));
             } else {
               if (i + 1 >= args.size()) {
-                result.ok = false;
+                std::array<char, 3> short_name = {'-', ch, '\0'};
+                set_missing_argument(std::string_view(short_name.data(), 2));
                 return result;
               }
               str = std::string(args[++i]);
@@ -367,7 +388,9 @@ ParseResult<N> parse_command(
                   std::from_chars(str.data(), str.data() + str.size(), v);
 
               if (ec != std::errc() || ptr != str.data() + str.size()) {
-                result.ok = false;
+                std::array<char, 3> short_name = {'-', ch, '\0'};
+                set_invalid_argument(std::string_view(short_name.data(), 2),
+                                     str);
                 return result;
               }
 
@@ -392,7 +415,9 @@ ParseResult<N> parse_command(
             auto [ptr, ec] =
                 std::from_chars(str.data(), str.data() + str.size(), v);
             if (ec != std::errc() || ptr != str.data() + str.size()) {
-              result.ok = false;
+              std::array<char, 3> short_name = {'-', ch, '\0'};
+              set_invalid_argument(std::string_view(short_name.data(), 2),
+                                   str);
               return result;
             }
 

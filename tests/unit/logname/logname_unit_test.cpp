@@ -39,3 +39,14 @@ TEST(logname, logname_basic) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_FALSE(r.stdout_text.empty());
 }
+
+TEST(logname, logname_version_succeeds) {
+  Pipeline p;
+  p.add(L"logname.exe", {L"--version"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_NE(r.stdout_text.find("logname (WinuxCmd)"), std::string::npos);
+  EXPECT_TRUE(r.stderr_text.empty());
+}

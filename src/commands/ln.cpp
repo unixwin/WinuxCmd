@@ -90,6 +90,41 @@ auto constexpr LN_OPTIONS = std::array{
 namespace ln_pipeline {
 namespace cp = core::pipeline;
 
+auto join_target_path(const std::string& directory, const std::string& source)
+    -> std::string {
+  std::string filename = source;
+  size_t sep = filename.find_last_of("/\\");
+  if (sep != std::string::npos) {
+    filename = filename.substr(sep + 1);
+  }
+  return directory + "\\" + filename;
+}
+
+auto ln_windows_error_text(DWORD error) -> std::string {
+  switch (error) {
+    case ERROR_FILE_NOT_FOUND:
+    case ERROR_PATH_NOT_FOUND:
+      return "No such file or directory";
+    case ERROR_FILE_EXISTS:
+    case ERROR_ALREADY_EXISTS:
+      return "File exists";
+    case ERROR_ACCESS_DENIED:
+      return "Permission denied";
+    case ERROR_PRIVILEGE_NOT_HELD:
+      return "Operation not permitted";
+    case ERROR_INVALID_PARAMETER:
+      return "Invalid argument";
+    default:
+      return std::system_category().message(static_cast<int>(error));
+  }
+}
+
+auto ln_creation_failure_prefix(bool symbolic, const std::string& target)
+    -> std::string {
+  return symbolic ? "failed to create symbolic link '" + target + "'"
+                  : "failed to create hard link '" + target + "'";
+}
+
 /**
  * @brief Create a hard link
  * @param source Source file path
@@ -115,7 +150,7 @@ auto create_hardlink(const std::string &source, const std::string &target,
 
   DWORD error = GetLastError();
   return std::unexpected("failed to create hard link '" + target +
-                         "': " + std::to_string(error));
+                         "': " + ln_windows_error_text(error));
 }
 
 /**
@@ -133,7 +168,8 @@ auto create_symlink(const std::string &source, const std::string &target,
   // Check if source is a directory
   DWORD attrs = GetFileAttributesW(wsource.c_str());
   if (attrs == INVALID_FILE_ATTRIBUTES) {
-    return std::unexpected("failed to access '" + source + "'");
+    return std::unexpected("failed to access '" + source +
+                           "': No such file or directory");
   }
 
   bool is_directory = (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
@@ -152,7 +188,7 @@ auto create_symlink(const std::string &source, const std::string &target,
 
   DWORD error = GetLastError();
   return std::unexpected("failed to create symbolic link '" + target +
-                         "': " + std::to_string(error));
+                         "': " + ln_windows_error_text(error));
 }
 
 /**
@@ -191,7 +227,7 @@ auto remove_existing(const std::string &path) -> cp::Result<void> {
 
   DWORD error = GetLastError();
   return std::unexpected("failed to remove '" + path +
-                         "': " + std::to_string(error));
+                         "': " + ln_windows_error_text(error));
 }
 
 }  // namespace ln_pipeline
@@ -237,12 +273,15 @@ REGISTER_COMMAND(
   bool no_target_dir =
       ctx.get<bool>("-T", false) || ctx.get<bool>("--no-target-directory", false);
 
-  // Determine source and targets
-  std::string source;
-  std::vector<std::string> targets;
+  if (!target_dir.empty() && no_target_dir) {
+    safeErrorPrint("ln: cannot combine --target-directory (-t) and "
+                   "--no-target-directory (-T)\n");
+    return 1;
+  }
+
+  std::vector<std::pair<std::string, std::string>> link_jobs;
 
   if (!target_dir.empty()) {
-    // -t mode: all positionals are sources, target_dir is the destination
     if (ctx.positionals.empty()) {
       safeErrorPrint("ln: missing operand\n");
       safeErrorPrint("Try 'ln --help' for more information.\n");
@@ -257,35 +296,61 @@ REGISTER_COMMAND(
       return 1;
     }
     for (auto arg : ctx.positionals) {
-      std::string s(arg);
-      // Extract filename from source path
-      std::string filename = s;
-      size_t sep = filename.find_last_of("/\\");
-      if (sep != std::string::npos) filename = filename.substr(sep + 1);
-      targets.push_back(target_dir + "\\" + filename);
+      std::string source(arg);
+      link_jobs.emplace_back(source, join_target_path(target_dir, source));
     }
-    source = std::string(ctx.positionals[0]);
-  } else if (ctx.positionals.size() < 2) {
+  } else if (ctx.positionals.empty()) {
     safeErrorPrint("ln: missing operand\n");
     safeErrorPrint("Try 'ln --help' for more information.\n");
     return 1;
+  } else if (ctx.positionals.size() == 1) {
+    std::string source(std::string(ctx.positionals[0]));
+    link_jobs.emplace_back(source, join_target_path(".", source));
+  } else if (no_target_dir) {
+    if (ctx.positionals.size() > 2) {
+      safeErrorPrint("ln: extra operand '" + std::string(ctx.positionals[2]) +
+                     "'\n");
+      safeErrorPrint("Try 'ln --help' for more information.\n");
+      return 1;
+    }
+    link_jobs.emplace_back(std::string(ctx.positionals[0]),
+                           std::string(ctx.positionals[1]));
+  } else if (ctx.positionals.size() == 2) {
+    std::string source(std::string(ctx.positionals[0]));
+    std::string target(std::string(ctx.positionals[1]));
+    std::wstring wtarget = utf8_to_wstring(target);
+    DWORD target_attrs = GetFileAttributesW(wtarget.c_str());
+    if (target_attrs != INVALID_FILE_ATTRIBUTES &&
+        (target_attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+      link_jobs.emplace_back(source, join_target_path(target, source));
+    } else {
+      link_jobs.emplace_back(source, target);
+    }
   } else {
-    source = std::string(ctx.positionals[0]);
-    for (size_t i = 1; i < ctx.positionals.size(); ++i) {
-      targets.push_back(std::string(ctx.positionals[i]));
+    target_dir = std::string(ctx.positionals.back());
+    std::wstring wtd = utf8_to_wstring(target_dir);
+    DWORD td_attrs = GetFileAttributesW(wtd.c_str());
+    if (td_attrs == INVALID_FILE_ATTRIBUTES ||
+        !(td_attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+      safeErrorPrint("ln: target '" + target_dir + "' is not a directory\n");
+      return 1;
+    }
+
+    for (size_t i = 0; i + 1 < ctx.positionals.size(); ++i) {
+      std::string source(ctx.positionals[i]);
+      link_jobs.emplace_back(source, join_target_path(target_dir, source));
     }
   }
 
-  size_t target_count = targets.size();
+  size_t target_count = link_jobs.size();
   size_t success_count = 0;
   size_t error_count = 0;
 
   if (verbose && target_count > 1) {
-    safePrint("ln: creating " + std::to_string(target_count) + " links from '" +
-              source + "'...\n");
+    safePrint("ln: creating " + std::to_string(target_count) + " links...\n");
   }
 
-  for (const auto& target : targets) {
+  for (const auto& [source, target] : link_jobs) {
     // Check if target exists
     std::wstring wtarget = utf8_to_wstring(target);
     DWORD target_attrs = GetFileAttributesW(wtarget.c_str());
@@ -331,7 +396,8 @@ REGISTER_COMMAND(
         // No force, no backup, no interactive - error
         if (!no_target_dir ||
             (target_attrs & FILE_ATTRIBUTE_DIRECTORY)) {
-          safeErrorPrint("ln: '" + target + "' exists\n");
+          safeErrorPrint("ln: " + ln_creation_failure_prefix(symbolic, target) +
+                         ": File exists\n");
           error_count++;
           continue;
         }

@@ -36,7 +36,7 @@ auto constexpr ENV_OPTIONS = std::array{
            "block delivery of SIG to COMMAND", OPTIONAL_STRING_TYPE),
     OPTION("", "--list-signal-handling",
            "list non default signal handling"),
-    OPTION("", "--debug", "print extra information about the processing")};
+    OPTION("-v", "--debug", "print extra information about the processing")};
 
 namespace env_pipeline {
 namespace cp = core::pipeline;
@@ -49,9 +49,126 @@ struct Config {
   std::string chdir;
   std::string argv0;  // -a
   std::string split_string;  // -S
+  size_t debug_level = 0;
   bool debug = false;
   SmallVector<std::string, 32> command;
+  SmallVector<std::string, 32> raw_args;
 };
+
+auto split_semicolon(std::string_view text) -> std::vector<std::string> {
+  SmallVector<std::string, 256> out;
+  size_t start = 0;
+  while (start <= text.size()) {
+    size_t pos = text.find(';', start);
+    if (pos == std::string_view::npos) {
+      out.emplace_back(text.substr(start));
+      break;
+    }
+    out.emplace_back(text.substr(start, pos - start));
+    start = pos + 1;
+  }
+  return std::vector<std::string>(out.begin(), out.end());
+}
+
+auto get_env_utf8(const wchar_t* key) -> std::optional<std::string> {
+  DWORD size = GetEnvironmentVariableW(key, nullptr, 0);
+  if (size == 0) return std::nullopt;
+
+  std::wstring value;
+  value.resize(size - 1);
+  if (GetEnvironmentVariableW(key, value.data(), size) == 0) {
+    return std::nullopt;
+  }
+  return wstring_to_utf8(value);
+}
+
+auto get_path_entries() -> std::vector<std::string> {
+  auto path_env = get_env_utf8(L"PATH");
+  if (!path_env.has_value() || path_env->empty()) return {};
+  return split_semicolon(*path_env);
+}
+
+auto get_pathext_entries() -> std::vector<std::string> {
+  auto ext_env = get_env_utf8(L"PATHEXT");
+  if (!ext_env.has_value() || ext_env->empty()) {
+    return std::vector<std::string>{".exe", ".cmd", ".bat", ".com"};
+  }
+  auto exts = split_semicolon(*ext_env);
+  if (exts.empty()) {
+    exts = std::vector<std::string>{".exe", ".cmd", ".bat", ".com"};
+  }
+  for (auto& ext : exts) {
+    if (!ext.empty() && ext.front() != '.') ext.insert(ext.begin(), '.');
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char ch) {
+      return static_cast<char>(std::tolower(ch));
+    });
+  }
+  return exts;
+}
+
+auto has_path_separator(std::string_view s) -> bool {
+  return s.find('/') != std::string_view::npos ||
+         s.find('\\') != std::string_view::npos;
+}
+
+auto exists_regular(const std::filesystem::path& p) -> bool {
+  std::error_code ec;
+  return std::filesystem::exists(p, ec) &&
+         std::filesystem::is_regular_file(p, ec);
+}
+
+auto with_extensions(const std::filesystem::path& base,
+                     const std::vector<std::string>& exts)
+    -> std::vector<std::filesystem::path> {
+  std::vector<std::filesystem::path> out;
+  out.push_back(base);
+  if (base.has_extension()) return out;
+
+  for (const auto& ext : exts) {
+    auto candidate = base;
+    candidate += ext;
+    out.push_back(std::move(candidate));
+  }
+  return out;
+}
+
+auto resolve_executable(std::string_view program,
+                        std::string_view working_directory = {})
+    -> std::optional<std::wstring> {
+  const auto pathext = get_pathext_entries();
+
+  if (has_path_separator(program)) {
+    std::filesystem::path base{std::string(program)};
+    for (const auto& candidate : with_extensions(base, pathext)) {
+      if (exists_regular(candidate)) return candidate.wstring();
+    }
+    return std::nullopt;
+  }
+
+  std::vector<std::filesystem::path> search_roots;
+  if (!working_directory.empty()) {
+    search_roots.emplace_back(std::string(working_directory));
+  } else {
+    search_roots.emplace_back(std::filesystem::current_path());
+  }
+
+  for (const auto& root : search_roots) {
+    std::filesystem::path base = root / std::string(program);
+    for (const auto& candidate : with_extensions(base, pathext)) {
+      if (exists_regular(candidate)) return candidate.wstring();
+    }
+  }
+
+  for (const auto& dir : get_path_entries()) {
+    if (dir.empty()) continue;
+    std::filesystem::path base = std::filesystem::path(dir) / std::string(program);
+    for (const auto& candidate : with_extensions(base, pathext)) {
+      if (exists_regular(candidate)) return candidate.wstring();
+    }
+  }
+
+  return std::nullopt;
+}
 
 auto parse_env_block() -> std::map<std::string, std::string> {
   std::map<std::string, std::string> out;
@@ -92,7 +209,8 @@ auto is_unsupported_used(const CommandContext<ENV_OPTIONS.size()>& ctx)
 
 /// Split a string into arguments respecting shell-like quoting rules.
 /// Supports single quotes, double quotes, backslash escaping, and comment (#).
-auto split_string_args(const std::string& s) -> std::vector<std::string> {
+auto split_string_args(const std::string& s)
+    -> cp::Result<std::vector<std::string>> {
   std::vector<std::string> args;
   std::string current;
   bool in_single = false;
@@ -142,6 +260,10 @@ auto split_string_args(const std::string& s) -> std::vector<std::string> {
     args.push_back(std::move(current));
   }
 
+  if (in_single || in_double) {
+    return std::unexpected("no terminating quote in -S string");
+  }
+
   return args;
 }
 
@@ -157,20 +279,44 @@ auto build_config(const CommandContext<ENV_OPTIONS.size()>& ctx)
   cfg.unset_names.insert(cfg.unset_names.end(), short_unsets.begin(),
                          short_unsets.end());
 
-  cfg.chdir = ctx.get<std::string>("--chdir", "");
-  if (cfg.chdir.empty()) cfg.chdir = ctx.get<std::string>("-C", "");
-  cfg.argv0 = ctx.get<std::string>("--argv0", "");
-  if (cfg.argv0.empty()) cfg.argv0 = ctx.get<std::string>("-a", "");
-  cfg.split_string = ctx.get<std::string>("--split-string", "");
-  if (cfg.split_string.empty())
-    cfg.split_string = ctx.get<std::string>("-S", "");
-  cfg.debug = ctx.get<bool>("--debug", false);
+  for (const auto& occurrence : ctx.options.occurrences()) {
+    if (!ctx.metas || occurrence.index >= ENV_OPTIONS.size()) {
+      continue;
+    }
+
+    const auto& meta = (*ctx.metas)[occurrence.index];
+    const auto* value = std::get_if<std::string>(&occurrence.value);
+    if (value == nullptr) {
+      continue;
+    }
+
+    if (meta.long_name == "--chdir" || meta.short_name == "-C") {
+      cfg.chdir = *value;
+      continue;
+    }
+
+    if (meta.long_name == "--argv0" || meta.short_name == "-a") {
+      cfg.argv0 = *value;
+      continue;
+    }
+
+    if (meta.long_name == "--split-string" || meta.short_name == "-S") {
+      cfg.split_string = *value;
+    }
+  }
+
+  cfg.debug_level = ctx.count({"--debug", "-v"});
+  cfg.debug = cfg.debug_level > 0;
+  if (cfg.debug_level >= 2) {
+    for (auto arg : ctx.raw_args) cfg.raw_args.emplace_back(arg);
+  }
 
   // If -S is provided, split it into arguments
   if (!cfg.split_string.empty()) {
     auto split_args = split_string_args(cfg.split_string);
+    if (!split_args) return std::unexpected(split_args.error());
     bool first = true;
-    for (auto& arg : split_args) {
+    for (auto& arg : *split_args) {
       if (first) {
         // First part could be NAME=VALUE or command
         auto assign = parse_assignment(arg);
@@ -246,9 +392,14 @@ auto quote_arg(const std::wstring& arg) -> std::wstring {
   return out;
 }
 
-auto build_command_line(const SmallVector<std::string, 32>& command)
+auto build_command_line(const SmallVector<std::string, 32>& command,
+                        const std::optional<std::string>& argv0_override =
+                            std::nullopt)
     -> std::wstring {
-  std::wstring out = quote_arg(utf8_to_wstring(command.front()));
+  auto argv0 =
+      argv0_override.has_value() ? utf8_to_wstring(*argv0_override)
+                                 : utf8_to_wstring(command.front());
+  std::wstring out = quote_arg(argv0);
   for (size_t i = 1; i < command.size(); ++i) {
     out.push_back(L' ');
     out += quote_arg(utf8_to_wstring(command[i]));
@@ -313,29 +464,56 @@ auto materialize_environment(const Config& cfg)
   return vars;
 }
 
+auto env_command_status_from_create_error(DWORD error) -> int {
+  switch (error) {
+    case ERROR_FILE_NOT_FOUND:
+    case ERROR_PATH_NOT_FOUND:
+      return 127;
+    default:
+      return 126;
+  }
+}
+
+auto env_windows_error_text(DWORD error) -> std::string {
+  switch (error) {
+    case ERROR_FILE_NOT_FOUND:
+    case ERROR_PATH_NOT_FOUND:
+      return "No such file or directory";
+    case ERROR_ACCESS_DENIED:
+      return "Permission denied";
+    default:
+      return std::system_category().message(static_cast<int>(error));
+  }
+}
+
 auto run_command(const Config& cfg,
                  const std::map<std::string, std::string>& vars) -> int {
-  // If -a is set, replace argv[0]
-  SmallVector<std::string, 32> actual_command;
-  if (!cfg.argv0.empty() && !cfg.command.empty()) {
-    actual_command.push_back(cfg.argv0);
-    for (size_t i = 1; i < cfg.command.size(); ++i) {
-      actual_command.push_back(cfg.command[i]);
-    }
-  } else {
-    actual_command = cfg.command;
-  }
-
   if (cfg.debug) {
-    std::string cmd_str;
-    for (size_t i = 0; i < actual_command.size(); ++i) {
-      if (i > 0) cmd_str += " ";
-      cmd_str += "'" + actual_command[i] + "'";
+    auto arg0 = cfg.argv0.empty() ? cfg.command.front() : cfg.argv0;
+    safeErrorPrint("executing: " + cfg.command.front() + "\n");
+    if (!cfg.argv0.empty()) {
+      safeErrorPrint("argv0:     " + cfg.argv0 + "\n");
     }
-    safeErrorPrint("env: executing: " + cmd_str + "\n");
+    safeErrorPrint("   arg[0]= " + arg0 + "\n");
+    for (size_t i = 1; i < cfg.command.size(); ++i) {
+      safeErrorPrint("   arg[" + std::to_string(i) + "]= " + cfg.command[i] +
+                     "\n");
+    }
   }
 
-  auto cmd_line = build_command_line(actual_command);
+  std::optional<std::wstring> application_name;
+  if (!cfg.argv0.empty()) {
+    application_name = resolve_executable(cfg.command.front(), cfg.chdir);
+    if (!application_name.has_value()) {
+      safeErrorPrint("env: failed to run command '" + cfg.command.front() +
+                     "': No such file or directory\n");
+      return 127;
+    }
+  }
+
+  auto cmd_line = build_command_line(
+      cfg.command, cfg.argv0.empty() ? std::nullopt
+                                     : std::optional<std::string>(cfg.argv0));
   auto env_block = build_environment_block(vars);
   std::wstring working_directory;
   LPCWSTR working_directory_arg =
@@ -356,12 +534,16 @@ auto run_command(const Config& cfg,
   si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
 
   PROCESS_INFORMATION pi{};
-  BOOL ok = CreateProcessW(nullptr, cmd_line.data(), nullptr, nullptr, TRUE,
+  BOOL ok = CreateProcessW(
+      application_name.has_value() ? application_name->c_str() : nullptr,
+      cmd_line.data(), nullptr, nullptr, TRUE,
                            CREATE_UNICODE_ENVIRONMENT, env_block.data(),
                            working_directory_arg, &si, &pi);
   if (!ok) {
-    cp::report_custom_error(L"env", L"failed to execute command");
-    return 127;
+    DWORD error = GetLastError();
+    safeErrorPrint("env: failed to run command '" + cfg.command.front() +
+                   "': " + env_windows_error_text(error) + "\n");
+    return env_command_status_from_create_error(error);
   }
 
   WaitForSingleObject(pi.hProcess, INFINITE);
@@ -379,21 +561,28 @@ auto run_command(const Config& cfg,
 }
 
 auto run(const Config& cfg) -> int {
+  if (cfg.command.empty() && !cfg.chdir.empty()) {
+    cp::report_custom_error(L"env", L"must specify command with --chdir");
+    return 125;
+  }
+
+  if (cfg.null_terminated && !cfg.command.empty()) {
+    cp::report_custom_error(L"env", L"cannot specify --null (-0) with command");
+    return 125;
+  }
+
+  if (cfg.debug_level >= 2) {
+    safeErrorPrint("input args:\n");
+    for (size_t i = 0; i < cfg.raw_args.size(); ++i) {
+      safeErrorPrint("arg[" + std::to_string(i) + "]: " + cfg.raw_args[i] +
+                     "\n");
+    }
+  }
+
   auto vars = materialize_environment(cfg);
 
   if (!cfg.command.empty()) {
     return run_command(cfg, vars);
-  }
-
-  if (!cfg.chdir.empty()) {
-    std::wstring working_directory;
-    LPCWSTR working_directory_arg =
-        make_working_directory_arg(cfg.chdir, working_directory);
-    if (working_directory_arg == nullptr ||
-        !SetCurrentDirectoryW(working_directory_arg)) {
-      cp::report_custom_error(L"env", L"cannot change directory");
-      return 125;
-    }
   }
 
   print_env(vars, cfg.null_terminated);
@@ -429,7 +618,7 @@ REGISTER_COMMAND(env, "env",
   auto cfg = build_config(ctx);
   if (!cfg) {
     cp::report_error(cfg, L"env");
-    return 1;
+    return 125;
   }
   return run(*cfg);
 }

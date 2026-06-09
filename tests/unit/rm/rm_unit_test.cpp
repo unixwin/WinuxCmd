@@ -107,6 +107,19 @@ TEST(rm, rm_force_with_no_operands_succeeds) {
   EXPECT_EQ_TEXT(r.stderr_text, "");
 }
 
+TEST(rm, rm_missing_operand_reports_help_hint_on_stderr) {
+  Pipeline p;
+  p.add(L"rm.exe", {});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "rm: missing file operand\n"
+                 "Try 'rm --help' for more information.\n");
+}
+
 TEST(rm, rm_dir_removes_empty_directory) {
   TempDir tmp;
   std::filesystem::create_directory(tmp.path / "empty");

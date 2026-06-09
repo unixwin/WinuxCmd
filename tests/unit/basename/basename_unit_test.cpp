@@ -70,6 +70,16 @@ TEST(basename, basename_with_suffix) {
   EXPECT_EQ_TEXT(r.stdout_text, "file\n");
 }
 
+TEST(basename, basename_does_not_strip_suffix_identical_to_name) {
+  Pipeline p;
+  p.add(L"basename.exe", {L"/usr/bin/sort", L"sort"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "sort\n");
+}
+
 TEST(basename, basename_multiple_with_suffix_option) {
   Pipeline p;
   p.add(L"basename.exe",
@@ -79,6 +89,59 @@ TEST(basename, basename_multiple_with_suffix_option) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "stdio\nstdlib\n");
+}
+
+TEST(basename, basename_accepts_abbreviated_multiple_long_option) {
+  Pipeline p;
+  p.add(L"basename.exe", {L"--mul", L"/foo/bar/baz", L"/foo/bar/baz"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "baz\nbaz\n");
+}
+
+TEST(basename, basename_accepts_abbreviated_suffix_long_option) {
+  Pipeline p;
+  p.add(L"basename.exe",
+        {L"--suf", L".exe", L"/foo/bar/baz.exe", L"/foo/bar/baz.exe"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "baz\nbaz\n");
+}
+
+TEST(basename, basename_accepts_abbreviated_zero_long_option) {
+  Pipeline p;
+  p.add(L"basename.exe", {L"--ze", L"-a", L"/foo/bar/baz", L"/foo/bar/baz"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(r.stdout_text, std::string("baz\0baz\0", 8));
+}
+
+TEST(basename, basename_empty_short_suffix_still_implies_multiple) {
+  Pipeline p;
+  p.add(L"basename.exe",
+        {L"-s", L"", L"include\\stdio.h", L"include\\stdlib.h"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "stdio.h\nstdlib.h\n");
+}
+
+TEST(basename, basename_empty_long_suffix_still_implies_multiple) {
+  Pipeline p;
+  p.add(L"basename.exe",
+        {L"--suffix=", L"include\\stdio.h", L"include\\stdlib.h"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "stdio.h\nstdlib.h\n");
 }
 
 TEST(basename, basename_zero_terminates_each_result) {
@@ -109,4 +172,42 @@ TEST(basename, basename_repeated_root_slashes_collapse_to_single_slash) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "/\n");
+}
+
+TEST(basename, basename_double_slash_root_collapses_to_single_slash) {
+  Pipeline p;
+  p.add(L"basename.exe", {L"//"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "/\n");
+}
+
+TEST(basename, basename_missing_operand_reports_help_hint) {
+  Pipeline p;
+  p.add(L"basename.exe", {});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "basename: missing operand\nTry 'basename --help' for more "
+      "information.\n");
+}
+
+TEST(basename, basename_extra_operand_is_rejected_without_multiple_mode) {
+  Pipeline p;
+  p.add(L"basename.exe", {L"a", L"b", L"c"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "basename: extra operand 'c'\nTry 'basename --help' for more "
+      "information.\n");
 }

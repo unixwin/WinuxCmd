@@ -333,8 +333,13 @@ auto apply_pattern(const std::vector<std::string>& lines,
       return std::unexpected("line number out of range");
     }
     result.found = true;
-    result.output.end = boundary;
-    result.next_start = boundary;
+    if (suppress_matched && boundary < lines.size()) {
+      result.output.end = boundary;
+      result.next_start = boundary + 1;
+    } else {
+      result.output.end = boundary;
+      result.next_start = boundary;
+    }
     return result;
   }
 
@@ -566,6 +571,10 @@ REGISTER_COMMAND(
   auto cfg_result = build_config(ctx);
   if (!cfg_result) {
     cp::report_error(cfg_result, L"csplit");
+    if (cfg_result.error() == "missing input file" ||
+        cfg_result.error() == "missing pattern") {
+      safeErrorPrint("Try 'csplit --help' for more information.\n");
+    }
     return 1;
   }
 

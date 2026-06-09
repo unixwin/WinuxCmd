@@ -57,6 +57,12 @@ auto constexpr TR_OPTIONS = std::array{
 namespace tr_pipeline {
 namespace cp = core::pipeline;
 
+auto make_dynamic_error(std::string message) -> cp::Error {
+  static thread_local std::string storage;
+  storage = std::move(message);
+  return storage;
+}
+
 // Parse escape sequences
 auto parse_escape_sequence(std::string_view& str) -> char {
   if (str.empty()) return '\\';
@@ -156,8 +162,9 @@ auto parse_set_atom(std::string_view& str) -> cp::Result<std::string> {
       std::string_view name = str.substr(2, close - 2);
       auto chars = ascii_class(name);
       if (!chars) {
-        return std::unexpected(std::string("invalid character class '") +
-                               std::string(name) + "'");
+        return std::unexpected(make_dynamic_error(
+            std::string("invalid character class '") + std::string(name) +
+            "'"));
       }
       str = str.substr(close + 2);
       return *chars;
@@ -320,6 +327,18 @@ auto build_config(const CommandContext<TR_OPTIONS.size()>& ctx)
     return std::unexpected("missing operand");
   }
 
+  if (!cfg.delete_mode && !cfg.squeeze && ctx.positionals.size() == 1) {
+    return std::unexpected("missing operand after set1 for translate");
+  }
+
+  if (cfg.delete_mode && cfg.squeeze && ctx.positionals.size() == 1) {
+    return std::unexpected("missing operand after set1 for delete+squeeze");
+  }
+
+  if (cfg.delete_mode && !cfg.squeeze && ctx.positionals.size() > 1) {
+    return std::unexpected("extra operand after delete");
+  }
+
   auto set1 = parse_set(ctx.positionals[0]);
   if (!set1) return std::unexpected(set1.error());
   cfg.set1 = *set1;
@@ -335,7 +354,7 @@ auto build_config(const CommandContext<TR_OPTIONS.size()>& ctx)
   }
 
   if (ctx.positionals.size() > 2) {
-    return std::unexpected("extra operand");
+    return std::unexpected("extra operand after set2");
   }
 
   return cfg;
@@ -442,6 +461,40 @@ REGISTER_COMMAND(
 
   auto cfg_result = build_config(ctx);
   if (!cfg_result) {
+    if (cfg_result.error() == "missing operand") {
+      cp::report_error(cfg_result, L"tr");
+      safeErrorPrintLn("Try 'tr --help' for more information.");
+      return 1;
+    }
+    if (cfg_result.error() == "missing operand after set1 for translate") {
+      safeErrorPrintLn(
+          std::format("tr: missing operand after '{}'", ctx.positionals[0]));
+      safeErrorPrintLn("Two strings must be given when translating.");
+      safeErrorPrintLn("Try 'tr --help' for more information.");
+      return 1;
+    }
+    if (cfg_result.error() == "missing operand after set1 for delete+squeeze") {
+      safeErrorPrintLn(
+          std::format("tr: missing operand after '{}'", ctx.positionals[0]));
+      safeErrorPrintLn("Two strings must be given when deleting and squeezing.");
+      safeErrorPrintLn("Try 'tr --help' for more information.");
+      return 1;
+    }
+    if (cfg_result.error() == "extra operand after delete") {
+      safeErrorPrintLn(
+          std::format("tr: extra operand '{}'", ctx.positionals[1]));
+      safeErrorPrintLn(
+          "Only one string may be given when deleting without squeezing "
+          "repeats.");
+      safeErrorPrintLn("Try 'tr --help' for more information.");
+      return 1;
+    }
+    if (cfg_result.error() == "extra operand after set2") {
+      safeErrorPrintLn(
+          std::format("tr: extra operand '{}'", ctx.positionals[2]));
+      safeErrorPrintLn("Try 'tr --help' for more information.");
+      return 1;
+    }
     cp::report_error(cfg_result, L"tr");
     return 1;
   }

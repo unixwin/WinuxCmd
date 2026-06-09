@@ -150,3 +150,17 @@ TEST(mkdir, mkdir_accepts_context_placeholder) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(std::filesystem::is_directory(tmp.path / "ctx_dir"));
 }
+
+TEST(mkdir, mkdir_missing_operand_reports_help_hint) {
+  Pipeline p;
+  p.add(L"mkdir.exe", {});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "mkdir: missing operand\n"
+      "Try 'mkdir --help' for more information.\n");
+}

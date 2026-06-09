@@ -44,6 +44,49 @@ using cmd::meta::OptionType;
 auto constexpr LINK_OPTIONS =
     std::array{OPTION("", "", "create link to file", STRING_TYPE)};
 
+namespace {
+
+auto emit_link_operand_count_error() -> int {
+  safeErrorPrintLn("link: 2 values required");
+  return 1;
+}
+
+auto link_windows_error_text(DWORD error) -> std::string {
+  switch (error) {
+    case ERROR_FILE_NOT_FOUND:
+    case ERROR_PATH_NOT_FOUND:
+      return "No such file or directory";
+    case ERROR_FILE_EXISTS:
+    case ERROR_ALREADY_EXISTS:
+      return "File exists";
+    case ERROR_ACCESS_DENIED:
+      return "Permission denied";
+    case ERROR_INVALID_PARAMETER:
+      return "Invalid argument";
+    default:
+      return std::system_category().message(static_cast<int>(error));
+  }
+}
+
+auto resolve_source_operand(const std::string& source)
+    -> std::expected<std::string, std::string> {
+  if (!contains_wildcard(source)) {
+    return source;
+  }
+
+  auto glob_result = glob_expand(source);
+  if (glob_result.expanded && !glob_result.files.empty()) {
+    if (glob_result.files.size() != 1) {
+      return std::unexpected("2 values required");
+    }
+    return wstring_to_utf8(glob_result.files[0]);
+  }
+
+  return source;
+}
+
+}  // namespace
+
 REGISTER_COMMAND(
     link,
     /* name */
@@ -65,18 +108,23 @@ REGISTER_COMMAND(
   namespace cp = core::pipeline;
 
   if (ctx.positionals.size() < 2) {
-    safeErrorPrintLn("link: missing file operand");
-    safePrintLn("Try 'link --help' for more information.");
-    return 1;
+    return emit_link_operand_count_error();
   }
   if (ctx.positionals.size() > 2) {
-    safeErrorPrintLn("link: extra operand '" + std::string(ctx.positionals[2]) +
-                     "'");
-    safePrintLn("Try 'link --help' for more information.");
+    return emit_link_operand_count_error();
+  }
+
+  std::string source_arg = std::string(ctx.positionals[0]);
+  auto source_result = resolve_source_operand(source_arg);
+  if (!source_result) {
+    if (source_result.error() == "2 values required") {
+      return emit_link_operand_count_error();
+    }
+    safeErrorPrintLn("link: " + source_result.error());
     return 1;
   }
 
-  std::string file = std::string(ctx.positionals[0]);
+  std::string file = *source_result;
   std::string linkname = std::string(ctx.positionals[1]);
 
   std::wstring wfile = utf8_to_wstring(file);
@@ -85,8 +133,12 @@ REGISTER_COMMAND(
   BOOL result = CreateHardLinkW(wlinkname.c_str(), wfile.c_str(), nullptr);
   if (!result) {
     DWORD error = GetLastError();
-    safeErrorPrintLn("link: cannot create link '" + linkname +
-                     "': " + std::to_string(error));
+    std::string error_text =
+        contains_wildcard(source_arg) && file == source_arg
+            ? "No such file or directory"
+            : link_windows_error_text(error);
+    safeErrorPrintLn("link: cannot create link '" + linkname + "' to '" + file +
+                     "': " + error_text);
     return 1;
   }
 

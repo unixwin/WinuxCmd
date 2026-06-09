@@ -184,3 +184,79 @@ TEST(tr, tr_delete_and_squeeze_preserves_single_squeeze_char) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "a b");
 }
+
+TEST(tr, tr_missing_operand_reports_help_hint) {
+  Pipeline p;
+  p.add(L"tr.exe", {});
+
+  TEST_LOG_CMD_LIST("tr.exe");
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("tr missing operand stderr", r.stderr_text);
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ(r.stdout_text, "");
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "tr: missing operand\n"
+                 "Try 'tr --help' for more information.\n");
+}
+
+TEST(tr, tr_translate_requires_second_set) {
+  Pipeline p;
+  p.add(L"tr.exe", {L"a-z"});
+
+  TEST_LOG_CMD_LIST("tr.exe", L"a-z");
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("tr missing set2 stderr", r.stderr_text);
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ(r.stdout_text, "");
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "tr: missing operand after 'a-z'\n"
+                 "Two strings must be given when translating.\n"
+                 "Try 'tr --help' for more information.\n");
+}
+
+TEST(tr, tr_delete_and_squeeze_require_second_set) {
+  Pipeline p;
+  p.add(L"tr.exe", {L"-ds", L"0-9"});
+
+  TEST_LOG_CMD_LIST("tr.exe", L"-ds", L"0-9");
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("tr missing squeeze set stderr", r.stderr_text);
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ(r.stdout_text, "");
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "tr: missing operand after '0-9'\n"
+                 "Two strings must be given when deleting and squeezing.\n"
+                 "Try 'tr --help' for more information.\n");
+}
+
+TEST(tr, tr_delete_without_squeeze_rejects_extra_operand) {
+  Pipeline p;
+  p.add(L"tr.exe", {L"-d", L"0-9", L"X"});
+
+  TEST_LOG_CMD_LIST("tr.exe", L"-d", L"0-9", L"X");
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("tr delete extra operand stderr", r.stderr_text);
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ(r.stdout_text, "");
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "tr: extra operand 'X'\n"
+                 "Only one string may be given when deleting without "
+                 "squeezing repeats.\n"
+                 "Try 'tr --help' for more information.\n");
+}

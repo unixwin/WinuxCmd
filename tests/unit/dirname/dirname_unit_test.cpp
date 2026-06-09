@@ -55,6 +55,16 @@ TEST(dirname, dirname_linux_path) {
   EXPECT_EQ_TEXT(r.stdout_text, "/home/user/test\n");
 }
 
+TEST(dirname, dirname_top_level_absolute_path_returns_root) {
+  Pipeline p;
+  p.add(L"dirname.exe", {L"/usr/"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "/\n");
+}
+
 TEST(dirname, dirname_no_slash) {
   Pipeline p;
   p.add(L"dirname.exe", {L"file.txt"});
@@ -70,6 +80,16 @@ TEST(dirname, dirname_no_slash) {
   EXPECT_EQ_TEXT(r.stdout_text, ".\n");
 }
 
+TEST(dirname, dirname_double_slash_root_collapses_to_single_slash) {
+  Pipeline p;
+  p.add(L"dirname.exe", {L"//"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "/\n");
+}
+
 TEST(dirname, dirname_zero_terminates_each_result) {
   Pipeline p;
   p.add(L"dirname.exe",
@@ -83,4 +103,17 @@ TEST(dirname, dirname_zero_terminates_each_result) {
   expected += "/home/user/test";
   expected.push_back('\0');
   EXPECT_EQ(r.stdout_text, expected);
+}
+
+TEST(dirname, dirname_missing_operand_reports_help_hint) {
+  Pipeline p;
+  p.add(L"dirname.exe", {});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "dirname: missing operand\nTry 'dirname --help' for more information.\n");
 }

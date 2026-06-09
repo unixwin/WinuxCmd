@@ -76,21 +76,53 @@ auto constexpr VDIR_OPTIONS = std::array{
 namespace vdir_pipeline {
 namespace cp = core::pipeline;
 
+auto quote_vdir_windows_arg(const std::wstring& arg) -> std::wstring {
+  if (arg.empty()) return L"\"\"";
+
+  bool need_quote = arg.find_first_of(L" \t\"") != std::wstring::npos;
+  if (!need_quote) return arg;
+
+  std::wstring out = L"\"";
+  size_t backslashes = 0;
+  for (wchar_t c : arg) {
+    if (c == L'\\') {
+      ++backslashes;
+    } else if (c == L'"') {
+      out.append(backslashes * 2 + 1, L'\\');
+      out.push_back(L'"');
+      backslashes = 0;
+    } else {
+      out.append(backslashes, L'\\');
+      backslashes = 0;
+      out.push_back(c);
+    }
+  }
+  out.append(backslashes * 2, L'\\');
+  out.push_back(L'"');
+  return out;
+}
+
+auto build_vdir_command_line(std::span<const std::wstring> args)
+    -> std::wstring {
+  std::wstring cmd_line = L"ls.exe";
+  for (const auto& arg : args) {
+    cmd_line.push_back(L' ');
+    cmd_line += quote_vdir_windows_arg(arg);
+  }
+  return cmd_line;
+}
+
 auto run(const CommandContext<VDIR_OPTIONS.size()>& ctx) -> int {
   // Build ls arguments with -l (long) as default
   SmallVector<std::wstring, 32> ls_args;
   ls_args.push_back(L"-l");  // Default to long format
 
-  // Forward all positionals to ls
-  for (const auto& pos : ctx.positionals) {
-    ls_args.push_back(utf8_to_wstring(std::string(pos)));
+  // Preserve the original argv surface so GNU vdir options actually reach ls.
+  for (const auto& arg : ctx.raw_args) {
+    ls_args.push_back(utf8_to_wstring(std::string(arg)));
   }
 
-  // Build command line
-  std::wstring cmd_line = L"ls.exe";
-  for (const auto& arg : ls_args) {
-    cmd_line += L" " + arg;
-  }
+  std::wstring cmd_line = build_vdir_command_line(ls_args);
 
   STARTUPINFOW si = {sizeof(si)};
   PROCESS_INFORMATION pi;

@@ -68,8 +68,69 @@ struct Config {
   SmallVector<std::string, 64> args;
 };
 
+auto quote_timeout_windows_arg(const std::wstring& arg) -> std::wstring {
+  if (arg.empty()) return L"\"\"";
+
+  bool need_quote = arg.find_first_of(L" \t\"") != std::wstring::npos;
+  if (!need_quote) return arg;
+
+  std::wstring out = L"\"";
+  size_t backslashes = 0;
+  for (wchar_t c : arg) {
+    if (c == L'\\') {
+      ++backslashes;
+    } else if (c == L'"') {
+      out.append(backslashes * 2 + 1, L'\\');
+      out.push_back(L'"');
+      backslashes = 0;
+    } else {
+      out.append(backslashes, L'\\');
+      backslashes = 0;
+      out.push_back(c);
+    }
+  }
+  out.append(backslashes * 2, L'\\');
+  out.push_back(L'"');
+  return out;
+}
+
+auto build_timeout_command_line(std::string_view command,
+                                std::span<const std::string> args)
+    -> std::wstring {
+  std::wstring cmd_line =
+      quote_timeout_windows_arg(utf8_to_wstring(std::string(command)));
+  for (const auto& arg : args) {
+    cmd_line.push_back(L' ');
+    cmd_line += quote_timeout_windows_arg(utf8_to_wstring(arg));
+  }
+  return cmd_line;
+}
+
+auto timeout_signal_name(int signal) -> std::string {
+  switch (signal) {
+    case 0:
+      return "0";
+    case 1:
+      return "HUP";
+    case 2:
+      return "INT";
+    case 3:
+      return "QUIT";
+    case 6:
+      return "ABRT";
+    case 9:
+      return "KILL";
+    case 14:
+      return "ALRM";
+    case 15:
+      return "TERM";
+    default:
+      return std::to_string(signal);
+  }
+}
+
 auto parse_signal(const std::string& signal) -> cp::Result<int> {
-  if (signal.empty()) return std::unexpected("invalid signal");
+  if (signal.empty()) return std::unexpected("'': invalid signal");
 
   try {
     size_t idx = 0;
@@ -95,7 +156,7 @@ auto parse_signal(const std::string& signal) -> cp::Result<int> {
     return it->second;
   }
 
-  return std::unexpected("invalid signal");
+  return std::unexpected("'" + signal + "': invalid signal");
 }
 
 auto parse_duration(const std::string& duration) -> cp::Result<int64_t> {
@@ -104,7 +165,7 @@ auto parse_duration(const std::string& duration) -> cp::Result<int64_t> {
     std::string s = duration;
 
     if (s.empty()) {
-      return std::unexpected("invalid duration");
+      return std::unexpected("invalid time interval '" + duration + "'");
     }
 
     int64_t multiplier = 1;
@@ -138,12 +199,12 @@ auto parse_duration(const std::string& duration) -> cp::Result<int64_t> {
     size_t parsed = 0;
     double value = std::stod(s, &parsed);
     if (parsed != s.size() || value < 0) {
-      return std::unexpected("invalid duration format");
+      return std::unexpected("invalid time interval '" + duration + "'");
     }
     return static_cast<int64_t>(value * multiplier *
                                 1000);  // Convert to milliseconds
   } catch (...) {
-    return std::unexpected("invalid duration format");
+    return std::unexpected("invalid time interval '" + duration + "'");
   }
 }
 
@@ -206,14 +267,7 @@ auto build_config(const CommandContext<TIMEOUT_OPTIONS.size()>& ctx)
 
 auto run(const Config& cfg) -> int {
   if (!cfg.command.empty()) {
-    // Build command line
-    std::string cmd_line = cfg.command;
-    for (const auto& arg : cfg.args) {
-      cmd_line += " " + arg;
-    }
-
-    // Convert to wide string for Windows API
-    std::wstring wcmd_line = utf8_to_wstring(cmd_line);
+    std::wstring wcmd_line = build_timeout_command_line(cfg.command, cfg.args);
 
     // Create process
     STARTUPINFOW si = {sizeof(si)};
@@ -253,16 +307,22 @@ auto run(const Config& cfg) -> int {
       // Process timed out, kill it
       int timeout_status =
           cfg.preserve_status ? std::min(255, 128 + cfg.signal) : 124;
+      bool sent_initial_termination = false;
       if (cfg.verbose) {
         safeErrorPrintLn("timeout: sending signal " +
-                         std::to_string(cfg.signal) + " to command '" +
+                         timeout_signal_name(cfg.signal) + " to command '" +
                          cfg.command + "'");
       }
 
-      // --foreground: don't send signal to background processes
-      // On Windows, this is less relevant but we can check process group
-      if (!cfg.foreground) {
+      // GNU signal 0 is a liveness probe, not a terminating signal. Keep the
+      // old Windows approximation for plain -s0 timeouts, but when --kill-after
+      // is present defer termination until the KILL phase so the exit status
+      // tracks the forced kill path.
+      if (cfg.signal != 0 || cfg.kill_after_ms <= 0) {
+        // On Windows we do not have GNU signal delivery semantics, but
+        // --foreground must not disable timeout enforcement.
         TerminateProcess(pi.hProcess, timeout_status);
+        sent_initial_termination = true;
       }
 
       // --kill-after: if specified, wait additional time then force kill
@@ -271,7 +331,18 @@ auto run(const Config& cfg) -> int {
         DWORD kill_result = WaitForSingleObject(pi.hProcess, kill_wait);
         if (kill_result == WAIT_TIMEOUT) {
           // Force kill after kill-after duration
+          if (cfg.verbose) {
+            safeErrorPrintLn("timeout: sending signal KILL to command '" +
+                             cfg.command + "'");
+          }
+          timeout_status = 128 + 9;
           TerminateProcess(pi.hProcess, timeout_status);
+        } else if (kill_result == WAIT_OBJECT_0 && !sent_initial_termination &&
+                   cfg.signal == 0 && cfg.preserve_status) {
+          DWORD exit_code = 0;
+          if (GetExitCodeProcess(pi.hProcess, &exit_code)) {
+            timeout_status = static_cast<int>(exit_code);
+          }
         }
       }
 
@@ -326,6 +397,21 @@ REGISTER_COMMAND(
 
   auto cfg_result = build_config(ctx);
   if (!cfg_result) {
+    if (cfg_result.error() == "missing operand") {
+      safeErrorPrintLn("timeout: missing operand");
+      safeErrorPrintLn("Try 'timeout --help' for more information.");
+      return 125;
+    }
+    if (cfg_result.error() == "missing command") {
+      safeErrorPrintLn("timeout: missing command");
+      safeErrorPrintLn("Try 'timeout --help' for more information.");
+      return 125;
+    }
+    if (cfg_result.error().contains("invalid signal") ||
+        cfg_result.error().contains("invalid time interval")) {
+      safeErrorPrintLn("timeout: " + std::string(cfg_result.error()));
+      return 125;
+    }
     cp::report_error(cfg_result, L"timeout");
     return 1;
   }

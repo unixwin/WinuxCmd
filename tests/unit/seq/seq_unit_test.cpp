@@ -116,6 +116,39 @@ TEST(seq, seq_rejects_invalid_number_without_throwing) {
               std::string::npos);
 }
 
+TEST(seq, seq_missing_operand_reports_help_hint) {
+  Pipeline p;
+  p.add(L"seq.exe", {});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "seq: missing operand\n"
+      "Try 'seq --help' for more information.\n");
+}
+
+TEST(seq, seq_rejects_extra_operand_with_help_hint) {
+  Pipeline p;
+  p.add(L"seq.exe", {L"1", L"2", L"3", L"4"});
+
+  TEST_LOG_CMD_LIST("seq.exe", L"1", L"2", L"3", L"4");
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("seq extra operand stderr", r.stderr_text);
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "seq: extra operand '4'\n"
+      "Try 'seq --help' for more information.\n");
+}
+
 TEST(seq, seq_rejects_zero_increment) {
   Pipeline p;
   p.add(L"seq.exe", {L"1", L"0", L"3"});
@@ -128,7 +161,8 @@ TEST(seq, seq_rejects_zero_increment) {
   TEST_LOG("seq zero increment stderr", r.stderr_text);
 
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stderr_text.find("zero increment") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(r.stderr_text, "seq: invalid Zero increment value: '0'\n");
 }
 
 TEST(seq, seq_negative_decreasing_range) {
@@ -249,4 +283,18 @@ TEST(seq, seq_format_rejects_non_float_conversion) {
 
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_TRUE(r.stderr_text.find("format") != std::string::npos);
+}
+
+TEST(seq, seq_rejects_format_with_equal_width) {
+  Pipeline p;
+  p.add(L"seq.exe", {L"-w", L"-f", L"%f", L"1"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "seq: format string may not be specified when printing equal width "
+      "strings\n");
 }

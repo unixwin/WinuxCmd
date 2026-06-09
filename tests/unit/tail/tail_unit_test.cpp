@@ -367,6 +367,39 @@ TEST(tail, tail_follow_option_recognized) {
   EXPECT_TRUE(r.stdout_text.find("--follow") != std::string::npos);
 }
 
+TEST(tail, tail_follow_mode_last_occurrence_wins_to_descriptor) {
+  TempDir tmp;
+  tmp.write("a.txt", "line1\nline2\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"tail.exe",
+        {L"--debug", L"-F", L"--follow=descriptor", L"--pid", L"999999",
+         L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "line1\nline2\n");
+  EXPECT_TRUE(r.stderr_text.find("following by descriptor") !=
+              std::string::npos);
+}
+
+TEST(tail, tail_follow_mode_last_occurrence_wins_to_name) {
+  TempDir tmp;
+  tmp.write("a.txt", "line1\nline2\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"tail.exe",
+        {L"--debug", L"--follow=descriptor", L"-F", L"--pid", L"999999",
+         L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "line1\nline2\n");
+  EXPECT_TRUE(r.stderr_text.find("following by name") != std::string::npos);
+}
+
 TEST(tail, tail_retry_and_pid_follow_missing_file_until_it_appears) {
   TempDir tmp;
   auto sentinel = start_follow_sentinel();

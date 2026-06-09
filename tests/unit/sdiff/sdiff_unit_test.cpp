@@ -44,7 +44,12 @@ TEST(sdiff, sdiff_suppress_common) {
   p.add(L"sdiff.exe", {L"--suppress-common-lines", L"a.txt", L"b.txt"});
   auto r = p.run();
 
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("sdiff suppress common output", r.stdout_text);
+
   EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("same") == std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("diff1") != std::string::npos);
 }
 
 TEST(sdiff, sdiff_width) {
@@ -56,6 +61,9 @@ TEST(sdiff, sdiff_width) {
   p.set_cwd(tmp.wpath());
   p.add(L"sdiff.exe", {L"-w", L"120", L"a.txt", L"b.txt"});
   auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("sdiff width output", r.stdout_text);
 
   EXPECT_EQ(r.exit_code, 0);
 }
@@ -98,4 +106,20 @@ TEST(sdiff, sdiff_empty_files) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.empty());
+}
+
+TEST(sdiff, sdiff_rejects_extra_operand_with_help_hint) {
+  Pipeline p;
+  p.add(L"sdiff.exe", {L"a.txt", L"b.txt", L"c.txt"});
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("sdiff extra operand stderr", r.stderr_text);
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ(r.stderr_text,
+            "sdiff: extra operand 'c.txt'\n"
+            "Try 'sdiff --help' for more information.\n");
 }

@@ -93,16 +93,36 @@ auto build_config(const CommandContext<STAT_OPTIONS.size()>& ctx)
       ctx.get<bool>("--dereference", false) || ctx.get<bool>("-L", false);
   cfg.file_system =
       ctx.get<bool>("--file-system", false) || ctx.get<bool>("-f", false);
-  cfg.format = ctx.get<std::string>("--format", "");
-  if (cfg.format.empty()) {
-    cfg.format = ctx.get<std::string>("-c", "");
-  }
-  cfg.terse = ctx.get<bool>("--terse", false) || ctx.get<bool>("-t", false);
 
-  auto printf_fmt = ctx.get<std::string>("--printf", "");
-  if (!printf_fmt.empty()) {
-    cfg.format = printf_fmt;
-    cfg.printf_format = true;
+  for (const auto& occurrence : ctx.options.occurrences()) {
+    if (!ctx.metas || occurrence.index >= STAT_OPTIONS.size()) {
+      continue;
+    }
+
+    const auto& meta = (*ctx.metas)[occurrence.index];
+    if (meta.long_name == "--terse" || meta.short_name == "-t") {
+      cfg.terse = true;
+      cfg.format.clear();
+      cfg.printf_format = false;
+      continue;
+    }
+
+    if (meta.long_name == "--printf") {
+      if (const auto* value = std::get_if<std::string>(&occurrence.value)) {
+        cfg.terse = false;
+        cfg.format = *value;
+        cfg.printf_format = true;
+      }
+      continue;
+    }
+
+    if (meta.long_name == "--format" || meta.short_name == "-c") {
+      if (const auto* value = std::get_if<std::string>(&occurrence.value)) {
+        cfg.terse = false;
+        cfg.format = *value;
+        cfg.printf_format = false;
+      }
+    }
   }
 
   for (auto arg : ctx.positionals) {
@@ -688,7 +708,12 @@ REGISTER_COMMAND(stat, "stat", "stat [OPTION]... FILE...",
 
   auto cfg_result = build_config(ctx);
   if (!cfg_result) {
-    cp::report_error(cfg_result, L"stat");
+    if (cfg_result.error() == "missing operand") {
+      safeErrorPrint("stat: missing operand\n");
+      safeErrorPrint("Try 'stat --help' for more information.\n");
+    } else {
+      cp::report_error(cfg_result, L"stat");
+    }
     return 1;
   }
 

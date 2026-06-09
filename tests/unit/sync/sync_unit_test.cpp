@@ -55,6 +55,119 @@ TEST(sync, sync_file) {
   EXPECT_EQ(r.exit_code, 0);
 }
 
+TEST(sync, sync_directory_operand_is_accepted) {
+  TempDir tmp;
+  std::filesystem::create_directory(tmp.path / "dir");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sync.exe", {L"dir"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.empty());
+}
+
+TEST(sync, sync_data_option_is_accepted) {
+  TempDir tmp;
+  tmp.write("test.txt", "hello world");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sync.exe", {L"-d", L"test.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.empty());
+}
+
+TEST(sync, sync_data_directory_operand_is_accepted) {
+  TempDir tmp;
+  std::filesystem::create_directory(tmp.path / "dir");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sync.exe", {L"--data", L"dir"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.empty());
+}
+
+TEST(sync, sync_data_without_files_reports_gnu_style_error) {
+  Pipeline p;
+  p.add(L"sync.exe", {L"--data"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "sync: --data needs at least one argument\n");
+}
+
+TEST(sync, sync_data_and_file_system_are_mutually_exclusive) {
+  TempDir tmp;
+  tmp.write("test.txt", "hello world");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sync.exe", {L"--data", L"--file-system", L"test.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "sync: options --data and --file-system are mutually exclusive\n");
+}
+
+TEST(sync, sync_file_system_option_is_accepted) {
+  TempDir tmp;
+  tmp.write("test.txt", "hello world");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sync.exe", {L"--file-system", L"test.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.empty());
+}
+
+TEST(sync, sync_file_system_accepts_directory_operand) {
+  TempDir tmp;
+  std::filesystem::create_directory(tmp.path / "dir");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sync.exe", {L"--file-system", L"dir"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.empty());
+}
+
+TEST(sync, sync_unknown_option_reports_gnu_style_parse_error) {
+  Pipeline p;
+  p.add(L"sync.exe", {L"--bogus"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "sync: unrecognized option '--bogus'\n"
+      "Try 'sync --help' for more information.\n");
+}
+
 TEST(sync, sync_nonexistent_file) {
   Pipeline p;
   p.add(L"sync.exe", {L"nonexistent.txt"});
@@ -67,5 +180,22 @@ TEST(sync, sync_nonexistent_file) {
   TEST_LOG("sync stderr", r.stderr_text);
 
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_FALSE(r.stderr_text.empty());
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "sync: error opening 'nonexistent.txt': No such file or directory\n");
+}
+
+TEST(sync, sync_multiple_nonexistent_files_report_all_errors) {
+  Pipeline p;
+  p.add(L"sync.exe", {L"--data", L"bad1", L"bad2"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "sync: error opening 'bad1': No such file or directory\n"
+      "sync: error opening 'bad2': No such file or directory\n");
 }

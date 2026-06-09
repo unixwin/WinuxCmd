@@ -61,12 +61,12 @@ auto parent_path(std::wstring p) -> std::wstring {
 auto remove_one(const std::string& utf8_path, bool ignore_non_empty,
                 bool verbose) -> bool {
   std::wstring wpath = utf8_to_wstring(utf8_path);
+  if (verbose) {
+    safePrint("rmdir: removing directory, '");
+    safePrint(utf8_path);
+    safePrint("'\n");
+  }
   if (RemoveDirectoryW(wpath.c_str())) {
-    if (verbose) {
-      safePrint("rmdir: removing directory '");
-      safePrint(utf8_path);
-      safePrint("'\n");
-    }
     return true;
   }
 
@@ -77,6 +77,12 @@ auto remove_one(const std::string& utf8_path, bool ignore_non_empty,
     safeErrorPrint("rmdir: failed to remove '");
     safeErrorPrint(utf8_path);
     safeErrorPrint("': No such file or directory\n");
+    return false;
+  }
+  if (e == ERROR_DIRECTORY) {
+    safeErrorPrint("rmdir: failed to remove '");
+    safeErrorPrint(utf8_path);
+    safeErrorPrint("': Not a directory\n");
     return false;
   }
   if (e == ERROR_DIR_NOT_EMPTY) {
@@ -119,7 +125,10 @@ auto process_command(const CommandContext<RMDIR_OPTIONS.size()>& ctx)
       if (p.empty() || is_root_path(p)) break;
 
       std::string p8 = wstring_to_utf8(p);
-      if (!remove_one(p8, ignore_non_empty, verbose)) break;
+      if (!remove_one(p8, ignore_non_empty, verbose)) {
+        ok_all = false;
+        break;
+      }
       wcur = p;
     }
   }
@@ -138,6 +147,11 @@ REGISTER_COMMAND(rmdir, "rmdir", "rmdir [OPTION]... DIRECTORY...",
   using namespace rmdir_pipeline;
   auto result = process_command(ctx);
   if (!result) {
+    if (result.error() == "missing operand") {
+      safeErrorPrintLn("rmdir: missing operand");
+      safeErrorPrintLn("Try 'rmdir --help' for more information.");
+      return 1;
+    }
     cp::report_error(result, L"rmdir");
     return 1;
   }

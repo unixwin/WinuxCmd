@@ -219,9 +219,247 @@ auto rewrite_head_tail_count_args(std::string_view cmdName,
   return std::nullopt;
 }
 
+auto is_chmod_negative_symbolic_mode_arg(std::string_view arg) -> bool {
+  if (arg.size() < 2 || arg[0] != '-' || arg[1] == '-') {
+    return false;
+  }
+
+  return std::ranges::all_of(arg.substr(1), [](unsigned char ch) {
+    return ch == 'r' || ch == 'w' || ch == 'x';
+  });
+}
+
+auto rewrite_chmod_gnu_negative_mode_args(std::string_view cmdName,
+                                          std::span<std::string_view> args)
+    -> std::optional<std::vector<std::string>> {
+  if (cmdName != "chmod" || args.empty()) {
+    return std::nullopt;
+  }
+
+  std::vector<std::string> negative_modes;
+  std::vector<std::string> pre_double_hyphen_args;
+  std::vector<std::string> post_double_hyphen_args;
+  bool seen_double_hyphen = false;
+
+  for (auto arg : args) {
+    if (!seen_double_hyphen && arg == "--") {
+      seen_double_hyphen = true;
+      continue;
+    }
+
+    if (!seen_double_hyphen && is_chmod_negative_symbolic_mode_arg(arg)) {
+      negative_modes.push_back("a" + std::string(arg));
+      continue;
+    }
+
+    if (seen_double_hyphen) {
+      post_double_hyphen_args.emplace_back(arg);
+    } else {
+      pre_double_hyphen_args.emplace_back(arg);
+    }
+  }
+
+  if (negative_modes.empty()) {
+    return std::nullopt;
+  }
+
+  std::vector<std::string> rewritten;
+  rewritten.reserve(args.size() + 1);
+
+  std::string merged_mode;
+  for (size_t i = 0; i < negative_modes.size(); ++i) {
+    if (i != 0) {
+      merged_mode.push_back(',');
+    }
+    merged_mode += negative_modes[i];
+  }
+
+  rewritten.push_back(std::move(merged_mode));
+  for (const auto& arg : pre_double_hyphen_args) {
+    rewritten.push_back(arg);
+  }
+  if (seen_double_hyphen) {
+    rewritten.push_back("--");
+    for (const auto& arg : post_double_hyphen_args) {
+      rewritten.push_back(arg);
+    }
+  }
+
+  return rewritten;
+}
+
+auto parse_legacy_nice_adjustment(std::string_view arg) -> std::optional<int> {
+  if (arg.size() < 2 || arg[0] != '-') {
+    return std::nullopt;
+  }
+
+  if (arg == "-n" || arg == "--adjustment") {
+    return std::nullopt;
+  }
+
+  std::string_view numeric = arg.substr(1);
+  if (numeric.empty() || numeric == "-" || numeric == "+") {
+    return std::nullopt;
+  }
+
+  if (numeric[0] == '+') {
+    numeric.remove_prefix(1);
+    if (numeric.empty()) {
+      return std::nullopt;
+    }
+  }
+
+  int value = 0;
+  auto [ptr, ec] =
+      std::from_chars(numeric.data(), numeric.data() + numeric.size(), value);
+  if (ec != std::errc() || ptr != numeric.data() + numeric.size()) {
+    return std::nullopt;
+  }
+
+  return value;
+}
+
+auto rewrite_nice_legacy_args(std::string_view cmdName,
+                              std::span<std::string_view> args)
+    -> std::optional<std::vector<std::string>> {
+  if (cmdName != "nice" || args.empty()) {
+    return std::nullopt;
+  }
+
+  std::vector<std::string> rewritten;
+  rewritten.reserve(args.size());
+  bool changed = false;
+  bool seen_command = false;
+  bool expecting_adjustment_value = false;
+
+  for (auto arg : args) {
+    if (seen_command) {
+      rewritten.emplace_back(arg);
+      continue;
+    }
+
+    if (arg == "--") {
+      rewritten.emplace_back(arg);
+      seen_command = true;
+      expecting_adjustment_value = false;
+      continue;
+    }
+
+    if (expecting_adjustment_value) {
+      rewritten.emplace_back(arg);
+      expecting_adjustment_value = false;
+      continue;
+    }
+
+    if (arg == "-n" || arg == "--adjustment") {
+      rewritten.emplace_back(arg);
+      expecting_adjustment_value = true;
+      continue;
+    }
+
+    if (arg.starts_with("-n") || arg.starts_with("--adjustment=")) {
+      rewritten.emplace_back(arg);
+      continue;
+    }
+
+    if (auto legacy_value = parse_legacy_nice_adjustment(arg)) {
+      rewritten.emplace_back("-n" + std::to_string(*legacy_value));
+      changed = true;
+      continue;
+    }
+
+    if (!arg.empty() && arg[0] != '-') {
+      rewritten.emplace_back("--");
+      rewritten.emplace_back(arg);
+      seen_command = true;
+      changed = true;
+      continue;
+    }
+
+    rewritten.emplace_back(arg);
+  }
+
+  if (!changed) {
+    return std::nullopt;
+  }
+
+  return rewritten;
+}
+
+auto echo_posixly_correct_literal_mode(std::string_view cmdName,
+                                       std::span<std::string_view> args)
+    -> bool {
+  if (cmdName != "echo") {
+    return false;
+  }
+
+  const char* value = std::getenv("POSIXLY_CORRECT");
+  if (value == nullptr || value[0] == '\0') {
+    return false;
+  }
+
+  return args.empty() || args[0] != "-n";
+}
+
+auto command_supports_dispatcher_version(std::string_view cmdName) -> bool {
+  return cmdName == "yes" || cmdName == "true" || cmdName == "false" ||
+         cmdName == "link" || cmdName == "unlink" || cmdName == "arch" ||
+         cmdName == "hostid" || cmdName == "logname" ||
+         cmdName == "whoami" || cmdName == "factor" || cmdName == "tsort" ||
+         cmdName == "users";
+}
+
+auto wants_standard_version(std::string_view cmdName,
+                            std::span<std::string_view> args) -> bool {
+  if (!command_supports_dispatcher_version(cmdName)) {
+    return false;
+  }
+
+  for (const auto& arg : args) {
+    if (arg == "--") {
+      break;
+    }
+    if (arg == "--version" || arg == "-V") {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+auto rewrite_echo_posix_args(std::string_view cmdName,
+                             std::span<std::string_view> args)
+    -> std::optional<std::vector<std::string>> {
+  if (!echo_posixly_correct_literal_mode(cmdName, args)) {
+    return std::nullopt;
+  }
+
+  std::vector<std::string> rewritten;
+  rewritten.reserve(args.size() + 1);
+  rewritten.emplace_back("--");
+  append_remaining_args(rewritten, args, 0);
+  return rewritten;
+}
+
 // Internal registry implementation class
 class RegistryImpl {
   std::unordered_map<std::string_view, CommandEntryErased> registry_;
+
+  static auto is_posixly_correct() -> bool {
+    const char* value = std::getenv("POSIXLY_CORRECT");
+    return value != nullptr && value[0] != '\0';
+  }
+
+  static auto parse_error_exit_code(std::string_view name) -> int {
+    if (name == "env") return 125;
+    if (name == "nice") return 125;
+    if (name == "nohup") return is_posixly_correct() ? 127 : 125;
+    if (name == "stdbuf") return 125;
+    if (name == "timeout") return 125;
+    if (name == "printenv") return 2;
+    if (name == "tty") return 2;
+    return 1;
+  }
 
  public:
   // Register a command with compile-time metadata
@@ -232,10 +470,18 @@ class RegistryImpl {
     cmd::meta::Registry::register_command(name, meta);
 
     // type erase
-    auto lambda = [meta, handler](std::span<std::string_view> args) -> int {
+    auto lambda = [meta, handler, name](std::span<std::string_view> args)
+        -> int {
       bool ok = true;
       auto ctx = make_context<N>(args, meta.options(), ok);
-      if (!ok) return 1;
+      if (!ok) {
+        if (!ctx.parse_error.empty()) {
+          safeErrorPrintLn(std::string(name) + ": " + ctx.parse_error);
+          safeErrorPrintLn("Try '" + std::string(name) +
+                           " --help' for more information.");
+        }
+        return parse_error_exit_code(name);
+      }
       return handler(ctx);
     };
 
@@ -266,33 +512,66 @@ class RegistryImpl {
       effective_args = std::span<std::string_view>(rewritten_views);
     }
 
+    if (auto rewritten =
+            rewrite_chmod_gnu_negative_mode_args(cmdName, effective_args)) {
+      rewritten_storage = std::move(*rewritten);
+      rewritten_views.clear();
+      rewritten_views.reserve(rewritten_storage.size());
+      for (const auto &arg : rewritten_storage) {
+        rewritten_views.emplace_back(arg);
+      }
+      effective_args = std::span<std::string_view>(rewritten_views);
+    }
+
+    if (auto rewritten = rewrite_nice_legacy_args(cmdName, effective_args)) {
+      rewritten_storage = std::move(*rewritten);
+      rewritten_views.clear();
+      rewritten_views.reserve(rewritten_storage.size());
+      for (const auto &arg : rewritten_storage) {
+        rewritten_views.emplace_back(arg);
+      }
+      effective_args = std::span<std::string_view>(rewritten_views);
+    }
+
+    if (auto rewritten = rewrite_echo_posix_args(cmdName, effective_args)) {
+      rewritten_storage = std::move(*rewritten);
+      rewritten_views.clear();
+      rewritten_views.reserve(rewritten_storage.size());
+      for (const auto& arg : rewritten_storage) {
+        rewritten_views.emplace_back(arg);
+      }
+      effective_args = std::span<std::string_view>(rewritten_views);
+    }
+
     // Get meta data from the command
     const auto &meta = it->second.meta;
     auto options = meta.options();  // std::span<const OptionMeta>
 
     // Check if it contains help
     bool wants_help = false;
-    for (const auto &arg : effective_args) {
-      if (arg == "--help") {
-        wants_help = true;
-        break;
-      }
-    }
-
-    if (!wants_help) {
-      // Check if -h is already been registered
-      bool has_h_option = false;
-      for (const auto &opt : options) {
-        if (opt.short_name == "-h") {
-          has_h_option = true;
+    if (!echo_posixly_correct_literal_mode(cmdName, args)) {
+      for (const auto &arg : effective_args) {
+        if (arg == "--help") {
+          wants_help = true;
           break;
         }
       }
-      if (!has_h_option) {
-        for (const auto &arg : effective_args) {
-          if (arg == "-h") {
-            wants_help = true;
+
+      if (!wants_help) {
+        // Check if -h is already been registered
+        bool has_h_option = false;
+        for (const auto &opt : options) {
+          if (opt.short_name == "-h") {
+            has_h_option = true;
             break;
+          }
+        }
+        if (!has_h_option) {
+          for (const auto &arg : effective_args) {
+            if (arg == "-h") {
+              wants_help = true;
+              break;
+            }
           }
         }
       }
@@ -300,6 +579,11 @@ class RegistryImpl {
 
     if (wants_help) {
       cmd::meta::Registry::print_help(cmdName);
+      return 0;
+    }
+
+    if (wants_standard_version(cmdName, effective_args)) {
+      safePrintLn(std::string(cmdName) + " (WinuxCmd) 0.1.0");
       return 0;
     }
 

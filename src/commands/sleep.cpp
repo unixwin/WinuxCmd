@@ -58,7 +58,7 @@ auto parse_duration(const std::string& duration) -> cp::Result<int64_t> {
     std::string s = duration;
 
     if (s.empty()) {
-      return std::unexpected("invalid duration");
+      return std::unexpected("invalid time interval '" + duration + "'");
     }
 
     int64_t multiplier = 1;
@@ -89,11 +89,15 @@ auto parse_duration(const std::string& duration) -> cp::Result<int64_t> {
       }
     }
 
-    double value = std::stod(s);
+    size_t parsed = 0;
+    double value = std::stod(s, &parsed);
+    if (parsed != s.size() || value < 0) {
+      return std::unexpected("invalid time interval '" + duration + "'");
+    }
     return static_cast<int64_t>(value * multiplier *
                                 1000);  // Convert to milliseconds
   } catch (...) {
-    return std::unexpected("invalid duration format");
+    return std::unexpected("invalid time interval '" + duration + "'");
   }
 }
 
@@ -114,18 +118,23 @@ auto build_config(const CommandContext<SLEEP_OPTIONS.size()>& ctx)
 
 auto run(const Config& cfg) -> int {
   int64_t total_ms = 0;
+  SmallVector<std::string, 8> invalid_durations;
 
   for (const auto& duration_str : cfg.durations) {
     auto duration_result = parse_duration(duration_str);
     if (!duration_result) {
-      cp::report_error(duration_result, L"sleep");
-      return 1;
+      invalid_durations.push_back(std::string(duration_result.error()));
+      continue;
     }
     total_ms += *duration_result;
   }
 
-  if (total_ms < 0) {
-    total_ms = 0;
+  if (!invalid_durations.empty()) {
+    for (const auto& error : invalid_durations) {
+      safeErrorPrintLn("sleep: " + error);
+    }
+    safeErrorPrintLn("Try 'sleep --help' for more information.");
+    return 1;
   }
 
   Sleep(static_cast<DWORD>(total_ms));
@@ -155,6 +164,11 @@ REGISTER_COMMAND(
 
   auto cfg_result = build_config(ctx);
   if (!cfg_result) {
+    if (cfg_result.error() == "missing operand") {
+      safeErrorPrintLn("sleep: missing operand");
+      safeErrorPrintLn("Try 'sleep --help' for more information.");
+      return 1;
+    }
     cp::report_error(cfg_result, L"sleep");
     return 1;
   }
