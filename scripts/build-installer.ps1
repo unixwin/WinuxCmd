@@ -14,7 +14,8 @@ param(
     [string[]]$VsEnvArgs,
     [string]$StageDir,
     [string]$OutputDir,
-    [string]$IsccPath
+    [string]$IsccPath,
+    [switch]$SkipBuild
 )
 
 $ErrorActionPreference = "Stop"
@@ -72,26 +73,28 @@ $projectVersion = Get-ProjectVersion -ProjectRoot $rootPath
 $issPath = Join-Path $rootPath "packaging\winuxcmd.iss"
 $buildScript = Join-Path $rootPath "scripts\build-with-vs.ps1"
 
-if (-not (Test-Path -LiteralPath $VsEnvScript)) {
-    throw "Visual Studio environment script not found: $VsEnvScript"
-}
-
 if (-not (Test-Path -LiteralPath $issPath)) {
     throw "Installer script not found: $issPath"
 }
 
-if (-not (Test-Path -LiteralPath $buildScript)) {
-    throw "Build helper not found: $buildScript"
-}
+if (-not $SkipBuild) {
+    if (-not (Test-Path -LiteralPath $VsEnvScript)) {
+        throw "Visual Studio environment script not found: $VsEnvScript"
+    }
 
-if ($null -eq $VsEnvArgs) {
-    $scriptName = Split-Path -Leaf $VsEnvScript
-    if ($scriptName -ieq "VsDevCmd.bat") {
-        $VsEnvArgs = @("-arch=$Arch")
-    } elseif ($scriptName -ieq "vcvarsall.bat") {
-        $VsEnvArgs = @($Arch)
-    } else {
-        $VsEnvArgs = @()
+    if (-not (Test-Path -LiteralPath $buildScript)) {
+        throw "Build helper not found: $buildScript"
+    }
+
+    if ($null -eq $VsEnvArgs) {
+        $scriptName = Split-Path -Leaf $VsEnvScript
+        if ($scriptName -ieq "VsDevCmd.bat") {
+            $VsEnvArgs = @("-arch=$Arch")
+        } elseif ($scriptName -ieq "vcvarsall.bat") {
+            $VsEnvArgs = @($Arch)
+        } else {
+            $VsEnvArgs = @()
+        }
     }
 }
 
@@ -109,27 +112,29 @@ Write-Host "Version: $projectVersion"
 Write-Host "Arch: $Arch"
 Write-Host ""
 
-$buildScriptArgs = @(
-    "-NoProfile",
-    "-ExecutionPolicy", "Bypass",
-    "-File", $buildScript,
-    "-Root", $rootPath,
-    "-BuildDir", $BuildDir,
-    "-Target", "winuxcmd",
-    "-Configuration", $Configuration,
-    "-VsEnvScript", $VsEnvScript,
-    "-Arch", $Arch,
-    "-Generator", $Generator
-)
+if (-not $SkipBuild) {
+    $buildScriptArgs = @(
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", $buildScript,
+        "-Root", $rootPath,
+        "-BuildDir", $BuildDir,
+        "-Target", "winuxcmd",
+        "-Configuration", $Configuration,
+        "-VsEnvScript", $VsEnvScript,
+        "-Arch", $Arch,
+        "-Generator", $Generator
+    )
 
-if ($VsEnvArgs.Count -gt 0) {
-    $buildScriptArgs += @("-VsEnvArgs")
-    $buildScriptArgs += $VsEnvArgs
-}
+    if ($VsEnvArgs.Count -gt 0) {
+        $buildScriptArgs += @("-VsEnvArgs")
+        $buildScriptArgs += $VsEnvArgs
+    }
 
-& powershell @buildScriptArgs
-if ($LASTEXITCODE -ne 0) {
-    exit $LASTEXITCODE
+    & powershell @buildScriptArgs
+    if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
+    }
 }
 
 & cmake --install $buildPath --prefix $resolvedStagePath
