@@ -778,6 +778,11 @@ install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/scripts/winux.ps1"
         COMPONENT Runtime
 )
 
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/scripts/winux.cmd"
+        DESTINATION "${CMAKE_INSTALL_BINDIR}"
+        COMPONENT Runtime
+)
+
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/scripts/winux-activate.ps1"
         DESTINATION "${CMAKE_INSTALL_BINDIR}"
         COMPONENT Runtime

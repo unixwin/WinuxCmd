@@ -157,6 +157,20 @@ add_test(
 )
 set_tests_properties(winux_command_discovery PROPERTIES LABELS "WinuxCmd;PowerShell")
 
+add_test(
+    NAME winux_winget_discovery
+    COMMAND ${POWERSHELL_EXE} -NoProfile -ExecutionPolicy Bypass -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/winux_winget_discovery_test.ps1"
+)
+set_tests_properties(winux_winget_discovery PROPERTIES LABELS "WinuxCmd;PowerShell")
+
+add_test(
+    NAME winux_installer_root_discovery
+    COMMAND ${POWERSHELL_EXE} -NoProfile -ExecutionPolicy Bypass -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/winux_installer_root_discovery_test.ps1"
+)
+set_tests_properties(winux_installer_root_discovery PROPERTIES LABELS "WinuxCmd;PowerShell")
+
 # Also add dependency to test-all target
 if(TARGET test-all)
     add_dependencies(test-all create-test-links)
