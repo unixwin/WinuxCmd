@@ -41,10 +41,32 @@ jobs:
           }
           echo "project_version=$version" >> $env:GITHUB_OUTPUT
 
+      - name: Locate Visual Studio toolchain
+        id: locate_vcvars
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) {
+            throw "vswhere.exe not found at $vswhere"
+          }
+
+          $vcvarsPath = & $vswhere `
+            -latest `
+            -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -find "VC\Auxiliary\Build\vcvarsall.bat" |
+            Select-Object -First 1
+
+          if ([string]::IsNullOrWhiteSpace($vcvarsPath)) {
+            throw "Failed to locate vcvarsall.bat via vswhere"
+          }
+
+          "vcvars_path=$vcvarsPath" >> $env:GITHUB_OUTPUT
+
       - name: Configure CMake (Release Mode)
         shell: cmd
         run: |
-          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" ${{ matrix.vcvars_arg }}
+          call "${{ steps.locate_vcvars.outputs.vcvars_path }}" ${{ matrix.vcvars_arg }}
           cmake -B build-${{ matrix.package_arch }} ^
             -G "Ninja" ^
             -DCMAKE_BUILD_TYPE=Release ^
@@ -63,7 +85,7 @@ jobs:
         shell: cmd
         working-directory: build-${{ matrix.package_arch }}
         run: |
-          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" ${{ matrix.vcvars_arg }}
+          call "${{ steps.locate_vcvars.outputs.vcvars_path }}" ${{ matrix.vcvars_arg }}
           cmake --build . --config Release --parallel %NUMBER_OF_PROCESSORS%
 
       - name: Package with CPack (7Z + ZIP + TGZ)
