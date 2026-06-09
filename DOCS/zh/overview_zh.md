@@ -19,31 +19,9 @@ WinuxCmd 是一个原生 Windows 命令行工具集，让你在不依赖 WSL 的
 
 ## Shell 行为（重点）
 
-WinuxCmd REPL 具备“内置命令 + 原生回退”机制。
-
-- 命中内置命令：内部执行
-- 未命中内置命令：回退到原生 shell
-- 回退 shell 根据进入来源自动选择：
-  - 从 PowerShell/pwsh 进入 -> 回退到 PowerShell
-  - 从 cmd 进入 -> 回退到 cmd
-
-因此，从 PowerShell 进入时，`Get-Process` / `Where-Object` 可以正常执行。
-
-## 自动补全
-
-用户补全文件：
-
-![自动补全演示](../images/auto.gif)
-
-- 默认：`%USERPROFILE%\.winuxcmd\completions\user-completions.txt`
-- 环境变量覆盖：`WINUXCMD_COMPLETION_FILE`
-
-格式：
-
-```text
-cmd|<command>|<description>
-opt|<command>|<option>|<description>
-```
+WinuxCmd 是命令执行器，不是 shell。它只分发已实现的 WinuxCmd 命令；
+未知命令返回 `127`。PATH 查找、alias、管道、重定向、补全和 shell
+内建命令都由当前 shell 负责。
 
 ## Shell 集成文档
 
@@ -67,6 +45,6 @@ opt|<command>|<option>|<description>
 
 高价值贡献方向：
 
-1. Shell 兼容性修复
-2. REPL / fallback 回归测试
+1. Shell 集成修复
+2. Windows 命令行为测试
 3. 文档与示例改进

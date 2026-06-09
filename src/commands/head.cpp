@@ -296,6 +296,16 @@ auto output_head(std::istream& in, const HeadConfig& config) -> void {
   }
 }
 
+auto open_input_file(const std::string& file) -> std::ifstream {
+  return std::ifstream(std::filesystem::path(utf8_to_wstring(file)),
+                       std::ios::binary);
+}
+
+auto output_text_head(std::istream& in, const HeadConfig& config) -> void {
+  std::istringstream decoded(read_text_stream(in));
+  output_head(decoded, config);
+}
+
 template <size_t N>
 auto build_config(const CommandContext<N>& ctx) -> cp::Result<HeadConfig> {
   HeadConfig config;
@@ -398,13 +408,17 @@ REGISTER_COMMAND(
     }
 
     if (file == "-") {
-      output_head(std::cin, config);
+      if (config.by_bytes || config.delimiter == '\0') {
+        output_head(std::cin, config);
+      } else {
+        output_text_head(std::cin, config);
+      }
       if (std::cin.bad()) {
         safeErrorPrint("head: error reading '-'\n");
         any_error = true;
       }
     } else {
-      std::ifstream input(file, std::ios::binary);
+      std::ifstream input = open_input_file(file);
       if (!input.is_open()) {
         safeErrorPrint("head: cannot open '");
         safeErrorPrint(file);
@@ -413,7 +427,11 @@ REGISTER_COMMAND(
         continue;
       }
 
-      output_head(input, config);
+      if (config.by_bytes || config.delimiter == '\0') {
+        output_head(input, config);
+      } else {
+        output_text_head(input, config);
+      }
       if (input.bad()) {
         safeErrorPrint("head: error reading '");
         safeErrorPrint(file);

@@ -541,8 +541,6 @@ if(BUILD_STANDALONE)
         src/container/container.cppm
         src/container/small_vector.cppm
         src/container/constexpr_map.cppm
-        src/Main/readline.cppm
-        src/Main/native_completion.cppm
     )
     
     # Set core library properties
@@ -621,8 +619,6 @@ if(BUILD_STANDALONE)
             src/container/container.cppm
             src/container/small_vector.cppm
             src/container/constexpr_map.cppm
-            src/Main/readline.cppm
-            src/Main/native_completion.cppm
         )
         
         # Add PCH (same as core library)

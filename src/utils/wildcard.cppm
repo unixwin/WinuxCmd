@@ -206,7 +206,7 @@ export struct GlobResult {
  * This approach works correctly in all environments:
  * - PowerShell: expanded parameters don't contain wildcards, used as literal
  * paths
- * - cmd.exe/REPL: parameters with wildcards are expanded
+ * - cmd.exe: wildcard arguments are passed through and expanded here
  * - Supports literal filenames like "*.txt" (a file actually named "*.txt")
  */
 export GlobResult glob_expand(std::wstring_view pattern) {

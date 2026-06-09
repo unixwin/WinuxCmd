@@ -211,6 +211,36 @@ TEST(head, head_legacy_count_shorthand) {
   EXPECT_EQ_TEXT(r.stdout_text, "alpha\nbeta\n");
 }
 
+TEST(head, head_strips_utf8_bom_in_line_mode) {
+  TempDir tmp;
+  tmp.write("a.txt", "\xEF\xBB\xBFhello\nsecond\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"head.exe", {L"-n", L"1", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "hello\n");
+}
+
+TEST(head, head_decodes_utf16le_input) {
+  TempDir tmp;
+  tmp.write_bytes("a.txt",
+                  {static_cast<char>(0xFF), static_cast<char>(0xFE),
+                   'h', '\0', 'e', '\0', 'l', '\0', 'l', '\0', 'o',
+                   '\0', '\n', '\0', 's', '\0', 'e', '\0', 'c', '\0',
+                   'o', '\0', 'n', '\0', 'd', '\0', '\n', '\0'});
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"head.exe", {L"-n", L"1", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "hello\n");
+}
+
 TEST(head, head_obsolete_compact_byte_count) {
   TempDir tmp;
   tmp.write("a.txt", "abcdef\n");

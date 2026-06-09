@@ -24,7 +24,8 @@ complexity without increasing release size materially.
 ## Wildcard expansion policy
 
 - Only commands wired to `contains_wildcard` / `glob_expand` expand wildcards.
-- Quoted arguments are tagged by the REPL and remain literal.
+- WinuxCmd receives arguments after shell parsing; wildcard-aware commands
+  expand file-like operands according to their own command policy.
 - Expansion tries the literal path first; if it does not exist, it expands
   `*`, `?`, and `[]` patterns.
 - This applies only to file-like positional arguments such as `ls *.txt`,

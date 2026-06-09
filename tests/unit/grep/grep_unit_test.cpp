@@ -505,6 +505,35 @@ TEST(grep, grep_only_matching) {
   EXPECT_EQ_TEXT(r.stdout_text, "123\n123\n");
 }
 
+TEST(grep, grep_strips_utf8_bom) {
+  TempDir tmp;
+  tmp.write("a.txt", "\xEF\xBB\xBFhello\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"grep.exe", {L"-x", L"hello", L"a.txt"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "hello\n");
+}
+
+TEST(grep, grep_decodes_utf16le_input) {
+  TempDir tmp;
+  tmp.write_bytes("a.txt",
+                  {static_cast<char>(0xFF), static_cast<char>(0xFE),
+                   'h', '\0', 'e', '\0', 'l', '\0', 'l', '\0', 'o',
+                   '\0', '\n', '\0'});
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"grep.exe", {L"hello", L"a.txt"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "hello\n");
+}
+
 TEST(grep, grep_only_matching_warns_and_ignores_context) {
   TempDir tmp;
   tmp.write("a.txt", "before\nabc123def123\nafter\n");
