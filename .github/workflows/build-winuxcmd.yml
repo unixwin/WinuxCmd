@@ -137,7 +137,8 @@ jobs:
             -Generator Ninja `
             -Arch ${{ matrix.package_arch }} `
             -VsEnvScript "${{ steps.locate_vcvars.outputs.vcvars_path }}" `
-            -IsccPath "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+            -IsccPath "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" `
+            -SkipBuild
 
       - name: Upload Installer Artifact
         if: github.ref_type == 'tag'
