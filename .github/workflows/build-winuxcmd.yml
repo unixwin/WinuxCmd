@@ -120,6 +120,35 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+      - name: Install Inno Setup
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+
+      - name: Build Installer
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        run: |
+          ./scripts/build-installer.ps1 `
+            -Root $env:GITHUB_WORKSPACE `
+            -BuildDir build-${{ matrix.package_arch }} `
+            -Configuration Release `
+            -Generator Ninja `
+            -Arch ${{ matrix.package_arch }} `
+            -VsEnvScript "${{ steps.locate_vcvars.outputs.vcvars_path }}" `
+            -IsccPath "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+
+      - name: Upload Installer Artifact
+        if: github.ref_type == 'tag'
+        uses: actions/upload-artifact@v7
+        with:
+          name: WinuxCmd-${{ steps.extract_version.outputs.project_version }}-${{ matrix.package_arch }}-installer
+          path: |
+            dist/WinuxCmd-${{ steps.extract_version.outputs.project_version }}-${{ matrix.package_arch }}-setup.exe
+          retention-days: 1
+          if-no-files-found: error
+
   release:
     runs-on: ubuntu-latest
     needs: build-windows
@@ -154,6 +183,18 @@ jobs:
           name: WinuxCmd-${{ steps.final_version.outputs.version }}-arm64
           path: artifacts/arm64
 
+      - name: Download x64 Installer
+        uses: actions/download-artifact@v8
+        with:
+          name: WinuxCmd-${{ steps.final_version.outputs.version }}-x64-installer
+          path: artifacts/installers/x64
+
+      - name: Download ARM64 Installer
+        uses: actions/download-artifact@v8
+        with:
+          name: WinuxCmd-${{ steps.final_version.outputs.version }}-arm64-installer
+          path: artifacts/installers/arm64
+
       - name: Package WinuxCmd Skill
         shell: pwsh
         run: |
@@ -162,7 +203,7 @@ jobs:
       - name: Verify Packages
         run: |
           echo "=== Valid Packages ==="
-          find artifacts -type f \( -name "*.7z" -o -name "*.zip" -o -name "*.tar.gz" \) | sort || exit 1
+          find artifacts -type f \( -name "*.7z" -o -name "*.zip" -o -name "*.tar.gz" -o -name "*.exe" \) | sort || exit 1
           echo "======================"
 
       - name: Create GitHub Release
@@ -175,6 +216,8 @@ jobs:
             artifacts/arm64/*.7z
             artifacts/arm64/*.zip
             artifacts/arm64/*.tar.gz
+            artifacts/installers/x64/*.exe
+            artifacts/installers/arm64/*.exe
             artifacts/skill/*.zip
           tag_name: ${{ github.ref_name }}
           name: Release ${{ github.ref_name }}
@@ -189,9 +232,11 @@ jobs:
             - WinuxCmd-${{ steps.final_version.outputs.version }}-win-x64.7z
             - WinuxCmd-${{ steps.final_version.outputs.version }}-win-x64.zip
             - WinuxCmd-${{ steps.final_version.outputs.version }}-win-x64.tar.gz
+            - WinuxCmd-${{ steps.final_version.outputs.version }}-x64-setup.exe
             - WinuxCmd-${{ steps.final_version.outputs.version }}-win-arm64.7z
             - WinuxCmd-${{ steps.final_version.outputs.version }}-win-arm64.zip
             - WinuxCmd-${{ steps.final_version.outputs.version }}-win-arm64.tar.gz
+            - WinuxCmd-${{ steps.final_version.outputs.version }}-arm64-setup.exe
             - WinuxCmd-skill-v${{ steps.final_version.outputs.version }}.zip
             
             ### Package Contents:
@@ -207,6 +252,7 @@ jobs:
             - **7Z**: Best compression (requires 7-Zip)
             - **ZIP**: Native Windows support (right-click to extract)
             - **TGZ**: tar.gz format (use `tar -xzf filename.tar.gz`)
+            - **EXE**: standalone installer with PATH and PowerShell integration tasks
             
             ### Usage:
             1. Download the appropriate package for your architecture

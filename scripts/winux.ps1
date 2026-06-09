@@ -26,7 +26,7 @@ $AllScopeAliases = @("echo", "cp", "where")
 
 function Get-AvailableCommands {
     $commands = [ordered]@{}
-    $ignoredNames = @("winuxcmd")
+    $ignoredNames = @("winuxcmd", "unins000")
 
     foreach ($exe in Get-ChildItem -LiteralPath $ScriptDir -Filter "*.exe" -File -ErrorAction SilentlyContinue) {
         $commandName = $exe.BaseName
