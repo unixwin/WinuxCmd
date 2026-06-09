@@ -25,6 +25,11 @@ wrapper，然后把下面这段放在 `$PROFILE` 里 wrapper 之后：
 if (Get-Command winux -ErrorAction SilentlyContinue) {
     winux activate 6>$null
 }
+
+如果 `winux activate` 提示 `winux.ps1 not found`，通常不是当前安装包漏文件，
+而是 `$PROFILE` 里还残留着旧安装路径生成的 wrapper，例如早期 Scoop 路径。
+请从当前 WinuxCmd 安装目录重新运行 `winux-activate.ps1`，让 wrapper 改为动态
+查找最新的 `%LOCALAPPDATA%\WinuxCmd` 运行时目录。
 ```
 
 ### CMD / Windows Terminal
@@ -39,3 +44,5 @@ PowerShell 自己处理。
    - 运行 `winux activate`，或把上面的自动激活片段加入 `$PROFILE`。
 2. Profile 没生效：
    - 检查执行策略与 profile 路径（`echo $PROFILE`）。
+3. 明明 `Get-Command ls` 还是 PowerShell alias，但输入 `ls` 却跑到了别的实现：
+   - 说明可能有别的工具在 `$PROFILE` 里注入了 `PSConsoleHostReadLine` 改写逻辑；微软 `coreutils` 就会这样做。

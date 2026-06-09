@@ -27,6 +27,12 @@ To auto-activate in every new interactive PowerShell session, install the
 if (Get-Command winux -ErrorAction SilentlyContinue) {
     winux activate 6>$null
 }
+
+If `winux activate` reports `winux.ps1 not found`, the usual cause is a stale
+older wrapper still left in `$PROFILE` from a previous install path such as an
+old Scoop location. Re-run `winux-activate.ps1` from the current WinuxCmd
+install to rewrite the wrapper against the latest `%LOCALAPPDATA%\WinuxCmd`
+runtime.
 ```
 
 ### CMD / Windows Terminal
@@ -41,3 +47,5 @@ commands remain handled by cmd or PowerShell.
    - Run `winux activate`, or add the auto-activation snippet above to `$PROFILE`.
 2. Profile script not loaded:
    - verify execution policy and profile path with `echo $PROFILE`.
+3. `ls` seems to be hijacked even though `Get-Command ls` still shows the PowerShell alias:
+   - another tool may have installed a `PSConsoleHostReadLine` rewrite in `$PROFILE`; Microsoft `coreutils` does this, so inspect your profile for injected wrapper blocks.

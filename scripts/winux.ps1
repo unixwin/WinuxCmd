@@ -13,186 +13,32 @@ param(
 $ScriptDir = $PSScriptRoot
 
 # PowerShell aliases that conflict with WinuxCmd commands
-# Note: echo, cp, where are excluded because they have AllScope option and cannot be removed
 $ConflictedAliases = @(
     "cat", "clear", "diff", "group", "kill", "ls", 
     "mv", "ps", "pwd", "rm", "rmdir", "sleep", "sort", "tee", "type", "man"
 )
 
-# Aliases intentionally left to PowerShell because overriding them is surprising
+# Aliases intentionally left to PowerShell in the default activation flow
+# because overriding them is still surprising in many PowerShell sessions.
 $AllScopeAliases = @("echo", "cp", "where")
 
-$CommandMap = @{
-    "ls"        = "ls.exe"
-    "cat"       = "cat.exe"
-    "cp"        = "cp.exe"
-    "mv"        = "mv.exe"
-    "rm"        = "rm.exe"
-    "mkdir"     = "mkdir.exe"
-    "rmdir"     = "rmdir.exe"
-    "touch"     = "touch.exe"
-    "echo"      = "echo.exe"
-    "head"      = "head.exe"
-    "tail"      = "tail.exe"
-    "find"      = "find.exe"
-    "grep"      = "grep.exe"
-    "sort"      = "sort.exe"
-    "uniq"      = "uniq.exe"
-    "cut"       = "cut.exe"
-    "wc"        = "wc.exe"
-    "which"     = "which.exe"
-    "env"       = "env.exe"
-    "sed"       = "sed.exe"
-    "chgrp"     = "chgrp.exe"
-    "chmod"     = "chmod.exe"
-    "date"      = "date.exe"
-    "diff"      = "diff.exe"
-    "dir"       = "dir.exe"
-    "vdir"      = "vdir.exe"
-    "dircolors" = "dircolors.exe"
-    "ln"        = "ln.exe"
-    "ps"        = "ps.exe"
-    "pwd"       = "pwd.exe"
-    "tee"       = "tee.exe"
-    "xargs"     = "xargs.exe"
-    "file"      = "file.exe"
-    "realpath"  = "realpath.exe"
-    "df"        = "df.exe"
-    "du"        = "du.exe"
-    "kill"      = "kill.exe"
-    "tree"      = "tree.exe"
-    "lsof"      = "lsof.exe"
-    # New commands added in v0.5.3
-    "base64"    = "base64.exe"
-    "tr"        = "tr.exe"
-    "less"      = "less.exe"
-    "watch"     = "watch.exe"
-    "jq"        = "jq.exe"
-    "md5sum"    = "md5sum.exe"
-    "sha256sum" = "sha256sum.exe"
-    "basename"  = "basename.exe"
-    "dirname"   = "dirname.exe"
-    "free"      = "free.exe"
-    "column"    = "column.exe"
-    "col"       = "col.exe"
-    "seq"       = "seq.exe"
-    "stat"      = "stat.exe"
-    # New commands added in v0.7.0 - Hash tools
-    "sha1sum"   = "sha1sum.exe"
-    "sha224sum" = "sha224sum.exe"
-    "sha384sum" = "sha384sum.exe"
-    "sha512sum" = "sha512sum.exe"
-    "b2sum"     = "b2sum.exe"
-    # New commands added in v0.7.0 - Text processing
-    "paste"     = "paste.exe"
-    "join"      = "join.exe"
-    "comm"      = "comm.exe"
-    "split"     = "split.exe"
-    "csplit"    = "csplit.exe"
-    "cmp"       = "cmp.exe"
-    "nl"        = "nl.exe"
-    "fold"      = "fold.exe"
-    "fmt"       = "fmt.exe"
-    "more"      = "more.exe"
-    # New commands added in v0.7.0 - Text conversion
-    "expand"    = "expand.exe"
-    "unexpand"  = "unexpand.exe"
-    "tac"       = "tac.exe"
-    # New commands added in v0.7.0 - System information
-    "hostname"  = "hostname.exe"
-    "whoami"    = "whoami.exe"
-    "arch"      = "arch.exe"
-    "uname"     = "uname.exe"
-    "id"        = "id.exe"
-    "who"       = "who.exe"
-    "users"     = "users.exe"
-    "groups"    = "groups.exe"
-    # New commands added in v0.7.0 - File operations
-    "truncate"  = "truncate.exe"
-    "mktemp"    = "mktemp.exe"
-    "install"   = "install.exe"
-    "readlink"  = "readlink.exe"
-    "cksum"     = "cksum.exe"
-    "sum"       = "sum.exe"
-    # New commands added in v0.7.0 - Other tools
-    "sleep"     = "sleep.exe"
-    "timeout"   = "timeout.exe"
-    "uptime"    = "uptime.exe"
-    "shuf"      = "shuf.exe"
-    "pr"        = "pr.exe"
-    "yes"       = "yes.exe"
-    "ptx"       = "ptx.exe"
-    # New commands added in v0.7.0 - Basic utilities
-    "clear"     = "clear.exe"
-    "true"      = "true.exe"
-    "false"     = "false.exe"
-    "tty"       = "tty.exe"
-    "sync"      = "sync.exe"
-    "reset"     = "reset.exe"
-    "logname"   = "logname.exe"
-    "printenv"  = "printenv.exe"
-    # New commands added in v0.7.0 - Text processing
-    "rev"       = "rev.exe"
-    "d2u"       = "d2u.exe"
-    "u2d"       = "u2d.exe"
-    "dos2unix"  = "dos2unix.exe"
-    "unix2dos"  = "unix2dos.exe"
-    "base32"    = "base32.exe"
-    "basenc"    = "basenc.exe"
-    "cygpath"   = "cygpath.exe"
-    "pathchk"   = "pathchk.exe"
-    # New commands added in v0.7.0 - Programming tools
-    "printf"    = "printf.exe"
-    "expr"      = "expr.exe"
-    "test"      = "test.exe"
-    "["         = "[.exe"
-    # New commands added in v0.7.0 - Binary tools
-    "od"        = "od.exe"
-    "xxd"       = "xxd.exe"
-    "dd"        = "dd.exe"
-    "shred"     = "shred.exe"
-    # New commands added in v0.7.0 - System utilities
-    "numfmt"    = "numfmt.exe"
-    "hmac256"   = "hmac256.exe"
-    "nice"      = "nice.exe"
-    "nohup"     = "nohup.exe"
-    "stdbuf"    = "stdbuf.exe"
-    # New commands added in v0.7.0 - Development tools
-    "patch"     = "patch.exe"
-    "diff3"     = "diff3.exe"
-    "sdiff"     = "sdiff.exe"
-    # New commands added in v0.7.0 - Calendar and sorting
-    "cal"       = "cal.exe"
-    "tsort"     = "tsort.exe"
-    # New commands added in v0.7.0 - Terminal tools
-    "tput"      = "tput.exe"
-    "infocmp"   = "infocmp.exe"
-    "tic"       = "tic.exe"
-    "toe"       = "toe.exe"
-    "top"       = "top.exe"
-    # New commands added in v0.7.0 - System information
-    "hostid"    = "hostid.exe"
-    "locale"    = "locale.exe"
-    "tzset"     = "tzset.exe"
-    "pinky"     = "pinky.exe"
-    "mpicalc"   = "mpicalc.exe"
-    "strings"   = "strings.exe"
-    "stty"      = "stty.exe"
-    "hexdump"   = "hexdump.exe"
-    # New commands added in v0.7.0 - Archive tools
-    "cpio"      = "cpio.exe"
-    # New commands added in v0.7.0 - System utilities
-    "nproc"     = "nproc.exe"
-    "getconf"   = "getconf.exe"
-    "link"      = "link.exe"
-    "unlink"    = "unlink.exe"
-    "factor"    = "factor.exe"
-    # New commands added in v0.9.0 - Coreutils
-    "man"       = "man.exe"
-    "chown"     = "chown.exe"
-}
-
 # ========== Functions ==========
+
+function Get-AvailableCommands {
+    $commands = [ordered]@{}
+    $ignoredNames = @("winuxcmd")
+
+    foreach ($exe in Get-ChildItem -LiteralPath $ScriptDir -Filter "*.exe" -File -ErrorAction SilentlyContinue) {
+        $commandName = $exe.BaseName
+        if ($commandName -in $ignoredNames) {
+            continue
+        }
+
+        $commands[$commandName] = $exe.Name
+    }
+
+    return $commands
+}
 
 function Save-ConflictedAliases {
     $global:Winux_SavedAliases = @{}
@@ -209,10 +55,12 @@ function Save-ConflictedAliases {
 }
 
 function Set-WinuxAliases {
-    foreach ($aliasName in $ConflictedAliases) {
-        if (-not $CommandMap.ContainsKey($aliasName)) { continue }
+    $commandMap = Get-AvailableCommands
 
-        $commandPath = Join-Path $ScriptDir $CommandMap[$aliasName]
+    foreach ($aliasName in $ConflictedAliases) {
+        if (-not $commandMap.Contains($aliasName)) { continue }
+
+        $commandPath = Join-Path $ScriptDir $commandMap[$aliasName]
         if (-not (Test-Path $commandPath)) { continue }
 
         $alias = Get-Alias -Name $aliasName -ErrorAction SilentlyContinue
@@ -254,20 +102,24 @@ Remove-Variable Winux_SavedAliases -Scope Global -ErrorAction SilentlyContinue
 
 
 function Show-CommandList {
+    $commandMap = Get-AvailableCommands
+
     Write-Host "Available WinuxCmd Commands:" -ForegroundColor Cyan
     Write-Host "============================" -ForegroundColor Cyan
 
-    foreach ($cmd in $CommandMap.Keys | Sort-Object) {
+    foreach ($cmd in $commandMap.Keys | Sort-Object) {
         Write-Host "  $cmd" -ForegroundColor Yellow -NoNewline
-        Write-Host " -> $($CommandMap[$cmd])"
+        Write-Host " -> $($commandMap[$cmd])"
     }
 
     Write-Host ""
-    Write-Host "Total: $($CommandMap.Count) commands" -ForegroundColor Yellow
+    Write-Host "Total: $($commandMap.Count) commands" -ForegroundColor Yellow
     Write-Host "To use these commands, run: .\winux.ps1 activate" -ForegroundColor Green
 }
 
 function Show-Status {
+    $commandMap = Get-AvailableCommands
+
     Write-Host "WinuxCmd Status:" -ForegroundColor Cyan
     Write-Host "================" -ForegroundColor Cyan
 
@@ -277,7 +129,7 @@ function Show-Status {
     if ($winuxInPath) {
         Write-Host "Status: ACTIVE" -ForegroundColor Green
         Write-Host "Directory: $ScriptDir" -ForegroundColor Gray
-        Write-Host "Commands: $($CommandMap.Count) available" -ForegroundColor Yellow
+        Write-Host "Commands: $($commandMap.Count) available" -ForegroundColor Yellow
     }
     else {
         Write-Host "Status: INACTIVE" -ForegroundColor Gray
@@ -289,6 +141,8 @@ function Show-Status {
 }
 
 function Invoke-Activate {
+    $commandMap = Get-AvailableCommands
+
     Write-Host "Activating WinuxCmd..." -ForegroundColor Green
 
     Save-ConflictedAliases
@@ -301,15 +155,15 @@ function Invoke-Activate {
 
     Write-Host "Activation complete!" -ForegroundColor Green
     Write-Host ""
-    Write-Host "Total: $($CommandMap.Count) commands" -ForegroundColor Yellow
+    Write-Host "Total: $($commandMap.Count) commands" -ForegroundColor Yellow
     Write-Host "Directory: $ScriptDir" -ForegroundColor Gray
     Write-Host ""
 
-    # Show note for aliases intentionally left to PowerShell
+    # Show note for aliases intentionally left to PowerShell in the default flow.
     if ($AllScopeAliases.Count -gt 0) {
-        Write-Host "Note: The following command names are kept as PowerShell aliases:" -ForegroundColor Yellow
+        Write-Host "Note: The default activation flow leaves these PowerShell aliases unchanged:" -ForegroundColor Yellow
         Write-Host "  $($AllScopeAliases -join ', ')" -ForegroundColor Magenta
-        Write-Host "  Use `.exe` extension to run WinuxCmd version, e.g.:" -ForegroundColor Cyan
+        Write-Host "  Use the WinuxCmd executable name when needed, for example:" -ForegroundColor Cyan
         Write-Host "  echo.exe, cp.exe, where.exe" -ForegroundColor Green
         Write-Host ""
     }
