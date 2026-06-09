@@ -173,7 +173,6 @@ TEST(basename, basename_repeated_root_slashes_collapse_to_single_slash) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "/\n");
 }
-
 TEST(basename, basename_double_slash_root_collapses_to_single_slash) {
   Pipeline p;
   p.add(L"basename.exe", {L"//"});
