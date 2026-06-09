@@ -559,6 +559,9 @@ REGISTER_COMMAND(
   auto cfg_result = build_config(ctx);
   if (!cfg_result) {
     safeErrorPrintLn("basenc: " + cfg_result.error());
+    if (cfg_result.error().starts_with("extra operand '")) {
+      safeErrorPrintLn("Try 'basenc --help' for more information.");
+    }
     return 1;
   }
 

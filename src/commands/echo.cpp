@@ -78,6 +78,39 @@ auto constexpr ECHO_OPTIONS =
 // ======================================================
 namespace echo_pipeline {
 namespace cp = core::pipeline;
+
+enum class EscapeMode {
+  disabled,
+  enabled,
+};
+
+auto posixly_correct_enabled() -> bool {
+  return GetEnvironmentVariableW(L"POSIXLY_CORRECT", nullptr, 0) != 0;
+}
+
+template <size_t N>
+auto determine_escape_mode(const CommandContext<N>& ctx) -> EscapeMode {
+  bool posix_mode = posixly_correct_enabled();
+  EscapeMode mode = posix_mode ? EscapeMode::enabled : EscapeMode::disabled;
+
+  for (const auto& occurrence : ctx.options.occurrences()) {
+    if (!ctx.metas || occurrence.index >= N) {
+      continue;
+    }
+
+    const auto& meta = (*ctx.metas)[occurrence.index];
+    if (meta.short_name == "-e") {
+      mode = EscapeMode::enabled;
+      continue;
+    }
+
+    if (!posix_mode && meta.short_name == "-E") {
+      mode = EscapeMode::disabled;
+    }
+  }
+
+  return mode;
+}
 // ----------------------------------------------
 // 1. Build text
 // ----------------------------------------------
@@ -93,7 +126,6 @@ namespace cp = core::pipeline;
  */
 auto build_text(std::span<const std::string_view> args)
     -> cp::Result<std::string> {
-  if (args.empty()) return std::unexpected("no arguments provided");
   std::string text;
   for (auto arg : args) {
     if (!text.empty()) text += ' ';
@@ -196,21 +228,24 @@ auto process_escapes(std::string text, bool enabled)
         case '\\':
           result += '\\';
           break;
-        case '0': {
-          // Octal escape \0nnn
+        case '0':
+        case '1':
+        case '2':
+        case '3':
+        case '4':
+        case '5':
+        case '6':
+        case '7': {
+          // Octal escape \0nnn and GNU old-style \nnn
           int value = 0;
-          size_t j = i + 1;
-          for (; j < i + 4 && j < text.size() &&
-                 std::isdigit(static_cast<unsigned char>(text[j]));
+          size_t j = i;
+          for (; j < i + 3 && j < text.size() && text[j] >= '0' &&
+                 text[j] <= '7';
                ++j) {
             value = value * 8 + (text[j] - '0');
           }
-          if (j > i + 1) {
-            result += static_cast<char>(value);
-            i = j - 1;
-          } else {
-            result += '\0';
-          }
+          result += static_cast<char>(value);
+          i = j - 1;
           break;
         }
         case 'x': {
@@ -230,6 +265,7 @@ auto process_escapes(std::string text, bool enabled)
             result += static_cast<char>(value);
             i = j - 1;
           } else {
+            result += '\\';
             result += 'x';
           }
           break;
@@ -243,6 +279,7 @@ auto process_escapes(std::string text, bool enabled)
           break;
         }
         default:
+          result += '\\';
           result += text[i];
           break;
       }
@@ -300,10 +337,7 @@ auto validate_repeat(int count) -> cp::Result<int> {
 template <size_t N>
 auto process_command(const CommandContext<N>& ctx)
     -> cp::Result<std::tuple<std::string, int, bool>> {
-  bool enable_escapes = ctx.get<bool>("-e", false);
-  bool suppress_escapes = ctx.get<bool>("-E", false);
-  // If both -e and -E are specified, -E takes precedence
-  bool process_escape = enable_escapes && !suppress_escapes;
+  bool process_escape = determine_escape_mode(ctx) == EscapeMode::enabled;
 
   return build_text(ctx.positionals)
       .and_then([&](std::string text) {

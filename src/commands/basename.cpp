@@ -45,10 +45,13 @@ using cmd::meta::OptionType;
 auto constexpr BASENAME_OPTIONS = std::array{
     OPTION("-a", "--multiple",
            "support multiple arguments and treat each as a NAME", BOOL_TYPE),
+    OPTION("", "--mul", "alias for --multiple", BOOL_TYPE),
     OPTION("-s", "--suffix", "remove a trailing SUFFIX; implies -a",
            STRING_TYPE),
+    OPTION("", "--suf", "alias for --suffix", STRING_TYPE),
     OPTION("-z", "--zero", "end each output line with NUL, not newline",
-           BOOL_TYPE)};
+           BOOL_TYPE),
+    OPTION("", "--ze", "alias for --zero", BOOL_TYPE)};
 
 namespace basename_pipeline {
 namespace cp = core::pipeline;
@@ -63,16 +66,19 @@ struct Config {
 auto build_config(const CommandContext<BASENAME_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
   Config cfg;
-  cfg.multiple =
-      ctx.get<bool>("--multiple", false) || ctx.get<bool>("-a", false);
-  cfg.suffix = ctx.get<std::string>("--suffix", "");
-  if (cfg.suffix.empty()) {
-    cfg.suffix = ctx.get<std::string>("-s", "");
+  bool suffix_option_present =
+      ctx.count({"--suffix", "-s", "--suf"}) > 0;
+  cfg.multiple = ctx.get<bool>("--multiple", false) ||
+                 ctx.get<bool>("--mul", false) || ctx.get<bool>("-a", false);
+  auto suffix_occurrences = ctx.string_occurrences({"--suffix", "-s", "--suf"});
+  if (!suffix_occurrences.empty()) {
+    cfg.suffix = suffix_occurrences.back().value;
   }
-  if (!cfg.suffix.empty()) {
+  if (suffix_option_present) {
     cfg.multiple = true;
   }
-  cfg.zero = ctx.get<bool>("--zero", false) || ctx.get<bool>("-z", false);
+  cfg.zero = ctx.get<bool>("--zero", false) || ctx.get<bool>("--ze", false) ||
+             ctx.get<bool>("-z", false);
 
   for (auto arg : ctx.positionals) {
     cfg.names.push_back(std::string(arg));
@@ -90,8 +96,8 @@ auto get_basename(std::string_view path, std::string_view suffix)
     result.pop_back();
   }
 
-  // GNU basename preserves a single root separator for inputs like "/" or
-  // "///" (with "//" remaining implementation-defined).
+  // Preserve a single root separator for slash-only roots such as "/",
+  // "//", or "///".
   if (result.empty() && !path.empty()) {
     return std::string(1, path.back());
   }
@@ -103,7 +109,7 @@ auto get_basename(std::string_view path, std::string_view suffix)
   }
 
   // Remove suffix if specified
-  if (!suffix.empty() && result.size() >= suffix.size()) {
+  if (!suffix.empty() && result.size() > suffix.size()) {
     if (result.substr(result.size() - suffix.size()) == suffix) {
       result = result.substr(0, result.size() - suffix.size());
     }
@@ -115,6 +121,14 @@ auto get_basename(std::string_view path, std::string_view suffix)
 auto run(const Config& cfg) -> int {
   if (cfg.names.empty()) {
     cp::report_custom_error(L"basename", L"missing operand");
+    safeErrorPrintLn("Try 'basename --help' for more information.");
+    return 1;
+  }
+
+  if (!cfg.multiple && cfg.names.size() > 2) {
+    safeErrorPrintLn(
+        std::format("basename: extra operand '{}'", cfg.names[2]));
+    safeErrorPrintLn("Try 'basename --help' for more information.");
     return 1;
   }
 

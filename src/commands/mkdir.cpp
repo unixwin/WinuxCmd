@@ -299,6 +299,11 @@ REGISTER_COMMAND(
 
   auto result = process_command(ctx);
   if (!result) {
+    if (result.error() == "missing operand") {
+      safeErrorPrintLn("mkdir: missing operand");
+      safeErrorPrintLn("Try 'mkdir --help' for more information.");
+      return 1;
+    }
     cp::report_error(result, L"mkdir");
     return 1;
   }

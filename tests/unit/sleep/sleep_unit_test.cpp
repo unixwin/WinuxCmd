@@ -52,3 +52,86 @@ TEST(sleep, sleep_short) {
   EXPECT_TRUE(duration.count() >= 90);   // Allow some tolerance
   EXPECT_TRUE(duration.count() <= 200);  // But not too long
 }
+
+TEST(sleep, sleep_missing_operand_reports_help_hint) {
+  Pipeline p;
+  p.add(L"sleep.exe", {});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "sleep: missing operand\n"
+      "Try 'sleep --help' for more information.\n");
+}
+
+TEST(sleep, sleep_invalid_interval_reports_gnu_style_error) {
+  Pipeline p;
+  p.add(L"sleep.exe", {L"abc"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "sleep: invalid time interval 'abc'\n"
+      "Try 'sleep --help' for more information.\n");
+}
+
+TEST(sleep, sleep_negative_interval_is_rejected) {
+  Pipeline p;
+  p.add(L"sleep.exe", {L"--", L"-1"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "sleep: invalid time interval '-1'\n"
+      "Try 'sleep --help' for more information.\n");
+}
+
+TEST(sleep, sleep_leading_whitespace_is_accepted) {
+  Pipeline p;
+  p.add(L"sleep.exe", {L" 0"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.empty());
+}
+
+TEST(sleep, sleep_trailing_whitespace_is_rejected) {
+  Pipeline p;
+  p.add(L"sleep.exe", {L"0 "});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "sleep: invalid time interval '0 '\n"
+      "Try 'sleep --help' for more information.\n");
+}
+
+TEST(sleep, sleep_reports_all_invalid_intervals_before_help_hint) {
+  Pipeline p;
+  p.add(L"sleep.exe", {L"abc", L"100000.0", L"1years", L" "});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "sleep: invalid time interval 'abc'\n"
+      "sleep: invalid time interval '1years'\n"
+      "sleep: invalid time interval ' '\n"
+      "Try 'sleep --help' for more information.\n");
+}

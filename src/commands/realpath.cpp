@@ -115,6 +115,14 @@ auto access_error(const std::string& path) -> std::string {
   return "realpath: cannot access '" + path + "': No such file or directory";
 }
 
+auto empty_operand_error() -> std::string_view {
+  return "invalid operand: empty string";
+}
+
+auto not_directory_error(const std::string& path) -> std::string {
+  return "'" + path + "': Not a directory";
+}
+
 auto resolve_default_path(const std::string& path) -> PathResult {
   std::wstring wpath = utf8_to_wstring(path);
 
@@ -200,6 +208,40 @@ auto validate_path_components(const std::string& path, bool allow_missing_leaf)
   return {true, {}, {}};
 }
 
+auto resolve_relative_option(const std::string& path,
+                             CanonicalizationMode mode) -> PathResult {
+  switch (mode) {
+    case CanonicalizationMode::permissive: {
+      auto valid = validate_path_components(path, true);
+      if (!valid) {
+        return valid;
+      }
+      return resolve_default_path(path);
+    }
+    case CanonicalizationMode::existing: {
+      auto valid = validate_path_components(path, false);
+      if (!valid) {
+        return valid;
+      }
+      auto resolved = resolve_default_path(path);
+      if (!resolved) {
+        return resolved;
+      }
+
+      DWORD attrs = GetFileAttributesW(utf8_to_wstring(resolved.value).c_str());
+      if (attrs == INVALID_FILE_ATTRIBUTES ||
+          !(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+        return {false, {}, not_directory_error(path)};
+      }
+      return resolved;
+    }
+    case CanonicalizationMode::missing:
+      return resolve_missing_path(path);
+  }
+
+  return resolve_missing_path(path);
+}
+
 auto is_under_base(const std::filesystem::path& path,
                    const std::filesystem::path& base) -> bool {
   auto path_it = path.begin();
@@ -259,15 +301,19 @@ auto emit_error(const std::string& message, bool zero_terminated) -> void {
 auto build_config(const CommandContext<REALPATH_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
   Config cfg;
-  if (ctx.get<bool>("--canonicalize-missing", false) ||
-      ctx.get<bool>("-m", false)) {
-    cfg.mode = CanonicalizationMode::missing;
-  } else if (ctx.get<bool>("--canonicalize-existing", false) ||
-             ctx.get<bool>("-e", false)) {
-    cfg.mode = CanonicalizationMode::existing;
-  } else if (ctx.get<bool>("--canonicalize", false) ||
-             ctx.get<bool>("-E", false)) {
-    cfg.mode = CanonicalizationMode::permissive;
+
+  for (const auto& occurrence : ctx.options.occurrences()) {
+    if (occurrence.index >= REALPATH_OPTIONS.size()) continue;
+    const auto& meta = (*ctx.metas)[occurrence.index];
+    if (meta.long_name == "--canonicalize-missing" || meta.short_name == "-m") {
+      cfg.mode = CanonicalizationMode::missing;
+    } else if (meta.long_name == "--canonicalize-existing" ||
+               meta.short_name == "-e") {
+      cfg.mode = CanonicalizationMode::existing;
+    } else if (meta.long_name == "--canonicalize" ||
+               meta.short_name == "-E") {
+      cfg.mode = CanonicalizationMode::permissive;
+    }
   }
 
   cfg.quiet = ctx.get<bool>("--quiet", false) || ctx.get<bool>("-q", false);
@@ -276,25 +322,48 @@ auto build_config(const CommandContext<REALPATH_OPTIONS.size()>& ctx)
                     ctx.get<bool>("--no-symlinks", false);
   cfg.zero_terminated =
       ctx.get<bool>("--zero", false) || ctx.get<bool>("-z", false);
-  cfg.relative_to = ctx.get<std::string>("--relative-to", "");
-  cfg.relative_base = ctx.get<std::string>("--relative-base", "");
+
+  for (const auto& arg : ctx.raw_args) {
+    if (arg == "--relative-to=" || arg == "--relative-base=") {
+      return std::unexpected(empty_operand_error());
+    }
+  }
+
+  for (const auto& occurrence :
+       ctx.string_occurrences({"--relative-to", "--relative-base"})) {
+    if (occurrence.value.empty()) {
+      return std::unexpected(empty_operand_error());
+    }
+    auto normalized = resolve_relative_option(occurrence.value, cfg.mode);
+    if (!normalized) {
+      return std::unexpected(normalized.error);
+    }
+    if (occurrence.long_name == "--relative-to") {
+      cfg.relative_to = normalized.value;
+    } else if (occurrence.long_name == "--relative-base") {
+      cfg.relative_base = normalized.value;
+    }
+  }
 
   if (ctx.positionals.empty()) {
-    cfg.paths.push_back(".");
-  } else {
-    for (const auto& arg : ctx.positionals) {
-      std::string file_arg(arg);
-      if (contains_wildcard(file_arg)) {
-        auto glob_result = glob_expand(file_arg);
-        if (glob_result.expanded) {
-          for (const auto& file : glob_result.files) {
-            cfg.paths.push_back(wstring_to_utf8(file));
-          }
-          continue;
-        }
-      }
-      cfg.paths.push_back(file_arg);
+    return std::unexpected("missing operand");
+  }
+
+  for (const auto& arg : ctx.positionals) {
+    std::string file_arg(arg);
+    if (file_arg.empty()) {
+      return std::unexpected(empty_operand_error());
     }
+    if (contains_wildcard(file_arg)) {
+      auto glob_result = glob_expand(file_arg);
+      if (glob_result.expanded) {
+        for (const auto& file : glob_result.files) {
+          cfg.paths.push_back(wstring_to_utf8(file));
+        }
+        continue;
+      }
+    }
+    cfg.paths.push_back(file_arg);
   }
 
   return cfg;
@@ -387,6 +456,12 @@ REGISTER_COMMAND(
 
   auto result = build_config(ctx);
   if (!result) {
+    if (result.error() == "missing operand") {
+      safeErrorPrintLn("realpath: missing operand");
+      safeErrorPrintLn("Try 'realpath --help' for more information.");
+      return 1;
+    }
+
     cp::report_error(result, L"realpath");
     return 1;
   }

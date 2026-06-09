@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   build-windows:
-    runs-on: windows-latest
+    runs-on: windows-2025
     strategy:
       fail-fast: false
       matrix:
@@ -26,7 +26,7 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 1
 
@@ -41,10 +41,32 @@ jobs:
           }
           echo "project_version=$version" >> $env:GITHUB_OUTPUT
 
+      - name: Locate Visual Studio toolchain
+        id: locate_vcvars
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) {
+            throw "vswhere.exe not found at $vswhere"
+          }
+
+          $vcvarsPath = & $vswhere `
+            -latest `
+            -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -find "VC\Auxiliary\Build\vcvarsall.bat" |
+            Select-Object -First 1
+
+          if ([string]::IsNullOrWhiteSpace($vcvarsPath)) {
+            throw "Failed to locate vcvarsall.bat via vswhere"
+          }
+
+          "vcvars_path=$vcvarsPath" >> $env:GITHUB_OUTPUT
+
       - name: Configure CMake (Release Mode)
         shell: cmd
         run: |
-          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" ${{ matrix.vcvars_arg }}
+          call "${{ steps.locate_vcvars.outputs.vcvars_path }}" ${{ matrix.vcvars_arg }}
           cmake -B build-${{ matrix.package_arch }} ^
             -G "Ninja" ^
             -DCMAKE_BUILD_TYPE=Release ^
@@ -63,7 +85,7 @@ jobs:
         shell: cmd
         working-directory: build-${{ matrix.package_arch }}
         run: |
-          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" ${{ matrix.vcvars_arg }}
+          call "${{ steps.locate_vcvars.outputs.vcvars_path }}" ${{ matrix.vcvars_arg }}
           cmake --build . --config Release --parallel %NUMBER_OF_PROCESSORS%
 
       - name: Package with CPack (7Z + ZIP + TGZ)
@@ -88,7 +110,7 @@ jobs:
           for %%f in ("%BUILD_DIR%\WinuxCmd-*.tar.gz") do ren "%%f" "WinuxCmd-%VER%-win-%ARCH%.tar.gz"
 
       - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: WinuxCmd-${{ steps.extract_version.outputs.project_version }}-${{ matrix.package_arch }}
           path: |
@@ -110,7 +132,7 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 1
 
@@ -121,13 +143,13 @@ jobs:
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
 
       - name: Download x64 Packages
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: WinuxCmd-${{ steps.final_version.outputs.version }}-x64
           path: artifacts/x64
 
       - name: Download ARM64 Packages
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: WinuxCmd-${{ steps.final_version.outputs.version }}-arm64
           path: artifacts/arm64
@@ -211,13 +233,13 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   cache-and-notify:
-    runs-on: windows-latest
+    runs-on: windows-2025
     needs: release  # Depends on release job
     if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')  # Only run on tag releases
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Refresh WinuxCmd Server Cache
         id: refresh-cache

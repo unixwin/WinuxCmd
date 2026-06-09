@@ -40,3 +40,14 @@ TEST(whoami, whoami_basic) {
   }
   EXPECT_FALSE(username.empty());
 }
+
+TEST(whoami, whoami_version_succeeds) {
+  Pipeline p;
+  p.add(L"whoami.exe", {L"--version"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_NE(r.stdout_text.find("whoami (WinuxCmd)"), std::string::npos);
+  EXPECT_TRUE(r.stderr_text.empty());
+}

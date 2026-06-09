@@ -84,7 +84,7 @@ using cmd::meta::OptionType;
  * null character [IMPLEMENTED]
  * - @a -L: Follow symbolic links [IMPLEMENTED]
  * - @a -H: Do not follow
- * symbolic links, except while processing command line arguments [NOT SUPPORT]
+ * symbolic links, except while processing command line arguments [IMPLEMENTED]
  * - @a -P: Never follow symbolic links (default) [IMPLEMENTED]
  * - @a -delete: Delete files [IMPLEMENTED]
  * - @a -exec: Execute command
@@ -143,7 +143,7 @@ auto constexpr FIND_OPTIONS = std::array{
     OPTION("-L", "", "follow symbolic links"),
     OPTION("-H", "",
            "do not follow symbolic links, except while processing command line "
-           "arguments [NOT SUPPORT]"),
+           "arguments"),
     OPTION("-P", "", "never follow symbolic links (default)"),
     OPTION("-delete", "", "delete files"),
     OPTION("-exec", "", "execute command", TERMINATED_STRING_TYPE),
@@ -208,6 +208,7 @@ enum class ExprKind {
   Delete,
   Prune,
   Quit,
+  Comma,
   And,
   Or,
   Not
@@ -251,6 +252,7 @@ struct Config {
   bool depth_first = false;
   std::vector<ExecAction> exec_actions;
   bool follow_symlinks = false;
+  bool follow_arg_symlinks = false;
   bool prune_current = false;
   bool quit = false;
   std::unique_ptr<ExprNode> expression;
@@ -378,7 +380,6 @@ auto type_matches(const std::filesystem::directory_entry& e,
 
 auto is_unsupported_used(const CommandContext<FIND_OPTIONS.size()>& ctx)
     -> std::optional<std::string> {
-  if (ctx.get<bool>("-H", false)) return "-H is [NOT SUPPORT]";
   return std::nullopt;
 }
 
@@ -437,16 +438,13 @@ auto parse_exec_actions(std::span<const std::string_view> args)
     }
 
     action.aggregate = *terminator == "+";
-    if (action.prompt && action.aggregate) {
-      return std::unexpected("-ok does not support the {} + form");
-    }
     if (action.aggregate) {
       if (command_words.back() != "{}") {
-        return std::unexpected("-exec ... + requires {} before +");
+        return std::unexpected("-exec/-ok ... + requires {} before +");
       }
       command_words.pop_back();
       if (command_words.empty()) {
-        return std::unexpected("missing command after -exec");
+        return std::unexpected("missing command after -exec/-ok");
       }
     }
 
@@ -486,7 +484,7 @@ class ExpressionParser {
       return make_expr(ExprKind::Always);
     }
 
-    auto expr = parse_or();
+    auto expr = parse_comma();
     if (!expr) return std::unexpected(expr.error());
     if (!at_end()) {
       return std::unexpected("invalid find expression");
@@ -559,11 +557,28 @@ class ExpressionParser {
     return left;
   }
 
+  auto parse_comma() -> cp::Result<std::unique_ptr<ExprNode>> {
+    auto left = parse_or();
+    if (!left) return std::unexpected(left.error());
+
+    while (!at_end() && peek() == ",") {
+      consume();
+      auto right = parse_or();
+      if (!right) return std::unexpected(right.error());
+
+      auto node = make_expr(ExprKind::Comma);
+      node->left = std::move(*left);
+      node->right = std::move(*right);
+      left = std::move(node);
+    }
+    return left;
+  }
+
   auto parse_and() -> cp::Result<std::unique_ptr<ExprNode>> {
     auto left = parse_not();
     if (!left) return std::unexpected(left.error());
 
-    while (!at_end() && peek() != ")" && !is_or(peek())) {
+    while (!at_end() && peek() != ")" && peek() != "," && !is_or(peek())) {
       if (is_and(peek())) {
         consume();
       } else if (!starts_primary(peek())) {
@@ -596,7 +611,7 @@ class ExpressionParser {
     if (at_end()) return std::unexpected("missing expression");
 
     if (match("(")) {
-      auto expr = parse_or();
+      auto expr = parse_comma();
       if (!expr) return std::unexpected(expr.error());
       if (!match(")")) return std::unexpected("missing closing parenthesis");
       return expr;
@@ -773,6 +788,7 @@ auto build_config(const CommandContext<FIND_OPTIONS.size()>& ctx)
   if (!exec_actions) return std::unexpected(exec_actions.error());
   cfg.exec_actions = std::move(*exec_actions);
   cfg.follow_symlinks = ctx.get<bool>("-L", false);
+  cfg.follow_arg_symlinks = ctx.get<bool>("-H", false);
 
   if (!cfg.type_filter.empty() && cfg.type_filter != "f" &&
       cfg.type_filter != "d" && cfg.type_filter != "l") {
@@ -902,14 +918,14 @@ auto modification_age_units(const std::filesystem::directory_entry& e,
 
 auto print_path(std::string_view path, bool null_terminated) -> void;
 auto printf_path(std::string_view format, const std::filesystem::path& p,
-                 const std::filesystem::directory_entry& e) -> void;
+                 const std::filesystem::directory_entry& e, int depth) -> void;
 auto execute_action_for_path(ExecAction& action, std::string_view path,
                              Config& cfg) -> bool;
 auto delete_path(const std::filesystem::path& p, Config& cfg) -> bool;
 
 auto evaluate_expression(const ExprNode& expr, const std::filesystem::path& p,
-                         const std::filesystem::directory_entry& e, Config& cfg)
-    -> bool {
+                         const std::filesystem::directory_entry& e, int depth,
+                         Config& cfg) -> bool {
   switch (expr.kind) {
     case ExprKind::Always:
       return true;
@@ -983,7 +999,7 @@ auto evaluate_expression(const ExprNode& expr, const std::filesystem::path& p,
       return true;
 
     case ExprKind::Printf:
-      printf_path(expr.text, p, e);
+      printf_path(expr.text, p, e, depth);
       return true;
 
     case ExprKind::False:
@@ -1005,18 +1021,23 @@ auto evaluate_expression(const ExprNode& expr, const std::filesystem::path& p,
       cfg.quit = true;
       return true;
 
+    case ExprKind::Comma:
+      if (!expr.left || !expr.right) return false;
+      (void)evaluate_expression(*expr.left, p, e, depth, cfg);
+      return evaluate_expression(*expr.right, p, e, depth, cfg);
+
     case ExprKind::And:
       return expr.left && expr.right &&
-             evaluate_expression(*expr.left, p, e, cfg) &&
-             evaluate_expression(*expr.right, p, e, cfg);
+             evaluate_expression(*expr.left, p, e, depth, cfg) &&
+             evaluate_expression(*expr.right, p, e, depth, cfg);
 
     case ExprKind::Or:
       return expr.left && expr.right &&
-             (evaluate_expression(*expr.left, p, e, cfg) ||
-              evaluate_expression(*expr.right, p, e, cfg));
+             (evaluate_expression(*expr.left, p, e, depth, cfg) ||
+              evaluate_expression(*expr.right, p, e, depth, cfg));
 
     case ExprKind::Not:
-      return expr.left && !evaluate_expression(*expr.left, p, e, cfg);
+      return expr.left && !evaluate_expression(*expr.left, p, e, depth, cfg);
   }
 
   return false;
@@ -1029,7 +1050,7 @@ auto entry_matches(Config& cfg, const std::filesystem::path& p,
   if (depth < cfg.mindepth || depth > cfg.maxdepth) return false;
 
   if (cfg.expression) {
-    return evaluate_expression(*cfg.expression, p, e, cfg);
+    return evaluate_expression(*cfg.expression, p, e, depth, cfg);
   }
 
   auto filename = p.filename().string();
@@ -1173,7 +1194,8 @@ auto dirname_display(const std::filesystem::path& p) -> std::string {
 }
 
 auto format_printf(std::string_view format, const std::filesystem::path& p,
-                   const std::filesystem::directory_entry& e) -> std::string {
+                   const std::filesystem::directory_entry& e,
+                   int depth) -> std::string {
   std::string out;
   out.reserve(format.size() + p.generic_string().size());
 
@@ -1227,6 +1249,9 @@ auto format_printf(std::string_view format, const std::filesystem::path& p,
       case 's':
         out += std::to_string(file_size_bytes(e));
         break;
+      case 'd':
+        out += std::to_string(depth);
+        break;
       case 'm':
         out += permission_bits(e);
         break;
@@ -1249,8 +1274,8 @@ auto format_printf(std::string_view format, const std::filesystem::path& p,
 }
 
 auto printf_path(std::string_view format, const std::filesystem::path& p,
-                 const std::filesystem::directory_entry& e) -> void {
-  safePrint(format_printf(format, p, e));
+                 const std::filesystem::directory_entry& e, int depth) -> void {
+  safePrint(format_printf(format, p, e, depth));
 }
 
 auto delete_path(const std::filesystem::path& p, Config& cfg) -> bool {
@@ -1352,6 +1377,24 @@ auto ask_confirmation(const ExecAction& action, std::string_view path) -> bool {
   return !answer.empty() && (answer[0] == 'y' || answer[0] == 'Y');
 }
 
+auto ask_confirmation_aggregate(const ExecAction& action) -> bool {
+  safeErrorPrint("< ");
+  safeErrorPrint(action.command);
+  for (const auto& arg : action.args) {
+    safeErrorPrint(" ");
+    safeErrorPrint(arg);
+  }
+  for (const auto& path : action.pending_paths) {
+    safeErrorPrint(" ");
+    safeErrorPrint(path);
+  }
+  safeErrorPrint(" > ? ");
+
+  std::string answer;
+  if (!std::getline(std::cin, answer)) return false;
+  return !answer.empty() && (answer[0] == 'y' || answer[0] == 'Y');
+}
+
 auto execute_action_for_path(ExecAction& action, std::string_view path,
                              Config& cfg) -> bool {
   if (action.aggregate) {
@@ -1376,6 +1419,11 @@ auto flush_exec_actions(Config& cfg) -> void {
   for (auto& action : cfg.exec_actions) {
     if (!action.aggregate || action.pending_paths.empty()) continue;
 
+    if (action.prompt && !ask_confirmation_aggregate(action)) {
+      action.pending_paths.clear();
+      continue;
+    }
+
     std::vector<std::string> args = action.args;
     args.insert(args.end(), action.pending_paths.begin(),
                 action.pending_paths.end());
@@ -1394,9 +1442,11 @@ auto apply_actions(const std::filesystem::path& p,
 }
 
 auto should_descend_into(const std::filesystem::directory_entry& e,
-                         const Config& cfg) -> bool {
+                         const Config& cfg,
+                         bool command_line_root = false) -> bool {
   std::error_code ec;
   if (!e.is_directory(ec) || ec) return false;
+  if (command_line_root && cfg.follow_arg_symlinks) return true;
   if (!cfg.follow_symlinks && e.is_symlink(ec) && !ec) return false;
   return true;
 }
@@ -1415,7 +1465,8 @@ auto scan_depth_first(const std::filesystem::path& p, int depth, Config& cfg,
     return;
   }
 
-  if (depth < cfg.maxdepth && should_descend_into(entry, cfg)) {
+  if (depth < cfg.maxdepth &&
+      should_descend_into(entry, cfg, depth == 0)) {
     auto options = std::filesystem::directory_options::skip_permission_denied;
     if (cfg.follow_symlinks) {
       options |= std::filesystem::directory_options::follow_directory_symlink;
@@ -1470,7 +1521,8 @@ auto scan_delete_depth_first(const std::filesystem::path& p, int depth,
     return;
   }
 
-  if (depth < cfg.maxdepth && should_descend_into(entry, cfg)) {
+  if (depth < cfg.maxdepth &&
+      should_descend_into(entry, cfg, depth == 0)) {
     auto options = std::filesystem::directory_options::skip_permission_denied;
     if (cfg.follow_symlinks) {
       options |= std::filesystem::directory_options::follow_directory_symlink;
@@ -1533,7 +1585,10 @@ auto scan_one_root(const std::filesystem::path& root, Config& cfg,
       matched_any = true;
       if (cfg.quit) return;
     }
-    if (cfg.prune_current && should_descend_into(root_entry, cfg)) return;
+    if (cfg.prune_current &&
+        should_descend_into(root_entry, cfg, true)) {
+      return;
+    }
   }
 
   if (!std::filesystem::is_directory(root, ec) || ec) return;

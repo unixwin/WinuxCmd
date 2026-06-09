@@ -54,7 +54,7 @@ TEST(link, link_missing_operand) {
   TEST_LOG("link stderr", r.stderr_text);
 
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_FALSE(r.stderr_text.empty());
+  EXPECT_EQ_TEXT(r.stderr_text, "link: 2 values required\n");
 }
 
 TEST(link, link_extra_operand) {
@@ -69,5 +69,135 @@ TEST(link, link_extra_operand) {
   TEST_LOG("link stderr", r.stderr_text);
 
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_FALSE(r.stderr_text.empty());
+  EXPECT_EQ_TEXT(r.stderr_text, "link: 2 values required\n");
+}
+
+TEST(link, link_unknown_option_reports_gnu_style_parse_error) {
+  Pipeline p;
+  p.add(L"link.exe", {L"--bogus", L"a", L"b"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "link: unrecognized option '--bogus'\n"
+      "Try 'link --help' for more information.\n");
+}
+
+TEST(link, link_version_succeeds) {
+  Pipeline p;
+  p.add(L"link.exe", {L"--version"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_NE(r.stdout_text.find("link (WinuxCmd)"), std::string::npos);
+  EXPECT_TRUE(r.stderr_text.empty());
+}
+
+TEST(link, link_nonexistent_source_reports_gnu_style_error) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"link.exe", {L"missing.txt", L"copy.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "link: cannot create link 'copy.txt' to 'missing.txt': No such file or "
+      "directory\n");
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "copy.txt"));
+}
+
+TEST(link, link_same_missing_path_reports_gnu_style_error) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"link.exe", {L"same.txt", L"same.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "link: cannot create link 'same.txt' to 'same.txt': No such file or "
+      "directory\n");
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "same.txt"));
+}
+
+TEST(link, link_existing_destination_reports_gnu_style_error) {
+  TempDir tmp;
+  tmp.write("source.txt", "hello world");
+  tmp.write("linked.txt", "existing");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"link.exe", {L"source.txt", L"linked.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "link: cannot create link 'linked.txt' to 'source.txt': File exists\n");
+  EXPECT_EQ_TEXT(tmp.read("linked.txt"), "existing");
+}
+
+TEST(link, link_wildcard_source_single_match_is_expanded) {
+  TempDir tmp;
+  tmp.write("source.txt", "hello world");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"link.exe", {L"*.txt", L"linked.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "linked.txt"));
+  EXPECT_EQ_TEXT(tmp.read("linked.txt"), "hello world");
+}
+
+TEST(link, link_wildcard_source_multiple_matches_are_rejected) {
+  TempDir tmp;
+  tmp.write("a.txt", "a");
+  tmp.write("b.txt", "b");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"link.exe", {L"*.txt", L"linked.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(r.stderr_text, "link: 2 values required\n");
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "linked.txt"));
+}
+
+TEST(link, link_wildcard_source_zero_match_falls_back_to_literal_path) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"link.exe", {L"*.txt", L"linked.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "link: cannot create link 'linked.txt' to '*.txt': No such file or "
+      "directory\n");
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "linked.txt"));
 }

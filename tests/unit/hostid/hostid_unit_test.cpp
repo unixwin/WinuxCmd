@@ -40,3 +40,14 @@ TEST(hostid, hostid_basic) {
   EXPECT_FALSE(r.stdout_text.empty());
   EXPECT_EQ(r.stdout_text.length(), 9);  // 8 hex chars + newline
 }
+
+TEST(hostid, hostid_version_succeeds) {
+  Pipeline p;
+  p.add(L"hostid.exe", {L"--version"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_NE(r.stdout_text.find("hostid (WinuxCmd)"), std::string::npos);
+  EXPECT_TRUE(r.stderr_text.empty());
+}

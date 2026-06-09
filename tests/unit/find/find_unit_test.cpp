@@ -458,6 +458,38 @@ TEST(find, find_expression_parentheses_override_precedence) {
   EXPECT_TRUE(r.stdout_text.find("src/notes.txt") == std::string::npos);
 }
 
+TEST(find, find_expression_comma_runs_both_sides_in_order) {
+  TempDir tmp;
+  tmp.write("a.txt", "");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe",
+        {L".", L"-name", L"a.txt", L"-printf", L"first:%f\\n", L",", L"-name",
+         L"a.txt", L"-printf", L"second:%f\\n"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "first:a.txt\nsecond:a.txt\n");
+}
+
+TEST(find, find_expression_comma_returns_right_side_truth_value) {
+  TempDir tmp;
+  tmp.write("a.txt", "");
+  tmp.write("b.txt", "");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe",
+        {L".", L"-name", L"a.txt", L",", L"-false", L"-o", L"-name",
+         L"b.txt"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("b.txt") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("a.txt") == std::string::npos);
+}
+
 TEST(find, find_expression_syntax_errors_return_error) {
   TempDir tmp;
   tmp.write("a.txt", "");
@@ -532,6 +564,22 @@ TEST(find, find_printf_formats_common_file_fields) {
   EXPECT_TRUE(is_octal_mode(fields[5]));
   EXPECT_TRUE(is_seconds_with_fraction(fields[6]));
   EXPECT_EQ(fields[7], "%");
+}
+
+TEST(find, find_printf_supports_depth_field) {
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "tree" / "inner");
+  tmp.write("tree/inner/file.txt", "");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L"tree", L"-printf", L"%d:%f\\n"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("0:tree\n") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("1:inner\n") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("2:file.txt\n") != std::string::npos);
 }
 
 TEST(find, find_printf_suppresses_default_print_and_handles_escapes) {
@@ -811,6 +859,49 @@ TEST(find, find_ok_prompts_and_respects_answer) {
   EXPECT_TRUE(r.stderr_text.find("cmd.exe") != std::string::npos);
 }
 
+TEST(find, find_ok_plus_prompts_once_and_runs_aggregate_batch) {
+  TempDir tmp;
+  tmp.write("a.txt", "x");
+  tmp.write("b.txt", "y");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("y\n");
+  p.add(L"find.exe", {L".", L"-type", L"f", L"-ok", L"cmd.exe", L"/C",
+                      L"echo", L"files", L"{}", L"+"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("files") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("a.txt") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("b.txt") != std::string::npos);
+
+  size_t prompt_count = 0;
+  size_t pos = 0;
+  while ((pos = r.stderr_text.find("> ?", pos)) != std::string::npos) {
+    ++prompt_count;
+    pos += 3;
+  }
+  EXPECT_EQ(prompt_count, 1u);
+}
+
+TEST(find, find_ok_plus_decline_skips_aggregate_batch) {
+  TempDir tmp;
+  tmp.write("a.txt", "x");
+  tmp.write("b.txt", "y");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("n\n");
+  p.add(L"find.exe", {L".", L"-type", L"f", L"-ok", L"cmd.exe", L"/C",
+                      L"echo", L"files", L"{}", L"+"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("cmd.exe") != std::string::npos);
+}
+
 TEST(find, find_exec_missing_terminator_returns_error) {
   TempDir tmp;
   tmp.write("a.txt", "x");
@@ -880,20 +971,56 @@ TEST(find, find_L_follows_directory_symlink_if_available) {
               std::string::npos);
 }
 
-TEST(find, find_unsupported_flags_return_error) {
+TEST(find, find_H_follows_command_line_directory_symlink_if_available) {
   TempDir tmp;
-  tmp.write("a.txt", "x");
+  std::filesystem::create_directories(tmp.path / "target" / "nested");
+  tmp.write("target/nested/through-link.txt", "");
 
-  const std::vector<std::vector<std::wstring>> cases = {{L".", L"-H"}};
-
-  for (const auto& args : cases) {
-    Pipeline p;
-    p.set_cwd(tmp.wpath());
-    p.add(L"find.exe", args);
-
-    auto r = p.run();
-    EXPECT_EQ(r.exit_code, 1);
+  if (!create_directory_symlink_or_skip(tmp.path / "linked",
+                                        tmp.path / "target")) {
+    return;
   }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L"-H", L"linked", L"-name", L"through-link.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("linked/nested/through-link.txt") !=
+              std::string::npos);
+}
+
+TEST(find, find_H_does_not_follow_nested_directory_symlink_if_available) {
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "target" / "inside");
+  std::filesystem::create_directories(tmp.path / "target" / "real");
+  tmp.write("target/inside/through-root.txt", "");
+  tmp.write("target/real/visible.txt", "");
+
+  if (!create_directory_symlink_or_skip(tmp.path / "linked",
+                                        tmp.path / "target")) {
+    return;
+  }
+  if (!create_directory_symlink_or_skip(tmp.path / "target" / "nested-link",
+                                        tmp.path / "target" / "inside")) {
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L"-H", L"linked", L"-name", L"*.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("linked/real/visible.txt") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("linked/inside/through-root.txt") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("linked/nested-link/through-root.txt") ==
+              std::string::npos);
 }
 
 TEST(find, find_invalid_size_returns_error) {

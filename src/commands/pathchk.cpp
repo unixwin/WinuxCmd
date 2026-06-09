@@ -95,9 +95,16 @@ bool has_empty_or_leading_dash_component(const std::string& path) {
 auto windows_path_error(const std::string& path) -> std::optional<std::string> {
   if (path.empty()) return "empty file name";
 
+  bool has_drive_prefix =
+      path.size() >= 2 &&
+      std::isalpha(static_cast<unsigned char>(path[0])) &&
+      path[1] == ':';
+
   // Check for invalid characters
   const std::string invalid_chars = "<>:\"|?*";
-  for (char c : path) {
+  for (size_t i = 0; i < path.size(); ++i) {
+    char c = path[i];
+    if (has_drive_prefix && i == 1) continue;
     if (invalid_chars.find(c) != std::string::npos) {
       return "invalid Windows filename";
     }
@@ -182,7 +189,7 @@ REGISTER_COMMAND(
 
   if (ctx.positionals.empty()) {
     safeErrorPrintLn("pathchk: missing operand");
-    safePrintLn("Try 'pathchk --help' for more information.");
+    safeErrorPrintLn("Try 'pathchk --help' for more information.");
     return 1;
   }
 
@@ -192,7 +199,15 @@ REGISTER_COMMAND(
     std::string path_str(path);
     std::optional<std::string> error_msg;
 
-    if (check_leading_dash && has_empty_or_leading_dash_component(path_str)) {
+    if (path_str.empty() && !check_portability &&
+        !ctx.get<bool>("-P", false) && !ctx.get<bool>("--posix", false) &&
+        !ctx.get<bool>("--portability", false) &&
+        std::getenv("POSIXLY_CORRECT") == nullptr) {
+      error_msg = "No such file or directory";
+    }
+
+    if (!error_msg && check_leading_dash &&
+        has_empty_or_leading_dash_component(path_str)) {
       error_msg = "empty file name or leading '-'";
     }
 
@@ -205,7 +220,7 @@ REGISTER_COMMAND(
     }
 
     if (error_msg) {
-      safeErrorPrintLn("pathchk: '" + path_str + "' - " + *error_msg);
+      safeErrorPrintLn("pathchk: '" + path_str + "': " + *error_msg);
       exit_code = 1;
     }
   }

@@ -135,5 +135,12 @@ TEST(diff3, diff3_too_many_files_fails) {
   p.add(L"diff3.exe", {L"a.txt", L"b.txt", L"c.txt", L"d.txt"});
   auto r = p.run();
 
-  EXPECT_NE(r.exit_code, 0);
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("diff3 extra operand stderr", r.stderr_text);
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ(r.stderr_text,
+            "diff3: extra operand 'd.txt'\n"
+            "Try 'diff3 --help' for more information.\n");
 }

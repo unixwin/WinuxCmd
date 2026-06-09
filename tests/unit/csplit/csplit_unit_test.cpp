@@ -139,3 +139,84 @@ TEST(csplit, csplit_wildcard_input_rejects_ambiguous_match) {
   EXPECT_TRUE(r.stdout_text.find("exactly one file") != std::string::npos ||
               r.stderr_text.find("exactly one file") != std::string::npos);
 }
+
+TEST(csplit, csplit_missing_input_reports_help_hint) {
+  Pipeline p;
+  p.add(L"csplit.exe", {});
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("csplit missing input stderr", r.stderr_text);
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ(r.stderr_text,
+            "csplit: missing input file\n"
+            "Try 'csplit --help' for more information.\n");
+}
+
+TEST(csplit, csplit_missing_pattern_reports_help_hint) {
+  TempDir tmp;
+  tmp.write("test.txt", "line1\nline2\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"csplit.exe", {L"test.txt"});
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("csplit missing pattern stderr", r.stderr_text);
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ(r.stderr_text,
+            "csplit: missing pattern\n"
+            "Try 'csplit --help' for more information.\n");
+}
+
+TEST(csplit, csplit_line_numbers_suppress_matched_keeps_final_empty_split) {
+  TempDir tmp;
+  tmp.write("input.txt", "1\n2\n3\n4\n5\n6\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"csplit.exe",
+        {L"--suppress-matched", L"input.txt", L"2", L"4", L"6"});
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("csplit suppress matched line-number stdout", r.stdout_text);
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(tmp.read("xx00"), "1\n");
+  EXPECT_EQ_TEXT(tmp.read("xx01"), "3\n");
+  EXPECT_EQ_TEXT(tmp.read("xx02"), "5\n");
+  EXPECT_EQ_TEXT(tmp.read("xx03"), "");
+  EXPECT_EQ_TEXT(r.stdout_text, "2\n2\n2\n0\n");
+}
+
+TEST(csplit,
+     csplit_line_numbers_suppress_matched_elides_final_empty_split_with_z) {
+  TempDir tmp;
+  tmp.write("input.txt", "1\n2\n3\n4\n5\n6\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"csplit.exe",
+        {L"--suppress-matched", L"-z", L"input.txt", L"2", L"4", L"6"});
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("csplit suppress matched -z stdout", r.stdout_text);
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(tmp.read("xx00"), "1\n");
+  EXPECT_EQ_TEXT(tmp.read("xx01"), "3\n");
+  EXPECT_EQ_TEXT(tmp.read("xx02"), "5\n");
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "xx03"));
+  EXPECT_EQ_TEXT(r.stdout_text, "2\n2\n2\n");
+}

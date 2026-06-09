@@ -88,33 +88,52 @@ auto constexpr DIR_OPTIONS = std::array{
 namespace dir_pipeline {
 namespace cp = core::pipeline;
 
+auto quote_dir_windows_arg(const std::wstring& arg) -> std::wstring {
+  if (arg.empty()) return L"\"\"";
+
+  bool need_quote = arg.find_first_of(L" \t\"") != std::wstring::npos;
+  if (!need_quote) return arg;
+
+  std::wstring out = L"\"";
+  size_t backslashes = 0;
+  for (wchar_t c : arg) {
+    if (c == L'\\') {
+      ++backslashes;
+    } else if (c == L'"') {
+      out.append(backslashes * 2 + 1, L'\\');
+      out.push_back(L'"');
+      backslashes = 0;
+    } else {
+      out.append(backslashes, L'\\');
+      backslashes = 0;
+      out.push_back(c);
+    }
+  }
+  out.append(backslashes * 2, L'\\');
+  out.push_back(L'"');
+  return out;
+}
+
+auto build_dir_command_line(std::span<const std::wstring> args) -> std::wstring {
+  std::wstring cmd_line = L"ls.exe";
+  for (const auto& arg : args) {
+    cmd_line.push_back(L' ');
+    cmd_line += quote_dir_windows_arg(arg);
+  }
+  return cmd_line;
+}
+
 auto run(const CommandContext<DIR_OPTIONS.size()>& ctx) -> int {
   // Build ls arguments with -C (columns) as default
   SmallVector<std::wstring, 32> ls_args;
   ls_args.push_back(L"-C");  // Default to columns
 
-  // Check if user explicitly set a format that overrides -C
-  bool has_format_override = false;
-  for (const auto& pos : ctx.positionals) {
-    std::string arg(pos);
-    if (arg == "-l" || arg == "-1" || arg == "-m" || arg == "-x" ||
-        arg == "--long" || arg == "--format=long" ||
-        arg == "--format=single-column" || arg == "--format=commas" ||
-        arg == "--format=across") {
-      has_format_override = true;
-    }
+  // Preserve the original argv surface so GNU dir options actually reach ls.
+  for (const auto& arg : ctx.raw_args) {
+    ls_args.push_back(utf8_to_wstring(std::string(arg)));
   }
 
-  // Forward all positionals to ls
-  for (const auto& pos : ctx.positionals) {
-    ls_args.push_back(utf8_to_wstring(std::string(pos)));
-  }
-
-  // Build command line
-  std::wstring cmd_line = L"ls.exe";
-  for (const auto& arg : ls_args) {
-    cmd_line += L" " + arg;
-  }
+  std::wstring cmd_line = build_dir_command_line(ls_args);
 
   STARTUPINFOW si = {sizeof(si)};
   PROCESS_INFORMATION pi;

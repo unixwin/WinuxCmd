@@ -43,3 +43,14 @@ TEST(arch, arch_basic) {
   EXPECT_TRUE(arch == "x86_64" || arch == "i386" || arch == "arm" ||
               arch == "aarch64" || arch == "ia64" || arch == "unknown");
 }
+
+TEST(arch, arch_version_succeeds) {
+  Pipeline p;
+  p.add(L"arch.exe", {L"--version"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_NE(r.stdout_text.find("arch (WinuxCmd)"), std::string::npos);
+  EXPECT_TRUE(r.stderr_text.empty());
+}

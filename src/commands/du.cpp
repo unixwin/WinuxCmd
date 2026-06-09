@@ -101,7 +101,7 @@ auto constexpr DU_OPTIONS = std::array{
     OPTION("", "--time",
            "show time of the last modification of any file in the directory; "
            "see --time-style",
-           STRING_TYPE),
+           OPTIONAL_STRING_TYPE),
     OPTION("-0", "--null", "end each output line with NUL, not newline"),
     OPTION("-D", "--dereference-args",
            "dereference only symlinks that are command line arguments"),
@@ -269,6 +269,63 @@ auto parse_threshold_size(std::string_view text) -> std::optional<int64_t> {
   return negative ? -value : value;
 }
 
+auto load_exclude_patterns_from_file(const std::string& path)
+    -> cp::Result<std::vector<std::string>> {
+  std::ifstream in(path, std::ios::binary);
+  if (!in.is_open()) {
+    return std::unexpected("cannot open exclude file '" + path + "'");
+  }
+
+  std::string buf((std::istreambuf_iterator<char>(in)),
+                  std::istreambuf_iterator<char>());
+  if (buf.empty()) {
+    return std::vector<std::string>{};
+  }
+
+  std::vector<std::string> lines;
+  size_t start = 0;
+  while (start < buf.size()) {
+    size_t pos = buf.find('\n', start);
+    if (pos == std::string::npos) {
+      lines.emplace_back(buf.substr(start));
+      break;
+    }
+    lines.emplace_back(buf.substr(start, pos - start));
+    start = pos + 1;
+  }
+
+  for (auto& line : lines) {
+    if (!line.empty() && line.back() == '\r') {
+      line.pop_back();
+    }
+  }
+  return lines;
+}
+
+auto read_files0_from(const std::string& path)
+    -> cp::Result<std::vector<std::string>> {
+  std::istream* input = nullptr;
+  std::ifstream file;
+  if (path == "-") {
+    input = &std::cin;
+  } else {
+    file.open(path, std::ios::binary);
+    if (!file.is_open()) {
+      return std::unexpected("cannot open file list '" + path + "'");
+    }
+    input = &file;
+  }
+
+  std::vector<std::string> paths;
+  std::string name;
+  while (std::getline(*input, name, '\0')) {
+    if (!name.empty()) {
+      paths.push_back(name);
+    }
+  }
+  return paths;
+}
+
 auto ceil_div(uint64_t value, uint64_t divisor) -> uint64_t {
   if (value == 0) {
     return 0;
@@ -283,6 +340,7 @@ struct OutputConfig {
 };
 
 enum class ThresholdMode { None, Minimum, Maximum };
+enum class DuTimeMode { Modification, Access, Status };
 
 struct DuConfig {
   bool count_all = false;
@@ -291,6 +349,10 @@ struct DuConfig {
   bool dereference = false;       // -L
   bool one_file_system = false;   // -x
   bool show_inodes = false;       // --inodes
+  bool null_terminated = false;   // -0
+  bool separate_dirs = false;     // -S
+  bool show_time = false;         // --time
+  DuTimeMode time_mode = DuTimeMode::Modification;
   std::string time_word;          // --time
   int max_depth = -1;
   ThresholdMode threshold_mode = ThresholdMode::None;
@@ -298,6 +360,20 @@ struct DuConfig {
   SmallVector<std::string, 16> exclude_patterns;
   OutputConfig output;
 };
+
+struct UsageSummary {
+  uint64_t size = 0;
+  FILETIME latest_time{};
+  bool has_time = false;
+};
+
+auto print_record_terminator(bool null_terminated) -> void {
+  if (null_terminated) {
+    safePrint(char{'\0'});
+  } else {
+    safePrint("\n");
+  }
+}
 
 auto print_scaled_size(uint64_t size, const OutputConfig& cfg) -> void {
   if (cfg.human || cfg.si) {
@@ -309,6 +385,71 @@ auto print_scaled_size(uint64_t size, const OutputConfig& cfg) -> void {
   snprintf(buf, sizeof(buf), "%16ju",
            static_cast<uintmax_t>(ceil_div(size, cfg.block_size)));
   safePrint(buf);
+}
+
+auto parse_du_time_mode(std::string_view value) -> std::optional<DuTimeMode> {
+  if (value.empty() || value == "mtime" || value == "modification" ||
+      value == "modified") {
+    return DuTimeMode::Modification;
+  }
+  if (value == "atime" || value == "access" || value == "use") {
+    return DuTimeMode::Access;
+  }
+  if (value == "ctime" || value == "status") {
+    return DuTimeMode::Status;
+  }
+  return std::nullopt;
+}
+
+auto get_selected_time(const WIN32_FILE_ATTRIBUTE_DATA& data, DuTimeMode mode)
+    -> FILETIME {
+  switch (mode) {
+    case DuTimeMode::Modification:
+      return data.ftLastWriteTime;
+    case DuTimeMode::Access:
+      return data.ftLastAccessTime;
+    case DuTimeMode::Status:
+      return data.ftCreationTime;
+  }
+  return data.ftLastWriteTime;
+}
+
+auto is_later_filetime(const FILETIME& lhs, const FILETIME& rhs) -> bool {
+  return CompareFileTime(&lhs, &rhs) > 0;
+}
+
+auto update_latest_time(UsageSummary& summary, const FILETIME& candidate)
+    -> void {
+  if (!summary.has_time || is_later_filetime(candidate, summary.latest_time)) {
+    summary.latest_time = candidate;
+    summary.has_time = true;
+  }
+}
+
+auto format_time_long_iso(FILETIME file_time) -> std::string {
+  FILETIME local_ft{};
+  if (!FileTimeToLocalFileTime(&file_time, &local_ft)) {
+    local_ft = file_time;
+  }
+
+  SYSTEMTIME st{};
+  if (!FileTimeToSystemTime(&local_ft, &st)) {
+    return "0000-00-00 00:00";
+  }
+
+  char buf[32];
+  snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d", st.wYear, st.wMonth,
+           st.wDay, st.wHour, st.wMinute);
+  return std::string(buf);
+}
+
+auto print_time_if_requested(const UsageSummary& summary, const DuConfig& cfg)
+    -> void {
+  if (!cfg.show_time || !summary.has_time) {
+    return;
+  }
+  safePrint("  ");
+  safePrint(format_time_long_iso(summary.latest_time));
 }
 
 auto configure_output(const CommandContext<DU_OPTIONS.size()>& ctx)
@@ -332,6 +473,13 @@ auto configure_output(const CommandContext<DU_OPTIONS.size()>& ctx)
       output.human = false;
       output.si = false;
       output.block_size = 1024;
+      continue;
+    }
+
+    if (meta.short_name == "-m") {
+      output.human = false;
+      output.si = false;
+      output.block_size = 1024 * 1024;
       continue;
     }
 
@@ -414,12 +562,41 @@ auto configure_du(const CommandContext<DU_OPTIONS.size()>& ctx)
     cfg.exclude_patterns.push_back(pattern);
   }
 
+  for (const auto& occurrence :
+       ctx.string_occurrences({"--exclude", "--exclude-from", "-X"})) {
+    if (occurrence.long_name == "--exclude") {
+      continue;
+    }
+
+    auto patterns = load_exclude_patterns_from_file(occurrence.value);
+    if (!patterns) {
+      return std::unexpected(patterns.error());
+    }
+    for (const auto& pattern : *patterns) {
+      if (!pattern.empty()) {
+        cfg.exclude_patterns.push_back(pattern);
+      }
+    }
+  }
+
   cfg.dereference = ctx.get<bool>("--dereference", false) ||
                     ctx.get<bool>("-L", false);
   cfg.one_file_system = ctx.get<bool>("--one-file-system", false) ||
                         ctx.get<bool>("-x", false);
   cfg.show_inodes = ctx.get<bool>("--inodes", false);
-  cfg.time_word = ctx.get<std::string>("--time", "");
+  cfg.null_terminated =
+      ctx.get<bool>("--null", false) || ctx.get<bool>("-0", false);
+  cfg.separate_dirs =
+      ctx.get<bool>("--separate-dirs", false) || ctx.get<bool>("-S", false);
+  for (const auto& occurrence : ctx.string_occurrences({"--time"})) {
+    auto parsed = parse_du_time_mode(occurrence.value);
+    if (!parsed) {
+      return std::unexpected("invalid time value");
+    }
+    cfg.show_time = true;
+    cfg.time_word = occurrence.value;
+    cfg.time_mode = *parsed;
+  }
 
   return cfg;
 }
@@ -508,14 +685,15 @@ auto get_file_size(const std::wstring& path) -> uint64_t {
  */
 auto calculate_dir_size(const std::wstring& path,
                         std::unordered_map<std::wstring, uint64_t>& sizes,
+                        std::unordered_map<std::wstring, FILETIME>& times,
                         int current_depth, const DuConfig& cfg,
-                        const std::wstring& root_drive = L"") -> uint64_t {
+                        const std::wstring& root_drive = L"") -> UsageSummary {
   WIN32_FIND_DATAW find_data;
   std::wstring search_path = path + L"\\*";
   HANDLE hFind = FindFirstFileW(search_path.c_str(), &find_data);
 
   if (hFind == INVALID_HANDLE_VALUE) {
-    return 0;
+    return {};
   }
 
   // Determine root drive for --one-file-system
@@ -524,7 +702,11 @@ auto calculate_dir_size(const std::wstring& path,
     drive = path.substr(0, 2);
   }
 
-  uint64_t total_size = 0;
+  UsageSummary summary;
+  WIN32_FILE_ATTRIBUTE_DATA path_data{};
+  const bool have_path_data =
+      cfg.show_time &&
+      GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &path_data);
 
   do {
     std::wstring filename = find_data.cFileName;
@@ -544,9 +726,9 @@ auto calculate_dir_size(const std::wstring& path,
     if (cfg.one_file_system && !drive.empty() && full_path.size() >= 2 &&
         full_path[1] == L':') {
       std::wstring file_drive = full_path.substr(0, 2);
-      if (file_drive != drive) {
-        continue;
-      }
+        if (file_drive != drive) {
+          continue;
+        }
     }
 
     const int child_depth = current_depth + 1;
@@ -556,13 +738,30 @@ auto calculate_dir_size(const std::wstring& path,
       // (FindFirstFile already handles this for most cases)
 
       // Recursively calculate subdirectory size
-      uint64_t dir_size =
-          calculate_dir_size(full_path, sizes, child_depth, cfg, drive);
-      total_size += dir_size;
+      UsageSummary child_summary =
+          calculate_dir_size(full_path, sizes, times, child_depth, cfg, drive);
+      if (!cfg.separate_dirs) {
+        summary.size += child_summary.size;
+      }
+      if (child_summary.has_time) {
+        update_latest_time(summary, child_summary.latest_time);
+      }
     } else {
       // It's a file
       uint64_t file_size = get_file_size(full_path);
-      total_size += file_size;
+      summary.size += file_size;
+      if (cfg.show_time) {
+        WIN32_FILE_ATTRIBUTE_DATA file_data{};
+        if (GetFileAttributesExW(full_path.c_str(), GetFileExInfoStandard,
+                                 &file_data)) {
+          FILETIME file_time = get_selected_time(file_data, cfg.time_mode);
+          update_latest_time(summary, file_time);
+          if (cfg.count_all &&
+              (cfg.max_depth < 0 || child_depth <= cfg.max_depth)) {
+            times[full_path] = file_time;
+          }
+        }
+      }
 
       // Count individual files if requested
       if (cfg.count_all &&
@@ -575,10 +774,20 @@ auto calculate_dir_size(const std::wstring& path,
   FindClose(hFind);
 
   if (cfg.max_depth < 0 || current_depth <= cfg.max_depth) {
-    sizes[path] = total_size;
+    sizes[path] = summary.size;
+    if (cfg.show_time && summary.has_time) {
+      times[path] = summary.latest_time;
+    }
   }
 
-  return total_size;
+  if (cfg.show_time && !summary.has_time && have_path_data) {
+    update_latest_time(summary, get_selected_time(path_data, cfg.time_mode));
+    if (cfg.max_depth < 0 || current_depth <= cfg.max_depth) {
+      times[path] = summary.latest_time;
+    }
+  }
+
+  return summary;
 }
 
 /**
@@ -591,7 +800,20 @@ auto print_disk_usage(const CommandContext<DU_OPTIONS.size()>& ctx)
   // Use SmallVector for file paths (max 32 paths) - all stack-allocated
   SmallVector<std::string, 32> paths{};
 
-  if (ctx.positionals.empty()) {
+  const std::string files0_from = ctx.get<std::string>("--files0-from", "");
+  if (!files0_from.empty()) {
+    if (!ctx.positionals.empty()) {
+      return std::unexpected(
+          "--files0-from disallows processing paths named on the command line");
+    }
+    auto file_list = read_files0_from(files0_from);
+    if (!file_list) {
+      return std::unexpected(file_list.error());
+    }
+    for (const auto& path : *file_list) {
+      paths.push_back(path);
+    }
+  } else if (ctx.positionals.empty()) {
     paths.push_back(".");
   } else {
     for (const auto& arg : ctx.positionals) {
@@ -638,10 +860,11 @@ auto print_disk_usage(const CommandContext<DU_OPTIONS.size()>& ctx)
     }
 
     std::unordered_map<std::wstring, uint64_t> sizes;
+    std::unordered_map<std::wstring, FILETIME> times;
 
     if (attrs & FILE_ATTRIBUTE_DIRECTORY) {
       // Calculate directory size
-      calculate_dir_size(wpath, sizes, 0, cfg);
+      UsageSummary dir_summary = calculate_dir_size(wpath, sizes, times, 0, cfg);
 
       // Print directory size
       uint64_t dir_size = sizes[wpath];
@@ -655,8 +878,10 @@ auto print_disk_usage(const CommandContext<DU_OPTIONS.size()>& ctx)
         } else {
           print_scaled_size(dir_size, cfg.output);
         }
+        print_time_if_requested(dir_summary, cfg);
         safePrint(L"  ");
-        safePrintLn(wpath);
+        safePrint(wpath);
+        print_record_terminator(cfg.null_terminated);
       }
 
       // Print subdirectories/files if not summarize mode
@@ -672,8 +897,18 @@ auto print_disk_usage(const CommandContext<DU_OPTIONS.size()>& ctx)
             } else {
               print_scaled_size(size, cfg.output);
             }
+            if (cfg.show_time) {
+              UsageSummary entry_summary;
+              auto time_it = times.find(subpath);
+              if (time_it != times.end()) {
+                entry_summary.latest_time = time_it->second;
+                entry_summary.has_time = true;
+              }
+              print_time_if_requested(entry_summary, cfg);
+            }
             safePrint(L"  ");
-            safePrintLn(subpath);
+            safePrint(subpath);
+            print_record_terminator(cfg.null_terminated);
           }
         }
       }
@@ -683,14 +918,25 @@ auto print_disk_usage(const CommandContext<DU_OPTIONS.size()>& ctx)
       grand_total += file_size;
 
       if (passes_threshold(cfg, file_size)) {
+        UsageSummary file_summary;
+        if (cfg.show_time) {
+          WIN32_FILE_ATTRIBUTE_DATA file_data{};
+          if (GetFileAttributesExW(wpath.c_str(), GetFileExInfoStandard,
+                                   &file_data)) {
+            file_summary.latest_time = get_selected_time(file_data, cfg.time_mode);
+            file_summary.has_time = true;
+          }
+        }
         safePrint(L"");
         if (cfg.show_inodes) {
           safePrint("1");  // Each file is 1 inode
         } else {
           print_scaled_size(file_size, cfg.output);
         }
+        print_time_if_requested(file_summary, cfg);
         safePrint(L"  ");
-        safePrintLn(wpath);
+        safePrint(wpath);
+        print_record_terminator(cfg.null_terminated);
       }
     }
   }
@@ -698,7 +944,8 @@ auto print_disk_usage(const CommandContext<DU_OPTIONS.size()>& ctx)
   if (cfg.total && passes_threshold(cfg, grand_total)) {
     safePrint(L"");
     print_scaled_size(grand_total, cfg.output);
-    safePrintLn(L"  total");
+    safePrint(L"  total");
+    print_record_terminator(cfg.null_terminated);
   }
 
   return all_ok;

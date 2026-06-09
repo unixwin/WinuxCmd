@@ -45,9 +45,11 @@ using cmd::meta::OptionType;
 // ======================================================
 
 auto constexpr NICE_OPTIONS =
-    std::array{OPTION("-n", "--adjustment", "adjust increment", INT_TYPE)};
+    std::array{OPTION("-n", "--adjustment", "adjust increment", STRING_TYPE)};
 
 namespace {
+constexpr int kNiceNoOverflowBound = 50;
+
 auto current_niceness() -> int {
   switch (GetPriorityClass(GetCurrentProcess())) {
     case HIGH_PRIORITY_CLASS:
@@ -81,6 +83,74 @@ auto nice_command_status_from_create_error(DWORD error) -> int {
       return 126;
   }
 }
+
+auto nice_windows_error_text(DWORD error) -> std::string {
+  switch (error) {
+    case ERROR_FILE_NOT_FOUND:
+    case ERROR_PATH_NOT_FOUND:
+      return "No such file or directory";
+    case ERROR_ACCESS_DENIED:
+      return "Permission denied";
+    default:
+      return std::system_category().message(static_cast<int>(error));
+  }
+}
+
+auto parse_adjustment_value(std::string_view raw) -> std::optional<int> {
+  if (raw.empty()) {
+    return std::nullopt;
+  }
+
+  int value = 0;
+  auto [ptr, ec] =
+      std::from_chars(raw.data(), raw.data() + raw.size(), value);
+  if (ec == std::errc::result_out_of_range) {
+    bool negative = raw.front() == '-';
+    return negative ? -kNiceNoOverflowBound : kNiceNoOverflowBound;
+  }
+  if (ec != std::errc() || ptr != raw.data() + raw.size()) {
+    return std::nullopt;
+  }
+
+  return value;
+}
+
+auto quote_windows_arg(const std::wstring& arg) -> std::wstring {
+  if (arg.empty()) return L"\"\"";
+
+  bool need_quote = arg.find_first_of(L" \t\"") != std::wstring::npos;
+  if (!need_quote) return arg;
+
+  std::wstring out = L"\"";
+  size_t backslashes = 0;
+  for (wchar_t c : arg) {
+    if (c == L'\\') {
+      ++backslashes;
+    } else if (c == L'"') {
+      out.append(backslashes * 2 + 1, L'\\');
+      out.push_back(L'"');
+      backslashes = 0;
+    } else {
+      out.append(backslashes, L'\\');
+      backslashes = 0;
+      out.push_back(c);
+    }
+  }
+  out.append(backslashes * 2, L'\\');
+  out.push_back(L'"');
+  return out;
+}
+
+auto build_command_line(std::span<const std::string_view> args) -> std::wstring {
+  std::wstring out;
+  bool first = true;
+  for (auto arg : args) {
+    if (!first) out.push_back(L' ');
+    first = false;
+    out += quote_windows_arg(utf8_to_wstring(std::string(arg)));
+  }
+  return out;
+}
 }  // namespace
 
 // ======================================================
@@ -105,46 +175,50 @@ REGISTER_COMMAND(
     /* copyright */ "Copyright © 2026 WinuxCmd",
     /* options */ NICE_OPTIONS) {
   int adjustment = 10;  // Default adjustment
+  bool has_explicit_adjustment = false;
 
   // Parse adjustment option
-  constexpr int kNoAdjustment = std::numeric_limits<int>::min();
-  int parsed_adjustment = ctx.get<int>("-n", kNoAdjustment);
-  if (parsed_adjustment == kNoAdjustment) {
-    parsed_adjustment = ctx.get<int>("--adjustment", kNoAdjustment);
+  std::string parsed_adjustment = ctx.get<std::string>("-n", "");
+  if (parsed_adjustment.empty()) {
+    parsed_adjustment = ctx.get<std::string>("--adjustment", "");
   }
-  if (parsed_adjustment != kNoAdjustment) {
-    adjustment = parsed_adjustment;
+  if (!parsed_adjustment.empty()) {
+    auto adjustment_value = parse_adjustment_value(parsed_adjustment);
+    if (!adjustment_value) {
+      safeErrorPrintLn("nice: invalid adjustment '" + parsed_adjustment + "'");
+      safeErrorPrintLn("Try 'nice --help' for more information.");
+      return 125;
+    }
+    adjustment = *adjustment_value;
+    has_explicit_adjustment = true;
   }
 
   // If no command provided, print current priority
   if (ctx.positionals.empty()) {
+    if (has_explicit_adjustment) {
+      safeErrorPrintLn("nice: A command must be given with an adjustment.");
+      safeErrorPrintLn("Try 'nice --help' for more information.");
+      return 125;
+    }
     safePrintLn(std::to_string(current_niceness()));
     return 0;
-  }
-
-  // Build command string
-  std::string cmd;
-  for (size_t i = 0; i < ctx.positionals.size(); ++i) {
-    if (i > 0) cmd += " ";
-    cmd += ctx.positionals[i];
   }
 
   // Execute command with adjusted priority
   STARTUPINFOW si = {sizeof(si)};
   PROCESS_INFORMATION pi;
-
-  std::wstring wcmd = utf8_to_wstring(cmd);
+  auto cmd_line = build_command_line(ctx.positionals);
 
   // Determine priority class based on adjustment
   int target_niceness = std::clamp(current_niceness() + adjustment, -20, 19);
   DWORD priority_class = priority_class_for_niceness(target_niceness);
 
-  if (!CreateProcessW(nullptr, const_cast<wchar_t*>(wcmd.c_str()), nullptr,
-                      nullptr, FALSE, priority_class, nullptr, nullptr, &si,
-                      &pi)) {
+  if (!CreateProcessW(nullptr, cmd_line.data(), nullptr, nullptr, FALSE,
+                      priority_class, nullptr, nullptr, &si, &pi)) {
     DWORD error = GetLastError();
-    safeErrorPrintLn("nice: failed to execute command: " +
-                     std::string(ctx.positionals[0]));
+    safeErrorPrintLn("nice: failed to run command '" +
+                     std::string(ctx.positionals[0]) + "': " +
+                     nice_windows_error_text(error));
     return nice_command_status_from_create_error(error);
   }
 

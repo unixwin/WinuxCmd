@@ -260,6 +260,9 @@ REGISTER_COMMAND(
   auto cfg_result = build_config(ctx);
   if (!cfg_result) {
     safeErrorPrintLn("base32: " + cfg_result.error());
+    if (cfg_result.error().starts_with("extra operand '")) {
+      safeErrorPrintLn("Try 'base32 --help' for more information.");
+    }
     return 1;
   }
 

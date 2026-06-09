@@ -171,3 +171,22 @@ TEST(diff, diff_wildcard_pair_expands) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.empty());
 }
+
+TEST(diff, diff_rejects_extra_operand_with_help_hint) {
+  Pipeline p;
+  p.add(L"diff.exe", {L"a", L"b", L"c"});
+
+  TEST_LOG_CMD_LIST("diff.exe", L"a", L"b", L"c");
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("diff extra operand stderr", r.stderr_text);
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "diff: extra operand 'c'\n"
+      "Try 'diff --help' for more information.\n");
+}

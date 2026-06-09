@@ -180,6 +180,92 @@ TEST(mv, mv_no_clobber_keeps_existing_destination) {
   EXPECT_EQ(tmp.read("dest.txt"), "old content");
 }
 
+TEST(mv, mv_last_overwrite_option_can_select_no_clobber) {
+  TempDir tmp;
+  tmp.write("source.txt", "new content");
+  tmp.write("dest.txt", "old content");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"mv.exe", {L"source.txt", L"dest.txt", L"-f", L"-i", L"-n"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "source.txt"));
+  EXPECT_EQ(tmp.read("dest.txt"), "old content");
+}
+
+TEST(mv, mv_last_overwrite_option_can_select_interactive) {
+  TempDir tmp;
+  tmp.write("source.txt", "new content");
+  tmp.write("dest.txt", "old content");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("n\n");
+  p.add(L"mv.exe", {L"source.txt", L"dest.txt", L"-n", L"-f", L"-i"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_NE(r.stderr_text.find("overwrite 'dest.txt'?"), std::string::npos);
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "source.txt"));
+  EXPECT_EQ(tmp.read("dest.txt"), "old content");
+}
+
+TEST(mv, mv_last_overwrite_option_can_select_force) {
+  TempDir tmp;
+  tmp.write("source.txt", "new content");
+  tmp.write("dest.txt", "old content");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"mv.exe", {L"source.txt", L"dest.txt", L"-i", L"-n", L"-f"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(r.stderr_text.find("overwrite 'dest.txt'?"), std::string::npos);
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "source.txt"));
+  EXPECT_EQ(tmp.read("dest.txt"), "new content");
+}
+
+TEST(mv, mv_bare_interactive_long_option_prompts_like_always) {
+  TempDir tmp;
+  tmp.write("source.txt", "new content");
+  tmp.write("dest.txt", "old content");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("n\n");
+  p.add(L"mv.exe", {L"--interactive", L"source.txt", L"dest.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_NE(r.stderr_text.find("overwrite 'dest.txt'?"), std::string::npos);
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "source.txt"));
+  EXPECT_EQ(tmp.read("dest.txt"), "old content");
+}
+
+TEST(mv, mv_invalid_interactive_mode_fails) {
+  TempDir tmp;
+  tmp.write("source.txt", "new content");
+  tmp.write("dest.txt", "old content");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"mv.exe", {L"--interactive=maybe", L"source.txt", L"dest.txt"});
+
+  auto r = p.run();
+
+  EXPECT_NE(r.exit_code, 0);
+  EXPECT_NE(r.stderr_text.find("invalid argument 'maybe'"), std::string::npos);
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "source.txt"));
+  EXPECT_EQ(tmp.read("dest.txt"), "old content");
+}
+
 TEST(mv, mv_wildcard_sources_expand) {
   TempDir tmp;
   tmp.write("a.txt", "alpha");

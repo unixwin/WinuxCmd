@@ -475,13 +475,29 @@ auto build_config(const CommandContext<N>& ctx) -> cp::Result<TailConfig> {
   TailConfig config;
   config.delimiter = ctx.get<bool>("--zero-terminated", false) ? '\0' : '\n';
   config.debug = ctx.get<bool>("--debug", false);
-  config.follow_by_name = ctx.get<bool>("-F", false);
-  if (ctx.has("--follow")) {
-    std::string follow_mode = ctx.get<std::string>("--follow", "");
-    if (follow_mode == "name") {
+
+  for (const auto& occurrence : ctx.options.occurrences()) {
+    if (!ctx.metas || occurrence.index >= N) continue;
+    const auto& meta = (*ctx.metas)[occurrence.index];
+
+    if (option_matches(meta, "-F", "")) {
       config.follow_by_name = true;
-    } else if (!follow_mode.empty() && follow_mode != "descriptor") {
-      return std::unexpected("invalid follow mode");
+      continue;
+    }
+
+    if (option_matches(meta, "", "--follow")) {
+      auto value = std::get_if<std::string>(&occurrence.value);
+      if (!value) {
+        config.follow_by_name = false;
+        continue;
+      }
+      if (*value == "name") {
+        config.follow_by_name = true;
+      } else if (*value == "descriptor" || value->empty()) {
+        config.follow_by_name = false;
+      } else {
+        return std::unexpected("invalid follow mode");
+      }
     }
   }
   config.follow = ctx.get<bool>("-f", false) || ctx.has("--follow") ||
@@ -551,7 +567,6 @@ auto build_config(const CommandContext<N>& ctx) -> cp::Result<TailConfig> {
 
   return config;
 }
-
 auto open_file_with_retry(const std::string& file, const TailConfig& config)
     -> std::optional<std::ifstream> {
   while (true) {

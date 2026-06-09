@@ -54,12 +54,25 @@ struct Config {
   std::string output = "y";
 };
 
+auto join_yes_args(std::span<const std::string_view> args) -> std::string {
+  std::string output;
+  for (size_t i = 0; i < args.size(); ++i) {
+    if (i != 0) {
+      output += ' ';
+    }
+    output += args[i];
+  }
+  return output;
+}
+
 auto build_config(const CommandContext<YES_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
   Config cfg;
 
   if (!ctx.positionals.empty()) {
-    cfg.output = std::string(ctx.positionals[0]);
+    cfg.output = join_yes_args(
+        std::span<const std::string_view>(ctx.positionals.data(),
+                                          ctx.positionals.size()));
   }
 
   return cfg;

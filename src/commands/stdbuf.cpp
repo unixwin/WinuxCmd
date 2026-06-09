@@ -57,6 +57,8 @@ auto constexpr STDBUF_OPTIONS =
 // ======================================================
 
 namespace {
+constexpr int kStdbufUsageErrorExitCode = 125;
+
 struct BufferSizeSuffix {
   std::string_view suffix;
   std::size_t base;
@@ -175,6 +177,56 @@ auto stdbuf_command_status_from_create_error(DWORD error) -> int {
       return 126;
   }
 }
+
+auto stdbuf_windows_error_text(DWORD error) -> std::string {
+  switch (error) {
+    case ERROR_FILE_NOT_FOUND:
+    case ERROR_PATH_NOT_FOUND:
+      return "No such file or directory";
+    case ERROR_ACCESS_DENIED:
+      return "Permission denied";
+    default:
+      return std::system_category().message(static_cast<int>(error));
+  }
+}
+
+auto quote_stdbuf_windows_arg(const std::wstring& arg) -> std::wstring {
+  if (arg.empty()) return L"\"\"";
+
+  bool need_quote = arg.find_first_of(L" \t\"") != std::wstring::npos;
+  if (!need_quote) return arg;
+
+  std::wstring out = L"\"";
+  size_t backslashes = 0;
+  for (wchar_t c : arg) {
+    if (c == L'\\') {
+      ++backslashes;
+    } else if (c == L'"') {
+      out.append(backslashes * 2 + 1, L'\\');
+      out.push_back(L'"');
+      backslashes = 0;
+    } else {
+      out.append(backslashes, L'\\');
+      backslashes = 0;
+      out.push_back(c);
+    }
+  }
+  out.append(backslashes * 2, L'\\');
+  out.push_back(L'"');
+  return out;
+}
+
+auto build_stdbuf_command_line(std::span<const std::string_view> args)
+    -> std::wstring {
+  std::wstring out;
+  bool first = true;
+  for (auto arg : args) {
+    if (!first) out.push_back(L' ');
+    first = false;
+    out += quote_stdbuf_windows_arg(utf8_to_wstring(std::string(arg)));
+  }
+  return out;
+}
 }  // namespace
 
 // ======================================================
@@ -198,8 +250,8 @@ REGISTER_COMMAND(
     /* options */ STDBUF_OPTIONS) {
   if (ctx.positionals.empty()) {
     safeErrorPrintLn("stdbuf: missing command");
-    safePrintLn("Try 'stdbuf --help' for more information.");
-    return 1;
+    safeErrorPrintLn("Try 'stdbuf --help' for more information.");
+    return kStdbufUsageErrorExitCode;
   }
 
   std::string input_mode = ctx.get<std::string>("-i", "");
@@ -208,52 +260,45 @@ REGISTER_COMMAND(
 
   if (!validate_buffer_mode("standard input", input_mode)) {
     safeErrorPrintLn("stdbuf: invalid mode for standard input: " + input_mode);
-    return 1;
+    return kStdbufUsageErrorExitCode;
   }
   if (!validate_buffer_mode("standard output", output_mode)) {
     safeErrorPrintLn("stdbuf: invalid mode for standard output: " +
                      output_mode);
-    return 1;
+    return kStdbufUsageErrorExitCode;
   }
   if (!validate_buffer_mode("standard error", error_mode)) {
     safeErrorPrintLn("stdbuf: invalid mode for standard error: " + error_mode);
-    return 1;
-  }
-
-  // Build command string
-  std::string cmd;
-  for (size_t i = 0; i < ctx.positionals.size(); ++i) {
-    if (i > 0) cmd += " ";
-    cmd += ctx.positionals[i];
+    return kStdbufUsageErrorExitCode;
   }
 
   // For Windows, we'll just execute the command directly
   // and set the parent process buffering
   if (!set_stream_buffering(stdin, input_mode)) {
     safeErrorPrintLn("stdbuf: invalid mode for standard input: " + input_mode);
-    return 1;
+    return kStdbufUsageErrorExitCode;
   }
   if (!set_stream_buffering(stdout, output_mode)) {
     safeErrorPrintLn("stdbuf: invalid mode for standard output: " +
                      output_mode);
-    return 1;
+    return kStdbufUsageErrorExitCode;
   }
   if (!set_stream_buffering(stderr, error_mode)) {
     safeErrorPrintLn("stdbuf: invalid mode for standard error: " + error_mode);
-    return 1;
+    return kStdbufUsageErrorExitCode;
   }
 
   // Execute command
   STARTUPINFOW si = {sizeof(si)};
   PROCESS_INFORMATION pi;
+  auto cmd_line = build_stdbuf_command_line(ctx.positionals);
 
-  std::wstring wcmd = utf8_to_wstring(cmd);
-
-  if (!CreateProcessW(nullptr, const_cast<wchar_t*>(wcmd.c_str()), nullptr,
-                      nullptr, TRUE, 0, nullptr, nullptr, &si, &pi)) {
+  if (!CreateProcessW(nullptr, cmd_line.data(), nullptr, nullptr, TRUE, 0,
+                      nullptr, nullptr, &si, &pi)) {
     DWORD error = GetLastError();
-    safeErrorPrintLn("stdbuf: failed to execute command: " +
-                     std::string(ctx.positionals[0]));
+    safeErrorPrintLn("stdbuf: failed to run command '" +
+                     std::string(ctx.positionals[0]) + "': " +
+                     stdbuf_windows_error_text(error));
     return stdbuf_command_status_from_create_error(error);
   }
 

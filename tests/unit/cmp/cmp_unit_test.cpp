@@ -52,8 +52,7 @@ TEST(cmp, cmp_different_files) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
-  // cmp should output the first differing byte
-  EXPECT_FALSE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(r.stdout_text, "file1.txt file2.txt differ: byte 1, line 1\n");
 }
 
 TEST(cmp, cmp_quiet_mode) {
@@ -69,4 +68,141 @@ TEST(cmp, cmp_quiet_mode) {
 
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_TRUE(r.stdout_text.empty());
+}
+
+TEST(cmp, cmp_last_output_mode_option_wins_to_verbose) {
+  TempDir tmp;
+  tmp.write("file1.txt", "hello\n");
+  tmp.write("file2.txt", "world\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cmp.exe", {L"-s", L"-l", L"file1.txt", L"file2.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_FALSE(r.stdout_text.empty());
+}
+
+TEST(cmp, cmp_last_output_mode_option_wins_to_quiet) {
+  TempDir tmp;
+  tmp.write("file1.txt", "hello\n");
+  tmp.write("file2.txt", "world\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cmp.exe", {L"-l", L"--quiet", L"file1.txt", L"file2.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+}
+
+TEST(cmp, cmp_positional_skip1_skips_both_files) {
+  TempDir tmp;
+  tmp.write("file1.txt", "xhello\n");
+  tmp.write("file2.txt", "yhello\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cmp.exe", {L"file1.txt", L"file2.txt", L"1"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.empty());
+}
+
+TEST(cmp, cmp_positional_skip1_and_skip2_skip_independently) {
+  TempDir tmp;
+  tmp.write("file1.txt", "xxhello\n");
+  tmp.write("file2.txt", "yhello\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cmp.exe", {L"file1.txt", L"file2.txt", L"2", L"1"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.empty());
+}
+
+TEST(cmp, cmp_ignore_initial_colon_spec_skips_independently) {
+  TempDir tmp;
+  tmp.write("file1.txt", "xxhello\n");
+  tmp.write("file2.txt", "yhello\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cmp.exe", {L"-i", L"2:1", L"file1.txt", L"file2.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.empty());
+}
+
+TEST(cmp, cmp_default_output_counts_byte_from_comparison_start_after_skip) {
+  TempDir tmp;
+  tmp.write("file1.txt", "xxa\n");
+  tmp.write("file2.txt", "yyb\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cmp.exe", {L"file1.txt", L"file2.txt", L"2", L"2"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ_TEXT(r.stdout_text, "file1.txt file2.txt differ: byte 1, line 1\n");
+}
+
+TEST(cmp, cmp_verbose_lists_all_differing_bytes) {
+  TempDir tmp;
+  tmp.write("file1.txt", "abx\ndf\n");
+  tmp.write("file2.txt", "aby\neg\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cmp.exe", {L"-l", L"file1.txt", L"file2.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ_TEXT(r.stdout_text, "3 170 171\n5 144 145\n6 146 147\n");
+}
+
+TEST(cmp, cmp_skip_beyond_shorter_file_reports_eof_without_underflow) {
+  TempDir tmp;
+  tmp.write("file1.txt", "abc");
+  tmp.write("file2.txt", "abcdef");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cmp.exe", {L"file1.txt", L"file2.txt", L"4", L"0"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ_TEXT(r.stdout_text, "cmp: EOF on file1.txt\n");
+}
+
+TEST(cmp, cmp_wildcard_expansion_does_not_reinterpret_extra_file_as_skip) {
+  TempDir tmp;
+  tmp.write("a.txt", "a");
+  tmp.write("b.txt", "b");
+  tmp.write("c.txt", "c");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cmp.exe", {L"*.txt", L"c.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("extra operand") != std::string::npos);
 }

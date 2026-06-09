@@ -62,8 +62,9 @@ using cmd::meta::OptionType;
 // ======================================================
 
 auto constexpr PWD_OPTIONS =
-    std::array{OPTION("-L", "--logical",
-                      "use PWD from environment, even if it contains symlinks"),
+    std::array{OPTION(
+                   "-L", "--logical",
+                   "use PWD from environment when it names the current directory"),
                OPTION("-P", "--physical", "avoid all symlinks")};
 
 // ======================================================
@@ -72,15 +73,76 @@ auto constexpr PWD_OPTIONS =
 namespace pwd_pipeline {
 namespace cp = core::pipeline;
 
-// ----------------------------------------------
-// 1. Get current working directory
-// ----------------------------------------------
-auto get_current_directory(const CommandContext<PWD_OPTIONS.size()>& ctx)
-    -> cp::Result<std::string> {
-  bool physical = ctx.get<bool>("--physical", false);
-  physical |= ctx.get<bool>("-P", false);
+enum class PathMode {
+  physical,
+  logical,
+};
 
-  // Get current directory using Windows API
+auto determine_path_mode(const CommandContext<PWD_OPTIONS.size()>& ctx)
+    -> PathMode {
+  PathMode mode = PathMode::physical;
+  if (GetEnvironmentVariableW(L"POSIXLY_CORRECT", nullptr, 0) != 0) {
+    mode = PathMode::logical;
+  }
+
+  for (const auto& occurrence : ctx.options.occurrences()) {
+    if (!ctx.metas || occurrence.index >= PWD_OPTIONS.size()) {
+      continue;
+    }
+
+    const auto& meta = (*ctx.metas)[occurrence.index];
+    if (meta.long_name == "--logical" || meta.short_name == "-L") {
+      mode = PathMode::logical;
+      continue;
+    }
+
+    if (meta.long_name == "--physical" || meta.short_name == "-P") {
+      mode = PathMode::physical;
+    }
+  }
+  return mode;
+}
+
+auto get_pwd_environment() -> std::optional<std::string> {
+  DWORD buffer_size = GetEnvironmentVariableW(L"PWD", nullptr, 0);
+  if (buffer_size == 0) {
+    return std::nullopt;
+  }
+
+  std::wstring value(buffer_size - 1, L'\0');
+  if (GetEnvironmentVariableW(L"PWD", value.data(), buffer_size) == 0) {
+    return std::nullopt;
+  }
+
+  return wstring_to_utf8(value);
+}
+
+auto is_absolute_pwd_value(const std::string& path) -> bool {
+  if (path.size() >= 3 && std::isalpha(static_cast<unsigned char>(path[0])) &&
+      path[1] == ':' && (path[2] == '\\' || path[2] == '/')) {
+    return true;
+  }
+
+  if (path.size() >= 2 &&
+      ((path[0] == '\\' && path[1] == '\\') ||
+       (path[0] == '/' && path[1] == '/'))) {
+    return true;
+  }
+
+  return !path.empty() && (path[0] == '\\' || path[0] == '/');
+}
+
+auto has_dot_components(const std::string& path) -> bool {
+  std::filesystem::path fs_path = utf8_to_wstring(path);
+  for (const auto& component : fs_path) {
+    if (component == L"." || component == L"..") {
+      return true;
+    }
+  }
+  return false;
+}
+
+auto get_physical_current_directory() -> cp::Result<std::string> {
   DWORD bufferSize = GetCurrentDirectoryW(0, NULL);
   if (bufferSize == 0) {
     return std::unexpected("cannot get current directory");
@@ -92,13 +154,51 @@ auto get_current_directory(const CommandContext<PWD_OPTIONS.size()>& ctx)
     return std::unexpected("cannot get current directory");
   }
 
-  // Remove null terminator
   wCurrentDir.resize(result);
+  return wstring_to_utf8(wCurrentDir);
+}
 
-  // Convert to UTF-8 using utility function
-  std::string currentDir = wstring_to_utf8(wCurrentDir);
+auto get_validated_logical_pwd() -> std::optional<std::string> {
+  auto pwd = get_pwd_environment();
+  if (!pwd.has_value() || pwd->empty() || !is_absolute_pwd_value(*pwd) ||
+      has_dot_components(*pwd)) {
+    return std::nullopt;
+  }
 
-  return currentDir;
+  auto current_dir = get_physical_current_directory();
+  if (!current_dir) {
+    return std::nullopt;
+  }
+
+  std::error_code ec;
+  std::filesystem::path pwd_path = utf8_to_wstring(*pwd);
+  if (!std::filesystem::exists(pwd_path, ec) || ec) {
+    return std::nullopt;
+  }
+
+  ec.clear();
+  std::filesystem::path current_path = utf8_to_wstring(*current_dir);
+  if (std::filesystem::equivalent(pwd_path, current_path, ec) && !ec) {
+    return *pwd;
+  }
+
+  return std::nullopt;
+}
+
+// ----------------------------------------------
+// 1. Get current working directory
+// ----------------------------------------------
+auto get_current_directory(const CommandContext<PWD_OPTIONS.size()>& ctx)
+    -> cp::Result<std::string> {
+  auto mode = determine_path_mode(ctx);
+
+  if (mode == PathMode::logical) {
+    if (auto pwd = get_validated_logical_pwd(); pwd.has_value()) {
+      return *pwd;
+    }
+  }
+
+  return get_physical_current_directory();
 }
 
 // ----------------------------------------------
@@ -115,6 +215,9 @@ auto print_directory(const std::string& path) -> cp::Result<bool> {
 // ----------------------------------------------
 template <size_t N>
 auto process_command(const CommandContext<N>& ctx) -> cp::Result<bool> {
+  if (!ctx.positionals.empty()) {
+    safeErrorPrint("pwd: ignoring non-option arguments\n");
+  }
   return get_current_directory(ctx).and_then(
       [](const std::string& path) { return print_directory(path); });
 }
@@ -136,7 +239,8 @@ REGISTER_COMMAND(
     /* description */
     "Print the full filename of the current working directory.\n"
     "\n"
-    "The -L option uses PWD from environment, even if it contains symlinks.\n"
+    "The -L option uses PWD from environment when it still names the current\n"
+    "directory.\n"
     "The -P option avoids all symlinks.",
 
     /* examples */

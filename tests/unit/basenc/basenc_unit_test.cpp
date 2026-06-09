@@ -147,6 +147,24 @@ TEST(basenc, basenc_rejects_multiple_selectors) {
               std::string::npos);
 }
 
+TEST(basenc, basenc_rejects_extra_file_operand_with_help_hint) {
+  TempDir tmp;
+  tmp.write("one.txt", "one");
+  tmp.write("two.txt", "two");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"basenc.exe", {L"--base64", L"one.txt", L"two.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "basenc: extra operand 'two.txt'\n"
+      "Try 'basenc --help' for more information.\n");
+}
+
 TEST(basenc, basenc_recognizes_unimplemented_gnu_selectors) {
   Pipeline base58;
   base58.set_stdin("hello");
