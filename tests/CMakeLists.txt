@@ -143,6 +143,20 @@ add_custom_target(create-test-links
 # Make sure links are created before running tests
 add_dependencies(winuxcmd-tests create-test-links)
 
+add_test(
+    NAME winux_activate_profile_cleanup
+    COMMAND ${POWERSHELL_EXE} -NoProfile -ExecutionPolicy Bypass -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/winux_activate_profile_cleanup_test.ps1"
+)
+set_tests_properties(winux_activate_profile_cleanup PROPERTIES LABELS "WinuxCmd;PowerShell")
+
+add_test(
+    NAME winux_command_discovery
+    COMMAND ${POWERSHELL_EXE} -NoProfile -ExecutionPolicy Bypass -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/winux_command_discovery_test.ps1"
+)
+set_tests_properties(winux_command_discovery PROPERTIES LABELS "WinuxCmd;PowerShell")
+
 # Also add dependency to test-all target
 if(TARGET test-all)
     add_dependencies(test-all create-test-links)

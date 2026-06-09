@@ -26,6 +26,36 @@ function Write-Color {
     Write-Host "$($Markers[$Color]) $Text"
 }
 
+function Get-ProfileInstallPath {
+    if (-not [string]::IsNullOrWhiteSpace($env:WINUXCMD_PROFILE_PATH)) {
+        return $env:WINUXCMD_PROFILE_PATH
+    }
+
+    return $PROFILE.CurrentUserAllHosts
+}
+
+function Remove-LegacyProfileBlocks {
+    param([string]$Content)
+
+    $options = [System.Text.RegularExpressions.RegexOptions]::Singleline -bor
+               [System.Text.RegularExpressions.RegexOptions]::Multiline
+    $patterns = @(
+        '# WinuxCmd wrapper.*?(?=^# Find winuxcmd\.exe|\Z)',
+        '^# set alias\s*\r?\nUpdate-WinuxCmdAlias\s*\r?\n\r?\n',
+        '^function Update-WinuxCmdAlias\s*\{.*?^\}',
+        '^function global:winux\s*\{.*?^\}',
+        '^Set-Alias -Name winuxcmd -Value [^\r\n]+\r?\n?',
+        '^# =+[\r\n]+# WinuxCmd Integration.*?# =+[\r\n]+# End WinuxCmd Integration[\r\n]*',
+        '^Register-EngineEvent -SourceIdentifier PowerShell\.Exiting -Action \{.*?\} \| Out-Null\r?\n?'
+    )
+
+    foreach ($pattern in $patterns) {
+        $Content = [regex]::Replace($Content, $pattern, '', $options)
+    }
+
+    return $Content
+}
+
 # ========== Find WinuxCmd installation ==========
 function Get-WinuxBinDir {
     # Priority 1: Check current directory (Scoop installation scenario)
@@ -350,7 +380,7 @@ Register-EngineEvent -SourceIdentifier PowerShell.Exiting -Action {
 } | Out-Null
 '@
 
-    $profilePath = $PROFILE.CurrentUserAllHosts
+    $profilePath = Get-ProfileInstallPath
 
     # Ensure profile directory exists
     $profileDir = Split-Path $profilePath -Parent
@@ -365,20 +395,7 @@ Register-EngineEvent -SourceIdentifier PowerShell.Exiting -Action {
         $currentContent = $currentContent.Trim()
     }
 
-    # remove old configuration.
-    $patterns = @(
-        '(?s)# WinuxCmd wrapper.*?(?=^# Find winuxcmd\.exe|\Z)',
-        '(?s)^# set alias\s*\r?\nUpdate-WinuxCmdAlias\s*\r?\n\r?\n',
-        '(?s)^function Update-WinuxCmdAlias\s*\{.*?^\}',
-        '(?s)^function global:winux\s*\{.*?^\}',
-        '^Set-Alias -Name winuxcmd -Value [^\r\n]+\r?\n?',
-        '(?s)^# =+[\r\n]+# WinuxCmd Integration.*?# =+[\r\n]+# End WinuxCmd Integration[\r\n]+',
-        '(?s)^Register-EngineEvent -SourceIdentifier PowerShell\.Exiting -Action \{.*?\} \| Out-Null'
-    )
-
-    foreach ($pattern in $patterns) {
-        $currentContent = $currentContent -replace $pattern, ''
-    }
+    $currentContent = Remove-LegacyProfileBlocks -Content $currentContent
 
     # remove extra space
     $currentContent = $currentContent -replace '\n\n\n+', "`n`n"
@@ -466,7 +483,7 @@ if (-not $binDir) {
 Write-Color "Cyan" "Found WinuxCmd at: $binDir"
 
 # Get profile path for display
-$profilePath = $PROFILE.CurrentUserAllHosts
+$profilePath = Get-ProfileInstallPath
 
 # Ask for confirmation
 Write-Host ""
@@ -492,8 +509,7 @@ if (Install-WinuxToProfile -BinDir $binDir) {
     Write-Color "Cyan" "Next steps:"
     Write-Host "1. RESTART PowerShell or run: . `$PROFILE.CurrentUserAllHosts"
     Write-Host "2. Test with: winux"
-    Write-Host "3. If you have winux.ps1, copy it to WinuxCmd bin directory"
-    Write-Host "4. Optional: winux activate (enables bare ls/rm/cat in PowerShell)"
+    Write-Host "3. Optional: winux activate (enables bare ls/rm/cat/man in PowerShell)"
     Write-Host ""
     Write-Color "Cyan" "Usage after restart:"
     Write-Host "  > winux                     # Show help and version info"
