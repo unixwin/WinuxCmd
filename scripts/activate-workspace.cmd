@@ -12,4 +12,4 @@ set "WINUXCMD_HOME=%WINUX_LOCAL_BIN%"
 echo.
 echo WinuxCmd workspace activation is active for this CMD session.
 echo Local bin: %WINUX_LOCAL_BIN%
-echo Use explicit .exe command names when a shell alias may conflict.
+echo Workspace-local command links are now at the front of PATH.

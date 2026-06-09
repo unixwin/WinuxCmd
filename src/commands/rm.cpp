@@ -605,6 +605,11 @@ REGISTER_COMMAND(
 
   auto result = process_command(ctx);
   if (!result) {
+    if (result.error() == "missing file operand") {
+      safeErrorPrintLn("rm: missing file operand");
+      safeErrorPrintLn("Try 'rm --help' for more information.");
+      return 1;
+    }
     cp::report_error(result, L"rm");
     return 1;
   }

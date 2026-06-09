@@ -273,6 +273,36 @@ TEST(tail, tail_legacy_count_shorthand) {
   EXPECT_EQ_TEXT(r2.stdout_text, "beta\ngamma\n");
 }
 
+TEST(tail, tail_strips_utf8_bom_in_line_mode) {
+  TempDir tmp;
+  tmp.write("a.txt", "\xEF\xBB\xBFhello\nsecond\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"tail.exe", {L"-n", L"2", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "hello\nsecond\n");
+}
+
+TEST(tail, tail_decodes_utf16le_input) {
+  TempDir tmp;
+  tmp.write_bytes("a.txt",
+                  {static_cast<char>(0xFF), static_cast<char>(0xFE),
+                   'h', '\0', 'e', '\0', 'l', '\0', 'l', '\0', 'o',
+                   '\0', '\n', '\0', 's', '\0', 'e', '\0', 'c', '\0',
+                   'o', '\0', 'n', '\0', 'd', '\0', '\n', '\0'});
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"tail.exe", {L"-n", L"1", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "second\n");
+}
+
 TEST(tail, tail_obsolete_compact_byte_count) {
   TempDir tmp;
   tmp.write("a.txt", "abcdef\n");
@@ -365,6 +395,39 @@ TEST(tail, tail_follow_option_recognized) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.find("--follow") != std::string::npos);
+}
+
+TEST(tail, tail_follow_mode_last_occurrence_wins_to_descriptor) {
+  TempDir tmp;
+  tmp.write("a.txt", "line1\nline2\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"tail.exe",
+        {L"--debug", L"-F", L"--follow=descriptor", L"--pid", L"999999",
+         L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "line1\nline2\n");
+  EXPECT_TRUE(r.stderr_text.find("following by descriptor") !=
+              std::string::npos);
+}
+
+TEST(tail, tail_follow_mode_last_occurrence_wins_to_name) {
+  TempDir tmp;
+  tmp.write("a.txt", "line1\nline2\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"tail.exe",
+        {L"--debug", L"--follow=descriptor", L"-F", L"--pid", L"999999",
+         L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "line1\nline2\n");
+  EXPECT_TRUE(r.stderr_text.find("following by name") != std::string::npos);
 }
 
 TEST(tail, tail_retry_and_pid_follow_missing_file_until_it_appears) {

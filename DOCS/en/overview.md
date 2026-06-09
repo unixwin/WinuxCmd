@@ -19,31 +19,10 @@ Core goals:
 
 ## Shell Behavior (Important)
 
-WinuxCmd REPL supports built-in commands and fallback execution.
-
-- Known WinuxCmd command: dispatched internally
-- Unknown command: fallback to native shell
-- Fallback shell is selected by parent shell session:
-  - entered from PowerShell/pwsh -> fallback uses PowerShell
-  - entered from cmd -> fallback uses cmd
-
-This keeps `Get-Process`/`Where-Object` usable when you entered from PowerShell.
-
-## Completion
-
-User completion file:
-
-![Auto Completion Demo](../images/auto.gif)
-
-- default: `%USERPROFILE%\.winuxcmd\completions\user-completions.txt`
-- env override: `WINUXCMD_COMPLETION_FILE`
-
-Format:
-
-```text
-cmd|<command>|<description>
-opt|<command>|<option>|<description>
-```
+WinuxCmd is a command executor, not a shell. It dispatches known WinuxCmd
+commands and returns `127` for unknown command names. PATH lookup, aliases,
+pipelines, redirection, completion, and shell built-ins remain the
+responsibility of the active shell.
 
 ## Shell Integration
 
@@ -69,6 +48,6 @@ The project has many users but relatively few maintainers/contributors.
 
 High-impact contributions:
 
-1. shell compatibility fixes
-2. regression tests for REPL and fallback logic
+1. shell integration fixes
+2. command behavior tests on Windows
 3. documentation improvements

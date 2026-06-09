@@ -71,6 +71,20 @@ TEST(readlink, readlink_regular_file_fails) {
   EXPECT_TRUE(r.stderr_text.empty());
 }
 
+TEST(readlink, readlink_missing_operand_reports_help_hint) {
+  Pipeline p;
+  p.add(L"readlink.exe", {});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "readlink: missing operand\nTry 'readlink --help' for more "
+      "information.\n");
+}
+
 TEST(readlink, readlink_verbose_reports_diagnostics) {
   TempDir tmp;
   tmp.write("target.txt", "hello\n");
@@ -98,6 +112,75 @@ TEST(readlink, readlink_quiet_suppresses_diagnostics) {
 
   EXPECT_NE(r.exit_code, 0);
   EXPECT_TRUE(r.stderr_text.empty());
+}
+
+TEST(readlink, readlink_posixly_correct_regular_file_reports_invalid_argument) {
+  TempDir tmp;
+  tmp.write("target.txt", "hello\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_env(L"POSIXLY_CORRECT", L"1");
+  p.add(L"readlink.exe", {L"target.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(r.stderr_text, "readlink: target.txt: Invalid argument\n");
+}
+
+TEST(readlink,
+     readlink_posixly_correct_ignores_quiet_and_silent_for_regular_file) {
+  TempDir tmp;
+  tmp.write("target.txt", "hello\n");
+
+  Pipeline quiet_result;
+  quiet_result.set_cwd(tmp.wpath());
+  quiet_result.set_env(L"POSIXLY_CORRECT", L"1");
+  quiet_result.add(L"readlink.exe", {L"-q", L"target.txt"});
+
+  auto q = quiet_result.run();
+
+  EXPECT_EQ(q.exit_code, 1);
+  EXPECT_TRUE(q.stdout_text.empty());
+  EXPECT_EQ_TEXT(q.stderr_text, "readlink: target.txt: Invalid argument\n");
+
+  Pipeline silent_result;
+  silent_result.set_cwd(tmp.wpath());
+  silent_result.set_env(L"POSIXLY_CORRECT", L"1");
+  silent_result.add(L"readlink.exe", {L"-s", L"target.txt"});
+
+  auto s = silent_result.run();
+
+  EXPECT_EQ(s.exit_code, 1);
+  EXPECT_TRUE(s.stdout_text.empty());
+  EXPECT_EQ_TEXT(s.stderr_text, "readlink: target.txt: Invalid argument\n");
+}
+
+TEST(readlink, readlink_verbose_and_silent_follow_last_occurrence) {
+  TempDir tmp;
+  tmp.write("target.txt", "hello\n");
+
+  Pipeline quiet_then_verbose;
+  quiet_then_verbose.set_cwd(tmp.wpath());
+  quiet_then_verbose.add(L"readlink.exe", {L"-s", L"-v", L"target.txt"});
+
+  auto verbose_result = quiet_then_verbose.run();
+
+  EXPECT_NE(verbose_result.exit_code, 0);
+  EXPECT_TRUE(verbose_result.stdout_text.empty());
+  EXPECT_FALSE(verbose_result.stderr_text.empty());
+
+  Pipeline verbose_then_quiet;
+  verbose_then_quiet.set_cwd(tmp.wpath());
+  verbose_then_quiet.add(L"readlink.exe", {L"-v", L"-s", L"target.txt"});
+
+  auto quiet_result = verbose_then_quiet.run();
+
+  EXPECT_NE(quiet_result.exit_code, 0);
+  EXPECT_TRUE(quiet_result.stdout_text.empty());
+  EXPECT_TRUE(quiet_result.stderr_text.empty());
 }
 
 TEST(readlink, readlink_canonicalize_existing) {
@@ -131,6 +214,35 @@ TEST(readlink, readlink_canonicalize_missing) {
 
   auto expected = normalize_path_text(
       (tmp.path / "missing" / "branch" / "leaf.txt").string());
+  EXPECT_EQ_TEXT(normalize_path_text(r.stdout_text), expected + "\n");
+}
+
+TEST(readlink, readlink_canonicalize_mode_last_occurrence_wins_to_existing) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"readlink.exe", {L"-m", L"-e", L"missing.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.empty());
+}
+
+TEST(readlink, readlink_canonicalize_mode_last_occurrence_wins_to_missing) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"readlink.exe", {L"-e", L"-m", L"missing.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+
+  auto expected = normalize_path_text((tmp.path / "missing.txt").string());
   EXPECT_EQ_TEXT(normalize_path_text(r.stdout_text), expected + "\n");
 }
 

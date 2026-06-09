@@ -92,6 +92,11 @@ auto get_dirname(std::string_view path) -> std::string {
     return ".";
   }
 
+  // Preserve the root directory for absolute top-level paths like "/usr".
+  if (last_sep == 0) {
+    return std::string(1, result[0]);
+  }
+
   // Get directory part
   result = result.substr(0, last_sep);
 
@@ -138,6 +143,12 @@ REGISTER_COMMAND(
 
   auto cfg_result = build_config(ctx);
   if (!cfg_result) {
+    if (cfg_result.error() == "missing operand") {
+      safeErrorPrintLn("dirname: missing operand");
+      safeErrorPrintLn("Try 'dirname --help' for more information.");
+      return 1;
+    }
+
     cp::report_error(cfg_result, L"dirname");
     return 1;
   }

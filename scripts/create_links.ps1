@@ -47,16 +47,16 @@ function Escape-WildcardChars {
 # Available commands list (auto-generated from src/commands/*.cpp)
 $Script:Commands = @(
     "arch", "b2sum", "base32", "base64", "basename", "basenc", "cal", "cat",
-    "chgrp", "chmod", "chown", "cksum", "clear", "cmp", "col", "column", "comm", "cp", "cpio", "csplit",
+    "chcon", "chgrp", "chmod", "chown", "chroot", "cksum", "clear", "cmp", "col", "column", "comm", "cp", "cpio", "csplit",
     "cut", "cygpath", "d2u", "date", "dd", "df", "diff", "diff3", "dirname",
     "dir", "dircolors", "dos2unix", "du", "echo", "env", "expand", "expr", "factor", "false", "file",
     "find", "fmt", "fold", "free", "getconf", "grep", "groups", "head", "hexdump",
     "hmac256", "hostid", "hostname", "id", "infocmp", "install", "join", "jq",
     "kill", "less", "link", "ln", "locale", "logname", "ls", "lsof", "man", "md5sum",
-    "mkdir", "mktemp", "more", "mpicalc", "mv", "nice", "nl", "nohup",
+    "mkdir", "mkfifo", "mknod", "mktemp", "more", "mpicalc", "mv", "nice", "nl", "nohup",
     "nproc", "numfmt", "od", "paste", "patch", "pathchk", "pinky", "pr",
     "printenv", "printf", "ps", "ptx", "pwd", "readlink", "realpath", "reset",
-    "rev", "rm", "rmdir", "sdiff", "sed", "seq", "sha1sum", "sha224sum",
+    "rev", "rm", "rmdir", "runcon", "sdiff", "sed", "seq", "sha1sum", "sha224sum",
     "sha256sum", "sha384sum", "sha512sum", "shred", "shuf", "sleep", "sort",
     "split", "stat", "stdbuf", "strings", "stty", "sum", "sync", "tac", "tail", "tee", "test",
     "[", "tic", "timeout", "toe", "top", "touch", "tput", "tr", "tree", "true",
@@ -227,43 +227,37 @@ function New-CommandLinks {
     Write-ColorOutput "Cyan" "Creating links (batch mode)..."
     Write-Host ""
     
-    # Build all target paths for batch creation
-    $allTargets = @()
     foreach ($cmd in $Script:Commands) {
         $cmdPath = Join-Path (Get-Location) "$cmd.exe"
-        $allTargets += $cmdPath
-    }
-    
-    try {
-        # Build ln command arguments for batch creation
-        $lnArgs = @("ln")
-        if ($UseSymbolic) {
-            $lnArgs += @("-s")
+
+        try {
+            $lnArgs = @("ln")
+            if ($UseSymbolic) {
+                $lnArgs += @("-s")
+            }
+            if ($Force) {
+                $lnArgs += @("-f")
+            }
+            $lnArgs += @($WinuxCmdPath, $cmdPath)
+
+            & $WinuxCmdPath @lnArgs
+
+            if ($LASTEXITCODE -eq 0) {
+                $createdCount++
+            }
+            else {
+                Write-ColorOutput "Red" "  [Failed] $cmd.exe (exit $LASTEXITCODE)"
+                $errorsCount++
+            }
         }
-        if ($Force) {
-            $lnArgs += @("-f")
-        }
-        $lnArgs += @($WinuxCmdPath)  # Source
-        $lnArgs += $allTargets       # All targets
-        
-        # Create all links in a single process call
-        & $WinuxCmdPath @lnArgs
-        
-        if ($LASTEXITCODE -eq 0) {
-            # All links created successfully
-            Write-ColorOutput "Green" "  [Batch Created] $($Script:Commands.Count) command links"
-            $createdCount = $Script:Commands.Count
-        }
-        else {
-            # Batch creation failed, show error
-            Write-ColorOutput "Red" "  [Batch Failed] winuxcmd ln returned exit code $LASTEXITCODE"
-            $errorsCount = $Script:Commands.Count
+        catch {
+            Write-ColorOutput "Red" "  [Failed] $cmd.exe: $($_.Exception.Message)"
+            $errorsCount++
         }
     }
-    catch {
-        $errorMsg = $_.Exception.Message
-        Write-ColorOutput "Red" "  [Batch Failed] $errorMsg"
-        $errorsCount = $Script:Commands.Count
+
+    if ($createdCount -gt 0 -and $errorsCount -eq 0) {
+        Write-ColorOutput "Green" "  [Created] $createdCount command links"
     }
     
     Write-Host ""

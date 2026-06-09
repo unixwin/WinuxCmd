@@ -49,3 +49,36 @@ TEST(yes, yes_custom_string) {
   // Should output "hello" 3 times
   EXPECT_TRUE(r.stdout_text.find("hello") != std::string::npos);
 }
+
+TEST(yes, yes_joins_all_arguments_with_spaces) {
+  Pipeline p;
+  p.add(L"yes.exe", {L"a", L"bar", L"c"});
+  p.add(L"head.exe", {L"-n", L"3"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(r.stdout_text, "a bar c\na bar c\na bar c\n");
+}
+
+TEST(yes, yes_version_succeeds) {
+  Pipeline p;
+  p.add(L"yes.exe", {L"--version"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_NE(r.stdout_text.find("yes (WinuxCmd)"), std::string::npos);
+  EXPECT_TRUE(r.stderr_text.empty());
+}
+
+TEST(yes, yes_double_dash_keeps_version_literal) {
+  Pipeline p;
+  p.add(L"yes.exe", {L"--", L"--version"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.starts_with("--version\n--version\n"));
+  EXPECT_TRUE(r.stderr_text.empty());
+}

@@ -55,7 +55,7 @@ TEST(realpath, realpath_basic) {
               r.stdout_text.find(":/") != std::string::npos);
 }
 
-TEST(realpath, realpath_current_dir) {
+TEST(realpath, realpath_requires_operand) {
   TempDir tmp;
 
   Pipeline p;
@@ -67,12 +67,14 @@ TEST(realpath, realpath_current_dir) {
   auto r = p.run();
 
   TEST_LOG_EXIT_CODE(r);
-  TEST_LOG("realpath.exe current dir output", r.stdout_text);
+  TEST_LOG("realpath.exe missing operand stderr", r.stderr_text);
 
-  EXPECT_EQ(r.exit_code, 0);
-  // Should output absolute path of current directory
-  EXPECT_TRUE(r.stdout_text.find(":\\") != std::string::npos ||
-              r.stdout_text.find(":/") != std::string::npos);
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "realpath: missing operand\nTry 'realpath --help' for more "
+      "information.\n");
 }
 
 TEST(realpath, realpath_strip) {
@@ -111,6 +113,48 @@ TEST(realpath, realpath_nonexistent) {
 
   // realpath on Windows can resolve paths even if file doesn't exist
   // The behavior depends on the implementation
+}
+
+TEST(realpath, realpath_rejects_empty_operand) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"realpath.exe", {L""});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(r.stderr_text, "realpath: invalid operand: empty string\n");
+}
+
+TEST(realpath, realpath_rejects_empty_relative_to) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"realpath.exe", {L"--relative-to", L"", L"."});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(r.stderr_text, "realpath: invalid operand: empty string\n");
+}
+
+TEST(realpath, realpath_rejects_empty_relative_base) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"realpath.exe", {L"--relative-base", L"", L"--relative-to=.", L"."});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(r.stderr_text, "realpath: invalid operand: empty string\n");
 }
 
 TEST(realpath, realpath_canonicalize_existing) {
@@ -207,6 +251,37 @@ TEST(realpath, realpath_canonicalize_allows_missing_leaf) {
       normalize_path_text((tmp.path / "missing.txt").string() + "\n"));
 }
 
+TEST(realpath, realpath_canonicalize_mode_last_occurrence_wins_to_existing) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"realpath.exe", {L"-m", L"-e", L"missing.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "realpath: cannot access 'missing.txt': No such file or "
+                 "directory\n");
+}
+
+TEST(realpath, realpath_canonicalize_mode_last_occurrence_wins_to_missing) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"realpath.exe", {L"-e", L"-m", L"missing.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(
+      normalize_path_text(r.stdout_text),
+      normalize_path_text((tmp.path / "missing.txt").string() + "\n"));
+}
+
 TEST(realpath, realpath_relative_to) {
   TempDir tmp;
   tmp.mkdir("base");
@@ -221,6 +296,40 @@ TEST(realpath, realpath_relative_to) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(normalize_path_text(r.stdout_text), "file.txt\n");
+}
+
+TEST(realpath, realpath_existing_relative_to_requires_directory) {
+  TempDir tmp;
+  tmp.mkdir("dir1");
+  tmp.write("dir1/f", "content");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"realpath.exe",
+        {L"-e", L"--relative-base=.", L"--relative-to=dir1\\f", L"."});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("Not a directory") != std::string::npos);
+}
+
+TEST(realpath, realpath_existing_relative_base_requires_directory) {
+  TempDir tmp;
+  tmp.mkdir("dir1");
+  tmp.write("dir1/f", "content");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"realpath.exe",
+        {L"-e", L"--relative-base=dir1\\f", L"--relative-to=.", L"."});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("Not a directory") != std::string::npos);
 }
 
 TEST(realpath, realpath_relative_base_leaves_outside_absolute) {

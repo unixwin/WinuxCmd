@@ -164,5 +164,8 @@ TEST(base64, base64_rejects_extra_file_operand) {
   auto r = p.run();
 
   EXPECT_NE(r.exit_code, 0);
-  EXPECT_TRUE(r.stderr_text.find("extra operand") != std::string::npos);
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "base64: extra operand 'two.txt'\n"
+      "Try 'base64 --help' for more information.\n");
 }

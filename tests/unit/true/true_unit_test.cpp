@@ -37,3 +37,14 @@ TEST(true_cmd, true_basic) {
 
   EXPECT_EQ(r.exit_code, 0);
 }
+
+TEST(true_cmd, true_version_succeeds) {
+  Pipeline p;
+  p.add(L"true.exe", {L"--version"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_NE(r.stdout_text.find("true (WinuxCmd)"), std::string::npos);
+  EXPECT_TRUE(r.stderr_text.empty());
+}

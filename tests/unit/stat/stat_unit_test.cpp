@@ -220,3 +220,73 @@ TEST(stat, stat_printf_interprets_common_backslash_escapes) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_BYTES(r.stdout_text, "test.txt\t\t\b");
 }
+
+TEST(stat, stat_format_last_occurrence_wins_over_printf) {
+  TempDir tmp;
+  tmp.write("test.txt", "data");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"stat.exe", {L"--printf", L"%n", L"-c", L"%s", L"test.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "4\n");
+}
+
+TEST(stat, stat_printf_last_occurrence_wins_over_format) {
+  TempDir tmp;
+  tmp.write("test.txt", "data");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"stat.exe", {L"-c", L"%s", L"--printf", L"%n", L"test.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "test.txt");
+}
+
+TEST(stat, stat_terse_last_occurrence_wins_over_format) {
+  TempDir tmp;
+  tmp.write("test.txt", "data");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"stat.exe", {L"-c", L"%n", L"-t", L"test.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_NE(r.stdout_text, "test.txt\n");
+  EXPECT_TRUE(r.stdout_text.starts_with("test.txt "));
+}
+
+TEST(stat, stat_format_last_occurrence_wins_over_terse) {
+  TempDir tmp;
+  tmp.write("test.txt", "data");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"stat.exe", {L"-t", L"-c", L"%n", L"test.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "test.txt\n");
+}
+
+TEST(stat, stat_missing_operand_reports_help_hint) {
+  Pipeline p;
+  p.add(L"stat.exe", {});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "stat: missing operand\nTry 'stat --help' for more information.\n");
+}

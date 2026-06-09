@@ -404,23 +404,48 @@ auto read_link_target(const std::wstring& path)
 auto build_config(const CommandContext<READLINK_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
   Config cfg;
+  bool posixly_correct = posixly_correct_is_set();
   cfg.mode = Mode::link_target;
-  if (ctx.get<bool>("--canonicalize-missing", false) ||
-      ctx.get<bool>("-m", false)) {
-    cfg.mode = Mode::canonicalize_missing;
-  } else if (ctx.get<bool>("--canonicalize-existing", false) ||
-             ctx.get<bool>("-e", false)) {
-    cfg.mode = Mode::canonicalize_existing;
-  } else if (ctx.get<bool>("--canonicalize", false) ||
-             ctx.get<bool>("-f", false)) {
-    cfg.mode = Mode::canonicalize;
-  }
   cfg.no_newline =
       ctx.get<bool>("--no-newline", false) || ctx.get<bool>("-n", false);
-  cfg.verbose = ctx.get<bool>("--verbose", false) || ctx.get<bool>("-v", false);
-  cfg.quiet = ctx.get<bool>("--quiet", false) || ctx.get<bool>("-q", false) ||
-              ctx.get<bool>("-s", false) ||
-              (!cfg.verbose && !posixly_correct_is_set());
+  cfg.verbose = false;
+  cfg.quiet = !posixly_correct;
+  for (const auto& occurrence : ctx.options.occurrences()) {
+    if (!ctx.metas || occurrence.index >= READLINK_OPTIONS.size()) {
+      continue;
+    }
+
+    const auto& meta = (*ctx.metas)[occurrence.index];
+    if (meta.long_name == "--canonicalize-missing" || meta.short_name == "-m") {
+      cfg.mode = Mode::canonicalize_missing;
+      continue;
+    }
+
+    if (meta.long_name == "--canonicalize-existing" || meta.short_name == "-e") {
+      cfg.mode = Mode::canonicalize_existing;
+      continue;
+    }
+
+    if (meta.long_name == "--canonicalize" || meta.short_name == "-f") {
+      cfg.mode = Mode::canonicalize;
+      continue;
+    }
+
+    if (meta.long_name == "--verbose" || meta.short_name == "-v") {
+      cfg.verbose = true;
+      cfg.quiet = false;
+      continue;
+    }
+
+    if (meta.long_name == "--quiet" || meta.short_name == "-q" ||
+        meta.long_name == "--silent" || meta.short_name == "-s") {
+      if (posixly_correct) {
+        continue;
+      }
+      cfg.verbose = false;
+      cfg.quiet = true;
+    }
+  }
   cfg.zero_terminated =
       ctx.get<bool>("--zero", false) || ctx.get<bool>("-z", false);
 
@@ -502,6 +527,12 @@ REGISTER_COMMAND(
 
   auto cfg_result = build_config(ctx);
   if (!cfg_result) {
+    if (cfg_result.error() == "missing operand") {
+      safeErrorPrintLn("readlink: missing operand");
+      safeErrorPrintLn("Try 'readlink --help' for more information.");
+      return 1;
+    }
+
     cp::report_error(cfg_result, L"readlink");
     return 1;
   }

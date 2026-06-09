@@ -110,5 +110,8 @@ TEST(base32, base32_rejects_extra_file_operand) {
   auto r = p.run();
 
   EXPECT_NE(r.exit_code, 0);
-  EXPECT_TRUE(r.stderr_text.find("extra operand") != std::string::npos);
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "base32: extra operand 'two.txt'\n"
+      "Try 'base32 --help' for more information.\n");
 }

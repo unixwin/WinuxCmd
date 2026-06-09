@@ -46,7 +46,10 @@ using cmd::meta::OptionType;
 
 auto constexpr SDIFF_OPTIONS =
     std::array{OPTION("-o", "", "output file", STRING_TYPE),
-               OPTION("-w", "", "ignore all whitespace"),
+               OPTION("-w", "", "set output width", STRING_TYPE),
+               OPTION("-l", "", "print only the left column when lines are common"),
+               OPTION("-s", "--suppress-common-lines",
+                      "do not print common lines"),
                OPTION("-B", "", "ignore changes whose lines are all blank"),
                OPTION("-E", "", "ignore tab expansion"),
                OPTION("-b", "", "ignore changes in amount of white space"),
@@ -120,6 +123,41 @@ std::string format_line(const std::string& line, int width, char marker = ' ') {
 
   return result;
 }
+
+auto resolve_files(const CommandContext<SDIFF_OPTIONS.size()>& ctx)
+    -> std::expected<std::pair<std::string, std::string>, std::string> {
+  std::vector<std::string> files;
+
+  for (const auto& positional : ctx.positionals) {
+    std::string file_arg = std::string(positional);
+    if (contains_wildcard(file_arg)) {
+      auto glob_result = glob_expand(file_arg);
+      if (glob_result.expanded && !glob_result.files.empty()) {
+        for (const auto& file : glob_result.files) {
+          files.push_back(wstring_to_utf8(file));
+        }
+        continue;
+      }
+    }
+
+    files.push_back(file_arg);
+  }
+
+  if (files.size() < 2) {
+    return std::unexpected("missing operand");
+  }
+  if (files.size() > 2) {
+    return std::unexpected("extra operand '" + files[2] + "'");
+  }
+
+  return std::make_pair(files[0], files[1]);
+}
+
+auto file_exists_for_read(const std::string& path) -> bool {
+  std::error_code ec;
+  return std::filesystem::exists(std::filesystem::u8path(path), ec) &&
+         !std::filesystem::is_directory(std::filesystem::u8path(path), ec);
+}
 }  // namespace
 
 // ======================================================
@@ -143,36 +181,53 @@ REGISTER_COMMAND(
     /* copyright */ "Copyright © 2026 WinuxCmd",
     /* options */ SDIFF_OPTIONS) {
   std::string output_file = ctx.get<std::string>("-o", "");
-  bool ignore_whitespace =
-      ctx.get<bool>("-w", false) || ctx.get<bool>("-b", false);
+  bool ignore_whitespace = ctx.get<bool>("-b", false);
   bool ignore_all_whitespace = ctx.get<bool>("-W", false);
   bool ignore_blank = ctx.get<bool>("-B", false);
   bool ignore_tab_expansion = ctx.get<bool>("-E", false);
+  bool left_only = ctx.get<bool>("-l", false);
+  bool suppress_common = ctx.get<bool>("-s", false) ||
+                         ctx.get<bool>("--suppress-common-lines", false);
+  int col_width = 40;
 
-  if (ctx.positionals.size() < 2) {
-    safeErrorPrintLn("sdiff: missing file operands");
-    safePrintLn("Usage: sdiff [OPTION] FILE1 FILE2");
+  auto width_opt = ctx.get<std::string>("-w", "");
+  if (!width_opt.empty()) {
+    try {
+      size_t consumed = 0;
+      int parsed = std::stoi(width_opt, &consumed);
+      if (consumed != width_opt.size() || parsed <= 0) {
+        throw std::invalid_argument("width");
+      }
+      col_width = std::max(1, (parsed - 3) / 2);
+    } catch (...) {
+      safeErrorPrintLn("sdiff: invalid width '" + width_opt + "'");
+      safeErrorPrint("Try 'sdiff --help' for more information.\n");
+      return 1;
+    }
+  }
+
+  auto files_result = resolve_files(ctx);
+  if (!files_result) {
+    safeErrorPrint("sdiff: ");
+    safeErrorPrintLn(files_result.error());
+    safeErrorPrint("Try 'sdiff --help' for more information.\n");
     return 1;
   }
 
-  std::string file1 = std::string(ctx.positionals[0]);
-  std::string file2 = std::string(ctx.positionals[1]);
+  const auto& [file1, file2] = *files_result;
 
   // Read files
   std::vector<std::string> lines1 = read_file_lines(file1);
   std::vector<std::string> lines2 = read_file_lines(file2);
 
-  if (lines1.empty()) {
+  if (lines1.empty() && !file_exists_for_read(file1)) {
     safeErrorPrintLn("sdiff: cannot read file '" + file1 + "'");
     return 1;
   }
-  if (lines2.empty()) {
+  if (lines2.empty() && !file_exists_for_read(file2)) {
     safeErrorPrintLn("sdiff: cannot read file '" + file2 + "'");
     return 1;
   }
-
-  // Column width (adjustable based on terminal)
-  int col_width = 40;
 
   // Compare lines side by side
   std::vector<std::string> output;
@@ -207,8 +262,18 @@ REGISTER_COMMAND(
       if (lines_equal(line1, line2, ignore_whitespace, ignore_all_whitespace,
                       ignore_tab_expansion)) {
         // Lines are equal
-        output.push_back(format_line(line1, col_width) + "  " +
-                         format_line(line2, col_width));
+        if (suppress_common) {
+          idx1++;
+          idx2++;
+          continue;
+        }
+
+        if (left_only) {
+          output.push_back(line1);
+        } else {
+          output.push_back(format_line(line1, col_width) + "  " +
+                           format_line(line2, col_width));
+        }
         idx1++;
         idx2++;
       } else {

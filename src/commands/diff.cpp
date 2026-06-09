@@ -94,7 +94,7 @@ auto resolve_files(const CommandContext<DIFF_OPTIONS.size()> &ctx)
     return std::unexpected("missing operand");
   }
   if (files.size() > 2) {
-    return std::unexpected("too many operands");
+    return std::unexpected("extra operand '" + files[2] + "'");
   }
 
   return files;

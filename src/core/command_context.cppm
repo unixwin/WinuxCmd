@@ -39,6 +39,7 @@ struct CommandContext {
   ParsedOptions<N> options;
   std::vector<std::string_view> raw_args;
   std::vector<std::string_view> positionals;
+  std::string parse_error;
 
   template <typename T>
   T get(std::string_view name, T default_value) const {
@@ -73,6 +74,24 @@ struct CommandContext {
       }
     }
     return {};
+  }
+
+  size_t count(std::initializer_list<std::string_view> names) const {
+    if (!metas) return 0;
+
+    size_t total = 0;
+    for (const auto& occurrence : options.occurrences()) {
+      if (occurrence.index >= N) continue;
+      const auto& meta = (*metas)[occurrence.index];
+
+      for (auto name : names) {
+        if (meta.long_name == name || meta.short_name == name) {
+          ++total;
+          break;
+        }
+      }
+    }
+    return total;
   }
 
   std::vector<StringOptionOccurrence> string_occurrences(
@@ -114,6 +133,7 @@ CommandContext<N> make_context(
   ctx.options = std::move(parsed.options);
   ctx.raw_args.assign(args.begin(), args.end());
   ctx.positionals = std::move(parsed.positionals);
+  ctx.parse_error = std::move(parsed.error_message);
 
   return ctx;
 }

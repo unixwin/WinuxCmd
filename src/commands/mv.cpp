@@ -122,6 +122,74 @@ struct MoveContext {
   bool no_target_directory = false;
 };
 
+enum class OverwriteMode {
+  default_mode,
+  force,
+  interactive_once,
+  interactive_always,
+  no_clobber,
+};
+
+template <size_t N>
+auto parse_overwrite_mode(const CommandContext<N>& ctx)
+    -> cp::Result<OverwriteMode> {
+  OverwriteMode mode = OverwriteMode::default_mode;
+
+  for (size_t i = 0; i < ctx.raw_args.size(); ++i) {
+    std::string arg(ctx.raw_args[i]);
+    if (arg == "--") break;
+
+    if (arg == "--force") {
+      mode = OverwriteMode::force;
+      continue;
+    }
+    if (arg == "--no-clobber") {
+      mode = OverwriteMode::no_clobber;
+      continue;
+    }
+    if (arg == "--interactive") {
+      mode = OverwriteMode::interactive_always;
+      continue;
+    }
+    if (arg.rfind("--interactive=", 0) == 0) {
+      auto when = arg.substr(std::string("--interactive=").size());
+      if (when == "never") {
+        mode = OverwriteMode::force;
+      } else if (when == "once") {
+        mode = OverwriteMode::interactive_once;
+      } else if (when == "always") {
+        mode = OverwriteMode::interactive_always;
+      } else {
+        return std::unexpected("invalid argument '" + when +
+                               "' for '--interactive'");
+      }
+      continue;
+    }
+
+    if (arg.size() < 2 || arg[0] != '-' || arg[1] == '-') continue;
+    for (size_t j = 1; j < arg.size(); ++j) {
+      switch (arg[j]) {
+        case 'f':
+          mode = OverwriteMode::force;
+          break;
+        case 'i':
+          mode = OverwriteMode::interactive_always;
+          break;
+        case 'I':
+          mode = OverwriteMode::interactive_once;
+          break;
+        case 'n':
+          mode = OverwriteMode::no_clobber;
+          break;
+        default:
+          break;
+      }
+    }
+  }
+
+  return mode;
+}
+
 auto append_expanded_source(SmallVector<std::string, 64>& source_paths,
                             std::string_view arg) -> void {
   std::string source(arg);
@@ -282,16 +350,15 @@ auto backup_existing_destination(const std::wstring& dest_path,
 }
 
 auto move_single_path(const std::string& src_path, const std::string& dest_path,
-                      const CommandContext<MV_OPTIONS.size()>& ctx)
+                      const CommandContext<MV_OPTIONS.size()>& ctx,
+                      OverwriteMode overwrite_mode)
     -> cp::Result<bool> {
   std::wstring wsrc_path = utf8_to_wstring(src_path);
   std::wstring wdest_path = utf8_to_wstring(dest_path);
 
   bool dest_exists =
       GetFileAttributesW(wdest_path.c_str()) != INVALID_FILE_ATTRIBUTES;
-  bool no_clobber =
-      ctx.get<bool>("--no-clobber", false) || ctx.get<bool>("-n", false);
-  if (no_clobber && dest_exists) {
+  if (overwrite_mode == OverwriteMode::no_clobber && dest_exists) {
     return true;
   }
 
@@ -300,10 +367,7 @@ auto move_single_path(const std::string& src_path, const std::string& dest_path,
     return true;
   }
 
-  std::string interactive_val = ctx.get<std::string>("--interactive", "");
-  bool interactive = ctx.get<bool>("-i", false) ||
-                     interactive_val == "always";
-  if (interactive) {
+  if (overwrite_mode == OverwriteMode::interactive_always) {
     auto dest_exists = check_path_exists(dest_path);
     if (!dest_exists) {
       return std::unexpected(dest_exists.error());
@@ -366,7 +430,8 @@ auto move_single_path(const std::string& src_path, const std::string& dest_path,
 
 auto process_single_source(const std::string& src_path,
                            const MoveContext& move_ctx, bool dest_is_dir,
-                           const CommandContext<MV_OPTIONS.size()>& ctx)
+                           const CommandContext<MV_OPTIONS.size()>& ctx,
+                           OverwriteMode overwrite_mode)
     -> cp::Result<bool> {
   auto src_exists = check_path_exists(src_path);
   if (!src_exists) {
@@ -382,13 +447,18 @@ auto process_single_source(const std::string& src_path,
     return std::unexpected(final_dest.error());
   }
 
-  return move_single_path(src_path, *final_dest, ctx);
+  return move_single_path(src_path, *final_dest, ctx, overwrite_mode);
 }
 
 template <size_t N>
 auto process_command(const CommandContext<N>& ctx) -> cp::Result<bool> {
   return parse_arguments(ctx).and_then(
       [&](MoveContext move_ctx) -> cp::Result<bool> {
+        auto overwrite_mode = parse_overwrite_mode(ctx);
+        if (!overwrite_mode) {
+          return std::unexpected(overwrite_mode.error());
+        }
+
         auto dest_exists = check_path_exists(move_ctx.dest_path);
         if (!dest_exists) {
           return std::unexpected(dest_exists.error());
@@ -408,10 +478,8 @@ auto process_command(const CommandContext<N>& ctx) -> cp::Result<bool> {
         }
 
         // -I / --interactive=once: prompt once before removing more than three files
-        std::string interactive_val = ctx.get<std::string>("--interactive", "");
-        bool prompt_once = ctx.get<bool>("-I", false) ||
-                           interactive_val == "once";
-        if (prompt_once && move_ctx.source_paths.size() > 3) {
+        if (*overwrite_mode == OverwriteMode::interactive_once &&
+            move_ctx.source_paths.size() > 3) {
           safeErrorPrint("mv: remove ");
           safeErrorPrint(std::to_string(move_ctx.source_paths.size()));
           safeErrorPrint(" arguments? (y/n) ");
@@ -425,7 +493,8 @@ auto process_command(const CommandContext<N>& ctx) -> cp::Result<bool> {
         bool success = true;
         for (const auto& src_path : move_ctx.source_paths) {
           auto result =
-              process_single_source(src_path, move_ctx, dest_is_dir, ctx);
+              process_single_source(src_path, move_ctx, dest_is_dir, ctx,
+                                    *overwrite_mode);
           if (!result) {
             return std::unexpected(result.error());
           }

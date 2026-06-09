@@ -161,3 +161,23 @@ TEST(split, split_wildcard_input_rejects_ambiguous_match) {
   EXPECT_TRUE(r.stdout_text.find("exactly one file") != std::string::npos ||
               r.stderr_text.find("exactly one file") != std::string::npos);
 }
+
+TEST(split, split_rejects_extra_operand_with_help_hint) {
+  TempDir tmp;
+  tmp.write("input.txt", "line1\nline2\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"split.exe", {L"input.txt", L"part", L"extra"});
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("split extra operand stderr", r.stderr_text);
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ(r.stderr_text,
+            "split: extra operand 'extra'\n"
+            "Try 'split --help' for more information.\n");
+}

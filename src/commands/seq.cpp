@@ -302,11 +302,12 @@ auto build_config(const CommandContext<SEQ_OPTIONS.size()>& ctx)
     cfg.increment = *increment;
     cfg.last = *last;
   } else {
-    return std::unexpected("extra operand");
+    return error_result<Config>("extra operand '" +
+                                std::string(operands[3]) + "'");
   }
 
   if (cfg.increment == 0.0) {
-    return error_result<Config>("invalid zero increment value '" +
+    return error_result<Config>("invalid Zero increment value: '" +
                                 std::string(operands[num_args == 3 ? 1 : 0]) +
                                 "'");
   }
@@ -314,6 +315,11 @@ auto build_config(const CommandContext<SEQ_OPTIONS.size()>& ctx)
   if (!cfg.format.empty()) {
     auto format = validate_format(cfg.format);
     if (!format) return std::unexpected(format.error());
+  }
+
+  if (cfg.equal_width && !cfg.format.empty()) {
+    return error_result<Config>(
+        "format string may not be specified when printing equal width strings");
   }
 
   for (auto operand : operands) {
@@ -443,6 +449,16 @@ REGISTER_COMMAND(seq, "seq",
 
   auto cfg_result = build_config(ctx);
   if (!cfg_result) {
+    if (cfg_result.error() == "missing operand") {
+      safeErrorPrintLn("seq: missing operand");
+      safeErrorPrintLn("Try 'seq --help' for more information.");
+      return 1;
+    }
+    if (cfg_result.error().starts_with("extra operand '")) {
+      cp::report_error(cfg_result, L"seq");
+      safeErrorPrintLn("Try 'seq --help' for more information.");
+      return 1;
+    }
     cp::report_error(cfg_result, L"seq");
     return 1;
   }

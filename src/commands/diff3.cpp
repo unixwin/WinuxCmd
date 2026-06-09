@@ -206,7 +206,7 @@ auto resolve_files(const CommandContext<DIFF3_OPTIONS.size()>& ctx)
     return std::unexpected("missing file operands");
   }
   if (files.size() > 3) {
-    return std::unexpected("too many file operands");
+    return std::unexpected("extra operand '" + files[3] + "'");
   }
 
   return std::make_tuple(files[0], files[1], files[2]);
@@ -388,7 +388,7 @@ REGISTER_COMMAND(diff3,
   if (!cfg_result) {
     safeErrorPrint("diff3: ");
     safeErrorPrintLn(cfg_result.error());
-    safePrintLn("Usage: diff3 [OPTION] MINE OLDER YOURS");
+    safeErrorPrint("Try 'diff3 --help' for more information.\n");
     return 1;
   }
 

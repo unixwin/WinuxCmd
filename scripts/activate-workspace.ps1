@@ -36,6 +36,11 @@ if ($pathParts -notcontains $binPath) {
 }
 $env:WINUXCMD_HOME = $binPath
 
+$utf8NoBom = New-Object System.Text.UTF8Encoding $false
+[Console]::InputEncoding = $utf8NoBom
+[Console]::OutputEncoding = $utf8NoBom
+$global:OutputEncoding = $utf8NoBom
+
 $aliasNames = @(
     "ls",
     "cat",
@@ -62,7 +67,8 @@ if (-not $Quiet) {
     Write-Host ""
     Write-Host "WinuxCmd workspace activation is active for this PowerShell session."
     Write-Host "Common PowerShell alias collisions were cleared for this session."
-    Write-Host "Use explicit .exe command names when you want to be unambiguous, for example:"
+    Write-Host "Workspace-local command links are now at the front of PATH."
+    Write-Host "Examples:"
     Write-Host "  man.exe ls"
     Write-Host "  grep.exe -n TODO README.md"
     Write-Host "  winuxcmd.exe help sort"

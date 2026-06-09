@@ -656,6 +656,14 @@ REGISTER_COMMAND(
     "csplit(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", SPLIT_OPTIONS) {
   using namespace split_pipeline;
 
+  if (ctx.positionals.size() > 2) {
+    safeErrorPrint("split: extra operand '");
+    safeErrorPrint(std::string(ctx.positionals[2]));
+    safeErrorPrintLn("'");
+    safeErrorPrint("Try 'split --help' for more information.\n");
+    return 1;
+  }
+
   auto cfg_result = build_config(ctx);
   if (!cfg_result) {
     cp::report_error(cfg_result, L"split");
