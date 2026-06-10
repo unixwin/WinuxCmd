@@ -308,6 +308,13 @@ auto split_records(std::string_view s, char delim)
   return out;
 }
 
+auto trim_text_record(std::string_view line, char delim) -> std::string_view {
+  if (delim == '\n' && !line.empty() && line.back() == '\r') {
+    return line.substr(0, line.size() - 1);
+  }
+  return line;
+}
+
 auto is_word_char(unsigned char c) -> bool {
   return std::isalnum(c) || c == '_';
 }
@@ -863,6 +870,7 @@ auto scan_text(const std::string& text, std::string_view display_name,
       bool had_delim = !whole.empty() && whole.back() == delim;
       std::string_view line =
           had_delim ? whole.substr(0, whole.size() - 1) : whole;
+      line = trim_text_record(line, delim);
       if (!process_selected_record(line, had_delim, display_name, show_filename,
                                    i + 1, b, cfg, selected_count))
         continue;
@@ -884,6 +892,7 @@ auto scan_text(const std::string& text, std::string_view display_name,
     bool had_delim = !whole.empty() && whole.back() == delim;
     std::string_view line =
         had_delim ? whole.substr(0, whole.size() - 1) : whole;
+    line = trim_text_record(line, delim);
     auto matches = collect_matches_in_line(line, cfg);
     bool is_match = !matches.empty();
     bool selected = cfg.invert_match ? !is_match : is_match;
@@ -933,6 +942,7 @@ auto scan_text(const std::string& text, std::string_view display_name,
       bool had_delim = !whole.empty() && whole.back() == delim;
       std::string_view line =
           had_delim ? whole.substr(0, whole.size() - 1) : whole;
+      line = trim_text_record(line, delim);
 
       bool selected = std::binary_search(selected_indices.begin(),
                                          selected_indices.end(), i);

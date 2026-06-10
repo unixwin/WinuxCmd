@@ -255,6 +255,37 @@ TEST(cp, cp_target_directory_and_no_target_directory_conflict) {
   EXPECT_NE(r.exit_code, 0);
 }
 
+TEST(cp, cp_strip_trailing_slashes_allows_file_source_with_trailing_separator) {
+  TempDir tmp;
+  tmp.write("source.txt", "content");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe",
+        {L"--strip-trailing-slashes", L"source.txt/", L"dest.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(tmp.read("dest.txt"), "content");
+}
+
+TEST(cp, cp_file_source_with_trailing_separator_still_fails_without_strip_option) {
+  TempDir tmp;
+  tmp.write("source.txt", "content");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"source.txt/", L"dest.txt"});
+
+  auto r = p.run();
+
+  EXPECT_NE(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.find("cannot stat 'source.txt/'") !=
+              std::string::npos);
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "dest.txt"));
+}
+
 TEST(cp, cp_no_clobber) {
   TempDir tmp;
   tmp.write("source.txt", "new content");

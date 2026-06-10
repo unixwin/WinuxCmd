@@ -30,6 +30,8 @@
 #include "core/command_macros.h"
 #include "pch/pch.h"
 
+#include <aclapi.h>
+
 #pragma comment(lib, "advapi32.lib")
 
 import std;

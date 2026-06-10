@@ -32,6 +32,7 @@
 #include "pch/pch.h"
 // include other header after pch.h
 #include "core/command_macros.h"
+#include <AclAPI.h>
 
 import std;
 import core;
@@ -92,7 +93,7 @@ using cmd::meta::OptionType;
  * - @a -ok: Execute command after
  * confirmation [IMPLEMENTED: ; form]
  * -
- * @a -printf: Print format [PARTIAL: %p,%f,%h,%y,%s,%m,%T@,%%]
+ * @a -printf: Print format [PARTIAL: %p,%f,%h,%l,%H,%P,%y,%Y,%s,%b,%k,%d,%D,%F,%g,%G,%o,%u,%U,%S,%m,%M,%n,%i,%A@,%B@,%C@,%T@,%AY,%Am,%Ad,%AH,%AM,%AS,%Aj,%BY,%Bm,%Bd,%BH,%BM,%BS,%Bj,%CY,%Cm,%Cd,%CH,%CM,%CS,%Cj,%TY,%Tm,%Td,%TH,%TM,%TS,%Tj,%%]
  * - @a -prune:
 
  * * Prune tree [IMPLEMENTED]
@@ -149,7 +150,7 @@ auto constexpr FIND_OPTIONS = std::array{
     OPTION("-exec", "", "execute command", TERMINATED_STRING_TYPE),
     OPTION("-ok", "", "execute command after confirmation",
            TERMINATED_STRING_TYPE),
-    OPTION("-printf", "", "print format [PARTIAL: %p,%f,%h,%y,%s,%m,%T@,%%]",
+    OPTION("-printf", "", "print format [PARTIAL: %p,%f,%h,%l,%H,%P,%y,%Y,%s,%b,%k,%d,%D,%F,%g,%G,%o,%u,%U,%S,%m,%M,%n,%i,%A@,%B@,%C@,%T@,%AY,%Am,%Ad,%AH,%AM,%AS,%Aj,%BY,%Bm,%Bd,%BH,%BM,%BS,%Bj,%CY,%Cm,%Cd,%CH,%CM,%CS,%Cj,%TY,%Tm,%Td,%TH,%TM,%TS,%Tj,%%]",
            STRING_TYPE),
     OPTION("-prune", "", "prune tree"),
     OPTION("-quit", "", "exit immediately"),
@@ -261,6 +262,12 @@ struct Config {
   bool had_error = false;
 };
 
+enum class SymlinkMode {
+  Never,
+  CommandLineOnly,
+  All,
+};
+
 // Wildcard matching is now provided by utils:wildcard module
 
 auto parse_numeric_predicate(std::string_view text)
@@ -367,15 +374,32 @@ auto numeric_matches(const NumericPredicate& pred, long long actual) -> bool {
   return false;
 }
 
+auto is_directory_reparse_point(const std::filesystem::directory_entry& e)
+    -> bool;
+
 auto type_matches(const std::filesystem::directory_entry& e,
                   std::string_view type) -> bool {
   if (type.empty()) return true;
 
-  if (type == "f") return e.is_regular_file();
-  if (type == "d") return e.is_directory();
-  if (type == "l") return e.is_symlink();
+  std::error_code ec;
+  bool link_like = (e.is_symlink(ec) && !ec) || is_directory_reparse_point(e);
+  ec.clear();
+
+  if (type == "f") return e.is_regular_file(ec) && !ec;
+  if (type == "d") return e.is_directory(ec) && !ec && !link_like;
+  if (type == "l") return link_like;
 
   return false;
+}
+
+auto is_directory_reparse_point(const std::filesystem::directory_entry& e)
+    -> bool {
+  const auto path = e.path().wstring();
+  DWORD attrs = GetFileAttributesW(path.c_str());
+  if (attrs == INVALID_FILE_ATTRIBUTES) return false;
+
+  return (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0 &&
+         (attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
 }
 
 auto is_unsupported_used(const CommandContext<FIND_OPTIONS.size()>& ctx)
@@ -455,6 +479,26 @@ auto parse_exec_actions(std::span<const std::string_view> args)
   }
 
   return actions;
+}
+
+auto resolve_symlink_mode(const CommandContext<FIND_OPTIONS.size()>& ctx)
+    -> SymlinkMode {
+  SymlinkMode mode = SymlinkMode::Never;
+
+  for (const auto& occurrence : ctx.options.occurrences()) {
+    if (occurrence.index >= FIND_OPTIONS.size()) continue;
+    const auto& meta = FIND_OPTIONS[occurrence.index];
+
+    if (meta.short_name == "-L") {
+      mode = SymlinkMode::All;
+    } else if (meta.short_name == "-H") {
+      mode = SymlinkMode::CommandLineOnly;
+    } else if (meta.short_name == "-P") {
+      mode = SymlinkMode::Never;
+    }
+  }
+
+  return mode;
 }
 
 auto expression_start_index(std::span<const std::string_view> args) -> size_t {
@@ -783,12 +827,30 @@ auto build_config(const CommandContext<FIND_OPTIONS.size()>& ctx)
 
   cfg.delete_action = ctx.get<bool>("-delete", false);
   cfg.depth_first = ctx.get<bool>("-depth", false);
+  if (cfg.delete_action && ctx.get<bool>("-prune", false) && !cfg.depth_first) {
+    return std::unexpected(
+        "The -delete action automatically turns on -depth, but -prune does "
+        "nothing when -depth is in effect.  If you want to carry on anyway, "
+        "just explicitly use the -depth option.");
+  }
   auto exec_actions = parse_exec_actions(std::span<const std::string_view>(
       ctx.raw_args.data(), ctx.raw_args.size()));
   if (!exec_actions) return std::unexpected(exec_actions.error());
   cfg.exec_actions = std::move(*exec_actions);
-  cfg.follow_symlinks = ctx.get<bool>("-L", false);
-  cfg.follow_arg_symlinks = ctx.get<bool>("-H", false);
+  switch (resolve_symlink_mode(ctx)) {
+    case SymlinkMode::All:
+      cfg.follow_symlinks = true;
+      cfg.follow_arg_symlinks = true;
+      break;
+    case SymlinkMode::CommandLineOnly:
+      cfg.follow_symlinks = false;
+      cfg.follow_arg_symlinks = true;
+      break;
+    case SymlinkMode::Never:
+      cfg.follow_symlinks = false;
+      cfg.follow_arg_symlinks = false;
+      break;
+  }
 
   if (!cfg.type_filter.empty() && cfg.type_filter != "f" &&
       cfg.type_filter != "d" && cfg.type_filter != "l") {
@@ -860,6 +922,10 @@ auto depth_from_root(const std::filesystem::path& root,
 auto path_display(const std::filesystem::path& p) -> std::string {
   auto s = p.generic_string();
   if (s.empty()) return ".";
+  std::replace(s.begin(), s.end(), '\\', '/');
+  if (s.size() >= 2 && s[0] == '.' && s[1] == '/') {
+    s[1] = '\\';
+  }
   return s;
 }
 
@@ -918,14 +984,16 @@ auto modification_age_units(const std::filesystem::directory_entry& e,
 
 auto print_path(std::string_view path, bool null_terminated) -> void;
 auto printf_path(std::string_view format, const std::filesystem::path& p,
-                 const std::filesystem::directory_entry& e, int depth) -> void;
+                 const std::filesystem::directory_entry& e, int depth,
+                 const std::filesystem::path& root) -> void;
 auto execute_action_for_path(ExecAction& action, std::string_view path,
                              Config& cfg) -> bool;
 auto delete_path(const std::filesystem::path& p, Config& cfg) -> bool;
 
 auto evaluate_expression(const ExprNode& expr, const std::filesystem::path& p,
                          const std::filesystem::directory_entry& e, int depth,
-                         Config& cfg) -> bool {
+                         const std::filesystem::path& root, Config& cfg)
+    -> bool {
   switch (expr.kind) {
     case ExprKind::Always:
       return true;
@@ -999,7 +1067,7 @@ auto evaluate_expression(const ExprNode& expr, const std::filesystem::path& p,
       return true;
 
     case ExprKind::Printf:
-      printf_path(expr.text, p, e, depth);
+      printf_path(expr.text, p, e, depth, root);
       return true;
 
     case ExprKind::False:
@@ -1023,34 +1091,36 @@ auto evaluate_expression(const ExprNode& expr, const std::filesystem::path& p,
 
     case ExprKind::Comma:
       if (!expr.left || !expr.right) return false;
-      (void)evaluate_expression(*expr.left, p, e, depth, cfg);
-      return evaluate_expression(*expr.right, p, e, depth, cfg);
+      (void)evaluate_expression(*expr.left, p, e, depth, root, cfg);
+      return evaluate_expression(*expr.right, p, e, depth, root, cfg);
 
     case ExprKind::And:
       return expr.left && expr.right &&
-             evaluate_expression(*expr.left, p, e, depth, cfg) &&
-             evaluate_expression(*expr.right, p, e, depth, cfg);
+             evaluate_expression(*expr.left, p, e, depth, root, cfg) &&
+             evaluate_expression(*expr.right, p, e, depth, root, cfg);
 
     case ExprKind::Or:
       return expr.left && expr.right &&
-             (evaluate_expression(*expr.left, p, e, depth, cfg) ||
-              evaluate_expression(*expr.right, p, e, depth, cfg));
+             (evaluate_expression(*expr.left, p, e, depth, root, cfg) ||
+              evaluate_expression(*expr.right, p, e, depth, root, cfg));
 
     case ExprKind::Not:
-      return expr.left && !evaluate_expression(*expr.left, p, e, depth, cfg);
+      return expr.left &&
+             !evaluate_expression(*expr.left, p, e, depth, root, cfg);
   }
 
   return false;
 }
 
 auto entry_matches(Config& cfg, const std::filesystem::path& p,
-                   const std::filesystem::directory_entry& e, int depth)
+                   const std::filesystem::directory_entry& e, int depth,
+                   const std::filesystem::path& root)
     -> bool {
   cfg.prune_current = false;
   if (depth < cfg.mindepth || depth > cfg.maxdepth) return false;
 
   if (cfg.expression) {
-    return evaluate_expression(*cfg.expression, p, e, depth, cfg);
+    return evaluate_expression(*cfg.expression, p, e, depth, root, cfg);
   }
 
   auto filename = p.filename().string();
@@ -1109,52 +1179,522 @@ auto print_path(std::string_view path, bool null_terminated) -> void {
 
 auto file_type_char(const std::filesystem::directory_entry& e) -> char {
   std::error_code ec;
+  if ((e.is_symlink(ec) && !ec) || is_directory_reparse_point(e)) return 'l';
+  ec.clear();
   if (e.is_regular_file(ec) && !ec) return 'f';
   if (e.is_directory(ec) && !ec) return 'd';
-  if (e.is_symlink(ec) && !ec) return 'l';
+  return '?';
+}
+
+auto symlink_target_type_char(const std::filesystem::directory_entry& e)
+    -> char {
+  std::error_code ec;
+  if (!e.is_symlink(ec) && !is_directory_reparse_point(e)) {
+    return file_type_char(e);
+  }
+
+  ec.clear();
+  auto target = std::filesystem::read_symlink(e.path(), ec);
+  if (ec) return '?';
+
+  std::filesystem::path resolved_target = target;
+  if (resolved_target.is_relative()) {
+    resolved_target = e.path().parent_path() / resolved_target;
+  }
+  resolved_target = resolved_target.lexically_normal();
+
+  auto status = std::filesystem::status(resolved_target, ec);
+  if (ec) return '?';
+  if (status.type() == std::filesystem::file_type::not_found) return 'N';
+  if (status.type() == std::filesystem::file_type::regular) return 'f';
+  if (status.type() == std::filesystem::file_type::directory) return 'd';
+  if (status.type() == std::filesystem::file_type::symlink) return 'l';
   return '?';
 }
 
 auto file_size_bytes(const std::filesystem::directory_entry& e)
     -> unsigned long long {
   std::error_code ec;
+  if (e.is_symlink(ec) || is_directory_reparse_point(e)) {
+    ec.clear();
+    auto target = std::filesystem::read_symlink(e.path(), ec);
+    if (ec) return 0;
+    return static_cast<unsigned long long>(target.generic_string().size());
+  }
+  ec.clear();
   if (!e.is_regular_file(ec) || ec) return 0;
   auto size = e.file_size(ec);
   if (ec) return 0;
   return static_cast<unsigned long long>(size);
 }
 
-auto permission_bits(const std::filesystem::directory_entry& e) -> std::string {
-  std::error_code ec;
-  auto status = e.symlink_status(ec);
-  if (ec) return "000";
-
-  auto perms = status.permissions();
-  auto has = [&](std::filesystem::perms bit) {
-    return (perms & bit) != std::filesystem::perms::none;
-  };
-
+auto permission_bits(const std::filesystem::path& p,
+                     const std::filesystem::directory_entry& e) -> std::string {
   unsigned mode = 0;
-  if (has(std::filesystem::perms::set_uid)) mode |= 04000;
-  if (has(std::filesystem::perms::set_gid)) mode |= 02000;
-  if (has(std::filesystem::perms::sticky_bit)) mode |= 01000;
-  if (has(std::filesystem::perms::owner_read)) mode |= 0400;
-  if (has(std::filesystem::perms::owner_write)) mode |= 0200;
-  if (has(std::filesystem::perms::owner_exec)) mode |= 0100;
-  if (has(std::filesystem::perms::group_read)) mode |= 0040;
-  if (has(std::filesystem::perms::group_write)) mode |= 0020;
-  if (has(std::filesystem::perms::group_exec)) mode |= 0010;
-  if (has(std::filesystem::perms::others_read)) mode |= 0004;
-  if (has(std::filesystem::perms::others_write)) mode |= 0002;
-  if (has(std::filesystem::perms::others_exec)) mode |= 0001;
+
+  std::error_code ec;
+  if (e.is_symlink(ec) || is_directory_reparse_point(e)) {
+    mode = 0777;
+  } else if (e.is_directory(ec) && !ec) {
+    mode = 0755;
+  } else {
+    std::string ext = p.extension().generic_string();
+    std::transform(ext.begin(), ext.end(), ext.begin(),
+                   [](unsigned char c) {
+                     return static_cast<char>(std::tolower(c));
+                   });
+    bool executable = ext == ".exe" || ext == ".bat" || ext == ".cmd" ||
+                      ext == ".ps1";
+    mode = executable ? 0755 : 0644;
+  }
 
   char buf[8];
-  if (mode >= 01000) {
-    snprintf(buf, sizeof(buf), "%04o", mode);
-  } else {
-    snprintf(buf, sizeof(buf), "%03o", mode);
-  }
+  snprintf(buf, sizeof(buf), "%03o", mode);
   return std::string(buf);
+}
+
+auto permission_string(const std::filesystem::path& p,
+                       const std::filesystem::directory_entry& e)
+    -> std::string {
+  char perms[11] = "----------";
+  perms[10] = '\0';
+
+  if (e.is_symlink() || is_directory_reparse_point(e)) {
+    perms[0] = 'l';
+    perms[1] = 'r';
+    perms[2] = 'w';
+    perms[3] = 'x';
+    perms[4] = 'r';
+    perms[5] = 'w';
+    perms[6] = 'x';
+    perms[7] = 'r';
+    perms[8] = 'w';
+    perms[9] = 'x';
+    return std::string(perms, 10);
+  }
+
+  if (e.is_directory()) {
+    perms[0] = 'd';
+    perms[1] = 'r';
+    perms[2] = 'w';
+    perms[3] = 'x';
+    perms[4] = 'r';
+    perms[6] = 'x';
+    perms[7] = 'r';
+    perms[9] = 'x';
+    return std::string(perms, 10);
+  }
+
+  std::string ext = p.extension().generic_string();
+  std::transform(ext.begin(), ext.end(), ext.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  bool executable = ext == ".exe" || ext == ".bat" || ext == ".cmd" ||
+                    ext == ".ps1";
+
+  perms[1] = 'r';
+  perms[2] = 'w';
+  perms[4] = 'r';
+  perms[7] = 'r';
+  if (executable) {
+    perms[3] = 'x';
+    perms[6] = 'x';
+    perms[9] = 'x';
+  }
+  return std::string(perms, 10);
+}
+
+auto win32_hard_link_count(const std::filesystem::path& p)
+    -> unsigned long long {
+  DWORD attrs = GetFileAttributesW(p.c_str());
+  if (attrs == INVALID_FILE_ATTRIBUTES) return 1;
+
+  DWORD flags = FILE_FLAG_BACKUP_SEMANTICS;
+  HANDLE handle = CreateFileW(
+      p.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+      nullptr, OPEN_EXISTING, flags, nullptr);
+  if (handle == INVALID_HANDLE_VALUE) return 1;
+
+  BY_HANDLE_FILE_INFORMATION info{};
+  bool ok = GetFileInformationByHandle(handle, &info) != 0;
+  CloseHandle(handle);
+  if (!ok) return 1;
+  return static_cast<unsigned long long>(std::max<DWORD>(info.nNumberOfLinks, 1));
+}
+
+auto win32_file_index(const std::filesystem::path& p) -> std::string {
+  DWORD attrs = GetFileAttributesW(p.c_str());
+  if (attrs == INVALID_FILE_ATTRIBUTES) return {};
+
+  DWORD flags = 0;
+  if (attrs & FILE_ATTRIBUTE_DIRECTORY) {
+    flags |= FILE_FLAG_BACKUP_SEMANTICS;
+  }
+  if (attrs & FILE_ATTRIBUTE_REPARSE_POINT) {
+    flags |= FILE_FLAG_OPEN_REPARSE_POINT;
+  }
+
+  HANDLE handle = CreateFileW(
+      p.c_str(), FILE_READ_ATTRIBUTES,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+      OPEN_EXISTING, flags, nullptr);
+  if (handle == INVALID_HANDLE_VALUE) return {};
+
+  BY_HANDLE_FILE_INFORMATION info{};
+  std::string result;
+  if (GetFileInformationByHandle(handle, &info)) {
+    ULONGLONG index =
+        (static_cast<ULONGLONG>(info.nFileIndexHigh) << 32) |
+        static_cast<ULONGLONG>(info.nFileIndexLow);
+    result = std::to_string(index);
+  }
+  CloseHandle(handle);
+  return result;
+}
+
+auto win32_allocation_size_bytes(const std::filesystem::path& p)
+    -> unsigned long long {
+  DWORD attrs = GetFileAttributesW(p.c_str());
+  if (attrs == INVALID_FILE_ATTRIBUTES) return 0;
+
+  DWORD flags = 0;
+  if (attrs & FILE_ATTRIBUTE_DIRECTORY) {
+    flags |= FILE_FLAG_BACKUP_SEMANTICS;
+  }
+  if (attrs & FILE_ATTRIBUTE_REPARSE_POINT) {
+    flags |= FILE_FLAG_OPEN_REPARSE_POINT;
+  }
+
+  HANDLE handle = CreateFileW(
+      p.c_str(), FILE_READ_ATTRIBUTES,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+      OPEN_EXISTING, flags, nullptr);
+  if (handle == INVALID_HANDLE_VALUE) return 0;
+
+  FILE_STANDARD_INFO info{};
+  unsigned long long size = 0;
+  if (GetFileInformationByHandleEx(handle, FileStandardInfo, &info,
+                                   sizeof(info))) {
+    size = static_cast<unsigned long long>(info.AllocationSize.QuadPart);
+  }
+  CloseHandle(handle);
+  return size;
+}
+
+auto allocated_block_count(const std::filesystem::path& p,
+                           const std::filesystem::directory_entry& e,
+                           unsigned long long unit) -> unsigned long long {
+  if (unit == 0) return 0;
+
+  const auto allocated = win32_allocation_size_bytes(p);
+  unsigned long long blocks = (allocated + unit - 1) / unit;
+
+  std::error_code ec;
+  if (e.is_regular_file(ec) && !ec) {
+    const auto logical_size = file_size_bytes(e);
+    if (logical_size > 0) {
+      const unsigned long long min_blocks = (1024ULL + unit - 1) / unit;
+      blocks = std::max(blocks, min_blocks);
+    }
+  }
+
+  return blocks;
+}
+
+auto file_sparseness(const std::filesystem::path& p,
+                     const std::filesystem::directory_entry& e)
+    -> std::string {
+  std::error_code ec;
+  if (!e.is_regular_file(ec) || ec) {
+    return "1";
+  }
+
+  const auto logical_size = file_size_bytes(e);
+  if (logical_size == 0) {
+    return "1";
+  }
+
+  const auto allocated = win32_allocation_size_bytes(p);
+  const double sparseness =
+      static_cast<double>(allocated) / static_cast<double>(logical_size);
+  std::ostringstream out;
+  out << sparseness;
+  return out.str();
+}
+
+auto win32_volume_serial_number(const std::filesystem::path& p) -> std::string {
+  DWORD attrs = GetFileAttributesW(p.c_str());
+  if (attrs == INVALID_FILE_ATTRIBUTES) return {};
+
+  DWORD flags = 0;
+  if (attrs & FILE_ATTRIBUTE_DIRECTORY) {
+    flags |= FILE_FLAG_BACKUP_SEMANTICS;
+  }
+  if (attrs & FILE_ATTRIBUTE_REPARSE_POINT) {
+    flags |= FILE_FLAG_OPEN_REPARSE_POINT;
+  }
+
+  HANDLE handle = CreateFileW(
+      p.c_str(), FILE_READ_ATTRIBUTES,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+      OPEN_EXISTING, flags, nullptr);
+  if (handle == INVALID_HANDLE_VALUE) return {};
+
+  BY_HANDLE_FILE_INFORMATION info{};
+  std::string result;
+  if (GetFileInformationByHandle(handle, &info)) {
+    result = std::to_string(
+        static_cast<unsigned long long>(info.dwVolumeSerialNumber));
+  }
+  CloseHandle(handle);
+  return result;
+}
+
+auto win32_filesystem_type_name(const std::filesystem::path& p) -> std::string {
+  auto dir = p.has_parent_path() ? p.parent_path() : std::filesystem::path(".");
+  std::error_code ec;
+  auto absolute = std::filesystem::absolute(dir, ec);
+  auto wdir = ec ? dir.wstring() : absolute.wstring();
+
+  wchar_t root[MAX_PATH];
+  if (!GetVolumePathNameW(wdir.c_str(), root, MAX_PATH)) return {};
+
+  wchar_t fs_name[MAX_PATH] = L"";
+  DWORD serial = 0;
+  DWORD max_component = 0;
+  DWORD flags = 0;
+  if (!GetVolumeInformationW(root, nullptr, 0, &serial, &max_component, &flags,
+                             fs_name, MAX_PATH)) {
+    return {};
+  }
+
+  return wstring_to_utf8(fs_name);
+}
+
+auto win32_io_block_size(const std::filesystem::path& p) -> unsigned long long {
+  auto dir = p.has_parent_path() ? p.parent_path() : std::filesystem::path(".");
+  std::error_code ec;
+  auto absolute = std::filesystem::absolute(dir, ec);
+  auto wdir = ec ? dir.wstring() : absolute.wstring();
+
+  wchar_t root[MAX_PATH];
+  if (!GetVolumePathNameW(wdir.c_str(), root, MAX_PATH)) return 4096;
+
+  DWORD sectors_per_cluster = 0;
+  DWORD bytes_per_sector = 0;
+  DWORD free_clusters = 0;
+  DWORD total_clusters = 0;
+  if (!GetDiskFreeSpaceW(root, &sectors_per_cluster, &bytes_per_sector,
+                         &free_clusters, &total_clusters)) {
+    return 4096;
+  }
+
+  const unsigned long long block_size =
+      static_cast<unsigned long long>(sectors_per_cluster) * bytes_per_sector;
+  return block_size == 0 ? 4096 : block_size;
+}
+
+struct Win32OwnershipInfo {
+  std::string owner_name;
+  std::string owner_id;
+  std::string group_name;
+  std::string group_id;
+};
+
+auto win32_account_name_from_sid(PSID sid) -> std::string {
+  if (sid == nullptr) return {};
+
+  DWORD name_size = 0;
+  DWORD domain_size = 0;
+  SID_NAME_USE sid_type = SidTypeUnknown;
+  LookupAccountSidW(nullptr, sid, nullptr, &name_size, nullptr, &domain_size,
+                    &sid_type);
+  if (GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
+    return {};
+  }
+
+  std::wstring name(name_size, L'\0');
+  std::wstring domain(domain_size, L'\0');
+  if (!LookupAccountSidW(nullptr, sid, name.data(), &name_size, domain.data(),
+                         &domain_size, &sid_type)) {
+    return {};
+  }
+
+  name.resize(name_size);
+  return wstring_to_utf8(name);
+}
+
+auto win32_account_id_from_sid(PSID sid) -> std::string {
+  if (sid == nullptr || !IsValidSid(sid)) return {};
+
+  PUCHAR subauth_count = GetSidSubAuthorityCount(sid);
+  if (subauth_count == nullptr || *subauth_count == 0) return {};
+
+  DWORD* rid = GetSidSubAuthority(sid, *subauth_count - 1);
+  if (rid == nullptr) return {};
+
+  return std::to_string(*rid);
+}
+
+auto win32_ownership_info(const std::filesystem::path& p) -> Win32OwnershipInfo {
+  std::wstring wpath = p.wstring();
+  PSECURITY_DESCRIPTOR security_desc = nullptr;
+  PSID owner_sid = nullptr;
+  PSID group_sid = nullptr;
+
+  const DWORD status = GetNamedSecurityInfoW(
+      const_cast<wchar_t*>(wpath.c_str()), SE_FILE_OBJECT,
+      OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION, &owner_sid,
+      &group_sid, nullptr, nullptr, &security_desc);
+  if (status != ERROR_SUCCESS) {
+    if (security_desc != nullptr) {
+      LocalFree(security_desc);
+    }
+    return {};
+  }
+
+  Win32OwnershipInfo info{
+      .owner_name = win32_account_name_from_sid(owner_sid),
+      .owner_id = win32_account_id_from_sid(owner_sid),
+      .group_name = win32_account_name_from_sid(group_sid),
+      .group_id = win32_account_id_from_sid(group_sid)};
+  if (security_desc != nullptr) {
+    LocalFree(security_desc);
+  }
+  return info;
+}
+
+enum class Win32FileTimeKind {
+  LastAccess,
+  Creation,
+  LastWrite,
+};
+
+auto win32_file_time_seconds(const std::filesystem::path& p,
+                             Win32FileTimeKind kind) -> std::string {
+  DWORD attrs = GetFileAttributesW(p.c_str());
+  if (attrs == INVALID_FILE_ATTRIBUTES) return "0.000000000";
+
+  DWORD flags = 0;
+  if (attrs & FILE_ATTRIBUTE_DIRECTORY) {
+    flags |= FILE_FLAG_BACKUP_SEMANTICS;
+  }
+  if (attrs & FILE_ATTRIBUTE_REPARSE_POINT) {
+    flags |= FILE_FLAG_OPEN_REPARSE_POINT;
+  }
+
+  HANDLE handle = CreateFileW(
+      p.c_str(), FILE_READ_ATTRIBUTES,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+      OPEN_EXISTING, flags, nullptr);
+  if (handle == INVALID_HANDLE_VALUE) return "0.000000000";
+
+  FILE_BASIC_INFO info{};
+  std::string out = "0.000000000";
+  if (GetFileInformationByHandleEx(handle, FileBasicInfo, &info, sizeof(info))) {
+    LARGE_INTEGER value = info.LastWriteTime;
+    if (kind == Win32FileTimeKind::LastAccess) {
+      value = info.LastAccessTime;
+    } else if (kind == Win32FileTimeKind::Creation) {
+      value = info.CreationTime;
+    }
+    const long long ticks = value.QuadPart;
+    long long seconds = ticks / 10000000LL - 11644473600LL;
+    long long nanos = (ticks % 10000000LL) * 100LL;
+    if (nanos < 0) {
+      --seconds;
+      nanos += 1000000000LL;
+    }
+
+    std::ostringstream stream;
+    stream << seconds << "." << std::setw(9) << std::setfill('0') << nanos;
+    out = stream.str();
+  }
+  CloseHandle(handle);
+  return out;
+}
+
+auto win32_file_time_component(const std::filesystem::path& p,
+                               Win32FileTimeKind kind, char component)
+    -> std::string {
+  DWORD attrs = GetFileAttributesW(p.c_str());
+  if (attrs == INVALID_FILE_ATTRIBUTES) return {};
+
+  DWORD flags = 0;
+  if (attrs & FILE_ATTRIBUTE_DIRECTORY) {
+    flags |= FILE_FLAG_BACKUP_SEMANTICS;
+  }
+  if (attrs & FILE_ATTRIBUTE_REPARSE_POINT) {
+    flags |= FILE_FLAG_OPEN_REPARSE_POINT;
+  }
+
+  HANDLE handle = CreateFileW(
+      p.c_str(), FILE_READ_ATTRIBUTES,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+      OPEN_EXISTING, flags, nullptr);
+  if (handle == INVALID_HANDLE_VALUE) return {};
+
+  FILE_BASIC_INFO info{};
+  std::string out;
+  if (GetFileInformationByHandleEx(handle, FileBasicInfo, &info, sizeof(info))) {
+    FILETIME file_time{};
+    LARGE_INTEGER value = info.LastWriteTime;
+    if (kind == Win32FileTimeKind::LastAccess) {
+      value = info.LastAccessTime;
+    } else if (kind == Win32FileTimeKind::Creation) {
+      value = info.CreationTime;
+    }
+
+    file_time.dwLowDateTime = value.LowPart;
+    file_time.dwHighDateTime = value.HighPart;
+
+    FILETIME local_file_time{};
+    SYSTEMTIME local_system_time{};
+    if (FileTimeToLocalFileTime(&file_time, &local_file_time) &&
+        FileTimeToSystemTime(&local_file_time, &local_system_time)) {
+      std::ostringstream stream;
+      auto is_leap_year = [](WORD year) {
+        return (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+      };
+      switch (component) {
+        case 'Y':
+          stream << std::setw(4) << std::setfill('0') << local_system_time.wYear;
+          break;
+        case 'm':
+          stream << std::setw(2) << std::setfill('0') << local_system_time.wMonth;
+          break;
+        case 'd':
+          stream << std::setw(2) << std::setfill('0') << local_system_time.wDay;
+          break;
+        case 'H':
+          stream << std::setw(2) << std::setfill('0') << local_system_time.wHour;
+          break;
+        case 'M':
+          stream << std::setw(2) << std::setfill('0') << local_system_time.wMinute;
+          break;
+        case 'S':
+          stream << std::setw(2) << std::setfill('0') << local_system_time.wSecond;
+          break;
+        case 'j': {
+          static constexpr int days_before_month[12] = {
+              0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334};
+          int day_of_year =
+              days_before_month[local_system_time.wMonth - 1] +
+              local_system_time.wDay;
+          if (local_system_time.wMonth > 2 &&
+              is_leap_year(local_system_time.wYear)) {
+            ++day_of_year;
+          }
+          stream << std::setw(3) << std::setfill('0') << day_of_year;
+          break;
+        }
+        default:
+          break;
+      }
+      out = stream.str();
+    }
+  }
+  CloseHandle(handle);
+  return out;
 }
 
 auto modification_time_seconds(const std::filesystem::directory_entry& e)
@@ -1181,6 +1721,57 @@ auto modification_time_seconds(const std::filesystem::directory_entry& e)
   return out.str();
 }
 
+auto append_file_time_printf(std::string& out, std::string_view format, size_t& i,
+                             char directive, const std::filesystem::path& p,
+                             const std::filesystem::directory_entry& e) -> void {
+  if (i + 1 >= format.size()) {
+    safeErrorPrint("find: warning: unrecognized format directive `%");
+    safeErrorPrint(std::string(1, directive));
+    safeErrorPrint("'\n");
+    out.push_back(directive);
+    return;
+  }
+
+  ++i;
+  const char subcode = format[i];
+  if (subcode == '@') {
+    switch (directive) {
+      case 'A':
+        out += win32_file_time_seconds(p, Win32FileTimeKind::LastAccess);
+        return;
+      case 'B':
+      case 'C':
+        out += win32_file_time_seconds(p, Win32FileTimeKind::Creation);
+        return;
+      case 'T':
+        out += modification_time_seconds(e);
+        return;
+      default:
+        break;
+    }
+  }
+
+  if (subcode == 'Y' || subcode == 'm' || subcode == 'd' || subcode == 'H' ||
+      subcode == 'M' || subcode == 'S' || subcode == 'j') {
+    Win32FileTimeKind kind = Win32FileTimeKind::LastWrite;
+    if (directive == 'A') {
+      kind = Win32FileTimeKind::LastAccess;
+    } else if (directive == 'B' || directive == 'C') {
+      kind = Win32FileTimeKind::Creation;
+    }
+
+    out += win32_file_time_component(p, kind, subcode);
+    return;
+  }
+
+  safeErrorPrint("find: warning: unrecognized format directive `%");
+  safeErrorPrint(std::string(1, directive));
+  safeErrorPrint(std::string(1, subcode));
+  safeErrorPrint("'\n");
+  out.push_back(directive);
+  out.push_back(subcode);
+}
+
 auto basename_display(const std::filesystem::path& p) -> std::string {
   auto filename = p.filename().generic_string();
   if (!filename.empty()) return filename;
@@ -1193,9 +1784,35 @@ auto dirname_display(const std::filesystem::path& p) -> std::string {
   return parent;
 }
 
+auto link_target_display(const std::filesystem::directory_entry& e)
+    -> std::string {
+  std::error_code ec;
+  if (!e.is_symlink(ec) && !is_directory_reparse_point(e)) {
+    return "";
+  }
+
+  ec.clear();
+  auto target = std::filesystem::read_symlink(e.path(), ec);
+  if (ec) return "";
+  return target.generic_string();
+}
+
+auto root_path_display(const std::filesystem::path& root) -> std::string {
+  return path_display(root);
+}
+
+auto path_below_root_display(const std::filesystem::path& root,
+                             const std::filesystem::path& p) -> std::string {
+  std::error_code ec;
+  auto rel = std::filesystem::relative(p, root, ec);
+  if (ec) return path_display(p);
+  if (rel.empty() || rel == ".") return "";
+  return rel.generic_string();
+}
+
 auto format_printf(std::string_view format, const std::filesystem::path& p,
                    const std::filesystem::directory_entry& e,
-                   int depth) -> std::string {
+                   int depth, const std::filesystem::path& root) -> std::string {
   std::string out;
   out.reserve(format.size() + p.generic_string().size());
 
@@ -1203,12 +1820,42 @@ auto format_printf(std::string_view format, const std::filesystem::path& p,
     char ch = format[i];
     if (ch == '\\' && i + 1 < format.size()) {
       char escaped = format[++i];
+      if (escaped >= '0' && escaped <= '7') {
+        unsigned int value = static_cast<unsigned int>(escaped - '0');
+        int consumed = 0;
+        while ((i + 1) < format.size() && consumed < 2 &&
+               format[i + 1] >= '0' && format[i + 1] <= '7') {
+          value = (value * 8) +
+                  static_cast<unsigned int>(format[i + 1] - '0');
+          ++i;
+          ++consumed;
+        }
+        out.push_back(static_cast<char>(value & 0xFF));
+        continue;
+      }
       switch (escaped) {
+        case 'a':
+          out.push_back('\a');
+          break;
+        case 'b':
+          out.push_back('\b');
+          break;
+        case 'c':
+          return out;
+        case 'f':
+          out.push_back('\f');
+          break;
         case 'n':
           out.push_back('\n');
           break;
+        case 'r':
+          out.push_back('\r');
+          break;
         case 't':
           out.push_back('\t');
+          break;
+        case 'v':
+          out.push_back('\v');
           break;
         case '0':
           out.push_back('\0');
@@ -1217,6 +1864,9 @@ auto format_printf(std::string_view format, const std::filesystem::path& p,
           out.push_back('\\');
           break;
         default:
+          safeErrorPrint("find: warning: unrecognized escape `\\");
+          safeErrorPrint(std::string(1, escaped));
+          safeErrorPrint("'\n");
           out.push_back('\\');
           out.push_back(escaped);
           break;
@@ -1243,28 +1893,85 @@ auto format_printf(std::string_view format, const std::filesystem::path& p,
       case 'h':
         out += dirname_display(p);
         break;
+      case 'l':
+        out += link_target_display(e);
+        break;
+      case 'H':
+        out += root_path_display(root);
+        break;
+      case 'P':
+        out += path_below_root_display(root, p);
+        break;
       case 'y':
         out.push_back(file_type_char(e));
+        break;
+      case 'Y':
+        out.push_back(symlink_target_type_char(e));
         break;
       case 's':
         out += std::to_string(file_size_bytes(e));
         break;
+      case 'b':
+        out += std::to_string(allocated_block_count(p, e, 512));
+        break;
+      case 'k':
+        out += std::to_string(allocated_block_count(p, e, 1024));
+        break;
       case 'd':
         out += std::to_string(depth);
         break;
+      case 'D':
+        out += win32_volume_serial_number(p);
+        break;
+      case 'F':
+        out += win32_filesystem_type_name(p);
+        break;
+      case 'g':
+        out += win32_ownership_info(p).group_name;
+        break;
+      case 'G':
+        out += win32_ownership_info(p).group_id;
+        break;
+      case 'o':
+        out += std::to_string(win32_io_block_size(p));
+        break;
+      case 'u':
+        out += win32_ownership_info(p).owner_name;
+        break;
+      case 'U':
+        out += win32_ownership_info(p).owner_id;
+        break;
+      case 'S':
+        out += file_sparseness(p, e);
+        break;
       case 'm':
-        out += permission_bits(e);
+        out += permission_bits(p, e);
+        break;
+      case 'M':
+        out += permission_string(p, e);
+        break;
+      case 'n':
+        out += std::to_string(win32_hard_link_count(p));
+        break;
+      case 'i':
+        out += win32_file_index(p);
+        break;
+      case 'A':
+        append_file_time_printf(out, format, i, 'A', p, e);
+        break;
+      case 'B':
+        append_file_time_printf(out, format, i, 'B', p, e);
+        break;
+      case 'C':
+        append_file_time_printf(out, format, i, 'C', p, e);
         break;
       case 'T':
-        if (i + 1 < format.size() && format[i + 1] == '@') {
-          ++i;
-          out += modification_time_seconds(e);
-        } else {
-          out += "%T";
-        }
+        append_file_time_printf(out, format, i, 'T', p, e);
         break;
       default:
-        out.push_back('%');
+        safeErrorPrint("find: warning: unrecognized format directive `%");
+        safeErrorPrint(std::string(1, code));
+        safeErrorPrint("'\n");
         out.push_back(code);
         break;
     }
@@ -1274,8 +1981,9 @@ auto format_printf(std::string_view format, const std::filesystem::path& p,
 }
 
 auto printf_path(std::string_view format, const std::filesystem::path& p,
-                 const std::filesystem::directory_entry& e, int depth) -> void {
-  safePrint(format_printf(format, p, e, depth));
+                 const std::filesystem::directory_entry& e, int depth,
+                 const std::filesystem::path& root) -> void {
+  safePrint(format_printf(format, p, e, depth, root));
 }
 
 auto delete_path(const std::filesystem::path& p, Config& cfg) -> bool {
@@ -1446,12 +2154,18 @@ auto should_descend_into(const std::filesystem::directory_entry& e,
                          bool command_line_root = false) -> bool {
   std::error_code ec;
   if (!e.is_directory(ec) || ec) return false;
-  if (command_line_root && cfg.follow_arg_symlinks) return true;
-  if (!cfg.follow_symlinks && e.is_symlink(ec) && !ec) return false;
+  const bool is_link_like =
+      (e.is_symlink(ec) && !ec) || is_directory_reparse_point(e);
+  if (command_line_root) {
+    if (cfg.follow_arg_symlinks) return true;
+    if (is_link_like) return false;
+  }
+  if (!cfg.follow_symlinks && is_link_like) return false;
   return true;
 }
 
-auto scan_depth_first(const std::filesystem::path& p, int depth, Config& cfg,
+auto scan_depth_first(const std::filesystem::path& root,
+                      const std::filesystem::path& p, int depth, Config& cfg,
                       bool& matched_any) -> void {
   std::error_code ec;
   std::filesystem::directory_entry entry(p, ec);
@@ -1492,14 +2206,14 @@ auto scan_depth_first(const std::filesystem::path& p, int depth, Config& cfg,
           cfg.had_error = true;
           break;
         }
-        scan_depth_first(it->path(), depth + 1, cfg, matched_any);
+        scan_depth_first(root, it->path(), depth + 1, cfg, matched_any);
       }
     }
   }
 
   if (cfg.quit && matched_any) return;
 
-  bool matched = entry_matches(cfg, p, entry, depth);
+  bool matched = entry_matches(cfg, p, entry, depth, root);
   if (cfg.quit && !matched) return;
   if (matched) {
     apply_actions(p, entry, cfg);
@@ -1507,7 +2221,8 @@ auto scan_depth_first(const std::filesystem::path& p, int depth, Config& cfg,
   }
 }
 
-auto scan_delete_depth_first(const std::filesystem::path& p, int depth,
+auto scan_delete_depth_first(const std::filesystem::path& root,
+                             const std::filesystem::path& p, int depth,
                              Config& cfg, bool& matched_any) -> void {
   std::error_code ec;
   std::filesystem::directory_entry entry(p, ec);
@@ -1548,14 +2263,14 @@ auto scan_delete_depth_first(const std::filesystem::path& p, int depth,
           cfg.had_error = true;
           break;
         }
-        scan_delete_depth_first(it->path(), depth + 1, cfg, matched_any);
+        scan_delete_depth_first(root, it->path(), depth + 1, cfg, matched_any);
       }
     }
   }
 
   if (cfg.quit && matched_any) return;
 
-  bool matched = entry_matches(cfg, p, entry, depth);
+  bool matched = entry_matches(cfg, p, entry, depth, root);
   if (cfg.quit && !matched) return;
   if (matched) {
     apply_actions(p, entry, cfg);
@@ -1569,7 +2284,7 @@ auto scan_one_root(const std::filesystem::path& root, Config& cfg,
   bool exists = std::filesystem::exists(root, ec);
   if (ec || !exists) {
     safeErrorPrint("find: '");
-    safeErrorPrint(root.string());
+    safeErrorPrint(path_display(root));
     safeErrorPrint("': No such file or directory\n");
     cfg.had_error = true;
     return;
@@ -1578,7 +2293,7 @@ auto scan_one_root(const std::filesystem::path& root, Config& cfg,
   std::filesystem::directory_entry root_entry(root, ec);
   if (!ec) {
     int d = 0;
-    bool matched = entry_matches(cfg, root, root_entry, d);
+    bool matched = entry_matches(cfg, root, root_entry, d, root);
     if (cfg.quit && !matched) return;
     if (matched) {
       apply_actions(root, root_entry, cfg);
@@ -1587,6 +2302,10 @@ auto scan_one_root(const std::filesystem::path& root, Config& cfg,
     }
     if (cfg.prune_current &&
         should_descend_into(root_entry, cfg, true)) {
+      return;
+    }
+
+    if (!should_descend_into(root_entry, cfg, true)) {
       return;
     }
   }
@@ -1617,7 +2336,7 @@ auto scan_one_root(const std::filesystem::path& root, Config& cfg,
       continue;
     }
 
-    bool matched = entry_matches(cfg, p, de, d);
+    bool matched = entry_matches(cfg, p, de, d, root);
     if (cfg.quit && !matched) return;
     if (matched) {
       apply_actions(p, de, cfg);
@@ -1639,22 +2358,22 @@ auto process(Config& cfg) -> int {
       bool exists = std::filesystem::exists(root, ec);
       if (ec || !exists) {
         safeErrorPrint("find: '");
-        safeErrorPrint(root.string());
+        safeErrorPrint(path_display(root));
         safeErrorPrint("': No such file or directory\n");
         cfg.had_error = true;
       } else {
-        scan_delete_depth_first(root, 0, cfg, matched_any);
+        scan_delete_depth_first(root, root, 0, cfg, matched_any);
       }
     } else if (cfg.depth_first) {
       std::error_code ec;
       bool exists = std::filesystem::exists(root, ec);
       if (ec || !exists) {
         safeErrorPrint("find: '");
-        safeErrorPrint(root.string());
+        safeErrorPrint(path_display(root));
         safeErrorPrint("': No such file or directory\n");
         cfg.had_error = true;
       } else {
-        scan_depth_first(root, 0, cfg, matched_any);
+        scan_depth_first(root, root, 0, cfg, matched_any);
       }
     } else {
       scan_one_root(root, cfg, matched_any);

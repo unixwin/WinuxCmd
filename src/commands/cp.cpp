@@ -115,6 +115,8 @@ auto constexpr CP_OPTIONS = std::array{
     OPTION("-t", "--target-directory",
            "copy all SOURCE arguments into DIRECTORY", STRING_TYPE),
     OPTION("-T", "--no-target-directory", "treat DEST as a normal file"),
+    OPTION("", "--strip-trailing-slashes",
+           "remove any trailing slashes from each SOURCE argument"),
     OPTION("-u", "--update", "equivalent to --update[=older]"),
     OPTION("-v", "--verbose", "explain what is being done"),
     OPTION("-x", "--one-file-system", "stay on this file system"),
@@ -160,6 +162,14 @@ auto append_expanded_source(std::vector<std::string>& source_paths,
   source_paths.push_back(std::move(source));
 }
 
+auto strip_trailing_slashes(std::string path) -> std::string {
+  while (path.size() > 1 && (path.back() == '\\' || path.back() == '/')) {
+    if (path.size() == 3 && path[1] == ':') break;
+    path.pop_back();
+  }
+  return path;
+}
+
 // ----------------------------------------------
 // 1. Validate arguments
 // ----------------------------------------------
@@ -167,6 +177,7 @@ auto validate_arguments(const CommandContext<CP_OPTIONS.size()>& ctx)
     -> cp::Result<std::pair<std::vector<std::string>, std::string>> {
   std::vector<std::string> sourcePaths;
   std::string destPath;
+  const bool strip_slashes = ctx.get<bool>("--strip-trailing-slashes", false);
 
   // Get target directory if specified
   std::string target_dir = ctx.get<std::string>("--target-directory", "");
@@ -201,6 +212,12 @@ auto validate_arguments(const CommandContext<CP_OPTIONS.size()>& ctx)
       append_expanded_source(sourcePaths, ctx.positionals[i]);
     }
     destPath = std::string(ctx.positionals.back());
+  }
+
+  if (strip_slashes) {
+    for (auto& src : sourcePaths) {
+      src = strip_trailing_slashes(std::move(src));
+    }
   }
 
   if (sourcePaths.empty()) {

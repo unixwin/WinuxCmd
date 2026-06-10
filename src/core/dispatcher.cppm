@@ -64,12 +64,6 @@ struct CommandEntryErased {
       : meta(std::move(m)), handler(std::move(h)), brief_desc(brief) {}
 };
 
-auto is_legacy_tail_from_start_count(std::string_view arg) -> bool {
-  if (arg.size() < 2 || arg[0] != '+') return false;
-  return std::ranges::all_of(
-      arg.substr(1), [](unsigned char ch) { return std::isdigit(ch) != 0; });
-}
-
 auto legacy_count_value(std::string_view arg) -> std::string {
   if (arg.empty()) return {};
   if ((arg[0] == '-' || arg[0] == '+') && arg.size() > 1) {
@@ -157,11 +151,37 @@ auto rewrite_tail_obsolete_args(std::span<std::string_view> args)
   if (args.empty()) return std::nullopt;
   std::string_view first = args[0];
 
-  if (is_legacy_tail_from_start_count(first)) {
+  if (first.size() >= 3 && first[0] == '+' && first[1] != '+') {
+    size_t suffix_pos = parse_decimal_prefix(first, 1);
+    if (suffix_pos == 1) return std::nullopt;
+
+    std::string count(first.substr(1, suffix_pos - 1));
+    std::string mode = "-n";
+    std::string value = "+" + count;
+
+    for (size_t i = suffix_pos; i < first.size(); ++i) {
+      switch (first[i]) {
+        case 'l':
+          mode = "-n";
+          value = "+" + count;
+          break;
+        case 'c':
+          mode = "-c";
+          value = "+" + count;
+          break;
+        case 'b':
+          mode = "-c";
+          value = "+" + count + "b";
+          break;
+        default:
+          return std::nullopt;
+      }
+    }
+
     std::vector<std::string> rewritten;
     rewritten.reserve(args.size() + 1);
-    rewritten.emplace_back("-n");
-    rewritten.emplace_back(std::string(first));
+    rewritten.emplace_back(mode);
+    rewritten.emplace_back(value);
     append_remaining_args(rewritten, args, 1);
     return rewritten;
   }
@@ -216,6 +236,128 @@ auto rewrite_head_tail_count_args(std::string_view cmdName,
     -> std::optional<std::vector<std::string>> {
   if (cmdName == "head") return rewrite_head_obsolete_args(args);
   if (cmdName == "tail") return rewrite_tail_obsolete_args(args);
+  return std::nullopt;
+}
+
+auto is_head_obsolete_count_arg(std::string_view arg) -> bool {
+  if (arg.size() < 2 || arg[0] != '-' || arg[1] == '-') return false;
+
+  size_t suffix_pos = parse_decimal_prefix(arg, 1);
+  if (suffix_pos == 1) return false;
+
+  for (size_t i = suffix_pos; i < arg.size(); ++i) {
+    switch (arg[i]) {
+      case 'l':
+      case 'c':
+      case 'b':
+      case 'k':
+      case 'm':
+      case 'q':
+      case 'v':
+        break;
+      default:
+        return false;
+    }
+  }
+
+  return true;
+}
+
+auto is_tail_obsolete_count_arg(std::string_view arg) -> bool {
+  if (arg.size() < 2) return false;
+
+  if (arg[0] == '+') {
+    if (arg[1] == '+') return false;
+
+    size_t suffix_pos = parse_decimal_prefix(arg, 1);
+    if (suffix_pos == 1) return false;
+    if (suffix_pos == arg.size()) return false;
+    for (size_t i = suffix_pos; i < arg.size(); ++i) {
+      if (arg[i] != 'l' && arg[i] != 'c' && arg[i] != 'b') return false;
+    }
+    return true;
+  }
+
+  if (arg[0] != '-' || arg[1] == '-') return false;
+  size_t suffix_pos = parse_decimal_prefix(arg, 1);
+  if (suffix_pos == 1) return false;
+  for (size_t i = suffix_pos; i < arg.size(); ++i) {
+    if (arg[i] != 'l' && arg[i] != 'c' && arg[i] != 'b' && arg[i] != 'f') {
+      return false;
+    }
+  }
+  return true;
+}
+
+auto tail_invalid_obsolete_count_context(std::span<std::string_view> args)
+    -> std::optional<std::string> {
+  if (args.size() < 2) return std::nullopt;
+
+  bool stop_option_parsing = false;
+  bool expect_value = false;
+
+  for (size_t i = 0; i < args.size(); ++i) {
+    std::string_view arg = args[i];
+
+    if (stop_option_parsing) continue;
+    if (arg == "--") {
+      stop_option_parsing = true;
+      continue;
+    }
+    if (expect_value) {
+      expect_value = false;
+      continue;
+    }
+
+    if (i > 0 && is_tail_obsolete_count_arg(arg)) {
+      return legacy_count_value(arg);
+    }
+
+    if (arg == "-c" || arg == "--bytes" || arg == "-n" || arg == "--lines" ||
+        arg == "-s" || arg == "--sleep-interval" ||
+        arg == "--max-unchanged-stats" || arg == "--pid") {
+      expect_value = true;
+      continue;
+    }
+
+    if (arg == "--follow" && i + 1 < args.size() && args[i + 1] != "--" &&
+        !args[i + 1].empty() && args[i + 1][0] != '-') {
+      expect_value = true;
+    }
+  }
+
+  return std::nullopt;
+}
+
+auto head_invalid_obsolete_count_context(std::span<std::string_view> args)
+    -> std::optional<std::string> {
+  if (args.size() < 2) return std::nullopt;
+
+  bool stop_option_parsing = false;
+  bool expect_value = false;
+
+  for (size_t i = 0; i < args.size(); ++i) {
+    std::string_view arg = args[i];
+
+    if (stop_option_parsing) continue;
+    if (arg == "--") {
+      stop_option_parsing = true;
+      continue;
+    }
+    if (expect_value) {
+      expect_value = false;
+      continue;
+    }
+
+    if (i > 0 && is_head_obsolete_count_arg(arg)) {
+      return legacy_count_value(arg);
+    }
+
+    if (arg == "-c" || arg == "--bytes" || arg == "-n" || arg == "--lines") {
+      expect_value = true;
+    }
+  }
+
   return std::nullopt;
 }
 
@@ -386,6 +528,46 @@ auto rewrite_nice_legacy_args(std::string_view cmdName,
   return rewritten;
 }
 
+auto rewrite_pr_legacy_column_args(std::string_view cmdName,
+                                   std::span<std::string_view> args)
+    -> std::optional<std::vector<std::string>> {
+  if (cmdName != "pr" || args.empty()) {
+    return std::nullopt;
+  }
+
+  std::vector<std::string> rewritten;
+  rewritten.reserve(args.size() + 2);
+  bool changed = false;
+  bool stop_option_parsing = false;
+
+  for (auto arg : args) {
+    if (!stop_option_parsing && arg == "--") {
+      stop_option_parsing = true;
+      rewritten.emplace_back(arg);
+      continue;
+    }
+
+    if (!stop_option_parsing && arg.size() >= 2 && arg[0] == '-' &&
+        arg[1] != '-') {
+      size_t suffix_pos = parse_decimal_prefix(arg, 1);
+      if (suffix_pos == arg.size() && suffix_pos > 1) {
+        rewritten.emplace_back("-COLUMN");
+        rewritten.emplace_back(std::string(arg.substr(1)));
+        changed = true;
+        continue;
+      }
+    }
+
+    rewritten.emplace_back(arg);
+  }
+
+  if (!changed) {
+    return std::nullopt;
+  }
+
+  return rewritten;
+}
+
 auto echo_posixly_correct_literal_mode(std::string_view cmdName,
                                        std::span<std::string_view> args)
     -> bool {
@@ -499,6 +681,22 @@ class RegistryImpl {
       return 127;
     }
 
+    if (cmdName == "head") {
+      if (auto invalid_count = head_invalid_obsolete_count_context(args)) {
+        safeErrorPrintLn("head: option used in invalid context -- " +
+                         *invalid_count);
+        return parse_error_exit_code(cmdName);
+      }
+    }
+
+    if (cmdName == "tail") {
+      if (auto invalid_count = tail_invalid_obsolete_count_context(args)) {
+        safeErrorPrintLn("tail: option used in invalid context -- " +
+                         *invalid_count);
+        return parse_error_exit_code(cmdName);
+      }
+    }
+
     std::vector<std::string> rewritten_storage;
     std::vector<std::string_view> rewritten_views;
     std::span<std::string_view> effective_args = args;
@@ -524,6 +722,16 @@ class RegistryImpl {
     }
 
     if (auto rewritten = rewrite_nice_legacy_args(cmdName, effective_args)) {
+      rewritten_storage = std::move(*rewritten);
+      rewritten_views.clear();
+      rewritten_views.reserve(rewritten_storage.size());
+      for (const auto &arg : rewritten_storage) {
+        rewritten_views.emplace_back(arg);
+      }
+      effective_args = std::span<std::string_view>(rewritten_views);
+    }
+
+    if (auto rewritten = rewrite_pr_legacy_column_args(cmdName, effective_args)) {
       rewritten_storage = std::move(*rewritten);
       rewritten_views.clear();
       rewritten_views.reserve(rewritten_storage.size());
