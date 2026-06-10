@@ -1,0 +1,1435 @@
+{
+  "GeneratedAt": "2026-06-10T07:39:30.8355850+08:00",
+  "WinuxDir": "C:\\Users\\cmx\\repo\\WinuxCmd\\build-vs-release-tests",
+  "MicrosoftDir": "C:\\Users\\cmx\\repo\\_winget_coreutils_install\\bin",
+  "Summary": {
+    "WinuxCommandCount": 153,
+    "MicrosoftCommandCount": 77,
+    "SharedCommandCount": 77,
+    "WinuxOnlyCommandCount": 76,
+    "MicrosoftOnlyCommandCount": 0,
+    "SameOptionSurfaceCount": 25,
+    "WinuxSupersetCount": 24,
+    "MicrosoftSupersetCount": 6,
+    "DifferentCount": 22
+  },
+  "WinuxOnlyCommands": [
+    "[",
+    "cal",
+    "chcon",
+    "chgrp",
+    "chmod",
+    "chown",
+    "chroot",
+    "clear",
+    "cmp",
+    "col",
+    "column",
+    "cpio",
+    "cygpath",
+    "d2u",
+    "dd",
+    "diff",
+    "diff3",
+    "dir",
+    "dircolors",
+    "dos2unix",
+    "expand",
+    "file",
+    "free",
+    "getconf",
+    "groups",
+    "hexdump",
+    "hmac256",
+    "hostid",
+    "id",
+    "infocmp",
+    "install",
+    "jq",
+    "kill",
+    "less",
+    "locale",
+    "logname",
+    "lsof",
+    "man",
+    "mkfifo",
+    "mknod",
+    "more",
+    "mpicalc",
+    "nice",
+    "nohup",
+    "paste",
+    "patch",
+    "pinky",
+    "ps",
+    "reset",
+    "rev",
+    "runcon",
+    "sdiff",
+    "sed",
+    "shred",
+    "stdbuf",
+    "strings",
+    "stty",
+    "sync",
+    "tic",
+    "timeout",
+    "toe",
+    "top",
+    "tput",
+    "tree",
+    "tty",
+    "tzset",
+    "u2d",
+    "uname",
+    "unix2dos",
+    "users",
+    "vdir",
+    "watch",
+    "which",
+    "who",
+    "whoami",
+    "xxd"
+  ],
+  "MicrosoftOnlyCommands": [],
+  "SharedCommands": [
+    {
+      "Command": "arch",
+      "Classification": "same",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 4,
+      "MicrosoftOptionCount": 4,
+      "SharedOptionCount": 4,
+      "WinuxOnlyCount": 0,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "b2sum",
+      "Classification": "different",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 21,
+      "MicrosoftOptionCount": 19,
+      "SharedOptionCount": 17,
+      "WinuxOnlyCount": 4,
+      "MicrosoftOnlyCount": 2,
+      "WinuxOnly": [
+        "--binary",
+        "-b",
+        "-q",
+        "-s"
+      ],
+      "MicrosoftOnly": [
+        "--ignore-missing",
+        "-z"
+      ]
+    },
+    {
+      "Command": "base32",
+      "Classification": "same",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 10,
+      "MicrosoftOptionCount": 10,
+      "SharedOptionCount": 10,
+      "WinuxOnlyCount": 0,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "base64",
+      "Classification": "same",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 10,
+      "MicrosoftOptionCount": 10,
+      "SharedOptionCount": 10,
+      "WinuxOnlyCount": 0,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "basename",
+      "Classification": "winux-superset",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 13,
+      "MicrosoftOptionCount": 10,
+      "SharedOptionCount": 10,
+      "WinuxOnlyCount": 3,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [
+        "--mul",
+        "--suf",
+        "--ze"
+      ],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "basenc",
+      "Classification": "winux-superset",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 20,
+      "MicrosoftOptionCount": 19,
+      "SharedOptionCount": 19,
+      "WinuxOnlyCount": 1,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [
+        "-b"
+      ],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "cat",
+      "Classification": "same",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 18,
+      "MicrosoftOptionCount": 18,
+      "SharedOptionCount": 18,
+      "WinuxOnlyCount": 0,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "cksum",
+      "Classification": "microsoft-superset",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 16,
+      "MicrosoftOptionCount": 23,
+      "SharedOptionCount": 16,
+      "WinuxOnlyCount": 0,
+      "MicrosoftOnlyCount": 7,
+      "WinuxOnly": [],
+      "MicrosoftOnly": [
+        "--ignore-missing",
+        "--quiet",
+        "--status",
+        "--strict",
+        "--warn",
+        "-l",
+        "-w"
+      ]
+    },
+    {
+      "Command": "comm",
+      "Classification": "same",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 13,
+      "MicrosoftOptionCount": 13,
+      "SharedOptionCount": 13,
+      "WinuxOnlyCount": 0,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "cp",
+      "Classification": "different",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 44,
+      "MicrosoftOptionCount": 44,
+      "SharedOptionCount": 39,
+      "WinuxOnlyCount": 5,
+      "MicrosoftOnlyCount": 5,
+      "WinuxOnly": [
+        "--context",
+        "--no-preserve",
+        "--preserve",
+        "--reflink",
+        "-c"
+      ],
+      "MicrosoftOnly": [
+        "--debug",
+        "--preserve-default-attributes",
+        "--progress",
+        "--strip-trailing-slashes",
+        "-g"
+      ]
+    },
+    {
+      "Command": "csplit",
+      "Classification": "winux-superset",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 19,
+      "MicrosoftOptionCount": 18,
+      "SharedOptionCount": 18,
+      "WinuxOnlyCount": 1,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [
+        "--silent"
+      ],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "cut",
+      "Classification": "different",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 21,
+      "MicrosoftOptionCount": 20,
+      "SharedOptionCount": 19,
+      "WinuxOnlyCount": 2,
+      "MicrosoftOnlyCount": 1,
+      "WinuxOnly": [
+        "--no-partial",
+        "-O"
+      ],
+      "MicrosoftOnly": [
+        "-w"
+      ]
+    },
+    {
+      "Command": "date",
+      "Classification": "different",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 17,
+      "MicrosoftOptionCount": 20,
+      "SharedOptionCount": 15,
+      "WinuxOnlyCount": 2,
+      "MicrosoftOnlyCount": 5,
+      "WinuxOnly": [
+        "--rfc-2822",
+        "--utc"
+      ],
+      "MicrosoftOnly": [
+        "--debug",
+        "--reference",
+        "--resolution",
+        "--set",
+        "-s"
+      ]
+    },
+    {
+      "Command": "df",
+      "Classification": "winux-superset",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 26,
+      "MicrosoftOptionCount": 25,
+      "SharedOptionCount": 25,
+      "WinuxOnlyCount": 1,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [
+        "--output"
+      ],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "dirname",
+      "Classification": "same",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 6,
+      "MicrosoftOptionCount": 6,
+      "SharedOptionCount": 6,
+      "WinuxOnlyCount": 0,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "du",
+      "Classification": "different",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 39,
+      "MicrosoftOptionCount": 39,
+      "SharedOptionCount": 38,
+      "WinuxOnlyCount": 1,
+      "MicrosoftOnlyCount": 1,
+      "WinuxOnly": [
+        "--time"
+      ],
+      "MicrosoftOnly": [
+        "--verbose"
+      ]
+    },
+    {
+      "Command": "echo",
+      "Classification": "winux-superset",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 10,
+      "MicrosoftOptionCount": 6,
+      "SharedOptionCount": 6,
+      "WinuxOnlyCount": 4,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [
+        "--repeat",
+        "--upper",
+        "-r",
+        "-u"
+      ],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "env",
+      "Classification": "different",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 21,
+      "MicrosoftOptionCount": 19,
+      "SharedOptionCount": 17,
+      "WinuxOnlyCount": 4,
+      "MicrosoftOnlyCount": 2,
+      "WinuxOnly": [
+        "--block-signal",
+        "--debug",
+        "--default-signal",
+        "--ignore-signal"
+      ],
+      "MicrosoftOnly": [
+        "--file",
+        "-f"
+      ]
+    },
+    {
+      "Command": "expr",
+      "Classification": "winux-superset",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 4,
+      "MicrosoftOptionCount": 2,
+      "SharedOptionCount": 2,
+      "WinuxOnlyCount": 2,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [
+        "-h",
+        "-V"
+      ],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "factor",
+      "Classification": "same",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 5,
+      "MicrosoftOptionCount": 5,
+      "SharedOptionCount": 5,
+      "WinuxOnlyCount": 0,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "false",
+      "Classification": "winux-superset",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 1,
+      "WinuxOptionCount": 4,
+      "MicrosoftOptionCount": 2,
+      "SharedOptionCount": 2,
+      "WinuxOnlyCount": 2,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [
+        "-h",
+        "-V"
+      ],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "find",
+      "Classification": "winux-superset",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 8,
+      "MicrosoftOptionCount": 1,
+      "SharedOptionCount": 1,
+      "WinuxOnlyCount": 7,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [
+        "--help",
+        "--version",
+        "-H",
+        "-L",
+        "-o",
+        "-P",
+        "-V"
+      ],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "fmt",
+      "Classification": "microsoft-superset",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 18,
+      "MicrosoftOptionCount": 27,
+      "SharedOptionCount": 18,
+      "WinuxOnlyCount": 0,
+      "MicrosoftOnlyCount": 9,
+      "WinuxOnly": [],
+      "MicrosoftOnly": [
+        "--exact-prefix",
+        "--exact-skip-prefix",
+        "--preserve-headers",
+        "--quick",
+        "--skip-prefix",
+        "--tab-width",
+        "-m",
+        "-q",
+        "-X"
+      ]
+    },
+    {
+      "Command": "fold",
+      "Classification": "same",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 12,
+      "MicrosoftOptionCount": 12,
+      "SharedOptionCount": 12,
+      "WinuxOnlyCount": 0,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "grep",
+      "Classification": "winux-superset",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 71,
+      "MicrosoftOptionCount": 68,
+      "SharedOptionCount": 68,
+      "WinuxOnlyCount": 3,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [
+        "--color",
+        "--colour",
+        "--silent"
+      ],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "head",
+      "Classification": "winux-superset",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 14,
+      "MicrosoftOptionCount": 13,
+      "SharedOptionCount": 13,
+      "WinuxOnlyCount": 1,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [
+        "--silent"
+      ],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "hostname",
+      "Classification": "winux-superset",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 21,
+      "MicrosoftOptionCount": 12,
+      "SharedOptionCount": 12,
+      "WinuxOnlyCount": 9,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [
+        "--alias",
+        "--all-fqdns",
+        "--all-ip-addresses",
+        "--file",
+        "--node",
+        "--yp",
+        "-a",
+        "-n",
+        "-y"
+      ],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "join",
+      "Classification": "winux-superset",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 20,
+      "MicrosoftOptionCount": 18,
+      "SharedOptionCount": 18,
+      "WinuxOnlyCount": 2,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [
+        "--empty",
+        "--output"
+      ],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "link",
+      "Classification": "same",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 4,
+      "MicrosoftOptionCount": 4,
+      "SharedOptionCount": 4,
+      "WinuxOnlyCount": 0,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "ln",
+      "Classification": "winux-superset",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 28,
+      "MicrosoftOptionCount": 25,
+      "SharedOptionCount": 25,
+      "WinuxOnlyCount": 3,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [
+        "--dereference",
+        "--directory",
+        "-d"
+      ],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "ls",
+      "Classification": "different",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 67,
+      "MicrosoftOptionCount": 65,
+      "SharedOptionCount": 61,
+      "WinuxOnlyCount": 6,
+      "MicrosoftOnlyCount": 4,
+      "WinuxOnly": [
+        "--block-size",
+        "--dereference-command-line-symlinks-to-dir",
+        "--format",
+        "--hyperlink",
+        "--long-list",
+        "--time"
+      ],
+      "MicrosoftOnly": [
+        "--author",
+        "--dereference-command-line-symlink-to-dir",
+        "--full-time",
+        "--long"
+      ]
+    },
+    {
+      "Command": "md5sum",
+      "Classification": "different",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 19,
+      "MicrosoftOptionCount": 17,
+      "SharedOptionCount": 15,
+      "WinuxOnlyCount": 4,
+      "MicrosoftOnlyCount": 2,
+      "WinuxOnly": [
+        "--binary",
+        "-b",
+        "-q",
+        "-s"
+      ],
+      "MicrosoftOnly": [
+        "--ignore-missing",
+        "-z"
+      ]
+    },
+    {
+      "Command": "mkdir",
+      "Classification": "same",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 11,
+      "MicrosoftOptionCount": 11,
+      "SharedOptionCount": 11,
+      "WinuxOnlyCount": 0,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "mktemp",
+      "Classification": "microsoft-superset",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 13,
+      "MicrosoftOptionCount": 14,
+      "SharedOptionCount": 13,
+      "WinuxOnlyCount": 0,
+      "MicrosoftOnlyCount": 1,
+      "WinuxOnly": [],
+      "MicrosoftOnly": [
+        "--suffix"
+      ]
+    },
+    {
+      "Command": "mv",
+      "Classification": "different",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 23,
+      "MicrosoftOptionCount": 25,
+      "SharedOptionCount": 22,
+      "WinuxOnlyCount": 1,
+      "MicrosoftOnlyCount": 3,
+      "WinuxOnly": [
+        "--context"
+      ],
+      "MicrosoftOnly": [
+        "--debug",
+        "--progress",
+        "-g"
+      ]
+    },
+    {
+      "Command": "nl",
+      "Classification": "same",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 24,
+      "MicrosoftOptionCount": 24,
+      "SharedOptionCount": 24,
+      "WinuxOnlyCount": 0,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "nproc",
+      "Classification": "same",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 6,
+      "MicrosoftOptionCount": 6,
+      "SharedOptionCount": 6,
+      "WinuxOnlyCount": 0,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "numfmt",
+      "Classification": "different",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 15,
+      "MicrosoftOptionCount": 23,
+      "SharedOptionCount": 14,
+      "WinuxOnlyCount": 1,
+      "MicrosoftOnlyCount": 9,
+      "WinuxOnly": [
+        "-f"
+      ],
+      "MicrosoftOnly": [
+        "--debug",
+        "--field",
+        "--from-unit",
+        "--suffix",
+        "--to-unit",
+        "--unit-separator",
+        "--zero-terminated",
+        "-M",
+        "-z"
+      ]
+    },
+    {
+      "Command": "od",
+      "Classification": "microsoft-superset",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 11,
+      "MicrosoftOptionCount": 28,
+      "SharedOptionCount": 11,
+      "WinuxOnlyCount": 0,
+      "MicrosoftOnlyCount": 17,
+      "WinuxOnly": [],
+      "MicrosoftOnly": [
+        "--address-radix",
+        "--endian",
+        "--format",
+        "--output-duplicates",
+        "--read-bytes",
+        "--skip-bytes",
+        "--strings",
+        "--width",
+        "-b",
+        "-d",
+        "-e",
+        "-F",
+        "-i",
+        "-l",
+        "-o",
+        "-S",
+        "-w"
+      ]
+    },
+    {
+      "Command": "pathchk",
+      "Classification": "winux-superset",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 7,
+      "MicrosoftOptionCount": 6,
+      "SharedOptionCount": 6,
+      "WinuxOnlyCount": 1,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [
+        "--posix"
+      ],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "pr",
+      "Classification": "different",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 42,
+      "MicrosoftOptionCount": 38,
+      "SharedOptionCount": 34,
+      "WinuxOnlyCount": 8,
+      "MicrosoftOnlyCount": 4,
+      "WinuxOnly": [
+        "--balance-columns",
+        "--expand",
+        "--join-lines",
+        "--output-tabs",
+        "--show-control-chars",
+        "--show-nonprinting",
+        "-b",
+        "-c"
+      ],
+      "MicrosoftOnly": [
+        "--across",
+        "--double-space",
+        "--expand-tabs",
+        "--pages"
+      ]
+    },
+    {
+      "Command": "printenv",
+      "Classification": "same",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 6,
+      "MicrosoftOptionCount": 6,
+      "SharedOptionCount": 6,
+      "WinuxOnlyCount": 0,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "printf",
+      "Classification": "winux-superset",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 4,
+      "MicrosoftOptionCount": 2,
+      "SharedOptionCount": 2,
+      "WinuxOnlyCount": 2,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [
+        "-h",
+        "-V"
+      ],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "ptx",
+      "Classification": "different",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 34,
+      "MicrosoftOptionCount": 30,
+      "SharedOptionCount": 29,
+      "WinuxOnlyCount": 5,
+      "MicrosoftOnlyCount": 1,
+      "WinuxOnly": [
+        "--break",
+        "--copyright",
+        "--format",
+        "--tabs",
+        "-C"
+      ],
+      "MicrosoftOnly": [
+        "--break-file"
+      ]
+    },
+    {
+      "Command": "pwd",
+      "Classification": "same",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 8,
+      "MicrosoftOptionCount": 8,
+      "SharedOptionCount": 8,
+      "WinuxOnlyCount": 0,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "readlink",
+      "Classification": "same",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 19,
+      "MicrosoftOptionCount": 19,
+      "SharedOptionCount": 19,
+      "WinuxOnlyCount": 0,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "realpath",
+      "Classification": "winux-superset",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 22,
+      "MicrosoftOptionCount": 21,
+      "SharedOptionCount": 21,
+      "WinuxOnlyCount": 1,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [
+        "--no-symlinks"
+      ],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "rm",
+      "Classification": "different",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 16,
+      "MicrosoftOptionCount": 17,
+      "SharedOptionCount": 15,
+      "WinuxOnlyCount": 1,
+      "MicrosoftOnlyCount": 2,
+      "WinuxOnly": [
+        "--interactive"
+      ],
+      "MicrosoftOnly": [
+        "--progress",
+        "-g"
+      ]
+    },
+    {
+      "Command": "rmdir",
+      "Classification": "same",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 8,
+      "MicrosoftOptionCount": 8,
+      "SharedOptionCount": 8,
+      "WinuxOnlyCount": 0,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "seq",
+      "Classification": "different",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 24,
+      "MicrosoftOptionCount": 12,
+      "SharedOptionCount": 10,
+      "WinuxOnlyCount": 14,
+      "MicrosoftOnlyCount": 2,
+      "WinuxOnly": [
+        "-0",
+        "-1",
+        "-2",
+        "-3",
+        "-4",
+        "-5",
+        "-6",
+        "-7",
+        "-8",
+        "-9",
+        "-a",
+        "-e",
+        "-i",
+        "-n"
+      ],
+      "MicrosoftOnly": [
+        "--terminator",
+        "-t"
+      ]
+    },
+    {
+      "Command": "sha1sum",
+      "Classification": "different",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 19,
+      "MicrosoftOptionCount": 17,
+      "SharedOptionCount": 15,
+      "WinuxOnlyCount": 4,
+      "MicrosoftOnlyCount": 2,
+      "WinuxOnly": [
+        "--binary",
+        "-b",
+        "-q",
+        "-s"
+      ],
+      "MicrosoftOnly": [
+        "--ignore-missing",
+        "-z"
+      ]
+    },
+    {
+      "Command": "sha224sum",
+      "Classification": "different",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 19,
+      "MicrosoftOptionCount": 17,
+      "SharedOptionCount": 15,
+      "WinuxOnlyCount": 4,
+      "MicrosoftOnlyCount": 2,
+      "WinuxOnly": [
+        "--binary",
+        "-b",
+        "-q",
+        "-s"
+      ],
+      "MicrosoftOnly": [
+        "--ignore-missing",
+        "-z"
+      ]
+    },
+    {
+      "Command": "sha256sum",
+      "Classification": "different",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 19,
+      "MicrosoftOptionCount": 17,
+      "SharedOptionCount": 15,
+      "WinuxOnlyCount": 4,
+      "MicrosoftOnlyCount": 2,
+      "WinuxOnly": [
+        "--binary",
+        "-b",
+        "-q",
+        "-s"
+      ],
+      "MicrosoftOnly": [
+        "--ignore-missing",
+        "-z"
+      ]
+    },
+    {
+      "Command": "sha384sum",
+      "Classification": "different",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 19,
+      "MicrosoftOptionCount": 17,
+      "SharedOptionCount": 15,
+      "WinuxOnlyCount": 4,
+      "MicrosoftOnlyCount": 2,
+      "WinuxOnly": [
+        "--binary",
+        "-b",
+        "-q",
+        "-s"
+      ],
+      "MicrosoftOnly": [
+        "--ignore-missing",
+        "-z"
+      ]
+    },
+    {
+      "Command": "sha512sum",
+      "Classification": "different",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 19,
+      "MicrosoftOptionCount": 17,
+      "SharedOptionCount": 15,
+      "WinuxOnlyCount": 4,
+      "MicrosoftOnlyCount": 2,
+      "WinuxOnly": [
+        "--binary",
+        "-b",
+        "-q",
+        "-s"
+      ],
+      "MicrosoftOnly": [
+        "--ignore-missing",
+        "-z"
+      ]
+    },
+    {
+      "Command": "shuf",
+      "Classification": "microsoft-superset",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 17,
+      "MicrosoftOptionCount": 18,
+      "SharedOptionCount": 17,
+      "WinuxOnlyCount": 0,
+      "MicrosoftOnlyCount": 1,
+      "WinuxOnly": [],
+      "MicrosoftOnly": [
+        "--random-seed"
+      ]
+    },
+    {
+      "Command": "sleep",
+      "Classification": "same",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 4,
+      "MicrosoftOptionCount": 4,
+      "SharedOptionCount": 4,
+      "WinuxOnlyCount": 0,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "sort",
+      "Classification": "different",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 43,
+      "MicrosoftOptionCount": 47,
+      "SharedOptionCount": 42,
+      "WinuxOnlyCount": 1,
+      "MicrosoftOnlyCount": 5,
+      "WinuxOnly": [
+        "--check"
+      ],
+      "MicrosoftOnly": [
+        "--batch-size",
+        "--check-silent",
+        "--compress-program",
+        "--parallel",
+        "--temporary-directory"
+      ]
+    },
+    {
+      "Command": "split",
+      "Classification": "different",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 26,
+      "MicrosoftOptionCount": 23,
+      "SharedOptionCount": 22,
+      "WinuxOnlyCount": 4,
+      "MicrosoftOnlyCount": 1,
+      "WinuxOnly": [
+        "--hex-suffixes",
+        "--numeric-suffixes",
+        "--unbuffered",
+        "-u"
+      ],
+      "MicrosoftOnly": [
+        "--verbose"
+      ]
+    },
+    {
+      "Command": "stat",
+      "Classification": "winux-superset",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 14,
+      "MicrosoftOptionCount": 13,
+      "SharedOptionCount": 13,
+      "WinuxOnlyCount": 1,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [
+        "--cached"
+      ],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "sum",
+      "Classification": "winux-superset",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 8,
+      "MicrosoftOptionCount": 7,
+      "SharedOptionCount": 7,
+      "WinuxOnlyCount": 1,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [
+        "--bsd"
+      ],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "tac",
+      "Classification": "same",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 10,
+      "MicrosoftOptionCount": 10,
+      "SharedOptionCount": 10,
+      "WinuxOnlyCount": 0,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "tail",
+      "Classification": "different",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 22,
+      "MicrosoftOptionCount": 22,
+      "SharedOptionCount": 21,
+      "WinuxOnlyCount": 1,
+      "MicrosoftOnlyCount": 1,
+      "WinuxOnly": [
+        "--silent"
+      ],
+      "MicrosoftOnly": [
+        "--use-polling"
+      ]
+    },
+    {
+      "Command": "tee",
+      "Classification": "winux-superset",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 11,
+      "MicrosoftOptionCount": 9,
+      "SharedOptionCount": 9,
+      "WinuxOnlyCount": 2,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [
+        "--diagnose",
+        "--output-error"
+      ],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "test",
+      "Classification": "winux-superset",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 23,
+      "MicrosoftOptionCount": 0,
+      "SharedOptionCount": 0,
+      "WinuxOnlyCount": 23,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [
+        "--help",
+        "--version",
+        "-a",
+        "-b",
+        "-c",
+        "-d",
+        "-e",
+        "-f",
+        "-g",
+        "-h",
+        "-k",
+        "-L",
+        "-n",
+        "-O",
+        "-p",
+        "-r",
+        "-S",
+        "-t",
+        "-u",
+        "-V",
+        "-w",
+        "-x",
+        "-z"
+      ],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "touch",
+      "Classification": "same",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 16,
+      "MicrosoftOptionCount": 16,
+      "SharedOptionCount": 16,
+      "WinuxOnlyCount": 0,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "tr",
+      "Classification": "same",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 12,
+      "MicrosoftOptionCount": 12,
+      "SharedOptionCount": 12,
+      "WinuxOnlyCount": 0,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "true",
+      "Classification": "winux-superset",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 4,
+      "MicrosoftOptionCount": 2,
+      "SharedOptionCount": 2,
+      "WinuxOnlyCount": 2,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [
+        "-h",
+        "-V"
+      ],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "truncate",
+      "Classification": "same",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 12,
+      "MicrosoftOptionCount": 12,
+      "SharedOptionCount": 12,
+      "WinuxOnlyCount": 0,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "tsort",
+      "Classification": "same",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 4,
+      "MicrosoftOptionCount": 4,
+      "SharedOptionCount": 4,
+      "WinuxOnlyCount": 0,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "unexpand",
+      "Classification": "microsoft-superset",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 9,
+      "MicrosoftOptionCount": 12,
+      "SharedOptionCount": 9,
+      "WinuxOnlyCount": 0,
+      "MicrosoftOnlyCount": 3,
+      "WinuxOnly": [],
+      "MicrosoftOnly": [
+        "--no-utf8",
+        "-f",
+        "-U"
+      ]
+    },
+    {
+      "Command": "uniq",
+      "Classification": "winux-superset",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 22,
+      "MicrosoftOptionCount": 20,
+      "SharedOptionCount": 20,
+      "WinuxOnlyCount": 2,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [
+        "--all-repeated",
+        "--group"
+      ],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "unlink",
+      "Classification": "same",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 4,
+      "MicrosoftOptionCount": 4,
+      "SharedOptionCount": 4,
+      "WinuxOnlyCount": 0,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "uptime",
+      "Classification": "same",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 8,
+      "MicrosoftOptionCount": 8,
+      "SharedOptionCount": 8,
+      "WinuxOnlyCount": 0,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "wc",
+      "Classification": "winux-superset",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 16,
+      "MicrosoftOptionCount": 15,
+      "SharedOptionCount": 15,
+      "WinuxOnlyCount": 1,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [
+        "--debug"
+      ],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "xargs",
+      "Classification": "winux-superset",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 33,
+      "MicrosoftOptionCount": 27,
+      "SharedOptionCount": 27,
+      "WinuxOnlyCount": 6,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [
+        "--interactive",
+        "--open-tty",
+        "--process-slot-var",
+        "--replace",
+        "--show-limits",
+        "-o"
+      ],
+      "MicrosoftOnly": []
+    },
+    {
+      "Command": "yes",
+      "Classification": "same",
+      "WinuxHelpExitCode": 0,
+      "MicrosoftHelpExitCode": 0,
+      "WinuxOptionCount": 4,
+      "MicrosoftOptionCount": 4,
+      "SharedOptionCount": 4,
+      "WinuxOnlyCount": 0,
+      "MicrosoftOnlyCount": 0,
+      "WinuxOnly": [],
+      "MicrosoftOnly": []
+    }
+  ]
+}

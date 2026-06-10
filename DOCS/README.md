@@ -8,6 +8,8 @@ This folder is the working README for WinuxCmd documentation.
 2. [Implementation status](en/commands_implementation_en.md)
 3. [Workspace integration](en/workspace_integration.md)
 4. [TODO](en/TODO.md)
+5. [WinuxCmd vs Microsoft Coreutils matrix](generated/microsoft_coreutils_matrix.md)
+6. [WinuxCmd vs Microsoft Coreutils behavior matrix](generated/microsoft_coreutils_behavior_matrix.md)
 
 ## Quick Start
 
@@ -16,10 +18,7 @@ This folder is the working README for WinuxCmd documentation.
    `.\scripts\setup-workspace-bin.ps1 -Source <unpacked-binary-dir>`.
 3. Enable this workspace without touching global PATH:
    `.\scripts\activate-workspace.ps1`.
-4. Optional persistent setup for AI shells:
-   `.\scripts\install-workspace-profile-hook.ps1 -Quiet`.
-5. On Windows, call WinuxCmd manuals as `man.exe <command>`; bare `man` can hit
-   a PowerShell alias instead.
+4. On Windows, call WinuxCmd manuals as `man.exe <command>`.
 
 Release packages should include both the Windows binaries and
 `WinuxCmd-skill-v<version>.zip`, so agents can install the repo-local skill
@@ -36,7 +35,7 @@ next to the workspace integration scripts.
 - Do not touch global PATH for workspace activation.
 - Use `man.exe` on Windows when asking WinuxCmd for help.
 
-## Current focus
+## Current Focus
 
 - Close the remaining GNU parity gaps for `ls`, `grep`, `head`, `tail`,
   `sed`, `find`, `xargs`, `install`, `timeout`, `stdbuf`, `chown`, `link`,
@@ -51,6 +50,8 @@ next to the workspace integration scripts.
 
 - [English overview](en/overview.md)
 - [Chinese overview](zh/overview_zh.md)
+- [WinuxCmd vs Microsoft Coreutils matrix](generated/microsoft_coreutils_matrix.md)
+- [WinuxCmd vs Microsoft Coreutils behavior matrix](generated/microsoft_coreutils_behavior_matrix.md)
 - [English TODO](en/TODO.md)
 - [Chinese TODO](zh/TODO_zh.md)
 - GNU `find` action references: [`-exec ... ;`](https://www.gnu.org/software/findutils/manual/html_node/find_html/Single-File.html),
