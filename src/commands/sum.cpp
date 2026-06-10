@@ -55,7 +55,11 @@ struct Config {
   enum class Algorithm { Bsd, Sysv };
 
   Algorithm algorithm = Algorithm::Bsd;
-  SmallVector<std::string, 64> files;
+  struct InputFile {
+    std::string path;
+    bool display_name = true;
+  };
+  SmallVector<InputFile, 64> files;
 };
 
 auto choose_algorithm(const CommandContext<SUM_OPTIONS.size()>& ctx)
@@ -79,16 +83,16 @@ auto build_config(const CommandContext<SUM_OPTIONS.size()>& ctx)
       auto glob_result = glob_expand(file_arg);
       if (glob_result.expanded) {
         for (const auto& file : glob_result.files) {
-          cfg.files.push_back(wstring_to_utf8(file));
+          cfg.files.push_back({wstring_to_utf8(file), true});
         }
         continue;
       }
     }
-    cfg.files.push_back(file_arg);
+    cfg.files.push_back({file_arg, true});
   }
 
   if (cfg.files.empty()) {
-    cfg.files.push_back("-");
+    cfg.files.push_back({"-", false});
   }
 
   return cfg;
@@ -97,6 +101,17 @@ auto build_config(const CommandContext<SUM_OPTIONS.size()>& ctx)
 auto calculate_checksum(const std::string& filename, uint32_t& block_count,
                         Config::Algorithm algorithm) -> cp::Result<uint16_t> {
   std::vector<char> data;
+  auto input_open_error = [](std::string_view path) -> std::string {
+    std::error_code ec;
+    if (std::filesystem::is_directory(std::filesystem::u8path(path), ec) &&
+        !ec) {
+      return std::string("cannot open '") + std::string(path) +
+             "' for reading: Is a directory";
+    }
+
+    return std::string("cannot open '") + std::string(path) +
+           "' for reading: No such file or directory";
+  };
 
   if (filename == "-" || filename.empty()) {
     data.assign(std::istreambuf_iterator<char>(std::cin),
@@ -104,8 +119,7 @@ auto calculate_checksum(const std::string& filename, uint32_t& block_count,
   } else {
     std::ifstream f(filename, std::ios::binary);
     if (!f) {
-      return std::unexpected(std::string("cannot open '") + filename +
-                             "' for reading");
+      return std::unexpected(input_open_error(filename));
     }
     data.assign(std::istreambuf_iterator<char>(f),
                 std::istreambuf_iterator<char>());
@@ -140,27 +154,35 @@ auto calculate_checksum(const std::string& filename, uint32_t& block_count,
 }
 
 auto run(const Config& cfg) -> int {
+  bool all_ok = true;
+
   for (const auto& file : cfg.files) {
     uint32_t block_count = 0;
-    auto checksum_result = calculate_checksum(file, block_count, cfg.algorithm);
+    auto checksum_result =
+        calculate_checksum(file.path, block_count, cfg.algorithm);
 
     if (!checksum_result) {
       cp::report_error(checksum_result, L"sum");
-      return 1;
+      all_ok = false;
+      continue;
     }
 
     char buf[64];
-    snprintf(buf, sizeof(buf), "%u %u", *checksum_result, block_count);
+    if (cfg.algorithm == Config::Algorithm::Bsd) {
+      snprintf(buf, sizeof(buf), "%05u %5u", *checksum_result, block_count);
+    } else {
+      snprintf(buf, sizeof(buf), "%u %u", *checksum_result, block_count);
+    }
     safePrint(buf);
 
-    if (file != "-") {
+    if (file.display_name) {
       safePrint(" ");
-      safePrint(file);
+      safePrint(file.path);
     }
     safePrintLn("");
   }
 
-  return 0;
+  return all_ok ? 0 : 1;
 }
 
 }  // namespace sum_pipeline

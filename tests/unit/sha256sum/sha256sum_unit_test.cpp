@@ -41,6 +41,37 @@ TEST(sha256sum, sha256sum_basic_file) {
   EXPECT_TRUE(r.stdout_text.length() > 64);
 }
 
+TEST(sha256sum, sha256sum_missing_input_reports_no_such_file) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sha256sum.exe", {L"missing.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "sha256sum: cannot open 'missing.txt' for reading: No such "
+                  "file or directory") != std::string::npos);
+}
+
+TEST(sha256sum, sha256sum_directory_input_reports_is_a_directory) {
+  TempDir tmp;
+  tmp.mkdir("indir");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sha256sum.exe", {L"indir"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(
+      r.stderr_text.find("sha256sum: cannot open 'indir' for reading: Is a directory") !=
+      std::string::npos);
+}
+
 TEST(sha256sum, sha256sum_stdin) {
   Pipeline p;
   p.set_stdin("hello\n");
@@ -50,4 +81,265 @@ TEST(sha256sum, sha256sum_stdin) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.length() > 64);
+}
+
+TEST(sha256sum, sha256sum_short_zero_alias_uses_nul_terminator) {
+  TempDir tmp;
+  tmp.write("test.txt", "hello\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sha256sum.exe", {L"-z", L"test.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(
+      r.stdout_text,
+      std::string(
+          "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"
+          "  test.txt\0",
+          75));
+}
+
+TEST(sha256sum, sha256sum_check_valid) {
+  TempDir tmp;
+  tmp.write("check.txt", "hello\n");
+
+  Pipeline p1;
+  p1.set_cwd(tmp.wpath());
+  p1.add(L"sha256sum.exe", {L"check.txt"});
+  auto r1 = p1.run();
+  EXPECT_EQ(r1.exit_code, 0);
+
+  std::string hash_line = r1.stdout_text.substr(0, 64) + "  check.txt";
+  tmp.write("check.sha256", hash_line);
+
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.add(L"sha256sum.exe", {L"-c", L"check.sha256"});
+  auto r2 = p2.run();
+
+  EXPECT_EQ(r2.exit_code, 0);
+  EXPECT_TRUE(r2.stdout_text.find("check.txt: OK") != std::string::npos);
+}
+
+TEST(sha256sum, sha256sum_check_invalid) {
+  TempDir tmp;
+  tmp.write("check.txt", "hello\n");
+  tmp.write(
+      "check.sha256",
+      "0000000000000000000000000000000000000000000000000000000000000000  "
+      "check.txt");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sha256sum.exe", {L"-c", L"check.sha256"});
+  auto r = p.run();
+
+  EXPECT_NE(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("check.txt: FAILED") != std::string::npos);
+}
+
+TEST(sha256sum, sha256sum_check_status_suppresses_output) {
+  TempDir tmp;
+  tmp.write("check.txt", "hello\n");
+
+  Pipeline p1;
+  p1.set_cwd(tmp.wpath());
+  p1.add(L"sha256sum.exe", {L"check.txt"});
+  auto r1 = p1.run();
+  EXPECT_EQ(r1.exit_code, 0);
+
+  std::string hash_line = r1.stdout_text.substr(0, 64) + "  check.txt";
+  tmp.write("check.sha256", hash_line);
+
+  Pipeline good;
+  good.set_cwd(tmp.wpath());
+  good.add(L"sha256sum.exe", {L"--status", L"-c", L"check.sha256"});
+  auto good_result = good.run();
+
+  EXPECT_EQ(good_result.exit_code, 0);
+  EXPECT_EQ_TEXT(good_result.stdout_text, "");
+  EXPECT_EQ_TEXT(good_result.stderr_text, "");
+
+  tmp.write(
+      "check.sha256",
+      "0000000000000000000000000000000000000000000000000000000000000000  "
+      "check.txt");
+
+  Pipeline bad;
+  bad.set_cwd(tmp.wpath());
+  bad.add(L"sha256sum.exe", {L"--status", L"-c", L"check.sha256"});
+  auto bad_result = bad.run();
+
+  EXPECT_NE(bad_result.exit_code, 0);
+  EXPECT_EQ_TEXT(bad_result.stdout_text, "");
+  EXPECT_EQ_TEXT(bad_result.stderr_text, "");
+}
+
+TEST(sha256sum, sha256sum_check_quiet_suppresses_ok_lines_only) {
+  TempDir tmp;
+  tmp.write("check.txt", "hello\n");
+
+  Pipeline p1;
+  p1.set_cwd(tmp.wpath());
+  p1.add(L"sha256sum.exe", {L"check.txt"});
+  auto r1 = p1.run();
+  EXPECT_EQ(r1.exit_code, 0);
+
+  std::string hash_line = r1.stdout_text.substr(0, 64) + "  check.txt";
+  tmp.write("check.sha256", hash_line);
+
+  Pipeline good;
+  good.set_cwd(tmp.wpath());
+  good.add(L"sha256sum.exe", {L"--quiet", L"-c", L"check.sha256"});
+  auto good_result = good.run();
+
+  EXPECT_EQ(good_result.exit_code, 0);
+  EXPECT_EQ_TEXT(good_result.stdout_text, "");
+  EXPECT_EQ_TEXT(good_result.stderr_text, "");
+
+  tmp.write(
+      "check.sha256",
+      "0000000000000000000000000000000000000000000000000000000000000000  "
+      "check.txt");
+
+  Pipeline bad;
+  bad.set_cwd(tmp.wpath());
+  bad.add(L"sha256sum.exe", {L"--quiet", L"-c", L"check.sha256"});
+  auto bad_result = bad.run();
+
+  EXPECT_NE(bad_result.exit_code, 0);
+  EXPECT_TRUE(bad_result.stdout_text.find("check.txt: FAILED") !=
+              std::string::npos);
+  EXPECT_EQ_TEXT(bad_result.stderr_text, "");
+}
+
+TEST(sha256sum, sha256sum_check_directory_input_reports_is_a_directory) {
+  TempDir tmp;
+  tmp.mkdir("checkdir");
+
+  Pipeline check;
+  check.set_cwd(tmp.wpath());
+  check.add(L"sha256sum.exe", {L"-c", L"checkdir"});
+  auto result = check.run();
+
+  EXPECT_EQ(result.exit_code, 1);
+  EXPECT_TRUE(result.stderr_text.find(
+                  "sha256sum: cannot open 'checkdir' for reading: Is a directory") !=
+              std::string::npos);
+}
+
+TEST(sha256sum, sha256sum_check_reports_unreadable_listed_files) {
+  TempDir tmp;
+  tmp.write(
+      "check.sha256",
+      "0000000000000000000000000000000000000000000000000000000000000000  "
+      "missing.txt\n");
+
+  Pipeline check;
+  check.set_cwd(tmp.wpath());
+  check.add(L"sha256sum.exe", {L"-c", L"check.sha256"});
+  auto result = check.run();
+
+  EXPECT_NE(result.exit_code, 0);
+  EXPECT_EQ_TEXT(result.stdout_text, "");
+  EXPECT_TRUE(result.stderr_text.find("cannot open 'missing.txt' for reading") !=
+              std::string::npos);
+  EXPECT_TRUE(result.stderr_text.find(
+                  "sha256sum: WARNING: 1 listed file could not be read") !=
+              std::string::npos);
+}
+
+TEST(sha256sum, sha256sum_check_ignore_missing_skips_missing_files) {
+  TempDir tmp;
+  tmp.write(
+      "check.sha256",
+      "0000000000000000000000000000000000000000000000000000000000000000  missing.txt\n");
+
+  Pipeline check;
+  check.set_cwd(tmp.wpath());
+  check.add(L"sha256sum.exe",
+            {L"--ignore-missing", L"-c", L"check.sha256"});
+  auto result = check.run();
+
+  EXPECT_EQ(result.exit_code, 0);
+  EXPECT_EQ_TEXT(result.stdout_text, "");
+  EXPECT_EQ_TEXT(result.stderr_text, "");
+}
+
+TEST(sha256sum, sha256sum_check_accepts_binary_marker_lines) {
+  TempDir tmp;
+  tmp.write("check.txt", "hello\n");
+  tmp.write(
+      "check.sha256",
+      "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03 "
+      "*check.txt");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sha256sum.exe", {L"-c", L"check.sha256"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("check.txt: OK") != std::string::npos);
+}
+
+TEST(sha256sum, sha256sum_check_warn_reports_malformed_line_locations) {
+  TempDir tmp;
+  tmp.write("check.txt", "hello\n");
+  tmp.write(
+      "check.sha256",
+      "not-a-checksum\n"
+      "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03  "
+      "check.txt\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sha256sum.exe", {L"--warn", L"-c", L"check.sha256"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(
+      r.stderr_text.find("sha256sum: check.sha256: 1: improperly formatted checksum line") !=
+      std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "sha256sum: WARNING: 1 line is improperly formatted") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("check.txt: OK") != std::string::npos);
+}
+
+TEST(sha256sum, sha256sum_check_without_valid_lines_reports_error) {
+  TempDir tmp;
+  tmp.write("check.sha256", "not-a-checksum\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sha256sum.exe", {L"--warn", L"-c", L"check.sha256"});
+  auto r = p.run();
+
+  EXPECT_NE(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "");
+  EXPECT_TRUE(
+      r.stderr_text.find("sha256sum: check.sha256: no properly formatted checksum lines found") !=
+      std::string::npos);
+}
+
+TEST(sha256sum, sha256sum_check_strict_rejects_malformed_lines) {
+  TempDir tmp;
+  tmp.write("check.txt", "hello\n");
+  tmp.write(
+      "check.sha256",
+      "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03  "
+      "check.txt\n"
+      "bad-line\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sha256sum.exe", {L"--strict", L"-c", L"check.sha256"});
+  auto r = p.run();
+
+  EXPECT_NE(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("check.txt: OK") != std::string::npos);
 }

@@ -169,3 +169,34 @@ TEST(base64, base64_rejects_extra_file_operand) {
       "base64: extra operand 'two.txt'\n"
       "Try 'base64 --help' for more information.\n");
 }
+
+TEST(base64, base64_missing_input_reports_no_such_file) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"base64.exe", {L"missing.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "base64: cannot open 'missing.txt' for reading: No such "
+                  "file or directory") != std::string::npos);
+}
+
+TEST(base64, base64_directory_input_reports_is_a_directory) {
+  TempDir tmp;
+  tmp.mkdir("indir");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"base64.exe", {L"indir"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(
+      r.stderr_text.find("base64: cannot open 'indir' for reading: Is a directory") !=
+      std::string::npos);
+}

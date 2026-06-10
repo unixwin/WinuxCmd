@@ -206,3 +206,43 @@ TEST(cmp, cmp_wildcard_expansion_does_not_reinterpret_extra_file_as_skip) {
   EXPECT_TRUE(r.stdout_text.empty());
   EXPECT_TRUE(r.stderr_text.find("extra operand") != std::string::npos);
 }
+
+TEST(cmp, cmp_missing_operands_report_help_hint) {
+  Pipeline p;
+  p.add(L"cmp.exe", {});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "cmp: missing operand\nTry 'cmp --help' for more information.\n");
+}
+
+TEST(cmp, cmp_single_operand_reports_help_hint) {
+  Pipeline p;
+  p.add(L"cmp.exe", {L"a"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "cmp: missing operand after 'a'\nTry 'cmp --help' for more "
+      "information.\n");
+}
+
+TEST(cmp, cmp_extra_operand_reports_help_hint) {
+  Pipeline p;
+  p.add(L"cmp.exe", {L"a", L"b", L"1", L"2", L"extra"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "cmp: extra operand 'extra'\nTry 'cmp --help' for more information.\n");
+}

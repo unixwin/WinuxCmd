@@ -63,6 +63,17 @@ struct Config {
 auto read_input(std::string_view filename)
     -> std::expected<std::string, std::string> {
   std::string content;
+  auto input_open_error = [](std::string_view path) -> std::string {
+    std::error_code ec;
+    if (std::filesystem::is_directory(std::filesystem::u8path(path), ec) &&
+        !ec) {
+      return "cannot open '" + std::string(path) +
+             "' for reading: Is a directory";
+    }
+
+    return "cannot open '" + std::string(path) +
+           "' for reading: No such file or directory";
+  };
 
   if (filename == "-") {
     content.assign(std::istreambuf_iterator<char>(std::cin),
@@ -75,8 +86,7 @@ auto read_input(std::string_view filename)
 
   std::ifstream file(std::string(filename), std::ios::binary);
   if (!file) {
-    return std::unexpected("cannot open '" + std::string(filename) +
-                           "' for reading");
+    return std::unexpected(input_open_error(filename));
   }
 
   content.assign(std::istreambuf_iterator<char>(file),
