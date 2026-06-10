@@ -33,7 +33,6 @@
 #include "pch/pch.h"
 // include other header after pch.h
 #include "core/command_macros.h"
-#include <intrin.h>
 
 import std;
 import core;
@@ -60,6 +59,31 @@ auto constexpr SHUF_OPTIONS = std::array{
 
 namespace shuf_pipeline {
 namespace cp = core::pipeline;
+
+struct Uint128Product {
+  uint64_t low = 0;
+  uint64_t high = 0;
+};
+
+auto multiply_u64(uint64_t lhs, uint64_t rhs) -> Uint128Product {
+  const uint64_t lhs_lo = lhs & 0xFFFFFFFFull;
+  const uint64_t lhs_hi = lhs >> 32;
+  const uint64_t rhs_lo = rhs & 0xFFFFFFFFull;
+  const uint64_t rhs_hi = rhs >> 32;
+
+  const uint64_t p00 = lhs_lo * rhs_lo;
+  const uint64_t p01 = lhs_lo * rhs_hi;
+  const uint64_t p10 = lhs_hi * rhs_lo;
+  const uint64_t p11 = lhs_hi * rhs_hi;
+
+  const uint64_t middle =
+      (p00 >> 32) + (p01 & 0xFFFFFFFFull) + (p10 & 0xFFFFFFFFull);
+
+  Uint128Product product;
+  product.low = (p00 & 0xFFFFFFFFull) | (middle << 32);
+  product.high = p11 + (p01 >> 32) + (p10 >> 32) + (middle >> 32);
+  return product;
+}
 
 struct Config {
   bool echo_mode = false;
@@ -289,13 +313,16 @@ class DeterministicRng {
 
     const uint64_t span = at_most + 1;
     uint64_t sample = next_u64();
-    uint64_t high = 0;
-    uint64_t low = _umul128(sample, span, &high);
+    auto product = multiply_u64(sample, span);
+    uint64_t low = product.low;
+    uint64_t high = product.high;
     if (low < span) {
       const uint64_t threshold = (0ull - span) % span;
       while (low < threshold) {
         sample = next_u64();
-        low = _umul128(sample, span, &high);
+        product = multiply_u64(sample, span);
+        low = product.low;
+        high = product.high;
       }
     }
     return high;
@@ -364,9 +391,7 @@ class CompatRandomSource {
     const uint64_t possibilities = at_most + 1;
     uint64_t margin = 0;
     if (entropy_ == std::numeric_limits<uint64_t>::max()) {
-      uint64_t remainder = 0;
-      (void)_udiv128(1, 0, possibilities, &remainder);
-      margin = remainder;
+      margin = (0ull - possibilities) % possibilities;
     } else {
       margin = (entropy_ + 1) % possibilities;
     }
