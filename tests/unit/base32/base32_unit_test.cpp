@@ -115,3 +115,66 @@ TEST(base32, base32_rejects_extra_file_operand) {
       "base32: extra operand 'two.txt'\n"
       "Try 'base32 --help' for more information.\n");
 }
+
+TEST(base32, base32_missing_input_reports_no_such_file) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"base32.exe", {L"missing.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "base32: cannot open 'missing.txt' for reading: No such "
+                  "file or directory") != std::string::npos);
+}
+
+TEST(base32, base32_directory_input_reports_is_a_directory) {
+  TempDir tmp;
+  tmp.mkdir("indir");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"base32.exe", {L"indir"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(
+      r.stderr_text.find("base32: cannot open 'indir' for reading: Is a directory") !=
+      std::string::npos);
+}
+
+TEST(base32, base32_file_operand_glob_expands_single_match) {
+  TempDir tmp;
+  tmp.write("one.txt", "hello");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"base32.exe", {L"*.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "NBSWY3DP\n");
+}
+
+TEST(base32, base32_rejects_wildcard_that_expands_to_multiple_files) {
+  TempDir tmp;
+  tmp.write("one.txt", "one");
+  tmp.write("two.txt", "two");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"base32.exe", {L"*.txt"});
+
+  auto r = p.run();
+
+  EXPECT_NE(r.exit_code, 0);
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "base32: extra operand 'two.txt'\n"
+      "Try 'base32 --help' for more information.\n");
+}

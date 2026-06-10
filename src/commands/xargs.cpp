@@ -66,8 +66,8 @@ using cmd::meta::OptionType;
  * executing it [IMPLEMENTED]
  * - @a -p, --interactive: Prompt before running each command line
  * [IMPLEMENTED]
- * - @a -r, --no-run-if-empty: If the standard input does not contain any
- * nonblanks, do not run the command [IMPLEMENTED]
+ * - @a -r, --no-run-if-empty: If the standard input is completely empty, do
+ * not run the command [IMPLEMENTED]
  * - @a -P, --max-procs: Run up to max-procs processes at a time [IMPLEMENTED]
  * - @a -s, --max-chars: Use at most max-chars chars per command line
  * [IMPLEMENTED]
@@ -102,16 +102,19 @@ auto constexpr XARGS_OPTIONS = std::array{
            "print the command line on the standard error before executing it"),
     OPTION("-p", "--interactive", "prompt before running each command line"),
     OPTION("-r", "--no-run-if-empty",
-           "if the standard input does not contain any nonblanks, do not run "
-           "the command"),
+           "if the standard input is completely empty, do not run the "
+           "command"),
     OPTION("-P", "--max-procs", "run up to max-procs processes at a time",
            INT_TYPE),
     OPTION("-s", "--max-chars", "use at most max-chars chars per command line",
            INT_TYPE),
     OPTION("-x", "--exit", "exit if the size (see -s) is exceeded"),
-    OPTION("-L", "--max-lines",
+    OPTION("-L", "",
            "use at most max-lines nonblank input lines per command line",
            INT_TYPE),
+    OPTION("", "--max-lines",
+           "use at most max-lines nonblank input lines per command line",
+           OPTIONAL_INT_TYPE),
     OPTION("-l", "",
            "deprecated alias for -L; use max-lines nonblank input lines",
            OPTIONAL_INT_TYPE),
@@ -128,6 +131,15 @@ auto constexpr XARGS_OPTIONS = std::array{
 
 namespace xargs_pipeline {
 namespace cp = core::pipeline;
+
+constexpr int kWindowsCommandLineLimit = 32767;
+
+thread_local std::string g_xargs_dynamic_error;
+
+auto store_xargs_dynamic_error(std::string message) -> std::string_view {
+  g_xargs_dynamic_error = std::move(message);
+  return g_xargs_dynamic_error;
+}
 
 template <size_t N>
 auto option_present(const CommandContext<N> &ctx, std::string_view name)
@@ -166,10 +178,83 @@ auto option_matches(const cmd::meta::OptionMeta &meta,
          (!long_name.empty() && meta.long_name == long_name);
 }
 
-auto warn_conflicting_batch_options() -> void {
+auto batch_option_family_name(BatchOptionFamily family) -> std::string_view {
+  switch (family) {
+    case BatchOptionFamily::MaxArgs:
+      return "--max-args";
+    case BatchOptionFamily::MaxLines:
+      return "--max-lines";
+    case BatchOptionFamily::Replace:
+      return "--replace";
+    case BatchOptionFamily::None:
+      break;
+  }
+  return "";
+}
+
+auto warn_conflicting_batch_options(BatchOptionFamily previous_family,
+                                    BatchOptionFamily next_family) -> void {
+  if (previous_family == BatchOptionFamily::None ||
+      previous_family == next_family) {
+    return;
+  }
+
+  if (previous_family == BatchOptionFamily::MaxLines &&
+      next_family == BatchOptionFamily::MaxArgs) {
+    safeErrorPrint("xargs: warning: options --max-lines and --max-args/-n "
+                   "are mutually exclusive, ignoring previous --max-lines "
+                   "value\n");
+    return;
+  }
+
+  if (previous_family == BatchOptionFamily::MaxArgs &&
+      next_family == BatchOptionFamily::MaxLines) {
+    safeErrorPrint("xargs: warning: options --max-args and "
+                   "--max-lines/-L/-l are mutually exclusive, ignoring "
+                   "previous --max-args value\n");
+    return;
+  }
+
+  if (previous_family == BatchOptionFamily::MaxArgs &&
+      next_family == BatchOptionFamily::Replace) {
+    safeErrorPrint("xargs: warning: options --max-args and "
+                   "--replace/-I/-i are mutually exclusive, ignoring "
+                   "previous --max-args value\n");
+    return;
+  }
+
+  if (previous_family == BatchOptionFamily::Replace &&
+      next_family == BatchOptionFamily::MaxArgs) {
+    safeErrorPrint("xargs: warning: options --replace/-I/-i and "
+                   "--max-args/-n are mutually exclusive, ignoring "
+                   "previous --replace value\n");
+    return;
+  }
+
+  if (previous_family == BatchOptionFamily::MaxLines &&
+      next_family == BatchOptionFamily::Replace) {
+    safeErrorPrint("xargs: warning: options --max-lines and "
+                   "--replace/-I/-i are mutually exclusive, ignoring "
+                   "previous --max-lines value\n");
+    return;
+  }
+
+  if (previous_family == BatchOptionFamily::Replace &&
+      next_family == BatchOptionFamily::MaxLines) {
+    safeErrorPrint("xargs: warning: options --replace/-I/-i and "
+                   "--max-lines/-L/-l are mutually exclusive, ignoring "
+                   "previous --replace value\n");
+    return;
+  }
+
+  safeErrorPrint("xargs: warning: options ");
+  safeErrorPrint(std::string(batch_option_family_name(previous_family)));
+  safeErrorPrint(" and ");
+  safeErrorPrint(std::string(batch_option_family_name(next_family)));
   safeErrorPrint(
-      "xargs: warning: options --replace, --max-lines and --max-args are "
-      "mutually exclusive; using the last one\n");
+      " are mutually exclusive, ignoring previous ");
+  safeErrorPrint(std::string(batch_option_family_name(previous_family)));
+  safeErrorPrint(" value\n");
 }
 
 auto normalize_batch_options(const CommandContext<XARGS_OPTIONS.size()> &ctx)
@@ -187,7 +272,7 @@ auto normalize_batch_options(const CommandContext<XARGS_OPTIONS.size()> &ctx)
   auto switch_family = [&](BatchOptionFamily family) {
     if (options.active_family != BatchOptionFamily::None &&
         options.active_family != family) {
-      warn_conflicting_batch_options();
+      warn_conflicting_batch_options(options.active_family, family);
       clear_active();
     }
     options.active_family = family;
@@ -279,6 +364,10 @@ auto parse_delimiter(std::string_view text) -> cp::Result<char> {
       case '\\':
         return '\\';
       default:
+        if (text[1] == 'x') {
+          return std::unexpected("invalid hex delimiter escape");
+        }
+        return std::unexpected("invalid delimiter escape");
         break;
     }
   }
@@ -393,10 +482,18 @@ auto parse_default_arguments(std::string_view text)
   }
 
   if (escaped) {
-    return std::unexpected("unmatched backslash in input");
+    arg += '\\';
+    have_arg = true;
   }
-  if (in_single_quote || in_double_quote) {
-    return std::unexpected("unmatched quote in input");
+  if (in_single_quote) {
+    return std::unexpected(
+        "unmatched single quote; by default quotes are special to xargs "
+        "unless you use the -0 option");
+  }
+  if (in_double_quote) {
+    return std::unexpected(
+        "unmatched double quote; by default quotes are special to xargs "
+        "unless you use the -0 option");
   }
 
   flush_arg();
@@ -418,23 +515,72 @@ auto parse_arguments(std::istream &input, char delimiter, bool split_blanks,
 
   SmallVector<std::string, 256> args;
   std::string arg;
+  bool saw_separator = false;
 
   for (char c : text) {
     bool is_separator = c == delimiter;
 
     if (is_separator) {
-      if (!arg.empty()) {
-        args.push_back(arg);
-        arg.clear();
-      }
+      args.push_back(arg);
+      arg.clear();
+      saw_separator = true;
     } else {
       arg += c;
+      saw_separator = false;
     }
   }
 
-  // Add last argument if not empty
-  if (!arg.empty()) {
+  // Preserve zero-length items between consecutive explicit delimiters, but
+  // do not synthesize a trailing empty item for a final terminator.
+  if (!arg.empty() || !saw_separator) {
     args.push_back(arg);
+  }
+
+  return std::vector<std::string>(args.begin(), args.end());
+}
+
+auto is_blank_input_line(std::string_view value) -> bool {
+  return value.find_first_not_of(" \t") == std::string_view::npos;
+}
+
+auto parse_replacement_arguments(std::istream &input,
+                                 const std::optional<std::string> &eof_str)
+    -> cp::Result<std::vector<std::string>> {
+  SmallVector<std::string, 256> args;
+  std::string current;
+  bool continued_line = false;
+
+  std::string line;
+  while (std::getline(input, line)) {
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    if (eof_str && !eof_str->empty() && line == *eof_str) break;
+
+    // GNU replacement mode ignores standalone blank/whitespace-only input
+    // lines; they should not become a logical-line continuation on their own.
+    if (is_blank_input_line(line) && current.empty() && !continued_line) {
+      continue;
+    }
+
+    bool ends_with_blank =
+        !line.empty() && (line.back() == ' ' || line.back() == '\t');
+    current += line;
+
+    if (ends_with_blank) {
+      continued_line = true;
+      continue;
+    }
+
+    if (!is_blank_input_line(current)) {
+      args.push_back(current);
+    }
+    current.clear();
+    continued_line = false;
+  }
+
+  if (continued_line || !current.empty()) {
+    if (!is_blank_input_line(current)) {
+      args.push_back(current);
+    }
   }
 
   return std::vector<std::string>(args.begin(), args.end());
@@ -486,7 +632,6 @@ auto parse_line_groups(std::istream &input, int max_lines,
 }
 
 auto print_show_limits(int max_chars) -> void {
-  constexpr int kWindowsCommandLineLimit = 32767;
   int buffer_size = max_chars > 0 ? max_chars : kWindowsCommandLineLimit;
   safeErrorPrint("POSIX upper limit on argument length (this system): ");
   safeErrorPrint(std::to_string(kWindowsCommandLineLimit));
@@ -533,6 +678,30 @@ auto materialize_arguments(const std::vector<std::string> &base_args,
   }
 
   return std::vector<std::string>(all_args.begin(), all_args.end());
+}
+
+auto expand_command_template_args(const SmallVector<std::string, 32> &base_args)
+    -> std::vector<std::string> {
+  SmallVector<std::string, 64> expanded_args;
+
+  for (const auto &arg : base_args) {
+    if (!contains_wildcard(arg)) {
+      expanded_args.push_back(arg);
+      continue;
+    }
+
+    auto glob_result = glob_expand(arg);
+    if (glob_result.files.empty()) {
+      expanded_args.push_back(arg);
+      continue;
+    }
+
+    for (const auto &match : glob_result.files) {
+      expanded_args.push_back(wstring_to_utf8(match));
+    }
+  }
+
+  return std::vector<std::string>(expanded_args.begin(), expanded_args.end());
 }
 
 auto quote_arg(const std::wstring &arg) -> std::wstring {
@@ -615,6 +784,21 @@ auto build_command_line(const std::string &command,
   return cmd_line;
 }
 
+auto clamp_max_chars_floor(int max_chars, const std::string &command,
+                           const std::vector<std::string> &args) -> int {
+  if (max_chars <= 0) return max_chars;
+
+  int minimum = static_cast<int>(build_command_line(command, args).size());
+  if (max_chars < minimum) {
+    safeErrorPrint("xargs: warning: value for -s option is too small; using ");
+    safeErrorPrint(std::to_string(minimum));
+    safeErrorPrint("\n");
+    return minimum;
+  }
+
+  return max_chars;
+}
+
 auto read_confirmation_line() -> std::string {
   std::string response;
   std::getline(std::cin, response);
@@ -688,6 +872,48 @@ auto append_env_entry(std::vector<wchar_t> &block, std::wstring_view entry)
   block.push_back(L'\0');
 }
 
+auto xargs_command_status_from_create_error(DWORD error) -> int {
+  switch (error) {
+    case ERROR_FILE_NOT_FOUND:
+    case ERROR_PATH_NOT_FOUND:
+      return 127;
+    default:
+      return 126;
+  }
+}
+
+auto xargs_windows_error_text(DWORD error) -> std::string {
+  switch (error) {
+    case ERROR_FILE_NOT_FOUND:
+    case ERROR_PATH_NOT_FOUND:
+      return "No such file or directory";
+    case ERROR_ACCESS_DENIED:
+    case ERROR_BAD_EXE_FORMAT:
+      return "Permission denied";
+    default:
+      return std::system_category().message(static_cast<int>(error));
+  }
+}
+
+auto report_xargs_input_file_open_error(std::string_view path) -> void {
+  safeErrorPrint("xargs: Cannot open input file '");
+  safeErrorPrint(path);
+  safeErrorPrint("': ");
+
+  std::error_code ec;
+  auto status = std::filesystem::status(utf8_to_wstring(std::string(path)), ec);
+  if (ec) {
+    safeErrorPrint(xargs_windows_error_text(static_cast<DWORD>(ec.value())));
+  } else if (status.type() == std::filesystem::file_type::not_found) {
+    safeErrorPrint("No such file or directory");
+  } else if (status.type() == std::filesystem::file_type::directory) {
+    safeErrorPrint("Is a directory");
+  } else {
+    safeErrorPrint("Permission denied");
+  }
+  safeErrorPrint("\n");
+}
+
 auto build_environment_block(std::string_view slot_var, int slot)
     -> std::vector<wchar_t> {
   if (slot_var.empty()) return {};
@@ -750,7 +976,8 @@ auto launch_process(const std::string &command,
                                 TRUE, CREATE_UNICODE_ENVIRONMENT, environment,
                                 nullptr, &si, &pi);
   if (!success) {
-    return std::unexpected("failed to execute command");
+    return std::unexpected(store_xargs_dynamic_error(
+        "create process failed:" + std::to_string(GetLastError())));
   }
 
   ChildProcess child;
@@ -769,10 +996,32 @@ auto wait_child(ChildProcess &child) -> int {
   return static_cast<int>(result);
 }
 
+auto wait_any_child(std::vector<ChildProcess> &running) -> size_t {
+  if (running.empty()) return 0;
+  if (running.size() == 1) return 0;
+  if (running.size() > MAXIMUM_WAIT_OBJECTS) return 0;
+
+  std::vector<HANDLE> handles;
+  handles.reserve(running.size());
+  for (const auto &child : running) {
+    handles.push_back(child.pi.hProcess);
+  }
+
+  DWORD wait_result = WaitForMultipleObjects(
+      static_cast<DWORD>(handles.size()), handles.data(), FALSE, INFINITE);
+  if (wait_result >= WAIT_OBJECT_0 &&
+      wait_result < WAIT_OBJECT_0 + handles.size()) {
+    return static_cast<size_t>(wait_result - WAIT_OBJECT_0);
+  }
+
+  return 0;
+}
+
 auto map_child_exit_status(int child_status) -> int {
   if (child_status == 0) return 0;
   if (child_status == 255) return 124;
-  if (child_status >= 1 && child_status <= 125) return 123;
+  if (child_status >= 1 && child_status <= 127) return 123;
+  if (child_status > 127) return 125;
   return child_status;
 }
 
@@ -819,13 +1068,16 @@ auto execute_command(const std::string &command,
 
   auto wait_one = [&]() {
     if (running.empty()) return;
-    int child_status = wait_child(running.front());
+    size_t completed_index = wait_any_child(running);
+    int child_status = wait_child(running[completed_index]);
     if (child_status != 0) {
       exit_code = map_child_exit_status(child_status);
       if (child_status == 255) stop_launching = true;
     }
-    if (!process_slot_var.empty()) free_slots.push_back(running.front().slot);
-    running.erase(running.begin());
+    if (!process_slot_var.empty()) {
+      free_slots.push_back(running[completed_index].slot);
+    }
+    running.erase(running.begin() + static_cast<std::ptrdiff_t>(completed_index));
   };
 
   SmallVector<std::string, 256> batch;
@@ -869,11 +1121,26 @@ auto execute_command(const std::string &command,
     auto child =
         launch_process(command, all_args, stdin_mode, process_slot_var, slot);
     if (!child) {
-      safeErrorPrint("xargs: failed to execute '");
+      DWORD error = 0;
+      std::string_view raw_error = child.error();
+      constexpr std::string_view kCreateProcessFailedPrefix =
+          "create process failed:";
+      if (raw_error.starts_with(kCreateProcessFailedPrefix)) {
+        auto code_text = raw_error.substr(kCreateProcessFailedPrefix.size());
+        auto parsed = std::from_chars(code_text.data(),
+                                      code_text.data() + code_text.size(),
+                                      error);
+        if (parsed.ec != std::errc()) {
+          error = 0;
+        }
+      }
+      safeErrorPrint("xargs: ");
       safeErrorPrint(command);
-      safeErrorPrint("'\n");
+      safeErrorPrint(": ");
+      safeErrorPrint(xargs_windows_error_text(error));
+      safeErrorPrint("\n");
       if (!process_slot_var.empty()) free_slots.push_back(slot);
-      exit_code = 127;
+      exit_code = xargs_command_status_from_create_error(error);
       stop_launching = true;
       return false;
     }
@@ -905,6 +1172,10 @@ auto execute_command(const std::string &command,
     return ok;
   };
 
+  auto drain_running_children = [&]() {
+    while (!running.empty()) wait_one();
+  };
+
   for (const auto &input_arg : input_args) {
     if (stop_launching) break;
     batch.push_back(input_arg);
@@ -914,6 +1185,7 @@ auto execute_command(const std::string &command,
 
     batch.pop_back();
     if (!flush_batch()) {
+      drain_running_children();
       return exit_code == 0 ? 1 : exit_code;
     }
 
@@ -928,10 +1200,11 @@ auto execute_command(const std::string &command,
   }
 
   if (!flush_batch()) {
+    drain_running_children();
     return exit_code == 0 ? 1 : exit_code;
   }
 
-  while (!running.empty()) wait_one();
+  drain_running_children();
   return exit_code;
 }
 
@@ -982,12 +1255,22 @@ REGISTER_COMMAND(
     cp::report_custom_error(L"xargs", L"max-chars must be non-negative");
     return 1;
   }
+  if (max_chars > kWindowsCommandLineLimit) {
+    safeErrorPrint("xargs: warning: value for -s option is too large; using ");
+    safeErrorPrint(std::to_string(kWindowsCommandLineLimit));
+    safeErrorPrint("\n");
+    max_chars = kWindowsCommandLineLimit;
+  }
   if (max_lines < 0 || (batch_options.max_lines_present && max_lines == 0)) {
     cp::report_custom_error(L"xargs", L"max-lines must be positive");
     return 1;
   }
+  const bool has_long_delimiter = ctx.has("--delimiter");
+  const bool has_short_delimiter = ctx.has("-d");
   std::string delimiter_arg = ctx.get<std::string>("--delimiter", "");
-  if (delimiter_arg.empty()) delimiter_arg = ctx.get<std::string>("-d", "");
+  if (!has_long_delimiter && has_short_delimiter) {
+    delimiter_arg = ctx.get<std::string>("-d", "");
+  }
   std::string arg_file = ctx.get<std::string>("--arg-file", "");
   if (arg_file.empty()) arg_file = ctx.get<std::string>("-a", "");
   std::string eof_arg = ctx.get<std::string>("-E", "");
@@ -1013,15 +1296,14 @@ REGISTER_COMMAND(
     return 1;
   }
 
-  if (!replace_str.empty() || max_lines > 0 || !delimiter_arg.empty()) {
+  if (!replace_str.empty() || max_lines > 0 ||
+      has_long_delimiter || has_short_delimiter) {
     exit_if_exceeded = true;
   }
 
-  if (show_limits) print_show_limits(max_chars);
-
   char delimiter = use_null ? '\0' : ' ';
   bool split_blanks = !use_null && replace_str.empty();
-  if (!delimiter_arg.empty()) {
+  if (has_long_delimiter || has_short_delimiter) {
     auto parsed_delim = parse_delimiter(delimiter_arg);
     if (!parsed_delim) {
       cp::report_error(parsed_delim, L"xargs");
@@ -1039,32 +1321,45 @@ REGISTER_COMMAND(
   if (!arg_file.empty()) {
     arg_input.open(arg_file, std::ios::binary);
     if (!arg_input.is_open()) {
-      safeErrorPrint("xargs: cannot open '");
-      safeErrorPrint(arg_file);
-      safeErrorPrint("'\n");
+      report_xargs_input_file_open_error(arg_file);
       return 1;
     }
     input = &arg_input;
   }
 
   std::optional<std::string> logical_eof;
-  if (!use_null && delimiter_arg.empty() && eof_enabled) {
+  if (!use_null && !has_long_delimiter && !has_short_delimiter && eof_enabled) {
     logical_eof = eof_arg;
   }
 
+  std::string raw_input_text((std::istreambuf_iterator<char>(*input)),
+                             std::istreambuf_iterator<char>());
+  const bool raw_input_empty = raw_input_text.empty();
+  std::istringstream parsed_input(raw_input_text);
+
   std::vector<std::vector<std::string>> input_groups;
-  bool use_line_groups = max_lines > 0 && !use_null && delimiter_arg.empty() &&
+  bool use_line_groups = max_lines > 0 && !use_null &&
+                         !has_long_delimiter && !has_short_delimiter &&
                          replace_str.empty();
   if (use_line_groups) {
-    auto parsed_groups = parse_line_groups(*input, max_lines, logical_eof);
+    auto parsed_groups = parse_line_groups(parsed_input, max_lines, logical_eof);
     if (!parsed_groups) {
       cp::report_error(parsed_groups, L"xargs");
       return 1;
     }
     input_groups = *parsed_groups;
+  } else if (!replace_str.empty() && !use_null && !has_long_delimiter &&
+             !has_short_delimiter) {
+    auto input_args_vec =
+        parse_replacement_arguments(parsed_input, logical_eof);
+    if (!input_args_vec) {
+      cp::report_error(input_args_vec, L"xargs");
+      return 1;
+    }
+    input_groups.emplace_back(input_args_vec->begin(), input_args_vec->end());
   } else {
     auto input_args_vec =
-        parse_arguments(*input, delimiter, split_blanks, logical_eof);
+        parse_arguments(parsed_input, delimiter, split_blanks, logical_eof);
     if (!input_args_vec) {
       cp::report_error(input_args_vec, L"xargs");
       return 1;
@@ -1082,48 +1377,100 @@ REGISTER_COMMAND(
 
   // Get command to execute (first positional arg)
   if (ctx.positionals.empty()) {
+    std::vector<std::string> echo_base_args;
+    max_chars = clamp_max_chars_floor(max_chars, "echo", echo_base_args);
+    if (show_limits) print_show_limits(max_chars);
+
     // Default to echo if no command specified
-    if (no_run_if_empty && input_empty) {
+    if (no_run_if_empty && raw_input_empty) {
       return 0;
     }
 
     if (input_groups.empty()) input_groups.emplace_back();
 
-    for (const auto &input_args : input_groups) {
-      size_t chunk_size =
-          max_args > 0 ? static_cast<size_t>(max_args) : input_args.size();
-      if (chunk_size == 0) chunk_size = 1;
+    auto echo_fits_limits = [&](const std::vector<std::string> &echo_args) {
+      if (max_args > 0 && static_cast<int>(echo_args.size()) > max_args) {
+        return false;
+      }
+      if (max_chars > 0) {
+        auto cmd_line = build_command_line("echo", echo_args);
+        if (cmd_line.size() > static_cast<size_t>(max_chars)) {
+          return false;
+        }
+      }
+      return true;
+    };
 
-      for (size_t begin = 0; begin <= input_args.size(); begin += chunk_size) {
-        size_t end = std::min(begin + chunk_size, input_args.size());
-        if (begin == input_args.size() && !input_args.empty()) break;
+    for (const auto &input_args : input_groups) {
+      SmallVector<std::string, 256> batch;
+      batch.reserve(input_args.size());
+      const int echo_max_args = !replace_str.empty() ? 1 : max_args;
+
+      auto flush_echo_batch = [&](bool allow_empty = false) -> bool {
+        if (batch.empty() && !allow_empty) return true;
+
+        std::vector<std::string> echo_args(batch.begin(), batch.end());
+        if (!echo_fits_limits(echo_args) && exit_if_exceeded) {
+          cp::report_custom_error(L"xargs", L"command line length exceeded");
+          return false;
+        }
 
         if (verbose) {
           safeErrorPrint("echo");
-          for (size_t i = begin; i < end; ++i) {
+          for (const auto &arg : echo_args) {
             safeErrorPrint(" ");
-            safeErrorPrint(input_args[i]);
+            safeErrorPrint(arg);
           }
           safeErrorPrint("\n");
         }
 
-        std::vector<std::string> echo_args;
-        echo_args.reserve(end - begin);
-        for (size_t i = begin; i < end; ++i) {
-          echo_args.push_back(input_args[i]);
-        }
         if (interactive && !confirm_command("echo", echo_args)) {
-          if (input_args.empty()) break;
+          batch.clear();
+          return true;
+        }
+
+        for (size_t i = 0; i < echo_args.size(); ++i) {
+          if (i > 0) safePrint(" ");
+          safePrint(echo_args[i]);
+        }
+        safePrint("\n");
+        batch.clear();
+        return true;
+      };
+
+      if (input_args.empty()) {
+        if (!flush_echo_batch(true)) return 1;
+        continue;
+      }
+
+      for (const auto &input_arg : input_args) {
+        batch.push_back(input_arg);
+        std::vector<std::string> candidate(batch.begin(), batch.end());
+        if (echo_max_args > 0 &&
+            static_cast<int>(candidate.size()) > echo_max_args) {
+          batch.pop_back();
+          if (!flush_echo_batch()) return 1;
+
+          batch.push_back(input_arg);
+          candidate.assign(batch.begin(), batch.end());
+        }
+        if (echo_fits_limits(candidate)) {
           continue;
         }
 
-        for (size_t i = begin; i < end; ++i) {
-          if (i > begin) safePrint(" ");
-          safePrint(input_args[i]);
-        }
-        safePrint("\n");
+        batch.pop_back();
+        if (!flush_echo_batch()) return 1;
 
-        if (input_args.empty()) break;
+        batch.push_back(input_arg);
+        candidate.assign(batch.begin(), batch.end());
+        if (!echo_fits_limits(candidate) && exit_if_exceeded) {
+          cp::report_custom_error(L"xargs", L"command line length exceeded");
+          return 1;
+        }
+      }
+
+      if (!flush_echo_batch()) {
+        return 1;
       }
     }
     return 0;
@@ -1139,7 +1486,7 @@ REGISTER_COMMAND(
   // If no input arguments, check if we should skip execution
   if (input_empty) {
     // Skip if -r (no-run-if-empty) is specified
-    if (no_run_if_empty) {
+    if (no_run_if_empty && raw_input_empty) {
       return 0;
     }
     // Skip if -I is specified but there's nothing to replace
@@ -1158,7 +1505,9 @@ REGISTER_COMMAND(
 
   // Execute command with arguments - convert SmallVector to std::vector for
   // compatibility
-  std::vector<std::string> base_args_vec(base_args.begin(), base_args.end());
+  std::vector<std::string> base_args_vec = expand_command_template_args(base_args);
+  max_chars = clamp_max_chars_floor(max_chars, command, base_args_vec);
+  if (show_limits) print_show_limits(max_chars);
   int exit_code = 0;
   for (const auto &input_args : input_groups) {
     int status =

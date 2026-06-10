@@ -159,15 +159,6 @@ function Invoke-Activate {
     Write-Host "Directory: $ScriptDir" -ForegroundColor Gray
     Write-Host ""
 
-    # Show note for aliases intentionally left to PowerShell in the default flow.
-    if ($AllScopeAliases.Count -gt 0) {
-        Write-Host "Note: The default activation flow leaves these PowerShell aliases unchanged:" -ForegroundColor Yellow
-        Write-Host "  $($AllScopeAliases -join ', ')" -ForegroundColor Magenta
-        Write-Host "  Use the WinuxCmd executable name when needed, for example:" -ForegroundColor Cyan
-        Write-Host "  echo.exe, cp.exe, where.exe" -ForegroundColor Green
-        Write-Host ""
-    }
-
     Write-Host "Run 'winux status' for details" -ForegroundColor Cyan
     Write-Host "Run 'winux list' to see all commands" -ForegroundColor Cyan
 }

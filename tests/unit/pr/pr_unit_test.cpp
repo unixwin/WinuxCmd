@@ -184,3 +184,19 @@ TEST(pr, pr_form_feed) {
 
   EXPECT_EQ(r.exit_code, 0);
 }
+
+TEST(pr, pr_newline_mode_trims_trailing_cr_from_crlf_records) {
+  TempDir tmp;
+  tmp.write_bytes("test.txt", {'l', 'i', 'n', 'e', '1', '\r', '\n', 'l', 'i',
+                               'n', 'e', '2', '\r', '\n'});
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"pr.exe", {L"-t", L"test.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(r.stdout_text.find('\r'), std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("line1\n") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("line2\n") != std::string::npos);
+}

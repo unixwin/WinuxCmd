@@ -134,3 +134,78 @@ TEST(join, join_zero_terminated_records) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ(r.stdout_text, std::string("1 a b\0x left right\0", 19));
 }
+
+TEST(join, join_mixed_lf_and_crlf_records_match_in_text_mode) {
+  TempDir tmp;
+  tmp.write_bytes("file1.txt", {'a', ' ', 'l', 'e', 'f', 't', '\n'});
+  tmp.write_bytes("file2.txt", {'a', ' ', 'r', 'i', 'g', 'h', 't', '\r',
+                                '\n'});
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"join.exe", {L"file1.txt", L"file2.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "a left right\n");
+}
+
+TEST(join, join_reports_gnu_shaped_missing_input_diagnostic) {
+  TempDir tmp;
+  tmp.write("file2.txt", "a right\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"join.exe", {L"missing.txt", L"file2.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("join: missing.txt: No such file or directory") !=
+              std::string::npos);
+}
+
+TEST(join, join_reports_is_a_directory_for_directory_input) {
+  TempDir tmp;
+  tmp.mkdir("dir1");
+  tmp.write("file2.txt", "a right\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"join.exe", {L"dir1", L"file2.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("join: dir1: Is a directory") !=
+              std::string::npos);
+}
+
+TEST(join, join_missing_operands_report_help_hint) {
+  Pipeline p;
+  p.add(L"join.exe", {});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "join: missing operand\nTry 'join --help' for more information.\n");
+}
+
+TEST(join, join_extra_operand_reports_help_hint) {
+  Pipeline p;
+  p.add(L"join.exe", {L"a", L"b", L"c"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "join: extra operand 'c'\nTry 'join --help' for more information.\n");
+}

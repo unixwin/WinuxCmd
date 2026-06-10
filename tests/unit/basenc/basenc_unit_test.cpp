@@ -165,6 +165,69 @@ TEST(basenc, basenc_rejects_extra_file_operand_with_help_hint) {
       "Try 'basenc --help' for more information.\n");
 }
 
+TEST(basenc, basenc_missing_input_reports_no_such_file) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"basenc.exe", {L"--base64", L"missing.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "basenc: cannot open 'missing.txt' for reading: No such "
+                  "file or directory") != std::string::npos);
+}
+
+TEST(basenc, basenc_directory_input_reports_is_a_directory) {
+  TempDir tmp;
+  tmp.mkdir("indir");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"basenc.exe", {L"--base64", L"indir"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(
+      r.stderr_text.find("basenc: cannot open 'indir' for reading: Is a directory") !=
+      std::string::npos);
+}
+
+TEST(basenc, basenc_file_operand_glob_expands_single_match) {
+  TempDir tmp;
+  tmp.write("one.txt", "hello");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"basenc.exe", {L"--base64", L"*.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "aGVsbG8=\n");
+}
+
+TEST(basenc, basenc_rejects_wildcard_that_expands_to_multiple_files) {
+  TempDir tmp;
+  tmp.write("one.txt", "one");
+  tmp.write("two.txt", "two");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"basenc.exe", {L"--base64", L"*.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "basenc: extra operand 'two.txt'\n"
+      "Try 'basenc --help' for more information.\n");
+}
+
 TEST(basenc, basenc_recognizes_unimplemented_gnu_selectors) {
   Pipeline base58;
   base58.set_stdin("hello");

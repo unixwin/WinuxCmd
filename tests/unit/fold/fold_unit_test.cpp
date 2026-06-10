@@ -122,6 +122,54 @@ TEST(fold, fold_characters_option) {
   EXPECT_EQ_TEXT(r.stdout_text, "ab\ncd\n");
 }
 
+TEST(fold, fold_characters_option_counts_utf8_codepoints_without_splitting) {
+  TempDir tmp;
+  tmp.write_bytes("utf8.txt",
+                  {static_cast<char>(0xE4), static_cast<char>(0xB8),
+                   static_cast<char>(0xAD), 'a', static_cast<char>(0xE6),
+                   static_cast<char>(0x96), static_cast<char>(0x87), 'b',
+                   '\n'});
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"fold.exe", {L"-c", L"-w", L"2", L"utf8.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(
+      r.stdout_text,
+      std::string("\xE4\xB8\xAD"
+                  "a\n"
+                  "\xE6\x96\x87"
+                  "b\n"));
+}
+
+TEST(fold, fold_default_mode_uses_display_width_for_utf8_wide_characters) {
+  TempDir tmp;
+  tmp.write_bytes("utf8.txt",
+                  {static_cast<char>(0xE4), static_cast<char>(0xB8),
+                   static_cast<char>(0xAD), 'a', static_cast<char>(0xE6),
+                   static_cast<char>(0x96), static_cast<char>(0x87), 'b',
+                   '\n'});
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"fold.exe", {L"-w", L"2", L"utf8.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(
+      r.stdout_text,
+      std::string("\xE4\xB8\xAD"
+                  "\n"
+                  "a\n"
+                  "\xE6\x96\x87"
+                  "\n"
+                  "b\n"));
+}
+
 TEST(fold, fold_rejects_trailing_junk_width) {
   Pipeline p;
   p.set_stdin("abcd\n");
@@ -141,4 +189,51 @@ TEST(fold, fold_spaces_breaks_at_last_blank) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "aa \nbb cc\n");
+}
+
+TEST(fold, fold_newline_mode_trims_trailing_cr_from_crlf_records) {
+  TempDir tmp;
+  tmp.write_bytes("crlf.txt",
+                  {'a', 'b', 'c', 'd', '\r', '\n',
+                   'e', 'f', 'g', 'h', '\r', '\n'});
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"fold.exe", {L"-w", L"10", L"crlf.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "abcd\nefgh\n");
+}
+
+TEST(fold, fold_missing_input_reports_no_such_file) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"fold.exe", {L"missing.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "fold: cannot open 'missing.txt' for reading: No such file "
+                  "or directory") != std::string::npos);
+}
+
+TEST(fold, fold_directory_input_reports_is_a_directory) {
+  TempDir tmp;
+  tmp.mkdir("indir");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"fold.exe", {L"indir"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "fold: cannot open 'indir' for reading: Is a directory") !=
+              std::string::npos);
 }

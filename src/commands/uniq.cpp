@@ -107,12 +107,21 @@ struct Config {
 
 auto read_all(std::istream& in) -> std::string { return read_text_stream(in); }
 
+auto input_open_error_message(std::string_view path) -> std::string {
+  std::error_code ec;
+  auto status = std::filesystem::status(std::filesystem::u8path(path), ec);
+  if (!ec && status.type() == std::filesystem::file_type::directory) {
+    return std::string(path) + ": Is a directory";
+  }
+  return std::string(path) + ": No such file or directory";
+}
+
 auto read_source(std::string_view path) -> cp::Result<std::string> {
   if (path == "-") return read_all(std::cin);
 
   std::ifstream in(std::string(path), std::ios::binary);
   if (!in.is_open()) {
-    return std::unexpected("cannot open '" + std::string(path) + "'");
+    return std::unexpected(input_open_error_message(path));
   }
   return read_all(in);
 }
@@ -120,15 +129,21 @@ auto read_source(std::string_view path) -> cp::Result<std::string> {
 auto split_records(std::string_view content, char delimiter)
     -> std::vector<std::string> {
   SmallVector<std::string, 4096> out;
+  const auto trim_record = [delimiter](std::string_view record) {
+    if (delimiter == '\n' && !record.empty() && record.back() == '\r') {
+      record.remove_suffix(1);
+    }
+    return std::string(record);
+  };
   size_t start = 0;
   for (size_t i = 0; i < content.size(); ++i) {
     if (content[i] == delimiter) {
-      out.emplace_back(content.substr(start, i - start));
+      out.emplace_back(trim_record(content.substr(start, i - start)));
       start = i + 1;
     }
   }
   if (start < content.size()) {
-    out.emplace_back(content.substr(start));
+    out.emplace_back(trim_record(content.substr(start)));
   }
   return std::vector<std::string>(out.begin(), out.end());
 }

@@ -51,6 +51,14 @@ auto constexpr CKSUM_OPTIONS = std::array{
            "select the digest type to use. TYPE is sysv, bsd, or crc (default)",
            STRING_TYPE),
     OPTION("-c", "--check", "read and verify checksums from FILE", STRING_TYPE),
+    OPTION("", "--ignore-missing",
+           "don't fail or report status for missing files"),
+    OPTION("-q", "--quiet",
+           "don't print OK for each successfully verified file"),
+    OPTION("-s", "--status", "don't output anything, status code shows success"),
+    OPTION("-w", "--warn", "warn about improperly formatted checksum lines"),
+    OPTION("", "--strict",
+           "exit non-zero for improperly formatted checksum lines"),
     OPTION("", "--tag",
            "create a BSD-style checksum (the default for compatibility)"),
     OPTION("", "--untagged",
@@ -62,7 +70,7 @@ auto constexpr CKSUM_OPTIONS = std::array{
            "print a raw binary digest, not hexadecimal"),
     OPTION("", "--base64",
            "print a base64-encoded digest"),
-    OPTION("", "--length",
+    OPTION("-l", "--length",
            "digest length in bits; must not exceed the maximum for the blake2 "
            "algorithm and must be a multiple of 8",
            STRING_TYPE),
@@ -76,6 +84,11 @@ enum class Algorithm { CRC, SYSV, BSD };
 struct Config {
   Algorithm algorithm = Algorithm::CRC;
   bool check_mode = false;
+  bool ignore_missing = false;
+  bool quiet = false;
+  bool status = false;
+  bool warn = false;
+  bool strict = false;
   bool tag_mode = false;
   bool untagged = false;
   bool zero_terminated = false;
@@ -117,6 +130,11 @@ auto build_config(const CommandContext<CKSUM_OPTIONS.size()>& ctx)
     cfg.check_file = check;
   }
 
+  cfg.ignore_missing = ctx.has("--ignore-missing");
+  cfg.quiet = ctx.has("--quiet") || ctx.has("-q");
+  cfg.status = ctx.has("--status") || ctx.has("-s");
+  cfg.warn = ctx.has("--warn") || ctx.has("-w");
+  cfg.strict = ctx.has("--strict");
   cfg.tag_mode = ctx.has("--tag");
   cfg.untagged = ctx.has("--untagged");
   cfg.zero_terminated = ctx.has("--zero") || ctx.has("-z");
@@ -125,6 +143,9 @@ auto build_config(const CommandContext<CKSUM_OPTIONS.size()>& ctx)
   cfg.debug = ctx.has("--debug");
 
   auto length_str = ctx.get<std::string>("--length", "");
+  if (length_str.empty()) {
+    length_str = ctx.get<std::string>("-l", "");
+  }
   if (!length_str.empty()) {
     try {
       cfg.digest_length = std::stoi(length_str);
@@ -166,6 +187,17 @@ struct FileData {
   uint64_t byte_count = 0;
 };
 
+auto input_open_error(std::string_view path) -> std::string {
+  std::error_code ec;
+  if (std::filesystem::is_directory(std::filesystem::u8path(path), ec) && !ec) {
+    return "cannot open '" + std::string(path) +
+           "' for reading: Is a directory";
+  }
+
+  return "cannot open '" + std::string(path) +
+         "' for reading: No such file or directory";
+}
+
 auto read_file(const std::string& filename) -> cp::Result<FileData> {
   FileData fd;
 
@@ -178,8 +210,7 @@ auto read_file(const std::string& filename) -> cp::Result<FileData> {
   } else {
     std::ifstream f(filename, std::ios::binary);
     if (!f) {
-      return std::unexpected(std::string("cannot open '") + filename +
-                             "' for reading");
+      return std::unexpected(input_open_error(filename));
     }
     fd.data.assign(std::istreambuf_iterator<char>(f),
                    std::istreambuf_iterator<char>());
@@ -322,10 +353,9 @@ auto output_digest(const Config& cfg, const std::string& digest_hex,
     return;
   }
 
-  // Default / --tag output
+  // Default output should stay in the traditional untagged GNU form.
   if (algo == Algorithm::CRC) {
-    // CRC32 uses tag format: CRC32 (FILENAME) = DIGEST
-    if (cfg.tag_mode || (!cfg.untagged && !cfg.raw_output && !cfg.base64_output)) {
+    if (cfg.tag_mode) {
       safePrint("CRC32");
       if (filename != "-") {
         safePrint(" (");
@@ -389,26 +419,36 @@ auto output_digest(const Config& cfg, const std::string& digest_hex,
 auto run_check_mode(const Config& cfg) -> int {
   std::istream* input = &std::cin;
   std::ifstream file;
+  std::string input_name = "standard input";
   if (!cfg.check_file.empty() && cfg.check_file != "-") {
     file.open(cfg.check_file);
     if (!file) {
-      safeErrorPrint("cksum: cannot open '" + cfg.check_file +
-                     "' for reading\n");
+      safeErrorPrint("cksum: " + input_open_error(cfg.check_file) + "\n");
       return 1;
     }
     input = &file;
+    input_name = cfg.check_file;
   }
 
-  int failures = 0;
   int total = 0;
+  int checked = 0;
+  int malformed = 0;
+  int unreadable = 0;
+  int mismatches = 0;
   std::string line;
+  size_t line_number = 0;
   while (std::getline(*input, line)) {
+    ++line_number;
+    if (!line.empty() && line.back() == '\r') {
+      line.pop_back();
+    }
     if (line.empty()) continue;
     ++total;
 
     // Parse line: expect format like "CRC32 (filename) = hexdigest"
     // or "checksum bytes filename"
     std::string expected_digest, filename;
+    std::optional<uint64_t> expected_bytes;
 
     size_t eq_pos = line.find(" = ");
     if (eq_pos != std::string::npos) {
@@ -431,24 +471,51 @@ auto run_check_mode(const Config& cfg) -> int {
         // The rest is the filename
         std::getline(iss >> std::ws, filename);
         expected_digest = checksum_str;
+        try {
+          size_t parsed_chars = 0;
+          expected_bytes = std::stoull(bytes_str, &parsed_chars, 10);
+          if (parsed_chars != bytes_str.size()) {
+            expected_bytes.reset();
+            filename.clear();
+            expected_digest.clear();
+          }
+        } catch (...) {
+          expected_bytes.reset();
+          filename.clear();
+          expected_digest.clear();
+        }
       }
     }
 
     if (filename.empty() || expected_digest.empty()) {
-      if (!cfg.zero_terminated) {
-        safeErrorPrint("cksum: " + line + ": no properly formatted checksum\n");
+      if (cfg.warn && !cfg.status) {
+        safeErrorPrint("cksum: " + input_name + ": " +
+                       std::to_string(line_number) +
+                       ": improperly formatted checksum line\n");
       }
-      ++failures;
+      ++malformed;
       continue;
+    }
+
+    ++checked;
+
+    if (cfg.ignore_missing) {
+      std::error_code ec;
+      if (!filename.empty() && filename != "-" &&
+          !std::filesystem::exists(std::filesystem::u8path(filename), ec)) {
+        continue;
+      }
     }
 
     // Compute actual digest
     auto file_data = read_file(filename);
     if (!file_data) {
-      safeErrorPrint("cksum: ");
-      safeErrorPrint(std::string(file_data.error()));
-      safeErrorPrint("\n");
-      ++failures;
+      if (!cfg.status) {
+        safeErrorPrint("cksum: ");
+        safeErrorPrint(std::string(file_data.error()));
+        safeErrorPrint("\n");
+      }
+      ++unreadable;
       continue;
     }
 
@@ -456,22 +523,66 @@ auto run_check_mode(const Config& cfg) -> int {
     char crc_hex[9];
     snprintf(crc_hex, sizeof(crc_hex), "%08x", crc);
 
-    if (expected_digest == crc_hex || expected_digest == std::to_string(crc)) {
-      if (!cfg.zero_terminated) {
+    bool digest_matches =
+        expected_digest == crc_hex || expected_digest == std::to_string(crc);
+    bool size_matches =
+        !expected_bytes.has_value() || *expected_bytes == file_data->byte_count;
+
+    if (digest_matches && size_matches) {
+      if (!cfg.zero_terminated && !cfg.quiet && !cfg.status) {
         safePrint(filename + ": OK\n");
       }
     } else {
-      if (!cfg.zero_terminated) {
+      if (!cfg.zero_terminated && !cfg.status) {
         safePrint(filename + ": FAILED\n");
       }
-      ++failures;
+      ++mismatches;
     }
   }
 
-  if (failures > 0) {
-    safeErrorPrint("cksum: WARNING: " + std::to_string(failures) +
-                   " of " + std::to_string(total) +
-                   " computed checksums did NOT match\n");
+  if (checked == 0 && total > 0) {
+    if (!cfg.status) {
+      safeErrorPrint("cksum: " + input_name +
+                     ": no properly formatted checksum lines found\n");
+    }
+    return 1;
+  }
+
+  if (!cfg.status && cfg.warn) {
+    if (malformed == 1) {
+      safeErrorPrint("cksum: WARNING: 1 line is improperly formatted\n");
+    } else if (malformed > 1) {
+      safeErrorPrint("cksum: WARNING: " + std::to_string(malformed) +
+                     " lines are improperly formatted\n");
+    }
+  }
+
+  if (!cfg.status) {
+    if (unreadable > 0) {
+      if (unreadable == 1) {
+        safeErrorPrint("cksum: WARNING: 1 listed file could not be read\n");
+      } else {
+        safeErrorPrint("cksum: WARNING: " + std::to_string(unreadable) +
+                       " listed files could not be read\n");
+      }
+    }
+  }
+
+  if (mismatches > 0) {
+    int computed = checked - unreadable;
+    if (!cfg.status) {
+      safeErrorPrint("cksum: WARNING: " + std::to_string(mismatches) +
+                     " of " + std::to_string(computed) +
+                     " computed checksums did NOT match\n");
+    }
+    return 1;
+  }
+
+  if (cfg.strict && malformed > 0) {
+    return 1;
+  }
+
+  if (unreadable > 0) {
     return 1;
   }
 
@@ -483,11 +594,13 @@ auto run(const Config& cfg) -> int {
     return run_check_mode(cfg);
   }
 
+  bool all_ok = true;
   for (const auto& file : cfg.files) {
     auto file_data = read_file(file);
     if (!file_data) {
       cp::report_error(file_data, L"cksum");
-      return 1;
+      all_ok = false;
+      continue;
     }
 
     if (cfg.debug) {
@@ -543,7 +656,7 @@ auto run(const Config& cfg) -> int {
                   cfg.algorithm);
   }
 
-  return 0;
+  return all_ok ? 0 : 1;
 }
 
 }  // namespace cksum_pipeline
@@ -558,6 +671,14 @@ REGISTER_COMMAND(
     "  -a, --algorithm=TYPE  select the digest type: sysv, bsd, or crc "
     "(default)\n"
     "  -c, --check           read and verify checksums from FILE\n"
+    "      --ignore-missing  don't fail or report status for missing files\n"
+    "  -q, --quiet           don't print OK for each successfully verified "
+    "file\n"
+    "  -s, --status          don't output anything, status code shows "
+    "success\n"
+    "  -w, --warn            warn about improperly formatted checksum lines\n"
+    "      --strict          exit non-zero for improperly formatted checksum "
+    "lines\n"
     "      --tag             create a BSD-style checksum\n"
     "      --untagged        create a reversed style checksum\n"
     "  -z, --zero            end each output line with NUL\n"

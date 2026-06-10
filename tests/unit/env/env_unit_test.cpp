@@ -43,6 +43,24 @@ auto write_argv0_helper(const TempDir& tmp) -> std::filesystem::path {
   return exe;
 }
 
+auto has_env_line(std::string_view output, std::string_view key,
+                  std::string_view value) -> bool {
+  std::string needle;
+  needle.reserve(key.size() + value.size() + 2);
+  needle.append(key);
+  needle.push_back('=');
+  needle.append(value);
+
+  if (output == needle) return true;
+  if (output.find(needle + "\n") == 0) return true;
+  if (output.find("\n" + needle + "\n") != std::string::npos) return true;
+  if (output.size() > needle.size() &&
+      output.ends_with(std::string("\n") + needle)) {
+    return true;
+  }
+  return false;
+}
+
 }  // namespace
 
 TEST(env, env_lists_current) {
@@ -101,6 +119,78 @@ TEST(env, env_runs_command_with_assignment) {
   EXPECT_TRUE(r.stdout_text.find("BAR") != std::string::npos);
 }
 
+TEST(env, env_file_loads_simple_assignments_for_printing) {
+  TempDir tmp;
+  tmp.write("vars.env", "A=1\n#comment\nC = spaced\nEMPTY=\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"env.exe", {L"-f", L"vars.env"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(has_env_line(r.stdout_text, "A", "1"));
+  EXPECT_TRUE(has_env_line(r.stdout_text, "C", "spaced"));
+  EXPECT_TRUE(has_env_line(r.stdout_text, "EMPTY", ""));
+}
+
+TEST(env, env_file_applies_before_unset_and_cli_assignments) {
+  TempDir tmp;
+  tmp.write("vars.env", "A=1\nB=two\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"env.exe", {L"-f", L"vars.env", L"-u", L"A", L"B=3"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_FALSE(has_env_line(r.stdout_text, "A", "1"));
+  EXPECT_TRUE(has_env_line(r.stdout_text, "B", "3"));
+  EXPECT_FALSE(has_env_line(r.stdout_text, "B", "two"));
+}
+
+TEST(env, env_file_supplies_command_environment) {
+  TempDir tmp;
+  tmp.write("vars.env", "A=1\nB=two\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"env.exe",
+        {L"-f", L"vars.env", system_cmd(), L"/C", L"echo", L"%A% %B%"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("1 two") != std::string::npos);
+}
+
+TEST(env, env_file_missing_path_reports_read_error) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"env.exe", {L"-f", L"missing.env"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "env: cannot read env file 'missing.env': No such file or "
+                 "directory\n");
+}
+
+TEST(env, env_file_directory_reports_is_a_directory) {
+  TempDir tmp;
+  tmp.mkdir("indir");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"env.exe", {L"--file", L"indir"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "env: cannot read env file 'indir': Is a directory\n");
+}
+
 TEST(env, env_runs_command_with_empty_environment) {
   Pipeline p;
   p.set_env(L"SHOULD_NOT", L"SEE");
@@ -132,6 +222,45 @@ TEST(env, env_split_string_rejects_unterminated_quote) {
   EXPECT_EQ(r.exit_code, 125);
   EXPECT_TRUE(r.stderr_text.find("no terminating quote in -S string") !=
               std::string::npos);
+}
+
+TEST(env, env_split_string_treats_newlines_as_separators) {
+  Pipeline p;
+  p.add(L"env.exe", {L"-S", L"A=1\nB=2"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("A=1") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("B=2") != std::string::npos);
+}
+
+TEST(env, env_split_string_backslash_underscore_splits_arguments) {
+  Pipeline p;
+  p.add(L"env.exe", {L"-S", L"A=1\\_B=2"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("A=1") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("B=2") != std::string::npos);
+}
+
+TEST(env, env_split_string_double_quoted_backslash_underscore_becomes_space) {
+  Pipeline p;
+  p.add(L"env.exe", {L"-S", L"A=\"left\\_right\""});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("A=left right") != std::string::npos);
+}
+
+TEST(env, env_split_string_backslash_c_ignores_remaining_text) {
+  Pipeline p;
+  p.add(L"env.exe", {L"-S", L"A=1\\c B=2"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("A=1") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("B=2") == std::string::npos);
 }
 
 TEST(env, env_chdir_runs_command_in_directory) {
@@ -339,6 +468,41 @@ TEST(env, env_ignore_environment_missing_command_reports_gnu_style_error) {
       r.stderr_text,
       "env: failed to run command 'definitely-not-a-command': No such file or "
       "directory\n");
+}
+
+TEST(env, env_non_executable_command_returns_126) {
+  TempDir tmp;
+  std::filesystem::create_directory(tmp.path / "not-executable");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"env.exe", {L".\\not-executable"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 126);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "env: failed to run command '.\\not-executable': Permission denied\n");
+}
+
+TEST(env, env_argv0_non_executable_command_returns_126) {
+  TempDir tmp;
+  std::filesystem::create_directory(tmp.path / "not-executable");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"env.exe",
+        {L"--argv0", L"fake-name", L".\\not-executable"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 126);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "env: failed to run command '.\\not-executable': Permission denied\n");
 }
 
 TEST(env, env_invalid_option_returns_125_with_help_hint) {

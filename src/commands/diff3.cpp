@@ -202,8 +202,11 @@ auto resolve_files(const CommandContext<DIFF3_OPTIONS.size()>& ctx)
     files.push_back(file_arg);
   }
 
+  if (files.empty()) {
+    return std::unexpected("missing operand");
+  }
   if (files.size() < 3) {
-    return std::unexpected("missing file operands");
+    return std::unexpected("missing operand after '" + files.back() + "'");
   }
   if (files.size() > 3) {
     return std::unexpected("extra operand '" + files[3] + "'");

@@ -100,16 +100,45 @@ auto read_source(const std::string& file) -> cp::Result<std::string> {
     return content;
   }
 
+  auto tac_input_open_error = [](std::string_view path) -> std::string {
+    std::error_code ec;
+    auto status = std::filesystem::status(std::filesystem::u8path(path), ec);
+    if (!ec && status.type() == std::filesystem::file_type::directory) {
+      return std::string("cannot open '") + std::string(path) +
+             "' for reading: Is a directory";
+    }
+    return std::string("cannot open '") + std::string(path) +
+           "' for reading: No such file or directory";
+  };
+
   std::ifstream f(file, std::ios::binary);
   if (!f) {
-    return std::unexpected(std::string("cannot open '") + file +
-                           "' for reading");
+    return std::unexpected(tac_input_open_error(file));
   }
   std::string content;
   content.assign(std::istreambuf_iterator<char>(f),
                  std::istreambuf_iterator<char>());
   if (f.fail() && !f.eof()) return std::unexpected("error reading from file");
   return content;
+}
+
+auto normalize_newline_delimited_text(std::string_view content) -> std::string {
+  std::string normalized;
+  normalized.reserve(content.size());
+
+  for (size_t i = 0; i < content.size(); ++i) {
+    if (content[i] == '\r') {
+      if (i + 1 == content.size()) {
+        continue;
+      }
+      if (content[i + 1] == '\n') {
+        continue;
+      }
+    }
+    normalized.push_back(content[i]);
+  }
+
+  return normalized;
 }
 
 auto split_literal_records(std::string_view content, std::string_view separator,
@@ -185,6 +214,10 @@ auto run(const Config& cfg) -> int {
     if (!content) {
       cp::report_error(content, L"tac");
       return 1;
+    }
+
+    if (!cfg.regex && cfg.separator == "\n") {
+      *content = normalize_newline_delimited_text(*content);
     }
 
     cp::Result<std::vector<std::string>> records =

@@ -194,7 +194,13 @@ auto parse_set(std::string_view str) -> cp::Result<std::string> {
         unsigned char start = static_cast<unsigned char>((*atom)[0]);
         unsigned char end = static_cast<unsigned char>((*end_atom)[0]);
         if (start > end) {
-          return std::unexpected("range-endpoints of invalid range order");
+          std::string range_text;
+          range_text += (*atom)[0];
+          range_text += '-';
+          range_text += (*end_atom)[0];
+          return std::unexpected(make_dynamic_error(
+              std::string("range-endpoints of '") + range_text +
+              "' are in reverse collating sequence order"));
         }
         for (unsigned int c = start; c <= end; ++c) {
           result += static_cast<char>(c);

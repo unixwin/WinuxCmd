@@ -63,6 +63,17 @@ struct Config {
 auto read_input(std::string_view filename)
     -> std::expected<std::string, std::string> {
   std::string content;
+  auto input_open_error = [](std::string_view path) -> std::string {
+    std::error_code ec;
+    if (std::filesystem::is_directory(std::filesystem::u8path(path), ec) &&
+        !ec) {
+      return "cannot open '" + std::string(path) +
+             "' for reading: Is a directory";
+    }
+
+    return "cannot open '" + std::string(path) +
+           "' for reading: No such file or directory";
+  };
 
   if (filename == "-") {
     content.assign(std::istreambuf_iterator<char>(std::cin),
@@ -75,8 +86,7 @@ auto read_input(std::string_view filename)
 
   std::ifstream file(std::string(filename), std::ios::binary);
   if (!file) {
-    return std::unexpected("cannot open '" + std::string(filename) +
-                           "' for reading");
+    return std::unexpected(input_open_error(filename));
   }
 
   content.assign(std::istreambuf_iterator<char>(file),
@@ -209,11 +219,26 @@ auto build_config(const CommandContext<BASE32_OPTIONS.size()>& ctx)
   cfg.wrap = ctx.get<int>("--wrap", 76);
 
   if (cfg.wrap < 0) return std::unexpected("invalid wrap size");
-  if (ctx.positionals.size() > 1) {
-    return std::unexpected("extra operand '" + std::string(ctx.positionals[1]) +
-                           "'");
+
+  SmallVector<std::string, 16> files;
+  for (auto arg : ctx.positionals) {
+    std::string file_arg(arg);
+    if (contains_wildcard(file_arg)) {
+      auto glob_result = glob_expand(file_arg);
+      if (glob_result.expanded) {
+        for (const auto& file : glob_result.files) {
+          files.push_back(wstring_to_utf8(file));
+        }
+        continue;
+      }
+    }
+    files.push_back(file_arg);
   }
-  if (!ctx.positionals.empty()) cfg.file = std::string(ctx.positionals[0]);
+
+  if (files.size() > 1) {
+    return std::unexpected("extra operand '" + files[1] + "'");
+  }
+  if (!files.empty()) cfg.file = files[0];
 
   return cfg;
 }

@@ -83,6 +83,23 @@ TEST(head, head_last_count_option_wins) {
   EXPECT_EQ_TEXT(r2.stdout_text, "al");
 }
 
+TEST(head, head_obsolete_count_after_options_reports_invalid_context) {
+  TempDir tmp;
+  tmp.write("a.txt", "1\n2\n3\n4\n5\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"head.exe", {L"-n", L"1", L"-5", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_NE(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "");
+  EXPECT_NE(
+      r.stderr_text.find("head: option used in invalid context -- 5"),
+      std::wstring::npos);
+  EXPECT_EQ(r.stderr_text.find("unrecognized option"), std::wstring::npos);
+}
+
 TEST(head, head_negative_line_and_byte_counts) {
   TempDir tmp;
   tmp.write("a.txt", "alpha\nbeta\ngamma\n");
@@ -353,6 +370,53 @@ TEST(head, head_stdin_header_uses_standard_input) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text,
                  "==> standard input <==\nS1\n\n==> a.txt <==\nA1\n");
+}
+
+TEST(head, head_missing_file_reports_gnu_shaped_open_error) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"head.exe", {L"missing.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(
+      r.stderr_text.find("head: cannot open 'missing.txt' for reading: No such file or directory") !=
+      std::string::npos);
+}
+
+TEST(head, head_multi_file_skips_header_for_missing_file) {
+  TempDir tmp;
+  tmp.write("a.txt", "A1\nA2\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"head.exe", {L"-n", L"1", L"missing.txt", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(
+      r.stderr_text.find("head: cannot open 'missing.txt' for reading: No such file or directory") !=
+      std::string::npos);
+  EXPECT_EQ(r.stdout_text.find("==> missing.txt <=="), std::string::npos);
+  EXPECT_EQ_TEXT(r.stdout_text, "==> a.txt <==\nA1\n");
+}
+
+TEST(head, head_directory_operand_reports_gnu_shaped_read_error) {
+  TempDir tmp;
+  std::filesystem::create_directory(tmp.path / "dir");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"head.exe", {L"dir"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(
+      r.stderr_text.find("head: error reading 'dir': Is a directory") !=
+      std::string::npos);
 }
 
 TEST(head, head_wildcard) {

@@ -2,7 +2,7 @@
 
 [English](README.md) | [中文](README-zh.md)
 
-> GNU-style commands for real Windows shells.
+> GNU-style commands for Windows shells, without leaving Windows.
 
 ![GitHub release (latest by date)](https://img.shields.io/github/v/release/caomengxuan666/WinuxCmd)
 ![GitHub all releases](https://img.shields.io/github/downloads/caomengxuan666/WinuxCmd/total)
@@ -10,9 +10,9 @@
 ![GitHub license](https://img.shields.io/github/license/caomengxuan666/WinuxCmd)
 ![Windows Support](https://img.shields.io/badge/platform-Windows-blue)
 
-WinuxCmd brings commands like `grep`, `sed`, `find`, `xargs`, `ls`, `cat`, and `rm` to Windows in a form that works with PowerShell, `cmd`, and Windows Terminal instead of asking you to leave them.
+WinuxCmd makes familiar GNU-style commands land cleanly in PowerShell, `cmd`, and Windows Terminal.
 
-It is built for the very common Windows situation where Linux-flavored snippets come from AI, docs, CI logs, issue comments, or muscle memory, but the machine in front of you is still Windows.
+It is built for the very common Windows situation where AI, docs, CI logs, issue comments, or muscle memory hand you Linux-flavored one-liners, but the machine in front of you is still Windows.
 
 ![Windows Terminal](DOCS/images/WindowsTerminal.png)
 
@@ -26,16 +26,15 @@ winget install caomengxuan666.WinuxCmd
 
 If you prefer a zip package, download the latest build from [Releases](https://github.com/caomengxuan666/WinuxCmd/releases).
 
-This project is also practical in conservative Windows environments that still expose Windows PowerShell 5.1, which makes it a good fit for many AI sandbox and automation hosts.
+WinuxCmd also fits conservative Windows environments that still expose Windows PowerShell 5.1, which makes it a practical choice for many AI sandbox and automation hosts.
 
 ## Why WinuxCmd
 
 - Native Windows first. No WSL, VM, or shell replacement.
 - Built for mixed pipelines where Windows tools and GNU-style filters need to coexist.
-- Started on January 23, 2026, before Microsoft's current Windows coreutils repository appeared on May 15, 2026.
-- Friendly to PowerShell 5.1 environments, including AI sandboxes such as Codex that may not expose PowerShell 7.
+- Designed for PowerShell 5.1 hosts, including AI sandboxes such as Codex that may not expose PowerShell 7.
 
-That last point is a real product difference, not just a timeline note. Microsoft's current [Coreutils for Windows](https://github.com/microsoft/coreutils) README explicitly says PowerShell 7.4 or newer is required, while WinuxCmd is designed to remain usable in PowerShell 5.1-hosted environments.
+That last point is a real product difference. Microsoft's current [Coreutils for Windows](https://github.com/microsoft/coreutils) README says PowerShell 7.4 or newer is required; WinuxCmd is designed to stay useful in PowerShell 5.1-hosted environments.
 
 ## What It Feels Like
 
@@ -47,7 +46,7 @@ dir /b | grep -E "\.cpp$" | sort | uniq
 find . -name "*.cpp" -print0 | xargs -0 grep -n TODO
 ```
 
-The point is not to turn Windows into Linux. The point is to let familiar GNU-style text workflows land cleanly in Windows terminals you already use.
+The point is not to turn Windows into Linux. The point is to make familiar text workflows work where you already are.
 
 ## Use It Your Way
 
@@ -102,7 +101,7 @@ Detailed compatibility references live here:
 ## Windows Notes
 
 - Unknown commands fall back through the parent shell, so WinuxCmd complements PowerShell and `cmd` instead of trying to replace them.
-- After `winux activate`, `man` can directly override the PowerShell mapping in the current session.
+- After `winux activate`, use `man.exe` when you want WinuxCmd's manual command directly.
 - For interactive `cmd` use, launching Windows Terminal with `%SystemRoot%\System32\cmd.exe /k winuxcmd` is safer than a global `AutoRun` hook.
 
 ## More

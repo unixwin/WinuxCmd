@@ -100,6 +100,26 @@ TEST(seq, seq_long_separator) {
   EXPECT_EQ_TEXT(r.stdout_text, "1,2,3,4\n");
 }
 
+TEST(seq, seq_long_terminator_replaces_final_newline) {
+  Pipeline p;
+  p.add(L"seq.exe", {L"--terminator=,", L"3"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "1\n2\n3,");
+}
+
+TEST(seq, seq_short_terminator_replaces_only_final_separator) {
+  Pipeline p;
+  p.add(L"seq.exe", {L"-t", L" END ", L"1", L"2", L"5"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "1\n3\n5 END ");
+}
+
 TEST(seq, seq_rejects_invalid_number_without_throwing) {
   Pipeline p;
   p.add(L"seq.exe", {L"not-a-number"});

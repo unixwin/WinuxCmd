@@ -127,7 +127,29 @@ TEST(diff3, diff3_missing_file_fails) {
   p.add(L"diff3.exe", {L"a.txt", L"b.txt"});
   auto r = p.run();
 
-  EXPECT_NE(r.exit_code, 0);
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("diff3 missing operand stderr", r.stderr_text);
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ(r.stderr_text,
+            "diff3: missing operand after 'b.txt'\n"
+            "Try 'diff3 --help' for more information.\n");
+}
+
+TEST(diff3, diff3_missing_all_operands_reports_help_hint) {
+  Pipeline p;
+  p.add(L"diff3.exe", {});
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("diff3 missing all operands stderr", r.stderr_text);
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ(r.stderr_text,
+            "diff3: missing operand\n"
+            "Try 'diff3 --help' for more information.\n");
 }
 
 TEST(diff3, diff3_too_many_files_fails) {

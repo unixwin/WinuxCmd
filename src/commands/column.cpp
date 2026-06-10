@@ -49,26 +49,46 @@ auto constexpr COLUMN_OPTIONS = std::array{
            "determine the number of columns the input contains", BOOL_TYPE),
     OPTION("-s", "--separator", "specify the possible input item delimiters",
            STRING_TYPE),
+    OPTION("", "--output-separator",
+           "specify the columns separator for table output", STRING_TYPE),
     OPTION("-o", "output-separator",
            "specify the columns separator for table output", STRING_TYPE),
+    OPTION("", "--table-name",
+           "specify the table name for JSON or XML output", STRING_TYPE),
     OPTION("-n", "table-name", "specify the table name for JSON or XML output",
+           STRING_TYPE),
+    OPTION("", "--output-fields",
+           "specify which columns to include in JSON or XML output",
            STRING_TYPE),
     OPTION("-x", "output-fields",
            "specify which columns to include in JSON or XML output",
            STRING_TYPE),
+    OPTION("", "--table-right", "columns to right align in table output",
+           STRING_TYPE),
     OPTION("-r", "table-right", "right align text in table columns", BOOL_TYPE),
     OPTION("-R", "table-right-columns",
            "columns to right align in table output", STRING_TYPE),
+    OPTION("", "--table-hide", "don't print header in table output", BOOL_TYPE),
     OPTION("-H", "table-hide", "don't print header in table output", BOOL_TYPE),
+    OPTION("", "--table-empty", "don't use empty lines in table output",
+           BOOL_TYPE),
     OPTION("-e", "table-empty", "don't use empty lines in table output",
+           BOOL_TYPE),
+    OPTION("", "--table-no-trunc", "don't truncate text in table output",
            BOOL_TYPE),
     OPTION("-N", "table-no-trunc", "don't truncate text in table output",
            BOOL_TYPE),
+    OPTION("", "--table-noescape",
+           "don't escape newline, tab, backslash in table output", BOOL_TYPE),
     OPTION("-E", "table-noescape",
            "don't escape newline, tab, backslash in table output", BOOL_TYPE),
+    OPTION("", "--json", "use JSON output format for table", BOOL_TYPE),
     OPTION("-J", "json", "use JSON output format for table", BOOL_TYPE),
+    OPTION("", "--output-width", "maximum display width", INT_TYPE),
     OPTION("-O", "output-width", "maximum display width", INT_TYPE),
+    OPTION("", "--version", "output version information and exit", BOOL_TYPE),
     OPTION("-V", "version", "output version information and exit", BOOL_TYPE),
+    OPTION("", "--help", "display this help and exit", BOOL_TYPE),
     OPTION("-h", "help", "display this help and exit", BOOL_TYPE)};
 
 namespace column_pipeline {
@@ -99,17 +119,48 @@ auto build_config(const CommandContext<COLUMN_OPTIONS.size()>& ctx)
   cfg.table_mode =
       ctx.get<bool>("--table", false) || ctx.get<bool>("-t", false);
   cfg.separator = ctx.get<std::string>("--separator", "");
-  cfg.output_separator = ctx.get<std::string>("-o", "");
-  cfg.table_name = ctx.get<std::string>("-n", "");
-  cfg.output_fields = ctx.get<std::string>("-x", "");
+  if (cfg.separator.empty()) cfg.separator = ctx.get<std::string>("-s", "");
+  cfg.output_separator = ctx.get<std::string>("--output-separator", "");
+  if (cfg.output_separator.empty()) {
+    cfg.output_separator = ctx.get<std::string>("-o", "");
+  }
+  if (cfg.output_separator.empty()) {
+    cfg.output_separator = ctx.get<std::string>("output-separator", "");
+  }
+  cfg.table_name = ctx.get<std::string>("--table-name", "");
+  if (cfg.table_name.empty()) {
+    cfg.table_name = ctx.get<std::string>("-n", "");
+  }
+  if (cfg.table_name.empty()) {
+    cfg.table_name = ctx.get<std::string>("table-name", "");
+  }
+  cfg.output_fields = ctx.get<std::string>("--output-fields", "");
+  if (cfg.output_fields.empty()) {
+    cfg.output_fields = ctx.get<std::string>("-x", "");
+  }
+  if (cfg.output_fields.empty()) {
+    cfg.output_fields = ctx.get<std::string>("output-fields", "");
+  }
   cfg.table_right = ctx.get<bool>("-r", false);
-  cfg.table_right_columns = ctx.get<std::string>("-R", "");
-  cfg.table_hide = ctx.get<bool>("-H", false);
-  cfg.table_empty = ctx.get<bool>("-e", false);
-  cfg.table_no_trunc = ctx.get<bool>("-N", false);
-  cfg.table_noescape = ctx.get<bool>("-E", false);
-  cfg.json_output = ctx.get<bool>("-J", false);
-  cfg.output_width = ctx.get<int>("-O", 0);
+  cfg.table_right_columns = ctx.get<std::string>("--table-right", "");
+  if (cfg.table_right_columns.empty()) {
+    cfg.table_right_columns = ctx.get<std::string>("-R", "");
+  }
+  if (cfg.table_right_columns.empty()) {
+    cfg.table_right_columns = ctx.get<std::string>("table-right-columns", "");
+  }
+  cfg.table_hide =
+      ctx.get<bool>("--table-hide", false) || ctx.get<bool>("-H", false);
+  cfg.table_empty =
+      ctx.get<bool>("--table-empty", false) || ctx.get<bool>("-e", false);
+  cfg.table_no_trunc = ctx.get<bool>("--table-no-trunc", false) ||
+                       ctx.get<bool>("-N", false);
+  cfg.table_noescape = ctx.get<bool>("--table-noescape", false) ||
+                       ctx.get<bool>("-E", false);
+  cfg.json_output =
+      ctx.get<bool>("--json", false) || ctx.get<bool>("-J", false);
+  cfg.output_width = ctx.get<int>("--output-width", 0);
+  if (cfg.output_width == 0) cfg.output_width = ctx.get<int>("-O", 0);
 
   for (auto arg : ctx.positionals) {
     std::string file_arg(arg);
@@ -134,6 +185,17 @@ auto build_config(const CommandContext<COLUMN_OPTIONS.size()>& ctx)
 
 auto read_input(const std::string& filename) -> cp::Result<std::string> {
   std::string content;
+  auto input_open_error = [](std::string_view path) -> std::string {
+    std::error_code ec;
+    if (std::filesystem::is_directory(std::filesystem::u8path(path), ec) &&
+        !ec) {
+      return std::string("cannot open '") + std::string(path) +
+             "' for reading: Is a directory";
+    }
+
+    return std::string("cannot open '") + std::string(path) +
+           "' for reading: No such file or directory";
+  };
 
   if (filename == "-" || filename.empty()) {
     // Read from stdin
@@ -149,8 +211,7 @@ auto read_input(const std::string& filename) -> cp::Result<std::string> {
     // Read from file
     std::ifstream file(filename, std::ios::binary);
     if (!file.is_open()) {
-      return std::unexpected(std::string("cannot open '") + filename +
-                             "' for reading");
+      return std::unexpected(input_open_error(filename));
     }
 
     // Get file size
@@ -189,16 +250,25 @@ auto run(const Config& cfg) -> int {
     // Table mode - format as a table
     // Use heap allocation to avoid stack overflow
     std::vector<std::string> lines;
+    auto normalize_line = [](std::string& line) {
+      if (!line.empty() && line.back() == '\r') {
+        line.pop_back();
+      }
+    };
     size_t start = 0;
     while (start < all_content.size()) {
       size_t end = all_content.find('\n', start);
       if (end == std::string::npos) {
-        if (!all_content.substr(start).empty()) {
-          lines.push_back(all_content.substr(start));
+        std::string line = all_content.substr(start);
+        normalize_line(line);
+        if (!line.empty()) {
+          lines.push_back(std::move(line));
         }
         break;
       }
-      lines.push_back(all_content.substr(start, end - start));
+      std::string line = all_content.substr(start, end - start);
+      normalize_line(line);
+      lines.push_back(std::move(line));
       start = end + 1;
     }
 

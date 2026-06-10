@@ -47,8 +47,11 @@ auto constexpr UNEXPAND_OPTIONS =
                       STRING_TYPE),
                OPTION("-a", "--all",
                       "convert all spaces, not just leading ones", BOOL_TYPE),
-               OPTION("", "--first-only",
-                      "convert only leading sequences of blanks", BOOL_TYPE)};
+               OPTION("-f", "--first-only",
+                      "convert only leading sequences of blanks", BOOL_TYPE),
+               OPTION("-U", "--no-utf8",
+                      "interpret input file as 8-bit ASCII rather than UTF-8",
+                      BOOL_TYPE)};
 
 namespace unexpand_pipeline {
 namespace cp = core::pipeline;
@@ -65,6 +68,7 @@ struct Config {
   TabStops tab_stops;
   bool all_spaces = false;
   bool first_only = true;
+  bool no_utf8 = false;
   SmallVector<std::string, 64> files;
 };
 
@@ -167,7 +171,10 @@ auto build_config(const CommandContext<UNEXPAND_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
   Config cfg;
   cfg.all_spaces = ctx.get<bool>("--all", false) || ctx.get<bool>("-a", false);
-  cfg.first_only = ctx.get<bool>("--first-only", false);
+  cfg.first_only =
+      ctx.get<bool>("--first-only", false) || ctx.get<bool>("-f", false);
+  cfg.no_utf8 =
+      ctx.get<bool>("--no-utf8", false) || ctx.get<bool>("-U", false);
 
   auto tabs_opt = ctx.get<std::string>("--tabs", "");
   if (tabs_opt.empty()) {
@@ -286,6 +293,17 @@ auto unexpand_line(const std::string& line, const Config::TabStops& tab_stops,
 
 auto run(const Config& cfg) -> int {
   bool all_ok = true;
+  auto input_open_error = [](std::string_view path) -> std::string {
+    std::error_code ec;
+    if (std::filesystem::is_directory(std::filesystem::u8path(path), ec) &&
+        !ec) {
+      return "cannot open '" + std::string(path) +
+             "' for reading: Is a directory";
+    }
+
+    return "cannot open '" + std::string(path) +
+           "' for reading: No such file or directory";
+  };
 
   for (const auto& file : cfg.files) {
     std::string content;
@@ -298,7 +316,7 @@ auto run(const Config& cfg) -> int {
       // Read from file
       std::ifstream f(file, std::ios::binary);
       if (!f) {
-        auto err = std::string("cannot open '") + file + "' for reading";
+        auto err = input_open_error(file);
         cp::Result<int> result = std::unexpected(std::string_view(err));
         cp::report_error(result, L"unexpand");
         all_ok = false;
@@ -312,8 +330,8 @@ auto run(const Config& cfg) -> int {
         all_ok = false;
         continue;
       }
-      // Skip UTF-8 BOM if present at the beginning
-      if (content.size() >= 3 &&
+      // Default mode treats UTF-8 input like GNU/coreutils and drops a BOM.
+      if (!cfg.no_utf8 && content.size() >= 3 &&
           static_cast<unsigned char>(content[0]) == 0xEF &&
           static_cast<unsigned char>(content[1]) == 0xBB &&
           static_cast<unsigned char>(content[2]) == 0xBF) {

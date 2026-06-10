@@ -110,6 +110,8 @@ auto constexpr TAIL_OPTIONS = std::array{
     OPTION("-q", "--quiet", "never output headers giving file names"),
     OPTION("", "--silent", "never output headers giving file names"),
     OPTION("", "--retry", "keep trying to open a file if it is inaccessible"),
+    OPTION("", "--use-polling",
+           "disable native directory change watching and use polling instead"),
     OPTION("-s", "--sleep-interval",
            "with -f, sleep for approximately N seconds between iterations",
            STRING_TYPE),
@@ -131,6 +133,7 @@ struct TailConfig {
   bool verbose = false;
   bool follow = false;
   bool follow_by_name = false;
+  bool explicit_retry = false;
   bool retry = false;
   bool debug = false;
   std::vector<DWORD> follow_pids;
@@ -460,6 +463,22 @@ auto open_input_file(const std::string& file) -> std::ifstream {
                        std::ios::binary);
 }
 
+auto describe_open_failure(const std::string& file) -> std::string {
+  std::wstring wfile = utf8_to_wstring(file);
+  DWORD attrs = GetFileAttributesW(wfile.c_str());
+  if (attrs == INVALID_FILE_ATTRIBUTES) {
+    return "No such file or directory";
+  }
+  if ((attrs & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+    return "Is a directory";
+  }
+  return "Permission denied";
+}
+
+auto is_directory_open_failure(std::string_view reason) -> bool {
+  return reason == "Is a directory";
+}
+
 auto output_text_tail(std::istream& in, const TailConfig& config) -> void {
   std::istringstream decoded(read_text_stream(in));
   output_tail(decoded, config);
@@ -502,7 +521,8 @@ auto build_config(const CommandContext<N>& ctx) -> cp::Result<TailConfig> {
   }
   config.follow = ctx.get<bool>("-f", false) || ctx.has("--follow") ||
                   config.follow_by_name;
-  config.retry = ctx.get<bool>("--retry", false) || config.follow_by_name;
+  config.explicit_retry = ctx.get<bool>("--retry", false);
+  config.retry = config.explicit_retry || config.follow_by_name;
   for (int pid : ctx.template get_all<int>("--pid")) {
     if (pid < 0) return std::unexpected("invalid process ID");
     config.follow_pids.push_back(static_cast<DWORD>(pid));
@@ -701,6 +721,26 @@ auto debug_follow_start(const TailConfig& config, size_t file_count) -> void {
   }
 }
 
+auto emit_ignored_pid_warning(const TailConfig& config) -> void {
+  if (config.follow || config.follow_pids.empty()) return;
+  safeErrorPrint(
+      "tail: warning: PID ignored; --pid=PID is useful only when following\n");
+}
+
+auto emit_retry_warning(const TailConfig& config) -> void {
+  if (!config.explicit_retry) return;
+  if (!config.follow) {
+    safeErrorPrint(
+        "tail: warning: --retry ignored; --retry is useful only when "
+        "following\n");
+    return;
+  }
+  if (!config.follow_by_name) {
+    safeErrorPrint(
+        "tail: warning: --retry only effective for the initial open\n");
+  }
+}
+
 auto follow_descriptor_target(FollowTarget& target, const TailConfig& config,
                               bool multi) -> bool {
   if (!target.descriptor.is_open()) {
@@ -835,6 +875,8 @@ REGISTER_COMMAND(
     return 1;
   }
   auto config = *config_result;
+  emit_ignored_pid_warning(config);
+  emit_retry_warning(config);
 
   // Use SmallVector for files (max 64 files) - all stack-allocated
   SmallVector<std::string, 64> files{};
@@ -862,15 +904,18 @@ REGISTER_COMMAND(
     const auto& file = files[i];
 
     bool show_header = config.verbose || (multi && !config.quiet);
-    if (show_header) {
+    auto emit_header = [&]() {
+      if (!show_header) return;
       if (!first_print) safePrint(std::string(1, config.delimiter));
       safePrint("==> ");
       safePrint(file == "-" ? "standard input" : file);
       safePrint(" <==");
       safePrint(std::string(1, config.delimiter));
-    }
+      first_print = false;
+    };
 
     if (file == "-") {
+      emit_header();
       config.stdin_mode = true;
       if (config.by_bytes || config.delimiter == '\0') {
         output_tail(std::cin, config);
@@ -884,13 +929,25 @@ REGISTER_COMMAND(
     } else {
       auto input = open_file_with_retry(file, config);
       if (!input) {
-        safeErrorPrint("tail: cannot open '");
-        safeErrorPrint(file);
-        safeErrorPrint("'\n");
+        std::string reason = describe_open_failure(file);
+        if (is_directory_open_failure(reason)) {
+          safeErrorPrint("tail: error reading '");
+          safeErrorPrint(file);
+          safeErrorPrint("': ");
+          safeErrorPrint(reason);
+          safeErrorPrint("\n");
+        } else {
+          safeErrorPrint("tail: cannot open '");
+          safeErrorPrint(file);
+          safeErrorPrint("' for reading: ");
+          safeErrorPrint(reason);
+          safeErrorPrint("\n");
+        }
         any_error = true;
         continue;
       }
 
+      emit_header();
       if (config.by_bytes || config.delimiter == '\0') {
         output_tail(*input, config);
       } else {
@@ -914,8 +971,6 @@ REGISTER_COMMAND(
         follow_targets_to_run.push_back(std::move(target));
       }
     }
-
-    first_print = false;
   }
 
   if (!follow_targets_to_run.empty() &&

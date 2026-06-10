@@ -283,10 +283,16 @@ auto build_config(const CommandContext<PR_OPTIONS.size()>& ctx)
 auto read_lines(const std::string& filename)
     -> cp::Result<SmallVector<std::string, 1024>> {
   SmallVector<std::string, 1024> lines;
+  auto normalize_text_line = [](std::string& line) {
+    if (!line.empty() && line.back() == '\r') {
+      line.pop_back();
+    }
+  };
 
   if (filename == "-") {
     std::string line;
     while (std::getline(std::cin, line)) {
+      normalize_text_line(line);
       lines.push_back(line);
     }
   } else {
@@ -305,6 +311,7 @@ auto read_lines(const std::string& filename)
           static_cast<unsigned char>(line[2]) == 0xBF) {
         line = line.substr(3);
       }
+      normalize_text_line(line);
       lines.push_back(line);
     }
 

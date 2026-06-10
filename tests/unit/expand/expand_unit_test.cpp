@@ -135,3 +135,48 @@ TEST(expand, expand_stdin) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.find("\t") == std::string::npos);
 }
+
+TEST(expand, expand_missing_input_reports_no_such_file) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"expand.exe", {L"missing.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "expand: cannot open 'missing.txt' for reading: No such "
+                  "file or directory") != std::string::npos);
+}
+
+TEST(expand, expand_directory_input_reports_is_a_directory) {
+  TempDir tmp;
+  tmp.mkdir("indir");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"expand.exe", {L"indir"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "expand: cannot open 'indir' for reading: Is a directory") !=
+              std::string::npos);
+}
+
+TEST(expand, expand_newline_mode_trims_trailing_cr_from_crlf_records) {
+  TempDir tmp;
+  tmp.write_bytes("crlf.txt", {'a', '\t', 'b', '\r', '\n', 'c', '\t', 'd', '\r', '\n'});
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"expand.exe", {L"-t", L"4", L"crlf.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "a   b\nc   d\n");
+}

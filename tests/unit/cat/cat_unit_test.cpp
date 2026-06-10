@@ -152,3 +152,72 @@ TEST(cat, cat_wildcard_char_class) {
   EXPECT_TRUE(r.stdout_text.find("bbb") != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("ccc") == std::string::npos);
 }
+
+TEST(cat, cat_wildcard_char_class_in_parent_directory_segment) {
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "d1");
+  std::filesystem::create_directories(tmp.path / "d2");
+  std::filesystem::create_directories(tmp.path / "d3");
+  tmp.write("d1/a.txt", "aaa\n");
+  tmp.write("d2/b.txt", "bbb\n");
+  tmp.write("d3/c.txt", "ccc\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cat.exe", {L"d[12]\\*.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("aaa") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("bbb") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("ccc") == std::string::npos);
+}
+
+TEST(cat, cat_char_class_prefers_glob_over_same_spelling_literal_path) {
+  TempDir tmp;
+  tmp.write("[ab].txt", "literal\n");
+  tmp.write("a.txt", "aaa\n");
+  tmp.write("b.txt", "bbb\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cat.exe", {L"[ab].txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("aaa") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("bbb") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("literal") == std::string::npos);
+}
+
+TEST(cat, cat_directory_input_reports_is_a_directory) {
+  TempDir tmp;
+  tmp.mkdir("indir");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cat.exe", {L"indir"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("cat: indir: Is a directory") !=
+              std::string::npos);
+}
+
+TEST(cat, cat_missing_input_reports_gnu_shaped_diagnostic) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cat.exe", {L"missing.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("cat: missing.txt: No such file or directory") !=
+              std::string::npos);
+}

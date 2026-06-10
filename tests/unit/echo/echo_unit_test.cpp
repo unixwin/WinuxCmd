@@ -182,6 +182,50 @@ TEST(echo, echo_hex_escape_utf8_sequence_forms_multibyte_text) {
   EXPECT_EQ_TEXT(r.stdout_text, "A😂B\n");
 }
 
+TEST(echo, echo_unicode_escape_u_emits_utf8) {
+  Pipeline p;
+  p.add(L"echo.exe", {L"-e", L"\\u4F60\\u597D"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.empty());
+  EXPECT_EQ_TEXT(r.stdout_text, "你好\n");
+}
+
+TEST(echo, echo_unicode_escape_U_emits_utf8) {
+  Pipeline p;
+  p.add(L"echo.exe", {L"-e", L"\\U0001F602"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.empty());
+  EXPECT_EQ_TEXT(r.stdout_text, "😂\n");
+}
+
+TEST(echo, echo_unicode_escape_without_hex_keeps_backslash) {
+  Pipeline p;
+  p.add(L"echo.exe", {L"-e", L"foo\\u bar \\U baz"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.empty());
+  EXPECT_EQ_TEXT(r.stdout_text, "foo\\u bar \\U baz\n");
+}
+
+TEST(echo, echo_c_escape_suppresses_further_output_and_newline) {
+  Pipeline p;
+  p.add(L"echo.exe", {L"-e", L"foo\\cbar"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.empty());
+  EXPECT_EQ_TEXT(r.stdout_text, "foo");
+}
+
 TEST(echo, echo_suppress_escapes) {
   Pipeline p;
   p.add(L"echo.exe", {L"-E", L"line1\\nline2"});

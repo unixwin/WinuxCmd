@@ -44,6 +44,8 @@ TEST(winuxcmd, winuxcmd_help_command_topic_shows_command_help) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.find("Usage: sort [OPTION]... [FILE]...") !=
               std::string::npos);
+  EXPECT_TRUE(
+      r.stdout_text.find("--compress-program") != std::string::npos);
 }
 
 TEST(winuxcmd, winuxcmd_unknown_command_does_not_fallback_to_shell) {

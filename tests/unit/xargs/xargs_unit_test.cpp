@@ -117,6 +117,20 @@ TEST(xargs, xargs_no_run_if_empty) {
   EXPECT_TRUE(r.stdout_text.empty());
 }
 
+TEST(xargs, xargs_no_run_if_empty_still_runs_for_whitespace_only_input) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"-r", L"cmd.exe", L"/C", L"echo", L"ran"});
+  p.set_stdin("   \r\n\t \r\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("ran") != std::string::npos);
+}
+
 TEST(xargs, xargs_default_echo) {
   TempDir tmp;
 
@@ -225,6 +239,52 @@ TEST(xargs, xargs_replacement_uses_one_input_line_per_command) {
   EXPECT_TRUE(r.stdout_text.find("[two words next]") == std::string::npos);
 }
 
+TEST(xargs, xargs_replacement_trailing_blank_continues_logical_line) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"-I", L"{}", L"cmd.exe", L"/C", L"echo", L"[{}]"});
+  p.set_stdin("alpha \nbeta\ngamma\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("[alpha beta]") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("[gamma]") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("[alpha]") == std::string::npos);
+}
+
+TEST(xargs, xargs_default_echo_replacement_uses_one_input_line_per_command) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"-I", L"{}"});
+  p.set_stdin("two words\nnext\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "two words\nnext\n");
+}
+
+TEST(xargs, xargs_replacement_ignores_blank_input_lines) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"-I", L"{}", L"cmd.exe", L"/C", L"echo", L"[{}]"});
+  p.set_stdin("alpha\n\n \t \nbeta\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("[alpha]") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("[beta]") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("[]") == std::string::npos);
+}
+
 TEST(xargs, xargs_deprecated_replace_defaults_to_braces) {
   TempDir tmp;
 
@@ -285,6 +345,55 @@ TEST(xargs, xargs_default_parser_respects_backslash_escaping) {
   EXPECT_TRUE(r.stdout_text.find("one two") != std::string::npos);
 }
 
+TEST(xargs, xargs_default_parser_preserves_trailing_backslash_at_eof) {
+  TempDir tmp;
+  tmp.write("input.txt", "alpha\\");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"-a", L"input.txt", L"cmd.exe", L"/C", L"echo"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.empty());
+  EXPECT_TRUE(r.stdout_text.find("alpha\\") != std::string::npos);
+}
+
+TEST(xargs, xargs_default_parser_rejects_unmatched_double_quote_with_gnu_hint) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"cmd.exe", L"/C", L"echo"});
+  p.set_stdin("\"unterminated\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(
+      r.stderr_text.find("xargs: unmatched double quote; by default quotes "
+                         "are special to xargs unless you use the -0 option") !=
+      std::string::npos);
+}
+
+TEST(xargs, xargs_default_parser_rejects_unmatched_single_quote_with_gnu_hint) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"cmd.exe", L"/C", L"echo"});
+  p.set_stdin("'unterminated\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(
+      r.stderr_text.find("xargs: unmatched single quote; by default quotes "
+                         "are special to xargs unless you use the -0 option") !=
+      std::string::npos);
+}
+
 TEST(xargs, xargs_input_items_are_literal_not_globs) {
   TempDir tmp;
   tmp.write("one.txt", "1\n");
@@ -304,6 +413,102 @@ TEST(xargs, xargs_input_items_are_literal_not_globs) {
   EXPECT_TRUE(r.stdout_text.find("one.txt two.txt") == std::string::npos);
 }
 
+TEST(xargs, xargs_command_template_args_expand_wildcards) {
+  TempDir tmp;
+  tmp.write("one.txt", "1\n");
+  tmp.write("two.txt", "2\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"cmd.exe", L"/C", L"echo", L"*.txt"});
+  p.set_stdin("stdinarg\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("one.txt") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("two.txt") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("stdinarg") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("*.txt") == std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("one.txt two.txt stdinarg") !=
+              std::string::npos);
+}
+
+TEST(xargs, xargs_command_template_args_expand_char_class_wildcards) {
+  TempDir tmp;
+  tmp.write("aa.txt", "1\n");
+  tmp.write("ab.txt", "2\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"cmd.exe", L"/C", L"echo", L"a[ab].txt"});
+  p.set_stdin("stdinarg\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("aa.txt") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("ab.txt") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("stdinarg") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("a[ab].txt") == std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("aa.txt ab.txt stdinarg") !=
+              std::string::npos);
+}
+
+TEST(xargs, xargs_command_template_args_expand_parent_segment_star_wildcards) {
+  TempDir tmp;
+  tmp.write("dir1\\one.txt", "1\n");
+  tmp.write("dir2\\two.txt", "2\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"cmd.exe", L"/C", L"echo", L"dir*\\*.txt"});
+  p.set_stdin("stdinarg\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("dir1\\one.txt") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("dir2\\two.txt") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("stdinarg") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("dir*\\*.txt") == std::string::npos);
+}
+
+TEST(xargs, xargs_command_template_args_expand_parent_segment_question_wildcards) {
+  TempDir tmp;
+  tmp.write("dir1\\one.txt", "1\n");
+  tmp.write("dir2\\two.txt", "2\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"cmd.exe", L"/C", L"echo", L"dir?\\*.txt"});
+  p.set_stdin("stdinarg\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("dir1\\one.txt") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("dir2\\two.txt") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("stdinarg") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("dir?\\*.txt") == std::string::npos);
+}
+
+TEST(xargs, xargs_command_template_args_keep_literal_when_wildcard_has_no_match) {
+  TempDir tmp;
+  tmp.write("one.txt", "1\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"cmd.exe", L"/C", L"echo", L"missing*.txt"});
+  p.set_stdin("stdinarg\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("missing*.txt") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("stdinarg") != std::string::npos);
+}
+
 TEST(xargs, xargs_custom_delimiter) {
   TempDir tmp;
 
@@ -320,6 +525,70 @@ TEST(xargs, xargs_custom_delimiter) {
   EXPECT_TRUE(r.stdout_text.find("gamma") != std::string::npos);
 }
 
+TEST(xargs, xargs_rejects_empty_short_delimiter) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe",
+        {L"-d", L"", L"-n", L"1", L"cmd.exe", L"/C", L"echo"});
+  p.set_stdin("alpha,beta");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("xargs: delimiter must not be empty") !=
+              std::string::npos);
+}
+
+TEST(xargs, xargs_rejects_empty_long_delimiter) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe",
+        {L"--delimiter=", L"-n", L"1", L"cmd.exe", L"/C", L"echo"});
+  p.set_stdin("alpha,beta");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("xargs: delimiter must not be empty") !=
+              std::string::npos);
+}
+
+TEST(xargs, xargs_rejects_incomplete_hex_delimiter_escape) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe",
+        {L"-d", L"\\x", L"-n", L"1", L"cmd.exe", L"/C", L"echo"});
+  p.set_stdin("alpha");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("xargs: invalid hex delimiter escape") !=
+              std::string::npos);
+}
+
+TEST(xargs, xargs_rejects_unknown_named_delimiter_escape) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe",
+        {L"-d", L"\\q", L"-n", L"1", L"cmd.exe", L"/C", L"echo"});
+  p.set_stdin("alpha");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("xargs: invalid delimiter escape") !=
+              std::string::npos);
+}
+
 TEST(xargs, xargs_delimiter_escape_keeps_spaces_literal) {
   TempDir tmp;
 
@@ -334,6 +603,74 @@ TEST(xargs, xargs_delimiter_escape_keeps_spaces_literal) {
   EXPECT_TRUE(r.stdout_text.find("two words") != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("next") != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("two words next") == std::string::npos);
+}
+
+TEST(xargs, xargs_delimiter_preserves_empty_items_between_separators) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe",
+        {L"-d", L"\\n", L"-I", L"{}", L"cmd.exe", L"/C", L"echo", L"[{}]"});
+  p.set_stdin("alpha\n\nbeta\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("[alpha]") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("[]") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("[beta]") != std::string::npos);
+}
+
+TEST(xargs, xargs_null_mode_preserves_empty_items_between_separators) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe",
+        {L"-0", L"-I", L"{}", L"cmd.exe", L"/C", L"echo", L"[{}]"});
+  p.set_stdin(std::string("alpha\0\0beta\0", 12));
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("[alpha]") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("[]") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("[beta]") != std::string::npos);
+}
+
+TEST(xargs, xargs_logical_eof_is_ignored_in_delimiter_mode) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe",
+        {L"-d", L"\\n", L"-E", L"STOP", L"cmd.exe", L"/C", L"echo"});
+  p.set_stdin("alpha\nSTOP\nbeta\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("alpha") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("STOP") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("beta") != std::string::npos);
+}
+
+TEST(xargs, xargs_logical_eof_is_ignored_in_null_mode) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe",
+        {L"-0", L"-E", L"STOP", L"cmd.exe", L"/C", L"echo"});
+  p.set_stdin(std::string("alpha\0STOP\0beta\0", 16));
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("alpha") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("STOP") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("beta") != std::string::npos);
 }
 
 TEST(xargs, xargs_max_procs_option_is_accepted) {
@@ -364,6 +701,50 @@ TEST(xargs, xargs_max_procs_zero_is_accepted) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.find("alpha") != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("beta") != std::string::npos);
+}
+
+TEST(xargs, xargs_max_procs_reuses_any_completed_slot_instead_of_fifo_waiting) {
+  TempDir tmp;
+  tmp.write("runner.cmd",
+            "@echo off\r\n"
+            "if \"%1\"==\"slow\" (\r\n"
+            "  echo slow-start>>order.txt\r\n"
+            "  ping -n 5 127.0.0.1 >nul\r\n"
+            "  echo slow-end>>order.txt\r\n"
+            "  exit /B 0\r\n"
+            ")\r\n"
+            "if \"%1\"==\"fast\" (\r\n"
+            "  echo fast-start>>order.txt\r\n"
+            "  ping -n 2 127.0.0.1 >nul\r\n"
+            "  echo fast-end>>order.txt\r\n"
+            "  exit /B 0\r\n"
+            ")\r\n"
+            "echo third-start>>order.txt\r\n"
+            "ping -n 2 127.0.0.1 >nul\r\n"
+            "echo third-end>>order.txt\r\n"
+            "exit /B 0\r\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"-P", L"2", L"-n", L"1", L"cmd.exe", L"/C",
+                       L"runner.cmd"});
+  p.set_stdin("slow\nfast\nthird\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+
+  std::ifstream order_file(tmp.path / "order.txt");
+  EXPECT_TRUE(order_file.good());
+  if (!order_file.good()) return;
+  std::string order((std::istreambuf_iterator<char>(order_file)),
+                    std::istreambuf_iterator<char>());
+
+  size_t slow_end = order.find("slow-end");
+  size_t third_start = order.find("third-start");
+  EXPECT_TRUE(slow_end != std::string::npos);
+  EXPECT_TRUE(third_start != std::string::npos);
+  EXPECT_LT(third_start, slow_end);
 }
 
 TEST(xargs, xargs_process_slot_var_is_exported_to_children) {
@@ -398,6 +779,22 @@ TEST(xargs, xargs_arg_file_reads_from_file_instead_of_stdin) {
   EXPECT_TRUE(r.stdout_text.find("stdin_arg") == std::string::npos);
 }
 
+TEST(xargs, xargs_missing_arg_file_reports_gnu_shaped_diagnostic) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"-a", L"missing.txt", L"cmd.exe", L"/C", L"echo"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "xargs: Cannot open input file 'missing.txt': No such file "
+                 "or directory\n");
+}
+
 TEST(xargs, xargs_max_lines_groups_by_input_lines) {
   TempDir tmp;
 
@@ -425,7 +822,10 @@ TEST(xargs, xargs_conflict_max_lines_then_max_args_last_wins) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stderr_text.find("mutually exclusive") != std::string::npos);
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "xargs: warning: options --max-lines and --max-args/-n are mutually "
+      "exclusive, ignoring previous --max-lines value\n");
   EXPECT_TRUE(r.stdout_text.find("a b c") != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("d") != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("a b\r\nc d") == std::string::npos);
@@ -442,7 +842,10 @@ TEST(xargs, xargs_conflict_max_args_then_max_lines_last_wins) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stderr_text.find("mutually exclusive") != std::string::npos);
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "xargs: warning: options --max-args and --max-lines/-L/-l are mutually "
+      "exclusive, ignoring previous --max-args value\n");
   EXPECT_TRUE(r.stdout_text.find("a b") != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("c d") != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("a b c") == std::string::npos);
@@ -460,7 +863,10 @@ TEST(xargs, xargs_conflict_replace_then_max_args_last_wins) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stderr_text.find("mutually exclusive") != std::string::npos);
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "xargs: warning: options --replace/-I/-i and --max-args/-n are "
+      "mutually exclusive, ignoring previous --replace value\n");
   EXPECT_TRUE(r.stdout_text.find("[{}] a b") != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("[a]") == std::string::npos);
 }
@@ -494,7 +900,10 @@ TEST(xargs, xargs_conflict_max_lines_then_replace_last_wins) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stderr_text.find("mutually exclusive") != std::string::npos);
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "xargs: warning: options --max-lines and --replace/-I/-i are mutually "
+      "exclusive, ignoring previous --max-lines value\n");
   EXPECT_TRUE(r.stdout_text.find("[a]") != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("[b]") != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("[a b]") == std::string::npos);
@@ -512,7 +921,10 @@ TEST(xargs, xargs_conflict_replace_then_max_lines_last_wins) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stderr_text.find("mutually exclusive") != std::string::npos);
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "xargs: warning: options --replace/-I/-i and --max-lines/-L/-l are "
+      "mutually exclusive, ignoring previous --replace value\n");
   EXPECT_TRUE(r.stdout_text.find("[{}] a b") != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("[a]") == std::string::npos);
 }
@@ -545,6 +957,24 @@ TEST(xargs, xargs_show_limits_reports_command_buffer) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stderr_text.find("Maximum length of command") !=
               std::string::npos);
+}
+
+TEST(xargs, xargs_max_chars_above_windows_limit_is_clamped_with_warning) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"--show-limits", L"-r", L"-s", L"40000"});
+  p.set_stdin("");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.find("value for -s option is too large") !=
+              std::string::npos);
+  EXPECT_TRUE(
+      r.stderr_text.find("Size of command buffer we are actually using: 32767") !=
+      std::string::npos);
 }
 
 TEST(xargs, xargs_eof_stops_reading_at_marker_line) {
@@ -609,6 +1039,37 @@ TEST(xargs, xargs_deprecated_max_lines_alias_defaults_to_one) {
   EXPECT_TRUE(r.stdout_text.find("gamma delta") != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("alpha beta gamma delta") ==
               std::string::npos);
+}
+
+TEST(xargs, xargs_long_max_lines_defaults_to_one_without_consuming_command) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"--max-lines", L"cmd.exe", L"/C", L"echo"});
+  p.set_stdin("alpha beta\ngamma delta\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("alpha beta") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("gamma delta") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("alpha beta gamma delta") ==
+              std::string::npos);
+}
+
+TEST(xargs, xargs_short_max_lines_still_requires_an_argument) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"-L", L"cmd.exe", L"/C", L"echo"});
+  p.set_stdin("alpha beta\ngamma delta\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("-L") != std::string::npos);
 }
 
 TEST(xargs, xargs_long_eof_with_equals_stops_at_marker) {
@@ -703,6 +1164,51 @@ TEST(xargs, xargs_exit_if_exceeded_rejects_oversized_command_line) {
               std::string::npos);
 }
 
+TEST(xargs, xargs_max_chars_below_command_floor_warns_and_runs) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"-s", L"1", L"cmd.exe", L"/C", L"echo"});
+  p.set_stdin("alpha\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.find("value for -s option is too small") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("alpha") != std::string::npos);
+}
+
+TEST(xargs, xargs_default_echo_max_chars_splits_batches) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"-s", L"8"});
+  p.set_stdin("one\ntwo\nthree\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "one\ntwo\nthree\n");
+}
+
+TEST(xargs, xargs_default_echo_exit_if_exceeded_rejects_oversized_command_line) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"-x", L"-s", L"3"});
+  p.set_stdin("alpha\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("command line length exceeded") !=
+              std::string::npos);
+}
+
 TEST(xargs, xargs_maps_child_failure_to_123) {
   Pipeline p;
   p.add(L"xargs.exe", {L"cmd.exe", L"/C", L"exit", L"/B"});
@@ -723,6 +1229,46 @@ TEST(xargs, xargs_maps_child_255_to_124) {
   EXPECT_EQ(r.exit_code, 124);
 }
 
+TEST(xargs, xargs_maps_child_126_to_123) {
+  Pipeline p;
+  p.add(L"xargs.exe", {L"cmd.exe", L"/C", L"exit", L"/B"});
+  p.set_stdin("126\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 123);
+}
+
+TEST(xargs, xargs_maps_child_127_to_123) {
+  Pipeline p;
+  p.add(L"xargs.exe", {L"cmd.exe", L"/C", L"exit", L"/B"});
+  p.set_stdin("127\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 123);
+}
+
+TEST(xargs, xargs_maps_signal_shaped_child_130_to_125) {
+  Pipeline p;
+  p.add(L"xargs.exe", {L"cmd.exe", L"/C", L"exit", L"/B"});
+  p.set_stdin("130\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 125);
+}
+
+TEST(xargs, xargs_maps_signal_shaped_child_143_to_125) {
+  Pipeline p;
+  p.add(L"xargs.exe", {L"cmd.exe", L"/C", L"exit", L"/B"});
+  p.set_stdin("143\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 125);
+}
+
 TEST(xargs, xargs_not_found_returns_127) {
   Pipeline p;
   p.add(L"xargs.exe", {L"definitely-not-a-winuxcmd-command.exe"});
@@ -731,6 +1277,23 @@ TEST(xargs, xargs_not_found_returns_127) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 127);
+  EXPECT_TRUE(r.stderr_text.find("No such file or directory") !=
+              std::string::npos);
+}
+
+TEST(xargs, xargs_non_executable_command_returns_126) {
+  TempDir tmp;
+  std::filesystem::create_directory(tmp.path / "not-executable");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L".\\not-executable"});
+  p.set_stdin("");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 126);
+  EXPECT_TRUE(r.stderr_text.find("Permission denied") != std::string::npos);
 }
 
 TEST(xargs, xargs_child_255_stops_further_launches) {
@@ -749,5 +1312,29 @@ TEST(xargs, xargs_child_255_stops_further_launches) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 124);
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "marker.txt"));
+}
+
+TEST(xargs, xargs_parallel_child_255_waits_for_running_children_before_exit) {
+  TempDir tmp;
+  tmp.write("runner.cmd",
+            "@echo off\r\n"
+            "if \"%1\"==\"fail\" (\r\n"
+            "  exit /B 255\r\n"
+            ")\r\n"
+            "ping -n 3 127.0.0.1 >nul\r\n"
+            "echo finished>%~dp0running-done.txt\r\n"
+            "exit /B 0\r\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe",
+        {L"-P", L"2", L"-n", L"1", L"cmd.exe", L"/C", L"runner.cmd"});
+  p.set_stdin("slow\nfail\nlater\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 124);
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "running-done.txt"));
   EXPECT_FALSE(std::filesystem::exists(tmp.path / "marker.txt"));
 }

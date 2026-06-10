@@ -38,6 +38,28 @@ TEST(grep, grep_basic_match) {
   EXPECT_EQ_TEXT(r.stdout_text, "alpha\nalpha beta\n");
 }
 
+TEST(grep, grep_crlf_lines_match_line_anchors_and_whole_line) {
+  TempDir tmp;
+  tmp.write_bytes("a.txt", {'a', '\r', '\n', 'b', '\r', '\n', 'a', '\r',
+                            '\n'});
+
+  Pipeline anchored;
+  anchored.set_cwd(tmp.wpath());
+  anchored.add(L"grep.exe", {L"-n", L"a$", L"a.txt"});
+  auto anchored_result = anchored.run();
+
+  EXPECT_EQ(anchored_result.exit_code, 0);
+  EXPECT_EQ_TEXT(anchored_result.stdout_text, "1:a\n3:a\n");
+
+  Pipeline whole_line;
+  whole_line.set_cwd(tmp.wpath());
+  whole_line.add(L"grep.exe", {L"-x", L"a", L"a.txt"});
+  auto whole_line_result = whole_line.run();
+
+  EXPECT_EQ(whole_line_result.exit_code, 0);
+  EXPECT_EQ_TEXT(whole_line_result.stdout_text, "a\na\n");
+}
+
 TEST(grep, grep_color_auto_respects_terminal_state) {
   TempDir tmp;
   tmp.write("a.txt", "alpha\n");
@@ -642,6 +664,48 @@ TEST(grep, grep_wildcard_files) {
   EXPECT_TRUE(r.stdout_text.find("file1.txt:hello world") != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("file2.txt:hello again") != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("other.log") == std::string::npos);
+}
+
+TEST(grep, grep_wildcard_char_class_in_parent_directory_segment) {
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "d1");
+  std::filesystem::create_directories(tmp.path / "d2");
+  std::filesystem::create_directories(tmp.path / "d3");
+  tmp.write("d1/a.txt", "needle one\n");
+  tmp.write("d2/b.txt", "needle two\n");
+  tmp.write("d3/c.txt", "needle three\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"grep.exe", {L"needle", L"d[12]\\*.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("d1\\a.txt:needle one") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("d2\\b.txt:needle two") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("d3\\c.txt") == std::string::npos);
+}
+
+TEST(grep, grep_char_class_prefers_glob_over_same_spelling_literal_path) {
+  TempDir tmp;
+  tmp.write("[ab].txt", "literal match\n");
+  tmp.write("a.txt", "real alpha\n");
+  tmp.write("b.txt", "real beta\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"grep.exe", {L"real", L"[ab].txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("a.txt:real alpha") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("b.txt:real beta") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("[ab].txt:literal match") ==
+              std::string::npos);
 }
 
 TEST(grep, grep_recursive_wildcard_directory_operands_recurse) {

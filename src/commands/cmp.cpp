@@ -405,6 +405,23 @@ REGISTER_COMMAND(
 
   auto cfg_result = build_config(ctx);
   if (!cfg_result) {
+    if (cfg_result.error() == "missing operand after ''") {
+      cp::report_custom_error(L"cmp", L"missing operand");
+      safeErrorPrintLn("Try 'cmp --help' for more information.");
+      return 1;
+    }
+    if (cfg_result.error().starts_with("missing operand after '")) {
+      safeErrorPrint("cmp: ");
+      safeErrorPrintLn(cfg_result.error());
+      safeErrorPrintLn("Try 'cmp --help' for more information.");
+      return 1;
+    }
+    if (cfg_result.error().starts_with("extra operand '")) {
+      safeErrorPrint("cmp: ");
+      safeErrorPrintLn(cfg_result.error());
+      safeErrorPrintLn("Try 'cmp --help' for more information.");
+      return 1;
+    }
     cp::report_error(cfg_result, L"cmp");
     return 1;
   }

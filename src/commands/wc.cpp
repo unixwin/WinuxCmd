@@ -108,6 +108,12 @@ struct CountResult {
 struct CountBatch {
   std::vector<CountResult> results;
   bool any_error = false;
+  size_t requested_input_count = 0;
+};
+
+struct Files0ReadResult {
+  std::vector<std::string> paths;
+  bool from_stdin = false;
 };
 
 struct DecodedChar {
@@ -147,28 +153,42 @@ auto validate_arguments(std::span<const std::string_view> args)
   return paths;
 }
 
-auto read_files0_from(const std::string& path)
-    -> cp::Result<std::vector<std::string>> {
+auto wc_input_open_error(std::string_view path) -> std::string {
+  std::error_code ec;
+  auto status = std::filesystem::status(std::filesystem::u8path(path), ec);
+  if (!ec && status.type() == std::filesystem::file_type::directory) {
+    return std::string(path) + ": Is a directory";
+  }
+  return "cannot open '" + std::string(path) +
+         "' for reading: No such file or directory";
+}
+
+auto read_files0_from(const std::string& path) -> cp::Result<Files0ReadResult> {
   std::istream* input = nullptr;
   std::ifstream file;
+  Files0ReadResult result;
   if (path == "-") {
     input = &std::cin;
+    result.from_stdin = true;
   } else {
     file.open(path, std::ios::binary);
     if (!file) {
-      return std::unexpected("cannot open file list '" + path + "'");
+      return std::unexpected(wc_input_open_error(path));
     }
     input = &file;
   }
-
-  std::vector<std::string> paths;
   std::string name;
   while (std::getline(*input, name, '\0')) {
-    if (!name.empty()) {
-      paths.push_back(name);
+    if (name.empty()) {
+      return std::unexpected("invalid zero-length file name");
     }
+    if (result.from_stdin && name == "-") {
+      return std::unexpected(
+          "when reading file names from stdin, no file name of '-' allowed");
+    }
+    result.paths.push_back(name);
   }
-  return paths;
+  return result;
 }
 
 // ----------------------------------------------
@@ -296,7 +316,7 @@ auto count_file(const std::string& path) -> cp::Result<CountResult> {
 
   std::ifstream file(path, std::ios::binary);
   if (!file) {
-    return std::unexpected("cannot open file '" + path + "'");
+    return std::unexpected(wc_input_open_error(path));
   }
 
   return count_stream(file, path, true);
@@ -330,6 +350,7 @@ auto count_file(const std::string& path) -> cp::Result<CountResult> {
 template <size_t N>
 auto process_command(const CommandContext<N>& ctx) -> cp::Result<CountBatch> {
   std::vector<std::string> paths;
+  bool files0_from_stdin = false;
   const std::string files0_from =
       ctx.template get<std::string>("--files0-from", "");
   if (!files0_from.empty()) {
@@ -339,7 +360,8 @@ auto process_command(const CommandContext<N>& ctx) -> cp::Result<CountBatch> {
     }
     auto file_list = read_files0_from(files0_from);
     if (!file_list) return std::unexpected(file_list.error());
-    paths = std::move(*file_list);
+    files0_from_stdin = file_list->from_stdin;
+    paths = std::move(file_list->paths);
   } else {
     auto validated = validate_arguments(ctx.positionals);
     if (!validated) return std::unexpected(validated.error());
@@ -351,9 +373,16 @@ auto process_command(const CommandContext<N>& ctx) -> cp::Result<CountBatch> {
     auto stdin_result = count_stdin(false);
     if (!stdin_result) return std::unexpected(stdin_result.error());
     batch.results.push_back(*stdin_result);
+    batch.requested_input_count = 1;
     return batch;
   }
 
+  if (paths.empty() && !files0_from.empty()) {
+    batch.any_error = true;
+    return batch;
+  }
+
+  batch.requested_input_count = paths.size();
   for (const auto& path : paths) {
     auto file_result = count_file(path);
     if (!file_result) {
@@ -475,7 +504,7 @@ REGISTER_COMMAND(
   } else if (total_when == "only") {
     print_total = true;
   } else if (total_when == "auto") {
-    print_total = count_results.size() > 1;
+    print_total = batch.requested_input_count > 1;
   } else {
     safeErrorPrint("wc: invalid --total value '");
     safeErrorPrint(total_when);

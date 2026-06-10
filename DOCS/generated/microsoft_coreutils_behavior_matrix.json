@@ -1,0 +1,451 @@
+{
+  "GeneratedAt": "2026-06-10T13:42:16.1672724+08:00",
+  "WinuxDir": "C:\\Users\\cmx\\repo\\WinuxCmd\\.winuxcmd\\bin",
+  "MicrosoftDir": "C:\\Users\\cmx\\repo\\_winget_coreutils_install\\bin",
+  "Summary": {
+    "TotalCases": 9,
+    "SameCount": 7,
+    "DifferentCount": 2
+  },
+  "Cases": [
+    {
+      "Name": "cat-file",
+      "Command": "cat",
+      "Arguments": [
+        "sample.txt"
+      ],
+      "StdinText": "",
+      "Classification": "same",
+      "Matches": {
+        "Stdout": true,
+        "Stderr": true,
+        "ExitCode": true,
+        "Snapshot": true
+      },
+      "Winux": {
+        "Flavor": "winux",
+        "Executable": "C:\\Users\\cmx\\repo\\WinuxCmd\\.winuxcmd\\bin\\cat.exe",
+        "ExitCode": 0,
+        "Stdout": "alpha\nbeta\nalpha beta\ngamma",
+        "Stderr": "",
+        "Snapshot": [
+          "dir:alpha",
+          "file:alpha/one.txt:one",
+          "dir:beta",
+          "file:beta/two.txt:two",
+          "dir:copies",
+          "file:sample.txt:alpha\nbeta\nalpha beta\ngamma",
+          "file:sortable.txt:pear\napple\nbanana"
+        ]
+      },
+      "Microsoft": {
+        "Flavor": "microsoft",
+        "Executable": "C:\\Users\\cmx\\repo\\_winget_coreutils_install\\bin\\cat.exe",
+        "ExitCode": 0,
+        "Stdout": "alpha\nbeta\nalpha beta\ngamma",
+        "Stderr": "",
+        "Snapshot": [
+          "dir:alpha",
+          "file:alpha/one.txt:one",
+          "dir:beta",
+          "file:beta/two.txt:two",
+          "dir:copies",
+          "file:sample.txt:alpha\nbeta\nalpha beta\ngamma",
+          "file:sortable.txt:pear\napple\nbanana"
+        ]
+      }
+    },
+    {
+      "Name": "cp-file",
+      "Command": "cp",
+      "Arguments": [
+        "sample.txt",
+        "copies/copied.txt"
+      ],
+      "StdinText": "",
+      "Classification": "same",
+      "Matches": {
+        "Stdout": true,
+        "Stderr": true,
+        "ExitCode": true,
+        "Snapshot": true
+      },
+      "Winux": {
+        "Flavor": "winux",
+        "Executable": "C:\\Users\\cmx\\repo\\WinuxCmd\\.winuxcmd\\bin\\cp.exe",
+        "ExitCode": 0,
+        "Stdout": "",
+        "Stderr": "",
+        "Snapshot": [
+          "dir:alpha",
+          "file:alpha/one.txt:one",
+          "dir:beta",
+          "file:beta/two.txt:two",
+          "dir:copies",
+          "file:copies/copied.txt:alpha\nbeta\nalpha beta\ngamma",
+          "file:sample.txt:alpha\nbeta\nalpha beta\ngamma",
+          "file:sortable.txt:pear\napple\nbanana"
+        ]
+      },
+      "Microsoft": {
+        "Flavor": "microsoft",
+        "Executable": "C:\\Users\\cmx\\repo\\_winget_coreutils_install\\bin\\cp.exe",
+        "ExitCode": 0,
+        "Stdout": "",
+        "Stderr": "",
+        "Snapshot": [
+          "dir:alpha",
+          "file:alpha/one.txt:one",
+          "dir:beta",
+          "file:beta/two.txt:two",
+          "dir:copies",
+          "file:copies/copied.txt:alpha\nbeta\nalpha beta\ngamma",
+          "file:sample.txt:alpha\nbeta\nalpha beta\ngamma",
+          "file:sortable.txt:pear\napple\nbanana"
+        ]
+      }
+    },
+    {
+      "Name": "ls-basic",
+      "Command": "ls",
+      "Arguments": [
+        "-1"
+      ],
+      "StdinText": "",
+      "Classification": "same",
+      "Matches": {
+        "Stdout": true,
+        "Stderr": true,
+        "ExitCode": true,
+        "Snapshot": true
+      },
+      "Winux": {
+        "Flavor": "winux",
+        "Executable": "C:\\Users\\cmx\\repo\\WinuxCmd\\.winuxcmd\\bin\\ls.exe",
+        "ExitCode": 0,
+        "Stdout": "alpha\nbeta\ncopies\nsample.txt\nsortable.txt",
+        "Stderr": "",
+        "Snapshot": [
+          "dir:alpha",
+          "file:alpha/one.txt:one",
+          "dir:beta",
+          "file:beta/two.txt:two",
+          "dir:copies",
+          "file:sample.txt:alpha\nbeta\nalpha beta\ngamma",
+          "file:sortable.txt:pear\napple\nbanana"
+        ]
+      },
+      "Microsoft": {
+        "Flavor": "microsoft",
+        "Executable": "C:\\Users\\cmx\\repo\\_winget_coreutils_install\\bin\\ls.exe",
+        "ExitCode": 0,
+        "Stdout": "alpha\nbeta\ncopies\nsample.txt\nsortable.txt",
+        "Stderr": "",
+        "Snapshot": [
+          "dir:alpha",
+          "file:alpha/one.txt:one",
+          "dir:beta",
+          "file:beta/two.txt:two",
+          "dir:copies",
+          "file:sample.txt:alpha\nbeta\nalpha beta\ngamma",
+          "file:sortable.txt:pear\napple\nbanana"
+        ]
+      }
+    },
+    {
+      "Name": "head-two-lines",
+      "Command": "head",
+      "Arguments": [
+        "-n",
+        "2",
+        "sample.txt"
+      ],
+      "StdinText": "",
+      "Classification": "same",
+      "Matches": {
+        "Stdout": true,
+        "Stderr": true,
+        "ExitCode": true,
+        "Snapshot": true
+      },
+      "Winux": {
+        "Flavor": "winux",
+        "Executable": "C:\\Users\\cmx\\repo\\WinuxCmd\\.winuxcmd\\bin\\head.exe",
+        "ExitCode": 0,
+        "Stdout": "alpha\nbeta",
+        "Stderr": "",
+        "Snapshot": [
+          "dir:alpha",
+          "file:alpha/one.txt:one",
+          "dir:beta",
+          "file:beta/two.txt:two",
+          "dir:copies",
+          "file:sample.txt:alpha\nbeta\nalpha beta\ngamma",
+          "file:sortable.txt:pear\napple\nbanana"
+        ]
+      },
+      "Microsoft": {
+        "Flavor": "microsoft",
+        "Executable": "C:\\Users\\cmx\\repo\\_winget_coreutils_install\\bin\\head.exe",
+        "ExitCode": 0,
+        "Stdout": "alpha\nbeta",
+        "Stderr": "",
+        "Snapshot": [
+          "dir:alpha",
+          "file:alpha/one.txt:one",
+          "dir:beta",
+          "file:beta/two.txt:two",
+          "dir:copies",
+          "file:sample.txt:alpha\nbeta\nalpha beta\ngamma",
+          "file:sortable.txt:pear\napple\nbanana"
+        ]
+      }
+    },
+    {
+      "Name": "tail-two-lines",
+      "Command": "tail",
+      "Arguments": [
+        "-n",
+        "2",
+        "sample.txt"
+      ],
+      "StdinText": "",
+      "Classification": "same",
+      "Matches": {
+        "Stdout": true,
+        "Stderr": true,
+        "ExitCode": true,
+        "Snapshot": true
+      },
+      "Winux": {
+        "Flavor": "winux",
+        "Executable": "C:\\Users\\cmx\\repo\\WinuxCmd\\.winuxcmd\\bin\\tail.exe",
+        "ExitCode": 0,
+        "Stdout": "alpha beta\ngamma",
+        "Stderr": "",
+        "Snapshot": [
+          "dir:alpha",
+          "file:alpha/one.txt:one",
+          "dir:beta",
+          "file:beta/two.txt:two",
+          "dir:copies",
+          "file:sample.txt:alpha\nbeta\nalpha beta\ngamma",
+          "file:sortable.txt:pear\napple\nbanana"
+        ]
+      },
+      "Microsoft": {
+        "Flavor": "microsoft",
+        "Executable": "C:\\Users\\cmx\\repo\\_winget_coreutils_install\\bin\\tail.exe",
+        "ExitCode": 0,
+        "Stdout": "alpha beta\ngamma",
+        "Stderr": "",
+        "Snapshot": [
+          "dir:alpha",
+          "file:alpha/one.txt:one",
+          "dir:beta",
+          "file:beta/two.txt:two",
+          "dir:copies",
+          "file:sample.txt:alpha\nbeta\nalpha beta\ngamma",
+          "file:sortable.txt:pear\napple\nbanana"
+        ]
+      }
+    },
+    {
+      "Name": "sort-file",
+      "Command": "sort",
+      "Arguments": [
+        "sortable.txt"
+      ],
+      "StdinText": "",
+      "Classification": "different",
+      "Matches": {
+        "Stdout": false,
+        "Stderr": true,
+        "ExitCode": true,
+        "Snapshot": true
+      },
+      "Winux": {
+        "Flavor": "winux",
+        "Executable": "C:\\Users\\cmx\\repo\\WinuxCmd\\.winuxcmd\\bin\\sort.exe",
+        "ExitCode": 0,
+        "Stdout": "apple\n\nbanana\n\npear",
+        "Stderr": "",
+        "Snapshot": [
+          "dir:alpha",
+          "file:alpha/one.txt:one",
+          "dir:beta",
+          "file:beta/two.txt:two",
+          "dir:copies",
+          "file:sample.txt:alpha\nbeta\nalpha beta\ngamma",
+          "file:sortable.txt:pear\napple\nbanana"
+        ]
+      },
+      "Microsoft": {
+        "Flavor": "microsoft",
+        "Executable": "C:\\Users\\cmx\\repo\\_winget_coreutils_install\\bin\\sort.exe",
+        "ExitCode": 0,
+        "Stdout": "apple\nbanana\npear",
+        "Stderr": "",
+        "Snapshot": [
+          "dir:alpha",
+          "file:alpha/one.txt:one",
+          "dir:beta",
+          "file:beta/two.txt:two",
+          "dir:copies",
+          "file:sample.txt:alpha\nbeta\nalpha beta\ngamma",
+          "file:sortable.txt:pear\napple\nbanana"
+        ]
+      }
+    },
+    {
+      "Name": "grep-line-number",
+      "Command": "grep",
+      "Arguments": [
+        "-n",
+        "alpha",
+        "sample.txt"
+      ],
+      "StdinText": "",
+      "Classification": "same",
+      "Matches": {
+        "Stdout": true,
+        "Stderr": true,
+        "ExitCode": true,
+        "Snapshot": true
+      },
+      "Winux": {
+        "Flavor": "winux",
+        "Executable": "C:\\Users\\cmx\\repo\\WinuxCmd\\.winuxcmd\\bin\\grep.exe",
+        "ExitCode": 0,
+        "Stdout": "1:alpha\n3:alpha beta",
+        "Stderr": "",
+        "Snapshot": [
+          "dir:alpha",
+          "file:alpha/one.txt:one",
+          "dir:beta",
+          "file:beta/two.txt:two",
+          "dir:copies",
+          "file:sample.txt:alpha\nbeta\nalpha beta\ngamma",
+          "file:sortable.txt:pear\napple\nbanana"
+        ]
+      },
+      "Microsoft": {
+        "Flavor": "microsoft",
+        "Executable": "C:\\Users\\cmx\\repo\\_winget_coreutils_install\\bin\\grep.exe",
+        "ExitCode": 0,
+        "Stdout": "1:alpha\n3:alpha beta",
+        "Stderr": "",
+        "Snapshot": [
+          "dir:alpha",
+          "file:alpha/one.txt:one",
+          "dir:beta",
+          "file:beta/two.txt:two",
+          "dir:copies",
+          "file:sample.txt:alpha\nbeta\nalpha beta\ngamma",
+          "file:sortable.txt:pear\napple\nbanana"
+        ]
+      }
+    },
+    {
+      "Name": "find-top-files",
+      "Command": "find",
+      "Arguments": [
+        ".",
+        "-maxdepth",
+        "1",
+        "-type",
+        "f",
+        "-print"
+      ],
+      "StdinText": "",
+      "Classification": "different",
+      "Matches": {
+        "Stdout": false,
+        "Stderr": true,
+        "ExitCode": true,
+        "Snapshot": true
+      },
+      "Winux": {
+        "Flavor": "winux",
+        "Executable": "C:\\Users\\cmx\\repo\\WinuxCmd\\.winuxcmd\\bin\\find.exe",
+        "ExitCode": 0,
+        "Stdout": "./sample.txt\n./sortable.txt",
+        "Stderr": "",
+        "Snapshot": [
+          "dir:alpha",
+          "file:alpha/one.txt:one",
+          "dir:beta",
+          "file:beta/two.txt:two",
+          "dir:copies",
+          "file:sample.txt:alpha\nbeta\nalpha beta\ngamma",
+          "file:sortable.txt:pear\napple\nbanana"
+        ]
+      },
+      "Microsoft": {
+        "Flavor": "microsoft",
+        "Executable": "C:\\Users\\cmx\\repo\\_winget_coreutils_install\\bin\\find.exe",
+        "ExitCode": 0,
+        "Stdout": ".\\sample.txt\n.\\sortable.txt",
+        "Stderr": "",
+        "Snapshot": [
+          "dir:alpha",
+          "file:alpha/one.txt:one",
+          "dir:beta",
+          "file:beta/two.txt:two",
+          "dir:copies",
+          "file:sample.txt:alpha\nbeta\nalpha beta\ngamma",
+          "file:sortable.txt:pear\napple\nbanana"
+        ]
+      }
+    },
+    {
+      "Name": "xargs-basic",
+      "Command": "xargs",
+      "Arguments": [
+        "-n",
+        "1",
+        "echo"
+      ],
+      "StdinText": "alpha beta\ngamma\n",
+      "Classification": "same",
+      "Matches": {
+        "Stdout": true,
+        "Stderr": true,
+        "ExitCode": true,
+        "Snapshot": true
+      },
+      "Winux": {
+        "Flavor": "winux",
+        "Executable": "C:\\Users\\cmx\\repo\\WinuxCmd\\.winuxcmd\\bin\\xargs.exe",
+        "ExitCode": 0,
+        "Stdout": "alpha\nbeta\ngamma",
+        "Stderr": "",
+        "Snapshot": [
+          "dir:alpha",
+          "file:alpha/one.txt:one",
+          "dir:beta",
+          "file:beta/two.txt:two",
+          "dir:copies",
+          "file:sample.txt:alpha\nbeta\nalpha beta\ngamma",
+          "file:sortable.txt:pear\napple\nbanana"
+        ]
+      },
+      "Microsoft": {
+        "Flavor": "microsoft",
+        "Executable": "C:\\Users\\cmx\\repo\\_winget_coreutils_install\\bin\\xargs.exe",
+        "ExitCode": 0,
+        "Stdout": "alpha\nbeta\ngamma",
+        "Stderr": "",
+        "Snapshot": [
+          "dir:alpha",
+          "file:alpha/one.txt:one",
+          "dir:beta",
+          "file:beta/two.txt:two",
+          "dir:copies",
+          "file:sample.txt:alpha\nbeta\nalpha beta\ngamma",
+          "file:sortable.txt:pear\napple\nbanana"
+        ]
+      }
+    }
+  ]
+}

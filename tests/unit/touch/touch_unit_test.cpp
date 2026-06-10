@@ -128,6 +128,25 @@ TEST(touch, touch_date_sets_fixed_utc_time) {
   EXPECT_EQ(st.wSecond, 5);
 }
 
+TEST(touch, touch_date_accepts_compact_local_timestamp) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"touch.exe", {L"-d", L"20250102030405", L"compact.txt"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+
+  auto st = filetime_to_local(read_file_times(tmp.path / "compact.txt").write);
+  EXPECT_EQ(st.wYear, 2025);
+  EXPECT_EQ(st.wMonth, 1);
+  EXPECT_EQ(st.wDay, 2);
+  EXPECT_EQ(st.wHour, 3);
+  EXPECT_EQ(st.wMinute, 4);
+  EXPECT_EQ(st.wSecond, 5);
+}
+
 TEST(touch, touch_t_timestamp_uses_local_time) {
   TempDir tmp;
 

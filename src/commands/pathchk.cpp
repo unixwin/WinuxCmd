@@ -78,14 +78,8 @@ bool has_empty_or_leading_dash_component(const std::string& path) {
   if (path.empty()) return true;
 
   auto components = split_components(path, true);
-  for (size_t i = 0; i < components.size(); ++i) {
-    const auto& component = components[i];
-    if (component.empty()) {
-      bool leading_root =
-          i == 0 && !path.empty() && (path[0] == '/' || path[0] == '\\');
-      if (!leading_root) return true;
-      continue;
-    }
+  for (const auto& component : components) {
+    if (component.empty()) continue;
     if (component.front() == '-') return true;
   }
   return false;

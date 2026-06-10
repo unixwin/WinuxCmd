@@ -190,3 +190,71 @@ TEST(diff, diff_rejects_extra_operand_with_help_hint) {
       "diff: extra operand 'c'\n"
       "Try 'diff --help' for more information.\n");
 }
+
+TEST(diff, diff_missing_all_operands_reports_help_hint) {
+  Pipeline p;
+  p.add(L"diff.exe", {});
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("diff missing all operands stderr", r.stderr_text);
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "diff: missing operand\n"
+      "Try 'diff --help' for more information.\n");
+}
+
+TEST(diff, diff_single_operand_reports_help_hint) {
+  Pipeline p;
+  p.add(L"diff.exe", {L"a"});
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("diff single operand stderr", r.stderr_text);
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "diff: missing operand after 'a'\n"
+      "Try 'diff --help' for more information.\n");
+}
+
+TEST(diff, diff_missing_input_reports_no_such_file) {
+  TempDir tmp;
+  tmp.write("file2.txt", "hello\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"diff.exe", {L"missing.txt", L"file2.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find(
+                  "diff: cannot open 'missing.txt' for reading: No such file "
+                  "or directory") != std::string::npos);
+}
+
+TEST(diff, diff_directory_input_reports_is_a_directory) {
+  TempDir tmp;
+  tmp.mkdir("indir");
+  tmp.write("file2.txt", "hello\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"diff.exe", {L"indir", L"file2.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("diff: indir: Is a directory") !=
+              std::string::npos);
+}

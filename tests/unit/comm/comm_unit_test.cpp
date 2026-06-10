@@ -159,3 +159,81 @@ TEST(comm, comm_zero_terminated_records) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ(r.stdout_text, std::string("banana\0", 7));
 }
+
+TEST(comm, comm_newline_mode_trims_trailing_cr_from_crlf_records) {
+  TempDir tmp;
+  tmp.write_bytes("file1.txt",
+                  {'a', 'p', 'p', 'l', 'e', '\r', '\n',
+                   'b', 'a', 'n', 'a', 'n', 'a', '\r', '\n'});
+  tmp.write_bytes("file2.txt",
+                  {'b', 'a', 'n', 'a', 'n', 'a', '\r', '\n',
+                   'c', 'h', 'e', 'r', 'r', 'y', '\r', '\n'});
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"comm.exe", {L"file1.txt", L"file2.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "apple\n\t\tbanana\n\tcherry\n");
+}
+
+TEST(comm, comm_missing_input_reports_no_such_file) {
+  TempDir tmp;
+  tmp.write("file2.txt", "banana\ndate\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"comm.exe", {L"missing.txt", L"file2.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "comm: cannot open 'missing.txt' for reading: No such file "
+                  "or directory") != std::string::npos);
+}
+
+TEST(comm, comm_directory_input_reports_is_a_directory) {
+  TempDir tmp;
+  tmp.write("file2.txt", "banana\ndate\n");
+  tmp.mkdir("indir");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"comm.exe", {L"indir", L"file2.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "comm: cannot open 'indir' for reading: Is a directory") !=
+              std::string::npos);
+}
+
+TEST(comm, comm_missing_operands_report_help_hint) {
+  Pipeline p;
+  p.add(L"comm.exe", {});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "comm: missing operand\nTry 'comm --help' for more information.\n");
+}
+
+TEST(comm, comm_extra_operand_reports_help_hint) {
+  Pipeline p;
+  p.add(L"comm.exe", {L"a", L"b", L"c"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "comm: extra operand 'c'\nTry 'comm --help' for more information.\n");
+}

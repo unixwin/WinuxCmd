@@ -301,6 +301,22 @@ auto open_input_file(const std::string& file) -> std::ifstream {
                        std::ios::binary);
 }
 
+auto describe_open_failure(const std::string& file) -> std::string {
+  std::wstring wfile = utf8_to_wstring(file);
+  DWORD attrs = GetFileAttributesW(wfile.c_str());
+  if (attrs == INVALID_FILE_ATTRIBUTES) {
+    return "No such file or directory";
+  }
+  if ((attrs & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+    return "Is a directory";
+  }
+  return "Permission denied";
+}
+
+auto is_directory_open_failure(std::string_view reason) -> bool {
+  return reason == "Is a directory";
+}
+
 auto output_text_head(std::istream& in, const HeadConfig& config) -> void {
   std::istringstream decoded(read_text_stream(in));
   output_head(decoded, config);
@@ -399,15 +415,18 @@ REGISTER_COMMAND(
     const auto& file = files[i];
 
     bool show_header = config.verbose || (multi && !config.quiet);
-    if (show_header) {
+    auto emit_header = [&]() {
+      if (!show_header) return;
       if (!first_print) safePrint(std::string(1, config.delimiter));
       safePrint("==> ");
       safePrint(file == "-" ? "standard input" : file);
       safePrint(" <==");
       safePrint(std::string(1, config.delimiter));
-    }
+      first_print = false;
+    };
 
     if (file == "-") {
+      emit_header();
       if (config.by_bytes || config.delimiter == '\0') {
         output_head(std::cin, config);
       } else {
@@ -420,13 +439,25 @@ REGISTER_COMMAND(
     } else {
       std::ifstream input = open_input_file(file);
       if (!input.is_open()) {
-        safeErrorPrint("head: cannot open '");
-        safeErrorPrint(file);
-        safeErrorPrint("'\n");
+        std::string reason = describe_open_failure(file);
+        if (is_directory_open_failure(reason)) {
+          safeErrorPrint("head: error reading '");
+          safeErrorPrint(file);
+          safeErrorPrint("': ");
+          safeErrorPrint(reason);
+          safeErrorPrint("\n");
+        } else {
+          safeErrorPrint("head: cannot open '");
+          safeErrorPrint(file);
+          safeErrorPrint("' for reading: ");
+          safeErrorPrint(reason);
+          safeErrorPrint("\n");
+        }
         any_error = true;
         continue;
       }
 
+      emit_header();
       if (config.by_bytes || config.delimiter == '\0') {
         output_head(input, config);
       } else {
@@ -439,8 +470,6 @@ REGISTER_COMMAND(
         any_error = true;
       }
     }
-
-    first_print = false;
   }
 
   return any_error ? 1 : 0;
