@@ -260,3 +260,16 @@ TEST(tr, tr_delete_without_squeeze_rejects_extra_operand) {
                  "squeezing repeats.\n"
                  "Try 'tr --help' for more information.\n");
 }
+
+TEST(tr, tr_reverse_range_reports_gnu_shaped_diagnostic) {
+  Pipeline p;
+  p.add(L"tr.exe", {L"z-a", L"x"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ(r.stdout_text, "");
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "tr: range-endpoints of 'z-a' are in reverse collating sequence order\n");
+}

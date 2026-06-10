@@ -365,6 +365,17 @@ auto process_line(const std::string& line, const Config& cfg, Section& section,
 }
 
 auto run(const Config& cfg) -> int {
+  auto nl_input_open_error = [](std::string_view path) -> std::string {
+    std::error_code ec;
+    auto status = std::filesystem::status(std::filesystem::u8path(path), ec);
+    if (!ec && status.type() == std::filesystem::file_type::directory) {
+      return std::string("cannot open '") + std::string(path) +
+             "' for reading: Is a directory";
+    }
+    return std::string("cannot open '") + std::string(path) +
+           "' for reading: No such file or directory";
+  };
+
   int line_number = cfg.starting_number;
   int blank_count = 0;
   Section section = Section::Body;
@@ -374,13 +385,16 @@ auto run(const Config& cfg) -> int {
       // Read from stdin
       std::string line;
       while (std::getline(std::cin, line)) {
+        if (!line.empty() && line.back() == '\r') {
+          line.pop_back();
+        }
         process_line(line, cfg, section, line_number, blank_count);
       }
     } else {
       // Read from file
       std::ifstream f(file, std::ios::binary);
       if (!f) {
-        auto err = std::string("cannot open '") + file + "' for reading";
+        auto err = nl_input_open_error(file);
         cp::Result<int> result = std::unexpected(std::string_view(err));
         cp::report_error(result, L"nl");
         return 1;
@@ -397,6 +411,9 @@ auto run(const Config& cfg) -> int {
           line = line.substr(3);
         }
         first_line = false;
+        if (!line.empty() && line.back() == '\r') {
+          line.pop_back();
+        }
 
         process_line(line, cfg, section, line_number, blank_count);
       }

@@ -35,6 +35,10 @@
 #include "core/command_macros.h"
 #include "pch/pch.h"
 
+#include <csignal>
+#include <fcntl.h>
+#include <io.h>
+
 #pragma comment(lib, "advapi32.lib")
 import std;
 import core;
@@ -77,8 +81,30 @@ REGISTER_COMMAND(
     "cat(1)", "caomengxuan666", "Copyright © 2026 WinuxCmd", TEE_OPTIONS) {
   using namespace core::pipeline;
 
+#ifdef _WIN32
+  _setmode(_fileno(stdin), _O_BINARY);
+  _setmode(_fileno(stdout), _O_BINARY);
+#endif
+
   bool append = ctx.get<bool>("-a", false) || ctx.get<bool>("--append", false);
-  auto output_error = ctx.get<std::string>("--output-error", "warn");
+  bool ignore_interrupts =
+      ctx.get<bool>("-i", false) || ctx.get<bool>("--ignore-interrupts", false);
+  bool diagnose = ctx.get<bool>("-p", false) || ctx.get<bool>("--diagnose", false);
+
+  auto output_error = ctx.get<std::string>("--output-error", "");
+  if (output_error.empty()) {
+    output_error = diagnose ? "warn-nopipe" : "warn";
+  } else if (output_error != "warn" && output_error != "warn-nopipe" &&
+             output_error != "exit" && output_error != "exit-nopipe") {
+    safeErrorPrint("tee: invalid argument '");
+    safeErrorPrint(output_error);
+    safeErrorPrint("' for '--output-error'\n");
+    return 1;
+  }
+
+  if (ignore_interrupts) {
+    std::signal(SIGINT, SIG_IGN);
+  }
 
   // Get output files from positional arguments
   SmallVector<std::string, 32> output_files;
@@ -86,14 +112,14 @@ REGISTER_COMMAND(
     output_files.push_back(std::string(arg));
   }
 
-  if (output_files.empty()) {
-    // No files specified, just copy stdin to stdout
-    std::string line;
-    while (std::getline(std::cin, line)) {
-      safePrintLn(line);
+  size_t extra_stdout_copies = 0;
+  for (const auto& filename : output_files) {
+    if (filename == "-") {
+      ++extra_stdout_copies;
     }
-    return 0;
   }
+
+  bool encountered_error = false;
 
   // Open output files
   SmallVector<std::ofstream, 32> file_streams;
@@ -116,28 +142,54 @@ REGISTER_COMMAND(
       safeErrorPrint("': ");
       safeErrorPrint(strerror(errno));
       safeErrorPrint("\n");
-      return 1;
+      encountered_error = true;
+      continue;
     }
 
     file_streams.push_back(std::move(file));
   }
 
-  // Read from stdin and write to all outputs
-  std::string line;
-  while (std::getline(std::cin, line)) {
-    // Write to stdout
-    safePrintLn(line);
+  auto handle_write_error = [&]() -> bool {
+    safeErrorPrint("tee: write error\n");
+    return output_error == "exit" || output_error == "exit-nopipe";
+  };
 
-    // Write to all files
-    for (auto &file : file_streams) {
-      file << line << '\n';
-      if (file.fail()) {
-        safeErrorPrint("tee: write error\n");
-        if (output_error == "exit" || output_error == "exit-nopipe") {
-          return 1;
-        }
+  auto write_stdout_copy = [&](const char* data, size_t size) -> bool {
+    if (size == 0) return true;
+    if (fwrite(data, 1, size, stdout) != size) {
+      return false;
+    }
+    return true;
+  };
+
+  // Read from stdin and write exact bytes to all outputs.
+  std::array<char, 8192> buffer{};
+  while (std::cin.good()) {
+    std::cin.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+    auto got = static_cast<size_t>(std::cin.gcount());
+    if (got == 0) break;
+
+    if (!write_stdout_copy(buffer.data(), got)) {
+      if (handle_write_error()) return 1;
+    }
+    for (size_t i = 0; i < extra_stdout_copies; ++i) {
+      if (!write_stdout_copy(buffer.data(), got)) {
+        if (handle_write_error()) return 1;
       }
     }
+
+    for (auto& file : file_streams) {
+      file.write(buffer.data(), static_cast<std::streamsize>(got));
+      if (file.fail()) {
+        encountered_error = true;
+        if (handle_write_error()) return 1;
+      }
+    }
+  }
+
+  if (std::cin.bad()) {
+    safeErrorPrint("tee: read error\n");
+    return 1;
   }
 
   // Close all files
@@ -145,9 +197,9 @@ REGISTER_COMMAND(
     file.close();
     if (file.fail()) {
       safeErrorPrint("tee: error closing file\n");
-      return 1;
+      encountered_error = true;
     }
   }
 
-  return 0;
+  return encountered_error ? 1 : 0;
 }

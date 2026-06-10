@@ -104,6 +104,127 @@ TEST(split, split_line_bytes_preserves_complete_lines) {
   EXPECT_EQ_TEXT(tmp.read("chunkac"), "cc\n");
 }
 
+TEST(split, split_number_line_mode_preserves_crlf_records) {
+  TempDir tmp;
+  {
+    std::ofstream out(tmp.path / "input.txt", std::ios::binary);
+    out << "a\r\nb\r\nc\r\n";
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"split.exe", {L"-n", L"l/2", L"input.txt", L"part"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(tmp.read("partaa"), "a\r\n");
+  EXPECT_EQ_TEXT(tmp.read("partab"), "b\r\nc\r\n");
+}
+
+TEST(split, split_number_k_of_n_mode_is_rejected) {
+  TempDir tmp;
+  tmp.write("input.txt", "line1\nline2\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"split.exe", {L"-n", L"1/2", L"input.txt", L"part"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("split: unsupported --number mode") !=
+              std::string::npos);
+}
+
+TEST(split, split_elide_empty_files_keeps_suffixes_dense) {
+  TempDir tmp;
+  tmp.write("input.txt", "a\nb\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"split.exe", {L"-e", L"-n", L"l/5", L"input.txt", L"part"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "partaa"));
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "partab"));
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "partac"));
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "partad"));
+  EXPECT_EQ_TEXT(tmp.read("partaa"), "a\n");
+  EXPECT_EQ_TEXT(tmp.read("partab"), "b\n");
+}
+
+TEST(split, split_separator_splits_records_without_newlines) {
+  TempDir tmp;
+  tmp.write("input.txt", "aa|bbbb|cc|");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"split.exe", {L"-t", L"|", L"-l", L"2", L"input.txt", L"part"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(tmp.read("partaa"), "aa|bbbb|");
+  EXPECT_EQ_TEXT(tmp.read("partab"), "cc|");
+}
+
+TEST(split, split_rejects_empty_separator) {
+  TempDir tmp;
+  tmp.write("input.txt", "a\nb\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"split.exe", {L"-t", L"", L"-l", L"1", L"input.txt", L"part"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("split: invalid separator") !=
+              std::string::npos);
+}
+
+TEST(split, split_filter_exports_file_environment_variable) {
+  TempDir tmp;
+  tmp.write("input.txt", "a\nb\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(
+      L"split.exe",
+      {L"--filter=powershell -NoProfile -Command "
+       L"\"$out=[System.IO.File]::Open($env:FILE,[System.IO.FileMode]::Create,"
+       L"[System.IO.FileAccess]::Write);[Console]::OpenStandardInput().CopyTo("
+       L"$out);$out.Dispose()\"",
+       L"-l", L"1", L"input.txt", L"part"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(tmp.read("partaa"), "a\n");
+  EXPECT_EQ_TEXT(tmp.read("partab"), "b\n");
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "%FILE%"));
+}
+
+TEST(split, split_verbose_reports_created_files) {
+  TempDir tmp;
+  tmp.write("input.txt", "line1\nline2\nline3\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"split.exe", {L"--verbose", L"-l", L"1", L"input.txt", L"part"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(r.stderr_text,
+            "creating file 'partaa'\n"
+            "creating file 'partab'\n"
+            "creating file 'partac'\n");
+}
+
 TEST(split, split_rejects_multiple_split_modes) {
   TempDir tmp;
   tmp.write("input.txt", "line1\nline2\n");
@@ -180,4 +301,35 @@ TEST(split, split_rejects_extra_operand_with_help_hint) {
   EXPECT_EQ(r.stderr_text,
             "split: extra operand 'extra'\n"
             "Try 'split --help' for more information.\n");
+}
+
+TEST(split, split_missing_input_reports_no_such_file) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"split.exe", {L"missing.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "split: cannot open 'missing.txt' for reading: No such "
+                  "file or directory") != std::string::npos);
+}
+
+TEST(split, split_directory_input_reports_is_a_directory) {
+  TempDir tmp;
+  tmp.mkdir("indir");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"split.exe", {L"indir"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(
+      r.stderr_text.find("split: cannot open 'indir' for reading: Is a directory") !=
+      std::string::npos);
 }

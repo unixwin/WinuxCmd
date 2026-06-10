@@ -38,6 +38,20 @@ TEST(uniq, uniq_basic_adjacent_behavior) {
   EXPECT_EQ_TEXT(r.stdout_text, "a\nb\na\n");
 }
 
+TEST(uniq, uniq_strips_cr_from_crlf_input_records) {
+  TempDir tmp;
+  tmp.write_bytes("a.txt", {'a', '\r', '\n', 'a', '\r', '\n', 'b', '\r',
+                            '\n', 'a', '\r', '\n'});
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"uniq.exe", {L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "a\nb\na\n");
+}
+
 TEST(uniq, uniq_count) {
   TempDir tmp;
   tmp.write("a.txt", "x\nx\ny\n");
@@ -148,5 +162,34 @@ TEST(uniq, uniq_group_rejects_invalid_method) {
   EXPECT_NE(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.empty());
   EXPECT_TRUE(r.stderr_text.find("invalid grouping method") !=
+              std::string::npos);
+}
+
+TEST(uniq, uniq_reports_gnu_shaped_missing_input_diagnostic) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"uniq.exe", {L"missing.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("uniq: missing.txt: No such file or directory") !=
+              std::string::npos);
+}
+
+TEST(uniq, uniq_reports_is_a_directory_for_directory_input) {
+  TempDir tmp;
+  tmp.mkdir("indir");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"uniq.exe", {L"indir"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("uniq: indir: Is a directory") !=
               std::string::npos);
 }

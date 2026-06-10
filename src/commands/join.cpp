@@ -179,6 +179,22 @@ auto parse_line(const std::string& line, const Config& cfg, int field_num)
   return parsed;
 }
 
+auto trim_text_record(std::string line, char delimiter) -> std::string {
+  if (delimiter == '\n' && !line.empty() && line.back() == '\r') {
+    line.pop_back();
+  }
+  return line;
+}
+
+auto join_input_open_error(std::string_view filename) -> std::string {
+  std::error_code ec;
+  auto status = std::filesystem::status(std::filesystem::u8path(filename), ec);
+  if (!ec && status.type() == std::filesystem::file_type::directory) {
+    return std::string(filename) + ": Is a directory";
+  }
+  return std::string(filename) + ": No such file or directory";
+}
+
 auto output_separator(const Config& cfg) -> std::string {
   if (!cfg.explicit_separator) return " ";
   return std::string(1, cfg.separator);
@@ -383,18 +399,18 @@ auto read_lines(const std::string& filename, char delimiter)
     size_t start = 0;
     for (size_t i = 0; i < content.size(); ++i) {
       if (content[i] == delimiter) {
-        lines.emplace_back(content.substr(start, i - start));
+        lines.emplace_back(
+            trim_text_record(content.substr(start, i - start), delimiter));
         start = i + 1;
       }
     }
     if (start < content.size()) {
-      lines.emplace_back(content.substr(start));
+      lines.emplace_back(trim_text_record(content.substr(start), delimiter));
     }
   } else {
     std::ifstream f(filename, std::ios::binary);
     if (!f) {
-      return std::unexpected(std::string("cannot open '") + filename +
-                             "' for reading");
+      return std::unexpected(join_input_open_error(filename));
     }
 
     std::string content((std::istreambuf_iterator<char>(f)),
@@ -403,7 +419,8 @@ auto read_lines(const std::string& filename, char delimiter)
     size_t start = 0;
     for (size_t i = 0; i < content.size(); ++i) {
       if (content[i] == delimiter) {
-        std::string line = content.substr(start, i - start);
+        std::string line =
+            trim_text_record(content.substr(start, i - start), delimiter);
         // Skip UTF-8 BOM if present at the beginning of the first line
         if (lines.empty() && line.size() >= 3 &&
             static_cast<unsigned char>(line[0]) == 0xEF &&
@@ -416,7 +433,7 @@ auto read_lines(const std::string& filename, char delimiter)
       }
     }
     if (start < content.size()) {
-      std::string line = content.substr(start);
+      std::string line = trim_text_record(content.substr(start), delimiter);
       if (lines.empty() && line.size() >= 3 &&
           static_cast<unsigned char>(line[0]) == 0xEF &&
           static_cast<unsigned char>(line[1]) == 0xBB &&
@@ -653,6 +670,17 @@ REGISTER_COMMAND(
 
   auto cfg_result = build_config(ctx);
   if (!cfg_result) {
+    if (cfg_result.error().starts_with("missing operand")) {
+      cp::report_custom_error(L"join", L"missing operand");
+      safeErrorPrintLn("Try 'join --help' for more information.");
+      return 1;
+    }
+    if (cfg_result.error().starts_with("extra operand '")) {
+      safeErrorPrint("join: ");
+      safeErrorPrintLn(cfg_result.error());
+      safeErrorPrintLn("Try 'join --help' for more information.");
+      return 1;
+    }
     cp::report_error(cfg_result, L"join");
     return 1;
   }

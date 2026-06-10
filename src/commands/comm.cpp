@@ -175,6 +175,11 @@ auto build_config(const CommandContext<COMM_OPTIONS.size()>& ctx)
 auto read_lines(const std::string& filename, char delimiter)
     -> cp::Result<SmallVector<std::string, 1024>> {
   SmallVector<std::string, 1024> lines;
+  auto normalize_line = [delimiter](std::string& line) {
+    if (delimiter == '\n' && !line.empty() && line.back() == '\r') {
+      line.pop_back();
+    }
+  };
 
   if (filename == "-") {
     // Read from stdin
@@ -187,19 +192,33 @@ auto read_lines(const std::string& filename, char delimiter)
     size_t start = 0;
     for (size_t i = 0; i < content.size(); ++i) {
       if (content[i] == delimiter) {
-        lines.emplace_back(content.substr(start, i - start));
+        std::string line = content.substr(start, i - start);
+        normalize_line(line);
+        lines.emplace_back(std::move(line));
         start = i + 1;
       }
     }
     if (start < content.size()) {
-      lines.emplace_back(content.substr(start));
+      std::string line = content.substr(start);
+      normalize_line(line);
+      lines.emplace_back(std::move(line));
     }
   } else {
+    auto comm_input_open_error = [](std::string_view path) -> std::string {
+      std::error_code ec;
+      auto status = std::filesystem::status(std::filesystem::u8path(path), ec);
+      if (!ec && status.type() == std::filesystem::file_type::directory) {
+        return std::string("cannot open '") + std::string(path) +
+               "' for reading: Is a directory";
+      }
+      return std::string("cannot open '") + std::string(path) +
+             "' for reading: No such file or directory";
+    };
+
     // Read from file
     std::ifstream f(filename, std::ios::binary);
     if (!f) {
-      return std::unexpected(std::string("cannot open '") + filename +
-                             "' for reading");
+      return std::unexpected(comm_input_open_error(filename));
     }
 
     std::string content((std::istreambuf_iterator<char>(f)),
@@ -216,6 +235,7 @@ auto read_lines(const std::string& filename, char delimiter)
             static_cast<unsigned char>(line[2]) == 0xBF) {
           line = line.substr(3);
         }
+        normalize_line(line);
         lines.push_back(line);
         start = i + 1;
       }
@@ -228,6 +248,7 @@ auto read_lines(const std::string& filename, char delimiter)
           static_cast<unsigned char>(line[2]) == 0xBF) {
         line = line.substr(3);
       }
+      normalize_line(line);
       lines.push_back(line);
     }
 
@@ -378,6 +399,17 @@ REGISTER_COMMAND(
 
   auto cfg_result = build_config(ctx);
   if (!cfg_result) {
+    if (cfg_result.error().starts_with("missing operand")) {
+      cp::report_custom_error(L"comm", L"missing operand");
+      safeErrorPrintLn("Try 'comm --help' for more information.");
+      return 1;
+    }
+    if (cfg_result.error().starts_with("extra operand '")) {
+      safeErrorPrint("comm: ");
+      safeErrorPrintLn(cfg_result.error());
+      safeErrorPrintLn("Try 'comm --help' for more information.");
+      return 1;
+    }
     cp::report_error(cfg_result, L"comm");
     return 1;
   }

@@ -143,8 +143,11 @@ auto resolve_files(const CommandContext<SDIFF_OPTIONS.size()>& ctx)
     files.push_back(file_arg);
   }
 
-  if (files.size() < 2) {
+  if (files.empty()) {
     return std::unexpected("missing operand");
+  }
+  if (files.size() < 2) {
+    return std::unexpected("missing operand after '" + files.back() + "'");
   }
   if (files.size() > 2) {
     return std::unexpected("extra operand '" + files[2] + "'");

@@ -22,6 +22,9 @@ auto constexpr ENV_OPTIONS = std::array{
     OPTION("-u", "--unset", "remove variable from the environment",
            STRING_TYPE),
     OPTION("-0", "--null", "end each output line with NUL, not newline"),
+    OPTION("-f", "--file",
+           "read and set variables from a .env-style configuration file",
+           STRING_TYPE),
     OPTION("-S", "--split-string",
            "process and split S into separate arguments; useful for shebang",
            STRING_TYPE),
@@ -45,7 +48,10 @@ struct Config {
   bool ignore_environment = false;
   bool null_terminated = false;
   std::vector<std::string> unset_names;
+  std::map<std::string, std::string> file_assignments;
   std::map<std::string, std::string> assignments;
+  std::string env_file;
+  std::string env_file_error;
   std::string chdir;
   std::string argv0;  // -a
   std::string split_string;  // -S
@@ -117,6 +123,11 @@ auto exists_regular(const std::filesystem::path& p) -> bool {
          std::filesystem::is_regular_file(p, ec);
 }
 
+auto exists_any(const std::filesystem::path& p) -> bool {
+  std::error_code ec;
+  return std::filesystem::exists(p, ec);
+}
+
 auto with_extensions(const std::filesystem::path& base,
                      const std::vector<std::string>& exts)
     -> std::vector<std::filesystem::path> {
@@ -132,17 +143,40 @@ auto with_extensions(const std::filesystem::path& base,
   return out;
 }
 
+enum class ExecutableLookupStatus {
+  Found,
+  NotFound,
+  NotExecutable,
+};
+
+struct ExecutableLookupResult {
+  ExecutableLookupStatus status = ExecutableLookupStatus::NotFound;
+  std::optional<std::wstring> path;
+};
+
 auto resolve_executable(std::string_view program,
                         std::string_view working_directory = {})
-    -> std::optional<std::wstring> {
+    -> ExecutableLookupResult {
   const auto pathext = get_pathext_entries();
+  bool found_non_executable = false;
+
+  auto scan_candidates =
+      [&](const std::filesystem::path& base) -> std::optional<std::wstring> {
+    for (const auto& candidate : with_extensions(base, pathext)) {
+      if (exists_regular(candidate)) return candidate.wstring();
+      if (exists_any(candidate)) found_non_executable = true;
+    }
+    return std::nullopt;
+  };
 
   if (has_path_separator(program)) {
     std::filesystem::path base{std::string(program)};
-    for (const auto& candidate : with_extensions(base, pathext)) {
-      if (exists_regular(candidate)) return candidate.wstring();
+    if (auto match = scan_candidates(base)) {
+      return {ExecutableLookupStatus::Found, std::move(match)};
     }
-    return std::nullopt;
+    return {found_non_executable ? ExecutableLookupStatus::NotExecutable
+                                 : ExecutableLookupStatus::NotFound,
+            std::nullopt};
   }
 
   std::vector<std::filesystem::path> search_roots;
@@ -154,20 +188,22 @@ auto resolve_executable(std::string_view program,
 
   for (const auto& root : search_roots) {
     std::filesystem::path base = root / std::string(program);
-    for (const auto& candidate : with_extensions(base, pathext)) {
-      if (exists_regular(candidate)) return candidate.wstring();
+    if (auto match = scan_candidates(base)) {
+      return {ExecutableLookupStatus::Found, std::move(match)};
     }
   }
 
   for (const auto& dir : get_path_entries()) {
     if (dir.empty()) continue;
     std::filesystem::path base = std::filesystem::path(dir) / std::string(program);
-    for (const auto& candidate : with_extensions(base, pathext)) {
-      if (exists_regular(candidate)) return candidate.wstring();
+    if (auto match = scan_candidates(base)) {
+      return {ExecutableLookupStatus::Found, std::move(match)};
     }
   }
 
-  return std::nullopt;
+  return {found_non_executable ? ExecutableLookupStatus::NotExecutable
+                               : ExecutableLookupStatus::NotFound,
+          std::nullopt};
 }
 
 auto parse_env_block() -> std::map<std::string, std::string> {
@@ -202,6 +238,73 @@ auto parse_assignment(std::string_view s)
   return std::pair{std::string(s.substr(0, eq)), std::string(s.substr(eq + 1))};
 }
 
+auto trim_ascii(std::string_view text) -> std::string_view {
+  size_t start = 0;
+  size_t end = text.size();
+  while (start < end &&
+         (text[start] == ' ' || text[start] == '\t' || text[start] == '\r')) {
+    ++start;
+  }
+  while (end > start &&
+         (text[end - 1] == ' ' || text[end - 1] == '\t' ||
+          text[end - 1] == '\r')) {
+    --end;
+  }
+  return text.substr(start, end - start);
+}
+
+auto read_env_file(std::string_view path)
+    -> std::expected<std::map<std::string, std::string>, std::string> {
+  auto input_open_error = [](std::string_view input_path) -> std::string {
+    std::error_code ec;
+    if (std::filesystem::is_directory(std::filesystem::u8path(input_path),
+                                      ec) &&
+        !ec) {
+      return "cannot read env file '" + std::string(input_path) +
+             "': Is a directory";
+    }
+    return "cannot read env file '" + std::string(input_path) +
+           "': No such file or directory";
+  };
+
+  std::ifstream in(std::string(path), std::ios::binary);
+  if (!in.is_open()) {
+    return std::unexpected(input_open_error(path));
+  }
+
+  std::string file_text{std::istreambuf_iterator<char>(in),
+                        std::istreambuf_iterator<char>()};
+  if (file_text.size() >= 3 &&
+      static_cast<unsigned char>(file_text[0]) == 0xEF &&
+      static_cast<unsigned char>(file_text[1]) == 0xBB &&
+      static_cast<unsigned char>(file_text[2]) == 0xBF) {
+    file_text.erase(0, 3);
+  }
+
+  std::map<std::string, std::string> vars;
+  std::string_view text_view{file_text};
+  size_t start = 0;
+  while (start <= file_text.size()) {
+    size_t end = file_text.find('\n', start);
+    if (end == std::string::npos) end = file_text.size();
+    auto line = trim_ascii(text_view.substr(start, end - start));
+    if (!line.empty() && line.front() != '#') {
+      auto eq = line.find('=');
+      if (eq != std::string_view::npos && eq != 0) {
+        auto key = trim_ascii(line.substr(0, eq));
+        auto value = trim_ascii(line.substr(eq + 1));
+        if (!key.empty()) {
+          vars[std::string(key)] = std::string(value);
+        }
+      }
+    }
+    if (end == file_text.size()) break;
+    start = end + 1;
+  }
+
+  return vars;
+}
+
 auto is_unsupported_used(const CommandContext<ENV_OPTIONS.size()>& ctx)
     -> std::optional<std::string_view> {
   return std::nullopt;
@@ -216,11 +319,74 @@ auto split_string_args(const std::string& s)
   bool in_single = false;
   bool in_double = false;
 
+  auto push_current = [&]() {
+    if (!current.empty()) {
+      args.push_back(std::move(current));
+      current.clear();
+    }
+  };
+
+  auto append_escape = [&](char escape, bool quoted_double)
+      -> std::optional<bool> {
+    switch (escape) {
+      case 'c':
+        if (!quoted_double) {
+          return true;
+        }
+        current += '\\';
+        current += 'c';
+        return false;
+      case 'f':
+        current += '\f';
+        return false;
+      case 'n':
+        current += '\n';
+        return false;
+      case 'r':
+        current += '\r';
+        return false;
+      case 't':
+        current += '\t';
+        return false;
+      case 'v':
+        current += '\v';
+        return false;
+      case '#':
+        current += '#';
+        return false;
+      case '$':
+        current += '$';
+        return false;
+      case '_':
+        if (quoted_double) {
+          current += ' ';
+        } else {
+          push_current();
+        }
+        return false;
+      case '"':
+        current += '"';
+        return false;
+      case '\'':
+        current += '\'';
+        return false;
+      case '\\':
+        current += '\\';
+        return false;
+      default:
+        current += escape;
+        return false;
+    }
+  };
+
   for (size_t i = 0; i < s.size(); ++i) {
     char c = s[i];
 
     if (in_single) {
-      if (c == '\'') {
+      if (c == '\\' && i + 1 < s.size() &&
+          (s[i + 1] == '\'' || s[i + 1] == '\\')) {
+        current += s[++i];
+      } else if (c == '\'') {
         in_single = false;
       } else {
         current += c;
@@ -228,10 +394,11 @@ auto split_string_args(const std::string& s)
     } else if (in_double) {
       if (c == '"') {
         in_double = false;
-      } else if (c == '\\' && i + 1 < s.size() &&
-                 (s[i + 1] == '"' || s[i + 1] == '\\' || s[i + 1] == '$' ||
-                  s[i + 1] == '`')) {
-        current += s[++i];
+      } else if (c == '\\' && i + 1 < s.size()) {
+        auto stop = append_escape(s[++i], true);
+        if (stop.value_or(false)) {
+          break;
+        }
       } else {
         current += c;
       }
@@ -241,12 +408,13 @@ auto split_string_args(const std::string& s)
       } else if (c == '"') {
         in_double = true;
       } else if (c == '\\' && i + 1 < s.size()) {
-        current += s[++i];
-      } else if (c == ' ' || c == '\t') {
-        if (!current.empty()) {
-          args.push_back(std::move(current));
-          current.clear();
+        auto stop = append_escape(s[++i], false);
+        if (stop.value_or(false)) {
+          break;
         }
+      } else if (c == ' ' || c == '\t' || c == '\n' || c == '\r' ||
+                 c == '\v' || c == '\f') {
+        push_current();
       } else if (c == '#' && current.empty()) {
         // Comment - rest of string is ignored
         break;
@@ -256,9 +424,7 @@ auto split_string_args(const std::string& s)
     }
   }
 
-  if (!current.empty()) {
-    args.push_back(std::move(current));
-  }
+  push_current();
 
   if (in_single || in_double) {
     return std::unexpected("no terminating quote in -S string");
@@ -295,6 +461,11 @@ auto build_config(const CommandContext<ENV_OPTIONS.size()>& ctx)
       continue;
     }
 
+    if (meta.long_name == "--file" || meta.short_name == "-f") {
+      cfg.env_file = *value;
+      continue;
+    }
+
     if (meta.long_name == "--argv0" || meta.short_name == "-a") {
       cfg.argv0 = *value;
       continue;
@@ -309,6 +480,15 @@ auto build_config(const CommandContext<ENV_OPTIONS.size()>& ctx)
   cfg.debug = cfg.debug_level > 0;
   if (cfg.debug_level >= 2) {
     for (auto arg : ctx.raw_args) cfg.raw_args.emplace_back(arg);
+  }
+
+  if (!cfg.env_file.empty()) {
+    auto file_vars = read_env_file(cfg.env_file);
+    if (!file_vars) {
+      cfg.env_file_error = std::move(file_vars.error());
+    } else {
+      cfg.file_assignments = std::move(*file_vars);
+    }
   }
 
   // If -S is provided, split it into arguments
@@ -444,6 +624,13 @@ auto materialize_environment(const Config& cfg)
     safeErrorPrint("env: starting with empty environment (-i)\n");
   }
 
+  for (const auto& [k, v] : cfg.file_assignments) {
+    if (cfg.debug) {
+      safeErrorPrint("env: file set '" + k + "'='" + v + "'\n");
+    }
+    vars[k] = v;
+  }
+
   for (const auto& unset_name : cfg.unset_names) {
     auto it = vars.find(unset_name);
     if (it != vars.end()) {
@@ -480,6 +667,7 @@ auto env_windows_error_text(DWORD error) -> std::string {
     case ERROR_PATH_NOT_FOUND:
       return "No such file or directory";
     case ERROR_ACCESS_DENIED:
+    case ERROR_BAD_EXE_FORMAT:
       return "Permission denied";
     default:
       return std::system_category().message(static_cast<int>(error));
@@ -503,12 +691,16 @@ auto run_command(const Config& cfg,
 
   std::optional<std::wstring> application_name;
   if (!cfg.argv0.empty()) {
-    application_name = resolve_executable(cfg.command.front(), cfg.chdir);
-    if (!application_name.has_value()) {
+    auto lookup = resolve_executable(cfg.command.front(), cfg.chdir);
+    if (lookup.status != ExecutableLookupStatus::Found) {
+      const DWORD error = lookup.status == ExecutableLookupStatus::NotExecutable
+                              ? ERROR_ACCESS_DENIED
+                              : ERROR_FILE_NOT_FOUND;
       safeErrorPrint("env: failed to run command '" + cfg.command.front() +
-                     "': No such file or directory\n");
-      return 127;
+                     "': " + env_windows_error_text(error) + "\n");
+      return env_command_status_from_create_error(error);
     }
+    application_name = std::move(lookup.path);
   }
 
   auto cmd_line = build_command_line(
@@ -561,6 +753,11 @@ auto run_command(const Config& cfg,
 }
 
 auto run(const Config& cfg) -> int {
+  if (!cfg.env_file_error.empty()) {
+    safeErrorPrint("env: " + cfg.env_file_error + "\n");
+    return 1;
+  }
+
   if (cfg.command.empty() && !cfg.chdir.empty()) {
     cp::report_custom_error(L"env", L"must specify command with --chdir");
     return 125;
@@ -596,6 +793,7 @@ REGISTER_COMMAND(env, "env",
                  "Set each NAME to VALUE in the environment and print the\n"
                  "resulting environment, or run COMMAND in that environment.\n"
                  "\n"
+                 "  -f, --file           read variables from a .env-style file\n"
                  "  -S, --split-string   process and split S into arguments\n"
                  "  -a, --argv0          pass STRING as argv[0] to command\n"
                  "  -C, --chdir          change working directory\n"
@@ -607,6 +805,7 @@ REGISTER_COMMAND(env, "env",
                  "  --list-signal-handling  list non default signal handling",
                  "  env\n"
                  "  env -i FOO=bar\n"
+                 "  env -f .env command\n"
                  "  env -u PATH\n"
                  "  env -S '-i FOO=bar command args'\n"
                  "  env -a 'myname' command\n"

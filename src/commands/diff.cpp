@@ -90,8 +90,11 @@ auto resolve_files(const CommandContext<DIFF_OPTIONS.size()> &ctx)
     files.push_back(file_arg);
   }
 
-  if (files.size() < 2) {
+  if (files.empty()) {
     return std::unexpected("missing operand");
+  }
+  if (files.size() < 2) {
+    return std::unexpected("missing operand after '" + files.back() + "'");
   }
   if (files.size() > 2) {
     return std::unexpected("extra operand '" + files[2] + "'");
@@ -236,9 +239,20 @@ auto compute_diff(const std::vector<std::string> &lines1,
  */
 auto read_file_lines_result(const std::string &path)
     -> cp::Result<std::vector<std::string>> {
+  auto diff_input_open_error = [](std::string_view file_path) -> std::string {
+    std::error_code ec;
+    auto status =
+        std::filesystem::status(std::filesystem::u8path(file_path), ec);
+    if (!ec && status.type() == std::filesystem::file_type::directory) {
+      return std::string(file_path) + ": Is a directory";
+    }
+    return "cannot open '" + std::string(file_path) +
+           "' for reading: No such file or directory";
+  };
+
   std::ifstream file(path, std::ios::binary);
   if (!file.is_open()) {
-    return std::unexpected("cannot open '" + path + "' for reading");
+    return std::unexpected(diff_input_open_error(path));
   }
 
   std::vector<std::string> lines;

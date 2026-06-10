@@ -47,6 +47,10 @@ auto constexpr MKTEMP_OPTIONS = std::array{
            BOOL_TYPE),
     OPTION("-u", "--dry-run", "do not actually create anything", BOOL_TYPE),
     OPTION("-q", "--quiet", "suppress diagnostics", BOOL_TYPE),
+    OPTION("", "--suffix",
+           "append SUFFIX to TEMPLATE; SUFFIX must not contain a path "
+           "separator",
+           STRING_TYPE),
     OPTION("-t", "--tmpdir", "interpret TEMPLATE relative to DIR", STRING_TYPE),
     OPTION("-p", "--tmpdir",
            "interpret TEMPLATE relative to DIR; if DIR is not specified, use "
@@ -62,6 +66,7 @@ struct Config {
   bool quiet = false;
   std::string tmpdir;
   std::string template_str;
+  std::string suffix;
 };
 
 auto build_config(const CommandContext<MKTEMP_OPTIONS.size()>& ctx)
@@ -83,6 +88,13 @@ auto build_config(const CommandContext<MKTEMP_OPTIONS.size()>& ctx)
     cfg.tmpdir = tmpdir_opt;
   }
 
+  cfg.suffix = ctx.get<std::string>("--suffix", "");
+  if (cfg.suffix.find('/') != std::string::npos ||
+      cfg.suffix.find('\\') != std::string::npos) {
+    return std::unexpected("invalid suffix '" + cfg.suffix +
+                           "', contains directory separator");
+  }
+
   // Get template from positionals
   if (!ctx.positionals.empty()) {
     cfg.template_str = std::string(ctx.positionals[0]);
@@ -95,23 +107,65 @@ auto build_config(const CommandContext<MKTEMP_OPTIONS.size()>& ctx)
 }
 
 auto run(const Config& cfg) -> int {
-  // Determine temp directory
-  std::string temp_dir = cfg.tmpdir;
-  if (temp_dir.empty()) {
-    // Use current directory for tests
-    temp_dir = ".";
+  auto find_template_run = [](std::string_view templ)
+      -> std::optional<std::pair<size_t, size_t>> {
+    auto last_sep = templ.find_last_of("/\\");
+    size_t component_start =
+        last_sep == std::string_view::npos ? 0 : last_sep + 1;
+
+    size_t best_start = std::string_view::npos;
+    size_t best_len = 0;
+    for (size_t i = component_start; i < templ.size();) {
+      if (templ[i] != 'X') {
+        ++i;
+        continue;
+      }
+      size_t j = i;
+      while (j < templ.size() && templ[j] == 'X') {
+        ++j;
+      }
+      size_t len = j - i;
+      if (len >= 3) {
+        best_start = i;
+        best_len = len;
+      }
+      i = j;
+    }
+
+    if (best_start == std::string_view::npos) {
+      return std::nullopt;
+    }
+    return std::pair{best_start, best_len};
+  };
+
+  std::filesystem::path base_dir;
+  std::string template_component = cfg.template_str;
+
+  if (!cfg.tmpdir.empty()) {
+    base_dir = std::filesystem::path(cfg.tmpdir);
+    template_component =
+        std::filesystem::path(cfg.template_str).filename().string();
+  } else {
+    std::filesystem::path template_path = std::filesystem::path(cfg.template_str);
+    base_dir = template_path.parent_path();
+    template_component = template_path.filename().string();
   }
 
-  // Process template
-  std::string template_str = cfg.template_str;
+  if (template_component.empty()) {
+    template_component = "tmp.XXXXXX";
+  }
 
-  // Find the XXXXXX pattern and replace with random characters
-  size_t xxx_pos = template_str.find("XXXXXX");
-  if (xxx_pos == std::string::npos) {
-    // If no XXXXXX, append it
+  // Process template. Replace the final X-run in the last path component and
+  // append --suffix after that replacement, matching GNU/Microsoft usage such
+  // as `mktemp file-XXXX.txt` and `mktemp --suffix=.txt file-XXXX`.
+  std::string template_str = template_component;
+  auto run_info = find_template_run(template_str);
+  if (!run_info) {
     template_str += "XXXXXX";
-    xxx_pos = template_str.size() - 6;
+    run_info = std::pair{template_str.size() - 6, size_t{6}};
   }
+  template_str += cfg.suffix;
+  auto [xxx_pos, xxx_len] = *run_info;
 
   // Generate unique filename
   std::string temp_file;
@@ -122,16 +176,15 @@ auto run(const Config& cfg) -> int {
     std::string filename = template_str;
     const char charset[] = "abcdefghijklmnopqrstuvwxyz0123456789";
 
-    for (size_t i = 0; i < 6; ++i) {
+    for (size_t i = 0; i < xxx_len; ++i) {
       filename[xxx_pos + i] = charset[rand() % (sizeof(charset) - 1)];
     }
 
     // Build full path
-    temp_file = temp_dir;
-    if (temp_file.back() != '\\' && temp_file.back() != '/') {
-      temp_file += "\\";
-    }
-    temp_file += filename;
+    std::filesystem::path candidate_path =
+        base_dir.empty() ? std::filesystem::path(filename)
+                         : (base_dir / std::filesystem::path(filename));
+    temp_file = candidate_path.string();
 
     // Check if file/directory already exists
     DWORD attrs = GetFileAttributesA(temp_file.c_str());
@@ -179,12 +232,7 @@ auto run(const Config& cfg) -> int {
     }
   }
 
-  // Print just the filename (not full path)
-  size_t last_slash = temp_file.find_last_of("/\\");
-  std::string filename_only = (last_slash != std::string::npos)
-                                  ? temp_file.substr(last_slash + 1)
-                                  : temp_file;
-  safePrintLn(filename_only);
+  safePrintLn(temp_file);
   return 0;
 }
 

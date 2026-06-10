@@ -251,6 +251,72 @@ TEST(wc, wc_files0_from_stdin_reads_nul_terminated_names) {
   EXPECT_TRUE(r.stdout_text.find("3 total") != std::string::npos);
 }
 
+TEST(wc, wc_files0_from_empty_file_is_an_error) {
+  TempDir tmp;
+  tmp.write_bytes("list.bin", {});
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"wc.exe", {L"--files0-from", L"list.bin"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.empty());
+}
+
+TEST(wc, wc_files0_from_empty_stdin_is_an_error) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("");
+  p.add(L"wc.exe", {L"--files0-from", L"-"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.empty());
+}
+
+TEST(wc, wc_files0_from_rejects_zero_length_names) {
+  TempDir tmp;
+  tmp.write("a.txt", "one\n");
+  tmp.write_bytes("list.bin", {'a', '.', 't', 'x', 't', '\0', '\0'});
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"wc.exe", {L"--files0-from", L"list.bin"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("wc: invalid zero-length file name") !=
+              std::string::npos);
+}
+
+TEST(wc, wc_files0_from_stdin_rejects_dash_name) {
+  TempDir tmp;
+  tmp.write("a.txt", "one\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin(std::string("a.txt\0-\0", 8));
+  p.add(L"wc.exe", {L"--files0-from", L"-"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(
+      r.stderr_text.find(
+          "wc: when reading file names from stdin, no file name of '-' allowed") !=
+      std::string::npos);
+}
+
 TEST(wc, wc_files0_from_rejects_named_operands) {
   TempDir tmp;
   tmp.write("a.txt", "one\n");
@@ -264,5 +330,87 @@ TEST(wc, wc_files0_from_rejects_named_operands) {
 
   EXPECT_NE(r.exit_code, 0);
   EXPECT_TRUE(r.stderr_text.find("--files0-from disallows") !=
+              std::string::npos);
+}
+
+TEST(wc, wc_files0_from_reports_gnu_shaped_missing_list_diagnostic) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"wc.exe", {L"--files0-from", L"missing.bin"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find(
+                  "wc: cannot open 'missing.bin' for reading: No such file "
+                  "or directory") != std::string::npos);
+}
+
+TEST(wc, wc_files0_from_reports_directory_list_input) {
+  TempDir tmp;
+  tmp.mkdir("indir");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"wc.exe", {L"--files0-from", L"indir"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("wc: indir: Is a directory") !=
+              std::string::npos);
+}
+
+TEST(wc, wc_reports_gnu_shaped_missing_input_diagnostic) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"wc.exe", {L"missing.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find(
+                  "wc: cannot open 'missing.txt' for reading: No such file "
+                  "or directory") != std::string::npos);
+}
+
+TEST(wc, wc_mixed_success_and_failure_still_prints_total_for_multiple_inputs) {
+  TempDir tmp;
+  tmp.write("a.txt", "one\ntwo\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"wc.exe", {L"-l", L"a.txt", L"missing.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.find("2 a.txt") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("2 total") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "wc: cannot open 'missing.txt' for reading: No such file "
+                  "or directory") != std::string::npos);
+}
+
+TEST(wc, wc_reports_is_a_directory_for_directory_input) {
+  TempDir tmp;
+  tmp.mkdir("indir");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"wc.exe", {L"indir"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("wc: indir: Is a directory") !=
               std::string::npos);
 }

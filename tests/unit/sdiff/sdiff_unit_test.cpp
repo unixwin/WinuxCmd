@@ -123,3 +123,33 @@ TEST(sdiff, sdiff_rejects_extra_operand_with_help_hint) {
             "sdiff: extra operand 'c.txt'\n"
             "Try 'sdiff --help' for more information.\n");
 }
+
+TEST(sdiff, sdiff_missing_all_operands_reports_help_hint) {
+  Pipeline p;
+  p.add(L"sdiff.exe", {});
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("sdiff missing all operands stderr", r.stderr_text);
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ(r.stderr_text,
+            "sdiff: missing operand\n"
+            "Try 'sdiff --help' for more information.\n");
+}
+
+TEST(sdiff, sdiff_single_operand_reports_help_hint) {
+  Pipeline p;
+  p.add(L"sdiff.exe", {L"a.txt"});
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("sdiff single operand stderr", r.stderr_text);
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ(r.stderr_text,
+            "sdiff: missing operand after 'a.txt'\n"
+            "Try 'sdiff --help' for more information.\n");
+}

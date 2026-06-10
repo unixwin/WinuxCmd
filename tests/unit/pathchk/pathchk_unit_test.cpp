@@ -36,6 +36,26 @@ TEST(pathchk, pathchk_default_rejects_leading_dash_component) {
   EXPECT_TRUE(r.stderr_text.find("leading '-'") != std::string::npos);
 }
 
+TEST(pathchk, pathchk_default_accepts_trailing_separator) {
+  Pipeline p;
+  p.add(L"pathchk.exe", {L"safe/path/"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.empty());
+}
+
+TEST(pathchk, pathchk_P_accepts_repeated_separators_without_empty_name_error) {
+  Pipeline p;
+  p.add(L"pathchk.exe", {L"-P", L"safe//nested///path/"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.empty());
+}
+
 TEST(pathchk, pathchk_default_empty_path_reports_gnu_style_missing_entry) {
   Pipeline p;
   p.add(L"pathchk.exe", {L""});

@@ -235,6 +235,17 @@ auto expand_line(const std::string& line, const Config::TabStops& tab_stops,
 }
 
 auto run(const Config& cfg) -> int {
+  auto expand_input_open_error = [](std::string_view path) -> std::string {
+    std::error_code ec;
+    auto status = std::filesystem::status(std::filesystem::u8path(path), ec);
+    if (!ec && status.type() == std::filesystem::file_type::directory) {
+      return std::string("cannot open '") + std::string(path) +
+             "' for reading: Is a directory";
+    }
+    return std::string("cannot open '") + std::string(path) +
+           "' for reading: No such file or directory";
+  };
+
   bool all_ok = true;
 
   for (const auto& file : cfg.files) {
@@ -248,7 +259,7 @@ auto run(const Config& cfg) -> int {
       // Read from file
       std::ifstream f(file, std::ios::binary);
       if (!f) {
-        auto err = std::string("cannot open '") + file + "' for reading";
+        auto err = expand_input_open_error(file);
         cp::Result<int> result = std::unexpected(std::string_view(err));
         cp::report_error(result, L"expand");
         all_ok = false;
@@ -280,11 +291,18 @@ auto run(const Config& cfg) -> int {
 
       if (line_end == std::string::npos) {
         line = content.substr(line_start);
+        if (!line.empty() && line.back() == '\r') {
+          line.pop_back();
+        }
         result += expand_line(line, cfg.tab_stops, cfg.initial_only);
         break;
       } else {
         line = content.substr(line_start,
                               line_end - line_start + 1);  // Include newline
+        if (line.size() >= 2 && line[line.size() - 2] == '\r' &&
+            line.back() == '\n') {
+          line.erase(line.end() - 2);
+        }
         result += expand_line(line, cfg.tab_stops, cfg.initial_only);
         line_start = line_end + 1;
       }

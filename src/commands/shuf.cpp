@@ -33,6 +33,7 @@
 #include "pch/pch.h"
 // include other header after pch.h
 #include "core/command_macros.h"
+#include <intrin.h>
 
 import std;
 import core;
@@ -50,6 +51,9 @@ auto constexpr SHUF_OPTIONS = std::array{
     OPTION("-o", "--output", "write result to FILE instead of standard output",
            STRING_TYPE),
     OPTION("-r", "--repeat", "output lines can be repeated", BOOL_TYPE),
+    OPTION("", "--random-seed",
+           "use STRING to initialize a reproducible random permutation",
+           STRING_TYPE),
     OPTION("", "--random-source", "get random bytes from FILE", STRING_TYPE),
     OPTION("-z", "--zero-terminated", "line delimiter is NUL, not newline",
            BOOL_TYPE)};
@@ -64,9 +68,326 @@ struct Config {
   bool zero_terminated = false;
   std::string input_range;
   std::string output_file;
+  std::string random_seed;
   std::string random_source;
   SmallVector<std::string, 64> files;
   SmallVector<std::string, 64> echo_args;
+};
+
+class DeterministicRng {
+ public:
+  explicit DeterministicRng(std::string_view seed_text)
+      : state_(make_seed_state(seed_text)),
+        block_words_(generate_block(state_)),
+        word_index_(0) {}
+
+  auto next_u64() -> uint64_t {
+    if (word_index_ >= block_words_.size()) {
+      refill_block();
+    }
+
+    const uint64_t low = static_cast<uint64_t>(block_words_[word_index_]);
+    const uint64_t high = static_cast<uint64_t>(block_words_[word_index_ + 1]);
+    word_index_ += 2;
+    return (high << 32) | low;
+  }
+
+  auto choose_from_range(uint64_t lo, uint64_t hi) -> uint64_t {
+    return lo + generate_at_most(hi - lo);
+  }
+
+  auto choose_index(size_t size) -> size_t {
+    return static_cast<size_t>(generate_at_most(
+        static_cast<uint64_t>(size == 0 ? 0 : size - 1)));
+  }
+
+  template <typename T>
+  auto choose_from_slice(const T& vals) -> decltype(vals[0]) {
+    return vals[choose_index(vals.size())];
+  }
+
+  template <typename T>
+  void shuffle_prefix(T& vals, size_t amount) {
+    amount = std::min(amount, vals.size());
+    for (size_t idx = 0; idx < amount; ++idx) {
+      const auto offset = static_cast<size_t>(generate_at_most(
+          static_cast<uint64_t>(vals.size() - idx - 1)));
+      std::swap(vals[idx], vals[idx + offset]);
+    }
+  }
+
+ private:
+  static constexpr std::array<uint64_t, 24> keccak_round_constants_{
+      0x0000000000000001ull, 0x0000000000008082ull,
+      0x800000000000808Aull, 0x8000000080008000ull,
+      0x000000000000808Bull, 0x0000000080000001ull,
+      0x8000000080008081ull, 0x8000000000008009ull,
+      0x000000000000008Aull, 0x0000000000000088ull,
+      0x0000000080008009ull, 0x000000008000000Aull,
+      0x000000008000808Bull, 0x800000000000008Bull,
+      0x8000000000008089ull, 0x8000000000008003ull,
+      0x8000000000008002ull, 0x8000000000000080ull,
+      0x000000000000800Aull, 0x800000008000000Aull,
+      0x8000000080008081ull, 0x8000000000008080ull,
+      0x0000000080000001ull, 0x8000000080008008ull};
+
+  static constexpr std::array<int, 25> keccak_rho_offsets_{
+      0,  1,  62, 28, 27, 36, 44, 6,  55, 20, 3,  10, 43,
+      25, 39, 41, 45, 15, 21, 8,  18, 2,  61, 56, 14};
+
+  static constexpr std::array<int, 25> keccak_pi_indices_{
+      0,  10, 20, 5,  15, 16, 1,  11, 21, 6,  7,  17, 2,
+      12, 22, 23, 8,  18, 3,  13, 14, 24, 9,  19, 4};
+
+  static constexpr std::array<uint32_t, 4> chacha_constants_{
+      0x61707865u, 0x3320646Eu, 0x79622D32u, 0x6B206574u};
+
+  static auto load64_le(const uint8_t* bytes) -> uint64_t {
+    uint64_t value = 0;
+    for (size_t i = 0; i < 8; ++i) {
+      value |= static_cast<uint64_t>(bytes[i]) << (8 * i);
+    }
+    return value;
+  }
+
+  static void keccak_permute(std::array<uint64_t, 25>& state) {
+    for (uint64_t round_constant : keccak_round_constants_) {
+      std::array<uint64_t, 5> c{};
+      std::array<uint64_t, 5> d{};
+      for (int x = 0; x < 5; ++x) {
+        c[x] =
+            state[x] ^ state[x + 5] ^ state[x + 10] ^ state[x + 15] ^ state[x + 20];
+      }
+      for (int x = 0; x < 5; ++x) {
+        d[x] = c[(x + 4) % 5] ^ std::rotl(c[(x + 1) % 5], 1);
+      }
+      for (int y = 0; y < 5; ++y) {
+        for (int x = 0; x < 5; ++x) {
+          state[x + 5 * y] ^= d[x];
+        }
+      }
+
+      std::array<uint64_t, 25> b{};
+      for (int i = 0; i < 25; ++i) {
+        b[keccak_pi_indices_[i]] =
+            std::rotl(state[i], keccak_rho_offsets_[i]);
+      }
+
+      for (int y = 0; y < 5; ++y) {
+        for (int x = 0; x < 5; ++x) {
+          state[x + 5 * y] =
+              b[x + 5 * y] ^
+              ((~b[((x + 1) % 5) + 5 * y]) & b[((x + 2) % 5) + 5 * y]);
+        }
+      }
+
+      state[0] ^= round_constant;
+    }
+  }
+
+  static auto sha3_256(std::string_view text) -> std::array<uint8_t, 32> {
+    constexpr size_t rate_bytes = 136;
+    constexpr size_t rate_words = rate_bytes / 8;
+
+    std::array<uint64_t, 25> state{};
+    size_t offset = 0;
+
+    while (offset + rate_bytes <= text.size()) {
+      const uint8_t* block =
+          reinterpret_cast<const uint8_t*>(text.data() + offset);
+      for (size_t i = 0; i < rate_words; ++i) {
+        state[i] ^= load64_le(block + i * 8);
+      }
+      keccak_permute(state);
+      offset += rate_bytes;
+    }
+
+    std::array<uint8_t, rate_bytes> tail{};
+    const size_t remaining = text.size() - offset;
+    for (size_t i = 0; i < remaining; ++i) {
+      tail[i] = static_cast<uint8_t>(text[offset + i]);
+    }
+    tail[remaining] ^= 0x06u;
+    tail[rate_bytes - 1] ^= 0x80u;
+    for (size_t i = 0; i < rate_words; ++i) {
+      state[i] ^= load64_le(tail.data() + i * 8);
+    }
+    keccak_permute(state);
+
+    std::array<uint8_t, 32> out{};
+    for (size_t i = 0; i < 4; ++i) {
+      const uint64_t lane = state[i];
+      for (size_t j = 0; j < 8; ++j) {
+        out[i * 8 + j] = static_cast<uint8_t>((lane >> (8 * j)) & 0xFFu);
+      }
+    }
+    return out;
+  }
+
+  static auto make_seed_state(std::string_view seed_text)
+      -> std::array<uint32_t, 16> {
+    std::array<uint32_t, 16> state{};
+    const auto seed = sha3_256(seed_text);
+
+    state[0] = chacha_constants_[0];
+    state[1] = chacha_constants_[1];
+    state[2] = chacha_constants_[2];
+    state[3] = chacha_constants_[3];
+    for (size_t i = 0; i < 8; ++i) {
+      state[4 + i] = static_cast<uint32_t>(seed[i * 4]) |
+                     (static_cast<uint32_t>(seed[i * 4 + 1]) << 8) |
+                     (static_cast<uint32_t>(seed[i * 4 + 2]) << 16) |
+                     (static_cast<uint32_t>(seed[i * 4 + 3]) << 24);
+    }
+    return state;
+  }
+
+  static void quarter_round(std::array<uint32_t, 16>& x, int a, int b, int c,
+                            int d) {
+    x[a] += x[b];
+    x[d] = std::rotl(x[d] ^ x[a], 16);
+    x[c] += x[d];
+    x[b] = std::rotl(x[b] ^ x[c], 12);
+    x[a] += x[b];
+    x[d] = std::rotl(x[d] ^ x[a], 8);
+    x[c] += x[d];
+    x[b] = std::rotl(x[b] ^ x[c], 7);
+  }
+
+  static auto generate_block(const std::array<uint32_t, 16>& state)
+      -> std::array<uint32_t, 16> {
+    std::array<uint32_t, 16> working = state;
+    for (int round = 0; round < 6; ++round) {
+      quarter_round(working, 0, 4, 8, 12);
+      quarter_round(working, 1, 5, 9, 13);
+      quarter_round(working, 2, 6, 10, 14);
+      quarter_round(working, 3, 7, 11, 15);
+      quarter_round(working, 0, 5, 10, 15);
+      quarter_round(working, 1, 6, 11, 12);
+      quarter_round(working, 2, 7, 8, 13);
+      quarter_round(working, 3, 4, 9, 14);
+    }
+    for (size_t i = 0; i < working.size(); ++i) {
+      working[i] += state[i];
+    }
+    return working;
+  }
+
+  void refill_block() {
+    state_[12] += 1;
+    if (state_[12] == 0) {
+      state_[13] += 1;
+    }
+    block_words_ = generate_block(state_);
+    word_index_ = 0;
+  }
+
+  auto generate_at_most(uint64_t at_most) -> uint64_t {
+    if (at_most == std::numeric_limits<uint64_t>::max()) {
+      return next_u64();
+    }
+
+    const uint64_t span = at_most + 1;
+    uint64_t sample = next_u64();
+    uint64_t high = 0;
+    uint64_t low = _umul128(sample, span, &high);
+    if (low < span) {
+      const uint64_t threshold = (0ull - span) % span;
+      while (low < threshold) {
+        sample = next_u64();
+        low = _umul128(sample, span, &high);
+      }
+    }
+    return high;
+  }
+
+  std::array<uint32_t, 16> state_{};
+  std::array<uint32_t, 16> block_words_{};
+  size_t word_index_ = 0;
+};
+
+class CompatRandomSource {
+ public:
+  explicit CompatRandomSource(std::istream& in) : in_(in) {}
+
+  auto choose_from_range(uint64_t lo, uint64_t hi) -> cp::Result<uint64_t> {
+    auto offset = generate_at_most(hi - lo);
+    if (!offset) return std::unexpected(offset.error());
+    return lo + *offset;
+  }
+
+  template <typename T>
+  auto choose_from_slice(const T& vals)
+      -> cp::Result<std::decay_t<decltype(vals[0])>> {
+    if (vals.empty()) {
+      return std::unexpected("no lines to repeat");
+    }
+    auto idx = generate_at_most(static_cast<uint64_t>(vals.size() - 1));
+    if (!idx) return std::unexpected(idx.error());
+    return vals[static_cast<size_t>(*idx)];
+  }
+
+  template <typename T>
+  auto shuffle_prefix(T& vals, size_t amount) -> cp::Result<size_t> {
+    amount = std::min(amount, vals.size());
+    for (size_t idx = 0; idx < amount; ++idx) {
+      auto offset =
+          generate_at_most(static_cast<uint64_t>(vals.size() - idx - 1));
+      if (!offset) return std::unexpected(offset.error());
+      std::swap(vals[idx], vals[idx + static_cast<size_t>(*offset)]);
+    }
+    return amount;
+  }
+
+ private:
+  auto generate_at_most(uint64_t at_most) -> cp::Result<uint64_t> {
+    while (entropy_ < at_most) {
+      const int ch = in_.get();
+      if (ch == std::char_traits<char>::eof()) {
+        if (in_.eof()) {
+          return std::unexpected("end of file");
+        }
+        return std::unexpected("error reading random source");
+      }
+      state_ = state_ * 256 +
+               static_cast<uint64_t>(static_cast<unsigned char>(ch));
+      entropy_ = entropy_ * 256 + 255;
+    }
+
+    if (at_most == std::numeric_limits<uint64_t>::max()) {
+      const uint64_t value = state_;
+      state_ = 0;
+      entropy_ = 0;
+      return value;
+    }
+
+    const uint64_t possibilities = at_most + 1;
+    uint64_t margin = 0;
+    if (entropy_ == std::numeric_limits<uint64_t>::max()) {
+      uint64_t remainder = 0;
+      (void)_udiv128(1, 0, possibilities, &remainder);
+      margin = remainder;
+    } else {
+      margin = (entropy_ + 1) % possibilities;
+    }
+    const uint64_t safe_zone = entropy_ - margin;
+
+    if (state_ <= safe_zone) {
+      const uint64_t value = state_ % possibilities;
+      state_ /= possibilities;
+      entropy_ -= at_most;
+      entropy_ /= possibilities;
+      return value;
+    }
+
+    state_ %= possibilities;
+    entropy_ %= possibilities;
+    return generate_at_most(at_most);
+  }
+
+  std::istream& in_;
+  uint64_t state_ = 0;
+  uint64_t entropy_ = 0;
 };
 
 auto parse_unsigned_decimal(std::string_view text, std::string_view diagnostic)
@@ -113,12 +434,15 @@ auto split_range(std::string_view range)
 }
 
 void append_record(SmallVector<std::string, 1024>& records, std::string record,
-                   bool skip_bom) {
+                   bool skip_bom, bool zero_terminated) {
   if (skip_bom && record.size() >= 3 &&
       static_cast<unsigned char>(record[0]) == 0xEF &&
       static_cast<unsigned char>(record[1]) == 0xBB &&
       static_cast<unsigned char>(record[2]) == 0xBF) {
     record = record.substr(3);
+  }
+  if (!zero_terminated && !record.empty() && record.back() == '\r') {
+    record.pop_back();
   }
   records.push_back(std::move(record));
 }
@@ -130,7 +454,7 @@ auto read_records(std::istream& in, bool zero_terminated,
   bool first = records.empty();
 
   while (std::getline(in, record, delimiter)) {
-    append_record(records, std::move(record), first);
+    append_record(records, std::move(record), first, zero_terminated);
     first = false;
     record.clear();
   }
@@ -143,43 +467,8 @@ auto read_records(std::istream& in, bool zero_terminated,
 }
 
 auto make_rng(const Config& cfg) -> cp::Result<std::mt19937> {
-  if (cfg.random_source.empty()) {
-    std::random_device rd;
-    return std::mt19937(rd());
-  }
-
-  std::ifstream source(cfg.random_source, std::ios::binary);
-  if (!source) {
-    return std::unexpected("cannot open random source");
-  }
-
-  std::vector<uint32_t> seed_words;
-  uint32_t word = 0;
-  int shift = 0;
-  char ch = 0;
-  while (source.get(ch)) {
-    word |= static_cast<uint32_t>(static_cast<unsigned char>(ch)) << shift;
-    shift += 8;
-    if (shift == 32) {
-      seed_words.push_back(word);
-      word = 0;
-      shift = 0;
-    }
-  }
-
-  if (source.fail() && !source.eof()) {
-    return std::unexpected("error reading random source");
-  }
-
-  if (shift != 0) {
-    seed_words.push_back(word);
-  }
-  if (seed_words.empty()) {
-    seed_words.push_back(0);
-  }
-
-  std::seed_seq seed(seed_words.begin(), seed_words.end());
-  return std::mt19937(seed);
+  std::random_device rd;
+  return std::mt19937(rd());
 }
 
 void append_output_record(std::string& output, const std::string& record,
@@ -221,24 +510,35 @@ auto build_config(const CommandContext<SHUF_OPTIONS.size()>& ctx)
   }
   cfg.input_range = range_opt;
 
-  auto count_opt = ctx.get<std::string>("--head-count", "");
-  if (count_opt.empty()) {
-    count_opt = ctx.get<std::string>("-n", "");
-  }
-  if (!count_opt.empty()) {
+  std::optional<size_t> min_count;
+  auto head_count_values = ctx.get_all<std::string>("--head-count");
+  auto short_head_count_values = ctx.get_all<std::string>("-n");
+  head_count_values.insert(head_count_values.end(), short_head_count_values.begin(),
+                           short_head_count_values.end());
+  for (const auto& count_opt : head_count_values) {
     auto count = parse_unsigned_decimal(count_opt, "invalid line count");
     if (!count) return std::unexpected(count.error());
     if (*count > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
       return std::unexpected("invalid line count");
     }
-    cfg.head_count = static_cast<size_t>(*count);
+    const size_t parsed = static_cast<size_t>(*count);
+    min_count = min_count ? std::min(*min_count, parsed) : parsed;
+  }
+  if (min_count.has_value()) {
+    cfg.head_count = *min_count;
   }
 
   cfg.output_file = ctx.get<std::string>("--output", "");
   if (cfg.output_file.empty()) {
     cfg.output_file = ctx.get<std::string>("-o", "");
   }
+  cfg.random_seed = ctx.get<std::string>("--random-seed", "");
   cfg.random_source = ctx.get<std::string>("--random-source", "");
+  if (!cfg.random_seed.empty() && !cfg.random_source.empty()) {
+    return std::unexpected(
+        "the arguments '--random-seed <STRING>' and '--random-source <FILE>' "
+        "are mutually exclusive");
+  }
 
   if (cfg.echo_mode) {
     for (auto arg : ctx.positionals) {
@@ -264,6 +564,17 @@ auto build_config(const CommandContext<SHUF_OPTIONS.size()>& ctx)
 }
 
 auto run(const Config& cfg) -> int {
+  auto shuf_input_open_error = [](std::string_view path) -> std::string {
+    std::error_code ec;
+    auto status = std::filesystem::status(std::filesystem::u8path(path), ec);
+    if (!ec && status.type() == std::filesystem::file_type::directory) {
+      return std::string("cannot open '") + std::string(path) +
+             "' for reading: Is a directory";
+    }
+    return std::string("cannot open '") + std::string(path) +
+           "' for reading: No such file or directory";
+  };
+
   SmallVector<std::string, 1024> lines;
 
   if (cfg.echo_mode) {
@@ -299,7 +610,7 @@ auto run(const Config& cfg) -> int {
       } else {
         std::ifstream f(file, std::ios::binary);
         if (!f) {
-          auto err = std::string("cannot open '") + file + "' for reading";
+          auto err = shuf_input_open_error(file);
           cp::Result<int> result = std::unexpected(std::string_view(err));
           cp::report_error(result, L"shuf");
           return 1;
@@ -316,6 +627,91 @@ auto run(const Config& cfg) -> int {
 
   if (lines.empty()) {
     return emit_output(cfg, std::string_view{});
+  }
+
+  if (!cfg.random_source.empty()) {
+    std::ifstream random_source(cfg.random_source, std::ios::binary);
+    if (!random_source) {
+      cp::Result<int> open_result = std::unexpected("cannot open random source");
+      cp::report_error(open_result, L"shuf");
+      return 1;
+    }
+
+    CompatRandomSource rng(random_source);
+    std::string output;
+
+    if (cfg.repeat) {
+      if (cfg.head_count) {
+        for (size_t i = 0; i < *cfg.head_count; ++i) {
+          auto record = rng.choose_from_slice(lines);
+          if (!record) {
+            cp::report_error(record, L"shuf");
+            return 1;
+          }
+          append_output_record(output, *record, cfg.zero_terminated);
+        }
+        return emit_output(cfg, output);
+      }
+
+      while (!is_stdout_pipe_closed()) {
+        output.clear();
+        for (size_t i = 0; i < 256 && !is_stdout_pipe_closed(); ++i) {
+          auto record = rng.choose_from_slice(lines);
+          if (!record) {
+            cp::report_error(record, L"shuf");
+            return 1;
+          }
+          append_output_record(output, *record, cfg.zero_terminated);
+        }
+        if (emit_output(cfg, output) != 0) return 1;
+      }
+      return 0;
+    }
+
+    const size_t output_count =
+        cfg.head_count ? std::min(*cfg.head_count, lines.size()) : lines.size();
+    auto shuffled = rng.shuffle_prefix(lines, output_count);
+    if (!shuffled) {
+      cp::report_error(shuffled, L"shuf");
+      return 1;
+    }
+    for (size_t i = 0; i < *shuffled; ++i) {
+      append_output_record(output, lines[i], cfg.zero_terminated);
+    }
+    return emit_output(cfg, output);
+  }
+
+  if (!cfg.random_seed.empty()) {
+    DeterministicRng rng(cfg.random_seed);
+    std::string output;
+
+    if (cfg.repeat) {
+      if (cfg.head_count) {
+        for (size_t i = 0; i < *cfg.head_count; ++i) {
+          append_output_record(output, rng.choose_from_slice(lines),
+                               cfg.zero_terminated);
+        }
+        return emit_output(cfg, output);
+      }
+
+      while (!is_stdout_pipe_closed()) {
+        output.clear();
+        for (size_t i = 0; i < 256 && !is_stdout_pipe_closed(); ++i) {
+          append_output_record(output, rng.choose_from_slice(lines),
+                               cfg.zero_terminated);
+        }
+        if (emit_output(cfg, output) != 0) return 1;
+      }
+      return 0;
+    }
+
+    const size_t output_count =
+        cfg.head_count ? std::min(*cfg.head_count, lines.size()) : lines.size();
+    rng.shuffle_prefix(lines, output_count);
+    for (size_t i = 0; i < output_count; ++i) {
+      append_output_record(output, lines[i], cfg.zero_terminated);
+    }
+    return emit_output(cfg, output);
   }
 
   auto rng_result = make_rng(cfg);
@@ -372,8 +768,9 @@ REGISTER_COMMAND(
     "\n"
     "Mandatory arguments to long options are mandatory for short options too.\n"
     "\n"
-    "Note: This implementation uses the Mersenne Twister PRNG\n"
-    "from the C++ standard library.",
+    "Note: --random-seed uses a reproducible SHA3-256 + ChaCha12 path,\n"
+    "and --random-source follows the GNU/Microsoft-compatible entropy-\n"
+    "recycling adapter.",
     "  shuf file.txt\n"
     "  shuf -n 5 file.txt\n"
     "  shuf -e a b c d e\n"

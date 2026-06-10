@@ -62,6 +62,8 @@ auto constexpr SPLIT_OPTIONS = std::array{
     OPTION("", "--filter", "write to shell COMMAND; file name is $FILE",
            STRING_TYPE),
     OPTION("-e", "--elide-empty-files", "do not generate empty output files"),
+    OPTION("", "--verbose",
+           "print a diagnostic just before each output file is opened"),
     OPTION("-t", "--separator",
            "use SEP instead of newline as the record separator; '\\0' (zero) "
            "specifies the NUL character",
@@ -96,11 +98,13 @@ auto resolve_input_file(const CommandContext<SPLIT_OPTIONS.size()>& ctx)
 struct Config {
   enum class Mode { Lines, Bytes, LineBytes, Number };
   enum class SuffixKind { Alpha, Numeric, Hex };
+  enum class NumberMode { ApproximateBytes, PreserveRecords };
 
   Mode mode = Mode::Lines;
   int64_t chunk_size = 0;
   int64_t chunk_lines = 1000;  // Default: 1000 lines per file
   int64_t num_chunks = 0;      // For -n mode
+  NumberMode number_mode = NumberMode::ApproximateBytes;
   SuffixKind suffix_kind = SuffixKind::Alpha;
   int suffix_length = 2;
   bool suffix_length_explicit = false;
@@ -111,6 +115,7 @@ struct Config {
   std::string input_file;
   std::string filter_command;
   bool elide_empty = false;
+  bool verbose = false;
   char separator = '\n';  // Default: newline
   bool separator_explicit = false;
   bool unbuffered = false;
@@ -288,17 +293,21 @@ auto build_config(const CommandContext<SPLIT_OPTIONS.size()>& ctx)
       if (!val.empty() && val[0] == '/') val = val.substr(1);
     }
 
-    // Parse N or k/N
-    size_t slash = val.find('/');
-    if (slash != std::string::npos) {
-      // k/N form - just extract N for now
-      val = val.substr(slash + 1);
+    if (round_robin) {
+      return std::unexpected("unsupported --number mode");
+    }
+
+    // Only GNU's plain N and l/N modes are implemented here.
+    if (val.find('/') != std::string::npos) {
+      return std::unexpected("unsupported --number mode");
     }
 
     auto num_result = parse_positive_i64(val, "number of chunks");
     if (!num_result) return std::unexpected(num_result.error());
     cfg.num_chunks = *num_result;
     cfg.mode = Config::Mode::Number;
+    cfg.number_mode = line_mode ? Config::NumberMode::PreserveRecords
+                                : Config::NumberMode::ApproximateBytes;
   }
 
   if (ctx.has("--numeric-suffixes") || ctx.has("-d")) {
@@ -346,12 +355,20 @@ auto build_config(const CommandContext<SPLIT_OPTIONS.size()>& ctx)
 
   cfg.filter_command = ctx.get<std::string>("--filter", "");
   cfg.elide_empty = ctx.has("--elide-empty-files") || ctx.has("-e");
+  cfg.verbose = ctx.has("--verbose");
   cfg.unbuffered = ctx.has("--unbuffered") || ctx.has("-u");
 
+  const bool has_long_separator = ctx.has("--separator");
+  const bool has_short_separator = ctx.has("-t");
   auto sep_opt = ctx.get<std::string>("--separator", "");
-  if (sep_opt.empty()) sep_opt = ctx.get<std::string>("-t", "");
-  if (!sep_opt.empty()) {
+  if (!has_long_separator && has_short_separator) {
+    sep_opt = ctx.get<std::string>("-t", "");
+  }
+  if (has_long_separator || has_short_separator) {
     cfg.separator_explicit = true;
+    if (sep_opt.empty()) {
+      return std::unexpected("invalid separator");
+    }
     if (sep_opt == "\\0" || sep_opt == "\0") {
       cfg.separator = '\0';
     } else if (sep_opt == "\\n") {
@@ -450,35 +467,57 @@ auto make_filename(const Config& cfg, uint64_t part_num)
 }
 
 auto write_chunk(const Config& cfg, uint64_t part_num, std::string_view chunk)
-    -> cp::Result<int> {
+    -> cp::Result<bool> {
   auto filename_result = make_filename(cfg, part_num);
   if (!filename_result) return std::unexpected(filename_result.error());
   const auto& filename = *filename_result;
 
   if (cfg.elide_empty && chunk.empty()) {
-    return 0;  // Skip empty files
+    return false;  // Skip empty files
+  }
+
+  if (cfg.verbose) {
+    safeErrorPrint("creating file '" + filename + "'\n");
   }
 
   if (!cfg.filter_command.empty()) {
-    // Execute filter command with $FILE set to filename
+    // GNU split exports FILE to the filter command environment. Keep the
+    // existing $FILE textual substitution too so common Windows cmd filters
+    // remain usable under the current _popen-based shell path.
     std::string cmd = cfg.filter_command;
-    // Replace $FILE with the actual filename
     size_t pos;
     while ((pos = cmd.find("$FILE")) != std::string::npos) {
       cmd.replace(pos, 5, filename);
     }
 
+    const char* previous_file = std::getenv("FILE");
+    std::optional<std::string> previous_file_value;
+    if (previous_file != nullptr) {
+      previous_file_value = previous_file;
+    }
+    _putenv_s("FILE", filename.c_str());
+
     FILE* pipe = _popen(cmd.c_str(), "w");
     if (!pipe) {
+      if (previous_file_value.has_value()) {
+        _putenv_s("FILE", previous_file_value->c_str());
+      } else {
+        _putenv_s("FILE", "");
+      }
       return std::unexpected(std::string("cannot run filter command"));
     }
     fwrite(chunk.data(), 1, chunk.size(), pipe);
     int ret = _pclose(pipe);
+    if (previous_file_value.has_value()) {
+      _putenv_s("FILE", previous_file_value->c_str());
+    } else {
+      _putenv_s("FILE", "");
+    }
     if (ret != 0) {
       return std::unexpected(std::string("filter command exited with status ") +
                              std::to_string(ret));
     }
-    return 0;
+    return true;
   }
 
   std::ofstream out(filename, std::ios::binary);
@@ -489,12 +528,40 @@ auto write_chunk(const Config& cfg, uint64_t part_num, std::string_view chunk)
   if (!out) {
     return std::unexpected(std::string("error writing '") + filename + "'");
   }
-  return 0;
+  return true;
+}
+
+struct RecordSpan {
+  size_t start;
+  size_t end;
+};
+
+auto collect_record_spans(std::string_view input, char separator)
+    -> std::vector<RecordSpan> {
+  std::vector<RecordSpan> records;
+  for (size_t pos = 0; pos < input.size();) {
+    size_t next = input.find(separator, pos);
+    size_t end = next == std::string::npos ? input.size() : next + 1;
+    records.push_back({pos, end});
+    pos = end;
+  }
+  return records;
 }
 
 auto run(const Config& cfg) -> int {
   // Read input
   std::string input;
+  auto split_input_open_error = [](std::string_view path) -> std::string {
+    std::error_code ec;
+    if (std::filesystem::is_directory(std::filesystem::u8path(path), ec) &&
+        !ec) {
+      return std::string("cannot open '") + std::string(path) +
+             "' for reading: Is a directory";
+    }
+
+    return std::string("cannot open '") + std::string(path) +
+           "' for reading: No such file or directory";
+  };
 
   if (cfg.input_file.empty() || cfg.input_file == "-") {
     // Read from stdin
@@ -509,8 +576,7 @@ auto run(const Config& cfg) -> int {
     // Read from file
     std::ifstream f(cfg.input_file, std::ios::binary);
     if (!f) {
-      auto err =
-          std::string("cannot open '") + cfg.input_file + "' for reading";
+      auto err = split_input_open_error(cfg.input_file);
       cp::Result<int> result = std::unexpected(std::string_view(err));
       cp::report_error(result, L"split");
       return 1;
@@ -541,43 +607,73 @@ auto run(const Config& cfg) -> int {
 
       if (lines_in_chunk == cfg.chunk_lines || pos == input.size()) {
         auto result = write_chunk(
-            cfg, part_num++,
+            cfg, part_num,
             std::string_view(input.data() + start, record_end - start));
         if (!result) {
           cp::report_error(result, L"split");
           return 1;
         }
+        if (*result) ++part_num;
         start = record_end;
         lines_in_chunk = 0;
       }
     }
   } else if (cfg.mode == Config::Mode::Number) {
-    // Split into N roughly equal chunks
-    int64_t chunk_size =
-        static_cast<int64_t>(input.size() / static_cast<size_t>(cfg.num_chunks));
-    if (chunk_size == 0) chunk_size = 1;
+    if (cfg.number_mode == Config::NumberMode::PreserveRecords) {
+      auto records = collect_record_spans(input, cfg.separator);
+      const size_t total_records = records.size();
 
-    for (int64_t i = 0; i < cfg.num_chunks; ++i) {
-      size_t start = static_cast<size_t>(i * chunk_size);
-      size_t end;
-      if (i == cfg.num_chunks - 1) {
-        end = input.size();
-      } else {
-        end = static_cast<size_t>((i + 1) * chunk_size);
-        // Try to find a newline boundary
-        size_t nl = input.find(cfg.separator, end);
-        if (nl != std::string::npos && nl < end + chunk_size / 10) {
-          end = nl + 1;
+      for (int64_t i = 0; i < cfg.num_chunks; ++i) {
+        const size_t start_record =
+            (static_cast<size_t>(i) * total_records) /
+            static_cast<size_t>(cfg.num_chunks);
+        const size_t end_record =
+            (static_cast<size_t>(i + 1) * total_records) /
+            static_cast<size_t>(cfg.num_chunks);
+
+        std::string_view chunk;
+        if (start_record < end_record) {
+          const size_t start = records[start_record].start;
+          const size_t end = records[end_record - 1].end;
+          chunk = std::string_view(input.data() + start, end - start);
         }
-      }
-      if (start >= input.size()) break;
 
-      auto result = write_chunk(
-          cfg, part_num++,
-          std::string_view(input.data() + start, end - start));
-      if (!result) {
-        cp::report_error(result, L"split");
-        return 1;
+        auto result = write_chunk(cfg, part_num, chunk);
+        if (!result) {
+          cp::report_error(result, L"split");
+          return 1;
+        }
+        if (*result) ++part_num;
+      }
+    } else {
+      // Split into N roughly equal chunks.
+      int64_t chunk_size = static_cast<int64_t>(
+          input.size() / static_cast<size_t>(cfg.num_chunks));
+      if (chunk_size == 0) chunk_size = 1;
+
+      for (int64_t i = 0; i < cfg.num_chunks; ++i) {
+        size_t start = static_cast<size_t>(i * chunk_size);
+        size_t end;
+        if (i == cfg.num_chunks - 1) {
+          end = input.size();
+        } else {
+          end = static_cast<size_t>((i + 1) * chunk_size);
+          // Try to find a newline boundary
+          size_t nl = input.find(cfg.separator, end);
+          if (nl != std::string::npos && nl < end + chunk_size / 10) {
+            end = nl + 1;
+          }
+        }
+        if (start >= input.size()) break;
+
+        auto result = write_chunk(
+            cfg, part_num,
+            std::string_view(input.data() + start, end - start));
+        if (!result) {
+          cp::report_error(result, L"split");
+          return 1;
+        }
+        if (*result) ++part_num;
       }
     }
   } else if (cfg.mode == Config::Mode::Bytes) {
@@ -585,11 +681,12 @@ auto run(const Config& cfg) -> int {
       size_t chunk_size = static_cast<size_t>(std::min<int64_t>(
           cfg.chunk_size, static_cast<int64_t>(input.size() - pos)));
       auto result = write_chunk(
-          cfg, part_num++, std::string_view(input.data() + pos, chunk_size));
+          cfg, part_num, std::string_view(input.data() + pos, chunk_size));
       if (!result) {
         cp::report_error(result, L"split");
         return 1;
       }
+      if (*result) ++part_num;
       pos += chunk_size;
     }
   } else {
@@ -618,11 +715,12 @@ auto run(const Config& cfg) -> int {
       }
 
       auto result = write_chunk(
-          cfg, part_num++, std::string_view(input.data() + start, pos - start));
+          cfg, part_num, std::string_view(input.data() + start, pos - start));
       if (!result) {
         cp::report_error(result, L"split");
         return 1;
       }
+      if (*result) ++part_num;
     }
   }
 

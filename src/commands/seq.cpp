@@ -46,6 +46,9 @@ auto constexpr SEQ_OPTIONS = std::array{
     OPTION("-f", "--format", "use printf style floating-point FORMAT",
            STRING_TYPE),
     OPTION("-s", "--separator", "use STRING to separate numbers", STRING_TYPE),
+    OPTION("-t", "--terminator",
+           "use STRING to terminate the output instead of newline",
+           STRING_TYPE),
     OPTION("-w", "--equal-width",
            "equalize width by padding with leading zeroes", BOOL_TYPE),
     // The shared option parser runs before seq can inspect operands. These
@@ -72,6 +75,7 @@ namespace cp = core::pipeline;
 struct Config {
   std::string format;
   std::string separator;
+  std::string terminator;
   bool equal_width = false;
   bool fixed_default_format = true;
   int default_precision = 0;
@@ -212,6 +216,7 @@ auto build_config(const CommandContext<SEQ_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
   Config cfg;
   cfg.separator = "\n";
+  cfg.terminator = "\n";
   std::vector<std::string_view> operands;
 
   bool parsing_options = true;
@@ -244,6 +249,23 @@ auto build_config(const CommandContext<SEQ_OPTIONS.size()>& ctx)
 
       if (arg.starts_with("--separator=")) {
         cfg.separator = std::string(arg.substr(12));
+        continue;
+      }
+
+      if (arg == "-t" || arg == "--terminator") {
+        auto value = read_option_value(ctx.raw_args, i, "", false, arg);
+        if (!value) return std::unexpected(value.error());
+        cfg.terminator = *value;
+        continue;
+      }
+
+      if (arg.starts_with("-t") && arg.size() > 2) {
+        cfg.terminator = std::string(arg.substr(2));
+        continue;
+      }
+
+      if (arg.starts_with("--terminator=")) {
+        cfg.terminator = std::string(arg.substr(13));
         continue;
       }
 
@@ -421,11 +443,7 @@ auto run(const Config& cfg) -> int {
   }
 
   if (!results.empty()) {
-    if (cfg.separator != "\n") {
-      safePrintLn("");
-    } else {
-      safePrintLn("");  // Always add final newline
-    }
+    safePrint(cfg.terminator);
   }
 
   return 0;

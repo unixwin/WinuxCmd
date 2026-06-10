@@ -85,6 +85,17 @@ TEST(unexpand, unexpand_first_only_overrides_tabs_all) {
   EXPECT_EQ_TEXT(r.stdout_text, "\tx    y\n");
 }
 
+TEST(unexpand, unexpand_f_alias_matches_first_only) {
+  Pipeline p;
+  p.set_stdin("        x    y\n");
+  p.add(L"unexpand.exe", {L"-a", L"-f"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "\tx    y\n");
+}
+
 TEST(unexpand, unexpand_tab_list) {
   Pipeline p;
   p.set_stdin("a  b\n");
@@ -119,4 +130,60 @@ TEST(unexpand, unexpand_tabs_option_keeps_glob_literal) {
   auto r = p.run();
 
   EXPECT_NE(r.exit_code, 0);
+}
+
+TEST(unexpand, unexpand_missing_input_reports_no_such_file) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"unexpand.exe", {L"missing.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "unexpand: cannot open 'missing.txt' for reading: No such "
+                  "file or directory") != std::string::npos);
+}
+
+TEST(unexpand, unexpand_directory_input_reports_is_a_directory) {
+  TempDir tmp;
+  tmp.mkdir("indir");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"unexpand.exe", {L"indir"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(
+      r.stderr_text.find("unexpand: cannot open 'indir' for reading: Is a directory") !=
+      std::string::npos);
+}
+
+TEST(unexpand, unexpand_no_utf8_preserves_utf8_bom_bytes) {
+  TempDir tmp;
+  tmp.write_bytes("bom.txt", {static_cast<char>(0xEF), static_cast<char>(0xBB),
+                              static_cast<char>(0xBF), ' ', ' ', ' ', ' ',
+                              ' ', ' ', ' ', ' ',
+                              'x', '\n'});
+
+  Pipeline default_mode;
+  default_mode.set_cwd(tmp.wpath());
+  default_mode.add(L"unexpand.exe", {L"bom.txt"});
+  auto default_result = default_mode.run();
+
+  EXPECT_EQ(default_result.exit_code, 0);
+  EXPECT_EQ_TEXT(default_result.stdout_text, "\tx\n");
+
+  Pipeline ascii_mode;
+  ascii_mode.set_cwd(tmp.wpath());
+  ascii_mode.add(L"unexpand.exe", {L"-U", L"-a", L"bom.txt"});
+  auto ascii_result = ascii_mode.run();
+
+  EXPECT_EQ(ascii_result.exit_code, 0);
+  EXPECT_EQ(ascii_result.stdout_text,
+            std::string("\xEF\xBB\xBF\t   x\n", 9));
 }

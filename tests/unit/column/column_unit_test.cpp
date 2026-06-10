@@ -143,3 +143,52 @@ TEST(column, column_fill_columns) {
 
   EXPECT_EQ(r.exit_code, 0);
 }
+
+TEST(column, column_table_mode_trims_trailing_cr_from_crlf_records) {
+  TempDir tmp;
+  tmp.write_bytes("crlf.txt",
+                  {'n', 'a', 'm', 'e', '\t', 'a', 'g', 'e', '\r', '\n',
+                   'A', 'l', 'i', 'c', 'e', '\t', '3', '0', '\r', '\n'});
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"column.exe", {L"-t", L"crlf.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find('\r') == std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("name  age\n") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("Alice 30") != std::string::npos);
+}
+
+TEST(column, column_missing_input_reports_no_such_file) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"column.exe", {L"missing.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "column: cannot open 'missing.txt' for reading: No such "
+                  "file or directory") != std::string::npos);
+}
+
+TEST(column, column_directory_input_reports_is_a_directory) {
+  TempDir tmp;
+  tmp.mkdir("indir");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"column.exe", {L"indir"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "column: cannot open 'indir' for reading: Is a directory") !=
+              std::string::npos);
+}

@@ -64,12 +64,16 @@ auto constexpr SORT_OPTIONS = std::array{
     OPTION("-S", "--buffer-size",
            "use SIZE for the main memory buffer; accepted as a memory hint",
            STRING_TYPE),
+    OPTION("", "--parallel",
+           "change the number of sorts run concurrently to N; accepted as a "
+           "concurrency hint",
+           STRING_TYPE),
     OPTION("-s", "--stable",
            "stabilize sort by disabling last-resort comparison"),
     OPTION("-u", "--unique", "output only the first of equal runs"),
     OPTION("-z", "--zero-terminated", "line delimiter is NUL, not newline"),
     OPTION("-c", "--check", "check whether input is sorted"),
-    OPTION("-C", "", "check whether input is sorted quietly"),
+    OPTION("-C", "--check-silent", "check whether input is sorted quietly"),
     OPTION("", "--debug", "print sort key diagnostics to standard error"),
     OPTION("-o", "--output", "write result to FILE instead of standard output",
            STRING_TYPE),
@@ -77,6 +81,15 @@ auto constexpr SORT_OPTIONS = std::array{
         "", "--files0-from",
         "read input from the files specified by NUL-terminated names in FILE",
         STRING_TYPE),
+    OPTION("", "--batch-size",
+           "merge at most NMERGE inputs at once; accepted as a merge hint",
+           STRING_TYPE),
+    OPTION("", "--compress-program",
+           "compress temporaries with PROG; accepted as a compression hint",
+           STRING_TYPE),
+    OPTION("-T", "--temporary-directory",
+           "use DIR for temporaries; accepted as a temporary-directory hint",
+           STRING_TYPE),
     OPTION("", "--sort", "set sort order; 'version' enables version sort",
            STRING_TYPE),
     OPTION("-t", "--field-separator",
@@ -137,7 +150,11 @@ struct Config {
   std::optional<char> field_separator;
   std::string output_file;
   std::string files0_from;
+  std::string batch_size_hint;
+  std::string compress_program_hint;
+  std::string temporary_directory_hint;
   std::string random_source;
+  std::string parallel_hint;
   uint64_t random_seed = 0;
   std::vector<KeySpec> keys;
   SmallVector<std::string, 64>
@@ -146,12 +163,25 @@ struct Config {
 
 auto read_all(std::istream& in) -> std::string { return read_text_stream(in); }
 
+auto describe_input_open_failure(std::string_view path) -> std::string {
+  std::wstring wpath = utf8_to_wstring(std::string(path));
+  DWORD attrs = GetFileAttributesW(wpath.c_str());
+  if (attrs == INVALID_FILE_ATTRIBUTES) {
+    return "No such file or directory";
+  }
+  if ((attrs & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+    return "Is a directory";
+  }
+  return "Permission denied";
+}
+
 auto read_source(std::string_view path) -> cp::Result<std::string> {
   if (path == "-") return read_all(std::cin);
 
   std::ifstream in(std::string(path), std::ios::binary);
   if (!in.is_open()) {
-    return std::unexpected("cannot open '" + std::string(path) + "'");
+    return std::unexpected("cannot read: " + std::string(path) + ": " +
+                           describe_input_open_failure(path));
   }
   return read_all(in);
 }
@@ -164,7 +194,8 @@ auto read_binary_source(std::string_view path) -> cp::Result<std::string> {
 
   std::ifstream in(std::string(path), std::ios::binary);
   if (!in.is_open()) {
-    return std::unexpected("cannot open '" + std::string(path) + "'");
+    return std::unexpected("cannot read: " + std::string(path) + ": " +
+                           describe_input_open_failure(path));
   }
   return std::string{std::istreambuf_iterator<char>{in},
                      std::istreambuf_iterator<char>{}};
@@ -196,15 +227,21 @@ auto split_records(std::string_view content, char delimiter)
     -> std::vector<std::string> {
   std::vector<std::string> out;
   out.reserve(content.size() / 20);  // Estimate: assume ~20 chars per record
+  const auto trim_record = [delimiter](std::string_view record) {
+    if (delimiter == '\n' && !record.empty() && record.back() == '\r') {
+      record.remove_suffix(1);
+    }
+    return std::string(record);
+  };
   size_t start = 0;
   for (size_t i = 0; i < content.size(); ++i) {
     if (content[i] == delimiter) {
-      out.emplace_back(content.substr(start, i - start));
+      out.emplace_back(trim_record(content.substr(start, i - start)));
       start = i + 1;
     }
   }
   if (start < content.size()) {
-    out.emplace_back(content.substr(start));
+    out.emplace_back(trim_record(content.substr(start)));
   }
   return out;
 }
@@ -1141,6 +1178,43 @@ auto parse_buffer_size_hint(std::string_view text) -> bool {
   return false;
 }
 
+auto parse_parallel_hint(std::string_view text) -> bool {
+  if (text.empty()) return false;
+
+  unsigned int value = 0;
+  auto [ptr, ec] =
+      std::from_chars(text.data(), text.data() + text.size(), value);
+  if (ec != std::errc() || ptr != text.data() + text.size()) {
+    return false;
+  }
+  return value > 0;
+}
+
+auto parse_batch_size_hint(std::string_view text) -> bool {
+  if (text.empty()) return false;
+
+  unsigned int value = 0;
+  auto [ptr, ec] =
+      std::from_chars(text.data(), text.data() + text.size(), value);
+  if (ec != std::errc() || ptr != text.data() + text.size()) {
+    return false;
+  }
+  return value >= 2;
+}
+
+auto validate_compress_program_hint(std::string_view text) -> bool {
+  return !text.empty();
+}
+
+auto validate_temporary_directory_hint(std::string_view text) -> bool {
+  if (text.empty()) return false;
+
+  std::error_code ec;
+  const auto path = std::filesystem::u8path(text);
+  return std::filesystem::exists(path, ec) &&
+         std::filesystem::is_directory(path, ec) && !ec;
+}
+
 auto build_config(const CommandContext<SORT_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
   Config cfg;
@@ -1163,7 +1237,7 @@ auto build_config(const CommandContext<SORT_OPTIONS.size()>& ctx)
   if (ctx.get<bool>("--check", false) || ctx.get<bool>("-c", false)) {
     cfg.mode = OperationMode::Check;
   }
-  if (ctx.get<bool>("-C", false)) {
+  if (ctx.get<bool>("-C", false) || ctx.get<bool>("--check-silent", false)) {
     cfg.mode = OperationMode::CheckQuiet;
   }
   cfg.delimiter =
@@ -1174,13 +1248,39 @@ auto build_config(const CommandContext<SORT_OPTIONS.size()>& ctx)
   cfg.output_file = ctx.get<std::string>("--output", "");
   if (cfg.output_file.empty()) cfg.output_file = ctx.get<std::string>("-o", "");
   cfg.files0_from = ctx.get<std::string>("--files0-from", "");
+  cfg.batch_size_hint = ctx.get<std::string>("--batch-size", "");
+  cfg.compress_program_hint = ctx.get<std::string>("--compress-program", "");
+  cfg.temporary_directory_hint =
+      ctx.get<std::string>("--temporary-directory", "");
+  if (cfg.temporary_directory_hint.empty()) {
+    cfg.temporary_directory_hint = ctx.get<std::string>("-T", "");
+  }
   cfg.random_source = ctx.get<std::string>("--random-source", "");
+  cfg.parallel_hint = ctx.get<std::string>("--parallel", "");
 
   std::string buffer_size = ctx.get<std::string>("--buffer-size", "");
   if (buffer_size.empty()) buffer_size = ctx.get<std::string>("-S", "");
   if ((ctx.has("--buffer-size") || ctx.has("-S")) &&
       !parse_buffer_size_hint(buffer_size)) {
     return std::unexpected("invalid buffer size");
+  }
+
+  if (ctx.has("--parallel") && !parse_parallel_hint(cfg.parallel_hint)) {
+    return std::unexpected("invalid parallel count");
+  }
+
+  if (ctx.has("--batch-size") && !parse_batch_size_hint(cfg.batch_size_hint)) {
+    return std::unexpected("invalid batch size");
+  }
+
+  if (ctx.has("--compress-program") &&
+      !validate_compress_program_hint(cfg.compress_program_hint)) {
+    return std::unexpected("invalid compress program");
+  }
+
+  if ((ctx.has("--temporary-directory") || ctx.has("-T")) &&
+      !validate_temporary_directory_hint(cfg.temporary_directory_hint)) {
+    return std::unexpected("invalid temporary directory");
   }
 
   std::string sep = ctx.get<std::string>("--field-separator", "");

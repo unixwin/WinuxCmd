@@ -264,6 +264,9 @@ auto parse_fixed_date_time(std::string input) -> std::optional<FILETIME> {
   int year = 0;
   int month = 0;
   int day = 0;
+  int hour = 0;
+  int minute = 0;
+  int second = 0;
   if (date_part.size() == 10 && (date_part[4] == '-' || date_part[4] == '/') &&
       date_part[7] == date_part[4]) {
     auto y = parse_int(std::string_view(date_part).substr(0, 4));
@@ -277,13 +280,20 @@ auto parse_fixed_date_time(std::string input) -> std::optional<FILETIME> {
     year = *parse_int(std::string_view(date_part).substr(0, 4));
     month = *parse_int(std::string_view(date_part).substr(4, 2));
     day = *parse_int(std::string_view(date_part).substr(6, 2));
+  } else if ((date_part.size() == 12 || date_part.size() == 14) &&
+             is_digits(date_part)) {
+    year = *parse_int(std::string_view(date_part).substr(0, 4));
+    month = *parse_int(std::string_view(date_part).substr(4, 2));
+    day = *parse_int(std::string_view(date_part).substr(6, 2));
+    hour = *parse_int(std::string_view(date_part).substr(8, 2));
+    minute = *parse_int(std::string_view(date_part).substr(10, 2));
+    if (date_part.size() == 14) {
+      second = *parse_int(std::string_view(date_part).substr(12, 2));
+    }
   } else {
     return std::nullopt;
   }
 
-  int hour = 0;
-  int minute = 0;
-  int second = 0;
   if (!time_part.empty()) {
     std::vector<std::string_view> pieces;
     std::string_view tv = time_part;

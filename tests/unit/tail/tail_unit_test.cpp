@@ -148,6 +148,37 @@ TEST(tail, tail_last_count_option_wins) {
   EXPECT_EQ_TEXT(r2.stdout_text, "amma\n");
 }
 
+TEST(tail, tail_obsolete_count_after_options_reports_invalid_context) {
+  TempDir tmp;
+  tmp.write("a.txt", "1\n2\n3\n4\n5\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"tail.exe", {L"-n", L"1", L"-5", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(
+      r.stderr_text.find("tail: option used in invalid context -- 5") !=
+      std::string::npos);
+}
+
+TEST(tail, tail_bare_plus_count_is_treated_as_a_file_operand) {
+  TempDir tmp;
+  tmp.write("a.txt", "1\n2\n3\n4\n5\n6\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"tail.exe", {L"+5", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("cannot open '+5' for reading") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("==> a.txt <==") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("1\n2\n3\n4\n5\n6\n") != std::string::npos);
+}
+
 TEST(tail, tail_negative_line_and_byte_counts) {
   TempDir tmp;
   tmp.write("a.txt", "alpha\nbeta\ngamma\n");
@@ -252,6 +283,54 @@ TEST(tail, tail_rejects_nonzero_oversized_count_suffix) {
   EXPECT_TRUE(r.stderr_text.find("invalid") != std::string::npos);
 }
 
+TEST(tail, tail_missing_file_reports_gnu_shaped_open_error) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"tail.exe", {L"missing.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find(
+                  "tail: cannot open 'missing.txt' for reading: "
+                  "No such file or directory") != std::string::npos);
+}
+
+TEST(tail, tail_multi_file_skips_header_for_missing_file) {
+  TempDir tmp;
+  tmp.write("a.txt", "A1\nA2\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"tail.exe", {L"-n", L"1", L"missing.txt", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "tail: cannot open 'missing.txt' for reading: "
+                  "No such file or directory") != std::string::npos);
+  EXPECT_EQ(r.stdout_text.find("==> missing.txt <=="), std::string::npos);
+  EXPECT_EQ_TEXT(r.stdout_text, "==> a.txt <==\nA2\n");
+}
+
+TEST(tail, tail_directory_operand_reports_gnu_shaped_read_error) {
+  TempDir tmp;
+  std::filesystem::create_directory(tmp.path / "dir");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"tail.exe", {L"dir"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(
+      r.stderr_text.find("tail: error reading 'dir': Is a directory") !=
+      std::string::npos);
+}
+
 TEST(tail, tail_legacy_count_shorthand) {
   TempDir tmp;
   tmp.write("a.txt", "alpha\nbeta\ngamma\n");
@@ -266,11 +345,11 @@ TEST(tail, tail_legacy_count_shorthand) {
 
   Pipeline p2;
   p2.set_cwd(tmp.wpath());
-  p2.add(L"tail.exe", {L"+2", L"a.txt"});
+  p2.add(L"tail.exe", {L"-c", L"+3", L"a.txt"});
   auto r2 = p2.run();
 
   EXPECT_EQ(r2.exit_code, 0);
-  EXPECT_EQ_TEXT(r2.stdout_text, "beta\ngamma\n");
+  EXPECT_EQ_TEXT(r2.stdout_text, "pha\nbeta\ngamma\n");
 }
 
 TEST(tail, tail_strips_utf8_bom_in_line_mode) {
@@ -345,6 +424,50 @@ TEST(tail, tail_obsolete_compact_line_suffix) {
   EXPECT_EQ_TEXT(r.stdout_text, "beta\ngamma\n");
 }
 
+TEST(tail, tail_obsolete_from_start_compact_byte_suffix) {
+  TempDir tmp;
+  std::string data(600, 'x');
+  data.replace(511, 4, "TAIL");
+  tmp.write("a.txt", data);
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"tail.exe", {L"+1b", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(r.stdout_text.size(), 89u);
+  EXPECT_EQ_TEXT(r.stdout_text.substr(0, 8), "TAILxxxx");
+}
+
+TEST(tail, tail_obsolete_from_start_compact_line_suffix) {
+  TempDir tmp;
+  tmp.write("a.txt", "alpha\nbeta\ngamma\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"tail.exe", {L"+2l", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "beta\ngamma\n");
+}
+
+TEST(tail, tail_obsolete_from_start_compact_line_suffix_supports_multiple_files) {
+  TempDir tmp;
+  tmp.write("a.txt", "a1\na2\na3\n");
+  tmp.write("b.txt", "b1\nb2\nb3\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"tail.exe", {L"+2l", L"a.txt", L"b.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text,
+                 "==> a.txt <==\na2\na3\n\n==> b.txt <==\nb2\nb3\n");
+}
+
 TEST(tail, tail_last_header_option_wins) {
   TempDir tmp;
   tmp.write("a.txt", "A1\nA2\n");
@@ -382,6 +505,56 @@ TEST(tail, tail_stdin_header_uses_standard_input) {
                  "==> standard input <==\nS2\n\n==> a.txt <==\nA2\n");
 }
 
+TEST(tail, tail_pid_without_follow_warns_and_still_succeeds) {
+  TempDir tmp;
+  tmp.write("a.txt", "alpha\nbeta\ngamma\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"tail.exe", {L"--pid", L"999999", L"-n", L"1", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "gamma\n");
+  EXPECT_TRUE(
+      r.stderr_text.find(
+          "tail: warning: PID ignored; --pid=PID is useful only when "
+          "following") != std::string::npos);
+}
+
+TEST(tail, tail_retry_without_follow_warns_and_still_succeeds) {
+  TempDir tmp;
+  tmp.write("a.txt", "alpha\nbeta\ngamma\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"tail.exe", {L"--retry", L"-n", L"1", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "gamma\n");
+  EXPECT_TRUE(r.stderr_text.find(
+                  "tail: warning: --retry ignored; --retry is useful only "
+                  "when following") != std::string::npos);
+}
+
+TEST(tail, tail_retry_with_descriptor_follow_warns_initial_open_only) {
+  TempDir tmp;
+  tmp.write("a.txt", "line1\nline2\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"tail.exe", {L"-f", L"--retry", L"--pid", L"999999", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "line1\nline2\n");
+  EXPECT_TRUE(
+      r.stderr_text.find(
+          "tail: warning: --retry only effective for the initial open") !=
+      std::string::npos);
+}
+
 TEST(tail, tail_follow_option_recognized) {
   // Verify that -f flag is recognized and doesn't error out
   // (actual follow mode is a long-running operation tested manually)
@@ -395,6 +568,22 @@ TEST(tail, tail_follow_option_recognized) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.find("--follow") != std::string::npos);
+}
+
+TEST(tail, tail_use_polling_option_is_recognized) {
+  TempDir tmp;
+  tmp.write("a.txt", "line1\nline2\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"tail.exe",
+        {L"--debug", L"--use-polling", L"-f", L"--pid", L"999999", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "line1\nline2\n");
+  EXPECT_TRUE(r.stderr_text.find("polling follow implementation") !=
+              std::string::npos);
 }
 
 TEST(tail, tail_follow_mode_last_occurrence_wins_to_descriptor) {

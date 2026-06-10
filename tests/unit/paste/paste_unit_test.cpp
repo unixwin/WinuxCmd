@@ -155,3 +155,51 @@ TEST(paste, paste_zero_terminated_records) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ(r.stdout_text, std::string("a,1\0b,2\0", 8));
 }
+
+TEST(paste, paste_reports_gnu_shaped_missing_input_diagnostic) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"paste.exe", {L"missing.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find(
+                  "paste: cannot open 'missing.txt' for reading: No such file "
+                  "or directory") != std::string::npos);
+}
+
+TEST(paste, paste_reports_is_a_directory_for_directory_input) {
+  TempDir tmp;
+  tmp.mkdir("indir");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"paste.exe", {L"indir"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find(
+                  "paste: cannot open 'indir' for reading: Is a directory") !=
+              std::string::npos);
+}
+
+TEST(paste, paste_newline_mode_trims_trailing_cr_from_crlf_records) {
+  TempDir tmp;
+  tmp.write_bytes("file1.txt", {'a', '\r', '\n', 'b', '\r', '\n'});
+  tmp.write_bytes("file2.txt", {'1', '\r', '\n', '2', '\r', '\n'});
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"paste.exe", {L"file1.txt", L"file2.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "a\t1\nb\t2\n");
+}
