@@ -15,3 +15,40 @@ regressions/12-seq-limit.case	platform: winux seq is slower for 1M-line output; 
 corpus/namei/01-basic.case	platform: output format differs between GNU namei (util-linux) and WinuxCmd (Windows path resolution steps)
 corpus/namei/02-no-exist.case	platform: GNU namei exits 1 for non-existent paths; WinuxCmd exits 0
 corpus/which/01-basic.case	environment: PATH differs between WSL (/usr/bin/sh) and Windows (C:\Windows\System32\sh.exe)
+# Byte-verified 2026-09-11: these four differ ONLY in message quoting style.
+# GNU quote() emits Unicode curly quotes U+2018/U+2019 under a UTF-8 locale
+# (C.UTF-8/en_US.UTF-8); WinuxCmd emits ASCII consistently. Text, stdout and
+# exit codes are identical (verified with od -c on both sides). Under an
+# LC_ALL=C oracle they match byte-for-byte, which proves it is a quoting-style
+# difference, not a semantic gap. Kept whitelisted because the documented
+# oracle (WSL GNU 9.4 / Git Bash 8.32) runs in a UTF-8 locale.
+corpus/date/03-12hour-invalid.case	format: GNU Unicode curly quotes vs WinuxCmd ASCII quotes in invalid-date stderr; byte-identical under LC_ALL=C oracle (M3 wording batch)
+corpus/date/11-military-j.case	format: same quoting-style-only difference as date/03 (invalid military timezone). M3 wording batch
+corpus/date/12-military-J.case	format: same quoting-style-only difference as date/03 (invalid military timezone). M3 wording batch
+corpus/seq/01-invalid-float.case	format: same quoting-style-only difference as date/03 (invalid float arg). M3 wording batch
+corpus/od/01-invalid-utf8-operand.case	format: WinuxCmd renders the invalid-UTF-8 operand as '?' (replacement char); GNU 8.32 (newlib, C locale) renders it as ''$'\377''. rc/text identical (M3 wording batch)
+
+# Round-5 verified known differences (oracle-side or platform, not product defects)
+corpus/printf/01-rounding-e.case	oracle: newlib printf rounds 2.455 down to 2.45e+00; double true value is 2.45500...07 so UCRT/glibc half-up 2.46e+00 is correct (issue #984 evidence, Python-verified)
+corpus/printf/02-rounding-f.case	oracle: same newlib rounding defect as 01; WinuxCmd 2.46 matches glibc semantics
+corpus/printf/04-rounding-negative.case	oracle: same newlib rounding defect as 01 (-2.455 -> -2.46 correct)
+corpus/printf/06-overflow-saturate.case	format: same quoting-style-only difference as date/03 (overflow warning). stdout digits, saturated value and rc=1 are byte-identical (#967 uppercase wording verified)
+regressions/37-numfmt-options.case	pre-existing: --to=iec-i prints 1.5K instead of GNU 1.5Ki (issue #140 cluster, out of current batch scope; not a regression of the 2026-09-10 batch)
+regressions/41-stdbuf-line-mode.case	platform: Git Bash oracle stdbuf itself fails (libstdbuf.dll not found, rc=125); WinuxCmd succeeds natively (rc=0)
+
+# PR #996 review follow-up. date/23 pins "invalid relative amount must be
+# invalid date, not a crash"; its stderr differs only in quoting style (same
+# cause as date/03). It does execute under an MSYS2 oracle, so it is whitelisted
+# as a genuine output difference.
+#
+# cat/03 and tee/02 are deliberately NOT whitelisted. Their expected GNU text
+# ("cat: -: Bad file descriptor" / "tee: read error: Bad file descriptor") comes
+# from coreutils' own read-error path, which an MSYS2 oracle never reaches: the
+# runtime's read() shim fails first and prints "failed to set file descriptor
+# text/binary mode: Bad file descriptor". That message is emitted identically
+# for cat, wc, od, head and tee, so it is a runtime artifact, not a utility
+# difference, and no coreutils version bump changes it (8.32 and 9.4 are
+# byte-identical on this path). Recording it here would have disguised an
+# unrunnable case as a known product difference. They now carry
+# `oracle: linux` and are SKIPped under a non-Linux oracle instead.
+corpus/date/23-rel-overflow.case	format: same quoting-style-only difference as date/03 (invalid date); rc=1 and "invalid date" text identical

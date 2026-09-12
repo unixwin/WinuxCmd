@@ -830,6 +830,23 @@ REGISTER_COMMAND(
   } else {
     bool ok = true;
     for (const auto& file_arg : cfg.files) {
+      // [GNU] Operands that are not well-formed UTF-8 (e.g. a lone 0xFF
+      // byte) cannot name a real file through the wide-char Windows API.
+      // GNU reports "No such file or directory" and exits 1; routing such
+      // bytes into path conversion previously hung the tool (#339,
+      // uutils#12794).
+      if (!is_valid_utf8(file_arg)) {
+        // Build the diagnostic as one message through the shared i18n helper
+        // (the idiom date.cpp uses for the same ENOENT case). Emitting it as
+        // three separate safeErrorPrint calls made each fragment its own
+        // catalog entry — producing a stray "od: " key and leaving the
+        // operand and the reason untranslatable.
+        safeErrorPrintLn(winux::i18n::format(
+            "command.od.error.cannot_open",
+            "od: {}: No such file or directory", file_arg));
+        ok = false;
+        continue;
+      }
       if (max_input_bytes && data.size() >= *max_input_bytes) break;
       std::vector<std::string> expanded;
       if (contains_wildcard(file_arg)) {

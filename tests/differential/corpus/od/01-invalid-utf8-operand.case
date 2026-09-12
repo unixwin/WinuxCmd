@@ -1,0 +1,5 @@
+cmd: od
+args: $'\377'
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/339
+tags: issue-339 compat-gap invalid-utf8 no-hang

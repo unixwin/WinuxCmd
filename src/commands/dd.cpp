@@ -493,7 +493,10 @@ REGISTER_COMMAND(dd,
   HANDLE stdout_handle = GetStdHandle(STD_OUTPUT_HANDLE);
 
   if (!cfg.input_file.empty()) {
-    std::wstring winput = utf8_to_wstring(cfg.input_file);
+    // Route through the shared operand boundary so MSYS-style paths and
+    // POSIX pseudo-devices (/dev/null -> NUL) resolve like other tools (#276).
+    std::wstring winput =
+        utf8_to_wstring(native_path::normalize_api_operand(cfg.input_file));
     hIn = CreateFileW(winput.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
                       OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (hIn == INVALID_HANDLE_VALUE) {
@@ -507,7 +510,8 @@ REGISTER_COMMAND(dd,
   }
 
   if (!cfg.output_file.empty()) {
-    std::wstring woutput = utf8_to_wstring(cfg.output_file);
+    std::wstring woutput =
+        utf8_to_wstring(native_path::normalize_api_operand(cfg.output_file));
     DWORD creation = cfg.notrunc ? OPEN_ALWAYS : CREATE_ALWAYS;
     hOut = CreateFileW(woutput.c_str(), GENERIC_WRITE, 0, nullptr, creation,
                        FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -588,6 +592,18 @@ REGISTER_COMMAND(dd,
           DWORD native_bytes = 0;
           const bool ok = ReadFile(hIn, data, static_cast<DWORD>(amount),
                                    &native_bytes, nullptr);
+          if (!ok) {
+            const DWORD err = GetLastError();
+            // A pipe whose write end closed (MSYS/Git-Bash pipelines) reports
+            // ERROR_BROKEN_PIPE; that is EOF, not a read failure. Treat it
+            // like ReadFile's normal EOF (TRUE + 0 bytes) so piped stdin
+            // terminates cleanly instead of reporting "dd: read error".
+            if (err == ERROR_BROKEN_PIPE || err == ERROR_HANDLE_EOF) {
+              got = 0;
+              read_error = false;
+              return true;
+            }
+          }
           got = native_bytes;
           read_error = !ok;
           return ok;

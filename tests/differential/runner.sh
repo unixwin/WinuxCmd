@@ -37,6 +37,20 @@ if [ -f "$WHITELIST" ]; then
   done < "$WHITELIST"
 fi
 
+# Platform of the GNU oracle runtime. A few GNU-visible behaviors are produced
+# by the POSIX runtime rather than by coreutils itself: the diagnostic for a
+# closed stdin, for example, is emitted by the Cygwin/MSYS2 read() shim
+# ("failed to set file descriptor text/binary mode") before cat(1) ever reaches
+# its own error path. Such cases cannot be compared against an MSYS2 oracle at
+# any coreutils version. They declare `oracle: linux` and are SKIPped here,
+# which keeps KNOWN_DIFF meaning "executed, results differ" instead of
+# "could not be executed".
+case "$(uname -s 2>/dev/null)" in
+  Linux) ORACLE_PLATFORM=linux ;;
+  MINGW*|MSYS*|CYGWIN*) ORACLE_PLATFORM=msys ;;
+  *) ORACLE_PLATFORM=unknown ;;
+esac
+
 find_oracle() {
   if [ -n "$GNU_BIN" ] && [ -x "$GNU_BIN/$1" ]; then
     printf '%s/%s' "$GNU_BIN" "$1"
@@ -75,10 +89,10 @@ shell_quote() {
 }
 
 run_case() {
-  local case_file=$1 work wdir gdir line block cmd args timeout setup stdin files
+  local case_file=$1 work wdir gdir line block cmd args timeout setup stdin files case_oracle
   work=$(mktemp -d) || return 2
   wdir="$work/w"; gdir="$work/g"; mkdir -p "$wdir" "$gdir"
-  cmd=""; args=""; timeout=10; setup=""; stdin=""; files=""; block=""
+  cmd=""; args=""; timeout=10; setup=""; stdin=""; files=""; block=""; case_oracle=""
   while IFS= read -r line || [ -n "$line" ]; do
     if [ -n "$block" ]; then
       if [[ "$line" == "  "* ]]; then
@@ -92,11 +106,17 @@ run_case() {
       args:*) args=${line#args:}; args=${args# };;
       timeout:*) timeout=${line#timeout: };;
       files:*) files=${line#files: };;
+      oracle:*) case_oracle=${line#oracle: }; case_oracle=${case_oracle# };;
       setup:\ \|) block=setup;;
       stdin:\ \|) block=stdin;;
     esac
   done < "$case_file"
   if [ -z "$cmd" ]; then
+    rm -rf "$work"
+    printf '%s\t%s\tSKIP\n' "${case_file#$ROOT/}" "$cmd"
+    return 0
+  fi
+  if [ -n "$case_oracle" ] && [ "$case_oracle" != "$ORACLE_PLATFORM" ]; then
     rm -rf "$work"
     printf '%s\t%s\tSKIP\n' "${case_file#$ROOT/}" "$cmd"
     return 0

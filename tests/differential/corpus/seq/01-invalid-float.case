@@ -1,0 +1,5 @@
+cmd: seq
+args: 4e4000003 4e4000003
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/958
+tags: issue-958 wording exit-code

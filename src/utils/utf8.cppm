@@ -45,3 +45,56 @@ export std::string wstring_to_utf8(const std::wstring_view& wide) {
                       utf8.data(), size_needed, nullptr, nullptr);
   return utf8;
 }
+
+/**
+ * @brief Strict UTF-8 validity check (RFC 3629, no surrogates, no
+ *        overlongs). Operands that fail this check cannot name a real file
+ *        through the wide-char Windows API, so tools can reject them up
+ *        front with GNU's "No such file or directory" instead of routing
+ *        malformed bytes into path conversion (#339, #350, #353, #362).
+ * @param text byte string to validate
+ * @return true when every byte sequence is a well-formed UTF-8 encoding
+ */
+export auto is_valid_utf8(const std::string_view& text) -> bool {
+  const auto* p = text.data();
+  const auto* const end = text.data() + text.size();
+
+  auto continuation = [&](unsigned char byte) -> bool {
+    return (byte & 0xC0) == 0x80;
+  };
+
+  while (p < end) {
+    const unsigned char lead = static_cast<unsigned char>(*p);
+    if (lead < 0x80) {
+      ++p;
+      continue;
+    }
+    size_t length = 0;
+    unsigned int codepoint = 0;
+    if ((lead & 0xE0) == 0xC0) {
+      length = 2;
+      codepoint = lead & 0x1F;
+    } else if ((lead & 0xF0) == 0xE0) {
+      length = 3;
+      codepoint = lead & 0x0F;
+    } else if ((lead & 0xF8) == 0xF0) {
+      length = 4;
+      codepoint = lead & 0x07;
+    } else {
+      return false;
+    }
+    if (static_cast<size_t>(end - p) < length) return false;
+    for (size_t i = 1; i < length; ++i) {
+      const unsigned char cont = static_cast<unsigned char>(p[i]);
+      if (!continuation(cont)) return false;
+      codepoint = (codepoint << 6) | (cont & 0x3F);
+    }
+    if (length == 2 && codepoint < 0x80) return false;      // overlong
+    if (length == 3 && codepoint < 0x800) return false;     // overlong
+    if (length == 4 && codepoint < 0x10000) return false;   // overlong
+    if (codepoint > 0x10FFFF) return false;
+    if (codepoint >= 0xD800 && codepoint <= 0xDFFF) return false;  // surrogate
+    p += length;
+  }
+  return true;
+}

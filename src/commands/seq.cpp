@@ -133,7 +133,11 @@ auto parse_number(std::string_view text) -> cp::Result<double> {
 
   if (end == value.c_str() || *end != '\0' || errno == ERANGE ||
       std::isnan(parsed)) {
-    return error_result<double>("invalid floating point argument '" + value +
+    // [GNU] message uses a colon between the argument kind and the quoted
+    // value ("invalid floating point argument: '4e4000003'"), and strtod
+    // overflow (ERANGE) must be rejected exactly like a malformed operand so
+    // out-of-range exponents never enter the loop below (#958).
+    return error_result<double>("invalid floating point argument: '" + value +
                                 "'");
   }
 
@@ -561,6 +565,7 @@ REGISTER_COMMAND(seq, "seq",
       return 1;
     }
     cp::report_error(cfg_result, L"seq");
+    safeErrorPrintLn("Try 'seq --help' for more information.");
     return 1;
   }
 

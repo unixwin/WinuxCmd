@@ -1,0 +1,12 @@
+# GNU prints "tee: read error: Bad file descriptor" here: tee.c:327 in 9.4,
+# :263 in 8.32, both error (0, errno, _("read error")).
+#
+# Same MSYS2 oracle artifact as corpus/cat/03-closed-stdin.case: the runtime
+# reports "tee: failed to set file descriptor text/binary mode: Bad file
+# descriptor" before tee(1) reads anything. Requires a real Linux oracle.
+cmd: tee
+args: /dev/null <&-
+oracle: linux
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/973
+tags: issue-973 closed-stdin

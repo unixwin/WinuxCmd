@@ -125,11 +125,20 @@ export auto normalize_api_operand_w(std::wstring_view path) -> std::wstring {
   return normalized;
 }
 
+export auto resolve_pseudo_device_w(std::wstring_view path)
+    -> std::optional<std::wstring>;
+
 export auto normalize_api_operand(std::string_view path) -> std::string {
   // Delegate to the wide implementation so MSYS/Git-Bash style operands such
   // as "/d/repo/file" are converted to "D:\repo\file" exactly like
   // make_api_path_operand does; otherwise return the stripped path unchanged.
-  return to_utf8(normalize_api_operand_w(from_utf8(path)));
+  // POSIX pseudo-devices resolve to their Windows equivalents first so tools
+  // reading through this boundary (od, dd, ...) see /dev/null etc. (#276).
+  const std::wstring wide = from_utf8(path);
+  if (auto pseudo = resolve_pseudo_device_w(wide)) {
+    return to_utf8(*pseudo);
+  }
+  return to_utf8(normalize_api_operand_w(wide));
 }
 
 export auto to_extended_path(std::wstring_view path) -> std::wstring {
@@ -156,9 +165,34 @@ export struct ApiPathOperand {
   bool had_trailing_separator = false;
 };
 
+// [GNU] POSIX pseudo-devices that GNU environments expose under /dev but
+// that have no directory entry on Windows. Mapping them at the shared path
+// boundary (instead of relying on an external runtime directory such as
+// niubash's dev/) keeps tools like dd/tee/cat/pr working when they receive
+// literal /dev/* operands (#276 follow-up, uutils#9745).
+export auto resolve_pseudo_device_w(std::wstring_view path)
+    -> std::optional<std::wstring> {
+  if (path == L"/dev/null") return std::wstring(L"NUL");
+  if (path == L"/dev/stdin") return std::wstring(L"CONIN$");
+  if (path == L"/dev/stdout") return std::wstring(L"CONOUT$");
+  if (path == L"/dev/stderr") return std::wstring(L"CONOUT$");
+  if (path == L"/dev/tty") return std::wstring(L"CONIN$");
+  return std::nullopt;
+}
+
 export auto make_api_path_operand_w(std::wstring_view path) -> ApiPathOperand {
   ApiPathOperand operand;
   operand.original = std::wstring(path);
+  if (auto pseudo = resolve_pseudo_device_w(operand.original)) {
+    // DOS device names (NUL, CONIN$, CONOUT$) must NOT carry the \\?\
+    // prefix: the \\?\ namespace bypasses Win32 device-name resolution, and
+    // GetFullPathNameW would resolve "NUL" against the current directory
+    // instead. Keep the device name verbatim in both normalized and extended.
+    operand.normalized = *pseudo;
+    operand.extended = *pseudo;
+    operand.had_trailing_separator = false;
+    return operand;
+  }
   operand.normalized = normalize_api_operand_w(operand.original);
   operand.extended = to_extended_path(operand.normalized);
   operand.had_trailing_separator =

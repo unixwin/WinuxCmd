@@ -34,6 +34,7 @@
 
 #include "pch/pch.h"
 // include other header after pch.h
+#include <cerrno>
 #include "core/command_macros.h"
 import std;
 import core;
@@ -132,6 +133,28 @@ REGISTER_COMMAND(cat, "cat",
 
 #ifdef _WIN32
   _setmode(_fileno(stdin), _O_BINARY);
+
+  // [GNU] A closed standard input (<&-) is a read error, not EOF (#973).
+  // The CRT reports EBADF on the first read while std::cin would silently
+  // yield EOF and the command would exit 0. _lseek(0, 0, SEEK_CUR) probes
+  // fd validity without disturbing pipes (ESPIPE) or regular files (no-op).
+  {
+    bool reads_stdin = ctx.positionals.empty();
+    for (auto operand : ctx.positionals) {
+      if (operand == "-") reads_stdin = true;
+    }
+    if (reads_stdin) {
+      errno = 0;
+      if (_lseek(0, 0, SEEK_CUR) == -1 && errno == EBADF) {
+        // GNU cat.c names the failing stream through its operand, and stdin
+        // is always the operand "-" (cat.c: infile = "-" before the operand
+        // loop), so the diagnostic is "cat: -: Bad file descriptor" — not
+        // tee's "standard input", which belongs to tee_files' close path.
+        safeErrorPrintLn("cat: -: Bad file descriptor");
+        return 1;
+      }
+    }
+  }
 #endif
 
   // [GNU] -u: accepted for POSIX compatibility (no-op)

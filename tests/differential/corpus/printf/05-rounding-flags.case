@@ -1,0 +1,5 @@
+cmd: printf
+args: '[%8.2f] %+.3e\n' 1.5 1.005
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/984
+tags: issue-984 compat-gap rounding flags-width

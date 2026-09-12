@@ -38,6 +38,16 @@
 #include <ctime>   // _tzset, localtime_s, mktime (TZ env support)
 #include <cstdlib> // std::getenv
 
+// Standard library symbols (std::regex, std::istringstream, ...) come from the
+// `import std;` below. Do NOT also #include standard C++ headers in a
+// translation unit that imports std: the unity build merges this file with the
+// other commands, and the MSVC STL headers then define std:: symbols a second
+// time, failing with C2995/C2011/C2953 redefinitions raised from
+// __msvc_heap_algorithms.hpp, __msvc_bit_utils.hpp and <limits>.
+// pgrep.cpp/pkill.cpp use std::regex, and a dozen other commands use
+// std::stringstream, all without including <regex>/<sstream> - which is the
+// established convention here.
+
 #pragma comment(lib, "advapi32.lib")
 import std;
 import core;
@@ -132,6 +142,39 @@ auto parse_int(std::string_view s) -> std::optional<int> {
   auto [ptr, ec] = std::from_chars(s.data(), s.data() + s.size(), value);
   if (ec != std::errc() || ptr != s.data() + s.size()) return std::nullopt;
   return value;
+}
+
+// [GNU] Relative magnitudes are parsed without exceptions: a value that does
+// not fit must yield "invalid date" (gnulib parse-datetime.y reports an
+// overflow through ckd_* and fails the parse), never std::out_of_range from
+// the throwing std::stoll family, which would abort the process.
+auto parse_amount(std::string_view s) -> std::optional<long long> {
+  if (s.starts_with('+')) s.remove_prefix(1);
+  long long value = 0;
+  auto [ptr, ec] = std::from_chars(s.data(), s.data() + s.size(), value);
+  if (ec != std::errc() || ptr != s.data() + s.size()) return std::nullopt;
+  return value;
+}
+
+// Checked accumulation mirroring gnulib's ckd_add / ckd_mul usage.
+auto add_checked(long long &total, long long amount) -> bool {
+  constexpr auto lo = std::numeric_limits<long long>::min();
+  constexpr auto hi = std::numeric_limits<long long>::max();
+  if (amount > 0 && total > hi - amount) return false;
+  if (amount < 0 && total < lo - amount) return false;
+  total += amount;
+  return true;
+}
+
+auto mul_checked(long long a, long long b, long long &out) -> bool {
+  constexpr auto lo = std::numeric_limits<long long>::min();
+  if (a == 0 || b == 0) {
+    out = 0;
+    return true;
+  }
+  if ((a == -1 && b == lo) || (b == -1 && a == lo)) return false;
+  out = a * b;
+  return out / b == a;
 }
 
 auto days_in_month(int year, int month) -> int {
@@ -331,39 +374,98 @@ auto parse_fixed_date_time(std::string input, bool use_utc)
   auto tz_offset = parse_timezone_suffix(input);
   std::ranges::replace(input, 'T', ' ');
 
-  std::string date_part = input;
+  // Tokenize: locate the Y-M-D date token (loose single-digit fields and
+  // '/' separators are accepted, uutils#6392 / WinuxCmd#979); the remaining
+  // tokens in original order form the wall-clock time, so both
+  // "2026-01-02 10:00 PM" and GNU's reversed "10:00 PM 2026-01-01" parse
+  // (uutils#9253 / WinuxCmd#264, Savannah#16214 / WinuxCmd#384).
+  static const std::regex date_token_re(
+      R"(^[0-9]{4}[-/][0-9]{1,2}[-/][0-9]{1,2}$|^[0-9]{8}$)");
+  std::string date_part;
   std::string time_part;
-  if (auto space = input.find(' '); space != std::string::npos) {
-    date_part = input.substr(0, space);
-    time_part = trim_copy(input.substr(space + 1));
+  {
+    std::vector<std::string> time_tokens;
+    std::istringstream iss(input);
+    std::string tok;
+    bool date_found = false;
+    while (iss >> tok) {
+      if (!date_found && std::regex_match(tok, date_token_re)) {
+        date_part = tok;
+        date_found = true;
+      } else {
+        time_tokens.push_back(tok);
+      }
+    }
+    for (size_t i = 0; i < time_tokens.size(); ++i) {
+      if (i) time_part += ' ';
+      time_part += time_tokens[i];
+    }
+    if (!date_found) date_part = input;  // legacy: whole string as date
   }
 
   int year = 0;
   int month = 0;
   int day = 0;
-  if (date_part.size() == 10 && (date_part[4] == '-' || date_part[4] == '/') &&
-      date_part[7] == date_part[4]) {
-    auto y = parse_int(std::string_view(date_part).substr(0, 4));
-    auto m = parse_int(std::string_view(date_part).substr(5, 2));
-    auto d = parse_int(std::string_view(date_part).substr(8, 2));
-    if (!y || !m || !d) return std::nullopt;
-    year = *y;
-    month = *m;
-    day = *d;
-  } else if (date_part.size() == 8 && is_digits(date_part)) {
-    year = *parse_int(std::string_view(date_part).substr(0, 4));
-    month = *parse_int(std::string_view(date_part).substr(4, 2));
-    day = *parse_int(std::string_view(date_part).substr(6, 2));
-  } else {
-    return std::nullopt;
+  {
+    static const std::regex ymd_re(
+        R"(^([0-9]{4})([-/])([0-9]{1,2})\2([0-9]{1,2})$)");
+    std::smatch ymd;
+    if (std::regex_match(date_part, ymd, ymd_re)) {
+      year = std::stoi(ymd[1].str());
+      month = std::stoi(ymd[3].str());
+      day = std::stoi(ymd[4].str());
+    } else if (date_part.size() == 8 && is_digits(date_part)) {
+      year = *parse_int(std::string_view(date_part).substr(0, 4));
+      month = *parse_int(std::string_view(date_part).substr(4, 2));
+      day = *parse_int(std::string_view(date_part).substr(6, 2));
+    } else {
+      return std::nullopt;
+    }
   }
 
   int hour = 0;
   int minute = 0;
   int second = 0;
   if (!time_part.empty()) {
+    // [GNU] Optional trailing AM/PM (case-insensitive, with or without a
+    // space: "03:04:05 PM" and "03:04:05PM"). 12 AM = 00:xx, 12 PM = 12:xx,
+    // and hour values above 12 combined with AM/PM are rejected
+    // (uutils#9253 / WinuxCmd#264).
+    // gnulib's meridian_table also spells these "A.M." and "P.M.", which are
+    // valid for date(1) ("2026-01-02 03:04:05 P.M." -> 15:04). Drop a trailing
+    // period and the period between the letters so all four spellings reach
+    // one suffix test.
+    std::string tp = time_part;
+    if (auto last = tp.find_last_not_of(' ');
+        last != std::string::npos && tp[last] == '.') {
+      tp.erase(last);
+      auto space = tp.find_last_of(' ');
+      auto begin = space == std::string::npos ? size_t{0} : space + 1;
+      tp.erase(std::remove(tp.begin() + static_cast<std::ptrdiff_t>(begin),
+                           tp.end(), '.'),
+               tp.end());
+      tp = trim_copy(tp);
+    }
+    std::string tp_lower = lower_copy(tp);
+    bool has_pm = false;
+    bool has_am = false;
+    auto strip_ampm = [&](std::string_view suffix) {
+      if (tp_lower.size() >= suffix.size() &&
+          tp_lower.compare(tp_lower.size() - suffix.size(), suffix.size(),
+                           suffix) == 0) {
+        tp = trim_copy(tp.substr(0, tp.size() - suffix.size()));
+        tp_lower = lower_copy(tp);
+        return true;
+      }
+      return false;
+    };
+    if (strip_ampm("pm"))
+      has_pm = true;
+    else if (strip_ampm("am"))
+      has_am = true;
+
     std::vector<std::string_view> pieces;
-    std::string_view tv = time_part;
+    std::string_view tv = tp;
     while (true) {
       auto colon = tv.find(':');
       pieces.push_back(tv.substr(0, colon));
@@ -379,6 +481,11 @@ auto parse_fixed_date_time(std::string input, bool use_utc)
     hour = *h;
     minute = *m;
     second = *sec;
+    if (has_am || has_pm) {
+      if (hour < 1 || hour > 12) return std::nullopt;
+      if (has_pm && hour < 12) hour += 12;
+      else if (has_am && hour == 12) hour = 0;
+    }
   }
 
   SYSTEMTIME st{};
@@ -404,10 +511,21 @@ auto timezone_offset_minutes(const FILETIME &utc, bool use_utc) -> int {
   if (use_utc) return 0;
   auto local = filetime_to_local_st(utc);
   if (!local) return 0;
+  // Truncate both sides to whole seconds before differencing: the incoming
+  // FILETIME carries sub-second ticks, and integer division by 60s would
+  // otherwise drop a whole minute (480 -> 479) whenever the sub-second part
+  // leaks into the difference. This broke military timezone conversion by
+  // one minute (WinuxCmd#354 follow-up).
+  local->wMilliseconds = 0;
+  SYSTEMTIME utc_st{};
+  if (!FileTimeToSystemTime(&utc, &utc_st)) return 0;
+  utc_st.wMilliseconds = 0;
+  FILETIME utc_trunc{};
+  if (!SystemTimeToFileTime(&utc_st, &utc_trunc)) return 0;
   FILETIME as_utc{};
   if (!SystemTimeToFileTime(&*local, &as_utc)) return 0;
   auto diff = static_cast<long long>(filetime_to_ticks(as_utc)) -
-              static_cast<long long>(filetime_to_ticks(utc));
+              static_cast<long long>(filetime_to_ticks(utc_trunc));
   return static_cast<int>(diff / (10000000LL * 60));
 }
 
@@ -761,6 +879,109 @@ auto read_reference_time(std::string_view path) -> std::optional<FILETIME> {
   return attributes.ftLastWriteTime;
 }
 
+// [GNU] Relative date items: "[+|-]N unit" chains appended after a base
+// date (or standing alone, relative to now), e.g. "2026-01-01 +1 month",
+// "-2 days", "+1 month +2 days" (WinuxCmd#975 #383 #386).
+// Month/year items are summed and applied as calendar arithmetic with
+// month-end rollover ("2026-01-31 +1 month +1 month" = 2026-03-31,
+// "2024-02-29 +1 year" = 2025-03-01); the rest accumulate as seconds.
+struct RelativeItem {
+  long long amount = 0;
+  bool calendar = false;          // month/year items
+  long long months_per_unit = 1;  // year items count as 12 calendar months
+  long long unit_seconds = 1;     // scale for non-calendar units
+};
+
+// Strip trailing relative items from the end of the string, returning them
+// in encounter order. Leaves the remainder (base date) in place. Returns
+// nullopt when an amount does not fit in the relative accumulator, which the
+// caller turns into GNU's "invalid date" (see parse_amount).
+auto strip_relative_items(std::string &s)
+    -> std::optional<std::vector<RelativeItem>> {
+  static const std::regex item_re(
+      R"(([+-]?[0-9]+)\s*(fortnights|fortnight|seconds|second|secs|sec|minutes|minute|mins|min|hours|hour|days|day|weeks|week|months|month|years|year)\s*$)",
+      std::regex::icase);
+  std::vector<RelativeItem> items;
+  std::string work = trim_copy(s);
+  std::smatch m;
+  while (std::regex_search(work, m, item_re) &&
+         m.position(0) + m.length(0) == work.size()) {
+    const auto amount = parse_amount(m[1].str());
+    if (!amount) return std::nullopt;
+    std::string unit = lower_copy(m[2].str());
+    bool is_year = unit.starts_with("year");
+    bool is_month = unit.starts_with("month");
+    long long unit_seconds = 1;
+    if (unit.starts_with("fortnight"))
+      unit_seconds = 1209600;
+    else if (unit.starts_with("week"))
+      unit_seconds = 604800;
+    else if (unit.starts_with("day"))
+      unit_seconds = 86400;
+    else if (unit.starts_with("hour"))
+      unit_seconds = 3600;
+    else if (unit.starts_with("min"))
+      unit_seconds = 60;
+    items.push_back({*amount, is_month || is_year, is_year ? 12 : 1,
+                     unit_seconds});
+    work = trim_copy(work.substr(0, m.position(0)));
+  }
+  s = work;
+  return items;
+}
+
+auto apply_relative_items(const FILETIME &base,
+                          const std::vector<RelativeItem> &items,
+                          bool use_utc) -> std::optional<FILETIME> {
+  long long delta_seconds = 0;
+  long long delta_months = 0;
+  for (const auto &item : items) {
+    long long scaled = 0;
+    if (!mul_checked(item.amount,
+                     item.calendar ? item.months_per_unit : item.unit_seconds,
+                     scaled))
+      return std::nullopt;
+    if (!add_checked(item.calendar ? delta_months : delta_seconds, scaled))
+      return std::nullopt;
+  }
+
+  FILETIME result = base;
+  if (delta_months != 0) {
+    // Calendar arithmetic in the display frame (local or UTC)
+    SYSTEMTIME st{};
+    if (use_utc) {
+      if (!FileTimeToSystemTime(&result, &st)) return std::nullopt;
+    } else {
+      auto local = filetime_to_local_st(result);
+      if (!local) return std::nullopt;
+      st = *local;
+    }
+    long long total = static_cast<long long>(st.wYear) * 12 +
+                      (st.wMonth - 1) + delta_months;
+    int year = static_cast<int>(total / 12);
+    int month = static_cast<int>(total % 12) + 1;
+    if (year < 1 || year > 9999) return std::nullopt;
+    int day = st.wDay;
+    while (day > days_in_month(year, month)) {
+      day -= days_in_month(year, month);
+      if (++month > 12) {
+        month = 1;
+        ++year;
+        if (year > 9999) return std::nullopt;
+      }
+    }
+    st.wYear = static_cast<WORD>(year);
+    st.wMonth = static_cast<WORD>(month);
+    st.wDay = static_cast<WORD>(day);
+    auto converted = use_utc ? utc_system_time_to_filetime(st)
+                             : local_system_time_to_filetime(st);
+    if (!converted) return std::nullopt;
+    result = *converted;
+  }
+  if (delta_seconds != 0) result = add_seconds(result, delta_seconds);
+  return result;
+}
+
 auto parse_date_argument(const std::string &arg, bool use_utc)
     -> std::optional<FILETIME> {
   std::string value = trim_copy(arg);
@@ -770,30 +991,31 @@ auto parse_date_argument(const std::string &arg, bool use_utc)
   auto relative = [&](long long amount, long long unit) {
     return add_seconds(now, amount * unit);
   };
-  std::smatch match;
-  const std::regex relative_re(
-      R"(^([+-])([0-9]+)\s*(second|seconds|minute|minutes|hour|hours|day|days|week|weeks|fortnight|fortnights|month|months|year|years)$)");
-  if (std::regex_match(lower, match, relative_re)) {
-    long long amount = std::stoll(match[2].str());
-    if (match[1].str() == "-") amount = -amount;
-    const auto unit = match[3].str();
-    long long seconds = 1;
-    if (unit.starts_with("minute"))
-      seconds = 60;
-    else if (unit.starts_with("hour"))
-      seconds = 3600;
-    else if (unit.starts_with("day"))
-      seconds = 86400;
-    else if (unit.starts_with("fortnight"))
-      seconds = 1209600;  // 2 weeks
-    else if (unit.starts_with("week"))
-      seconds = 604800;
-    else if (unit.starts_with("month"))
-      seconds = 2629746;  // Average month length (30.44 days)
-    else if (unit.starts_with("year"))
-      seconds = 31557600;  // Average year length (365.25 days)
-    return relative(amount, seconds);
+
+  // [GNU] Trailing relative items ("2026-01-01 +1 month", "+2 days",
+  // "1 hour"). The remainder is parsed as the base date; with no remainder
+  // the base is now.
+  {
+    std::string work = value;
+    auto rel_items = strip_relative_items(work);
+    // An unrepresentable amount is an invalid date, exactly like GNU's
+    // overflow check in parse-datetime.y — never a thrown exception.
+    if (!rel_items) return std::nullopt;
+    if (!rel_items->empty()) {
+      std::string rest = trim_copy(std::move(work));
+      std::optional<FILETIME> base;
+      if (rest.empty()) {
+        base = now;
+      } else {
+        base = parse_date_argument(rest, use_utc);
+      }
+      if (!base) return std::nullopt;
+      auto applied = apply_relative_items(*base, *rel_items, use_utc);
+      if (!applied) return std::nullopt;
+      return *applied;
+    }
   }
+
   // [GNU] Natural language date support
   if (lower == "now" || lower == "today") return now;
   if (lower == "tomorrow") return relative(1, 86400);
@@ -941,9 +1163,9 @@ auto parse_date_argument(const std::string &arg, bool use_utc)
     return relative(-days_back, 86400);
   }
 
-  // [GNU] military timezone specs: <digits><letter>, e.g. 9j, 1230z.
-  // J = local time, Z = UTC, A-M (except J) = UTC+1..+12, N-Y = UTC-1..-12
-  // (uutils #12684)
+  // [GNU] military timezone specs: <digits><letter>, e.g. 9a, 1230z.
+  // A-I = UTC+1..+9, K-M = UTC+10..+12, N-Y = UTC-1..-12, Z = UTC;
+  // J is skipped and must be rejected (uutils #12684, #12895)
   {
     static const std::regex military_re(R"(^([0-9]{1,4})([A-Za-z])$)");
     std::smatch mil;
@@ -961,16 +1183,22 @@ auto parse_date_argument(const std::string &arg, bool use_utc)
       }
       bool ok = hour <= 23 && minute <= 59;
       int zone_offset_minutes = 0;
-      if (letter != 'j') {
-        if (letter >= 'a' && letter <= 'm') {
-          zone_offset_minutes = (letter - 'a' + 1) * 60;
-        } else if (letter == 'z') {
-          zone_offset_minutes = 0;
-        } else if (letter >= 'n' && letter <= 'y') {
-          zone_offset_minutes = -(letter - 'n' + 1) * 60;
-        } else {
-          ok = false;
-        }
+      if (letter == 'j') {
+        // [GNU] J is deliberately absent from the military zone table
+        // (uutils#12895 / WinuxCmd#354): both "1024j" and "1024J" must be
+        // rejected as invalid dates.
+        ok = false;
+      } else if (letter >= 'a' && letter <= 'i') {
+        zone_offset_minutes = (letter - 'a' + 1) * 60;
+      } else if (letter >= 'k' && letter <= 'm') {
+        // K=+10, L=+11, M=+12 (J is skipped in the military alphabet)
+        zone_offset_minutes = (letter - 'a') * 60;
+      } else if (letter == 'z') {
+        zone_offset_minutes = 0;
+      } else if (letter >= 'n' && letter <= 'y') {
+        zone_offset_minutes = -(letter - 'n' + 1) * 60;
+      } else {
+        ok = false;
       }
       if (!ok) return std::nullopt;
 
@@ -987,10 +1215,6 @@ auto parse_date_argument(const std::string &arg, bool use_utc)
       target.wHour = static_cast<WORD>(hour);
       target.wMinute = static_cast<WORD>(minute);
 
-      if (letter == 'j') {
-        // J is the local military zone: wall time is local
-        return local_system_time_to_filetime(target);
-      }
       auto as_local = local_system_time_to_filetime(target);
       if (!as_local) return std::nullopt;
       // Shift from "wall time as local" to "wall time in the target zone"

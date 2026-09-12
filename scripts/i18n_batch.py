@@ -277,6 +277,7 @@ MANUAL_MESSAGES = {
     "command.date.error.cannot_open": "date: {}: No such file or directory",
     "command.date.error.cannot_open_generic": "date: {}: {}",
     "command.date.error.read_error": "date: {}: read error: Is a directory",
+    "command.od.error.cannot_open": "od: {}: No such file or directory",
     "common.error.invalid_integer": "invalid integer '{}'",
     "common.error.missing_arg_after": "missing argument after '{}'",
     "common.error.invalid_wrap": "invalid wrap size",

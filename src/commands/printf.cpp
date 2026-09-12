@@ -430,7 +430,7 @@ long long parse_signed_argument(const std::vector<std::string_view>& args,
     return 0;
   }
   if (errno == ERANGE) {
-    warn_numeric(arg, "numerical result out of range", had_error);
+    warn_numeric(arg, "Numerical result out of range", had_error);
   } else if (*end != '\0') {
     warn_numeric(arg, "value not completely converted", had_error);
   }
@@ -456,7 +456,7 @@ unsigned long long parse_unsigned_argument(
     return 0;
   }
   if (errno == ERANGE) {
-    warn_numeric(arg, "numerical result out of range", had_error);
+    warn_numeric(arg, "Numerical result out of range", had_error);
   } else if (*end != '\0') {
     warn_numeric(arg, "value not completely converted", had_error);
   }
@@ -481,13 +481,19 @@ double parse_float_argument(const std::vector<std::string_view>& args,
     return 0.0;
   }
   if (errno == ERANGE) {
-    warn_numeric(arg, "numerical result out of range", had_error);
+    warn_numeric(arg, "Numerical result out of range", had_error);
   } else if (*end != '\0') {
     warn_numeric(arg, "value not completely converted", had_error);
   }
   return value;
 }
 
+// [GNU] Floating-point rounding note (WinuxCmd#984): the MSVC/UCRT printf
+// rounds "%.2e 2.455" against the double's exact binary value
+// (2.4550000000000000710... -> 2.46e+00), matching glibc (WSL GNU 9.4,
+// the differential-test oracle). Git Bash's coreutils links against
+// newlib, whose dtoa misrounds this case to 2.45e+00; that newlib artifact
+// is what the issue report captured. No pre-rounding is applied here.
 std::string render_directive(const FormatSpec& spec,
                              const std::vector<std::string_view>& args,
                              size_t& arg_index, bool& had_error,

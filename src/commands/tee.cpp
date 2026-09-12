@@ -32,6 +32,7 @@
 /// @License: MIT
 /// @Copyright: Copyright © 2026 WinuxCmd
 
+#include <cerrno>
 #include <fcntl.h>
 #include <io.h>
 
@@ -95,6 +96,18 @@ REGISTER_COMMAND(
   _setmode(_fileno(stdout), _O_BINARY);
 #endif
 
+  // [GNU] A closed standard input (<&-) is a read error, not EOF (#973).
+  // The CRT reports EBADF on the first read while std::cin would silently
+  // yield EOF and the command would exit 0. _lseek(0, 0, SEEK_CUR) probes
+  // fd validity without disturbing pipes (ESPIPE) or regular files (no-op).
+  {
+    errno = 0;
+    if (_lseek(0, 0, SEEK_CUR) == -1 && errno == EBADF) {
+      safeErrorPrintLn("tee: read error: Bad file descriptor");
+      return 1;
+    }
+  }
+
   bool append = ctx.get<bool>("-a", false) || ctx.get<bool>("--append", false);
   bool ignore_interrupts =
       ctx.get<bool>("-i", false) || ctx.get<bool>("--ignore-interrupts", false);
@@ -129,10 +142,14 @@ REGISTER_COMMAND(
   SmallVector<std::ofstream, 32> file_streams;
   for (const auto& filename : output_files) {
     std::ofstream file;
+    // Resolve through the shared operand boundary so MSYS-style paths and
+    // POSIX pseudo-devices (/dev/null -> NUL) work like other tools (#276).
+    // Error messages keep echoing the user-visible operand verbatim.
+    const std::string resolved = native_path::normalize_api_operand(filename);
     if (append) {
-      file.open(filename, std::ios::out | std::ios::app | std::ios::binary);
+      file.open(resolved, std::ios::out | std::ios::app | std::ios::binary);
     } else {
-      file.open(filename, std::ios::out | std::ios::trunc | std::ios::binary);
+      file.open(resolved, std::ios::out | std::ios::trunc | std::ios::binary);
     }
 
     if (!file.is_open()) {

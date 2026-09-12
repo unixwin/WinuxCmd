@@ -1,0 +1,6 @@
+cmd: date
+args: '-u' '-d' '1024J' '+%H:%M'
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/354
+tags: issue-354 compat-gap date
+

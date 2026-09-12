@@ -1,0 +1,7 @@
+cmd: wc
+args: -c
+timeout: 10
+stdin: |
+  abc\032def
+source: github.com/unixwin/WinuxCmd/issues/973
+tags: fix-2026-09-11 wc-binary-stdin no-ctrlz-eof

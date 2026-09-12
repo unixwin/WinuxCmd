@@ -1,0 +1,6 @@
+cmd: date
+args: '-d' '2024-02-29 +1 year' '+%F'
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/975
+tags: issue-975 compat-gap date
+
