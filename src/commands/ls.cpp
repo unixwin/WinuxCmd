@@ -3333,6 +3333,33 @@ auto process_paths(const std::vector<std::string> &paths,
     if (ctx.get<bool>("-r", false) || ctx.get<bool>("--reverse", false)) {
       std::reverse(expanded_paths.begin(), expanded_paths.end());
     }
+  } else if (expanded_paths.size() > 1) {
+    // [GNU coreutils] compare_qsort: non-directory operands are sorted and
+    // printed first, then directory operands are sorted and printed after.
+    // This matches `ls lib/**` where glob expands to a mix of files and
+    // directories: GNU prints all files up front, then each directory block.
+    std::vector<std::string> file_operands;
+    std::vector<std::string> dir_operands;
+    for (const auto &path : expanded_paths) {
+      auto probe = probe_path(utf8_to_wstring(path));
+      if (probe.attributes_valid &&
+          (probe.attributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+        dir_operands.push_back(path);
+      } else {
+        file_operands.push_back(path);
+      }
+    }
+    std::sort(file_operands.begin(), file_operands.end());
+    std::sort(dir_operands.begin(), dir_operands.end());
+    if (ctx.get<bool>("-r", false) || ctx.get<bool>("--reverse", false)) {
+      std::reverse(file_operands.begin(), file_operands.end());
+      std::reverse(dir_operands.begin(), dir_operands.end());
+    }
+    expanded_paths.clear();
+    expanded_paths.insert(expanded_paths.end(), file_operands.begin(),
+                          file_operands.end());
+    expanded_paths.insert(expanded_paths.end(), dir_operands.begin(),
+                          dir_operands.end());
   }
 
   for (const auto &path : expanded_paths) {
