@@ -306,3 +306,69 @@ TEST(ln, ln_multiple_sources_require_directory_target) {
   EXPECT_EQ_TEXT(r.stderr_text, "ln: target 'not-dir.txt': Not a directory\n");
   EXPECT_FALSE(std::filesystem::exists(tmp.path / "not-dir.txt~"));
 }
+
+// [DIFFERS] #1101: NT resolves reparse-point link text with the Win32 path
+// parser, which only accepts backslash separators. A stored target such as
+// "./original.txt" or "sub/original.txt" fails native resolution with
+// ERROR_INVALID_NAME ("The filename, directory name, or volume label syntax
+// is incorrect") even though the link creation itself succeeds. The link
+// text must be normalized to backslashes before CreateSymbolicLinkW.
+TEST(ln, ln_symlink_dot_slash_target_resolves_natively) {
+  TempDir tmp;
+  tmp.write("original.txt", "hello world\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ln.exe", {L"-s", L"./original.txt", L"link.txt"});
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("ln -s ./src stderr", r.stderr_text);
+
+  // Same skip policy as the other symbolic-link tests.
+  if (r.exit_code != 0) {
+    std::cout
+        << "  SKIPPED (requires administrator privileges for symbolic links)\n";
+    return;
+  }
+  EXPECT_EQ(r.exit_code, 0);
+
+  std::error_code ec;
+  auto stored =
+      std::filesystem::read_symlink(tmp.path / L"link.txt", ec).wstring();
+  EXPECT_FALSE(ec);
+  EXPECT_TRUE(stored.find(L'/') == std::wstring::npos);
+
+  // TempDir::read goes through CreateFileW on the plain path, so this
+  // exercises the native reparse-point resolution that used to fail.
+  EXPECT_EQ_TEXT(tmp.read("link.txt"), "hello world\n");
+}
+
+TEST(ln, ln_symlink_forward_slash_path_target_resolves_natively) {
+  TempDir tmp;
+  tmp.write("sub/original.txt", "nested\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ln.exe", {L"-s", L"sub/original.txt", L"link.txt"});
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("ln -s sub/src stderr", r.stderr_text);
+
+  if (r.exit_code != 0) {
+    std::cout
+        << "  SKIPPED (requires administrator privileges for symbolic links)\n";
+    return;
+  }
+  EXPECT_EQ(r.exit_code, 0);
+
+  std::error_code ec;
+  auto stored =
+      std::filesystem::read_symlink(tmp.path / L"link.txt", ec).wstring();
+  EXPECT_FALSE(ec);
+  EXPECT_TRUE(stored.find(L'/') == std::wstring::npos);
+  EXPECT_EQ_TEXT(tmp.read("link.txt"), "nested\n");
+}

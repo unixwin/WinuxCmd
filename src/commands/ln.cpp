@@ -182,7 +182,12 @@ auto create_hardlink(const std::string &source, const std::string &target,
  */
 auto create_symlink(const std::string &source, const std::string &target,
                     bool verbose) -> cp::Result<void> {
-  std::wstring wsource = utf8_to_wstring(source);
+  // [DIFFERS] #1101: reparse-point targets must use backslash separators;
+  // "./bds" or "dir/file" resolve as ERROR_INVALID_NAME on native Windows.
+  // Store the user-visible link text unchanged, but normalize what goes
+  // into the reparse point.
+  std::wstring wsource =
+      win32_normalize_symlink_target(utf8_to_wstring(source));
   std::wstring wtarget = utf8_to_wstring(target);
 
   // Check if source is a directory

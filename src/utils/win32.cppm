@@ -105,6 +105,17 @@ export class UniqueFindHandle {
   HANDLE handle_ = INVALID_HANDLE_VALUE;
 };
 
+// [DIFFERS] Windows resolves reparse-point link targets with the Win32 path
+// parser, which only accepts backslash separators: a stored target like
+// "./bds" or "dir/file" fails to resolve with ERROR_INVALID_NAME (123),
+// while the POSIX kernel accepts any separator. Translate forward slashes
+// to backslashes before handing a target to CreateSymbolicLinkW (#1101).
+export auto win32_normalize_symlink_target(std::wstring target)
+    -> std::wstring {
+  std::replace(target.begin(), target.end(), L'/', L'\\');
+  return target;
+}
+
 export auto quote_windows_command_arg(std::wstring_view arg) -> std::wstring {
   if (arg.empty()) return L"\"\"";
 
