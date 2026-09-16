@@ -360,6 +360,24 @@ export auto win32_lookup_account(std::wstring_view name)
   return account;
 }
 
+// GNU userspec resolves account names before interpreting decimal IDs.
+export auto win32_account_matches(std::string_view spec, std::string_view name,
+                                  std::string_view id) -> bool {
+  if (auto account = win32_lookup_account(utf8_to_wstring(spec))) {
+    const auto expected = utf8_to_wstring(account->name);
+    const auto actual = utf8_to_wstring(name);
+    return CompareStringOrdinal(expected.data(),
+                                static_cast<int>(expected.size()),
+                                actual.data(), static_cast<int>(actual.size()),
+                                TRUE) == CSTR_EQUAL;
+  }
+  unsigned long long numeric = 0;
+  const auto [end, error] =
+      std::from_chars(spec.data(), spec.data() + spec.size(), numeric);
+  return error == std::errc{} && end == spec.data() + spec.size() &&
+         std::to_string(numeric) == id;
+}
+
 export auto win32_token_information(HANDLE token,
                                     TOKEN_INFORMATION_CLASS token_class)
     -> std::vector<std::byte> {
