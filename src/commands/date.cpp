@@ -1655,8 +1655,8 @@ auto parse_date_argument(const std::string &arg, bool use_utc,
   // [GNU] military timezone specs (parse-datetime.y military_table):
   // "<HH|HHMM><L>", "<HH>:<MM>[:<SS>]<L>", or a lone "<L>" meaning today at
   // 00:00 in that zone. A-I = UTC+1..+9, K-M = UTC+10..+12 (J is not in the
-  // sequence), N-Y = UTC-1..-12, Z = UTC, and J is the LOCAL zone. 'T' is the
-  // ISO 8601 date/time separator, not a zone.
+  // sequence), N-Y = UTC-1..-12, Z = UTC, and J is the LOCAL zone. 'T' also
+  // serves as the ISO 8601 separator, but remains UTC-7 in a zone position.
   //
   // J was added upstream in gnulib commit 9cde39f8 (2022-05-17,
   // "parse-datetime: support 'J' military time zone", released in
@@ -1705,7 +1705,7 @@ auto parse_date_argument(const std::string &arg, bool use_utc,
       matched = true;
     }
     if (matched) {
-      bool ok = letter != 't' && hour <= 23 && minute <= 59 && second <= 59;
+      bool ok = hour <= 23 && minute <= 59 && second <= 59;
       int zone_offset_minutes = 0;
       bool local_zone = false;
       if (letter == 'j') {

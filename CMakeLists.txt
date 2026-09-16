@@ -44,9 +44,6 @@ else()
 endif()
 set_property(CACHE BUILD_MODE PROPERTY STRINGS "DEV" "RELEASE" "DEBUG_RELEASE" "RELEASE_EXAMPLES")
 
-# Option to enable tests
-option(ENABLE_TESTS "Enable tests" ON)
-
 # Enable PCRE2 for GNU grep -P / --perl-regexp. JIT stays off by default to
 # keep the Windows-native bundle small and avoid executable-memory allocation.
 option(WINUXCMD_ENABLE_PCRE2 "Enable PCRE2-backed grep -P support" ON)
@@ -111,9 +108,7 @@ else()
 endif()
 
 # Apply default values based on build mode if not explicitly set
-if(NOT DEFINED ENABLE_TESTS_USER_VALUE)
-    set(ENABLE_TESTS ${ENABLE_TESTS_DEFAULT} CACHE BOOL "Enable tests" FORCE)
-endif()
+option(ENABLE_TESTS "Enable tests" ${ENABLE_TESTS_DEFAULT})
 if(NOT DEFINED GENERATE_MAP_INFO_USER_VALUE)
     set(GENERATE_MAP_INFO ${GENERATE_MAP_INFO_DEFAULT} CACHE BOOL "Generate_MAP_INFO" FORCE)
 endif()
@@ -220,7 +215,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 if (MSVC)
     add_compile_options(/wd5050)    #we do not use rtti
-    add_compile_options(/wd4819)    #we do not use unicode
+    # Sources and narrow string literals use UTF-8 on every Windows code page.
+    add_compile_options(/utf-8)
 endif ()
 
 # Directory for compiled module files

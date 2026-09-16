@@ -25,6 +25,20 @@
  */
 #include "framework/winuxtest.h"
 
+TEST(base64, shared_stdin_reader_preserves_binary_bytes) {
+  const std::string payload("A\x1a\0\r\nB", 6);
+  for (const auto *command : {L"base64.exe", L"base32.exe"}) {
+    Pipeline p;
+    p.set_stdin(payload);
+    p.add(command, {});
+    p.add(command, {L"-d"});
+    const auto r = p.run();
+    EXPECT_EQ(r.exit_code, 0);
+    EXPECT_EQ(r.stdout_text, payload);
+    EXPECT_TRUE(r.stderr_text.empty());
+  }
+}
+
 TEST(base64, base64_encode_basic) {
   Pipeline p;
   p.set_stdin("hello world");

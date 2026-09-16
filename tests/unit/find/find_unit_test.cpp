@@ -2560,8 +2560,7 @@ TEST(find, find_new_file_predicates_and_listing_actions) {
   ASSERT_EQ(_wutime64((tmp.path / "ref").c_str(), &old_times), 0);
   Pipeline p;
   p.set_cwd(tmp.wpath());
-  p.add(L"find.exe",
-        {L".", L"-anewer", L"ref", L"-fstype", L"NTFS", L"-nogroup", L"-ls"});
+  p.add(L"find.exe", {L".", L"-anewer", L"ref", L"-fstype", L"NTFS", L"-ls"});
   auto r = p.run();
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_FALSE(r.stdout_text.empty());
@@ -2572,6 +2571,22 @@ TEST(find, find_new_file_predicates_and_listing_actions) {
   auto lr = links.run();
   EXPECT_EQ(lr.exit_code, 0);
   EXPECT_TRUE(lr.stderr_text.empty());
+}
+
+TEST(find, nogroup_agrees_with_resolved_fixture_group) {
+  TempDir tmp;
+  tmp.write("file.txt", "x");
+  auto group = ownership_fields(tmp.path / "file.txt").group_name;
+  std::transform(
+      group.begin(), group.end(), group.begin(),
+      [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L"file.txt", L"-nogroup", L"-print"});
+  const auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text,
+                 group.empty() || group == "none" ? "file.txt\n" : "");
 }
 
 TEST(find, find_invalid_size_returns_error) {

@@ -39,10 +39,22 @@ TEST(dircolors, dircolors_print_database) {
 
 TEST(dircolors, dircolors_print_ls_colors) {
   Pipeline p;
+  p.set_env(L"TERM", L"xterm");
   p.add(L"dircolors.exe", {L"--print-ls-colors"});
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  // Should output raw color codes
-  EXPECT_TRUE(r.stdout_text.find("di=01;34") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("\x1b[01;34mdi\t01;34\x1b[0m\n") !=
+              std::string::npos);
+}
+
+TEST(dircolors, print_ls_colors_uses_display_format_for_custom_database) {
+  Pipeline p;
+  p.set_env(L"TERM", L"xterm");
+  p.set_stdin("TERM xterm\nDIR 01;34\n");
+  p.add(L"dircolors.exe", {L"--print-ls-colors", L"-"});
+  const auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(r.stdout_text, "\x1b[01;34mdi\t01;34\x1b[0m\n");
+  EXPECT_TRUE(r.stderr_text.empty());
 }

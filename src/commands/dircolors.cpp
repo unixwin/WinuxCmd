@@ -642,16 +642,10 @@ auto run(const CommandContext<DIRCOLORS_OPTIONS.size()>& ctx) -> int {
   if (!ok) return 1;
 
   if (print_colors) {
-    // [GNU] --print-ls-colors: emit the raw LS_COLORS value as
-    // colon-separated "key=code" pairs.
     std::string out;
     for (const auto& e : entries) {
-      out += e.key;
-      out.push_back('=');
-      out += e.value;
-      out.push_back(':');
+      append_entry(out, 0, e.key, e.value, true);
     }
-    out.push_back('\n');
     safePrint(out);
     return 0;
   }

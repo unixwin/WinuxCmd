@@ -223,17 +223,6 @@ auto get_group_name_for_path(const std::string& path) -> std::string {
   return get_group_info_for_path(path).name;
 }
 
-auto group_names_equal(std::string_view lhs, std::string_view rhs) -> bool {
-  if (lhs.size() != rhs.size()) {
-    return false;
-  }
-
-  return std::ranges::equal(lhs, rhs, [](char left, char right) {
-    return std::tolower(static_cast<unsigned char>(left)) ==
-           std::tolower(static_cast<unsigned char>(right));
-  });
-}
-
 auto should_process_file(const std::string& file, const Config& cfg) -> bool {
   if (cfg.from_group.empty()) {
     return true;
@@ -244,7 +233,8 @@ auto should_process_file(const std::string& file, const Config& cfg) -> bool {
     return false;
   }
 
-  if (is_numeric_group_id_spec(cfg.from_group)) {
+  if (is_numeric_group_id_spec(cfg.from_group) &&
+      cfg.from_group.front() == ':') {
     std::string expected_id = cfg.from_group.front() == ':'
                                   ? cfg.from_group.substr(1)
                                   : cfg.from_group;
@@ -252,7 +242,8 @@ auto should_process_file(const std::string& file, const Config& cfg) -> bool {
            current_group.numeric_id == expected_id;
   }
 
-  return group_names_equal(current_group.name, cfg.from_group);
+  return win32_account_matches(cfg.from_group, current_group.name,
+                               current_group.numeric_id);
 }
 
 auto normalize_path_for_root_compare(std::wstring path) -> std::wstring {

@@ -74,6 +74,30 @@ TEST(argv, non_ascii_operand_reaches_winuxcmd_as_utf8) {
   EXPECT_TRUE(r.stdout_text.find("a.txt") != std::string::npos);
 }
 
+TEST(argv, missing_non_ascii_ls_operand_preserves_utf8_diagnostic) {
+  TempDir tmp;
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ls.exe", {kChineseDir});
+  const auto r = p.run();
+  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_NE(r.stderr_text.find(kChineseDirUtf8), std::string::npos);
+}
+
+TEST(argv, non_ascii_recursive_ls_header_preserves_utf8) {
+  TempDir tmp;
+  std::filesystem::create_directory(tmp.path / kChineseDir);
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ls.exe", {L"-R", kChineseDir});
+  const auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_NE(r.stdout_text.find(std::string(kChineseDirUtf8) + ":"),
+            std::string::npos);
+  EXPECT_TRUE(r.stderr_text.empty());
+}
+
 TEST(argv, non_ascii_find_root_prints_utf8_paths) {
   TempDir tmp;
   std::filesystem::create_directory(tmp.path / kChineseDir);

@@ -3064,29 +3064,18 @@ auto numeric_id_matches(std::string_view actual,
              expected, static_cast<unsigned long long>(*actual_value));
 }
 
-auto exact_id_matches(std::string_view actual, std::string_view expected)
-    -> bool {
-  auto actual_value = parse_unsigned_decimal(actual);
-  auto expected_value = parse_unsigned_decimal(expected);
-  return actual_value && expected_value && *actual_value == *expected_value;
-}
-
 auto owner_matches(const std::filesystem::path& p, std::string_view expected)
     -> bool {
   auto ownership = win32_ownership_info(p);
-  if (is_decimal_text(expected)) {
-    return exact_id_matches(ownership.owner_id, expected);
-  }
-  return ascii_equals_ignore_case(ownership.owner_name, expected);
+  return win32_account_matches(expected, ownership.owner_name,
+                               ownership.owner_id);
 }
 
 auto group_matches(const std::filesystem::path& p, std::string_view expected)
     -> bool {
   auto ownership = win32_ownership_info(p);
-  if (is_decimal_text(expected)) {
-    return exact_id_matches(ownership.group_id, expected);
-  }
-  return ascii_equals_ignore_case(ownership.group_name, expected);
+  return win32_account_matches(expected, ownership.group_name,
+                               ownership.group_id);
 }
 
 auto owner_id_matches(const std::filesystem::path& p,

@@ -1,4 +1,5 @@
 # case path<TAB>reason
+corpus/ls/04-nul-literal.case	platform: issue #1055 intentionally accepts bare DOS device NUL on native Windows; GNU treats NUL as an ordinary filename (exit 2). /dev/null remains separately checked.
 # Verified against GNU coreutils 9.4 (WSL) on the current build. The runner pins
 # WINUX_LANG=en and runs *both* sides under ORACLE_LOCALE (C by default), so a
 # verdict never depends on the locale of the shell that started the runner.

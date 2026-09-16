@@ -31,7 +31,8 @@ scripts/manager.py
 
 /Testing
 
-tests/differential
+tests/differential/report.md
+tests/differential/commands.txt
 
 /CMakeSettings.json
 

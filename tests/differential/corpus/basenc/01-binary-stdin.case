@@ -1,0 +1,5 @@
+cmd: basenc
+args: --base16 -w 0
+stdin: |
+  A\x1a\x00\r\nB
+source: GNU coreutils master src/basenc.c (xset_binary_mode)

@@ -372,7 +372,8 @@ auto resolve_account_sid(const std::string& spec, PSID base_sid)
     }
   }
 
-  if (is_numeric_id(spec)) {
+  if (is_numeric_id(spec) &&
+      !win32_lookup_account(utf8_to_wstring(spec)).has_value()) {
     DWORD rid = 0;
     try {
       rid = static_cast<DWORD>(std::stoul(spec));
@@ -502,39 +503,19 @@ auto format_ownership_display(const OwnershipInfo& info) -> std::string {
   return {};
 }
 
-auto names_equal_case_insensitive(std::string_view lhs, std::string_view rhs)
-    -> bool {
-  if (lhs.size() != rhs.size()) {
-    return false;
-  }
-
-  return std::ranges::equal(lhs, rhs, [](char left, char right) {
-    return std::tolower(static_cast<unsigned char>(left)) ==
-           std::tolower(static_cast<unsigned char>(right));
-  });
-}
-
 auto matches_from_spec(const OwnerGroupSpec& from,
                        const OwnershipInfo& current_ownership) -> bool {
   if (!from.owner.empty()) {
-    const bool owner_matches =
-        is_numeric_id(from.owner)
-            ? (!current_ownership.owner_id.empty() &&
-               current_ownership.owner_id == from.owner)
-            : names_equal_case_insensitive(current_ownership.owner_name,
-                                           from.owner);
+    const bool owner_matches = win32_account_matches(
+        from.owner, current_ownership.owner_name, current_ownership.owner_id);
     if (!owner_matches) {
       return false;
     }
   }
 
   if (from.has_group && !from.group.empty()) {
-    const bool group_matches =
-        is_numeric_id(from.group)
-            ? (!current_ownership.group_id.empty() &&
-               current_ownership.group_id == from.group)
-            : names_equal_case_insensitive(current_ownership.group_name,
-                                           from.group);
+    const bool group_matches = win32_account_matches(
+        from.group, current_ownership.group_name, current_ownership.group_id);
     if (!group_matches) {
       return false;
     }
@@ -547,11 +528,8 @@ auto matches_requested_ownership(const Config& cfg,
                                  const OwnershipInfo& current_ownership)
     -> bool {
   if (!cfg.owner.empty()) {
-    const bool owner_matches =
-        is_numeric_id(cfg.owner) ? (!current_ownership.owner_id.empty() &&
-                                    current_ownership.owner_id == cfg.owner)
-                                 : names_equal_case_insensitive(
-                                       current_ownership.owner_name, cfg.owner);
+    const bool owner_matches = win32_account_matches(
+        cfg.owner, current_ownership.owner_name, current_ownership.owner_id);
     if (!owner_matches) {
       return false;
     }
@@ -559,12 +537,8 @@ auto matches_requested_ownership(const Config& cfg,
 
   if (cfg.has_group) {
     if (!cfg.group.empty()) {
-      const bool group_matches =
-          is_numeric_id(cfg.group)
-              ? (!current_ownership.group_id.empty() &&
-                 current_ownership.group_id == cfg.group)
-              : names_equal_case_insensitive(current_ownership.group_name,
-                                             cfg.group);
+      const bool group_matches = win32_account_matches(
+          cfg.group, current_ownership.group_name, current_ownership.group_id);
       if (!group_matches) {
         return false;
       }
@@ -694,8 +668,9 @@ auto validate_owner_group_spec(const OwnerGroupSpec& spec,
       }
     }
 
-    if (is_numeric_id(spec.owner) && spec.group.empty() &&
-        raw_spec != spec.owner) {
+    if (is_numeric_id(spec.owner) &&
+        !win32_lookup_account(utf8_to_wstring(spec.owner)).has_value() &&
+        spec.group.empty() && raw_spec != spec.owner) {
       return std::unexpected("invalid spec: '" + raw_spec + "'");
     }
   }

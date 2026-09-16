@@ -25,6 +25,17 @@
  */
 #include "framework/winuxtest.h"
 
+TEST(date, military_t_zone_is_utc_minus_seven) {
+  for (const auto *input : {L"1024t", L"1024T", L"10:24:00 T"}) {
+    Pipeline p;
+    p.add(L"date.exe", {L"-u", L"-d", input, L"+%H:%M:%S"});
+    const auto r = p.run();
+    EXPECT_EQ(r.exit_code, 0);
+    EXPECT_EQ_TEXT(r.stdout_text, "17:24:00\n");
+    EXPECT_TRUE(r.stderr_text.empty());
+  }
+}
+
 TEST(date, date_basic) {
   TempDir tmp;
 

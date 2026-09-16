@@ -529,9 +529,9 @@ TEST(ls, ls_long_format_L_dereferences_directory_entry_symlink) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.find("dirlink -> targetdir") == std::string::npos);
-  EXPECT_TRUE(std::regex_search(r.stdout_text,
-                                std::regex(R"(^d[rwx-]{9}\s+\d+\s+.*dirlink$)",
-                                           std::regex_constants::multiline)));
+  EXPECT_TRUE(std::regex_search(
+      r.stdout_text,
+      std::regex(R"((^|\n)d[rwx-]{9}\s+\d+\s+.*dirlink(\n|$))")));
 }
 
 TEST(ls,
@@ -1007,9 +1007,9 @@ TEST(ls, ls_long_format_dotdot_uses_parent_directory_metadata) {
   const auto expected_parent_size = match[1].str();
 
   EXPECT_TRUE(std::regex_search(
-      r.stdout_text, std::regex("^drwx[rwx-]*\\s+\\d+\\s+\\S+\\s+\\S+\\s+" +
-                                    expected_parent_size + "\\s+.*\\.\\.$",
-                                std::regex::multiline)));
+      r.stdout_text,
+      std::regex("(^|\\n)drwx[rwx-]*\\s+\\d+\\s+\\S+\\s+\\S+\\s+" +
+                 expected_parent_size + "\\s+.*\\.\\.(\\n|$)")));
   if (expected_parent_size != "0") {
     EXPECT_TRUE(r.stdout_text.find("total 0\n") == std::string::npos);
   }
@@ -2478,7 +2478,14 @@ TEST(ls, ls_time_style_custom_format_supports_strftime_tokens) {
 TEST(ls, ls_time_style_custom_format_supports_epoch_seconds) {
   TempDir tmp;
   tmp.write("a.txt", "a");
-  EXPECT_TRUE(set_last_write_time(tmp.path / "a.txt", 2023, 1, 2, 3, 4, 5));
+  // Epoch seconds are absolute; a local calendar fixture varies by runner TZ.
+  const auto timestamp =
+      std::chrono::sys_seconds{std::chrono::seconds{1672599845}};
+  std::error_code error;
+  std::filesystem::last_write_time(
+      tmp.path / "a.txt",
+      std::chrono::clock_cast<std::chrono::file_clock>(timestamp), error);
+  ASSERT_FALSE(error);
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
@@ -2926,8 +2933,8 @@ TEST(ls, ls_block_size_humanizes_blocks_and_total) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.find("total 1.0K\n") == 0);
   EXPECT_TRUE(std::regex_search(
-      r.stdout_text, std::regex(R"(^1\.0K\s+-[rwx-]{9}\s+\d+\s+.*sample\.txt$)",
-                                std::regex::multiline)));
+      r.stdout_text,
+      std::regex(R"((^|\n)1\.0K\s+-[rwx-]{9}\s+\d+\s+.*sample\.txt(\n|$))")));
   EXPECT_TRUE(r.stdout_text.find("sample.txt") != std::string::npos);
 }
 

@@ -95,16 +95,7 @@ jobs:
         working-directory: build-${{ matrix.package_arch }}
         run: |
           call "${{ steps.locate_vcvars.outputs.vcvars_path }}" ${{ matrix.vcvars_arg }}
-          REM Known failures (tracked separately, do not block CI):
-          REM  - numfmt.numfmt_to_iec_i_and_selected_field
-          REM  - numfmt.numfmt_to_si_uses_decimal_scaling
-          REM  - numfmt.numfmt_debug_reports_conversions
-          REM  - wpm.wpm_restore_installs_plain_profile_list
-          REM  - wpm.wpm_install_existing_package_skips_download
-          REM  - seq.seq_rejects_zero_increment
-          REM  - seq.seq_rejects_format_with_equal_width
-          REM  - df.df_block_size_human_readable_alias
-          ctest --output-on-failure -C Release --exclude-regex "numfmt\.numfmt_to_iec_i_and_selected_field|numfmt\.numfmt_to_si_uses_decimal_scaling|numfmt\.numfmt_debug_reports_conversions|wpm\.wpm_restore_installs_plain_profile_list|wpm\.wpm_install_existing_package_skips_download|seq\.seq_rejects_zero_increment|seq\.seq_rejects_format_with_equal_width|df\.df_block_size_human_readable_alias"
+          ctest --output-on-failure --no-tests=error --timeout 120 -C Release
 
       - name: Package with CPack (7Z + ZIP + TGZ)
         shell: cmd
