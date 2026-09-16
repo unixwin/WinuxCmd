@@ -865,7 +865,11 @@ auto create_symlink_copy(const std::string& srcPath,
   std::wstring wdest = utf8_to_wstring(destPath);
   DWORD flags = SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE;
   if (src_is_dir) flags |= SYMBOLIC_LINK_FLAG_DIRECTORY;
-  if (!CreateSymbolicLinkW(wdest.c_str(), link_target.c_str(), flags)) {
+  // [DIFFERS] #1101: reparse-point targets must use backslash separators
+  // or native resolution fails with ERROR_INVALID_NAME.
+  if (!CreateSymbolicLinkW(wdest.c_str(),
+                           win32_normalize_symlink_target(link_target).c_str(),
+                           flags)) {
     return std::unexpected("cannot create symbolic link '" + destPath +
                            "' to '" + srcPath +
                            "': " + win32_posix_error_text(GetLastError()));
@@ -1259,7 +1263,10 @@ auto copy_file(const std::string& srcPath, const std::string& destPath,
     if (path_exists_and_is_directory(srcPath).value_or(false)) {
       attrs |= SYMBOLIC_LINK_FLAG_DIRECTORY;
     }
-    if (CreateSymbolicLinkW(utf8_to_wstring(destPath).c_str(), source.c_str(),
+    // [DIFFERS] #1101: reparse-point targets must use backslash separators
+    // or native resolution fails with ERROR_INVALID_NAME.
+    if (CreateSymbolicLinkW(utf8_to_wstring(destPath).c_str(),
+                            win32_normalize_symlink_target(source).c_str(),
                             attrs)) {
       if (verbose) {
         safePrint("'");

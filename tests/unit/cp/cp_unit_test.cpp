@@ -944,3 +944,46 @@ TEST(cp, cp_parents_requires_directory_destination) {
                   "with --parents, the destination must be a directory") !=
               std::string::npos);
 }
+
+// [DIFFERS] #1101: NT resolves reparse-point link text with the Win32 path
+// parser, which only accepts backslash separators. A relative -s source
+// written with forward slashes (e.g. "./src.txt") used to be stored
+// verbatim and failed native resolution with ERROR_INVALID_NAME.
+TEST(cp, cp_symbolic_forward_slash_source_resolves_natively) {
+  TempDir tmp;
+  tmp.write("src.txt", "payload");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"-s", L"./src.txt", L"dest.txt"});
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("cp -s stderr", r.stderr_text);
+
+  if (r.exit_code != 0) {
+    std::cout
+        << "  SKIPPED (requires administrator privileges for symbolic links)\n";
+    return;
+  }
+  EXPECT_EQ(r.exit_code, 0);
+
+  std::error_code ec;
+  auto stored =
+      std::filesystem::read_symlink(tmp.path / L"dest.txt", ec).wstring();
+  EXPECT_FALSE(ec);
+  EXPECT_TRUE(stored.find(L'/') == std::wstring::npos);
+
+  // CreateFileW on the plain path exercises native reparse resolution.
+  HANDLE file = CreateFileW((tmp.path / L"dest.txt").wstring().c_str(),
+                            GENERIC_READ, FILE_SHARE_READ, nullptr,
+                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  EXPECT_NE(file, INVALID_HANDLE_VALUE);
+  if (file != INVALID_HANDLE_VALUE) {
+    char buffer[64] = {};
+    DWORD read = 0;
+    ReadFile(file, buffer, sizeof(buffer) - 1, &read, nullptr);
+    CloseHandle(file);
+    EXPECT_EQ_TEXT(std::string(buffer, read), "payload");
+  }
+}

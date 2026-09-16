@@ -105,6 +105,17 @@ export class UniqueFindHandle {
   HANDLE handle_ = INVALID_HANDLE_VALUE;
 };
 
+// [DIFFERS] Windows resolves reparse-point link targets with the Win32 path
+// parser, which only accepts backslash separators: a stored target like
+// "./bds" or "dir/file" fails to resolve with ERROR_INVALID_NAME (123),
+// while the POSIX kernel accepts any separator. Translate forward slashes
+// to backslashes before handing a target to CreateSymbolicLinkW (#1101).
+export auto win32_normalize_symlink_target(std::wstring target)
+    -> std::wstring {
+  std::replace(target.begin(), target.end(), L'/', L'\\');
+  return target;
+}
+
 export auto quote_windows_command_arg(std::wstring_view arg) -> std::wstring {
   if (arg.empty()) return L"\"\"";
 
@@ -347,24 +358,6 @@ export auto win32_lookup_account(std::wstring_view name)
   auto account = win32_account_from_sid(sid_buffer.data());
   if (account.name.empty()) account.name = wstring_to_utf8(name);
   return account;
-}
-
-// GNU userspec resolves account names before interpreting decimal IDs.
-export auto win32_account_matches(std::string_view spec, std::string_view name,
-                                  std::string_view id) -> bool {
-  if (auto account = win32_lookup_account(utf8_to_wstring(spec))) {
-    const auto expected = utf8_to_wstring(account->name);
-    const auto actual = utf8_to_wstring(name);
-    return CompareStringOrdinal(expected.data(),
-                                static_cast<int>(expected.size()),
-                                actual.data(), static_cast<int>(actual.size()),
-                                TRUE) == CSTR_EQUAL;
-  }
-  unsigned long long numeric = 0;
-  const auto [end, error] =
-      std::from_chars(spec.data(), spec.data() + spec.size(), numeric);
-  return error == std::errc{} && end == spec.data() + spec.size() &&
-         std::to_string(numeric) == id;
 }
 
 export auto win32_token_information(HANDLE token,
