@@ -123,7 +123,7 @@ MANUAL_MESSAGES = {
         '  cache clean [cache|staging|all]       alias for clean\\n'
         '  index status|update                   inspect or refresh local index\\n'
         '  update-index                          alias for index update\\n'
-        '  source list|use|add|test              manage and test index sources\\n'
+        '  source list|use|add|region|test       manage and test index sources\\n'
         '  list                                  list indexed packages and install state\\n'
         '  categories                            list package categories and counts\\n'
         '  search <query>                        search names, commands, categories, licenses\\n'
@@ -232,7 +232,11 @@ MANUAL_MESSAGES = {
     "command.wpm.status.links_removed": "wpm: links removed={} failed={}",
     "command.wpm.error.usage.links": "wpm: usage: wpm links list|rebuild|remove",
     "command.wpm.error.usage.index": "wpm: usage: wpm index status|update",
-    "command.wpm.error.usage.source": "wpm: usage: wpm source list|use <name>|add <name> <url>|test",
+    "command.wpm.error.usage.source": "wpm: usage: wpm source list|use <name>|add <name> <url>|region <auto|global|cn>|test",
+    "command.wpm.error.usage.region": "wpm: usage: wpm source region auto|global|cn",
+    "command.wpm.error.save_region": "wpm: failed to save region",
+    "command.wpm.status.prefer_regional_sources": "wpm: global index source unreachable; trying regional mirrors first",
+    "command.wpm.status.region_set": "wpm: region set to {}",
     "command.wpm.error.usage.cache": "wpm: usage: wpm cache clean [cache|staging|all]",
     "command.wpm.error.usage.clean": "wpm: usage: wpm clean [cache|staging|all]",
     "command.wpm.error.usage.export": "wpm: usage: wpm export [--plain]",
