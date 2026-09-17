@@ -236,7 +236,7 @@ TEST(wpm, wpm_hardlink_entrypoint_reports_version) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.find("wpm 0.3.0") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("wpm 0.4.0") != std::string::npos);
 }
 
 TEST(wpm, wpm_help_matches_plain_usage) {
@@ -259,8 +259,9 @@ TEST(wpm, wpm_help_matches_plain_usage) {
               std::string::npos);
   EXPECT_TRUE(help_result.stdout_text.find("cache clean [cache|staging|all]") !=
               std::string::npos);
-  EXPECT_TRUE(help_result.stdout_text.find("source list|use|add|test") !=
-              std::string::npos);
+  EXPECT_TRUE(
+      help_result.stdout_text.find("source list|use|add|region|test") !=
+      std::string::npos);
   EXPECT_TRUE(help_result.stdout_text.find("export [--plain]") !=
               std::string::npos);
   EXPECT_TRUE(help_result.stdout_text.find("restore <file>") !=
@@ -273,7 +274,7 @@ TEST(wpm, wpm_standard_version_uses_wpm_version) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "wpm 0.3.0\n");
+  EXPECT_EQ_TEXT(r.stdout_text, "wpm 0.4.0\n");
 }
 
 TEST(wpm, wpm_install_without_package_shows_usage) {
@@ -641,6 +642,144 @@ TEST(wpm, wpm_index_update_uses_local_file_source) {
   auto info_result = info.run();
   EXPECT_EQ(info_result.exit_code, 0);
   EXPECT_TRUE(info_result.stdout_text.find("Version: 1.0.0") !=
+              std::string::npos);
+}
+
+TEST(wpm, wpm_source_region_command_updates_config) {
+  TempDir tmp;
+
+  Pipeline set;
+  set.add(L"winuxcmd.exe",
+          {L"wpm", L"source", L"region", L"cn", L"--root", tmp.wpath()});
+  auto set_result = set.run();
+  EXPECT_EQ(set_result.exit_code, 0);
+  EXPECT_TRUE(set_result.stdout_text.find("region set to cn") !=
+              std::string::npos);
+
+  std::ifstream in(tmp.path / L".wpm" / L"config.json");
+  std::string config_text{std::istreambuf_iterator<char>(in),
+                          std::istreambuf_iterator<char>()};
+  EXPECT_TRUE(config_text.find("\"region\": \"cn\"") != std::string::npos);
+
+  Pipeline bad;
+  bad.add(L"winuxcmd.exe",
+          {L"wpm", L"source", L"region", L"moon", L"--root", tmp.wpath()});
+  auto bad_result = bad.run();
+  EXPECT_EQ(bad_result.exit_code, 1);
+}
+
+TEST(wpm, wpm_index_update_auto_prefers_cn_when_global_unreachable) {
+  TempDir tmp;
+  const auto cn_index = tmp.path / L"cn-index.json";
+  tmp.write("cn-index.json",
+            "{\n"
+            "  \"schema\": 1,\n"
+            "  \"name\": \"cn-fixture\",\n"
+            "  \"version\": \"cn-1\",\n"
+            "  \"packages\": []\n"
+            "}\n");
+
+  // A dead global source at 127.0.0.1:9 (discard port) is refused instantly,
+  // so the auto probe fails fast and deterministically without real network.
+  tmp.write(".wpm/config.json",
+            std::string("{\n"
+                        "  \"preferred_source\": \"auto\",\n"
+                        "  \"region\": \"auto\",\n"
+                        "  \"user_sources\": [\n"
+                        "    {\"name\": \"dead-global\", \"region\": "
+                        "\"global\", \"priority\": 1, \"index_urls\": "
+                        "[\"http://127.0.0.1:9/index.json\"]},\n"
+                        "    {\"name\": \"local-cn\", \"region\": \"cn\", "
+                        "\"priority\": 2, \"index_urls\": [\"") +
+                file_url(cn_index) +
+                std::string("\"]}\n"
+                            "  ]\n"
+                            "}\n"));
+
+  Pipeline update;
+  update.add(L"winuxcmd.exe",
+             {L"wpm", L"index", L"update", L"--root", tmp.wpath()});
+  auto r = update.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("index updated from local-cn") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("trying regional mirrors first") !=
+              std::string::npos);
+}
+
+TEST(wpm, wpm_index_update_region_cn_skips_probe) {
+  TempDir tmp;
+  const auto cn_index = tmp.path / L"cn-index.json";
+  tmp.write("cn-index.json",
+            "{\n"
+            "  \"schema\": 1,\n"
+            "  \"name\": \"cn-fixture\",\n"
+            "  \"version\": \"cn-1\",\n"
+            "  \"packages\": []\n"
+            "}\n");
+
+  tmp.write(".wpm/config.json",
+            std::string("{\n"
+                        "  \"preferred_source\": \"auto\",\n"
+                        "  \"region\": \"cn\",\n"
+                        "  \"user_sources\": [\n"
+                        "    {\"name\": \"dead-global\", \"region\": "
+                        "\"global\", \"priority\": 1, \"index_urls\": "
+                        "[\"http://127.0.0.1:9/index.json\"]},\n"
+                        "    {\"name\": \"local-cn\", \"region\": \"cn\", "
+                        "\"priority\": 2, \"index_urls\": [\"") +
+                file_url(cn_index) +
+                std::string("\"]}\n"
+                            "  ]\n"
+                            "}\n"));
+
+  Pipeline update;
+  update.add(L"winuxcmd.exe",
+             {L"wpm", L"index", L"update", L"--root", tmp.wpath()});
+  auto r = update.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("index updated from local-cn") !=
+              std::string::npos);
+  // Explicit region=cn reorders without a probe, so no notice is printed.
+  EXPECT_TRUE(r.stdout_text.find("trying regional mirrors first") ==
+              std::string::npos);
+}
+
+TEST(wpm, wpm_index_update_region_global_keeps_order) {
+  TempDir tmp;
+  const auto cn_index = tmp.path / L"cn-index.json";
+  tmp.write("cn-index.json",
+            "{\n"
+            "  \"schema\": 1,\n"
+            "  \"name\": \"cn-fixture\",\n"
+            "  \"version\": \"cn-1\",\n"
+            "  \"packages\": []\n"
+            "}\n");
+
+  tmp.write(".wpm/config.json",
+            std::string("{\n"
+                        "  \"preferred_source\": \"auto\",\n"
+                        "  \"region\": \"global\",\n"
+                        "  \"user_sources\": [\n"
+                        "    {\"name\": \"dead-global\", \"region\": "
+                        "\"global\", \"priority\": 1, \"index_urls\": "
+                        "[\"http://127.0.0.1:9/index.json\"]},\n"
+                        "    {\"name\": \"local-cn\", \"region\": \"cn\", "
+                        "\"priority\": 2, \"index_urls\": [\"") +
+                file_url(cn_index) +
+                std::string("\"]}\n"
+                            "  ]\n"
+                            "}\n"));
+
+  Pipeline update;
+  update.add(L"winuxcmd.exe",
+             {L"wpm", L"index", L"update", L"--root", tmp.wpath()});
+  auto r = update.run();
+  // Dead global fails first but the cn source is still reached by fallback.
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("index updated from local-cn") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("trying regional mirrors first") ==
               std::string::npos);
 }
 

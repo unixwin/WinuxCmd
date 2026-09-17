@@ -77,7 +77,7 @@ auto constexpr WPM_OPTIONS = std::array{
 namespace wpm {
 namespace fs = std::filesystem;
 
-constexpr std::string_view kVersion = "0.3.0";
+constexpr std::string_view kVersion = "0.4.0";
 constexpr std::string_view kInternalToolName = "wpm";
 
 template <typename... Args>
@@ -90,8 +90,8 @@ constexpr std::string_view kBuiltinIndex = R"json(
 {
   "schema": 1,
   "name": "official",
-  "version": "builtin-2026.09.15",
-  "updated": "2026-09-15",
+  "version": "builtin-2026.09.17",
+  "updated": "2026-09-17",
   "sources": [
     {
       "name": "official-github-raw",
@@ -127,9 +127,11 @@ constexpr std::string_view kBuiltinIndex = R"json(
       "name": "official-cn",
       "region": "cn",
       "priority": 30,
-      "description": "Reserved China-friendly WPM index mirror.",
-      "homepage": "",
-      "index_urls": []
+      "description": "China mirror index served via gh.caomengxuan666.com; artifact URLs point at the nginx cache proxy, GitHub origins kept as fallback.",
+      "homepage": "https://gh.caomengxuan666.com/wpm/index.json",
+      "index_urls": [
+        "https://gh.caomengxuan666.com/wpm/index.json"
+      ]
     }
   ],
   "packages": []
@@ -1486,6 +1488,85 @@ auto http_get(std::string_view url, std::string_view progress_label = {},
     return finish_failed(std::move(result));
   }
   return result;
+}
+
+// Lightweight reachability check for index sources. Issues a GET but closes
+// after response headers, costing one round trip. Only consulted when the
+// source preference is "auto"; the result merely reorders the candidate
+// list, so a wrong answer can never skip a working source.
+auto probe_url(std::string_view url, DWORD timeout_ms,
+               std::optional<std::wstring> forced_proxy) -> bool {
+  if (starts_with_ci(url, "file://")) return true;
+
+  std::wstring wurl = utf8_to_wstring(std::string(url));
+  URL_COMPONENTS parts{};
+  parts.dwStructSize = sizeof(parts);
+  parts.dwSchemeLength = static_cast<DWORD>(-1);
+  parts.dwHostNameLength = static_cast<DWORD>(-1);
+  parts.dwUrlPathLength = static_cast<DWORD>(-1);
+  parts.dwExtraInfoLength = static_cast<DWORD>(-1);
+  if (!WinHttpCrackUrl(wurl.c_str(), 0, 0, &parts)) return false;
+  std::wstring host(parts.lpszHostName, parts.dwHostNameLength);
+  std::wstring path_part;
+  if (parts.lpszUrlPath) {
+    path_part.assign(parts.lpszUrlPath, parts.dwUrlPathLength);
+  }
+  if (parts.lpszExtraInfo) {
+    path_part.append(parts.lpszExtraInfo, parts.dwExtraInfoLength);
+  }
+  if (path_part.empty()) path_part = L"/";
+  bool https = parts.nScheme == INTERNET_SCHEME_HTTPS;
+
+  HINTERNET session =
+      WinHttpOpen(L"WinuxCmd-WPM/0.2", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                  WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+  if (!session) return false;
+
+  bool ok = false;
+  HINTERNET connect = WinHttpConnect(session, host.c_str(), parts.nPort, 0);
+  if (connect) {
+    DWORD flags = https ? WINHTTP_FLAG_SECURE : 0;
+    HINTERNET request = WinHttpOpenRequest(connect, L"GET", path_part.c_str(),
+                                           nullptr, WINHTTP_NO_REFERER,
+                                           WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
+    if (request) {
+      if (forced_proxy) {
+        auto bypass = proxy_bypass_from_environment();
+        if (!(bypass && *bypass == L"*")) {
+          set_request_proxy(request, *forced_proxy,
+                            bypass ? bypass->c_str() : WINHTTP_NO_PROXY_BYPASS);
+        }
+      } else {
+        apply_user_proxy(session, request, wurl, https);
+      }
+      WinHttpSetOption(request, WINHTTP_OPTION_RESOLVE_TIMEOUT, &timeout_ms,
+                       sizeof(timeout_ms));
+      WinHttpSetOption(request, WINHTTP_OPTION_CONNECT_TIMEOUT, &timeout_ms,
+                       sizeof(timeout_ms));
+      WinHttpSetOption(request, WINHTTP_OPTION_SEND_TIMEOUT, &timeout_ms,
+                       sizeof(timeout_ms));
+      WinHttpSetOption(request, WINHTTP_OPTION_RECEIVE_TIMEOUT, &timeout_ms,
+                       sizeof(timeout_ms));
+      DWORD redirect_policy = WINHTTP_OPTION_REDIRECT_POLICY_ALWAYS;
+      WinHttpSetOption(request, WINHTTP_OPTION_REDIRECT_POLICY,
+                       &redirect_policy, sizeof(redirect_policy));
+      if (WinHttpSendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+                             WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
+          WinHttpReceiveResponse(request, nullptr)) {
+        DWORD status = 0;
+        DWORD status_size = sizeof(status);
+        WinHttpQueryHeaders(
+            request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+            WINHTTP_HEADER_NAME_BY_INDEX, &status, &status_size,
+            WINHTTP_NO_HEADER_INDEX);
+        ok = status >= 200 && status < 400;
+      }
+      WinHttpCloseHandle(request);
+    }
+    WinHttpCloseHandle(connect);
+  }
+  WinHttpCloseHandle(session);
+  return ok;
 }
 
 auto sha256_file(const fs::path& file) -> std::optional<std::string> {
@@ -2876,9 +2957,56 @@ auto try_fetch_index(const Options& opts, std::string& used_source)
     -> std::optional<nlohmann::json> {
   auto current = load_index(opts.root);
   auto sources = merged_sources(opts.root, current);
-  std::string wanted = opts.source.empty() ? load_config(opts.root).value(
-                                                 "preferred_source", "auto")
-                                           : opts.source;
+  auto config = load_config(opts.root);
+  std::string wanted = opts.source.empty()
+                           ? config.value("preferred_source", "auto")
+                           : opts.source;
+
+  // Source ordering only; every source is still tried on failure. An explicit
+  // preferred_source disables all reordering. region=cn always prefers
+  // regional sources; region=auto probes the highest-priority source once and
+  // prefers regional ones only when it is unreachable.
+  if (wanted == "auto") {
+    std::string region = config.value("region", "auto");
+    bool prefer_cn = region == "cn";
+    bool probed_unreachable = false;
+    if (region == "auto") {
+      bool has_cn = std::ranges::any_of(sources, [](const nlohmann::json& s) {
+        return s.value("region", "") == "cn" && s.contains("index_urls") &&
+               s["index_urls"].is_array() && !s["index_urls"].empty();
+      });
+      if (has_cn) {
+        for (const auto& source : sources) {
+          if (!source.contains("index_urls") ||
+              !source["index_urls"].is_array() ||
+              source["index_urls"].empty()) {
+            continue;
+          }
+          if (source.value("region", "") == "cn") break;
+          const auto& first = source["index_urls"].front();
+          if (!first.is_string()) break;
+          if (!probe_url(first.get<std::string>(), 3000,
+                         user_forced_proxy(opts))) {
+            prefer_cn = true;
+            probed_unreachable = true;
+          }
+          break;
+        }
+      }
+    }
+    if (prefer_cn) {
+      std::stable_partition(sources.begin(), sources.end(),
+                            [](const nlohmann::json& s) {
+                              return s.value("region", "") == "cn";
+                            });
+      if (probed_unreachable) {
+        safePrintLn(wpm_text(
+            "command.wpm.status.prefer_regional_sources",
+            "wpm: global index source unreachable; trying regional mirrors "
+            "first"));
+      }
+    }
+  }
 
   for (const auto& source : sources) {
     std::string name = source.value("name", "");
@@ -3049,6 +3177,7 @@ auto list_sources(const Options& opts) -> int {
     }
     nlohmann::json payload = {{"schema", 1},
                               {"preferred", preferred},
+                              {"region", config.value("region", "auto")},
                               {"sources", nlohmann::json::array()}};
     for (const auto& source : sources) {
       bool custom = false;
@@ -3072,7 +3201,8 @@ auto list_sources(const Options& opts) -> int {
     return 0;
   }
 
-  safePrintLn("WPM sources (preferred: " + preferred + ")");
+  safePrintLn("WPM sources (preferred: " + preferred +
+              ", region: " + config.value("region", "auto") + ")");
   for (const auto& source : sources) {
     std::string name = source.value("name", "");
     std::string region = source.value("region", "");
@@ -3104,6 +3234,25 @@ auto source_use(const Options& opts, std::string_view name) -> int {
     return 1;
   }
   safePrintLn("wpm: preferred source set to " + std::string(name));
+  return 0;
+}
+
+auto source_region(const Options& opts, std::string_view region) -> int {
+  if (region != "auto" && region != "global" && region != "cn") {
+    safeErrorPrintLn(
+        winux::i18n::translate("command.wpm.error.usage.region",
+                               "wpm: usage: wpm source region auto|global|cn"));
+    return 1;
+  }
+  auto config = load_config(opts.root);
+  config["region"] = std::string(region);
+  if (!save_config(opts.root, config)) {
+    safeErrorPrintLn(winux::i18n::translate("command.wpm.error.save_region",
+                                            "wpm: failed to save region"));
+    return 1;
+  }
+  safePrintLn(wpm_text("command.wpm.status.region_set", "wpm: region set to {}",
+                       std::string(region)));
   return 0;
 }
 
@@ -3753,7 +3902,7 @@ auto print_usage() -> int {
       "  cache clean [cache|staging|all]       alias for clean\n"
       "  index status|update                   inspect or refresh local index\n"
       "  update-index                          alias for index update\n"
-      "  source list|use|add|test              manage and test index sources\n"
+      "  source list|use|add|region|test       manage and test index sources\n"
       "  list                                  list indexed packages and "
       "install state\n"
       "  categories                            list package categories and "
@@ -3889,10 +4038,13 @@ auto dispatch(const Options& opts, std::span<const std::string_view> args)
     if (args[1] == "use" && args.size() >= 3) return source_use(opts, args[2]);
     if (args[1] == "add" && args.size() >= 4)
       return source_add(opts, args[2], args[3]);
+    if (args[1] == "region" && args.size() >= 3)
+      return source_region(opts, args[2]);
     if (args[1] == "test") return update_index(opts);
     safeErrorPrintLn(winux::i18n::translate(
         "command.wpm.error.usage.source",
-        "wpm: usage: wpm source list|use <name>|add <name> <url>|test"));
+        "wpm: usage: wpm source list|use <name>|add <name> <url>|region "
+        "<auto|global|cn>|test"));
     return 1;
   }
 
@@ -3986,6 +4138,7 @@ REGISTER_COMMAND(
     "  wpm clean\n"
     "  wpm index update\n"
     "  wpm source list\n"
+    "  wpm source region auto|global|cn\n"
     "  wpm outdated\n"
     "  wpm uninstall <package>\n"
     "  wpm update winuxcmd",
