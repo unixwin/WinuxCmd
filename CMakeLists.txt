@@ -65,6 +65,23 @@ set(WINUXCMD_CXX_DIALECT_NOTE "pending compiler detection")
 option(GENERATE_MAP_INFO "Generate_MAP_INFO" ON)
 # Merge Every commands.cpp into one source file(It could decrease template volume costs)
 option(ENABLE_UNITY_BUILD "Enable Unity Build" ON)
+# MSVC Profile-Guided Optimization (see scripts/build-pgo.ps1):
+# WINUXCMD_PGO_INSTRUMENT links with /GENPROFILE for the training build;
+# WINUXCMD_PGO_USE_DIR points the final link at the collected .pgd/.pgc.
+option(WINUXCMD_PGO_INSTRUMENT "Link with /GENPROFILE for PGO training" OFF)
+option(WINUXCMD_PGO_USE "Link with /USEPROFILE; winuxcmd.pgd/.pgc must be copied into the build dir first" OFF)
+set(WINUXCMD_PGO_FLAGS "")
+if(WINUXCMD_PGO_INSTRUMENT)
+    set(WINUXCMD_PGO_FLAGS "/GENPROFILE")
+elseif(WINUXCMD_PGO_USE)
+    set(WINUXCMD_PGO_FLAGS "/USEPROFILE")
+endif()
+# PGO requires whole-program optimization: objects compiled with /GL so the
+# /LTCG link can instrument and optimize across translation units (LNK1264
+# otherwise: "/GENPROFILE specified but required code generation failed").
+if(NOT WINUXCMD_PGO_FLAGS STREQUAL "")
+    add_compile_options($<$<CONFIG:Release>:/GL>)
+endif()
 
 # Configure options based on build mode
 if(BUILD_MODE STREQUAL "DEV")
@@ -392,7 +409,7 @@ endif()
 
 # Link options
 target_link_options(winuxcmd-commands PRIVATE
-        $<$<CONFIG:Release>:/LTCG /OPT:REF /OPT:ICF>
+        $<$<CONFIG:Release>:/LTCG /OPT:REF /OPT:ICF ${WINUXCMD_PGO_FLAGS}>
 )
 
 if (USE_STATIC_CRT AND MSVC)
@@ -444,7 +461,7 @@ target_compile_definitions(winuxcmd PRIVATE
 )
 
 target_link_options(winuxcmd PRIVATE
-        $<$<CONFIG:Release>:/LTCG /OPT:REF /OPT:ICF>
+        $<$<CONFIG:Release>:/LTCG /OPT:REF /OPT:ICF ${WINUXCMD_PGO_FLAGS}>
 )
 
 if (USE_STATIC_CRT AND MSVC)
