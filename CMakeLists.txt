@@ -805,36 +805,6 @@ endif()
 # Users can run `winuxcmd wpm links rebuild` in the bin directory to generate
 # command links. scripts/create_links.ps1 remains as a compatibility wrapper.
 
-# Scaffold tool for generating new command modules
-add_executable(scaffold
-        src/tools/scaffold.cpp
-)
-
-# Set C++ standard for scaffold tool
-set_target_properties(scaffold PROPERTIES
-        CXX_STANDARD ${WINUXCMD_CXX_STANDARD}
-        CXX_STANDARD_REQUIRED ON
-        CXX_EXTENSIONS OFF
-)
-
-# Add include directories for scaffold tool
-target_include_directories(scaffold PRIVATE ${SRC_DIR})
-
-# MSVC-specific configuration for scaffold tool
-if (MSVC)
-    target_compile_options(scaffold PRIVATE
-            /std:c++latest
-    )
-endif ()
-
-# Post-build command to copy scaffold to project root
-add_custom_command(TARGET scaffold POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        $<TARGET_FILE:scaffold>
-        ${CMAKE_SOURCE_DIR}/scaffold.exe
-        COMMENT "Copying scaffold to project root"
-)
-
 add_subdirectory(examples)
 
 if (ENABLE_TESTS)
@@ -934,8 +904,6 @@ if (WIN32)
 endif ()
 
 set(CPACK_IGNORE_FILES
-        "${CMAKE_SOURCE_DIR}/scaffold.exe$"
-        "${CMAKE_SOURCE_DIR}/scaffold"
         "${CMAKE_SOURCE_DIR}/CMakeLists.txt$"
         "${CMAKE_SOURCE_DIR}/.clang.*$"
         "${CMAKE_SOURCE_DIR}/.git.*$"
