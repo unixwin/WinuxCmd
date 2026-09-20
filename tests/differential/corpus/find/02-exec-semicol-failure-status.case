@@ -1,0 +1,6 @@
+cmd: find
+args: . -maxdepth 1 -name 'sample.txt' -exec false \; -print
+setup: |
+  printf 'x' > sample.txt
+source: tests/differential/corpus/find/02-exec-semicol-failure-status.case
+tags: gnu-compat find-exec exit-status compat-gap

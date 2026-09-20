@@ -1,0 +1,6 @@
+cmd: grep
+args: -q needle missing.txt
+setup: |
+  printf 'nothing here\n'
+source: tests/differential/corpus/grep/04-quiet-error-exit-status.case
+tags: gnu-compat grep-q-error-exit-status

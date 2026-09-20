@@ -1,0 +1,7 @@
+cmd: grep
+args: -Z -n x a.txt b.txt
+setup: |
+  printf 'x\n' > a.txt
+  printf 'nope\nx\n' > b.txt
+source: tests/differential/corpus/grep/02-null-filename-separator.case
+tags: gnu-compat grep-null-separator

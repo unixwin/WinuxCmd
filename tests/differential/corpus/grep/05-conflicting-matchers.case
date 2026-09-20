@@ -1,0 +1,6 @@
+cmd: grep
+args: -E -F a+b input.txt
+setup: |
+  printf 'a+b\naab\n' > input.txt
+source: tests/differential/corpus/grep/05-conflicting-matchers.case
+tags: gnu-compat grep-conflicting-matchers

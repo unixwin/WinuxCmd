@@ -1,0 +1,7 @@
+cmd: grep
+args: -f empty.patterns input.txt
+setup: |
+  printf 'alpha\nbeta\n' > input.txt
+  : > empty.patterns
+source: tests/differential/corpus/grep/01-empty-pattern-file.case
+tags: gnu-compat grep-empty-pattern

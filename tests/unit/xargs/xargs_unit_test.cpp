@@ -1,28 +1,5 @@
-/*
- *  Copyright © 2026 [caomengxuan666]
- *
- *  Permission is hereby granted, free of charge, to any person obtaining a copy
- *  of this software and associated documentation files (the "Software"), to
- *  deal in the Software without restriction, including without limitation the
- *  rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
- *  sell copies of the Software, and to permit persons to whom the Software is
- *  furnished to do so, subject to the following conditions:
- *
- *  The above copyright notice and this permission notice shall be included in
- *  all copies or substantial portions of the Software.
- *
- *  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- *  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- *  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- *  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- *  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- *  FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
- *  IN THE SOFTWARE.
- *
- *  - File: xargs_unit_test.cpp
- *  - Username: Administrator
- *  - CopyrightYear: 2026
- */
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 caomengxuan666 <caomengxuan666@users.noreply.github.com>
 #include "framework/winuxtest.h"
 
 TEST(xargs, xargs_basic) {
@@ -117,12 +94,30 @@ TEST(xargs, xargs_no_run_if_empty) {
   EXPECT_TRUE(r.stdout_text.empty());
 }
 
-TEST(xargs, xargs_no_run_if_empty_still_runs_for_whitespace_only_input) {
+// [GNU] xargs.c: -r/--no-run-if-empty runs nothing when zero arguments were
+// accumulated; whitespace-only default-split input yields no arguments.
+TEST(xargs, xargs_no_run_if_empty_skips_whitespace_only_input) {
   TempDir tmp;
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
   p.add(L"xargs.exe", {L"-r", L"cmd.exe", L"/C", L"echo", L"ran"});
+  p.set_stdin("   \r\n\t \r\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("ran") == std::string::npos);
+}
+
+// Whitespace-only input without -r still runs the command once with no
+// input arguments, matching GNU xargs.
+TEST(xargs, xargs_whitespace_only_input_without_no_run_if_empty_runs_once) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"cmd.exe", L"/C", L"echo", L"ran"});
   p.set_stdin("   \r\n\t \r\n");
 
   auto r = p.run();
@@ -1352,4 +1347,57 @@ TEST(xargs, xargs_parallel_child_255_waits_for_running_children_before_exit) {
   EXPECT_EQ(r.exit_code, 124);
   EXPECT_TRUE(std::filesystem::exists(tmp.path / "running-done.txt"));
   EXPECT_FALSE(std::filesystem::exists(tmp.path / "marker.txt"));
+}
+
+// [GNU] xargs.c:773 only -I/-i and -L/-l force -x/--exit; -d/--delimiter
+// does not, so an over-long batch is split instead of aborting.
+TEST(xargs, xargs_delimiter_does_not_force_exit_if_exceeded) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"-d", L",", L"-s", L"12", L"cmd.exe", L"/C", L"echo"});
+  p.set_stdin("alpha,beta,gamma\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.find("command line length exceeded") ==
+              std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("alpha") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("beta") != std::string::npos);
+}
+
+// -I still implies -x, so an oversized replacement aborts with exit 1.
+TEST(xargs, xargs_replace_still_implies_exit_if_exceeded) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe",
+        {L"-I", L"{}", L"-s", L"12", L"cmd.exe", L"/C", L"echo", L"{}"});
+  p.set_stdin("alphalongstring\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("command line length exceeded") !=
+              std::string::npos);
+}
+
+// Explicit -x with -d still exits when a single item exceeds -s.
+TEST(xargs, xargs_explicit_exit_with_delimiter_rejects_oversized_item) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe",
+        {L"-x", L"-d", L",", L"-s", L"10", L"cmd.exe", L"/C", L"echo"});
+  p.set_stdin("alphalongstring\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("command line length exceeded") !=
+              std::string::npos);
 }
