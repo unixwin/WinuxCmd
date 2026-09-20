@@ -1,0 +1,7 @@
+cmd: tail
+args: -c 3
+timeout: 10
+stdin: |
+  abcdef
+source: github.com/unixwin/WinuxCmd
+tags: corpus-expansion round-4

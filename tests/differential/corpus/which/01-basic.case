@@ -1,0 +1,5 @@
+cmd: which
+args: sh
+timeout: 10
+source: github.com/unixwin/WinuxCmd
+tags: coverage expansion

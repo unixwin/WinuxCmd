@@ -259,9 +259,8 @@ TEST(wpm, wpm_help_matches_plain_usage) {
               std::string::npos);
   EXPECT_TRUE(help_result.stdout_text.find("cache clean [cache|staging|all]") !=
               std::string::npos);
-  EXPECT_TRUE(
-      help_result.stdout_text.find("source list|use|add|region|test") !=
-      std::string::npos);
+  EXPECT_TRUE(help_result.stdout_text.find("source list|use|add|region|test") !=
+              std::string::npos);
   EXPECT_TRUE(help_result.stdout_text.find("export [--plain]") !=
               std::string::npos);
   EXPECT_TRUE(help_result.stdout_text.find("restore <file>") !=

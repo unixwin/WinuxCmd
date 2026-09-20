@@ -1,0 +1,7 @@
+cmd: rmdir
+args: a
+timeout: 10
+setup: |
+  mkdir a; printf x > a/f.txt
+source: github.com/unixwin/WinuxCmd
+tags: corpus-expansion round-3

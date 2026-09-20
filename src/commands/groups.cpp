@@ -77,7 +77,11 @@ auto build_config(const CommandContext<GROUPS_OPTIONS.size()>& ctx)
   return cfg;
 }
 
-auto get_user_groups(const std::string& user_str) -> int {
+// [GNU] groups.c prints one line: space-separated group names, prefixed
+// with "user : " only when a username argument was given.  Collect the
+// names here; run() does the formatting.
+auto collect_user_groups(const std::string& user_str,
+                         std::vector<std::string>& out) -> int {
   // Convert UTF-8 username to wide string for the Win32 API
   std::wstring wuser = utf8_to_wstring(user_str);
 
@@ -114,14 +118,28 @@ auto get_user_groups(const std::string& user_str) -> int {
     if (is_none_group_name(name)) {
       if (auto account = win32_lookup_account(wname);
           account && !account->id.empty()) {
-        safePrintLn(account->id);
+        out.push_back(account->id);
       }
       continue;
     }
-    safePrintLn(name);
+    out.push_back(std::move(name));
   }
 
   if (raw) NetApiBufferFree(raw);
+  return 0;
+}
+
+auto get_user_groups(const std::string& user_str, bool with_prefix) -> int {
+  std::vector<std::string> names;
+  int result = collect_user_groups(user_str, names);
+  if (result != 0) return result;
+  std::string line;
+  if (with_prefix) line = user_str + " : ";
+  for (size_t i = 0; i < names.size(); ++i) {
+    if (i > 0) line += " ";
+    line += names[i];
+  }
+  safePrintLn(line);
   return 0;
 }
 
@@ -139,12 +157,13 @@ auto run(const Config& cfg) -> int {
 
     std::wstring ws(username);
     user_str = wstring_to_utf8(ws);
-    return get_user_groups(user_str);
+    return get_user_groups(user_str, /*with_prefix=*/false);
   }
 
+  // [GNU] with username arguments, each line is prefixed "user : ".
   int exit_code = 0;
   for (const auto& user : cfg.users) {
-    int result = get_user_groups(user);
+    int result = get_user_groups(user, /*with_prefix=*/true);
     if (result != 0) {
       exit_code = result;
     }

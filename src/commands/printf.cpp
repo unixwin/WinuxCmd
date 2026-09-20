@@ -554,6 +554,35 @@ std::string render_directive(const FormatSpec& spec,
   }
 }
 
+// [GNU] the conversion characters accepted by coreutils printf (printf.c
+// ok[] table); anything else is an "invalid conversion specification".
+constexpr bool is_known_conversion(char c) {
+  switch (c) {
+    case '%':
+    case 's':
+    case 'b':
+    case 'q':
+    case 'c':
+    case 'd':
+    case 'i':
+    case 'u':
+    case 'o':
+    case 'x':
+    case 'X':
+    case 'f':
+    case 'F':
+    case 'e':
+    case 'E':
+    case 'g':
+    case 'G':
+    case 'a':
+    case 'A':
+      return true;
+    default:
+      return false;
+  }
+}
+
 RenderResult render_once(std::string_view format,
                          const std::vector<std::string_view>& args,
                          size_t& arg_index, bool& had_error) {
@@ -581,10 +610,20 @@ RenderResult render_once(std::string_view format,
       continue;
     }
 
+    size_t spec_start = i;
     FormatSpec spec = parse_format_spec(format, i);
-    if (!spec.valid) {
-      result.text += '%';
-      continue;
+    // [GNU] printf.c:663: an unrecognized conversion is fatal:
+    // "printf: '%y': invalid conversion specification", exit 1.
+    if (!spec.valid || !is_known_conversion(spec.conversion)) {
+      // pos points at the conversion character itself; include it in the
+      // reported directive so "%y" is shown, not "%" (GNU %.*s at 663).
+      std::string directive(format.substr(spec_start, (i + 1) - spec_start));
+      if (directive.empty()) directive = "%";
+      had_error = true;
+      result.stop_output = true;
+      safeErrorPrintLn("printf: '" + directive +
+                       "': invalid conversion specification");
+      return result;
     }
 
     if (spec.dynamic_width) {

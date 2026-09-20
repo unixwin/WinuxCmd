@@ -223,7 +223,7 @@ run_case() {
     wcommand="exec $wquoted $(shell_quote "$cmd") $case_args"
   fi
   local gcommand="exec $gquoted $case_args"
-  (cd "$wdir" && export PATH="$(dirname "$wcmd"):$PATH" WINUX_LANG=en LC_ALL="$ORACLE_LOCALE" LANG="$ORACLE_LOCALE" && printf '%b' "$stdin" | MSYS2_ARG_CONV_EXCL='*' MSYS_NO_PATHCONV=1 \
+  (cd "$wdir" && export PATH="$(dirname "$wcmd"):$PATH" WINUX_LANG=en LC_ALL="$ORACLE_LOCALE" LANG="$ORACLE_LOCALE" WSLENV="WINUX_LANG/u:${WSLENV:-}" && printf '%b' "$stdin" | MSYS2_ARG_CONV_EXCL='*' MSYS_NO_PATHCONV=1 \
     "$timeout_cmd" "$timeout" bash -c "$wcommand" >"$wout" 2>"$werr"); wrc=$?
   (cd "$gdir" && export PATH="$(dirname "$gcmd"):$PATH" LC_ALL="$ORACLE_LOCALE" LANG="$ORACLE_LOCALE" && printf '%b' "$stdin" | MSYS2_ARG_CONV_EXCL='*' MSYS_NO_PATHCONV=1 \
     "$timeout_cmd" "$timeout" bash -c "$gcommand" >"$gout" 2>"$gerr"); grc=$?

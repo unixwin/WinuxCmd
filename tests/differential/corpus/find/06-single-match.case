@@ -1,0 +1,7 @@
+cmd: find
+args: . -name one.txt
+timeout: 10
+setup: |
+  mkdir -p sub; printf x > sub/one.txt; printf y > sub/two.log
+source: github.com/unixwin/WinuxCmd
+tags: corpus-expansion round-3

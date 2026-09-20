@@ -1,0 +1,7 @@
+cmd: realpath
+args: --relative-to=a a/b/c
+timeout: 10
+setup: |
+  mkdir -p a/b; printf x > a/b/c
+source: github.com/unixwin/WinuxCmd
+tags: corpus-expansion round-3

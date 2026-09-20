@@ -326,7 +326,9 @@ auto print_difference(const Config& cfg, const std::string& file1,
                       const std::string& file2, size_t display_pos,
                       size_t line_number, unsigned char c1, unsigned char c2)
     -> void {
-  if (cfg.verbose || cfg.print_bytes) {
+  // [GNU] -l lists every differing byte; -b prints only the first
+  // difference, appended to the normal "differ" message (cmp.c).
+  if (cfg.verbose) {
     char buf[64];
     snprintf(buf, sizeof(buf), "%zu %3o %3o", display_pos, c1, c2);
     safePrintLn(buf);
@@ -339,7 +341,13 @@ auto print_difference(const Config& cfg, const std::string& file1,
   safePrint(" differ: byte ");
   safePrint(std::to_string(display_pos));
   safePrint(", line ");
-  safePrintLn(std::to_string(line_number));
+  safePrint(std::to_string(line_number));
+  if (cfg.print_bytes) {
+    char buf[32];
+    snprintf(buf, sizeof(buf), " is %3o %3o", c1, c2);
+    safePrint(buf);
+  }
+  safePrintLn("");
 }
 
 auto run(const Config& cfg) -> int {
@@ -417,6 +425,7 @@ auto run(const Config& cfg) -> int {
 
   size_t line_number = 1;
   size_t compared = 0;
+  size_t eof_newlines = 0;
   bool found_difference = false;
   size_t remaining_limit = cfg.max_bytes;
 
@@ -461,11 +470,29 @@ auto run(const Config& cfg) -> int {
 
     compared += smaller;
     remaining_limit -= smaller;
+    // Track the line count of the shorter stream for the EOF diagnostic.
+    eof_newlines += count_newlines(std::span<const char>(
+        (read1 < read2 ? buffer1 : buffer2).data(), smaller));
 
     if (read1 != read2) {
+      // [GNU] "cmp: EOF on FILE which is empty" when the shorter side had
+      // no data at all, otherwise "EOF on FILE after byte N, in line L"
+      // where N is the number of bytes both streams had (cmp.c).
       if (!cfg.quiet) {
-        safePrint("cmp: EOF on ");
-        safePrintLn(read1 < read2 ? file1 : file2);
+        const std::string& eof_file = read1 < read2 ? file1 : file2;
+        if (compared == 0) {
+          safePrint("cmp: EOF on ");
+          safePrint(eof_file);
+          safePrintLn(" which is empty");
+        } else {
+          const size_t line = 1 + eof_newlines;
+          safePrint("cmp: EOF on ");
+          safePrint(eof_file);
+          safePrint(" after byte ");
+          safePrint(std::to_string(compared));
+          safePrint(", in line ");
+          safePrintLn(std::to_string(line));
+        }
       }
       return 1;
     }
@@ -499,25 +526,26 @@ REGISTER_COMMAND(
 
   auto cfg_result = build_config(ctx);
   if (!cfg_result) {
+    // [GNU] cmp exits 2 (EXIT_TROUBLE) for usage errors and trouble.
     if (cfg_result.error() == "missing operand after ''") {
       cp::report_custom_error(L"cmp", L"missing operand");
       safeErrorPrintLn("Try 'cmp --help' for more information.");
-      return 1;
+      return 2;
     }
     if (cfg_result.error().starts_with("missing operand after '")) {
       safeErrorPrint("cmp: ");
       safeErrorPrintLn(cfg_result.error());
       safeErrorPrintLn("Try 'cmp --help' for more information.");
-      return 1;
+      return 2;
     }
     if (cfg_result.error().starts_with("extra operand '")) {
       safeErrorPrint("cmp: ");
       safeErrorPrintLn(cfg_result.error());
       safeErrorPrintLn("Try 'cmp --help' for more information.");
-      return 1;
+      return 2;
     }
     cp::report_error(cfg_result, L"cmp");
-    return 1;
+    return 2;
   }
 
   return run(*cfg_result);

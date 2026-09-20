@@ -129,13 +129,19 @@ auto run(const Config& cfg) -> int {
     local_cfg.operating_system = true;
   }
 
-  // Get Windows version info
-  OSVERSIONINFOEXW osvi = {0};
-  osvi.dwOSVersionInfoSize = sizeof(OSVERSIONINFOEXW);
+  // Get Windows version info.  [GNU] -r/-v must reflect the running OS,
+  // so use RtlGetVersion (GetVersionEx is subject to manifest shims).
+  using RtlGetVersionFn = LONG(WINAPI*)(PRTL_OSVERSIONINFOW);
+  RTL_OSVERSIONINFOW osvi = {0};
+  osvi.dwOSVersionInfoSize = sizeof(RTL_OSVERSIONINFOW);
+  if (auto* rtl_get_version = reinterpret_cast<RtlGetVersionFn>(
+          GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlGetVersion"))) {
+    rtl_get_version(&osvi);
+  }
 
   // Kernel name
   if (local_cfg.kernel_name) {
-    outputs.push_back("MSWindows_NT");
+    outputs.push_back("Windows_NT");
   }
 
   // Nodename (hostname)
@@ -153,12 +159,13 @@ auto run(const Config& cfg) -> int {
 
   // Kernel release
   if (local_cfg.kernel_release) {
-    outputs.push_back("10.0");
+    outputs.push_back(std::to_string(osvi.dwMajorVersion) + "." +
+                      std::to_string(osvi.dwMinorVersion));
   }
 
   // Kernel version
   if (local_cfg.kernel_version) {
-    outputs.push_back("19045");  // Windows 10/11 build number
+    outputs.push_back(std::to_string(osvi.dwBuildNumber));
   }
 
   // Machine

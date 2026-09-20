@@ -44,9 +44,8 @@ auto constexpr INSTALL_OPTIONS = std::array{
     // [GNU]
     OPTION("-b", "--backup", "make a backup of each existing destination file",
            BOOL_TYPE),
-    // [GNU] -c is an alias for -C/--compare (GNU Coreutils behavior)
-    OPTION("-c", "", "compare source and destination (alias for -C)",
-           BOOL_TYPE),
+    // [GNU] -c is accepted and ignored (install.c:821-822: "(ignored)")
+    OPTION("-c", "", "(ignored)", BOOL_TYPE),
     // [GNU]
     OPTION("-C", "--compare",
            "compare source and destination and skip copy if identical",
@@ -394,8 +393,8 @@ auto build_config(const CommandContext<INSTALL_OPTIONS.size()>& ctx)
       ctx.get<bool>("--directory", false) || ctx.get<bool>("-d", false);
   cfg.preserve_timestamps = ctx.get<bool>("--preserve-timestamps", false) ||
                             ctx.get<bool>("-p", false);
-  cfg.compare = ctx.get<bool>("--compare", false) ||
-                ctx.get<bool>("-C", false) || ctx.get<bool>("-c", false);
+  // [GNU] -c does not enable --compare; it is a no-op.
+  cfg.compare = ctx.get<bool>("--compare", false) || ctx.get<bool>("-C", false);
   cfg.strip = ctx.get<bool>("--strip", false) || ctx.get<bool>("-s", false);
   cfg.verbose = ctx.get<bool>("--verbose", false) ||
                 ctx.get<bool>("-v", false) || ctx.get<bool>("--debug", false);
@@ -653,6 +652,9 @@ auto run(const Config& cfg) -> int {
     return 1;
   }
 
+  // [GNU] install.c continues over -t sources after a failure and exits
+  // nonzero at the end.
+  bool had_failure = false;
   for (const auto& source : sources) {
     std::string dest = target;
 
@@ -690,7 +692,8 @@ auto run(const Config& cfg) -> int {
           safeErrorPrint("install: cannot create directory '");
           safeErrorPrint(parent.string());
           safeErrorPrintLn("'");
-          return 1;
+          had_failure = true;
+          continue;
         }
         if (cfg.verbose) {
           for (const auto& comp : created) {
@@ -732,14 +735,16 @@ auto run(const Config& cfg) -> int {
       // (uutils#12407).
       if (!copy_stdin_to_dest(dest)) {
         safeErrorPrintLn("install: cannot create regular file '" + dest + "'");
-        return 1;
+        had_failure = true;
+        continue;
       }
     } else {
       DWORD src_attrs = native_attributes(source);
       if (src_attrs == INVALID_FILE_ATTRIBUTES) {
         safeErrorPrintLn("install: cannot stat '" + source +
                          "': No such file or directory");
-        return 1;
+        had_failure = true;
+        continue;
       }
       auto src_operand = native_path::make_api_path_operand(source);
       auto dst_operand = native_path::make_api_path_operand(dest);
@@ -747,7 +752,8 @@ auto run(const Config& cfg) -> int {
                      FALSE)) {
         safeErrorPrintLn("install: cannot create regular file '" + dest +
                          "': " + win32_posix_error_text(GetLastError()));
-        return 1;
+        had_failure = true;
+        continue;
       }
     }
 
@@ -755,7 +761,8 @@ auto run(const Config& cfg) -> int {
       safeErrorPrint("install: cannot preserve timestamps for '");
       safeErrorPrint(dest);
       safeErrorPrintLn("'");
-      return 1;
+      had_failure = true;
+      continue;
     }
 
     // GNU install always applies the final mode after copying.  Windows has no
@@ -764,7 +771,8 @@ auto run(const Config& cfg) -> int {
       safeErrorPrint("install: cannot change permissions of '");
       safeErrorPrint(dest);
       safeErrorPrintLn("'");
-      return 1;
+      had_failure = true;
+      continue;
     }
     if (cfg.verbose && !cfg.mode.empty()) {
       safePrint("install: set mode '");
@@ -809,7 +817,7 @@ auto run(const Config& cfg) -> int {
     }
   }
 
-  return 0;
+  return had_failure ? 1 : 0;
 }
 
 }  // namespace install_pipeline

@@ -1,0 +1,9 @@
+cmd: sort
+args: -t ''
+timeout: 10
+oracle_version: >=9.3
+stdin: |
+  b
+  a
+source: github.com/unixwin/WinuxCmd
+tags: audit-9.7-fix sort-empty-tab

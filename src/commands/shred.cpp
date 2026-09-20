@@ -61,8 +61,9 @@ REGISTER_COMMAND(
   bool force = ctx.get<bool>("-f", false) || ctx.get<bool>("--force", false);
   int passes = ctx.get<int>("-n", 3);
   bool remove = ctx.get<bool>("-u", false) || ctx.has("--remove");
-  // Parse --remove[=HOW]: unlink (default), wipe, wipesync
-  std::string remove_how = "unlink";
+  // Parse --remove[=HOW]: [GNU] the bare default is wipesync (shred.c),
+  // not unlink.
+  std::string remove_how = "wipesync";
   if (ctx.has("--remove")) {
     auto how = ctx.get<std::string>("--remove", "");
     if (!how.empty()) {

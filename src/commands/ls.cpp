@@ -717,6 +717,7 @@ auto parse_quoting_mode(std::string_view value) -> std::optional<QuotingMode> {
 auto resolve_quoting_mode(const CommandContext<LS_OPTIONS.size()> &ctx)
     -> cp::Result<QuotingMode> {
   QuotingMode mode = QuotingMode::Literal;
+  bool explicit_style = false;
   for (const auto &occurrence : ctx.options.occurrences()) {
     if (occurrence.index >= LS_OPTIONS.size()) continue;
     const auto &meta = LS_OPTIONS[occurrence.index];
@@ -724,21 +725,25 @@ auto resolve_quoting_mode(const CommandContext<LS_OPTIONS.size()> &ctx)
     if (meta.short_name == "-N" || meta.long_name == "--literal" ||
         meta.long_name == "--show-control-chars") {
       mode = QuotingMode::Literal;
+      explicit_style = true;
       continue;
     }
 
     if (meta.short_name == "-b" || meta.long_name == "--escape") {
       mode = QuotingMode::Escape;
+      explicit_style = true;
       continue;
     }
 
     if (meta.short_name == "-q" || meta.long_name == "--hide-control-chars") {
       mode = QuotingMode::HideControl;
+      explicit_style = true;
       continue;
     }
 
     if (meta.short_name == "-Q" || meta.long_name == "--quote-name") {
       mode = QuotingMode::C;
+      explicit_style = true;
       continue;
     }
 
@@ -748,7 +753,13 @@ auto resolve_quoting_mode(const CommandContext<LS_OPTIONS.size()> &ctx)
       auto parsed = parse_quoting_mode(*value);
       if (!parsed) return std::unexpected("invalid quoting style");
       mode = *parsed;
+      explicit_style = true;
     }
+  }
+  // [GNU] ls.c:2391: with no quoting-related option, the default style is
+  // shell-escape-quoting when stdout is a terminal and literal otherwise.
+  if (!explicit_style && ls_is_terminal(stdout)) {
+    mode = QuotingMode::ShellEscape;
   }
   return mode;
 }
@@ -3108,8 +3119,7 @@ auto list_directory(const std::string &path,
                                                                          : "";
         safeErrorPrintLn(std::wstring(L"ls: cannot access '") +
                          utf8_to_wstring(path) + utf8_to_wstring(sep) +
-                         entry.name +
-                         L"': No such file or directory");
+                         entry.name + L"': No such file or directory");
         g_had_minor_errors = true;
         info.perms = "l?????????";
         info.inode = "?";
@@ -3734,16 +3744,14 @@ auto expand_path_operands(const std::vector<std::string> &paths)
           !resolved_operand_is_directory(wpath)) {
         // [GNU] "ls file/" fails with ENOTDIR instead of listing "file/".
         safeErrorPrintLn(std::wstring(L"ls: cannot access '") +
-                         utf8_to_wstring(path) +
-                         L"': Not a directory");
+                         utf8_to_wstring(path) + L"': Not a directory");
         success = false;
         continue;
       }
       expanded_paths.push_back(path);
     } else {
       safeErrorPrintLn(std::wstring(L"ls: cannot access '") +
-                       utf8_to_wstring(path) +
-                       L"': No such file or directory");
+                       utf8_to_wstring(path) + L"': No such file or directory");
       success = false;
     }
   }

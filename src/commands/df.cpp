@@ -1004,6 +1004,44 @@ auto print_disk_usage(const CommandContext<DF_OPTIONS.size()>& ctx)
   uint64_t total_used = 0;
   uint64_t total_available = 0;
   size_t printed_rows = 0;
+
+  // [GNU] df pads every column to the widest cell, so rows must be
+  // buffered and rendered after all widths are known (df.c
+  // header_mode/print_disk_info_full).
+  struct PendingRow {
+    std::string filesystem;
+    std::string type;
+    std::string total_cell;
+    std::string used_cell;
+    std::string avail_cell;
+    std::string use_cell;
+    std::string mount;
+  };
+  auto render_size_cell = [&](uint64_t value) -> std::string {
+    if (output->human || output->si) {
+      return format_size(value, output->si);
+    }
+    return std::to_string(
+               static_cast<uintmax_t>(ceil_div(value, output->block_size))) +
+           output->display_suffix;
+  };
+  auto render_size_header = [&]() -> std::string {
+    if (output->human || output->si) return "Size";
+    return output->block_label;
+  };
+  auto render_used_header = [&]() -> std::string {
+    if (output->human || output->si) return "Used";
+    return "Used";
+  };
+  auto render_avail_header = [&]() -> std::string {
+    if (output->human || output->si) return "Avail";
+    return "Available";
+  };
+  auto render_use_header = [&]() -> std::string {
+    // [GNU] POSIX -P mode uses the historical "Capacity" header.
+    return output->portability ? "Capacity" : "Use%";
+  };
+  std::vector<PendingRow> pending_rows;
   std::vector<std::vector<std::string>> custom_rows;
 
   for (size_t i = 0; i < paths.size(); ++i) {
@@ -1093,31 +1131,25 @@ auto print_disk_usage(const CommandContext<DF_OPTIONS.size()>& ctx)
       custom_rows.push_back(std::move(row));
       header_printed = true;
     } else {
-      // Print header (only once)
-      if (!header_printed) {
-        print_usage_header(*output, print_type, inodes);
-        header_printed = true;
-      }
-
-      // Print filesystem
-      safePrint(info.filesystem);
-      if (print_type) {
-        safePrint(" ");
-        safePrint(info.type);
-      }
-
+      header_printed = true;
+      PendingRow row;
+      row.filesystem = info.filesystem;
+      row.type = info.type;
+      row.mount = info.mount_point;
       if (inodes) {
-        safePrint("            -          -          -     -");
+        // [PLATFORM-OK] Windows volumes expose no inode counts; GNU on
+        // Windows-adjacent filesystems also prints '-' placeholders.
+        row.total_cell = "-";
+        row.used_cell = "-";
+        row.avail_cell = "-";
+        row.use_cell = "-";
       } else {
-        print_size_columns(info.total, used, info.available, *output);
-
-        // Print capacity percentage
-        safePrint(" ");
-        safePrint(format_percent(used, info.available));
+        row.total_cell = render_size_cell(info.total);
+        row.used_cell = render_size_cell(used);
+        row.avail_cell = render_size_cell(info.available);
+        row.use_cell = format_percent(used, info.available);
       }
-
-      // Print mount point (use path itself on Windows)
-      safePrintLn(L"  " + utf8_to_wstring(info.mount_point));
+      pending_rows.push_back(std::move(row));
     }
     total_size += info.total;
     total_used += used;
@@ -1139,13 +1171,109 @@ auto print_disk_usage(const CommandContext<DF_OPTIONS.size()>& ctx)
     return all_ok;
   }
 
-  if (!header_printed && all_ok) {
-    print_usage_header(*output, print_type, inodes);
-  }
+  // [GNU] the header prints even when no filesystem matched the -t/-x
+  // filters (df exits 0 with a bare header row).
+  if (!pending_rows.empty() || all_ok) {
+    // [GNU] Column width = max(header width, widest cell); numeric
+    // columns right-align, filesystem/type/mount left-align, columns
+    // separated by one space.
+    auto width_of = [](const std::string& text) -> size_t {
+      return utf8_to_wstring(text).size();
+    };
+    std::string fs_header = "Filesystem";
+    std::string type_header = "Type";
+    std::string size_header = inodes ? "Inodes" : render_size_header();
+    std::string used_header = inodes ? "IUsed" : render_used_header();
+    std::string avail_header = inodes ? "IFree" : render_avail_header();
+    std::string use_header = inodes ? "IUse%" : render_use_header();
+    if (inodes) {
+      size_header = "Inodes";
+      used_header = "IUsed";
+      avail_header = "IFree";
+      use_header = "IUse%";
+    }
+    size_t fs_w = width_of(fs_header);
+    size_t type_w = width_of(type_header);
+    size_t size_w = width_of(size_header);
+    size_t used_w = width_of(used_header);
+    size_t avail_w = width_of(avail_header);
+    size_t use_w = width_of(use_header);
+    for (const auto& row : pending_rows) {
+      fs_w = std::max(fs_w, width_of(row.filesystem));
+      type_w = std::max(type_w, width_of(row.type));
+      size_w = std::max(size_w, width_of(row.total_cell));
+      used_w = std::max(used_w, width_of(row.used_cell));
+      avail_w = std::max(avail_w, width_of(row.avail_cell));
+      use_w = std::max(use_w, width_of(row.use_cell));
+    }
+    PendingRow total_row;
+    if (total && printed_rows > 0) {
+      total_row.filesystem = "total";
+      total_row.type = "-";
+      if (inodes) {
+        total_row.total_cell = "-";
+        total_row.used_cell = "-";
+        total_row.avail_cell = "-";
+        total_row.use_cell = "-";
+      } else {
+        total_row.total_cell = render_size_cell(total_size);
+        total_row.used_cell = render_size_cell(total_used);
+        total_row.avail_cell = render_size_cell(total_available);
+        total_row.use_cell = format_percent(total_used, total_available);
+      }
+      fs_w = std::max(fs_w, width_of(total_row.filesystem));
+      size_w = std::max(size_w, width_of(total_row.total_cell));
+      used_w = std::max(used_w, width_of(total_row.used_cell));
+      avail_w = std::max(avail_w, width_of(total_row.avail_cell));
+      use_w = std::max(use_w, width_of(total_row.use_cell));
+    }
 
-  if (total && header_printed && printed_rows > 0) {
-    print_total_row(total_size, total_used, total_available, *output,
-                    print_type, inodes);
+    auto print_left = [&](const std::string& cell, size_t width) {
+      safePrint(cell);
+      safePrint(std::string(width - width_of(cell), ' '));
+    };
+    auto print_right = [&](const std::string& cell, size_t width) {
+      safePrint(std::string(width - width_of(cell), ' '));
+      safePrint(cell);
+    };
+
+    auto print_table_row = [&](const PendingRow& row) {
+      print_left(row.filesystem, fs_w);
+      safePrint(" ");
+      if (print_type) {
+        print_left(row.type, type_w);
+        safePrint(" ");
+      }
+      print_right(row.total_cell, size_w);
+      safePrint(" ");
+      print_right(row.used_cell, used_w);
+      safePrint(" ");
+      print_right(row.avail_cell, avail_w);
+      safePrint(" ");
+      print_right(row.use_cell, use_w);
+      if (!row.mount.empty()) {
+        safePrint(" ");
+        safePrintLn(row.mount);
+      } else {
+        safePrintLn("");
+      }
+    };
+
+    PendingRow header;
+    header.filesystem = fs_header;
+    header.type = type_header;
+    header.total_cell = size_header;
+    header.used_cell = used_header;
+    header.avail_cell = avail_header;
+    header.use_cell = use_header;
+    header.mount = "Mounted on";
+    print_table_row(header);
+    for (const auto& row : pending_rows) {
+      print_table_row(row);
+    }
+    if (total && printed_rows > 0) {
+      print_table_row(total_row);
+    }
   }
 
   return all_ok;

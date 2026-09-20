@@ -161,7 +161,8 @@ auto constexpr CP_OPTIONS = std::array{
     OPTION("-T", "--no-target-directory", "treat DEST as a normal file"),
     OPTION("", "--strip-trailing-slashes",
            "remove any trailing slashes from each SOURCE argument"),
-    OPTION("-u", "--update", "equivalent to --update[=older]"),
+    OPTION("-u", "--update", "equivalent to --update[=older]",
+           OPTIONAL_STRING_TYPE),
     OPTION("-v", "--verbose", "explain what is being done"),
     OPTION("", "--debug", "explain how a file is copied; implies --verbose"),
     OPTION("-g", "--progress-bar", "display a progress bar while copying"),
@@ -918,6 +919,32 @@ auto clone_error_text(DWORD error) -> std::string {
   }
 }
 
+// [GNU] --update[={all,none,none-fail,older}]: bare -u/--update means
+// 'older' (cp.c update_type_string).
+enum class UpdateMode { All, None, NoneFail, Older };
+
+auto parse_update_mode(const CommandContext<CP_OPTIONS.size()>& ctx)
+    -> cp::Result<std::optional<UpdateMode>> {
+  if (!ctx.has("--update")) {
+    return std::nullopt;
+  }
+  const std::string value = ctx.get<std::string>("--update", "");
+  if (value.empty()) {
+    return UpdateMode::Older;
+  }
+  if (value == "all") return UpdateMode::All;
+  if (value == "none") return UpdateMode::None;
+  if (value == "none-fail") return UpdateMode::NoneFail;
+  if (value == "older") return UpdateMode::Older;
+  return std::unexpected("invalid argument '" + value +
+                         "' for '--update'\n"
+                         "Valid arguments are:\n"
+                         "  'all'\n"
+                         "  'none'\n"
+                         "  'none-fail'\n"
+                         "  'older'");
+}
+
 // [GNU] --reflink: attempt a copy-on-write clone through
 // FSCTL_DUPLICATE_EXTENTS_TO_FILE (ReFS).  The destination must be sized to
 // the source length first: the clone region must already exist there.
@@ -1102,12 +1129,43 @@ auto copy_sparse_file(const std::string& srcPath, const std::string& destPath,
 auto copy_file(const std::string& srcPath, const std::string& destPath,
                const CommandContext<CP_OPTIONS.size()>& ctx,
                bool command_line_arg = false) -> cp::Result<bool> {
-  bool interactive =
-      ctx.get<bool>("--interactive", false) || ctx.get<bool>("-i", false);
+  // [GNU] -i and -n are last-wins: whichever overwrite mode was given
+  // later on the command line takes effect (cp.c: "override a previous -n"
+  // and vice versa).  Occurrence order in the parsed options is argv order.
+  auto last_occurrence_of =
+      [&](std::initializer_list<std::string_view> names) -> ptrdiff_t {
+    ptrdiff_t best = -1;
+    if (!ctx.metas) return best;
+    const auto& occs = ctx.options.occurrences();
+    for (size_t i = 0; i < CP_OPTIONS.size(); ++i) {
+      const auto& meta = (*ctx.metas)[i];
+      bool wanted = false;
+      for (auto name : names) {
+        if (meta.long_name == name || meta.short_name == name) {
+          wanted = true;
+          break;
+        }
+      }
+      if (!wanted) continue;
+      for (size_t k = 0; k < occs.size(); ++k) {
+        if (occs[k].index == i) best = static_cast<ptrdiff_t>(k);
+      }
+    }
+    return best;
+  };
+  const ptrdiff_t interactive_pos = last_occurrence_of({"-i", "--interactive"});
+  const ptrdiff_t no_clobber_pos = last_occurrence_of({"-n", "--no-clobber"});
+  bool interactive = interactive_pos >= 0 && interactive_pos >= no_clobber_pos;
+  bool no_clobber = no_clobber_pos >= 0 && no_clobber_pos > interactive_pos;
   bool verbose = verbose_enabled(ctx);
-  bool no_clobber =
-      ctx.get<bool>("--no-clobber", false) || ctx.get<bool>("-n", false);
-  bool update = ctx.get<bool>("-u", false) || ctx.get<bool>("--update", false);
+  const std::optional<UpdateMode> update_mode =
+      parse_update_mode(ctx).value_or(std::nullopt);
+  bool update = update_mode.has_value() && *update_mode == UpdateMode::Older;
+  bool update_none =
+      update_mode.has_value() && (*update_mode == UpdateMode::None ||
+                                  *update_mode == UpdateMode::NoneFail);
+  bool update_none_fail =
+      update_mode.has_value() && *update_mode == UpdateMode::NoneFail;
   bool remove_dest = ctx.has("--remove-destination");
   bool attrs_only = ctx.has("--attributes-only");
   bool hard_link = ctx.get<bool>("--link", false) || ctx.get<bool>("-l", false);
@@ -1143,7 +1201,12 @@ auto copy_file(const std::string& srcPath, const std::string& destPath,
   bool src_is_symlink = is_link_path(srcPath);
   bool dest_exists = lexists(destPath);
 
-  if (no_clobber && dest_exists) {
+  if ((no_clobber || update_none) && dest_exists) {
+    // [GNU] --update=none-fail skips like none but reports
+    // "not replacing 'dest'" and fails (copy.c:2448).
+    if (update_none_fail) {
+      return std::unexpected("not replacing '" + destPath + "'");
+    }
     return true;
   }
 
@@ -1741,11 +1804,28 @@ auto process_command(const CommandContext<N>& ctx) -> cp::Result<bool> {
         "options --backup and --no-clobber are mutually exclusive\n"
         "Try 'cp --help' for more information.");
   }
+  {
+    // [GNU] cp.c:1212-1216: --backup is mutually exclusive with
+    // --update=none and --update=none-fail.
+    auto update_mode = parse_update_mode(ctx);
+    if (update_mode &&
+        (*update_mode == UpdateMode::None ||
+         *update_mode == UpdateMode::NoneFail) &&
+        backup_enabled(ctx)) {
+      return std::unexpected(
+          "--backup is mutually exclusive with -n or --update=none-fail");
+    }
+  }
 
   bool no_target_directory = ctx.get<bool>("-T", false) ||
                              ctx.get<bool>("--no-target-directory", false);
   const bool parents =
       ctx.has("--parents") || ctx.has("--parent") || ctx.has("--path");
+  // [GNU] validate --update[=WHEN] once, before any copying starts.
+  auto update_mode = parse_update_mode(ctx);
+  if (!update_mode) {
+    return std::unexpected(update_mode.error());
+  }
   return validate_arguments(ctx)
       .and_then([&](std::pair<std::vector<std::string>, std::string> paths) {
         return check_destination(paths, no_target_directory, parents);

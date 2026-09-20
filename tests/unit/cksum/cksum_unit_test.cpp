@@ -67,7 +67,9 @@ TEST(cksum, cksum_tag_opt_in_keeps_bsd_style_format) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "CRC32 (test.txt) = c3f5812d\n");
+  // [GNU] output_crc ignores tagged mode: CRC always prints the plain
+  // "checksum length file" line, identical to no --tag (cksum.c:357-378).
+  EXPECT_EQ_TEXT(r.stdout_text, "3287646509 5 test.txt\n");
 }
 
 TEST(cksum, cksum_stdin) {

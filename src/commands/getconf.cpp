@@ -105,6 +105,7 @@ REGISTER_COMMAND(
   }
 
   // Display specific configuration values
+  int exit_code = 0;
   for (auto var : ctx.positionals) {
     std::string var_name = std::string(var);
     std::transform(var_name.begin(), var_name.end(), var_name.begin(),
@@ -131,10 +132,13 @@ REGISTER_COMMAND(
       GlobalMemoryStatus(&memStatus);
       safePrintLn(std::to_string(memStatus.dwAvailPhys / sysInfo.dwPageSize));
     } else {
-      safeErrorPrint("getconf: '" + var_name +
-                     "' is not available on Windows\n");
+      // [GNU] an unknown system variable is an error with a nonzero exit,
+      // not a silent success.
+      safeErrorPrintLn("getconf: '" + var_name +
+                       "' is not a valid system variable");
+      exit_code = 1;
     }
   }
 
-  return 0;
+  return exit_code;
 }

@@ -1,0 +1,8 @@
+cmd: ln
+args: -T a.txt b.txt
+timeout: 10
+setup: |
+  printf 'a\n' > a.txt
+  printf 'b\n' > b.txt
+source: github.com/unixwin/WinuxCmd
+tags: audit-9.7-fix ln-no-overwrite-without-force

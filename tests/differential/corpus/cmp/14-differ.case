@@ -1,0 +1,8 @@
+cmd: cmp
+oracle_version: >=9
+args: a.txt b.txt
+timeout: 10
+setup: |
+  printf 'same\n' > a.txt; printf 'other\n' > b.txt
+source: github.com/unixwin/WinuxCmd
+tags: corpus-expansion round-3

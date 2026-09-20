@@ -1,0 +1,5 @@
+cmd: printf
+args: '%y'
+timeout: 10
+source: github.com/unixwin/WinuxCmd
+tags: audit-9.7-fix printf-invalid-conversion

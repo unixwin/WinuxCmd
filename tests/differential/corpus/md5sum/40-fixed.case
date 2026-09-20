@@ -1,0 +1,7 @@
+cmd: md5sum
+args: f.txt
+timeout: 10
+setup: |
+  printf 'hello\n' > f.txt
+source: github.com/unixwin/WinuxCmd
+tags: corpus-expansion round-3

@@ -1,0 +1,9 @@
+cmd: tr
+args: '\n' ' '
+timeout: 10
+stdin: |
+  a
+  b
+  c
+source: github.com/unixwin/WinuxCmd
+tags: corpus-expansion round-4

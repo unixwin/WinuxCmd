@@ -566,7 +566,9 @@ TEST(head, head_zero_terminated_multi_file_headers) {
 
   auto r = p.run();
 
+  // [GNU] the header separator and inter-header gap are always "\n";
+  // -z affects only output records (head.c:171).
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ(r.stdout_text,
-            std::string("==> a.bin <==\0a\0\0==> b.bin <==\0c\0", 33));
+            std::string("==> a.bin <==\na\0\n==> b.bin <==\nc\0", 33));
 }

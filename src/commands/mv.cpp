@@ -726,7 +726,11 @@ auto process_command(const CommandContext<N>& ctx) -> cp::Result<bool> {
           auto result = process_single_source(src_path, move_ctx, dest_is_dir,
                                               ctx, *overwrite_mode);
           if (!result) {
-            return std::unexpected(result.error());
+            // [GNU] mv.c continues with the remaining sources after a
+            // failure and reports a nonzero exit at the end.
+            cp::report_custom_error(L"mv", utf8_to_wstring(result.error()));
+            success = false;
+            continue;
           }
           if (!*result) {
             success = false;

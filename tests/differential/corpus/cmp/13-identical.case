@@ -1,0 +1,7 @@
+cmd: cmp
+args: a.txt b.txt
+timeout: 10
+setup: |
+  printf 'same\n' > a.txt; printf 'same\n' > b.txt
+source: github.com/unixwin/WinuxCmd
+tags: corpus-expansion round-3

@@ -49,7 +49,10 @@ enum class HashAlgorithm {
   Sha384,
   Sha512,
   Blake2b,
-  Sm3
+  Sm3,
+  // [GNU] cksum -a crc32b (coreutils 9.x): the reflected CRC-32 used by
+  // zlib, rendered through the digest output machinery.
+  Crc32b
 };
 
 struct PosixCksumResult {
@@ -1095,6 +1098,30 @@ auto hash_file_hex(HashAlgorithm algorithm, const std::string& filename,
   }
 
   switch (algorithm) {
+    case HashAlgorithm::Crc32b: {
+      // [GNU] crc32b_sum_stream: reflected CRC-32 (poly 0xEDB88320),
+      // init/final 0xFFFFFFFF, digest is the 4 bytes big-endian.
+      constexpr uint32_t kCrc32bPoly = 0xEDB88320u;
+      uint32_t crc = 0xFFFFFFFFu;
+      std::array<char, 8192> buffer{};
+      uint64_t length = 0;
+      while (input->read(buffer.data(), buffer.size()) || input->gcount() > 0) {
+        const std::streamsize got = input->gcount();
+        length += static_cast<uint64_t>(got);
+        for (std::streamsize i = 0; i < got; ++i) {
+          crc ^= static_cast<uint32_t>(
+              static_cast<unsigned char>(buffer[static_cast<size_t>(i)]));
+          for (int bit = 0; bit < 8; ++bit) {
+            crc = (crc >> 1) ^ (0u - (crc & 1u) & kCrc32bPoly);
+          }
+        }
+      }
+      crc ^= 0xFFFFFFFFu;
+      const std::array<uint8_t, 4> digest = {
+          static_cast<uint8_t>(crc >> 24), static_cast<uint8_t>(crc >> 16),
+          static_cast<uint8_t>(crc >> 8), static_cast<uint8_t>(crc)};
+      return detail::to_hex(std::span<const uint8_t>(digest));
+    }
     case HashAlgorithm::Md5: {
       auto hasher = detail::Md5();
       return detail::hash_stream_to_hex(*input, hasher);

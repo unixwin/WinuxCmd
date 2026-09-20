@@ -71,7 +71,10 @@ auto build_config(const CommandContext<TAC_OPTIONS.size()>& ctx)
   if (ctx.has("--separator") || ctx.has("-s")) {
     cfg.separator = ctx.get<std::string>("--separator", "");
     if (cfg.separator.empty()) cfg.separator = ctx.get<std::string>("-s", "");
-    if (cfg.separator.empty()) cfg.separator.push_back('\0');
+    // [GNU] tac.c:528 rejects an empty -s separator instead of falling
+    // back to a NUL byte.
+    if (cfg.separator.empty())
+      return std::unexpected("separator cannot be empty");
   }
 
   for (auto arg : ctx.positionals) {

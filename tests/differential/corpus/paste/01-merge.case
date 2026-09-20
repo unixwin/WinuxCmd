@@ -1,0 +1,8 @@
+cmd: paste
+args: f1.txt f2.txt
+timeout: 10
+setup: |
+  printf 'a\nb\n' > f1.txt
+  printf '1\n2\n' > f2.txt
+source: github.com/unixwin/WinuxCmd
+tags: corpus-expansion round-4

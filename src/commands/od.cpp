@@ -130,7 +130,8 @@ struct Config {
 
 // [GNU] xstrtoumax-style count parsing for -j/-N/-w/-S: leading
 // whitespace and sign allowed, base 0 autodetection (0x hex, 0 octal,
-// else decimal), no suffixes, entire string must be a number.
+// else decimal), trailing 'b' (512) and 'B' (1024) multipliers per the
+// "Bb" suffix set od passes to xstrtoumax, entire string must be a number.
 struct CountResult {
   enum class Status { ok, invalid, too_large };
   Status status = Status::invalid;
@@ -149,6 +150,16 @@ auto parse_count(std::string_view text) -> CountResult {
     ++i;
   }
   std::string_view num = text.substr(i);
+  // [GNU] xstrtoumax suffixes "Bb": 'b' scales by 512, 'B' by 1024.
+  // Not a suffix when the digits are hex (0x1b parses as 27, suffix absent),
+  // mirroring how strtol consumes the whole hex literal.
+  uint64_t multiplier = 1;
+  bool is_hex =
+      num.size() >= 2 && num[0] == '0' && (num[1] == 'x' || num[1] == 'X');
+  if (!is_hex && num.size() >= 2 && (num.back() == 'b' || num.back() == 'B')) {
+    multiplier = num.back() == 'b' ? 512 : 1024;
+    num.remove_suffix(1);
+  }
   int base = 10;
   if (num.size() >= 2 && num[0] == '0' && (num[1] == 'x' || num[1] == 'X')) {
     base = 16;
@@ -182,6 +193,14 @@ auto parse_count(std::string_view text) -> CountResult {
     return r;
   }
   if (negative) value = static_cast<uint64_t>(0) - value;
+  if (multiplier != 1) {
+    if (value > std::numeric_limits<uint64_t>::max() / multiplier) {
+      r.status = CountResult::Status::too_large;
+      return r;
+    }
+    value *= multiplier;
+    if (negative) value = static_cast<uint64_t>(0) - value;
+  }
   r.status = CountResult::Status::ok;
   r.value = static_cast<size_t>(value);
   return r;
@@ -669,11 +688,11 @@ auto build_config(const CommandContext<OD_OPTIONS.size()>& ctx)
     cfg.specs.push_back({FormatKind::unsigned_decimal, 2, false});
   if (ctx.has("-f"))
     cfg.specs.push_back(
-        {FormatKind::floating_point, 8, false});  // [GNU] -f == -t fD
+        {FormatKind::floating_point, 4, false});  // [GNU] -f == -t fF
   if (ctx.has("-i"))
-    cfg.specs.push_back({FormatKind::signed_decimal, 2, false});  // [DIFFERS]
+    cfg.specs.push_back({FormatKind::signed_decimal, 4, false});  // [GNU] dI
   if (ctx.has("-l"))
-    cfg.specs.push_back({FormatKind::signed_decimal, 4, false});  // [DIFFERS]
+    cfg.specs.push_back({FormatKind::signed_decimal, 8, false});  // [GNU] dL
   if (ctx.has("-o")) cfg.specs.push_back({FormatKind::octal, 2, false});
   if (ctx.has("-s"))
     cfg.specs.push_back({FormatKind::signed_decimal, 2, false});  // [DIFFERS]

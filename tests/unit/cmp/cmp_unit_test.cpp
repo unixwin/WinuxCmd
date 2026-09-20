@@ -187,7 +187,9 @@ TEST(cmp, cmp_skip_beyond_shorter_file_reports_eof_without_underflow) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_EQ_TEXT(r.stdout_text, "cmp: EOF on file1.txt\n");
+  // [GNU] a skip past the shorter file's end yields the "which is empty"
+  // form of the EOF diagnostic (cmp.c).
+  EXPECT_EQ_TEXT(r.stdout_text, "cmp: EOF on file1.txt which is empty\n");
 }
 
 TEST(cmp, cmp_wildcard_expansion_does_not_reinterpret_extra_file_as_skip) {
@@ -202,7 +204,7 @@ TEST(cmp, cmp_wildcard_expansion_does_not_reinterpret_extra_file_as_skip) {
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ(r.exit_code, 2);
   EXPECT_TRUE(r.stdout_text.empty());
   EXPECT_TRUE(r.stderr_text.find("extra operand") != std::string::npos);
 }
@@ -213,7 +215,7 @@ TEST(cmp, cmp_missing_operands_report_help_hint) {
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ(r.exit_code, 2);
   EXPECT_TRUE(r.stdout_text.empty());
   EXPECT_EQ_TEXT(
       r.stderr_text,
@@ -226,7 +228,7 @@ TEST(cmp, cmp_single_operand_reports_help_hint) {
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ(r.exit_code, 2);
   EXPECT_TRUE(r.stdout_text.empty());
   EXPECT_EQ_TEXT(r.stderr_text,
                  "cmp: missing operand after 'a'\nTry 'cmp --help' for more "
@@ -239,7 +241,7 @@ TEST(cmp, cmp_extra_operand_reports_help_hint) {
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ(r.exit_code, 2);
   EXPECT_TRUE(r.stdout_text.empty());
   EXPECT_EQ_TEXT(
       r.stderr_text,

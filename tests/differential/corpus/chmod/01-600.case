@@ -1,0 +1,7 @@
+cmd: chmod
+args: 600 f.txt
+timeout: 10
+setup: |
+  printf 'x' > f.txt
+source: github.com/unixwin/WinuxCmd
+tags: corpus-expansion round-4

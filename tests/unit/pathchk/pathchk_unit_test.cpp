@@ -26,9 +26,20 @@ TEST(pathchk, pathchk_accepts_windows_drive_absolute_path) {
   EXPECT_TRUE(r.stderr_text.empty());
 }
 
-TEST(pathchk, pathchk_default_rejects_leading_dash_component) {
+TEST(pathchk, pathchk_default_accepts_leading_dash_component) {
+  // [GNU] the default mode only applies filesystem limits; leading '-' is
+  // flagged by -P / --portability only.
   Pipeline p;
   p.add(L"pathchk.exe", {L"safe/-bad"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+}
+
+TEST(pathchk, pathchk_P_rejects_leading_dash_component) {
+  Pipeline p;
+  p.add(L"pathchk.exe", {L"-P", L"safe/-bad"});
 
   auto r = p.run();
 

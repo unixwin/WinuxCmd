@@ -1,0 +1,7 @@
+cmd: ln
+args: src.txt link.txt
+timeout: 10
+setup: |
+  printf x > src.txt
+source: github.com/unixwin/WinuxCmd
+tags: corpus-expansion round-3

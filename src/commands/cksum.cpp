@@ -105,6 +105,7 @@ enum class Algorithm {
   BSD,
   SYSV,
   CRC,
+  CRC32B,
   MD5,
   SHA1,
   SHA224,
@@ -127,6 +128,7 @@ inline constexpr std::array kAlgorithms = {
     AlgorithmEntry{Algorithm::BSD, "bsd", "BSD", 16},
     AlgorithmEntry{Algorithm::SYSV, "sysv", "SYSV", 16},
     AlgorithmEntry{Algorithm::CRC, "crc", "CRC", 32},
+    AlgorithmEntry{Algorithm::CRC32B, "crc32b", "CRC32B", 32},
     AlgorithmEntry{Algorithm::MD5, "md5", "MD5", 128},
     AlgorithmEntry{Algorithm::SHA1, "sha1", "SHA1", 160},
     AlgorithmEntry{Algorithm::SHA224, "sha224", "SHA224", 224},
@@ -138,6 +140,8 @@ inline constexpr std::array kAlgorithms = {
 };
 
 auto is_legacy(Algorithm a) -> bool {
+  // [GNU] CRC32B flows through the digest output machinery, not the
+  // legacy "checksum length" formats.
   return a == Algorithm::BSD || a == Algorithm::SYSV || a == Algorithm::CRC;
 }
 
@@ -150,6 +154,8 @@ auto algorithm_entry(Algorithm a) -> const AlgorithmEntry& {
 
 auto to_hash_algorithm(Algorithm a) -> portable_digest::HashAlgorithm {
   switch (a) {
+    case Algorithm::CRC32B:
+      return portable_digest::HashAlgorithm::Crc32b;
     case Algorithm::MD5:
       return portable_digest::HashAlgorithm::Md5;
     case Algorithm::SHA1:
@@ -574,22 +580,8 @@ auto output_legacy(const Config& cfg, Algorithm algo, uint32_t checksum,
     return;
   }
 
-  // [WinuxCmd] --tag renders the default CRC checksum in the BSD tagged
-  // form "CRC32 (file) = hex" (the generic digest output shape).
-  if (algo == Algorithm::CRC && cfg.tag_mode == 1) {
-    const bool escape = sep == '\n' && has_problematic_chars(filename);
-    const std::string shown_name =
-        escape ? escape_filename(filename) : filename;
-    if (escape) safePrint("\\");
-    char hexbuf[16];
-    snprintf(hexbuf, sizeof hexbuf, "%08x", checksum);
-    safePrint("CRC32 (");
-    safePrint(shown_name);
-    safePrint(") = ");
-    safePrint(hexbuf);
-    safePrint(std::string(1, sep));
-    return;
-  }
+  // [GNU] output_crc ignores tagged mode entirely: CRC always prints
+  // "%u %ju [file]" (cksum.c:357-378); no "CRC32 (f) = hex" form exists.
 
   char buf[64];
   switch (algo) {
