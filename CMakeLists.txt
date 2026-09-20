@@ -60,8 +60,6 @@ set(WINUXCMD_CXX_STANDARD 23)
 set(WINUXCMD_CXX_DIALECT_NOTE "pending compiler detection")
 
 # Option to enable FFI library
-option(BUILD_FFI "Build FFI library for external integration" OFF)
-set(BUILD_FFI OFF CACHE BOOL "Build FFI library for external integration" FORCE)
 
 # Generate the map info(For the developers to collect binary information)
 option(GENERATE_MAP_INFO "Generate_MAP_INFO" ON)
@@ -109,11 +107,7 @@ if(NOT DEFINED ENABLE_UNITY_BUILD_USER_VALUE)
     set(ENABLE_UNITY_BUILD ${ENABLE_UNITY_BUILD_DEFAULT} CACHE BOOL "Enable Unity Build" FORCE)
 endif()
 
-if(BUILD_MODE STREQUAL "RELEASE" OR BUILD_MODE STREQUAL "RELEASE_EXAMPLES")
-    if(BUILD_FFI)
-        message(STATUS "Disabling FFI for release-oriented build mode")
-    endif()
-    set(BUILD_FFI OFF CACHE BOOL "Build FFI library for external integration" FORCE)
+if(BUILD_MODE STREQUAL "RELEASE" OR BUILD_MODE STREQUAL "RELEASE_EXAMPLES") 
 endif()
 
 if (USE_STATIC_CRT)
@@ -712,7 +706,6 @@ message(STATUS "=================== BUILD CONFIGURATION SUMMARY ================
 message(STATUS "Build Mode: ${BUILD_MODE}")
 message(STATUS "C++ Dialect: ${WINUXCMD_CXX_DIALECT} (${WINUXCMD_CXX_DIALECT_NOTE}, CXX_STANDARD=${WINUXCMD_CXX_STANDARD})")
 message(STATUS "Tests Enabled: ${ENABLE_TESTS}")
-message(STATUS "FFI Library: ${BUILD_FFI}")
 message(STATUS "Map Info Generation: ${GENERATE_MAP_INFO}")
 message(STATUS "Unity Build: ${ENABLE_UNITY_BUILD}")
 message(STATUS "Static CRT: ${USE_STATIC_CRT}")
