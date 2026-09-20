@@ -84,20 +84,6 @@
       }
     },
     {
-      "name": "standalone-release",
-      "displayName": "Standalone Release Build",
-      "description": "Build individual standalone executables for each command (for distribution and size analysis)",
-      "binaryDir": "${sourceDir}/build-standalone",
-      "generator": "Ninja",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release",
-        "BUILD_MODE": "RELEASE",
-        "USE_STATIC_CRT": "ON",
-        "BUILD_STANDALONE": "ON",
-        "BUILD_FFI": "ON"
-      }
-    },
-    {
       "name": "ffi-only",
       "displayName": "FFI Library Only",
       "description": "Build only the FFI library (winuxcore.dll)",
@@ -164,12 +150,6 @@
       "description": "Build optimized for testing"
     },
     {
-      "name": "standalone-release",
-      "configurePreset": "standalone-release",
-      "displayName": "Build Standalone Release",
-      "description": "Build individual standalone executables"
-    },
-    {
       "name": "ffi-only",
       "configurePreset": "ffi-only",
       "displayName": "Build FFI Only",
@@ -181,5 +161,6 @@
       "displayName": "Build Release with Examples",
       "description": "Build release version with examples enabled"
     }
-  ]
+  ],
+  "testPresets": []
 }
