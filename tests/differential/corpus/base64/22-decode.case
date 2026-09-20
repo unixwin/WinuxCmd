@@ -1,0 +1,7 @@
+cmd: base64
+args: -d b64.txt
+timeout: 10
+setup: |
+  printf 'aGVsbG8K' > b64.txt
+source: github.com/unixwin/WinuxCmd
+tags: corpus-expansion round-3

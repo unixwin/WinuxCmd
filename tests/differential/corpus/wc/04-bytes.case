@@ -1,0 +1,7 @@
+cmd: wc
+args: -c f.txt
+timeout: 10
+setup: |
+  printf 'abcde\n' > f.txt
+source: github.com/unixwin/WinuxCmd
+tags: corpus-expansion round-4

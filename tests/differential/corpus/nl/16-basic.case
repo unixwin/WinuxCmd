@@ -1,0 +1,7 @@
+cmd: nl
+args: f.txt
+timeout: 10
+setup: |
+  printf 'one\n\ntwo\n' > f.txt
+source: github.com/unixwin/WinuxCmd
+tags: corpus-expansion round-3

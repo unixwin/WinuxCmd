@@ -1,0 +1,6 @@
+cmd: envsubst
+timeout: 10
+stdin: |
+  hello $HOME
+source: github.com/unixwin/WinuxCmd
+tags: corpus-expansion round-4

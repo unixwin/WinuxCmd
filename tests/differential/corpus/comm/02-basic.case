@@ -1,0 +1,8 @@
+cmd: comm
+args: f1.txt f2.txt
+timeout: 10
+setup: |
+  printf 'a\nb\nc\nd\ne\n' > f1.txt
+  printf 'b\nc\ne\nf\ng\n' > f2.txt
+source: github.com/unixwin/WinuxCmd
+tags: corpus-expansion round-4

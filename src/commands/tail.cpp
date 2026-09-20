@@ -790,11 +790,12 @@ struct FollowTarget {
 
 auto follow_header(const FollowTarget& target, const TailConfig& config)
     -> std::string {
-  std::string header(1, config.delimiter);
-  header += "==> ";
+  (void)config;
+  // [GNU] Follow headers are always "\n"-terminated; -z applies to
+  // output records only (tail.c:413).
+  std::string header("\n==> ");
   header += target.file;
-  header += " <==";
-  header.push_back(config.delimiter);
+  header += " <==\n";
   return header;
 }
 

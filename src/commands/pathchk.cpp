@@ -175,14 +175,14 @@ REGISTER_COMMAND(
     /* author */ "WinuxCmd",
     /* copyright */ "Copyright © 2026 WinuxCmd",
     /* options */ PATHCHK_OPTIONS) {
+  // [GNU] pathchk.c: default mode checks only the current filesystem's
+  // limits.  -p selects POSIX-minimum checks, -P the empty-name /
+  // leading-dash / ".." checks, and --portability is "equivalent to
+  // -p -P" (pathchk.c:93).
   bool check_portability =
       ctx.get<bool>("-p", false) || ctx.get<bool>("--portability", false);
   bool check_leading_dash =
       ctx.get<bool>("-P", false) || ctx.get<bool>("--portability", false);
-  if (!check_portability && !check_leading_dash &&
-      std::getenv("POSIXLY_CORRECT") == nullptr) {
-    check_leading_dash = true;
-  }
 
   if (ctx.positionals.empty()) {
     safeErrorPrintLn("pathchk: missing operand");
@@ -196,10 +196,11 @@ REGISTER_COMMAND(
     std::string path_str(path);
     std::optional<std::string> error_msg;
 
-    if (path_str.empty() && !check_portability && !ctx.get<bool>("-P", false) &&
-        !ctx.get<bool>("--portability", false) &&
-        std::getenv("POSIXLY_CORRECT") == nullptr) {
-      error_msg = "No such file or directory";
+    // [GNU] an empty operand: -P reports "empty file name"; otherwise the
+    // stat("") ENOENT path applies.
+    if (path_str.empty()) {
+      error_msg =
+          check_leading_dash ? "empty file name" : "No such file or directory";
     }
 
     if (!error_msg && check_leading_dash &&

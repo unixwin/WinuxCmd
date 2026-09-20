@@ -590,13 +590,14 @@ REGISTER_COMMAND(
     const auto& file = files[i];
 
     bool show_header = config.verbose || (multi && !config.quiet);
+    // [GNU] The header separator and the gap between headers are always
+    // "\n"; the -z NUL delimiter applies to output records only.
     auto emit_header = [&]() {
       if (!show_header) return;
-      if (!first_print) safePrint(std::string(1, config.delimiter));
+      if (!first_print) safePrint("\n");
       safePrint("==> ");
       safePrint(file == "-" ? "standard input" : file);
-      safePrint(" <==");
-      safePrint(std::string(1, config.delimiter));
+      safePrint(" <==\n");
       first_print = false;
     };
 

@@ -1,0 +1,5 @@
+cmd: cal
+args: 3 2025
+timeout: 10
+source: github.com/unixwin/WinuxCmd
+tags: coverage expansion

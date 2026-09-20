@@ -1,0 +1,8 @@
+cmd: split
+args: -l 2 f.txt
+timeout: 10
+setup: |
+  printf 'a\nb\nc\nd\ne\n' > f.txt
+files: xaa,xab
+source: github.com/unixwin/WinuxCmd
+tags: corpus-expansion round-4

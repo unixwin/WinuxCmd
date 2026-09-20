@@ -43,8 +43,10 @@ TEST(uname, uname_all) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_FALSE(r.stdout_text.empty());
-  // Should contain kernel name, hostname, release, version, machine
-  EXPECT_TRUE(r.stdout_text.find("MSWindows_NT") != std::string::npos);
+  // Should contain kernel name, hostname, release, version, machine.
+  // [GNU] sysname is "Windows_NT", matching uname -o.
+  EXPECT_TRUE(r.stdout_text.find("Windows_NT") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("MSWindows_NT") == std::string::npos);
 }
 
 TEST(uname, uname_machine) {

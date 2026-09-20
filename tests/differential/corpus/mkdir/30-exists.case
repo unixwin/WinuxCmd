@@ -1,0 +1,7 @@
+cmd: mkdir
+args: a
+timeout: 10
+setup: |
+  mkdir a
+source: github.com/unixwin/WinuxCmd
+tags: corpus-expansion round-3

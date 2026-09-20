@@ -1,0 +1,5 @@
+cmd: test
+args: ! -f nofile.txt
+timeout: 10
+source: github.com/unixwin/WinuxCmd
+tags: corpus-expansion round-4

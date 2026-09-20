@@ -612,13 +612,15 @@ inline GnuDecodeResult base32_decode_gnu(std::string_view encoded,
   return result;
 }
 
-// GNU base16 decode: uppercase hex only, '\n' skipped, bytes emitted as they
-// decode; a dangling nibble or a garbage byte fails.
+// GNU base16 decode: hex digits in either case ('\n' skipped, bytes emitted
+// as they decode; a dangling nibble or a garbage byte fails).  GNU's B16
+// macro accepts both 'A'-'F' and 'a'-'f' (basenc.c:530-542).
 inline GnuDecodeResult base16_decode_gnu(std::string_view encoded,
                                          bool ignore_garbage) {
   auto hex_value = [](unsigned char c) -> int {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
     return -1;
   };
 

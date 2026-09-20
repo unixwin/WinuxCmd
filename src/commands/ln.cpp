@@ -496,22 +496,15 @@ REGISTER_COMMAND(
           continue;
         }
       } else if (!backup) {
-        // No force, no backup, no interactive - error
-        if (!no_target_dir || (target_attrs & FILE_ATTRIBUTE_DIRECTORY)) {
-          safeErrorPrint("ln: " + ln_creation_failure_prefix(symbolic, target) +
-                         ": File exists\n");
-          error_count++;
-          continue;
-        }
-        // With -T, try to overwrite
-        auto result = remove_existing(target);
-        if (!result) {
-          safeErrorPrint("ln: ");
-          safeErrorPrint(result.error());
-          safeErrorPrint("\n");
-          error_count++;
-          continue;
-        }
+        // No force, no backup, no interactive - error.  [GNU] ln never
+        // overwrites an existing destination without -f, including -T
+        // (ln.c reports "File exists" for every existing target).
+        (void)no_target_dir;
+        (void)target_attrs;
+        safeErrorPrint("ln: " + ln_creation_failure_prefix(symbolic, target) +
+                       ": File exists\n");
+        error_count++;
+        continue;
       }
     }
 

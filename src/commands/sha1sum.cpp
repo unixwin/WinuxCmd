@@ -237,9 +237,11 @@ auto calculate_sha1(const std::string& filename, bool text_mode = false)
     }
     success = true;
   } else {
-    // Read from file (binary mode by default, text mode if --text)
+    // Read from file.  [GNU] -t/--text changes only the output marker,
+    // never the bytes hashed: coreutils hashes raw file bytes in both
+    // modes, so no CRLF translation may happen here.
     std::ifstream file(native_path::normalize_api_operand(filename),
-                       text_mode ? std::ios::in : std::ios::binary);
+                       std::ios::binary);
     if (!file) {
       CryptDestroyHash(hHash);
       CryptReleaseContext(hProv, 0);

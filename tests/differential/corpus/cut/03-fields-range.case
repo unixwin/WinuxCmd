@@ -1,0 +1,7 @@
+cmd: cut
+args: -d, -f2-3
+timeout: 10
+stdin: |
+  a,b,c,d
+source: github.com/unixwin/WinuxCmd
+tags: corpus-expansion round-4

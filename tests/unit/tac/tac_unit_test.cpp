@@ -102,16 +102,16 @@ TEST(tac, tac_before_attaches_separator_to_next_record) {
   EXPECT_EQ_TEXT(r.stdout_text, "::three:twoone");
 }
 
-TEST(tac, tac_empty_separator_uses_nul) {
+TEST(tac, tac_empty_separator_is_rejected) {
   Pipeline p;
   p.set_stdin(std::string("a\0b\0c\0", 6));
   p.add(L"tac.exe", {L"--separator="});
-  p.add(L"base64.exe", {});
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "YwBiAGEA\n");
+  // [GNU] tac.c:528: an empty separator is an error, not a NUL fallback.
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ_TEXT(r.stderr_text, "tac: separator cannot be empty\n");
 }
 
 TEST(tac, tac_regex_separator) {

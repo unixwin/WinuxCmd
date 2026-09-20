@@ -1,0 +1,5 @@
+cmd: timeout
+args: 10 echo "done"
+timeout: 15
+source: github.com/unixwin/WinuxCmd
+tags: coverage expansion

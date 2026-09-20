@@ -1,0 +1,11 @@
+cmd: uniq
+args: -c
+timeout: 10
+stdin: |
+  a
+  a
+  b
+  b
+  b
+source: github.com/unixwin/WinuxCmd
+tags: corpus-expansion round-4

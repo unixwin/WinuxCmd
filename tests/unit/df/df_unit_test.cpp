@@ -307,8 +307,9 @@ TEST(df, df_total_row_shape) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_NE(r.stdout_text.find("1K-blocks"), std::string::npos);
+  // [GNU] the total row occupies the Filesystem column with an empty
+  // mount column, so the line starts at column zero.
   EXPECT_NE(r.stdout_text.find("\ntotal"), std::string::npos);
-  EXPECT_NE(r.stdout_text.find(" total\n"), std::string::npos);
 }
 
 TEST(df, df_accepts_all_sync_no_sync) {

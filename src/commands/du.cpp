@@ -1117,6 +1117,18 @@ auto calculate_dir_size(const std::wstring& path,
         }
       }
 
+      // [GNU] --inodes counts entries instead of blocks: each file counts
+      // one (extra links under --count-links); a directory adds its whole
+      // subtree via the recursion above.  The counts travel through the
+      // same summary.size/sizes plumbing used for byte sizes.
+      if (cfg.show_inodes) {
+        if (cfg.count_links) {
+          summary.size += std::max<DWORD>(get_hard_link_count(full_path), 1);
+        } else if (counted) {
+          summary.size += 1;
+        }
+      }
+
       // Count individual files if requested
       if (counted && cfg.count_all &&
           (cfg.max_depth < 0 || child_depth <= cfg.max_depth)) {
@@ -1289,9 +1301,10 @@ auto print_disk_usage(const CommandContext<DU_OPTIONS.size()>& ctx)
                              bool is_operand_root) {
         safePrint(L"");
         if (cfg.show_inodes) {
-          // Show inode count (approximated as file count) for the operand
-          // root; each listed entry counts as 1 inode.
-          safePrint(is_operand_root ? std::to_string(sizes.size()) : "1");
+          // [GNU] --inodes: print each entry's recursive entry count, not
+          // a literal 1 (only standalone file operands are exactly 1).
+          (void)is_operand_root;
+          safePrint(std::to_string(size));
         } else {
           print_scaled_size(size, cfg.output);
         }
@@ -1376,7 +1389,11 @@ auto print_disk_usage(const CommandContext<DU_OPTIONS.size()>& ctx)
 
   if (cfg.total && passes_threshold(cfg, grand_total)) {
     safePrint(L"");
-    print_scaled_size(grand_total, cfg.output);
+    if (cfg.show_inodes) {
+      safePrint(std::to_string(grand_total));
+    } else {
+      print_scaled_size(grand_total, cfg.output);
+    }
     safePrint("\ttotal");
     print_record_terminator(cfg.null_terminated);
   }

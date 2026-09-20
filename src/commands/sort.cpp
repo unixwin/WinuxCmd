@@ -1473,6 +1473,11 @@ auto build_config(const CommandContext<SORT_OPTIONS.size()>& ctx)
 
   std::string sep = ctx.get<std::string>("--field-separator", "");
   if (sep.empty()) sep = ctx.get<std::string>("-t", "");
+  // [GNU] sort.c:4660: an explicitly empty -t separator is the error
+  // "empty tab", not "no separator given".
+  if (sep.empty() && (ctx.has("--field-separator") || ctx.has("-t"))) {
+    return std::unexpected("empty tab");
+  }
   if (!sep.empty()) {
     if (sep == "\\0") {
       cfg.field_separator = '\0';
