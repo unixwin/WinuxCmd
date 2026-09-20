@@ -63,8 +63,6 @@ set(WINUXCMD_CXX_DIALECT_NOTE "pending compiler detection")
 option(BUILD_FFI "Build FFI library for external integration" OFF)
 set(BUILD_FFI OFF CACHE BOOL "Build FFI library for external integration" FORCE)
 
-# Option to enable UPX compression
-option(ENABLE_UPX "Enable UPX compression for executables" OFF)
 # Generate the map info(For the developers to collect binary information)
 option(GENERATE_MAP_INFO "Generate_MAP_INFO" ON)
 # Merge Every commands.cpp into one source file(It could decrease template volume costs)
@@ -77,34 +75,29 @@ if(BUILD_MODE STREQUAL "DEV")
     set(ENABLE_TESTS_DEFAULT ON)
     set(GENERATE_MAP_INFO_DEFAULT ON)
     set(ENABLE_UNITY_BUILD_DEFAULT OFF)  # Unity build slows down incremental compilation
-    set(ENABLE_UPX_DEFAULT OFF)
 elseif(BUILD_MODE STREQUAL "RELEASE")
     # Release mode: optimize for performance and size
     message(STATUS "Configuring for RELEASE mode")
     set(ENABLE_TESTS_DEFAULT OFF)
     set(GENERATE_MAP_INFO_DEFAULT OFF)
     set(ENABLE_UNITY_BUILD_DEFAULT ON)   # Unity build improves performance and reduces size
-    set(ENABLE_UPX_DEFAULT OFF)
 elseif(BUILD_MODE STREQUAL "DEBUG_RELEASE")
     # Debug-Release mode: Release optimizations with debug features
     message(STATUS "Configuring for DEBUG-RELEASE mode")
     set(ENABLE_TESTS_DEFAULT ON)
     set(GENERATE_MAP_INFO_DEFAULT ON)
     set(ENABLE_UNITY_BUILD_DEFAULT OFF)  # Disable Unity build for better debugging
-    set(ENABLE_UPX_DEFAULT OFF)
 elseif(BUILD_MODE STREQUAL "RELEASE_EXAMPLES")
     # Release mode with examples: optimize for performance and size, but build examples
     message(STATUS "Configuring for RELEASE_EXAMPLES mode")
     set(ENABLE_TESTS_DEFAULT OFF)
     set(GENERATE_MAP_INFO_DEFAULT OFF)
     set(ENABLE_UNITY_BUILD_DEFAULT ON)   # Unity build improves performance and reduces size
-    set(ENABLE_UPX_DEFAULT OFF)
 else()
     message(WARNING "Unknown BUILD_MODE '${BUILD_MODE}', using DEVELOPMENT settings")
     set(ENABLE_TESTS_DEFAULT ON)
     set(GENERATE_MAP_INFO_DEFAULT ON)
     set(ENABLE_UNITY_BUILD_DEFAULT ON)
-    set(ENABLE_UPX_DEFAULT OFF)
 endif()
 
 # Apply default values based on build mode if not explicitly set
@@ -114,9 +107,6 @@ if(NOT DEFINED GENERATE_MAP_INFO_USER_VALUE)
 endif()
 if(NOT DEFINED ENABLE_UNITY_BUILD_USER_VALUE)
     set(ENABLE_UNITY_BUILD ${ENABLE_UNITY_BUILD_DEFAULT} CACHE BOOL "Enable Unity Build" FORCE)
-endif()
-if(NOT DEFINED ENABLE_UPX_USER_VALUE)
-    set(ENABLE_UPX ${ENABLE_UPX_DEFAULT} CACHE BOOL "Enable UPX compression for executables" FORCE)
 endif()
 
 if(BUILD_MODE STREQUAL "RELEASE" OR BUILD_MODE STREQUAL "RELEASE_EXAMPLES")
@@ -130,11 +120,6 @@ if (USE_STATIC_CRT)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
 else ()
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")
-endif ()
-
-# Include UPX compression configuration if enabled
-if (ENABLE_UPX)
-    include(cmake/FetchUpx.cmake)
 endif ()
 
 if (NOT CMAKE_SUPPRESS_DEVELOPER_WARNINGS)
@@ -481,11 +466,6 @@ endif ()
 
 enable_unity_build(winuxcmd)
 
-# Add UPX compression for main executable if enabled
-if (ENABLE_UPX)
-    add_upx_compression(winuxcmd)
-endif ()
-
 # Add include directories for main executable
 target_include_directories(winuxcmd PRIVATE ${SRC_DIR} ${CMAKE_BINARY_DIR})
 
@@ -590,10 +570,6 @@ macro(create_command_executable CMD)
                 /OPT:ICF      # Enable identical COMDAT folding
                 >)
 
-        # Add UPX compression for individual command executable if enabled
-        if (ENABLE_UPX)
-            add_upx_compression(${CMD})
-        endif ()
     endif ()
 endmacro()
 
@@ -739,10 +715,8 @@ message(STATUS "Tests Enabled: ${ENABLE_TESTS}")
 message(STATUS "FFI Library: ${BUILD_FFI}")
 message(STATUS "Map Info Generation: ${GENERATE_MAP_INFO}")
 message(STATUS "Unity Build: ${ENABLE_UNITY_BUILD}")
-message(STATUS "UPX Compression: ${ENABLE_UPX} (PERMANENTLY DISABLED)")
 message(STATUS "Static CRT: ${USE_STATIC_CRT}")
 message(STATUS "PCRE2 grep -P: ${WINUXCMD_ENABLE_PCRE2} (JIT=${WINUXCMD_PCRE2_JIT})")
-message(STATUS "Note: UPX compression has been permanently disabled for reliability")
 message(STATUS "Note: Run `winuxcmd wpm links rebuild` in bin directory to generate command links")
 message(STATUS "=================================================================")
 
