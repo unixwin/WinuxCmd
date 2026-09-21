@@ -3256,6 +3256,40 @@ auto source_add(const Options& opts, std::string_view name,
   return 0;
 }
 
+// [wpm] remove a user-added source by name.  Built-in sources are
+// protected: they are not stored in user_sources and cannot be removed.
+auto source_remove(const Options& opts, std::string_view name) -> int {
+  auto config = load_config(opts.root);
+  if (!config.contains("user_sources") || !config["user_sources"].is_array()) {
+    safeErrorPrintLn("wpm: source not found: " + std::string(name));
+    return 1;
+  }
+  auto& sources = config["user_sources"];
+  for (auto it = sources.begin(); it != sources.end(); ++it) {
+    if (it->is_object() && it->value("name", "") == name) {
+      sources.erase(it);
+      if (!save_config(opts.root, config)) {
+        safeErrorPrintLn("wpm: failed to save source");
+        return 1;
+      }
+      // A removed source can no longer be the active one.
+      if (config.contains("preferred_source") &&
+          config["preferred_source"].is_string() &&
+          config["preferred_source"].get<std::string>() == name) {
+        config.erase("preferred_source");
+        if (!save_config(opts.root, config)) {
+          safeErrorPrintLn("wpm: failed to save source");
+          return 1;
+        }
+      }
+      safePrintLn("wpm: source removed: " + std::string(name));
+      return 0;
+    }
+  }
+  safeErrorPrintLn("wpm: source not found: " + std::string(name));
+  return 1;
+}
+
 auto print_package_summary(const nlohmann::json& pkg) -> void {
   std::string version = pkg.value("version", "");
   if (!version.empty()) version = " " + version;
@@ -4019,13 +4053,15 @@ auto dispatch(const Options& opts, std::span<const std::string_view> args)
     if (args[1] == "use" && args.size() >= 3) return source_use(opts, args[2]);
     if (args[1] == "add" && args.size() >= 4)
       return source_add(opts, args[2], args[3]);
+    if ((args[1] == "remove" || args[1] == "delete") && args.size() >= 3)
+      return source_remove(opts, args[2]);
     if (args[1] == "region" && args.size() >= 3)
       return source_region(opts, args[2]);
     if (args[1] == "test") return update_index(opts);
     safeErrorPrintLn(winux::i18n::translate(
         "command.wpm.error.usage.source",
-        "wpm: usage: wpm source list|use <name>|add <name> <url>|region "
-        "<auto|global|cn>|test"));
+        "wpm: usage: wpm source list|use <name>|add <name> <url>|"
+        "remove <name>|region <auto|global|cn>|test"));
     return 1;
   }
 
