@@ -87,4 +87,3 @@ Remove it with:
   `man.exe`.
 - The local bin can be removed with `scripts\setup-workspace-bin.ps1 -Remove`.
 - The setup script expects an NTFS-style filesystem for hardlinks.
-- The repo-local AI usage guide lives in `skills/winuxcmd/SKILL.md`.

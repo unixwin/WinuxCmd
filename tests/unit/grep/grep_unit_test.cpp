@@ -765,25 +765,18 @@ TEST(grep, grep_recursive_extended_alternation_combined_short_options) {
   EXPECT_EQ_TEXT(clean_result.stdout_text, "");
 }
 
-TEST(grep, grep_regexp_mode_last_option_wins) {
+TEST(grep, grep_conflicting_g_then_e_is_an_error) {
   TempDir tmp;
   tmp.write("a.txt", "aaa\na+\n");
 
-  Pipeline extended_last;
-  extended_last.set_cwd(tmp.wpath());
-  extended_last.add(L"grep.exe", {L"-G", L"-E", L"a+", L"a.txt"});
-  auto extended_result = extended_last.run();
-
-  EXPECT_EQ(extended_result.exit_code, 0);
-  EXPECT_EQ_TEXT(extended_result.stdout_text, "aaa\na+\n");
-
-  Pipeline fixed_last;
-  fixed_last.set_cwd(tmp.wpath());
-  fixed_last.add(L"grep.exe", {L"-E", L"-F", L"a+", L"a.txt"});
-  auto fixed_result = fixed_last.run();
-
-  EXPECT_EQ(fixed_result.exit_code, 0);
-  EXPECT_EQ_TEXT(fixed_result.stdout_text, "a+\n");
+  // [GNU grep 3.x] conflicting matchers are fatal, exit 2 (grep.c:2108).
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"grep.exe", {L"-G", L"-E", L"a+", L"a.txt"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_TRUE(r.stderr_text.find("conflicting matchers specified") !=
+              std::string::npos);
 }
 
 TEST(grep, grep_egrep_and_fgrep_entry_points_set_default_mode) {
@@ -1481,4 +1474,87 @@ TEST(grep, grep_obsolete_y_synonym_for_ignore_case) {
   auto r = p.run();
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "HELLO\n");
+}
+
+
+TEST(grep, grep_conflicting_matchers_are_a_hard_error) {
+  TempDir tmp;
+  tmp.write("a.txt", "\n");
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"grep.exe", {L"-E", L"-F", L"x", L"a.txt"});
+  auto r = p.run();
+  // [GNU] grep.c:2108: a second, different matcher is fatal, exit 2.
+  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_TRUE(r.stderr_text.find("conflicting matchers specified") !=
+              std::string::npos);
+}
+
+TEST(grep, grep_same_matcher_twice_is_legal) {
+  TempDir tmp;
+  tmp.write("a.txt", "x\n");
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"grep.exe", {L"-E", L"-E", L"x", L"a.txt"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+}
+
+TEST(grep, grep_z_nul_after_filename_only) {
+  TempDir tmp;
+  tmp.write("a.txt", "x\n");
+  tmp.write("b.txt", "nope\nx\n");
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"grep.exe", {L"-Z", L"-n", L"x", L"a.txt", L"b.txt"});
+  auto r = p.run();
+  // [GNU] -Z NULs the filename separator; line-number separator
+  // stays ':' (grep.c filename_mask).
+  std::string expected = "a.txt";
+  expected.push_back('\0');
+  expected += "1:x\nb.txt";
+  expected.push_back('\0');
+  expected += "2:x\n";
+  EXPECT_EQ(r.stdout_text.size(), expected.size());
+  for (size_t i = 0; i < expected.size(); ++i) {
+    ASSERT_TRUE(i < r.stdout_text.size());
+    ASSERT_EQ(r.stdout_text[i], expected[i]);
+  }
+}
+
+TEST(grep, grep_quiet_keeps_error_diagnostics_and_exits_two) {
+  Pipeline p;
+  p.add(L"grep.exe", {L"-q", L"needle", L"missing.txt"});
+  auto r = p.run();
+  // [GNU] -q suppresses output, not diagnostics; errseen -> exit 2.
+  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_TRUE(r.stderr_text.find("missing.txt") != std::string::npos);
+}
+
+TEST(grep, grep_empty_pattern_file_selects_nothing_exits_one) {
+  TempDir tmp;
+  tmp.write("input.txt", "alpha\nbeta\n");
+  tmp.write("empty.patterns", "");
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"grep.exe", {L"-f", L"empty.patterns", L"input.txt"});
+  auto r = p.run();
+  // [GNU 9.4 verified] an empty pattern file selects nothing:
+  // no output, exit 1.
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+}
+
+TEST(grep, grep_l_exit_zero_iff_any_line_selected) {
+  TempDir tmp;
+  tmp.write("hit.txt", "zebra\n");
+  tmp.write("miss.txt", "nothing\n");
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"grep.exe", {L"-L", L"zebra", L"hit.txt", L"miss.txt"});
+  auto r = p.run();
+  // [GNU] -L exits 0 iff any line was selected anywhere.
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_NE(r.stdout_text.find("miss.txt"), std::string::npos);
+  EXPECT_EQ(r.stdout_text.find("hit.txt"), std::string::npos);
 }

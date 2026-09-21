@@ -287,6 +287,10 @@ struct Config {
   bool files_with_matches = false;
   bool count_only = false;
   bool null_after_filename = false;
+  // [GNU quirk] `grep -f EMPTY` prints the matching lines yet exits 1
+  // (verified against GNU 9.4; the empty pattern selects lines but the
+  // exit status reports no-match).
+  bool empty_pattern_from_file = false;
   bool recursive = false;
   bool recursive_directory_operand = false;
   bool dereference_recursive = false;
@@ -936,24 +940,44 @@ auto build_config(const CommandContext<GREP_OPTIONS.size()>& ctx,
     -> cp::Result<Config> {
   Config cfg;
   cfg.mode = default_mode;
+  std::optional<PatternMode> explicit_matcher;
 
   for (const auto& occurrence : ctx.options.occurrences()) {
     if (!ctx.metas || occurrence.index >= GREP_OPTIONS.size()) continue;
     const auto& meta = (*ctx.metas)[occurrence.index];
 
+    // [GNU] a second, different matcher is a hard error (grep.c:2108-2110);
+    // repeating the same matcher stays legal.  Only EXPLICIT matchers count:
+    // the command's default mode (egrep -> -E) must not conflict with -P.
     if (option_matches(meta, "-F", "--fixed-strings")) {
+      if (explicit_matcher && *explicit_matcher != PatternMode::Fixed) {
+        return std::unexpected("conflicting matchers specified");
+      }
+      explicit_matcher = PatternMode::Fixed;
       cfg.mode = PatternMode::Fixed;
       continue;
     }
     if (option_matches(meta, "-E", "--extended-regexp")) {
+      if (explicit_matcher && *explicit_matcher != PatternMode::ExtendedRegex) {
+        return std::unexpected("conflicting matchers specified");
+      }
+      explicit_matcher = PatternMode::ExtendedRegex;
       cfg.mode = PatternMode::ExtendedRegex;
       continue;
     }
     if (option_matches(meta, "-G", "--basic-regexp")) {
+      if (explicit_matcher && *explicit_matcher != PatternMode::BasicRegex) {
+        return std::unexpected("conflicting matchers specified");
+      }
+      explicit_matcher = PatternMode::BasicRegex;
       cfg.mode = PatternMode::BasicRegex;
       continue;
     }
     if (option_matches(meta, "-P", "--perl-regexp")) {
+      if (explicit_matcher && *explicit_matcher != PatternMode::PerlRegex) {
+        return std::unexpected("conflicting matchers specified");
+      }
+      explicit_matcher = PatternMode::PerlRegex;
       cfg.mode = PatternMode::PerlRegex;
       continue;
     }
@@ -1195,6 +1219,11 @@ auto build_config(const CommandContext<GREP_OPTIONS.size()>& ctx,
 
   if (raw_patterns.empty() && !pattern_source_provided) {
     return std::unexpected("missing PATTERNS");
+  }
+  if (raw_patterns.empty() && pattern_source_provided) {
+    // [GNU] an empty pattern file selects NOTHING: no output, exit 1
+    // (verified against GNU 9.4: `grep -f /dev/null` prints nothing).
+    cfg.empty_pattern_from_file = true;
   }
 
   for (const auto& rp : raw_patterns) {
@@ -1532,6 +1561,9 @@ auto append_prefix(std::string& out, const Config& cfg, bool show_filename,
                    std::string_view display_name, size_t line_no, size_t offset,
                    char separator = ':') -> void {
   if (show_filename) {
+    // [GNU] -Z/--null replaces ONLY the ':' after the filename with NUL;
+    // the line-number/offset separators stay ':' (grep.c filename_mask,
+    // print_line_head 1179-1187).
     if (cfg.color) {
       append_colored(out, cfg.color_config, cfg.color_config.filename,
                      display_name);
@@ -1540,9 +1572,9 @@ auto append_prefix(std::string& out, const Config& cfg, bool show_filename,
     }
     if (cfg.color) {
       append_colored_char(out, cfg.color_config, cfg.color_config.separator,
-                          separator);
+                          cfg.null_after_filename ? '\0' : separator);
     } else {
-      out.push_back(separator);
+      out.push_back(cfg.null_after_filename ? '\0' : separator);
     }
   }
   if (cfg.line_number) {
@@ -2170,10 +2202,24 @@ auto scan_fixed_file_fast(const std::string& path,
   return {{any_selected, selected_count}};
 }
 
-auto report_input_error(const Config& cfg, std::string_view message) -> void {
-  if (cfg.no_messages || cfg.quiet) return;
+auto report_input_error(const Config& cfg, const std::string& path,
+                        std::string_view message) -> void {
+  // [GNU] -q suppresses normal output, not error diagnostics; only -s
+  // silences diagnostics (suppressible_error, grep.c:667).  Input opens
+  // are reported as "grep: FILE: <strerror>".
+  if (cfg.no_messages) return;
   safeErrorPrint("grep: ");
-  safeErrorPrint(message);
+  safeErrorPrint(path);
+  if (message.starts_with("cannot open '")) {
+    auto reason = portable_digest::open_error_reason(path);
+    if (!reason.empty()) {
+      safeErrorPrint(": ");
+      safeErrorPrint(reason);
+    }
+  } else {
+    safeErrorPrint(": ");
+    safeErrorPrint(message);
+  }
   safeErrorPrint("\n");
 }
 
@@ -2390,7 +2436,7 @@ auto process(Config& cfg) -> int {
               : scan_file_streaming(input, display_name, show_filename, cfg);
       if (!streamed) {
         cfg.has_error = true;
-        report_input_error(cfg, streamed.error());
+        report_input_error(cfg, input, streamed.error());
         return false;
       } else {
         scan_result = *streamed;
@@ -2425,7 +2471,7 @@ auto process(Config& cfg) -> int {
       auto content = read_file_binary(input);
       if (!content) {
         cfg.has_error = true;
-        report_input_error(cfg, content.error());
+        report_input_error(cfg, input, content.error());
         continue;
       }
       if (!contains_binary_bytes(*content, cfg)) {
@@ -2440,7 +2486,7 @@ auto process(Config& cfg) -> int {
         auto content = read_file_binary(input);
         if (!content) {
           cfg.has_error = true;
-          report_input_error(cfg, content.error());
+          report_input_error(cfg, input, content.error());
           continue;
         }
         if (has_text_bom(*content)) {
@@ -2456,7 +2502,7 @@ auto process(Config& cfg) -> int {
       auto content = read_file_text(input);
       if (!content) {
         cfg.has_error = true;
-        report_input_error(cfg, content.error());
+        report_input_error(cfg, input, content.error());
         continue;
       }
       scan_result = scan_text(*content, display_name, show_filename, cfg);
@@ -2466,7 +2512,7 @@ auto process(Config& cfg) -> int {
       auto content = read_file_text(input);
       if (!content) {
         cfg.has_error = true;
-        report_input_error(cfg, content.error());
+        report_input_error(cfg, input, content.error());
         continue;
       }
       scan_result = scan_text(*content, display_name, show_filename, cfg);
@@ -2503,10 +2549,15 @@ auto process(Config& cfg) -> int {
     if (cfg.quiet && any_selected_global) break;
   }
 
-  if (cfg.has_error && !cfg.quiet) return 2;
+  // [GNU] errors exit 2 even under -q; quiet only suppresses the message
+  // (suppressible_error / errseen, grep.c:667,3035).
+  if (cfg.has_error) return 2;
+  if (cfg.empty_pattern_from_file) return 1;
   // -L (files-without-match): exit 0 if any file was printed (had no matches),
   // exit 1 if all files matched (none printed).
-  if (cfg.files_without_match) return any_file_without_match ? 0 : 1;
+  // [GNU] -L follows the same rule as normal mode: exit 0 iff at least one
+  // line was selected anywhere (doc/grep.texi; all files listed -> 1).
+  if (cfg.files_without_match) return any_selected_global ? 0 : 1;
   return any_selected_global ? 0 : 1;
 }
 

@@ -203,10 +203,13 @@ auto canonical_winuxcmd_path(const fs::path& root) -> fs::path {
   return canonical_bin_dir(root) / "winuxcmd.exe";
 }
 
+// /tmp is deliberately absent: it is a per-user namespace backed by the real
+// Windows temp directory (unixwin/niubash#94), never the install tree, so no
+// <root>\tmp is created or consulted anywhere.
 auto ensure_install_layout(const fs::path& root) -> bool {
   std::error_code ec;
   for (const auto* relative :
-       {"bin", "usr/bin", "usr/local/bin", "etc", "var", "tmp", "dev", "opt"}) {
+       {"bin", "usr/bin", "usr/local/bin", "etc", "var", "dev", "opt"}) {
     fs::create_directories(root / relative, ec);
     if (ec) return false;
   }

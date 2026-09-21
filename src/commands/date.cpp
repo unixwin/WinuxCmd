@@ -1687,7 +1687,14 @@ auto parse_date_argument(const std::string &arg, bool use_utc,
       bool local_zone = false;
       if (letter == 'j') {
         // [GNU] 'J' is the local zone (parse-datetime.y: {"J", 'J', 0}).
-        local_zone = true;
+        // Under -u the universal context makes "local" UTC itself, so
+        // `date -u -d 1024j` renders 10:24, not the shifted UTC time.
+        if (use_utc) {
+          local_zone = false;
+          zone_offset_minutes = 0;
+        } else {
+          local_zone = true;
+        }
       } else if (letter >= 'a' && letter <= 'i') {
         zone_offset_minutes = (letter - 'a' + 1) * 60;
       } else if (letter >= 'k' && letter <= 'm') {

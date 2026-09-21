@@ -1,4 +1,5 @@
 cmd: grep
+oracle: linux
 args: -Z -n x a.txt b.txt
 setup: |
   printf 'x\n' > a.txt

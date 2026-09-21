@@ -1,4 +1,5 @@
 cmd: grep
+oracle: linux
 args: -f empty.patterns input.txt
 setup: |
   printf 'alpha\nbeta\n' > input.txt

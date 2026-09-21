@@ -1,4 +1,5 @@
 cmd: grep
+oracle: linux
 args: -q needle missing.txt
 setup: |
   printf 'nothing here\n'
