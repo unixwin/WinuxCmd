@@ -70,8 +70,8 @@ wpm install jq
 - 🪟 **Native, not emulated** — talks to Win32 APIs directly. Understands `C:\`, UNC paths and NTFS ACLs (with `cygpath` and `getfacl` for bridging). No VM, no runtime DLLs, instant startup.
 - 🧠 **GNU where it counts** — `find` alone implements 88 options (full expression parser, `-exec`/`-execdir`/`-ok`, `-printf`); `grep` ships PCRE2; `sed` supports in-place `-i` editing.
 - 📦 **WPM built in** — a package manager for the tools that shouldn't be reimplemented: jq, ripgrep, fd, fzf, bat, make, neovim, curl, wget…
-- 🧪 **Tested like it matters** — 2,420 unit tests (99.6% pass), plus 178 differential output cases against a GNU coreutils 9.7 oracle (165 pass / 13 tracked platform diffs, 93%).
-- ⚡ **Small and fast** — ~3 MB, zero dependencies, instant startup (Cygwin takes 2–5 s just to boot).
+- 🧪 **Tested like it matters** — 2,741 unit tests, plus a 178-command differential suite byte-compared against authoritative upstream sources (GNU coreutils 9.7, findutils 4.10.0, grep 3.12, sed 4.9, patch 2.7.6, util-linux 2.41, procps-ng 4.0.4). Every command audited line-by-line; reports in `tests/differential/audit-*.md`.
+- ⚡ **Small, fast, PGO-built** — 3.95 MB for 180 commands, statically linked, zero dependencies, ~19 ms cold start. Release binaries are Profile-Guided Optimization builds trained on real workloads (sort −18%, nl −17% vs the same code without PGO). Methodology and data: `docs/performance-roadmap.md`.
 
 ## 🐂 Better together: the niubash shell
 
