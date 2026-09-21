@@ -1,27 +1,5 @@
-/*
- *  Copyright © 2026 WinuxCmd
- *
- *  Permission is hereby granted, free of charge, to any person obtaining a copy
- *  of this software and associated documentation files (the "Software"), to
- * deal in the Software without restriction, including without limitation the
- * rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
- * sell copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- *  The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- *  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- *  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- *  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- *  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- *  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
- * IN THE SOFTWARE.
- *
- *  - File: find.cpp
- *  - CopyrightYear: 2026
- */
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 caomengxuan666 <caomengxuan666@users.noreply.github.com>
 /// @contributors:
 ///   - @contributor1 WinuxCmd
 /// @Description: Implementation for find command.
@@ -570,6 +548,16 @@ struct Config {
   std::string files0_from;
   bool prune_current = false;
   bool quit = false;
+  // [GNU] -daystart (findutils-4.10.0/find/pred.c): shift -amin/-atime/
+  // -cmin/-ctime/-mmin/-mtime measurements to the start of the local day.
+  bool daystart = false;
+  // [GNU] -xdev/-mount (findutils-4.10.0/find/ftsfind.c): do not descend
+  // into directories on other file systems.  On Windows this is emulated by
+  // comparing the volume root (drive letter / mount point) of each descent
+  // candidate with the traversal starting point; other kinds of mount
+  // boundaries are detected only as far as GetVolumePathNameW exposes them.
+  bool stay_on_filesystem = false;
+  std::wstring xdev_volume_key;
   std::unique_ptr<ExprNode> expression;
 
   bool unsupported_used = false;
@@ -909,20 +897,70 @@ auto find_regex_type_names() -> std::string {
   return names;
 }
 
+// [GNU] -regextype (findutils-4.10.0/find/parser.c, lib/regextype.c).
+// findutils-default (and "emacs") use EMACS regex syntax: the characters
+// `+ ? | ( )` are LITERAL unless escaped, `\|` is alternation, `\+` and
+// `\?` are postfix repetition operators and `\(...\)` groups.  The local
+// regex engine only exposes Basic and Extended syntax, so the observable
+// EMACS subset is emulated by translating the pattern to ERE before
+// matching: unescaped operators are escaped (made literal) and escaped
+// operators are unescaped (made active).
+enum class FindRegexDialect { EmacsTranslated, Basic, Extended };
+
+auto translate_emacs_regex_to_ere(std::string_view pattern) -> std::string {
+  std::string out;
+  out.reserve(pattern.size());
+  for (size_t i = 0; i < pattern.size(); ++i) {
+    char ch = pattern[i];
+    if (ch == '\\' && i + 1 < pattern.size()) {
+      char next = pattern[++i];
+      switch (next) {
+        case '|':
+        case '(':
+        case ')':
+        case '+':
+        case '?':
+          out.push_back(next);
+          break;
+        default:
+          out.push_back('\\');
+          out.push_back(next);
+          break;
+      }
+      continue;
+    }
+    switch (ch) {
+      case '+':
+      case '?':
+      case '|':
+      case '(':
+      case ')':
+        out.push_back('\\');
+        break;
+      default:
+        break;
+    }
+    out.push_back(ch);
+  }
+  return out;
+}
+
 auto parse_find_regex_syntax(std::string_view type)
-    -> cp::Result<portable_regex::Syntax> {
-  // GNU findutils maps -regextype through lib/regextype.c. The local regex
+    -> cp::Result<FindRegexDialect> {
+  // GNU findutils maps -regextype through lib/regextype.c.  The local regex
   // engine currently exposes BRE and ERE syntax classes, so accepted GNU names
   // are folded into the closest supported class while staying positional.
   if (type == "awk" || type == "egrep" || type == "gnu-awk" ||
       type == "posix-awk" || type == "posix-egrep" ||
       type == "posix-extended") {
-    return portable_regex::Syntax::Extended;
+    return FindRegexDialect::Extended;
   }
-  if (type == "findutils-default" || type == "ed" || type == "emacs" ||
-      type == "grep" || type == "posix-basic" ||
+  if (type == "emacs" || type == "findutils-default") {
+    return FindRegexDialect::EmacsTranslated;
+  }
+  if (type == "ed" || type == "grep" || type == "posix-basic" ||
       type == "posix-minimal-basic" || type == "sed") {
-    return portable_regex::Syntax::Basic;
+    return FindRegexDialect::Basic;
   }
 
   return std::unexpected("Unknown regular expression type '" +
@@ -930,9 +968,16 @@ auto parse_find_regex_syntax(std::string_view type)
                          "'; valid types are: " + find_regex_type_names());
 }
 
-auto parse_regex(portable_regex::Syntax syntax, std::string_view pattern,
+auto parse_regex(FindRegexDialect dialect, std::string_view pattern,
                  bool case_insensitive) -> cp::Result<portable_regex::Pattern> {
-  auto parsed = portable_regex::compile(syntax, pattern, case_insensitive);
+  auto syntax = portable_regex::Syntax::Extended;
+  std::string translated(pattern);
+  if (dialect == FindRegexDialect::EmacsTranslated) {
+    translated = translate_emacs_regex_to_ere(pattern);
+  } else if (dialect == FindRegexDialect::Basic) {
+    syntax = portable_regex::Syntax::Basic;
+  }
+  auto parsed = portable_regex::compile(syntax, translated, case_insensitive);
   if (!parsed) {
     return std::unexpected("invalid regular expression");
   }
@@ -1301,8 +1346,8 @@ auto make_expr(ExprKind kind) -> std::unique_ptr<ExprNode> {
 class ExpressionParser {
  public:
   explicit ExpressionParser(std::span<const std::string_view> tokens,
-                            portable_regex::Syntax regex_syntax)
-      : tokens_(tokens), regex_syntax_(regex_syntax) {}
+                            FindRegexDialect regex_dialect)
+      : tokens_(tokens), regex_dialect_(regex_dialect) {}
 
   auto parse() -> cp::Result<std::unique_ptr<ExprNode>> {
     if (at_end()) {
@@ -1321,7 +1366,7 @@ class ExpressionParser {
   std::span<const std::string_view> tokens_;
   size_t pos_ = 0;
   size_t exec_index_ = 0;
-  portable_regex::Syntax regex_syntax_ = portable_regex::Syntax::Extended;
+  FindRegexDialect regex_dialect_ = FindRegexDialect::EmacsTranslated;
 
   auto at_end() const -> bool { return pos_ >= tokens_.size(); }
 
@@ -1548,7 +1593,7 @@ class ExpressionParser {
     if (option == "-regex" || option == "-iregex") {
       auto value = require_value(option);
       if (!value) return std::unexpected(value.error());
-      auto parsed = parse_regex(regex_syntax_, *value, option == "-iregex");
+      auto parsed = parse_regex(regex_dialect_, *value, option == "-iregex");
       if (!parsed) return std::unexpected(parsed.error());
       auto node =
           make_expr(option == "-regex" ? ExprKind::Regex : ExprKind::IRegex);
@@ -1654,7 +1699,7 @@ class ExpressionParser {
       if (!value) return std::unexpected(value.error());
       auto parsed = parse_find_regex_syntax(*value);
       if (!parsed) return std::unexpected(parsed.error());
-      regex_syntax_ = *parsed;
+      regex_dialect_ = *parsed;
       return make_expr(ExprKind::Always);
     }
 
@@ -1773,8 +1818,10 @@ class ExpressionParser {
 
 auto initial_regex_syntax(std::span<const std::string_view> raw_args,
                           size_t expression_start)
-    -> cp::Result<portable_regex::Syntax> {
-  auto syntax = portable_regex::Syntax::Extended;
+    -> cp::Result<FindRegexDialect> {
+  // [GNU] findutils-4.10.0 defaults to the findutils-default (EMACS) regex
+  // syntax (parser.c: check_type_arg), NOT ERE.
+  auto syntax = FindRegexDialect::EmacsTranslated;
   for (size_t i = 0; i < expression_start && i < raw_args.size(); ++i) {
     if (raw_args[i] != "-regextype") continue;
     if (i + 1 >= raw_args.size()) {
@@ -1885,6 +1932,9 @@ auto build_config(const CommandContext<FIND_OPTIONS.size()>& ctx)
   cfg.nowarn = ctx.has("-nowarn") && !ctx.has("-warn");
   cfg.ignore_readdir_race =
       ctx.has("-ignore_readdir_race") && !ctx.has("-noignore_readdir_race");
+  // [GNU] -daystart / -xdev / -mount (parser.c).
+  cfg.daystart = ctx.has("-daystart");
+  cfg.stay_on_filesystem = ctx.has("-xdev") || ctx.has("-mount");
 
   cfg.delete_action = ctx.get<bool>("-delete", false);
   cfg.depth_first =
@@ -2095,14 +2145,31 @@ auto permission_matches(const std::filesystem::path& p,
   return false;
 }
 
+// [GNU] -daystart (findutils-4.10.0/find/pred.c): when -daystart is in
+// effect, the "current time" used by -amin/-atime/-cmin/-ctime/-mmin/
+// -mtime is the start of the local day instead of the current instant.
+auto age_reference_now_ticks(bool daystart) -> long long {
+  FILETIME now_filetime{};
+  GetSystemTimeAsFileTime(&now_filetime);
+  if (!daystart) return filetime_ticks(now_filetime);
+
+  SYSTEMTIME local_now{};
+  GetLocalTime(&local_now);
+  SYSTEMTIME day_start{.wYear = local_now.wYear,
+                       .wMonth = local_now.wMonth,
+                       .wDay = local_now.wDay};
+  auto ticks = local_system_time_to_filetime_ticks(day_start);
+  return ticks ? *ticks : filetime_ticks(now_filetime);
+}
+
 auto file_age_units(const std::filesystem::path& p, FindFileTimeKind kind,
-                    std::chrono::seconds unit) -> std::optional<long long> {
+                    std::chrono::seconds unit, bool daystart)
+    -> std::optional<long long> {
   auto ticks = win32_file_time_ticks(p, kind);
   if (!ticks) return std::nullopt;
 
-  FILETIME now_filetime{};
-  GetSystemTimeAsFileTime(&now_filetime);
-  long long elapsed_ticks = filetime_ticks(now_filetime) - *ticks;
+  long long now_ticks = age_reference_now_ticks(daystart);
+  long long elapsed_ticks = now_ticks - *ticks;
   if (elapsed_ticks < 0) elapsed_ticks = 0;
 
   auto elapsed_seconds = std::chrono::seconds(elapsed_ticks / 10000000LL);
@@ -2128,9 +2195,9 @@ auto file_used_age_units(const std::filesystem::path& p,
 }
 
 auto modification_age_units(const std::filesystem::directory_entry& e,
-                            std::chrono::seconds unit)
+                            std::chrono::seconds unit, bool daystart)
     -> std::optional<long long> {
-  return file_age_units(e.path(), FindFileTimeKind::Modify, unit);
+  return file_age_units(e.path(), FindFileTimeKind::Modify, unit, daystart);
 }
 
 auto print_path(std::string_view path, bool null_terminated) -> void;
@@ -2257,41 +2324,43 @@ auto evaluate_expression(const ExprNode& expr, const std::filesystem::path& p,
 
     case ExprKind::ATime: {
       if (!expr.numeric) return false;
-      auto age =
-          file_age_units(p, FindFileTimeKind::Access, std::chrono::hours(24));
+      auto age = file_age_units(p, FindFileTimeKind::Access,
+                                std::chrono::hours(24), cfg.daystart);
       return age && numeric_matches(*expr.numeric, *age);
     }
 
     case ExprKind::AMin: {
       if (!expr.numeric) return false;
-      auto age =
-          file_age_units(p, FindFileTimeKind::Access, std::chrono::minutes(1));
+      auto age = file_age_units(p, FindFileTimeKind::Access,
+                                std::chrono::minutes(1), cfg.daystart);
       return age && numeric_matches(*expr.numeric, *age);
     }
 
     case ExprKind::CTime: {
       if (!expr.numeric) return false;
-      auto age =
-          file_age_units(p, FindFileTimeKind::Change, std::chrono::hours(24));
+      auto age = file_age_units(p, FindFileTimeKind::Change,
+                                std::chrono::hours(24), cfg.daystart);
       return age && numeric_matches(*expr.numeric, *age);
     }
 
     case ExprKind::CMin: {
       if (!expr.numeric) return false;
-      auto age =
-          file_age_units(p, FindFileTimeKind::Change, std::chrono::minutes(1));
+      auto age = file_age_units(p, FindFileTimeKind::Change,
+                                std::chrono::minutes(1), cfg.daystart);
       return age && numeric_matches(*expr.numeric, *age);
     }
 
     case ExprKind::MTime: {
       if (!expr.numeric) return false;
-      auto age = modification_age_units(e, std::chrono::hours(24));
+      auto age =
+          modification_age_units(e, std::chrono::hours(24), cfg.daystart);
       return age && numeric_matches(*expr.numeric, *age);
     }
 
     case ExprKind::MMin: {
       if (!expr.numeric) return false;
-      auto age = modification_age_units(e, std::chrono::minutes(1));
+      auto age =
+          modification_age_units(e, std::chrono::minutes(1), cfg.daystart);
       return age && numeric_matches(*expr.numeric, *age);
     }
 
@@ -2467,36 +2536,36 @@ auto entry_matches(Config& cfg, const std::filesystem::path& p,
   if (cfg.size_filter && !size_matches(e, *cfg.size_filter)) return false;
 
   if (cfg.atime_filter) {
-    auto age =
-        file_age_units(p, FindFileTimeKind::Access, std::chrono::hours(24));
+    auto age = file_age_units(p, FindFileTimeKind::Access,
+                              std::chrono::hours(24), cfg.daystart);
     if (!age || !numeric_matches(*cfg.atime_filter, *age)) return false;
   }
 
   if (cfg.amin_filter) {
-    auto age =
-        file_age_units(p, FindFileTimeKind::Access, std::chrono::minutes(1));
+    auto age = file_age_units(p, FindFileTimeKind::Access,
+                              std::chrono::minutes(1), cfg.daystart);
     if (!age || !numeric_matches(*cfg.amin_filter, *age)) return false;
   }
 
   if (cfg.ctime_filter) {
-    auto age =
-        file_age_units(p, FindFileTimeKind::Change, std::chrono::hours(24));
+    auto age = file_age_units(p, FindFileTimeKind::Change,
+                              std::chrono::hours(24), cfg.daystart);
     if (!age || !numeric_matches(*cfg.ctime_filter, *age)) return false;
   }
 
   if (cfg.cmin_filter) {
-    auto age =
-        file_age_units(p, FindFileTimeKind::Change, std::chrono::minutes(1));
+    auto age = file_age_units(p, FindFileTimeKind::Change,
+                              std::chrono::minutes(1), cfg.daystart);
     if (!age || !numeric_matches(*cfg.cmin_filter, *age)) return false;
   }
 
   if (cfg.mtime_filter) {
-    auto age = modification_age_units(e, std::chrono::hours(24));
+    auto age = modification_age_units(e, std::chrono::hours(24), cfg.daystart);
     if (!age || !numeric_matches(*cfg.mtime_filter, *age)) return false;
   }
 
   if (cfg.mmin_filter) {
-    auto age = modification_age_units(e, std::chrono::minutes(1));
+    auto age = modification_age_units(e, std::chrono::minutes(1), cfg.daystart);
     if (!age || !numeric_matches(*cfg.mmin_filter, *age)) return false;
   }
 
@@ -3343,6 +3412,62 @@ auto path_below_root_display(const std::filesystem::path& root,
   return path_to_utf8(rel);
 }
 
+// [GNU] -printf field formatting (findutils-4.10.0/find/print.c):
+// directives accept printf-style flags (`-`, space, `+`, `#`, `0`), a field
+// width and a precision, e.g. %8p, %-10s, %.5f, %08d.
+struct PrintfFieldSpec {
+  std::string flags;
+  int width = -1;
+  int precision = -1;
+};
+
+auto parse_printf_field_spec(std::string_view format, size_t& i)
+    -> PrintfFieldSpec {
+  PrintfFieldSpec spec;
+  while (i < format.size() &&
+         (format[i] == '-' || format[i] == ' ' || format[i] == '+' ||
+          format[i] == '#' || format[i] == '0')) {
+    spec.flags.push_back(format[i++]);
+  }
+  if (i < format.size() && format[i] >= '0' && format[i] <= '9') {
+    int width = 0;
+    while (i < format.size() && format[i] >= '0' && format[i] <= '9') {
+      width = width * 10 + (format[i++] - '0');
+    }
+    spec.width = width;
+  }
+  if (i < format.size() && format[i] == '.') {
+    ++i;
+    int precision = 0;
+    bool any = false;
+    while (i < format.size() && format[i] >= '0' && format[i] <= '9') {
+      precision = precision * 10 + (format[i++] - '0');
+      any = true;
+    }
+    if (any) spec.precision = precision;
+  }
+  return spec;
+}
+
+auto apply_printf_field_spec(std::string piece, const PrintfFieldSpec& spec)
+    -> std::string {
+  if (spec.precision >= 0 && static_cast<int>(piece.size()) > spec.precision) {
+    piece.resize(static_cast<size_t>(spec.precision));
+  }
+  if (spec.width >= 0 && static_cast<int>(piece.size()) < spec.width) {
+    bool left_justify = spec.flags.find('-') != std::string::npos;
+    bool zero_pad = spec.flags.find('0') != std::string::npos && !left_justify;
+    std::string padding(static_cast<size_t>(spec.width) - piece.size(),
+                        zero_pad ? '0' : ' ');
+    if (left_justify) {
+      piece += padding;
+    } else {
+      piece.insert(0, padding);
+    }
+  }
+  return piece;
+}
+
 auto format_printf(std::string_view format, const std::filesystem::path& p,
                    const std::filesystem::directory_entry& e, int depth,
                    const std::filesystem::path& root) -> std::string {
@@ -3411,102 +3536,113 @@ auto format_printf(std::string_view format, const std::filesystem::path& p,
       continue;
     }
 
-    char code = format[++i];
+    // [GNU] printf-style flags/width/precision precede the directive char
+    // (findutils-4.10.0/find/print.c: get_format_flags_length).
+    ++i;
+    PrintfFieldSpec spec = parse_printf_field_spec(format, i);
+    if (i >= format.size()) {
+      out.push_back('%');
+      break;
+    }
+
+    char code = format[i];
+    std::string piece;
     switch (code) {
       case '%':
-        out.push_back('%');
+        piece.push_back('%');
         break;
       case 'p':
-        out += path_display(p);
+        piece += path_display(p);
         break;
       case 'f':
-        out += basename_display(p);
+        piece += basename_display(p);
         break;
       case 'h':
-        out += dirname_display(p);
+        piece += dirname_display(p);
         break;
       case 'l':
-        out += link_target_display(e);
+        piece += link_target_display(e);
         break;
       case 'H':
-        out += root_path_display(root);
+        piece += root_path_display(root);
         break;
       case 'P':
-        out += path_below_root_display(root, p);
+        piece += path_below_root_display(root, p);
         break;
       case 'y':
-        out.push_back(file_type_char(e));
+        piece.push_back(file_type_char(e));
         break;
       case 'Y':
-        out.push_back(symlink_target_type_char(e));
+        piece.push_back(symlink_target_type_char(e));
         break;
       case 's':
-        out += std::to_string(file_size_bytes(e));
+        piece += std::to_string(file_size_bytes(e));
         break;
       case 'b':
-        out += std::to_string(allocated_block_count(p, e, 512));
+        piece += std::to_string(allocated_block_count(p, e, 512));
         break;
       case 'k':
-        out += std::to_string(allocated_block_count(p, e, 1024));
+        piece += std::to_string(allocated_block_count(p, e, 1024));
         break;
       case 'd':
-        out += std::to_string(depth);
+        piece += std::to_string(depth);
         break;
       case 'D':
-        out += win32_volume_serial_number(p);
+        piece += win32_volume_serial_number(p);
         break;
       case 'F':
-        out += win32_filesystem_type_name(p);
+        piece += win32_filesystem_type_name(p);
         break;
       case 'g':
-        out += win32_ownership_info(p).group_name;
+        piece += win32_ownership_info(p).group_name;
         break;
       case 'G':
-        out += win32_ownership_info(p).group_id;
+        piece += win32_ownership_info(p).group_id;
         break;
       case 'o':
-        out += std::to_string(win32_io_block_size(p));
+        piece += std::to_string(win32_io_block_size(p));
         break;
       case 'u':
-        out += win32_ownership_info(p).owner_name;
+        piece += win32_ownership_info(p).owner_name;
         break;
       case 'U':
-        out += win32_ownership_info(p).owner_id;
+        piece += win32_ownership_info(p).owner_id;
         break;
       case 'S':
-        out += file_sparseness(p, e);
+        piece += file_sparseness(p, e);
         break;
       case 'm':
-        out += permission_bits(p, e);
+        piece += permission_bits(p, e);
         break;
       case 'M':
-        out += permission_string(p, e);
+        piece += permission_string(p, e);
         break;
       case 'n':
-        out += std::to_string(win32_hard_link_count(p));
+        piece += std::to_string(win32_hard_link_count(p));
         break;
       case 'i':
-        out += win32_file_index(p);
+        piece += win32_file_index(p);
         break;
       case 'A':
-        append_file_time_printf(out, format, i, 'A', p, e);
+        append_file_time_printf(piece, format, i, 'A', p, e);
         break;
       case 'B':
-        append_file_time_printf(out, format, i, 'B', p, e);
+        append_file_time_printf(piece, format, i, 'B', p, e);
         break;
       case 'C':
-        append_file_time_printf(out, format, i, 'C', p, e);
+        append_file_time_printf(piece, format, i, 'C', p, e);
         break;
       case 'T':
-        append_file_time_printf(out, format, i, 'T', p, e);
+        append_file_time_printf(piece, format, i, 'T', p, e);
         break;
       default:
         safeErrorPrint("find: warning: unrecognized format directive `%");
         safeErrorPrint(std::string(1, code));
         safeErrorPrint("'\n");
-        out.push_back(code);
+        piece.push_back(code);
         break;
     }
+    out += apply_printf_field_spec(std::move(piece), spec);
   }
 
   return out;
@@ -3611,6 +3747,14 @@ auto ask_confirmation_aggregate(const ExecAction& action) -> bool {
   return !answer.empty() && (answer[0] == 'y' || answer[0] == 'Y');
 }
 
+// [GNU] -execdir/-okdir (findutils-4.10.0/find/exec.c:114-129): the
+// placeholder is replaced with "./basename", the relative name of the file
+// inside the directory the command runs in, not with the full traversal
+// path.
+auto execdir_target_display(const std::filesystem::path& p) -> std::string {
+  return "./" + basename_display(p);
+}
+
 auto execute_action_for_path(ExecAction& action, std::string_view path,
                              Config& cfg) -> bool {
   if (action.aggregate) {
@@ -3618,27 +3762,58 @@ auto execute_action_for_path(ExecAction& action, std::string_view path,
     return true;
   }
 
-  if (action.prompt && !ask_confirmation(action, path)) return false;
+  std::filesystem::path wpath =
+      std::filesystem::path(utf8_to_wstring(std::string(path)));
+  std::string target = std::string(path);
+  std::filesystem::path cwd;
+  if (action.execdir) {
+    target = execdir_target_display(wpath);
+    cwd = wpath.parent_path();
+  }
+
+  if (action.prompt && !ask_confirmation(action, target)) return false;
 
   std::vector<std::string> args;
   args.reserve(action.args.size());
   for (const auto& arg : action.args) {
-    args.push_back(replace_placeholder(arg, path));
+    args.push_back(replace_placeholder(arg, target));
   }
 
-  std::filesystem::path cwd;
-  if (action.execdir) {
-    cwd =
-        std::filesystem::path(utf8_to_wstring(std::string(path))).parent_path();
-  }
+  // [GNU] exec.c:388-392: `-exec cmd \;` only makes the predicate false
+  // when the invoked command fails; it must NOT change find's exit status.
+  // Only `-exec {} +` sets the program exit status.
   int status = run_child(action.command, args, cwd);
-  if (status != 0) cfg.had_error = true;
   return status == 0;
 }
 
 auto flush_exec_actions(Config& cfg) -> void {
   for (auto& action : cfg.exec_actions) {
     if (!action.aggregate || action.pending_paths.empty()) continue;
+
+    // [GNU] exec.c: -execdir {} + batches pending paths per directory and
+    // runs the command once per directory with "./basename" arguments.
+    if (action.execdir) {
+      std::map<std::wstring, std::vector<std::string>> per_directory;
+      for (const auto& path : action.pending_paths) {
+        std::filesystem::path wpath(utf8_to_wstring(path));
+        per_directory[wpath.parent_path().wstring()].push_back(
+            execdir_target_display(wpath));
+      }
+      for (auto& [dir, targets] : per_directory) {
+        if (action.prompt && !ask_confirmation_aggregate(action)) {
+          continue;
+        }
+        std::vector<std::string> args = action.args;
+        args.insert(args.end(), targets.begin(), targets.end());
+        // [GNU] exec.c:397-399: `-exec {} +` is TRUE even when the invoked
+        // command fails, but it sets find's exit status.
+        int status =
+            run_child(action.command, args, std::filesystem::path(dir));
+        if (status != 0) cfg.had_error = true;
+      }
+      action.pending_paths.clear();
+      continue;
+    }
 
     if (action.prompt && !ask_confirmation_aggregate(action)) {
       action.pending_paths.clear();
@@ -3648,6 +3823,8 @@ auto flush_exec_actions(Config& cfg) -> void {
     std::vector<std::string> args = action.args;
     args.insert(args.end(), action.pending_paths.begin(),
                 action.pending_paths.end());
+    // [GNU] exec.c:397-399: the predicate value of `-exec {} +` stays TRUE
+    // when the command fails; only the exit status is affected.
     int status = run_child(action.command, args);
     if (status != 0) cfg.had_error = true;
     action.pending_paths.clear();
@@ -3662,6 +3839,18 @@ auto apply_actions(const std::filesystem::path& p,
   }
 }
 
+// [GNU] -xdev/-mount: on Windows a file system boundary is approximated by
+// the volume root (drive letter or mounted volume) reported by
+// GetVolumePathNameW.  This is best-effort: it detects crossing to another
+// volume but not same-volume mount nuances.
+auto volume_root_key(const std::filesystem::path& p) -> std::wstring {
+  wchar_t root[MAX_PATH];
+  if (GetVolumePathNameW(p.wstring().c_str(), root, MAX_PATH)) {
+    return root;
+  }
+  return {};
+}
+
 auto should_descend_into(const std::filesystem::directory_entry& e,
                          const Config& cfg, bool command_line_root = false)
     -> bool {
@@ -3674,6 +3863,16 @@ auto should_descend_into(const std::filesystem::directory_entry& e,
     if (is_link_like) return false;
   }
   if (!cfg.follow_symlinks && is_link_like) return false;
+  // [GNU] -xdev/-mount: never descend into a directory that lives on a
+  // different file system than the traversal starting point.  Command line
+  // starting points are always processed regardless of their volume.
+  if (cfg.stay_on_filesystem && !command_line_root &&
+      !cfg.xdev_volume_key.empty()) {
+    auto entry_volume = volume_root_key(e.path());
+    if (!entry_volume.empty() && entry_volume != cfg.xdev_volume_key) {
+      return false;
+    }
+  }
   return true;
 }
 
@@ -3853,7 +4052,7 @@ auto scan_one_root(const std::filesystem::path& root, Config& cfg,
       matched_any = true;
       if (cfg.quit) return;
     }
-    if (cfg.prune_current && should_descend_into(de, cfg)) {
+    if (cfg.prune_current || !should_descend_into(de, cfg)) {
       it.disable_recursion_pending();
     }
   }
@@ -3865,6 +4064,8 @@ auto process(Config& cfg) -> int {
     // Roots arrive as UTF-8 from the argv boundary; build the path from the
     // wide form because the narrow path ctor would decode via the ACP.
     auto root = std::filesystem::path(utf8_to_wstring(r));
+    // [GNU] -xdev: the volume of the starting point anchors the traversal.
+    cfg.xdev_volume_key = volume_root_key(root);
     if (cfg.delete_action) {
       std::error_code ec;
       bool exists = std::filesystem::exists(root, ec);

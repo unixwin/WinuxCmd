@@ -1,28 +1,5 @@
-/*
- *  Copyright © 2026 [caomengxuan666]
- *
- *  Permission is hereby granted, free of charge, to any person obtaining a copy
- *  of this software and associated documentation files (the "Software"), to
- *  deal in the Software without restriction, including without limitation the
- *  rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
- *  sell copies of the Software, and to permit persons to whom the Software is
- *  furnished to do so, subject to the following conditions:
- *
- *  The above copyright notice and this permission notice shall be included in
- *  all copies or substantial portions of the Software.
- *
- *  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- *  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- *  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- *  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- *  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- *  FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
- *  IN THE SOFTWARE.
- *
- *  - File: xargs.cpp
- *  - Username: Administrator
- *  - CopyrightYear: 2026
- */
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 caomengxuan666 <caomengxuan666@users.noreply.github.com>
 /// @contributors:
 ///   - @contributor1 caomengxuan666 2507560089@qq.com
 ///   - @contributor2 <email2@example.com>
@@ -110,9 +87,11 @@ auto constexpr XARGS_OPTIONS = std::array{
            "print the command line on the standard error before executing it"),
     // [GNU] option
     OPTION("-p", "--interactive", "prompt before running each command line"),
-    // [GNU] option
+    // [GNU] option (xargs.c: "-r, --no-run-if-empty"; findutils runs nothing
+    // whenever no arguments were accumulated, not merely when the raw input
+    // stream was byte-empty)
     OPTION("-r", "--no-run-if-empty",
-           "if the standard input is completely empty, do not run the "
+           "if no arguments were read from standard input, do not run the "
            "command"),
     // [GNU] option
     OPTION("-P", "--max-procs", "run up to max-procs processes at a time",
@@ -1288,8 +1267,9 @@ REGISTER_COMMAND(
     return 1;
   }
 
-  if (!replace_str.empty() || max_lines > 0 || has_long_delimiter ||
-      has_short_delimiter) {
+  // [GNU] xargs.c:773 forces -x/--exit only for -I/-i (replace_pat) and
+  // -L/-l (lines_per_exec); -d/--delimiter does not imply -x.
+  if (!replace_str.empty() || max_lines > 0) {
     exit_if_exceeded = true;
   }
 
@@ -1326,7 +1306,6 @@ REGISTER_COMMAND(
 
   std::string raw_input_text((std::istreambuf_iterator<char>(*input)),
                              std::istreambuf_iterator<char>());
-  const bool raw_input_empty = raw_input_text.empty();
   std::istringstream parsed_input(raw_input_text);
 
   std::vector<std::vector<std::string>> input_groups;
@@ -1374,7 +1353,10 @@ REGISTER_COMMAND(
     if (show_limits) print_show_limits(max_chars);
 
     // Default to echo if no command specified
-    if (no_run_if_empty && raw_input_empty) {
+    // [GNU] xargs.c decides whether to run by checking whether any arguments
+    // were accumulated, not by whether the raw input stream was byte-empty;
+    // whitespace-only input yields zero arguments and therefore runs nothing.
+    if (no_run_if_empty && input_empty) {
       return 0;
     }
 
@@ -1478,7 +1460,9 @@ REGISTER_COMMAND(
   // If no input arguments, check if we should skip execution
   if (input_empty) {
     // Skip if -r (no-run-if-empty) is specified
-    if (no_run_if_empty && raw_input_empty) {
+    // [GNU] xargs.c gates -r/--no-run-if-empty on the number of accumulated
+    // arguments (none), not on raw input being byte-empty.
+    if (no_run_if_empty && input_empty) {
       return 0;
     }
     // Skip if -I is specified but there's nothing to replace

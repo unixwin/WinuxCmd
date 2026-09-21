@@ -1,27 +1,5 @@
-﻿/*
- *  Copyright (c) 2026 [caomengxuan666]
- *
- *  Permission is hereby granted, free of charge, to any person obtaining a copy
- *  of this software and associated documentation files (the "Software"), to
- *  deal in the Software without restriction, including without limitation the
- *  rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
- *  sell copies of the Software, and to permit persons to whom the Software is
- *  furnished to do so, subject to the following conditions:
- *
- *  The above copyright notice and this permission notice shall be included in
- *  all copies or substantial portions of the Software.
- *
- *  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- *  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- *  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- *  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- *  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- *  FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
- *  IN THE SOFTWARE.
- *
- *  - File: wpm.cpp
- *  - CopyrightYear: 2026
- */
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 caomengxuan666 <caomengxuan666@users.noreply.github.com>
 /// @Description: Winux Package Manager internal command.
 /// @Version: 0.2.0
 /// @License: MIT
@@ -225,10 +203,13 @@ auto canonical_winuxcmd_path(const fs::path& root) -> fs::path {
   return canonical_bin_dir(root) / "winuxcmd.exe";
 }
 
+// /tmp is deliberately absent: it is a per-user namespace backed by the real
+// Windows temp directory (unixwin/niubash#94), never the install tree, so no
+// <root>\tmp is created or consulted anywhere.
 auto ensure_install_layout(const fs::path& root) -> bool {
   std::error_code ec;
   for (const auto* relative :
-       {"bin", "usr/bin", "usr/local/bin", "etc", "var", "tmp", "dev", "opt"}) {
+       {"bin", "usr/bin", "usr/local/bin", "etc", "var", "dev", "opt"}) {
     fs::create_directories(root / relative, ec);
     if (ec) return false;
   }

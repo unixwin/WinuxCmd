@@ -60,15 +60,28 @@ set(WINUXCMD_CXX_STANDARD 23)
 set(WINUXCMD_CXX_DIALECT_NOTE "pending compiler detection")
 
 # Option to enable FFI library
-option(BUILD_FFI "Build FFI library for external integration" OFF)
-set(BUILD_FFI OFF CACHE BOOL "Build FFI library for external integration" FORCE)
 
-# Option to enable UPX compression
-option(ENABLE_UPX "Enable UPX compression for executables" OFF)
 # Generate the map info(For the developers to collect binary information)
 option(GENERATE_MAP_INFO "Generate_MAP_INFO" ON)
 # Merge Every commands.cpp into one source file(It could decrease template volume costs)
 option(ENABLE_UNITY_BUILD "Enable Unity Build" ON)
+# MSVC Profile-Guided Optimization (see scripts/build-pgo.ps1):
+# WINUXCMD_PGO_INSTRUMENT links with /GENPROFILE for the training build;
+# WINUXCMD_PGO_USE_DIR points the final link at the collected .pgd/.pgc.
+option(WINUXCMD_PGO_INSTRUMENT "Link with /GENPROFILE for PGO training" OFF)
+option(WINUXCMD_PGO_USE "Link with /USEPROFILE; winuxcmd.pgd/.pgc must be copied into the build dir first" OFF)
+set(WINUXCMD_PGO_FLAGS "")
+if(WINUXCMD_PGO_INSTRUMENT)
+    set(WINUXCMD_PGO_FLAGS "/GENPROFILE")
+elseif(WINUXCMD_PGO_USE)
+    set(WINUXCMD_PGO_FLAGS "/USEPROFILE")
+endif()
+# PGO requires whole-program optimization: objects compiled with /GL so the
+# /LTCG link can instrument and optimize across translation units (LNK1264
+# otherwise: "/GENPROFILE specified but required code generation failed").
+if(NOT WINUXCMD_PGO_FLAGS STREQUAL "")
+    add_compile_options($<$<CONFIG:Release>:/GL>)
+endif()
 
 # Configure options based on build mode
 if(BUILD_MODE STREQUAL "DEV")
@@ -77,34 +90,29 @@ if(BUILD_MODE STREQUAL "DEV")
     set(ENABLE_TESTS_DEFAULT ON)
     set(GENERATE_MAP_INFO_DEFAULT ON)
     set(ENABLE_UNITY_BUILD_DEFAULT OFF)  # Unity build slows down incremental compilation
-    set(ENABLE_UPX_DEFAULT OFF)
 elseif(BUILD_MODE STREQUAL "RELEASE")
     # Release mode: optimize for performance and size
     message(STATUS "Configuring for RELEASE mode")
     set(ENABLE_TESTS_DEFAULT OFF)
     set(GENERATE_MAP_INFO_DEFAULT OFF)
     set(ENABLE_UNITY_BUILD_DEFAULT ON)   # Unity build improves performance and reduces size
-    set(ENABLE_UPX_DEFAULT OFF)
 elseif(BUILD_MODE STREQUAL "DEBUG_RELEASE")
     # Debug-Release mode: Release optimizations with debug features
     message(STATUS "Configuring for DEBUG-RELEASE mode")
     set(ENABLE_TESTS_DEFAULT ON)
     set(GENERATE_MAP_INFO_DEFAULT ON)
     set(ENABLE_UNITY_BUILD_DEFAULT OFF)  # Disable Unity build for better debugging
-    set(ENABLE_UPX_DEFAULT OFF)
 elseif(BUILD_MODE STREQUAL "RELEASE_EXAMPLES")
     # Release mode with examples: optimize for performance and size, but build examples
     message(STATUS "Configuring for RELEASE_EXAMPLES mode")
     set(ENABLE_TESTS_DEFAULT OFF)
     set(GENERATE_MAP_INFO_DEFAULT OFF)
     set(ENABLE_UNITY_BUILD_DEFAULT ON)   # Unity build improves performance and reduces size
-    set(ENABLE_UPX_DEFAULT OFF)
 else()
     message(WARNING "Unknown BUILD_MODE '${BUILD_MODE}', using DEVELOPMENT settings")
     set(ENABLE_TESTS_DEFAULT ON)
     set(GENERATE_MAP_INFO_DEFAULT ON)
     set(ENABLE_UNITY_BUILD_DEFAULT ON)
-    set(ENABLE_UPX_DEFAULT OFF)
 endif()
 
 # Apply default values based on build mode if not explicitly set
@@ -115,26 +123,14 @@ endif()
 if(NOT DEFINED ENABLE_UNITY_BUILD_USER_VALUE)
     set(ENABLE_UNITY_BUILD ${ENABLE_UNITY_BUILD_DEFAULT} CACHE BOOL "Enable Unity Build" FORCE)
 endif()
-if(NOT DEFINED ENABLE_UPX_USER_VALUE)
-    set(ENABLE_UPX ${ENABLE_UPX_DEFAULT} CACHE BOOL "Enable UPX compression for executables" FORCE)
-endif()
 
-if(BUILD_MODE STREQUAL "RELEASE" OR BUILD_MODE STREQUAL "RELEASE_EXAMPLES")
-    if(BUILD_FFI)
-        message(STATUS "Disabling FFI for release-oriented build mode")
-    endif()
-    set(BUILD_FFI OFF CACHE BOOL "Build FFI library for external integration" FORCE)
+if(BUILD_MODE STREQUAL "RELEASE" OR BUILD_MODE STREQUAL "RELEASE_EXAMPLES") 
 endif()
 
 if (USE_STATIC_CRT)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
 else ()
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")
-endif ()
-
-# Include UPX compression configuration if enabled
-if (ENABLE_UPX)
-    include(cmake/FetchUpx.cmake)
 endif ()
 
 if (NOT CMAKE_SUPPRESS_DEVELOPER_WARNINGS)
@@ -413,7 +409,7 @@ endif()
 
 # Link options
 target_link_options(winuxcmd-commands PRIVATE
-        $<$<CONFIG:Release>:/LTCG /OPT:REF /OPT:ICF>
+        $<$<CONFIG:Release>:/LTCG /OPT:REF /OPT:ICF ${WINUXCMD_PGO_FLAGS}>
 )
 
 if (USE_STATIC_CRT AND MSVC)
@@ -465,7 +461,7 @@ target_compile_definitions(winuxcmd PRIVATE
 )
 
 target_link_options(winuxcmd PRIVATE
-        $<$<CONFIG:Release>:/LTCG /OPT:REF /OPT:ICF>
+        $<$<CONFIG:Release>:/LTCG /OPT:REF /OPT:ICF ${WINUXCMD_PGO_FLAGS}>
 )
 
 if (USE_STATIC_CRT AND MSVC)
@@ -480,11 +476,6 @@ if(GENERATE_MAP_INFO)
 endif ()
 
 enable_unity_build(winuxcmd)
-
-# Add UPX compression for main executable if enabled
-if (ENABLE_UPX)
-    add_upx_compression(winuxcmd)
-endif ()
 
 # Add include directories for main executable
 target_include_directories(winuxcmd PRIVATE ${SRC_DIR} ${CMAKE_BINARY_DIR})
@@ -590,15 +581,9 @@ macro(create_command_executable CMD)
                 /OPT:ICF      # Enable identical COMDAT folding
                 >)
 
-        # Add UPX compression for individual command executable if enabled
-        if (ENABLE_UPX)
-            add_upx_compression(${CMD})
-        endif ()
     endif ()
 endmacro()
 
-# Option to build standalone executables for each command
-option(BUILD_STANDALONE "Build individual standalone executables for each command" OFF)
 
 # Automatically collect commands from src/commands directory
 file(GLOB COMMAND_FILES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/commands/*.cpp")
@@ -609,231 +594,9 @@ foreach (CMD_FILE ${COMMAND_FILES})
     list(APPEND COMMANDS ${CMD_NAME})
 endforeach ()
 
-# Build standalone executables for each command if enabled
-if(BUILD_STANDALONE)
-    message(STATUS "=== Building Standalone Command Executables ===")
-    message(STATUS "Commands: ${COMMANDS}")
-
-    # Step 1: Create a static library with ONLY core modules (no commands)
-    add_library(winuxcmd-core STATIC)
-
-    # Add PCH to core library
-    target_precompile_headers(winuxcmd-core PRIVATE ${CMAKE_SOURCE_DIR}/src/pch/pch.h)
-
-    # Add only core C++23 module interfaces (not commands)
-    target_sources(winuxcmd-core
-        PUBLIC
-        FILE_SET CXX_MODULES
-        TYPE CXX_MODULES
-        BASE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}"
-        FILES
-        src/version/version.cppm
-        src/core/core.cppm
-        src/core/cmd_meta.cppm
-        src/core/command_context.cppm
-        src/core/dispatcher.cppm
-        src/core/opt.cppm
-        src/core/pipeline.cppm
-        src/utils/utils.cppm
-        src/utils/console.cppm
-        src/utils/text_io.cppm
-        src/utils/string.cppm
-        src/utils/path.cppm
-        src/utils/native_path.cppm
-        src/utils/utf8.cppm
-        src/utils/win32.cppm
-        src/utils/wildcard.cppm
-        src/utils/json.cppm
-        src/utils/i18n.cppm
-        src/utils/file_io.cppm
-        src/utils/cppbar.cppm
-        src/utils/encoding.cppm
-        src/utils/regex.cppm
-        src/utils/digest.cppm
-        src/utils/pager.cppm
-        src/container/container.cppm
-        src/container/small_vector.cppm
-        src/container/constexpr_map.cppm
-    )
-
-    # Set core library properties
-    target_compile_options(winuxcmd-core PRIVATE
-        $<$<CONFIG:Release>:/O2 /Os>
-        /GR-  # Keep RTTI disabled for size
-        /EHsc-
-    )
-
-    target_compile_definitions(winuxcmd-core PRIVATE
-        _UNICODE
-        UNICODE
-        _CRT_DISABLE_PERFCRIT_LOCKS
-        _HAS_RTTI=0
-    )
-
-    target_link_options(winuxcmd-core PRIVATE
-        $<$<CONFIG:Release>:/LTCG /OPT:REF /OPT:ICF>
-    )
-
-    if (USE_STATIC_CRT AND MSVC)
-        target_compile_options(winuxcmd-core PRIVATE /MT /Os /Oy /GS-)
-    endif ()
-
-    # Import std and enable C++23
-    target_compile_features(winuxcmd-core PRIVATE cxx_std_23)
-
-    # Add include directories
-    target_include_directories(winuxcmd-core PRIVATE ${SRC_DIR} ${CMAKE_BINARY_DIR})
-
-    # Generate version header for core library
-    configure_file(
-        ${CMAKE_SOURCE_DIR}/src/version/version.hpp.in
-        ${CMAKE_BINARY_DIR}/version.hpp
-        @ONLY
-    )
-
-    message(STATUS "Core library: winuxcmd-core.lib (core modules only)")
-
-    # Step 2: Create standalone executables with only ONE command each
-    foreach(CMD_NAME ${COMMANDS})
-        set(CMD_FILE "${CMAKE_CURRENT_SOURCE_DIR}/src/commands/${CMD_NAME}.cpp")
-        set(CMD_EXE_NAME "${CMD_NAME}")
-        set(CMD_TARGET_NAME "winuxcmd-standalone-${CMD_NAME}")
-
-        # Create standalone executable
-        add_executable(${CMD_TARGET_NAME})
-
-        # Add main.cpp and ONLY this command's .cpp file
-        target_sources(${CMD_TARGET_NAME} PRIVATE
-            src/Main/main.cpp
-            ${CMD_FILE}
-        )
-
-        if (WIN32)
-            target_sources(${CMD_TARGET_NAME} PRIVATE
-                "${WINUXCMD_RESOURCE_RC}"
-                "${WINUXCMD_MANIFEST}"
-            )
-        endif ()
-
-        # Add core module interfaces directly for reliable module partition resolution
-        # across standalone command targets on MSVC/CMake.
-        target_sources(${CMD_TARGET_NAME}
-            PUBLIC
-            FILE_SET CXX_MODULES
-            TYPE CXX_MODULES
-            BASE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}"
-            FILES
-            src/version/version.cppm
-            src/core/core.cppm
-            src/core/cmd_meta.cppm
-            src/core/command_context.cppm
-            src/core/dispatcher.cppm
-            src/core/opt.cppm
-            src/core/pipeline.cppm
-            src/utils/utils.cppm
-            src/utils/console.cppm
-            src/utils/text_io.cppm
-            src/utils/string.cppm
-            src/utils/path.cppm
-            src/utils/native_path.cppm
-            src/utils/utf8.cppm
-            src/utils/win32.cppm
-            src/utils/wildcard.cppm
-            src/utils/json.cppm
-            src/utils/i18n.cppm
-            src/utils/file_io.cppm
-            src/utils/cppbar.cppm
-            src/utils/encoding.cppm
-            src/utils/regex.cppm
-            src/utils/digest.cppm
-            src/utils/pager.cppm
-            src/container/container.cppm
-            src/container/small_vector.cppm
-            src/container/constexpr_map.cppm
-        )
-
-        # Add PCH (same as core library)
-        target_precompile_headers(${CMD_TARGET_NAME} PRIVATE ${CMAKE_SOURCE_DIR}/src/pch/pch.h)
-
-        # Set minimal compile options
-        target_compile_options(${CMD_TARGET_NAME} PRIVATE
-            $<$<CONFIG:Release>:/O2 /Os>
-            /GR-
-            /EHsc-
-        )
-
-        target_compile_definitions(${CMD_TARGET_NAME} PRIVATE
-            _UNICODE
-            UNICODE
-            _CRT_DISABLE_PERFCRIT_LOCKS
-            _HAS_RTTI=0
-        )
-
-        if(WINUXCMD_ENABLE_PCRE2)
-            target_compile_definitions(${CMD_TARGET_NAME} PRIVATE WINUXCMD_ENABLE_PCRE2)
-            target_link_libraries(${CMD_TARGET_NAME} PRIVATE ${WINUXCMD_PCRE2_TARGET})
-        endif()
-
-        target_link_options(${CMD_TARGET_NAME} PRIVATE
-            $<$<CONFIG:Release>:/LTCG /OPT:REF /OPT:ICF>
-        )
-
-        if (USE_STATIC_CRT AND MSVC)
-            target_compile_options(${CMD_TARGET_NAME} PRIVATE /MT /Os /Oy /GS-)
-        endif ()
-
-        # Add include directories
-        target_include_directories(${CMD_TARGET_NAME} PRIVATE ${SRC_DIR} ${CMAKE_BINARY_DIR})
-        if (MSVC)
-            target_include_directories(${CMD_TARGET_NAME} PRIVATE "${MODULES_DIR}")
-        endif ()
-
-        # Import std and enable C++23
-        target_compile_features(${CMD_TARGET_NAME} PRIVATE cxx_std_23)
-
-        # Set output name
-        set_target_properties(${CMD_TARGET_NAME} PROPERTIES
-            OUTPUT_NAME "${CMD_EXE_NAME}"
-            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
-        )
-
-        message(STATUS "  - ${CMD_EXE_NAME}.exe")
-    endforeach()
-endif()
-
 # Note: Hardlinks are no longer created during build.
 # Users can run `winuxcmd wpm links rebuild` in the bin directory to generate
 # command links. scripts/create_links.ps1 remains as a compatibility wrapper.
-
-# Scaffold tool for generating new command modules
-add_executable(scaffold
-        src/tools/scaffold.cpp
-)
-
-# Set C++ standard for scaffold tool
-set_target_properties(scaffold PROPERTIES
-        CXX_STANDARD ${WINUXCMD_CXX_STANDARD}
-        CXX_STANDARD_REQUIRED ON
-        CXX_EXTENSIONS OFF
-)
-
-# Add include directories for scaffold tool
-target_include_directories(scaffold PRIVATE ${SRC_DIR})
-
-# MSVC-specific configuration for scaffold tool
-if (MSVC)
-    target_compile_options(scaffold PRIVATE
-            /std:c++latest
-    )
-endif ()
-
-# Post-build command to copy scaffold to project root
-add_custom_command(TARGET scaffold POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        $<TARGET_FILE:scaffold>
-        ${CMAKE_SOURCE_DIR}/scaffold.exe
-        COMMENT "Copying scaffold to project root"
-)
 
 add_subdirectory(examples)
 
@@ -934,8 +697,6 @@ if (WIN32)
 endif ()
 
 set(CPACK_IGNORE_FILES
-        "${CMAKE_SOURCE_DIR}/scaffold.exe$"
-        "${CMAKE_SOURCE_DIR}/scaffold"
         "${CMAKE_SOURCE_DIR}/CMakeLists.txt$"
         "${CMAKE_SOURCE_DIR}/.clang.*$"
         "${CMAKE_SOURCE_DIR}/.git.*$"
@@ -962,13 +723,10 @@ message(STATUS "=================== BUILD CONFIGURATION SUMMARY ================
 message(STATUS "Build Mode: ${BUILD_MODE}")
 message(STATUS "C++ Dialect: ${WINUXCMD_CXX_DIALECT} (${WINUXCMD_CXX_DIALECT_NOTE}, CXX_STANDARD=${WINUXCMD_CXX_STANDARD})")
 message(STATUS "Tests Enabled: ${ENABLE_TESTS}")
-message(STATUS "FFI Library: ${BUILD_FFI}")
 message(STATUS "Map Info Generation: ${GENERATE_MAP_INFO}")
 message(STATUS "Unity Build: ${ENABLE_UNITY_BUILD}")
-message(STATUS "UPX Compression: ${ENABLE_UPX} (PERMANENTLY DISABLED)")
 message(STATUS "Static CRT: ${USE_STATIC_CRT}")
 message(STATUS "PCRE2 grep -P: ${WINUXCMD_ENABLE_PCRE2} (JIT=${WINUXCMD_PCRE2_JIT})")
-message(STATUS "Note: UPX compression has been permanently disabled for reliability")
 message(STATUS "Note: Run `winuxcmd wpm links rebuild` in bin directory to generate command links")
 message(STATUS "=================================================================")
 

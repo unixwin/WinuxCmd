@@ -79,4 +79,3 @@ PowerShell 7 profile 和 Windows PowerShell 5.1 profile，修改前会给每个
 - 如果你想保持绝对明确，仍然可以显式写 `.exe`，尤其是 `man.exe`。
 - 删除本地 bin：`scripts\setup-workspace-bin.ps1 -Remove`
 - hardlink 依赖 NTFS 风格文件系统。
-- 仓库内面向 AI 的使用说明在 `skills/winuxcmd/SKILL.md`。

@@ -7,6 +7,9 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 #include "pch/pch.h"
 // include other header after pch.h
+#include <cerrno>
+#include <cstring>
+
 #include "core/command_macros.h"
 import std;
 import core;
@@ -48,11 +51,13 @@ auto constexpr SED_OPTIONS = std::array{
            INT_TYPE),
     // [GNU]
     OPTION("-E", "--regexp-extended", "use extended regular expressions"),
-    // [DIFFERS]
-    OPTION("", "--debug", "annotate program execution (unsupported)"),
-    // [DIFFERS]
+    // [DIFFERS] accepted for GNU compatibility; no execution annotation is
+    // produced on this platform
+    OPTION("", "--debug", "annotate program execution (accepted, no output)"),
+    // [DIFFERS] accepted for GNU compatibility; symlinks are always opened
+    // directly on this platform
     OPTION("", "--follow-symlinks",
-           "follow symlinks when processing in place (unsupported)"),
+           "follow symlinks when processing in place (accepted, no-op)"),
     // [GNU]
     OPTION("", "--sandbox", "restrict file system access in the script"),
     // [GNU]
@@ -99,12 +104,19 @@ struct Script {
     ClearPattern
   } kind;
   portable_regex::Pattern pattern;  // for Subst
-  std::string replacement;          // for Subst
-  bool global = false;              // for Subst
-  size_t occurrence = 0;            // for Subst; 0 means first/all
-  bool print_on_match = false;      // for Subst
-  std::string subst_write_file;     // for s///w FILE
-  int quit_exit_code = 0;           // for q/Q
+  // [GNU] s///m and s///M modifiers (REG_NEWLINE): ^ and $ also match at
+  // newlines inside the pattern space. The bundled regex engine anchors ^/$
+  // only at string edges, so the anchors are stripped at compile time and
+  // validated manually during matching.
+  portable_regex::Pattern ml_pattern;  // pattern with stripped anchors
+  bool ml_caret = false;               // pattern started with unescaped ^
+  bool ml_dollar = false;              // pattern ended with unescaped $
+  std::string replacement;             // for Subst
+  bool global = false;                 // for Subst
+  size_t occurrence = 0;               // for Subst; 0 means first/all
+  bool print_on_match = false;         // for Subst
+  std::string subst_write_file;        // for s///w FILE
+  int quit_exit_code = 0;              // for q/Q
   size_t list_line_length = std::numeric_limits<size_t>::max();  // for l
   bool invert_address = false;                                   // for address!
   std::string text;   // for Append/Insert/Change
@@ -305,7 +317,7 @@ auto parse_subst(std::string_view expr, portable_regex::Syntax syntax,
   auto p2 = read_part(repl);
   if (!p2) return std::unexpected(p2.error());
 
-  bool g = false, pflag = false, ignore_case = false;
+  bool g = false, pflag = false, ignore_case = false, multiline = false;
   size_t occurrence = 0;
   std::string write_file;
   for (; i < expr.size(); ++i) {
@@ -319,6 +331,18 @@ auto parse_subst(std::string_view expr, portable_regex::Syntax syntax,
         return std::unexpected("POSIX sed rejects GNU substitution modifiers");
       }
       ignore_case = true;
+    } else if (f == 'm' || f == 'M') {
+      // [GNU] multi-line modifier: ^ and $ also match at embedded newlines
+      if (parse_context.posix) {
+        return std::unexpected("POSIX sed rejects GNU substitution modifiers");
+      }
+      multiline = true;
+    } else if (f == 'e') {
+      // [DIFFERS] shell evaluation of the pattern space is intentionally not
+      // supported; GNU accepts this modifier (sed-4.9/sed/compile.c:1049).
+      return std::unexpected(
+          "the 'e' flag to the s command is not supported by this sed "
+          "implementation");
     } else if (f == 'w') {
       std::string_view path = trim_left_space(expr.substr(i + 1));
       if (path.empty()) {
@@ -371,6 +395,35 @@ auto parse_subst(std::string_view expr, portable_regex::Syntax syntax,
   Script s;
   s.kind = Script::Kind::Subst;
   s.pattern = std::move(compiled.pattern);
+  if (multiline) {
+    // [GNU] REG_NEWLINE anchors: strip the leading ^ and trailing unescaped $
+    // so the matcher can validate them at embedded newlines.
+    std::string ml = pat;
+    if (!ml.empty() && ml.front() == '^') {
+      s.ml_caret = true;
+      ml.erase(ml.begin());
+    }
+    if (!ml.empty() && ml.back() == '$') {
+      // unescaped unless preceded by an odd run of backslashes
+      size_t backslashes = 0;
+      while (backslashes < ml.size() - 1 &&
+             ml[ml.size() - 2 - backslashes] == '\\') {
+        ++backslashes;
+      }
+      if (backslashes % 2 == 0) {
+        s.ml_dollar = true;
+        ml.pop_back();
+      }
+    }
+    if (s.ml_caret || s.ml_dollar) {
+      auto ml_compiled =
+          portable_regex::compile(syntax, ml, effective_ignore_case);
+      if (!ml_compiled) {
+        return std::unexpected("invalid regular expression");
+      }
+      s.ml_pattern = std::move(ml_compiled.pattern);
+    }
+  }
   s.replacement = repl;
   s.global = g;
   s.occurrence = occurrence;
@@ -588,6 +641,12 @@ auto parse_y_cmd(std::string_view line) -> cp::Result<Script> {
   if (!p1) return std::unexpected(p1.error());
   auto p2 = read_part(dst);
   if (!p2) return std::unexpected(p2.error());
+  // [GNU] normalize_text() processes backslash escapes inside both y/// lists
+  // before the translate map is built (sed-4.9/sed/compile.c:1415-1446): \n,
+  // \t and friends become their control characters and \\ collapses to a
+  // single backslash. Escaped delimiters were already unescaped by read_part.
+  src = normalize_text_command_body(src);
+  dst = normalize_text_command_body(dst);
   if (src.size() != dst.size())
     return std::unexpected("y command requires equal length strings");
   Script s;
@@ -1286,14 +1345,12 @@ auto resolve_labels(std::vector<Script>& scripts) -> cp::Result<void> {
 auto build_config(const CommandContext<SED_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
   Config cfg;
-  if (ctx.has("--debug")) {
-    return std::unexpected(
-        "--debug is not supported by this sed implementation");
-  }
-  if (ctx.has("--follow-symlinks")) {
-    return std::unexpected(
-        "--follow-symlinks is not supported by this sed implementation");
-  }
+  // [DIFFERS] --debug: accepted for GNU compatibility; no execution
+  // annotation is produced on this platform (must not fail).
+  (void)ctx.has("--debug");
+  // [DIFFERS] --follow-symlinks: accepted; symlink following is a no-op on
+  // this platform (must not fail).
+  (void)ctx.has("--follow-symlinks");
   // [DIFFERS] -u/--unbuffered: accepted; Windows stdout is line-buffered
   (void)ctx.has("--unbuffered");
   (void)ctx.has("-u");
@@ -1397,17 +1454,38 @@ auto build_config(const CommandContext<SED_OPTIONS.size()>& ctx)
   for (size_t i = consumed_positional; i < ctx.positionals.size(); ++i) {
     cfg.files.emplace_back(ctx.positionals[i]);
   }
-  if (cfg.files.empty()) cfg.files.emplace_back("-");
+  // [GNU] with -i, stdin is never implied: GNU panics with "no input
+  // files" (execute.c:1672). Leave the list empty; the command entry
+  // reports the panic exit code 4.
+  if (cfg.files.empty() && !cfg.in_place) cfg.files.emplace_back("-");
   return cfg;
 }
 
-auto append_match_text(std::string& out, std::string_view input,
-                       const portable_regex::Submatch& match) -> void {
-  if (!match.matched || match.end < match.begin || match.end > input.size()) {
-    return;
+// [GNU] Case conversion for s/// replacement text, mirroring the REPL_*
+// handling in setup_replacement (sed-4.9/sed/sed.h:67-77,
+// compile.c:738-830): \U and \L stay in effect until \E or the end of the
+// replacement, \u and \l affect only the next character, and an active
+// conversion also applies to text inserted by & and back-references.
+namespace sed_case {
+enum class Mode { None, Upper, Lower };
+enum class First { None, Upper, Lower };
+
+auto apply(std::string& out, char c, Mode mode, First& first) -> void {
+  if (first == First::Upper) {
+    c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    first = First::None;
+  } else if (first == First::Lower) {
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    first = First::None;
   }
-  out.append(input.substr(match.begin, match.end - match.begin));
+  if (mode == Mode::Upper) {
+    c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+  } else if (mode == Mode::Lower) {
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+  out.push_back(c);
 }
+}  // namespace sed_case
 
 auto expand_substitution_replacement(const std::string& replacement,
                                      std::string_view input,
@@ -1415,40 +1493,61 @@ auto expand_substitution_replacement(const std::string& replacement,
     -> std::string {
   std::string out;
   out.reserve(replacement.size() + (match.end - match.begin));
+  sed_case::Mode mode = sed_case::Mode::None;
+  sed_case::First first = sed_case::First::None;
+  auto emit_text = [&](std::string_view text) {
+    for (char ch : text) {
+      sed_case::apply(out, ch, mode, first);
+    }
+  };
   for (size_t i = 0; i < replacement.size(); ++i) {
     char c = replacement[i];
     if (c == '&') {
-      append_match_text(out, input,
-                        portable_regex::Submatch{match.begin, match.end, true});
+      emit_text(input.substr(match.begin, match.end - match.begin));
       continue;
     }
     if (c == '\\' && i + 1 < replacement.size()) {
       char next = replacement[++i];
       if (next >= '1' && next <= '9') {
         size_t group = static_cast<size_t>(next - '0');
-        if (group < match.captures.size()) {
-          append_match_text(out, input, match.captures[group]);
+        if (group < match.captures.size() && match.captures[group].matched) {
+          emit_text(input.substr(
+              match.captures[group].begin,
+              match.captures[group].end - match.captures[group].begin));
         }
       } else if (next == 'a') {
-        out.push_back('\a');
+        sed_case::apply(out, '\a', mode, first);
       } else if (next == 'f') {
-        out.push_back('\f');
+        sed_case::apply(out, '\f', mode, first);
       } else if (next == 'n') {
-        out.push_back('\n');
+        sed_case::apply(out, '\n', mode, first);
       } else if (next == 'r') {
-        out.push_back('\r');
+        sed_case::apply(out, '\r', mode, first);
       } else if (next == 't') {
-        out.push_back('\t');
+        sed_case::apply(out, '\t', mode, first);
       } else if (next == 'v') {
-        out.push_back('\v');
+        sed_case::apply(out, '\v', mode, first);
+      } else if (next == 'U') {
+        mode = sed_case::Mode::Upper;
+      } else if (next == 'L') {
+        mode = sed_case::Mode::Lower;
+      } else if (next == 'u') {
+        first = sed_case::First::Upper;
+      } else if (next == 'l') {
+        first = sed_case::First::Lower;
+      } else if (next == 'E') {
+        mode = sed_case::Mode::None;
+        first = sed_case::First::None;
       } else if (next == '&' || next == '\\') {
-        out.push_back(next);
+        sed_case::apply(out, next, mode, first);
       } else {
-        out.push_back(next);
+        // [GNU] unknown escapes keep the backslash (compile.c:560-565)
+        sed_case::apply(out, '\\', mode, first);
+        sed_case::apply(out, next, mode, first);
       }
       continue;
     }
-    out.push_back(c);
+    sed_case::apply(out, c, mode, first);
   }
   return out;
 }
@@ -1520,7 +1619,36 @@ auto substitute_line(const std::string& input, const Script& script,
   size_t last_append = 0;
   size_t match_index = 0;
 
-  while (auto match = script.pattern.find_first(input, search_start)) {
+  // [GNU] REG_NEWLINE matching for s///m and s///M: with the m/M modifier
+  // ^ and $ also match immediately after/before an embedded newline, so
+  // matches from the anchor-stripped pattern are filtered by an explicit
+  // anchor check at the candidate position.
+  auto find_match = [&](size_t from) -> std::optional<portable_regex::Match> {
+    if (!script.ml_caret && !script.ml_dollar) {
+      return script.pattern.find_first(input, from);
+    }
+    size_t cursor = from;
+    while (auto candidate = script.ml_pattern.find_first(input, cursor)) {
+      if (script.ml_caret && candidate->begin != 0 &&
+          input[candidate->begin - 1] != '\n') {
+        cursor = candidate->end == candidate->begin ? candidate->end + 1
+                                                    : candidate->end;
+        if (cursor > input.size()) break;
+        continue;
+      }
+      if (script.ml_dollar && candidate->end != input.size() &&
+          input[candidate->end] != '\n') {
+        cursor = candidate->end == candidate->begin ? candidate->end + 1
+                                                    : candidate->end;
+        if (cursor > input.size()) break;
+        continue;
+      }
+      return candidate;
+    }
+    return std::nullopt;
+  };
+
+  while (auto match = find_match(search_start)) {
     ++match_index;
     size_t match_start = match->begin;
     size_t match_end = match->end;
@@ -1703,7 +1831,13 @@ auto write_file_once_truncated(ProcessRuntime& runtime, const std::string& path,
 
 auto read_whole_file_for_append(const std::string& path) -> std::string {
   std::ifstream in(path, std::ios::binary);
-  if (!in.is_open()) return {};
+  if (!in.is_open()) {
+    // [GNU] report and keep going (execute.c:565, r command is never
+    // fatal: "sed: can't read FILE: reason" on stderr)
+    safeErrorPrint("sed: can't read " + path + ": " +
+                   std::string(std::strerror(errno)) + "\n");
+    return {};
+  }
   return std::string(std::istreambuf_iterator<char>{in},
                      std::istreambuf_iterator<char>{});
 }
@@ -1717,6 +1851,9 @@ auto read_one_file_record_for_append(ProcessRuntime& runtime,
   if (inserted) {
     it->second.open(path, std::ios::binary);
     if (!it->second.is_open()) {
+      // [GNU] report once and keep going (execute.c:565)
+      safeErrorPrint("sed: can't read " + path + ": " +
+                     std::string(std::strerror(errno)) + "\n");
       runtime.missing_read_files.insert(path);
       return std::nullopt;
     }
@@ -2309,7 +2446,11 @@ auto process_files(const Config& cfg) -> int {
     expanded_files.push_back(f);
   }
 
-  bool any_error = false;
+  // [GNU] exit codes: 1 = bad usage/script (reported by build_config),
+  // 2 = bad input files or w/W/s///w write failures (EXIT_BAD_INPUT,
+  // utils.h:22-25, execute.c:1710-1712). A q exit code wins only when no
+  // error was recorded.
+  int error_level = 0;
   size_t state_slots = 0;
   for (const auto& s : cfg.scripts) state_slots += 1 + s.group_addresses.size();
   std::vector<ScriptState> states(state_slots);
@@ -2319,8 +2460,10 @@ auto process_files(const Config& cfg) -> int {
        ++file_index) {
     const auto& f = expanded_files[file_index];
     if (cfg.in_place && f == "-") {
-      safeErrorPrint("sed: cannot edit standard input in place\n");
-      any_error = true;
+      // [GNU] with -i, "-" is opened as a regular file name and fails
+      // like any other unreadable input (EXIT_BAD_INPUT, utils.h:22-25).
+      safeErrorPrint("sed: can't read -: No such file or directory\n");
+      error_level = std::max(error_level, 2);
       continue;
     }
 
@@ -2331,15 +2474,18 @@ auto process_files(const Config& cfg) -> int {
       // dereferencing a bad stream (MSYS sed itself segfaults here).
       if (file_io::stdin_is_bad()) {
         safeErrorPrint("sed: can't read -: Bad file descriptor\n");
-        any_error = true;
+        error_level = std::max(error_level, 2);
         continue;
       }
       in = &std::cin;
     } else {
       file.open(f, std::ios::binary);
       if (!file.is_open()) {
-        safeErrorPrint("sed: cannot open '" + f + "'\n");
-        any_error = true;
+        // [GNU] "sed: can't read FILE: reason" + EXIT_BAD_INPUT (2)
+        // (execute.c:562-566)
+        safeErrorPrint("sed: can't read " + f + ": " +
+                       std::string(std::strerror(errno)) + "\n");
+        error_level = std::max(error_level, 2);
         continue;
       }
       in = &file;
@@ -2364,7 +2510,7 @@ auto process_files(const Config& cfg) -> int {
       if (cfg.in_place) {
         file.close();
         if (!replace_file_atomically(f, cfg.in_place_suffix, output)) {
-          any_error = true;
+          error_level = std::max(error_level, 1);
         }
       } else {
         safePrint(output);
@@ -2378,24 +2524,26 @@ auto process_files(const Config& cfg) -> int {
       std::string output;
       auto quit_exit_code = process_stream(*in, cfg, states, runtime, line_no,
                                            true, current_file, &output);
-      any_error = any_error || runtime.io_error;
+      if (runtime.io_error) error_level = std::max(error_level, 2);
       file.close();
       if (!replace_file_atomically(f, cfg.in_place_suffix, output)) {
-        any_error = true;
+        error_level = std::max(error_level, 1);
       }
-      if (quit_exit_code) return any_error ? 1 : *quit_exit_code;
+      if (quit_exit_code) {
+        return error_level != 0 ? error_level : *quit_exit_code;
+      }
       continue;
     }
 
     if (auto quit_exit_code =
             process_stream(*in, cfg, states, runtime, line_no, final_input,
                            current_file, nullptr)) {
-      any_error = any_error || runtime.io_error;
-      return any_error ? 1 : *quit_exit_code;
+      if (runtime.io_error) error_level = std::max(error_level, 2);
+      return error_level != 0 ? error_level : *quit_exit_code;
     }
-    any_error = any_error || runtime.io_error;
+    if (runtime.io_error) error_level = std::max(error_level, 2);
   }
-  return any_error ? 1 : 0;
+  return error_level;
 }
 
 }  // namespace sed_pipeline
@@ -2416,6 +2564,13 @@ REGISTER_COMMAND(
   if (!cfg) {
     cp::report_error(cfg, L"sed");
     return 1;
+  }
+
+  // [GNU] -i with no input files: PANIC, exit 4 (utils.h:26,
+  // execute.c:1672)
+  if (cfg->in_place && cfg->files.empty()) {
+    safeErrorPrint("sed: no input files\n");
+    return 4;
   }
 
   return process_files(*cfg);

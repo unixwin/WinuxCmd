@@ -1320,3 +1320,268 @@ TEST(sed, empty_expression_script_treats_positional_as_input) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "x\n");
 }
+
+// ======================================================
+// [GNU] compatibility regression tests
+// ======================================================
+
+TEST(sed, gnu_compat_input_open_failure_exits_2) {
+  // [GNU] failed input open is EXIT_BAD_INPUT (2), not 1
+  // (utils.h:22-25, execute.c:1710-1712).
+  TempDir tmp;
+  tmp.write("a.txt", "foo\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sed.exe", {L"s/foo/bar/", L"missing.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_CONTAINS(r.stderr_text, "can't read missing.txt");
+}
+
+TEST(sed, gnu_compat_write_file_failure_exits_2) {
+  // [GNU] w/W/s///w target that cannot be opened is a bad-input failure (2).
+  TempDir tmp;
+  tmp.write("a.txt", "foo\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sed.exe", {L"w no_such_dir/out.txt", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 2);
+}
+
+TEST(sed, gnu_compat_subst_write_flag_failure_exits_2) {
+  TempDir tmp;
+  tmp.write("a.txt", "foo\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sed.exe", {L"s/foo/bar/w no_such_dir/hits.txt", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 2);
+}
+
+TEST(sed, gnu_compat_usage_error_still_exits_1) {
+  TempDir tmp;
+  tmp.write("a.txt", "foo\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sed.exe", {L"p extra", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+}
+
+TEST(sed, gnu_compat_replacement_uppercase_until_E) {
+  // [GNU] \U upper-cases until \E or end of replacement
+  // (sed.h:67-77, compile.c:783-800).
+  TempDir tmp;
+  tmp.write("a.txt", "hello world\n");
+
+  Pipeline upper;
+  upper.set_cwd(tmp.wpath());
+  upper.add(L"sed.exe", {L"s/hello world/\\U&/", L"a.txt"});
+  auto upper_result = upper.run();
+
+  EXPECT_EQ(upper_result.exit_code, 0);
+  EXPECT_EQ_TEXT(upper_result.stdout_text, "HELLO WORLD\n");
+
+  Pipeline stop_at_e;
+  stop_at_e.set_cwd(tmp.wpath());
+  stop_at_e.add(L"sed.exe", {L"s/world/\\Uwo\\Erld/", L"a.txt"});
+  auto stop_result = stop_at_e.run();
+
+  EXPECT_EQ(stop_result.exit_code, 0);
+  EXPECT_EQ_TEXT(stop_result.stdout_text, "hello WOrld\n");
+}
+
+TEST(sed, gnu_compat_replacement_lowercase_and_next_char) {
+  // [GNU] \L lower-cases the rest, \u upper-cases only the next character.
+  TempDir tmp;
+  tmp.write("a.txt", "ABC DEF\n");
+
+  Pipeline lower;
+  lower.set_cwd(tmp.wpath());
+  lower.add(L"sed.exe", {L"s/ABC DEF/\\L&/", L"a.txt"});
+  auto lower_result = lower.run();
+
+  EXPECT_EQ(lower_result.exit_code, 0);
+  EXPECT_EQ_TEXT(lower_result.stdout_text, "abc def\n");
+
+  Pipeline next_char;
+  next_char.set_cwd(tmp.wpath());
+  next_char.add(L"sed.exe", {L"s/ABC/\\uabc/", L"a.txt"});
+  auto next_result = next_char.run();
+
+  EXPECT_EQ(next_result.exit_code, 0);
+  EXPECT_EQ_TEXT(next_result.stdout_text, "Abc DEF\n");
+}
+
+TEST(sed, gnu_compat_case_conversion_applies_to_backrefs) {
+  TempDir tmp;
+  tmp.write("a.txt", "abc-DEF\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sed.exe",
+        {L"-E", L"s/([a-z]+)-([A-Z]+)/\\U\\1 \\E\\L\\2/", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "ABC def\n");
+}
+
+TEST(sed, gnu_compat_unknown_replacement_escape_keeps_backslash) {
+  // [GNU] unknown escapes keep the backslash (compile.c:560-565).
+  TempDir tmp;
+  tmp.write("a.txt", "foo\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sed.exe", {L"s/foo/\\q/", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "\\q\n");
+}
+
+TEST(sed, gnu_compat_y_command_processes_escapes) {
+  // [GNU] y/// lists process \n, \t, \\ and escaped delimiters before
+  // the translate map is built (compile.c:1415-1446).
+  TempDir tmp;
+  tmp.write("a.txt", "abc\n");
+  tmp.write("slash.txt", "a\\b\n");
+
+  Pipeline tab;
+  tab.set_cwd(tmp.wpath());
+  tab.add(L"sed.exe", {L"y/b/\\t/", L"a.txt"});
+  auto tab_result = tab.run();
+
+  EXPECT_EQ(tab_result.exit_code, 0);
+  EXPECT_EQ_TEXT(tab_result.stdout_text, "a\tc\n");
+
+  Pipeline backslash;
+  backslash.set_cwd(tmp.wpath());
+  backslash.add(L"sed.exe", {L"y/\\\\/q/", L"slash.txt"});
+  auto backslash_result = backslash.run();
+
+  EXPECT_EQ(backslash_result.exit_code, 0);
+  EXPECT_EQ_TEXT(backslash_result.stdout_text, "aqb\n");
+}
+
+TEST(sed, gnu_compat_read_command_reports_unreadable_file) {
+  // [GNU] r on an unreadable file prints "sed: can't read FILE: reason" and
+  // continues (execute.c:1510-1523, execute.c:565).
+  TempDir tmp;
+  tmp.write("a.txt", "foo\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sed.exe", {L"r no_such_file.txt", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_CONTAINS(r.stderr_text, "can't read no_such_file.txt");
+  EXPECT_EQ_TEXT(r.stdout_text, "foo\n");
+}
+
+TEST(sed, gnu_compat_read_line_command_reports_unreadable_file) {
+  TempDir tmp;
+  tmp.write("a.txt", "foo\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sed.exe", {L"R no_such_file.txt", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_CONTAINS(r.stderr_text, "can't read no_such_file.txt");
+  EXPECT_EQ_TEXT(r.stdout_text, "foo\n");
+}
+
+TEST(sed, gnu_compat_in_place_without_input_files_exits_4) {
+  // [GNU] sed -i with stdin: PANIC "no input files", exit 4
+  // (execute.c:1672, utils.h:26).
+  Pipeline p;
+  p.set_stdin("foo\n");
+  p.add(L"sed.exe", {L"-i", L"s/foo/bar/"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 4);
+  EXPECT_CONTAINS(r.stderr_text, "no input files");
+}
+
+TEST(sed, gnu_compat_subst_multiline_flag_matches_at_newlines) {
+  // [GNU] s///m and s///M: $ also matches before an embedded newline.
+  TempDir tmp;
+  tmp.write("a.txt", "a\nb\nc\n");
+
+  Pipeline dollar;
+  dollar.set_cwd(tmp.wpath());
+  dollar.add(L"sed.exe", {L"N;s/b$/X/m", L"a.txt"});
+  auto dollar_result = dollar.run();
+
+  EXPECT_EQ(dollar_result.exit_code, 0);
+  EXPECT_EQ_TEXT(dollar_result.stdout_text, "a\nX\nc\n");
+
+  Pipeline big_m;
+  big_m.set_cwd(tmp.wpath());
+  big_m.add(L"sed.exe", {L"N;s/^b$/X/M", L"a.txt"});
+  auto big_m_result = big_m.run();
+
+  EXPECT_EQ(big_m_result.exit_code, 0);
+  EXPECT_EQ_TEXT(big_m_result.stdout_text, "a\nX\nc\n");
+}
+
+TEST(sed, gnu_compat_subst_multiline_flag_absent_keeps_string_anchors) {
+  TempDir tmp;
+  tmp.write("a.txt", "a\nb\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sed.exe", {L"N;s/^b$/X/", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "a\nb\n");
+}
+
+TEST(sed, gnu_compat_subst_e_flag_is_rejected_with_clear_message) {
+  TempDir tmp;
+  tmp.write("a.txt", "foo\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sed.exe", {L"s/foo/bar/e", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_NE(r.exit_code, 0);
+  EXPECT_CONTAINS(r.stderr_text, "'e' flag");
+}
+
+TEST(sed, gnu_compat_debug_and_follow_symlinks_are_accepted) {
+  TempDir tmp;
+  tmp.write("a.txt", "foo\n");
+
+  Pipeline debug;
+  debug.set_cwd(tmp.wpath());
+  debug.add(L"sed.exe", {L"--debug", L"s/foo/bar/", L"a.txt"});
+  auto debug_result = debug.run();
+
+  EXPECT_EQ(debug_result.exit_code, 0);
+  EXPECT_EQ_TEXT(debug_result.stdout_text, "bar\n");
+
+  Pipeline follow;
+  follow.set_cwd(tmp.wpath());
+  follow.add(L"sed.exe",
+             {L"--follow-symlinks", L"-i", L"s/foo/bar/", L"a.txt"});
+  auto follow_result = follow.run();
+
+  EXPECT_EQ(follow_result.exit_code, 0);
+  EXPECT_EQ_TEXT(tmp.read("a.txt"), "bar\n");
+}

@@ -1,28 +1,5 @@
-/*
- *  Copyright © 2026 [caomengxuan666]
- *
- *  Permission is hereby granted, free of charge, to any person obtaining a copy
- *  of this software and associated documentation files (the “Software”), to
- * deal in the Software without restriction, including without limitation the
- * rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
- * sell copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- *  The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- *  THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- *  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- *  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- *  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- *  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
- * IN THE SOFTWARE.
- *
- *  - File: find_unit_test.cpp
- *  - Username: Administrator
- *  - CopyrightYear: 2026
- */
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 caomengxuan666 <caomengxuan666@users.noreply.github.com>
 #include <AclAPI.h>
 #include <sys/utime.h>
 
@@ -2599,4 +2576,190 @@ TEST(find, find_invalid_size_returns_error) {
 
   auto r = p.run();
   EXPECT_EQ(r.exit_code, 1);
+}
+
+TEST(find, find_exec_semicolon_failure_does_not_set_exit_status) {
+  TempDir tmp;
+  tmp.write("a.txt", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  // [GNU] exec.c:388-392: `-exec cmd \;` only makes the predicate false.
+  p.add(L"find.exe", {L".", L"-name", L"*.txt", L"-exec", L"cmd.exe", L"/C",
+                      L"exit", L"1", L";", L"-print"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.empty());
+}
+
+TEST(find, find_exec_semicolon_success_makes_predicate_true) {
+  TempDir tmp;
+  tmp.write("a.txt", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L".", L"-name", L"*.txt", L"-exec", L"cmd.exe", L"/C",
+                      L"exit", L"0", L";", L"-print"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("a.txt") != std::string::npos);
+}
+
+TEST(find, find_exec_plus_failure_sets_exit_status_but_predicate_stays_true) {
+  TempDir tmp;
+  tmp.write("a.txt", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  // [GNU] exec.c:397-399: `-exec {} +` is TRUE even when the command fails,
+  // but it sets find's exit status.
+  p.add(L"find.exe", {L".", L"-name", L"*.txt", L"-exec", L"cmd.exe", L"/C",
+                      L"exit", L"1", L"{}", L"+", L"-print"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.find("a.txt") != std::string::npos);
+}
+
+TEST(find, find_execdir_substitutes_dot_slash_basename) {
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "tree" / "nested");
+  tmp.write("tree/nested/leaf.txt", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  // [GNU] exec.c:114-129: -execdir passes "./basename" as the placeholder.
+  p.add(L"find.exe", {L"tree", L"-name", L"leaf.txt", L"-execdir", L"cmd.exe",
+                      L"/C", L"echo", L"{}", L";"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("./leaf.txt") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("tree/nested/leaf.txt") == std::string::npos);
+}
+
+TEST(find, find_execdir_plus_batches_per_directory_with_basename_args) {
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "tree" / "sub");
+  tmp.write("tree/a.txt", "x");
+  tmp.write("tree/sub/b.txt", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L"tree", L"-name", L"*.txt", L"-execdir", L"cmd.exe",
+                      L"/C", L"echo", L"{}", L"+"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("./a.txt") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("./b.txt") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("tree/sub/b.txt") == std::string::npos);
+}
+
+TEST(find, find_regextype_default_treats_plus_question_bar_parens_as_literal) {
+  TempDir tmp;
+  tmp.write("a+b.txt", "");
+  tmp.write("aab.txt", "");
+  tmp.write("aXb.txt", "");
+
+  Pipeline literal;
+  literal.set_cwd(tmp.wpath());
+  // [GNU] findutils-default (EMACS): `+` is literal unless escaped.
+  literal.add(L"find.exe", {L".", L"-regex", L"./a+b.txt"});
+  auto literal_result = literal.run();
+
+  EXPECT_EQ(literal_result.exit_code, 0);
+  EXPECT_TRUE(literal_result.stdout_text.find("a+b.txt") != std::string::npos);
+  EXPECT_TRUE(literal_result.stdout_text.find("aab.txt") == std::string::npos);
+
+  Pipeline escaped;
+  escaped.set_cwd(tmp.wpath());
+  // `\+` is the EMACS one-or-more operator.
+  escaped.add(L"find.exe", {L".", L"-regex", L"./a\\+b\\.txt"});
+  auto escaped_result = escaped.run();
+
+  EXPECT_EQ(escaped_result.exit_code, 0);
+  EXPECT_TRUE(escaped_result.stdout_text.find("aab.txt") != std::string::npos);
+  EXPECT_TRUE(escaped_result.stdout_text.find("a+b.txt") == std::string::npos);
+
+  Pipeline alternation;
+  alternation.set_cwd(tmp.wpath());
+  // `\|` is the EMACS alternation operator; `|` unescaped is literal.
+  alternation.add(L"find.exe", {L".", L"-regex", L".*\\(a\\+b\\|aXb\\)\\.txt"});
+  auto alternation_result = alternation.run();
+
+  EXPECT_EQ(alternation_result.exit_code, 0);
+  // `a\+b` is "a" then one-or-more "b", so it matches aab.txt but not the
+  // literal a+b.txt.
+  EXPECT_TRUE(alternation_result.stdout_text.find("aab.txt") !=
+              std::string::npos);
+  EXPECT_TRUE(alternation_result.stdout_text.find("aXb.txt") !=
+              std::string::npos);
+  EXPECT_TRUE(alternation_result.stdout_text.find("a+b.txt") ==
+              std::string::npos);
+}
+
+TEST(find, find_printf_supports_field_width_flags_and_precision) {
+  TempDir tmp;
+  tmp.write("ab.txt", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  // [GNU] print.c: %8p, %-10s, %.5f, %08d style field formatting.
+  p.add(L"find.exe",
+        {L"ab.txt", L"-printf", L"[%8f][%-8f][%.2f][%08f][%2f]\n"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "[  ab.txt][ab.txt  ][ab][00ab.txt][ab.txt]\n");
+}
+
+TEST(find, find_daystart_measures_from_start_of_local_day) {
+  TempDir tmp;
+  tmp.write("today.txt", "x");
+
+  SYSTEMTIME now{};
+  GetLocalTime(&now);
+  // File written one minute after local midnight of the current day.
+  EXPECT_TRUE(set_last_write_time(tmp.path / "today.txt", now.wYear, now.wMonth,
+                                  now.wDay, 0, 1, 0));
+
+  // [GNU] pred.c: with -daystart the file's age in 24h units is measured
+  // from the start of today, so it is still 0 days old even late at night.
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L".", L"-name", L"today.txt", L"-daystart", L"-mtime",
+                      L"0", L"-print"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("today.txt") != std::string::npos);
+}
+
+TEST(find, find_xdev_still_traverses_single_volume_tree) {
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "tree" / "sub");
+  tmp.write("tree/f1.txt", "x");
+  tmp.write("tree/sub/f2.txt", "x");
+
+  // [GNU] -xdev: with a single-volume tree every entry is visited.  The
+  // cross-volume guarantee cannot be exercised without a second drive.
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L"tree", L"-xdev"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("f1.txt") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("f2.txt") != std::string::npos);
+
+  Pipeline mount;
+  mount.set_cwd(tmp.wpath());
+  mount.add(L"find.exe", {L"tree", L"-mount"});
+  auto mount_result = mount.run();
+
+  EXPECT_EQ(mount_result.exit_code, 0);
+  EXPECT_TRUE(mount_result.stdout_text.find("f2.txt") != std::string::npos);
 }

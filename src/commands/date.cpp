@@ -1,28 +1,5 @@
-/*
- *  Copyright © 2026 [caomengxuan666]
- *
- *  Permission is hereby granted, free of charge, to any person obtaining a copy
- *  of this software and associated documentation files (the "Software"), to
- *  deal in the Software without restriction, including without limitation the
- *  rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
- *  sell copies of the Software, and to permit persons to whom the Software is
- *  furnished to do so, subject to the following conditions:
- *
- *  The above copyright notice and this permission notice shall be included in
- *  all copies or substantial portions of the Software.
- *
- *  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- *  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- *  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- *  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- *  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- *  FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
- *  IN THE SOFTWARE.
- *
- *  - File: date.cpp
- *  - Username: Administrator
- *  - CopyrightYear: 2026
- */
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 caomengxuan666 <caomengxuan666@users.noreply.github.com>
 /// @contributors:
 ///   - @contributor1 caomengxuan666 2507560089@qq.com
 ///   - @contributor2 <email2@example.com>
@@ -1710,7 +1687,14 @@ auto parse_date_argument(const std::string &arg, bool use_utc,
       bool local_zone = false;
       if (letter == 'j') {
         // [GNU] 'J' is the local zone (parse-datetime.y: {"J", 'J', 0}).
-        local_zone = true;
+        // Under -u the universal context makes "local" UTC itself, so
+        // `date -u -d 1024j` renders 10:24, not the shifted UTC time.
+        if (use_utc) {
+          local_zone = false;
+          zone_offset_minutes = 0;
+        } else {
+          local_zone = true;
+        }
       } else if (letter >= 'a' && letter <= 'i') {
         zone_offset_minutes = (letter - 'a' + 1) * 60;
       } else if (letter >= 'k' && letter <= 'm') {

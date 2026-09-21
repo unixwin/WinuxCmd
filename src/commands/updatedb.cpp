@@ -1,32 +1,9 @@
-/*
- *  Copyright © 2026 WinuxCmd
- *
- *  Permission is hereby granted, free of charge, to any person obtaining a copy
- *  of this software and associated documentation files (the "Software"), to
- *  deal in the Software without restriction, including without limitation the
- *  rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
- *  sell copies of the Software, and to permit persons to whom the Software is
- *  furnished to do so, subject to the following conditions:
- *
- *  The above copyright notice and this permission notice shall be included in
- *  all copies or substantial portions of the Software.
- *
- *  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS  OR
- *  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- *  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- *  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- *  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- *  FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
- *  IN THE SOFTWARE.
- *
- *  - File: updatedb.cpp
- *  - Username: Administrator
- *  - CopyrightYear: 2026
- */
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 caomengxuan666 <caomengxuan666@users.noreply.github.com>
 /// @contributors:
 ///   - caomengxuan666 <2507560089@qq.com>
 /// @Description: Implementation for updatedb (update the locate database).
-/// @Version: 0.1.0
+/// @Version: 0.2.0
 /// @License: MIT
 /// @Copyright: Copyright © 2026 WinuxCmd
 
@@ -41,17 +18,30 @@ import container;
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
+// [GNU] updatedb.sh accepts --output=FILE, --localpaths='...' and
+// --prunepaths='...'.  The local paths and prune paths are semicolon
+// separated here (a documented deviation: GNU relies on shell word
+// splitting, which our option parser does not perform).
 auto constexpr UPDATEDB_OPTIONS = std::array{
     OPTION("-d", "--directory", "directory to start walking", STRING_TYPE),
-    OPTION("-e", "--exclude", "prune entries matching pattern", STRING_TYPE),
-    OPTION("-f", "", "force walk even if DB is new", BOOL_TYPE),
-    OPTION("-g", "--group", "only include files with this group", STRING_TYPE),
+    OPTION("-e", "--exclude", "prune entries whose path contains this pattern",
+           STRING_TYPE),
+    OPTION("-f", "", "accepted for compatibility; ignored", BOOL_TYPE),
+    // [GNU] updatedb.sh: "--localpaths='path1 path2...'" (semicolon separated
+    // in WinuxCmd because the option parser does not word-split arguments)
+    OPTION("", "--localpaths",
+           "walk these roots (semicolon separated) instead of --directory",
+           STRING_TYPE),
     OPTION("-o", "--output", "database output file", STRING_TYPE),
-    OPTION("-r", "", "only walk directories owned by root", BOOL_TYPE),
-    OPTION("-s", "", "create compacter (but slower) database", BOOL_TYPE),
-    OPTION("-u", "--user", "only include files with this user", STRING_TYPE),
+    // [GNU] updatedb.sh: "--prunepaths='/tmp /var/spool'" (semicolon
+    // separated in WinuxCmd; pruned directories are not descended into)
+    OPTION("", "--prunepaths",
+           "directories (semicolon separated) not to descend into",
+           STRING_TYPE),
+    OPTION("-s", "", "accepted for compatibility; ignored", BOOL_TYPE),
     OPTION("-v", "--verbose", "be verbose", BOOL_TYPE),
-    OPTION("-x", "--exclude-dir", "directory pattern to exclude", STRING_TYPE)};
+    OPTION("-x", "--exclude-dir", "directory name pattern to exclude",
+           STRING_TYPE)};
 
 namespace updatedb_pipeline {
 namespace cp = core::pipeline;
@@ -59,8 +49,11 @@ namespace cp = core::pipeline;
 struct Config {
   std::string directory = ".";
   std::string output;
+  std::string localpaths;
+  std::string prunepaths;
+  std::string exclude;
+  std::string exclude_dir;
   bool verbose = false;
-  bool compact = false;
 };
 
 auto get_env_utf8(const wchar_t* key) -> std::optional<std::string> {
@@ -88,15 +81,66 @@ auto build_config(const CommandContext<UPDATEDB_OPTIONS.size()>& ctx)
     cfg.directory = ctx.get<std::string>("--directory", ".");
   if (ctx.has("-o")) cfg.output = ctx.get<std::string>("-o", "");
   if (ctx.has("--output")) cfg.output = ctx.get<std::string>("--output", "");
+  if (ctx.has("--localpaths"))
+    cfg.localpaths = ctx.get<std::string>("--localpaths", "");
+  if (ctx.has("--prunepaths"))
+    cfg.prunepaths = ctx.get<std::string>("--prunepaths", "");
+  if (ctx.has("-e")) cfg.exclude = ctx.get<std::string>("-e", "");
+  if (ctx.has("--exclude")) cfg.exclude = ctx.get<std::string>("--exclude", "");
+  if (ctx.has("-x")) cfg.exclude_dir = ctx.get<std::string>("-x", "");
+  if (ctx.has("--exclude-dir"))
+    cfg.exclude_dir = ctx.get<std::string>("--exclude-dir", "");
   cfg.verbose = ctx.has("-v") || ctx.has("--verbose");
-  cfg.compact = ctx.has("-s");
   if (cfg.output.empty()) cfg.output = get_default_database();
   return cfg;
 }
 
+// Normalize a stored path to forward slashes with no trailing separator so
+// that prefix comparisons for pruning are stable.
+auto normalize_stored(const std::string& path) -> std::string {
+  std::string out = path;
+  for (char& c : out) {
+    if (c == '\\') c = '/';
+  }
+  while (out.size() > 1 && out.back() == '/') out.pop_back();
+  return out;
+}
+
+auto split_semicolon_list(const std::string& text) -> std::vector<std::string> {
+  std::vector<std::string> parts;
+  size_t start = 0;
+  while (start <= text.size()) {
+    size_t sep = text.find(';', start);
+    if (sep == std::string::npos) {
+      std::string part = text.substr(start);
+      if (!part.empty()) parts.push_back(part);
+      break;
+    }
+    std::string part = text.substr(start, sep - start);
+    if (!part.empty()) parts.push_back(part);
+    start = sep + 1;
+  }
+  return parts;
+}
+
+// Make a walk root absolute so that --prunepaths prefix comparisons (which
+// users give as absolute paths, like GNU updatedb) match stored entries.
+auto absolute_path(const std::string& path) -> std::string {
+  std::wstring w = utf8_to_wstring(path);
+  DWORD size = GetFullPathNameW(w.c_str(), 0, nullptr, nullptr);
+  if (size == 0) return path;
+  std::wstring buffer(size, L'\0');
+  DWORD written = GetFullPathNameW(w.c_str(), size, buffer.data(), nullptr);
+  buffer.resize(written);
+  return wstring_to_utf8(buffer);
+}
+
 // Recursively walk a directory and collect all file/directory paths.
-auto walk_dir(const std::string& dir, std::vector<std::string>& results)
-    -> void {
+// [GNU] updatedb.sh skip_names / PRUNEFS: pruned directories are never
+// descended into, and their paths are not recorded either.
+auto walk_dir(const std::string& dir, const Config& cfg,
+              const std::vector<std::string>& pruned_prefixes,
+              std::vector<std::string>& results) -> void {
   std::wstring pattern = utf8_to_wstring(dir) + L"\\*";
   WIN32_FIND_DATAW fd;
   HANDLE h = FindFirstFileW(pattern.c_str(), &fd);
@@ -111,32 +155,52 @@ auto walk_dir(const std::string& dir, std::vector<std::string>& results)
     if (full.back() != '/' && full.back() != '\\') full += "/";
     full += utf8name;
 
-    results.push_back(full);
+    std::string stored = normalize_stored(full);
+
+    // --prunepaths: skip directories whose stored path is a pruned prefix
+    // (matched on path-component boundaries).
+    bool pruned = false;
+    for (const auto& prefix : pruned_prefixes) {
+      std::string norm_prefix = normalize_stored(prefix);
+      if (stored == norm_prefix || (stored.size() > norm_prefix.size() &&
+                                    stored.starts_with(norm_prefix) &&
+                                    stored[norm_prefix.size()] == '/')) {
+        pruned = true;
+        break;
+      }
+    }
+    if (pruned) continue;
+
+    // -x/--exclude-dir: never descend into directories whose *name* matches
+    // the given wildcard pattern.
+    if (!cfg.exclude_dir.empty() &&
+        fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY &&
+        wildcard_match(cfg.exclude_dir, utf8name, false)) {
+      continue;
+    }
+
+    // -e/--exclude: record nothing for entries whose path contains the
+    // pattern (kept for compatibility with the previous behaviour).
+    if (!cfg.exclude.empty() && stored.find(cfg.exclude) != std::string::npos) {
+      continue;
+    }
+
+    results.push_back(stored);
 
     if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-      walk_dir(full, results);
+      walk_dir(full, cfg, pruned_prefixes, results);
     }
   } while (FindNextFileW(h, &fd));
   FindClose(h);
 }
 
-auto run(const Config& cfg) -> int {
-  std::vector<std::string> paths;
-  if (cfg.verbose) {
-    safePrintLn("Walking " + cfg.directory + "...");
-  }
+// [GNU] updatedb.sh writes the database to a temporary file and renames it
+// into place, so a failed run never leaves a truncated database behind.
+auto write_database_atomically(const std::string& output,
+                               const std::string& content) -> bool {
+  std::wstring woutput = utf8_to_wstring(output);
+  std::wstring wtemp = woutput + L".tmp";
 
-  walk_dir(cfg.directory, paths);
-
-  if (cfg.verbose) {
-    safePrint("Found " + std::to_string(paths.size()) + " paths. ");
-  }
-
-  // Sort
-  std::sort(paths.begin(), paths.end());
-
-  // Write database
-  std::wstring woutput = utf8_to_wstring(cfg.output);
   // Create parent directory if needed
   {
     size_t last_slash = woutput.find_last_of(L"/\\");
@@ -146,18 +210,11 @@ auto run(const Config& cfg) -> int {
     }
   }
 
-  HANDLE h =
-      CreateFileW(woutput.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
-                  CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  HANDLE h = CreateFileW(wtemp.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+                         CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (h == INVALID_HANDLE_VALUE) {
-    safeErrorPrintLn("updatedb: cannot create database '" + cfg.output + "'");
-    return 1;
-  }
-
-  std::string content;
-  for (const auto& p : paths) {
-    content += p;
-    content += "\n";
+    safeErrorPrintLn("updatedb: cannot create database '" + output + "'");
+    return false;
   }
 
   DWORD written = 0;
@@ -166,6 +223,53 @@ auto run(const Config& cfg) -> int {
   CloseHandle(h);
   if (!ok || written != static_cast<DWORD>(content.size())) {
     safeErrorPrintLn("updatedb: failed to write database");
+    DeleteFileW(wtemp.c_str());
+    return false;
+  }
+
+  if (!MoveFileExW(wtemp.c_str(), woutput.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+    safeErrorPrintLn("updatedb: failed to replace database '" + output + "'");
+    DeleteFileW(wtemp.c_str());
+    return false;
+  }
+  return true;
+}
+
+auto run(const Config& cfg) -> int {
+  std::vector<std::string> roots;
+  if (!cfg.localpaths.empty()) {
+    // [GNU] updatedb.sh: --localpaths replaces the default walk roots.
+    for (const auto& root : split_semicolon_list(cfg.localpaths)) {
+      roots.push_back(absolute_path(root));
+    }
+  } else {
+    roots.push_back(absolute_path(cfg.directory));
+  }
+
+  auto pruned_prefixes = split_semicolon_list(cfg.prunepaths);
+
+  std::vector<std::string> paths;
+  for (const auto& root : roots) {
+    if (cfg.verbose) {
+      safePrintLn("Walking " + root + "...");
+    }
+    walk_dir(root, cfg, pruned_prefixes, paths);
+  }
+
+  if (cfg.verbose) {
+    safePrint("Found " + std::to_string(paths.size()) + " paths. ");
+  }
+
+  // Sort
+  std::sort(paths.begin(), paths.end());
+
+  std::string content;
+  for (const auto& p : paths) {
+    content += p;
+    content += "\n";
+  }
+
+  if (!write_database_atomically(cfg.output, content)) {
     return 1;
   }
 
@@ -182,10 +286,16 @@ auto run(const Config& cfg) -> int {
 
 REGISTER_COMMAND(updatedb, "updatedb", "updatedb [OPTION]...",
                  "Update the filename database used by locate.\n"
-                 "Walks the filesystem and writes a sorted path list.",
+                 "Walks the filesystem and writes a sorted path list.\n"
+                 "The database is written to a temporary file and renamed\n"
+                 "into place, replacing any previous database atomically.\n"
+                 "Database entries are plain path lines (a Windows platform\n"
+                 "deviation from GNU LOCATE02).",
                  "  updatedb\n"
                  "  updatedb -d /path\n"
-                 "  updatedb -d C:\Windows -v",
+                 "  updatedb --localpaths='C:/Users;D:/data' "
+                 "--prunepaths='C:/Users/Default'\n"
+                 "  updatedb -d C:\\Windows -v",
                  "locate(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd",
                  UPDATEDB_OPTIONS) {
   using namespace updatedb_pipeline;

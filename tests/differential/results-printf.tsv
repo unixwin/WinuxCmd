@@ -1,0 +1,3 @@
+regressions/31-leading-dash-operands.case	printf	EXIT_DIFF
+regressions/32-printf-dynamic-width.case	printf	EXIT_DIFF
+regressions/33-printf-shell-quote.case	printf	EXIT_DIFF
