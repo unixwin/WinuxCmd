@@ -6,6 +6,8 @@ repository release tags.
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-09-21
+
 ### Fixed — GNU/upstream parity (audit rounds 1-2, 178 commands audited)
 
 - **grep**: conflicting matchers are fatal (exit 2); `-q` keeps error
