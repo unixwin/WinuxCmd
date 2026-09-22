@@ -889,6 +889,56 @@ TEST(wpm, wpm_install_downloads_local_exe_with_sha256) {
   EXPECT_FALSE(same_file(root_exe, installed_jq));
 }
 
+TEST(wpm, wpm_install_failed_download_reports_transport_retry) {
+  // A dead artifact URL makes the WinHTTP attempt fail; the URLMon fallback
+  // must announce itself, otherwise a second progress bar looks like a
+  // duplicate download.
+  TempDir tmp;
+  const auto index_path = tmp.path / L"fixture-dead-index.json";
+  tmp.write("fixture-dead-index.json",
+            "{\n"
+            "  \"schema\": 1,\n"
+            "  \"name\": \"fixture\",\n"
+            "  \"version\": \"fixture-dead\",\n"
+            "  \"packages\": [\n"
+            "    {\n"
+            "      \"name\": \"jq\",\n"
+            "      \"version\": \"1.0.0\",\n"
+            "      \"kind\": \"external\",\n"
+            "      \"artifacts\": {\n"
+            "        \"" +
+                current_arch_key() +
+                "\": {\n"
+                "          \"type\": \"exe\",\n"
+                "          \"sha256\": \"00\",\n"
+                "          \"urls\": [\"http://127.0.0.1:9/jq.exe\"],\n"
+                "          \"files\": [{\"from\":\"jq.exe\"}]\n"
+                "        }\n"
+                "      }\n"
+                "    }\n"
+                "  ]\n"
+                "}\n");
+
+  Pipeline add;
+  add.add(L"winuxcmd.exe",
+          {L"wpm", L"source", L"add", L"fixture",
+           widen_ascii(file_url(index_path)), L"--root", tmp.wpath()});
+  EXPECT_EQ(add.run().exit_code, 0);
+
+  Pipeline use;
+  use.add(L"winuxcmd.exe",
+          {L"wpm", L"source", L"use", L"fixture", L"--root", tmp.wpath()});
+  EXPECT_EQ(use.run().exit_code, 0);
+
+  Pipeline install;
+  install.add(L"winuxcmd.exe",
+              {L"wpm", L"install", L"jq", L"--root", tmp.wpath()});
+  auto r = install.run();
+  EXPECT_NE(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("retrying via fallback transport") !=
+              std::string::npos);
+}
+
 TEST(wpm, wpm_update_winuxcmd_refreshes_index_before_staging) {
   TempDir tmp;
   const auto artifact_path = tmp.path / L"source" / L"winuxcmd.exe";
