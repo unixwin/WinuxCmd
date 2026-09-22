@@ -89,6 +89,72 @@ jobs:
           call "${{ steps.locate_vcvars.outputs.vcvars_path }}" ${{ matrix.vcvars_arg }}
           cmake --build . --config Release --parallel %NUMBER_OF_PROCESSORS%
 
+      # PGO (x64 only): profile collection must run the instrumented binary
+      # on the host arch, so the cross-compiled arm64 job stays non-PGO.
+      - name: PGO instrumented build (x64)
+        if: matrix.package_arch == 'x64'
+        shell: cmd
+        run: |
+          call "${{ steps.locate_vcvars.outputs.vcvars_path }}" x64
+          cmake -B build-x64-pgo-train ^
+            -G "Ninja" ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_CXX_COMPILER_TARGET=x64 ^
+            -DWINUXCMD_PACKAGE_ARCH=x64 ^
+            -DBUILD_MODE=RELEASE ^
+            -DUSE_STATIC_CRT=ON ^
+            -DENABLE_TESTS=OFF ^
+            -DCMAKE_CXX_STANDARD=23 ^
+            -DCMAKE_CXX_STANDARD_REQUIRED=ON ^
+            -DCMAKE_EXPERIMENTAL_CXX_MODULE_STD=ON ^
+            -DCMAKE_CXX_MODULE_STD=ON ^
+            -DCMAKE_CXX_FLAGS="/std:c++latest /EHsc" ^
+            -DWINUXCMD_PGO_INSTRUMENT=ON
+          cmake --build build-x64-pgo-train --config Release --parallel %NUMBER_OF_PROCESSORS%
+
+      - name: PGO collect profile (x64)
+        if: matrix.package_arch == 'x64'
+        shell: pwsh
+        run: |
+          $profileDir = Join-Path $PWD "build-x64-pgo-train\pgo"
+          New-Item -ItemType Directory -Force -Path $profileDir | Out-Null
+          $env:VCPROFILE_PATH = $profileDir
+          # The instrumented binary needs pgort140.dll (VC PGO runtime).
+          $pgRt = Get-ChildItem "C:\Program Files\Microsoft Visual Studio" -Recurse -Filter pgort140.dll -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+          if (-not $pgRt) { throw "pgort140.dll not found" }
+          $env:PATH = "$(Split-Path $pgRt.FullName);$env:PATH"
+          & bash scripts/pgo-train.sh (Join-Path $PWD "build-x64-pgo-train\usr\bin")
+          if ($LASTEXITCODE -ne 0) { throw "training workloads failed" }
+          Get-ChildItem $profileDir -Filter *.pgc | Where-Object { $_.Length -eq 0 } | Remove-Item
+          $pgc = Get-ChildItem $profileDir -Filter *.pgc
+          if (-not $pgc) { throw "no .pgc profile data collected; training did not run" }
+          Write-Host ("collected {0} .pgc file(s), {1:N1} MB total" -f $pgc.Count, (($pgc | Measure-Object Length -Sum).Sum / 1MB))
+          Copy-Item (Join-Path $PWD "build-x64-pgo-train\winuxcmd.pgd") $profileDir -Force
+
+      - name: PGO rebuild with profile (x64)
+        if: matrix.package_arch == 'x64'
+        shell: cmd
+        run: |
+          call "${{ steps.locate_vcvars.outputs.vcvars_path }}" x64
+          cmake -B build-x64 ^
+            -G "Ninja" ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_CXX_COMPILER_TARGET=x64 ^
+            -DWINUXCMD_PACKAGE_ARCH=x64 ^
+            -DBUILD_MODE=RELEASE ^
+            -DUSE_STATIC_CRT=ON ^
+            -DENABLE_TESTS=ON ^
+            -DCMAKE_CXX_STANDARD=23 ^
+            -DCMAKE_CXX_STANDARD_REQUIRED=ON ^
+            -DCMAKE_EXPERIMENTAL_CXX_MODULE_STD=ON ^
+            -DCMAKE_CXX_MODULE_STD=ON ^
+            -DCMAKE_CXX_FLAGS="/std:c++latest /EHsc" ^
+            -DWINUXCMD_PGO_USE=ON
+          copy /Y build-x64-pgo-train\pgo\*.pgc build-x64\ >NUL
+          copy /Y build-x64-pgo-train\pgo\winuxcmd.pgd build-x64\ >NUL
+          cmake --build build-x64 --config Release --parallel %NUMBER_OF_PROCESSORS%
+
       - name: Run Unit Tests (ctest)
         if: matrix.package_arch == 'x64'
         shell: cmd
