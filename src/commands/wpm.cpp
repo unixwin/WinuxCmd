@@ -482,6 +482,36 @@ auto cleanup_link_names() -> std::vector<std::string> {
   return names;
 }
 
+#ifndef FILE_DISPOSITION_DELETE
+#define FILE_DISPOSITION_DELETE 0x00000001
+#define FILE_DISPOSITION_POSIX_SEMANTICS 0x00000002
+#define FILE_DISPOSITION_IGNORE_READONLY_ATTRIBUTE 0x00000010
+#endif
+
+auto delete_file_name(const fs::path& target) -> bool {
+  // POSIX-style unlink: removes this directory entry even while the file
+  // stays alive elsewhere. Every command link in usr\bin is a hardlink to
+  // the same inode as the running wpm/winuxcmd image, so plain DeleteFileW
+  // fails with Access denied — the classic self-lock of link-style
+  // packaging. FILE_DISPOSITION_POSIX_SEMANTICS removes only this name.
+  HANDLE h = CreateFileW(target.wstring().c_str(), DELETE,
+                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                         nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT,
+                         nullptr);
+  if (h != INVALID_HANDLE_VALUE) {
+    FILE_DISPOSITION_INFO_EX info{};
+    info.Flags = FILE_DISPOSITION_DELETE | FILE_DISPOSITION_POSIX_SEMANTICS |
+                 FILE_DISPOSITION_IGNORE_READONLY_ATTRIBUTE;
+    if (SetFileInformationByHandle(h, FileDispositionInfoEx, &info,
+                                 sizeof(info))) {
+      CloseHandle(h);
+      return true;
+    }
+    CloseHandle(h);
+  }
+  return DeleteFileW(target.wstring().c_str()) != 0;
+}
+
 auto remove_link_if_safe(const fs::path& source, const fs::path& target,
                          const fs::path& current, bool force, bool dry_run)
     -> bool {
@@ -501,7 +531,7 @@ auto remove_link_if_safe(const fs::path& source, const fs::path& target,
                               target.string()));
     return false;
   }
-  if (!DeleteFileW(target.wstring().c_str())) {
+  if (!delete_file_name(target)) {
     safeErrorPrintLn(wpm_text("command.wpm.error.remove",
                               "wpm: failed to remove '{}': {}", target.string(),
                               win32_error_text(GetLastError())));
@@ -531,7 +561,7 @@ auto remove_stale_legacy_links(const fs::path& root, const fs::path& source,
       ++removed;
       continue;
     }
-    if (DeleteFileW(target.wstring().c_str())) {
+    if (delete_file_name(target)) {
       ++removed;
       if (verbose)
         safePrintLn(wpm_text("command.wpm.status.removed_legacy",
