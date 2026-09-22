@@ -6,6 +6,14 @@ repository release tags.
 
 ## [Unreleased]
 
+### Added
+
+- **PGO in release CI** (x64): the tag build now runs the instrumented
+  build, collects profiles via `scripts/pgo-train.sh`, and relinks with
+  `/USEPROFILE` — matching the local `scripts/build-pgo.ps1` pipeline
+  (~12% smaller, faster hot paths). ARM64 stays non-PGO: profiles must be
+  collected on the target architecture.
+
 ### Removed
 
 - **link** command (again): its hardlink-style name shadows the MSVC
