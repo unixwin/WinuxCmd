@@ -561,6 +561,45 @@ TEST(wpm, wpm_links_rebuild_removes_legacy_jq_hardlink) {
   EXPECT_TRUE(std::filesystem::exists(canonical_exe(tmp.path, L"wpm.exe")));
 }
 
+TEST(wpm, wpm_links_rebuild_removes_legacy_link_on_running_inode) {
+  // Production self-lock: every usr\bin\*.exe is a hardlink to the inode the
+  // running wpm image is mapped from, so DeleteFileW on a stale link fails
+  // with Access denied. The rebuild must still remove it (POSIX unlink).
+  // The root must live on the same volume as the running binary so
+  // usr\bin\winuxcmd.exe can share its inode — TempDir (system %TEMP%) may
+  // be on another volume where hardlinks are impossible.
+  auto scratch = std::filesystem::path(WINUXCMD_BIN_DIR) /
+                 (L"wpm-selflock-test-" + std::to_wstring(GetCurrentProcessId()));
+  std::filesystem::remove_all(scratch);
+  std::filesystem::create_directories(scratch);
+
+  auto root_exe = canonical_exe(scratch, L"winuxcmd.exe");
+  std::filesystem::create_directories(root_exe.parent_path());
+  bool linked = CreateHardLinkW(root_exe.wstring().c_str(),
+                                build_winuxcmd_path().wstring().c_str(),
+                                nullptr) != 0;
+  EXPECT_TRUE(linked);
+  auto legacy_jq = scratch / L"jq.exe";
+  if (linked) {
+    linked = CreateHardLinkW(legacy_jq.wstring().c_str(),
+                           root_exe.wstring().c_str(), nullptr) != 0;
+    EXPECT_TRUE(linked);
+  }
+
+  if (linked) {
+    Pipeline p;
+    p.add(L"winuxcmd.exe",
+          {L"wpm", L"links", L"rebuild", L"--root", scratch.wstring()});
+    auto r = p.run();
+    EXPECT_EQ(r.exit_code, 0);
+    EXPECT_FALSE(std::filesystem::exists(legacy_jq));
+    EXPECT_TRUE(std::filesystem::exists(root_exe));
+  }
+
+  std::error_code ec;
+  std::filesystem::remove_all(scratch, ec);
+}
+
 TEST(wpm, wpm_apply_update_replaces_root_and_rebuilds_links) {
   TempDir tmp;
   auto root_exe = canonical_exe(tmp.path, L"winuxcmd.exe");
