@@ -770,6 +770,43 @@ TEST(wpm, wpm_index_update_region_global_keeps_order) {
               std::string::npos);
 }
 
+TEST(wpm, wpm_index_update_preferred_source_falls_back) {
+  TempDir tmp;
+  const auto cn_index = tmp.path / L"cn-index.json";
+  tmp.write("cn-index.json",
+            "{\n"
+            "  \"schema\": 1,\n"
+            "  \"name\": \"cn-fixture\",\n"
+            "  \"version\": \"cn-1\",\n"
+            "  \"packages\": []\n"
+            "}\n");
+
+  // preferred_source names the dead source: it is tried first, then the
+  // remaining sources remain as fallback instead of being skipped.
+  tmp.write(".wpm/config.json",
+            std::string("{\n"
+                        "  \"preferred_source\": \"dead-global\",\n"
+                        "  \"user_sources\": [\n"
+                        "    {\"name\": \"dead-global\", \"region\": "
+                        "\"global\", \"priority\": 1, \"index_urls\": "
+                        "[\"http://127.0.0.1:9/index.json\"]},\n"
+                        "    {\"name\": \"local-cn\", \"region\": \"cn\", "
+                        "\"priority\": 2, \"index_urls\": [\"") +
+                file_url(cn_index) +
+                std::string("\"]}\n"
+                            "  ]\n"
+                            "}\n"));
+
+  Pipeline update;
+  update.add(L"winuxcmd.exe",
+             {L"wpm", L"index", L"update", L"--root", tmp.wpath()});
+  auto r = update.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("index updated from local-cn") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("trying other sources") != std::string::npos);
+}
+
 TEST(wpm, wpm_install_downloads_local_exe_with_sha256) {
   TempDir tmp;
   const auto artifact_path = tmp.path / L"source" / L"jq.exe";

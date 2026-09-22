@@ -2944,9 +2944,11 @@ auto try_fetch_index(const Options& opts, std::string& used_source)
                            : opts.source;
 
   // Source ordering only; every source is still tried on failure. An explicit
-  // preferred_source disables all reordering. region=cn always prefers
-  // regional sources; region=auto probes the highest-priority source once and
-  // prefers regional ones only when it is unreachable.
+  // preferred_source goes first but the remaining sources stay as fallback —
+  // a pinned source that dies (e.g. proxy turned off) must not strand the
+  // client without any working index. region=cn always prefers regional
+  // sources; region=auto probes the highest-priority source once and prefers
+  // regional ones only when it is unreachable.
   if (wanted == "auto") {
     std::string region = config.value("region", "auto");
     bool prefer_cn = region == "cn";
@@ -2987,12 +2989,29 @@ auto try_fetch_index(const Options& opts, std::string& used_source)
             "first"));
       }
     }
+  } else {
+    std::stable_partition(
+        sources.begin(), sources.end(),
+        [&](const nlohmann::json& s) { return s.value("name", "") == wanted; });
   }
 
+  bool preferred_seen = false;
+  bool fallback_notified = false;
   for (const auto& source : sources) {
     std::string name = source.value("name", "");
     if (name.empty()) continue;
-    if (wanted != "auto" && wanted != name) continue;
+    if (wanted != "auto") {
+      if (name == wanted) {
+        preferred_seen = true;
+      } else if (preferred_seen && !fallback_notified) {
+        fallback_notified = true;
+        safePrintLn(wpm_text(
+            "command.wpm.status.preferred_fallback",
+            "wpm: preferred source '{}' failed; trying other sources (run "
+            "'wpm source use auto' to restore automatic selection)",
+            wanted));
+      }
+    }
     if (!source.contains("index_urls") || !source["index_urls"].is_array())
       continue;
     for (const auto& url_json : source["index_urls"]) {
