@@ -38,3 +38,10 @@ catalog before the WinuxCmd release. The release workflow publishes the
 English catalog automatically and preserves locale catalogs from the I18N
 repository. Translation batches and manual review happen independently of the
 WinuxCmd binary build.
+
+# Banned commands
+
+Never add a `link` command. Its hardlink-style name shadows the MSVC
+toolchain linker `link.exe` on PATH and breaks builds that invoke it. This
+command was removed once already (`10b2364`) and a bot PR re-added it
+(#1065); do not accept any PR, generated or otherwise, that reintroduces it.

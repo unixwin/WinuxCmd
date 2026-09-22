@@ -6,6 +6,14 @@ repository release tags.
 
 ## [Unreleased]
 
+### Removed
+
+- **link** command (again): its hardlink-style name shadows the MSVC
+  toolchain linker `link.exe` on PATH. Added a CMake reserved-command
+  blacklist guard (`WINUXCMD_BANNED_COMMANDS`) that fails configuration
+  with the command name and rejection reason if the source ever reappears;
+  the rule is also recorded in `AGENTS.md`.
+
 ## [1.1.0] - 2026-09-21
 
 ### Fixed — GNU/upstream parity (audit rounds 1-2, 178 commands audited)

@@ -361,6 +361,28 @@ file(GLOB COMMAND_SOURCES CONFIGURE_DEPENDS
         "src/commands/*.cpp"
 )
 
+set(WINUXCMD_BANNED_COMMANDS "link")
+set(WINUXCMD_BANNED_COMMANDS_REASONS
+        "Its hardlink-style name shadows the MSVC toolchain linker link.exe "
+        "on PATH and breaks builds that invoke it. Removed once in 10b2364 "
+        "and re-added by a bot PR (#1065); it must never come back.")
+
+# Reserved command blacklist: these names must never exist as WinuxCmd
+# commands. If a banned source appears (e.g. a generated PR re-adds it),
+# configure fails immediately with the command name and the rejection
+# reason instead of shipping a binary that shadows foreign tools on PATH.
+foreach(_banned _reason IN ZIP_LISTS
+        WINUXCMD_BANNED_COMMANDS
+        WINUXCMD_BANNED_COMMANDS_REASONS)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/commands/${_banned}.cpp")
+        message(FATAL_ERROR
+                "Banned command '${_banned}': src/commands/${_banned}.cpp must "
+                "not exist.\nReason: ${_reason}\n"
+                "Remove the file (and its tests/docs/i18n entries) before "
+                "configuring. See the 'Banned commands' section in AGENTS.md.")
+    endif()
+endforeach()
+
 target_sources(winuxcmd-commands PRIVATE ${COMMAND_SOURCES})
 
 # Link module interface library (for settings only)
