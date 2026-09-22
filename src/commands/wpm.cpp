@@ -861,6 +861,14 @@ auto http_get_urlmon(std::wstring_view url,
 
 auto with_urlmon_fallback(HttpResult result, std::wstring_view url,
                           std::string_view progress_label = {}) -> HttpResult {
+  if (!progress_label.empty() && !result.error.empty()) {
+    // The primary transport's progress bar already rendered to 100%; say why
+    // a second bar is starting instead of looking like a duplicate download.
+    safePrintLn(wpm_text("command.wpm.status.retry_fallback_transport",
+                         "wpm: download failed ({}); retrying via fallback "
+                         "transport",
+                         result.error));
+  }
   auto fallback = http_get_urlmon(url, progress_label);
   if (fallback.ok) return fallback;
   if (result.error.empty()) return fallback;

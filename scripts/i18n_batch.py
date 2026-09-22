@@ -237,6 +237,7 @@ MANUAL_MESSAGES = {
     "command.wpm.error.save_region": "wpm: failed to save region",
     "command.wpm.status.prefer_regional_sources": "wpm: global index source unreachable; trying regional mirrors first",
     "command.wpm.status.preferred_fallback": "wpm: preferred source '{}' failed; trying other sources (run 'wpm source use auto' to restore automatic selection)",
+    "command.wpm.status.retry_fallback_transport": "wpm: download failed ({}); retrying via fallback transport",
     "command.wpm.status.region_set": "wpm: region set to {}",
     "command.wpm.error.usage.cache": "wpm: usage: wpm cache clean [cache|staging|all]",
     "command.wpm.error.usage.clean": "wpm: usage: wpm clean [cache|staging|all]",
