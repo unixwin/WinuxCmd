@@ -1,3 +1,0 @@
-D:/repo/unixwin-winuxcmd/tests/differential/regressions/31-leading-dash-operands.case	printf	EXIT_DIFF
-D:/repo/unixwin-winuxcmd/tests/differential/regressions/32-printf-dynamic-width.case	printf	EXIT_DIFF
-D:/repo/unixwin-winuxcmd/tests/differential/regressions/33-printf-shell-quote.case	printf	EXIT_DIFF

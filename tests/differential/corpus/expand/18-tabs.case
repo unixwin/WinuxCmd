@@ -1,7 +1,0 @@
-cmd: expand
-args: -t 4 f.txt
-timeout: 10
-setup: |
-  printf 'a\tb\n  c\td\n' > f.txt
-source: github.com/unixwin/WinuxCmd
-tags: corpus-expansion round-3

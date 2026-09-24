@@ -1,9 +1,0 @@
-{
-  "oracle": {
-    "name": "gnu-coreutils",
-    "version": "9.7",
-    "source": "https://ftp.gnu.org/gnu/coreutils/coreutils-9.7.tar.xz",
-    "sha256": "pin-after-fetch"
-  },
-  "case_format": 1
-}

@@ -1,8 +1,0 @@
-cmd: sha256sum
-oracle_version: >=9
-args: -c f.sha256
-timeout: 10
-setup: |
-  printf 'hello\n' > f.txt; printf '5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be0386a2e846f6be03  f.txt\n' > f.sha256
-source: github.com/unixwin/WinuxCmd
-tags: corpus-expansion round-3

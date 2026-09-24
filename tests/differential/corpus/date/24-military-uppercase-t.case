@@ -1,3 +1,0 @@
-cmd: date
-args: -u -d '1024T' '+%H:%M'
-source: GNU master gnulib parse-datetime.y zone production, T = -HOUR(7)

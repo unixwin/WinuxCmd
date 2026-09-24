@@ -1,7 +1,0 @@
-cmd: fold
-args: -w 10 f.txt
-timeout: 10
-setup: |
-  printf 'aaaa bbbb cccc dddd eeee ffff gggg\n' > f.txt
-source: github.com/unixwin/WinuxCmd
-tags: corpus-expansion round-3

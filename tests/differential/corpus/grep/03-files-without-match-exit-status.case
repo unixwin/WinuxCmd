@@ -1,7 +1,0 @@
-cmd: grep
-oracle: linux
-args: -L needle input.txt
-setup: |
-  printf 'needle here\nother\n' > input.txt
-source: tests/differential/corpus/grep/03-files-without-match-exit-status.case
-tags: gnu-compat grep-L-exit-status

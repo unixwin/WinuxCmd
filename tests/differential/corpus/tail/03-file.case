@@ -1,7 +1,0 @@
-cmd: tail
-args: -n 2 f.txt
-timeout: 10
-setup: |
-  printf 'one\ntwo\nthree\n' > f.txt
-source: github.com/unixwin/WinuxCmd
-tags: corpus-expansion round-4

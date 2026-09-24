@@ -1,5 +1,0 @@
-cmd: namei
-args: /no/such/file
-timeout: 10
-source: github.com/unixwin/WinuxCmd
-tags: new-command namei

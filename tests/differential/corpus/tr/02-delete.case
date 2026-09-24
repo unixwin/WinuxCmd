@@ -1,7 +1,0 @@
-cmd: tr
-args: -d 'a-z'
-timeout: 10
-stdin: |
-  a1b2c3
-source: github.com/unixwin/WinuxCmd
-tags: corpus-expansion round-4

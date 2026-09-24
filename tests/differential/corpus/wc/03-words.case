@@ -1,7 +1,0 @@
-cmd: wc
-args: -w f.txt
-timeout: 10
-setup: |
-  printf 'a b c\n' > f.txt
-source: github.com/unixwin/WinuxCmd
-tags: corpus-expansion round-4

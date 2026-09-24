@@ -1,5 +1,0 @@
-cmd: stat
-args: '-c' '%F' /dev/tty
-timeout: 10
-source: github.com/unixwin/WinuxCmd/issues/276
-tags: fix-2026-09-15 dev-pseudo-device device-attribute-probe

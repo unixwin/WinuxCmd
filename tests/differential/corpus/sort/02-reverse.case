@@ -1,9 +1,0 @@
-cmd: sort
-args: -r
-timeout: 10
-stdin: |
-  c
-  a
-  b
-source: github.com/unixwin/WinuxCmd
-tags: corpus-expansion round-4

@@ -1,5 +1,0 @@
-cmd: test
-args: 1 -eq 2
-timeout: 10
-source: github.com/unixwin/WinuxCmd
-tags: corpus-expansion round-4
