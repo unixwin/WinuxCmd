@@ -6,6 +6,31 @@ repository release tags.
 
 ## [Unreleased]
 
+### Fixed — diff rewritten to GNU diffutils 3.10 output parity
+
+- **diff**: every output format byte-compared against GNU diffutils 3.10
+  (25/25 golden cases): normal, unified, context, side-by-side (GNU tab
+  gutter layout with the exact half-width/gutter formula), ed script (-e),
+  forward ed (-f), RCS (-n), --ifdef, --line-format and the
+  --GTYPE-group-format family, --from-file/--to-file.
+- **diff**: options that were declared in help but rejected at runtime are
+  now implemented: -e/-f/-n, -D/--ifdef, -p/--show-c-function,
+  -F/--show-function-line, -r/--recursive directory comparison with
+  -x/-X/--exclude-dir/-S filters, -l/--paginate (pr-style 66-line pages),
+  --color[=WHEN], --left-column, --horizon-lines, --speed-large-files,
+  -d/--minimal accepted (the LCS is already minimal).
+- **diff**: -Z rebinding per GNU 3.4+: -Z is now --ignore-trailing-space;
+  --strip-trailing-cr keeps its long form; -E/--ignore-tab-expansion added.
+- **diff**: hunk grouping distance fixed — the old heuristic never split
+  hunks; now measures the common-line gap change-to-change (context 0-3
+  outputs match GNU for the first time).
+- **help**: the i18n catalog's 112 placeholder strings ("新增选项：x")
+  replaced with real translations (synced in winuxcmd-i18n 0.6.13);
+  diff help text now matches GNU wording.
+- **parser**: glued values now accepted on int options (diff -U1, head
+  -n5 style), matching GNU; usage errors (missing/extra operands) exit 2
+  as GNU does.
+
 ### Added
 
 - **PGO in release CI** (x64): the tag build now runs the instrumented

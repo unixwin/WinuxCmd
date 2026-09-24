@@ -447,9 +447,16 @@ export ParseResultRuntime parse_command_runtime(
           if (arg.size() > 2) {
             for (const auto& m : metas) {
               if (m.short_name.size() == 2 && arg.starts_with(m.short_name)) {
+                // GNU accepts glued numeric values on int options too
+                // (diff -U1, head -n5 style) — treat the rest of the
+                // token as the option's value for all value-taking types.
                 if ((m.type == OptionType::String &&
                      policy.allow_short_attached_values) ||
                     (m.type == OptionType::OptionalString &&
+                     policy.allow_optional_short_attached_values) ||
+                    (m.type == OptionType::Int &&
+                     policy.allow_short_attached_values) ||
+                    (m.type == OptionType::OptionalInt &&
                      policy.allow_optional_short_attached_values)) {
                   glued_to_value_option = true;
                   break;

@@ -208,7 +208,7 @@ TEST(diff, diff_rejects_extra_operand_with_help_hint) {
   TEST_LOG_EXIT_CODE(r);
   TEST_LOG("diff extra operand stderr", r.stderr_text);
 
-  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ(r.exit_code, 2);
   EXPECT_TRUE(r.stdout_text.empty());
   EXPECT_EQ_TEXT(r.stderr_text,
                  "diff: extra operand 'c'\n"
@@ -224,7 +224,7 @@ TEST(diff, diff_missing_all_operands_reports_help_hint) {
   TEST_LOG_EXIT_CODE(r);
   TEST_LOG("diff missing all operands stderr", r.stderr_text);
 
-  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ(r.exit_code, 2);
   EXPECT_TRUE(r.stdout_text.empty());
   EXPECT_EQ_TEXT(r.stderr_text,
                  "diff: missing operand\n"
@@ -240,7 +240,7 @@ TEST(diff, diff_single_operand_reports_help_hint) {
   TEST_LOG_EXIT_CODE(r);
   TEST_LOG("diff single operand stderr", r.stderr_text);
 
-  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ(r.exit_code, 2);
   EXPECT_TRUE(r.stdout_text.empty());
   EXPECT_EQ_TEXT(r.stderr_text,
                  "diff: missing operand after 'a'\n"

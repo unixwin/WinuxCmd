@@ -10,6 +10,7 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "core/command_macros.h"
+#include <shellapi.h>
 #include "pch/pch.h"
 
 #pragma comment(lib, "advapi32.lib")
@@ -72,111 +73,237 @@ using cmd::meta::OptionType;
 // [GNU] -X, --exclude-from=FILE: exclude files that match any pattern in FILE
 // [GNU] -Z, --strip-trailing-cr: strip trailing carriage return on input
 auto constexpr DIFF_OPTIONS = std::array{
-    // [GNU]
+    // [GNU 3.10] wording follows `diff --help` verbatim.
+    OPTION("", "--normal", "output a normal diff (the default)"),
     OPTION("-q", "--brief", "report only when files differ"),
-    // [GNU]
-    OPTION("-u", "--unified", "output NUM (default 3) lines of unified context",
-           OPTIONAL_INT_TYPE),
-    // [GNU]
-    OPTION("-U", "", "output NUM lines of unified context", INT_TYPE),
-    // [GNU]
+    OPTION("-s", "--report-identical-files",
+           "report when two files are the same"),
     OPTION("-c", "--context", "output NUM (default 3) lines of copied context",
            OPTIONAL_INT_TYPE),
-    // [GNU]
     OPTION("-C", "", "output NUM lines of copied context", INT_TYPE),
-    // [GNU]
-    OPTION("", "--label", "use LABEL instead of file name", STRING_TYPE),
-    // [GNU]
-    OPTION("-y", "--side-by-side", "output in two columns"),
-    // [GNU]
-    OPTION("-w", "--ignore-all-space", "ignore all white space"),
-    // [GNU]
-    OPTION("-B", "--ignore-blank-lines",
-           "ignore changes whose lines are all blank"),
-    // [GNU]
-    OPTION("-a", "--text", "treat all files as text"),
-    // [GNU]
-    OPTION("-b", "--ignore-space-change",
-           "ignore changes in amount of white space"),
-    // [GNU]
-    OPTION("", "--binary", "read and write data as binary"),
-    // [GNU]
-    OPTION("", "--color", "colorize the output"),
-    // [GNU]
-    OPTION("-d", "--minimal", "try hard to find a smaller set of changes"),
-    // [GNU]
-    OPTION("", "--diff-program", "use PROGRAM to compare files", STRING_TYPE),
-    // [GNU]
+    OPTION("-u", "--unified", "output NUM (default 3) lines of unified context",
+           OPTIONAL_INT_TYPE),
+    OPTION("-U", "", "output NUM lines of unified context", INT_TYPE),
     OPTION("-e", "--ed", "output an ed script"),
-    // [GNU]
-    OPTION("", "--exclude", "exclude files that match PATTERN", STRING_TYPE),
-    // [GNU]
-    OPTION("", "--exclude-from", "exclude files matching pattern in FILE",
-           STRING_TYPE),
-    // [GNU]
-    OPTION("", "--exclude-dir", "exclude directories matching PATTERN",
-           STRING_TYPE),
-    // [GNU]
-    OPTION("-f", "--forward-ed", "output an ed script for current changes"),
-    // [GNU]
-    OPTION("-i", "--ignore-case", "ignore case when comparing files"),
-    // [GNU]
-    OPTION("", "--ignore-file-name-case", "ignore case for file names"),
-    // [GNU]
-    OPTION("-I", "--ignore-matching-lines", "ignore changes matching NUM lines",
-           STRING_TYPE),
-    // [GNU]
-    OPTION("-l", "--paginate", "pass output through pr"),
-    // [GNU]
-    OPTION("-n", "--rcs", "output an RCS-format diff"),
-    // [GNU]
-    OPTION("-N", "--new-file", "treat absent files as empty"),
-    // [GNU]
-    OPTION("", "--no-dereference", "don't follow symbolic links"),
-    // [GNU]
+    OPTION("-f", "--forward-ed",
+           "output an ed script for the second file"),
+    OPTION("-n", "--rcs", "output an RCS format diff"),
+    OPTION("-y", "--side-by-side", "output in two columns"),
+    OPTION("-W", "--width", "output at most NUM (default 130) print columns",
+           INT_TYPE),
+    OPTION("", "--left-column", "output only the left column of common lines"),
+    OPTION("", "--suppress-common-lines", "do not output common lines"),
     OPTION("-p", "--show-c-function",
            "show which C function each change is in"),
-    // [GNU]
-    OPTION("", "--show-function-line", "show most recent line matching REGEXP",
+    OPTION("-F", "--show-function-line",
+           "show the most recent line matching RE", STRING_TYPE),
+    OPTION("", "--label", "use LABEL instead of file name and timestamp",
            STRING_TYPE),
-    // [GNU]
-    OPTION("-r", "--recursive", "recursively compare subdirectories"),
-    // [GNU]
-    OPTION("", "--report-identical-files",
-           "report when two files are the same"),
-    // [GNU]
-    OPTION("-s", "", "report when two files are the same"),
-    // [GNU]
-    OPTION("", "--strip-trailing-cr",
-           "strip trailing carriage return on input"),
-    // [GNU]
-    OPTION("-S", "--starting-file", "start with FILE when comparing dirs",
-           STRING_TYPE),
-    // [GNU]
-    OPTION("", "--suppress-blank-empty", "suppress empty common lines"),
-    // [GNU]
-    OPTION("", "--suppress-common-lines",
-           "suppress common lines in side-by-side"),
-    // [GNU]
     OPTION("-t", "--expand-tabs", "expand tabs to spaces in output"),
-    // [GNU]
-    OPTION("-T", "--initial-tab", "tab stop every NUM output lines"),
-    // [GNU]
-    OPTION("", "--tabsize", "tab stop every NUM print positions", INT_TYPE),
-    // [GNU]
+    OPTION("-T", "--initial-tab",
+           "make tabs line up by prepending a tab"),
+    OPTION("", "--tabsize", "tab stops every NUM (default 8) print columns",
+           INT_TYPE),
+    OPTION("", "--suppress-blank-empty",
+           "suppress space or tab before empty output lines"),
+    OPTION("-l", "--paginate", "pass output through 'pr' to paginate it"),
+    OPTION("-r", "--recursive",
+           "recursively compare any subdirectories found"),
+    OPTION("", "--no-dereference", "don't follow symbolic links"),
+    OPTION("-N", "--new-file", "treat absent files as empty"),
     OPTION("", "--unidirectional-new-file",
            "treat absent first files as empty"),
-    // [GNU]
-    OPTION("-W", "--width", "output at most NUM columns", INT_TYPE),
-    // [GNU]
+    OPTION("", "--ignore-file-name-case",
+           "ignore case when comparing file names"),
+    OPTION("", "--no-ignore-file-name-case",
+           "consider case when comparing file names"),
     OPTION("-x", "", "exclude files that match PAT", STRING_TYPE),
-    // [GNU]
-    OPTION("-X", "", "exclude files matching pattern in FILE", STRING_TYPE),
-    // [GNU]
-    OPTION("-Z", "", "strip trailing carriage return on input")};
+    OPTION("-X", "", "exclude files that match any pattern in FILE",
+           STRING_TYPE),
+    OPTION("-S", "", "start with FILE when comparing directories",
+           STRING_TYPE),
+    OPTION("", "--from-file", "compare FILE1 to all operands; FILE1 can be a "
+                              "directory",
+           STRING_TYPE),
+    OPTION("", "--to-file", "compare all operands to FILE2; FILE2 can be a "
+                            "directory",
+           STRING_TYPE),
+    OPTION("-i", "--ignore-case", "ignore case differences in file contents"),
+    OPTION("-E", "--ignore-tab-expansion",
+           "ignore changes due to tab expansion"),
+    OPTION("-Z", "--ignore-trailing-space",
+           "ignore white space at line end"),
+    OPTION("-b", "--ignore-space-change",
+           "ignore changes in the amount of white space"),
+    OPTION("-w", "--ignore-all-space", "ignore all white space"),
+    OPTION("-B", "--ignore-blank-lines",
+           "ignore changes where lines are all blank"),
+    OPTION("-I", "--ignore-matching-lines",
+           "ignore changes where all lines match RE", STRING_TYPE),
+    OPTION("-a", "--text", "treat all files as text"),
+    OPTION("", "--strip-trailing-cr",
+           "strip trailing carriage return on input"),
+    OPTION("-D", "--ifdef",
+           "output merged file with '#ifdef NAME' diffs", STRING_TYPE),
+    OPTION("", "--old-group-format", "format changed groups of lines from "
+                                     "FILE1 with GFMT",
+           STRING_TYPE),
+    OPTION("", "--new-group-format", "format changed groups of lines from "
+                                     "FILE2 with GFMT",
+           STRING_TYPE),
+    OPTION("", "--changed-group-format",
+           "format a group of differing lines with GFMT", STRING_TYPE),
+    OPTION("", "--unchanged-group-format",
+           "format a group of unchanged lines with GFMT", STRING_TYPE),
+    OPTION("", "--line-format", "format all input lines with LFMT",
+           STRING_TYPE),
+    OPTION("", "--old-line-format", "format lines from FILE1 with LFMT",
+           STRING_TYPE),
+    OPTION("", "--new-line-format", "format lines from FILE2 with LFMT",
+           STRING_TYPE),
+    OPTION("", "--unchanged-line-format",
+           "format common lines with LFMT", STRING_TYPE),
+    OPTION("-d", "--minimal",
+           "try hard to find a smaller set of changes (this diff is always "
+           "minimal)"),
+    OPTION("", "--horizon-lines",
+           "keep NUM lines of the common prefix and suffix", INT_TYPE),
+    OPTION("", "--speed-large-files",
+           "assume large files and many scattered small changes"),
+    OPTION("", "--color", "color output; WHEN is 'never', 'always', or "
+                          "'auto'; plain --color means --color='auto'",
+           OPTIONAL_STRING_TYPE),
+    OPTION("", "--palette",
+           "the colors to use when --color is active (accepted, default "
+           "palette used)"),
+    OPTION("", "--binary", "read and write data as binary"),
+    OPTION("", "--diff-program", "use PROGRAM to compare files (accepted, "
+                                 "built-in engine used)",
+           STRING_TYPE),
+    OPTION("", "--exclude", "alias for -x, exclude files that match PATTERN",
+           STRING_TYPE),
+    OPTION("", "--exclude-from",
+           "alias for -X, exclude files matching pattern in FILE",
+           STRING_TYPE),
+    OPTION("", "--exclude-dir", "exclude directories matching PATTERN",
+           STRING_TYPE)};
 
 namespace diff_pipeline {
 namespace cp = core::pipeline;
+
+// ===== GNU diffutils 3.10 output engines: ed / RCS / format directives =====
+
+// Output sink: -l/--paginate buffers the diff and paginates it pr-style
+// (66-line pages with a dated header) instead of writing each line out.
+std::string paginate_buffer;
+bool buffering_output = false;
+
+void dput(std::string_view s) {
+  if (buffering_output) {
+    paginate_buffer.append(s);
+  } else {
+    safePrint(s);
+  }
+}
+
+struct DiffColors {
+  bool on = false;
+  [[nodiscard]] auto bold(std::string_view s) const -> std::string {
+    return on ? "\033[1m" + std::string(s) + "\033[0m" : std::string(s);
+  }
+  [[nodiscard]] auto cyan(std::string_view s) const -> std::string {
+    return on ? "\033[36m" + std::string(s) + "\033[0m" : std::string(s);
+  }
+  [[nodiscard]] auto red(std::string_view s) const -> std::string {
+    return on ? "\033[31m" + std::string(s) + "\033[0m" : std::string(s);
+  }
+  [[nodiscard]] auto green(std::string_view s) const -> std::string {
+    return on ? "\033[32m" + std::string(s) + "\033[0m" : std::string(s);
+  }
+};
+
+// Styling shared by the line printers (--color palette, -p/-F function
+// context). A default-constructed value is "everything off".
+struct StyleCtx {
+  const DiffColors *colors = nullptr;
+  const portable_regex::Pattern *func_re = nullptr;
+  bool func_show_c = false;  // -p default: leading alphabetic/underscore/$
+};
+
+
+auto find_function_line(const std::vector<std::string> &lines,
+                        size_t bound,
+                        const portable_regex::Pattern *func_re,
+                        bool func_show_c) -> std::string;
+
+// Reconstructs the "diff -ru a b" tail GNU echoes in -r headers and the
+// -l page header: argv[0] dropped, plus the subcommand token when
+// dispatched through the winuxcmd multiplexer.
+auto diff_command_tail() -> std::string {
+  int argc = 0;
+  LPWSTR *argv_w = CommandLineToArgvW(GetCommandLineW(), &argc);
+  if (!argv_w || argc < 1) return "diff";
+  std::string tail = "diff";
+  for (int i = 1; i < argc; ++i) {
+    std::string token = wstring_to_utf8(argv_w[i]);
+    if (i == 1 && token == "diff") continue;
+    tail += " ";
+    tail += token;
+  }
+  LocalFree(argv_w);
+  return tail;
+}
+
+auto split_lines(const std::string &text) -> std::vector<std::string> {
+  std::vector<std::string> lines;
+  std::string current;
+  for (char ch : text) {
+    if (ch == '\n') {
+      lines.push_back(current);
+      current.clear();
+    } else {
+      current += ch;
+    }
+  }
+  return lines;
+}
+
+// pr(1)-style pagination: 72-column header line = date (18) + centered
+// title (45) + right-aligned "Page N" (9); 66 lines per page with a
+// two-blank/header/two-blank masthead. Form feed only between pages.
+void paginate_and_flush(const std::string &title) {
+  auto lines = split_lines(paginate_buffer);
+  const size_t kPageLines = 66;
+  const size_t kBodyLines = kPageLines - 5;
+  size_t page = 1;
+  for (size_t i = 0; i < lines.size() || page == 1; i += kBodyLines, ++page) {
+    if (page > 1) dput("\f\n");
+    SYSTEMTIME st{};
+    GetLocalTime(&st);
+    char datebuf[32]{};
+    std::snprintf(datebuf, sizeof(datebuf), "%04d-%02d-%02d %02d:%02d",
+                  static_cast<int>(st.wYear), static_cast<int>(st.wMonth),
+                  static_cast<int>(st.wDay), static_cast<int>(st.wHour),
+                  static_cast<int>(st.wMinute));
+    char pagebuf[24]{};
+    std::snprintf(pagebuf, sizeof(pagebuf), "Page %zu", page);
+    std::string page_str(pagebuf);
+    const size_t middle = 72 - 18 - page_str.size();
+    const size_t pad = title.size() < middle ? (middle - title.size()) / 2 : 0;
+    dput("\n\n");
+    dput(datebuf);
+    dput(std::string(18 - std::strlen(datebuf), ' '));
+    dput(std::string(pad, ' ') + title + "\n\n");
+    size_t emitted = 0;
+    for (size_t j = i; j < lines.size() && emitted < kBodyLines; ++j, ++emitted) {
+      dput(lines[j] + "\n");
+    }
+    for (size_t j = emitted; j < kBodyLines; ++j) dput("\n");
+    if (i >= lines.size()) break;
+  }
+  paginate_buffer.clear();
+  buffering_output = false;
+}
 
 auto resolve_files(const CommandContext<DIFF_OPTIONS.size()> &ctx)
     -> cp::Result<std::vector<std::string>> {
@@ -550,11 +677,11 @@ auto compare_files(const std::string &path1, const std::string &path2,
   // Quick check: compare line counts
   if (compare_lines1.size() != compare_lines2.size()) {
     if (brief) {
-      safePrint("Files ");
-      safePrint(path1);
-      safePrint(" and ");
-      safePrint(path2);
-      safePrint(" differ\n");
+      dput("Files ");
+      dput(path1);
+      dput(" and ");
+      dput(path2);
+      dput(" differ\n");
     }
     return false;
   }
@@ -569,11 +696,11 @@ auto compare_files(const std::string &path1, const std::string &path2,
   }
 
   if (!equal && brief) {
-    safePrint("Files ");
-    safePrint(path1);
-    safePrint(" and ");
-    safePrint(path2);
-    safePrint(" differ\n");
+    dput("Files ");
+    dput(path1);
+    dput(" and ");
+    dput(path2);
+    dput(" differ\n");
   }
 
   return equal;
@@ -673,24 +800,31 @@ auto build_diff_hunks(const std::vector<Edit> &edits, size_t line1_count,
     }
     if (in_run) groups.push_back({run_start, edits.size()});
   } else {
+    // [GNU] Hunks merge while the common-line gap between consecutive
+    // CHANGES is at most 2*context; distance is measured change-to-change
+    // (KEEP runs in between are exactly the gap being measured).
     size_t hunk_start = 0;
-    for (size_t i = 1; i < edits.size(); ++i) {
-      size_t prev_line1 = edits[i - 1].line1_index;
-      size_t curr_line1 = edits[i].line1_index;
-      size_t prev_line2 = edits[i - 1].line2_index;
-      size_t curr_line2 = edits[i].line2_index;
-
-      size_t distance = std::max((curr_line1 > prev_line1 + context_lines)
-                                     ? curr_line1 - prev_line1 - context_lines
-                                     : 0,
-                                 (curr_line2 > prev_line2 + context_lines)
-                                     ? curr_line2 - prev_line2 - context_lines
-                                     : 0);
-
-      if (distance > context_lines * 2) {
-        groups.push_back({hunk_start, i});
-        hunk_start = i;
+    bool have_prev_change = false;
+    size_t prev_change1 = 0;
+    size_t prev_change2 = 0;
+    for (size_t i = 0; i < edits.size(); ++i) {
+      if (edits[i].type == EditType::KEEP) continue;
+      if (have_prev_change) {
+        size_t gap1 = edits[i].line1_index > prev_change1 + 1
+                          ? edits[i].line1_index - prev_change1 - 1
+                          : 0;
+        size_t gap2 = edits[i].line2_index > prev_change2 + 1
+                          ? edits[i].line2_index - prev_change2 - 1
+                          : 0;
+        size_t gap = std::max(gap1, gap2);
+        if (gap > static_cast<size_t>(context_lines) * 2) {
+          groups.push_back({hunk_start, i});
+          hunk_start = i;
+        }
       }
+      have_prev_change = true;
+      prev_change1 = edits[i].line1_index;
+      prev_change2 = edits[i].line2_index;
     }
     groups.push_back({hunk_start, edits.size()});
   }
@@ -746,18 +880,23 @@ struct DiffLabel {
   bool custom = false;
 };
 
+// Styling shared by the line printers (--color palette, -p/-F function
+// context). A default-constructed value is "everything off".
+
 void output_diff_file_header(std::string_view prefix, const DiffLabel &label,
-                             const std::string &path) {
-  safePrint(std::string(prefix));
-  safePrint(label.text);
+                             const std::string &path,
+                             const StyleCtx &style = {}) {
+  std::string line(prefix);
+  line += label.text;
   if (!label.custom) {
     auto timestamp = format_unified_timestamp(path);
     if (!timestamp.empty()) {
-      safePrint("\t");
-      safePrint(timestamp);
+      line += "\t";
+      line += timestamp;
     }
   }
-  safePrint("\n");
+  dput(style.colors ? style.colors->bold(line) : line);
+  dput("\n");
 }
 
 /**
@@ -773,23 +912,50 @@ auto output_unified_diff(const std::string &path1, const std::string &path2,
                          const std::vector<std::string> &compare_lines2,
                          const std::vector<std::string> &lines1,
                          const std::vector<std::string> &lines2, int context,
-                         const DiffLabel &label1, const DiffLabel &label2)
+                         const DiffLabel &label1, const DiffLabel &label2,
+                         const StyleCtx &style = {})
     -> void {
   auto edits = compute_diff(compare_lines1, compare_lines2);
   auto hunks = build_diff_hunks(edits, lines1.size(), lines2.size(), context);
   if (hunks.empty()) return;
 
-  output_diff_file_header("--- ", label1, path1);
-  output_diff_file_header("+++ ", label2, path2);
+  output_diff_file_header("--- ", label1, path1, style);
+  output_diff_file_header("+++ ", label2, path2, style);
 
+  // GNU -p/-F: the function header is the most recent matching line
+  // before each hunk, tracked independently per hunk start.
+  auto hunk_function = [&](const DiffHunk &hunk) -> std::string {
+    if (!style.func_re && !style.func_show_c) return {};
+    return find_function_line(lines1, hunk.file1_start, style.func_re,
+                              style.func_show_c);
+  };
+
+  const DiffColors &colors =
+      style.colors ? *style.colors : DiffColors{};
   for (const auto &hunk : hunks) {
-    safePrint("@@ -");
-    safePrint(format_unified_range(hunk.file1_start + 1,
-                                   hunk.file1_end - hunk.file1_start));
-    safePrint(" +");
-    safePrint(format_unified_range(hunk.file2_start + 1,
-                                   hunk.file2_end - hunk.file2_start));
-    safePrint(" @@\n");
+    std::string header = "@@ -";
+    header += format_unified_range(hunk.file1_start + 1,
+                                   hunk.file1_end - hunk.file1_start);
+    header += " +";
+    header += format_unified_range(hunk.file2_start + 1,
+                                   hunk.file2_end - hunk.file2_start);
+    header += " @@";
+    std::string func = hunk_function(hunk);
+    if (!func.empty()) header += " " + func;
+    dput(colors.cyan(header));
+    dput("\n");
+
+    auto emit = [&](std::string_view prefix, const std::string &line) {
+      if (prefix == "-") {
+        dput(colors.red(std::string(prefix) + line));
+      } else if (prefix == "+") {
+        dput(colors.green(std::string(prefix) + line));
+      } else {
+        dput(std::string(prefix));
+        dput(line);
+      }
+      dput("\n");
+    };
 
     size_t i1 = hunk.file1_start;
     size_t i2 = hunk.file2_start;
@@ -804,15 +970,11 @@ auto output_unified_diff(const std::string &path1, const std::string &path2,
           continue;
         }
         while (i1 < edit.line1_index && i1 < hunk.file1_end) {
-          safePrint(" ");
-          safePrint(lines1[i1]);
-          safePrint("\n");
+          emit(" ", lines1[i1]);
           ++i1;
           ++i2;
         }
-        safePrint(" ");
-        safePrint(lines1[edit.line1_index]);
-        safePrint("\n");
+        emit(" ", lines1[edit.line1_index]);
         ++i1;
         ++i2;
       } else if (edit.type == EditType::DEL) {
@@ -821,15 +983,11 @@ auto output_unified_diff(const std::string &path1, const std::string &path2,
           continue;
         }
         while (i1 < edit.line1_index && i1 < hunk.file1_end) {
-          safePrint(" ");
-          safePrint(lines1[i1]);
-          safePrint("\n");
+          emit(" ", lines1[i1]);
           ++i1;
           ++i2;
         }
-        safePrint("-");
-        safePrint(lines1[edit.line1_index]);
-        safePrint("\n");
+        emit("-", lines1[edit.line1_index]);
         ++i1;
       } else {
         if (edit.line2_index < hunk.file2_start ||
@@ -837,23 +995,17 @@ auto output_unified_diff(const std::string &path1, const std::string &path2,
           continue;
         }
         while (i2 < edit.line2_index && i2 < hunk.file2_end) {
-          safePrint(" ");
-          safePrint(lines2[i2]);
-          safePrint("\n");
+          emit(" ", lines2[i2]);
           ++i1;
           ++i2;
         }
-        safePrint("+");
-        safePrint(lines2[edit.line2_index]);
-        safePrint("\n");
+        emit("+", lines2[edit.line2_index]);
         ++i2;
       }
     }
 
     while (i1 < hunk.file1_end && i2 < hunk.file2_end) {
-      safePrint(" ");
-      safePrint(lines1[i1]);
-      safePrint("\n");
+      emit(" ", lines1[i1]);
       ++i1;
       ++i2;
     }
@@ -862,7 +1014,8 @@ auto output_unified_diff(const std::string &path1, const std::string &path2,
 
 void output_context_old_section(const std::vector<Edit> &edits,
                                 const std::vector<std::string> &lines1,
-                                const DiffHunk &hunk, bool mixed_change) {
+                                const DiffHunk &hunk, bool mixed_change,
+                                const DiffColors &colors = {}) {
   size_t i1 = hunk.file1_start;
   for (size_t i = hunk.edit_start; i < hunk.edit_end; ++i) {
     const auto &edit = edits[i];
@@ -873,14 +1026,14 @@ void output_context_old_section(const std::vector<Edit> &edits,
         continue;
       }
       while (i1 < edit.line1_index && i1 < hunk.file1_end) {
-        safePrint("  ");
-        safePrint(lines1[i1]);
-        safePrint("\n");
+        dput("  ");
+        dput(lines1[i1]);
+        dput("\n");
         ++i1;
       }
-      safePrint("  ");
-      safePrint(lines1[edit.line1_index]);
-      safePrint("\n");
+      dput("  ");
+      dput(lines1[edit.line1_index]);
+      dput("\n");
       ++i1;
       continue;
     }
@@ -889,27 +1042,28 @@ void output_context_old_section(const std::vector<Edit> &edits,
       continue;
     }
     while (i1 < edit.line1_index && i1 < hunk.file1_end) {
-      safePrint("  ");
-      safePrint(lines1[i1]);
-      safePrint("\n");
+      dput("  ");
+      dput(lines1[i1]);
+      dput("\n");
       ++i1;
     }
-    safePrint(mixed_change ? "! " : "- ");
-    safePrint(lines1[edit.line1_index]);
-    safePrint("\n");
+    dput(mixed_change ? "! " : "- ");
+    dput(lines1[edit.line1_index]);
+    dput("\n");
     ++i1;
   }
   while (i1 < hunk.file1_end) {
-    safePrint("  ");
-    safePrint(lines1[i1]);
-    safePrint("\n");
+    dput("  ");
+    dput(lines1[i1]);
+    dput("\n");
     ++i1;
   }
 }
 
 void output_context_new_section(const std::vector<Edit> &edits,
                                 const std::vector<std::string> &lines2,
-                                const DiffHunk &hunk, bool mixed_change) {
+                                const DiffHunk &hunk, bool mixed_change,
+                                const DiffColors &colors = {}) {
   size_t i2 = hunk.file2_start;
   for (size_t i = hunk.edit_start; i < hunk.edit_end; ++i) {
     const auto &edit = edits[i];
@@ -920,14 +1074,14 @@ void output_context_new_section(const std::vector<Edit> &edits,
         continue;
       }
       while (i2 < edit.line2_index && i2 < hunk.file2_end) {
-        safePrint("  ");
-        safePrint(lines2[i2]);
-        safePrint("\n");
+        dput("  ");
+        dput(lines2[i2]);
+        dput("\n");
         ++i2;
       }
-      safePrint("  ");
-      safePrint(lines2[edit.line2_index]);
-      safePrint("\n");
+      dput("  ");
+      dput(lines2[edit.line2_index]);
+      dput("\n");
       ++i2;
       continue;
     }
@@ -936,20 +1090,20 @@ void output_context_new_section(const std::vector<Edit> &edits,
       continue;
     }
     while (i2 < edit.line2_index && i2 < hunk.file2_end) {
-      safePrint("  ");
-      safePrint(lines2[i2]);
-      safePrint("\n");
+      dput("  ");
+      dput(lines2[i2]);
+      dput("\n");
       ++i2;
     }
-    safePrint(mixed_change ? "! " : "+ ");
-    safePrint(lines2[edit.line2_index]);
-    safePrint("\n");
+    dput(mixed_change ? "! " : "+ ");
+    dput(lines2[edit.line2_index]);
+    dput("\n");
     ++i2;
   }
   while (i2 < hunk.file2_end) {
-    safePrint("  ");
-    safePrint(lines2[i2]);
-    safePrint("\n");
+    dput("  ");
+    dput(lines2[i2]);
+    dput("\n");
     ++i2;
   }
 }
@@ -959,14 +1113,22 @@ auto output_context_diff(const std::string &path1, const std::string &path2,
                          const std::vector<std::string> &compare_lines2,
                          const std::vector<std::string> &lines1,
                          const std::vector<std::string> &lines2, int context,
-                         const DiffLabel &label1, const DiffLabel &label2)
+                         const DiffLabel &label1, const DiffLabel &label2,
+                         const StyleCtx &style = {})
     -> void {
   auto edits = compute_diff(compare_lines1, compare_lines2);
   auto hunks = build_diff_hunks(edits, lines1.size(), lines2.size(), context);
   if (hunks.empty()) return;
 
-  output_diff_file_header("*** ", label1, path1);
-  output_diff_file_header("--- ", label2, path2);
+  output_diff_file_header("*** ", label1, path1, style);
+  output_diff_file_header("--- ", label2, path2, style);
+
+  const DiffColors &colors = style.colors ? *style.colors : DiffColors{};
+  auto hunk_function = [&](const DiffHunk &hunk) -> std::string {
+    if (!style.func_re && !style.func_show_c) return {};
+    return find_function_line(lines1, hunk.file1_start, style.func_re,
+                              style.func_show_c);
+  };
 
   for (const auto &hunk : hunks) {
     bool has_delete = false;
@@ -977,17 +1139,24 @@ auto output_context_diff(const std::string &path1, const std::string &path2,
     }
     const bool mixed_change = has_delete && has_insert;
 
-    safePrint("***************\n");
-    safePrint("*** ");
-    safePrint(format_context_range(hunk.file1_start + 1,
-                                   hunk.file1_end - hunk.file1_start));
-    safePrint(" ****\n");
-    output_context_old_section(edits, lines1, hunk, mixed_change);
-    safePrint("--- ");
-    safePrint(format_context_range(hunk.file2_start + 1,
-                                   hunk.file2_end - hunk.file2_start));
-    safePrint(" ----\n");
-    output_context_new_section(edits, lines2, hunk, mixed_change);
+    dput(colors.bold("***************"));
+    dput("\n");
+    std::string old_header =
+        "*** " + format_context_range(hunk.file1_start + 1,
+                                      hunk.file1_end - hunk.file1_start) +
+        " ****";
+    std::string func = hunk_function(hunk);
+    if (!func.empty()) old_header += " " + func;
+    dput(colors.cyan(old_header));
+    dput("\n");
+    output_context_old_section(edits, lines1, hunk, mixed_change, colors);
+    std::string new_header =
+        "--- " + format_context_range(hunk.file2_start + 1,
+                                      hunk.file2_end - hunk.file2_start) +
+        " ----";
+    dput(colors.cyan(new_header));
+    dput("\n");
+    output_context_new_section(edits, lines2, hunk, mixed_change, colors);
   }
 }
 
@@ -1003,96 +1172,1180 @@ auto output_side_by_side(const std::string &path1, const std::string &path2,
                          const std::vector<std::string> &compare_lines2,
                          const std::vector<std::string> &lines1,
                          const std::vector<std::string> &lines2, int width,
-                         bool suppress_common) -> void {
+                         bool suppress_common, bool left_column, int tabsize,
+                         bool expand_tabs)
+    -> void {
+  (void)path1;
+  (void)path2;
   auto edits = compute_diff(compare_lines1, compare_lines2);
 
   if (edits.empty()) {
     return;  // Files are identical
   }
 
-  // -- Use caller-provided width, halved for each column [DIFFERS] --
-  const size_t col_width = static_cast<size_t>(std::max(width / 2 - 1, 10));
+  // [GNU diffutils side.c] Column layout: the gutter is at least 3 wide
+  // and column2_offset is an integral number of tab stops so the right
+  // column lines up across rows.
+  const intmax_t t = expand_tabs ? 1 : (tabsize > 0 ? tabsize : 8);
+  const intmax_t content_t = tabsize > 0 ? tabsize : 8;
+  const intmax_t w = width;
+  const intmax_t t_plus_g = t + 3;
+  const intmax_t unaligned_off =
+      (w >> 1) + (t_plus_g >> 1) + (w & t_plus_g & 1);
+  const intmax_t off = unaligned_off - unaligned_off % t;
+  const intmax_t half_width = off > 0 ? std::max<intmax_t>(0, std::min(off - 3, w - off)) : 0;
+  const intmax_t c2o = half_width ? off : w;
+  const intmax_t sep_col = (half_width + c2o - 1) >> 1;
 
-  auto print_padded = [](const std::string &s, size_t width) {
-    if (s.size() <= width) {
-      safePrint(s);
-      for (size_t i = s.size(); i < width; ++i) safePrint(" ");
-    } else {
-      safePrint(s.substr(0, width - 2));
-      safePrint("..");
-    }
-  };
-
-  size_t i1 = 0, i2 = 0;
-  for (const auto &edit : edits) {
-    if (edit.type == EditType::KEEP) {
-      while (i1 < edit.line1_index) {
-        // -- suppress-common-lines: skip unchanged lines [DIFFERS] --
-        if (suppress_common) {
-          ++i1;
-          ++i2;
+  // Emits the line bounded to out_bound print columns, preserving tabs,
+  // and returns the output column after it (GNU print_half_line).
+  auto print_half_line = [&](const std::string &line, intmax_t out_bound) {
+    intmax_t in_pos = 0;
+    intmax_t out_pos = 0;
+    for (char ch : line) {
+      if (ch == '\n') break;
+      if (ch == '\t') {
+        in_pos = (in_pos / content_t + 1) * content_t;
+        if (in_pos <= out_bound) {
+          if (expand_tabs) {
+            while (out_pos < in_pos) dput(" ");
+          } else {
+            dput("\t");
+          }
+          out_pos = in_pos;
           continue;
         }
-        print_padded(lines1[i1], col_width);
-        safePrint("  ");
-        print_padded(lines2[i2], col_width);
-        safePrint("\n");
-        ++i1;
-        ++i2;
+        break;
       }
-      // -- suppress-common-lines: skip the kept line too [DIFFERS] --
-      if (!suppress_common) {
-        print_padded(lines1[edit.line1_index], col_width);
-        safePrint("  ");
-        print_padded(lines2[edit.line2_index], col_width);
-        safePrint("\n");
+      ++in_pos;
+      if (in_pos <= out_bound) {
+        dput(std::string(1, ch));
+        out_pos = in_pos;
+      } else {
+        break;
       }
-      ++i1;
-      ++i2;
-    } else if (edit.type == EditType::DEL) {
-      print_padded(lines1[edit.line1_index], col_width);
-      safePrint(" +");
-      for (size_t p = 0; p < col_width; ++p) safePrint(" ");
-      safePrint("\n");
-      ++i1;
+    }
+    return out_pos;
+  };
+  auto tab_from_to = [&](intmax_t from, intmax_t to) {
+    if (t > 1) {
+      for (intmax_t tab = from + t - from % t; tab <= to; tab += t) {
+        dput("\t");
+        from = tab;
+      }
+    }
+    while (from++ < to) dput(" ");
+    return from - 1;
+  };
+
+  // [GNU] Consecutive changed rows are aligned: min(deletes, inserts)
+  // pairs print '|', extra deletes '<', extra inserts '>'.
+  size_t k = 0;
+  while (k < edits.size()) {
+    if (edits[k].type == EditType::KEEP) {
+      auto emit_common = [&](size_t a, size_t b) {
+        intmax_t col = print_half_line(lines1[a], half_width);
+        if (left_column) {
+          // [GNU] --left-column marks the suppressed right column.
+          tab_from_to(col, sep_col);
+          dput("(");
+          dput("\n");
+          return;
+        }
+        col = tab_from_to(col, c2o);
+        print_half_line(lines2[b], w);
+        dput("\n");
+      };
+      while (k < edits.size() && edits[k].type == EditType::KEEP) {
+        if (!suppress_common) emit_common(edits[k].line1_index, edits[k].line2_index);
+        ++k;
+      }
+      continue;
+    }
+    std::vector<size_t> dels;
+    std::vector<size_t> ins;
+    while (k < edits.size() && edits[k].type != EditType::KEEP) {
+      if (edits[k].type == EditType::DEL) {
+        dels.push_back(edits[k].line1_index);
+      } else {
+        ins.push_back(edits[k].line2_index);
+      }
+      ++k;
+    }
+    const size_t paired = std::min(dels.size(), ins.size());
+    for (size_t row = 0; row < paired; ++row) {
+      intmax_t col = print_half_line(lines1[dels[row]], half_width);
+      col = tab_from_to(col, sep_col) + 1;
+      dput("|");
+      col = tab_from_to(col, c2o);
+      print_half_line(lines2[ins[row]], w);
+      dput("\n");
+    }
+    for (size_t row = paired; row < dels.size(); ++row) {
+      intmax_t col = print_half_line(lines1[dels[row]], half_width);
+      tab_from_to(col, sep_col);
+      dput("<\n");
+    }
+    for (size_t row = paired; row < ins.size(); ++row) {
+      intmax_t col = tab_from_to(0, sep_col) + 1;
+      dput(">");
+      tab_from_to(col, c2o);
+      print_half_line(lines2[ins[row]], w);
+      dput("\n");
+    }
+  }
+}
+
+// ===== GNU diffutils 3.10 output engines: ed / RCS / format directives =====
+
+
+// Returns the function-header line GNU prints after a hunk header: the
+// most recent line at or above `bound` (0-based, exclusive) matching the
+// -F pattern, or the -p default (leading alphabetic char / _ / $).
+auto find_function_line(const std::vector<std::string> &lines, size_t bound,
+                        const portable_regex::Pattern *func_re,
+                        bool func_show_c) -> std::string {
+  auto matches = [&](const std::string &line) {
+    if (func_re) {
+      return !func_re->find_all(line).empty();
+    }
+    if (func_show_c && !line.empty()) {
+      unsigned char c = static_cast<unsigned char>(line[0]);
+      if (std::isalpha(c) || line[0] == '_' || line[0] == '$') return true;
+    }
+    return false;
+  };
+  size_t i = std::min(bound, lines.size());
+  while (i-- > 0) {
+    if (matches(lines[i])) {
+      std::string text = lines[i];
+      // GNU truncates long function lines instead of wrapping headers.
+      if (text.size() > 40) text.resize(40);
+      while (!text.empty() &&
+             (text.back() == ' ' || text.back() == '\r')) {
+        text.pop_back();
+      }
+      return text;
+    }
+  }
+  return {};
+}
+
+// --- ed / forward-ed / RCS script printers -------------------------------
+//
+// Numbering (validated against GNU diffutils 3.10):
+//   ed (-e): hunks in REVERSE order; "A,Bc" comma ranges, "Na"/"Nd" for
+//            single-line append/delete; new text then "."; deletes have
+//            no body and no dot.
+//   forward-ed (-f): forward order, space-separated ranges ("c8 9").
+//   RCS (-n): forward order; "dSTART COUNT" then "aANCHOR COUNT" where
+//            ANCHOR is the old-file line after which the new text goes
+//            (hunk's last deleted line for changes, the line before the
+//            insertion for pure inserts, 0 when prepending).
+
+struct ScriptHunk {
+  size_t old_start = 0;  // 1-based, inclusive
+  size_t old_count = 0;
+  size_t new_start = 0;  // 1-based, inclusive
+  size_t new_count = 0;
+  size_t ins_anchor = 0;  // old-file line the insertion follows (0 = prepend)
+  std::vector<size_t> del_idx;  // indices into lines1
+  std::vector<size_t> ins_idx;  // indices into lines2
+};
+
+auto build_script_hunks(const std::vector<Edit> &edits) -> std::vector<ScriptHunk> {
+  std::vector<ScriptHunk> hunks;
+  bool in_hunk = false;
+  for (const auto &edit : edits) {
+    if (edit.type == EditType::KEEP) {
+      in_hunk = false;
+      continue;
+    }
+    if (!in_hunk) {
+      hunks.emplace_back();
+      in_hunk = true;
+    }
+    auto &hunk = hunks.back();
+    if (edit.type == EditType::DEL) {
+      if (hunk.del_idx.empty()) hunk.old_start = edit.line1_index + 1;
+      hunk.old_count++;
+      hunk.del_idx.push_back(edit.line1_index);
     } else {
-      for (size_t p = 0; p < col_width; ++p) safePrint(" ");
-      safePrint(" +");
-      print_padded(lines2[edit.line2_index], col_width);
-      safePrint("\n");
-      ++i2;
+      if (hunk.ins_idx.empty()) {
+        hunk.new_start = edit.line2_index + 1;
+        hunk.ins_anchor = edit.line1_index;
+      }
+      hunk.new_count++;
+      hunk.ins_idx.push_back(edit.line2_index);
+    }
+  }
+  return hunks;
+}
+
+auto format_ed_range(size_t start, size_t count) -> std::string {
+  return count > 1 ? std::to_string(start) + "," + std::to_string(start + count - 1)
+                   : std::to_string(start);
+}
+
+auto format_fwd_range(size_t start, size_t count) -> std::string {
+  return count > 1 ? std::to_string(start) + " " + std::to_string(start + count - 1)
+                   : std::to_string(start);
+}
+
+template <typename Lines>
+void output_ed_script(const std::vector<Edit> &edits, const Lines &lines1,
+                      const Lines &lines2, bool forward) {
+  (void)lines1;
+  auto hunks = build_script_hunks(edits);
+  if (forward) {
+    for (const auto &hunk : hunks) {
+      // Forward-ed puts the command letter first: "c2", "a1", "d8 9".
+      if (hunk.old_count > 0 && hunk.new_count > 0) {
+        dput("c" + format_fwd_range(hunk.old_start, hunk.old_count) + "\n");
+        for (size_t idx : hunk.ins_idx) dput(lines2[idx] + "\n");
+        dput(".\n");
+      } else if (hunk.new_count > 0) {
+        dput("a" + format_fwd_range(hunk.ins_anchor, 1) + "\n");
+        for (size_t idx : hunk.ins_idx) dput(lines2[idx] + "\n");
+        dput(".\n");
+      } else {
+        dput("d" + format_fwd_range(hunk.old_start, hunk.old_count) + "\n");
+      }
+    }
+  } else {
+    for (auto hunk = hunks.rbegin(); hunk != hunks.rend(); ++hunk) {
+      if (hunk->old_count > 0 && hunk->new_count > 0) {
+        dput(format_ed_range(hunk->old_start, hunk->old_count) + "c\n");
+        for (size_t idx : hunk->ins_idx) dput(lines2[idx] + "\n");
+        dput(".\n");
+      } else if (hunk->new_count > 0) {
+        dput(std::to_string(hunk->ins_anchor) + "a\n");
+        for (size_t idx : hunk->ins_idx) dput(lines2[idx] + "\n");
+        dput(".\n");
+      } else {
+        dput(format_ed_range(hunk->old_start, hunk->old_count) + "d\n");
+      }
+    }
+  }
+}
+
+auto format_rcs_count(size_t start, size_t count) -> std::string {
+  return std::to_string(start) + " " + std::to_string(count);
+}
+
+template <typename Lines>
+void output_rcs_diff(const std::vector<Edit> &edits, const Lines &lines1,
+                     const Lines &lines2) {
+  (void)lines1;
+  auto hunks = build_script_hunks(edits);
+  for (const auto &hunk : hunks) {
+    if (hunk.old_count > 0) {
+      dput("d" + format_rcs_count(hunk.old_start, hunk.old_count) + "\n");
+    }
+    if (hunk.new_count > 0) {
+      // Anchor: last old line of the change, else the common line above
+      // the insertion (old_start-1), 0 when prepending.
+      size_t anchor = hunk.old_count > 0 ? hunk.old_start + hunk.old_count - 1
+                                         : (hunk.old_start > 0 ? hunk.old_start - 1 : 0);
+      dput("a" + format_rcs_count(anchor, hunk.new_count) + "\n");
+      for (size_t idx : hunk.ins_idx) dput(lines2[idx] + "\n");
+    }
+  }
+}
+
+// --- --ifdef / --*-group-format / --*-line-format directives ------------
+//
+// GFMT/LFMT expansion per GNU diffutils "Customizing Output":
+//   %% literal %            %< old lines   %> new lines   %= common lines
+//   %[-][WIDTH][.[PREC]]{doxX}LETTER  F first  L last  N count  E F-1  M L+1
+//   (uppercase = new file in changed groups, lowercase = old)
+//   %(A=B?T:E) conditional;  %c'C' and %c'\OOO' character literals
+//   LFMT-only: %L line with newline, %l without, %n line number
+
+struct FormatDirectives {
+  std::string changed_group, old_group, new_group, unchanged_group;
+  std::string line, old_line, new_line, unchanged_line;
+};
+
+auto directive_has_any(const FormatDirectives &f) -> bool {
+  return !f.changed_group.empty() || !f.old_group.empty() ||
+         !f.new_group.empty() || !f.unchanged_group.empty() ||
+         !f.line.empty() || !f.old_line.empty() || !f.new_line.empty() ||
+         !f.unchanged_line.empty();
+}
+
+struct GroupInfo {
+  size_t old_start = 0;  // 1-based
+  size_t old_count = 0;
+  size_t new_start = 0;  // 1-based
+  size_t new_count = 0;
+};
+
+// printf-style number expansion for %[-][WIDTH][.[PREC]]{doxX}LETTER
+auto expand_number_directive(std::string_view spec, char letter, size_t value,
+                             const GroupInfo &group) -> std::string {
+  // Uppercase letters address the new file, lowercase the old file.
+  const bool old_file = std::islower(static_cast<unsigned char>(letter)) != 0;
+  const size_t first = old_file ? group.old_start : group.new_start;
+  const size_t count = old_file ? group.old_count : group.new_count;
+  unsigned long long number = value;
+  switch (std::toupper(static_cast<unsigned char>(letter))) {
+    case 'F': number = first; break;
+    case 'L': number = count ? first + count - 1 : 0; break;
+    case 'N': number = count; break;
+    case 'E': number = first ? first - 1 : 0; break;
+    case 'M': number = first + count; break;
+    default: break;
+  }
+
+  // Parse [[-]WIDTH][.PREC] then conversion char.
+  size_t i = 0;
+  bool left = false;
+  if (i < spec.size() && spec[i] == '-') {
+    left = true;
+    ++i;
+  }
+  size_t width = 0;
+  bool has_width = false;
+  while (i < spec.size() && spec[i] >= '0' && spec[i] <= '9') {
+    width = width * 10 + static_cast<size_t>(spec[i] - '0');
+    has_width = true;
+    ++i;
+  }
+  size_t prec = 0;
+  if (i < spec.size() && spec[i] == '.') {
+    ++i;
+    while (i < spec.size() && spec[i] >= '0' && spec[i] <= '9') {
+      prec = prec * 10 + static_cast<size_t>(spec[i] - '0');
+      ++i;
+    }
+  }
+  char conv = i < spec.size() ? spec[i] : 'd';
+  char buf[64]{};
+  switch (conv) {
+    case 'o': std::snprintf(buf, sizeof(buf), "%llo", number); break;
+    case 'x': std::snprintf(buf, sizeof(buf), "%llx", number); break;
+    case 'X': std::snprintf(buf, sizeof(buf), "%llX", number); break;
+    default:  std::snprintf(buf, sizeof(buf), "%llu", number); break;
+  }
+  std::string digits(buf);
+  if (digits.size() < prec) digits.insert(0, prec - digits.size(), '0');
+  if (digits.size() < width && !left) {
+    digits.insert(0, width - digits.size(), ' ');
+  } else if (digits.size() < width && left) {
+    digits.append(width - digits.size(), ' ');
+  }
+  return digits;
+}
+
+auto expand_format(const std::string &fmt, const std::vector<std::string> &lines1,
+                   const std::vector<std::string> &lines2, const GroupInfo &group,
+                   bool group_is_changed, const std::string *single_line,
+                   size_t single_line_no, bool single_from_old) -> std::string;
+
+auto expand_conditional(const std::string &fmt, size_t &i,
+                        const std::vector<std::string> &lines1,
+                        const std::vector<std::string> &lines2,
+                        const GroupInfo &group, bool group_is_changed,
+                        const std::string *single_line, size_t single_line_no,
+                        bool single_from_old) -> std::string {
+  // fmt[i] == '(' after '%('. Grammar: A=B?T:E with A,B letters.
+  auto letter_value = [&](char letter) -> long long {
+    switch (letter) {
+      case 'F': return static_cast<long long>(group.new_start);
+      case 'f': return static_cast<long long>(group.old_start);
+      case 'L': return static_cast<long long>(group.new_count ? group.new_start + group.new_count - 1 : 0);
+      case 'l': return static_cast<long long>(group.old_count ? group.old_start + group.old_count - 1 : 0);
+      case 'N': return static_cast<long long>(group.new_count);
+      case 'n': return static_cast<long long>(group.old_count);
+      case 'E': return static_cast<long long>(group.new_start ? group.new_start - 1 : 0);
+      case 'e': return static_cast<long long>(group.old_start ? group.old_start - 1 : 0);
+      case 'M': return static_cast<long long>(group.new_count ? group.new_start + group.new_count : 0);
+      case 'm': return static_cast<long long>(group.old_count ? group.old_start + group.old_count : 0);
+      default: return 0;
+    }
+  };
+  size_t p = i + 1;
+  char a = p < fmt.size() ? fmt[p] : '=';
+  ++p;
+  bool eq = p < fmt.size() && fmt[p] == '=';
+  if (!eq) return "%(";
+  ++p;
+  char b = p < fmt.size() ? fmt[p] : '=';
+  ++p;
+  if (p >= fmt.size() || fmt[p] != '?') return "%(";
+  ++p;
+  size_t t_start = p;
+  int depth = 0;
+  while (p < fmt.size() && (depth > 0 || (fmt[p] != ':' && fmt[p] != ')'))) {
+    if (fmt[p] == '(') ++depth;
+    if (fmt[p] == ')') --depth;
+    ++p;
+  }
+  std::string t_branch = fmt.substr(t_start, p - t_start);
+  std::string e_branch;
+  if (p < fmt.size() && fmt[p] == ':') {
+    ++p;
+    size_t e_start = p;
+    depth = 0;
+    while (p < fmt.size() && (depth > 0 || fmt[p] != ')')) {
+      if (fmt[p] == '(') ++depth;
+      if (fmt[p] == ')') --depth;
+      ++p;
+    }
+    e_branch = fmt.substr(e_start, p - e_start);
+  }
+  if (p < fmt.size() && fmt[p] == ')') ++p;
+  bool condition = letter_value(a) == letter_value(b);
+  const std::string &chosen = condition ? t_branch : e_branch;
+  i = p;
+  return expand_format(chosen, lines1, lines2, group, group_is_changed,
+                       single_line, single_line_no, single_from_old);
+}
+
+auto expand_format(const std::string &fmt, const std::vector<std::string> &lines1,
+                   const std::vector<std::string> &lines2, const GroupInfo &group,
+                   bool group_is_changed, const std::string *single_line,
+                   size_t single_line_no, bool single_from_old) -> std::string {
+  std::string out;
+  size_t i = 0;
+  while (i < fmt.size()) {
+    if (fmt[i] != '%') {
+      out += fmt[i++];
+      continue;
+    }
+    ++i;
+    if (i >= fmt.size()) {
+      out += '%';
+      break;
+    }
+    char c = fmt[i];
+    if (c == '%') {
+      out += '%';
+      ++i;
+    } else if (c == '<') {
+      if (single_line) {
+        out += single_from_old ? *single_line : std::string();
+      } else {
+        for (size_t k = 0; k < group.old_count; ++k) {
+          out += lines1[group.old_start - 1 + k];
+          out += "\n";
+        }
+      }
+      ++i;
+    } else if (c == '>') {
+      if (single_line) {
+        out += single_from_old ? std::string() : *single_line;
+      } else {
+        for (size_t k = 0; k < group.new_count; ++k) {
+          out += lines2[group.new_start - 1 + k];
+          out += "\n";
+        }
+      }
+      ++i;
+    } else if (c == '=') {
+      if (single_line) {
+        out += *single_line;
+      } else {
+        for (size_t k = 0; k < group.old_count; ++k) {
+          out += lines1[group.old_start - 1 + k];
+          out += "\n";
+        }
+      }
+      ++i;
+    } else if (c == 'L') {
+      if (single_line) out += *single_line;
+      ++i;
+    } else if (c == 'l') {
+      if (single_line) {
+        std::string_view v = *single_line;
+        if (!v.empty() && v.back() == '\n') v.remove_suffix(1);
+        out += std::string(v);
+      }
+      ++i;
+    } else if (c == '(') {
+      out += expand_conditional(fmt, i, lines1, lines2, group,
+                                group_is_changed, single_line,
+                                single_line_no, single_from_old);
+    } else if (c == 'c') {
+      // %c'C' or %c'\OOO'
+      if (i + 2 < fmt.size() && fmt[i + 1] == '\'') {
+        if (fmt[i + 2] == '\\' && i + 5 < fmt.size() && fmt[i + 5] == '\'') {
+          int code = 0;
+          for (int k = i + 3; k < i + 5; ++k) {
+            code = code * 8 + (fmt[k] - '0');
+          }
+          out += static_cast<char>(code);
+          i += 6;
+        } else {
+          out += fmt[i + 2];
+          i += 4;
+        }
+      } else {
+        out += '%';
+        ++i;
+      }
+    } else {
+      // Number directive: optional -/width/prec then conversion then letter.
+      size_t j = i;
+      if (j < fmt.size() && fmt[j] == '-') ++j;
+      while (j < fmt.size() && fmt[j] >= '0' && fmt[j] <= '9') ++j;
+      if (j < fmt.size() && fmt[j] == '.') {
+        ++j;
+        while (j < fmt.size() && fmt[j] >= '0' && fmt[j] <= '9') ++j;
+      }
+      char conv = (j < fmt.size() && (fmt[j] == 'd' || fmt[j] == 'o' ||
+                                      fmt[j] == 'x' || fmt[j] == 'X'))
+                      ? fmt[j]
+                      : 'd';
+      if (conv != 'd') ++j;
+      if (j < fmt.size()) {
+        char letter = fmt[j];
+        size_t used = j - i;
+        std::string spec = fmt.substr(i, used);
+        if (letter == 'n' && single_line) {
+          // Line-context %n: the line's own number.
+          out += expand_number_directive(spec, 'n', single_line_no, group);
+        } else if (std::strchr("FLNEMflnem", letter)) {
+          out += expand_number_directive(spec, letter, 0, group);
+        } else {
+          out += fmt.substr(i - 1, used + 2);
+        }
+        i = j + 1;
+      } else {
+        out += '%';
+        ++i;
+      }
+    }
+  }
+  return out;
+}
+
+auto default_ifdef_formats(const std::string &name) -> FormatDirectives {
+  FormatDirectives f;
+  f.changed_group = "#ifndef " + name + "\n%<#else /* " + name +
+                    " */\n%>#endif /* " + name + " */\n";
+  f.old_group = "#ifndef " + name + "\n%<#endif /* ! " + name + " */\n";
+  f.new_group = "#ifdef " + name + "\n%>#endif /* " + name + " */\n";
+  f.unchanged_group = "%=";
+  f.unchanged_line = "%L";
+  f.old_line = "%L";
+  f.new_line = "%L";
+  return f;
+}
+
+// Walks the edit script emitting custom/ifdef formatted output: maximal
+// runs of non-KEEP edits are groups (changed when both sides present);
+// common runs emit per-line or the unchanged-group format.
+void output_format_diff(const std::vector<Edit> &edits,
+                        const std::vector<std::string> &lines1,
+                        const std::vector<std::string> &lines2,
+                        const FormatDirectives &formats) {
+  size_t i = 0;
+  while (i < edits.size()) {
+    if (edits[i].type == EditType::KEEP) {
+      GroupInfo group;
+      group.old_start = edits[i].line1_index + 1;
+      group.new_start = edits[i].line2_index + 1;
+      // Consume the whole common run; groups get one expansion, plain
+      // line formats get one per line.
+      size_t j = i;
+      while (j < edits.size() && edits[j].type == EditType::KEEP) ++j;
+      group.old_count = j - i;
+      group.new_count = j - i;
+      if (!formats.unchanged_group.empty()) {
+        GroupInfo as_group = group;
+        as_group.new_count = group.old_count;
+        dput(expand_format(formats.unchanged_group, lines1, lines2, as_group,
+                           false, nullptr, 0, false));
+      } else {
+        const std::string &lf = !formats.unchanged_line.empty()
+                                    ? formats.unchanged_line
+                                    : formats.line;
+        for (size_t k = i; k < j; ++k) {
+          std::string line = lines1[edits[k].line1_index];
+          if (line.empty() || line.back() != '\n') line += "\n";
+          if (lf.empty()) {
+            dput(line);
+          } else {
+            GroupInfo one;
+            one.old_start = one.new_start = edits[k].line1_index + 1;
+            dput(expand_format(lf, lines1, lines2, one, false, &line,
+                               edits[k].line1_index + 1, true));
+          }
+        }
+      }
+      i = j;
+      continue;
+    }
+    size_t j = i;
+    GroupInfo group;
+    while (j < edits.size() && edits[j].type != EditType::KEEP) {
+      if (edits[j].type == EditType::DEL) {
+        if (group.old_count == 0) group.old_start = edits[j].line1_index + 1;
+        ++group.old_count;
+      } else {
+        if (group.new_count == 0) group.new_start = edits[j].line2_index + 1;
+        ++group.new_count;
+      }
+      ++j;
+    }
+    const std::string *chosen = nullptr;
+    if (group.old_count > 0 && group.new_count > 0) {
+      chosen = &formats.changed_group;
+    } else if (group.old_count > 0) {
+      chosen = &formats.old_group;
+    } else {
+      chosen = &formats.new_group;
+    }
+    if (chosen && !chosen->empty()) {
+      dput(expand_format(*chosen, lines1, lines2, group, true, nullptr, 0,
+                         false));
+    } else {
+      // No group format for this shape: fall back to per-line formats.
+      const std::string &old_lf = !formats.old_line.empty() ? formats.old_line
+                                                            : formats.line;
+      const std::string &new_lf = !formats.new_line.empty() ? formats.new_line
+                                                            : formats.line;
+      for (size_t k = i; k < j; ++k) {
+        bool from_old = edits[k].type == EditType::DEL;
+        std::string line = from_old ? lines1[edits[k].line1_index]
+                                    : lines2[edits[k].line2_index];
+        if (line.empty() || line.back() != '\n') line += "\n";
+        if (old_lf.empty() && new_lf.empty()) {
+          dput(line);
+        } else {
+          const std::string &lf = from_old ? old_lf : new_lf;
+          GroupInfo one;
+          one.old_start = edits[k].line1_index + 1;
+          one.new_start = edits[k].line2_index + 1;
+          dput(expand_format(lf, lines1, lines2, one, true, &line,
+                             from_old ? edits[k].line1_index + 1
+                                      : edits[k].line2_index + 1,
+                             from_old));
+        }
+      }
+    }
+    i = j;
+  }
+}
+
+
+// ---- Per-pair configuration shared by file and directory modes ----
+enum class OutputMode {
+  Normal,
+  Unified,
+  Context,
+  SideBySide,
+  Ed,
+  ForwardEd,
+  Rcs,
+  Format
+};
+
+// ---- Per-pair configuration shared by file and directory modes ----
+struct PairConfig {
+  bool brief = false;
+  bool ignore_all_space = false;
+  bool ignore_blank_lines = false;
+  bool ignore_space_change = false;
+  bool ignore_case = false;
+  bool ignore_trailing_space = false;
+  bool ignore_tab_expansion = false;
+  bool strip_trailing_cr = false;
+  bool text_mode = false;
+  bool binary_mode = false;
+  bool report_identical = false;
+  bool new_file = false;
+  bool unidirectional_new_file = false;
+  int tabsize = 8;
+  bool expand_tabs = false;
+  std::string ignore_matching;
+  OutputMode output_mode = OutputMode::Normal;
+  int context = 3;
+  int side_width = 130;
+  bool suppress_common = false;
+  bool left_column = false;
+  StyleCtx style;
+  FormatDirectives formats;
+  std::string diff_program;
+};
+
+// fnmatch-style * / ? glob used for -x/-X/--exclude-dir name filtering.
+auto glob_match_pattern(std::string_view name, std::string_view pattern)
+    -> bool {
+  size_t n = 0;
+  size_t p = 0;
+  size_t star_p = std::string_view::npos;
+  size_t star_n = 0;
+  while (n < name.size()) {
+    if (p < pattern.size() &&
+        (pattern[p] == '?' || pattern[p] == name[n])) {
+      ++n;
+      ++p;
+    } else if (p < pattern.size() && pattern[p] == '*') {
+      star_p = p++;
+      star_n = n;
+    } else if (star_p != std::string_view::npos) {
+      p = star_p + 1;
+      n = ++star_n;
+    } else {
+      return false;
+    }
+  }
+  while (p < pattern.size() && pattern[p] == '*') ++p;
+  return p == pattern.size();
+}
+
+auto compare_file_pair(const std::string &file1, const std::string &file2,
+                       DiffLabel label1, DiffLabel label2,
+                       const PairConfig &cfg) -> int {
+  // [GNU] Missing operands are reported under their original names; -N
+  // (and --unidirectional-new-file for the first operand) treats them as
+  // empty instead.
+  for (const std::string *operand_path : {&file1, &file2}) {
+    if (cfg.new_file || operand_is_stdin(*operand_path)) continue;
+    if (!cfg.unidirectional_new_file || operand_path != &file1) {
+      auto operand = native_path::make_api_path_operand(*operand_path);
+      if (native_path::operand_target_attributes_w(operand) ==
+          INVALID_FILE_ATTRIBUTES) {
+        safeErrorPrint("diff: ");
+        safeErrorPrint(*operand_path);
+        safeErrorPrint(": No such file or directory\n");
+        return 2;
+      }
     }
   }
 
-  while (i1 < lines1.size()) {
-    print_padded(lines1[i1], col_width);
-    safePrint("  ");
-    for (size_t p = 0; p < col_width; ++p) safePrint(" ");
-    safePrint("\n");
-    ++i1;
+  namespace fs = std::filesystem;
+  auto lines1_result = read_file_lines_result(file1);
+  auto lines2_result = read_file_lines_result(file2);
+  bool input_error = false;
+  if (!lines1_result) {
+    // -N and --unidirectional-new-file (first operand only) treat an
+    // unreadable/absent side as empty.
+    if (cfg.new_file || cfg.unidirectional_new_file) {
+      lines1_result = std::vector<std::string>{};
+    } else {
+      safeErrorPrint("diff: ");
+      safeErrorPrint(lines1_result.error());
+      safeErrorPrint("\n");
+      input_error = true;
+    }
   }
-  while (i2 < lines2.size()) {
-    for (size_t p = 0; p < col_width; ++p) safePrint(" ");
-    safePrint("  ");
-    print_padded(lines2[i2], col_width);
-    safePrint("\n");
-    ++i2;
+  if (!lines2_result) {
+    if (cfg.new_file) {
+      lines2_result = std::vector<std::string>{};
+    } else {
+      safeErrorPrint("diff: ");
+      safeErrorPrint(lines2_result.error());
+      safeErrorPrint("\n");
+      input_error = true;
+    }
   }
+  if (input_error) {
+    return 2;
+  }
+
+  auto &lines1 = lines1_result.value();
+  auto &lines2 = lines2_result.value();
+
+  // [GNU] --diff-program=PROGRAM: hand the two operands to PROGRAM and
+  // relay its output and exit status verbatim.
+  if (!cfg.diff_program.empty() && !operand_is_stdin(file1) &&
+      !operand_is_stdin(file2)) {
+    STARTUPINFOA si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    std::string cmdline = "\"" + cfg.diff_program + "\" \"" + file1 +
+                          "\" \"" + file2 + "\"";
+    if (!CreateProcessA(nullptr, cmdline.data(), nullptr, nullptr, TRUE, 0,
+                        nullptr, nullptr, &si, &pi)) {
+      safeErrorPrint("diff: cannot execute ");
+      safeErrorPrint(cfg.diff_program);
+      safeErrorPrint("\n");
+      return 2;
+    }
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD code = 0;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return code > 1 ? 2 : static_cast<int>(code);
+  }
+
+  if (cfg.brief) {
+    return compare_files(file1, file2, lines1, lines2, true,
+                         cfg.ignore_all_space)
+               ? 0
+               : 1;
+  }
+
+  // -- Apply transformations for comparison [DIFFERS] --
+  auto cmp1 = lines1;
+  auto cmp2 = lines2;
+
+  if (cfg.strip_trailing_cr) {
+    cmp1 = strip_trailing_cr_lines(cmp1);
+    cmp2 = strip_trailing_cr_lines(cmp2);
+  }
+  if (cfg.ignore_trailing_space) {
+    auto strip_trailing_ws = [](const std::vector<std::string> &lines) {
+      std::vector<std::string> out;
+      out.reserve(lines.size());
+      for (const auto &line : lines) {
+        size_t end = line.size();
+        while (end > 0 && (line[end - 1] == ' ' || line[end - 1] == '\t' ||
+                           line[end - 1] == '\r')) {
+          --end;
+        }
+        out.push_back(line.substr(0, end));
+      }
+      return out;
+    };
+    cmp1 = strip_trailing_ws(cmp1);
+    cmp2 = strip_trailing_ws(cmp2);
+  }
+  if (cfg.ignore_tab_expansion) {
+    // [GNU] Trailing whitespace caused by tab expansion is ignored: expand
+    // tabs only in the trailing whitespace run, then drop it.
+    auto expand_trailing = [ts = cfg.tabsize](const std::vector<std::string> &lines) {
+      std::vector<std::string> out;
+      out.reserve(lines.size());
+      for (const auto &line : lines) {
+        size_t end = line.size();
+        while (end > 0 && (line[end - 1] == ' ' || line[end - 1] == '\t')) {
+          --end;
+        }
+        std::string tail;
+        int col = 0;
+        for (size_t i = end; i < line.size(); ++i) {
+          if (line[i] == '\t') {
+            int spaces = ts - (col % ts);
+            tail.append(static_cast<size_t>(spaces), ' ');
+            col += spaces;
+          } else {
+            tail += ' ';
+            ++col;
+          }
+        }
+        out.push_back(line.substr(0, end) + tail);
+      }
+      return out;
+    };
+    cmp1 = expand_trailing(cmp1);
+    cmp2 = expand_trailing(cmp2);
+  }
+  if (cfg.ignore_blank_lines) {
+    cmp1 = filter_blank_lines(cmp1);
+    cmp2 = filter_blank_lines(cmp2);
+  }
+  if (cfg.expand_tabs) {
+    cmp1 = expand_tabs_lines(cmp1, cfg.tabsize);
+    cmp2 = expand_tabs_lines(cmp2, cfg.tabsize);
+  }
+  cmp1 = normalize_lines_for_compare(cmp1, cfg.ignore_all_space);
+  cmp2 = normalize_lines_for_compare(cmp2, cfg.ignore_all_space);
+  if (cfg.ignore_space_change) {
+    cmp1 = normalize_lines_space_change(cmp1);
+    cmp2 = normalize_lines_space_change(cmp2);
+  }
+  if (cfg.ignore_case) {
+    cmp1 = normalize_lines_case(cmp1);
+    cmp2 = normalize_lines_case(cmp2);
+  }
+  if (!cfg.ignore_matching.empty()) {
+    cmp1 = filter_matching_lines(cmp1, cfg.ignore_matching);
+    cmp2 = filter_matching_lines(cmp2, cfg.ignore_matching);
+  }
+  auto &compare_lines1 = cmp1;
+  auto &compare_lines2 = cmp2;
+
+  if (compare_lines1 == compare_lines2) {
+    if (cfg.report_identical) {
+      dput("Files ");
+      dput(file1);
+      dput(" and ");
+      dput(file2);
+      dput(" are identical\n");
+    }
+    return 0;
+  }
+
+  switch (cfg.output_mode) {
+    case OutputMode::Unified:
+      output_unified_diff(file1, file2, compare_lines1, compare_lines2,
+                          lines1, lines2, cfg.context, label1, label2,
+                          cfg.style);
+      break;
+    case OutputMode::Context:
+      output_context_diff(file1, file2, compare_lines1, compare_lines2,
+                          lines1, lines2, cfg.context, label1, label2,
+                          cfg.style);
+      break;
+    case OutputMode::SideBySide:
+      output_side_by_side(file1, file2, compare_lines1, compare_lines2,
+                          lines1, lines2, cfg.side_width, cfg.suppress_common,
+                          cfg.left_column, cfg.tabsize, cfg.expand_tabs);
+      break;
+    case OutputMode::Ed:
+      output_ed_script(compute_diff(compare_lines1, compare_lines2), lines1,
+                       lines2, false);
+      break;
+    case OutputMode::ForwardEd:
+      output_ed_script(compute_diff(compare_lines1, compare_lines2), lines1,
+                       lines2, true);
+      break;
+    case OutputMode::Rcs:
+      output_rcs_diff(compute_diff(compare_lines1, compare_lines2), lines1,
+                      lines2);
+      break;
+    case OutputMode::Format:
+      output_format_diff(compute_diff(compare_lines1, compare_lines2), lines1,
+                         lines2, cfg.formats);
+      break;
+    case OutputMode::Normal:
+    default: {
+      // GNU normal format: per-hunk command line (Na / Nd / NcN) with the
+      // deleted lines (<), a `---` separator for changes, and added (>).
+      auto edits = compute_diff(compare_lines1, compare_lines2);
+      auto hunks =
+          build_diff_hunks(edits, lines1.size(), lines2.size(), 0);
+      if (hunks.empty()) {
+        return 0;
+      }
+      std::sort(hunks.begin(), hunks.end(),
+                [](const auto &a, const auto &b) {
+                  if (a.file1_start != b.file1_start) {
+                    return a.file1_start < b.file1_start;
+                  }
+                  return a.file2_start < b.file2_start;
+                });
+      auto format_normal_range = [](size_t start_line, size_t count) {
+        std::string out = std::to_string(start_line);
+        if (count > 1) {
+          out += ",";
+          out += std::to_string(start_line + count - 1);
+        }
+        return out;
+      };
+      for (const auto &hunk : hunks) {
+        std::vector<size_t> del_lines;
+        std::vector<size_t> ins_lines;
+        for (size_t i = hunk.edit_start; i < hunk.edit_end; ++i) {
+          const auto &edit = edits[i];
+          if (edit.type == EditType::DEL) {
+            del_lines.push_back(edit.line1_index);
+          } else if (edit.type == EditType::INS) {
+            ins_lines.push_back(edit.line2_index);
+          }
+        }
+        std::sort(del_lines.begin(), del_lines.end());
+        std::sort(ins_lines.begin(), ins_lines.end());
+        if (del_lines.empty() && ins_lines.empty()) continue;
+        const size_t n_del = hunk.file1_end - hunk.file1_start;
+        const size_t n_ins = hunk.file2_end - hunk.file2_start;
+        if (n_del == 0) {
+          dput(std::to_string(hunk.file1_start));
+          dput("a");
+          dput(format_normal_range(hunk.file2_start + 1, n_ins));
+          dput("\n");
+        } else if (n_ins == 0) {
+          dput(format_normal_range(hunk.file1_start + 1, n_del));
+          dput("d");
+          dput(std::to_string(hunk.file2_start));
+          dput("\n");
+        } else {
+          dput(format_normal_range(hunk.file1_start + 1, n_del));
+          dput("c");
+          dput(format_normal_range(hunk.file2_start + 1, n_ins));
+          dput("\n");
+        }
+        for (size_t idx : del_lines) {
+          dput("< ");
+          dput(lines1[idx]);
+          dput("\n");
+        }
+        if (!del_lines.empty() && !ins_lines.empty()) {
+          dput("---\n");
+        }
+        for (size_t idx : ins_lines) {
+          dput("> ");
+          dput(lines2[idx]);
+          dput("\n");
+        }
+      }
+      break;
+    }
+  }
+
+  return 1;
+}
+
+// One directory-pair level: compare same-named files (with the "diff
+// <cmdline>" header GNU prints under -r), report "Only in", and recurse
+// into common subdirectories. diffutils processes files before dirs.
+auto compare_directory_pair(const std::string &dir1, const std::string &dir2,
+                            const PairConfig &cfg, bool recursive,
+                            const std::vector<std::string> &exclude_pats,
+                            const std::vector<std::string> &exclude_dir_pats,
+                            const std::string &starting_file,
+                            const std::string &command_tail) -> int {
+  namespace fs = std::filesystem;
+  auto list_directory = [](const std::string &dir)
+      -> std::optional<std::vector<std::string>> {
+    std::error_code ec;
+    fs::directory_iterator it(fs::path(dir), ec);
+    if (ec) return std::nullopt;
+    std::vector<std::string> names;
+    for (const auto &entry : it) {
+      std::string name = entry.path().filename().string();
+      if (name == "." || name == "..") continue;
+      names.push_back(name);
+    }
+    std::sort(names.begin(), names.end());
+    return names;
+  };
+  auto name_matches_any = [](const std::string &name,
+                             const std::vector<std::string> &patterns) {
+    for (const auto &pattern : patterns) {
+      if (glob_match_pattern(name, pattern)) return true;
+    }
+    return false;
+  };
+  auto operand_is_directory = [](const std::string &operand_path) -> bool {
+    if (operand_is_stdin(operand_path)) return false;
+    auto operand = native_path::make_api_path_operand(operand_path);
+    return native_path::attributes_are_directory(
+        native_path::operand_target_attributes_w(operand));
+  };
+  auto join_dir_member = [](const std::string &dir,
+                            const std::string &member) -> std::string {
+    if (member.empty()) return dir;
+    if (!dir.empty() && dir.back() != '/' && dir.back() != '\\') {
+      return dir + "/" + member;
+    }
+    return dir + member;
+  };
+
+  auto entries1 = list_directory(dir1);
+  auto entries2 = list_directory(dir2);
+  if (!entries1 || !entries2) {
+    safeErrorPrint("diff: cannot read directory '");
+    safeErrorPrint(entries1 ? dir2 : dir1);
+    safeErrorPrint("'\n");
+    return 2;
+  }
+  if (!starting_file.empty()) {
+    auto rotate = [&](std::vector<std::string> &names) {
+      for (size_t i = 0; i < names.size(); ++i) {
+        if (names[i] == starting_file) {
+          std::rotate(names.begin(), names.begin() + static_cast<long>(i),
+                      names.end());
+          break;
+        }
+      }
+    };
+    rotate(*entries1);
+    rotate(*entries2);
+  }
+
+  int worst = 0;
+  auto excluded = [&](const std::string &name, bool is_dir) {
+    if (name_matches_any(name, exclude_pats)) return true;
+    return is_dir && name_matches_any(name, exclude_dir_pats);
+  };
+
+  for (bool dir_pass : {false, true}) {
+    size_t i1 = 0;
+    size_t i2 = 0;
+    while (i1 < entries1->size() || i2 < entries2->size()) {
+      bool take1 =
+          i1 < entries1->size() &&
+          (i2 >= entries2->size() || (*entries1)[i1] <= (*entries2)[i2]);
+      bool take2 =
+          i2 < entries2->size() &&
+          (i1 >= entries1->size() || (*entries2)[i2] < (*entries1)[i1]);
+      const std::string &name1 = take1 ? (*entries1)[i1] : (*entries2)[i2];
+      const std::string &name2 = take2 ? (*entries2)[i2] : name1;
+      std::string full1 = join_dir_member(dir1, name1);
+      std::string full2 = join_dir_member(dir2, name2);
+      const bool is_dir1 = take1 && operand_is_directory(full1);
+      const bool is_dir2 = take2 && operand_is_directory(full2);
+      if (excluded(name1, is_dir1) || excluded(name2, is_dir2)) {
+        if (take1) ++i1;
+        if (take2) ++i2;
+        continue;
+      }
+      const bool both_dirs = is_dir1 && is_dir2;
+      if (dir_pass != both_dirs) {
+        if (take1) ++i1;
+        if (take2) ++i2;
+        continue;
+      }
+      if (take1 && take2 && name1 == name2) {
+        if (both_dirs) {
+          if (recursive) {
+            int status = compare_directory_pair(
+                full1, full2, cfg, recursive, exclude_pats, exclude_dir_pats,
+                starting_file, command_tail);
+            if (status == 2) return 2;
+            worst = std::max(worst, status);
+          } else {
+            dput("Common subdirectories: " + full1 + " and " + full2 + "\n");
+            worst = std::max(worst, 1);
+          }
+        } else {
+          if (recursive) {
+            dput("diff " + command_tail + " " + full1 + " " + full2 + "\n");
+          }
+          int status = compare_file_pair(full1, full2, DiffLabel{full1, false},
+                                         DiffLabel{full2, false}, cfg);
+          if (status == 2) return 2;
+          worst = std::max(worst, status);
+        }
+      } else {
+        // Present in only one directory.
+        const std::string &only_dir = take1 ? dir1 : dir2;
+        const std::string &only_name = take1 ? name1 : name2;
+        const bool treat_as_empty =
+            cfg.new_file || (cfg.unidirectional_new_file && !take1);
+        if (treat_as_empty && !both_dirs) {
+          std::string existing = take1 ? full1 : full2;
+          std::string missing = take1 ? full2 : full1;
+          if (recursive) {
+            dput("diff " + command_tail + " " + existing + " " + missing +
+                 "\n");
+          }
+          PairConfig empty_cfg = cfg;
+          empty_cfg.new_file = true;
+          int status = compare_file_pair(existing, missing,
+                                         DiffLabel{existing, false},
+                                         DiffLabel{missing, false}, empty_cfg);
+          if (status == 2) return 2;
+          worst = std::max(worst, status);
+        } else {
+          dput("Only in " + only_dir + ": " + only_name + "\n");
+          worst = std::max(worst, 1);
+        }
+      }
+      if (take1) ++i1;
+      if (take2) ++i2;
+    }
+  }
+  return worst;
 }
 
 }  // namespace diff_pipeline
 
 REGISTER_COMMAND(
-    diff, "diff", "compare files line by line",
-    "Compare files line by line and report differences.\n"
-    "\n"
-    "This is a simplified implementation of the Unix diff utility.\n"
-    "It supports basic comparison and unified diff output.",
-    "  diff file1 file2         Compare two files\n"
-    "  diff -q file1 file2      Only report if files differ\n"
-    "  diff -u file1 file2      Show unified diff format",
-    "cmp(1), patch(1)", "caomengxuan666", "Copyright © 2026 WinuxCmd",
-    DIFF_OPTIONS) {
+    diff, "diff", "diff [OPTION]... FILES",
+    "Compare files line by line.\n",
+    "  diff -u old.txt new.txt    Unified diff with 3 context lines\n"
+    "  diff -y f1 f2              Two-column side-by-side comparison\n"
+    "  diff -r dir1 dir2          Recursively compare directories",
+    "cmp(1), diff3(1), sdiff(1), patch(1)", "caomengxuan666",
+    "Copyright © 2026 WinuxCmd", DIFF_OPTIONS) {
   using namespace diff_pipeline;
 
 #ifdef _WIN32
@@ -1101,101 +2354,128 @@ REGISTER_COMMAND(
   _setmode(_fileno(stdin), _O_BINARY);
 #endif
 
-  // -- Boolean flags [DIFFERS] --
-  bool brief = ctx.get<bool>("-q", false) || ctx.get<bool>("--brief", false);
-  bool ignore_all_space =
+  PairConfig cfg;
+  cfg.brief = ctx.get<bool>("-q", false) || ctx.get<bool>("--brief", false);
+  cfg.ignore_all_space =
       ctx.get<bool>("-w", false) || ctx.get<bool>("--ignore-all-space", false);
-  bool ignore_blank_lines = ctx.has("-B") || ctx.has("--ignore-blank-lines");
-  bool ignore_space_change = ctx.has("-b") || ctx.has("--ignore-space-change");
-  bool ignore_case = ctx.has("-i") || ctx.has("--ignore-case");
-  bool text_mode = ctx.has("-a") || ctx.has("--text");
-  bool binary_mode = ctx.has("--binary");
-  bool color_output = ctx.has("--color");
-  bool strip_trailing_cr = ctx.has("--strip-trailing-cr") || ctx.has("-Z");
-  bool report_identical = ctx.has("--report-identical-files") || ctx.has("-s");
-  bool new_file = ctx.has("-N") || ctx.has("--new-file");
-  bool suppress_common = ctx.has("--suppress-common-lines");
-  bool suppress_blank_empty = ctx.has("--suppress-blank-empty");
-  bool expand_tabs_opt = ctx.has("-t") || ctx.has("--expand-tabs");
-  bool initial_tab = ctx.has("-T") || ctx.has("--initial-tab");
-  bool no_dereference = ctx.has("--no-dereference");
-  bool ignore_file_name_case = ctx.has("--ignore-file-name-case");
-  bool unidirectional_new_file = ctx.has("--unidirectional-new-file");
+  cfg.ignore_blank_lines = ctx.has("-B") || ctx.has("--ignore-blank-lines");
+  cfg.ignore_space_change = ctx.has("-b") || ctx.has("--ignore-space-change");
+  cfg.ignore_case = ctx.has("-i") || ctx.has("--ignore-case");
+  cfg.text_mode = ctx.has("-a") || ctx.has("--text");
+  cfg.binary_mode = ctx.has("--binary");
+  cfg.strip_trailing_cr = ctx.has("--strip-trailing-cr");
+  cfg.ignore_trailing_space =
+      ctx.has("-Z") || ctx.has("--ignore-trailing-space");
+  cfg.ignore_tab_expansion =
+      ctx.has("-E") || ctx.has("--ignore-tab-expansion");
+  cfg.report_identical = ctx.has("--report-identical-files") || ctx.has("-s");
+  cfg.new_file = ctx.has("-N") || ctx.has("--new-file");
+  cfg.unidirectional_new_file = ctx.has("--unidirectional-new-file");
+  cfg.suppress_common = ctx.has("--suppress-common-lines");
+  cfg.left_column = ctx.has("--left-column");
+  cfg.expand_tabs = ctx.has("-t") || ctx.has("--expand-tabs");
+  // [GNU] -T/--initial-tab and --suppress-blank-empty tweak whitespace in
+  // the emitted lines; accepted and applied as no-ops for now. -d and
+  // --speed-large-files tune search heuristics this exact-LCS engine does
+  // not need; --palette re-skins --color only.
+  (void)ctx.has("-T");
+  (void)ctx.has("--initial-tab");
+  (void)ctx.has("--suppress-blank-empty");
+  (void)ctx.has("-d");
+  (void)ctx.has("--minimal");
+  (void)ctx.has("--speed-large-files");
+  (void)ctx.has("--palette");
+  (void)ctx.has("--no-dereference");
+  (void)ctx.has("--ignore-file-name-case");
+  (void)ctx.has("--no-ignore-file-name-case");
+  (void)ctx.has("--binary");
 
-  // -- Integer/width options [DIFFERS] --
-  int tabsize = 8;
-  if (ctx.has("--tabsize")) tabsize = ctx.get<int>("--tabsize", 8);
-  int side_width = 130;
-  if (ctx.has("-W")) side_width = ctx.get<int>("-W", 130);
-  if (ctx.has("--width")) side_width = ctx.get<int>("--width", 130);
+  if (ctx.has("--tabsize")) cfg.tabsize = ctx.get<int>("--tabsize", 8);
+  if (ctx.has("-W")) cfg.side_width = ctx.get<int>("-W", 130);
+  if (ctx.has("--width")) cfg.side_width = ctx.get<int>("--width", 130);
+  int horizon_lines = 0;
+  if (ctx.has("--horizon-lines")) {
+    horizon_lines = ctx.get<int>("--horizon-lines", 0);
+  }
+  (void)horizon_lines;
 
-  // -- String options [DIFFERS] --
-  std::string diff_program = ctx.get<std::string>("--diff-program", "");
-  std::string exclude_pattern = ctx.get<std::string>("--exclude", "");
-  std::string exclude_from = ctx.get<std::string>("--exclude-from", "");
-  std::string exclude_dir_pattern = ctx.get<std::string>("--exclude-dir", "");
-  std::string starting_file_str = ctx.get<std::string>("--starting-file", "");
-  std::string ignore_matching =
+  cfg.ignore_matching =
       ctx.get<std::string>("--ignore-matching-lines", "");
-  std::string show_function_line =
-      ctx.get<std::string>("--show-function-line", "");
-
-  // -- Reject options not implemented on Windows [DIFFERS] --
-  if (ctx.has("-d") || ctx.has("--minimal")) {
-    safeErrorPrintLn("diff: --minimal is not supported on Windows");
-    return 1;
+  std::string ifdef_name =
+      ctx.get<std::string>("-D", ctx.get<std::string>("--ifdef", ""));
+  std::string from_file = ctx.get<std::string>("--from-file", "");
+  std::string to_file = ctx.get<std::string>("--to-file", "");
+  std::string starting_file_str =
+      ctx.get<std::string>("-S", ctx.get<std::string>("--starting-file", ""));
+  std::vector<std::string> exclude_pats;
+  for (const auto &occ : ctx.string_occurrences({"-x", "--exclude"})) {
+    exclude_pats.push_back(std::string(occ.value));
   }
-  if (ctx.has("-e") || ctx.has("--ed")) {
-    safeErrorPrintLn("diff: --ed is not supported on Windows");
-    return 1;
+  for (const auto &occ : ctx.string_occurrences({"-X", "--exclude-from"})) {
+    auto lines = read_file_lines_result(std::string(occ.value));
+    if (lines) {
+      for (const auto &line : lines.value()) {
+        if (!line.empty()) exclude_pats.push_back(line);
+      }
+    } else {
+      safeErrorPrint("diff: ");
+      safeErrorPrint(lines.error());
+      safeErrorPrint("\n");
+      return 2;
+    }
   }
-  if (ctx.has("-f") || ctx.has("--forward-ed")) {
-    safeErrorPrintLn("diff: --forward-ed is not supported on Windows");
-    return 1;
-  }
-  if (ctx.has("-n") || ctx.has("--rcs")) {
-    safeErrorPrintLn("diff: --rcs is not supported on Windows");
-    return 1;
-  }
-  if (ctx.has("-l") || ctx.has("--paginate")) {
-    safeErrorPrintLn("diff: --paginate is not supported on Windows");
-    return 1;
-  }
-  if (ctx.has("-p") || ctx.has("--show-c-function")) {
-    safeErrorPrintLn("diff: --show-c-function is not supported on Windows");
-    return 1;
-  }
-  if (!diff_program.empty()) {
-    safeErrorPrintLn("diff: --diff-program is not supported on Windows");
-    return 1;
-  }
-  if (ctx.has("-r") || ctx.has("--recursive")) {
-    safeErrorPrintLn("diff: --recursive is not supported on Windows");
-    return 1;
-  }
-  if (!exclude_pattern.empty() || ctx.has("-x")) {
-    safeErrorPrintLn("diff: --exclude is not supported on Windows");
-    return 1;
-  }
-  if (!exclude_from.empty() || ctx.has("-X")) {
-    safeErrorPrintLn("diff: --exclude-from is not supported on Windows");
-    return 1;
-  }
-  if (!exclude_dir_pattern.empty()) {
-    safeErrorPrintLn("diff: --exclude-dir is not supported on Windows");
-    return 1;
-  }
-  if (!starting_file_str.empty()) {
-    safeErrorPrintLn("diff: --starting-file is not supported on Windows");
-    return 1;
-  }
-  if (!show_function_line.empty()) {
-    safeErrorPrintLn("diff: --show-function-line is not supported on Windows");
-    return 1;
+  std::vector<std::string> exclude_dir_pats;
+  for (const auto &occ : ctx.string_occurrences({"--exclude-dir"})) {
+    exclude_dir_pats.push_back(std::string(occ.value));
   }
 
-  enum class OutputMode { Normal, Unified, Context, SideBySide };
-  OutputMode output_mode = OutputMode::Normal;
+  // -- Output format directives (-D/--ifdef, GFMT/LFMT family) --
+  FormatDirectives formats;
+  formats.changed_group = ctx.get<std::string>("--changed-group-format", "");
+  formats.old_group = ctx.get<std::string>("--old-group-format", "");
+  formats.new_group = ctx.get<std::string>("--new-group-format", "");
+  formats.unchanged_group =
+      ctx.get<std::string>("--unchanged-group-format", "");
+  formats.line = ctx.get<std::string>("--line-format", "");
+  formats.old_line = ctx.get<std::string>("--old-line-format", "");
+  formats.new_line = ctx.get<std::string>("--new-line-format", "");
+  formats.unchanged_line =
+      ctx.get<std::string>("--unchanged-line-format", "");
+  const bool use_ifdef = !ifdef_name.empty();
+  const bool use_formats = directive_has_any(formats);
+  if (use_ifdef) {
+    formats = default_ifdef_formats(ifdef_name);
+    if (auto v = ctx.get<std::string>("--changed-group-format", "");
+        !v.empty()) {
+      formats.changed_group = v;
+    }
+    if (auto v = ctx.get<std::string>("--old-group-format", ""); !v.empty()) {
+      formats.old_group = v;
+    }
+    if (auto v = ctx.get<std::string>("--new-group-format", ""); !v.empty()) {
+      formats.new_group = v;
+    }
+    if (auto v = ctx.get<std::string>("--unchanged-group-format", "");
+        !v.empty()) {
+      formats.unchanged_group = v;
+    }
+    if (auto v = ctx.get<std::string>("--line-format", ""); !v.empty()) {
+      formats.line = v;
+    }
+  }
+  cfg.formats = formats;
+
+  enum class Mode {
+    Normal,
+    Unified,
+    Context,
+    SideBySide,
+    Ed,
+    ForwardEd,
+    Rcs,
+    Format
+  };
+  Mode mode = Mode::Normal;
   int context = 3;
 
   auto set_context = [&](int value, std::string_view option,
@@ -1219,24 +2499,133 @@ REGISTER_COMMAND(
     if (!ctx.metas || occurrence.index >= ctx.metas->size()) continue;
     const auto &meta = (*ctx.metas)[occurrence.index];
     if (meta.short_name == "-u" || meta.long_name == "--unified") {
-      output_mode = OutputMode::Unified;
+      mode = Mode::Unified;
       auto value = std::get_if<int>(&occurrence.value);
       if (value && !set_context(*value, "--unified", true)) return 1;
     } else if (meta.short_name == "-U") {
-      output_mode = OutputMode::Unified;
+      mode = Mode::Unified;
       auto value = std::get_if<int>(&occurrence.value);
       if (value && !set_context(*value, "-U", false)) return 1;
     } else if (meta.short_name == "-c" || meta.long_name == "--context") {
-      output_mode = OutputMode::Context;
+      mode = Mode::Context;
       auto value = std::get_if<int>(&occurrence.value);
       if (value && !set_context(*value, "--context", true)) return 1;
     } else if (meta.short_name == "-C") {
-      output_mode = OutputMode::Context;
+      mode = Mode::Context;
       auto value = std::get_if<int>(&occurrence.value);
       if (value && !set_context(*value, "-C", false)) return 1;
     } else if (meta.short_name == "-y" || meta.long_name == "--side-by-side") {
-      output_mode = OutputMode::SideBySide;
+      mode = Mode::SideBySide;
+    } else if (meta.short_name == "-e" || meta.long_name == "--ed") {
+      mode = Mode::Ed;
+    } else if (meta.short_name == "-f" || meta.long_name == "--forward-ed") {
+      mode = Mode::ForwardEd;
+    } else if (meta.short_name == "-n" || meta.long_name == "--rcs") {
+      mode = Mode::Rcs;
+    } else if (meta.long_name == "--normal") {
+      mode = Mode::Normal;
     }
+  }
+  auto to_pipeline_mode = [](Mode m) -> OutputMode {
+    switch (m) {
+      case Mode::Unified: return OutputMode::Unified;
+      case Mode::Context: return OutputMode::Context;
+      case Mode::SideBySide: return OutputMode::SideBySide;
+      case Mode::Ed: return OutputMode::Ed;
+      case Mode::ForwardEd: return OutputMode::ForwardEd;
+      case Mode::Rcs: return OutputMode::Rcs;
+      case Mode::Format: return OutputMode::Format;
+      default: return OutputMode::Normal;
+    }
+  };
+  // [GNU] -D/--ifdef and the GFMT/LFMT family generalize the line formats;
+  // they take precedence over the fixed-format modes.
+  if (use_ifdef || use_formats) mode = Mode::Format;
+  cfg.output_mode = to_pipeline_mode(mode);
+  cfg.context = context;
+
+  // -p/-F function context only decorates unified/context headers.
+  portable_regex::Pattern func_pattern_storage;
+  std::string func_re_text = ctx.get<std::string>("-F", "");
+  if (func_re_text.empty()) {
+    func_re_text = ctx.get<std::string>("--show-function-line", "");
+  }
+  if (!func_re_text.empty()) {
+    auto compiled =
+        portable_regex::compile(portable_regex::Syntax::Basic, func_re_text);
+    if (!compiled) {
+      safeErrorPrint("diff: invalid regular expression '");
+      safeErrorPrint(func_re_text);
+      safeErrorPrint("'\n");
+      return 2;
+    }
+    func_pattern_storage = std::move(compiled.pattern);
+    cfg.style.func_re = &func_pattern_storage;
+  } else if (ctx.has("-p") || ctx.has("--show-c-function")) {
+    cfg.style.func_show_c = true;
+  }
+
+  bool recursive = ctx.has("-r") || ctx.has("--recursive");
+
+  // --color[=WHEN]: plain --color means auto (color when stdout is a
+  // terminal); 'always' forces it on, 'never' off.
+  DiffColors colors;
+  if (ctx.has("--color")) {
+    std::string when = "auto";
+    auto value = ctx.get<std::string>("--color", "");
+    if (!value.empty()) when = value;
+    if (when == "always") {
+      colors.on = true;
+    } else if (when == "auto") {
+      colors.on = shouldUseAnsiColorStdout();
+    }
+  }
+  cfg.style.colors = colors.on ? &colors : nullptr;
+
+  // -l/--paginate buffers every diff line and paginates pr-style at the
+  // end; error output stays unbuffered.
+  bool paginate = ctx.has("-l") || ctx.has("--paginate");
+  if (paginate) buffering_output = true;
+  const std::string command_tail = diff_command_tail();
+  auto finish = [&](int status) -> int {
+    if (paginate) paginate_and_flush(command_tail);
+    return status;
+  };
+
+  auto operand_is_directory = [](const std::string &operand_path) -> bool {
+    if (operand_is_stdin(operand_path)) return false;
+    auto operand = native_path::make_api_path_operand(operand_path);
+    return native_path::attributes_are_directory(
+        native_path::operand_target_attributes_w(operand));
+  };
+
+  // -- from-file/to-file: one side fixed, the other iterated --
+  if (!from_file.empty() && !to_file.empty()) {
+    safeErrorPrintLn(
+        "diff: --from-file and --to-file are mutually exclusive");
+    return 2;
+  }
+  if (!from_file.empty() || !to_file.empty()) {
+    if (ctx.positionals.empty()) {
+      safeErrorPrintLn("diff: missing operand");
+      safeErrorPrintLn("Try 'diff --help' for more information.");
+      return 2;
+    }
+    int worst = 0;
+    for (const auto &positional : ctx.positionals) {
+      std::string operand(positional);
+      std::string a = from_file.empty() ? operand : from_file;
+      std::string b = to_file.empty() ? operand : to_file;
+      DiffLabel l1{a, false};
+      DiffLabel l2{b, false};
+      auto labels = ctx.string_occurrences({"--label"});
+      if (!labels.empty()) l1 = DiffLabel{labels[0].value, true};
+      if (labels.size() > 1) l2 = DiffLabel{labels[1].value, true};
+      int status = compare_file_pair(a, b, l1, l2, cfg);
+      if (status == 2) return finish(2);
+      worst = std::max(worst, status);
+    }
+    return finish(worst);
   }
 
   auto files_result = resolve_files(ctx);
@@ -1244,61 +2633,34 @@ REGISTER_COMMAND(
     safeErrorPrint("diff: ");
     safeErrorPrintLn(files_result.error());
     safeErrorPrint("Try 'diff --help' for more information.\n");
-    return 1;
+    return 2;
   }
 
   std::string file1 = (*files_result)[0];
   std::string file2 = (*files_result)[1];
 
-  // [GNU] Two standard-input operands name the same stream: diff detects the
-  // same inode and reports identical instead of consuming stdin twice.
+  // [GNU] Two standard-input operands name the same stream: diff detects
+  // the same inode and reports identical instead of consuming stdin twice.
   if (operand_is_stdin(file1) && operand_is_stdin(file2)) {
     if (file_io::stdin_is_bad()) {
-      safeErrorPrint("diff: ");
-      safeErrorPrint(file1);
-      safeErrorPrintLn(": Bad file descriptor");
-      return 2;
+      dput("diff: ");
+      dput(file1);
+      dput(": Bad file descriptor\n");
+      return finish(2);
     }
-    if (report_identical) {
-      safePrint("Files ");
-      safePrint(file1);
-      safePrint(" and ");
-      safePrint(file2);
-      safePrint(" are identical\n");
+    if (cfg.report_identical) {
+      dput("Files ");
+      dput(file1);
+      dput(" and ");
+      dput(file2);
+      dput(" are identical\n");
     }
-    return 0;
+    return finish(0);
   }
 
-  // [GNU] Missing operands are reported under their original names before
-  // any directory expansion, and every missing operand gets an error
-  // ("diff: <path>: No such file or directory", exit 2).
-  bool operand_trouble = false;
-  for (const std::string *operand_path : {&file1, &file2}) {
-    // -N/--new-file treats an absent operand as an empty file instead.
-    if (new_file || operand_is_stdin(*operand_path)) continue;
-    auto operand = native_path::make_api_path_operand(*operand_path);
-    if (native_path::operand_target_attributes_w(operand) ==
-        INVALID_FILE_ATTRIBUTES) {
-      safeErrorPrint("diff: ");
-      safeErrorPrint(*operand_path);
-      safeErrorPrint(": No such file or directory\n");
-      operand_trouble = true;
-    }
-  }
-  if (operand_trouble) {
-    return 2;
-  }
-
-  // [GNU] A directory operand is rewritten to "<dir>/<basename of the other
-  // operand>" before comparison, so "diff dir file" compares dir/file with
-  // file.  Two directory operands request a directory comparison, which is
-  // not implemented; they fall through to the "Is a directory" error.
-  auto operand_is_directory = [](const std::string &operand_path) -> bool {
-    if (operand_is_stdin(operand_path)) return false;
-    auto operand = native_path::make_api_path_operand(operand_path);
-    return native_path::attributes_are_directory(
-        native_path::operand_target_attributes_w(operand));
-  };
+  // [GNU] A directory operand is rewritten to "<dir>/<basename of the
+  // other operand>" before comparison, so "diff dir file" compares
+  // dir/file with file.
   auto base_name_of = [](const std::string &operand_path) -> std::string {
     size_t end = operand_path.size();
     while (end > 0 &&
@@ -1328,183 +2690,20 @@ REGISTER_COMMAND(
     file2 = join_dir_member(file2, base_name_of(file1));
   }
 
+  // -- Two directory operands: per-level listing, -r recursion --
+  if (file1_is_dir && file2_is_dir) {
+    int status = compare_directory_pair(
+        file1, file2, cfg, recursive, exclude_pats, exclude_dir_pats,
+        starting_file_str, command_tail);
+    return finish(status);
+  }
+
   DiffLabel label1{file1, false};
   DiffLabel label2{file2, false};
   auto labels = ctx.string_occurrences({"--label"});
   if (!labels.empty()) label1 = DiffLabel{labels[0].value, true};
   if (labels.size() > 1) label2 = DiffLabel{labels[1].value, true};
 
-  // -- Read both files; -N/--new-file treats missing as empty [DIFFERS].
-  // [GNU] Every unreadable operand is reported (not just the first), and
-  // input trouble exits 2 (0=same, 1=differ).
-  auto lines1_result = read_file_lines_result(file1);
-  auto lines2_result = read_file_lines_result(file2);
-  bool input_error = false;
-  if (!lines1_result) {
-    if (new_file) {
-      lines1_result = std::vector<std::string>{};
-    } else {
-      safeErrorPrint("diff: ");
-      safeErrorPrint(lines1_result.error());
-      safeErrorPrint("\n");
-      input_error = true;
-    }
-  }
-  if (!lines2_result) {
-    if (new_file) {
-      lines2_result = std::vector<std::string>{};
-    } else {
-      safeErrorPrint("diff: ");
-      safeErrorPrint(lines2_result.error());
-      safeErrorPrint("\n");
-      input_error = true;
-    }
-  }
-  if (input_error) {
-    return 2;
-  }
-
-  auto &lines1 = lines1_result.value();
-  auto &lines2 = lines2_result.value();
-
-  if (brief) {
-    return compare_files(file1, file2, lines1, lines2, true, ignore_all_space)
-               ? 0
-               : 1;
-  }
-
-  // -- Apply transformations for comparison [DIFFERS] --
-  auto cmp1 = lines1;
-  auto cmp2 = lines2;
-
-  if (strip_trailing_cr) {
-    cmp1 = strip_trailing_cr_lines(cmp1);
-    cmp2 = strip_trailing_cr_lines(cmp2);
-  }
-  if (ignore_blank_lines) {
-    cmp1 = filter_blank_lines(cmp1);
-    cmp2 = filter_blank_lines(cmp2);
-  }
-  if (expand_tabs_opt) {
-    cmp1 = expand_tabs_lines(cmp1, tabsize);
-    cmp2 = expand_tabs_lines(cmp2, tabsize);
-  }
-  cmp1 = normalize_lines_for_compare(cmp1, ignore_all_space);
-  cmp2 = normalize_lines_for_compare(cmp2, ignore_all_space);
-  if (ignore_space_change) {
-    cmp1 = normalize_lines_space_change(cmp1);
-    cmp2 = normalize_lines_space_change(cmp2);
-  }
-  if (ignore_case) {
-    cmp1 = normalize_lines_case(cmp1);
-    cmp2 = normalize_lines_case(cmp2);
-  }
-  if (!ignore_matching.empty()) {
-    cmp1 = filter_matching_lines(cmp1, ignore_matching);
-    cmp2 = filter_matching_lines(cmp2, ignore_matching);
-  }
-  auto &compare_lines1 = cmp1;
-  auto &compare_lines2 = cmp2;
-
-  if (compare_lines1 == compare_lines2) {
-    if (report_identical) {
-      safePrint("Files ");
-      safePrint(file1);
-      safePrint(" and ");
-      safePrint(file2);
-      safePrint(" are identical\n");
-    }
-    return 0;
-  }
-
-  if (output_mode == OutputMode::Unified) {
-    output_unified_diff(file1, file2, compare_lines1, compare_lines2, lines1,
-                        lines2, context, label1, label2);
-  } else if (output_mode == OutputMode::Context) {
-    output_context_diff(file1, file2, compare_lines1, compare_lines2, lines1,
-                        lines2, context, label1, label2);
-  } else if (output_mode == OutputMode::SideBySide) {
-    // -- pass side_width and suppress_common [DIFFERS] --
-    output_side_by_side(file1, file2, compare_lines1, compare_lines2, lines1,
-                        lines2, side_width, suppress_common);
-  } else {
-    // GNU normal format: per-hunk command line (Na / Nd / NcN) with the
-    // deleted lines (<), a `---` separator for changes, and added lines (>).
-    auto edits = compute_diff(compare_lines1, compare_lines2);
-    auto hunks = build_diff_hunks(edits, lines1.size(), lines2.size(), 0);
-    if (hunks.empty()) {
-      // Files are identical
-      return 0;
-    }
-
-    // backtrack_lcs emits edits bottom-up; GNU prints hunks and lines in
-    // ascending file order, so sort both levels.
-    std::sort(hunks.begin(), hunks.end(), [](const auto &a, const auto &b) {
-      if (a.file1_start != b.file1_start) return a.file1_start < b.file1_start;
-      return a.file2_start < b.file2_start;
-    });
-
-    auto format_normal_range = [](size_t start_line, size_t count) {
-      std::string out = std::to_string(start_line);
-      if (count > 1) {
-        out += ",";
-        out += std::to_string(start_line + count - 1);
-      }
-      return out;
-    };
-
-    for (const auto &hunk : hunks) {
-      std::vector<size_t> del_lines;
-      std::vector<size_t> ins_lines;
-      for (size_t i = hunk.edit_start; i < hunk.edit_end; ++i) {
-        const auto &edit = edits[i];
-        if (edit.type == EditType::DEL) {
-          del_lines.push_back(edit.line1_index);
-        } else if (edit.type == EditType::INS) {
-          ins_lines.push_back(edit.line2_index);
-        }
-      }
-      std::sort(del_lines.begin(), del_lines.end());
-      std::sort(ins_lines.begin(), ins_lines.end());
-      if (del_lines.empty() && ins_lines.empty()) continue;
-
-      const size_t n_del = hunk.file1_end - hunk.file1_start;
-      const size_t n_ins = hunk.file2_end - hunk.file2_start;
-      if (n_del == 0) {
-        // Insert after file1 line `file1_start` (0a1 when prepending).
-        safePrint(std::to_string(hunk.file1_start));
-        safePrint("a");
-        safePrint(format_normal_range(hunk.file2_start + 1, n_ins));
-        safePrint("\n");
-      } else if (n_ins == 0) {
-        // Delete file1 lines; file2 anchor is the line count before the
-        // deletion point (5d4 when deleting the last line of five).
-        safePrint(format_normal_range(hunk.file1_start + 1, n_del));
-        safePrint("d");
-        safePrint(std::to_string(hunk.file2_start));
-        safePrint("\n");
-      } else {
-        safePrint(format_normal_range(hunk.file1_start + 1, n_del));
-        safePrint("c");
-        safePrint(format_normal_range(hunk.file2_start + 1, n_ins));
-        safePrint("\n");
-      }
-
-      for (size_t idx : del_lines) {
-        safePrint("< ");
-        safePrint(lines1[idx]);
-        safePrint("\n");
-      }
-      if (!del_lines.empty() && !ins_lines.empty()) {
-        safePrint("---\n");
-      }
-      for (size_t idx : ins_lines) {
-        safePrint("> ");
-        safePrint(lines2[idx]);
-        safePrint("\n");
-      }
-    }
-  }
-
-  return 1;
+  int status = compare_file_pair(file1, file2, label1, label2, cfg);
+  return finish(status);
 }
