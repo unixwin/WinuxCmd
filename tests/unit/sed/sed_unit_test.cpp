@@ -1628,6 +1628,19 @@ TEST(sed, crlf_normalize_passes_converge_like_gnu) {
   EXPECT_EQ_TEXT(tmp.read("a.txt"), "line1\r\nline2\r\n");
 }
 
+TEST(sed, address_regex_control_escapes_match_bytes) {
+  TempDir tmp;
+  tmp.write("a.txt", "x\ty\nplain\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sed.exe", {L"-n", L"/x\\ty/p", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "x\ty\n");
+}
+
 TEST(sed, pattern_unknown_escapes_keep_historical_form) {
   TempDir tmp;
   // Escapes the regex engine does not define keep their pre-change

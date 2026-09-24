@@ -802,8 +802,34 @@ auto parse_address(std::string_view line, size_t& i,
     for (; i < line.size(); ++i) {
       char c = line[i];
       if (escape) {
-        pat.push_back(c);
         escape = false;
+        // [GNU] Decode control escapes in address regexes the same way
+        // s/// decodes them (compile.c:1449-1465): /\r/ matches the CR
+        // byte, /\t/ the TAB byte. Unknown escapes keep their historical
+        // literal form (the regex compiler resolves them).
+        switch (c) {
+          case 'a':
+            pat.push_back('\a');
+            break;
+          case 'f':
+            pat.push_back('\f');
+            break;
+          case 'n':
+            pat.push_back('\n');
+            break;
+          case 'r':
+            pat.push_back('\r');
+            break;
+          case 't':
+            pat.push_back('\t');
+            break;
+          case 'v':
+            pat.push_back('\v');
+            break;
+          default:
+            pat.push_back(c);
+            break;
+        }
         continue;
       }
       if (c == '\\') {
