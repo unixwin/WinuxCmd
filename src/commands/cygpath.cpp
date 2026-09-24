@@ -80,7 +80,6 @@ auto constexpr CYGPATH_OPTIONS = std::array{
 // ======================================================
 
 namespace {
-enum class OutputMode { Unix, Windows, Mixed };
 
 auto ascii_lower(char ch) -> char {
   return static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
@@ -256,6 +255,16 @@ auto long_path_name(std::string path) -> std::string {
   return wstring_to_utf8(out);
 }
 
+}  // namespace
+
+// ======================================================
+// Pipeline components
+// ======================================================
+namespace cygpath_pipeline {
+namespace cp = core::pipeline;
+
+enum class OutputMode { Unix, Windows, Mixed };
+
 auto convert_one(std::string path, OutputMode mode, bool absolute,
                  bool proc_cygdrive, bool short_name, bool long_name)
     -> std::string {
@@ -316,13 +325,6 @@ auto unsupported_options(const CommandContext<CYGPATH_OPTIONS.size()>& ctx)
   }
   return names;
 }
-}  // namespace
-
-// ======================================================
-// Pipeline components
-// ======================================================
-namespace cygpath_pipeline {
-namespace cp = core::pipeline;
 
 struct Config {
   OutputMode mode = OutputMode::Unix;
