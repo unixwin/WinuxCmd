@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <assemblyIdentity type="win32" name="unixwin.WinuxCmd" version="1.0.5.0" processorArchitecture="*"/>
+  <description>WinuxCmd - GNU-compatible command suite for Windows</description>
+  <!-- niubash#88 class of bugs: pin the process ANSI code page to UTF-8 so
+       every narrow-char boundary (argv, std::filesystem narrow path ctors,
+       path::string(), *A Win32 APIs, CRT stdio) speaks UTF-8 instead of the
+       legacy system ACP (e.g. 936/1252). Requires Windows 10 1903+. -->
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings xmlns:ws2019="http://schemas.microsoft.com/SMI/2019/WindowsSettings">
+      <ws2019:activeCodePage>UTF-8</ws2019:activeCodePage>
+    </windowsSettings>
+  </application>
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows 10 / 11 -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
+    </application>
+  </compatibility>
+</assembly>

@@ -1,0 +1,7 @@
+cmd: sed
+args: -i s/a/b/ file.txt
+timeout: 10
+setup: |
+  printf a > file.txt
+source: github.com/unixwin/WinuxCmd/issues/140
+tags: issue-140 regression

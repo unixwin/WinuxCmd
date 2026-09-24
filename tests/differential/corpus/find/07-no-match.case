@@ -1,0 +1,7 @@
+cmd: find
+args: . -name missing.txt
+timeout: 10
+setup: |
+  mkdir -p sub; printf x > sub/one.txt
+source: github.com/unixwin/WinuxCmd
+tags: corpus-expansion round-3

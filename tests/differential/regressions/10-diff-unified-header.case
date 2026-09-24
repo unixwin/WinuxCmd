@@ -1,0 +1,8 @@
+cmd: diff
+args: -u old.txt new.txt
+timeout: 10
+setup: |
+  printf 'old\n' > old.txt; printf 'old\nnew\n' > new.txt
+  touch -t 202001010000.00 old.txt new.txt
+source: github.com/unixwin/WinuxCmd/issues/140
+tags: issue-140 regression

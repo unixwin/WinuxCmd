@@ -1,0 +1,7 @@
+cmd: test
+args: -f a -o -f b
+timeout: 10
+setup: |
+  touch a
+source: github.com/unixwin/WinuxCmd/issues/140
+tags: issue-140 regression

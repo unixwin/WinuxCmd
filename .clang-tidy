@@ -1,0 +1,92 @@
+---
+Checks: '-*,
+        clang-analyzer-core.*,
+        clang-analyzer-cplusplus.*,
+        modernize-redundant-void-arg,
+        modernize-use-bool-literals,
+        modernize-use-equals-default,
+        modernize-use-nullptr,
+        modernize-use-override,
+        google-explicit-constructor,
+        google-readability-casting,
+        readability-braces-around-statements,
+        readability-identifier-naming.ClassCase,
+        readability-identifier-naming.StructCase,
+        readability-identifier-naming.TypedefCase,
+        readability-identifier-naming.EnumCase,
+        readability-non-const-parameter,
+        cert-dcl21-cpp,
+        bugprone-undelegated-constructor,
+        bugprone-macro-parentheses,
+        bugprone-macro-repeated-side-effects,
+        bugprone-forward-declaration-namespace,
+        bugprone-bool-pointer-implicit-conversion,
+        bugprone-misplaced-widening-cast,
+        cppcoreguidelines-narrowing-conversions,
+        cppcoreguidelines-pro-type-reinterpret-cast,
+        misc-unconventional-assign-operator,
+        performance-move-const-arg,
+        readability-container-size-empty,
+        bugprone-unique-ptr-array-mismatch,
+        bugprone-lambda-function-name,
+        modernize-use-designated-initializers'
+WarningsAsErrors: ''
+HeaderFilterRegex: '^((?!third_party).)*$'
+CheckOptions:
+  - key:             modernize-redundant-void-arg
+    value:           'true' 
+  - key:             modernize-use-bool-literals
+    value:           'true'  
+  - key:             modernize-use-equals-default
+    value:           'true'  
+  - key:             modernize-use-nullptr
+    value:           'true'  
+  - key:             modernize-use-override
+    value:           'true'  
+  # Google 
+  - key:             google-explicit-constructor
+    value:           'true'  
+  - key:             google-readability-casting
+    value:           'true'  
+
+  # Readability
+  - key:             readability-braces-around-statements
+    value:           'true'  
+  - key:             readability-identifier-naming.ClassCase
+    value:           'CamelCase'  
+  - key:             readability-identifier-naming.StructCase
+    value:           'CamelCase'  
+  - key:             readability-identifier-naming.TypedefCase
+    value:           'CamelCase' 
+  - key:             readability-identifier-naming.EnumCase
+    value:           'CamelCase' 
+  - key:             readability-non-const-parameter
+    value:           'true'  
+
+  # CERT 
+  - key:             cert-dcl21-cpp
+    value:           'true'  
+
+  # Bugprone
+  - key:             bugprone-undelegated-constructor
+    value:           'true' 
+  - key:             bugprone-macro-parentheses
+    value:           'true'  
+  - key:             bugprone-macro-repeated-side-effects
+    value:           'true'  
+  - key:             bugprone-forward-declaration-namespace
+    value:           'true'  
+  - key:             bugprone-bool-pointer-implicit-conversion
+    value:           'true' 
+  - key:             bugprone-misplaced-widening-cast
+    value:           'true'  
+
+  # CppCoreGuidelines
+  - key:             cppcoreguidelines-narrowing-conversions
+    value:           'true' 
+  - key:             cppcoreguidelines-pro-type-reinterpret-cast
+    value:           'true' 
+
+  # Miscellaneous
+  - key:             misc-unconventional-assign-operator
+    value:           'true'  

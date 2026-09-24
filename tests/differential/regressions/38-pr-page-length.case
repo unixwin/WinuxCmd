@@ -1,0 +1,7 @@
+cmd: pr
+args: -t -l 10 file.txt
+timeout: 10
+setup: |
+  printf 'a\nb\nc\n' > file.txt
+source: github.com/unixwin/WinuxCmd/issues/140
+tags: issue-140 regression

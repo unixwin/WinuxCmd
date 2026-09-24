@@ -1,0 +1,7 @@
+cmd: diff
+args: x1.txt x2.txt
+timeout: 10
+setup: |
+  printf 'a\nb\n' > x1.txt; printf 'a\nX\n' > x2.txt
+source: github.com/unixwin/WinuxCmd/issues/140
+tags: issue-140 regression corpus-expansion

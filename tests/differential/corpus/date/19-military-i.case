@@ -1,0 +1,6 @@
+cmd: date
+args: '-u' '-d' '1024i' '+%H:%M'
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/354
+tags: issue-354 military-zone i-is-utc-plus-9
+

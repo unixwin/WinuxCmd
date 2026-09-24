@@ -1,0 +1,10 @@
+cmd: sdiff
+args: -o merged.txt a.txt b.txt
+timeout: 10
+files: merged.txt
+stdin: |
+  l
+setup: |
+  printf 'a\n' > a.txt; printf 'b\n' > b.txt
+source: github.com/unixwin/WinuxCmd/issues/140
+tags: issue-140 regression

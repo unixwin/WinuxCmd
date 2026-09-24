@@ -1,0 +1,8 @@
+cmd: dd
+args: if=f.txt of=out bs=1 skip=3 count=2
+timeout: 10
+setup: |
+  printf 'abcdef\n' > f.txt
+files: out
+source: github.com/unixwin/WinuxCmd
+tags: corpus-expansion round-4

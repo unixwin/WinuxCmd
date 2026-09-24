@@ -1,0 +1,528 @@
+name: CMake Windows Multi-Arch CI
+
+on:
+  push:
+    branches: [ "main", "master" ]
+    tags: [ "v*" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            vcvars_arg: x64
+            package_arch: x64
+          - arch: arm64
+            vcvars_arg: x64_arm64
+            package_arch: arm64
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Extract Version
+        id: extract_version
+        shell: pwsh
+        run: |
+          if ("${{ github.ref }}" -match "^refs/tags/v(\d+\.\d+\.\d+)") {
+            $version = $matches[1]
+          } else {
+            $version = (Select-String -Path "CMakeLists.txt" -Pattern "VERSION (\d+\.\d+\.\d+)").Matches.Groups[1].Value
+          }
+          echo "project_version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Locate Visual Studio toolchain
+        id: locate_vcvars
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) {
+            throw "vswhere.exe not found at $vswhere"
+          }
+
+          $vcvarsPath = & $vswhere `
+            -latest `
+            -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -find "VC\Auxiliary\Build\vcvarsall.bat" |
+            Select-Object -First 1
+
+          if ([string]::IsNullOrWhiteSpace($vcvarsPath)) {
+            throw "Failed to locate vcvarsall.bat via vswhere"
+          }
+
+          "vcvars_path=$vcvarsPath" >> $env:GITHUB_OUTPUT
+
+      - name: Configure CMake (Release Mode)
+        shell: cmd
+        run: |
+          call "${{ steps.locate_vcvars.outputs.vcvars_path }}" ${{ matrix.vcvars_arg }}
+          cmake -B build-${{ matrix.package_arch }} ^
+            -G "Ninja" ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_C_COMPILER_TARGET=${{ matrix.arch }} ^
+            -DCMAKE_CXX_COMPILER_TARGET=${{ matrix.arch }} ^
+            -DWINUXCMD_PACKAGE_ARCH=${{ matrix.package_arch }} ^
+            -DBUILD_MODE=RELEASE ^
+            -DUSE_STATIC_CRT=ON ^
+            -DENABLE_TESTS=${{ matrix.package_arch == 'x64' && 'ON' || 'OFF' }} ^
+            -DCMAKE_CXX_STANDARD=23 ^
+            -DCMAKE_CXX_STANDARD_REQUIRED=ON ^
+            -DCMAKE_EXPERIMENTAL_CXX_MODULE_STD=ON ^
+            -DCMAKE_CXX_MODULE_STD=ON ^
+            -DCMAKE_CXX_FLAGS="/std:c++latest /EHsc"
+
+      - name: Build Project
+        shell: cmd
+        working-directory: build-${{ matrix.package_arch }}
+        run: |
+          call "${{ steps.locate_vcvars.outputs.vcvars_path }}" ${{ matrix.vcvars_arg }}
+          cmake --build . --config Release --parallel %NUMBER_OF_PROCESSORS%
+
+      # PGO (x64 only): profile collection must run the instrumented binary
+      # on the host arch, so the cross-compiled arm64 job stays non-PGO.
+      - name: PGO instrumented build (x64)
+        if: matrix.package_arch == 'x64'
+        shell: cmd
+        run: |
+          call "${{ steps.locate_vcvars.outputs.vcvars_path }}" x64
+          cmake -B build-x64-pgo-train ^
+            -G "Ninja" ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_CXX_COMPILER_TARGET=x64 ^
+            -DWINUXCMD_PACKAGE_ARCH=x64 ^
+            -DBUILD_MODE=RELEASE ^
+            -DUSE_STATIC_CRT=ON ^
+            -DENABLE_TESTS=OFF ^
+            -DCMAKE_CXX_STANDARD=23 ^
+            -DCMAKE_CXX_STANDARD_REQUIRED=ON ^
+            -DCMAKE_EXPERIMENTAL_CXX_MODULE_STD=ON ^
+            -DCMAKE_CXX_MODULE_STD=ON ^
+            -DCMAKE_CXX_FLAGS="/std:c++latest /EHsc" ^
+            -DWINUXCMD_PGO_INSTRUMENT=ON
+          cmake --build build-x64-pgo-train --config Release --parallel %NUMBER_OF_PROCESSORS%
+
+      - name: PGO collect profile (x64)
+        if: matrix.package_arch == 'x64'
+        shell: pwsh
+        run: |
+          $profileDir = Join-Path $PWD "build-x64-pgo-train\pgo"
+          New-Item -ItemType Directory -Force -Path $profileDir | Out-Null
+          $env:VCPROFILE_PATH = $profileDir
+          # The instrumented binary needs pgort140.dll (VC PGO runtime).
+          $pgRt = Get-ChildItem "C:\Program Files\Microsoft Visual Studio" -Recurse -Filter pgort140.dll -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+          if (-not $pgRt) { throw "pgort140.dll not found" }
+          $env:PATH = "$(Split-Path $pgRt.FullName);$env:PATH"
+          & bash scripts/pgo-train.sh (Join-Path $PWD "build-x64-pgo-train\usr\bin")
+          if ($LASTEXITCODE -ne 0) { throw "training workloads failed" }
+          Get-ChildItem $profileDir -Filter *.pgc | Where-Object { $_.Length -eq 0 } | Remove-Item
+          $pgc = Get-ChildItem $profileDir -Filter *.pgc
+          if (-not $pgc) { throw "no .pgc profile data collected; training did not run" }
+          Write-Host ("collected {0} .pgc file(s), {1:N1} MB total" -f $pgc.Count, (($pgc | Measure-Object Length -Sum).Sum / 1MB))
+          Copy-Item (Join-Path $PWD "build-x64-pgo-train\winuxcmd.pgd") $profileDir -Force
+
+      - name: PGO rebuild with profile (x64)
+        if: matrix.package_arch == 'x64'
+        shell: cmd
+        run: |
+          call "${{ steps.locate_vcvars.outputs.vcvars_path }}" x64
+          cmake -B build-x64 ^
+            -G "Ninja" ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_CXX_COMPILER_TARGET=x64 ^
+            -DWINUXCMD_PACKAGE_ARCH=x64 ^
+            -DBUILD_MODE=RELEASE ^
+            -DUSE_STATIC_CRT=ON ^
+            -DENABLE_TESTS=ON ^
+            -DCMAKE_CXX_STANDARD=23 ^
+            -DCMAKE_CXX_STANDARD_REQUIRED=ON ^
+            -DCMAKE_EXPERIMENTAL_CXX_MODULE_STD=ON ^
+            -DCMAKE_CXX_MODULE_STD=ON ^
+            -DCMAKE_CXX_FLAGS="/std:c++latest /EHsc" ^
+            -DWINUXCMD_PGO_USE=ON
+          copy /Y build-x64-pgo-train\pgo\*.pgc build-x64\ >NUL
+          copy /Y build-x64-pgo-train\pgo\winuxcmd.pgd build-x64\ >NUL
+          cmake --build build-x64 --config Release --parallel %NUMBER_OF_PROCESSORS%
+
+      - name: Run Unit Tests (ctest)
+        if: matrix.package_arch == 'x64'
+        shell: cmd
+        working-directory: build-${{ matrix.package_arch }}
+        run: |
+          call "${{ steps.locate_vcvars.outputs.vcvars_path }}" ${{ matrix.vcvars_arg }}
+          ctest --output-on-failure --no-tests=error --timeout 120 -C Release
+
+      - name: Package with CPack (7Z + ZIP + TGZ)
+        shell: cmd
+        working-directory: build-${{ matrix.package_arch }}
+        run: |
+          REM Package all components (Runtime + Documentation + FFI)
+          cpack -G 7Z -C Release
+          cpack -G ZIP -C Release
+          cpack -G TGZ -C Release
+
+      - name: Rename Packages
+        shell: cmd
+        run: |
+          set "VER=${{ steps.extract_version.outputs.project_version }}"
+          set "ARCH=${{ matrix.package_arch }}"
+          set "BUILD_DIR=build-%ARCH%"
+          
+          REM Rename Runtime packages
+          for %%f in ("%BUILD_DIR%\WinuxCmd-*.7z") do ren "%%f" "WinuxCmd-%VER%-win-%ARCH%.7z"
+          for %%f in ("%BUILD_DIR%\WinuxCmd-*.zip") do ren "%%f" "WinuxCmd-%VER%-win-%ARCH%.zip"
+          for %%f in ("%BUILD_DIR%\WinuxCmd-*.tar.gz") do ren "%%f" "WinuxCmd-%VER%-win-%ARCH%.tar.gz"
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: WinuxCmd-${{ steps.extract_version.outputs.project_version }}-${{ matrix.package_arch }}
+          path: |
+            build-${{ matrix.package_arch }}/WinuxCmd-${{ steps.extract_version.outputs.project_version }}-win-${{ matrix.package_arch }}.7z
+            build-${{ matrix.package_arch }}/WinuxCmd-${{ steps.extract_version.outputs.project_version }}-win-${{ matrix.package_arch }}.zip
+            build-${{ matrix.package_arch }}/WinuxCmd-${{ steps.extract_version.outputs.project_version }}-win-${{ matrix.package_arch }}.tar.gz
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Install Inno Setup
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+
+      - name: Build Installer
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        run: |
+          ./scripts/build-installer.ps1 `
+            -Root $env:GITHUB_WORKSPACE `
+            -BuildDir build-${{ matrix.package_arch }} `
+            -Configuration Release `
+            -Generator Ninja `
+            -Arch ${{ matrix.package_arch }} `
+            -VsEnvScript "${{ steps.locate_vcvars.outputs.vcvars_path }}" `
+            -IsccPath "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" `
+            -SkipBuild
+
+      - name: Upload Installer Artifact
+        if: github.ref_type == 'tag'
+        uses: actions/upload-artifact@v7
+        with:
+          name: WinuxCmd-${{ steps.extract_version.outputs.project_version }}-${{ matrix.package_arch }}-installer
+          path: |
+            dist/WinuxCmd-${{ steps.extract_version.outputs.project_version }}-${{ matrix.package_arch }}-setup.exe
+          retention-days: 1
+          if-no-files-found: error
+
+  release:
+    runs-on: ubuntu-latest
+    needs: build-windows
+    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+    permissions:
+      contents: write
+
+    outputs:
+      version: ${{ steps.final_version.outputs.version }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Extract Version from Tag
+        id: final_version
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Download x64 Packages
+        uses: actions/download-artifact@v8
+        with:
+          name: WinuxCmd-${{ steps.final_version.outputs.version }}-x64
+          path: artifacts/x64
+
+      - name: Download ARM64 Packages
+        uses: actions/download-artifact@v8
+        with:
+          name: WinuxCmd-${{ steps.final_version.outputs.version }}-arm64
+          path: artifacts/arm64
+
+      - name: Download x64 Installer
+        uses: actions/download-artifact@v8
+        with:
+          name: WinuxCmd-${{ steps.final_version.outputs.version }}-x64-installer
+          path: artifacts/installers/x64
+
+      - name: Download ARM64 Installer
+        uses: actions/download-artifact@v8
+        with:
+          name: WinuxCmd-${{ steps.final_version.outputs.version }}-arm64-installer
+          path: artifacts/installers/arm64
+
+      - name: Verify Packages
+        run: |
+          echo "=== Valid Packages ==="
+          find artifacts -type f \( -name "*.7z" -o -name "*.zip" -o -name "*.tar.gz" -o -name "*.exe" \) | sort || exit 1
+          echo "======================"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/x64/*.7z
+            artifacts/x64/*.zip
+            artifacts/x64/*.tar.gz
+            artifacts/arm64/*.7z
+            artifacts/arm64/*.zip
+            artifacts/arm64/*.tar.gz
+            artifacts/installers/x64/*.exe
+            artifacts/installers/arm64/*.exe
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          body: |
+            Windows binaries for ${{ github.ref_name }}
+            
+            ### Architectures:
+            - **x64**: Windows 64-bit
+            - **ARM64**: Windows ARM64 (cross-compiled)
+            
+            ### Files included:
+            - WinuxCmd-${{ steps.final_version.outputs.version }}-win-x64.7z
+            - WinuxCmd-${{ steps.final_version.outputs.version }}-win-x64.zip
+            - WinuxCmd-${{ steps.final_version.outputs.version }}-win-x64.tar.gz
+            - WinuxCmd-${{ steps.final_version.outputs.version }}-x64-setup.exe
+            - WinuxCmd-${{ steps.final_version.outputs.version }}-win-arm64.7z
+            - WinuxCmd-${{ steps.final_version.outputs.version }}-win-arm64.zip
+            - WinuxCmd-${{ steps.final_version.outputs.version }}-win-arm64.tar.gz
+            - WinuxCmd-${{ steps.final_version.outputs.version }}-arm64-setup.exe
+            - WinuxCmd-skill-v${{ steps.final_version.outputs.version }}.zip
+            
+            ### Package Contents:
+            - `winuxcmd.exe` - Main executable
+            - `ffi/` directory:
+              - `ffi.h` - FFI header file
+              - `winuxcore.dll` - FFI library (direct function call API)
+              - `winuxcore.lib` - Import library
+            - Scripts for installation and setup
+            - Standalone `winuxcmd` skill bundle for AI agents
+            
+            ### Package Formats:
+            - **7Z**: Best compression (requires 7-Zip)
+            - **ZIP**: Native Windows support (right-click to extract)
+            - **TGZ**: tar.gz format (use `tar -xzf filename.tar.gz`)
+            - **EXE**: standalone installer with PATH and PowerShell integration tasks
+            
+            ### Usage:
+            1. Download the appropriate package for your architecture
+            2. Extract to your desired directory
+            3. Navigate to the `bin` directory
+            4. Run `create_links.ps1` to generate command links
+               ```powershell
+               # For NTFS filesystems (recommended)
+               .\create_links.ps1
+               
+               # For non-NTFS filesystems, use symbolic links
+               .\create_links.ps1 -UseSymbolicLinks
+               
+               # To remove all links later
+               .\create_links.ps1 -Remove
+               ```
+            5. Add the `bin` directory to your PATH
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          overwrite_files: 'true'
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  sync-i18n-catalog:
+    runs-on: ubuntu-latest
+    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+    env:
+      I18N_REPO_TOKEN: ${{ secrets.I18N_REPO_TOKEN }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout WinuxCmd
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Prepare English catalog
+        shell: bash
+        run: |
+          python3 scripts/i18n_sync.py prepare --output artifacts/i18n
+
+      - name: Check I18N token
+        shell: bash
+        run: |
+          if [ -z "$I18N_REPO_TOKEN" ]; then
+            echo "I18N_REPO_TOKEN is not configured; English catalog was prepared locally only."
+            exit 0
+          fi
+
+      - name: Checkout I18N repository
+        if: env.I18N_REPO_TOKEN != ''
+        uses: actions/checkout@v6
+        with:
+          repository: unixwin/winuxcmd-i18n
+          token: ${{ env.I18N_REPO_TOKEN }}
+          path: i18n-repo
+          fetch-depth: 1
+
+      - name: Sync catalog
+        if: env.I18N_REPO_TOKEN != ''
+        shell: bash
+        env:
+          VERSION: ${{ github.ref_name }}
+          BRANCH: automation/winuxcmd-${{ github.ref_name }}-i18n
+        run: |
+          python3 scripts/i18n_sync.py publish \
+            --source artifacts/i18n \
+            --repo i18n-repo \
+            --version "$VERSION" \
+            --branch "$BRANCH"
+          export GH_TOKEN="$I18N_REPO_TOKEN"
+          pr_url="$(gh pr list --repo unixwin/winuxcmd-i18n --head "$BRANCH" --state open --json url --jq '.[0].url')"
+          if [ -z "$pr_url" ]; then
+            pr_url="$(gh pr create --repo unixwin/winuxcmd-i18n --base main --head "$BRANCH" \
+              --title "Sync WinuxCmd ${VERSION} I18N catalog" \
+              --body "Automated catalog sync for WinuxCmd ${VERSION}.")"
+          fi
+          gh pr merge "$pr_url" --repo unixwin/winuxcmd-i18n --squash --delete-branch || \
+            gh pr merge "$pr_url" --repo unixwin/winuxcmd-i18n --squash --delete-branch --auto
+
+  update-wpm-source-index:
+    runs-on: ubuntu-latest
+    needs: release
+    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+
+    steps:
+      - name: Verify wpm-source token
+        shell: bash
+        env:
+          WPM_SOURCE_TOKEN: ${{ secrets.WPM_SOURCE_TOKEN }}
+        run: |
+          if [ -z "${WPM_SOURCE_TOKEN}" ]; then
+            echo "::error::Set WPM_SOURCE_TOKEN to a token with write access to unixwin/wpm-source."
+            exit 1
+          fi
+
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Checkout WPM Source
+        uses: actions/checkout@v6
+        with:
+          repository: unixwin/wpm-source
+          token: ${{ secrets.WPM_SOURCE_TOKEN }}
+          path: wpm-source
+          fetch-depth: 1
+
+      - name: Download x64 Packages
+        uses: actions/download-artifact@v8
+        with:
+          name: WinuxCmd-${{ needs.release.outputs.version }}-x64
+          path: artifacts/x64
+
+      - name: Download ARM64 Packages
+        uses: actions/download-artifact@v8
+        with:
+          name: WinuxCmd-${{ needs.release.outputs.version }}-arm64
+          path: artifacts/arm64
+
+      - name: Update WPM source index
+        shell: pwsh
+        run: |
+          ./.github/scripts/update-wpm-source-index.ps1 `
+            -IndexPath "wpm-source/index.json" `
+            -Version "${{ needs.release.outputs.version }}" `
+            -X64ZipPath "artifacts/x64/WinuxCmd-${{ needs.release.outputs.version }}-win-x64.zip" `
+            -Arm64ZipPath "artifacts/arm64/WinuxCmd-${{ needs.release.outputs.version }}-win-arm64.zip" `
+            -ReleaseTag "${{ github.ref_name }}"
+
+      - name: Create and merge wpm-source PR
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.WPM_SOURCE_TOKEN }}
+          VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          cd wpm-source
+          if git diff --quiet -- index.json; then
+            echo "wpm-source index already matches WinuxCmd ${VERSION}."
+            exit 0
+          fi
+
+          branch="automation/winuxcmd-${VERSION}-index"
+          title="Update WinuxCmd package index to ${VERSION}"
+          body="Automated update from unixwin/WinuxCmd release v${VERSION}."
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "${branch}"
+          git add index.json
+          git commit -m "${title}"
+          git push --force-with-lease origin "${branch}"
+
+          pr_url="$(gh pr list --repo unixwin/wpm-source --head "${branch}" --state open --json url --jq '.[0].url')"
+          if [ -z "${pr_url}" ]; then
+            pr_url="$(gh pr create --repo unixwin/wpm-source --base main --head "${branch}" --title "${title}" --body "${body}")"
+          fi
+
+          gh pr merge "${pr_url}" --repo unixwin/wpm-source --squash --delete-branch ||
+            gh pr merge "${pr_url}" --repo unixwin/wpm-source --squash --delete-branch --auto
+
+  cache-and-notify:
+    runs-on: windows-2025
+    needs:
+      - release
+      - update-wpm-source-index
+    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')  # Only run on tag releases
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+
+      - name: Refresh WinuxCmd Server Cache
+        id: refresh-cache
+        continue-on-error: true  # Cache refresh failure won't break the job
+        env:
+          CACHE_REFRESH_TOKEN: ${{ secrets.CACHE_REFRESH_TOKEN }}
+        run: |
+          .\.github\scripts\refresh-cache.ps1
+        shell: pwsh
+
+      - name: Send Notification
+        id: notify
+        continue-on-error: true  # Notification failure won't break the job
+        env:
+          CACHE_RESULT: ${{ steps.refresh-cache.outputs.cache-refresh-result || 'skipped' }}
+          CACHE_MESSAGE: ${{ steps.refresh-cache.outputs.cache-message || '' }}
+          CACHE_ERROR: ${{ steps.refresh-cache.outputs.cache-error || '' }}
+          VERSION: ${{ needs.release.outputs.version || '' }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          .\.github\scripts\notify-cache-result.ps1 `
+            -Result "$env:CACHE_RESULT" `
+            -Message "$env:CACHE_MESSAGE" `
+            -Error "$env:CACHE_ERROR" `
+            -Version "$env:VERSION" `
+            -TagName "$env:TAG_NAME"
+        shell: pwsh

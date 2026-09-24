@@ -1,0 +1,5 @@
+cmd: printf
+args: '%.2f %.0f\n' 0.125 0.5
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/984
+tags: issue-984 compat-gap rounding tie-even

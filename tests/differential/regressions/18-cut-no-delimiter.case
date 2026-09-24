@@ -1,0 +1,7 @@
+cmd: cut
+args: -f1-2 file.txt
+timeout: 10
+setup: |
+  printf 'a\tb\nnodelim\n' > file.txt
+source: github.com/unixwin/WinuxCmd/issues/140
+tags: issue-140 regression

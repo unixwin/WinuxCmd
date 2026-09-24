@@ -1,0 +1,6 @@
+cmd: split
+args: -n 2 input.txt part
+setup: |
+  printf 'one\ntwo\nthree\nfour\n' > input.txt
+source: tests/differential/corpus/split/no-overlap.case:1
+tags: regression

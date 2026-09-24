@@ -1,0 +1,5 @@
+cmd: date
+args: +%s
+timeout: 10
+source: github.com/unixwin/WinuxCmd
+tags: corpus-expansion round-4

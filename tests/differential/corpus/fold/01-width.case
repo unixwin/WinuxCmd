@@ -1,0 +1,7 @@
+cmd: fold
+args: -w 5
+timeout: 10
+stdin: |
+  1234567890
+source: github.com/unixwin/WinuxCmd
+tags: corpus-expansion round-4

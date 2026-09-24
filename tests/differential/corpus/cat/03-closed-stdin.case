@@ -1,0 +1,17 @@
+# GNU prints "cat: -: Bad file descriptor" here: cat sets infile = "-"
+# (src/cat.c:664 in 9.4, :655 in 8.32) and every read-error path reports the
+# operand via error (0, errno, "%s", quotef (infile)).
+#
+# The MSYS2 oracle cannot exhibit that. Its read() shim installs the text/binary
+# mode on the descriptor first and fails on the invalid handle, so cat(1) never
+# reaches its own error path. The identical message is produced for wc, od, head
+# and tee, which proves it comes from the runtime and not from an individual
+# utility. coreutils 8.32 and 9.4 are byte-identical on this path, so no oracle
+# version bump helps; only a real Linux runtime can be compared against.
+# See tests/differential/README.md for the `oracle:` precondition.
+cmd: cat
+args: <&-
+oracle: linux
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/973
+tags: issue-973 closed-stdin

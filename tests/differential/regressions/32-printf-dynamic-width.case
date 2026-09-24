@@ -1,0 +1,5 @@
+cmd: printf
+args: %*d 5 42
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/140
+tags: issue-140 regression

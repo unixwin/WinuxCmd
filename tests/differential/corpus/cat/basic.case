@@ -1,0 +1,6 @@
+cmd: cat
+args: input.txt
+setup: |
+  printf 'alpha\nbeta\n' > input.txt
+source: tests/differential/corpus/cat/basic.case:1
+tags: literal

@@ -1,0 +1,7 @@
+cmd: tac
+args: file.txt
+timeout: 10
+setup: |
+  printf 'a\r\nb\r\n' > file.txt
+source: github.com/unixwin/WinuxCmd/issues/140
+tags: issue-140 regression

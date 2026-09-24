@@ -1,0 +1,5 @@
+cmd: seq
+args: 1 1000001
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/140
+tags: issue-140 regression

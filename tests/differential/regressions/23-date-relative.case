@@ -1,0 +1,5 @@
+cmd: date
+args: -d '+1 day' +%Y-%m-%d
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/140
+tags: issue-140 regression

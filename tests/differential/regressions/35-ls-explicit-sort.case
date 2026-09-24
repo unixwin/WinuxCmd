@@ -1,0 +1,7 @@
+cmd: ls
+args: -1 z.txt a.txt
+timeout: 10
+setup: |
+  printf z > z.txt; printf a > a.txt
+source: github.com/unixwin/WinuxCmd/issues/140
+tags: issue-140 regression

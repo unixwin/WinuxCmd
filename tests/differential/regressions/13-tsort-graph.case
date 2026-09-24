@@ -1,0 +1,8 @@
+cmd: tsort
+args:
+timeout: 10
+stdin: |
+  c b
+  b a
+source: github.com/unixwin/WinuxCmd/issues/140
+tags: issue-140 regression

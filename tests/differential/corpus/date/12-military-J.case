@@ -1,0 +1,8 @@
+# Same as date/11-military-j: 'J' is the local military zone from coreutils 9.2
+# (gnulib 9cde39f8), and is rejected by the 8.32 oracle.
+cmd: date
+args: '-u' '-d' '1024J' '+%H:%M'
+timeout: 10
+oracle_version: >= 9.2
+source: github.com/unixwin/WinuxCmd/issues/354
+tags: issue-354 compat-gap date military-zone

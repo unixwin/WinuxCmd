@@ -1,0 +1,2 @@
+#define IDI_WINUXCMD 101
+IDI_WINUXCMD ICON "winuxcmd.ico"

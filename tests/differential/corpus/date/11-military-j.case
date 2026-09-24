@@ -1,0 +1,12 @@
+# J is the *local* military zone (gnulib parse-datetime.y military_table
+# { "J", 'J', 0 } plus the `item: 'J'` rule), added in gnulib commit 9cde39f8
+# (2022-05-17) and first released in coreutils 9.2. Coreutils 8.32 - the Git for
+# Windows oracle - predates it and rejects J outright, so this case cannot be
+# judged below 9.2 and is SKIPped there rather than whitelisted as a format
+# difference (see whitelist.txt).
+cmd: date
+args: '-u' '-d' '1024j' '+%H:%M'
+timeout: 10
+oracle_version: >= 9.2
+source: github.com/unixwin/WinuxCmd/issues/354
+tags: issue-354 compat-gap date military-zone

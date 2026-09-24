@@ -1,0 +1,8 @@
+cmd: xxd
+args: -r dump.txt out.bin
+timeout: 10
+files: out.bin
+setup: |
+  printf '00000000: 61\n' > dump.txt
+source: github.com/unixwin/WinuxCmd/issues/140
+tags: issue-140 regression

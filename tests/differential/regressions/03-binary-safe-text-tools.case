@@ -1,0 +1,7 @@
+cmd: cat
+args: input.bin
+timeout: 10
+setup: |
+  printf 'a\000b\000c\n' > input.bin
+source: github.com/unixwin/WinuxCmd/issues/140
+tags: issue-140 regression

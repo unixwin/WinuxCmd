@@ -1,0 +1,7 @@
+cmd: join
+args: -j 1 a.txt b.txt
+timeout: 10
+setup: |
+  printf '1 a\n' > a.txt; printf '1 b\n' > b.txt
+source: github.com/unixwin/WinuxCmd/issues/140
+tags: issue-140 regression

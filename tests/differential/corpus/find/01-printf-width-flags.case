@@ -1,0 +1,6 @@
+cmd: find
+args: . -maxdepth 1 -name 'sample.txt' -printf '[%8f][%-8f][%.2f][%08f]\n'
+setup: |
+  printf 'x' > sample.txt
+source: tests/differential/corpus/find/01-printf-width-flags.case
+tags: gnu-compat find-printf width-flags compat-gap

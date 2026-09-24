@@ -1,0 +1,7 @@
+cmd: mv
+args: new.txt old.txt
+timeout: 10
+setup: |
+  printf old > old.txt; printf new > new.txt
+source: github.com/unixwin/WinuxCmd/issues/140
+tags: issue-140 regression

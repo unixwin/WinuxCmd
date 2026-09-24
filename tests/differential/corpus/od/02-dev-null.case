@@ -1,0 +1,5 @@
+cmd: od
+args: /dev/null
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/276
+tags: fix-2026-09-11 dev-null-pseudo-device

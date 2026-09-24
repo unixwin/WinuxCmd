@@ -1,0 +1,7 @@
+cmd: split
+args: -n 4 input.txt part
+timeout: 10
+setup: |
+  printf 'one\ntwo\nthree\nfour\n' > input.txt
+source: github.com/unixwin/WinuxCmd/issues/140
+tags: issue-140 regression

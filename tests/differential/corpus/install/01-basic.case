@@ -1,0 +1,8 @@
+cmd: install
+args: -d tmpdir
+timeout: 10
+setup: |
+  rm -rf tmpdir
+  echo "hello" > /tmp/src.txt
+source: github.com/unixwin/WinuxCmd
+tags: coverage expansion

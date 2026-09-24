@@ -1,0 +1,7 @@
+cmd: fmt
+args: -w 20 file.txt
+timeout: 10
+setup: |
+  printf 'alpha beta gamma one two three\n' > file.txt
+source: github.com/unixwin/WinuxCmd/issues/140
+tags: issue-140 regression

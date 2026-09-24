@@ -1,0 +1,7 @@
+cmd: shred
+args: -s 0 secret
+timeout: 10
+setup: |
+  printf 'secret\n' > secret
+source: github.com/unixwin/WinuxCmd/issues/140
+tags: issue-140 regression

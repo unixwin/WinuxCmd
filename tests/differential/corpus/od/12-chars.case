@@ -1,0 +1,7 @@
+cmd: od
+args: -c f.bin
+timeout: 10
+setup: |
+  printf 'ab\001\002\n' > f.bin
+source: github.com/unixwin/WinuxCmd
+tags: corpus-expansion round-3

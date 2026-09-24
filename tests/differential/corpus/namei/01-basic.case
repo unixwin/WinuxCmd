@@ -1,0 +1,5 @@
+cmd: namei
+args: /bin/ls
+timeout: 10
+source: github.com/unixwin/WinuxCmd
+tags: new-command namei

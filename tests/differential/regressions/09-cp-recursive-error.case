@@ -1,0 +1,7 @@
+cmd: cp
+args: -r src dest
+timeout: 10
+setup: |
+  mkdir -p src; printf x > src/file
+source: github.com/unixwin/WinuxCmd/issues/140
+tags: issue-140 regression

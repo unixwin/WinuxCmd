@@ -1,0 +1,7 @@
+cmd: cat
+args: /dev/stdin
+timeout: 10
+stdin: |
+  hello
+source: github.com/unixwin/WinuxCmd/issues/276
+tags: fix-2026-09-11 dev-null-pseudo-device stdin-redirect

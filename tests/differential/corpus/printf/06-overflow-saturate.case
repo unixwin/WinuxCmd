@@ -1,0 +1,5 @@
+cmd: printf
+args: '%d\n' 99999999999999999999
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/967
+tags: issue-967 wording overflow saturate

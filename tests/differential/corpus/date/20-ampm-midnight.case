@@ -1,0 +1,6 @@
+cmd: date
+args: '-d' '2026-01-02 12:00:00 AM' '+%H:%M'
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/264
+tags: issue-264 12hour 12am-is-00
+

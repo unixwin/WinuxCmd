@@ -1,0 +1,6 @@
+cmd: date
+args: '-d' '+99999999999999999999 days' '+%F'
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/996
+tags: issue-996 relative-overflow must-not-crash
+

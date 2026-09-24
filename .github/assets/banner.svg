@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="300" viewBox="0 0 1200 300" role="img" aria-label="WinuxCmd: Unix commands, native on Windows. 176 commands, 1924 options, 93% GNU compatibility.">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0d1117"/>
+      <stop offset="100%" stop-color="#13293f"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#58a6ff"/>
+      <stop offset="50%" stop-color="#3fb950"/>
+      <stop offset="100%" stop-color="#d29922"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1200" height="300" fill="url(#bg)"/>
+  <rect x="0" y="0" width="1200" height="6" fill="url(#accent)"/>
+  <rect x="0" y="294" width="1200" height="6" fill="url(#accent)"/>
+
+  <text x="600" y="128" text-anchor="middle"
+        font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif"
+        font-size="84" font-weight="700" letter-spacing="2" fill="#ffffff">WinuxCmd</text>
+
+  <text x="600" y="178" text-anchor="middle"
+        font-family="Consolas, Menlo, 'Courier New', monospace"
+        font-size="26" fill="#8b949e">Unix commands, native on Windows</text>
+
+  <!-- stat chips -->
+  <rect x="136" y="216" width="210" height="46" rx="23" fill="#161b22" stroke="#30363d" stroke-width="1.5"/>
+  <text x="241" y="246" text-anchor="middle" font-family="Consolas, Menlo, 'Courier New', monospace"
+        font-size="19" font-weight="700" fill="#58a6ff">176 commands</text>
+
+  <rect x="366" y="216" width="220" height="46" rx="23" fill="#161b22" stroke="#30363d" stroke-width="1.5"/>
+  <text x="476" y="246" text-anchor="middle" font-family="Consolas, Menlo, 'Courier New', monospace"
+        font-size="19" font-weight="700" fill="#3fb950">1,924 options</text>
+
+  <rect x="606" y="216" width="240" height="46" rx="23" fill="#161b22" stroke="#30363d" stroke-width="1.5"/>
+  <text x="726" y="246" text-anchor="middle" font-family="Consolas, Menlo, 'Courier New', monospace"
+        font-size="19" font-weight="700" fill="#d29922">93% GNU compat</text>
+
+  <rect x="866" y="216" width="200" height="46" rx="23" fill="#161b22" stroke="#30363d" stroke-width="1.5"/>
+  <text x="966" y="246" text-anchor="middle" font-family="Consolas, Menlo, 'Courier New', monospace"
+        font-size="19" font-weight="700" fill="#bc8cff">x64 / ARM64</text>
+</svg>

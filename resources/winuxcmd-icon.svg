@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="WinuxCmd icon">
+  <rect width="256" height="256" rx="48" fill="#0d1117"/>
+  <rect x="20" y="20" width="216" height="216" rx="38" fill="none" stroke="#3eb84f" stroke-width="10"/>
+  <path d="M56 74 L94 182 L128 92 L162 182 L200 74" fill="none" stroke="#3eb84f" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M62 202 H118" fill="none" stroke="#f0f6fc" stroke-width="16" stroke-linecap="round"/>
+  <path d="M150 202 H202" fill="none" stroke="#3eb84f" stroke-width="16" stroke-linecap="round"/>
+</svg>

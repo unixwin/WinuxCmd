@@ -1,0 +1,6 @@
+cmd: head
+args: -n +2 input.txt
+setup: |
+  printf 'one\ntwo\nthree\n' > input.txt
+source: tests/differential/corpus/head/positive-offset.case:1
+tags: regression

@@ -1,0 +1,7 @@
+cmd: unix2dos
+args: 
+timeout: 10
+stdin: |
+  no-nl
+source: github.com/unixwin/WinuxCmd/issues/140
+tags: issue-140 regression

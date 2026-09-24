@@ -1,0 +1,168 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 caomengxuan666 <caomengxuan666@users.noreply.github.com>
+/// @contributors:
+///   - caomengxuan666 <2507560089@qq.com>
+/// @Description: Implementation for basename.
+/// @Version: 0.1.0
+/// @License: MIT
+/// @Copyright: Copyright © 2026 WinuxCmd
+
+#include "pch/pch.h"
+// include other header after pch.h
+#include "core/command_macros.h"
+
+import std;
+import core;
+import utils;
+import container;
+
+using cmd::meta::OptionMeta;
+using cmd::meta::OptionType;
+
+auto constexpr BASENAME_OPTIONS = std::array{
+    // [GNU]
+    OPTION("-a", "--multiple",
+           "support multiple arguments and treat each as a NAME", BOOL_TYPE),
+    // [GNU]
+    OPTION("", "--mul", "alias for --multiple", BOOL_TYPE),
+    // [GNU]
+    OPTION("-s", "--suffix", "remove a trailing SUFFIX; implies -a",
+           STRING_TYPE),
+    // [GNU]
+    OPTION("", "--suf", "alias for --suffix", STRING_TYPE),
+    // [GNU]
+    OPTION("-z", "--zero", "end each output line with NUL, not newline",
+           BOOL_TYPE),
+    // [GNU]
+    OPTION("", "--ze", "alias for --zero", BOOL_TYPE)};
+
+namespace basename_pipeline {
+namespace cp = core::pipeline;
+
+struct Config {
+  bool multiple = false;
+  std::string suffix;
+  bool zero = false;
+  SmallVector<std::string, 64> names;
+};
+
+auto build_config(const CommandContext<BASENAME_OPTIONS.size()>& ctx)
+    -> cp::Result<Config> {
+  Config cfg;
+  bool suffix_option_present = ctx.count({"--suffix", "-s", "--suf"}) > 0;
+  cfg.multiple = ctx.get<bool>("--multiple", false) ||
+                 ctx.get<bool>("--mul", false) || ctx.get<bool>("-a", false);
+  auto suffix_occurrences = ctx.string_occurrences({"--suffix", "-s", "--suf"});
+  if (!suffix_occurrences.empty()) {
+    cfg.suffix = suffix_occurrences.back().value;
+  }
+  if (suffix_option_present) {
+    cfg.multiple = true;
+  }
+  cfg.zero = ctx.get<bool>("--zero", false) || ctx.get<bool>("--ze", false) ||
+             ctx.get<bool>("-z", false);
+
+  for (auto arg : ctx.positionals) {
+    cfg.names.push_back(std::string(arg));
+  }
+
+  return cfg;
+}
+
+auto get_basename(std::string_view path, std::string_view suffix)
+    -> std::string {
+  std::string result = std::string(path);
+
+  // Remove trailing slashes
+  while (!result.empty() && (result.back() == '/' || result.back() == '\\')) {
+    result.pop_back();
+  }
+
+  // Preserve a root separator for separator-only roots such as "/" or
+  // "///".  [GNU] base_len(): without DOUBLE_SLASH_IS_DISTINCT_ROOT (the
+  // GNU/Linux behavior) a separator-only name collapses to a single
+  // separator, so "//" becomes "/".
+  if (result.empty() && !path.empty()) {
+    return std::string(1, path.back());
+  }
+
+  // Find last separator
+  size_t last_sep = result.find_last_of("/\\");
+  if (last_sep != std::string::npos) {
+    result = result.substr(last_sep + 1);
+  }
+
+  // Remove suffix if specified
+  if (!suffix.empty() && result.size() > suffix.size()) {
+    if (result.substr(result.size() - suffix.size()) == suffix) {
+      result = result.substr(0, result.size() - suffix.size());
+    }
+  }
+
+  return result;
+}
+
+auto run(const Config& cfg) -> int {
+  if (cfg.names.empty()) {
+    cp::report_custom_error(L"basename", L"missing operand");
+    safeErrorPrintLn("Try 'basename --help' for more information.");
+    return 1;
+  }
+
+  if (!cfg.multiple && cfg.names.size() > 2) {
+    safeErrorPrintLn(std::format("basename: extra operand '{}'", cfg.names[2]));
+    safeErrorPrintLn("Try 'basename --help' for more information.");
+    return 1;
+  }
+
+  if (!cfg.multiple && cfg.names.size() > 1) {
+    // Non-multiple mode: first arg is NAME, second arg (if any) is SUFFIX
+    std::string name = cfg.names[0];
+    std::string suffix = cfg.names.size() > 1 ? cfg.names[1] : cfg.suffix;
+
+    std::string result = get_basename(name, suffix);
+    if (cfg.zero) {
+      safePrint(result);
+      safePrint(char{'\0'});
+    } else {
+      safePrintLn(result);
+    }
+  } else {
+    // Multiple mode: process all names
+    for (const auto& name : cfg.names) {
+      std::string result = get_basename(name, cfg.suffix);
+      if (cfg.zero) {
+        safePrint(result);
+        safePrint(char{'\0'});
+      } else {
+        safePrintLn(result);
+      }
+    }
+  }
+
+  return 0;
+}
+
+}  // namespace basename_pipeline
+
+REGISTER_COMMAND(basename, "basename",
+                 "basename NAME [SUFFIX]\n"
+                 "basename OPTION... NAME...",
+                 "Print NAME with any leading directory components removed.\n"
+                 "If specified, also remove a trailing SUFFIX.",
+                 "  basename /path/to/file.txt\n"
+                 "  basename /path/to/file.txt .txt\n"
+                 "  basename -a file1.txt file2.txt\n"
+                 "  basename -s .txt file1 file2",
+                 "dirname(1), realpath(1)", "WinuxCmd",
+                 "Copyright © 2026 WinuxCmd", BASENAME_OPTIONS) {
+  using namespace basename_pipeline;
+
+  auto cfg_result = build_config(ctx);
+  if (!cfg_result) {
+    cp::report_error(cfg_result, L"basename");
+    return 1;
+  }
+
+  return run(*cfg_result);
+}

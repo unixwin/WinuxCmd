@@ -1,0 +1,7 @@
+cmd: stat
+args: -c %s deep/file.txt
+timeout: 10
+setup: |
+  mkdir -p deep; printf x > deep/file.txt
+source: github.com/unixwin/WinuxCmd/issues/140
+tags: issue-140 regression
