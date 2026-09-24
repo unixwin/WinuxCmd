@@ -6,6 +6,8 @@ repository release tags.
 
 ## [Unreleased]
 
+## [1.1.3] - 2026-09-24
+
 ### Fixed — diff rewritten to GNU diffutils 3.10 output parity
 
 - **diff**: every output format byte-compared against GNU diffutils 3.10
