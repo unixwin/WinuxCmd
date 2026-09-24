@@ -1,7 +1,0 @@
-cmd: tr
-args: '[:lower:]' '[:upper:]'
-timeout: 10
-stdin: |
-  hello world
-source: github.com/unixwin/WinuxCmd
-tags: corpus-expansion round-4

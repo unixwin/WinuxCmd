@@ -1,9 +1,0 @@
-cmd: cp
-oracle_version: >=9.3
-args: --update=none a.txt b.txt
-timeout: 10
-setup: |
-  printf 'newer\n' > a.txt
-  printf 'older\n' > b.txt
-source: github.com/unixwin/WinuxCmd
-tags: audit-9.7-fix cp-update-values

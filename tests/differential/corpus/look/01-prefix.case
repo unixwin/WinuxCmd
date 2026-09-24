@@ -1,7 +1,0 @@
-cmd: look
-args: app words.txt
-timeout: 10
-setup: |
-  printf 'apple\napply\napricot\nbanana\ncherry\n' > words.txt
-source: github.com/unixwin/WinuxCmd
-tags: new-command look

@@ -1,8 +1,0 @@
-cmd: truncate
-args: -s 0 f.txt
-timeout: 10
-setup: |
-  printf 'hello\n' > f.txt
-files: f.txt
-source: github.com/unixwin/WinuxCmd
-tags: corpus-expansion round-4

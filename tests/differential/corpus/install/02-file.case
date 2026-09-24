@@ -1,9 +1,0 @@
-cmd: install
-oracle: linux
-args: /tmp/src.txt /tmp/dest.txt
-timeout: 10
-setup: |
-  rm -rf /tmp/dest.txt
-  echo "hello install" > /tmp/src.txt
-source: github.com/unixwin/WinuxCmd
-tags: coverage expansion

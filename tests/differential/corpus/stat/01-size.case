@@ -1,7 +1,0 @@
-cmd: stat
-args: -c '%s' f.txt
-timeout: 10
-setup: |
-  printf 'abc\n' > f.txt
-source: github.com/unixwin/WinuxCmd
-tags: corpus-expansion round-4

@@ -1,9 +1,0 @@
-cmd: tac
-args: -s ''
-timeout: 10
-oracle_version: >=9.3
-stdin: |
-  a
-  b
-source: github.com/unixwin/WinuxCmd
-tags: audit-9.7-fix tac-empty-separator

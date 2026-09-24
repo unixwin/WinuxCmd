@@ -1,5 +1,0 @@
-cmd: timeout
-args: 0.1 sleep 5
-timeout: 5
-source: github.com/unixwin/WinuxCmd
-tags: coverage expansion

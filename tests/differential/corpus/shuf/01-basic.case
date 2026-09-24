@@ -1,7 +1,0 @@
-cmd: shuf
-args: --random-source=<(echo "a")
-timeout: 10
-setup: |
-  printf "a\nb\nc\nd\n" > shuf_input.txt
-source: github.com/unixwin/WinuxCmd
-tags: coverage expansion

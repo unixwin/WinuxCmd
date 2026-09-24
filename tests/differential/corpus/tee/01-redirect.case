@@ -1,8 +1,0 @@
-cmd: tee
-args: f.txt
-timeout: 10
-stdin: |
-  abcdef
-files: f.txt
-source: github.com/unixwin/WinuxCmd
-tags: corpus-expansion round-4

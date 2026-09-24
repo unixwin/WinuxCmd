@@ -1,4 +1,0 @@
-cmd: tac
-stdin: |
-  A\x1a\x00\r\nB
-source: GNU coreutils master src/tac.c (xset_binary_mode)

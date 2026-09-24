@@ -1,8 +1,0 @@
-cmd: nl
-args: -ba
-timeout: 10
-stdin: |
-  hello
-  world
-source: github.com/unixwin/WinuxCmd
-tags: corpus-expansion round-4

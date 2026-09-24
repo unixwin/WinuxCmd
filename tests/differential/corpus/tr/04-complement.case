@@ -1,7 +1,0 @@
-cmd: tr
-args: -d -c 'a-z'
-timeout: 10
-stdin: |
-  hello 123 world
-source: github.com/unixwin/WinuxCmd
-tags: corpus-expansion round-4

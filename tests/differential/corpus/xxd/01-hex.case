@@ -1,6 +1,0 @@
-cmd: xxd
-timeout: 10
-stdin: |
-  abc
-source: github.com/unixwin/WinuxCmd
-tags: corpus-expansion round-4

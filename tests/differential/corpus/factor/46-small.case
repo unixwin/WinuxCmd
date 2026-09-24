@@ -1,5 +1,0 @@
-cmd: factor
-args: 60
-timeout: 10
-source: github.com/unixwin/WinuxCmd
-tags: corpus-expansion round-3

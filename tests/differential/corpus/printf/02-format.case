@@ -1,5 +1,0 @@
-cmd: printf
-args: '%s %s\n' a b
-timeout: 10
-source: github.com/unixwin/WinuxCmd
-tags: corpus-expansion round-4

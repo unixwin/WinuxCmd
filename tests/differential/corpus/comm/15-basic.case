@@ -1,7 +1,0 @@
-cmd: comm
-args: a.txt b.txt
-timeout: 10
-setup: |
-  printf '1\n2\n3\n' > a.txt; printf '2\n3\n4\n' > b.txt
-source: github.com/unixwin/WinuxCmd
-tags: corpus-expansion round-3

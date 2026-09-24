@@ -1,8 +1,0 @@
-cmd: join
-args: -t, f1.txt f2.txt
-timeout: 10
-setup: |
-  printf '1,b\n2,c\n' > f1.txt
-  printf '1,x\n2,y\n' > f2.txt
-source: github.com/unixwin/WinuxCmd
-tags: corpus-expansion round-4

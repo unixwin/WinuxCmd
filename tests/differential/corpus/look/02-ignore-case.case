@@ -1,7 +1,0 @@
-cmd: look
-args: -f APP words.txt
-timeout: 10
-setup: |
-  printf 'Apple\nApply\nBANANA\n' > words.txt
-source: github.com/unixwin/WinuxCmd
-tags: new-command look

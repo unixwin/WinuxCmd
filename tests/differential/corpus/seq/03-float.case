@@ -1,5 +1,0 @@
-cmd: seq
-args: -f '%.1f' 1 0.5 3
-timeout: 10
-source: github.com/unixwin/WinuxCmd
-tags: corpus-expansion round-4

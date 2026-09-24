@@ -1,8 +1,0 @@
-﻿#import_std.cmake
-set(_IMPORT_STD_UUID_3_30 "0e5b6991-d74f-4b3d-a41c-cf096e0b2508")
-set(_IMPORT_STD_UUID_3_31 "0e5b6991-d74f-4b3d-a41c-cf096e0b2508")
-set(_IMPORT_STD_UUID_4_0  "a9e1cf81-9932-4810-974b-6eccaf14e457")
-set(_IMPORT_STD_UUID_4_1  "d0edc3af-4c50-42ea-a356-e2862fe7a444")
-set(_IMPORT_STD_UUID_4_2  "d0edc3af-4c50-42ea-a356-e2862fe7a444")
-set(_IMPORT_STD_UUID_4_3  "451f2fe2-a8a2-47c3-bc32-94786d8fc91b")
-set(_IMPORT_STD_UUID_4_4  "f35a9ac6-8463-4d38-8eec-5d6008153e7d")

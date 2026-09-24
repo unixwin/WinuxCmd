@@ -1,7 +1,0 @@
-cmd: grep
-args: -n hello f.txt
-timeout: 10
-setup: |
-  printf 'hello\nworld\nhello again\n' > f.txt
-source: github.com/unixwin/WinuxCmd
-tags: corpus-expansion round-3

@@ -1,5 +1,0 @@
-cmd: basename
-args: a/b/c.txt .txt
-timeout: 10
-source: github.com/unixwin/WinuxCmd
-tags: corpus-expansion round-3

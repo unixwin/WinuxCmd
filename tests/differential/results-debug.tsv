@@ -1,3 +1,0 @@
-regressions/31-leading-dash-operands.case	printf	SKIP
-regressions/32-printf-dynamic-width.case	printf	SKIP
-regressions/33-printf-shell-quote.case	printf	SKIP
