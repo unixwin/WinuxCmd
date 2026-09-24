@@ -17,6 +17,13 @@ export auto option_policy_for_command(std::string_view command)
     // (the optstring); everything after it is data to normalize.
     policy.stop_options_after_positionals = 1;
   }
+  if (command == "nohup") {
+    // [GNU] coreutils nohup parses with a leading-'+' getopt: option
+    // processing stops at the first non-option argument (the wrapped
+    // command), so `nohup prog -flag` runs prog with -flag instead of
+    // reporting -flag as an invalid nohup option.
+    policy.stop_options_after_positionals = 1;
+  }
   // [GNU] printf.c and test.c never call getopt: "--help"/"--version" are
   // honored only as the sole argument (handled by the dispatcher), and
   // every other token is an operand.  Long-option tokens therefore stay
