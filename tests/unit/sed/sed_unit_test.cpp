@@ -1585,3 +1585,68 @@ TEST(sed, gnu_compat_debug_and_follow_symlinks_are_accepted) {
   EXPECT_EQ(follow_result.exit_code, 0);
   EXPECT_EQ_TEXT(tmp.read("a.txt"), "bar\n");
 }
+
+TEST(sed, pattern_cr_escape_matches_carriage_return) {
+  TempDir tmp;
+  // CR bytes plus an 'r' letter: the regexp-side \r must match the CR, not
+  // degrade to a literal 'r' (GNU compile.c decodes \a \f \n \r \t \v in the
+  // regexp before compilation).
+  tmp.write("a.txt", "rxr x\r\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sed.exe", {L"s/\\r//g", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "rxr x\n");
+}
+
+TEST(sed, pattern_tab_escape_matches_tab) {
+  TempDir tmp;
+  tmp.write("a.txt", "a\tb\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sed.exe", {L"s/\\t/TAB/", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "aTABb\n");
+}
+
+TEST(sed, crlf_normalize_passes_converge_like_gnu) {
+  TempDir tmp;
+  tmp.write("a.txt", "line1\r\nline2\r\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sed.exe", {L"-i", L"s/\\r//g; s/$/\\r/", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(tmp.read("a.txt"), "line1\r\nline2\r\n");
+}
+
+TEST(sed, pattern_unknown_escapes_keep_historical_form) {
+  TempDir tmp;
+  // Escapes the regex engine does not define keep their pre-change
+  // behavior: the decoding only rewrites \a \f \n \r \t \v. \d degrades to
+  // a literal 'd', \z to a literal 'z', exactly as GNU hands unrecognized
+  // escapes to the regex compiler verbatim.
+  tmp.write("a.txt", "a5b\ndigit\nazb\n");
+
+  Pipeline d;
+  d.set_cwd(tmp.wpath());
+  d.add(L"sed.exe", {L"s/\\d/X/", L"a.txt"});
+  auto dr = d.run();
+  EXPECT_EQ(dr.exit_code, 0);
+  EXPECT_EQ_TEXT(dr.stdout_text, "a5b\nXigit\nazb\n");
+
+  Pipeline z;
+  z.set_cwd(tmp.wpath());
+  z.add(L"sed.exe", {L"s/\\z/X/", L"a.txt"});
+  auto zr = z.run();
+  EXPECT_EQ(zr.exit_code, 0);
+  EXPECT_EQ_TEXT(zr.stdout_text, "a5b\ndigit\naXb\n");
+}

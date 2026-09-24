@@ -245,6 +245,53 @@ auto normalize_text_command_body(std::string_view text) -> std::string {
   return out;
 }
 
+// [GNU] Backslash escapes inside the REGEXP of s/// are decoded to their
+// control characters before the regex is compiled
+// (sed-4.9/sed/compile.c:1449-1465, parse_regex -> compile_regex): \a \f \n
+// \r \t \v become BEL FF LF CR TAB VT, so `s/\r//g` matches the CR the
+// replacement side writes with `s/$/\r/`. Unknown escapes keep the
+// backslash and stay byte-identical to the historical pattern text: the
+// regex engine resolves them (\\ still matches a literal backslash), which
+// mirrors GNU handing unrecognized escapes to the regex compiler verbatim.
+// Escaped delimiters were already unescaped by read_part.
+auto normalize_pattern_escapes(std::string_view text) -> std::string {
+  std::string out;
+  out.reserve(text.size());
+  for (size_t i = 0; i < text.size(); ++i) {
+    char c = text[i];
+    if (c != '\\' || i + 1 >= text.size()) {
+      out.push_back(c);
+      continue;
+    }
+    char next = text[++i];
+    switch (next) {
+      case 'a':
+        out.push_back('\a');
+        break;
+      case 'f':
+        out.push_back('\f');
+        break;
+      case 'n':
+        out.push_back('\n');
+        break;
+      case 'r':
+        out.push_back('\r');
+        break;
+      case 't':
+        out.push_back('\t');
+        break;
+      case 'v':
+        out.push_back('\v');
+        break;
+      default:
+        out.push_back('\\');
+        out.push_back(next);
+        break;
+    }
+  }
+  return out;
+}
+
 auto has_text_line_continuation(std::string_view text) -> bool {
   size_t slash_count = 0;
   for (size_t i = text.size(); i > 0 && text[i - 1] == '\\'; --i) {
@@ -316,6 +363,10 @@ auto parse_subst(std::string_view expr, portable_regex::Syntax syntax,
   if (!p1) return std::unexpected(p1.error());
   auto p2 = read_part(repl);
   if (!p2) return std::unexpected(p2.error());
+  // [GNU] Decode regexp-side control escapes before any downstream scanning
+  // (anchor detection, literal fast path, last-regex cache) inspects the
+  // pattern, so `s/\r//g` and `s/$/\r/` see the same CR byte.
+  pat = normalize_pattern_escapes(pat);
 
   bool g = false, pflag = false, ignore_case = false, multiline = false;
   size_t occurrence = 0;
