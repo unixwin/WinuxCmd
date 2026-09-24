@@ -857,6 +857,30 @@ auto default_standard_interception_enabled(std::span<std::string_view>)
   return true;
 }
 
+// [GNU] nohup owns only the options before the wrapped command: coreutils
+// nohup.c parses with a leading-'+' getopt, so option processing ends at
+// the first non-option argument.  --help/--version appearing after the
+// command name belong to the child (`nohup echo --help` must run
+// `echo --help`, not print nohup's help), so interception is enabled only
+// when one of them sits in nohup's own option prefix.
+auto nohup_standard_interception_enabled(std::span<std::string_view> args)
+    -> bool {
+  for (const auto &arg : args) {
+    if (arg == "--") {
+      // "--" ends nohup's own option run; the rest belongs to the child.
+      return false;
+    }
+    if (arg.size() < 2 || arg[0] != '-') {
+      // First non-option token: the wrapped command's name.
+      return false;
+    }
+    if (arg == "--help" || arg == "--version") {
+      return true;
+    }
+  }
+  return false;
+}
+
 auto command_owned_help_interception_disabled(std::span<std::string_view>)
     -> bool {
   return false;
@@ -895,6 +919,8 @@ auto behavior_for(std::string_view name) -> CommandBehavior {
     behavior.parse_error_exit_code = 125;
   } else if (name == "nohup") {
     behavior.parse_error_exit_code = is_posixly_correct() ? 127 : 125;
+    behavior.standard_interception_enabled =
+        nohup_standard_interception_enabled;
   } else if (name == "printenv" || name == "tty" || name == "sort" ||
              name == "ls" || name == "dir" || name == "vdir" ||
              name == "getopt" || name == "expr" || name == "test" ||
@@ -1135,10 +1161,19 @@ class RegistryImpl {
       return 0;
     }
 
-    const bool wants_version =
-        behavior.help_version_only_when_sole_argument
-            ? (effective_args.size() == 1 && effective_args[0] == "--version")
-            : wants_standard_version(cmdName, effective_args, options);
+    // Same gate as --help above: commands that opt out of standard
+    // interception (e.g. nohup, whose options end at the wrapped command)
+    // must not have their operands scanned for --version either.
+    bool wants_version = false;
+    if (behavior.standard_interception_enabled(args)) {
+      if (behavior.help_version_only_when_sole_argument) {
+        wants_version =
+            effective_args.size() == 1 && effective_args[0] == "--version";
+      } else {
+        wants_version =
+            wants_standard_version(cmdName, effective_args, options);
+      }
+    }
     if (wants_version) {
       // [GNU] --version prints a multi-line block in the shape of
       // "cmd (suite) version" + copyright/license/warranty/author (#1044).
