@@ -167,7 +167,7 @@ jobs:
         shell: cmd
         working-directory: build-${{ matrix.package_arch }}
         run: |
-          REM Package all components (Runtime + Documentation + FFI)
+          REM Package all components (Runtime + Documentation)
           cpack -G 7Z -C Release
           cpack -G ZIP -C Release
           cpack -G TGZ -C Release
@@ -299,24 +299,17 @@ jobs:
             - **ARM64**: Windows ARM64 (cross-compiled)
             
             ### Files included:
-            - WinuxCmd-${{ steps.final_version.outputs.version }}-win-x64.7z
-            - WinuxCmd-${{ steps.final_version.outputs.version }}-win-x64.zip
-            - WinuxCmd-${{ steps.final_version.outputs.version }}-win-x64.tar.gz
+            - WinuxCmd-${{ steps.final_version.outputs.version }}-win-x64.7z / .zip / .tar.gz
             - WinuxCmd-${{ steps.final_version.outputs.version }}-x64-setup.exe
-            - WinuxCmd-${{ steps.final_version.outputs.version }}-win-arm64.7z
-            - WinuxCmd-${{ steps.final_version.outputs.version }}-win-arm64.zip
-            - WinuxCmd-${{ steps.final_version.outputs.version }}-win-arm64.tar.gz
+            - WinuxCmd-${{ steps.final_version.outputs.version }}-win-arm64.7z / .zip / .tar.gz
             - WinuxCmd-${{ steps.final_version.outputs.version }}-arm64-setup.exe
-            - WinuxCmd-skill-v${{ steps.final_version.outputs.version }}.zip
+            - WinuxCmd-skill-v${{ steps.final_version.outputs.version }}.zip (AI agent skill bundle, attached separately)
             
             ### Package Contents:
-            - `winuxcmd.exe` - Main executable
-            - `ffi/` directory:
-              - `ffi.h` - FFI header file
-              - `winuxcore.dll` - FFI library (direct function call API)
-              - `winuxcore.lib` - Import library
-            - Scripts for installation and setup
-            - Standalone `winuxcmd` skill bundle for AI agents
+            - `usr/bin/winuxcmd.exe` - Main executable (multi-call binary: one exe provides all commands)
+            - `usr/bin/create_links.ps1` - Generates per-command links (hardlinks on NTFS, symlinks otherwise)
+            - Environment and lifecycle scripts: `winux.ps1` / `winux.cmd` / `winux-activate.ps1`, `winuxcmd_init.cmd` / `winuxcmd_uninstall.cmd`
+            - `README.md` / `README-ZH.md` / `LICENSE`
             
             ### Package Formats:
             - **7Z**: Best compression (requires 7-Zip)
@@ -327,7 +320,7 @@ jobs:
             ### Usage:
             1. Download the appropriate package for your architecture
             2. Extract to your desired directory
-            3. Navigate to the `bin` directory
+            3. Navigate to the `usr/bin` directory
             4. Run `create_links.ps1` to generate command links
                ```powershell
                # For NTFS filesystems (recommended)
@@ -339,7 +332,7 @@ jobs:
                # To remove all links later
                .\create_links.ps1 -Remove
                ```
-            5. Add the `bin` directory to your PATH
+            5. Add the `usr\bin` directory to your PATH
           draft: false
           prerelease: false
           generate_release_notes: true
