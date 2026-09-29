@@ -2333,28 +2333,76 @@ auto append_search_path(Config& cfg, std::string_view input,
 
   if (cfg.directories == "recurse") {
     cfg.recursive_directory_operand = true;
-    auto options = std::filesystem::directory_options::skip_permission_denied;
-    if (cfg.dereference_recursive) {
-      options |= std::filesystem::directory_options::follow_directory_symlink;
-    }
-    std::filesystem::recursive_directory_iterator it(f, options);
-    const std::filesystem::recursive_directory_iterator end;
-    for (; it != end; ++it) {
-      const auto& e = *it;
-      if (e.is_directory()) {
-        std::string dirname = wstring_to_utf8(e.path().filename().wstring());
-        if (matches_any_glob(cfg.exclude_dir_patterns, dirname)) {
-          it.disable_recursion_pending();
-        }
-        continue;
+    // Hand-rolled walk, not recursive_directory_iterator: pnpm lays out
+    // node_modules with NTFS junctions, which std::filesystem does not
+    // classify as symlinks (mount-point reparse tag), so
+    // follow_directory_symlink=off still descends into them and crossed
+    // junction trees recurse until the stack dies with 0xC0000409 and no
+    // diagnostics (#1135). Explicit stack + visited-real-path dedup keeps
+    // -r GNU-shaped (never follow reparse dirs) and -R loop-safe.
+    struct Pending {
+      std::wstring dir;      // directory whose files we read next
+      std::wstring dir_arg;  // as spelled for exclude matching
+    };
+    std::vector<Pending> pending{{utf8_to_wstring(f), utf8_to_wstring(f)}};
+    std::set<std::wstring> visited_dirs;  // canonical real paths
+    auto is_reparse_dir = [](const std::filesystem::path& p) {
+      DWORD attrs = GetFileAttributesW(p.c_str());
+      return attrs != INVALID_FILE_ATTRIBUTES &&
+             (attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+    };
+    auto canonical_key = [](const std::filesystem::path& p) -> std::wstring {
+      std::error_code canon_ec;
+      auto real = std::filesystem::canonical(p, canon_ec);
+      if (canon_ec) real = std::filesystem::weakly_canonical(p, canon_ec);
+      std::wstring key = real.wstring();
+      for (auto& ch : key) {
+        ch = static_cast<wchar_t>(
+            std::towlower(static_cast<wint_t>(ch)));
       }
-      if (e.is_regular_file()) {
-        // UTF-8, not ACP bytes: these strings feed both the printed file
-        // header and the wide path rebuilt for opening the file (#88).
-        std::string filepath = wstring_to_utf8(e.path().generic_wstring());
-        std::string filename = wstring_to_utf8(e.path().filename().wstring());
-        if (!should_search_file(cfg, filename)) continue;
-        out.push_back(filepath);
+      return key;
+    };
+    while (!pending.empty()) {
+      Pending cur = pending.back();
+      pending.pop_back();
+
+      std::error_code iter_ec;
+      std::filesystem::directory_iterator it(std::filesystem::path(cur.dir),
+                                             std::filesystem::directory_options
+                                                 ::skip_permission_denied,
+                                             iter_ec);
+      if (iter_ec) continue;
+      std::filesystem::directory_iterator end;
+      for (; it != end; it.increment(iter_ec)) {
+        if (iter_ec) break;
+        const auto& e = *it;
+        std::error_code entry_ec;
+        if (e.is_directory(entry_ec) && !entry_ec) {
+          std::string dirname =
+              wstring_to_utf8(e.path().filename().wstring());
+          if (matches_any_glob(cfg.exclude_dir_patterns, dirname)) continue;
+          bool reparse = is_reparse_dir(e.path());
+          if (reparse && !cfg.dereference_recursive) continue;
+          if (reparse) {
+            auto key = canonical_key(e.path());
+            if (!visited_dirs.insert(key).second) {
+              safeErrorPrint("grep: warning: ");
+              safeErrorPrintLn(
+                  wstring_to_utf8(e.path().wstring()) +
+                  ": cyclic directory junction; skipped");
+              continue;
+            }
+          }
+          pending.push_back({e.path().wstring(), e.path().wstring()});
+          continue;
+        }
+        std::error_code file_ec;
+        if (e.is_regular_file(file_ec) && !file_ec) {
+          std::string filepath = wstring_to_utf8(e.path().generic_wstring());
+          std::string filename = wstring_to_utf8(e.path().filename().wstring());
+          if (!should_search_file(cfg, filename)) continue;
+          out.push_back(filepath);
+        }
       }
     }
     return {};

@@ -1558,3 +1558,57 @@ TEST(grep, grep_l_exit_zero_iff_any_line_selected) {
   EXPECT_NE(r.stdout_text.find("miss.txt"), std::string::npos);
   EXPECT_EQ(r.stdout_text.find("hit.txt"), std::string::npos);
 }
+
+TEST(grep, grep_r_skips_cross_junction_trees_without_crashing) {
+  // #1135: pnpm-style crossed directory junctions used to overflow the
+  // stack inside recursive_directory_iterator (0xC0000409, zero output).
+  TempDir tmp;
+  std::filesystem::path nm = tmp.path / "node_modules";
+  std::filesystem::create_directories(
+      nm / ".pnpm" / "a@1" / "node_modules" / "a");
+  tmp.write("node_modules/.pnpm/a@1/node_modules/a/dist.js",
+            "pattern-here" + std::string(1, char(10)));
+  std::filesystem::path link = nm / "a-link";
+  std::filesystem::path target = nm / ".pnpm" / "a@1" / "node_modules" / "a";
+  std::filesystem::create_directory_symlink(target, link);
+  if (!std::filesystem::exists(link)) {
+    return;  // symlinks unavailable on this host
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"grep.exe", {L"-r", L"pattern-here", L"."});
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_NE(r.stdout_text.find("dist.js"), std::string::npos);
+  // -r must not follow the junction (GNU semantics): the file is reported
+  // exactly once through its real path.
+  EXPECT_EQ(r.stdout_text.find("a-link"), std::string::npos);
+}
+
+TEST(grep, grep_R_warns_and_terminates_on_junction_cycle) {
+  TempDir tmp;
+  std::filesystem::path base = tmp.path / "j";
+  std::filesystem::create_directories(base / "inner");
+  tmp.write("j/inner/real.txt", "needle" + std::string(1, char(10)));
+  std::filesystem::path loop = base / "loop";
+  std::filesystem::path target = tmp.path / "j";
+  std::filesystem::create_directory_symlink(target, loop);
+  if (!std::filesystem::exists(loop)) {
+    return;  // symlinks unavailable on this host
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"grep.exe", {L"-R", L"needle", L"j"});
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  // The old implementation hung/crashed here; now it must terminate with
+  // the hit found and a diagnostic for the skipped cycle.
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_NE(r.stdout_text.find("real.txt"), std::string::npos);
+  EXPECT_NE(r.stderr_text.find("cyclic"), std::string::npos);
+}

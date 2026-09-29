@@ -88,7 +88,12 @@ REGISTER_COMMAND(
     std::transform(var_name.begin(), var_name.end(), var_name.begin(),
                    ::tolower);
 
-    if (var_name == "path_max" || var_name == "_posix_path_max" ||
+    if (var_name == "arg_max" || var_name == "_arg_max") {
+      // Windows has no kernel ARG_MAX; the effective per-process limit is
+      // CreateProcess's 32767-character command line, so report that
+      // instead of an undefined value (#1134).
+      safePrintLn("32767");
+    } else if (var_name == "path_max" || var_name == "_posix_path_max" ||
         var_name == "name_max" || var_name == "_posix_name_max") {
       safePrintLn("260");  // MAX_PATH on Windows
     } else if (var_name == "nprocessors_onln" ||

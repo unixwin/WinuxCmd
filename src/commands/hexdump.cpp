@@ -206,15 +206,18 @@ auto print_decimal2(const std::vector<uint8_t>& data, size_t base_offset)
 auto print_octal1(const std::vector<uint8_t>& data, size_t base_offset)
     -> void {
   for (size_t i = 0; i < data.size(); i += 16) {
-    safePrint(std::format("{:07x} ", base_offset + i));
+    std::string line = std::format("{:07x} ", base_offset + i);
     for (size_t j = 0; j < 16; ++j) {
       if (i + j < data.size()) {
-        safePrint(std::format("{:03o} ", data[i + j]));
+        line += std::format("{:03o} ", data[i + j]);
       } else {
-        safePrint("    ");
+        line += "    ";
       }
     }
-    safePrintLn("");
+    // [GNU] the row is fixed at 71 columns: 16 slots of 4 with the final
+    // trailing space trimmed (#1133).
+    if (!line.empty() && line.back() == ' ') line.pop_back();
+    safePrintLn(line);
   }
   if (!data.empty()) {
     safePrintLn(std::format("{:07x}", base_offset + data.size()));
@@ -223,35 +226,37 @@ auto print_octal1(const std::vector<uint8_t>& data, size_t base_offset)
 
 auto print_char(const std::vector<uint8_t>& data, size_t base_offset) -> void {
   for (size_t i = 0; i < data.size(); i += 16) {
-    safePrint(std::format("{:07x} ", base_offset + i));
+    std::string line = std::format("{:07x} ", base_offset + i);
     for (size_t j = 0; j < 16; ++j) {
       if (i + j >= data.size()) {
-        safePrint("    ");
+        line += "    ";
         continue;
       }
       unsigned char ch = data[i + j];
       if (ch == 0)
-        safePrint(" \\0 ");
+        line += " \\0 ";
       else if (ch == 7)
-        safePrint(" \\a ");
+        line += " \\a ";
       else if (ch == 8)
-        safePrint(" \\b ");
+        line += " \\b ";
       else if (ch == 9)
-        safePrint(" \\t ");
+        line += " \\t ";
       else if (ch == 10)
-        safePrint(" \\n ");
+        line += " \\n ";
       else if (ch == 11)
-        safePrint(" \\v ");
+        line += " \\v ";
       else if (ch == 12)
-        safePrint(" \\f ");
+        line += " \\f ";
       else if (ch == 13)
-        safePrint(" \\r ");
+        line += " \\r ";
       else if (ch >= 32 && ch <= 126)
-        safePrint(std::format("  {} ", static_cast<char>(ch)));
+        line += std::format("  {} ", static_cast<char>(ch));
       else
-        safePrint(std::format("{:03o} ", ch));
+        line += std::format("{:03o} ", ch);
     }
-    safePrintLn("");
+    // [GNU] fixed 71-column row: final trailing space trimmed (#1133).
+    if (!line.empty() && line.back() == ' ') line.pop_back();
+    safePrintLn(line);
   }
   if (!data.empty()) {
     safePrintLn(std::format("{:07x}", base_offset + data.size()));

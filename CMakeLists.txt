@@ -414,6 +414,7 @@ set_target_properties(winuxcmd-commands PROPERTIES
 # Compile options
 target_compile_options(winuxcmd-commands PRIVATE
         $<$<CONFIG:Release>:/O2 /Os>
+        /bigobj
         /GR-
 )
 
