@@ -6,6 +6,24 @@ repository release tags.
 
 ## [Unreleased]
 
+### Fixed — issue triage round (2026-09-29)
+
+- **grep -r**: recursive walk rewritten (#1135). pnpm-style crossed NTFS
+  junctions are not symlinks to std::filesystem, so
+  `recursive_directory_iterator` descended them until the stack died with
+  0xC0000409 and zero output — indistinguishable from "no matches". The
+  hand-rolled walk skips reparse directories under -r, dedups canonical
+  real paths under -R, and warns
+  `grep: warning: <dir>: cyclic directory junction; skipped` on loops.
+- **hexdump -b/-c**: rows are the GNU-fixed 71 columns — 16 slots of 4
+  with only the final trailing space trimmed (#1133); short lines carried
+  one extra space.
+- **getconf ARG_MAX**: prints the Windows per-process limit (32767,
+  CreateProcess command-line cap) instead of falling through to the
+  unknown-variable error (#1134).
+- **build**: /bigobj for the commands unity TU (176-file merge exceeded
+  the default COFF section limit).
+
 ## [1.1.3] - 2026-09-24
 
 ### Fixed — diff rewritten to GNU diffutils 3.10 output parity
