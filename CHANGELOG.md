@@ -6,6 +6,8 @@ repository release tags.
 
 ## [Unreleased]
 
+## [1.1.4] - 2026-09-30
+
 ### Fixed — issue triage round (2026-09-29)
 
 - **grep -r**: recursive walk rewritten (#1135). pnpm-style crossed NTFS
