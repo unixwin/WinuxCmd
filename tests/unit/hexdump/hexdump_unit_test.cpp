@@ -88,7 +88,7 @@ TEST(hexdump, hexdump_octal1_prints_final_offset) {
 
   EXPECT_EQ(r.exit_code, 0);
   const std::string expected =
-      "0000000 101 102 103                                                     "
+      "0000000 101 102 103                                                    "
       "\n"
       "0000003\n";
   EXPECT_EQ_TEXT(r.stdout_text, expected);
@@ -106,7 +106,7 @@ TEST(hexdump, hexdump_char_escapes_control_chars) {
   EXPECT_EQ(r.exit_code, 0);
   const std::string expected =
       "0000000   A  \\n  \\t                                                   "
-      "  \n"
+      " \n"
       "0000003\n";
   EXPECT_EQ_TEXT(r.stdout_text, expected);
 }
