@@ -6,6 +6,29 @@ repository release tags.
 
 ## [Unreleased]
 
+### Fixed — upstream lane wt41 (2026-10-02)
+
+- **mv**: operands in MSYS drive form (`/d/x`) are routed through the
+  shared API-path boundary like cp/install, so mixing Windows-form and
+  POSIX-form operands in one invocation works in any combination (#1140,
+  unixwin/niubash#124); GNU coreutils under MSYS accepts either dialect.
+  The copy fallback also no longer mislabels regular files as directories,
+  actually moves directories across volumes (they used to report success
+  while doing nothing), refuses to move a directory into itself
+  (`cannot copy a directory, X, into itself, Y`, GNU copy.c:2091), and
+  honors a trailing separator on DEST (`failed to access 'DEST': Not a
+  directory` instead of silently creating/overwriting the stripped name).
+- **mktemp**: the printed name keeps the `-p`/`--tmpdir` operand's dialect
+  (`-p /d/...` echoes `/d/.../x.XXXXXX`, `-p /cygdrive/d/...` likewise),
+  so shell round-trips that capture the output stay self-consistent with
+  POSIX-form variables (#1141); Windows-form operands and the TMPDIR/
+  default-temp paths keep the native display form.
+- **xargs**: option parsing stops at the utility name; every argument
+  after it is passed to the utility verbatim (POSIX xargs operand
+  semantics, GNU findutils) — `xargs cat -n` no longer errors on `-n`,
+  `xargs wc -l` no longer silently consumes `-l` as `--max-lines`, and
+  `xargs echo -- help` keeps the `--` (#1139).
+
 ## [1.1.4] - 2026-09-30
 
 ### Fixed — issue triage round (2026-09-29)

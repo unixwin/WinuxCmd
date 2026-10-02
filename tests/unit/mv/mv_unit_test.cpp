@@ -54,6 +54,102 @@ TEST(mv, mv_cross_volume_directory_falls_back_to_copy_and_remove) {
   EXPECT_EQ(destination_tmp.read("moved_dir/nested/child.txt"), "child");
 }
 
+namespace {
+
+// C:/a/b -> /c/a/b (MSYS drive form, lowercase drive letter).
+auto slash_drive_form(const std::filesystem::path& path) -> std::wstring {
+  std::wstring text = path.generic_wstring();
+  std::wstring drive = text.substr(0, 1);
+  drive[0] = static_cast<wchar_t>(
+      std::tolower(static_cast<unsigned char>(drive[0])));
+  return L"/" + drive + text.substr(2);
+}
+
+}  // namespace
+
+// [GNU] mv operands are pathnames: the Windows drive form (C:/x) and the
+// MSYS drive form (/c/x) denote the same file, so any dialect combination
+// in one invocation must move (#1140; GNU coreutils under MSYS accepts
+// either).  A POSIX-form destination used to fail with "cannot copy
+// directory ... The system cannot find the path specified".
+TEST(mv, mv_mixed_windows_posix_operand_forms_all_succeed) {
+  for (int variant = 0; variant < 4; ++variant) {
+    TempDir tmp;
+    tmp.write("src.txt", "payload");
+    std::filesystem::path win_src = tmp.path / "src.txt";
+    std::filesystem::path win_dst = tmp.path / "dst.txt";
+
+    std::wstring src =
+        (variant & 1) ? slash_drive_form(win_src) : win_src.generic_wstring();
+    std::wstring dst =
+        (variant & 2) ? slash_drive_form(win_dst) : win_dst.generic_wstring();
+
+    Pipeline p;
+    p.set_cwd(tmp.wpath());
+    p.add(L"mv.exe", {src, dst});
+
+    auto r = p.run();
+
+    EXPECT_EQ(r.exit_code, 0);
+    EXPECT_TRUE(std::filesystem::exists(win_dst));
+    EXPECT_FALSE(std::filesystem::exists(win_src));
+    EXPECT_EQ(tmp.read("dst.txt"), "payload");
+  }
+}
+
+// [GNU] copy.c:2091: moving a directory into itself fails with
+// "cannot copy a directory, X, into itself, Y" instead of recursing.
+TEST(mv, mv_directory_into_itself_reports_error) {
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "dir");
+  tmp.write("dir/file.txt", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"mv.exe", {(tmp.path / "dir").wstring(),
+                    (tmp.path / "dir" / "sub").wstring()});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("into itself") != std::string::npos);
+  // No runaway copy happened and the source is untouched.
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "dir" / "file.txt"));
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "dir" / "sub"));
+}
+
+// [GNU] A trailing separator on DEST names a directory operand; a missing
+// path or a regular file fails with "failed to access 'DEST': Not a
+// directory" (lib/targetdir.c target_directory_operand) and must not create
+// or overwrite the stripped name as a file.
+TEST(mv, mv_trailing_slash_destination_not_directory_reports_error) {
+  TempDir tmp;
+  tmp.write("src.txt", "payload");
+  tmp.write("existing.txt", "old");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"mv.exe", {L"src.txt", L"missing/"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("failed to access") != std::string::npos);
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "src.txt"));
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "missing"));
+
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.add(L"mv.exe", {L"src.txt", L"existing.txt/"});
+
+  auto r2 = p2.run();
+
+  EXPECT_EQ(r2.exit_code, 1);
+  EXPECT_TRUE(r2.stderr_text.find("Not a directory") != std::string::npos);
+  EXPECT_EQ(tmp.read("src.txt"), "payload");
+  EXPECT_EQ(tmp.read("existing.txt"), "old");
+}
+
 TEST(mv, mv_move_to_directory) {
   TempDir tmp;
   tmp.write("file.txt", "content");

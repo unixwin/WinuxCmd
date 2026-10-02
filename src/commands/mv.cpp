@@ -291,14 +291,39 @@ auto parse_arguments(const CommandContext<MV_OPTIONS.size()>& ctx)
   return move_ctx;
 }
 
+// [GNU] mv operands are pathnames: on this platform they arrive either in
+// Windows drive form (D:/x) or MSYS drive form (/d/x, /cygdrive/d/x), and
+// both denote the same file — GNU coreutils under MSYS accepts either.
+// Route every Win32 call through the shared API-path boundary (the same
+// invariant cp/install use) so a POSIX-form operand is not mistaken for a
+// current-drive root-relative path (\d\x on the current drive) and fail
+// ENOENT (#1140). Diagnostics keep quoting the operand as typed.
+auto api_operand_w(std::string_view path) -> std::wstring {
+  return native_path::make_api_path_operand(path).extended;
+}
+
+// True when candidate equals base or lives somewhere below it, comparing
+// case-insensitively on the normalized backslash-separated forms (NTFS is
+// case-insensitive by default).  Used to reject moving a directory into
+// itself before the recursive-copy fallback could loop (#1140).
+auto path_is_at_or_below(const std::wstring& base,
+                         const std::wstring& candidate) -> bool {
+  if (base.empty() || candidate.size() < base.size()) return false;
+  if (_wcsnicmp(base.c_str(), candidate.c_str(), base.size()) != 0) {
+    return false;
+  }
+  return candidate.size() == base.size() ||
+         candidate[base.size()] == L'\\' || candidate[base.size()] == L'/';
+}
+
 auto check_path_exists(const std::string& path) -> cp::Result<bool> {
-  std::wstring wpath = utf8_to_wstring(path);
+  std::wstring wpath = api_operand_w(path);
   DWORD attr = GetFileAttributesW(wpath.c_str());
   return attr != INVALID_FILE_ATTRIBUTES;
 }
 
 auto check_is_directory(const std::string& path) -> cp::Result<bool> {
-  std::wstring wpath = utf8_to_wstring(path);
+  std::wstring wpath = api_operand_w(path);
   DWORD attr = GetFileAttributesW(wpath.c_str());
   if (attr == INVALID_FILE_ATTRIBUTES) {
     return std::unexpected("cannot access '" + path +
@@ -383,8 +408,8 @@ auto move_single_path(const std::string& src_path, const std::string& dest_path,
                       const CommandContext<MV_OPTIONS.size()>& ctx,
                       OverwriteMode overwrite_mode, UpdateMode update_mode)
     -> cp::Result<bool> {
-  std::wstring wsrc_path = utf8_to_wstring(src_path);
-  std::wstring wdest_path = utf8_to_wstring(dest_path);
+  std::wstring wsrc_path = api_operand_w(src_path);
+  std::wstring wdest_path = api_operand_w(dest_path);
 
   bool dest_exists =
       GetFileAttributesW(wdest_path.c_str()) != INVALID_FILE_ATTRIBUTES;
@@ -485,9 +510,18 @@ auto move_single_path(const std::string& src_path, const std::string& dest_path,
       if (!DeleteFileW(wsrc_path.c_str())) {
         return std::unexpected("cannot delete source file '" + src_path + "'");
       }
-    } else if (!(src_attr & FILE_ATTRIBUTE_DIRECTORY)) {
-      // MoveFileEx cannot rename a directory across volumes.  Fall back to a
-      // recursive copy, then remove the source only after the copy succeeds.
+    } else {
+      // [GNU] MoveFileExW cannot rename across volumes (and some tools hold
+      // handles that block same-volume renames); fall back to a recursive
+      // copy of files *and* directories, then remove the source only after
+      // the copy succeeds (mv.c do_move).  Directories used to fall through
+      // this branch silently, reporting success without moving anything.
+      if ((src_attr & FILE_ATTRIBUTE_DIRECTORY) != 0 &&
+          path_is_at_or_below(wsrc_path, wdest_path)) {
+        // [GNU] copy.c:2091: "cannot copy a directory, %s, into itself, %s"
+        return std::unexpected("cannot copy a directory, '" + src_path +
+                               "', into itself, '" + dest_path + "'");
+      }
       std::error_code ec;
       std::filesystem::copy(
           std::filesystem::path(wsrc_path), std::filesystem::path(wdest_path),
@@ -495,12 +529,12 @@ auto move_single_path(const std::string& src_path, const std::string& dest_path,
               std::filesystem::copy_options::overwrite_existing,
           ec);
       if (ec) {
-        return std::unexpected("cannot copy directory '" + src_path + "' to '" +
+        return std::unexpected("cannot copy '" + src_path + "' to '" +
                                dest_path + "': " + ec.message());
       }
       std::filesystem::remove_all(std::filesystem::path(wsrc_path), ec);
       if (ec) {
-        return std::unexpected("cannot delete source directory '" + src_path +
+        return std::unexpected("cannot remove '" + src_path +
                                "': " + ec.message());
       }
     }
@@ -531,7 +565,7 @@ auto process_single_source(const std::string& src_path,
                       (src_path.back() == '/' || src_path.back() == '\\');
   if (trailing_sep) {
     std::string stripped = strip_trailing_slashes(src_path);
-    DWORD attrs = GetFileAttributesW(utf8_to_wstring(stripped).c_str());
+    DWORD attrs = GetFileAttributesW(api_operand_w(stripped).c_str());
     if (attrs == INVALID_FILE_ATTRIBUTES) {
       return std::unexpected("cannot stat '" + src_path +
                              "': No such file or directory");
@@ -575,8 +609,10 @@ auto process_single_source(const std::string& src_path,
 // constraint that the exchange is a same-filesystem rename operation.
 auto exchange_paths(const std::string& src_path, const std::string& dest_path,
                     bool verbose) -> cp::Result<bool> {
-  std::wstring wsrc = utf8_to_wstring(src_path);
-  std::wstring wdest = utf8_to_wstring(dest_path);
+  // .normalized (not .extended): GetVolumePathNameW rejects \\?\ paths, and
+  // the operands here are already absolute after MSYS-to-drive conversion.
+  std::wstring wsrc = native_path::make_api_path_operand(src_path).normalized;
+  std::wstring wdest = native_path::make_api_path_operand(dest_path).normalized;
   DWORD src_attr = GetFileAttributesW(wsrc.c_str());
   if (src_attr == INVALID_FILE_ATTRIBUTES) {
     return std::unexpected("cannot stat '" + src_path +
@@ -672,6 +708,23 @@ auto process_command(const CommandContext<N>& ctx) -> cp::Result<bool> {
              move_ctx.source_paths.size() > 1) &&
             !dest_is_dir) {
           return std::unexpected("target is not a directory");
+        }
+
+        // [GNU] A trailing separator makes DEST a directory operand
+        // (lib/targetdir.c target_directory_operand opens it O_DIRECTORY):
+        // when it names a missing path or a regular file the move fails
+        // before any rename or copy attempt — "failed to access 'DEST': Not
+        // a directory" — instead of silently creating the stripped name as
+        // a regular file.  This keeps the copy fallback from bypassing the
+        // #1052 trailing-separator invariant (std::filesystem::copy strips
+        // the separator and creates a file).
+        const bool dest_trailing_sep =
+            move_ctx.dest_path.size() > 1 &&
+            (move_ctx.dest_path.back() == '/' ||
+             move_ctx.dest_path.back() == '\\');
+        if (dest_trailing_sep && !dest_is_dir) {
+          return std::unexpected("failed to access '" + move_ctx.dest_path +
+                                 "': Not a directory");
         }
 
         // -I / --interactive=once: prompt once before removing more than three

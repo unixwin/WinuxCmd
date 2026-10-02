@@ -45,6 +45,53 @@ auto constexpr MKTEMP_OPTIONS = std::array{
 namespace mktemp_pipeline {
 namespace cp = core::pipeline;
 
+// [GNU] mktemp.c:276-311 prints file_name_concat (dest_dir, template): the
+// caller's directory spec verbatim, never canonicalized. A -p/--tmpdir
+// operand in MSYS drive form (/d/... or /cygdrive/d/...) must therefore
+// echo back in that dialect so shell round-trips like
+// t=$(mktemp -p "$d" 'x.XXXXXX'); mv "$t" "$d/out" stay dialect-consistent
+// (#1141). Filesystem operations keep using the normalized native form.
+// The default paths (TMPDIR, GetTempPathW) stay native-form, matching the
+// pinned mktemp_default_template_uses_tmpdir_env_as_native_path behavior.
+enum class DisplayDialect {
+  Native,     // Windows drive form (D:/...)
+  MsysDrive,  // /d/...
+  Cygdrive,   // /cygdrive/d/...
+};
+
+auto display_dialect_of(std::string_view text) -> DisplayDialect {
+  auto is_separator = [](char ch) { return ch == '/' || ch == '\\'; };
+  if (text.size() >= 3 && is_separator(text[0]) &&
+      std::isalpha(static_cast<unsigned char>(text[1])) &&
+      is_separator(text[2])) {
+    return DisplayDialect::MsysDrive;
+  }
+  constexpr std::string_view cygdrive = "/cygdrive/";
+  if (text.size() > cygdrive.size() + 1 && text.starts_with(cygdrive) &&
+      std::isalpha(static_cast<unsigned char>(text[cygdrive.size()])) &&
+      is_separator(text[cygdrive.size() + 1])) {
+    return DisplayDialect::Cygdrive;
+  }
+  return DisplayDialect::Native;
+}
+
+// Re-express a native drive path (D:/rest) in the caller's dialect, using
+// the MSYS lowercase-drive convention (/d/rest, /cygdrive/d/rest). Anything
+// that is not a drive-letter path is returned unchanged.
+auto to_display_dialect(std::string_view native, DisplayDialect dialect)
+    -> std::string {
+  if (dialect == DisplayDialect::Native || native.size() < 2 ||
+      native[1] != ':') {
+    return std::string(native);
+  }
+  const char drive =
+      static_cast<char>(std::tolower(static_cast<unsigned char>(native[0])));
+  std::string prefix =
+      dialect == DisplayDialect::MsysDrive ? "/" : "/cygdrive/";
+  prefix.push_back(drive);
+  return prefix + std::string(native.substr(2));
+}
+
 struct Config {
   bool make_directory = false;
   bool dry_run = false;
@@ -53,6 +100,7 @@ struct Config {
   std::string tmpdir;
   std::string template_str;
   std::string suffix;
+  DisplayDialect tmpdir_dialect = DisplayDialect::Native;
 };
 auto normalize_win_shell_path(std::string_view text) -> std::string {
   auto make_drive_path = [](char drive, std::string_view rest) {
@@ -278,6 +326,7 @@ auto build_config(const CommandContext<MKTEMP_OPTIONS.size()>& ctx)
   }
   if (!tmpdir_opt.empty()) {
     cfg.tmpdir = tmpdir_opt;
+    cfg.tmpdir_dialect = display_dialect_of(tmpdir_opt);
   }
 
   // -t (deprecated): interpret TEMPLATE as a single file name component
@@ -474,7 +523,9 @@ auto run(const Config& cfg) -> int {
     }
   }
 
-  safePrintLn(temp_file);
+  // [GNU] The printed name keeps the -p/--tmpdir dialect the caller used
+  // (#1141); creation above happened on the normalized native form.
+  safePrintLn(to_display_dialect(temp_file, cfg.tmpdir_dialect));
   return 0;
 }
 
