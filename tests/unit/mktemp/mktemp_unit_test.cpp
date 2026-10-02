@@ -221,6 +221,92 @@ TEST(mktemp, mktemp_tmpdir_prints_path_not_just_basename) {
       std::filesystem::exists(tmp.path / std::filesystem::u8path(created)));
 }
 
+// [GNU] mktemp -p DIR echoes DIR's dialect: a POSIX drive-form operand
+// (/c/...) produces a POSIX-form name so shell round-trips like
+// t=$(mktemp -p "$d" ...); mv "$t" "$d/out" stay dialect-consistent (#1141).
+TEST(mktemp, mktemp_p_slash_drive_dir_outputs_posix_form) {
+  TempDir tmp;
+  auto out_dir = tmp.path / "out";
+  std::filesystem::create_directory(out_dir);
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"mktemp.exe", {L"-p", slash_drive_path(out_dir), L"x-XXXXXX"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_FALSE(r.stdout_text.empty());
+  std::string created = r.stdout_text;
+  if (!created.empty() && created.back() == '\n') {
+    created.pop_back();
+  }
+  std::string expected_prefix = "/";
+  expected_prefix.push_back(static_cast<char>(std::tolower(
+      static_cast<unsigned char>(out_dir.wstring()[0]))));
+  expected_prefix.push_back('/');
+  EXPECT_TRUE(created.starts_with(expected_prefix));
+  EXPECT_EQ(created.find(":~"), std::string::npos);
+  // The file exists at the native spelling of the printed POSIX path.
+  std::filesystem::path native = out_dir.root_name();
+  native += std::filesystem::u8path(created.substr(2));
+  EXPECT_TRUE(std::filesystem::exists(native));
+  std::filesystem::remove(native);
+}
+
+// [GNU] /cygdrive/d/... is the other POSIX spelling of -p DIR and echoes
+// back the same way (#1141).
+TEST(mktemp, mktemp_p_cygdrive_dir_outputs_cygdrive_form) {
+  TempDir tmp;
+  auto out_dir = tmp.path / "out";
+  std::filesystem::create_directory(out_dir);
+  std::wstring cygdrive = L"/cygdrive";
+  cygdrive += slash_drive_path(out_dir);
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"mktemp.exe", {L"-p", cygdrive, L"x-XXXXXX"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_FALSE(r.stdout_text.empty());
+  std::string created = r.stdout_text;
+  if (!created.empty() && created.back() == '\n') {
+    created.pop_back();
+  }
+  EXPECT_TRUE(created.starts_with("/cygdrive/"));
+  std::filesystem::path native = out_dir.root_name();
+  // "/cygdrive" + "/c/rest" -> "C:" + "/rest"
+  native += std::filesystem::u8path(
+      created.substr(std::string_view("/cygdrive").size() + 3));
+  EXPECT_TRUE(std::filesystem::exists(native));
+  std::filesystem::remove(native);
+}
+
+// [GNU] A Windows drive-form -p DIR keeps the native display form.
+TEST(mktemp, mktemp_p_windows_drive_dir_outputs_native_form) {
+  TempDir tmp;
+  auto out_dir = tmp.path / "out";
+  std::filesystem::create_directory(out_dir);
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"mktemp.exe", {L"-p", out_dir.generic_wstring(), L"x-XXXXXX"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_FALSE(r.stdout_text.empty());
+  std::string created = r.stdout_text;
+  if (!created.empty() && created.back() == '\n') {
+    created.pop_back();
+  }
+  EXPECT_TRUE(created.size() >= 3 && created[1] == ':' && created[2] == '/');
+  EXPECT_TRUE(std::filesystem::exists(std::filesystem::u8path(created)));
+  std::filesystem::remove(std::filesystem::u8path(created));
+}
+
 TEST(mktemp, mktemp_template_with_directory_prints_relative_path) {
   TempDir tmp;
   std::filesystem::create_directory(tmp.path / "nested");
