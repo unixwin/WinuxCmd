@@ -522,6 +522,62 @@ TEST(xargs, xargs_custom_delimiter) {
   EXPECT_TRUE(r.stdout_text.find("gamma") != std::string::npos);
 }
 
+// [GNU findutils] xargs's own option parsing stops at the utility name;
+// arguments after it pass to the utility verbatim. `xargs cat -n` used to
+// fail with "option requires an argument -- 'n'" (#1139).
+TEST(xargs, xargs_options_after_utility_name_pass_to_utility) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"cmd.exe", L"/C", L"echo", L"-n"});
+  p.set_stdin("stdinarg\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("-n") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("stdinarg") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("option requires an argument") ==
+              std::string::npos);
+}
+
+// [GNU findutils] `-l` after the utility is the utility's argument, not
+// xargs's deprecated --max-lines: `xargs wc -l` used to silently drop it and
+// produce wrong values (#1139).
+TEST(xargs, xargs_dash_l_after_utility_name_is_not_max_lines) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"cmd.exe", L"/C", L"echo", L"-l"});
+  p.set_stdin("stdinarg\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("-l") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("stdinarg") != std::string::npos);
+}
+
+// [GNU findutils] after the utility name even `--` is a literal argument:
+// `xargs echo -- help` prints `-- help a` (#1139).
+TEST(xargs, xargs_dash_dash_after_utility_name_is_literal) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"cmd.exe", L"/C", L"echo", L"--", L"help"});
+  p.set_stdin("stdinarg\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("--") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("help") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("stdinarg") != std::string::npos);
+}
+
 TEST(xargs, xargs_rejects_empty_short_delimiter) {
   TempDir tmp;
 

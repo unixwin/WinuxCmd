@@ -24,6 +24,14 @@ export auto option_policy_for_command(std::string_view command)
     // reporting -flag as an invalid nohup option.
     policy.stop_options_after_positionals = 1;
   }
+  if (command == "xargs") {
+    // [GNU findutils] xargs's own options stop at the first non-option
+    // operand (the utility name); every argument after it passes to the
+    // utility verbatim (POSIX xargs operand semantics).  Without this,
+    // `xargs cat -n` reports "option requires an argument" and `xargs wc
+    // -l` silently consumes -l as xargs's own --max-lines (#1139).
+    policy.stop_options_after_positionals = 1;
+  }
   // [GNU] printf.c and test.c never call getopt: "--help"/"--version" are
   // honored only as the sole argument (handled by the dispatcher), and
   // every other token is an operand.  Long-option tokens therefore stay
