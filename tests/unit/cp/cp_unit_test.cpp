@@ -965,3 +965,104 @@ TEST(cp, cp_symbolic_forward_slash_source_resolves_natively) {
     EXPECT_EQ_TEXT(std::string(buffer, read), "payload");
   }
 }
+
+namespace {
+
+// C:/a/b -> /c/a/b and /cygdrive/c/a/b (MSYS drive dialects).
+auto cp_slash_drive_form(const std::filesystem::path& path) -> std::wstring {
+  std::wstring text = path.generic_wstring();
+  std::wstring drive = text.substr(0, 1);
+  drive[0] = static_cast<wchar_t>(
+      std::tolower(static_cast<unsigned char>(drive[0])));
+  return L"/" + drive + text.substr(2);
+}
+
+auto cp_cygdrive_form(const std::filesystem::path& path) -> std::wstring {
+  std::wstring text = path.generic_wstring();
+  std::wstring drive = text.substr(0, 1);
+  drive[0] = static_cast<wchar_t>(
+      std::tolower(static_cast<unsigned char>(drive[0])));
+  return L"/cygdrive/" + drive + text.substr(2);
+}
+
+}  // namespace
+
+// [GNU] cp operands are pathnames: the Windows drive form (C:/x), the MSYS
+// drive form (/c/x) and the Cygwin prefix form (/cygdrive/c/x) denote the
+// same file, so any dialect combination in one invocation must copy (GNU
+// coreutils under MSYS accepts either; the runtime layer resolves the
+// dialect before cp stats anything).  POSIX-form sources used to fail at
+// the stat gate with "cannot stat ... No such file or directory" (#1145).
+TEST(cp, cp_mixed_operand_dialects_all_succeed) {
+  for (int variant = 0; variant < 9; ++variant) {
+    TempDir tmp;
+    tmp.write("src.txt", "payload");
+    std::filesystem::path win_src = tmp.path / "src.txt";
+    std::filesystem::path win_dst = tmp.path / "dst.txt";
+
+    std::wstring src;
+    switch (variant % 3) {
+      case 0: src = win_src.generic_wstring(); break;
+      case 1: src = cp_slash_drive_form(win_src); break;
+      default: src = cp_cygdrive_form(win_src); break;
+    }
+    std::wstring dst;
+    switch (variant / 3) {
+      case 0: dst = win_dst.generic_wstring(); break;
+      case 1: dst = cp_slash_drive_form(win_dst); break;
+      default: dst = cp_cygdrive_form(win_dst); break;
+    }
+
+    Pipeline p;
+    p.set_cwd(tmp.wpath());
+    p.add(L"cp.exe", {src, dst});
+
+    auto r = p.run();
+
+    EXPECT_EQ(r.exit_code, 0);
+    EXPECT_TRUE(std::filesystem::exists(win_dst));
+    EXPECT_EQ(tmp.read("dst.txt"), "payload");
+  }
+}
+
+// [GNU] -r with POSIX-form source and destination directories copies the
+// tree; the recursive enumeration used to miss children when the source
+// was spelled in a drive dialect (#1145).
+TEST(cp, cp_recursive_posix_dialect_source_and_dest) {
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "src" / "nested");
+  tmp.write("src/f.txt", "root");
+  tmp.write("src/nested/g.txt", "leaf");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe",
+        {L"-r", cp_slash_drive_form(tmp.path / "src"),
+         cp_slash_drive_form(tmp.path / "dst")});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(tmp.read("dst/f.txt"), "root");
+  EXPECT_EQ(tmp.read("dst/nested/g.txt"), "leaf");
+}
+
+// [GNU] a SOURCE and DEST naming the same file fails with "'X' and 'Y' are
+// the same file" instead of truncating it; both operands in mixed dialects
+// must be recognized as one file (copy.c same_name) (#1145).
+TEST(cp, cp_same_file_mixed_dialects_reports_error) {
+  TempDir tmp;
+  tmp.write("f.txt", "payload");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe",
+        {cp_slash_drive_form(tmp.path / "f.txt"),
+         cp_cygdrive_form(tmp.path / "f.txt")});
+
+  auto r = p.run();
+
+  EXPECT_NE(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.find("same file") != std::string::npos);
+  EXPECT_EQ(tmp.read("f.txt"), "payload");
+}

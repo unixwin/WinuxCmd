@@ -3171,3 +3171,104 @@ TEST(ls, ls_hyperlink_rejects_invalid_when_with_gnu_list) {
               std::string::npos);
   EXPECT_TRUE(r.stderr_text.find("Valid arguments are:") != std::string::npos);
 }
+
+namespace {
+
+// C:/a/b -> /c/a/b and /cygdrive/c/a/b (MSYS drive dialects).
+auto ls_slash_drive_form(const std::filesystem::path& path) -> std::wstring {
+  std::wstring text = path.generic_wstring();
+  std::wstring drive = text.substr(0, 1);
+  drive[0] = static_cast<wchar_t>(
+      std::tolower(static_cast<unsigned char>(drive[0])));
+  return L"/" + drive + text.substr(2);
+}
+
+auto ls_cygdrive_form(const std::filesystem::path& path) -> std::wstring {
+  std::wstring text = path.generic_wstring();
+  std::wstring drive = text.substr(0, 1);
+  drive[0] = static_cast<wchar_t>(
+      std::tolower(static_cast<unsigned char>(drive[0])));
+  return L"/cygdrive/" + drive + text.substr(2);
+}
+
+// UTF-8 spelling of a wide dialect operand (ls writes stdout as UTF-8).
+auto ls_utf8(const std::wstring& text) -> std::string {
+  if (text.empty()) return {};
+  int needed = WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, nullptr, 0,
+                                   nullptr, nullptr);
+  if (needed <= 1) return {};
+  std::string out(static_cast<size_t>(needed - 1), '\0');
+  WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, out.data(),
+                      static_cast<int>(out.size() + 1), nullptr, nullptr);
+  return out;
+}
+
+}  // namespace
+
+// [GNU] ls operands are pathnames: the Windows drive form (C:/x), the MSYS
+// drive form (/c/x) and the Cygwin prefix form (/cygdrive/c/x) denote the
+// same file, and the operand is echoed exactly as typed (coreutils ls.c
+// gobble_file receives the resolved pathname but prints the operand).
+// `ls /c/.../f.txt` and `ls -d /c/.../dir` used to fail with "cannot
+// access ... No such file or directory" (#1145).
+TEST(ls, ls_file_operands_in_every_drive_dialect_resolve) {
+  const std::wstring forms[] = {L"", L"/", L"/cygdrive/"};
+  for (const auto& prefix : forms) {
+    TempDir tmp;
+    tmp.write("f.txt", "x");
+    std::wstring text = (tmp.path / "f.txt").generic_wstring();
+    std::wstring drive = text.substr(0, 1);
+    drive[0] = static_cast<wchar_t>(
+        std::tolower(static_cast<unsigned char>(drive[0])));
+    std::wstring dialect =
+        prefix.empty() ? text : prefix + drive + text.substr(2);
+
+    Pipeline p;
+    p.set_cwd(tmp.wpath());
+    p.add(L"ls.exe", {dialect});
+    auto r = p.run();
+
+    EXPECT_EQ(r.exit_code, 0);
+    EXPECT_EQ_TEXT(r.stdout_text, ls_utf8(dialect) + "\n");
+  }
+}
+
+// [GNU] `ls -d DIR` lists the directory itself, not its contents; a
+// POSIX-dialect operand used to fail the stat probe (#1145).
+TEST(ls, ls_directory_flag_posix_dialect_lists_directory_itself) {
+  TempDir tmp;
+  tmp.write("f.txt", "x");
+  std::wstring dialect = ls_slash_drive_form(tmp.path);
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ls.exe", {L"-d", dialect});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, ls_utf8(dialect) + "\n");
+}
+
+// [GNU] a bare root operand ("/") lists the root of the current drive (the
+// platform's mapping of the POSIX root; cygpath -w / renders "\"), and
+// `ls -d /` prints the operand.  The root used to fail both probes because
+// the \?\ spelling of a drive root is rejected by attribute queries (#1145).
+TEST(ls, ls_root_operand_lists_current_drive_root) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ls.exe", {L"/"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_FALSE(r.stdout_text.empty());
+
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.add(L"ls.exe", {L"-d", L"/"});
+  auto r2 = p2.run();
+
+  EXPECT_EQ(r2.exit_code, 0);
+  EXPECT_EQ_TEXT(r2.stdout_text, "/\n");
+}

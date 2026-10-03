@@ -200,6 +200,18 @@ auto strip_trailing_slashes(std::string path) -> std::string {
   return path;
 }
 
+// [GNU] cp operands are pathnames: on this platform they arrive either in
+// Windows drive form (D:/x) or MSYS drive form (/d/x, /cygdrive/d/x), and
+// both denote the same file — GNU coreutils under MSYS accepts either in
+// any combination. Route every Win32/filesystem call through the shared
+// API-path boundary (the same invariant mv/install use; #1140) so a
+// POSIX-form operand is not mistaken for a current-drive root-relative
+// path (\d\x) and fails ENOENT at the stat/open gates (#1145).
+// Diagnostics keep quoting the operand as typed.
+auto api_operand_w(std::string_view path) -> std::wstring {
+  return native_path::make_api_path_operand(path).extended;
+}
+
 // ----------------------------------------------
 // 1. Validate arguments
 // ----------------------------------------------
@@ -223,7 +235,7 @@ auto validate_arguments(const CommandContext<CP_OPTIONS.size()>& ctx)
           "(-T)\nTry 'cp --help' for more information.");
     }
 
-    DWORD attr = native_path::attributes_w(utf8_to_wstring(target_dir));
+    DWORD attr = native_path::attributes_w(api_operand_w(target_dir));
     if (attr == INVALID_FILE_ATTRIBUTES) {
       return std::unexpected("target directory '" + target_dir +
                              "': No such file or directory");
@@ -282,7 +294,7 @@ auto check_destination(
     -> cp::Result<std::tuple<std::vector<std::string>, std::string, bool>> {
   const auto& [sourcePaths, destPath] = paths;
 
-  DWORD attr = native_path::attributes_w(utf8_to_wstring(destPath));
+  DWORD attr = native_path::attributes_w(api_operand_w(destPath));
   bool destIsDir = !no_target_directory && (attr != INVALID_FILE_ATTRIBUTES) &&
                    (attr & FILE_ATTRIBUTE_DIRECTORY);
 
@@ -350,14 +362,14 @@ auto path_exists(const std::string& path) -> cp::Result<bool> {
     return true;
   }
   return native_path::valid_attributes(
-      native_path::attributes_w(utf8_to_wstring(path)));
+      native_path::attributes_w(api_operand_w(path)));
 }
 
 // ----------------------------------------------
 // 5. Check if path exists and is directory
 // ----------------------------------------------
 auto path_exists_and_is_directory(const std::string& path) -> cp::Result<bool> {
-  DWORD attr = native_path::attributes_w(utf8_to_wstring(path));
+  DWORD attr = native_path::attributes_w(api_operand_w(path));
   return (attr != INVALID_FILE_ATTRIBUTES) && (attr & FILE_ATTRIBUTE_DIRECTORY);
 }
 
@@ -563,7 +575,7 @@ auto copy_self_with_backup(const std::string& path, const std::string& destPath,
                            "' are the same file");
   }
 
-  std::wstring wpath = utf8_to_wstring(path);
+  std::wstring wpath = api_operand_w(path);
   auto backup_path = select_backup_path(wpath, ctx);
   if (!backup_path) {
     return std::unexpected(backup_path.error());
@@ -580,14 +592,14 @@ auto copy_self_with_backup(const std::string& path, const std::string& destPath,
 // lstat-style existence probe: a (possibly dangling) symlink itself counts.
 auto lexists(const std::string& path) -> bool {
   std::error_code ec;
-  auto status = std::filesystem::symlink_status(utf8_to_wstring(path), ec);
+  auto status = std::filesystem::symlink_status(api_operand_w(path), ec);
   return !ec && status.type() != std::filesystem::file_type::not_found;
 }
 
 auto is_symlink_path(const std::string& path) -> bool {
   std::error_code ec;
   return std::filesystem::is_symlink(
-      std::filesystem::symlink_status(utf8_to_wstring(path), ec));
+      std::filesystem::symlink_status(api_operand_w(path), ec));
 }
 
 // [GNU] POSIX symlinks correspond to two Windows reparse tags:
@@ -815,8 +827,12 @@ auto remove_destination_entry(const std::string& destPath) -> cp::Result<bool> {
 // [GNU] -s: a relative SOURCE may only be linked into the current
 // directory; anything else would produce a broken link (#218, #274).
 auto dest_in_current_directory(const std::string& destPath) -> bool {
-  std::filesystem::path parent =
-      std::filesystem::path(utf8_to_wstring(destPath)).parent_path();
+  // The parent directory must be computed on the dialect-resolved form: a
+  // POSIX operand folded by std::filesystem::absolute against the current
+  // drive names the wrong directory (#1145).
+  std::filesystem::path parent = std::filesystem::path(
+      native_path::make_api_path_operand(destPath).normalized)
+                                     .parent_path();
   if (parent.empty()) {
     return true;
   }
@@ -839,7 +855,7 @@ auto create_symlink_copy(const std::string& srcPath,
                          const std::string& destPath,
                          const std::wstring& link_target, bool src_is_dir,
                          bool verbose) -> cp::Result<bool> {
-  std::wstring wdest = utf8_to_wstring(destPath);
+  std::wstring wdest = api_operand_w(destPath);
   DWORD flags = SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE;
   if (src_is_dir) flags |= SYMBOLIC_LINK_FLAG_DIRECTORY;
   // [DIFFERS] #1101: reparse-point targets must use backslash separators
@@ -1165,11 +1181,17 @@ auto copy_file(const std::string& srcPath, const std::string& destPath,
   std::error_code equivalent_ec;
   // Use the error_code overload: pseudo-device operands such as "NUL" make
   // GetFileAttributesExW report ERROR_INVALID_PARAMETER, which the throwing
-  // overload turns into an uncaught filesystem_error.
+  // overload turns into an uncaught filesystem_error.  Both sides go through
+  // the API-path boundary so a POSIX drive-form operand compares against the
+  // file it names, not a current-drive root-relative misreading (#1145).
+  const std::wstring src_api = api_operand_w(srcPath);
   if (!hard_link && !symbolic_link &&
-      std::filesystem::exists(srcPath, equivalent_ec) && !equivalent_ec &&
-      lexists(destPath) &&
-      std::filesystem::equivalent(srcPath, destPath, equivalent_ec) &&
+      std::filesystem::exists(std::filesystem::path(src_api),
+                              equivalent_ec) &&
+      !equivalent_ec && lexists(destPath) &&
+      std::filesystem::equivalent(std::filesystem::path(src_api),
+                                  std::filesystem::path(api_operand_w(destPath)),
+                                  equivalent_ec) &&
       !equivalent_ec) {
     return copy_self_with_backup(srcPath, destPath, ctx);
   }
@@ -1236,15 +1258,16 @@ auto copy_file(const std::string& srcPath, const std::string& destPath,
   dest_exists = lexists(destPath);
 
   if (hard_link) {
-    std::wstring dest = utf8_to_wstring(destPath);
-    std::wstring link_source = utf8_to_wstring(srcPath);
+    std::wstring dest = api_operand_w(destPath);
+    std::wstring link_source = api_operand_w(srcPath);
     // GNU -l dereferences the source by default; only -P/-d/-a link the
     // symlink itself.  CreateHardLinkW on a symlink operand links the
     // reparse point, which is exactly the no-dereference behaviour.
     if (!no_deref && src_is_symlink) {
       std::error_code res_ec;
       auto resolved =
-          std::filesystem::canonical(utf8_to_wstring(srcPath), res_ec);
+          std::filesystem::canonical(std::filesystem::path(link_source),
+                                     res_ec);
       if (!res_ec) link_source = resolved.wstring();
     }
     if (CreateHardLinkW(dest.c_str(), link_source.c_str(), nullptr)) {
@@ -1280,7 +1303,13 @@ auto copy_file(const std::string& srcPath, const std::string& destPath,
   }
 
   if (symbolic_link) {
-    std::wstring source = utf8_to_wstring(srcPath);
+    // [GNU] cp -s (coreutils copy.c) symlinks to the SOURCE *name*: under
+    // MSYS the runtime has already resolved the operand to its native form,
+    // so the equivalent link text here is the dialect-resolved spelling —
+    // the typed POSIX form would create a permanently dangling link on
+    // native Windows (#1145).
+    const auto src_operand = native_path::make_api_path_operand(srcPath);
+    std::wstring source = src_operand.normalized;
     // [GNU] refuse a relative SOURCE unless DEST lands in the current
     // directory; otherwise the link text would resolve to the wrong place.
     bool src_absolute = std::filesystem::path(source).is_absolute() ||
@@ -1304,7 +1333,7 @@ auto copy_file(const std::string& srcPath, const std::string& destPath,
     }
     // [DIFFERS] #1101: reparse-point targets must use backslash separators
     // or native resolution fails with ERROR_INVALID_NAME.
-    if (CreateSymbolicLinkW(utf8_to_wstring(destPath).c_str(),
+    if (CreateSymbolicLinkW(api_operand_w(destPath).c_str(),
                             win32_normalize_symlink_target(source).c_str(),
                             attrs)) {
       if (verbose) {
@@ -1325,8 +1354,7 @@ auto copy_file(const std::string& srcPath, const std::string& destPath,
   // as a link (the link text is copied verbatim), not followed (#1064).
   if (no_deref && src_is_symlink) {
     std::error_code rl_ec;
-    auto target =
-        std::filesystem::read_symlink(utf8_to_wstring(srcPath), rl_ec);
+    auto target = std::filesystem::read_symlink(api_operand_w(srcPath), rl_ec);
     if (rl_ec) {
       // std::filesystem::read_symlink only decodes IO_REPARSE_TAG_SYMLINK;
       // junctions (MOUNT_POINT) need the raw reparse buffer.
@@ -1346,7 +1374,7 @@ auto copy_file(const std::string& srcPath, const std::string& destPath,
     bool src_is_dir = link_reparse_tag(srcPath) ==
                       std::optional<DWORD>{IO_REPARSE_TAG_MOUNT_POINT};
     if (!src_is_dir) {
-      DWORD sattrs = GetFileAttributesW(utf8_to_wstring(srcPath).c_str());
+      DWORD sattrs = GetFileAttributesW(api_operand_w(srcPath).c_str());
       src_is_dir = sattrs != INVALID_FILE_ATTRIBUTES &&
                    (sattrs & FILE_ATTRIBUTE_DIRECTORY);
     }
@@ -1547,7 +1575,7 @@ auto copy_directory_helper(const std::string& srcPath,
     // Check if it's a directory
     if (is_dir_child && !link_child) {
       // Verify it's actually a directory
-      DWORD attr = native_path::attributes_w(utf8_to_wstring(srcItemPath));
+      DWORD attr = native_path::attributes_w(api_operand_w(srcItemPath));
       if (attr != INVALID_FILE_ATTRIBUTES &&
           (attr & FILE_ATTRIBUTE_DIRECTORY)) {
         // Recursively copy subdirectory with increased depth

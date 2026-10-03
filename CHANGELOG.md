@@ -6,6 +6,33 @@ repository release tags.
 
 ## [Unreleased]
 
+### Fixed — upstream lane wt48 (2026-10-03)
+
+- **cp**: every stat/open route now goes through the shared API-path
+  boundary (`native_path::make_api_path_operand`, the mv/install
+  invariant), so POSIX-drive-form operands (`/d/x`, `/cygdrive/d/x`) work
+  in any combination with Windows-form operands instead of failing
+  `cannot stat ... No such file or directory` at the source-existence,
+  destination-directory, `-t`, same-file, symlink, and recursive-child
+  gates (#1145, unixwin/niubash#124 Option B). `cp -s` stores the
+  dialect-resolved source spelling as link text (a typed `/d/x` link text
+  can never resolve on native Windows).
+- **ls**: file operands and `-d` directory operands resolve POSIX drive
+  forms — `std::filesystem::absolute` used to fold `/d/x` against the
+  current drive root (`D:\d\x`) before the boundary could convert it
+  (#1145). A bare root operand (`ls /`, `ls -d /`, `ls //`) lists the
+  current drive root (the platform's `/` mapping, consistent with
+  `cygpath -w /`): the `\\?\` spelling of a drive root is rejected by
+  attribute probes, and the root/`\*` enumeration pattern is now built
+  with a path-aware join (`GetFullPathNameW` mis-parses the concatenated
+  `/\*` form).
+- **native_path (shared boundary)**: `normalize_api_operand_w` folds the
+  Cygwin drive prefix (`/cygdrive/d/x`, both separators) into the MSYS
+  spelling before drive-letter conversion, giving every command that
+  already routes through the boundary (cat, cp, install, mv, ...) cygdrive
+  support uniformly; `to_extended_path` keeps bare drive roots un-prefixed
+  and folds separators before `GetFullPathNameW` (#1145).
+
 ### Fixed — upstream lane wt41 (2026-10-02)
 
 - **mv**: operands in MSYS drive form (`/d/x`) are routed through the

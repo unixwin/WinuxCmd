@@ -102,6 +102,39 @@ export auto normalize_api_operand_w(std::wstring_view path) -> std::wstring {
   const bool had_trailing_separator =
       strip_trailing_separators(path).size() != path.size();
   std::wstring normalized(strip_trailing_separators(path));
+  // Cygwin drive prefix: /cygdrive/d/... names the same file as /d/... and
+  // D:\... (the GNU runtime layer resolves every spelling; cygpath/mktemp
+  // additionally recognize the prefix in raw argument text). Folding it to
+  // the MSYS spelling first keeps a single drive-letter branch below owning
+  // every POSIX drive form (#1145).  Both separators are accepted anywhere
+  // in the prefix: callers routinely hand this function already-preferred
+  // backslash forms (e.g. a "\cygdrive\d\src\*" enumeration pattern).
+  constexpr std::wstring_view k_cygdrive_name = L"cygdrive";
+  if (normalized.size() >= k_cygdrive_name.size() + 3 &&
+      is_separator(normalized[0])) {
+    bool name_match = true;
+    for (size_t i = 0; i < k_cygdrive_name.size(); ++i) {
+      wchar_t ch = normalized[1 + i];
+      if (ch >= L'A' && ch <= L'Z') {
+        ch = static_cast<wchar_t>(ch - L'A' + L'a');
+      }
+      if (ch != k_cygdrive_name[i]) {
+        name_match = false;
+        break;
+      }
+    }
+    const size_t drive_pos = k_cygdrive_name.size() + 2;
+    const wchar_t drive_ch = normalized[drive_pos];
+    const bool drive_letter =
+        (drive_ch >= L'a' && drive_ch <= L'z') ||
+        (drive_ch >= L'A' && drive_ch <= L'Z');
+    if (name_match && is_separator(normalized[1 + k_cygdrive_name.size()]) &&
+        drive_letter &&
+        (normalized.size() == drive_pos + 1 ||
+         is_separator(normalized[drive_pos + 1]))) {
+      normalized = L"/" + normalized.substr(drive_pos);
+    }
+  }
   if (normalized.size() >= 2 && is_separator(normalized[0]) &&
       ((normalized[1] >= L'a' && normalized[1] <= L'z') ||
        (normalized[1] >= L'A' && normalized[1] <= L'Z')) &&
@@ -162,12 +195,22 @@ export auto to_extended_path(std::wstring_view path) -> std::wstring {
     return std::wstring(path);
   }
 
-  std::wstring native(path);
+  // GetFullPathNameW mis-parses a mixed-separator root ("/\x" returns the
+  // garbage UNC form "\\x" instead of "<drive>:\x"), so fold every separator
+  // first; Win32 treats '/' and '\' interchangeably elsewhere (#1145).
+  std::wstring native(normalize_separators(std::wstring(path)));
   wchar_t abs_buf[32768];
   DWORD len = GetFullPathNameW(native.c_str(), 32768, abs_buf, nullptr);
   if (len == 0 || len >= 32768) return native;
 
   std::wstring absolute(abs_buf, len);
+  // A bare drive root ("D:\") must stay un-prefixed: attribute probes reject
+  // the \\?\ spelling of a root — verified GetFileAttributesW("\\?\D:\") ->
+  // INVALID_FILE_ATTRIBUTES while "D:\" -> FILE_ATTRIBUTE_DIRECTORY — and a
+  // root can never exceed MAX_PATH, so nothing is lost (#1145: `ls /`).
+  if (absolute.size() == 3 && absolute[1] == L':') {
+    return absolute;
+  }
   if (absolute.size() >= 2 && absolute.compare(0, 2, L"\\\\") == 0) {
     return L"\\\\?\\UNC\\" + absolute.substr(2);
   }

@@ -391,6 +391,14 @@ auto normalize_lookup_path(const std::wstring &path) -> std::wstring {
     return path;
   }
 
+  // [GNU/POSIX] An operand made only of separators ("/", "//", ...) names
+  // the root directory (POSIX allows exactly two leading slashes to be
+  // special; coreutils never treats them specially).  Collapse to a single
+  // root so the pattern join and the dialect boundary both see "/" (#1145).
+  if (path.find_first_not_of(L"\\/") == std::wstring::npos) {
+    return L"/";
+  }
+
   std::filesystem::path fs_path(path);
   size_t root_length = 0;
   if (fs_path.has_root_name()) {
@@ -444,12 +452,21 @@ auto probe_path(const std::wstring &path) -> PathProbe {
 }
 
 auto normalize_metadata_probe_path(const std::wstring &path) -> std::wstring {
+  // Resolve the MSYS drive dialect (/d/..., /cygdrive/d/...) BEFORE folding
+  // the path against the current directory: std::filesystem::absolute treats
+  // "/d/x" as a current-drive root-relative path and produces
+  // "<curdrive>:\d\x", silently renaming the operand before the API-path
+  // boundary can convert it — `ls /d/file` and `ls -d /d/dir` failed exactly
+  // this way (#1145). The GNU runtime layer performs this resolution before
+  // ls ever stats the operand (coreutils ls.c gobble_file receives a native
+  // pathname), so the boundary conversion belongs first here too.
+  const std::wstring resolved = native_path::normalize_api_operand_w(path);
   try {
-    return std::filesystem::absolute(std::filesystem::path(path))
+    return std::filesystem::absolute(std::filesystem::path(resolved))
         .lexically_normal()
         .native();
   } catch (...) {
-    return path;
+    return resolved;
   }
 }
 
@@ -2143,8 +2160,11 @@ auto try_get_dereferenced_find_data(
     return std::nullopt;
   }
 
+  // Canonicalize the dialect-resolved form: std::filesystem::canonical on a
+  // POSIX drive-form operand resolves against the current drive root (#1145).
   std::error_code ec;
-  std::filesystem::path target = std::filesystem::canonical(path, ec);
+  const std::filesystem::path target = std::filesystem::canonical(
+      native_path::make_api_path_operand_w(path).normalized, ec);
   if (ec) {
     return std::nullopt;
   }
@@ -2875,7 +2895,8 @@ auto is_dangling_dereference(const EntryInfo &entry,
     return false;
   }
   std::error_code ec;
-  (void)std::filesystem::canonical(entry.full_path, ec);
+  (void)std::filesystem::canonical(
+      native_path::make_api_path_operand_w(entry.full_path).normalized, ec);
   return static_cast<bool>(ec);
 }
 
@@ -2913,7 +2934,11 @@ auto list_directory(const std::string &path,
   }
 
   // Normal directory listing
-  std::wstring search_path = lookup_wpath + L"\\*";
+  // join_w (not string concatenation): a root operand ("/") concatenated
+  // with "\\*" produces "/\*", which GetFullPathNameW mis-parses as the
+  // garbage UNC form "\\*" — `ls /` failed exactly this way (#1145).
+  std::wstring search_path =
+      native_path::join_w(lookup_wpath, L"*");
   search_path = native_path::make_api_path_operand_w(search_path).extended;
   const std::wstring ignore_pattern = get_ignore_pattern(ctx);
   const std::wstring hide_pattern = get_hide_pattern(ctx);
@@ -2925,10 +2950,9 @@ auto list_directory(const std::string &path,
     DWORD error_code = GetLastError();
     // [GNU] Empty directory should succeed with no output
     if (error_code == ERROR_FILE_NOT_FOUND) {
-      // Check if path exists as directory
-      std::error_code ec;
-      std::filesystem::path fs_path(utf8_to_wstring(path));
-      if (std::filesystem::is_directory(fs_path, ec)) {
+      // Check if path exists as directory (through the dialect boundary so a
+      // POSIX drive-form operand answers for the right path, #1145).
+      if (native_path::is_directory_w(lookup_operand.normalized)) {
         return true;  // Empty directory, no entries
       }
     }
@@ -3332,25 +3356,47 @@ auto list_file(const std::string &path,
   HANDLE hFind = FindFirstFileW(metadata_operand.extended.c_str(), &find_data);
 
   if (hFind == INVALID_HANDLE_VALUE) {
-    // [GNU] POSIX pseudo-devices (/dev/null, ...) have no directory entry on
-    // Windows but are real objects; list them as plain files (uutils #6540).
+    // [GNU] A drive-root operand ("ls -d /", "ls -d /d") names a real
+    // directory that no FindFirstFileW pattern can express; stat it through
+    // the boundary and synthesize the metadata record instead of reporting
+    // ENOENT (#1145).
     if (!native_path::resolve_pseudo_device_w(lookup_wpath)) {
-      return std::unexpected("cannot access '" + path +
-                             "': No such file or directory");
+      WIN32_FILE_ATTRIBUTE_DATA root_data{};
+      const std::wstring &normalized = metadata_operand.normalized;
+      const bool is_drive_root =
+          (normalized.size() == 3 && normalized[1] == L':') ||
+          (normalized.size() == 2 && normalized[1] == L':');
+      if (is_drive_root &&
+          native_path::file_attribute_data_w(normalized, root_data)) {
+        find_data = WIN32_FIND_DATAW{};
+        find_data.dwFileAttributes = root_data.dwFileAttributes;
+        find_data.ftCreationTime = root_data.ftCreationTime;
+        find_data.ftLastAccessTime = root_data.ftLastAccessTime;
+        find_data.ftLastWriteTime = root_data.ftLastWriteTime;
+        find_data.nFileSizeHigh = root_data.nFileSizeHigh;
+        find_data.nFileSizeLow = root_data.nFileSizeLow;
+        find_data.cFileName[0] = L'\0';  // a root has no leaf name
+        hFind = nullptr;
+      } else {
+        return std::unexpected("cannot access '" + path +
+                               "': No such file or directory");
+      }
+    } else {
+      find_data = WIN32_FIND_DATAW{};
+      // [GNU] Pseudo-devices are character devices: mark them so the long
+      // listing shows a 'c' type ("crw-rw-rw- ... /dev/null").
+      find_data.dwFileAttributes =
+          FILE_ATTRIBUTE_NORMAL | FILE_ATTRIBUTE_DEVICE;
+      const std::wstring leaf =
+          std::filesystem::path(lookup_wpath).filename().wstring();
+      wcsncpy_s(find_data.cFileName, leaf.c_str(), _TRUNCATE);
+      FILETIME now{};
+      GetSystemTimeAsFileTime(&now);
+      find_data.ftCreationTime = now;
+      find_data.ftLastAccessTime = now;
+      find_data.ftLastWriteTime = now;
+      hFind = nullptr;
     }
-    find_data = WIN32_FIND_DATAW{};
-    // [GNU] Pseudo-devices are character devices: mark them so the long
-    // listing shows a 'c' type ("crw-rw-rw- ... /dev/null").
-    find_data.dwFileAttributes = FILE_ATTRIBUTE_NORMAL | FILE_ATTRIBUTE_DEVICE;
-    const std::wstring leaf =
-        std::filesystem::path(lookup_wpath).filename().wstring();
-    wcsncpy_s(find_data.cFileName, leaf.c_str(), _TRUNCATE);
-    FILETIME now{};
-    GetSystemTimeAsFileTime(&now);
-    find_data.ftCreationTime = now;
-    find_data.ftLastAccessTime = now;
-    find_data.ftLastWriteTime = now;
-    hFind = nullptr;
   } else {
     FindClose(hFind);
   }
@@ -3531,7 +3577,8 @@ auto list_directory_recursive(const std::string &path,
 
   // Collect subdirectories for recursion
   std::wstring wpath = utf8_to_wstring(path);
-  std::wstring search_path = wpath + L"\\*";
+  // join_w for the same root-operand reason as list_directory (#1145).
+  std::wstring search_path = native_path::join_w(wpath, L"*");
   search_path = native_path::make_api_path_operand_w(search_path).extended;
 
   WIN32_FIND_DATAW find_data;
@@ -3677,11 +3724,12 @@ auto operand_requires_directory(std::wstring_view path) -> bool {
 // directory while "link-to-file/" is ENOTDIR, so directory-ness is tested on
 // the resolved target, not the link itself.
 auto resolved_operand_is_directory(std::wstring_view path) -> bool {
-  std::error_code ec;
-  const std::filesystem::path fs_path(
-      normalize_lookup_path(std::wstring(path)));
-  const auto status = std::filesystem::status(fs_path, ec);
-  return !ec && std::filesystem::is_directory(status);
+  // Probe through the API-path boundary: std::filesystem::status folds a
+  // POSIX drive-form operand against the current drive root and answers for
+  // the wrong path (#1145).
+  const auto operand = native_path::make_api_path_operand_w(path);
+  return native_path::attributes_are_directory(
+      native_path::attributes_w(operand.extended));
 }
 
 auto expand_path_operands(const std::vector<std::string> &paths)
