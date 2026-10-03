@@ -6,6 +6,10 @@ repository release tags.
 
 ## [Unreleased]
 
+- Nothing yet.
+
+## [1.1.5] - 2026-10-03
+
 ### Fixed — upstream lane wt48 (2026-10-03)
 
 - **cp**: every stat/open route now goes through the shared API-path
