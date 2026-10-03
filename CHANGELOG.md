@@ -10,6 +10,13 @@ repository release tags.
 
 ## [1.1.5] - 2026-10-03
 
+### Fixed — upstream lane wt50 (2026-10-03)
+
+- **yes**: a broken-pipe write death now reports exit status 141 (the
+  SIGPIPE emulation other streaming tools use) instead of exit 1, so
+  `yes | head -n 3` shows 141 on the producer side exactly like GNU
+  coreutils (#1142). Non-pipe write errors keep the fatal exit-1 path.
+
 ### Fixed — upstream lane wt48 (2026-10-03)
 
 - **cp**: every stat/open route now goes through the shared API-path
