@@ -13,6 +13,8 @@
 #include <fcntl.h>
 #include <io.h>
 
+#include <cerrno>
+
 import std;
 import core;
 import utils;
@@ -77,6 +79,30 @@ std::optional<size_t> test_repeat_limit() {
   return value;
 }
 
+// [GNU coreutils src/yes.c] the endless write loop never reaches its
+// write-error path ("standard output" + EXIT_FAILURE) when the pipe reader
+// exits: the default SIGPIPE disposition kills the process during write(),
+// so the shell observes a signal death and reports 128 + SIGPIPE = 141.
+// Windows has no SIGPIPE, so emulate that death as exit status 141
+// (#1142): a broken pipe surfaces as a failed CRT write whose Win32
+// cause is recorded in _doserrno — ERROR_BROKEN_PIPE / ERROR_NO_DATA,
+// the same pipe-gone pair console.cppm's broken-pipe classification
+// uses — with errno mapped to EPIPE. Any other write failure keeps the
+// existing fatal path (GNU would print "yes: standard output: <error>"
+// and exit 1).
+constexpr int kSigpipeDeathStatus = 128 + 13;
+
+// Classify the failed stdout write that made the caller's fwrite return
+// short. Must be evaluated immediately after the failing fwrite, before
+// any other CRT call can clobber errno/_doserrno.
+int write_failure_status() {
+  if (errno == EPIPE || _doserrno == ERROR_BROKEN_PIPE ||
+      _doserrno == ERROR_NO_DATA) {
+    return kSigpipeDeathStatus;
+  }
+  return ferror(stdout) ? 1 : 0;
+}
+
 auto run(const Config& cfg) -> int {
 #ifdef _WIN32
   // [GNU] yes writes raw bytes: keep stdout in binary mode so '\n' is not
@@ -88,7 +114,7 @@ auto run(const Config& cfg) -> int {
     std::string line = cfg.output + "\n";
     for (size_t i = 0; i < *limit; ++i) {
       if (fwrite(line.data(), 1, line.size(), stdout) != line.size()) {
-        return ferror(stdout) ? 1 : 0;
+        return write_failure_status();
       }
     }
     return 0;
@@ -98,7 +124,7 @@ auto run(const Config& cfg) -> int {
   for (;;) {
     size_t written = fwrite(block.data(), 1, block.size(), stdout);
     if (written != block.size()) {
-      return ferror(stdout) ? 1 : 0;
+      return write_failure_status();
     }
   }
 }
