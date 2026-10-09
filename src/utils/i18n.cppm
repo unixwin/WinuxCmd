@@ -25,6 +25,24 @@ std::filesystem::path executable_root() {
                                 : std::filesystem::current_path();
 }
 
+// Candidate i18n catalog roots, in probe order:
+//  1. next to the executable (<exe-dir>/.wpm/i18n)
+//  2. ancestor directories (<root>/.wpm/i18n), where WPM actually installs
+//     i18n packages. The exe lives in <root>/usr/bin, so the WinuxCmd root
+//     is two levels above the exe directory (#1150).
+std::vector<std::filesystem::path> catalog_roots() {
+  std::vector<std::filesystem::path> roots;
+  auto dir = executable_root();
+  roots.push_back(dir / ".wpm" / "i18n");
+  for (int depth = 0; depth < 2 && dir.has_parent_path(); ++depth) {
+    auto parent = dir.parent_path();
+    if (parent == dir) break;
+    roots.push_back(parent / ".wpm" / "i18n");
+    dir = parent;
+  }
+  return roots;
+}
+
 std::string environment_value(const char* name) {
   const char* value = std::getenv(name);
   return value ? std::string(value) : std::string{};
@@ -82,12 +100,14 @@ const Catalog& catalog() {
     }
     result.enabled = true;
 
-    auto root = executable_root() / ".wpm" / "i18n";
-    auto path = root / result.locale / "catalog.json";
-    auto parsed = read_catalog(path);
-    if (!parsed && result.locale.find('-') != std::string::npos) {
-      auto language = result.locale.substr(0, result.locale.find('-'));
-      parsed = read_catalog(root / language / "catalog.json");
+    std::optional<nlohmann::json> parsed;
+    for (const auto& root : catalog_roots()) {
+      parsed = read_catalog(root / result.locale / "catalog.json");
+      if (!parsed && result.locale.find('-') != std::string::npos) {
+        auto language = result.locale.substr(0, result.locale.find('-'));
+        parsed = read_catalog(root / language / "catalog.json");
+      }
+      if (parsed) break;
     }
     if (parsed) result.messages = std::move(*parsed)["messages"];
     return result;
