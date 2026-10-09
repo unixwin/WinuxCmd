@@ -484,6 +484,34 @@ TEST(winuxcmd, fmt_obsolete_width_form_first_argument_only) {
   }
 }
 
+// #1150: WPM installs i18n catalogs at the WinuxCmd root
+// (<root>/.wpm/i18n) while the exe lives in <root>/usr/bin; the runtime
+// must still find the catalog by walking up one level from the exe dir.
+TEST(winuxcmd, i18n_catalog_found_at_wpm_install_root) {
+  TempDir root;
+  const auto exe_src = ProjectPaths::exe(L"winuxcmd.exe");
+  ASSERT_TRUE(std::filesystem::exists(exe_src));
+
+  // Install layout: <root>/usr/bin/winuxcmd.exe.
+  root.mkdir("usr/bin");
+  std::filesystem::copy_file(exe_src,
+                             root.path / "usr" / "bin" / "winuxcmd.exe",
+                             std::filesystem::copy_options::overwrite_existing);
+
+  // WPM install location: <root>/.wpm/i18n/zh-CN/catalog.json.
+  root.write(".wpm/i18n/zh-CN/catalog.json",
+             R"({"messages": {"common.usage": "USAGE-I18N-PROBE:"}})");
+
+  Pipeline p;
+  p.set_env(L"WINUX_LANG", L"zh-CN");
+  p.add((root.path / "usr" / "bin" / "winuxcmd.exe").wstring(),
+        {L"ls", L"--help"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("USAGE-I18N-PROBE:") != std::string::npos);
+}
+
 namespace {
 
 // Bounded helper process so --pid=PID gives follow-mode tests a natural end.
