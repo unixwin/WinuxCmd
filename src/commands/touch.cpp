@@ -809,7 +809,15 @@ auto apply_touch_one(const std::string& path,
 
   if (!h) {
     DWORD e = GetLastError();
-    if (no_create && (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND)) {
+    // [GNU] -c/--no-create skips files that do not exist. A literal-glob
+    // operand with no matches (GNU glob semantics: unmatched patterns stay
+    // literal) may name a file that cannot exist on this filesystem at all
+    // ('x*x' — '*' is an illegal NTFS filename character, issue #1143).
+    // Such a name is as good as missing, so -c skips it silently with exit
+    // status 0, matching `touch -c 'x*x'` under GNU coreutils.
+    if (no_create &&
+        (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND ||
+         e == ERROR_INVALID_NAME || e == ERROR_INVALID_PARAMETER)) {
       return true;
     }
     safeErrorPrintLn(touch_operand_error(path, e));

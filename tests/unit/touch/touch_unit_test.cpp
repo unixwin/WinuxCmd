@@ -442,3 +442,51 @@ TEST(touch, touch_no_dereference_reference_reads_symlink_time) {
   EXPECT_EQ(target.wMinute, 9);
   EXPECT_EQ(target.wSecond, 10);
 }
+
+// Issue #1143: a quoted glob like 'x*x' reaches touch as a literal operand
+// (GNU glob semantics: an unmatched pattern stays literal). On NTFS '*'
+// cannot appear in a filename, so bare touch fails with a create error
+// (platform noise; GNU/Linux would create the file with status 0), while
+// -c/--no-create must skip it silently like any other missing file.
+
+TEST(touch, touch_no_create_unmatched_glob_succeeds) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"touch.exe", {L"-c", L"x*x"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+}
+
+TEST(touch, touch_unmatched_glob_literal_reports_ntfs_error) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"touch.exe", {L"x*x"});
+
+  auto r = p.run();
+  // GNU/Linux would create a file literally named x*x (exit 0); NTFS
+  // forbids '*' in filenames, so the literal fallback surfaces a create
+  // error instead (issue #1143, noise-platform).
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("touch: cannot touch 'x*x'") !=
+              std::string::npos);
+}
+
+TEST(touch, touch_glob_expands_matches) {
+  TempDir tmp;
+  tmp.write("aa1.txt", "1");
+  tmp.write("aa2.txt", "2");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"touch.exe", {L"aa*.txt"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "aa1.txt"));
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "aa2.txt"));
+}
