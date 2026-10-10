@@ -46,16 +46,21 @@ auto sha256_file_hex(const std::filesystem::path& path) -> std::string {
   return result.stdout_text.substr(0, 64);
 }
 
-auto install_fixture_index_json(const std::filesystem::path& artifact_path)
-    -> std::string {
+auto exe_index_json(const std::filesystem::path& artifact_path,
+                    const std::string& package, const std::string& version,
+                    const std::string& sha256) -> std::string {
   return "{\n"
          "  \"schema\": 1,\n"
          "  \"name\": \"fixture\",\n"
-         "  \"version\": \"fixture-install\",\n"
+         "  \"version\": \"fixture-exe-index\",\n"
          "  \"packages\": [\n"
          "    {\n"
-         "      \"name\": \"jq\",\n"
-         "      \"version\": \"1.0.0\",\n"
+         "      \"name\": \"" +
+         package +
+         "\",\n"
+         "      \"version\": \"" +
+         version +
+         "\",\n"
          "      \"description\": \"Local fixture executable\",\n"
          "      \"kind\": \"external\",\n"
          "      \"artifacts\": {\n"
@@ -63,18 +68,27 @@ auto install_fixture_index_json(const std::filesystem::path& artifact_path)
          current_arch_key() +
          "\": {\n"
          "          \"type\": \"exe\",\n"
-         "          \"sha256\": "
-         "\"5140f4f6bf8b5691b7bccc1c4f00a2027dae00b2110d38a1e090af291226f322\","
-         "\n"
+         "          \"sha256\": \"" +
+         sha256 +
+         "\",\n"
          "          \"urls\": [\"" +
          file_url(artifact_path) +
          "\"],\n"
-         "          \"files\": [{\"from\":\"bin/jq.exe\"}]\n"
+         "          \"files\": [{\"from\":\"bin/" +
+         package +
+         ".exe\"}]\n"
          "        }\n"
          "      }\n"
          "    }\n"
          "  ]\n"
          "}\n";
+}
+
+auto install_fixture_index_json(const std::filesystem::path& artifact_path)
+    -> std::string {
+  return exe_index_json(artifact_path, "jq", "1.0.0",
+                        "5140f4f6bf8b5691b7bccc1c4f00a2027dae00b2110d38"
+                        "a1e090af291226f322");
 }
 
 auto catalog_fixture_index_json() -> std::string {
@@ -1014,7 +1028,8 @@ TEST(wpm, wpm_install_uses_valid_cached_artifact_before_downloading) {
   const auto missing_artifact_path = tmp.path / L"source" / L"jq.exe";
   tmp.write(".wpm/indexes/official.json",
             install_fixture_index_json(missing_artifact_path));
-  tmp.write(".wpm/cache/jq.exe", "external exe\n");
+  // Cache key embeds version and short artifact hash: jq-1.0.0-5140f4f6.exe.
+  tmp.write(".wpm/cache/jq-1.0.0-5140f4f6.exe", "external exe\n");
 
   Pipeline install;
   install.add(L"winuxcmd.exe",
@@ -1029,6 +1044,91 @@ TEST(wpm, wpm_install_uses_valid_cached_artifact_before_downloading) {
   EXPECT_TRUE(install_result.stderr_text.find("download failed") ==
               std::string::npos);
   EXPECT_EQ(tmp.read("usr/bin/jq.exe"), "external exe\n");
+}
+
+TEST(wpm, wpm_install_cache_key_distinguishes_versions) {
+  TempDir tmp;
+  // The index advertises jq 2.0.0 but its artifact URL is unreachable, so a
+  // successful install could only come from wrongly reusing a 1.0.0 cache
+  // entry (issue #1154).
+  const auto missing_artifact_path = tmp.path / L"source" / L"jq.exe";
+  tmp.write(".wpm/indexes/official.json",
+            exe_index_json(missing_artifact_path, "jq", "2.0.0",
+                           "5140f4f6bf8b5691b7bccc1c4f00a2027dae00b2110d38"
+                           "a1e090af291226f322"));
+  tmp.write(".wpm/cache/jq-1.0.0-5140f4f6.exe", "external exe\n");
+  tmp.write(".wpm/cache/jq.exe", "external exe\n");
+
+  Pipeline install;
+  install.add(L"winuxcmd.exe",
+              {L"wpm", L"install", L"jq", L"--root", tmp.wpath()});
+  auto install_result = install.run();
+
+  EXPECT_EQ(install_result.exit_code, 1);
+  EXPECT_TRUE(install_result.stderr_text.find("download failed") !=
+              std::string::npos);
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / L"usr" / L"bin" / L"jq.exe"));
+}
+
+TEST(wpm, wpm_install_redownloads_when_cached_artifact_sha_mismatches) {
+  TempDir tmp;
+  const auto artifact_path = tmp.path / L"source" / L"jq.exe";
+  tmp.write("source/jq.exe", "external exe\n");
+  tmp.write(".wpm/indexes/official.json",
+            install_fixture_index_json(artifact_path));
+  // Right cache key, wrong bytes: the entry must be discarded and replaced.
+  tmp.write(".wpm/cache/jq-1.0.0-5140f4f6.exe", "corrupted payload\n");
+
+  Pipeline install;
+  install.add(L"winuxcmd.exe", {L"wpm", L"install", L"jq", L"--verbose",
+                                L"--root", tmp.wpath()});
+  auto install_result = install.run();
+
+  EXPECT_EQ(install_result.exit_code, 0);
+  EXPECT_TRUE(install_result.stdout_text.find("downloading") !=
+              std::string::npos);
+  EXPECT_EQ(tmp.read("usr/bin/jq.exe"), "external exe\n");
+  EXPECT_EQ(tmp.read(".wpm/cache/jq-1.0.0-5140f4f6.exe"), "external exe\n");
+}
+
+TEST(wpm, wpm_install_force_after_version_bump_installs_new_artifact) {
+  TempDir tmp;
+  const auto old_artifact = tmp.path / L"source" / L"jq-1.0.0.exe";
+  const auto new_artifact = tmp.path / L"source" / L"jq-2.0.0.exe";
+  tmp.write("source/jq-1.0.0.exe", "external exe\n");
+  tmp.write("source/jq-2.0.0.exe", "upgraded exe\n");
+  const auto new_sha = sha256_file_hex(new_artifact);
+  EXPECT_EQ(new_sha.size(), 64u);
+  if (new_sha.size() != 64) return;
+  tmp.write(".wpm/indexes/official.json",
+            exe_index_json(old_artifact, "jq", "1.0.0",
+                           "5140f4f6bf8b5691b7bccc1c4f00a2027dae00b2110d38"
+                           "a1e090af291226f322"));
+
+  Pipeline first;
+  first.add(L"winuxcmd.exe",
+            {L"wpm", L"install", L"jq", L"--root", tmp.wpath()});
+  auto first_result = first.run();
+  EXPECT_EQ(first_result.exit_code, 0);
+  EXPECT_EQ(tmp.read("usr/bin/jq.exe"), "external exe\n");
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / L".wpm" / L"cache" /
+                                      L"jq-1.0.0-5140f4f6.exe"));
+
+  // The index moves to 2.0.0 with a new URL and sha256; --force must install
+  // the new artifact instead of silently reusing the 1.0.0 cache entry.
+  tmp.write(".wpm/indexes/official.json",
+            exe_index_json(new_artifact, "jq", "2.0.0", new_sha));
+
+  Pipeline reinstall;
+  reinstall.add(L"winuxcmd.exe", {L"wpm", L"install", L"jq", L"--force",
+                                  L"--root", tmp.wpath()});
+  auto reinstall_result = reinstall.run();
+
+  EXPECT_EQ(reinstall_result.exit_code, 0);
+  EXPECT_EQ(tmp.read("usr/bin/jq.exe"), "upgraded exe\n");
+  EXPECT_TRUE(
+      std::filesystem::exists(tmp.path / L".wpm" / L"cache" /
+                              ("jq-2.0.0-" + new_sha.substr(0, 8) + ".exe")));
 }
 
 TEST(wpm, wpm_install_single_exe_can_rename_command) {
