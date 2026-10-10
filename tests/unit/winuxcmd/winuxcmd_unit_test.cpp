@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <ctime>
 #include <iterator>
+#include <numeric>
 #include <regex>
 
 #include "framework/winuxtest.h"
@@ -510,6 +511,249 @@ TEST(winuxcmd, i18n_catalog_found_at_wpm_install_root) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.find("USAGE-I18N-PROBE:") != std::string::npos);
+}
+
+// ---- bare `winuxcmd` output redesign (#1155) ----
+
+namespace {
+
+// Extract the "  name          description" summary lines used by both the
+// grouped bare output and --list-all. A summary line reserves columns 2..13
+// for the padded command name and column 14 for the separator space; guide
+// lines ("  winuxcmd <command> --help ...") embed spaces inside the first
+// 12 columns and are therefore rejected.
+std::vector<std::pair<std::string, std::string>> parse_command_summaries(
+    const std::string& text) {
+  std::vector<std::pair<std::string, std::string>> entries;
+  std::istringstream iss(text);
+  std::string line;
+  while (std::getline(iss, line)) {
+    if (line.size() < 15 || line.substr(0, 2) != "  " || line[14] != ' ' ||
+        line.substr(15).starts_with(' ')) {
+      continue;
+    }
+    std::string name = line.substr(2, 12);
+    const auto last = name.find_last_not_of(' ');
+    if (last == std::string::npos) continue;  // wrapped description line
+    name.resize(last + 1);
+    if (name.find_first_of(' ') != std::string::npos) continue;  // guide line
+    entries.emplace_back(name, line.substr(15));
+  }
+  return entries;
+}
+
+std::vector<std::string> command_names(
+    const std::vector<std::pair<std::string, std::string>>& entries) {
+  std::vector<std::string> names;
+  names.reserve(entries.size());
+  for (const auto& [name, desc] : entries) names.push_back(name);
+  return names;
+}
+
+}  // namespace
+
+TEST(winuxcmd, bare_help_groups_commands_into_coreutils_style_sections) {
+  Pipeline p;
+  p.set_env(L"WINUX_LANG", L"en");  // suppress the machine-dependent hint
+  p.add(L"winuxcmd.exe", {});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  for (const char* section :
+       {"File operations:", "Text processing:", "Compare & patch:",
+        "Numeric operations:", "Search tools:", "Checksums & encoding:",
+        "Shell utilities:", "System & process:", "Terminal & documentation:"}) {
+    EXPECT_TRUE(r.stdout_text.find(section) != std::string::npos);
+  }
+  // No command may fall through to the catch-all section; if this fails a
+  // newly added command needs a category in src/Main/main.cpp.
+  EXPECT_TRUE(r.stdout_text.find("Other utilities:") == std::string::npos);
+  // Discovery guide lines from the issue.
+  EXPECT_TRUE(r.stdout_text.find("winuxcmd <command> --help") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("winuxcmd help <command>") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("winuxcmd --list-all") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("wpm search <capability>") !=
+              std::string::npos);
+}
+
+TEST(winuxcmd, bare_help_sections_are_alphabetically_sorted) {
+  Pipeline p;
+  p.set_env(L"WINUX_LANG", L"en");
+  p.add(L"winuxcmd.exe", {});
+  auto r = p.run();
+
+  ASSERT_EQ(r.exit_code, 1);
+  // Walk the output line by line: every section header starts a new group;
+  // summary lines inside a group must be in ascending name order.
+  std::istringstream iss(r.stdout_text);
+  std::string line;
+  std::string previous;
+  std::string current_section;
+  while (std::getline(iss, line)) {
+    if (!line.empty() && line.back() == ':' && line.substr(0, 2) != "  ") {
+      current_section = line;
+      previous.clear();
+      continue;
+    }
+    if (line.size() < 15 || line.substr(0, 2) != "  " || line[14] != ' ' ||
+        line.substr(15).starts_with(' ')) {
+      continue;
+    }
+    std::string name = line.substr(2, 12);
+    const auto last = name.find_last_not_of(' ');
+    if (last == std::string::npos) continue;
+    name.resize(last + 1);
+    if (name.find_first_of(' ') != std::string::npos) continue;
+    EXPECT_TRUE(previous.empty() || previous < name);
+    previous = name;
+  }
+  EXPECT_FALSE(current_section.empty());
+}
+
+TEST(winuxcmd, bare_help_lists_exactly_the_commands_of_list_all) {
+  std::vector<std::string> bare_names;
+  {
+    Pipeline p;
+    p.set_env(L"WINUX_LANG", L"en");
+    p.add(L"winuxcmd.exe", {});
+    auto r = p.run();
+    ASSERT_EQ(r.exit_code, 1);
+    bare_names = command_names(parse_command_summaries(r.stdout_text));
+  }
+  std::vector<std::string> flat_names;
+  {
+    Pipeline p;
+    p.set_env(L"WINUX_LANG", L"en");
+    p.add(L"winuxcmd.exe", {L"--list-all"});
+    auto r = p.run();
+    ASSERT_EQ(r.exit_code, 0);
+    flat_names = command_names(parse_command_summaries(r.stdout_text));
+  }
+
+  ASSERT_GE(flat_names.size(), 150u);
+  // Same command set, no duplicates in either rendering.
+  std::sort(bare_names.begin(), bare_names.end());
+  std::sort(flat_names.begin(), flat_names.end());
+  EXPECT_EQ(bare_names.size(), flat_names.size());
+  const std::string bare_joined =
+      std::accumulate(bare_names.begin(), bare_names.end(), std::string{},
+                      [](const std::string& acc, const std::string& name) {
+                        return acc.empty() ? name : acc + "\n" + name;
+                      });
+  const std::string flat_joined =
+      std::accumulate(flat_names.begin(), flat_names.end(), std::string{},
+                      [](const std::string& acc, const std::string& name) {
+                        return acc.empty() ? name : acc + "\n" + name;
+                      });
+  EXPECT_EQ(bare_joined, flat_joined);
+}
+
+TEST(winuxcmd, list_all_prints_flat_alphabetical_listing) {
+  Pipeline p;
+  p.set_env(L"WINUX_LANG", L"en");
+  p.add(L"winuxcmd.exe", {L"--list-all"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // Flat mode carries no section headers and no guide prose.
+  EXPECT_TRUE(r.stdout_text.find("File operations:") == std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("Help and discovery:") == std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("Tip:") == std::string::npos);
+
+  const auto names = command_names(parse_command_summaries(r.stdout_text));
+  ASSERT_GE(names.size(), 150u);
+  EXPECT_TRUE(std::is_sorted(names.begin(), names.end()));
+  EXPECT_TRUE(std::adjacent_find(names.begin(), names.end()) == names.end());
+}
+
+// #1155: a non-English locale whose WPM i18n catalog is not installed gets
+// one hint line pointing at the WPM package and WINUX_LANG.
+TEST(winuxcmd, locale_hint_suggests_install_when_catalog_missing) {
+  Pipeline p;
+  p.set_env(L"WINUX_LANG", L"zh-CN");
+  p.add(L"winuxcmd.exe", {});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.find("wpm install winuxcmd-i18n-zh-cn") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("WINUX_LANG=zh-CN") != std::string::npos);
+}
+
+// The same detection works through the POSIX locale environment, including
+// MSYS-style underscore and codeset spellings (zh_CN.UTF-8).
+TEST(winuxcmd, locale_hint_resolves_through_lang_environment) {
+  Pipeline p;
+  // Neutralize the higher-precedence variables so LANG drives detection.
+  p.set_env(L"WINUX_LANG", L"");
+  p.set_env(L"LC_ALL", L"");
+  p.set_env(L"LC_MESSAGES", L"");
+  p.set_env(L"LANG", L"zh_CN.UTF-8");
+  p.add(L"winuxcmd.exe", {});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.find("wpm install winuxcmd-i18n-zh-cn") !=
+              std::string::npos);
+}
+
+TEST(winuxcmd, locale_hint_absent_for_english_locale) {
+  Pipeline p;
+  p.set_env(L"WINUX_LANG", L"en");
+  p.add(L"winuxcmd.exe", {});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.find("wpm install winuxcmd-i18n-zh-cn") ==
+              std::string::npos);
+}
+
+// Installed catalog (at the WPM root, WINUX_LANG unset so only the
+// install-state probe can silence the hint) means no nudge.
+TEST(winuxcmd, locale_hint_absent_when_catalog_installed) {
+  TempDir root;
+  const auto exe_src = ProjectPaths::exe(L"winuxcmd.exe");
+  ASSERT_TRUE(std::filesystem::exists(exe_src));
+  root.mkdir("usr/bin");
+  std::filesystem::copy_file(exe_src,
+                             root.path / "usr" / "bin" / "winuxcmd.exe",
+                             std::filesystem::copy_options::overwrite_existing);
+  root.write(".wpm/i18n/zh-CN/catalog.json",
+             R"({"messages": {"main.subtitle": "SUBTITLE-PROBE"}})");
+
+  // Scenario 1: WINUX_LANG unset (LANG selects zh-CN) — the hint is
+  // suppressed by the installed-catalog probe alone, and help stays English.
+  {
+    Pipeline p;
+    p.set_env(L"WINUX_LANG", L"");
+    p.set_env(L"LC_ALL", L"");
+    p.set_env(L"LC_MESSAGES", L"");
+    p.set_env(L"LANG", L"zh-CN");
+    p.add((root.path / "usr" / "bin" / "winuxcmd.exe").wstring(), {});
+    auto r = p.run();
+
+    EXPECT_EQ(r.exit_code, 1);
+    EXPECT_TRUE(r.stdout_text.find("wpm install winuxcmd-i18n-zh-cn") ==
+                std::string::npos);
+    EXPECT_TRUE(
+        r.stdout_text.find("WinuxCmd - Windows Compatible Linux Command Set") !=
+        std::string::npos);
+  }
+  // Scenario 2: WINUX_LANG=zh-CN with the catalog installed — help is
+  // localized and no hint is printed.
+  {
+    Pipeline p;
+    p.set_env(L"WINUX_LANG", L"zh-CN");
+    p.add((root.path / "usr" / "bin" / "winuxcmd.exe").wstring(), {});
+    auto r = p.run();
+
+    EXPECT_EQ(r.exit_code, 1);
+    EXPECT_TRUE(r.stdout_text.find("SUBTITLE-PROBE") != std::string::npos);
+    EXPECT_TRUE(r.stdout_text.find("wpm install winuxcmd-i18n-zh-cn") ==
+                std::string::npos);
+  }
 }
 
 namespace {

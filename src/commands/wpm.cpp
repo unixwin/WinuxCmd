@@ -1684,6 +1684,33 @@ auto artifact_cache_extension(std::string_view type) -> std::string {
   return std::string(type);
 }
 
+// Keep cache file names portable across filesystems; index metadata
+// (versions, names) may in principle contain separators or spaces.
+auto sanitize_cache_key_component(std::string_view value) -> std::string {
+  std::string out;
+  out.reserve(value.size());
+  for (const char c : value) {
+    const bool safe = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                      (c >= '0' && c <= '9') || c == '.' || c == '-' ||
+                      c == '_';
+    out.push_back(safe ? c : '_');
+  }
+  return out;
+}
+
+// Cache entries are keyed by package, version, and a short artifact hash so a
+// stale entry can never satisfy a newer index revision (issue #1154).
+auto artifact_cache_filename(std::string_view package, std::string_view version,
+                             std::string_view sha256, std::string_view type)
+    -> std::string {
+  std::string name = sanitize_cache_key_component(package);
+  std::string safe_version = sanitize_cache_key_component(version);
+  if (!safe_version.empty()) name += "-" + safe_version;
+  std::string sha8 = lower_ascii(std::string(sha256)).substr(0, 8);
+  if (sha8.size() == 8) name += "-" + sha8;
+  return name + "." + artifact_cache_extension(type);
+}
+
 auto artifact_size_bytes(const nlohmann::json& artifact)
     -> std::optional<unsigned long long> {
   for (const auto* key : {"size", "size_bytes"}) {
@@ -2020,7 +2047,8 @@ auto package_matches_category(const nlohmann::json& pkg,
 }
 
 auto download_artifact(const fs::path& root, const std::string& package,
-                       const nlohmann::json& artifact, bool verbose,
+                       std::string_view version, const nlohmann::json& artifact,
+                       bool verbose,
                        const std::optional<std::wstring>& forced_proxy,
                        bool json) -> std::optional<fs::path> {
   // --json keeps stdout pure JSON; progress goes to stderr (#1156).
@@ -2044,9 +2072,12 @@ auto download_artifact(const fs::path& root, const std::string& package,
   }
 
   std::string type = artifact.value("type", "exe");
-  fs::path out =
-      cache_dir(root) / (package + "." + artifact_cache_extension(type));
   std::string expected_sha = artifact.value("sha256", "");
+  fs::path out = cache_dir(root) /
+                 artifact_cache_filename(package, version, expected_sha, type);
+  // The cache hit is accepted only when the cached file still hashes to the
+  // index artifact sha256; anything else (corruption, stale entry) falls
+  // through to a fresh download below.
   if (cached_artifact_is_valid(out, expected_sha)) {
     if (verbose)
       progress(wpm_text("command.wpm.status.using_cache",
@@ -2706,7 +2737,8 @@ auto install_package(const Options& opts, std::string_view package_name,
   }
 
   auto downloaded =
-      download_artifact(opts.root, pkg->value("name", ""), *artifact,
+      download_artifact(opts.root, pkg->value("name", ""),
+                        pkg->value("version", ""), *artifact,
                         opts.verbose, user_forced_proxy(opts), json);
   if (!downloaded) {
     json_errors.push_back(
@@ -3057,9 +3089,9 @@ auto update_winuxcmd(const Options& opts) -> int {
 
   auto artifact = artifact_for_current_arch(*pkg);
   if (!artifact) return 1;
-  auto downloaded =
-      download_artifact(opts.root, "winuxcmd", *artifact, opts.verbose,
-                        user_forced_proxy(opts), opts.json);
+  auto downloaded = download_artifact(
+      opts.root, "winuxcmd", pkg->value("version", ""), *artifact,
+      opts.verbose, user_forced_proxy(opts), opts.json);
   if (!downloaded) return 1;
 
   fs::path extracted = staging_dir(opts.root) / "winuxcmd-update";

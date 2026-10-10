@@ -6,6 +6,17 @@ repository release tags.
 
 ## [Unreleased]
 
+### Changed
+
+- **winuxcmd**: the bare `winuxcmd` listing groups commands into GNU
+  coreutils-style sections (File operations, Text processing, Shell
+  utilities, ...) with alphabetical entries and a discovery guide
+  (`winuxcmd <command> --help`, `winuxcmd help <command>`,
+  `winuxcmd --list-all`, `wpm search`); `winuxcmd --list-all` preserves the
+  flat alphabetical listing. When the system locale is non-English and its
+  i18n catalog is not installed, one hint line points at the matching WPM
+  package (`wpm install winuxcmd-i18n-zh-cn` + `WINUX_LANG`) (#1155).
+
 ### Fixed
 
 - **i18n**: the WPM message catalog resolves at the WinuxCmd install root, so
@@ -14,6 +25,7 @@ repository release tags.
 - **touch**: GNU-parity handling of unmatched literal-glob operands — names
   that glob to nothing are treated as missing under `-c` (skipped) instead of
   being created verbatim, matching GNU coreutils (#1152).
+<<<<<<< HEAD
 - **wpm**: interaction-audit fixes (#1156). `wpm outdated` now anchors
   installed versions on install receipts, so it keeps reporting a pending
   update after `wpm index update` instead of flipping to "all up to date"
@@ -27,6 +39,12 @@ repository release tags.
   `-y` in any argument position) already behaved correctly on this branch,
   and locked destination files already fail loudly with exit 1 on both
   install and uninstall; regression tests pin all of these behaviors.
+=======
+- **du**: an operand's trailing separator run collapses to a single slash —
+  `du src/` prints `src/` and `src/bin` (never `src//bin`), `du src//` prints
+  byte-identically to `du src/`, and `du src` keeps the plain form, matching
+  GNU coreutils (#1159).
+>>>>>>> origin/main
 
 ## [1.1.5] - 2026-10-03
 
