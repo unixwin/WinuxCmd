@@ -968,6 +968,56 @@ auto get_file_size(const std::wstring& path, bool apparent) -> uint64_t {
   return (static_cast<uint64_t>(data.nFileSizeHigh) << 32) | data.nFileSizeLow;
 }
 
+// Counts the trailing separator run of |path| ('/' or '\\').
+auto trailing_separator_run(const std::wstring& path) -> size_t {
+  size_t run = 0;
+  while (run < path.size()) {
+    const wchar_t ch = path[path.size() - 1 - run];
+    if (ch != L'/' && ch != L'\\') {
+      break;
+    }
+    ++run;
+  }
+  return run;
+}
+
+// [GNU] Operand trailing separators collapse to a single slash (GitHub
+// #1159): traversal and child entries build onto the stripped base so no
+// doubled separator is ever printed, while the operand line keeps exactly
+// one trailing slash when the operand had one (`du src/` prints `src/` and
+// `src/bin`; `du src//` prints the same; `du src` prints `src`).
+auto operand_base_path(const std::wstring& path) -> std::wstring {
+  const size_t run = trailing_separator_run(path);
+  if (run == 0) {
+    return path;
+  }
+  if (run == path.size()) {
+    return L"/";  // operand made only of separators resolves to the root
+  }
+  return path.substr(0, path.size() - run);
+}
+
+auto operand_display_path(const std::wstring& path) -> std::wstring {
+  const size_t run = trailing_separator_run(path);
+  if (run == 0) {
+    return path;
+  }
+  if (run == path.size()) {
+    return L"/";
+  }
+  return path.substr(0, path.size() - run) + L"/";
+}
+
+// Appends a directory entry name without doubling the separator when the
+// directory already ends with one (e.g. the root operand "/").
+auto append_entry_name(const std::wstring& dir, const wchar_t* name)
+    -> std::wstring {
+  if (!dir.empty() && dir.back() != L'\\' && dir.back() != L'/') {
+    return dir + L"\\" + name;
+  }
+  return dir + name;
+}
+
 /**
  * @brief Calculate directory size recursively
  * @param path Directory path
@@ -991,7 +1041,7 @@ auto calculate_dir_size(const std::wstring& path,
                         std::vector<std::wstring>* print_order = nullptr)
     -> UsageSummary {
   WIN32_FIND_DATAW find_data;
-  std::wstring search_path = path + L"\\*";
+  std::wstring search_path = append_entry_name(path, L"*");
   HANDLE hFind = FindFirstFileW(search_path.c_str(), &find_data);
 
   if (hFind == INVALID_HANDLE_VALUE) {
@@ -1018,7 +1068,7 @@ auto calculate_dir_size(const std::wstring& path,
       continue;
     }
 
-    std::wstring full_path = path + L"\\" + filename;
+    std::wstring full_path = append_entry_name(path, find_data.cFileName);
 
     if (should_exclude(cfg, full_path, filename)) {
       continue;
@@ -1204,7 +1254,14 @@ auto print_disk_usage(const CommandContext<DU_OPTIONS.size()>& ctx)
 
   for (size_t i = 0; i < paths.size(); ++i) {
     const auto& path = paths[i];
-    std::wstring wpath = utf8_to_wstring(path);
+    // [GNU] A trailing separator run on the operand collapses to a single
+    // slash: children build onto the stripped base (`src/` -> `src/bin`,
+    // never `src//bin`) and the operand line keeps one trailing slash
+    // (GitHub #1159).
+    const std::wstring raw_path = utf8_to_wstring(path);
+    const std::wstring wpath = operand_base_path(raw_path);
+    const std::string operand_display =
+        wstring_to_utf8(operand_display_path(raw_path));
 
     // [GNU] Under -L/-H a symlink operand that does not resolve (dangling
     // link) is reported and the run fails; GNU prints no errno text for the
@@ -1299,7 +1356,14 @@ auto print_disk_usage(const CommandContext<DU_OPTIONS.size()>& ctx)
           print_time_if_requested(entry_summary, cfg);
         }
         safePrint("\t");
-        safePrint(display_path(entry_path));
+        if (is_operand_root) {
+          // [GNU] The operand line echoes the operand with its trailing
+          // separator run collapsed to one slash (`src/` stays `src/`,
+          // `src//` also prints `src/`).
+          safePrint(operand_display);
+        } else {
+          safePrint(display_path(entry_path));
+        }
         print_record_terminator(cfg.null_terminated);
       };
 
@@ -1358,7 +1422,7 @@ auto print_disk_usage(const CommandContext<DU_OPTIONS.size()>& ctx)
         }
         print_time_if_requested(file_summary, cfg);
         safePrint("\t");
-        safePrint(display_path(wpath));
+        safePrint(operand_display);
         print_record_terminator(cfg.null_terminated);
       }
     }

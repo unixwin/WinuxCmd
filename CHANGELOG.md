@@ -25,6 +25,10 @@ repository release tags.
 - **touch**: GNU-parity handling of unmatched literal-glob operands — names
   that glob to nothing are treated as missing under `-c` (skipped) instead of
   being created verbatim, matching GNU coreutils (#1152).
+- **du**: an operand's trailing separator run collapses to a single slash —
+  `du src/` prints `src/` and `src/bin` (never `src//bin`), `du src//` prints
+  byte-identically to `du src/`, and `du src` keeps the plain form, matching
+  GNU coreutils (#1159).
 
 ## [1.1.5] - 2026-10-03
 

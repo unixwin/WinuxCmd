@@ -259,6 +259,99 @@ TEST(du, du_summarize) {
   EXPECT_TRUE(r.stdout_text.length() > 0);
 }
 
+// GNU du collapses a trailing separator run on an operand to a single slash:
+// child entries build onto the stripped base and the operand line keeps one
+// trailing slash (`du src/` -> `src/bin` + `src/`; `du src//` -> the same;
+// `du src` -> `src/bin` + `src`). Regression for GitHub #1159.
+TEST(du, du_trailing_slash_operand_no_double_slash) {
+  TempDir tmp;
+  tmp.write("src/bin/a.txt", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"du.exe", {L"src/"});
+
+  TEST_LOG_CMD_LIST("du.exe", L"src/");
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("du.exe src/ output", r.stdout_text);
+
+  EXPECT_EQ(r.exit_code, 0);
+  const std::string blocks = std::to_string(
+      expected_blocks(allocated_size(1, tmp.path), 1024, tmp.path));
+  EXPECT_EQ_TEXT(r.stdout_text, blocks + "\tsrc/bin\n" + blocks + "\tsrc/\n");
+  EXPECT_NOT_CONTAINS(r.stdout_text, "//");
+}
+
+TEST(du, du_multi_slash_operand_collapses_like_gnu) {
+  TempDir tmp;
+  tmp.write("src/bin/a.txt", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"du.exe", {L"src//"});
+
+  TEST_LOG_CMD_LIST("du.exe", L"src//");
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("du.exe src// output", r.stdout_text);
+
+  EXPECT_EQ(r.exit_code, 0);
+  // `src//` prints byte-identically to `src/` (GNU collapses the run).
+  const std::string blocks = std::to_string(
+      expected_blocks(allocated_size(1, tmp.path), 1024, tmp.path));
+  EXPECT_EQ_TEXT(r.stdout_text, blocks + "\tsrc/bin\n" + blocks + "\tsrc/\n");
+  EXPECT_NOT_CONTAINS(r.stdout_text, "//");
+}
+
+TEST(du, du_plain_operand_has_no_trailing_slash) {
+  TempDir tmp;
+  tmp.write("src/bin/a.txt", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"du.exe", {L"src"});
+
+  TEST_LOG_CMD_LIST("du.exe", L"src");
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("du.exe src output", r.stdout_text);
+
+  EXPECT_EQ(r.exit_code, 0);
+  const std::string blocks = std::to_string(
+      expected_blocks(allocated_size(1, tmp.path), 1024, tmp.path));
+  EXPECT_EQ_TEXT(r.stdout_text, blocks + "\tsrc/bin\n" + blocks + "\tsrc\n");
+  EXPECT_NOT_CONTAINS(r.stdout_text, "//");
+}
+
+TEST(du, du_summarize_trailing_slash_keeps_single_slash) {
+  TempDir tmp;
+  tmp.write("src/bin/a.txt", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"du.exe", {L"-s", L"src/"});
+
+  TEST_LOG_CMD_LIST("du.exe", L"-s", L"src/");
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("du.exe -s src/ output", r.stdout_text);
+
+  EXPECT_EQ(r.exit_code, 0);
+  const std::string blocks = std::to_string(
+      expected_blocks(allocated_size(1, tmp.path), 1024, tmp.path));
+  EXPECT_EQ_TEXT(r.stdout_text, blocks + "\tsrc/\n");
+  EXPECT_NOT_CONTAINS(r.stdout_text, "//");
+}
+
 TEST(du, du_max_depth) {
   TempDir tmp;
   std::filesystem::create_directory(tmp.path / "subdir");
