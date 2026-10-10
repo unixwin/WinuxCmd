@@ -6,7 +6,14 @@ repository release tags.
 
 ## [Unreleased]
 
-- Nothing yet.
+### Fixed
+
+- **i18n**: the WPM message catalog resolves at the WinuxCmd install root, so
+  localized messages work when `winuxcmd.exe` is invoked through a shim or
+  PATH entry outside the install directory (#1151).
+- **touch**: GNU-parity handling of unmatched literal-glob operands — names
+  that glob to nothing are treated as missing under `-c` (skipped) instead of
+  being created verbatim, matching GNU coreutils (#1152).
 
 ## [1.1.5] - 2026-10-03
 
