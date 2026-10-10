@@ -6,6 +6,17 @@ repository release tags.
 
 ## [Unreleased]
 
+### Changed
+
+- **winuxcmd**: the bare `winuxcmd` listing groups commands into GNU
+  coreutils-style sections (File operations, Text processing, Shell
+  utilities, ...) with alphabetical entries and a discovery guide
+  (`winuxcmd <command> --help`, `winuxcmd help <command>`,
+  `winuxcmd --list-all`, `wpm search`); `winuxcmd --list-all` preserves the
+  flat alphabetical listing. When the system locale is non-English and its
+  i18n catalog is not installed, one hint line points at the matching WPM
+  package (`wpm install winuxcmd-i18n-zh-cn` + `WINUX_LANG`) (#1155).
+
 ### Fixed
 
 - **i18n**: the WPM message catalog resolves at the WinuxCmd install root, so
