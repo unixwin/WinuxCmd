@@ -25,10 +25,26 @@ repository release tags.
 - **touch**: GNU-parity handling of unmatched literal-glob operands — names
   that glob to nothing are treated as missing under `-c` (skipped) instead of
   being created verbatim, matching GNU coreutils (#1152).
+<<<<<<< HEAD
+- **wpm**: interaction-audit fixes (#1156). `wpm outdated` now anchors
+  installed versions on install receipts, so it keeps reporting a pending
+  update after `wpm index update` instead of flipping to "all up to date"
+  while old files are still on disk. `wpm install --json` prints one
+  machine-readable payload (statuses `installed`, `already_installed`,
+  `would_install`, `not_found`, `not_installable`, `preflight_failed`,
+  `download_failed`, `error`) with all human progress routed to stderr, and
+  `wpm index update --json` prints a matching payload. `wpm --help` now
+  documents the `install` `--force` reinstall/overwrite semantics. Verified
+  by measurement: piped `y`/`n` confirmation on `wpm uninstall` stdin (and
+  `-y` in any argument position) already behaved correctly on this branch,
+  and locked destination files already fail loudly with exit 1 on both
+  install and uninstall; regression tests pin all of these behaviors.
+=======
 - **du**: an operand's trailing separator run collapses to a single slash —
   `du src/` prints `src/` and `src/bin` (never `src//bin`), `du src//` prints
   byte-identically to `du src/`, and `du src` keeps the plain form, matching
   GNU coreutils (#1159).
+>>>>>>> origin/main
 
 ## [1.1.5] - 2026-10-03
 

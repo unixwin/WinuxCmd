@@ -582,21 +582,22 @@ TEST(wpm, wpm_links_rebuild_removes_legacy_link_on_running_inode) {
   // The root must live on the same volume as the running binary so
   // usr\bin\winuxcmd.exe can share its inode — TempDir (system %TEMP%) may
   // be on another volume where hardlinks are impossible.
-  auto scratch = std::filesystem::path(WINUXCMD_BIN_DIR) /
-                 (L"wpm-selflock-test-" + std::to_wstring(GetCurrentProcessId()));
+  auto scratch =
+      std::filesystem::path(WINUXCMD_BIN_DIR) /
+      (L"wpm-selflock-test-" + std::to_wstring(GetCurrentProcessId()));
   std::filesystem::remove_all(scratch);
   std::filesystem::create_directories(scratch);
 
   auto root_exe = canonical_exe(scratch, L"winuxcmd.exe");
   std::filesystem::create_directories(root_exe.parent_path());
-  bool linked = CreateHardLinkW(root_exe.wstring().c_str(),
-                                build_winuxcmd_path().wstring().c_str(),
-                                nullptr) != 0;
+  bool linked =
+      CreateHardLinkW(root_exe.wstring().c_str(),
+                      build_winuxcmd_path().wstring().c_str(), nullptr) != 0;
   EXPECT_TRUE(linked);
   auto legacy_jq = scratch / L"jq.exe";
   if (linked) {
     linked = CreateHardLinkW(legacy_jq.wstring().c_str(),
-                           root_exe.wstring().c_str(), nullptr) != 0;
+                             root_exe.wstring().c_str(), nullptr) != 0;
     EXPECT_TRUE(linked);
   }
 
@@ -1459,4 +1460,305 @@ TEST(wpm, wpm_source_list_json_marks_custom_and_preferred) {
   EXPECT_TRUE(r.stdout_text.find("\"preferred\": \"my-mirror\"") !=
               std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("\"custom\": true") != std::string::npos);
+}
+
+// --- #1156 interaction audit regressions -----------------------------------
+
+TEST(wpm, wpm_help_documents_install_force_semantics) {
+  Pipeline p;
+  p.add(L"wpm.exe", {L"--help"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_CONTAINS(r.stdout_text, "--force to reinstall");
+}
+
+TEST(wpm, wpm_uninstall_accepts_piped_yes_confirmation) {
+  TempDir tmp;
+  tmp.write(".wpm/indexes/official.json", catalog_fixture_index_json());
+  tmp.write("usr/bin/jq.exe", "installed jq\n");
+
+  Pipeline p;
+  p.set_stdin("y\n");
+  p.add(L"winuxcmd.exe", {L"wpm", L"uninstall", L"jq", L"--root", tmp.wpath()});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_CONTAINS(r.stdout_text, "uninstalled jq");
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / L"usr" / L"bin" / L"jq.exe"));
+}
+
+TEST(wpm, wpm_uninstall_piped_no_aborts_without_removal) {
+  TempDir tmp;
+  tmp.write(".wpm/indexes/official.json", catalog_fixture_index_json());
+  tmp.write("usr/bin/jq.exe", "installed jq\n");
+
+  Pipeline decline;
+  decline.set_stdin("n\n");
+  decline.add(L"winuxcmd.exe",
+              {L"wpm", L"uninstall", L"jq", L"--root", tmp.wpath()});
+  auto declined = decline.run();
+
+  EXPECT_EQ(declined.exit_code, 0);
+  EXPECT_CONTAINS(declined.stdout_text, "aborted; nothing was removed");
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / L"usr" / L"bin" / L"jq.exe"));
+
+  // A closed stdin answers EOF, which is not "yes": nothing is removed.
+  Pipeline eof;
+  eof.set_stdin("");
+  eof.add(L"winuxcmd.exe",
+          {L"wpm", L"uninstall", L"jq", L"--root", tmp.wpath()});
+  auto eof_result = eof.run();
+
+  EXPECT_EQ(eof_result.exit_code, 0);
+  EXPECT_CONTAINS(eof_result.stdout_text, "aborted; nothing was removed");
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / L"usr" / L"bin" / L"jq.exe"));
+}
+
+TEST(wpm, wpm_uninstall_yes_flag_skips_confirmation) {
+  TempDir tmp;
+  tmp.write(".wpm/indexes/official.json", catalog_fixture_index_json());
+  tmp.write("usr/bin/jq.exe", "installed jq\n");
+
+  Pipeline p;
+  p.add(L"winuxcmd.exe",
+        {L"wpm", L"uninstall", L"jq", L"-y", L"--root", tmp.wpath()});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_CONTAINS(r.stdout_text, "uninstalled jq");
+  EXPECT_NOT_CONTAINS(r.stdout_text, "continue?");
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / L"usr" / L"bin" / L"jq.exe"));
+}
+
+TEST(wpm, wpm_uninstall_locked_destination_fails_loudly) {
+  TempDir tmp;
+  tmp.write(".wpm/indexes/official.json", catalog_fixture_index_json());
+  tmp.write("usr/bin/jq.exe", "installed jq\n");
+  const auto locked = tmp.path / L"usr" / L"bin" / L"jq.exe";
+
+  // Hold the destination open without FILE_SHARE_DELETE, like a running
+  // process would: the removal must fail loudly, never silently report
+  // success (#1156).
+  HANDLE hold =
+      CreateFileW(locked.wstring().c_str(), GENERIC_READ, FILE_SHARE_READ,
+                  nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  ASSERT_TRUE(hold != INVALID_HANDLE_VALUE);
+  if (hold == INVALID_HANDLE_VALUE) return;
+
+  Pipeline p;
+  p.add(L"winuxcmd.exe",
+        {L"wpm", L"uninstall", L"jq", L"-y", L"--root", tmp.wpath()});
+  auto r = p.run();
+  CloseHandle(hold);
+
+  EXPECT_NE(r.exit_code, 0);
+  EXPECT_CONTAINS(r.stderr_text, "failed to remove");
+  EXPECT_TRUE(std::filesystem::exists(locked));
+}
+
+TEST(wpm, wpm_install_force_locked_destination_fails_loudly) {
+  TempDir tmp;
+  const auto artifact_path = tmp.path / L"source" / L"jq.exe";
+  const auto index_path = tmp.path / L"fixture-install-index.json";
+  const auto root_exe = canonical_exe(tmp.path, L"winuxcmd.exe");
+  std::filesystem::create_directories(root_exe.parent_path());
+  std::filesystem::copy_file(build_winuxcmd_path(), root_exe,
+                             std::filesystem::copy_options::overwrite_existing);
+  tmp.write("source/jq.exe", "external exe\n");
+  tmp.write("fixture-install-index.json",
+            install_fixture_index_json(artifact_path));
+
+  Pipeline add;
+  add.add(L"winuxcmd.exe",
+          {L"wpm", L"source", L"add", L"fixture",
+           widen_ascii(file_url(index_path)), L"--root", tmp.wpath()});
+  EXPECT_EQ(add.run().exit_code, 0);
+
+  Pipeline use;
+  use.add(L"winuxcmd.exe",
+          {L"wpm", L"source", L"use", L"fixture", L"--root", tmp.wpath()});
+  EXPECT_EQ(use.run().exit_code, 0);
+
+  Pipeline install;
+  install.add(L"winuxcmd.exe",
+              {L"wpm", L"install", L"jq", L"--root", tmp.wpath()});
+  ASSERT_EQ(install.run().exit_code, 0);
+
+  const auto locked = tmp.path / L"usr" / L"bin" / L"jq.exe";
+  HANDLE hold =
+      CreateFileW(locked.wstring().c_str(), GENERIC_READ, FILE_SHARE_READ,
+                  nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  ASSERT_TRUE(hold != INVALID_HANDLE_VALUE);
+  if (hold == INVALID_HANDLE_VALUE) return;
+
+  Pipeline force;
+  force.add(L"winuxcmd.exe",
+            {L"wpm", L"install", L"jq", L"--force", L"--root", tmp.wpath()});
+  auto r = force.run();
+  CloseHandle(hold);
+
+  // A locked destination is an error, not a silent skip (#1156).
+  EXPECT_NE(r.exit_code, 0);
+  EXPECT_CONTAINS(r.stderr_text, "failed to install");
+  EXPECT_TRUE(std::filesystem::exists(locked));
+}
+
+TEST(wpm, wpm_outdated_uses_receipt_version_after_index_update) {
+  TempDir tmp;
+  const auto artifact_path = tmp.path / L"source" / L"jq.exe";
+  const auto v1_path = tmp.path / L"fixture-v1.json";
+  const auto v2_path = tmp.path / L"fixture-v2.json";
+  const auto root_exe = canonical_exe(tmp.path, L"winuxcmd.exe");
+  std::filesystem::create_directories(root_exe.parent_path());
+  std::filesystem::copy_file(build_winuxcmd_path(), root_exe,
+                             std::filesystem::copy_options::overwrite_existing);
+  tmp.write("source/jq.exe", "external exe\n");
+  tmp.write("fixture-v1.json", install_fixture_index_json(artifact_path));
+  tmp.write("fixture-v2.json",
+            "{\n"
+            "  \"schema\": 1,\n"
+            "  \"name\": \"fixture\",\n"
+            "  \"version\": \"v2\",\n"
+            "  \"packages\": [\n"
+            "    {\"name\":\"jq\",\"version\":\"2.0.0\","
+            "\"description\":\"JSON processor\",\"kind\":\"external\","
+            "\"commands\":[\"jq\"],\"artifacts\":{\"" +
+                current_arch_key() +
+                "\":{\"type\":\"exe\",\"sha256\":\"present\","
+                "\"urls\":[\"https://example.invalid/jq2.exe\"],"
+                "\"files\":[{\"from\":\"jq.exe\"}]}}}\n"
+                "  ]\n"
+                "}\n");
+
+  Pipeline add_v1;
+  add_v1.add(L"winuxcmd.exe",
+             {L"wpm", L"source", L"add", L"fixture",
+              widen_ascii(file_url(v1_path)), L"--root", tmp.wpath()});
+  EXPECT_EQ(add_v1.run().exit_code, 0);
+  Pipeline use_v1;
+  use_v1.add(L"winuxcmd.exe",
+             {L"wpm", L"source", L"use", L"fixture", L"--root", tmp.wpath()});
+  EXPECT_EQ(use_v1.run().exit_code, 0);
+
+  Pipeline install;
+  install.add(L"winuxcmd.exe",
+              {L"wpm", L"install", L"jq", L"--root", tmp.wpath()});
+  ASSERT_EQ(install.run().exit_code, 0);
+
+  // The local index copy moves to 2.0.0; the disk still holds 1.0.0.
+  Pipeline add_v2;
+  add_v2.add(L"winuxcmd.exe",
+             {L"wpm", L"source", L"add", L"fixture-v2",
+              widen_ascii(file_url(v2_path)), L"--root", tmp.wpath()});
+  EXPECT_EQ(add_v2.run().exit_code, 0);
+  Pipeline use_v2;
+  use_v2.add(L"winuxcmd.exe", {L"wpm", L"source", L"use", L"fixture-v2",
+                               L"--root", tmp.wpath()});
+  EXPECT_EQ(use_v2.run().exit_code, 0);
+  Pipeline update;
+  update.add(L"winuxcmd.exe",
+             {L"wpm", L"index", L"update", L"--root", tmp.wpath()});
+  ASSERT_EQ(update.run().exit_code, 0);
+
+  // outdated must anchor on the receipt (1.0.0 installed), not on the
+  // refreshed local index: after `index update` it used to claim "all up to
+  // date" even though the old files were still on disk (#1156).
+  Pipeline outdated_json;
+  outdated_json.add(L"winuxcmd.exe",
+                    {L"wpm", L"outdated", L"--json", L"--root", tmp.wpath()});
+  auto r = outdated_json.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_CONTAINS(r.stdout_text, "\"version\": \"1.0.0\"");
+  EXPECT_CONTAINS(r.stdout_text, "\"available\": \"2.0.0\"");
+
+  Pipeline outdated_human;
+  outdated_human.add(L"winuxcmd.exe",
+                     {L"wpm", L"outdated", L"--root", tmp.wpath()});
+  auto human = outdated_human.run();
+
+  EXPECT_EQ(human.exit_code, 0);
+  EXPECT_CONTAINS(human.stdout_text, "update available: jq 1.0.0 -> 2.0.0");
+  EXPECT_NOT_CONTAINS(human.stdout_text,
+                      "all installed packages are up to date");
+}
+
+TEST(wpm, wpm_install_json_prints_payload_only) {
+  TempDir tmp;
+  const auto artifact_path = tmp.path / L"source" / L"jq.exe";
+  const auto index_path = tmp.path / L"fixture-install-index.json";
+  const auto root_exe = canonical_exe(tmp.path, L"winuxcmd.exe");
+  std::filesystem::create_directories(root_exe.parent_path());
+  std::filesystem::copy_file(build_winuxcmd_path(), root_exe,
+                             std::filesystem::copy_options::overwrite_existing);
+  tmp.write("source/jq.exe", "external exe\n");
+  tmp.write("fixture-install-index.json",
+            install_fixture_index_json(artifact_path));
+
+  Pipeline add;
+  add.add(L"winuxcmd.exe",
+          {L"wpm", L"source", L"add", L"fixture",
+           widen_ascii(file_url(index_path)), L"--root", tmp.wpath()});
+  EXPECT_EQ(add.run().exit_code, 0);
+
+  Pipeline use;
+  use.add(L"winuxcmd.exe",
+          {L"wpm", L"source", L"use", L"fixture", L"--root", tmp.wpath()});
+  EXPECT_EQ(use.run().exit_code, 0);
+
+  Pipeline install;
+  install.add(L"winuxcmd.exe",
+              {L"wpm", L"install", L"jq", L"--json", L"--root", tmp.wpath()});
+  auto r = install.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // stdout carries exactly one machine-readable payload; human progress
+  // belongs on stderr (#1156).
+  EXPECT_EQ_TEXT(r.stdout_text,
+                 "{\n"
+                 "  \"failed\": 0,\n"
+                 "  \"results\": [\n"
+                 "    {\n"
+                 "      \"dry_run\": false,\n"
+                 "      \"errors\": [],\n"
+                 "      \"name\": \"jq\",\n"
+                 "      \"status\": \"installed\",\n"
+                 "      \"version\": \"1.0.0\"\n"
+                 "    }\n"
+                 "  ],\n"
+                 "  \"schema\": 1\n"
+                 "}\n");
+  EXPECT_EQ(tmp.read("usr/bin/jq.exe"), "external exe\n");
+
+  Pipeline again;
+  again.add(L"winuxcmd.exe",
+            {L"wpm", L"install", L"jq", L"--json", L"--root", tmp.wpath()});
+  auto repeat = again.run();
+
+  EXPECT_EQ(repeat.exit_code, 0);
+  EXPECT_CONTAINS(repeat.stdout_text, "\"status\": \"already_installed\"");
+  EXPECT_NOT_CONTAINS(repeat.stdout_text, "wpm:");
+}
+
+TEST(wpm, wpm_index_update_json_prints_payload) {
+  TempDir tmp;
+  const auto index_path = tmp.path / L"fixture-index.json";
+  tmp.write("fixture-index.json", catalog_fixture_index_json());
+
+  Pipeline add;
+  add.add(L"winuxcmd.exe",
+          {L"wpm", L"source", L"add", L"fixture",
+           widen_ascii(file_url(index_path)), L"--root", tmp.wpath()});
+  EXPECT_EQ(add.run().exit_code, 0);
+
+  Pipeline p;
+  p.add(L"winuxcmd.exe",
+        {L"wpm", L"index", L"update", L"--json", L"--root", tmp.wpath()});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_CONTAINS(r.stdout_text, "\"status\": \"updated\"");
+  EXPECT_NOT_CONTAINS(r.stdout_text, "wpm: index updated");
+  EXPECT_CONTAINS(r.stderr_text, "index updated from");
 }

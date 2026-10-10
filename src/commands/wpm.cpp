@@ -503,7 +503,7 @@ auto delete_file_name(const fs::path& target) -> bool {
     info.Flags = FILE_DISPOSITION_DELETE | FILE_DISPOSITION_POSIX_SEMANTICS |
                  FILE_DISPOSITION_IGNORE_READONLY_ATTRIBUTE;
     if (SetFileInformationByHandle(h, FileDispositionInfoEx, &info,
-                                 sizeof(info))) {
+                                   sizeof(info))) {
       CloseHandle(h);
       return true;
     }
@@ -1763,11 +1763,19 @@ auto quote(const fs::path& p) -> std::wstring {
 }
 
 auto extract_archive(const fs::path& archive, const fs::path& dest,
-                     std::string_view type) -> bool {
+                     std::string_view type, bool json) -> bool {
   std::error_code ec;
   fs::create_directories(dest, ec);
-  safePrintLn(wpm_text("command.wpm.status.extracting", "wpm: extracting {}",
-                       archive.filename().string()));
+  // --json keeps stdout pure JSON; progress goes to stderr (#1156).
+  auto progress = [json](std::string_view line) {
+    if (json) {
+      safeErrorPrintLn(line);
+    } else {
+      safePrintLn(line);
+    }
+  };
+  progress(wpm_text("command.wpm.status.extracting", "wpm: extracting {}",
+                    archive.filename().string()));
   std::wstring command =
       L"tar.exe -xf " + quote(archive) + L" -C " + quote(dest);
   int code = run_process(command);
@@ -2041,8 +2049,16 @@ auto package_matches_category(const nlohmann::json& pkg,
 auto download_artifact(const fs::path& root, const std::string& package,
                        std::string_view version, const nlohmann::json& artifact,
                        bool verbose,
-                       const std::optional<std::wstring>& forced_proxy)
-    -> std::optional<fs::path> {
+                       const std::optional<std::wstring>& forced_proxy,
+                       bool json) -> std::optional<fs::path> {
+  // --json keeps stdout pure JSON; progress goes to stderr (#1156).
+  auto progress = [json](std::string_view line) {
+    if (json) {
+      safeErrorPrintLn(line);
+    } else {
+      safePrintLn(line);
+    }
+  };
   auto urls = artifact_urls(artifact);
   if (urls.empty()) {
     safeErrorPrintLn(wpm_text("command.wpm.error.no_urls",
@@ -2064,8 +2080,8 @@ auto download_artifact(const fs::path& root, const std::string& package,
   // through to a fresh download below.
   if (cached_artifact_is_valid(out, expected_sha)) {
     if (verbose)
-      safePrintLn(wpm_text("command.wpm.status.using_cache",
-                           "wpm: using cached {}", out.string()));
+      progress(wpm_text("command.wpm.status.using_cache",
+                        "wpm: using cached {}", out.string()));
     return out;
   }
   if (fs::exists(out)) {
@@ -2073,11 +2089,15 @@ auto download_artifact(const fs::path& root, const std::string& package,
     fs::remove(out, ec);
   }
   for (const auto& url : urls) {
-    if (verbose) safePrintLn("wpm: downloading " + url);
-    auto result = http_get(url,
-                           wpm_text("command.wpm.status.downloading",
-                                    "wpm: downloading {}", package),
-                           5, forced_proxy);
+    if (verbose) progress("wpm: downloading " + url);
+    // An empty label disables the progress bar entirely: --json output must
+    // stay machine-readable even when WT_SESSION would allow bar output.
+    std::string progress_label;
+    if (!json) {
+      progress_label = wpm_text("command.wpm.status.downloading",
+                                "wpm: downloading {}", package);
+    }
+    auto result = http_get(url, progress_label, 5, forced_proxy);
     if (!result.ok) {
       safeErrorPrintLn(wpm_text("command.wpm.error.download_failed",
                                 "wpm: download failed from {}: {}", url,
@@ -2103,7 +2123,16 @@ auto download_artifact(const fs::path& root, const std::string& package,
 
 auto copy_artifact_files(const fs::path& extracted, const fs::path& root,
                          const nlohmann::json& artifact, bool force,
-                         bool dry_run, std::string_view package) -> bool {
+                         bool dry_run, std::string_view package, bool json)
+    -> bool {
+  // --json keeps stdout pure JSON; progress goes to stderr (#1156).
+  auto progress = [json](std::string_view line) {
+    if (json) {
+      safeErrorPrintLn(line);
+    } else {
+      safePrintLn(line);
+    }
+  };
   if (!artifact.contains("files") || !artifact["files"].is_array()) {
     safeErrorPrintLn("wpm: artifact has no files mapping");
     return false;
@@ -2164,7 +2193,7 @@ auto copy_artifact_files(const fs::path& extracted, const fs::path& root,
       return false;
     }
     if (dry_run) {
-      safePrintLn(
+      progress(
           std::string(directory ? "would copy directory " : "would copy ") +
           src->string() + " -> " + dest.string());
       continue;
@@ -2233,6 +2262,54 @@ auto package_has_receipt(const fs::path& root, std::string_view package)
   return fs::is_regular_file(receipt_path(root, package), ec);
 }
 
+// Read the version an install receipt recorded. Receipts capture what wpm
+// actually placed on disk; the local index copy is rewritten by every
+// `index update`, so it cannot tell which version is installed (#1156:
+// outdated compared the local index against a freshly fetched remote index
+// and reported "up to date" forever after the first index update).
+auto receipt_version(const nlohmann::json& receipt) -> std::string {
+  if (!receipt.is_object()) return "";
+  return receipt.value("version", "");
+}
+
+// Enumerate receipts as the authoritative record of wpm-installed packages:
+// name -> installed version. A receipt only counts while every recorded
+// destination still exists (manual deletion means the package is gone).
+auto receipt_install_records(const fs::path& root)
+    -> std::map<std::string, std::string> {
+  std::map<std::string, std::string> installed;
+  std::error_code ec;
+  fs::directory_iterator it(receipts_dir(root), ec);
+  if (ec) return installed;
+  for (; it != fs::end(it); it.increment(ec)) {
+    if (ec) break;
+    std::error_code file_ec;
+    if (!it->is_regular_file(file_ec)) continue;
+    if (it->path().extension() != ".json") continue;
+    auto text = read_text(it->path());
+    if (!text) continue;
+    auto parsed = parse_json_text(*text);
+    if (!parsed) continue;
+    const std::string name = parsed->value("name", "");
+    if (name.empty() || name == "winuxcmd") continue;
+    bool present = true;
+    if (parsed->contains("destinations") &&
+        (*parsed)["destinations"].is_array())
+      for (const auto& dest : (*parsed)["destinations"]) {
+        if (!dest.is_string()) continue;
+        std::error_code exists_ec;
+        if (!fs::exists(fs::path(dest.get<std::string>()), exists_ec) ||
+            exists_ec) {
+          present = false;
+          break;
+        }
+      }
+    if (!present) continue;
+    installed.emplace(name, receipt_version(*parsed));
+  }
+  return installed;
+}
+
 auto write_install_receipt(const fs::path& root, const nlohmann::json& pkg,
                            const nlohmann::json& artifact) -> void {
   const std::string name = pkg.value("name", "");
@@ -2261,10 +2338,19 @@ auto remove_install_receipt(const fs::path& root, std::string_view package)
   fs::remove(receipt_path(root, package), ec);
 }
 
+// Decides whether an install may proceed without --force. Returns nullopt to
+// proceed, 0 for the benign "already installed" stop, 1 for a refusal. The
+// human messages are echoed to stderr as usual; `messages` (when non-null)
+// collects them for the --json result payload (#1156).
 auto preflight_install_destinations(const fs::path& root,
                                     const nlohmann::json& artifact,
-                                    std::string_view package, bool force)
+                                    std::string_view package, bool force,
+                                    bool json,
+                                    std::vector<std::string>* messages)
     -> std::optional<int> {
+  auto note = [messages](std::string text) {
+    if (messages != nullptr) messages->push_back(text);
+  };
   auto destinations = artifact_destination_paths(root, artifact, package);
   if (!destinations) return 1;
   if (force) return std::nullopt;
@@ -2282,9 +2368,10 @@ auto preflight_install_destinations(const fs::path& root,
     if (dest_is_winux_link && dest_is_legacy_link) continue;
 
     if (dest_is_winux_link) {
-      safeErrorPrintLn(
-          "wpm: destination is a WinuxCmd hardlink; use --force: " +
-          dest.string());
+      auto line = "wpm: destination is a WinuxCmd hardlink; use --force: " +
+                  dest.string();
+      safeErrorPrintLn(line);
+      note(std::move(line));
       return 1;
     }
 
@@ -2297,14 +2384,23 @@ auto preflight_install_destinations(const fs::path& root,
       // the files came from another source. Report honestly instead of
       // claiming "already installed" (which skipped the download and the
       // sha256 verification).
-      safeErrorPrintLn(
+      auto line =
           "wpm: '" + std::string(package) +
           "' destinations exist but are not wpm-managed; use --force to "
-          "replace them with the indexed artifact");
+          "replace them with the indexed artifact";
+      safeErrorPrintLn(line);
+      note(std::move(line));
       return 1;
     }
-    safePrintLn("wpm: already installed " + std::string(package) +
-                "; use --force to reinstall");
+    // Benign stop: in --json mode stdout stays pure, so this notice goes to
+    // stderr; the result payload carries status "already_installed".
+    auto line = "wpm: already installed " + std::string(package) +
+                "; use --force to reinstall";
+    if (json) {
+      safeErrorPrintLn(line);
+    } else {
+      safePrintLn(line);
+    }
     return 0;
   }
 
@@ -2312,8 +2408,9 @@ auto preflight_install_destinations(const fs::path& root,
     for (const auto& dest : *destinations) {
       std::error_code ec;
       if (fs::exists(dest, ec)) {
-        safeErrorPrintLn("wpm: destination exists; use --force: " +
-                         dest.string());
+        auto line = "wpm: destination exists; use --force: " + dest.string();
+        safeErrorPrintLn(line);
+        note(std::move(line));
         return 1;
       }
     }
@@ -2350,16 +2447,22 @@ auto package_command_count(const nlohmann::json& pkg) -> int {
 // command links): the dispatcher forwards non-builtin names to
 // opt\<pkg>\<cmd>.exe, keeping single-binary distribution intact.
 auto create_package_shims(const fs::path& root, const nlohmann::json& pkg,
-                          bool force, bool dry_run) -> bool {
+                          bool force, bool dry_run, bool json) -> bool {
   const std::string package = pkg.value("name", "");
   const int commands = package_command_count(pkg);
   if (commands == 0) return true;
 
   if (dry_run) {
-    safePrintLn(wpm_text(
+    // --json keeps stdout pure JSON; progress goes to stderr (#1156).
+    auto line = wpm_text(
         "command.wpm.status.shims_dry_run",
         "wpm: dry-run: would create {} command shim(s) in usr/bin for '{}'",
-        commands, package));
+        commands, package);
+    if (json) {
+      safeErrorPrintLn(line);
+    } else {
+      safePrintLn(line);
+    }
     return true;
   }
 
@@ -2407,7 +2510,7 @@ auto create_package_shims(const fs::path& root, const nlohmann::json& pkg,
 }
 
 auto create_package_aliases(const fs::path& root, const nlohmann::json& pkg,
-                            bool force, bool dry_run) -> bool {
+                            bool force, bool dry_run, bool json) -> bool {
   const auto package = pkg.value("name", "");
   if (!pkg.contains("aliases") || !pkg["aliases"].is_array()) return true;
   const auto bin_dir = canonical_bin_dir(root);
@@ -2456,9 +2559,15 @@ auto create_package_aliases(const fs::path& root, const nlohmann::json& pkg,
     ++created;
   }
   if (created > 0) {
-    safePrintLn(wpm_text("command.wpm.status.aliases_created",
-                         "wpm: created {} alias(es) for '{}'", created,
-                         package));
+    // --json keeps stdout pure JSON; progress goes to stderr (#1156).
+    auto line =
+        wpm_text("command.wpm.status.aliases_created",
+                 "wpm: created {} alias(es) for '{}'", created, package);
+    if (json) {
+      safeErrorPrintLn(line);
+    } else {
+      safePrintLn(line);
+    }
   }
   return true;
 }
@@ -2471,7 +2580,8 @@ auto create_package_aliases(const fs::path& root, const nlohmann::json& pkg,
 auto cleanup_legacy_flat_artifacts(const fs::path& root,
                                    const fs::path& extracted,
                                    const nlohmann::json& artifact,
-                                   const nlohmann::json& pkg) -> int {
+                                   const nlohmann::json& pkg, bool json)
+    -> int {
   const std::string package = pkg.value("name", "");
   if (!artifact.contains("files") || !artifact["files"].is_array()) return 0;
   fs::path bin_dir = canonical_bin_dir(root);
@@ -2497,21 +2607,33 @@ auto cleanup_legacy_flat_artifacts(const fs::path& root,
     ++removed;
   }
   if (removed > 0) {
-    safePrintLn(
+    // --json keeps stdout pure JSON; progress goes to stderr (#1156).
+    auto line =
         wpm_text("command.wpm.status.shim_migrated",
                  "wpm: removed {} stale flat file(s) from usr/bin for '{}'",
-                 removed, package));
+                 removed, package);
+    if (json) {
+      safeErrorPrintLn(line);
+    } else {
+      safePrintLn(line);
+    }
   }
   return removed;
 }
 
-auto update_index(const Options& opts) -> int;
+auto update_index(const Options& opts, bool json_payload) -> int;
 
 auto refresh_index_once(const Options& opts, std::string_view reason) -> bool {
-  safePrintLn(wpm_text("command.wpm.status.auto_index_update",
-                       "wpm: {}; updating index from configured sources",
-                       reason));
-  if (update_index(opts) == 0) return true;
+  // --json keeps stdout pure JSON; progress goes to stderr (#1156).
+  auto line =
+      wpm_text("command.wpm.status.auto_index_update",
+               "wpm: {}; updating index from configured sources", reason);
+  if (opts.json) {
+    safeErrorPrintLn(line);
+  } else {
+    safePrintLn(line);
+  }
+  if (update_index(opts, false) == 0) return true;
   safeErrorPrintLn(wpm_text("command.wpm.error.auto_index_failed",
                             "wpm: automatic index update failed"));
   safeErrorPrintLn(
@@ -2521,10 +2643,35 @@ auto refresh_index_once(const Options& opts, std::string_view reason) -> bool {
   return false;
 }
 
-auto install_package(const Options& opts, std::string_view package_name)
-    -> int {
+auto install_package(const Options& opts, std::string_view package_name,
+                     nlohmann::json* json_result) -> int {
+  // When json_result is non-null (--json mode) stdout stays pure JSON: human
+  // progress moves to stderr and this call records one result object
+  // (mirrors uninstall_packages, #1156).
+  const bool json = json_result != nullptr;
+  auto progress = [json](std::string_view line) {
+    if (json) {
+      safeErrorPrintLn(line);
+    } else {
+      safePrintLn(line);
+    }
+  };
+  std::vector<std::string> json_errors;
+  const std::string requested(package_name);
   auto index = load_index(opts.root);
   auto pkg = find_package(index, package_name);
+  // finish() records the result object once; every exit path goes through it.
+  auto finish = [&](bool ok, const std::string& status) -> int {
+    if (json_result != nullptr) {
+      *json_result = {{"name", requested},
+                      {"status", status},
+                      {"dry_run", opts.dry_run},
+                      {"errors", json_errors}};
+      if (ok && pkg) (*json_result)["version"] = pkg->value("version", "");
+    }
+    return ok ? 0 : 1;
+  };
+
   bool refreshed = false;
   if (!pkg) {
     refreshed = refresh_index_once(opts, "package not found in local index");
@@ -2534,10 +2681,12 @@ auto install_package(const Options& opts, std::string_view package_name)
     }
   }
   if (!pkg) {
-    safeErrorPrintLn(wpm_text("command.wpm.error.install_not_found",
-                              "wpm: package not found after index update: {}",
-                              package_name));
-    return 1;
+    auto line =
+        wpm_text("command.wpm.error.install_not_found",
+                 "wpm: package not found after index update: {}", package_name);
+    safeErrorPrintLn(line);
+    json_errors.push_back(std::move(line));
+    return finish(false, "not_found");
   }
 
   auto state = artifact_install_state(*pkg);
@@ -2550,18 +2699,20 @@ auto install_package(const Options& opts, std::string_view package_name)
     }
   }
   if (state != "ready") {
-    safeErrorPrintLn(wpm_text("command.wpm.error.not_installable",
-                              "wpm: package is not installable for {}: {}",
-                              detect_arch_key(), state));
-    safeErrorPrintLn(
+    auto line = wpm_text("command.wpm.error.not_installable",
+                         "wpm: package is not installable for {}: {}",
+                         detect_arch_key(), state);
+    safeErrorPrintLn(line);
+    json_errors.push_back(std::move(line));
+    json_errors.push_back(
         wpm_text("command.wpm.error.fix_index_hint",
                  "wpm: update the source index artifact urls, sha256, and "
                  "files mapping"));
-    return 1;
+    return finish(false, "not_installable");
   }
 
   auto artifact = artifact_for_current_arch(*pkg);
-  if (!artifact) return 1;
+  if (!artifact) return finish(false, "error");
   // Packages linked against the MSYS2 runtime need msys-2.0.dll and friends;
   // in a pure Win32 layout they only run where that runtime is reachable.
   // Surface the index's runtime annotation before the user downloads.
@@ -2574,15 +2725,28 @@ auto install_package(const Options& opts, std::string_view package_name)
         "it only runs where that runtime is available",
         pkg->value("name", std::string(package_name))));
   }
+  std::vector<std::string> preflight_messages;
   auto preflight = preflight_install_destinations(
       opts.root, *artifact, pkg->value("name", std::string(package_name)),
-      opts.force);
-  if (preflight) return *preflight;
+      opts.force, json, json ? &preflight_messages : nullptr);
+  if (preflight) {
+    if (*preflight == 0) return finish(true, "already_installed");
+    for (auto& message : preflight_messages)
+      json_errors.push_back(std::move(message));
+    return finish(false, "preflight_failed");
+  }
 
-  auto downloaded = download_artifact(opts.root, pkg->value("name", ""),
-                                      pkg->value("version", ""), *artifact,
-                                      opts.verbose, user_forced_proxy(opts));
-  if (!downloaded) return 1;
+  auto downloaded =
+      download_artifact(opts.root, pkg->value("name", ""),
+                        pkg->value("version", ""), *artifact,
+                        opts.verbose, user_forced_proxy(opts), json);
+  if (!downloaded) {
+    json_errors.push_back(
+        wpm_text("command.wpm.error.download_failed_generic",
+                 "wpm: failed to download '{}' from every configured URL",
+                 pkg->value("name", std::string(package_name))));
+    return finish(false, "download_failed");
+  }
 
   fs::path extracted = staging_dir(opts.root) / pkg->value("name", "package");
   std::error_code ec;
@@ -2591,56 +2755,95 @@ auto install_package(const Options& opts, std::string_view package_name)
 
   std::string type = artifact->value("type", "exe");
   if (archive_artifact_type(type)) {
-    if (!extract_archive(*downloaded, extracted, type)) return 1;
+    if (!extract_archive(*downloaded, extracted, type, json)) {
+      return finish(false, "error");
+    }
   } else if (type == "exe") {
     if (!materialize_file(*downloaded, extracted / downloaded->filename(), true,
                           ec)) {
-      safeErrorPrintLn(wpm_text("command.wpm.error.stage",
-                                "wpm: failed to stage exe: {}", ec.message()));
-      return 1;
+      auto line = wpm_text("command.wpm.error.stage",
+                           "wpm: failed to stage exe: {}", ec.message());
+      safeErrorPrintLn(line);
+      json_errors.push_back(std::move(line));
+      return finish(false, "error");
     }
   } else {
-    safeErrorPrintLn(wpm_text("command.wpm.error.unsupported_type",
-                              "wpm: unsupported artifact type: {}", type));
-    return 1;
+    auto line = wpm_text("command.wpm.error.unsupported_type",
+                         "wpm: unsupported artifact type: {}", type);
+    safeErrorPrintLn(line);
+    json_errors.push_back(std::move(line));
+    return finish(false, "error");
   }
 
   const bool shim_layout = artifact_layout(*artifact) == "shim";
-  safePrintLn(wpm_text("command.wpm.status.installing_files",
-                       "wpm: installing files..."));
-  if (!copy_artifact_files(extracted, opts.root, *artifact, opts.force,
-                           opts.dry_run,
-                           pkg->value("name", std::string(package_name)))) {
-    return 1;
+  progress(wpm_text("command.wpm.status.installing_files",
+                    "wpm: installing files..."));
+  if (!copy_artifact_files(
+          extracted, opts.root, *artifact, opts.force, opts.dry_run,
+          pkg->value("name", std::string(package_name)), json)) {
+    json_errors.push_back(
+        wpm_text("command.wpm.error.copy_failed",
+                 "wpm: failed to install one or more files for '{}'",
+                 pkg->value("name", std::string(package_name))));
+    return finish(false, "error");
   }
   if (shim_layout && !opts.dry_run) {
-    cleanup_legacy_flat_artifacts(opts.root, extracted, *artifact, *pkg);
+    cleanup_legacy_flat_artifacts(opts.root, extracted, *artifact, *pkg, json);
   }
   if (shim_layout) {
-    if (!create_package_shims(opts.root, *pkg, opts.force, opts.dry_run)) {
-      return 1;
+    if (!create_package_shims(opts.root, *pkg, opts.force, opts.dry_run,
+                              json)) {
+      json_errors.push_back(
+          wpm_text("command.wpm.error.shim_failed",
+                   "wpm: failed to create command shims for '{}'",
+                   pkg->value("name", std::string(package_name))));
+      return finish(false, "error");
     }
   }
-  if (!create_package_aliases(opts.root, *pkg, opts.force, opts.dry_run)) {
-    return 1;
+  if (!create_package_aliases(opts.root, *pkg, opts.force, opts.dry_run,
+                              json)) {
+    json_errors.push_back(
+        wpm_text("command.wpm.error.alias_failed",
+                 "wpm: failed to create command aliases for '{}'",
+                 pkg->value("name", std::string(package_name))));
+    return finish(false, "error");
   }
   if (opts.dry_run) {
-    safePrintLn(wpm_text("command.wpm.status.install_dry_run",
-                         "wpm: dry-run complete; would install {}",
-                         pkg->value("name", std::string(package_name))));
-  } else {
-    write_install_receipt(opts.root, *pkg, *artifact);
-    safePrintLn(wpm_text("command.wpm.status.installed", "wpm: installed {}",
-                         pkg->value("name", std::string(package_name))));
+    progress(wpm_text("command.wpm.status.install_dry_run",
+                      "wpm: dry-run complete; would install {}",
+                      pkg->value("name", std::string(package_name))));
+    return finish(true, "would_install");
   }
-  return 0;
+  write_install_receipt(opts.root, *pkg, *artifact);
+  progress(wpm_text("command.wpm.status.installed", "wpm: installed {}",
+                    pkg->value("name", std::string(package_name))));
+  return finish(true, "installed");
 }
 
 auto install_packages(const Options& opts,
                       std::span<const std::string_view> packages) -> int {
   int failed = 0;
+  nlohmann::json results = nlohmann::json::array();
   for (const auto package : packages) {
-    if (install_package(opts, package) != 0) ++failed;
+    nlohmann::json result;
+    if (install_package(opts, package, opts.json ? &result : nullptr) != 0) {
+      ++failed;
+    }
+    if (opts.json) {
+      if (!result.is_object()) {
+        result = {{"name", std::string(package)},
+                  {"status", "error"},
+                  {"dry_run", opts.dry_run},
+                  {"errors", nlohmann::json::array()}};
+      }
+      results.push_back(std::move(result));
+    }
+  }
+  if (opts.json) {
+    nlohmann::json payload = {
+        {"schema", 1}, {"results", std::move(results)}, {"failed", failed}};
+    safePrintLn(payload.dump(2));
+    return failed == 0 ? 0 : 1;
   }
   if (packages.size() > 1) {
     safePrintLn(wpm_text("command.wpm.status.install_summary",
@@ -2886,9 +3089,9 @@ auto update_winuxcmd(const Options& opts) -> int {
 
   auto artifact = artifact_for_current_arch(*pkg);
   if (!artifact) return 1;
-  auto downloaded =
-      download_artifact(opts.root, "winuxcmd", pkg->value("version", ""),
-                        *artifact, opts.verbose, user_forced_proxy(opts));
+  auto downloaded = download_artifact(
+      opts.root, "winuxcmd", pkg->value("version", ""), *artifact,
+      opts.verbose, user_forced_proxy(opts), opts.json);
   if (!downloaded) return 1;
 
   fs::path extracted = staging_dir(opts.root) / "winuxcmd-update";
@@ -2898,7 +3101,7 @@ auto update_winuxcmd(const Options& opts) -> int {
 
   std::string type = artifact->value("type", "zip");
   if (archive_artifact_type(type)) {
-    if (!extract_archive(*downloaded, extracted, type)) return 1;
+    if (!extract_archive(*downloaded, extracted, type, opts.json)) return 1;
   } else if (type == "exe") {
     fs::copy_file(*downloaded, extracted / "winuxcmd.exe",
                   fs::copy_options::overwrite_existing, ec);
@@ -3111,7 +3314,7 @@ auto try_fetch_index(const Options& opts, std::string& used_source)
   return std::nullopt;
 }
 
-auto update_index(const Options& opts) -> int {
+auto update_index(const Options& opts, bool json_payload) -> int {
   std::string used_source;
   auto fetched = try_fetch_index(opts, used_source);
   if (!fetched) {
@@ -3127,15 +3330,35 @@ auto update_index(const Options& opts) -> int {
   auto config = load_config(opts.root);
   config["last_success_source"] = used_source;
   save_config(opts.root, config);
-  safePrintLn(wpm_text("command.wpm.status.index_updated",
-                       "wpm: index updated from {}", used_source));
+  auto line = wpm_text("command.wpm.status.index_updated",
+                       "wpm: index updated from {}", used_source);
+  if (json_payload) {
+    // `wpm index update --json` prints one machine-readable payload on
+    // stdout; the human line moves to stderr (#1156). Auto-refreshes inside
+    // other commands pass json_payload=false so they never leak a second
+    // JSON document into the caller's stdout stream, while opts.json still
+    // routes their human progress to stderr.
+    safeErrorPrintLn(line);
+    nlohmann::json payload = {
+        {"schema", 1}, {"status", "updated"}, {"source", used_source}};
+    safePrintLn(payload.dump(2));
+    return 0;
+  }
+  if (opts.json) {
+    safeErrorPrintLn(line);
+    return 0;
+  }
+  safePrintLn(line);
   return 0;
 }
 
 // Compares locally installed packages against the remote index so users can
-// see which packages have newer versions available upstream. Installation
-// state is derived from artifact destinations on disk; versions come from the
-// cached local index versus the freshly fetched remote index.
+// see which packages have newer versions available upstream. Installed
+// versions are anchored on install receipts (what wpm actually placed on
+// disk), falling back to the local index for pre-receipt installs; available
+// versions come from the freshly fetched remote index. Comparing the local
+// index copy instead made `outdated` flip to "all up to date" after every
+// `index update` even while old files were still installed (#1156).
 auto package_is_installed(const fs::path& root, const nlohmann::json& pkg)
     -> bool;
 
@@ -3156,15 +3379,27 @@ auto list_outdated(const Options& opts) -> int {
     if (!name.empty()) remote_versions[name] = pkg.value("version", "");
   }
 
+  // Installed versions come from receipts first (what wpm actually placed on
+  // disk), falling back to the local index for pre-receipt installs whose
+  // destinations all exist. Comparing the local index copy against the remote
+  // one made `outdated` agree with a just-updated index instead of the disk
+  // and report "all up to date" while old files were still installed (#1156).
+  std::map<std::string, std::string> installed_versions =
+      receipt_install_records(opts.root);
+  for (const auto& pkg : package_array(index)) {
+    const std::string name = pkg.value("name", "");
+    if (name.empty() || name == "winuxcmd") continue;
+    if (installed_versions.contains(name)) continue;
+    if (!package_is_installed(opts.root, pkg)) continue;
+    installed_versions.emplace(name, pkg.value("version", ""));
+  }
+
   int checked = 0;
   nlohmann::json outdated = nlohmann::json::array();
-  for (const auto& pkg : package_array(index)) {
-    if (!package_is_installed(opts.root, pkg)) continue;
+  for (const auto& [name, local_version] : installed_versions) {
     ++checked;
-    const std::string name = pkg.value("name", "");
     auto it = remote_versions.find(name);
     if (it == remote_versions.end()) continue;
-    const std::string local_version = pkg.value("version", "");
     if (it->second.empty() || it->second == local_version) continue;
     outdated.push_back({{"name", name},
                         {"version", local_version},
@@ -4014,7 +4249,10 @@ auto print_usage() -> int {
       "  search <query>                        search names, commands, "
       "categories, licenses\n"
       "  info <package>                        show package metadata\n"
-      "  install <package>...                  install one or more packages\n"
+      "  install <package>...                  install one or more packages; "
+      "use\n"
+      "                                        --force to reinstall or "
+      "overwrite\n"
       "  installed                             list packages present in this "
       "root\n"
       "  export [--plain]                      print installed package names "
@@ -4128,7 +4366,7 @@ auto dispatch(const Options& opts, std::span<const std::string_view> args)
 
   if (args[0] == "index" || args[0] == "update-index") {
     if (args[0] == "update-index" || (args.size() >= 2 && args[1] == "update"))
-      return update_index(opts);
+      return update_index(opts, opts.json);
     if (args.size() == 1 || args[1] == "status")
       return print_index_status(opts);
     safeErrorPrintLn(
@@ -4146,7 +4384,7 @@ auto dispatch(const Options& opts, std::span<const std::string_view> args)
       return source_remove(opts, args[2]);
     if (args[1] == "region" && args.size() >= 3)
       return source_region(opts, args[2]);
-    if (args[1] == "test") return update_index(opts);
+    if (args[1] == "test") return update_index(opts, opts.json);
     safeErrorPrintLn(winux::i18n::translate(
         "command.wpm.error.usage.source",
         "wpm: usage: wpm source list|use <name>|add <name> <url>|"
