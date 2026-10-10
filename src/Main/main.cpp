@@ -166,6 +166,101 @@ static std::optional<int> forwardToOptPayload(std::string_view name) noexcept {
   return static_cast<int>(exit_code);
 }
 
+// GNU coreutils-style presentation groups for the bare `winuxcmd` listing
+// (#1155). Sections render alphabetically inside; a registered command that
+// is missing from every table still shows up under "Other utilities", so
+// adding a command never requires touching this table to stay visible.
+constexpr std::string_view kFileOperationsCommands[] = {
+    "basename", "chattr",  "chcon", "chgrp", "chmod",   "chown",     "cp",
+    "cpio",     "dd",      "df",    "dir",   "dirname", "dircolors", "du",
+    "file",     "install", "ln",    "ls",    "lsattr",  "mkdir",     "mkfifo",
+    "mknod",    "mktemp",  "mv",    "namei", "pathchk", "readlink",  "realpath",
+    "rm",       "rmdir",   "shred", "stat",  "sync",    "touch",     "tree",
+    "truncate", "unlink",  "vdir"};
+
+constexpr std::string_view kTextProcessingCommands[] = {
+    "cat",      "col",    "column",   "comm",     "csplit", "cut",  "d2u",
+    "dos2unix", "expand", "fmt",      "fold",     "head",   "join", "look",
+    "nl",       "paste",  "pr",       "ptx",      "rev",    "sed",  "shuf",
+    "sort",     "split",  "tac",      "tail",     "tee",    "tr",   "tsort",
+    "u2d",      "uniq",   "unix2dos", "unexpand", "wc"};
+
+constexpr std::string_view kComparePatchCommands[] = {"cmp", "diff", "diff3",
+                                                      "patch", "sdiff"};
+
+constexpr std::string_view kNumericOperationsCommands[] = {"factor", "mpicalc",
+                                                           "numfmt", "seq"};
+
+constexpr std::string_view kSearchToolsCommands[] = {
+    "egrep",    "fgrep",   "find",  "grep", "locate",
+    "updatedb", "whereis", "which", "xargs"};
+
+constexpr std::string_view kChecksumEncodingCommands[] = {
+    "b2sum",     "base32",    "base64",  "basenc",  "cksum",     "hexdump",
+    "hmac256",   "md5sum",    "od",      "sha1sum", "sha224sum", "sha256sum",
+    "sha384sum", "sha512sum", "strings", "sum",     "xxd"};
+
+constexpr std::string_view kShellUtilitiesCommands[] = {
+    "[",      "clear", "echo",    "env",  "envsubst", "expr",  "false",
+    "getopt", "nohup", "printf",  "pwd",  "printenv", "sleep", "stdbuf",
+    "test",   "time",  "timeout", "true", "yes"};
+
+constexpr std::string_view kSystemProcessCommands[] = {
+    "arch",    "cal",     "chroot",   "cygpath", "date",  "free",    "getconf",
+    "getfacl", "groups",  "hostname", "hostid",  "id",    "kill",    "killall",
+    "ldd",     "locale",  "logger",   "logname", "lsof",  "mkgroup", "mkpasswd",
+    "nice",    "nproc",   "pgrep",    "pidof",   "pinky", "pkill",   "pldd",
+    "ps",      "regtool", "renice",   "runcon",  "top",   "tzset",   "uname",
+    "uptime",  "users",   "vmstat",   "w",       "watch", "who",     "whoami",
+    "wpm"};
+
+constexpr std::string_view kTerminalDocumentationCommands[] = {
+    "infocmp", "less", "man", "more", "reset",
+    "stty",    "tic",  "toe", "tput", "tty"};
+
+struct CommandCategory {
+  std::string_view title_key;
+  std::string_view title_fallback;
+  std::span<const std::string_view> commands;
+};
+
+constexpr CommandCategory kCommandCategories[] = {
+    {"main.category.file_operations",
+     "File operations:", kFileOperationsCommands},
+    {"main.category.text_processing",
+     "Text processing:", kTextProcessingCommands},
+    {"main.category.compare_patch", "Compare & patch:", kComparePatchCommands},
+    {"main.category.numeric_operations",
+     "Numeric operations:", kNumericOperationsCommands},
+    {"main.category.search_tools", "Search tools:", kSearchToolsCommands},
+    {"main.category.checksum_encoding",
+     "Checksums & encoding:", kChecksumEncodingCommands},
+    {"main.category.shell_utilities",
+     "Shell utilities:", kShellUtilitiesCommands},
+    {"main.category.system_process",
+     "System & process:", kSystemProcessCommands},
+    {"main.category.terminal_docs",
+     "Terminal & documentation:", kTerminalDocumentationCommands},
+};
+
+void printGuideLine(std::string_view key, std::string_view fallback) {
+  safePrintLn(winux::i18n::translate(key, fallback));
+}
+
+void printSectionTitle(std::string_view title, const std::string& style,
+                       bool color) {
+  safePrintLn(color ? colorizeStdout(std::string(title), style)
+                    : std::string(title));
+}
+
+void printCommandGroup(
+    const std::vector<std::pair<std::string_view, std::string_view>>& members,
+    const std::string& command_style, bool color) {
+  for (const auto& [cmd_name, cmd_desc] : members) {
+    printCommandSummary(cmd_name, cmd_desc, command_style, color);
+  }
+}
+
 }  // namespace
 
 /**
@@ -190,22 +285,95 @@ static int printHelp() noexcept {
                           " winuxcmd <command> [options]..."
                     : usage + " winuxcmd <command> [options]...");
   safePrintLn("");
-  const auto available =
-      winux::i18n::translate("main.available_commands", "Available Commands:");
-  safePrintLn(color ? colorizeStdout(available, section_style) : available);
 
-  // Get all registered commands and display them with brief descriptions
+  // Getting-started guide (#1155): three discovery paths plus the flat
+  // listing, printed before the groups so first contact teaches navigation.
+  const auto guide_title =
+      winux::i18n::translate("main.guide.title", "Help and discovery:");
+  printSectionTitle(guide_title, section_style, color);
+  printGuideLine("main.guide.help_flag",
+                 "  winuxcmd <command> --help     show usage for a command");
+  printGuideLine(
+      "main.guide.help_command",
+      "  winuxcmd help <command>       show the full help for a command");
+  printGuideLine(
+      "main.guide.list_all",
+      "  winuxcmd --list-all           list every command, ungrouped");
+  printGuideLine(
+      "main.guide.search",
+      "  wpm search <capability>       find and install extra packages");
+  safePrintLn("");
+
+  // Grouped listing: registered commands bucketed into the categories above,
+  // alphabetical inside each section. Commands missing from every bucket are
+  // collected into "Other utilities" so a new command is never invisible.
   auto commands = CommandRegistry::getAllCommands();
+  std::ranges::sort(commands);
+
+  std::map<std::string_view, std::string_view> by_name;
   for (const auto& [cmd_name, cmd_desc] : commands) {
-    printCommandSummary(cmd_name, cmd_desc, command_style, color);
+    by_name.emplace(cmd_name, cmd_desc);
   }
 
-  safePrintLn("");
+  std::set<std::string_view> categorized;
+  for (const auto& category : kCommandCategories) {
+    std::vector<std::pair<std::string_view, std::string_view>> members;
+    for (const auto& name : category.commands) {
+      if (auto it = by_name.find(name); it != by_name.end()) {
+        members.emplace_back(*it);
+        categorized.insert(name);
+      }
+    }
+    if (members.empty()) continue;
+    std::ranges::sort(members);
+    const auto title =
+        winux::i18n::translate(category.title_key, category.title_fallback);
+    printSectionTitle(title, section_style, color);
+    printCommandGroup(members, command_style, color);
+    safePrintLn("");
+  }
+
+  std::vector<std::pair<std::string_view, std::string_view>> others;
+  for (const auto& [cmd_name, cmd_desc] : commands) {
+    if (!categorized.contains(cmd_name)) {
+      others.emplace_back(cmd_name, cmd_desc);
+    }
+  }
+  if (!others.empty()) {
+    std::ranges::sort(others);
+    const auto title =
+        winux::i18n::translate("main.category.other", "Other utilities:");
+    printSectionTitle(title, section_style, color);
+    printCommandGroup(others, command_style, color);
+    safePrintLn("");
+  }
+
   const auto tip = winux::i18n::translate(
       "main.help_tip",
       "Tip: Use 'winuxcmd <command> --help' for command-specific help.");
   safePrintLn(color ? colorizeStdout("Tip:", subtle_style) + " " + tip : tip);
+
+  // i18n discoverability (#1155): when the system language is not English
+  // and its WPM catalog is not installed, point at the install command.
+  if (const auto hint = winux::i18n::locale_hint(); !hint.empty()) {
+    safePrintLn(color ? colorizeStdout(hint, subtle_style) : hint);
+  }
   return 1;
+}
+
+/**
+ * @brief Print the flat, alphabetical list of every registered command
+ *        (`winuxcmd --list-all`, #1155)
+ * @return Exit code (0 - success)
+ */
+static int printCommandList() noexcept {
+  const bool color = shouldUseAnsiColorStdout();
+  const std::string command_style = std::string(ANSI_BOLD) + ansiFg256(117);
+
+  auto commands = CommandRegistry::getAllCommands();
+  std::ranges::sort(commands);
+  printCommandGroup(commands, command_style, color);
+  return 0;
 }
 
 /**
@@ -252,6 +420,11 @@ int wmain(int argc, wchar_t* wargv[]) noexcept {
     // Mode 1: winuxcmd <command> [args...] (e.g., winuxcmd ls -la)
     if (args.empty()) {
       return printHelp();
+    }
+
+    // #1155: explicit flat listing of every registered command.
+    if (args.size() == 1 && args[0] == "--list-all") {
+      return printCommandList();
     }
 
     // Check for top-level help flag/alias. Like GNU getopt_long, accept any

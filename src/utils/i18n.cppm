@@ -6,6 +6,7 @@ export module utils:i18n;
 
 import std;
 import :json;
+import :utf8;
 
 namespace winux::i18n {
 
@@ -118,6 +119,56 @@ const Catalog& catalog() {
 
 export std::string locale() { return catalog().locale; }
 
+// The locale WinuxCmd would present in, resolved with an injection-friendly
+// precedence (#1155): the i18n selector WINUX_LANG first, then the POSIX
+// locale environment (LC_ALL > LC_MESSAGES > LANG), then the Windows user
+// locale. Underscore separators are normalized to dashes so MSYS-style
+// values (zh_CN.UTF-8) compare equal to Windows names (zh-CN).
+export std::string system_locale() {
+  for (const char* name : {"WINUX_LANG", "LC_ALL", "LC_MESSAGES", "LANG"}) {
+    std::string value = normalize_locale(environment_value(name));
+    if (!value.empty()) return value;
+  }
+  wchar_t buffer[LOCALE_NAME_MAX_LENGTH] = {};
+  if (GetUserDefaultLocaleName(buffer, LOCALE_NAME_MAX_LENGTH) != 0) {
+    return normalize_locale(wstring_to_utf8(buffer));
+  }
+  return {};
+}
+
+// Whether a readable catalog for the given locale (or its bare language) is
+// installed under one of the WPM catalog roots (#1151).
+export bool catalog_installed(std::string_view locale_name) {
+  std::string locale = normalize_locale(std::string(locale_name));
+  if (locale.empty()) return false;
+  std::string language;
+  if (const auto dash = locale.find('-'); dash != std::string::npos) {
+    language = locale.substr(0, dash);
+  }
+  for (const auto& root : catalog_roots()) {
+    for (const std::string* candidate : {&locale, &language}) {
+      if (candidate->empty()) continue;
+      if (read_catalog(root / *candidate / "catalog.json")) return true;
+    }
+  }
+  return false;
+}
+
+namespace {
+// Languages with a catalog published through the winuxcmd-i18n repository
+// and shipped as a WPM package. Extend this table when a new locale is
+// published; languages without an entry never produce an install hint.
+struct LocalePackageHint {
+  std::string_view language;
+  std::string_view language_label;
+  std::string_view package;
+  std::string_view lang_value;
+};
+
+constexpr LocalePackageHint kLocalePackageHints[]{
+    {"zh", "Chinese", "winuxcmd-i18n-zh-cn", "zh-CN"}};
+}  // namespace
+
 export std::string translate(std::string_view key, std::string_view fallback) {
   const auto& messages = catalog().messages;
   auto it = messages.find(std::string(key));
@@ -139,6 +190,42 @@ std::string format(std::string_view key, std::string_view fallback,
       return std::vformat(fallback, std::make_format_args(args...));
     }
   }
+}
+
+// A one-line hint pointing at the WPM i18n package for the system locale
+// (#1155). Empty when the locale is English (or unset/C/POSIX), when the
+// user disabled catalogs via WINUX_LANG=off, or when the matching catalog
+// is already installed.
+export std::string locale_hint() {
+  if (!catalog().messages.empty()) return {};  // a loaded catalog: opted in
+  std::string locale = system_locale();
+  // Strip the codeset (.UTF-8) and modifier (@euro) from POSIX-style names.
+  if (const auto cut = locale.find_first_of(".@"); cut != std::string::npos) {
+    locale.resize(cut);
+  }
+  if (locale.empty()) return {};
+  std::string language = locale.substr(0, locale.find('-'));
+  for (char& ch : language) {
+    ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+  }
+  if (language.empty() || language == "c" || language == "posix" ||
+      language == "en") {
+    return {};
+  }
+  if (catalog_installed(locale)) return {};
+  for (const auto& hint : kLocalePackageHints) {
+    if (language == hint.language) {
+      // [modules] Qualified on purpose: an unqualified `format` here can
+      // resolve to std::format via argument-dependent lookup and echo the
+      // bare key instead of the message.
+      return ::winux::i18n::format(
+          "main.i18n_hint",
+          "Tip: {2} help is available - run 'wpm install {0}' and set "
+          "WINUX_LANG={1} to enable it.",
+          hint.package, hint.lang_value, hint.language_label);
+    }
+  }
+  return {};
 }
 
 export std::string translate_legacy(std::string_view text);
