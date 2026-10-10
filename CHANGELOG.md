@@ -6,6 +6,23 @@ repository release tags.
 
 ## [Unreleased]
 
+### Added
+
+- **diff3**: full GNU diffutils 3.10 alignment on the shared diff engine —
+  three-way block merge (`make_3way_diff`), default report with GNU's
+  odd-one-out section rules, ed scripts (`-A`/`-e`/`-E`/`-3`/`-x`/`-X` with
+  `-i` final write), merged output (`-m`, `-L` labels, `-T` initial tab,
+  `--strip-trailing-cr`, `--diff-program`), `-` stdin operands and GNU exit
+  statuses (0 ok / 1 conflicts / 2 trouble) with byte-verified usage
+  diagnostics (issue #1127, P1).
+- **sdiff**: rebuilt on `diff --side-by-side` output — GNU's gutter formula,
+  `|`/`<`/`>`/`(`/`)` row markers and `/`/`\` separators for rows missing a
+  trailing newline; `-l`/`-s`, `-w`/`--tabsize`/`-t`, the ignore-option
+  family (`-i`/`-E`/`-Z`/`-b`/`-W`/`-B`/`-I`/`-a`/`--strip-trailing-cr`,
+  `-d`/`-H`/`--diff-program`) forwarded into matching only, and `-o` merged
+  output that auto-merges non-interactively (overlaps keep the left column)
+  per issue #1127, P1.
+
 ### Changed
 
 - **winuxcmd**: the bare `winuxcmd` listing groups commands into GNU
@@ -16,6 +33,13 @@ repository release tags.
   flat alphabetical listing. When the system locale is non-English and its
   i18n catalog is not installed, one hint line points at the matching WPM
   package (`wpm install winuxcmd-i18n-zh-cn` + `WINUX_LANG`) (#1155).
+- **diff**: side-by-side output now shares the GNU diffutils `side.c`
+  printer with sdiff (identical rows, `(`/`)` remainders, `/`/`\`
+  separators, common rows for equal inputs); `-E` expands tabs across the
+  whole line for matching, `-B`/`-I` drop ignored hunks and realign their
+  lines positionally instead of filtering buffers, and a final line without
+  a newline only compares equal to the other side's incomplete last line
+  (issue #1127, P1).
 
 ### Fixed
 
@@ -25,7 +49,6 @@ repository release tags.
 - **touch**: GNU-parity handling of unmatched literal-glob operands — names
   that glob to nothing are treated as missing under `-c` (skipped) instead of
   being created verbatim, matching GNU coreutils (#1152).
-<<<<<<< HEAD
 - **wpm**: interaction-audit fixes (#1156). `wpm outdated` now anchors
   installed versions on install receipts, so it keeps reporting a pending
   update after `wpm index update` instead of flipping to "all up to date"
@@ -39,12 +62,10 @@ repository release tags.
   `-y` in any argument position) already behaved correctly on this branch,
   and locked destination files already fail loudly with exit 1 on both
   install and uninstall; regression tests pin all of these behaviors.
-=======
 - **du**: an operand's trailing separator run collapses to a single slash —
   `du src/` prints `src/` and `src/bin` (never `src//bin`), `du src//` prints
   byte-identically to `du src/`, and `du src` keeps the plain form, matching
   GNU coreutils (#1159).
->>>>>>> origin/main
 
 ## [1.1.5] - 2026-10-03
 

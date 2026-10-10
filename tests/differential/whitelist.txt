@@ -64,3 +64,4 @@ regressions/41-stdbuf-line-mode.case	platform: Git Bash oracle stdbuf itself fai
 # The cases now carry `oracle_version: >= 9.2` and are SKIPped below that, which
 # keeps KNOWN_DIFF meaning "executed, results differ".
 corpus/date/23-rel-overflow.case	format: same quoting-style-only difference as date/03 (invalid date); rc=1 and "invalid date" text identical
+regressions/30-sdiff-output-file.case	behavior: sdiff -o auto-merges non-interactively per issue #1127 P1; GNU prompts (prints % and reads stdin). The merged-file bytes agree; only the interactive prompt on stdout differs.

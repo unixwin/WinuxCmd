@@ -9,8 +9,9 @@
 /// @License: MIT
 /// @Copyright: Copyright © 2026 WinuxCmd
 
-#include "core/command_macros.h"
 #include <shellapi.h>
+
+#include "core/command_macros.h"
 #include "pch/pch.h"
 
 #pragma comment(lib, "advapi32.lib")
@@ -18,8 +19,24 @@ import std;
 import core;
 import utils;
 
+#include "diff_engine.h"
+
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
+
+// The diff command family shares one engine (see diff_engine.h).
+using diff_engine::build_script_hunks;
+using diff_engine::compute_diff;
+using diff_engine::Edit;
+using diff_engine::EditType;
+using diff_engine::expand_tabs_lines;
+using diff_engine::filter_blank_lines;
+using diff_engine::filter_matching_lines;
+using diff_engine::normalize_lines_case;
+using diff_engine::normalize_lines_for_compare;
+using diff_engine::normalize_lines_space_change;
+using diff_engine::operand_is_stdin;
+using diff_engine::strip_trailing_cr_lines;
 
 /**
  * @brief DIFF command options definition
@@ -85,8 +102,7 @@ auto constexpr DIFF_OPTIONS = std::array{
            OPTIONAL_INT_TYPE),
     OPTION("-U", "", "output NUM lines of unified context", INT_TYPE),
     OPTION("-e", "--ed", "output an ed script"),
-    OPTION("-f", "--forward-ed",
-           "output an ed script for the second file"),
+    OPTION("-f", "--forward-ed", "output an ed script for the second file"),
     OPTION("-n", "--rcs", "output an RCS format diff"),
     OPTION("-y", "--side-by-side", "output in two columns"),
     OPTION("-W", "--width", "output at most NUM (default 130) print columns",
@@ -100,15 +116,13 @@ auto constexpr DIFF_OPTIONS = std::array{
     OPTION("", "--label", "use LABEL instead of file name and timestamp",
            STRING_TYPE),
     OPTION("-t", "--expand-tabs", "expand tabs to spaces in output"),
-    OPTION("-T", "--initial-tab",
-           "make tabs line up by prepending a tab"),
+    OPTION("-T", "--initial-tab", "make tabs line up by prepending a tab"),
     OPTION("", "--tabsize", "tab stops every NUM (default 8) print columns",
            INT_TYPE),
     OPTION("", "--suppress-blank-empty",
            "suppress space or tab before empty output lines"),
     OPTION("-l", "--paginate", "pass output through 'pr' to paginate it"),
-    OPTION("-r", "--recursive",
-           "recursively compare any subdirectories found"),
+    OPTION("-r", "--recursive", "recursively compare any subdirectories found"),
     OPTION("", "--no-dereference", "don't follow symbolic links"),
     OPTION("-N", "--new-file", "treat absent files as empty"),
     OPTION("", "--unidirectional-new-file",
@@ -120,19 +134,19 @@ auto constexpr DIFF_OPTIONS = std::array{
     OPTION("-x", "", "exclude files that match PAT", STRING_TYPE),
     OPTION("-X", "", "exclude files that match any pattern in FILE",
            STRING_TYPE),
-    OPTION("-S", "", "start with FILE when comparing directories",
+    OPTION("-S", "", "start with FILE when comparing directories", STRING_TYPE),
+    OPTION("", "--from-file",
+           "compare FILE1 to all operands; FILE1 can be a "
+           "directory",
            STRING_TYPE),
-    OPTION("", "--from-file", "compare FILE1 to all operands; FILE1 can be a "
-                              "directory",
-           STRING_TYPE),
-    OPTION("", "--to-file", "compare all operands to FILE2; FILE2 can be a "
-                            "directory",
+    OPTION("", "--to-file",
+           "compare all operands to FILE2; FILE2 can be a "
+           "directory",
            STRING_TYPE),
     OPTION("-i", "--ignore-case", "ignore case differences in file contents"),
     OPTION("-E", "--ignore-tab-expansion",
            "ignore changes due to tab expansion"),
-    OPTION("-Z", "--ignore-trailing-space",
-           "ignore white space at line end"),
+    OPTION("-Z", "--ignore-trailing-space", "ignore white space at line end"),
     OPTION("-b", "--ignore-space-change",
            "ignore changes in the amount of white space"),
     OPTION("-w", "--ignore-all-space", "ignore all white space"),
@@ -143,13 +157,15 @@ auto constexpr DIFF_OPTIONS = std::array{
     OPTION("-a", "--text", "treat all files as text"),
     OPTION("", "--strip-trailing-cr",
            "strip trailing carriage return on input"),
-    OPTION("-D", "--ifdef",
-           "output merged file with '#ifdef NAME' diffs", STRING_TYPE),
-    OPTION("", "--old-group-format", "format changed groups of lines from "
-                                     "FILE1 with GFMT",
+    OPTION("-D", "--ifdef", "output merged file with '#ifdef NAME' diffs",
            STRING_TYPE),
-    OPTION("", "--new-group-format", "format changed groups of lines from "
-                                     "FILE2 with GFMT",
+    OPTION("", "--old-group-format",
+           "format changed groups of lines from "
+           "FILE1 with GFMT",
+           STRING_TYPE),
+    OPTION("", "--new-group-format",
+           "format changed groups of lines from "
+           "FILE2 with GFMT",
            STRING_TYPE),
     OPTION("", "--changed-group-format",
            "format a group of differing lines with GFMT", STRING_TYPE),
@@ -161,8 +177,8 @@ auto constexpr DIFF_OPTIONS = std::array{
            STRING_TYPE),
     OPTION("", "--new-line-format", "format lines from FILE2 with LFMT",
            STRING_TYPE),
-    OPTION("", "--unchanged-line-format",
-           "format common lines with LFMT", STRING_TYPE),
+    OPTION("", "--unchanged-line-format", "format common lines with LFMT",
+           STRING_TYPE),
     OPTION("-d", "--minimal",
            "try hard to find a smaller set of changes (this diff is always "
            "minimal)"),
@@ -170,21 +186,22 @@ auto constexpr DIFF_OPTIONS = std::array{
            "keep NUM lines of the common prefix and suffix", INT_TYPE),
     OPTION("", "--speed-large-files",
            "assume large files and many scattered small changes"),
-    OPTION("", "--color", "color output; WHEN is 'never', 'always', or "
-                          "'auto'; plain --color means --color='auto'",
+    OPTION("", "--color",
+           "color output; WHEN is 'never', 'always', or "
+           "'auto'; plain --color means --color='auto'",
            OPTIONAL_STRING_TYPE),
     OPTION("", "--palette",
            "the colors to use when --color is active (accepted, default "
            "palette used)"),
     OPTION("", "--binary", "read and write data as binary"),
-    OPTION("", "--diff-program", "use PROGRAM to compare files (accepted, "
-                                 "built-in engine used)",
+    OPTION("", "--diff-program",
+           "use PROGRAM to compare files (accepted, "
+           "built-in engine used)",
            STRING_TYPE),
     OPTION("", "--exclude", "alias for -x, exclude files that match PATTERN",
            STRING_TYPE),
     OPTION("", "--exclude-from",
-           "alias for -X, exclude files matching pattern in FILE",
-           STRING_TYPE),
+           "alias for -X, exclude files matching pattern in FILE", STRING_TYPE),
     OPTION("", "--exclude-dir", "exclude directories matching PATTERN",
            STRING_TYPE)};
 
@@ -230,9 +247,7 @@ struct StyleCtx {
   bool func_show_c = false;  // -p default: leading alphabetic/underscore/$
 };
 
-
-auto find_function_line(const std::vector<std::string> &lines,
-                        size_t bound,
+auto find_function_line(const std::vector<std::string> &lines, size_t bound,
                         const portable_regex::Pattern *func_re,
                         bool func_show_c) -> std::string;
 
@@ -295,7 +310,8 @@ void paginate_and_flush(const std::string &title) {
     dput(std::string(18 - std::strlen(datebuf), ' '));
     dput(std::string(pad, ' ') + title + "\n\n");
     size_t emitted = 0;
-    for (size_t j = i; j < lines.size() && emitted < kBodyLines; ++j, ++emitted) {
+    for (size_t j = i; j < lines.size() && emitted < kBodyLines;
+         ++j, ++emitted) {
       dput(lines[j] + "\n");
     }
     for (size_t j = emitted; j < kBodyLines; ++j) dput("\n");
@@ -337,336 +353,10 @@ auto resolve_files(const CommandContext<DIFF_OPTIONS.size()> &ctx)
   return files;
 }
 
-/**
- * @brief Edit operation type for diff
- */
-enum class EditType { KEEP, DEL, INS };
+// [GNU] "-" (and /dev/stdin-family operands) read standard input (#1057),
+// and unreadable inputs report "<path>: <errno text>" - both live in the
+// shared diff_engine header used by diff, diff3 and sdiff.
 
-/**
- * @brief Edit operation
- */
-struct Edit {
-  EditType type;
-  size_t line1_index;  // Line index in file1 (for DEL/KEEP)
-  size_t line2_index;  // Line index in file2 (for INS/KEEP)
-};
-
-/**
- * @brief Quick path: check if files are identical
- * @param lines1 Lines from first file
- * @param lines2 Lines from second file
- * @return true if files are identical
- */
-auto is_identical(const std::vector<std::string> &lines1,
-                  const std::vector<std::string> &lines2) -> bool {
-  if (lines1.size() != lines2.size()) {
-    return false;
-  }
-  return lines1 == lines2;
-}
-
-/**
- * @brief Compute LCS with hash optimization for fast comparison
- * @param lines1 Lines from first file
- * @param lines2 Lines from second file
- * @return LCS matrix
- */
-auto compute_lcs_optimized(const std::vector<std::string> &lines1,
-                           const std::vector<std::string> &lines2)
-    -> std::vector<std::vector<size_t>> {
-  size_t m = lines1.size();
-  size_t n = lines2.size();
-
-  // Fast path: if files are identical, no need to compute
-  if (is_identical(lines1, lines2)) {
-    std::vector<std::vector<size_t>> lcs(m + 1, std::vector<size_t>(n + 1, 0));
-    for (size_t i = 0; i <= m; ++i) {
-      lcs[i][i] = i;
-    }
-    return lcs;
-  }
-
-  // Precompute hashes for fast comparison
-  std::vector<size_t> hash1;
-  std::vector<size_t> hash2;
-  hash1.reserve(m);
-  hash2.reserve(n);
-
-  for (const auto &line : lines1) {
-    hash1.push_back(std::hash<std::string>{}(line));
-  }
-  for (const auto &line : lines2) {
-    hash2.push_back(std::hash<std::string>{}(line));
-  }
-
-  // Create LCS matrix (needed for backtracking)
-  std::vector<std::vector<size_t>> lcs(m + 1, std::vector<size_t>(n + 1, 0));
-
-  for (size_t i = 1; i <= m; ++i) {
-    for (size_t j = 1; j <= n; ++j) {
-      // Compare hashes first, then confirm with string comparison
-      if (hash1[i - 1] == hash2[j - 1] && lines1[i - 1] == lines2[j - 1]) {
-        lcs[i][j] = lcs[i - 1][j - 1] + 1;
-      } else {
-        lcs[i][j] = std::max(lcs[i - 1][j], lcs[i][j - 1]);
-      }
-    }
-  }
-
-  return lcs;
-}
-
-/**
- * @brief Backtrack LCS matrix to find edit operations
- * @param lcs LCS matrix
- * @param lines1 Lines from first file
- * @param lines2 Lines from second file
- * @return Vector of edit operations
- */
-auto backtrack_lcs(const std::vector<std::vector<size_t>> &lcs,
-                   const std::vector<std::string> &lines1,
-                   const std::vector<std::string> &lines2)
-    -> std::vector<Edit> {
-  std::vector<Edit> edits;
-  size_t i = lines1.size();
-  size_t j = lines2.size();
-
-  while (i > 0 || j > 0) {
-    if (i > 0 && j > 0 && lines1[i - 1] == lines2[j - 1]) {
-      edits.push_back({EditType::KEEP, i - 1, j - 1});
-      --i;
-      --j;
-    } else if (j > 0 && (i == 0 || lcs[i][j - 1] >= lcs[i - 1][j])) {
-      edits.push_back({EditType::INS, i, j - 1});
-      --j;
-    } else {
-      edits.push_back({EditType::DEL, i - 1, j});
-      --i;
-    }
-  }
-
-  std::reverse(edits.begin(), edits.end());
-  return edits;
-}
-
-/**
- * @brief Compute diff using optimized LCS algorithm
- * @param lines1 Lines from first file
- * @param lines2 Lines from second file
- * @return Vector of edit operations
- */
-auto compute_diff(const std::vector<std::string> &lines1,
-                  const std::vector<std::string> &lines2) -> std::vector<Edit> {
-  // Fast path: identical files
-  if (is_identical(lines1, lines2)) {
-    return {};
-  }
-
-  auto lcs = compute_lcs_optimized(lines1, lines2);
-  return backtrack_lcs(lcs, lines1, lines2);
-}
-
-/**
- * @brief Read file into lines
- * @param path File path
- * @return Result with vector of lines
- */
-// [GNU] "-" (and /dev/stdin-family operands) read standard input (#1057).
-auto operand_is_stdin(const std::string &path) -> bool {
-  return path == "-" ||
-         native_path::pseudo_device_std_fd(path) == std::optional<int>(0);
-}
-
-auto read_file_lines_result(const std::string &path)
-    -> cp::Result<std::vector<std::string>> {
-  auto diff_input_open_error = [](std::string_view file_path) -> std::string {
-    auto operand = native_path::make_api_path_operand(file_path);
-    const DWORD attrs = native_path::operand_target_attributes_w(operand);
-    if (native_path::attributes_are_directory(attrs)) {
-      return std::string(file_path) + ": Is a directory";
-    }
-    // [GNU] Unreadable input reports "<path>: <errno text>", not a
-    // "cannot open ... for reading" wrapper.
-    return std::string(file_path) + ": No such file or directory";
-  };
-
-  std::vector<std::string> lines;
-
-  if (operand_is_stdin(path)) {
-    // [GNU] A closed standard input (<&-) is a read error, not EOF (#973).
-    // For "-" GNU reports EBADF; a /dev/stdin-family operand dangles like a
-    // dead /proc/self/fd symlink and reports ENOENT instead.
-    if (file_io::stdin_is_bad()) {
-      return std::unexpected(path + (path == "-"
-                                         ? ": Bad file descriptor"
-                                         : ": No such file or directory"));
-    }
-    std::string line;
-    while (std::getline(std::cin, line)) {
-      lines.push_back(line);
-    }
-    return lines;
-  }
-
-  std::ifstream file = file_io::open_binary_file(path);
-  if (!file.is_open()) {
-    return std::unexpected(diff_input_open_error(path));
-  }
-
-  std::string line;
-  while (std::getline(file, line)) {
-    lines.push_back(line);
-  }
-
-  return lines;
-}
-
-auto normalize_line_for_compare(const std::string &line, bool ignore_all_space)
-    -> std::string {
-  if (!ignore_all_space) return line;
-  std::string normalized;
-  normalized.reserve(line.size());
-  for (char ch : line) {
-    if (!std::isspace(static_cast<unsigned char>(ch))) {
-      normalized.push_back(ch);
-    }
-  }
-  return normalized;
-}
-
-auto normalize_lines_for_compare(const std::vector<std::string> &lines,
-                                 bool ignore_all_space)
-    -> std::vector<std::string> {
-  if (!ignore_all_space) return lines;
-  std::vector<std::string> normalized;
-  normalized.reserve(lines.size());
-  for (const auto &line : lines) {
-    normalized.push_back(normalize_line_for_compare(line, true));
-  }
-  return normalized;
-}
-
-auto strip_trailing_cr_lines(const std::vector<std::string> &lines)
-    -> std::vector<std::string> {
-  std::vector<std::string> result;
-  result.reserve(lines.size());
-  for (const auto &line : lines) {
-    if (!line.empty() && line.back() == '\r') {
-      result.emplace_back(line.substr(0, line.size() - 1));
-    } else {
-      result.push_back(line);
-    }
-  }
-  return result;
-}
-
-auto filter_blank_lines(const std::vector<std::string> &lines)
-    -> std::vector<std::string> {
-  std::vector<std::string> result;
-  for (const auto &line : lines) {
-    bool all_space = true;
-    for (char ch : line) {
-      if (!std::isspace(static_cast<unsigned char>(ch))) {
-        all_space = false;
-        break;
-      }
-    }
-    if (!all_space) {
-      result.push_back(line);
-    }
-  }
-  return result;
-}
-
-auto normalize_space_change(const std::string &line) -> std::string {
-  std::string result;
-  result.reserve(line.size());
-  bool in_space = false;
-  for (char ch : line) {
-    if (std::isspace(static_cast<unsigned char>(ch))) {
-      if (!in_space) {
-        result.push_back(' ');
-        in_space = true;
-      }
-    } else {
-      result.push_back(ch);
-      in_space = false;
-    }
-  }
-  return result;
-}
-
-auto normalize_lines_space_change(const std::vector<std::string> &lines)
-    -> std::vector<std::string> {
-  std::vector<std::string> result;
-  result.reserve(lines.size());
-  for (const auto &line : lines) {
-    result.push_back(normalize_space_change(line));
-  }
-  return result;
-}
-
-auto normalize_lines_case(const std::vector<std::string> &lines)
-    -> std::vector<std::string> {
-  std::vector<std::string> result;
-  result.reserve(lines.size());
-  for (const auto &line : lines) {
-    std::string lowered;
-    lowered.reserve(line.size());
-    for (char ch : line) {
-      lowered.push_back(
-          static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
-    }
-    result.push_back(std::move(lowered));
-  }
-  return result;
-}
-
-auto filter_matching_lines(const std::vector<std::string> &lines,
-                           const std::string &pattern)
-    -> std::vector<std::string> {
-  std::vector<std::string> result;
-  for (const auto &line : lines) {
-    if (line.find(pattern) == std::string::npos) {
-      result.push_back(line);
-    }
-  }
-  return result;
-}
-
-auto expand_tabs_in_line(const std::string &line, int tabsize) -> std::string {
-  std::string result;
-  int col = 0;
-  for (char ch : line) {
-    if (ch == '\t') {
-      int spaces = tabsize - (col % tabsize);
-      result.append(spaces, ' ');
-      col += spaces;
-    } else {
-      result.push_back(ch);
-      ++col;
-    }
-  }
-  return result;
-}
-
-auto expand_tabs_lines(const std::vector<std::string> &lines, int tabsize)
-    -> std::vector<std::string> {
-  std::vector<std::string> result;
-  result.reserve(lines.size());
-  for (const auto &line : lines) {
-    result.push_back(expand_tabs_in_line(line, tabsize));
-  }
-  return result;
-}
-
-/**
- * @brief Compare two files
- * @param path1 First file path
- * @param path2 Second file path
- * @param brief If true, only report if files differ
- * @return Result with true if files are equal
- */
 auto compare_files(const std::string &path1, const std::string &path2,
                    const std::vector<std::string> &lines1,
                    const std::vector<std::string> &lines2, bool brief,
@@ -913,9 +603,11 @@ auto output_unified_diff(const std::string &path1, const std::string &path2,
                          const std::vector<std::string> &lines1,
                          const std::vector<std::string> &lines2, int context,
                          const DiffLabel &label1, const DiffLabel &label2,
-                         const StyleCtx &style = {})
-    -> void {
-  auto edits = compute_diff(compare_lines1, compare_lines2);
+                         const StyleCtx &style = {},
+                         std::vector<Edit> preset_edits = {}) -> void {
+  auto edits = !preset_edits.empty()
+                   ? std::move(preset_edits)
+                   : compute_diff(compare_lines1, compare_lines2);
   auto hunks = build_diff_hunks(edits, lines1.size(), lines2.size(), context);
   if (hunks.empty()) return;
 
@@ -930,8 +622,7 @@ auto output_unified_diff(const std::string &path1, const std::string &path2,
                               style.func_show_c);
   };
 
-  const DiffColors &colors =
-      style.colors ? *style.colors : DiffColors{};
+  const DiffColors &colors = style.colors ? *style.colors : DiffColors{};
   for (const auto &hunk : hunks) {
     std::string header = "@@ -";
     header += format_unified_range(hunk.file1_start + 1,
@@ -1114,9 +805,11 @@ auto output_context_diff(const std::string &path1, const std::string &path2,
                          const std::vector<std::string> &lines1,
                          const std::vector<std::string> &lines2, int context,
                          const DiffLabel &label1, const DiffLabel &label2,
-                         const StyleCtx &style = {})
-    -> void {
-  auto edits = compute_diff(compare_lines1, compare_lines2);
+                         const StyleCtx &style = {},
+                         std::vector<Edit> preset_edits = {}) -> void {
+  auto edits = !preset_edits.empty()
+                   ? std::move(preset_edits)
+                   : compute_diff(compare_lines1, compare_lines2);
   auto hunks = build_diff_hunks(edits, lines1.size(), lines2.size(), context);
   if (hunks.empty()) return;
 
@@ -1142,8 +835,9 @@ auto output_context_diff(const std::string &path1, const std::string &path2,
     dput(colors.bold("***************"));
     dput("\n");
     std::string old_header =
-        "*** " + format_context_range(hunk.file1_start + 1,
-                                      hunk.file1_end - hunk.file1_start) +
+        "*** " +
+        format_context_range(hunk.file1_start + 1,
+                             hunk.file1_end - hunk.file1_start) +
         " ****";
     std::string func = hunk_function(hunk);
     if (!func.empty()) old_header += " " + func;
@@ -1151,8 +845,9 @@ auto output_context_diff(const std::string &path1, const std::string &path2,
     dput("\n");
     output_context_old_section(edits, lines1, hunk, mixed_change, colors);
     std::string new_header =
-        "--- " + format_context_range(hunk.file2_start + 1,
-                                      hunk.file2_end - hunk.file2_start) +
+        "--- " +
+        format_context_range(hunk.file2_start + 1,
+                             hunk.file2_end - hunk.file2_start) +
         " ----";
     dput(colors.cyan(new_header));
     dput("\n");
@@ -1160,144 +855,7 @@ auto output_context_diff(const std::string &path1, const std::string &path2,
   }
 }
 
-/**
- * @brief Output side-by-side diff format
- * @param path1 First file path
- * @param path2 Second file path
- * @param lines1 Lines from first file
- * @param lines2 Lines from second file
- */
-auto output_side_by_side(const std::string &path1, const std::string &path2,
-                         const std::vector<std::string> &compare_lines1,
-                         const std::vector<std::string> &compare_lines2,
-                         const std::vector<std::string> &lines1,
-                         const std::vector<std::string> &lines2, int width,
-                         bool suppress_common, bool left_column, int tabsize,
-                         bool expand_tabs)
-    -> void {
-  (void)path1;
-  (void)path2;
-  auto edits = compute_diff(compare_lines1, compare_lines2);
-
-  if (edits.empty()) {
-    return;  // Files are identical
-  }
-
-  // [GNU diffutils side.c] Column layout: the gutter is at least 3 wide
-  // and column2_offset is an integral number of tab stops so the right
-  // column lines up across rows.
-  const intmax_t t = expand_tabs ? 1 : (tabsize > 0 ? tabsize : 8);
-  const intmax_t content_t = tabsize > 0 ? tabsize : 8;
-  const intmax_t w = width;
-  const intmax_t t_plus_g = t + 3;
-  const intmax_t unaligned_off =
-      (w >> 1) + (t_plus_g >> 1) + (w & t_plus_g & 1);
-  const intmax_t off = unaligned_off - unaligned_off % t;
-  const intmax_t half_width = off > 0 ? std::max<intmax_t>(0, std::min(off - 3, w - off)) : 0;
-  const intmax_t c2o = half_width ? off : w;
-  const intmax_t sep_col = (half_width + c2o - 1) >> 1;
-
-  // Emits the line bounded to out_bound print columns, preserving tabs,
-  // and returns the output column after it (GNU print_half_line).
-  auto print_half_line = [&](const std::string &line, intmax_t out_bound) {
-    intmax_t in_pos = 0;
-    intmax_t out_pos = 0;
-    for (char ch : line) {
-      if (ch == '\n') break;
-      if (ch == '\t') {
-        in_pos = (in_pos / content_t + 1) * content_t;
-        if (in_pos <= out_bound) {
-          if (expand_tabs) {
-            while (out_pos < in_pos) dput(" ");
-          } else {
-            dput("\t");
-          }
-          out_pos = in_pos;
-          continue;
-        }
-        break;
-      }
-      ++in_pos;
-      if (in_pos <= out_bound) {
-        dput(std::string(1, ch));
-        out_pos = in_pos;
-      } else {
-        break;
-      }
-    }
-    return out_pos;
-  };
-  auto tab_from_to = [&](intmax_t from, intmax_t to) {
-    if (t > 1) {
-      for (intmax_t tab = from + t - from % t; tab <= to; tab += t) {
-        dput("\t");
-        from = tab;
-      }
-    }
-    while (from++ < to) dput(" ");
-    return from - 1;
-  };
-
-  // [GNU] Consecutive changed rows are aligned: min(deletes, inserts)
-  // pairs print '|', extra deletes '<', extra inserts '>'.
-  size_t k = 0;
-  while (k < edits.size()) {
-    if (edits[k].type == EditType::KEEP) {
-      auto emit_common = [&](size_t a, size_t b) {
-        intmax_t col = print_half_line(lines1[a], half_width);
-        if (left_column) {
-          // [GNU] --left-column marks the suppressed right column.
-          tab_from_to(col, sep_col);
-          dput("(");
-          dput("\n");
-          return;
-        }
-        col = tab_from_to(col, c2o);
-        print_half_line(lines2[b], w);
-        dput("\n");
-      };
-      while (k < edits.size() && edits[k].type == EditType::KEEP) {
-        if (!suppress_common) emit_common(edits[k].line1_index, edits[k].line2_index);
-        ++k;
-      }
-      continue;
-    }
-    std::vector<size_t> dels;
-    std::vector<size_t> ins;
-    while (k < edits.size() && edits[k].type != EditType::KEEP) {
-      if (edits[k].type == EditType::DEL) {
-        dels.push_back(edits[k].line1_index);
-      } else {
-        ins.push_back(edits[k].line2_index);
-      }
-      ++k;
-    }
-    const size_t paired = std::min(dels.size(), ins.size());
-    for (size_t row = 0; row < paired; ++row) {
-      intmax_t col = print_half_line(lines1[dels[row]], half_width);
-      col = tab_from_to(col, sep_col) + 1;
-      dput("|");
-      col = tab_from_to(col, c2o);
-      print_half_line(lines2[ins[row]], w);
-      dput("\n");
-    }
-    for (size_t row = paired; row < dels.size(); ++row) {
-      intmax_t col = print_half_line(lines1[dels[row]], half_width);
-      tab_from_to(col, sep_col);
-      dput("<\n");
-    }
-    for (size_t row = paired; row < ins.size(); ++row) {
-      intmax_t col = tab_from_to(0, sep_col) + 1;
-      dput(">");
-      tab_from_to(col, c2o);
-      print_half_line(lines2[ins[row]], w);
-      dput("\n");
-    }
-  }
-}
-
 // ===== GNU diffutils 3.10 output engines: ed / RCS / format directives =====
-
 
 // Returns the function-header line GNU prints after a hunk header: the
 // most recent line at or above `bound` (0-based, exclusive) matching the
@@ -1321,8 +879,7 @@ auto find_function_line(const std::vector<std::string> &lines, size_t bound,
       std::string text = lines[i];
       // GNU truncates long function lines instead of wrapping headers.
       if (text.size() > 40) text.resize(40);
-      while (!text.empty() &&
-             (text.back() == ' ' || text.back() == '\r')) {
+      while (!text.empty() && (text.back() == ' ' || text.back() == '\r')) {
         text.pop_back();
       }
       return text;
@@ -1343,53 +900,16 @@ auto find_function_line(const std::vector<std::string> &lines, size_t bound,
 //            (hunk's last deleted line for changes, the line before the
 //            insertion for pure inserts, 0 when prepending).
 
-struct ScriptHunk {
-  size_t old_start = 0;  // 1-based, inclusive
-  size_t old_count = 0;
-  size_t new_start = 0;  // 1-based, inclusive
-  size_t new_count = 0;
-  size_t ins_anchor = 0;  // old-file line the insertion follows (0 = prepend)
-  std::vector<size_t> del_idx;  // indices into lines1
-  std::vector<size_t> ins_idx;  // indices into lines2
-};
-
-auto build_script_hunks(const std::vector<Edit> &edits) -> std::vector<ScriptHunk> {
-  std::vector<ScriptHunk> hunks;
-  bool in_hunk = false;
-  for (const auto &edit : edits) {
-    if (edit.type == EditType::KEEP) {
-      in_hunk = false;
-      continue;
-    }
-    if (!in_hunk) {
-      hunks.emplace_back();
-      in_hunk = true;
-    }
-    auto &hunk = hunks.back();
-    if (edit.type == EditType::DEL) {
-      if (hunk.del_idx.empty()) hunk.old_start = edit.line1_index + 1;
-      hunk.old_count++;
-      hunk.del_idx.push_back(edit.line1_index);
-    } else {
-      if (hunk.ins_idx.empty()) {
-        hunk.new_start = edit.line2_index + 1;
-        hunk.ins_anchor = edit.line1_index;
-      }
-      hunk.new_count++;
-      hunk.ins_idx.push_back(edit.line2_index);
-    }
-  }
-  return hunks;
-}
-
 auto format_ed_range(size_t start, size_t count) -> std::string {
-  return count > 1 ? std::to_string(start) + "," + std::to_string(start + count - 1)
-                   : std::to_string(start);
+  return count > 1
+             ? std::to_string(start) + "," + std::to_string(start + count - 1)
+             : std::to_string(start);
 }
 
 auto format_fwd_range(size_t start, size_t count) -> std::string {
-  return count > 1 ? std::to_string(start) + " " + std::to_string(start + count - 1)
-                   : std::to_string(start);
+  return count > 1
+             ? std::to_string(start) + " " + std::to_string(start + count - 1)
+             : std::to_string(start);
 }
 
 template <typename Lines>
@@ -1445,8 +965,9 @@ void output_rcs_diff(const std::vector<Edit> &edits, const Lines &lines1,
     if (hunk.new_count > 0) {
       // Anchor: last old line of the change, else the common line above
       // the insertion (old_start-1), 0 when prepending.
-      size_t anchor = hunk.old_count > 0 ? hunk.old_start + hunk.old_count - 1
-                                         : (hunk.old_start > 0 ? hunk.old_start - 1 : 0);
+      size_t anchor = hunk.old_count > 0
+                          ? hunk.old_start + hunk.old_count - 1
+                          : (hunk.old_start > 0 ? hunk.old_start - 1 : 0);
       dput("a" + format_rcs_count(anchor, hunk.new_count) + "\n");
       for (size_t idx : hunk.ins_idx) dput(lines2[idx] + "\n");
     }
@@ -1490,12 +1011,23 @@ auto expand_number_directive(std::string_view spec, char letter, size_t value,
   const size_t count = old_file ? group.old_count : group.new_count;
   unsigned long long number = value;
   switch (std::toupper(static_cast<unsigned char>(letter))) {
-    case 'F': number = first; break;
-    case 'L': number = count ? first + count - 1 : 0; break;
-    case 'N': number = count; break;
-    case 'E': number = first ? first - 1 : 0; break;
-    case 'M': number = first + count; break;
-    default: break;
+    case 'F':
+      number = first;
+      break;
+    case 'L':
+      number = count ? first + count - 1 : 0;
+      break;
+    case 'N':
+      number = count;
+      break;
+    case 'E':
+      number = first ? first - 1 : 0;
+      break;
+    case 'M':
+      number = first + count;
+      break;
+    default:
+      break;
   }
 
   // Parse [[-]WIDTH][.PREC] then conversion char.
@@ -1523,10 +1055,18 @@ auto expand_number_directive(std::string_view spec, char letter, size_t value,
   char conv = i < spec.size() ? spec[i] : 'd';
   char buf[64]{};
   switch (conv) {
-    case 'o': std::snprintf(buf, sizeof(buf), "%llo", number); break;
-    case 'x': std::snprintf(buf, sizeof(buf), "%llx", number); break;
-    case 'X': std::snprintf(buf, sizeof(buf), "%llX", number); break;
-    default:  std::snprintf(buf, sizeof(buf), "%llu", number); break;
+    case 'o':
+      std::snprintf(buf, sizeof(buf), "%llo", number);
+      break;
+    case 'x':
+      std::snprintf(buf, sizeof(buf), "%llx", number);
+      break;
+    case 'X':
+      std::snprintf(buf, sizeof(buf), "%llX", number);
+      break;
+    default:
+      std::snprintf(buf, sizeof(buf), "%llu", number);
+      break;
   }
   std::string digits(buf);
   if (digits.size() < prec) digits.insert(0, prec - digits.size(), '0');
@@ -1538,10 +1078,12 @@ auto expand_number_directive(std::string_view spec, char letter, size_t value,
   return digits;
 }
 
-auto expand_format(const std::string &fmt, const std::vector<std::string> &lines1,
-                   const std::vector<std::string> &lines2, const GroupInfo &group,
-                   bool group_is_changed, const std::string *single_line,
-                   size_t single_line_no, bool single_from_old) -> std::string;
+auto expand_format(const std::string &fmt,
+                   const std::vector<std::string> &lines1,
+                   const std::vector<std::string> &lines2,
+                   const GroupInfo &group, bool group_is_changed,
+                   const std::string *single_line, size_t single_line_no,
+                   bool single_from_old) -> std::string;
 
 auto expand_conditional(const std::string &fmt, size_t &i,
                         const std::vector<std::string> &lines1,
@@ -1552,17 +1094,34 @@ auto expand_conditional(const std::string &fmt, size_t &i,
   // fmt[i] == '(' after '%('. Grammar: A=B?T:E with A,B letters.
   auto letter_value = [&](char letter) -> long long {
     switch (letter) {
-      case 'F': return static_cast<long long>(group.new_start);
-      case 'f': return static_cast<long long>(group.old_start);
-      case 'L': return static_cast<long long>(group.new_count ? group.new_start + group.new_count - 1 : 0);
-      case 'l': return static_cast<long long>(group.old_count ? group.old_start + group.old_count - 1 : 0);
-      case 'N': return static_cast<long long>(group.new_count);
-      case 'n': return static_cast<long long>(group.old_count);
-      case 'E': return static_cast<long long>(group.new_start ? group.new_start - 1 : 0);
-      case 'e': return static_cast<long long>(group.old_start ? group.old_start - 1 : 0);
-      case 'M': return static_cast<long long>(group.new_count ? group.new_start + group.new_count : 0);
-      case 'm': return static_cast<long long>(group.old_count ? group.old_start + group.old_count : 0);
-      default: return 0;
+      case 'F':
+        return static_cast<long long>(group.new_start);
+      case 'f':
+        return static_cast<long long>(group.old_start);
+      case 'L':
+        return static_cast<long long>(
+            group.new_count ? group.new_start + group.new_count - 1 : 0);
+      case 'l':
+        return static_cast<long long>(
+            group.old_count ? group.old_start + group.old_count - 1 : 0);
+      case 'N':
+        return static_cast<long long>(group.new_count);
+      case 'n':
+        return static_cast<long long>(group.old_count);
+      case 'E':
+        return static_cast<long long>(group.new_start ? group.new_start - 1
+                                                      : 0);
+      case 'e':
+        return static_cast<long long>(group.old_start ? group.old_start - 1
+                                                      : 0);
+      case 'M':
+        return static_cast<long long>(
+            group.new_count ? group.new_start + group.new_count : 0);
+      case 'm':
+        return static_cast<long long>(
+            group.old_count ? group.old_start + group.old_count : 0);
+      default:
+        return 0;
     }
   };
   size_t p = i + 1;
@@ -1603,10 +1162,12 @@ auto expand_conditional(const std::string &fmt, size_t &i,
                        single_line, single_line_no, single_from_old);
 }
 
-auto expand_format(const std::string &fmt, const std::vector<std::string> &lines1,
-                   const std::vector<std::string> &lines2, const GroupInfo &group,
-                   bool group_is_changed, const std::string *single_line,
-                   size_t single_line_no, bool single_from_old) -> std::string {
+auto expand_format(const std::string &fmt,
+                   const std::vector<std::string> &lines1,
+                   const std::vector<std::string> &lines2,
+                   const GroupInfo &group, bool group_is_changed,
+                   const std::string *single_line, size_t single_line_no,
+                   bool single_from_old) -> std::string {
   std::string out;
   size_t i = 0;
   while (i < fmt.size()) {
@@ -1664,9 +1225,8 @@ auto expand_format(const std::string &fmt, const std::vector<std::string> &lines
       }
       ++i;
     } else if (c == '(') {
-      out += expand_conditional(fmt, i, lines1, lines2, group,
-                                group_is_changed, single_line,
-                                single_line_no, single_from_old);
+      out += expand_conditional(fmt, i, lines1, lines2, group, group_is_changed,
+                                single_line, single_line_no, single_from_old);
     } else if (c == 'c') {
       // %c'C' or %c'\OOO'
       if (i + 2 < fmt.size() && fmt[i + 1] == '\'') {
@@ -1803,10 +1363,10 @@ void output_format_diff(const std::vector<Edit> &edits,
                          false));
     } else {
       // No group format for this shape: fall back to per-line formats.
-      const std::string &old_lf = !formats.old_line.empty() ? formats.old_line
-                                                            : formats.line;
-      const std::string &new_lf = !formats.new_line.empty() ? formats.new_line
-                                                            : formats.line;
+      const std::string &old_lf =
+          !formats.old_line.empty() ? formats.old_line : formats.line;
+      const std::string &new_lf =
+          !formats.new_line.empty() ? formats.new_line : formats.line;
       for (size_t k = i; k < j; ++k) {
         bool from_old = edits[k].type == EditType::DEL;
         std::string line = from_old ? lines1[edits[k].line1_index]
@@ -1819,17 +1379,16 @@ void output_format_diff(const std::vector<Edit> &edits,
           GroupInfo one;
           one.old_start = edits[k].line1_index + 1;
           one.new_start = edits[k].line2_index + 1;
-          dput(expand_format(lf, lines1, lines2, one, true, &line,
-                             from_old ? edits[k].line1_index + 1
-                                      : edits[k].line2_index + 1,
-                             from_old));
+          dput(expand_format(
+              lf, lines1, lines2, one, true, &line,
+              from_old ? edits[k].line1_index + 1 : edits[k].line2_index + 1,
+              from_old));
         }
       }
     }
     i = j;
   }
 }
-
 
 // ---- Per-pair configuration shared by file and directory modes ----
 enum class OutputMode {
@@ -1879,8 +1438,7 @@ auto glob_match_pattern(std::string_view name, std::string_view pattern)
   size_t star_p = std::string_view::npos;
   size_t star_n = 0;
   while (n < name.size()) {
-    if (p < pattern.size() &&
-        (pattern[p] == '?' || pattern[p] == name[n])) {
+    if (p < pattern.size() && (pattern[p] == '?' || pattern[p] == name[n])) {
       ++n;
       ++p;
     } else if (p < pattern.size() && pattern[p] == '*') {
@@ -1918,14 +1476,14 @@ auto compare_file_pair(const std::string &file1, const std::string &file2,
   }
 
   namespace fs = std::filesystem;
-  auto lines1_result = read_file_lines_result(file1);
-  auto lines2_result = read_file_lines_result(file2);
+  auto lines1_result = diff_engine::read_file_lines_result(file1);
+  auto lines2_result = diff_engine::read_file_lines_result(file2);
   bool input_error = false;
   if (!lines1_result) {
     // -N and --unidirectional-new-file (first operand only) treat an
     // unreadable/absent side as empty.
     if (cfg.new_file || cfg.unidirectional_new_file) {
-      lines1_result = std::vector<std::string>{};
+      lines1_result = diff_engine::FileLines{};
     } else {
       safeErrorPrint("diff: ");
       safeErrorPrint(lines1_result.error());
@@ -1935,7 +1493,7 @@ auto compare_file_pair(const std::string &file1, const std::string &file2,
   }
   if (!lines2_result) {
     if (cfg.new_file) {
-      lines2_result = std::vector<std::string>{};
+      lines2_result = diff_engine::FileLines{};
     } else {
       safeErrorPrint("diff: ");
       safeErrorPrint(lines2_result.error());
@@ -1947,8 +1505,10 @@ auto compare_file_pair(const std::string &file1, const std::string &file2,
     return 2;
   }
 
-  auto &lines1 = lines1_result.value();
-  auto &lines2 = lines2_result.value();
+  auto &file1_input = lines1_result.value();
+  auto &file2_input = lines2_result.value();
+  const std::vector<std::string> &lines1 = file1_input.lines;
+  const std::vector<std::string> &lines2 = file2_input.lines;
 
   // [GNU] --diff-program=PROGRAM: hand the two operands to PROGRAM and
   // relay its output and exit status verbatim.
@@ -1957,8 +1517,8 @@ auto compare_file_pair(const std::string &file1, const std::string &file2,
     STARTUPINFOA si{};
     si.cb = sizeof(si);
     PROCESS_INFORMATION pi{};
-    std::string cmdline = "\"" + cfg.diff_program + "\" \"" + file1 +
-                          "\" \"" + file2 + "\"";
+    std::string cmdline =
+        "\"" + cfg.diff_program + "\" \"" + file1 + "\" \"" + file2 + "\"";
     if (!CreateProcessA(nullptr, cmdline.data(), nullptr, nullptr, TRUE, 0,
                         nullptr, nullptr, &si, &pi)) {
       safeErrorPrint("diff: cannot execute ");
@@ -1975,7 +1535,17 @@ auto compare_file_pair(const std::string &file1, const std::string &file2,
   }
 
   if (cfg.brief) {
-    return compare_files(file1, file2, lines1, lines2, true,
+    auto brief1 = lines1;
+    auto brief2 = lines2;
+    // [GNU io.c] The incomplete-last-line rule applies to -q as well.
+    const bool newline_insensitive = cfg.ignore_trailing_space ||
+                                     cfg.ignore_space_change ||
+                                     cfg.ignore_all_space;
+    diff_engine::mark_incomplete_last_line(
+        brief1, file1_input.ends_with_newline, newline_insensitive);
+    diff_engine::mark_incomplete_last_line(
+        brief2, file2_input.ends_with_newline, newline_insensitive);
+    return compare_files(file1, file2, brief1, brief2, true,
                          cfg.ignore_all_space)
                ? 0
                : 1;
@@ -1990,59 +1560,13 @@ auto compare_file_pair(const std::string &file1, const std::string &file2,
     cmp2 = strip_trailing_cr_lines(cmp2);
   }
   if (cfg.ignore_trailing_space) {
-    auto strip_trailing_ws = [](const std::vector<std::string> &lines) {
-      std::vector<std::string> out;
-      out.reserve(lines.size());
-      for (const auto &line : lines) {
-        size_t end = line.size();
-        while (end > 0 && (line[end - 1] == ' ' || line[end - 1] == '\t' ||
-                           line[end - 1] == '\r')) {
-          --end;
-        }
-        out.push_back(line.substr(0, end));
-      }
-      return out;
-    };
-    cmp1 = strip_trailing_ws(cmp1);
-    cmp2 = strip_trailing_ws(cmp2);
+    cmp1 = diff_engine::strip_trailing_space_lines(cmp1);
+    cmp2 = diff_engine::strip_trailing_space_lines(cmp2);
   }
   if (cfg.ignore_tab_expansion) {
-    // [GNU] Trailing whitespace caused by tab expansion is ignored: expand
-    // tabs only in the trailing whitespace run, then drop it.
-    auto expand_trailing = [ts = cfg.tabsize](const std::vector<std::string> &lines) {
-      std::vector<std::string> out;
-      out.reserve(lines.size());
-      for (const auto &line : lines) {
-        size_t end = line.size();
-        while (end > 0 && (line[end - 1] == ' ' || line[end - 1] == '\t')) {
-          --end;
-        }
-        std::string tail;
-        int col = 0;
-        for (size_t i = end; i < line.size(); ++i) {
-          if (line[i] == '\t') {
-            int spaces = ts - (col % ts);
-            tail.append(static_cast<size_t>(spaces), ' ');
-            col += spaces;
-          } else {
-            tail += ' ';
-            ++col;
-          }
-        }
-        out.push_back(line.substr(0, end) + tail);
-      }
-      return out;
-    };
-    cmp1 = expand_trailing(cmp1);
-    cmp2 = expand_trailing(cmp2);
-  }
-  if (cfg.ignore_blank_lines) {
-    cmp1 = filter_blank_lines(cmp1);
-    cmp2 = filter_blank_lines(cmp2);
-  }
-  if (cfg.expand_tabs) {
-    cmp1 = expand_tabs_lines(cmp1, cfg.tabsize);
-    cmp2 = expand_tabs_lines(cmp2, cfg.tabsize);
+    // [GNU -E] Tabs compare as spaces up to the next tab stop.
+    cmp1 = diff_engine::normalize_tab_expansion_lines(cmp1, cfg.tabsize);
+    cmp2 = diff_engine::normalize_tab_expansion_lines(cmp2, cfg.tabsize);
   }
   cmp1 = normalize_lines_for_compare(cmp1, cfg.ignore_all_space);
   cmp2 = normalize_lines_for_compare(cmp2, cfg.ignore_all_space);
@@ -2054,14 +1578,40 @@ auto compare_file_pair(const std::string &file1, const std::string &file2,
     cmp1 = normalize_lines_case(cmp1);
     cmp2 = normalize_lines_case(cmp2);
   }
-  if (!cfg.ignore_matching.empty()) {
-    cmp1 = filter_matching_lines(cmp1, cfg.ignore_matching);
-    cmp2 = filter_matching_lines(cmp2, cfg.ignore_matching);
+  // [GNU io.c] A last line with no newline compares equal only to the
+  // other file's incomplete last line, unless trailing white space is
+  // ignored (-Z/-b/-W).
+  diff_engine::mark_incomplete_last_line(cmp1, file1_input.ends_with_newline,
+                                         cfg.ignore_trailing_space ||
+                                             cfg.ignore_space_change ||
+                                             cfg.ignore_all_space);
+  diff_engine::mark_incomplete_last_line(cmp2, file2_input.ends_with_newline,
+                                         cfg.ignore_trailing_space ||
+                                             cfg.ignore_space_change ||
+                                             cfg.ignore_all_space);
+
+  // [GNU analyze.c] -B/-I drop whole hunks from the script; their lines
+  // fall back into the unchanged flow and realign positionally.
+  const bool ignore_hunks =
+      cfg.ignore_blank_lines || !cfg.ignore_matching.empty();
+  std::vector<diff_engine::Edit> script_edits;
+  if (ignore_hunks) {
+    script_edits = diff_engine::drop_ignored_hunks(
+        compute_diff(cmp1, cmp2), lines1, lines2,
+        diff_engine::make_blank_or_matching_predicate(cfg.ignore_matching));
   }
+
   auto &compare_lines1 = cmp1;
   auto &compare_lines2 = cmp2;
 
-  if (compare_lines1 == compare_lines2) {
+  // [GNU analyze.c] With -B/-I the exit status reports only hunks that
+  // survive the ignore rules; realigned common runs do not count.
+  const bool has_real_changes =
+      ignore_hunks && std::any_of(script_edits.begin(), script_edits.end(),
+                                  [](const diff_engine::Edit &edit) {
+                                    return edit.type != EditType::KEEP;
+                                  });
+  if (compare_lines1 == compare_lines2 || (ignore_hunks && !has_real_changes)) {
     if (cfg.report_identical) {
       dput("Files ");
       dput(file1);
@@ -2072,55 +1622,57 @@ auto compare_file_pair(const std::string &file1, const std::string &file2,
     return 0;
   }
 
+  // One edit script drives every output format (pre-dropped for -B/-I).
+  std::vector<Edit> final_edits =
+      ignore_hunks ? std::move(script_edits)
+                   : compute_diff(compare_lines1, compare_lines2);
+
   switch (cfg.output_mode) {
     case OutputMode::Unified:
-      output_unified_diff(file1, file2, compare_lines1, compare_lines2,
-                          lines1, lines2, cfg.context, label1, label2,
-                          cfg.style);
+      output_unified_diff(file1, file2, compare_lines1, compare_lines2, lines1,
+                          lines2, cfg.context, label1, label2, cfg.style,
+                          final_edits);
       break;
     case OutputMode::Context:
-      output_context_diff(file1, file2, compare_lines1, compare_lines2,
-                          lines1, lines2, cfg.context, label1, label2,
-                          cfg.style);
+      output_context_diff(file1, file2, compare_lines1, compare_lines2, lines1,
+                          lines2, cfg.context, label1, label2, cfg.style,
+                          final_edits);
       break;
     case OutputMode::SideBySide:
-      output_side_by_side(file1, file2, compare_lines1, compare_lines2,
-                          lines1, lines2, cfg.side_width, cfg.suppress_common,
-                          cfg.left_column, cfg.tabsize, cfg.expand_tabs);
+      diff_engine::emit_side_by_side(
+          final_edits, lines1, lines2, file1_input.ends_with_newline,
+          file2_input.ends_with_newline, cfg.side_width, cfg.suppress_common,
+          cfg.left_column,
+          diff_engine::SdiffStyle{cfg.tabsize, cfg.expand_tabs},
+          [](std::string_view text) { dput(text); });
       break;
     case OutputMode::Ed:
-      output_ed_script(compute_diff(compare_lines1, compare_lines2), lines1,
-                       lines2, false);
+      output_ed_script(final_edits, lines1, lines2, false);
       break;
     case OutputMode::ForwardEd:
-      output_ed_script(compute_diff(compare_lines1, compare_lines2), lines1,
-                       lines2, true);
+      output_ed_script(final_edits, lines1, lines2, true);
       break;
     case OutputMode::Rcs:
-      output_rcs_diff(compute_diff(compare_lines1, compare_lines2), lines1,
-                      lines2);
+      output_rcs_diff(final_edits, lines1, lines2);
       break;
     case OutputMode::Format:
-      output_format_diff(compute_diff(compare_lines1, compare_lines2), lines1,
-                         lines2, cfg.formats);
+      output_format_diff(final_edits, lines1, lines2, cfg.formats);
       break;
     case OutputMode::Normal:
     default: {
       // GNU normal format: per-hunk command line (Na / Nd / NcN) with the
       // deleted lines (<), a `---` separator for changes, and added (>).
-      auto edits = compute_diff(compare_lines1, compare_lines2);
-      auto hunks =
-          build_diff_hunks(edits, lines1.size(), lines2.size(), 0);
+      auto edits = final_edits;
+      auto hunks = build_diff_hunks(edits, lines1.size(), lines2.size(), 0);
       if (hunks.empty()) {
         return 0;
       }
-      std::sort(hunks.begin(), hunks.end(),
-                [](const auto &a, const auto &b) {
-                  if (a.file1_start != b.file1_start) {
-                    return a.file1_start < b.file1_start;
-                  }
-                  return a.file2_start < b.file2_start;
-                });
+      std::sort(hunks.begin(), hunks.end(), [](const auto &a, const auto &b) {
+        if (a.file1_start != b.file1_start) {
+          return a.file1_start < b.file1_start;
+        }
+        return a.file2_start < b.file2_start;
+      });
       auto format_normal_range = [](size_t start_line, size_t count) {
         std::string out = std::to_string(start_line);
         if (count > 1) {
@@ -2192,8 +1744,8 @@ auto compare_directory_pair(const std::string &dir1, const std::string &dir2,
                             const std::string &starting_file,
                             const std::string &command_tail) -> int {
   namespace fs = std::filesystem;
-  auto list_directory = [](const std::string &dir)
-      -> std::optional<std::vector<std::string>> {
+  auto list_directory =
+      [](const std::string &dir) -> std::optional<std::vector<std::string>> {
     std::error_code ec;
     fs::directory_iterator it(fs::path(dir), ec);
     if (ec) return std::nullopt;
@@ -2263,9 +1815,8 @@ auto compare_directory_pair(const std::string &dir1, const std::string &dir2,
       bool take1 =
           i1 < entries1->size() &&
           (i2 >= entries2->size() || (*entries1)[i1] <= (*entries2)[i2]);
-      bool take2 =
-          i2 < entries2->size() &&
-          (i1 >= entries1->size() || (*entries2)[i2] < (*entries1)[i1]);
+      bool take2 = i2 < entries2->size() && (i1 >= entries1->size() ||
+                                             (*entries2)[i2] < (*entries1)[i1]);
       const std::string &name1 = take1 ? (*entries1)[i1] : (*entries2)[i2];
       const std::string &name2 = take2 ? (*entries2)[i2] : name1;
       std::string full1 = join_dir_member(dir1, name1);
@@ -2286,9 +1837,9 @@ auto compare_directory_pair(const std::string &dir1, const std::string &dir2,
       if (take1 && take2 && name1 == name2) {
         if (both_dirs) {
           if (recursive) {
-            int status = compare_directory_pair(
-                full1, full2, cfg, recursive, exclude_pats, exclude_dir_pats,
-                starting_file, command_tail);
+            int status = compare_directory_pair(full1, full2, cfg, recursive,
+                                                exclude_pats, exclude_dir_pats,
+                                                starting_file, command_tail);
             if (status == 2) return 2;
             worst = std::max(worst, status);
           } else {
@@ -2319,9 +1870,9 @@ auto compare_directory_pair(const std::string &dir1, const std::string &dir2,
           }
           PairConfig empty_cfg = cfg;
           empty_cfg.new_file = true;
-          int status = compare_file_pair(existing, missing,
-                                         DiffLabel{existing, false},
-                                         DiffLabel{missing, false}, empty_cfg);
+          int status =
+              compare_file_pair(existing, missing, DiffLabel{existing, false},
+                                DiffLabel{missing, false}, empty_cfg);
           if (status == 2) return 2;
           worst = std::max(worst, status);
         } else {
@@ -2339,8 +1890,7 @@ auto compare_directory_pair(const std::string &dir1, const std::string &dir2,
 }  // namespace diff_pipeline
 
 REGISTER_COMMAND(
-    diff, "diff", "diff [OPTION]... FILES",
-    "Compare files line by line.\n",
+    diff, "diff", "diff [OPTION]... FILES", "Compare files line by line.\n",
     "  diff -u old.txt new.txt    Unified diff with 3 context lines\n"
     "  diff -y f1 f2              Two-column side-by-side comparison\n"
     "  diff -r dir1 dir2          Recursively compare directories",
@@ -2366,8 +1916,7 @@ REGISTER_COMMAND(
   cfg.strip_trailing_cr = ctx.has("--strip-trailing-cr");
   cfg.ignore_trailing_space =
       ctx.has("-Z") || ctx.has("--ignore-trailing-space");
-  cfg.ignore_tab_expansion =
-      ctx.has("-E") || ctx.has("--ignore-tab-expansion");
+  cfg.ignore_tab_expansion = ctx.has("-E") || ctx.has("--ignore-tab-expansion");
   cfg.report_identical = ctx.has("--report-identical-files") || ctx.has("-s");
   cfg.new_file = ctx.has("-N") || ctx.has("--new-file");
   cfg.unidirectional_new_file = ctx.has("--unidirectional-new-file");
@@ -2399,8 +1948,7 @@ REGISTER_COMMAND(
   }
   (void)horizon_lines;
 
-  cfg.ignore_matching =
-      ctx.get<std::string>("--ignore-matching-lines", "");
+  cfg.ignore_matching = ctx.get<std::string>("--ignore-matching-lines", "");
   std::string ifdef_name =
       ctx.get<std::string>("-D", ctx.get<std::string>("--ifdef", ""));
   std::string from_file = ctx.get<std::string>("--from-file", "");
@@ -2412,9 +1960,9 @@ REGISTER_COMMAND(
     exclude_pats.push_back(std::string(occ.value));
   }
   for (const auto &occ : ctx.string_occurrences({"-X", "--exclude-from"})) {
-    auto lines = read_file_lines_result(std::string(occ.value));
+    auto lines = diff_engine::read_file_lines_result(std::string(occ.value));
     if (lines) {
-      for (const auto &line : lines.value()) {
+      for (const auto &line : lines.value().lines) {
         if (!line.empty()) exclude_pats.push_back(line);
       }
     } else {
@@ -2439,8 +1987,7 @@ REGISTER_COMMAND(
   formats.line = ctx.get<std::string>("--line-format", "");
   formats.old_line = ctx.get<std::string>("--old-line-format", "");
   formats.new_line = ctx.get<std::string>("--new-line-format", "");
-  formats.unchanged_line =
-      ctx.get<std::string>("--unchanged-line-format", "");
+  formats.unchanged_line = ctx.get<std::string>("--unchanged-line-format", "");
   const bool use_ifdef = !ifdef_name.empty();
   const bool use_formats = directive_has_any(formats);
   if (use_ifdef) {
@@ -2528,14 +2075,22 @@ REGISTER_COMMAND(
   }
   auto to_pipeline_mode = [](Mode m) -> OutputMode {
     switch (m) {
-      case Mode::Unified: return OutputMode::Unified;
-      case Mode::Context: return OutputMode::Context;
-      case Mode::SideBySide: return OutputMode::SideBySide;
-      case Mode::Ed: return OutputMode::Ed;
-      case Mode::ForwardEd: return OutputMode::ForwardEd;
-      case Mode::Rcs: return OutputMode::Rcs;
-      case Mode::Format: return OutputMode::Format;
-      default: return OutputMode::Normal;
+      case Mode::Unified:
+        return OutputMode::Unified;
+      case Mode::Context:
+        return OutputMode::Context;
+      case Mode::SideBySide:
+        return OutputMode::SideBySide;
+      case Mode::Ed:
+        return OutputMode::Ed;
+      case Mode::ForwardEd:
+        return OutputMode::ForwardEd;
+      case Mode::Rcs:
+        return OutputMode::Rcs;
+      case Mode::Format:
+        return OutputMode::Format;
+      default:
+        return OutputMode::Normal;
     }
   };
   // [GNU] -D/--ifdef and the GFMT/LFMT family generalize the line formats;
@@ -2601,8 +2156,7 @@ REGISTER_COMMAND(
 
   // -- from-file/to-file: one side fixed, the other iterated --
   if (!from_file.empty() && !to_file.empty()) {
-    safeErrorPrintLn(
-        "diff: --from-file and --to-file are mutually exclusive");
+    safeErrorPrintLn("diff: --from-file and --to-file are mutually exclusive");
     return 2;
   }
   if (!from_file.empty() || !to_file.empty()) {
@@ -2692,9 +2246,9 @@ REGISTER_COMMAND(
 
   // -- Two directory operands: per-level listing, -r recursion --
   if (file1_is_dir && file2_is_dir) {
-    int status = compare_directory_pair(
-        file1, file2, cfg, recursive, exclude_pats, exclude_dir_pats,
-        starting_file_str, command_tail);
+    int status = compare_directory_pair(file1, file2, cfg, recursive,
+                                        exclude_pats, exclude_dir_pats,
+                                        starting_file_str, command_tail);
     return finish(status);
   }
 
