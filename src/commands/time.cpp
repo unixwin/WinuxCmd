@@ -227,12 +227,22 @@ struct Config {
 
 REGISTER_COMMAND(
     time_cmd, "time", "time [OPTION]... COMMAND [ARG]...",
-    "Run a command and report how long it took.\n"
+    "Run COMMAND, then print system resource usage.\n"
     "\n"
-    "The command is executed as a child process and the child exit status is\n"
-    "returned unchanged. Timing data is written to standard error.\n"
+    "The command is executed as a child process; its exit status is returned\n"
+    "unchanged.  After the command finishes, timing information is written\n"
+    "to standard error:\n"
     "\n"
-    "With -p, print POSIX-compatible timing lines.",
+    "  real <elapsed wall clock time in seconds>\n"
+    "  user <user cpu time in seconds>\n"
+    "  sys  <system cpu time in seconds>\n"
+    "\n"
+    "With -p, print the same three lines in the POSIX 1003.2 style required\n"
+    "by GNU time's --portability option.\n"
+    "\n"
+    "[DIFFERS] GNU Time options that select the output format or destination\n"
+    "(-f/--format, -o/--output, -a/--append, -v/--verbose, -q/--quiet) are\n"
+    "not implemented in this Windows port.",
     "  time true\n"
     "  time -p cmd.exe /c exit 7",
     "bash(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", TIME_OPTIONS) {

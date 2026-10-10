@@ -37,9 +37,40 @@ REGISTER_COMMAND(man,
                  /* cmd_name */ "man",
                  /* cmd_synopsis */ "man [OPTION]... [COMMAND]...",
                  /* cmd_desc */
-                 "Display manual page for a WinuxCmd command.\n"
-                 "[DIFFERS] Options -t, -T, -H are GNU-specific and not "
-                 "available on Windows.",
+                 "man is the manual pager for WinuxCmd.  Each page argument "
+                 "given to\n"
+                 "man is normally the name of a command.  WinuxCmd ships one "
+                 "manual\n"
+                 "page per supported command in a built-in registry; the "
+                 "requested\n"
+                 "page is formatted and displayed through the built-in "
+                 "pager.\n"
+                 "\n"
+                 "The default action is to display the manual page in the "
+                 "terminal.\n"
+                 "With -l/--list, man lists every command that has a manual "
+                 "page and\n"
+                 "exits.  With -w/--where, man prints the physical location "
+                 "of each\n"
+                 "requested page instead of displaying it.\n"
+                 "\n"
+                 "Mandatory or optional arguments to long options are also "
+                 "mandatory\n"
+                 "or optional for any corresponding short options.\n"
+                 "\n"
+                 "[DIFFERS] man-db options that need a system man tree or "
+                 "external\n"
+                 "formatters are not implemented: section selection,\n"
+                 "-f/--whatis, -k/--apropos, -K/--global-apropos,\n"
+                 "-l/--local-file (WinuxCmd rebinds -l to --list),\n"
+                 "-a/--all, --regex, --wildcard, --names-only, -M/--manpath,\n"
+                 "-m/--systems, -S/--sections, -e/--extension, -i/-I case "
+                 "control,\n"
+                 "-L/--locale, -u/--update, -r/--prompt, -7/--ascii,\n"
+                 "-E/--encoding, --nh, --nj, -p/--preprocessor,\n"
+                 "-X/--gxditview, -Z/--ditroff and --usage.  -P/--pager is\n"
+                 "accepted; the built-in pager is always used.  -t/--troff,\n"
+                 "-T/--troff-device and -H/--html report an error.",
                  /* examples */ "man ls\nman grep\nman --list\nman -w ls",
                  /* see_also */ "help(1)",
                  /* author */ "WinuxCmd",
