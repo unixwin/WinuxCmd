@@ -123,7 +123,7 @@ Details in the [WPM User Guide](DOCS/en/wpm_guide.md).
 | **Maintained** | ✅ 2026 | ✅ | ❌ since 2012 | ✅ | ❌ |
 
 <details>
-<summary><b>Deep dive: vs uutils / GnuWin32 / Cygwin</b></summary>
+<summary><b>Detailed comparison: vs uutils / GnuWin32 / Cygwin</b></summary>
 
 ### vs uutils/coreutils (Rust)
 

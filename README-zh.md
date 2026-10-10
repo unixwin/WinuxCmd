@@ -123,7 +123,7 @@ wpm list --all          # 查看已安装
 | **活跃维护** | ✅ 2026 | ✅ | ❌ 2012 年起 | ✅ | ❌ |
 
 <details>
-<summary><b>深度对比：vs uutils / GnuWin32 / Cygwin</b></summary>
+<summary><b>详细对比：vs uutils / GnuWin32 / Cygwin</b></summary>
 
 ### vs uutils/coreutils（Rust）
 
