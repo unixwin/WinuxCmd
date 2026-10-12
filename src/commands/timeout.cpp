@@ -47,91 +47,6 @@ struct Config {
   SmallVector<std::string, 64> args;
 };
 
-auto build_timeout_command_line(std::string_view command,
-                                std::span<const std::string> args)
-    -> std::wstring {
-  std::wstring cmd_line =
-      quote_windows_command_arg(utf8_to_wstring(std::string(command)));
-  for (const auto& arg : args) {
-    append_windows_command_arg(cmd_line, utf8_to_wstring(arg));
-  }
-  return cmd_line;
-}
-
-auto search_path(std::wstring_view file, std::wstring_view extension = {})
-    -> std::optional<std::wstring> {
-  std::wstring file_storage(file);
-  std::wstring extension_storage(extension);
-  DWORD capacity = MAX_PATH;
-  for (;;) {
-    std::wstring buffer(capacity, L'\0');
-    DWORD length = SearchPathW(
-        nullptr, file_storage.c_str(),
-        extension_storage.empty() ? nullptr : extension_storage.c_str(),
-        capacity, buffer.data(), nullptr);
-    if (length == 0) return std::nullopt;
-    if (length < capacity) {
-      buffer.resize(length);
-      return buffer;
-    }
-    if (length >= 32768) return std::nullopt;
-    capacity = length + 1;
-  }
-}
-
-auto lowercase(std::wstring value) -> std::wstring {
-  std::transform(value.begin(), value.end(), value.begin(),
-                 [](wchar_t ch) { return std::towlower(ch); });
-  return value;
-}
-
-auto find_batch_command(std::wstring_view command)
-    -> std::optional<std::wstring> {
-  const std::filesystem::path command_path{command};
-  const auto extension = lowercase(command_path.extension().wstring());
-  if (extension == L".cmd" || extension == L".bat") {
-    return search_path(command);
-  }
-  if (!extension.empty()) return std::nullopt;
-
-  for (const auto script_extension : {L".cmd", L".bat"}) {
-    if (auto path = search_path(command, script_extension)) return path;
-  }
-  return std::nullopt;
-}
-
-struct LaunchCommand {
-  std::optional<std::wstring> application_name;
-  std::wstring command_line;
-};
-
-auto build_launch_command(std::string_view command,
-                          std::span<const std::string> args) -> LaunchCommand {
-  const auto wcommand = utf8_to_wstring(std::string(command));
-  if (auto batch_path = find_batch_command(wcommand)) {
-    wchar_t comspec[MAX_PATH]{};
-    DWORD length = GetEnvironmentVariableW(
-        L"COMSPEC", comspec, static_cast<DWORD>(std::size(comspec)));
-    std::wstring comspec_path;
-    if (length > 0 && length < std::size(comspec)) {
-      comspec_path.assign(comspec, length);
-    } else {
-      comspec_path = L"cmd.exe";
-    }
-
-    std::wstring script_command = quote_windows_command_arg(*batch_path);
-    for (const auto& arg : args) {
-      append_windows_command_arg(script_command, utf8_to_wstring(arg));
-    }
-
-    // CreateProcessW cannot launch a batch file directly. Keep the script as
-    // the command being monitored while cmd.exe provides the Windows wrapper.
-    return {std::move(comspec_path), L"/d /s /c \"" + script_command + L"\""};
-  }
-
-  return {std::nullopt, build_timeout_command_line(command, args)};
-}
-
 auto timeout_signal_name(int signal) -> std::string {
   switch (signal) {
     case 0:
@@ -291,7 +206,24 @@ auto build_config(const CommandContext<TIMEOUT_OPTIONS.size()>& ctx)
 
 auto run(const Config& cfg) -> int {
   if (!cfg.command.empty()) {
-    auto launch = build_launch_command(cfg.command, cfg.args);
+    // Resolve the child with GNU execvp semantics (PATH-only; no
+    // application-directory, cwd, or System32 fallback) so a name colliding
+    // with a Windows image (timeout, sort, find, ...) resolves from the
+    // caller's PATH. Batch scripts are routed through the command
+    // interpreter, which CreateProcessW cannot launch directly.
+    winux::childproc::ChildLaunchRequest timeout_launch_request;
+    timeout_launch_request.command = cfg.command;
+    for (const auto& arg : cfg.args) {
+      timeout_launch_request.args.push_back(arg);
+    }
+    auto launch = winux::childproc::plan_child_launch(timeout_launch_request);
+    if (launch.status != winux::childproc::ChildResolveStatus::Found) {
+      const DWORD resolve_error =
+          winux::childproc::child_status_to_win32_error(launch.status);
+      safeErrorPrintLn("timeout: failed to run command '" + cfg.command +
+                       "': " + win32_posix_error_text(resolve_error));
+      return winux::childproc::child_spawn_exit_status(resolve_error);
+    }
     std::wstring& wcmd_line = launch.command_line;
 
     // Create process

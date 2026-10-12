@@ -59,11 +59,6 @@ auto open_inheritable_file(const wchar_t* path, DWORD access, DWORD creation)
   return CreateFileW(path, access, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa,
                      creation, FILE_ATTRIBUTE_NORMAL, nullptr);
 }
-
-auto build_nohup_command_line(std::span<const std::string_view> args)
-    -> std::wstring {
-  return build_windows_command_line(args);
-}
 }  // namespace
 
 // ======================================================
@@ -137,11 +132,31 @@ REGISTER_COMMAND(
     }
   }
 
-  auto cmd_line = build_nohup_command_line(ctx.positionals);
+  // Resolve the child with GNU execvp semantics (PATH-only; no
+  // application-directory, cwd, or System32 fallback) so a name colliding
+  // with a Windows image resolves from the caller's PATH.
+  winux::childproc::ChildLaunchRequest nohup_launch_request;
+  nohup_launch_request.command = std::string(ctx.positionals[0]);
+  for (size_t i = 1; i < ctx.positionals.size(); ++i) {
+    nohup_launch_request.args.emplace_back(ctx.positionals[i]);
+  }
+  auto launch = winux::childproc::plan_child_launch(nohup_launch_request);
+  if (launch.status != winux::childproc::ChildResolveStatus::Found) {
+    const DWORD resolve_error =
+        winux::childproc::child_status_to_win32_error(launch.status);
+    for (HANDLE handle : owned_handles) {
+      CloseHandle(handle);
+    }
+    safeErrorPrintLn("nohup: failed to run command '" +
+                     std::string(ctx.positionals[0]) +
+                     "': " + nohup_windows_error_text(resolve_error));
+    return nohup_command_status_from_create_error(resolve_error);
+  }
 
   DWORD creation_flags = CREATE_NEW_PROCESS_GROUP;
 
-  if (!CreateProcessW(nullptr, cmd_line.data(), nullptr, nullptr, TRUE,
+  if (!CreateProcessW(launch.application_name->c_str(),
+                      launch.command_line.data(), nullptr, nullptr, TRUE,
                       creation_flags, nullptr, nullptr, &si, &pi)) {
     DWORD error = GetLastError();
     for (HANDLE handle : owned_handles) {

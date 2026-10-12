@@ -28,11 +28,6 @@ struct HandleCloser {
 using unique_handle =
     std::unique_ptr<std::remove_pointer_t<HANDLE>, HandleCloser>;
 
-struct LaunchCommand {
-  std::optional<std::wstring> application_name;
-  std::wstring command_line;
-};
-
 struct Config {
   bool posix = false;
   std::string command;
@@ -49,81 +44,6 @@ struct Config {
 [[nodiscard]] auto filetime_to_seconds(const FILETIME& ft) -> double {
   constexpr double kTicksPerSecond = 10000000.0;
   return static_cast<double>(filetime_to_ticks(ft)) / kTicksPerSecond;
-}
-
-[[nodiscard]] auto build_command_line(std::string_view command,
-                                      std::span<const std::string> args)
-    -> std::wstring {
-  std::wstring command_line =
-      quote_windows_command_arg(utf8_to_wstring(std::string(command)));
-  for (const auto& arg : args) {
-    append_windows_command_arg(command_line, utf8_to_wstring(arg));
-  }
-  return command_line;
-}
-
-[[nodiscard]] auto search_path(std::wstring_view file,
-                               std::wstring_view extension = {})
-    -> std::optional<std::wstring> {
-  const std::wstring file_storage(file);
-  const std::wstring extension_storage(extension);
-  DWORD capacity = MAX_PATH;
-  for (;;) {
-    std::wstring buffer(capacity, L'\0');
-    const DWORD length = SearchPathW(
-        nullptr, file_storage.c_str(),
-        extension_storage.empty() ? nullptr : extension_storage.c_str(),
-        capacity, buffer.data(), nullptr);
-    if (length == 0) return std::nullopt;
-    if (length < capacity) {
-      buffer.resize(length);
-      return buffer;
-    }
-    if (length >= 32768) return std::nullopt;
-    capacity = length + 1;
-  }
-}
-
-[[nodiscard]] auto find_batch_wrapper(std::wstring_view command)
-    -> std::optional<std::wstring> {
-  const std::filesystem::path command_path{command};
-  std::wstring extension = command_path.extension().wstring();
-  std::ranges::transform(extension, extension.begin(), [](wchar_t ch) {
-    return static_cast<wchar_t>(std::towlower(ch));
-  });
-
-  if (extension == L".cmd" || extension == L".bat") {
-    return search_path(command);
-  }
-  if (!extension.empty()) return std::nullopt;
-
-  for (const auto* candidate_extension : {L".cmd", L".bat"}) {
-    if (auto path = search_path(command, candidate_extension)) return path;
-  }
-  return std::nullopt;
-}
-
-[[nodiscard]] auto build_launch_command(std::string_view command,
-                                        std::span<const std::string> args)
-    -> LaunchCommand {
-  const std::wstring wcommand = utf8_to_wstring(std::string(command));
-  if (auto batch_path = find_batch_wrapper(wcommand)) {
-    wchar_t comspec[MAX_PATH]{};
-    const DWORD length = GetEnvironmentVariableW(
-        L"COMSPEC", comspec, static_cast<DWORD>(std::size(comspec)));
-    std::wstring shell = L"cmd.exe";
-    if (length > 0 && length < std::size(comspec)) {
-      shell.assign(comspec, length);
-    }
-
-    std::wstring script_line = quote_windows_command_arg(*batch_path);
-    for (const auto& arg : args) {
-      append_windows_command_arg(script_line, utf8_to_wstring(arg));
-    }
-    return {std::move(shell), L"/d /s /c \"" + script_line + L"\""};
-  }
-
-  return {std::nullopt, build_command_line(command, args)};
 }
 
 [[nodiscard]] auto build_config(const CommandContext<TIME_OPTIONS.size()>& ctx)
@@ -160,7 +80,24 @@ struct Config {
     return 125;
   }
 
-  auto launch = build_launch_command(cfg.command, cfg.args);
+  // Resolve the child with GNU execvp semantics (PATH-only; no
+  // application-directory, cwd, or System32 fallback) so a name colliding
+  // with a Windows image resolves from the caller's PATH. Batch scripts are
+  // routed through the command interpreter.
+  winux::childproc::ChildLaunchRequest time_launch_request;
+  time_launch_request.command = cfg.command;
+  for (const auto& arg : cfg.args) {
+    time_launch_request.args.push_back(arg);
+  }
+  auto launch = winux::childproc::plan_child_launch(time_launch_request);
+  if (launch.status != winux::childproc::ChildResolveStatus::Found) {
+    const DWORD resolve_error =
+        winux::childproc::child_status_to_win32_error(launch.status);
+    safeErrorPrintLn("time: failed to run command '" + cfg.command +
+                     "': " + win32_posix_error_text(resolve_error));
+    return winux::childproc::child_spawn_exit_status(resolve_error);
+  }
+  std::wstring command_line = std::move(launch.command_line);
 
   STARTUPINFOW si{sizeof(si)};
   si.dwFlags = STARTF_USESTDHANDLES;
@@ -169,11 +106,9 @@ struct Config {
   si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
 
   PROCESS_INFORMATION pi{};
-  std::wstring command_line = launch.command_line;
-  const BOOL ok = CreateProcessW(
-      launch.application_name ? launch.application_name->c_str() : nullptr,
-      command_line.data(), nullptr, nullptr, TRUE, 0, nullptr, nullptr, &si,
-      &pi);
+  const BOOL ok =
+      CreateProcessW(launch.application_name->c_str(), command_line.data(),
+                     nullptr, nullptr, TRUE, 0, nullptr, nullptr, &si, &pi);
   if (!ok) {
     const DWORD error = GetLastError();
     safeErrorPrintLn("time: failed to run command '" + cfg.command +

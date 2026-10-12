@@ -72,21 +72,6 @@ struct Config {
   SmallVector<std::string, 32> raw_args;
 };
 
-auto split_semicolon(std::string_view text) -> std::vector<std::string> {
-  SmallVector<std::string, 256> out;
-  size_t start = 0;
-  while (start <= text.size()) {
-    size_t pos = text.find(';', start);
-    if (pos == std::string_view::npos) {
-      out.emplace_back(text.substr(start));
-      break;
-    }
-    out.emplace_back(text.substr(start, pos - start));
-    start = pos + 1;
-  }
-  return std::vector<std::string>(out.begin(), out.end());
-}
-
 auto get_env_utf8(const wchar_t* key) -> std::optional<std::string> {
   DWORD size = GetEnvironmentVariableW(key, nullptr, 0);
   if (size == 0) return std::nullopt;
@@ -118,144 +103,6 @@ auto find_env_value(const std::map<std::string, std::string>& vars,
   }
 
   return std::nullopt;
-}
-
-auto get_path_entries(const std::map<std::string, std::string>& vars)
-    -> std::vector<std::string> {
-  auto path_env = find_env_value(vars, "PATH");
-  if (!path_env.has_value() || path_env->empty()) return {};
-  return split_semicolon(*path_env);
-}
-
-auto get_pathext_entries(const std::map<std::string, std::string>& vars)
-    -> std::vector<std::string> {
-  auto ext_env = find_env_value(vars, "PATHEXT");
-  if (!ext_env.has_value() || ext_env->empty()) {
-    return std::vector<std::string>{".exe", ".cmd", ".bat", ".com"};
-  }
-  auto exts = split_semicolon(*ext_env);
-  if (exts.empty()) {
-    exts = std::vector<std::string>{".exe", ".cmd", ".bat", ".com"};
-  }
-  for (auto& ext : exts) {
-    if (!ext.empty() && ext.front() != '.') ext.insert(ext.begin(), '.');
-    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char ch) {
-      return static_cast<char>(std::tolower(ch));
-    });
-  }
-  return exts;
-}
-
-auto has_path_separator(std::string_view s) -> bool {
-  return s.find('/') != std::string_view::npos ||
-         s.find('\\') != std::string_view::npos;
-}
-
-auto exists_regular(const std::filesystem::path& p) -> bool {
-  std::error_code ec;
-  return std::filesystem::exists(p, ec) &&
-         std::filesystem::is_regular_file(p, ec);
-}
-
-auto exists_any(const std::filesystem::path& p) -> bool {
-  std::error_code ec;
-  return std::filesystem::exists(p, ec);
-}
-
-auto with_extensions(const std::filesystem::path& base,
-                     const std::vector<std::string>& exts)
-    -> std::vector<std::filesystem::path> {
-  std::vector<std::filesystem::path> out;
-  out.push_back(base);
-  if (base.has_extension()) return out;
-
-  for (const auto& ext : exts) {
-    auto candidate = base;
-    candidate += ext;
-    out.push_back(std::move(candidate));
-  }
-  return out;
-}
-
-enum class ExecutableLookupStatus {
-  Found,
-  NotFound,
-  NotExecutable,
-  NotADirectory,
-};
-
-struct ExecutableLookupResult {
-  ExecutableLookupStatus status = ExecutableLookupStatus::NotFound;
-  std::optional<std::wstring> path;
-};
-
-auto resolve_executable(std::string_view program,
-                        const std::map<std::string, std::string>& vars,
-                        std::string_view working_directory = {})
-    -> ExecutableLookupResult {
-  const auto pathext = get_pathext_entries(vars);
-  bool found_non_executable = false;
-
-  auto scan_candidates =
-      [&](const std::filesystem::path& base) -> std::optional<std::wstring> {
-    for (const auto& candidate : with_extensions(base, pathext)) {
-      if (exists_regular(candidate)) return candidate.wstring();
-      if (exists_any(candidate)) found_non_executable = true;
-    }
-    return std::nullopt;
-  };
-
-  if (has_path_separator(program)) {
-    std::filesystem::path base{std::string(program)};
-    if (auto match = scan_candidates(base)) {
-      return {ExecutableLookupStatus::Found, std::move(match)};
-    }
-    // [GNU] a trailing separator after a regular file is ENOTDIR
-    // ("Not a directory", exit 126), not ENOENT (uutils #12778).
-    if (program.ends_with('/') || program.ends_with('\\')) {
-      std::string stripped(program);
-      while (!stripped.empty() &&
-             (stripped.back() == '/' || stripped.back() == '\\')) {
-        stripped.pop_back();
-      }
-      std::error_code ec;
-      std::filesystem::path stripped_path{stripped};
-      if (std::filesystem::exists(stripped_path, ec) &&
-          !std::filesystem::is_directory(stripped_path, ec)) {
-        return {ExecutableLookupStatus::NotADirectory, std::nullopt};
-      }
-    }
-    return {found_non_executable ? ExecutableLookupStatus::NotExecutable
-                                 : ExecutableLookupStatus::NotFound,
-            std::nullopt};
-  }
-
-  std::vector<std::filesystem::path> search_roots;
-  if (!working_directory.empty()) {
-    search_roots.emplace_back(std::string(working_directory));
-  } else {
-    search_roots.emplace_back(std::filesystem::current_path());
-  }
-
-  for (const auto& root : search_roots) {
-    std::filesystem::path base = root / std::string(program);
-    if (auto match = scan_candidates(base)) {
-      return {ExecutableLookupStatus::Found, std::move(match)};
-    }
-  }
-
-  for (const auto& dir : get_path_entries(vars)) {
-    if (dir.empty()) continue;
-    std::filesystem::path base =
-        std::filesystem::path(dir) / std::string(program);
-    if (auto match = scan_candidates(base)) {
-      return {ExecutableLookupStatus::Found, std::move(match)};
-    }
-  }
-
-  return {found_non_executable ? ExecutableLookupStatus::NotExecutable
-                               : ExecutableLookupStatus::NotFound,
-          std::nullopt};
 }
 
 auto parse_env_block() -> std::map<std::string, std::string> {
@@ -748,18 +595,6 @@ auto print_env(const std::map<std::string, std::string>& vars,
   }
 }
 
-auto build_command_line(const SmallVector<std::string, 32>& command,
-                        const std::optional<std::string>& argv0_override =
-                            std::nullopt) -> std::wstring {
-  auto argv0 = argv0_override.has_value() ? utf8_to_wstring(*argv0_override)
-                                          : utf8_to_wstring(command.front());
-  std::wstring out = quote_windows_command_arg(argv0);
-  for (size_t i = 1; i < command.size(); ++i) {
-    append_windows_command_arg(out, utf8_to_wstring(command[i]));
-  }
-  return out;
-}
-
 auto build_environment_block(const std::map<std::string, std::string>& vars)
     -> std::vector<wchar_t> {
   std::vector<wchar_t> block;
@@ -859,22 +694,34 @@ auto run_command(const Config& cfg,
     }
   }
 
-  auto lookup = resolve_executable(cfg.command.front(), vars, cfg.chdir);
-  if (lookup.status != ExecutableLookupStatus::Found) {
-    const DWORD error = lookup.status == ExecutableLookupStatus::NotExecutable
-                            ? ERROR_ACCESS_DENIED
-                        : lookup.status == ExecutableLookupStatus::NotADirectory
-                            ? ERROR_DIRECTORY
-                            : ERROR_FILE_NOT_FOUND;
+  // Resolve the child with GNU execvp semantics through the shared helper:
+  // PATH-only search (no application-directory, cwd, or System32 fallback),
+  // honoring the modified PATH this env invocation is about to install.
+  std::optional<std::wstring> path_override;
+  if (auto path_value = find_env_value(vars, "PATH"); path_value.has_value()) {
+    path_override = utf8_to_wstring(*path_value);
+  }
+  winux::childproc::ChildLaunchRequest env_launch_request;
+  env_launch_request.command = cfg.command.front();
+  for (size_t i = 1; i < cfg.command.size(); ++i) {
+    env_launch_request.args.emplace_back(cfg.command[i]);
+  }
+  if (!cfg.argv0.empty()) {
+    env_launch_request.argv0 = cfg.argv0;
+  }
+  env_launch_request.path_override = path_override;
+
+  auto launch = winux::childproc::plan_child_launch(env_launch_request);
+  if (launch.status != winux::childproc::ChildResolveStatus::Found) {
+    const DWORD error =
+        winux::childproc::child_status_to_win32_error(launch.status);
     safeErrorPrint("env: failed to run command '" + cfg.command.front() +
                    "': " + env_windows_error_text(error) + "\n");
     return env_command_status_from_create_error(error);
   }
-  std::optional<std::wstring> application_name = std::move(lookup.path);
-
-  auto cmd_line = build_command_line(
-      cfg.command,
-      cfg.argv0.empty() ? std::nullopt : std::optional<std::string>(cfg.argv0));
+  std::optional<std::wstring> application_name =
+      std::move(launch.application_name);
+  auto cmd_line = std::move(launch.command_line);
   auto env_block = build_environment_block(vars);
   std::wstring working_directory;
   LPCWSTR working_directory_arg =

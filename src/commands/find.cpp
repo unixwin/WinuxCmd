@@ -3672,15 +3672,6 @@ auto delete_path(const std::filesystem::path& p, Config& cfg) -> bool {
   return true;
 }
 
-auto build_command_line(const std::string& command,
-                        const std::vector<std::string>& args) -> std::wstring {
-  std::wstring cmd_line = quote_windows_command_arg(utf8_to_wstring(command));
-  for (const auto& arg : args) {
-    append_windows_command_arg(cmd_line, utf8_to_wstring(arg));
-  }
-  return cmd_line;
-}
-
 auto replace_placeholder(std::string_view text, std::string_view path)
     -> std::string {
   std::string out(text);
@@ -3694,15 +3685,24 @@ auto replace_placeholder(std::string_view text, std::string_view path)
 
 auto run_child(const std::string& command, const std::vector<std::string>& args,
                const std::filesystem::path& working_directory = {}) -> int {
-  auto cmd_line = build_command_line(command, args);
+  // Resolve the child with GNU execvp semantics (PATH-only; no
+  // application-directory, cwd, or System32 fallback) so a name colliding
+  // with a Windows image resolves from the caller's PATH.
+  winux::childproc::ChildLaunchRequest find_launch_request;
+  find_launch_request.command = command;
+  find_launch_request.args = args;
+  auto launch = winux::childproc::plan_child_launch(find_launch_request);
+  if (launch.status != winux::childproc::ChildResolveStatus::Found) {
+    return 127;
+  }
   STARTUPINFOW si{sizeof(si)};
   PROCESS_INFORMATION pi{};
 
   std::wstring cwd =
       working_directory.empty() ? L"" : working_directory.wstring();
-  BOOL ok =
-      CreateProcessW(nullptr, cmd_line.data(), nullptr, nullptr, TRUE, 0,
-                     nullptr, cwd.empty() ? nullptr : cwd.c_str(), &si, &pi);
+  BOOL ok = CreateProcessW(
+      launch.application_name->c_str(), launch.command_line.data(), nullptr,
+      nullptr, TRUE, 0, nullptr, cwd.empty() ? nullptr : cwd.c_str(), &si, &pi);
   if (!ok) return 127;
 
   WaitForSingleObject(pi.hProcess, INFINITE);

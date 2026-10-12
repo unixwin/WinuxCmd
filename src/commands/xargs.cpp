@@ -915,7 +915,26 @@ auto launch_process(const std::string &command,
                     ChildStdinMode stdin_mode,
                     std::string_view process_slot_var, int slot)
     -> cp::Result<ChildProcess> {
-  auto cmd_line = build_command_line(command, args);
+  // Resolve the child with GNU execvp semantics (PATH-only; no
+  // application-directory, cwd, or System32 fallback) so a name colliding
+  // with a Windows image resolves from the caller's PATH. Resolve failures
+  // reuse the CreateProcess error channel so the caller keeps one
+  // diagnostic/exit-status mapping.
+  winux::childproc::ChildLaunchRequest xargs_launch_request;
+  xargs_launch_request.command = command;
+  xargs_launch_request.args = args;
+  // xargs has its own command-aware quoting (caret escaping for cmd /C
+  // tails); keep that line and let the helper only resolve the image and
+  // route batch scripts through the command interpreter.
+  xargs_launch_request.command_line_override =
+      build_command_line(command, args);
+  auto launch = winux::childproc::plan_child_launch(xargs_launch_request);
+  if (launch.status != winux::childproc::ChildResolveStatus::Found) {
+    return std::unexpected<cp::Error>(
+        "create process failed:" +
+        std::to_string(
+            winux::childproc::child_status_to_win32_error(launch.status)));
+  }
   STARTUPINFOW si = {sizeof(si)};
   PROCESS_INFORMATION pi{};
   ScopedHandle stdin_handle;
@@ -942,7 +961,8 @@ auto launch_process(const std::string &command,
   auto env_block = build_environment_block(process_slot_var, slot);
   LPVOID environment = env_block.empty() ? nullptr : env_block.data();
 
-  BOOL success = CreateProcessW(nullptr, cmd_line.data(), nullptr, nullptr,
+  BOOL success = CreateProcessW(launch.application_name->c_str(),
+                                launch.command_line.data(), nullptr, nullptr,
                                 TRUE, CREATE_UNICODE_ENVIRONMENT, environment,
                                 nullptr, &si, &pi);
   if (!success) {

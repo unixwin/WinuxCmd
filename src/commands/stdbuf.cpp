@@ -165,11 +165,6 @@ auto stdbuf_windows_error_text(DWORD error) -> std::string {
   return win32_posix_error_text(error);
 }
 
-auto build_stdbuf_command_line(std::span<const std::string_view> args)
-    -> std::wstring {
-  return build_windows_command_line(args);
-}
-
 auto set_child_buffer_mode(const char* name, const std::string& mode)
     -> std::optional<std::string> {
   const char* old = std::getenv(name);
@@ -294,9 +289,29 @@ REGISTER_COMMAND(
   // Execute command
   STARTUPINFOW si = {sizeof(si)};
   PROCESS_INFORMATION pi;
-  auto cmd_line = build_stdbuf_command_line(ctx.positionals);
+  // Execute command. The child is resolved with GNU execvp semantics
+  // (PATH-only; no application-directory, cwd, or System32 fallback) so a
+  // name colliding with a Windows image resolves from the caller's PATH.
+  winux::childproc::ChildLaunchRequest stdbuf_launch_request;
+  stdbuf_launch_request.command = std::string(ctx.positionals[0]);
+  for (size_t i = 1; i < ctx.positionals.size(); ++i) {
+    stdbuf_launch_request.args.emplace_back(ctx.positionals[i]);
+  }
+  auto launch = winux::childproc::plan_child_launch(stdbuf_launch_request);
+  if (launch.status != winux::childproc::ChildResolveStatus::Found) {
+    restore_child_buffer_mode("WINUX_STDBUF_I", old_i);
+    restore_child_buffer_mode("WINUX_STDBUF_O", old_o);
+    restore_child_buffer_mode("WINUX_STDBUF_E", old_e);
+    const DWORD resolve_error =
+        winux::childproc::child_status_to_win32_error(launch.status);
+    safeErrorPrintLn("stdbuf: failed to run command '" +
+                     std::string(ctx.positionals[0]) +
+                     "': " + stdbuf_windows_error_text(resolve_error));
+    return stdbuf_command_status_from_create_error(resolve_error);
+  }
 
-  if (!CreateProcessW(nullptr, cmd_line.data(), nullptr, nullptr, TRUE, 0,
+  if (!CreateProcessW(launch.application_name->c_str(),
+                      launch.command_line.data(), nullptr, nullptr, TRUE, 0,
                       nullptr, nullptr, &si, &pi)) {
     restore_child_buffer_mode("WINUX_STDBUF_I", old_i);
     restore_child_buffer_mode("WINUX_STDBUF_O", old_o);

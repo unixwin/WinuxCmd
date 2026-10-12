@@ -60,11 +60,6 @@ auto parse_adjustment_value(std::string_view raw) -> std::optional<int> {
 
   return value;
 }
-
-auto build_command_line(std::span<const std::string_view> args)
-    -> std::wstring {
-  return build_windows_command_line(args);
-}
 }  // namespace
 
 // ======================================================
@@ -118,17 +113,35 @@ REGISTER_COMMAND(
     return 0;
   }
 
-  // Execute command with adjusted priority
+  // Execute command with adjusted priority. The child is resolved with
+  // GNU execvp semantics (PATH-only; no application-directory, cwd, or
+  // System32 fallback) so a name colliding with a Windows image (sort,
+  // find, timeout, ...) resolves from the caller's PATH.
+  winux::childproc::ChildLaunchRequest nice_launch_request;
+  nice_launch_request.command = std::string(ctx.positionals[0]);
+  for (size_t i = 1; i < ctx.positionals.size(); ++i) {
+    nice_launch_request.args.emplace_back(ctx.positionals[i]);
+  }
+  auto launch = winux::childproc::plan_child_launch(nice_launch_request);
+  if (launch.status != winux::childproc::ChildResolveStatus::Found) {
+    const DWORD resolve_error =
+        winux::childproc::child_status_to_win32_error(launch.status);
+    safeErrorPrintLn("nice: failed to run command '" +
+                     std::string(ctx.positionals[0]) +
+                     "': " + nice_windows_error_text(resolve_error));
+    return nice_command_status_from_create_error(resolve_error);
+  }
+
   STARTUPINFOW si = {sizeof(si)};
   PROCESS_INFORMATION pi;
-  auto cmd_line = build_command_line(ctx.positionals);
 
   // Determine priority class based on adjustment
   int target_niceness =
       std::clamp(win32_current_niceness() + adjustment, -20, 19);
   DWORD priority_class = win32_priority_class_for_niceness(target_niceness);
 
-  if (!CreateProcessW(nullptr, cmd_line.data(), nullptr, nullptr, FALSE,
+  if (!CreateProcessW(launch.application_name->c_str(),
+                      launch.command_line.data(), nullptr, nullptr, FALSE,
                       priority_class, nullptr, nullptr, &si, &pi)) {
     DWORD error = GetLastError();
     safeErrorPrintLn("nice: failed to run command '" +
