@@ -2,6 +2,32 @@
 // Copyright (c) 2026 caomengxuan666 <caomengxuan666@users.noreply.github.com>
 #include "framework/winuxtest.h"
 
+namespace {
+
+// #1168: mirror the *_or_skip helper every other unit test file uses
+// (ls/readlink/touch/unlink/find): std::filesystem::create_directory_symlink
+// throws when the host lacks symlink privilege (error 1314), which fails the
+// test outright instead of skipping it. The raw CreateSymbolicLinkW call
+// degrades to a reported SKIP on those hosts.
+bool create_directory_symlink_or_skip(const std::filesystem::path& link,
+                                      const std::filesystem::path& target) {
+  DWORD flags = SYMBOLIC_LINK_FLAG_DIRECTORY;
+#ifdef SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE
+  flags |= SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE;
+#endif
+
+  if (CreateSymbolicLinkW(link.wstring().c_str(), target.wstring().c_str(),
+                          flags)) {
+    return true;
+  }
+
+  std::cout << "  SKIPPED (CreateSymbolicLinkW failed with error "
+            << GetLastError() << ")\n";
+  return false;
+}
+
+}  // namespace
+
 TEST(grep, grep_basic_match) {
   TempDir tmp;
   tmp.write("a.txt", "alpha\nbeta\nalpha beta\n");
@@ -1476,7 +1502,6 @@ TEST(grep, grep_obsolete_y_synonym_for_ignore_case) {
   EXPECT_EQ_TEXT(r.stdout_text, "HELLO\n");
 }
 
-
 TEST(grep, grep_conflicting_matchers_are_a_hard_error) {
   TempDir tmp;
   tmp.write("a.txt", "\n");
@@ -1564,14 +1589,13 @@ TEST(grep, grep_r_skips_cross_junction_trees_without_crashing) {
   // stack inside recursive_directory_iterator (0xC0000409, zero output).
   TempDir tmp;
   std::filesystem::path nm = tmp.path / "node_modules";
-  std::filesystem::create_directories(
-      nm / ".pnpm" / "a@1" / "node_modules" / "a");
+  std::filesystem::create_directories(nm / ".pnpm" / "a@1" / "node_modules" /
+                                      "a");
   tmp.write("node_modules/.pnpm/a@1/node_modules/a/dist.js",
             "pattern-here" + std::string(1, char(10)));
   std::filesystem::path link = nm / "a-link";
   std::filesystem::path target = nm / ".pnpm" / "a@1" / "node_modules" / "a";
-  std::filesystem::create_directory_symlink(target, link);
-  if (!std::filesystem::exists(link)) {
+  if (!create_directory_symlink_or_skip(link, target)) {
     return;  // symlinks unavailable on this host
   }
 
@@ -1595,8 +1619,7 @@ TEST(grep, grep_R_warns_and_terminates_on_junction_cycle) {
   tmp.write("j/inner/real.txt", "needle" + std::string(1, char(10)));
   std::filesystem::path loop = base / "loop";
   std::filesystem::path target = tmp.path / "j";
-  std::filesystem::create_directory_symlink(target, loop);
-  if (!std::filesystem::exists(loop)) {
+  if (!create_directory_symlink_or_skip(loop, target)) {
     return;  // symlinks unavailable on this host
   }
 
