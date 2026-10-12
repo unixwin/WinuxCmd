@@ -387,7 +387,7 @@ TEST(env, env_debug_shows_overridden_argv0) {
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
-  p.add(L"env.exe", {L"-v", L"--argv0", L"debug-name", L"argv0check.exe"});
+  p.add(L"env.exe", {L"-v", L"--argv0", L"debug-name", L".\\argv0check.exe"});
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
@@ -427,7 +427,7 @@ TEST(env, env_argv0_overrides_child_command_line_argv0) {
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
-  p.add(L"env.exe", {L"--argv0", L"hijacked-name", L"argv0check.exe"});
+  p.add(L"env.exe", {L"--argv0", L"hijacked-name", L".\\argv0check.exe"});
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
@@ -442,8 +442,8 @@ TEST(env, env_argv0_last_occurrence_wins) {
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
-  p.add(L"env.exe",
-        {L"-a", L"first-name", L"--argv0", L"final-name", L"argv0check.exe"});
+  p.add(L"env.exe", {L"-a", L"first-name", L"--argv0", L"final-name",
+                     L".\\argv0check.exe"});
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
@@ -458,8 +458,8 @@ TEST(env, env_argv0_last_occurrence_wins_across_aliases) {
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
-  p.add(L"env.exe",
-        {L"--argv0", L"first-name", L"-a", L"final-name", L"argv0check.exe"});
+  p.add(L"env.exe", {L"--argv0", L"first-name", L"-a", L"final-name",
+                     L".\\argv0check.exe"});
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);

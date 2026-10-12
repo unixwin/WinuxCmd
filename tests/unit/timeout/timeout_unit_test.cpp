@@ -139,7 +139,9 @@ TEST(timeout, timeout_executes_batch_commands) {
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
-  p.add(L"timeout.exe", {L"-k", L"5s", L"20s", L"runner.cmd"});
+  // GNU execvp semantics: a bare operand is searched in PATH only, so the
+  // batch script is addressed with an explicit relative path.
+  p.add(L"timeout.exe", {L"-k", L"5s", L"20s", L".\\runner.cmd"});
 
   auto r = p.run();
 
