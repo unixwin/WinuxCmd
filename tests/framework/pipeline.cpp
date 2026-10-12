@@ -46,6 +46,15 @@ void Pipeline::add(const std::wstring &exe,
 void Pipeline::set_stdin(std::string data) { stdin_data_ = std::move(data); }
 
 /**
+ * @brief Enable leftover-stdin probing for the next run
+ *
+ * See the declaration in pipeline.h for the contract.
+ */
+void Pipeline::probe_stdin_leftover(bool enable) {
+  probe_stdin_leftover_ = enable;
+}
+
+/**
  * @brief Set working directory for pipeline execution
  *
  * Configures the working directory where all commands
@@ -308,10 +317,10 @@ CommandResult Pipeline::run() {
     DWORD written = 0;
     WriteFile(stdin_w, stdin_data_->data(), (DWORD)stdin_data_->size(),
               &written, nullptr);
-    CloseHandle(stdin_w);  // EOF
+    if (!probe_stdin_leftover_) CloseHandle(stdin_w);  // EOF
   }
 
-  if (stdin_r) CloseHandle(stdin_r);
+  if (stdin_r && !probe_stdin_leftover_) CloseHandle(stdin_r);
 
   // ----- read stdout / stderr concurrently -----
   auto read_all = [](HANDLE h) {
@@ -346,6 +355,24 @@ CommandResult Pipeline::run() {
   t_out.join();
   t_err.join();
 
+  // ----- collect unconsumed stdin (probe mode) -----
+  std::string stdin_leftover;
+  if (probe_stdin_leftover_ && stdin_r != nullptr) {
+    DWORD available = 0;
+    if (PeekNamedPipe(stdin_r, nullptr, 0, nullptr, &available, nullptr) &&
+        available > 0) {
+      stdin_leftover.resize(available);
+      DWORD got = 0;
+      if (ReadFile(stdin_r, stdin_leftover.data(), available, &got, nullptr)) {
+        stdin_leftover.resize(got);
+      } else {
+        stdin_leftover.clear();
+      }
+    }
+    CloseHandle(stdin_w);
+    CloseHandle(stdin_r);
+  }
+
   // ----- Cleanup process handles -----
   for (auto &p : procs) {
     CloseHandle(p.hProcess);
@@ -357,5 +384,7 @@ CommandResult Pipeline::run() {
   CloseHandle(final_err_r);
 
   // Return results with exit code and captured output
-  return {(int)exit_code, out, err};
+  CommandResult result{(int)exit_code, out, err};
+  result.stdin_leftover = std::move(stdin_leftover);
+  return result;
 }

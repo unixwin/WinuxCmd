@@ -14,6 +14,11 @@ struct CommandResult {
   int exit_code = -1;       ///< Process exit code (-1 if not executed)
   std::string stdout_text;  ///< Captured stdout output
   std::string stderr_text;  ///< Captured stderr output
+  /// Bytes still pending on the pipeline's stdin after the child exited.
+  /// Only collected when Pipeline::probe_stdin_leftover(true) is set;
+  /// empty otherwise. Used by GNU-differential tests that pin the
+  /// "command X must not consume stdin" contract (#1166).
+  std::string stdin_leftover;
 };
 
 /**

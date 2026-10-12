@@ -43,6 +43,17 @@ repository release tags.
 
 ### Fixed
 
+- **find**: POSIX drive-form start points (`/c/...`, `/d/...`,
+  `/cygdrive/c/...`) now resolve through the same operand boundary as every
+  other tool's path operands, matching msys find semantics where the tool's
+  own POSIX layer handles the start point. Command-line roots, `-files0-from`
+  entries, and the `-files0-from` source operand all go through it (#1170).
+- **tests**: the grep junction recursion cases degrade to a SKIP on hosts
+  without symlink-creation privilege (error 1314) instead of failing, mirroring
+  the `*_or_skip` helper every other unit test file uses (#1168). New tput
+  GNU-differential tests pin that every tput path — success, unknown
+  capability, missing operand — leaves piped stdin untouched, the contract
+  GNU tput is known for (#1166).
 - **i18n**: the WPM message catalog resolves at the WinuxCmd install root, so
   localized messages work when `winuxcmd.exe` is invoked through a shim or
   PATH entry outside the install directory (#1151).

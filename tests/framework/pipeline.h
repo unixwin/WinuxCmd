@@ -60,6 +60,20 @@ class Pipeline {
   void set_stdin(std::string data);
 
   /**
+   * @brief Keep the stdin pipe open and measure unconsumed input
+   *
+   * By default the pipeline closes the stdin write end right after
+   * feeding the data (signalling EOF). With probing enabled the write
+   * end stays open until the child exits, and every byte the child did
+   * NOT consume is reported in CommandResult::stdin_leftover. Only
+   * enable this for children that never read stdin to EOF; a child that
+   * waits for EOF would hang.
+   *
+   * @param enable true to collect leftover stdin after the run
+   */
+  void probe_stdin_leftover(bool enable);
+
+  /**
    * @brief Set working directory for all commands
    *
    * Sets the working directory where all commands in the pipeline
@@ -104,6 +118,7 @@ class Pipeline {
  private:
   std::vector<PipelineCommand> cmds_;         ///< Commands in pipeline order
   std::optional<std::string> stdin_data_;     ///< Optional stdin input data
+  bool probe_stdin_leftover_ = false;         ///< Collect unconsumed stdin
   std::optional<std::wstring> cwd_;           ///< Optional working directory
   std::optional<std::wstring> exe_dir_;       ///< Optional executable directory
   std::map<std::wstring, std::wstring> env_;  ///< Environment variables
