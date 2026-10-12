@@ -1511,16 +1511,29 @@ auto compare_file_pair(const std::string &file1, const std::string &file2,
   const std::vector<std::string> &lines2 = file2_input.lines;
 
   // [GNU] --diff-program=PROGRAM: hand the two operands to PROGRAM and
-  // relay its output and exit status verbatim.
+  // relay its output and exit status verbatim. PROGRAM is resolved with
+  // GNU execvp semantics (PATH-only; no application-directory, cwd, or
+  // System32 fallback).
   if (!cfg.diff_program.empty() && !operand_is_stdin(file1) &&
       !operand_is_stdin(file2)) {
-    STARTUPINFOA si{};
+    winux::childproc::ChildLaunchRequest diff_launch_request;
+    diff_launch_request.command = cfg.diff_program;
+    diff_launch_request.args.emplace_back(file1);
+    diff_launch_request.args.emplace_back(file2);
+    auto launch = winux::childproc::plan_child_launch(diff_launch_request);
+    if (launch.status != winux::childproc::ChildResolveStatus::Found) {
+      safeErrorPrint("diff: cannot execute ");
+      safeErrorPrint(cfg.diff_program);
+      safeErrorPrint("\n");
+      return 2;
+    }
+    STARTUPINFOW si{};
     si.cb = sizeof(si);
     PROCESS_INFORMATION pi{};
-    std::string cmdline =
-        "\"" + cfg.diff_program + "\" \"" + file1 + "\" \"" + file2 + "\"";
-    if (!CreateProcessA(nullptr, cmdline.data(), nullptr, nullptr, TRUE, 0,
-                        nullptr, nullptr, &si, &pi)) {
+    std::wstring cmdline = launch.command_line;
+    if (!CreateProcessW(launch.application_name->c_str(), cmdline.data(),
+                        nullptr, nullptr, TRUE, 0, nullptr, nullptr, &si,
+                        &pi)) {
       safeErrorPrint("diff: cannot execute ");
       safeErrorPrint(cfg.diff_program);
       safeErrorPrint("\n");

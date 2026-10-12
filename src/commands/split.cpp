@@ -548,7 +548,13 @@ auto write_chunk(const Config& cfg, uint64_t part_num, std::string_view chunk)
     // GNU split exports FILE to the filter command environment. Keep the
     // existing $FILE textual substitution too so common Windows cmd filters
     // remain usable under the current _popen-based shell path.
-    std::string cmd = cfg.filter_command;
+    // The filter string is run through the command interpreter (cmd.exe /c),
+    // whose own search cannot parse POSIX '/c/...' PATH entries and would
+    // otherwise resolve the first word behind System32 images. Rewriting the
+    // first word to its PATH-resolved absolute form restores GNU execvp
+    // resolution; unresolved words are left for the shell to report.
+    std::string cmd =
+        winux::childproc::resolve_shell_command_first_word(cfg.filter_command);
     size_t pos;
     while ((pos = cmd.find("$FILE")) != std::string::npos) {
       cmd.replace(pos, 5, filename);

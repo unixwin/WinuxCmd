@@ -179,11 +179,19 @@ auto run(const Config& cfg) -> int {
       safePrintLn("");  // Empty line after header
     }
 
-    // Execute command and capture output
+    // Execute command and capture output. The command string is handed to
+    // the command interpreter (cmd.exe /c), whose own search would resolve
+    // the first word ahead of the caller's PATH entries that Win32 cannot
+    // parse (POSIX '/c/...' spellings) or behind System32 images it can.
+    // Rewriting the first word to its PATH-resolved absolute form restores
+    // GNU execvp resolution; words that do not resolve are left untouched
+    // so the interpreter reports the original error verbatim.
+    const std::string resolved_command =
+        winux::childproc::resolve_shell_command_first_word(cfg.command);
     std::string output;
     std::array<char, 128> buffer;
     std::unique_ptr<FILE, decltype(&_pclose)> pipe(
-        _popen(cfg.command.c_str(), "r"), _pclose);
+        _popen(resolved_command.c_str(), "r"), _pclose);
 
     if (!pipe) {
       cp::report_custom_error(L"watch", L"failed to execute command");

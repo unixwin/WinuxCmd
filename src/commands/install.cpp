@@ -763,25 +763,34 @@ auto run(const Config& cfg) -> int {
     // [SECURITY] Launch strip via CreateProcessW with proper argv quoting
     // instead of std::system: a dest path containing a double quote must not
     // be able to break out of the command line (command injection).
+    // STRIP is resolved with GNU execvp semantics (PATH-only; no
+    // application-directory, cwd, or System32 fallback).
     if (cfg.strip) {
       const std::string strip_name =
           cfg.strip_program.empty() ? std::string("strip") : cfg.strip_program;
-      std::wstring strip_command_line;
-      append_windows_command_arg(strip_command_line,
-                                 utf8_to_wstring(strip_name));
-      append_windows_command_arg(strip_command_line, utf8_to_wstring(dest));
-
-      STARTUPINFOW si{};
-      si.cb = sizeof(si);
-      PROCESS_INFORMATION pi{};
-      if (CreateProcessW(nullptr, strip_command_line.data(), nullptr, nullptr,
-                         FALSE, 0, nullptr, nullptr, &si, &pi)) {
-        WaitForSingleObject(pi.hProcess, INFINITE);
-        DWORD strip_exit_code = 1;
-        GetExitCodeProcess(pi.hProcess, &strip_exit_code);
-        CloseHandle(pi.hThread);
-        CloseHandle(pi.hProcess);
-        if (strip_exit_code != 0 && cfg.verbose) {
+      winux::childproc::ChildLaunchRequest install_launch_request;
+      install_launch_request.command = strip_name;
+      install_launch_request.args.emplace_back(dest);
+      auto launch = winux::childproc::plan_child_launch(install_launch_request);
+      if (launch.status == winux::childproc::ChildResolveStatus::Found) {
+        STARTUPINFOW si{};
+        si.cb = sizeof(si);
+        PROCESS_INFORMATION pi{};
+        std::wstring strip_command_line = launch.command_line;
+        if (CreateProcessW(launch.application_name->c_str(),
+                           strip_command_line.data(), nullptr, nullptr, FALSE,
+                           0, nullptr, nullptr, &si, &pi)) {
+          WaitForSingleObject(pi.hProcess, INFINITE);
+          DWORD strip_exit_code = 1;
+          GetExitCodeProcess(pi.hProcess, &strip_exit_code);
+          CloseHandle(pi.hThread);
+          CloseHandle(pi.hProcess);
+          if (strip_exit_code != 0 && cfg.verbose) {
+            safePrint("install: warning: strip failed for '");
+            safePrint(dest);
+            safePrintLn("'");
+          }
+        } else if (cfg.verbose) {
           safePrint("install: warning: strip failed for '");
           safePrint(dest);
           safePrintLn("'");

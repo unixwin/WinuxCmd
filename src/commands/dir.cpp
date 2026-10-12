@@ -221,6 +221,14 @@ auto run(const CommandContext<DIR_OPTIONS.size()>& ctx) -> int {
 
   std::wstring cmd_line = build_dir_command_line(ls_args);
 
+  // The external fallback resolves `ls` with GNU execvp semantics
+  // (PATH-only; no application-directory, cwd, or System32 fallback).
+  auto ls_launch = winux::childproc::resolve_child_command(L"ls");
+  if (ls_launch.status != winux::childproc::ChildResolveStatus::Found) {
+    safeErrorPrintLn("dir: failed to execute ls");
+    return 1;
+  }
+
   STARTUPINFOW si = {sizeof(si)};
   PROCESS_INFORMATION pi;
   si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
@@ -228,8 +236,8 @@ auto run(const CommandContext<DIR_OPTIONS.size()>& ctx) -> int {
   si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
   si.dwFlags = STARTF_USESTDHANDLES;
 
-  if (!CreateProcessW(NULL, &cmd_line[0], NULL, NULL, TRUE, 0, NULL, NULL, &si,
-                      &pi)) {
+  if (!CreateProcessW(ls_launch.path.c_str(), &cmd_line[0], NULL, NULL, TRUE, 0,
+                      NULL, NULL, &si, &pi)) {
     safeErrorPrintLn("dir: failed to execute ls");
     return 1;
   }

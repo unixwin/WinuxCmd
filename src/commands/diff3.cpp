@@ -766,15 +766,28 @@ auto parse_normal_diff(const std::string &text, std::vector<Diff2Block> &blocks)
 }
 
 // Run PROGRAM the way GNU read_diff does and parse its normal output.
+// PROGRAM is resolved with GNU execvp semantics (PATH-only; no
+// application-directory, cwd, or System32 fallback).
 auto read_diff_via_program(const std::string &program, bool text_mode,
                            bool strip_cr, const std::string &filea,
                            const std::string &fileb,
                            std::vector<Diff2Block> &blocks) -> bool {
-  std::string cmdline = "\"" + program + "\"";
-  if (text_mode) cmdline += " -a";
-  if (strip_cr) cmdline += " --strip-trailing-cr";
-  cmdline += " --horizon-lines=100 ---no-directory -- \"" + filea + "\" \"" +
-             fileb + "\"";
+  winux::childproc::ChildLaunchRequest diff3_launch_request;
+  diff3_launch_request.command = program;
+  if (text_mode) diff3_launch_request.args.emplace_back("-a");
+  if (strip_cr) diff3_launch_request.args.emplace_back("--strip-trailing-cr");
+  diff3_launch_request.args.emplace_back("--horizon-lines=100");
+  diff3_launch_request.args.emplace_back("---no-directory");
+  diff3_launch_request.args.emplace_back("--");
+  diff3_launch_request.args.emplace_back(filea);
+  diff3_launch_request.args.emplace_back(fileb);
+  auto launch = winux::childproc::plan_child_launch(diff3_launch_request);
+  if (launch.status != winux::childproc::ChildResolveStatus::Found) {
+    safeErrorPrint("diff3: subsidiary program '");
+    safeErrorPrint(program);
+    safeErrorPrintLn("' not found");
+    return false;
+  }
 
   SECURITY_ATTRIBUTES inherit{};
   inherit.nLength = sizeof(inherit);
@@ -793,15 +806,17 @@ auto read_diff_via_program(const std::string &program, bool text_mode,
     return false;
   }
 
-  STARTUPINFOA si{};
+  STARTUPINFOW si{};
   si.cb = sizeof(si);
   si.dwFlags = STARTF_USESTDHANDLES;
   si.hStdOutput = write_end;
   si.hStdError = err_write;
   si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
   PROCESS_INFORMATION pi{};
-  const BOOL spawned = CreateProcessA(nullptr, cmdline.data(), nullptr, nullptr,
-                                      TRUE, 0, nullptr, nullptr, &si, &pi);
+  std::wstring cmdline = launch.command_line;
+  const BOOL spawned =
+      CreateProcessW(launch.application_name->c_str(), cmdline.data(), nullptr,
+                     nullptr, TRUE, 0, nullptr, nullptr, &si, &pi);
   if (!spawned) {
     CloseHandle(read_end);
     CloseHandle(write_end);
