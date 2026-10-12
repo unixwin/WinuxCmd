@@ -175,6 +175,18 @@ TEST(nohup, nohup_wrapped_command_own_version_is_not_intercepted) {
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
+  // [GNU] PR #1169: the child is resolved with execvp semantics -- a bare
+  // operand is searched in PATH only, never in nohup.exe's application
+  // directory. This test used to pass because of the old Win32 default
+  // search order (application directory first), which let the bare
+  // "printf.exe" accidentally hit the WinuxCmd hardlink sitting next to
+  // nohup.exe; on a PATH-driven resolution the bare name legitimately
+  // resolves to whatever printf the environment carries (CI runners find
+  // GNU coreutils 8.32 through Git's usr/bin). Pin PATH to the WinuxCmd
+  // bin directory -- the "activated winuxcmd shell" scenario -- so the
+  // wrapped command is the WinuxCmd printf deterministically on every
+  // machine while still exercising bare-name PATH resolution.
+  p.set_env(L"PATH", WINUXCMD_BIN_DIR);
   p.add(L"nohup.exe", {L"printf.exe", L"--version"});
 
   TEST_LOG_CMD_LIST("nohup.exe", L"printf.exe", L"--version");
