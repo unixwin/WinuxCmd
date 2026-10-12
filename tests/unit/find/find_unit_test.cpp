@@ -2763,3 +2763,83 @@ TEST(find, find_xdev_still_traverses_single_volume_tree) {
   EXPECT_EQ(mount_result.exit_code, 0);
   EXPECT_TRUE(mount_result.stdout_text.find("f2.txt") != std::string::npos);
 }
+
+TEST(find, find_accepts_posix_drive_form_start_points) {
+  // #1170: POSIX drive-form start points (/c/..., /d/...) name the same
+  // files as their native C:/... / D:/... spellings. GNU find takes start
+  // points verbatim through its POSIX layer (WSL findutils 4.9.0 attested);
+  // the msys runtime maps /c/... to C:\\..., and every other WinuxCmd tool
+  // already resolves operands through that boundary.
+  TempDir tmp;
+  tmp.write("hit.txt", "x");
+  std::filesystem::create_directories(tmp.path / "sub");
+  tmp.write("sub/nested.txt", "x");
+
+  const std::wstring posix_root = [](const std::filesystem::path& native) {
+    // C:\\Users\\...  ->  /c/Users/...
+    std::wstring s = native.wstring();
+    if (s.size() >= 2 && s[1] == L':') {
+      std::wstring out;
+      out.push_back(L'/');
+      out.push_back(s[0] >= L'A' && s[0] <= L'Z'
+                        ? static_cast<wchar_t>(s[0] - L'A' + L'a')
+                        : s[0]);
+      for (size_t i = 2; i < s.size(); ++i) {
+        out.push_back(s[i] == L'\\' ? L'/' : s[i]);
+      }
+      return out;
+    }
+    return s;
+  }(tmp.path);
+
+  Pipeline directory_root;
+  directory_root.set_cwd(tmp.wpath());
+  directory_root.add(L"find.exe",
+                     {posix_root, L"-maxdepth", L"1", L"-name", L"hit.txt"});
+  auto r = directory_root.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("find stdout", r.stdout_text);
+  TEST_LOG("find stderr", r.stderr_text);
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_NE(r.stdout_text.find("hit.txt"), std::string::npos);
+
+  // A POSIX-form start point naming a regular file directly.
+  std::wstring posix_file = [](const std::filesystem::path& native) {
+    std::wstring s = native.wstring();
+    if (s.size() >= 2 && s[1] == L':') {
+      std::wstring out;
+      out.push_back(L'/');
+      out.push_back(s[0] >= L'A' && s[0] <= L'Z'
+                        ? static_cast<wchar_t>(s[0] - L'A' + L'a')
+                        : s[0]);
+      for (size_t i = 2; i < s.size(); ++i) {
+        out.push_back(s[i] == L'\\' ? L'/' : s[i]);
+      }
+      return out;
+    }
+    return s;
+  }(tmp.path / "hit.txt");
+
+  Pipeline file_root;
+  file_root.set_cwd(tmp.wpath());
+  file_root.add(L"find.exe", {posix_file, L"-maxdepth", L"0"});
+  auto rf = file_root.run();
+
+  TEST_LOG_EXIT_CODE(rf);
+  TEST_LOG("find stdout", rf.stdout_text);
+  EXPECT_EQ(rf.exit_code, 0);
+  EXPECT_FALSE(rf.stdout_text.empty());
+
+  // Descending below a POSIX-form start point still finds nested files.
+  Pipeline deeper;
+  deeper.set_cwd(tmp.wpath());
+  deeper.add(L"find.exe",
+             {posix_root, L"-maxdepth", L"2", L"-name", L"nested.txt"});
+  auto r2 = deeper.run();
+
+  TEST_LOG_EXIT_CODE(r2);
+  TEST_LOG("find stdout", r2.stdout_text);
+  EXPECT_EQ(r2.exit_code, 0);
+  EXPECT_NE(r2.stdout_text.find("nested.txt"), std::string::npos);
+}

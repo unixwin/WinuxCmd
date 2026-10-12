@@ -1219,7 +1219,12 @@ auto parse_roots(std::span<const std::string_view> args)
         arg == ",") {
       break;
     }
-    roots.emplace_back(arg);
+    // [#1170] Start points go through the same operand boundary as every
+    // other tool's path operands: POSIX drive forms (/c/..., /d/...,
+    // /cygdrive/c/...) resolve to their native spellings, matching msys
+    // find semantics where the tool's own POSIX layer handles the start
+    // point. Native and relative forms pass through unchanged.
+    roots.emplace_back(native_path::normalize_api_operand(arg));
   }
   if (roots.empty()) roots.emplace_back(".");
   return roots;
@@ -1886,9 +1891,9 @@ auto load_roots_from_files0(std::string_view source)
     buffer << std::cin.rdbuf();
     data = buffer.str();
   } else {
-    std::ifstream in(
-        std::filesystem::path(utf8_to_wstring(std::string(source))),
-        std::ios::binary);
+    std::ifstream in(std::filesystem::path(utf8_to_wstring(
+                         native_path::normalize_api_operand(source))),
+                     std::ios::binary);
     if (!in.is_open()) {
       return std::unexpected("cannot open -files0-from file '" +
                              std::string(source) + "'");
@@ -1903,7 +1908,12 @@ auto load_roots_from_files0(std::string_view source)
   while (start <= data.size()) {
     size_t end = data.find('\0', start);
     if (end == std::string::npos) end = data.size();
-    if (end > start) roots.emplace_back(data.substr(start, end - start));
+    if (end > start) {
+      // [#1170] -files0-from entries are start points too: apply the same
+      // POSIX-form operand resolution as command-line roots.
+      roots.emplace_back(
+          native_path::normalize_api_operand(data.substr(start, end - start)));
+    }
     if (end == data.size()) break;
     start = end + 1;
   }
