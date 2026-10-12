@@ -561,6 +561,7 @@ macro(create_command_executable CMD)
             src/utils/native_path.cppm
             src/utils/utf8.cppm
             src/utils/win32.cppm
+            src/utils/childproc.cppm
             src/utils/json.cppm
             src/utils/i18n.cppm
             src/utils/file_io.cppm

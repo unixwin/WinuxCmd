@@ -17,6 +17,7 @@ export import :encoding;
 export import :regex;
 export import :digest;
 export import :win32;
+export import :childproc;
 export import :pager;
 export import :bigint;
 export import :gnu_float80;
