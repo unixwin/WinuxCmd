@@ -118,3 +118,13 @@ touch [选项]... FILE...
 ## WinuxCmd 实现状态
 
 **已实现**
+
+### 平台差异（Windows 特有，issue #1143）
+
+GNU glob 语义下，未匹配的模式保持字面量，因此 `touch 'x*x'` 在 GNU/Linux 上会创建名为 `x*x` 的文件并返回退出码 0。NTFS/Win32 文件名禁止 `*`、`?` 等字符，这样的文件在本平台上不可能存在，属本质平台差异，无法对齐：
+
+- `touch 'x*x'`：创建失败，报错并返回退出码 1（GNU 为 0）。
+- `touch -c 'x*x'`：与 GNU 一致——不可能存在的名字视同缺失文件，静默跳过并返回退出码 0（issue #1143 修复项）。
+- 派生行为（如 `ls 'x*x'`）：按文件缺失处理返回 2；与 GNU 的差异仅源于 GNU 侧 touch 成功创建了该文件。
+
+单元测试 `touch_unmatched_glob_literal_reports_ntfs_error` 在所有平台断言上述 Windows 行为并注明理由，构成对该差异的测试豁免（不按 GNU 行为断言）。

@@ -297,6 +297,7 @@
 - 信号名称和行为（`timeout`/`kill`）
 - SELinux 上下文（`install`/`mkdir`/`cp`/`mv`）
 - Windows 终端设置（`stty`）— 仅 echo/icanon/isig 有效果
+- 字面量 glob 文件名（`touch 'x*x'` 等，issue #1143）— `*`/`?` 是 NTFS 非法文件名字符，文件不可能存在；`touch -c` 已对齐按缺失静默跳过，裸 `touch` 报错为平台本质差异
 - 不可移植的命令：`chcon`、`chroot`、`mkfifo`、`mknod`、`runcon`（SELinux/设备节点）
 
 ### 剩余行为差异
