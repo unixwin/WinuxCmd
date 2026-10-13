@@ -4,7 +4,7 @@ All notable changes to WinuxCmd are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow the
 repository release tags.
 
-## [Unreleased]
+## [1.1.7] - 
 
 ### Added
 
@@ -33,6 +33,15 @@ repository release tags.
   flat alphabetical listing. When the system locale is non-English and its
   i18n catalog is not installed, one hint line points at the matching WPM
   package (`wpm install winuxcmd-i18n-zh-cn` + `WINUX_LANG`) (#1155).
+- **seq**: output is assembled into 64 KiB buffer chunks instead of one
+  `WriteFile` per line, and integral first/increment sequences (default
+  fixed format, precision 0, no `--format`/`-w`, |operands| <= 2^52) emit
+  through a `std::to_chars` fast path like GNU seq.c's integer bypass.
+  100k lines, release build: `seq 1 100000` 332 ms -> ~45 ms and
+  `seq 1 100000 | wc -l` 903 ms -> ~45 ms (GNU/WSL oracle 7-10 ms; the
+  residual is Windows process spawn). The byte stream is unchanged — a
+  regression test pins all 588,895 bytes across several flush rounds
+  (#1173).
 - **diff**: side-by-side output now shares the GNU diffutils `side.c`
   printer with sdiff (identical rows, `(`/`)` remainders, `/`/`\`
   separators, common rows for equal inputs); `-E` expands tabs across the
@@ -91,6 +100,14 @@ repository release tags.
   `du src/` prints `src/` and `src/bin` (never `src//bin`), `du src//` prints
   byte-identically to `du src/`, and `du src` keeps the plain form, matching
   GNU coreutils (#1159).
+- **du, sed**: POSIX drive-form operands (`/d/...`, `/cygdrive/d/...`)
+  resolve through the shared operand boundary — du used to reject them
+  with ENOENT while accepting `D:/...`, and sed could not read them as
+  input files, `-i` targets, `-f` script files or the `r`/`w`/`W`
+  script-embedded paths. Both now route operands through the same
+  boundary grep/wc/head/find already use (the L2 self-parse contract,
+  uniformly applied); error messages and the `=`/`F` filename display
+  keep the operand text as typed (#1174).
 - **wpm**: candidate index sources are the built-in registry plus
   `user_sources` only — a `sources` array declared inside the cached index
   file is no longer merged, so one poisoned fetch can no longer persistently
