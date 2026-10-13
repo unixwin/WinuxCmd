@@ -40,9 +40,23 @@ repository release tags.
   lines positionally instead of filtering buffers, and a final line without
   a newline only compares equal to the other side's incomplete last line
   (issue #1127, P1).
+- **docs**: the GNU coreutils compatibility records the one deliberate
+  Windows deviation around literal-glob operands — NTFS/Win32 forbid `*` in
+  file names, so `touch 'x*x'` reports the NTFS error where GNU creates the
+  literal file, `touch -c 'x*x'` silently skips like GNU (fixed in #1152),
+  and the derived `ls 'x*x'` miss is a consequence of GNU's own creation
+  succeeding; the touch test exemption is registered in
+  `DOCS/gnu-coreutils/touch.md` and `COMPATIBILITY_MATRIX.md` (#1143, #1167).
 
 ### Fixed
 
+- **spawn**: every child-process launch (the xargs/`find -exec`/pipeline
+  spawn family) resolves through a shared GNU `execvp`-style resolver —
+  bare names search PATH only (no cwd or implicit System32 shadowing, so
+  `sort`/`find`/`tree`... pick the GNU-compatible binary the caller put on
+  PATH first) and POSIX PATH spellings (`/c/...`, `/cygdrive/c/...`,
+  `:`-separated entries) are split and converted before resolution
+  (owner-reported, #1169).
 - **find**: POSIX drive-form start points (`/c/...`, `/d/...`,
   `/cygdrive/c/...`) now resolve through the same operand boundary as every
   other tool's path operands, matching msys find semantics where the tool's
