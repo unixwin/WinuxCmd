@@ -1762,3 +1762,277 @@ TEST(wpm, wpm_index_update_json_prints_payload) {
   EXPECT_NOT_CONTAINS(r.stdout_text, "wpm: index updated");
   EXPECT_CONTAINS(r.stderr_text, "index updated from");
 }
+
+// Extracts a top-level `"key": "value"` string field from a pretty-printed
+// nlohmann payload (config.json, --json output). Returns "" when absent.
+auto flat_json_string_field(const std::string& json_text,
+                            const std::string& key) -> std::string {
+  const auto needle = "\"" + key + "\": \"";
+  const auto pos = json_text.find(needle);
+  if (pos == std::string::npos) return "";
+  const auto start = pos + needle.size();
+  const auto end = json_text.find('"', start);
+  if (end == std::string::npos || end == start) return "";
+  return json_text.substr(start, end - start);
+}
+
+auto is_sha256_hex(const std::string& text) -> bool {
+  if (text.size() != 64) return false;
+  return std::ranges::all_of(text, [](char c) {
+    const auto lowered =
+        static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return (lowered >= '0' && lowered <= '9') ||
+           (lowered >= 'a' && lowered <= 'f');
+  });
+}
+
+// Issue #1176: a cached index that declares its own 'sources' array must not
+// have those sources merged into the candidate set. The fixture smuggles a
+// fully self-consistent attack (index + matching artifact sha256 over
+// file://) into the cached index only; nothing points at it from the config.
+TEST(wpm, wpm_rejects_sources_declared_in_cached_index) {
+  TempDir tmp;
+  const auto artifact_path = tmp.path / L"source" / L"evil-tool.exe";
+  tmp.write("source/evil-tool.exe", "external exe\n");
+  const auto evil_index_path = tmp.path / L"evil-index.json";
+  // Self-consistent poison: the artifact sha256 matches the payload, so the
+  // only defense is refusing to trust the smuggled source at all.
+  tmp.write("evil-index.json",
+            exe_index_json(artifact_path, "evil-tool", "9.9.9",
+                           "5140f4f6bf8b5691b7bccc1c4f00a2027dae00b2110d38"
+                           "a1e090af291226f322"));
+
+  // Cached index as a previous poisoned fetch would have persisted it: the
+  // package list is empty, but a 'sources' array names the attacker's index
+  // with the highest priority.
+  tmp.write(".wpm/indexes/official.json",
+            std::string("{\n"
+                        "  \"schema\": 1,\n"
+                        "  \"name\": \"poisoned\",\n"
+                        "  \"version\": \"poisoned-1\",\n"
+                        "  \"sources\": [\n"
+                        "    {\n"
+                        "      \"name\": \"cache-evil\",\n"
+                        "      \"region\": \"global\",\n"
+                        "      \"priority\": 1,\n"
+                        "      \"index_urls\": [\"") +
+                file_url(evil_index_path) +
+                std::string("\"]\n"
+                            "    }\n"
+                            "  ],\n"
+                            "  \"packages\": []\n"
+                            "}\n"));
+
+  // The user's only legitimate source is a harmless file:// catalog with a
+  // lower priority number than built-ins, so every fetch stays offline and
+  // succeeds before any network source is consulted.
+  const auto good_index_path = tmp.path / L"good-index.json";
+  tmp.write("good-index.json",
+            "{\n"
+            "  \"schema\": 1,\n"
+            "  \"name\": \"good\",\n"
+            "  \"version\": \"good-1\",\n"
+            "  \"packages\": []\n"
+            "}\n");
+  Pipeline add;
+  add.add(L"winuxcmd.exe",
+          {L"wpm", L"source", L"add", L"good",
+           widen_ascii(file_url(good_index_path)), L"--root", tmp.wpath()});
+  EXPECT_EQ(add.run().exit_code, 0);
+
+  Pipeline list;
+  list.add(L"winuxcmd.exe",
+           {L"wpm", L"source", L"list", L"--json", L"--root", tmp.wpath()});
+  auto list_result = list.run();
+  EXPECT_EQ(list_result.exit_code, 0);
+  EXPECT_NOT_CONTAINS(list_result.stdout_text, "cache-evil");
+  EXPECT_CONTAINS(list_result.stdout_text, "\"name\": \"good\"");
+
+  Pipeline update;
+  update.add(L"winuxcmd.exe",
+             {L"wpm", L"index", L"update", L"--root", tmp.wpath()});
+  auto update_result = update.run();
+  EXPECT_EQ(update_result.exit_code, 0);
+  EXPECT_CONTAINS(update_result.stdout_text, "index updated from good");
+
+  // End to end: the smuggled package must never become installable even
+  // though its index and artifact are mutually consistent.
+  Pipeline install;
+  install.add(L"winuxcmd.exe",
+              {L"wpm", L"install", L"evil-tool", L"--root", tmp.wpath()});
+  auto install_result = install.run();
+  EXPECT_NE(install_result.exit_code, 0);
+  EXPECT_CONTAINS(install_result.stderr_text,
+                  "package not found after index update: evil-tool");
+  EXPECT_FALSE(
+      std::filesystem::exists(tmp.path / L"usr" / L"bin" / L"evil-tool.exe"));
+}
+
+// Issue #1176: `wpm index update` records the winning source and the hash of
+// the persisted index; when the content changes while being served from a
+// non-preferred source, the user is warned. A same-hash refresh stays quiet.
+TEST(wpm, wpm_index_update_records_hash_and_warns_on_nonpreferred_change) {
+  TempDir tmp;
+  tmp.write("index-a.json",
+            "{\n"
+            "  \"schema\": 1,\n"
+            "  \"name\": \"ledger-a\",\n"
+            "  \"version\": \"ledger-v1\",\n"
+            "  \"packages\": []\n"
+            "}\n");
+  tmp.write("index-b.json",
+            "{\n"
+            "  \"schema\": 1,\n"
+            "  \"name\": \"ledger-b\",\n"
+            "  \"version\": \"ledger-v2\",\n"
+            "  \"packages\": []\n"
+            "}\n");
+  const auto index_a = tmp.path / L"index-a.json";
+  const auto index_b = tmp.path / L"index-b.json";
+  tmp.write(".wpm/config.json",
+            std::string("{\n"
+                        "  \"preferred_source\": \"ledger-a\",\n"
+                        "  \"region\": \"auto\",\n"
+                        "  \"user_sources\": [\n"
+                        "    {\"name\": \"ledger-a\", \"region\": \"custom\","
+                        " \"priority\": 1, \"index_urls\": [\"") +
+                file_url(index_a) +
+                std::string("\"]},\n"
+                            "    {\"name\": \"ledger-b\", \"region\": "
+                            "\"custom\", \"priority\": 2, \"index_urls\": "
+                            "[\"") +
+                file_url(index_b) +
+                std::string("\"]}\n"
+                            "  ]\n"
+                            "}\n"));
+
+  auto run_update = [&tmp]() {
+    Pipeline update;
+    update.add(L"winuxcmd.exe",
+               {L"wpm", L"index", L"update", L"--root", tmp.wpath()});
+    return update.run();
+  };
+  auto read_config = [&tmp]() {
+    std::ifstream in(tmp.path / L".wpm" / L"config.json");
+    return std::string(std::istreambuf_iterator<char>(in),
+                       std::istreambuf_iterator<char>());
+  };
+
+  // Baseline: the preferred source serves the first index; the ledger is
+  // seeded with its source name and content hash.
+  auto first = run_update();
+  EXPECT_EQ(first.exit_code, 0);
+  EXPECT_CONTAINS(first.stdout_text, "index updated from ledger-a");
+  const auto config_after_first = read_config();
+  EXPECT_CONTAINS(config_after_first, "\"last_success_source\": \"ledger-a\"");
+  const auto first_hash =
+      flat_json_string_field(config_after_first, "last_index_sha256");
+  EXPECT_TRUE(is_sha256_hex(first_hash));
+
+  // The preferred source dies and a mirror with different content answers
+  // instead: the update still succeeds (fallback contract) but the change of
+  // content on a non-preferred source must be surfaced.
+  std::error_code remove_ec;
+  std::filesystem::remove(index_a, remove_ec);
+  auto second = run_update();
+  EXPECT_EQ(second.exit_code, 0);
+  EXPECT_CONTAINS(second.stdout_text, "index updated from ledger-b");
+  EXPECT_CONTAINS(second.stderr_text, "non-preferred source 'ledger-b'");
+  const auto config_after_second = read_config();
+  EXPECT_CONTAINS(config_after_second, "\"last_success_source\": \"ledger-b\"");
+  const auto second_hash =
+      flat_json_string_field(config_after_second, "last_index_sha256");
+  EXPECT_TRUE(is_sha256_hex(second_hash));
+  EXPECT_NE(second_hash, first_hash);
+
+  // A refresh that returns identical content raises no poisoning warning.
+  auto third = run_update();
+  EXPECT_EQ(third.exit_code, 0);
+  EXPECT_NOT_CONTAINS(third.stderr_text, "non-preferred source");
+}
+
+// Issue #1176: the machine-readable payload of `wpm index update --json`
+// carries the recorded index hash alongside the winning source.
+TEST(wpm, wpm_index_update_json_records_index_sha256) {
+  TempDir tmp;
+  const auto index_path = tmp.path / L"fixture-index.json";
+  tmp.write("fixture-index.json",
+            "{\n"
+            "  \"schema\": 1,\n"
+            "  \"name\": \"fixture\",\n"
+            "  \"version\": \"fixture-hash-1\",\n"
+            "  \"packages\": []\n"
+            "}\n");
+
+  Pipeline add;
+  add.add(L"winuxcmd.exe",
+          {L"wpm", L"source", L"add", L"fixture",
+           widen_ascii(file_url(index_path)), L"--root", tmp.wpath()});
+  EXPECT_EQ(add.run().exit_code, 0);
+
+  Pipeline p;
+  p.add(L"winuxcmd.exe",
+        {L"wpm", L"index", L"update", L"--json", L"--root", tmp.wpath()});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_CONTAINS(r.stdout_text, "\"source\": \"fixture\"");
+  const auto recorded = flat_json_string_field(r.stdout_text, "index_sha256");
+  EXPECT_TRUE(is_sha256_hex(recorded));
+}
+
+// Issue #1177: probing loopback proxy ports (Clash/V2Ray defaults) is
+// opt-in. A dead artifact URL must fail without touching 127.0.0.1 proxy
+// candidates unless the user sets allow_loopback_fallback in config. The
+// probe leaves a "loopback proxy ... failed" trace in the download error,
+// which doubles as the observable for both polarities.
+TEST(wpm, wpm_loopback_proxy_fallback_off_by_default_opt_in_via_config) {
+  const std::string poisoned_index =
+      "{\n"
+      "  \"schema\": 1,\n"
+      "  \"name\": \"fixture\",\n"
+      "  \"version\": \"fixture-loopback\",\n"
+      "  \"packages\": [\n"
+      "    {\n"
+      "      \"name\": \"jq\",\n"
+      "      \"version\": \"1.0.0\",\n"
+      "      \"kind\": \"external\",\n"
+      "      \"artifacts\": {\n"
+      "        \"" +
+      current_arch_key() +
+      "\": {\n"
+      "          \"type\": \"exe\",\n"
+      "          \"sha256\": \"00\",\n"
+      "          \"urls\": [\"http://127.0.0.1:9/jq.exe\"],\n"
+      "          \"files\": [{\"from\":\"jq.exe\"}]\n"
+      "        }\n"
+      "      }\n"
+      "    }\n"
+      "  ]\n"
+      "}\n";
+
+  auto run_install = [&poisoned_index](bool allow_loopback) {
+    TempDir tmp;
+    tmp.write(".wpm/indexes/official.json", poisoned_index);
+    if (allow_loopback) {
+      tmp.write(".wpm/config.json",
+                "{\n  \"allow_loopback_fallback\": true\n}\n");
+    }
+    Pipeline install;
+    install.add(L"winuxcmd.exe",
+                {L"wpm", L"install", L"jq", L"--root", tmp.wpath()});
+    return install.run();
+  };
+
+  // Default: direct failure only — no loopback proxy candidates probed.
+  auto denied = run_install(false);
+  EXPECT_NE(denied.exit_code, 0);
+  EXPECT_CONTAINS(denied.stderr_text,
+                  "download failed from http://127.0.0.1:9/jq.exe");
+  EXPECT_NOT_CONTAINS(denied.stderr_text, "loopback proxy");
+
+  // Opt-in: the same failure now travels the loopback candidate list.
+  auto allowed = run_install(true);
+  EXPECT_NE(allowed.exit_code, 0);
+  EXPECT_CONTAINS(allowed.stderr_text, "loopback proxy 127.0.0.1:");
+}

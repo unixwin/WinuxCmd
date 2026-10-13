@@ -91,6 +91,20 @@ repository release tags.
   `du src/` prints `src/` and `src/bin` (never `src//bin`), `du src//` prints
   byte-identically to `du src/`, and `du src` keeps the plain form, matching
   GNU coreutils (#1159).
+- **wpm**: candidate index sources are the built-in registry plus
+  `user_sources` only — a `sources` array declared inside the cached index
+  file is no longer merged, so one poisoned fetch can no longer persistently
+  inject new download locations; `wpm index update` now records the winning
+  source (`last_success_source`) and the SHA-256 of the persisted index
+  (`last_index_sha256`) and warns when the index content changes while being
+  served from a non-preferred source; the `wpm index update --json` payload
+  carries `index_sha256` (#1176).
+- **wpm**: the loopback proxy fallback (probing `127.0.0.1:7897/7890/7891/
+  7892/7893/10808/10809` after direct failures) is off by default; any
+  unprivileged local process could otherwise listen there and serve both
+  index and artifacts past the index's own sha256 checks. Opt in via
+  `allow_loopback_fallback: true` in `.wpm/config.json`, or configure a
+  trusted proxy with `--proxy`/environment variables (#1177).
 
 ## [1.1.5] - 2026-10-03
 

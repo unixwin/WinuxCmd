@@ -315,26 +315,20 @@ auto load_index(const fs::path& root) -> nlohmann::json {
   return nlohmann::json::object();
 }
 
-auto merged_sources(const fs::path& root, const nlohmann::json& index)
-    -> std::vector<nlohmann::json> {
+// Candidate index sources are the built-in registry plus sources the user
+// explicitly configured (`wpm source add` or config user_sources). Sources
+// declared inside the cached index file are deliberately NOT merged: the
+// cached index is itself fetched from those sources, so honoring its
+// 'sources' array let one poisoned fetch persistently inject new download
+// locations that later fetches would trust (issue #1176). New mirrors must
+// be added by the user or shipped in the built-in registry.
+auto merged_sources(const fs::path& root) -> std::vector<nlohmann::json> {
   std::vector<nlohmann::json> sources;
-  std::unordered_set<std::string> builtin_names;
   if (auto builtin = parse_json_text(kBuiltinIndex);
       builtin && builtin->contains("sources") &&
       (*builtin)["sources"].is_array()) {
     for (const auto& source : (*builtin)["sources"]) {
       if (!source.is_object()) continue;
-      sources.push_back(source);
-      auto name = source.value("name", "");
-      if (!name.empty()) builtin_names.insert(name);
-    }
-  }
-
-  if (index.contains("sources") && index["sources"].is_array()) {
-    for (const auto& source : index["sources"]) {
-      if (!source.is_object()) continue;
-      auto name = source.value("name", "");
-      if (!name.empty() && builtin_names.contains(name)) continue;
       sources.push_back(source);
     }
   }
@@ -1231,6 +1225,17 @@ auto loopback_proxy_candidates() -> std::vector<std::wstring> {
           L"127.0.0.1:10809"};
 }
 
+// Loopback proxy probing is opt-in (issue #1177): any unprivileged local
+// process can listen on the well-known Clash/V2Ray ports above and serve
+// both the index and artifacts, self-consistently passing the index's own
+// sha256 checks. Enable only via config `allow_loopback_fallback: true` —
+// users with a real proxy should pass --proxy or set the proxy environment
+// variables instead, both of which are explicit and trusted.
+auto loopback_fallback_allowed(const fs::path& root) -> bool {
+  auto config = load_config(root);
+  return config.value("allow_loopback_fallback", false);
+}
+
 auto response_header(HINTERNET request, DWORD query)
     -> std::optional<std::wstring> {
   DWORD size = 0;
@@ -1274,10 +1279,12 @@ auto redirect_url(std::wstring_view location, bool https,
   return wstring_to_utf8(absolute);
 }
 
-auto http_get(std::string_view url, std::string_view progress_label = {},
-              int redirects_remaining = 5,
-              std::optional<std::wstring> forced_proxy = std::nullopt,
-              bool allow_loopback_proxy_fallback = true) -> HttpResult {
+// Every caller states allow_loopback_proxy_fallback explicitly: the loopback
+// proxy probe is opt-in (issue #1177) and a silent default-on here is how the
+// hazard of #1177 existed in the first place.
+auto http_get(std::string_view url, std::string_view progress_label,
+              int redirects_remaining, std::optional<std::wstring> forced_proxy,
+              bool allow_loopback_proxy_fallback) -> HttpResult {
   HttpResult result;
 
   if (starts_with_ci(url, "file://")) {
@@ -2097,7 +2104,8 @@ auto download_artifact(const fs::path& root, const std::string& package,
       progress_label = wpm_text("command.wpm.status.downloading",
                                 "wpm: downloading {}", package);
     }
-    auto result = http_get(url, progress_label, 5, forced_proxy);
+    auto result = http_get(url, progress_label, 5, forced_proxy,
+                           loopback_fallback_allowed(root));
     if (!result.ok) {
       safeErrorPrintLn(wpm_text("command.wpm.error.download_failed",
                                 "wpm: download failed from {}: {}", url,
@@ -3009,7 +3017,8 @@ auto install_from_manifest(const Options& opts, const std::string& from)
     auto result = http_get(from,
                            wpm_text("command.wpm.status.fetching_manifest",
                                     "wpm: fetching manifest from {}", from),
-                           5, user_forced_proxy(opts));
+                           5, user_forced_proxy(opts),
+                           loopback_fallback_allowed(opts.root));
     if (!result.ok) {
       safeErrorPrintLn(wpm_text("command.wpm.error.manifest_fetch",
                                 "wpm: failed to fetch manifest '{}': {}", from,
@@ -3209,8 +3218,7 @@ auto apply_update(std::span<const std::string_view> args) -> int {
 
 auto try_fetch_index(const Options& opts, std::string& used_source)
     -> std::optional<nlohmann::json> {
-  auto current = load_index(opts.root);
-  auto sources = merged_sources(opts.root, current);
+  auto sources = merged_sources(opts.root);
   auto config = load_config(opts.root);
   std::string wanted = opts.source.empty()
                            ? config.value("preferred_source", "auto")
@@ -3294,7 +3302,8 @@ auto try_fetch_index(const Options& opts, std::string& used_source)
       auto result = http_get(url,
                              wpm_text("command.wpm.status.fetching_index",
                                       "wpm: fetching index from {}", name),
-                             5, user_forced_proxy(opts));
+                             5, user_forced_proxy(opts),
+                             loopback_fallback_allowed(opts.root));
       if (!result.ok) {
         safeErrorPrintLn("wpm: index fetch failed from " + name + ": " +
                          result.error);
@@ -3328,7 +3337,28 @@ auto update_index(const Options& opts, bool json_payload) -> int {
     return 1;
   }
   auto config = load_config(opts.root);
+  // Supply-chain ledger (#1176): remember which source produced the index
+  // and the hash of the persisted content. The index carries the artifact
+  // sha256 values, so a silent content change on a source other than the
+  // preferred one is the signature of a poisoned mirror — surface it.
+  auto index_hash = sha256_file(local_index_path(opts.root));
+  const std::string previous_hash = config.value("last_index_sha256", "");
+  const std::string previous_source = config.value("last_success_source", "");
+  std::string preferred = opts.source.empty()
+                              ? config.value("preferred_source", "auto")
+                              : opts.source;
+  if (preferred.empty() || preferred == "auto") preferred = previous_source;
+  if (index_hash && !previous_hash.empty() && *index_hash != previous_hash &&
+      !preferred.empty() && preferred != "auto" && used_source != preferred) {
+    safeErrorPrintLn(wpm_text(
+        "command.wpm.warn.index_changed_nonpreferred",
+        "wpm: warning: index content changed and was fetched from "
+        "non-preferred source '{}' (preferred: '{}'); verify this mirror or "
+        "re-run 'wpm index update' against the preferred source",
+        used_source, preferred));
+  }
   config["last_success_source"] = used_source;
+  if (index_hash) config["last_index_sha256"] = *index_hash;
   save_config(opts.root, config);
   auto line = wpm_text("command.wpm.status.index_updated",
                        "wpm: index updated from {}", used_source);
@@ -3339,8 +3369,10 @@ auto update_index(const Options& opts, bool json_payload) -> int {
     // JSON document into the caller's stdout stream, while opts.json still
     // routes their human progress to stderr.
     safeErrorPrintLn(line);
-    nlohmann::json payload = {
-        {"schema", 1}, {"status", "updated"}, {"source", used_source}};
+    nlohmann::json payload = {{"schema", 1},
+                              {"status", "updated"},
+                              {"source", used_source},
+                              {"index_sha256", index_hash.value_or("")}};
     safePrintLn(payload.dump(2));
     return 0;
   }
@@ -3466,10 +3498,9 @@ auto print_index_status(const Options& opts) -> int {
 }
 
 auto list_sources(const Options& opts) -> int {
-  auto index = load_index(opts.root);
   auto config = load_config(opts.root);
   auto preferred = config.value("preferred_source", "auto");
-  auto sources = merged_sources(opts.root, index);
+  auto sources = merged_sources(opts.root);
 
   if (opts.json) {
     nlohmann::json user_names = nlohmann::json::array();

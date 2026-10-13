@@ -319,6 +319,14 @@ WPM ships with four built-in source definitions:
 4. If `preferred_source` is `"auto"` (the default), sources are tried in priority order.
 5. If a source fails, WPM falls back through remaining sources.
 6. User-added sources are merged in after built-in sources.
+7. Sources declared *inside* a fetched index are never merged: the candidate
+   set is the built-in registry plus `user_sources` only, so a compromised
+   index cannot persistently inject new download locations. Add mirrors with
+   `wpm source add` instead.
+8. `wpm index update` records the winning source (`last_success_source`) and
+   the SHA-256 of the persisted index (`last_index_sha256`) in config. When
+   the index content changes while being served from a non-preferred source,
+   WPM prints a warning so a poisoned mirror cannot swap the index silently.
 
 ### Proxy Support
 
@@ -327,7 +335,7 @@ WPM automatically detects proxy settings from:
 1. Environment variables (checked in order): `WPM_HTTPS_PROXY`, `WPM_HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `HTTP_PROXY`
 2. Windows Internet Explorer proxy configuration (system settings)
 3. PAC auto-detection (WPAD)
-4. Loopback proxy fallback: if all else fails, WPM probes common local proxy ports (`7897`, `7890`, `7891`, `7892`, `7893`, `10808`, `10809`)
+4. Loopback proxy fallback (**off by default**): only when `allow_loopback_fallback` is `true` in `.wpm/config.json` does WPM probe common local proxy ports (`7897`, `7890`, `7891`, `7892`, `7893`, `10808`, `10809`) after direct connections fail. The opt-in exists because any unprivileged local process can listen on those ports and serve both the index and artifacts. Prefer an explicit `--proxy` or the environment variables above.
 
 ---
 
@@ -540,7 +548,9 @@ The `files` array maps source paths (inside the archive or binary) to destinatio
   wpm index update
   ```
 
-- WPM also probes common loopback proxy ports automatically.
+- WPM probes common loopback proxy ports only when `allow_loopback_fallback`
+  is `true` in `.wpm/config.json` (off by default); set your proxy explicitly
+  instead.
 
 ### "sha256 mismatch"
 
@@ -723,6 +733,8 @@ WPM stores configuration in `<root>/.wpm/config.json`:
   "preferred_source": "auto",
   "region": "auto",
   "last_success_source": "official-github-raw",
+  "last_index_sha256": "…64 hex chars recorded by `wpm index update`…",
+  "allow_loopback_fallback": false,
   "user_sources": [
     {
       "name": "my-org",
