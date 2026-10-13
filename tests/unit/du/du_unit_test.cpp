@@ -1125,3 +1125,103 @@ TEST(du, du_block_size_env_is_honored) {
   EXPECT_TRUE(std::regex_search(
       r.stdout_text, std::regex(R"(^([4-9]|[0-9][0-9]+)\tfile\.bin)")));
 }
+
+// #1174: POSIX drive-form operands (`/d/...`) name the same files as the
+// native `D:/...` spellings. Every WinuxCmd tool resolves path operands
+// through the shared native_path boundary (grep/wc/head precedent); du
+// joins it so for/xargs-style callers handing over raw POSIX paths work.
+namespace {
+
+auto to_posix_drive_form(const std::filesystem::path& native) -> std::wstring {
+  // D:\\dir\\file -> /d/dir/file
+  std::wstring s = native.wstring();
+  if (s.size() >= 2 && s[1] == L':') {
+    std::wstring out;
+    out.push_back(L'/');
+    out.push_back(s[0] >= L'A' && s[0] <= L'Z'
+                      ? static_cast<wchar_t>(s[0] - L'A' + L'a')
+                      : s[0]);
+    for (size_t i = 2; i < s.size(); ++i) {
+      out.push_back(s[i] == L'\\' ? L'/' : s[i]);
+    }
+    return out;
+  }
+  return s;
+}
+
+auto to_forward_slash_form(const std::filesystem::path& native)
+    -> std::wstring {
+  // D:\\dir\\file -> D:/dir/file
+  std::wstring s = native.wstring();
+  for (auto& ch : s) {
+    if (ch == L'\\') ch = L'/';
+  }
+  return s;
+}
+
+}  // namespace
+
+TEST(du, du_accepts_posix_drive_form_operands) {
+  TempDir tmp;
+  tmp.write("src/bin/a.txt", "x");
+
+  const std::wstring posix_root = to_posix_drive_form(tmp.path);
+  const std::wstring native_root = to_forward_slash_form(tmp.path);
+
+  Pipeline posix;
+  posix.set_cwd(tmp.wpath());
+  posix.add(L"du.exe", {L"-sh", posix_root});
+  auto rp = posix.run();
+
+  TEST_LOG_EXIT_CODE(rp);
+  TEST_LOG("du -sh POSIX operand stdout", rp.stdout_text);
+  TEST_LOG("du -sh POSIX operand stderr", rp.stderr_text);
+
+  EXPECT_EQ(rp.exit_code, 0);
+  EXPECT_FALSE(rp.stdout_text.empty());
+  // The resolved operand text is what prints (the same line the MSYS
+  // runtime hands GNU du after substituting the drive form): the POSIX
+  // operand echoes back as the "<drive>:/..." spelling.
+  const std::string display_drive =
+      std::string(1, static_cast<char>(tmp.path.wstring()[0])) + ":/";
+  EXPECT_CONTAINS(rp.stdout_text, "\t" + display_drive);
+  const std::uintmax_t posix_usage = first_usage_value(rp.stdout_text);
+  EXPECT_GT(posix_usage, 0);
+
+  // Native spelling of the same directory: identical size line payload.
+  Pipeline native;
+  native.set_cwd(tmp.wpath());
+  native.add(L"du.exe", {L"-sh", native_root});
+  auto rn = native.run();
+
+  TEST_LOG_EXIT_CODE(rn);
+  TEST_LOG("du -sh native operand stdout", rn.stdout_text);
+
+  EXPECT_EQ(rn.exit_code, 0);
+  EXPECT_EQ(first_usage_value(rn.stdout_text), posix_usage);
+}
+
+TEST(du, du_accepts_posix_drive_form_without_summarize) {
+  TempDir tmp;
+  tmp.write("src/bin/a.txt", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"du.exe", {to_posix_drive_form(tmp.path)});
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("du POSIX operand stdout", r.stdout_text);
+  TEST_LOG("du POSIX operand stderr", r.stderr_text);
+
+  EXPECT_EQ(r.exit_code, 0);
+  // Operand line and child entries agree on the resolved, forward-slashed
+  // spelling (Savannah #13956).
+  const std::wstring native_root = to_forward_slash_form(tmp.path);
+  const std::string display_root(native_root.begin(), native_root.end());
+  const std::string blocks = std::to_string(
+      expected_blocks(allocated_size(1, tmp.path), 1024, tmp.path));
+  EXPECT_EQ_TEXT(r.stdout_text, blocks + "\t" + display_root + "/src/bin\n" +
+                                    blocks + "\t" + display_root + "/src\n" +
+                                    blocks + "\t" + display_root + "\n");
+}

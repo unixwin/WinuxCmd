@@ -1332,7 +1332,10 @@ auto parse_script_text(std::string_view script, portable_regex::Syntax syntax,
 }
 
 auto read_script_file(const std::string& path) -> cp::Result<std::string> {
-  std::ifstream in(path, std::ios::binary);
+  // [L2 self-parse] POSIX drive spellings (`/d/...`, `/cygdrive/d/...`)
+  // resolve through the shared operand boundary like input operands do
+  // (#1174); diagnostics keep the operand text as typed.
+  std::ifstream in(native_path::normalize_api_operand(path), std::ios::binary);
   if (!in.is_open())
     return std::unexpected("cannot open script file '" + path + "'");
   return std::string(std::istreambuf_iterator<char>{in},
@@ -1893,7 +1896,7 @@ auto write_file_once_truncated(ProcessRuntime& runtime, const std::string& path,
     runtime.truncated_write_files.insert(path);
   }
 
-  std::ofstream out(path, mode);
+  std::ofstream out(native_path::normalize_api_operand(path), mode);
   if (!out.is_open()) {
     safeErrorPrint("sed: cannot open '" + path + "' for writing\n");
     return false;
@@ -1907,7 +1910,9 @@ auto write_file_once_truncated(ProcessRuntime& runtime, const std::string& path,
 }
 
 auto read_whole_file_for_append(const std::string& path) -> std::string {
-  std::ifstream in(path, std::ios::binary);
+  // [L2 self-parse] POSIX drive spellings resolve through the shared
+  // operand boundary like input operands do (#1174).
+  std::ifstream in(native_path::normalize_api_operand(path), std::ios::binary);
   if (!in.is_open()) {
     // [GNU] report and keep going (execute.c:565, r command is never
     // fatal: "sed: can't read FILE: reason" on stderr)
@@ -1926,7 +1931,9 @@ auto read_one_file_record_for_append(ProcessRuntime& runtime,
 
   auto [it, inserted] = runtime.read_files.try_emplace(path);
   if (inserted) {
-    it->second.open(path, std::ios::binary);
+    // [L2 self-parse] POSIX drive spellings resolve through the shared
+    // operand boundary like input operands do (#1174).
+    it->second.open(native_path::normalize_api_operand(path), std::ios::binary);
     if (!it->second.is_open()) {
       // [GNU] report once and keep going (execute.c:565)
       safeErrorPrint("sed: can't read " + path + ": " +
@@ -2507,9 +2514,17 @@ auto process_files(const Config& cfg) -> int {
       continue;
     }
 
+    // [L2 self-parse] POSIX drive spellings (`/d/...`, `/cygdrive/d/...`)
+    // and /dev pseudo-paths fold to their Win32 form at the shared operand
+    // boundary — the same layer wc/grep normalize through — so `/d/...`
+    // names the same file as `D:/...` however argv reached us (#1174).
+    // Globs and opens use the folded form; diagnostics and the `=`/F
+    // filename display keep the operand text as typed.
+    const std::string operand = native_path::normalize_api_operand(f);
+
     // Smart glob expansion for wildcard patterns
-    if (contains_wildcard(f)) {
-      auto glob_result = glob_expand(f);
+    if (contains_wildcard(operand)) {
+      auto glob_result = glob_expand(operand);
       if (glob_result.expanded) {
         // Pattern was expanded, add all matched files
         for (const auto& file : glob_result.files) {
@@ -2546,6 +2561,11 @@ auto process_files(const Config& cfg) -> int {
 
     std::ifstream file;
     std::istream* in = nullptr;
+    // [L2 self-parse] the folded operand is what opens — and, with -i,
+    // what gets replaced; `f` keeps the caller's text for diagnostics and
+    // the `=`/F filename display (#1174).
+    const std::string open_path =
+        f == "-" ? f : native_path::normalize_api_operand(f);
     if (f == "-") {
       // [GNU] closed stdin (<&-) reports a read error instead of
       // dereferencing a bad stream (MSYS sed itself segfaults here).
@@ -2556,7 +2576,7 @@ auto process_files(const Config& cfg) -> int {
       }
       in = &std::cin;
     } else {
-      file.open(f, std::ios::binary);
+      file.open(open_path, std::ios::binary);
       if (!file.is_open()) {
         // [GNU] "sed: can't read FILE: reason" + EXIT_BAD_INPUT (2)
         // (execute.c:562-566)
@@ -2586,7 +2606,7 @@ auto process_files(const Config& cfg) -> int {
       std::string output = apply_literal_stream_fast_path(content, cfg);
       if (cfg.in_place) {
         file.close();
-        if (!replace_file_atomically(f, cfg.in_place_suffix, output)) {
+        if (!replace_file_atomically(open_path, cfg.in_place_suffix, output)) {
           error_level = std::max(error_level, 1);
         }
       } else {
@@ -2603,7 +2623,7 @@ auto process_files(const Config& cfg) -> int {
                                            true, current_file, &output);
       if (runtime.io_error) error_level = std::max(error_level, 2);
       file.close();
-      if (!replace_file_atomically(f, cfg.in_place_suffix, output)) {
+      if (!replace_file_atomically(open_path, cfg.in_place_suffix, output)) {
         error_level = std::max(error_level, 1);
       }
       if (quit_exit_code) {

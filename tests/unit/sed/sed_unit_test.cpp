@@ -1663,3 +1663,105 @@ TEST(sed, pattern_unknown_escapes_keep_historical_form) {
   EXPECT_EQ(zr.exit_code, 0);
   EXPECT_EQ_TEXT(zr.stdout_text, "a5b\ndigit\naXb\n");
 }
+
+// #1174: POSIX drive-form operands (`/d/...`) name the same files as the
+// native `D:/...` spellings. Every WinuxCmd tool resolves path operands
+// through the shared native_path boundary (grep/wc/head precedent); sed
+// joins it so for/xargs-style callers handing over raw POSIX paths work.
+namespace {
+
+auto to_posix_drive_form(const std::filesystem::path& native) -> std::wstring {
+  // D:\\dir\\file -> /d/dir/file
+  std::wstring s = native.wstring();
+  if (s.size() >= 2 && s[1] == L':') {
+    std::wstring out;
+    out.push_back(L'/');
+    out.push_back(s[0] >= L'A' && s[0] <= L'Z'
+                      ? static_cast<wchar_t>(s[0] - L'A' + L'a')
+                      : s[0]);
+    for (size_t i = 2; i < s.size(); ++i) {
+      out.push_back(s[i] == L'\\' ? L'/' : s[i]);
+    }
+    return out;
+  }
+  return s;
+}
+
+auto to_forward_slash_form(const std::filesystem::path& native)
+    -> std::wstring {
+  // D:\\dir\\file -> D:/dir/file
+  std::wstring s = native.wstring();
+  for (auto& ch : s) {
+    if (ch == L'\\') ch = L'/';
+  }
+  return s;
+}
+
+}  // namespace
+
+TEST(sed, sed_accepts_posix_drive_form_operands) {
+  TempDir tmp;
+  tmp.write("in.txt", "alpha\nbeta\n");
+
+  const std::wstring posix_file = to_posix_drive_form(tmp.path / "in.txt");
+  const std::wstring native_file = to_forward_slash_form(tmp.path / "in.txt");
+
+  Pipeline posix;
+  posix.set_cwd(tmp.wpath());
+  posix.add(L"sed.exe", {L"-n", L"1p", posix_file});
+  auto rp = posix.run();
+
+  TEST_LOG_EXIT_CODE(rp);
+  TEST_LOG("sed -n 1p POSIX operand stdout", rp.stdout_text);
+  TEST_LOG("sed -n 1p POSIX operand stderr", rp.stderr_text);
+
+  EXPECT_EQ(rp.exit_code, 0);
+  EXPECT_EQ_TEXT(rp.stdout_text, "alpha\n");
+
+  // Native spelling of the same file: identical output.
+  Pipeline native;
+  native.set_cwd(tmp.wpath());
+  native.add(L"sed.exe", {L"-n", L"1p", native_file});
+  auto rn = native.run();
+
+  TEST_LOG_EXIT_CODE(rn);
+  TEST_LOG("sed -n 1p native operand stdout", rn.stdout_text);
+
+  EXPECT_EQ(rn.exit_code, 0);
+  EXPECT_EQ_TEXT(rn.stdout_text, "alpha\n");
+}
+
+TEST(sed, sed_in_place_accepts_posix_drive_form_operand) {
+  TempDir tmp;
+  tmp.write("in.txt", "one\ntwo\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sed.exe",
+        {L"-i", L"s/one/1/", to_posix_drive_form(tmp.path / "in.txt")});
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("sed -i POSIX operand stderr", r.stderr_text);
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(tmp.read("in.txt"), "1\ntwo\n");
+}
+
+TEST(sed, sed_script_file_accepts_posix_drive_form_operand) {
+  TempDir tmp;
+  tmp.write("in.txt", "alpha\n");
+  tmp.write("script.sed", "s/alpha/beta/\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sed.exe", {L"-f", to_posix_drive_form(tmp.path / "script.sed"),
+                     to_posix_drive_form(tmp.path / "in.txt")});
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("sed -f POSIX operand stderr", r.stderr_text);
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "beta\n");
+}

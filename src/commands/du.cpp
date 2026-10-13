@@ -309,7 +309,9 @@ auto parse_threshold_size(std::string_view text) -> std::optional<int64_t> {
 
 auto load_exclude_patterns_from_file(const std::string& path)
     -> cp::Result<std::vector<std::string>> {
-  std::ifstream in(path, std::ios::binary);
+  // [L2 self-parse] POSIX drive spellings resolve through the shared
+  // operand boundary like the traversal operands do (#1174).
+  std::ifstream in(native_path::normalize_api_operand(path), std::ios::binary);
   if (!in.is_open()) {
     return std::unexpected("cannot open exclude file '" + path + "'");
   }
@@ -347,7 +349,9 @@ auto read_files0_from(const std::string& path)
   if (path == "-") {
     input = &std::cin;
   } else {
-    file.open(path, std::ios::binary);
+    // [L2 self-parse] POSIX drive spellings resolve through the shared
+    // operand boundary like the traversal operands do (#1174).
+    file.open(native_path::normalize_api_operand(path), std::ios::binary);
     if (!file.is_open()) {
       return std::unexpected("cannot open file list '" + path + "'");
     }
@@ -1259,9 +1263,29 @@ auto print_disk_usage(const CommandContext<DU_OPTIONS.size()>& ctx)
     // never `src//bin`) and the operand line keeps one trailing slash
     // (GitHub #1159).
     const std::wstring raw_path = utf8_to_wstring(path);
-    const std::wstring wpath = operand_base_path(raw_path);
+    // [L2 self-parse] POSIX drive spellings (`/d/src`, `/cygdrive/d/src`)
+    // and the /dev pseudo-paths fold to their Win32 form at the shared
+    // operand boundary — the same layer wc/grep/head normalize through —
+    // so `/d/...` names the same file as `D:/...` however argv reached us
+    // (#1174). Operand text and child entries both use the resolved form,
+    // which is also the spelling the MSYS/Git-Bash runtime substitutes
+    // before GNU du would see the argument.
+    std::wstring resolved_path =
+        native_path::make_api_path_operand_w(raw_path).normalized;
+    // The raw operand's trailing separator run still decides the collapsed
+    // single slash on the operand line (#1159); make_api_path_operand_w
+    // re-adds a separator only when the target is a non-directory (#1052),
+    // so restore the collapsed form whenever the fold dropped it.
+    if (trailing_separator_run(raw_path) > 0 && !resolved_path.empty() &&
+        !native_path::is_separator(resolved_path.back())) {
+      resolved_path.push_back(L'\\');
+    }
+    const std::wstring wpath = operand_base_path(resolved_path);
+    // Forward-slash display for the resolved operand text, exactly like the
+    // child entries below (Savannah #13956 prints operand paths and their
+    // descendants with forward slashes).
     const std::string operand_display =
-        wstring_to_utf8(operand_display_path(raw_path));
+        display_path(operand_display_path(resolved_path));
 
     // [GNU] Under -L/-H a symlink operand that does not resolve (dangling
     // link) is reported and the run fails; GNU prints no errno text for the
