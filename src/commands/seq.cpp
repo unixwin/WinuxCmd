@@ -546,17 +546,119 @@ auto run(const Config& cfg) -> int {
   // Second pass: generate and output incrementally (streaming, no memory
   // blowup).  [GNU] iterates x = first + i*step which is mathematically
   // equivalent to x += step but less subject to accumulated rounding error.
+  //
+  // Output is assembled into a 64 KiB buffer and flushed in large chunks:
+  // safePrint issues one WriteFile per call, so emitting per line made long
+  // sequences pay a kernel transition two-three times per line (~30us/line
+  // through a pipe, 100k lines in ~332ms while GNU needs ~5ms, #1173).
+  // Batching keeps the byte stream identical while cutting the syscall
+  // count to roughly one per buffer.
+  constexpr size_t kFlushThreshold = 64 * 1024;
+  std::string out_buffer;
+  out_buffer.reserve(kFlushThreshold + 128);
+  const auto flush_output = [&out_buffer]() {
+    if (!out_buffer.empty()) {
+      safePrint(out_buffer);
+      out_buffer.clear();
+    }
+  };
+  const auto buffer_output = [&](std::string_view text) {
+    out_buffer.append(text);
+    if (out_buffer.size() >= kFlushThreshold) {
+      flush_output();
+    }
+  };
+
+  // [GNU] seq.c drives integral first/increment sequences through integer
+  // arithmetic instead of floating-point formatting.  When the operands
+  // admit it — integral FIRST and INCREMENT, the default fixed format with
+  // no fractional digits, no --format, not --equal-width, and every value
+  // inside the exact-integer double range (<= 2^52 keeps the range test on
+  // the next item exact too) — emit through std::to_chars: snprintf is what
+  // still cost ~0.6us/line after batching (#1173).
+  constexpr double kExactIntLimit = 4503599627370496.0;  // 2^52
+  const bool integral_fast_path =
+      cfg.format.empty() && cfg.fixed_default_format &&
+      cfg.default_precision == 0 && !cfg.equal_width &&
+      std::isfinite(cfg.first) && std::isfinite(cfg.increment) &&
+      std::isfinite(cfg.last) && std::floor(cfg.first) == cfg.first &&
+      std::floor(cfg.increment) == cfg.increment &&
+      std::fabs(cfg.first) <= kExactIntLimit &&
+      std::fabs(cfg.increment) <= kExactIntLimit &&
+      std::fabs(cfg.last) <= kExactIntLimit;
+
   bool first_item = true;
+
+  if (integral_fast_path) {
+    const auto first_i = static_cast<long long>(cfg.first);
+    const auto inc_i = static_cast<long long>(cfg.increment);
+    char number_buf[32];
+    for (long long x = first_i;;) {
+      auto [ptr, ec] =
+          std::to_chars(number_buf, number_buf + sizeof(number_buf), x);
+      if (!first_item) {
+        buffer_output(cfg.separator);
+      }
+      buffer_output(std::string_view(number_buf, ptr - number_buf));
+      first_item = false;
+
+      x += inc_i;
+      // The endpoint-rescue of the floating loop can never fire here: an
+      // integral NEXT equal to LAST satisfies in_range, so anything past
+      // the range also formats back to a value != LAST.
+      if (increasing ? static_cast<double>(x) > cfg.last
+                     : static_cast<double>(x) < cfg.last) {
+        break;
+      }
+    }
+    buffer_output(cfg.terminator);
+    flush_output();
+    return 0;
+  }
+
   double current = cfg.first;
+  // Like format_number() but into caller storage: one snprintf per line
+  // instead of a size-query + write pair, and the default fixed format
+  // string is built once instead of per line (#1173).  Falls back to
+  // format_number() when the text exceeds the stack buffer (exotic user
+  // formats); equal-width padding copies before mutating.
+  const std::string fixed_format =
+      "%." + std::to_string(cfg.default_precision) + "f";
+  char format_buf[1024];
+  // Scratch for the rare overlong outputs that do not fit format_buf; the
+  // returned view is consumed before the next format_value call.
+  std::string fallback;
+  const auto format_value = [&](double value) -> std::string_view {
+    const char* fmt = nullptr;
+    if (!cfg.format.empty()) {
+      fmt = cfg.format.c_str();
+    } else if (cfg.fixed_default_format) {
+      fmt = fixed_format.c_str();
+    } else {
+      fmt = "%g";
+    }
+    const int len = std::snprintf(format_buf, sizeof(format_buf), fmt, value);
+    if (len >= 0 && static_cast<size_t>(len) < sizeof(format_buf)) {
+      return std::string_view(format_buf, static_cast<size_t>(len));
+    }
+    fallback = format_number(value, cfg);
+    return fallback;
+  };
+
   const auto emit = [&](double x) {
-    std::string formatted = format_number(x, cfg);
     if (cfg.equal_width && cfg.format.empty()) {
-      formatted = zero_pad(std::move(formatted), max_width);
+      std::string formatted = zero_pad(std::string(format_value(x)), max_width);
+      if (!first_item) {
+        buffer_output(cfg.separator);
+      }
+      buffer_output(formatted);
+      first_item = false;
+      return;
     }
     if (!first_item) {
-      safePrint(cfg.separator);
+      buffer_output(cfg.separator);
     }
-    safePrint(formatted);
+    buffer_output(format_value(x));
     first_item = false;
   };
 
@@ -578,8 +680,9 @@ auto run(const Config& cfg) -> int {
   }
 
   if (!first_item) {
-    safePrint(cfg.terminator);
+    buffer_output(cfg.terminator);
   }
+  flush_output();
 
   return 0;
 }

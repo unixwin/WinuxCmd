@@ -365,3 +365,49 @@ TEST(seq, seq_two_digit_increment_precision) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "1.00\n1.15\n1.30\n");
 }
+
+// #1173: the 64 KiB output buffer must flush in order and preserve the byte
+// stream exactly — several full buffer rounds plus a partial tail.
+TEST(seq, seq_large_range_buffered_output_matches_gnu_bytes) {
+  Pipeline p;
+  p.add(L"seq.exe", {L"1", L"100000"});
+
+  TEST_LOG_CMD_LIST("seq.exe", L"1", L"100000");
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("seq large range first bytes", r.stdout_text.substr(0, 32));
+  TEST_LOG("seq large range last bytes",
+           r.stdout_text.substr(
+               r.stdout_text.size() > 32 ? r.stdout_text.size() - 32 : 0));
+
+  EXPECT_EQ(r.exit_code, 0);
+  // 100000 newline-terminated lines: "1\n" .. "100000\n" = 588895 bytes.
+  EXPECT_EQ(r.stdout_text.size(), size_t{588895});
+  EXPECT_TRUE(r.stdout_text.starts_with("1\n2\n3\n4\n5\n"));
+  EXPECT_TRUE(r.stdout_text.ends_with("99996\n99997\n99998\n99999\n100000\n"));
+  size_t newlines = 0;
+  for (char c : r.stdout_text) {
+    if (c == '\n') ++newlines;
+  }
+  EXPECT_EQ(newlines, size_t{100000});
+}
+
+// #1173: a custom separator interleaved across buffer flush boundaries must
+// survive the batching byte-for-byte (every third flush lands mid-line).
+TEST(seq, seq_custom_separator_large_range_buffered) {
+  Pipeline p;
+  p.add(L"seq.exe", {L"-s", L", ", L"1", L"50000"});
+
+  TEST_LOG_CMD_LIST("seq.exe", L"-s", L", ", L"1", L"50000");
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.starts_with("1, 2, 3, 4, 5, "));
+  EXPECT_TRUE(r.stdout_text.ends_with("49999, 50000\n"));
+  EXPECT_NOT_CONTAINS(r.stdout_text, ", , ");
+}
