@@ -4,6 +4,35 @@ All notable changes to WinuxCmd are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow the
 repository release tags.
 
+## [Unreleased]
+
+### Fixed
+
+- **wpm**: `wpm update winuxcmd` swaps the image by unlinking the old name
+  and moving the staged binary into place instead of overwriting a
+  running/mapped image in place. The in-place write fails with "being used by
+  another process" whenever any process holds the file (observed on a live
+  install, where the update silently kept the old version), and writing under
+  a mapped image is unsafe for the processes already running from it. The
+  in-place path remains the fallback when the unlink itself fails.
+- **wpm**: installing a package reconciles its own previous install first -
+  destinations the new artifact no longer maps are removed and, on a version
+  change, files inside still-mapped directories that the new payload dropped
+  are pruned. Before, a layout change left inert leftovers behind (the retired
+  shim launcher `opt\<pkg>\<cmd>.exe` after a move to `layout: flat`, or a
+  stale DLL in a PATH directory from older flat packaging). Only paths
+  recorded in the package's own receipt are touched, they must resolve inside
+  the root, and the winuxcmd image and the running executable are never
+  deleted.
+- **wpm**: `outdated` orders versions instead of comparing strings, so a stale
+  mirror advertising an older version no longer reports a
+  `update available: 2.55.0.5 -> 2.55.0.4` downgrade. The order is the
+  dotted-numeric core plus, when present, a Debian-style packaging revision
+  (`5.4.1-unixwin2` > `5.4.1-unixwin1` > `5.4.1`) - what a repackaged artifact
+  needs, since the upstream version stays and our rebuild gets a revision.
+  Vendor spellings (`9.5.0.0p1`, `r42`, ...) keep the conservative "any
+  difference is an update" rule.
+
 ## [1.1.10] - 2026-10-16
 
 ### Added
