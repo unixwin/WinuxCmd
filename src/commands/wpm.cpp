@@ -2658,14 +2658,16 @@ auto refresh_index_once(const Options& opts, std::string_view reason) -> bool {
   return false;
 }
 
-// Dotted-numeric version ordering ("2.55.0.5" > "2.55.0.4"). Returns
-// std::nullopt when either side is not plain dotted-numeric: the index also
-// carries vendor spellings such as "9.5.0.0p1", "r42" or "kustomize/v5.8.1",
-// and for those callers keep the conservative "any difference is an update"
-// rule instead of guessing an order.
-auto compare_dotted_versions(std::string_view left, std::string_view right)
+// Version ordering for index entries: a dotted-numeric core with an optional
+// packaging revision ("5.4.1-unixwin2" > "5.4.1-unixwin1" > "5.4.1"), which is
+// what a repackaged artifact needs (the upstream version stays, our rebuild
+// gets a revision). Returns std::nullopt when either side does not follow that
+// shape - the index also carries spellings such as "9.5.0.0p1", "r42" or
+// "kustomize/v5.8.1" - and callers then keep the conservative "any difference
+// is an update" rule instead of guessing an order.
+auto compare_versions(std::string_view left, std::string_view right)
     -> std::optional<int> {
-  auto parse = [](std::string_view text)
+  auto parse_core = [](std::string_view text)
       -> std::optional<std::vector<unsigned long long>> {
     std::vector<unsigned long long> parts;
     size_t begin = 0;
@@ -2686,15 +2688,64 @@ auto compare_dotted_versions(std::string_view left, std::string_view right)
     }
     return parts;
   };
-  auto lhs = parse(left);
-  auto rhs = parse(right);
+  auto split_revision = [](std::string_view text)
+      -> std::pair<std::string_view, std::string_view> {
+    const size_t dash = text.find('-');
+    if (dash == std::string_view::npos) return {text, {}};
+    return {text.substr(0, dash), text.substr(dash + 1)};
+  };
+  auto compare_core = [](const std::vector<unsigned long long>& lhs,
+                         const std::vector<unsigned long long>& rhs) -> int {
+    const size_t count = std::max(lhs.size(), rhs.size());
+    for (size_t i = 0; i < count; ++i) {
+      const unsigned long long l = i < lhs.size() ? lhs[i] : 0;
+      const unsigned long long r = i < rhs.size() ? rhs[i] : 0;
+      if (l != r) return l < r ? -1 : 1;
+    }
+    return 0;
+  };
+
+  const auto [left_core, left_revision] = split_revision(left);
+  const auto [right_core, right_revision] = split_revision(right);
+  auto lhs = parse_core(left_core);
+  auto rhs = parse_core(right_core);
   if (!lhs || !rhs) return std::nullopt;
-  const size_t count = std::max(lhs->size(), rhs->size());
-  for (size_t i = 0; i < count; ++i) {
-    const unsigned long long l = i < lhs->size() ? (*lhs)[i] : 0;
-    const unsigned long long r = i < rhs->size() ? (*rhs)[i] : 0;
-    if (l != r) return l < r ? -1 : 1;
+  if (const int core = compare_core(*lhs, *rhs); core != 0) return core;
+  if (left_revision.empty() && right_revision.empty()) return 0;
+  // A repackaging revision outranks the bare upstream version.
+  if (left_revision.empty()) return -1;
+  if (right_revision.empty()) return 1;
+
+  auto tokens = [](std::string_view text) {
+    std::vector<std::string_view> out;
+    size_t begin = 0;
+    while (begin <= text.size()) {
+      size_t end = text.find_first_of(".-", begin);
+      std::string_view token = end == std::string_view::npos
+                                   ? text.substr(begin)
+                                   : text.substr(begin, end - begin);
+      if (!token.empty()) out.push_back(token);
+      if (end == std::string_view::npos) break;
+      begin = end + 1;
+    }
+    return out;
+  };
+  const auto left_tokens = tokens(left_revision);
+  const auto right_tokens = tokens(right_revision);
+  for (size_t i = 0; i < std::min(left_tokens.size(), right_tokens.size()); ++i) {
+    const auto l = parse_core(left_tokens[i]);
+    const auto r = parse_core(right_tokens[i]);
+    int order = 0;
+    if (l && r) {
+      order = compare_core(*l, *r);
+    } else {
+      const int cmp = left_tokens[i].compare(right_tokens[i]);
+      order = cmp < 0 ? -1 : (cmp > 0 ? 1 : 0);
+    }
+    if (order != 0) return order;
   }
+  if (left_tokens.size() != right_tokens.size())
+    return left_tokens.size() < right_tokens.size() ? -1 : 1;
   return 0;
 }
 
@@ -3675,11 +3726,11 @@ auto list_outdated(const Options& opts) -> int {
     auto it = remote_versions.find(name);
     if (it == remote_versions.end()) continue;
     if (it->second.empty() || it->second == local_version) continue;
-    // A stale mirror can advertise an older version than what is installed;
-    // only report an update when the remote version is actually newer. Non
-    // dotted-numeric versions keep the conservative "difference means update"
-    // rule.
-    if (auto order = compare_dotted_versions(it->second, local_version);
+    // A stale mirror can advertise an older version (or an older packaging
+    // revision) than what is installed; only report an update when the remote
+    // version actually orders higher. Vendor spellings keep the conservative
+    // "difference means update" rule.
+    if (auto order = compare_versions(it->second, local_version);
         order && *order <= 0)
       continue;
     outdated.push_back({{"name", name},
