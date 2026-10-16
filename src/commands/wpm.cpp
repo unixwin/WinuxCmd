@@ -2658,6 +2658,194 @@ auto refresh_index_once(const Options& opts, std::string_view reason) -> bool {
   return false;
 }
 
+// Dotted-numeric version ordering ("2.55.0.5" > "2.55.0.4"). Returns
+// std::nullopt when either side is not plain dotted-numeric: the index also
+// carries vendor spellings such as "9.5.0.0p1", "r42" or "kustomize/v5.8.1",
+// and for those callers keep the conservative "any difference is an update"
+// rule instead of guessing an order.
+auto compare_dotted_versions(std::string_view left, std::string_view right)
+    -> std::optional<int> {
+  auto parse = [](std::string_view text)
+      -> std::optional<std::vector<unsigned long long>> {
+    std::vector<unsigned long long> parts;
+    size_t begin = 0;
+    while (begin <= text.size()) {
+      size_t dot = text.find('.', begin);
+      std::string_view segment =
+          dot == std::string_view::npos ? text.substr(begin)
+                                       : text.substr(begin, dot - begin);
+      if (segment.empty() || segment.size() > 18) return std::nullopt;
+      unsigned long long value = 0;
+      for (char ch : segment) {
+        if (ch < '0' || ch > '9') return std::nullopt;
+        value = value * 10 + static_cast<unsigned long long>(ch - '0');
+      }
+      parts.push_back(value);
+      if (dot == std::string_view::npos) break;
+      begin = dot + 1;
+    }
+    return parts;
+  };
+  auto lhs = parse(left);
+  auto rhs = parse(right);
+  if (!lhs || !rhs) return std::nullopt;
+  const size_t count = std::max(lhs->size(), rhs->size());
+  for (size_t i = 0; i < count; ++i) {
+    const unsigned long long l = i < lhs->size() ? (*lhs)[i] : 0;
+    const unsigned long long r = i < rhs->size() ? (*rhs)[i] : 0;
+    if (l != r) return l < r ? -1 : 1;
+  }
+  return 0;
+}
+
+// True when `path` resolves strictly inside `root` (guards receipt-driven
+// deletions against a receipt written for a different root).
+auto path_is_within(const fs::path& root, const fs::path& path) -> bool {
+  std::error_code ec;
+  const fs::path relative = fs::relative(path, root, ec);
+  if (ec) return false;
+  const std::string text = relative.generic_string();
+  return !text.empty() && text != "." && text != ".." &&
+         !text.starts_with("../");
+}
+
+// Remove files under `installed` that the artifact source tree `source` no
+// longer ships, then drop the directories that became empty. Only used on a
+// version change, so a same-version reinstall does not pay for the walk.
+auto prune_stale_entries(const fs::path& installed, const fs::path& source,
+                         bool dry_run, bool verbose) -> void {
+  std::error_code ec;
+  std::vector<fs::path> directories;
+  fs::recursive_directory_iterator it(
+      installed, fs::directory_options::skip_permission_denied, ec);
+  const fs::recursive_directory_iterator end;
+  for (; !ec && it != end; it.increment(ec)) {
+    const fs::path entry = it->path();
+    std::error_code type_ec;
+    if (it->is_directory(type_ec)) {
+      directories.push_back(entry);
+      continue;
+    }
+    if (!it->is_regular_file(type_ec)) continue;
+    std::error_code rel_ec;
+    const fs::path relative = fs::relative(entry, installed, rel_ec);
+    if (rel_ec) continue;
+    std::error_code exists_ec;
+    if (fs::exists(source / relative, exists_ec)) continue;
+    if (dry_run) {
+      if (verbose)
+        safePrintLn("wpm: would remove superseded file " + entry.string());
+      continue;
+    }
+    if (delete_file_name(entry) && verbose)
+      safePrintLn("wpm: removed superseded file " + entry.string());
+  }
+  if (dry_run) return;
+  std::sort(directories.begin(), directories.end(),
+            [](const fs::path& a, const fs::path& b) {
+              return std::distance(a.begin(), a.end()) >
+                     std::distance(b.begin(), b.end());
+            });
+  for (const auto& directory : directories) {
+    std::error_code empty_ec;
+    if (!fs::is_empty(directory, empty_ec) || empty_ec) continue;
+    std::error_code rm_ec;
+    fs::remove(directory, rm_ec);
+  }
+}
+
+// Reconcile the package's previous install with what this artifact ships:
+// destinations the new mapping no longer covers are removed, and on a version
+// change files inside still-covered directories that the new payload dropped
+// are pruned too. Without it a layout change leaves inert leftovers behind -
+// most visibly the retired shim launcher opt/<pkg>/<cmd>.exe after a move to
+// layout:flat (unixwin/niu-git#8) or a stale DLL in a PATH directory from an
+// older flat packaging. Only paths this package's own receipt recorded are
+// considered, they must resolve inside the root, and the winuxcmd image and
+// the running executable are never touched.
+auto prune_superseded_install(const fs::path& root, const std::string& package,
+                              const nlohmann::json& artifact,
+                              const fs::path& extracted, bool dry_run,
+                              bool verbose) -> void {
+  if (package.empty()) return;
+  auto text = read_text(receipt_path(root, package));
+  if (!text) return;
+  auto receipt = parse_json_text(*text);
+  if (!receipt || !receipt->contains("destinations") ||
+      !(*receipt)["destinations"].is_array())
+    return;
+
+  const fs::path core = canonical_winuxcmd_path(root);
+  const fs::path current = current_exe_path();
+
+  struct Covered {
+    fs::path destination;
+    fs::path source;
+    bool directory = false;
+  };
+  std::vector<Covered> covered;
+  if (artifact.contains("files") && artifact["files"].is_array()) {
+    for (const auto& mapping : artifact["files"]) {
+      const bool directory = mapping_is_directory(mapping);
+      auto destination =
+          artifact_destination_for_mapping(root, artifact, package, mapping);
+      if (!destination) continue;
+      const std::string from = mapping.value("from", "");
+      const bool single_file_fallback = artifact.value("type", "exe") == "exe";
+      auto source =
+          find_artifact_path(extracted, from, directory, single_file_fallback);
+      covered.push_back({*destination, source ? *source : fs::path{}, directory});
+    }
+  }
+
+  const bool upgraded =
+      receipt->value("version", "") != artifact.value("version", std::string{});
+  for (const auto& entry : (*receipt)["destinations"]) {
+    if (!entry.is_string()) continue;
+    const fs::path previous(entry.get<std::string>());
+    std::error_code exists_ec;
+    if (!fs::exists(previous, exists_ec)) continue;
+    if (!path_is_within(root, previous)) continue;
+    if (same_file(core, previous) || same_path_name(current, previous))
+      continue;
+
+    const Covered* match = nullptr;
+    for (const auto& candidate : covered) {
+      if (normalized_path_key(candidate.destination) ==
+          normalized_path_key(previous)) {
+        match = &candidate;
+        break;
+      }
+    }
+    if (match != nullptr) {
+      if (upgraded && match->directory && !match->source.empty())
+        prune_stale_entries(previous, match->source, dry_run, verbose);
+      continue;
+    }
+
+    // Not part of the artifact any more: drop the file or the whole directory.
+    std::error_code type_ec;
+    const bool directory = fs::is_directory(previous, type_ec);
+    if (dry_run) {
+      if (verbose)
+        safePrintLn("wpm: would remove superseded path " + previous.string());
+      continue;
+    }
+    std::error_code remove_ec;
+    if (directory) {
+      fs::remove_all(previous, remove_ec);
+    } else if (!delete_file_name(previous)) {
+      remove_ec = std::error_code(GetLastError(), std::system_category());
+    }
+    if (remove_ec) {
+      safeErrorPrintLn("wpm: failed to remove superseded path '" +
+                       previous.string() + "': " + remove_ec.message());
+    } else if (verbose) {
+      safePrintLn("wpm: removed superseded path " + previous.string());
+    }
+  }
+}
+
 auto install_package(const Options& opts, std::string_view package_name,
                      nlohmann::json* json_result) -> int {
   // When json_result is non-null (--json mode) stdout stays pure JSON: human
@@ -2791,6 +2979,10 @@ auto install_package(const Options& opts, std::string_view package_name,
   }
 
   const bool shim_layout = artifact_layout(*artifact) == "shim";
+  // Reconcile the previous install before laying the new payload down, so a
+  // renamed/removed file cannot survive as an inert leftover.
+  prune_superseded_install(opts.root, pkg->value("name", std::string(package_name)),
+                           *artifact, extracted, opts.dry_run, opts.verbose);
   progress(wpm_text("command.wpm.status.installing_files",
                     "wpm: installing files..."));
   if (!copy_artifact_files(
@@ -3205,6 +3397,49 @@ auto apply_update(std::span<const std::string_view> args) -> int {
     }
   }
 
+  // Swap the name instead of overwriting the image in place. usr\bin entries
+  // are hardlinks of this one record, and a mapped executable refuses an
+  // in-place write ("being used by another process" - the failure that left
+  // wpm update winuxcmd stuck with the old version on a live install), while
+  // a POSIX unlink of the name always works and keeps already-running
+  // processes on the old record. The new image is then moved into place and
+  // every command link is rebuilt onto it.
+  const fs::path staged_target =
+      target.parent_path() /
+      (target.stem().wstring() + L".update-" +
+       std::to_wstring(GetCurrentProcessId()) + target.extension().wstring());
+  std::error_code staged_ec;
+  fs::copy_file(payload, staged_target, fs::copy_options::overwrite_existing,
+                staged_ec);
+  if (staged_ec) {
+    safeErrorPrintLn("wpm: failed to stage the updated winuxcmd.exe: " +
+                     staged_ec.message());
+  } else if (delete_file_name(target)) {
+    std::error_code rename_ec;
+    fs::rename(staged_target, target, rename_ec);
+    if (!rename_ec) return rebuild_links(root, true, false, false);
+    safeErrorPrintLn("wpm: failed to move the updated winuxcmd.exe into place: " +
+                     rename_ec.message());
+    // The old name is gone; put a usable image back before giving up.
+    std::error_code restore_ec;
+    fs::copy_file(backup, target, fs::copy_options::overwrite_existing,
+                  restore_ec);
+    if (restore_ec)
+      safeErrorPrintLn("wpm: failed to restore backup winuxcmd.exe: " +
+                       restore_ec.message());
+    std::error_code cleanup_ec;
+    fs::remove(staged_target, cleanup_ec);
+    rebuild_links(root, true, false, false);
+    return 1;
+  } else {
+    std::error_code cleanup_ec;
+    fs::remove(staged_target, cleanup_ec);
+    safeErrorPrintLn(
+        "wpm: could not unlink the old winuxcmd.exe; falling back to an "
+        "in-place replace");
+  }
+
+  ec.clear();
   fs::copy_file(payload, target, fs::copy_options::overwrite_existing, ec);
   if (ec) {
     safeErrorPrintLn("wpm: failed to replace winuxcmd.exe: " + ec.message());
@@ -3440,6 +3675,13 @@ auto list_outdated(const Options& opts) -> int {
     auto it = remote_versions.find(name);
     if (it == remote_versions.end()) continue;
     if (it->second.empty() || it->second == local_version) continue;
+    // A stale mirror can advertise an older version than what is installed;
+    // only report an update when the remote version is actually newer. Non
+    // dotted-numeric versions keep the conservative "difference means update"
+    // rule.
+    if (auto order = compare_dotted_versions(it->second, local_version);
+        order && *order <= 0)
+      continue;
     outdated.push_back({{"name", name},
                         {"version", local_version},
                         {"available", it->second}});
