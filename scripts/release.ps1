@@ -224,8 +224,39 @@ if ($PullRequestFlow) {
     Write-Host ""
 
     Write-Color "Yellow" "Fetching merged $BaseBranch..."
-    git fetch origin $BaseBranch --tags
-    Write-Color "Green" "  Fetched origin/$BaseBranch"
+    # The tag must land on the merge commit. A transient network error here
+    # used to slip through unchecked and tag the stale local origin/$BaseBranch
+    # (shipping a release built from the previous version's tree), so the fetch
+    # is retried and its exit code is enforced.
+    $fetchOk = $false
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        git fetch origin $BaseBranch --tags
+        if ($LASTEXITCODE -eq 0) {
+            $fetchOk = $true
+            break
+        }
+        Write-Color "Yellow" "  fetch attempt $attempt failed; retrying..."
+        Start-Sleep -Seconds 3
+    }
+    if (-not $fetchOk) {
+        Write-Color "Red" "Failed to fetch origin/$BaseBranch; refusing to tag a stale commit"
+        exit 1
+    }
+
+    # The PR merge must be visible in the fetched ref before tagging it.
+    $mergeCommit = (git rev-parse "origin/$BaseBranch").Trim()
+    $prMergeSha = (gh pr view $prNumber --json mergeCommit --jq '.mergeCommit.oid' 2>$null)
+    if ($prMergeSha) { $prMergeSha = $prMergeSha.Trim() }
+    if ($prMergeSha) {
+        git merge-base --is-ancestor $prMergeSha $mergeCommit 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Color "Red" "PR #$prNumber merge ($prMergeSha) is not in origin/$BaseBranch ($mergeCommit); refusing to tag a stale commit"
+            exit 1
+        }
+    } else {
+        Write-Color "Yellow" "  Could not resolve PR #$prNumber merge commit; tagging origin/$BaseBranch as fetched"
+    }
+    Write-Color "Green" "  Fetched origin/$BaseBranch at $mergeCommit"
     Write-Host ""
 
     $existingTag = git tag -l $tagName
@@ -241,6 +272,10 @@ if ($PullRequestFlow) {
 
     Write-Color "Yellow" "Pushing tag $tagName..."
     git push origin $tagName
+    if ($LASTEXITCODE -ne 0) {
+        Write-Color "Red" "Failed to push tag $tagName; the release build was NOT triggered"
+        exit 1
+    }
     Write-Color "Green" "  Tag pushed"
     Write-Host ""
 
