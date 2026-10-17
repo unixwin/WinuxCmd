@@ -664,6 +664,14 @@ install(TARGETS winuxcmd
         COMPONENT Runtime
 )
 
+# The package shim travels with the payload: `wpm` links a `layout: shim`
+# command to it when it is present, and without it in the archive the cheaper
+# dispatch never reaches an installation (unixwin/WinuxCmd#1207).
+install(TARGETS winuxcmd-shim
+        RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+        COMPONENT Runtime
+)
+
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/scripts/winux.ps1"
         DESTINATION "${CMAKE_INSTALL_BINDIR}"
         COMPONENT Runtime
