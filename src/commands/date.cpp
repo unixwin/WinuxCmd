@@ -2122,15 +2122,21 @@ REGISTER_COMMAND(
   // [GNU] -d/-f/-r/--resolution are mutually exclusive date sources
   std::string date_arg = ctx.get<std::string>("--date", "");
   if (date_arg.empty()) date_arg = ctx.get<std::string>("-d", "");
+  // [#1216] An *explicitly empty* date operand is a date, not "no -d was
+  // given": `date -d ''` and `date -d ' '` both mean "today at 00:00:00" in
+  // GNU (gnulib parse-datetime accepts the empty string), while WinuxCmd
+  // used to treat an empty -d value as if the option were absent and printed
+  // the current time instead.
+  const bool has_date_arg = ctx.has("-d") || ctx.has("--date");
   std::string date_file = ctx.get<std::string>("--file", "");
   if (date_file.empty()) date_file = ctx.get<std::string>("-f", "");
   std::string reference_path = ctx.get<std::string>("--reference", "");
   if (reference_path.empty()) reference_path = ctx.get<std::string>("-r", "");
   bool has_resolution = ctx.has("--resolution");
 
-  int specified_date =
-      (!date_arg.empty() ? 1 : 0) + (!date_file.empty() ? 1 : 0) +
-      (!reference_path.empty() ? 1 : 0) + (has_resolution ? 1 : 0);
+  int specified_date = (has_date_arg ? 1 : 0) + (!date_file.empty() ? 1 : 0) +
+                       (!reference_path.empty() ? 1 : 0) +
+                       (has_resolution ? 1 : 0);
   if (specified_date > 1) {
     safeErrorPrintLn(
         "date: the options to specify dates for printing are mutually "
@@ -2282,7 +2288,7 @@ REGISTER_COMMAND(
       return 1;
     }
     selected_time = *reference_time;
-  } else if (!date_arg.empty()) {
+  } else if (has_date_arg) {
     DateDebugInfo dbg;
     auto parsed =
         parse_date_argument(date_arg, use_utc, debug ? &dbg : nullptr);

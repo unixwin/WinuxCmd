@@ -498,3 +498,43 @@ TEST(date, date_deprecated_uct_and_rfc822_aliases) {
   EXPECT_EQ(r2.exit_code, 0);
   EXPECT_EQ_TEXT(r2.stdout_text, r3.stdout_text);
 }
+
+// [#1216] `date -d ''` is an explicit (empty) date operand, not "no -d":
+// GNU resolves it to today at 00:00:00 in the effective zone. WinuxCmd used
+// to print the current time because the empty value made the option look
+// absent.
+TEST(date, date_empty_d_argument_is_today_midnight_issue1216) {
+  Pipeline p;
+  p.add(L"date.exe", {L"-u", L"-d", L"", L"+%H:%M:%S"});
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  EXPECT_EXIT_CODE(r, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "00:00:00\n");
+}
+
+TEST(date, date_blank_d_argument_is_today_midnight_issue1216) {
+  Pipeline p;
+  p.add(L"date.exe", {L"-u", L"-d", L" ", L"+%H:%M:%S"});
+
+  auto r = p.run();
+
+  EXPECT_EXIT_CODE(r, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "00:00:00\n");
+}
+
+// [#1216] The date part must stay today (not 1970-01-01); GNU `date -u -d ''
+// +%F` is the same day as `date -u +%F`.
+TEST(date, date_empty_d_argument_keeps_todays_date_issue1216) {
+  Pipeline today;
+  today.add(L"date.exe", {L"-u", L"+%F"});
+  auto rt = today.run();
+
+  Pipeline empty;
+  empty.add(L"date.exe", {L"-u", L"-d", L"", L"+%F"});
+  auto re = empty.run();
+
+  EXPECT_EXIT_CODE(re, 0);
+  EXPECT_EQ_TEXT(re.stdout_text, rt.stdout_text);
+}
