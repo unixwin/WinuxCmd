@@ -1225,3 +1225,21 @@ TEST(du, du_accepts_posix_drive_form_without_summarize) {
                                     blocks + "\t" + display_root + "/src\n" +
                                     blocks + "\t" + display_root + "\n");
 }
+
+// [#1212] text-mode stdin stopped at the 0x1A and silently ignored every
+// file-list entry after it; the full list must reach the accessor.
+TEST(du, du_files0_from_stdin_ctrlz_not_truncated_issue1212) {
+  TempDir tmp;
+  tmp.write("f", "x");
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin(
+      std::string("f\x00\x1a"
+                  "g\x00",
+                  6));
+  p.add(L"du.exe", {L"--files0-from", L"-"});
+  auto r = p.run();
+
+  EXPECT_NE(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.find("cannot access") != std::string::npos);
+}
