@@ -200,7 +200,11 @@ auto calculate_sha1(const std::string& filename, bool text_mode = false)
       return std::unexpected(std::string(filename.empty() ? "-" : filename) +
                              ": Bad file descriptor");
     }
-    // Read from stdin
+    // Read from stdin.  [#1195] fd 0 uses the CRT's text mode by default,
+    // where fread() silently stops at the first 0x1A (Ctrl-Z) byte; like
+    // GNU, the digest must hash raw bytes, so switch stdin to binary mode
+    // before reading (same idiom as cat/wc/tr).
+    _setmode(_fileno(stdin), _O_BINARY);
     std::array<char, 8192> buffer;
     size_t bytes_read;
 

@@ -421,3 +421,92 @@ TEST(md5sum, md5sum_check_ignore_missing_skips_missing_files) {
   EXPECT_TRUE(result.stderr_text.find("no file was verified") !=
               std::string::npos);
 }
+
+// [#1195] stdin must be read in binary mode: the CRT's default text mode
+// silently stops at the first 0x1A (Ctrl-Z) byte, so the digest was computed
+// over a truncated stream ("AAAA" instead of "AAAA<0x1A>BBBB\n").  GNU hashes
+// the full 10-byte payload for the pipe, the `<` redirect, and the file
+// operand alike.
+TEST(md5sum, md5sum_stdin_ctrl_z_pipe_hashes_full_payload_issue1195) {
+  Pipeline p;
+  // "AAAA\032BBBB\n" — a 0x1A byte in the middle of the payload.
+  p.set_stdin(
+      std::string("AAAA\x1a"
+                  "BBBB\n",
+                  10));
+  p.add(L"md5sum.exe", {});
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("md5sum ctrl-z pipe output", r.stdout_text);
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("60f5ffbcfe8a049be21dc9d6c334c82c") !=
+              std::string::npos);  // GNU md5 of the full 10-byte payload
+  // The pre-fix truncated value (md5("AAAA")) must not appear.
+  EXPECT_TRUE(r.stdout_text.find("098890dde069e9abad63f19a0d9e1f32") ==
+              std::string::npos);
+}
+
+TEST(md5sum, md5sum_stdin_nul_pipe_unchanged_issue1195) {
+  Pipeline p;
+  // "AB\0CD" — NUL bytes were handled correctly before #1195 and must stay.
+  p.set_stdin(
+      std::string("AB"
+                  "\x00"
+                  "CD",
+                  5));
+  p.add(L"md5sum.exe", {});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("580dfde355cb3ceb91f01544d9918f9c") !=
+              std::string::npos);  // GNU md5 of "AB\0CD"
+}
+
+TEST(md5sum, md5sum_pipe_matches_file_operand_issue1195) {
+  // The file operand form must stay byte-correct (it never reproduced the
+  // bug), and the stdin form must now agree with it on identical bytes.
+  TempDir tmp;
+  tmp.write("payload.bin", std::string("AAAA\x1a"
+                                       "BBBB\n",
+                                       10));
+
+  Pipeline file;
+  file.set_cwd(tmp.wpath());
+  file.add(L"md5sum.exe", {L"payload.bin"});
+  auto file_result = file.run();
+
+  EXPECT_EQ(file_result.exit_code, 0);
+  EXPECT_TRUE(
+      file_result.stdout_text.find("60f5ffbcfe8a049be21dc9d6c334c82c") !=
+      std::string::npos);  // GNU md5 of the full 10-byte payload
+
+  Pipeline piped;
+  piped.set_stdin(
+      std::string("AAAA\x1a"
+                  "BBBB\n",
+                  10));
+  piped.add(L"md5sum.exe", {});
+  auto pipe_result = piped.run();
+
+  EXPECT_EQ(pipe_result.exit_code, 0);
+  // Same 32-hex digest must be printed for both input forms.
+  EXPECT_EQ(file_result.stdout_text.substr(0, 32),
+            pipe_result.stdout_text.substr(0, 32));
+}
+
+TEST(md5sum, md5sum_stdin_plain_text_sanity_issue1195) {
+  // A legitimately plain-text stdin pipe must produce the bytes of "hi\n".
+  Pipeline p;
+  p.set_stdin("hi\n");
+  p.add(L"md5sum.exe", {});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("764efa883dda1e11db47671c4a3bbd9e") !=
+              std::string::npos);  // GNU md5 of "hi\n"
+}

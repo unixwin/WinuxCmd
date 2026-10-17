@@ -316,3 +316,92 @@ TEST(sha256sum, sha256sum_check_strict_rejects_malformed_lines) {
   EXPECT_NE(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.find("check.txt: OK") != std::string::npos);
 }
+
+// [#1195] stdin must be read in binary mode: the CRT's default text mode
+// silently stops at the first 0x1A (Ctrl-Z) byte.  GNU hashes the full
+// 10-byte payload for the pipe, the `<` redirect, and the file operand alike.
+TEST(sha256sum, sha256sum_stdin_ctrl_z_pipe_hashes_full_payload_issue1195) {
+  Pipeline p;
+  // "AAAA\032BBBB\n" — a 0x1A byte in the middle of the payload.
+  p.set_stdin(
+      std::string("AAAA\x1a"
+                  "BBBB\n",
+                  10));
+  p.add(L"sha256sum.exe", {});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(
+      r.stdout_text.find(
+          "947cd8c9aeb7e77eaf23c65ce58e442ac3d04f4ab249599efa541b46c239662d") !=
+      std::string::npos);  // GNU sha256 of the full 10-byte payload
+  // The pre-fix truncated value (sha256("AAAA")) must not appear.
+  EXPECT_TRUE(
+      r.stdout_text.find(
+          "63c1dd951ffedf6f7fd968ad4efa39b8ed584f162f46e715114ee184f8de9201") ==
+      std::string::npos);
+}
+
+TEST(sha256sum, sha256sum_stdin_nul_pipe_unchanged_issue1195) {
+  Pipeline p;
+  // "AB\0CD" — NUL bytes were handled correctly before #1195 and must stay.
+  p.set_stdin(
+      std::string("AB"
+                  "\x00"
+                  "CD",
+                  5));
+  p.add(L"sha256sum.exe", {});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(
+      r.stdout_text.find(
+          "9bcc7c333a8038b7754d9d3e0d99440e86c2f385c8b2a0d5eaffa94a37607a25") !=
+      std::string::npos);  // GNU sha256 of "AB\0CD"
+}
+
+TEST(sha256sum, sha256sum_pipe_matches_file_operand_issue1195) {
+  TempDir tmp;
+  tmp.write("payload.bin", std::string("AAAA\x1a"
+                                       "BBBB\n",
+                                       10));
+
+  Pipeline file;
+  file.set_cwd(tmp.wpath());
+  file.add(L"sha256sum.exe", {L"payload.bin"});
+  auto file_result = file.run();
+
+  EXPECT_EQ(file_result.exit_code, 0);
+  EXPECT_TRUE(
+      file_result.stdout_text.find(
+          "947cd8c9aeb7e77eaf23c65ce58e442ac3d04f4ab249599efa541b46c239662d") !=
+      std::string::npos);  // GNU sha256 of the full 10-byte payload
+
+  Pipeline piped;
+  piped.set_stdin(
+      std::string("AAAA\x1a"
+                  "BBBB\n",
+                  10));
+  piped.add(L"sha256sum.exe", {});
+  auto pipe_result = piped.run();
+
+  EXPECT_EQ(pipe_result.exit_code, 0);
+  EXPECT_EQ(file_result.stdout_text.substr(0, 64),
+            pipe_result.stdout_text.substr(0, 64));
+}
+
+TEST(sha256sum, sha256sum_stdin_plain_text_sanity_issue1195) {
+  Pipeline p;
+  p.set_stdin("hi\n");
+  p.add(L"sha256sum.exe", {});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(
+      r.stdout_text.find(
+          "98ea6e4f216f2fb4b69fff9b3a44842c38686ca685f3f55dc48c5d3fb1107be4") !=
+      std::string::npos);  // GNU sha256 of "hi\n"
+}

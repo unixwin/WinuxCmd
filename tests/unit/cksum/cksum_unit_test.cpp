@@ -363,3 +363,90 @@ TEST(cksum, cksum_check_quiet_suppresses_ok_lines_only) {
                   "cksum: WARNING: 1 of 1 computed checksums did NOT match") !=
               std::string::npos);
 }
+
+// [#1195] every cksum stdin route (legacy read_file/read_crc_file and the
+// digest path via portable_digest::hash_file_hex) must read fd 0 in binary
+// mode: the CRT's default text mode silently stops at the first 0x1A
+// (Ctrl-Z) byte, silently corrupting both the checksum and the byte count.
+TEST(cksum, cksum_stdin_ctrl_z_pipe_hashes_full_payload_issue1195) {
+  Pipeline p;
+  // "AAAA\032BBBB\n" — a 0x1A byte in the middle of the payload.
+  p.set_stdin(
+      std::string("AAAA\x1a"
+                  "BBBB\n",
+                  10));
+  p.add(L"cksum.exe", {});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // [GNU] CRC of the full 10-byte payload plus the full byte count.
+  EXPECT_TRUE(r.stdout_text.find("2873339409") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find(" 10") != std::string::npos);
+  // The pre-fix truncated values (crc/length of "AAAA") must not appear.
+  EXPECT_TRUE(r.stdout_text.find("1257162693") == std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find(" 4") == std::string::npos);
+}
+
+TEST(cksum, cksum_stdin_nul_pipe_unchanged_issue1195) {
+  Pipeline p;
+  // "AB\0CD" — NUL bytes were handled correctly before #1195 and must stay.
+  p.set_stdin(
+      std::string("AB"
+                  "\x00"
+                  "CD",
+                  5));
+  p.add(L"cksum.exe", {});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("3345473462") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find(" 5") != std::string::npos);
+}
+
+TEST(cksum, cksum_pipe_matches_file_operand_issue1195) {
+  TempDir tmp;
+  tmp.write("payload.bin", std::string("AAAA\x1a"
+                                       "BBBB\n",
+                                       10));
+
+  Pipeline file;
+  file.set_cwd(tmp.wpath());
+  file.add(L"cksum.exe", {L"payload.bin"});
+  auto file_result = file.run();
+
+  EXPECT_EQ(file_result.exit_code, 0);
+  EXPECT_TRUE(file_result.stdout_text.find("2873339409 10") !=
+              std::string::npos);  // [GNU] full payload CRC + length
+
+  Pipeline piped;
+  piped.set_stdin(
+      std::string("AAAA\x1a"
+                  "BBBB\n",
+                  10));
+  piped.add(L"cksum.exe", {});
+  auto pipe_result = piped.run();
+
+  EXPECT_EQ(pipe_result.exit_code, 0);
+  // Same checksum and byte count for the stdin form as for the operand.
+  EXPECT_TRUE(pipe_result.stdout_text.find("2873339409 10") !=
+              std::string::npos);
+}
+
+TEST(cksum, cksum_stdin_digest_algorithm_ctrl_z_issue1195) {
+  // The -a/--algorithm route goes through hash_file_hex's std::cin path,
+  // also hit by the -c check mode for "-" targets.
+  Pipeline p;
+  p.set_stdin(
+      std::string("AAAA\x1a"
+                  "BBBB\n",
+                  10));
+  p.add(L"cksum.exe", {L"--algorithm", L"md5"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("60f5ffbcfe8a049be21dc9d6c334c82c") !=
+              std::string::npos);  // GNU md5 of the full 10-byte payload
+}

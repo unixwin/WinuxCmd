@@ -886,6 +886,14 @@ auto run_check_mode(const Config& cfg) -> int {
 }
 
 auto run(const Config& cfg) -> int {
+#ifdef _WIN32
+  // [#1195] Every stdin route in this process (read_file, read_crc_file,
+  // portable_digest::hash_file_hex) reads fd 0 through the CRT, whose
+  // default text mode silently stops at the first 0x1A (Ctrl-Z) byte.
+  // cksum hashes raw bytes like GNU, so switch stdin to binary mode once
+  // here (same idiom as cat/wc/tr) instead of patching each reader.
+  _setmode(_fileno(stdin), _O_BINARY);
+#endif
   if (!validate_config(cfg)) return 1;
   if (cfg.check_mode) {
     return run_check_mode(cfg);
