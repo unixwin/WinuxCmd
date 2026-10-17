@@ -522,12 +522,16 @@ int wmain(int argc, wchar_t* wargv[]) noexcept {
                                                args.size() - 1);
 
     // Check for --version in command arguments.  [GNU] Commands whose
-    // arguments are data (echo, yes, test, [, true, false, printf) do not
-    // honor "--version" in any position — e.g. `printf '%s\n' --version`
-    // prints "--version" — so the dispatcher's per-command rule applies
-    // to them instead of this scan.
+    // arguments are data (echo, yes, test, [, true, false, printf, expr) do
+    // not honor "--version" in any position — e.g. `printf '%s\n' --version`
+    // prints "--version" and `expr 1 --version` is a syntax error — so the
+    // dispatcher's per-command rule applies to them instead of this scan.
+    // Keep this list in sync with the dispatcher's own literal-argument list
+    // (WinuxCmd #1215): without "expr" here, `winuxcmd expr 1 --version`
+    // printed the top-level "WinuxCmd <ver>" and exited 0, while the
+    // expr.exe shim (and GNU) reject the operand with exit 2.
     static constexpr std::string_view kLiteralArgCommands[] = {
-        "echo", "yes", "test", "[", "true", "false", "printf"};
+        "echo", "yes", "test", "[", "true", "false", "printf", "expr"};
     const bool literal_arg_command = std::ranges::any_of(
         kLiteralArgCommands,
         [cmd_name](std::string_view n) { return n == cmd_name; });

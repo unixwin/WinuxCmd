@@ -960,8 +960,9 @@ auto behavior_for(std::string_view name) -> CommandBehavior {
   // is the sole argument; in any other position the token is data.
   // true/false follow coreutils truefalse.c the same way: no getopt is run
   // at all, so `true -x --help` exits 0 with no output (#1196).
-  if (name == "printf" || name == "test" || name == "[" ||
-      name == "true" || name == "false") {
+  // expr follows expr.c: `expr 1 --help` is a syntax error, not help.
+  if (name == "printf" || name == "test" || name == "[" || name == "true" ||
+      name == "false" || name == "expr") {
     behavior.help_version_only_when_sole_argument = true;
   }
 
@@ -1055,8 +1056,9 @@ class RegistryImpl {
       // [GNU] printf also belongs here: printf.c parses options directly
       // rather than via getopt_long, precisely so that abbreviations such
       // as "--hel" are treated as the format string, not as --help.
+      // expr.c likewise never abbreviates: `expr --hel` is an operand.
       static constexpr std::string_view kLiteralArgCommands[] = {
-          "echo", "yes", "test", "[", "true", "false", "printf"};
+          "echo", "yes", "test", "[", "true", "false", "printf", "expr"};
       const bool literal_args = std::ranges::any_of(
           kLiteralArgCommands, [cmdName](auto n) { return n == cmdName; });
       if (!literal_args) {

@@ -28,3 +28,18 @@ TEST(whoami, whoami_version_succeeds) {
   EXPECT_NE(r.stdout_text.find("whoami (WinuxCmd)"), std::string::npos);
   EXPECT_TRUE(r.stderr_text.empty());
 }
+
+// [#1215] whoami takes no operands: GNU coreutils reports
+// "whoami: extra operand 'extra'" and exits 1 instead of printing the answer.
+TEST(whoami, whoami_extra_operand_rejected_issue1215) {
+  Pipeline p;
+  p.add(L"whoami.exe", {L"extra"});
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  EXPECT_EXIT_CODE(r, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("extra operand 'extra'") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("Try 'whoami --help'") != std::string::npos);
+}

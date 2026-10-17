@@ -61,3 +61,18 @@ TEST(uname, uname_obsolescent_sysname_release_aliases) {
   EXPECT_EQ(rr.exit_code, 0);
   EXPECT_EQ_TEXT(rr.stdout_text, rrc.stdout_text);
 }
+
+// [#1215] uname takes no operands: GNU coreutils reports
+// "uname: extra operand 'extra'" and exits 1 instead of printing the answer.
+TEST(uname, uname_extra_operand_rejected_issue1215) {
+  Pipeline p;
+  p.add(L"uname.exe", {L"extra"});
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  EXPECT_EXIT_CODE(r, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("extra operand 'extra'") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("Try 'uname --help'") != std::string::npos);
+}

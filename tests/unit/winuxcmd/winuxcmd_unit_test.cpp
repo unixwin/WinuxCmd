@@ -973,3 +973,32 @@ TEST(winuxcmd, tac_error_between_operands_still_processes_rest) {
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_EQ_TEXT(r.stdout_text, "a1\nb1\n");
 }
+
+// [#1215] The  dispatcher form scanned argv for
+// --version before dispatch, so WinuxCmd 1.1.13 printed the
+// top-level version and exited 0.  expr must be treated as a literal-argument
+// command here too: the operand makes it a syntax error (exit 2), exactly
+// like the expr.exe shim and GNU expr.
+TEST(winuxcmd, winuxcmd_expr_version_after_operand_is_syntax_error_issue1215) {
+  Pipeline p;
+  p.add(L"winuxcmd.exe", {L"expr", L"1", L"--version"});
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("syntax error") != std::string::npos);
+}
+
+// [#1215] The sole-argument form still prints expr's own version block in the
+// dispatcher form.
+TEST(winuxcmd, winuxcmd_expr_version_alone_prints_expr_version_issue1215) {
+  Pipeline p;
+  p.add(L"winuxcmd.exe", {L"expr", L"--version"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("expr (WinuxCmd)") != std::string::npos);
+}

@@ -41,6 +41,12 @@ REGISTER_COMMAND(
     LOGNAME_OPTIONS) {
   namespace cp = core::pipeline;
 
+  // [GNU] logname takes no operands: coreutils reports "extra operand 'X'"
+  // and exits 1 rather than printing the login name (WinuxCmd #1215).
+  if (!ctx.positionals.empty()) {
+    return cp::report_extra_operand("logname", ctx.positionals.front());
+  }
+
   // Get current username
   wchar_t username[UNLEN + 1];
   DWORD size = UNLEN + 1;

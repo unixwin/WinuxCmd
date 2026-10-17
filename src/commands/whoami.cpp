@@ -82,6 +82,12 @@ REGISTER_COMMAND(
     WHOAMI_OPTIONS) {
   using namespace whoami_pipeline;
 
+  // [GNU] whoami takes no operands: coreutils reports "extra operand 'X'"
+  // and exits 1 rather than printing the effective user (WinuxCmd #1215).
+  if (!ctx.positionals.empty()) {
+    return cp::report_extra_operand("whoami", ctx.positionals.front());
+  }
+
   auto cfg_result = build_config(ctx);
   if (!cfg_result) {
     cp::report_error(cfg_result, L"whoami");

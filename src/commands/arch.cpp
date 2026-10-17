@@ -81,6 +81,13 @@ REGISTER_COMMAND(
     ARCH_OPTIONS) {
   using namespace arch_pipeline;
 
+  // [GNU] arch is `uname -m` and takes no operands: coreutils reports
+  // "extra operand 'X'" and exits 1 rather than printing the machine name
+  // (WinuxCmd #1215).
+  if (!ctx.positionals.empty()) {
+    return cp::report_extra_operand("arch", ctx.positionals.front());
+  }
+
   auto cfg_result = build_config(ctx);
   if (!cfg_result) {
     cp::report_error(cfg_result, L"arch");

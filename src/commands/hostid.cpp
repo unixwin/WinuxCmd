@@ -82,6 +82,15 @@ REGISTER_COMMAND(
     /* author */ "WinuxCmd",
     /* copyright */ "Copyright © 2026 WinuxCmd",
     /* options */ HOSTID_OPTIONS) {
+  namespace cp = core::pipeline;
+
+  // [GNU] hostid takes no operands: coreutils hostid.c reports
+  // "extra operand 'X'" and exits 1 rather than printing the host id
+  // (WinuxCmd #1215).
+  if (!ctx.positionals.empty()) {
+    return cp::report_extra_operand("hostid", ctx.positionals.front());
+  }
+
   std::string hex_id = get_machine_guid();
 
   safePrintLn(hex_id);

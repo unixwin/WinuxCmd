@@ -207,6 +207,13 @@ REGISTER_COMMAND(
     UNAME_OPTIONS) {
   using namespace uname_pipeline;
 
+  // [GNU] uname takes no operands: coreutils uname.c reports
+  // "extra operand 'X'" (then the usage hint) and exits 1 instead of
+  // printing the system name (WinuxCmd #1215).
+  if (!ctx.positionals.empty()) {
+    return cp::report_extra_operand("uname", ctx.positionals.front());
+  }
+
   auto cfg_result = build_config(ctx);
   if (!cfg_result) {
     cp::report_error(cfg_result, L"uname");

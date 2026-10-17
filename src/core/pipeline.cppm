@@ -38,4 +38,19 @@ inline void report_custom_error(std::wstring_view command_name,
                    utf8_to_wstring(translated));
 }
 
+// [GNU] coreutils commands that take no operands report a stray operand as
+// "<cmd>: extra operand 'X'" followed by the usual usage hint and exit 1
+// (the `if (optind < argc) { error (...); usage (EXIT_FAILURE); }` idiom).
+// Shared so uname/arch/whoami/logname/hostid all emit the identical shape.
+inline int report_extra_operand(std::string_view command_name,
+                                std::string_view operand) {
+  const std::string raw = "extra operand '" + std::string(operand) + "'";
+  safeErrorPrintLn(std::string(command_name) + ": " +
+                   winux::i18n::translate_error(raw));
+  safeErrorPrintLn(winux::i18n::format("common.try_help",
+                                       "Try '{} --help' for more information.",
+                                       command_name));
+  return 1;
+}
+
 }  // namespace core::pipeline

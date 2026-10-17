@@ -46,6 +46,13 @@ export auto option_policy_for_command(std::string_view command)
   if (command == "test" || command == "[") {
     policy.allow_long_options = false;
   }
+  // [GNU] expr.c also parses no options with getopt: a leading "--foo" is an
+  // expression token, so `expr --zzz` prints "--zzz" and exits 0 while
+  // `expr 1 --help` is a syntax error.  Only the sole-argument spellings
+  // reach the dispatcher's --help/--version interception (WinuxCmd #1215).
+  if (command == "expr") {
+    policy.allow_long_options = false;
+  }
   // [GNU] fmt's obsolete "-WIDTH" width is argv[1]-only; digit options in
   // other positions get fmt.c's own diagnostic.
   policy.obsolete_numeric_width_hint = command == "fmt";

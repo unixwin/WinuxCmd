@@ -187,3 +187,41 @@ TEST(expr, expr_invalid_expression_exits_two) {
   EXPECT_EXIT_CODE(missing_result, 2);
   EXPECT_CONTAINS(missing_result.stderr_text, "missing argument");
 }
+
+// [#1215] expr.c never runs getopt: a leading long option is expression data
+// (`expr --zzz-nope` prints it and exits 0), while --help/--version count
+// only as the sole argument.
+TEST(expr, expr_long_option_is_operand_issue1215) {
+  Pipeline p;
+  p.add(L"expr.exe", {L"--zzz-nope"});
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  EXPECT_EXIT_CODE(r, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "--zzz-nope\n");
+}
+
+// [#1215] `expr 1 --help` is a syntax error in GNU expr, not help.
+TEST(expr, expr_help_after_operand_is_syntax_error_issue1215) {
+  Pipeline p;
+  p.add(L"expr.exe", {L"1", L"--help"});
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  EXPECT_EXIT_CODE(r, 2);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("syntax error") != std::string::npos);
+}
+
+TEST(expr, expr_version_after_operand_is_syntax_error_issue1215) {
+  Pipeline p;
+  p.add(L"expr.exe", {L"1", L"--version"});
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  EXPECT_EXIT_CODE(r, 2);
+  EXPECT_TRUE(r.stdout_text.empty());
+}
