@@ -489,3 +489,28 @@ TEST(split, split_stdin_ctrlz_not_truncated_issue1212) {
                                             10));
   EXPECT_EQ(tmp.read("partab"), std::string("CCCC\n", 5));
 }
+
+// [#1214] _popen() returns a CRT stream in text mode, so a filter child saw
+// a\r\nb\r\n for input a\nb\n instead of the exact bytes GNU delivers.
+TEST(split, split_filter_pipe_delivers_lf_only_bytes_issue1214) {
+  TempDir tmp;
+  tmp.write("input.txt", "a\nb\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(
+      L"split.exe",
+      {L"--filter=powershell -NoProfile -Command "
+       L"\"$out=[System.IO.File]::Open($env:FILE,[System.IO.FileMode]::Create,"
+       L"[System.IO.FileAccess]::Write);[Console]::OpenStandardInput().CopyTo("
+       L"$out);$out.Dispose()\"",
+       L"-l", L"1", L"input.txt", L"part"});
+
+  auto r = p.run();
+
+  EXPECT_EXIT_CODE(r, 0);
+  const std::string first = tmp.read("partaa");
+  TEST_LOG("partaa bytes", first);
+  EXPECT_BYTES(first, std::string("a\n", 2));
+  EXPECT_BYTES(tmp.read("partab"), std::string("b\n", 2));
+}

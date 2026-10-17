@@ -473,7 +473,12 @@ auto execute_tree(const CommandContext<TREE_OPTIONS.size()> &ctx)
 
   if (output_to_file) {
     std::wstring woutput_file = utf8_to_wstring(cfg.output_file);
-    file_output.open(woutput_file);
+    // [#1214] std::ofstream defaults to text mode on Windows, so every '\n'
+    // written through << std::endl became CRLF and `tree -o FILE` did not
+    // match GNU tree (or tree's own stdout, which goes through safePrint and
+    // writes LF).  Open the file in binary mode so the bytes are identical
+    // to the console path.
+    file_output.open(woutput_file, std::ios::binary);
     if (!file_output.is_open()) {
       return std::unexpected("cannot open output file: " + cfg.output_file);
     }
@@ -546,6 +551,12 @@ auto execute_tree(const CommandContext<TREE_OPTIONS.size()> &ctx)
         file_output << wstring_to_utf8(abs_path) << std::endl;
         print_tree_file(*entries, cfg, abs_path, L"", 0, file_output,
                         total_dirs, total_files);
+
+        // [#1214] The console path prints the "N directories, M files"
+        // summary; the -o path dropped it entirely, so a redirected listing
+        // lost its last line.  GNU tree prints the summary in file mode too.
+        file_output << total_dirs << " directories, " << total_files << " files"
+                    << std::endl;
       } else {
         safePrintLn(abs_path);
         print_tree_console(*entries, cfg, abs_path, L"", 0, total_dirs,

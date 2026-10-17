@@ -260,3 +260,33 @@ TEST(tree, tree_single_directory) {
   EXPECT_TRUE(r.stdout_text.find("mydir") != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("file.txt") != std::string::npos);
 }
+
+// [#1214] `tree -o FILE` opened the target in text mode and dropped the
+// trailing "N directories, M files" summary, so a redirected listing was
+// neither LF-only nor complete next to the console listing.
+TEST(tree, tree_output_file_is_lf_only_and_keeps_summary_issue1214) {
+  TempDir tmp;
+  tmp.write("dir1/a.txt", "x");
+
+  Pipeline console;
+  console.set_cwd(tmp.wpath());
+  console.add(L"tree.exe", {L"dir1"});
+  auto rc = console.run();
+
+  EXPECT_EXIT_CODE(rc, 0);
+  TEST_LOG("tree stdout", rc.stdout_text);
+  EXPECT_TRUE(rc.stdout_text.find('\r') == std::string::npos);
+  EXPECT_TRUE(rc.stdout_text.find("directories, ") != std::string::npos);
+
+  Pipeline file;
+  file.set_cwd(tmp.wpath());
+  file.add(L"tree.exe", {L"-o", L"out.txt", L"dir1"});
+  auto rf = file.run();
+
+  EXPECT_EXIT_CODE(rf, 0);
+  const std::string out = tmp.read("out.txt");
+  TEST_LOG("tree -o bytes", out);
+  EXPECT_TRUE(out.find('\r') == std::string::npos);
+  EXPECT_TRUE(out.find('\n') != std::string::npos);
+  EXPECT_TRUE(out.find("directories, ") != std::string::npos);
+}

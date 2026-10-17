@@ -576,6 +576,11 @@ auto write_chunk(const Config& cfg, uint64_t part_num, std::string_view chunk)
       }
       return std::unexpected(std::string("cannot run filter command"));
     }
+    // [#1214] _popen() hands back a CRT stream in text mode, so every 0x0A in
+    // the chunk reached the filter as CRLF — `split --filter=cat` emitted
+    // a\r\nb\r\n where GNU emits a\nb\n.  The filter must receive the exact
+    // bytes GNU popen() would deliver.
+    _setmode(_fileno(pipe), _O_BINARY);
     fwrite(chunk.data(), 1, chunk.size(), pipe);
     int ret = _pclose(pipe);
     if (previous_file_value.has_value()) {

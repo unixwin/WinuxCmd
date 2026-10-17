@@ -893,6 +893,13 @@ auto run(const Config& cfg) -> int {
   // cksum hashes raw bytes like GNU, so switch stdin to binary mode once
   // here (same idiom as cat/wc/tr) instead of patching each reader.
   _setmode(_fileno(stdin), _O_BINARY);
+  // [#1214] `--raw` writes the digest with fwrite(3) straight through the
+  // CRT's stdout.  The default text mode maps every 0x0A byte in the digest
+  // to CRLF, so a digest byte of 10 becomes 0D 0A: four raw bytes become
+  // five and the byte stream is corrupt.  GNU writes the raw digest
+  // verbatim, so switch stdout to binary for the whole run (same idiom as
+  // sort/uniq/tee/tr/yes).
+  _setmode(_fileno(stdout), _O_BINARY);
 #endif
   if (!validate_config(cfg)) return 1;
   if (cfg.check_mode) {

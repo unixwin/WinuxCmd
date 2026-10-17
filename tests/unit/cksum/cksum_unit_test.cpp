@@ -450,3 +450,24 @@ TEST(cksum, cksum_stdin_digest_algorithm_ctrl_z_issue1195) {
   EXPECT_TRUE(r.stdout_text.find("60f5ffbcfe8a049be21dc9d6c334c82c") !=
               std::string::npos);  // GNU md5 of the full 10-byte payload
 }
+
+// [#1214] `--raw` writes the digest with fwrite(3) through a CRT stream that
+// is still in text mode, so a 0x0A digest byte came out as 0D 0A and a
+// four-byte CRC grew to five bytes. "x"*66 + LF has CRC32 47 8b 0a 06 in GNU
+// coreutils 9.4, so the middle byte pins the bug.
+TEST(cksum, cksum_raw_preserves_0x0a_digest_byte_issue1214) {
+  TempDir tmp;
+  tmp.write("raw66", std::string(66, 'x') + "\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cksum.exe", {L"--raw", L"raw66"});
+
+  auto r = p.run();
+
+  TEST_LOG_HEX("cksum --raw bytes", r.stdout_text);
+
+  EXPECT_EXIT_CODE(r, 0);
+  EXPECT_TRUE(r.stdout_text.size() == 4);
+  EXPECT_BYTES(r.stdout_text, std::string("\x47\x8b\x0a\x06", 4));
+}
