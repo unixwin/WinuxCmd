@@ -144,19 +144,28 @@ TEST(expand, expand_directory_input_reports_is_a_directory) {
               std::string::npos);
 }
 
-TEST(expand, expand_newline_mode_trims_trailing_cr_from_crlf_records) {
+// [#1204] expand keeps the CR like GNU; tab expansion never touches it.
+TEST(expand, expand_preserves_cr_from_crlf_records_issue1204) {
   TempDir tmp;
   tmp.write_bytes("crlf.txt",
                   {'a', '\t', 'b', '\r', '\n', 'c', '\t', 'd', '\r', '\n'});
 
-  Pipeline p;
-  p.set_cwd(tmp.wpath());
-  p.add(L"expand.exe", {L"-t", L"4", L"crlf.txt"});
+  Pipeline by_file;
+  by_file.set_cwd(tmp.wpath());
+  by_file.add(L"expand.exe", {L"-t", L"4", L"crlf.txt"});
+  auto rf = by_file.run();
 
-  auto r = p.run();
+  EXPECT_EQ(rf.exit_code, 0);
+  EXPECT_EQ(rf.stdout_text, std::string("a   b\r\nc   d\r\n", 14));
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "a   b\nc   d\n");
+  const std::string payload("a\tb\r\nc\td\r\n", 10);
+  Pipeline by_stdin;
+  by_stdin.set_stdin(payload);
+  by_stdin.add(L"expand.exe", {L"-t", L"4"});
+  auto rs = by_stdin.run();
+
+  EXPECT_EQ(rs.exit_code, 0);
+  EXPECT_EQ(rs.stdout_text, rf.stdout_text);
 }
 
 TEST(expand, expand_tab_stop_error_messages_match_gnu) {

@@ -362,18 +362,11 @@ auto run(const Config& cfg) -> int {
 
       if (line_end == std::string::npos) {
         line = content.substr(line_start);
-        if (!line.empty() && line.back() == '\r') {
-          line.pop_back();
-        }
         expand_line(line, cfg.tab_stops, cfg.initial_only, out);
         break;
       } else {
         line = content.substr(line_start,
                               line_end - line_start + 1);  // Include newline
-        if (line.size() >= 2 && line[line.size() - 2] == '\r' &&
-            line.back() == '\n') {
-          line.erase(line.end() - 2);
-        }
         expand_line(line, cfg.tab_stops, cfg.initial_only, out);
         line_start = line_end + 1;
       }

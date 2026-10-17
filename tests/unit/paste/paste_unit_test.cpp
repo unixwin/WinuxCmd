@@ -166,21 +166,6 @@ TEST(paste, paste_reports_is_a_directory_for_directory_input) {
               std::string::npos);
 }
 
-TEST(paste, paste_newline_mode_trims_trailing_cr_from_crlf_records) {
-  TempDir tmp;
-  tmp.write_bytes("file1.txt", {'a', '\r', '\n', 'b', '\r', '\n'});
-  tmp.write_bytes("file2.txt", {'1', '\r', '\n', '2', '\r', '\n'});
-
-  Pipeline p;
-  p.set_cwd(tmp.wpath());
-  p.add(L"paste.exe", {L"file1.txt", L"file2.txt"});
-
-  auto r = p.run();
-
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "a\t1\nb\t2\n");
-}
-
 // [#1212] fd 0 is text mode by default, so a pipe stopped at the first 0x1A
 // and disagreed with the file operand. Both forms must be byte-identical.
 TEST(paste, paste_stdin_ctrlz_matches_file_operand_issue1212) {
@@ -205,4 +190,21 @@ TEST(paste, paste_stdin_ctrlz_matches_file_operand_issue1212) {
   EXPECT_EQ(rs.exit_code, 0);
   EXPECT_FALSE(rf.stdout_text.empty());
   EXPECT_EQ(rs.stdout_text, rf.stdout_text);
+}
+
+TEST(paste, paste_preserves_cr_from_crlf_records_issue1204) {
+  TempDir tmp;
+  tmp.write_bytes("file1.txt", {'a', '\r', '\n', 'b', '\r', '\n'});
+  tmp.write_bytes("file2.txt", {'1', '\r', '\n', '2', '\r', '\n'});
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"paste.exe", {L"file1.txt", L"file2.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // GNU keeps the CR: the trailing CR of each field survives and the
+  // per-file newline is re-added, so the bytes are name\r\tfield\r\n.
+  EXPECT_EQ(r.stdout_text, std::string("a\r\t1\r\nb\r\t2\r\n", 12));
 }

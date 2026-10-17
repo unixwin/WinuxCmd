@@ -224,19 +224,29 @@ TEST(fold, fold_spaces_breaks_at_last_blank) {
   EXPECT_EQ_TEXT(r.stdout_text, "aa \nbb cc\n");
 }
 
-TEST(fold, fold_newline_mode_trims_trailing_cr_from_crlf_records) {
+// [#1204] fold keeps the CR like GNU; it resets the column rather than
+// being deleted, so a CRLF record round-trips byte-exactly.
+TEST(fold, fold_preserves_cr_from_crlf_records_issue1204) {
   TempDir tmp;
   tmp.write_bytes("crlf.txt", {'a', 'b', 'c', 'd', '\r', '\n', 'e', 'f', 'g',
                                'h', '\r', '\n'});
 
-  Pipeline p;
-  p.set_cwd(tmp.wpath());
-  p.add(L"fold.exe", {L"-w", L"10", L"crlf.txt"});
+  Pipeline by_file;
+  by_file.set_cwd(tmp.wpath());
+  by_file.add(L"fold.exe", {L"-w", L"10", L"crlf.txt"});
+  auto rf = by_file.run();
 
-  auto r = p.run();
+  EXPECT_EQ(rf.exit_code, 0);
+  EXPECT_EQ(rf.stdout_text, std::string("abcd\r\nefgh\r\n", 12));
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "abcd\nefgh\n");
+  const std::string payload("abcd\r\nefgh\r\n", 12);
+  Pipeline by_stdin;
+  by_stdin.set_stdin(payload);
+  by_stdin.add(L"fold.exe", {L"-w", L"10"});
+  auto rs = by_stdin.run();
+
+  EXPECT_EQ(rs.exit_code, 0);
+  EXPECT_EQ(rs.stdout_text, rf.stdout_text);
 }
 
 TEST(fold, fold_missing_input_reports_no_such_file) {

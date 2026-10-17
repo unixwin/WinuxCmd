@@ -472,9 +472,6 @@ auto run(const Config& cfg) -> int {
       file_io::set_stdin_binary();
       std::string line;
       while (std::getline(std::cin, line)) {
-        if (!line.empty() && line.back() == '\r') {
-          line.pop_back();
-        }
         process_line(line, cfg, section, line_number, blank_count);
       }
     } else {
@@ -499,9 +496,6 @@ auto run(const Config& cfg) -> int {
           line = line.substr(3);
         }
         first_line = false;
-        if (!line.empty() && line.back() == '\r') {
-          line.pop_back();
-        }
 
         process_line(line, cfg, section, line_number, blank_count);
       }

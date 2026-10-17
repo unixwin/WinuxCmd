@@ -145,19 +145,28 @@ TEST(nl, nl_empty_number_separator) {
   EXPECT_EQ(r.stdout_text, "1line\n");
 }
 
-TEST(nl, nl_newline_mode_trims_trailing_cr_from_crlf_records) {
+// [#1204] nl keeps the CR like GNU; the CR stays at the end of the text.
+TEST(nl, nl_preserves_cr_from_crlf_records_issue1204) {
   TempDir tmp;
   tmp.write_bytes("crlf.txt", {'l', 'i', 'n', 'e', '1', '\r', '\n', 'l', 'i',
                                'n', 'e', '2', '\r', '\n'});
 
-  Pipeline p;
-  p.set_cwd(tmp.wpath());
-  p.add(L"nl.exe", {L"-w", L"1", L"crlf.txt"});
+  Pipeline by_file;
+  by_file.set_cwd(tmp.wpath());
+  by_file.add(L"nl.exe", {L"-w", L"1", L"crlf.txt"});
+  auto rf = by_file.run();
 
-  auto r = p.run();
+  EXPECT_EQ(rf.exit_code, 0);
+  EXPECT_EQ(rf.stdout_text, std::string("1\tline1\r\n2\tline2\r\n", 18));
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "1\tline1\n2\tline2\n");
+  const std::string payload("line1\r\nline2\r\n", 14);
+  Pipeline by_stdin;
+  by_stdin.set_stdin(payload);
+  by_stdin.add(L"nl.exe", {L"-w", L"1"});
+  auto rs = by_stdin.run();
+
+  EXPECT_EQ(rs.exit_code, 0);
+  EXPECT_EQ(rs.stdout_text, rf.stdout_text);
 }
 
 TEST(nl, nl_missing_input_reports_no_such_file) {

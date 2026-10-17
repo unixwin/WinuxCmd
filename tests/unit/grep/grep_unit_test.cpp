@@ -54,7 +54,9 @@ TEST(grep, grep_extended_backslash_d_is_literal_d) {
   EXPECT_EQ_TEXT(r.stdout_text, "2:d\n");
 }
 
-TEST(grep, grep_crlf_lines_match_line_anchors_and_whole_line) {
+// [#1204] a trailing CR is data: it takes part in $ / -x anchoring and is
+// printed verbatim, matching GNU on a CRLF file (the stdin path does too).
+TEST(grep, grep_crlf_file_keeps_cr_for_anchors_issue1204) {
   TempDir tmp;
   tmp.write_bytes("a.txt", {'a', '\r', '\n', 'b', '\r', '\n', 'a', '\r', '\n'});
 
@@ -63,16 +65,35 @@ TEST(grep, grep_crlf_lines_match_line_anchors_and_whole_line) {
   anchored.add(L"grep.exe", {L"-n", L"a$", L"a.txt"});
   auto anchored_result = anchored.run();
 
-  EXPECT_EQ(anchored_result.exit_code, 0);
-  EXPECT_EQ_TEXT(anchored_result.stdout_text, "1:a\n3:a\n");
+  EXPECT_EQ(anchored_result.exit_code, 1);
+  EXPECT_EQ(anchored_result.stdout_text, std::string());
 
   Pipeline whole_line;
   whole_line.set_cwd(tmp.wpath());
   whole_line.add(L"grep.exe", {L"-x", L"a", L"a.txt"});
   auto whole_line_result = whole_line.run();
 
-  EXPECT_EQ(whole_line_result.exit_code, 0);
-  EXPECT_EQ_TEXT(whole_line_result.stdout_text, "a\na\n");
+  EXPECT_EQ(whole_line_result.exit_code, 1);
+  EXPECT_EQ(whole_line_result.stdout_text, std::string());
+
+  // A plain match still prints the CR byte-for-byte.
+  Pipeline verbatim;
+  verbatim.set_cwd(tmp.wpath());
+  verbatim.add(L"grep.exe", {L"-n", L"a", L"a.txt"});
+  auto verbatim_result = verbatim.run();
+
+  EXPECT_EQ(verbatim_result.exit_code, 0);
+  EXPECT_EQ(verbatim_result.stdout_text, std::string("1:a\r\n3:a\r\n", 10));
+
+  // stdin and file operand agree (the #1212 invariant, now with CR).
+  const std::string payload("a\r\nb\r\na\r\n", 9);
+  Pipeline by_stdin;
+  by_stdin.set_stdin(payload);
+  by_stdin.add(L"grep.exe", {L"-n", L"a"});
+  auto stdin_result = by_stdin.run();
+
+  EXPECT_EQ(stdin_result.exit_code, 0);
+  EXPECT_EQ(stdin_result.stdout_text, verbatim_result.stdout_text);
 }
 
 TEST(grep, grep_color_auto_respects_terminal_state) {
@@ -732,7 +753,8 @@ TEST(grep, grep_unix_byte_offsets_option_is_accepted) {
   EXPECT_EQ_TEXT(r.stdout_text, "alpha\n");
 }
 
-TEST(grep, grep_binary_option_preserves_cr_before_lf) {
+// [#1204] GNU keeps the CR before the LF; -U/--binary no longer changes it.
+TEST(grep, grep_keeps_cr_before_lf_with_and_without_binary_option_issue1204) {
   TempDir tmp;
   tmp.write("a.txt", "a\r\n");
 
@@ -741,8 +763,8 @@ TEST(grep, grep_binary_option_preserves_cr_before_lf) {
   normal.add(L"grep.exe", {L"a$", L"a.txt"});
   auto normal_result = normal.run();
 
-  EXPECT_EQ(normal_result.exit_code, 0);
-  EXPECT_EQ_TEXT(normal_result.stdout_text, "a\n");
+  EXPECT_EQ(normal_result.exit_code, 1);
+  EXPECT_EQ(normal_result.stdout_text, std::string());
 
   Pipeline binary;
   binary.set_cwd(tmp.wpath());
@@ -750,7 +772,7 @@ TEST(grep, grep_binary_option_preserves_cr_before_lf) {
   auto binary_result = binary.run();
 
   EXPECT_EQ(binary_result.exit_code, 1);
-  EXPECT_EQ_TEXT(binary_result.stdout_text, "");
+  EXPECT_EQ(binary_result.stdout_text, std::string());
 }
 
 TEST(grep, grep_recursive_extended_alternation_combined_short_options) {

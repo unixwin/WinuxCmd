@@ -533,8 +533,8 @@ auto run_file(const std::string& path, const Config& cfg) -> int {
       return 1;
     }
 #ifdef _WIN32
-    // Binary mode keeps '\r', NUL records and 0x1A bytes intact; the
-    // newline path strips a trailing '\r' itself, matching file input.
+    // Binary mode keeps '\r', NUL records and 0x1A bytes intact so the
+    // record bytes reach the field/byte logic unchanged (GNU keeps CR).
     _setmode(_fileno(stdin), _O_BINARY);
 #endif
     input = &std::cin;
@@ -555,10 +555,6 @@ auto run_file(const std::string& path, const Config& cfg) -> int {
   output.reserve(kOutputFlushThreshold);
 
   while (std::getline(*input, record, record_delim)) {
-    if (!cfg.zero_terminated && !record.empty() && record.back() == '\r') {
-      record.pop_back();
-    }
-
     bool should_emit = true;
     if (fast_fields) {
       should_emit = append_fast_field_record(record, cfg, output);

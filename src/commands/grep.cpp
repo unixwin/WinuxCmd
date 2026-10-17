@@ -130,7 +130,8 @@ static auto grep_is_terminal(FILE* stream) -> bool {
  * - @a --colour: Highlight matching strings [IMPLEMENTED]
  * - @a -u, @a --unix-byte-offsets: Report Unix-style byte offsets [DIFFERS:
  * accepted but no effect]
- * - @a -U, @a --binary: Do not strip CR at EOL [IMPLEMENTED]
+ * - @a -U, @a --binary: Treat the file(s) as binary [DIFFERS: accepted but
+ * no effect; a trailing CR is never stripped]
  */
 auto constexpr GREP_OPTIONS = std::array{
     OPTION("-E", "--extended-regexp",
@@ -309,7 +310,6 @@ struct Config {
   std::string group_separator = "--";
   bool no_group_separator = false;
   bool initial_tab = false;
-  bool preserve_cr = false;
 };
 
 auto getenv_string(const char* name) -> std::string {
@@ -761,15 +761,6 @@ auto split_records(std::string_view s, char delim)
   return out;
 }
 
-auto trim_text_record(std::string_view line, char delim, const Config& cfg)
-    -> std::string_view {
-  if (!cfg.preserve_cr && delim == '\n' && !line.empty() &&
-      line.back() == '\r') {
-    return line.substr(0, line.size() - 1);
-  }
-  return line;
-}
-
 auto is_word_char(unsigned char c) -> bool {
   return std::isalnum(c) || c == '_';
 }
@@ -1184,9 +1175,6 @@ auto build_config(const CommandContext<GREP_OPTIONS.size()>& ctx,
   cfg.no_group_separator = ctx.get<bool>("--no-group-separator", false);
   cfg.initial_tab =
       ctx.get<bool>("--initial-tab", false) || ctx.get<bool>("-T", false);
-  cfg.preserve_cr =
-      ctx.get<bool>("--binary", false) || ctx.get<bool>("-U", false);
-
   SmallVector<std::string, 32> raw_patterns;
   auto regexp_options = ctx.get_all<std::string>("--regexp");
   auto pattern_file_options = ctx.get_all<std::string>("--file");
@@ -1841,7 +1829,6 @@ auto scan_text(const std::string& text, std::string_view display_name,
       bool had_delim = !whole.empty() && whole.back() == delim;
       std::string_view line =
           had_delim ? whole.substr(0, whole.size() - 1) : whole;
-      line = trim_text_record(line, delim, cfg);
       if (!process_selected_record(line, had_delim, display_name, show_filename,
                                    i + 1, b, cfg, selected_count))
         continue;
@@ -1867,7 +1854,6 @@ auto scan_text(const std::string& text, std::string_view display_name,
     bool had_delim = !whole.empty() && whole.back() == delim;
     std::string_view line =
         had_delim ? whole.substr(0, whole.size() - 1) : whole;
-    line = trim_text_record(line, delim, cfg);
     bool is_match = line_matches(line, cfg);
     bool selected = cfg.invert_match ? !is_match : is_match;
     if (selected) {
@@ -1916,7 +1902,6 @@ auto scan_text(const std::string& text, std::string_view display_name,
       bool had_delim = !whole.empty() && whole.back() == delim;
       std::string_view line =
           had_delim ? whole.substr(0, whole.size() - 1) : whole;
-      line = trim_text_record(line, delim, cfg);
 
       bool selected = std::binary_search(selected_indices.begin(),
                                          selected_indices.end(), i);
@@ -1991,7 +1976,6 @@ auto scan_stream(std::istream& in, std::string_view display_name,
         break;
 
       std::string_view line(pending.data() + start, i - start);
-      line = trim_text_record(line, delim, cfg);
       size_t offset = base_offset + start;
       if (process_selected_record(line, true, display_name, show_filename,
                                   line_no, offset, cfg, selected_count)) {
@@ -2019,7 +2003,7 @@ auto scan_stream(std::istream& in, std::string_view display_name,
         selected_count >= static_cast<size_t>(cfg.max_count)) {
       return {any_selected, selected_count};
     }
-    std::string_view line = trim_text_record(pending, delim, cfg);
+    std::string_view line(pending);
     if (process_selected_record(line, false, display_name, show_filename,
                                 line_no, base_offset, cfg, selected_count)) {
       any_selected = true;
@@ -2155,13 +2139,8 @@ auto scan_fixed_file_fast(const std::string& path,
 
       const auto* delim_ptr = static_cast<const char*>(found);
       const size_t delim_pos = static_cast<size_t>(delim_ptr - pending.data());
-      size_t line_end = delim_pos;
-      if (!cfg.preserve_cr && delim == '\n' && line_end > start &&
-          pending[line_end - 1] == '\r') {
-        --line_end;
-      }
 
-      std::string_view line(pending.data() + start, line_end - start);
+      std::string_view line(pending.data() + start, delim_pos - start);
       const size_t offset = base_offset + start;
       if (process_fixed_fast_record(line, true, display_name, show_filename,
                                     line_no, offset, cfg, selected_count)) {
@@ -2192,7 +2171,6 @@ auto scan_fixed_file_fast(const std::string& path,
       return {{any_selected, selected_count}};
     }
     std::string_view line(pending.data(), pending.size());
-    line = trim_text_record(line, delim, cfg);
     if (process_fixed_fast_record(line, false, display_name, show_filename,
                                   line_no, base_offset, cfg, selected_count)) {
       any_selected = true;

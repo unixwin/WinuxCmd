@@ -261,25 +261,6 @@ auto fold_content(const std::string& content, int width, bool count_bytes,
   return result;
 }
 
-auto normalize_crlf_text(std::string_view content) -> std::string {
-  std::string normalized;
-  normalized.reserve(content.size());
-
-  for (size_t i = 0; i < content.size(); ++i) {
-    if (content[i] == '\r') {
-      if (i + 1 == content.size()) {
-        continue;
-      }
-      if (content[i + 1] == '\n') {
-        continue;
-      }
-    }
-    normalized.push_back(content[i]);
-  }
-
-  return normalized;
-}
-
 auto run(const Config& cfg) -> int {
   auto fold_input_open_error = [](std::string_view path) -> std::string {
     std::error_code ec;
@@ -333,8 +314,6 @@ auto run(const Config& cfg) -> int {
         content = content.substr(3);
       }
     }
-
-    content = normalize_crlf_text(content);
 
     auto folded = fold_content(content, cfg.width, cfg.count_bytes,
                                cfg.count_characters, cfg.break_at_spaces);

@@ -412,18 +412,29 @@ TEST(cut, cut_directory_input_reports_is_a_directory) {
               std::string::npos);
 }
 
-TEST(cut, cut_newline_mode_trims_trailing_cr_from_crlf_records) {
+// [#1204] GNU never strips a trailing CR, on the operand or on stdin; the
+// CR is part of the last field, so it survives when that field is selected.
+TEST(cut, cut_preserves_cr_from_crlf_records_issue1204) {
   TempDir tmp;
   tmp.write_bytes("a.txt",
                   {'a', ':', 'b', '\r', '\n', 'c', ':', 'd', '\r', '\n'});
 
-  Pipeline p;
-  p.set_cwd(tmp.wpath());
-  p.add(L"cut.exe", {L"-d", L":", L"-f", L"2", L"a.txt"});
-  auto r = p.run();
+  Pipeline by_file;
+  by_file.set_cwd(tmp.wpath());
+  by_file.add(L"cut.exe", {L"-d", L":", L"-f", L"2", L"a.txt"});
+  auto rf = by_file.run();
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "b\nd\n");
+  EXPECT_EQ(rf.exit_code, 0);
+  EXPECT_EQ(rf.stdout_text, std::string("b\r\nd\r\n", 6));
+
+  const std::string payload("a:b\r\nc:d\r\n", 10);
+  Pipeline by_stdin;
+  by_stdin.set_stdin(payload);
+  by_stdin.add(L"cut.exe", {L"-d", L":", L"-f", L"2"});
+  auto rs = by_stdin.run();
+
+  EXPECT_EQ(rs.exit_code, 0);
+  EXPECT_EQ(rs.stdout_text, rf.stdout_text);
 }
 
 // ---------------------------------------------------------------------------
