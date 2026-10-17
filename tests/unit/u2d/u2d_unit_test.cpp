@@ -53,3 +53,22 @@ TEST(u2d, u2d_verbose) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.find("converted") != std::string::npos);
 }
+
+// [#1211] piped stdin is a byte stream: fd 0 must not drop data at 0x1A.
+TEST(u2d, u2d_stdin_bytes_issue1211) {
+  const std::string payload(
+      "a\nb\n\x1a"
+      "c\n",
+      7);
+  const std::string expected(
+      "a\r\nb\r\n\x1a"
+      "c\r\n",
+      10);
+  Pipeline p;
+  p.set_stdin(payload);
+  p.add(L"u2d.exe", {});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(r.stdout_text, expected);
+}

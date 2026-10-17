@@ -96,6 +96,7 @@ REGISTER_COMMAND(unix2dos,
   };
 
   if (ctx.positionals.empty()) {
+    file_io::set_stdin_binary();
     std::string content((std::istreambuf_iterator<char>(std::cin)), {});
     for (size_t i = 0; i < content.size(); ++i) {
       if (content[i] == '\n' && (i == 0 || content[i - 1] != '\r'))

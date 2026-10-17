@@ -98,9 +98,13 @@ REGISTER_COMMAND(u2d,
 
   if (ctx.positionals.empty()) {
     // Read from stdin, write to stdout
+    file_io::set_stdin_binary();
     std::string line;
     bool first = true;
     while (std::getline(std::cin, line)) {
+      // Binary mode keeps bytes past 0x1A; drop the CR so re-adding CRLF
+      // below does not double it on already-CRLF input.
+      if (!line.empty() && line.back() == '\r') line.pop_back();
       if (!first) {
         safePrint("\r\n");
       }

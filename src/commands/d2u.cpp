@@ -92,6 +92,7 @@ REGISTER_COMMAND(d2u,
   };
 
   if (ctx.positionals.empty()) {
+    file_io::set_stdin_binary();
     std::string content((std::istreambuf_iterator<char>(std::cin)), {});
     for (size_t i = 0; i < content.size(); ++i) {
       if (content[i] == '\r' && i + 1 < content.size() &&

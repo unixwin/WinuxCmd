@@ -93,6 +93,7 @@ REGISTER_COMMAND(dos2unix,
   if (ctx.positionals.empty()) {
     // Preserve stdin byte-for-byte except for CRLF pairs. getline() would
     // manufacture a final newline for input that does not have one.
+    file_io::set_stdin_binary();
     std::string content((std::istreambuf_iterator<char>(std::cin)), {});
     size_t pos = 0;
     while ((pos = content.find("\r\n", pos)) != std::string::npos) {
