@@ -649,6 +649,7 @@ auto run(const Config& cfg) -> int {
     bool first_record = true;
     for (const auto& file : files) {
       if (file == "-") {
+        file_io::set_stdin_binary();
         auto read_result =
             read_records(std::cin, cfg.zero_terminated, lines, first_record);
         if (!read_result) {

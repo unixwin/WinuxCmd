@@ -469,6 +469,7 @@ auto run(const Config& cfg) -> int {
         return 1;
       }
       // Read from stdin
+      file_io::set_stdin_binary();
       std::string line;
       while (std::getline(std::cin, line)) {
         if (!line.empty() && line.back() == '\r') {

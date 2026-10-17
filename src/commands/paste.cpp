@@ -221,6 +221,7 @@ auto read_lines(const std::string& filename, char delimiter = '\n')
       return std::unexpected("-: Bad file descriptor");
     }
     // Read from stdin
+    file_io::set_stdin_binary();
     std::string content;
     {
       std::ostringstream oss;

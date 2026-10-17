@@ -203,6 +203,7 @@ auto build_config(const CommandContext<PTX_OPTIONS.size()>& ctx)
 
 auto read_all(const std::string& filename) -> std::optional<std::string> {
   if (filename == "-") {
+    file_io::set_stdin_binary();
     std::ostringstream buffer;
     buffer << std::cin.rdbuf();
     return buffer.str();

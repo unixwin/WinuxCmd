@@ -224,6 +224,7 @@ auto read_input(const std::string& filename) -> cp::Result<std::string> {
   };
 
   if (filename == "-") {
+    file_io::set_stdin_binary();
     content.assign(std::istreambuf_iterator<char>(std::cin),
                    std::istreambuf_iterator<char>());
   } else {

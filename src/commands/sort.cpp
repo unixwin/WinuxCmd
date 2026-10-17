@@ -197,6 +197,7 @@ auto read_source(std::string_view path) -> cp::Result<std::string> {
     if (file_io::stdin_is_bad()) {
       return std::unexpected("stat failed: -: Bad file descriptor");
     }
+    file_io::set_stdin_binary();
     return read_all(std::cin);
   }
 
@@ -243,6 +244,7 @@ auto read_binary_source(std::string_view path) -> cp::Result<std::string> {
     if (file_io::stdin_is_bad()) {
       return std::unexpected("stat failed: -: Bad file descriptor");
     }
+    file_io::set_stdin_binary();
     return std::string{std::istreambuf_iterator<char>{std::cin},
                        std::istreambuf_iterator<char>{}};
   }
@@ -264,6 +266,7 @@ auto read_files0_from(const std::string& path)
     if (file_io::stdin_is_bad()) {
       return std::unexpected("stat failed: -: Bad file descriptor");
     }
+    file_io::set_stdin_binary();
     input = &std::cin;
   } else {
     file = file_io::open_binary_file(path);

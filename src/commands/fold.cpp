@@ -303,6 +303,7 @@ auto run(const Config& cfg) -> int {
         cp::report_error(result, L"fold");
         return 1;
       }
+      file_io::set_stdin_binary();
       content.assign(std::istreambuf_iterator<char>(std::cin),
                      std::istreambuf_iterator<char>());
     } else {

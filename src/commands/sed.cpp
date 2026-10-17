@@ -2574,6 +2574,7 @@ auto process_files(const Config& cfg) -> int {
         error_level = std::max(error_level, 2);
         continue;
       }
+      file_io::set_stdin_binary();
       in = &std::cin;
     } else {
       file.open(open_path, std::ios::binary);

@@ -267,6 +267,7 @@ auto dump_file(const std::string& filename, const Config& cfg) -> int {
   std::vector<uint8_t> data;
 
   if (filename.empty() || filename == "-") {
+    file_io::set_stdin_binary();
     char buf[4096];
     while (std::cin.read(buf, sizeof(buf))) {
       data.insert(data.end(), buf, buf + std::cin.gcount());

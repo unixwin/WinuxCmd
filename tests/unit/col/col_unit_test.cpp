@@ -60,3 +60,18 @@ TEST(col, col_empty_input) {
 
   EXPECT_EQ(r.exit_code, 0);
 }
+
+// [#1212] a piped payload must not be truncated at the first 0x1A.
+TEST(col, col_stdin_ctrlz_not_truncated_issue1212) {
+  const std::string payload(
+      "AAAA\x1a"
+      "BBBB\n",
+      10);
+  Pipeline p;
+  p.set_stdin(payload);
+  p.add(L"col.exe", {});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("BBBB") != std::string::npos);
+}

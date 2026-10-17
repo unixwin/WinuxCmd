@@ -66,6 +66,7 @@ auto build_config(const CommandContext<COL_OPTIONS.size()>& ctx)
 }
 
 auto run(const Config& cfg) -> int {
+  file_io::set_stdin_binary();
   // Read all input
   std::string input;
   char buf[4096];

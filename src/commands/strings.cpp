@@ -329,6 +329,7 @@ auto extract_strings_from_file(const std::string& filename, const Config& cfg)
   std::vector<uint8_t> data;
 
   if (filename.empty() || filename == "-") {
+    file_io::set_stdin_binary();
     // Read from stdin
     char buf[4096];
     while (std::cin.read(buf, sizeof(buf))) {

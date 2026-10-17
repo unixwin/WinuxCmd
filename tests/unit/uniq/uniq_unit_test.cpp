@@ -272,3 +272,29 @@ TEST(uniq, uniq_group_both_separates_groups_with_single_blank_lines) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "\na\na\n\nb\nb\n\nc\n\n");
 }
+
+// [#1212] fd 0 is text mode by default, so a pipe stopped at the first 0x1A
+// and disagreed with the file operand. Both forms must be byte-identical.
+TEST(uniq, uniq_stdin_ctrlz_matches_file_operand_issue1212) {
+  const std::string payload(
+      "AAAA\x1a"
+      "BBBB\n",
+      10);
+  TempDir tmp;
+  tmp.write_bytes("p.bin",
+                  {'A', 'A', 'A', 'A', 0x1a, 'B', 'B', 'B', 'B', '\n'});
+
+  Pipeline by_file;
+  by_file.set_cwd(tmp.wpath());
+  by_file.add(L"uniq.exe", {L"p.bin"});
+  auto rf = by_file.run();
+
+  Pipeline by_stdin;
+  by_stdin.set_stdin(payload);
+  by_stdin.add(L"uniq.exe", {});
+  auto rs = by_stdin.run();
+
+  EXPECT_EQ(rs.exit_code, 0);
+  EXPECT_FALSE(rf.stdout_text.empty());
+  EXPECT_EQ(rs.stdout_text, rf.stdout_text);
+}

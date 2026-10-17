@@ -48,6 +48,7 @@ struct XxdConfig {
 };
 
 std::vector<unsigned char> read_stdin_bytes() {
+  file_io::set_stdin_binary();
   std::vector<unsigned char> data;
   char ch = 0;
   while (std::cin.get(ch)) {

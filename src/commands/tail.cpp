@@ -1043,6 +1043,7 @@ REGISTER_COMMAND(
         continue;
       }
       config.stdin_mode = true;
+      file_io::set_stdin_binary();
       if (config.by_bytes || config.delimiter == '\0') {
         output_tail(std::cin, config);
       } else {

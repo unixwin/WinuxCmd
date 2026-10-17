@@ -2493,6 +2493,7 @@ auto process(Config& cfg) -> int {
     };
 
     if (input == "-") {
+      file_io::set_stdin_binary();
       if (cfg.binary_mode == BinaryMode::Binary) {
         std::string content((std::istreambuf_iterator<char>(std::cin)),
                             std::istreambuf_iterator<char>());

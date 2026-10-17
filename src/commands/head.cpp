@@ -589,6 +589,7 @@ REGISTER_COMMAND(
       // stdin may be a live pipe.  Do not decode the whole stream before
       // applying the head limit: an unbounded producer such as `yes` must be
       // able to stop once the requested records have been emitted.
+      file_io::set_stdin_binary();
       output_head(std::cin, config);
       if (std::cin.bad()) {
         safeErrorPrint("head: error reading '-'\n");

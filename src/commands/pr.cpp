@@ -509,6 +509,7 @@ auto read_lines(const std::string& filename)
     if (file_io::stdin_is_bad()) {
       return std::unexpected("'standard input': Bad file descriptor");
     }
+    file_io::set_stdin_binary();
     std::string line;
     while (std::getline(std::cin, line)) {
       normalize_text_line(line);

@@ -323,6 +323,7 @@ auto run(const Config& cfg) -> int {
         return 1;
       }
       // Read from stdin
+      file_io::set_stdin_binary();
       content.assign(std::istreambuf_iterator<char>(std::cin),
                      std::istreambuf_iterator<char>());
     } else {

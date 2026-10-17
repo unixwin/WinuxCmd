@@ -230,6 +230,7 @@ auto read_input(const std::string& filename) -> cp::Result<std::string> {
   };
 
   if (filename == "-" || filename.empty()) {
+    file_io::set_stdin_binary();
     // Read from stdin
     std::string line;
     while (std::getline(std::cin, line)) {

@@ -102,6 +102,7 @@ auto read_source(std::string_view path) -> cp::Result<std::string> {
     if (file_io::stdin_is_bad()) {
       return std::unexpected("error reading '-': Bad file descriptor");
     }
+    file_io::set_stdin_binary();
     return read_all(std::cin);
   }
 
@@ -307,6 +308,10 @@ auto run(const Config& cfg) -> int {
     // [GNU] closed stdin (<&-) errors "uniq: error reading '-'".
     cp::report_custom_error(L"uniq", L"error reading '-': Bad file descriptor");
     return 1;
+  } else {
+    // [#1212] the direct std::cin route must read fd 0 as bytes, not the
+    // CRT text stream, or the payload stops at the first 0x1A.
+    file_io::set_stdin_binary();
   }
 
   std::ostream* out = &std::cout;
