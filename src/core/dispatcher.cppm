@@ -958,7 +958,10 @@ auto behavior_for(std::string_view name) -> CommandBehavior {
 
   // [GNU] printf/test/[ recognize --help/--version only when one of them
   // is the sole argument; in any other position the token is data.
-  if (name == "printf" || name == "test" || name == "[") {
+  // true/false follow coreutils truefalse.c the same way: no getopt is run
+  // at all, so `true -x --help` exits 0 with no output (#1196).
+  if (name == "printf" || name == "test" || name == "[" ||
+      name == "true" || name == "false") {
     behavior.help_version_only_when_sole_argument = true;
   }
 

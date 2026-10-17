@@ -72,8 +72,13 @@ auto root_length(std::string_view path) -> size_t {
   return 0;
 }
 
-auto trim_trailing_separators(std::string& path) -> void {
-  while (path.size() > root_length(path) && is_separator(path.back())) {
+// Trailing separators above the root prefix are never part of the
+// directory name. The root length is captured once by the caller: for a
+// run of three or more leading separators the root is a single slash, and
+// recomputing it per pop would stop early at the implementation-defined
+// "//" window (dirname /// must be "/", not "//", WinuxCmd #1196).
+auto trim_trailing_separators(std::string& path, size_t root_len) -> void {
+  while (root_len < path.size() && is_separator(path.back())) {
     path.pop_back();
   }
 }
@@ -84,7 +89,12 @@ auto get_dirname(std::string_view path) -> std::string {
   }
 
   std::string result(path);
-  trim_trailing_separators(result);
+  // [GNU] Strip trailing slashes down to the root prefix. One or two
+  // leading separators are kept as-is ("dirname //" stays "//"); a longer
+  // run folds to a single separator because the root is only its first
+  // slash ("dirname ///" is "/", "dirname ////a" is "/").
+  const size_t raw_root_len = root_length(result);
+  trim_trailing_separators(result, raw_root_len);
   const size_t root_len = root_length(result);
   const size_t last_sep = result.find_last_of("/\\");
 
@@ -104,7 +114,10 @@ auto get_dirname(std::string_view path) -> std::string {
   }
 
   result.resize(last_sep);
-  trim_trailing_separators(result);
+  // Same rule as the first trim, rooted at the same root prefix: dropping
+  // the basename must not strand more than the root's separators
+  // ("dirname ///a" is "/", not "//").
+  trim_trailing_separators(result, root_len);
   if (result.empty()) {
     return ".";
   }

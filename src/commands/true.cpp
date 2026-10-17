@@ -39,18 +39,10 @@ REGISTER_COMMAND(
 
     /* see also */
     "false(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", TRUE_OPTIONS) {
-  // [GNU] true --help prints a usage summary and exits successfully
-  // (uutils #10279, #9117).
-  if (ctx.has("--help")) {
-    safePrint(
-        "Usage: true [ignored command line arguments]\n"
-        "  or:  true OPTION\n"
-        "Exit with a status code indicating success.\n"
-        "\n"
-        "      --help     display this help and exit\n"
-        "      --version  output version information and exit\n");
-    return 0;
-  }
-  // Do nothing, just return 0 (success)
+  // [GNU] true ignores every operand: no getopt is run and "--help"/
+  // "--version" are honored only as the sole argument (intercepted by the
+  // dispatcher), so this handler only ever runs for the plain no-op case
+  // or with operands to disregard (WinuxCmd #1196).
+  (void)ctx;
   return 0;
 }

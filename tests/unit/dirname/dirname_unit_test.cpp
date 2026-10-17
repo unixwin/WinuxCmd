@@ -57,6 +57,75 @@ TEST(dirname, dirname_no_slash) {
   EXPECT_EQ_TEXT(r.stdout_text, ".\n");
 }
 
+// [GNU] Runs of three or more leading slashes fold to a single "/":
+// `dirname ///` is "/", never the POSIX implementation-defined "//"
+// (WinuxCmd #1196).
+TEST(dirname, dirname_triple_slash_collapses_to_single) {
+  Pipeline p;
+  p.add(L"dirname.exe", {L"///"});
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("dirname /// output", r.stdout_text);
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "/\n");
+}
+
+TEST(dirname, dirname_four_slash_collapses_to_single) {
+  Pipeline p;
+  p.add(L"dirname.exe", {L"////"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "/\n");
+}
+
+TEST(dirname, dirname_triple_slash_path_collapses_to_single) {
+  Pipeline p;
+  p.add(L"dirname.exe", {L"///a", L"////a", L"///a/b"});
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("dirname ///a matrix output", r.stdout_text);
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "/\n/\n///a\n");
+}
+
+// [GNU] Exactly two leading slashes stay implementation-defined and GNU
+// preserves them; dropping the basename must not fold a "//" root run
+// back into a longer collapse ("dirname //a" is "//").
+TEST(dirname, dirname_double_slash_root_stays_after_basename_drop) {
+  Pipeline p;
+  p.add(L"dirname.exe", {L"//a", L"//a/b", L"//a//"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "//\n//a\n//\n");
+}
+
+// [GNU] The trailing-slash matrix keeps the shared semantics: interior
+// runs are folded down to the parent component, and single-slash and
+// relative cases never regress.
+TEST(dirname, dirname_common_cases_and_trailing_slashes) {
+  Pipeline p;
+  p.add(L"dirname.exe",
+        {L"/a/b/c", L"b/c", L"./a", L"/", L"a/", L"a/b///", L"a//b", L"x////"});
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("dirname matrix output", r.stdout_text);
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "/a/b\nb\n.\n/\n.\na\na\n.\n");
+}
+
 TEST(dirname, dirname_double_slash_root_preserves_msys_unc_root) {
   std::vector<std::wstring> args;
   args.push_back(L"//");

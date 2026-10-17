@@ -49,6 +49,17 @@ export auto option_policy_for_command(std::string_view command)
   // [GNU] fmt's obsolete "-WIDTH" width is argv[1]-only; digit options in
   // other positions get fmt.c's own diagnostic.
   policy.obsolete_numeric_width_hint = command == "fmt";
+  // [GNU] coreutils truefalse.c never calls getopt: every operand is
+  // ignored ("true -x -q --whatever" exits with the plain status and no
+  // diagnostics), and --help/--version are honored only as the sole
+  // argument — which the dispatcher intercepts before this parser runs.
+  // Keep long-option parsing off so "--foo" stays an operand instead of
+  // raising "unrecognized option", and let unknown short options pass as
+  // operands too ("true -x" must exit 0, not 1, WinuxCmd #1196).
+  if (command == "true" || command == "false") {
+    policy.allow_long_options = false;
+    policy.allow_unknown_short_options_as_positionals = true;
+  }
   return policy;
 }
 
