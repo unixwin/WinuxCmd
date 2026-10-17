@@ -457,3 +457,16 @@ TEST(diff3, diff3_missing_input_reports_subsidiary_failure) {
                   "diff3: subsidiary program 'diff' failed (exit status 2)") !=
               std::string::npos);
 }
+
+// [#1213] GNU diff3 documents exit 2 for trouble; a rejected option used to
+// exit 1.
+TEST(diff3, diff3_unknown_option_exits_2_issue1213) {
+  Pipeline p;
+  p.add(L"diff3.exe", {L"--zzz-nope"});
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  EXPECT_EXIT_CODE(r, 2);
+  EXPECT_TRUE(r.stderr_text.find("unrecognized option") != std::string::npos);
+}

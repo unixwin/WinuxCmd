@@ -239,3 +239,32 @@ TEST(od, od_traditional_and_strings_options) {
   EXPECT_TRUE(r.stderr_text.empty());
   EXPECT_EQ_TEXT(r.stdout_text, "0000002 hello\n");
 }
+
+// [#1213] A file operand that cannot be opened must fail the command even
+// when another operand produced data; the old guard reported the failure
+// only while nothing had been read yet.
+TEST(od, od_failed_operand_still_exits_nonzero_issue1213) {
+  TempDir tmp;
+  tmp.write("good.txt", "hello\n");
+
+  Pipeline after;
+  after.set_cwd(tmp.wpath());
+  after.add(L"od.exe", {L"good.txt", L"missing.txt"});
+  auto r1 = after.run();
+  TEST_LOG_EXIT_CODE(r1);
+  EXPECT_EXIT_CODE(r1, 1);
+  EXPECT_TRUE(r1.stderr_text.find("missing.txt: No such file") !=
+              std::string::npos);
+
+  Pipeline before;
+  before.set_cwd(tmp.wpath());
+  before.add(L"od.exe", {L"missing.txt", L"good.txt"});
+  auto r2 = before.run();
+  EXPECT_EXIT_CODE(r2, 1);
+
+  Pipeline only;
+  only.set_cwd(tmp.wpath());
+  only.add(L"od.exe", {L"missing.txt"});
+  auto r3 = only.run();
+  EXPECT_EXIT_CODE(r3, 1);
+}

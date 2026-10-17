@@ -243,3 +243,16 @@ TEST(cmp, cmp_stdin_ctrlz_matches_file_issue1212) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.empty());
 }
+
+// [#1213] GNU cmp uses 2 for a usage/option error (1 means "differ"), so an
+// unrecognized option must not exit 1.
+TEST(cmp, cmp_unknown_option_exits_2_issue1213) {
+  Pipeline p;
+  p.add(L"cmp.exe", {L"--zzz-nope"});
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  EXPECT_EXIT_CODE(r, 2);
+  EXPECT_TRUE(r.stderr_text.find("unrecognized option") != std::string::npos);
+}

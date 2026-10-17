@@ -1661,3 +1661,31 @@ TEST(grep, grep_stdin_ctrlz_matches_file_operand_issue1212) {
   EXPECT_FALSE(rf.stdout_text.empty());
   EXPECT_EQ(rs.stdout_text, rf.stdout_text);
 }
+
+// [#1213] GNU grep documents exit 2 for usage/option errors; a rejected
+// option used to fall through to the generic 1 (which scripts read as
+// "no match").
+TEST(grep, grep_unknown_option_exits_2_issue1213) {
+  Pipeline p;
+  p.add(L"grep.exe", {L"--zzz-nope"});
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  EXPECT_EXIT_CODE(r, 2);
+  EXPECT_TRUE(r.stderr_text.find("unrecognized option") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.empty());
+}
+
+// [#1213] Same rule for an invalid option argument (GNU: "invalid context
+// length argument", exit 2).
+TEST(grep, grep_invalid_context_length_exits_2_issue1213) {
+  Pipeline p;
+  p.add(L"grep.exe", {L"-A", L"x", L"in.txt"});
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  EXPECT_EXIT_CODE(r, 2);
+  EXPECT_TRUE(r.stderr_text.find("invalid") != std::string::npos);
+}

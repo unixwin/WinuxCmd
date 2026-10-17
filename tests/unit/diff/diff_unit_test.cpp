@@ -306,3 +306,17 @@ TEST(diff, diff_directory_operand_compares_member_file) {
   EXPECT_TRUE(r.stdout_text.find("< inner") != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("> hello") != std::string::npos);
 }
+
+// [#1213] GNU diff uses 2 for a usage/option error (1 means "inputs
+// differ"), so an unrecognized option must not exit 1.
+TEST(diff, diff_unknown_option_exits_2_issue1213) {
+  Pipeline p;
+  p.add(L"diff.exe", {L"--zzz-nope", L"in.txt"});
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  EXPECT_EXIT_CODE(r, 2);
+  EXPECT_TRUE(r.stderr_text.find("unrecognized option") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.empty());
+}

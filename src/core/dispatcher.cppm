@@ -924,8 +924,12 @@ auto behavior_for(std::string_view name) -> CommandBehavior {
   } else if (name == "printenv" || name == "tty" || name == "sort" ||
              name == "ls" || name == "dir" || name == "vdir" ||
              name == "getopt" || name == "expr" || name == "test" ||
-             name == "[") {
-    // [GNU] these commands exit 2 on option/usage errors.
+             name == "[" || name == "grep" || name == "diff" ||
+             name == "diff3" || name == "sdiff" || name == "cmp") {
+    // [GNU] these commands exit 2 on option/usage errors.  GNU grep/diff/
+    // diff3/sdiff/cmp document 2 as "trouble" for any usage or option error
+    // (and diff/cmp also use 1 for "inputs differ"), so a rejected option
+    // must not be reported as an ordinary failure (WinuxCmd #1213).
     behavior.parse_error_exit_code = 2;
   }
 

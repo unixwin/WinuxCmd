@@ -926,7 +926,13 @@ REGISTER_COMMAND(
         ok = od_pipeline::read_file_bytes(exp, data, max_input_bytes) && ok;
       }
     }
-    if (!ok && data.empty()) return 1;
+    // [GNU] Every operand that cannot be opened contributes to the exit
+    // status, no matter how many other operands were dumped successfully:
+    // `od good.txt missing.txt` still exits 1.  The earlier condition only
+    // reported the failure when *nothing* had been read, so a failed
+    // operand was silently swallowed as soon as any data was collected
+    // (`od missing.txt good.txt` ended in 0, WinuxCmd #1213).
+    if (!ok) return 1;
   }
 
   safePrint(cfg.strings_mode ? od_pipeline::dump_strings(cfg, data)

@@ -292,3 +292,16 @@ TEST(sdiff, sdiff_missing_input_reports_diff_diagnostic) {
   EXPECT_EQ(r.exit_code, 2);
   EXPECT_EQ(r.stderr_text, "diff: missing.txt: No such file or directory\n");
 }
+
+// [#1213] GNU sdiff documents exit 2 for trouble; a rejected option used to
+// exit 1.
+TEST(sdiff, sdiff_unknown_option_exits_2_issue1213) {
+  Pipeline p;
+  p.add(L"sdiff.exe", {L"--zzz-nope"});
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  EXPECT_EXIT_CODE(r, 2);
+  EXPECT_TRUE(r.stderr_text.find("unrecognized option") != std::string::npos);
+}
