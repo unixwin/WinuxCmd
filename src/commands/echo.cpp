@@ -216,7 +216,21 @@ auto process_escapes(std::string text, bool enabled)
         case '\\':
           result += '\\';
           break;
-        case '0':
+        case '0': {
+          // [GNU] \0nnn: the leading zero is the prefix and up to three more
+          // octal digits follow it, so \0101 is octal 101 (0x41 'A'), not
+          // \010 followed by a literal '1'.  The standalone \0 is a NUL.
+          int value = 0;
+          size_t j = i + 1;
+          for (;
+               j < i + 4 && j < text.size() && text[j] >= '0' && text[j] <= '7';
+               ++j) {
+            value = value * 8 + (text[j] - '0');
+          }
+          result += static_cast<char>(value);
+          i = j - 1;
+          break;
+        }
         case '1':
         case '2':
         case '3':
@@ -224,7 +238,7 @@ auto process_escapes(std::string text, bool enabled)
         case '5':
         case '6':
         case '7': {
-          // Octal escape \0nnn and GNU old-style \nnn
+          // [GNU] old-style \nnn: up to three octal digits, no prefix.
           int value = 0;
           size_t j = i;
           for (;

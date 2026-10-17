@@ -349,3 +349,54 @@ TEST(echo, echo_complex) {
 
   EXPECT_EQ_TEXT(r.stdout_text, "Hello\tWorld!\n");
 }
+
+// [#1203] \0nnn: the leading zero is a prefix and up to three octal digits
+// follow it, so \0101 is octal 101 = 'A' (GNU coreutils echo).  Before the
+// fix it produced backspace + "1".
+TEST(echo, echo_leading_zero_octal_prefix_issue1203) {
+  Pipeline p;
+  p.add(L"echo.exe", {L"-e", L"\\0101"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.empty());
+  EXPECT_EQ(r.stdout_text, std::string("A\n"));
+}
+
+TEST(echo, echo_leading_zero_octal_three_digits_issue1203) {
+  Pipeline p;
+  p.add(L"echo.exe", {L"-e", L"\\0777"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.empty());
+  EXPECT_EQ(r.stdout_text, std::string("\xFF\n", 2));
+}
+
+// \0 is a NUL; a following non-octal byte is left literal.
+TEST(echo, echo_leading_zero_octal_no_digits_is_nul_issue1203) {
+  Pipeline p;
+  p.add(L"echo.exe", {L"-e", L"\\0x"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.empty());
+  EXPECT_EQ(r.stdout_text, std::string("\0x\n", 3));
+}
+
+// [#1203] The issue's second case looks wrong only against bash's builtin:
+// GNU coreutils echo (8.32 and 9.4) still reads the old-style \nnn form, so
+// \101 is 'A' and stays that way.  This pins the coreutils behaviour.
+TEST(echo, echo_old_style_octal_stays_octal_issue1203) {
+  Pipeline p;
+  p.add(L"echo.exe", {L"-e", L"\\101"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.empty());
+  EXPECT_EQ(r.stdout_text, std::string("A\n"));
+}
