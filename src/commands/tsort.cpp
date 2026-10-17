@@ -25,6 +25,7 @@ REGISTER_COMMAND(tsort,
   std::string input;
 
   if (ctx.positionals.empty()) {
+    file_io::set_stdin_binary();
     // Read from stdin
     input.assign(std::istreambuf_iterator<char>(std::cin),
                  std::istreambuf_iterator<char>());

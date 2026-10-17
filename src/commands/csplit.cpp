@@ -150,6 +150,7 @@ auto read_records(const std::string& filename)
     -> cp::Result<std::vector<std::string>> {
   std::string input;
   if (filename == "-") {
+    file_io::set_stdin_binary();
     input.assign(std::istreambuf_iterator<char>(std::cin),
                  std::istreambuf_iterator<char>());
     if (std::cin.fail() && !std::cin.eof()) {

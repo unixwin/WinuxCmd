@@ -440,6 +440,7 @@ auto read_lines(const std::string& filename, char delimiter)
   SmallVector<std::string, 1024> lines;
 
   if (filename == "-") {
+    file_io::set_stdin_binary();
     std::string content;
     {
       std::ostringstream oss;

@@ -169,6 +169,7 @@ REGISTER_COMMAND(factor_cmd,
   bool exponents = ctx.count({"-e", "-h", "--exponents"}) > 0;
 
   if (ctx.positionals.empty()) {
+    file_io::set_stdin_binary();
     // [GNU] read whitespace-separated tokens from standard input
     std::string line;
     while (std::getline(std::cin, line)) {

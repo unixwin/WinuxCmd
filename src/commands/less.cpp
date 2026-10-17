@@ -155,6 +155,7 @@ auto read_file_content(const std::string& filename) -> cp::Result<std::string> {
   std::string content;
 
   if (filename == "-" || filename.empty()) {
+    file_io::set_stdin_binary();
     // Read from stdin
     content.assign(std::istreambuf_iterator<char>(std::cin),
                    std::istreambuf_iterator<char>());

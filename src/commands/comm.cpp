@@ -193,6 +193,7 @@ auto read_lines(const std::string& filename, char delimiter)
   };
 
   if (filename == "-") {
+    file_io::set_stdin_binary();
     // Read from stdin
     std::string content;
     {

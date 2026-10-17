@@ -1014,6 +1014,7 @@ REGISTER_COMMAND(
       if (!process_line(std::string(arg), false)) return 2;
     }
   } else {
+    file_io::set_stdin_binary();
     std::string input;
     input.assign(std::istreambuf_iterator<char>(std::cin),
                  std::istreambuf_iterator<char>());

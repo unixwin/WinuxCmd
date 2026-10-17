@@ -336,6 +336,10 @@ auto run(const Config& cfg) -> int {
     return 0;
   }
 
+  if (file1 == "-" || file2 == "-") {
+    file_io::set_stdin_binary();
+  }
+
   std::ifstream stream1;
   std::ifstream stream2;
   std::istream* in1 = &std::cin;

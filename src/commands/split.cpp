@@ -619,6 +619,7 @@ auto collect_record_spans(std::string_view input, char separator)
 }
 
 auto run(const Config& cfg) -> int {
+  file_io::set_stdin_binary();
   // Stream the common fixed-size modes. The filter and record-preserving
   // number modes still use the existing in-memory path because their output
   // contract requires a complete record set or a subprocess payload.

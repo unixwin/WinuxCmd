@@ -347,6 +347,7 @@ auto read_files0_from(const std::string& path)
   std::istream* input = nullptr;
   std::ifstream file;
   if (path == "-") {
+    file_io::set_stdin_binary();
     input = &std::cin;
   } else {
     // [L2 self-parse] POSIX drive spellings resolve through the shared

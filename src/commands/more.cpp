@@ -355,6 +355,7 @@ void print_directory_banner(const std::string& filename) {
 
 auto copy_file_to_stdout(const std::string& filename) -> int {
   if (filename.empty() || filename == "-") {
+    file_io::set_stdin_binary();
     return copy_stream_to_stdout(std::cin);
   }
   const auto probe = probe_file_operand(filename);
@@ -374,6 +375,7 @@ auto copy_file_to_stdout(const std::string& filename) -> int {
 auto read_display_lines(const std::string& filename)
     -> std::expected<std::vector<std::string>, std::string> {
   if (filename.empty() || filename == "-") {
+    file_io::set_stdin_binary();
     std::string content;
     std::array<char, 64 * 1024> buffer{};
     while (std::cin.good()) {

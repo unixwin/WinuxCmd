@@ -289,3 +289,20 @@ TEST(csplit, csplit_line_number_out_of_range_message_matches_gnu) {
   EXPECT_NE(r.stderr_text.find("'100': line number out of range"),
             std::string::npos);
 }
+
+// [#1212] text mode cut the stream at 0x1A, so /line2/ never matched.
+TEST(csplit, csplit_stdin_ctrlz_not_truncated_issue1212) {
+  TempDir tmp;
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin(
+      std::string("line1\x1a"
+                  "line2\nline3\n",
+                  18));
+  p.add(L"csplit.exe", {L"-f", L"part", L"-", L"/line2/"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  const std::string joined = tmp.read("part00") + tmp.read("part01");
+  EXPECT_TRUE(joined.find("line2") != std::string::npos);
+}

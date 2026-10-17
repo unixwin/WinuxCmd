@@ -583,6 +583,7 @@ REGISTER_COMMAND(
     if (verbose) {
       safePrintLn("patch: reading patch from standard input");
     }
+    file_io::set_stdin_binary();
     patch_content = std::string(std::istreambuf_iterator<char>(std::cin),
                                 std::istreambuf_iterator<char>());
   }

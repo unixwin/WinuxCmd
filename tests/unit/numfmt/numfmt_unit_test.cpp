@@ -292,3 +292,18 @@ TEST(numfmt, numfmt_grouping_reformats_only_integer_part) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "1,234,567.891\n");
 }
+
+// [#1212] text mode stopped at 0x1A and silently exited 0; the full stream
+// reaches the parser, which rejects the embedded 0x1A token (exit 2).
+TEST(numfmt, numfmt_stdin_ctrlz_not_truncated_issue1212) {
+  Pipeline p;
+  p.set_stdin(
+      std::string("1000\n2000\n\x1a"
+                  "3000\n",
+                  16));
+  p.add(L"numfmt.exe", {});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_TRUE(r.stderr_text.find("invalid number") != std::string::npos);
+}

@@ -452,3 +452,24 @@ TEST(patch, patch_input_option_and_fuzz_validation) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(tmp.read("f.txt"), "world\n");
 }
+
+// [#1212] a 0x1A in the patch stream truncated the hunk.
+TEST(patch, patch_stdin_ctrlz_not_truncated_issue1212) {
+  TempDir tmp;
+  tmp.write("p.txt",
+            "ctx\x1a"
+            "AAA\nBBB\n");
+  const std::string patch =
+      "--- p.txt\n+++ p.txt\n@@ -1,2 +1,2 @@\n ctx\x1a"
+      "AAA\n-BBB\n+XXX\n";
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin(patch);
+  p.add(L"patch.exe", {L"p.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(tmp.read("p.txt"), std::string("ctx\x1a"
+                                           "AAA\nXXX\n",
+                                           12));
+}

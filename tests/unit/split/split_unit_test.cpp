@@ -470,3 +470,22 @@ TEST(split, split_obsolete_dash_number_conflicts_with_lines) {
   EXPECT_TRUE(r.stderr_text.find("cannot split in more than one way") !=
               std::string::npos);
 }
+
+// [#1212] text mode saw only "AAAA"; the full payload is two records.
+TEST(split, split_stdin_ctrlz_not_truncated_issue1212) {
+  TempDir tmp;
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin(
+      std::string("AAAA\x1a"
+                  "BBBB\nCCCC\n",
+                  15));
+  p.add(L"split.exe", {L"-l", L"1", L"-", L"part"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(tmp.read("partaa"), std::string("AAAA\x1a"
+                                            "BBBB\n",
+                                            10));
+  EXPECT_EQ(tmp.read("partab"), std::string("CCCC\n", 5));
+}

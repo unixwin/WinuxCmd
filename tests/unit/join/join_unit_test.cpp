@@ -292,3 +292,22 @@ TEST(join, join_missing_operand_after_reports_last_argument) {
       "join: missing operand after 'f1.txt'\nTry 'join --help' for more "
       "information.\n");
 }
+
+// [#1212] join read a text-mode stdin and never saw the 0x1A join key.
+TEST(join, join_stdin_ctrlz_not_truncated_issue1212) {
+  TempDir tmp;
+  tmp.write("f2",
+            "a\x1a"
+            "A y\n");
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin(
+      std::string("a\x1a"
+                  "A x\n",
+                  6));
+  p.add(L"join.exe", {L"-", L"f2"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find('\x1a') != std::string::npos);
+}

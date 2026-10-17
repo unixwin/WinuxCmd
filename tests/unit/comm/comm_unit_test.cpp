@@ -292,3 +292,23 @@ TEST(comm, comm_missing_operand_after_reports_operand) {
       "comm: missing operand after 'file1.txt'\nTry 'comm --help' for more "
       "information.\n");
 }
+
+// [#1212] a pipe that stops at the first 0x1A loses stdin column 1; the file
+// operand is correct, so the command disagreed with itself.
+TEST(comm, comm_stdin_ctrlz_not_truncated_issue1212) {
+  TempDir tmp;
+  tmp.write("f2",
+            "a\x1a"
+            "A\nc\n");
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin(
+      std::string("a\x1a"
+                  "A\nb\n",
+                  6));
+  p.add(L"comm.exe", {L"-", L"f2"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find('\x1a') != std::string::npos);
+}

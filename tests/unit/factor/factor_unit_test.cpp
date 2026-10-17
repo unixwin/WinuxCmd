@@ -133,3 +133,16 @@ TEST(factor, factor_stdin_reads_whitespace_separated_tokens) {
   EXPECT_EQ_TEXT(r.stdout_text, "12: 2 2 3\n24: 2 2 2 3\n");
   EXPECT_CONTAINS(r.stderr_text, "not a valid positive integer");
 }
+
+// [#1212] text mode dropped "20 30" after the 0x1A; 30 must still be factored.
+TEST(factor, factor_stdin_ctrlz_not_truncated_issue1212) {
+  Pipeline p;
+  p.set_stdin(
+      std::string("12 18\x1a"
+                  "20 30\n",
+                  12));
+  p.add(L"factor.exe", {});
+  auto r = p.run();
+
+  EXPECT_TRUE(r.stdout_text.find("30:") != std::string::npos);
+}

@@ -69,3 +69,17 @@ TEST(tsort, tsort_w_flag_is_noop) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "a\nb\nc\n");
 }
+
+// [#1212] a valid pair after 0x1A must survive (text mode treated it as EOF).
+TEST(tsort, tsort_stdin_ctrlz_not_truncated_issue1212) {
+  Pipeline p;
+  p.set_stdin(
+      std::string("a b\nb c\n\x1a"
+                  "x y\n",
+                  13));
+  p.add(L"tsort.exe", {});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("y") != std::string::npos);
+}

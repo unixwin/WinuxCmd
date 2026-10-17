@@ -224,3 +224,22 @@ TEST(cmp, cmp_extra_operand_reports_help_hint) {
       r.stderr_text,
       "cmp: extra operand 'extra'\nTry 'cmp --help' for more information.\n");
 }
+
+// [#1212] `cmp - FILE` compared an empty text-mode stdin and reported EOF.
+TEST(cmp, cmp_stdin_ctrlz_matches_file_issue1212) {
+  const std::string payload(
+      "AAAA\x1a"
+      "BBBB\n",
+      10);
+  TempDir tmp;
+  tmp.write_bytes("p.bin",
+                  {'A', 'A', 'A', 'A', 0x1a, 'B', 'B', 'B', 'B', '\n'});
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin(payload);
+  p.add(L"cmp.exe", {L"-", L"p.bin"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.empty());
+}
