@@ -139,3 +139,115 @@ TEST(sum, sum_continues_past_unreadable_files_and_returns_nonzero) {
       std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("08403     1 ok.txt\n") != std::string::npos);
 }
+
+// [#1200] calculate_checksum reads fd 0 through the CRT's default text
+// mode, where std::istream reads silently stop at the first 0x1A (Ctrl-Z)
+// byte, silently corrupting the checksum (the BSD rot-word and the SysV
+// byte sum) and the byte count.  GNU sums raw bytes.
+TEST(sum, sum_stdin_ctrl_z_pipe_hashes_full_payload_issue1200) {
+  Pipeline p;
+  // "AAAA\032BBBB\n" — a 0x1A byte in the middle of the payload.
+  p.set_stdin(
+      std::string("AAAA\x1a"
+                  "BBBB\n",
+                  10));
+  p.add(L"sum.exe", {});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // [GNU] BSD checksum of the full 10-byte payload.
+  EXPECT_TRUE(r.stdout_text.find("38858") != std::string::npos);
+  // The pre-fix truncated value (BSD sum of "AAAA") must not appear.
+  EXPECT_TRUE(r.stdout_text.find("57465") == std::string::npos);
+}
+
+TEST(sum, sum_stdin_sysv_ctrl_z_pipe_hashes_full_payload_issue1200) {
+  // The SysV route shares calculate_checksum's same text-mode read.
+  Pipeline p;
+  p.set_stdin(
+      std::string("AAAA\x1a"
+                  "BBBB\n",
+                  10));
+  p.add(L"sum.exe", {L"-s"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // [GNU] SysV byte sum of the full 10-byte payload.
+  EXPECT_TRUE(r.stdout_text.find("560") != std::string::npos);
+  // The pre-fix truncated value (SysV sum of "AAAA") must not appear.
+  EXPECT_TRUE(r.stdout_text.find("260") == std::string::npos);
+}
+
+TEST(sum, sum_stdin_nul_pipe_unchanged_issue1200) {
+  // "AB\0CD" — NUL bytes were handled correctly before #1200 and must stay.
+  Pipeline p;
+  p.set_stdin(
+      std::string("AB"
+                  "\x00"
+                  "CD",
+                  5));
+  p.add(L"sum.exe", {});
+  auto bsd = p.run();
+
+  EXPECT_EQ(bsd.exit_code, 0);
+  // [GNU] BSD checksum of "AB\0CD".
+  EXPECT_TRUE(bsd.stdout_text.find("53361") != std::string::npos);
+
+  Pipeline sysv;
+  sysv.set_stdin(
+      std::string("AB"
+                  "\x00"
+                  "CD",
+                  5));
+  sysv.add(L"sum.exe", {L"-s"});
+  auto sysv_result = sysv.run();
+
+  EXPECT_EQ(sysv_result.exit_code, 0);
+  // [GNU] SysV byte sum of "AB\0CD".
+  EXPECT_TRUE(sysv_result.stdout_text.find("266") != std::string::npos);
+}
+
+TEST(sum, sum_pipe_matches_file_operand_issue1200) {
+  // The file operand form must stay byte-correct (it never reproduced the
+  // bug), and the stdin form must now agree with it on identical bytes.
+  TempDir tmp;
+  tmp.write("payload.bin", std::string("AAAA\x1a"
+                                       "BBBB\n",
+                                       10));
+
+  Pipeline file;
+  file.set_cwd(tmp.wpath());
+  file.add(L"sum.exe", {L"payload.bin"});
+  auto file_result = file.run();
+
+  EXPECT_EQ(file_result.exit_code, 0);
+  // [GNU] full payload checksum + 1 block (1024-byte BSD blocks).
+  EXPECT_TRUE(file_result.stdout_text.find("38858     1") != std::string::npos);
+
+  Pipeline piped;
+  piped.set_stdin(
+      std::string("AAAA\x1a"
+                  "BBBB\n",
+                  10));
+  piped.add(L"sum.exe", {});
+  auto pipe_result = piped.run();
+
+  EXPECT_EQ(pipe_result.exit_code, 0);
+  // Same checksum and block count for the stdin form as for the operand.
+  EXPECT_TRUE(pipe_result.stdout_text.find("38858     1") != std::string::npos);
+}
+
+TEST(sum, sum_stdin_plain_text_sanity_issue1200) {
+  // A legitimately plain-text stdin pipe must produce the bytes of "hi\n".
+  Pipeline p;
+  p.set_stdin("hi\n");
+  p.add(L"sum.exe", {});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // [GNU] BSD checksum of "hi\n".
+  EXPECT_TRUE(r.stdout_text.find("32856") != std::string::npos);
+}

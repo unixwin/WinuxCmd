@@ -3,6 +3,10 @@
 module;
 
 #include <cstdint>
+#ifdef _WIN32
+#include <fcntl.h>  // For _setmode, _O_BINARY
+#include <io.h>     // For _fileno
+#endif
 #if defined(_MSC_VER)
 #define WINUXCMD_DIGEST_FORCEINLINE __forceinline
 #elif defined(__GNUC__) || defined(__clang__)
@@ -1073,6 +1077,18 @@ auto hash_file_hex(HashAlgorithm algorithm, const std::string& filename,
     // hashing an empty stream (#1091).
     return std::unexpected(std::string(filename.empty() ? "-" : filename) +
                            ": Bad file descriptor");
+  } else {
+#ifdef _WIN32
+    // [#1195/#1200] fd 0 stays in the CRT's default text mode, where
+    // std::cin silently stops at the first 0x1A (Ctrl-Z) byte.  The digest
+    // tools that stream stdin through this helper (sha224sum, sha384sum,
+    // b2sum, and cksum's portable -a/-c route) hash raw bytes like GNU, so
+    // switch stdin to binary mode before reading (same idiom as
+    // cat/wc/tr).  File operands go through std::ifstream(std::ios::binary)
+    // above and are not affected.  This is idempotent: tools that already
+    // set fd 0 to binary themselves (PR #1199) keep working.
+    _setmode(_fileno(stdin), _O_BINARY);
+#endif
   }
 
   switch (algorithm) {

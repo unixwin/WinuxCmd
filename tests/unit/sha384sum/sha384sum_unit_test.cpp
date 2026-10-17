@@ -394,3 +394,96 @@ TEST(sha384sum, sha384sum_short_zero_alias_uses_nul_terminator) {
                 "3553bcdb9c666fa90125a3c79f90397bdf5f6a13de828684f *test.txt\0",
                 107));
 }
+
+// [#1200] stdin must be read in binary mode: the CRT's default text mode
+// silently stops at the first 0x1A (Ctrl-Z) byte — sha384sum reads fd 0
+// through the shared helper portable_digest::hash_file_hex.  GNU hashes the
+// full 10-byte payload for the pipe, the `<` redirect, and the file operand
+// alike.
+TEST(sha384sum, sha384sum_stdin_ctrl_z_pipe_hashes_full_payload_issue1200) {
+  Pipeline p;
+  // "AAAA\032BBBB\n" — a 0x1A byte in the middle of the payload.
+  p.set_stdin(
+      std::string("AAAA\x1a"
+                  "BBBB\n",
+                  10));
+  p.add(L"sha384sum.exe", {});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(
+      r.stdout_text.find(
+          "dc7e5641bd3d50fb39f132ac116fd803b986e8fd3ae70752642aeff2ea1f08c24cce"
+          "4038312a542441ecd6daf4449d10") != std::string::npos);  // [GNU]
+  // The pre-fix truncated value (sha384("AAAA")) must not appear.
+  EXPECT_TRUE(
+      r.stdout_text.find(
+          "d8bf1572ab3b9bc239325d2a657ad37cb8fa6cb32c2d83cddee33be1238eb7a40b33"
+          "d1bc796b426b6c68c22e4769dea2") == std::string::npos);
+}
+
+TEST(sha384sum, sha384sum_stdin_nul_pipe_unchanged_issue1200) {
+  Pipeline p;
+  // "AB\0CD" — NUL bytes were handled correctly before #1200 and must stay.
+  p.set_stdin(
+      std::string("AB"
+                  "\x00"
+                  "CD",
+                  5));
+  p.add(L"sha384sum.exe", {});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(
+      r.stdout_text.find(
+          "b65a459bbe72d4e63e9279ad58a3f33a4e30453d0964d877e76edbc30f6a2d3b2e0a"
+          "65aacbee89a9e869b409a2438262") != std::string::npos);  // [GNU]
+}
+
+TEST(sha384sum, sha384sum_pipe_matches_file_operand_issue1200) {
+  TempDir tmp;
+  tmp.write("payload.bin", std::string("AAAA\x1a"
+                                       "BBBB\n",
+                                       10));
+
+  Pipeline file;
+  file.set_cwd(tmp.wpath());
+  file.add(L"sha384sum.exe", {L"payload.bin"});
+  auto file_result = file.run();
+
+  EXPECT_EQ(file_result.exit_code, 0);
+  EXPECT_TRUE(
+      file_result.stdout_text.find(
+          "dc7e5641bd3d50fb39f132ac116fd803b986e8fd3ae70752642aeff2ea1f08c24cce"
+          "4038312a542441ecd6daf4449d10") != std::string::npos);  // [GNU]
+
+  Pipeline piped;
+  piped.set_stdin(
+      std::string("AAAA\x1a"
+                  "BBBB\n",
+                  10));
+  piped.add(L"sha384sum.exe", {});
+  auto pipe_result = piped.run();
+
+  EXPECT_EQ(pipe_result.exit_code, 0);
+  // Same 96-hex digest must be printed for both input forms.
+  EXPECT_EQ(file_result.stdout_text.substr(0, 96),
+            pipe_result.stdout_text.substr(0, 96));
+}
+
+TEST(sha384sum, sha384sum_stdin_plain_text_sanity_issue1200) {
+  // A legitimately plain-text stdin pipe must produce the bytes of "hi\n".
+  Pipeline p;
+  p.set_stdin("hi\n");
+  p.add(L"sha384sum.exe", {});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(
+      r.stdout_text.find(
+          "4284b5694ca6c0d2cf4789a0b95ac8025c818de52304364be7cd2981b2d2edc685b3"
+          "22277ec25819962413d8c9b2c1f5") != std::string::npos);  // [GNU]
+}

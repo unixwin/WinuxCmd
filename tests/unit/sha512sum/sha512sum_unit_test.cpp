@@ -399,3 +399,101 @@ TEST(sha512sum, sha512sum_short_zero_alias_uses_nul_terminator) {
                         "63475c2e5c3adef46f73bcdec043 *test.txt\0",
                         139));
 }
+
+// [#1200] stdin must be read in binary mode: the CRT's default text mode
+// silently stops at the first 0x1A (Ctrl-Z) byte — sha512sum has its own
+// CryptoAPI fread(stdin) path, not shared with hash_file_hex.  GNU hashes
+// the full 10-byte payload for the pipe, the `<` redirect, and the file
+// operand alike.
+TEST(sha512sum, sha512sum_stdin_ctrl_z_pipe_hashes_full_payload_issue1200) {
+  Pipeline p;
+  // "AAAA\032BBBB\n" — a 0x1A byte in the middle of the payload.
+  p.set_stdin(
+      std::string("AAAA\x1a"
+                  "BBBB\n",
+                  10));
+  p.add(L"sha512sum.exe", {});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(
+      r.stdout_text.find(
+          "16d6cea306afa32e67877b65e6d005f9f238ae85f15359165697b75d8d682358e888"
+          "acec532856591ce894f4079d625bc3a981070b5f4ae879254b253a6febab") !=
+      std::string::npos);  // GNU sha512 of the full 10-byte payload
+  // The pre-fix truncated value (sha512("AAAA")) must not appear.
+  EXPECT_TRUE(
+      r.stdout_text.find(
+          "53b74be8b295b733fdfafbd7d2a22b1686733740de7fdc592b26cf3e1874cfce1581"
+          "70ce9230e24696331a61829244e5d9f48abdacc9ffa8c4cb498724844cf8") ==
+      std::string::npos);
+}
+
+TEST(sha512sum, sha512sum_stdin_nul_pipe_unchanged_issue1200) {
+  Pipeline p;
+  // "AB\0CD" — NUL bytes were handled correctly before #1200 and must stay.
+  p.set_stdin(
+      std::string("AB"
+                  "\x00"
+                  "CD",
+                  5));
+  p.add(L"sha512sum.exe", {});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(
+      r.stdout_text.find(
+          "8a53305a945338d8c1cba8184a805870a2c8a296d783cc5023d0c196800f6fefc2d8"
+          "1c4e2e6254ab9af4f1e0a7232cae45a41cab1ebef1d8c3466827076daaa6") !=
+      std::string::npos);  // GNU sha512 of "AB\0CD"
+}
+
+TEST(sha512sum, sha512sum_pipe_matches_file_operand_issue1200) {
+  TempDir tmp;
+  tmp.write("payload.bin", std::string("AAAA\x1a"
+                                       "BBBB\n",
+                                       10));
+
+  Pipeline file;
+  file.set_cwd(tmp.wpath());
+  file.add(L"sha512sum.exe", {L"payload.bin"});
+  auto file_result = file.run();
+
+  EXPECT_EQ(file_result.exit_code, 0);
+  EXPECT_TRUE(
+      file_result.stdout_text.find(
+          "16d6cea306afa32e67877b65e6d005f9f238ae85f15359165697b75d8d682358e888"
+          "acec532856591ce894f4079d625bc3a981070b5f4ae879254b253a6febab") !=
+      std::string::npos);  // GNU sha512 of the full 10-byte payload
+
+  Pipeline piped;
+  piped.set_stdin(
+      std::string("AAAA\x1a"
+                  "BBBB\n",
+                  10));
+  piped.add(L"sha512sum.exe", {});
+  auto pipe_result = piped.run();
+
+  EXPECT_EQ(pipe_result.exit_code, 0);
+  // Same 128-hex digest must be printed for both input forms.
+  EXPECT_EQ(file_result.stdout_text.substr(0, 128),
+            pipe_result.stdout_text.substr(0, 128));
+}
+
+TEST(sha512sum, sha512sum_stdin_plain_text_sanity_issue1200) {
+  // A legitimately plain-text stdin pipe must produce the bytes of "hi\n".
+  Pipeline p;
+  p.set_stdin("hi\n");
+  p.add(L"sha512sum.exe", {});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(
+      r.stdout_text.find(
+          "d78abb0542736865f94704521609c230dac03a2f369d043ac212d6933b91410e0639"
+          "9e37f9c5cc88436a31737330c1c8eccb2c2f9f374d62f716432a32d50fac") !=
+      std::string::npos);  // GNU sha512 of "hi\n"
+}

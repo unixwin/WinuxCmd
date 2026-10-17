@@ -92,6 +92,11 @@ auto calculate_checksum(const std::string& filename, uint32_t& block_count,
       return std::unexpected(std::string(filename.empty() ? "-" : filename) +
                              ": Bad file descriptor");
     }
+    // [#1200] fd 0 uses the CRT's default text mode, where std::istream
+    // reads silently stop at the first 0x1A (Ctrl-Z) byte; sum counts raw
+    // bytes like GNU, so switch stdin to binary mode before reading
+    // (same idiom as cat/wc/tr).
+    _setmode(_fileno(stdin), _O_BINARY);
   } else {
     file.open(native_path::normalize_api_operand(filename), std::ios::binary);
     if (!file) {

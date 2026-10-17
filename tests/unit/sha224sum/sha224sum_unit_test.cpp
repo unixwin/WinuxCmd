@@ -378,3 +378,95 @@ TEST(sha224sum, sha224sum_short_zero_alias_uses_nul_terminator) {
                   " *test.txt\0",
                   67));
 }
+
+// [#1200] stdin must be read in binary mode: the CRT's default text mode
+// silently stops at the first 0x1A (Ctrl-Z) byte — sha224sum reads fd 0
+// through the shared helper portable_digest::hash_file_hex.  GNU hashes the
+// full 10-byte payload for the pipe, the `<` redirect, and the file operand
+// alike.
+TEST(sha224sum, sha224sum_stdin_ctrl_z_pipe_hashes_full_payload_issue1200) {
+  Pipeline p;
+  // "AAAA\032BBBB\n" — a 0x1A byte in the middle of the payload.
+  p.set_stdin(
+      std::string("AAAA\x1a"
+                  "BBBB\n",
+                  10));
+  p.add(L"sha224sum.exe", {});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(
+      r.stdout_text.find("3afda03a96d961663239a82aa7416fb39446399964417f7b8c6c"
+                         "472d") !=
+      std::string::npos);  // GNU sha224 of the full 10-byte payload
+  // The pre-fix truncated value (sha224("AAAA")) must not appear.
+  EXPECT_TRUE(
+      r.stdout_text.find("5cdde10ca4df3e7e6e0e428f683e1c6ca0bfb917555ad94727a3"
+                         "f344") == std::string::npos);
+}
+
+TEST(sha224sum, sha224sum_stdin_nul_pipe_unchanged_issue1200) {
+  Pipeline p;
+  // "AB\0CD" — NUL bytes were handled correctly before #1200 and must stay.
+  p.set_stdin(
+      std::string("AB"
+                  "\x00"
+                  "CD",
+                  5));
+  p.add(L"sha224sum.exe", {});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(
+      r.stdout_text.find("0a2bf2317b9595e5a591a754b51dc5aa9f37bd3ab4e24e9f21faf"
+                         "ff2") !=
+      std::string::npos);  // GNU sha224 of "AB\0CD"
+}
+
+TEST(sha224sum, sha224sum_pipe_matches_file_operand_issue1200) {
+  TempDir tmp;
+  tmp.write("payload.bin", std::string("AAAA\x1a"
+                                       "BBBB\n",
+                                       10));
+
+  Pipeline file;
+  file.set_cwd(tmp.wpath());
+  file.add(L"sha224sum.exe", {L"payload.bin"});
+  auto file_result = file.run();
+
+  EXPECT_EQ(file_result.exit_code, 0);
+  EXPECT_TRUE(
+      file_result.stdout_text.find("3afda03a96d961663239a82aa7416fb39446399964"
+                                   "417f7b8c6c472d") !=
+      std::string::npos);  // GNU sha224 of the full 10-byte payload
+
+  Pipeline piped;
+  piped.set_stdin(
+      std::string("AAAA\x1a"
+                  "BBBB\n",
+                  10));
+  piped.add(L"sha224sum.exe", {});
+  auto pipe_result = piped.run();
+
+  EXPECT_EQ(pipe_result.exit_code, 0);
+  // Same 56-hex digest must be printed for both input forms.
+  EXPECT_EQ(file_result.stdout_text.substr(0, 56),
+            pipe_result.stdout_text.substr(0, 56));
+}
+
+TEST(sha224sum, sha224sum_stdin_plain_text_sanity_issue1200) {
+  // A legitimately plain-text stdin pipe must produce the bytes of "hi\n".
+  Pipeline p;
+  p.set_stdin("hi\n");
+  p.add(L"sha224sum.exe", {});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(
+      r.stdout_text.find("0689e590864cee67b037c8f4c390a75a192bb01160cc9c21374af"
+                         "b12") !=
+      std::string::npos);  // GNU sha224 of "hi\n"
+}

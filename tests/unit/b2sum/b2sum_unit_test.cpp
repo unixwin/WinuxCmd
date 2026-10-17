@@ -421,3 +421,100 @@ TEST(b2sum, b2sum_wildcard) {
   EXPECT_TRUE(r.stdout_text.find("a.txt") != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("b.txt") != std::string::npos);
 }
+
+// [#1200] stdin must be read in binary mode: the CRT's default text mode
+// silently stops at the first 0x1A (Ctrl-Z) byte — b2sum reads fd 0 through
+// the shared helper portable_digest::hash_file_hex.  GNU hashes the full
+// 10-byte payload for the pipe, the `<` redirect, and the file operand alike.
+TEST(b2sum, b2sum_stdin_ctrl_z_pipe_hashes_full_payload_issue1200) {
+  Pipeline p;
+  // "AAAA\032BBBB\n" — a 0x1A byte in the middle of the payload.
+  p.set_stdin(
+      std::string("AAAA\x1a"
+                  "BBBB\n",
+                  10));
+  p.add(L"b2sum.exe", {});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(
+      r.stdout_text.find(
+          "79d9a3f0d2c8368f371b84ca8557412f5d4377f7c40d85be8f7c3829608c524086421"
+          "12674ca24ce035013ba3408a9ce532ad94432bbff005e5f57a17424bf14") !=
+      std::string::npos);  // GNU b2sum (BLAKE2b) of the full 10-byte payload
+  // The pre-fix truncated value (b2sum("AAAA")) must not appear.
+  EXPECT_TRUE(
+      r.stdout_text.find(
+          "5448fb61bfeba39eb14a49f72310ab14653b230655b0adccadcb31148602317af3bc"
+          "ef80f09f0945f06607465a0e467ab8cf257a3088d25065aded9fc0963271") ==
+      std::string::npos);
+}
+
+TEST(b2sum, b2sum_stdin_nul_pipe_unchanged_issue1200) {
+  Pipeline p;
+  // "AB\0CD" — NUL bytes were handled correctly before #1200 and must stay.
+  p.set_stdin(
+      std::string("AB"
+                  "\x00"
+                  "CD",
+                  5));
+  p.add(L"b2sum.exe", {});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(
+      r.stdout_text.find(
+          "4ac7dc8c650655b995de91fcdf25afb14c64b2e5a7f64eb08c418469d3876b6cded5"
+          "cdd000fa3052e8b84befe877f2ef75405bc25759df1539b8a385452e94e2") !=
+      std::string::npos);  // GNU b2sum of "AB\0CD"
+}
+
+TEST(b2sum, b2sum_pipe_matches_file_operand_issue1200) {
+  TempDir tmp;
+  tmp.write("payload.bin", std::string("AAAA\x1a"
+                                       "BBBB\n",
+                                       10));
+
+  Pipeline file;
+  file.set_cwd(tmp.wpath());
+  file.add(L"b2sum.exe", {L"payload.bin"});
+  auto file_result = file.run();
+
+  EXPECT_EQ(file_result.exit_code, 0);
+  EXPECT_TRUE(
+      file_result.stdout_text.find(
+          "79d9a3f0d2c8368f371b84ca8557412f5d4377f7c40d85be8f7c3829608c524086421"
+          "12674ca24ce035013ba3408a9ce532ad94432bbff005e5f57a17424bf14") !=
+      std::string::npos);  // GNU b2sum of the full 10-byte payload
+
+  Pipeline piped;
+  piped.set_stdin(
+      std::string("AAAA\x1a"
+                  "BBBB\n",
+                  10));
+  piped.add(L"b2sum.exe", {});
+  auto pipe_result = piped.run();
+
+  EXPECT_EQ(pipe_result.exit_code, 0);
+  // Same 128-hex digest must be printed for both input forms.
+  EXPECT_EQ(file_result.stdout_text.substr(0, 128),
+            pipe_result.stdout_text.substr(0, 128));
+}
+
+TEST(b2sum, b2sum_stdin_plain_text_sanity_issue1200) {
+  // A legitimately plain-text stdin pipe must produce the bytes of "hi\n".
+  Pipeline p;
+  p.set_stdin("hi\n");
+  p.add(L"b2sum.exe", {});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(
+      r.stdout_text.find(
+          "7ea59e7a000ec003846b6607dfd5f9217b681dc1a81b0789b464c3995105d93083f7"
+          "f0a86fca01a1bed27e9f9303ae58d01746e3b20443480bea56198e65bfc5") !=
+      std::string::npos);  // GNU b2sum of "hi\n"
+}
