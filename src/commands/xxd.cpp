@@ -306,6 +306,12 @@ XxdConfig build_config(const CommandContext<XXD_OPTIONS.size()>& ctx) {
     }
     cfg.columns = static_cast<size_t>(cols);
   }
+  // [GNU] the plain (-p) dump wraps at 60 hex characters (30 bytes) per
+  // line; the 16-byte default belongs to the normal and include formats.
+  // An explicit -c still overrides it.
+  if (cfg.plain && !cfg.columns_specified) {
+    cfg.columns = 30;
+  }
   if (ctx.has("-g") || ctx.has("--group")) {
     int g = ctx.get<int>("--group", ctx.get<int>("-g", 2));
     if (g < 1) g = 2;

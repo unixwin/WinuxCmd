@@ -108,7 +108,7 @@ TEST(md5sum, md5sum_short_zero_alias_uses_nul_terminator) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ(r.stdout_text,
-            std::string("6f5902ac237024bdd0c176cb93063dc4 *test.txt\0", 43));
+            std::string("6f5902ac237024bdd0c176cb93063dc4  test.txt\0", 43));
 }
 
 TEST(md5sum, md5sum_quiet) {
@@ -509,4 +509,34 @@ TEST(md5sum, md5sum_stdin_plain_text_sanity_issue1195) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.find("764efa883dda1e11db47671c4a3bbd9e") !=
               std::string::npos);  // GNU md5 of "hi\n"
+}
+
+// [#1205] the default output marker is a space (text); -b/--binary selects
+// the '*' marker, and the last of -b/-t wins, matching GNU.
+TEST(md5sum, md5sum_marker_text_default_and_last_option_wins_issue1205) {
+  Pipeline def;
+  def.set_stdin("hello\n");
+  def.add(L"md5sum.exe", {});
+  auto rd = def.run();
+  EXPECT_EQ(rd.exit_code, 0);
+  EXPECT_TRUE(rd.stdout_text.ends_with("  -\n"));
+
+  Pipeline bin;
+  bin.set_stdin("hello\n");
+  bin.add(L"md5sum.exe", {L"-b"});
+  auto rb = bin.run();
+  EXPECT_EQ(rb.exit_code, 0);
+  EXPECT_TRUE(rb.stdout_text.ends_with(" *-\n"));
+
+  Pipeline last_bin;
+  last_bin.set_stdin("hello\n");
+  last_bin.add(L"md5sum.exe", {L"-t", L"-b"});
+  auto rlb = last_bin.run();
+  EXPECT_EQ(rlb.stdout_text, rb.stdout_text);
+
+  Pipeline last_text;
+  last_text.set_stdin("hello\n");
+  last_text.add(L"md5sum.exe", {L"-b", L"-t"});
+  auto rlt = last_text.run();
+  EXPECT_EQ(rlt.stdout_text, rd.stdout_text);
 }

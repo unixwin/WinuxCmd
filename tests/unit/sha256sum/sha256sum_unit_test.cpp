@@ -73,7 +73,7 @@ TEST(sha256sum, sha256sum_short_zero_alias_uses_nul_terminator) {
       r.stdout_text,
       std::string(
           "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"
-          " *test.txt\0",
+          "  test.txt\0",
           75));
 }
 
@@ -404,4 +404,34 @@ TEST(sha256sum, sha256sum_stdin_plain_text_sanity_issue1195) {
       r.stdout_text.find(
           "98ea6e4f216f2fb4b69fff9b3a44842c38686ca685f3f55dc48c5d3fb1107be4") !=
       std::string::npos);  // GNU sha256 of "hi\n"
+}
+
+// [#1205] the default output marker is a space (text); -b/--binary selects
+// the '*' marker, and the last of -b/-t wins, matching GNU.
+TEST(sha256sum, sha256sum_marker_text_default_and_last_option_wins_issue1205) {
+  Pipeline def;
+  def.set_stdin("hello\n");
+  def.add(L"sha256sum.exe", {});
+  auto rd = def.run();
+  EXPECT_EQ(rd.exit_code, 0);
+  EXPECT_TRUE(rd.stdout_text.ends_with("  -\n"));
+
+  Pipeline bin;
+  bin.set_stdin("hello\n");
+  bin.add(L"sha256sum.exe", {L"-b"});
+  auto rb = bin.run();
+  EXPECT_EQ(rb.exit_code, 0);
+  EXPECT_TRUE(rb.stdout_text.ends_with(" *-\n"));
+
+  Pipeline last_bin;
+  last_bin.set_stdin("hello\n");
+  last_bin.add(L"sha256sum.exe", {L"-t", L"-b"});
+  auto rlb = last_bin.run();
+  EXPECT_EQ(rlb.stdout_text, rb.stdout_text);
+
+  Pipeline last_text;
+  last_text.set_stdin("hello\n");
+  last_text.add(L"sha256sum.exe", {L"-b", L"-t"});
+  auto rlt = last_text.run();
+  EXPECT_EQ(rlt.stdout_text, rd.stdout_text);
 }

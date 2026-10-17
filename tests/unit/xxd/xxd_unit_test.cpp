@@ -243,3 +243,35 @@ TEST(xxd, xxd_stdin_ctrlz_matches_file_operand_issue1212) {
   EXPECT_FALSE(rf.stdout_text.empty());
   EXPECT_EQ(rs.stdout_text, rf.stdout_text);
 }
+
+// [#1205] xxd -p wraps at 60 hex characters (30 bytes) per line, matching
+// GNU; an explicit -c still overrides it.
+TEST(xxd, xxd_plain_wraps_at_60_hex_chars_issue1205) {
+  TempDir tmp;
+  std::vector<char> data(100);
+  for (int i = 0; i < 100; ++i) {
+    data[static_cast<size_t>(i)] = static_cast<char>(i);
+  }
+  tmp.write_bytes("in100.bin", data);
+
+  Pipeline def;
+  def.set_cwd(tmp.wpath());
+  def.add(L"xxd.exe", {L"-p", L"in100.bin"});
+  auto rd = def.run();
+
+  EXPECT_EQ(rd.exit_code, 0);
+  EXPECT_EQ(rd.stdout_text.find('\n'), size_t(60));
+  size_t newlines = 0;
+  for (char c : rd.stdout_text) {
+    if (c == '\n') ++newlines;
+  }
+  EXPECT_EQ(newlines, size_t(4));
+
+  Pipeline cols;
+  cols.set_cwd(tmp.wpath());
+  cols.add(L"xxd.exe", {L"-p", L"-c", L"16", L"in100.bin"});
+  auto rc = cols.run();
+
+  EXPECT_EQ(rc.exit_code, 0);
+  EXPECT_EQ(rc.stdout_text.find('\n'), size_t(32));
+}

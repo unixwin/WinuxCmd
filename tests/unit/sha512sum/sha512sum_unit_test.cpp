@@ -396,7 +396,7 @@ TEST(sha512sum, sha512sum_short_zero_alias_uses_nul_terminator) {
   EXPECT_EQ(r.stdout_text,
             std::string("9b71d224bd62f3785d96d46ad3ea3d73319bfbc2890caadae2"
                         "dff72519673ca72323c3d99ba5c11d7c7acc6e14b8c5da0c46"
-                        "63475c2e5c3adef46f73bcdec043 *test.txt\0",
+                        "63475c2e5c3adef46f73bcdec043  test.txt\0",
                         139));
 }
 

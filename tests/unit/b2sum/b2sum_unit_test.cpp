@@ -101,7 +101,7 @@ TEST(b2sum, b2sum_short_zero_alias_uses_nul_terminator) {
   EXPECT_EQ(r.stdout_text,
             std::string("e4cfa39a3d37be31c59609e807970799caa68a19bfaa15135f"
                         "165085e01d41a65ba1e1b146aeb6bd0092b49eac214c103ccfa3"
-                        "a365954bbbe52f74a2b3620c94 *test.txt\0",
+                        "a365954bbbe52f74a2b3620c94  test.txt\0",
                         139));
 }
 
@@ -128,7 +128,7 @@ TEST(b2sum, b2sum_length) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.starts_with("46fb7408d4f285228f4af516ea25851b"));
-  EXPECT_TRUE(r.stdout_text.find(" *-\n") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("  -\n") != std::string::npos);
 }
 
 TEST(b2sum, b2sum_length_accepts_nonstandard_multiple_of_8) {
@@ -517,4 +517,34 @@ TEST(b2sum, b2sum_stdin_plain_text_sanity_issue1200) {
           "7ea59e7a000ec003846b6607dfd5f9217b681dc1a81b0789b464c3995105d93083f7"
           "f0a86fca01a1bed27e9f9303ae58d01746e3b20443480bea56198e65bfc5") !=
       std::string::npos);  // GNU b2sum of "hi\n"
+}
+
+// [#1205] the default output marker is a space (text); -b/--binary selects
+// the '*' marker, and the last of -b/-t wins, matching GNU.
+TEST(b2sum, b2sum_marker_text_default_and_last_option_wins_issue1205) {
+  Pipeline def;
+  def.set_stdin("hello\n");
+  def.add(L"b2sum.exe", {});
+  auto rd = def.run();
+  EXPECT_EQ(rd.exit_code, 0);
+  EXPECT_TRUE(rd.stdout_text.ends_with("  -\n"));
+
+  Pipeline bin;
+  bin.set_stdin("hello\n");
+  bin.add(L"b2sum.exe", {L"-b"});
+  auto rb = bin.run();
+  EXPECT_EQ(rb.exit_code, 0);
+  EXPECT_TRUE(rb.stdout_text.ends_with(" *-\n"));
+
+  Pipeline last_bin;
+  last_bin.set_stdin("hello\n");
+  last_bin.add(L"b2sum.exe", {L"-t", L"-b"});
+  auto rlb = last_bin.run();
+  EXPECT_EQ(rlb.stdout_text, rb.stdout_text);
+
+  Pipeline last_text;
+  last_text.set_stdin("hello\n");
+  last_text.add(L"b2sum.exe", {L"-b", L"-t"});
+  auto rlt = last_text.run();
+  EXPECT_EQ(rlt.stdout_text, rd.stdout_text);
 }

@@ -375,7 +375,7 @@ TEST(sha224sum, sha224sum_short_zero_alias_uses_nul_terminator) {
   EXPECT_EQ(
       r.stdout_text,
       std::string("ea09ae9cc6768c50fcee903ed054556e5bfc8347907f12598aa24193"
-                  " *test.txt\0",
+                  "  test.txt\0",
                   67));
 }
 

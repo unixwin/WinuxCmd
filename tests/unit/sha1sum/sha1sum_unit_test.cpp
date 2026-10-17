@@ -89,7 +89,7 @@ TEST(sha1sum, sha1sum_short_zero_alias_uses_nul_terminator) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ(
       r.stdout_text,
-      std::string("f572d396fae9206628714fb2ce00f72e94f2258f *test.txt\0", 51));
+      std::string("f572d396fae9206628714fb2ce00f72e94f2258f  test.txt\0", 51));
 }
 
 TEST(sha1sum, sha1sum_check_valid) {

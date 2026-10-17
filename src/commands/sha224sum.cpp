@@ -72,13 +72,21 @@ auto input_open_error(std::string_view path) -> std::string {
 auto build_config(const CommandContext<SHA224SUM_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
   Config cfg;
-  cfg.text_mode = ctx.get<bool>("--text", false) || ctx.get<bool>("-t", false);
-#ifdef _WIN32
-  cfg.binary_mode = !cfg.text_mode;  // Binary mode is default on Windows
-#else
-  cfg.binary_mode =
-      ctx.get<bool>("--binary", false) || ctx.get<bool>("-b", false);
-#endif
+  // [GNU] the text marker ("  ") is the default; -b/--binary selects the
+  // "*" marker and the last of -b/-t wins, mirroring cksum.c.  Only the
+  // marker changes -- the bytes hashed are always raw.
+  cfg.binary_mode = false;
+  cfg.text_mode = false;
+  for (const auto& occurrence : ctx.options.occurrences()) {
+    const auto& meta = (*ctx.metas)[occurrence.index];
+    if (meta.short_name == "-b" || meta.long_name == "--binary") {
+      cfg.binary_mode = true;
+      cfg.text_mode = false;
+    } else if (meta.short_name == "-t" || meta.long_name == "--text") {
+      cfg.binary_mode = false;
+      cfg.text_mode = true;
+    }
+  }
   cfg.check_mode =
       ctx.get<bool>("--check", false) || ctx.get<bool>("-c", false);
   cfg.tag = ctx.get<bool>("--tag", false);
