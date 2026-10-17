@@ -249,6 +249,18 @@ export auto stdin_is_bad() -> bool {
   return _lseek(0, 0, SEEK_CUR) == -1 && errno == EBADF;
 }
 
+// Unix filters consume fd 0 as a byte stream, but the CRT opens it in text
+// mode by default: reads then stop at the first 0x1A (Ctrl-Z) byte and
+// collapse CRLF to LF, so a piped payload silently loses data while the
+// same bytes via a file operand come through intact. Commands that read
+// stdin themselves call this before their first read (the idiom cat/wc/tr
+// and the checksum family already use) so the pipe and operand forms agree.
+export auto set_stdin_binary() -> void {
+#ifdef _WIN32
+  _setmode(_fileno(stdin), _O_BINARY);
+#endif
+}
+
 auto read_all_stdin() -> std::expected<std::string, std::string> {
   if (stdin_is_bad()) {
     return std::unexpected(winux::i18n::translate(
