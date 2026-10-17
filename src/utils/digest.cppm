@@ -3,6 +3,7 @@
 module;
 
 #include <cstdint>
+#include <cstdio>   // For stdin (the digest tools' fd-0 read path)
 #ifdef _WIN32
 #include <fcntl.h>  // For _setmode, _O_BINARY
 #include <io.h>     // For _fileno
