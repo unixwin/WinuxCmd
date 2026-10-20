@@ -60,6 +60,9 @@ set(WINUXCMD_CXX_STANDARD 23)
 set(WINUXCMD_CXX_DIALECT_NOTE "pending compiler detection")
 
 # Option to enable FFI library
+# The FFI sources under src/ffi are not tracked in git; a checkout that carries
+# them can build winuxcore.dll with -DBUILD_FFI=ON (all presets still do).
+option(BUILD_FFI "Build the winuxcore FFI library (requires src/ffi sources)" OFF)
 
 # Generate the map info(For the developers to collect binary information)
 option(GENERATE_MAP_INFO "Generate_MAP_INFO" ON)
@@ -759,8 +762,17 @@ set(CPACK_IGNORE_FILES
 
 # ========== FFI Library for External Integration ==========
 if(BUILD_FFI)
-    message(STATUS "FFI Library: ENABLED (winuxcore.dll)")
-    add_subdirectory(src/ffi)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/ffi/CMakeLists.txt")
+        message(STATUS "FFI Library: ENABLED (winuxcore.dll)")
+        add_subdirectory(src/ffi)
+    else()
+        message(WARNING
+                "BUILD_FFI=ON but src/ffi is not present in this checkout "
+                "(the FFI sources are not distributed with the repository). "
+                "Continuing with the FFI library disabled; pass -DBUILD_FFI=OFF "
+                "to silence this warning.")
+        set(BUILD_FFI OFF CACHE BOOL "Build the winuxcore FFI library" FORCE)
+    endif()
 else()
     message(STATUS "FFI Library: DISABLED")
 endif()
