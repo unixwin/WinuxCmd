@@ -128,3 +128,12 @@ chown [选项]... --reference=RFILE FILE...
 ## WinuxCmd 实现状态
 
 **待实现**
+## 诊断中的操作数拼写
+
+诊断消息按用户输入原样引用操作数。全分隔符操作数按原拼写打印：
+`chown -R --preserve-root OWNER ///` 报告
+`it is dangerous to operate recursively on '///'`，而 MSYS 打印
+`on '/'`——`///` 在 MSYS 自己的 argv 层就被折叠为 `/`，二进制并未收到原拼写。
+拒绝行为完全一致，仅引用的拼写不同（既定约定，#1262）。`//` 遵循 POSIX
+双斜杠规则，因此 `//e/..` 按 `//e` 解析并报告
+`cannot access '//e/..': No such file or directory`，与 MSYS 逐字节一致。

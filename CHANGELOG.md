@@ -4,6 +4,22 @@ All notable changes to WinuxCmd are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow the
 repository release tags.
 
+## [Unreleased]
+
+### Fixed
+
+- **chgrp / chown**: #1249 CR follow-ups (#1262). `//e/..`-class operands
+  (the POSIX two-slash rule keeps them rooted at `//e`, never `/`) now
+  report `cannot access '//e/..': No such file or directory` from both
+  commands - chown printed the Win32 invalid-name text where chgrp and
+  the MSYS oracle print ENOENT. `chgrp -R` propagates a failing
+  descendant through `process_directory` like chown's
+  `process_recursive` does, instead of still exiting 0. The operand
+  spelling convention is now documented in DOCS/gnu-coreutils: messages
+  quote the operand verbatim, so `///` prints as `///` where MSYS shows
+  `/` after its own argv-layer collapse (same refusal, display-only
+  divergence).
+
 ## [1.1.18] - 2026-10-20
 
 ### Fixed

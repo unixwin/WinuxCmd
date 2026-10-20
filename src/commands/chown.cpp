@@ -396,6 +396,14 @@ auto format_chown_error(const std::string& verb, const std::string& path,
   switch (error) {
     case ERROR_FILE_NOT_FOUND:
     case ERROR_PATH_NOT_FOUND:
+    // #1262: a "//e/.."-class operand survives the POSIX two-slash fold and
+    // reaches Win32 as an UNC-ish name, which fails at the path-syntax layer
+    // (ERROR_BAD_PATHNAME / ERROR_INVALID_NAME) — POSIX name resolution
+    // reports it as ENOENT and MSYS prints
+    // "cannot access '//e/..': No such file or directory", the same form
+    // chgrp already emits (chmod's format_access_error precedent).
+    case ERROR_INVALID_NAME:
+    case ERROR_BAD_PATHNAME:
       message += "No such file or directory";
       break;
     case ERROR_ACCESS_DENIED:

@@ -147,6 +147,46 @@ auto choose_mismatching_valid_group(std::string_view current_group)
   return {};
 }
 
+auto current_user_name() -> std::wstring {
+  wchar_t name[256];
+  DWORD size = static_cast<DWORD>(std::size(name));
+  if (!GetUserNameW(name, &size)) return {};
+  return name;
+}
+
+auto set_self_ace(const std::filesystem::path& path, DWORD permissions,
+                  ACCESS_MODE mode) -> bool {
+  const std::wstring user = current_user_name();
+  if (user.empty()) return false;
+  std::wstring wpath = path.wstring();
+
+  EXPLICIT_ACCESS_W entry{};
+  entry.grfAccessPermissions = permissions;
+  entry.grfAccessMode = mode;
+  entry.grfInheritance = NO_INHERITANCE;
+  entry.Trustee.TrusteeForm = TRUSTEE_IS_NAME;
+  entry.Trustee.TrusteeType = TRUSTEE_IS_USER;
+  entry.Trustee.ptstrName = const_cast<wchar_t*>(user.c_str());
+
+  PACL dacl = nullptr;
+  if (SetEntriesInAclW(1, &entry, nullptr, &dacl) != ERROR_SUCCESS) {
+    return false;
+  }
+  const DWORD status = SetNamedSecurityInfoW(
+      const_cast<wchar_t*>(wpath.c_str()), SE_FILE_OBJECT,
+      DACL_SECURITY_INFORMATION, nullptr, nullptr, dacl, nullptr);
+  LocalFree(dacl);
+  return status == ERROR_SUCCESS;
+}
+
+auto deny_self_generic_all(const std::filesystem::path& path) -> bool {
+  return set_self_ace(path, GENERIC_ALL, DENY_ACCESS);
+}
+
+auto allow_self_full_access(const std::filesystem::path& path) -> bool {
+  return set_self_ace(path, FILE_ALL_ACCESS, SET_ACCESS);
+}
+
 }  // namespace
 
 TEST(chgrp, chgrp_no_args_shows_error) {
@@ -639,7 +679,10 @@ TEST(chgrp, chgrp_preserve_root_double_slash_component_spelling_is_refused) {
 
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_EQ(r.stderr_text.find("it is dangerous"), std::string::npos);
-  EXPECT_NE(r.stderr_text.find("cannot access '//e/..'"), std::string::npos);
+  // #1262: pin the MSYS reason verbatim - not the Win32 invalid-name text.
+  EXPECT_NE(
+      r.stderr_text.find("cannot access '//e/..': No such file or directory"),
+      std::string::npos);
 }
 
 TEST(chgrp, chgrp_preserve_root_dotdot_collapse_spelling_is_rejected) {
@@ -739,4 +782,60 @@ TEST(chgrp, chgrp_preserve_root_dot_without_shell_root_is_not_refused) {
   // No shell root configured and the temp cwd is no volume root: "." is an
   // ordinary directory operand.
   EXPECT_EQ(r.stderr_text.find("it is dangerous"), std::string::npos);
+}
+
+TEST(chgrp, chgrp_recursive_descendant_failure_reaches_exit_code) {
+  // #1262: process_directory dropped a directory child's own change_group
+  // result AND the recursive call's return - a failing descendant still
+  // produced rc 0.  A DENY GENERIC_ALL ACE for the current user makes the
+  // descendant's named security call fail deterministically (no privileges
+  // needed): 'tree\link' covers the directory child itself and
+  // 'tree\sub\inner.txt' covers the nested call's return.
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "tree" / "link");
+  std::filesystem::create_directories(tmp.path / "tree" / "sub");
+  tmp.write("tree/sub/inner.txt", "x");
+
+  const std::filesystem::path link = tmp.path / "tree" / "link";
+  const std::filesystem::path inner = tmp.path / "tree" / "sub" / "inner.txt";
+  const bool link_denied = deny_self_generic_all(link);
+  const bool inner_denied = deny_self_generic_all(inner);
+  if (!link_denied || !inner_denied) {
+    if (link_denied) allow_self_full_access(link);
+    if (inner_denied) allow_self_full_access(inner);
+    std::cout << "  SKIPPED (cannot set deny ACE)\n";
+    return;
+  }
+
+  // Whether the token may set the group at all is environment-dependent;
+  // probe the parent first so a permission-less run skips instead of
+  // asserting on a walk whose failures never reach the descendants.
+  Pipeline probe;
+  probe.set_cwd(tmp.wpath());
+  probe.add(L"chgrp.exe", {L"Users", L"tree"});
+  if (probe.run().exit_code != 0) {
+    allow_self_full_access(link);
+    allow_self_full_access(inner);
+    std::cout << "  SKIPPED (cannot change group on this token)\n";
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"chgrp.exe", {L"-R", L"Users", L"tree"});
+  auto r = p.run();
+
+  TEST_LOG_CMD_LIST("chgrp.exe", L"-R", L"Users", L"tree");
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("chgrp stderr", r.stderr_text);
+
+  // Restore before asserting so the temp tree stays removable.
+  allow_self_full_access(link);
+  allow_self_full_access(inner);
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_NE(r.stderr_text.find("changing group of 'tree\\link'"),
+            std::string::npos);
+  EXPECT_NE(r.stderr_text.find("changing group of 'tree\\sub\\inner.txt'"),
+            std::string::npos);
 }

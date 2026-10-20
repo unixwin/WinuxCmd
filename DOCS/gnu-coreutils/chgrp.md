@@ -52,6 +52,17 @@ chgrp -v Users *.txt          # Verbose mode
 - 0: Success
 - 1: Error (permission denied, invalid group, file not found)
 
+## Operand spelling in diagnostics
+
+Diagnostics quote the operand exactly as typed. An all-separator operand is
+printed verbatim: `chgrp -R --preserve-root GROUP ///` reports
+`it is dangerous to operate recursively on '///'`, where MSYS prints
+`on '/'` because its own argv layer collapses `///` to `/` before the binary
+runs. The refusal is identical; only the quoted spelling differs (declared
+convention, #1262). `//` keeps the POSIX two-slash rule, so `//e/..`
+resolves against the `//e` name and reports
+`cannot access '//e/..': No such file or directory`, byte-identical to MSYS.
+
 ## See Also
 
 - `chown(1)` - Change file owner

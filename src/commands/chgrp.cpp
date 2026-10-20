@@ -554,9 +554,15 @@ auto process_directory(const std::string& path, const Config& cfg) -> bool {
     std::string full_path_utf8 = path + "\\" + wstring_to_utf8(name);
 
     if (find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-      change_group(full_path_utf8, cfg.group, cfg);
+      // #1262: propagate like chown's process_recursive - a failing child
+      // directory or a failing descent must reach the exit code.
+      if (!change_group(full_path_utf8, cfg.group, cfg)) {
+        success = false;
+      }
       if (cfg.recursive) {
-        process_directory(full_path_utf8, cfg);
+        if (!process_directory(full_path_utf8, cfg)) {
+          success = false;
+        }
       }
     } else {
       if (!change_group(full_path_utf8, cfg.group, cfg)) {

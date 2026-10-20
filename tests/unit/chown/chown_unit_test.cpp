@@ -865,7 +865,11 @@ TEST(chown, chown_preserve_root_double_slash_component_spelling_is_refused) {
 
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_EQ(r.stderr_text.find("it is dangerous"), std::string::npos);
-  EXPECT_NE(r.stderr_text.find("cannot access '//e/..'"), std::string::npos);
+  // #1262: pin the MSYS reason verbatim - chown used to print the Win32
+  // invalid-name text where chgrp and MSYS print ENOENT.
+  EXPECT_NE(
+      r.stderr_text.find("cannot access '//e/..': No such file or directory"),
+      std::string::npos);
 }
 
 TEST(chown, chown_preserve_root_dotdot_collapse_spelling_is_rejected) {
