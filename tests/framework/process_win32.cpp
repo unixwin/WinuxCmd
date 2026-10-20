@@ -4,6 +4,8 @@
 
 #include <windows.h>
 
+#include <thread>
+
 #include "framework/framework_pch.h"
 
 static std::wstring build_cmd(const std::wstring &exe,
@@ -28,6 +30,12 @@ static std::string read_all(HANDLE h) {
  * Creates pipes for stdin/stdout/stderr, spawns the process,
  * feeds stdin data, captures output, and returns results.
  *
+ * stdout and stderr are drained on separate threads while stdin is fed on
+ * a third: draining stdout before stderr lets a child that fills the stderr
+ * pipe block forever, and a synchronous stdin write blocks when the child
+ * never reads - both used to hang the wait below until the ctest timeout
+ * killed the test process (#1260 parallel-run flake family).
+ *
  * @param exe Executable path
  * @param args Command arguments
  * @param stdin_data Optional stdin input data
@@ -41,9 +49,13 @@ CommandResult run_command(const std::wstring &exe,
 
   // Create pipes for stdin, stdout, and stderr
   HANDLE in_r, in_w, out_r, out_w, err_r, err_w;
-  CreatePipe(&in_r, &in_w, &sa, 0);    // stdin pipe
-  CreatePipe(&out_r, &out_w, &sa, 0);  // stdout pipe
-  CreatePipe(&err_r, &err_w, &sa, 0);  // stderr pipe
+  if (!CreatePipe(&in_r, &in_w, &sa, 0) ||    // stdin pipe
+      !CreatePipe(&out_r, &out_w, &sa, 0) ||  // stdout pipe
+      !CreatePipe(&err_r, &err_w, &sa, 0)) {  // stderr pipe
+    CommandResult res;
+    res.stderr_text = "run_command: CreatePipe failed";
+    return res;  // exit_code stays -1
+  }
 
   // Make parent-side handles non-inheritable
   SetHandleInformation(in_w, HANDLE_FLAG_INHERIT, 0);   // Parent writes
@@ -62,33 +74,52 @@ CommandResult run_command(const std::wstring &exe,
   auto cmd = build_cmd(exe, args);
 
   // Create the child process with redirected handles
-  CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, TRUE, 0, nullptr,
-                 nullptr, &si, &pi);
+  BOOL created = CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, TRUE, 0,
+                                nullptr, nullptr, &si, &pi);
+  DWORD spawn_err = created ? 0 : GetLastError();
 
   // Parent closes child-side handles
   CloseHandle(in_r);   // Child owns this now
   CloseHandle(out_w);  // Child owns this now
   CloseHandle(err_w);  // Child owns this now
 
-  // Send stdin data to child process
-  if (!stdin_data.empty()) {
-    DWORD written;
-    WriteFile(in_w, stdin_data.data(),
-              // NOLINTNEXTLINE
-              (DWORD)stdin_data.size(), &written, nullptr);
+  if (!created) {
+    // Spawning can fail transiently under parallel load; report a
+    // deterministic failure instead of waiting on a NULL process handle
+    // and returning an uninitialized exit code.
+    CloseHandle(in_w);
+    CloseHandle(out_r);
+    CloseHandle(err_r);
+    CommandResult res;
+    res.stderr_text =
+        "run_command: CreateProcessW failed: " + std::to_string(spawn_err);
+    return res;  // exit_code stays -1
   }
-  CloseHandle(in_w);  // Signal EOF by closing write end
 
-  // Read all output from child process
-  auto out = read_all(out_r);
-  auto err = read_all(err_r);
+  std::string out, err;
+  std::thread t_err([&] { err = read_all(err_r); });
+  std::thread t_in([&] {
+    if (!stdin_data.empty()) {
+      DWORD written;
+      WriteFile(in_w, stdin_data.data(),
+                // NOLINTNEXTLINE
+                (DWORD)stdin_data.size(), &written, nullptr);
+    }
+    CloseHandle(in_w);  // Signal EOF by closing write end
+  });
+  out = read_all(out_r);
 
   // Wait for process to complete
   WaitForSingleObject(pi.hProcess, INFINITE);
 
   // Get process exit code
-  DWORD code;
+  DWORD code = 0;
   GetExitCodeProcess(pi.hProcess, &code);
+
+  // Once the child has exited its pipe ends are broken, so both threads
+  // are guaranteed to finish.
+  t_err.join();
+  t_in.join();
 
   // Cleanup remaining handles
   CloseHandle(out_r);

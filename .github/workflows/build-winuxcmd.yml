@@ -155,13 +155,17 @@ jobs:
           copy /Y build-x64-pgo-train\pgo\winuxcmd.pgd build-x64\ >NUL
           cmake --build build-x64 --config Release --parallel %NUMBER_OF_PROCESSORS%
 
+      # Parallel ctest flakes (0xc0000409 fail-fast / env-sensitive asserts,
+      # #1260) are absorbed by re-running only the failed tests serially once
+      # via scripts/ctest-gate.ps1; a test that also fails serially still reds.
       - name: Run Unit Tests (ctest)
         if: matrix.package_arch == 'x64'
         shell: cmd
         working-directory: build-${{ matrix.package_arch }}
         run: |
           call "${{ steps.locate_vcvars.outputs.vcvars_path }}" ${{ matrix.vcvars_arg }}
-          ctest --output-on-failure --no-tests=error --timeout 120 -C Release
+          powershell -NoProfile -ExecutionPolicy Bypass -File ..\scripts\ctest-gate.ps1 -BuildDir . -Configuration Release -TimeoutSeconds 120
+          if errorlevel 1 exit /b 1
 
       - name: Package with CPack (7Z + ZIP + TGZ)
         shell: cmd

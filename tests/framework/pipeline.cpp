@@ -312,12 +312,20 @@ CommandResult Pipeline::run() {
   CloseHandle(final_out_w);
   CloseHandle(final_err_w);
 
-  // ----- write stdin -----
+  // ----- write stdin on a thread -----
+  // A synchronous WriteFile here blocks when the first child never reads
+  // stdin, which used to prevent the output-reader threads below from
+  // starting and deadlocked the run until the ctest timeout fired (#1260).
+  std::thread t_in;
   if (stdin_w) {
-    DWORD written = 0;
-    WriteFile(stdin_w, stdin_data_->data(), (DWORD)stdin_data_->size(),
-              &written, nullptr);
-    if (!probe_stdin_leftover_) CloseHandle(stdin_w);  // EOF
+    HANDLE w = stdin_w;
+    const std::string *data = &*stdin_data_;
+    bool close_after = !probe_stdin_leftover_;
+    t_in = std::thread([w, data, close_after] {
+      DWORD written = 0;
+      WriteFile(w, data->data(), (DWORD)data->size(), &written, nullptr);
+      if (close_after) CloseHandle(w);  // EOF
+    });
   }
 
   if (stdin_r && !probe_stdin_leftover_) CloseHandle(stdin_r);
@@ -351,9 +359,12 @@ CommandResult Pipeline::run() {
   DWORD exit_code = 0;
   GetExitCodeProcess(procs.back().hProcess, &exit_code);
 
-  // Wait for output reading threads to complete
+  // Wait for output reading and stdin writer threads to complete; the
+  // child's exit breaks its pipe ends so all of them are guaranteed
+  // to finish.
   t_out.join();
   t_err.join();
+  if (t_in.joinable()) t_in.join();
 
   // ----- collect unconsumed stdin (probe mode) -----
   std::string stdin_leftover;

@@ -678,17 +678,41 @@ inline std::string normalize_newlines(std::string s) {
    * and reports pass/fail status with colored output. \ \ \                         \
    */                                                                                \
   static void test_runner_##group##_##test_name() {                                  \
-    for (auto h : wctest::before_hooks()) h(#group, #test_name);                     \
     wctest::current_test_failed = 0;                                                 \
+    /* A throwing before-hook (e.g. TempDir setup under parallel load, #1260)        \
+       must fail the test, not terminate the process: the hook runs before the       \
+       try below, so an escape is an uncaught exception -> 0xc0000409.  The          \
+       reset also moved above the hooks so a hook-reported failure is not                        \
+       cleared. */                                                                   \
+    bool hooks_ok = true;                                                            \
     try {                                                                            \
-      test_fn_##group##_##test_name();                                               \
+      for (auto h : wctest::before_hooks()) h(#group, #test_name);                   \
     } catch (const std::exception &e) {                                              \
       wctest::fail(__FILE__, __LINE__,                                               \
-                   std::string("Unhandled exception: ") + e.what());                 \
+                   std::string("Before-hook exception: ") + e.what());               \
+      hooks_ok = false;                                                              \
     } catch (...) {                                                                  \
-      wctest::fail(__FILE__, __LINE__, "Unhandled unknown exception");               \
+      wctest::fail(__FILE__, __LINE__, "Before-hook unknown exception");             \
+      hooks_ok = false;                                                              \
     }                                                                                \
-    for (auto h : wctest::after_hooks()) h(#group, #test_name);                      \
+    if (hooks_ok) {                                                                  \
+      try {                                                                          \
+        test_fn_##group##_##test_name();                                             \
+      } catch (const std::exception &e) {                                            \
+        wctest::fail(__FILE__, __LINE__,                                             \
+                     std::string("Unhandled exception: ") + e.what());               \
+      } catch (...) {                                                                \
+        wctest::fail(__FILE__, __LINE__, "Unhandled unknown exception");             \
+      }                                                                              \
+    }                                                                                \
+    try {                                                                            \
+      for (auto h : wctest::after_hooks()) h(#group, #test_name);                    \
+    } catch (const std::exception &e) {                                              \
+      wctest::fail(__FILE__, __LINE__,                                               \
+                   std::string("After-hook exception: ") + e.what());                \
+    } catch (...) {                                                                  \
+      wctest::fail(__FILE__, __LINE__, "After-hook unknown exception");              \
+    }                                                                                \
     if (!wctest::current_test_failed) {                                              \
       wctest::set_color(wctest::Color::Green);                                       \
       std::cout << "  PASSED\n";                                                     \

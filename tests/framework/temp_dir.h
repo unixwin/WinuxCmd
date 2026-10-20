@@ -3,6 +3,8 @@
 #pragma once
 #include <windows.h>
 
+#include <atomic>
+#include <cwchar>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -89,13 +91,24 @@ struct TempDir {
     // Get system temporary directory path
     GetTempPathW(MAX_PATH, base);
 
-    wchar_t name[MAX_PATH];
-    // Generate unique temporary file name (we'll use it as directory name)
-    GetTempFileNameW(base, L"wct", 0, name);
-    DeleteFileW(name);  // Remove the temporary file
-
-    path = name;
-    std::filesystem::create_directory(path);  // Create directory instead
+    // Claim the directory name atomically with CreateDirectoryW.  The old
+    // GetTempFileNameW + DeleteFileW + create_directory sequence left a
+    // window where a parallel ctest worker could claim the same path, so
+    // two tests shared (and deleted) each other's files - and a leftover
+    // file at that name made create_directory throw out of the before-hook,
+    // terminating the test process (0xc0000409).  See #1245/#1260.
+    static std::atomic<unsigned long> counter{0};
+    const unsigned long pid = GetCurrentProcessId();
+    const unsigned long long tick = GetTickCount64();
+    for (int attempt = 0; attempt < 100; ++attempt) {
+      wchar_t name[MAX_PATH];
+      swprintf(name, std::size(name), L"%swct-%lu-%llu-%lu", base, pid, tick,
+               counter.fetch_add(1, std::memory_order_relaxed));
+      path = name;
+      std::error_code ec;
+      if (std::filesystem::create_directory(path, ec)) break;
+      // !ec means the name already existed: try the next unique name.
+    }
   }
 
   /**
