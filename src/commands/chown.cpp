@@ -641,17 +641,32 @@ auto get_preserve_root_match(const std::string& input_path)
     return std::nullopt;
   }
 
+  const auto same_directory = [](std::wstring_view a, std::wstring_view b) {
+    return normalize_path_for_root_compare(
+               std::wstring(native_path::strip_trailing_separators(a))) ==
+           normalize_path_for_root_compare(
+               std::wstring(native_path::strip_trailing_separators(b)));
+  };
+
   std::wstring volume_root = get_volume_root_path(full_path);
-  if (volume_root.empty()) {
-    return std::nullopt;
+  if (!volume_root.empty() && same_directory(full_path, volume_root)) {
+    return PreserveRootMatch{input_path, input_path != "/"};
   }
 
-  if (normalize_path_for_root_compare(full_path) !=
-      normalize_path_for_root_compare(volume_root)) {
-    return std::nullopt;
+  // #1259: GNU compares the operand's device+inode against "/", so a
+  // relative spelling whose resolved directory IS the root is refused like
+  // "/" - ".", "./" and "././" from a cwd sitting on the shell root used to
+  // walk the shell tree because the volume-root probe above only catches
+  // spellings that name the volume root.  Resolving "/" through the same
+  // operand layer names the shell root when one is configured (the
+  // current-drive root otherwise), which is the comparison target.
+  const std::wstring root_full =
+      get_full_path(utf8_to_wstring(native_path::normalize_api_operand("/")));
+  if (!root_full.empty() && same_directory(full_path, root_full)) {
+    return PreserveRootMatch{input_path, input_path != "/"};
   }
 
-  return PreserveRootMatch{input_path, input_path != "/"};
+  return std::nullopt;
 }
 
 auto add_file_args(Config& cfg, std::span<const std::string_view> args)

@@ -661,3 +661,82 @@ TEST(chgrp, chgrp_preserve_root_dotdot_collapse_spelling_is_rejected) {
             std::string::npos);
   EXPECT_NE(r.stderr_text.find("use --no-preserve-root"), std::string::npos);
 }
+
+// ===== #1259 regression: "." spellings resolved onto the shell root
+// ===== GNU's failsafe compares device+inode against "/", so ".", "./" and
+// ===== "././" from a cwd that IS the shell root are refused like "/" (with
+// ===== the "(same as '/')" suffix, exactly like MSYS).  The volume-root
+// ===== probe only catches spellings that name the volume root, so these
+// ===== operands used to walk the shell tree.
+TEST(chgrp, chgrp_preserve_root_dot_spellings_at_shell_root_are_rejected) {
+  TempDir root;
+  for (const std::wstring operand : {L".", L"./", L"././"}) {
+    Pipeline p;
+    p.set_cwd(root.wpath());
+    p.set_env(L"__RUBASH_SHELL_ROOT", root.wpath());
+    for (const auto* name : {L"NIU_ROOT", L"WINUXSH_ROOT", L"RUBASH_ROOT"}) {
+      p.set_env(name, L"");
+    }
+    p.add(L"chgrp.exe", {L"-R", L"--preserve-root", L"Users", operand});
+
+    auto r = p.run();
+
+    TEST_LOG_CMD_LIST("chgrp.exe", L"-R", L"--preserve-root", L"Users",
+                      operand);
+    TEST_LOG_EXIT_CODE(r);
+    TEST_LOG("chgrp stderr", r.stderr_text);
+
+    EXPECT_EQ(r.exit_code, 1);
+    EXPECT_NE(r.stderr_text.find("it is dangerous to operate recursively on '" +
+                                 chgrp_root_spelling_detail::narrow(operand) +
+                                 "' (same as '/')"),
+              std::string::npos);
+    EXPECT_NE(r.stderr_text.find("use --no-preserve-root"), std::string::npos);
+  }
+}
+
+TEST(chgrp, chgrp_preserve_root_dot_below_shell_root_is_not_refused) {
+  TempDir root;
+  root.write("sub/probe.txt", "x");
+
+  Pipeline p;
+  p.set_cwd((root.path / "sub").wstring());
+  p.set_env(L"__RUBASH_SHELL_ROOT", root.wpath());
+  for (const auto* name : {L"NIU_ROOT", L"WINUXSH_ROOT", L"RUBASH_ROOT"}) {
+    p.set_env(name, L"");
+  }
+  p.add(L"chgrp.exe", {L"-R", L"--preserve-root", L"Users", L"."});
+
+  auto r = p.run();
+
+  TEST_LOG_CMD_LIST("chgrp.exe", L"-R", L"--preserve-root", L"Users", L".");
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("chgrp stderr", r.stderr_text);
+
+  // "." resolves to <root>/sub, not the shell root: the failsafe stays
+  // quiet (the chgrp itself may still fail on privileges).
+  EXPECT_EQ(r.stderr_text.find("it is dangerous"), std::string::npos);
+}
+
+TEST(chgrp, chgrp_preserve_root_dot_without_shell_root_is_not_refused) {
+  TempDir cwd;
+  cwd.write("probe.txt", "x");
+
+  Pipeline p;
+  p.set_cwd(cwd.wpath());
+  for (const auto* name :
+       {L"__RUBASH_SHELL_ROOT", L"NIU_ROOT", L"WINUXSH_ROOT", L"RUBASH_ROOT"}) {
+    p.set_env(name, L"");
+  }
+  p.add(L"chgrp.exe", {L"-R", L"--preserve-root", L"Users", L"."});
+
+  auto r = p.run();
+
+  TEST_LOG_CMD_LIST("chgrp.exe", L"-R", L"--preserve-root", L"Users", L".");
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("chgrp stderr", r.stderr_text);
+
+  // No shell root configured and the temp cwd is no volume root: "." is an
+  // ordinary directory operand.
+  EXPECT_EQ(r.stderr_text.find("it is dangerous"), std::string::npos);
+}
