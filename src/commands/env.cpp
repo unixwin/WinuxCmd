@@ -153,10 +153,13 @@ auto trim_ascii(std::string_view text) -> std::string_view {
 
 auto read_env_file(std::string_view path)
     -> std::expected<std::map<std::string, std::string>, std::string> {
-  auto input_open_error = [](std::string_view input_path) -> std::string {
+  // The open and the classification probe run on the resolved spelling so
+  // MSYS drive-dialect operands ("/e/...") name the same target a native
+  // spelling would; diagnostics keep the caller's text (#1230).
+  const std::string resolved = native_path::normalize_api_operand(path);
+  auto input_open_error = [&resolved](std::string_view input_path) {
     std::error_code ec;
-    if (std::filesystem::is_directory(std::filesystem::u8path(input_path),
-                                      ec) &&
+    if (std::filesystem::is_directory(std::filesystem::u8path(resolved), ec) &&
         !ec) {
       return "cannot read env file '" + std::string(input_path) +
              "': Is a directory";
@@ -165,7 +168,7 @@ auto read_env_file(std::string_view path)
            "': No such file or directory";
   };
 
-  std::ifstream in(std::string(path), std::ios::binary);
+  std::ifstream in(resolved, std::ios::binary);
   if (!in.is_open()) {
     return std::unexpected(input_open_error(path));
   }

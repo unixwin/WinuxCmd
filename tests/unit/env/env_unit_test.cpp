@@ -560,3 +560,43 @@ TEST(env, env_invalid_option_returns_125_with_help_hint) {
                  "env: unrecognized option '--definitely-invalid'\n"
                  "Try 'env --help' for more information.\n");
 }
+
+namespace {
+
+// #1230/#1275: the MSYS single-letter drive spelling of a native path
+// ("D:\tmp\x" -> "/d/tmp/x"). env -f must resolve the operand through the
+// shared normalize_api_operand boundary; the raw "/d/..." text decays to a
+// cwd-drive-relative path and misses the named file.
+auto drive_dialect_spelling(const std::filesystem::path& native)
+    -> std::wstring {
+  const std::wstring text = native.wstring();
+  wchar_t drive = text[0];
+  if (drive >= L'A' && drive <= L'Z') {
+    drive = static_cast<wchar_t>(drive - L'A' + L'a');
+  }
+  std::wstring dialect;
+  dialect.push_back(L'/');
+  dialect.push_back(drive);
+  for (size_t i = 2; i < text.size(); ++i) {
+    dialect.push_back(text[i] == L'\\' ? L'/' : text[i]);
+  }
+  return dialect;
+}
+
+}  // namespace
+
+TEST(env, env_file_drive_dialect_operand_resolves_named_drive) {
+  TempDir tmp;
+  TempDir cwd;
+  tmp.write("vars.env", "WX_DIALECT_FILE=from_dialect\n");
+
+  Pipeline p;
+  p.set_cwd(cwd.wpath());
+  p.add(L"env.exe", {L"-f", drive_dialect_spelling(tmp.path / "vars.env")});
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("env stderr", r.stderr_text);
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(has_env_line(r.stdout_text, "WX_DIALECT_FILE", "from_dialect"));
+}
