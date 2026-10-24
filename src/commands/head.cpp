@@ -332,6 +332,37 @@ auto output_first_records(std::istream& in, size_t records, char delimiter)
     -> void {
   if (records == 0) return;
 
+  // niubash R2: istream::read (xsgetn) loops until the request is FULL or
+  // EOF, so `producer | head -n 1` withholds the first line until the
+  // producer exits. On a live pipe/console stdin a single ReadFile short-
+  // reads whatever is available; emit as data arrives (GNU head exits once
+  // the Nth delimiter is seen and leaves the rest of the producer to EPIPE).
+  HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
+  DWORD inType =
+      (hIn == INVALID_HANDLE_VALUE || hIn == nullptr) ? 0 : GetFileType(hIn);
+  if (&in == &std::cin &&
+      (inType == FILE_TYPE_PIPE || inType == FILE_TYPE_CHAR)) {
+    std::array<char, 8192> buffer{};
+    while (records > 0) {
+      DWORD got = 0;
+      if (!ReadFile(hIn, buffer.data(), static_cast<DWORD>(buffer.size()),
+                    &got, nullptr)) {
+        break;  // EOF (broken pipe) or read error
+      }
+      if (got == 0) break;
+
+      size_t bytes_to_write = got;
+      for (size_t i = 0; i < got; ++i) {
+        if (buffer[i] == delimiter && --records == 0) {
+          bytes_to_write = i + 1;
+          break;
+        }
+      }
+      safePrint(std::string_view(buffer.data(), bytes_to_write));
+    }
+    return;
+  }
+
   std::array<char, 64 * 1024> buffer{};
   while (records > 0 && in.good()) {
     in.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));

@@ -299,20 +299,20 @@ REGISTER_COMMAND(cat, "cat",
     std::string out;
     out.reserve(kTransformBufferSize);
 
-    char raw = 0;
-    while (stream.get(raw)) {
-      unsigned char c = static_cast<unsigned char>(raw);
+    // Returns true when a complete output line is ready in `out`.
+    auto feed_char = [&](unsigned char c) -> bool {
+      bool completed_line = false;
 
       if (state.at_line_start && c == 0x0A) {
         if (flags.squeeze_blank && state.previous_line_empty) {
-          continue;
+          return false;
         }
         if (flags.number_all) print_line_number(state.line_num, out);
         if (flags.show_ends) append_output_char(out, static_cast<char>(0x24));
         append_output_char(out, static_cast<char>(0x0A));
         state.previous_line_empty = true;
-        if (out.empty() && is_stdout_pipe_closed()) break;
-        continue;
+        completed_line = true;
+        return completed_line && !out.empty();
       }
 
       if (state.at_line_start) {
@@ -327,10 +327,56 @@ REGISTER_COMMAND(cat, "cat",
         if (flags.show_ends) append_output_char(out, static_cast<char>(0x24));
         append_output_char(out, static_cast<char>(0x0A));
         state.at_line_start = true;
+        completed_line = true;
       } else {
         print_visible_byte(c, flags, stream, out);
       }
+      return completed_line && !out.empty();
+    };
 
+    // niubash R2: a live pipe/console stdin must not withhold transformed
+    // output until EOF. istream::get feeds one char per underflow (OK), but
+    // the old loop only flushed `out` at 64KiB or EOF — `producer | cat -n`
+    // therefore stalled at the producer. Short-ReadFile the live stdin,
+    // transform, and flush after every completed line (and every 64KiB).
+    HANDLE hLiveIn = GetStdHandle(STD_INPUT_HANDLE);
+    DWORD liveInType =
+        (hLiveIn == INVALID_HANDLE_VALUE || hLiveIn == nullptr)
+            ? 0
+            : GetFileType(hLiveIn);
+    const bool live_stdin =
+        &stream == &std::cin &&
+        (liveInType == FILE_TYPE_PIPE || liveInType == FILE_TYPE_CHAR);
+    if (live_stdin) {
+      std::array<char, 8192> buffer{};
+      while (!is_stdout_pipe_closed()) {
+        DWORD got = 0;
+        if (!ReadFile(hLiveIn, buffer.data(),
+                      static_cast<DWORD>(buffer.size()), &got, nullptr)) {
+          break;  // EOF (broken pipe) or read error
+        }
+        if (got == 0) break;
+        for (DWORD i = 0; i < got; ++i) {
+          const bool line_done =
+              feed_char(static_cast<unsigned char>(buffer[i]));
+          if (line_done) flush_output_buffer(out);
+          if (is_stdout_pipe_closed() && out.empty()) {
+            flush_output_buffer(out);
+            return;
+          }
+        }
+      }
+      flush_output_buffer(out);
+      return;
+    }
+
+    char raw = 0;
+    while (stream.get(raw)) {
+      const bool line_done =
+          feed_char(static_cast<unsigned char>(raw));
+      // Line-flush so `cat -n` as a pipe tail streams with the producer;
+      // append_output still coalesces mid-line transforms into 64KiB.
+      if (line_done) flush_output_buffer(out);
       if (out.empty() && is_stdout_pipe_closed()) {
         break;
       }
