@@ -65,6 +65,10 @@ wpm install jq
 | **Portable** | Unzip `WinuxCmd-<version>-win-x64.zip` anywhere and add it to your `PATH` |
 | **Build from source** | VS 2022 + CMake 3.30 + Ninja — see [Building from source](#️-building-from-source) |
 
+## 🔏 Code signing
+
+Release binaries are code-signed via the [SignPath Foundation](https://signpath.org).
+
 ## 🚀 Why WinuxCmd
 
 - 🪟 **Native, not emulated** — talks to Win32 APIs directly. Understands `C:\`, UNC paths and NTFS ACLs (with `cygpath` and `getfacl` for bridging). No VM, no runtime DLLs, instant startup.
