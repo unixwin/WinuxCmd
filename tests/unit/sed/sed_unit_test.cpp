@@ -470,6 +470,63 @@ TEST(sed, substitution_numeric_occurrence_with_global_replaces_from_nth) {
   EXPECT_EQ_TEXT(r.stdout_text, "foo bar bar\n");
 }
 
+// [GNU] sed/execute.c do_subst(): a null match immediately following a
+// non-empty match is not substituted (#1284).
+TEST(sed, substitution_nullable_pattern_does_not_refire_after_nonempty_match) {
+  TempDir tmp;
+  tmp.write("a.txt", "2 g x\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sed.exe", {L"s/[0-9]*/N/g", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "N NgN NxN\n");
+}
+
+TEST(sed, substitution_nullable_pattern_at_string_edges) {
+  TempDir tmp;
+  tmp.write("a.txt", "aab\nbaa\nbaaaac\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sed.exe", {L"s/a*/x/g", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "xbx\nxbx\nxbxcx\n");
+}
+
+// [GNU] the skipped null match does not advance the Nth-occurrence counter:
+// s/a*/x/2 on "aab" must replace the null match after "b", not the vacuous
+// match at the end of the "aa" run.
+TEST(sed, substitution_numeric_occurrence_skips_suppressed_null_match) {
+  TempDir tmp;
+  tmp.write("a.txt", "aab\nbaa\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sed.exe", {L"s/a*/x/2", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "aabx\nbx\n");
+}
+
+TEST(sed, substitution_nullable_pattern_numeric_occurrence_global) {
+  TempDir tmp;
+  tmp.write("a.txt", "baa\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sed.exe", {L"s/a*/x/2g", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "bx\n");
+}
+
 TEST(sed, literal_substitution_preserves_no_final_newline) {
   TempDir tmp;
   tmp.write("a.txt", "foo foo");
