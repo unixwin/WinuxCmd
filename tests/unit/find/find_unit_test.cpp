@@ -2305,6 +2305,45 @@ TEST(find, find_long_root_beyond_max_path_is_not_reported_missing) {
   EXPECT_TRUE(r2.stdout_text.find("d9.txt") != std::string::npos);
 }
 
+// #1288: path-valued predicate operands (-newer reference files and -fprint
+// outputs) must resolve through the same operand boundary as start points —
+// a POSIX /x/ spelling used to false-ENOENT the reference or create the
+// output under "<cwd>\d\...".
+TEST(find, find_newer_and_fprint_accept_posix_drive_form_operands) {
+  TempDir tmp;
+  tmp.write("hit.txt", "x");
+
+  const auto to_posix = [](const std::filesystem::path& native) {
+    std::wstring s = native.wstring();
+    std::wstring out;
+    out.push_back(L'/');
+    out.push_back(s[0] >= L'A' && s[0] <= L'Z'
+                      ? static_cast<wchar_t>(s[0] - L'A' + L'a')
+                      : s[0]);
+    for (size_t i = 2; i < s.size(); ++i) {
+      out.push_back(s[i] == L'\\' ? L'/' : s[i]);
+    }
+    return out;
+  };
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L".", L"-newer", to_posix(tmp.path / "hit.txt"),
+                      L"-name", L"hit.txt"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.find("cannot read reference") ==
+              std::string::npos);
+
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.add(L"find.exe", {L".", L"-maxdepth", L"0", L"-fprint",
+                       to_posix(tmp.path / "out.txt")});
+  auto r2 = p2.run();
+  EXPECT_EQ(r2.exit_code, 0);
+  EXPECT_FALSE(temp_dir_detail::read_all(tmp.path / "out.txt").empty());
+}
+
 // D9: still report a true missing start point as ENOENT, not a different
 // message, after switching the probe off std::filesystem::exists.
 TEST(find, find_missing_root_still_reports_enoent_after_native_probe) {

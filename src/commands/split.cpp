@@ -771,8 +771,12 @@ auto run(const Config& cfg) -> int {
       return 1;
     }
   } else {
-    // Read from file
-    std::ifstream f(cfg.input_file, std::ios::binary);
+    // Read from file — open through the operand boundary so POSIX spellings
+    // and paths past MAX_PATH reach the input (#1288).
+    std::ifstream f(
+        std::filesystem::path(
+            native_path::make_api_path_operand(cfg.input_file).extended),
+        std::ios::binary);
     if (!f) {
       auto err = split_input_open_error(cfg.input_file);
       cp::Result<int> result = std::unexpected(err);

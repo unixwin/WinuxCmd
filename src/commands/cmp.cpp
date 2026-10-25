@@ -251,7 +251,8 @@ auto regular_remaining_after_skip(const std::string& file, size_t skip)
   if (file == "-") return std::nullopt;
 
   std::error_code ec;
-  auto path = std::filesystem::path(utf8_to_wstring(file));
+  auto path = std::filesystem::path(
+      native_path::make_api_path_operand(file).extended);
   if (!std::filesystem::is_regular_file(path, ec) || ec) return std::nullopt;
 
   auto size = std::filesystem::file_size(path, ec);

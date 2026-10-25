@@ -457,18 +457,25 @@ auto build_config(const CommandContext<INSTALL_OPTIONS.size()>& ctx)
 }
 
 auto files_match(const std::string& lhs, const std::string& rhs) -> bool {
+  // Probe through the operand boundary so POSIX spellings and paths past
+  // MAX_PATH compare against the object the operand names (#1288).
+  const std::filesystem::path lhs_path(
+      native_path::make_api_path_operand(lhs).extended);
+  const std::filesystem::path rhs_path(
+      native_path::make_api_path_operand(rhs).extended);
   std::error_code ec;
-  if (!std::filesystem::exists(lhs, ec) || !std::filesystem::exists(rhs, ec)) {
+  if (!std::filesystem::exists(lhs_path, ec) ||
+      !std::filesystem::exists(rhs_path, ec)) {
     return false;
   }
 
-  auto lhs_size = std::filesystem::file_size(lhs, ec);
+  auto lhs_size = std::filesystem::file_size(lhs_path, ec);
   if (ec) return false;
-  auto rhs_size = std::filesystem::file_size(rhs, ec);
+  auto rhs_size = std::filesystem::file_size(rhs_path, ec);
   if (ec || lhs_size != rhs_size) return false;
 
-  std::ifstream lhs_file(lhs, std::ios::binary);
-  std::ifstream rhs_file(rhs, std::ios::binary);
+  std::ifstream lhs_file(lhs_path, std::ios::binary);
+  std::ifstream rhs_file(rhs_path, std::ios::binary);
   if (!lhs_file || !rhs_file) return false;
 
   constexpr size_t kBufferSize = 64 * 1024;
@@ -650,7 +657,8 @@ auto run(const Config& cfg) -> int {
     bool dest_mode_matches =
         dest_owner_writable.has_value() &&
         dest_owner_writable.value() == desired_mode.owner_write;
-    if (cfg.compare && std::filesystem::exists(dest) &&
+    if (cfg.compare &&
+        native_path::exists(native_path::normalize_api_operand(dest)) &&
         files_match(source, dest) && dest_mode_matches) {
       if (cfg.verbose) {
         safeErrorPrint("install: skipping identical destination '");

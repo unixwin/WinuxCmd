@@ -988,7 +988,8 @@ auto reference_write_time(std::string_view path)
     -> cp::Result<std::filesystem::file_time_type> {
   std::error_code ec;
   auto t = std::filesystem::last_write_time(
-      std::filesystem::path(utf8_to_wstring(std::string(path))), ec);
+      std::filesystem::path(native_path::make_api_path_operand(path).extended),
+      ec);
   if (ec) return std::unexpected("cannot read reference file for -newer");
   return t;
 }
@@ -1146,7 +1147,8 @@ auto parse_newerxy_reference(std::string_view option, std::string_view value)
                            std::string(option));
   }
   auto ticks = win32_file_time_ticks(
-      std::filesystem::path(utf8_to_wstring(std::string(value))),
+      std::filesystem::path(
+          native_path::make_api_path_operand(value).extended),
       *reference_kind);
   if (!ticks) {
     return std::unexpected("cannot read reference file for " +
@@ -1643,10 +1645,11 @@ class ExpressionParser {
     if (option == "-anewer" || option == "-cnewer") {
       auto value = require_value(option);
       if (!value) return std::unexpected(value.error());
-      auto reference =
-          win32_file_time_ticks(std::filesystem::path(utf8_to_wstring(*value)),
-                                option == "-anewer" ? FindFileTimeKind::Access
-                                                    : FindFileTimeKind::Change);
+      auto reference = win32_file_time_ticks(
+          std::filesystem::path(
+              native_path::make_api_path_operand(*value).extended),
+          option == "-anewer" ? FindFileTimeKind::Access
+                              : FindFileTimeKind::Change);
       if (!reference)
         return std::unexpected("cannot read reference file for " +
                                std::string(option));
@@ -1688,8 +1691,9 @@ class ExpressionParser {
     if (option == "-samefile") {
       auto value = require_value(option);
       if (!value) return std::unexpected(value.error());
-      auto identity =
-          win32_file_identity(std::filesystem::path(utf8_to_wstring(*value)));
+      auto identity = win32_file_identity(
+          std::filesystem::path(
+              native_path::make_api_path_operand(*value).extended));
       if (!identity) {
         return std::unexpected("cannot read reference file for -samefile");
       }
@@ -1853,7 +1857,7 @@ auto prepare_find_output_file(Config& cfg, const std::string& path)
     -> cp::Result<void> {
   if (cfg.output_files.contains(path)) return {};
   auto out = std::make_unique<std::ofstream>(
-      std::filesystem::path(utf8_to_wstring(path)),
+      std::filesystem::path(native_path::make_api_path_operand(path).extended),
       std::ios::binary | std::ios::trunc);
   if (!out->is_open()) {
     return std::unexpected("cannot open output file " + path);

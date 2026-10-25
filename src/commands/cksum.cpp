@@ -709,12 +709,10 @@ auto check_one_file(const std::string& checkfile_name, const Config& cfg,
   if (!is_stdin) {
     checkfile.open(native_path::normalize_api_operand(checkfile_name));
     if (!checkfile) {
-      std::error_code ec;
       // [GNU] fopen() succeeds on a directory and the first getline() then
       // fails: GNU reports "<file>: read error", not "Is a directory".
-      if (std::filesystem::is_directory(std::filesystem::u8path(checkfile_name),
-                                        ec) &&
-          !ec) {
+      if (native_path::is_directory(
+              native_path::normalize_api_operand(checkfile_name))) {
         safeErrorPrintLn(
             "cksum: " + portable_digest::detail::sum_quotef(checkfile_name) +
             ": Is a directory");
@@ -781,8 +779,9 @@ auto check_one_file(const std::string& checkfile_name, const Config& cfg,
 
     bool missing = false;
     if (cfg.ignore_missing && target != "-") {
-      std::error_code ec;
-      missing = !std::filesystem::exists(std::filesystem::u8path(target), ec);
+      // The target spelling comes from the check file's contents, not argv —
+      // probe it through the same operand boundary (#1288).
+      missing = !native_path::exists(native_path::normalize_api_operand(target));
     }
     if (missing) continue;
 

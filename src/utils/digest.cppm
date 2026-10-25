@@ -1473,12 +1473,10 @@ auto sum_digest_check(const std::string& program, const std::string& algo_tag,
   } else {
     checkfile.open(native_path::normalize_api_operand(checkfile_name));
     if (!checkfile) {
-      std::error_code ec;
       // [GNU] fopen() succeeds on a directory and the first getline() then
       // fails: GNU reports "<file>: read error", not "Is a directory".
-      if (std::filesystem::is_directory(std::filesystem::u8path(checkfile_name),
-                                        ec) &&
-          !ec) {
+      if (native_path::is_directory(
+              native_path::normalize_api_operand(checkfile_name))) {
         safeErrorPrintLn(program + ": " + detail::sum_quotef(checkfile_name) +
                          ": read error");
       } else {
@@ -1515,9 +1513,10 @@ auto sum_digest_check(const std::string& program, const std::string& algo_tag,
 
     bool missing = false;
     if (flags.ignore_missing && parsed->filename != "-") {
-      std::error_code ec;
-      missing = !std::filesystem::exists(
-          std::filesystem::u8path(parsed->filename), ec);
+      // The target spelling comes from the check file's contents, not argv —
+      // probe it through the same operand boundary (#1288).
+      missing = !native_path::exists(
+          native_path::normalize_api_operand(parsed->filename));
     }
 
     if (!missing) {
