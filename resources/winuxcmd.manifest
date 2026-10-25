@@ -7,8 +7,12 @@
        path::string(), *A Win32 APIs, CRT stdio) speaks UTF-8 instead of the
        legacy system ACP (e.g. 936/1252). Requires Windows 10 1903+. -->
   <application xmlns="urn:schemas-microsoft-com:asm.v3">
-    <windowsSettings xmlns:ws2019="http://schemas.microsoft.com/SMI/2019/WindowsSettings">
+    <windowsSettings xmlns:ws2019="http://schemas.microsoft.com/SMI/2019/WindowsSettings"
+                     xmlns:ws2016="http://schemas.microsoft.com/SMI/2016/WindowsSettings">
       <ws2019:activeCodePage>UTF-8</ws2019:activeCodePage>
+      <!-- Win10 1607+: let unprefixed Win32 probes reach paths past MAX_PATH
+           (host registry LongPathsEnabled still gates it; #1288) -->
+      <ws2016:longPathAware>true</ws2016:longPathAware>
     </windowsSettings>
   </application>
   <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
