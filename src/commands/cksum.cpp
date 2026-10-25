@@ -707,14 +707,17 @@ auto check_one_file(const std::string& checkfile_name, const Config& cfg,
   std::istream* input = &std::cin;
   std::ifstream checkfile;
   if (!is_stdin) {
-    checkfile.open(native_path::normalize_api_operand(checkfile_name));
+    // #1288: open and probe the check file through its operand's
+    // extended spelling; the normalized narrow spelling fails past
+    // MAX_PATH.
+    const auto check_operand =
+        native_path::make_api_path_operand(checkfile_name);
+    checkfile.open(std::filesystem::path(check_operand.extended));
     if (!checkfile) {
-      std::error_code ec;
       // [GNU] fopen() succeeds on a directory and the first getline() then
       // fails: GNU reports "<file>: read error", not "Is a directory".
-      if (std::filesystem::is_directory(std::filesystem::u8path(checkfile_name),
-                                        ec) &&
-          !ec) {
+      if (native_path::attributes_are_directory(
+              native_path::operand_target_attributes_w(check_operand))) {
         safeErrorPrintLn(
             "cksum: " + portable_digest::detail::sum_quotef(checkfile_name) +
             ": Is a directory");
@@ -781,8 +784,12 @@ auto check_one_file(const std::string& checkfile_name, const Config& cfg,
 
     bool missing = false;
     if (cfg.ignore_missing && target != "-") {
-      std::error_code ec;
-      missing = !std::filesystem::exists(std::filesystem::u8path(target), ec);
+      // #1288: probe the listed file through its operand spelling; the
+      // raw u8path probe judges an existing long path missing and the
+      // entry is then silently skipped instead of verified.
+      missing = !native_path::valid_attributes(
+          native_path::operand_target_attributes_w(
+              native_path::make_api_path_operand(target)));
     }
     if (missing) continue;
 

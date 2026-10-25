@@ -251,7 +251,10 @@ auto regular_remaining_after_skip(const std::string& file, size_t skip)
   if (file == "-") return std::nullopt;
 
   std::error_code ec;
-  auto path = std::filesystem::path(utf8_to_wstring(file));
+  // #1288: probe the extended spelling; on the raw one this size probe
+  // fails past MAX_PATH and the -n early-exit silently degrades.
+  auto path = std::filesystem::path(
+      native_path::to_extended_path(utf8_to_wstring(file)));
   if (!std::filesystem::is_regular_file(path, ec) || ec) return std::nullopt;
 
   auto size = std::filesystem::file_size(path, ec);

@@ -1243,3 +1243,48 @@ TEST(du, du_files0_from_stdin_ctrlz_not_truncated_issue1212) {
   EXPECT_NE(r.exit_code, 0);
   EXPECT_TRUE(r.stderr_text.find("cannot access") != std::string::npos);
 }
+
+namespace {
+// #1288 fixture: an 8x40 directory chain (composed path past MAX_PATH),
+// created through the extended-length API. Empty result: skip the test.
+auto make_deep_tree_1288(const TempDir& tmp) -> std::wstring {
+  std::wstring cursor = tmp.wpath();
+  const std::wstring component(40, L'x');
+  for (int i = 0; i < 8; ++i) {
+    cursor += L"\\" + component;
+    const std::wstring extended =
+        cursor.rfind(L"\\\\?\\", 0) == 0 ? cursor : L"\\\\?\\" + cursor;
+    if (!CreateDirectoryW(extended.c_str(), nullptr)) {
+      const DWORD err = GetLastError();
+      if (err != ERROR_ALREADY_EXISTS) return {};
+    }
+  }
+  return cursor;
+}
+auto extended_1288(const std::wstring& p) -> std::wstring {
+  return p.rfind(L"\\\\?\\", 0) == 0 ? p : L"\\\\?\\" + p;
+}
+}  // namespace
+
+TEST(du, issue_1288_same_deep_directory_two_spellings_counted_once) {
+  TempDir tmp;
+  const std::wstring deep = make_deep_tree_1288(tmp);
+  if (deep.empty() || deep.size() <= MAX_PATH) {
+    std::cout << "  SKIPPED (deep fixture unavailable)\n";
+    return;
+  }
+  temp_dir_detail::write_all(
+      std::filesystem::path(extended_1288(deep)) / L"f.txt", "x", 1);
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"du.exe", {L"-s", deep, deep + L"\\."});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // GNU: an already-traversed argument prints nothing at all, so the
+  // -s summary for the directory appears exactly once.
+  const size_t first = r.stdout_text.find("xxxx");
+  ASSERT_NE(first, std::string::npos);
+  EXPECT_EQ(r.stdout_text.find("xxxx", first + 1), std::string::npos);
+}

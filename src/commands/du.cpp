@@ -382,9 +382,28 @@ auto ceil_div(uint64_t value, uint64_t divisor) -> uint64_t {
 // parent arguments (Savannah #10397).
 auto du_dir_key(const std::wstring& path) -> std::wstring {
   std::error_code ec;
-  std::filesystem::path canon =
-      std::filesystem::weakly_canonical(std::filesystem::path(path), ec);
+  // #1288: canonicalize the extended spelling so the key is computed,
+  // not degraded to the raw literal, for directories past MAX_PATH.
+  // Keys stay uniform within a run because every directory passes
+  // through this one function.
+  std::filesystem::path canon = std::filesystem::weakly_canonical(
+      std::filesystem::path(native_path::to_extended_path(path)), ec);
   std::wstring key = ec ? path : canon.wstring();
+  // Some STLs skip lexical normalization for verbatim (\\?\) paths and
+  // keep a trailing "/." segment or separator; strip both so spellings
+  // like `dir` and `dir/.` still key identically. A real final component
+  // that merely ends in a dot (e.g. `inner.`) is untouched: only a whole
+  // trailing "." segment is removed.
+  while (key.size() > 1 && (key.back() == L'\\' || key.back() == L'/')) {
+    key.pop_back();
+  }
+  while (key.size() > 2 && key[key.size() - 1] == L'.' &&
+         (key[key.size() - 2] == L'\\' || key[key.size() - 2] == L'/')) {
+    key.resize(key.size() - 2);
+    while (key.size() > 1 && (key.back() == L'\\' || key.back() == L'/')) {
+      key.pop_back();
+    }
+  }
   std::transform(key.begin(), key.end(), key.begin(), ::towupper);
   return key;
 }

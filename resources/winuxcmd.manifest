@@ -10,6 +10,13 @@
     <windowsSettings xmlns:ws2019="http://schemas.microsoft.com/SMI/2019/WindowsSettings">
       <ws2019:activeCodePage>UTF-8</ws2019:activeCodePage>
     </windowsSettings>
+    <!-- #1288 bundled mitigation: opt the process out of the legacy
+         MAX_PATH interpretation for the Win32 APIs that honour the
+         long-path policy, complementing the \\?\ extended spellings
+         the path layer already produces. -->
+    <windowsSettings xmlns:ws2016="http://schemas.microsoft.com/SMI/2016/WindowsSettings">
+      <ws2016:longPathAware>true</ws2016:longPathAware>
+    </windowsSettings>
   </application>
   <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
     <application>

@@ -2993,3 +2993,121 @@ TEST(find, issue_1283_recursion_past_max_path_prints_deepest_file) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_NE(r.stdout_text.find("marker.txt"), std::string::npos);
 }
+
+// #1288: the walk's per-entry probes (type/empty/printf) must still work
+// when the composed entry path is past MAX_PATH; before the fix they
+// probed the unextended spelling and silently misjudged the entry.
+TEST(find, issue_1288_predicates_work_past_max_path) {
+  TempDir tmp;
+  const std::wstring deep = make_deep_tree(tmp, 8, L'x', 40);
+  if (deep.empty() || deep.size() <= MAX_PATH) {
+    std::cout << "  SKIPPED (deep fixture unavailable)\n";
+    return;
+  }
+  const std::filesystem::path deep_io(extended_of(deep));
+  temp_dir_detail::write_all(deep_io / L"probe.txt", "x", 1);
+  temp_dir_detail::write_all(deep_io / L"empty.txt", "", 0);
+
+  Pipeline by_type;
+  by_type.set_cwd(tmp.wpath());
+  by_type.add(L"find.exe", {deep, L"-type", L"f"});
+  auto rt = by_type.run();
+  EXPECT_EQ(rt.exit_code, 0);
+  EXPECT_NE(rt.stdout_text.find("probe.txt"), std::string::npos);
+  EXPECT_NE(rt.stdout_text.find("empty.txt"), std::string::npos);
+
+  Pipeline by_empty;
+  by_empty.set_cwd(tmp.wpath());
+  by_empty.add(L"find.exe", {deep, L"-empty"});
+  auto re = by_empty.run();
+  EXPECT_EQ(re.exit_code, 0);
+  EXPECT_NE(re.stdout_text.find("empty.txt"), std::string::npos);
+  EXPECT_EQ(re.stdout_text.find("probe.txt"), std::string::npos);
+
+  Pipeline by_printf;
+  by_printf.set_cwd(tmp.wpath());
+  by_printf.add(L"find.exe", {deep, L"-name", L"probe.txt", L"-printf",
+                               L"%y\\n"});
+  auto rp = by_printf.run();
+  EXPECT_EQ(rp.exit_code, 0);
+  EXPECT_EQ_TEXT(rp.stdout_text, "f\n");
+}
+
+// #1288: -newer with the reference file itself past MAX_PATH. Before
+// the fix the reference was read through the raw operand spelling and
+// the comparison silently never matched.
+TEST(find, issue_1288_newer_reference_past_max_path) {
+  TempDir tmp;
+  const std::wstring deep = make_deep_tree(tmp, 8, L'x', 40);
+  if (deep.empty() || deep.size() <= MAX_PATH) {
+    std::cout << "  SKIPPED (deep fixture unavailable)\n";
+    return;
+  }
+  const std::filesystem::path deep_io(extended_of(deep));
+  temp_dir_detail::write_all(deep_io / L"ref.txt", "x", 1);
+  temp_dir_detail::write_all(deep_io / L"newer.txt", "x", 1);
+  ASSERT_TRUE(set_last_write_time(deep_io / L"ref.txt", 2020, 1, 1, 0, 0, 0));
+  ASSERT_TRUE(
+      set_last_write_time(deep_io / L"newer.txt", 2024, 1, 1, 0, 0, 0));
+
+  const std::wstring ref_display = deep + L"\\ref.txt";
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {deep, L"-newer", ref_display});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_NE(r.stdout_text.find("newer.txt"), std::string::npos);
+  EXPECT_EQ(r.stdout_text.find("ref.txt"), std::string::npos);
+}
+
+// #1288: -delete must remove entries whose composed path is past
+// MAX_PATH (it removed through the logical spelling before the fix).
+TEST(find, issue_1288_delete_past_max_path) {
+  TempDir tmp;
+  const std::wstring deep = make_deep_tree(tmp, 8, L'x', 40);
+  if (deep.empty() || deep.size() <= MAX_PATH) {
+    std::cout << "  SKIPPED (deep fixture unavailable)\n";
+    return;
+  }
+  const std::filesystem::path deep_io(extended_of(deep));
+  temp_dir_detail::write_all(deep_io / L"doomed.txt", "x", 1);
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {deep, L"-name", L"doomed.txt", L"-delete"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(GetFileAttributesW(
+                (extended_of(deep) + L"\\doomed.txt").c_str()),
+            INVALID_FILE_ATTRIBUTES);
+}
+
+// #1288: -fprint with a POSIX-spelled output path. Before the fix the
+// raw operand was handed to std::ofstream and "/C:/..." landed in a
+// relative "C" directory under the cwd instead of the named file.
+TEST(find, issue_1288_fprint_posix_spelled_output_path) {
+  TempDir tmp;
+  tmp.write("a.txt", "x\n");
+
+  std::wstring posix_out = tmp.wpath();
+  posix_out.erase(1, 1);  // drop the drive ':'
+  for (auto& ch : posix_out) {
+    if (ch == L'\\') ch = L'/';
+  }
+  posix_out = L"/" + posix_out + L"/out.txt";
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L".", L"-name", L"a.txt", L"-fprint", posix_out});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  const std::filesystem::path out_path = tmp.path / "out.txt";
+  ASSERT_TRUE(std::filesystem::exists(out_path));
+  std::ifstream in(out_path);
+  std::string content((std::istreambuf_iterator<char>(in)),
+                      std::istreambuf_iterator<char>());
+  EXPECT_NE(content.find("a.txt"), std::string::npos);
+}

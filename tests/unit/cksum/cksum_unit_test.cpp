@@ -471,3 +471,52 @@ TEST(cksum, cksum_raw_preserves_0x0a_digest_byte_issue1214) {
   EXPECT_TRUE(r.stdout_text.size() == 4);
   EXPECT_BYTES(r.stdout_text, std::string("\x47\x8b\x0a\x06", 4));
 }
+
+namespace {
+// #1288 fixture: an 8x40 directory chain (composed path past MAX_PATH),
+// created through the extended-length API. Empty result: skip the test.
+auto make_deep_tree_1288(const TempDir& tmp) -> std::wstring {
+  std::wstring cursor = tmp.wpath();
+  const std::wstring component(40, L'x');
+  for (int i = 0; i < 8; ++i) {
+    cursor += L"\\" + component;
+    const std::wstring extended =
+        cursor.rfind(L"\\\\?\\", 0) == 0 ? cursor : L"\\\\?\\" + cursor;
+    if (!CreateDirectoryW(extended.c_str(), nullptr)) {
+      const DWORD err = GetLastError();
+      if (err != ERROR_ALREADY_EXISTS) return {};
+    }
+  }
+  return cursor;
+}
+auto extended_1288(const std::wstring& p) -> std::wstring {
+  return p.rfind(L"\\\\?\\", 0) == 0 ? p : L"\\\\?\\" + p;
+}
+}  // namespace
+
+TEST(cksum, issue_1288_ignore_missing_verifies_target_past_max_path) {
+  TempDir tmp;
+  const std::wstring deep = make_deep_tree_1288(tmp);
+  if (deep.empty() || deep.size() <= MAX_PATH) {
+    std::cout << "  SKIPPED (deep fixture unavailable)\n";
+    return;
+  }
+  temp_dir_detail::write_all(
+      std::filesystem::path(extended_1288(deep)) / L"target.txt", "", 0);
+  const std::wstring target = deep + L"\\target.txt";
+
+  Pipeline gen;
+  gen.set_cwd(tmp.wpath());
+  gen.add(L"cksum.exe", {target});
+  auto rg = gen.run();
+  ASSERT_EQ(rg.exit_code, 0);
+  tmp.write("list.cksum", rg.stdout_text);
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cksum.exe", {L"-c", L"--ignore-missing", L"list.cksum"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_NE(r.stdout_text.find(": OK"), std::string::npos);
+}
