@@ -2305,6 +2305,50 @@ TEST(find, find_long_root_beyond_max_path_is_not_reported_missing) {
   EXPECT_TRUE(r2.stdout_text.find("d9.txt") != std::string::npos);
 }
 
+// #1283: a directory whose literal name ends in '.' exists on NTFS and is
+// reachable under \\?\ — the operand must absolutize without the
+// GetFullPathNameW trailing-dot strip so the start point resolves.
+TEST(find, find_trailing_dot_root_resolves_literal_name) {
+  TempDir tmp;
+
+  const std::wstring dot_dir = tmp.wpath() + L"\\inner.";
+  const std::wstring extended = L"\\\\?\\" + dot_dir;
+  if (!CreateDirectoryW(extended.c_str(), nullptr)) {
+    const DWORD err = GetLastError();
+    if (err != ERROR_ALREADY_EXISTS) {
+      std::cout << "  SKIPPED (CreateDirectoryW failed with error " << err
+                << ")\n";
+      return;
+    }
+  }
+  // write_all routes through GetFullPathNameW, which strips the trailing
+  // dot — create the file at the literal extended path instead.
+  HANDLE file =
+      CreateFileW((extended + L"\\f.txt").c_str(), GENERIC_WRITE, 0, nullptr,
+                  CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) {
+    std::cout << "  SKIPPED (CreateFileW failed with error " << GetLastError()
+              << ")\n";
+    return;
+  }
+  CloseHandle(file);
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L"inner./"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.find("No such file") == std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("inner./f.txt") != std::string::npos);
+
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.add(L"find.exe", {L"inner."});
+  auto r2 = p2.run();
+  EXPECT_EQ(r2.exit_code, 0);
+  EXPECT_TRUE(r2.stdout_text.find("inner./f.txt") != std::string::npos);
+}
+
 // D9: still report a true missing start point as ENOENT, not a different
 // message, after switching the probe off std::filesystem::exists.
 TEST(find, find_missing_root_still_reports_enoent_after_native_probe) {

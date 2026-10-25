@@ -97,6 +97,7 @@ export auto attributes_w(std::wstring_view path) -> DWORD;
 export auto attributes_are_directory(DWORD attrs) -> bool;
 export auto attributes_are_regular_file(DWORD attrs) -> bool;
 export auto valid_attributes(DWORD attrs) -> bool;
+export auto current_directory_w() -> std::wstring;
 
 // ---------------------------------------------------------------------------
 // Shell namespace (niubash#346, the "coreutils own the shell tree" boundary).
@@ -544,6 +545,122 @@ export auto normalize_api_operand(std::string_view path) -> std::string {
   return to_utf8(normalize_api_operand_w(wide));
 }
 
+// A component ending in '.' or ' ' that is not "." or ".." is a literal
+// on-disk name (NTFS keeps such names under the \\?\ namespace), but
+// GetFullPathNameW strips the suffix and absolutizes onto a different
+// object — "D:\x\inner." comes back as "D:\x\inner" (#1283).
+auto has_literal_dot_space_component(std::wstring_view native) -> bool {
+  size_t start = 0;
+  for (;;) {
+    const size_t end = native.find(L'\\', start);
+    const std::wstring_view component = native.substr(
+        start, end == std::wstring_view::npos ? std::wstring_view::npos
+                                            : end - start);
+    if (!component.empty() && component != L"." && component != L".." &&
+        (component.back() == L'.' || component.back() == L' ')) {
+      return true;
+    }
+    if (end == std::wstring_view::npos) return false;
+    start = end + 1;
+  }
+}
+
+// Split an absolute path into its root ("D:\" or "\\server\share\") and the
+// components below it.
+auto split_absolute_components_w(std::wstring_view abs,
+                                 std::vector<std::wstring_view>& components)
+    -> std::wstring {
+  std::wstring root;
+  std::wstring_view rest;
+  if (auto root_len = unc_root_length(abs); root_len) {
+    root.assign(abs.substr(0, *root_len));
+    rest = *root_len < abs.size() ? abs.substr(*root_len + 1)
+                                  : std::wstring_view{};
+  } else {
+    root.assign(abs.substr(0, 2));
+    rest = abs.size() > 3 ? abs.substr(3) : std::wstring_view{};
+  }
+  root.push_back(L'\\');
+  size_t start = 0;
+  for (;;) {
+    const size_t end = rest.find(L'\\', start);
+    const std::wstring_view component = rest.substr(
+        start, end == std::wstring_view::npos ? std::wstring_view::npos
+                                            : end - start);
+    if (!component.empty()) components.push_back(component);
+    if (end == std::wstring_view::npos) break;
+    start = end + 1;
+  }
+  return root;
+}
+
+// Absolutize lexically so components ending in '.' or ' ' survive: every
+// component except "." and ".." is literal, matching what MSYS resolves and
+// what the \\?\ namespace stores. GetFullPathNameW cannot be used for these
+// spellings because it rewrites the leaf name (#1283).
+auto to_extended_path_preserving(std::wstring_view native) -> std::wstring {
+  std::wstring base;
+  std::wstring_view tail;
+  if (native.size() >= 2 && is_separator(native[0]) &&
+      is_separator(native[1])) {
+    // UNC absolute: absolutization is identity for the root part.
+    base.assign(native);
+  } else if (is_separator(native[0])) {
+    // Rooted on the current drive: keep only its root as the base.
+    std::vector<std::wstring_view> ignored;
+    base = split_absolute_components_w(current_directory_w(), ignored);
+    tail = native.substr(1);
+  } else if (native.size() > 2 && native[1] == L':' &&
+             is_separator(native[2])) {
+    base.assign(native.substr(0, 3));
+    tail = native.substr(3);
+  } else if (native.size() >= 2 && native[1] == L':') {
+    // Drive-relative "D:rel": resolve against the drive's own cwd.
+    std::wstring probe;
+    probe.push_back(native[0]);
+    probe.append(L":.");
+    wchar_t abs_buf[32768];
+    const DWORD len =
+        GetFullPathNameW(probe.c_str(), 32768, abs_buf, nullptr);
+    base.assign(len != 0 && len < 32768 ? std::wstring(abs_buf, len)
+                                        : std::move(probe));
+    tail = native.substr(2);
+  } else {
+    base = current_directory_w();
+    tail = native;
+  }
+
+  std::vector<std::wstring_view> components;
+  const std::wstring root = split_absolute_components_w(base, components);
+
+  size_t start = 0;
+  for (;;) {
+    const size_t end = tail.find(L'\\', start);
+    const std::wstring_view component = tail.substr(
+        start, end == std::wstring_view::npos ? std::wstring_view::npos
+                                            : end - start);
+    if (component == L"..") {
+      if (!components.empty()) components.pop_back();
+    } else if (!component.empty() && component != L".") {
+      components.push_back(component);
+    }
+    if (end == std::wstring_view::npos) break;
+    start = end + 1;
+  }
+
+  std::wstring absolute = std::move(root);
+  for (size_t i = 0; i < components.size(); ++i) {
+    if (i != 0) absolute.push_back(L'\\');
+    absolute.append(components[i]);
+  }
+
+  if (absolute.size() == 3 && absolute[1] == L':') return absolute;
+  if (absolute.size() >= 2 && absolute.compare(0, 2, L"\\\\") == 0) {
+    return L"\\\\?\\UNC\\" + absolute.substr(2);
+  }
+  return L"\\\\?\\" + absolute;
+}
+
 export auto to_extended_path(std::wstring_view path) -> std::wstring {
   if (path.size() >= 4 && path.compare(0, 4, L"\\\\?\\") == 0) {
     return std::wstring(path);
@@ -553,6 +670,13 @@ export auto to_extended_path(std::wstring_view path) -> std::wstring {
   // garbage UNC form "\\x" instead of "<drive>:\x"), so fold every separator
   // first; Win32 treats '/' and '\' interchangeably elsewhere (#1145).
   std::wstring native(normalize_separators(std::wstring(path)));
+  if (has_literal_dot_space_component(native) &&
+      !(native.size() >= 4 &&
+        (native.compare(0, 4, L"\\\\?\\") == 0 ||
+         native.compare(0, 4, L"\\\\.\\") == 0))) {
+    return to_extended_path_preserving(native);
+  }
+
   wchar_t abs_buf[32768];
   DWORD len = GetFullPathNameW(native.c_str(), 32768, abs_buf, nullptr);
   if (len == 0 || len >= 32768) return native;
