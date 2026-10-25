@@ -824,7 +824,7 @@ auto check_one_file(const std::string& checkfile_name, const Config& cfg,
       safeErrorPrintLn("cksum: " + portable_digest::detail::sum_quotef(target) +
                        ": " + portable_digest::open_error_reason(target));
       if (!cfg.status) {
-        safePrintLn(portable_digest::detail::sum_quotef(target) +
+        safePrintLn(portable_digest::detail::sum_result_name(target) +
                     ": FAILED open or read");
       }
       continue;
@@ -839,7 +839,7 @@ auto check_one_file(const std::string& checkfile_name, const Config& cfg,
 
     if (!cfg.status) {
       if (!match || !cfg.quiet) {
-        safePrintLn(portable_digest::detail::sum_quotef(target) +
+        safePrintLn(portable_digest::detail::sum_result_name(target) +
                     (match ? ": OK" : ": FAILED"));
       }
     }

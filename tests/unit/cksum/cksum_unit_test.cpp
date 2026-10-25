@@ -518,5 +518,5 @@ TEST(cksum, issue_1288_ignore_missing_verifies_target_past_max_path) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_NE(r.stdout_text.find(": OK"), std::string::npos);
+  EXPECT_NE(r.stdout_text.find("target.txt: OK"), std::string::npos);
 }
