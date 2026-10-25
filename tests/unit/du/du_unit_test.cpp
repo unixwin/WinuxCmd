@@ -1283,8 +1283,21 @@ TEST(du, issue_1288_same_deep_directory_two_spellings_counted_once) {
 
   EXPECT_EQ(r.exit_code, 0);
   // GNU: an already-traversed argument prints nothing at all, so the
-  // -s summary for the directory appears exactly once.
-  const size_t first = r.stdout_text.find("xxxx");
-  ASSERT_NE(first, std::string::npos);
-  EXPECT_EQ(r.stdout_text.find("xxxx", first + 1), std::string::npos);
+  // -s summary for the directory appears exactly once. Count whole
+  // output lines rather than "xxxx" occurrences: the fixture path is
+  // eight 40-'x' components, so a substring search matches inside a
+  // single correct line (Windows CI run 40200117965 failed this test
+  // with the second hit at first+1 -- the overlap inside one 'x' run,
+  // which says nothing about whether the directory was counted once).
+  EXPECT_NE(r.stdout_text.find("xxxx"), std::string::npos);
+  size_t lines = 0;
+  size_t pos = 0;
+  while (pos < r.stdout_text.size()) {
+    const size_t nl = r.stdout_text.find('\n', pos);
+    const size_t end = nl == std::string::npos ? r.stdout_text.size() : nl;
+    if (end > pos) ++lines;
+    if (nl == std::string::npos) break;
+    pos = nl + 1;
+  }
+  EXPECT_EQ(lines, 1u);
 }
