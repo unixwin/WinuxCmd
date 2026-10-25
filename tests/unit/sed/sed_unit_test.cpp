@@ -1791,3 +1791,62 @@ TEST(sed, sed_stdin_ctrlz_matches_file_operand_issue1212) {
   EXPECT_FALSE(rf.stdout_text.empty());
   EXPECT_EQ(rs.stdout_text, rf.stdout_text);
 }
+
+TEST(sed, issue_1284_empty_match_after_nonempty_match_is_not_substituted) {
+  // GNU: an empty match immediately after a non-empty match is not a
+  // match at all. `2 g x` with s/[0-9]*/N/g: the matches are "2", the
+  // empty match before "g" and the empty match before "x" — NOT the
+  // empty match between "2" and " " (that one abuts the "2" match).
+  TempDir tmp;
+  tmp.write("a.txt", "2 g x\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sed.exe", {L"s/[0-9]*/N/g", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "N NgN NxN\n");
+}
+
+TEST(sed, issue_1284_empty_match_suppressed_at_both_ends) {
+  TempDir tmp;
+  tmp.write("a.txt", "aab\nbaa\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sed.exe", {L"s/a*/x/g", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "xbx\nxbx\n");
+}
+
+TEST(sed, issue_1284_suppressed_empty_match_is_not_counted) {
+  // The suppressed empty match must not consume an occurrence number:
+  // on "aab", s/a*/x/2 replaces the genuine empty match at end of line,
+  // while on "aa" there is no second match at all.
+  TempDir tmp;
+  tmp.write("a.txt", "aab\naa\nab\naaa\n");
+
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.add(L"sed.exe", {L"s/a*/x/2", L"a.txt"});
+  auto r2 = p2.run();
+  EXPECT_EQ(r2.exit_code, 0);
+  EXPECT_EQ_TEXT(r2.stdout_text, "aabx\naa\nabx\naaa\n");
+
+  Pipeline p2g;
+  p2g.set_cwd(tmp.wpath());
+  p2g.add(L"sed.exe", {L"s/a*/x/2g", L"a.txt"});
+  auto r2g = p2g.run();
+  EXPECT_EQ(r2g.exit_code, 0);
+  EXPECT_EQ_TEXT(r2g.stdout_text, "aabx\naa\nabx\naaa\n");
+
+  Pipeline pb;
+  pb.set_cwd(tmp.wpath());
+  pb.add(L"sed.exe", {L"s/b*/X/g", L"a.txt"});
+  auto rb = pb.run();
+  EXPECT_EQ(rb.exit_code, 0);
+  EXPECT_EQ_TEXT(rb.stdout_text, "XaXaX\nXaXaX\nXaX\nXaXaXaX\n");
+}

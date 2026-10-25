@@ -1698,6 +1698,12 @@ auto substitute_line(const std::string& input, const Script& script,
   size_t search_start = 0;
   size_t last_append = 0;
   size_t match_index = 0;
+  // [GNU] An empty match that starts exactly where the immediately
+  // preceding non-empty match ended is not a match at all: GNU sed
+  // neither substitutes it nor counts it for the s///N occurrence
+  // numbering (issue #1284). Track that end position here; any genuine
+  // match clears it.
+  size_t previous_nonempty_end = std::string::npos;
 
   // [GNU] REG_NEWLINE matching for s///m and s///M: with the m/M modifier
   // ^ and $ also match immediately after/before an embedded newline, so
@@ -1729,9 +1735,19 @@ auto substitute_line(const std::string& input, const Script& script,
   };
 
   while (auto match = find_match(search_start)) {
-    ++match_index;
     size_t match_start = match->begin;
     size_t match_end = match->end;
+    if (match_start == match_end && match_start == previous_nonempty_end) {
+      // Suppressed empty match (see above): skip one character so the
+      // adjacency is cleared, without counting or replacing it.
+      previous_nonempty_end = std::string::npos;
+      if (match_end >= input.size()) break;
+      search_start = match_end + 1;
+      continue;
+    }
+    ++match_index;
+    previous_nonempty_end =
+        match_end > match_start ? match_end : std::string::npos;
     const bool replace_this =
         script.occurrence == 0
             ? script.global || match_index == 1
