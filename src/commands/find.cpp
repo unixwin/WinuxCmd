@@ -4111,26 +4111,42 @@ auto scan_one_root(const std::filesystem::path& root, Config& cfg,
     return;
   }
 
-  for (; it != end; ++it) {
-    std::error_code iec;
+  // #1283: advance with the error_code overload, exactly like
+  // scan_depth_first / scan_delete_depth_first do. The throwing ++it used
+  // to abort the whole process (0xC0000409) when a step failed — stepping
+  // into a directory whose name ends in a dot, or walking past MAX_PATH —
+  // where GNU find reports the entry and finishes with a nonzero status.
+  std::error_code iec;
+  for (; it != end;) {
     const auto& de = *it;
     auto p = logical_from_io(root, io_root, de.path());
     int d = static_cast<int>(it.depth()) + 1;
 
     if (d > cfg.maxdepth) {
       it.disable_recursion_pending();
-      continue;
+    } else {
+      bool matched = entry_matches(cfg, p, de, d, root);
+      if (cfg.quit && !matched) return;
+      if (matched) {
+        apply_actions(p, de, cfg);
+        matched_any = true;
+        if (cfg.quit) return;
+      }
+      if (cfg.prune_current || !should_descend_into(de, cfg)) {
+        it.disable_recursion_pending();
+      }
     }
 
-    bool matched = entry_matches(cfg, p, de, d, root);
-    if (cfg.quit && !matched) return;
-    if (matched) {
-      apply_actions(p, de, cfg);
-      matched_any = true;
-      if (cfg.quit) return;
-    }
-    if (cfg.prune_current || !should_descend_into(de, cfg)) {
-      it.disable_recursion_pending();
+    iec.clear();
+    it.increment(iec);
+    if (iec) {
+      safeErrorPrint("find: '");
+      safeErrorPrint(path_display(p));
+      safeErrorPrint("': ");
+      safeErrorPrint(root_probe_error_text(iec.value()));
+      safeErrorPrint("\n");
+      cfg.had_error = true;
+      break;
     }
   }
 }

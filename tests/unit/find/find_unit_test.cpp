@@ -2916,3 +2916,80 @@ TEST(find, find_accepts_posix_drive_form_start_points) {
   EXPECT_EQ(r2.exit_code, 0);
   EXPECT_NE(r2.stdout_text.find("nested.txt"), std::string::npos);
 }
+
+namespace {
+
+// #1283/#1288 shared fixture: a directory chain of `levels` components
+// of `width` characters under the temp root, created through the
+// extended-length API (plain Win32 refuses past MAX_PATH). Returns the
+// unextended display spelling, or an empty string when the fixture
+// cannot be built in this environment (callers skip, like the D9 test).
+auto make_deep_tree(const TempDir& tmp, int levels, wchar_t fill, int width)
+    -> std::wstring {
+  std::wstring cursor = tmp.wpath();
+  const std::wstring component(static_cast<size_t>(width), fill);
+  for (int i = 0; i < levels; ++i) {
+    cursor += L"\\" + component;
+    const std::wstring extended =
+        cursor.rfind(L"\\\\?\\", 0) == 0 ? cursor : L"\\\\?\\" + cursor;
+    if (!CreateDirectoryW(extended.c_str(), nullptr)) {
+      const DWORD err = GetLastError();
+      if (err != ERROR_ALREADY_EXISTS) return {};
+    }
+  }
+  return cursor;
+}
+
+auto extended_of(const std::wstring& path) -> std::wstring {
+  return path.rfind(L"\\\\?\\", 0) == 0 ? path : L"\\\\?\\" + path;
+}
+
+}  // namespace
+
+// #1283 repro A: listing a directory whose child is named "inner."
+// aborted with 0xC0000409. The walk must evaluate the trailing-dot
+// entry, not crash on it.
+TEST(find, issue_1283_trailing_dot_directory_is_walked_not_fatal) {
+  TempDir tmp;
+  const std::wstring inner = tmp.wpath() + L"\\inner.";
+  if (!CreateDirectoryW(extended_of(inner).c_str(), nullptr)) {
+    const DWORD err = GetLastError();
+    if (err != ERROR_ALREADY_EXISTS) {
+      std::cout << "  SKIPPED (CreateDirectoryW failed with error " << err
+                << ")\n";
+      return;
+    }
+  }
+  temp_dir_detail::write_all(
+      std::filesystem::path(extended_of(inner)) / L"f.txt", "x", 1);
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {tmp.wpath()});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_NE(r.stdout_text.find("inner."), std::string::npos);
+  EXPECT_NE(r.stdout_text.find("f.txt"), std::string::npos);
+}
+
+// #1283 repro B: recursion into a tree whose composed paths pass
+// MAX_PATH aborted with 0xC0000409; ls -R completed the same tree.
+TEST(find, issue_1283_recursion_past_max_path_prints_deepest_file) {
+  TempDir tmp;
+  const std::wstring deep = make_deep_tree(tmp, 23, L'd', 23);
+  if (deep.empty() || deep.size() <= MAX_PATH) {
+    std::cout << "  SKIPPED (deep fixture unavailable)\n";
+    return;
+  }
+  temp_dir_detail::write_all(
+      std::filesystem::path(extended_of(deep)) / L"marker.txt", "x", 1);
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {tmp.wpath(), L"-name", L"marker.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_NE(r.stdout_text.find("marker.txt"), std::string::npos);
+}
