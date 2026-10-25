@@ -538,3 +538,20 @@ TEST(stat, stat_cygdrive_and_mnt_prefix_operands_resolve) {
   EXPECT_TRUE(rm.stdout_text.find("f.txt") != std::string::npos);
   EXPECT_EQ_TEXT(rm.stderr_text, "");
 }
+
+TEST(stat, issue_1283_drive_colon_operand_stats_carrier_file) {
+  TempDir tmp;
+  const wchar_t drive = tmp.wpath()[0];
+  const std::wstring carrier =
+      std::wstring(1, drive) + L'\uF03A' + L"wux.txt";
+  temp_dir_detail::write_all(tmp.path / carrier, "hello\n", 6);
+  const std::wstring operand = std::wstring(1, drive) + L":wux.txt";
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"stat.exe", {operand});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_NE(r.stdout_text.find("wux.txt"), std::string::npos);
+}

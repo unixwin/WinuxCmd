@@ -1790,3 +1790,20 @@ TEST(grep, grep_invalid_context_length_exits_2_issue1213) {
   EXPECT_EXIT_CODE(r, 2);
   EXPECT_TRUE(r.stderr_text.find("invalid") != std::string::npos);
 }
+
+TEST(grep, issue_1283_drive_colon_operand_searches_carrier_file) {
+  TempDir tmp;
+  const wchar_t drive = tmp.wpath()[0];
+  const std::wstring carrier =
+      std::wstring(1, drive) + L'\uF03A' + L"wux.txt";
+  temp_dir_detail::write_all(tmp.path / carrier, "hello\n", 6);
+  const std::wstring operand = std::wstring(1, drive) + L":wux.txt";
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"grep.exe", {L"hello", operand});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_NE(r.stdout_text.find("hello"), std::string::npos);
+}

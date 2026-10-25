@@ -41,3 +41,4 @@
 40	#140-40	ptx output must match GNU
 41	#140-41	stdbuf modes must work
 42	#140-42	locale keyword output must work
+55	#1284	sed empty match after a non-empty match must not be substituted or counted

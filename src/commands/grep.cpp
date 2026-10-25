@@ -2377,14 +2377,21 @@ auto append_search_path(Config& cfg, std::string_view input,
         {utf8_to_wstring(resolved), utf8_to_wstring(f)}};
     std::set<std::wstring> visited_dirs;  // canonical real paths
     auto is_reparse_dir = [](const std::filesystem::path& p) {
-      DWORD attrs = GetFileAttributesW(p.c_str());
+      // #1288: probe the self-extending spelling (native_path), not the
+      // raw walked path.
+      DWORD attrs = native_path::attributes_w(p.wstring());
       return attrs != INVALID_FILE_ATTRIBUTES &&
              (attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
     };
     auto canonical_key = [](const std::filesystem::path& p) -> std::wstring {
       std::error_code canon_ec;
-      auto real = std::filesystem::canonical(p, canon_ec);
-      if (canon_ec) real = std::filesystem::weakly_canonical(p, canon_ec);
+      // #1288: canonicalize the extended spelling; on the raw one,
+      // canonical() fails past MAX_PATH and the dedup key degrades to
+      // the literal spelling, so junction cycles escape detection.
+      const std::filesystem::path io(
+          native_path::to_extended_path(p.wstring()));
+      auto real = std::filesystem::canonical(io, canon_ec);
+      if (canon_ec) real = std::filesystem::weakly_canonical(io, canon_ec);
       std::wstring key = real.wstring();
       for (auto& ch : key) {
         ch = static_cast<wchar_t>(
