@@ -342,6 +342,13 @@ auto build_config(const CommandContext<MKTEMP_OPTIONS.size()>& ctx)
   // relative to a directory: $TMPDIR, if set; else /tmp.
   cfg.use_tmpdir_flag = ctx.get<bool>("-t", false);
 
+  // [GNU] More than one template operand is an error, and it is
+  // reported before any suffix/template validation (mktemp.c) (#1358).
+  if (ctx.positionals.size() > 1) {
+    return std::unexpected(
+        "too many templates\nTry 'mktemp --help' for more information.");
+  }
+
   cfg.suffix = ctx.get<std::string>("--suffix", "");
   if (cfg.suffix.find('/') != std::string::npos ||
       cfg.suffix.find('\\') != std::string::npos) {
@@ -379,17 +386,34 @@ auto build_config(const CommandContext<MKTEMP_OPTIONS.size()>& ctx)
     }
   }
 
-  // [GNU] reject templates without a run of >= 3 consecutive X's:
-  // "too few X's in template '...'" (uutils #10187).
-  {
-    std::string full = cfg.template_str + cfg.suffix;
-    std::string component =
-        path_utf8(utf8_path(normalize_win_shell_path(full)).filename());
+  // [GNU] The X-run rules (mktemp.c) (#1358): without --suffix, the
+  // template's final component must contain a run of at least 3 X's.
+  // With --suffix, the template itself must END in a run of at least 3
+  // X's — the suffix's characters never count toward the run, and a
+  // template not ending in X is rejected with its own diagnostic.
+  if (!cfg.suffix.empty()) {
+    if (cfg.template_str.empty() || cfg.template_str.back() != 'X') {
+      return std::unexpected("with --suffix, template '" +
+                             cfg.template_str + "' must end in X");
+    }
+    size_t run = 0;
+    for (size_t i = cfg.template_str.size();
+         i > 0 && cfg.template_str[i - 1] == 'X'; --i) {
+      ++run;
+    }
+    if (run < 3) {
+      return std::unexpected("too few X's in template '" +
+                             cfg.template_str + cfg.suffix + "'");
+    }
+  } else {
+    std::string component = path_utf8(
+        utf8_path(normalize_win_shell_path(cfg.template_str)).filename());
     if (component.empty()) {
-      component = full;
+      component = cfg.template_str;
     }
     if (!has_x_run_of_three(component)) {
-      return std::unexpected("too few X's in template '" + full + "'");
+      return std::unexpected("too few X's in template '" +
+                             cfg.template_str + "'");
     }
   }
 

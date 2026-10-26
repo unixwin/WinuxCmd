@@ -348,3 +348,50 @@ TEST(mktemp, mktemp_slash_drive_template_outputs_native_path) {
   EXPECT_TRUE(created.find("/file-") != std::string::npos);
   EXPECT_TRUE(std::filesystem::exists(std::filesystem::u8path(created)));
 }
+
+// [#1358] More than one template operand is an error, and nothing is
+// created.
+TEST(mktemp, issue1358_mktemp_too_many_templates) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"mktemp.exe", {L"one.XXXXXX", L"two.XXXXXX"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("too many templates") !=
+              std::string::npos);
+  EXPECT_TRUE(std::filesystem::is_empty(tmp.path));
+}
+
+// [#1358] The suffix's X's never count toward the template's X-run:
+// --suffix=XXX cannot rescue a template ending in only two X's.
+TEST(mktemp, issue1358_mktemp_suffix_x_not_counted) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"mktemp.exe", {L"--suffix=XXX", L"foo.XX"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("too few X's in template 'foo.XXXXX'") !=
+              std::string::npos);
+  EXPECT_TRUE(std::filesystem::is_empty(tmp.path));
+}
+
+// [#1358] With --suffix, the template must end in X.
+TEST(mktemp, issue1358_mktemp_suffix_must_end_in_x) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"mktemp.exe", {L"--suffix=.log", L"foo.XXXbar"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("with --suffix, template 'foo.XXXbar' "
+                                 "must end in X") != std::string::npos);
+  EXPECT_TRUE(std::filesystem::is_empty(tmp.path));
+}
