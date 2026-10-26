@@ -102,6 +102,11 @@ export struct OptionParsePolicy {
   // Stop option parsing after this many positional operands. A value of zero
   // keeps the traditional parser behavior.
   size_t stop_options_after_positionals = 0;
+  // #1304: POSIXLY_CORRECT stops getopt-style permutation at the first
+  // operand. Set by option_policy_for_command (presence of the variable
+  // counts, per glibc); commands whose grammar is not getopt-style opt
+  // out there, and the dispatcher pre-passes share this flag.
+  bool posixly_correct = false;
   // [GNU] fmt accepts the obsolete "-WIDTH" width form only in argv[1]; a
   // digit option anywhere else is diagnosed by fmt.c itself as
   //   invalid option -- N; -WIDTH is recognized only when it is the first
@@ -116,6 +121,25 @@ export ParseResultRuntime parse_command_runtime(
   using cmd::meta::OptionType;
 
   bool end_of_options = false;
+
+  // #1304: with POSIXLY_CORRECT, getopt stops at the first operand even
+  // for commands that otherwise keep scanning (their configured stop
+  // narrows to 1); without it the configured stop applies unchanged.
+  const size_t effective_stop_after_positionals =
+      policy.posixly_correct
+          ? (policy.stop_options_after_positionals == 0
+                 ? 1
+                 : std::min(policy.stop_options_after_positionals,
+                            size_t{1}))
+          : policy.stop_options_after_positionals;
+
+  auto push_positional = [&](std::string_view value) -> void {
+    result.positionals.push_back(value);
+    if (effective_stop_after_positionals != 0 &&
+        result.positionals.size() >= effective_stop_after_positionals) {
+      end_of_options = true;
+    }
+  };
 
   auto take_terminated_string = [&](size_t& i) -> std::string {
     std::string value;
@@ -465,7 +489,7 @@ export ParseResultRuntime parse_command_runtime(
             }
           }
           if (!glued_to_value_option) {
-            result.positionals.push_back(arg);
+            push_positional(arg);
             continue;
           }
         }
@@ -619,11 +643,7 @@ export ParseResultRuntime parse_command_runtime(
     }
 
     // ---------- positional ----------
-    result.positionals.push_back(arg);
-    if (policy.stop_options_after_positionals != 0 &&
-        result.positionals.size() >= policy.stop_options_after_positionals) {
-      end_of_options = true;
-    }
+    push_positional(arg);
   }
 
   return result;

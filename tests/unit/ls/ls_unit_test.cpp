@@ -3513,3 +3513,36 @@ TEST(ls, ls_mnt_forms_keep_shell_root_semantics) {
   EXPECT_EQ_TEXT(mount_result.stdout_text, "marker.txt\n");
   EXPECT_EQ_TEXT(mount_result.stderr_text, "");
 }
+
+// #1304: with POSIXLY_CORRECT, option scanning stops at the first
+// operand, so `--color=never` after "." is an operand, not an option.
+TEST(ls, ls_posixly_correct_stops_at_first_operand) {
+  TempDir tmp;
+  tmp.write("marker.txt", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_env(L"POSIXLY_CORRECT", L"1");
+  p.add(L"ls.exe", {L".", L"--color=never"});
+  auto r = p.run();
+
+  EXPECT_NE(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.find("cannot access '--color=never'") !=
+              std::string::npos);
+}
+
+// #1304: options before the first operand still parse under
+// POSIXLY_CORRECT.
+TEST(ls, ls_posixly_correct_still_parses_leading_options) {
+  TempDir tmp;
+  tmp.write("marker.txt", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_env(L"POSIXLY_CORRECT", L"1");
+  p.add(L"ls.exe", {L"--color=never", L"."});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.find("cannot access") == std::string::npos);
+}

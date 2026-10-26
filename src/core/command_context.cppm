@@ -53,6 +53,19 @@ export auto option_policy_for_command(std::string_view command)
   if (command == "expr") {
     policy.allow_long_options = false;
   }
+  // #1304: POSIXLY_CORRECT stops getopt permutation at the first
+  // operand. glibc counts mere presence of the variable (unlike the
+  // dispatcher's is_posixly_correct(), which also requires a non-empty
+  // value). Commands whose argument grammar is not getopt-style keep
+  // permuting: find parses an expression off the raw args, test/[ and
+  // expr parse expressions, true/false never call getopt, and dd takes
+  // KEY=VALUE operands plus a usage scan that ignores operand order.
+  // (env needs no flag: its stop=1 above is the same boundary already.)
+  if (command != "find" && command != "test" && command != "[" &&
+      command != "expr" && command != "true" && command != "false" &&
+      command != "dd") {
+    policy.posixly_correct = std::getenv("POSIXLY_CORRECT") != nullptr;
+  }
   // [GNU] fmt's obsolete "-WIDTH" width is argv[1]-only; digit options in
   // other positions get fmt.c's own diagnostic.
   policy.obsolete_numeric_width_hint = command == "fmt";
