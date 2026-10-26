@@ -2217,13 +2217,40 @@ auto is_empty_entry(const std::filesystem::directory_entry& e) -> bool {
   return false;
 }
 
-auto size_matches(const std::filesystem::directory_entry& e,
-                  const SizePredicate& pred) -> bool {
+// [#1310] GNU applies -size to every file type: the lstat size for
+// symlinks (target-path length on this platform), the stat size for
+// regular files and directories, and 0 for fifos/sockets. Under -L a
+// symlink resolves to its target's size, except a dangling link, which
+// falls back to the link itself (probed against GNU findutils 4.9.0).
+auto find_size_bytes(const std::filesystem::directory_entry& e,
+                     bool follow_symlinks) -> unsigned long long {
   std::error_code ec;
-  if (!e.is_regular_file(ec) || ec) return false;
+  if (e.is_symlink(ec) || is_directory_reparse_point(e)) {
+    if (follow_symlinks) {
+      ec.clear();
+      auto target_size = e.file_size(ec);
+      if (!ec) return static_cast<unsigned long long>(target_size);
+    }
+    ec.clear();
+    auto target = std::filesystem::read_symlink(e.path(), ec);
+    if (ec) return 0;
+    return static_cast<unsigned long long>(path_to_utf8(target).size());
+  }
 
-  auto bytes = e.file_size(ec);
-  if (ec) return false;
+  ec.clear();
+  if (e.is_regular_file(ec) || e.is_directory(ec)) {
+    auto size = e.file_size(ec);
+    if (ec) return 0;
+    return static_cast<unsigned long long>(size);
+  }
+
+  // Fifos, sockets and other special files have no size: 0 units.
+  return 0;
+}
+
+auto size_matches(const std::filesystem::directory_entry& e,
+                  const SizePredicate& pred, bool follow_symlinks) -> bool {
+  const auto bytes = find_size_bytes(e, follow_symlinks);
 
   unsigned long long units = 0;
   if (bytes != 0) {
@@ -2469,7 +2496,7 @@ auto evaluate_expression(const ExprNode& expr, const std::filesystem::path& p,
       return is_empty_entry(e);
 
     case ExprKind::Size:
-      return expr.size && size_matches(e, *expr.size);
+      return expr.size && size_matches(e, *expr.size, cfg.follow_symlinks);
 
     case ExprKind::ATime: {
       if (!expr.numeric) return false;
@@ -2690,7 +2717,10 @@ auto entry_matches(Config& cfg, const std::filesystem::path& p,
 
   if (cfg.empty_filter && !is_empty_entry(e)) return false;
 
-  if (cfg.size_filter && !size_matches(e, *cfg.size_filter)) return false;
+  if (cfg.size_filter &&
+      !size_matches(e, *cfg.size_filter, cfg.follow_symlinks)) {
+    return false;
+  }
 
   if (cfg.atime_filter) {
     auto age = file_age_units(p, FindFileTimeKind::Access,

@@ -3132,3 +3132,62 @@ TEST(find, issue_1309_quit_suppresses_default_print) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.empty());
 }
+
+TEST(find, issue_1310_size_applies_to_symlinks_by_target_length) {
+  TempDir tmp;
+  tmp.write("target.txt", "hello");
+  // Relative target so the stored link text is exactly "target.txt"
+  // (10 chars -> 1 unit of 512 bytes) on every platform.
+  if (!create_file_symlink_or_skip(tmp.path / "link.txt",
+                                   std::filesystem::path("target.txt"))) {
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L".", L"-name", L"link.txt", L"-size", L"1"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("link.txt") != std::string::npos);
+
+  Pipeline neg;
+  neg.set_cwd(tmp.wpath());
+  neg.add(L"find.exe", {L".", L"-name", L"link.txt", L"-size", L"0"});
+  auto nr = neg.run();
+  EXPECT_EQ(nr.exit_code, 0);
+  EXPECT_TRUE(nr.stdout_text.empty());
+}
+
+TEST(find, issue_1310_size_follows_symlinks_under_dash_L) {
+  TempDir tmp;
+  tmp.write("big.bin", std::string(1500, 'x'));
+  if (!create_file_symlink_or_skip(tmp.path / "link.bin",
+                                   std::filesystem::path("big.bin"))) {
+    return;
+  }
+
+  // -P (default): link size is the target-path length (7 chars -> 1 unit).
+  Pipeline plain;
+  plain.set_cwd(tmp.wpath());
+  plain.add(L"find.exe", {L".", L"-name", L"link.bin", L"-size", L"1"});
+  auto pr = plain.run();
+  EXPECT_EQ(pr.exit_code, 0);
+  EXPECT_TRUE(pr.stdout_text.find("link.bin") != std::string::npos);
+
+  // -L: link size is the target's size (1500 bytes -> 3 units).
+  Pipeline followed;
+  followed.set_cwd(tmp.wpath());
+  followed.add(L"find.exe",
+               {L"-L", L".", L"-name", L"link.bin", L"-size", L"3"});
+  auto fr = followed.run();
+  EXPECT_EQ(fr.exit_code, 0);
+  EXPECT_TRUE(fr.stdout_text.find("link.bin") != std::string::npos);
+
+  Pipeline followed_one;
+  followed_one.set_cwd(tmp.wpath());
+  followed_one.add(L"find.exe",
+                   {L"-L", L".", L"-name", L"link.bin", L"-size", L"1"});
+  auto for_ = followed_one.run();
+  EXPECT_EQ(for_.exit_code, 0);
+  EXPECT_TRUE(for_.stdout_text.empty());
+}
