@@ -997,10 +997,22 @@ auto clone_file(const std::string& srcPath, const std::string& destPath)
     return std::unexpected(win32_posix_error_text(GetLastError()));
   }
 
+  // [GNU] #1369: --reflink=always is clone-or-fail.  The destination has
+  // been created (and is about to be sized to the source length), so any
+  // failure from here on must remove the half-written file: GNU leaves no
+  // destination behind when the clone is refused.  ('auto' is unaffected:
+  // its fallback copy recreates the destination anyway.)
+  auto fail_and_remove_dest = [&]() -> cp::Result<bool> {
+    const std::string message = win32_posix_error_text(GetLastError());
+    dest.reset();
+    (void)DeleteFileW(dest_operand.extended.c_str());
+    return std::unexpected(message);
+  };
+
   if (size.QuadPart > 0) {
     if (!SetFilePointerEx(dest.get(), size, nullptr, FILE_BEGIN) ||
         !SetEndOfFile(dest.get())) {
-      return std::unexpected(win32_posix_error_text(GetLastError()));
+      return fail_and_remove_dest();
     }
     DUPLICATE_EXTENTS_DATA request{};
     request.FileHandle = src.get();
@@ -1010,7 +1022,10 @@ auto clone_file(const std::string& srcPath, const std::string& destPath)
     DWORD returned = 0;
     if (!DeviceIoControl(dest.get(), FSCTL_DUPLICATE_EXTENTS_TO_FILE, &request,
                          sizeof(request), nullptr, 0, &returned, nullptr)) {
-      return std::unexpected(clone_error_text(GetLastError()));
+      const std::string message = clone_error_text(GetLastError());
+      dest.reset();
+      (void)DeleteFileW(dest_operand.extended.c_str());
+      return std::unexpected(message);
     }
   }
   return true;

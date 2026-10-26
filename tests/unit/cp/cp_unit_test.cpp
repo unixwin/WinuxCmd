@@ -1092,3 +1092,26 @@ TEST(cp, issue1366_parents_drive_letter_absolute_source) {
   EXPECT_FALSE(
       std::filesystem::exists(tmp.path / "dest" / drive / "sub" / "src.txt"));
 }
+
+// [GNU] #1369: --reflink=always is clone-or-fail: when the volume cannot
+// clone, the command fails AND leaves no destination behind.
+TEST(cp, issue1369_reflink_always_failure_leaves_no_destination) {
+  TempDir tmp;
+  tmp.write("src.txt", "payload");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"--reflink=always", L"src.txt", L"dest.txt"});
+  auto r = p.run();
+
+  if (r.exit_code == 0) {
+    // The volume cloned successfully; contents must match.
+    EXPECT_EQ(tmp.read("dest.txt"), "payload");
+  } else {
+    EXPECT_TRUE(r.stderr_text.find("failed to clone 'dest.txt'") !=
+                std::string::npos);
+    std::error_code ec;
+    (void)std::filesystem::symlink_status(tmp.path / "dest.txt", ec);
+    EXPECT_TRUE(ec);  // no half-written destination remains
+  }
+}
