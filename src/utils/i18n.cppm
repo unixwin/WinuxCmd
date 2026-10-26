@@ -366,6 +366,20 @@ export std::string translate_error(std::string_view error) {
       }
     }
   }
+  // #1301: "option '--flag' doesn't allow an argument" (getopt_long).
+  constexpr std::string_view kNoArgumentPrefix = "option '";
+  constexpr std::string_view kNoArgumentSuffix = "' doesn't allow an argument";
+  if (error.size() > kNoArgumentPrefix.size() + kNoArgumentSuffix.size() &&
+      error.starts_with(kNoArgumentPrefix) &&
+      error.ends_with(kNoArgumentSuffix)) {
+    const auto value =
+        error.substr(kNoArgumentPrefix.size(),
+                     error.size() - kNoArgumentPrefix.size() -
+                         kNoArgumentSuffix.size());
+    return ::winux::i18n::format("common.error.option_no_argument",
+                                 "option '{}' doesn't allow an argument",
+                                 value);
+  }
   constexpr std::array<std::pair<std::string_view, std::string_view>, 32> exact{
       {{"invalid input", "common.error.invalid_input"},
        {"error reading from file", "common.error.read_file"},

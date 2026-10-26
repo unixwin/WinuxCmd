@@ -480,3 +480,35 @@ TEST(cat, cat_show_all_quotes_nonprinting_like_gnu) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "A^IB^M$\n^?M-^@M-^?$\n$\nZ");
 }
+
+// #1301: a Bool long option must reject "--flag=value" instead of
+// silently ignoring the value.
+TEST(cat, cat_bool_long_option_rejects_attached_value) {
+  TempDir tmp;
+  tmp.write("input.txt", "hello\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cat.exe", {L"--show-ends=foo", L"input.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("option '--show-ends' doesn't allow an argument") !=
+              std::string::npos);
+}
+
+// #1301: --help takes no argument either (dispatcher path).
+TEST(cat, cat_help_rejects_attached_value) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cat.exe", {L"--help=foo"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("option '--help' doesn't allow an argument") !=
+              std::string::npos);
+}
+

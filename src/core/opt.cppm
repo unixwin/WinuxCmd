@@ -195,6 +195,14 @@ export ParseResultRuntime parse_command_runtime(
                            "' for '" + std::string(option) + "'";
   };
 
+  // [GNU] getopt_long rejects an attached value on a flag option:
+  //   "option '--count' doesn't allow an argument".
+  auto set_does_not_allow_argument = [&](std::string_view option) -> void {
+    result.ok = false;
+    result.error_message = "option '" + std::string(option) +
+                           "' doesn't allow an argument";
+  };
+
   auto parse_int_value = [&](std::string_view option, std::string_view value,
                              int& out) -> bool {
     std::string str(value);
@@ -276,6 +284,12 @@ export ParseResultRuntime parse_command_runtime(
 
       switch (meta->type) {
         case OptionType::Bool:
+          // #1301: a flag option must reject "--flag=value" instead of
+          // silently ignoring the value (grep --count=x used to hang).
+          if (has_inline_value) {
+            set_does_not_allow_argument(name);
+            return result;
+          }
           result.options.set(idx, true);
           break;
 
@@ -384,6 +398,11 @@ export ParseResultRuntime parse_command_runtime(
         size_t idx = exact_meta->index;
         switch (exact_meta->type) {
           case OptionType::Bool:
+            // #1301, single-dash long form: same rejection as "--flag=".
+            if (exact_has_inline_value) {
+              set_does_not_allow_argument(exact_name);
+              return result;
+            }
             result.options.set(idx, true);
             break;
           case OptionType::Int: {
