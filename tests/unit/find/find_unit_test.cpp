@@ -3191,3 +3191,58 @@ TEST(find, issue_1310_size_follows_symlinks_under_dash_L) {
   EXPECT_EQ(for_.exit_code, 0);
   EXPECT_TRUE(for_.stdout_text.empty());
 }
+
+TEST(find, issue_1314_perm_accepts_symbolic_copy_clauses) {
+  TempDir tmp;
+  tmp.write("plain.txt", "x");
+  tmp.write("run.cmd", "@echo off\n");
+  tmp.write("plain2.cmd", "@echo off\n");
+  EXPECT_TRUE(SetFileAttributesW((tmp.path / "run.cmd").c_str(),
+                                 FILE_ATTRIBUTE_READONLY));
+
+  // Copy clauses must parse (previously "invalid -perm symbolic mode").
+  // "g=u" copies from an empty mode, so it builds 000 and matches
+  // nothing here, but must exit 0.
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L".", L"-maxdepth", L"1", L"-perm", L"g=u"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.empty());
+
+  // Later clauses copy from the mode accumulated so far:
+  // g=rx,o=g,u=rwx builds 0755, the plain executable mode.
+  Pipeline exe;
+  exe.set_cwd(tmp.wpath());
+  exe.add(L"find.exe",
+          {L".", L"-maxdepth", L"1", L"-perm", L"g=rx,o=g,u=rwx"});
+  auto er = exe.run();
+  EXPECT_EQ(er.exit_code, 0);
+  EXPECT_TRUE(er.stdout_text.find("plain2.cmd") != std::string::npos);
+  EXPECT_TRUE(er.stdout_text.find("plain.txt") == std::string::npos);
+  EXPECT_TRUE(er.stdout_text.find("run.cmd") == std::string::npos);
+
+  // o=r,u=rw,g=o builds 0644, the plain-file mode.
+  Pipeline plain;
+  plain.set_cwd(tmp.wpath());
+  plain.add(L"find.exe",
+            {L".", L"-maxdepth", L"1", L"-perm", L"o=r,u=rw,g=o"});
+  auto pr = plain.run();
+  EXPECT_EQ(pr.exit_code, 0);
+  EXPECT_TRUE(pr.stdout_text.find("plain.txt") != std::string::npos);
+  EXPECT_TRUE(pr.stdout_text.find("run.cmd") == std::string::npos);
+  EXPECT_TRUE(pr.stdout_text.find("plain2.cmd") == std::string::npos);
+
+  // g=rx,o=rx,u=g builds 0555, the read-only executable mode.
+  Pipeline ro;
+  ro.set_cwd(tmp.wpath());
+  ro.add(L"find.exe",
+         {L".", L"-maxdepth", L"1", L"-perm", L"g=rx,o=rx,u=g"});
+  auto rr = ro.run();
+  EXPECT_EQ(rr.exit_code, 0);
+  EXPECT_TRUE(rr.stdout_text.find("run.cmd") != std::string::npos);
+  EXPECT_TRUE(rr.stdout_text.find("plain.txt") == std::string::npos);
+
+  // Restore the attribute so TempDir cleanup can remove the file.
+  SetFileAttributesW((tmp.path / "run.cmd").c_str(), FILE_ATTRIBUTE_NORMAL);
+}

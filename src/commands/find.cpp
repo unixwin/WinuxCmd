@@ -716,6 +716,19 @@ auto parse_permission_predicate(std::string_view text)
       while (pos < text.size() && text[pos] != ',') {
         const char perm = text[pos++];
         for (char target : who) {
+          // [#1314] A u/g/o letter in permission position copies the
+          // source class's current rwx bits (from the mode accumulated
+          // so far, starting at 0) into the target class, for all three
+          // operators; "=" still clears the target's bits first.
+          if (perm == 'u' || perm == 'g' || perm == 'o') {
+            const unsigned source = perm == 'u'   ? (mode >> 6) & 7U
+                                     : perm == 'g' ? (mode >> 3) & 7U
+                                                   : mode & 7U;
+            const unsigned shift =
+                target == 'u' ? 6U : target == 'g' ? 3U : 0U;
+            clause_bits |= source << shift;
+            continue;
+          }
           auto bit = symbolic_bit(target, perm);
           if (!bit) {
             return std::unexpected("invalid -perm symbolic mode");
