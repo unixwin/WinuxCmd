@@ -3464,6 +3464,39 @@ auto win32_file_index_value(const std::filesystem::path& p)
   return static_cast<unsigned long long>(identity->file_index);
 }
 
+// [#1378] Identity of the directory a path resolves TO when symlinks are
+// followed (no FILE_FLAG_OPEN_REPARSE_POINT): win32_file_identity pins the
+// reparse point itself, which can never alias an ancestor directory, so
+// loop detection needs the followed identity.
+auto win32_followed_file_identity(const std::filesystem::path& p)
+    -> std::optional<FileIdentity> {
+  DWORD attrs = GetFileAttributesW(p.c_str());
+  if (attrs == INVALID_FILE_ATTRIBUTES) return std::nullopt;
+
+  DWORD flags = 0;
+  if (attrs & FILE_ATTRIBUTE_DIRECTORY) {
+    flags |= FILE_FLAG_BACKUP_SEMANTICS;
+  }
+
+  HANDLE handle =
+      CreateFileW(p.c_str(), FILE_READ_ATTRIBUTES,
+                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                  nullptr, OPEN_EXISTING, flags, nullptr);
+  if (handle == INVALID_HANDLE_VALUE) return std::nullopt;
+
+  BY_HANDLE_FILE_INFORMATION info{};
+  std::optional<FileIdentity> result;
+  if (GetFileInformationByHandle(handle, &info)) {
+    result = FileIdentity{
+        .volume_serial = info.dwVolumeSerialNumber,
+        .file_index = (static_cast<ULONGLONG>(info.nFileIndexHigh) << 32) |
+                      static_cast<ULONGLONG>(info.nFileIndexLow),
+    };
+  }
+  CloseHandle(handle);
+  return result;
+}
+
 auto win32_file_time_ticks(const std::filesystem::path& p,
                            FindFileTimeKind kind) -> std::optional<long long> {
   DWORD attrs = GetFileAttributesW(p.c_str());
@@ -4581,6 +4614,37 @@ auto volume_root_key(const std::filesystem::path& p) -> std::wstring {
   return {};
 }
 
+// [#1378] GNU find -L loop detection (findutils ftsfind.c): while
+// following symlinks, find tracks the (device, inode) identity of every
+// directory on the current traversal path; a directory whose followed
+// identity equals an ancestor's is reported once and never descended
+// into (and the entry itself is not evaluated), instead of expanding
+// the cycle until the path stops fitting.
+struct AncestorDirectory {
+  FileIdentity identity;
+  std::filesystem::path path;
+};
+
+auto report_filesystem_loop(const std::filesystem::path& p,
+                            const std::filesystem::path& ancestor, Config& cfg)
+    -> void {
+  safeErrorPrint("find: File system loop detected; '");
+  safeErrorPrint(path_display(p));
+  safeErrorPrint("' is part of the same file system loop as '");
+  safeErrorPrint(path_display(ancestor));
+  safeErrorPrint("'.\n");
+  cfg.had_error = true;
+}
+
+auto find_loop_ancestor(const std::vector<AncestorDirectory>& ancestors,
+                        const FileIdentity& identity)
+    -> const std::filesystem::path* {
+  for (const auto& ancestor : ancestors) {
+    if (ancestor.identity == identity) return &ancestor.path;
+  }
+  return nullptr;
+}
+
 auto should_descend_into(const std::filesystem::directory_entry& e,
                          const Config& cfg, bool command_line_root = false)
     -> bool {
@@ -4608,7 +4672,8 @@ auto should_descend_into(const std::filesystem::directory_entry& e,
 
 auto scan_depth_first(const std::filesystem::path& root,
                       const std::filesystem::path& p, int depth, Config& cfg,
-                      bool& matched_any) -> void {
+                      bool& matched_any,
+                      std::vector<AncestorDirectory>& ancestors) -> void {
   const auto io_p = to_io_path(p);
   std::error_code ec;
   std::filesystem::directory_entry entry(io_p, ec);
@@ -4620,6 +4685,25 @@ auto scan_depth_first(const std::filesystem::path& root,
     safeErrorPrint("\n");
     cfg.had_error = true;
     return;
+  }
+
+  // [#1378] Loop detection applies to directories this call would
+  // descend into while following symlinks; the root itself (depth 0)
+  // starts a fresh ancestor chain.
+  std::optional<FileIdentity> self_identity;
+  if (depth < cfg.maxdepth && cfg.follow_symlinks &&
+      should_descend_into(entry, cfg, depth == 0)) {
+    self_identity = win32_followed_file_identity(p);
+    if (self_identity && depth > 0) {
+      if (const auto* loop = find_loop_ancestor(ancestors, *self_identity)) {
+        report_filesystem_loop(p, *loop, cfg);
+        return;
+      }
+    }
+  }
+  const size_t ancestor_mark = ancestors.size();
+  if (self_identity) {
+    ancestors.push_back(AncestorDirectory{*self_identity, p});
   }
 
   if (depth < cfg.maxdepth && should_descend_into(entry, cfg, depth == 0)) {
@@ -4649,10 +4733,11 @@ auto scan_depth_first(const std::filesystem::path& root,
           break;
         }
         auto child = logical_from_io(p, io_p, it->path());
-        scan_depth_first(root, child, depth + 1, cfg, matched_any);
+        scan_depth_first(root, child, depth + 1, cfg, matched_any, ancestors);
       }
     }
   }
+  ancestors.resize(ancestor_mark);
 
   if (cfg.quit && matched_any) return;
 
@@ -4666,7 +4751,9 @@ auto scan_depth_first(const std::filesystem::path& root,
 
 auto scan_delete_depth_first(const std::filesystem::path& root,
                              const std::filesystem::path& p, int depth,
-                             Config& cfg, bool& matched_any) -> void {
+                             Config& cfg, bool& matched_any,
+                             std::vector<AncestorDirectory>& ancestors)
+    -> void {
   const auto io_p = to_io_path(p);
   std::error_code ec;
   std::filesystem::directory_entry entry(io_p, ec);
@@ -4678,6 +4765,23 @@ auto scan_delete_depth_first(const std::filesystem::path& root,
     safeErrorPrint("\n");
     cfg.had_error = true;
     return;
+  }
+
+  // [#1378] Same loop detection as scan_depth_first.
+  std::optional<FileIdentity> self_identity;
+  if (depth < cfg.maxdepth && cfg.follow_symlinks &&
+      should_descend_into(entry, cfg, depth == 0)) {
+    self_identity = win32_followed_file_identity(p);
+    if (self_identity && depth > 0) {
+      if (const auto* loop = find_loop_ancestor(ancestors, *self_identity)) {
+        report_filesystem_loop(p, *loop, cfg);
+        return;
+      }
+    }
+  }
+  const size_t ancestor_mark = ancestors.size();
+  if (self_identity) {
+    ancestors.push_back(AncestorDirectory{*self_identity, p});
   }
 
   if (depth < cfg.maxdepth && should_descend_into(entry, cfg, depth == 0)) {
@@ -4707,10 +4811,12 @@ auto scan_delete_depth_first(const std::filesystem::path& root,
           break;
         }
         auto child = logical_from_io(p, io_p, it->path());
-        scan_delete_depth_first(root, child, depth + 1, cfg, matched_any);
+        scan_delete_depth_first(root, child, depth + 1, cfg, matched_any,
+                                ancestors);
       }
     }
   }
+  ancestors.resize(ancestor_mark);
 
   if (cfg.quit && matched_any) return;
 
@@ -4771,6 +4877,16 @@ auto scan_one_root(const std::filesystem::path& root, Config& cfg,
     return;
   }
 
+  // [#1378] Ancestor chain for loop detection, indexed by depth:
+  // dir_stack[k] is the directory at depth k on the current path whose
+  // contents the iterator is walking (index 0 is the root itself).
+  std::vector<AncestorDirectory> dir_stack;
+  if (cfg.follow_symlinks) {
+    if (auto root_identity = win32_followed_file_identity(root)) {
+      dir_stack.push_back(AncestorDirectory{*root_identity, root});
+    }
+  }
+
   for (; it != end; ++it) {
     std::error_code iec;
     const auto& de = *it;
@@ -4782,6 +4898,26 @@ auto scan_one_root(const std::filesystem::path& root, Config& cfg,
       continue;
     }
 
+    // [#1378] Directories deeper than the current path belong to a
+    // subtree that has been left behind; drop them before checking.
+    if (cfg.follow_symlinks &&
+        dir_stack.size() > static_cast<size_t>(d)) {
+      dir_stack.resize(static_cast<size_t>(d));
+    }
+    bool will_descend = should_descend_into(de, cfg);
+    std::optional<FileIdentity> self_identity;
+    if (cfg.follow_symlinks && will_descend) {
+      self_identity = win32_followed_file_identity(p);
+      if (self_identity) {
+        if (const auto* loop =
+                find_loop_ancestor(dir_stack, *self_identity)) {
+          report_filesystem_loop(p, *loop, cfg);
+          it.disable_recursion_pending();
+          continue;
+        }
+      }
+    }
+
     bool matched = entry_matches(cfg, p, de, d, root);
     if (cfg.quit && !matched) return;
     if (matched) {
@@ -4791,6 +4927,16 @@ auto scan_one_root(const std::filesystem::path& root, Config& cfg,
     }
     if (cfg.prune_current || !should_descend_into(de, cfg)) {
       it.disable_recursion_pending();
+    } else if (self_identity) {
+      if (dir_stack.size() > static_cast<size_t>(d)) {
+        dir_stack.resize(static_cast<size_t>(d));
+      }
+      if (dir_stack.size() == static_cast<size_t>(d)) {
+        dir_stack.push_back(AncestorDirectory{*self_identity, p});
+      } else {
+        dir_stack[static_cast<size_t>(d)] =
+            AncestorDirectory{*self_identity, p};
+      }
     }
   }
 }
@@ -4808,14 +4954,16 @@ auto process(Config& cfg) -> int {
         report_root_probe_failure(root);
         cfg.had_error = true;
       } else {
-        scan_delete_depth_first(root, root, 0, cfg, matched_any);
+        std::vector<AncestorDirectory> ancestors;
+        scan_delete_depth_first(root, root, 0, cfg, matched_any, ancestors);
       }
     } else if (cfg.depth_first) {
       if (!root_exists(root)) {
         report_root_probe_failure(root);
         cfg.had_error = true;
       } else {
-        scan_depth_first(root, root, 0, cfg, matched_any);
+        std::vector<AncestorDirectory> ancestors;
+        scan_depth_first(root, root, 0, cfg, matched_any, ancestors);
       }
     } else {
       scan_one_root(root, cfg, matched_any);

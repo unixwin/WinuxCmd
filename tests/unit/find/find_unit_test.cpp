@@ -3529,3 +3529,30 @@ TEST(find, issue_1377_type_accepts_b_c_s_letters) {
     EXPECT_TRUE(r.stderr_text.empty());
   }
 }
+
+TEST(find, issue_1378_L_reports_filesystem_loop_instead_of_expanding_it) {
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "root" / "d");
+  tmp.write("root/f.txt", "x");
+
+  if (!create_directory_symlink_or_skip(tmp.path / "root" / "d" / "loop",
+                                        tmp.path / "root")) {
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L"-L", L"root"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("File system loop detected") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("root/d/loop") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("same file system loop as 'root'") !=
+              std::string::npos);
+  // Bounded output: the cycle must not be expanded level after level.
+  EXPECT_TRUE(r.stdout_text.find("loop/d/loop") == std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("root/d/loop") == std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("root/f.txt") != std::string::npos);
+}
