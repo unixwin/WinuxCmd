@@ -443,8 +443,26 @@ auto parse_default_arguments(std::string_view text)
   };
 
   for (char c : text) {
+    // #1321: a newline inside either quote kind is an error (GNU has no
+    // line continuation inside quotes), even right after a backslash.
+    if ((in_single_quote || in_double_quote) && c == '\n') {
+      return std::unexpected(
+          in_single_quote
+              ? "unmatched single quote; by default quotes are special to "
+                "xargs unless you use the -0 option"
+              : "unmatched double quote; by default quotes are special to "
+                "xargs unless you use the -0 option");
+    }
+
     if (escaped) {
-      arg += c;
+      if (in_double_quote) {
+        // #1321: inside double quotes only $, `, " and \ are escapable;
+        // any other character keeps its backslash literally.
+        if (c != '$' && c != '`' && c != '"' && c != '\\') arg += '\\';
+        arg += c;
+      } else {
+        arg += c;
+      }
       have_arg = true;
       escaped = false;
       continue;
@@ -481,7 +499,11 @@ auto parse_default_arguments(std::string_view text)
     } else if (c == '"') {
       in_double_quote = true;
       have_arg = true;
-    } else if (c == '\r' || c == '\n' || c == ' ' || c == '\t') {
+    } else if (c == '\r') {
+      // #1321: a CR at token start is skipped; inside a token it is
+      // literal (it is not a separator).
+      if (have_arg) arg += c;
+    } else if (c == '\n' || c == ' ' || c == '\t') {
       flush_arg();
     } else {
       arg += c;
@@ -489,10 +511,7 @@ auto parse_default_arguments(std::string_view text)
     }
   }
 
-  if (escaped) {
-    arg += '\\';
-    have_arg = true;
-  }
+  // #1321: a trailing backslash at EOF is dropped (GNU), not preserved.
   if (in_single_quote) {
     return std::unexpected(
         "unmatched single quote; by default quotes are special to xargs "
@@ -554,49 +573,150 @@ auto parse_arguments(std::istream &input, char delimiter, bool split_blanks,
 }
 
 auto is_blank_input_line(std::string_view value) -> bool {
-  return value.find_first_not_of(" \t") == std::string_view::npos;
+  // #1321/#1322: a blank line holds only spaces, tabs, or CRs.
+  return value.find_first_not_of(" \t\r") == std::string_view::npos;
 }
 
 auto parse_replacement_arguments(std::istream &input,
                                  const std::optional<std::string> &eof_str)
     -> cp::Result<std::vector<std::string>> {
+  // #1321/#1322: -I mode rewritten to the GNU line model.  The old code
+  // copied raw lines (no quote processing at all) and treated a trailing
+  // blank as a logical-line continuation; both are wrong.  Now each line
+  // is one item: leading blanks are stripped, trailing blanks are kept,
+  // quotes/backslashes follow the default-mode rules (without blank
+  // splitting), and only a trailing unquoted backslash continues the item
+  // onto the next line (the backslash is dropped, the newline kept).
   SmallVector<std::string, 256> args;
-  std::string current;
-  bool continued_line = false;
+  std::string item;
+  bool in_single_quote = false;
+  bool in_double_quote = false;
+  bool escaped = false;
+  bool have_item = false;
+  bool continuing = false;
+  bool pending_newline = false;
+
+  auto unmatched_error = [&]() -> std::string {
+    return in_single_quote
+               ? "unmatched single quote; by default quotes are special to "
+                 "xargs unless you use the -0 option"
+               : "unmatched double quote; by default quotes are special to "
+                 "xargs unless you use the -0 option";
+  };
+
+  // Feed one physical line into the current item.  Returns an error string
+  // on an unclosed quote, or std::nullopt on success.  `strip_leading`
+  // applies only to the first line of an item.
+  auto feed_line = [&](std::string_view line, bool strip_leading)
+      -> std::optional<std::string> {
+    size_t i = 0;
+    if (strip_leading) {
+      while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) ++i;
+    }
+    for (; i < line.size(); ++i) {
+      char c = line[i];
+      if (escaped) {
+        if (in_double_quote) {
+          if (c != '$' && c != '`' && c != '"' && c != '\\') item += '\\';
+          item += c;
+        } else {
+          item += c;
+        }
+        have_item = true;
+        escaped = false;
+        continue;
+      }
+      if (in_single_quote) {
+        if (c == '\'') {
+          in_single_quote = false;
+        } else {
+          item += c;
+        }
+        have_item = true;
+        continue;
+      }
+      if (in_double_quote) {
+        if (c == '"') {
+          in_double_quote = false;
+        } else if (c == '\\') {
+          escaped = true;
+        } else {
+          item += c;
+        }
+        have_item = true;
+        continue;
+      }
+      if (c == '\\') {
+        escaped = true;
+        have_item = true;
+      } else if (c == '\'') {
+        in_single_quote = true;
+        have_item = true;
+      } else if (c == '"') {
+        in_double_quote = true;
+        have_item = true;
+      } else if (c == '\r') {
+        if (have_item) item += c;
+      } else {
+        item += c;
+        have_item = true;
+      }
+    }
+    return std::nullopt;
+  };
+
+  auto finish_item = [&]() {
+    if (have_item) {
+      args.push_back(item);
+      item.clear();
+      have_item = false;
+    }
+  };
 
   std::string line;
   while (std::getline(input, line)) {
-    if (!line.empty() && line.back() == '\r') line.pop_back();
-    if (eof_str && !eof_str->empty() && line == *eof_str) break;
+    // The EOF marker comparison strips a trailing CR (CRLF input), but
+    // the parsed item keeps it.
+    std::string_view eof_candidate = line;
+    if (!eof_candidate.empty() && eof_candidate.back() == '\r') {
+      eof_candidate.remove_suffix(1);
+    }
+    if (eof_str && !eof_str->empty() && eof_candidate == *eof_str) {
+      // A continued item is kept (its trailing backslash was dropped);
+      // between items this is a no-op.
+      finish_item();
+      break;
+    }
 
-    // GNU replacement mode ignores standalone blank/whitespace-only input
-    // lines; they should not become a logical-line continuation on their own.
-    if (is_blank_input_line(line) && current.empty() && !continued_line) {
+    if (!continuing && is_blank_input_line(line)) continue;
+
+    if (pending_newline) {
+      item += '\n';
+      pending_newline = false;
+    }
+    if (auto error = feed_line(line, !continuing)) {
+      return std::unexpected(*error);
+    }
+    if (in_single_quote || in_double_quote) {
+      return std::unexpected(unmatched_error());
+    }
+    if (escaped) {
+      // Trailing unquoted backslash: drop it and continue on the next
+      // line.  The newline itself is only materialized if a next line
+      // actually arrives (see pending_newline).
+      escaped = false;
+      continuing = true;
+      pending_newline = true;
       continue;
     }
-
-    bool ends_with_blank =
-        !line.empty() && (line.back() == ' ' || line.back() == '\t');
-    current += line;
-
-    if (ends_with_blank) {
-      continued_line = true;
-      continue;
-    }
-
-    if (!is_blank_input_line(current)) {
-      args.push_back(current);
-    }
-    current.clear();
-    continued_line = false;
+    continuing = false;
+    finish_item();
   }
 
-  if (continued_line || !current.empty()) {
-    if (!is_blank_input_line(current)) {
-      args.push_back(current);
-    }
+  if (in_single_quote || in_double_quote) {
+    return std::unexpected(unmatched_error());
   }
-
+  finish_item();
   return std::vector<std::string>(args.begin(), args.end());
 }
 
@@ -610,8 +730,14 @@ auto parse_line_groups(std::istream &input, int max_lines,
 
   std::string line;
   while (std::getline(input, line)) {
-    if (!line.empty() && line.back() == '\r') line.pop_back();
-    if (eof_str && !eof_str->empty() && line == *eof_str) break;
+    // #1321: -L no longer strips a trailing CR.  The EOF comparison still
+    // ignores it, and a CR-only line still parses to zero parts (skipped
+    // below) under the new CR rule in parse_default_arguments.
+    std::string_view eof_candidate = line;
+    if (!eof_candidate.empty() && eof_candidate.back() == '\r') {
+      eof_candidate.remove_suffix(1);
+    }
+    if (eof_str && !eof_str->empty() && eof_candidate == *eof_str) break;
 
     bool ends_with_blank =
         !line.empty() && (line.back() == ' ' || line.back() == '\t');

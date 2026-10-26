@@ -234,7 +234,7 @@ TEST(xargs, xargs_replacement_uses_one_input_line_per_command) {
   EXPECT_TRUE(r.stdout_text.find("[two words next]") == std::string::npos);
 }
 
-TEST(xargs, xargs_replacement_trailing_blank_continues_logical_line) {
+TEST(xargs, xargs_replacement_trailing_blank_starts_new_item_1321) {
   TempDir tmp;
 
   Pipeline p;
@@ -245,9 +245,12 @@ TEST(xargs, xargs_replacement_trailing_blank_continues_logical_line) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.find("[alpha beta]") != std::string::npos);
+  // GNU -I keeps the trailing blank on its own item; it does not join
+  // the next line (that continuation belongs to -L only).
+  EXPECT_TRUE(r.stdout_text.find("[alpha ]") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("[beta]") != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("[gamma]") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("[alpha]") == std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("[alpha beta]") == std::string::npos);
 }
 
 TEST(xargs, xargs_default_echo_replacement_uses_one_input_line_per_command) {
@@ -340,7 +343,7 @@ TEST(xargs, xargs_default_parser_respects_backslash_escaping) {
   EXPECT_TRUE(r.stdout_text.find("one two") != std::string::npos);
 }
 
-TEST(xargs, xargs_default_parser_preserves_trailing_backslash_at_eof) {
+TEST(xargs, xargs_default_parser_drops_trailing_backslash_at_eof_1321) {
   TempDir tmp;
   tmp.write("input.txt", "alpha\\");
 
@@ -352,7 +355,8 @@ TEST(xargs, xargs_default_parser_preserves_trailing_backslash_at_eof) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stderr_text.empty());
-  EXPECT_TRUE(r.stdout_text.find("alpha\\") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("alpha") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("alpha\\") == std::string::npos);
 }
 
 TEST(xargs, xargs_default_parser_rejects_unmatched_double_quote_with_gnu_hint) {
@@ -1548,5 +1552,78 @@ TEST(xargs, xargs_interactive_leading_blank_answer_refuses_1320) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.find("alpha") == std::string::npos);
   EXPECT_TRUE(r.stderr_text.find("?...") != std::string::npos);
+}
+
+TEST(xargs, xargs_double_quoted_backslash_stays_literal_1321) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"cmd.exe", L"/C", L"echo"});
+  p.set_stdin("\"a\\b\"\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("a\\b") != std::string::npos);
+}
+
+TEST(xargs, xargs_newline_inside_double_quotes_errors_1321) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"cmd.exe", L"/C", L"echo"});
+  p.set_stdin("\"abc\ndef\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(
+      r.stderr_text.find("xargs: unmatched double quote; by default quotes "
+                         "are special to xargs unless you use the -0 option") !=
+      std::string::npos);
+}
+
+TEST(xargs, xargs_replacement_backslash_continues_line_1321) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"-I", L"{}"});
+  p.set_stdin("foo\\\nbar\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "foo\nbar\n");
+}
+
+TEST(xargs, xargs_replacement_double_backslash_does_not_continue_1321) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"-I", L"{}"});
+  p.set_stdin("foo\\\\\nbar\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "foo\\\nbar\n");
+}
+
+TEST(xargs, xargs_replacement_empty_quotes_yield_empty_item_1321) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"-I", L"{}"});
+  p.set_stdin("\"\"\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "\n");
 }
 
