@@ -664,3 +664,94 @@ TEST(ln, ln_fT_drive_dialect_remove_failure_message_keeps_operand_spelling) {
   // The non-empty directory survived (nothing was force-removed).
   EXPECT_TRUE(std::filesystem::is_directory(tmp.path / L"nonempty1234"));
 }
+
+// [GNU] #1367: a dangling symlink destination EXISTS (lstat semantics):
+// the plain form fails with "File exists" and leaves the link untouched.
+TEST(ln, issue1367_dangling_destination_counts_as_existing) {
+  TempDir tmp;
+  tmp.write("t", "tee\n");
+  std::error_code ec;
+  std::filesystem::create_symlink("missing", tmp.path / "d", ec);
+  if (ec) {
+    std::cout << "  SKIPPED (requires administrator privileges for symbolic "
+                 "links)\n";
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ln.exe", {L"-s", L"t", L"d"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("failed to create symbolic link 'd': "
+                                 "File exists") != std::string::npos);
+  EXPECT_EQ(std::filesystem::read_symlink(tmp.path / "d", ec),
+            std::filesystem::path("missing"));
+}
+
+// [GNU] #1367: -i on a dangling destination prompts on stderr and honours
+// the answer; declining is an error (GNU exits 1).
+TEST(ln, issue1367_dangling_destination_interactive_prompts) {
+  TempDir tmp;
+  tmp.write("t", "tee\n");
+  std::error_code ec;
+  std::filesystem::create_symlink("missing", tmp.path / "d", ec);
+  if (ec) {
+    std::cout << "  SKIPPED (requires administrator privileges for symbolic "
+                 "links)\n";
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("n\n");
+  p.add(L"ln.exe", {L"-s", L"-i", L"t", L"d"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("replace 'd'?") != std::string::npos);
+  EXPECT_EQ(std::filesystem::read_symlink(tmp.path / "d", ec),
+            std::filesystem::path("missing"));
+
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.set_stdin("y\n");
+  p2.add(L"ln.exe", {L"-s", L"-i", L"t", L"d"});
+  auto r2 = p2.run();
+  EXPECT_EQ(r2.exit_code, 0);
+  EXPECT_EQ(std::filesystem::read_symlink(tmp.path / "d", ec),
+            std::filesystem::path("t"));
+}
+
+// [GNU] #1367: -b backs a dangling destination up (the backup keeps the old
+// link text); -f replaces it.
+TEST(ln, issue1367_dangling_destination_backup_and_force) {
+  TempDir tmp;
+  tmp.write("t", "tee\n");
+  std::error_code ec;
+  std::filesystem::create_symlink("missing", tmp.path / "d", ec);
+  if (ec) {
+    std::cout << "  SKIPPED (requires administrator privileges for symbolic "
+                 "links)\n";
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ln.exe", {L"-s", L"-b", L"t", L"d"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(std::filesystem::read_symlink(tmp.path / "d", ec),
+            std::filesystem::path("t"));
+  EXPECT_EQ(std::filesystem::read_symlink(tmp.path / "d~", ec),
+            std::filesystem::path("missing"));
+
+  std::filesystem::create_symlink("missing", tmp.path / "e", ec);
+  ASSERT_FALSE(ec);
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.add(L"ln.exe", {L"-sf", L"t", L"e"});
+  auto r2 = p2.run();
+  EXPECT_EQ(r2.exit_code, 0);
+  EXPECT_EQ(std::filesystem::read_symlink(tmp.path / "e", ec),
+            std::filesystem::path("t"));
+}

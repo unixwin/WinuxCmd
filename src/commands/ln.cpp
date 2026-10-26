@@ -200,6 +200,22 @@ auto create_symlink(const std::string &source, const std::string &target,
                          "': " + ln_windows_error_text(error));
 }
 
+// [GNU] #1367: existence with lstat semantics.  GetFileAttributesW follows
+// symlinks, so a dangling destination link looks missing and the "File
+// exists" error, the -i prompt, the -b backup, and -f removal all misfire.
+// FindFirstFileW reports the link itself (the same probe the hard-link
+// source check in the command body uses).
+auto lstat_attrs(const std::wstring &wpath, DWORD &attrs) -> bool {
+  WIN32_FIND_DATAW fd{};
+  HANDLE h = FindFirstFileW(wpath.c_str(), &fd);
+  if (h == INVALID_HANDLE_VALUE) {
+    return false;
+  }
+  FindClose(h);
+  attrs = fd.dwFileAttributes;
+  return true;
+}
+
 /**
  * @brief Remove existing file/directory
  * @param path Path to remove (folded API form, see the #1234 call site)
@@ -210,8 +226,8 @@ auto remove_existing(const std::string &path,
                      const std::string &path_display) -> cp::Result<void> {
   std::wstring wpath = utf8_to_wstring(path);
 
-  DWORD attrs = GetFileAttributesW(wpath.c_str());
-  if (attrs == INVALID_FILE_ATTRIBUTES) {
+  DWORD attrs = 0;
+  if (!lstat_attrs(wpath, attrs)) {
     return {};  // File doesn't exist, nothing to remove
   }
 
@@ -463,18 +479,21 @@ REGISTER_COMMAND(
       FindClose(sh);
     }
 
-    // Check if target exists
+    // Check if target exists (lstat semantics: a dangling symlink
+    // destination exists, #1367)
     std::wstring wtarget = utf8_to_wstring(target_api);
-    DWORD target_attrs = GetFileAttributesW(wtarget.c_str());
-    bool target_exists = (target_attrs != INVALID_FILE_ATTRIBUTES);
+    DWORD target_attrs = 0;
+    bool target_exists = lstat_attrs(wtarget, target_attrs);
 
     if (target_exists) {
       if (interactive && !force) {
-        // Prompt user
-        safePrint("ln: replace '" + target + "'? ");
+        // [GNU] The prompt goes to stderr, like the cp/mv overwrite
+        // prompts; declining is an error (GNU exits 1) (#1367).
+        safeErrorPrint("ln: replace '" + target + "'? ");
         std::string response;
         std::getline(std::cin, response);
         if (response.empty() || (response[0] != 'y' && response[0] != 'Y')) {
+          error_count++;
           continue;
         }
       }
