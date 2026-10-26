@@ -348,44 +348,6 @@ auto build_config(const CommandContext<RM_OPTIONS.size()>& ctx)
   return cfg;
 }
 
-// Attribute probe through an open handle, used as a fallback when the
-// GetFileAttributesW probe reports a missing target. Opening the extended
-// spelling asks the filesystem for the literal name, which is the one route
-// that stays reliable for every on-disk name (#1297).
-auto probe_attributes_by_handle(const std::wstring& wpath)
-    -> std::optional<DWORD> {
-  HANDLE handle = CreateFileW(wpath.c_str(), FILE_READ_ATTRIBUTES,
-                              FILE_SHARE_READ | FILE_SHARE_WRITE |
-                                  FILE_SHARE_DELETE,
-                              nullptr, OPEN_EXISTING,
-                              FILE_FLAG_BACKUP_SEMANTICS, nullptr);
-  if (handle == INVALID_HANDLE_VALUE) {
-    return std::nullopt;
-  }
-  BY_HANDLE_FILE_INFORMATION info{};
-  std::optional<DWORD> result;
-  if (GetFileInformationByHandle(handle, &info)) {
-    result = info.dwFileAttributes;
-  }
-  CloseHandle(handle);
-  return result;
-}
-
-// True when the operand's final component is a DOS device name (NUL, CON,
-// ...) but the operand as a whole is not the bare device: "pa\NUL" names an
-// ordinary on-disk entry, while bare "NUL" names the device itself (#1297).
-auto leaf_is_dos_device_name(const native_path::ApiPathOperand& operand)
-    -> bool {
-  const std::wstring stripped(
-      native_path::strip_trailing_separators(operand.normalized));
-  const size_t sep = stripped.find_last_of(L"\\/");
-  if (sep == std::wstring::npos) {
-    return false;  // whole operand: the device itself, handled elsewhere
-  }
-  return native_path::is_dos_device_name_w(
-      std::wstring_view(stripped).substr(sep + 1));
-}
-
 /**
  * @brief Remove a file or directory
  * @param path Path to remove
@@ -401,27 +363,6 @@ auto remove_path(const std::string& path, const RmConfig& cfg) -> bool {
   auto operand = native_path::make_api_path_operand(path);
   const std::wstring& wpath = operand.extended;
   DWORD attr = native_path::operand_target_attributes_w(operand);
-
-  // TEMP-DBG-1297 (remove before merge): dump the computed operand.
-  safeErrorPrint("DBG1297 path=[" + path + "] norm=[" +
-                 wstring_to_utf8(operand.normalized) + "] ext=[" +
-                 wstring_to_utf8(operand.extended) +
-                 "] attr=" + std::to_string(attr) + "\n");
-
-  if (attr == INVALID_FILE_ATTRIBUTES && leaf_is_dos_device_name(operand)) {
-    // #1297: an on-disk entry whose name is a DOS device name (a directory
-    // literally called "NUL") must not be decided by the attribute probe
-    // alone: GetFileAttributesW on the extended spelling can report the
-    // entry as missing even though it exists, and -f would then silently
-    // succeed without removing anything. Confirm through a handle before
-    // treating the target as nonexistent.
-    if (auto probed = probe_attributes_by_handle(wpath)) {
-      attr = *probed;
-    }
-    // TEMP-DBG-1297 (remove before merge)
-    safeErrorPrint("DBG1297 after-fallback attr=" + std::to_string(attr) +
-                   "\n");
-  }
 
   if (cfg.recursive &&
       path_is_current_or_parent_directory(utf8_to_wstring(path))) {
@@ -545,26 +486,8 @@ auto remove_path(const std::string& path, const RmConfig& cfg) -> bool {
       if (hFind == INVALID_HANDLE_VALUE) {
         DWORD error = GetLastError();
         if (error == ERROR_FILE_NOT_FOUND) {
-          // Enumeration reports no entries. Do not conclude success from
-          // that alone: for a directory whose name Win32 treats specially
-          // (#1297) the search can find nothing while the directory still
-          // exists. Attempt the removal itself; an already-vanished
-          // directory is the only case where that reports "not found",
-          // which for rm means the goal is already met.
-          DWORD dir_attr = GetFileAttributesW(dirPath.c_str());
-          clear_readonly_attribute(dirPath, dir_attr);
-          if (RemoveDirectoryW(dirPath.c_str())) {
-            if (cfg.verbose) {
-              std::string dirPathStr = wstring_to_utf8(dirPath);
-              safePrint("removed '");
-              safePrint(dirPathStr);
-              safePrint("'\n");
-            }
-            return true;
-          }
-          const DWORD remove_error = GetLastError();
-          return remove_error == ERROR_FILE_NOT_FOUND ||
-                 remove_error == ERROR_PATH_NOT_FOUND;
+          // Directory is empty, this is expected and not an error
+          return true;
         } else {
           // Directory is inaccessible or other error
           std::string dirPathStr = wstring_to_utf8(dirPath);
