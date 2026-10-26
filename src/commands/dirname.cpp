@@ -89,10 +89,10 @@ auto get_dirname(std::string_view path) -> std::string {
   }
 
   std::string result(path);
-  // [GNU] Strip trailing slashes down to the root prefix. One or two
-  // leading separators are kept as-is ("dirname //" stays "//"); a longer
-  // run folds to a single separator because the root is only its first
-  // slash ("dirname ///" is "/", "dirname ////a" is "/").
+  // [GNU] Strip trailing slashes down to the root prefix. A result that
+  // consists solely of separators folds to a single separator
+  // ("dirname //" is "/", "dirname //a" is "/"); a longer leading run
+  // folds the same way ("dirname ///" is "/", "dirname ////a" is "/").
   const size_t raw_root_len = root_length(result);
   trim_trailing_separators(result, raw_root_len);
   const size_t root_len = root_length(result);
@@ -106,10 +106,16 @@ auto get_dirname(std::string_view path) -> std::string {
   }
 
   if (result.size() == root_len && root_len != 0) {
+    if (root_len == 2 && is_separator(result[0]) && is_separator(result[1])) {
+      return result.substr(0, 1);
+    }
     return result.substr(0, root_len);
   }
 
   if (last_sep <= root_len) {
+    if (root_len == 2 && is_separator(result[0]) && is_separator(result[1])) {
+      return result.substr(0, 1);
+    }
     return result.substr(0, root_len == 0 ? last_sep + 1 : root_len);
   }
 
