@@ -3989,8 +3989,20 @@ auto install_package(const Options& opts, std::string_view package_name,
   if (prune_ec && opts.verbose)
     safeErrorPrintLn("wpm: note: could not prune " + extracted.string() + ": " +
                      prune_ec.message());
-  progress(wpm_text("command.wpm.status.installed", "wpm: installed {}",
-                    pkg->value("name", std::string(package_name))));
+  // The success line is the only confirmation a plain install prints, so it
+  // carries the name, the version and the primary destination (#1363: a
+  // bare "installed <name>" left the user unable to tell what landed where).
+  const std::string installed_name =
+      pkg->value("name", std::string(package_name));
+  std::string installed_dest = opts.root.string();
+  if (auto destinations =
+          artifact_destination_paths(opts.root, *artifact, installed_name);
+      destinations && !destinations->empty()) {
+    installed_dest = destinations->front().string();
+  }
+  progress(wpm_text("command.wpm.status.installed",
+                    "wpm: installed {} {} -> {}", installed_name,
+                    pkg->value("version", ""), installed_dest));
   return finish(true, "installed");
 }
 

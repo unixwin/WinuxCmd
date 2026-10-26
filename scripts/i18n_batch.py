@@ -194,7 +194,7 @@ MANUAL_MESSAGES = {
     "command.wpm.status.uninstall_progress":
         "wpm: removing {}... {}% ({}/{} files, {})",
     "command.wpm.status.installing_files": "wpm: installing files...",
-    "command.wpm.status.installed": "wpm: installed {}",
+    "command.wpm.status.installed": "wpm: installed {} {} -> {}",
     "command.wpm.status.install_dry_run": "wpm: dry-run complete; would install {}",
     "command.wpm.status.extracting": "wpm: extracting {}",
     "command.wpm.status.downloading": "wpm: downloading {}",
