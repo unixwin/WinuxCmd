@@ -1135,26 +1135,24 @@ auto calculate_dir_size(const std::wstring& path,
       uint64_t file_size = get_file_size(full_path, cfg.apparent_size);
       // [GNU] Hard-linked files are counted once per invocation; later
       // occurrences of the same inode contribute nothing (uutils #9202
-      // #10241 #10312 #9871). --count-links opts out.
+      // #10241 #10312 #9871).  Every counted file registers its inode,
+      // not only multiply-linked ones: a later operand naming the same
+      // file is a repeat encounter too (#1351).  --count-links opts out
+      // of the dedup: every encounter then counts once AT FACE VALUE —
+      // it never scales the size by the link count.
       bool counted = true;
       if (!cfg.count_links) {
-        const DWORD nlinks = get_hard_link_count(full_path);
-        if (nlinks > 1) {
-          const std::wstring inode_key = get_inode_key(full_path);
-          if (!inode_key.empty()) {
-            if (!seen_inodes.insert(inode_key).second) {
-              counted = false;
-              file_size = 0;
-            }
+        const std::wstring inode_key = get_inode_key(full_path);
+        if (!inode_key.empty()) {
+          if (!seen_inodes.insert(inode_key).second) {
+            counted = false;
+            file_size = 0;
           }
         }
-      } else {
-        const DWORD nlinks = get_hard_link_count(full_path);
-        if (nlinks > 1) {
-          file_size *= nlinks;
-        }
       }
-      summary.size += file_size;
+      if (!cfg.show_inodes) {
+        summary.size += file_size;
+      }
       if (cfg.show_time) {
         WIN32_FILE_ATTRIBUTE_DATA file_data{};
         if (GetFileAttributesExW(full_path.c_str(), GetFileExInfoStandard,
@@ -1168,22 +1166,20 @@ auto calculate_dir_size(const std::wstring& path,
         }
       }
 
-      // [GNU] --inodes counts entries instead of blocks: each file counts
-      // one (extra links under --count-links); a directory adds its whole
-      // subtree via the recursion above.  The counts travel through the
-      // same summary.size/sizes plumbing used for byte sizes.
-      if (cfg.show_inodes) {
-        if (cfg.count_links) {
-          summary.size += std::max<DWORD>(get_hard_link_count(full_path), 1);
-        } else if (counted) {
-          summary.size += 1;
-        }
+      // [GNU] --inodes counts entries instead of blocks: each counted
+      // encounter counts exactly one — under --count-links every
+      // encounter counts one too, never the file's link count (#1351);
+      // a directory adds its whole subtree via the recursion above.
+      // The counts travel through the same summary.size/sizes plumbing
+      // used for byte sizes.
+      if (cfg.show_inodes && counted) {
+        summary.size += 1;
       }
 
       // Count individual files if requested
       if (counted && cfg.count_all &&
           (cfg.max_depth < 0 || child_depth <= cfg.max_depth)) {
-        sizes[full_path] = file_size;
+        sizes[full_path] = cfg.show_inodes ? 1 : file_size;
         if (print_order != nullptr) {
           print_order->push_back(full_path);
         }
@@ -1438,14 +1434,19 @@ auto print_disk_usage(const CommandContext<DU_OPTIONS.size()>& ctx)
     } else {
       // It's a file
       uint64_t file_size = get_file_size(wpath, cfg.apparent_size);
-      // --count-links: multiply by hard link count [DIFFERS]
-      if (cfg.count_links) {
-        DWORD nlinks = get_hard_link_count(wpath);
-        if (nlinks > 1) {
-          file_size *= nlinks;
+      // [GNU] The seen-inode table spans the whole invocation (#1351):
+      // a file operand whose inode was already counted — by an earlier
+      // operand or inside an earlier directory traversal — prints
+      // nothing and adds nothing, unless --count-links is in effect.
+      // --count-links counts each encounter once at face value; it
+      // never scales the size by the link count.
+      if (!cfg.count_links) {
+        const std::wstring inode_key = get_inode_key(wpath);
+        if (!inode_key.empty() && !seen_inodes.insert(inode_key).second) {
+          continue;
         }
       }
-      grand_total += file_size;
+      grand_total += cfg.show_inodes ? 1 : file_size;
 
       if (passes_threshold(cfg, file_size)) {
         UsageSummary file_summary;
