@@ -772,13 +772,31 @@ TEST(sort, sort_check_quiet_detects_unsorted_input) {
   EXPECT_EQ_TEXT(r.stdout_text, "");
 }
 
-TEST(sort, sort_check_silent_long_option_matches_quiet_check_mode) {
+// #1355: GNU has no --check-silent long option (the quiet check mode is
+// spelled -C or --check=quiet/--check=silent). The invented long option
+// must be rejected with GNU's exit code and diagnostic.
+TEST(sort, sort_check_silent_long_option_rejected_issue1355) {
   TempDir tmp;
   tmp.write("bad.txt", "b\na\n");
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
   p.add(L"sort.exe", {L"--check-silent", L"bad.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_TRUE(r.stderr_text.find("unrecognized option '--check-silent'") !=
+              std::string::npos);
+  EXPECT_EQ_TEXT(r.stdout_text, "");
+}
+
+TEST(sort, sort_check_equals_silent_legal_issue1355) {
+  TempDir tmp;
+  tmp.write("bad.txt", "b\na\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sort.exe", {L"--check=silent", L"bad.txt"});
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
