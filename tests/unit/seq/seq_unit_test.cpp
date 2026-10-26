@@ -411,3 +411,16 @@ TEST(seq, seq_custom_separator_large_range_buffered) {
   EXPECT_TRUE(r.stdout_text.ends_with("49999, 50000\n"));
   EXPECT_NOT_CONTAINS(r.stdout_text, ", , ");
 }
+// #1376: seq has no iteration ceiling — it streams, and the consumer
+// decides how much to read. `seq 1000000001 | head -3` used to fail
+// upfront with "seq: too many iterations" and print nothing.
+TEST(seq, seq_streams_beyond_billion_iterations_issue1376) {
+  Pipeline p;
+  p.add(L"seq.exe", {L"1000000001"});
+  p.add(L"head.exe", {L"-n", L"3"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "1\n2\n3\n");
+}

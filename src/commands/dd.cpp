@@ -424,7 +424,12 @@ auto parse_status_value(std::string_view value, Config& cfg) -> bool {
 auto set_operand(Config& cfg, std::string_view name, std::string_view value,
                  std::string_view operand) -> bool {
   if (name == "if") {
-    cfg.input_file = std::string(value);
+    // [native-glob] #1374: in WINUX_SHELL_GLOB=native mode `dd if=*`
+    // reaches us unexpanded; the if= value goes through the shared
+    // expansion boundary like a plain file operand (first match wins).
+    // of= names a file to create and is never expanded.
+    auto expanded = expand_file_operand(value);
+    cfg.input_file = expanded.empty() ? std::string(value) : expanded.front();
     cfg.input_given = true;
   } else if (name == "of") {
     cfg.output_file = std::string(value);

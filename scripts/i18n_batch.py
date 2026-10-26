@@ -85,6 +85,10 @@ MANUAL_MESSAGES = {
     "command.xxd.error.cannot_open": "xxd: cannot open {}",
     "command.xxd.error.invalid_columns": "xxd: invalid column count",
     "command.xxd.error.invalid_hex_dump": "xxd: invalid hex dump",
+    "command.hexdump.error.cannot_open_format_file":
+        "can't open format file '{}'",
+    "command.hexdump.error.format_consumes_no_input":
+        "format string consumes no input",
     "common.try_help": "Try '{} --help' for more information.",
     "command.top.custom_help": (
         "Usage: top [options]\n"
