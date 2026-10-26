@@ -4530,6 +4530,12 @@ auto should_descend_into(const std::filesystem::directory_entry& e,
   return true;
 }
 
+// [#1316] GNU evaluates -quit as an action that exits as soon as it is
+// reached, regardless of whether any entry matched yet. The quit checks
+// below therefore test cfg.quit alone: gating them on matched_any let
+// traversal continue into unvisited roots (and report their errors)
+// when -quit fired on a non-matching entry. matched_any is kept as a
+// write-only parameter to avoid churning every call site.
 auto scan_depth_first(const std::filesystem::path& root,
                       const std::filesystem::path& p, int depth, Config& cfg,
                       bool& matched_any) -> void {
@@ -4562,7 +4568,7 @@ auto scan_depth_first(const std::filesystem::path& root,
       safeErrorPrint("\n");
       cfg.had_error = true;
     } else {
-      for (; it != end && !(cfg.quit && matched_any); it.increment(ec)) {
+      for (; it != end && !cfg.quit; it.increment(ec)) {
         if (ec) {
           safeErrorPrint("find: '");
           safeErrorPrint(path_display(p));
@@ -4578,7 +4584,7 @@ auto scan_depth_first(const std::filesystem::path& root,
     }
   }
 
-  if (cfg.quit && matched_any) return;
+  if (cfg.quit) return;
 
   bool matched = entry_matches(cfg, p, entry, depth, root);
   if (cfg.quit && !matched) return;
@@ -4620,7 +4626,7 @@ auto scan_delete_depth_first(const std::filesystem::path& root,
       safeErrorPrint("\n");
       cfg.had_error = true;
     } else {
-      for (; it != end && !(cfg.quit && matched_any); it.increment(ec)) {
+      for (; it != end && !cfg.quit; it.increment(ec)) {
         if (ec) {
           safeErrorPrint("find: '");
           safeErrorPrint(path_display(p));
@@ -4636,7 +4642,7 @@ auto scan_delete_depth_first(const std::filesystem::path& root,
     }
   }
 
-  if (cfg.quit && matched_any) return;
+  if (cfg.quit) return;
 
   bool matched = entry_matches(cfg, p, entry, depth, root);
   if (cfg.quit && !matched) return;
@@ -4760,7 +4766,7 @@ auto process(Config& cfg) -> int {
     } else {
       scan_one_root(root, cfg, matched_any);
     }
-    if (cfg.quit && matched_any) break;
+    if (cfg.quit) break;
   }
 
   flush_exec_actions(cfg);

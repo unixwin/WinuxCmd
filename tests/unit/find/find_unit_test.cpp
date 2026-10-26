@@ -875,6 +875,26 @@ TEST(find, issue_1315_exec_plus_expands_non_trailing_placeholder) {
   EXPECT_EQ(f1_count, 2u);
 }
 
+TEST(find, issue_1316_quit_stops_without_any_match) {
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "dir1");
+  tmp.write("dir1/nomatch.txt", "x");
+
+  // -quit is evaluated (and fires) for the non-matching entry before
+  // the -a -false branch rejects it, so traversal must stop before the
+  // missing second root is visited: GNU exits 0 with no error. The
+  // issue's seed form (find emptydir missingdir -name x -quit) is NOT
+  // used here: with -name x, -quit is never reached for non-matching
+  // entries, so GNU itself reports the missing root with exit 1.
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe",
+        {L"dir1", L"missingdir", L"-quit", L"-a", L"-false"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.find("missingdir") == std::string::npos);
+}
+
 TEST(find, find_perm_and_access_primaries_match_winux_permissions) {
   TempDir tmp;
   tmp.write("plain.txt", "x");
