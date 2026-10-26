@@ -957,9 +957,6 @@ auto build_command_line(const std::string &command,
   return cmd_line;
 }
 
-auto clamp_max_chars_floor(int max_chars, const std::string &command,
-                           const std::vector<std::string> &args) -> int {
-  if (max_chars <= 0) return max_chars;
 // #1322: the quoting used by -t and by the -p prompt (one function for
 // both, as in GNU).  Quoting triggers on blanks, controls, and the
 // punctuation set below; alphanumerics, `# % + , - . / : @ ] _ { } ~`
@@ -995,12 +992,6 @@ auto shell_argument_needs_quoting(unsigned char c) -> bool {
   }
 }
 
-  int minimum = static_cast<int>(build_command_line(command, args).size());
-  if (max_chars < minimum) {
-    safeErrorPrint("xargs: warning: value for -s option is too small; using ");
-    safeErrorPrint(std::to_string(minimum));
-    safeErrorPrint("\n");
-    return minimum;
 auto quote_shell_argument(std::string_view arg) -> std::string {
   if (arg.empty()) return "''";
 
@@ -1021,7 +1012,6 @@ auto quote_shell_argument(std::string_view arg) -> std::string {
     return "\"" + std::string(arg) + "\"";
   }
 
-  return max_chars;
   std::string out;
   out.push_back('\'');
   for (unsigned char c : arg) {
@@ -1379,6 +1369,10 @@ auto execute_command(const std::string &command,
                      int max_chars, bool exit_if_exceeded, int max_procs,
                      bool verbose, bool interactive, ChildStdinMode stdin_mode,
                      const std::string &process_slot_var) -> int {
+  // #1323: -x needs no separate branch anymore: GNU errors on a single
+  // item that fits nowhere with or without -x, and splits multi-item
+  // batches with or without -x.
+  (void)exit_if_exceeded;
   int exit_code = 0;
   bool stop_launching = false;
 
@@ -1427,6 +1421,18 @@ auto execute_command(const std::string &command,
   SmallVector<std::string, 256> batch;
   batch.reserve(static_cast<size_t>(std::max(max_args, 1)));
 
+  // #1323: -s accounting counts every argv entry (command + initial
+  // arguments + this batch's items) as len+1 bytes of the original UTF-8
+  // text, never the Windows-quoted command line (quoting inflates it and
+  // used to shift every boundary by one).
+  auto argv_size = [&](const std::vector<std::string> &materialized) {
+    size_t total = command.size() + 1;
+    for (const auto &arg : materialized) total += arg.size() + 1;
+    return total;
+  };
+  auto base_argv_size = [&]() {
+    return argv_size(materialize_arguments(base_args, {}, replace_str));
+  };
   auto fits_limits = [&](const std::vector<std::string> &candidate) -> bool {
     if (max_args > 0 && static_cast<int>(candidate.size()) > max_args) {
       return false;
@@ -1434,12 +1440,22 @@ auto execute_command(const std::string &command,
     if (max_chars > 0) {
       auto materialized =
           materialize_arguments(base_args, candidate, replace_str);
-      auto cmd_line = build_command_line(command, materialized);
-      if (cmd_line.size() > static_cast<size_t>(max_chars)) {
+      if (argv_size(materialized) > static_cast<size_t>(max_chars)) {
         return false;
       }
     }
     return true;
+  };
+  // #1323: GNU's two single-item errors: the command + initial arguments
+  // alone already over the limit, versus a fitting base pushed over by
+  // one item.
+  auto report_oversized_single = [&]() {
+    if (max_chars > 0 && base_argv_size() > static_cast<size_t>(max_chars)) {
+      safeErrorPrint("xargs: cannot fit single argument within argument "
+                     "list size limit\n");
+    } else {
+      safeErrorPrint("xargs: argument line too long\n");
+    }
   };
 
   auto run_batch = [&](const std::vector<std::string> &current_batch,
@@ -1499,11 +1515,11 @@ auto execute_command(const std::string &command,
   };
 
   if (input_args.empty()) {
+    // #1323: the command + initial arguments alone over the limit is an
+    // error even with no items (and even without -x).
     if (!fits_limits({})) {
-      if (exit_if_exceeded) {
-        cp::report_custom_error(L"xargs", L"command line length exceeded");
-        return 1;
-      }
+      report_oversized_single();
+      return 1;
     }
     run_batch({}, true);
     while (!running.empty()) wait_one();
@@ -1537,10 +1553,11 @@ auto execute_command(const std::string &command,
     batch.push_back(input_arg);
     auto current_batch = std::vector<std::string>(batch.begin(), batch.end());
     if (!fits_limits(current_batch)) {
-      if (exit_if_exceeded) {
-        cp::report_custom_error(L"xargs", L"command line length exceeded");
-        return 1;
-      }
+      // #1323: a single item that fits nowhere is an error even without
+      // -x; GNU does not run it.
+      drain_running_children();
+      report_oversized_single();
+      return 1;
     }
   }
 
@@ -1729,11 +1746,18 @@ REGISTER_COMMAND(
 
   // Get command to execute (first positional arg)
   if (ctx.positionals.empty()) {
-    std::vector<std::string> echo_base_args;
-    max_chars = clamp_max_chars_floor(max_chars, "echo", echo_base_args);
     // #1322: --show-limits prints the limits and execution continues
     // normally (GNU runs the command afterwards); it suppresses nothing.
     if (show_limits) print_show_limits(max_chars);
+    // #1323: the echo command itself (5 bytes) over -s is an error even
+    // with -r or --show-limits -- except -I with no items, where GNU
+    // runs nothing at all.
+    if (max_chars > 0 && static_cast<size_t>(max_chars) < 5 &&
+        !( !replace_str.empty() && input_empty )) {
+      safeErrorPrint("xargs: cannot fit single argument within argument "
+                     "list size limit\n");
+      return 1;
+    }
 
     // Default to echo if no command specified
     // [GNU] xargs.c decides whether to run by checking whether any arguments
@@ -1745,17 +1769,27 @@ REGISTER_COMMAND(
 
     if (input_groups.empty()) input_groups.emplace_back();
 
+    // #1323: same argv accounting as execute_command ("echo" counts 5).
     auto echo_fits_limits = [&](const std::vector<std::string> &echo_args) {
       if (max_args > 0 && static_cast<int>(echo_args.size()) > max_args) {
         return false;
       }
       if (max_chars > 0) {
-        auto cmd_line = build_command_line("echo", echo_args);
-        if (cmd_line.size() > static_cast<size_t>(max_chars)) {
+        size_t total = 5;
+        for (const auto &arg : echo_args) total += arg.size() + 1;
+        if (total > static_cast<size_t>(max_chars)) {
           return false;
         }
       }
       return true;
+    };
+    auto echo_report_oversized_single = [&]() {
+      if (max_chars > 0 && static_cast<size_t>(max_chars) < 5) {
+        safeErrorPrint("xargs: cannot fit single argument within argument "
+                       "list size limit\n");
+      } else {
+        safeErrorPrint("xargs: argument line too long\n");
+      }
     };
 
     for (const auto &input_args : input_groups) {
@@ -1767,8 +1801,9 @@ REGISTER_COMMAND(
         if (batch.empty() && !allow_empty) return true;
 
         std::vector<std::string> echo_args(batch.begin(), batch.end());
-        if (!echo_fits_limits(echo_args) && exit_if_exceeded) {
-          cp::report_custom_error(L"xargs", L"command line length exceeded");
+        // #1323: a batch that fits nowhere is an error even without -x.
+        if (!echo_fits_limits(echo_args)) {
+          echo_report_oversized_single();
           return false;
         }
 
@@ -1796,6 +1831,10 @@ REGISTER_COMMAND(
       };
 
       if (input_args.empty()) {
+        // -I with no items runs nothing (GNU), even when the echo
+        // command itself would exceed -s (same exception as the
+        // explicit-command pre-check above).
+        if (!replace_str.empty()) continue;
         if (!flush_echo_batch(true)) return 1;
         continue;
       }
@@ -1820,8 +1859,10 @@ REGISTER_COMMAND(
 
         batch.push_back(input_arg);
         candidate.assign(batch.begin(), batch.end());
-        if (!echo_fits_limits(candidate) && exit_if_exceeded) {
-          cp::report_custom_error(L"xargs", L"command line length exceeded");
+        if (!echo_fits_limits(candidate)) {
+          // #1323: a single item that fits nowhere is an error even
+          // without -x; GNU does not print it.
+          echo_report_oversized_single();
           return 1;
         }
       }
@@ -1844,6 +1885,25 @@ REGISTER_COMMAND(
   // normally (GNU runs the command afterwards); it suppresses nothing.
   if (show_limits) print_show_limits(max_chars);
 
+  // Execute command with arguments - convert SmallVector to std::vector for
+  // compatibility
+  std::vector<std::string> base_args_vec =
+      expand_command_template_args(base_args);
+  // #1323: the old clamp lifted -s up to the command line and kept
+  // running; GNU instead refuses when the command + initial arguments
+  // alone exceed -s -- even with -r or --show-limits, and even with no
+  // items.  The one exception is -I with no items, where GNU runs
+  // nothing at all.  (With the default -s of 32767 this never fires.)
+  if (max_chars > 0 && !( !replace_str.empty() && input_empty )) {
+    size_t base_size = command.size() + 1;
+    for (const auto &arg : base_args_vec) base_size += arg.size() + 1;
+    if (base_size > static_cast<size_t>(max_chars)) {
+      safeErrorPrint("xargs: cannot fit single argument within argument "
+                     "list size limit\n");
+      return 1;
+    }
+  }
+
   // If no input arguments, check if we should skip execution
   if (input_empty) {
     // Skip if -r (no-run-if-empty) is specified
@@ -1865,12 +1925,6 @@ REGISTER_COMMAND(
   } else if (!arg_file.empty()) {
     stdin_mode = ChildStdinMode::Parent;
   }
-
-  // Execute command with arguments - convert SmallVector to std::vector for
-  // compatibility
-  std::vector<std::string> base_args_vec =
-      expand_command_template_args(base_args);
-  max_chars = clamp_max_chars_floor(max_chars, command, base_args_vec);
   int exit_code = 0;
   for (const auto &input_args : input_groups) {
     int status =

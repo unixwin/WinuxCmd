@@ -1228,12 +1228,15 @@ TEST(xargs, xargs_exit_if_exceeded_rejects_oversized_command_line) {
 
   auto r = p.run();
 
+  // #1323: cmd.exe + /C + echo alone is already 16 bytes over a -s 10
+  // limit, so GNU reports cannot-fit (not the old generic message).
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stderr_text.find("command line length exceeded") !=
-              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "cannot fit single argument within argument list size "
+                  "limit") != std::string::npos);
 }
 
-TEST(xargs, xargs_max_chars_below_command_floor_warns_and_runs) {
+TEST(xargs, xargs_max_chars_below_command_size_errors_without_running_1323) {
   TempDir tmp;
 
   Pipeline p;
@@ -1243,10 +1246,13 @@ TEST(xargs, xargs_max_chars_below_command_floor_warns_and_runs) {
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stderr_text.find("value for -s option is too small") !=
-              std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("alpha") != std::string::npos);
+  // #1323: the old code lifted -s up to the command line and ran anyway;
+  // GNU refuses with cannot-fit and runs nothing.
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "cannot fit single argument within argument list size "
+                  "limit") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("alpha") == std::string::npos);
 }
 
 TEST(xargs, xargs_default_echo_max_chars_splits_batches) {
@@ -1254,13 +1260,16 @@ TEST(xargs, xargs_default_echo_max_chars_splits_batches) {
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
-  p.add(L"xargs.exe", {L"-s", L"8"});
+  // #1323: echo counts 5 bytes, so -s 13 fits "one two" (5+4+4) but not
+  // a third item; -s 8 would make even one item unusable (see the
+  // single-oversized-item test below).
+  p.add(L"xargs.exe", {L"-s", L"13"});
   p.set_stdin("one\ntwo\nthree\n");
 
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "one\ntwo\nthree\n");
+  EXPECT_EQ_TEXT(r.stdout_text, "one two\nthree\n");
 }
 
 TEST(xargs,
@@ -1274,9 +1283,11 @@ TEST(xargs,
 
   auto r = p.run();
 
+  // #1323: echo alone (5 bytes) already exceeds -s 3.
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stderr_text.find("command line length exceeded") !=
-              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "cannot fit single argument within argument list size "
+                  "limit") != std::string::npos);
 }
 
 TEST(xargs, xargs_maps_child_failure_to_123) {
@@ -1416,13 +1427,18 @@ TEST(xargs, xargs_delimiter_does_not_force_exit_if_exceeded) {
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
-  p.add(L"xargs.exe", {L"-d", L",", L"-s", L"12", L"cmd.exe", L"/C", L"echo"});
+  // #1323: cmd.exe + /C + echo is 16 bytes, so -s 22 fits one item
+  // (16+6) but not two; -d still splits instead of aborting.  (-s 12
+  // would now be a cannot-fit error, since even the base exceeds it.)
+  p.add(L"xargs.exe", {L"-d", L",", L"-s", L"22", L"cmd.exe", L"/C", L"echo"});
   p.set_stdin("alpha,beta,gamma\n");
 
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stderr_text.find("command line length exceeded") ==
+              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("cannot fit single argument") ==
               std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("alpha") != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("beta") != std::string::npos);
@@ -1440,9 +1456,12 @@ TEST(xargs, xargs_replace_still_implies_exit_if_exceeded) {
 
   auto r = p.run();
 
+  // #1323: the base (cmd.exe + /C + echo + template) already exceeds
+  // -s 12, so GNU reports cannot-fit.
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stderr_text.find("command line length exceeded") !=
-              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "cannot fit single argument within argument list size "
+                  "limit") != std::string::npos);
 }
 
 // Explicit -x with -d still exits when a single item exceeds -s.
@@ -1457,9 +1476,11 @@ TEST(xargs, xargs_explicit_exit_with_delimiter_rejects_oversized_item) {
 
   auto r = p.run();
 
+  // #1323: the base alone (16 bytes) already exceeds -s 10.
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stderr_text.find("command line length exceeded") !=
-              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "cannot fit single argument within argument list size "
+                  "limit") != std::string::npos);
 }
 
 // ---- winx3-xargs regressions (issues #1318-#1323) ----
@@ -1735,3 +1756,86 @@ TEST(xargs, xargs_show_limits_prints_six_lines_and_runs_1322) {
   EXPECT_TRUE(r.stdout_text.find("hi") != std::string::npos);
 }
 
+TEST(xargs, xargs_single_oversized_item_errors_without_exit_flag_1323) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"-s", L"20", L"cmd.exe", L"/C", L"echo"});
+  p.set_stdin("alpha\n");
+
+  auto r = p.run();
+
+  // Base (16) fits, but base + alpha (22) does not, and GNU errors even
+  // without -x instead of running the item anyway.
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("argument line too long") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("alpha") == std::string::npos);
+}
+
+TEST(xargs, xargs_empty_input_below_echo_size_errors_1323) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"-s", L"4"});
+  p.set_stdin("");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "cannot fit single argument within argument list size "
+                  "limit") != std::string::npos);
+}
+
+TEST(xargs, xargs_default_echo_single_oversized_item_errors_1323) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"-s", L"8"});
+  p.set_stdin("one\ntwo\nthree\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("argument line too long") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("one") == std::string::npos);
+}
+
+TEST(xargs, xargs_argv_accounting_boundary_1323) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe",
+        {L"-s", L"24", L"cmd.exe", L"/C", L"echo", L"PRE"});
+  p.set_stdin("aaa bbb\n");
+
+  auto r = p.run();
+
+  // cmd.exe + /C + echo + PRE is 20 bytes; one item (24) fits, two do not.
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("PRE aaa") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("PRE bbb") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("PRE aaa bbb") == std::string::npos);
+}
+
+TEST(xargs, xargs_size_counts_raw_argv_not_quoted_line_1323) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"-x", L"-s", L"9"});
+  p.set_stdin("a;b\n");
+
+  auto r = p.run();
+
+  // echo (5) + a;b (4) is exactly 9; the Windows-quoted form would be
+  // longer, but -s accounting must use the raw argv bytes.
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("a;b") != std::string::npos);
+}
