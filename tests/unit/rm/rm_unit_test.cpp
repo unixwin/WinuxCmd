@@ -619,11 +619,89 @@ TEST(rm, rm_force_bare_nul_operand_names_device_not_filesystem_issue1297) {
   EXPECT_TRUE(std::filesystem::is_empty(tmp.path));
 }
 
-// ===== TEMPORARY DIAGNOSTIC for #1297 (remove before merge) =====
-// Probes, from a real Windows process, how each Win32 API treats an
-// on-disk directory named NUL under the extended (\\?\) spelling, so the
-// rm fix can target the step that actually loses the directory. Always
+// ===== TEMPORARY DIAGNOSTIC v2 for #1297 (remove before merge) =====
+// v1 proved every Win32 API handles the extended spelling correctly
+// (GFAW(ext)=0x10, CreateFile ok, FFF ok, RemoveDirectoryW ok,
+// remove_all ok), so the loss is inside rm's own flow. v2 runs rm.exe
+// through the Pipeline on a control dir and on NUL dirs (separate and
+// combined flags) and dumps exit/stdout/stderr plus post-state. Always
 // fails on purpose: the dump is the result.
+TEST(rm, diag_nul_dir_pipeline_probe_issue1297) {
+  TempDir tmp;
+  std::string out;
+  auto narrow = [](const std::wstring& w) {
+    if (w.empty()) return std::string{};
+    int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), nullptr,
+                                0, nullptr, nullptr);
+    std::string s((size_t)n, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), s.data(), n,
+                        nullptr, nullptr);
+    return s;
+  };
+  auto mk_nul = [&](const wchar_t* parent) {
+    std::filesystem::create_directory(tmp.path / narrow(parent));
+    const std::wstring ext = L"\\\\?\\" + tmp.wpath() + L"\\" + parent +
+                             L"\\NUL";
+    std::filesystem::create_directory(std::filesystem::path(ext));
+    std::ofstream inside(std::filesystem::path(ext) / "inside.txt");
+    inside << "payload";
+    return ext;
+  };
+
+  // Control: ordinary directory, separate flags.
+  std::filesystem::create_directory(tmp.path / "ctl");
+  {
+    std::ofstream inside(tmp.path / "ctl" / "inside.txt");
+    inside << "payload";
+  }
+  {
+    Pipeline p;
+    p.set_cwd(tmp.wpath());
+    p.add(L"rm.exe", {L"-r", L"-f", tmp.wpath() + L"\\ctl"});
+    auto r = p.run();
+    out += "CTL exit=" + std::to_string(r.exit_code) +
+           " exists_after=" +
+           std::to_string(std::filesystem::exists(tmp.path / "ctl")) +
+           " stdout=[" + r.stdout_text + "] stderr=[" + r.stderr_text + "]\n";
+  }
+
+  // NUL dir, separate flags.
+  const std::wstring ext_a = mk_nul(L"pa");
+  {
+    Pipeline p;
+    p.set_cwd(tmp.wpath());
+    p.add(L"rm.exe", {L"-r", L"-f", tmp.wpath() + L"\\pa\\NUL"});
+    auto r = p.run();
+    out += "NUL-sep exit=" + std::to_string(r.exit_code) +
+           " dir_exists=" +
+           std::to_string(std::filesystem::exists(std::filesystem::path(ext_a))) +
+           " file_exists=" +
+           std::to_string(std::filesystem::exists(
+               std::filesystem::path(ext_a) / "inside.txt")) +
+           " stdout=[" + r.stdout_text + "] stderr=[" + r.stderr_text + "]\n";
+  }
+
+  // NUL dir, combined -rf.
+  const std::wstring ext_b = mk_nul(L"pb");
+  {
+    Pipeline p;
+    p.set_cwd(tmp.wpath());
+    p.add(L"rm.exe", {L"-rf", tmp.wpath() + L"\\pb\\NUL"});
+    auto r = p.run();
+    out += "NUL-rf exit=" + std::to_string(r.exit_code) +
+           " dir_exists=" +
+           std::to_string(std::filesystem::exists(std::filesystem::path(ext_b))) +
+           " file_exists=" +
+           std::to_string(std::filesystem::exists(
+               std::filesystem::path(ext_b) / "inside.txt")) +
+           " stdout=[" + r.stdout_text + "] stderr=[" + r.stderr_text + "]\n";
+  }
+
+  wctest::fail(__FILE__, __LINE__,
+               "TEMP DIAGNOSTIC V2 DUMP (#1297):\n" + out);
+}
+
+// ===== TEMPORARY DIAGNOSTIC v1 for #1297 (remove before merge) =====
 TEST(rm, diag_nul_dir_api_probe_issue1297) {
   TempDir tmp;
   std::filesystem::create_directory(tmp.path / "pa");
