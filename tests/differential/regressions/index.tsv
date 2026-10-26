@@ -50,3 +50,4 @@
 62	#1338	grep negative context length must be rejected
 63	#1339	sed address escapes must keep the backslash
 64	#1340	sort -V must use filevercmp ordering
+65	#1341	uniq -w -1 must be rejected
