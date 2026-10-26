@@ -48,3 +48,4 @@
 59	#1335	ls quoting-style locale and --sort prefixes must match GNU
 61	#1337	dirname of // forms must collapse to a single slash
 62	#1338	grep negative context length must be rejected
+63	#1339	sed address escapes must keep the backslash

@@ -805,8 +805,9 @@ auto parse_address(std::string_view line, size_t& i,
         escape = false;
         // [GNU] Decode control escapes in address regexes the same way
         // s/// decodes them (compile.c:1449-1465): /\r/ matches the CR
-        // byte, /\t/ the TAB byte. Unknown escapes keep their historical
-        // literal form (the regex compiler resolves them).
+        // byte, /\t/ the TAB byte. Other escapes keep their backslash
+        // so the regex compiler resolves them (\. is a literal dot,
+        // \+ the BRE one-or-more form), like the s/// pattern reader.
         switch (c) {
           case 'a':
             pat.push_back('\a');
@@ -827,7 +828,12 @@ auto parse_address(std::string_view line, size_t& i,
             pat.push_back('\v');
             break;
           default:
-            pat.push_back(c);
+            if (c == delim) {
+              pat.push_back(c);
+            } else {
+              pat.push_back('\\');
+              pat.push_back(c);
+            }
             break;
         }
         continue;
