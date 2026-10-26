@@ -517,6 +517,12 @@ auto parse_arguments(std::istream &input, char delimiter, bool split_blanks,
                      const std::optional<std::string> &eof_str)
     -> cp::Result<std::vector<std::string>> {
   auto text = read_input_text(input, eof_str);
+  if (text.empty()) {
+    // #1318: empty input yields zero items in every mode.  The loop below
+    // used to synthesize one empty item for the delimiter/-0 path (the
+    // final `!saw_separator` push), which also defeated -r.
+    return std::vector<std::string>{};
+  }
   if (split_blanks) {
     return parse_default_arguments(text);
   }

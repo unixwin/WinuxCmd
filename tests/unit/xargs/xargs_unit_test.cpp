@@ -1457,3 +1457,36 @@ TEST(xargs, xargs_explicit_exit_with_delimiter_rejects_oversized_item) {
   EXPECT_TRUE(r.stderr_text.find("command line length exceeded") !=
               std::string::npos);
 }
+
+// ---- winx3-xargs regressions (issues #1318-#1323) ----
+
+TEST(xargs, xargs_null_empty_input_with_no_run_if_empty_skips_1318) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe",
+        {L"-0", L"-r", L"cmd.exe", L"/C", L"echo", L"baseline"});
+  p.set_stdin("");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("baseline") == std::string::npos);
+}
+
+TEST(xargs, xargs_delimiter_empty_input_with_no_run_if_empty_skips_1318) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe",
+        {L"-d", L",", L"-r", L"cmd.exe", L"/C", L"echo", L"baseline"});
+  p.set_stdin("");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("baseline") == std::string::npos);
+}
+
