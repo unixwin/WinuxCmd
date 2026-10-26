@@ -63,3 +63,13 @@ TEST(chroot, chroot_option_surface_reports_windows_limitation) {
   EXPECT_EQ(r.exit_code, 125);
   EXPECT_NE(r.stderr_text.find("not supported on Windows"), std::string::npos);
 }
+// #1375: chroot option errors exit 125 (GNU EXIT_USAGE), not 1.
+TEST(chroot, chroot_option_error_exits_125_issue1375) {
+  Pipeline p;
+  p.add(L"chroot.exe", {L"--zzz", L"someroot"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 125);
+}
+

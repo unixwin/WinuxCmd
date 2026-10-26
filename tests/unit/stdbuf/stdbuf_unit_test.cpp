@@ -140,3 +140,19 @@ TEST(stdbuf, stdbuf_rejects_zero_sized_buffer_mode) {
   EXPECT_EQ(r.exit_code, 125);
   EXPECT_TRUE(r.stderr_text.find("invalid mode '0KiB'") != std::string::npos);
 }
+// #1375: stdbuf's own option parsing stops at COMMAND; the wrapped
+// command's options pass through untouched. `stdbuf -oL ls -l` used to
+// fail with "stdbuf: invalid option -- 'l'".
+TEST(stdbuf, stdbuf_wrapped_command_options_pass_through_issue1375) {
+  TempDir tmp;
+  tmp.write("marker.txt", "x\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"stdbuf.exe", {L"-oL", L"ls.exe", L"-l"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("marker.txt") != std::string::npos);
+}
+

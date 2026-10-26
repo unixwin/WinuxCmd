@@ -915,7 +915,12 @@ auto behavior_for(std::string_view name) -> CommandBehavior {
       default_standard_interception_enabled;
 
   if (name == "env" || name == "nice" || name == "stdbuf" ||
-      name == "timeout") {
+      name == "timeout" || name == "chroot" || name == "runcon") {
+    // [GNU] chroot/runcon usage (option) errors also exit 125
+    // (EXIT_USAGE in the coreutils wrapper family, #1375); their
+    // missing-operand paths already returned 125/1 inconsistently —
+    // chroot's handler returns 125, runcon's stays 1 per its pinned
+    // repo tests.
     behavior.parse_error_exit_code = 125;
   } else if (name == "nohup") {
     behavior.parse_error_exit_code = is_posixly_correct() ? 127 : 125;
