@@ -2068,7 +2068,10 @@ auto build_config(const CommandContext<FIND_OPTIONS.size()>& ctx)
     cfg.mmin_filter = *parsed;
   }
 
-  if (cfg.mindepth < 0 || cfg.maxdepth < 0 || cfg.mindepth > cfg.maxdepth) {
+  // [#1312] GNU treats -mindepth greater than -maxdepth as a valid,
+  // never-matching range (empty output, exit 0), not an error. Only
+  // negative depths are rejected.
+  if (cfg.mindepth < 0 || cfg.maxdepth < 0) {
     return std::unexpected("invalid depth range");
   }
 

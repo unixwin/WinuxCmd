@@ -3006,3 +3006,24 @@ TEST(find, issue_1317_dashdash_after_root_is_unknown_predicate) {
   EXPECT_TRUE(r.stderr_text.find("unknown predicate") !=
               std::string::npos);
 }
+
+TEST(find, issue_1312_mindepth_above_maxdepth_matches_nothing) {
+  TempDir tmp;
+  tmp.write("a.txt", "");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L".", L"-mindepth", L"2", L"-maxdepth", L"1"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.empty());
+
+  // Negative depths are still rejected.
+  Pipeline neg;
+  neg.set_cwd(tmp.wpath());
+  neg.add(L"find.exe", {L".", L"-mindepth", L"-1"});
+  auto nr = neg.run();
+  EXPECT_EQ(nr.exit_code, 1);
+}
