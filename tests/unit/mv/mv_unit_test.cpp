@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 caomengxuan666 <caomengxuan666@users.noreply.github.com>
+#include <chrono>
+
 #include "framework/winuxtest.h"
 
 TEST(mv, mv_basic) {
@@ -544,4 +546,36 @@ TEST(mv, mv_overwrite_1325_target_value_not_scanned) {
   EXPECT_EQ(r2.stderr_text.find("overwrite"), std::string::npos);
   EXPECT_FALSE(std::filesystem::exists(tmp2.path / "s"));
   EXPECT_EQ(tmp2.read("ndir/s"), "NEW");
+}
+
+TEST(mv, mv_update_1326_explicit_beats_u) {
+  const auto now = std::filesystem::file_time_type::clock::now();
+  auto run_case = [&](const std::vector<std::wstring>& opts) {
+    TempDir tmp;
+    tmp.write("src", "SRC");
+    tmp.write("dst", "DST");
+    std::filesystem::last_write_time(tmp.path / "dst",
+                                     now - std::chrono::hours(24));
+    std::filesystem::last_write_time(tmp.path / "src", now);
+
+    Pipeline p;
+    p.set_cwd(tmp.wpath());
+    std::vector<std::wstring> args = opts;
+    args.push_back(L"src");
+    args.push_back(L"dst");
+    p.add(L"mv.exe", args);
+
+    auto r = p.run();
+    EXPECT_EQ(r.exit_code, 0);
+    return tmp.read("dst");
+  };
+
+  // GNU rule (#1326): explicit --update=VALUE forms are last-wins among
+  // themselves and beat -u in either order; -u alone is the weak form
+  // and moves because the source is newer.
+  EXPECT_EQ(run_case({L"--update=none", L"-u"}), "DST");
+  EXPECT_EQ(run_case({L"-u", L"--update=none"}), "DST");
+  EXPECT_EQ(run_case({L"--update=none", L"--update=older"}), "SRC");
+  EXPECT_EQ(run_case({L"--update=older", L"--update=none"}), "DST");
+  EXPECT_EQ(run_case({L"-u"}), "SRC");
 }

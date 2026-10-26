@@ -231,19 +231,35 @@ auto parse_arguments(const CommandContext<MV_OPTIONS.size()>& ctx)
   }
 
   // Parse --update[=UPDATE] mode
-  if (ctx.get<bool>("-u", false)) {
-    move_ctx.update_mode = UpdateMode::older;
-  } else if (ctx.has("--update")) {
-    auto update_opt = ctx.get<std::string>("--update", "");
-    if (update_opt == "all") {
-      move_ctx.update_mode = UpdateMode::all;
-    } else if (update_opt == "none") {
-      move_ctx.update_mode = UpdateMode::none;
-    } else if (update_opt == "older" || update_opt.empty()) {
+  // [GNU] Explicit --update=VALUE forms are last-wins among themselves;
+  // -u and a bare --update are weak: they select 'older' only when no
+  // explicit --update=VALUE appears anywhere on the command line
+  // (coreutils 9.4 measured; #1326).  A bare --update is indistinguishable
+  // from --update= in the parser (both store ""), so "" stays 'older'
+  // here; GNU rejects --update= as ambiguous — a documented gap.
+  {
+    std::optional<std::string> explicit_update;
+    bool weak_older = ctx.get<bool>("-u", false);
+    for (const auto& occ : ctx.string_occurrences({"--update"})) {
+      if (!occ.value.empty()) {
+        explicit_update = occ.value;
+      } else {
+        weak_older = true;
+      }
+    }
+    if (explicit_update.has_value()) {
+      if (*explicit_update == "all") {
+        move_ctx.update_mode = UpdateMode::all;
+      } else if (*explicit_update == "none") {
+        move_ctx.update_mode = UpdateMode::none;
+      } else if (*explicit_update == "older") {
+        move_ctx.update_mode = UpdateMode::older;
+      } else {
+        return std::unexpected("invalid argument '" + *explicit_update +
+                               "' for '--update'");
+      }
+    } else if (weak_older) {
       move_ctx.update_mode = UpdateMode::older;
-    } else {
-      return std::unexpected("invalid argument '" + update_opt +
-                             "' for '--update'");
     }
   }
 
