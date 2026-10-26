@@ -59,8 +59,13 @@ struct Config {
   bool ignore_environment = false;
   bool null_terminated = false;
   std::vector<std::string> unset_names;
-  std::map<std::string, std::string> file_assignments;
-  std::map<std::string, std::string> assignments;
+  // [GNU] Environment entries are order-significant: the inherited block
+  // keeps its order and command-line assignments append in the order
+  // given (an assignment to an existing name replaces the value in
+  // place).  An ordered entry list is used throughout instead of a
+  // sorted map (#1352).
+  std::vector<std::pair<std::string, std::string>> file_assignments;
+  std::vector<std::pair<std::string, std::string>> assignments;
   std::string env_file;
   std::string env_file_error;
   std::string chdir;
@@ -84,10 +89,31 @@ auto get_env_utf8(const wchar_t* key) -> std::optional<std::string> {
   return wstring_to_utf8(value);
 }
 
-auto find_env_value(const std::map<std::string, std::string>& vars,
-                    std::string_view key) -> std::optional<std::string> {
-  auto it = vars.find(std::string(key));
-  if (it != vars.end()) return it->second;
+using EnvEntries = std::vector<std::pair<std::string, std::string>>;
+
+// [GNU] setenv semantics on an ordered entry list: assigning an existing
+// name replaces its value at its original position; a new name appends.
+auto env_entries_set(EnvEntries& entries, std::string key, std::string value)
+    -> void {
+  for (auto& [name, existing] : entries) {
+    if (name == key) {
+      existing = std::move(value);
+      return;
+    }
+  }
+  entries.emplace_back(std::move(key), std::move(value));
+}
+
+auto env_entries_erase(EnvEntries& entries, std::string_view key) -> void {
+  std::erase_if(entries,
+                [key](const auto& entry) { return entry.first == key; });
+}
+
+auto find_env_value(const EnvEntries& vars, std::string_view key)
+    -> std::optional<std::string> {
+  for (const auto& [name, value] : vars) {
+    if (name == key) return value;
+  }
 
   for (const auto& [name, value] : vars) {
     if (name.size() != key.size()) continue;
@@ -105,8 +131,8 @@ auto find_env_value(const std::map<std::string, std::string>& vars,
   return std::nullopt;
 }
 
-auto parse_env_block() -> std::map<std::string, std::string> {
-  std::map<std::string, std::string> out;
+auto parse_env_block() -> EnvEntries {
+  EnvEntries out;
   LPWCH block = GetEnvironmentStringsW();
   if (block == nullptr) return out;
 
@@ -123,7 +149,7 @@ auto parse_env_block() -> std::map<std::string, std::string> {
 
     auto key = wstring_to_utf8(entry.substr(0, pos));
     auto value = wstring_to_utf8(entry.substr(pos + 1));
-    out[std::move(key)] = std::move(value);
+    env_entries_set(out, std::move(key), std::move(value));
   }
 
   FreeEnvironmentStringsW(block);
@@ -152,7 +178,7 @@ auto trim_ascii(std::string_view text) -> std::string_view {
 }
 
 auto read_env_file(std::string_view path)
-    -> std::expected<std::map<std::string, std::string>, std::string> {
+    -> std::expected<EnvEntries, std::string> {
   // The open and the classification probe run on the resolved spelling so
   // MSYS drive-dialect operands ("/e/...") name the same target a native
   // spelling would; diagnostics keep the caller's text (#1230).
@@ -182,7 +208,7 @@ auto read_env_file(std::string_view path)
     file_text.erase(0, 3);
   }
 
-  std::map<std::string, std::string> vars;
+  EnvEntries vars;
   std::string_view text_view{file_text};
   size_t start = 0;
   while (start <= file_text.size()) {
@@ -195,7 +221,7 @@ auto read_env_file(std::string_view path)
         auto key = trim_ascii(line.substr(0, eq));
         auto value = trim_ascii(line.substr(eq + 1));
         if (!key.empty()) {
-          vars[std::string(key)] = std::string(value);
+          env_entries_set(vars, std::string(key), std::string(value));
         }
       }
     }
@@ -491,7 +517,7 @@ auto apply_split_arguments(Config& cfg, std::vector<std::string> split_args)
 
     auto assign = parse_assignment(arg);
     if (assign.has_value()) {
-      cfg.assignments[assign->first] = assign->second;
+      cfg.assignments.emplace_back(assign->first, assign->second);
       continue;
     }
     in_command = true;
@@ -573,7 +599,7 @@ auto build_config(const CommandContext<ENV_OPTIONS.size()>& ctx)
 
     auto assign = parse_assignment(p);
     if (assign.has_value()) {
-      cfg.assignments[assign->first] = assign->second;
+      cfg.assignments.emplace_back(assign->first, assign->second);
       continue;
     }
 
@@ -584,8 +610,7 @@ auto build_config(const CommandContext<ENV_OPTIONS.size()>& ctx)
   return cfg;
 }
 
-auto print_env(const std::map<std::string, std::string>& vars,
-               bool null_terminated) -> void {
+auto print_env(const EnvEntries& vars, bool null_terminated) -> void {
   for (const auto& [k, v] : vars) {
     safePrint(k);
     safePrint("=");
@@ -598,8 +623,7 @@ auto print_env(const std::map<std::string, std::string>& vars,
   }
 }
 
-auto build_environment_block(const std::map<std::string, std::string>& vars)
-    -> std::vector<wchar_t> {
+auto build_environment_block(const EnvEntries& vars) -> std::vector<wchar_t> {
   std::vector<wchar_t> block;
   for (const auto& [key, value] : vars) {
     auto entry = utf8_to_wstring(key + "=" + value);
@@ -625,9 +649,8 @@ auto make_working_directory_arg(const std::string& chdir, std::wstring& storage)
 // [GNU] -v/--debug traces each processing step on stderr in GNU's format:
 // "cleaning environ", "unset:    NAME" (for every -u operand), then
 // "setenv:   NAME=VALUE" for each assignment (env.c devmsg, uutils #14171).
-auto materialize_environment(const Config& cfg)
-    -> std::map<std::string, std::string> {
-  std::map<std::string, std::string> vars;
+auto materialize_environment(const Config& cfg) -> EnvEntries {
+  EnvEntries vars;
   if (!cfg.ignore_environment) {
     vars = parse_env_block();
   } else if (cfg.debug) {
@@ -638,24 +661,21 @@ auto materialize_environment(const Config& cfg)
     if (cfg.debug) {
       safeErrorPrint("setenv:   " + k + "=" + v + "\n");
     }
-    vars[k] = v;
+    env_entries_set(vars, k, v);
   }
 
   for (const auto& unset_name : cfg.unset_names) {
     if (cfg.debug) {
       safeErrorPrint("unset:    " + unset_name + "\n");
     }
-    auto it = vars.find(unset_name);
-    if (it != vars.end()) {
-      vars.erase(it);
-    }
+    env_entries_erase(vars, unset_name);
   }
 
   for (const auto& [k, v] : cfg.assignments) {
     if (cfg.debug) {
       safeErrorPrint("setenv:   " + k + "=" + v + "\n");
     }
-    vars[k] = v;
+    env_entries_set(vars, k, v);
   }
 
   return vars;
@@ -677,8 +697,7 @@ auto env_windows_error_text(DWORD error) -> std::string {
   return win32_posix_error_text(error, options);
 }
 
-auto run_command(const Config& cfg,
-                 const std::map<std::string, std::string>& vars) -> int {
+auto run_command(const Config& cfg, const EnvEntries& vars) -> int {
   if (cfg.debug) {
     // [GNU] trace order: chdir, argv0, then executing + quoted args
     // (env.c:902-923, uutils #14171).

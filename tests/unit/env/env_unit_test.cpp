@@ -600,3 +600,57 @@ TEST(env, env_file_drive_dialect_operand_resolves_named_drive) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(has_env_line(r.stdout_text, "WX_DIALECT_FILE", "from_dialect"));
 }
+
+// #1352: [GNU] -i starts from an empty environment block: the child
+// receives exactly the command-line assignments, in the order given.
+TEST(env, env_ignore_environment_child_block_exact_and_ordered) {
+  TempDir tmp;
+  std::filesystem::copy_file(
+      std::filesystem::path(WINUXCMD_BIN_DIR) / "env.exe", tmp.path / "env.exe",
+      std::filesystem::copy_options::overwrite_existing);
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_env(L"AMBIENT_LEAK", L"must-not-appear");
+  p.add(L"env.exe", {L"-i", L"Z=1", L"A=2", L".\\env.exe"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "Z=1\nA=2\n");
+  EXPECT_TRUE(r.stdout_text.find("AMBIENT_LEAK") == std::string::npos);
+}
+
+// #1352: [GNU] printed listings keep order too: inherited order is
+// preserved and assignments append in command-line order instead of
+// being re-sorted alphabetically.
+TEST(env, env_listing_preserves_assignment_order) {
+  Pipeline p;
+  p.set_env(L"SHOULD_NOT", L"SEE");
+  p.add(L"env.exe", {L"-i", L"B=2", L"A=1"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "B=2\nA=1\n");
+}
+
+// #1352: [GNU] a repeated assignment replaces the value at the first
+// occurrence's position; it does not move or duplicate the entry.
+TEST(env, env_duplicate_assignment_replaces_in_place) {
+  Pipeline p;
+  p.add(L"env.exe", {L"-i", L"X=1", L"Y=2", L"X=3"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "X=3\nY=2\n");
+}
+
+// #1352: [GNU] -u removes an entry without disturbing the relative
+// order of the survivors.
+TEST(env, env_unset_preserves_survivor_order) {
+  Pipeline p;
+  p.add(L"env.exe", {L"-i", L"KEEP1=1", L"DROP=2", L"KEEP2=3", L"-u", L"DROP"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "KEEP1=1\nKEEP2=3\n");
+}
