@@ -1848,6 +1848,21 @@ TEST(sed, sed_stdin_ctrlz_matches_file_operand_issue1212) {
   EXPECT_FALSE(rf.stdout_text.empty());
   EXPECT_EQ(rs.stdout_text, rf.stdout_text);
 }
+// #1306 guard: commands that genuinely take a short attached value
+// keep it: sed -i.bak still writes a backup file.
+TEST(sed, sed_in_place_attached_suffix_still_works) {
+  TempDir tmp;
+  tmp.write("input.txt", "line3\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sed.exe", {L"-i.bak", L"s/line3/XXX/", L"input.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(tmp.read("input.txt"), "XXX\n");
+  EXPECT_EQ(tmp.read("input.txt.bak"), "line3\n");
+}
 
 // #1305: a sed option error carries the full usage text (and, unlike
 // other commands, no Try line after it).

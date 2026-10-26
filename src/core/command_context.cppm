@@ -9,6 +9,16 @@ export auto option_policy_for_command(std::string_view command)
   policy.allow_unknown_short_options_as_positionals =
       command == "printf" || command == "expr" || command == "test" ||
       command == "[" || command == "stty" || command == "kill";
+  if (command == "uniq" || command == "diff" || command == "split") {
+    // #1306: GNU getopt gives these commands' optional short options no
+    // attached value inside a cluster: -D/-c/-d are flags there and the
+    // rest of the cluster keeps parsing as further short options
+    // (uniq -Dc, diff -cu, split -dl). Digits still reach the -NUM
+    // rule (diff -c5, split -d5, uniq -D5), and --opt=value is
+    // untouched. Commands that genuinely take a short attached value
+    // (sed -i.bak, paste -d,) keep the default.
+    policy.allow_optional_short_attached_values = false;
+  }
   if (command == "env") {
     // #1303: GNU env scans options only up to the first non-option
     // token: an assignment or the command name ends option parsing, so

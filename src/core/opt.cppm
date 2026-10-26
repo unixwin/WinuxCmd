@@ -557,6 +557,36 @@ export ParseResultRuntime parse_command_runtime(
       for (size_t pos = 1; pos < arg.size(); ++pos) {
         char ch = arg[pos];
 
+        // #1306: a digit run inside a cluster is the command's -NUM
+        // option (GNU split -d5, diff -c5, uniq -D5), not an attached
+        // value of the preceding flag. Commands without a -NUM meta
+        // fall through to the unrecognized-option diagnostic below.
+        if (policy.allow_numeric_short_options &&
+            std::isdigit(static_cast<unsigned char>(ch)) != 0) {
+          const cmd::meta::OptionMeta* numeric_meta = nullptr;
+          for (const auto& m : metas) {
+            if (m.short_name == "-NUM") {
+              numeric_meta = &m;
+              break;
+            }
+          }
+          if (numeric_meta) {
+            size_t end = pos;
+            while (end < arg.size() &&
+                   std::isdigit(static_cast<unsigned char>(arg[end])) != 0) {
+              ++end;
+            }
+            int v = 0;
+            if (!parse_int_value(numeric_meta->short_name,
+                                 arg.substr(pos, end - pos), v)) {
+              return result;
+            }
+            result.options.set(numeric_meta->index, v);
+            pos = end - 1;
+            continue;
+          }
+        }
+
         const cmd::meta::OptionMeta* meta = nullptr;
 
         for (const auto& m : metas) {
@@ -619,10 +649,15 @@ export ParseResultRuntime parse_command_runtime(
           }
 
           case OptionType::OptionalInt: {
+            // #1306: when a command opts out of short attached values
+            // (uniq/diff/split), the flag is recorded with no value and
+            // the rest of the cluster keeps parsing as further short
+            // options (uniq -Dc, diff -cu) instead of being swallowed
+            // or dropped. The attached-value form still ends the
+            // cluster for commands that keep it (sed -i.bak).
             if (!policy.allow_optional_short_attached_values ||
                 pos + 1 >= arg.size()) {
               result.options.set(idx, -1);
-              pos = arg.size();
               break;
             }
 
@@ -642,13 +677,14 @@ export ParseResultRuntime parse_command_runtime(
           }
 
           case OptionType::OptionalString: {
-            std::string str;
+            // #1306: same rule as OptionalInt above.
             if (policy.allow_optional_short_attached_values &&
                 pos + 1 < arg.size()) {
-              str = std::string(arg.substr(pos + 1));
+              result.options.set(idx, std::string(arg.substr(pos + 1)));
+              pos = arg.size();
+            } else {
+              result.options.set(idx, std::string());
             }
-            result.options.set(idx, std::move(str));
-            pos = arg.size();
             break;
           }
 

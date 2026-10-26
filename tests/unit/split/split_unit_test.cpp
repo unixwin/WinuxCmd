@@ -514,3 +514,55 @@ TEST(split, split_filter_pipe_delivers_lf_only_bytes_issue1214) {
   EXPECT_BYTES(first, std::string("a\n", 2));
   EXPECT_BYTES(tmp.read("partab"), std::string("b\n", 2));
 }
+
+// #1306: -d is a flag inside a cluster, so -d5 means numeric suffixes
+// plus the -NUM line count (5-line chunks), not a suffix start of 5.
+TEST(split, split_cluster_digits_are_line_count) {
+  TempDir tmp;
+  tmp.write("input.txt",
+            "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"split.exe", {L"-d5", L"input.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(tmp.read("x00"), "1\n2\n3\n4\n5\n");
+  EXPECT_EQ(tmp.read("x01"), "6\n7\n8\n9\n10\n");
+  EXPECT_EQ(tmp.read("x02"), "11\n12\n");
+}
+
+// #1306: -dl keeps parsing the cluster: -d plus -l taking its value
+// from the next argv.
+TEST(split, split_cluster_flag_then_value_option) {
+  TempDir tmp;
+  tmp.write("input.txt",
+            "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"split.exe", {L"-dl", L"5", L"input.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(tmp.read("x00"), "1\n2\n3\n4\n5\n");
+  EXPECT_EQ(tmp.read("x01"), "6\n7\n8\n9\n10\n");
+  EXPECT_EQ(tmp.read("x02"), "11\n12\n");
+}
+
+// #1306: a non-option letter after -d is diagnosed, not swallowed as
+// -d's value (GNU: invalid option -- 'f').
+TEST(split, split_cluster_unknown_letter_is_an_error) {
+  TempDir tmp;
+  tmp.write("input.txt", "1\n2\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"split.exe", {L"-dfoo", L"input.txt"});
+  auto r = p.run();
+
+  EXPECT_NE(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.find("invalid option -- 'f'") !=
+              std::string::npos);
+}

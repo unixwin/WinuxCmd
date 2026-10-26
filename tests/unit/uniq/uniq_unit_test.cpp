@@ -298,3 +298,29 @@ TEST(uniq, uniq_stdin_ctrlz_matches_file_operand_issue1212) {
   EXPECT_FALSE(rf.stdout_text.empty());
   EXPECT_EQ(rs.stdout_text, rf.stdout_text);
 }
+
+// #1306: -D is a flag inside a cluster, so -Dc means -D plus -c and
+// reports the count/all-repeated conflict instead of treating "c" as
+// -D's value.
+TEST(uniq, uniq_cluster_flag_does_not_swallow_next_flag) {
+  Pipeline p;
+  p.set_stdin("dup\ndup\n");
+  p.add(L"uniq.exe", {L"-Dc"});
+  auto r = p.run();
+
+  EXPECT_NE(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.find("printing all duplicated lines and repeat counts") !=
+              std::string::npos);
+}
+
+// #1306: digits inside a cluster are the -NUM check-chars count, so
+// -D5 compares only the first 5 characters.
+TEST(uniq, uniq_cluster_digits_are_check_chars) {
+  Pipeline p;
+  p.set_stdin("abcdefX\nabcdefY\n");
+  p.add(L"uniq.exe", {L"-D5"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "abcdefX\nabcdefY\n");
+}
