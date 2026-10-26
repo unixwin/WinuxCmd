@@ -1215,6 +1215,22 @@ auto parse_roots(std::span<const std::string_view> args)
         })) {
       continue;
     }
+    // [#1317] A leading "--" ends option scanning (GNU findutils
+    // parser.c): skip it while no root has been seen yet. Once a root
+    // exists, "--" is an expression token, so stop the root scan and let
+    // the expression parser reject it as an unknown predicate.
+    if (arg == "--") {
+      if (roots.empty()) continue;
+      break;
+    }
+    // [#1317] Any other dash-led token that is not a leading global option
+    // is an expression token, never a root: stop the scan so the
+    // expression parser reports it (GNU: unknown predicate, e.g. for
+    // "-maxdepth=1") instead of treating it as a start point. A lone "-"
+    // stays a root (GNU treats "-" as a path).
+    if (arg.size() > 1 && arg[0] == '-') {
+      break;
+    }
     if (is_path_option(arg) || arg == "!" || arg == "(" || arg == ")" ||
         arg == ",") {
       break;
@@ -1333,6 +1349,19 @@ auto expression_start_index(std::span<const std::string_view> args) -> size_t {
           return std::isdigit(static_cast<unsigned char>(ch)) != 0;
         })) {
       continue;
+    }
+    // [#1317] "--" ends option scanning only before the first root; after
+    // a root it starts the expression (GNU rejects it there as an unknown
+    // predicate).
+    if (arg == "--") {
+      if (!roots_seen) continue;
+      return i;
+    }
+    // [#1317] Any other dash-led token starts the expression, so the
+    // parser reports unknown predicates like "-maxdepth=1" instead of
+    // swallowing the token as a root. A lone "-" stays a root.
+    if (arg.size() > 1 && arg[0] == '-') {
+      return i;
     }
     if (is_path_option(arg) || arg == "(" || arg == ")" || arg == ",") {
       return i;
@@ -1476,7 +1505,9 @@ class ExpressionParser {
       if (is_and(peek())) {
         consume();
       } else if (!starts_primary(peek())) {
-        return std::unexpected("invalid find expression");
+        // [#1317] GNU reports an unrecognized predicate by name.
+        return std::unexpected("unknown predicate `" + std::string(peek()) +
+                                "'");
       }
 
       auto right = parse_not();
@@ -1817,7 +1848,8 @@ class ExpressionParser {
       return std::unexpected("missing expression");
     }
 
-    return std::unexpected("invalid find expression");
+    // [#1317] GNU reports an unrecognized predicate by name.
+    return std::unexpected("unknown predicate `" + std::string(option) + "'");
   }
 };
 
