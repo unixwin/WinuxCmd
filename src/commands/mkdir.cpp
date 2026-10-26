@@ -111,15 +111,97 @@ auto mode_allows_write(std::string_view mode) -> cp::Result<bool> {
     return (value & 0222) != 0;
   }
 
-  if (mode.find('=') != std::string_view::npos) {
-    size_t op = mode.find('=');
-    return mode.substr(op + 1).find('w') != std::string_view::npos;
-  }
-  if (mode.find("+w") != std::string_view::npos) return true;
-  if (mode.find("-w") != std::string_view::npos) return false;
-  return std::unexpected("unsupported mode");
-}
+  // [GNU] Symbolic mode, evaluated against the fresh-directory base
+  // 0777 (the umask plays no role for -m): comma-separated clauses of
+  // [ugoa]* followed by one or more (op, perms) pairs, where perms is a
+  // run of rwxXst or a single ugo copy letter (#1330).  Only the
+  // resulting owner/group/other write bits are observable on Windows,
+  // via the read-only attribute.
+  unsigned int cur = 0777;
+  size_t start = 0;
+  while (start <= mode.size()) {
+    const size_t comma = mode.find(',', start);
+    const std::string_view clause =
+        comma == std::string_view::npos
+            ? mode.substr(start)
+            : mode.substr(start, comma - start);
+    if (clause.empty()) {
+      return std::unexpected("invalid mode");
+    }
 
+    size_t i = 0;
+    unsigned int who_mask = 0;
+    while (i < clause.size() && (clause[i] == 'u' || clause[i] == 'g' ||
+                                 clause[i] == 'o' || clause[i] == 'a')) {
+      if (clause[i] == 'u' || clause[i] == 'a') who_mask |= 0700;
+      if (clause[i] == 'g' || clause[i] == 'a') who_mask |= 0070;
+      if (clause[i] == 'o' || clause[i] == 'a') who_mask |= 0007;
+      ++i;
+    }
+    if (who_mask == 0) who_mask = 0777;
+    if (i >= clause.size()) {
+      return std::unexpected("invalid mode");
+    }
+
+    while (i < clause.size()) {
+      const char op = clause[i];
+      if (op != '+' && op != '-' && op != '=') {
+        return std::unexpected("invalid mode");
+      }
+      ++i;
+      const size_t seg_start = i;
+      while (i < clause.size() && clause[i] != '+' && clause[i] != '-' &&
+             clause[i] != '=') {
+        ++i;
+      }
+      const std::string_view seg = clause.substr(seg_start, i - seg_start);
+
+      unsigned int bits = 0;
+      if (seg.empty()) {
+        // "u+" / "u-" are no-ops; "=" with no perms clears the who's bits.
+        if (op == '=') cur &= ~who_mask;
+        continue;
+      }
+      bool all_perm_letters = true;
+      for (char c : seg) {
+        if (c != 'r' && c != 'w' && c != 'x' && c != 'X' && c != 's' &&
+            c != 't') {
+          all_perm_letters = false;
+          break;
+        }
+      }
+      if (all_perm_letters) {
+        for (char c : seg) {
+          if (c == 'r') bits |= 0444;
+          if (c == 'w') bits |= 0222;
+          if (c == 'x' || c == 'X') bits |= 0111;  // X: fresh dir -> x
+          if (c == 's') bits |= 06000;
+          if (c == 't') bits |= 01000;
+        }
+      } else if (seg.size() == 1 &&
+                 (seg[0] == 'u' || seg[0] == 'g' || seg[0] == 'o')) {
+        const unsigned int src = seg[0] == 'u'   ? (cur >> 6) & 7
+                                 : seg[0] == 'g' ? (cur >> 3) & 7
+                                                  : cur & 7;
+        bits = (src << 6) | (src << 3) | src;
+      } else {
+        return std::unexpected("invalid mode");
+      }
+      bits &= who_mask;
+      if (op == '+') {
+        cur |= bits;
+      } else if (op == '-') {
+        cur &= ~bits;
+      } else {
+        cur = (cur & ~who_mask) | bits;
+      }
+    }
+
+    if (comma == std::string_view::npos) break;
+    start = comma + 1;
+  }
+  return (cur & 0222) != 0;
+}
 auto apply_directory_mode(const std::string& path, std::string_view mode)
     -> cp::Result<void> {
   auto writable = mode_allows_write(mode);
