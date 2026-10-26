@@ -1066,3 +1066,26 @@ TEST(cp, cp_same_file_mixed_dialects_reports_error) {
   EXPECT_TRUE(r.stderr_text.find("same file") != std::string::npos);
   EXPECT_EQ(tmp.read("f.txt"), "payload");
 }
+
+TEST(cp, cp_invented_dash_c_rejected_issue1355) {
+  TempDir tmp;
+  tmp.write("a.txt", "a\n");
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"-c", L"a.txt", L"b.txt"});
+  auto r = p.run();
+  EXPECT_EXIT_CODE(r, 1);
+  EXPECT_TRUE(r.stderr_text.find("invalid option -- 'c'") != std::string::npos);
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "b.txt"));
+}
+
+TEST(cp, cp_context_forms_still_legal_issue1355) {
+  TempDir tmp;
+  tmp.write("a.txt", "a\n");
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"--context", L"a.txt", L"b.txt"});
+  auto r = p.run();
+  EXPECT_EXIT_CODE(r, 0);
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "b.txt"));
+}
