@@ -1848,3 +1848,21 @@ TEST(sed, sed_stdin_ctrlz_matches_file_operand_issue1212) {
   EXPECT_FALSE(rf.stdout_text.empty());
   EXPECT_EQ(rs.stdout_text, rf.stdout_text);
 }
+
+// #1305: a sed option error carries the full usage text (and, unlike
+// other commands, no Try line after it).
+TEST(sed, sed_option_error_prints_full_usage) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sed.exe", {L"--zzz"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("unrecognized option '--zzz'") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("Usage:") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("Try 'sed --help'") == std::string::npos);
+}
+

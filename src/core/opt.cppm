@@ -264,7 +264,10 @@ export ParseResultRuntime parse_command_runtime(
         if (possibilities.size() != 1) {
           meta = nullptr;
           if (possibilities.empty()) {
-            set_unrecognized_option(name);
+            // #1305: GNU keeps the "=value" in the diagnostic
+            // ("unrecognized option '--unknown=x'"); only the ambiguous
+            // report below uses the bare name.
+            set_unrecognized_option(arg);
           } else {
             std::string msg = "option '" + std::string(name) +
                               "' is ambiguous; possibilities:";

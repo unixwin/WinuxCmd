@@ -480,6 +480,19 @@ TEST(cat, cat_show_all_quotes_nonprinting_like_gnu) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "A^IB^M$\n^?M-^@M-^?$\n$\nZ");
 }
+// #1305: an unknown long option keeps its "=value" in the diagnostic.
+TEST(cat, cat_unknown_long_option_keeps_attached_value_in_message) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cat.exe", {L"--unknown=x"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("unrecognized option '--unknown=x'") !=
+              std::string::npos);
+}
 
 // #1301: a Bool long option must reject "--flag=value" instead of
 // silently ignoring the value.

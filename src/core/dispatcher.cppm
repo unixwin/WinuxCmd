@@ -1231,6 +1231,25 @@ auto classify_args_for_dispatch(
   return roles;
 }
 
+// #1305: GNU prints a usage tail after an option error for some
+// commands: grep gets its one-line Usage before the Try line, sed
+// gets its full help instead of the Try line. Returns false when the
+// tail replaces the Try line.
+auto print_parse_error_tail(std::string_view name) -> bool {
+  if (name == "grep") {
+    safeErrorPrintLn("Usage: grep [OPTION]... PATTERNS [FILE]...");
+    return true;
+  }
+  if (name == "sed") {
+    std::string help = cmd::meta::Registry::get_help(name);
+    if (!help.empty()) {
+      safeErrorPrintLn(help);
+    }
+    return false;
+  }
+  return true;
+}
+
 // Internal registry implementation class
 class RegistryImpl {
   std::unordered_map<std::string_view, CommandEntryErased> registry_;
@@ -1453,9 +1472,11 @@ class RegistryImpl {
           winux::i18n::format("common.error.option_no_argument",
                               "option '{}' doesn't allow an argument",
                               no_argument_option));
+      if (print_parse_error_tail(cmdName)) {
         safeErrorPrintLn(winux::i18n::format(
             "common.try_help", "Try '{} --help' for more information.",
             cmdName));
+      }
       return behavior.parse_error_exit_code;
     }
 
@@ -1532,6 +1553,13 @@ export class CommandRegistry {
 
   static int parseErrorExitCode(std::string_view name) noexcept {
     return RegistryImpl::parse_error_exit_code(name);
+  }
+
+  // #1305: print the command's option-error usage tail (grep's
+  // one-line Usage, sed's full help). Returns false when the tail
+  // replaces the Try line (sed).
+  static bool printParseErrorTail(std::string_view name) {
+    return print_parse_error_tail(name);
   }
 
   // Dispatch command execution (public interface)
