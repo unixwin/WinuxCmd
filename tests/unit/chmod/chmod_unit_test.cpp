@@ -401,3 +401,47 @@ TEST(chmod, chmod_gnu_negative_mode_before_double_dash_is_accepted) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(is_readonly(tmp.path / "test.txt"));
 }
+
+TEST(chmod, chmod_symbolic_1331_copy_and_multiop) {
+  TempDir tmp;
+  tmp.write("f", "hello\n");
+
+  auto run_chmod = [&tmp](const std::vector<std::wstring>& args) {
+    Pipeline p;
+    p.set_cwd(tmp.wpath());
+    p.add(L"chmod.exe", args);
+    return p.run();
+  };
+
+  // Copy clause: g=u on 0644 displays as 0664 (#1331).
+  auto r1 = run_chmod({L"-v", L"g=u", L"f"});
+  EXPECT_EQ(r1.exit_code, 0);
+  EXPECT_NE(r1.stdout_text.find("mode of 'f' changed from 0644 "
+                                "(rw-r--r--) to 0664 (rw-rw-r--)"),
+            std::string::npos);
+
+  // Multi-op clause in one segment: u+rw-x.
+  tmp.write("f2", "hello\n");
+  auto r0 = run_chmod({L"640", L"f2"});
+  EXPECT_EQ(r0.exit_code, 0);
+  auto r2 = run_chmod({L"u+rw-x", L"f2"});
+  EXPECT_EQ(r2.exit_code, 0);
+  EXPECT_FALSE(is_readonly(tmp.path / "f2"));
+
+  // Empty-perms clauses are valid: a= clears (read-only set), u+ and
+  // u- are no-ops.  The old grammar rejected all three.
+  tmp.write("f3", "hello\n");
+  auto r3 = run_chmod({L"a=", L"f3"});
+  EXPECT_EQ(r3.exit_code, 0);
+  EXPECT_TRUE(is_readonly(tmp.path / "f3"));
+  auto r4 = run_chmod({L"u+", L"f3"});
+  EXPECT_EQ(r4.exit_code, 0);
+  auto r5 = run_chmod({L"u-", L"f3"});
+  EXPECT_EQ(r5.exit_code, 0);
+
+  // A copy letter mixed with rwx letters is invalid.
+  auto r6 = run_chmod({L"u+ug", L"f"});
+  EXPECT_NE(r6.exit_code, 0);
+  auto r7 = run_chmod({L"g+ur", L"f"});
+  EXPECT_NE(r7.exit_code, 0);
+}
