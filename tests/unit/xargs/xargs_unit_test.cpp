@@ -1512,3 +1512,41 @@ TEST(xargs, xargs_child_255_prints_abort_diagnostic_1319) {
               std::string::npos);
 }
 
+TEST(xargs, xargs_interactive_stdin_exhausted_fails_loudly_1320) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  // No -a: stdin is the item source and is fully consumed before the
+  // prompt, so there is no answer left to read.  GNU fails loudly here;
+  // the old code silently skipped with exit code 0.
+  p.add(L"xargs.exe", {L"-p", L"cmd.exe", L"/C", L"echo"});
+  p.set_stdin("alpha\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("Failed to read from stdin") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("?...") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("alpha") == std::string::npos);
+}
+
+TEST(xargs, xargs_interactive_leading_blank_answer_refuses_1320) {
+  TempDir tmp;
+  tmp.write("args.txt", "alpha\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"-p", L"-a", L"args.txt", L"cmd.exe", L"/C", L"echo"});
+  p.set_stdin(" y\n");
+
+  auto r = p.run();
+
+  // Only the first character of the answer counts: a leading blank is a
+  // refusal, not a yes.
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("alpha") == std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("?...") != std::string::npos);
+}
+

@@ -770,6 +770,40 @@ auto build_command_line(const std::string &command,
 auto clamp_max_chars_floor(int max_chars, const std::string &command,
                            const std::vector<std::string> &args) -> int {
   if (max_chars <= 0) return max_chars;
+// #1322: the quoting used by -t and by the -p prompt (one function for
+// both, as in GNU).  Quoting triggers on blanks, controls, and the
+// punctuation set below; alphanumerics, `# % + , - . / : @ ] _ { } ~`
+// and bytes >= 0x80 never trigger.  An argument holding a single quote
+// but none of `" $ ` \ !` and no control character is double-quoted;
+// anything else quoted goes single-quote style, with `'` as `'\''` and
+// control characters as a closed quote + `$'\x'` + a reopened quote.
+auto shell_argument_needs_quoting(unsigned char c) -> bool {
+  if (c < 0x20 || c == 0x7f) return true;
+  switch (c) {
+    case ' ':
+    case '!':
+    case '"':
+    case '$':
+    case '&':
+    case '\'':
+    case '(':
+    case ')':
+    case '*':
+    case ';':
+    case '<':
+    case '=':
+    case '>':
+    case '?':
+    case '[':
+    case '\\':
+    case '^':
+    case '`':
+    case '|':
+      return true;
+    default:
+      return false;
+  }
+}
 
   int minimum = static_cast<int>(build_command_line(command, args).size());
   if (max_chars < minimum) {
@@ -777,29 +811,143 @@ auto clamp_max_chars_floor(int max_chars, const std::string &command,
     safeErrorPrint(std::to_string(minimum));
     safeErrorPrint("\n");
     return minimum;
+auto quote_shell_argument(std::string_view arg) -> std::string {
+  if (arg.empty()) return "''";
+
+  bool needs_quoting = false;
+  bool has_single_quote = false;
+  bool double_quote_safe = true;
+  for (unsigned char c : arg) {
+    if (shell_argument_needs_quoting(c)) needs_quoting = true;
+    if (c == '\'') has_single_quote = true;
+    if (c == '"' || c == '$' || c == '`' || c == '\\' || c == '!' ||
+        c < 0x20 || c == 0x7f) {
+      double_quote_safe = false;
+    }
+  }
+  if (!needs_quoting) return std::string(arg);
+
+  if (has_single_quote && double_quote_safe) {
+    return "\"" + std::string(arg) + "\"";
   }
 
   return max_chars;
+  std::string out;
+  out.push_back('\'');
+  for (unsigned char c : arg) {
+    if (c == '\'') {
+      out += "'\\''";
+    } else if (c < 0x20 || c == 0x7f) {
+      out.push_back('\'');
+      out += "$'";
+      switch (c) {
+        case '\a':
+          out += "\\a";
+          break;
+        case '\b':
+          out += "\\b";
+          break;
+        case '\t':
+          out += "\\t";
+          break;
+        case '\n':
+          out += "\\n";
+          break;
+        case '\v':
+          out += "\\v";
+          break;
+        case '\f':
+          out += "\\f";
+          break;
+        case '\r':
+          out += "\\r";
+          break;
+        default:
+          out.push_back('\\');
+          out.push_back(static_cast<char>('0' + ((c >> 6) & 0x7)));
+          out.push_back(static_cast<char>('0' + ((c >> 3) & 0x7)));
+          out.push_back(static_cast<char>('0' + (c & 0x7)));
+          break;
+      }
+      out += "'";
+      out.push_back('\'');
+    } else {
+      out.push_back(static_cast<char>(c));
+    }
+  }
+  out.push_back('\'');
+  return out;
 }
 
-auto read_confirmation_line() -> std::string {
+auto quote_command_line(std::string_view command,
+                        const std::vector<std::string> &args) -> std::string {
+  std::string out = quote_shell_argument(command);
+  for (const auto &arg : args) {
+    out.push_back(' ');
+    out += quote_shell_argument(arg);
+  }
+  return out;
+}
+
+enum class Confirmation { Yes, No, Fatal };
+
+// #1320: GNU reads the -p answer from /dev/tty, never from the item
+// stream.  The Windows counterpart is CONIN$; it is tried first so a
+// redirected stdin (the normal -p case) still gets an interactive prompt.
+// Under Wine there is no console, so CONIN$ fails and the answer falls
+// back to stdin -- which only works when stdin was not already consumed
+// as the item source (e.g. with -a).  A read failure on either source is
+// loud (Fatal), never a silent skip with exit code 0.
+auto read_confirmation() -> Confirmation {
+  HANDLE console =
+      CreateFileW(L"CONIN$", GENERIC_READ,
+                  FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+                  0, nullptr);
+  if (console != nullptr && console != INVALID_HANDLE_VALUE) {
+    std::string line;
+    char buffer[256];
+    DWORD read = 0;
+    bool got_line = false;
+    while (ReadFile(console, buffer, sizeof(buffer), &read, nullptr) &&
+           read > 0) {
+      for (DWORD i = 0; i < read; ++i) {
+        if (buffer[i] == '\n') {
+          got_line = true;
+          break;
+        }
+        line.push_back(buffer[i]);
+      }
+      if (got_line) break;
+    }
+    CloseHandle(console);
+    if (got_line) {
+      if (!line.empty() && line.back() == '\r') line.pop_back();
+      // Only the first character of the answer counts: a leading blank
+      // is a refusal, not a yes.
+      return !line.empty() && (line[0] == 'y' || line[0] == 'Y')
+                 ? Confirmation::Yes
+                 : Confirmation::No;
+    }
+    safeErrorPrint("xargs: Failed to read from stdin\n");
+    return Confirmation::Fatal;
+  }
+
   std::string response;
-  std::getline(std::cin, response);
-  return response;
+  if (!std::getline(std::cin, response)) {
+    safeErrorPrint("xargs: Failed to read from stdin\n");
+    return Confirmation::Fatal;
+  }
+  if (!response.empty() && response.back() == '\r') response.pop_back();
+  return !response.empty() && (response[0] == 'y' || response[0] == 'Y')
+             ? Confirmation::Yes
+             : Confirmation::No;
 }
 
 auto confirm_command(std::string_view command,
-                     const std::vector<std::string> &args) -> bool {
-  auto cmd_line = build_command_line(std::string(command), args);
-  safeErrorPrint(wstring_to_utf8(cmd_line));
-  safeErrorPrint(" ?...");
-
-  auto response = read_confirmation_line();
-  for (unsigned char ch : response) {
-    if (std::isspace(ch)) continue;
-    return ch == 'y' || ch == 'Y';
-  }
-  return false;
+                     const std::vector<std::string> &args) -> Confirmation {
+  safeErrorPrint(quote_command_line(command, args));
+  safeErrorPrint("?...");
+  return read_confirmation();
 }
 
 struct ChildProcess {
@@ -1111,8 +1259,14 @@ auto execute_command(const std::string &command,
 
     auto all_args =
         materialize_arguments(base_args, current_batch, replace_str);
-    if (interactive && !confirm_command(command, all_args)) {
-      return true;
+    if (interactive) {
+      auto decision = confirm_command(command, all_args);
+      if (decision == Confirmation::Fatal) {
+        exit_code = 1;
+        stop_launching = true;
+        return false;
+      }
+      if (decision == Confirmation::No) return true;
     }
     if (verbose) {
       safeErrorPrint(command);
@@ -1434,9 +1588,13 @@ REGISTER_COMMAND(
           safeErrorPrint("\n");
         }
 
-        if (interactive && !confirm_command("echo", echo_args)) {
-          batch.clear();
-          return true;
+        if (interactive) {
+          auto decision = confirm_command("echo", echo_args);
+          if (decision == Confirmation::Fatal) return false;
+          if (decision == Confirmation::No) {
+            batch.clear();
+            return true;
+          }
         }
 
         for (size_t i = 0; i < echo_args.size(); ++i) {
