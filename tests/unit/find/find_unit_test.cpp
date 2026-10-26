@@ -3469,3 +3469,63 @@ TEST(find, issue_1313_unknown_user_and_group_are_parse_errors) {
   auto nr = numeric.run();
   EXPECT_EQ(nr.exit_code, 0);
 }
+
+TEST(find, issue_1377_type_comma_list_and_gnu_diagnostics) {
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "root" / "d");
+  tmp.write("root/f.txt", "x");
+
+  // [GNU] Comma-separated lists match any of the listed types.
+  Pipeline list;
+  list.set_cwd(tmp.wpath());
+  list.add(L"find.exe", {L"root", L"-type", L"f,d"});
+  auto lr = list.run();
+  EXPECT_EQ(lr.exit_code, 0);
+  EXPECT_TRUE(lr.stdout_text.find("root/f.txt") != std::string::npos);
+  EXPECT_TRUE(lr.stdout_text.find("root/d") != std::string::npos);
+
+  // [GNU] 'u' was never a findutils type letter; 'D' gets the doors
+  // diagnostic; concatenated letters need commas.
+  Pipeline unknown;
+  unknown.set_cwd(tmp.wpath());
+  unknown.add(L"find.exe", {L"root", L"-type", L"u"});
+  auto ur = unknown.run();
+  EXPECT_EQ(ur.exit_code, 1);
+  EXPECT_TRUE(ur.stderr_text.find("Unknown argument to -type: u") !=
+              std::string::npos);
+
+  Pipeline doors;
+  doors.set_cwd(tmp.wpath());
+  doors.add(L"find.exe", {L"root", L"-type", L"D"});
+  auto dr = doors.run();
+  EXPECT_EQ(dr.exit_code, 1);
+  EXPECT_TRUE(dr.stderr_text.find("Solaris doors are not supported") !=
+              std::string::npos);
+
+  Pipeline joined;
+  joined.set_cwd(tmp.wpath());
+  joined.add(L"find.exe", {L"root", L"-type", L"fd"});
+  auto jr = joined.run();
+  EXPECT_EQ(jr.exit_code, 1);
+  EXPECT_TRUE(jr.stderr_text.find("Must separate multiple arguments to "
+                                  "-type using: ','") != std::string::npos);
+}
+
+
+TEST(find, issue_1377_type_accepts_b_c_s_letters) {
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "root" / "d");
+  tmp.write("root/f.txt", "x");
+
+  // [GNU] b/c/s are legal -type letters; a type that cannot occur in
+  // the fixture simply matches nothing, with exit status 0.
+  for (const wchar_t* letter : {L"b", L"c", L"s"}) {
+    Pipeline p;
+    p.set_cwd(tmp.wpath());
+    p.add(L"find.exe", {L"root", L"-type", letter});
+    auto r = p.run();
+    EXPECT_EQ(r.exit_code, 0);
+    EXPECT_TRUE(r.stdout_text.empty());
+    EXPECT_TRUE(r.stderr_text.empty());
+  }
+}

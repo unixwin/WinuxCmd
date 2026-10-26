@@ -113,12 +113,13 @@ auto constexpr FIND_OPTIONS = std::array{
            STRING_TYPE),
     // [GNU]
     OPTION("-type", "",
-           "file is of type c: b,d,p,f,l,s,D [only d,f,l,p are supported]",
+           "file is of type c: b,c,d,p,f,l,s,D [D: Solaris doors are not "
+           "supported on this platform]",
            STRING_TYPE),
     // [GNU]
     OPTION("-xtype", "",
-           "like -type but checks the opposite symlink resolution state [only "
-           "d,f,l,p are supported]",
+           "like -type but checks the opposite symlink resolution state "
+           "[D: Solaris doors are not supported on this platform]",
            STRING_TYPE),
     // [GNU]
     OPTION("-execdir", "",
@@ -1276,10 +1277,11 @@ auto numeric_matches_unsigned(const NumericPredicate& pred,
 auto is_directory_reparse_point(const std::filesystem::directory_entry& e)
     -> bool;
 
-auto type_matches(const std::filesystem::directory_entry& e,
-                  std::string_view type) -> bool {
-  if (type.empty()) return true;
-
+// [#1377] GNU find accepts a comma-separated list of type letters for
+// -type/-xtype (findutils parser.c, parse_type): any one matching letter
+// is enough.  Validation happens at parse time (validate_type_argument).
+auto type_letter_matches(const std::filesystem::directory_entry& e,
+                         std::string_view type) -> bool {
   std::error_code ec;
   bool link_like = (e.is_symlink(ec) && !ec) || is_directory_reparse_point(e);
   ec.clear();
@@ -1292,14 +1294,32 @@ auto type_matches(const std::filesystem::directory_entry& e,
   if (type == "l") return link_like;
   // WinuxCmd fifo marker (#1038): on-disk marker file counts as 'p'.
   if (type == "p") return native_path::is_winux_fifo_w(e.path().wstring());
+  if (type == "b") return e.is_block_file(ec) && !ec && !link_like;
+  if (type == "c") return e.is_character_file(ec) && !ec && !link_like;
+  if (type == "s") return e.is_socket(ec) && !ec && !link_like;
 
   return false;
 }
 
-auto file_type_matches(std::filesystem::file_type file_type, bool link_like,
-                       const std::filesystem::path& p, std::string_view type)
-    -> bool {
+auto type_matches(const std::filesystem::directory_entry& e,
+                  std::string_view type) -> bool {
   if (type.empty()) return true;
+  size_t start = 0;
+  while (start <= type.size()) {
+    size_t comma = type.find(',', start);
+    if (comma == std::string_view::npos) comma = type.size();
+    if (type_letter_matches(e, type.substr(start, comma - start))) {
+      return true;
+    }
+    if (comma == type.size()) break;
+    start = comma + 1;
+  }
+  return false;
+}
+
+auto file_type_letter_matches(std::filesystem::file_type file_type,
+                              bool link_like, const std::filesystem::path& p,
+                              std::string_view type) -> bool {
   if (type == "l") {
     return link_like || file_type == std::filesystem::file_type::symlink;
   }
@@ -1312,6 +1332,35 @@ auto file_type_matches(std::filesystem::file_type file_type, bool link_like,
   }
   // WinuxCmd fifo marker (#1038).
   if (type == "p") return native_path::is_winux_fifo_w(p.wstring());
+  // [#1377] Device and socket letters: a type that cannot occur on this
+  // platform simply matches nothing, like GNU.
+  if (type == "b") {
+    return file_type == std::filesystem::file_type::block && !link_like;
+  }
+  if (type == "c") {
+    return file_type == std::filesystem::file_type::character && !link_like;
+  }
+  if (type == "s") {
+    return file_type == std::filesystem::file_type::socket && !link_like;
+  }
+  return false;
+}
+
+auto file_type_matches(std::filesystem::file_type file_type, bool link_like,
+                       const std::filesystem::path& p, std::string_view type)
+    -> bool {
+  if (type.empty()) return true;
+  size_t start = 0;
+  while (start <= type.size()) {
+    size_t comma = type.find(',', start);
+    if (comma == std::string_view::npos) comma = type.size();
+    if (file_type_letter_matches(file_type, link_like, p,
+                                 type.substr(start, comma - start))) {
+      return true;
+    }
+    if (comma == type.size()) break;
+    start = comma + 1;
+  }
   return false;
 }
 auto self_type_matches(const std::filesystem::path& p,
@@ -1408,6 +1457,62 @@ auto parse_newerxy_reference(std::string_view option, std::string_view value)
 
 auto is_unsupported_used(const CommandContext<FIND_OPTIONS.size()>& ctx)
     -> std::optional<std::string> {
+  return std::nullopt;
+}
+
+// [#1377] GNU -type/-xtype argument validation (findutils parser.c,
+// parse_type, probed against findutils 4.9.0): the argument is a
+// comma-separated list of single letters from "bcdpfls"; "D" is rejected
+// with the doors diagnostic, a run of valid letters without commas is
+// rejected with the "Must separate" diagnostic, and anything else is an
+// "Unknown argument".  Returns the GNU error text (without the "find: "
+// prefix) or std::nullopt when the argument is valid.
+auto validate_type_argument(std::string_view option, std::string_view value)
+    -> std::optional<std::string> {
+  if (value.empty()) {
+    return "Arguments to " + std::string(option) +
+           " should contain at least one letter";
+  }
+  size_t start = 0;
+  while (true) {
+    size_t comma = value.find(',', start);
+    bool last = comma == std::string_view::npos;
+    std::string_view element =
+        value.substr(start, (last ? value.size() : comma) - start);
+    if (element.empty()) {
+      if (last && start > 0) {
+        return "Last file type in list argument to " + std::string(option) +
+               " is missing, i.e., list is ending on: ','";
+      }
+      return "Unknown argument to " + std::string(option) + ": ,";
+    }
+    if (element.size() > 1) {
+      bool all_type_letters =
+          std::all_of(element.begin(), element.end(), [](char ch) {
+            return ch == 'b' || ch == 'c' || ch == 'd' || ch == 'p' ||
+                   ch == 'f' || ch == 'l' || ch == 's' || ch == 'D';
+          });
+      if (all_type_letters) {
+        return "Must separate multiple arguments to " + std::string(option) +
+               " using: ','";
+      }
+      return "Unknown argument to " + std::string(option) + ": " +
+             std::string(element);
+    }
+    char letter = element[0];
+    if (letter == 'D') {
+      return std::string(option) +
+             " D is not supported because Solaris doors are not supported "
+             "on the platform find was compiled on.";
+    }
+    if (letter != 'b' && letter != 'c' && letter != 'd' && letter != 'p' &&
+        letter != 'f' && letter != 'l' && letter != 's') {
+      return "Unknown argument to " + std::string(option) + ": " +
+             std::string(element);
+    }
+    if (last) break;
+    start = comma + 1;
+  }
   return std::nullopt;
 }
 
@@ -1807,9 +1912,9 @@ class ExpressionParser {
       if (option == "-wholename") kind = ExprKind::Path;
       if (option == "-iwholename") kind = ExprKind::IPath;
       if (option == "-type" || option == "-xtype") {
-        if (*value != "f" && *value != "d" && *value != "l" && *value != "p") {
-          return std::unexpected(std::string(option) +
-                                 " currently supports only f,d,l,p");
+        // [#1377] Full GNU letter set and diagnostics.
+        if (auto error = validate_type_argument(option, *value)) {
+          return std::unexpected(*error);
         }
         kind = option == "-type" ? ExprKind::Type : ExprKind::XType;
       }
@@ -2272,10 +2377,11 @@ auto build_config(const CommandContext<FIND_OPTIONS.size()>& ctx)
       break;
   }
 
-  if (!cfg.type_filter.empty() && cfg.type_filter != "f" &&
-      cfg.type_filter != "d" && cfg.type_filter != "l" &&
-      cfg.type_filter != "p") {
-    return std::unexpected("-type currently supports only f,d,l,p");
+  if (!cfg.type_filter.empty()) {
+    // [#1377] Same GNU validation as the expression parser.
+    if (auto error = validate_type_argument("-type", cfg.type_filter)) {
+      return std::unexpected(*error);
+    }
   }
 
   auto size_text = ctx.get<std::string>("-size", "");
