@@ -493,3 +493,228 @@ TEST(patch, patch_native_glob_expands_operands_issue1374) {
                       std::istreambuf_iterator<char>());
   EXPECT_EQ_TEXT(applied, "new\n");
 }
+
+// [GNU] #1345: -p/--strip must actually strip leading components from
+// the header file names.  The option was decoded with the wrong value
+// type, so the count silently stayed 0 and `patch -p1` tried to open
+// the literal 'b/src/f.txt'.
+TEST(patch, patch_strip_applies_to_header_names_issue1345) {
+  const std::string diff =
+      "--- a/src/f.txt\n"
+      "+++ b/src/f.txt\n"
+      "@@ -1,3 +1,3 @@\n"
+      " l1\n"
+      "-l2\n"
+      "+L2\n"
+      " l3\n";
+
+  // -p1 applies to src/f.txt.
+  {
+    TempDir tmp;
+    tmp.mkdir("src");
+    tmp.write("src/f.txt", "l1\nl2\nl3\n");
+    Pipeline p;
+    p.set_cwd(tmp.wpath());
+    p.set_stdin(diff);
+    p.add(L"patch.exe", {L"-p1"});
+    auto r = p.run();
+    EXPECT_EQ(r.exit_code, 0);
+    EXPECT_EQ_TEXT(tmp.read("src/f.txt"), "l1\nL2\nl3\n");
+  }
+  // --strip=1 and --strip 1 behave identically.
+  for (const auto& args :
+       {std::vector<std::wstring>{L"--strip=1"},
+        std::vector<std::wstring>{L"--strip", L"1"}}) {
+    TempDir tmp;
+    tmp.mkdir("src");
+    tmp.write("src/f.txt", "l1\nl2\nl3\n");
+    Pipeline p;
+    p.set_cwd(tmp.wpath());
+    p.set_stdin(diff);
+    p.add(L"patch.exe", args);
+    auto r = p.run();
+    EXPECT_EQ(r.exit_code, 0);
+    EXPECT_EQ_TEXT(tmp.read("src/f.txt"), "l1\nL2\nl3\n");
+  }
+  // -p0 keeps the full header path and cannot find the file.
+  {
+    TempDir tmp;
+    tmp.mkdir("src");
+    tmp.write("src/f.txt", "l1\nl2\nl3\n");
+    Pipeline p;
+    p.set_cwd(tmp.wpath());
+    p.set_stdin(diff);
+    p.add(L"patch.exe", {L"-p0"});
+    auto r = p.run();
+    EXPECT_EQ(r.exit_code, 2);
+    EXPECT_EQ_TEXT(tmp.read("src/f.txt"), "l1\nl2\nl3\n");
+  }
+}
+
+// [GNU] #1345: a negative strip count is a usage error (exit 2), and
+// so is an unrecognized option.
+TEST(patch, patch_usage_errors_exit_2_issue1345) {
+  TempDir tmp;
+  tmp.write("f.txt", "l1\n");
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("");
+  p.add(L"patch.exe", {L"-p-1"});
+  EXPECT_EQ(p.run().exit_code, 2);
+
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.set_stdin("");
+  p2.add(L"patch.exe", {L"--bogus"});
+  EXPECT_EQ(p2.run().exit_code, 2);
+}
+
+// [GNU] #1346: a context diff is parsed and applied (previously it
+// printed "patching file" and exited 0 without changing anything).
+TEST(patch, patch_context_diff_applies_issue1346) {
+  TempDir tmp;
+  tmp.write("f.txt", "l1\nl2\nl3\n");
+  const std::string diff =
+      "*** f.txt\t2026-01-01 00:00:00\n"
+      "--- f.txt\t2026-01-01 00:00:01\n"
+      "***************\n"
+      "*** 1,3 ****\n"
+      "  l1\n"
+      "! l2\n"
+      "  l3\n"
+      "--- 1,3 ----\n"
+      "  l1\n"
+      "! L2\n"
+      "  l3\n";
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin(diff);
+  p.add(L"patch.exe", {L"f.txt"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("patching file f.txt") != std::string::npos);
+  EXPECT_EQ_TEXT(tmp.read("f.txt"), "l1\nL2\nl3\n");
+}
+
+// [GNU] #1346: in a pure-addition context hunk, GNU diff omits the old
+// section's lines entirely (only its range header is printed); the
+// hunk must still apply at the right place.
+TEST(patch, patch_context_diff_pure_addition_issue1346) {
+  TempDir tmp;
+  tmp.write("f.txt", "a\nb\nc\nd\ne\n");
+  const std::string diff =
+      "*** f.txt\t2026-01-01 00:00:00\n"
+      "--- f.txt\t2026-01-01 00:00:01\n"
+      "***************\n"
+      "*** 1,5 ****\n"
+      "--- 1,6 ----\n"
+      "  a\n"
+      "  b\n"
+      "+ X\n"
+      "  c\n"
+      "  d\n"
+      "  e\n";
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin(diff);
+  p.add(L"patch.exe", {L"f.txt"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(tmp.read("f.txt"), "a\nb\nX\nc\nd\ne\n");
+}
+
+// [GNU] #1346: a normal (ed-style) diff is parsed and applied at the
+// stated positions, including a later command whose position shifts
+// because of an earlier one.
+TEST(patch, patch_normal_diff_applies_issue1346) {
+  TempDir tmp;
+  tmp.write("f.txt", "l1\nl2\nl3\n");
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("1c1\n< l1\n---\n> L1\n");
+  p.add(L"patch.exe", {L"f.txt"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(tmp.read("f.txt"), "L1\nl2\nl3\n");
+
+  TempDir tmp2;
+  tmp2.write("f.txt", "x\nY\nz\n");
+  Pipeline p2;
+  p2.set_cwd(tmp2.wpath());
+  p2.set_stdin("2c2\n< Y\n---\n> y\n3a4\n> w\n");
+  p2.add(L"patch.exe", {L"f.txt"});
+  auto r2 = p2.run();
+  EXPECT_EQ(r2.exit_code, 0);
+  EXPECT_EQ_TEXT(tmp2.read("f.txt"), "x\ny\nz\nw\n");
+
+  // Content that does not match the stated position fails the hunk.
+  TempDir tmp3;
+  tmp3.write("f.txt", "XX\nl2\nl3\n");
+  Pipeline p3;
+  p3.set_cwd(tmp3.wpath());
+  p3.set_stdin("1c1\n< l1\n---\n> L1\n");
+  p3.add(L"patch.exe", {L"f.txt"});
+  auto r3 = p3.run();
+  EXPECT_EQ(r3.exit_code, 1);
+  EXPECT_EQ_TEXT(tmp3.read("f.txt"), "XX\nl2\nl3\n");
+}
+
+// [GNU] #1346: input that names files but contains no hunks is
+// garbage (exit 2), for both unified and context headers — it must
+// never be reported as a successful patch.
+TEST(patch, patch_header_without_hunks_is_garbage_issue1346) {
+  TempDir tmp;
+  tmp.write("f.txt", "l1\n");
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("--- f.txt\n+++ f.txt\n");
+  p.add(L"patch.exe", {});
+  EXPECT_EQ(p.run().exit_code, 2);
+  EXPECT_EQ_TEXT(tmp.read("f.txt"), "l1\n");
+
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.set_stdin("*** f.txt\n--- f.txt\n");
+  p2.add(L"patch.exe", {L"f.txt"});
+  EXPECT_EQ(p2.run().exit_code, 2);
+  EXPECT_EQ_TEXT(tmp.read("f.txt"), "l1\n");
+}
+
+namespace patch_dialect_detail {
+// "C:\Users\...\wct123" -> "/c/Users/.../wct123" (MSYS drive spelling:
+// the colon is dropped, only the letter stays) — same fold the shred
+// #1240 tests use.
+inline auto slash_drive_form(const std::filesystem::path &path)
+    -> std::wstring {
+  std::wstring text = path.wstring();
+  if (text.size() >= 2 && text[0] >= L'A' && text[0] <= L'Z') {
+    text[0] = static_cast<wchar_t>(text[0] - L'A' + L'a');
+  }
+  text.erase(1, 1);  // drop the ':' from "c:\..."
+  for (wchar_t &ch : text) {
+    if (ch == L'\\') ch = L'/';
+  }
+  return L"/" + text;
+}
+}  // namespace patch_dialect_detail
+
+// [GNU] rootaudit #1364: the patch file operand must be resolved
+// through the shared path boundary.  A bare "/"-leading spelling
+// handed raw to CreateFileW lands on the process current drive root
+// and the file is not found; through the boundary it names the file.
+TEST(patch, patch_input_operand_uses_shared_path_boundary_rootaudit1364) {
+  TempDir tmp;
+  tmp.write("f.txt", "hello\n");
+  tmp.write("changes.diff",
+            "--- f.txt\n+++ f.txt\n@@ -1,1 +1,1 @@\n-hello\n+world\n");
+  const std::wstring patch_operand =
+      patch_dialect_detail::slash_drive_form(tmp.path / L"changes.diff");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"patch.exe", {L"-i", patch_operand});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(tmp.read("f.txt"), "world\n");
+}
