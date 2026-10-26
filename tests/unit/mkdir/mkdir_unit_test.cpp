@@ -390,3 +390,42 @@ TEST(mkdir, mkdir_p_drive_dialect_verbose_reports_operand_form) {
   EXPECT_TRUE(r.stderr_text.empty());
   EXPECT_TRUE(std::filesystem::is_directory(tmp.path / L"vdeep1233"));
 }
+
+// ===== #1296 regression: mkdir on an existing directory =====
+
+TEST(mkdir, mkdir_existing_directory_fails_with_file_exists_issue1296) {
+  TempDir tmp;
+  std::filesystem::create_directory(tmp.path / "pa");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"mkdir.exe", {L"pa"});
+
+  auto r = p.run();
+
+  // [GNU] mkdir without -p on an existing directory is an error:
+  // "mkdir: cannot create directory 'pa': File exists", exit 1.
+  // The #1283 audit observed a build that silently exited 0 instead.
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "mkdir: cannot create directory 'pa': File exists\n");
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(std::filesystem::is_directory(tmp.path / "pa"));
+}
+
+TEST(mkdir, mkdir_p_existing_directory_is_silent_success_issue1296) {
+  TempDir tmp;
+  std::filesystem::create_directory(tmp.path / "pa");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"mkdir.exe", {L"-p", L"pa"});
+
+  auto r = p.run();
+
+  // [GNU] -p never errors on an existing directory and stays silent;
+  // pinning this guards the #1296 fix against over-correction.
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.empty());
+}
