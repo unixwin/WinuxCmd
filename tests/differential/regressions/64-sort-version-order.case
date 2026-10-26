@@ -1,0 +1,7 @@
+cmd: sort
+args: -V versions.txt
+timeout: 10
+setup: |
+  printf 'a1\na01\na001\na~1\na\n1.0~rc1\n1.0\n1.0a\n~~\n~\na0\n' > versions.txt
+source: github.com/unixwin/WinuxCmd/issues/1340
+tags: issue-1340 regression
