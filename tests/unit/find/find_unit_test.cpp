@@ -801,6 +801,80 @@ TEST(find, issue_1311_used_measures_atime_minus_ctime_gap) {
   EXPECT_TRUE(one_result.stdout_text.find("wide.txt") == std::string::npos);
 }
 
+TEST(find, issue_1315_exec_spawn_failure_is_diagnosed_per_file) {
+  TempDir tmp;
+  tmp.write("in1.txt", "x");
+  tmp.write("in2.txt", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L".", L"-name", L"in*.txt", L"-exec",
+                      L"./nosuchcmdxyz", L"{}", L";"});
+  auto r = p.run();
+  // GNU: a spawn failure is diagnosed for every file but does not change
+  // find's exit status for the `\;` form.
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.find("No such file or directory") !=
+              std::string::npos);
+  size_t count = 0;
+  size_t pos = 0;
+  while ((pos = r.stderr_text.find("nosuchcmdxyz", pos)) !=
+         std::string::npos) {
+    ++count;
+    pos += 12;
+  }
+  EXPECT_EQ(count, 2u);
+}
+
+TEST(find, issue_1315_exec_substitutes_command_position_placeholder) {
+  TempDir tmp;
+  tmp.write("a.txt", "x");
+
+  // With substitution, the program is ./a.txt: the diagnostic names the
+  // file, and the launch fails (on Windows CreateProcessW rejects the
+  // .txt image; GNU on Linux reports Permission denied for the same
+  // shape). Without substitution the program would be the literal {}
+  // and the diagnostic would name {} instead.
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe",
+        {L".", L"-name", L"a.txt", L"-exec", L"{}", L"{}", L";"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.find("./a.txt") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("'{}'") == std::string::npos);
+}
+
+TEST(find, issue_1315_exec_plus_expands_non_trailing_placeholder) {
+  TempDir tmp;
+  tmp.write("f1.txt", "a");
+  tmp.write("f2.txt", "b");
+  tmp.write("echoer.cmd", "@echo %* >> marker.txt\r\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L".", L"-name", L"f*.txt", L"-exec", L"./echoer.cmd",
+                      L"{}", L"{}", L"+"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+
+  std::ifstream marker(tmp.path / "marker.txt");
+  std::stringstream content;
+  content << marker.rdbuf();
+  // The non-trailing {} expands to the full batch, then the trailing
+  // batch is appended: each file appears twice, and no literal {} stays.
+  EXPECT_TRUE(content.str().find("{}") == std::string::npos);
+  EXPECT_TRUE(content.str().find("f1.txt") != std::string::npos);
+  EXPECT_TRUE(content.str().find("f2.txt") != std::string::npos);
+  size_t f1_count = 0;
+  size_t pos = 0;
+  while ((pos = content.str().find("f1.txt", pos)) != std::string::npos) {
+    ++f1_count;
+    pos += 6;
+  }
+  EXPECT_EQ(f1_count, 2u);
+}
+
 TEST(find, find_perm_and_access_primaries_match_winux_permissions) {
   TempDir tmp;
   tmp.write("plain.txt", "x");
