@@ -697,6 +697,40 @@ TEST(rm, diag_nul_dir_pipeline_probe_issue1297) {
            " stdout=[" + r.stdout_text + "] stderr=[" + r.stderr_text + "]\n";
   }
 
+  // v3 additions: verbose and non-force runs reveal what path rm thinks
+  // it is processing (or that it never engages the operand at all).
+  const std::wstring ext_c = mk_nul(L"pc");
+  {
+    Pipeline p;
+    p.set_cwd(tmp.wpath());
+    p.add(L"rm.exe", {L"-r", L"-f", L"-v", tmp.wpath() + L"\\pc\\NUL"});
+    auto r = p.run();
+    out += "NUL-verbose exit=" + std::to_string(r.exit_code) +
+           " dir_exists=" +
+           std::to_string(std::filesystem::exists(std::filesystem::path(ext_c))) +
+           " stdout=[" + r.stdout_text + "] stderr=[" + r.stderr_text + "]\n";
+  }
+  const std::wstring ext_d = mk_nul(L"pd");
+  {
+    Pipeline p;
+    p.set_cwd(tmp.wpath());
+    p.add(L"rm.exe", {L"-r", tmp.wpath() + L"\\pd\\NUL"});
+    auto r = p.run();
+    out += "NUL-noforce exit=" + std::to_string(r.exit_code) +
+           " dir_exists=" +
+           std::to_string(std::filesystem::exists(std::filesystem::path(ext_d))) +
+           " stdout=[" + r.stdout_text + "] stderr=[" + r.stderr_text + "]\n";
+  }
+  {
+    Pipeline p;
+    p.set_cwd(tmp.wpath());
+    p.add(L"rm.exe", {L"-r", L"-f", L"-v", tmp.wpath() + L"\\ctl2"});
+    std::filesystem::create_directory(tmp.path / "ctl2");
+    auto r = p.run();
+    out += "CTL2-verbose exit=" + std::to_string(r.exit_code) +
+           " stdout=[" + r.stdout_text + "] stderr=[" + r.stderr_text + "]\n";
+  }
+
   wctest::fail(__FILE__, __LINE__,
                "TEMP DIAGNOSTIC V2 DUMP (#1297):\n" + out);
 }
