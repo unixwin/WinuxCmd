@@ -195,3 +195,100 @@ TEST(hexdump, hexdump_stdin_ctrlz_matches_file_operand_issue1212) {
   EXPECT_FALSE(rf.stdout_text.empty());
   EXPECT_EQ(rs.stdout_text, rf.stdout_text);
 }
+
+// #1373: the -e/-f format engine is the core of hexdump; -e was
+// rejected and -f silently ignored. Repeated lines squeeze to "*",
+// 2-byte modes print a trailing odd byte, and multiple files form one
+// continuous stream. Expected outputs follow util-linux hexdump.
+TEST(hexdump, hexdump_e_format_string_issue1373) {
+  TempDir tmp;
+  write_binary_file(tmp.path / "test.bin", "abcde");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"hexdump.exe", {L"-e", L"1/1 \"%02x\\n\"", L"test.bin"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "61\n62\n63\n64\n65\n");
+}
+
+TEST(hexdump, hexdump_f_format_file_issue1373) {
+  TempDir tmp;
+  write_binary_file(tmp.path / "test.bin", "abcde");
+  write_binary_file(tmp.path / "fmt.txt", "1/1 \"%02x\\n\"\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"hexdump.exe", {L"-f", L"fmt.txt", L"test.bin"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "61\n62\n63\n64\n65\n");
+}
+
+TEST(hexdump, hexdump_repeated_lines_squeezed_issue1373) {
+  TempDir tmp;
+  write_binary_file(tmp.path / "rep.bin", std::string(48, 'a'));
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"hexdump.exe", {L"rep.bin"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text,
+                 "0000000 6161 6161 6161 6161 6161 6161 6161 6161\n"
+                 "*\n"
+                 "0000030\n");
+}
+
+TEST(hexdump, hexdump_v_disables_squeeze_issue1373) {
+  TempDir tmp;
+  write_binary_file(tmp.path / "rep.bin", std::string(48, 'a'));
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"hexdump.exe", {L"-v", L"rep.bin"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text,
+                 "0000000 6161 6161 6161 6161 6161 6161 6161 6161\n"
+                 "0000020 6161 6161 6161 6161 6161 6161 6161 6161\n"
+                 "0000040 6161 6161 6161 6161 6161 6161 6161 6161\n"
+                 "0000030\n");
+}
+
+TEST(hexdump, hexdump_two_byte_modes_print_trailing_odd_byte_issue1373) {
+  TempDir tmp;
+  write_binary_file(tmp.path / "test.bin", "abcde");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"hexdump.exe", {L"-x", L"test.bin"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text,
+                 "0000000    6261    6463    0065 \n"
+                 "0000005\n");
+}
+
+TEST(hexdump, hexdump_multiple_files_form_one_stream_issue1373) {
+  TempDir tmp;
+  write_binary_file(tmp.path / "f1.bin", std::string(16, 'a'));
+  write_binary_file(tmp.path / "f2.bin", std::string(16, 'b'));
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"hexdump.exe", {L"f1.bin", L"f2.bin"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text,
+                 "0000000 6161 6161 6161 6161 6161 6161 6161 6161\n"
+                 "0000010 6262 6262 6262 6262 6262 6262 6262 6262\n"
+                 "0000020\n");
+}
+
