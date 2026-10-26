@@ -4246,8 +4246,20 @@ auto replace_placeholder(std::string_view text, std::string_view path)
   return out;
 }
 
+// [#1315] Spawn outcome: a nullopt status means the child never ran
+// (resolve or CreateProcessW failure) and carries the diagnostic reason;
+// a plain 127 used to conflate "spawn failed" with "child exited 127",
+// which silenced GNU's per-file spawn diagnostic. Callers print
+// `find: '<command>': <reason>` and keep find's exit status unchanged
+// for the `\;` form (GNU exec.c:388-392).
+struct ChildRunResult {
+  std::optional<int> status;
+  std::string spawn_error;
+};
+
 auto run_child(const std::string& command, const std::vector<std::string>& args,
-               const std::filesystem::path& working_directory = {}) -> int {
+               const std::filesystem::path& working_directory = {})
+    -> ChildRunResult {
   // Resolve the child with GNU execvp semantics (PATH-only; no
   // application-directory, cwd, or System32 fallback) so a name colliding
   // with a Windows image resolves from the caller's PATH.
@@ -4256,7 +4268,15 @@ auto run_child(const std::string& command, const std::vector<std::string>& args,
   find_launch_request.args = args;
   auto launch = winux::childproc::plan_child_launch(find_launch_request);
   if (launch.status != winux::childproc::ChildResolveStatus::Found) {
-    return 127;
+    std::string reason = "No such file or directory";
+    if (launch.status ==
+        winux::childproc::ChildResolveStatus::NotExecutable) {
+      reason = "Permission denied";
+    } else if (launch.status ==
+               winux::childproc::ChildResolveStatus::NotADirectory) {
+      reason = "Not a directory";
+    }
+    return ChildRunResult{std::nullopt, reason};
   }
   STARTUPINFOW si{sizeof(si)};
   PROCESS_INFORMATION pi{};
@@ -4266,14 +4286,43 @@ auto run_child(const std::string& command, const std::vector<std::string>& args,
   BOOL ok = CreateProcessW(
       launch.application_name->c_str(), launch.command_line.data(), nullptr,
       nullptr, TRUE, 0, nullptr, cwd.empty() ? nullptr : cwd.c_str(), &si, &pi);
-  if (!ok) return 127;
+  if (!ok) {
+    DWORD error = GetLastError();
+    wchar_t* buffer = nullptr;
+    std::string reason = "Unknown error";
+    if (FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER |
+                           FORMAT_MESSAGE_FROM_SYSTEM |
+                           FORMAT_MESSAGE_IGNORE_INSERTS,
+                       nullptr, error, 0,
+                       reinterpret_cast<LPWSTR>(&buffer), 0, nullptr) != 0 &&
+        buffer != nullptr) {
+      reason = wstring_to_utf8(buffer);
+      LocalFree(buffer);
+      while (!reason.empty() &&
+             (reason.back() == '\n' || reason.back() == '\r' ||
+              reason.back() == ' ')) {
+        reason.pop_back();
+      }
+      if (reason.empty()) reason = "Unknown error";
+    }
+    return ChildRunResult{std::nullopt, reason};
+  }
 
   WaitForSingleObject(pi.hProcess, INFINITE);
   DWORD exit_code = 1;
   GetExitCodeProcess(pi.hProcess, &exit_code);
   CloseHandle(pi.hProcess);
   CloseHandle(pi.hThread);
-  return static_cast<int>(exit_code);
+  return ChildRunResult{static_cast<int>(exit_code), ""};
+}
+
+auto report_spawn_failure(const std::string& command,
+                          const std::string& reason) -> void {
+  safeErrorPrint("find: '");
+  safeErrorPrint(command);
+  safeErrorPrint("': ");
+  safeErrorPrint(reason);
+  safeErrorPrint("\n");
 }
 
 auto ask_confirmation(const ExecAction& action, std::string_view path) -> bool {
@@ -4342,11 +4391,40 @@ auto execute_action_for_path(ExecAction& action, std::string_view path,
     args.push_back(replace_placeholder(arg, target));
   }
 
+  // [#1315] {} is substituted in the command position too: `-exec {} \;`
+  // runs the matched file itself, as GNU does. The substitution loop
+  // above only covered the arguments.
+  std::string program = replace_placeholder(action.command, target);
+
   // [GNU] exec.c:388-392: `-exec cmd \;` only makes the predicate false
   // when the invoked command fails; it must NOT change find's exit status.
-  // Only `-exec {} +` sets the program exit status.
-  int status = run_child(action.command, args, cwd);
-  return status == 0;
+  // Only `-exec {} +` sets the program exit status. A spawn failure is
+  // diagnosed per file (GNU prints it for every file) and also yields
+  // false, without touching the exit status.
+  auto result = run_child(program, args, cwd);
+  if (!result.status) {
+    report_spawn_failure(program, result.spawn_error);
+    return false;
+  }
+  return *result.status == 0;
+}
+
+// [#1315] -exec ... {} + expansion: the parser already popped the single
+// trailing {}, which the flush appends below. A non-trailing {} argument
+// expands to the full target list instead of being passed literally.
+auto expand_aggregate_args(const std::vector<std::string>& args,
+                           const std::vector<std::string>& targets)
+    -> std::vector<std::string> {
+  std::vector<std::string> expanded;
+  expanded.reserve(args.size() + targets.size());
+  for (const auto& arg : args) {
+    if (arg == "{}") {
+      expanded.insert(expanded.end(), targets.begin(), targets.end());
+    } else {
+      expanded.push_back(arg);
+    }
+  }
+  return expanded;
 }
 
 auto flush_exec_actions(Config& cfg) -> void {
@@ -4366,13 +4444,19 @@ auto flush_exec_actions(Config& cfg) -> void {
         if (action.prompt && !ask_confirmation_aggregate(action)) {
           continue;
         }
-        std::vector<std::string> args = action.args;
+        std::vector<std::string> args =
+            expand_aggregate_args(action.args, targets);
         args.insert(args.end(), targets.begin(), targets.end());
         // [GNU] exec.c:397-399: `-exec {} +` is TRUE even when the invoked
         // command fails, but it sets find's exit status.
-        int status =
+        auto result =
             run_child(action.command, args, std::filesystem::path(dir));
-        if (status != 0) cfg.had_error = true;
+        if (!result.status) {
+          report_spawn_failure(action.command, result.spawn_error);
+          cfg.had_error = true;
+        } else if (*result.status != 0) {
+          cfg.had_error = true;
+        }
       }
       action.pending_paths.clear();
       continue;
@@ -4383,13 +4467,19 @@ auto flush_exec_actions(Config& cfg) -> void {
       continue;
     }
 
-    std::vector<std::string> args = action.args;
+    std::vector<std::string> args =
+        expand_aggregate_args(action.args, action.pending_paths);
     args.insert(args.end(), action.pending_paths.begin(),
                 action.pending_paths.end());
     // [GNU] exec.c:397-399: the predicate value of `-exec {} +` stays TRUE
     // when the command fails; only the exit status is affected.
-    int status = run_child(action.command, args);
-    if (status != 0) cfg.had_error = true;
+    auto result = run_child(action.command, args);
+    if (!result.status) {
+      report_spawn_failure(action.command, result.spawn_error);
+      cfg.had_error = true;
+    } else if (*result.status != 0) {
+      cfg.had_error = true;
+    }
     action.pending_paths.clear();
   }
 }
