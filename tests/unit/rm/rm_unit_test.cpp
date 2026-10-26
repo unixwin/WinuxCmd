@@ -653,3 +653,21 @@ TEST(rm, rm_interactive_1327_full_sequence) {
             "rm: remove directory 'd'? ");
   EXPECT_FALSE(std::filesystem::exists(tmp.path / "d"));
 }
+
+TEST(rm, rm_verbose_1328_recursive_paths) {
+  TempDir tmp;
+  std::filesystem::create_directory(tmp.path / "d");
+  tmp.write("d/f", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"rm.exe", {L"-rv", L"d"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // GNU wording for the directory itself, and operand-relative paths
+  // throughout (no extended \\?\ prefixes) (#1328).
+  EXPECT_EQ(r.stdout_text, "removed 'd/f'\nremoved directory 'd'\n");
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "d"));
+}

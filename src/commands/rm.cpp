@@ -337,7 +337,9 @@ auto remove_empty_directory_path(const std::wstring& wpath,
   }
 
   if (cfg.verbose) {
-    safePrint("removed '");
+    // [GNU] Directory removals are reported as "removed directory"
+    // (#1328); files keep the plain "removed" form below.
+    safePrint("removed directory '");
     safePrint(display_path);
     safePrint("'\n");
   }
