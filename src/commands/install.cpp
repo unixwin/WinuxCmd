@@ -18,9 +18,12 @@ import container;
 using cmd::meta::OptionType;
 
 auto constexpr INSTALL_OPTIONS = std::array{
-    // [GNU]
-    OPTION("-b", "--backup", "make a backup of each existing destination file",
+    // [GNU] -b: like --backup but does not accept an argument
+    OPTION("-b", "", "like --backup but does not accept an argument",
            BOOL_TYPE),
+    // [GNU]
+    OPTION("", "--backup", "make a backup of each existing destination file",
+           OPTIONAL_STRING_TYPE),
     // [GNU] -c is accepted and ignored (install.c:821-822: "(ignored)")
     OPTION("-c", "", "(ignored)", BOOL_TYPE),
     // [GNU]
@@ -75,8 +78,32 @@ auto constexpr INSTALL_OPTIONS = std::array{
 namespace install_pipeline {
 namespace cp = core::pipeline;
 
+// [GNU] Backup control, mirroring cp's model: the CONTROL word of
+// --backup[=CONTROL] (or "existing" for -b / an empty value) selects
+// whether and how an overwritten destination is preserved (#1357).
+enum class BackupControl { none, simple, numbered, existing };
+
+auto parse_backup_control(std::string control) -> cp::Result<BackupControl> {
+  std::ranges::transform(control, control.begin(), [](unsigned char ch) {
+    return static_cast<char>(std::tolower(ch));
+  });
+  if (control.empty() || control == "existing" || control == "nil") {
+    return BackupControl::existing;
+  }
+  if (control == "none" || control == "off") {
+    return BackupControl::none;
+  }
+  if (control == "simple" || control == "never") {
+    return BackupControl::simple;
+  }
+  if (control == "numbered" || control == "t") {
+    return BackupControl::numbered;
+  }
+  return std::unexpected("invalid backup type");
+}
+
 struct Config {
-  bool backup = false;
+  BackupControl backup_control = BackupControl::none;
   bool directory_mode = false;
   bool preserve_timestamps = false;
   bool compare = false;
@@ -365,7 +392,18 @@ void append_source_operand(Config& cfg, const std::string& file_arg) {
 auto build_config(const CommandContext<INSTALL_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
   Config cfg;
-  cfg.backup = ctx.get<bool>("--backup", false) || ctx.get<bool>("-b", false);
+  // [GNU] -b is --backup without an argument (control "existing");
+  // --backup takes its CONTROL only in = form (#1357).
+  if (ctx.get<bool>("-b", false)) {
+    cfg.backup_control = BackupControl::existing;
+  } else if (ctx.has("--backup")) {
+    auto parsed =
+        parse_backup_control(ctx.get<std::string>("--backup", ""));
+    if (!parsed) {
+      return std::unexpected(parsed.error());
+    }
+    cfg.backup_control = *parsed;
+  }
   cfg.directory_mode =
       ctx.get<bool>("--directory", false) || ctx.get<bool>("-d", false);
   cfg.preserve_timestamps = ctx.get<bool>("--preserve-timestamps", false) ||
@@ -406,6 +444,10 @@ auto build_config(const CommandContext<INSTALL_OPTIONS.size()>& ctx)
   }
   if (!suffix_opt.empty()) {
     cfg.backup_suffix = suffix_opt;
+  } else if (const char* env_suffix = std::getenv("SIMPLE_BACKUP_SUFFIX");
+             env_suffix != nullptr && *env_suffix != '\0') {
+    // [GNU] the simple-backup suffix falls back to $SIMPLE_BACKUP_SUFFIX.
+    cfg.backup_suffix = env_suffix;
   }
 
   cfg.strip_program = ctx.get<std::string>("--strip-program", "");
@@ -531,6 +573,35 @@ auto preserve_timestamps(const std::string& source, const std::string& dest)
   CloseHandle(hDest);
   CloseHandle(hSource);
   return ok;
+}
+
+// [GNU] Numbered backups are "<dest>.~N~" with the first free N;
+// "existing" uses the numbered form when a numbered backup is already
+// present and the simple suffix otherwise (#1357).
+auto numbered_backup_path(const std::string& dest) -> std::string {
+  for (int version = 1;; ++version) {
+    std::string candidate = dest + ".~" + std::to_string(version) + "~";
+    if (native_attributes(candidate) == INVALID_FILE_ATTRIBUTES) {
+      return candidate;
+    }
+  }
+}
+
+auto select_backup_path(const std::string& dest, const Config& cfg)
+    -> std::string {
+  switch (cfg.backup_control) {
+    case BackupControl::numbered:
+      return numbered_backup_path(dest);
+    case BackupControl::existing:
+      if (native_attributes(dest + ".~1~") != INVALID_FILE_ATTRIBUTES) {
+        return numbered_backup_path(dest);
+      }
+      return dest + cfg.backup_suffix;
+    case BackupControl::simple:
+    case BackupControl::none:
+      return dest + cfg.backup_suffix;
+  }
+  return dest + cfg.backup_suffix;
 }
 
 auto run(const Config& cfg) -> int {
@@ -693,10 +764,29 @@ auto run(const Config& cfg) -> int {
       }
     }
 
-    if (cfg.backup) {
+    // [GNU] The source is validated before the destination is touched:
+    // a missing source reports "cannot stat" and a directory source
+    // reports "omitting directory", and neither makes a backup (#1357).
+    const bool source_is_stdin = is_stdin_alias(source);
+    if (!source_is_stdin) {
+      DWORD src_attrs = native_attributes(source);
+      if (src_attrs == INVALID_FILE_ATTRIBUTES) {
+        safeErrorPrintLn("install: cannot stat '" + source +
+                         "': No such file or directory");
+        had_failure = true;
+        continue;
+      }
+      if (src_attrs & FILE_ATTRIBUTE_DIRECTORY) {
+        safeErrorPrintLn("install: omitting directory '" + source + "'");
+        had_failure = true;
+        continue;
+      }
+    }
+
+    if (cfg.backup_control != BackupControl::none) {
       DWORD dest_attrs = native_attributes(dest);
       if (dest_attrs != INVALID_FILE_ATTRIBUTES) {
-        std::string backup_path = dest + cfg.backup_suffix;
+        std::string backup_path = select_backup_path(dest, cfg);
         auto dest_operand = native_path::make_api_path_operand(dest);
         auto backup_operand = native_path::make_api_path_operand(backup_path);
         if (MoveFileExW(dest_operand.extended.c_str(),
@@ -727,13 +817,8 @@ auto run(const Config& cfg) -> int {
         continue;
       }
     } else {
-      DWORD src_attrs = native_attributes(source);
-      if (src_attrs == INVALID_FILE_ATTRIBUTES) {
-        safeErrorPrintLn("install: cannot stat '" + source +
-                         "': No such file or directory");
-        had_failure = true;
-        continue;
-      }
+      // The source was validated (stat + not a directory) before the
+      // backup step above.
       auto src_operand = native_path::make_api_path_operand(source);
       auto dst_operand = native_path::make_api_path_operand(dest);
       if (!CopyFileW(src_operand.extended.c_str(), dst_operand.extended.c_str(),
@@ -783,6 +868,12 @@ auto run(const Config& cfg) -> int {
       install_launch_request.command = strip_name;
       install_launch_request.args.emplace_back(dest);
       auto launch = winux::childproc::plan_child_launch(install_launch_request);
+      // [GNU] A strip failure fails the install (#1357): the diagnostic
+      // goes to stderr, the destination is removed, and the run exits 1.
+      // A strip program that cannot be run at all additionally reports
+      // "cannot run '<prog>': No such file or directory" first.
+      bool strip_failed = false;
+      bool strip_cannot_run = false;
       if (launch.status == winux::childproc::ChildResolveStatus::Found) {
         STARTUPINFOW si{};
         si.cb = sizeof(si);
@@ -796,20 +887,27 @@ auto run(const Config& cfg) -> int {
           GetExitCodeProcess(pi.hProcess, &strip_exit_code);
           CloseHandle(pi.hThread);
           CloseHandle(pi.hProcess);
-          if (strip_exit_code != 0 && cfg.verbose) {
-            safePrint("install: warning: strip failed for '");
-            safePrint(dest);
-            safePrintLn("'");
+          if (strip_exit_code != 0) {
+            strip_failed = true;
           }
-        } else if (cfg.verbose) {
-          safePrint("install: warning: strip failed for '");
-          safePrint(dest);
-          safePrintLn("'");
+        } else {
+          strip_failed = true;
+          strip_cannot_run = true;
         }
-      } else if (cfg.verbose) {
-        safePrint("install: warning: strip failed for '");
-        safePrint(dest);
-        safePrintLn("'");
+      } else {
+        strip_failed = true;
+        strip_cannot_run = true;
+      }
+      if (strip_failed) {
+        if (strip_cannot_run) {
+          safeErrorPrintLn("install: cannot run '" + strip_name +
+                           "': No such file or directory");
+        }
+        safeErrorPrintLn("install: strip process terminated abnormally");
+        auto dst_operand = native_path::make_api_path_operand(dest);
+        DeleteFileW(dst_operand.extended.c_str());
+        had_failure = true;
+        continue;
       }
     }
   }
