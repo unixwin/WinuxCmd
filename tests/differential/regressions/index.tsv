@@ -51,3 +51,4 @@
 63	#1339	sed address escapes must keep the backslash
 64	#1340	sort -V must use filevercmp ordering
 65	#1341	uniq -w -1 must be rejected
+66	#1342	tail -z headers must use newline separators
