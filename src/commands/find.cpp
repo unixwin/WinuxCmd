@@ -1565,6 +1565,19 @@ auto parse_roots(std::span<const std::string_view> args)
       ++i;
       continue;
     }
+    // [#1380] The remaining leading global options must be skipped the
+    // same way expression_start_index skips them; otherwise "-D tree"
+    // ends the root scan here and the real start point that follows is
+    // never collected (the traversal silently runs on ".").
+    if (roots.empty() &&
+        (arg == "-nowarn" || arg == "-warn" ||
+         arg == "-ignore_readdir_race" || arg == "-noignore_readdir_race")) {
+      continue;
+    }
+    if (roots.empty() && (arg == "-D" || arg == "--debug")) {
+      ++i;
+      continue;
+    }
     if (roots.empty() && arg.size() > 2 && arg[0] == '-' && arg[1] == 'O' &&
         std::all_of(arg.begin() + 2, arg.end(), [](char ch) {
           return std::isdigit(static_cast<unsigned char>(ch)) != 0;
@@ -2342,6 +2355,18 @@ auto build_config(const CommandContext<FIND_OPTIONS.size()>& ctx)
   cfg.files0_from = ctx.get<std::string>("-files0-from", "");
   cfg.debug_category = ctx.get<std::string>("-D", "");
   cfg.debug_enabled = ctx.has("-D") || ctx.has("--debug");
+  // [#1380] The generic parser no longer claims "--debug" for find (see
+  // option_policy_for_command), so honor the -D alias from the raw
+  // arguments, where find's own expression parser already accepts it.
+  if (!cfg.debug_enabled) {
+    for (size_t i = 0; i + 1 < ctx.raw_args.size(); ++i) {
+      if (ctx.raw_args[i] == "--debug") {
+        cfg.debug_enabled = true;
+        cfg.debug_category = std::string(ctx.raw_args[i + 1]);
+        break;
+      }
+    }
+  }
   cfg.nowarn = ctx.has("-nowarn") && !ctx.has("-warn");
   cfg.ignore_readdir_race =
       ctx.has("-ignore_readdir_race") && !ctx.has("-noignore_readdir_race");

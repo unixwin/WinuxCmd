@@ -3674,3 +3674,81 @@ TEST(find, issue_1379_printf_epoch_is_exact_and_deterministic) {
   EXPECT_TRUE(r1.stdout_text.find(creation_time_seconds(tmp.path / "f")) !=
               std::string::npos);
 }
+
+TEST(find, issue_1380_unknown_predicates_are_answered_by_find) {
+  TempDir tmp;
+  tmp.write("a.txt", "");
+
+  // [GNU] Unknown tokens in predicate position are find's own error,
+  // not the generic option parser's.
+  Pipeline long_opt;
+  long_opt.set_cwd(tmp.wpath());
+  long_opt.add(L"find.exe", {L".", L"--zzz"});
+  auto lr = long_opt.run();
+  EXPECT_EQ(lr.exit_code, 1);
+  EXPECT_TRUE(lr.stderr_text.find("unknown predicate `--zzz'") !=
+              std::string::npos);
+  EXPECT_TRUE(lr.stderr_text.find("unrecognized option") ==
+              std::string::npos);
+
+  Pipeline bogus;
+  bogus.set_cwd(tmp.wpath());
+  bogus.add(L"find.exe", {L".", L"-bogus"});
+  auto br = bogus.run();
+  EXPECT_EQ(br.exit_code, 1);
+  EXPECT_TRUE(br.stderr_text.find("unknown predicate `-bogus'") !=
+              std::string::npos);
+  EXPECT_TRUE(br.stderr_text.find("invalid option") == std::string::npos);
+}
+
+TEST(find, issue_1380_global_options_reach_their_start_point) {
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "sub");
+  tmp.write("sub/f.txt", "x");
+  // Same-named file at the top level: if a global option silently
+  // drops the real start point and the walk falls back to ".", this
+  // file is printed too (as ./f.txt) and the exact-output assertions
+  // below fail.
+  tmp.write("f.txt", "x");
+
+  // [GNU] -D is a global option with an argument: "tree" is the debug
+  // category, "sub" is the start point.  Neither may be treated as a
+  // missing file operand, and the walk must cover "sub", not ".".
+  Pipeline debug_opt;
+  debug_opt.set_cwd(tmp.wpath());
+  debug_opt.add(L"find.exe", {L"-D", L"tree", L"sub", L"-name", L"f.txt"});
+  auto dr = debug_opt.run();
+  EXPECT_EQ(dr.exit_code, 0);
+  EXPECT_EQ_TEXT(dr.stdout_text, "sub/f.txt\n");
+  EXPECT_TRUE(dr.stderr_text.find("No such file or directory") ==
+              std::string::npos);
+
+  // The --debug long alias of -D (a WinuxCmd extension; GNU find has
+  // no such option) must reach the same start point, not be answered
+  // as a missing file operand.
+  Pipeline debug_long;
+  debug_long.set_cwd(tmp.wpath());
+  debug_long.add(L"find.exe",
+                 {L"--debug", L"tree", L"sub", L"-name", L"f.txt"});
+  auto dlr = debug_long.run();
+  EXPECT_EQ(dlr.exit_code, 0);
+  EXPECT_EQ_TEXT(dlr.stdout_text, "sub/f.txt\n");
+
+  // [GNU] -ignore_readdir_race is a positional option: accepted before
+  // and after the start point.
+  Pipeline race_before;
+  race_before.set_cwd(tmp.wpath());
+  race_before.add(L"find.exe",
+                  {L"-ignore_readdir_race", L"sub", L"-name", L"f.txt"});
+  auto rb = race_before.run();
+  EXPECT_EQ(rb.exit_code, 0);
+  EXPECT_EQ_TEXT(rb.stdout_text, "sub/f.txt\n");
+
+  Pipeline race_after;
+  race_after.set_cwd(tmp.wpath());
+  race_after.add(L"find.exe",
+                 {L"sub", L"-ignore_readdir_race", L"-name", L"f.txt"});
+  auto ra = race_after.run();
+  EXPECT_EQ(ra.exit_code, 0);
+  EXPECT_EQ_TEXT(ra.stdout_text, "sub/f.txt\n");
+}
