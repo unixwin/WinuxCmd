@@ -1066,3 +1066,29 @@ TEST(cp, cp_same_file_mixed_dialects_reports_error) {
   EXPECT_TRUE(r.stderr_text.find("same file") != std::string::npos);
   EXPECT_EQ(tmp.read("f.txt"), "payload");
 }
+
+// [GNU] #1366: --parents grafts the source's full path under the target
+// directory; a drive-letter absolute source is anchored at its drive root,
+// not spliced in as a literal "Z:" relative component.
+TEST(cp, issue1366_parents_drive_letter_absolute_source) {
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "sub");
+  std::filesystem::create_directory(tmp.path / "dest");
+  tmp.write("sub/src.txt", "src");
+
+  std::wstring abs_src = (tmp.path / "sub" / "src.txt").wstring();
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"--parents", L"-t", L"dest", abs_src});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // Grafted path = dest + (absolute source minus its "X:" drive anchor).
+  std::string graft_rel = "dest\\" + tmp.path.relative_path().string() +
+                          "\\sub\\src.txt";
+  EXPECT_EQ(tmp.read(graft_rel), "src");
+  // The broken form would have created a literal drive-named directory.
+  std::string drive = tmp.path.root_name().string();
+  EXPECT_FALSE(
+      std::filesystem::exists(tmp.path / "dest" / drive / "sub" / "src.txt"));
+}

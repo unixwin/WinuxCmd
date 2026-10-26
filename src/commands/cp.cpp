@@ -192,6 +192,39 @@ auto normalize_path_separators(std::string path) -> std::string {
   return path;
 }
 
+// [GNU] #1366: the path --parents grafts under the destination: the
+// source's full path with its root stripped, computed from the operand
+// text (never from the folded native path — a "/"-rooted shell spelling
+// grafts as spelled, not as its payload-tree resolution).  An absolute
+// source (drive letter, rooted, or UNC) contributes every component below
+// its root; splicing the raw operand text after the destination used to
+// embed a literal "Z:" component (dest\Z:\...) and corrupt the graft.
+// The MSYS drive spellings fold textually (/x/... and /cygdrive/x/...
+// name X:\...).  Relative sources keep their components unchanged.
+auto parents_graft_path(const std::string& srcPath) -> std::string {
+  std::string graft = normalize_path_separators(srcPath);
+  const std::string cygdrive = "\\cygdrive\\";
+  if (graft.size() > cygdrive.size() + 1 &&
+      graft.compare(0, cygdrive.size(), cygdrive) == 0 &&
+      std::isalpha(static_cast<unsigned char>(graft[cygdrive.size()])) &&
+      graft[cygdrive.size() + 1] == '\\') {
+    graft = graft.substr(cygdrive.size(), 1) + ":\\" +
+            graft.substr(cygdrive.size() + 2);
+  } else if (graft.size() >= 3 && graft[0] == '\\' &&
+             std::isalpha(static_cast<unsigned char>(graft[1])) &&
+             graft[2] == '\\') {
+    graft = std::string(1, graft[1]) + ":\\" + graft.substr(3);
+  }
+  if (graft.size() >= 2 && graft[1] == ':' &&
+      std::isalpha(static_cast<unsigned char>(graft[0]))) {
+    graft.erase(0, 2);
+  }
+  while (!graft.empty() && graft.front() == '\\') {
+    graft.erase(0, 1);
+  }
+  return graft;
+}
+
 auto strip_trailing_slashes(std::string path) -> std::string {
   while (path.size() > 1 && (path.back() == '\\' || path.back() == '/')) {
     if (path.size() == 3 && path[1] == ':') break;
@@ -1674,9 +1707,10 @@ auto process_source_paths(
         ctx.has("--parents") || ctx.has("--parent") || ctx.has("--path");
     if (destIsDir) {
       if (parents) {
-        // --parents: use relative source path under destination
-        // e.g., cp --parents a/b/c dest/ -> dest/a/b/c
-        finalDestPath = destPath + "\\" + normalize_path_separators(srcPath);
+        // --parents: use the source's full path under the destination
+        // e.g., cp --parents a/b/c dest/ -> dest/a/b/c, and an absolute
+        // source is grafted below its root (#1366).
+        finalDestPath = destPath + "\\" + parents_graft_path(srcPath);
         // Create intermediate directories
         size_t pos = 0;
         while ((pos = finalDestPath.find('\\', pos)) != std::string::npos) {
