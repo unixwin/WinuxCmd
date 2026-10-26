@@ -619,6 +619,110 @@ TEST(rm, rm_force_bare_nul_operand_names_device_not_filesystem_issue1297) {
   EXPECT_TRUE(std::filesystem::is_empty(tmp.path));
 }
 
+// ===== TEMPORARY DIAGNOSTIC for #1297 (remove before merge) =====
+// Probes, from a real Windows process, how each Win32 API treats an
+// on-disk directory named NUL under the extended (\\?\) spelling, so the
+// rm fix can target the step that actually loses the directory. Always
+// fails on purpose: the dump is the result.
+TEST(rm, diag_nul_dir_api_probe_issue1297) {
+  TempDir tmp;
+  std::filesystem::create_directory(tmp.path / "pa");
+  const std::wstring plain = tmp.wpath() + L"\\pa\\NUL";
+  const std::wstring ext = L"\\\\?\\" + plain;
+  const std::filesystem::path ext_dir = std::filesystem::path(ext);
+  ASSERT_TRUE(std::filesystem::create_directory(ext_dir));
+  {
+    std::ofstream inside(ext_dir / "inside.txt");
+    inside << "payload";
+  }
+
+  std::string out;
+  auto narrow = [](const std::wstring& w) {
+    if (w.empty()) return std::string{};
+    int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), nullptr,
+                                0, nullptr, nullptr);
+    std::string s((size_t)n, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), s.data(), n,
+                        nullptr, nullptr);
+    return s;
+  };
+  auto hex = [](DWORD v) {
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "0x%lx", (unsigned long)v);
+    return std::string(buf);
+  };
+  auto num = [](auto v) { return std::to_string(v); };
+
+  out += "plain=" + narrow(plain) + "\n";
+  DWORD a_plain = GetFileAttributesW(plain.c_str());
+  out += "GFAW(plain)=" + hex(a_plain) + " err=" + num(GetLastError()) + "\n";
+  DWORD a_ext = GetFileAttributesW(ext.c_str());
+  out += "GFAW(ext)=" + hex(a_ext) + " err=" + num(GetLastError()) + "\n";
+
+  HANDLE h1 = CreateFileW(ext.c_str(), FILE_READ_ATTRIBUTES,
+                          FILE_SHARE_READ | FILE_SHARE_WRITE |
+                              FILE_SHARE_DELETE,
+                          nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS,
+                          nullptr);
+  out += "CreateFile(ext,READ_ATTRS)=" + num(h1 != INVALID_HANDLE_VALUE) +
+         " err=" + num(GetLastError()) + "\n";
+  if (h1 != INVALID_HANDLE_VALUE) CloseHandle(h1);
+  HANDLE h2 = CreateFileW(ext.c_str(), GENERIC_READ,
+                          FILE_SHARE_READ | FILE_SHARE_WRITE |
+                              FILE_SHARE_DELETE,
+                          nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS,
+                          nullptr);
+  out += "CreateFile(ext,GENERIC_READ)=" + num(h2 != INVALID_HANDLE_VALUE) +
+         " err=" + num(GetLastError()) + "\n";
+  if (h2 != INVALID_HANDLE_VALUE) CloseHandle(h2);
+
+  WIN32_FIND_DATAW fd{};
+  HANDLE hf = FindFirstFileW((ext + L"\\*").c_str(), &fd);
+  out += "FFF(ext\\*)=" + num(hf != INVALID_HANDLE_VALUE) +
+         " err=" + num(GetLastError());
+  if (hf != INVALID_HANDLE_VALUE) {
+    out += " first=" + narrow(fd.cFileName);
+    FindClose(hf);
+  }
+  out += "\n";
+
+  HANDLE hp = FindFirstFileW((tmp.wpath() + L"\\pa\\*").c_str(), &fd);
+  out += "FFF(parent\\*)=" + num(hp != INVALID_HANDLE_VALUE) + " entries:";
+  if (hp != INVALID_HANDLE_VALUE) {
+    do {
+      out += " [" + narrow(fd.cFileName) +
+             " attr=" + hex(fd.dwFileAttributes) + "]";
+    } while (FindNextFileW(hp, &fd));
+    FindClose(hp);
+  }
+  out += "\n";
+
+  // Control: std::filesystem::remove_all on a sacrificial NUL dir.
+  std::filesystem::create_directory(tmp.path / "qb");
+  const std::wstring ext2 = L"\\\\?\\" + tmp.wpath() + L"\\qb\\NUL";
+  const std::filesystem::path ext2_dir = std::filesystem::path(ext2);
+  std::filesystem::create_directory(ext2_dir);
+  {
+    std::ofstream inside(ext2_dir / "inside.txt");
+    inside << "payload";
+  }
+  std::error_code ec;
+  auto removed = std::filesystem::remove_all(ext2_dir, ec);
+  out += "remove_all(ext2)=" + num(removed) + " ec=" + num(ec.value()) +
+         " exists_after=" + num(std::filesystem::exists(ext2_dir)) + "\n";
+
+  // Direct RemoveDirectoryW on an empty sacrificial NUL dir.
+  std::filesystem::create_directory(tmp.path / "qc");
+  const std::wstring ext3 = L"\\\\?\\" + tmp.wpath() + L"\\qc\\NUL";
+  std::filesystem::create_directory(std::filesystem::path(ext3));
+  BOOL rd = RemoveDirectoryW(ext3.c_str());
+  out += "RemoveDirectoryW(ext3 empty)=" + num((bool)rd) +
+         " err=" + num(GetLastError()) + " exists_after=" +
+         num(std::filesystem::exists(std::filesystem::path(ext3))) + "\n";
+
+  FAIL() << "TEMP DIAGNOSTIC DUMP (#1297):\n" << out;
+}
+
 // ===== #1298 regression: rm -v output =====
 
 TEST(rm, rm_verbose_reports_removed_file_issue1298) {
