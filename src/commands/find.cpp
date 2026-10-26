@@ -243,7 +243,7 @@ auto constexpr FIND_OPTIONS = std::array{
         "-printf", "",
         "print format [PARTIAL: "
         "%p,%f,%h,%l,%H,%P,%y,%Y,%s,%b,%k,%d,%D,%F,%g,%G,%o,%u,%U,%S,%m,%M,%n,%"
-        "i,%A@,%B@,%C@,%T@,%AY,%Am,%Ad,%AH,%AM,%AS,%Aj,%BY,%Bm,%Bd,%BH,%BM,%BS,"
+        "i,%a,%c,%t,%A@,%B@,%C@,%T@,%AY,%Am,%Ad,%AH,%AM,%AS,%Aj,%BY,%Bm,%Bd,%BH,%BM,%BS,"
         "%Bj,%CY,%Cm,%Cd,%CH,%CM,%CS,%Cj,%TY,%Tm,%Td,%TH,%TM,%TS,%Tj,%%]",
         STRING_TYPE),
     // [GNU]
@@ -3835,49 +3835,79 @@ enum class Win32FileTimeKind {
   LastWrite,
 };
 
+// [#1379] GNU renders %X@ as epoch seconds with exactly ten fractional
+// digits (findutils print.c uses the nanosecond field plus a trailing
+// zero from its 100ns-free representation).  FILETIME ticks are exact
+// 100ns counts, so the rendering is exact and deterministic — unlike a
+// std::filesystem clock conversion, which drifts by the offset between
+// two now() samples.
+auto format_epoch_seconds(long long ticks) -> std::string {
+  long long seconds = ticks / 10000000LL - 11644473600LL;
+  long long rem = ticks % 10000000LL;
+  if (rem < 0) {
+    --seconds;
+    rem += 10000000LL;
+  }
+  std::ostringstream stream;
+  stream << seconds << "." << std::setw(10) << std::setfill('0')
+         << rem * 1000LL;
+  return stream.str();
+}
+
 auto win32_file_time_seconds(const std::filesystem::path& p,
                              Win32FileTimeKind kind) -> std::string {
-  DWORD attrs = GetFileAttributesW(p.c_str());
-  if (attrs == INVALID_FILE_ATTRIBUTES) return "0.000000000";
-
-  DWORD flags = 0;
-  if (attrs & FILE_ATTRIBUTE_DIRECTORY) {
-    flags |= FILE_FLAG_BACKUP_SEMANTICS;
+  FindFileTimeKind find_kind = FindFileTimeKind::Modify;
+  if (kind == Win32FileTimeKind::LastAccess) {
+    find_kind = FindFileTimeKind::Access;
+  } else if (kind == Win32FileTimeKind::Creation) {
+    find_kind = FindFileTimeKind::Birth;
   }
-  if (attrs & FILE_ATTRIBUTE_REPARSE_POINT) {
-    flags |= FILE_FLAG_OPEN_REPARSE_POINT;
+  auto ticks = win32_file_time_ticks(p, find_kind);
+  if (!ticks) return "0.0000000000";
+  return format_epoch_seconds(*ticks);
+}
+
+// [#1379] ctime-style rendering for the %a/%c/%t directives: GNU prints
+// the time in ctime(3) layout but with the fractional seconds inserted
+// before the year, at the same ten-digit precision as %X@
+// (e.g. "Sun Sep 13 12:26:40.0000000000 2020").
+auto win32_file_time_ctime(const std::filesystem::path& p,
+                           Win32FileTimeKind kind) -> std::string {
+  auto find_kind = FindFileTimeKind::Modify;
+  if (kind == Win32FileTimeKind::LastAccess) {
+    find_kind = FindFileTimeKind::Access;
+  } else if (kind == Win32FileTimeKind::Creation) {
+    find_kind = FindFileTimeKind::Birth;
+  }
+  auto ticks = win32_file_time_ticks(p, find_kind);
+  if (!ticks) return "";
+
+  FILETIME file_time{};
+  file_time.dwLowDateTime = static_cast<DWORD>(*ticks & 0xFFFFFFFFLL);
+  file_time.dwHighDateTime = static_cast<DWORD>(*ticks >> 32);
+  FILETIME local_file_time{};
+  SYSTEMTIME local{};
+  if (!FileTimeToLocalFileTime(&file_time, &local_file_time) ||
+      !FileTimeToSystemTime(&local_file_time, &local)) {
+    return "";
   }
 
-  HANDLE handle =
-      CreateFileW(p.c_str(), FILE_READ_ATTRIBUTES,
-                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                  nullptr, OPEN_EXISTING, flags, nullptr);
-  if (handle == INVALID_HANDLE_VALUE) return "0.000000000";
+  static constexpr const char* kWeekdays[] = {"Sun", "Mon", "Tue", "Wed",
+                                              "Thu", "Fri", "Sat"};
+  static constexpr const char* kMonths[] = {"Jan", "Feb", "Mar", "Apr",
+                                            "May", "Jun", "Jul", "Aug",
+                                            "Sep", "Oct", "Nov", "Dec"};
+  long long rem = *ticks % 10000000LL;
+  if (rem < 0) rem += 10000000LL;
 
-  FILE_BASIC_INFO info{};
-  std::string out = "0.000000000";
-  if (GetFileInformationByHandleEx(handle, FileBasicInfo, &info,
-                                   sizeof(info))) {
-    LARGE_INTEGER value = info.LastWriteTime;
-    if (kind == Win32FileTimeKind::LastAccess) {
-      value = info.LastAccessTime;
-    } else if (kind == Win32FileTimeKind::Creation) {
-      value = info.CreationTime;
-    }
-    const long long ticks = value.QuadPart;
-    long long seconds = ticks / 10000000LL - 11644473600LL;
-    long long nanos = (ticks % 10000000LL) * 100LL;
-    if (nanos < 0) {
-      --seconds;
-      nanos += 1000000000LL;
-    }
-
-    std::ostringstream stream;
-    stream << seconds << "." << std::setw(9) << std::setfill('0') << nanos;
-    out = stream.str();
-  }
-  CloseHandle(handle);
-  return out;
+  std::ostringstream stream;
+  stream << kWeekdays[local.wDayOfWeek % 7] << ' '
+         << kMonths[(local.wMonth - 1) % 12] << ' ' << std::setw(2)
+         << std::setfill(' ') << local.wDay << ' ' << std::setw(2)
+         << std::setfill('0') << local.wHour << ':' << std::setw(2)
+         << local.wMinute << ':' << std::setw(2) << local.wSecond << '.'
+         << std::setw(10) << rem * 1000LL << ' ' << local.wYear;
+  return stream.str();
 }
 
 auto win32_file_time_component(const std::filesystem::path& p,
@@ -3971,26 +4001,12 @@ auto win32_file_time_component(const std::filesystem::path& p,
 
 auto modification_time_seconds(const std::filesystem::directory_entry& e)
     -> std::string {
-  std::error_code ec;
-  auto write_time = e.last_write_time(ec);
-  if (ec) return "0.000000000";
-
-  auto system_time = std::chrono::time_point_cast<std::chrono::nanoseconds>(
-      write_time - std::filesystem::file_time_type::clock::now() +
-      std::chrono::system_clock::now());
-  auto epoch = system_time.time_since_epoch();
-  auto seconds = std::chrono::duration_cast<std::chrono::seconds>(epoch);
-  auto nanos =
-      std::chrono::duration_cast<std::chrono::nanoseconds>(epoch - seconds)
-          .count();
-  if (nanos < 0) {
-    --seconds;
-    nanos += 1000000000LL;
-  }
-
-  std::ostringstream out;
-  out << seconds.count() << "." << std::setw(9) << std::setfill('0') << nanos;
-  return out.str();
+  // [#1379] Exact FILETIME-based rendering (see format_epoch_seconds):
+  // the previous std::filesystem clock conversion sampled two clocks
+  // and produced a different sub-microsecond tail on every run.
+  auto ticks = win32_file_time_ticks(e.path(), FindFileTimeKind::Modify);
+  if (!ticks) return "0.0000000000";
+  return format_epoch_seconds(*ticks);
 }
 
 auto append_file_time_printf(std::string& out, std::string_view format,
@@ -4121,18 +4137,54 @@ auto parse_printf_field_spec(std::string_view format, size_t& i)
   return spec;
 }
 
-auto apply_printf_field_spec(std::string piece, const PrintfFieldSpec& spec)
-    -> std::string {
-  if (spec.precision >= 0 && static_cast<int>(piece.size()) > spec.precision) {
-    piece.resize(static_cast<size_t>(spec.precision));
+// [#1379] Flag semantics differ per conversion kind in GNU find
+// (findutils print.c, probed against findutils 4.9.0): the '+' and ' '
+// sign flags are honored only for %d; the '0' flag zero-pads only %d
+// and %m and is ignored (space padding) for every other conversion,
+// including numeric ones like %s and %i; precision zero-extends the
+// integer conversions %d/%m but truncates string pieces.
+enum class PrintfPieceKind { String, Numeric, SignedNumeric, OctalNumeric };
+
+auto apply_printf_field_spec(std::string piece, const PrintfFieldSpec& spec,
+                             PrintfPieceKind kind) -> std::string {
+  if (spec.precision >= 0) {
+    if (kind == PrintfPieceKind::SignedNumeric ||
+        kind == PrintfPieceKind::OctalNumeric) {
+      size_t sign_len =
+          (!piece.empty() && (piece[0] == '-' || piece[0] == '+' ||
+                              piece[0] == ' '))
+              ? 1
+              : 0;
+      if (piece.size() - sign_len < static_cast<size_t>(spec.precision)) {
+        piece.insert(sign_len,
+                     static_cast<size_t>(spec.precision) - (piece.size() - sign_len),
+                     '0');
+      }
+    } else if (static_cast<int>(piece.size()) > spec.precision) {
+      piece.resize(static_cast<size_t>(spec.precision));
+    }
+  }
+  if (kind == PrintfPieceKind::SignedNumeric &&
+      (piece.empty() || piece[0] != '-')) {
+    if (spec.flags.find('+') != std::string::npos) {
+      piece.insert(0, "+");
+    } else if (spec.flags.find(' ') != std::string::npos) {
+      piece.insert(0, " ");
+    }
   }
   if (spec.width >= 0 && static_cast<int>(piece.size()) < spec.width) {
     bool left_justify = spec.flags.find('-') != std::string::npos;
-    bool zero_pad = spec.flags.find('0') != std::string::npos && !left_justify;
+    bool zero_pad = spec.flags.find('0') != std::string::npos &&
+                    !left_justify &&
+                    (kind == PrintfPieceKind::SignedNumeric ||
+                     kind == PrintfPieceKind::OctalNumeric);
     std::string padding(static_cast<size_t>(spec.width) - piece.size(),
                         zero_pad ? '0' : ' ');
     if (left_justify) {
       piece += padding;
+    } else if (zero_pad && !piece.empty() &&
+               (piece[0] == '-' || piece[0] == '+' || piece[0] == ' ')) {
+      piece.insert(1, padding);
     } else {
       piece.insert(0, padding);
     }
@@ -4210,6 +4262,7 @@ auto format_printf(std::string_view format, const std::filesystem::path& p,
 
     // [GNU] printf-style flags/width/precision precede the directive char
     // (findutils-4.10.0/find/print.c: get_format_flags_length).
+    const size_t spec_start = i;
     ++i;
     PrintfFieldSpec spec = parse_printf_field_spec(format, i);
     if (i >= format.size()) {
@@ -4219,6 +4272,7 @@ auto format_printf(std::string_view format, const std::filesystem::path& p,
 
     char code = format[i];
     std::string piece;
+    PrintfPieceKind kind = PrintfPieceKind::String;
     switch (code) {
       case '%':
         piece.push_back('%');
@@ -4248,18 +4302,23 @@ auto format_printf(std::string_view format, const std::filesystem::path& p,
         piece.push_back(symlink_target_type_char(e));
         break;
       case 's':
+        kind = PrintfPieceKind::Numeric;
         piece += std::to_string(file_size_bytes(e));
         break;
       case 'b':
+        kind = PrintfPieceKind::Numeric;
         piece += std::to_string(allocated_block_count(p, e, 512));
         break;
       case 'k':
+        kind = PrintfPieceKind::Numeric;
         piece += std::to_string(allocated_block_count(p, e, 1024));
         break;
       case 'd':
+        kind = PrintfPieceKind::SignedNumeric;
         piece += std::to_string(depth);
         break;
       case 'D':
+        kind = PrintfPieceKind::Numeric;
         piece += win32_volume_serial_number(p);
         break;
       case 'F':
@@ -4269,30 +4328,36 @@ auto format_printf(std::string_view format, const std::filesystem::path& p,
         piece += win32_ownership_info(p).group_name;
         break;
       case 'G':
+        kind = PrintfPieceKind::Numeric;
         piece += win32_ownership_info(p).group_id;
         break;
       case 'o':
+        kind = PrintfPieceKind::Numeric;
         piece += std::to_string(win32_io_block_size(p));
         break;
       case 'u':
         piece += win32_ownership_info(p).owner_name;
         break;
       case 'U':
+        kind = PrintfPieceKind::Numeric;
         piece += win32_ownership_info(p).owner_id;
         break;
       case 'S':
         piece += file_sparseness(p, e);
         break;
       case 'm':
+        kind = PrintfPieceKind::OctalNumeric;
         piece += permission_bits(p, e);
         break;
       case 'M':
         piece += permission_string(p, e);
         break;
       case 'n':
+        kind = PrintfPieceKind::Numeric;
         piece += std::to_string(win32_hard_link_count(p));
         break;
       case 'i':
+        kind = PrintfPieceKind::Numeric;
         piece += win32_file_index(p);
         break;
       case 'A':
@@ -4307,14 +4372,31 @@ auto format_printf(std::string_view format, const std::filesystem::path& p,
       case 'T':
         append_file_time_printf(piece, format, i, 'T', p, e);
         break;
+      // [#1379] %a/%c/%t print the access/change/modification time as a
+      // ctime-style string with fractional seconds (GNU print.c).
+      case 'a':
+        piece += win32_file_time_ctime(p, Win32FileTimeKind::LastAccess);
+        break;
+      case 'c':
+        piece += win32_file_time_ctime(p, Win32FileTimeKind::Creation);
+        break;
+      case 't':
+        piece += win32_file_time_ctime(p, Win32FileTimeKind::LastWrite);
+        break;
       default:
         safeErrorPrint("find: warning: unrecognized format directive `%");
         safeErrorPrint(std::string(1, code));
         safeErrorPrint("'\n");
-        piece.push_back(code);
+        // [#1379] GNU echoes the whole directive verbatim, '%' and any
+        // flags/width included ("%Q" prints "%Q", "%5Q" prints "%5Q");
+        // the field spec must not be applied to it.
+        out += format.substr(spec_start, i - spec_start + 1);
+        piece.clear();
+        kind = PrintfPieceKind::String;
+        spec = PrintfFieldSpec{};
         break;
     }
-    out += apply_printf_field_spec(std::move(piece), spec);
+    out += apply_printf_field_spec(std::move(piece), spec, kind);
   }
 
   return out;

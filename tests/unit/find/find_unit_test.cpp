@@ -358,7 +358,7 @@ OwnershipFields ownership_fields(const std::filesystem::path& path) {
 
 std::string creation_time_seconds(const std::filesystem::path& path) {
   DWORD attrs = GetFileAttributesW(path.wstring().c_str());
-  if (attrs == INVALID_FILE_ATTRIBUTES) return "0.000000000";
+  if (attrs == INVALID_FILE_ATTRIBUTES) return "0.0000000000";
 
   DWORD flags = 0;
   if (attrs & FILE_ATTRIBUTE_DIRECTORY) flags |= FILE_FLAG_BACKUP_SEMANTICS;
@@ -369,22 +369,59 @@ std::string creation_time_seconds(const std::filesystem::path& path) {
       CreateFileW(path.wstring().c_str(), FILE_READ_ATTRIBUTES,
                   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                   nullptr, OPEN_EXISTING, flags, nullptr);
-  if (handle == INVALID_HANDLE_VALUE) return "0.000000000";
+  if (handle == INVALID_HANDLE_VALUE) return "0.0000000000";
 
   FILE_BASIC_INFO info{};
-  std::string out = "0.000000000";
+  std::string out = "0.0000000000";
   if (GetFileInformationByHandleEx(handle, FileBasicInfo, &info,
                                    sizeof(info))) {
     const long long ticks = info.CreationTime.QuadPart;
     long long seconds = ticks / 10000000LL - 11644473600LL;
-    long long nanos = (ticks % 10000000LL) * 100LL;
-    if (nanos < 0) {
+    long long rem = ticks % 10000000LL;
+    if (rem < 0) {
       --seconds;
-      nanos += 1000000000LL;
+      rem += 10000000LL;
     }
 
     std::ostringstream stream;
-    stream << seconds << "." << std::setw(9) << std::setfill('0') << nanos;
+    stream << seconds << "." << std::setw(10) << std::setfill('0')
+           << rem * 1000LL;
+    out = stream.str();
+  }
+  CloseHandle(handle);
+  return out;
+}
+
+std::string modification_time_seconds(const std::filesystem::path& path) {
+  DWORD attrs = GetFileAttributesW(path.wstring().c_str());
+  if (attrs == INVALID_FILE_ATTRIBUTES) return "0.0000000000";
+
+  DWORD flags = 0;
+  if (attrs & FILE_ATTRIBUTE_DIRECTORY) flags |= FILE_FLAG_BACKUP_SEMANTICS;
+  if (attrs & FILE_ATTRIBUTE_REPARSE_POINT)
+    flags |= FILE_FLAG_OPEN_REPARSE_POINT;
+
+  HANDLE handle =
+      CreateFileW(path.wstring().c_str(), FILE_READ_ATTRIBUTES,
+                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                  nullptr, OPEN_EXISTING, flags, nullptr);
+  if (handle == INVALID_HANDLE_VALUE) return "0.0000000000";
+
+  FILE_BASIC_INFO info{};
+  std::string out = "0.0000000000";
+  if (GetFileInformationByHandleEx(handle, FileBasicInfo, &info,
+                                   sizeof(info))) {
+    const long long ticks = info.LastWriteTime.QuadPart;
+    long long seconds = ticks / 10000000LL - 11644473600LL;
+    long long rem = ticks % 10000000LL;
+    if (rem < 0) {
+      --seconds;
+      rem += 10000000LL;
+    }
+
+    std::ostringstream stream;
+    stream << seconds << "." << std::setw(10) << std::setfill('0')
+           << rem * 1000LL;
     out = stream.str();
   }
   CloseHandle(handle);
@@ -393,7 +430,7 @@ std::string creation_time_seconds(const std::filesystem::path& path) {
 
 std::string access_time_seconds(const std::filesystem::path& path) {
   DWORD attrs = GetFileAttributesW(path.wstring().c_str());
-  if (attrs == INVALID_FILE_ATTRIBUTES) return "0.000000000";
+  if (attrs == INVALID_FILE_ATTRIBUTES) return "0.0000000000";
 
   DWORD flags = 0;
   if (attrs & FILE_ATTRIBUTE_DIRECTORY) flags |= FILE_FLAG_BACKUP_SEMANTICS;
@@ -404,22 +441,23 @@ std::string access_time_seconds(const std::filesystem::path& path) {
       CreateFileW(path.wstring().c_str(), FILE_READ_ATTRIBUTES,
                   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                   nullptr, OPEN_EXISTING, flags, nullptr);
-  if (handle == INVALID_HANDLE_VALUE) return "0.000000000";
+  if (handle == INVALID_HANDLE_VALUE) return "0.0000000000";
 
   FILE_BASIC_INFO info{};
-  std::string out = "0.000000000";
+  std::string out = "0.0000000000";
   if (GetFileInformationByHandleEx(handle, FileBasicInfo, &info,
                                    sizeof(info))) {
     const long long ticks = info.LastAccessTime.QuadPart;
     long long seconds = ticks / 10000000LL - 11644473600LL;
-    long long nanos = (ticks % 10000000LL) * 100LL;
-    if (nanos < 0) {
+    long long rem = ticks % 10000000LL;
+    if (rem < 0) {
       --seconds;
-      nanos += 1000000000LL;
+      rem += 10000000LL;
     }
 
     std::ostringstream stream;
-    stream << seconds << "." << std::setw(9) << std::setfill('0') << nanos;
+    stream << seconds << "." << std::setw(10) << std::setfill('0')
+           << rem * 1000LL;
     out = stream.str();
   }
   CloseHandle(handle);
@@ -3042,7 +3080,7 @@ TEST(find, find_printf_supports_field_width_flags_and_precision) {
 
   auto r = p.run();
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "[  ab.txt][ab.txt  ][ab][00ab.txt][ab.txt]\n");
+  EXPECT_EQ_TEXT(r.stdout_text, "[  ab.txt][ab.txt  ][ab][  ab.txt][ab.txt]\n");
 }
 
 TEST(find, find_daystart_measures_from_start_of_local_day) {
@@ -3555,4 +3593,84 @@ TEST(find, issue_1378_L_reports_filesystem_loop_instead_of_expanding_it) {
   EXPECT_TRUE(r.stdout_text.find("loop/d/loop") == std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("root/d/loop") == std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("root/f.txt") != std::string::npos);
+}
+
+TEST(find, issue_1379_printf_ctime_directives) {
+  TempDir tmp;
+  tmp.write("a.txt", "x");
+
+  // Creation = Mon 2023-01-02 03:04:05 local, access = Tue 2024-03-05
+  // 09:07:11 local, write = Wed 2022-06-15 22:33:44 local.
+  EXPECT_TRUE(set_file_times(tmp.path / "a.txt", 2023, 1, 2, 3, 4, 5,
+                             2024, 3, 5, 9, 7, 11, 2022, 6, 15, 22, 33,
+                             44));
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe",
+        {L"a.txt", L"-printf", L"%a|%c|%t\n"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  // [GNU] ctime layout with the ten-digit fraction before the year;
+  // the day of the month is space-padded like ctime(3).
+  EXPECT_EQ_TEXT(r.stdout_text,
+                 "Tue Mar  5 09:07:11.0000000000 2024|"
+                 "Mon Jan  2 03:04:05.0000000000 2023|"
+                 "Wed Jun 15 22:33:44.0000000000 2022\n");
+}
+
+TEST(find, issue_1379_printf_unknown_directive_keeps_percent) {
+  TempDir tmp;
+  tmp.write("f", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L"f", L"-printf", L"%Q|%5Q|\n"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  // [GNU] Unknown directives are echoed verbatim, '%' included, with
+  // the unrecognized-directive warning on stderr.
+  EXPECT_EQ_TEXT(r.stdout_text, "%Q|%5Q|\n");
+  EXPECT_TRUE(r.stderr_text.find("unrecognized format directive `%Q'") !=
+              std::string::npos);
+}
+
+TEST(find, issue_1379_printf_flag_semantics_per_conversion) {
+  TempDir tmp;
+  tmp.write("f", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe",
+        {L".", L"-name", L"f", L"-printf", L"%05p|%+5d|% 5d|%05d|\n"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  // [GNU] The 0 flag is ignored for %p (space padding); '+' and ' '
+  // apply to %d; 0 zero-pads %d.  ./f is at depth 1.
+  EXPECT_EQ_TEXT(r.stdout_text, "   ./f|   +1|    1|00001|\n");
+}
+
+TEST(find, issue_1379_printf_epoch_is_exact_and_deterministic) {
+  TempDir tmp;
+  tmp.write("f", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L"f", L"-printf", L"%T@|%A@|%C@\n"});
+
+  auto r1 = p.run();
+  auto r2 = p.run();
+  EXPECT_EQ(r1.exit_code, 0);
+  // [GNU] Ten fractional digits, derived exactly from the file time:
+  // repeated runs must be identical (no clock-sampling jitter).
+  EXPECT_EQ_TEXT(r2.stdout_text, r1.stdout_text);
+  EXPECT_TRUE(r1.stdout_text.find(modification_time_seconds(
+                  tmp.path / "f")) != std::string::npos);
+  EXPECT_TRUE(r1.stdout_text.find(access_time_seconds(tmp.path / "f")) !=
+              std::string::npos);
+  EXPECT_TRUE(r1.stdout_text.find(creation_time_seconds(tmp.path / "f")) !=
+              std::string::npos);
 }
