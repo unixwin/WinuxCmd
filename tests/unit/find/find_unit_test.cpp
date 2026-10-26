@@ -3155,3 +3155,48 @@ TEST(find, issue_1288_fprint_posix_spelled_output_path) {
                       std::istreambuf_iterator<char>());
   EXPECT_NE(content.find("a.txt"), std::string::npos);
 }
+TEST(find, issue_1317_leading_dashdash_is_not_a_root) {
+  TempDir tmp;
+  tmp.write("a.txt", "");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L"--", L".", L"-type", L"f"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("a.txt") != std::string::npos);
+}
+
+TEST(find, issue_1317_equals_form_is_unknown_predicate_not_root) {
+  TempDir tmp;
+  tmp.write("a.txt", "");
+
+  // GNU rejects every "=value" form with "unknown predicate"; it must not
+  // be swallowed as a start point (which used to list "." then fail on
+  // the bogus root) and must not traverse at all.
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L".", L"-maxdepth=1", L"-type", L"f"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("unknown predicate") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("-maxdepth=1") != std::string::npos);
+}
+
+TEST(find, issue_1317_dashdash_after_root_is_unknown_predicate) {
+  TempDir tmp;
+  tmp.write("a.txt", "");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L".", L"--", L"-name", L"a.txt"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("unknown predicate") !=
+              std::string::npos);
+}
