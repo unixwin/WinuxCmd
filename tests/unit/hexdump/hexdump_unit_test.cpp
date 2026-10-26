@@ -292,3 +292,18 @@ TEST(hexdump, hexdump_multiple_files_form_one_stream_issue1373) {
                  "0000020\n");
 }
 
+// #1374: in WINUX_SHELL_GLOB=native mode hexdump expands its file
+// operands through the shared glob path like cat does.
+TEST(hexdump, hexdump_native_glob_expands_operands_issue1374) {
+  TempDir tmp;
+  write_binary_file(tmp.path / "in.bin", "only\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_env(L"WINUX_SHELL_GLOB", L"native");
+  p.add(L"hexdump.exe", {L"in.*"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "0000000 6e6f 796c 000a\n0000005\n");
+}

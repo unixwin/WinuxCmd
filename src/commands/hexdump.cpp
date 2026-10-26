@@ -438,8 +438,12 @@ auto build_config(const CommandContext<HEXDUMP_OPTIONS.size()>& ctx)
     }
   }
 
+  // [native-glob] #1374: file operands expand through the shared helper
+  // in WINUX_SHELL_GLOB=native mode, like cat's operands do.
   for (const auto& pos : ctx.positionals) {
-    cfg.files.push_back(std::string(pos));
+    for (auto& file : expand_file_operand(pos)) {
+      cfg.files.push_back(std::move(file));
+    }
   }
 
   return cfg;

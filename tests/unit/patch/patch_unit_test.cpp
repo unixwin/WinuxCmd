@@ -473,3 +473,23 @@ TEST(patch, patch_stdin_ctrlz_not_truncated_issue1212) {
                                            "AAA\nXXX\n",
                                            12));
 }
+// #1374: patch expands its ORIGFILE and PATCHFILE operands in
+// WINUX_SHELL_GLOB=native mode.
+TEST(patch, patch_native_glob_expands_operands_issue1374) {
+  TempDir tmp;
+  tmp.write("porig.dat", "old\n");
+  tmp.write("change.patch",
+            "--- porig.dat\n+++ porig.dat\n@@ -1 +1 @@\n-old\n+new\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_env(L"WINUX_SHELL_GLOB", L"native");
+  p.add(L"patch.exe", {L"porig.da*", L"change.pa*"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  std::ifstream in(tmp.path / "porig.dat", std::ios::binary);
+  std::string applied((std::istreambuf_iterator<char>(in)),
+                      std::istreambuf_iterator<char>());
+  EXPECT_EQ_TEXT(applied, "new\n");
+}

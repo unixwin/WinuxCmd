@@ -323,7 +323,12 @@ XxdConfig build_config(const CommandContext<XXD_OPTIONS.size()>& ctx) {
         "command.xxd.error.invalid_columns", "xxd: invalid column count"));
   }
   if (!ctx.positionals.empty()) {
-    cfg.input_file = std::string(ctx.positionals[0]);
+    // [native-glob] #1374: the input operand expands through the shared
+    // helper in WINUX_SHELL_GLOB=native mode, like its siblings; the
+    // first match is the input (the output operand is never expanded).
+    auto expanded = expand_file_operand(ctx.positionals[0]);
+    cfg.input_file = expanded.empty() ? std::string(ctx.positionals[0])
+                                      : expanded.front();
   }
   if (cfg.reverse && ctx.positionals.size() > 1) {
     cfg.output_file = std::string(ctx.positionals[1]);

@@ -532,10 +532,20 @@ REGISTER_COMMAND(
   if (directory.empty()) directory = ctx.get<std::string>("--directory", "");
   std::string patch_file = ctx.get<std::string>("-i", "");
   if (patch_file.empty()) patch_file = ctx.get<std::string>("--input", "");
+  // [native-glob] #1374: in WINUX_SHELL_GLOB=native mode the ORIGFILE
+  // and PATCHFILE operands expand through the shared helper like their
+  // siblings (first match each); the -i/--input option value is not an
+  // operand and is left alone.
+  auto expand_first_operand = [](std::string_view operand) -> std::string {
+    auto expanded = expand_file_operand(operand);
+    return expanded.empty() ? std::string(operand) : expanded.front();
+  };
   std::string orig_file_arg;
-  if (!ctx.positionals.empty()) orig_file_arg = std::string(ctx.positionals[0]);
+  if (!ctx.positionals.empty()) {
+    orig_file_arg = expand_first_operand(ctx.positionals[0]);
+  }
   if (patch_file.empty() && ctx.positionals.size() > 1) {
-    patch_file = std::string(ctx.positionals[1]);
+    patch_file = expand_first_operand(ctx.positionals[1]);
   }
 
   const bool remove_empty_flag = ctx.has("--remove-empty-files");
