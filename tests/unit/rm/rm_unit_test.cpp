@@ -720,7 +720,7 @@ TEST(rm, diag_nul_dir_api_probe_issue1297) {
          " err=" + num(GetLastError()) + " exists_after=" +
          num(std::filesystem::exists(std::filesystem::path(ext3))) + "\n";
 
-  FAIL() << "TEMP DIAGNOSTIC DUMP (#1297):\n" << out;
+  wctest::fail(__FILE__, __LINE__, "TEMP DIAGNOSTIC DUMP (#1297):\n" + out);
 }
 
 // ===== #1298 regression: rm -v output =====
