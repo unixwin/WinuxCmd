@@ -493,3 +493,78 @@ TEST(patch, patch_native_glob_expands_operands_issue1374) {
                       std::istreambuf_iterator<char>());
   EXPECT_EQ_TEXT(applied, "new\n");
 }
+
+// [GNU] #1345: -p/--strip must actually strip leading components from
+// the header file names.  The option was decoded with the wrong value
+// type, so the count silently stayed 0 and `patch -p1` tried to open
+// the literal 'b/src/f.txt'.
+TEST(patch, patch_strip_applies_to_header_names_issue1345) {
+  const std::string diff =
+      "--- a/src/f.txt\n"
+      "+++ b/src/f.txt\n"
+      "@@ -1,3 +1,3 @@\n"
+      " l1\n"
+      "-l2\n"
+      "+L2\n"
+      " l3\n";
+
+  // -p1 applies to src/f.txt.
+  {
+    TempDir tmp;
+    tmp.mkdir("src");
+    tmp.write("src/f.txt", "l1\nl2\nl3\n");
+    Pipeline p;
+    p.set_cwd(tmp.wpath());
+    p.set_stdin(diff);
+    p.add(L"patch.exe", {L"-p1"});
+    auto r = p.run();
+    EXPECT_EQ(r.exit_code, 0);
+    EXPECT_EQ_TEXT(tmp.read("src/f.txt"), "l1\nL2\nl3\n");
+  }
+  // --strip=1 and --strip 1 behave identically.
+  for (const auto& args :
+       {std::vector<std::wstring>{L"--strip=1"},
+        std::vector<std::wstring>{L"--strip", L"1"}}) {
+    TempDir tmp;
+    tmp.mkdir("src");
+    tmp.write("src/f.txt", "l1\nl2\nl3\n");
+    Pipeline p;
+    p.set_cwd(tmp.wpath());
+    p.set_stdin(diff);
+    p.add(L"patch.exe", args);
+    auto r = p.run();
+    EXPECT_EQ(r.exit_code, 0);
+    EXPECT_EQ_TEXT(tmp.read("src/f.txt"), "l1\nL2\nl3\n");
+  }
+  // -p0 keeps the full header path and cannot find the file.
+  {
+    TempDir tmp;
+    tmp.mkdir("src");
+    tmp.write("src/f.txt", "l1\nl2\nl3\n");
+    Pipeline p;
+    p.set_cwd(tmp.wpath());
+    p.set_stdin(diff);
+    p.add(L"patch.exe", {L"-p0"});
+    auto r = p.run();
+    EXPECT_EQ(r.exit_code, 2);
+    EXPECT_EQ_TEXT(tmp.read("src/f.txt"), "l1\nl2\nl3\n");
+  }
+}
+
+// [GNU] #1345: a negative strip count is a usage error (exit 2), and
+// so is an unrecognized option.
+TEST(patch, patch_usage_errors_exit_2_issue1345) {
+  TempDir tmp;
+  tmp.write("f.txt", "l1\n");
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("");
+  p.add(L"patch.exe", {L"-p-1"});
+  EXPECT_EQ(p.run().exit_code, 2);
+
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.set_stdin("");
+  p2.add(L"patch.exe", {L"--bogus"});
+  EXPECT_EQ(p2.run().exit_code, 2);
+}

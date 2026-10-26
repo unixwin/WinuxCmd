@@ -469,21 +469,19 @@ REGISTER_COMMAND(
   const bool posix_mode = posixly_env || ctx.has("--posix");
 
   // ----- option decoding ---------------------------------------------
+  // [GNU] -p/--strip is an INT option: read it with get<int>. (Reading
+  // it as bool/string always yielded the defaults, so the strip count
+  // silently stayed 0 and header file names were opened literally.)
   int strip_components = 0;
-  if (ctx.get<bool>("-p", false)) {
-    try {
-      strip_components = std::stoi(ctx.get<std::string>("-p", ""));
-    } catch (...) {
-      safeErrorPrintLn("patch: invalid strip count '-p'");
-      return 2;
-    }
+  if (ctx.has("-p")) {
+    strip_components = ctx.get<int>("-p", 0);
   } else if (ctx.has("--strip")) {
-    try {
-      strip_components = std::stoi(ctx.get<std::string>("--strip", "0"));
-    } catch (...) {
-      safeErrorPrintLn("patch: invalid strip count '--strip'");
-      return 2;
-    }
+    strip_components = ctx.get<int>("--strip", 0);
+  }
+  if (strip_components < 0) {
+    safeErrorPrintLn("patch: **** strip count " +
+                     std::to_string(strip_components) + " is negative");
+    return 2;
   }
 
   long long maxfuzz = kDefaultFuzz;
