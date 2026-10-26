@@ -44,3 +44,4 @@
 55	#1284	sed empty match after a non-empty match must not be substituted or counted
 56	#1307	ls bare --color must colorize like always
 57	#1308	ln --backup control and backup line must match GNU
+58	#1334	stat --printf must expand \xHH escapes and honor -c over -t
