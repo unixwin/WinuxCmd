@@ -3246,3 +3246,31 @@ TEST(find, issue_1314_perm_accepts_symbolic_copy_clauses) {
   // Restore the attribute so TempDir cleanup can remove the file.
   SetFileAttributesW((tmp.path / "run.cmd").c_str(), FILE_ATTRIBUTE_NORMAL);
 }
+
+TEST(find, issue_1313_unknown_user_and_group_are_parse_errors) {
+  TempDir tmp;
+  tmp.write("a.txt", "");
+
+  Pipeline user;
+  user.set_cwd(tmp.wpath());
+  user.add(L"find.exe", {L".", L"-user", L"nosuchusrx"});
+  auto ur = user.run();
+  EXPECT_EQ(ur.exit_code, 1);
+  EXPECT_TRUE(ur.stderr_text.find("nosuchusrx") != std::string::npos);
+  EXPECT_TRUE(ur.stderr_text.find("known user") != std::string::npos);
+
+  Pipeline group;
+  group.set_cwd(tmp.wpath());
+  group.add(L"find.exe", {L".", L"-group", L"nosuchgrpx"});
+  auto gr = group.run();
+  EXPECT_EQ(gr.exit_code, 1);
+  EXPECT_TRUE(gr.stderr_text.find("nosuchgrpx") != std::string::npos);
+  EXPECT_TRUE(gr.stderr_text.find("an existing group") != std::string::npos);
+
+  // Numeric specs never need a lookup and must not error.
+  Pipeline numeric;
+  numeric.set_cwd(tmp.wpath());
+  numeric.add(L"find.exe", {L".", L"-user", L"99999"});
+  auto nr = numeric.run();
+  EXPECT_EQ(nr.exit_code, 0);
+}

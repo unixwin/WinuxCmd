@@ -1633,6 +1633,21 @@ class ExpressionParser {
     if (option == "-user" || option == "-group") {
       auto value = require_value(option);
       if (!value) return std::unexpected(value.error());
+      // [#1313] GNU resolves a non-numeric name at parse time: an
+      // unknown user/group is an error, not a never-matching predicate.
+      // Numeric specs pass without a lookup (matching the fallback in
+      // win32_account_matches).
+      const bool all_digits =
+          !value->empty() &&
+          std::all_of(value->begin(), value->end(), [](char ch) {
+            return std::isdigit(static_cast<unsigned char>(ch)) != 0;
+          });
+      if (!all_digits &&
+          !win32_lookup_account(utf8_to_wstring(*value))) {
+        return std::unexpected(
+            "'" + *value + "' is not the name of " +
+            (option == "-user" ? "a known user" : "an existing group"));
+      }
       auto node =
           make_expr(option == "-user" ? ExprKind::User : ExprKind::Group);
       node->text = std::move(*value);
