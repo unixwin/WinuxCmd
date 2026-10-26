@@ -568,3 +568,114 @@ TEST(patch, patch_usage_errors_exit_2_issue1345) {
   p2.add(L"patch.exe", {L"--bogus"});
   EXPECT_EQ(p2.run().exit_code, 2);
 }
+
+// [GNU] #1346: a context diff is parsed and applied (previously it
+// printed "patching file" and exited 0 without changing anything).
+TEST(patch, patch_context_diff_applies_issue1346) {
+  TempDir tmp;
+  tmp.write("f.txt", "l1\nl2\nl3\n");
+  const std::string diff =
+      "*** f.txt\t2026-01-01 00:00:00\n"
+      "--- f.txt\t2026-01-01 00:00:01\n"
+      "***************\n"
+      "*** 1,3 ****\n"
+      "  l1\n"
+      "! l2\n"
+      "  l3\n"
+      "--- 1,3 ----\n"
+      "  l1\n"
+      "! L2\n"
+      "  l3\n";
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin(diff);
+  p.add(L"patch.exe", {L"f.txt"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("patching file f.txt") != std::string::npos);
+  EXPECT_EQ_TEXT(tmp.read("f.txt"), "l1\nL2\nl3\n");
+}
+
+// [GNU] #1346: in a pure-addition context hunk, GNU diff omits the old
+// section's lines entirely (only its range header is printed); the
+// hunk must still apply at the right place.
+TEST(patch, patch_context_diff_pure_addition_issue1346) {
+  TempDir tmp;
+  tmp.write("f.txt", "a\nb\nc\nd\ne\n");
+  const std::string diff =
+      "*** f.txt\t2026-01-01 00:00:00\n"
+      "--- f.txt\t2026-01-01 00:00:01\n"
+      "***************\n"
+      "*** 1,5 ****\n"
+      "--- 1,6 ----\n"
+      "  a\n"
+      "  b\n"
+      "+ X\n"
+      "  c\n"
+      "  d\n"
+      "  e\n";
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin(diff);
+  p.add(L"patch.exe", {L"f.txt"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(tmp.read("f.txt"), "a\nb\nX\nc\nd\ne\n");
+}
+
+// [GNU] #1346: a normal (ed-style) diff is parsed and applied at the
+// stated positions, including a later command whose position shifts
+// because of an earlier one.
+TEST(patch, patch_normal_diff_applies_issue1346) {
+  TempDir tmp;
+  tmp.write("f.txt", "l1\nl2\nl3\n");
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("1c1\n< l1\n---\n> L1\n");
+  p.add(L"patch.exe", {L"f.txt"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(tmp.read("f.txt"), "L1\nl2\nl3\n");
+
+  TempDir tmp2;
+  tmp2.write("f.txt", "x\nY\nz\n");
+  Pipeline p2;
+  p2.set_cwd(tmp2.wpath());
+  p2.set_stdin("2c2\n< Y\n---\n> y\n3a4\n> w\n");
+  p2.add(L"patch.exe", {L"f.txt"});
+  auto r2 = p2.run();
+  EXPECT_EQ(r2.exit_code, 0);
+  EXPECT_EQ_TEXT(tmp2.read("f.txt"), "x\ny\nz\nw\n");
+
+  // Content that does not match the stated position fails the hunk.
+  TempDir tmp3;
+  tmp3.write("f.txt", "XX\nl2\nl3\n");
+  Pipeline p3;
+  p3.set_cwd(tmp3.wpath());
+  p3.set_stdin("1c1\n< l1\n---\n> L1\n");
+  p3.add(L"patch.exe", {L"f.txt"});
+  auto r3 = p3.run();
+  EXPECT_EQ(r3.exit_code, 1);
+  EXPECT_EQ_TEXT(tmp3.read("f.txt"), "XX\nl2\nl3\n");
+}
+
+// [GNU] #1346: input that names files but contains no hunks is
+// garbage (exit 2), for both unified and context headers — it must
+// never be reported as a successful patch.
+TEST(patch, patch_header_without_hunks_is_garbage_issue1346) {
+  TempDir tmp;
+  tmp.write("f.txt", "l1\n");
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("--- f.txt\n+++ f.txt\n");
+  p.add(L"patch.exe", {});
+  EXPECT_EQ(p.run().exit_code, 2);
+  EXPECT_EQ_TEXT(tmp.read("f.txt"), "l1\n");
+
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.set_stdin("*** f.txt\n--- f.txt\n");
+  p2.add(L"patch.exe", {L"f.txt"});
+  EXPECT_EQ(p2.run().exit_code, 2);
+  EXPECT_EQ_TEXT(tmp.read("f.txt"), "l1\n");
+}
