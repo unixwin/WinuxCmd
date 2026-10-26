@@ -402,6 +402,12 @@ auto remove_path(const std::string& path, const RmConfig& cfg) -> bool {
   const std::wstring& wpath = operand.extended;
   DWORD attr = native_path::operand_target_attributes_w(operand);
 
+  // TEMP-DBG-1297 (remove before merge): dump the computed operand.
+  safeErrorPrint("DBG1297 path=[" + path + "] norm=[" +
+                 wstring_to_utf8(operand.normalized) + "] ext=[" +
+                 wstring_to_utf8(operand.extended) +
+                 "] attr=" + std::to_string(attr) + "\n");
+
   if (attr == INVALID_FILE_ATTRIBUTES && leaf_is_dos_device_name(operand)) {
     // #1297: an on-disk entry whose name is a DOS device name (a directory
     // literally called "NUL") must not be decided by the attribute probe
@@ -412,6 +418,9 @@ auto remove_path(const std::string& path, const RmConfig& cfg) -> bool {
     if (auto probed = probe_attributes_by_handle(wpath)) {
       attr = *probed;
     }
+    // TEMP-DBG-1297 (remove before merge)
+    safeErrorPrint("DBG1297 after-fallback attr=" + std::to_string(attr) +
+                   "\n");
   }
 
   if (cfg.recursive &&
