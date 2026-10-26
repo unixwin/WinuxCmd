@@ -522,3 +522,26 @@ TEST(mv, issue_1283_drive_colon_operand_moves_carrier_file) {
   EXPECT_TRUE(std::filesystem::exists(tmp.path / "dest.txt"));
   EXPECT_FALSE(std::filesystem::exists(tmp.path / carrier));
 }
+
+TEST(mv, mv_invented_dash_I_rejected_issue1355) {
+  TempDir tmp;
+  tmp.write("a.txt", "a\n");
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"mv.exe", {L"-I", L"a.txt", L"b.txt"});
+  auto r = p.run();
+  EXPECT_EXIT_CODE(r, 1);
+  EXPECT_TRUE(r.stderr_text.find("invalid option -- 'I'") != std::string::npos);
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "a.txt"));  // nothing moved
+}
+
+TEST(mv, mv_dash_i_still_legal_issue1355) {
+  TempDir tmp;
+  tmp.write("a.txt", "a\n");
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"mv.exe", {L"-i", L"a.txt", L"b.txt"});
+  auto r = p.run();
+  EXPECT_EXIT_CODE(r, 0);
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "b.txt"));
+}
