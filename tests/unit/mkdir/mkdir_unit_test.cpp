@@ -429,3 +429,39 @@ TEST(mkdir, mkdir_p_existing_directory_is_silent_success_issue1296) {
   EXPECT_TRUE(r.stdout_text.empty());
   EXPECT_TRUE(r.stderr_text.empty());
 }
+
+// ===== #1298 regression: mkdir -v outside the -p path =====
+
+TEST(mkdir, mkdir_verbose_reports_created_directory_issue1298) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"mkdir.exe", {L"-v", L"newdir"});
+
+  auto r = p.run();
+
+  // [GNU] mkdir -v announces every created directory. The -p form was
+  // already pinned (mkdir_verbose_parents_reports_each_created_directory);
+  // the #1283 audit observed -v being silently ignored, so pin the
+  // plain form too.
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "mkdir: created directory 'newdir'\n");
+  EXPECT_TRUE(r.stderr_text.empty());
+  EXPECT_TRUE(std::filesystem::is_directory(tmp.path / "newdir"));
+}
+
+TEST(mkdir, mkdir_long_verbose_reports_created_directory_issue1298) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"mkdir.exe", {L"--verbose", L"newdir"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "mkdir: created directory 'newdir'\n");
+  EXPECT_TRUE(r.stderr_text.empty());
+  EXPECT_TRUE(std::filesystem::is_directory(tmp.path / "newdir"));
+}

@@ -618,3 +618,40 @@ TEST(rm, rm_force_bare_nul_operand_names_device_not_filesystem_issue1297) {
   EXPECT_TRUE(r.exit_code == 0 || r.exit_code == 1);
   EXPECT_TRUE(std::filesystem::is_empty(tmp.path));
 }
+
+// ===== #1298 regression: rm -v output =====
+
+TEST(rm, rm_verbose_reports_removed_file_issue1298) {
+  TempDir tmp;
+  tmp.write("f.txt", "content");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"rm.exe", {L"-v", L"f.txt"});
+
+  auto r = p.run();
+
+  // [GNU] rm -v prints "removed '<name>'" for each removal. rm had no
+  // verbose coverage at all while mkdir/rmdir did; the #1283 audit
+  // observed -v being silently ignored by all three commands.
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "removed 'f.txt'\n");
+  EXPECT_TRUE(r.stderr_text.empty());
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "f.txt"));
+}
+
+TEST(rm, rm_long_verbose_reports_removed_file_issue1298) {
+  TempDir tmp;
+  tmp.write("f.txt", "content");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"rm.exe", {L"--verbose", L"f.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "removed 'f.txt'\n");
+  EXPECT_TRUE(r.stderr_text.empty());
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "f.txt"));
+}
