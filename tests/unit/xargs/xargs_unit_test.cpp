@@ -1315,24 +1315,24 @@ TEST(xargs, xargs_maps_child_127_to_123) {
   EXPECT_EQ(r.exit_code, 123);
 }
 
-TEST(xargs, xargs_maps_signal_shaped_child_130_to_125) {
+TEST(xargs, xargs_maps_child_130_to_123_1319) {
   Pipeline p;
   p.add(L"xargs.exe", {L"cmd.exe", L"/C", L"exit", L"/B"});
   p.set_stdin("130\n");
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 125);
+  EXPECT_EQ(r.exit_code, 123);
 }
 
-TEST(xargs, xargs_maps_signal_shaped_child_143_to_125) {
+TEST(xargs, xargs_maps_child_143_to_123_1319) {
   Pipeline p;
   p.add(L"xargs.exe", {L"cmd.exe", L"/C", L"exit", L"/B"});
   p.set_stdin("143\n");
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 125);
+  EXPECT_EQ(r.exit_code, 123);
 }
 
 TEST(xargs, xargs_not_found_returns_127) {
@@ -1488,5 +1488,27 @@ TEST(xargs, xargs_delimiter_empty_input_with_no_run_if_empty_skips_1318) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.find("baseline") == std::string::npos);
+}
+
+TEST(xargs, xargs_maps_child_200_to_123_1319) {
+  Pipeline p;
+  p.add(L"xargs.exe", {L"cmd.exe", L"/C", L"exit", L"/B"});
+  p.set_stdin("200\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 123);
+}
+
+TEST(xargs, xargs_child_255_prints_abort_diagnostic_1319) {
+  Pipeline p;
+  p.add(L"xargs.exe", {L"cmd.exe", L"/C", L"exit", L"/B"});
+  p.set_stdin("255\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 124);
+  EXPECT_TRUE(r.stderr_text.find("exited with status 255; aborting") !=
+              std::string::npos);
 }
 

@@ -1015,11 +1015,13 @@ auto wait_any_child(std::vector<ChildProcess> &running) -> size_t {
 }
 
 auto map_child_exit_status(int child_status) -> int {
+  // #1319 (GNU): 1-254 -> 123; only 255 aborts with 124; a negative value
+  // here means the DWORD exit code had its high bit set (an NTSTATUS-shaped
+  // abnormal termination), which maps to 125 like a signal death.
   if (child_status == 0) return 0;
   if (child_status == 255) return 124;
-  if (child_status >= 1 && child_status <= 127) return 123;
-  if (child_status > 127) return 125;
-  return child_status;
+  if (child_status >= 1 && child_status <= 254) return 123;
+  return 125;
 }
 
 /**
@@ -1069,7 +1071,13 @@ auto execute_command(const std::string &command,
     int child_status = wait_child(running[completed_index]);
     if (child_status != 0) {
       exit_code = map_child_exit_status(child_status);
-      if (child_status == 255) stop_launching = true;
+      if (child_status == 255) {
+        // #1319: GNU prints the abort diagnostic for a 255 child.
+        safeErrorPrint("xargs: ");
+        safeErrorPrint(command);
+        safeErrorPrint(": exited with status 255; aborting\n");
+        stop_launching = true;
+      }
     }
     if (!process_slot_var.empty()) {
       free_slots.push_back(running[completed_index].slot);
