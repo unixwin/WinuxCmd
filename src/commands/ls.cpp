@@ -153,7 +153,7 @@ auto constexpr LS_OPTIONS = std::array{
     OPTION("", "--file-type", "append file type indicators, without *"),
     OPTION("", "--color",
            "colorize the output; WHEN can be 'always', 'auto', or 'never'",
-           STRING_TYPE),
+           OPTIONAL_STRING_TYPE),
     OPTION("-1", "", "list one file per line"),
     OPTION("-D", "--dired", "generate output designed for Emacs dired mode"),
     OPTION("-G", "--no-group", "in a long listing, don't print group names"),
@@ -1822,7 +1822,9 @@ auto resolve_color_enabled(const CommandContext<LS_OPTIONS.size()> &ctx)
     -> bool {
   std::string color_option = ctx.get<std::string>("--color", "auto");
   if (color_option == "never") return false;
-  if (color_option == "always") return true;
+  // [GNU] Bare --color means --color=always (verified: piped output still
+  // carries escapes under GNU 9.4, unlike --color=auto).
+  if (color_option == "always" || color_option.empty()) return true;
   return ls_is_terminal(stdout);
 }
 
@@ -2779,6 +2781,10 @@ auto print_columns(const std::vector<EntryInfo> &entries,
     color_enabled = false;
   } else if (color_option == "auto") {
     color_enabled = ls_is_terminal(stdout);
+  } else if (color_option.empty()) {
+    // [GNU] Bare --color means --color=always (verified: piped output
+    // still carries escapes under GNU 9.4, unlike --color=auto).
+    color_enabled = true;
   }
 
   // Get terminal width or use specified width
