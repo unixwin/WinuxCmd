@@ -473,3 +473,112 @@ TEST(patch, patch_stdin_ctrlz_not_truncated_issue1212) {
                                            "AAA\nXXX\n",
                                            12));
 }
+
+// [GNU] Issue #1381: -l matches lines that differ only in whitespace-run
+// length; a wholly missing space is still a mismatch.
+TEST(patch, issue_1381_ignore_whitespace_runs) {
+  TempDir tmp;
+  tmp.write("v.txt", "a  b\nc d\n");
+  std::string patch_data =
+      "--- v.txt\n+++ v.txt\n@@ -1,2 +1,2 @@\n a b\n-c d\n+C D\n";
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin(patch_data);
+  p.add(L"patch.exe", {L"-l", L"v.txt"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(tmp.read("v.txt"), "a  b\nC D\n");
+
+  // Without -l the same patch must fail.
+  tmp.write("v.txt", "a  b\nc d\n");
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.set_stdin(patch_data);
+  p2.add(L"patch.exe", {L"v.txt"});
+  auto r2 = p2.run();
+  EXPECT_EQ(r2.exit_code, 1);
+}
+
+// [GNU] Issue #1381: forcing a non-unified format on unified input is
+// "Only garbage" (rc 2); --unified/-u apply it.
+TEST(patch, issue_1381_format_forcing) {
+  TempDir tmp;
+  tmp.write("v.txt", "old\n");
+  std::string patch_data =
+      "--- v.txt\n+++ v.txt\n@@ -1,1 +1,1 @@\n-old\n+new\n";
+
+  for (const wchar_t* opt : {L"--context", L"--normal", L"--ed", L"-c",
+                             L"-n", L"-e"}) {
+    Pipeline p;
+    p.set_cwd(tmp.wpath());
+    p.set_stdin(patch_data);
+    p.add(L"patch.exe", {opt, L"v.txt"});
+    auto r = p.run();
+    EXPECT_EQ(r.exit_code, 2);
+    EXPECT_EQ_TEXT(tmp.read("v.txt"), "old\n");
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin(patch_data);
+  p.add(L"patch.exe", {L"--unified", L"v.txt"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(tmp.read("v.txt"), "new\n");
+}
+
+// [GNU] Issue #1381: --version-control naming, including the measured
+// 2.7.6 quirk that "none"/"off" selects numbered backups.
+TEST(patch, issue_1381_version_control) {
+  TempDir tmp;
+  std::string bad_patch =
+      "--- f.txt\n+++ f.txt\n@@ -1,1 +1,1 @@\n-WRONG\n+new\n";
+  auto run_vc = [&](const std::wstring& arg) {
+    tmp.write("f.txt", "old\n");
+    Pipeline p;
+    p.set_cwd(tmp.wpath());
+    p.set_stdin(bad_patch);
+    p.add(L"patch.exe", {arg, L"f.txt"});
+    return p.run().exit_code;
+  };
+
+  EXPECT_EQ(run_vc(L"--version-control=simple"), 1);
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "f.txt.orig"));
+  std::filesystem::remove(tmp.path / "f.txt.orig");
+
+  EXPECT_EQ(run_vc(L"--version-control=numbered"), 1);
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "f.txt.~1~"));
+  std::filesystem::remove(tmp.path / "f.txt.~1~");
+
+  EXPECT_EQ(run_vc(L"--version-control=none"), 1);
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "f.txt.~1~"));
+  std::filesystem::remove(tmp.path / "f.txt.~1~");
+
+  EXPECT_EQ(run_vc(L"--version-control=bogus"), 2);
+}
+
+// [GNU] Issue #1381: --get validates its value; --quoting-style=c quotes
+// the file name in the "patching file" line.
+TEST(patch, issue_1381_get_and_quoting_style) {
+  TempDir tmp;
+  tmp.write("f.txt", "old\n");
+  std::string good_patch =
+      "--- f.txt\n+++ f.txt\n@@ -1,1 +1,1 @@\n-old\n+new\n";
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin(good_patch);
+  p.add(L"patch.exe", {L"--get=abc", L"f.txt"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 2);
+
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.set_stdin(good_patch);
+  p2.add(L"patch.exe", {L"--quoting-style=c", L"f.txt"});
+  auto r2 = p2.run();
+  EXPECT_EQ(r2.exit_code, 0);
+  EXPECT_TRUE(r2.stdout_text.find("patching file \"f.txt\"") !=
+              std::string::npos);
+}
