@@ -225,7 +225,8 @@ enum class QuotingMode {
   Shell,
   ShellAlways,
   ShellEscape,
-  ShellEscapeAlways
+  ShellEscapeAlways,
+  Locale
 };
 
 enum class DereferenceMode { None, CommandLine, CommandLineDirectories, All };
@@ -696,6 +697,69 @@ auto escape_display_name(const std::wstring &name) -> std::wstring {
   return rendered;
 }
 
+// [GNU] --quoting-style=locale in the C locale: always single-quoted,
+// with the C-style escapes except that ' itself is escaped and " stays
+// literal. (The UTF-8-locale Unicode-quote form is not reproduced: this
+// command has no locale machinery to select it.)
+auto locale_quote_display_name(const std::wstring &name) -> std::wstring {
+  std::wstring rendered;
+  rendered.reserve(name.size() * 2);
+
+  auto append_hex = [&](unsigned int value, int width, wchar_t prefix) {
+    static constexpr wchar_t digits[] = L"0123456789abcdef";
+    rendered.push_back(L'\\');
+    rendered.push_back(prefix);
+    for (int shift = (width - 1) * 4; shift >= 0; shift -= 4) {
+      rendered.push_back(digits[(value >> shift) & 0xF]);
+    }
+  };
+
+  for (wchar_t ch : name) {
+    switch (ch) {
+      case L'\a':
+        rendered += L"\\a";
+        break;
+      case L'\b':
+        rendered += L"\\b";
+        break;
+      case L'\t':
+        rendered += L"\\t";
+        break;
+      case L'\n':
+        rendered += L"\\n";
+        break;
+      case L'\v':
+        rendered += L"\\v";
+        break;
+      case L'\f':
+        rendered += L"\\f";
+        break;
+      case L'\r':
+        rendered += L"\\r";
+        break;
+      case L'\\':
+        rendered += L"\\\\";
+        break;
+      case L'\'':
+        rendered += L"\\'";
+        break;
+      default:
+        if (ch >= 0x20 && ch < 0x7f && std::iswprint(static_cast<wint_t>(ch))) {
+          rendered.push_back(ch);
+        } else if (ch <= 0xFF) {
+          append_hex(static_cast<unsigned int>(ch), 2, L'x');
+        } else if (ch <= 0xFFFF) {
+          append_hex(static_cast<unsigned int>(ch), 4, L'u');
+        } else {
+          append_hex(static_cast<unsigned int>(ch), 8, L'U');
+        }
+        break;
+    }
+  }
+
+  return L"'" + rendered + L"'";
+}
+
 auto parse_quoting_mode(std::string_view value) -> std::optional<QuotingMode> {
   if (value == "literal") return QuotingMode::Literal;
   if (value == "escape") return QuotingMode::Escape;
@@ -705,6 +769,8 @@ auto parse_quoting_mode(std::string_view value) -> std::optional<QuotingMode> {
   if (value == "shell-always") return QuotingMode::ShellAlways;
   if (value == "shell-escape") return QuotingMode::ShellEscape;
   if (value == "shell-escape-always") return QuotingMode::ShellEscapeAlways;
+  if (value == "locale") return QuotingMode::Locale;
+  if (value == "clocale") return QuotingMode::C;
   return std::nullopt;
 }
 
@@ -845,6 +911,9 @@ auto apply_quoting_mode(const std::wstring &value, QuotingMode quoting)
     case QuotingMode::ShellAlways:
     case QuotingMode::ShellEscapeAlways:
       rendered = shell_quote_display_name(rendered, true);
+      break;
+    case QuotingMode::Locale:
+      rendered = locale_quote_display_name(rendered);
       break;
   }
 
@@ -1250,6 +1319,42 @@ auto parse_sort_mode(std::string_view value) -> std::optional<SortMode> {
   return std::nullopt;
 }
 
+// [GNU] --sort values are matched exactly, then by unique prefix
+// (argmatch): several prefix matches are ambiguous, none is invalid.
+// The valid set is this command's superset of GNU's (GNU has no name or
+// type value), so "n" and "t" stay ambiguous here although GNU resolves
+// them to none and time.
+auto resolve_sort_mode_value(std::string_view value) -> cp::Result<SortMode> {
+  if (auto parsed = parse_sort_mode(value)) return *parsed;
+  static constexpr std::string_view kNames[] = {
+      "name", "size", "time", "version", "extension", "type", "none",
+  };
+  int matches = 0;
+  SortMode matched = SortMode::Name;
+  for (std::string_view name : kNames) {
+    if (name.starts_with(value)) {
+      ++matches;
+      matched = parse_sort_mode(name).value();
+    }
+  }
+  if (matches == 1) return matched;
+  std::string message =
+      matches > 1 ? "ambiguous argument '" : "invalid argument '";
+  message += value;
+  message +=
+      "' for '--sort'\n"
+      "Valid arguments are:\n"
+      "  - 'name'\n"
+      "  - 'size'\n"
+      "  - 'time'\n"
+      "  - 'version'\n"
+      "  - 'extension'\n"
+      "  - 'type'\n"
+      "  - 'none'\n"
+      "Try 'ls --help' for more information.";
+  return std::unexpected(message);
+}
+
 auto parse_time_mode(std::string_view value) -> std::optional<TimeMode> {
   if (value.empty() || value == "mtime" || value == "modification" ||
       value == "modified") {
@@ -1594,8 +1699,8 @@ auto resolve_sort_mode(const CommandContext<LS_OPTIONS.size()> &ctx)
     if (meta.long_name == "--sort") {
       auto value = std::get_if<std::string>(&occurrence.value);
       if (!value) return std::unexpected("invalid sort value");
-      auto parsed = parse_sort_mode(*value);
-      if (!parsed) return std::unexpected("invalid sort value");
+      auto parsed = resolve_sort_mode_value(*value);
+      if (!parsed) return std::unexpected(parsed.error());
       selection.mode = *parsed;
       selection.explicit_sort = true;
       continue;

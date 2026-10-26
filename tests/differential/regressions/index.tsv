@@ -45,3 +45,4 @@
 56	#1307	ls bare --color must colorize like always
 57	#1308	ln --backup control and backup line must match GNU
 58	#1334	stat --printf must expand \xHH escapes and honor -c over -t
+59	#1335	ls quoting-style locale and --sort prefixes must match GNU
