@@ -297,8 +297,11 @@ export ParseResultRuntime parse_command_runtime(
           int v = 0;
           std::string str;
 
-          if (!value.empty()) {
-            // --int=123
+          // #1302: an explicit empty value ("--opt=") is a value, not a
+          // missing one: it must fail here instead of swallowing the
+          // next argv as the value.
+          if (has_inline_value) {
+            // --int=123 (including the explicit empty "--int=")
             str = std::string(value);
           } else {
             // --int 123
@@ -408,7 +411,9 @@ export ParseResultRuntime parse_command_runtime(
           case OptionType::Int: {
             int v = 0;
             std::string str;
-            if (!exact_value.empty()) {
+            // #1302, single-dash long form: an explicit empty value is
+            // a value, not a missing one.
+            if (exact_has_inline_value) {
               str = std::string(exact_value);
             } else {
               if (i + 1 >= args.size()) {

@@ -1790,6 +1790,22 @@ TEST(grep, grep_invalid_context_length_exits_2_issue1213) {
   EXPECT_EXIT_CODE(r, 2);
   EXPECT_TRUE(r.stderr_text.find("invalid") != std::string::npos);
 }
+// #1302: an explicit empty value ("--max-count=") must fail on the
+// empty value, not swallow the next argv (-e) as the value.
+TEST(grep, grep_int_long_option_empty_value_does_not_swallow_next_arg) {
+  TempDir tmp;
+  tmp.write("input.txt", "x\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"grep.exe", {L"--max-count=", L"-e", L"x", L"input.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_TRUE(r.stderr_text.find("invalid argument '' for '--max-count'") !=
+              std::string::npos);
+}
+
 
 // #1301: grep --count=x must fail instead of hanging on a Bool long
 // option that silently swallowed the value.
