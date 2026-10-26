@@ -291,8 +291,14 @@ auto run(const Config& cfg) -> int {
 
     if (wait_result == WAIT_TIMEOUT) {
       // Process timed out, kill it
+      // [GNU] The status of a timeout kill is signal-dependent: 124 for
+      // the ordinary signal path, but a command killed by SIGKILL reports
+      // 128+SIGKILL = 137 (the shell convention); --preserve-status always
+      // reports the command's own signal status 128+SIG (#1350).
       int timeout_status =
-          cfg.preserve_status ? std::min(255, 128 + cfg.signal) : 124;
+          cfg.preserve_status
+              ? std::min(255, 128 + cfg.signal)
+              : (cfg.signal == 9 ? 128 + 9 : 124);
       bool sent_initial_termination = false;
       if (cfg.verbose) {
         safeErrorPrintLn("timeout: sending signal " +
