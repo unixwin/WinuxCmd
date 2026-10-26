@@ -9,6 +9,15 @@ export auto option_policy_for_command(std::string_view command)
   policy.allow_unknown_short_options_as_positionals =
       command == "printf" || command == "expr" || command == "test" ||
       command == "[" || command == "stty" || command == "kill";
+  if (command == "env") {
+    // #1303: GNU env scans options only up to the first non-option
+    // token: an assignment or the command name ends option parsing, so
+    // `env FOO=bar -i cmd` treats -i as the command and
+    // `env echo --version` runs echo. Assignments are positionals to
+    // the parser, so stopping after the first positional is exactly
+    // this boundary (and it holds with or without POSIXLY_CORRECT).
+    policy.stop_options_after_positionals = 1;
+  }
   if (command == "timeout") {
     policy.stop_options_after_positionals = 2;
   }

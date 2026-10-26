@@ -1790,3 +1790,18 @@ TEST(grep, grep_invalid_context_length_exits_2_issue1213) {
   EXPECT_EXIT_CODE(r, 2);
   EXPECT_TRUE(r.stderr_text.find("invalid") != std::string::npos);
 }
+// #1303: --help as --label's value is data, not an interception: grep
+// searches instead of printing its own help.
+TEST(grep, grep_label_value_that_looks_like_help_is_not_intercepted) {
+  TempDir tmp;
+  tmp.write("input.txt", "x line\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"grep.exe", {L"--label", L"--help", L"-e", L"x", L"input.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "x line\n");
+}
+

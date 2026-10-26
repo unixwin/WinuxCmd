@@ -266,3 +266,16 @@ TEST(timeout, timeout_invalid_option_returns_125_with_help_hint) {
                  "timeout: unrecognized option '--definitely-invalid'\n"
                  "Try 'timeout --help' for more information.\n");
 }
+
+// #1303: --help after the wrapped command belongs to the command, not
+// to timeout: `timeout 5 echo --help` shows echo's help, not
+// timeout's.
+TEST(timeout, timeout_wrapped_command_help_is_not_intercepted) {
+  Pipeline p;
+  p.add(L"timeout.exe", {L"5", L"echo.exe", L"--help"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("Usage:") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("Usage: timeout") == std::string::npos);
+}
