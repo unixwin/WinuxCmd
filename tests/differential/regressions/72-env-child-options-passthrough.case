@@ -1,0 +1,5 @@
+cmd: env
+args: echo -n hi
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/1353
+tags: issue-1353 regression

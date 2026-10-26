@@ -24,6 +24,15 @@ export auto option_policy_for_command(std::string_view command)
     // reporting -flag as an invalid nohup option.
     policy.stop_options_after_positionals = 1;
   }
+  if (command == "env") {
+    // [GNU] coreutils env also parses with a leading-'+' getopt: option
+    // processing stops at the first non-option argument (an assignment
+    // or the wrapped command's name), so `env ./ls -l` runs ls with its
+    // own -l instead of reporting -l as an invalid env option, and a
+    // leading-dash token after an assignment is the command to run
+    // (#1353).
+    policy.stop_options_after_positionals = 1;
+  }
   if (command == "xargs") {
     // [GNU findutils] xargs's own options stop at the first non-option
     // operand (the utility name); every argument after it passes to the

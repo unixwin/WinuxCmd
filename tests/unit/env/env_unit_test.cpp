@@ -654,3 +654,55 @@ TEST(env, env_unset_preserves_survivor_order) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "KEEP1=1\nKEEP2=3\n");
 }
+
+// #1353: [GNU] option processing stops at the first non-option
+// argument: a path-form command launches, and dash tokens after it
+// belong to the command, not to env.
+TEST(env, env_path_form_command_runs_with_child_options) {
+  TempDir tmp;
+  std::filesystem::copy_file(std::filesystem::path(WINUXCMD_BIN_DIR) /
+                                 "echo.exe",
+                             tmp.path / "echo.exe",
+                             std::filesystem::copy_options::overwrite_existing);
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"env.exe", {L".\\echo.exe", L"-n", L"hi"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "hi");
+}
+
+TEST(env, env_options_after_assignment_belong_to_command) {
+  TempDir tmp;
+  std::filesystem::copy_file(std::filesystem::path(WINUXCMD_BIN_DIR) /
+                                 "echo.exe",
+                             tmp.path / "echo.exe",
+                             std::filesystem::copy_options::overwrite_existing);
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"env.exe", {L"A=1", L".\\echo.exe", L"-n", L"hi"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "hi");
+}
+
+// #1353: [GNU] a dash token in the command position is the command to
+// run (and simply not found), not an env option to reject with 125.
+TEST(env, env_dash_token_after_assignment_is_command) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"env.exe", {L"FOO=1", L"-i"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 127);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "env: failed to run command '-i': No such file or "
+                 "directory\n");
+}

@@ -44,3 +44,4 @@
 55	#1284	sed empty match after a non-empty match must not be substituted or counted
 70	#1352	env -i child environment block must contain exactly the given assignments in order
 71	#1352	env printed listing must preserve assignment order, not alphabetical order
+72	#1353	env must pass option-like arguments after the command name to the command
