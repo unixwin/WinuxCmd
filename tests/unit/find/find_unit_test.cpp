@@ -680,6 +680,127 @@ TEST(find, find_mmin_and_mtime_support_signed_ranges) {
   EXPECT_TRUE(day_result.stdout_text.find("recent.txt") == std::string::npos);
 }
 
+TEST(find, issue_1311_time_predicates_use_gnu_windows_and_fractions) {
+  TempDir tmp;
+  tmp.write("fresh.txt", "now");
+  tmp.write("old.txt", "old");
+  tmp.write("future.txt", "future");
+
+  auto now = std::filesystem::file_time_type::clock::now();
+  std::filesystem::last_write_time(tmp.path / "old.txt",
+                                   now - std::chrono::hours(25));
+  std::filesystem::last_write_time(tmp.path / "future.txt",
+                                   now + std::chrono::hours(1));
+
+  auto run_time_query = [&tmp](const wchar_t* option, const wchar_t* value) {
+    Pipeline p;
+    p.set_cwd(tmp.wpath());
+    p.add(L"find.exe",
+          {L".", L"-type", L"f", option, value, L"-print"});
+    return p.run();
+  };
+
+  // MIN family, fractional: a file a few seconds old sits in [-30s, 30s),
+  // so -mmin 0.5 matches it, -mmin 1.5 does not, and -mmin +0.5 (age > 30s)
+  // does not either (the 25h-old file does match +0.5, so only assert the
+  // fresh file's absence there).
+  auto half = run_time_query(L"-mmin", L"0.5");
+  EXPECT_EQ(half.exit_code, 0);
+  EXPECT_TRUE(half.stdout_text.find("fresh.txt") != std::string::npos);
+  EXPECT_TRUE(half.stdout_text.find("old.txt") == std::string::npos);
+  EXPECT_TRUE(half.stdout_text.find("future.txt") == std::string::npos);
+
+  auto one_half = run_time_query(L"-mmin", L"1.5");
+  EXPECT_EQ(one_half.exit_code, 0);
+  EXPECT_TRUE(one_half.stdout_text.find("fresh.txt") == std::string::npos);
+
+  auto plus_half = run_time_query(L"-mmin", L"+0.5");
+  EXPECT_EQ(plus_half.exit_code, 0);
+  EXPECT_TRUE(plus_half.stdout_text.find("fresh.txt") == std::string::npos);
+  EXPECT_TRUE(plus_half.stdout_text.find("old.txt") != std::string::npos);
+
+  // Future timestamps are not clamped: the file an hour in the future
+  // (age -3600s) is outside [-60s, 0s) so -mmin 0 misses it, but
+  // -mmin -1 (age < 60s) catches it.
+  auto zero = run_time_query(L"-mmin", L"0");
+  EXPECT_EQ(zero.exit_code, 0);
+  EXPECT_TRUE(zero.stdout_text.find("future.txt") == std::string::npos);
+
+  auto minus_one = run_time_query(L"-mmin", L"-1");
+  EXPECT_EQ(minus_one.exit_code, 0);
+  EXPECT_TRUE(minus_one.stdout_text.find("future.txt") != std::string::npos);
+  EXPECT_TRUE(minus_one.stdout_text.find("old.txt") == std::string::npos);
+
+  // DAY family: the 25h-old file is in [24h, 48h), so -mtime 1 matches
+  // it and -mtime 0 does not (the fresh file does match -mtime 0).
+  auto day_one = run_time_query(L"-mtime", L"1");
+  EXPECT_EQ(day_one.exit_code, 0);
+  EXPECT_TRUE(day_one.stdout_text.find("old.txt") != std::string::npos);
+  EXPECT_TRUE(day_one.stdout_text.find("fresh.txt") == std::string::npos);
+  EXPECT_TRUE(day_one.stdout_text.find("future.txt") == std::string::npos);
+
+  auto day_zero = run_time_query(L"-mtime", L"0");
+  EXPECT_EQ(day_zero.exit_code, 0);
+  EXPECT_TRUE(day_zero.stdout_text.find("old.txt") == std::string::npos);
+  EXPECT_TRUE(day_zero.stdout_text.find("fresh.txt") != std::string::npos);
+}
+
+TEST(find, issue_1311_newermt_accepts_relative_dates) {
+  TempDir tmp;
+  tmp.write("recent.txt", "now");
+  tmp.write("old.txt", "old");
+
+  auto now = std::filesystem::file_time_type::clock::now();
+  std::filesystem::last_write_time(tmp.path / "old.txt",
+                                   now - std::chrono::hours(2));
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L".", L"-type", L"f", L"-newermt", L"1 hour ago",
+                      L"-print"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("recent.txt") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("old.txt") == std::string::npos);
+
+  // GNU rejects 'an hour ago'; the parse error must survive.
+  Pipeline bad;
+  bad.set_cwd(tmp.wpath());
+  bad.add(L"find.exe", {L".", L"-newermt", L"an hour ago"});
+  auto bad_result = bad.run();
+  EXPECT_EQ(bad_result.exit_code, 1);
+}
+
+TEST(find, issue_1311_used_measures_atime_minus_ctime_gap) {
+  TempDir tmp;
+  tmp.write("wide.txt", "wide");
+  tmp.write("fresh.txt", "fresh");
+
+  // Access far in the future, creation/write today: the filesystem stamps
+  // the change time at the SetFileTime call, so the atime-ctime gap is
+  // roughly three years, far above 100 days and far below any exact-day
+  // window edge used here. The fresh file's gap is ~0 (or a hair
+  // negative on filesystems that stamp atime just before ctime), so it
+  // matches neither +100 nor 1.
+  EXPECT_TRUE(set_file_times(tmp.path / "wide.txt", 2026, 10, 26, 0, 0, 0,
+                             2030, 1, 1, 0, 0, 0, 2026, 10, 26, 0, 0, 0));
+
+  Pipeline plus;
+  plus.set_cwd(tmp.wpath());
+  plus.add(L"find.exe", {L".", L"-type", L"f", L"-used", L"+100", L"-print"});
+  auto plus_result = plus.run();
+  EXPECT_EQ(plus_result.exit_code, 0);
+  EXPECT_TRUE(plus_result.stdout_text.find("wide.txt") != std::string::npos);
+  EXPECT_TRUE(plus_result.stdout_text.find("fresh.txt") == std::string::npos);
+
+  Pipeline one;
+  one.set_cwd(tmp.wpath());
+  one.add(L"find.exe", {L".", L"-type", L"f", L"-used", L"1", L"-print"});
+  auto one_result = one.run();
+  EXPECT_EQ(one_result.exit_code, 0);
+  EXPECT_TRUE(one_result.stdout_text.find("wide.txt") == std::string::npos);
+}
+
 TEST(find, find_perm_and_access_primaries_match_winux_permissions) {
   TempDir tmp;
   tmp.write("plain.txt", "x");
