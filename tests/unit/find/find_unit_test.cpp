@@ -3,6 +3,11 @@
 #include <AclAPI.h>
 #include <sys/utime.h>
 
+#include <algorithm>
+#include <cctype>
+#include <fstream>
+#include <sstream>
+
 #include "framework/winuxtest.h"
 
 namespace {
@@ -576,15 +581,27 @@ TEST(find, find_quit_stops_after_first_match) {
   tmp.write("first.txt", "");
   tmp.write("second.txt", "");
 
+  // [#1309] -quit is an action, so it suppresses the default -print:
+  // GNU prints nothing here and exits 0. The traversal-stop property is
+  // covered by the -print -quit case below.
   Pipeline p;
   p.set_cwd(tmp.wpath());
   p.add(L"find.exe", {L".", L"-name", L"*.txt", L"-quit"});
 
   auto r = p.run();
   EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.empty());
+
+  // With an explicit -print, -quit still stops after the first match.
+  Pipeline printed;
+  printed.set_cwd(tmp.wpath());
+  printed.add(L"find.exe", {L".", L"-name", L"*.txt", L"-print", L"-quit"});
+
+  auto pr = printed.run();
+  EXPECT_EQ(pr.exit_code, 0);
 
   size_t newline_count = 0;
-  for (char ch : r.stdout_text) {
+  for (char ch : pr.stdout_text) {
     if (ch == '\n') ++newline_count;
   }
   EXPECT_EQ(newline_count, 1u);
@@ -3026,4 +3043,92 @@ TEST(find, issue_1312_mindepth_above_maxdepth_matches_nothing) {
   neg.add(L"find.exe", {L".", L"-mindepth", L"-1"});
   auto nr = neg.run();
   EXPECT_EQ(nr.exit_code, 1);
+}
+
+namespace {
+// Splits a single -ls line on whitespace for field-shape assertions.
+std::vector<std::string> split_ls_fields(const std::string& line) {
+  std::vector<std::string> fields;
+  std::string current;
+  for (char ch : line) {
+    if (ch == ' ' || ch == '\t') {
+      if (!current.empty()) {
+        fields.push_back(current);
+        current.clear();
+      }
+    } else if (ch != '\n' && ch != '\r') {
+      current.push_back(ch);
+    }
+  }
+  if (!current.empty()) fields.push_back(current);
+  return fields;
+}
+}  // namespace
+
+TEST(find, issue_1309_ls_suppresses_default_print_and_has_all_fields) {
+  TempDir tmp;
+  tmp.write("a.txt", "hello");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L".", L"-name", L"a.txt", L"-ls"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+
+  // Exactly one line: the -ls line itself, no bare-path default print.
+  size_t newline_count = 0;
+  for (char ch : r.stdout_text) {
+    if (ch == '\n') ++newline_count;
+  }
+  EXPECT_EQ(newline_count, 1u);
+  EXPECT_TRUE(r.stdout_text.find("./a.txt\n") == std::string::npos);
+
+  // GNU "ls -dils" shape: inode, blocks, mode, links, owner, group,
+  // size, month, day, time-or-year, path.
+  auto fields = split_ls_fields(r.stdout_text);
+  ASSERT_EQ(fields.size(), 11u);
+  EXPECT_TRUE(std::all_of(fields[0].begin(), fields[0].end(),
+                          [](char ch) { return std::isdigit(ch) != 0; }));
+  EXPECT_TRUE(std::all_of(fields[1].begin(), fields[1].end(),
+                          [](char ch) { return std::isdigit(ch) != 0; }));
+  EXPECT_EQ(fields[2].size(), 10u);
+  EXPECT_EQ(fields[6], "5");
+  EXPECT_EQ(fields[7].size(), 3u);
+  EXPECT_TRUE(fields[9].find(':') != std::string::npos);
+  EXPECT_TRUE(fields[10].find("a.txt") != std::string::npos);
+}
+
+TEST(find, issue_1309_fls_suppresses_stdout_and_writes_ls_line) {
+  TempDir tmp;
+  tmp.write("a.txt", "hello");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L".", L"-name", L"a.txt", L"-fls", L"out.txt"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.empty());
+
+  std::ifstream in(tmp.path / "out.txt");
+  std::stringstream buffer;
+  buffer << in.rdbuf();
+  auto fields = split_ls_fields(buffer.str());
+  ASSERT_EQ(fields.size(), 11u);
+  EXPECT_EQ(fields[6], "5");
+  EXPECT_TRUE(fields[10].find("a.txt") != std::string::npos);
+}
+
+TEST(find, issue_1309_quit_suppresses_default_print) {
+  TempDir tmp;
+  tmp.write("a.txt", "");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L".", L"-quit"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.empty());
 }
