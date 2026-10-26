@@ -411,6 +411,14 @@ struct SizePredicate {
   unsigned long long unit = 512;
 };
 
+// Time predicates (-amin/-atime/-cmin/-ctime/-mmin/-mtime/-used) use a
+// floating-point value, unlike the integer numerics above: GNU accepts
+// fractions (0.5, .5, 1., 1e3) for every *min/*time numeric.
+struct TimePredicate {
+  NumericComparison comparison = NumericComparison::Exact;
+  double value = 0;
+};
+
 enum class PermissionComparison { Exact, All, Any };
 
 struct PermissionPredicate {
@@ -496,6 +504,7 @@ struct ExprNode {
   std::optional<portable_regex::Pattern> regex;
   std::optional<SizePredicate> size;
   std::optional<NumericPredicate> numeric;
+  std::optional<TimePredicate> time_pred;
   std::optional<PermissionPredicate> permission;
   std::optional<std::filesystem::file_time_type> reference_time;
   std::optional<long long> reference_ticks;
@@ -525,13 +534,13 @@ struct Config {
   std::string type_filter;
   std::optional<SizePredicate> size_filter;
   bool empty_filter = false;
-  std::optional<NumericPredicate> atime_filter;
-  std::optional<NumericPredicate> amin_filter;
-  std::optional<NumericPredicate> ctime_filter;
-  std::optional<NumericPredicate> cmin_filter;
-  std::optional<NumericPredicate> mtime_filter;
-  std::optional<NumericPredicate> mmin_filter;
-  std::optional<NumericPredicate> used_filter;
+  std::optional<TimePredicate> atime_filter;
+  std::optional<TimePredicate> amin_filter;
+  std::optional<TimePredicate> ctime_filter;
+  std::optional<TimePredicate> cmin_filter;
+  std::optional<TimePredicate> mtime_filter;
+  std::optional<TimePredicate> mmin_filter;
+  std::optional<TimePredicate> used_filter;
   int mindepth = 0;
   int maxdepth = std::numeric_limits<int>::max();
   bool has_print = false;
@@ -593,6 +602,42 @@ auto parse_numeric_predicate(std::string_view text)
   auto end = text.data() + text.size();
   auto [ptr, ec] = std::from_chars(begin, end, value);
   if (ec != std::errc() || ptr != end) {
+    return std::unexpected("invalid numeric argument");
+  }
+  if (value < 0) return std::unexpected("invalid numeric argument");
+
+  result.value = value;
+  return result;
+}
+
+// Time predicates accept fractions: GNU parses *min/*time numerics with
+// strtod semantics, so 0.5, .5, 1. and 1e3 are all valid. std::from_chars in
+// general format covers those spellings; full consumption rejects a bare
+// trailing exponent (1e), hex, and inf/nan (checked via isfinite).
+auto parse_time_predicate(std::string_view text)
+    -> cp::Result<TimePredicate> {
+  if (text.empty()) return std::unexpected("missing numeric argument");
+
+  TimePredicate result;
+  size_t pos = 0;
+  if (text[pos] == '+') {
+    result.comparison = NumericComparison::GreaterThan;
+    ++pos;
+  } else if (text[pos] == '-') {
+    result.comparison = NumericComparison::LessThan;
+    ++pos;
+  }
+
+  if (pos >= text.size()) return std::unexpected("invalid numeric argument");
+  if (text[pos] == '+' || text[pos] == '-') {
+    return std::unexpected("invalid numeric argument");
+  }
+
+  double value = 0;
+  auto begin = text.data() + pos;
+  auto end = text.data() + text.size();
+  auto [ptr, ec] = std::from_chars(begin, end, value);
+  if (ec != std::errc() || ptr != end || !std::isfinite(value)) {
     return std::unexpected("invalid numeric argument");
   }
   if (value < 0) return std::unexpected("invalid numeric argument");
@@ -831,6 +876,189 @@ auto local_system_time_to_filetime_ticks(const SYSTEMTIME& local_time)
   return filetime_ticks(file_time);
 }
 
+// [#1311] Local calendar shift for -newermt month/year offsets:
+// Jan 31 - 1 month -> Dec 31, Mar 31 - 1 month -> Feb 28/29 (day clamp).
+auto shift_local_calendar(long long now_ticks, std::string_view unit,
+                          long long delta) -> std::optional<long long> {
+  FILETIME filetime{.dwLowDateTime =
+                        static_cast<DWORD>(now_ticks & 0xFFFFFFFFLL),
+                    .dwHighDateTime = static_cast<DWORD>(now_ticks >> 32)};
+  SYSTEMTIME utc{};
+  if (FileTimeToSystemTime(&filetime, &utc) == 0) return std::nullopt;
+  SYSTEMTIME local{};
+  if (SystemTimeToTzSpecificLocalTime(nullptr, &utc, &local) == 0) {
+    return std::nullopt;
+  }
+  auto days_in_month = [](int year, int month) {
+    static constexpr int kDays[] = {31, 28, 31, 30, 31, 30,
+                                    31, 31, 30, 31, 30, 31};
+    if (month != 2) return kDays[month - 1];
+    bool leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    return leap ? 29 : 28;
+  };
+  int year = local.wYear;
+  int month = local.wMonth;
+  if (unit == "month") {
+    long long total =
+        static_cast<long long>(year) * 12 + (month - 1) + delta;
+    long long new_year = total >= 0 ? total / 12 : -((-total + 11) / 12);
+    int new_month = static_cast<int>(total - new_year * 12) + 1;
+    year = static_cast<int>(new_year);
+    month = new_month;
+  } else {
+    year = static_cast<int>(static_cast<long long>(year) + delta);
+  }
+  int day = std::min<int>(local.wDay, days_in_month(year, month));
+  SYSTEMTIME shifted{.wYear = static_cast<WORD>(year),
+                     .wMonth = static_cast<WORD>(month),
+                     .wDay = static_cast<WORD>(day),
+                     .wHour = local.wHour,
+                     .wMinute = local.wMinute,
+                     .wSecond = local.wSecond,
+                     .wMilliseconds = local.wMilliseconds};
+  return local_system_time_to_filetime_ticks(shifted);
+}
+
+// [#1311] Subset of GNU get_date for -newermt: now/today/tomorrow/
+// yesterday, "last"/"next" <unit>, "<n>|a <unit>[s] ago", and month-name
+// dates ("Jan 1 2025", "1 Jan 2025"). Day words are offsets from now,
+// not midnights. Not covered (GNU accepts, out of scope here): compound
+// expressions ("2 days 3 hours ago"), fractional magnitudes, 2-digit
+// years, and weekday names.
+auto parse_relative_time_ticks(std::string_view text)
+    -> std::optional<long long> {
+  std::string lowered;
+  for (char c : text) {
+    lowered +=
+        static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+  std::vector<std::string_view> words;
+  size_t pos = 0;
+  while (pos < lowered.size()) {
+    while (pos < lowered.size() &&
+           std::isspace(static_cast<unsigned char>(lowered[pos])) != 0) {
+      ++pos;
+    }
+    size_t start = pos;
+    while (pos < lowered.size() &&
+           std::isspace(static_cast<unsigned char>(lowered[pos])) == 0) {
+      ++pos;
+    }
+    if (pos > start) words.emplace_back(lowered.data() + start, pos - start);
+  }
+  if (words.empty()) return std::nullopt;
+
+  auto unit_seconds = [](std::string_view unit) -> std::optional<long long> {
+    if (unit == "second" || unit == "sec") return 1LL;
+    if (unit == "minute" || unit == "min") return 60LL;
+    if (unit == "hour") return 3600LL;
+    if (unit == "day") return 86400LL;
+    if (unit == "week") return 604800LL;
+    if (unit == "fortnight") return 1209600LL;
+    return std::nullopt;
+  };
+  auto strip_plural = [](std::string_view unit) {
+    if (!unit.empty() && unit.back() == 's') unit.remove_suffix(1);
+    return unit;
+  };
+
+  FILETIME now_filetime{};
+  GetSystemTimeAsFileTime(&now_filetime);
+  long long now_ticks = filetime_ticks(now_filetime);
+  constexpr long long kTicksPerSecond = 10000000LL;
+
+  if (words.size() == 1) {
+    if (words[0] == "now" || words[0] == "today") return now_ticks;
+    if (words[0] == "tomorrow") {
+      return now_ticks + 86400LL * kTicksPerSecond;
+    }
+    if (words[0] == "yesterday") {
+      return now_ticks - 86400LL * kTicksPerSecond;
+    }
+    return std::nullopt;
+  }
+
+  if (words.size() == 2 && (words[0] == "last" || words[0] == "next")) {
+    std::string_view unit = strip_plural(words[1]);
+    long long sign = words[0] == "last" ? -1 : 1;
+    if (unit == "month" || unit == "year") {
+      return shift_local_calendar(now_ticks, unit, sign);
+    }
+    auto seconds = unit_seconds(unit);
+    if (!seconds) return std::nullopt;
+    return now_ticks + sign * *seconds * kTicksPerSecond;
+  }
+
+  if (words.size() == 3 && words[2] == "ago") {
+    long long magnitude = 0;
+    if (words[0] == "a") {
+      magnitude = 1;
+    } else {
+      auto [ptr, ec] = std::from_chars(words[0].data(),
+                                       words[0].data() + words[0].size(),
+                                       magnitude);
+      if (ec != std::errc() || ptr != words[0].data() + words[0].size() ||
+          magnitude < 0) {
+        return std::nullopt;
+      }
+    }
+    std::string_view unit = strip_plural(words[1]);
+    if (unit == "month" || unit == "year") {
+      return shift_local_calendar(now_ticks, unit, -magnitude);
+    }
+    auto seconds = unit_seconds(unit);
+    if (!seconds) return std::nullopt;
+    return now_ticks - magnitude * *seconds * kTicksPerSecond;
+  }
+
+  if (words.size() == 3) {
+    static constexpr std::array<std::string_view, 12> kMonths = {
+        "january", "february", "march",     "april",   "may",      "june",
+        "july",    "august",   "september", "october", "november", "december"};
+    int month = 0;
+    size_t month_idx = words.size();
+    for (size_t i = 0; i < words.size(); ++i) {
+      for (size_t m = 0; m < kMonths.size(); ++m) {
+        if (words[i] == kMonths[m] || words[i] == kMonths[m].substr(0, 3)) {
+          month = static_cast<int>(m) + 1;
+          month_idx = i;
+        }
+      }
+    }
+    if (month == 0) return std::nullopt;
+    auto parse_number = [](std::string_view word) -> std::optional<long long> {
+      long long value = 0;
+      auto [ptr, ec] =
+          std::from_chars(word.data(), word.data() + word.size(), value);
+      if (ec != std::errc() || ptr != word.data() + word.size()) {
+        return std::nullopt;
+      }
+      return value;
+    };
+    long long day = 0;
+    long long year = 0;
+    for (size_t i = 0; i < words.size(); ++i) {
+      if (i == month_idx) continue;
+      auto number = parse_number(words[i]);
+      if (!number) return std::nullopt;
+      if (*number >= 1000) {
+        year = *number;
+      } else if (*number >= 1 && *number <= 31 && day == 0) {
+        day = *number;
+      } else {
+        return std::nullopt;
+      }
+    }
+    if (day == 0 || year == 0) return std::nullopt;
+    SYSTEMTIME st{.wYear = static_cast<WORD>(year),
+                  .wMonth = static_cast<WORD>(month),
+                  .wDay = static_cast<WORD>(day)};
+    return local_system_time_to_filetime_ticks(st);
+  }
+
+  return std::nullopt;
+}
+
 auto parse_literal_time_ticks(std::string_view text)
     -> std::optional<long long> {
   auto trim = [](std::string_view value) {
@@ -847,6 +1075,16 @@ auto parse_literal_time_ticks(std::string_view text)
 
   text = trim(text);
   if (text.empty()) return std::nullopt;
+
+  // [#1311] GNU -newermt parses via get_date: relative expressions,
+  // @epoch, and month-name dates are all valid. This is the subset the
+  // issue needs; day words are offsets from now (today == now, tomorrow
+  // == now + 1 day, yesterday == now - 1 day), 'a' counts as 1, 'an' is
+  // rejected by GNU and is rejected here too, and 'midnight'/'noon' are
+  // rejected by GNU's -newermt and are not added. Month/year offsets use
+  // local calendar arithmetic with day clamping (Jan 31 - 1 month ->
+  // Dec 31; Mar 31 - 1 month -> Feb 28/29).
+  if (auto relative = parse_relative_time_ticks(text)) return *relative;
 
   if (text.front() == '@') {
     long long seconds = 0;
@@ -1689,7 +1927,7 @@ class ExpressionParser {
         option == "-used") {
       auto value = require_value(option);
       if (!value) return std::unexpected(value.error());
-      auto parsed = parse_numeric_predicate(*value);
+      auto parsed = parse_time_predicate(*value);
       if (!parsed) return std::unexpected(parsed.error());
       ExprKind kind = ExprKind::MMin;
       if (option == "-used") kind = ExprKind::Used;
@@ -1699,7 +1937,7 @@ class ExpressionParser {
       if (option == "-ctime") kind = ExprKind::CTime;
       if (option == "-mtime") kind = ExprKind::MTime;
       auto node = make_expr(kind);
-      node->numeric = *parsed;
+      node->time_pred = *parsed;
       return node;
     }
 
@@ -2058,49 +2296,49 @@ auto build_config(const CommandContext<FIND_OPTIONS.size()>& ctx)
 
   auto atime_text = ctx.get<std::string>("-atime", "");
   if (!atime_text.empty()) {
-    auto parsed = parse_numeric_predicate(atime_text);
+    auto parsed = parse_time_predicate(atime_text);
     if (!parsed) return std::unexpected(parsed.error());
     cfg.atime_filter = *parsed;
   }
 
   auto amin_text = ctx.get<std::string>("-amin", "");
   if (!amin_text.empty()) {
-    auto parsed = parse_numeric_predicate(amin_text);
+    auto parsed = parse_time_predicate(amin_text);
     if (!parsed) return std::unexpected(parsed.error());
     cfg.amin_filter = *parsed;
   }
 
   auto ctime_text = ctx.get<std::string>("-ctime", "");
   if (!ctime_text.empty()) {
-    auto parsed = parse_numeric_predicate(ctime_text);
+    auto parsed = parse_time_predicate(ctime_text);
     if (!parsed) return std::unexpected(parsed.error());
     cfg.ctime_filter = *parsed;
   }
 
   auto cmin_text = ctx.get<std::string>("-cmin", "");
   if (!cmin_text.empty()) {
-    auto parsed = parse_numeric_predicate(cmin_text);
+    auto parsed = parse_time_predicate(cmin_text);
     if (!parsed) return std::unexpected(parsed.error());
     cfg.cmin_filter = *parsed;
   }
 
   auto mtime_text = ctx.get<std::string>("-mtime", "");
   if (!mtime_text.empty()) {
-    auto parsed = parse_numeric_predicate(mtime_text);
+    auto parsed = parse_time_predicate(mtime_text);
     if (!parsed) return std::unexpected(parsed.error());
     cfg.mtime_filter = *parsed;
   }
 
   auto used_text = ctx.get<std::string>("-used", "");
   if (!used_text.empty()) {
-    auto parsed = parse_numeric_predicate(used_text);
+    auto parsed = parse_time_predicate(used_text);
     if (!parsed) return std::unexpected(parsed.error());
     cfg.used_filter = *parsed;
   }
 
   auto mmin_text = ctx.get<std::string>("-mmin", "");
   if (!mmin_text.empty()) {
-    auto parsed = parse_numeric_predicate(mmin_text);
+    auto parsed = parse_time_predicate(mmin_text);
     if (!parsed) return std::unexpected(parsed.error());
     cfg.mmin_filter = *parsed;
   }
@@ -2334,42 +2572,84 @@ auto age_reference_now_ticks(bool daystart) -> long long {
   return ticks ? *ticks : filetime_ticks(now_filetime);
 }
 
-auto file_age_units(const std::filesystem::path& p, FindFileTimeKind kind,
-                    std::chrono::seconds unit, bool daystart)
+// [#1311] GNU time predicates use two window families over the age in
+// whole seconds, with NO clamping of future timestamps (a negative age
+// simply falls wherever the window puts it):
+//   MIN family (amin/cmin/mmin; -used on the atime-ctime gap in days):
+//     exact v: (v-1)*u <= age < v*u;  +v: age > v*u;  -v: age < v*u.
+//   DAY family (atime/ctime/mtime):
+//     exact v: v*u <= age < (v+1)*u;  +v: age >= (v+1)*u;  -v: age < v*u.
+// The old floor/trunc model (age clamped at 0, then divided) is wrong for
+// both families, not just for future files: e.g. a 61-second-old file
+// matches neither -mmin 1 nor -mmin 2 under the old model, but GNU
+// matches it with -mmin 2 only.
+auto file_age_seconds(const std::filesystem::path& p, FindFileTimeKind kind)
     -> std::optional<long long> {
   auto ticks = win32_file_time_ticks(p, kind);
   if (!ticks) return std::nullopt;
-
-  long long now_ticks = age_reference_now_ticks(daystart);
-  long long elapsed_ticks = now_ticks - *ticks;
-  if (elapsed_ticks < 0) elapsed_ticks = 0;
-
-  auto elapsed_seconds = std::chrono::seconds(elapsed_ticks / 10000000LL);
-  return elapsed_seconds.count() / unit.count();
+  long long now_ticks = age_reference_now_ticks(false);
+  return (now_ticks - *ticks) / 10000000LL;
 }
 
-/// Compute (access_time - change_time) in the given unit for `-used`.
-/// GNU find's `-used n` tests whether the file was last accessed n*24 hours
-/// after its status was last changed.  On Windows, NTFS provides both
-/// LastAccessTime and ChangeTime via FILE_BASIC_INFO.
-auto file_used_age_units(const std::filesystem::path& p,
-                         std::chrono::seconds unit)
+// [#1311] -daystart for the DAY family: calendar-day difference between
+// the file's local day and today, DST-safe via llround (a 23/25-hour day
+// still counts as one day). Returns day_count * 86400 so callers keep
+// working in seconds.
+auto file_age_daystart_seconds(const std::filesystem::path& p,
+                               FindFileTimeKind kind)
+    -> std::optional<long long> {
+  auto ticks = win32_file_time_ticks(p, kind);
+  if (!ticks) return std::nullopt;
+  FILETIME filetime{.dwLowDateTime = static_cast<DWORD>(*ticks & 0xFFFFFFFFLL),
+                    .dwHighDateTime =
+                        static_cast<DWORD>(*ticks >> 32)};
+  SYSTEMTIME utc{};
+  if (FileTimeToSystemTime(&filetime, &utc) == 0) return std::nullopt;
+  SYSTEMTIME local{};
+  if (SystemTimeToTzSpecificLocalTime(nullptr, &utc, &local) == 0) {
+    return std::nullopt;
+  }
+  SYSTEMTIME day_start_local{.wYear = local.wYear,
+                             .wMonth = local.wMonth,
+                             .wDay = local.wDay};
+  auto day_start_ticks = local_system_time_to_filetime_ticks(day_start_local);
+  if (!day_start_ticks) return std::nullopt;
+  long long now_day_ticks = age_reference_now_ticks(true);
+  double days = std::llround(static_cast<double>(now_day_ticks -
+                                                 *day_start_ticks) /
+                             864000000000.0);
+  return static_cast<long long>(days * 86400.0);
+}
+
+// [#1311] -used gap in raw ticks (access_time - change_time), unclamped.
+// The negativity test must use ticks, not seconds: a freshly created
+// file can carry atime a few hundred microseconds BEFORE ctime, and GNU
+// (timespec-precise) treats any negative gap as never-matching, while
+// truncating to seconds would falsely report gap 0 and match -used 1.
+auto used_gap_ticks(const std::filesystem::path& p)
     -> std::optional<long long> {
   auto access_ticks = win32_file_time_ticks(p, FindFileTimeKind::Access);
   auto change_ticks = win32_file_time_ticks(p, FindFileTimeKind::Change);
   if (!access_ticks || !change_ticks) return std::nullopt;
-
-  long long diff_ticks = *access_ticks - *change_ticks;
-  if (diff_ticks < 0) diff_ticks = 0;
-
-  auto diff_seconds = std::chrono::seconds(diff_ticks / 10000000LL);
-  return diff_seconds.count() / unit.count();
+  return *access_ticks - *change_ticks;
 }
 
-auto modification_age_units(const std::filesystem::directory_entry& e,
-                            std::chrono::seconds unit, bool daystart)
-    -> std::optional<long long> {
-  return file_age_units(e.path(), FindFileTimeKind::Modify, unit, daystart);
+auto time_matches(const TimePredicate& pred, long long age_seconds,
+                  std::chrono::seconds unit, bool day_family) -> bool {
+  double age = static_cast<double>(age_seconds);
+  double u = static_cast<double>(unit.count());
+  double v = pred.value;
+  switch (pred.comparison) {
+    case NumericComparison::Exact:
+      if (day_family) return age >= v * u && age < (v + 1) * u;
+      return age >= (v - 1) * u && age < v * u;
+    case NumericComparison::GreaterThan:
+      if (day_family) return age >= (v + 1) * u;
+      return age > v * u;
+    case NumericComparison::LessThan:
+      return age < v * u;
+  }
+  return false;
 }
 
 auto print_path(std::string_view path, bool null_terminated) -> void;
@@ -2536,51 +2816,62 @@ auto evaluate_expression(const ExprNode& expr, const std::filesystem::path& p,
       return expr.size && size_matches(e, *expr.size, cfg.follow_symlinks);
 
     case ExprKind::ATime: {
-      if (!expr.numeric) return false;
-      auto age = file_age_units(p, FindFileTimeKind::Access,
-                                std::chrono::hours(24), cfg.daystart);
-      return age && numeric_matches(*expr.numeric, *age);
+      if (!expr.time_pred) return false;
+      auto age = cfg.daystart
+                     ? file_age_daystart_seconds(p, FindFileTimeKind::Access)
+                     : file_age_seconds(p, FindFileTimeKind::Access);
+      return age &&
+             time_matches(*expr.time_pred, *age, std::chrono::hours(24), true);
     }
 
     case ExprKind::AMin: {
-      if (!expr.numeric) return false;
-      auto age = file_age_units(p, FindFileTimeKind::Access,
-                                std::chrono::minutes(1), cfg.daystart);
-      return age && numeric_matches(*expr.numeric, *age);
+      if (!expr.time_pred) return false;
+      auto age = file_age_seconds(p, FindFileTimeKind::Access);
+      return age &&
+             time_matches(*expr.time_pred, *age, std::chrono::minutes(1),
+                          false);
     }
 
     case ExprKind::CTime: {
-      if (!expr.numeric) return false;
-      auto age = file_age_units(p, FindFileTimeKind::Change,
-                                std::chrono::hours(24), cfg.daystart);
-      return age && numeric_matches(*expr.numeric, *age);
+      if (!expr.time_pred) return false;
+      auto age = cfg.daystart
+                     ? file_age_daystart_seconds(p, FindFileTimeKind::Change)
+                     : file_age_seconds(p, FindFileTimeKind::Change);
+      return age &&
+             time_matches(*expr.time_pred, *age, std::chrono::hours(24), true);
     }
 
     case ExprKind::CMin: {
-      if (!expr.numeric) return false;
-      auto age = file_age_units(p, FindFileTimeKind::Change,
-                                std::chrono::minutes(1), cfg.daystart);
-      return age && numeric_matches(*expr.numeric, *age);
+      if (!expr.time_pred) return false;
+      auto age = file_age_seconds(p, FindFileTimeKind::Change);
+      return age &&
+             time_matches(*expr.time_pred, *age, std::chrono::minutes(1),
+                          false);
     }
 
     case ExprKind::MTime: {
-      if (!expr.numeric) return false;
-      auto age =
-          modification_age_units(e, std::chrono::hours(24), cfg.daystart);
-      return age && numeric_matches(*expr.numeric, *age);
+      if (!expr.time_pred) return false;
+      auto age = cfg.daystart
+                     ? file_age_daystart_seconds(p, FindFileTimeKind::Modify)
+                     : file_age_seconds(p, FindFileTimeKind::Modify);
+      return age &&
+             time_matches(*expr.time_pred, *age, std::chrono::hours(24), true);
     }
 
     case ExprKind::MMin: {
-      if (!expr.numeric) return false;
-      auto age =
-          modification_age_units(e, std::chrono::minutes(1), cfg.daystart);
-      return age && numeric_matches(*expr.numeric, *age);
+      if (!expr.time_pred) return false;
+      auto age = file_age_seconds(p, FindFileTimeKind::Modify);
+      return age &&
+             time_matches(*expr.time_pred, *age, std::chrono::minutes(1),
+                          false);
     }
 
     case ExprKind::Used: {
-      if (!expr.numeric) return false;
-      auto age = file_used_age_units(p, std::chrono::hours(24));
-      return age && numeric_matches(*expr.numeric, *age);
+      if (!expr.time_pred) return false;
+      auto gap_ticks = used_gap_ticks(p);
+      return gap_ticks && *gap_ticks >= 0 &&
+             time_matches(*expr.time_pred, *gap_ticks / 10000000LL,
+                          std::chrono::hours(24), false);
     }
 
     case ExprKind::Newer: {
@@ -2760,42 +3051,69 @@ auto entry_matches(Config& cfg, const std::filesystem::path& p,
   }
 
   if (cfg.atime_filter) {
-    auto age = file_age_units(p, FindFileTimeKind::Access,
-                              std::chrono::hours(24), cfg.daystart);
-    if (!age || !numeric_matches(*cfg.atime_filter, *age)) return false;
+    auto age = cfg.daystart
+                   ? file_age_daystart_seconds(p, FindFileTimeKind::Access)
+                   : file_age_seconds(p, FindFileTimeKind::Access);
+    if (!age ||
+        !time_matches(*cfg.atime_filter, *age, std::chrono::hours(24), true)) {
+      return false;
+    }
   }
 
   if (cfg.amin_filter) {
-    auto age = file_age_units(p, FindFileTimeKind::Access,
-                              std::chrono::minutes(1), cfg.daystart);
-    if (!age || !numeric_matches(*cfg.amin_filter, *age)) return false;
+    auto age = file_age_seconds(p, FindFileTimeKind::Access);
+    if (!age ||
+        !time_matches(*cfg.amin_filter, *age, std::chrono::minutes(1),
+                      false)) {
+      return false;
+    }
   }
 
   if (cfg.ctime_filter) {
-    auto age = file_age_units(p, FindFileTimeKind::Change,
-                              std::chrono::hours(24), cfg.daystart);
-    if (!age || !numeric_matches(*cfg.ctime_filter, *age)) return false;
+    auto age = cfg.daystart
+                   ? file_age_daystart_seconds(p, FindFileTimeKind::Change)
+                   : file_age_seconds(p, FindFileTimeKind::Change);
+    if (!age ||
+        !time_matches(*cfg.ctime_filter, *age, std::chrono::hours(24), true)) {
+      return false;
+    }
   }
 
   if (cfg.cmin_filter) {
-    auto age = file_age_units(p, FindFileTimeKind::Change,
-                              std::chrono::minutes(1), cfg.daystart);
-    if (!age || !numeric_matches(*cfg.cmin_filter, *age)) return false;
+    auto age = file_age_seconds(p, FindFileTimeKind::Change);
+    if (!age ||
+        !time_matches(*cfg.cmin_filter, *age, std::chrono::minutes(1),
+                      false)) {
+      return false;
+    }
   }
 
   if (cfg.mtime_filter) {
-    auto age = modification_age_units(e, std::chrono::hours(24), cfg.daystart);
-    if (!age || !numeric_matches(*cfg.mtime_filter, *age)) return false;
+    auto age = cfg.daystart
+                   ? file_age_daystart_seconds(p, FindFileTimeKind::Modify)
+                   : file_age_seconds(p, FindFileTimeKind::Modify);
+    if (!age ||
+        !time_matches(*cfg.mtime_filter, *age, std::chrono::hours(24), true)) {
+      return false;
+    }
   }
 
   if (cfg.mmin_filter) {
-    auto age = modification_age_units(e, std::chrono::minutes(1), cfg.daystart);
-    if (!age || !numeric_matches(*cfg.mmin_filter, *age)) return false;
+    auto age = file_age_seconds(p, FindFileTimeKind::Modify);
+    if (!age ||
+        !time_matches(*cfg.mmin_filter, *age, std::chrono::minutes(1),
+                      false)) {
+      return false;
+    }
   }
 
   if (cfg.used_filter) {
-    auto age = file_used_age_units(p, std::chrono::hours(24));
-    if (!age || !numeric_matches(*cfg.used_filter, *age)) return false;
+    auto gap_ticks = used_gap_ticks(p);
+    if (!gap_ticks || *gap_ticks < 0 ||
+        !time_matches(*cfg.used_filter, *gap_ticks / 10000000LL,
+                      std::chrono::hours(24), false)) {
+      return false;
+    }
   }
 
   return true;
