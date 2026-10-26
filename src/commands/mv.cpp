@@ -150,54 +150,40 @@ auto parse_overwrite_mode(const CommandContext<N>& ctx)
     -> cp::Result<OverwriteMode> {
   OverwriteMode mode = OverwriteMode::default_mode;
 
-  for (size_t i = 0; i < ctx.raw_args.size(); ++i) {
-    std::string arg(ctx.raw_args[i]);
-    if (arg == "--") break;
-
-    if (arg == "--force") {
+  // [GNU] Judge the overwrite mode from the parser's option occurrences,
+  // not from a raw argv rescan: the parser has already expanded bundled
+  // short flags into separate occurrences and consumed option values
+  // (attached or separate), so a value that merely contains the letters
+  // f/i/I/n — e.g. `mv -t ndir s` or `mv --suffix n …` — can no longer
+  // rewrite the mode (#1325).  Last applicable option wins.
+  if (!ctx.metas) {
+    return mode;
+  }
+  for (const auto& occurrence : ctx.options.occurrences()) {
+    if (occurrence.index >= ctx.metas->size()) {
+      continue;
+    }
+    const auto& meta = (*ctx.metas)[occurrence.index];
+    if (meta.short_name == "-f" || meta.long_name == "--force") {
       mode = OverwriteMode::force;
-      continue;
-    }
-    if (arg == "--no-clobber") {
-      mode = OverwriteMode::no_clobber;
-      continue;
-    }
-    if (arg == "--interactive") {
+    } else if (meta.short_name == "-i") {
       mode = OverwriteMode::interactive_always;
-      continue;
-    }
-    if (arg.rfind("--interactive=", 0) == 0) {
-      auto when = arg.substr(std::string("--interactive=").size());
-      if (when == "never") {
+    } else if (meta.short_name == "-I") {
+      mode = OverwriteMode::interactive_once;
+    } else if (meta.short_name == "-n" || meta.long_name == "--no-clobber") {
+      mode = OverwriteMode::no_clobber;
+    } else if (meta.long_name == "--interactive") {
+      auto value = std::get_if<std::string>(&occurrence.value);
+      const std::string when = value ? *value : std::string{};
+      if (when.empty() || when == "always") {
+        mode = OverwriteMode::interactive_always;
+      } else if (when == "never") {
         mode = OverwriteMode::force;
       } else if (when == "once") {
         mode = OverwriteMode::interactive_once;
-      } else if (when == "always") {
-        mode = OverwriteMode::interactive_always;
       } else {
         return std::unexpected("invalid argument '" + when +
                                "' for '--interactive'");
-      }
-      continue;
-    }
-
-    if (arg.size() < 2 || arg[0] != '-' || arg[1] == '-') continue;
-    for (size_t j = 1; j < arg.size(); ++j) {
-      switch (arg[j]) {
-        case 'f':
-          mode = OverwriteMode::force;
-          break;
-        case 'i':
-          mode = OverwriteMode::interactive_always;
-          break;
-        case 'I':
-          mode = OverwriteMode::interactive_once;
-          break;
-        case 'n':
-          mode = OverwriteMode::no_clobber;
-          break;
-        default:
-          break;
       }
     }
   }

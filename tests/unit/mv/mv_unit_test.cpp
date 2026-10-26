@@ -504,3 +504,44 @@ TEST(mv, mv_exchange_missing_operand_fails) {
   EXPECT_NE(r.stderr_text.find("No such file or directory"), std::string::npos);
   EXPECT_EQ(tmp.read("a.txt"), "AAA");
 }
+
+TEST(mv, mv_overwrite_1325_target_value_not_scanned) {
+  // Separate form: a plain silent overwrite (control case).
+  TempDir tmp;
+  std::filesystem::create_directory(tmp.path / "ndir");
+  tmp.write("s", "NEW");
+  tmp.write("ndir/s", "OLD");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("");  // any prompt would read EOF and decline
+  p.add(L"mv.exe", {L"-t", L"ndir", L"s"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(r.stderr_text.find("overwrite"), std::string::npos);
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "s"));
+  EXPECT_EQ(tmp.read("ndir/s"), "NEW");
+
+  // Bundled form: "-tndir" carries the value inside the option token.
+  // A raw argv rescan sees the letters 'n' and 'i' in the value and
+  // rewrites the overwrite mode; the parser-occurrence view must not
+  // (#1325).
+  TempDir tmp2;
+  std::filesystem::create_directory(tmp2.path / "ndir");
+  tmp2.write("s", "NEW");
+  tmp2.write("ndir/s", "OLD");
+
+  Pipeline p2;
+  p2.set_cwd(tmp2.wpath());
+  p2.set_stdin("");
+  p2.add(L"mv.exe", {L"-tndir", L"s"});
+
+  auto r2 = p2.run();
+
+  EXPECT_EQ(r2.exit_code, 0);
+  EXPECT_EQ(r2.stderr_text.find("overwrite"), std::string::npos);
+  EXPECT_FALSE(std::filesystem::exists(tmp2.path / "s"));
+  EXPECT_EQ(tmp2.read("ndir/s"), "NEW");
+}
