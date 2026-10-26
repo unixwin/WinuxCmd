@@ -27,10 +27,8 @@ auto constexpr SEQ_OPTIONS = std::array{
            STRING_TYPE),
     // [GNU]
     OPTION("-s", "--separator", "use STRING to separate numbers", STRING_TYPE),
-    // [GNU]
-    OPTION("-t", "--terminator",
-           "use STRING to terminate the output instead of newline",
-           STRING_TYPE),
+    // [GNU] seq has no -t/--terminator option; that pair was invented and
+    // is removed (#1355). Output always ends with a newline.
     // [GNU]
     OPTION("-w", "--equal-width",
            "equalize width by padding with leading zeroes", BOOL_TYPE),
@@ -301,25 +299,6 @@ auto build_config(const CommandContext<SEQ_OPTIONS.size()>& ctx)
 
       if (arg.starts_with("--separator=")) {
         cfg.separator = std::string(arg.substr(12));
-        continue;
-      }
-
-      if (arg == "-t" || arg == "--terminator") {
-        auto value = read_option_value(ctx.raw_args, i, "", false, arg);
-        if (!value) return std::unexpected(value.error());
-        cfg.terminator = *value;
-        continue;
-      }
-
-      if (arg.starts_with("-t") && arg.size() > 2) {
-        // Handle both -tVALUE and -t=VALUE forms.
-        cfg.terminator =
-            std::string(arg[2] == '=' ? arg.substr(3) : arg.substr(2));
-        continue;
-      }
-
-      if (arg.starts_with("--terminator=")) {
-        cfg.terminator = std::string(arg.substr(13));
         continue;
       }
 
