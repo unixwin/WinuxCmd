@@ -2102,10 +2102,14 @@ auto build_config(const CommandContext<FIND_OPTIONS.size()>& ctx)
     return std::unexpected(ok.error());
   }
 
+  // [#1309] -ls, -fls and -quit are actions too: their presence must
+  // suppress the default -print, just like -print/-printf/-exec do.
   bool has_print_action = ctx.get<bool>("-print", false) ||
                           ctx.get<bool>("-print0", false) ||
                           ctx.has("-fprint") || ctx.has("-fprint0") ||
-                          ctx.has("-printf") || ctx.has("-fprintf");
+                          ctx.has("-printf") || ctx.has("-fprintf") ||
+                          ctx.has("-ls") || ctx.has("-fls") ||
+                          ctx.has("-quit");
   if (!has_print_action && !cfg.delete_action && cfg.exec_actions.empty()) {
     cfg.has_print = true;  // default action
   }
@@ -2331,9 +2335,50 @@ auto file_size_bytes(const std::filesystem::directory_entry& e)
 auto permission_string(const std::filesystem::path& p,
                        const std::filesystem::directory_entry& e)
     -> std::string;
+auto allocated_block_count(const std::filesystem::path& p,
+                           const std::filesystem::directory_entry& e,
+                           unsigned long long unit) -> unsigned long long;
 auto format_printf(std::string_view fmt, const std::filesystem::path& p,
                    const std::filesystem::directory_entry& e, int depth,
                    const std::filesystem::path& root) -> std::string;
+// [#1309] GNU "ls -dils" date: "%b %e %H:%M" for files modified within
+// the last half Julian year (15778476 seconds) and not more than 3600
+// seconds in the future, else "%b %e %Y" (space-padded day in both).
+auto format_ls_date(const std::filesystem::path& p) -> std::string {
+  static constexpr std::array<const char*, 12> kMonths = {
+      "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+  auto ticks = win32_file_time_ticks(p, FindFileTimeKind::Modify);
+  if (!ticks) return "";
+  LARGE_INTEGER value;
+  value.QuadPart = *ticks;
+  FILETIME file_time{};
+  file_time.dwLowDateTime = value.LowPart;
+  file_time.dwHighDateTime = value.HighPart;
+  FILETIME local_file_time{};
+  SYSTEMTIME local_system_time{};
+  if (!FileTimeToLocalFileTime(&file_time, &local_file_time) ||
+      !FileTimeToSystemTime(&local_file_time, &local_system_time)) {
+    return "";
+  }
+  const long long age_seconds =
+      (age_reference_now_ticks(false) - *ticks) / 10000000;
+  std::ostringstream out;
+  const auto month = local_system_time.wMonth >= 1 &&
+                             local_system_time.wMonth <= 12
+                         ? kMonths[local_system_time.wMonth - 1]
+                         : "???";
+  out << month << ' ' << std::setw(2) << local_system_time.wDay << ' ';
+  if (age_seconds >= -3600 && age_seconds <= 15778476) {
+    out << std::setw(2) << std::setfill('0') << local_system_time.wHour
+        << ':' << std::setw(2) << std::setfill('0')
+        << local_system_time.wMinute;
+  } else {
+    out << local_system_time.wYear;
+  }
+  return out.str();
+}
+
 auto evaluate_expression(const ExprNode& expr, const std::filesystem::path& p,
                          const std::filesystem::directory_entry& e, int depth,
                          const std::filesystem::path& root, Config& cfg)
@@ -2553,12 +2598,20 @@ auto evaluate_expression(const ExprNode& expr, const std::filesystem::path& p,
 
     case ExprKind::Ls:
     case ExprKind::Fls: {
-      std::string text = permission_string(p, e) + " " +
+      // [#1309] GNU "ls -dils" shape: inode, 1K blocks, mode, links,
+      // owner, group, size, date, path. Fields are single-space
+      // separated (GNU pads inode/blocks columns; content and field
+      // count match, padding does not).
+      const auto ownership = win32_ownership_info(p);
+      const auto index = win32_file_index_value(p);
+      std::string text = std::to_string(index.value_or(0)) + " " +
+                         std::to_string(allocated_block_count(p, e, 1024)) +
+                         " " + permission_string(p, e) + " " +
                          std::to_string(win32_hard_link_count(p)) + " " +
-                         win32_ownership_info(p).owner_name + " " +
-                         win32_ownership_info(p).group_name + " " +
+                         ownership.owner_name + " " +
+                         ownership.group_name + " " +
                          std::to_string(file_size_bytes(e)) + " " +
-                         path_display(p) + "\n";
+                         format_ls_date(p) + " " + path_display(p) + "\n";
       if (expr.kind == ExprKind::Ls) {
         safePrint(text);
         return true;
