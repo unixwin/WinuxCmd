@@ -679,3 +679,42 @@ TEST(patch, patch_header_without_hunks_is_garbage_issue1346) {
   EXPECT_EQ(p2.run().exit_code, 2);
   EXPECT_EQ_TEXT(tmp.read("f.txt"), "l1\n");
 }
+
+namespace patch_dialect_detail {
+// "C:\Users\...\wct123" -> "/c/Users/.../wct123" (MSYS drive spelling:
+// the colon is dropped, only the letter stays) — same fold the shred
+// #1240 tests use.
+inline auto slash_drive_form(const std::filesystem::path &path)
+    -> std::wstring {
+  std::wstring text = path.wstring();
+  if (text.size() >= 2 && text[0] >= L'A' && text[0] <= L'Z') {
+    text[0] = static_cast<wchar_t>(text[0] - L'A' + L'a');
+  }
+  text.erase(1, 1);  // drop the ':' from "c:\..."
+  for (wchar_t &ch : text) {
+    if (ch == L'\\') ch = L'/';
+  }
+  return L"/" + text;
+}
+}  // namespace patch_dialect_detail
+
+// [GNU] rootaudit #1364: the patch file operand must be resolved
+// through the shared path boundary.  A bare "/"-leading spelling
+// handed raw to CreateFileW lands on the process current drive root
+// and the file is not found; through the boundary it names the file.
+TEST(patch, patch_input_operand_uses_shared_path_boundary_rootaudit1364) {
+  TempDir tmp;
+  tmp.write("f.txt", "hello\n");
+  tmp.write("changes.diff",
+            "--- f.txt\n+++ f.txt\n@@ -1,1 +1,1 @@\n-hello\n+world\n");
+  const std::wstring patch_operand =
+      patch_dialect_detail::slash_drive_form(tmp.path / L"changes.diff");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"patch.exe", {L"-i", patch_operand});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(tmp.read("f.txt"), "world\n");
+}

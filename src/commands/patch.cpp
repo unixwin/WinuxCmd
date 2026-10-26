@@ -216,8 +216,13 @@ std::string join_lines(const std::vector<TLine>& lines, bool crlf) {
 }
 
 bool read_file_raw(const std::string& filename, std::string& raw) {
-  std::wstring wfile = utf8_to_wstring(filename);
-  HANDLE hFile = CreateFileW(wfile.c_str(), GENERIC_READ,
+  // Route the operand through the shared path boundary (rootaudit
+  // #1364): a bare "/"-leading operand (an -i patch file, or a header
+  // name in a POSIX drive spelling) must resolve through the shell
+  // drive mapping / payload root, not land on the process current
+  // drive root as a raw CreateFileW path would.
+  const auto operand = native_path::make_api_path_operand(filename);
+  HANDLE hFile = CreateFileW(operand.extended.c_str(), GENERIC_READ,
                              FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
                              OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (hFile == INVALID_HANDLE_VALUE) return false;
