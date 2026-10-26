@@ -1627,3 +1627,111 @@ TEST(xargs, xargs_replacement_empty_quotes_yield_empty_item_1321) {
   EXPECT_EQ_TEXT(r.stdout_text, "\n");
 }
 
+TEST(xargs, xargs_replacement_strips_leading_blanks_keeps_trailing_1322) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"-I", L"{}"});
+  p.set_stdin("  lead trail \n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "lead trail \n");
+}
+
+TEST(xargs, xargs_verbose_quotes_special_args_1322) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"-t", L"cmd.exe", L"/C", L"echo"});
+  p.set_stdin("a;b\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.find("'a;b'") != std::string::npos);
+
+  Pipeline q;
+  q.set_cwd(tmp.wpath());
+  q.add(L"xargs.exe", {L"-t", L"cmd.exe", L"/C", L"echo"});
+  q.set_stdin("a'b'\n");
+
+  auto s = q.run();
+
+  EXPECT_EQ(s.exit_code, 0);
+  EXPECT_TRUE(s.stderr_text.find("\"a'b\"") != std::string::npos);
+}
+
+TEST(xargs, xargs_eof_warning_with_null_1322) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"-E", L"STOP", L"-0", L"cmd.exe", L"/C", L"echo"});
+  p.set_stdin(std::string("a\0", 2));
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.find("the -E option has no effect if -0 or -d "
+                                 "is used") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("a") != std::string::npos);
+}
+
+TEST(xargs, xargs_last_of_null_and_delimiter_wins_1322) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"-0", L"-d", L",", L"cmd.exe", L"/C", L"echo"});
+  p.set_stdin(std::string("a,b\0c", 5));
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("a b") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("a,b") == std::string::npos);
+
+  Pipeline q;
+  q.set_cwd(tmp.wpath());
+  q.add(L"xargs.exe", {L"-d", L",", L"-0", L"cmd.exe", L"/C", L"echo"});
+  q.set_stdin(std::string("a,b\0c", 5));
+
+  auto s = q.run();
+
+  EXPECT_EQ(s.exit_code, 0);
+  EXPECT_TRUE(s.stdout_text.find("a,b c") != std::string::npos);
+}
+
+TEST(xargs, xargs_show_limits_prints_six_lines_and_runs_1322) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"--show-limits", L"cmd.exe", L"/C", L"echo"});
+  p.set_stdin("hi\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.find("Your environment variables take up") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("POSIX upper limit on argument length") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("POSIX smallest allowable upper limit") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "Maximum length of command we could actually use") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "Size of command buffer we are actually using: 32767") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("Maximum parallelism") !=
+              std::string::npos);
+  // --show-limits suppresses nothing: the command still runs.
+  EXPECT_TRUE(r.stdout_text.find("hi") != std::string::npos);
+}
+

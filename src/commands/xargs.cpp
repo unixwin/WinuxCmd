@@ -331,6 +331,39 @@ auto normalize_batch_options(const CommandContext<XARGS_OPTIONS.size()> &ctx)
   return options;
 }
 
+struct DelimiterMode {
+  bool use_null = false;
+  bool has_delimiter = false;
+  std::string delimiter_arg;
+};
+
+// #1322: -0 and -d do not have a fixed priority; the last one on the
+// command line wins (GNU), and the winner also decides whether the
+// logical EOF string and the -E warning apply.
+auto resolve_delimiter_mode(const CommandContext<XARGS_OPTIONS.size()> &ctx)
+    -> DelimiterMode {
+  DelimiterMode mode;
+  if (!ctx.metas) return mode;
+
+  for (const auto &occurrence : ctx.options.occurrences()) {
+    if (occurrence.index >= XARGS_OPTIONS.size()) continue;
+    const auto &meta = (*ctx.metas)[occurrence.index];
+    if (option_matches(meta, "-0", "--null")) {
+      mode.use_null = true;
+      mode.has_delimiter = false;
+      mode.delimiter_arg.clear();
+    } else if (option_matches(meta, "-d", "--delimiter")) {
+      mode.use_null = false;
+      mode.has_delimiter = true;
+      if (const auto *value =
+              std::get_if<std::string>(&occurrence.value)) {
+        mode.delimiter_arg = *value;
+      }
+    }
+  }
+  return mode;
+}
+
 /**
  * @brief Parse arguments from stdin
  * @param delimiter Delimiter character (default: space/newline)
@@ -772,16 +805,47 @@ auto parse_line_groups(std::istream &input, int max_lines,
 }
 
 auto print_show_limits(int max_chars) -> void {
+  // #1322: GNU prints six lines to stderr and then runs the command
+  // normally; --show-limits suppresses nothing.  The Windows
+  // ARG_MAX equivalent is the 32767 command-line limit; env is the real
+  // environment block size in bytes, upper = 32767 - env - 2048, usable =
+  // upper - env (both clamped at zero), buffer is the effective -s value,
+  // smallest is 4096, and maximum parallelism is INT_MAX.
+  size_t env_bytes = 0;
+  LPWCH env = GetEnvironmentStringsW();
+  if (env) {
+    for (const wchar_t *p = env; *p != L'\0';) {
+      size_t len = std::wcslen(p);
+      env_bytes += (len + 1) * sizeof(wchar_t);
+      p += len + 1;
+    }
+    FreeEnvironmentStringsW(env);
+    env_bytes += sizeof(wchar_t);
+  }
+  long long upper =
+      static_cast<long long>(kWindowsCommandLineLimit) -
+      static_cast<long long>(env_bytes) - 2048;
+  if (upper < 0) upper = 0;
+  long long usable = upper - static_cast<long long>(env_bytes);
+  if (usable < 0) usable = 0;
   int buffer_size = max_chars > 0 ? max_chars : kWindowsCommandLineLimit;
+
+  safeErrorPrint("Your environment variables take up ");
+  safeErrorPrint(std::to_string(env_bytes));
+  safeErrorPrint(" bytes\n");
   safeErrorPrint("POSIX upper limit on argument length (this system): ");
-  safeErrorPrint(std::to_string(kWindowsCommandLineLimit));
+  safeErrorPrint(std::to_string(upper));
   safeErrorPrint("\n");
+  safeErrorPrint("POSIX smallest allowable upper limit on argument length (all "
+            "systems): 4096\n");
   safeErrorPrint("Maximum length of command we could actually use: ");
-  safeErrorPrint(std::to_string(kWindowsCommandLineLimit));
+  safeErrorPrint(std::to_string(usable));
   safeErrorPrint("\n");
   safeErrorPrint("Size of command buffer we are actually using: ");
   safeErrorPrint(std::to_string(buffer_size));
   safeErrorPrint("\n");
+  safeErrorPrint("Maximum parallelism (--max-procs must be no greater): "
+            "2147483647\n");
 }
 
 auto materialize_arguments(const std::vector<std::string> &base_args,
@@ -1395,11 +1459,7 @@ auto execute_command(const std::string &command,
       if (decision == Confirmation::No) return true;
     }
     if (verbose) {
-      safeErrorPrint(command);
-      for (const auto &arg : all_args) {
-        safeErrorPrint(" ");
-        safeErrorPrint(arg);
-      }
+      safeErrorPrint(quote_command_line(command, all_args));
       safeErrorPrint("\n");
     }
 
@@ -1509,7 +1569,7 @@ REGISTER_COMMAND(
     XARGS_OPTIONS) {
   using namespace xargs_pipeline;
 
-  bool use_null = ctx.get<bool>("-0", false) || ctx.get<bool>("--null", false);
+  auto delimiter_mode = resolve_delimiter_mode(ctx);
   bool verbose =
       ctx.get<bool>("-t", false) || ctx.get<bool>("--verbose", false);
   bool interactive =
@@ -1551,12 +1611,9 @@ REGISTER_COMMAND(
     cp::report_custom_error(L"xargs", L"max-lines must be positive");
     return 1;
   }
-  const bool has_long_delimiter = ctx.has("--delimiter");
-  const bool has_short_delimiter = ctx.has("-d");
-  std::string delimiter_arg = ctx.get<std::string>("--delimiter", "");
-  if (!has_long_delimiter && has_short_delimiter) {
-    delimiter_arg = ctx.get<std::string>("-d", "");
-  }
+  // Delimiter state comes from resolve_delimiter_mode (last of -0/-d
+  // wins); see that helper.
+  std::string delimiter_arg = delimiter_mode.delimiter_arg;
   std::string arg_file = ctx.get<std::string>("--arg-file", "");
   if (arg_file.empty()) arg_file = ctx.get<std::string>("-a", "");
   std::string eof_arg = ctx.get<std::string>("-E", "");
@@ -1568,6 +1625,12 @@ REGISTER_COMMAND(
   if (!eof_enabled && ctx.has("-e")) {
     eof_arg = ctx.get<std::string>("-e", "");
     eof_enabled = !eof_arg.empty();
+  }
+  // #1322: -E has no effect under -0/-d; GNU warns once and continues.
+  if (eof_enabled &&
+      (delimiter_mode.use_null || delimiter_mode.has_delimiter)) {
+    safeErrorPrint("xargs: warning: the -E option has no effect if -0 or "
+                   "-d is used.\n");
   }
   std::string process_slot_var = ctx.get<std::string>("--process-slot-var", "");
   bool open_tty =
@@ -1588,9 +1651,9 @@ REGISTER_COMMAND(
     exit_if_exceeded = true;
   }
 
-  char delimiter = use_null ? '\0' : ' ';
-  bool split_blanks = !use_null && replace_str.empty();
-  if (has_long_delimiter || has_short_delimiter) {
+  char delimiter = delimiter_mode.use_null ? '\0' : ' ';
+  bool split_blanks = !delimiter_mode.use_null && replace_str.empty();
+  if (delimiter_mode.has_delimiter) {
     auto parsed_delim = parse_delimiter(delimiter_arg);
     if (!parsed_delim) {
       cp::report_error(parsed_delim, L"xargs");
@@ -1598,7 +1661,7 @@ REGISTER_COMMAND(
     }
     delimiter = *parsed_delim;
     split_blanks = false;
-  } else if (!replace_str.empty() && !use_null) {
+  } else if (!replace_str.empty() && !delimiter_mode.use_null) {
     delimiter = '\n';
     split_blanks = false;
   }
@@ -1616,7 +1679,8 @@ REGISTER_COMMAND(
   }
 
   std::optional<std::string> logical_eof;
-  if (!use_null && !has_long_delimiter && !has_short_delimiter && eof_enabled) {
+  if (!delimiter_mode.use_null && !delimiter_mode.has_delimiter &&
+      eof_enabled) {
     logical_eof = eof_arg;
   }
 
@@ -1625,8 +1689,9 @@ REGISTER_COMMAND(
   std::istringstream parsed_input(raw_input_text);
 
   std::vector<std::vector<std::string>> input_groups;
-  bool use_line_groups = max_lines > 0 && !use_null && !has_long_delimiter &&
-                         !has_short_delimiter && replace_str.empty();
+  bool use_line_groups = max_lines > 0 && !delimiter_mode.use_null &&
+                         !delimiter_mode.has_delimiter &&
+                         replace_str.empty();
   if (use_line_groups) {
     auto parsed_groups =
         parse_line_groups(parsed_input, max_lines, logical_eof);
@@ -1635,8 +1700,8 @@ REGISTER_COMMAND(
       return 1;
     }
     input_groups = *parsed_groups;
-  } else if (!replace_str.empty() && !use_null && !has_long_delimiter &&
-             !has_short_delimiter) {
+  } else if (!replace_str.empty() && !delimiter_mode.use_null &&
+             !delimiter_mode.has_delimiter) {
     auto input_args_vec =
         parse_replacement_arguments(parsed_input, logical_eof);
     if (!input_args_vec) {
@@ -1666,6 +1731,8 @@ REGISTER_COMMAND(
   if (ctx.positionals.empty()) {
     std::vector<std::string> echo_base_args;
     max_chars = clamp_max_chars_floor(max_chars, "echo", echo_base_args);
+    // #1322: --show-limits prints the limits and execution continues
+    // normally (GNU runs the command afterwards); it suppresses nothing.
     if (show_limits) print_show_limits(max_chars);
 
     // Default to echo if no command specified
@@ -1706,11 +1773,7 @@ REGISTER_COMMAND(
         }
 
         if (verbose) {
-          safeErrorPrint("echo");
-          for (const auto &arg : echo_args) {
-            safeErrorPrint(" ");
-            safeErrorPrint(arg);
-          }
+          safeErrorPrint(quote_command_line("echo", echo_args));
           safeErrorPrint("\n");
         }
 
@@ -1777,6 +1840,10 @@ REGISTER_COMMAND(
     base_args.push_back(std::string(ctx.positionals[i]));
   }
 
+  // #1322: --show-limits prints the limits and execution continues
+  // normally (GNU runs the command afterwards); it suppresses nothing.
+  if (show_limits) print_show_limits(max_chars);
+
   // If no input arguments, check if we should skip execution
   if (input_empty) {
     // Skip if -r (no-run-if-empty) is specified
@@ -1804,7 +1871,6 @@ REGISTER_COMMAND(
   std::vector<std::string> base_args_vec =
       expand_command_template_args(base_args);
   max_chars = clamp_max_chars_floor(max_chars, command, base_args_vec);
-  if (show_limits) print_show_limits(max_chars);
   int exit_code = 0;
   for (const auto &input_args : input_groups) {
     int status =
