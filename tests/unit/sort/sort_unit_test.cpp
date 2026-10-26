@@ -1142,3 +1142,32 @@ TEST(sort, sort_temporary_directory_dialect_hint_cleans_spill_chunks) {
   }
   EXPECT_EQ(leftovers, 0u);
 }
+
+// #1371: sort -h dropped the sign when comparing suffix ranks, so
+// negative human sizes came out as -500M, -2G, -1G. GNU compares the
+// full signed scaled quantity: -2G < -1G < -500M.
+TEST(sort, sort_human_numeric_negative_sizes_issue1371) {
+  TempDir tmp;
+  tmp.write("sizes.txt", "-500M\n-1G\n-2G\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sort.exe", {L"-h", L"sizes.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "-2G\n-1G\n-500M\n");
+}
+
+TEST(sort, sort_human_numeric_mixed_signs_issue1371) {
+  TempDir tmp;
+  tmp.write("mixed.txt", "-1K\n0\n2K\n-3\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sort.exe", {L"-h", L"mixed.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "-1K\n-3\n0\n2K\n");
+}
