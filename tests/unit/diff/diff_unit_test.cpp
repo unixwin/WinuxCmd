@@ -321,6 +321,7 @@ TEST(diff, diff_unknown_option_exits_2_issue1213) {
   EXPECT_TRUE(r.stdout_text.empty());
 }
 
+<<<<<<< HEAD
 // #1306: -c and -u in one cluster are two different output styles,
 // not a value: diff -cu reports conflicting styles.
 TEST(diff, diff_cluster_conflicting_styles_are_an_error) {
@@ -390,4 +391,93 @@ TEST(diff, diff_repeated_style_is_not_a_conflict) {
 
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_TRUE(r.stdout_text.find("***") != std::string::npos);
+=======
+// [#1344] Recursive directory comparison must pair same-name entries on
+// both sides (the merge predicate took an entry from side 2 only when it
+// was strictly less than side 1's entry, so equal names never paired and
+// were reported as "Only in" on both sides without comparing contents).
+TEST(diff, diff_recursive_same_name_identical_files_quiet_issue1344) {
+  TempDir tmp;
+  tmp.write("A/f.txt", "same\n");
+  tmp.write("B/f.txt", "same\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"diff.exe", {L"-r", L"A", L"B"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("Only in") == std::string::npos);
+  EXPECT_TRUE(r.stdout_text.empty());
+}
+
+TEST(diff, diff_recursive_same_name_different_files_diff_issue1344) {
+  TempDir tmp;
+  tmp.write("A/f.txt", "hello\n");
+  tmp.write("B/f.txt", "world\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"diff.exe", {L"-r", L"A", L"B"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.find("< hello") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("> world") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("Only in") == std::string::npos);
+}
+
+TEST(diff, diff_recursive_only_in_one_side_issue1344) {
+  TempDir tmp;
+  tmp.write("A/f.txt", "same\n");
+  tmp.write("B/f.txt", "same\n");
+  tmp.write("A/only.txt", "onlyA\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"diff.exe", {L"-r", L"A", L"B"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.find("Only in A: only.txt") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("Only in B: only.txt") ==
+              std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("Only in A: f.txt") == std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("Only in B: f.txt") == std::string::npos);
+}
+
+TEST(diff, diff_recursive_nested_subdirectory_issue1344) {
+  TempDir tmp;
+  tmp.write("A/sub/s.txt", "subA\n");
+  tmp.write("B/sub/s.txt", "subB\n");
+  tmp.write("A/sub/deep.txt", "deep\n");
+  tmp.write("B/sub/deep.txt", "deep\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"diff.exe", {L"-r", L"A", L"B"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.find("< subA") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("> subB") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("Only in") == std::string::npos);
+}
+
+TEST(diff, diff_recursive_missing_directory_exits_2_issue1344) {
+  TempDir tmp;
+  tmp.write("A/f.txt", "same\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"diff.exe", {L"-r", L"A", L"NOPE"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 2);
+>>>>>>> 718c1c1 (fix(diff): pair same-name entries in recursive directory comparison (#1344))
 }
