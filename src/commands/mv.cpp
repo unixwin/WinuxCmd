@@ -169,8 +169,6 @@ auto parse_overwrite_mode(const CommandContext<N>& ctx)
       mode = OverwriteMode::force;
     } else if (meta.short_name == "-i") {
       mode = OverwriteMode::interactive_always;
-    } else if (meta.short_name == "-I") {
-      mode = OverwriteMode::interactive_once;
     } else if (meta.short_name == "-n" || meta.long_name == "--no-clobber") {
       mode = OverwriteMode::no_clobber;
     } else if (meta.long_name == "--interactive") {
@@ -186,27 +184,6 @@ auto parse_overwrite_mode(const CommandContext<N>& ctx)
         return std::unexpected("invalid argument '" + when +
                                "' for '--interactive'");
       }
-<<<<<<< HEAD
-      continue;
-    }
-
-    if (arg.size() < 2 || arg[0] != '-' || arg[1] == '-') continue;
-    for (size_t j = 1; j < arg.size(); ++j) {
-      switch (arg[j]) {
-        case 'f':
-          mode = OverwriteMode::force;
-          break;
-        case 'i':
-          mode = OverwriteMode::interactive_always;
-          break;
-        case 'n':
-          mode = OverwriteMode::no_clobber;
-          break;
-        default:
-          break;
-      }
-=======
->>>>>>> origin/main
     }
   }
 

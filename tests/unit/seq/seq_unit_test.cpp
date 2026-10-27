@@ -397,10 +397,9 @@ TEST(seq, seq_invented_terminator_rejected_issue1355) {
   p.add(L"seq.exe", {L"--terminator=X", L"2"});
   auto r = p.run();
   EXPECT_EXIT_CODE(r, 1);
-  // The shared parser names the bare option in this diagnostic; GNU
-  // getopt prints the full '--terminator=X' token (parser-layer nuance,
-  // registered in the winx4-opt cluster report for #1355).
-  EXPECT_TRUE(r.stderr_text.find("unrecognized option '--terminator'") !=
+  // GNU getopt names the full attached-value token in the diagnostic,
+  // and the shared parser does the same (#1391 parser alignment).
+  EXPECT_TRUE(r.stderr_text.find("unrecognized option '--terminator=X'") !=
               std::string::npos);
 }
 

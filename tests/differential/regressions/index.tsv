@@ -20,43 +20,40 @@
 20	#140-20	test must implement file time operators
 21	#140-21	id -g must report the effective group
 22	#140-22	 dirname and basename must handle root and trailing slash
-23a	#140-23	date must parse relative dates
-23b	#140-23-duplicate	cp link option must be implemented
-24	#140-24	chmod must accept short octal modes
-25	#140-25	sed -i must preserve attributes
-26	#140-26	paths over MAX_PATH must work
-27	#140-27	xxd reverse mode must work
-28	#140-28	mv must replace readonly destinations
-29	#140-29	join must support -j aliases
-30	#140-30	sdiff -o must not write stdout
-31	#140-31	leading dash operands must be accepted
-32	#140-32	printf dynamic width and precision must work
-33	#140-33	printf %q must work
-34	#140-34	test logical operators and grouping must work
-35	#140-35	ls must sort explicit operands
-36	#140-36	head positive count must match GNU
-37	#140-37	numfmt option variants must work
-38	#140-38	pr page length must work
-39	#140-39	unix2dos and d2u must preserve missing final newline
-40	#140-40	ptx output must match GNU
-41	#140-41	stdbuf modes must work
-42	#140-42	locale keyword output must work
-55	#1284	sed empty match after a non-empty match must not be substituted or counted
-<<<<<<< HEAD
-70	#1352	env -i child environment block must contain exactly the given assignments in order
-71	#1352	env printed listing must preserve assignment order, not alphabetical order
-72	#1353	env must pass option-like arguments after the command name to the command
-73	#1350	timeout with --signal=KILL must report 137 on timeout
-74	#1350	timeout on the TERM path must report 124 on timeout
-=======
-56	#1307	ls bare --color must colorize like always
-57	#1308	ln --backup control and backup line must match GNU
-58	#1334	stat --printf must expand \xHH escapes and honor -c over -t
-59	#1335	ls quoting-style locale and --sort prefixes must match GNU
-62	#1338	grep negative context length must be rejected
-63	#1339	sed address escapes must keep the backslash
-64	#1340	sort -V must use filevercmp ordering
-65	#1341	uniq -w -1 must be rejected
-66	#1342	tail -z headers must use newline separators
-67	#1343	echo -e must print \E literally
->>>>>>> origin/main
+23	#140-23	date must parse relative dates
+24	#140-23-duplicate	cp link option must be implemented
+25	#140-24	chmod must accept short octal modes
+26	#140-25	sed -i must preserve attributes
+27	#140-26	paths over MAX_PATH must work
+28	#140-27	xxd reverse mode must work
+29	#140-28	mv must replace readonly destinations
+30	#140-29	join must support -j aliases
+31	#140-30	sdiff -o must not write stdout
+32	#140-31	leading dash operands must be accepted
+33	#140-32	printf dynamic width and precision must work
+34	#140-33	printf %q must work
+35	#140-34	test logical operators and grouping must work
+36	#140-35	ls must sort explicit operands
+37	#140-36	head positive count must match GNU
+38	#140-37	numfmt option variants must work
+39	#140-38	pr page length must work
+40	#140-39	unix2dos and d2u must preserve missing final newline
+41	#140-40	ptx output must match GNU
+42	#140-41	stdbuf modes must work
+43	#140-42	locale keyword output must work
+44	#1284	sed empty match after a non-empty match must not be substituted or counted
+45	#1352	env -i child environment block must contain exactly the given assignments in order
+46	#1352	env printed listing must preserve assignment order, not alphabetical order
+47	#1353	env must pass option-like arguments after the command name to the command
+48	#1350	timeout with --signal=KILL must report 137 on timeout
+49	#1350	timeout on the TERM path must report 124 on timeout
+50	#1307	ls bare --color must colorize like always
+51	#1308	ln --backup control and backup line must match GNU
+52	#1334	stat --printf must expand \xHH escapes and honor -c over -t
+53	#1335	ls quoting-style locale and --sort prefixes must match GNU
+54	#1338	grep negative context length must be rejected
+55	#1339	sed address escapes must keep the backslash
+56	#1340	sort -V must use filevercmp ordering
+57	#1341	uniq -w -1 must be rejected
+58	#1342	tail -z headers must use newline separators
+59	#1343	echo -e must print \E literally

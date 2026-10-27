@@ -355,10 +355,9 @@ TEST(join, join_invented_output_long_rejected_issue1355) {
   p.add(L"join.exe", {L"--output=0", L"j1.txt", L"j2.txt"});
   auto r = p.run();
   EXPECT_EXIT_CODE(r, 1);
-  // The shared parser names the bare option in this diagnostic; GNU
-  // getopt prints the full '--output=0' token (parser-layer nuance,
-  // registered in the winx4-opt cluster report for #1355).
-  EXPECT_TRUE(r.stderr_text.find("unrecognized option '--output'") !=
+  // GNU getopt names the full attached-value token in the diagnostic,
+  // and the shared parser does the same (#1391 parser alignment).
+  EXPECT_TRUE(r.stderr_text.find("unrecognized option '--output=0'") !=
               std::string::npos);
 }
 

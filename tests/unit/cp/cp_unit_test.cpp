@@ -1067,7 +1067,6 @@ TEST(cp, cp_same_file_mixed_dialects_reports_error) {
   EXPECT_EQ(tmp.read("f.txt"), "payload");
 }
 
-<<<<<<< HEAD
 TEST(cp, cp_invented_dash_c_rejected_issue1355) {
   TempDir tmp;
   tmp.write("a.txt", "a\n");
@@ -1090,7 +1089,6 @@ TEST(cp, cp_context_forms_still_legal_issue1355) {
   EXPECT_EXIT_CODE(r, 0);
   EXPECT_TRUE(std::filesystem::exists(tmp.path / "b.txt"));
 }
-=======
 TEST(cp, cp_interactive_1324_second_prompt_reads_own_line) {
   TempDir tmp;
   std::filesystem::create_directory(tmp.path / "dest");
@@ -1176,4 +1174,3 @@ TEST(cp, cp_suffix_value_that_looks_like_abbreviation_is_not_expanded) {
   EXPECT_EQ(tmp.read("b.txt"), "payload");
 }
 
->>>>>>> origin/main
