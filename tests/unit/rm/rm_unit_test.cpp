@@ -572,3 +572,86 @@ TEST(rm, rm_interactive_once_and_force_last_option_wins) {
   EXPECT_TRUE(std::filesystem::exists(once_last.path / "file3.txt"));
   EXPECT_TRUE(std::filesystem::exists(once_last.path / "file4.txt"));
 }
+
+// ===== #1297 regression: on-disk directory named NUL =====
+
+TEST(rm, rm_recursive_removes_on_disk_nul_directory_issue1297) {
+  TempDir tmp;
+  std::filesystem::create_directory(tmp.path / "pa");
+
+  // A directory literally named NUL can only be created through the
+  // extended (\\?\) spelling; the plain spelling names the DOS device.
+  const std::filesystem::path ext_dir =
+      std::filesystem::path(L"\\\\?\\" + tmp.wpath() + L"\\pa\\NUL");
+  ASSERT_TRUE(std::filesystem::create_directory(ext_dir));
+  {
+    std::ofstream inside(ext_dir / "inside.txt");
+    inside << "payload";
+  }
+  ASSERT_TRUE(std::filesystem::exists(ext_dir / "inside.txt"));
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"rm.exe", {L"-rf", tmp.wpath() + L"\\pa\\NUL"});
+
+  auto r = p.run();
+
+  // The operand names the on-disk directory (only a bare NUL names the
+  // device), so rm -rf must really remove it: exit 0 AND the directory
+  // actually gone. The #1283 audit observed exit 0 with the directory
+  // left in place (false success).
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_FALSE(std::filesystem::exists(ext_dir));
+}
+
+TEST(rm, rm_force_bare_nul_operand_names_device_not_filesystem_issue1297) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"rm.exe", {L"-rf", L"NUL"});
+
+  auto r = p.run();
+
+  // Bare NUL is the null device, never a filesystem entry: rm -rf must
+  // not create or delete anything, and must not hang or crash.
+  EXPECT_TRUE(r.exit_code == 0 || r.exit_code == 1);
+  EXPECT_TRUE(std::filesystem::is_empty(tmp.path));
+}
+
+// ===== #1298 regression: rm -v output =====
+
+TEST(rm, rm_verbose_reports_removed_file_issue1298) {
+  TempDir tmp;
+  tmp.write("f.txt", "content");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"rm.exe", {L"-v", L"f.txt"});
+
+  auto r = p.run();
+
+  // [GNU] rm -v prints "removed '<name>'" for each removal. rm had no
+  // verbose coverage at all while mkdir/rmdir did; the #1283 audit
+  // observed -v being silently ignored by all three commands.
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "removed 'f.txt'\n");
+  EXPECT_TRUE(r.stderr_text.empty());
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "f.txt"));
+}
+
+TEST(rm, rm_long_verbose_reports_removed_file_issue1298) {
+  TempDir tmp;
+  tmp.write("f.txt", "content");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"rm.exe", {L"--verbose", L"f.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "removed 'f.txt'\n");
+  EXPECT_TRUE(r.stderr_text.empty());
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "f.txt"));
+}

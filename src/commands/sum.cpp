@@ -43,10 +43,22 @@ struct Config {
 
 auto choose_algorithm(const CommandContext<SUM_OPTIONS.size()>& ctx)
     -> Config::Algorithm {
+  // [GNU] sum.c: the LAST of -r/-s wins, in any spelling — separate,
+  // clustered (`-rs` = SysV), or long. Tokens the parser did not consume
+  // as options (operands, anything after `--`) never select an algorithm.
+  // The parser's occurrence list records exactly the consumed options in
+  // argv order, so derive the choice from it instead of rescanning the
+  // raw argument vector (#1370).
   auto algorithm = Config::Algorithm::Bsd;
-  for (auto arg : ctx.raw_args) {
-    if (arg == "-r" || arg == "--bsd") algorithm = Config::Algorithm::Bsd;
-    if (arg == "-s" || arg == "--sysv") algorithm = Config::Algorithm::Sysv;
+  if (ctx.metas == nullptr) return algorithm;
+  for (const auto& occurrence : ctx.options.occurrences()) {
+    if (occurrence.index >= ctx.metas->size()) continue;
+    const auto& meta = (*ctx.metas)[occurrence.index];
+    if (meta.short_name == "-s" || meta.long_name == "--sysv") {
+      algorithm = Config::Algorithm::Sysv;
+    } else if (meta.short_name == "-r" || meta.long_name == "--bsd") {
+      algorithm = Config::Algorithm::Bsd;
+    }
   }
   return algorithm;
 }

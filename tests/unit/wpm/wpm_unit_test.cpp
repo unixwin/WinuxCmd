@@ -939,6 +939,52 @@ TEST(wpm, wpm_install_downloads_local_exe_with_sha256) {
   EXPECT_FALSE(same_file(root_exe, installed_jq));
 }
 
+TEST(wpm, wpm_install_success_line_reports_version_and_destination_1363) {
+  // #1363: the success line is the only confirmation a plain install prints,
+  // so it must carry the package name, the installed version and the primary
+  // destination. The benign already-installed notice stays exactly as it was
+  // and must not repeat the success line.
+  TempDir tmp;
+  const auto artifact_path = tmp.path / L"source" / L"jq.exe";
+  const auto index_path = tmp.path / L"fixture-install-index.json";
+  tmp.write("source/jq.exe", "external exe\n");
+  tmp.write("fixture-install-index.json",
+            install_fixture_index_json(artifact_path));
+
+  Pipeline add;
+  add.add(L"winuxcmd.exe",
+          {L"wpm", L"source", L"add", L"fixture",
+           widen_ascii(file_url(index_path)), L"--root", tmp.wpath()});
+  EXPECT_EQ(add.run().exit_code, 0);
+
+  Pipeline use;
+  use.add(L"winuxcmd.exe",
+          {L"wpm", L"source", L"use", L"fixture", L"--root", tmp.wpath()});
+  EXPECT_EQ(use.run().exit_code, 0);
+
+  Pipeline install;
+  install.add(L"winuxcmd.exe",
+              {L"wpm", L"install", L"jq", L"--root", tmp.wpath()});
+  auto install_result = install.run();
+  EXPECT_EQ(install_result.exit_code, 0);
+  if (install_result.exit_code != 0) return;
+  EXPECT_TRUE(install_result.stdout_text.find("installed jq 1.0.0") !=
+              std::string::npos);
+  EXPECT_TRUE(install_result.stdout_text.find("usr\\bin\\jq.exe") !=
+              std::string::npos);
+  EXPECT_EQ(tmp.read("usr/bin/jq.exe"), "external exe\n");
+
+  Pipeline again;
+  again.add(L"winuxcmd.exe",
+            {L"wpm", L"install", L"jq", L"--root", tmp.wpath()});
+  auto again_result = again.run();
+  EXPECT_EQ(again_result.exit_code, 0);
+  EXPECT_TRUE(again_result.stdout_text.find("already installed jq") !=
+              std::string::npos);
+  EXPECT_TRUE(again_result.stdout_text.find("installed jq 1.0.0") ==
+              std::string::npos);
+}
+
 TEST(wpm, wpm_install_failed_download_reports_transport_retry) {
   // A dead artifact URL makes the WinHTTP attempt fail; the URLMon fallback
   // must announce itself, otherwise a second progress bar looks like a

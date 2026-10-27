@@ -251,3 +251,53 @@ TEST(sum, sum_stdin_plain_text_sanity_issue1200) {
   // [GNU] BSD checksum of "hi\n".
   EXPECT_TRUE(r.stdout_text.find("32856") != std::string::npos);
 }
+
+// #1370: algorithm selection must come from the parsed options (last of
+// -r/-s wins, clustered or separate); a raw-argv rescan ignored cluster
+// order and reinterpreted operands after `--` as options. Reference
+// values from GNU coreutils 9.4: file "f" = "x\n" -> BSD 00070,
+// SysV 130; file "-s" = "q\n" -> BSD 32834.
+TEST(sum, sum_clustered_flags_last_wins_issue1370) {
+  TempDir tmp;
+  tmp.write("f", "x\n");
+
+  Pipeline sysv;
+  sysv.set_cwd(tmp.wpath());
+  sysv.add(L"sum.exe", {L"-rs", L"f"});
+  auto rs = sysv.run();
+  EXPECT_EQ(rs.exit_code, 0);
+  EXPECT_EQ_TEXT(rs.stdout_text, "130 1 f\n");
+
+  Pipeline bsd;
+  bsd.set_cwd(tmp.wpath());
+  bsd.add(L"sum.exe", {L"-sr", L"f"});
+  auto sr = bsd.run();
+  EXPECT_EQ(sr.exit_code, 0);
+  EXPECT_EQ_TEXT(sr.stdout_text, "00070     1 f\n");
+}
+
+TEST(sum, sum_operand_after_double_dash_is_not_an_option_issue1370) {
+  TempDir tmp;
+  tmp.write("-s", "q\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sum.exe", {L"--", L"-s"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "32834     1 -s\n");
+}
+
+TEST(sum, sum_long_options_last_wins_issue1370) {
+  TempDir tmp;
+  tmp.write("f", "x\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sum.exe", {L"--sysv", L"--bsd", L"f"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "00070     1 f\n");
+}

@@ -149,6 +149,10 @@ struct Hunk {
   std::vector<HunkLine> lines;
   bool old_no_newline = false;  // "\ No newline" seen after old side
   bool new_no_newline = false;  // "\ No newline" seen after new side
+  // Normal (ed-style) diffs carry no context: the pattern must match at
+  // exactly old_start (already delta-adjusted at parse time), with no
+  // offset search and no fuzz.
+  bool exact_position = false;
 };
 
 // One `--- / +++ ` header pair and its hunk group.
@@ -241,8 +245,13 @@ std::string join_lines(const std::vector<TLine>& lines, bool crlf) {
 }
 
 bool read_file_raw(const std::string& filename, std::string& raw) {
-  std::wstring wfile = utf8_to_wstring(filename);
-  HANDLE hFile = CreateFileW(wfile.c_str(), GENERIC_READ,
+  // Route the operand through the shared path boundary (rootaudit
+  // #1364): a bare "/"-leading operand (an -i patch file, or a header
+  // name in a POSIX drive spelling) must resolve through the shell
+  // drive mapping / payload root, not land on the process current
+  // drive root as a raw CreateFileW path would.
+  const auto operand = native_path::make_api_path_operand(filename);
+  HANDLE hFile = CreateFileW(operand.extended.c_str(), GENERIC_READ,
                              FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
                              OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (hFile == INVALID_HANDLE_VALUE) return false;
@@ -307,6 +316,7 @@ Hunk reversed(const Hunk& h) {
   r.new_count = h.old_count;
   r.old_no_newline = h.new_no_newline;
   r.new_no_newline = h.old_no_newline;
+  r.exact_position = h.exact_position;
   r.lines.reserve(h.lines.size());
   for (const auto& l : h.lines) {
     char tag = l.tag == '-' ? '+' : (l.tag == '+' ? '-' : ' ');
@@ -500,6 +510,263 @@ std::string range_str(long long start, long long count) {
   return std::to_string(start) + "," + std::to_string(count);
 }
 
+// ======================================================
+// Context and normal (ed-style) diff parsing
+// ======================================================
+
+// One line of a context-diff section: tag is ' ' (context), '-' (old
+// only), '+' (new only) or '!' (changed; present on both sides).
+struct SecLine {
+  char tag = ' ';
+  std::string text;
+};
+
+// Parse "*** A[,B] ****" / "--- A[,B] ----" range headers.  A single
+// number means a one-line range.
+bool parse_context_range(const std::string& line, const char* marker,
+                         const char* trailer, long long& first,
+                         long long& last) {
+  const std::string head = std::string(marker) + " ";
+  const std::string tail = std::string(" ") + trailer;
+  if (line.size() <= head.size() + tail.size()) return false;
+  if (line.compare(0, head.size(), head) != 0) return false;
+  if (line.compare(line.size() - tail.size(), tail.size(), tail) != 0) {
+    return false;
+  }
+  const std::string mid =
+      line.substr(head.size(), line.size() - head.size() - tail.size());
+  auto num = [](const std::string& s, long long& v) {
+    if (s.empty()) return false;
+    for (char c : s) {
+      if (c < '0' || c > '9') return false;
+    }
+    try {
+      v = std::stoll(s);
+    } catch (...) {
+      return false;
+    }
+    return true;
+  };
+  const size_t comma = mid.find(',');
+  if (comma == std::string::npos) {
+    if (!num(mid, first)) return false;
+    last = first;
+    return true;
+  }
+  return num(mid.substr(0, comma), first) &&
+         num(mid.substr(comma + 1), last);
+}
+
+bool is_context_separator(const std::string& line) {
+  return line.size() >= 7 &&
+         line.find_first_not_of('*') == std::string::npos;
+}
+
+std::string section_text(const std::string& line) {
+  if (line.size() >= 2 && line[1] == ' ') return line.substr(2);
+  if (!line.empty()) return line.substr(1);
+  return "";
+}
+
+// Classify one context-diff section line.  The old section admits
+// ' ', '-' and '!'; the new section admits ' ', '+' and '!'.  A blank
+// line counts as an empty context line.
+bool context_section_line(const std::string& line, bool old_side,
+                          SecLine& out) {
+  if (line.empty()) {
+    out = {' ', ""};
+    return true;
+  }
+  const char t = line[0];
+  const bool ok = old_side ? (t == ' ' || t == '-' || t == '!')
+                           : (t == ' ' || t == '+' || t == '!');
+  if (!ok) return false;
+  out = {t, section_text(line)};
+  return true;
+}
+
+// Merge the two sections of a context hunk into unified hunk lines:
+// context lines pair up, each maximal run of changed/removed old lines
+// becomes '-' lines followed by the run of changed/added new lines as
+// '+' lines.  GNU diff omits a section's lines entirely when that side
+// has no non-context lines (pure addition/deletion hunks); the missing
+// side's context spine is then taken from the other section.
+Hunk convert_context_hunk(long long old_first, long long old_last,
+                          const std::vector<SecLine>& old_in,
+                          long long new_first,
+                          const std::vector<SecLine>& new_in,
+                          bool old_no_newline, bool new_no_newline) {
+  std::vector<SecLine> old_seq = old_in;
+  std::vector<SecLine> new_seq = new_in;
+  if (old_seq.empty()) {
+    for (const auto& l : new_seq) {
+      if (l.tag == ' ') old_seq.push_back(l);
+    }
+  }
+  if (new_seq.empty()) {
+    for (const auto& l : old_seq) {
+      if (l.tag == ' ') new_seq.push_back(l);
+    }
+  }
+  Hunk h;
+  size_t i = 0;
+  size_t j = 0;
+  while (i < old_seq.size() || j < new_seq.size()) {
+    const bool old_ctx = i < old_seq.size() && old_seq[i].tag == ' ';
+    const bool new_ctx = j < new_seq.size() && new_seq[j].tag == ' ';
+    if (old_ctx && new_ctx) {
+      h.lines.push_back({' ', old_seq[i].text});
+      ++i;
+      ++j;
+      continue;
+    }
+    bool progressed = false;
+    while (i < old_seq.size() && old_seq[i].tag != ' ') {
+      h.lines.push_back({'-', old_seq[i].text});
+      ++i;
+      progressed = true;
+    }
+    while (j < new_seq.size() && new_seq[j].tag != ' ') {
+      h.lines.push_back({'+', new_seq[j].text});
+      ++j;
+      progressed = true;
+    }
+    if (!progressed) {
+      // Context present on only one side (mismatched sections): keep
+      // it as context so the merge cannot stall.
+      if (old_ctx) {
+        h.lines.push_back({' ', old_seq[i].text});
+        ++i;
+      } else if (new_ctx) {
+        h.lines.push_back({' ', new_seq[j].text});
+        ++j;
+      }
+    }
+  }
+  for (const auto& l : h.lines) {
+    if (l.tag != '+') h.old_count++;
+    if (l.tag != '-') h.new_count++;
+  }
+  bool pattern_empty = true;
+  for (const auto& l : h.lines) {
+    if (l.tag != '+') {
+      pattern_empty = false;
+      break;
+    }
+  }
+  if (pattern_empty) {
+    // Pure insertion with no context anywhere: the old range denotes
+    // the position — insertion happens after line
+    // (old_first - 1 + range_count); following the unified convention
+    // used by try_hunk, old_start is one past that line.
+    h.old_start = old_first + (old_last - old_first + 1);
+  } else {
+    h.old_start = old_first;
+  }
+  h.new_start = new_first;
+  h.old_no_newline = old_no_newline;
+  h.new_no_newline = new_no_newline;
+  return h;
+}
+
+// Parse one context hunk starting at the "***************" separator
+// line `sep`; appends the converted hunk to `cur`.  Returns the index
+// of the first unconsumed line.
+size_t parse_context_hunk(const std::vector<std::string>& lines, size_t sep,
+                          FilePatch& cur) {
+  const size_t n = lines.size();
+  size_t i = sep + 1;
+  long long of = 0, ol = 0, nf = 0, nl = 0;
+  bool have_old_range = false;
+  bool have_new_range = false;
+  std::vector<SecLine> old_seq;
+  std::vector<SecLine> new_seq;
+  bool old_nn = false;
+  bool new_nn = false;
+  if (i < n && parse_context_range(lines[i], "***", "****", of, ol)) {
+    have_old_range = true;
+    ++i;
+    while (i < n) {
+      const std::string& l = lines[i];
+      long long f, la;
+      if (parse_context_range(l, "---", "----", f, la)) break;
+      if (is_context_separator(l)) break;
+      if (!l.empty() && l[0] == '\\') {
+        old_nn = true;
+        ++i;
+        continue;
+      }
+      SecLine sl;
+      if (!context_section_line(l, true, sl)) break;
+      old_seq.push_back(std::move(sl));
+      ++i;
+    }
+  }
+  if (i < n && parse_context_range(lines[i], "---", "----", nf, nl)) {
+    have_new_range = true;
+    ++i;
+    while (i < n) {
+      const std::string& l = lines[i];
+      if (is_context_separator(l)) break;
+      if (!l.empty() && l[0] == '\\') {
+        new_nn = true;
+        ++i;
+        continue;
+      }
+      SecLine sl;
+      if (!context_section_line(l, false, sl)) break;
+      new_seq.push_back(std::move(sl));
+      ++i;
+    }
+  }
+  if (!have_old_range && !have_new_range) return sep + 1;  // not a hunk
+  cur.hunks.push_back(
+      convert_context_hunk(of, ol, old_seq, nf, new_seq, old_nn, new_nn));
+  return i;
+}
+
+// Parse a normal-diff command line: "A[,B]a|C|D X[,Y]" with nothing
+// else on the line.
+bool parse_normal_head(const std::string& line, long long& of, long long& ol,
+                       char& op, long long& nf, long long& nl) {
+  size_t i = 0;
+  const size_t n = line.size();
+  auto num = [&]() {
+    long long v = 0;
+    const size_t start = i;
+    while (i < n && line[i] >= '0' && line[i] <= '9') ++i;
+    if (i == start) return -1LL;
+    try {
+      v = std::stoll(line.substr(start, i - start));
+    } catch (...) {
+      return -1LL;
+    }
+    return v;
+  };
+  of = num();
+  if (of < 0) return false;
+  ol = of;
+  if (i < n && line[i] == ',') {
+    ++i;
+    ol = num();
+    if (ol < 0) return false;
+  }
+  if (i >= n || (line[i] != 'a' && line[i] != 'c' && line[i] != 'd')) {
+    return false;
+  }
+  op = line[i];
+  ++i;
+  nf = num();
+  if (nf < 0) return false;
+  nl = nf;
+  if (i < n && line[i] == ',') {
+    ++i;
+    nl = num();
+    if (nl < 0) return false;
+  }
+  return i == n;
+}
+
 }  // namespace
 
 // ======================================================
@@ -528,21 +795,19 @@ REGISTER_COMMAND(
   const bool posix_mode = posixly_env || ctx.has("--posix");
 
   // ----- option decoding ---------------------------------------------
+  // [GNU] -p/--strip is an INT option: read it with get<int>. (Reading
+  // it as bool/string always yielded the defaults, so the strip count
+  // silently stayed 0 and header file names were opened literally.)
   int strip_components = 0;
-  if (ctx.get<bool>("-p", false)) {
-    try {
-      strip_components = std::stoi(ctx.get<std::string>("-p", ""));
-    } catch (...) {
-      safeErrorPrintLn("patch: invalid strip count '-p'");
-      return 2;
-    }
+  if (ctx.has("-p")) {
+    strip_components = ctx.get<int>("-p", 0);
   } else if (ctx.has("--strip")) {
-    try {
-      strip_components = std::stoi(ctx.get<std::string>("--strip", "0"));
-    } catch (...) {
-      safeErrorPrintLn("patch: invalid strip count '--strip'");
-      return 2;
-    }
+    strip_components = ctx.get<int>("--strip", 0);
+  }
+  if (strip_components < 0) {
+    safeErrorPrintLn("patch: **** strip count " +
+                     std::to_string(strip_components) + " is negative");
+    return 2;
   }
 
   long long maxfuzz = kDefaultFuzz;
@@ -767,10 +1032,20 @@ REGISTER_COMMAND(
   if (directory.empty()) directory = ctx.get<std::string>("--directory", "");
   std::string patch_file = ctx.get<std::string>("-i", "");
   if (patch_file.empty()) patch_file = ctx.get<std::string>("--input", "");
+  // [native-glob] #1374: in WINUX_SHELL_GLOB=native mode the ORIGFILE
+  // and PATCHFILE operands expand through the shared helper like their
+  // siblings (first match each); the -i/--input option value is not an
+  // operand and is left alone.
+  auto expand_first_operand = [](std::string_view operand) -> std::string {
+    auto expanded = expand_file_operand(operand);
+    return expanded.empty() ? std::string(operand) : expanded.front();
+  };
   std::string orig_file_arg;
-  if (!ctx.positionals.empty()) orig_file_arg = std::string(ctx.positionals[0]);
+  if (!ctx.positionals.empty()) {
+    orig_file_arg = expand_first_operand(ctx.positionals[0]);
+  }
   if (patch_file.empty() && ctx.positionals.size() > 1) {
-    patch_file = std::string(ctx.positionals[1]);
+    patch_file = expand_first_operand(ctx.positionals[1]);
   }
 
   const bool remove_empty_flag = ctx.has("--remove-empty-files");
@@ -856,6 +1131,12 @@ REGISTER_COMMAND(
     long long oc = 0;
     long long nc = 0;
     char last_tag = 0;
+    // Format of the group currently being read.  A group with no hunks
+    // is not a patch at all: GNU patch reports such input ("--- /+++"
+    // headers alone, a context header pair alone, ...) as garbage.
+    enum class GroupFormat { unified, context, normal };
+    GroupFormat cur_format = GroupFormat::unified;
+    long long normal_delta = 0;  // cumulative line delta, normal groups
 
     auto close_hunk = [&]() {
       if (in_hunk) {
@@ -874,15 +1155,80 @@ REGISTER_COMMAND(
     };
     auto close_group = [&]() {
       close_hunk();
-      if (group_open && (!cur.hunks.empty() || !cur.old_name.empty() ||
-                         !cur.new_name.empty())) {
+      if (group_open && !cur.hunks.empty()) {
         groups.push_back(cur);
       }
       cur = FilePatch();
       group_open = false;
+      cur_format = GroupFormat::unified;
+      normal_delta = 0;
     };
 
-    for (const auto& line : raw_lines) {
+    // Consume the body lines of one normal-diff command whose head is
+    // at raw_lines[head_idx] and append the converted (exact-position)
+    // hunk to `cur`.  Returns the first unconsumed line index; on a
+    // malformed body the hunk is abandoned and scanning resumes right
+    // after the command line.
+    auto parse_normal_body = [&](size_t head_idx, long long nof,
+                                 long long nol, char nop, long long nnf,
+                                 long long nnl) -> size_t {
+      const size_t total = raw_lines.size();
+      size_t i = head_idx + 1;
+      const long long old_count = (nop == 'a') ? 0 : (nol - nof + 1);
+      const long long new_count = (nop == 'd') ? 0 : (nnl - nnf + 1);
+      Hunk h;
+      h.exact_position = true;
+      bool malformed = false;
+      auto read_side = [&](long long count, char prefix, char tag,
+                           bool& no_newline) {
+        for (long long k = 0; k < count && !malformed; ++k) {
+          if (i >= total) {
+            malformed = true;
+            break;
+          }
+          const std::string& l = raw_lines[i];
+          if (l.size() >= 2 && l[0] == prefix && l[1] == ' ') {
+            h.lines.push_back({tag, l.substr(2)});
+          } else if (l.size() == 1 && l[0] == prefix) {
+            h.lines.push_back({tag, ""});
+          } else {
+            malformed = true;
+            break;
+          }
+          ++i;
+          if (i < total && !raw_lines[i].empty() && raw_lines[i][0] == '\\') {
+            no_newline = true;
+            ++i;
+          }
+        }
+      };
+      read_side(old_count, '<', '-', h.old_no_newline);
+      if (!malformed && nop == 'c') {
+        if (i < total && raw_lines[i] == "---") {
+          ++i;
+        } else {
+          malformed = true;
+        }
+      }
+      if (!malformed) {
+        read_side(new_count, '>', '+', h.new_no_newline);
+      }
+      if (malformed) return head_idx + 1;
+      h.old_count = old_count;
+      h.new_count = new_count;
+      // 'a' inserts AFTER old line nof; 'c'/'d' start AT old line nof.
+      // Both are stated against the original file, so fold in the
+      // cumulative delta of the hunks already read for this group.
+      h.old_start =
+          (nop == 'a') ? (nof + normal_delta + 1) : (nof + normal_delta);
+      h.new_start = nnf + normal_delta;
+      normal_delta += new_count - old_count;
+      cur.hunks.push_back(std::move(h));
+      return i;
+    };
+
+    for (size_t li = 0; li < raw_lines.size(); ++li) {
+      const std::string& line = raw_lines[li];
       // Hunk body lines take priority over header detection: a removed
       // line whose text is "--- ..." must still count toward the hunk.
       // But a non-body line where body lines are still expected ends the
@@ -891,6 +1237,32 @@ REGISTER_COMMAND(
           !line.empty() && line[0] != '\\' && line[0] != ' ' &&
           line[0] != '-' && line[0] != '+') {
         close_hunk();
+      }
+      // Context format: inside a context group, a separator line starts
+      // the next hunk; anything else ends the group and is reprocessed
+      // below as a potential new group header.
+      if (group_open && cur_format == GroupFormat::context) {
+        if (is_context_separator(line)) {
+          li = parse_context_hunk(raw_lines, li, cur) - 1;
+          continue;
+        }
+        if (line.empty()) continue;  // tolerate blank lines between hunks
+        close_group();
+      }
+      // Context group header pair: "*** old" immediately followed by
+      // "--- new".  (A unified "--- " line is followed by "+++ ", and a
+      // context section header by "***************", so this is
+      // unambiguous.)
+      if (line.length() >= 4 && line.compare(0, 4, "*** ") == 0 &&
+          li + 1 < raw_lines.size() && raw_lines[li + 1].length() >= 4 &&
+          raw_lines[li + 1].compare(0, 4, "--- ") == 0) {
+        close_group();
+        cur.old_name = header_name(line.substr(4));
+        cur.new_name = header_name(raw_lines[li + 1].substr(4));
+        group_open = true;
+        cur_format = GroupFormat::context;
+        ++li;  // consume the "--- new" line
+        continue;
       }
       if (line.length() >= 4 && line.compare(0, 4, "--- ") == 0) {
         close_group();
@@ -906,6 +1278,23 @@ REGISTER_COMMAND(
           cur.new_name = header_name(line.substr(4));
         }
         continue;
+      }
+      // Normal (ed-style) format: a bare "A[,B]a|c|d X[,Y]" command
+      // line.  Normal groups carry no file names; the target comes
+      // from the ORIGFILE operand at apply time.
+      if (!in_hunk) {
+        long long nof, nol, nnf, nnl;
+        char nop;
+        if (parse_normal_head(line, nof, nol, nop, nnf, nnl)) {
+          if (!group_open || cur_format != GroupFormat::normal) {
+            close_group();
+            group_open = true;
+            cur_format = GroupFormat::normal;
+            normal_delta = 0;
+          }
+          li = parse_normal_body(li, nof, nol, nop, nnf, nnl) - 1;
+          continue;
+        }
       }
       Hunk parsed;
       if (line.length() >= 6 && line.compare(0, 4, "@@ -") == 0 &&
@@ -1076,10 +1465,29 @@ REGISTER_COMMAND(
         }
       }
 
-      Attempt att = try_hunk(st, pat, prefix_context, suffix_context,
-                             hunk.old_start, maxfuzz, ignore_ws);
+      Attempt att;
+      if (hunk.exact_position) {
+        // [GNU] normal (ed-style) hunks carry no context to search
+        // with: the old lines must match at exactly the stated
+        // position (the parser folded in the cumulative delta of
+        // earlier hunks of the group).  No offset search, no fuzz.
+        att.where0 = hunk.old_start - 1;
+        att.offset = 0;
+        att.fuzz = 0;
+        att.ok = att.where0 >= st.copy_ptr &&
+                 att.where0 + static_cast<long long>(pat.size()) <=
+                     static_cast<long long>(st.input.size());
+        for (size_t k = 0; att.ok && k < pat.size(); ++k) {
+          if (st.input[static_cast<size_t>(att.where0) + k].text != pat[k]) {
+            att.ok = false;
+          }
+        }
+      } else {
+        att = try_hunk(st, pat, prefix_context, suffix_context,
+                       hunk.old_start, maxfuzz, ignore_ws);
+      }
 
-      if (!att.ok && forward) {
+      if (!att.ok && forward && !hunk.exact_position) {
         // [GNU] -N/--forward: diagnose reversed or already-applied hunks
         // and skip them without applying.
         Attempt rev_att;

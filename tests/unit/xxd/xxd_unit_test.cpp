@@ -275,3 +275,18 @@ TEST(xxd, xxd_plain_wraps_at_60_hex_chars_issue1205) {
   EXPECT_EQ(rc.exit_code, 0);
   EXPECT_EQ(rc.stdout_text.find('\n'), size_t(32));
 }
+// #1374: xxd expands its input operand in WINUX_SHELL_GLOB=native mode.
+TEST(xxd, xxd_native_glob_expands_input_operand_issue1374) {
+  TempDir tmp;
+  tmp.write("in.bin", "only\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_env(L"WINUX_SHELL_GLOB", L"native");
+  p.add(L"xxd.exe", {L"in.*"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("only") != std::string::npos);
+}
+
