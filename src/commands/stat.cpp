@@ -158,9 +158,9 @@ auto build_config(const CommandContext<STAT_OPTIONS.size()>& ctx)
 
     const auto& meta = (*ctx.metas)[occurrence.index];
     if (meta.long_name == "--terse" || meta.short_name == "-t") {
+      // [GNU] -t does not clear an explicit format: format beats terse
+      // at render time regardless of option order.
       cfg.terse = true;
-      cfg.format.clear();
-      cfg.printf_format = false;
       continue;
     }
 
@@ -515,6 +515,26 @@ auto expand_backslash_escapes(std::string_view input) -> std::string {
       case 'v':
         out.push_back('\v');
         break;
+      case 'x': {
+        // [GNU] \xHH: up to two hex digits; with none, warn and emit a
+        // literal 'x' (the following characters are processed normally).
+        int value = 0;
+        int digits = 0;
+        while (i + 1 < input.size() && digits < 2 &&
+               std::isxdigit(static_cast<unsigned char>(input[i + 1])) != 0) {
+          char h = input[++i];
+          value = value * 16 +
+                  (h <= '9' ? h - '0' : (h <= 'F' ? h - 'A' + 10 : h - 'a' + 10));
+          ++digits;
+        }
+        if (digits > 0) {
+          out.push_back(static_cast<char>(value));
+        } else {
+          safeErrorPrint("stat: warning: unrecognized escape '\\x'\n");
+          out.push_back('x');
+        }
+        break;
+      }
       case '\\':
         out.push_back('\\');
         break;
@@ -1128,6 +1148,16 @@ auto print_stat(const std::string& filename, const Config& cfg) -> int {
       return 1;
     }
 
+    // [GNU] An explicit format beats -t regardless of option order.
+    if (!cfg.format.empty()) {
+      auto format =
+          cfg.printf_format ? expand_backslash_escapes(cfg.format) : cfg.format;
+      safePrint(render_file_system_format(format, filename, *stat_result));
+      if (!cfg.printf_format) {
+        safePrint("\n");
+      }
+      return 0;
+    }
     if (cfg.terse) {
       // [GNU] -f -t: %n %i %l %t %s %S %b %f %a %c %d
       safePrint(render_file_system_format("%n %i %l %t %s %S %b %f %a %c %d",
@@ -1135,17 +1165,7 @@ auto print_stat(const std::string& filename, const Config& cfg) -> int {
       safePrint("\n");
       return 0;
     }
-    if (cfg.format.empty()) {
-      return print_file_system_stat(filename, *stat_result);
-    }
-
-    auto format =
-        cfg.printf_format ? expand_backslash_escapes(cfg.format) : cfg.format;
-    safePrint(render_file_system_format(format, filename, *stat_result));
-    if (!cfg.printf_format) {
-      safePrint("\n");
-    }
-    return 0;
+    return print_file_system_stat(filename, *stat_result);
   }
 
   auto stat_result = load_file_stat(stat_target, lstat_link);
@@ -1179,13 +1199,8 @@ auto print_stat(const std::string& filename, const Config& cfg) -> int {
 auto emit_stat_output(const std::string& filename, const FileStatData& stat,
                       const std::string& link_target, const Config& cfg)
     -> int {
-  if (cfg.terse) {
-    // [GNU] -t: %n %s %b %f %u %g %D %i %h %t %T %X %Y %Z %W %o (#1023)
-    bool ctx_failed = false;
-    safePrint(render_format("%n %s %b %f %u %g %D %i %h %t %T %X %Y %Z %W %o",
-                            filename, stat, ctx_failed));
-    safePrint("\n");
-  } else if (!cfg.format.empty()) {
+  // [GNU] An explicit format beats -t regardless of option order.
+  if (!cfg.format.empty()) {
     auto format =
         cfg.printf_format ? expand_backslash_escapes(cfg.format) : cfg.format;
     bool ctx_failed = false;
@@ -1201,6 +1216,12 @@ auto emit_stat_output(const std::string& filename, const FileStatData& stat,
       safeErrorPrint("': No data available\n");
       return 1;
     }
+  } else if (cfg.terse) {
+    // [GNU] -t: %n %s %b %f %u %g %D %i %h %t %T %X %Y %Z %W %o (#1023)
+    bool ctx_failed = false;
+    safePrint(render_format("%n %s %b %f %u %g %D %i %h %t %T %X %Y %Z %W %o",
+                            filename, stat, ctx_failed));
+    safePrint("\n");
   } else {
     // [GNU] default layout (#1023):
     //   File: <n>[ -> <target>]

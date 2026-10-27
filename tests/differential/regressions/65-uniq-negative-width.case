@@ -1,0 +1,7 @@
+cmd: uniq
+args: -w -1 dup.txt
+timeout: 10
+setup: |
+  printf 'a\na\n' > dup.txt
+source: github.com/unixwin/WinuxCmd/issues/1341
+tags: issue-1341 regression

@@ -235,6 +235,15 @@ auto build_config(const CommandContext<UNIQ_OPTIONS.size()>& ctx)
     return std::unexpected("negative counts are not allowed");
   }
 
+  // [GNU] An explicitly given negative -w/--check-chars has its own
+  // diagnostic; check_chars == -1 is the "no limit" default only when
+  // neither option was given.
+  bool check_given = ctx.has("-w") || ctx.has("--check-chars");
+  if (check_given && cfg.check_chars < 0) {
+    return std::unexpected(std::to_string(cfg.check_chars) +
+                           ": invalid number of bytes to compare");
+  }
+
   if (ctx.has("--group")) {
     auto group_mode = parse_group_mode(ctx.get<std::string>("--group", ""),
                                        GroupMode::separate);

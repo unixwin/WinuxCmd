@@ -42,3 +42,13 @@
 41	#140-41	stdbuf modes must work
 42	#140-42	locale keyword output must work
 55	#1284	sed empty match after a non-empty match must not be substituted or counted
+56	#1307	ls bare --color must colorize like always
+57	#1308	ln --backup control and backup line must match GNU
+58	#1334	stat --printf must expand \xHH escapes and honor -c over -t
+59	#1335	ls quoting-style locale and --sort prefixes must match GNU
+62	#1338	grep negative context length must be rejected
+63	#1339	sed address escapes must keep the backslash
+64	#1340	sort -V must use filevercmp ordering
+65	#1341	uniq -w -1 must be rejected
+66	#1342	tail -z headers must use newline separators
+67	#1343	echo -e must print \E literally
