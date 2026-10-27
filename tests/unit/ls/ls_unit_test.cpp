@@ -3531,6 +3531,24 @@ TEST(ls, ls_posixly_correct_stops_at_first_operand) {
               std::string::npos);
 }
 
+// #1304: glibc counts mere presence of POSIXLY_CORRECT, so an empty
+// value ("POSIXLY_CORRECT=") still stops option scanning at the first
+// operand.
+TEST(ls, ls_posixly_correct_empty_value_still_stops_at_first_operand) {
+  TempDir tmp;
+  tmp.write("marker.txt", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_env(L"POSIXLY_CORRECT", L"");
+  p.add(L"ls.exe", {L".", L"--color=never"});
+  auto r = p.run();
+
+  EXPECT_NE(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.find("cannot access '--color=never'") !=
+              std::string::npos);
+}
+
 // #1304: options before the first operand still parse under
 // POSIXLY_CORRECT.
 TEST(ls, ls_posixly_correct_still_parses_leading_options) {
