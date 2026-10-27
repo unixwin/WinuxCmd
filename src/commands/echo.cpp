@@ -152,7 +152,7 @@ auto to_uppercase(std::string text, bool enabled) -> cp::Result<std::string> {
  * - @a \a: Alert (bell)
  * - @a \b: Backspace
  * - @a \c: Suppress further output
- * - @a \e, @a \E: Escape character
+ * - @a \e: Escape character
  * - @a \f: Form feed
  * - @a \n: New line
  * - @a \r: Carriage return
@@ -193,9 +193,6 @@ auto process_escapes(std::string text, bool enabled)
         case 'c':
           return EscapeResult{std::move(result), true};
         case 'e':
-          result += '\x1B';
-          break;
-        case 'E':
           result += '\x1B';
           break;
         case 'f':

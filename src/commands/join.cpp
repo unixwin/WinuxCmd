@@ -182,12 +182,9 @@ auto parse_line(const std::string& line, const Config& cfg, int field_num,
   return parsed;
 }
 
-auto trim_text_record(std::string line, char delimiter) -> std::string {
-  if (delimiter == '\n' && !line.empty() && line.back() == '\r') {
-    line.pop_back();
-  }
-  return line;
-}
+// [GNU] join is byte-oriented: records reach key splitting, comparison
+// and output exactly as read — a trailing '\r' is ordinary content, and
+// a leading UTF-8 BOM is not skipped either (issue #1354).
 
 auto join_input_open_error(std::string_view filename) -> std::string {
   std::error_code ec;
@@ -449,13 +446,12 @@ auto read_lines(const std::string& filename, char delimiter)
     size_t start = 0;
     for (size_t i = 0; i < content.size(); ++i) {
       if (content[i] == delimiter) {
-        lines.emplace_back(
-            trim_text_record(content.substr(start, i - start), delimiter));
+        lines.emplace_back(content.substr(start, i - start));
         start = i + 1;
       }
     }
     if (start < content.size()) {
-      lines.emplace_back(trim_text_record(content.substr(start), delimiter));
+      lines.emplace_back(content.substr(start));
     }
   } else {
     auto f = file_io::open_binary_file(filename);
@@ -469,27 +465,13 @@ auto read_lines(const std::string& filename, char delimiter)
     size_t start = 0;
     for (size_t i = 0; i < content.size(); ++i) {
       if (content[i] == delimiter) {
-        std::string line =
-            trim_text_record(content.substr(start, i - start), delimiter);
-        // Skip UTF-8 BOM if present at the beginning of the first line
-        if (lines.empty() && line.size() >= 3 &&
-            static_cast<unsigned char>(line[0]) == 0xEF &&
-            static_cast<unsigned char>(line[1]) == 0xBB &&
-            static_cast<unsigned char>(line[2]) == 0xBF) {
-          line = line.substr(3);
-        }
+        std::string line = content.substr(start, i - start);
         lines.push_back(line);
         start = i + 1;
       }
     }
     if (start < content.size()) {
-      std::string line = trim_text_record(content.substr(start), delimiter);
-      if (lines.empty() && line.size() >= 3 &&
-          static_cast<unsigned char>(line[0]) == 0xEF &&
-          static_cast<unsigned char>(line[1]) == 0xBB &&
-          static_cast<unsigned char>(line[2]) == 0xBF) {
-        line = line.substr(3);
-      }
+      std::string line = content.substr(start);
       lines.push_back(line);
     }
 

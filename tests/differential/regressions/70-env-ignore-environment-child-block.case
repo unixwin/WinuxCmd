@@ -1,0 +1,5 @@
+cmd: env
+args: -i Z=1 A=2 env
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/1352
+tags: issue-1352 regression

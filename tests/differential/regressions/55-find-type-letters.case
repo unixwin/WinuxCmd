@@ -1,0 +1,9 @@
+cmd: find
+oracle_version: >=4.9
+args: root -type s
+timeout: 10
+setup: |
+  mkdir -p root/d
+  printf 'x' > root/f.txt
+source: github.com/unixwin/WinuxCmd
+tags: issue-1377 regression find-type

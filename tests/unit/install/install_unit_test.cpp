@@ -441,3 +441,88 @@ TEST(install, issue_1288_compare_skips_identical_past_max_path) {
   EXPECT_NE(r.stderr_text.find("skipping identical destination"),
             std::string::npos);
 }
+
+// [#1357] --backup=numbered names the backup "<dest>.~1~"; the CONTROL
+// word is honored instead of being dropped by a Bool declaration.
+TEST(install, issue1357_install_backup_numbered_name) {
+  TempDir tmp;
+  tmp.write("f", "new\n");
+  tmp.write("bk", "old\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"install.exe", {L"--backup=numbered", L"f", L"bk"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "bk.~1~"));
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "bk~"));
+  EXPECT_EQ_TEXT(tmp.read("bk.~1~"), "old\n");
+  EXPECT_EQ_TEXT(tmp.read("bk"), "new\n");
+}
+
+TEST(install, issue1357_install_backup_default_is_existing_simple) {
+  TempDir tmp;
+  tmp.write("f", "new\n");
+  tmp.write("bk", "old\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"install.exe", {L"--backup", L"f", L"bk"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "bk~"));
+}
+
+TEST(install, issue1357_install_backup_none) {
+  TempDir tmp;
+  tmp.write("f", "new\n");
+  tmp.write("bk", "old\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"install.exe", {L"--backup=none", L"f", L"bk"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "bk~"));
+  EXPECT_EQ_TEXT(tmp.read("bk"), "new\n");
+}
+
+// [#1357] A strip program that cannot be run fails the install: exit 1,
+// a "cannot run" diagnostic, and no destination left behind.
+TEST(install, issue1357_install_strip_program_missing) {
+  TempDir tmp;
+  tmp.write("f", "payload\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"install.exe", {L"-s", L"--strip-program=winux-nonexistent-strip",
+                          L"f", L"d"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("cannot run "
+                                 "'winux-nonexistent-strip'") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("strip process terminated abnormally") !=
+              std::string::npos);
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "d"));
+}
+
+// [#1357] A directory source is reported as "omitting directory", and
+// the destination is not created.
+TEST(install, issue1357_install_directory_source) {
+  TempDir tmp;
+  std::filesystem::create_directory(tmp.path / "sdir");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"install.exe", {L"sdir", L"dest"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ_TEXT(r.stderr_text, "install: omitting directory 'sdir'\n");
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "dest"));
+}

@@ -424,7 +424,7 @@ TEST(rm, rm_interactive_accepts_gnu_aliases) {
   auto yes_result = yes_pipeline.run();
 
   EXPECT_EQ(yes_result.exit_code, 0);
-  EXPECT_TRUE(yes_result.stderr_text.find("remove 'file.txt'?") !=
+  EXPECT_TRUE(yes_result.stderr_text.find("remove regular file 'file.txt'?") !=
               std::string::npos);
   EXPECT_TRUE(std::filesystem::exists(yes_alias.path / "file.txt"));
 
@@ -452,7 +452,8 @@ TEST(rm, rm_interactive_always_declines_single_remove) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stderr_text.find("remove 'file.txt'?") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("remove regular file 'file.txt'?") !=
+              std::string::npos);
   EXPECT_TRUE(std::filesystem::exists(tmp.path / "file.txt"));
 }
 
@@ -522,7 +523,8 @@ TEST(rm, rm_interactive_force_last_option_wins) {
   auto interactive_result = interactive_pipeline.run();
 
   EXPECT_EQ(interactive_result.exit_code, 0);
-  EXPECT_TRUE(interactive_result.stderr_text.find("remove 'file.txt'?") !=
+  EXPECT_TRUE(interactive_result.stderr_text.find(
+                  "remove regular file 'file.txt'?") !=
               std::string::npos);
   EXPECT_TRUE(std::filesystem::exists(interactive_last.path / "file.txt"));
 }
@@ -571,6 +573,29 @@ TEST(rm, rm_interactive_once_and_force_last_option_wins) {
   EXPECT_TRUE(std::filesystem::exists(once_last.path / "file2.txt"));
   EXPECT_TRUE(std::filesystem::exists(once_last.path / "file3.txt"));
   EXPECT_TRUE(std::filesystem::exists(once_last.path / "file4.txt"));
+}
+
+TEST(rm, rm_interactive_1327_typed_prompts) {
+  TempDir tmp;
+  tmp.write("empty.txt", "");
+  tmp.write("full.txt", "content");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("n\nn\n");
+  p.add(L"rm.exe", {L"-i", L"empty.txt", L"full.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // GNU names the item kind and prints no "(y/n)" suffix (#1327).
+  EXPECT_NE(r.stderr_text.find("remove regular empty file 'empty.txt'?"),
+            std::string::npos);
+  EXPECT_NE(r.stderr_text.find("remove regular file 'full.txt'?"),
+            std::string::npos);
+  EXPECT_EQ(r.stderr_text.find("(y/n)"), std::string::npos);
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "empty.txt"));
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "full.txt"));
 }
 
 // ===== #1297 regression: on-disk directory named NUL =====
@@ -654,4 +679,80 @@ TEST(rm, rm_long_verbose_reports_removed_file_issue1298) {
   EXPECT_EQ_TEXT(r.stdout_text, "removed 'f.txt'\n");
   EXPECT_TRUE(r.stderr_text.empty());
   EXPECT_FALSE(std::filesystem::exists(tmp.path / "f.txt"));
+}
+
+TEST(rm, rm_interactive_1327_missing_operand_no_prompt) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"rm.exe", {L"-i", L"missing"});
+
+  auto r = p.run();
+
+  // The existence check precedes any prompt (#1327).  The cannot-remove
+  // diagnostic itself says "remove", so key on the prompt's trailing
+  // "'? " instead of the bare word.
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ(r.stderr_text.find("'? "), std::string::npos);
+  EXPECT_NE(r.stderr_text.find("No such file or directory"),
+            std::string::npos);
+}
+
+TEST(rm, rm_interactive_1327_empty_dir_no_descend) {
+  TempDir tmp;
+  std::filesystem::create_directory(tmp.path / "e");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("n\n");
+  p.add(L"rm.exe", {L"-ri", L"e"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // An empty directory is asked about directly; GNU prints no descend
+  // prompt for it (#1327).
+  EXPECT_NE(r.stderr_text.find("remove directory 'e'?"),
+            std::string::npos);
+  EXPECT_EQ(r.stderr_text.find("descend"), std::string::npos);
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "e"));
+}
+
+TEST(rm, rm_interactive_1327_full_sequence) {
+  TempDir tmp;
+  std::filesystem::create_directory(tmp.path / "d");
+  tmp.write("d/inner", "");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("y\ny\ny\n");
+  p.add(L"rm.exe", {L"-ri", L"d"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(r.stderr_text,
+            "rm: descend into directory 'd'? "
+            "rm: remove regular empty file 'd/inner'? "
+            "rm: remove directory 'd'? ");
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "d"));
+}
+
+TEST(rm, rm_verbose_1328_recursive_paths) {
+  TempDir tmp;
+  std::filesystem::create_directory(tmp.path / "d");
+  tmp.write("d/f", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"rm.exe", {L"-rv", L"d"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // GNU wording for the directory itself, and operand-relative paths
+  // throughout (no extended \\?\ prefixes) (#1328).
+  EXPECT_EQ(r.stdout_text, "removed 'd/f'\nremoved directory 'd'\n");
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "d"));
 }

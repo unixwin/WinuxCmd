@@ -839,66 +839,118 @@ auto parse_month_rank(std::string_view s) -> std::optional<int> {
   return std::nullopt;
 }
 
-auto compare_version_strings(std::string_view a, std::string_view b) -> int {
+// [GNU] sort -V ordering is filevercmp: a leading-dot rule and a
+// version-suffix cut (file_prefixlen) around verrevcmp. Validated
+// against GNU sort -V 9.4 on fixed batteries plus random strings:
+// ".." < ".a", "." < "..", "a1" < "a01x", "a001" < "a01" < "a1",
+// "1.0" < "1.0.gz" < "1.0.tar" < "1.0.tar.gz", ".tar" < "a.tar",
+// "a~" < "a~1" < "a" < "a0" < "a1". Also used by ls --sort=version.
+
+namespace {
+
+// [GNU] filevercmp order(): end-of-string -> -1, '~' -> -2, digit -> 0,
+// letter -> ASCII value, any other byte -> byte value + 256 (unsigned).
+auto version_order(unsigned char c, bool at_end) -> int {
+  if (at_end) return -1;
+  if (c == '~') return -2;
+  if (std::isdigit(c) != 0) return 0;
+  if (std::isalpha(c) != 0) return static_cast<int>(c);
+  return static_cast<int>(c) + 256;
+}
+
+auto is_digit_byte(unsigned char c) -> bool {
+  return std::isdigit(c) != 0;
+}
+
+// [GNU] verrevcmp: compare two strings digit-run aware. Equal-valued digit
+// runs (a01 vs a1) are NOT decided here — first_diff is dropped when both
+// runs end together, so the caller (sort's last-resort whole-line byte
+// comparison, or ls's tie-break) decides them.
+auto verrevcmp(std::string_view a, std::string_view b) -> int {
   size_t i = 0;
   size_t j = 0;
-
-  auto is_digit = [](unsigned char c) { return std::isdigit(c) != 0; };
-
   while (i < a.size() || j < b.size()) {
-    bool a_digit = i < a.size() && is_digit(static_cast<unsigned char>(a[i]));
-    bool b_digit = j < b.size() && is_digit(static_cast<unsigned char>(b[j]));
-
-    if (a_digit && b_digit) {
-      size_t a_start = i;
-      size_t b_start = j;
-      while (i < a.size() && is_digit(static_cast<unsigned char>(a[i]))) ++i;
-      while (j < b.size() && is_digit(static_cast<unsigned char>(b[j]))) ++j;
-
-      while (a_start < i && a[a_start] == '0') ++a_start;
-      while (b_start < j && b[b_start] == '0') ++b_start;
-
-      size_t a_len = i - a_start;
-      size_t b_len = j - b_start;
-      if (a_len < b_len) return -1;
-      if (a_len > b_len) return 1;
-
-      for (size_t k = 0; k < a_len; ++k) {
-        unsigned char ac = static_cast<unsigned char>(a[a_start + k]);
-        unsigned char bc = static_cast<unsigned char>(b[b_start + k]);
-        if (ac < bc) return -1;
-        if (ac > bc) return 1;
+    int first_diff = 0;
+    while ((i < a.size() && !is_digit_byte(static_cast<unsigned char>(a[i]))) ||
+           (j < b.size() && !is_digit_byte(static_cast<unsigned char>(b[j])))) {
+      int ac = version_order(
+          i < a.size() ? static_cast<unsigned char>(a[i]) : 0, i >= a.size());
+      int bc = version_order(
+          j < b.size() ? static_cast<unsigned char>(b[j]) : 0, j >= b.size());
+      if (ac != bc) return ac < bc ? -1 : 1;
+      ++i;
+      ++j;
+    }
+    while (i < a.size() && a[i] == '0') ++i;
+    while (j < b.size() && b[j] == '0') ++j;
+    while (i < a.size() && j < b.size() &&
+           is_digit_byte(static_cast<unsigned char>(a[i])) &&
+           is_digit_byte(static_cast<unsigned char>(b[j]))) {
+      if (first_diff == 0) {
+        first_diff =
+            static_cast<unsigned char>(a[i]) - static_cast<unsigned char>(b[j]);
       }
-      continue;
+      ++i;
+      ++j;
     }
-
-    if (a_digit != b_digit) {
-      return a_digit ? -1 : 1;
+    if (i < a.size() && is_digit_byte(static_cast<unsigned char>(a[i]))) {
+      return 1;
     }
-
-    while (i < a.size() && !is_digit(static_cast<unsigned char>(a[i])) &&
-           j < b.size() && !is_digit(static_cast<unsigned char>(b[j]))) {
-      unsigned char ac = static_cast<unsigned char>(a[i]);
-      unsigned char bc = static_cast<unsigned char>(b[j]);
-      if (ac == bc) {
-        ++i;
-        ++j;
-        continue;
-      }
-
-      if (std::tolower(ac) < std::tolower(bc)) return -1;
-      if (std::tolower(ac) > std::tolower(bc)) return 1;
-      if (ac < bc) return -1;
-      if (ac > bc) return 1;
+    if (j < b.size() && is_digit_byte(static_cast<unsigned char>(b[j]))) {
+      return -1;
     }
-
-    if (i < a.size() && j < b.size()) {
-      continue;
-    }
-    if (i < a.size()) return 1;
-    if (j < b.size()) return -1;
+    if (first_diff != 0) return first_diff < 0 ? -1 : 1;
   }
+  return 0;
+}
 
+// [GNU] file_prefixlen: length of the part before the version suffix.
+// A suffix is a run of ".SEG" segments at the end, each SEG starting with a
+// letter or '~' and continuing with alnum or '~'. A segment starting at
+// position 0 is never a suffix (the whole string is never cut).
+auto file_prefixlen(std::string_view s) -> size_t {
+  size_t cut = s.size();
+  while (cut > 1) {
+    size_t q = cut;
+    while (q > 0 && (std::isalnum(static_cast<unsigned char>(s[q - 1])) != 0 ||
+                     s[q - 1] == '~')) {
+      --q;
+    }
+    if (q == 0 || q == cut) break;
+    if (s[q - 1] != '.') break;
+    if (std::isalpha(static_cast<unsigned char>(s[q])) == 0 && s[q] != '~') {
+      break;
+    }
+    if (q - 1 == 0) break;
+    cut = q - 1;
+  }
+  return cut;
+}
+
+}  // namespace
+
+auto compare_version_strings(std::string_view a, std::string_view b) -> int {
+  if (a.empty() || b.empty()) {
+    if (a.empty() && b.empty()) return 0;
+    return a.empty() ? -1 : 1;
+  }
+  // [GNU] Leading-dot rule, before suffix cutting: "." is smallest, ".."
+  // next; any other dot-leading name sorts before any non-dot name.
+  if (a == ".") return b == "." ? 0 : -1;
+  if (b == ".") return 1;
+  if (a == "..") return b == ".." ? 0 : -1;
+  if (b == "..") return 1;
+  bool a_dot = a[0] == '.';
+  bool b_dot = b[0] == '.';
+  if (a_dot != b_dot) return a_dot ? -1 : 1;
+
+  size_t a_prefix = file_prefixlen(a);
+  size_t b_prefix = file_prefixlen(b);
+  int cmp = verrevcmp(a.substr(0, a_prefix), b.substr(0, b_prefix));
+  if (cmp != 0) return cmp;
+  if (a_prefix < a.size() || b_prefix < b.size()) {
+    return verrevcmp(a, b);
+  }
   return 0;
 }
 

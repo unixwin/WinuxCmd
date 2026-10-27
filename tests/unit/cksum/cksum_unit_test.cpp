@@ -520,3 +520,65 @@ TEST(cksum, issue_1288_ignore_missing_verifies_target_past_max_path) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_NE(r.stdout_text.find("target.txt: OK"), std::string::npos);
 }
+
+// [#1362] -b/--binary and -t/--text are a last-occurrence-wins pair:
+// "-t -b" resolves to binary, so tagged output is legal and the
+// untagged marker is '*'.
+TEST(cksum, issue1362_cksum_text_binary_last_wins_tagged) {
+  TempDir tmp;
+  tmp.write("f", "data\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cksum.exe", {L"-a", L"md5", L"-t", L"-b", L"f"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text,
+                 "MD5 (f) = 6137cde4893c59f76f005a8123d8e8e6\n");
+}
+
+TEST(cksum, issue1362_cksum_text_binary_last_wins_untagged) {
+  TempDir tmp;
+  tmp.write("f", "data\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cksum.exe", {L"-a", L"md5", L"--untagged", L"-t", L"-b", L"f"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text,
+                 "6137cde4893c59f76f005a8123d8e8e6 *f\n");
+}
+
+TEST(cksum, issue1362_cksum_binary_text_last_wins_untagged) {
+  TempDir tmp;
+  tmp.write("f", "data\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cksum.exe", {L"-a", L"md5", L"--untagged", L"-b", L"-t", L"f"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text,
+                 "6137cde4893c59f76f005a8123d8e8e6  f\n");
+}
+
+// Control: the reverse order resolves to text and keeps conflicting
+// with the default tagged output on both implementations.
+TEST(cksum, issue1362_cksum_binary_text_tagged_conflict) {
+  TempDir tmp;
+  tmp.write("f", "data\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cksum.exe", {L"-a", L"md5", L"-b", L"-t", L"f"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "--text mode is only supported with --untagged") !=
+              std::string::npos);
+}

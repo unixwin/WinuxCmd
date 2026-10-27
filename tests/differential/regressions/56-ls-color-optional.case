@@ -1,0 +1,7 @@
+cmd: ls
+args: --color
+timeout: 10
+setup: |
+  touch plain.txt "with space.txt"
+source: github.com/unixwin/WinuxCmd/issues/1307
+tags: issue-1307 regression

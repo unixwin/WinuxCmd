@@ -226,7 +226,10 @@ TEST(stat, stat_printf_last_occurrence_wins_over_format) {
   EXPECT_EQ_TEXT(r.stdout_text, "test.txt");
 }
 
-TEST(stat, stat_terse_last_occurrence_wins_over_format) {
+// [GNU] An explicit -c/--printf format beats -t regardless of option
+// order: `stat -c %n -t f` prints just the format result (probed on GNU
+// for #1334); -t only supplies the default when no format was given.
+TEST(stat, stat_format_beats_terse_regardless_of_order) {
   TempDir tmp;
   tmp.write("test.txt", "data");
 
@@ -237,8 +240,7 @@ TEST(stat, stat_terse_last_occurrence_wins_over_format) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_NE(r.stdout_text, "test.txt\n");
-  EXPECT_TRUE(r.stdout_text.starts_with("test.txt "));
+  EXPECT_EQ_TEXT(r.stdout_text, "test.txt\n");
 }
 
 TEST(stat, stat_format_last_occurrence_wins_over_terse) {

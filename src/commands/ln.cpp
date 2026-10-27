@@ -60,7 +60,9 @@ auto constexpr LN_OPTIONS = std::array{
     // [DIFFERS] --dereference: alias for -L; same Windows caveats apply.
     OPTION("", "--dereference", "dereference TARGETs that are symbolic links"),
     // [GNU]
-    OPTION("-b", "--backup", "make a backup of each existing destination file"),
+    OPTION("-b", "", "like --backup but does not accept an argument"),
+    OPTION("", "--backup", "make a backup of each existing destination file",
+           OPTIONAL_STRING_TYPE),
     // [GNU]
     OPTION("-S", "--suffix", "override the usual backup suffix", STRING_TYPE),
     // [DIFFERS] -r/--relative: on Windows, relative symlink targets are
@@ -123,6 +125,105 @@ auto ln_creation_failure_prefix(bool symbolic, const std::string &target)
     -> std::string {
   return symbolic ? "failed to create symbolic link '" + target + "'"
                   : "failed to create hard link '" + target + "'";
+}
+
+enum class LnBackupControl { none, simple, numbered, existing };
+
+struct LnBackupParse {
+  LnBackupControl control = LnBackupControl::none;
+  int error_kind = 0;  // 0 = ok, 1 = invalid, 2 = ambiguous
+};
+
+// [GNU] --backup CONTROL parsing follows argmatch: an exact name wins,
+// otherwise a unique prefix of one of the eight names; no match is
+// "invalid" and several matches are "ambiguous". Matching is done on the
+// lowercased value; a bare --backup (empty value) means existing.
+auto parse_ln_backup_control(const std::string &raw) -> LnBackupParse {
+  std::string value = raw;
+  std::ranges::transform(value, value.begin(), [](unsigned char ch) {
+    return static_cast<char>(std::tolower(ch));
+  });
+  static constexpr std::pair<std::string_view, LnBackupControl> kNames[] = {
+      {"none", LnBackupControl::none},
+      {"off", LnBackupControl::none},
+      {"simple", LnBackupControl::simple},
+      {"never", LnBackupControl::simple},
+      {"existing", LnBackupControl::existing},
+      {"nil", LnBackupControl::existing},
+      {"numbered", LnBackupControl::numbered},
+      {"t", LnBackupControl::numbered},
+  };
+  for (auto [name, control] : kNames) {
+    if (value == name) return {control, 0};
+  }
+  if (value.empty()) return {LnBackupControl::existing, 0};
+  int matches = 0;
+  LnBackupControl matched = LnBackupControl::none;
+  for (auto [name, control] : kNames) {
+    if (name.starts_with(value)) {
+      ++matches;
+      matched = control;
+    }
+  }
+  if (matches == 1) return {matched, 0};
+  return {LnBackupControl::none, matches == 0 ? 1 : 2};
+}
+
+// [GNU] argmatch diagnostic for a bad backup type; the caller adds the
+// "ln: " prefix and the trailing newline.
+auto ln_backup_type_message(int error_kind, const std::string &value)
+    -> std::string {
+  std::string message =
+      error_kind == 2 ? "ambiguous argument '" : "invalid argument '";
+  message += value;
+  message +=
+      "' for 'backup type'\n"
+      "Valid arguments are:\n"
+      "  - 'none', 'off'\n"
+      "  - 'simple', 'never'\n"
+      "  - 'existing', 'nil'\n"
+      "  - 'numbered', 't'\n"
+      "Try 'ln --help' for more information.";
+  return message;
+}
+
+// [GNU] Highest N among existing "<target>.~N~" siblings, or 0 when none.
+// The directory scan uses the folded API form, like the rest of the
+// backup flow; any scan failure is treated as "no numbered backups".
+auto ln_max_numbered_backup(const std::string &target_api) -> int {
+  std::filesystem::path target_path(utf8_to_wstring(target_api));
+  std::filesystem::path dir = target_path.parent_path();
+  if (dir.empty()) dir = ".";
+  const std::string base = wstring_to_utf8(target_path.filename().wstring());
+  const std::string prefix = base + ".~";
+  int max_version = 0;
+  std::error_code ec;
+  for (const auto &entry : std::filesystem::directory_iterator(dir, ec)) {
+    const std::string name =
+        wstring_to_utf8(entry.path().filename().wstring());
+    if (!name.starts_with(prefix) || name.size() <= prefix.size() + 1 ||
+        name.back() != '~') {
+      continue;
+    }
+    const std::string digits =
+        name.substr(prefix.size(), name.size() - prefix.size() - 1);
+    if (!std::ranges::all_of(digits, [](unsigned char ch) {
+          return std::isdigit(ch) != 0;
+        })) {
+      continue;
+    }
+    int version = 0;
+    for (char ch : digits) version = version * 10 + (ch - '0');
+    if (version > max_version) max_version = version;
+  }
+  return max_version;
+}
+
+// [GNU] Numbered backups take max existing N + 1 (with .~1~ and .~3~
+// present the next backup is .~4~, not the first free slot).
+auto ln_numbered_backup_name(const std::string &target_api) -> std::string {
+  return target_api + ".~" +
+         std::to_string(ln_max_numbered_backup(target_api) + 1) + "~";
 }
 
 /**
@@ -188,7 +289,7 @@ auto create_symlink(const std::string &source, const std::string &target,
     if (verbose) {
       safePrint("'");
       safePrint(target_display);
-      safePrint("' => '");
+      safePrint("' -> '");
       safePrint(source_display);
       safePrint("'\n");
     }
@@ -198,6 +299,22 @@ auto create_symlink(const std::string &source, const std::string &target,
   DWORD error = GetLastError();
   return std::unexpected("failed to create symbolic link '" + target_display +
                          "': " + ln_windows_error_text(error));
+}
+
+// [GNU] #1367: existence with lstat semantics.  GetFileAttributesW follows
+// symlinks, so a dangling destination link looks missing and the "File
+// exists" error, the -i prompt, the -b backup, and -f removal all misfire.
+// FindFirstFileW reports the link itself (the same probe the hard-link
+// source check in the command body uses).
+auto lstat_attrs(const std::wstring &wpath, DWORD &attrs) -> bool {
+  WIN32_FIND_DATAW fd{};
+  HANDLE h = FindFirstFileW(wpath.c_str(), &fd);
+  if (h == INVALID_HANDLE_VALUE) {
+    return false;
+  }
+  FindClose(h);
+  attrs = fd.dwFileAttributes;
+  return true;
 }
 
 /**
@@ -210,8 +327,8 @@ auto remove_existing(const std::string &path,
                      const std::string &path_display) -> cp::Result<void> {
   std::wstring wpath = utf8_to_wstring(path);
 
-  DWORD attrs = GetFileAttributesW(wpath.c_str());
-  if (attrs == INVALID_FILE_ATTRIBUTES) {
+  DWORD attrs = 0;
+  if (!lstat_attrs(wpath, attrs)) {
     return {};  // File doesn't exist, nothing to remove
   }
 
@@ -275,7 +392,28 @@ REGISTER_COMMAND(
       ctx.get<bool>("-v", false) || ctx.get<bool>("--verbose", false);
   bool interactive =
       ctx.get<bool>("-i", false) || ctx.get<bool>("--interactive", false);
-  bool backup = ctx.get<bool>("-b", false) || ctx.get<bool>("--backup", false);
+  // [GNU] -b is --backup with no argument (CONTROL defaults to
+  // existing); --backup takes an optional CONTROL parsed by argmatch
+  // rules. When both are given, the --backup value wins.
+  bool backup_flag = ctx.get<bool>("-b", false);
+  bool backup_given = backup_flag || ctx.has("--backup");
+  LnBackupControl backup_control = LnBackupControl::none;
+  if (backup_given) {
+    if (ctx.has("--backup")) {
+      std::string raw_control = ctx.get<std::string>("--backup", "");
+      auto parsed = parse_ln_backup_control(raw_control);
+      if (parsed.error_kind != 0) {
+        safeErrorPrint("ln: " +
+                       ln_backup_type_message(parsed.error_kind, raw_control) +
+                       "\n");
+        return 1;
+      }
+      backup_control = parsed.control;
+    } else {
+      backup_control = LnBackupControl::existing;
+    }
+  }
+  bool backup = backup_control != LnBackupControl::none;
   std::string backup_suffix = ctx.get<std::string>("--suffix", "");
   if (backup_suffix.empty()) backup_suffix = ctx.get<std::string>("-S", "");
   if (backup && backup_suffix.empty()) backup_suffix = "~";
@@ -463,25 +601,36 @@ REGISTER_COMMAND(
       FindClose(sh);
     }
 
-    // Check if target exists
+    // Check if target exists (lstat semantics: a dangling symlink
+    // destination exists, #1367)
     std::wstring wtarget = utf8_to_wstring(target_api);
-    DWORD target_attrs = GetFileAttributesW(wtarget.c_str());
-    bool target_exists = (target_attrs != INVALID_FILE_ATTRIBUTES);
+    DWORD target_attrs = 0;
+    bool target_exists = lstat_attrs(wtarget, target_attrs);
 
     if (target_exists) {
       if (interactive && !force) {
-        // Prompt user
-        safePrint("ln: replace '" + target + "'? ");
+        // [GNU] The prompt goes to stderr, like the cp/mv overwrite
+        // prompts; declining is an error (GNU exits 1) (#1367).
+        safeErrorPrint("ln: replace '" + target + "'? ");
         std::string response;
         std::getline(std::cin, response);
         if (response.empty() || (response[0] != 'y' && response[0] != 'Y')) {
+          error_count++;
           continue;
         }
       }
 
       // Backup if requested
       if (backup && target_exists) {
-        std::string backup_name = target_api + backup_suffix;
+        std::string backup_name;
+        if (backup_control == LnBackupControl::numbered) {
+          backup_name = ln_numbered_backup_name(target_api);
+        } else if (backup_control == LnBackupControl::existing &&
+                   ln_max_numbered_backup(target_api) > 0) {
+          backup_name = ln_numbered_backup_name(target_api);
+        } else {
+          backup_name = target_api + backup_suffix;
+        }
         std::wstring wbackup = utf8_to_wstring(backup_name);
         // Remove existing backup if any
         DeleteFileW(wbackup.c_str());
@@ -492,7 +641,10 @@ REGISTER_COMMAND(
           continue;
         }
         if (verbose) {
-          safePrint("'" + target + "' -> '" + backup_name + "' (backup)\n");
+          // [GNU] "'<backup>' ~ '<dest>' -> '<src>'" for symlinks, "=>"
+          // for hard links.
+          safePrint("'" + backup_name + "' ~ '" + target + "' " +
+                    (symbolic ? "->" : "=>") + " '" + source + "'\n");
         }
       } else if (force) {
         // Remove existing target if force is set

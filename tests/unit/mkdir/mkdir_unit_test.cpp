@@ -391,6 +391,36 @@ TEST(mkdir, mkdir_p_drive_dialect_verbose_reports_operand_form) {
   EXPECT_TRUE(std::filesystem::is_directory(tmp.path / L"vdeep1233"));
 }
 
+TEST(mkdir, mkdir_mode_1330_symbolic) {
+  auto run_mkdir = [](const wchar_t* mode, const wchar_t* name) {
+    TempDir tmp;
+    Pipeline p;
+    p.set_cwd(tmp.wpath());
+    p.add(L"mkdir.exe", {L"-m", mode, name});
+    auto r = p.run();
+    EXPECT_EQ(r.exit_code, 0);
+    auto dir = tmp.path / name;
+    DWORD attrs = GetFileAttributesW(dir.wstring().c_str());
+    EXPECT_NE(attrs, INVALID_FILE_ATTRIBUTES);
+    const bool readonly = (attrs & FILE_ATTRIBUTE_READONLY) != 0;
+    if (readonly) {  // keep the temp tree cleanable
+      SetFileAttributesW(
+          dir.wstring().c_str(),
+          attrs & ~static_cast<DWORD>(FILE_ATTRIBUTE_READONLY));
+    }
+    return readonly;
+  };
+
+  // GNU 9.4 values against the -m base 0777 (the issue's claim of
+  // u+rwx -> 0700 is wrong; it is 0777).  Only the write bits are
+  // observable on Windows, via the read-only attribute (#1330).
+  EXPECT_FALSE(run_mkdir(L"u+rwx", L"a"));      // 0777
+  EXPECT_FALSE(run_mkdir(L"u=rw,go=r", L"b"));  // 0644
+  EXPECT_FALSE(run_mkdir(L"go-w", L"c"));       // 0755
+  EXPECT_FALSE(run_mkdir(L"u=rwx,go=", L"d"));  // 0700
+  EXPECT_TRUE(run_mkdir(L"a-w", L"e"));         // 0555
+}
+
 // ===== #1296 regression: mkdir on an existing directory =====
 
 TEST(mkdir, mkdir_existing_directory_fails_with_file_exists_issue1296) {

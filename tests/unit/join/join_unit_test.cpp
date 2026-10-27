@@ -112,7 +112,10 @@ TEST(join, join_zero_terminated_records) {
   EXPECT_EQ(r.stdout_text, std::string("1 a b\0x left right\0", 19));
 }
 
-TEST(join, join_mixed_lf_and_crlf_records_match_in_text_mode) {
+TEST(join, join_issue1354_mixed_lf_crlf_records_keep_cr_bytes) {
+  // [GNU] join is byte-oriented: file2's record is "a right\r", so the
+  // joined line keeps the '\r' inside its last field. This test
+  // previously pinned the CR-stripping divergence (issue #1354).
   TempDir tmp;
   tmp.write_bytes("file1.txt", {'a', ' ', 'l', 'e', 'f', 't', '\n'});
   tmp.write_bytes("file2.txt", {'a', ' ', 'r', 'i', 'g', 'h', 't', '\r', '\n'});
@@ -124,7 +127,38 @@ TEST(join, join_mixed_lf_and_crlf_records_match_in_text_mode) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "a left right\n");
+  EXPECT_EQ_TEXT(r.stdout_text, "a left right\r\n");
+}
+
+TEST(join, join_issue1354_cr_in_key_prevents_match) {
+  TempDir tmp;
+  tmp.write_bytes("file1.txt", {'a', '\r', ' ', '1', '\n'});
+  tmp.write_bytes("file2.txt", {'a', ' ', '1', '\n'});
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"join.exe", {L"file1.txt", L"file2.txt"});
+
+  auto r = p.run();
+
+  // Keys "a\r" and "a" differ byte-wise, so GNU joins nothing.
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.empty());
+}
+
+TEST(join, join_issue1354_crlf_records_join_with_cr_preserved) {
+  TempDir tmp;
+  tmp.write_bytes("file1.txt", {'a', ' ', '1', '\r', '\n'});
+  tmp.write_bytes("file2.txt", {'a', ' ', 'x', '\r', '\n'});
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"join.exe", {L"file1.txt", L"file2.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "a 1\r x\r\n");
 }
 
 TEST(join, join_reports_gnu_shaped_missing_input_diagnostic) {

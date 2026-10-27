@@ -143,14 +143,28 @@ auto read_yes_no_response() -> bool {
 }
 
 /**
- * @brief Prompt the user to confirm removal of a file or item.
+ * @brief Prompt the user to confirm removal of a non-directory item.
+ * [GNU] The prompt names the item kind: "regular file", "regular empty
+ * file", "symbolic link", ... and never appends a "(y/n)" suffix (#1327).
+ * @param path Path to display in the prompt.
+ * @param noun GNU item-kind wording for the prompt.
+ * @return true if the user confirms, false otherwise.
+ */
+auto prompt_remove_typed(std::string_view path, std::string_view noun)
+    -> bool {
+  safeErrorPrint(winux::i18n::format("command.rm.prompt.remove_typed",
+                                     "rm: remove {} '{}'? ", noun, path));
+  return read_yes_no_response();
+}
+
+/**
+ * @brief Prompt the user to confirm removal of a directory itself.
  * @param path Path to display in the prompt.
  * @return true if the user confirms, false otherwise.
  */
-auto prompt_remove_file(std::string_view path) -> bool {
-  safeErrorPrint("rm: remove '");
-  safeErrorPrint(path);
-  safeErrorPrint("'? (y/n) ");
+auto prompt_remove_directory(std::string_view path) -> bool {
+  safeErrorPrint(winux::i18n::format("command.rm.prompt.remove_directory",
+                                     "rm: remove directory '{}'? ", path));
   return read_yes_no_response();
 }
 
@@ -161,10 +175,68 @@ auto prompt_remove_file(std::string_view path) -> bool {
  * @return true if the user confirms, false otherwise.
  */
 auto prompt_descend_directory(std::string_view path) -> bool {
-  safeErrorPrint("rm: descend into directory '");
-  safeErrorPrint(path);
-  safeErrorPrint("'? (y/n) ");
+  safeErrorPrint(winux::i18n::format("command.rm.prompt.descend_directory",
+                                     "rm: descend into directory '{}'? ",
+                                     path));
   return read_yes_no_response();
+}
+
+/**
+ * @brief True when a directory holds no entries besides "." and "..".
+ * An enumeration failure other than "no entries" is reported as
+ * non-empty, so callers keep the descend prompt and the removal attempt
+ * surfaces the real error.
+ */
+auto directory_is_empty(const std::wstring& wpath) -> bool {
+  WIN32_FIND_DATAW findData;
+  HANDLE hFind = FindFirstFileW((wpath + L"\\*").c_str(), &findData);
+  if (hFind == INVALID_HANDLE_VALUE) {
+    return GetLastError() == ERROR_FILE_NOT_FOUND;
+  }
+  bool empty = true;
+  do {
+    std::wstring_view name(findData.cFileName);
+    if (name != L"." && name != L"..") {
+      empty = false;
+      break;
+    }
+  } while (FindNextFileW(hFind, &findData));
+  FindClose(hFind);
+  return empty;
+}
+
+/**
+ * @brief True when the operand itself is a reparse point (symlink or
+ * junction).  GetFileAttributesW — and therefore
+ * operand_target_attributes_w — reports the TARGET's attributes for a
+ * link, so prompt selection probes the link itself through
+ * FindFirstFileW, whose find data describes the link (#1327).
+ */
+auto operand_is_reparse_link(const std::wstring& wpath) -> bool {
+  WIN32_FIND_DATAW findData;
+  HANDLE hFind = FindFirstFileW(wpath.c_str(), &findData);
+  if (hFind == INVALID_HANDLE_VALUE) {
+    return false;
+  }
+  const bool link =
+      (findData.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+  FindClose(hFind);
+  return link;
+}
+
+/**
+ * @brief Join a display path with a child name the way GNU prints it:
+ * parent + "/" + name (no extra separator when the parent already ends
+ * with one).  Display paths are operand-relative, unlike the extended
+ * \\?\ API paths used for the actual removal (#1328).
+ */
+auto child_display_path(const std::string& parent_display,
+                        const std::string& item_name) -> std::string {
+  if (!parent_display.empty() &&
+      (parent_display.back() == '/' || parent_display.back() == '\\')) {
+    return parent_display + item_name;
+  }
+  return parent_display + "/" + item_name;
 }
 
 /**
@@ -265,7 +337,9 @@ auto remove_empty_directory_path(const std::wstring& wpath,
   }
 
   if (cfg.verbose) {
-    safePrint("removed '");
+    // [GNU] Directory removals are reported as "removed directory"
+    // (#1328); files keep the plain "removed" form below.
+    safePrint("removed directory '");
     safePrint(display_path);
     safePrint("'\n");
   }
@@ -428,17 +502,46 @@ auto remove_path(const std::string& path, const RmConfig& cfg) -> bool {
   const bool is_directory = (attr & FILE_ATTRIBUTE_DIRECTORY) != 0;
   const bool is_reparse_point = (attr & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
 
-  // Interactive prompt before removal
+  // Interactive prompt before removal.  [GNU] Prompt selection follows
+  // the operand kind (#1327): a directory is asked about with a descend
+  // prompt only when it holds something; an empty directory is asked
+  // about directly ("remove directory"); a directory without -r or -d
+  // is never prompted (it falls through to the "Is a directory"
+  // diagnostic); a non-empty directory with -d is never prompted (it
+  // falls through to "Directory not empty").  Files and symlinks get the
+  // typed prompt.  Note the existence check above runs first, so a
+  // missing operand is diagnosed without any prompt.
+  bool top_dir_empty = false;
   if (cfg.interactive == InteractiveMode::always) {
-    bool response;
-    if (is_directory && cfg.recursive && !is_reparse_point) {
-      // For directories with -r, prompt to descend (GNU-style)
-      response = prompt_descend_directory(path);
+    bool response = true;
+    bool prompted = true;
+    if (operand_is_reparse_link(wpath)) {
+      response = prompt_remove_typed(path, "symbolic link");
+    } else if (is_directory) {
+      if (cfg.recursive) {
+        top_dir_empty = directory_is_empty(wpath);
+        response = top_dir_empty ? prompt_remove_directory(path)
+                                 : prompt_descend_directory(path);
+      } else if (cfg.remove_empty_dir) {
+        top_dir_empty = directory_is_empty(wpath);
+        if (top_dir_empty) {
+          response = prompt_remove_directory(path);
+        } else {
+          prompted = false;  // non-empty with -d: diagnostic, no prompt
+        }
+      } else {
+        prompted = false;  // plain directory: diagnostic, no prompt
+      }
     } else {
-      // For files, symlinks, or non-recursive directories, prompt to remove
-      response = prompt_remove_file(path);
+      WIN32_FILE_ATTRIBUTE_DATA data{};
+      const bool empty_file =
+          GetFileAttributesExW(wpath.c_str(), GetFileExInfoStandard,
+                               &data) &&
+          data.nFileSizeHigh == 0 && data.nFileSizeLow == 0;
+      response = prompt_remove_typed(
+          path, empty_file ? "regular empty file" : "regular file");
     }
-    if (!response) {
+    if (prompted && !response) {
       return true;  // user declined, treat as success
     }
   }
@@ -460,85 +563,102 @@ auto remove_path(const std::string& path, const RmConfig& cfg) -> bool {
       return remove_empty_directory_path(wpath, path, cfg);
     }
 
-    // Recursive function to delete directory with post-order traversal
-    std::function<bool(const std::wstring&)> remove_directory_recursive;
+    // Recursive function to delete directory with post-order traversal.
+    // A display path is threaded alongside the API path so prompts and
+    // verbose lines show operand-relative paths instead of the extended
+    // \\?\ form (#1328).  prompt_final is false only for a top-level
+    // empty directory, whose removal was already prompted for above.
+    std::function<bool(const std::wstring&, const std::string&, bool)>
+        remove_directory_recursive;
     std::wstring root_volume =
         cfg.one_file_system ? get_volume_root(wpath) : L"";
-    remove_directory_recursive = [&](const std::wstring& dirPath) -> bool {
+    remove_directory_recursive = [&](const std::wstring& dirPath,
+                                     const std::string& dirDisplay,
+                                     bool prompt_final) -> bool {
       if (cfg.one_file_system && !root_volume.empty()) {
         std::wstring current_volume = get_volume_root(dirPath);
         if (!current_volume.empty() && current_volume != root_volume) {
           if (cfg.verbose) {
-            std::string dirPathStr = wstring_to_utf8(dirPath);
             safePrint("skipping directory '");
-            safePrint(dirPathStr);
+            safePrint(dirDisplay);
             safePrintLn("' on a different file system");
           }
           return true;
         }
       }
 
-      // First, enumerate all items in the directory
+      // Enumerate all items in the directory.  An empty directory
+      // enumerates as ERROR_FILE_NOT_FOUND: not an error, just an empty
+      // item list — fall through to the final removal below.
       std::wstring searchPath = dirPath + L"\\*";
       WIN32_FIND_DATAW findData;
       HANDLE hFind = FindFirstFileW(searchPath.c_str(), &findData);
 
+      std::vector<std::pair<std::wstring, std::string>> subdirs;
+      bool success = true;
+      bool all_removed = true;
+
       if (hFind == INVALID_HANDLE_VALUE) {
         DWORD error = GetLastError();
-        if (error == ERROR_FILE_NOT_FOUND) {
-          // Directory is empty, this is expected and not an error
-          return true;
-        } else {
+        if (error != ERROR_FILE_NOT_FOUND) {
           // Directory is inaccessible or other error
-          std::string dirPathStr = wstring_to_utf8(dirPath);
           std::wstring errorMsg = get_system_error_message(error);
           safeErrorPrint("rm: cannot access directory '");
-          safeErrorPrint(dirPathStr);
+          safeErrorPrint(dirDisplay);
           safeErrorPrint("': ");
           safeErrorPrint(errorMsg);
           safeErrorPrint("\n");
           return false;
         }
-      }
+      } else {
+        do {
+          std::wstring itemName(findData.cFileName);
+          if (itemName != L"." && itemName != L"..") {
+            std::wstring itemPath = dirPath + L"\\" + itemName;
+            std::string itemDisplay =
+                child_display_path(dirDisplay, wstring_to_utf8(itemName));
 
-      std::vector<std::wstring> subdirs;
-      bool success = true;
-      bool all_removed = true;
-
-      do {
-        std::wstring itemName(findData.cFileName);
-        if (itemName != L"." && itemName != L"..") {
-          std::wstring itemPath = dirPath + L"\\" + itemName;
-          std::string itemStr = wstring_to_utf8(itemPath);
-
-          if (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-            // Prompt before descending into subdirectories
-            if (cfg.interactive == InteractiveMode::always &&
-                !(findData.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
-              if (!prompt_descend_directory(itemStr)) {
-                all_removed = false;  // user declined, leave subtree
-                continue;
+            if (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+              // Prompt before descending into subdirectories.  Empty
+              // subdirectories get no descend prompt: their own removal
+              // prompt happens at the end of the recursion (#1327).
+              if (cfg.interactive == InteractiveMode::always &&
+                  !(findData.dwFileAttributes &
+                    FILE_ATTRIBUTE_REPARSE_POINT) &&
+                  !directory_is_empty(itemPath)) {
+                if (!prompt_descend_directory(itemDisplay)) {
+                  all_removed = false;  // user declined, leave subtree
+                  continue;
+                }
               }
-            }
-            // Store subdirectory for later recursive deletion
-            subdirs.push_back(itemPath);
-          } else {
-            // Prompt before removing files
-            if (cfg.interactive == InteractiveMode::always) {
-              if (!prompt_remove_file(itemStr)) {
-                all_removed = false;  // user declined
-                continue;
+              // Store subdirectory for later recursive deletion
+              subdirs.emplace_back(itemPath, itemDisplay);
+            } else {
+              // Prompt before removing files and file symlinks
+              if (cfg.interactive == InteractiveMode::always) {
+                std::string_view noun = "regular file";
+                if (findData.dwFileAttributes &
+                    FILE_ATTRIBUTE_REPARSE_POINT) {
+                  noun = "symbolic link";
+                } else if (findData.nFileSizeHigh == 0 &&
+                           findData.nFileSizeLow == 0) {
+                  noun = "regular empty file";
+                }
+                if (!prompt_remove_typed(itemDisplay, noun)) {
+                  all_removed = false;  // user declined
+                  continue;
+                }
               }
-            }
-            if (!remove_file_path(itemPath, itemStr, cfg)) {
-              success = false;
-              all_removed = false;
+              if (!remove_file_path(itemPath, itemDisplay, cfg)) {
+                success = false;
+                all_removed = false;
+              }
             }
           }
-        }
-      } while (FindNextFileW(hFind, &findData));
+        } while (FindNextFileW(hFind, &findData));
 
-      FindClose(hFind);
+        FindClose(hFind);
+      }
 
       // If we encountered errors, don't continue
       if (!success) {
@@ -546,22 +666,26 @@ auto remove_path(const std::string& path, const RmConfig& cfg) -> bool {
       }
 
       // Recursively delete all subdirectories (post-order traversal)
-      for (const auto& subdir : subdirs) {
+      for (const auto& [subdir, subdir_display] : subdirs) {
         DWORD sub_attr = GetFileAttributesW(subdir.c_str());
         bool sub_success = false;
         if (sub_attr != INVALID_FILE_ATTRIBUTES &&
             (sub_attr & FILE_ATTRIBUTE_REPARSE_POINT)) {
-          // Prompt before removing reparse points (symlinks/junctions)
+          // Prompt before removing reparse points (symlinks/junctions).
+          // Note the attributes here describe the link itself only when
+          // the enumeration reported it as a directory entry; the
+          // removal target is the link, not its referent.
           if (cfg.interactive == InteractiveMode::always) {
-            if (!prompt_remove_file(wstring_to_utf8(subdir))) {
+            if (!prompt_remove_typed(subdir_display, "symbolic link")) {
               all_removed = false;
               continue;
             }
           }
           sub_success =
-              remove_empty_directory_path(subdir, wstring_to_utf8(subdir), cfg);
+              remove_empty_directory_path(subdir, subdir_display, cfg);
         } else {
-          sub_success = remove_directory_recursive(subdir);
+          sub_success =
+              remove_directory_recursive(subdir, subdir_display, true);
         }
         if (!sub_success) {
           success = false;
@@ -579,13 +703,22 @@ auto remove_path(const std::string& path, const RmConfig& cfg) -> bool {
         return true;
       }
 
-      // Finally, remove the directory itself
-      return remove_empty_directory_path(dirPath, wstring_to_utf8(dirPath),
-                                         cfg);
+      // Finally, remove the directory itself.  GNU asks first, unless
+      // the top-level prompt above already covered this directory.
+      if (cfg.interactive == InteractiveMode::always && prompt_final) {
+        if (!prompt_remove_directory(dirDisplay)) {
+          return true;  // declined: leave the (now empty) directory
+        }
+      }
+      return remove_empty_directory_path(dirPath, dirDisplay, cfg);
     };
 
-    // Start recursive directory deletion
-    return remove_directory_recursive(wpath);
+    // Start recursive directory deletion.  A top-level empty directory
+    // already got its "remove directory" prompt above, so the recursion
+    // must not ask again for the root.
+    return remove_directory_recursive(
+        wpath, path,
+        !(cfg.interactive == InteractiveMode::always && top_dir_empty));
   } else {
     return remove_file_path(wpath, path, cfg);
   }
