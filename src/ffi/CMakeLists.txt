@@ -69,6 +69,15 @@ if (MSVC)
         /interface
     )
     target_include_directories(winuxcmd_ffi PRIVATE "${MODULES_DIR}")
+    # /EHa is load-bearing, not a style choice. ffi.cpp's borrow/lock
+    # guards are RAII objects in winux_ffi_call's frame; under /EHsc an
+    # SEH fault raised inside dispatch is caught by the boundary
+    # catch(...) but unwinds WITHOUT running those destructors, leaving
+    # the process FFI mutex locked for the life of the process (every
+    # later call then fails "resource deadlock would occur"). /EHa makes
+    # SEH unwinds run the destructors, so a contained fault restores all
+    # borrowed process state and releases the lock.
+    target_compile_options(winuxcmd_ffi PRIVATE /EHa)
 endif ()
 
 # Add include directories
@@ -119,9 +128,11 @@ else ()
 endif ()
 
 # Stage the versioned side-by-side layout (DESIGN 4.1) in the build tree:
-#   <build>/ffi-layout/usr/bin/ffi/v<version>/{winuxcore.dll,tiers.tsv}
-# The pinned-hash manifest (winuxcore.sha256) is written by the packaging /
-# harness tooling that consumes this layout, never by the DLL build itself.
+#   <build>/ffi-layout/usr/bin/ffi/v<version>/{winuxcore.dll,tiers.tsv,
+#                                              winuxcore.sha256}
+# The per-version winuxcore.sha256 is staged with the DLL it pins (layout
+# ruling: it is the loader's pinned-hash source). The package-root
+# SHA256SUMS remains the zip-level manifest and is written by packaging.
 set(WINUX_FFI_LAYOUT_DIR
     "${CMAKE_BINARY_DIR}/ffi-layout/usr/bin/ffi/v${PROJECT_VERSION}")
 add_custom_command(TARGET winuxcmd_ffi POST_BUILD
@@ -130,6 +141,10 @@ add_custom_command(TARGET winuxcmd_ffi POST_BUILD
         $<TARGET_FILE:winuxcmd_ffi> "${WINUX_FFI_LAYOUT_DIR}/winuxcore.dll"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${WINUX_FFI_TIERS_OUT}" "${WINUX_FFI_LAYOUT_DIR}/tiers.tsv"
+    COMMAND ${CMAKE_COMMAND}
+        "-DDLL=${WINUX_FFI_LAYOUT_DIR}/winuxcore.dll"
+        "-DOUT=${WINUX_FFI_LAYOUT_DIR}/winuxcore.sha256"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/write_pin.cmake"
     COMMENT "Staging FFI layout v${PROJECT_VERSION}"
 )
 
@@ -143,5 +158,6 @@ install(TARGETS winuxcmd_ffi
 install(FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/winux_ffi.h"
     "${WINUX_FFI_TIERS_OUT}"
+    "${WINUX_FFI_LAYOUT_DIR}/winuxcore.sha256"
     DESTINATION "${CMAKE_INSTALL_BINDIR}/ffi/v${PROJECT_VERSION}"
 )
