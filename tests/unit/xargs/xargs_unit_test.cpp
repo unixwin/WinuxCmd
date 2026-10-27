@@ -234,7 +234,7 @@ TEST(xargs, xargs_replacement_uses_one_input_line_per_command) {
   EXPECT_TRUE(r.stdout_text.find("[two words next]") == std::string::npos);
 }
 
-TEST(xargs, xargs_replacement_trailing_blank_continues_logical_line) {
+TEST(xargs, xargs_replacement_trailing_blank_starts_new_item_1321) {
   TempDir tmp;
 
   Pipeline p;
@@ -245,9 +245,12 @@ TEST(xargs, xargs_replacement_trailing_blank_continues_logical_line) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.find("[alpha beta]") != std::string::npos);
+  // GNU -I keeps the trailing blank on its own item; it does not join
+  // the next line (that continuation belongs to -L only).
+  EXPECT_TRUE(r.stdout_text.find("[alpha ]") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("[beta]") != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("[gamma]") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("[alpha]") == std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("[alpha beta]") == std::string::npos);
 }
 
 TEST(xargs, xargs_default_echo_replacement_uses_one_input_line_per_command) {
@@ -340,7 +343,7 @@ TEST(xargs, xargs_default_parser_respects_backslash_escaping) {
   EXPECT_TRUE(r.stdout_text.find("one two") != std::string::npos);
 }
 
-TEST(xargs, xargs_default_parser_preserves_trailing_backslash_at_eof) {
+TEST(xargs, xargs_default_parser_drops_trailing_backslash_at_eof_1321) {
   TempDir tmp;
   tmp.write("input.txt", "alpha\\");
 
@@ -352,7 +355,8 @@ TEST(xargs, xargs_default_parser_preserves_trailing_backslash_at_eof) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stderr_text.empty());
-  EXPECT_TRUE(r.stdout_text.find("alpha\\") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("alpha") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("alpha\\") == std::string::npos);
 }
 
 TEST(xargs, xargs_default_parser_rejects_unmatched_double_quote_with_gnu_hint) {
@@ -1224,12 +1228,15 @@ TEST(xargs, xargs_exit_if_exceeded_rejects_oversized_command_line) {
 
   auto r = p.run();
 
+  // #1323: cmd.exe + /C + echo alone is already 16 bytes over a -s 10
+  // limit, so GNU reports cannot-fit (not the old generic message).
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stderr_text.find("command line length exceeded") !=
-              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "cannot fit single argument within argument list size "
+                  "limit") != std::string::npos);
 }
 
-TEST(xargs, xargs_max_chars_below_command_floor_warns_and_runs) {
+TEST(xargs, xargs_max_chars_below_command_size_errors_without_running_1323) {
   TempDir tmp;
 
   Pipeline p;
@@ -1239,10 +1246,13 @@ TEST(xargs, xargs_max_chars_below_command_floor_warns_and_runs) {
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stderr_text.find("value for -s option is too small") !=
-              std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("alpha") != std::string::npos);
+  // #1323: the old code lifted -s up to the command line and ran anyway;
+  // GNU refuses with cannot-fit and runs nothing.
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "cannot fit single argument within argument list size "
+                  "limit") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("alpha") == std::string::npos);
 }
 
 TEST(xargs, xargs_default_echo_max_chars_splits_batches) {
@@ -1250,13 +1260,16 @@ TEST(xargs, xargs_default_echo_max_chars_splits_batches) {
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
-  p.add(L"xargs.exe", {L"-s", L"8"});
+  // #1323: echo counts 5 bytes, so -s 13 fits "one two" (5+4+4) but not
+  // a third item; -s 8 would make even one item unusable (see the
+  // single-oversized-item test below).
+  p.add(L"xargs.exe", {L"-s", L"13"});
   p.set_stdin("one\ntwo\nthree\n");
 
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "one\ntwo\nthree\n");
+  EXPECT_EQ_TEXT(r.stdout_text, "one two\nthree\n");
 }
 
 TEST(xargs,
@@ -1270,9 +1283,11 @@ TEST(xargs,
 
   auto r = p.run();
 
+  // #1323: echo alone (5 bytes) already exceeds -s 3.
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stderr_text.find("command line length exceeded") !=
-              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "cannot fit single argument within argument list size "
+                  "limit") != std::string::npos);
 }
 
 TEST(xargs, xargs_maps_child_failure_to_123) {
@@ -1315,24 +1330,24 @@ TEST(xargs, xargs_maps_child_127_to_123) {
   EXPECT_EQ(r.exit_code, 123);
 }
 
-TEST(xargs, xargs_maps_signal_shaped_child_130_to_125) {
+TEST(xargs, xargs_maps_child_130_to_123_1319) {
   Pipeline p;
   p.add(L"xargs.exe", {L"cmd.exe", L"/C", L"exit", L"/B"});
   p.set_stdin("130\n");
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 125);
+  EXPECT_EQ(r.exit_code, 123);
 }
 
-TEST(xargs, xargs_maps_signal_shaped_child_143_to_125) {
+TEST(xargs, xargs_maps_child_143_to_123_1319) {
   Pipeline p;
   p.add(L"xargs.exe", {L"cmd.exe", L"/C", L"exit", L"/B"});
   p.set_stdin("143\n");
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 125);
+  EXPECT_EQ(r.exit_code, 123);
 }
 
 TEST(xargs, xargs_not_found_returns_127) {
@@ -1412,13 +1427,18 @@ TEST(xargs, xargs_delimiter_does_not_force_exit_if_exceeded) {
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
-  p.add(L"xargs.exe", {L"-d", L",", L"-s", L"12", L"cmd.exe", L"/C", L"echo"});
+  // #1323: cmd.exe + /C + echo is 16 bytes, so -s 22 fits one item
+  // (16+6) but not two; -d still splits instead of aborting.  (-s 12
+  // would now be a cannot-fit error, since even the base exceeds it.)
+  p.add(L"xargs.exe", {L"-d", L",", L"-s", L"22", L"cmd.exe", L"/C", L"echo"});
   p.set_stdin("alpha,beta,gamma\n");
 
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stderr_text.find("command line length exceeded") ==
+              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("cannot fit single argument") ==
               std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("alpha") != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("beta") != std::string::npos);
@@ -1436,9 +1456,12 @@ TEST(xargs, xargs_replace_still_implies_exit_if_exceeded) {
 
   auto r = p.run();
 
+  // #1323: the base (cmd.exe + /C + echo + template) already exceeds
+  // -s 12, so GNU reports cannot-fit.
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stderr_text.find("command line length exceeded") !=
-              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "cannot fit single argument within argument list size "
+                  "limit") != std::string::npos);
 }
 
 // Explicit -x with -d still exits when a single item exceeds -s.
@@ -1453,8 +1476,64 @@ TEST(xargs, xargs_explicit_exit_with_delimiter_rejects_oversized_item) {
 
   auto r = p.run();
 
+  // #1323: the base alone (16 bytes) already exceeds -s 10.
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stderr_text.find("command line length exceeded") !=
+  EXPECT_TRUE(r.stderr_text.find(
+                  "cannot fit single argument within argument list size "
+                  "limit") != std::string::npos);
+}
+
+// ---- winx3-xargs regressions (issues #1318-#1323) ----
+
+TEST(xargs, xargs_null_empty_input_with_no_run_if_empty_skips_1318) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe",
+        {L"-0", L"-r", L"cmd.exe", L"/C", L"echo", L"baseline"});
+  p.set_stdin("");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("baseline") == std::string::npos);
+}
+
+TEST(xargs, xargs_delimiter_empty_input_with_no_run_if_empty_skips_1318) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe",
+        {L"-d", L",", L"-r", L"cmd.exe", L"/C", L"echo", L"baseline"});
+  p.set_stdin("");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("baseline") == std::string::npos);
+}
+
+TEST(xargs, xargs_maps_child_200_to_123_1319) {
+  Pipeline p;
+  p.add(L"xargs.exe", {L"cmd.exe", L"/C", L"exit", L"/B"});
+  p.set_stdin("200\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 123);
+}
+
+TEST(xargs, xargs_child_255_prints_abort_diagnostic_1319) {
+  Pipeline p;
+  p.add(L"xargs.exe", {L"cmd.exe", L"/C", L"exit", L"/B"});
+  p.set_stdin("255\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 124);
+  EXPECT_TRUE(r.stderr_text.find("exited with status 255; aborting") !=
               std::string::npos);
 }
 
@@ -1471,4 +1550,307 @@ TEST(xargs, xargs_utility_help_is_not_intercepted) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.find("--help a") != std::string::npos);
+}
+
+TEST(xargs, xargs_interactive_stdin_exhausted_fails_loudly_1320) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  // No -a: stdin is the item source and is fully consumed before the
+  // prompt, so there is no answer left to read.  GNU fails loudly here;
+  // the old code silently skipped with exit code 0.
+  p.add(L"xargs.exe", {L"-p", L"cmd.exe", L"/C", L"echo"});
+  p.set_stdin("alpha\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("Failed to read from stdin") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("?...") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("alpha") == std::string::npos);
+}
+
+TEST(xargs, xargs_interactive_leading_blank_answer_refuses_1320) {
+  TempDir tmp;
+  tmp.write("args.txt", "alpha\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"-p", L"-a", L"args.txt", L"cmd.exe", L"/C", L"echo"});
+  p.set_stdin(" y\n");
+
+  auto r = p.run();
+
+  // Only the first character of the answer counts: a leading blank is a
+  // refusal, not a yes.
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("alpha") == std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("?...") != std::string::npos);
+}
+
+TEST(xargs, xargs_double_quoted_backslash_stays_literal_1321) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"cmd.exe", L"/C", L"echo"});
+  p.set_stdin("\"a\\b\"\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("a\\b") != std::string::npos);
+}
+
+TEST(xargs, xargs_newline_inside_double_quotes_errors_1321) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"cmd.exe", L"/C", L"echo"});
+  p.set_stdin("\"abc\ndef\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(
+      r.stderr_text.find("xargs: unmatched double quote; by default quotes "
+                         "are special to xargs unless you use the -0 option") !=
+      std::string::npos);
+}
+
+TEST(xargs, xargs_replacement_backslash_continues_line_1321) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"-I", L"{}"});
+  p.set_stdin("foo\\\nbar\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "foo\nbar\n");
+}
+
+TEST(xargs, xargs_replacement_double_backslash_does_not_continue_1321) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"-I", L"{}"});
+  p.set_stdin("foo\\\\\nbar\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "foo\\\nbar\n");
+}
+
+TEST(xargs, xargs_replacement_empty_quotes_yield_empty_item_1321) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"-I", L"{}"});
+  p.set_stdin("\"\"\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "\n");
+}
+
+TEST(xargs, xargs_replacement_strips_leading_blanks_keeps_trailing_1322) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"-I", L"{}"});
+  p.set_stdin("  lead trail \n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "lead trail \n");
+}
+
+TEST(xargs, xargs_verbose_quotes_special_args_1322) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"-t", L"cmd.exe", L"/C", L"echo"});
+  p.set_stdin("a;b\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.find("'a;b'") != std::string::npos);
+
+  Pipeline q;
+  q.set_cwd(tmp.wpath());
+  q.add(L"xargs.exe", {L"-t", L"cmd.exe", L"/C", L"echo"});
+  q.set_stdin("a'b'\n");
+
+  auto s = q.run();
+
+  EXPECT_EQ(s.exit_code, 0);
+  EXPECT_TRUE(s.stderr_text.find("\"a'b\"") != std::string::npos);
+}
+
+TEST(xargs, xargs_eof_warning_with_null_1322) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"-E", L"STOP", L"-0", L"cmd.exe", L"/C", L"echo"});
+  p.set_stdin(std::string("a\0", 2));
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.find("the -E option has no effect if -0 or -d "
+                                 "is used") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("a") != std::string::npos);
+}
+
+TEST(xargs, xargs_last_of_null_and_delimiter_wins_1322) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"-0", L"-d", L",", L"cmd.exe", L"/C", L"echo"});
+  p.set_stdin(std::string("a,b\0c", 5));
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("a b") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("a,b") == std::string::npos);
+
+  Pipeline q;
+  q.set_cwd(tmp.wpath());
+  q.add(L"xargs.exe", {L"-d", L",", L"-0", L"cmd.exe", L"/C", L"echo"});
+  q.set_stdin(std::string("a,b\0c", 5));
+
+  auto s = q.run();
+
+  EXPECT_EQ(s.exit_code, 0);
+  EXPECT_TRUE(s.stdout_text.find("a,b c") != std::string::npos);
+}
+
+TEST(xargs, xargs_show_limits_prints_six_lines_and_runs_1322) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"--show-limits", L"cmd.exe", L"/C", L"echo"});
+  p.set_stdin("hi\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.find("Your environment variables take up") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("POSIX upper limit on argument length") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("POSIX smallest allowable upper limit") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "Maximum length of command we could actually use") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "Size of command buffer we are actually using: 32767") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("Maximum parallelism") !=
+              std::string::npos);
+  // --show-limits suppresses nothing: the command still runs.
+  EXPECT_TRUE(r.stdout_text.find("hi") != std::string::npos);
+}
+
+TEST(xargs, xargs_single_oversized_item_errors_without_exit_flag_1323) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"-s", L"20", L"cmd.exe", L"/C", L"echo"});
+  p.set_stdin("alpha\n");
+
+  auto r = p.run();
+
+  // Base (16) fits, but base + alpha (22) does not, and GNU errors even
+  // without -x instead of running the item anyway.
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("argument line too long") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("alpha") == std::string::npos);
+}
+
+TEST(xargs, xargs_empty_input_below_echo_size_errors_1323) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"-s", L"4"});
+  p.set_stdin("");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "cannot fit single argument within argument list size "
+                  "limit") != std::string::npos);
+}
+
+TEST(xargs, xargs_default_echo_single_oversized_item_errors_1323) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"-s", L"8"});
+  p.set_stdin("one\ntwo\nthree\n");
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("argument line too long") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("one") == std::string::npos);
+}
+
+TEST(xargs, xargs_argv_accounting_boundary_1323) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe",
+        {L"-s", L"24", L"cmd.exe", L"/C", L"echo", L"PRE"});
+  p.set_stdin("aaa bbb\n");
+
+  auto r = p.run();
+
+  // cmd.exe + /C + echo + PRE is 20 bytes; one item (24) fits, two do not.
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("PRE aaa") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("PRE bbb") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("PRE aaa bbb") == std::string::npos);
+}
+
+TEST(xargs, xargs_size_counts_raw_argv_not_quoted_line_1323) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"-x", L"-s", L"9"});
+  p.set_stdin("a;b\n");
+
+  auto r = p.run();
+
+  // echo (5) + a;b (4) is exactly 9; the Windows-quoted form would be
+  // longer, but -s accounting must use the raw argv bytes.
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("a;b") != std::string::npos);
 }

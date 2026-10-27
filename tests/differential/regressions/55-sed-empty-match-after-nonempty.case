@@ -1,0 +1,7 @@
+cmd: sed
+args: s/[0-9]*/N/g data.txt
+timeout: 10
+setup: |
+  printf '2 g x\n' > data.txt
+source: github.com/unixwin/WinuxCmd/issues/1284
+tags: issue-1284 regression

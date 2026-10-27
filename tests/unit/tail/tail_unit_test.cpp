@@ -903,3 +903,20 @@ TEST(tail, tail_stdin_ctrlz_matches_file_operand_issue1212) {
   EXPECT_FALSE(rf.stdout_text.empty());
   EXPECT_EQ(rs.stdout_text, rf.stdout_text);
 }
+
+TEST(tail, issue_1283_drive_colon_operand_reads_carrier_file) {
+  TempDir tmp;
+  const wchar_t drive = tmp.wpath()[0];
+  const std::wstring carrier =
+      std::wstring(1, drive) + L'\uF03A' + L"wux.txt";
+  temp_dir_detail::write_all(tmp.path / carrier, "first\nsecond\n", 13);
+  const std::wstring operand = std::wstring(1, drive) + L":wux.txt";
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"tail.exe", {L"-n", L"1", operand});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "second\n");
+}

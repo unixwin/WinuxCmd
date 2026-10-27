@@ -525,3 +525,63 @@ TEST(cat, cat_help_rejects_attached_value) {
               std::string::npos);
 }
 
+
+TEST(cat, issue_1283_drive_colon_operand_reads_carrier_file) {
+  TempDir tmp;
+  const wchar_t drive = tmp.wpath()[0];
+  const std::wstring carrier =
+      std::wstring(1, drive) + L'\uF03A' + L"wux.txt";
+  temp_dir_detail::write_all(tmp.path / carrier, "hello\n", 6);
+  const std::wstring operand = std::wstring(1, drive) + L":wux.txt";
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cat.exe", {operand});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "hello\n");
+}
+
+namespace {
+// #1288 fixture: an 8x40 directory chain (composed path past MAX_PATH),
+// created through the extended-length API. Empty result: skip the test.
+auto make_deep_tree_1288(const TempDir& tmp) -> std::wstring {
+  std::wstring cursor = tmp.wpath();
+  const std::wstring component(40, L'x');
+  for (int i = 0; i < 8; ++i) {
+    cursor += L"\\" + component;
+    const std::wstring extended =
+        cursor.rfind(L"\\\\?\\", 0) == 0 ? cursor : L"\\\\?\\" + cursor;
+    if (!CreateDirectoryW(extended.c_str(), nullptr)) {
+      const DWORD err = GetLastError();
+      if (err != ERROR_ALREADY_EXISTS) return {};
+    }
+  }
+  return cursor;
+}
+auto extended_1288(const std::wstring& p) -> std::wstring {
+  return p.rfind(L"\\\\?\\", 0) == 0 ? p : L"\\\\?\\" + p;
+}
+}  // namespace
+
+TEST(cat, issue_1288_glob_expands_past_max_path) {
+  TempDir tmp;
+  const std::wstring deep = make_deep_tree_1288(tmp);
+  if (deep.empty() || deep.size() <= MAX_PATH) {
+    std::cout << "  SKIPPED (deep fixture unavailable)\n";
+    return;
+  }
+  temp_dir_detail::write_all(
+      std::filesystem::path(extended_1288(deep)) / L"globbed.txt", "glob\n",
+      5);
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_env(L"WINUX_SHELL_GLOB", L"native");
+  p.add(L"cat.exe", {deep + L"\\*.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "glob\n");
+}

@@ -3,6 +3,11 @@
 #include <AclAPI.h>
 #include <sys/utime.h>
 
+#include <algorithm>
+#include <cctype>
+#include <fstream>
+#include <sstream>
+
 #include "framework/winuxtest.h"
 
 namespace {
@@ -576,15 +581,27 @@ TEST(find, find_quit_stops_after_first_match) {
   tmp.write("first.txt", "");
   tmp.write("second.txt", "");
 
+  // [#1309] -quit is an action, so it suppresses the default -print:
+  // GNU prints nothing here and exits 0. The traversal-stop property is
+  // covered by the -print -quit case below.
   Pipeline p;
   p.set_cwd(tmp.wpath());
   p.add(L"find.exe", {L".", L"-name", L"*.txt", L"-quit"});
 
   auto r = p.run();
   EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.empty());
+
+  // With an explicit -print, -quit still stops after the first match.
+  Pipeline printed;
+  printed.set_cwd(tmp.wpath());
+  printed.add(L"find.exe", {L".", L"-name", L"*.txt", L"-print", L"-quit"});
+
+  auto pr = printed.run();
+  EXPECT_EQ(pr.exit_code, 0);
 
   size_t newline_count = 0;
-  for (char ch : r.stdout_text) {
+  for (char ch : pr.stdout_text) {
     if (ch == '\n') ++newline_count;
   }
   EXPECT_EQ(newline_count, 1u);
@@ -661,6 +678,221 @@ TEST(find, find_mmin_and_mtime_support_signed_ranges) {
   EXPECT_EQ(day_result.exit_code, 0);
   EXPECT_TRUE(day_result.stdout_text.find("older.txt") != std::string::npos);
   EXPECT_TRUE(day_result.stdout_text.find("recent.txt") == std::string::npos);
+}
+
+TEST(find, issue_1311_time_predicates_use_gnu_windows_and_fractions) {
+  TempDir tmp;
+  tmp.write("fresh.txt", "now");
+  tmp.write("old.txt", "old");
+  tmp.write("future.txt", "future");
+
+  auto now = std::filesystem::file_time_type::clock::now();
+  std::filesystem::last_write_time(tmp.path / "old.txt",
+                                   now - std::chrono::hours(25));
+  std::filesystem::last_write_time(tmp.path / "future.txt",
+                                   now + std::chrono::hours(1));
+
+  auto run_time_query = [&tmp](const wchar_t* option, const wchar_t* value) {
+    Pipeline p;
+    p.set_cwd(tmp.wpath());
+    p.add(L"find.exe",
+          {L".", L"-type", L"f", option, value, L"-print"});
+    return p.run();
+  };
+
+  // MIN family, fractional: a file a few seconds old sits in [-30s, 30s),
+  // so -mmin 0.5 matches it, -mmin 1.5 does not, and -mmin +0.5 (age > 30s)
+  // does not either (the 25h-old file does match +0.5, so only assert the
+  // fresh file's absence there).
+  auto half = run_time_query(L"-mmin", L"0.5");
+  EXPECT_EQ(half.exit_code, 0);
+  EXPECT_TRUE(half.stdout_text.find("fresh.txt") != std::string::npos);
+  EXPECT_TRUE(half.stdout_text.find("old.txt") == std::string::npos);
+  EXPECT_TRUE(half.stdout_text.find("future.txt") == std::string::npos);
+
+  auto one_half = run_time_query(L"-mmin", L"1.5");
+  EXPECT_EQ(one_half.exit_code, 0);
+  EXPECT_TRUE(one_half.stdout_text.find("fresh.txt") == std::string::npos);
+
+  auto plus_half = run_time_query(L"-mmin", L"+0.5");
+  EXPECT_EQ(plus_half.exit_code, 0);
+  EXPECT_TRUE(plus_half.stdout_text.find("fresh.txt") == std::string::npos);
+  EXPECT_TRUE(plus_half.stdout_text.find("old.txt") != std::string::npos);
+
+  // Future timestamps are not clamped: the file an hour in the future
+  // (age -3600s) is outside [-60s, 0s) so -mmin 0 misses it, but
+  // -mmin -1 (age < 60s) catches it.
+  auto zero = run_time_query(L"-mmin", L"0");
+  EXPECT_EQ(zero.exit_code, 0);
+  EXPECT_TRUE(zero.stdout_text.find("future.txt") == std::string::npos);
+
+  auto minus_one = run_time_query(L"-mmin", L"-1");
+  EXPECT_EQ(minus_one.exit_code, 0);
+  EXPECT_TRUE(minus_one.stdout_text.find("future.txt") != std::string::npos);
+  EXPECT_TRUE(minus_one.stdout_text.find("old.txt") == std::string::npos);
+
+  // DAY family: the 25h-old file is in [24h, 48h), so -mtime 1 matches
+  // it and -mtime 0 does not (the fresh file does match -mtime 0).
+  auto day_one = run_time_query(L"-mtime", L"1");
+  EXPECT_EQ(day_one.exit_code, 0);
+  EXPECT_TRUE(day_one.stdout_text.find("old.txt") != std::string::npos);
+  EXPECT_TRUE(day_one.stdout_text.find("fresh.txt") == std::string::npos);
+  EXPECT_TRUE(day_one.stdout_text.find("future.txt") == std::string::npos);
+
+  auto day_zero = run_time_query(L"-mtime", L"0");
+  EXPECT_EQ(day_zero.exit_code, 0);
+  EXPECT_TRUE(day_zero.stdout_text.find("old.txt") == std::string::npos);
+  EXPECT_TRUE(day_zero.stdout_text.find("fresh.txt") != std::string::npos);
+}
+
+TEST(find, issue_1311_newermt_accepts_relative_dates) {
+  TempDir tmp;
+  tmp.write("recent.txt", "now");
+  tmp.write("old.txt", "old");
+
+  auto now = std::filesystem::file_time_type::clock::now();
+  std::filesystem::last_write_time(tmp.path / "old.txt",
+                                   now - std::chrono::hours(2));
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L".", L"-type", L"f", L"-newermt", L"1 hour ago",
+                      L"-print"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("recent.txt") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("old.txt") == std::string::npos);
+
+  // GNU rejects 'an hour ago'; the parse error must survive.
+  Pipeline bad;
+  bad.set_cwd(tmp.wpath());
+  bad.add(L"find.exe", {L".", L"-newermt", L"an hour ago"});
+  auto bad_result = bad.run();
+  EXPECT_EQ(bad_result.exit_code, 1);
+}
+
+TEST(find, issue_1311_used_measures_atime_minus_ctime_gap) {
+  TempDir tmp;
+  tmp.write("wide.txt", "wide");
+  tmp.write("fresh.txt", "fresh");
+
+  // Access far in the future, creation/write today: the filesystem stamps
+  // the change time at the SetFileTime call, so the atime-ctime gap is
+  // roughly three years, far above 100 days and far below any exact-day
+  // window edge used here. The fresh file's gap is ~0 (or a hair
+  // negative on filesystems that stamp atime just before ctime), so it
+  // matches neither +100 nor 1.
+  EXPECT_TRUE(set_file_times(tmp.path / "wide.txt", 2026, 10, 26, 0, 0, 0,
+                             2030, 1, 1, 0, 0, 0, 2026, 10, 26, 0, 0, 0));
+
+  Pipeline plus;
+  plus.set_cwd(tmp.wpath());
+  plus.add(L"find.exe", {L".", L"-type", L"f", L"-used", L"+100", L"-print"});
+  auto plus_result = plus.run();
+  EXPECT_EQ(plus_result.exit_code, 0);
+  EXPECT_TRUE(plus_result.stdout_text.find("wide.txt") != std::string::npos);
+  EXPECT_TRUE(plus_result.stdout_text.find("fresh.txt") == std::string::npos);
+
+  Pipeline one;
+  one.set_cwd(tmp.wpath());
+  one.add(L"find.exe", {L".", L"-type", L"f", L"-used", L"1", L"-print"});
+  auto one_result = one.run();
+  EXPECT_EQ(one_result.exit_code, 0);
+  EXPECT_TRUE(one_result.stdout_text.find("wide.txt") == std::string::npos);
+}
+
+TEST(find, issue_1315_exec_spawn_failure_is_diagnosed_per_file) {
+  TempDir tmp;
+  tmp.write("in1.txt", "x");
+  tmp.write("in2.txt", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L".", L"-name", L"in*.txt", L"-exec",
+                      L"./nosuchcmdxyz", L"{}", L";"});
+  auto r = p.run();
+  // GNU: a spawn failure is diagnosed for every file but does not change
+  // find's exit status for the `\;` form.
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.find("No such file or directory") !=
+              std::string::npos);
+  size_t count = 0;
+  size_t pos = 0;
+  while ((pos = r.stderr_text.find("nosuchcmdxyz", pos)) !=
+         std::string::npos) {
+    ++count;
+    pos += 12;
+  }
+  EXPECT_EQ(count, 2u);
+}
+
+TEST(find, issue_1315_exec_substitutes_command_position_placeholder) {
+  TempDir tmp;
+  tmp.write("a.txt", "x");
+
+  // With substitution, the program is ./a.txt: the diagnostic names the
+  // file, and the launch fails (on Windows CreateProcessW rejects the
+  // .txt image; GNU on Linux reports Permission denied for the same
+  // shape). Without substitution the program would be the literal {}
+  // and the diagnostic would name {} instead.
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe",
+        {L".", L"-name", L"a.txt", L"-exec", L"{}", L"{}", L";"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.find("./a.txt") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("'{}'") == std::string::npos);
+}
+
+TEST(find, issue_1315_exec_plus_expands_non_trailing_placeholder) {
+  TempDir tmp;
+  tmp.write("f1.txt", "a");
+  tmp.write("f2.txt", "b");
+  tmp.write("echoer.cmd", "@echo %* >> marker.txt\r\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L".", L"-name", L"f*.txt", L"-exec", L"./echoer.cmd",
+                      L"{}", L"{}", L"+"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+
+  std::ifstream marker(tmp.path / "marker.txt");
+  std::stringstream content;
+  content << marker.rdbuf();
+  // The non-trailing {} expands to the full batch, then the trailing
+  // batch is appended: each file appears twice, and no literal {} stays.
+  EXPECT_TRUE(content.str().find("{}") == std::string::npos);
+  EXPECT_TRUE(content.str().find("f1.txt") != std::string::npos);
+  EXPECT_TRUE(content.str().find("f2.txt") != std::string::npos);
+  size_t f1_count = 0;
+  size_t pos = 0;
+  while ((pos = content.str().find("f1.txt", pos)) != std::string::npos) {
+    ++f1_count;
+    pos += 6;
+  }
+  EXPECT_EQ(f1_count, 2u);
+}
+
+TEST(find, issue_1316_quit_stops_without_any_match) {
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "dir1");
+  tmp.write("dir1/nomatch.txt", "x");
+
+  // -quit is evaluated (and fires) for the non-matching entry before
+  // the -a -false branch rejects it, so traversal must stop before the
+  // missing second root is visited: GNU exits 0 with no error. The
+  // issue's seed form (find emptydir missingdir -name x -quit) is NOT
+  // used here: with -name x, -quit is never reached for non-matching
+  // entries, so GNU itself reports the missing root with exit 1.
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe",
+        {L"dir1", L"missingdir", L"-quit", L"-a", L"-false"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.find("missingdir") == std::string::npos);
 }
 
 TEST(find, find_perm_and_access_primaries_match_winux_permissions) {
@@ -2977,4 +3209,495 @@ TEST(find, find_exec_help_is_not_intercepted) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.find("Usage:") != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("Usage: find") == std::string::npos);
+}
+
+namespace {
+
+// #1283/#1288 shared fixture: a directory chain of `levels` components
+// of `width` characters under the temp root, created through the
+// extended-length API (plain Win32 refuses past MAX_PATH). Returns the
+// unextended display spelling, or an empty string when the fixture
+// cannot be built in this environment (callers skip, like the D9 test).
+auto make_deep_tree(const TempDir& tmp, int levels, wchar_t fill, int width)
+    -> std::wstring {
+  std::wstring cursor = tmp.wpath();
+  const std::wstring component(static_cast<size_t>(width), fill);
+  for (int i = 0; i < levels; ++i) {
+    cursor += L"\\" + component;
+    const std::wstring extended =
+        cursor.rfind(L"\\\\?\\", 0) == 0 ? cursor : L"\\\\?\\" + cursor;
+    if (!CreateDirectoryW(extended.c_str(), nullptr)) {
+      const DWORD err = GetLastError();
+      if (err != ERROR_ALREADY_EXISTS) return {};
+    }
+  }
+  return cursor;
+}
+
+auto extended_of(const std::wstring& path) -> std::wstring {
+  return path.rfind(L"\\\\?\\", 0) == 0 ? path : L"\\\\?\\" + path;
+}
+
+}  // namespace
+
+// #1283 repro A: listing a directory whose child is named "inner."
+// aborted with 0xC0000409. The walk must evaluate the trailing-dot
+// entry, not crash on it.
+TEST(find, issue_1283_trailing_dot_directory_is_walked_not_fatal) {
+  TempDir tmp;
+  const std::wstring inner = tmp.wpath() + L"\\inner.";
+  if (!CreateDirectoryW(extended_of(inner).c_str(), nullptr)) {
+    const DWORD err = GetLastError();
+    if (err != ERROR_ALREADY_EXISTS) {
+      std::cout << "  SKIPPED (CreateDirectoryW failed with error " << err
+                << ")\n";
+      return;
+    }
+  }
+  temp_dir_detail::write_all(
+      std::filesystem::path(extended_of(inner)) / L"f.txt", "x", 1);
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {tmp.wpath()});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_NE(r.stdout_text.find("inner."), std::string::npos);
+  EXPECT_NE(r.stdout_text.find("f.txt"), std::string::npos);
+}
+
+// #1283 repro B: recursion into a tree whose composed paths pass
+// MAX_PATH aborted with 0xC0000409; ls -R completed the same tree.
+TEST(find, issue_1283_recursion_past_max_path_prints_deepest_file) {
+  TempDir tmp;
+  const std::wstring deep = make_deep_tree(tmp, 23, L'd', 23);
+  if (deep.empty() || deep.size() <= MAX_PATH) {
+    std::cout << "  SKIPPED (deep fixture unavailable)\n";
+    return;
+  }
+  temp_dir_detail::write_all(
+      std::filesystem::path(extended_of(deep)) / L"marker.txt", "x", 1);
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {tmp.wpath(), L"-name", L"marker.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_NE(r.stdout_text.find("marker.txt"), std::string::npos);
+}
+
+// #1288: the walk's per-entry probes (type/empty/printf) must still work
+// when the composed entry path is past MAX_PATH; before the fix they
+// probed the unextended spelling and silently misjudged the entry.
+TEST(find, issue_1288_predicates_work_past_max_path) {
+  TempDir tmp;
+  const std::wstring deep = make_deep_tree(tmp, 8, L'x', 40);
+  if (deep.empty() || deep.size() <= MAX_PATH) {
+    std::cout << "  SKIPPED (deep fixture unavailable)\n";
+    return;
+  }
+  const std::filesystem::path deep_io(extended_of(deep));
+  temp_dir_detail::write_all(deep_io / L"probe.txt", "x", 1);
+  temp_dir_detail::write_all(deep_io / L"empty.txt", "", 0);
+
+  Pipeline by_type;
+  by_type.set_cwd(tmp.wpath());
+  by_type.add(L"find.exe", {deep, L"-type", L"f"});
+  auto rt = by_type.run();
+  EXPECT_EQ(rt.exit_code, 0);
+  EXPECT_NE(rt.stdout_text.find("probe.txt"), std::string::npos);
+  EXPECT_NE(rt.stdout_text.find("empty.txt"), std::string::npos);
+
+  Pipeline by_empty;
+  by_empty.set_cwd(tmp.wpath());
+  by_empty.add(L"find.exe", {deep, L"-empty"});
+  auto re = by_empty.run();
+  EXPECT_EQ(re.exit_code, 0);
+  EXPECT_NE(re.stdout_text.find("empty.txt"), std::string::npos);
+  EXPECT_EQ(re.stdout_text.find("probe.txt"), std::string::npos);
+
+  Pipeline by_printf;
+  by_printf.set_cwd(tmp.wpath());
+  by_printf.add(L"find.exe", {deep, L"-name", L"probe.txt", L"-printf",
+                               L"%y\\n"});
+  auto rp = by_printf.run();
+  EXPECT_EQ(rp.exit_code, 0);
+  EXPECT_EQ_TEXT(rp.stdout_text, "f\n");
+}
+
+// #1288: -newer with the reference file itself past MAX_PATH. Before
+// the fix the reference was read through the raw operand spelling and
+// the comparison silently never matched.
+TEST(find, issue_1288_newer_reference_past_max_path) {
+  TempDir tmp;
+  const std::wstring deep = make_deep_tree(tmp, 8, L'x', 40);
+  if (deep.empty() || deep.size() <= MAX_PATH) {
+    std::cout << "  SKIPPED (deep fixture unavailable)\n";
+    return;
+  }
+  const std::filesystem::path deep_io(extended_of(deep));
+  temp_dir_detail::write_all(deep_io / L"ref.txt", "x", 1);
+  temp_dir_detail::write_all(deep_io / L"newer.txt", "x", 1);
+  ASSERT_TRUE(set_last_write_time(deep_io / L"ref.txt", 2020, 1, 1, 0, 0, 0));
+  ASSERT_TRUE(
+      set_last_write_time(deep_io / L"newer.txt", 2024, 1, 1, 0, 0, 0));
+
+  const std::wstring ref_display = deep + L"\\ref.txt";
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {deep, L"-newer", ref_display});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_NE(r.stdout_text.find("newer.txt"), std::string::npos);
+  EXPECT_EQ(r.stdout_text.find("ref.txt"), std::string::npos);
+}
+
+// #1288: -delete must remove entries whose composed path is past
+// MAX_PATH (it removed through the logical spelling before the fix).
+TEST(find, issue_1288_delete_past_max_path) {
+  TempDir tmp;
+  const std::wstring deep = make_deep_tree(tmp, 8, L'x', 40);
+  if (deep.empty() || deep.size() <= MAX_PATH) {
+    std::cout << "  SKIPPED (deep fixture unavailable)\n";
+    return;
+  }
+  const std::filesystem::path deep_io(extended_of(deep));
+  temp_dir_detail::write_all(deep_io / L"doomed.txt", "x", 1);
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {deep, L"-name", L"doomed.txt", L"-delete"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(GetFileAttributesW(
+                (extended_of(deep) + L"\\doomed.txt").c_str()),
+            INVALID_FILE_ATTRIBUTES);
+}
+
+// #1288: -fprint with a POSIX-spelled output path. Before the fix the
+// raw operand was handed to std::ofstream and "/C:/..." landed in a
+// relative "C" directory under the cwd instead of the named file.
+TEST(find, issue_1288_fprint_posix_spelled_output_path) {
+  TempDir tmp;
+  tmp.write("a.txt", "x\n");
+
+  std::wstring posix_out = tmp.wpath();
+  posix_out.erase(1, 1);  // drop the drive ':'
+  for (auto& ch : posix_out) {
+    if (ch == L'\\') ch = L'/';
+  }
+  posix_out = L"/" + posix_out + L"/out.txt";
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L".", L"-name", L"a.txt", L"-fprint", posix_out});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  const std::filesystem::path out_path = tmp.path / "out.txt";
+  ASSERT_TRUE(std::filesystem::exists(out_path));
+  std::ifstream in(out_path);
+  std::string content((std::istreambuf_iterator<char>(in)),
+                      std::istreambuf_iterator<char>());
+  EXPECT_NE(content.find("a.txt"), std::string::npos);
+}
+TEST(find, issue_1317_leading_dashdash_is_not_a_root) {
+  TempDir tmp;
+  tmp.write("a.txt", "");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L"--", L".", L"-type", L"f"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("a.txt") != std::string::npos);
+}
+
+TEST(find, issue_1317_equals_form_is_unknown_predicate_not_root) {
+  TempDir tmp;
+  tmp.write("a.txt", "");
+
+  // GNU rejects every "=value" form with "unknown predicate"; it must not
+  // be swallowed as a start point (which used to list "." then fail on
+  // the bogus root) and must not traverse at all.
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L".", L"-maxdepth=1", L"-type", L"f"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("unknown predicate") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("-maxdepth=1") != std::string::npos);
+}
+
+TEST(find, issue_1317_dashdash_after_root_is_unknown_predicate) {
+  TempDir tmp;
+  tmp.write("a.txt", "");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L".", L"--", L"-name", L"a.txt"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("unknown predicate") !=
+              std::string::npos);
+}
+
+TEST(find, issue_1312_mindepth_above_maxdepth_matches_nothing) {
+  TempDir tmp;
+  tmp.write("a.txt", "");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L".", L"-mindepth", L"2", L"-maxdepth", L"1"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.empty());
+
+  // Negative depths are still rejected.
+  Pipeline neg;
+  neg.set_cwd(tmp.wpath());
+  neg.add(L"find.exe", {L".", L"-mindepth", L"-1"});
+  auto nr = neg.run();
+  EXPECT_EQ(nr.exit_code, 1);
+}
+
+namespace {
+// Splits a single -ls line on whitespace for field-shape assertions.
+std::vector<std::string> split_ls_fields(const std::string& line) {
+  std::vector<std::string> fields;
+  std::string current;
+  for (char ch : line) {
+    if (ch == ' ' || ch == '\t') {
+      if (!current.empty()) {
+        fields.push_back(current);
+        current.clear();
+      }
+    } else if (ch != '\n' && ch != '\r') {
+      current.push_back(ch);
+    }
+  }
+  if (!current.empty()) fields.push_back(current);
+  return fields;
+}
+}  // namespace
+
+TEST(find, issue_1309_ls_suppresses_default_print_and_has_all_fields) {
+  TempDir tmp;
+  tmp.write("a.txt", "hello");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L".", L"-name", L"a.txt", L"-ls"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+
+  // Exactly one line: the -ls line itself, no bare-path default print.
+  size_t newline_count = 0;
+  for (char ch : r.stdout_text) {
+    if (ch == '\n') ++newline_count;
+  }
+  EXPECT_EQ(newline_count, 1u);
+  EXPECT_TRUE(r.stdout_text.find("./a.txt\n") == std::string::npos);
+
+  // GNU "ls -dils" shape: inode, blocks, mode, links, owner, group,
+  // size, month, day, time-or-year, path.
+  auto fields = split_ls_fields(r.stdout_text);
+  ASSERT_EQ(fields.size(), 11u);
+  EXPECT_TRUE(std::all_of(fields[0].begin(), fields[0].end(),
+                          [](char ch) { return std::isdigit(ch) != 0; }));
+  EXPECT_TRUE(std::all_of(fields[1].begin(), fields[1].end(),
+                          [](char ch) { return std::isdigit(ch) != 0; }));
+  EXPECT_EQ(fields[2].size(), 10u);
+  EXPECT_EQ(fields[6], "5");
+  EXPECT_EQ(fields[7].size(), 3u);
+  EXPECT_TRUE(fields[9].find(':') != std::string::npos);
+  EXPECT_TRUE(fields[10].find("a.txt") != std::string::npos);
+}
+
+TEST(find, issue_1309_fls_suppresses_stdout_and_writes_ls_line) {
+  TempDir tmp;
+  tmp.write("a.txt", "hello");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L".", L"-name", L"a.txt", L"-fls", L"out.txt"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.empty());
+
+  std::ifstream in(tmp.path / "out.txt");
+  std::stringstream buffer;
+  buffer << in.rdbuf();
+  auto fields = split_ls_fields(buffer.str());
+  ASSERT_EQ(fields.size(), 11u);
+  EXPECT_EQ(fields[6], "5");
+  EXPECT_TRUE(fields[10].find("a.txt") != std::string::npos);
+}
+
+TEST(find, issue_1309_quit_suppresses_default_print) {
+  TempDir tmp;
+  tmp.write("a.txt", "");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L".", L"-quit"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.empty());
+}
+
+TEST(find, issue_1310_size_applies_to_symlinks_by_target_length) {
+  TempDir tmp;
+  tmp.write("target.txt", "hello");
+  // Relative target so the stored link text is exactly "target.txt"
+  // (10 chars -> 1 unit of 512 bytes) on every platform.
+  if (!create_file_symlink_or_skip(tmp.path / "link.txt",
+                                   std::filesystem::path("target.txt"))) {
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L".", L"-name", L"link.txt", L"-size", L"1"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("link.txt") != std::string::npos);
+
+  Pipeline neg;
+  neg.set_cwd(tmp.wpath());
+  neg.add(L"find.exe", {L".", L"-name", L"link.txt", L"-size", L"0"});
+  auto nr = neg.run();
+  EXPECT_EQ(nr.exit_code, 0);
+  EXPECT_TRUE(nr.stdout_text.empty());
+}
+
+TEST(find, issue_1310_size_follows_symlinks_under_dash_L) {
+  TempDir tmp;
+  tmp.write("big.bin", std::string(1500, 'x'));
+  if (!create_file_symlink_or_skip(tmp.path / "link.bin",
+                                   std::filesystem::path("big.bin"))) {
+    return;
+  }
+
+  // -P (default): link size is the target-path length (7 chars -> 1 unit).
+  Pipeline plain;
+  plain.set_cwd(tmp.wpath());
+  plain.add(L"find.exe", {L".", L"-name", L"link.bin", L"-size", L"1"});
+  auto pr = plain.run();
+  EXPECT_EQ(pr.exit_code, 0);
+  EXPECT_TRUE(pr.stdout_text.find("link.bin") != std::string::npos);
+
+  // -L: link size is the target's size (1500 bytes -> 3 units).
+  Pipeline followed;
+  followed.set_cwd(tmp.wpath());
+  followed.add(L"find.exe",
+               {L"-L", L".", L"-name", L"link.bin", L"-size", L"3"});
+  auto fr = followed.run();
+  EXPECT_EQ(fr.exit_code, 0);
+  EXPECT_TRUE(fr.stdout_text.find("link.bin") != std::string::npos);
+
+  Pipeline followed_one;
+  followed_one.set_cwd(tmp.wpath());
+  followed_one.add(L"find.exe",
+                   {L"-L", L".", L"-name", L"link.bin", L"-size", L"1"});
+  auto for_ = followed_one.run();
+  EXPECT_EQ(for_.exit_code, 0);
+  EXPECT_TRUE(for_.stdout_text.empty());
+}
+
+TEST(find, issue_1314_perm_accepts_symbolic_copy_clauses) {
+  TempDir tmp;
+  tmp.write("plain.txt", "x");
+  tmp.write("run.cmd", "@echo off\n");
+  tmp.write("plain2.cmd", "@echo off\n");
+  EXPECT_TRUE(SetFileAttributesW((tmp.path / "run.cmd").c_str(),
+                                 FILE_ATTRIBUTE_READONLY));
+
+  // Copy clauses must parse (previously "invalid -perm symbolic mode").
+  // "g=u" copies from an empty mode, so it builds 000 and matches
+  // nothing here, but must exit 0.
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L".", L"-maxdepth", L"1", L"-perm", L"g=u"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.empty());
+
+  // Later clauses copy from the mode accumulated so far:
+  // g=rx,o=g,u=rwx builds 0755, the plain executable mode.
+  Pipeline exe;
+  exe.set_cwd(tmp.wpath());
+  exe.add(L"find.exe",
+          {L".", L"-maxdepth", L"1", L"-perm", L"g=rx,o=g,u=rwx"});
+  auto er = exe.run();
+  EXPECT_EQ(er.exit_code, 0);
+  EXPECT_TRUE(er.stdout_text.find("plain2.cmd") != std::string::npos);
+  EXPECT_TRUE(er.stdout_text.find("plain.txt") == std::string::npos);
+  EXPECT_TRUE(er.stdout_text.find("run.cmd") == std::string::npos);
+
+  // o=r,u=rw,g=o builds 0644, the plain-file mode.
+  Pipeline plain;
+  plain.set_cwd(tmp.wpath());
+  plain.add(L"find.exe",
+            {L".", L"-maxdepth", L"1", L"-perm", L"o=r,u=rw,g=o"});
+  auto pr = plain.run();
+  EXPECT_EQ(pr.exit_code, 0);
+  EXPECT_TRUE(pr.stdout_text.find("plain.txt") != std::string::npos);
+  EXPECT_TRUE(pr.stdout_text.find("run.cmd") == std::string::npos);
+  EXPECT_TRUE(pr.stdout_text.find("plain2.cmd") == std::string::npos);
+
+  // g=rx,o=rx,u=g builds 0555, the read-only executable mode.
+  Pipeline ro;
+  ro.set_cwd(tmp.wpath());
+  ro.add(L"find.exe",
+         {L".", L"-maxdepth", L"1", L"-perm", L"g=rx,o=rx,u=g"});
+  auto rr = ro.run();
+  EXPECT_EQ(rr.exit_code, 0);
+  EXPECT_TRUE(rr.stdout_text.find("run.cmd") != std::string::npos);
+  EXPECT_TRUE(rr.stdout_text.find("plain.txt") == std::string::npos);
+
+  // Restore the attribute so TempDir cleanup can remove the file.
+  SetFileAttributesW((tmp.path / "run.cmd").c_str(), FILE_ATTRIBUTE_NORMAL);
+}
+
+TEST(find, issue_1313_unknown_user_and_group_are_parse_errors) {
+  TempDir tmp;
+  tmp.write("a.txt", "");
+
+  Pipeline user;
+  user.set_cwd(tmp.wpath());
+  user.add(L"find.exe", {L".", L"-user", L"nosuchusrx"});
+  auto ur = user.run();
+  EXPECT_EQ(ur.exit_code, 1);
+  EXPECT_TRUE(ur.stderr_text.find("nosuchusrx") != std::string::npos);
+  EXPECT_TRUE(ur.stderr_text.find("known user") != std::string::npos);
+
+  Pipeline group;
+  group.set_cwd(tmp.wpath());
+  group.add(L"find.exe", {L".", L"-group", L"nosuchgrpx"});
+  auto gr = group.run();
+  EXPECT_EQ(gr.exit_code, 1);
+  EXPECT_TRUE(gr.stderr_text.find("nosuchgrpx") != std::string::npos);
+  EXPECT_TRUE(gr.stderr_text.find("an existing group") != std::string::npos);
+
+  // Numeric specs never need a lookup and must not error.
+  Pipeline numeric;
+  numeric.set_cwd(tmp.wpath());
+  numeric.add(L"find.exe", {L".", L"-user", L"99999"});
+  auto nr = numeric.run();
+  EXPECT_EQ(nr.exit_code, 0);
 }

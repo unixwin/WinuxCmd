@@ -397,3 +397,47 @@ TEST(install, install_wildcard_multiple_sources_require_existing_directory) {
   EXPECT_NE(r.exit_code, 0);
   EXPECT_FALSE(std::filesystem::exists(tmp.path / "missing_dir"));
 }
+
+namespace {
+// #1288 fixture: an 8x40 directory chain (composed path past MAX_PATH),
+// created through the extended-length API. Empty result: skip the test.
+auto make_deep_tree_1288(const TempDir& tmp) -> std::wstring {
+  std::wstring cursor = tmp.wpath();
+  const std::wstring component(40, L'x');
+  for (int i = 0; i < 8; ++i) {
+    cursor += L"\\" + component;
+    const std::wstring extended =
+        cursor.rfind(L"\\\\?\\", 0) == 0 ? cursor : L"\\\\?\\" + cursor;
+    if (!CreateDirectoryW(extended.c_str(), nullptr)) {
+      const DWORD err = GetLastError();
+      if (err != ERROR_ALREADY_EXISTS) return {};
+    }
+  }
+  return cursor;
+}
+auto extended_1288(const std::wstring& p) -> std::wstring {
+  return p.rfind(L"\\\\?\\", 0) == 0 ? p : L"\\\\?\\" + p;
+}
+}  // namespace
+
+TEST(install, issue_1288_compare_skips_identical_past_max_path) {
+  TempDir tmp;
+  const std::wstring deep = make_deep_tree_1288(tmp);
+  if (deep.empty() || deep.size() <= MAX_PATH) {
+    std::cout << "  SKIPPED (deep fixture unavailable)\n";
+    return;
+  }
+  tmp.write("src.txt", "same\n");
+  temp_dir_detail::write_all(
+      std::filesystem::path(extended_1288(deep)) / L"dest.txt", "same\n", 5);
+  const std::wstring dest = deep + L"\\dest.txt";
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"install.exe", {L"-C", L"-v", L"src.txt", dest});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_NE(r.stderr_text.find("skipping identical destination"),
+            std::string::npos);
+}

@@ -382,9 +382,28 @@ auto ceil_div(uint64_t value, uint64_t divisor) -> uint64_t {
 // parent arguments (Savannah #10397).
 auto du_dir_key(const std::wstring& path) -> std::wstring {
   std::error_code ec;
-  std::filesystem::path canon =
-      std::filesystem::weakly_canonical(std::filesystem::path(path), ec);
+  // #1288: canonicalize the extended spelling so the key is computed,
+  // not degraded to the raw literal, for directories past MAX_PATH.
+  // Keys stay uniform within a run because every directory passes
+  // through this one function.
+  std::filesystem::path canon = std::filesystem::weakly_canonical(
+      std::filesystem::path(native_path::to_extended_path(path)), ec);
   std::wstring key = ec ? path : canon.wstring();
+  // Some STLs skip lexical normalization for verbatim (\\?\) paths and
+  // keep a trailing "/." segment or separator; strip both so spellings
+  // like `dir` and `dir/.` still key identically. A real final component
+  // that merely ends in a dot (e.g. `inner.`) is untouched: only a whole
+  // trailing "." segment is removed.
+  while (key.size() > 1 && (key.back() == L'\\' || key.back() == L'/')) {
+    key.pop_back();
+  }
+  while (key.size() > 2 && key[key.size() - 1] == L'.' &&
+         (key[key.size() - 2] == L'\\' || key[key.size() - 2] == L'/')) {
+    key.resize(key.size() - 2);
+    while (key.size() > 1 && (key.back() == L'\\' || key.back() == L'/')) {
+      key.pop_back();
+    }
+  }
   std::transform(key.begin(), key.end(), key.begin(), ::towupper);
   return key;
 }
@@ -1060,6 +1079,13 @@ auto calculate_dir_size(const std::wstring& path,
   }
 
   UsageSummary summary;
+  // [GNU] --inodes: a directory counts ITSELF as one inode before its
+  // entries are added (#1372). The count travels through the same
+  // summary.size plumbing as byte totals, but byte sizes must never be
+  // added into it (see the file branch below).
+  if (cfg.show_inodes) {
+    summary.size += 1;
+  }
   WIN32_FILE_ATTRIBUTE_DATA path_data{};
   const bool have_path_data =
       cfg.show_time &&
@@ -1135,7 +1161,24 @@ auto calculate_dir_size(const std::wstring& path,
           file_size *= nlinks;
         }
       }
-      summary.size += file_size;
+      // [GNU] --inodes counts entries instead of blocks (#1372): in
+      // inode mode the file contributes its count (1, or its link count
+      // under --count-links; 0 when an earlier occurrence of the same
+      // inode was already counted) and the byte/block size contributes
+      // NOTHING — the old code added both, reporting e.g. 4097 for a
+      // directory holding one file.
+      uint64_t entry_count = file_size;
+      if (cfg.show_inodes) {
+        entry_count = 0;
+        if (cfg.count_links) {
+          entry_count = std::max<DWORD>(get_hard_link_count(full_path), 1);
+        } else if (counted) {
+          entry_count = 1;
+        }
+        summary.size += entry_count;
+      } else {
+        summary.size += file_size;
+      }
       if (cfg.show_time) {
         WIN32_FILE_ATTRIBUTE_DATA file_data{};
         if (GetFileAttributesExW(full_path.c_str(), GetFileExInfoStandard,
@@ -1149,22 +1192,11 @@ auto calculate_dir_size(const std::wstring& path,
         }
       }
 
-      // [GNU] --inodes counts entries instead of blocks: each file counts
-      // one (extra links under --count-links); a directory adds its whole
-      // subtree via the recursion above.  The counts travel through the
-      // same summary.size/sizes plumbing used for byte sizes.
-      if (cfg.show_inodes) {
-        if (cfg.count_links) {
-          summary.size += std::max<DWORD>(get_hard_link_count(full_path), 1);
-        } else if (counted) {
-          summary.size += 1;
-        }
-      }
-
-      // Count individual files if requested
+      // Count individual files if requested. In --inodes mode the
+      // per-entry record is the entry count, not the byte size (#1372).
       if (counted && cfg.count_all &&
           (cfg.max_depth < 0 || child_depth <= cfg.max_depth)) {
-        sizes[full_path] = file_size;
+        sizes[full_path] = entry_count;
         if (print_order != nullptr) {
           print_order->push_back(full_path);
         }
@@ -1426,9 +1458,18 @@ auto print_disk_usage(const CommandContext<DU_OPTIONS.size()>& ctx)
           file_size *= nlinks;
         }
       }
-      grand_total += file_size;
+      // [GNU] --inodes: a file operand contributes its inode count (1,
+      // or its link count under --count-links) to the grand total,
+      // never its byte size (#1372).
+      const uint64_t operand_total =
+          cfg.show_inodes
+              ? (cfg.count_links
+                     ? std::max<DWORD>(get_hard_link_count(wpath), 1)
+                     : 1)
+              : file_size;
+      grand_total += operand_total;
 
-      if (passes_threshold(cfg, file_size)) {
+      if (passes_threshold(cfg, operand_total)) {
         UsageSummary file_summary;
         if (cfg.show_time) {
           WIN32_FILE_ATTRIBUTE_DATA file_data{};
@@ -1441,7 +1482,7 @@ auto print_disk_usage(const CommandContext<DU_OPTIONS.size()>& ctx)
         }
         safePrint(L"");
         if (cfg.show_inodes) {
-          safePrint("1");  // Each file is 1 inode
+          safePrint(std::to_string(operand_total));
         } else {
           print_scaled_size(file_size, cfg.output);
         }

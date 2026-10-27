@@ -258,12 +258,29 @@ auto build_config(const CommandContext<UNIQ_OPTIONS.size()>& ctx)
         "printing all duplicated lines and repeat counts is meaningless");
   }
 
-  if (ctx.positionals.size() > 2) {
-    return std::unexpected("extra operand '" + std::string(ctx.positionals[2]) +
-                           "'");
+  // [native-glob] #1374: with WINUX_SHELL_GLOB=native the shell leaves
+  // expansion to the command; the INPUT operand goes through the shared
+  // expand_file_operand boundary like cat's operands do. The expansion
+  // is spliced into the operand list, so a multi-file match produces
+  // the same "extra operand" result a shell expansion would. The OUTPUT
+  // operand names a file to create and is never expanded.
+  std::vector<std::string> expanded_input;
+  std::vector<std::string_view> operands(ctx.positionals.begin(),
+                                         ctx.positionals.end());
+  if (!operands.empty() && contains_wildcard(operands[0])) {
+    expanded_input = expand_file_operand(operands[0]);
+    operands.clear();
+    for (const auto& file : expanded_input) operands.emplace_back(file);
+    for (size_t i = 1; i < ctx.positionals.size(); ++i) {
+      operands.push_back(ctx.positionals[i]);
+    }
   }
-  if (ctx.positionals.size() >= 1) cfg.input = std::string(ctx.positionals[0]);
-  if (ctx.positionals.size() == 2) cfg.output = std::string(ctx.positionals[1]);
+
+  if (operands.size() > 2) {
+    return std::unexpected("extra operand '" + std::string(operands[2]) + "'");
+  }
+  if (operands.size() >= 1) cfg.input = std::string(operands[0]);
+  if (operands.size() == 2) cfg.output = std::string(operands[1]);
 
   return cfg;
 }

@@ -257,3 +257,21 @@ TEST(locate, locate_limit_zero_means_unlimited) {
   EXPECT_TRUE(r.stdout_text.find("a.cpp") != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("b.cpp") != std::string::npos);
 }
+
+// #1364 (enclave rule): with a shell root configured, a database path
+// spelled from the root (`locate -d /ra.db`) resolves through the payload
+// (shell) root, not the current drive root.
+TEST(locate, locate_database_path_uses_shell_root_issue1364) {
+  TempDir payload;
+  write_db(payload, "ra.db", "C:/work/main.cpp\n");
+  TempDir elsewhere;
+
+  Pipeline p;
+  p.set_cwd(elsewhere.wpath());
+  p.set_env(L"WINUXSH_ROOT", payload.wpath());
+  p.add(L"locate.exe", {L"-d", L"/ra.db", L"main"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("main.cpp") != std::string::npos);
+}
