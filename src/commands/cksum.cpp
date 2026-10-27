@@ -208,9 +208,20 @@ auto build_config(const CommandContext<CKSUM_OPTIONS.size()>& ctx)
   cfg.check_mode = ctx.has("--check") || ctx.has("-c");
 
   // [GNU] deprecated no-op flags; they only affect the untagged output
-  // marker ('*' vs ' ') for digest algorithms.
-  if (ctx.has("--binary") || ctx.has("-b")) cfg.binary = 1;
-  if (ctx.has("--text") || ctx.has("-t")) cfg.binary = 0;
+  // marker ('*' vs ' ') for digest algorithms.  -b/--binary and
+  // -t/--text form a last-occurrence-wins pair, resolved in argv order
+  // exactly like the digest-family applets (#1362).
+  if (ctx.metas) {
+    for (const auto& occurrence : ctx.options.occurrences()) {
+      if (occurrence.index >= CKSUM_OPTIONS.size()) continue;
+      const auto& meta = (*ctx.metas)[occurrence.index];
+      if (meta.short_name == "-b" || meta.long_name == "--binary") {
+        cfg.binary = 1;
+      } else if (meta.short_name == "-t" || meta.long_name == "--text") {
+        cfg.binary = 0;
+      }
+    }
+  }
 
   cfg.ignore_missing = ctx.has("--ignore-missing");
   cfg.quiet = ctx.has("--quiet") || ctx.has("-q");

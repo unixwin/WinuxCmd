@@ -212,3 +212,41 @@ TEST(nice, nice_missing_command_reports_gnu_style_error_and_127) {
       "nice: failed to run command 'definitely-not-a-command': No such file "
       "or directory\n");
 }
+
+
+// #1359: [GNU] when the requested priority cannot be applied, nice
+// prints "cannot set niceness: <reason>" to stderr and still runs the
+// command, propagating the command's exit status.  Whether a raise
+// can be applied depends on the caller's privileges, so the stderr
+// assertion is a strict either/or: empty (the raise was applied) or
+// exactly the GNU warning line (it was not); any other shape fails.
+TEST(nice, nice_raise_warns_when_unapplied_and_propagates_status) {
+  Pipeline p;
+  p.add(L"nice.exe", {L"-n", L"-1", L"cmd.exe", L"/d", L"/c", L"exit", L"7"});
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("nice raise stderr", r.stderr_text);
+
+  EXPECT_EQ(r.exit_code, 7);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.empty() ||
+              r.stderr_text ==
+                  "nice: cannot set niceness: Permission denied\n");
+}
+
+// #1359 control: lowering the priority is always permitted, so it
+// must stay silent (GNU: no warning when setpriority succeeds).
+TEST(nice, nice_lower_priority_stays_silent) {
+  Pipeline p;
+  p.add(L"nice.exe", {L"-n", L"5", L"echo.exe", L"hello"});
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("hello") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.empty());
+}

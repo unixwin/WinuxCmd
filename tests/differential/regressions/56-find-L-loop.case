@@ -1,0 +1,10 @@
+cmd: find
+oracle_version: >=4.9
+args: -L root
+timeout: 10
+setup: |
+  mkdir -p root/d
+  printf 'x' > root/f.txt
+  ln -s .. root/d/loop
+source: github.com/unixwin/WinuxCmd
+tags: issue-1378 regression find-loop

@@ -186,11 +186,9 @@ auto build_config(const CommandContext<COMM_OPTIONS.size()>& ctx)
 auto read_lines(const std::string& filename, char delimiter)
     -> cp::Result<SmallVector<std::string, 1024>> {
   SmallVector<std::string, 1024> lines;
-  auto normalize_line = [delimiter](std::string& line) {
-    if (delimiter == '\n' && !line.empty() && line.back() == '\r') {
-      line.pop_back();
-    }
-  };
+  // [GNU] comm is byte-oriented: a trailing '\r' is part of the line's
+  // key and of its output, and a leading UTF-8 BOM is ordinary content.
+  // No CRLF/BOM normalization happens here (issue #1354).
 
   if (filename == "-") {
     file_io::set_stdin_binary();
@@ -205,14 +203,12 @@ auto read_lines(const std::string& filename, char delimiter)
     for (size_t i = 0; i < content.size(); ++i) {
       if (content[i] == delimiter) {
         std::string line = content.substr(start, i - start);
-        normalize_line(line);
         lines.emplace_back(std::move(line));
         start = i + 1;
       }
     }
     if (start < content.size()) {
       std::string line = content.substr(start);
-      normalize_line(line);
       lines.emplace_back(std::move(line));
     }
   } else {
@@ -243,27 +239,12 @@ auto read_lines(const std::string& filename, char delimiter)
     for (size_t i = 0; i < content.size(); ++i) {
       if (content[i] == delimiter) {
         std::string line = content.substr(start, i - start);
-        // Skip UTF-8 BOM if present at the beginning of the first line
-        if (lines.empty() && line.size() >= 3 &&
-            static_cast<unsigned char>(line[0]) == 0xEF &&
-            static_cast<unsigned char>(line[1]) == 0xBB &&
-            static_cast<unsigned char>(line[2]) == 0xBF) {
-          line = line.substr(3);
-        }
-        normalize_line(line);
         lines.push_back(line);
         start = i + 1;
       }
     }
     if (start < content.size()) {
       std::string line = content.substr(start);
-      if (lines.empty() && line.size() >= 3 &&
-          static_cast<unsigned char>(line[0]) == 0xEF &&
-          static_cast<unsigned char>(line[1]) == 0xBB &&
-          static_cast<unsigned char>(line[2]) == 0xBF) {
-        line = line.substr(3);
-      }
-      normalize_line(line);
       lines.push_back(line);
     }
 

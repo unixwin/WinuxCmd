@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 caomengxuan666 <caomengxuan666@users.noreply.github.com>
+#include <chrono>
+
 #include "framework/winuxtest.h"
 
 TEST(mv, mv_basic) {
@@ -505,6 +507,79 @@ TEST(mv, mv_exchange_missing_operand_fails) {
   EXPECT_EQ(tmp.read("a.txt"), "AAA");
 }
 
+TEST(mv, mv_overwrite_1325_target_value_not_scanned) {
+  // Separate form: a plain silent overwrite (control case).
+  TempDir tmp;
+  std::filesystem::create_directory(tmp.path / "ndir");
+  tmp.write("s", "NEW");
+  tmp.write("ndir/s", "OLD");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("");  // any prompt would read EOF and decline
+  p.add(L"mv.exe", {L"-t", L"ndir", L"s"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(r.stderr_text.find("overwrite"), std::string::npos);
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "s"));
+  EXPECT_EQ(tmp.read("ndir/s"), "NEW");
+
+  // Bundled form: "-tndir" carries the value inside the option token.
+  // A raw argv rescan sees the letters 'n' and 'i' in the value and
+  // rewrites the overwrite mode; the parser-occurrence view must not
+  // (#1325).
+  TempDir tmp2;
+  std::filesystem::create_directory(tmp2.path / "ndir");
+  tmp2.write("s", "NEW");
+  tmp2.write("ndir/s", "OLD");
+
+  Pipeline p2;
+  p2.set_cwd(tmp2.wpath());
+  p2.set_stdin("");
+  p2.add(L"mv.exe", {L"-tndir", L"s"});
+
+  auto r2 = p2.run();
+
+  EXPECT_EQ(r2.exit_code, 0);
+  EXPECT_EQ(r2.stderr_text.find("overwrite"), std::string::npos);
+  EXPECT_FALSE(std::filesystem::exists(tmp2.path / "s"));
+  EXPECT_EQ(tmp2.read("ndir/s"), "NEW");
+}
+
+TEST(mv, mv_update_1326_explicit_beats_u) {
+  const auto now = std::filesystem::file_time_type::clock::now();
+  auto run_case = [&](const std::vector<std::wstring>& opts) {
+    TempDir tmp;
+    tmp.write("src", "SRC");
+    tmp.write("dst", "DST");
+    std::filesystem::last_write_time(tmp.path / "dst",
+                                     now - std::chrono::hours(24));
+    std::filesystem::last_write_time(tmp.path / "src", now);
+
+    Pipeline p;
+    p.set_cwd(tmp.wpath());
+    std::vector<std::wstring> args = opts;
+    args.push_back(L"src");
+    args.push_back(L"dst");
+    p.add(L"mv.exe", args);
+
+    auto r = p.run();
+    EXPECT_EQ(r.exit_code, 0);
+    return tmp.read("dst");
+  };
+
+  // GNU rule (#1326): explicit --update=VALUE forms are last-wins among
+  // themselves and beat -u in either order; -u alone is the weak form
+  // and moves because the source is newer.
+  EXPECT_EQ(run_case({L"--update=none", L"-u"}), "DST");
+  EXPECT_EQ(run_case({L"-u", L"--update=none"}), "DST");
+  EXPECT_EQ(run_case({L"--update=none", L"--update=older"}), "SRC");
+  EXPECT_EQ(run_case({L"--update=older", L"--update=none"}), "DST");
+  EXPECT_EQ(run_case({L"-u"}), "SRC");
+}
+
 TEST(mv, issue_1283_drive_colon_operand_moves_carrier_file) {
   TempDir tmp;
   const wchar_t drive = tmp.wpath()[0];
@@ -545,3 +620,67 @@ TEST(mv, mv_dash_i_still_legal_issue1355) {
   EXPECT_EXIT_CODE(r, 0);
   EXPECT_TRUE(std::filesystem::exists(tmp.path / "b.txt"));
 }
+
+// [GNU] #1365: a cross-volume move of a symlink recreates the link at the
+// destination with its text preserved verbatim and removes the source; it
+// must never degrade into a regular-file copy of the target's contents.
+TEST(mv, issue1365_cross_volume_symlink_recreated_not_copied) {
+  TempDir src_tmp;
+  TempDir dst_tmp;  // distinct TempDir roots stand in for distinct volumes
+  src_tmp.write("real.txt", "real\n");
+  std::error_code ec;
+  std::filesystem::create_symlink("real.txt", src_tmp.path / "lnk", ec);
+  if (ec) {
+    std::cout << "  SKIPPED (requires administrator privileges for symbolic "
+                 "links)\n";
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(src_tmp.wpath());
+  p.add(L"mv.exe", {L"lnk", (dst_tmp.path / "lnk").wstring()});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  auto dst_status = std::filesystem::symlink_status(dst_tmp.path / "lnk", ec);
+  EXPECT_FALSE(ec);
+  EXPECT_TRUE(std::filesystem::is_symlink(dst_status));
+  EXPECT_EQ(std::filesystem::read_symlink(dst_tmp.path / "lnk", ec),
+            std::filesystem::path("real.txt"));
+  std::error_code src_ec;
+  (void)std::filesystem::symlink_status(src_tmp.path / "lnk", src_ec);
+  EXPECT_TRUE(src_ec);  // source link is gone
+}
+
+// [GNU] #1365: the directory-symlink form: the link is recreated as a
+// directory link and the source link is removed (DeleteFileW alone cannot
+// remove a directory link).
+TEST(mv, issue1365_cross_volume_dir_symlink_recreated_not_copied) {
+  TempDir src_tmp;
+  TempDir dst_tmp;
+  std::filesystem::create_directories(src_tmp.path / "realdir");
+  src_tmp.write("realdir/f.txt", "in\n");
+  std::error_code ec;
+  std::filesystem::create_directory_symlink("realdir", src_tmp.path / "dlnk",
+                                            ec);
+  if (ec) {
+    std::cout << "  SKIPPED (requires administrator privileges for symbolic "
+                 "links)\n";
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(src_tmp.wpath());
+  p.add(L"mv.exe", {L"dlnk", (dst_tmp.path / "dlnk").wstring()});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(std::filesystem::is_symlink(
+      std::filesystem::symlink_status(dst_tmp.path / "dlnk", ec)));
+  EXPECT_EQ(std::filesystem::read_symlink(dst_tmp.path / "dlnk", ec),
+            std::filesystem::path("realdir"));
+  std::error_code src_ec;
+  (void)std::filesystem::symlink_status(src_tmp.path / "dlnk", src_ec);
+  EXPECT_TRUE(src_ec);  // source link is gone
+}
+

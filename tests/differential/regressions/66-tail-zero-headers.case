@@ -1,0 +1,8 @@
+cmd: tail
+args: -z f1 f2
+timeout: 10
+setup: |
+  printf 'a\nb\n' > f1
+  printf 'c\nd\n' > f2
+source: github.com/unixwin/WinuxCmd/issues/1342
+tags: issue-1342 regression

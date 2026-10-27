@@ -871,27 +871,6 @@ auto passes_threshold(const DuConfig& cfg, uint64_t size) -> bool {
 }
 
 /**
- * @brief Get hard link count for a file (Windows API)
- * @param path File path
- * @return Number of hard links, or 1 if unable to determine
- */
-auto get_hard_link_count(const std::wstring& path) -> DWORD {
-  HANDLE hFile = CreateFileW(
-      path.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-      nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (hFile == INVALID_HANDLE_VALUE) {
-    return 1;
-  }
-  BY_HANDLE_FILE_INFORMATION info{};
-  DWORD result = 1;
-  if (GetFileInformationByHandle(hFile, &info)) {
-    result = info.nNumberOfLinks;
-  }
-  CloseHandle(hFile);
-  return result;
-}
-
-/**
  * @brief Get a stable per-inode key (volume serial + file index)
  * @param path File path
  * @return L"<volume>:<index>" or empty if unavailable
@@ -1142,39 +1121,32 @@ auto calculate_dir_size(const std::wstring& path,
       uint64_t file_size = get_file_size(full_path, cfg.apparent_size);
       // [GNU] Hard-linked files are counted once per invocation; later
       // occurrences of the same inode contribute nothing (uutils #9202
-      // #10241 #10312 #9871). --count-links opts out.
+      // #10241 #10312 #9871).  Every counted file registers its inode,
+      // not only multiply-linked ones: a later operand naming the same
+      // file is a repeat encounter too (#1351).  --count-links opts out
+      // of the dedup: every encounter then counts once AT FACE VALUE —
+      // it never scales the size by the link count.
       bool counted = true;
       if (!cfg.count_links) {
-        const DWORD nlinks = get_hard_link_count(full_path);
-        if (nlinks > 1) {
-          const std::wstring inode_key = get_inode_key(full_path);
-          if (!inode_key.empty()) {
-            if (!seen_inodes.insert(inode_key).second) {
-              counted = false;
-              file_size = 0;
-            }
+        const std::wstring inode_key = get_inode_key(full_path);
+        if (!inode_key.empty()) {
+          if (!seen_inodes.insert(inode_key).second) {
+            counted = false;
+            file_size = 0;
           }
-        }
-      } else {
-        const DWORD nlinks = get_hard_link_count(full_path);
-        if (nlinks > 1) {
-          file_size *= nlinks;
         }
       }
       // [GNU] --inodes counts entries instead of blocks (#1372): in
-      // inode mode the file contributes its count (1, or its link count
-      // under --count-links; 0 when an earlier occurrence of the same
-      // inode was already counted) and the byte/block size contributes
-      // NOTHING — the old code added both, reporting e.g. 4097 for a
-      // directory holding one file.
+      // inode mode the file contributes exactly one per encounter —
+      // never its byte size, and never its link count under
+      // --count-links (#1351); that flag only disables the dedup above.
+      // An encounter already deduplicated away contributes 0.  The
+      // byte/block size contributes NOTHING in inode mode — the old
+      // code added both, reporting e.g. 4097 for a directory holding
+      // one file.
       uint64_t entry_count = file_size;
       if (cfg.show_inodes) {
-        entry_count = 0;
-        if (cfg.count_links) {
-          entry_count = std::max<DWORD>(get_hard_link_count(full_path), 1);
-        } else if (counted) {
-          entry_count = 1;
-        }
+        entry_count = counted ? 1 : 0;
         summary.size += entry_count;
       } else {
         summary.size += file_size;
@@ -1451,22 +1423,23 @@ auto print_disk_usage(const CommandContext<DU_OPTIONS.size()>& ctx)
     } else {
       // It's a file
       uint64_t file_size = get_file_size(wpath, cfg.apparent_size);
-      // --count-links: multiply by hard link count [DIFFERS]
-      if (cfg.count_links) {
-        DWORD nlinks = get_hard_link_count(wpath);
-        if (nlinks > 1) {
-          file_size *= nlinks;
+      // [GNU] The seen-inode table spans the whole invocation (#1351):
+      // a file operand whose inode was already counted — by an earlier
+      // operand or inside an earlier directory traversal — prints
+      // nothing and adds nothing, unless --count-links is in effect.
+      // --count-links counts each encounter once at face value; it
+      // never scales the size by the link count.
+      if (!cfg.count_links) {
+        const std::wstring inode_key = get_inode_key(wpath);
+        if (!inode_key.empty() && !seen_inodes.insert(inode_key).second) {
+          continue;
         }
       }
-      // [GNU] --inodes: a file operand contributes its inode count (1,
-      // or its link count under --count-links) to the grand total,
-      // never its byte size (#1372).
-      const uint64_t operand_total =
-          cfg.show_inodes
-              ? (cfg.count_links
-                     ? std::max<DWORD>(get_hard_link_count(wpath), 1)
-                     : 1)
-              : file_size;
+      // [GNU] --inodes: a file operand contributes exactly one inode to
+      // the grand total, never its byte size (#1372) and never its link
+      // count under --count-links (#1351) — that flag only disables the
+      // dedup above.
+      const uint64_t operand_total = cfg.show_inodes ? 1 : file_size;
       grand_total += operand_total;
 
       if (passes_threshold(cfg, operand_total)) {

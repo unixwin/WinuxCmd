@@ -31,7 +31,9 @@ auto constexpr CMP_OPTIONS = std::array{
     // [GNU]
     OPTION("-n", "--bytes", "compare specified number of bytes", STRING_TYPE),
     // [GNU]
-    OPTION("-s", "--quiet", "silent mode", BOOL_TYPE)};
+    OPTION("-s", "--quiet", "silent mode", BOOL_TYPE),
+    // [GNU] --silent is a second long name for -s (cmp.c).
+    OPTION("", "--silent", "silent mode", BOOL_TYPE)};
 
 namespace cmp_pipeline {
 namespace cp = core::pipeline;
@@ -84,40 +86,60 @@ auto parse_unsigned_with_base_prefix(std::string_view text)
 }
 
 auto parse_byte_count(std::string_view text) -> std::optional<size_t> {
+  // [GNU] xstrtoumax skips leading whitespace (#1347).
+  while (!text.empty() &&
+         std::isspace(static_cast<unsigned char>(text.front()))) {
+    text.remove_prefix(1);
+  }
   if (text.empty()) return std::nullopt;
 
+  // [GNU] cmp's suffix grammar (cmp.c via xstrtoumax): a bare count may
+  // end in k/K/M/G/T/P/E (powers of 1024), or in kB/KB/MB/GB/TB/PB/EB
+  // (powers of 1000), or in KiB/MiB/GiB/TiB/PiB/EiB (powers of 1024).
+  // The historic c/w/b suffixes are NOT part of cmp's table.  Entries
+  // are tried longest-first so a two/three-letter suffix always wins
+  // over its one-letter tail; a plain number is the no-suffix fallback.
   static constexpr std::array suffixes{
-      CountSuffix{"", 1},
-      CountSuffix{"c", 1},
-      CountSuffix{"w", 2},
-      CountSuffix{"b", 512},
-      CountSuffix{"kB", 1000ULL},
-      CountSuffix{"K", 1024ULL},
       CountSuffix{"KiB", 1024ULL},
-      CountSuffix{"MB", 1000ULL * 1000ULL},
-      CountSuffix{"M", 1024ULL * 1024ULL},
       CountSuffix{"MiB", 1024ULL * 1024ULL},
-      CountSuffix{"GB", 1000ULL * 1000ULL * 1000ULL},
-      CountSuffix{"G", 1024ULL * 1024ULL * 1024ULL},
       CountSuffix{"GiB", 1024ULL * 1024ULL * 1024ULL},
+      CountSuffix{"TiB", 1024ULL * 1024ULL * 1024ULL * 1024ULL},
+      CountSuffix{"PiB", 1024ULL * 1024ULL * 1024ULL * 1024ULL * 1024ULL},
+      CountSuffix{"EiB", 1024ULL * 1024ULL * 1024ULL * 1024ULL * 1024ULL *
+                              1024ULL},
+      CountSuffix{"kB", 1000ULL},
+      CountSuffix{"KB", 1000ULL},
+      CountSuffix{"MB", 1000ULL * 1000ULL},
+      CountSuffix{"GB", 1000ULL * 1000ULL * 1000ULL},
       CountSuffix{"TB", 1000ULL * 1000ULL * 1000ULL * 1000ULL},
+      CountSuffix{"PB", 1000ULL * 1000ULL * 1000ULL * 1000ULL * 1000ULL},
+      CountSuffix{"EB", 1000ULL * 1000ULL * 1000ULL * 1000ULL * 1000ULL *
+                          1000ULL},
+      CountSuffix{"K", 1024ULL},
+      CountSuffix{"k", 1024ULL},
+      CountSuffix{"M", 1024ULL * 1024ULL},
+      CountSuffix{"G", 1024ULL * 1024ULL * 1024ULL},
       CountSuffix{"T", 1024ULL * 1024ULL * 1024ULL * 1024ULL},
-      CountSuffix{"TiB", 1024ULL * 1024ULL * 1024ULL * 1024ULL}};
+      CountSuffix{"P", 1024ULL * 1024ULL * 1024ULL * 1024ULL * 1024ULL},
+      CountSuffix{"E", 1024ULL * 1024ULL * 1024ULL * 1024ULL * 1024ULL *
+                            1024ULL}};
 
   for (const auto& entry : suffixes) {
-    if (text.size() < entry.suffix.size()) continue;
+    if (text.size() <= entry.suffix.size()) continue;
     if (!text.ends_with(entry.suffix)) continue;
 
     auto numeric_part = text.substr(0, text.size() - entry.suffix.size());
     auto parsed = parse_unsigned_with_base_prefix(numeric_part);
-    if (!parsed) return std::nullopt;
+    if (!parsed) continue;
     if (*parsed > std::numeric_limits<size_t>::max() / entry.multiplier) {
       return std::nullopt;
     }
     return static_cast<size_t>(*parsed * entry.multiplier);
   }
 
-  return std::nullopt;
+  auto parsed = parse_unsigned_with_base_prefix(text);
+  if (!parsed) return std::nullopt;
+  return static_cast<size_t>(*parsed);
 }
 
 auto parse_skip_pair(std::string_view text)
@@ -152,7 +174,8 @@ auto build_config(const CommandContext<CMP_OPTIONS.size()>& ctx)
       continue;
     }
 
-    if (meta.long_name == "--quiet" || meta.short_name == "-s") {
+    if (meta.long_name == "--quiet" || meta.long_name == "--silent" ||
+        meta.short_name == "-s") {
       cfg.quiet = true;
       cfg.verbose = false;
       continue;
@@ -166,7 +189,9 @@ auto build_config(const CommandContext<CMP_OPTIONS.size()>& ctx)
   if (!skip_opt.empty()) {
     auto skip_pair = parse_skip_pair(skip_opt);
     if (!skip_pair) {
-      return std::unexpected("invalid skip count");
+      // [GNU] cmp.c: "invalid --ignore-initial value '<arg>'".
+      return std::unexpected("invalid --ignore-initial value '" + skip_opt +
+                             "'");
     }
     cfg.skip_bytes_file1 = skip_pair->first;
     cfg.skip_bytes_file2 = skip_pair->second;
@@ -179,7 +204,8 @@ auto build_config(const CommandContext<CMP_OPTIONS.size()>& ctx)
   if (!bytes_opt.empty()) {
     auto parsed_bytes = parse_byte_count(bytes_opt);
     if (!parsed_bytes) {
-      return std::unexpected("invalid byte count");
+      // [GNU] cmp.c: "invalid --bytes value '<arg>'".
+      return std::unexpected("invalid --bytes value '" + bytes_opt + "'");
     }
     cfg.max_bytes = *parsed_bytes;
   }
@@ -225,14 +251,21 @@ auto build_config(const CommandContext<CMP_OPTIONS.size()>& ctx)
 
   if (raw_positionals.size() >= 3) {
     auto skip1 = parse_byte_count(raw_positionals[2]);
-    if (!skip1) return std::unexpected("invalid skip count");
+    if (!skip1) {
+      // [GNU] positional skips report as --ignore-initial values.
+      return std::unexpected("invalid --ignore-initial value '" +
+                             raw_positionals[2] + "'");
+    }
     cfg.skip_bytes_file1 = *skip1;
     cfg.skip_bytes_file2 = *skip1;
   }
 
   if (raw_positionals.size() >= 4) {
     auto skip2 = parse_byte_count(raw_positionals[3]);
-    if (!skip2) return std::unexpected("invalid skip count");
+    if (!skip2) {
+      return std::unexpected("invalid --ignore-initial value '" +
+                             raw_positionals[3] + "'");
+    }
     cfg.skip_bytes_file2 = *skip2;
   }
 
@@ -241,9 +274,21 @@ auto build_config(const CommandContext<CMP_OPTIONS.size()>& ctx)
 
 auto report_open_error(const Config& cfg, const std::string& file) -> void {
   if (cfg.quiet) return;
-  auto err = std::string("cmp: ") + file + ": No such file";
-  cp::Result<int> result = std::unexpected(err);
-  cp::report_error(result, L"cmp");
+  // [GNU] exactly one "cmp: " prefix and the full reason text
+  // ("No such file or directory", "Is a directory", ...), chosen from
+  // the operand's attributes like cat's open-error wording (#1347).
+  auto operand = native_path::make_api_path_operand(file);
+  const DWORD attrs = native_path::operand_target_attributes_w(operand);
+  safeErrorPrint("cmp: ");
+  safeErrorPrint(file);
+  safeErrorPrint(": ");
+  if (native_path::attributes_are_directory(attrs)) {
+    safeErrorPrintLn("Is a directory");
+  } else if (attrs == INVALID_FILE_ATTRIBUTES) {
+    safeErrorPrintLn("No such file or directory");
+  } else {
+    safeErrorPrintLn("Permission denied");
+  }
 }
 
 auto regular_remaining_after_skip(const std::string& file, size_t skip)
@@ -459,23 +504,36 @@ auto run(const Config& cfg) -> int {
         (read1 < read2 ? buffer1 : buffer2).data(), smaller));
 
     if (read1 != read2) {
-      // [GNU] "cmp: EOF on FILE which is empty" when the shorter side had
-      // no data at all, otherwise "EOF on FILE after byte N, in line L"
-      // where N is the number of bytes both streams had (cmp.c).
+      // [GNU] EOF reports go to stderr (cmp.c).  "cmp: EOF on FILE
+      // which is empty" when the shorter side had no data at all;
+      // otherwise "EOF on FILE after byte N" where N is the number of
+      // bytes both streams had, followed by ", line L" when the
+      // shorter side ends exactly at a line boundary (L = its complete
+      // lines) or ", in line L" when it ends mid-line (L = lines + 1).
+      // The -l form omits the line part entirely (#1347).
       if (!cfg.quiet) {
         const std::string& eof_file = read1 < read2 ? file1 : file2;
+        safeErrorPrint("cmp: EOF on ");
+        safeErrorPrint(eof_file);
         if (compared == 0) {
-          safePrint("cmp: EOF on ");
-          safePrint(eof_file);
-          safePrintLn(" which is empty");
+          safeErrorPrintLn(" which is empty");
+        } else if (cfg.verbose) {
+          safeErrorPrint(" after byte ");
+          safeErrorPrintLn(std::to_string(compared));
         } else {
-          const size_t line = 1 + eof_newlines;
-          safePrint("cmp: EOF on ");
-          safePrint(eof_file);
-          safePrint(" after byte ");
-          safePrint(std::to_string(compared));
-          safePrint(", in line ");
-          safePrintLn(std::to_string(line));
+          const char* short_buf =
+              read1 < read2 ? buffer1.data() : buffer2.data();
+          const bool at_line_end =
+              smaller > 0 && short_buf[smaller - 1] == '\n';
+          safeErrorPrint(" after byte ");
+          safeErrorPrint(std::to_string(compared));
+          if (at_line_end) {
+            safeErrorPrint(", line ");
+            safeErrorPrintLn(std::to_string(eof_newlines));
+          } else {
+            safeErrorPrint(", in line ");
+            safeErrorPrintLn(std::to_string(eof_newlines + 1));
+          }
         }
       }
       return 1;
@@ -523,6 +581,13 @@ REGISTER_COMMAND(
       return 2;
     }
     if (cfg_result.error().starts_with("extra operand '")) {
+      safeErrorPrint("cmp: ");
+      safeErrorPrintLn(cfg_result.error());
+      safeErrorPrintLn("Try 'cmp --help' for more information.");
+      return 2;
+    }
+    if (cfg_result.error().starts_with("invalid --bytes value '") ||
+        cfg_result.error().starts_with("invalid --ignore-initial value '")) {
       safeErrorPrint("cmp: ");
       safeErrorPrintLn(cfg_result.error());
       safeErrorPrintLn("Try 'cmp --help' for more information.");

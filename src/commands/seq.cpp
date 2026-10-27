@@ -278,22 +278,15 @@ auto build_config(const CommandContext<SEQ_OPTIONS.size()>& ctx)
 
     if (parsing_options && arg.starts_with('-') && arg != "-" &&
         !looks_like_number(arg)) {
-      if (arg == "-w" || arg == "--equal-width") {
+      if (arg == "--equal-width") {
         cfg.equal_width = true;
         continue;
       }
 
-      if (arg == "-s" || arg == "--separator") {
+      if (arg == "--separator") {
         auto value = read_option_value(ctx.raw_args, i, "", false, arg);
         if (!value) return std::unexpected(value.error());
         cfg.separator = *value;
-        continue;
-      }
-
-      if (arg.starts_with("-s") && arg.size() > 2) {
-        // Handle both -sVALUE and -s=VALUE forms.
-        cfg.separator =
-            std::string(arg[2] == '=' ? arg.substr(3) : arg.substr(2));
         continue;
       }
 
@@ -309,14 +302,47 @@ auto build_config(const CommandContext<SEQ_OPTIONS.size()>& ctx)
         continue;
       }
 
-      if (arg.starts_with("-f") && arg.size() > 2) {
-        // Handle both -fVALUE and -f=VALUE forms.
-        cfg.format = std::string(arg[2] == '=' ? arg.substr(3) : arg.substr(2));
+      if (arg.starts_with("--format=")) {
+        cfg.format = std::string(arg.substr(9));
         continue;
       }
 
-      if (arg.starts_with("--format=")) {
-        cfg.format = std::string(arg.substr(9));
+      if (!arg.starts_with("--")) {
+        // [GNU] getopt walks a short-option cluster character by
+        // character: a boolean member continues the walk, and an
+        // argument-taking member consumes the rest of the token (a
+        // leading '=' is dropped, as in the historical -s=VALUE form)
+        // or the next argv element (issue #1356).
+        for (size_t j = 1; j < arg.size(); ++j) {
+          char c = arg[j];
+          if (c == 'w') {
+            cfg.equal_width = true;
+            continue;
+          }
+          if (c == 's' || c == 't' || c == 'f') {
+            std::string value;
+            if (j + 1 < arg.size()) {
+              std::string_view rest = arg.substr(j + 1);
+              if (rest.starts_with('=')) rest.remove_prefix(1);
+              value = std::string(rest);
+            } else {
+              auto v = read_option_value(ctx.raw_args, i, "", false,
+                                         std::string("-") + c);
+              if (!v) return std::unexpected(v.error());
+              value = *v;
+            }
+            if (c == 's') {
+              cfg.separator = value;
+            } else if (c == 't') {
+              cfg.terminator = value;
+            } else {
+              cfg.format = value;
+            }
+            break;  // the rest of the token was the value
+          }
+          return error_result<Config>("invalid option '-" +
+                                      std::string(1, c) + "'");
+        }
         continue;
       }
 
