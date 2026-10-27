@@ -585,3 +585,23 @@ TEST(cat, issue_1288_glob_expands_past_max_path) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "glob\n");
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1368: GNU cat's first failed stdout write reaches write_error()
+// (system.h:960): one "cat: write error: <strerror>" diagnostic, exit 1.
+// With stdout closed (`>&-`) the child has no std-output handle, so the
+// first flush fails with ERROR_INVALID_HANDLE — the Win32 image of EBADF —
+// and cat must no longer exit 0 silently.
+// ---------------------------------------------------------------------------
+TEST(cat, issue1368_closed_stdout_reports_write_error) {
+  TempDir tmp;
+  tmp.write("input.txt", "hello\nworld\n");
+  const std::wstring operand = (tmp.path / L"input.txt").wstring();
+
+  auto r =
+      run_command_closed_stdout(ProjectPaths::exe(L"cat.exe"), {operand});
+
+  EXPECT_EXIT_CODE(r, 1);
+  EXPECT_CONTAINS(r.stderr_text, "cat: write error: ");
+  EXPECT_CONTAINS(r.stderr_text, "Bad file descriptor");
+}

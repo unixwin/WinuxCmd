@@ -4166,3 +4166,21 @@ TEST(find, issue_1380_global_options_reach_their_start_point) {
   EXPECT_EQ(ra.exit_code, 0);
   EXPECT_EQ_TEXT(ra.stdout_text, "sub/f.txt\n");
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1368: findutils reports a failed stdout write as a fatal error
+// ("find: write error: <strerror>") with the findutils error status 1. With
+// stdout closed (`>&-`) the child has no std-output handle, so the first
+// -print write fails with ERROR_INVALID_HANDLE — the Win32 image of EBADF —
+// and find must exit 1 instead of 0 silently.
+// ---------------------------------------------------------------------------
+TEST(find, issue1368_closed_stdout_reports_write_error_and_exits_1) {
+  TempDir tmp;
+  tmp.write("entry.txt", "x");
+  auto r = run_command_closed_stdout(ProjectPaths::exe(L"find.exe"),
+                                     {tmp.wpath(), L"-print"});
+
+  EXPECT_EXIT_CODE(r, 1);
+  EXPECT_CONTAINS(r.stderr_text, "find: write error: ");
+  EXPECT_CONTAINS(r.stderr_text, "Bad file descriptor");
+}

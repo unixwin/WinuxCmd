@@ -72,7 +72,13 @@ REGISTER_COMMAND(
     safePrintLn("not a tty");
   }
 
+  // [GNU] tty's documented exit status 3 covers a failed stdout write as
+  // well (#1368); the pipe-closed arm is the pre-existing SIGPIPE-style
+  // silent case.
   if (is_stdout_pipe_closed()) {
+    return 3;
+  }
+  if (is_stdout_write_failed()) {
     return 3;
   }
 

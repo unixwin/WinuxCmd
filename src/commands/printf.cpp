@@ -692,5 +692,11 @@ REGISTER_COMMAND(printf_cmd,
 
   safePrint(std::string_view(result));
 
+  // [GNU] printf.c registers close_stdout (printf.c:701): a failed stdout
+  // write surfaces as "printf: write error: <strerror>" with exit status 1
+  // (#1368). A closed downstream pipe keeps the quiet SIGPIPE-style status.
+  if (int write_error_rc = report_stdout_write_error("printf", 1)) {
+    return write_error_rc;
+  }
   return had_error ? 1 : 0;
 }

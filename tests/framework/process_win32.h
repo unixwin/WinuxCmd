@@ -35,3 +35,22 @@ struct CommandResult {
 CommandResult run_command(const std::wstring& exe,
                           const std::vector<std::wstring>& args,
                           const std::string& stdin_data = {});
+
+/**
+ * @brief Execute a command with stdout closed (bash `cmd args >&-`)
+ *
+ * Spawns the process with a NULL standard-output handle
+ * (STARTF_USESTDHANDLES with hStdOutput = nullptr), which is what a POSIX
+ * shell hands a child after `>&-`: the first stdout write fails with
+ * ERROR_INVALID_HANDLE, the Win32 image of EBADF (#1368). stderr is
+ * captured normally, so the command's write-error diagnostic stays
+ * observable.
+ *
+ * @param exe Path to the executable
+ * @param args Vector of command arguments
+ * @param stdin_data Optional string to feed to command's stdin
+ * @return CommandResult Execution results; stdout_text is always empty
+ */
+CommandResult run_command_closed_stdout(
+    const std::wstring& exe, const std::vector<std::wstring>& args,
+    const std::string& stdin_data = {});

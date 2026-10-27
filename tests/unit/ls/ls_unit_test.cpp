@@ -3590,3 +3590,22 @@ TEST(ls, ls_posixly_correct_still_parses_leading_options) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stderr_text.find("cannot access") == std::string::npos);
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1368: ls.c registers close_stdout (ls.c:1661), which reports a
+// failed stdout write ("ls: write error: <strerror>", closeout.c) and
+// exits with the serious status LS_FAILURE = 2. With stdout closed (`>&-`)
+// the child has no std-output handle, so the first listing write fails with
+// ERROR_INVALID_HANDLE — the Win32 image of EBADF — and ls must exit 2
+// instead of 0 silently.
+// ---------------------------------------------------------------------------
+TEST(ls, issue1368_closed_stdout_reports_write_error_and_exits_2) {
+  TempDir tmp;
+  tmp.write("entry.txt", "x");
+  auto r = run_command_closed_stdout(ProjectPaths::exe(L"ls.exe"),
+                                     {tmp.wpath()});
+
+  EXPECT_EXIT_CODE(r, 2);
+  EXPECT_CONTAINS(r.stderr_text, "ls: write error: ");
+  EXPECT_CONTAINS(r.stderr_text, "Bad file descriptor");
+}

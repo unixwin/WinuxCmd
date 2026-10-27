@@ -482,3 +482,33 @@ TEST(seq, issue1356_unknown_bundled_member_is_rejected) {
                  "seq: invalid option -- 'z'\n"
                  "Try 'seq --help' for more information.\n");
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1368: GNU seq treats a failed stdout write as fatal — seq.c calls
+// write_error() (system.h:960), printing one "seq: write error: <strerror>"
+// diagnostic and exiting 1. With stdout closed (`>&-`) the child has no
+// std-output handle at all, so the first flush fails with
+// ERROR_INVALID_HANDLE, the Win32 image of EBADF. The big LAST also pins
+// the prompt-stop contract: the item loop must bail out on the recorded
+// failure instead of generating ten million lines into a dead sink.
+// ---------------------------------------------------------------------------
+TEST(seq, issue1368_closed_stdout_reports_write_error_and_stops) {
+  auto r = run_command_closed_stdout(ProjectPaths::exe(L"seq.exe"),
+                                     {L"10000000"});
+
+  EXPECT_EXIT_CODE(r, 1);
+  EXPECT_CONTAINS(r.stderr_text, "seq: write error: ");
+  EXPECT_CONTAINS(r.stderr_text, "Bad file descriptor");
+}
+
+// The same contract for the floating-point loop (`seq 1 2 9` takes the
+// integral fast path; a non-integral INCREMENT exercises the double loop).
+TEST(seq, issue1368_closed_stdout_float_loop_reports_write_error) {
+  auto r =
+      run_command_closed_stdout(ProjectPaths::exe(L"seq.exe"),
+                                {L"1", L"0.5", L"100000"});
+
+  EXPECT_EXIT_CODE(r, 1);
+  EXPECT_CONTAINS(r.stderr_text, "seq: write error: ");
+  EXPECT_CONTAINS(r.stderr_text, "Bad file descriptor");
+}

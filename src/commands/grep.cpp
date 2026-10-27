@@ -2524,6 +2524,9 @@ auto process(Config& cfg) -> int {
   }
 
   for (const auto& input : inputs) {
+    // #1368: once stdout can no longer take writes, scanning further files
+    // only feeds a dead sink; GNU grep stops at the first failed write.
+    if (is_stdout_pipe_closed() || is_stdout_write_failed()) break;
     std::pair<bool, size_t> scan_result{false, 0};
     auto display_name = record_name_for_output(input, cfg);
 
@@ -2651,6 +2654,12 @@ auto process(Config& cfg) -> int {
     if (cfg.quiet && any_selected_global) break;
   }
 
+  // [GNU] a failed stdout write is an EXIT_TROUBLE (2) outcome, reported
+  // once as "grep: write error: <strerror>" (#1368). A closed downstream
+  // pipe keeps the quiet SIGPIPE-style status.
+  if (int write_error_rc = report_stdout_write_error("grep", 2)) {
+    return write_error_rc;
+  }
   // [GNU] errors exit 2 even under -q; quiet only suppresses the message
   // (suppressible_error / errseen, grep.c:667,3035).
   if (cfg.has_error) return 2;
