@@ -4,6 +4,167 @@ All notable changes to WinuxCmd are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow the
 repository release tags.
 
+## [1.1.21] - Unreleased
+
+Release-prep status: this section is being prepared ahead of the release.
+The release baseline is `main` **after** PRs #1414, #1415 and #1423 merge;
+before tagging, this section must be re-reconciled against the final
+`main` and the three `[PENDING]` entries below either promoted to regular
+entries or dropped.
+
+### Added
+
+- **FFI acceleration library (experimental, opt-in, default off)**: the
+  package now carries the FFI payload described in
+  `packaging/ffi/README.md` — `usr/bin/ffi/v1.1.21/winuxcore.dll` with its
+  `tiers.tsv` tier table, a `usr/bin/ffi/current.txt` version pointer, and
+  a package SHA-256 manifest that includes the DLL. Nothing changes
+  unless the host shell is started with `NIU_WINUXCMD_FFI=1`; the PATH /
+  spawn path remains the default, the fallback, and the reference
+  implementation. The DLL in this release is **unsigned**: expect possible
+  SmartScreen / Microsoft Defender attention when it is loaded, and see
+  `usr/bin/ffi/FFI-EXPERIMENTAL-NOTICE.md` in the installed tree before
+  enabling it. A signed DLL (same certificate line as the rest of the
+  product) is a hard gate for any non-experimental FFI release.
+- **README**: winget install row (package ID `caomengxuan666.WinuxCmd`)
+  and a note on SignPath Foundation code signing.
+
+### Fixed
+
+- **shared operand boundary (payload-root audit, #1364; residuals
+  #1385)**: `locate -d`, `stat`, `cygpath`, `updatedb`, `mktemp` and
+  `patch` file reads now fold shell-namespace spellings through the
+  shared operand boundary instead of resolving a bare `/` (or a dialect
+  spelling) against the caller's drive; the remaining operand-boundary
+  residuals across the command set were routed through the same fold.
+- **find**: `-printf` time directives completed with verbatim unknowns,
+  GNU flag semantics and exact `%X@` (#1379); GNU time-predicate windows,
+  fractions and relative `-newermt` (#1311); symbolic copy clauses in
+  `-perm` (#1314); `-size` applies to every file type (#1310); the full
+  GNU `-type` letter set and comma lists (#1377); file-system loops under
+  `-L` detected instead of expanded (#1378); traversal stops at `-quit`
+  even with no match (#1316); `-exec` spawn failures diagnosed and `{}`
+  substituted in command position (#1315); default `-print` suppressed
+  for `-ls`/`-fls`/`-quit` with full ls fields (#1309); `-mindepth` above
+  `-maxdepth` is a never-matching range (#1312); `--opt=value` forms and
+  a leading `--` no longer misroute as traversal roots (#1317); find owns
+  its diagnostics instead of the generic parser (#1380); directory times
+  are sampled before the enumeration open (#1402).
+- **option parser and dispatch (GNU conformance)**: bool long options
+  reject `--flag=value` (#1301); an explicit empty `--int=` value no
+  longer swallows the next argv (#1302); arity-aware `--help`/`--version`
+  interception and abbreviation expansion (#1303); `POSIXLY_CORRECT`
+  honored — option permutation stops at the first operand (#1304);
+  GNU-shaped option-error tails (#1305); short clusters with
+  optional-value options keep parsing, including `-NUM` forms for
+  uniq/diff/split (#1306).
+- **invented options removed (#1355, #1411)**: options GNU does not have
+  are no longer accepted — `seq -t/--terminator`, `tee --diagnose`,
+  `join --output`, `cp -c` as a `--context` alias, `mv -I`,
+  `sort --check-silent`, and a second batch of pseudo-options across the
+  set. `nice` stops option parsing at the wrapped command (#1408) and
+  warns when the requested priority cannot be applied (#1359).
+- **cp / mv / ln / install / shred / patch**: `cp -i` reads answers
+  line-wise so later prompts get their own answer (#1324); `mv -u`
+  precedence follows GNU (explicit value last-wins, `-u` weak) and the
+  overwrite mode is derived from parser occurrences, not raw argv
+  (#1325, #1326); `ln` treats a dangling symlink destination as existing
+  (#1367) and `--backup` follows the GNU argmatch/numbering rules
+  (#1308); a failed `cp --reflink=always` clone no longer leaves a
+  half-written destination (#1369); `cp --parents` grafts absolute
+  sources below their root (#1366); cross-volume `mv` recreates symlinks
+  verbatim instead of copying contents (#1365); `install` uses GNU
+  backup naming/control and fails loudly on strip errors (#1357);
+  `shred` renames to a fresh random name and verifies the result, with
+  the exact GNU `-s` suffix grammar (#1348); `patch` implements context
+  and normal (ed-style) diff formats, `-p` reads its INT value, and the
+  GNU option surface (`-V`/`--prefix`/`--quoting-style`/`--get`/
+  `--read-only`, real `-l` matching) is covered (#1345, #1346, #1381).
+- **chmod / mkdir / rm**: chmod's symbolic grammar handles multi-op
+  pairs, copy clauses and empty perms (#1331); `mkdir -m` evaluates
+  symbolic modes with the full GNU grammar (#1330); `rm` uses typed `-i`
+  prompts with GNU prompt selection and the final directory prompt
+  (#1327), and verbose wording plus operand-relative display paths
+  (#1328).
+- **text tools**: the `hexdump -e/-f` format engine (block model,
+  squeezed repeated blocks, trailing odd bytes, one continuous stream
+  across operands) (#1373); `sort -h` compares (suffix rank, mantissa)
+  lexicographically per GNU and `-V` ordering was rewritten to filevercmp
+  (#1371, #1340); `comm`/`join` use byte-exact line keys (no CR
+  normalization, no BOM stripping) (#1354); `cksum -b/-t` are
+  order-sensitive, last spelling wins (#1362); `tac` uses the Basic regex
+  dialect for separators (#1361); `seq` walks bundled short options
+  per-character and drops the 1e9 iteration ceiling, stopping when the
+  output pipe closes (#1356, #1376); `grep` rejects negative context
+  lengths with the GNU diagnostic (#1338); `sed` keeps the backslash in
+  address escapes and suppresses empty matches that abut a non-empty one
+  (#1339, #1284); `uniq` rejects an explicitly negative `-w` (#1341);
+  `tail -z` headers and separators stay newlines (#1342); `echo` prints
+  `\E` literally (#1343); `stat --printf` supports `\xHH` escapes and an
+  explicit format beats `-t` in any order (#1334);
+  `ls --quoting-style=locale`, exact-then-unique-prefix option matching,
+  and bare `--color` meaning `always` (#1335, #1307); `dirname` folds
+  all-separator results to a single slash and the bare `//` operand to
+  `/` (#1337).
+- **xargs**: quote parsing and `-I` line mode rewritten; `-p` answers are
+  read from `CONIN$` first and fail loudly on EOF; child exit codes
+  1–254 map to 123 with the 255 abort diagnostic; `-s` accounting uses
+  raw argv bytes and a single oversized item errors; `-t` output is
+  quoted; `-0`/`-d` are last-wins with the `-E` warning and the six-line
+  `--show-limits`; empty input yields zero items in `-0`/`-d` modes.
+- **process wrappers**: `timeout` carries the full Linux signal table
+  (numeric specs valid only 0..31 and 34..64) and reports 137 on SIGKILL
+  timeout (#1384, #1350); `env` stops option parsing at the first
+  non-option argument, preserves environment order, and `-i` starts from
+  an empty block (#1352, #1353); `stdbuf`/`time`/`runcon`/`chroot` stop
+  option parsing at the wrapped command and wrapper option errors exit
+  125 (#1375); `file` classifies by content only (extension maps deleted)
+  (#1383); `touch -d` accepts the empty string (today 00:00), `@epoch`
+  fractions to 100ns, fortnight and weekday items (#1382); `sum` selects
+  the algorithm from parsed options, last of `-r`/`-s` wins (#1370);
+  `cmp` aligns suffix grammar, count parsing, open-error and EOF reports
+  with GNU (#1347); `truncate --size` skips leading whitespace (#1360);
+  `mktemp` template precedence and GNU suffix/X rules (#1358); `du`
+  counts hard links once and `--inodes` reports pure inode counts
+  (#1351, #1372).
+- **paths, long paths and console output**: operands are probed and
+  opened through extended spellings past `MAX_PATH`, and `winuxcmd.exe`
+  is marked `longPathAware` in its manifest (#1288); literal trailing
+  `.`/` ` components survive path folding (#1283); a device-named
+  on-disk directory no longer vanishes from probes or collapses onto the
+  device (#1297); file operands in uniq/hexdump/xxd/dd/tree/patch expand
+  through the shared glob path under `WINUX_SHELL_GLOB=native` (#1374);
+  stdout write failures surface with the GNU exit mapping instead of
+  being swallowed (#1368); optioned `cat`/`head` stream correctly on
+  short reads from pipes and stdin, and `grep` matches `.` by UTF-8
+  codepoint with GNU `\b`/`\B` word boundaries.
+- **wpm**: a successful install now reports the package name, version
+  and destination (#1363).
+
+### Build
+
+- GCC module builds: the global-fragment class of failures is addressed
+  for the covered modules (`::size_t` provision in module global
+  fragments, redundant inner exports dropped) (#1401, #1406, #1407,
+  #1412).
+- Stray `part{a,b,c}` split artifacts removed from the repository root
+  (#1413).
+
+### Pending merge — placeholders, NOT in the baseline this section was drafted against
+
+The following entries describe PRs that are still open. They enter this
+release only if the PRs merge before tagging; the pre-release checklist
+(`packaging/ffi-interim-release-checklist.md`) requires re-reconciling
+this section against the final `main` and deleting any entry whose PR
+did not merge.
+
+- **[PENDING PR #1414]** `diff`: pair same-name entries in recursive
+  directory comparison (#1344).
+- **[PENDING PR #1415]** path layer: trailing dot/space operands and the
+  on-disk `NUL.txt` case (#1332, #1333).
+- **[PENDING PR #1423]** build: GCC wall class completion and the `cpio`
+  operand boundary (#1412, #1422).
+
 ## [1.1.20] - 2026-10-22
 
 ### Fixed
