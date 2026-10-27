@@ -168,12 +168,34 @@ auto filetime_to_local_system_time(const FILETIME& ft)
 
 auto parse_epoch_time(std::string_view s) -> std::optional<FILETIME> {
   if (s.empty() || s.front() != '@') return std::nullopt;
-  long long seconds = 0;
   auto rest = s.substr(1);
-  auto [ptr, ec] =
-      std::from_chars(rest.data(), rest.data() + rest.size(), seconds);
-  if (ec != std::errc() || ptr != rest.data() + rest.size())
+
+  // [GNU] "@<seconds>" accepts a fractional part ("@123.5" — the fraction
+  // is kept to 100ns FILETIME ticks) and a sign that applies to the whole
+  // value ("@-1.5" is 1.5 seconds before the epoch). Issue #1382.
+  bool negative = false;
+  if (!rest.empty() && (rest.front() == '-' || rest.front() == '+')) {
+    negative = rest.front() == '-';
+    rest = rest.substr(1);
+  }
+  auto dot = rest.find('.');
+  auto int_part = dot == std::string_view::npos ? rest : rest.substr(0, dot);
+  auto frac_part =
+      dot == std::string_view::npos ? std::string_view{} : rest.substr(dot + 1);
+  if (!is_digits(int_part)) return std::nullopt;
+  if (dot != std::string_view::npos && !is_digits(frac_part)) {
     return std::nullopt;
+  }
+  long long seconds = 0;
+  auto [ptr, ec] = std::from_chars(int_part.data(),
+                                   int_part.data() + int_part.size(), seconds);
+  if (ec != std::errc() || ptr != int_part.data() + int_part.size()) {
+    return std::nullopt;
+  }
+  long long frac_ticks = 0;
+  for (size_t i = 0; i < 7; ++i) {
+    frac_ticks = frac_ticks * 10 + (i < frac_part.size() ? frac_part[i] - '0' : 0);
+  }
 
   SYSTEMTIME epoch{};
   epoch.wYear = 1970;
@@ -181,7 +203,12 @@ auto parse_epoch_time(std::string_view s) -> std::optional<FILETIME> {
   epoch.wDay = 1;
   auto ft = utc_system_time_to_filetime(epoch);
   if (!ft) return std::nullopt;
-  return add_seconds(*ft, seconds);
+  const long long delta =
+      seconds * 10000000LL + frac_ticks;
+  const auto total = static_cast<long long>(filetime_to_ticks(*ft)) +
+                     (negative ? -delta : delta);
+  if (total < 0) return std::nullopt;
+  return ticks_to_filetime(static_cast<unsigned long long>(total));
 }
 
 auto parse_timezone_suffix(std::string& s) -> std::optional<int> {
@@ -576,11 +603,63 @@ auto parse_relative_date(std::string input, const FILETIME& base)
     scale = 24 * 60 * 60;
   } else if (unit == "week" || unit == "weeks") {
     scale = 7 * 24 * 60 * 60;
+  } else if (unit == "fortnight" || unit == "fortnights") {
+    // [GNU] a fortnight is fourteen days (issue #1382).
+    scale = 14 * 24 * 60 * 60;
   } else {
     return std::nullopt;
   }
 
   return add_seconds(base, static_cast<long long>(amount) * scale);
+}
+
+// [GNU] Weekday items (issue #1382): "Monday", "next Monday",
+// "last Monday". A bare name is the nearest such day, today counting
+// (+0..6); "next" pushes a same-day match a full week out (+7), "last"
+// mirrors it backwards (-7..0 with same-day at -7). The result is
+// 00:00:00 of the target date in the effective zone.
+auto weekday_number(const std::string& name) -> std::optional<int> {
+  static const std::unordered_map<std::string, int> days = {
+      {"sunday", 0}, {"sun", 0},    {"monday", 1},   {"mon", 1},
+      {"tuesday", 2}, {"tue", 2},   {"tues", 2},     {"wednesday", 3},
+      {"wed", 3},    {"thursday", 4}, {"thu", 4},    {"thur", 4},
+      {"thurs", 4},  {"friday", 5}, {"fri", 5},      {"saturday", 6},
+      {"sat", 6}};
+  auto it = days.find(name);
+  if (it == days.end()) return std::nullopt;
+  return it->second;
+}
+
+auto parse_weekday_date(std::string input, const FILETIME& base)
+    -> std::optional<FILETIME> {
+  input = lower_copy(trim_copy(input));
+  enum class Mode { bare, next, last };
+  Mode mode = Mode::bare;
+  if (input.starts_with("next ")) {
+    mode = Mode::next;
+    input = trim_copy(input.substr(5));
+  } else if (input.starts_with("last ")) {
+    mode = Mode::last;
+    input = trim_copy(input.substr(5));
+  }
+  auto target = weekday_number(input);
+  if (!target) return std::nullopt;
+
+  auto st = filetime_to_zone_system_time(base);
+  if (!st) return std::nullopt;
+  const int delta = (*target - static_cast<int>(st->wDayOfWeek) + 7) % 7;
+  long long offset = delta;
+  if (mode == Mode::next && delta == 0) offset = 7;
+  if (mode == Mode::last) offset = delta == 0 ? -7 : delta - 7;
+
+  auto shifted = add_seconds(base, offset * 24LL * 60 * 60);
+  auto day = filetime_to_zone_system_time(shifted);
+  if (!day) return std::nullopt;
+  day->wHour = 0;
+  day->wMinute = 0;
+  day->wSecond = 0;
+  day->wMilliseconds = 0;
+  return zone_time_to_filetime(*day, std::nullopt);
 }
 
 // [GNU] A date string may end with one relative item applied to a base
@@ -593,7 +672,21 @@ auto parse_combined_date(std::string input, const FILETIME& base, int depth)
       R"(^(.*?)\s+([+-]?[0-9]+|next|last)\s+(fortnights?|seconds?|secs?|minutes?|mins?|hours?|days?|weeks?|months?|years?)\s*(ago|hence)?\s*$)",
       std::regex::icase);
   std::smatch m;
-  if (!std::regex_match(input, m, tail_re)) return std::nullopt;
+  if (!std::regex_match(input, m, tail_re)) {
+    // [GNU] A trailing weekday item applies to the fixed head the same
+    // way ("2020-01-02 Monday"; issue #1382).
+    static const std::regex weekday_tail_re(
+        R"(^(.*?)\s+((?:next|last)\s+)?(sunday|monday|tuesday|wednesday|thursday|friday|saturday|sun|mon|tue|tues|wed|thu|thur|thurs|fri|sat)\s*$)",
+        std::regex::icase);
+    std::smatch wm;
+    if (!std::regex_match(input, wm, weekday_tail_re)) return std::nullopt;
+    std::string head = trim_copy(wm[1].str());
+    if (head.empty()) return std::nullopt;
+    std::optional<FILETIME> head_ft = parse_fixed_date_time(head);
+    if (!head_ft) head_ft = parse_combined_date(head, base, depth + 1);
+    if (!head_ft) return std::nullopt;
+    return parse_weekday_date(trim_copy(wm[2].str() + wm[3].str()), *head_ft);
+  }
   std::string base_str = trim_copy(m[1].str());
   if (base_str.empty()) return std::nullopt;
 
@@ -680,8 +773,21 @@ auto parse_military_time(const std::string& input) -> std::optional<FILETIME> {
 
 auto parse_gnu_date_string(const std::string& input, const FILETIME& base)
     -> std::optional<FILETIME> {
+  // [GNU] An empty (or all-blank) -d string means today at 00:00:00 in the
+  // effective zone (getdate: an empty string is the start of today).
+  // Issue #1382.
+  if (trim_copy(input).empty()) {
+    auto st = filetime_to_zone_system_time(base);
+    if (!st) return std::nullopt;
+    st->wHour = 0;
+    st->wMinute = 0;
+    st->wSecond = 0;
+    st->wMilliseconds = 0;
+    return zone_time_to_filetime(*st, std::nullopt);
+  }
   if (auto fixed = parse_fixed_date_time(input)) return fixed;
   if (auto mil = parse_military_time(input)) return mil;
+  if (auto weekday = parse_weekday_date(input, base)) return weekday;
   if (auto rel = parse_relative_date(input, base)) return rel;
   return parse_combined_date(input, base, 0);
 }

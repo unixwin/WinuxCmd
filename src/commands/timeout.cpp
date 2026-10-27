@@ -48,24 +48,81 @@ struct Config {
 };
 
 auto timeout_signal_name(int signal) -> std::string {
+  // [GNU] Linux signal numbering (issue #1384): the full table, with
+  // real-time signals spelled RTMIN / RTMIN+n / RTMAX.
   switch (signal) {
     case 0:
-      return "0";
+      return "EXIT";
     case 1:
       return "HUP";
     case 2:
       return "INT";
     case 3:
       return "QUIT";
+    case 4:
+      return "ILL";
+    case 5:
+      return "TRAP";
     case 6:
       return "ABRT";
+    case 7:
+      return "BUS";
+    case 8:
+      return "FPE";
     case 9:
       return "KILL";
+    case 10:
+      return "USR1";
+    case 11:
+      return "SEGV";
+    case 12:
+      return "USR2";
+    case 13:
+      return "PIPE";
     case 14:
       return "ALRM";
     case 15:
       return "TERM";
+    case 16:
+      return "STKFLT";
+    case 17:
+      return "CHLD";
+    case 18:
+      return "CONT";
+    case 19:
+      return "STOP";
+    case 20:
+      return "TSTP";
+    case 21:
+      return "TTIN";
+    case 22:
+      return "TTOU";
+    case 23:
+      return "URG";
+    case 24:
+      return "XCPU";
+    case 25:
+      return "XFSZ";
+    case 26:
+      return "VTALRM";
+    case 27:
+      return "PROF";
+    case 28:
+      return "WINCH";
+    case 29:
+      return "IO";
+    case 30:
+      return "PWR";
+    case 31:
+      return "SYS";
+    case 34:
+      return "RTMIN";
+    case 64:
+      return "RTMAX";
     default:
+      if (signal > 34 && signal < 64) {
+        return "RTMIN+" + std::to_string(signal - 34);
+      }
       return std::to_string(signal);
   }
 }
@@ -73,11 +130,16 @@ auto timeout_signal_name(int signal) -> std::string {
 auto parse_signal(const std::string& signal) -> cp::Result<int> {
   if (signal.empty()) return std::unexpected("'': invalid signal");
 
+  // [GNU] Numeric specs are valid only for 0..31 and 34..64; 32/33 are
+  // reserved by the C library and anything else is out of range.
   int value = 0;
   auto [ptr, ec] =
       std::from_chars(signal.data(), signal.data() + signal.size(), value);
-  if (ec == std::errc() && ptr == signal.data() + signal.size() && value >= 0) {
-    return value;
+  if (ec == std::errc() && ptr == signal.data() + signal.size()) {
+    if ((value >= 0 && value <= 31) || (value >= 34 && value <= 64)) {
+      return value;
+    }
+    return std::unexpected("'" + signal + "': invalid signal");
   }
 
   std::string name;
@@ -90,12 +152,37 @@ auto parse_signal(const std::string& signal) -> cp::Result<int> {
   }
 
   static const std::unordered_map<std::string, int> signals = {
-      {"HUP", 1},  {"INT", 2},   {"QUIT", 3}, {"ABRT", 6},
-      {"KILL", 9}, {"ALRM", 14}, {"TERM", 15}};
+      {"EXIT", 0},   {"HUP", 1},    {"INT", 2},    {"QUIT", 3},
+      {"ILL", 4},    {"TRAP", 5},   {"ABRT", 6},   {"IOT", 6},
+      {"BUS", 7},    {"FPE", 8},    {"KILL", 9},   {"USR1", 10},
+      {"SEGV", 11},  {"USR2", 12},  {"PIPE", 13},  {"ALRM", 14},
+      {"TERM", 15},  {"STKFLT", 16}, {"CHLD", 17}, {"CONT", 18},
+      {"STOP", 19},  {"TSTP", 20},  {"TTIN", 21},  {"TTOU", 22},
+      {"URG", 23},   {"XCPU", 24},  {"XFSZ", 25},  {"VTALRM", 26},
+      {"PROF", 27},  {"WINCH", 28}, {"IO", 29},    {"POLL", 29},
+      {"LOST", 29},  {"PWR", 30},   {"SYS", 31},   {"UNUSED", 31}};
 
   if (auto it = signals.find(name); it != signals.end()) {
     return it->second;
   }
+
+  // Real-time forms: RTMIN, RTMIN+n (35..63), RTMAX, RTMAX-n (35..63).
+  auto parse_rt_offset = [&name](std::string_view prefix, char sign)
+      -> std::optional<int> {
+    if (!name.starts_with(prefix)) return std::nullopt;
+    std::string_view rest = std::string_view(name).substr(prefix.size());
+    if (rest.empty() || rest[0] != sign) return std::nullopt;
+    int n = 0;
+    auto [p, e] = std::from_chars(rest.data() + 1, rest.data() + rest.size(), n);
+    if (e != std::errc() || p != rest.data() + rest.size() || n < 0 || n > 29) {
+      return std::nullopt;
+    }
+    return n;
+  };
+  if (name == "RTMIN") return 34;
+  if (name == "RTMAX") return 64;
+  if (auto n = parse_rt_offset("RTMIN", '+')) return 34 + *n;
+  if (auto n = parse_rt_offset("RTMAX", '-')) return 64 - *n;
 
   return std::unexpected("'" + signal + "': invalid signal");
 }
@@ -386,16 +473,14 @@ REGISTER_COMMAND(
     "kill(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", TIMEOUT_OPTIONS) {
   using namespace timeout_pipeline;
 
-  // -l: list supported signals
+  // -l: list supported signals (full Linux table, issue #1384)
   if (ctx.get<bool>("-l", false)) {
-    safePrintLn("  0 (reserved)");
-    safePrintLn("  1 HUP");
-    safePrintLn("  2 INT");
-    safePrintLn("  3 QUIT");
-    safePrintLn("  6 ABRT");
-    safePrintLn("  9 KILL");
-    safePrintLn(" 14 ALRM");
-    safePrintLn(" 15 TERM");
+    for (int sig = 0; sig <= 64; ++sig) {
+      if (sig == 32 || sig == 33) continue;  // reserved by the C library
+      std::string num = std::to_string(sig);
+      safePrintLn(std::string(sig < 10 ? "  " : " ") + num + " " +
+                  timeout_signal_name(sig));
+    }
     return 0;
   }
 

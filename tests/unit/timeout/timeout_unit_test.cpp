@@ -180,8 +180,10 @@ TEST(timeout, timeout_verbose_signal0_kill_after_reports_probe_then_kill) {
 
   EXPECT_EQ(r.exit_code, 137);
   EXPECT_TRUE(r.stdout_text.empty());
+  // [GNU] signal 0 resolves to the EXIT pseudo-signal name in the
+  // verbose line (sig2str(0) == "EXIT").
   EXPECT_EQ_TEXT(r.stderr_text,
-                 "timeout: sending signal 0 to command 'sleep.exe'\n"
+                 "timeout: sending signal EXIT to command 'sleep.exe'\n"
                  "timeout: sending signal KILL to command 'sleep.exe'\n");
 }
 
@@ -243,6 +245,32 @@ TEST(timeout, timeout_invalid_signal) {
   EXPECT_EQ(r.exit_code, 125);
   EXPECT_TRUE(r.stdout_text.empty());
   EXPECT_EQ_TEXT(r.stderr_text, "timeout: 'INVALID': invalid signal\n");
+}
+
+// [GNU] Issue #1384: the full Linux signal table is accepted by name
+// (USR1/USR2, PIPE, CHLD, RT forms, ...), not just the classic seven.
+TEST(timeout, timeout_accepts_full_signal_table_names) {
+  for (const wchar_t* name :
+       {L"USR1", L"USR2", L"PIPE", L"CHLD", L"CONT", L"STOP", L"SEGV",
+        L"RTMIN", L"RTMIN+1", L"RTMAX", L"RTMAX-1", L"EXIT", L"SIGUSR1"}) {
+    Pipeline p;
+    p.add(L"timeout.exe", {L"-s", name, L"5", L"echo.exe", L"test"});
+    auto r = p.run();
+    EXPECT_EQ(r.exit_code, 0);
+  }
+}
+
+// [GNU] Issue #1384: numeric specs are valid only for 0..31 and 34..64;
+// 32/33 are C-library-reserved and out-of-range values are rejected with
+// the same one-line diagnostic as a bad name.
+TEST(timeout, timeout_rejects_reserved_and_out_of_range_signal_numbers) {
+  for (const wchar_t* num : {L"32", L"33", L"65", L"999", L"-1"}) {
+    Pipeline p;
+    p.add(L"timeout.exe", {L"-s", num, L"5", L"echo.exe", L"test"});
+    auto r = p.run();
+    EXPECT_EQ(r.exit_code, 125);
+    EXPECT_TRUE(r.stdout_text.empty());
+  }
 }
 
 TEST(timeout, timeout_invalid_kill_after_reports_gnu_style_usage_error) {

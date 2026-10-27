@@ -509,3 +509,49 @@ TEST(touch, issue_1283_drive_colon_operand_creates_carrier_file) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(std::filesystem::exists(tmp.path / carrier));
 }
+
+// [GNU] Issue #1382: -d @<seconds> accepts a fraction to 100ns ticks.
+TEST(touch, issue_1382_epoch_fraction) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"touch.exe", {L"-d", L"@123.5", L"epoch.txt"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+
+  auto st = filetime_to_utc(read_file_times(tmp.path / "epoch.txt").write);
+  EXPECT_EQ(st.wYear, 1970);
+  EXPECT_EQ(st.wMonth, 1);
+  EXPECT_EQ(st.wDay, 1);
+  EXPECT_EQ(st.wMinute, 2);
+  EXPECT_EQ(st.wSecond, 3);
+  EXPECT_EQ(st.wMilliseconds, 500);
+}
+
+// [GNU] Issue #1382: "1 fortnight ago" is fourteen days back from the
+// reference time.
+TEST(touch, issue_1382_fortnight_relative) {
+  TempDir tmp;
+
+  Pipeline p1;
+  p1.set_cwd(tmp.wpath());
+  p1.add(L"touch.exe", {L"-d", L"@86400", L"ref.txt"});
+  auto r1 = p1.run();
+  EXPECT_EQ(r1.exit_code, 0);
+
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.add(L"touch.exe",
+         {L"-r", L"ref.txt", L"-d", L"1 fortnight ago", L"out.txt"});
+  auto r2 = p2.run();
+  EXPECT_EQ(r2.exit_code, 0);
+
+  // ref = epoch + 1 day; minus 14 days = 1969-12-19 00:00 UTC.
+  auto st = filetime_to_utc(read_file_times(tmp.path / "out.txt").write);
+  EXPECT_EQ(st.wYear, 1969);
+  EXPECT_EQ(st.wMonth, 12);
+  EXPECT_EQ(st.wDay, 19);
+  EXPECT_EQ(st.wHour, 0);
+}
