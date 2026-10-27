@@ -1537,6 +1537,21 @@ TEST(xargs, xargs_child_255_prints_abort_diagnostic_1319) {
               std::string::npos);
 }
 
+// #1303: --help after the utility name belongs to the utility, not to
+// xargs: `xargs echo --help` runs echo with --help and the operand.
+TEST(xargs, xargs_utility_help_is_not_intercepted) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"xargs.exe", {L"echo", L"--help"});
+  p.set_stdin("a\n");
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("--help a") != std::string::npos);
+}
+
 TEST(xargs, xargs_interactive_stdin_exhausted_fails_loudly_1320) {
   TempDir tmp;
 

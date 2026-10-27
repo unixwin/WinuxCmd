@@ -1,0 +1,5 @@
+cmd: echo
+args: -e 'a\Eb'
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/1343
+tags: issue-1343 regression

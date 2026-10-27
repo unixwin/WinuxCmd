@@ -366,6 +366,20 @@ export std::string translate_error(std::string_view error) {
       }
     }
   }
+  // #1301: "option '--flag' doesn't allow an argument" (getopt_long).
+  constexpr std::string_view kNoArgumentPrefix = "option '";
+  constexpr std::string_view kNoArgumentSuffix = "' doesn't allow an argument";
+  if (error.size() > kNoArgumentPrefix.size() + kNoArgumentSuffix.size() &&
+      error.starts_with(kNoArgumentPrefix) &&
+      error.ends_with(kNoArgumentSuffix)) {
+    const auto value =
+        error.substr(kNoArgumentPrefix.size(),
+                     error.size() - kNoArgumentPrefix.size() -
+                         kNoArgumentSuffix.size());
+    return ::winux::i18n::format("common.error.option_no_argument",
+                                 "option '{}' doesn't allow an argument",
+                                 value);
+  }
   // hexdump: "bad format string: <detail>" (#1373); the detail is the
   // format parser's own diagnostic and stays untranslated, like the
   // pr number detail above.

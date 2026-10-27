@@ -320,3 +320,74 @@ TEST(diff, diff_unknown_option_exits_2_issue1213) {
   EXPECT_TRUE(r.stderr_text.find("unrecognized option") != std::string::npos);
   EXPECT_TRUE(r.stdout_text.empty());
 }
+
+// #1306: -c and -u in one cluster are two different output styles,
+// not a value: diff -cu reports conflicting styles.
+TEST(diff, diff_cluster_conflicting_styles_are_an_error) {
+  TempDir tmp;
+  tmp.write("a.txt", "line1\nline2\nline3\n");
+  tmp.write("b.txt", "line1\nline2\nCHANGED\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"diff.exe", {L"-cu", L"a.txt", L"b.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_TRUE(r.stderr_text.find("conflicting output style options") !=
+              std::string::npos);
+}
+
+// #1306: digits inside a cluster are the -NUM context length, so
+// -c5 is context output with 5 lines of context.
+TEST(diff, diff_cluster_digits_are_context_length) {
+  TempDir tmp;
+  tmp.write("a.txt",
+            "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\n"
+            "line9\nline10\n");
+  tmp.write("b.txt",
+            "line1\nline2\nCHANGED\nline4\nline5\nline6\nline7\nline8\n"
+            "line9\nline10\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"diff.exe", {L"-c5", L"a.txt", L"b.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.find("*** 1,8 ****") != std::string::npos);
+}
+
+// #1306: digits before the style flag set the same length (-5c).
+TEST(diff, diff_leading_digits_are_context_length) {
+  TempDir tmp;
+  tmp.write("a.txt",
+            "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\n"
+            "line9\nline10\n");
+  tmp.write("b.txt",
+            "line1\nline2\nCHANGED\nline4\nline5\nline6\nline7\nline8\n"
+            "line9\nline10\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"diff.exe", {L"-5c", L"a.txt", L"b.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.find("*** 1,8 ****") != std::string::npos);
+}
+
+// Repeating the same style is not a conflict.
+TEST(diff, diff_repeated_style_is_not_a_conflict) {
+  TempDir tmp;
+  tmp.write("a.txt", "line1\nline2\nline3\n");
+  tmp.write("b.txt", "line1\nline2\nCHANGED\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"diff.exe", {L"-cc", L"a.txt", L"b.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.find("***") != std::string::npos);
+}

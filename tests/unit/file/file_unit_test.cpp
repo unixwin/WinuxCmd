@@ -22,9 +22,10 @@ TEST(file, file_basic) {
   TEST_LOG("file.exe output", r.stdout_text);
 
   EXPECT_EQ(r.exit_code, 0);
-  // Verify the output contains expected file types
+  // [GNU] Issue #1383: classification is by content only — a .py file
+  // without a shebang is plain ASCII text, never "Python script".
   EXPECT_TRUE(r.stdout_text.find("ASCII text") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("Python script") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("Python script") == std::string::npos);
 }
 
 TEST(file, file_brief) {
@@ -104,8 +105,56 @@ TEST(file, file_nonexistent) {
   auto r = p.run();
 
   TEST_LOG_EXIT_CODE(r);
-  TEST_LOG("file.exe nonexistent output", r.stderr_text);
+  TEST_LOG("file.exe nonexistent output", r.stdout_text);
 
-  EXPECT_NE(r.exit_code, 0);
-  EXPECT_TRUE(r.stderr_text.find("No such file") != std::string::npos);
+  // [GNU] Issue #1383: a missing operand is a stdout "cannot open" line
+  // and the exit status stays 0.
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("cannot open 'nonexistent.txt'") !=
+              std::string::npos);
+}
+
+TEST(file, file_content_beats_extension) {
+  TempDir tmp;
+  tmp.write("photo.jpg", "just some plain text\n");
+  tmp.write("notes.txt", "%PDF-1.4 fake\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"file.exe", {L"photo.jpg", L"notes.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("photo.jpg: ASCII text") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("notes.txt: PDF document") !=
+              std::string::npos);
+}
+
+TEST(file, file_empty_and_shebang) {
+  TempDir tmp;
+  tmp.write("empty.bin", "");
+  tmp.write("tool", "#!/usr/bin/env python3\nprint('hi')\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"file.exe", {L"empty.bin", L"tool"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("empty.bin: empty") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("Python script") != std::string::npos);
+}
+
+TEST(file, file_no_operands_usage) {
+  Pipeline p;
+  p.add(L"file.exe", {});
+
+  auto r = p.run();
+
+  // [GNU] Issue #1383: no operands -> usage on stderr, exit 1.
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("Usage: file") != std::string::npos);
 }

@@ -180,8 +180,10 @@ TEST(timeout, timeout_verbose_signal0_kill_after_reports_probe_then_kill) {
 
   EXPECT_EQ(r.exit_code, 137);
   EXPECT_TRUE(r.stdout_text.empty());
+  // [GNU] signal 0 resolves to the EXIT pseudo-signal name in the
+  // verbose line (sig2str(0) == "EXIT").
   EXPECT_EQ_TEXT(r.stderr_text,
-                 "timeout: sending signal 0 to command 'sleep.exe'\n"
+                 "timeout: sending signal EXIT to command 'sleep.exe'\n"
                  "timeout: sending signal KILL to command 'sleep.exe'\n");
 }
 
@@ -245,6 +247,32 @@ TEST(timeout, timeout_invalid_signal) {
   EXPECT_EQ_TEXT(r.stderr_text, "timeout: 'INVALID': invalid signal\n");
 }
 
+// [GNU] Issue #1384: the full Linux signal table is accepted by name
+// (USR1/USR2, PIPE, CHLD, RT forms, ...), not just the classic seven.
+TEST(timeout, timeout_accepts_full_signal_table_names) {
+  for (const wchar_t* name :
+       {L"USR1", L"USR2", L"PIPE", L"CHLD", L"CONT", L"STOP", L"SEGV",
+        L"RTMIN", L"RTMIN+1", L"RTMAX", L"RTMAX-1", L"EXIT", L"SIGUSR1"}) {
+    Pipeline p;
+    p.add(L"timeout.exe", {L"-s", name, L"5", L"echo.exe", L"test"});
+    auto r = p.run();
+    EXPECT_EQ(r.exit_code, 0);
+  }
+}
+
+// [GNU] Issue #1384: numeric specs are valid only for 0..31 and 34..64;
+// 32/33 are C-library-reserved and out-of-range values are rejected with
+// the same one-line diagnostic as a bad name.
+TEST(timeout, timeout_rejects_reserved_and_out_of_range_signal_numbers) {
+  for (const wchar_t* num : {L"32", L"33", L"65", L"999", L"-1"}) {
+    Pipeline p;
+    p.add(L"timeout.exe", {L"-s", num, L"5", L"echo.exe", L"test"});
+    auto r = p.run();
+    EXPECT_EQ(r.exit_code, 125);
+    EXPECT_TRUE(r.stdout_text.empty());
+  }
+}
+
 TEST(timeout, timeout_invalid_kill_after_reports_gnu_style_usage_error) {
   Pipeline p;
   p.add(L"timeout.exe", {L"-k", L"xyz", L"5", L"echo.exe", L"test"});
@@ -266,3 +294,62 @@ TEST(timeout, timeout_invalid_option_returns_125_with_help_hint) {
                  "timeout: unrecognized option '--definitely-invalid'\n"
                  "Try 'timeout --help' for more information.\n");
 }
+
+// #1350: [GNU] the status of a timeout kill is signal-dependent: 124
+// for the ordinary signal path, but 128+SIGKILL = 137 when the command
+// is killed by SIGKILL; --preserve-status reports 128+SIG throughout.
+TEST(timeout, timeout_kill_signal_reports_137) {
+  Pipeline p;
+  p.add(L"timeout.exe", {L"-s", L"KILL", L"0.2", L"sleep.exe", L"5"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 137);
+  EXPECT_TRUE(r.stdout_text.empty());
+}
+
+TEST(timeout, timeout_term_signal_reports_124) {
+  Pipeline p;
+  p.add(L"timeout.exe", {L"-s", L"TERM", L"0.2", L"sleep.exe", L"5"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 124);
+}
+
+TEST(timeout, timeout_int_signal_reports_124) {
+  Pipeline p;
+  p.add(L"timeout.exe", {L"-s", L"INT", L"0.2", L"sleep.exe", L"5"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 124);
+}
+
+TEST(timeout, timeout_preserve_status_term_reports_143) {
+  Pipeline p;
+  p.add(L"timeout.exe", {L"--preserve-status", L"0.2", L"sleep.exe", L"5"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 143);
+}
+
+TEST(timeout, timeout_preserve_status_kill_reports_137) {
+  Pipeline p;
+  p.add(L"timeout.exe",
+        {L"-s", L"KILL", L"--preserve-status", L"0.2", L"sleep.exe", L"5"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 137);
+}
+
+// #1303: --help after the wrapped command belongs to the command, not
+// to timeout: `timeout 5 echo --help` shows echo's help, not
+// timeout's.
+TEST(timeout, timeout_wrapped_command_help_is_not_intercepted) {
+  Pipeline p;
+  p.add(L"timeout.exe", {L"5", L"echo.exe", L"--help"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("Usage:") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("Usage: timeout") == std::string::npos);
+}
+

@@ -1,0 +1,7 @@
+cmd: sed
+args: -n '/\./p' lines.txt
+timeout: 10
+setup: |
+  printf 'a.b\naxb\n' > lines.txt
+source: github.com/unixwin/WinuxCmd/issues/1339
+tags: issue-1339 regression
