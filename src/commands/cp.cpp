@@ -57,7 +57,6 @@ import utils;
  * - @a --parent, @a --parents: Use full source file name under DIRECTORY
  * [IMPLEMENTED]
  * - @a --debug: Explain how a file is copied [IMPLEMENTED AS VERBOSE]
- * - @a -g, @a --progress-bar: Accept progress-bar flag [COMPAT NO-OP]
  */
 
 using cmd::meta::OptionMeta;
@@ -96,7 +95,6 @@ constexpr char DEFAULT_BACKUP_SUFFIX[] = "~";
 // [GNU] -u, --update: equivalent to --update[=older]
 // [GNU] -v, --verbose: explain what is being done
 // [GNU] --debug: explain how a file is copied; implies --verbose
-// [EXT] -g, --progress-bar: WinuxCmd extension, not in GNU coreutils
 // [GNU] -x, --one-file-system: stay on this file system
 // [DIFFERS] -Z: SELinux contexts are unavailable on Windows
 // [IMPLEMENTED] --remove-destination: remove each existing destination file
@@ -141,7 +139,8 @@ auto constexpr CP_OPTIONS = std::array{
            OPTIONAL_STRING_TYPE),
     OPTION("-v", "--verbose", "explain what is being done"),
     OPTION("", "--debug", "explain how a file is copied; implies --verbose"),
-    OPTION("-g", "--progress-bar", "display a progress bar while copying"),
+    // [GNU] cp has no -g/--progress-bar; that is a WinuxCmd extension
+    // dropped in #1411.
     OPTION("-x", "--one-file-system", "stay on this file system"),
     // [DIFFERS] SELinux security contexts are unavailable on Windows.
     OPTION("-Z", "",
@@ -1844,10 +1843,6 @@ auto process_command(const CommandContext<N>& ctx) -> cp::Result<bool> {
   // Pseudo-device sources (/dev/null, NUL, /dev/std*) are already read as
   // streams here, so accepting the flag is a compatible no-op (#1066).
   (void)ctx.get<bool>("--copy-contents", false);
-
-  // [COMPAT NO-OP] -g/--progress-bar: WinuxCmd extension for progress display.
-  (void)ctx.get<bool>("-g", false);
-  (void)ctx.get<bool>("--progress-bar", false);
 
   bool no_clobber =
       ctx.get<bool>("--no-clobber", false) || ctx.get<bool>("-n", false);

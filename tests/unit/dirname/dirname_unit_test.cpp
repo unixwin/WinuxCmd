@@ -126,16 +126,21 @@ TEST(dirname, dirname_common_cases_and_trailing_slashes) {
   EXPECT_EQ_TEXT(r.stdout_text, "/a/b\nb\n.\n/\n.\na\na\n.\n");
 }
 
-TEST(dirname, dirname_double_slash_root_preserves_msys_unc_root) {
+// [GNU] A bare all-slash operand collapses to a single "/": `dirname //`
+// is "/" in GNU (dir_len yields one leading slash), while the
+// exactly-two-slash window survives only when more of the path follows
+// ("dirname //a/b" is still "//a") (#1337).
+TEST(dirname, dirname_bare_double_slash_collapses_to_single_slash) {
   std::vector<std::wstring> args;
   args.push_back(L"//");
+  args.push_back(L"//a/b");
   Pipeline p;
   p.add(L"dirname.exe", args);
 
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "//\n");
+  EXPECT_EQ_TEXT(r.stdout_text, "/\n//a\n");
 }
 
 TEST(dirname, dirname_drive_paths_preserve_drive_prefix) {

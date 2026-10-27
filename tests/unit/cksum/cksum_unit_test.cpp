@@ -582,3 +582,64 @@ TEST(cksum, issue1362_cksum_binary_text_tagged_conflict) {
                   "--text mode is only supported with --untagged") !=
               std::string::npos);
 }
+
+TEST(cksum, cksum_invented_q_s_short_forms_rejected_issue1411) {
+  // [GNU] --quiet/--status are long-only in GNU cksum; -q/-s belong to
+  // md5sum & co. (#1411).
+  TempDir tmp;
+  tmp.write("f", "data\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cksum.exe", {L"-q", L"f"});
+  auto r = p.run();
+
+  EXPECT_EXIT_CODE(r, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("invalid option -- 'q'") != std::string::npos);
+
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.add(L"cksum.exe", {L"-s", L"f"});
+  auto r2 = p2.run();
+
+  EXPECT_EXIT_CODE(r2, 1);
+  EXPECT_TRUE(r2.stdout_text.empty());
+  EXPECT_TRUE(r2.stderr_text.find("invalid option -- 's'") != std::string::npos);
+}
+
+TEST(cksum, cksum_invented_r_reversed_style_rejected_issue1411) {
+  // [GNU] cksum has no -r; the untagged form is spelled --untagged (#1411).
+  TempDir tmp;
+  tmp.write("f", "data\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cksum.exe", {L"-r", L"f"});
+  auto r = p.run();
+
+  EXPECT_EXIT_CODE(r, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("invalid option -- 'r'") != std::string::npos);
+}
+
+TEST(cksum, cksum_quiet_status_untagged_still_legal_issue1411) {
+  TempDir tmp;
+  tmp.write("f", "data\n");
+  tmp.write("check.txt", "6137cde4893c59f76f005a8123d8e8e6  f\n");
+
+  Pipeline good;
+  good.set_cwd(tmp.wpath());
+  good.add(L"cksum.exe", {L"-a", L"md5", L"--quiet", L"-c", L"check.txt"});
+  auto rg = good.run();
+  EXPECT_EXIT_CODE(rg, 0);
+  EXPECT_TRUE(rg.stdout_text.empty());
+
+  Pipeline quiet_tagged;
+  quiet_tagged.set_cwd(tmp.wpath());
+  quiet_tagged.add(L"cksum.exe", {L"-a", L"md5", L"--untagged", L"f"});
+  auto rq = quiet_tagged.run();
+  EXPECT_EXIT_CODE(rq, 0);
+  EXPECT_EQ_TEXT(rq.stdout_text,
+                 "6137cde4893c59f76f005a8123d8e8e6  f\n");
+}

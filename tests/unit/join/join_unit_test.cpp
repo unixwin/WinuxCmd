@@ -290,8 +290,9 @@ TEST(join, join_interleaves_unpaired_output_in_merge_order) {
   EXPECT_EQ_TEXT(r.stdout_text, "a x\nb 1\nc y\n");
 }
 
-TEST(join, join_key_option_selects_join_field_of_both_files) {
-  // [EXTENSION] #1070: -k N is equivalent to "-1 N -2 N".
+TEST(join, join_invented_key_option_rejected_issue1411) {
+  // [GNU] join has no -k/--key (that is sort's syntax); -1/-2/-j select the
+  // join fields (#1411).
   TempDir tmp;
   tmp.write("k1.txt", "x a 1\nx b 2\n");
   tmp.write("k2.txt", "y a r\ny b s\n");
@@ -301,16 +302,53 @@ TEST(join, join_key_option_selects_join_field_of_both_files) {
   p.add(L"join.exe", {L"-k", L"2", L"k1.txt", L"k2.txt"});
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "a x 1 y r\nb x 2 y s\n");
+  EXPECT_EXIT_CODE(r, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("invalid option -- 'k'") != std::string::npos);
 
   Pipeline p2;
   p2.set_cwd(tmp.wpath());
   p2.add(L"join.exe", {L"--key", L"2", L"k1.txt", L"k2.txt"});
   auto r2 = p2.run();
 
-  EXPECT_EQ(r2.exit_code, 0);
-  EXPECT_EQ_TEXT(r2.stdout_text, "a x 1 y r\nb x 2 y s\n");
+  EXPECT_EXIT_CODE(r2, 1);
+  EXPECT_TRUE(r2.stdout_text.empty());
+  EXPECT_TRUE(r2.stderr_text.find("unrecognized option '--key'") !=
+              std::string::npos);
+}
+
+TEST(join, join_invented_empty_long_rejected_issue1411) {
+  // [GNU] -e has no long form in GNU join; "--empty" is invented (#1411).
+  TempDir tmp;
+  tmp.write("k1.txt", "x 1\n");
+  tmp.write("k2.txt", "x A\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"join.exe", {L"--empty", L"?", L"k1.txt", L"k2.txt"});
+  auto r = p.run();
+
+  EXPECT_EXIT_CODE(r, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("unrecognized option '--empty'") !=
+              std::string::npos);
+}
+
+TEST(join, join_dash_e_still_legal_issue1411) {
+  // [GNU] the short form -e EMPTY keeps replacing missing fields: the
+  // unpaired "z 2" line (kept by -a1) has no 2.2 field, so -o fills it.
+  TempDir tmp;
+  tmp.write("k1.txt", "x 1\nz 2\n");
+  tmp.write("k2.txt", "x A\ny B\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"join.exe", {L"-a1", L"-e", L"MISSING", L"-o", L"0,1.2,2.2",
+                      L"k1.txt", L"k2.txt"});
+  auto r = p.run();
+
+  EXPECT_EXIT_CODE(r, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "x 1 A\nz 2 MISSING\n");
 }
 
 TEST(join, join_missing_operand_after_reports_last_argument) {

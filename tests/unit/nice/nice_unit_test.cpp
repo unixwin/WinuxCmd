@@ -250,3 +250,20 @@ TEST(nice, nice_lower_priority_stays_silent) {
   EXPECT_TRUE(r.stdout_text.find("hello") != std::string::npos);
   EXPECT_TRUE(r.stderr_text.empty());
 }
+
+// #1408 audit: nice's option parsing stops at the wrapped command (GNU
+// nice.c parses with a leading-'+' optstring), so the command's own
+// flags pass through instead of being diagnosed as nice options.
+TEST(nice, nice_wrapped_command_options_pass_through_issue1408) {
+  Pipeline p;
+  p.add(L"nice.exe", {L"-n", L"5", L"echo.exe", L"-n", L"hi"});
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("nice passthrough stderr", r.stderr_text);
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "hi");
+  EXPECT_TRUE(r.stderr_text.empty());
+}

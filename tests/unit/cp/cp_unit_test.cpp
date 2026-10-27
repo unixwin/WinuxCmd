@@ -1174,3 +1174,41 @@ TEST(cp, cp_suffix_value_that_looks_like_abbreviation_is_not_expanded) {
   EXPECT_EQ(tmp.read("b.txt"), "payload");
 }
 
+
+TEST(cp, cp_invented_progress_bar_rejected_issue1411) {
+  // [GNU] cp has no -g/--progress-bar (#1411).
+  TempDir tmp;
+  tmp.write("a.txt", "a\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"-g", L"a.txt", L"b.txt"});
+  auto r = p.run();
+
+  EXPECT_EXIT_CODE(r, 1);
+  EXPECT_TRUE(r.stderr_text.find("invalid option -- 'g'") != std::string::npos);
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "b.txt"));
+
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.add(L"cp.exe", {L"--progress-bar", L"a.txt", L"c.txt"});
+  auto r2 = p2.run();
+
+  EXPECT_EXIT_CODE(r2, 1);
+  EXPECT_TRUE(r2.stderr_text.find("unrecognized option '--progress-bar'") !=
+              std::string::npos);
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "c.txt"));
+}
+
+TEST(cp, cp_debug_still_legal_issue1411) {
+  TempDir tmp;
+  tmp.write("a.txt", "a\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"--debug", L"a.txt", L"b.txt"});
+  auto r = p.run();
+
+  EXPECT_EXIT_CODE(r, 0);
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "b.txt"));
+}

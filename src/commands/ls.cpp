@@ -111,8 +111,9 @@ auto constexpr LS_OPTIONS = std::array{
     OPTION("-L", "--dereference",
            "when showing file information for a symbolic link, show "
            "information for the file the link references"),
-    OPTION("-l", "--long-list", "use a long listing format"),
-    OPTION("", "--long", "use a long listing format"),
+    // [GNU] -l has no long form in GNU ls; "--long"/"--long-list" are
+    // invented (#1411).
+    OPTION("-l", "", "use a long listing format"),
     OPTION("-m", "", "fill width with a comma separated list of entries"),
     OPTION("-n", "--numeric-uid-gid",
            "like -l, but list numeric user and group IDs"),
@@ -1481,7 +1482,6 @@ auto format_mode_explicitly_requested(
         meta.short_name == "-1" || meta.short_name == "-C" ||
         meta.short_name == "-l" || meta.short_name == "-g" ||
         meta.short_name == "-n" || meta.short_name == "-o" ||
-        meta.long_name == "--long-list" || meta.long_name == "--long" ||
         meta.long_name == "--format") {
       return true;
     }
@@ -1569,8 +1569,7 @@ auto resolve_format_mode(const CommandContext<LS_OPTIONS.size()> &ctx)
     }
 
     if (meta.short_name == "-l" || meta.short_name == "-g" ||
-        meta.short_name == "-n" || meta.short_name == "-o" ||
-        meta.long_name == "--long-list" || meta.long_name == "--long") {
+        meta.short_name == "-n" || meta.short_name == "-o") {
       mode = FormatMode::Long;
       continue;
     }

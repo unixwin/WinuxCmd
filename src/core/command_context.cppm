@@ -64,6 +64,13 @@ export auto option_policy_for_command(std::string_view command)
     // (#1353).
     policy.stop_options_after_positionals = 1;
   }
+  if (command == "nice") {
+    // [GNU] nice.c parses with a leading-'+' optstring ("+n:"): option
+    // processing stops at the first non-option argument (the wrapped
+    // command), so `nice -n 5 ls -l` runs ls with its own -l instead of
+    // reporting -l as an invalid nice option (#1408).
+    policy.stop_options_after_positionals = 1;
+  }
   if (command == "xargs") {
     // [GNU findutils] xargs's own options stop at the first non-option
     // operand (the utility name); every argument after it passes to the

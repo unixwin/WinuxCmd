@@ -24,14 +24,8 @@ auto constexpr TIMEOUT_OPTIONS = std::array{
            STRING_TYPE),
     OPTION("-k", "--kill-after",
            "also send a KILL signal if COMMAND still running", STRING_TYPE),
-    OPTION("-f", "--foreground",
-           "when not running timeout directly from a shell prompt", BOOL_TYPE),
-    OPTION("-p", "--preserve-status", "exit with the same status as COMMAND",
-           BOOL_TYPE),
     OPTION("-v", "--verbose", "diagnose to stderr any signal sent on timeout",
-           BOOL_TYPE),
-    // [GNU]
-    OPTION("-l", "", "list supported signals")};
+           BOOL_TYPE)};
 
 namespace timeout_pipeline {
 namespace cp = core::pipeline;
@@ -40,8 +34,6 @@ struct Config {
   int64_t duration_ms = 0;
   int64_t kill_after_ms = 0;
   int signal = 15;  // SIGTERM
-  bool foreground = false;
-  bool preserve_status = false;
   bool verbose = false;
   std::string command;
   SmallVector<std::string, 64> args;
@@ -262,10 +254,6 @@ auto build_config(const CommandContext<TIMEOUT_OPTIONS.size()>& ctx)
     cfg.kill_after_ms = *duration_result;
   }
 
-  cfg.foreground =
-      ctx.get<bool>("-f", false) || ctx.get<bool>("--foreground", false);
-  cfg.preserve_status =
-      ctx.get<bool>("-p", false) || ctx.get<bool>("--preserve-status", false);
   cfg.verbose = ctx.get<bool>("-v", false) || ctx.get<bool>("--verbose", false);
 
   // Get duration and command from positionals
@@ -380,12 +368,9 @@ auto run(const Config& cfg) -> int {
       // Process timed out, kill it
       // [GNU] The status of a timeout kill is signal-dependent: 124 for
       // the ordinary signal path, but a command killed by SIGKILL reports
-      // 128+SIGKILL = 137 (the shell convention); --preserve-status always
-      // reports the command's own signal status 128+SIG (#1350).
+      // 128+SIGKILL = 137 (the shell convention) (#1350).
       int timeout_status =
-          cfg.preserve_status
-              ? std::min(255, 128 + cfg.signal)
-              : (cfg.signal == 9 ? 128 + 9 : 124);
+          cfg.signal == 9 ? 128 + 9 : 124;
       bool sent_initial_termination = false;
       if (cfg.verbose) {
         safeErrorPrintLn("timeout: sending signal " +
@@ -398,8 +383,6 @@ auto run(const Config& cfg) -> int {
       // is present defer termination until the KILL phase so the exit status
       // tracks the forced kill path.
       if (cfg.signal != 0 || cfg.kill_after_ms <= 0) {
-        // On Windows we do not have GNU signal delivery semantics, but
-        // --foreground must not disable timeout enforcement.
         TerminateProcess(pi.hProcess, timeout_status);
         sent_initial_termination = true;
       }
@@ -416,12 +399,6 @@ auto run(const Config& cfg) -> int {
           }
           timeout_status = 128 + 9;
           TerminateProcess(pi.hProcess, timeout_status);
-        } else if (kill_result == WAIT_OBJECT_0 && !sent_initial_termination &&
-                   cfg.signal == 0 && cfg.preserve_status) {
-          DWORD exit_code = 0;
-          if (GetExitCodeProcess(pi.hProcess, &exit_code)) {
-            timeout_status = static_cast<int>(exit_code);
-          }
         }
       }
 
@@ -472,17 +449,6 @@ REGISTER_COMMAND(
     "  timeout -k 10s 30s command",
     "kill(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", TIMEOUT_OPTIONS) {
   using namespace timeout_pipeline;
-
-  // -l: list supported signals (full Linux table, issue #1384)
-  if (ctx.get<bool>("-l", false)) {
-    for (int sig = 0; sig <= 64; ++sig) {
-      if (sig == 32 || sig == 33) continue;  // reserved by the C library
-      std::string num = std::to_string(sig);
-      safePrintLn(std::string(sig < 10 ? "  " : " ") + num + " " +
-                  timeout_signal_name(sig));
-    }
-    return 0;
-  }
 
   auto cfg_result = build_config(ctx);
   if (!cfg_result) {
