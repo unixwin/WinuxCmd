@@ -11,7 +11,7 @@
         "CMAKE_BUILD_TYPE": "Debug",
         "BUILD_MODE": "DEV",
         "USE_STATIC_CRT": "ON",
-        "BUILD_FFI": "ON"
+        "BUILD_FFI": "OFF"
       }
     },
     {
@@ -24,7 +24,7 @@
         "CMAKE_BUILD_TYPE": "Release",
         "BUILD_MODE": "RELEASE",
         "USE_STATIC_CRT": "ON",
-        "BUILD_FFI": "ON"
+        "BUILD_FFI": "OFF"
       }
     },
     {
@@ -37,7 +37,7 @@
         "CMAKE_BUILD_TYPE": "Release",
         "BUILD_MODE": "DEBUG_RELEASE",
         "USE_STATIC_CRT": "ON",
-        "BUILD_FFI": "ON"
+        "BUILD_FFI": "OFF"
       }
     },
     {
@@ -50,7 +50,7 @@
         "CMAKE_BUILD_TYPE": "Debug",
         "BUILD_MODE": "DEV",
         "USE_STATIC_CRT": "ON",
-        "BUILD_FFI": "ON"
+        "BUILD_FFI": "OFF"
       }
     },
     {
@@ -65,7 +65,7 @@
         "USE_STATIC_CRT": "ON",
         "ENABLE_TESTS": "ON",
         "GENERATE_MAP_INFO": "ON",
-        "BUILD_FFI": "ON"
+        "BUILD_FFI": "OFF"
       }
     },
     {
@@ -80,7 +80,7 @@
         "USE_STATIC_CRT": "ON",
         "ENABLE_TESTS": "ON",
         "GENERATE_MAP_INFO": "ON",
-        "BUILD_FFI": "ON"
+        "BUILD_FFI": "OFF"
       }
     },
     {
@@ -108,7 +108,7 @@
         "CMAKE_BUILD_TYPE": "Release",
         "BUILD_MODE": "RELEASE_EXAMPLES",
         "USE_STATIC_CRT": "ON",
-        "BUILD_FFI": "ON"
+        "BUILD_FFI": "OFF"
       }
     }
   ],
