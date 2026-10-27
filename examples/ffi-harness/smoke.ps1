@@ -98,9 +98,13 @@ $seqErr = Join-Path $WorkDir "seq.err"
 $p = Start-Process -FilePath $HarnessExe -ArgumentList $seqArgs `
     -RedirectStandardOutput $seqOut -RedirectStandardError $seqErr `
     -Wait -PassThru -NoNewWindow
+# Start-Process -PassThru with redirected streams can leave ExitCode
+# unpopulated ($null) unless the exit is observed explicitly.
+$p.WaitForExit()
+$seqCode = $p.ExitCode
 $seqText = Get-Content $seqOut -Raw
 $seqErrText = Get-Content $seqErr -Raw
-Report "sequence-multi-call" ($p.ExitCode -eq 0 -and $seqText -match "SEQUENCE OK" -and $seqErrText -notmatch "exception at DLL boundary") "$seqText $seqErrText"
+Report "sequence-multi-call" ($seqCode -eq 0 -and $seqText -match "SEQUENCE OK" -and $seqErrText -notmatch "exception at DLL boundary") "$seqText $seqErrText"
 
 # 4. tampered DLL -> hash-mismatch, spawn fallback still works
 Add-Content -Path (Join-Path $verDir "winuxcore.dll") -Value "x" -Encoding ascii -NoNewline
