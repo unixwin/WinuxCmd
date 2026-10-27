@@ -1835,7 +1835,7 @@ auto compare_directory_pair(const std::string &dir1, const std::string &dir2,
           i1 < entries1->size() &&
           (i2 >= entries2->size() || (*entries1)[i1] <= (*entries2)[i2]);
       bool take2 = i2 < entries2->size() && (i1 >= entries1->size() ||
-                                             (*entries2)[i2] < (*entries1)[i1]);
+                                             (*entries2)[i2] <= (*entries1)[i1]);  // [#1344] equal names must pair (take both)
       const std::string &name1 = take1 ? (*entries1)[i1] : (*entries2)[i2];
       const std::string &name2 = take2 ? (*entries2)[i2] : name1;
       std::string full1 = join_dir_member(dir1, name1);
