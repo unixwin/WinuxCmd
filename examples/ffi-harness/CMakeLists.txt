@@ -6,7 +6,7 @@ option(BUILD_FFI_HARNESS_DEMO "Build the FFI harness test doubles (demo DLL + sp
 
 add_executable(ffi-harness harness.cpp)
 set_target_properties(ffi-harness PROPERTIES
-    CXX_STANDARD 17
+    CXX_STANDARD 23
     CXX_STANDARD_REQUIRED ON
 )
 if (WIN32)
