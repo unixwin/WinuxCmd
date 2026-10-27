@@ -2104,7 +2104,7 @@ TEST(find, find_printf_unrecognized_escape_warns_and_keeps_literal_text) {
               std::string::npos);
 }
 
-TEST(find, find_printf_unrecognized_format_directive_warns_and_drops_percent) {
+TEST(find, find_printf_unrecognized_format_directive_warns_and_keeps_percent) {
   TempDir tmp;
   tmp.write("a.txt", "x");
 
@@ -2114,7 +2114,8 @@ TEST(find, find_printf_unrecognized_format_directive_warns_and_drops_percent) {
 
   auto r = p.run();
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "leftJright");
+  // [GNU #1379] Unknown directives are echoed verbatim, '%' included.
+  EXPECT_EQ_TEXT(r.stdout_text, "left%Jright");
   EXPECT_TRUE(
       r.stderr_text.find("warning: unrecognized format directive `%J'") !=
       std::string::npos);
@@ -3862,9 +3863,10 @@ TEST(find, issue_1379_printf_flag_semantics_per_conversion) {
 
   auto r = p.run();
   EXPECT_EQ(r.exit_code, 0);
-  // [GNU] The 0 flag is ignored for %p (space padding); '+' and ' '
-  // apply to %d; 0 zero-pads %d.  ./f is at depth 1.
-  EXPECT_EQ_TEXT(r.stdout_text, "   ./f|   +1|    1|00001|\n");
+  // [GNU] The 0 flag is ignored for %p (space padding to the stated
+  // width, so "./f" gains two spaces); '+' and ' ' apply to %d; 0
+  // zero-pads %d.  ./f is at depth 1.
+  EXPECT_EQ_TEXT(r.stdout_text, "  ./f|   +1|    1|00001|\n");
 }
 
 TEST(find, issue_1379_printf_epoch_is_exact_and_deterministic) {

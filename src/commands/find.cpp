@@ -5101,9 +5101,6 @@ auto scan_one_root(const std::filesystem::path& root, Config& cfg,
     }
   }
 }
-    }
-  }
-}
 
 auto process(Config& cfg) -> int {
   bool matched_any = false;
