@@ -2454,13 +2454,39 @@ TEST(ls, ls_full_time_implies_long_full_iso_output) {
           R"(^-[rwx-]{9}\s+\d+\s+.*\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{9} [+-]\d{4} a\.txt\n?$)")));
 }
 
-TEST(ls, ls_long_alias_implies_long_format) {
+TEST(ls, ls_invented_long_aliases_rejected_issue1411) {
+  // [GNU] ls has no "--long"/"--long-list"; only -l / --format=long (#1411).
   TempDir tmp;
   tmp.write("a.txt", "a");
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
   p.add(L"ls.exe", {L"--long", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EXIT_CODE(r, 2);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("unrecognized option '--long'") !=
+              std::string::npos);
+
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.add(L"ls.exe", {L"--long-list", L"a.txt"});
+  auto r2 = p2.run();
+
+  EXPECT_EXIT_CODE(r2, 2);
+  EXPECT_TRUE(r2.stdout_text.empty());
+  EXPECT_TRUE(r2.stderr_text.find("unrecognized option '--long-list'") !=
+              std::string::npos);
+}
+
+TEST(ls, ls_dash_l_still_legal_issue1411) {
+  TempDir tmp;
+  tmp.write("a.txt", "a");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ls.exe", {L"-l", L"a.txt"});
 
   auto r = p.run();
 

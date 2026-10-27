@@ -66,33 +66,69 @@ TEST(timeout, timeout_kill_after) {
   EXPECT_EQ(r.exit_code, 0);
 }
 
-TEST(timeout, timeout_foreground) {
+TEST(timeout, timeout_invented_foreground_rejected_issue1411) {
+  // #1411: timeout's -f/--foreground was an accepted-but-inert pseudo
+  // option on Windows; it is dropped, so GNU's spelling is rejected
+  // like any unknown option.
   Pipeline p;
   p.add(L"timeout.exe", {L"-f", L"5", L"echo.exe", L"test"});
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
-}
-
-TEST(timeout, timeout_foreground_still_enforces_timeout_promptly) {
-  Pipeline p;
-  p.add(L"timeout.exe", {L"--foreground", L"0.1", L"sleep.exe", L"2"});
-
-  auto start = std::chrono::steady_clock::now();
-  auto r = p.run();
-  auto elapsed = std::chrono::steady_clock::now() - start;
-
-  EXPECT_EQ(r.exit_code, 124);
+  EXPECT_EQ(r.exit_code, 125);
   EXPECT_TRUE(r.stdout_text.empty());
-  EXPECT_LT(elapsed, std::chrono::milliseconds(1200));
+  EXPECT_TRUE(r.stderr_text.find("invalid option -- 'f'") != std::string::npos);
+
+  Pipeline p2;
+  p2.add(L"timeout.exe", {L"--foreground", L"5", L"echo.exe", L"test"});
+  auto r2 = p2.run();
+
+  EXPECT_EQ(r2.exit_code, 125);
+  EXPECT_TRUE(r2.stdout_text.empty());
+  EXPECT_TRUE(r2.stderr_text.find("unrecognized option '--foreground'") !=
+              std::string::npos);
 }
 
-TEST(timeout, timeout_preserve_status) {
+TEST(timeout, timeout_invented_preserve_status_rejected_issue1411) {
+  // #1411: -p/--preserve-status was an accepted-but-inert pseudo option
+  // on Windows; it is dropped.
   Pipeline p;
   p.add(L"timeout.exe", {L"-p", L"5", L"echo.exe", L"test"});
   auto r = p.run();
 
+  EXPECT_EQ(r.exit_code, 125);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("invalid option -- 'p'") != std::string::npos);
+
+  Pipeline p2;
+  p2.add(L"timeout.exe",
+         {L"--preserve-status", L"0.2", L"sleep.exe", L"5"});
+  auto r2 = p2.run();
+
+  EXPECT_EQ(r2.exit_code, 125);
+  EXPECT_TRUE(r2.stdout_text.empty());
+  EXPECT_TRUE(r2.stderr_text.find("unrecognized option '--preserve-status'") !=
+              std::string::npos);
+}
+
+TEST(timeout, timeout_invented_list_signals_rejected_issue1411) {
+  // #1411: GNU timeout has no -l (that is kill's listing form).
+  Pipeline p;
+  p.add(L"timeout.exe", {L"-l"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 125);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("invalid option -- 'l'") != std::string::npos);
+}
+
+TEST(timeout, timeout_options_still_legal_issue1411) {
+  Pipeline p;
+  p.add(L"timeout.exe",
+        {L"-v", L"-k", L"5s", L"-s", L"TERM", L"5", L"echo.exe", L"test"});
+  auto r = p.run();
+
   EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.empty());
 }
 
 TEST(timeout, timeout_verbose) {
@@ -159,10 +195,9 @@ TEST(timeout, timeout_verbose_reports_signal_name) {
                  "timeout: sending signal TERM to command 'sleep.exe'\n");
 }
 
-TEST(timeout, timeout_foreground_signal0_kill_after_returns_kill_status) {
+TEST(timeout, timeout_signal0_kill_after_returns_kill_status) {
   Pipeline p;
-  p.add(L"timeout.exe",
-        {L"--foreground", L"-s0", L"-k0.1", L"0.1", L"sleep.exe", L"2"});
+  p.add(L"timeout.exe", {L"-s0", L"-k0.1", L"0.1", L"sleep.exe", L"2"});
 
   auto start = std::chrono::steady_clock::now();
   auto r = p.run();
@@ -297,7 +332,7 @@ TEST(timeout, timeout_invalid_option_returns_125_with_help_hint) {
 
 // #1350: [GNU] the status of a timeout kill is signal-dependent: 124
 // for the ordinary signal path, but 128+SIGKILL = 137 when the command
-// is killed by SIGKILL; --preserve-status reports 128+SIG throughout.
+// is killed by SIGKILL.
 TEST(timeout, timeout_kill_signal_reports_137) {
   Pipeline p;
   p.add(L"timeout.exe", {L"-s", L"KILL", L"0.2", L"sleep.exe", L"5"});
@@ -321,23 +356,6 @@ TEST(timeout, timeout_int_signal_reports_124) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 124);
-}
-
-TEST(timeout, timeout_preserve_status_term_reports_143) {
-  Pipeline p;
-  p.add(L"timeout.exe", {L"--preserve-status", L"0.2", L"sleep.exe", L"5"});
-  auto r = p.run();
-
-  EXPECT_EQ(r.exit_code, 143);
-}
-
-TEST(timeout, timeout_preserve_status_kill_reports_137) {
-  Pipeline p;
-  p.add(L"timeout.exe",
-        {L"-s", L"KILL", L"--preserve-status", L"0.2", L"sleep.exe", L"5"});
-  auto r = p.run();
-
-  EXPECT_EQ(r.exit_code, 137);
 }
 
 // #1303: --help after the wrapped command belongs to the command, not
