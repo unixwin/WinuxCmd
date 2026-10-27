@@ -1067,6 +1067,55 @@ TEST(cp, cp_same_file_mixed_dialects_reports_error) {
   EXPECT_EQ(tmp.read("f.txt"), "payload");
 }
 
+// [GNU] #1366: --parents grafts the source's full path under the target
+// directory; a drive-letter absolute source is anchored at its drive root,
+// not spliced in as a literal "Z:" relative component.
+TEST(cp, issue1366_parents_drive_letter_absolute_source) {
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "sub");
+  std::filesystem::create_directory(tmp.path / "dest");
+  tmp.write("sub/src.txt", "src");
+
+  std::wstring abs_src = (tmp.path / "sub" / "src.txt").wstring();
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"--parents", L"-t", L"dest", abs_src});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // Grafted path = dest + (absolute source minus its "X:" drive anchor).
+  std::string graft_rel = "dest\\" + tmp.path.relative_path().string() +
+                          "\\sub\\src.txt";
+  EXPECT_EQ(tmp.read(graft_rel), "src");
+  // The broken form would have created a literal drive-named directory.
+  std::string drive = tmp.path.root_name().string();
+  EXPECT_FALSE(
+      std::filesystem::exists(tmp.path / "dest" / drive / "sub" / "src.txt"));
+}
+
+// [GNU] #1369: --reflink=always is clone-or-fail: when the volume cannot
+// clone, the command fails AND leaves no destination behind.
+TEST(cp, issue1369_reflink_always_failure_leaves_no_destination) {
+  TempDir tmp;
+  tmp.write("src.txt", "payload");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"--reflink=always", L"src.txt", L"dest.txt"});
+  auto r = p.run();
+
+  if (r.exit_code == 0) {
+    // The volume cloned successfully; contents must match.
+    EXPECT_EQ(tmp.read("dest.txt"), "payload");
+  } else {
+    EXPECT_TRUE(r.stderr_text.find("failed to clone 'dest.txt'") !=
+                std::string::npos);
+    std::error_code ec;
+    (void)std::filesystem::symlink_status(tmp.path / "dest.txt", ec);
+    EXPECT_TRUE(ec);  // no half-written destination remains
+  }
+}
+
 // #1303: --ver is --suffix's value, not an ambiguous abbreviation:
 // the copy succeeds instead of reporting ambiguity.
 TEST(cp, cp_suffix_value_that_looks_like_abbreviation_is_not_expanded) {
@@ -1081,3 +1130,4 @@ TEST(cp, cp_suffix_value_that_looks_like_abbreviation_is_not_expanded) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ(tmp.read("b.txt"), "payload");
 }
+

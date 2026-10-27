@@ -52,6 +52,7 @@
 #include "pch/pch.h"
 #pragma comment(lib, "shlwapi.lib")
 #include "core/command_macros.h"
+#include <winioctl.h>  // For FSCTL_GET_REPARSE_POINT (junction targets)
 
 import std;
 import core;
@@ -404,6 +405,106 @@ auto backup_existing_destination(const std::wstring& dest_path,
   return true;
 }
 
+namespace mv_win32_compat {
+// Same layout as REPARSE_DATA_BUFFER, spelled out so the mount-point fields
+// stay readable (mirrors cp.cpp's reader).
+struct ReparseDataBuffer {
+  DWORD ReparseTag;
+  WORD ReparseDataLength;
+  WORD Reserved;
+  union {
+    struct {
+      WORD SubstituteNameOffset;
+      WORD SubstituteNameLength;
+      WORD PrintNameOffset;
+      WORD PrintNameLength;
+      DWORD Flags;
+      wchar_t PathBuffer[1];
+    } SymbolicLinkReparseBuffer;
+    struct {
+      WORD SubstituteNameOffset;
+      WORD SubstituteNameLength;
+      WORD PrintNameOffset;
+      WORD PrintNameLength;
+      wchar_t PathBuffer[1];
+    } MountPointReparseBuffer;
+  };
+};
+}  // namespace mv_win32_compat
+
+auto strip_nt_prefix(std::wstring_view path) -> std::wstring {
+  for (std::wstring_view prefix :
+       {std::wstring_view(L"\\??\\"), std::wstring_view(L"\\\\?\\")}) {
+    if (path.starts_with(prefix)) {
+      return std::wstring(path.substr(prefix.size()));
+    }
+  }
+  return std::wstring(path);
+}
+
+// [GNU] #1365: read a reparse point's link text verbatim — the exact string
+// stored in the reparse point — NOT the resolved final path.  Symlinks are
+// decoded by std::filesystem::read_symlink; junctions (mount points) are
+// not, so fall back to FSCTL_GET_REPARSE_POINT like cp's
+// read_mount_point_target.
+auto read_link_text_verbatim(const std::wstring& wpath)
+    -> std::optional<std::wstring> {
+  std::error_code ec;
+  const auto target =
+      std::filesystem::read_symlink(std::filesystem::path(wpath), ec);
+  if (!ec) {
+    return target.wstring();
+  }
+  UniqueHandle h(CreateFileW(
+      wpath.c_str(), FILE_READ_ATTRIBUTES,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+      OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+      nullptr));
+  if (!h) return std::nullopt;
+
+  std::array<std::byte, MAXIMUM_REPARSE_DATA_BUFFER_SIZE> buffer{};
+  DWORD returned = 0;
+  if (!DeviceIoControl(h.get(), FSCTL_GET_REPARSE_POINT, nullptr, 0,
+                        buffer.data(), static_cast<DWORD>(buffer.size()),
+                        &returned, nullptr)) {
+    return std::nullopt;
+  }
+  const auto* reparse =
+      reinterpret_cast<const mv_win32_compat::ReparseDataBuffer*>(
+          buffer.data());
+  const wchar_t* path_buffer = nullptr;
+  WORD print_offset = 0;
+  WORD print_length = 0;
+  WORD substitute_offset = 0;
+  WORD substitute_length = 0;
+  if (reparse->ReparseTag == IO_REPARSE_TAG_SYMLINK) {
+    const auto& sl = reparse->SymbolicLinkReparseBuffer;
+    path_buffer = sl.PathBuffer;
+    print_offset = sl.PrintNameOffset;
+    print_length = sl.PrintNameLength;
+    substitute_offset = sl.SubstituteNameOffset;
+    substitute_length = sl.SubstituteNameLength;
+  } else if (reparse->ReparseTag == IO_REPARSE_TAG_MOUNT_POINT) {
+    const auto& mp = reparse->MountPointReparseBuffer;
+    path_buffer = mp.PathBuffer;
+    print_offset = mp.PrintNameOffset;
+    print_length = mp.PrintNameLength;
+    substitute_offset = mp.SubstituteNameOffset;
+    substitute_length = mp.SubstituteNameLength;
+  } else {
+    return std::nullopt;
+  }
+  std::wstring_view print_name(path_buffer + print_offset / sizeof(wchar_t),
+                               print_length / sizeof(wchar_t));
+  if (print_name.empty()) {
+    std::wstring_view substitute_name(
+        path_buffer + substitute_offset / sizeof(wchar_t),
+        substitute_length / sizeof(wchar_t));
+    return strip_nt_prefix(substitute_name);
+  }
+  return strip_nt_prefix(print_name);
+}
+
 auto move_single_path(const std::string& src_path, const std::string& dest_path,
                       const CommandContext<MV_OPTIONS.size()>& ctx,
                       OverwriteMode overwrite_mode, UpdateMode update_mode)
@@ -488,27 +589,40 @@ auto move_single_path(const std::string& src_path, const std::string& dest_path,
     // [GNU] Check if source is a reparse point (symlink/junction)
     // and copy it as a symlink instead of following it
     if ((src_attr & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
-      // Get the symlink target
-      wchar_t target[4096] = {};
-      if (!GetFinalPathNameByHandleW(
-              CreateFileW(wsrc_path.c_str(), 0,
-                          FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-                          OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr),
-              target, 4096, 0)) {
-        return std::unexpected("cannot read symlink target");
+      // [GNU] #1365: recreate the link at the destination with its text
+      // preserved verbatim.  The old code read the RESOLVED final path via
+      // GetFinalPathNameByHandleW (an absolute \\?\ path, not the link
+      // text): creation with it failed, and the silent CopyFileW fallback
+      // degraded the move into a regular-file copy of the target's
+      // contents while still reporting success.
+      const auto link_text = read_link_text_verbatim(wsrc_path);
+      if (!link_text) {
+        return std::unexpected("cannot read symlink target of '" + src_path +
+                               "'");
       }
-      // Create symlink at destination
-      bool is_dir = (src_attr & FILE_ATTRIBUTE_DIRECTORY) != 0;
-      if (!CreateSymbolicLinkW(wdest_path.c_str(), target, is_dir ? 1 : 0)) {
-        // Fallback: copy the file as-is (will follow symlink)
-        if (!CopyFileW(wsrc_path.c_str(), wdest_path.c_str(), FALSE)) {
-          return std::unexpected("cannot copy '" + src_path + "' to '" +
-                                 dest_path + "'");
-        }
+      const bool is_dir = (src_attr & FILE_ATTRIBUTE_DIRECTORY) != 0;
+      DWORD flags = SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE;
+      if (is_dir) flags |= SYMBOLIC_LINK_FLAG_DIRECTORY;
+      if (!CreateSymbolicLinkW(
+              wdest_path.c_str(),
+              win32_normalize_symlink_target(*link_text).c_str(), flags)) {
+        // Never degrade into a content copy: a failed recreation is an
+        // error, like GNU mv failing to recreate the link.
+        return std::unexpected("cannot create symbolic link '" + dest_path +
+                               "': " +
+                               win32_posix_error_text(GetLastError()));
       }
-      // If copy/symlink succeeds, delete the source
-      if (!DeleteFileW(wsrc_path.c_str())) {
-        return std::unexpected("cannot delete source file '" + src_path + "'");
+      // Remove the source link itself.  A directory link needs
+      // RemoveDirectoryW; DeleteFileW alone cannot remove it, which used
+      // to leave the source behind after a "successful" move.
+      const bool removed =
+          is_dir ? (RemoveDirectoryW(wsrc_path.c_str()) ||
+                    DeleteFileW(wsrc_path.c_str()))
+                 : (DeleteFileW(wsrc_path.c_str()) ||
+                    RemoveDirectoryW(wsrc_path.c_str()));
+      if (!removed) {
+        return std::unexpected("cannot remove source link '" + src_path +
+                               "'");
       }
     } else {
       // [GNU] MoveFileExW cannot rename across volumes (and some tools hold

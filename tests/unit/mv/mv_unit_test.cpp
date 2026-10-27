@@ -522,3 +522,66 @@ TEST(mv, issue_1283_drive_colon_operand_moves_carrier_file) {
   EXPECT_TRUE(std::filesystem::exists(tmp.path / "dest.txt"));
   EXPECT_FALSE(std::filesystem::exists(tmp.path / carrier));
 }
+
+// [GNU] #1365: a cross-volume move of a symlink recreates the link at the
+// destination with its text preserved verbatim and removes the source; it
+// must never degrade into a regular-file copy of the target's contents.
+TEST(mv, issue1365_cross_volume_symlink_recreated_not_copied) {
+  TempDir src_tmp;
+  TempDir dst_tmp;  // distinct TempDir roots stand in for distinct volumes
+  src_tmp.write("real.txt", "real\n");
+  std::error_code ec;
+  std::filesystem::create_symlink("real.txt", src_tmp.path / "lnk", ec);
+  if (ec) {
+    std::cout << "  SKIPPED (requires administrator privileges for symbolic "
+                 "links)\n";
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(src_tmp.wpath());
+  p.add(L"mv.exe", {L"lnk", (dst_tmp.path / "lnk").wstring()});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  auto dst_status = std::filesystem::symlink_status(dst_tmp.path / "lnk", ec);
+  EXPECT_FALSE(ec);
+  EXPECT_TRUE(std::filesystem::is_symlink(dst_status));
+  EXPECT_EQ(std::filesystem::read_symlink(dst_tmp.path / "lnk", ec),
+            std::filesystem::path("real.txt"));
+  std::error_code src_ec;
+  (void)std::filesystem::symlink_status(src_tmp.path / "lnk", src_ec);
+  EXPECT_TRUE(src_ec);  // source link is gone
+}
+
+// [GNU] #1365: the directory-symlink form: the link is recreated as a
+// directory link and the source link is removed (DeleteFileW alone cannot
+// remove a directory link).
+TEST(mv, issue1365_cross_volume_dir_symlink_recreated_not_copied) {
+  TempDir src_tmp;
+  TempDir dst_tmp;
+  std::filesystem::create_directories(src_tmp.path / "realdir");
+  src_tmp.write("realdir/f.txt", "in\n");
+  std::error_code ec;
+  std::filesystem::create_directory_symlink("realdir", src_tmp.path / "dlnk",
+                                            ec);
+  if (ec) {
+    std::cout << "  SKIPPED (requires administrator privileges for symbolic "
+                 "links)\n";
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(src_tmp.wpath());
+  p.add(L"mv.exe", {L"dlnk", (dst_tmp.path / "dlnk").wstring()});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(std::filesystem::is_symlink(
+      std::filesystem::symlink_status(dst_tmp.path / "dlnk", ec)));
+  EXPECT_EQ(std::filesystem::read_symlink(dst_tmp.path / "dlnk", ec),
+            std::filesystem::path("realdir"));
+  std::error_code src_ec;
+  (void)std::filesystem::symlink_status(src_tmp.path / "dlnk", src_ec);
+  EXPECT_TRUE(src_ec);  // source link is gone
+}
