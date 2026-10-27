@@ -745,30 +745,6 @@ auto command_declares_version_short(
     return option.short_name == name && option.long_name == "--version";
   });
 }
-auto wants_standard_version(std::string_view cmdName,
-                            std::span<std::string_view> args,
-                            std::span<const cmd::meta::OptionMeta> options)
-    -> bool {
-  if (echo_posixly_correct_literal_mode(cmdName, args)) {
-    return false;
-  }
-  for (const auto &arg : args) {
-    if (arg == "--") {
-      break;
-    }
-    if (arg == "--version") {
-      return true;
-    }
-    if (arg == "-v" && command_declares_version_short(options, "-v")) {
-      return true;
-    }
-    if (arg == "-V") {
-      return !command_declares_option(options, arg) ||
-             command_declares_version_short(options, arg);
-    }
-  }
-  return false;
-}
 auto rewrite_echo_posix_args(std::string_view cmdName,
                              std::span<std::string_view> args)
     -> std::optional<std::vector<std::string>> {
@@ -1000,6 +976,287 @@ auto replace_effective_args(std::vector<std::string> rewritten,
   return std::span<std::string_view>(views);
 }
 
+// #1303: classify each argv token the way the parser will see it, so
+// the dispatcher pre-passes (abbreviation expansion, --help/--version
+// interception) only act on real option tokens. Without this, a value
+// that looks like an option (grep --label --help, cp --suffix --ver)
+// or an operand of a wrapped command (xargs echo --help, timeout 5
+// echo --help, find -exec echo --help \;) is wrongly expanded or
+// intercepted. The walk mirrors parse_command_runtime: "--" ends
+// options, value options swallow their value (attached or next argv),
+// TerminatedString swallows through ";" / "+", clusters keep walking,
+// and the first positional ends scanning once the command's stop (or
+// POSIXLY_CORRECT) is reached.
+enum class ArgRole { Option, Value, Data, Terminator };
+
+auto classify_args_for_dispatch(
+    std::string_view cmd_name, std::span<std::string_view> args,
+    std::span<const cmd::meta::OptionMeta> options) -> std::vector<ArgRole> {
+  const auto policy = option_policy_for_command(cmd_name);
+  std::vector<ArgRole> roles(args.size(), ArgRole::Data);
+
+  bool end_of_options = false;
+  size_t positionals = 0;
+  const size_t stop_after =
+      policy.posixly_correct
+          ? (policy.stop_options_after_positionals == 0
+                 ? 1
+                 : std::min(policy.stop_options_after_positionals,
+                            size_t{1}))
+          : policy.stop_options_after_positionals;
+  auto note_positional = [&]() {
+    ++positionals;
+    if (stop_after != 0 && positionals >= stop_after) {
+      end_of_options = true;
+    }
+  };
+  auto find_long = [&](std::string_view name) {
+    const cmd::meta::OptionMeta* meta = nullptr;
+    for (const auto& m : options) {
+      if (m.long_name == name) {
+        meta = &m;
+        break;
+      }
+    }
+    return meta;
+  };
+  auto find_short = [&](char ch) {
+    const cmd::meta::OptionMeta* meta = nullptr;
+    for (const auto& m : options) {
+      if (m.short_name.size() == 2 && m.short_name[0] == '-' &&
+          m.short_name[1] == ch) {
+        meta = &m;
+        break;
+      }
+    }
+    return meta;
+  };
+  auto has_numeric_meta = [&]() {
+    for (const auto& m : options) {
+      if (m.short_name == "-NUM") return true;
+    }
+    return false;
+  };
+  auto is_digits = [](std::string_view value) {
+    return !value.empty() && std::ranges::all_of(value, [](char c) {
+      return std::isdigit(static_cast<unsigned char>(c)) != 0;
+    });
+  };
+  // Value handling shared by the long and single-dash-long forms: a
+  // value taken from following argv entries is marked Value (and the
+  // index advances past it, so the outer loop resumes after the value).
+  auto swallow_long_value = [&](size_t& i, const cmd::meta::OptionMeta* meta,
+                                 bool has_inline_value) {
+    switch (meta->type) {
+      case cmd::meta::OptionType::Int:
+      case cmd::meta::OptionType::String:
+        if (!has_inline_value && i + 1 < args.size()) {
+          roles[++i] = ArgRole::Value;
+        }
+        break;
+      case cmd::meta::OptionType::TerminatedString:
+        if (!has_inline_value) {
+          while (++i < args.size()) {
+            roles[i] = ArgRole::Value;
+            if (args[i] == ";" || args[i] == "+") break;
+          }
+        }
+        break;
+      default:
+        break;
+    }
+  };
+
+  for (size_t i = 0; i < args.size(); ++i) {
+    std::string_view arg = args[i];
+    if (end_of_options) {
+      roles[i] = ArgRole::Data;
+      continue;
+    }
+    if (policy.recognize_double_dash && arg == "--") {
+      roles[i] = ArgRole::Terminator;
+      end_of_options = true;
+      continue;
+    }
+    // ---------- long option ----------
+    if (policy.allow_long_options && arg.starts_with("--") &&
+        arg.size() > 2) {
+      std::string_view name = arg;
+      bool has_inline_value = false;
+      if (policy.allow_long_equals) {
+        if (auto eq = arg.find('='); eq != std::string_view::npos) {
+          name = arg.substr(0, eq);
+          has_inline_value = true;
+        }
+      }
+      roles[i] = ArgRole::Option;
+      const cmd::meta::OptionMeta* meta = find_long(name);
+      if (meta == nullptr) {
+        // Unabbreviated or unknown long: the abbreviation pass may
+        // still expand a unique prefix, but it takes no value.
+        std::vector<std::string_view> matches;
+        for (const auto& m : options) {
+          if (m.long_name.size() > name.size() &&
+              m.long_name.starts_with(name)) {
+            matches.push_back(m.long_name);
+          }
+        }
+        if (matches.size() == 1) meta = find_long(matches[0]);
+      }
+      if (meta != nullptr) swallow_long_value(i, meta, has_inline_value);
+      continue;
+    }
+    // ---------- single-dash long option (find -name, ...) ----------
+    if (policy.allow_single_dash_long_options && arg.size() > 2 &&
+        arg[0] == '-' && arg[1] != '-') {
+      std::string_view exact_name = arg;
+      bool exact_has_inline_value = false;
+      if (policy.allow_long_equals) {
+        if (auto eq = arg.find('='); eq != std::string_view::npos) {
+          exact_name = arg.substr(0, eq);
+          exact_has_inline_value = true;
+        }
+      }
+      const cmd::meta::OptionMeta* exact_meta = nullptr;
+      for (const auto& m : options) {
+        if (!m.short_name.empty() && m.short_name == exact_name &&
+            m.short_name.size() > 2) {
+          exact_meta = &m;
+          break;
+        }
+      }
+      if (exact_meta != nullptr) {
+        roles[i] = ArgRole::Option;
+        swallow_long_value(i, exact_meta, exact_has_inline_value);
+        continue;
+      }
+      // Otherwise fall through to the short-cluster walk below.
+    }
+    // ---------- short option(s) ----------
+    if (arg.size() >= 2 && arg[0] == '-' && arg[1] != '-') {
+      if (policy.allow_unknown_short_options_as_positionals) {
+        bool has_registered_short_name = false;
+        for (const auto& m : options) {
+          if (m.short_name == arg) {
+            has_registered_short_name = true;
+            break;
+          }
+        }
+        if (!has_registered_short_name) {
+          bool glued_to_value_option = false;
+          if (arg.size() > 2) {
+            for (const auto& m : options) {
+              if (m.short_name.size() == 2 &&
+                  arg.starts_with(m.short_name)) {
+                if ((m.type == cmd::meta::OptionType::String &&
+                     policy.allow_short_attached_values) ||
+                    (m.type == cmd::meta::OptionType::OptionalString &&
+                     policy.allow_optional_short_attached_values) ||
+                    (m.type == cmd::meta::OptionType::Int &&
+                     policy.allow_short_attached_values) ||
+                    (m.type == cmd::meta::OptionType::OptionalInt &&
+                     policy.allow_optional_short_attached_values)) {
+                  glued_to_value_option = true;
+                  break;
+                }
+              }
+            }
+          }
+          if (!glued_to_value_option) {
+            roles[i] = ArgRole::Data;
+            note_positional();
+            continue;
+          }
+        }
+      }
+      if (policy.allow_numeric_short_options && arg.size() > 1 &&
+          is_digits(arg.substr(1)) && has_numeric_meta()) {
+        roles[i] = ArgRole::Option;
+        continue;
+      }
+      if (!policy.allow_short_option_clusters && arg.size() > 2) {
+        // The parser diagnoses this; the pre-passes leave it alone.
+        roles[i] = ArgRole::Option;
+        continue;
+      }
+      roles[i] = ArgRole::Option;
+      for (size_t pos = 1; pos < arg.size(); ++pos) {
+        char ch = arg[pos];
+        if (policy.allow_numeric_short_options &&
+            std::isdigit(static_cast<unsigned char>(ch)) != 0 &&
+            has_numeric_meta()) {
+          while (pos < arg.size() &&
+                 std::isdigit(static_cast<unsigned char>(arg[pos])) != 0) {
+            ++pos;
+          }
+          --pos;
+          continue;
+        }
+        const cmd::meta::OptionMeta* meta = find_short(ch);
+        if (meta == nullptr) break;  // unknown short; rest is opaque
+        switch (meta->type) {
+          case cmd::meta::OptionType::Bool:
+            break;
+          case cmd::meta::OptionType::Int:
+          case cmd::meta::OptionType::String:
+            if (policy.allow_short_attached_values &&
+                pos + 1 < arg.size()) {
+              pos = arg.size();
+            } else {
+              if (i + 1 < args.size()) roles[++i] = ArgRole::Value;
+              pos = arg.size();
+            }
+            break;
+          case cmd::meta::OptionType::OptionalInt:
+          case cmd::meta::OptionType::OptionalString:
+            // With attached values the rest of the cluster is the
+            // value; without them the cluster keeps walking (#1306).
+            if (policy.allow_optional_short_attached_values &&
+                pos + 1 < arg.size()) {
+              pos = arg.size();
+            }
+            break;
+          case cmd::meta::OptionType::TerminatedString:
+            if (pos + 1 < arg.size()) {
+              pos = arg.size();
+            } else {
+              while (++i < args.size()) {
+                roles[i] = ArgRole::Value;
+                if (args[i] == ";" || args[i] == "+") break;
+              }
+              pos = arg.size();
+            }
+            break;
+        }
+      }
+      continue;
+    }
+    // ---------- positional ----------
+    roles[i] = ArgRole::Data;
+    note_positional();
+  }
+  return roles;
+}
+
+// #1305: GNU prints a usage tail after an option error for some
+// commands: grep gets its one-line Usage before the Try line, sed
+// gets its full help instead of the Try line. Returns false when the
+// tail replaces the Try line.
+auto print_parse_error_tail(std::string_view name) -> bool {
+  if (name == "grep") {
+    safeErrorPrintLn("Usage: grep [OPTION]... PATTERNS [FILE]...");
+    return true;
+  }
+  if (name == "sed") {
+    std::string help = cmd::meta::Registry::get_help(name);
+    if (!help.empty()) {
+      safeErrorPrintLn(help);
+    }
+    return false;
+  }
+  return true;
+}
+
 // Internal registry implementation class
 class RegistryImpl {
   std::unordered_map<std::string_view, CommandEntryErased> registry_;
@@ -1074,11 +1331,15 @@ class RegistryImpl {
           kLiteralArgCommands, [cmdName](auto n) { return n == cmdName; });
       if (!literal_args) {
         std::vector<std::string> abbrev_storage;
-        bool end_of_options = false;
         std::optional<std::string> ambiguous;
-        for (std::string_view arg : effective_args) {
-          if (end_of_options || arg.size() <= 2 || !arg.starts_with("--")) {
-            if (arg == "--") end_of_options = true;
+        // #1303: only real option tokens are expanded; values and
+        // wrapped-command operands keep their spelling (cp --suffix
+        // --ver, grep --label --help).
+        const std::vector<ArgRole> roles =
+            classify_args_for_dispatch(cmdName, effective_args, options);
+        for (size_t ai = 0; ai < effective_args.size(); ++ai) {
+          std::string_view arg = effective_args[ai];
+          if (roles[ai] != ArgRole::Option || !arg.starts_with("--")) {
             abbrev_storage.emplace_back(arg);
             continue;
           }
@@ -1148,25 +1409,60 @@ class RegistryImpl {
       }
     }
 
-    // Check if it contains help. [GNU] "--" ends option processing, so a
-    // "--help" after it is data (e.g. `echo -- --help` must print
-    // "--help", not show help) — same rule wants_standard_version uses.
-    // printf/test/[ narrow it further: their --help/--version are honored
-    // only as the sole argument, so `printf '%s\n' --help` prints
-    // "--help" and `test --help x` is an expression error, not help.
+    // Single argv-order scan for --help/--version (#1301/#1303): only
+    // real option tokens count, so a value (grep --label --help) or a
+    // wrapped command's operand (xargs echo --help, timeout 5 echo
+    // --help, env echo --version) is never intercepted, and "--" still
+    // ends scanning (echo -- --help prints "--help"). The first match
+    // wins, so `cmd --version --help` prints the version, as GNU
+    // does; `--help=x` / `--version=x` report "doesn't allow an
+    // argument" instead of being intercepted. printf/test/[ narrow it
+    // further: their --help/--version are honored only as the sole
+    // argument, so `printf '%s\n' --help` prints "--help" and
+    // `test --help x` is an expression error, not help. Commands that
+    // opt out of standard interception (e.g. nohup, whose options end
+    // at the wrapped command) skip the scan entirely.
     bool wants_help = false;
+    bool wants_version = false;
+    std::string_view no_argument_option;
     if (behavior.standard_interception_enabled(args)) {
       if (behavior.help_version_only_when_sole_argument) {
         wants_help =
             effective_args.size() == 1 && effective_args[0] == "--help";
+        wants_version =
+            effective_args.size() == 1 && effective_args[0] == "--version";
       } else {
-        for (const auto &arg : effective_args) {
-          if (arg == "--") {
-            break;
-          }
+        const std::vector<ArgRole> roles =
+            classify_args_for_dispatch(cmdName, effective_args, options);
+        for (size_t i = 0; i < effective_args.size(); ++i) {
+          if (roles[i] != ArgRole::Option) continue;
+          const std::string_view arg = effective_args[i];
           if (arg == "--help") {
             wants_help = true;
             break;
+          }
+          if (arg.starts_with("--help=")) {
+            no_argument_option = "--help";
+            break;
+          }
+          if (arg == "--version") {
+            wants_version = true;
+            break;
+          }
+          if (arg.starts_with("--version=")) {
+            no_argument_option = "--version";
+            break;
+          }
+          if (arg == "-v" && command_declares_version_short(options, "-v")) {
+            wants_version = true;
+            break;
+          }
+          if (arg == "-V") {
+            if (!command_declares_option(options, arg) ||
+                command_declares_version_short(options, arg)) {
+              wants_version = true;
+              break;
+            }
           }
         }
       }
@@ -1177,19 +1473,20 @@ class RegistryImpl {
       return 0;
     }
 
-    // Same gate as --help above: commands that opt out of standard
-    // interception (e.g. nohup, whose options end at the wrapped command)
-    // must not have their operands scanned for --version either.
-    bool wants_version = false;
-    if (behavior.standard_interception_enabled(args)) {
-      if (behavior.help_version_only_when_sole_argument) {
-        wants_version =
-            effective_args.size() == 1 && effective_args[0] == "--version";
-      } else {
-        wants_version =
-            wants_standard_version(cmdName, effective_args, options);
+    if (!no_argument_option.empty()) {
+      safeErrorPrintLn(
+          std::string(cmdName) + ": " +
+          winux::i18n::format("common.error.option_no_argument",
+                              "option '{}' doesn't allow an argument",
+                              no_argument_option));
+      if (print_parse_error_tail(cmdName)) {
+        safeErrorPrintLn(winux::i18n::format(
+            "common.try_help", "Try '{} --help' for more information.",
+            cmdName));
       }
+      return behavior.parse_error_exit_code;
     }
+
     if (wants_version) {
       // [GNU] --version prints a multi-line block in the shape of
       // "cmd (suite) version" + copyright/license/warranty/author (#1044).
@@ -1263,6 +1560,13 @@ export class CommandRegistry {
 
   static int parseErrorExitCode(std::string_view name) noexcept {
     return RegistryImpl::parse_error_exit_code(name);
+  }
+
+  // #1305: print the command's option-error usage tail (grep's
+  // one-line Usage, sed's full help). Returns false when the tail
+  // replaces the Try line (sed).
+  static bool printParseErrorTail(std::string_view name) {
+    return print_parse_error_tail(name);
   }
 
   // Dispatch command execution (public interface)

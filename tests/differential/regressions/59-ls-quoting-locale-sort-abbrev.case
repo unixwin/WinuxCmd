@@ -1,0 +1,8 @@
+cmd: ls
+args: --quoting-style=locale --sort=s
+timeout: 10
+setup: |
+  printf 'aa\n' > "a b"
+  printf 'bbbbbbbb\n' > "a'b"
+source: github.com/unixwin/WinuxCmd/issues/1335
+tags: issue-1335 regression

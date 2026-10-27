@@ -3193,6 +3193,24 @@ TEST(find, find_accepts_posix_drive_form_start_points) {
   EXPECT_NE(r2.stdout_text.find("nested.txt"), std::string::npos);
 }
 
+// #1303: --help inside -exec belongs to the executed command, not to
+// find: `find . -exec echo.exe --help \;` shows echo's help, not
+// find's.
+TEST(find, find_exec_help_is_not_intercepted) {
+  TempDir tmp;
+  tmp.write("a.txt", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L".", L"-name", L"a.txt", L"-exec", L"echo.exe",
+                      L"--help", L";"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("Usage:") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("Usage: find") == std::string::npos);
+}
+
 namespace {
 
 // #1283/#1288 shared fixture: a directory chain of `levels` components

@@ -9,6 +9,25 @@ export auto option_policy_for_command(std::string_view command)
   policy.allow_unknown_short_options_as_positionals =
       command == "printf" || command == "expr" || command == "test" ||
       command == "[" || command == "stty" || command == "kill";
+  if (command == "uniq" || command == "diff" || command == "split") {
+    // #1306: GNU getopt gives these commands' optional short options no
+    // attached value inside a cluster: -D/-c/-d are flags there and the
+    // rest of the cluster keeps parsing as further short options
+    // (uniq -Dc, diff -cu, split -dl). Digits still reach the -NUM
+    // rule (diff -c5, split -d5, uniq -D5), and --opt=value is
+    // untouched. Commands that genuinely take a short attached value
+    // (sed -i.bak, paste -d,) keep the default.
+    policy.allow_optional_short_attached_values = false;
+  }
+  if (command == "env") {
+    // #1303: GNU env scans options only up to the first non-option
+    // token: an assignment or the command name ends option parsing, so
+    // `env FOO=bar -i cmd` treats -i as the command and
+    // `env echo --version` runs echo. Assignments are positionals to
+    // the parser, so stopping after the first positional is exactly
+    // this boundary (and it holds with or without POSIXLY_CORRECT).
+    policy.stop_options_after_positionals = 1;
+  }
   if (command == "timeout") {
     policy.stop_options_after_positionals = 2;
   }
@@ -73,6 +92,19 @@ export auto option_policy_for_command(std::string_view command)
   // reach the dispatcher's --help/--version interception (WinuxCmd #1215).
   if (command == "expr") {
     policy.allow_long_options = false;
+  }
+  // #1304: POSIXLY_CORRECT stops getopt permutation at the first
+  // operand. glibc counts mere presence of the variable (unlike the
+  // dispatcher's is_posixly_correct(), which also requires a non-empty
+  // value). Commands whose argument grammar is not getopt-style keep
+  // permuting: find parses an expression off the raw args, test/[ and
+  // expr parse expressions, true/false never call getopt, and dd takes
+  // KEY=VALUE operands plus a usage scan that ignores operand order.
+  // (env needs no flag: its stop=1 above is the same boundary already.)
+  if (command != "find" && command != "test" && command != "[" &&
+      command != "expr" && command != "true" && command != "false" &&
+      command != "dd") {
+    policy.posixly_correct = std::getenv("POSIXLY_CORRECT") != nullptr;
   }
   // [GNU] fmt's obsolete "-WIDTH" width is argv[1]-only; digit options in
   // other positions get fmt.c's own diagnostic.

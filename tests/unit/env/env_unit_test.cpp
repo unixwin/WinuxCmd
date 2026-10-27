@@ -601,6 +601,7 @@ TEST(env, env_file_drive_dialect_operand_resolves_named_drive) {
   EXPECT_TRUE(has_env_line(r.stdout_text, "WX_DIALECT_FILE", "from_dialect"));
 }
 
+<<<<<<< HEAD
 // #1352: [GNU] -i starts from an empty environment block: the child
 // receives exactly the command-line assignments, in the order given.
 TEST(env, env_ignore_environment_child_block_exact_and_ordered) {
@@ -714,4 +715,28 @@ TEST(env, env_dash_token_after_assignment_is_command) {
   EXPECT_EQ_TEXT(r.stderr_text,
                  "env: failed to run command '-i': No such file or "
                  "directory\n");
+=======
+// #1303: --version after the command name belongs to the command, not
+// to env: `env echo.exe --version` prints echo's version, not env's.
+TEST(env, env_wrapped_command_version_is_not_intercepted) {
+  Pipeline p;
+  p.add(L"env.exe", {L"echo.exe", L"--version"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("echo (WinuxCmd)") != std::string::npos);
+}
+
+// #1303: env's option scan ends at the first non-option token, so an
+// assignment ends it too: `env FOO=bar --help` treats --help as the
+// command to run (which fails) instead of printing env's help.
+TEST(env, env_option_scan_ends_at_first_assignment) {
+  Pipeline p;
+  p.add(L"env.exe", {L"FOO=bar", L"--help"});
+  auto r = p.run();
+
+  EXPECT_NE(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.find("failed to run command '--help'") !=
+              std::string::npos);
+>>>>>>> origin/main
 }

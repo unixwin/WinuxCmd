@@ -1,0 +1,8 @@
+cmd: ln
+args: -sv --backup=numbered srcfile dest
+timeout: 10
+setup: |
+  printf 'src\n' > srcfile
+  printf 'old\n' > dest
+source: github.com/unixwin/WinuxCmd/issues/1308
+tags: issue-1308 regression

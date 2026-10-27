@@ -713,6 +713,17 @@ export class Registry {
     return false;
   }
 
+  // #1305: the same help text for the error path, where GNU prints the
+  // full usage to stderr instead of the stdout help (sed).
+  static std::string get_help(std::string_view cmd_name) {
+    auto& storage = get_storage();
+    auto it = storage.find(cmd_name);
+    if (it != storage.end()) {
+      return it->second.get_help();
+    }
+    return "";
+  }
+
   static std::string get_man(std::string_view cmd_name) {
     auto& storage = get_storage();
     auto it = storage.find(cmd_name);
