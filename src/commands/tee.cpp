@@ -38,18 +38,16 @@ using cmd::meta::OptionType;
  * - @a -a, @a --append: Append to the given FILEs, do not overwrite
  * [IMPLEMENTED]
  * - @a -i, @a --ignore-interrupts: Ignore interrupt signals [IMPLEMENTED]
- * - @a -p, @a --diagnose: Diagnose write errors using warn-nopipe mode
- * [IMPLEMENTED]
+ * - @a -p: Diagnose write errors using warn-nopipe mode [IMPLEMENTED]
  */
 auto constexpr TEE_OPTIONS = std::array{
     // [GNU] -a, --append
     OPTION("-a", "--append", "append to the given FILEs, do not overwrite"),
     // [GNU] -i, --ignore-interrupts
     OPTION("-i", "--ignore-interrupts", "ignore interrupt signals"),
-    // [GNU] -p  (no long form in GNU coreutils 9.4; --diagnose added for
-    // ergonomics — newer GNU versions may adopt this alias)
-    // [DIFFERS from GNU 9.4] GNU -p has no --diagnose long form.
-    OPTION("-p", "--diagnose", "write errors to standard error"),
+    // [GNU] -p has no long form; the "--diagnose" alias was invented and
+    // is removed (#1355).
+    OPTION("-p", "", "write errors to standard error"),
     // [GNU] --output-error
     OPTION("", "--output-error",
            "set behavior on write error: 'warn' (default), 'warn-nopipe', "
@@ -88,8 +86,7 @@ REGISTER_COMMAND(
   bool append = ctx.get<bool>("-a", false) || ctx.get<bool>("--append", false);
   bool ignore_interrupts =
       ctx.get<bool>("-i", false) || ctx.get<bool>("--ignore-interrupts", false);
-  bool diagnose =
-      ctx.get<bool>("-p", false) || ctx.get<bool>("--diagnose", false);
+  bool diagnose = ctx.get<bool>("-p", false);
 
   auto output_error = ctx.get<std::string>("--output-error", "");
   if (output_error.empty()) {

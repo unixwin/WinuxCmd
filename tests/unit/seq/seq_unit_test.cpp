@@ -77,26 +77,6 @@ TEST(seq, seq_long_separator) {
   EXPECT_EQ_TEXT(r.stdout_text, "1,2,3,4\n");
 }
 
-TEST(seq, seq_long_terminator_replaces_final_newline) {
-  Pipeline p;
-  p.add(L"seq.exe", {L"--terminator=,", L"3"});
-
-  auto r = p.run();
-
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "1\n2\n3,");
-}
-
-TEST(seq, seq_short_terminator_replaces_only_final_separator) {
-  Pipeline p;
-  p.add(L"seq.exe", {L"-t", L" END ", L"1", L"2", L"5"});
-
-  auto r = p.run();
-
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "1\n3\n5 END ");
-}
-
 TEST(seq, seq_rejects_invalid_number_without_throwing) {
   Pipeline p;
   p.add(L"seq.exe", {L"not-a-number"});
@@ -411,6 +391,34 @@ TEST(seq, seq_custom_separator_large_range_buffered) {
   EXPECT_TRUE(r.stdout_text.ends_with("49999, 50000\n"));
   EXPECT_NOT_CONTAINS(r.stdout_text, ", , ");
 }
+
+TEST(seq, seq_invented_terminator_rejected_issue1355) {
+  Pipeline p;
+  p.add(L"seq.exe", {L"--terminator=X", L"2"});
+  auto r = p.run();
+  EXPECT_EXIT_CODE(r, 1);
+  // GNU getopt names the full attached-value token in the diagnostic,
+  // and the shared parser does the same (#1391 parser alignment).
+  EXPECT_TRUE(r.stderr_text.find("unrecognized option '--terminator=X'") !=
+              std::string::npos);
+}
+
+TEST(seq, seq_invented_dash_t_rejected_issue1355) {
+  Pipeline p;
+  p.add(L"seq.exe", {L"-t", L";", L"3"});
+  auto r = p.run();
+  EXPECT_EXIT_CODE(r, 1);
+  EXPECT_TRUE(r.stderr_text.find("invalid option -- 't'") != std::string::npos);
+}
+
+TEST(seq, seq_separator_still_legal_issue1355) {
+  Pipeline p;
+  p.add(L"seq.exe", {L"--separator=X", L"2"});
+  auto r = p.run();
+  EXPECT_EXIT_CODE(r, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "1X2\n");
+}
+
 // #1376: seq has no iteration ceiling — it streams, and the consumer
 // decides how much to read. `seq 1000000001 | head -3` used to fail
 // upfront with "seq: too many iterations" and print nothing.
@@ -423,4 +431,84 @@ TEST(seq, seq_streams_beyond_billion_iterations_issue1376) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "1\n2\n3\n");
+}
+
+TEST(seq, issue1356_bundled_short_options_expand_per_getopt) {
+  // [GNU] `-ws ,` is `-w -s ,`: the boolean member continues the walk and
+  // the argument-taking member takes the next argv element.
+  Pipeline p;
+  p.add(L"seq.exe", {L"-ws", L",", L"3"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "1,2,3\n");
+
+  Pipeline p2;
+  p2.add(L"seq.exe", {L"-ws", L" ", L"3"});
+  auto r2 = p2.run();
+  EXPECT_EQ(r2.exit_code, 0);
+  EXPECT_EQ_TEXT(r2.stdout_text, "1 2 3\n");
+}
+
+TEST(seq, issue1356_bundled_format_member_consumes_token_rest) {
+  // [GNU] -w and -f are mutually exclusive, so a bundle where -f
+  // consumed the token rest fails with the format/equal-width conflict
+  // diagnostic — which is itself proof the cluster walk worked
+  // (an unconsumed rest would read as an invalid option instead).
+  Pipeline p;
+  p.add(L"seq.exe", {L"-wf%03g", L"2"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("format string may not be specified") !=
+              std::string::npos);
+}
+
+TEST(seq, issue1356_argument_member_value_is_not_rewalked) {
+  // [GNU] In `-sw`, the `w` is -s's value, not the -w flag.
+  Pipeline p;
+  p.add(L"seq.exe", {L"-sw", L"3"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "1w2w3\n");
+}
+
+TEST(seq, issue1356_unknown_bundled_member_is_rejected) {
+  Pipeline p;
+  p.add(L"seq.exe", {L"-wz", L"3"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "seq: invalid option -- 'z'\n"
+                 "Try 'seq --help' for more information.\n");
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1368: GNU seq treats a failed stdout write as fatal — seq.c calls
+// write_error() (system.h:960), printing one "seq: write error: <strerror>"
+// diagnostic and exiting 1. With stdout closed (`>&-`) the child has no
+// std-output handle at all, so the first flush fails with
+// ERROR_INVALID_HANDLE, the Win32 image of EBADF. The big LAST also pins
+// the prompt-stop contract: the item loop must bail out on the recorded
+// failure instead of generating ten million lines into a dead sink.
+// ---------------------------------------------------------------------------
+TEST(seq, issue1368_closed_stdout_reports_write_error_and_stops) {
+  auto r = run_command_closed_stdout(ProjectPaths::exe(L"seq.exe"),
+                                     {L"10000000"});
+
+  EXPECT_EXIT_CODE(r, 1);
+  EXPECT_CONTAINS(r.stderr_text, "seq: write error: ");
+  EXPECT_CONTAINS(r.stderr_text, "Bad file descriptor");
+}
+
+// The same contract for the floating-point loop (`seq 1 2 9` takes the
+// integral fast path; a non-integral INCREMENT exercises the double loop).
+TEST(seq, issue1368_closed_stdout_float_loop_reports_write_error) {
+  auto r =
+      run_command_closed_stdout(ProjectPaths::exe(L"seq.exe"),
+                                {L"1", L"0.5", L"100000"});
+
+  EXPECT_EXIT_CODE(r, 1);
+  EXPECT_CONTAINS(r.stderr_text, "seq: write error: ");
+  EXPECT_CONTAINS(r.stderr_text, "Bad file descriptor");
 }

@@ -165,8 +165,9 @@ TEST(cmp, cmp_skip_beyond_shorter_file_reports_eof_without_underflow) {
 
   EXPECT_EQ(r.exit_code, 1);
   // [GNU] a skip past the shorter file's end yields the "which is empty"
-  // form of the EOF diagnostic (cmp.c).
-  EXPECT_EQ_TEXT(r.stdout_text, "cmp: EOF on file1.txt which is empty\n");
+  // form of the EOF diagnostic (cmp.c) — on stderr, not stdout (#1347).
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(r.stderr_text, "cmp: EOF on file1.txt which is empty\n");
 }
 
 TEST(cmp, cmp_wildcard_expansion_does_not_reinterpret_extra_file_as_skip) {
@@ -255,4 +256,187 @@ TEST(cmp, cmp_unknown_option_exits_2_issue1213) {
   TEST_LOG_EXIT_CODE(r);
   EXPECT_EXIT_CODE(r, 2);
   EXPECT_TRUE(r.stderr_text.find("unrecognized option") != std::string::npos);
+}
+
+// [#1347] Byte counts take GNU cmp's suffix grammar: -n 1K is accepted
+// (K = 1024), 1KB is 1000, and the historic c/w/b suffixes are rejected.
+TEST(cmp, issue1347_cmp_bytes_suffix_accepted) {
+  TempDir tmp;
+  tmp.write("file1.txt", "hello\n");
+  tmp.write("file2.txt", "hello\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cmp.exe", {L"-n", L"1K", L"file1.txt", L"file2.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.empty());
+}
+
+TEST(cmp, issue1347_cmp_bytes_suffix_kb_is_1000_k_is_1024) {
+  TempDir tmp;
+  // Two 2000-byte files differing only at byte 1006 (1-based).
+  std::vector<char> a(2000, 0), b(2000, 0);
+  a[1005] = 'x';
+  b[1005] = 'y';
+  tmp.write_bytes("a.bin", a);
+  tmp.write_bytes("b.bin", b);
+
+  Pipeline p1;
+  p1.set_cwd(tmp.wpath());
+  p1.add(L"cmp.exe", {L"-n", L"1KB", L"a.bin", L"b.bin"});
+  auto r1 = p1.run();
+  EXPECT_EQ(r1.exit_code, 0);  // 1KB = 1000 < 1006: difference not reached
+
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.add(L"cmp.exe", {L"-n", L"1K", L"a.bin", L"b.bin"});
+  auto r2 = p2.run();
+  EXPECT_EQ(r2.exit_code, 1);  // 1K = 1024 > 1006: difference reported
+}
+
+TEST(cmp, issue1347_cmp_bytes_suffix_c_and_b_rejected) {
+  TempDir tmp;
+  tmp.write("file1.txt", "a");
+  tmp.write("file2.txt", "a");
+
+  Pipeline p1;
+  p1.set_cwd(tmp.wpath());
+  p1.add(L"cmp.exe", {L"-n", L"1b", L"file1.txt", L"file2.txt"});
+  auto r1 = p1.run();
+  EXPECT_EQ(r1.exit_code, 2);
+  EXPECT_TRUE(r1.stderr_text.find("invalid --bytes value '1b'") !=
+              std::string::npos);
+
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.add(L"cmp.exe", {L"-n", L"1c", L"file1.txt", L"file2.txt"});
+  auto r2 = p2.run();
+  EXPECT_EQ(r2.exit_code, 2);
+}
+
+TEST(cmp, issue1347_cmp_silent_long_option) {
+  TempDir tmp;
+  tmp.write("file1.txt", "hello\n");
+  tmp.write("file2.txt", "world\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cmp.exe", {L"--silent", L"file1.txt", L"file2.txt"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.empty());
+
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.add(L"cmp.exe", {L"--silent", L"missing", L"missing"});
+  auto r2 = p2.run();
+  EXPECT_EQ(r2.exit_code, 2);
+  EXPECT_TRUE(r2.stdout_text.empty());
+  EXPECT_TRUE(r2.stderr_text.empty());
+}
+
+// [#1347] Open failures carry exactly one "cmp: " prefix and the full
+// reason text.
+TEST(cmp, issue1347_cmp_missing_file_message) {
+  TempDir tmp;
+  tmp.write("file1.txt", "a");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cmp.exe", {L"missing", L"file1.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "cmp: missing: No such file or directory\n");
+}
+
+TEST(cmp, issue1347_cmp_directory_message) {
+  TempDir tmp;
+  tmp.write("file1.txt", "a");
+  std::filesystem::create_directory(tmp.path / "somedir");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cmp.exe", {L"somedir", L"file1.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_EQ_TEXT(r.stderr_text, "cmp: somedir: Is a directory\n");
+}
+
+// [#1347] EOF reports go to stderr; the line form is ", line N" when the
+// shorter side ends at a line boundary and ", in line N" mid-line.
+TEST(cmp, issue1347_cmp_eof_line_boundary_on_stderr) {
+  TempDir tmp;
+  tmp.write("f1", "a\n");
+  tmp.write("f2", "a\nX\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cmp.exe", {L"f1", L"f2"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(r.stderr_text, "cmp: EOF on f1 after byte 2, line 1\n");
+}
+
+TEST(cmp, issue1347_cmp_eof_in_line_on_stderr) {
+  TempDir tmp;
+  tmp.write("f1", "a\nb\n");
+  tmp.write("f2", "a\nb");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cmp.exe", {L"f1", L"f2"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "cmp: EOF on f2 after byte 3, in line 2\n");
+
+  TempDir tmp2;
+  tmp2.write("g1", "ab");
+  tmp2.write("g2", "abc");
+  Pipeline p2;
+  p2.set_cwd(tmp2.wpath());
+  p2.add(L"cmp.exe", {L"g1", L"g2"});
+  auto r2 = p2.run();
+  EXPECT_EQ(r2.exit_code, 1);
+  EXPECT_EQ_TEXT(r2.stderr_text,
+                 "cmp: EOF on g1 after byte 2, in line 1\n");
+}
+
+TEST(cmp, issue1347_cmp_verbose_eof_form) {
+  TempDir tmp;
+  tmp.write("f1", "a\n");
+  tmp.write("f2", "a\nX\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cmp.exe", {L"-l", L"f1", L"f2"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ_TEXT(r.stderr_text, "cmp: EOF on f1 after byte 2\n");
+}
+
+TEST(cmp, issue1347_cmp_eof_on_stdin) {
+  TempDir tmp;
+  tmp.write("f2", "a\nX\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("");
+  p.add(L"cmp.exe", {L"-", L"f2"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(r.stderr_text, "cmp: EOF on - which is empty\n");
 }

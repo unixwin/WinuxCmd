@@ -93,7 +93,7 @@ bool isBrokenPipeError(DWORD err) {
 // Record a failed write to stdout. A broken pipe maps to GNU's SIGPIPE
 // death (the command exits quietly); any other failure — for example
 // ERROR_INVALID_HANDLE when the caller closed stdout (`>&-`) — is a fatal
-// "write error" the command is expected to report.
+// "write error" the command is expected to report (#1368).
 void note_stdout_write_failure() {
   const DWORD err = GetLastError();
   if (isBrokenPipeError(err)) {
@@ -166,6 +166,41 @@ export bool is_stdout_write_failed() { return g_stdout_write_error != 0; }
 // The Win32 error code recorded by the first failed stdout write; 0 when
 // is_stdout_write_failed() is false.
 export DWORD stdout_write_error() { return g_stdout_write_error; }
+
+// The strerror(errno) text GNU would print for the recorded stdout write
+// failure, kept in the C locale so diagnostics are diffable (#1368). The
+// dominant case is `>&-`: the child's stdout handle is gone and WriteFile
+// reports ERROR_INVALID_HANDLE, the Win32 image of EBADF.
+export std::string_view stdout_write_error_text() {
+  switch (g_stdout_write_error) {
+    case ERROR_INVALID_HANDLE:
+      return "Bad file descriptor";
+    case ERROR_ACCESS_DENIED:
+      return "Permission denied";
+    case ERROR_DISK_FULL:
+    case ERROR_HANDLE_DISK_FULL:
+      return "No space left on device";
+    default:
+      return "Input/output error";
+  }
+}
+
+// [GNU] system.h write_error() / closeout.c close_stdout(): report a failed
+// stdout write exactly once as "<prog>: write error: <strerror>" and hand
+// back `fatal_status` for the caller's exit mapping. Returns 0 when no
+// stdout write failure is pending, so callers can write
+// `if (int rc = report_stdout_write_error("cat", 1)) return rc;`.
+// Broken-pipe failures are deliberately NOT reported here: GNU dies of
+// SIGPIPE for those, and commands keep their own quiet exit semantics.
+export void safeErrorPrintLn(std::string_view);
+
+export int report_stdout_write_error(std::string_view prog,
+                                     int fatal_status) {
+  if (g_stdout_write_error == 0) return 0;
+  safeErrorPrintLn(std::string(prog) + ": write error: " +
+                   std::string(stdout_write_error_text()));
+  return fatal_status;
+}
 
 // Byte counter for `ls --dired`: GNU emits "//DIRED//" trailer lines with
 // the byte offsets of each filename in the output stream.  Counting is
@@ -473,21 +508,18 @@ export void safePrint(std::wstring_view wsv) {
   if (isStdoutConsole()) {
     if (translated != utf8) {
       const std::wstring wide = utf8_to_wstring(translated);
-      if (!detail::writeConsoleW(h, wide.data(), wide.size()) &&
-          isBrokenPipeError(GetLastError())) {
-        g_stdout_pipe_closed = true;
+      if (!detail::writeConsoleW(h, wide.data(), wide.size())) {
+        note_stdout_write_failure();
       }
-    } else if (!detail::writeConsoleW(h, wsv.data(), wsv.size()) &&
-               isBrokenPipeError(GetLastError())) {
-      g_stdout_pipe_closed = true;
+    } else if (!detail::writeConsoleW(h, wsv.data(), wsv.size())) {
+      note_stdout_write_failure();
     }
     if (g_count_stdout_bytes) {
       g_stdout_bytes_written += translated.size();
     }
   } else {
-    if (!detail::writeFile(h, translated.data(), translated.size()) &&
-        isBrokenPipeError(GetLastError())) {
-      g_stdout_pipe_closed = true;
+    if (!detail::writeFile(h, translated.data(), translated.size())) {
+      note_stdout_write_failure();
     }
     if (g_count_stdout_bytes) {
       g_stdout_bytes_written += translated.size();
@@ -538,15 +570,13 @@ export void safePrint(std::string_view sv) {
   if (isStdoutConsole()) {
     detail::wchar_buffer buf(sv);
     if (buf.valid()) {
-      if (!detail::writeConsoleW(h, buf.data(), buf.size()) &&
-          isBrokenPipeError(GetLastError())) {
-        g_stdout_pipe_closed = true;
+      if (!detail::writeConsoleW(h, buf.data(), buf.size())) {
+        note_stdout_write_failure();
       }
     }
   } else {
-    if (!detail::writeFile(h, sv.data(), sv.size()) &&
-        isBrokenPipeError(GetLastError())) {
-      g_stdout_pipe_closed = true;
+    if (!detail::writeFile(h, sv.data(), sv.size())) {
+      note_stdout_write_failure();
     }
   }
   if (g_count_stdout_bytes) {
@@ -637,9 +667,13 @@ export void safePrint(char c) {
   HANDLE h = getStdOut();
   if (isStdoutConsole()) {
     wchar_t wc = static_cast<wchar_t>(c);
-    detail::writeConsoleW(h, &wc, 1);
+    if (!detail::writeConsoleW(h, &wc, 1)) {
+      note_stdout_write_failure();
+    }
   } else {
-    detail::writeFile(h, &c, 1);
+    if (!detail::writeFile(h, &c, 1)) {
+      note_stdout_write_failure();
+    }
   }
 }
 

@@ -29,10 +29,11 @@ auto constexpr JOIN_OPTIONS = std::array{
     OPTION("-t", "", "use CHAR as input and output field separator",
            STRING_TYPE),
     // [GNU]
-    OPTION("-e", "--empty", "replace missing input fields with EMPTY",
-           STRING_TYPE),
+    // [GNU] -e has no long form in GNU join; "--empty" is invented (#1411).
+    OPTION("-e", "", "replace missing input fields with EMPTY", STRING_TYPE),
     // [GNU]
-    OPTION("-o", "--output", "use specified output format", STRING_TYPE),
+    // [GNU] -o has no long form in GNU join; "--output" is invented (#1355).
+    OPTION("-o", "", "use specified output format", STRING_TYPE),
     // [GNU]
     OPTION("-j", "", "equivalent to -1 FIELD -2 FIELD", STRING_TYPE),
     // [GNU]
@@ -53,11 +54,7 @@ auto constexpr JOIN_OPTIONS = std::array{
            BOOL_TYPE),
     // [GNU]
     OPTION("-z", "--zero-terminated", "line delimiter is NUL, not newline",
-           BOOL_TYPE),
-    // [EXTENSION] GNU join has no -k/--key; FIELD[.CHAR] selects the join
-    // field of both files and optionally starts the key at character CHAR
-    // of that field (1-based), in the style of 'sort -k'.
-    OPTION("-k", "--key", "join on FIELD[.CHAR] of both files", STRING_TYPE)};
+           BOOL_TYPE)};
 
 namespace join_pipeline {
 namespace cp = core::pipeline;
@@ -75,10 +72,6 @@ struct ParsedLine {
 struct Config {
   int field1 = 1;
   int field2 = 1;
-  // 1-based character offset within the join field at which the comparison
-  // key starts; only set via -k/--key FIELD.CHAR.
-  int key_char1 = 1;
-  int key_char2 = 1;
   bool explicit_separator = false;
   bool whole_line = false;
   bool ignore_case = false;
@@ -167,26 +160,21 @@ auto normalize_key(std::string key, bool ignore_case) -> std::string {
   return key;
 }
 
-auto parse_line(const std::string& line, const Config& cfg, int field_num,
-                int char_num) -> ParsedLine {
+auto parse_line(const std::string& line, const Config& cfg, int field_num)
+    -> ParsedLine {
   ParsedLine parsed;
   parsed.fields = split_fields(line, cfg);
   if (field_num <= static_cast<int>(parsed.fields.size())) {
-    const auto& field = parsed.fields[static_cast<size_t>(field_num - 1)];
-    size_t offset = std::min(field.size(), static_cast<size_t>(char_num - 1));
-    parsed.key = field.substr(offset);
+    parsed.key = parsed.fields[static_cast<size_t>(field_num - 1)];
   }
   parsed.key = normalize_key(parsed.key, cfg.ignore_case);
 
   return parsed;
 }
 
-auto trim_text_record(std::string line, char delimiter) -> std::string {
-  if (delimiter == '\n' && !line.empty() && line.back() == '\r') {
-    line.pop_back();
-  }
-  return line;
-}
+// [GNU] join is byte-oriented: records reach key splitting, comparison
+// and output exactly as read — a trailing '\r' is ordinary content, and
+// a leading UTF-8 BOM is not skipped either (issue #1354).
 
 auto join_input_open_error(std::string_view filename) -> std::string {
   std::error_code ec;
@@ -295,24 +283,6 @@ auto build_config(const CommandContext<JOIN_OPTIONS.size()>& ctx)
     return {};
   };
 
-  // [EXTENSION] -k/--key FIELD[.CHAR]: like "-1 FIELD -2 FIELD", with an
-  // optional 1-based character offset applied to the comparison key of both
-  // files.  -1/-2/-j may still override the field afterwards.
-  auto key_opt = ctx.get<std::string>("-k", "");
-  if (!key_opt.empty()) {
-    auto dot = key_opt.find('.');
-    auto field = parse_positive_field(key_opt.substr(0, dot));
-    if (!field) return std::unexpected(field.error());
-    if (auto r = set_field(1, *field); !r) return std::unexpected(r.error());
-    if (auto r = set_field(2, *field); !r) return std::unexpected(r.error());
-    if (dot != std::string::npos) {
-      auto char_num = parse_positive_field(key_opt.substr(dot + 1));
-      if (!char_num) return std::unexpected(char_num.error());
-      cfg.key_char1 = *char_num;
-      cfg.key_char2 = *char_num;
-    }
-  }
-
   auto field1_opt = ctx.get<std::string>("-1", "");
   if (!field1_opt.empty()) {
     auto field = parse_positive_field(field1_opt);
@@ -359,17 +329,10 @@ auto build_config(const CommandContext<JOIN_OPTIONS.size()>& ctx)
   cfg.zero_terminated =
       ctx.get<bool>("--zero-terminated", false) || ctx.get<bool>("-z", false);
 
-  auto empty_opt = ctx.get<std::string>("--empty", "");
-  if (empty_opt.empty()) {
-    empty_opt = ctx.get<std::string>("-e", "");
-  }
+  auto empty_opt = ctx.get<std::string>("-e", "");
   cfg.empty_field = empty_opt;
 
-  auto output_opt = ctx.get<std::string>("--output", "");
-  if (output_opt.empty()) {
-    output_opt = ctx.get<std::string>("-o", "");
-  }
-  cfg.output_format = output_opt;
+  cfg.output_format = ctx.get<std::string>("-o", "");
   if (!cfg.output_format.empty()) {
     if (cfg.output_format == "auto") {
       cfg.output_auto = true;
@@ -452,13 +415,12 @@ auto read_lines(const std::string& filename, char delimiter)
     size_t start = 0;
     for (size_t i = 0; i < content.size(); ++i) {
       if (content[i] == delimiter) {
-        lines.emplace_back(
-            trim_text_record(content.substr(start, i - start), delimiter));
+        lines.emplace_back(content.substr(start, i - start));
         start = i + 1;
       }
     }
     if (start < content.size()) {
-      lines.emplace_back(trim_text_record(content.substr(start), delimiter));
+      lines.emplace_back(content.substr(start));
     }
   } else {
     auto f = file_io::open_binary_file(filename);
@@ -472,27 +434,13 @@ auto read_lines(const std::string& filename, char delimiter)
     size_t start = 0;
     for (size_t i = 0; i < content.size(); ++i) {
       if (content[i] == delimiter) {
-        std::string line =
-            trim_text_record(content.substr(start, i - start), delimiter);
-        // Skip UTF-8 BOM if present at the beginning of the first line
-        if (lines.empty() && line.size() >= 3 &&
-            static_cast<unsigned char>(line[0]) == 0xEF &&
-            static_cast<unsigned char>(line[1]) == 0xBB &&
-            static_cast<unsigned char>(line[2]) == 0xBF) {
-          line = line.substr(3);
-        }
+        std::string line = content.substr(start, i - start);
         lines.push_back(line);
         start = i + 1;
       }
     }
     if (start < content.size()) {
-      std::string line = trim_text_record(content.substr(start), delimiter);
-      if (lines.empty() && line.size() >= 3 &&
-          static_cast<unsigned char>(line[0]) == 0xEF &&
-          static_cast<unsigned char>(line[1]) == 0xBB &&
-          static_cast<unsigned char>(line[2]) == 0xBF) {
-        line = line.substr(3);
-      }
+      std::string line = content.substr(start);
       lines.push_back(line);
     }
 
@@ -667,10 +615,10 @@ auto run(const Config& cfg) -> int {
   parsed1.reserve(lines1.size());
   parsed2.reserve(lines2.size());
   for (const auto& line : lines1) {
-    parsed1.push_back(parse_line(line, cfg, cfg.field1, cfg.key_char1));
+    parsed1.push_back(parse_line(line, cfg, cfg.field1));
   }
   for (const auto& line : lines2) {
-    parsed2.push_back(parse_line(line, cfg, cfg.field2, cfg.key_char2));
+    parsed2.push_back(parse_line(line, cfg, cfg.field2));
   }
 
   const size_t data_start1 = cfg.header && !parsed1.empty() ? 1 : 0;

@@ -112,7 +112,10 @@ TEST(join, join_zero_terminated_records) {
   EXPECT_EQ(r.stdout_text, std::string("1 a b\0x left right\0", 19));
 }
 
-TEST(join, join_mixed_lf_and_crlf_records_match_in_text_mode) {
+TEST(join, join_issue1354_mixed_lf_crlf_records_keep_cr_bytes) {
+  // [GNU] join is byte-oriented: file2's record is "a right\r", so the
+  // joined line keeps the '\r' inside its last field. This test
+  // previously pinned the CR-stripping divergence (issue #1354).
   TempDir tmp;
   tmp.write_bytes("file1.txt", {'a', ' ', 'l', 'e', 'f', 't', '\n'});
   tmp.write_bytes("file2.txt", {'a', ' ', 'r', 'i', 'g', 'h', 't', '\r', '\n'});
@@ -124,7 +127,38 @@ TEST(join, join_mixed_lf_and_crlf_records_match_in_text_mode) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "a left right\n");
+  EXPECT_EQ_TEXT(r.stdout_text, "a left right\r\n");
+}
+
+TEST(join, join_issue1354_cr_in_key_prevents_match) {
+  TempDir tmp;
+  tmp.write_bytes("file1.txt", {'a', '\r', ' ', '1', '\n'});
+  tmp.write_bytes("file2.txt", {'a', ' ', '1', '\n'});
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"join.exe", {L"file1.txt", L"file2.txt"});
+
+  auto r = p.run();
+
+  // Keys "a\r" and "a" differ byte-wise, so GNU joins nothing.
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.empty());
+}
+
+TEST(join, join_issue1354_crlf_records_join_with_cr_preserved) {
+  TempDir tmp;
+  tmp.write_bytes("file1.txt", {'a', ' ', '1', '\r', '\n'});
+  tmp.write_bytes("file2.txt", {'a', ' ', 'x', '\r', '\n'});
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"join.exe", {L"file1.txt", L"file2.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "a 1\r x\r\n");
 }
 
 TEST(join, join_reports_gnu_shaped_missing_input_diagnostic) {
@@ -256,8 +290,9 @@ TEST(join, join_interleaves_unpaired_output_in_merge_order) {
   EXPECT_EQ_TEXT(r.stdout_text, "a x\nb 1\nc y\n");
 }
 
-TEST(join, join_key_option_selects_join_field_of_both_files) {
-  // [EXTENSION] #1070: -k N is equivalent to "-1 N -2 N".
+TEST(join, join_invented_key_option_rejected_issue1411) {
+  // [GNU] join has no -k/--key (that is sort's syntax); -1/-2/-j select the
+  // join fields (#1411).
   TempDir tmp;
   tmp.write("k1.txt", "x a 1\nx b 2\n");
   tmp.write("k2.txt", "y a r\ny b s\n");
@@ -267,16 +302,53 @@ TEST(join, join_key_option_selects_join_field_of_both_files) {
   p.add(L"join.exe", {L"-k", L"2", L"k1.txt", L"k2.txt"});
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "a x 1 y r\nb x 2 y s\n");
+  EXPECT_EXIT_CODE(r, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("invalid option -- 'k'") != std::string::npos);
 
   Pipeline p2;
   p2.set_cwd(tmp.wpath());
   p2.add(L"join.exe", {L"--key", L"2", L"k1.txt", L"k2.txt"});
   auto r2 = p2.run();
 
-  EXPECT_EQ(r2.exit_code, 0);
-  EXPECT_EQ_TEXT(r2.stdout_text, "a x 1 y r\nb x 2 y s\n");
+  EXPECT_EXIT_CODE(r2, 1);
+  EXPECT_TRUE(r2.stdout_text.empty());
+  EXPECT_TRUE(r2.stderr_text.find("unrecognized option '--key'") !=
+              std::string::npos);
+}
+
+TEST(join, join_invented_empty_long_rejected_issue1411) {
+  // [GNU] -e has no long form in GNU join; "--empty" is invented (#1411).
+  TempDir tmp;
+  tmp.write("k1.txt", "x 1\n");
+  tmp.write("k2.txt", "x A\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"join.exe", {L"--empty", L"?", L"k1.txt", L"k2.txt"});
+  auto r = p.run();
+
+  EXPECT_EXIT_CODE(r, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("unrecognized option '--empty'") !=
+              std::string::npos);
+}
+
+TEST(join, join_dash_e_still_legal_issue1411) {
+  // [GNU] the short form -e EMPTY keeps replacing missing fields: the
+  // unpaired "z 2" line (kept by -a1) has no 2.2 field, so -o fills it.
+  TempDir tmp;
+  tmp.write("k1.txt", "x 1\nz 2\n");
+  tmp.write("k2.txt", "x A\ny B\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"join.exe", {L"-a1", L"-e", L"MISSING", L"-o", L"0,1.2,2.2",
+                      L"k1.txt", L"k2.txt"});
+  auto r = p.run();
+
+  EXPECT_EXIT_CODE(r, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "x 1 A\nz 2 MISSING\n");
 }
 
 TEST(join, join_missing_operand_after_reports_last_argument) {
@@ -310,4 +382,31 @@ TEST(join, join_stdin_ctrlz_not_truncated_issue1212) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.find('\x1a') != std::string::npos);
+}
+
+TEST(join, join_invented_output_long_rejected_issue1355) {
+  TempDir tmp;
+  tmp.write("j1.txt", "x 1\n");
+  tmp.write("j2.txt", "x A\n");
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"join.exe", {L"--output=0", L"j1.txt", L"j2.txt"});
+  auto r = p.run();
+  EXPECT_EXIT_CODE(r, 1);
+  // GNU getopt names the full attached-value token in the diagnostic,
+  // and the shared parser does the same (#1391 parser alignment).
+  EXPECT_TRUE(r.stderr_text.find("unrecognized option '--output=0'") !=
+              std::string::npos);
+}
+
+TEST(join, join_dash_o_still_legal_issue1355) {
+  TempDir tmp;
+  tmp.write("j1.txt", "x 1\n");
+  tmp.write("j2.txt", "x A\n");
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"join.exe", {L"-o", L"0", L"j1.txt", L"j2.txt"});
+  auto r = p.run();
+  EXPECT_EXIT_CODE(r, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "x\n");
 }

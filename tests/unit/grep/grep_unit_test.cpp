@@ -1790,6 +1790,87 @@ TEST(grep, grep_invalid_context_length_exits_2_issue1213) {
   EXPECT_EXIT_CODE(r, 2);
   EXPECT_TRUE(r.stderr_text.find("invalid") != std::string::npos);
 }
+// #1305: a grep option error carries the one-line Usage before Try.
+TEST(grep, grep_option_error_prints_usage_line) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"grep.exe", {L"--zzz"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_TRUE(r.stderr_text.find("unrecognized option '--zzz'") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("Usage: grep [OPTION]... PATTERNS [FILE]...") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("Try 'grep --help'") != std::string::npos);
+}
+// #1302: an explicit empty value ("--max-count=") must fail on the
+// empty value, not swallow the next argv (-e) as the value.
+TEST(grep, grep_int_long_option_empty_value_does_not_swallow_next_arg) {
+  TempDir tmp;
+  tmp.write("input.txt", "x\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"grep.exe", {L"--max-count=", L"-e", L"x", L"input.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_TRUE(r.stderr_text.find("invalid argument '' for '--max-count'") !=
+              std::string::npos);
+}
+
+
+// #1301: grep --count=x must fail instead of hanging on a Bool long
+// option that silently swallowed the value.
+TEST(grep, grep_bool_long_option_rejects_attached_value) {
+  TempDir tmp;
+  tmp.write("input.txt", "x\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"grep.exe", {L"--count=x", L"-e", L"x", L"input.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_TRUE(r.stderr_text.find("doesn't allow an argument") !=
+              std::string::npos);
+}
+
+// #1301 (dispatcher path): --help=x reports the same rejection and
+// still carries grep's Usage line.
+TEST(grep, grep_help_rejects_attached_value_with_usage) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"grep.exe", {L"--help=x"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_TRUE(r.stderr_text.find("option '--help' doesn't allow an argument") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("Usage: grep [OPTION]... PATTERNS [FILE]...") !=
+              std::string::npos);
+}
+
+// #1303: --help as --label's value is data, not an interception: grep
+// searches instead of printing its own help.
+TEST(grep, grep_label_value_that_looks_like_help_is_not_intercepted) {
+  TempDir tmp;
+  tmp.write("input.txt", "x line\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"grep.exe", {L"--label", L"--help", L"-e", L"x", L"input.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "x line\n");
+}
+
 
 TEST(grep, issue_1283_drive_colon_operand_searches_carrier_file) {
   TempDir tmp;
@@ -1897,4 +1978,27 @@ TEST(grep, bare_nul_still_device_issue1333) {
 
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_TRUE(r.stdout_text.find("0") != std::string::npos);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1368: GNU grep treats a failed stdout write as an EXIT_TROUBLE (2)
+// outcome ("grep: write error: <strerror>"). With stdout closed (`>&-`) the
+// child has no std-output handle, so the first write fails with
+// ERROR_INVALID_HANDLE — the Win32 image of EBADF — and grep must exit 2
+// instead of 0, skipping the remaining files instead of scanning into a
+// dead sink.
+// ---------------------------------------------------------------------------
+TEST(grep, issue1368_closed_stdout_reports_write_error_and_exits_2) {
+  TempDir tmp;
+  tmp.write("a.txt", "x match\nno hit\n");
+  tmp.write("b.txt", "x again\n");
+  const std::wstring operand_a = (tmp.path / L"a.txt").wstring();
+  const std::wstring operand_b = (tmp.path / L"b.txt").wstring();
+
+  auto r = run_command_closed_stdout(ProjectPaths::exe(L"grep.exe"),
+                                     {L"x", operand_a, operand_b});
+
+  EXPECT_EXIT_CODE(r, 2);
+  EXPECT_CONTAINS(r.stderr_text, "grep: write error: ");
+  EXPECT_CONTAINS(r.stderr_text, "Bad file descriptor");
 }

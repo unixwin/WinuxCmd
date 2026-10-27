@@ -222,3 +222,73 @@ TEST(truncate, truncate_file_operand_glob_expands) {
   EXPECT_EQ(std::filesystem::file_size(tmp.path / "b.txt"), 1);
   EXPECT_EQ(std::filesystem::file_size(tmp.path / "c.log"), 5);
 }
+
+// [#1360] A -s value with leading whitespace is valid: the number
+// grammar skips it, including before a mode sign.
+TEST(truncate, issue1360_truncate_leading_whitespace) {
+  TempDir tmp;
+  tmp.write("test.txt", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"truncate.exe", {L"-s", L" 5", L"test.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(std::filesystem::file_size(tmp.path / "test.txt"), 5);
+}
+
+TEST(truncate, issue1360_truncate_whitespace_before_plus) {
+  TempDir tmp;
+  tmp.write("test.txt", "0123456789");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"truncate.exe", {L"-s", L" +5", L"test.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(std::filesystem::file_size(tmp.path / "test.txt"), 15);
+}
+
+// [#1360] Whitespace after a +/- sign stays invalid (sign and digits
+// must be adjacent), and the diagnostic quotes the stripped token.
+TEST(truncate, issue1360_truncate_plus_space_rejected) {
+  TempDir tmp;
+  tmp.write("test.txt", "0123456789");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"truncate.exe", {L"-s", L"+ 5", L"test.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("Invalid number: '+ 5'") !=
+              std::string::npos);
+}
+
+TEST(truncate, issue1360_truncate_error_quote_after_whitespace) {
+  TempDir tmp;
+  tmp.write("test.txt", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"truncate.exe", {L"-s", L" 5x", L"test.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("Invalid number: '5x'") !=
+              std::string::npos);
+}
+
+TEST(truncate, issue1360_truncate_trailing_whitespace_rejected) {
+  TempDir tmp;
+  tmp.write("test.txt", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"truncate.exe", {L"-s", L"5 ", L"test.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+}

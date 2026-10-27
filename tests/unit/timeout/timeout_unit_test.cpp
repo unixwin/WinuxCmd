@@ -66,33 +66,69 @@ TEST(timeout, timeout_kill_after) {
   EXPECT_EQ(r.exit_code, 0);
 }
 
-TEST(timeout, timeout_foreground) {
+TEST(timeout, timeout_invented_foreground_rejected_issue1411) {
+  // #1411: timeout's -f/--foreground was an accepted-but-inert pseudo
+  // option on Windows; it is dropped, so GNU's spelling is rejected
+  // like any unknown option.
   Pipeline p;
   p.add(L"timeout.exe", {L"-f", L"5", L"echo.exe", L"test"});
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
-}
-
-TEST(timeout, timeout_foreground_still_enforces_timeout_promptly) {
-  Pipeline p;
-  p.add(L"timeout.exe", {L"--foreground", L"0.1", L"sleep.exe", L"2"});
-
-  auto start = std::chrono::steady_clock::now();
-  auto r = p.run();
-  auto elapsed = std::chrono::steady_clock::now() - start;
-
-  EXPECT_EQ(r.exit_code, 124);
+  EXPECT_EQ(r.exit_code, 125);
   EXPECT_TRUE(r.stdout_text.empty());
-  EXPECT_LT(elapsed, std::chrono::milliseconds(1200));
+  EXPECT_TRUE(r.stderr_text.find("invalid option -- 'f'") != std::string::npos);
+
+  Pipeline p2;
+  p2.add(L"timeout.exe", {L"--foreground", L"5", L"echo.exe", L"test"});
+  auto r2 = p2.run();
+
+  EXPECT_EQ(r2.exit_code, 125);
+  EXPECT_TRUE(r2.stdout_text.empty());
+  EXPECT_TRUE(r2.stderr_text.find("unrecognized option '--foreground'") !=
+              std::string::npos);
 }
 
-TEST(timeout, timeout_preserve_status) {
+TEST(timeout, timeout_invented_preserve_status_rejected_issue1411) {
+  // #1411: -p/--preserve-status was an accepted-but-inert pseudo option
+  // on Windows; it is dropped.
   Pipeline p;
   p.add(L"timeout.exe", {L"-p", L"5", L"echo.exe", L"test"});
   auto r = p.run();
 
+  EXPECT_EQ(r.exit_code, 125);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("invalid option -- 'p'") != std::string::npos);
+
+  Pipeline p2;
+  p2.add(L"timeout.exe",
+         {L"--preserve-status", L"0.2", L"sleep.exe", L"5"});
+  auto r2 = p2.run();
+
+  EXPECT_EQ(r2.exit_code, 125);
+  EXPECT_TRUE(r2.stdout_text.empty());
+  EXPECT_TRUE(r2.stderr_text.find("unrecognized option '--preserve-status'") !=
+              std::string::npos);
+}
+
+TEST(timeout, timeout_invented_list_signals_rejected_issue1411) {
+  // #1411: GNU timeout has no -l (that is kill's listing form).
+  Pipeline p;
+  p.add(L"timeout.exe", {L"-l"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 125);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("invalid option -- 'l'") != std::string::npos);
+}
+
+TEST(timeout, timeout_options_still_legal_issue1411) {
+  Pipeline p;
+  p.add(L"timeout.exe",
+        {L"-v", L"-k", L"5s", L"-s", L"TERM", L"5", L"echo.exe", L"test"});
+  auto r = p.run();
+
   EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.empty());
 }
 
 TEST(timeout, timeout_verbose) {
@@ -159,10 +195,9 @@ TEST(timeout, timeout_verbose_reports_signal_name) {
                  "timeout: sending signal TERM to command 'sleep.exe'\n");
 }
 
-TEST(timeout, timeout_foreground_signal0_kill_after_returns_kill_status) {
+TEST(timeout, timeout_signal0_kill_after_returns_kill_status) {
   Pipeline p;
-  p.add(L"timeout.exe",
-        {L"--foreground", L"-s0", L"-k0.1", L"0.1", L"sleep.exe", L"2"});
+  p.add(L"timeout.exe", {L"-s0", L"-k0.1", L"0.1", L"sleep.exe", L"2"});
 
   auto start = std::chrono::steady_clock::now();
   auto r = p.run();
@@ -180,8 +215,10 @@ TEST(timeout, timeout_verbose_signal0_kill_after_reports_probe_then_kill) {
 
   EXPECT_EQ(r.exit_code, 137);
   EXPECT_TRUE(r.stdout_text.empty());
+  // [GNU] signal 0 resolves to the EXIT pseudo-signal name in the
+  // verbose line (sig2str(0) == "EXIT").
   EXPECT_EQ_TEXT(r.stderr_text,
-                 "timeout: sending signal 0 to command 'sleep.exe'\n"
+                 "timeout: sending signal EXIT to command 'sleep.exe'\n"
                  "timeout: sending signal KILL to command 'sleep.exe'\n");
 }
 
@@ -245,6 +282,32 @@ TEST(timeout, timeout_invalid_signal) {
   EXPECT_EQ_TEXT(r.stderr_text, "timeout: 'INVALID': invalid signal\n");
 }
 
+// [GNU] Issue #1384: the full Linux signal table is accepted by name
+// (USR1/USR2, PIPE, CHLD, RT forms, ...), not just the classic seven.
+TEST(timeout, timeout_accepts_full_signal_table_names) {
+  for (const wchar_t* name :
+       {L"USR1", L"USR2", L"PIPE", L"CHLD", L"CONT", L"STOP", L"SEGV",
+        L"RTMIN", L"RTMIN+1", L"RTMAX", L"RTMAX-1", L"EXIT", L"SIGUSR1"}) {
+    Pipeline p;
+    p.add(L"timeout.exe", {L"-s", name, L"5", L"echo.exe", L"test"});
+    auto r = p.run();
+    EXPECT_EQ(r.exit_code, 0);
+  }
+}
+
+// [GNU] Issue #1384: numeric specs are valid only for 0..31 and 34..64;
+// 32/33 are C-library-reserved and out-of-range values are rejected with
+// the same one-line diagnostic as a bad name.
+TEST(timeout, timeout_rejects_reserved_and_out_of_range_signal_numbers) {
+  for (const wchar_t* num : {L"32", L"33", L"65", L"999", L"-1"}) {
+    Pipeline p;
+    p.add(L"timeout.exe", {L"-s", num, L"5", L"echo.exe", L"test"});
+    auto r = p.run();
+    EXPECT_EQ(r.exit_code, 125);
+    EXPECT_TRUE(r.stdout_text.empty());
+  }
+}
+
 TEST(timeout, timeout_invalid_kill_after_reports_gnu_style_usage_error) {
   Pipeline p;
   p.add(L"timeout.exe", {L"-k", L"xyz", L"5", L"echo.exe", L"test"});
@@ -266,3 +329,45 @@ TEST(timeout, timeout_invalid_option_returns_125_with_help_hint) {
                  "timeout: unrecognized option '--definitely-invalid'\n"
                  "Try 'timeout --help' for more information.\n");
 }
+
+// #1350: [GNU] the status of a timeout kill is signal-dependent: 124
+// for the ordinary signal path, but 128+SIGKILL = 137 when the command
+// is killed by SIGKILL.
+TEST(timeout, timeout_kill_signal_reports_137) {
+  Pipeline p;
+  p.add(L"timeout.exe", {L"-s", L"KILL", L"0.2", L"sleep.exe", L"5"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 137);
+  EXPECT_TRUE(r.stdout_text.empty());
+}
+
+TEST(timeout, timeout_term_signal_reports_124) {
+  Pipeline p;
+  p.add(L"timeout.exe", {L"-s", L"TERM", L"0.2", L"sleep.exe", L"5"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 124);
+}
+
+TEST(timeout, timeout_int_signal_reports_124) {
+  Pipeline p;
+  p.add(L"timeout.exe", {L"-s", L"INT", L"0.2", L"sleep.exe", L"5"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 124);
+}
+
+// #1303: --help after the wrapped command belongs to the command, not
+// to timeout: `timeout 5 echo --help` shows echo's help, not
+// timeout's.
+TEST(timeout, timeout_wrapped_command_help_is_not_intercepted) {
+  Pipeline p;
+  p.add(L"timeout.exe", {L"5", L"echo.exe", L"--help"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("Usage:") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("Usage: timeout") == std::string::npos);
+}
+

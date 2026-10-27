@@ -271,3 +271,65 @@ TEST(which, which_tty_only_suppresses_pipe_output) {
   EXPECT_TRUE(r.stdout_text.empty());
   EXPECT_TRUE(r.stderr_text.empty());
 }
+
+// #1385 (enclave rule): with a shell root configured, an operand spelled
+// from the root (`which /ra-tool`) searches the operand's directory through
+// the shared operand boundary — in the payload (shell) root, not on the
+// current drive root. The drive spelling of the same operand keeps resolving
+// through the drive fold.
+TEST(which, which_slash_operand_searches_shell_root_issue1385) {
+  TempDir payload;
+  TempDir elsewhere;
+  payload.write("ra-tool.exe", "");
+  std::filesystem::create_directories(payload.path / L"usr");
+  payload.write("usr/tool.exe", "");
+
+  Pipeline root_spelling;
+  root_spelling.set_cwd(elsewhere.wpath());
+  root_spelling.set_env(L"WINUXSH_ROOT", payload.wpath());
+  root_spelling.add(L"which.exe", {L"/ra-tool"});
+  auto root_result = root_spelling.run();
+
+  EXPECT_EQ(root_result.exit_code, 0);
+  EXPECT_EQ_TEXT(root_result.stdout_text,
+                 (payload.path / L"ra-tool.exe").generic_string() + "\n");
+
+  Pipeline sub_spelling;
+  sub_spelling.set_cwd(elsewhere.wpath());
+  sub_spelling.set_env(L"WINUXSH_ROOT", payload.wpath());
+  sub_spelling.add(L"which.exe", {L"/usr/tool"});
+  auto sub_result = sub_spelling.run();
+
+  EXPECT_EQ(sub_result.exit_code, 0);
+  EXPECT_EQ_TEXT(sub_result.stdout_text,
+                 (payload.path / L"usr" / L"tool.exe").generic_string() + "\n");
+
+  // The drive spelling of the same operand still resolves through the fold.
+  const std::wstring drive_spelled = winuxsh_drive_path(payload.path);
+  Pipeline drive_operand;
+  drive_operand.set_cwd(elsewhere.wpath());
+  drive_operand.set_env(L"WINUXSH_ROOT", payload.wpath());
+  drive_operand.add(L"which.exe", {drive_spelled + L"/ra-tool.exe"});
+  auto drive_result = drive_operand.run();
+
+  EXPECT_EQ(drive_result.exit_code, 0);
+  EXPECT_EQ_TEXT(drive_result.stdout_text,
+                 (payload.path / L"ra-tool.exe").generic_string() + "\n");
+}
+
+// #1385: relative operands with a separator keep searching relative to the
+// cwd; the operand fold is a no-op for them.
+TEST(which, which_relative_slash_operand_unchanged_issue1385) {
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / L"bin");
+  tmp.write("bin/near.exe", "");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"which.exe", {L"bin/near"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text,
+                 (tmp.path / L"bin" / L"near.exe").generic_string() + "\n");
+}

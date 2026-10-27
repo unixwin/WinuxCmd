@@ -165,3 +165,18 @@ TEST(tty, tty_returns_three_when_stdout_pipe_is_closed) {
   EXPECT_TRUE(r.stdout_text.empty());
   EXPECT_TRUE(r.stderr_text.empty());
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1368: tty's documented exit status 3 also covers a failed stdout
+// write. Unlike the broken-pipe helper above, run_command_closed_stdout
+// spawns tty with no std-output handle at all (`>&-`), so the "not a tty"
+// line fails with ERROR_INVALID_HANDLE — the Win32 image of EBADF.
+// ---------------------------------------------------------------------------
+TEST(tty, issue1368_closed_stdout_write_error_returns_three) {
+  auto r = run_command_closed_stdout(ProjectPaths::exe(L"tty.exe"), {});
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("tty stderr", r.stderr_text);
+
+  EXPECT_EQ(r.exit_code, 3);
+}

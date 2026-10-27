@@ -1,0 +1,5 @@
+cmd: timeout
+args: -s KILL 0.2 sleep 5
+timeout: 15
+source: github.com/unixwin/WinuxCmd/issues/1350
+tags: issue-1350 regression

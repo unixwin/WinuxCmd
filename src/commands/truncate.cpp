@@ -158,11 +158,28 @@ auto scale_size(int64_t value, long double multiplier) -> cp::Result<int64_t> {
 auto parse_size(const std::string& size_str) -> cp::Result<SizeSpec> {
   std::string s = size_str;
   SizeSpec spec;
-  // [GNU] every rejected size reports the raw operand (uutils #13576)
-  const auto invalid_number = [&size_str]() -> std::string {
-    return "Invalid number: '" + size_str + "'";
+
+  // [GNU] The size grammar (truncate.c via xstrtol) (#1360): leading
+  // whitespace is skipped before everything — a size like " 5" or
+  // " +5" is valid — and after a <, >, / or % mode prefix the numeric
+  // parse skips whitespace again, while after + or - the sign and the
+  // digits must be adjacent ("+ 5" is invalid).  Diagnostics quote the
+  // operand as it stands when the numeric parse runs: the stripped
+  // remainder, with a +/- sign kept as part of the quoted token
+  // (uutils #13576).
+  const auto skip_whitespace = [](std::string& text) {
+    size_t count = 0;
+    while (count < text.size() &&
+           std::isspace(static_cast<unsigned char>(text[count]))) {
+      ++count;
+    }
+    text.erase(0, count);
   };
 
+  skip_whitespace(s);
+  std::string report = s;
+
+  bool prefix_mode = false;
   if (!s.empty()) {
     switch (s[0]) {
       case '+':
@@ -175,24 +192,36 @@ auto parse_size(const std::string& size_str) -> cp::Result<SizeSpec> {
         break;
       case '<':
         spec.mode = SizeMode::AtMost;
+        prefix_mode = true;
         s.erase(0, 1);
         break;
       case '>':
         spec.mode = SizeMode::AtLeast;
+        prefix_mode = true;
         s.erase(0, 1);
         break;
       case '/':
         spec.mode = SizeMode::RoundDown;
+        prefix_mode = true;
         s.erase(0, 1);
         break;
       case '%':
         spec.mode = SizeMode::RoundUp;
+        prefix_mode = true;
         s.erase(0, 1);
         break;
       default:
         break;
     }
   }
+  if (prefix_mode) {
+    skip_whitespace(s);
+    report = s;
+  }
+
+  const auto invalid_number = [&report]() -> std::string {
+    return "Invalid number: '" + report + "'";
+  };
 
   if (s.empty()) {
     return std::unexpected(invalid_number());

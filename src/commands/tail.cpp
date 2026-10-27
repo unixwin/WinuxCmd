@@ -1026,11 +1026,13 @@ REGISTER_COMMAND(
     bool show_header = config.verbose || (multi && !config.quiet);
     auto emit_header = [&]() {
       if (!show_header) return;
-      if (!first_print) safePrint(std::string(1, config.delimiter));
+      // [GNU] -z applies to output records only: headers and the blank
+      // line between them always use '\n' (as in follow_header).
+      if (!first_print) safePrint(std::string(1, '\n'));
       safePrint("==> ");
       safePrint(file == "-" ? "standard input" : file);
       safePrint(" <==");
-      safePrint(std::string(1, config.delimiter));
+      safePrint(std::string(1, '\n'));
       first_print = false;
     };
 

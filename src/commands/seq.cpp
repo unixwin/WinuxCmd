@@ -27,10 +27,8 @@ auto constexpr SEQ_OPTIONS = std::array{
            STRING_TYPE),
     // [GNU]
     OPTION("-s", "--separator", "use STRING to separate numbers", STRING_TYPE),
-    // [GNU]
-    OPTION("-t", "--terminator",
-           "use STRING to terminate the output instead of newline",
-           STRING_TYPE),
+    // [GNU] seq has no -t/--terminator option; that pair was invented and
+    // is removed (#1355). Output always ends with a newline.
     // [GNU]
     OPTION("-w", "--equal-width",
            "equalize width by padding with leading zeroes", BOOL_TYPE),
@@ -280,46 +278,20 @@ auto build_config(const CommandContext<SEQ_OPTIONS.size()>& ctx)
 
     if (parsing_options && arg.starts_with('-') && arg != "-" &&
         !looks_like_number(arg)) {
-      if (arg == "-w" || arg == "--equal-width") {
+      if (arg == "--equal-width") {
         cfg.equal_width = true;
         continue;
       }
 
-      if (arg == "-s" || arg == "--separator") {
+      if (arg == "--separator") {
         auto value = read_option_value(ctx.raw_args, i, "", false, arg);
         if (!value) return std::unexpected(value.error());
         cfg.separator = *value;
         continue;
       }
 
-      if (arg.starts_with("-s") && arg.size() > 2) {
-        // Handle both -sVALUE and -s=VALUE forms.
-        cfg.separator =
-            std::string(arg[2] == '=' ? arg.substr(3) : arg.substr(2));
-        continue;
-      }
-
       if (arg.starts_with("--separator=")) {
         cfg.separator = std::string(arg.substr(12));
-        continue;
-      }
-
-      if (arg == "-t" || arg == "--terminator") {
-        auto value = read_option_value(ctx.raw_args, i, "", false, arg);
-        if (!value) return std::unexpected(value.error());
-        cfg.terminator = *value;
-        continue;
-      }
-
-      if (arg.starts_with("-t") && arg.size() > 2) {
-        // Handle both -tVALUE and -t=VALUE forms.
-        cfg.terminator =
-            std::string(arg[2] == '=' ? arg.substr(3) : arg.substr(2));
-        continue;
-      }
-
-      if (arg.starts_with("--terminator=")) {
-        cfg.terminator = std::string(arg.substr(13));
         continue;
       }
 
@@ -330,14 +302,47 @@ auto build_config(const CommandContext<SEQ_OPTIONS.size()>& ctx)
         continue;
       }
 
-      if (arg.starts_with("-f") && arg.size() > 2) {
-        // Handle both -fVALUE and -f=VALUE forms.
-        cfg.format = std::string(arg[2] == '=' ? arg.substr(3) : arg.substr(2));
+      if (arg.starts_with("--format=")) {
+        cfg.format = std::string(arg.substr(9));
         continue;
       }
 
-      if (arg.starts_with("--format=")) {
-        cfg.format = std::string(arg.substr(9));
+      if (!arg.starts_with("--")) {
+        // [GNU] getopt walks a short-option cluster character by
+        // character: a boolean member continues the walk, and an
+        // argument-taking member consumes the rest of the token (a
+        // leading '=' is dropped, as in the historical -s=VALUE form)
+        // or the next argv element (issue #1356).
+        for (size_t j = 1; j < arg.size(); ++j) {
+          char c = arg[j];
+          if (c == 'w') {
+            cfg.equal_width = true;
+            continue;
+          }
+          if (c == 's' || c == 't' || c == 'f') {
+            std::string value;
+            if (j + 1 < arg.size()) {
+              std::string_view rest = arg.substr(j + 1);
+              if (rest.starts_with('=')) rest.remove_prefix(1);
+              value = std::string(rest);
+            } else {
+              auto v = read_option_value(ctx.raw_args, i, "", false,
+                                         std::string("-") + c);
+              if (!v) return std::unexpected(v.error());
+              value = *v;
+            }
+            if (c == 's') {
+              cfg.separator = value;
+            } else if (c == 't') {
+              cfg.terminator = value;
+            } else {
+              cfg.format = value;
+            }
+            break;  // the rest of the token was the value
+          }
+          return error_result<Config>("invalid option '-" +
+                                      std::string(1, c) + "'");
+        }
         continue;
       }
 
@@ -584,6 +589,14 @@ auto run(const Config& cfg) -> int {
 
   bool first_item = true;
 
+  // #1368: a failed stdout write is fatal for GNU seq — seq.c calls
+  // write_error() (system.h:960), printing one "seq: write error:
+  // <strerror>" diagnostic and exiting 1. A closed downstream pipe keeps
+  // the quiet SIGPIPE-style exit 0 established by #1376.
+  const auto stdout_failure_rc = [&]() -> int {
+    return report_stdout_write_error("seq", 1);
+  };
+
   if (integral_fast_path) {
     const auto first_i = static_cast<long long>(cfg.first);
     const auto inc_i = static_cast<long long>(cfg.increment);
@@ -593,6 +606,7 @@ auto run(const Config& cfg) -> int {
       // stream: GNU seq dies of SIGPIPE; the console layer records the
       // broken pipe in a flag instead, so poll it per item (#1376).
       if (is_stdout_pipe_closed()) return 0;
+      if (is_stdout_write_failed()) return stdout_failure_rc();
       auto [ptr, ec] =
           std::to_chars(number_buf, number_buf + sizeof(number_buf), x);
       if (!first_item) {
@@ -612,7 +626,7 @@ auto run(const Config& cfg) -> int {
     }
     buffer_output(cfg.terminator);
     flush_output();
-    return 0;
+    return stdout_failure_rc();
   }
 
   double current = cfg.first;
@@ -663,6 +677,7 @@ auto run(const Config& cfg) -> int {
 
   for (double i = 1;; ++i) {
     if (is_stdout_pipe_closed()) return 0;  // see fast path note (#1376)
+    if (is_stdout_write_failed()) return stdout_failure_rc();  // #1368
     const double prev = current;
     emit(current);
 
@@ -684,7 +699,7 @@ auto run(const Config& cfg) -> int {
   }
   flush_output();
 
-  return 0;
+  return stdout_failure_rc();
 }
 
 }  // namespace seq_pipeline

@@ -140,10 +140,42 @@ REGISTER_COMMAND(
       std::clamp(win32_current_niceness() + adjustment, -20, 19);
   DWORD priority_class = win32_priority_class_for_niceness(target_niceness);
 
+  // [GNU] The child is created suspended and the priority class is
+  // applied with SetPriorityClass so that a failure is observable:
+  // GNU nice prints "cannot set niceness: <reason>" and runs the
+  // command anyway when the requested priority cannot be applied,
+  // while passing the class as a CreateProcessW flag would have it
+  // silently clamped with no way to notice (#1359).
   if (!CreateProcessW(launch.application_name->c_str(),
                       launch.command_line.data(), nullptr, nullptr, FALSE,
-                      priority_class, nullptr, nullptr, &si, &pi)) {
+                      CREATE_SUSPENDED, nullptr, nullptr, &si, &pi)) {
     DWORD error = GetLastError();
+    safeErrorPrintLn("nice: failed to run command '" +
+                     std::string(ctx.positionals[0]) +
+                     "': " + nice_windows_error_text(error));
+    return nice_command_status_from_create_error(error);
+  }
+
+  bool priority_applied =
+      SetPriorityClass(pi.hProcess, priority_class) != FALSE;
+  DWORD priority_error = priority_applied ? ERROR_SUCCESS : GetLastError();
+  if (priority_applied && GetPriorityClass(pi.hProcess) != priority_class) {
+    // The requested class was silently clamped to a lower one: the
+    // requested priority was not applied either.
+    priority_applied = false;
+    priority_error = ERROR_ACCESS_DENIED;
+  }
+  if (!priority_applied) {
+    safeErrorPrintLn("nice: cannot set niceness: " +
+                     nice_windows_error_text(priority_error));
+  }
+
+  if (ResumeThread(pi.hThread) == static_cast<DWORD>(-1)) {
+    DWORD error = GetLastError();
+    TerminateProcess(pi.hProcess, 125);
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
     safeErrorPrintLn("nice: failed to run command '" +
                      std::string(ctx.positionals[0]) +
                      "': " + nice_windows_error_text(error));

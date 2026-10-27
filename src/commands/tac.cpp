@@ -131,8 +131,11 @@ auto split_literal_records(std::string_view content, std::string_view separator,
 auto split_regex_records(std::string_view content, const std::string& separator,
                          bool before) -> cp::Result<std::vector<std::string>> {
   std::vector<std::string> records;
+  // [GNU] tac.c compiles the -r separator as a basic regular expression
+  // (BRE): `\|` is alternation and a bare `|` is a literal character.
+  // Extended (ERE) inverts both (issue #1361).
   auto sep =
-      portable_regex::compile(portable_regex::Syntax::Extended, separator);
+      portable_regex::compile(portable_regex::Syntax::Basic, separator);
   if (!sep) {
     return std::unexpected("invalid regular expression");
   }
@@ -161,6 +164,9 @@ auto split_regex_records(std::string_view content, const std::string& separator,
 auto output_reversed_records(const std::vector<std::string>& records) -> void {
   for (auto it = records.rbegin(); it != records.rend(); ++it) {
     safePrint(*it);
+    // #1368: once stdout can no longer take writes, further records would
+    // only pile into a dead sink; GNU tac stops at the first failed write.
+    if (is_stdout_pipe_closed() || is_stdout_write_failed()) break;
   }
 }
 
@@ -187,8 +193,15 @@ auto run(const Config& cfg) -> int {
       continue;
     }
     output_reversed_records(*records);
+    if (is_stdout_pipe_closed() || is_stdout_write_failed()) break;
   }
 
+  // [GNU] tac.c full_write() failure reaches write_error() (system.h:960):
+  // one "tac: write error: <strerror>" diagnostic, exit 1 (#1368). A closed
+  // downstream pipe keeps the quiet SIGPIPE-style status.
+  if (int write_error_rc = report_stdout_write_error("tac", 1)) {
+    return write_error_rc;
+  }
   return any_error ? 1 : 0;
 }
 

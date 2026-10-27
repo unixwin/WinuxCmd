@@ -480,6 +480,51 @@ TEST(cat, cat_show_all_quotes_nonprinting_like_gnu) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "A^IB^M$\n^?M-^@M-^?$\n$\nZ");
 }
+// #1305: an unknown long option keeps its "=value" in the diagnostic.
+TEST(cat, cat_unknown_long_option_keeps_attached_value_in_message) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cat.exe", {L"--unknown=x"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("unrecognized option '--unknown=x'") !=
+              std::string::npos);
+}
+
+// #1301: a Bool long option must reject "--flag=value" instead of
+// silently ignoring the value.
+TEST(cat, cat_bool_long_option_rejects_attached_value) {
+  TempDir tmp;
+  tmp.write("input.txt", "hello\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cat.exe", {L"--show-ends=foo", L"input.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("option '--show-ends' doesn't allow an argument") !=
+              std::string::npos);
+}
+
+// #1301: --help takes no argument either (dispatcher path).
+TEST(cat, cat_help_rejects_attached_value) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cat.exe", {L"--help=foo"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("option '--help' doesn't allow an argument") !=
+              std::string::npos);
+}
+
 
 TEST(cat, issue_1283_drive_colon_operand_reads_carrier_file) {
   TempDir tmp;
@@ -539,6 +584,26 @@ TEST(cat, issue_1288_glob_expands_past_max_path) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "glob\n");
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1368: GNU cat's first failed stdout write reaches write_error()
+// (system.h:960): one "cat: write error: <strerror>" diagnostic, exit 1.
+// With stdout closed (`>&-`) the child has no std-output handle, so the
+// first flush fails with ERROR_INVALID_HANDLE — the Win32 image of EBADF —
+// and cat must no longer exit 0 silently.
+// ---------------------------------------------------------------------------
+TEST(cat, issue1368_closed_stdout_reports_write_error) {
+  TempDir tmp;
+  tmp.write("input.txt", "hello\nworld\n");
+  const std::wstring operand = (tmp.path / L"input.txt").wstring();
+
+  auto r =
+      run_command_closed_stdout(ProjectPaths::exe(L"cat.exe"), {operand});
+
+  EXPECT_EXIT_CODE(r, 1);
+  EXPECT_CONTAINS(r.stderr_text, "cat: write error: ");
+  EXPECT_CONTAINS(r.stderr_text, "Bad file descriptor");
 }
 
 TEST(cat, nul_txt_reads_file_issue1333) {

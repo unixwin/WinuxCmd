@@ -71,6 +71,14 @@ auto constexpr CAT_OPTIONS =
 namespace cat_pipeline {
 namespace cp = core::pipeline;
 
+// #1368: a broken downstream pipe and a failed (e.g. closed, `>&-`) stdout
+// both end the stream — GNU dies of SIGPIPE for the former, and reports a
+// fatal "cat: write error" for the latter. The shared console layer records
+// the first failed stdout write in one of the two flags below.
+auto stdout_write_gone() -> bool {
+  return is_stdout_pipe_closed() || is_stdout_write_failed();
+}
+
 // ----------------------------------------------
 // 1. Validate arguments - OPTIMIZED: pass by reference
 // ----------------------------------------------
@@ -274,7 +282,7 @@ REGISTER_COMMAND(cat, "cat",
               : GetFileType(hIn);
       if (&stream == &std::cin &&
           (inType == FILE_TYPE_PIPE || inType == FILE_TYPE_CHAR)) {
-        while (!is_stdout_pipe_closed()) {
+        while (!stdout_write_gone()) {
           DWORD got = 0;
           if (!ReadFile(hIn, buffer.data(),
                         static_cast<DWORD>(buffer.size()), &got, nullptr)) {
@@ -290,7 +298,7 @@ REGISTER_COMMAND(cat, "cat",
         auto got = stream.gcount();
         if (got <= 0) break;
         safePrint(std::string_view(buffer.data(), static_cast<size_t>(got)));
-        if (is_stdout_pipe_closed()) break;
+        if (stdout_write_gone()) break;
       }
       return;
     }
@@ -349,7 +357,7 @@ REGISTER_COMMAND(cat, "cat",
         (liveInType == FILE_TYPE_PIPE || liveInType == FILE_TYPE_CHAR);
     if (live_stdin) {
       std::array<char, 8192> buffer{};
-      while (!is_stdout_pipe_closed()) {
+      while (!stdout_write_gone()) {
         DWORD got = 0;
         if (!ReadFile(hLiveIn, buffer.data(),
                       static_cast<DWORD>(buffer.size()), &got, nullptr)) {
@@ -360,7 +368,7 @@ REGISTER_COMMAND(cat, "cat",
           const bool line_done =
               feed_char(static_cast<unsigned char>(buffer[i]));
           if (line_done) flush_output_buffer(out);
-          if (is_stdout_pipe_closed() && out.empty()) {
+          if (stdout_write_gone() && out.empty()) {
             flush_output_buffer(out);
             return;
           }
@@ -377,7 +385,7 @@ REGISTER_COMMAND(cat, "cat",
       // Line-flush so `cat -n` as a pipe tail streams with the producer;
       // append_output still coalesces mid-line transforms into 64KiB.
       if (line_done) flush_output_buffer(out);
-      if (out.empty() && is_stdout_pipe_closed()) {
+      if (out.empty() && stdout_write_gone()) {
         break;
       }
     }
@@ -483,7 +491,7 @@ REGISTER_COMMAND(cat, "cat",
   clear_pipe_closed_flags();
 
   for (const auto &file : files) {
-    if (is_stdout_pipe_closed()) {
+    if (stdout_write_gone()) {
       break;
     }
     if (!process_file(file, ctx, state)) {
@@ -491,5 +499,11 @@ REGISTER_COMMAND(cat, "cat",
     }
   }
 
+  // [GNU] cat.c write_error() (system.h:960): the first failed stdout write
+  // is fatal — one "cat: write error: <strerror>" diagnostic and exit 1
+  // (#1368). A closed downstream pipe keeps the quiet SIGPIPE-style status.
+  if (int write_error_rc = report_stdout_write_error("cat", 1)) {
+    return write_error_rc;
+  }
   return exit_code;
 }

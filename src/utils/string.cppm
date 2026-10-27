@@ -1,5 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 caomengxuan666 <caomengxuan666@users.noreply.github.com>
+module;
+
+// `import std` does not provide unqualified ::size_t under GCC modules.
+#include <cstddef>
+
 export module utils:string;
 
 import std;

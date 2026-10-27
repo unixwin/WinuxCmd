@@ -212,3 +212,18 @@ TEST(printf, printf_leading_v_extension_still_parses) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "x\n");
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1368: printf.c registers close_stdout, so a failed stdout write
+// surfaces as "printf: write error: <strerror>" with exit status 1. With
+// stdout closed (`>&-`) the first write fails with ERROR_INVALID_HANDLE —
+// the Win32 image of EBADF — and printf must no longer exit 0 silently.
+// ---------------------------------------------------------------------------
+TEST(printf, issue1368_closed_stdout_reports_write_error) {
+  auto r = run_command_closed_stdout(ProjectPaths::exe(L"printf.exe"),
+                                     {L"hi\\n"});
+
+  EXPECT_EXIT_CODE(r, 1);
+  EXPECT_CONTAINS(r.stderr_text, "printf: write error: ");
+  EXPECT_CONTAINS(r.stderr_text, "Bad file descriptor");
+}

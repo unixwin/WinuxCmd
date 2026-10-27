@@ -89,10 +89,12 @@ auto get_dirname(std::string_view path) -> std::string {
   }
 
   std::string result(path);
-  // [GNU] Strip trailing slashes down to the root prefix. One or two
-  // leading separators are kept as-is ("dirname //" stays "//"); a longer
-  // run folds to a single separator because the root is only its first
-  // slash ("dirname ///" is "/", "dirname ////a" is "/").
+  // [GNU] Strip trailing slashes down to the root prefix. A longer run
+  // folds to a single separator because the root is only its first slash
+  // ("dirname ///" is "/", "dirname ////a" is "/"); the bare
+  // exactly-two-slash operand folds too ("dirname //" is "/", #1337),
+  // while the two-slash window is preserved only when more of the path
+  // follows ("dirname //a/b" is "//a").
   const size_t raw_root_len = root_length(result);
   trim_trailing_separators(result, raw_root_len);
   const size_t root_len = root_length(result);
@@ -106,6 +108,11 @@ auto get_dirname(std::string_view path) -> std::string {
   }
 
   if (result.size() == root_len && root_len != 0) {
+    // [GNU] An all-forward-slash operand collapses to a single "/"
+    // (#1337); pure-backslash operands keep the Windows spelling.
+    if (result.find_first_not_of('/') == std::string::npos) {
+      return "/";
+    }
     return result.substr(0, root_len);
   }
 

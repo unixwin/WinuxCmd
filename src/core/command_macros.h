@@ -85,9 +85,14 @@
         if (!ctx.parse_error.empty()) {                                        \
           safeErrorPrintLn(std::string(command_name) + ": " +                  \
                            winux::i18n::translate_error(ctx.parse_error));     \
-          safeErrorPrintLn(winux::i18n::format(                                \
-              "common.try_help", "Try '{} --help' for more information.",      \
-              command_name));                                                  \
+          /* #1305: GNU prints a usage tail after an option error for */ \
+          /* some commands (grep's one-line Usage, sed's full help); */  \
+          /* the tail replaces the Try line only for sed. */           \
+          if (CommandRegistry::printParseErrorTail(command_name)) {            \
+            safeErrorPrintLn(winux::i18n::format(                              \
+                "common.try_help", "Try '{} --help' for more information.",    \
+                command_name));                                                \
+          }                                                                    \
         }                                                                      \
         return CommandRegistry::parseErrorExitCode(command_name);              \
       }                                                                        \

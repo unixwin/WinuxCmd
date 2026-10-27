@@ -2454,13 +2454,39 @@ TEST(ls, ls_full_time_implies_long_full_iso_output) {
           R"(^-[rwx-]{9}\s+\d+\s+.*\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{9} [+-]\d{4} a\.txt\n?$)")));
 }
 
-TEST(ls, ls_long_alias_implies_long_format) {
+TEST(ls, ls_invented_long_aliases_rejected_issue1411) {
+  // [GNU] ls has no "--long"/"--long-list"; only -l / --format=long (#1411).
   TempDir tmp;
   tmp.write("a.txt", "a");
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
   p.add(L"ls.exe", {L"--long", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EXIT_CODE(r, 2);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("unrecognized option '--long'") !=
+              std::string::npos);
+
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.add(L"ls.exe", {L"--long-list", L"a.txt"});
+  auto r2 = p2.run();
+
+  EXPECT_EXIT_CODE(r2, 2);
+  EXPECT_TRUE(r2.stdout_text.empty());
+  EXPECT_TRUE(r2.stderr_text.find("unrecognized option '--long-list'") !=
+              std::string::npos);
+}
+
+TEST(ls, ls_dash_l_still_legal_issue1411) {
+  TempDir tmp;
+  tmp.write("a.txt", "a");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ls.exe", {L"-l", L"a.txt"});
 
   auto r = p.run();
 
@@ -3512,4 +3538,74 @@ TEST(ls, ls_mnt_forms_keep_shell_root_semantics) {
   EXPECT_EQ(mount_result.exit_code, 0);
   EXPECT_EQ_TEXT(mount_result.stdout_text, "marker.txt\n");
   EXPECT_EQ_TEXT(mount_result.stderr_text, "");
+}
+
+// #1304: with POSIXLY_CORRECT, option scanning stops at the first
+// operand, so `--color=never` after "." is an operand, not an option.
+TEST(ls, ls_posixly_correct_stops_at_first_operand) {
+  TempDir tmp;
+  tmp.write("marker.txt", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_env(L"POSIXLY_CORRECT", L"1");
+  p.add(L"ls.exe", {L".", L"--color=never"});
+  auto r = p.run();
+
+  EXPECT_NE(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.find("cannot access '--color=never'") !=
+              std::string::npos);
+}
+
+// #1304: glibc counts mere presence of POSIXLY_CORRECT, so an empty
+// value ("POSIXLY_CORRECT=") still stops option scanning at the first
+// operand.
+TEST(ls, ls_posixly_correct_empty_value_still_stops_at_first_operand) {
+  TempDir tmp;
+  tmp.write("marker.txt", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_env(L"POSIXLY_CORRECT", L"");
+  p.add(L"ls.exe", {L".", L"--color=never"});
+  auto r = p.run();
+
+  EXPECT_NE(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.find("cannot access '--color=never'") !=
+              std::string::npos);
+}
+
+// #1304: options before the first operand still parse under
+// POSIXLY_CORRECT.
+TEST(ls, ls_posixly_correct_still_parses_leading_options) {
+  TempDir tmp;
+  tmp.write("marker.txt", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_env(L"POSIXLY_CORRECT", L"1");
+  p.add(L"ls.exe", {L"--color=never", L"."});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.find("cannot access") == std::string::npos);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1368: ls.c registers close_stdout (ls.c:1661), which reports a
+// failed stdout write ("ls: write error: <strerror>", closeout.c) and
+// exits with the serious status LS_FAILURE = 2. With stdout closed (`>&-`)
+// the child has no std-output handle, so the first listing write fails with
+// ERROR_INVALID_HANDLE — the Win32 image of EBADF — and ls must exit 2
+// instead of 0 silently.
+// ---------------------------------------------------------------------------
+TEST(ls, issue1368_closed_stdout_reports_write_error_and_exits_2) {
+  TempDir tmp;
+  tmp.write("entry.txt", "x");
+  auto r = run_command_closed_stdout(ProjectPaths::exe(L"ls.exe"),
+                                     {tmp.wpath()});
+
+  EXPECT_EXIT_CODE(r, 2);
+  EXPECT_CONTAINS(r.stderr_text, "ls: write error: ");
+  EXPECT_CONTAINS(r.stderr_text, "Bad file descriptor");
 }

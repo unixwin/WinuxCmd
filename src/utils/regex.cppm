@@ -10,6 +10,9 @@ module;
 #include <pcre2.h>
 #endif
 
+// `import std` does not provide unqualified ::size_t under GCC modules.
+#include <cstddef>
+
 export module utils:regex;
 
 import std;

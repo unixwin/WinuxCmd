@@ -36,7 +36,7 @@
  * default type [TODO]
  * - @a --backup: Make a backup of each existing destination file [IMPLEMENTED]
  * - @a --force: Do not prompt before overwriting [IMPLEMENTED]
- * - @a --interactive: Prompt according to WHEN: never, once (-I), or always
+ * - @a --interactive: Prompt according to WHEN: never, once, or always
  * (-i) [IMPLEMENTED]
  * - @a --no-clobber: Do not overwrite an existing file [IMPLEMENTED]
  * - @a --suffix: Override the usual backup suffix [IMPLEMENTED]
@@ -52,6 +52,7 @@
 #include "pch/pch.h"
 #pragma comment(lib, "shlwapi.lib")
 #include "core/command_macros.h"
+#include <winioctl.h>  // For FSCTL_GET_REPARSE_POINT (junction targets)
 
 import std;
 import core;
@@ -74,8 +75,8 @@ auto constexpr MV_OPTIONS =
                OPTION("-f", "--force", "do not prompt before overwriting"),
                // [GNU]
                OPTION("-i", "", "prompt before overwrite"),
-               // [GNU]
-               OPTION("-I", "", "prompt once before removing more than three files, or when moving recursively"),
+               // [GNU] mv has no -I option (that is rm's); the "once" prompt
+               // mode is reached only via --interactive=once (#1355).
                // [GNU]
                OPTION("-n", "--no-clobber", "do not overwrite an existing file"),
                // [GNU]
@@ -97,7 +98,7 @@ auto constexpr MV_OPTIONS =
                // [GNU]
                OPTION("", "--backup", "make a backup of each existing destination file", OPTIONAL_STRING_TYPE),
                // [GNU]
-               OPTION("", "--interactive", "prompt according to WHEN: never, once (-I), or always (-i)", OPTIONAL_STRING_TYPE),
+               OPTION("", "--interactive", "prompt according to WHEN: never, once, or always (-i)", OPTIONAL_STRING_TYPE),
                // [GNU]
                OPTION("", "--no-clobber", "do not overwrite an existing file"),
                // [GNU]
@@ -150,54 +151,38 @@ auto parse_overwrite_mode(const CommandContext<N>& ctx)
     -> cp::Result<OverwriteMode> {
   OverwriteMode mode = OverwriteMode::default_mode;
 
-  for (size_t i = 0; i < ctx.raw_args.size(); ++i) {
-    std::string arg(ctx.raw_args[i]);
-    if (arg == "--") break;
-
-    if (arg == "--force") {
+  // [GNU] Judge the overwrite mode from the parser's option occurrences,
+  // not from a raw argv rescan: the parser has already expanded bundled
+  // short flags into separate occurrences and consumed option values
+  // (attached or separate), so a value that merely contains the letters
+  // f/i/I/n — e.g. `mv -t ndir s` or `mv --suffix n …` — can no longer
+  // rewrite the mode (#1325).  Last applicable option wins.
+  if (!ctx.metas) {
+    return mode;
+  }
+  for (const auto& occurrence : ctx.options.occurrences()) {
+    if (occurrence.index >= ctx.metas->size()) {
+      continue;
+    }
+    const auto& meta = (*ctx.metas)[occurrence.index];
+    if (meta.short_name == "-f" || meta.long_name == "--force") {
       mode = OverwriteMode::force;
-      continue;
-    }
-    if (arg == "--no-clobber") {
-      mode = OverwriteMode::no_clobber;
-      continue;
-    }
-    if (arg == "--interactive") {
+    } else if (meta.short_name == "-i") {
       mode = OverwriteMode::interactive_always;
-      continue;
-    }
-    if (arg.rfind("--interactive=", 0) == 0) {
-      auto when = arg.substr(std::string("--interactive=").size());
-      if (when == "never") {
+    } else if (meta.short_name == "-n" || meta.long_name == "--no-clobber") {
+      mode = OverwriteMode::no_clobber;
+    } else if (meta.long_name == "--interactive") {
+      auto value = std::get_if<std::string>(&occurrence.value);
+      const std::string when = value ? *value : std::string{};
+      if (when.empty() || when == "always") {
+        mode = OverwriteMode::interactive_always;
+      } else if (when == "never") {
         mode = OverwriteMode::force;
       } else if (when == "once") {
         mode = OverwriteMode::interactive_once;
-      } else if (when == "always") {
-        mode = OverwriteMode::interactive_always;
       } else {
         return std::unexpected("invalid argument '" + when +
                                "' for '--interactive'");
-      }
-      continue;
-    }
-
-    if (arg.size() < 2 || arg[0] != '-' || arg[1] == '-') continue;
-    for (size_t j = 1; j < arg.size(); ++j) {
-      switch (arg[j]) {
-        case 'f':
-          mode = OverwriteMode::force;
-          break;
-        case 'i':
-          mode = OverwriteMode::interactive_always;
-          break;
-        case 'I':
-          mode = OverwriteMode::interactive_once;
-          break;
-        case 'n':
-          mode = OverwriteMode::no_clobber;
-          break;
-        default:
-          break;
       }
     }
   }
@@ -245,19 +230,35 @@ auto parse_arguments(const CommandContext<MV_OPTIONS.size()>& ctx)
   }
 
   // Parse --update[=UPDATE] mode
-  if (ctx.get<bool>("-u", false)) {
-    move_ctx.update_mode = UpdateMode::older;
-  } else if (ctx.has("--update")) {
-    auto update_opt = ctx.get<std::string>("--update", "");
-    if (update_opt == "all") {
-      move_ctx.update_mode = UpdateMode::all;
-    } else if (update_opt == "none") {
-      move_ctx.update_mode = UpdateMode::none;
-    } else if (update_opt == "older" || update_opt.empty()) {
+  // [GNU] Explicit --update=VALUE forms are last-wins among themselves;
+  // -u and a bare --update are weak: they select 'older' only when no
+  // explicit --update=VALUE appears anywhere on the command line
+  // (coreutils 9.4 measured; #1326).  A bare --update is indistinguishable
+  // from --update= in the parser (both store ""), so "" stays 'older'
+  // here; GNU rejects --update= as ambiguous — a documented gap.
+  {
+    std::optional<std::string> explicit_update;
+    bool weak_older = ctx.get<bool>("-u", false);
+    for (const auto& occ : ctx.string_occurrences({"--update"})) {
+      if (!occ.value.empty()) {
+        explicit_update = occ.value;
+      } else {
+        weak_older = true;
+      }
+    }
+    if (explicit_update.has_value()) {
+      if (*explicit_update == "all") {
+        move_ctx.update_mode = UpdateMode::all;
+      } else if (*explicit_update == "none") {
+        move_ctx.update_mode = UpdateMode::none;
+      } else if (*explicit_update == "older") {
+        move_ctx.update_mode = UpdateMode::older;
+      } else {
+        return std::unexpected("invalid argument '" + *explicit_update +
+                               "' for '--update'");
+      }
+    } else if (weak_older) {
       move_ctx.update_mode = UpdateMode::older;
-    } else {
-      return std::unexpected("invalid argument '" + update_opt +
-                             "' for '--update'");
     }
   }
 
@@ -404,6 +405,106 @@ auto backup_existing_destination(const std::wstring& dest_path,
   return true;
 }
 
+namespace mv_win32_compat {
+// Same layout as REPARSE_DATA_BUFFER, spelled out so the mount-point fields
+// stay readable (mirrors cp.cpp's reader).
+struct ReparseDataBuffer {
+  DWORD ReparseTag;
+  WORD ReparseDataLength;
+  WORD Reserved;
+  union {
+    struct {
+      WORD SubstituteNameOffset;
+      WORD SubstituteNameLength;
+      WORD PrintNameOffset;
+      WORD PrintNameLength;
+      DWORD Flags;
+      wchar_t PathBuffer[1];
+    } SymbolicLinkReparseBuffer;
+    struct {
+      WORD SubstituteNameOffset;
+      WORD SubstituteNameLength;
+      WORD PrintNameOffset;
+      WORD PrintNameLength;
+      wchar_t PathBuffer[1];
+    } MountPointReparseBuffer;
+  };
+};
+}  // namespace mv_win32_compat
+
+auto strip_nt_prefix(std::wstring_view path) -> std::wstring {
+  for (std::wstring_view prefix :
+       {std::wstring_view(L"\\??\\"), std::wstring_view(L"\\\\?\\")}) {
+    if (path.starts_with(prefix)) {
+      return std::wstring(path.substr(prefix.size()));
+    }
+  }
+  return std::wstring(path);
+}
+
+// [GNU] #1365: read a reparse point's link text verbatim — the exact string
+// stored in the reparse point — NOT the resolved final path.  Symlinks are
+// decoded by std::filesystem::read_symlink; junctions (mount points) are
+// not, so fall back to FSCTL_GET_REPARSE_POINT like cp's
+// read_mount_point_target.
+auto read_link_text_verbatim(const std::wstring& wpath)
+    -> std::optional<std::wstring> {
+  std::error_code ec;
+  const auto target =
+      std::filesystem::read_symlink(std::filesystem::path(wpath), ec);
+  if (!ec) {
+    return target.wstring();
+  }
+  UniqueHandle h(CreateFileW(
+      wpath.c_str(), FILE_READ_ATTRIBUTES,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+      OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+      nullptr));
+  if (!h) return std::nullopt;
+
+  std::array<std::byte, MAXIMUM_REPARSE_DATA_BUFFER_SIZE> buffer{};
+  DWORD returned = 0;
+  if (!DeviceIoControl(h.get(), FSCTL_GET_REPARSE_POINT, nullptr, 0,
+                        buffer.data(), static_cast<DWORD>(buffer.size()),
+                        &returned, nullptr)) {
+    return std::nullopt;
+  }
+  const auto* reparse =
+      reinterpret_cast<const mv_win32_compat::ReparseDataBuffer*>(
+          buffer.data());
+  const wchar_t* path_buffer = nullptr;
+  WORD print_offset = 0;
+  WORD print_length = 0;
+  WORD substitute_offset = 0;
+  WORD substitute_length = 0;
+  if (reparse->ReparseTag == IO_REPARSE_TAG_SYMLINK) {
+    const auto& sl = reparse->SymbolicLinkReparseBuffer;
+    path_buffer = sl.PathBuffer;
+    print_offset = sl.PrintNameOffset;
+    print_length = sl.PrintNameLength;
+    substitute_offset = sl.SubstituteNameOffset;
+    substitute_length = sl.SubstituteNameLength;
+  } else if (reparse->ReparseTag == IO_REPARSE_TAG_MOUNT_POINT) {
+    const auto& mp = reparse->MountPointReparseBuffer;
+    path_buffer = mp.PathBuffer;
+    print_offset = mp.PrintNameOffset;
+    print_length = mp.PrintNameLength;
+    substitute_offset = mp.SubstituteNameOffset;
+    substitute_length = mp.SubstituteNameLength;
+  } else {
+    return std::nullopt;
+  }
+  std::wstring_view print_name(path_buffer + print_offset / sizeof(wchar_t),
+                               print_length / sizeof(wchar_t));
+  if (print_name.empty()) {
+    std::wstring_view substitute_name(
+        path_buffer + substitute_offset / sizeof(wchar_t),
+        substitute_length / sizeof(wchar_t));
+    return strip_nt_prefix(substitute_name);
+  }
+  return strip_nt_prefix(print_name);
+}
+
 auto move_single_path(const std::string& src_path, const std::string& dest_path,
                       const CommandContext<MV_OPTIONS.size()>& ctx,
                       OverwriteMode overwrite_mode, UpdateMode update_mode)
@@ -426,7 +527,7 @@ auto move_single_path(const std::string& src_path, const std::string& dest_path,
     return true;
   }
 
-  // [GNU] With no -f/-i/-n/-I, an unwritable destination is confirmed once
+  // [GNU] With no -f/-i/-n, an unwritable destination is confirmed once
   // when stdin is a terminal; non-tty stdin proceeds without prompting.
   if (overwrite_mode == OverwriteMode::default_mode && dest_exists &&
       _isatty(_fileno(stdin))) {
@@ -488,27 +589,40 @@ auto move_single_path(const std::string& src_path, const std::string& dest_path,
     // [GNU] Check if source is a reparse point (symlink/junction)
     // and copy it as a symlink instead of following it
     if ((src_attr & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
-      // Get the symlink target
-      wchar_t target[4096] = {};
-      if (!GetFinalPathNameByHandleW(
-              CreateFileW(wsrc_path.c_str(), 0,
-                          FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-                          OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr),
-              target, 4096, 0)) {
-        return std::unexpected("cannot read symlink target");
+      // [GNU] #1365: recreate the link at the destination with its text
+      // preserved verbatim.  The old code read the RESOLVED final path via
+      // GetFinalPathNameByHandleW (an absolute \\?\ path, not the link
+      // text): creation with it failed, and the silent CopyFileW fallback
+      // degraded the move into a regular-file copy of the target's
+      // contents while still reporting success.
+      const auto link_text = read_link_text_verbatim(wsrc_path);
+      if (!link_text) {
+        return std::unexpected("cannot read symlink target of '" + src_path +
+                               "'");
       }
-      // Create symlink at destination
-      bool is_dir = (src_attr & FILE_ATTRIBUTE_DIRECTORY) != 0;
-      if (!CreateSymbolicLinkW(wdest_path.c_str(), target, is_dir ? 1 : 0)) {
-        // Fallback: copy the file as-is (will follow symlink)
-        if (!CopyFileW(wsrc_path.c_str(), wdest_path.c_str(), FALSE)) {
-          return std::unexpected("cannot copy '" + src_path + "' to '" +
-                                 dest_path + "'");
-        }
+      const bool is_dir = (src_attr & FILE_ATTRIBUTE_DIRECTORY) != 0;
+      DWORD flags = SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE;
+      if (is_dir) flags |= SYMBOLIC_LINK_FLAG_DIRECTORY;
+      if (!CreateSymbolicLinkW(
+              wdest_path.c_str(),
+              win32_normalize_symlink_target(*link_text).c_str(), flags)) {
+        // Never degrade into a content copy: a failed recreation is an
+        // error, like GNU mv failing to recreate the link.
+        return std::unexpected("cannot create symbolic link '" + dest_path +
+                               "': " +
+                               win32_posix_error_text(GetLastError()));
       }
-      // If copy/symlink succeeds, delete the source
-      if (!DeleteFileW(wsrc_path.c_str())) {
-        return std::unexpected("cannot delete source file '" + src_path + "'");
+      // Remove the source link itself.  A directory link needs
+      // RemoveDirectoryW; DeleteFileW alone cannot remove it, which used
+      // to leave the source behind after a "successful" move.
+      const bool removed =
+          is_dir ? (RemoveDirectoryW(wsrc_path.c_str()) ||
+                    DeleteFileW(wsrc_path.c_str()))
+                 : (DeleteFileW(wsrc_path.c_str()) ||
+                    RemoveDirectoryW(wsrc_path.c_str()));
+      if (!removed) {
+        return std::unexpected("cannot remove source link '" + src_path +
+                               "'");
       }
     } else {
       // [GNU] MoveFileExW cannot rename across volumes (and some tools hold
@@ -727,7 +841,7 @@ auto process_command(const CommandContext<N>& ctx) -> cp::Result<bool> {
                                  "': Not a directory");
         }
 
-        // -I / --interactive=once: prompt once before removing more than three
+        // --interactive=once: prompt once before removing more than three
         // files, or when moving recursively
         bool recursive =
             ctx.get<bool>("-r", false) || ctx.get<bool>("--recursive", false);

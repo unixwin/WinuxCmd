@@ -112,3 +112,52 @@ TEST(less, less_stdin_bytes_issue1212) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ(r.stdout_text, expected);
 }
+
+// #1385 (enclave rule): with a shell root configured, a file operand spelled
+// from the root (`less /ra.txt`) reads through the payload (shell) root,
+// never on the current drive root; the drive spelling of the same file still
+// resolves through the drive fold, and relative operands are unchanged.
+TEST(less, less_file_operand_uses_shell_root_issue1385) {
+  TempDir payload;
+  payload.write("ra.txt", "payload-content\n");
+  TempDir elsewhere;
+
+  Pipeline root_spelling;
+  root_spelling.set_cwd(elsewhere.wpath());
+  root_spelling.set_env(L"WINUXSH_ROOT", payload.wpath());
+  root_spelling.add(L"less.exe", {L"/ra.txt"});
+  auto root_result = root_spelling.run();
+
+  EXPECT_EQ(root_result.exit_code, 0);
+  EXPECT_EQ_TEXT(root_result.stdout_text, "payload-content\n");
+
+  // The drive spelling of the same file ("/c/Users/.../ra.txt") must keep
+  // resolving through the drive fold onto the very same bytes.
+  const std::wstring generic = (payload.path / L"ra.txt").generic_wstring();
+  std::wstring drive_spelled_arg = L"/";
+  drive_spelled_arg.push_back(
+      static_cast<wchar_t>(std::tolower(generic.front())));
+  drive_spelled_arg += generic.substr(2);
+
+  Pipeline drive_spelled;
+  drive_spelled.set_cwd(elsewhere.wpath());
+  drive_spelled.set_env(L"WINUXSH_ROOT", payload.wpath());
+  drive_spelled.add(L"less.exe", {drive_spelled_arg});
+  auto drive_result = drive_spelled.run();
+
+  EXPECT_EQ(drive_result.exit_code, 0);
+  EXPECT_EQ_TEXT(drive_result.stdout_text, "payload-content\n");
+}
+
+TEST(less, less_relative_operand_unchanged_issue1385) {
+  TempDir tmp;
+  tmp.write("nearby.txt", "relative-content\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"less.exe", {L"nearby.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "relative-content\n");
+}

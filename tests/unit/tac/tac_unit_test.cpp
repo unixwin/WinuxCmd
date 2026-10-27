@@ -97,12 +97,44 @@ TEST(tac, tac_regex_separator) {
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
-  p.add(L"tac.exe", {L"-r", L"-s", L"[0-9]+", L"digits.txt"});
+  p.add(L"tac.exe", {L"-r", L"-s", L"[0-9]", L"digits.txt"});
 
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "cc33bb22aa11");
+  // [GNU] single-digit separators; each record keeps its separator.
+  EXPECT_EQ_TEXT(r.stdout_text, "3cc32bb21aa1");
+}
+
+TEST(tac, tac_issue1361_bare_pipe_is_literal_in_bre_separator) {
+  // [GNU] In a BRE, '|' is an ordinary character: the separator is the
+  // literal string "x|yy", which never occurs, so nothing is split.
+  TempDir tmp;
+  tmp.write("letters.txt", "axbyyc");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"tac.exe", {L"-r", L"-s", L"x|yy", L"letters.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "axbyyc");
+}
+
+TEST(tac, tac_issue1361_escaped_pipe_is_alternation_in_bre_separator) {
+  // [GNU] In a BRE, `\|` is alternation: separators are "x" and "yy".
+  TempDir tmp;
+  tmp.write("letters.txt", "axbyyc");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"tac.exe", {L"-r", L"-s", L"x\\|yy", L"letters.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "cbyyax");
 }
 
 TEST(tac, tac_stdin) {
@@ -194,4 +226,24 @@ TEST(tac, tac_file_with_trailing_separator_reports_not_directory) {
       r.stderr_text.find(
           "tac: cannot open 'file.txt/' for reading: Not a directory") !=
       std::string::npos);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1368: tac.c's full_write() failure reaches write_error()
+// (system.h:960): one "tac: write error: <strerror>" diagnostic, exit 1.
+// With stdout closed (`>&-`) the first record write fails with
+// ERROR_INVALID_HANDLE — the Win32 image of EBADF — and tac must stop
+// printing instead of exiting 0 silently.
+// ---------------------------------------------------------------------------
+TEST(tac, issue1368_closed_stdout_reports_write_error) {
+  TempDir tmp;
+  tmp.write("input.txt", "line1\nline2\nline3\n");
+  const std::wstring operand = (tmp.path / L"input.txt").wstring();
+
+  auto r =
+      run_command_closed_stdout(ProjectPaths::exe(L"tac.exe"), {operand});
+
+  EXPECT_EXIT_CODE(r, 1);
+  EXPECT_CONTAINS(r.stderr_text, "tac: write error: ");
+  EXPECT_CONTAINS(r.stderr_text, "Bad file descriptor");
 }

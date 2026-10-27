@@ -50,8 +50,14 @@ REGISTER_COMMAND(dos2unix,
   auto process_file = [&](const std::string& filename,
                           bool modify_in_place) -> bool {
     std::wstring wfilename = utf8_to_wstring(filename);
-    std::ifstream input(native_path::normalize_api_operand_w(wfilename),
-                        std::ios::binary);
+    // #1385: fold the operand once and open BOTH sides through the folded
+    // spelling. The read side already went through the shared operand
+    // boundary; the write side used to take the raw operand, so a
+    // shell-namespace spelling was read in the payload (shell) root but
+    // rewritten on the current drive root.
+    const std::wstring api_path =
+        native_path::normalize_api_operand_w(wfilename);
+    std::ifstream input(api_path, std::ios::binary);
     if (!input) {
       safeErrorPrintLn("dos2unix: cannot open '" + filename +
                        "': No such file or directory");
@@ -70,8 +76,8 @@ REGISTER_COMMAND(dos2unix,
     }
 
     if (modify_in_place) {
-      // Write back to file
-      std::ofstream output(wfilename, std::ios::binary);
+      // Write back to file (the same folded operand the read side opened)
+      std::ofstream output(api_path, std::ios::binary);
       if (!output) {
         safeErrorPrintLn("dos2unix: cannot write to '" + filename + "'");
         return false;

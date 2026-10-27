@@ -24,14 +24,8 @@ auto constexpr TIMEOUT_OPTIONS = std::array{
            STRING_TYPE),
     OPTION("-k", "--kill-after",
            "also send a KILL signal if COMMAND still running", STRING_TYPE),
-    OPTION("-f", "--foreground",
-           "when not running timeout directly from a shell prompt", BOOL_TYPE),
-    OPTION("-p", "--preserve-status", "exit with the same status as COMMAND",
-           BOOL_TYPE),
     OPTION("-v", "--verbose", "diagnose to stderr any signal sent on timeout",
-           BOOL_TYPE),
-    // [GNU]
-    OPTION("-l", "", "list supported signals")};
+           BOOL_TYPE)};
 
 namespace timeout_pipeline {
 namespace cp = core::pipeline;
@@ -40,32 +34,87 @@ struct Config {
   int64_t duration_ms = 0;
   int64_t kill_after_ms = 0;
   int signal = 15;  // SIGTERM
-  bool foreground = false;
-  bool preserve_status = false;
   bool verbose = false;
   std::string command;
   SmallVector<std::string, 64> args;
 };
 
 auto timeout_signal_name(int signal) -> std::string {
+  // [GNU] Linux signal numbering (issue #1384): the full table, with
+  // real-time signals spelled RTMIN / RTMIN+n / RTMAX.
   switch (signal) {
     case 0:
-      return "0";
+      return "EXIT";
     case 1:
       return "HUP";
     case 2:
       return "INT";
     case 3:
       return "QUIT";
+    case 4:
+      return "ILL";
+    case 5:
+      return "TRAP";
     case 6:
       return "ABRT";
+    case 7:
+      return "BUS";
+    case 8:
+      return "FPE";
     case 9:
       return "KILL";
+    case 10:
+      return "USR1";
+    case 11:
+      return "SEGV";
+    case 12:
+      return "USR2";
+    case 13:
+      return "PIPE";
     case 14:
       return "ALRM";
     case 15:
       return "TERM";
+    case 16:
+      return "STKFLT";
+    case 17:
+      return "CHLD";
+    case 18:
+      return "CONT";
+    case 19:
+      return "STOP";
+    case 20:
+      return "TSTP";
+    case 21:
+      return "TTIN";
+    case 22:
+      return "TTOU";
+    case 23:
+      return "URG";
+    case 24:
+      return "XCPU";
+    case 25:
+      return "XFSZ";
+    case 26:
+      return "VTALRM";
+    case 27:
+      return "PROF";
+    case 28:
+      return "WINCH";
+    case 29:
+      return "IO";
+    case 30:
+      return "PWR";
+    case 31:
+      return "SYS";
+    case 34:
+      return "RTMIN";
+    case 64:
+      return "RTMAX";
     default:
+      if (signal > 34 && signal < 64) {
+        return "RTMIN+" + std::to_string(signal - 34);
+      }
       return std::to_string(signal);
   }
 }
@@ -73,11 +122,16 @@ auto timeout_signal_name(int signal) -> std::string {
 auto parse_signal(const std::string& signal) -> cp::Result<int> {
   if (signal.empty()) return std::unexpected("'': invalid signal");
 
+  // [GNU] Numeric specs are valid only for 0..31 and 34..64; 32/33 are
+  // reserved by the C library and anything else is out of range.
   int value = 0;
   auto [ptr, ec] =
       std::from_chars(signal.data(), signal.data() + signal.size(), value);
-  if (ec == std::errc() && ptr == signal.data() + signal.size() && value >= 0) {
-    return value;
+  if (ec == std::errc() && ptr == signal.data() + signal.size()) {
+    if ((value >= 0 && value <= 31) || (value >= 34 && value <= 64)) {
+      return value;
+    }
+    return std::unexpected("'" + signal + "': invalid signal");
   }
 
   std::string name;
@@ -90,12 +144,37 @@ auto parse_signal(const std::string& signal) -> cp::Result<int> {
   }
 
   static const std::unordered_map<std::string, int> signals = {
-      {"HUP", 1},  {"INT", 2},   {"QUIT", 3}, {"ABRT", 6},
-      {"KILL", 9}, {"ALRM", 14}, {"TERM", 15}};
+      {"EXIT", 0},   {"HUP", 1},    {"INT", 2},    {"QUIT", 3},
+      {"ILL", 4},    {"TRAP", 5},   {"ABRT", 6},   {"IOT", 6},
+      {"BUS", 7},    {"FPE", 8},    {"KILL", 9},   {"USR1", 10},
+      {"SEGV", 11},  {"USR2", 12},  {"PIPE", 13},  {"ALRM", 14},
+      {"TERM", 15},  {"STKFLT", 16}, {"CHLD", 17}, {"CONT", 18},
+      {"STOP", 19},  {"TSTP", 20},  {"TTIN", 21},  {"TTOU", 22},
+      {"URG", 23},   {"XCPU", 24},  {"XFSZ", 25},  {"VTALRM", 26},
+      {"PROF", 27},  {"WINCH", 28}, {"IO", 29},    {"POLL", 29},
+      {"LOST", 29},  {"PWR", 30},   {"SYS", 31},   {"UNUSED", 31}};
 
   if (auto it = signals.find(name); it != signals.end()) {
     return it->second;
   }
+
+  // Real-time forms: RTMIN, RTMIN+n (35..63), RTMAX, RTMAX-n (35..63).
+  auto parse_rt_offset = [&name](std::string_view prefix, char sign)
+      -> std::optional<int> {
+    if (!name.starts_with(prefix)) return std::nullopt;
+    std::string_view rest = std::string_view(name).substr(prefix.size());
+    if (rest.empty() || rest[0] != sign) return std::nullopt;
+    int n = 0;
+    auto [p, e] = std::from_chars(rest.data() + 1, rest.data() + rest.size(), n);
+    if (e != std::errc() || p != rest.data() + rest.size() || n < 0 || n > 29) {
+      return std::nullopt;
+    }
+    return n;
+  };
+  if (name == "RTMIN") return 34;
+  if (name == "RTMAX") return 64;
+  if (auto n = parse_rt_offset("RTMIN", '+')) return 34 + *n;
+  if (auto n = parse_rt_offset("RTMAX", '-')) return 64 - *n;
 
   return std::unexpected("'" + signal + "': invalid signal");
 }
@@ -175,10 +254,6 @@ auto build_config(const CommandContext<TIMEOUT_OPTIONS.size()>& ctx)
     cfg.kill_after_ms = *duration_result;
   }
 
-  cfg.foreground =
-      ctx.get<bool>("-f", false) || ctx.get<bool>("--foreground", false);
-  cfg.preserve_status =
-      ctx.get<bool>("-p", false) || ctx.get<bool>("--preserve-status", false);
   cfg.verbose = ctx.get<bool>("-v", false) || ctx.get<bool>("--verbose", false);
 
   // Get duration and command from positionals
@@ -291,8 +366,11 @@ auto run(const Config& cfg) -> int {
 
     if (wait_result == WAIT_TIMEOUT) {
       // Process timed out, kill it
+      // [GNU] The status of a timeout kill is signal-dependent: 124 for
+      // the ordinary signal path, but a command killed by SIGKILL reports
+      // 128+SIGKILL = 137 (the shell convention) (#1350).
       int timeout_status =
-          cfg.preserve_status ? std::min(255, 128 + cfg.signal) : 124;
+          cfg.signal == 9 ? 128 + 9 : 124;
       bool sent_initial_termination = false;
       if (cfg.verbose) {
         safeErrorPrintLn("timeout: sending signal " +
@@ -305,8 +383,6 @@ auto run(const Config& cfg) -> int {
       // is present defer termination until the KILL phase so the exit status
       // tracks the forced kill path.
       if (cfg.signal != 0 || cfg.kill_after_ms <= 0) {
-        // On Windows we do not have GNU signal delivery semantics, but
-        // --foreground must not disable timeout enforcement.
         TerminateProcess(pi.hProcess, timeout_status);
         sent_initial_termination = true;
       }
@@ -323,12 +399,6 @@ auto run(const Config& cfg) -> int {
           }
           timeout_status = 128 + 9;
           TerminateProcess(pi.hProcess, timeout_status);
-        } else if (kill_result == WAIT_OBJECT_0 && !sent_initial_termination &&
-                   cfg.signal == 0 && cfg.preserve_status) {
-          DWORD exit_code = 0;
-          if (GetExitCodeProcess(pi.hProcess, &exit_code)) {
-            timeout_status = static_cast<int>(exit_code);
-          }
         }
       }
 
@@ -379,19 +449,6 @@ REGISTER_COMMAND(
     "  timeout -k 10s 30s command",
     "kill(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", TIMEOUT_OPTIONS) {
   using namespace timeout_pipeline;
-
-  // -l: list supported signals
-  if (ctx.get<bool>("-l", false)) {
-    safePrintLn("  0 (reserved)");
-    safePrintLn("  1 HUP");
-    safePrintLn("  2 INT");
-    safePrintLn("  3 QUIT");
-    safePrintLn("  6 ABRT");
-    safePrintLn("  9 KILL");
-    safePrintLn(" 14 ALRM");
-    safePrintLn(" 15 TERM");
-    return 0;
-  }
 
   auto cfg_result = build_config(ctx);
   if (!cfg_result) {

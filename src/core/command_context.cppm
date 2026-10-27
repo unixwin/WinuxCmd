@@ -9,6 +9,25 @@ export auto option_policy_for_command(std::string_view command)
   policy.allow_unknown_short_options_as_positionals =
       command == "printf" || command == "expr" || command == "test" ||
       command == "[" || command == "stty" || command == "kill";
+  if (command == "uniq" || command == "diff" || command == "split") {
+    // #1306: GNU getopt gives these commands' optional short options no
+    // attached value inside a cluster: -D/-c/-d are flags there and the
+    // rest of the cluster keeps parsing as further short options
+    // (uniq -Dc, diff -cu, split -dl). Digits still reach the -NUM
+    // rule (diff -c5, split -d5, uniq -D5), and --opt=value is
+    // untouched. Commands that genuinely take a short attached value
+    // (sed -i.bak, paste -d,) keep the default.
+    policy.allow_optional_short_attached_values = false;
+  }
+  if (command == "env") {
+    // #1303: GNU env scans options only up to the first non-option
+    // token: an assignment or the command name ends option parsing, so
+    // `env FOO=bar -i cmd` treats -i as the command and
+    // `env echo --version` runs echo. Assignments are positionals to
+    // the parser, so stopping after the first positional is exactly
+    // this boundary (and it holds with or without POSIXLY_CORRECT).
+    policy.stop_options_after_positionals = 1;
+  }
   if (command == "timeout") {
     policy.stop_options_after_positionals = 2;
   }
@@ -34,6 +53,22 @@ export auto option_policy_for_command(std::string_view command)
     // processing stops at the first non-option argument (the wrapped
     // command), so `nohup prog -flag` runs prog with -flag instead of
     // reporting -flag as an invalid nohup option.
+    policy.stop_options_after_positionals = 1;
+  }
+  if (command == "env") {
+    // [GNU] coreutils env also parses with a leading-'+' getopt: option
+    // processing stops at the first non-option argument (an assignment
+    // or the wrapped command's name), so `env ./ls -l` runs ls with its
+    // own -l instead of reporting -l as an invalid env option, and a
+    // leading-dash token after an assignment is the command to run
+    // (#1353).
+    policy.stop_options_after_positionals = 1;
+  }
+  if (command == "nice") {
+    // [GNU] nice.c parses with a leading-'+' optstring ("+n:"): option
+    // processing stops at the first non-option argument (the wrapped
+    // command), so `nice -n 5 ls -l` runs ls with its own -l instead of
+    // reporting -l as an invalid nice option (#1408).
     policy.stop_options_after_positionals = 1;
   }
   if (command == "xargs") {
@@ -65,6 +100,19 @@ export auto option_policy_for_command(std::string_view command)
   if (command == "expr") {
     policy.allow_long_options = false;
   }
+  // #1304: POSIXLY_CORRECT stops getopt permutation at the first
+  // operand. glibc counts mere presence of the variable (unlike the
+  // dispatcher's is_posixly_correct(), which also requires a non-empty
+  // value). Commands whose argument grammar is not getopt-style keep
+  // permuting: find parses an expression off the raw args, test/[ and
+  // expr parse expressions, true/false never call getopt, and dd takes
+  // KEY=VALUE operands plus a usage scan that ignores operand order.
+  // (env needs no flag: its stop=1 above is the same boundary already.)
+  if (command != "find" && command != "test" && command != "[" &&
+      command != "expr" && command != "true" && command != "false" &&
+      command != "dd") {
+    policy.posixly_correct = std::getenv("POSIXLY_CORRECT") != nullptr;
+  }
   // [GNU] fmt's obsolete "-WIDTH" width is argv[1]-only; digit options in
   // other positions get fmt.c's own diagnostic.
   policy.obsolete_numeric_width_hint = command == "fmt";
@@ -76,6 +124,20 @@ export auto option_policy_for_command(std::string_view command)
   // raising "unrecognized option", and let unknown short options pass as
   // operands too ("true -x" must exit 0, not 1, WinuxCmd #1196).
   if (command == "true" || command == "false") {
+    policy.allow_long_options = false;
+    policy.allow_unknown_short_options_as_positionals = true;
+  }
+  // [GNU] find owns its whole argument language: every token after the
+  // starting points is a predicate judged by find's own parser, and an
+  // unknown one must be answered with find's "unknown predicate"
+  // diagnostic, never by the generic option parser ("unrecognized
+  // option '--zzz'" / "invalid option -- 'b'" for -bogus) or by operand
+  // handling ("'-D': No such file or directory").  find has no long
+  // options of its own (the only long name, --debug, is handled by
+  // find's expression parser as the -D alias), and its single-dash
+  // predicates are never clusters, so unknown dash tokens pass through
+  // as positionals for find itself to judge (#1380).
+  if (command == "find") {
     policy.allow_long_options = false;
     policy.allow_unknown_short_options_as_positionals = true;
   }

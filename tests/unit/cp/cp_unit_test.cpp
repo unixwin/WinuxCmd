@@ -1066,3 +1066,149 @@ TEST(cp, cp_same_file_mixed_dialects_reports_error) {
   EXPECT_TRUE(r.stderr_text.find("same file") != std::string::npos);
   EXPECT_EQ(tmp.read("f.txt"), "payload");
 }
+
+TEST(cp, cp_invented_dash_c_rejected_issue1355) {
+  TempDir tmp;
+  tmp.write("a.txt", "a\n");
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"-c", L"a.txt", L"b.txt"});
+  auto r = p.run();
+  EXPECT_EXIT_CODE(r, 1);
+  EXPECT_TRUE(r.stderr_text.find("invalid option -- 'c'") != std::string::npos);
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "b.txt"));
+}
+
+TEST(cp, cp_context_forms_still_legal_issue1355) {
+  TempDir tmp;
+  tmp.write("a.txt", "a\n");
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"--context", L"a.txt", L"b.txt"});
+  auto r = p.run();
+  EXPECT_EXIT_CODE(r, 0);
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "b.txt"));
+}
+TEST(cp, cp_interactive_1324_second_prompt_reads_own_line) {
+  TempDir tmp;
+  std::filesystem::create_directory(tmp.path / "dest");
+  tmp.write("src1", "NEW1");
+  tmp.write("src2", "NEW2");
+  tmp.write("dest/src1", "OLD1");
+  tmp.write("dest/src2", "OLD2");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("y\ny\n");
+  p.add(L"cp.exe", {L"-i", L"src1", L"src2", L"dest"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // The first answer's newline must not auto-answer the second prompt
+  // as "no" (#1324): both destinations are overwritten.
+  EXPECT_EQ(tmp.read("dest/src1"), "NEW1");
+  EXPECT_EQ(tmp.read("dest/src2"), "NEW2");
+}
+// [GNU] #1366: --parents grafts the source's full path under the target
+// directory; a drive-letter absolute source is anchored at its drive root,
+// not spliced in as a literal "Z:" relative component.
+TEST(cp, issue1366_parents_drive_letter_absolute_source) {
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "sub");
+  std::filesystem::create_directory(tmp.path / "dest");
+  tmp.write("sub/src.txt", "src");
+
+  std::wstring abs_src = (tmp.path / "sub" / "src.txt").wstring();
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"--parents", L"-t", L"dest", abs_src});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // Grafted path = dest + (absolute source minus its "X:" drive anchor).
+  std::string graft_rel = "dest\\" + tmp.path.relative_path().string() +
+                          "\\sub\\src.txt";
+  EXPECT_EQ(tmp.read(graft_rel), "src");
+  // The broken form would have created a literal drive-named directory.
+  std::string drive = tmp.path.root_name().string();
+  EXPECT_FALSE(
+      std::filesystem::exists(tmp.path / "dest" / drive / "sub" / "src.txt"));
+}
+
+// [GNU] #1369: --reflink=always is clone-or-fail: when the volume cannot
+// clone, the command fails AND leaves no destination behind.
+TEST(cp, issue1369_reflink_always_failure_leaves_no_destination) {
+  TempDir tmp;
+  tmp.write("src.txt", "payload");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"--reflink=always", L"src.txt", L"dest.txt"});
+  auto r = p.run();
+
+  if (r.exit_code == 0) {
+    // The volume cloned successfully; contents must match.
+    EXPECT_EQ(tmp.read("dest.txt"), "payload");
+  } else {
+    EXPECT_TRUE(r.stderr_text.find("failed to clone 'dest.txt'") !=
+                std::string::npos);
+    std::error_code ec;
+    (void)std::filesystem::symlink_status(tmp.path / "dest.txt", ec);
+    EXPECT_TRUE(ec);  // no half-written destination remains
+  }
+}
+
+// #1303: --ver is --suffix's value, not an ambiguous abbreviation:
+// the copy succeeds instead of reporting ambiguity.
+TEST(cp, cp_suffix_value_that_looks_like_abbreviation_is_not_expanded) {
+  TempDir tmp;
+  tmp.write("a.txt", "payload");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"--suffix", L"--ver", L"a.txt", L"b.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(tmp.read("b.txt"), "payload");
+}
+
+
+TEST(cp, cp_invented_progress_bar_rejected_issue1411) {
+  // [GNU] cp has no -g/--progress-bar (#1411).
+  TempDir tmp;
+  tmp.write("a.txt", "a\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"-g", L"a.txt", L"b.txt"});
+  auto r = p.run();
+
+  EXPECT_EXIT_CODE(r, 1);
+  EXPECT_TRUE(r.stderr_text.find("invalid option -- 'g'") != std::string::npos);
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "b.txt"));
+
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.add(L"cp.exe", {L"--progress-bar", L"a.txt", L"c.txt"});
+  auto r2 = p2.run();
+
+  EXPECT_EXIT_CODE(r2, 1);
+  EXPECT_TRUE(r2.stderr_text.find("unrecognized option '--progress-bar'") !=
+              std::string::npos);
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "c.txt"));
+}
+
+TEST(cp, cp_debug_still_legal_issue1411) {
+  TempDir tmp;
+  tmp.write("a.txt", "a\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"--debug", L"a.txt", L"b.txt"});
+  auto r = p.run();
+
+  EXPECT_EXIT_CODE(r, 0);
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "b.txt"));
+}

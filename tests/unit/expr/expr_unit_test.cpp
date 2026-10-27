@@ -225,3 +225,52 @@ TEST(expr, expr_version_after_operand_is_syntax_error_issue1215) {
   EXPECT_EXIT_CODE(r, 2);
   EXPECT_TRUE(r.stdout_text.empty());
 }
+
+TEST(expr, issue1349_or_returns_left_operand_when_nonzero) {
+  // [GNU] expr.c: `A | B` yields A itself when A is neither empty nor 0.
+  Pipeline p;
+  p.add(L"expr.exe", {L"2", L"|", L"0"});
+  auto r = p.run();
+  EXPECT_EXIT_CODE(r, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "2\n");
+
+  Pipeline p2;
+  p2.add(L"expr.exe", {L"5", L"|", L"3"});
+  auto r2 = p2.run();
+  EXPECT_EXIT_CODE(r2, 0);
+  EXPECT_EQ_TEXT(r2.stdout_text, "5\n");
+
+  Pipeline p3;
+  p3.add(L"expr.exe", {L"foo", L"|", L"0"});
+  auto r3 = p3.run();
+  EXPECT_EXIT_CODE(r3, 0);
+  EXPECT_EQ_TEXT(r3.stdout_text, "foo\n");
+}
+
+TEST(expr, issue1349_or_falls_back_to_right_operand_when_left_is_null) {
+  Pipeline p;
+  p.add(L"expr.exe", {L"0", L"|", L"5"});
+  auto r = p.run();
+  EXPECT_EXIT_CODE(r, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "5\n");
+
+  Pipeline p2;
+  p2.add(L"expr.exe", {L"0", L"|", L"0"});
+  auto r2 = p2.run();
+  EXPECT_EXIT_CODE(r2, 1);
+  EXPECT_EQ_TEXT(r2.stdout_text, "0\n");
+}
+
+TEST(expr, issue1349_and_keeps_left_operand_semantics) {
+  Pipeline p;
+  p.add(L"expr.exe", {L"3", L"&", L"4"});
+  auto r = p.run();
+  EXPECT_EXIT_CODE(r, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "3\n");
+
+  Pipeline p2;
+  p2.add(L"expr.exe", {L"0", L"&", L"4"});
+  auto r2 = p2.run();
+  EXPECT_EXIT_CODE(r2, 1);
+  EXPECT_EQ_TEXT(r2.stdout_text, "0\n");
+}
