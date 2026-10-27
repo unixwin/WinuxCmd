@@ -442,11 +442,17 @@ TEST(seq, issue1356_bundled_short_options_expand_per_getopt) {
 }
 
 TEST(seq, issue1356_bundled_format_member_consumes_token_rest) {
+  // [GNU] -w and -f are mutually exclusive, so a bundle where -f
+  // consumed the token rest fails with the format/equal-width conflict
+  // diagnostic — which is itself proof the cluster walk worked
+  // (an unconsumed rest would read as an invalid option instead).
   Pipeline p;
   p.add(L"seq.exe", {L"-wf%03g", L"2"});
   auto r = p.run();
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "001\n002\n");
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("format string may not be specified") !=
+              std::string::npos);
 }
 
 TEST(seq, issue1356_argument_member_value_is_not_rewalked) {
@@ -465,6 +471,6 @@ TEST(seq, issue1356_unknown_bundled_member_is_rejected) {
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_TRUE(r.stdout_text.empty());
   EXPECT_EQ_TEXT(r.stderr_text,
-                 "seq: invalid option '-z'\n"
+                 "seq: invalid option -- 'z'\n"
                  "Try 'seq --help' for more information.\n");
 }
