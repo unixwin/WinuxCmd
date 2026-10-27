@@ -201,6 +201,20 @@ auto append_path(std::string base, std::string_view tail) -> std::string {
 
 auto windows_to_unix(std::string path, bool proc_cygdrive) -> std::string {
   path = remove_extended_prefix(std::move(path));
+
+  // #1385 (display side): with a shell root configured, the canonical
+  // spelling of a native path under a shell mount is its POSIX mount name,
+  // so `cygpath -u <payload-root>\sub` prints /sub instead of the /z/...
+  // drive spelling the raw drive fold below would emit — the inverse of the
+  // #1364 `-w` resolution. The /home alias is declined: cygpath mirrors the
+  // on-disk layout, so C:\Users\... keeps its drive spelling. Standalone
+  // (no shell root) the accessor declines and the drive-spelling output is
+  // unchanged.
+  if (auto display = native_path::shell_tree_display(path,
+                                                      /*include_home=*/false)) {
+    return *display;
+  }
+
   path = replace_char(std::move(path), '\\', '/');
 
   if (has_windows_drive(path)) {

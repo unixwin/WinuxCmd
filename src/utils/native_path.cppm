@@ -294,7 +294,10 @@ auto shell_tree_to_native_w(std::wstring_view normalized)
 // Re-express a native path back in the shell namespace: the canonical
 // spelling of a path under a shell mount is its POSIX mount name. Returns
 // nullopt when the path is not under any mount (native paths stay native).
-auto shell_tree_display_w(std::wstring_view native)
+// include_home=false declines the /home alias: mount displays that must
+// mirror on-disk layout (cygpath -u) never re-spell C:\Users as /home,
+// while path-of-least-surprise displays keep it.
+auto shell_tree_display_w(std::wstring_view native, bool include_home = true)
     -> std::optional<std::wstring> {
   const std::wstring value = normalize_separators(std::wstring(native));
 
@@ -328,7 +331,22 @@ auto shell_tree_display_w(std::wstring_view native)
     }
     if (auto mapped = under(tmp, L"/tmp")) return mapped;
   }
+  if (!include_home) return std::nullopt;
   return under(shell_ns::home_parent_w(), L"/home");
+}
+
+// #1385 display-side accessor for commands that print a native path's
+// shell-namespace spelling (cygpath -u): active only under a configured
+// shell root, so standalone WinuxCmd keeps its native-dialect output and
+// callers need no shell-root gate of their own. Narrow form over
+// shell_tree_display_w; nullopt when no mount names the path.
+export auto shell_tree_display(std::string_view native,
+                               bool include_home = true)
+    -> std::optional<std::string> {
+  if (shell_ns::root().empty()) return std::nullopt;
+  auto mapped = shell_tree_display_w(from_utf8(native), include_home);
+  if (!mapped) return std::nullopt;
+  return to_utf8(std::move(*mapped));
 }
 
 // Fold the Cygwin "/cygdrive/X" (#1145) and WSL interop "/mnt/X" (#1172)

@@ -320,13 +320,26 @@ auto command_operand_search_dirs(std::string_view operand, const Config& cfg)
   auto parent = operand_path.parent_path();
   std::string parent_text;
 
-  if (operand_path.is_absolute() || starts_with_tilde(operand_str) ||
-      starts_with_dot(operand_str)) {
-    parent_text = parent.empty() ? std::string(".") : path_to_utf8(parent);
+  // [POSIX] the parent of "/ra-tool" is "/": fs::path on Windows calls that
+  // drive-relative, so judge absoluteness on the leading separator before
+  // the relative branch can prefix it with "./" (#1385).
+  auto raw_parent = parent.empty() ? std::string(".") : path_to_utf8(parent);
+  const bool posix_absolute_parent =
+      !raw_parent.empty() && (raw_parent[0] == '/' || raw_parent[0] == '\\');
+
+  if (operand_path.is_absolute() || posix_absolute_parent ||
+      starts_with_tilde(operand_str) || starts_with_dot(operand_str)) {
+    parent_text = std::move(raw_parent);
   } else {
-    auto rel_parent = parent.empty() ? std::string(".") : path_to_utf8(parent);
-    parent_text = ensure_trailing_slash(".") + rel_parent;
+    parent_text = ensure_trailing_slash(".") + raw_parent;
   }
+
+  // #1385: the operand's directory part is an argv operand: fold it through
+  // the shared boundary before searching, so a shell-namespace parent (the
+  // bare "/", /usr/bin) is searched in the shell tree instead of being taken
+  // as text onto the current drive root. Tilde, dot and relative parents
+  // pass through the fold unchanged.
+  parent_text = native_path::normalize_api_operand(parent_text);
 
   if (auto dir = make_search_dir(parent_text, cfg); dir.has_value()) {
     dirs.push_back(std::move(*dir));
