@@ -104,7 +104,8 @@ jobs:
             -SpawnExe $exe.FullName `
             -TiersPath $tiers.FullName `
             -WorkDir (Join-Path $PWD "smoke-demo") `
-            -VersionLabel "v0.0.0-demo"
+            -VersionLabel "v0.0.0-demo" `
+            -SequenceApplets "cat,cp,rm"
 
       - name: Record artifact provenance
         shell: pwsh

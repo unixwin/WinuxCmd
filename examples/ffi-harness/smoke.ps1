@@ -14,7 +14,8 @@ param(
     [Parameter(Mandatory = $true)][string]$SpawnExe,
     [Parameter(Mandatory = $true)][string]$TiersPath,
     [Parameter(Mandatory = $true)][string]$WorkDir,
-    [string]$VersionLabel = "v0.0.0-smoke"
+    [string]$VersionLabel = "v0.0.0-smoke",
+    [string]$SequenceApplets = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -64,17 +65,42 @@ $r = Run-Harness "0" ($rootArg + @("cat", (Join-Path $data "payload.bin"))) "off
 $same = Same-AsPayload $r.Out
 Report "switch-off-spawns" ($r.Code -eq 0 -and $same -and $r.Err -match "reason=switch-off") $r.Err
 
-# 2. switch on -> ffi, bytes identical to the spawn run
+# 2. switch on -> ffi, bytes identical to the spawn run.
+# Route assertions must be strict: the harness prints route=ffi BEFORE the
+# call, so a call that faults in-process and is rescued by the spawn
+# fallback still contains "route=ffi" in stderr. An FFI case only passes
+# when the call really completed in-process: no ffi-call-failed line and
+# no DLL boundary diagnostic may appear.
 $r = Run-Harness "1" ($rootArg + @("cat", (Join-Path $data "payload.bin"))) "on"
 $same = Same-AsPayload $r.Out
-Report "switch-on-ffi-cat" ($r.Code -eq 0 -and $same -and $r.Err -match "route=ffi") $r.Err
+Report "switch-on-ffi-cat" ($r.Code -eq 0 -and $same -and $r.Err -match "route=ffi" -and $r.Err -notmatch "ffi-call-failed" -and $r.Err -notmatch "exception at DLL boundary") $r.Err
 
-# 3. cp + rm in-process
+# 3. cp + rm in-process (same strict route assertions)
 $r = Run-Harness "1" ($rootArg + @("cp", (Join-Path $data "payload.bin"), (Join-Path $data "copy.bin"))) "cp"
-$cpOk = $r.Code -eq 0 -and (Test-Path (Join-Path $data "copy.bin")) -and $r.Err -match "route=ffi"
+$cpOk = $r.Code -eq 0 -and (Test-Path (Join-Path $data "copy.bin")) -and $r.Err -match "route=ffi" -and $r.Err -notmatch "ffi-call-failed" -and $r.Err -notmatch "exception at DLL boundary"
 Report "ffi-cp" $cpOk $r.Err
 $r = Run-Harness "1" ($rootArg + @("rm", (Join-Path $data "copy.bin"))) "rm"
-Report "ffi-rm" ($r.Code -eq 0 -and -not (Test-Path (Join-Path $data "copy.bin")) -and $r.Err -match "route=ffi") $r.Err
+Report "ffi-rm" ($r.Code -eq 0 -and -not (Test-Path (Join-Path $data "copy.bin")) -and $r.Err -match "route=ffi" -and $r.Err -notmatch "ffi-call-failed" -and $r.Err -notmatch "exception at DLL boundary") $r.Err
+
+# 3b. same-process multi-call sequence. Every case above runs ONE call per
+# process; a fault that leaves the DLL's serialization lock held (the rm
+# wedge class) is invisible to them — each new process starts with a fresh
+# lock. The sequence runs 25 rotations (touch/cat/cp/rm/chmod by default)
+# in ONE process with no spawn fallback and fails if any call falls back,
+# returns an FFI-layer error, or if calls after an rm stop working.
+$seqDir = Join-Path $WorkDir "seqdata"
+New-Item -ItemType Directory -Force -Path $seqDir | Out-Null
+$env:NIU_WINUXCMD_FFI = "1"
+$seqArgs = @("sequence", $root, $seqDir, "25")
+if ($SequenceApplets) { $seqArgs += $SequenceApplets }
+$seqOut = Join-Path $WorkDir "seq.out"
+$seqErr = Join-Path $WorkDir "seq.err"
+$p = Start-Process -FilePath $HarnessExe -ArgumentList $seqArgs `
+    -RedirectStandardOutput $seqOut -RedirectStandardError $seqErr `
+    -Wait -PassThru -NoNewWindow
+$seqText = Get-Content $seqOut -Raw
+$seqErrText = Get-Content $seqErr -Raw
+Report "sequence-multi-call" ($p.ExitCode -eq 0 -and $seqText -match "SEQUENCE OK" -and $seqErrText -notmatch "exception at DLL boundary") "$seqText $seqErrText"
 
 # 4. tampered DLL -> hash-mismatch, spawn fallback still works
 Add-Content -Path (Join-Path $verDir "winuxcore.dll") -Value "x" -Encoding ascii -NoNewline
