@@ -93,6 +93,7 @@ export auto strip_trailing_separators(std::string_view path)
   return path;
 }
 
+export auto is_dos_device_name_w(std::wstring_view path) -> bool;
 export auto attributes_w(std::wstring_view path) -> DWORD;
 export auto attributes_are_directory(DWORD attrs) -> bool;
 export auto attributes_are_regular_file(DWORD attrs) -> bool;
@@ -661,6 +662,16 @@ auto to_extended_path_preserving(std::wstring_view native) -> std::wstring {
   return L"\\\\?\\" + absolute;
 }
 
+// True when the final component is a DOS device name but the path as a
+// whole is not the bare device: "C:\dir\NUL" names an ordinary on-disk
+// entry, while bare "NUL" names the device itself (#1297).
+auto has_device_name_leaf(std::wstring_view native) -> bool {
+  const std::wstring_view stripped = strip_trailing_separators(native);
+  const size_t sep = stripped.find_last_of(L'\\');
+  if (sep == std::wstring_view::npos) return false;
+  return is_dos_device_name_w(stripped.substr(sep + 1));
+}
+
 export auto to_extended_path(std::wstring_view path) -> std::wstring {
   if (path.size() >= 4 && path.compare(0, 4, L"\\\\?\\") == 0) {
     return std::wstring(path);
@@ -670,6 +681,17 @@ export auto to_extended_path(std::wstring_view path) -> std::wstring {
   // garbage UNC form "\\x" instead of "<drive>:\x"), so fold every separator
   // first; Win32 treats '/' and '\' interchangeably elsewhere (#1145).
   std::wstring native(normalize_separators(std::wstring(path)));
+
+  // GetFullPathNameW collapses any path whose final component is a DOS
+  // device name onto the device itself: "C:\dir\NUL" comes back as
+  // "\\.\NUL", and the extended result names the device namespace
+  // instead of the on-disk entry, so every later probe reports a real
+  // file or directory as missing (#1297, verified on Windows CI). Such
+  // operands name a literal entry under the \\?\ namespace, so
+  // absolutize them lexically like the dot/space spellings below.
+  if (has_device_name_leaf(native)) {
+    return to_extended_path_preserving(native);
+  }
   if (has_literal_dot_space_component(native) &&
       !(native.size() >= 4 &&
         (native.compare(0, 4, L"\\\\?\\") == 0 ||

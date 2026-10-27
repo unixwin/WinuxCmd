@@ -799,8 +799,17 @@ auto parse_human_number(std::string_view s) -> HumanNumber {
 
 auto compare_human_numbers(const HumanNumber& a, const HumanNumber& b) -> int {
   if (a.sign != b.sign) return a.sign < b.sign ? -1 : 1;
+  // [GNU] -h compares lexicographically by (suffix rank, mantissa),
+  // never by the scaled quantity (#1371): GNU orders 2000M before 1G
+  // and 1500K before 1M because the unit order decides before the
+  // mantissa is consulted. For negative values the rank comparison
+  // runs in reverse (a larger rank is a smaller number: -2G < -1G <
+  // -500M, -1M < -1500K); the mantissa needs no extra flip because
+  // `value` carries the sign, so plain ascending order already puts
+  // the larger magnitude first within one rank.
   if (a.suffix_rank != b.suffix_rank) {
-    return a.suffix_rank < b.suffix_rank ? -1 : 1;
+    const int rank_order = a.suffix_rank < b.suffix_rank ? -1 : 1;
+    return a.sign < 0 ? -rank_order : rank_order;
   }
   if (a.value < b.value) return -1;
   if (a.value > b.value) return 1;
