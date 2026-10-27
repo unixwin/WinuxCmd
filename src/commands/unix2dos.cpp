@@ -50,7 +50,13 @@ REGISTER_COMMAND(unix2dos,
   auto process_file = [&](const std::string& filename,
                           bool modify_in_place) -> bool {
     std::wstring wfilename = utf8_to_wstring(filename);
-    std::ifstream input(wfilename, std::ios::binary);
+    // #1385: the file operand is an argv operand: both open sides resolve it
+    // through the shared operand boundary so a shell-namespace spelling reads
+    // and rewrites inside the payload (shell) root, never on the current
+    // drive root. Errors report the operand as typed.
+    const std::wstring api_path =
+        native_path::normalize_api_operand_w(wfilename);
+    std::ifstream input(api_path, std::ios::binary);
     if (!input) {
       safeErrorPrintLn("unix2dos: cannot open '" + filename +
                        "': No such file or directory");
@@ -75,8 +81,8 @@ REGISTER_COMMAND(unix2dos,
     }
 
     if (modify_in_place) {
-      // Write back to file
-      std::ofstream output(wfilename, std::ios::binary);
+      // Write back to file (the same folded operand the read side opened)
+      std::ofstream output(api_path, std::ios::binary);
       if (!output) {
         safeErrorPrintLn("unix2dos: cannot write to '" + filename + "'");
         return false;

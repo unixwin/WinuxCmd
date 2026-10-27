@@ -164,3 +164,34 @@ TEST(cygpath, shell_root_bare_slash_converts_to_payload_root_issue1364) {
   EXPECT_EQ(drive_result.exit_code, 0);
   EXPECT_EQ_TEXT(drive_result.stdout_text, "C:\\\n");
 }
+
+// #1385 (display side of the -u direction): with a shell root configured, a
+// native path under the payload root converts to its shell-namespace
+// spelling, not to the /z/... drive spelling the raw drive fold would emit;
+// native paths under no shell mount keep the drive spelling.
+TEST(cygpath, shell_root_native_path_converts_to_shell_spelling_issue1385) {
+  TempDir payload;
+  std::filesystem::create_directories(payload.path / L"sub");
+
+  Pipeline root_itself;
+  root_itself.set_env(L"WINUXSH_ROOT", payload.wpath());
+  root_itself.add(L"cygpath.exe", {L"-u", payload.path.wstring()});
+  auto root_result = root_itself.run();
+  EXPECT_EQ(root_result.exit_code, 0);
+  EXPECT_EQ_TEXT(root_result.stdout_text, "/\n");
+
+  Pipeline under_root;
+  under_root.set_env(L"WINUXSH_ROOT", payload.wpath());
+  under_root.add(L"cygpath.exe", {L"-u", (payload.path / L"sub").wstring()});
+  auto under_result = under_root.run();
+  EXPECT_EQ(under_result.exit_code, 0);
+  EXPECT_EQ_TEXT(under_result.stdout_text, "/sub\n");
+
+  // A native path under no shell mount keeps the drive spelling.
+  Pipeline outside;
+  outside.set_env(L"WINUXSH_ROOT", payload.wpath());
+  outside.add(L"cygpath.exe", {L"-u", L"C:\\Program Files\\Tools"});
+  auto outside_result = outside.run();
+  EXPECT_EQ(outside_result.exit_code, 0);
+  EXPECT_EQ_TEXT(outside_result.stdout_text, "/c/Program Files/Tools\n");
+}

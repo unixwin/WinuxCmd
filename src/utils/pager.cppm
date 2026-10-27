@@ -8,6 +8,7 @@ export module utils:pager;
 import std;
 import :console;
 import :i18n;
+import :native_path;
 
 namespace winux::pager {
 export struct Options {
@@ -88,6 +89,11 @@ export auto split_text_lines(std::string_view content)
 export class Document {
  public:
   std::string name;
+  // #1385: resolved open spelling for seekable documents. Every line_at
+  // re-open must land on the same file the loader scanned, so it opens this
+  // path (the operand folded through the shared boundary) rather than the
+  // as-typed `name`, which keeps the operand for prompts and diagnostics.
+  std::string path;
   bool seekable = false;
   std::string content;
   std::vector<std::string> memory_lines;
@@ -103,7 +109,7 @@ export class Document {
     if (index >= line_count()) return std::string{};
     if (!seekable) return memory_lines[index];
 
-    std::ifstream file(name, std::ios::binary);
+    std::ifstream file(path.empty() ? name : path, std::ios::binary);
     if (!file) {
       return std::unexpected(std::string("cannot open '") + name +
                              "' for reading");
@@ -150,7 +156,11 @@ export auto load_memory_document(std::string name, std::string content)
 
 export auto load_seekable_document(const std::string& filename)
     -> std::expected<Document, std::string> {
-  std::ifstream file(filename, std::ios::binary);
+  // #1385: the file operand is an argv operand: open it through the shared
+  // operand boundary so a shell-namespace spelling names the payload root,
+  // not the current drive root. `name` keeps the operand as typed.
+  const std::string open_path = native_path::normalize_api_operand(filename);
+  std::ifstream file(open_path, std::ios::binary);
   if (!file) {
     return std::unexpected(std::string("cannot open '") + filename +
                            "' for reading");
@@ -162,6 +172,7 @@ export auto load_seekable_document(const std::string& filename)
 
   Document doc;
   doc.name = filename;
+  doc.path = open_path;
   doc.seekable = true;
   doc.file_size = static_cast<std::uint64_t>(end_pos);
   doc.line_offsets.push_back(0);
