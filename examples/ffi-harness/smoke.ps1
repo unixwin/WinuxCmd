@@ -106,7 +106,10 @@ $p.WaitForExit()
 $seqCode = $p.ExitCode
 $seqText = Get-Content $seqOut -Raw
 $seqErrText = Get-Content $seqErr -Raw
-Report "sequence-multi-call" ($seqCode -eq 0 -and $seqText -match "SEQUENCE OK" -and $seqErrText -notmatch "exception at DLL boundary") "exit=$seqCode out: $seqText err: $seqErrText"
+$seqExitOk = ($seqCode -eq 0)
+$seqOutOk = ($null -ne $seqText) -and ($seqText -match "SEQUENCE OK")
+$seqErrOk = [string]::IsNullOrEmpty($seqErrText) -or ($seqErrText -notmatch "exception at DLL boundary")
+Report "sequence-multi-call" ($seqExitOk -and $seqOutOk -and $seqErrOk) "exit=$seqCode exitOk=$seqExitOk outOk=$seqOutOk errOk=$seqErrOk out: $seqText err: $seqErrText"
 
 # 4. tampered DLL -> hash-mismatch, spawn fallback still works
 Add-Content -Path (Join-Path $verDir "winuxcore.dll") -Value "x" -Encoding ascii -NoNewline
