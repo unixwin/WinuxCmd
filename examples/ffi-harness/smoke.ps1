@@ -41,6 +41,11 @@ $data = Join-Path $WorkDir "data"
 New-Item -ItemType Directory -Force -Path $data | Out-Null
 $payload = [byte[]](0..255) + [Text.Encoding]::ASCII.GetBytes("`r`nffi-smoke`n")
 [IO.File]::WriteAllBytes((Join-Path $data "payload.bin"), $payload)
+$payloadHash = (Get-FileHash (Join-Path $data "payload.bin") -Algorithm SHA256).Hash
+
+function Same-AsPayload([string]$path) {
+    return (Get-FileHash $path -Algorithm SHA256).Hash -eq $payloadHash
+}
 
 function Run-Harness([string]$switch, [string[]]$argv, [string]$tag) {
     $env:NIU_WINUXCMD_FFI = $switch
@@ -56,12 +61,12 @@ $rootArg = @($root)
 
 # 1. switch off -> spawn, correct bytes
 $r = Run-Harness "0" ($rootArg + @("cat", (Join-Path $data "payload.bin"))) "off"
-$same = [Linq.Enumerable]::SequenceEqual([IO.File]::ReadAllBytes($r.Out), $payload)
+$same = Same-AsPayload $r.Out
 Report "switch-off-spawns" ($r.Code -eq 0 -and $same -and $r.Err -match "reason=switch-off") $r.Err
 
 # 2. switch on -> ffi, bytes identical to the spawn run
 $r = Run-Harness "1" ($rootArg + @("cat", (Join-Path $data "payload.bin"))) "on"
-$same = [Linq.Enumerable]::SequenceEqual([IO.File]::ReadAllBytes($r.Out), $payload)
+$same = Same-AsPayload $r.Out
 Report "switch-on-ffi-cat" ($r.Code -eq 0 -and $same -and $r.Err -match "route=ffi") $r.Err
 
 # 3. cp + rm in-process
@@ -74,20 +79,20 @@ Report "ffi-rm" ($r.Code -eq 0 -and -not (Test-Path (Join-Path $data "copy.bin")
 # 4. tampered DLL -> hash-mismatch, spawn fallback still works
 Add-Content -Path (Join-Path $verDir "winuxcore.dll") -Value "x" -Encoding ascii -NoNewline
 $r = Run-Harness "1" ($rootArg + @("cat", (Join-Path $data "payload.bin"))) "tamper"
-$same = [Linq.Enumerable]::SequenceEqual([IO.File]::ReadAllBytes($r.Out), $payload)
+$same = Same-AsPayload $r.Out
 Report "hash-tamper-falls-back" ($r.Code -eq 0 -and $same -and $r.Err -match "reason=hash-mismatch") $r.Err
 Copy-Item $DllPath (Join-Path $verDir "winuxcore.dll") -Force
 
 # 5. DLL missing -> dll-missing fallback
 Remove-Item (Join-Path $verDir "winuxcore.dll")
 $r = Run-Harness "1" ($rootArg + @("cat", (Join-Path $data "payload.bin"))) "missing"
-$same = [Linq.Enumerable]::SequenceEqual([IO.File]::ReadAllBytes($r.Out), $payload)
+$same = Same-AsPayload $r.Out
 Report "dll-missing-falls-back" ($r.Code -eq 0 -and $same -and $r.Err -match "reason=dll-missing") $r.Err
 
 # 6. current.txt points at a nonexistent version -> dll-missing fallback
 Set-Content -Path (Join-Path $root "usr\bin\ffi\current.txt") -Value "v9.9.9-absent" -Encoding ascii -NoNewline
 $r = Run-Harness "1" ($rootArg + @("cat", (Join-Path $data "payload.bin"))) "badptr"
-$same = [Linq.Enumerable]::SequenceEqual([IO.File]::ReadAllBytes($r.Out), $payload)
+$same = Same-AsPayload $r.Out
 Report "dangling-pointer-falls-back" ($r.Code -eq 0 -and $same -and $r.Err -match "reason=dll-missing") $r.Err
 
 if ($failures -gt 0) { Write-Host "SMOKE FAILED: $failures case(s)"; exit 1 }
