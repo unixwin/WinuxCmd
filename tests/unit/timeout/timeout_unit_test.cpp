@@ -267,6 +267,51 @@ TEST(timeout, timeout_invalid_option_returns_125_with_help_hint) {
                  "Try 'timeout --help' for more information.\n");
 }
 
+// #1350: [GNU] the status of a timeout kill is signal-dependent: 124
+// for the ordinary signal path, but 128+SIGKILL = 137 when the command
+// is killed by SIGKILL; --preserve-status reports 128+SIG throughout.
+TEST(timeout, timeout_kill_signal_reports_137) {
+  Pipeline p;
+  p.add(L"timeout.exe", {L"-s", L"KILL", L"0.2", L"sleep.exe", L"5"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 137);
+  EXPECT_TRUE(r.stdout_text.empty());
+}
+
+TEST(timeout, timeout_term_signal_reports_124) {
+  Pipeline p;
+  p.add(L"timeout.exe", {L"-s", L"TERM", L"0.2", L"sleep.exe", L"5"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 124);
+}
+
+TEST(timeout, timeout_int_signal_reports_124) {
+  Pipeline p;
+  p.add(L"timeout.exe", {L"-s", L"INT", L"0.2", L"sleep.exe", L"5"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 124);
+}
+
+TEST(timeout, timeout_preserve_status_term_reports_143) {
+  Pipeline p;
+  p.add(L"timeout.exe", {L"--preserve-status", L"0.2", L"sleep.exe", L"5"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 143);
+}
+
+TEST(timeout, timeout_preserve_status_kill_reports_137) {
+  Pipeline p;
+  p.add(L"timeout.exe",
+        {L"-s", L"KILL", L"--preserve-status", L"0.2", L"sleep.exe", L"5"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 137);
+}
+
 // #1303: --help after the wrapped command belongs to the command, not
 // to timeout: `timeout 5 echo --help` shows echo's help, not
 // timeout's.
@@ -279,3 +324,4 @@ TEST(timeout, timeout_wrapped_command_help_is_not_intercepted) {
   EXPECT_TRUE(r.stdout_text.find("Usage:") != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("Usage: timeout") == std::string::npos);
 }
+

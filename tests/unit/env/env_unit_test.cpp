@@ -601,6 +601,121 @@ TEST(env, env_file_drive_dialect_operand_resolves_named_drive) {
   EXPECT_TRUE(has_env_line(r.stdout_text, "WX_DIALECT_FILE", "from_dialect"));
 }
 
+<<<<<<< HEAD
+// #1352: [GNU] -i starts from an empty environment block: the child
+// receives exactly the command-line assignments, in the order given.
+TEST(env, env_ignore_environment_child_block_exact_and_ordered) {
+  TempDir tmp;
+  std::filesystem::copy_file(
+      std::filesystem::path(WINUXCMD_BIN_DIR) / "env.exe", tmp.path / "env.exe",
+      std::filesystem::copy_options::overwrite_existing);
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_env(L"AMBIENT_LEAK", L"must-not-appear");
+  p.add(L"env.exe", {L"-i", L"Z=1", L"A=2", L".\\env.exe"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "Z=1\nA=2\n");
+  EXPECT_TRUE(r.stdout_text.find("AMBIENT_LEAK") == std::string::npos);
+}
+
+// #1352: [GNU] printed listings keep order too: inherited order is
+// preserved and assignments append in command-line order instead of
+// being re-sorted alphabetically.
+TEST(env, env_listing_preserves_assignment_order) {
+  Pipeline p;
+  p.set_env(L"SHOULD_NOT", L"SEE");
+  p.add(L"env.exe", {L"-i", L"B=2", L"A=1"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "B=2\nA=1\n");
+}
+
+// #1352: [GNU] a repeated assignment replaces the value at the first
+// occurrence's position; it does not move or duplicate the entry.
+TEST(env, env_duplicate_assignment_replaces_in_place) {
+  Pipeline p;
+  p.add(L"env.exe", {L"-i", L"X=1", L"Y=2", L"X=3"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "X=3\nY=2\n");
+}
+
+// #1352: [GNU] -u removes an entry without disturbing the relative
+// order of the survivors. DROP comes from the inherited environment
+// (GNU applies -u to the inherited block before assignments, and per
+// #1353 an option after the first non-option argument is the utility
+// name, not an env option).
+TEST(env, env_unset_preserves_survivor_order) {
+  Pipeline p;
+  p.set_env(L"DROP", L"2");
+  p.add(L"env.exe", {L"-u", L"DROP", L"KEEP1=1", L"KEEP2=3"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("DROP=") == std::string::npos);
+  const size_t keep1 = r.stdout_text.find("KEEP1=1\n");
+  const size_t keep2 = r.stdout_text.find("KEEP2=3\n");
+  EXPECT_NE(keep1, std::string::npos);
+  EXPECT_NE(keep2, std::string::npos);
+  EXPECT_LT(keep1, keep2);
+}
+
+// #1353: [GNU] option processing stops at the first non-option
+// argument: a path-form command launches, and dash tokens after it
+// belong to the command, not to env.
+TEST(env, env_path_form_command_runs_with_child_options) {
+  TempDir tmp;
+  std::filesystem::copy_file(std::filesystem::path(WINUXCMD_BIN_DIR) /
+                                 "echo.exe",
+                             tmp.path / "echo.exe",
+                             std::filesystem::copy_options::overwrite_existing);
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"env.exe", {L".\\echo.exe", L"-n", L"hi"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "hi");
+}
+
+TEST(env, env_options_after_assignment_belong_to_command) {
+  TempDir tmp;
+  std::filesystem::copy_file(std::filesystem::path(WINUXCMD_BIN_DIR) /
+                                 "echo.exe",
+                             tmp.path / "echo.exe",
+                             std::filesystem::copy_options::overwrite_existing);
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"env.exe", {L"A=1", L".\\echo.exe", L"-n", L"hi"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "hi");
+}
+
+// #1353: [GNU] a dash token in the command position is the command to
+// run (and simply not found), not an env option to reject with 125.
+TEST(env, env_dash_token_after_assignment_is_command) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"env.exe", {L"FOO=1", L"-i"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 127);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "env: failed to run command '-i': No such file or "
+                 "directory\n");
+=======
 // #1303: --version after the command name belongs to the command, not
 // to env: `env echo.exe --version` prints echo's version, not env's.
 TEST(env, env_wrapped_command_version_is_not_intercepted) {
@@ -623,4 +738,5 @@ TEST(env, env_option_scan_ends_at_first_assignment) {
   EXPECT_NE(r.exit_code, 0);
   EXPECT_TRUE(r.stderr_text.find("failed to run command '--help'") !=
               std::string::npos);
+>>>>>>> origin/main
 }
