@@ -217,6 +217,19 @@ auto windows_to_unix(std::string path, bool proc_cygdrive) -> std::string {
 }
 
 auto unix_to_windows(std::string path, bool mixed) -> std::string {
+  // #1364: a shell-namespace spelling (the bare "/", /usr, ...) names the
+  // payload root when a shell root is configured. Fold it through the
+  // shared operand boundary first so cygpath's answer agrees with every
+  // other command's resolution instead of rooting the spelling on the
+  // current drive. Drive spellings fold inside the boundary as well and
+  // arrive here already native; non-shell spellings pass through unchanged.
+  if (!path.empty() && path.front() == '/') {
+    std::string folded = native_path::normalize_api_operand(path);
+    if (has_windows_drive(folded)) {
+      path = std::move(folded);
+    }
+  }
+
   if (path.starts_with("/cygdrive/") && path.size() >= 11 &&
       is_drive_letter(path[10]) && (path.size() == 11 || path[11] == '/')) {
     std::string tail = path.substr(11);

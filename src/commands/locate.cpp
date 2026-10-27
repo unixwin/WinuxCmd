@@ -135,7 +135,10 @@ auto build_config(const CommandContext<LOCATE_OPTIONS.size()>& ctx)
 
 auto read_db(const std::string& db_path, std::vector<std::string>& lines)
     -> bool {
-  std::wstring wpath = utf8_to_wstring(db_path);
+  // #1364: the -d database path is an argv operand: resolve it through the
+  // shared operand boundary so a shell-namespace spelling names the payload
+  // root, not the current drive root.
+  std::wstring wpath = native_path::make_api_path_operand(db_path).extended;
   HANDLE h = CreateFileW(wpath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
                          OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (h == INVALID_HANDLE_VALUE) return false;

@@ -126,7 +126,12 @@ auto split_semicolon_list(const std::string& text) -> std::vector<std::string> {
 // Make a walk root absolute so that --prunepaths prefix comparisons (which
 // users give as absolute paths, like GNU updatedb) match stored entries.
 auto absolute_path(const std::string& path) -> std::string {
-  std::wstring w = utf8_to_wstring(path);
+  // #1364: fold shell-namespace spellings (the bare "/") through the shared
+  // operand boundary first; GetFullPathNameW alone roots them on the
+  // current drive, so `updatedb --localpaths=/` walked the drive root
+  // instead of the payload root.
+  std::wstring w =
+      utf8_to_wstring(native_path::normalize_api_operand(path));
   DWORD size = GetFullPathNameW(w.c_str(), 0, nullptr, nullptr);
   if (size == 0) return path;
   std::wstring buffer(size, L'\0');

@@ -366,7 +366,18 @@ export std::string translate_error(std::string_view error) {
       }
     }
   }
-  constexpr std::array<std::pair<std::string_view, std::string_view>, 32> exact{
+  // hexdump: "bad format string: <detail>" (#1373); the detail is the
+  // format parser's own diagnostic and stays untranslated, like the
+  // pr number detail above.
+  {
+    constexpr std::string_view kBadFormatPrefix = "bad format string: ";
+    if (error.starts_with(kBadFormatPrefix)) {
+      return ::winux::i18n::format(
+          "command.hexdump.error.bad_format_string", "bad format string: {}",
+          error.substr(kBadFormatPrefix.size()));
+    }
+  }
+  constexpr std::array<std::pair<std::string_view, std::string_view>, 33> exact{
       {{"invalid input", "common.error.invalid_input"},
        {"error reading from file", "common.error.read_file"},
        {"error reading input", "common.error.read_input"},
@@ -402,7 +413,9 @@ export std::string translate_error(std::string_view error) {
        {"cannot both summarize and show all",
         "common.error.summarize_and_show_all"},
        {"multiple output files specified",
-        "common.error.multiple_output_files"}}};
+        "common.error.multiple_output_files"},
+       {"format string consumes no input",
+        "command.hexdump.error.format_consumes_no_input"}}};
   for (const auto [literal, key] : exact) {
     if (error == literal) return translate(key, error);
   }
@@ -434,7 +447,7 @@ export std::string translate_error(std::string_view error) {
     }
     return ::winux::i18n::format(key, "error reading '{}'", value);
   }
-  constexpr std::array<std::pair<std::string_view, std::string_view>, 41>
+  constexpr std::array<std::pair<std::string_view, std::string_view>, 42>
       quoted{
           {{"cannot open '", "common.error.cannot_open"},
            {"cannot access '", "common.error.cannot_access"},
@@ -479,7 +492,9 @@ export std::string translate_error(std::string_view error) {
            {"Invalid number: '", "common.error.invalid_number"},
            {"invalid field number: '", "common.error.invalid_field_number"},
            {"invalid tab size: '", "common.error.invalid_tab_size"},
-           {"too few X's in template '", "common.error.too_few_xs"}}};
+           {"too few X's in template '", "common.error.too_few_xs"},
+           {"can't open format file '",
+            "command.hexdump.error.cannot_open_format_file"}}};
   for (const auto [prefix, key] : quoted) {
     if (!error.starts_with(prefix) || error.back() != '\'') continue;
     const auto value =
@@ -496,7 +511,7 @@ export std::string translate_error(std::string_view error) {
       return ::winux::i18n::format(key, "error writing '{}'", value);
     if (key == "common.error.invalid_mode")
       return ::winux::i18n::format(key, "invalid mode: '{}'", value);
-    constexpr std::array<std::pair<std::string_view, std::string_view>, 35>
+    constexpr std::array<std::pair<std::string_view, std::string_view>, 36>
         fallbacks{
             {{"common.error.invalid_group", "invalid group: '{}'"},
              {"common.error.invalid_user", "invalid user: '{}'"},
@@ -549,7 +564,9 @@ export std::string translate_error(std::string_view error) {
              {"common.error.invalid_field_number",
               "invalid field number: '{}'"},
              {"common.error.invalid_tab_size", "invalid tab size: '{}'"},
-             {"common.error.too_few_xs", "too few X's in template '{}'"}}};
+             {"common.error.too_few_xs", "too few X's in template '{}'"},
+             {"command.hexdump.error.cannot_open_format_file",
+              "can't open format file '{}'"}}};
     for (const auto [fallback_key, fallback] : fallbacks) {
       if (key == fallback_key)
         return ::winux::i18n::format(key, fallback, value);
