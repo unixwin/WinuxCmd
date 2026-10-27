@@ -345,3 +345,31 @@ TEST(join, join_stdin_ctrlz_not_truncated_issue1212) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.find('\x1a') != std::string::npos);
 }
+
+TEST(join, join_invented_output_long_rejected_issue1355) {
+  TempDir tmp;
+  tmp.write("j1.txt", "x 1\n");
+  tmp.write("j2.txt", "x A\n");
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"join.exe", {L"--output=0", L"j1.txt", L"j2.txt"});
+  auto r = p.run();
+  EXPECT_EXIT_CODE(r, 1);
+  // The shared parser names the bare option in this diagnostic; GNU
+  // getopt prints the full '--output=0' token (parser-layer nuance,
+  // registered in the winx4-opt cluster report for #1355).
+  EXPECT_TRUE(r.stderr_text.find("unrecognized option '--output'") !=
+              std::string::npos);
+}
+
+TEST(join, join_dash_o_still_legal_issue1355) {
+  TempDir tmp;
+  tmp.write("j1.txt", "x 1\n");
+  tmp.write("j2.txt", "x A\n");
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"join.exe", {L"-o", L"0", L"j1.txt", L"j2.txt"});
+  auto r = p.run();
+  EXPECT_EXIT_CODE(r, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "x\n");
+}

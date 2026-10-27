@@ -155,3 +155,26 @@ TEST(tee, tee_output_error_inline_mode_accepts_gnu_values) {
   EXPECT_EQ_TEXT(r.stdout_text, "hello\n");
   EXPECT_EQ(tmp.read("output.txt"), "hello\n");
 }
+
+TEST(tee, tee_invented_diagnose_rejected_issue1355) {
+  TempDir tmp;
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("hi\n");
+  p.add(L"tee.exe", {L"--diagnose", L"out.txt"});
+  auto r = p.run();
+  EXPECT_EXIT_CODE(r, 1);
+  EXPECT_TRUE(r.stderr_text.find("unrecognized option '--diagnose'") !=
+              std::string::npos);
+}
+
+TEST(tee, tee_dash_p_still_legal_issue1355) {
+  TempDir tmp;
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("hi\n");
+  p.add(L"tee.exe", {L"-p", L"out.txt"});
+  auto r = p.run();
+  EXPECT_EXIT_CODE(r, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "hi\n");
+}

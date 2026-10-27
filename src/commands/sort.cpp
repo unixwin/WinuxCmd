@@ -77,8 +77,9 @@ auto constexpr SORT_OPTIONS = std::array{
            "check whether input is sorted; accepts =diagnose-first|quiet|"
            "silent",
            OPTIONAL_STRING_TYPE),
-    // [GNU] -C, --check-silent
-    OPTION("-C", "--check-silent", "check whether input is sorted quietly"),
+    // [GNU] -C is the short form of --check=quiet/--check=silent; GNU has
+    // no "--check-silent" long option (#1355).
+    OPTION("-C", "", "check whether input is sorted quietly"),
     // [GNU] --debug
     OPTION("", "--debug", "print sort key diagnostics to standard error"),
     // [GNU] -o, --output
@@ -1379,8 +1380,8 @@ auto build_config(const CommandContext<SORT_OPTIONS.size()>& ctx)
   cfg.stable = ctx.get<bool>("--stable", false) || ctx.get<bool>("-s", false);
   cfg.unique = ctx.get<bool>("--unique", false) || ctx.get<bool>("-u", false);
   cfg.debug = ctx.get<bool>("--debug", false);
-  // [GNU] -c and --check select the diagnose-first check mode, while -C,
-  // --check-silent and --check=quiet/silent select the quiet mode. Mixing
+  // [GNU] -c and --check select the diagnose-first check mode, while -C
+  // and --check=quiet/silent select the quiet mode. Mixing
   // the two modes is rejected at parse time ("options '-cC' are
   // incompatible"). --check values follow argmatch rules: unique prefixes
   // of {quiet, silent, diagnose-first} are accepted, an explicitly empty
@@ -1395,7 +1396,7 @@ auto build_config(const CommandContext<SORT_OPTIONS.size()>& ctx)
   for (const auto& occurrence : ctx.options.occurrences()) {
     if (!ctx.metas || occurrence.index >= SORT_OPTIONS.size()) continue;
     const auto& meta = (*ctx.metas)[occurrence.index];
-    if (option_matches(meta, "-C", "--check-silent")) {
+    if (option_matches(meta, "-C", "")) {
       want_check_quiet = true;
       continue;
     }
@@ -1460,7 +1461,7 @@ auto build_config(const CommandContext<SORT_OPTIONS.size()>& ctx)
   if (cfg.output_file.empty()) cfg.output_file = ctx.get<std::string>("-o", "");
   if (cfg.mode != OperationMode::Sort && !cfg.output_file.empty()) {
     // [GNU] quotes the effective check option letter: "-co" for -c/--check
-    // and "-Co" for -C/--check-silent/--check=quiet|silent.
+    // and "-Co" for -C/--check=quiet|silent.
     return std::unexpected(
         std::string("options '-") +
         (cfg.mode == OperationMode::CheckQuiet ? "Co" : "co") +

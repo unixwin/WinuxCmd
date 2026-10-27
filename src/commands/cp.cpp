@@ -163,7 +163,9 @@ auto constexpr CP_OPTIONS = std::array{
            STRING_TYPE),
     OPTION("", "--copy-contents",
            "copy contents of special files when recursive"),
-    OPTION("-c", "--context",
+    // [GNU] cp has no -c short option; the SELinux context option is
+    // spelled -Z or --context only (#1355).
+    OPTION("", "--context",
            "set SELinux security context of destination file to default type")};
 
 // ======================================================
@@ -1799,7 +1801,6 @@ auto process_command(const CommandContext<N>& ctx) -> cp::Result<bool> {
   // must not fail (#995).
   (void)ctx.get<bool>("-Z", false);
   (void)ctx.get<bool>("--context", false);
-  (void)ctx.get<bool>("-c", false);
 
   // [DIFFERS] --keep-directory-symlink: on Windows directory symlinks are
   // followed by default, so this flag is silently accepted as a no-op.

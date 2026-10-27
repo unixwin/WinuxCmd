@@ -77,26 +77,6 @@ TEST(seq, seq_long_separator) {
   EXPECT_EQ_TEXT(r.stdout_text, "1,2,3,4\n");
 }
 
-TEST(seq, seq_long_terminator_replaces_final_newline) {
-  Pipeline p;
-  p.add(L"seq.exe", {L"--terminator=,", L"3"});
-
-  auto r = p.run();
-
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "1\n2\n3,");
-}
-
-TEST(seq, seq_short_terminator_replaces_only_final_separator) {
-  Pipeline p;
-  p.add(L"seq.exe", {L"-t", L" END ", L"1", L"2", L"5"});
-
-  auto r = p.run();
-
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "1\n3\n5 END ");
-}
-
 TEST(seq, seq_rejects_invalid_number_without_throwing) {
   Pipeline p;
   p.add(L"seq.exe", {L"not-a-number"});
@@ -411,6 +391,35 @@ TEST(seq, seq_custom_separator_large_range_buffered) {
   EXPECT_TRUE(r.stdout_text.ends_with("49999, 50000\n"));
   EXPECT_NOT_CONTAINS(r.stdout_text, ", , ");
 }
+
+TEST(seq, seq_invented_terminator_rejected_issue1355) {
+  Pipeline p;
+  p.add(L"seq.exe", {L"--terminator=X", L"2"});
+  auto r = p.run();
+  EXPECT_EXIT_CODE(r, 1);
+  // The shared parser names the bare option in this diagnostic; GNU
+  // getopt prints the full '--terminator=X' token (parser-layer nuance,
+  // registered in the winx4-opt cluster report for #1355).
+  EXPECT_TRUE(r.stderr_text.find("unrecognized option '--terminator'") !=
+              std::string::npos);
+}
+
+TEST(seq, seq_invented_dash_t_rejected_issue1355) {
+  Pipeline p;
+  p.add(L"seq.exe", {L"-t", L";", L"3"});
+  auto r = p.run();
+  EXPECT_EXIT_CODE(r, 1);
+  EXPECT_TRUE(r.stderr_text.find("invalid option -- 't'") != std::string::npos);
+}
+
+TEST(seq, seq_separator_still_legal_issue1355) {
+  Pipeline p;
+  p.add(L"seq.exe", {L"--separator=X", L"2"});
+  auto r = p.run();
+  EXPECT_EXIT_CODE(r, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "1X2\n");
+}
+
 // #1376: seq has no iteration ceiling — it streams, and the consumer
 // decides how much to read. `seq 1000000001 | head -3` used to fail
 // upfront with "seq: too many iterations" and print nothing.

@@ -36,7 +36,7 @@
  * default type [TODO]
  * - @a --backup: Make a backup of each existing destination file [IMPLEMENTED]
  * - @a --force: Do not prompt before overwriting [IMPLEMENTED]
- * - @a --interactive: Prompt according to WHEN: never, once (-I), or always
+ * - @a --interactive: Prompt according to WHEN: never, once, or always
  * (-i) [IMPLEMENTED]
  * - @a --no-clobber: Do not overwrite an existing file [IMPLEMENTED]
  * - @a --suffix: Override the usual backup suffix [IMPLEMENTED]
@@ -75,8 +75,8 @@ auto constexpr MV_OPTIONS =
                OPTION("-f", "--force", "do not prompt before overwriting"),
                // [GNU]
                OPTION("-i", "", "prompt before overwrite"),
-               // [GNU]
-               OPTION("-I", "", "prompt once before removing more than three files, or when moving recursively"),
+               // [GNU] mv has no -I option (that is rm's); the "once" prompt
+               // mode is reached only via --interactive=once (#1355).
                // [GNU]
                OPTION("-n", "--no-clobber", "do not overwrite an existing file"),
                // [GNU]
@@ -98,7 +98,7 @@ auto constexpr MV_OPTIONS =
                // [GNU]
                OPTION("", "--backup", "make a backup of each existing destination file", OPTIONAL_STRING_TYPE),
                // [GNU]
-               OPTION("", "--interactive", "prompt according to WHEN: never, once (-I), or always (-i)", OPTIONAL_STRING_TYPE),
+               OPTION("", "--interactive", "prompt according to WHEN: never, once, or always (-i)", OPTIONAL_STRING_TYPE),
                // [GNU]
                OPTION("", "--no-clobber", "do not overwrite an existing file"),
                // [GNU]
@@ -186,6 +186,27 @@ auto parse_overwrite_mode(const CommandContext<N>& ctx)
         return std::unexpected("invalid argument '" + when +
                                "' for '--interactive'");
       }
+<<<<<<< HEAD
+      continue;
+    }
+
+    if (arg.size() < 2 || arg[0] != '-' || arg[1] == '-') continue;
+    for (size_t j = 1; j < arg.size(); ++j) {
+      switch (arg[j]) {
+        case 'f':
+          mode = OverwriteMode::force;
+          break;
+        case 'i':
+          mode = OverwriteMode::interactive_always;
+          break;
+        case 'n':
+          mode = OverwriteMode::no_clobber;
+          break;
+        default:
+          break;
+      }
+=======
+>>>>>>> origin/main
     }
   }
 
@@ -529,7 +550,7 @@ auto move_single_path(const std::string& src_path, const std::string& dest_path,
     return true;
   }
 
-  // [GNU] With no -f/-i/-n/-I, an unwritable destination is confirmed once
+  // [GNU] With no -f/-i/-n, an unwritable destination is confirmed once
   // when stdin is a terminal; non-tty stdin proceeds without prompting.
   if (overwrite_mode == OverwriteMode::default_mode && dest_exists &&
       _isatty(_fileno(stdin))) {
@@ -843,7 +864,7 @@ auto process_command(const CommandContext<N>& ctx) -> cp::Result<bool> {
                                  "': Not a directory");
         }
 
-        // -I / --interactive=once: prompt once before removing more than three
+        // --interactive=once: prompt once before removing more than three
         // files, or when moving recursively
         bool recursive =
             ctx.get<bool>("-r", false) || ctx.get<bool>("--recursive", false);

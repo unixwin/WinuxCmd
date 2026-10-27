@@ -32,7 +32,8 @@ auto constexpr JOIN_OPTIONS = std::array{
     OPTION("-e", "--empty", "replace missing input fields with EMPTY",
            STRING_TYPE),
     // [GNU]
-    OPTION("-o", "--output", "use specified output format", STRING_TYPE),
+    // [GNU] -o has no long form in GNU join; "--output" is invented (#1355).
+    OPTION("-o", "", "use specified output format", STRING_TYPE),
     // [GNU]
     OPTION("-j", "", "equivalent to -1 FIELD -2 FIELD", STRING_TYPE),
     // [GNU]
@@ -362,11 +363,7 @@ auto build_config(const CommandContext<JOIN_OPTIONS.size()>& ctx)
   }
   cfg.empty_field = empty_opt;
 
-  auto output_opt = ctx.get<std::string>("--output", "");
-  if (output_opt.empty()) {
-    output_opt = ctx.get<std::string>("-o", "");
-  }
-  cfg.output_format = output_opt;
+  cfg.output_format = ctx.get<std::string>("-o", "");
   if (!cfg.output_format.empty()) {
     if (cfg.output_format == "auto") {
       cfg.output_auto = true;
