@@ -23,6 +23,10 @@
 //                reason code on stderr (stdout belongs to the command).
 //
 // Usage: ffi-harness.exe <install-root> <applet> [args...]
+//        ffi-harness.exe sequence <install-root> <scratch-dir> [reps]
+//                        [applets-csv]
+//        (sequence mode: same-process multi-call liveness rotations, no
+//        spawn fallback — see run_sequence below.)
 // Exit:  the command's exit code; 64 for harness usage errors; 65 when
 //        neither the FFI path nor the spawn target could run.
 
@@ -231,16 +235,39 @@ TierRow lookup_tier(const std::wstring &tiers_path, const std::wstring &applet) 
   return row;
 }
 
+// Per-call shape judgment over the argv STRUCTURE (the tiers row lists
+// shapes that must decline this individual call, e.g. rm's -i/-I):
+//   * "--" ends option territory: every later token is an operand and
+//     can never match a shape. (rm -- -weird.txt removes a file whose
+//     name happens to contain "i"; it is not an interactive call. An
+//     earlier substring heuristic matched the "i" anyway and declined
+//     the call — routing only, but the table is load-bearing, so the
+//     judgment is structural now.)
+//   * An exact shape token matches anywhere before "--".
+//   * A single-letter short shape (-i) also matches a short-flag cluster
+//     (-ri, -fi), but only when the token is a pure cluster: one leading
+//     '-', then ASCII letters only. A token with any non-letter in it
+//     (-weird.txt) is not a cluster — its letters are a filename, and a
+//     later "i" means nothing.
 bool shape_matches(const std::vector<std::wstring> &args,
                    const std::vector<std::wstring> &shapes) {
-  for (const std::wstring &shape : shapes) {
-    for (const std::wstring &arg : args) {
+  for (const std::wstring &arg : args) {
+    if (arg == L"--") break;
+    for (const std::wstring &shape : shapes) {
       if (arg == shape) return true;
-      // A short-flag shape (-i) also matches clusters (-ri, -fi).
       if (shape.size() == 2 && shape[0] == L'-' && shape[1] != L'-' &&
-          arg.size() > 2 && arg[0] == L'-' && arg[1] != L'-' &&
-          arg.find(shape[1], 1) != std::wstring::npos) {
-        return true;
+          arg.size() > 2 && arg[0] == L'-' && arg[1] != L'-') {
+        bool pure_cluster = true;
+        for (size_t i = 1; i < arg.size(); ++i) {
+          const wchar_t c = arg[i];
+          if (!((c >= L'a' && c <= L'z') || (c >= L'A' && c <= L'Z'))) {
+            pure_cluster = false;
+            break;
+          }
+        }
+        if (pure_cluster && arg.find(shape[1], 1) != std::wstring::npos) {
+          return true;
+        }
       }
     }
   }
@@ -329,11 +356,266 @@ std::wstring locale_stamp() {
   return L"";
 }
 
+std::string narrow_of(const std::wstring &s) {
+  std::string narrow;
+  narrow.reserve(s.size());
+  for (wchar_t c : s) narrow.push_back(c < 128 ? static_cast<char>(c) : '?');
+  return narrow;
+}
+
+// --- same-process sequence mode ----------------------------------------------
+//   ffi-harness.exe sequence <install-root> <scratch-dir> [reps] [applets]
+//
+// One process, one DLL load, N rotations of in-process calls. This mode
+// exists because the one-call-per-process form is blind to a whole class
+// of failure: a call that faults inside the DLL and leaves the DLL's
+// serialization lock held still produces correct output end-to-end (the
+// single-call harness falls back to spawn), so per-call smoke passes
+// while the FFI face is dead for the rest of the process. The sequence
+// asserts, inside one process, that every call routes in-process (tier1,
+// no shape decline), returns the applet's own success, and — via the
+// rotation — that calls AFTER an rm still work. There is no spawn
+// fallback in this mode: any FFI-layer failure fails the sequence.
+// Supported rotation applets and their operands (fixed scenario):
+//   touch {f} / cat {f} / cp {f} {f.copy} / rm {f.copy} / chmod {644} {f}
+// The scratch file f is primed by the harness before the first rep so a
+// rotation starting with cat (the demo doubles implement only cat/cp/rm)
+// still has input.
+
+void seq_out(const std::string &line) {
+  HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
+  if (!h || h == INVALID_HANDLE_VALUE) return;
+  DWORD written = 0;
+  WriteFile(h, line.data(), static_cast<DWORD>(line.size()), &written,
+            nullptr);
+}
+
+std::vector<std::wstring> split_csv(const std::wstring &csv) {
+  std::vector<std::wstring> out;
+  size_t pos = 0;
+  while (pos <= csv.size()) {
+    const size_t comma = csv.find(L',', pos);
+    const std::wstring item = trim(csv.substr(
+        pos, comma == std::wstring::npos ? std::wstring::npos : comma - pos));
+    if (!item.empty()) out.push_back(item);
+    if (comma == std::wstring::npos) break;
+    pos = comma + 1;
+  }
+  return out;
+}
+
+bool seq_args_for(const std::wstring &applet, const std::wstring &fname,
+                  const std::wstring &fcopy,
+                  std::vector<std::wstring> &args) {
+  if (applet == L"touch" || applet == L"cat") {
+    args = {fname};
+  } else if (applet == L"cp") {
+    args = {fname, fcopy};
+  } else if (applet == L"rm") {
+    args = {fcopy};
+  } else if (applet == L"chmod") {
+    args = {L"644", fname};
+  } else {
+    return false;
+  }
+  return true;
+}
+
+int run_sequence(int argc, wchar_t *argv[]) {
+  if (argc < 4) {
+    diag(L"usage: ffi-harness.exe sequence <install-root> <scratch-dir> "
+         L"[reps] [applets-csv]");
+    return 64;
+  }
+  const std::wstring root = argv[2];
+  const std::wstring scratch = argv[3];
+  const int reps = argc >= 5 ? _wtoi(argv[4]) : 25;
+  const std::vector<std::wstring> rotation =
+      split_csv(argc >= 6 ? argv[5] : L"touch,cat,cp,rm,chmod");
+  if (reps < 1 || rotation.empty() || !is_absolute_wpath(scratch)) {
+    diag(L"sequence: bad arguments (reps>=1, applets non-empty, scratch "
+         L"must be absolute)");
+    return 64;
+  }
+  const std::wstring fname = L"seqfile.txt";
+  const std::wstring fcopy = L"seqfile.txt.copy";
+  for (const auto &applet : rotation) {
+    std::vector<std::wstring> probe;
+    if (!seq_args_for(applet, fname, fcopy, probe)) {
+      diag(L"sequence: unsupported applet in rotation: " + applet);
+      return 64;
+    }
+  }
+
+  // Discovery and integrity: identical rules to the single-call path
+  // (absolute override or current.txt pointer, per-version pin before
+  // load). The switch/exclude policy is the caller's business — this
+  // mode measures the DLL face itself.
+  std::wstring dll_path, ver_dir;
+  const wchar_t *override_path = _wgetenv(L"NIU_WINUXCMD_FFI_DLL");
+  if (override_path && *override_path) {
+    if (!is_absolute_wpath(override_path)) {
+      seq_out("SEQUENCE FAIL stage=discovery reason=override-not-absolute\n");
+      return 1;
+    }
+    dll_path = override_path;
+    const size_t slash = dll_path.find_last_of(L"\\/");
+    ver_dir = slash == std::wstring::npos ? L"" : dll_path.substr(0, slash);
+  } else {
+    std::wstring pointer;
+    if (!read_file_text(root + L"\\usr\\bin\\ffi\\current.txt", pointer)) {
+      seq_out("SEQUENCE FAIL stage=discovery reason=pointer-missing\n");
+      return 1;
+    }
+    const std::wstring ver = trim(pointer);
+    if (ver.empty() || ver.find_first_of(L"\\/:") != std::wstring::npos) {
+      seq_out("SEQUENCE FAIL stage=discovery reason=pointer-invalid\n");
+      return 1;
+    }
+    ver_dir = root + L"\\usr\\bin\\ffi\\" + ver;
+    dll_path = ver_dir + L"\\winuxcore.dll";
+  }
+  if (!file_exists(dll_path)) {
+    seq_out("SEQUENCE FAIL stage=discovery reason=dll-missing\n");
+    return 1;
+  }
+  const std::string pinned = pinned_hash(ver_dir + L"\\winuxcore.sha256");
+  std::string actual;
+  if (pinned.size() != 64 || !sha256_file_hex(dll_path, actual) ||
+      actual != pinned) {
+    seq_out("SEQUENCE FAIL stage=integrity reason=pin-mismatch\n");
+    return 1;
+  }
+  HMODULE dll = LoadLibraryExW(
+      dll_path.c_str(), nullptr,
+      LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+  if (!dll) {
+    seq_out("SEQUENCE FAIL stage=load reason=load-failed\n");
+    return 1;
+  }
+  const auto fn_abi = reinterpret_cast<FnAbiVersion>(
+      GetProcAddress(dll, "winux_ffi_abi_version"));
+  const auto fn_init =
+      reinterpret_cast<FnInit>(GetProcAddress(dll, "winux_ffi_init"));
+  const auto fn_call =
+      reinterpret_cast<FnCall>(GetProcAddress(dll, "winux_ffi_call"));
+  if (!fn_abi || !fn_init || !fn_call || fn_abi() != kExpectedAbi) {
+    seq_out("SEQUENCE FAIL stage=load reason=symbols-or-abi\n");
+    return 1;
+  }
+  const std::wstring stamp = locale_stamp();
+  FfiInitArgs init{};
+  init.struct_size = sizeof(init);
+  init.abi_version = kExpectedAbi;
+  init.install_root = root.c_str();
+  init.locale_stamp = stamp.empty() ? nullptr : stamp.c_str();
+  if (fn_init(&init) != 0) {
+    seq_out("SEQUENCE FAIL stage=init\n");
+    return 1;
+  }
+
+  // Prime the scratch file so a rotation starting with cat has input.
+  const std::wstring fpath = scratch + L"\\" + fname;
+  const std::wstring cpath = scratch + L"\\" + fcopy;
+  CreateDirectoryW(scratch.c_str(), nullptr);
+  {
+    HANDLE h = CreateFileW(fpath.c_str(), GENERIC_WRITE, 0, nullptr,
+                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+      seq_out("SEQUENCE FAIL stage=prime\n");
+      return 1;
+    }
+    const char payload[] = "ffi sequence payload\n";
+    DWORD written = 0;
+    WriteFile(h, payload, sizeof(payload) - 1, &written, nullptr);
+    CloseHandle(h);
+  }
+
+  LPWCH env_block = GetEnvironmentStringsW();
+  long calls = 0;
+  int fail_rc = 0;
+  for (int rep = 0; rep < reps && fail_rc == 0; ++rep) {
+    for (const auto &applet : rotation) {
+      std::vector<std::wstring> args;
+      seq_args_for(applet, fname, fcopy, args);
+      const TierRow tier = lookup_tier(ver_dir + L"\\tiers.tsv", applet);
+      if (!tier.found || tier.tier != L"tier1" ||
+          shape_matches(args, tier.fallback_shapes)) {
+        seq_out("SEQUENCE FAIL rep=" + std::to_string(rep) +
+                " applet=" + narrow_of(applet) + " reason=not-ffi-eligible\n");
+        fail_rc = 1;
+        break;
+      }
+      std::vector<const wchar_t *> argv_ptrs;
+      argv_ptrs.reserve(args.size());
+      for (const auto &a : args) argv_ptrs.push_back(a.c_str());
+      FfiContext ctx{};
+      ctx.struct_size = sizeof(ctx);
+      ctx.abi_version = kExpectedAbi;
+      ctx.applet = applet.c_str();
+      ctx.argc = static_cast<int32_t>(argv_ptrs.size());
+      ctx.argv = argv_ptrs.empty() ? nullptr : argv_ptrs.data();
+      ctx.env_block = env_block;
+      ctx.cwd = scratch.c_str();
+      ctx.stdin_handle = GetStdHandle(STD_INPUT_HANDLE);
+      ctx.stdout_handle = GetStdHandle(STD_OUTPUT_HANDLE);
+      ctx.stderr_handle = GetStdHandle(STD_ERROR_HANDLE);
+      ctx.cancel_check = nullptr;
+      ctx.cancel_user_data = nullptr;
+      const int rc = fn_call(&ctx);
+      ++calls;
+      seq_out("seq rep=" + std::to_string(rep) +
+              " applet=" + narrow_of(applet) + " rc=" + std::to_string(rc) +
+              "\n");
+      if (rc <= kFfiErrFloor) {
+        seq_out("SEQUENCE FAIL rep=" + std::to_string(rep) +
+                " applet=" + narrow_of(applet) +
+                " reason=ffi-layer rc=" + std::to_string(rc) + "\n");
+        fail_rc = 1;
+        break;
+      }
+      if (rc != 0) {
+        seq_out("SEQUENCE FAIL rep=" + std::to_string(rep) +
+                " applet=" + narrow_of(applet) +
+                " reason=applet-rc rc=" + std::to_string(rc) + "\n");
+        fail_rc = 1;
+        break;
+      }
+      if (applet == L"cp" && !file_exists(cpath)) {
+        seq_out("SEQUENCE FAIL rep=" + std::to_string(rep) +
+                " applet=cp reason=copy-missing\n");
+        fail_rc = 1;
+        break;
+      }
+      if (applet == L"rm" && file_exists(cpath)) {
+        seq_out("SEQUENCE FAIL rep=" + std::to_string(rep) +
+                " applet=rm reason=copy-survived\n");
+        fail_rc = 1;
+        break;
+      }
+    }
+  }
+  if (env_block) FreeEnvironmentStringsW(env_block);
+  if (fail_rc != 0) return fail_rc;
+  if (!file_exists(fpath)) {
+    seq_out("SEQUENCE FAIL stage=final reason=scratch-file-missing\n");
+    return 1;
+  }
+  seq_out("SEQUENCE OK reps=" + std::to_string(reps) +
+          " calls=" + std::to_string(calls) + "\n");
+  return 0;
+}
+
 }  // namespace
 
 int wmain(int argc, wchar_t *argv[]) {
+  if (argc >= 2 && std::wstring(argv[1]) == L"sequence") {
+    return run_sequence(argc, argv);
+  }
   if (argc < 3) {
-    diag(L"usage: ffi-harness.exe <install-root> <applet> [args...]");
+    diag(L"usage: ffi-harness.exe <install-root> <applet> [args...] | "
+         L"ffi-harness.exe sequence <install-root> <scratch-dir> [reps] "
+         L"[applets-csv]");
     return 64;
   }
   const std::wstring root = argv[1];
