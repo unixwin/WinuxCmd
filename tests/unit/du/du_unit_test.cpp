@@ -1302,6 +1302,136 @@ TEST(du, issue_1288_same_deep_directory_two_spellings_counted_once) {
   EXPECT_EQ(lines, 1u);
 }
 
+// [#1351] --count-links counts every encounter once at face value; it
+// never multiplies a file's usage by its link count, and without it an
+// inode already counted (by an earlier operand or traversal) is
+// skipped entirely.
+namespace {
+bool du_test_create_hard_link(const std::filesystem::path& link,
+                              const std::filesystem::path& target) {
+  return CreateHardLinkW(link.c_str(), target.c_str(), nullptr) != 0;
+}
+
+size_t du_test_line_count(const std::string& text) {
+  size_t lines = 0;
+  for (char ch : text) {
+    if (ch == '\n') ++lines;
+  }
+  return lines;
+}
+}  // namespace
+
+TEST(du, issue1351_du_count_links_single_operand_not_multiplied) {
+  TempDir tmp;
+  tmp.write("f", "data\n");
+  ASSERT_TRUE(du_test_create_hard_link(tmp.path / "h", tmp.path / "f"));
+
+  Pipeline plain;
+  plain.set_cwd(tmp.wpath());
+  plain.add(L"du.exe", {L"f"});
+  auto r_plain = plain.run();
+  EXPECT_EQ(r_plain.exit_code, 0);
+
+  Pipeline counted;
+  counted.set_cwd(tmp.wpath());
+  counted.add(L"du.exe", {L"-l", L"f"});
+  auto r_counted = counted.run();
+  EXPECT_EQ(r_counted.exit_code, 0);
+  EXPECT_EQ_TEXT(r_counted.stdout_text, r_plain.stdout_text);
+}
+
+TEST(du, issue1351_du_cross_operand_dedup) {
+  TempDir tmp;
+  tmp.write("f", "data\n");
+  ASSERT_TRUE(du_test_create_hard_link(tmp.path / "h", tmp.path / "f"));
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"du.exe", {L"f", L"h"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(du_test_line_count(r.stdout_text), 1u);
+  EXPECT_NE(r.stdout_text.find("f"), std::string::npos);
+  EXPECT_EQ(r.stdout_text.find("\th"), std::string::npos);
+}
+
+TEST(du, issue1351_du_count_links_two_operands) {
+  TempDir tmp;
+  tmp.write("f", "data\n");
+  ASSERT_TRUE(du_test_create_hard_link(tmp.path / "h", tmp.path / "f"));
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"du.exe", {L"-l", L"f", L"h"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(du_test_line_count(r.stdout_text), 2u);
+}
+
+TEST(du, issue1351_du_dir_walk_counts_links_once_each) {
+  TempDir tmp;
+  tmp.write("d/x", "data\n");
+  ASSERT_TRUE(du_test_create_hard_link(tmp.path / "d" / "y",
+                                       tmp.path / "d" / "x"));
+
+  Pipeline dedup;
+  dedup.set_cwd(tmp.wpath());
+  dedup.add(L"du.exe", {L"--apparent-size", L"-B1", L"d"});
+  auto r_dedup = dedup.run();
+  EXPECT_EQ(r_dedup.exit_code, 0);
+  EXPECT_NE(r_dedup.stdout_text.find("5\t"), std::string::npos);
+
+  Pipeline counted;
+  counted.set_cwd(tmp.wpath());
+  counted.add(L"du.exe", {L"--apparent-size", L"-B1", L"-l", L"d"});
+  auto r_counted = counted.run();
+  EXPECT_EQ(r_counted.exit_code, 0);
+  EXPECT_NE(r_counted.stdout_text.find("10\t"), std::string::npos);
+}
+
+TEST(du, issue1351_du_total_dedup) {
+  TempDir tmp;
+  tmp.write("f", "data\n");
+  ASSERT_TRUE(du_test_create_hard_link(tmp.path / "h", tmp.path / "f"));
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"du.exe", {L"--apparent-size", L"-B1", L"-c", L"f", L"h"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(du_test_line_count(r.stdout_text), 2u);  // f line + total line
+  EXPECT_NE(r.stdout_text.find("5\ttotal"), std::string::npos);
+}
+
+// [#1351] --inodes totals are pure counts: hard links dedup across
+// operands, and a directory counts itself as one entry.
+TEST(du, issue1351_du_inodes_operand_dedup_and_total) {
+  TempDir tmp;
+  tmp.write("f", "data\n");
+  ASSERT_TRUE(du_test_create_hard_link(tmp.path / "h", tmp.path / "f"));
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"du.exe", {L"--inodes", L"-c", L"f", L"h"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(du_test_line_count(r.stdout_text), 2u);  // f line + total line
+  EXPECT_NE(r.stdout_text.find("1\ttotal"), std::string::npos);
+}
+
+TEST(du, issue1351_du_inodes_count_links_total) {
+  TempDir tmp;
+  tmp.write("f", "data\n");
+  ASSERT_TRUE(du_test_create_hard_link(tmp.path / "h", tmp.path / "f"));
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"du.exe", {L"--inodes", L"-l", L"-c", L"f", L"h"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_NE(r.stdout_text.find("2\ttotal"), std::string::npos);
+}
+
 // #1372: du --inodes must report pure inode counts — every visited
 // object (including each directory itself) contributes exactly 1. The
 // old code initialized directory counts at 0 and added block totals
