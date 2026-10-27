@@ -305,9 +305,12 @@ int winux_ffi_call(const winux_ffi_context *ctx) {
     const std::wstring stamp = live_locale_stamp();
     if (stamp != g_locale_stamp) g_locale_stamp = stamp;
 
-    std::fflush(nullptr);
+    // No CRT flush around dispatch: the exe form does not flush either —
+    // applets own their stream flushing, and stdio writes in this tree go
+    // through the console layer on the borrowed handles. (std::fflush is
+    // also unspellable here: _CRT_DISABLE_PERFCRIT_LOCKS in the PCH macro-
+    // rewrites the token to _fflush_nolock, which the std module lacks.)
     const int rc = CommandRegistry::dispatch(applet_utf8, arg_views);
-    std::fflush(nullptr);
     return rc;
   } catch (const std::exception &e) {
     write_diag(diag_handle, "winux-ffi: exception at DLL boundary: ");
