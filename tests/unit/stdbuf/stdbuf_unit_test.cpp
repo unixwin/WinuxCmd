@@ -156,3 +156,32 @@ TEST(stdbuf, stdbuf_wrapped_command_options_pass_through_issue1375) {
   EXPECT_TRUE(r.stdout_text.find("marker.txt") != std::string::npos);
 }
 
+// #1408: option parsing stops at the first non-option operand, so the
+// wrapped command's own flags are never diagnosed as stdbuf options —
+// including the path-form command spelling from the issue probe.
+TEST(stdbuf, stdbuf_wrapped_command_path_form_option_passthrough_issue1408) {
+  Pipeline p;
+  p.set_cwd(ProjectPaths::detect_bin_dir().wstring());
+  p.add(L"stdbuf.exe", {L"-o0", L"./echo.exe", L"-n", L"hi"});
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("stdbuf path-form passthrough stderr", r.stderr_text);
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "hi");
+  EXPECT_TRUE(r.stderr_text.empty());
+}
+
+TEST(stdbuf, stdbuf_wrapped_command_option_passthrough_issue1408) {
+  Pipeline p;
+  p.add(L"stdbuf.exe", {L"-o0", L"echo.exe", L"-n", L"hi"});
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "hi");
+  EXPECT_TRUE(r.stderr_text.empty());
+}
+
