@@ -683,3 +683,4 @@ TEST(mv, issue1365_cross_volume_dir_symlink_recreated_not_copied) {
   (void)std::filesystem::symlink_status(src_tmp.path / "dlnk", src_ec);
   EXPECT_TRUE(src_ec);  // source link is gone
 }
+

@@ -295,23 +295,7 @@ auto build_config(const CommandContext<SEQ_OPTIONS.size()>& ctx)
         continue;
       }
 
-<<<<<<< HEAD
       if (arg == "-f" || arg == "--format") {
-=======
-      if (arg == "--terminator") {
-        auto value = read_option_value(ctx.raw_args, i, "", false, arg);
-        if (!value) return std::unexpected(value.error());
-        cfg.terminator = *value;
-        continue;
-      }
-
-      if (arg.starts_with("--terminator=")) {
-        cfg.terminator = std::string(arg.substr(13));
-        continue;
-      }
-
-      if (arg == "--format") {
->>>>>>> origin/main
         auto value = read_option_value(ctx.raw_args, i, "", false, arg);
         if (!value) return std::unexpected(value.error());
         cfg.format = *value;
