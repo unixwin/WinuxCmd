@@ -1939,6 +1939,8 @@ TEST(sed, issue_1284_suppressed_empty_match_is_not_counted) {
   auto rb = pb.run();
   EXPECT_EQ(rb.exit_code, 0);
   EXPECT_EQ_TEXT(rb.stdout_text, "XaXaX\nXaXaX\nXaX\nXaXaXaX\n");
+}
+
 namespace {
 
 // #1332/#1333: fixture helpers for names TempDir cannot express.

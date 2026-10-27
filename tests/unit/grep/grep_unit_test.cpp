@@ -1887,6 +1887,8 @@ TEST(grep, issue_1283_drive_colon_operand_searches_carrier_file) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_NE(r.stdout_text.find("hello"), std::string::npos);
+}
+
 namespace {
 
 // #1332: same fixture note as the sed tests — TempDir::write routes
