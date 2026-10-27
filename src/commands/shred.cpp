@@ -52,6 +52,16 @@ REGISTER_COMMAND(
     /* author */ "WinuxCmd",
     /* copyright */ "Copyright © 2026 WinuxCmd",
     /* options */ SHRED_OPTIONS) {
+  // [GNU] option values are validated before the operand check and
+  // before any file is touched: `shred -n -1` reports the bad count
+  // even with no (or a nonexistent) file operand.
+  int passes = ctx.get<int>("-n", 3);
+  if (passes < 0) {
+    safeErrorPrintLn("shred: invalid number of passes: '" +
+                     std::to_string(passes) + "'");
+    return 1;
+  }
+
   if (ctx.positionals.empty()) {
     safeErrorPrintLn("shred: missing file operand");
     safeErrorPrintLn("Try 'shred --help' for more information.");
@@ -59,7 +69,6 @@ REGISTER_COMMAND(
   }
 
   bool force = ctx.get<bool>("-f", false) || ctx.get<bool>("--force", false);
-  int passes = ctx.get<int>("-n", 3);
   bool remove = ctx.get<bool>("-u", false) || ctx.has("--remove");
   // Parse --remove[=HOW]: [GNU] the bare default is wipesync (shred.c),
   // not unlink.
@@ -85,51 +94,110 @@ REGISTER_COMMAND(
     size_str = ctx.get<std::string>("--size", "");
   }
   std::optional<LONGLONG> size_limit;
-  if (!size_str.empty()) {
-    LONGLONG parsed = 0;
-    const char* data = size_str.data();
-    const char* end = size_str.data() + size_str.size();
-    auto [ptr, ec] = std::from_chars(data, end, parsed);
-    if (ec != std::errc() || parsed < 0) {
-      safeErrorPrintLn("shred: invalid size: '" + size_str + "'");
-      return 1;
-    }
-    // Parse optional suffix: K, M, G, T, P, E (case-insensitive)
-    LONGLONG multiplier = 1;
-    if (ptr < end) {
-      char suffix =
-          static_cast<char>(std::toupper(static_cast<unsigned char>(*ptr)));
-      ++ptr;
-      switch (suffix) {
-        case 'E':
-          multiplier *= 1024;
-          [[fallthrough]];
-        case 'P':
-          multiplier *= 1024;
-          [[fallthrough]];
-        case 'T':
-          multiplier *= 1024;
-          [[fallthrough]];
-        case 'G':
-          multiplier *= 1024;
-          [[fallthrough]];
-        case 'M':
-          multiplier *= 1024;
-          [[fallthrough]];
-        case 'K':
-          multiplier *= 1024;
-          break;
-        default:
-          safeErrorPrintLn("shred: invalid suffix in size: '" + size_str + "'");
-          return 1;
-      }
-      if (ptr != end) {
-        safeErrorPrintLn("shred: invalid size: '" + size_str + "'");
+  if (ctx.has("-s") || ctx.has("--size")) {
+    // [GNU] coreutils size grammar (xstrtoumax as used by shred -s):
+    // a base-0 number (0x hex, leading-0 octal), then an optional
+    // suffix: 'b' = 512, 'c' = 1, a power letter k/K/M/G/T/P/E/Z/Y
+    // (only 'k' may be lowercase) for 1024^n, the letter plus 'B' for
+    // 1000^n, the letter plus 'iB' for 1024^n, and a bare 'B' = 1024.
+    // Anything else (including an explicitly empty value) is invalid.
+    const std::string& s = size_str;
+    // strtoull silently wraps a leading '-' into a huge magnitude;
+    // the GNU unsigned grammar rejects a sign outright (plain
+    // "invalid file size", not the overflow wording).
+    {
+      const char* p = s.c_str();
+      while (*p == ' ' || *p == '\t') ++p;
+      if (*p == '-') {
+        safeErrorPrintLn("shred: invalid file size: '" + s + "'");
         return 1;
       }
     }
-    parsed *= multiplier;
-    size_limit = parsed;
+    char* endp = nullptr;
+    const unsigned long long magnitude =
+        std::strtoull(s.c_str(), &endp, 0);
+    bool invalid = endp == s.c_str();
+    unsigned long long value = magnitude;
+    bool overflow =
+        value > static_cast<unsigned long long>(
+            std::numeric_limits<long long>::max());
+    auto mul = [&](unsigned long long m) {
+      if (m != 0 && value > ~0ULL / m) {
+        overflow = true;
+        return;
+      }
+      value *= m;
+      if (value > static_cast<unsigned long long>(
+            std::numeric_limits<long long>::max())) {
+        overflow = true;
+      }
+    };
+    if (!invalid && endp != nullptr && *endp != '\0') {
+      const std::string suffix(endp);
+      auto power_of = [](char c, int& power) {
+        switch (c) {
+          case 'k':
+          case 'K':
+            power = 1;
+            return true;
+          case 'M':
+            power = 2;
+            return true;
+          case 'G':
+            power = 3;
+            return true;
+          case 'T':
+            power = 4;
+            return true;
+          case 'P':
+            power = 5;
+            return true;
+          case 'E':
+            power = 6;
+            return true;
+          case 'Z':
+            power = 7;
+            return true;
+          case 'Y':
+            power = 8;
+            return true;
+          default:
+            return false;
+        }
+      };
+      int power = 0;
+      unsigned long long base = 0;
+      if (suffix == "b") {
+        mul(512);
+      } else if (suffix == "c") {
+        // x1
+      } else if (suffix == "B") {
+        mul(1024);
+      } else if (suffix.size() == 1 && power_of(suffix[0], power)) {
+        base = 1024;
+      } else if (suffix.size() == 2 && suffix[1] == 'B' &&
+                 power_of(suffix[0], power)) {
+        base = 1000;
+      } else if (suffix.size() == 3 && suffix[1] == 'i' && suffix[2] == 'B' &&
+                 power_of(suffix[0], power)) {
+        base = 1024;
+      } else {
+        invalid = true;
+      }
+      if (base != 0) {
+        for (int i = 0; i < power; ++i) mul(base);
+      }
+    }
+    if (invalid || overflow) {
+      if (!invalid) {
+        safeErrorPrintLn("shred: invalid file size: '" + s +
+                         "': Value too large for defined data type");
+      } else {
+        safeErrorPrintLn("shred: invalid file size: '" + s + "'");
+      }
+      return 1;
+    }
+    size_limit = static_cast<LONGLONG>(value);
   }
 
   // Initialize CryptGenRandom
@@ -138,6 +206,87 @@ REGISTER_COMMAND(
                                        CRYPT_VERIFYCONTEXT);
 
   int exit_code = 0;
+
+  // Remove one already-overwritten file. For wipe/wipesync the file is
+  // first renamed to a fresh unpredictable name in the same directory
+  // and only THAT name is unlinked. The rename result must be checked
+  // and a name this call did not just create must never be deleted:
+  // the previous implementation renamed onto a compile-time constant
+  // name (hex[(ri * 7 + 31) % 16] = "f6d4b2907e5c3a1"), ignored the
+  // rename result, and deleted that path unconditionally — when an
+  // unrelated file already had the constant name, the rename failed,
+  // the unrelated file was deleted, and the shred target survived
+  // (silent data loss, exit 0).
+  auto remove_one = [&](const std::wstring& api_path,
+                        const std::string& display) -> bool {
+    if (remove_how == "unlink") {
+      if (DeleteFileW(api_path.c_str())) return true;
+      safeErrorPrintLn("shred: cannot remove '" + display + "'");
+      return false;
+    }
+    std::wstring dir_part;
+    const auto sep = api_path.find_last_of(L"\\/");
+    if (sep != std::wstring::npos) dir_part = api_path.substr(0, sep + 1);
+    for (int attempt = 0; attempt < 100; ++attempt) {
+      unsigned char bytes[8] = {};
+      if (crypt_ok) {
+        CryptGenRandom(hProv, static_cast<DWORD>(sizeof(bytes)), bytes);
+      } else {
+        // Fallback entropy when no CSP is available: time, pid and the
+        // attempt counter through an LCG.
+        unsigned long long seed =
+            static_cast<unsigned long long>(std::time(nullptr)) ^
+            (static_cast<unsigned long long>(GetCurrentProcessId()) << 16) ^
+            (static_cast<unsigned long long>(attempt + 1) *
+             0x9E3779B97F4A7C15ULL);
+        for (int i = 0; i < 8; ++i) {
+          seed = seed * 6364136223846793005ULL + 1442695040888963407ULL;
+          bytes[i] = static_cast<unsigned char>(seed >> 56);
+        }
+      }
+      static constexpr char hexd[] = "0123456789abcdef";
+      std::wstring candidate = dir_part;
+      for (unsigned char b : bytes) {
+        candidate += static_cast<wchar_t>(hexd[b >> 4]);
+        candidate += static_cast<wchar_t>(hexd[b & 0xF]);
+      }
+      // Never rename onto (or delete) a path that already exists.
+      if (GetFileAttributesW(candidate.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        continue;
+      }
+      if (!MoveFileW(api_path.c_str(), candidate.c_str())) {
+        const DWORD err = GetLastError();
+        if (err == ERROR_ALREADY_EXISTS || err == ERROR_FILE_EXISTS) {
+          continue;
+        }
+        safeErrorPrintLn("shred: cannot remove '" + display + "'");
+        return false;
+      }
+      if (remove_how == "wipesync" && !dir_part.empty()) {
+        // Sync the parent directory to ensure the rename is durable.
+        std::wstring parent_dir = dir_part;
+        while (parent_dir.size() > 1 &&
+               (parent_dir.back() == L'\\' || parent_dir.back() == L'/')) {
+          parent_dir.pop_back();
+        }
+        HANDLE hDir = CreateFileW(
+            parent_dir.c_str(), GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+            OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+        if (hDir != INVALID_HANDLE_VALUE) {
+          FlushFileBuffers(hDir);
+          CloseHandle(hDir);
+        }
+      }
+      if (!DeleteFileW(candidate.c_str())) {
+        safeErrorPrintLn("shred: cannot remove '" + display + "'");
+        return false;
+      }
+      return true;
+    }
+    safeErrorPrintLn("shred: cannot remove '" + display + "'");
+    return false;
+  };
 
   for (const auto& filename : ctx.positionals) {
     // #1240: the operand may use any accepted POSIX drive spelling
@@ -225,13 +374,14 @@ REGISTER_COMMAND(
       GetFileSizeEx(hFile, &fileSize);
       LONGLONG size = fileSize.QuadPart;
 
-      // Apply --size limit
       if (size_limit) {
-        size = std::min(size, *size_limit);
-      }
-
-      // Round up to block boundary unless --exact is specified
-      if (!exact && size > 0) {
+        // [GNU] -s N shreds exactly N bytes: the file grows when N
+        // exceeds its current size, and the block round-up below does
+        // not apply to an explicit size (a 5-byte file with -s 100
+        // ends up exactly 100 bytes, not one rounded block).
+        size = *size_limit;
+      } else if (!exact && size > 0) {
+        // Round up to block boundary unless --exact is specified
         constexpr LONGLONG BLOCK_SIZE = 512;
         size = ((size + BLOCK_SIZE - 1) / BLOCK_SIZE) * BLOCK_SIZE;
       }
@@ -239,8 +389,8 @@ REGISTER_COMMAND(
       if (size == 0) {
         if (!is_stdout) {
           CloseHandle(hFile);
-          if (remove) {
-            DeleteFileW(wfilename.c_str());
+          if (remove && !remove_one(wfilename, exp)) {
+            exit_code = 1;
           }
         }
         continue;
@@ -326,44 +476,9 @@ REGISTER_COMMAND(
 
       // Remove file if requested (never removes stdout for "-")
       if (remove && !is_stdout) {
-        if (remove_how == "wipe" || remove_how == "wipesync") {
-          // Obfuscate the file name before deletion (wipe/wipesync mode).
-          // On Windows, rename the file to a random name before unlinking.
-          std::wstring random_name = wfilename;
-          auto last_bs = random_name.find_last_of(L'\\');
-          if (last_bs != std::wstring::npos) {
-            std::wstring dir_part = random_name.substr(0, last_bs + 1);
-            // Generate a random 15-char hex name
-            wchar_t rand_buf[16];
-            for (int ri = 0; ri < 15; ++ri) {
-              static constexpr wchar_t hex[] = L"0123456789abcdef";
-              rand_buf[ri] =
-                  hex[(static_cast<unsigned char>(ri * 7 + 31)) % 16];
-            }
-            rand_buf[15] = 0;
-            random_name = dir_part + std::wstring(rand_buf);
-            MoveFileW(wfilename.c_str(), random_name.c_str());
-            if (remove_how == "wipesync") {
-              // Sync the parent directory to ensure the rename is durable
-              std::wstring parent_dir = wfilename.substr(0, last_bs);
-              HANDLE hDir = CreateFileW(
-                  parent_dir.c_str(), GENERIC_WRITE,
-                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                  nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
-              if (hDir != INVALID_HANDLE_VALUE) {
-                FlushFileBuffers(hDir);
-                CloseHandle(hDir);
-              }
-            }
-            DeleteFileW(random_name.c_str());
-          } else {
-            DeleteFileW(wfilename.c_str());
-          }
-        } else {
-          // Default: unlink -- simple deletion
-          DeleteFileW(wfilename.c_str());
-        }
-        if (verbose) {
+        if (!remove_one(wfilename, exp)) {
+          exit_code = 1;
+        } else if (verbose) {
           safePrint("shred: '" + exp + "': removed (" + remove_how + ")\n");
         }
       }

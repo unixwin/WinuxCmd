@@ -438,3 +438,22 @@ TEST(dd, noerror_recovery_skips_failed_block_and_syncs) {
                           [](char value) { return value == '\0'; }));
   EXPECT_EQ(bytes_read, 0u);
 }
+// #1374: dd expands the if= value in WINUX_SHELL_GLOB=native mode;
+// of= names a file to create and is never expanded.
+TEST(dd, dd_native_glob_expands_if_value_issue1374) {
+  TempDir tmp;
+  tmp.write("in.bin", "only\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_env(L"WINUX_SHELL_GLOB", L"native");
+  p.add(L"dd.exe", {L"if=in.*", L"of=out.bin", L"bs=64"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  std::ifstream out(tmp.path / "out.bin", std::ios::binary);
+  std::string copied((std::istreambuf_iterator<char>(out)),
+                     std::istreambuf_iterator<char>());
+  EXPECT_EQ_TEXT(copied, "only\n");
+}
+

@@ -1301,3 +1301,49 @@ TEST(du, issue_1288_same_deep_directory_two_spellings_counted_once) {
   }
   EXPECT_EQ(lines, 1u);
 }
+
+// #1372: du --inodes must report pure inode counts — every visited
+// object (including each directory itself) contributes exactly 1. The
+// old code initialized directory counts at 0 and added block totals
+// into the count (4097 for a directory holding one file; GNU: 2).
+TEST(du, du_inodes_empty_directory_counts_itself_issue1372) {
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "d");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"du.exe", {L"--inodes", L"d"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "1\td\n");
+}
+
+TEST(du, du_inodes_directory_with_one_file_issue1372) {
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "d");
+  tmp.write("d/one.txt", "hello\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"du.exe", {L"--inodes", L"d"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "2\td\n");
+}
+
+TEST(du, du_inodes_nested_tree_counts_every_object_issue1372) {
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "d" / "sub");
+  tmp.write("d/one.txt", "hello\n");
+  tmp.write("d/sub/x.txt", "world\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"du.exe", {L"--inodes", L"d"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "2\td/sub\n4\td\n");
+}

@@ -496,7 +496,17 @@ auto execute_tree(const CommandContext<TREE_OPTIONS.size()> &ctx)
   // Get target directories (default to current directory)
   std::vector<std::wstring> target_dirs;
   std::vector<std::wstring> target_spellings;
+  // [native-glob] #1374: in WINUX_SHELL_GLOB=native mode each operand
+  // expands through the shared helper first (a match splices in as its
+  // own target, spelled as matched); in shell mode this is a pass-through.
+  std::vector<std::string> globbed_operands;
   for (auto arg : ctx.positionals) {
+    for (auto& match : expand_file_operand(arg)) {
+      globbed_operands.push_back(std::move(match));
+    }
+  }
+  for (auto& operand_storage : globbed_operands) {
+    auto arg = std::string_view(operand_storage);
     // #1236: the operand may use any accepted POSIX drive spelling
     // ("/e/Data", "/cygdrive/e/Data", "/mnt/e/Data").  Handing that raw
     // text to GetFullPathNameW makes Win32 resolve a leading "/e" against
