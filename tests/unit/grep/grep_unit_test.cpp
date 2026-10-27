@@ -1865,3 +1865,36 @@ TEST(grep, trailing_space_read_issue1332) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "SSS\n");
 }
+
+TEST(grep, nul_txt_reads_file_issue1333) {
+  TempDir tmp;
+  tmp.write("NUL.txt", "real-content\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"grep.exe", {L"real", L"NUL.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "real-content\n");
+
+  Pipeline pc;
+  pc.set_cwd(tmp.wpath());
+  pc.add(L"grep.exe", {L"-c", L"real", L"NUL.txt"});
+  auto rc = pc.run();
+
+  EXPECT_EQ(rc.exit_code, 0);
+  EXPECT_TRUE(rc.stdout_text.find("1") != std::string::npos);
+}
+
+TEST(grep, bare_nul_still_device_issue1333) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"grep.exe", {L"-c", L"real", L"NUL"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.find("0") != std::string::npos);
+}

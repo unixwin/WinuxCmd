@@ -2000,3 +2000,28 @@ TEST(sed, trailing_dot_inplace_edits_dot_file_only_issue1332) {
   EXPECT_EQ_TEXT(tmp.read("name"), "lineB\n");
   EXPECT_EQ_TEXT(read_preserving(tmp, "name."), "EDITC\n");
 }
+
+TEST(sed, nul_txt_reads_file_issue1333) {
+  TempDir tmp;
+  tmp.write("NUL.txt", "real-content\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sed.exe", {L"-n", L"p", L"NUL.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "real-content\n");
+}
+
+TEST(sed, bare_nul_still_device_issue1333) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sed.exe", {L"-n", L"p", L"NUL"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "");
+}

@@ -539,4 +539,27 @@ TEST(cat, issue_1288_glob_expands_past_max_path) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "glob\n");
+TEST(cat, nul_txt_reads_file_issue1333) {
+  TempDir tmp;
+  tmp.write("NUL.txt", "real-content\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cat.exe", {L"NUL.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "real-content\n");
+}
+
+TEST(cat, bare_nul_still_device_issue1333) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cat.exe", {L"NUL"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "");
 }
