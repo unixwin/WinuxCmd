@@ -11,6 +11,19 @@
 module;
 
 #define WIN32_LEAN_AND_MEAN
+// Pre-include a C++ header so c++config.h's std declarations (e.g.
+// std::__is_constant_evaluated) are first seen with C++ linkage: pch.h's
+// windows.h chain (winnt.h -> x86intrin -> mm_malloc -> stdlib.h -> cstdlib)
+// would otherwise declare them inside winnt.h's extern "C" region, which
+// conflicts with the same declarations imported from module std (#1412).
+#include <cstddef>
+// _fileno (used below with _setmode) comes from <stdio.h>; MSVC's header
+// chain leaks it into this TU, GCC's does not.
+#include <stdio.h>
+// os_defines.h (via cstddef) defines NOMINMAX as 1; drop it so pch.h's own
+// bare definition below applies exactly as before, without a warning.
+#undef NOMINMAX
+
 #include "pch/pch.h"
 
 export module utils:console;

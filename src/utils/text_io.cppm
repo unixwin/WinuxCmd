@@ -1,5 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 caomengxuan666 <caomengxuan666@users.noreply.github.com>
+module;
+
+// Bare size_t is used below; like #1406/#1407 it must come from <cstddef>,
+// not from a leak out of module std (GCC's std module exports none).
+#include <cstddef>
+
 export module utils:textio;
 
 import std;
