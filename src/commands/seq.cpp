@@ -388,15 +388,10 @@ auto build_config(const CommandContext<SEQ_OPTIONS.size()>& ctx)
                                 "'");
   }
 
-  // Pre-compute the iteration count to guard against infinite loops caused by
-  // extremely small increments (e.g. seq 0 1e-20 1 would otherwise loop ~10^20
-  // times). Reject sequences with more than ~10^9 iterations.
-  {
-    const double count = (cfg.last - cfg.first) / cfg.increment + 1.0;
-    if (count > 1e9) {
-      return error_result<Config>("too many iterations");
-    }
-  }
+  // [GNU] seq.c imposes no iteration ceiling (#1376): generation is lazy
+  // and streamed through the chunk buffer in run(), so a pipeline consumer
+  // (head, grep -m, ...) decides how much is produced. An upfront count
+  // cap made `seq 1000000001 | head -3` fail before printing anything.
 
   if (!cfg.format.empty()) {
     auto format = validate_format(cfg.format);
@@ -594,6 +589,10 @@ auto run(const Config& cfg) -> int {
     const auto inc_i = static_cast<long long>(cfg.increment);
     char number_buf[32];
     for (long long x = first_i;;) {
+      // [GNU] a consumer that stops reading (head, grep -m) ends the
+      // stream: GNU seq dies of SIGPIPE; the console layer records the
+      // broken pipe in a flag instead, so poll it per item (#1376).
+      if (is_stdout_pipe_closed()) return 0;
       auto [ptr, ec] =
           std::to_chars(number_buf, number_buf + sizeof(number_buf), x);
       if (!first_item) {
@@ -663,6 +662,7 @@ auto run(const Config& cfg) -> int {
   };
 
   for (double i = 1;; ++i) {
+    if (is_stdout_pipe_closed()) return 0;  // see fast path note (#1376)
     const double prev = current;
     emit(current);
 

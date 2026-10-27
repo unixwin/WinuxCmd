@@ -55,9 +55,10 @@ auto open_failure_reason(std::string_view path) -> std::string {
   // Probe the operand's resolved spelling: the drive dialect ("/e") names
   // the same target the failed open was attempted on, while the raw text
   // decays to a cwd-drive-relative path and misclassifies the failure
-  // (#1230).
+  // (#1230). #1288: probe the extended spelling for the same reason —
+  // the normalized one still fails every probe past MAX_PATH.
   const std::filesystem::path fs_path =
-      std::filesystem::u8path(native_path::normalize_api_operand(path));
+      native_path::make_api_path_operand(path).extended;
   if (std::filesystem::is_directory(fs_path, ec) && !ec) {
     return "Is a directory";
   }
@@ -1290,6 +1291,37 @@ auto sum_quotef(std::string_view name) -> std::string {
   return out;
 }
 
+// GNU digest_check() result lines ("name: OK" / "FAILED" / "FAILED open
+// or read", stdout) do not shell-quote the name the way diagnostics do:
+// it is printed verbatim unless it contains '\\', '\n' or '\r', in which
+// case it takes the escaped spelling -- a leading '\' with each of those
+// characters backslash-escaped, the same spelling sum_parse_check_line()
+// accepts back.  (On a Windows path every separator is '\\', so quotef()
+// would wrap every absolute path in single quotes and ": OK" would no
+// longer follow the file name.)
+auto sum_result_name(std::string_view name) -> std::string {
+  if (name.find_first_of("\\\n\r") == std::string_view::npos) {
+    return std::string(name);
+  }
+  std::string out = "\\";
+  for (char c : name) {
+    switch (c) {
+      case '\\':
+        out += "\\\\";
+        break;
+      case '\n':
+        out += "\\n";
+        break;
+      case '\r':
+        out += "\\r";
+        break;
+      default:
+        out.push_back(c);
+    }
+  }
+  return out;
+}
+
 // GNU filename_unescape(): translate \\, \n and \r escapes introduced when
 // the check line started with '\'.  Returns nullopt on a bad escape.
 auto sum_unescape_filename(std::string_view s) -> std::optional<std::string> {
@@ -1471,14 +1503,17 @@ auto sum_digest_check(const std::string& program, const std::string& algo_tag,
   if (is_stdin) {
     display_name = "standard input";
   } else {
-    checkfile.open(native_path::normalize_api_operand(checkfile_name));
+    // #1288: open and probe the check file through its operand's
+    // extended spelling; the normalized narrow spelling fails past
+    // MAX_PATH.
+    const auto check_operand =
+        native_path::make_api_path_operand(checkfile_name);
+    checkfile.open(std::filesystem::path(check_operand.extended));
     if (!checkfile) {
-      std::error_code ec;
       // [GNU] fopen() succeeds on a directory and the first getline() then
       // fails: GNU reports "<file>: read error", not "Is a directory".
-      if (std::filesystem::is_directory(std::filesystem::u8path(checkfile_name),
-                                        ec) &&
-          !ec) {
+      if (native_path::attributes_are_directory(
+              native_path::operand_target_attributes_w(check_operand))) {
         safeErrorPrintLn(program + ": " + detail::sum_quotef(checkfile_name) +
                          ": read error");
       } else {
@@ -1515,9 +1550,12 @@ auto sum_digest_check(const std::string& program, const std::string& algo_tag,
 
     bool missing = false;
     if (flags.ignore_missing && parsed->filename != "-") {
-      std::error_code ec;
-      missing = !std::filesystem::exists(
-          std::filesystem::u8path(parsed->filename), ec);
+      // #1288: probe the listed file through its operand spelling; the
+      // raw u8path probe judges an existing long path missing and the
+      // entry is then silently skipped instead of verified.
+      missing = !native_path::valid_attributes(
+          native_path::operand_target_attributes_w(
+              native_path::make_api_path_operand(parsed->filename)));
     }
 
     if (!missing) {
@@ -1527,7 +1565,7 @@ auto sum_digest_check(const std::string& program, const std::string& algo_tag,
         safeErrorPrintLn(program + ": " + detail::sum_quotef(parsed->filename) +
                          ": " + detail::sum_open_reason(parsed->filename));
         if (!flags.status_only) {
-          safePrintLn(detail::sum_quotef(parsed->filename) +
+          safePrintLn(detail::sum_result_name(parsed->filename) +
                       ": FAILED open or read");
         }
         continue;
@@ -1548,7 +1586,7 @@ auto sum_digest_check(const std::string& program, const std::string& algo_tag,
 
       if (!flags.status_only) {
         if (!match || !flags.quiet) {
-          safePrintLn(detail::sum_quotef(parsed->filename) +
+          safePrintLn(detail::sum_result_name(parsed->filename) +
                       (match ? ": OK" : ": FAILED"));
         }
       }

@@ -915,7 +915,12 @@ auto behavior_for(std::string_view name) -> CommandBehavior {
       default_standard_interception_enabled;
 
   if (name == "env" || name == "nice" || name == "stdbuf" ||
-      name == "timeout") {
+      name == "timeout" || name == "chroot" || name == "runcon") {
+    // [GNU] chroot/runcon usage (option) errors also exit 125
+    // (EXIT_USAGE in the coreutils wrapper family, #1375); their
+    // missing-operand paths already returned 125/1 inconsistently —
+    // chroot's handler returns 125, runcon's stays 1 per its pinned
+    // repo tests.
     behavior.parse_error_exit_code = 125;
   } else if (name == "nohup") {
     behavior.parse_error_exit_code = is_posixly_correct() ? 127 : 125;
@@ -925,11 +930,13 @@ auto behavior_for(std::string_view name) -> CommandBehavior {
              name == "ls" || name == "dir" || name == "vdir" ||
              name == "getopt" || name == "expr" || name == "test" ||
              name == "[" || name == "grep" || name == "diff" ||
-             name == "diff3" || name == "sdiff" || name == "cmp") {
+             name == "diff3" || name == "sdiff" || name == "cmp" ||
+             name == "patch") {
     // [GNU] these commands exit 2 on option/usage errors.  GNU grep/diff/
     // diff3/sdiff/cmp document 2 as "trouble" for any usage or option error
     // (and diff/cmp also use 1 for "inputs differ"), so a rejected option
-    // must not be reported as an ordinary failure (WinuxCmd #1213).
+    // must not be reported as an ordinary failure (WinuxCmd #1213).  GNU
+    // patch likewise exits 2 on usage errors (WinuxCmd #1345).
     behavior.parse_error_exit_code = 2;
   }
 

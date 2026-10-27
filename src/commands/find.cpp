@@ -411,6 +411,14 @@ struct SizePredicate {
   unsigned long long unit = 512;
 };
 
+// Time predicates (-amin/-atime/-cmin/-ctime/-mmin/-mtime/-used) use a
+// floating-point value, unlike the integer numerics above: GNU accepts
+// fractions (0.5, .5, 1., 1e3) for every *min/*time numeric.
+struct TimePredicate {
+  NumericComparison comparison = NumericComparison::Exact;
+  double value = 0;
+};
+
 enum class PermissionComparison { Exact, All, Any };
 
 struct PermissionPredicate {
@@ -496,6 +504,7 @@ struct ExprNode {
   std::optional<portable_regex::Pattern> regex;
   std::optional<SizePredicate> size;
   std::optional<NumericPredicate> numeric;
+  std::optional<TimePredicate> time_pred;
   std::optional<PermissionPredicate> permission;
   std::optional<std::filesystem::file_time_type> reference_time;
   std::optional<long long> reference_ticks;
@@ -525,13 +534,13 @@ struct Config {
   std::string type_filter;
   std::optional<SizePredicate> size_filter;
   bool empty_filter = false;
-  std::optional<NumericPredicate> atime_filter;
-  std::optional<NumericPredicate> amin_filter;
-  std::optional<NumericPredicate> ctime_filter;
-  std::optional<NumericPredicate> cmin_filter;
-  std::optional<NumericPredicate> mtime_filter;
-  std::optional<NumericPredicate> mmin_filter;
-  std::optional<NumericPredicate> used_filter;
+  std::optional<TimePredicate> atime_filter;
+  std::optional<TimePredicate> amin_filter;
+  std::optional<TimePredicate> ctime_filter;
+  std::optional<TimePredicate> cmin_filter;
+  std::optional<TimePredicate> mtime_filter;
+  std::optional<TimePredicate> mmin_filter;
+  std::optional<TimePredicate> used_filter;
   int mindepth = 0;
   int maxdepth = std::numeric_limits<int>::max();
   bool has_print = false;
@@ -593,6 +602,42 @@ auto parse_numeric_predicate(std::string_view text)
   auto end = text.data() + text.size();
   auto [ptr, ec] = std::from_chars(begin, end, value);
   if (ec != std::errc() || ptr != end) {
+    return std::unexpected("invalid numeric argument");
+  }
+  if (value < 0) return std::unexpected("invalid numeric argument");
+
+  result.value = value;
+  return result;
+}
+
+// Time predicates accept fractions: GNU parses *min/*time numerics with
+// strtod semantics, so 0.5, .5, 1. and 1e3 are all valid. std::from_chars in
+// general format covers those spellings; full consumption rejects a bare
+// trailing exponent (1e), hex, and inf/nan (checked via isfinite).
+auto parse_time_predicate(std::string_view text)
+    -> cp::Result<TimePredicate> {
+  if (text.empty()) return std::unexpected("missing numeric argument");
+
+  TimePredicate result;
+  size_t pos = 0;
+  if (text[pos] == '+') {
+    result.comparison = NumericComparison::GreaterThan;
+    ++pos;
+  } else if (text[pos] == '-') {
+    result.comparison = NumericComparison::LessThan;
+    ++pos;
+  }
+
+  if (pos >= text.size()) return std::unexpected("invalid numeric argument");
+  if (text[pos] == '+' || text[pos] == '-') {
+    return std::unexpected("invalid numeric argument");
+  }
+
+  double value = 0;
+  auto begin = text.data() + pos;
+  auto end = text.data() + text.size();
+  auto [ptr, ec] = std::from_chars(begin, end, value);
+  if (ec != std::errc() || ptr != end || !std::isfinite(value)) {
     return std::unexpected("invalid numeric argument");
   }
   if (value < 0) return std::unexpected("invalid numeric argument");
@@ -716,6 +761,19 @@ auto parse_permission_predicate(std::string_view text)
       while (pos < text.size() && text[pos] != ',') {
         const char perm = text[pos++];
         for (char target : who) {
+          // [#1314] A u/g/o letter in permission position copies the
+          // source class's current rwx bits (from the mode accumulated
+          // so far, starting at 0) into the target class, for all three
+          // operators; "=" still clears the target's bits first.
+          if (perm == 'u' || perm == 'g' || perm == 'o') {
+            const unsigned source = perm == 'u'   ? (mode >> 6) & 7U
+                                     : perm == 'g' ? (mode >> 3) & 7U
+                                                   : mode & 7U;
+            const unsigned shift =
+                target == 'u' ? 6U : target == 'g' ? 3U : 0U;
+            clause_bits |= source << shift;
+            continue;
+          }
           auto bit = symbolic_bit(target, perm);
           if (!bit) {
             return std::unexpected("invalid -perm symbolic mode");
@@ -818,6 +876,189 @@ auto local_system_time_to_filetime_ticks(const SYSTEMTIME& local_time)
   return filetime_ticks(file_time);
 }
 
+// [#1311] Local calendar shift for -newermt month/year offsets:
+// Jan 31 - 1 month -> Dec 31, Mar 31 - 1 month -> Feb 28/29 (day clamp).
+auto shift_local_calendar(long long now_ticks, std::string_view unit,
+                          long long delta) -> std::optional<long long> {
+  FILETIME filetime{.dwLowDateTime =
+                        static_cast<DWORD>(now_ticks & 0xFFFFFFFFLL),
+                    .dwHighDateTime = static_cast<DWORD>(now_ticks >> 32)};
+  SYSTEMTIME utc{};
+  if (FileTimeToSystemTime(&filetime, &utc) == 0) return std::nullopt;
+  SYSTEMTIME local{};
+  if (SystemTimeToTzSpecificLocalTime(nullptr, &utc, &local) == 0) {
+    return std::nullopt;
+  }
+  auto days_in_month = [](int year, int month) {
+    static constexpr int kDays[] = {31, 28, 31, 30, 31, 30,
+                                    31, 31, 30, 31, 30, 31};
+    if (month != 2) return kDays[month - 1];
+    bool leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    return leap ? 29 : 28;
+  };
+  int year = local.wYear;
+  int month = local.wMonth;
+  if (unit == "month") {
+    long long total =
+        static_cast<long long>(year) * 12 + (month - 1) + delta;
+    long long new_year = total >= 0 ? total / 12 : -((-total + 11) / 12);
+    int new_month = static_cast<int>(total - new_year * 12) + 1;
+    year = static_cast<int>(new_year);
+    month = new_month;
+  } else {
+    year = static_cast<int>(static_cast<long long>(year) + delta);
+  }
+  int day = std::min<int>(local.wDay, days_in_month(year, month));
+  SYSTEMTIME shifted{.wYear = static_cast<WORD>(year),
+                     .wMonth = static_cast<WORD>(month),
+                     .wDay = static_cast<WORD>(day),
+                     .wHour = local.wHour,
+                     .wMinute = local.wMinute,
+                     .wSecond = local.wSecond,
+                     .wMilliseconds = local.wMilliseconds};
+  return local_system_time_to_filetime_ticks(shifted);
+}
+
+// [#1311] Subset of GNU get_date for -newermt: now/today/tomorrow/
+// yesterday, "last"/"next" <unit>, "<n>|a <unit>[s] ago", and month-name
+// dates ("Jan 1 2025", "1 Jan 2025"). Day words are offsets from now,
+// not midnights. Not covered (GNU accepts, out of scope here): compound
+// expressions ("2 days 3 hours ago"), fractional magnitudes, 2-digit
+// years, and weekday names.
+auto parse_relative_time_ticks(std::string_view text)
+    -> std::optional<long long> {
+  std::string lowered;
+  for (char c : text) {
+    lowered +=
+        static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+  std::vector<std::string_view> words;
+  size_t pos = 0;
+  while (pos < lowered.size()) {
+    while (pos < lowered.size() &&
+           std::isspace(static_cast<unsigned char>(lowered[pos])) != 0) {
+      ++pos;
+    }
+    size_t start = pos;
+    while (pos < lowered.size() &&
+           std::isspace(static_cast<unsigned char>(lowered[pos])) == 0) {
+      ++pos;
+    }
+    if (pos > start) words.emplace_back(lowered.data() + start, pos - start);
+  }
+  if (words.empty()) return std::nullopt;
+
+  auto unit_seconds = [](std::string_view unit) -> std::optional<long long> {
+    if (unit == "second" || unit == "sec") return 1LL;
+    if (unit == "minute" || unit == "min") return 60LL;
+    if (unit == "hour") return 3600LL;
+    if (unit == "day") return 86400LL;
+    if (unit == "week") return 604800LL;
+    if (unit == "fortnight") return 1209600LL;
+    return std::nullopt;
+  };
+  auto strip_plural = [](std::string_view unit) {
+    if (!unit.empty() && unit.back() == 's') unit.remove_suffix(1);
+    return unit;
+  };
+
+  FILETIME now_filetime{};
+  GetSystemTimeAsFileTime(&now_filetime);
+  long long now_ticks = filetime_ticks(now_filetime);
+  constexpr long long kTicksPerSecond = 10000000LL;
+
+  if (words.size() == 1) {
+    if (words[0] == "now" || words[0] == "today") return now_ticks;
+    if (words[0] == "tomorrow") {
+      return now_ticks + 86400LL * kTicksPerSecond;
+    }
+    if (words[0] == "yesterday") {
+      return now_ticks - 86400LL * kTicksPerSecond;
+    }
+    return std::nullopt;
+  }
+
+  if (words.size() == 2 && (words[0] == "last" || words[0] == "next")) {
+    std::string_view unit = strip_plural(words[1]);
+    long long sign = words[0] == "last" ? -1 : 1;
+    if (unit == "month" || unit == "year") {
+      return shift_local_calendar(now_ticks, unit, sign);
+    }
+    auto seconds = unit_seconds(unit);
+    if (!seconds) return std::nullopt;
+    return now_ticks + sign * *seconds * kTicksPerSecond;
+  }
+
+  if (words.size() == 3 && words[2] == "ago") {
+    long long magnitude = 0;
+    if (words[0] == "a") {
+      magnitude = 1;
+    } else {
+      auto [ptr, ec] = std::from_chars(words[0].data(),
+                                       words[0].data() + words[0].size(),
+                                       magnitude);
+      if (ec != std::errc() || ptr != words[0].data() + words[0].size() ||
+          magnitude < 0) {
+        return std::nullopt;
+      }
+    }
+    std::string_view unit = strip_plural(words[1]);
+    if (unit == "month" || unit == "year") {
+      return shift_local_calendar(now_ticks, unit, -magnitude);
+    }
+    auto seconds = unit_seconds(unit);
+    if (!seconds) return std::nullopt;
+    return now_ticks - magnitude * *seconds * kTicksPerSecond;
+  }
+
+  if (words.size() == 3) {
+    static constexpr std::array<std::string_view, 12> kMonths = {
+        "january", "february", "march",     "april",   "may",      "june",
+        "july",    "august",   "september", "october", "november", "december"};
+    int month = 0;
+    size_t month_idx = words.size();
+    for (size_t i = 0; i < words.size(); ++i) {
+      for (size_t m = 0; m < kMonths.size(); ++m) {
+        if (words[i] == kMonths[m] || words[i] == kMonths[m].substr(0, 3)) {
+          month = static_cast<int>(m) + 1;
+          month_idx = i;
+        }
+      }
+    }
+    if (month == 0) return std::nullopt;
+    auto parse_number = [](std::string_view word) -> std::optional<long long> {
+      long long value = 0;
+      auto [ptr, ec] =
+          std::from_chars(word.data(), word.data() + word.size(), value);
+      if (ec != std::errc() || ptr != word.data() + word.size()) {
+        return std::nullopt;
+      }
+      return value;
+    };
+    long long day = 0;
+    long long year = 0;
+    for (size_t i = 0; i < words.size(); ++i) {
+      if (i == month_idx) continue;
+      auto number = parse_number(words[i]);
+      if (!number) return std::nullopt;
+      if (*number >= 1000) {
+        year = *number;
+      } else if (*number >= 1 && *number <= 31 && day == 0) {
+        day = *number;
+      } else {
+        return std::nullopt;
+      }
+    }
+    if (day == 0 || year == 0) return std::nullopt;
+    SYSTEMTIME st{.wYear = static_cast<WORD>(year),
+                  .wMonth = static_cast<WORD>(month),
+                  .wDay = static_cast<WORD>(day)};
+    return local_system_time_to_filetime_ticks(st);
+  }
+
+  return std::nullopt;
+}
+
 auto parse_literal_time_ticks(std::string_view text)
     -> std::optional<long long> {
   auto trim = [](std::string_view value) {
@@ -834,6 +1075,16 @@ auto parse_literal_time_ticks(std::string_view text)
 
   text = trim(text);
   if (text.empty()) return std::nullopt;
+
+  // [#1311] GNU -newermt parses via get_date: relative expressions,
+  // @epoch, and month-name dates are all valid. This is the subset the
+  // issue needs; day words are offsets from now (today == now, tomorrow
+  // == now + 1 day, yesterday == now - 1 day), 'a' counts as 1, 'an' is
+  // rejected by GNU and is rejected here too, and 'midnight'/'noon' are
+  // rejected by GNU's -newermt and are not added. Month/year offsets use
+  // local calendar arithmetic with day clamping (Jan 31 - 1 month ->
+  // Dec 31; Mar 31 - 1 month -> Feb 28/29).
+  if (auto relative = parse_relative_time_ticks(text)) return *relative;
 
   if (text.front() == '@') {
     long long seconds = 0;
@@ -987,8 +1238,12 @@ auto parse_regex(FindRegexDialect dialect, std::string_view pattern,
 auto reference_write_time(std::string_view path)
     -> cp::Result<std::filesystem::file_time_type> {
   std::error_code ec;
+  // #1288: the -newer reference is a user operand: normalize it at the
+  // operand boundary and read the extended spelling, or a reference
+  // past MAX_PATH (or spelled with '/' separators) reads as missing.
+  const auto operand = native_path::make_api_path_operand(path);
   auto t = std::filesystem::last_write_time(
-      std::filesystem::path(utf8_to_wstring(std::string(path))), ec);
+      std::filesystem::path(operand.extended), ec);
   if (ec) return std::unexpected("cannot read reference file for -newer");
   return t;
 }
@@ -1215,6 +1470,22 @@ auto parse_roots(std::span<const std::string_view> args)
         })) {
       continue;
     }
+    // [#1317] A leading "--" ends option scanning (GNU findutils
+    // parser.c): skip it while no root has been seen yet. Once a root
+    // exists, "--" is an expression token, so stop the root scan and let
+    // the expression parser reject it as an unknown predicate.
+    if (arg == "--") {
+      if (roots.empty()) continue;
+      break;
+    }
+    // [#1317] Any other dash-led token that is not a leading global option
+    // is an expression token, never a root: stop the scan so the
+    // expression parser reports it (GNU: unknown predicate, e.g. for
+    // "-maxdepth=1") instead of treating it as a start point. A lone "-"
+    // stays a root (GNU treats "-" as a path).
+    if (arg.size() > 1 && arg[0] == '-') {
+      break;
+    }
     if (is_path_option(arg) || arg == "!" || arg == "(" || arg == ")" ||
         arg == ",") {
       break;
@@ -1333,6 +1604,19 @@ auto expression_start_index(std::span<const std::string_view> args) -> size_t {
           return std::isdigit(static_cast<unsigned char>(ch)) != 0;
         })) {
       continue;
+    }
+    // [#1317] "--" ends option scanning only before the first root; after
+    // a root it starts the expression (GNU rejects it there as an unknown
+    // predicate).
+    if (arg == "--") {
+      if (!roots_seen) continue;
+      return i;
+    }
+    // [#1317] Any other dash-led token starts the expression, so the
+    // parser reports unknown predicates like "-maxdepth=1" instead of
+    // swallowing the token as a root. A lone "-" stays a root.
+    if (arg.size() > 1 && arg[0] == '-') {
+      return i;
     }
     if (is_path_option(arg) || arg == "(" || arg == ")" || arg == ",") {
       return i;
@@ -1476,7 +1760,9 @@ class ExpressionParser {
       if (is_and(peek())) {
         consume();
       } else if (!starts_primary(peek())) {
-        return std::unexpected("invalid find expression");
+        // [#1317] GNU reports an unrecognized predicate by name.
+        return std::unexpected("unknown predicate `" + std::string(peek()) +
+                                "'");
       }
 
       auto right = parse_not();
@@ -1589,6 +1875,21 @@ class ExpressionParser {
     if (option == "-user" || option == "-group") {
       auto value = require_value(option);
       if (!value) return std::unexpected(value.error());
+      // [#1313] GNU resolves a non-numeric name at parse time: an
+      // unknown user/group is an error, not a never-matching predicate.
+      // Numeric specs pass without a lookup (matching the fallback in
+      // win32_account_matches).
+      const bool all_digits =
+          !value->empty() &&
+          std::all_of(value->begin(), value->end(), [](char ch) {
+            return std::isdigit(static_cast<unsigned char>(ch)) != 0;
+          });
+      if (!all_digits &&
+          !win32_lookup_account(utf8_to_wstring(*value))) {
+        return std::unexpected(
+            "'" + *value + "' is not the name of " +
+            (option == "-user" ? "a known user" : "an existing group"));
+      }
       auto node =
           make_expr(option == "-user" ? ExprKind::User : ExprKind::Group);
       node->text = std::move(*value);
@@ -1626,7 +1927,7 @@ class ExpressionParser {
         option == "-used") {
       auto value = require_value(option);
       if (!value) return std::unexpected(value.error());
-      auto parsed = parse_numeric_predicate(*value);
+      auto parsed = parse_time_predicate(*value);
       if (!parsed) return std::unexpected(parsed.error());
       ExprKind kind = ExprKind::MMin;
       if (option == "-used") kind = ExprKind::Used;
@@ -1636,7 +1937,7 @@ class ExpressionParser {
       if (option == "-ctime") kind = ExprKind::CTime;
       if (option == "-mtime") kind = ExprKind::MTime;
       auto node = make_expr(kind);
-      node->numeric = *parsed;
+      node->time_pred = *parsed;
       return node;
     }
 
@@ -1817,7 +2118,8 @@ class ExpressionParser {
       return std::unexpected("missing expression");
     }
 
-    return std::unexpected("invalid find expression");
+    // [#1317] GNU reports an unrecognized predicate by name.
+    return std::unexpected("unknown predicate `" + std::string(option) + "'");
   }
 };
 
@@ -1852,8 +2154,13 @@ auto parse_expression(std::span<const std::string_view> raw_args)
 auto prepare_find_output_file(Config& cfg, const std::string& path)
     -> cp::Result<void> {
   if (cfg.output_files.contains(path)) return {};
+  // #1288: open the operand's extended spelling (the -fprint* target is
+  // a user path: the raw spelling made "/d/out" land in "<cwd>\d\out"
+  // and fails outright past MAX_PATH). The map stays keyed by the
+  // original operand string.
+  const auto operand = native_path::make_api_path_operand(path);
   auto out = std::make_unique<std::ofstream>(
-      std::filesystem::path(utf8_to_wstring(path)),
+      std::filesystem::path(operand.extended),
       std::ios::binary | std::ios::trunc);
   if (!out->is_open()) {
     return std::unexpected("cannot open output file " + path);
@@ -1989,54 +2296,57 @@ auto build_config(const CommandContext<FIND_OPTIONS.size()>& ctx)
 
   auto atime_text = ctx.get<std::string>("-atime", "");
   if (!atime_text.empty()) {
-    auto parsed = parse_numeric_predicate(atime_text);
+    auto parsed = parse_time_predicate(atime_text);
     if (!parsed) return std::unexpected(parsed.error());
     cfg.atime_filter = *parsed;
   }
 
   auto amin_text = ctx.get<std::string>("-amin", "");
   if (!amin_text.empty()) {
-    auto parsed = parse_numeric_predicate(amin_text);
+    auto parsed = parse_time_predicate(amin_text);
     if (!parsed) return std::unexpected(parsed.error());
     cfg.amin_filter = *parsed;
   }
 
   auto ctime_text = ctx.get<std::string>("-ctime", "");
   if (!ctime_text.empty()) {
-    auto parsed = parse_numeric_predicate(ctime_text);
+    auto parsed = parse_time_predicate(ctime_text);
     if (!parsed) return std::unexpected(parsed.error());
     cfg.ctime_filter = *parsed;
   }
 
   auto cmin_text = ctx.get<std::string>("-cmin", "");
   if (!cmin_text.empty()) {
-    auto parsed = parse_numeric_predicate(cmin_text);
+    auto parsed = parse_time_predicate(cmin_text);
     if (!parsed) return std::unexpected(parsed.error());
     cfg.cmin_filter = *parsed;
   }
 
   auto mtime_text = ctx.get<std::string>("-mtime", "");
   if (!mtime_text.empty()) {
-    auto parsed = parse_numeric_predicate(mtime_text);
+    auto parsed = parse_time_predicate(mtime_text);
     if (!parsed) return std::unexpected(parsed.error());
     cfg.mtime_filter = *parsed;
   }
 
   auto used_text = ctx.get<std::string>("-used", "");
   if (!used_text.empty()) {
-    auto parsed = parse_numeric_predicate(used_text);
+    auto parsed = parse_time_predicate(used_text);
     if (!parsed) return std::unexpected(parsed.error());
     cfg.used_filter = *parsed;
   }
 
   auto mmin_text = ctx.get<std::string>("-mmin", "");
   if (!mmin_text.empty()) {
-    auto parsed = parse_numeric_predicate(mmin_text);
+    auto parsed = parse_time_predicate(mmin_text);
     if (!parsed) return std::unexpected(parsed.error());
     cfg.mmin_filter = *parsed;
   }
 
-  if (cfg.mindepth < 0 || cfg.maxdepth < 0 || cfg.mindepth > cfg.maxdepth) {
+  // [#1312] GNU treats -mindepth greater than -maxdepth as a valid,
+  // never-matching range (empty output, exit 0), not an error. Only
+  // negative depths are rejected.
+  if (cfg.mindepth < 0 || cfg.maxdepth < 0) {
     return std::unexpected("invalid depth range");
   }
 
@@ -2058,10 +2368,14 @@ auto build_config(const CommandContext<FIND_OPTIONS.size()>& ctx)
     return std::unexpected(ok.error());
   }
 
+  // [#1309] -ls, -fls and -quit are actions too: their presence must
+  // suppress the default -print, just like -print/-printf/-exec do.
   bool has_print_action = ctx.get<bool>("-print", false) ||
                           ctx.get<bool>("-print0", false) ||
                           ctx.has("-fprint") || ctx.has("-fprint0") ||
-                          ctx.has("-printf") || ctx.has("-fprintf");
+                          ctx.has("-printf") || ctx.has("-fprintf") ||
+                          ctx.has("-ls") || ctx.has("-fls") ||
+                          ctx.has("-quit");
   if (!has_print_action && !cfg.delete_action && cfg.exec_actions.empty()) {
     cfg.has_print = true;  // default action
   }
@@ -2178,13 +2492,40 @@ auto is_empty_entry(const std::filesystem::directory_entry& e) -> bool {
   return false;
 }
 
-auto size_matches(const std::filesystem::directory_entry& e,
-                  const SizePredicate& pred) -> bool {
+// [#1310] GNU applies -size to every file type: the lstat size for
+// symlinks (target-path length on this platform), the stat size for
+// regular files and directories, and 0 for fifos/sockets. Under -L a
+// symlink resolves to its target's size, except a dangling link, which
+// falls back to the link itself (probed against GNU findutils 4.9.0).
+auto find_size_bytes(const std::filesystem::directory_entry& e,
+                     bool follow_symlinks) -> unsigned long long {
   std::error_code ec;
-  if (!e.is_regular_file(ec) || ec) return false;
+  if (e.is_symlink(ec) || is_directory_reparse_point(e)) {
+    if (follow_symlinks) {
+      ec.clear();
+      auto target_size = e.file_size(ec);
+      if (!ec) return static_cast<unsigned long long>(target_size);
+    }
+    ec.clear();
+    auto target = std::filesystem::read_symlink(e.path(), ec);
+    if (ec) return 0;
+    return static_cast<unsigned long long>(path_to_utf8(target).size());
+  }
 
-  auto bytes = e.file_size(ec);
-  if (ec) return false;
+  ec.clear();
+  if (e.is_regular_file(ec) || e.is_directory(ec)) {
+    auto size = e.file_size(ec);
+    if (ec) return 0;
+    return static_cast<unsigned long long>(size);
+  }
+
+  // Fifos, sockets and other special files have no size: 0 units.
+  return 0;
+}
+
+auto size_matches(const std::filesystem::directory_entry& e,
+                  const SizePredicate& pred, bool follow_symlinks) -> bool {
+  const auto bytes = find_size_bytes(e, follow_symlinks);
 
   unsigned long long units = 0;
   if (bytes != 0) {
@@ -2231,42 +2572,84 @@ auto age_reference_now_ticks(bool daystart) -> long long {
   return ticks ? *ticks : filetime_ticks(now_filetime);
 }
 
-auto file_age_units(const std::filesystem::path& p, FindFileTimeKind kind,
-                    std::chrono::seconds unit, bool daystart)
+// [#1311] GNU time predicates use two window families over the age in
+// whole seconds, with NO clamping of future timestamps (a negative age
+// simply falls wherever the window puts it):
+//   MIN family (amin/cmin/mmin; -used on the atime-ctime gap in days):
+//     exact v: (v-1)*u <= age < v*u;  +v: age > v*u;  -v: age < v*u.
+//   DAY family (atime/ctime/mtime):
+//     exact v: v*u <= age < (v+1)*u;  +v: age >= (v+1)*u;  -v: age < v*u.
+// The old floor/trunc model (age clamped at 0, then divided) is wrong for
+// both families, not just for future files: e.g. a 61-second-old file
+// matches neither -mmin 1 nor -mmin 2 under the old model, but GNU
+// matches it with -mmin 2 only.
+auto file_age_seconds(const std::filesystem::path& p, FindFileTimeKind kind)
     -> std::optional<long long> {
   auto ticks = win32_file_time_ticks(p, kind);
   if (!ticks) return std::nullopt;
-
-  long long now_ticks = age_reference_now_ticks(daystart);
-  long long elapsed_ticks = now_ticks - *ticks;
-  if (elapsed_ticks < 0) elapsed_ticks = 0;
-
-  auto elapsed_seconds = std::chrono::seconds(elapsed_ticks / 10000000LL);
-  return elapsed_seconds.count() / unit.count();
+  long long now_ticks = age_reference_now_ticks(false);
+  return (now_ticks - *ticks) / 10000000LL;
 }
 
-/// Compute (access_time - change_time) in the given unit for `-used`.
-/// GNU find's `-used n` tests whether the file was last accessed n*24 hours
-/// after its status was last changed.  On Windows, NTFS provides both
-/// LastAccessTime and ChangeTime via FILE_BASIC_INFO.
-auto file_used_age_units(const std::filesystem::path& p,
-                         std::chrono::seconds unit)
+// [#1311] -daystart for the DAY family: calendar-day difference between
+// the file's local day and today, DST-safe via llround (a 23/25-hour day
+// still counts as one day). Returns day_count * 86400 so callers keep
+// working in seconds.
+auto file_age_daystart_seconds(const std::filesystem::path& p,
+                               FindFileTimeKind kind)
+    -> std::optional<long long> {
+  auto ticks = win32_file_time_ticks(p, kind);
+  if (!ticks) return std::nullopt;
+  FILETIME filetime{.dwLowDateTime = static_cast<DWORD>(*ticks & 0xFFFFFFFFLL),
+                    .dwHighDateTime =
+                        static_cast<DWORD>(*ticks >> 32)};
+  SYSTEMTIME utc{};
+  if (FileTimeToSystemTime(&filetime, &utc) == 0) return std::nullopt;
+  SYSTEMTIME local{};
+  if (SystemTimeToTzSpecificLocalTime(nullptr, &utc, &local) == 0) {
+    return std::nullopt;
+  }
+  SYSTEMTIME day_start_local{.wYear = local.wYear,
+                             .wMonth = local.wMonth,
+                             .wDay = local.wDay};
+  auto day_start_ticks = local_system_time_to_filetime_ticks(day_start_local);
+  if (!day_start_ticks) return std::nullopt;
+  long long now_day_ticks = age_reference_now_ticks(true);
+  double days = std::llround(static_cast<double>(now_day_ticks -
+                                                 *day_start_ticks) /
+                             864000000000.0);
+  return static_cast<long long>(days * 86400.0);
+}
+
+// [#1311] -used gap in raw ticks (access_time - change_time), unclamped.
+// The negativity test must use ticks, not seconds: a freshly created
+// file can carry atime a few hundred microseconds BEFORE ctime, and GNU
+// (timespec-precise) treats any negative gap as never-matching, while
+// truncating to seconds would falsely report gap 0 and match -used 1.
+auto used_gap_ticks(const std::filesystem::path& p)
     -> std::optional<long long> {
   auto access_ticks = win32_file_time_ticks(p, FindFileTimeKind::Access);
   auto change_ticks = win32_file_time_ticks(p, FindFileTimeKind::Change);
   if (!access_ticks || !change_ticks) return std::nullopt;
-
-  long long diff_ticks = *access_ticks - *change_ticks;
-  if (diff_ticks < 0) diff_ticks = 0;
-
-  auto diff_seconds = std::chrono::seconds(diff_ticks / 10000000LL);
-  return diff_seconds.count() / unit.count();
+  return *access_ticks - *change_ticks;
 }
 
-auto modification_age_units(const std::filesystem::directory_entry& e,
-                            std::chrono::seconds unit, bool daystart)
-    -> std::optional<long long> {
-  return file_age_units(e.path(), FindFileTimeKind::Modify, unit, daystart);
+auto time_matches(const TimePredicate& pred, long long age_seconds,
+                  std::chrono::seconds unit, bool day_family) -> bool {
+  double age = static_cast<double>(age_seconds);
+  double u = static_cast<double>(unit.count());
+  double v = pred.value;
+  switch (pred.comparison) {
+    case NumericComparison::Exact:
+      if (day_family) return age >= v * u && age < (v + 1) * u;
+      return age >= (v - 1) * u && age < v * u;
+    case NumericComparison::GreaterThan:
+      if (day_family) return age >= (v + 1) * u;
+      return age > v * u;
+    case NumericComparison::LessThan:
+      return age < v * u;
+  }
+  return false;
 }
 
 auto print_path(std::string_view path, bool null_terminated) -> void;
@@ -2287,9 +2670,50 @@ auto file_size_bytes(const std::filesystem::directory_entry& e)
 auto permission_string(const std::filesystem::path& p,
                        const std::filesystem::directory_entry& e)
     -> std::string;
+auto allocated_block_count(const std::filesystem::path& p,
+                           const std::filesystem::directory_entry& e,
+                           unsigned long long unit) -> unsigned long long;
 auto format_printf(std::string_view fmt, const std::filesystem::path& p,
                    const std::filesystem::directory_entry& e, int depth,
                    const std::filesystem::path& root) -> std::string;
+// [#1309] GNU "ls -dils" date: "%b %e %H:%M" for files modified within
+// the last half Julian year (15778476 seconds) and not more than 3600
+// seconds in the future, else "%b %e %Y" (space-padded day in both).
+auto format_ls_date(const std::filesystem::path& p) -> std::string {
+  static constexpr std::array<const char*, 12> kMonths = {
+      "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+  auto ticks = win32_file_time_ticks(p, FindFileTimeKind::Modify);
+  if (!ticks) return "";
+  LARGE_INTEGER value;
+  value.QuadPart = *ticks;
+  FILETIME file_time{};
+  file_time.dwLowDateTime = value.LowPart;
+  file_time.dwHighDateTime = value.HighPart;
+  FILETIME local_file_time{};
+  SYSTEMTIME local_system_time{};
+  if (!FileTimeToLocalFileTime(&file_time, &local_file_time) ||
+      !FileTimeToSystemTime(&local_file_time, &local_system_time)) {
+    return "";
+  }
+  const long long age_seconds =
+      (age_reference_now_ticks(false) - *ticks) / 10000000;
+  std::ostringstream out;
+  const auto month = local_system_time.wMonth >= 1 &&
+                             local_system_time.wMonth <= 12
+                         ? kMonths[local_system_time.wMonth - 1]
+                         : "???";
+  out << month << ' ' << std::setw(2) << local_system_time.wDay << ' ';
+  if (age_seconds >= -3600 && age_seconds <= 15778476) {
+    out << std::setw(2) << std::setfill('0') << local_system_time.wHour
+        << ':' << std::setw(2) << std::setfill('0')
+        << local_system_time.wMinute;
+  } else {
+    out << local_system_time.wYear;
+  }
+  return out.str();
+}
+
 auto evaluate_expression(const ExprNode& expr, const std::filesystem::path& p,
                          const std::filesystem::directory_entry& e, int depth,
                          const std::filesystem::path& root, Config& cfg)
@@ -2389,54 +2813,65 @@ auto evaluate_expression(const ExprNode& expr, const std::filesystem::path& p,
       return is_empty_entry(e);
 
     case ExprKind::Size:
-      return expr.size && size_matches(e, *expr.size);
+      return expr.size && size_matches(e, *expr.size, cfg.follow_symlinks);
 
     case ExprKind::ATime: {
-      if (!expr.numeric) return false;
-      auto age = file_age_units(p, FindFileTimeKind::Access,
-                                std::chrono::hours(24), cfg.daystart);
-      return age && numeric_matches(*expr.numeric, *age);
+      if (!expr.time_pred) return false;
+      auto age = cfg.daystart
+                     ? file_age_daystart_seconds(p, FindFileTimeKind::Access)
+                     : file_age_seconds(p, FindFileTimeKind::Access);
+      return age &&
+             time_matches(*expr.time_pred, *age, std::chrono::hours(24), true);
     }
 
     case ExprKind::AMin: {
-      if (!expr.numeric) return false;
-      auto age = file_age_units(p, FindFileTimeKind::Access,
-                                std::chrono::minutes(1), cfg.daystart);
-      return age && numeric_matches(*expr.numeric, *age);
+      if (!expr.time_pred) return false;
+      auto age = file_age_seconds(p, FindFileTimeKind::Access);
+      return age &&
+             time_matches(*expr.time_pred, *age, std::chrono::minutes(1),
+                          false);
     }
 
     case ExprKind::CTime: {
-      if (!expr.numeric) return false;
-      auto age = file_age_units(p, FindFileTimeKind::Change,
-                                std::chrono::hours(24), cfg.daystart);
-      return age && numeric_matches(*expr.numeric, *age);
+      if (!expr.time_pred) return false;
+      auto age = cfg.daystart
+                     ? file_age_daystart_seconds(p, FindFileTimeKind::Change)
+                     : file_age_seconds(p, FindFileTimeKind::Change);
+      return age &&
+             time_matches(*expr.time_pred, *age, std::chrono::hours(24), true);
     }
 
     case ExprKind::CMin: {
-      if (!expr.numeric) return false;
-      auto age = file_age_units(p, FindFileTimeKind::Change,
-                                std::chrono::minutes(1), cfg.daystart);
-      return age && numeric_matches(*expr.numeric, *age);
+      if (!expr.time_pred) return false;
+      auto age = file_age_seconds(p, FindFileTimeKind::Change);
+      return age &&
+             time_matches(*expr.time_pred, *age, std::chrono::minutes(1),
+                          false);
     }
 
     case ExprKind::MTime: {
-      if (!expr.numeric) return false;
-      auto age =
-          modification_age_units(e, std::chrono::hours(24), cfg.daystart);
-      return age && numeric_matches(*expr.numeric, *age);
+      if (!expr.time_pred) return false;
+      auto age = cfg.daystart
+                     ? file_age_daystart_seconds(p, FindFileTimeKind::Modify)
+                     : file_age_seconds(p, FindFileTimeKind::Modify);
+      return age &&
+             time_matches(*expr.time_pred, *age, std::chrono::hours(24), true);
     }
 
     case ExprKind::MMin: {
-      if (!expr.numeric) return false;
-      auto age =
-          modification_age_units(e, std::chrono::minutes(1), cfg.daystart);
-      return age && numeric_matches(*expr.numeric, *age);
+      if (!expr.time_pred) return false;
+      auto age = file_age_seconds(p, FindFileTimeKind::Modify);
+      return age &&
+             time_matches(*expr.time_pred, *age, std::chrono::minutes(1),
+                          false);
     }
 
     case ExprKind::Used: {
-      if (!expr.numeric) return false;
-      auto age = file_used_age_units(p, std::chrono::hours(24));
-      return age && numeric_matches(*expr.numeric, *age);
+      if (!expr.time_pred) return false;
+      auto gap_ticks = used_gap_ticks(p);
+      return gap_ticks && *gap_ticks >= 0 &&
+             time_matches(*expr.time_pred, *gap_ticks / 10000000LL,
+                          std::chrono::hours(24), false);
     }
 
     case ExprKind::Newer: {
@@ -2509,12 +2944,20 @@ auto evaluate_expression(const ExprNode& expr, const std::filesystem::path& p,
 
     case ExprKind::Ls:
     case ExprKind::Fls: {
-      std::string text = permission_string(p, e) + " " +
+      // [#1309] GNU "ls -dils" shape: inode, 1K blocks, mode, links,
+      // owner, group, size, date, path. Fields are single-space
+      // separated (GNU pads inode/blocks columns; content and field
+      // count match, padding does not).
+      const auto ownership = win32_ownership_info(p);
+      const auto index = win32_file_index_value(p);
+      std::string text = std::to_string(index.value_or(0)) + " " +
+                         std::to_string(allocated_block_count(p, e, 1024)) +
+                         " " + permission_string(p, e) + " " +
                          std::to_string(win32_hard_link_count(p)) + " " +
-                         win32_ownership_info(p).owner_name + " " +
-                         win32_ownership_info(p).group_name + " " +
+                         ownership.owner_name + " " +
+                         ownership.group_name + " " +
                          std::to_string(file_size_bytes(e)) + " " +
-                         path_display(p) + "\n";
+                         format_ls_date(p) + " " + path_display(p) + "\n";
       if (expr.kind == ExprKind::Ls) {
         safePrint(text);
         return true;
@@ -2602,45 +3045,75 @@ auto entry_matches(Config& cfg, const std::filesystem::path& p,
 
   if (cfg.empty_filter && !is_empty_entry(e)) return false;
 
-  if (cfg.size_filter && !size_matches(e, *cfg.size_filter)) return false;
+  if (cfg.size_filter &&
+      !size_matches(e, *cfg.size_filter, cfg.follow_symlinks)) {
+    return false;
+  }
 
   if (cfg.atime_filter) {
-    auto age = file_age_units(p, FindFileTimeKind::Access,
-                              std::chrono::hours(24), cfg.daystart);
-    if (!age || !numeric_matches(*cfg.atime_filter, *age)) return false;
+    auto age = cfg.daystart
+                   ? file_age_daystart_seconds(p, FindFileTimeKind::Access)
+                   : file_age_seconds(p, FindFileTimeKind::Access);
+    if (!age ||
+        !time_matches(*cfg.atime_filter, *age, std::chrono::hours(24), true)) {
+      return false;
+    }
   }
 
   if (cfg.amin_filter) {
-    auto age = file_age_units(p, FindFileTimeKind::Access,
-                              std::chrono::minutes(1), cfg.daystart);
-    if (!age || !numeric_matches(*cfg.amin_filter, *age)) return false;
+    auto age = file_age_seconds(p, FindFileTimeKind::Access);
+    if (!age ||
+        !time_matches(*cfg.amin_filter, *age, std::chrono::minutes(1),
+                      false)) {
+      return false;
+    }
   }
 
   if (cfg.ctime_filter) {
-    auto age = file_age_units(p, FindFileTimeKind::Change,
-                              std::chrono::hours(24), cfg.daystart);
-    if (!age || !numeric_matches(*cfg.ctime_filter, *age)) return false;
+    auto age = cfg.daystart
+                   ? file_age_daystart_seconds(p, FindFileTimeKind::Change)
+                   : file_age_seconds(p, FindFileTimeKind::Change);
+    if (!age ||
+        !time_matches(*cfg.ctime_filter, *age, std::chrono::hours(24), true)) {
+      return false;
+    }
   }
 
   if (cfg.cmin_filter) {
-    auto age = file_age_units(p, FindFileTimeKind::Change,
-                              std::chrono::minutes(1), cfg.daystart);
-    if (!age || !numeric_matches(*cfg.cmin_filter, *age)) return false;
+    auto age = file_age_seconds(p, FindFileTimeKind::Change);
+    if (!age ||
+        !time_matches(*cfg.cmin_filter, *age, std::chrono::minutes(1),
+                      false)) {
+      return false;
+    }
   }
 
   if (cfg.mtime_filter) {
-    auto age = modification_age_units(e, std::chrono::hours(24), cfg.daystart);
-    if (!age || !numeric_matches(*cfg.mtime_filter, *age)) return false;
+    auto age = cfg.daystart
+                   ? file_age_daystart_seconds(p, FindFileTimeKind::Modify)
+                   : file_age_seconds(p, FindFileTimeKind::Modify);
+    if (!age ||
+        !time_matches(*cfg.mtime_filter, *age, std::chrono::hours(24), true)) {
+      return false;
+    }
   }
 
   if (cfg.mmin_filter) {
-    auto age = modification_age_units(e, std::chrono::minutes(1), cfg.daystart);
-    if (!age || !numeric_matches(*cfg.mmin_filter, *age)) return false;
+    auto age = file_age_seconds(p, FindFileTimeKind::Modify);
+    if (!age ||
+        !time_matches(*cfg.mmin_filter, *age, std::chrono::minutes(1),
+                      false)) {
+      return false;
+    }
   }
 
   if (cfg.used_filter) {
-    auto age = file_used_age_units(p, std::chrono::hours(24));
-    if (!age || !numeric_matches(*cfg.used_filter, *age)) return false;
+    auto gap_ticks = used_gap_ticks(p);
+    if (!gap_ticks || *gap_ticks < 0 ||
+        !time_matches(*cfg.used_filter, *gap_ticks / 10000000LL,
+                      std::chrono::hours(24), false)) {
+      return false;
+    }
   }
 
   return true;
@@ -2734,9 +3207,24 @@ auto file_size_bytes(const std::filesystem::directory_entry& e)
   return static_cast<unsigned long long>(size);
 }
 
+// #1288: the win32_* probes below receive the walk's logical (display)
+// spelling, but Win32 calls on that spelling stat the wrong object past
+// MAX_PATH or on a trailing-dot component — the unextended namespace
+// strips the dot and enforces the legacy length limit. Probe and open
+// the extended-length spelling instead, the same pattern #1285 applied
+// to the walk roots. DOS device names are the one exception: they
+// resolve only in the device namespace the \\?\ prefix bypasses, so
+// they stay verbatim (the invariant native_path::attributes_w honours).
+auto probe_spelling(const std::filesystem::path& p) -> std::wstring {
+  const std::wstring raw = p.wstring();
+  if (native_path::is_dos_device_name_w(raw)) return raw;
+  return to_io_path(p).wstring();
+}
+
 auto win32_accessible(const std::filesystem::path& p, DWORD desired_access)
     -> bool {
-  DWORD attrs = GetFileAttributesW(p.wstring().c_str());
+  const std::wstring io = probe_spelling(p);
+  DWORD attrs = GetFileAttributesW(io.c_str());
   if (attrs == INVALID_FILE_ATTRIBUTES) return false;
   if ((desired_access & GENERIC_WRITE) != 0 &&
       (attrs & FILE_ATTRIBUTE_READONLY) != 0) {
@@ -2747,7 +3235,7 @@ auto win32_accessible(const std::filesystem::path& p, DWORD desired_access)
                     ? FILE_FLAG_BACKUP_SEMANTICS
                     : FILE_ATTRIBUTE_NORMAL;
   HANDLE handle =
-      CreateFileW(p.wstring().c_str(), desired_access,
+      CreateFileW(io.c_str(), desired_access,
                   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                   nullptr, OPEN_EXISTING, flags, nullptr);
   if (handle == INVALID_HANDLE_VALUE) return false;
@@ -2780,7 +3268,7 @@ auto permission_mode(const std::filesystem::path& p,
   }
   ec.clear();
   if (e.is_directory(ec) && !ec) {
-    DWORD attrs = GetFileAttributesW(p.wstring().c_str());
+    DWORD attrs = GetFileAttributesW(probe_spelling(p).c_str());
     unsigned mode = 0755;
     if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_READONLY)) {
       mode &= ~0222U;
@@ -2795,7 +3283,7 @@ auto permission_mode(const std::filesystem::path& p,
   bool executable =
       ext == ".exe" || ext == ".bat" || ext == ".cmd" || ext == ".ps1";
   unsigned mode = executable ? 0755 : 0644;
-  DWORD attrs = GetFileAttributesW(p.wstring().c_str());
+  DWORD attrs = GetFileAttributesW(probe_spelling(p).c_str());
   if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_READONLY)) {
     mode &= ~0222U;
   }
@@ -2838,12 +3326,13 @@ auto permission_string(const std::filesystem::path& p,
 
 auto win32_hard_link_count(const std::filesystem::path& p)
     -> unsigned long long {
-  DWORD attrs = GetFileAttributesW(p.c_str());
+  const std::wstring io = probe_spelling(p);
+  DWORD attrs = GetFileAttributesW(io.c_str());
   if (attrs == INVALID_FILE_ATTRIBUTES) return 1;
 
   DWORD flags = FILE_FLAG_BACKUP_SEMANTICS;
   HANDLE handle = CreateFileW(
-      p.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+      io.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
       nullptr, OPEN_EXISTING, flags, nullptr);
   if (handle == INVALID_HANDLE_VALUE) return 1;
 
@@ -2857,7 +3346,8 @@ auto win32_hard_link_count(const std::filesystem::path& p)
 
 auto win32_file_identity(const std::filesystem::path& p)
     -> std::optional<FileIdentity> {
-  DWORD attrs = GetFileAttributesW(p.c_str());
+  const std::wstring io = probe_spelling(p);
+  DWORD attrs = GetFileAttributesW(io.c_str());
   if (attrs == INVALID_FILE_ATTRIBUTES) return std::nullopt;
 
   DWORD flags = 0;
@@ -2869,7 +3359,7 @@ auto win32_file_identity(const std::filesystem::path& p)
   }
 
   HANDLE handle =
-      CreateFileW(p.c_str(), FILE_READ_ATTRIBUTES,
+      CreateFileW(io.c_str(), FILE_READ_ATTRIBUTES,
                   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                   nullptr, OPEN_EXISTING, flags, nullptr);
   if (handle == INVALID_HANDLE_VALUE) return std::nullopt;
@@ -2896,7 +3386,8 @@ auto win32_file_index_value(const std::filesystem::path& p)
 
 auto win32_file_time_ticks(const std::filesystem::path& p,
                            FindFileTimeKind kind) -> std::optional<long long> {
-  DWORD attrs = GetFileAttributesW(p.c_str());
+  const std::wstring io = probe_spelling(p);
+  DWORD attrs = GetFileAttributesW(io.c_str());
   if (attrs == INVALID_FILE_ATTRIBUTES) return std::nullopt;
 
   DWORD flags = 0;
@@ -2908,7 +3399,7 @@ auto win32_file_time_ticks(const std::filesystem::path& p,
   }
 
   HANDLE handle =
-      CreateFileW(p.c_str(), FILE_READ_ATTRIBUTES,
+      CreateFileW(io.c_str(), FILE_READ_ATTRIBUTES,
                   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                   nullptr, OPEN_EXISTING, flags, nullptr);
   if (handle == INVALID_HANDLE_VALUE) return std::nullopt;
@@ -3725,7 +4216,10 @@ auto printf_path(std::string_view format, const std::filesystem::path& p,
 
 auto delete_path(const std::filesystem::path& p, Config& cfg) -> bool {
   std::error_code ec;
-  bool removed = std::filesystem::remove(p, ec);
+  // #1288: delete through the extended spelling (#1285's to_io_path);
+  // removing the logical spelling fails past MAX_PATH and on
+  // trailing-dot components.
+  bool removed = std::filesystem::remove(to_io_path(p), ec);
   if (!removed || ec) {
     safeErrorPrint("find: cannot delete '");
     safeErrorPrint(path_display(p));
@@ -3752,8 +4246,20 @@ auto replace_placeholder(std::string_view text, std::string_view path)
   return out;
 }
 
+// [#1315] Spawn outcome: a nullopt status means the child never ran
+// (resolve or CreateProcessW failure) and carries the diagnostic reason;
+// a plain 127 used to conflate "spawn failed" with "child exited 127",
+// which silenced GNU's per-file spawn diagnostic. Callers print
+// `find: '<command>': <reason>` and keep find's exit status unchanged
+// for the `\;` form (GNU exec.c:388-392).
+struct ChildRunResult {
+  std::optional<int> status;
+  std::string spawn_error;
+};
+
 auto run_child(const std::string& command, const std::vector<std::string>& args,
-               const std::filesystem::path& working_directory = {}) -> int {
+               const std::filesystem::path& working_directory = {})
+    -> ChildRunResult {
   // Resolve the child with GNU execvp semantics (PATH-only; no
   // application-directory, cwd, or System32 fallback) so a name colliding
   // with a Windows image resolves from the caller's PATH.
@@ -3762,7 +4268,15 @@ auto run_child(const std::string& command, const std::vector<std::string>& args,
   find_launch_request.args = args;
   auto launch = winux::childproc::plan_child_launch(find_launch_request);
   if (launch.status != winux::childproc::ChildResolveStatus::Found) {
-    return 127;
+    std::string reason = "No such file or directory";
+    if (launch.status ==
+        winux::childproc::ChildResolveStatus::NotExecutable) {
+      reason = "Permission denied";
+    } else if (launch.status ==
+               winux::childproc::ChildResolveStatus::NotADirectory) {
+      reason = "Not a directory";
+    }
+    return ChildRunResult{std::nullopt, reason};
   }
   STARTUPINFOW si{sizeof(si)};
   PROCESS_INFORMATION pi{};
@@ -3772,14 +4286,43 @@ auto run_child(const std::string& command, const std::vector<std::string>& args,
   BOOL ok = CreateProcessW(
       launch.application_name->c_str(), launch.command_line.data(), nullptr,
       nullptr, TRUE, 0, nullptr, cwd.empty() ? nullptr : cwd.c_str(), &si, &pi);
-  if (!ok) return 127;
+  if (!ok) {
+    DWORD error = GetLastError();
+    wchar_t* buffer = nullptr;
+    std::string reason = "Unknown error";
+    if (FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER |
+                           FORMAT_MESSAGE_FROM_SYSTEM |
+                           FORMAT_MESSAGE_IGNORE_INSERTS,
+                       nullptr, error, 0,
+                       reinterpret_cast<LPWSTR>(&buffer), 0, nullptr) != 0 &&
+        buffer != nullptr) {
+      reason = wstring_to_utf8(buffer);
+      LocalFree(buffer);
+      while (!reason.empty() &&
+             (reason.back() == '\n' || reason.back() == '\r' ||
+              reason.back() == ' ')) {
+        reason.pop_back();
+      }
+      if (reason.empty()) reason = "Unknown error";
+    }
+    return ChildRunResult{std::nullopt, reason};
+  }
 
   WaitForSingleObject(pi.hProcess, INFINITE);
   DWORD exit_code = 1;
   GetExitCodeProcess(pi.hProcess, &exit_code);
   CloseHandle(pi.hProcess);
   CloseHandle(pi.hThread);
-  return static_cast<int>(exit_code);
+  return ChildRunResult{static_cast<int>(exit_code), ""};
+}
+
+auto report_spawn_failure(const std::string& command,
+                          const std::string& reason) -> void {
+  safeErrorPrint("find: '");
+  safeErrorPrint(command);
+  safeErrorPrint("': ");
+  safeErrorPrint(reason);
+  safeErrorPrint("\n");
 }
 
 auto ask_confirmation(const ExecAction& action, std::string_view path) -> bool {
@@ -3848,11 +4391,40 @@ auto execute_action_for_path(ExecAction& action, std::string_view path,
     args.push_back(replace_placeholder(arg, target));
   }
 
+  // [#1315] {} is substituted in the command position too: `-exec {} \;`
+  // runs the matched file itself, as GNU does. The substitution loop
+  // above only covered the arguments.
+  std::string program = replace_placeholder(action.command, target);
+
   // [GNU] exec.c:388-392: `-exec cmd \;` only makes the predicate false
   // when the invoked command fails; it must NOT change find's exit status.
-  // Only `-exec {} +` sets the program exit status.
-  int status = run_child(action.command, args, cwd);
-  return status == 0;
+  // Only `-exec {} +` sets the program exit status. A spawn failure is
+  // diagnosed per file (GNU prints it for every file) and also yields
+  // false, without touching the exit status.
+  auto result = run_child(program, args, cwd);
+  if (!result.status) {
+    report_spawn_failure(program, result.spawn_error);
+    return false;
+  }
+  return *result.status == 0;
+}
+
+// [#1315] -exec ... {} + expansion: the parser already popped the single
+// trailing {}, which the flush appends below. A non-trailing {} argument
+// expands to the full target list instead of being passed literally.
+auto expand_aggregate_args(const std::vector<std::string>& args,
+                           const std::vector<std::string>& targets)
+    -> std::vector<std::string> {
+  std::vector<std::string> expanded;
+  expanded.reserve(args.size() + targets.size());
+  for (const auto& arg : args) {
+    if (arg == "{}") {
+      expanded.insert(expanded.end(), targets.begin(), targets.end());
+    } else {
+      expanded.push_back(arg);
+    }
+  }
+  return expanded;
 }
 
 auto flush_exec_actions(Config& cfg) -> void {
@@ -3872,13 +4444,19 @@ auto flush_exec_actions(Config& cfg) -> void {
         if (action.prompt && !ask_confirmation_aggregate(action)) {
           continue;
         }
-        std::vector<std::string> args = action.args;
+        std::vector<std::string> args =
+            expand_aggregate_args(action.args, targets);
         args.insert(args.end(), targets.begin(), targets.end());
         // [GNU] exec.c:397-399: `-exec {} +` is TRUE even when the invoked
         // command fails, but it sets find's exit status.
-        int status =
+        auto result =
             run_child(action.command, args, std::filesystem::path(dir));
-        if (status != 0) cfg.had_error = true;
+        if (!result.status) {
+          report_spawn_failure(action.command, result.spawn_error);
+          cfg.had_error = true;
+        } else if (*result.status != 0) {
+          cfg.had_error = true;
+        }
       }
       action.pending_paths.clear();
       continue;
@@ -3889,13 +4467,19 @@ auto flush_exec_actions(Config& cfg) -> void {
       continue;
     }
 
-    std::vector<std::string> args = action.args;
+    std::vector<std::string> args =
+        expand_aggregate_args(action.args, action.pending_paths);
     args.insert(args.end(), action.pending_paths.begin(),
                 action.pending_paths.end());
     // [GNU] exec.c:397-399: the predicate value of `-exec {} +` stays TRUE
     // when the command fails; only the exit status is affected.
-    int status = run_child(action.command, args);
-    if (status != 0) cfg.had_error = true;
+    auto result = run_child(action.command, args);
+    if (!result.status) {
+      report_spawn_failure(action.command, result.spawn_error);
+      cfg.had_error = true;
+    } else if (*result.status != 0) {
+      cfg.had_error = true;
+    }
     action.pending_paths.clear();
   }
 }
@@ -3946,6 +4530,12 @@ auto should_descend_into(const std::filesystem::directory_entry& e,
   return true;
 }
 
+// [#1316] GNU evaluates -quit as an action that exits as soon as it is
+// reached, regardless of whether any entry matched yet. The quit checks
+// below therefore test cfg.quit alone: gating them on matched_any let
+// traversal continue into unvisited roots (and report their errors)
+// when -quit fired on a non-matching entry. matched_any is kept as a
+// write-only parameter to avoid churning every call site.
 auto scan_depth_first(const std::filesystem::path& root,
                       const std::filesystem::path& p, int depth, Config& cfg,
                       bool& matched_any) -> void {
@@ -3978,7 +4568,7 @@ auto scan_depth_first(const std::filesystem::path& root,
       safeErrorPrint("\n");
       cfg.had_error = true;
     } else {
-      for (; it != end && !(cfg.quit && matched_any); it.increment(ec)) {
+      for (; it != end && !cfg.quit; it.increment(ec)) {
         if (ec) {
           safeErrorPrint("find: '");
           safeErrorPrint(path_display(p));
@@ -3994,7 +4584,7 @@ auto scan_depth_first(const std::filesystem::path& root,
     }
   }
 
-  if (cfg.quit && matched_any) return;
+  if (cfg.quit) return;
 
   bool matched = entry_matches(cfg, p, entry, depth, root);
   if (cfg.quit && !matched) return;
@@ -4036,7 +4626,7 @@ auto scan_delete_depth_first(const std::filesystem::path& root,
       safeErrorPrint("\n");
       cfg.had_error = true;
     } else {
-      for (; it != end && !(cfg.quit && matched_any); it.increment(ec)) {
+      for (; it != end && !cfg.quit; it.increment(ec)) {
         if (ec) {
           safeErrorPrint("find: '");
           safeErrorPrint(path_display(p));
@@ -4052,7 +4642,7 @@ auto scan_delete_depth_first(const std::filesystem::path& root,
     }
   }
 
-  if (cfg.quit && matched_any) return;
+  if (cfg.quit) return;
 
   bool matched = entry_matches(cfg, p, entry, depth, root);
   if (cfg.quit && !matched) return;
@@ -4111,26 +4701,42 @@ auto scan_one_root(const std::filesystem::path& root, Config& cfg,
     return;
   }
 
-  for (; it != end; ++it) {
-    std::error_code iec;
+  // #1283: advance with the error_code overload, exactly like
+  // scan_depth_first / scan_delete_depth_first do. The throwing ++it used
+  // to abort the whole process (0xC0000409) when a step failed — stepping
+  // into a directory whose name ends in a dot, or walking past MAX_PATH —
+  // where GNU find reports the entry and finishes with a nonzero status.
+  std::error_code iec;
+  for (; it != end;) {
     const auto& de = *it;
     auto p = logical_from_io(root, io_root, de.path());
     int d = static_cast<int>(it.depth()) + 1;
 
     if (d > cfg.maxdepth) {
       it.disable_recursion_pending();
-      continue;
+    } else {
+      bool matched = entry_matches(cfg, p, de, d, root);
+      if (cfg.quit && !matched) return;
+      if (matched) {
+        apply_actions(p, de, cfg);
+        matched_any = true;
+        if (cfg.quit) return;
+      }
+      if (cfg.prune_current || !should_descend_into(de, cfg)) {
+        it.disable_recursion_pending();
+      }
     }
 
-    bool matched = entry_matches(cfg, p, de, d, root);
-    if (cfg.quit && !matched) return;
-    if (matched) {
-      apply_actions(p, de, cfg);
-      matched_any = true;
-      if (cfg.quit) return;
-    }
-    if (cfg.prune_current || !should_descend_into(de, cfg)) {
-      it.disable_recursion_pending();
+    iec.clear();
+    it.increment(iec);
+    if (iec) {
+      safeErrorPrint("find: '");
+      safeErrorPrint(path_display(p));
+      safeErrorPrint("': ");
+      safeErrorPrint(root_probe_error_text(iec.value()));
+      safeErrorPrint("\n");
+      cfg.had_error = true;
+      break;
     }
   }
 }
@@ -4160,7 +4766,7 @@ auto process(Config& cfg) -> int {
     } else {
       scan_one_root(root, cfg, matched_any);
     }
-    if (cfg.quit && matched_any) break;
+    if (cfg.quit) break;
   }
 
   flush_exec_actions(cfg);

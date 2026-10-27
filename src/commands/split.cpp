@@ -771,8 +771,13 @@ auto run(const Config& cfg) -> int {
       return 1;
     }
   } else {
-    // Read from file
-    std::ifstream f(cfg.input_file, std::ios::binary);
+    // Read from file. #1288: open the operand's extended spelling like
+    // the streaming path above; the raw narrow operand fails past
+    // MAX_PATH and on '/'-spelled paths.
+    std::ifstream f(
+        std::filesystem::path(
+            native_path::make_api_path_operand(cfg.input_file).extended),
+        std::ios::binary);
     if (!f) {
       auto err = split_input_open_error(cfg.input_file);
       cp::Result<int> result = std::unexpected(err);

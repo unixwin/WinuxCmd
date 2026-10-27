@@ -514,3 +514,47 @@ TEST(split, split_filter_pipe_delivers_lf_only_bytes_issue1214) {
   EXPECT_BYTES(first, std::string("a\n", 2));
   EXPECT_BYTES(tmp.read("partab"), std::string("b\n", 2));
 }
+
+namespace {
+// #1288 fixture: an 8x40 directory chain (composed path past MAX_PATH),
+// created through the extended-length API. Empty result: skip the test.
+auto make_deep_tree_1288(const TempDir& tmp) -> std::wstring {
+  std::wstring cursor = tmp.wpath();
+  const std::wstring component(40, L'x');
+  for (int i = 0; i < 8; ++i) {
+    cursor += L"\\" + component;
+    const std::wstring extended =
+        cursor.rfind(L"\\\\?\\", 0) == 0 ? cursor : L"\\\\?\\" + cursor;
+    if (!CreateDirectoryW(extended.c_str(), nullptr)) {
+      const DWORD err = GetLastError();
+      if (err != ERROR_ALREADY_EXISTS) return {};
+    }
+  }
+  return cursor;
+}
+auto extended_1288(const std::wstring& p) -> std::wstring {
+  return p.rfind(L"\\\\?\\", 0) == 0 ? p : L"\\\\?\\" + p;
+}
+}  // namespace
+
+TEST(split, issue_1288_number_mode_reads_input_past_max_path) {
+  TempDir tmp;
+  const std::wstring deep = make_deep_tree_1288(tmp);
+  if (deep.empty() || deep.size() <= MAX_PATH) {
+    std::cout << "  SKIPPED (deep fixture unavailable)\n";
+    return;
+  }
+  temp_dir_detail::write_all(
+      std::filesystem::path(extended_1288(deep)) / L"in.txt", "a\nb\nc\nd\n",
+      8);
+  const std::wstring input = deep + L"\\in.txt";
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"split.exe", {L"-n", L"2", input, L"out"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "outaa"));
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "outab"));
+}

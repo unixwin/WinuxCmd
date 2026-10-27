@@ -200,8 +200,15 @@ static auto expand_path_components(std::wstring_view pattern)
       std::filesystem::path dir =
           base.empty() ? std::filesystem::path(L".") : base;
       std::error_code iter_ec;
+      // #1288: iterate the extended spelling of the accumulated base;
+      // on the raw one the iterator fails silently once the composed
+      // directory passes MAX_PATH and deep globs match nothing. Only
+      // the entry filename is consumed below — results are composed
+      // from the unextended base, so no \\?\ spelling leaks out.
+      const std::filesystem::path io_dir(
+          native_path::to_extended_path(dir.wstring()));
       for (const auto &entry :
-           std::filesystem::directory_iterator(dir, iter_ec)) {
+           std::filesystem::directory_iterator(io_dir, iter_ec)) {
         std::wstring filename = entry.path().filename().wstring();
         if (leading_dot_blocks_match(segment, filename)) continue;
         // GNU glob matching is case-sensitive even on case-insensitive

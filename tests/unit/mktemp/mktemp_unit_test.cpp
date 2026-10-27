@@ -348,3 +348,27 @@ TEST(mktemp, mktemp_slash_drive_template_outputs_native_path) {
   EXPECT_TRUE(created.find("/file-") != std::string::npos);
   EXPECT_TRUE(std::filesystem::exists(std::filesystem::u8path(created)));
 }
+
+// #1364 (enclave rule): with a shell root configured, `mktemp -p /` creates
+// its file in the payload (shell) root, never in the current drive root;
+// the drive spelling keeps naming the drive (pinned by the Wine probes).
+TEST(mktemp, mktemp_dash_p_bare_slash_uses_shell_root_issue1364) {
+  TempDir payload;
+  TempDir elsewhere;
+
+  Pipeline p;
+  p.set_cwd(elsewhere.wpath());
+  p.set_env(L"WINUXSH_ROOT", payload.wpath());
+  p.add(L"mktemp.exe", {L"-p", L"/", L"raXXXXXX"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  bool created_in_payload = false;
+  for (const auto& entry : std::filesystem::directory_iterator(payload.path)) {
+    if (entry.path().filename().wstring().starts_with(L"ra")) {
+      created_in_payload = true;
+      std::filesystem::remove(entry.path());
+    }
+  }
+  EXPECT_TRUE(created_in_payload);
+}

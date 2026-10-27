@@ -490,3 +490,22 @@ TEST(touch, touch_glob_expands_matches) {
   EXPECT_TRUE(std::filesystem::exists(tmp.path / "aa1.txt"));
   EXPECT_TRUE(std::filesystem::exists(tmp.path / "aa2.txt"));
 }
+
+TEST(touch, issue_1283_drive_colon_operand_creates_carrier_file) {
+  // #1283: "D:name" must name the literal carrier file in the cwd (the
+  // spelling the shell puts on disk, ':' as U+F03A), uniformly with the
+  // other applets — not the Win32 drive-relative interpretation.
+  TempDir tmp;
+  const wchar_t drive = tmp.wpath()[0];
+  const std::wstring operand = std::wstring(1, drive) + L":new.txt";
+  const std::wstring carrier =
+      std::wstring(1, drive) + L'\uF03A' + L"new.txt";
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"touch.exe", {operand});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / carrier));
+}
