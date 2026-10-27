@@ -188,3 +188,27 @@ TEST(updatedb, updatedb_verbose_reports_progress) {
   EXPECT_TRUE(r.stderr_text.find("Found") != std::string::npos ||
               r.stdout_text.find("Found") != std::string::npos);
 }
+
+// #1364 (enclave rule): with a shell root configured, `updatedb -d /`
+// walks the payload (shell) root, not the current drive root.
+TEST(updatedb, updatedb_bare_slash_walks_shell_root_issue1364) {
+  TempDir payload;
+  {
+    std::ofstream out(payload.path / L"payload_marker.txt",
+                      std::ios::binary);
+    out << "x";
+  }
+  TempDir elsewhere;
+
+  Pipeline p;
+  p.set_cwd(elsewhere.wpath());
+  p.set_env(L"WINUXSH_ROOT", payload.wpath());
+  p.add(L"updatedb.exe", {L"-d", L"/", L"-o", L"out.db"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  std::ifstream in(elsewhere.path / "out.db", std::ios::binary);
+  std::string body((std::istreambuf_iterator<char>(in)),
+                   std::istreambuf_iterator<char>());
+  EXPECT_TRUE(body.find("payload_marker.txt") != std::string::npos);
+}

@@ -871,27 +871,6 @@ auto passes_threshold(const DuConfig& cfg, uint64_t size) -> bool {
 }
 
 /**
- * @brief Get hard link count for a file (Windows API)
- * @param path File path
- * @return Number of hard links, or 1 if unable to determine
- */
-auto get_hard_link_count(const std::wstring& path) -> DWORD {
-  HANDLE hFile = CreateFileW(
-      path.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-      nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (hFile == INVALID_HANDLE_VALUE) {
-    return 1;
-  }
-  BY_HANDLE_FILE_INFORMATION info{};
-  DWORD result = 1;
-  if (GetFileInformationByHandle(hFile, &info)) {
-    result = info.nNumberOfLinks;
-  }
-  CloseHandle(hFile);
-  return result;
-}
-
-/**
  * @brief Get a stable per-inode key (volume serial + file index)
  * @param path File path
  * @return L"<volume>:<index>" or empty if unavailable
@@ -1079,6 +1058,13 @@ auto calculate_dir_size(const std::wstring& path,
   }
 
   UsageSummary summary;
+  // [GNU] --inodes: a directory counts ITSELF as one inode before its
+  // entries are added (#1372). The count travels through the same
+  // summary.size plumbing as byte totals, but byte sizes must never be
+  // added into it (see the file branch below).
+  if (cfg.show_inodes) {
+    summary.size += 1;
+  }
   WIN32_FILE_ATTRIBUTE_DATA path_data{};
   const bool have_path_data =
       cfg.show_time &&
@@ -1150,7 +1136,19 @@ auto calculate_dir_size(const std::wstring& path,
           }
         }
       }
-      if (!cfg.show_inodes) {
+      // [GNU] --inodes counts entries instead of blocks (#1372): in
+      // inode mode the file contributes exactly one per encounter —
+      // never its byte size, and never its link count under
+      // --count-links (#1351); that flag only disables the dedup above.
+      // An encounter already deduplicated away contributes 0.  The
+      // byte/block size contributes NOTHING in inode mode — the old
+      // code added both, reporting e.g. 4097 for a directory holding
+      // one file.
+      uint64_t entry_count = file_size;
+      if (cfg.show_inodes) {
+        entry_count = counted ? 1 : 0;
+        summary.size += entry_count;
+      } else {
         summary.size += file_size;
       }
       if (cfg.show_time) {
@@ -1166,20 +1164,11 @@ auto calculate_dir_size(const std::wstring& path,
         }
       }
 
-      // [GNU] --inodes counts entries instead of blocks: each counted
-      // encounter counts exactly one — under --count-links every
-      // encounter counts one too, never the file's link count (#1351);
-      // a directory adds its whole subtree via the recursion above.
-      // The counts travel through the same summary.size/sizes plumbing
-      // used for byte sizes.
-      if (cfg.show_inodes && counted) {
-        summary.size += 1;
-      }
-
-      // Count individual files if requested
+      // Count individual files if requested. In --inodes mode the
+      // per-entry record is the entry count, not the byte size (#1372).
       if (counted && cfg.count_all &&
           (cfg.max_depth < 0 || child_depth <= cfg.max_depth)) {
-        sizes[full_path] = cfg.show_inodes ? 1 : file_size;
+        sizes[full_path] = entry_count;
         if (print_order != nullptr) {
           print_order->push_back(full_path);
         }
@@ -1446,9 +1435,14 @@ auto print_disk_usage(const CommandContext<DU_OPTIONS.size()>& ctx)
           continue;
         }
       }
-      grand_total += cfg.show_inodes ? 1 : file_size;
+      // [GNU] --inodes: a file operand contributes exactly one inode to
+      // the grand total, never its byte size (#1372) and never its link
+      // count under --count-links (#1351) — that flag only disables the
+      // dedup above.
+      const uint64_t operand_total = cfg.show_inodes ? 1 : file_size;
+      grand_total += operand_total;
 
-      if (passes_threshold(cfg, file_size)) {
+      if (passes_threshold(cfg, operand_total)) {
         UsageSummary file_summary;
         if (cfg.show_time) {
           WIN32_FILE_ATTRIBUTE_DATA file_data{};
@@ -1461,7 +1455,7 @@ auto print_disk_usage(const CommandContext<DU_OPTIONS.size()>& ctx)
         }
         safePrint(L"");
         if (cfg.show_inodes) {
-          safePrint("1");  // Each file is 1 inode
+          safePrint(std::to_string(operand_total));
         } else {
           print_scaled_size(file_size, cfg.output);
         }

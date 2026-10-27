@@ -455,13 +455,23 @@ auto run(const Config& cfg) -> int {
   std::filesystem::path base_dir;
   std::string template_component = cfg.template_str;
 
+  // #1364: the directory side of the template is an argv operand: fold it
+  // through the shared normalize_api_operand boundary after the local
+  // drive-dialect fold, so a shell-namespace spelling (the bare "/", /tmp,
+  // ...) resolves through the shell tree (payload root) instead of being
+  // absolutized onto the current drive by GetFullPathNameW downstream.
+  const auto fold_dir_operand = [](std::string_view text) -> std::string {
+    return native_path::normalize_api_operand(
+        normalize_win_shell_path(text));
+  };
+
   if (!cfg.tmpdir.empty()) {
-    base_dir = utf8_path(normalize_win_shell_path(cfg.tmpdir));
+    base_dir = utf8_path(fold_dir_operand(cfg.tmpdir));
     template_component = path_utf8(
         utf8_path(normalize_win_shell_path(cfg.template_str)).filename());
   } else {
     std::filesystem::path template_path =
-        utf8_path(normalize_win_shell_path(cfg.template_str));
+        utf8_path(fold_dir_operand(cfg.template_str));
     base_dir = template_path.parent_path();
     template_component = path_utf8(template_path.filename());
   }

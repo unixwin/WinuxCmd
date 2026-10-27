@@ -144,3 +144,23 @@ TEST(cygpath, special_folder_options_emit_paths) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_CONTAINS(r.stdout_text, "/");
 }
+
+// #1364 (enclave rule): with a shell root configured, `cygpath -w /` prints
+// the payload root; the drive spelling `/c` still prints the drive root.
+TEST(cygpath, shell_root_bare_slash_converts_to_payload_root_issue1364) {
+  TempDir payload;
+
+  Pipeline p;
+  p.set_env(L"WINUXSH_ROOT", payload.wpath());
+  p.add(L"cygpath.exe", {L"-w", L"/"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, payload.path.string() + "\n");
+
+  Pipeline drive;
+  drive.set_env(L"WINUXSH_ROOT", payload.wpath());
+  drive.add(L"cygpath.exe", {L"-w", L"/c"});
+  auto drive_result = drive.run();
+  EXPECT_EQ(drive_result.exit_code, 0);
+  EXPECT_EQ_TEXT(drive_result.stdout_text, "C:\\\n");
+}

@@ -37,3 +37,19 @@ TEST(time_cmd, time_posix_format) {
   EXPECT_NE(r.stderr_text.find("user "), std::string::npos);
   EXPECT_NE(r.stderr_text.find("sys "), std::string::npos);
 }
+// #1375: time's own option parsing stops at COMMAND; `time ls -l`
+// used to fail with "time: invalid option -- 'l'".
+TEST(time_cmd, time_wrapped_command_options_pass_through_issue1375) {
+  TempDir tmp;
+  tmp.write("marker.txt", "x\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"time.exe", {L"ls.exe", L"-l"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("marker.txt") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("real") != std::string::npos);
+}
+
