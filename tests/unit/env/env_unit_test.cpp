@@ -645,14 +645,23 @@ TEST(env, env_duplicate_assignment_replaces_in_place) {
 }
 
 // #1352: [GNU] -u removes an entry without disturbing the relative
-// order of the survivors.
+// order of the survivors. DROP comes from the inherited environment
+// (GNU applies -u to the inherited block before assignments, and per
+// #1353 an option after the first non-option argument is the utility
+// name, not an env option).
 TEST(env, env_unset_preserves_survivor_order) {
   Pipeline p;
-  p.add(L"env.exe", {L"-i", L"KEEP1=1", L"DROP=2", L"KEEP2=3", L"-u", L"DROP"});
+  p.set_env(L"DROP", L"2");
+  p.add(L"env.exe", {L"-u", L"DROP", L"KEEP1=1", L"KEEP2=3"});
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "KEEP1=1\nKEEP2=3\n");
+  EXPECT_TRUE(r.stdout_text.find("DROP=") == std::string::npos);
+  const size_t keep1 = r.stdout_text.find("KEEP1=1\n");
+  const size_t keep2 = r.stdout_text.find("KEEP2=3\n");
+  EXPECT_NE(keep1, std::string::npos);
+  EXPECT_NE(keep2, std::string::npos);
+  EXPECT_LT(keep1, keep2);
 }
 
 // #1353: [GNU] option processing stops at the first non-option
