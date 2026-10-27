@@ -97,12 +97,44 @@ TEST(tac, tac_regex_separator) {
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
-  p.add(L"tac.exe", {L"-r", L"-s", L"[0-9]+", L"digits.txt"});
+  p.add(L"tac.exe", {L"-r", L"-s", L"[0-9]", L"digits.txt"});
 
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "cc33bb22aa11");
+  // [GNU] single-digit separators; each record keeps its separator.
+  EXPECT_EQ_TEXT(r.stdout_text, "3cc32bb21aa1");
+}
+
+TEST(tac, tac_issue1361_bare_pipe_is_literal_in_bre_separator) {
+  // [GNU] In a BRE, '|' is an ordinary character: the separator is the
+  // literal string "x|yy", which never occurs, so nothing is split.
+  TempDir tmp;
+  tmp.write("letters.txt", "axbyyc");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"tac.exe", {L"-r", L"-s", L"x|yy", L"letters.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "axbyyc");
+}
+
+TEST(tac, tac_issue1361_escaped_pipe_is_alternation_in_bre_separator) {
+  // [GNU] In a BRE, `\|` is alternation: separators are "x" and "yy".
+  TempDir tmp;
+  tmp.write("letters.txt", "axbyyc");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"tac.exe", {L"-r", L"-s", L"x\\|yy", L"letters.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "cbyyax");
 }
 
 TEST(tac, tac_stdin) {

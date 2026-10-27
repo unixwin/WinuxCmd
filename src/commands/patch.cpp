@@ -75,14 +75,43 @@ auto constexpr PATCH_OPTIONS = std::array{
     OPTION("", "--set-utc", "set the patch's modification time to UTC"),
     // [GNU] -u, --unified: interpret the patch as unified diff
     OPTION("-u", "--unified", "interpret the patch as unified diff"),
+    // [GNU] -l, --ignore-whitespace: ignore whitespace runs when matching
+    // (issue #1381; not to be confused with the unsupported --merge)
+    OPTION("-l", "--ignore-whitespace",
+           "ignore whitespace runs when matching"),
+    // [GNU] -c/-n/-e, --context/--normal/--ed: force the input format.
+    // Accepted so that forcing a non-unified format on unified input is
+    // rejected as garbage, exactly like GNU (issue #1381); parsing those
+    // formats themselves is tracked separately (#1346).
+    OPTION("-c", "--context", "interpret the patch as a context diff"),
+    OPTION("-n", "--normal", "interpret the patch as a normal diff"),
+    OPTION("-e", "--ed", "interpret the patch as an ed script"),
+    // [GNU] -V, --version-control: backup naming style (issue #1381)
+    OPTION("-V", "--version-control", "use STYLE for backup file names",
+           STRING_TYPE),
+    // [GNU] --prefix / --basename-prefix: rename backups (issue #1381)
+    OPTION("", "--prefix", "prefix backup file names with PREFIX",
+           STRING_TYPE),
+    OPTION("", "--basename-prefix",
+           "prefix backup file basenames with PREFIX", STRING_TYPE),
+    // [GNU] --quoting-style: quote file names in diagnostics (issue #1381)
+    OPTION("", "--quoting-style", "quote file names in diagnostics",
+           STRING_TYPE),
+    // [GNU] --get: fetch from RCS/SCCS when positive; validated and
+    // accepted, no backend on this port (issue #1381)
+    OPTION("", "--get", "get files from RCS or SCCS if NUM is positive",
+           STRING_TYPE),
+    // [GNU] --read-only: how to treat read-only files (issue #1381)
+    OPTION("", "--read-only", "how to handle read-only files: ignore, "
+                              "warn, or fail",
+           STRING_TYPE),
     // [GNU] -v, --verbose: print verbose output
     OPTION("-v", "--verbose", "print verbose output"),
     // [GNU] --binary: read and write in binary mode
     OPTION("", "--binary", "read and write in binary mode"),
     // [GNU] --posix: conform to POSIX standard
     OPTION("", "--posix", "conform to POSIX standard"),
-    // [GNU] --quoting-style / --strip-trailing-slashes are accepted for
-    // compatibility; only the latter has effect here.
+    // [GNU] --strip-trailing-slashes is accepted for compatibility.
     OPTION("", "--strip-trailing-slashes",
            "strip trailing slashes from file names")};
 
@@ -260,9 +289,9 @@ bool file_exists(const std::string& filename) {
          !(attrs & FILE_ATTRIBUTE_DIRECTORY);
 }
 
-bool backup_file(const std::string& filename, const std::string& suffix) {
+bool backup_file_to(const std::string& filename, const std::string& dest) {
   std::wstring wsrc = utf8_to_wstring(filename);
-  std::wstring wdst = utf8_to_wstring(filename + suffix);
+  std::wstring wdst = utf8_to_wstring(dest);
   return CopyFileW(wsrc.c_str(), wdst.c_str(), FALSE) != FALSE;
 }
 
@@ -306,20 +335,45 @@ std::vector<std::string> pattern_of(const Hunk& h) {
   return pat;
 }
 
+// [GNU] patch -l/--ignore-whitespace (issue #1381): two lines match when
+// they differ only in the LENGTH of whitespace runs (spaces/tabs collapse
+// to a single space; leading/trailing runs vanish). A missing space is
+// still a difference: "ab" does not match "a b".
+std::string collapse_ws_runs(const std::string& s) {
+  std::string out;
+  bool in_ws = false;
+  for (char c : s) {
+    if (c == ' ' || c == '\t') {
+      if (!in_ws) out += ' ';
+      in_ws = true;
+    } else {
+      out += c;
+      in_ws = false;
+    }
+  }
+  if (!out.empty() && out.front() == ' ') out.erase(out.begin());
+  if (!out.empty() && out.back() == ' ') out.pop_back();
+  return out;
+}
+
+bool lines_match(const std::string& a, const std::string& b, bool ignore_ws) {
+  return ignore_ws ? collapse_ws_runs(a) == collapse_ws_runs(b) : a == b;
+}
+
 // [GNU] patch_match (patch.c:1687): compare the pattern (minus prefix_fuzz
 // leading and suffix_fuzz trailing lines) against the file at base+offset.
 bool patch_match(const std::vector<TLine>& file,
                  const std::vector<std::string>& pat, long long base,
                  long long offset, long long prefix_fuzz,
-                 long long suffix_fuzz) {
+                 long long suffix_fuzz, bool ignore_ws) {
   long long n = static_cast<long long>(pat.size()) - prefix_fuzz - suffix_fuzz;
   if (n < 0) n = 0;
   long long start = base + offset + prefix_fuzz;
   if (start < 0 || start + n > static_cast<long long>(file.size()))
     return false;
   for (long long i = 0; i < n; ++i) {
-    if (file[static_cast<size_t>(start + i)].text !=
-        pat[static_cast<size_t>(prefix_fuzz + i)]) {
+    if (!lines_match(file[static_cast<size_t>(start + i)].text,
+                     pat[static_cast<size_t>(prefix_fuzz + i)], ignore_ws)) {
       return false;
     }
   }
@@ -334,7 +388,8 @@ long long locate_hunk(const std::vector<TLine>& file,
                       const std::vector<std::string>& pat,
                       long long prefix_context, long long suffix_context,
                       long long fuzz, long long first /*1-based hint*/,
-                      long long min_where /*0-based*/, long long& in_offset) {
+                      long long min_where /*0-based*/, long long& in_offset,
+                      bool ignore_ws) {
   const long long pat_lines = static_cast<long long>(pat.size());
   const long long input_lines = static_cast<long long>(file.size());
   const long long first_guess = first - 1 + in_offset;
@@ -358,7 +413,8 @@ long long locate_hunk(const std::vector<TLine>& file,
     }
     long long offset = -first_guess;
     if (min_where <= prefix_context && offset <= max_pos_offset &&
-        patch_match(file, pat, first_guess, offset, 0, suffix_fuzz)) {
+        patch_match(file, pat, first_guess, offset, 0, suffix_fuzz,
+                    ignore_ws)) {
       in_offset += offset;
       return first_guess + offset;
     }
@@ -370,7 +426,8 @@ long long locate_hunk(const std::vector<TLine>& file,
     // Can only match end of file.
     long long offset = first_guess - (input_lines - pat_lines);
     if (offset <= max_neg_offset &&
-        patch_match(file, pat, first_guess, -offset, prefix_fuzz, 0)) {
+        patch_match(file, pat, first_guess, -offset, prefix_fuzz, 0,
+                    ignore_ws)) {
       in_offset -= offset;
       return first_guess - offset;
     }
@@ -382,12 +439,14 @@ long long locate_hunk(const std::vector<TLine>& file,
                          : (max_neg_offset < 0 ? first_guess - min_where : 0);
   for (long long offset = min_offset; offset <= max_offset; ++offset) {
     if (offset <= max_pos_offset &&
-        patch_match(file, pat, first_guess, offset, prefix_fuzz, suffix_fuzz)) {
+        patch_match(file, pat, first_guess, offset, prefix_fuzz, suffix_fuzz,
+                    ignore_ws)) {
       in_offset += offset;
       return first_guess + offset;
     }
     if (offset <= max_neg_offset && patch_match(file, pat, first_guess, -offset,
-                                                prefix_fuzz, suffix_fuzz)) {
+                                                prefix_fuzz, suffix_fuzz,
+                                                ignore_ws)) {
       in_offset -= offset;
       return first_guess - offset;
     }
@@ -417,7 +476,7 @@ struct Attempt {
 // Try to locate a hunk at increasing fuzz, [GNU] patch.c:395-455.
 Attempt try_hunk(const FileState& st, const std::vector<std::string>& pat,
                  long long prefix_context, long long suffix_context,
-                 long long hint, long long maxfuzz) {
+                 long long hint, long long maxfuzz, bool ignore_ws) {
   Attempt best;
   const long long context = std::max(prefix_context, suffix_context);
   const long long eff_max = std::min(maxfuzz, context < 0 ? 0 : context);
@@ -431,7 +490,7 @@ Attempt try_hunk(const FileState& st, const std::vector<std::string>& pat,
   for (long long f = 0; f <= eff_max; ++f) {
     long long in_offset = st.in_offset;
     long long where = locate_hunk(st.input, pat, prefix_context, suffix_context,
-                                  f, hint, st.copy_ptr, in_offset);
+                                  f, hint, st.copy_ptr, in_offset, ignore_ws);
     if (where < 0) continue;
     best.ok = true;
     best.where0 = where;
@@ -793,6 +852,182 @@ REGISTER_COMMAND(
   }
   if (backup_suffix.empty()) backup_suffix = ".orig";
 
+  // ----- issue #1381 option family ------------------------------------
+  const bool ignore_ws =
+      ctx.has("-l") || ctx.has("--ignore-whitespace");
+
+  // --version-control / -V (fallback: VERSION_CONTROL env). GNU patch
+  // 2.7.6 measured behavior: "none"/"off" selects NUMBERED naming (a
+  // genuine upstream quirk, probed 2026-10-26), "simple"/"never" the
+  // suffix form, "existing"/"nil" numbered only when a numbered backup
+  // already exists, "numbered"/"t" always numbered.
+  enum class VcMode { simple, numbered, existing };
+  std::optional<VcMode> vc_mode;  // nullopt: port default (simple)
+  {
+    std::string vc = ctx.get<std::string>("--version-control", "");
+    if (vc.empty()) vc = ctx.get<std::string>("-V", "");
+    if (vc.empty()) {
+      if (const char* env = std::getenv("VERSION_CONTROL")) vc = env;
+    }
+    if (!vc.empty()) {
+      if (vc == "none" || vc == "off") {
+        vc_mode = VcMode::numbered;
+      } else if (vc == "simple" || vc == "never") {
+        vc_mode = VcMode::simple;
+      } else if (vc == "existing" || vc == "nil") {
+        vc_mode = VcMode::existing;
+      } else if (vc == "numbered" || vc == "t") {
+        vc_mode = VcMode::numbered;
+      } else {
+        safeErrorPrintLn("patch: invalid argument '" + vc +
+                         "' for '--version-control or -V option'");
+        safeErrorPrintLn("Valid arguments are:");
+        safeErrorPrintLn("  - 'none', 'off'");
+        safeErrorPrintLn("  - 'simple', 'never'");
+        safeErrorPrintLn("  - 'existing', 'nil'");
+        safeErrorPrintLn("  - 'numbered', 't'");
+        return 2;
+      }
+    }
+  }
+  const std::string backup_prefix = ctx.get<std::string>("--prefix", "");
+  const std::string backup_basename_prefix =
+      ctx.get<std::string>("--basename-prefix", "");
+
+  auto compute_backup_name = [&](const std::string& target) -> std::string {
+    // [GNU] --prefix replaces the whole naming scheme: PRE_ + name, the
+    // suffix is dropped (probed). --basename-prefix keeps the directory.
+    if (!backup_prefix.empty()) return backup_prefix + target;
+    if (!backup_basename_prefix.empty()) {
+      size_t sep = target.find_last_of("/\\");
+      if (sep == std::string::npos) return backup_basename_prefix + target;
+      return target.substr(0, sep + 1) + backup_basename_prefix +
+             target.substr(sep + 1);
+    }
+    auto numbered_name = [&]() {
+      for (long long n = 1;; ++n) {
+        std::string cand = target + ".~" + std::to_string(n) + "~";
+        if (!file_exists(cand)) return cand;
+      }
+    };
+    switch (vc_mode.value_or(VcMode::simple)) {
+      case VcMode::numbered:
+        return numbered_name();
+      case VcMode::existing: {
+        bool any_numbered = false;
+        for (long long n = 1; n <= 100000; ++n) {
+          if (file_exists(target + ".~" + std::to_string(n) + "~")) {
+            any_numbered = true;
+            break;
+          }
+        }
+        return any_numbered ? numbered_name() : target + backup_suffix;
+      }
+      case VcMode::simple:
+      default:
+        return target + backup_suffix;
+    }
+  };
+
+  // --quoting-style: validated against GNU's style table; applied to the
+  // "patching file" line and the rejects summary (issue #1381).
+  const std::string quoting_style = ctx.get<std::string>("--quoting-style", "");
+  if (!quoting_style.empty()) {
+    static const char* kStyles[] = {
+        "literal",   "shell",      "shell-always", "shell-escape",
+        "shell-escape-always", "c", "c-maybe",     "escape",
+        "locale",    "clocale"};
+    bool known = false;
+    for (const char* s : kStyles) known = known || quoting_style == s;
+    if (!known) {
+      safeErrorPrintLn("patch: invalid argument '" + quoting_style +
+                       "' for 'quoting style'");
+      safeErrorPrintLn("Try 'patch --help' for more information.");
+      return 2;
+    }
+  }
+  auto quote_name = [&](const std::string& name) -> std::string {
+    if (quoting_style.empty() || quoting_style == "literal") return name;
+    auto c_quote = [](const std::string& n) {
+      std::string out = "\"";
+      for (char c : n) {
+        if (c == '"' || c == '\\') out += '\\';
+        out += c;
+      }
+      return out + "\"";
+    };
+    auto shell_quote = [](const std::string& n) {
+      std::string out = "'";
+      for (char c : n) {
+        if (c == '\'') {
+          out += "'\\''";
+        } else {
+          out += c;
+        }
+      }
+      return out + "'";
+    };
+    auto name_is_safe = [](const std::string& n) {
+      for (unsigned char c : n) {
+        if (!std::isalnum(c) && c != '.' && c != '_' && c != '-' &&
+            c != '/' && c != '\\' && c != ':' && c != '~' && c != '+') {
+          return false;
+        }
+      }
+      return !n.empty();
+    };
+    if (quoting_style == "c" || quoting_style == "clocale") {
+      return c_quote(name);
+    }
+    if (quoting_style == "c-maybe" || quoting_style == "locale") {
+      return name_is_safe(name) ? name : c_quote(name);
+    }
+    if (quoting_style == "shell-always" ||
+        quoting_style == "shell-escape-always") {
+      return shell_quote(name);
+    }
+    if (quoting_style == "shell" || quoting_style == "shell-escape") {
+      return name_is_safe(name) ? name : shell_quote(name);
+    }
+    // escape: backslash-escape anything non-alphanumeric.
+    std::string out;
+    for (unsigned char c : name) {
+      if (!std::isalnum(c) && c != '.' && c != '_' && c != '-') out += '\\';
+      out += static_cast<char>(c);
+    }
+    return out;
+  };
+
+  // --get: a numeric value is accepted (no RCS/SCCS backend on this
+  // port); anything else is a usage error, GNU wording (issue #1381).
+  if (ctx.has("--get")) {
+    const std::string get_value = ctx.get<std::string>("--get", "");
+    long long parsed = 0;
+    auto [gp, gec] = std::from_chars(get_value.data(),
+                                     get_value.data() + get_value.size(),
+                                     parsed);
+    if (gec != std::errc() || gp != get_value.data() + get_value.size()) {
+      safeErrorPrintLn("patch: **** get option value " + get_value +
+                       " is not a number");
+      safeErrorPrintLn("Try 'patch --help' for more information.");
+      return 2;
+    }
+  }
+
+  // --read-only: only the value set is validated here; "fail" is enforced
+  // per target file below (issue #1381).
+  const std::string read_only_mode = ctx.get<std::string>("--read-only", "");
+  if (!read_only_mode.empty() && read_only_mode != "ignore" &&
+      read_only_mode != "warn" && read_only_mode != "fail") {
+    safeErrorPrintLn("patch: invalid argument '" + read_only_mode +
+                     "' for '--read-only option'");
+    safeErrorPrintLn("Valid arguments are:");
+    safeErrorPrintLn("  - 'ignore'");
+    safeErrorPrintLn("  - 'warn'");
+    safeErrorPrintLn("  - 'fail'");
+    return 2;
+  }
+
   std::string directory = ctx.get<std::string>("-d", "");
   if (directory.empty()) directory = ctx.get<std::string>("--directory", "");
   std::string patch_file = ctx.get<std::string>("-i", "");
@@ -827,7 +1062,7 @@ REGISTER_COMMAND(
       !ctx.get<std::string>("--ifdef", "").empty()) {
     return unsupported("--ifdef/-D");
   }
-  if (ctx.has("-l") || ctx.has("--merge")) return unsupported("--merge/-l");
+  if (ctx.has("--merge")) return unsupported("--merge");
   if (!ctx.get<std::string>("--reject-format", "").empty()) {
     return unsupported("--reject-format");
   }
@@ -861,6 +1096,19 @@ REGISTER_COMMAND(
     file_io::set_stdin_binary();
     patch_content = std::string(std::istreambuf_iterator<char>(std::cin),
                                 std::istreambuf_iterator<char>());
+  }
+
+  // ----- forced input format (issue #1381) ---------------------------
+  // This engine parses unified diffs only; context/normal parsing is
+  // #1346. Forcing one of those formats makes the (unified) input garbage
+  // for the requested format, which GNU reports exactly this way.
+  const bool force_unified = ctx.has("-u") || ctx.has("--unified");
+  const bool force_other = ctx.has("-c") || ctx.has("--context") ||
+                           ctx.has("-n") || ctx.has("--normal") ||
+                           ctx.has("-e") || ctx.has("--ed");
+  if (force_other && !force_unified) {
+    safeErrorPrintLn("patch: Only garbage was found in the patch input.");
+    return 2;
   }
 
   // ----- parse into per-file hunk groups -----------------------------
@@ -1161,7 +1409,7 @@ REGISTER_COMMAND(
       }
     }
 
-    say("patching file " + target);
+    say("patching file " + quote_name(target));
 
     FileState st;
     st.exists = file_exists(target);
@@ -1178,6 +1426,17 @@ REGISTER_COMMAND(
       safeErrorPrintLn("patch: cannot open file '" + target +
                        "': No such file or directory");
       return 2;
+    }
+
+    // [GNU] --read-only=fail (issue #1381): refuse up front, leaving the
+    // file untouched, when the target carries the read-only attribute.
+    if (read_only_mode == "fail" && st.exists) {
+      DWORD attrs = GetFileAttributesW(utf8_to_wstring(target).c_str());
+      if (attrs != INVALID_FILE_ATTRIBUTES &&
+          (attrs & FILE_ATTRIBUTE_READONLY) != 0) {
+        safeErrorPrintLn("patch: file '" + target + "' is read-only");
+        return 2;
+      }
     }
 
     // ----- apply hunks (locate_hunk semantics) ------------------------
@@ -1225,7 +1484,7 @@ REGISTER_COMMAND(
         }
       } else {
         att = try_hunk(st, pat, prefix_context, suffix_context,
-                       hunk.old_start, maxfuzz);
+                       hunk.old_start, maxfuzz, ignore_ws);
       }
 
       if (!att.ok && forward && !hunk.exact_position) {
@@ -1236,7 +1495,7 @@ REGISTER_COMMAND(
           Hunk rev = reversed(hunk);
           std::vector<std::string> rpat = pattern_of(rev);
           rev_att = try_hunk(st, rpat, prefix_context, suffix_context,
-                             rev.old_start, maxfuzz);
+                             rev.old_start, maxfuzz, ignore_ws);
         }
         if (rev_att.ok) {
           say("Hunk #" + std::to_string(hunk_no) + " ignored at " +
@@ -1344,7 +1603,7 @@ REGISTER_COMMAND(
           std::to_string(failed) + " out of " +
           std::to_string(static_cast<long long>(group.hunks.size())) +
           (group.hunks.size() == 1 ? " hunk" : " hunks") +
-          " FAILED -- saving rejects to file " + rej_path;
+          " FAILED -- saving rejects to file " + quote_name(rej_path);
       say(summary);
     }
 
@@ -1353,9 +1612,10 @@ REGISTER_COMMAND(
         make_backups || (backup_if_mismatch && (mismatch || failed > 0));
     const bool wrote_output_now = output_file.empty();
     if (backup && !dry_run && st.exists && !creation && wrote_output_now) {
-      if (!backup_file(target, backup_suffix)) {
-        safeErrorPrintLn("patch: cannot create backup file '" + target +
-                         backup_suffix + "'");
+      const std::string backup_name = compute_backup_name(target);
+      if (!backup_file_to(target, backup_name)) {
+        safeErrorPrintLn("patch: cannot create backup file '" + backup_name +
+                         "'");
         return 2;
       }
     }

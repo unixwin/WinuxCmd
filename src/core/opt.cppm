@@ -102,6 +102,11 @@ export struct OptionParsePolicy {
   // Stop option parsing after this many positional operands. A value of zero
   // keeps the traditional parser behavior.
   size_t stop_options_after_positionals = 0;
+  // #1304: POSIXLY_CORRECT stops getopt-style permutation at the first
+  // operand. Set by option_policy_for_command (presence of the variable
+  // counts, per glibc); commands whose grammar is not getopt-style opt
+  // out there, and the dispatcher pre-passes share this flag.
+  bool posixly_correct = false;
   // [GNU] fmt accepts the obsolete "-WIDTH" width form only in argv[1]; a
   // digit option anywhere else is diagnosed by fmt.c itself as
   //   invalid option -- N; -WIDTH is recognized only when it is the first
@@ -116,6 +121,25 @@ export ParseResultRuntime parse_command_runtime(
   using cmd::meta::OptionType;
 
   bool end_of_options = false;
+
+  // #1304: with POSIXLY_CORRECT, getopt stops at the first operand even
+  // for commands that otherwise keep scanning (their configured stop
+  // narrows to 1); without it the configured stop applies unchanged.
+  const size_t effective_stop_after_positionals =
+      policy.posixly_correct
+          ? (policy.stop_options_after_positionals == 0
+                 ? 1
+                 : std::min(policy.stop_options_after_positionals,
+                            size_t{1}))
+          : policy.stop_options_after_positionals;
+
+  auto push_positional = [&](std::string_view value) -> void {
+    result.positionals.push_back(value);
+    if (effective_stop_after_positionals != 0 &&
+        result.positionals.size() >= effective_stop_after_positionals) {
+      end_of_options = true;
+    }
+  };
 
   auto take_terminated_string = [&](size_t& i) -> std::string {
     std::string value;
@@ -169,6 +193,14 @@ export ParseResultRuntime parse_command_runtime(
     result.ok = false;
     result.error_message = "invalid argument '" + std::string(value) +
                            "' for '" + std::string(option) + "'";
+  };
+
+  // [GNU] getopt_long rejects an attached value on a flag option:
+  //   "option '--count' doesn't allow an argument".
+  auto set_does_not_allow_argument = [&](std::string_view option) -> void {
+    result.ok = false;
+    result.error_message = "option '" + std::string(option) +
+                           "' doesn't allow an argument";
   };
 
   auto parse_int_value = [&](std::string_view option, std::string_view value,
@@ -232,7 +264,10 @@ export ParseResultRuntime parse_command_runtime(
         if (possibilities.size() != 1) {
           meta = nullptr;
           if (possibilities.empty()) {
-            set_unrecognized_option(name);
+            // #1305: GNU keeps the "=value" in the diagnostic
+            // ("unrecognized option '--unknown=x'"); only the ambiguous
+            // report below uses the bare name.
+            set_unrecognized_option(arg);
           } else {
             std::string msg = "option '" + std::string(name) +
                               "' is ambiguous; possibilities:";
@@ -252,6 +287,12 @@ export ParseResultRuntime parse_command_runtime(
 
       switch (meta->type) {
         case OptionType::Bool:
+          // #1301: a flag option must reject "--flag=value" instead of
+          // silently ignoring the value (grep --count=x used to hang).
+          if (has_inline_value) {
+            set_does_not_allow_argument(name);
+            return result;
+          }
           result.options.set(idx, true);
           break;
 
@@ -259,8 +300,11 @@ export ParseResultRuntime parse_command_runtime(
           int v = 0;
           std::string str;
 
-          if (!value.empty()) {
-            // --int=123
+          // #1302: an explicit empty value ("--opt=") is a value, not a
+          // missing one: it must fail here instead of swallowing the
+          // next argv as the value.
+          if (has_inline_value) {
+            // --int=123 (including the explicit empty "--int=")
             str = std::string(value);
           } else {
             // --int 123
@@ -360,12 +404,19 @@ export ParseResultRuntime parse_command_runtime(
         size_t idx = exact_meta->index;
         switch (exact_meta->type) {
           case OptionType::Bool:
+            // #1301, single-dash long form: same rejection as "--flag=".
+            if (exact_has_inline_value) {
+              set_does_not_allow_argument(exact_name);
+              return result;
+            }
             result.options.set(idx, true);
             break;
           case OptionType::Int: {
             int v = 0;
             std::string str;
-            if (!exact_value.empty()) {
+            // #1302, single-dash long form: an explicit empty value is
+            // a value, not a missing one.
+            if (exact_has_inline_value) {
               str = std::string(exact_value);
             } else {
               if (i + 1 >= args.size()) {
@@ -465,7 +516,7 @@ export ParseResultRuntime parse_command_runtime(
             }
           }
           if (!glued_to_value_option) {
-            result.positionals.push_back(arg);
+            push_positional(arg);
             continue;
           }
         }
@@ -505,6 +556,36 @@ export ParseResultRuntime parse_command_runtime(
       // iterate each short flag: -abc
       for (size_t pos = 1; pos < arg.size(); ++pos) {
         char ch = arg[pos];
+
+        // #1306: a digit run inside a cluster is the command's -NUM
+        // option (GNU split -d5, diff -c5, uniq -D5), not an attached
+        // value of the preceding flag. Commands without a -NUM meta
+        // fall through to the unrecognized-option diagnostic below.
+        if (policy.allow_numeric_short_options &&
+            std::isdigit(static_cast<unsigned char>(ch)) != 0) {
+          const cmd::meta::OptionMeta* numeric_meta = nullptr;
+          for (const auto& m : metas) {
+            if (m.short_name == "-NUM") {
+              numeric_meta = &m;
+              break;
+            }
+          }
+          if (numeric_meta) {
+            size_t end = pos;
+            while (end < arg.size() &&
+                   std::isdigit(static_cast<unsigned char>(arg[end])) != 0) {
+              ++end;
+            }
+            int v = 0;
+            if (!parse_int_value(numeric_meta->short_name,
+                                 arg.substr(pos, end - pos), v)) {
+              return result;
+            }
+            result.options.set(numeric_meta->index, v);
+            pos = end - 1;
+            continue;
+          }
+        }
 
         const cmd::meta::OptionMeta* meta = nullptr;
 
@@ -568,10 +649,15 @@ export ParseResultRuntime parse_command_runtime(
           }
 
           case OptionType::OptionalInt: {
+            // #1306: when a command opts out of short attached values
+            // (uniq/diff/split), the flag is recorded with no value and
+            // the rest of the cluster keeps parsing as further short
+            // options (uniq -Dc, diff -cu) instead of being swallowed
+            // or dropped. The attached-value form still ends the
+            // cluster for commands that keep it (sed -i.bak).
             if (!policy.allow_optional_short_attached_values ||
                 pos + 1 >= arg.size()) {
               result.options.set(idx, -1);
-              pos = arg.size();
               break;
             }
 
@@ -591,13 +677,14 @@ export ParseResultRuntime parse_command_runtime(
           }
 
           case OptionType::OptionalString: {
-            std::string str;
+            // #1306: same rule as OptionalInt above.
             if (policy.allow_optional_short_attached_values &&
                 pos + 1 < arg.size()) {
-              str = std::string(arg.substr(pos + 1));
+              result.options.set(idx, std::string(arg.substr(pos + 1)));
+              pos = arg.size();
+            } else {
+              result.options.set(idx, std::string());
             }
-            result.options.set(idx, std::move(str));
-            pos = arg.size();
             break;
           }
 
@@ -619,11 +706,7 @@ export ParseResultRuntime parse_command_runtime(
     }
 
     // ---------- positional ----------
-    result.positionals.push_back(arg);
-    if (policy.stop_options_after_positionals != 0 &&
-        result.positionals.size() >= policy.stop_options_after_positionals) {
-      end_of_options = true;
-    }
+    push_positional(arg);
   }
 
   return result;

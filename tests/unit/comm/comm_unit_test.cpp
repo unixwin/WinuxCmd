@@ -186,7 +186,10 @@ TEST(comm, comm_zero_terminated_records) {
   EXPECT_EQ(r.stdout_text, std::string("banana\0", 7));
 }
 
-TEST(comm, comm_newline_mode_trims_trailing_cr_from_crlf_records) {
+TEST(comm, comm_issue1354_crlf_records_keep_cr_bytes) {
+  // [GNU] comm is byte-oriented: "apple\r" is a different line from
+  // "apple" and prints with its '\r'. This test previously pinned the
+  // CR-stripping divergence (issue #1354).
   TempDir tmp;
   tmp.write_bytes("file1.txt", {'a', 'p', 'p', 'l', 'e', '\r', '\n', 'b', 'a',
                                 'n', 'a', 'n', 'a', '\r', '\n'});
@@ -200,7 +203,43 @@ TEST(comm, comm_newline_mode_trims_trailing_cr_from_crlf_records) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "apple\n\t\tbanana\n\tcherry\n");
+  EXPECT_EQ_TEXT(r.stdout_text, "apple\r\n\t\tbanana\r\n\tcherry\r\n");
+}
+
+TEST(comm, comm_issue1354_cr_makes_lines_distinct_keys) {
+  TempDir tmp;
+  tmp.write_bytes("file1.txt", {'a', '\r', '\n', 'b', '\n'});
+  tmp.write_bytes("file2.txt", {'a', '\n', 'b', '\n'});
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"comm.exe", {L"file1.txt", L"file2.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // "a" is only in file2 (column 2), "a\r" only in file1 (column 1),
+  // "b" is common (column 3) — GNU byte order: "a" < "a\r" < "b".
+  EXPECT_EQ_TEXT(r.stdout_text, "\ta\na\r\n\t\tb\n");
+}
+
+TEST(comm, comm_issue1354_utf8_bom_is_ordinary_content) {
+  TempDir tmp;
+  tmp.write_bytes("file1.txt", {static_cast<char>(0xEF), static_cast<char>(0xBB),
+                                static_cast<char>(0xBF), 'a', '\n'});
+  tmp.write("file2.txt", "a\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"comm.exe", {L"file1.txt", L"file2.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  std::string expected = "\ta\n";
+  expected += std::string("\xEF\xBB\xBF", 3);
+  expected += "a\n";
+  EXPECT_EQ(r.stdout_text, expected);
 }
 
 TEST(comm, comm_missing_input_reports_no_such_file) {

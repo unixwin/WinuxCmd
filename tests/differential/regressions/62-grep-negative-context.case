@@ -1,0 +1,7 @@
+cmd: grep
+args: -B -1 needle hay.txt
+timeout: 10
+setup: |
+  printf 'hay\nneedle\nhay\n' > hay.txt
+source: github.com/unixwin/WinuxCmd/issues/1338
+tags: issue-1338 regression

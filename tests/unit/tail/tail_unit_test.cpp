@@ -852,8 +852,11 @@ TEST(tail, tail_zero_terminated_multi_file_headers) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
+  // [GNU] With -z, only the record delimiter changes: headers and the
+  // blank separator between file sections stay newline-terminated
+  // (probed on GNU for #1342).
   EXPECT_EQ(r.stdout_text,
-            std::string("==> a.bin <==\0b\0\0==> b.bin <==\0d\0", 33));
+            std::string("==> a.bin <==\nb\0\n==> b.bin <==\nd\0", 33));
 }
 
 TEST(tail, tail_invalid_count_message_matches_gnu) {
