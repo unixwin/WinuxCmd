@@ -1067,6 +1067,27 @@ TEST(cp, cp_same_file_mixed_dialects_reports_error) {
   EXPECT_EQ(tmp.read("f.txt"), "payload");
 }
 
+TEST(cp, cp_interactive_1324_second_prompt_reads_own_line) {
+  TempDir tmp;
+  std::filesystem::create_directory(tmp.path / "dest");
+  tmp.write("src1", "NEW1");
+  tmp.write("src2", "NEW2");
+  tmp.write("dest/src1", "OLD1");
+  tmp.write("dest/src2", "OLD2");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("y\ny\n");
+  p.add(L"cp.exe", {L"-i", L"src1", L"src2", L"dest"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // The first answer's newline must not auto-answer the second prompt
+  // as "no" (#1324): both destinations are overwritten.
+  EXPECT_EQ(tmp.read("dest/src1"), "NEW1");
+  EXPECT_EQ(tmp.read("dest/src2"), "NEW2");
+}
 // [GNU] #1366: --parents grafts the source's full path under the target
 // directory; a drive-letter absolute source is anchored at its drive root,
 // not spliced in as a literal "Z:" relative component.

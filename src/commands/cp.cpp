@@ -1276,9 +1276,14 @@ auto copy_file(const std::string& srcPath, const std::string& destPath,
     safeErrorPrint("cp: overwrite '");
     safeErrorPrint(destPath);
     safeErrorPrint("'? ");
-    char response;
-    std::cin.get(response);
-    if (response != 'y' && response != 'Y') {
+    // [GNU] Read a whole line: a char-wise read leaves the first answer's
+    // newline in the stream, which then auto-answers the next prompt as
+    // "no" (#1324).
+    std::string line;
+    if (!std::getline(std::cin, line)) {
+      return true;
+    }
+    if (line.empty() || (line[0] != 'y' && line[0] != 'Y')) {
       return true;
     }
   }
