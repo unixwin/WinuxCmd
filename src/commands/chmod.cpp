@@ -75,6 +75,10 @@ struct SymbolicModeClause {
   std::string who;
   char op = '\0';
   std::string perms;
+  // [GNU] Copy clause (e.g. "g=u"): perms stays empty and copy_from
+  // names the source class whose current bits are taken (#1331).
+  bool is_copy = false;
+  char copy_from = '\0';
 };
 
 struct ParsedMode {
@@ -231,7 +235,9 @@ auto format_mode_verbose(unsigned int mode, bool is_dir) -> std::string {
     perms[i + 1] = (mode & (0400u >> i)) ? rwx[i] : '-';
   }
   perms[10] = '\0';
-  return std::string(oct) + " (" + perms + ")";
+  // GNU prints the 9 permission chars only, dropping the type bit
+  // (coreutils chmod.c: &perms[1] after strmode).
+  return std::string(oct) + " (" + (perms + 1) + ")";
 }
 
 /**
@@ -248,17 +254,27 @@ auto apply_clause_for_display(unsigned int mode,
     if (w == 'a' || w == 'o') who_mask |= 0007u;
   }
   unsigned int perm_bits = 0;
-  for (char p : clause.perms) {
-    if (p == 'r') {
-      perm_bits |= 0444u;
-    } else if (p == 'w') {
-      perm_bits |= 0222u;
-    } else if (p == 'x') {
-      perm_bits |= 0111u;
-    } else if (p == 'X' && (is_dir || (mode & 0111u))) {
-      perm_bits |= 0111u;
+  if (clause.is_copy) {
+    // [GNU] Copy clause: the source class's current 3 bits, expanded to
+    // all three class positions; the who_mask below narrows them to the
+    // addressed classes (#1331).
+    const unsigned int src = clause.copy_from == 'u'   ? (mode >> 6) & 7u
+                             : clause.copy_from == 'g' ? (mode >> 3) & 7u
+                                                       : mode & 7u;
+    perm_bits = (src << 6) | (src << 3) | src;
+  } else {
+    for (char p : clause.perms) {
+      if (p == 'r') {
+        perm_bits |= 0444u;
+      } else if (p == 'w') {
+        perm_bits |= 0222u;
+      } else if (p == 'x') {
+        perm_bits |= 0111u;
+      } else if (p == 'X' && (is_dir || (mode & 0111u))) {
+        perm_bits |= 0111u;
+      }
+      // 's' and 't' have no Windows attribute counterpart.
     }
-    // 's' and 't' have no Windows attribute counterpart.
   }
   perm_bits &= who_mask;
   switch (clause.op) {
@@ -299,52 +315,82 @@ auto report_mode_change(const std::string &path, unsigned int old_mode,
 }
 
 /**
- * @brief Parse symbolic mode (e.g., "u+rwx", "go-w", "a=rx")
- * @param mode_str Mode string to parse
- * @return Tuple of (who, op, perms) or error message
+ * @brief Parse one comma-free symbolic mode segment (e.g. "u+rwx",
+ * "go-w", "u+rw-x", "g=u") into one or more clauses.
+ * @param mode_str Mode segment to parse (no commas)
+ * @return The clauses in application order, or an error message
  */
 auto parse_symbolic_mode(std::string_view mode_str)
-    -> cp::Result<SymbolicModeClause> {
+    -> cp::Result<std::vector<SymbolicModeClause>> {
   const std::string original_mode(mode_str);
-  SymbolicModeClause clause;
+  std::vector<SymbolicModeClause> clauses;
 
   size_t i = 0;
 
   // Parse who (u/g/o/a)
+  std::string who;
   while (i < mode_str.size() && (mode_str[i] == 'u' || mode_str[i] == 'g' ||
                                  mode_str[i] == 'o' || mode_str[i] == 'a')) {
-    clause.who += mode_str[i];
+    who += mode_str[i];
     i++;
   }
-
-  if (clause.who.empty()) {
-    clause.who = "a";  // Default to all
+  if (who.empty()) {
+    who = "a";  // Default to all
   }
 
-  // Parse operator (+/-/=)
-  if (i >= mode_str.size() ||
-      (mode_str[i] != '+' && mode_str[i] != '-' && mode_str[i] != '=')) {
+  // [GNU] After the who part, one or more (op, perms) pairs follow
+  // (#1331).  A perms segment runs until the next op character and is
+  // either empty ("u+", "a=" — a valid no-op / clear), a run of rwxXst,
+  // or exactly one ugo copy letter ("g=u").  Who letters are not perms:
+  // "u+rwg" and "u+ug" are invalid.
+  if (i >= mode_str.size()) {
     return std::unexpected("invalid mode: '" + original_mode + "'");
   }
-  clause.op = mode_str[i];
-  i++;
-
-  // Parse permissions (r/w/x plus s/t/X; GNU accepts the full set).
-  // s (setuid/setgid), t (sticky) and X (conditional execute) parse fine but
-  // have no Windows attribute counterpart: they apply as no-ops (Savannah
-  // #11638).
-  while (i < mode_str.size() &&
-         (mode_str[i] == 'r' || mode_str[i] == 'w' || mode_str[i] == 'x' ||
-          mode_str[i] == 's' || mode_str[i] == 't' || mode_str[i] == 'X')) {
-    clause.perms += mode_str[i];
+  while (i < mode_str.size()) {
+    const char op = mode_str[i];
+    if (op != '+' && op != '-' && op != '=') {
+      return std::unexpected("invalid mode: '" + original_mode + "'");
+    }
     i++;
+
+    const size_t seg_start = i;
+    while (i < mode_str.size() && mode_str[i] != '+' &&
+           mode_str[i] != '-' && mode_str[i] != '=') {
+      i++;
+    }
+    const std::string_view seg = mode_str.substr(seg_start, i - seg_start);
+
+    SymbolicModeClause clause;
+    clause.who = who;
+    clause.op = op;
+    if (seg.empty()) {
+      // No-op for + and -, clear for =.  perms stays empty.
+    } else if (seg.size() == 1 &&
+               (seg[0] == 'u' || seg[0] == 'g' || seg[0] == 'o')) {
+      clause.is_copy = true;
+      clause.copy_from = seg[0];
+    } else {
+      // Permissions (r/w/x plus s/t/X; GNU accepts the full set).
+      // s (setuid/setgid), t (sticky) and X (conditional execute) parse
+      // fine but have no Windows attribute counterpart: they apply as
+      // no-ops (Savannah #11638).
+      bool valid = true;
+      for (char c : seg) {
+        if (c != 'r' && c != 'w' && c != 'x' && c != 's' && c != 't' &&
+            c != 'X') {
+          valid = false;
+          break;
+        }
+      }
+      if (!valid) {
+        return std::unexpected("invalid mode: '" + original_mode + "'");
+      }
+      clause.perms = std::string(seg);
+    }
+    clauses.push_back(clause);
   }
 
-  if (clause.perms.empty() || i != mode_str.size()) {
-    return std::unexpected("invalid mode: '" + original_mode + "'");
-  }
-
-  return clause;
+  return clauses;
 }
 
 /**
@@ -379,15 +425,13 @@ auto numeric_to_permissions(int mode) -> std::string {
 }
 
 /**
- * @brief Apply symbolic mode to Windows file attributes
+ * @brief Apply one symbolic clause to Windows file attributes
  * @param path File path
- * @param who Who to apply permissions to (u/g/o/a)
- * @param op Operation (+/-/=)
- * @param perms Permissions (r/w/x)
+ * @param clause The parsed clause (who / op / perms or copy source)
  * @return Result with success status
  */
-auto apply_symbolic_mode(const std::string &path, const std::string &who,
-                         char op, const std::string &perms)
+auto apply_symbolic_mode(const std::string &path,
+                         const SymbolicModeClause &clause)
     -> cp::Result<bool> {
   const auto operand = native_path::make_api_path_operand(path);
   const std::wstring &wpath = operand.extended;
@@ -403,20 +447,28 @@ auto apply_symbolic_mode(const std::string &path, const std::string &who,
   // Read-only attribute is the closest approximation
 
   const bool affects_owner =
-      who.find('a') != std::string::npos || who.find('u') != std::string::npos;
+      clause.who.find('a') != std::string::npos ||
+      clause.who.find('u') != std::string::npos;
   if (!affects_owner) {
     return false;
   }
 
-  // On Windows/MSYS, chmod's observable read-only attribute follows the owner
-  // write bit.  Group/other write bits have no independent FILE_ATTRIBUTE_*.
-  const bool mentions_write = perms.find('w') != std::string::npos;
+  // On Windows/MSYS, chmod's observable read-only attribute follows the
+  // owner write bit.  Group/other write bits have no independent
+  // FILE_ATTRIBUTE_*.
   bool owner_writable = (attrs & FILE_ATTRIBUTE_READONLY) == 0;
-  if (op == '+') {
+  // [GNU] A copy clause takes the source class's current write bit; in
+  // this attribute model only the owner class has a real one, and the
+  // synthetic group/other write bits are always clear for ordinary
+  // files/directories (#1331).
+  const bool mentions_write =
+      clause.is_copy ? (clause.copy_from == 'u' ? owner_writable : false)
+                     : clause.perms.find('w') != std::string::npos;
+  if (clause.op == '+') {
     owner_writable = owner_writable || mentions_write;
-  } else if (op == '-') {
+  } else if (clause.op == '-') {
     owner_writable = owner_writable && !mentions_write;
-  } else if (op == '=') {
+  } else if (clause.op == '=') {
     owner_writable = mentions_write;
   }
 
@@ -547,7 +599,9 @@ auto parse_mode(std::string_view mode_str) -> cp::Result<ParsedMode> {
     if (!result) {
       return std::unexpected("invalid mode: '" + mode_text + "'");
     }
-    parsed_mode.symbolic_clauses.push_back(result.value());
+    parsed_mode.symbolic_clauses.insert(parsed_mode.symbolic_clauses.end(),
+                                        result.value().begin(),
+                                        result.value().end());
 
     if (comma == std::string::npos) {
       break;
@@ -613,8 +667,7 @@ auto process_file(const std::string &path, std::string_view mode_str,
     changed = result.value();
   } else {
     for (const auto &clause : mode_result.value().symbolic_clauses) {
-      auto result =
-          apply_symbolic_mode(path, clause.who, clause.op, clause.perms);
+      auto result = apply_symbolic_mode(path, clause);
       if (!result) {
         if (!silent) {
           safeErrorPrint("chmod: ");
