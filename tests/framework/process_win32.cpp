@@ -130,3 +130,81 @@ CommandResult run_command(const std::wstring &exe,
   // Return results
   return {(int)code, out, err};  // NOLINT
 }
+
+/**
+ * @brief Execute a single command with stdout closed (#1368)
+ *
+ * Same plumbing as run_command except the child's standard-output handle is
+ * NULL (what a POSIX shell leaves behind for `cmd >&-`): the CRT marks fd 1
+ * closed and the first stdout write fails with ERROR_INVALID_HANDLE. Only
+ * stderr is piped, so the write-error diagnostic is observable; stdout_text
+ * stays empty.
+ */
+CommandResult run_command_closed_stdout(const std::wstring &exe,
+                                        const std::vector<std::wstring> &args,
+                                        const std::string &stdin_data) {
+  SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
+
+  HANDLE in_r, in_w, err_r, err_w;
+  if (!CreatePipe(&in_r, &in_w, &sa, 0) ||    // stdin pipe
+      !CreatePipe(&err_r, &err_w, &sa, 0)) {  // stderr pipe
+    CommandResult res;
+    res.stderr_text = "run_command_closed_stdout: CreatePipe failed";
+    return res;  // exit_code stays -1
+  }
+
+  SetHandleInformation(in_w, HANDLE_FLAG_INHERIT, 0);   // Parent writes
+  SetHandleInformation(err_r, HANDLE_FLAG_INHERIT, 0);  // Parent reads
+
+  STARTUPINFOW si{};
+  si.cb = sizeof(si);
+  si.dwFlags = STARTF_USESTDHANDLES;
+  si.hStdInput = in_r;
+  si.hStdOutput = nullptr;  // closed stdout: the `>&-` contract (#1368)
+  si.hStdError = err_w;
+
+  PROCESS_INFORMATION pi{};
+  auto cmd = build_cmd(exe, args);
+
+  BOOL created = CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, TRUE, 0,
+                                nullptr, nullptr, &si, &pi);
+  DWORD spawn_err = created ? 0 : GetLastError();
+
+  CloseHandle(in_r);
+  CloseHandle(err_w);
+
+  if (!created) {
+    CloseHandle(in_w);
+    CloseHandle(err_r);
+    CommandResult res;
+    res.stderr_text = "run_command_closed_stdout: CreateProcessW failed: " +
+                      std::to_string(spawn_err);
+    return res;  // exit_code stays -1
+  }
+
+  std::string err;
+  std::thread t_err([&] { err = read_all(err_r); });
+  std::thread t_in([&] {
+    if (!stdin_data.empty()) {
+      DWORD written;
+      WriteFile(in_w, stdin_data.data(),
+                // NOLINTNEXTLINE
+                (DWORD)stdin_data.size(), &written, nullptr);
+    }
+    CloseHandle(in_w);  // Signal EOF by closing write end
+  });
+
+  WaitForSingleObject(pi.hProcess, INFINITE);
+
+  DWORD code = 0;
+  GetExitCodeProcess(pi.hProcess, &code);
+
+  t_err.join();
+  t_in.join();
+
+  CloseHandle(err_r);
+  CloseHandle(pi.hProcess);
+  CloseHandle(pi.hThread);
+
+  return {(int)code, std::string(), err};  // NOLINT
+}

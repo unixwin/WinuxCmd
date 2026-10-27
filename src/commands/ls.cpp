@@ -4152,6 +4152,13 @@ REGISTER_COMMAND(
   // GNU/Microsoft-style ls uses exit 2 for serious runtime trouble such as
   // missing-path "cannot access" failures, and exit 1 for minor problems
   // such as entries inside a listed directory that could not be statted.
+  // [GNU] ls.c registers close_stdout (ls.c:1661): a failed stdout write is
+  // diagnosed ("ls: write error: <strerror>", closeout.c close_stdout) and
+  // escalates the exit status to LS_FAILURE = 2 (#1368). A closed
+  // downstream pipe keeps the quiet SIGPIPE-style status.
+  if (int write_error_rc = report_stdout_write_error("ls", 2)) {
+    return write_error_rc;
+  }
   if (*result) {
     return g_had_minor_errors ? 1 : 0;
   }

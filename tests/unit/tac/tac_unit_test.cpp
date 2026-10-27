@@ -227,3 +227,23 @@ TEST(tac, tac_file_with_trailing_separator_reports_not_directory) {
           "tac: cannot open 'file.txt/' for reading: Not a directory") !=
       std::string::npos);
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1368: tac.c's full_write() failure reaches write_error()
+// (system.h:960): one "tac: write error: <strerror>" diagnostic, exit 1.
+// With stdout closed (`>&-`) the first record write fails with
+// ERROR_INVALID_HANDLE — the Win32 image of EBADF — and tac must stop
+// printing instead of exiting 0 silently.
+// ---------------------------------------------------------------------------
+TEST(tac, issue1368_closed_stdout_reports_write_error) {
+  TempDir tmp;
+  tmp.write("input.txt", "line1\nline2\nline3\n");
+  const std::wstring operand = (tmp.path / L"input.txt").wstring();
+
+  auto r =
+      run_command_closed_stdout(ProjectPaths::exe(L"tac.exe"), {operand});
+
+  EXPECT_EXIT_CODE(r, 1);
+  EXPECT_CONTAINS(r.stderr_text, "tac: write error: ");
+  EXPECT_CONTAINS(r.stderr_text, "Bad file descriptor");
+}

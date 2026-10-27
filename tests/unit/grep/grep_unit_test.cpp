@@ -1888,3 +1888,26 @@ TEST(grep, issue_1283_drive_colon_operand_searches_carrier_file) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_NE(r.stdout_text.find("hello"), std::string::npos);
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1368: GNU grep treats a failed stdout write as an EXIT_TROUBLE (2)
+// outcome ("grep: write error: <strerror>"). With stdout closed (`>&-`) the
+// child has no std-output handle, so the first write fails with
+// ERROR_INVALID_HANDLE — the Win32 image of EBADF — and grep must exit 2
+// instead of 0, skipping the remaining files instead of scanning into a
+// dead sink.
+// ---------------------------------------------------------------------------
+TEST(grep, issue1368_closed_stdout_reports_write_error_and_exits_2) {
+  TempDir tmp;
+  tmp.write("a.txt", "x match\nno hit\n");
+  tmp.write("b.txt", "x again\n");
+  const std::wstring operand_a = (tmp.path / L"a.txt").wstring();
+  const std::wstring operand_b = (tmp.path / L"b.txt").wstring();
+
+  auto r = run_command_closed_stdout(ProjectPaths::exe(L"grep.exe"),
+                                     {L"x", operand_a, operand_b});
+
+  EXPECT_EXIT_CODE(r, 2);
+  EXPECT_CONTAINS(r.stderr_text, "grep: write error: ");
+  EXPECT_CONTAINS(r.stderr_text, "Bad file descriptor");
+}

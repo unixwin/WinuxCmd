@@ -2786,6 +2786,7 @@ auto time_matches(const TimePredicate& pred, long long age_seconds,
 auto print_path(std::string_view path, bool null_terminated) -> void;
 auto write_find_output_file(Config& cfg, const std::string& path,
                             std::string_view text) -> bool;
+auto stop_on_stdout_failure(Config& cfg) -> void;
 auto printf_path(std::string_view format, const std::filesystem::path& p,
                  const std::filesystem::directory_entry& e, int depth,
                  const std::filesystem::path& root) -> void;
@@ -3043,10 +3044,12 @@ auto evaluate_expression(const ExprNode& expr, const std::filesystem::path& p,
 
     case ExprKind::Print:
       print_path(path_display(p), false);
+      stop_on_stdout_failure(cfg);
       return true;
 
     case ExprKind::Print0:
       print_path(path_display(p), true);
+      stop_on_stdout_failure(cfg);
       return true;
 
     case ExprKind::FPrint: {
@@ -3063,6 +3066,7 @@ auto evaluate_expression(const ExprNode& expr, const std::filesystem::path& p,
 
     case ExprKind::Printf:
       printf_path(expr.text, p, e, depth, root);
+      stop_on_stdout_failure(cfg);
       return true;
 
     case ExprKind::FPrintf: {
@@ -3091,6 +3095,7 @@ auto evaluate_expression(const ExprNode& expr, const std::filesystem::path& p,
                          format_ls_date(p) + " " + path_display(p) + "\n";
       if (expr.kind == ExprKind::Ls) {
         safePrint(text);
+        stop_on_stdout_failure(cfg);
         return true;
       }
       return write_find_output_file(cfg, expr.text, text);
@@ -3283,6 +3288,14 @@ auto print_path(std::string_view path, bool null_terminated) -> void {
   } else {
     safePrint("\n");
   }
+}
+
+// #1368: once a stdout write has failed (e.g. closed stdout, `>&-`),
+// continuing the traversal only feeds a dead sink; GNU find dies at the
+// first failed write. Reuse the -quit flag to unwind the walk promptly;
+// the exit mapping happens once at the end of process().
+auto stop_on_stdout_failure(Config& cfg) -> void {
+  if (is_stdout_write_failed()) cfg.quit = true;
 }
 
 auto file_type_char(const std::filesystem::directory_entry& e) -> char {
@@ -4735,6 +4748,7 @@ auto apply_actions(const std::filesystem::path& p,
     -> void {
   if (cfg.has_print) {
     print_path(path_display(p), false);
+    stop_on_stdout_failure(cfg);
   }
 }
 
@@ -5134,6 +5148,13 @@ auto process(Config& cfg) -> int {
 
   flush_exec_actions(cfg);
 
+  // [GNU] findutils registers close_stdout: a failed stdout write is a
+  // fatal error reported once as "find: write error: <strerror>" with the
+  // nonzero findutils error status 1 (#1368). A closed downstream pipe
+  // keeps the quiet SIGPIPE-style status.
+  if (int write_error_rc = report_stdout_write_error("find", 1)) {
+    return write_error_rc;
+  }
   if (cfg.had_error) return 1;
   return 0;
 }

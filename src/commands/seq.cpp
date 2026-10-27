@@ -589,6 +589,14 @@ auto run(const Config& cfg) -> int {
 
   bool first_item = true;
 
+  // #1368: a failed stdout write is fatal for GNU seq — seq.c calls
+  // write_error() (system.h:960), printing one "seq: write error:
+  // <strerror>" diagnostic and exiting 1. A closed downstream pipe keeps
+  // the quiet SIGPIPE-style exit 0 established by #1376.
+  const auto stdout_failure_rc = [&]() -> int {
+    return report_stdout_write_error("seq", 1);
+  };
+
   if (integral_fast_path) {
     const auto first_i = static_cast<long long>(cfg.first);
     const auto inc_i = static_cast<long long>(cfg.increment);
@@ -598,6 +606,7 @@ auto run(const Config& cfg) -> int {
       // stream: GNU seq dies of SIGPIPE; the console layer records the
       // broken pipe in a flag instead, so poll it per item (#1376).
       if (is_stdout_pipe_closed()) return 0;
+      if (is_stdout_write_failed()) return stdout_failure_rc();
       auto [ptr, ec] =
           std::to_chars(number_buf, number_buf + sizeof(number_buf), x);
       if (!first_item) {
@@ -617,7 +626,7 @@ auto run(const Config& cfg) -> int {
     }
     buffer_output(cfg.terminator);
     flush_output();
-    return 0;
+    return stdout_failure_rc();
   }
 
   double current = cfg.first;
@@ -668,6 +677,7 @@ auto run(const Config& cfg) -> int {
 
   for (double i = 1;; ++i) {
     if (is_stdout_pipe_closed()) return 0;  // see fast path note (#1376)
+    if (is_stdout_write_failed()) return stdout_failure_rc();  // #1368
     const double prev = current;
     emit(current);
 
@@ -689,7 +699,7 @@ auto run(const Config& cfg) -> int {
   }
   flush_output();
 
-  return 0;
+  return stdout_failure_rc();
 }
 
 }  // namespace seq_pipeline
