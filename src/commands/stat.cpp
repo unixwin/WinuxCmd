@@ -544,8 +544,13 @@ auto expand_backslash_escapes(std::string_view input) -> std::string {
 
 auto load_file_system_stat(const std::string& filename)
     -> cp::Result<FileSystemStatData> {
+  // #1364: fold the operand through the shared boundary BEFORE absolutizing:
+  // std::filesystem::absolute roots a shell spelling ("/") on the current
+  // drive, so the volume probed belonged to the cwd, not to the operand.
   std::error_code ec;
-  std::filesystem::path fs_path(filename);
+  std::filesystem::path fs_path(
+      native_path::make_api_path_operand_w(utf8_to_wstring(filename))
+          .normalized);
   auto absolute = std::filesystem::absolute(fs_path, ec);
   std::wstring path = ec ? utf8_to_wstring(filename) : absolute.wstring();
 

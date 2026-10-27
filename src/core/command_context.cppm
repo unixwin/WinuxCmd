@@ -17,6 +17,18 @@ export auto option_policy_for_command(std::string_view command)
     // (the optstring); everything after it is data to normalize.
     policy.stop_options_after_positionals = 1;
   }
+  if (command == "stdbuf" || command == "time" || command == "runcon" ||
+      command == "chroot") {
+    // [GNU] The wrapper applets stop their own option parsing at the
+    // first non-option operand: stdbuf/time at COMMAND, runcon at
+    // CONTEXT (its command follows as the next operand), chroot at
+    // NEWROOT. Everything from the wrapped command on passes through
+    // untouched, so `stdbuf -oL ls -l`, `time ls -l`,
+    // `runcon ctx ls -l` and `chroot /jail ls -l` run the wrapped
+    // command instead of diagnosing its -l as their own option (#1375;
+    // same discipline as nohup/xargs below).
+    policy.stop_options_after_positionals = 1;
+  }
   if (command == "nohup") {
     // [GNU] coreutils nohup parses with a leading-'+' getopt: option
     // processing stops at the first non-option argument (the wrapped

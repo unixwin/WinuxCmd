@@ -1243,3 +1243,107 @@ TEST(du, du_files0_from_stdin_ctrlz_not_truncated_issue1212) {
   EXPECT_NE(r.exit_code, 0);
   EXPECT_TRUE(r.stderr_text.find("cannot access") != std::string::npos);
 }
+
+namespace {
+// #1288 fixture: an 8x40 directory chain (composed path past MAX_PATH),
+// created through the extended-length API. Empty result: skip the test.
+auto make_deep_tree_1288(const TempDir& tmp) -> std::wstring {
+  std::wstring cursor = tmp.wpath();
+  const std::wstring component(40, L'x');
+  for (int i = 0; i < 8; ++i) {
+    cursor += L"\\" + component;
+    const std::wstring extended =
+        cursor.rfind(L"\\\\?\\", 0) == 0 ? cursor : L"\\\\?\\" + cursor;
+    if (!CreateDirectoryW(extended.c_str(), nullptr)) {
+      const DWORD err = GetLastError();
+      if (err != ERROR_ALREADY_EXISTS) return {};
+    }
+  }
+  return cursor;
+}
+auto extended_1288(const std::wstring& p) -> std::wstring {
+  return p.rfind(L"\\\\?\\", 0) == 0 ? p : L"\\\\?\\" + p;
+}
+}  // namespace
+
+TEST(du, issue_1288_same_deep_directory_two_spellings_counted_once) {
+  TempDir tmp;
+  const std::wstring deep = make_deep_tree_1288(tmp);
+  if (deep.empty() || deep.size() <= MAX_PATH) {
+    std::cout << "  SKIPPED (deep fixture unavailable)\n";
+    return;
+  }
+  temp_dir_detail::write_all(
+      std::filesystem::path(extended_1288(deep)) / L"f.txt", "x", 1);
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"du.exe", {L"-s", deep, deep + L"\\."});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // GNU: an already-traversed argument prints nothing at all, so the
+  // -s summary for the directory appears exactly once. Count whole
+  // output lines rather than "xxxx" occurrences: the fixture path is
+  // eight 40-'x' components, so a substring search matches inside a
+  // single correct line (Windows CI run 40200117965 failed this test
+  // with the second hit at first+1 -- the overlap inside one 'x' run,
+  // which says nothing about whether the directory was counted once).
+  EXPECT_NE(r.stdout_text.find("xxxx"), std::string::npos);
+  size_t lines = 0;
+  size_t pos = 0;
+  while (pos < r.stdout_text.size()) {
+    const size_t nl = r.stdout_text.find('\n', pos);
+    const size_t end = nl == std::string::npos ? r.stdout_text.size() : nl;
+    if (end > pos) ++lines;
+    if (nl == std::string::npos) break;
+    pos = nl + 1;
+  }
+  EXPECT_EQ(lines, 1u);
+}
+
+// #1372: du --inodes must report pure inode counts — every visited
+// object (including each directory itself) contributes exactly 1. The
+// old code initialized directory counts at 0 and added block totals
+// into the count (4097 for a directory holding one file; GNU: 2).
+TEST(du, du_inodes_empty_directory_counts_itself_issue1372) {
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "d");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"du.exe", {L"--inodes", L"d"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "1\td\n");
+}
+
+TEST(du, du_inodes_directory_with_one_file_issue1372) {
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "d");
+  tmp.write("d/one.txt", "hello\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"du.exe", {L"--inodes", L"d"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "2\td\n");
+}
+
+TEST(du, du_inodes_nested_tree_counts_every_object_issue1372) {
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "d" / "sub");
+  tmp.write("d/one.txt", "hello\n");
+  tmp.write("d/sub/x.txt", "world\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"du.exe", {L"--inodes", L"d"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "2\td/sub\n4\td\n");
+}

@@ -456,3 +456,112 @@ TEST(shred, shred_u_dialect_operand_removes_operand_drive_file) {
   EXPECT_FALSE(std::filesystem::exists(tmp.path / L"v1240.txt"));
   EXPECT_FALSE(std::filesystem::exists(std::filesystem::path(shadow)));
 }
+
+// [GNU] #1348: --remove=wipe must rename the target to a fresh
+// unpredictable name and delete only that name.  The old code renamed
+// onto the compile-time constant "f6d4b2907e5c3a1", ignored the rename
+// result, and deleted that path unconditionally: a pre-existing file
+// with the constant name was destroyed while the target survived.
+TEST(shred, shred_wipe_spares_preexisting_constant_named_file_issue1348) {
+  TempDir tmp;
+  tmp.mkdir("sub");
+  tmp.write("sub/f6d4b2907e5c3a1", "keepme");
+  tmp.write("sub/victim", "secret");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"shred.exe", {L"--remove=wipe", L"sub/victim"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // The sentinel is untouched and the target is gone.
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / L"sub" / L"f6d4b2907e5c3a1"));
+  EXPECT_EQ(tmp.read("sub/f6d4b2907e5c3a1"), "keepme");
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / L"sub" / L"victim"));
+
+  // Without a collision the wipe path still removes its target, and
+  // the default (-u / wipesync) mode spares the sentinel as well.
+  tmp.write("sub/victim2", "secret2");
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.add(L"shred.exe", {L"-u", L"sub/victim2"});
+  auto r2 = p2.run();
+  EXPECT_EQ(r2.exit_code, 0);
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / L"sub" / L"victim2"));
+  EXPECT_EQ(tmp.read("sub/f6d4b2907e5c3a1"), "keepme");
+}
+
+// [GNU] #1348: -s N shreds exactly N bytes — a file shorter than N
+// grows to exactly N (no block round-up on an explicit size), and a
+// longer file keeps its size.
+TEST(shred, shred_size_limit_is_exact_issue1348) {
+  TempDir tmp;
+  tmp.write("short.bin", "12345");
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"shred.exe", {L"-s", L"100", L"short.bin"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(static_cast<unsigned long long>(
+                std::filesystem::file_size(tmp.path / L"short.bin")),
+            100ULL);
+
+  tmp.write("long.bin", std::string(600, 'x'));
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.add(L"shred.exe", {L"-s", L"100", L"long.bin"});
+  auto r2 = p2.run();
+  EXPECT_EQ(r2.exit_code, 0);
+  EXPECT_EQ(static_cast<unsigned long long>(
+                std::filesystem::file_size(tmp.path / L"long.bin")),
+            600ULL);
+}
+
+// [GNU] #1348: -s accepts the coreutils suffix grammar (KB = 1000,
+// KiB/K = 1024, b = 512); invalid sizes are rejected before any file
+// is touched, with GNU's diagnostic.
+TEST(shred, shred_size_suffix_forms_issue1348) {
+  TempDir tmp;
+  tmp.write("kb.bin", "");
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"shred.exe", {L"-s", L"1KB", L"kb.bin"});
+  EXPECT_EQ(p.run().exit_code, 0);
+  EXPECT_EQ(static_cast<unsigned long long>(
+                std::filesystem::file_size(tmp.path / L"kb.bin")),
+            1000ULL);
+
+  tmp.write("kib.bin", "");
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.add(L"shred.exe", {L"-s", L"1KiB", L"kib.bin"});
+  EXPECT_EQ(p2.run().exit_code, 0);
+  EXPECT_EQ(static_cast<unsigned long long>(
+                std::filesystem::file_size(tmp.path / L"kib.bin")),
+            1024ULL);
+
+  tmp.write("keep.bin", "untouched");
+  Pipeline p3;
+  p3.set_cwd(tmp.wpath());
+  p3.add(L"shred.exe", {L"-s", L"bogus", L"keep.bin"});
+  auto r3 = p3.run();
+  EXPECT_EQ(r3.exit_code, 1);
+  EXPECT_TRUE(r3.stderr_text.find("invalid file size: 'bogus'") !=
+              std::string::npos);
+  EXPECT_EQ(tmp.read("keep.bin"), "untouched");
+}
+
+// [GNU] #1348: a negative pass count is rejected up front; the file
+// is not touched.
+TEST(shred, shred_negative_passes_rejected_issue1348) {
+  TempDir tmp;
+  tmp.write("victim.txt", "still here");
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"shred.exe", {L"-n", L"-1", L"victim.txt"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("invalid number of passes: '-1'") !=
+              std::string::npos);
+  EXPECT_EQ(tmp.read("victim.txt"), "still here");
+}

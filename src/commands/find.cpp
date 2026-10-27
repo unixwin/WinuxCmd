@@ -1239,8 +1239,12 @@ auto parse_regex(FindRegexDialect dialect, std::string_view pattern,
 auto reference_write_time(std::string_view path)
     -> cp::Result<std::filesystem::file_time_type> {
   std::error_code ec;
+  // #1288: the -newer reference is a user operand: normalize it at the
+  // operand boundary and read the extended spelling, or a reference
+  // past MAX_PATH (or spelled with '/' separators) reads as missing.
+  const auto operand = native_path::make_api_path_operand(path);
   auto t = std::filesystem::last_write_time(
-      std::filesystem::path(utf8_to_wstring(std::string(path))), ec);
+      std::filesystem::path(operand.extended), ec);
   if (ec) return std::unexpected("cannot read reference file for -newer");
   return t;
 }
@@ -2268,8 +2272,13 @@ auto parse_expression(std::span<const std::string_view> raw_args)
 auto prepare_find_output_file(Config& cfg, const std::string& path)
     -> cp::Result<void> {
   if (cfg.output_files.contains(path)) return {};
+  // #1288: open the operand's extended spelling (the -fprint* target is
+  // a user path: the raw spelling made "/d/out" land in "<cwd>\d\out"
+  // and fails outright past MAX_PATH). The map stays keyed by the
+  // original operand string.
+  const auto operand = native_path::make_api_path_operand(path);
   auto out = std::make_unique<std::ofstream>(
-      std::filesystem::path(utf8_to_wstring(path)),
+      std::filesystem::path(operand.extended),
       std::ios::binary | std::ios::trunc);
   if (!out->is_open()) {
     return std::unexpected("cannot open output file " + path);
@@ -3329,9 +3338,24 @@ auto file_size_bytes(const std::filesystem::directory_entry& e)
   return static_cast<unsigned long long>(size);
 }
 
+// #1288: the win32_* probes below receive the walk's logical (display)
+// spelling, but Win32 calls on that spelling stat the wrong object past
+// MAX_PATH or on a trailing-dot component — the unextended namespace
+// strips the dot and enforces the legacy length limit. Probe and open
+// the extended-length spelling instead, the same pattern #1285 applied
+// to the walk roots. DOS device names are the one exception: they
+// resolve only in the device namespace the \\?\ prefix bypasses, so
+// they stay verbatim (the invariant native_path::attributes_w honours).
+auto probe_spelling(const std::filesystem::path& p) -> std::wstring {
+  const std::wstring raw = p.wstring();
+  if (native_path::is_dos_device_name_w(raw)) return raw;
+  return to_io_path(p).wstring();
+}
+
 auto win32_accessible(const std::filesystem::path& p, DWORD desired_access)
     -> bool {
-  DWORD attrs = GetFileAttributesW(p.wstring().c_str());
+  const std::wstring io = probe_spelling(p);
+  DWORD attrs = GetFileAttributesW(io.c_str());
   if (attrs == INVALID_FILE_ATTRIBUTES) return false;
   if ((desired_access & GENERIC_WRITE) != 0 &&
       (attrs & FILE_ATTRIBUTE_READONLY) != 0) {
@@ -3342,7 +3366,7 @@ auto win32_accessible(const std::filesystem::path& p, DWORD desired_access)
                     ? FILE_FLAG_BACKUP_SEMANTICS
                     : FILE_ATTRIBUTE_NORMAL;
   HANDLE handle =
-      CreateFileW(p.wstring().c_str(), desired_access,
+      CreateFileW(io.c_str(), desired_access,
                   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                   nullptr, OPEN_EXISTING, flags, nullptr);
   if (handle == INVALID_HANDLE_VALUE) return false;
@@ -3375,7 +3399,7 @@ auto permission_mode(const std::filesystem::path& p,
   }
   ec.clear();
   if (e.is_directory(ec) && !ec) {
-    DWORD attrs = GetFileAttributesW(p.wstring().c_str());
+    DWORD attrs = GetFileAttributesW(probe_spelling(p).c_str());
     unsigned mode = 0755;
     if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_READONLY)) {
       mode &= ~0222U;
@@ -3390,7 +3414,7 @@ auto permission_mode(const std::filesystem::path& p,
   bool executable =
       ext == ".exe" || ext == ".bat" || ext == ".cmd" || ext == ".ps1";
   unsigned mode = executable ? 0755 : 0644;
-  DWORD attrs = GetFileAttributesW(p.wstring().c_str());
+  DWORD attrs = GetFileAttributesW(probe_spelling(p).c_str());
   if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_READONLY)) {
     mode &= ~0222U;
   }
@@ -3433,12 +3457,13 @@ auto permission_string(const std::filesystem::path& p,
 
 auto win32_hard_link_count(const std::filesystem::path& p)
     -> unsigned long long {
-  DWORD attrs = GetFileAttributesW(p.c_str());
+  const std::wstring io = probe_spelling(p);
+  DWORD attrs = GetFileAttributesW(io.c_str());
   if (attrs == INVALID_FILE_ATTRIBUTES) return 1;
 
   DWORD flags = FILE_FLAG_BACKUP_SEMANTICS;
   HANDLE handle = CreateFileW(
-      p.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+      io.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
       nullptr, OPEN_EXISTING, flags, nullptr);
   if (handle == INVALID_HANDLE_VALUE) return 1;
 
@@ -3452,7 +3477,8 @@ auto win32_hard_link_count(const std::filesystem::path& p)
 
 auto win32_file_identity(const std::filesystem::path& p)
     -> std::optional<FileIdentity> {
-  DWORD attrs = GetFileAttributesW(p.c_str());
+  const std::wstring io = probe_spelling(p);
+  DWORD attrs = GetFileAttributesW(io.c_str());
   if (attrs == INVALID_FILE_ATTRIBUTES) return std::nullopt;
 
   DWORD flags = 0;
@@ -3464,7 +3490,7 @@ auto win32_file_identity(const std::filesystem::path& p)
   }
 
   HANDLE handle =
-      CreateFileW(p.c_str(), FILE_READ_ATTRIBUTES,
+      CreateFileW(io.c_str(), FILE_READ_ATTRIBUTES,
                   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                   nullptr, OPEN_EXISTING, flags, nullptr);
   if (handle == INVALID_HANDLE_VALUE) return std::nullopt;
@@ -3524,7 +3550,8 @@ auto win32_followed_file_identity(const std::filesystem::path& p)
 
 auto win32_file_time_ticks(const std::filesystem::path& p,
                            FindFileTimeKind kind) -> std::optional<long long> {
-  DWORD attrs = GetFileAttributesW(p.c_str());
+  const std::wstring io = probe_spelling(p);
+  DWORD attrs = GetFileAttributesW(io.c_str());
   if (attrs == INVALID_FILE_ATTRIBUTES) return std::nullopt;
 
   DWORD flags = 0;
@@ -3536,7 +3563,7 @@ auto win32_file_time_ticks(const std::filesystem::path& p,
   }
 
   HANDLE handle =
-      CreateFileW(p.c_str(), FILE_READ_ATTRIBUTES,
+      CreateFileW(io.c_str(), FILE_READ_ATTRIBUTES,
                   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                   nullptr, OPEN_EXISTING, flags, nullptr);
   if (handle == INVALID_HANDLE_VALUE) return std::nullopt;
@@ -4435,7 +4462,10 @@ auto printf_path(std::string_view format, const std::filesystem::path& p,
 
 auto delete_path(const std::filesystem::path& p, Config& cfg) -> bool {
   std::error_code ec;
-  bool removed = std::filesystem::remove(p, ec);
+  // #1288: delete through the extended spelling (#1285's to_io_path);
+  // removing the logical spelling fails past MAX_PATH and on
+  // trailing-dot components.
+  bool removed = std::filesystem::remove(to_io_path(p), ec);
   if (!removed || ec) {
     safeErrorPrint("find: cannot delete '");
     safeErrorPrint(path_display(p));
@@ -4777,6 +4807,12 @@ auto should_descend_into(const std::filesystem::directory_entry& e,
   return true;
 }
 
+// [#1316] GNU evaluates -quit as an action that exits as soon as it is
+// reached, regardless of whether any entry matched yet. The quit checks
+// below therefore test cfg.quit alone: gating them on matched_any let
+// traversal continue into unvisited roots (and report their errors)
+// when -quit fired on a non-matching entry. matched_any is kept as a
+// write-only parameter to avoid churning every call site.
 auto scan_depth_first(const std::filesystem::path& root,
                       const std::filesystem::path& p, int depth, Config& cfg,
                       bool& matched_any,
@@ -4829,7 +4865,7 @@ auto scan_depth_first(const std::filesystem::path& root,
       safeErrorPrint("\n");
       cfg.had_error = true;
     } else {
-      for (; it != end && !(cfg.quit && matched_any); it.increment(ec)) {
+      for (; it != end && !cfg.quit; it.increment(ec)) {
         if (ec) {
           safeErrorPrint("find: '");
           safeErrorPrint(path_display(p));
@@ -4846,7 +4882,7 @@ auto scan_depth_first(const std::filesystem::path& root,
   }
   ancestors.resize(ancestor_mark);
 
-  if (cfg.quit && matched_any) return;
+  if (cfg.quit) return;
 
   bool matched = entry_matches(cfg, p, entry, depth, root);
   if (cfg.quit && !matched) return;
@@ -4907,7 +4943,7 @@ auto scan_delete_depth_first(const std::filesystem::path& root,
       safeErrorPrint("\n");
       cfg.had_error = true;
     } else {
-      for (; it != end && !(cfg.quit && matched_any); it.increment(ec)) {
+      for (; it != end && !cfg.quit; it.increment(ec)) {
         if (ec) {
           safeErrorPrint("find: '");
           safeErrorPrint(path_display(p));
@@ -4925,7 +4961,7 @@ auto scan_delete_depth_first(const std::filesystem::path& root,
   }
   ancestors.resize(ancestor_mark);
 
-  if (cfg.quit && matched_any) return;
+  if (cfg.quit) return;
 
   bool matched = entry_matches(cfg, p, entry, depth, root);
   if (cfg.quit && !matched) return;
@@ -4994,56 +5030,77 @@ auto scan_one_root(const std::filesystem::path& root, Config& cfg,
     }
   }
 
-  for (; it != end; ++it) {
-    std::error_code iec;
+  // #1283: advance with the error_code overload, exactly like
+  // scan_depth_first / scan_delete_depth_first do. The throwing ++it used
+  // to abort the whole process (0xC0000409) when a step failed — stepping
+  // into a directory whose name ends in a dot, or walking past MAX_PATH —
+  // where GNU find reports the entry and finishes with a nonzero status.
+  std::error_code iec;
+  for (; it != end;) {
     const auto& de = *it;
     auto p = logical_from_io(root, io_root, de.path());
     int d = static_cast<int>(it.depth()) + 1;
 
     if (d > cfg.maxdepth) {
       it.disable_recursion_pending();
-      continue;
-    }
-
-    // [#1378] Directories deeper than the current path belong to a
-    // subtree that has been left behind; drop them before checking.
-    if (cfg.follow_symlinks &&
-        dir_stack.size() > static_cast<size_t>(d)) {
-      dir_stack.resize(static_cast<size_t>(d));
-    }
-    bool will_descend = should_descend_into(de, cfg);
-    std::optional<FileIdentity> self_identity;
-    if (cfg.follow_symlinks && will_descend) {
-      self_identity = win32_followed_file_identity(p);
-      if (self_identity) {
-        if (const auto* loop =
-                find_loop_ancestor(dir_stack, *self_identity)) {
-          report_filesystem_loop(p, *loop, cfg);
+    } else {
+      // [#1378] Directories deeper than the current path belong to a
+      // subtree that has been left behind; drop them before checking.
+      if (cfg.follow_symlinks &&
+          dir_stack.size() > static_cast<size_t>(d)) {
+        dir_stack.resize(static_cast<size_t>(d));
+      }
+      bool will_descend = should_descend_into(de, cfg);
+      std::optional<FileIdentity> self_identity;
+      bool looped = false;
+      if (cfg.follow_symlinks && will_descend) {
+        self_identity = win32_followed_file_identity(p);
+        if (self_identity) {
+          if (const auto* loop =
+                  find_loop_ancestor(dir_stack, *self_identity)) {
+            report_filesystem_loop(p, *loop, cfg);
+            it.disable_recursion_pending();
+            looped = true;
+          }
+        }
+      }
+      if (!looped) {
+        bool matched = entry_matches(cfg, p, de, d, root);
+        if (cfg.quit && !matched) return;
+        if (matched) {
+          apply_actions(p, de, cfg);
+          matched_any = true;
+          if (cfg.quit) return;
+        }
+        if (cfg.prune_current || !should_descend_into(de, cfg)) {
           it.disable_recursion_pending();
-          continue;
+        } else if (self_identity) {
+          if (dir_stack.size() > static_cast<size_t>(d)) {
+            dir_stack.resize(static_cast<size_t>(d));
+          }
+          if (dir_stack.size() == static_cast<size_t>(d)) {
+            dir_stack.push_back(AncestorDirectory{*self_identity, p});
+          } else {
+            dir_stack[static_cast<size_t>(d)] =
+                AncestorDirectory{*self_identity, p};
+          }
         }
       }
     }
 
-    bool matched = entry_matches(cfg, p, de, d, root);
-    if (cfg.quit && !matched) return;
-    if (matched) {
-      apply_actions(p, de, cfg);
-      matched_any = true;
-      if (cfg.quit) return;
+    iec.clear();
+    it.increment(iec);
+    if (iec) {
+      safeErrorPrint("find: '");
+      safeErrorPrint(path_display(p));
+      safeErrorPrint("': ");
+      safeErrorPrint(root_probe_error_text(iec.value()));
+      safeErrorPrint("\n");
+      cfg.had_error = true;
+      break;
     }
-    if (cfg.prune_current || !should_descend_into(de, cfg)) {
-      it.disable_recursion_pending();
-    } else if (self_identity) {
-      if (dir_stack.size() > static_cast<size_t>(d)) {
-        dir_stack.resize(static_cast<size_t>(d));
-      }
-      if (dir_stack.size() == static_cast<size_t>(d)) {
-        dir_stack.push_back(AncestorDirectory{*self_identity, p});
-      } else {
-        dir_stack[static_cast<size_t>(d)] =
-            AncestorDirectory{*self_identity, p};
-      }
+  }
+}
     }
   }
 }
@@ -5075,7 +5132,7 @@ auto process(Config& cfg) -> int {
     } else {
       scan_one_root(root, cfg, matched_any);
     }
-    if (cfg.quit && matched_any) break;
+    if (cfg.quit) break;
   }
 
   flush_exec_actions(cfg);

@@ -298,3 +298,20 @@ TEST(uniq, uniq_stdin_ctrlz_matches_file_operand_issue1212) {
   EXPECT_FALSE(rf.stdout_text.empty());
   EXPECT_EQ(rs.stdout_text, rf.stdout_text);
 }
+// #1374: in WINUX_SHELL_GLOB=native mode the shell leaves expansion to
+// the command; uniq must expand its input operand through the shared
+// glob path like cat does, instead of failing on the literal pattern.
+TEST(uniq, uniq_native_glob_expands_input_operand_issue1374) {
+  TempDir tmp;
+  tmp.write("u.dat", "dup\ndup\nuniq\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_env(L"WINUX_SHELL_GLOB", L"native");
+  p.add(L"uniq.exe", {L"u.*"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "dup\nuniq\n");
+}
+

@@ -1695,6 +1695,16 @@ auto substitute_line(const std::string& input, const Script& script,
   std::string output;
   output.reserve(input.size());
 
+  size_t search_start = 0;
+  size_t last_append = 0;
+  size_t match_index = 0;
+  // [GNU] An empty match that starts exactly where the immediately
+  // preceding non-empty match ended is not a match at all: GNU sed
+  // neither substitutes it nor counts it for the s///N occurrence
+  // numbering (issue #1284). Track that end position here; any genuine
+  // match clears it.
+  size_t previous_nonempty_end = std::string::npos;
+
   // [GNU] REG_NEWLINE matching for s///m and s///M: with the m/M modifier
   // ^ and $ also match immediately after/before an embedded newline, so
   // matches from the anchor-stripped pattern are filtered by an explicit
@@ -1724,52 +1734,50 @@ auto substitute_line(const std::string& input, const Script& script,
     return std::nullopt;
   };
 
-  // [GNU] sed/execute.c do_subst(): a null match immediately following a
-  // non-empty match is not substituted — "baaaac" through s,a*,x,g gives
-  // xbxcx, not xbxxcx (#1284). `count` counts only substitutable matches,
-  // so a skipped null match does not advance the Nth-occurrence counter
-  // either. `last_end` is the real end of the previous regex match,
-  // excluding the character consumed when skipping a vacuous match.
-  size_t start = 0;
-  size_t last_end = 0;
-  size_t count = 0;
-  bool again = true;
-
-  auto match = find_match(0);
-  while (match) {
-    const size_t offset = match->begin;
-    size_t matched = match->end - match->begin;
-
-    if (start < offset) {
-      output.append(input, start, offset - start);
-      start = offset;
+  while (auto match = find_match(search_start)) {
+    size_t match_start = match->begin;
+    size_t match_end = match->end;
+    if (match_start == match_end && match_start == previous_nonempty_end) {
+      // Suppressed empty match (see above): skip one character so the
+      // adjacency is cleared, without counting or replacing it.
+      previous_nonempty_end = std::string::npos;
+      if (match_end >= input.size()) break;
+      search_start = match_end + 1;
+      continue;
     }
+    ++match_index;
+    previous_nonempty_end =
+        match_end > match_start ? match_end : std::string::npos;
+    const bool replace_this =
+        script.occurrence == 0
+            ? script.global || match_index == 1
+            : match_index >= script.occurrence &&
+                  (script.global || match_index == script.occurrence);
 
-    if ((matched > 0 || count == 0 || offset > last_end) &&
-        ++count >= script.occurrence) {
+    if (replace_this) {
+      output.append(input, last_append, match_start - last_append);
       output.append(
           expand_substitution_replacement(script.replacement, input, *match));
+      last_append = match_end;
       changed = true;
-      again = script.global;
-    } else {
-      if (matched == 0) {
-        if (start < input.size()) {
-          matched = 1;
-        } else {
-          break;
-        }
-      }
-      output.append(input, offset, matched);
     }
 
-    start = offset + matched;
-    last_end = match->end;
-    if (!again || start > input.size()) break;
-    match = find_match(start);
+    if (match_end == match_start) {
+      if (match_end >= input.size()) break;
+      search_start = match_end + 1;
+    } else {
+      search_start = match_end;
+    }
+
+    if (script.occurrence == 0 && !script.global && changed) break;
+    if (script.occurrence != 0 && !script.global &&
+        match_index >= script.occurrence) {
+      break;
+    }
   }
 
   if (changed) {
-    output.append(input, start, std::string::npos);
+    output.append(input, last_append, std::string::npos);
     return output;
   }
   return input;

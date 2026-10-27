@@ -331,6 +331,39 @@ auto normalize_batch_options(const CommandContext<XARGS_OPTIONS.size()> &ctx)
   return options;
 }
 
+struct DelimiterMode {
+  bool use_null = false;
+  bool has_delimiter = false;
+  std::string delimiter_arg;
+};
+
+// #1322: -0 and -d do not have a fixed priority; the last one on the
+// command line wins (GNU), and the winner also decides whether the
+// logical EOF string and the -E warning apply.
+auto resolve_delimiter_mode(const CommandContext<XARGS_OPTIONS.size()> &ctx)
+    -> DelimiterMode {
+  DelimiterMode mode;
+  if (!ctx.metas) return mode;
+
+  for (const auto &occurrence : ctx.options.occurrences()) {
+    if (occurrence.index >= XARGS_OPTIONS.size()) continue;
+    const auto &meta = (*ctx.metas)[occurrence.index];
+    if (option_matches(meta, "-0", "--null")) {
+      mode.use_null = true;
+      mode.has_delimiter = false;
+      mode.delimiter_arg.clear();
+    } else if (option_matches(meta, "-d", "--delimiter")) {
+      mode.use_null = false;
+      mode.has_delimiter = true;
+      if (const auto *value =
+              std::get_if<std::string>(&occurrence.value)) {
+        mode.delimiter_arg = *value;
+      }
+    }
+  }
+  return mode;
+}
+
 /**
  * @brief Parse arguments from stdin
  * @param delimiter Delimiter character (default: space/newline)
@@ -443,8 +476,26 @@ auto parse_default_arguments(std::string_view text)
   };
 
   for (char c : text) {
+    // #1321: a newline inside either quote kind is an error (GNU has no
+    // line continuation inside quotes), even right after a backslash.
+    if ((in_single_quote || in_double_quote) && c == '\n') {
+      return std::unexpected(
+          in_single_quote
+              ? "unmatched single quote; by default quotes are special to "
+                "xargs unless you use the -0 option"
+              : "unmatched double quote; by default quotes are special to "
+                "xargs unless you use the -0 option");
+    }
+
     if (escaped) {
-      arg += c;
+      if (in_double_quote) {
+        // #1321: inside double quotes only $, `, " and \ are escapable;
+        // any other character keeps its backslash literally.
+        if (c != '$' && c != '`' && c != '"' && c != '\\') arg += '\\';
+        arg += c;
+      } else {
+        arg += c;
+      }
       have_arg = true;
       escaped = false;
       continue;
@@ -481,7 +532,11 @@ auto parse_default_arguments(std::string_view text)
     } else if (c == '"') {
       in_double_quote = true;
       have_arg = true;
-    } else if (c == '\r' || c == '\n' || c == ' ' || c == '\t') {
+    } else if (c == '\r') {
+      // #1321: a CR at token start is skipped; inside a token it is
+      // literal (it is not a separator).
+      if (have_arg) arg += c;
+    } else if (c == '\n' || c == ' ' || c == '\t') {
       flush_arg();
     } else {
       arg += c;
@@ -489,10 +544,7 @@ auto parse_default_arguments(std::string_view text)
     }
   }
 
-  if (escaped) {
-    arg += '\\';
-    have_arg = true;
-  }
+  // #1321: a trailing backslash at EOF is dropped (GNU), not preserved.
   if (in_single_quote) {
     return std::unexpected(
         "unmatched single quote; by default quotes are special to xargs "
@@ -517,6 +569,12 @@ auto parse_arguments(std::istream &input, char delimiter, bool split_blanks,
                      const std::optional<std::string> &eof_str)
     -> cp::Result<std::vector<std::string>> {
   auto text = read_input_text(input, eof_str);
+  if (text.empty()) {
+    // #1318: empty input yields zero items in every mode.  The loop below
+    // used to synthesize one empty item for the delimiter/-0 path (the
+    // final `!saw_separator` push), which also defeated -r.
+    return std::vector<std::string>{};
+  }
   if (split_blanks) {
     return parse_default_arguments(text);
   }
@@ -548,49 +606,150 @@ auto parse_arguments(std::istream &input, char delimiter, bool split_blanks,
 }
 
 auto is_blank_input_line(std::string_view value) -> bool {
-  return value.find_first_not_of(" \t") == std::string_view::npos;
+  // #1321/#1322: a blank line holds only spaces, tabs, or CRs.
+  return value.find_first_not_of(" \t\r") == std::string_view::npos;
 }
 
 auto parse_replacement_arguments(std::istream &input,
                                  const std::optional<std::string> &eof_str)
     -> cp::Result<std::vector<std::string>> {
+  // #1321/#1322: -I mode rewritten to the GNU line model.  The old code
+  // copied raw lines (no quote processing at all) and treated a trailing
+  // blank as a logical-line continuation; both are wrong.  Now each line
+  // is one item: leading blanks are stripped, trailing blanks are kept,
+  // quotes/backslashes follow the default-mode rules (without blank
+  // splitting), and only a trailing unquoted backslash continues the item
+  // onto the next line (the backslash is dropped, the newline kept).
   SmallVector<std::string, 256> args;
-  std::string current;
-  bool continued_line = false;
+  std::string item;
+  bool in_single_quote = false;
+  bool in_double_quote = false;
+  bool escaped = false;
+  bool have_item = false;
+  bool continuing = false;
+  bool pending_newline = false;
+
+  auto unmatched_error = [&]() -> std::string {
+    return in_single_quote
+               ? "unmatched single quote; by default quotes are special to "
+                 "xargs unless you use the -0 option"
+               : "unmatched double quote; by default quotes are special to "
+                 "xargs unless you use the -0 option";
+  };
+
+  // Feed one physical line into the current item.  Returns an error string
+  // on an unclosed quote, or std::nullopt on success.  `strip_leading`
+  // applies only to the first line of an item.
+  auto feed_line = [&](std::string_view line, bool strip_leading)
+      -> std::optional<std::string> {
+    size_t i = 0;
+    if (strip_leading) {
+      while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) ++i;
+    }
+    for (; i < line.size(); ++i) {
+      char c = line[i];
+      if (escaped) {
+        if (in_double_quote) {
+          if (c != '$' && c != '`' && c != '"' && c != '\\') item += '\\';
+          item += c;
+        } else {
+          item += c;
+        }
+        have_item = true;
+        escaped = false;
+        continue;
+      }
+      if (in_single_quote) {
+        if (c == '\'') {
+          in_single_quote = false;
+        } else {
+          item += c;
+        }
+        have_item = true;
+        continue;
+      }
+      if (in_double_quote) {
+        if (c == '"') {
+          in_double_quote = false;
+        } else if (c == '\\') {
+          escaped = true;
+        } else {
+          item += c;
+        }
+        have_item = true;
+        continue;
+      }
+      if (c == '\\') {
+        escaped = true;
+        have_item = true;
+      } else if (c == '\'') {
+        in_single_quote = true;
+        have_item = true;
+      } else if (c == '"') {
+        in_double_quote = true;
+        have_item = true;
+      } else if (c == '\r') {
+        if (have_item) item += c;
+      } else {
+        item += c;
+        have_item = true;
+      }
+    }
+    return std::nullopt;
+  };
+
+  auto finish_item = [&]() {
+    if (have_item) {
+      args.push_back(item);
+      item.clear();
+      have_item = false;
+    }
+  };
 
   std::string line;
   while (std::getline(input, line)) {
-    if (!line.empty() && line.back() == '\r') line.pop_back();
-    if (eof_str && !eof_str->empty() && line == *eof_str) break;
+    // The EOF marker comparison strips a trailing CR (CRLF input), but
+    // the parsed item keeps it.
+    std::string_view eof_candidate = line;
+    if (!eof_candidate.empty() && eof_candidate.back() == '\r') {
+      eof_candidate.remove_suffix(1);
+    }
+    if (eof_str && !eof_str->empty() && eof_candidate == *eof_str) {
+      // A continued item is kept (its trailing backslash was dropped);
+      // between items this is a no-op.
+      finish_item();
+      break;
+    }
 
-    // GNU replacement mode ignores standalone blank/whitespace-only input
-    // lines; they should not become a logical-line continuation on their own.
-    if (is_blank_input_line(line) && current.empty() && !continued_line) {
+    if (!continuing && is_blank_input_line(line)) continue;
+
+    if (pending_newline) {
+      item += '\n';
+      pending_newline = false;
+    }
+    if (auto error = feed_line(line, !continuing)) {
+      return std::unexpected(*error);
+    }
+    if (in_single_quote || in_double_quote) {
+      return std::unexpected(unmatched_error());
+    }
+    if (escaped) {
+      // Trailing unquoted backslash: drop it and continue on the next
+      // line.  The newline itself is only materialized if a next line
+      // actually arrives (see pending_newline).
+      escaped = false;
+      continuing = true;
+      pending_newline = true;
       continue;
     }
-
-    bool ends_with_blank =
-        !line.empty() && (line.back() == ' ' || line.back() == '\t');
-    current += line;
-
-    if (ends_with_blank) {
-      continued_line = true;
-      continue;
-    }
-
-    if (!is_blank_input_line(current)) {
-      args.push_back(current);
-    }
-    current.clear();
-    continued_line = false;
+    continuing = false;
+    finish_item();
   }
 
-  if (continued_line || !current.empty()) {
-    if (!is_blank_input_line(current)) {
-      args.push_back(current);
-    }
+  if (in_single_quote || in_double_quote) {
+    return std::unexpected(unmatched_error());
   }
-
+  finish_item();
   return std::vector<std::string>(args.begin(), args.end());
 }
 
@@ -604,8 +763,14 @@ auto parse_line_groups(std::istream &input, int max_lines,
 
   std::string line;
   while (std::getline(input, line)) {
-    if (!line.empty() && line.back() == '\r') line.pop_back();
-    if (eof_str && !eof_str->empty() && line == *eof_str) break;
+    // #1321: -L no longer strips a trailing CR.  The EOF comparison still
+    // ignores it, and a CR-only line still parses to zero parts (skipped
+    // below) under the new CR rule in parse_default_arguments.
+    std::string_view eof_candidate = line;
+    if (!eof_candidate.empty() && eof_candidate.back() == '\r') {
+      eof_candidate.remove_suffix(1);
+    }
+    if (eof_str && !eof_str->empty() && eof_candidate == *eof_str) break;
 
     bool ends_with_blank =
         !line.empty() && (line.back() == ' ' || line.back() == '\t');
@@ -640,16 +805,47 @@ auto parse_line_groups(std::istream &input, int max_lines,
 }
 
 auto print_show_limits(int max_chars) -> void {
+  // #1322: GNU prints six lines to stderr and then runs the command
+  // normally; --show-limits suppresses nothing.  The Windows
+  // ARG_MAX equivalent is the 32767 command-line limit; env is the real
+  // environment block size in bytes, upper = 32767 - env - 2048, usable =
+  // upper - env (both clamped at zero), buffer is the effective -s value,
+  // smallest is 4096, and maximum parallelism is INT_MAX.
+  size_t env_bytes = 0;
+  LPWCH env = GetEnvironmentStringsW();
+  if (env) {
+    for (const wchar_t *p = env; *p != L'\0';) {
+      size_t len = std::wcslen(p);
+      env_bytes += (len + 1) * sizeof(wchar_t);
+      p += len + 1;
+    }
+    FreeEnvironmentStringsW(env);
+    env_bytes += sizeof(wchar_t);
+  }
+  long long upper =
+      static_cast<long long>(kWindowsCommandLineLimit) -
+      static_cast<long long>(env_bytes) - 2048;
+  if (upper < 0) upper = 0;
+  long long usable = upper - static_cast<long long>(env_bytes);
+  if (usable < 0) usable = 0;
   int buffer_size = max_chars > 0 ? max_chars : kWindowsCommandLineLimit;
+
+  safeErrorPrint("Your environment variables take up ");
+  safeErrorPrint(std::to_string(env_bytes));
+  safeErrorPrint(" bytes\n");
   safeErrorPrint("POSIX upper limit on argument length (this system): ");
-  safeErrorPrint(std::to_string(kWindowsCommandLineLimit));
+  safeErrorPrint(std::to_string(upper));
   safeErrorPrint("\n");
+  safeErrorPrint("POSIX smallest allowable upper limit on argument length (all "
+            "systems): 4096\n");
   safeErrorPrint("Maximum length of command we could actually use: ");
-  safeErrorPrint(std::to_string(kWindowsCommandLineLimit));
+  safeErrorPrint(std::to_string(usable));
   safeErrorPrint("\n");
   safeErrorPrint("Size of command buffer we are actually using: ");
   safeErrorPrint(std::to_string(buffer_size));
   safeErrorPrint("\n");
+  safeErrorPrint("Maximum parallelism (--max-procs must be no greater): "
+            "2147483647\n");
 }
 
 auto materialize_arguments(const std::vector<std::string> &base_args,
@@ -761,39 +957,177 @@ auto build_command_line(const std::string &command,
   return cmd_line;
 }
 
-auto clamp_max_chars_floor(int max_chars, const std::string &command,
-                           const std::vector<std::string> &args) -> int {
-  if (max_chars <= 0) return max_chars;
-
-  int minimum = static_cast<int>(build_command_line(command, args).size());
-  if (max_chars < minimum) {
-    safeErrorPrint("xargs: warning: value for -s option is too small; using ");
-    safeErrorPrint(std::to_string(minimum));
-    safeErrorPrint("\n");
-    return minimum;
+// #1322: the quoting used by -t and by the -p prompt (one function for
+// both, as in GNU).  Quoting triggers on blanks, controls, and the
+// punctuation set below; alphanumerics, `# % + , - . / : @ ] _ { } ~`
+// and bytes >= 0x80 never trigger.  An argument holding a single quote
+// but none of `" $ ` \ !` and no control character is double-quoted;
+// anything else quoted goes single-quote style, with `'` as `'\''` and
+// control characters as a closed quote + `$'\x'` + a reopened quote.
+auto shell_argument_needs_quoting(unsigned char c) -> bool {
+  if (c < 0x20 || c == 0x7f) return true;
+  switch (c) {
+    case ' ':
+    case '!':
+    case '"':
+    case '$':
+    case '&':
+    case '\'':
+    case '(':
+    case ')':
+    case '*':
+    case ';':
+    case '<':
+    case '=':
+    case '>':
+    case '?':
+    case '[':
+    case '\\':
+    case '^':
+    case '`':
+    case '|':
+      return true;
+    default:
+      return false;
   }
-
-  return max_chars;
 }
 
-auto read_confirmation_line() -> std::string {
+auto quote_shell_argument(std::string_view arg) -> std::string {
+  if (arg.empty()) return "''";
+
+  bool needs_quoting = false;
+  bool has_single_quote = false;
+  bool double_quote_safe = true;
+  for (unsigned char c : arg) {
+    if (shell_argument_needs_quoting(c)) needs_quoting = true;
+    if (c == '\'') has_single_quote = true;
+    if (c == '"' || c == '$' || c == '`' || c == '\\' || c == '!' ||
+        c < 0x20 || c == 0x7f) {
+      double_quote_safe = false;
+    }
+  }
+  if (!needs_quoting) return std::string(arg);
+
+  if (has_single_quote && double_quote_safe) {
+    return "\"" + std::string(arg) + "\"";
+  }
+
+  std::string out;
+  out.push_back('\'');
+  for (unsigned char c : arg) {
+    if (c == '\'') {
+      out += "'\\''";
+    } else if (c < 0x20 || c == 0x7f) {
+      out.push_back('\'');
+      out += "$'";
+      switch (c) {
+        case '\a':
+          out += "\\a";
+          break;
+        case '\b':
+          out += "\\b";
+          break;
+        case '\t':
+          out += "\\t";
+          break;
+        case '\n':
+          out += "\\n";
+          break;
+        case '\v':
+          out += "\\v";
+          break;
+        case '\f':
+          out += "\\f";
+          break;
+        case '\r':
+          out += "\\r";
+          break;
+        default:
+          out.push_back('\\');
+          out.push_back(static_cast<char>('0' + ((c >> 6) & 0x7)));
+          out.push_back(static_cast<char>('0' + ((c >> 3) & 0x7)));
+          out.push_back(static_cast<char>('0' + (c & 0x7)));
+          break;
+      }
+      out += "'";
+      out.push_back('\'');
+    } else {
+      out.push_back(static_cast<char>(c));
+    }
+  }
+  out.push_back('\'');
+  return out;
+}
+
+auto quote_command_line(std::string_view command,
+                        const std::vector<std::string> &args) -> std::string {
+  std::string out = quote_shell_argument(command);
+  for (const auto &arg : args) {
+    out.push_back(' ');
+    out += quote_shell_argument(arg);
+  }
+  return out;
+}
+
+enum class Confirmation { Yes, No, Fatal };
+
+// #1320: GNU reads the -p answer from /dev/tty, never from the item
+// stream.  The Windows counterpart is CONIN$; it is tried first so a
+// redirected stdin (the normal -p case) still gets an interactive prompt.
+// Under Wine there is no console, so CONIN$ fails and the answer falls
+// back to stdin -- which only works when stdin was not already consumed
+// as the item source (e.g. with -a).  A read failure on either source is
+// loud (Fatal), never a silent skip with exit code 0.
+auto read_confirmation() -> Confirmation {
+  HANDLE console =
+      CreateFileW(L"CONIN$", GENERIC_READ,
+                  FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+                  0, nullptr);
+  if (console != nullptr && console != INVALID_HANDLE_VALUE) {
+    std::string line;
+    char buffer[256];
+    DWORD read = 0;
+    bool got_line = false;
+    while (ReadFile(console, buffer, sizeof(buffer), &read, nullptr) &&
+           read > 0) {
+      for (DWORD i = 0; i < read; ++i) {
+        if (buffer[i] == '\n') {
+          got_line = true;
+          break;
+        }
+        line.push_back(buffer[i]);
+      }
+      if (got_line) break;
+    }
+    CloseHandle(console);
+    if (got_line) {
+      if (!line.empty() && line.back() == '\r') line.pop_back();
+      // Only the first character of the answer counts: a leading blank
+      // is a refusal, not a yes.
+      return !line.empty() && (line[0] == 'y' || line[0] == 'Y')
+                 ? Confirmation::Yes
+                 : Confirmation::No;
+    }
+    safeErrorPrint("xargs: Failed to read from stdin\n");
+    return Confirmation::Fatal;
+  }
+
   std::string response;
-  std::getline(std::cin, response);
-  return response;
+  if (!std::getline(std::cin, response)) {
+    safeErrorPrint("xargs: Failed to read from stdin\n");
+    return Confirmation::Fatal;
+  }
+  if (!response.empty() && response.back() == '\r') response.pop_back();
+  return !response.empty() && (response[0] == 'y' || response[0] == 'Y')
+             ? Confirmation::Yes
+             : Confirmation::No;
 }
 
 auto confirm_command(std::string_view command,
-                     const std::vector<std::string> &args) -> bool {
-  auto cmd_line = build_command_line(std::string(command), args);
-  safeErrorPrint(wstring_to_utf8(cmd_line));
-  safeErrorPrint(" ?...");
-
-  auto response = read_confirmation_line();
-  for (unsigned char ch : response) {
-    if (std::isspace(ch)) continue;
-    return ch == 'y' || ch == 'Y';
-  }
-  return false;
+                     const std::vector<std::string> &args) -> Confirmation {
+  safeErrorPrint(quote_command_line(command, args));
+  safeErrorPrint("?...");
+  return read_confirmation();
 }
 
 struct ChildProcess {
@@ -1009,11 +1343,13 @@ auto wait_any_child(std::vector<ChildProcess> &running) -> size_t {
 }
 
 auto map_child_exit_status(int child_status) -> int {
+  // #1319 (GNU): 1-254 -> 123; only 255 aborts with 124; a negative value
+  // here means the DWORD exit code had its high bit set (an NTSTATUS-shaped
+  // abnormal termination), which maps to 125 like a signal death.
   if (child_status == 0) return 0;
   if (child_status == 255) return 124;
-  if (child_status >= 1 && child_status <= 127) return 123;
-  if (child_status > 127) return 125;
-  return child_status;
+  if (child_status >= 1 && child_status <= 254) return 123;
+  return 125;
 }
 
 /**
@@ -1033,6 +1369,10 @@ auto execute_command(const std::string &command,
                      int max_chars, bool exit_if_exceeded, int max_procs,
                      bool verbose, bool interactive, ChildStdinMode stdin_mode,
                      const std::string &process_slot_var) -> int {
+  // #1323: -x needs no separate branch anymore: GNU errors on a single
+  // item that fits nowhere with or without -x, and splits multi-item
+  // batches with or without -x.
+  (void)exit_if_exceeded;
   int exit_code = 0;
   bool stop_launching = false;
 
@@ -1063,7 +1403,13 @@ auto execute_command(const std::string &command,
     int child_status = wait_child(running[completed_index]);
     if (child_status != 0) {
       exit_code = map_child_exit_status(child_status);
-      if (child_status == 255) stop_launching = true;
+      if (child_status == 255) {
+        // #1319: GNU prints the abort diagnostic for a 255 child.
+        safeErrorPrint("xargs: ");
+        safeErrorPrint(command);
+        safeErrorPrint(": exited with status 255; aborting\n");
+        stop_launching = true;
+      }
     }
     if (!process_slot_var.empty()) {
       free_slots.push_back(running[completed_index].slot);
@@ -1075,6 +1421,18 @@ auto execute_command(const std::string &command,
   SmallVector<std::string, 256> batch;
   batch.reserve(static_cast<size_t>(std::max(max_args, 1)));
 
+  // #1323: -s accounting counts every argv entry (command + initial
+  // arguments + this batch's items) as len+1 bytes of the original UTF-8
+  // text, never the Windows-quoted command line (quoting inflates it and
+  // used to shift every boundary by one).
+  auto argv_size = [&](const std::vector<std::string> &materialized) {
+    size_t total = command.size() + 1;
+    for (const auto &arg : materialized) total += arg.size() + 1;
+    return total;
+  };
+  auto base_argv_size = [&]() {
+    return argv_size(materialize_arguments(base_args, {}, replace_str));
+  };
   auto fits_limits = [&](const std::vector<std::string> &candidate) -> bool {
     if (max_args > 0 && static_cast<int>(candidate.size()) > max_args) {
       return false;
@@ -1082,12 +1440,22 @@ auto execute_command(const std::string &command,
     if (max_chars > 0) {
       auto materialized =
           materialize_arguments(base_args, candidate, replace_str);
-      auto cmd_line = build_command_line(command, materialized);
-      if (cmd_line.size() > static_cast<size_t>(max_chars)) {
+      if (argv_size(materialized) > static_cast<size_t>(max_chars)) {
         return false;
       }
     }
     return true;
+  };
+  // #1323: GNU's two single-item errors: the command + initial arguments
+  // alone already over the limit, versus a fitting base pushed over by
+  // one item.
+  auto report_oversized_single = [&]() {
+    if (max_chars > 0 && base_argv_size() > static_cast<size_t>(max_chars)) {
+      safeErrorPrint("xargs: cannot fit single argument within argument "
+                     "list size limit\n");
+    } else {
+      safeErrorPrint("xargs: argument line too long\n");
+    }
   };
 
   auto run_batch = [&](const std::vector<std::string> &current_batch,
@@ -1097,15 +1465,17 @@ auto execute_command(const std::string &command,
 
     auto all_args =
         materialize_arguments(base_args, current_batch, replace_str);
-    if (interactive && !confirm_command(command, all_args)) {
-      return true;
+    if (interactive) {
+      auto decision = confirm_command(command, all_args);
+      if (decision == Confirmation::Fatal) {
+        exit_code = 1;
+        stop_launching = true;
+        return false;
+      }
+      if (decision == Confirmation::No) return true;
     }
     if (verbose) {
-      safeErrorPrint(command);
-      for (const auto &arg : all_args) {
-        safeErrorPrint(" ");
-        safeErrorPrint(arg);
-      }
+      safeErrorPrint(quote_command_line(command, all_args));
       safeErrorPrint("\n");
     }
 
@@ -1145,11 +1515,11 @@ auto execute_command(const std::string &command,
   };
 
   if (input_args.empty()) {
+    // #1323: the command + initial arguments alone over the limit is an
+    // error even with no items (and even without -x).
     if (!fits_limits({})) {
-      if (exit_if_exceeded) {
-        cp::report_custom_error(L"xargs", L"command line length exceeded");
-        return 1;
-      }
+      report_oversized_single();
+      return 1;
     }
     run_batch({}, true);
     while (!running.empty()) wait_one();
@@ -1183,10 +1553,11 @@ auto execute_command(const std::string &command,
     batch.push_back(input_arg);
     auto current_batch = std::vector<std::string>(batch.begin(), batch.end());
     if (!fits_limits(current_batch)) {
-      if (exit_if_exceeded) {
-        cp::report_custom_error(L"xargs", L"command line length exceeded");
-        return 1;
-      }
+      // #1323: a single item that fits nowhere is an error even without
+      // -x; GNU does not run it.
+      drain_running_children();
+      report_oversized_single();
+      return 1;
     }
   }
 
@@ -1215,7 +1586,7 @@ REGISTER_COMMAND(
     XARGS_OPTIONS) {
   using namespace xargs_pipeline;
 
-  bool use_null = ctx.get<bool>("-0", false) || ctx.get<bool>("--null", false);
+  auto delimiter_mode = resolve_delimiter_mode(ctx);
   bool verbose =
       ctx.get<bool>("-t", false) || ctx.get<bool>("--verbose", false);
   bool interactive =
@@ -1257,12 +1628,9 @@ REGISTER_COMMAND(
     cp::report_custom_error(L"xargs", L"max-lines must be positive");
     return 1;
   }
-  const bool has_long_delimiter = ctx.has("--delimiter");
-  const bool has_short_delimiter = ctx.has("-d");
-  std::string delimiter_arg = ctx.get<std::string>("--delimiter", "");
-  if (!has_long_delimiter && has_short_delimiter) {
-    delimiter_arg = ctx.get<std::string>("-d", "");
-  }
+  // Delimiter state comes from resolve_delimiter_mode (last of -0/-d
+  // wins); see that helper.
+  std::string delimiter_arg = delimiter_mode.delimiter_arg;
   std::string arg_file = ctx.get<std::string>("--arg-file", "");
   if (arg_file.empty()) arg_file = ctx.get<std::string>("-a", "");
   std::string eof_arg = ctx.get<std::string>("-E", "");
@@ -1274,6 +1642,12 @@ REGISTER_COMMAND(
   if (!eof_enabled && ctx.has("-e")) {
     eof_arg = ctx.get<std::string>("-e", "");
     eof_enabled = !eof_arg.empty();
+  }
+  // #1322: -E has no effect under -0/-d; GNU warns once and continues.
+  if (eof_enabled &&
+      (delimiter_mode.use_null || delimiter_mode.has_delimiter)) {
+    safeErrorPrint("xargs: warning: the -E option has no effect if -0 or "
+                   "-d is used.\n");
   }
   std::string process_slot_var = ctx.get<std::string>("--process-slot-var", "");
   bool open_tty =
@@ -1294,9 +1668,9 @@ REGISTER_COMMAND(
     exit_if_exceeded = true;
   }
 
-  char delimiter = use_null ? '\0' : ' ';
-  bool split_blanks = !use_null && replace_str.empty();
-  if (has_long_delimiter || has_short_delimiter) {
+  char delimiter = delimiter_mode.use_null ? '\0' : ' ';
+  bool split_blanks = !delimiter_mode.use_null && replace_str.empty();
+  if (delimiter_mode.has_delimiter) {
     auto parsed_delim = parse_delimiter(delimiter_arg);
     if (!parsed_delim) {
       cp::report_error(parsed_delim, L"xargs");
@@ -1304,7 +1678,7 @@ REGISTER_COMMAND(
     }
     delimiter = *parsed_delim;
     split_blanks = false;
-  } else if (!replace_str.empty() && !use_null) {
+  } else if (!replace_str.empty() && !delimiter_mode.use_null) {
     delimiter = '\n';
     split_blanks = false;
   }
@@ -1322,7 +1696,8 @@ REGISTER_COMMAND(
   }
 
   std::optional<std::string> logical_eof;
-  if (!use_null && !has_long_delimiter && !has_short_delimiter && eof_enabled) {
+  if (!delimiter_mode.use_null && !delimiter_mode.has_delimiter &&
+      eof_enabled) {
     logical_eof = eof_arg;
   }
 
@@ -1331,8 +1706,9 @@ REGISTER_COMMAND(
   std::istringstream parsed_input(raw_input_text);
 
   std::vector<std::vector<std::string>> input_groups;
-  bool use_line_groups = max_lines > 0 && !use_null && !has_long_delimiter &&
-                         !has_short_delimiter && replace_str.empty();
+  bool use_line_groups = max_lines > 0 && !delimiter_mode.use_null &&
+                         !delimiter_mode.has_delimiter &&
+                         replace_str.empty();
   if (use_line_groups) {
     auto parsed_groups =
         parse_line_groups(parsed_input, max_lines, logical_eof);
@@ -1341,8 +1717,8 @@ REGISTER_COMMAND(
       return 1;
     }
     input_groups = *parsed_groups;
-  } else if (!replace_str.empty() && !use_null && !has_long_delimiter &&
-             !has_short_delimiter) {
+  } else if (!replace_str.empty() && !delimiter_mode.use_null &&
+             !delimiter_mode.has_delimiter) {
     auto input_args_vec =
         parse_replacement_arguments(parsed_input, logical_eof);
     if (!input_args_vec) {
@@ -1370,9 +1746,18 @@ REGISTER_COMMAND(
 
   // Get command to execute (first positional arg)
   if (ctx.positionals.empty()) {
-    std::vector<std::string> echo_base_args;
-    max_chars = clamp_max_chars_floor(max_chars, "echo", echo_base_args);
+    // #1322: --show-limits prints the limits and execution continues
+    // normally (GNU runs the command afterwards); it suppresses nothing.
     if (show_limits) print_show_limits(max_chars);
+    // #1323: the echo command itself (5 bytes) over -s is an error even
+    // with -r or --show-limits -- except -I with no items, where GNU
+    // runs nothing at all.
+    if (max_chars > 0 && static_cast<size_t>(max_chars) < 5 &&
+        !( !replace_str.empty() && input_empty )) {
+      safeErrorPrint("xargs: cannot fit single argument within argument "
+                     "list size limit\n");
+      return 1;
+    }
 
     // Default to echo if no command specified
     // [GNU] xargs.c decides whether to run by checking whether any arguments
@@ -1384,17 +1769,27 @@ REGISTER_COMMAND(
 
     if (input_groups.empty()) input_groups.emplace_back();
 
+    // #1323: same argv accounting as execute_command ("echo" counts 5).
     auto echo_fits_limits = [&](const std::vector<std::string> &echo_args) {
       if (max_args > 0 && static_cast<int>(echo_args.size()) > max_args) {
         return false;
       }
       if (max_chars > 0) {
-        auto cmd_line = build_command_line("echo", echo_args);
-        if (cmd_line.size() > static_cast<size_t>(max_chars)) {
+        size_t total = 5;
+        for (const auto &arg : echo_args) total += arg.size() + 1;
+        if (total > static_cast<size_t>(max_chars)) {
           return false;
         }
       }
       return true;
+    };
+    auto echo_report_oversized_single = [&]() {
+      if (max_chars > 0 && static_cast<size_t>(max_chars) < 5) {
+        safeErrorPrint("xargs: cannot fit single argument within argument "
+                       "list size limit\n");
+      } else {
+        safeErrorPrint("xargs: argument line too long\n");
+      }
     };
 
     for (const auto &input_args : input_groups) {
@@ -1406,23 +1801,24 @@ REGISTER_COMMAND(
         if (batch.empty() && !allow_empty) return true;
 
         std::vector<std::string> echo_args(batch.begin(), batch.end());
-        if (!echo_fits_limits(echo_args) && exit_if_exceeded) {
-          cp::report_custom_error(L"xargs", L"command line length exceeded");
+        // #1323: a batch that fits nowhere is an error even without -x.
+        if (!echo_fits_limits(echo_args)) {
+          echo_report_oversized_single();
           return false;
         }
 
         if (verbose) {
-          safeErrorPrint("echo");
-          for (const auto &arg : echo_args) {
-            safeErrorPrint(" ");
-            safeErrorPrint(arg);
-          }
+          safeErrorPrint(quote_command_line("echo", echo_args));
           safeErrorPrint("\n");
         }
 
-        if (interactive && !confirm_command("echo", echo_args)) {
-          batch.clear();
-          return true;
+        if (interactive) {
+          auto decision = confirm_command("echo", echo_args);
+          if (decision == Confirmation::Fatal) return false;
+          if (decision == Confirmation::No) {
+            batch.clear();
+            return true;
+          }
         }
 
         for (size_t i = 0; i < echo_args.size(); ++i) {
@@ -1435,6 +1831,10 @@ REGISTER_COMMAND(
       };
 
       if (input_args.empty()) {
+        // -I with no items runs nothing (GNU), even when the echo
+        // command itself would exceed -s (same exception as the
+        // explicit-command pre-check above).
+        if (!replace_str.empty()) continue;
         if (!flush_echo_batch(true)) return 1;
         continue;
       }
@@ -1459,8 +1859,10 @@ REGISTER_COMMAND(
 
         batch.push_back(input_arg);
         candidate.assign(batch.begin(), batch.end());
-        if (!echo_fits_limits(candidate) && exit_if_exceeded) {
-          cp::report_custom_error(L"xargs", L"command line length exceeded");
+        if (!echo_fits_limits(candidate)) {
+          // #1323: a single item that fits nowhere is an error even
+          // without -x; GNU does not print it.
+          echo_report_oversized_single();
           return 1;
         }
       }
@@ -1477,6 +1879,29 @@ REGISTER_COMMAND(
 
   for (size_t i = 1; i < ctx.positionals.size(); ++i) {
     base_args.push_back(std::string(ctx.positionals[i]));
+  }
+
+  // #1322: --show-limits prints the limits and execution continues
+  // normally (GNU runs the command afterwards); it suppresses nothing.
+  if (show_limits) print_show_limits(max_chars);
+
+  // Execute command with arguments - convert SmallVector to std::vector for
+  // compatibility
+  std::vector<std::string> base_args_vec =
+      expand_command_template_args(base_args);
+  // #1323: the old clamp lifted -s up to the command line and kept
+  // running; GNU instead refuses when the command + initial arguments
+  // alone exceed -s -- even with -r or --show-limits, and even with no
+  // items.  The one exception is -I with no items, where GNU runs
+  // nothing at all.  (With the default -s of 32767 this never fires.)
+  if (max_chars > 0 && !( !replace_str.empty() && input_empty )) {
+    size_t base_size = command.size() + 1;
+    for (const auto &arg : base_args_vec) base_size += arg.size() + 1;
+    if (base_size > static_cast<size_t>(max_chars)) {
+      safeErrorPrint("xargs: cannot fit single argument within argument "
+                     "list size limit\n");
+      return 1;
+    }
   }
 
   // If no input arguments, check if we should skip execution
@@ -1500,13 +1925,6 @@ REGISTER_COMMAND(
   } else if (!arg_file.empty()) {
     stdin_mode = ChildStdinMode::Parent;
   }
-
-  // Execute command with arguments - convert SmallVector to std::vector for
-  // compatibility
-  std::vector<std::string> base_args_vec =
-      expand_command_template_args(base_args);
-  max_chars = clamp_max_chars_floor(max_chars, command, base_args_vec);
-  if (show_limits) print_show_limits(max_chars);
   int exit_code = 0;
   for (const auto &input_args : input_groups) {
     int status =

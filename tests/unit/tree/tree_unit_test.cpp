@@ -579,3 +579,20 @@ TEST(tree, tree_output_operand_open_failure_quotes_operand_spelling) {
                   "cannot open output file: " +
                       tree_dialect_detail::utf8(operand));
 }
+// #1374: tree expands its directory operands in
+// WINUX_SHELL_GLOB=native mode.
+TEST(tree, tree_native_glob_expands_operands_issue1374) {
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "gt");
+  tmp.write("gt/t.txt", "T\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_env(L"WINUX_SHELL_GLOB", L"native");
+  p.add(L"tree.exe", {L"g*"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("t.txt") != std::string::npos);
+}
+

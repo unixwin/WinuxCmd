@@ -93,6 +93,7 @@ export auto strip_trailing_separators(std::string_view path)
   return path;
 }
 
+export auto is_dos_device_name_w(std::wstring_view path) -> bool;
 export auto attributes_w(std::wstring_view path) -> DWORD;
 export auto attributes_are_directory(DWORD attrs) -> bool;
 export auto attributes_are_regular_file(DWORD attrs) -> bool;
@@ -426,6 +427,46 @@ auto fold_drive_dialect_w(std::wstring_view normalized)
   return normalize_separators(std::move(folded));
 }
 
+// Fold literal colons in the operand's final component onto the
+// private-use carrier U+F03A (#1283). A ':' in a final component is
+// never a drive colon (those live in earlier components) and Win32
+// reads it as an alternate-data-stream separator, while the shell's
+// own path layer stores such names on disk with ':' encoded as
+// U+F03A — the spelling redirects actually create and MSYS resolves.
+// Before this fold the same operand spelled three ways across applets:
+// "D:name" resolved drive-relative through GetFullPathNameW (touch,
+// realpath), as the literal carrier file (cat), or not at all (stat,
+// mv, head, tail, grep). Folding here, at the one operand boundary,
+// makes every consumer resolve the one literal file. The bare drive
+// ("D:") keeps its drive meaning, and verbatim/device spellings
+// ("\\?\", "\\.\") are the caller's own responsibility and pass
+// through untouched. Consumers: normalize_api_operand_w (the argv
+// operand boundary) and canonicalize_path_w (the realpath/readlink
+// resolver), mirroring the fold_posix_drive_prefix_w sharing.
+auto fold_carrier_colons_w(std::wstring_view normalized)
+    -> std::optional<std::wstring> {
+  if (normalized.starts_with(L"\\\\?\\") ||
+      normalized.starts_with(L"\\\\.\\")) {
+    return std::nullopt;
+  }
+  const size_t sep = normalized.find_last_of(L"\\/");
+  const std::wstring_view tail =
+      sep == std::wstring_view::npos ? normalized : normalized.substr(sep + 1);
+  if (tail.find(L':') == std::wstring_view::npos) {
+    return std::nullopt;
+  }
+  if (sep == std::wstring_view::npos && normalized.size() == 2) {
+    return std::nullopt;  // bare "D:" — the drive itself, not a file name
+  }
+  std::wstring folded(normalized);
+  const size_t tail_begin =
+      sep == std::wstring_view::npos ? 0 : sep + 1;
+  for (size_t i = tail_begin; i < folded.size(); ++i) {
+    if (folded[i] == L':') folded[i] = L'\uF03A';
+  }
+  return folded;
+}
+
 export auto normalize_api_operand_w(std::wstring_view path) -> std::wstring {
   const bool had_trailing_separator =
       strip_trailing_separators(path).size() != path.size();
@@ -450,6 +491,11 @@ export auto normalize_api_operand_w(std::wstring_view path) -> std::wstring {
   }
   if (auto folded = fold_drive_dialect_w(normalized)) {
     normalized = std::move(*folded);
+  }
+  // #1283: literal colons in the final component name the carrier file
+  // the shell puts on disk, never an ADS or a drive-relative path.
+  if (auto carrier = fold_carrier_colons_w(normalized)) {
+    normalized = std::move(*carrier);
   }
   // niubash#346: after the cygdrive/drive folds above, any remaining
   // "/"-prefixed operand is a shell-namespace spelling (the bare "/", a
@@ -616,6 +662,16 @@ auto to_extended_path_preserving(std::wstring_view native) -> std::wstring {
   return L"\\\\?\\" + absolute;
 }
 
+// True when the final component is a DOS device name but the path as a
+// whole is not the bare device: "C:\dir\NUL" names an ordinary on-disk
+// entry, while bare "NUL" names the device itself (#1297).
+auto has_device_name_leaf(std::wstring_view native) -> bool {
+  const std::wstring_view stripped = strip_trailing_separators(native);
+  const size_t sep = stripped.find_last_of(L'\\');
+  if (sep == std::wstring_view::npos) return false;
+  return is_dos_device_name_w(stripped.substr(sep + 1));
+}
+
 export auto to_extended_path(std::wstring_view path) -> std::wstring {
   if (path.size() >= 4 && path.compare(0, 4, L"\\\\?\\") == 0) {
     return std::wstring(path);
@@ -625,6 +681,17 @@ export auto to_extended_path(std::wstring_view path) -> std::wstring {
   // garbage UNC form "\\x" instead of "<drive>:\x"), so fold every separator
   // first; Win32 treats '/' and '\' interchangeably elsewhere (#1145).
   std::wstring native(normalize_separators(std::wstring(path)));
+
+  // GetFullPathNameW collapses any path whose final component is a DOS
+  // device name onto the device itself: "C:\dir\NUL" comes back as
+  // "\\.\NUL", and the extended result names the device namespace
+  // instead of the on-disk entry, so every later probe reports a real
+  // file or directory as missing (#1297, verified on Windows CI). Such
+  // operands name a literal entry under the \\?\ namespace, so
+  // absolutize them lexically like the dot/space spellings below.
+  if (has_device_name_leaf(native)) {
+    return to_extended_path_preserving(native);
+  }
   if (has_literal_dot_space_component(native) &&
       !(native.size() >= 4 &&
         (native.compare(0, 4, L"\\\\?\\") == 0 ||
@@ -1225,6 +1292,11 @@ export auto canonicalize_path_w(std::wstring_view path, CanonMode mode,
   }
   if (auto folded = fold_drive_dialect_w(operand)) {
     effective = std::move(*folded);
+  } else if (auto carrier = fold_carrier_colons_w(operand)) {
+    // #1283: same carrier fold as the argv boundary, so realpath and
+    // readlink resolve "D:name" to the literal file the shell created
+    // instead of stranding it on a drive-relative interpretation.
+    effective = std::move(*carrier);
   } else if (auto mapped = shell_tree_to_native_w(operand)) {
     shell_input = *mapped;
     effective = *mapped;
