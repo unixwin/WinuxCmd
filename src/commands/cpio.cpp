@@ -41,6 +41,9 @@ auto constexpr CPIO_OPTIONS =
         // [GNU]
         OPTION("-v", "--verbose", "verbose output"),
         // [GNU]
+        OPTION("-F", "--file", "use given archive FILE instead of stdin/stdout",
+               STRING_TYPE),
+        // [GNU]
         OPTION("-H", "--format", "use given archive FORMAT", STRING_TYPE),
         // [GNU]
         OPTION("-R", "--owner", "set the ownership of all files", STRING_TYPE)};
@@ -84,11 +87,32 @@ void ull_to_hex(unsigned long long value, char* buffer, size_t len) {
   }
 }
 
+// #1422: member names and the -F archive path are path operands, so they
+// go through the shared operand boundary (native_path) like every other
+// command's file operands instead of raw CreateFileW on the literal text.
+// Written policy for member names (archive content — a different operand
+// class from argv): names in the shell's POSIX dialect (rooted at '/',
+// including '/c/...' drive spellings) fold through the boundary exactly
+// like argv operands (bare '/' names the payload root, #1364 ruling);
+// Windows-native absolute names and relative names are taken literally
+// (absolutized against the working directory), as GNU cpio takes member
+// names literally. The extended form is what keeps trailing-dot/space
+// leaves and device-stem leaves ("NUL.txt") naming the on-disk file
+// (#1332/#1333); a trailing separator keeps the normalized form so the
+// #1052 ENOTDIR enforcement still applies.
+auto operand_path_w(const std::string& name) -> std::wstring {
+  auto operand = native_path::make_api_path_operand(name);
+  if (operand.had_trailing_separator) {
+    return operand.normalized;
+  }
+  return operand.extended;
+}
+
 // Read file content
 std::vector<char> read_file(const std::string& filename) {
   std::vector<char> content;
 
-  std::wstring wfilename = utf8_to_wstring(filename);
+  std::wstring wfilename = operand_path_w(filename);
   HANDLE hFile =
       CreateFileW(wfilename.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
                   OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -114,7 +138,7 @@ std::vector<char> read_file(const std::string& filename) {
 
 // Write file content
 bool write_file(const std::string& filename, const std::vector<char>& content) {
-  std::wstring wfilename = utf8_to_wstring(filename);
+  std::wstring wfilename = operand_path_w(filename);
   HANDLE hFile = CreateFileW(wfilename.c_str(), GENERIC_WRITE, 0, nullptr,
                              CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
 
@@ -128,12 +152,6 @@ bool write_file(const std::string& filename, const std::vector<char>& content) {
   CloseHandle(hFile);
 
   return true;
-}
-
-// Create directory
-bool create_directory(const std::string& path) {
-  std::wstring wpath = utf8_to_wstring(path);
-  return CreateDirectoryW(wpath.c_str(), nullptr) != FALSE;
 }
 
 // Windows equivalent for S_ISREG
@@ -185,6 +203,7 @@ struct Config {
   bool verbose = false;
   std::string format;
   std::string owner;
+  std::string file;
 };
 
 auto build_config(const CommandContext<CPIO_OPTIONS.size()>& ctx)
@@ -209,6 +228,10 @@ auto build_config(const CommandContext<CPIO_OPTIONS.size()>& ctx)
   if (cfg.owner.empty()) {
     cfg.owner = ctx.get<std::string>("--owner", "");
   }
+  cfg.file = ctx.get<std::string>("-F", "");
+  if (cfg.file.empty()) {
+    cfg.file = ctx.get<std::string>("--file", "");
+  }
 
   if (!cfg.create && !cfg.extract && !cfg.list && !cfg.pass_through) {
     return std::unexpected("missing option (-o/-i/-t/-p)");
@@ -223,10 +246,26 @@ auto build_config(const CommandContext<CPIO_OPTIONS.size()>& ctx)
 }
 
 auto run(const Config& cfg) -> int {
-  // Read input (file list or archive)
+  // Read input (file list or archive). With -F/--file the archive is the
+  // named file (an argv operand, resolved through the shared boundary by
+  // read_file) instead of stdin; in create mode stdin always carries the
+  // file list.
   std::string input;
-  input.assign(std::istreambuf_iterator<char>(std::cin),
-               std::istreambuf_iterator<char>());
+  if (!cfg.create && !cfg.file.empty()) {
+    std::vector<char> archive_file = read_file(cfg.file);
+    if (archive_file.empty() &&
+        GetFileAttributesW(operand_path_w(cfg.file).c_str()) ==
+            INVALID_FILE_ATTRIBUTES) {
+      safeErrorPrint("cpio: cannot open archive '");
+      safeErrorPrint(cfg.file);
+      safeErrorPrintLn("'");
+      return 1;
+    }
+    input.assign(archive_file.begin(), archive_file.end());
+  } else {
+    input.assign(std::istreambuf_iterator<char>(std::cin),
+                 std::istreambuf_iterator<char>());
+  }
 
   if (cfg.create) {
     // Create archive
@@ -252,7 +291,7 @@ auto run(const Config& cfg) -> int {
       }
 
       // Get file attributes
-      std::wstring wfile = utf8_to_wstring(line);
+      std::wstring wfile = operand_path_w(line);
       DWORD attrs = GetFileAttributesW(wfile.c_str());
       bool is_dir = is_directory(attrs);
 
@@ -337,8 +376,17 @@ auto run(const Config& cfg) -> int {
       archive.push_back(0);
     }
 
-    // Output archive
-    safePrint(std::string(archive.begin(), archive.end()));
+    // Output archive: to the -F/--file target when given, else stdout.
+    if (!cfg.file.empty()) {
+      if (!write_file(cfg.file, archive)) {
+        safeErrorPrint("cpio: cannot open archive '");
+        safeErrorPrint(cfg.file);
+        safeErrorPrintLn("'");
+        return 1;
+      }
+    } else {
+      safePrint(std::string(archive.begin(), archive.end()));
+    }
 
   } else if (cfg.extract) {
     // Extract archive
@@ -393,14 +441,13 @@ auto run(const Config& cfg) -> int {
           pos++;
         }
 
-        // Create leading directories if -d/--make-directories
+        // Create leading directories if -d/--make-directories: the parent
+        // of the resolved target path, recursively (best effort).
         if (cfg.make_dirs) {
-          auto pos_sep = filename.find_last_of("/\\");
-          if (pos_sep != std::string::npos) {
-            std::string dir = filename.substr(0, pos_sep);
-            // Create directories recursively (best effort)
-            std::wstring wdir = utf8_to_wstring(dir);
-            CreateDirectoryW(wdir.c_str(), nullptr);
+          const std::wstring target = operand_path_w(filename);
+          auto pos_sep = target.find_last_of(L"\\/");
+          if (pos_sep != std::wstring::npos) {
+            native_path::create_directories_w(target.substr(0, pos_sep));
           }
         }
 
@@ -412,7 +459,7 @@ auto run(const Config& cfg) -> int {
 
         // Preserve modification time if -m/--preserve-modification-time
         if (cfg.preserve_time) {
-          std::wstring wfile = utf8_to_wstring(filename);
+          std::wstring wfile = operand_path_w(filename);
           HANDLE hFile =
               CreateFileW(wfile.c_str(), GENERIC_WRITE, 0, nullptr,
                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -469,7 +516,7 @@ auto run(const Config& cfg) -> int {
       }
 
       // Print file info
-      DWORD attrs = GetFileAttributesW(utf8_to_wstring(filename).c_str());
+      DWORD attrs = GetFileAttributesW(operand_path_w(filename).c_str());
       char file_type = get_file_type(attrs);
 
       char buf[256];
