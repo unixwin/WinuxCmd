@@ -180,8 +180,10 @@ TEST(timeout, timeout_verbose_signal0_kill_after_reports_probe_then_kill) {
 
   EXPECT_EQ(r.exit_code, 137);
   EXPECT_TRUE(r.stdout_text.empty());
+  // [GNU] signal 0 resolves to the EXIT pseudo-signal name in the
+  // verbose line (sig2str(0) == "EXIT").
   EXPECT_EQ_TEXT(r.stderr_text,
-                 "timeout: sending signal 0 to command 'sleep.exe'\n"
+                 "timeout: sending signal EXIT to command 'sleep.exe'\n"
                  "timeout: sending signal KILL to command 'sleep.exe'\n");
 }
 

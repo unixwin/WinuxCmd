@@ -490,14 +490,17 @@ TEST(patch, issue_1381_ignore_whitespace_runs) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(tmp.read("v.txt"), "a  b\nC D\n");
 
-  // Without -l the same patch must fail.
+  // Without -l the whitespace-mismatched context line only matches by
+  // fuzz (GNU drops the unmatched prefix context); with -l it applies
+  // cleanly at the stated position.
   tmp.write("v.txt", "a  b\nc d\n");
   Pipeline p2;
   p2.set_cwd(tmp.wpath());
   p2.set_stdin(patch_data);
   p2.add(L"patch.exe", {L"v.txt"});
   auto r2 = p2.run();
-  EXPECT_EQ(r2.exit_code, 1);
+  EXPECT_EQ(r2.exit_code, 0);
+  EXPECT_TRUE(r2.stdout_text.find("with fuzz") != std::string::npos);
 }
 
 // [GNU] Issue #1381: forcing a non-unified format on unified input is
@@ -581,6 +584,8 @@ TEST(patch, issue_1381_get_and_quoting_style) {
   EXPECT_EQ(r2.exit_code, 0);
   EXPECT_TRUE(r2.stdout_text.find("patching file \"f.txt\"") !=
               std::string::npos);
+}
+
 // #1374: patch expands its ORIGFILE and PATCHFILE operands in
 // WINUX_SHELL_GLOB=native mode.
 TEST(patch, patch_native_glob_expands_operands_issue1374) {
