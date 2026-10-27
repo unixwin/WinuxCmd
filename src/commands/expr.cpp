@@ -253,9 +253,9 @@ class Parser {
       if (is_null(lhs)) {
         lhs = std::move(rhs);
         if (is_null(lhs)) lhs = Value::make_integer(0);
-      } else {
-        lhs = Value::make_integer(1);
       }
+      // [GNU] expr.c: a non-null left operand IS the result of `|`; it
+      // must not be replaced by a boolean (issue #1349).
     }
     return lhs;
   }
