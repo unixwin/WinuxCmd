@@ -113,12 +113,13 @@ auto constexpr FIND_OPTIONS = std::array{
            STRING_TYPE),
     // [GNU]
     OPTION("-type", "",
-           "file is of type c: b,d,p,f,l,s,D [only d,f,l,p are supported]",
+           "file is of type c: b,c,d,p,f,l,s,D [D: Solaris doors are not "
+           "supported on this platform]",
            STRING_TYPE),
     // [GNU]
     OPTION("-xtype", "",
-           "like -type but checks the opposite symlink resolution state [only "
-           "d,f,l,p are supported]",
+           "like -type but checks the opposite symlink resolution state "
+           "[D: Solaris doors are not supported on this platform]",
            STRING_TYPE),
     // [GNU]
     OPTION("-execdir", "",
@@ -242,7 +243,7 @@ auto constexpr FIND_OPTIONS = std::array{
         "-printf", "",
         "print format [PARTIAL: "
         "%p,%f,%h,%l,%H,%P,%y,%Y,%s,%b,%k,%d,%D,%F,%g,%G,%o,%u,%U,%S,%m,%M,%n,%"
-        "i,%A@,%B@,%C@,%T@,%AY,%Am,%Ad,%AH,%AM,%AS,%Aj,%BY,%Bm,%Bd,%BH,%BM,%BS,"
+        "i,%a,%c,%t,%A@,%B@,%C@,%T@,%AY,%Am,%Ad,%AH,%AM,%AS,%Aj,%BY,%Bm,%Bd,%BH,%BM,%BS,"
         "%Bj,%CY,%Cm,%Cd,%CH,%CM,%CS,%Cj,%TY,%Tm,%Td,%TH,%TM,%TS,%Tj,%%]",
         STRING_TYPE),
     // [GNU]
@@ -1280,10 +1281,11 @@ auto numeric_matches_unsigned(const NumericPredicate& pred,
 auto is_directory_reparse_point(const std::filesystem::directory_entry& e)
     -> bool;
 
-auto type_matches(const std::filesystem::directory_entry& e,
-                  std::string_view type) -> bool {
-  if (type.empty()) return true;
-
+// [#1377] GNU find accepts a comma-separated list of type letters for
+// -type/-xtype (findutils parser.c, parse_type): any one matching letter
+// is enough.  Validation happens at parse time (validate_type_argument).
+auto type_letter_matches(const std::filesystem::directory_entry& e,
+                         std::string_view type) -> bool {
   std::error_code ec;
   bool link_like = (e.is_symlink(ec) && !ec) || is_directory_reparse_point(e);
   ec.clear();
@@ -1296,14 +1298,32 @@ auto type_matches(const std::filesystem::directory_entry& e,
   if (type == "l") return link_like;
   // WinuxCmd fifo marker (#1038): on-disk marker file counts as 'p'.
   if (type == "p") return native_path::is_winux_fifo_w(e.path().wstring());
+  if (type == "b") return e.is_block_file(ec) && !ec && !link_like;
+  if (type == "c") return e.is_character_file(ec) && !ec && !link_like;
+  if (type == "s") return e.is_socket(ec) && !ec && !link_like;
 
   return false;
 }
 
-auto file_type_matches(std::filesystem::file_type file_type, bool link_like,
-                       const std::filesystem::path& p, std::string_view type)
-    -> bool {
+auto type_matches(const std::filesystem::directory_entry& e,
+                  std::string_view type) -> bool {
   if (type.empty()) return true;
+  size_t start = 0;
+  while (start <= type.size()) {
+    size_t comma = type.find(',', start);
+    if (comma == std::string_view::npos) comma = type.size();
+    if (type_letter_matches(e, type.substr(start, comma - start))) {
+      return true;
+    }
+    if (comma == type.size()) break;
+    start = comma + 1;
+  }
+  return false;
+}
+
+auto file_type_letter_matches(std::filesystem::file_type file_type,
+                              bool link_like, const std::filesystem::path& p,
+                              std::string_view type) -> bool {
   if (type == "l") {
     return link_like || file_type == std::filesystem::file_type::symlink;
   }
@@ -1316,6 +1336,35 @@ auto file_type_matches(std::filesystem::file_type file_type, bool link_like,
   }
   // WinuxCmd fifo marker (#1038).
   if (type == "p") return native_path::is_winux_fifo_w(p.wstring());
+  // [#1377] Device and socket letters: a type that cannot occur on this
+  // platform simply matches nothing, like GNU.
+  if (type == "b") {
+    return file_type == std::filesystem::file_type::block && !link_like;
+  }
+  if (type == "c") {
+    return file_type == std::filesystem::file_type::character && !link_like;
+  }
+  if (type == "s") {
+    return file_type == std::filesystem::file_type::socket && !link_like;
+  }
+  return false;
+}
+
+auto file_type_matches(std::filesystem::file_type file_type, bool link_like,
+                       const std::filesystem::path& p, std::string_view type)
+    -> bool {
+  if (type.empty()) return true;
+  size_t start = 0;
+  while (start <= type.size()) {
+    size_t comma = type.find(',', start);
+    if (comma == std::string_view::npos) comma = type.size();
+    if (file_type_letter_matches(file_type, link_like, p,
+                                 type.substr(start, comma - start))) {
+      return true;
+    }
+    if (comma == type.size()) break;
+    start = comma + 1;
+  }
   return false;
 }
 auto self_type_matches(const std::filesystem::path& p,
@@ -1415,6 +1464,62 @@ auto is_unsupported_used(const CommandContext<FIND_OPTIONS.size()>& ctx)
   return std::nullopt;
 }
 
+// [#1377] GNU -type/-xtype argument validation (findutils parser.c,
+// parse_type, probed against findutils 4.9.0): the argument is a
+// comma-separated list of single letters from "bcdpfls"; "D" is rejected
+// with the doors diagnostic, a run of valid letters without commas is
+// rejected with the "Must separate" diagnostic, and anything else is an
+// "Unknown argument".  Returns the GNU error text (without the "find: "
+// prefix) or std::nullopt when the argument is valid.
+auto validate_type_argument(std::string_view option, std::string_view value)
+    -> std::optional<std::string> {
+  if (value.empty()) {
+    return "Arguments to " + std::string(option) +
+           " should contain at least one letter";
+  }
+  size_t start = 0;
+  while (true) {
+    size_t comma = value.find(',', start);
+    bool last = comma == std::string_view::npos;
+    std::string_view element =
+        value.substr(start, (last ? value.size() : comma) - start);
+    if (element.empty()) {
+      if (last && start > 0) {
+        return "Last file type in list argument to " + std::string(option) +
+               " is missing, i.e., list is ending on: ','";
+      }
+      return "Unknown argument to " + std::string(option) + ": ,";
+    }
+    if (element.size() > 1) {
+      bool all_type_letters =
+          std::all_of(element.begin(), element.end(), [](char ch) {
+            return ch == 'b' || ch == 'c' || ch == 'd' || ch == 'p' ||
+                   ch == 'f' || ch == 'l' || ch == 's' || ch == 'D';
+          });
+      if (all_type_letters) {
+        return "Must separate multiple arguments to " + std::string(option) +
+               " using: ','";
+      }
+      return "Unknown argument to " + std::string(option) + ": " +
+             std::string(element);
+    }
+    char letter = element[0];
+    if (letter == 'D') {
+      return std::string(option) +
+             " D is not supported because Solaris doors are not supported "
+             "on the platform find was compiled on.";
+    }
+    if (letter != 'b' && letter != 'c' && letter != 'd' && letter != 'p' &&
+        letter != 'f' && letter != 'l' && letter != 's') {
+      return "Unknown argument to " + std::string(option) + ": " +
+             std::string(element);
+    }
+    if (last) break;
+    start = comma + 1;
+  }
+  return std::nullopt;
+}
+
 auto is_path_option(std::string_view arg) -> bool {
   return arg == "-name" || arg == "-iname" || arg == "-path" ||
          arg == "-ipath" || arg == "-wholename" || arg == "-iwholename" ||
@@ -1461,6 +1566,19 @@ auto parse_roots(std::span<const std::string_view> args)
       continue;
     }
     if (roots.empty() && arg == "-files0-from") {
+      ++i;
+      continue;
+    }
+    // [#1380] The remaining leading global options must be skipped the
+    // same way expression_start_index skips them; otherwise "-D tree"
+    // ends the root scan here and the real start point that follows is
+    // never collected (the traversal silently runs on ".").
+    if (roots.empty() &&
+        (arg == "-nowarn" || arg == "-warn" ||
+         arg == "-ignore_readdir_race" || arg == "-noignore_readdir_race")) {
+      continue;
+    }
+    if (roots.empty() && (arg == "-D" || arg == "--debug")) {
       ++i;
       continue;
     }
@@ -1811,9 +1929,9 @@ class ExpressionParser {
       if (option == "-wholename") kind = ExprKind::Path;
       if (option == "-iwholename") kind = ExprKind::IPath;
       if (option == "-type" || option == "-xtype") {
-        if (*value != "f" && *value != "d" && *value != "l" && *value != "p") {
-          return std::unexpected(std::string(option) +
-                                 " currently supports only f,d,l,p");
+        // [#1377] Full GNU letter set and diagnostics.
+        if (auto error = validate_type_argument(option, *value)) {
+          return std::unexpected(*error);
         }
         kind = option == "-type" ? ExprKind::Type : ExprKind::XType;
       }
@@ -2246,6 +2364,18 @@ auto build_config(const CommandContext<FIND_OPTIONS.size()>& ctx)
   cfg.files0_from = ctx.get<std::string>("-files0-from", "");
   cfg.debug_category = ctx.get<std::string>("-D", "");
   cfg.debug_enabled = ctx.has("-D") || ctx.has("--debug");
+  // [#1380] The generic parser no longer claims "--debug" for find (see
+  // option_policy_for_command), so honor the -D alias from the raw
+  // arguments, where find's own expression parser already accepts it.
+  if (!cfg.debug_enabled) {
+    for (size_t i = 0; i + 1 < ctx.raw_args.size(); ++i) {
+      if (ctx.raw_args[i] == "--debug") {
+        cfg.debug_enabled = true;
+        cfg.debug_category = std::string(ctx.raw_args[i + 1]);
+        break;
+      }
+    }
+  }
   cfg.nowarn = ctx.has("-nowarn") && !ctx.has("-warn");
   cfg.ignore_readdir_race =
       ctx.has("-ignore_readdir_race") && !ctx.has("-noignore_readdir_race");
@@ -2281,10 +2411,11 @@ auto build_config(const CommandContext<FIND_OPTIONS.size()>& ctx)
       break;
   }
 
-  if (!cfg.type_filter.empty() && cfg.type_filter != "f" &&
-      cfg.type_filter != "d" && cfg.type_filter != "l" &&
-      cfg.type_filter != "p") {
-    return std::unexpected("-type currently supports only f,d,l,p");
+  if (!cfg.type_filter.empty()) {
+    // [#1377] Same GNU validation as the expression parser.
+    if (auto error = validate_type_argument("-type", cfg.type_filter)) {
+      return std::unexpected(*error);
+    }
   }
 
   auto size_text = ctx.get<std::string>("-size", "");
@@ -3384,6 +3515,39 @@ auto win32_file_index_value(const std::filesystem::path& p)
   return static_cast<unsigned long long>(identity->file_index);
 }
 
+// [#1378] Identity of the directory a path resolves TO when symlinks are
+// followed (no FILE_FLAG_OPEN_REPARSE_POINT): win32_file_identity pins the
+// reparse point itself, which can never alias an ancestor directory, so
+// loop detection needs the followed identity.
+auto win32_followed_file_identity(const std::filesystem::path& p)
+    -> std::optional<FileIdentity> {
+  DWORD attrs = GetFileAttributesW(p.c_str());
+  if (attrs == INVALID_FILE_ATTRIBUTES) return std::nullopt;
+
+  DWORD flags = 0;
+  if (attrs & FILE_ATTRIBUTE_DIRECTORY) {
+    flags |= FILE_FLAG_BACKUP_SEMANTICS;
+  }
+
+  HANDLE handle =
+      CreateFileW(p.c_str(), FILE_READ_ATTRIBUTES,
+                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                  nullptr, OPEN_EXISTING, flags, nullptr);
+  if (handle == INVALID_HANDLE_VALUE) return std::nullopt;
+
+  BY_HANDLE_FILE_INFORMATION info{};
+  std::optional<FileIdentity> result;
+  if (GetFileInformationByHandle(handle, &info)) {
+    result = FileIdentity{
+        .volume_serial = info.dwVolumeSerialNumber,
+        .file_index = (static_cast<ULONGLONG>(info.nFileIndexHigh) << 32) |
+                      static_cast<ULONGLONG>(info.nFileIndexLow),
+    };
+  }
+  CloseHandle(handle);
+  return result;
+}
+
 auto win32_file_time_ticks(const std::filesystem::path& p,
                            FindFileTimeKind kind) -> std::optional<long long> {
   const std::wstring io = probe_spelling(p);
@@ -3723,49 +3887,79 @@ enum class Win32FileTimeKind {
   LastWrite,
 };
 
+// [#1379] GNU renders %X@ as epoch seconds with exactly ten fractional
+// digits (findutils print.c uses the nanosecond field plus a trailing
+// zero from its 100ns-free representation).  FILETIME ticks are exact
+// 100ns counts, so the rendering is exact and deterministic — unlike a
+// std::filesystem clock conversion, which drifts by the offset between
+// two now() samples.
+auto format_epoch_seconds(long long ticks) -> std::string {
+  long long seconds = ticks / 10000000LL - 11644473600LL;
+  long long rem = ticks % 10000000LL;
+  if (rem < 0) {
+    --seconds;
+    rem += 10000000LL;
+  }
+  std::ostringstream stream;
+  stream << seconds << "." << std::setw(10) << std::setfill('0')
+         << rem * 1000LL;
+  return stream.str();
+}
+
 auto win32_file_time_seconds(const std::filesystem::path& p,
                              Win32FileTimeKind kind) -> std::string {
-  DWORD attrs = GetFileAttributesW(p.c_str());
-  if (attrs == INVALID_FILE_ATTRIBUTES) return "0.000000000";
-
-  DWORD flags = 0;
-  if (attrs & FILE_ATTRIBUTE_DIRECTORY) {
-    flags |= FILE_FLAG_BACKUP_SEMANTICS;
+  FindFileTimeKind find_kind = FindFileTimeKind::Modify;
+  if (kind == Win32FileTimeKind::LastAccess) {
+    find_kind = FindFileTimeKind::Access;
+  } else if (kind == Win32FileTimeKind::Creation) {
+    find_kind = FindFileTimeKind::Birth;
   }
-  if (attrs & FILE_ATTRIBUTE_REPARSE_POINT) {
-    flags |= FILE_FLAG_OPEN_REPARSE_POINT;
+  auto ticks = win32_file_time_ticks(p, find_kind);
+  if (!ticks) return "0.0000000000";
+  return format_epoch_seconds(*ticks);
+}
+
+// [#1379] ctime-style rendering for the %a/%c/%t directives: GNU prints
+// the time in ctime(3) layout but with the fractional seconds inserted
+// before the year, at the same ten-digit precision as %X@
+// (e.g. "Sun Sep 13 12:26:40.0000000000 2020").
+auto win32_file_time_ctime(const std::filesystem::path& p,
+                           Win32FileTimeKind kind) -> std::string {
+  auto find_kind = FindFileTimeKind::Modify;
+  if (kind == Win32FileTimeKind::LastAccess) {
+    find_kind = FindFileTimeKind::Access;
+  } else if (kind == Win32FileTimeKind::Creation) {
+    find_kind = FindFileTimeKind::Birth;
+  }
+  auto ticks = win32_file_time_ticks(p, find_kind);
+  if (!ticks) return "";
+
+  FILETIME file_time{};
+  file_time.dwLowDateTime = static_cast<DWORD>(*ticks & 0xFFFFFFFFLL);
+  file_time.dwHighDateTime = static_cast<DWORD>(*ticks >> 32);
+  FILETIME local_file_time{};
+  SYSTEMTIME local{};
+  if (!FileTimeToLocalFileTime(&file_time, &local_file_time) ||
+      !FileTimeToSystemTime(&local_file_time, &local)) {
+    return "";
   }
 
-  HANDLE handle =
-      CreateFileW(p.c_str(), FILE_READ_ATTRIBUTES,
-                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                  nullptr, OPEN_EXISTING, flags, nullptr);
-  if (handle == INVALID_HANDLE_VALUE) return "0.000000000";
+  static constexpr const char* kWeekdays[] = {"Sun", "Mon", "Tue", "Wed",
+                                              "Thu", "Fri", "Sat"};
+  static constexpr const char* kMonths[] = {"Jan", "Feb", "Mar", "Apr",
+                                            "May", "Jun", "Jul", "Aug",
+                                            "Sep", "Oct", "Nov", "Dec"};
+  long long rem = *ticks % 10000000LL;
+  if (rem < 0) rem += 10000000LL;
 
-  FILE_BASIC_INFO info{};
-  std::string out = "0.000000000";
-  if (GetFileInformationByHandleEx(handle, FileBasicInfo, &info,
-                                   sizeof(info))) {
-    LARGE_INTEGER value = info.LastWriteTime;
-    if (kind == Win32FileTimeKind::LastAccess) {
-      value = info.LastAccessTime;
-    } else if (kind == Win32FileTimeKind::Creation) {
-      value = info.CreationTime;
-    }
-    const long long ticks = value.QuadPart;
-    long long seconds = ticks / 10000000LL - 11644473600LL;
-    long long nanos = (ticks % 10000000LL) * 100LL;
-    if (nanos < 0) {
-      --seconds;
-      nanos += 1000000000LL;
-    }
-
-    std::ostringstream stream;
-    stream << seconds << "." << std::setw(9) << std::setfill('0') << nanos;
-    out = stream.str();
-  }
-  CloseHandle(handle);
-  return out;
+  std::ostringstream stream;
+  stream << kWeekdays[local.wDayOfWeek % 7] << ' '
+         << kMonths[(local.wMonth - 1) % 12] << ' ' << std::setw(2)
+         << std::setfill(' ') << local.wDay << ' ' << std::setw(2)
+         << std::setfill('0') << local.wHour << ':' << std::setw(2)
+         << local.wMinute << ':' << std::setw(2) << local.wSecond << '.'
+         << std::setw(10) << rem * 1000LL << ' ' << local.wYear;
+  return stream.str();
 }
 
 auto win32_file_time_component(const std::filesystem::path& p,
@@ -3859,26 +4053,12 @@ auto win32_file_time_component(const std::filesystem::path& p,
 
 auto modification_time_seconds(const std::filesystem::directory_entry& e)
     -> std::string {
-  std::error_code ec;
-  auto write_time = e.last_write_time(ec);
-  if (ec) return "0.000000000";
-
-  auto system_time = std::chrono::time_point_cast<std::chrono::nanoseconds>(
-      write_time - std::filesystem::file_time_type::clock::now() +
-      std::chrono::system_clock::now());
-  auto epoch = system_time.time_since_epoch();
-  auto seconds = std::chrono::duration_cast<std::chrono::seconds>(epoch);
-  auto nanos =
-      std::chrono::duration_cast<std::chrono::nanoseconds>(epoch - seconds)
-          .count();
-  if (nanos < 0) {
-    --seconds;
-    nanos += 1000000000LL;
-  }
-
-  std::ostringstream out;
-  out << seconds.count() << "." << std::setw(9) << std::setfill('0') << nanos;
-  return out.str();
+  // [#1379] Exact FILETIME-based rendering (see format_epoch_seconds):
+  // the previous std::filesystem clock conversion sampled two clocks
+  // and produced a different sub-microsecond tail on every run.
+  auto ticks = win32_file_time_ticks(e.path(), FindFileTimeKind::Modify);
+  if (!ticks) return "0.0000000000";
+  return format_epoch_seconds(*ticks);
 }
 
 auto append_file_time_printf(std::string& out, std::string_view format,
@@ -4009,18 +4189,54 @@ auto parse_printf_field_spec(std::string_view format, size_t& i)
   return spec;
 }
 
-auto apply_printf_field_spec(std::string piece, const PrintfFieldSpec& spec)
-    -> std::string {
-  if (spec.precision >= 0 && static_cast<int>(piece.size()) > spec.precision) {
-    piece.resize(static_cast<size_t>(spec.precision));
+// [#1379] Flag semantics differ per conversion kind in GNU find
+// (findutils print.c, probed against findutils 4.9.0): the '+' and ' '
+// sign flags are honored only for %d; the '0' flag zero-pads only %d
+// and %m and is ignored (space padding) for every other conversion,
+// including numeric ones like %s and %i; precision zero-extends the
+// integer conversions %d/%m but truncates string pieces.
+enum class PrintfPieceKind { String, Numeric, SignedNumeric, OctalNumeric };
+
+auto apply_printf_field_spec(std::string piece, const PrintfFieldSpec& spec,
+                             PrintfPieceKind kind) -> std::string {
+  if (spec.precision >= 0) {
+    if (kind == PrintfPieceKind::SignedNumeric ||
+        kind == PrintfPieceKind::OctalNumeric) {
+      size_t sign_len =
+          (!piece.empty() && (piece[0] == '-' || piece[0] == '+' ||
+                              piece[0] == ' '))
+              ? 1
+              : 0;
+      if (piece.size() - sign_len < static_cast<size_t>(spec.precision)) {
+        piece.insert(sign_len,
+                     static_cast<size_t>(spec.precision) - (piece.size() - sign_len),
+                     '0');
+      }
+    } else if (static_cast<int>(piece.size()) > spec.precision) {
+      piece.resize(static_cast<size_t>(spec.precision));
+    }
+  }
+  if (kind == PrintfPieceKind::SignedNumeric &&
+      (piece.empty() || piece[0] != '-')) {
+    if (spec.flags.find('+') != std::string::npos) {
+      piece.insert(0, "+");
+    } else if (spec.flags.find(' ') != std::string::npos) {
+      piece.insert(0, " ");
+    }
   }
   if (spec.width >= 0 && static_cast<int>(piece.size()) < spec.width) {
     bool left_justify = spec.flags.find('-') != std::string::npos;
-    bool zero_pad = spec.flags.find('0') != std::string::npos && !left_justify;
+    bool zero_pad = spec.flags.find('0') != std::string::npos &&
+                    !left_justify &&
+                    (kind == PrintfPieceKind::SignedNumeric ||
+                     kind == PrintfPieceKind::OctalNumeric);
     std::string padding(static_cast<size_t>(spec.width) - piece.size(),
                         zero_pad ? '0' : ' ');
     if (left_justify) {
       piece += padding;
+    } else if (zero_pad && !piece.empty() &&
+               (piece[0] == '-' || piece[0] == '+' || piece[0] == ' ')) {
+      piece.insert(1, padding);
     } else {
       piece.insert(0, padding);
     }
@@ -4098,6 +4314,7 @@ auto format_printf(std::string_view format, const std::filesystem::path& p,
 
     // [GNU] printf-style flags/width/precision precede the directive char
     // (findutils-4.10.0/find/print.c: get_format_flags_length).
+    const size_t spec_start = i;
     ++i;
     PrintfFieldSpec spec = parse_printf_field_spec(format, i);
     if (i >= format.size()) {
@@ -4107,6 +4324,7 @@ auto format_printf(std::string_view format, const std::filesystem::path& p,
 
     char code = format[i];
     std::string piece;
+    PrintfPieceKind kind = PrintfPieceKind::String;
     switch (code) {
       case '%':
         piece.push_back('%');
@@ -4136,18 +4354,23 @@ auto format_printf(std::string_view format, const std::filesystem::path& p,
         piece.push_back(symlink_target_type_char(e));
         break;
       case 's':
+        kind = PrintfPieceKind::Numeric;
         piece += std::to_string(file_size_bytes(e));
         break;
       case 'b':
+        kind = PrintfPieceKind::Numeric;
         piece += std::to_string(allocated_block_count(p, e, 512));
         break;
       case 'k':
+        kind = PrintfPieceKind::Numeric;
         piece += std::to_string(allocated_block_count(p, e, 1024));
         break;
       case 'd':
+        kind = PrintfPieceKind::SignedNumeric;
         piece += std::to_string(depth);
         break;
       case 'D':
+        kind = PrintfPieceKind::Numeric;
         piece += win32_volume_serial_number(p);
         break;
       case 'F':
@@ -4157,30 +4380,36 @@ auto format_printf(std::string_view format, const std::filesystem::path& p,
         piece += win32_ownership_info(p).group_name;
         break;
       case 'G':
+        kind = PrintfPieceKind::Numeric;
         piece += win32_ownership_info(p).group_id;
         break;
       case 'o':
+        kind = PrintfPieceKind::Numeric;
         piece += std::to_string(win32_io_block_size(p));
         break;
       case 'u':
         piece += win32_ownership_info(p).owner_name;
         break;
       case 'U':
+        kind = PrintfPieceKind::Numeric;
         piece += win32_ownership_info(p).owner_id;
         break;
       case 'S':
         piece += file_sparseness(p, e);
         break;
       case 'm':
+        kind = PrintfPieceKind::OctalNumeric;
         piece += permission_bits(p, e);
         break;
       case 'M':
         piece += permission_string(p, e);
         break;
       case 'n':
+        kind = PrintfPieceKind::Numeric;
         piece += std::to_string(win32_hard_link_count(p));
         break;
       case 'i':
+        kind = PrintfPieceKind::Numeric;
         piece += win32_file_index(p);
         break;
       case 'A':
@@ -4195,14 +4424,31 @@ auto format_printf(std::string_view format, const std::filesystem::path& p,
       case 'T':
         append_file_time_printf(piece, format, i, 'T', p, e);
         break;
+      // [#1379] %a/%c/%t print the access/change/modification time as a
+      // ctime-style string with fractional seconds (GNU print.c).
+      case 'a':
+        piece += win32_file_time_ctime(p, Win32FileTimeKind::LastAccess);
+        break;
+      case 'c':
+        piece += win32_file_time_ctime(p, Win32FileTimeKind::Creation);
+        break;
+      case 't':
+        piece += win32_file_time_ctime(p, Win32FileTimeKind::LastWrite);
+        break;
       default:
         safeErrorPrint("find: warning: unrecognized format directive `%");
         safeErrorPrint(std::string(1, code));
         safeErrorPrint("'\n");
-        piece.push_back(code);
+        // [#1379] GNU echoes the whole directive verbatim, '%' and any
+        // flags/width included ("%Q" prints "%Q", "%5Q" prints "%5Q");
+        // the field spec must not be applied to it.
+        out += format.substr(spec_start, i - spec_start + 1);
+        piece.clear();
+        kind = PrintfPieceKind::String;
+        spec = PrintfFieldSpec{};
         break;
     }
-    out += apply_printf_field_spec(std::move(piece), spec);
+    out += apply_printf_field_spec(std::move(piece), spec, kind);
   }
 
   return out;
@@ -4505,6 +4751,37 @@ auto volume_root_key(const std::filesystem::path& p) -> std::wstring {
   return {};
 }
 
+// [#1378] GNU find -L loop detection (findutils ftsfind.c): while
+// following symlinks, find tracks the (device, inode) identity of every
+// directory on the current traversal path; a directory whose followed
+// identity equals an ancestor's is reported once and never descended
+// into (and the entry itself is not evaluated), instead of expanding
+// the cycle until the path stops fitting.
+struct AncestorDirectory {
+  FileIdentity identity;
+  std::filesystem::path path;
+};
+
+auto report_filesystem_loop(const std::filesystem::path& p,
+                            const std::filesystem::path& ancestor, Config& cfg)
+    -> void {
+  safeErrorPrint("find: File system loop detected; '");
+  safeErrorPrint(path_display(p));
+  safeErrorPrint("' is part of the same file system loop as '");
+  safeErrorPrint(path_display(ancestor));
+  safeErrorPrint("'.\n");
+  cfg.had_error = true;
+}
+
+auto find_loop_ancestor(const std::vector<AncestorDirectory>& ancestors,
+                        const FileIdentity& identity)
+    -> const std::filesystem::path* {
+  for (const auto& ancestor : ancestors) {
+    if (ancestor.identity == identity) return &ancestor.path;
+  }
+  return nullptr;
+}
+
 auto should_descend_into(const std::filesystem::directory_entry& e,
                          const Config& cfg, bool command_line_root = false)
     -> bool {
@@ -4538,7 +4815,8 @@ auto should_descend_into(const std::filesystem::directory_entry& e,
 // write-only parameter to avoid churning every call site.
 auto scan_depth_first(const std::filesystem::path& root,
                       const std::filesystem::path& p, int depth, Config& cfg,
-                      bool& matched_any) -> void {
+                      bool& matched_any,
+                      std::vector<AncestorDirectory>& ancestors) -> void {
   const auto io_p = to_io_path(p);
   std::error_code ec;
   std::filesystem::directory_entry entry(io_p, ec);
@@ -4550,6 +4828,25 @@ auto scan_depth_first(const std::filesystem::path& root,
     safeErrorPrint("\n");
     cfg.had_error = true;
     return;
+  }
+
+  // [#1378] Loop detection applies to directories this call would
+  // descend into while following symlinks; the root itself (depth 0)
+  // starts a fresh ancestor chain.
+  std::optional<FileIdentity> self_identity;
+  if (depth < cfg.maxdepth && cfg.follow_symlinks &&
+      should_descend_into(entry, cfg, depth == 0)) {
+    self_identity = win32_followed_file_identity(p);
+    if (self_identity && depth > 0) {
+      if (const auto* loop = find_loop_ancestor(ancestors, *self_identity)) {
+        report_filesystem_loop(p, *loop, cfg);
+        return;
+      }
+    }
+  }
+  const size_t ancestor_mark = ancestors.size();
+  if (self_identity) {
+    ancestors.push_back(AncestorDirectory{*self_identity, p});
   }
 
   if (depth < cfg.maxdepth && should_descend_into(entry, cfg, depth == 0)) {
@@ -4579,10 +4876,11 @@ auto scan_depth_first(const std::filesystem::path& root,
           break;
         }
         auto child = logical_from_io(p, io_p, it->path());
-        scan_depth_first(root, child, depth + 1, cfg, matched_any);
+        scan_depth_first(root, child, depth + 1, cfg, matched_any, ancestors);
       }
     }
   }
+  ancestors.resize(ancestor_mark);
 
   if (cfg.quit) return;
 
@@ -4596,7 +4894,9 @@ auto scan_depth_first(const std::filesystem::path& root,
 
 auto scan_delete_depth_first(const std::filesystem::path& root,
                              const std::filesystem::path& p, int depth,
-                             Config& cfg, bool& matched_any) -> void {
+                             Config& cfg, bool& matched_any,
+                             std::vector<AncestorDirectory>& ancestors)
+    -> void {
   const auto io_p = to_io_path(p);
   std::error_code ec;
   std::filesystem::directory_entry entry(io_p, ec);
@@ -4608,6 +4908,23 @@ auto scan_delete_depth_first(const std::filesystem::path& root,
     safeErrorPrint("\n");
     cfg.had_error = true;
     return;
+  }
+
+  // [#1378] Same loop detection as scan_depth_first.
+  std::optional<FileIdentity> self_identity;
+  if (depth < cfg.maxdepth && cfg.follow_symlinks &&
+      should_descend_into(entry, cfg, depth == 0)) {
+    self_identity = win32_followed_file_identity(p);
+    if (self_identity && depth > 0) {
+      if (const auto* loop = find_loop_ancestor(ancestors, *self_identity)) {
+        report_filesystem_loop(p, *loop, cfg);
+        return;
+      }
+    }
+  }
+  const size_t ancestor_mark = ancestors.size();
+  if (self_identity) {
+    ancestors.push_back(AncestorDirectory{*self_identity, p});
   }
 
   if (depth < cfg.maxdepth && should_descend_into(entry, cfg, depth == 0)) {
@@ -4637,10 +4954,12 @@ auto scan_delete_depth_first(const std::filesystem::path& root,
           break;
         }
         auto child = logical_from_io(p, io_p, it->path());
-        scan_delete_depth_first(root, child, depth + 1, cfg, matched_any);
+        scan_delete_depth_first(root, child, depth + 1, cfg, matched_any,
+                                ancestors);
       }
     }
   }
+  ancestors.resize(ancestor_mark);
 
   if (cfg.quit) return;
 
@@ -4701,6 +5020,16 @@ auto scan_one_root(const std::filesystem::path& root, Config& cfg,
     return;
   }
 
+  // [#1378] Ancestor chain for loop detection, indexed by depth:
+  // dir_stack[k] is the directory at depth k on the current path whose
+  // contents the iterator is walking (index 0 is the root itself).
+  std::vector<AncestorDirectory> dir_stack;
+  if (cfg.follow_symlinks) {
+    if (auto root_identity = win32_followed_file_identity(root)) {
+      dir_stack.push_back(AncestorDirectory{*root_identity, root});
+    }
+  }
+
   // #1283: advance with the error_code overload, exactly like
   // scan_depth_first / scan_delete_depth_first do. The throwing ++it used
   // to abort the whole process (0xC0000409) when a step failed — stepping
@@ -4715,15 +5044,47 @@ auto scan_one_root(const std::filesystem::path& root, Config& cfg,
     if (d > cfg.maxdepth) {
       it.disable_recursion_pending();
     } else {
-      bool matched = entry_matches(cfg, p, de, d, root);
-      if (cfg.quit && !matched) return;
-      if (matched) {
-        apply_actions(p, de, cfg);
-        matched_any = true;
-        if (cfg.quit) return;
+      // [#1378] Directories deeper than the current path belong to a
+      // subtree that has been left behind; drop them before checking.
+      if (cfg.follow_symlinks &&
+          dir_stack.size() > static_cast<size_t>(d)) {
+        dir_stack.resize(static_cast<size_t>(d));
       }
-      if (cfg.prune_current || !should_descend_into(de, cfg)) {
-        it.disable_recursion_pending();
+      bool will_descend = should_descend_into(de, cfg);
+      std::optional<FileIdentity> self_identity;
+      bool looped = false;
+      if (cfg.follow_symlinks && will_descend) {
+        self_identity = win32_followed_file_identity(p);
+        if (self_identity) {
+          if (const auto* loop =
+                  find_loop_ancestor(dir_stack, *self_identity)) {
+            report_filesystem_loop(p, *loop, cfg);
+            it.disable_recursion_pending();
+            looped = true;
+          }
+        }
+      }
+      if (!looped) {
+        bool matched = entry_matches(cfg, p, de, d, root);
+        if (cfg.quit && !matched) return;
+        if (matched) {
+          apply_actions(p, de, cfg);
+          matched_any = true;
+          if (cfg.quit) return;
+        }
+        if (cfg.prune_current || !should_descend_into(de, cfg)) {
+          it.disable_recursion_pending();
+        } else if (self_identity) {
+          if (dir_stack.size() > static_cast<size_t>(d)) {
+            dir_stack.resize(static_cast<size_t>(d));
+          }
+          if (dir_stack.size() == static_cast<size_t>(d)) {
+            dir_stack.push_back(AncestorDirectory{*self_identity, p});
+          } else {
+            dir_stack[static_cast<size_t>(d)] =
+                AncestorDirectory{*self_identity, p};
+          }
+        }
       }
     }
 
@@ -4754,14 +5115,16 @@ auto process(Config& cfg) -> int {
         report_root_probe_failure(root);
         cfg.had_error = true;
       } else {
-        scan_delete_depth_first(root, root, 0, cfg, matched_any);
+        std::vector<AncestorDirectory> ancestors;
+        scan_delete_depth_first(root, root, 0, cfg, matched_any, ancestors);
       }
     } else if (cfg.depth_first) {
       if (!root_exists(root)) {
         report_root_probe_failure(root);
         cfg.had_error = true;
       } else {
-        scan_depth_first(root, root, 0, cfg, matched_any);
+        std::vector<AncestorDirectory> ancestors;
+        scan_depth_first(root, root, 0, cfg, matched_any, ancestors);
       }
     } else {
       scan_one_root(root, cfg, matched_any);

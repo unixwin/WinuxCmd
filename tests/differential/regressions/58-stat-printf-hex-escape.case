@@ -1,0 +1,7 @@
+cmd: stat
+args: --printf='[\x41][\x4][\x414][\xZZ]\n' probefile
+timeout: 10
+setup: |
+  printf 'x\n' > probefile
+source: github.com/unixwin/WinuxCmd/issues/1334
+tags: issue-1334 regression

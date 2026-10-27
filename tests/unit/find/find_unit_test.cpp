@@ -358,7 +358,7 @@ OwnershipFields ownership_fields(const std::filesystem::path& path) {
 
 std::string creation_time_seconds(const std::filesystem::path& path) {
   DWORD attrs = GetFileAttributesW(path.wstring().c_str());
-  if (attrs == INVALID_FILE_ATTRIBUTES) return "0.000000000";
+  if (attrs == INVALID_FILE_ATTRIBUTES) return "0.0000000000";
 
   DWORD flags = 0;
   if (attrs & FILE_ATTRIBUTE_DIRECTORY) flags |= FILE_FLAG_BACKUP_SEMANTICS;
@@ -369,22 +369,59 @@ std::string creation_time_seconds(const std::filesystem::path& path) {
       CreateFileW(path.wstring().c_str(), FILE_READ_ATTRIBUTES,
                   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                   nullptr, OPEN_EXISTING, flags, nullptr);
-  if (handle == INVALID_HANDLE_VALUE) return "0.000000000";
+  if (handle == INVALID_HANDLE_VALUE) return "0.0000000000";
 
   FILE_BASIC_INFO info{};
-  std::string out = "0.000000000";
+  std::string out = "0.0000000000";
   if (GetFileInformationByHandleEx(handle, FileBasicInfo, &info,
                                    sizeof(info))) {
     const long long ticks = info.CreationTime.QuadPart;
     long long seconds = ticks / 10000000LL - 11644473600LL;
-    long long nanos = (ticks % 10000000LL) * 100LL;
-    if (nanos < 0) {
+    long long rem = ticks % 10000000LL;
+    if (rem < 0) {
       --seconds;
-      nanos += 1000000000LL;
+      rem += 10000000LL;
     }
 
     std::ostringstream stream;
-    stream << seconds << "." << std::setw(9) << std::setfill('0') << nanos;
+    stream << seconds << "." << std::setw(10) << std::setfill('0')
+           << rem * 1000LL;
+    out = stream.str();
+  }
+  CloseHandle(handle);
+  return out;
+}
+
+std::string modification_time_seconds(const std::filesystem::path& path) {
+  DWORD attrs = GetFileAttributesW(path.wstring().c_str());
+  if (attrs == INVALID_FILE_ATTRIBUTES) return "0.0000000000";
+
+  DWORD flags = 0;
+  if (attrs & FILE_ATTRIBUTE_DIRECTORY) flags |= FILE_FLAG_BACKUP_SEMANTICS;
+  if (attrs & FILE_ATTRIBUTE_REPARSE_POINT)
+    flags |= FILE_FLAG_OPEN_REPARSE_POINT;
+
+  HANDLE handle =
+      CreateFileW(path.wstring().c_str(), FILE_READ_ATTRIBUTES,
+                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                  nullptr, OPEN_EXISTING, flags, nullptr);
+  if (handle == INVALID_HANDLE_VALUE) return "0.0000000000";
+
+  FILE_BASIC_INFO info{};
+  std::string out = "0.0000000000";
+  if (GetFileInformationByHandleEx(handle, FileBasicInfo, &info,
+                                   sizeof(info))) {
+    const long long ticks = info.LastWriteTime.QuadPart;
+    long long seconds = ticks / 10000000LL - 11644473600LL;
+    long long rem = ticks % 10000000LL;
+    if (rem < 0) {
+      --seconds;
+      rem += 10000000LL;
+    }
+
+    std::ostringstream stream;
+    stream << seconds << "." << std::setw(10) << std::setfill('0')
+           << rem * 1000LL;
     out = stream.str();
   }
   CloseHandle(handle);
@@ -393,7 +430,7 @@ std::string creation_time_seconds(const std::filesystem::path& path) {
 
 std::string access_time_seconds(const std::filesystem::path& path) {
   DWORD attrs = GetFileAttributesW(path.wstring().c_str());
-  if (attrs == INVALID_FILE_ATTRIBUTES) return "0.000000000";
+  if (attrs == INVALID_FILE_ATTRIBUTES) return "0.0000000000";
 
   DWORD flags = 0;
   if (attrs & FILE_ATTRIBUTE_DIRECTORY) flags |= FILE_FLAG_BACKUP_SEMANTICS;
@@ -404,22 +441,23 @@ std::string access_time_seconds(const std::filesystem::path& path) {
       CreateFileW(path.wstring().c_str(), FILE_READ_ATTRIBUTES,
                   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                   nullptr, OPEN_EXISTING, flags, nullptr);
-  if (handle == INVALID_HANDLE_VALUE) return "0.000000000";
+  if (handle == INVALID_HANDLE_VALUE) return "0.0000000000";
 
   FILE_BASIC_INFO info{};
-  std::string out = "0.000000000";
+  std::string out = "0.0000000000";
   if (GetFileInformationByHandleEx(handle, FileBasicInfo, &info,
                                    sizeof(info))) {
     const long long ticks = info.LastAccessTime.QuadPart;
     long long seconds = ticks / 10000000LL - 11644473600LL;
-    long long nanos = (ticks % 10000000LL) * 100LL;
-    if (nanos < 0) {
+    long long rem = ticks % 10000000LL;
+    if (rem < 0) {
       --seconds;
-      nanos += 1000000000LL;
+      rem += 10000000LL;
     }
 
     std::ostringstream stream;
-    stream << seconds << "." << std::setw(9) << std::setfill('0') << nanos;
+    stream << seconds << "." << std::setw(10) << std::setfill('0')
+           << rem * 1000LL;
     out = stream.str();
   }
   CloseHandle(handle);
@@ -2066,7 +2104,7 @@ TEST(find, find_printf_unrecognized_escape_warns_and_keeps_literal_text) {
               std::string::npos);
 }
 
-TEST(find, find_printf_unrecognized_format_directive_warns_and_drops_percent) {
+TEST(find, find_printf_unrecognized_format_directive_warns_and_keeps_percent) {
   TempDir tmp;
   tmp.write("a.txt", "x");
 
@@ -2076,7 +2114,8 @@ TEST(find, find_printf_unrecognized_format_directive_warns_and_drops_percent) {
 
   auto r = p.run();
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "leftJright");
+  // [GNU #1379] Unknown directives are echoed verbatim, '%' included.
+  EXPECT_EQ_TEXT(r.stdout_text, "left%Jright");
   EXPECT_TRUE(
       r.stderr_text.find("warning: unrecognized format directive `%J'") !=
       std::string::npos);
@@ -3062,7 +3101,7 @@ TEST(find, find_printf_supports_field_width_flags_and_precision) {
 
   auto r = p.run();
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "[  ab.txt][ab.txt  ][ab][00ab.txt][ab.txt]\n");
+  EXPECT_EQ_TEXT(r.stdout_text, "[  ab.txt][ab.txt  ][ab][  ab.txt][ab.txt]\n");
 }
 
 TEST(find, find_daystart_measures_from_start_of_local_day) {
@@ -3191,6 +3230,24 @@ TEST(find, find_accepts_posix_drive_form_start_points) {
   TEST_LOG("find stdout", r2.stdout_text);
   EXPECT_EQ(r2.exit_code, 0);
   EXPECT_NE(r2.stdout_text.find("nested.txt"), std::string::npos);
+}
+
+// #1303: --help inside -exec belongs to the executed command, not to
+// find: `find . -exec echo.exe --help \;` shows echo's help, not
+// find's.
+TEST(find, find_exec_help_is_not_intercepted) {
+  TempDir tmp;
+  tmp.write("a.txt", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L".", L"-name", L"a.txt", L"-exec", L"echo.exe",
+                      L"--help", L";"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("Usage:") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("Usage: find") == std::string::npos);
 }
 
 namespace {
@@ -3682,4 +3739,250 @@ TEST(find, issue_1313_unknown_user_and_group_are_parse_errors) {
   numeric.add(L"find.exe", {L".", L"-user", L"99999"});
   auto nr = numeric.run();
   EXPECT_EQ(nr.exit_code, 0);
+}
+
+TEST(find, issue_1377_type_comma_list_and_gnu_diagnostics) {
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "root" / "d");
+  tmp.write("root/f.txt", "x");
+
+  // [GNU] Comma-separated lists match any of the listed types.
+  Pipeline list;
+  list.set_cwd(tmp.wpath());
+  list.add(L"find.exe", {L"root", L"-type", L"f,d"});
+  auto lr = list.run();
+  EXPECT_EQ(lr.exit_code, 0);
+  EXPECT_TRUE(lr.stdout_text.find("root/f.txt") != std::string::npos);
+  EXPECT_TRUE(lr.stdout_text.find("root/d") != std::string::npos);
+
+  // [GNU] 'u' was never a findutils type letter; 'D' gets the doors
+  // diagnostic; concatenated letters need commas.
+  Pipeline unknown;
+  unknown.set_cwd(tmp.wpath());
+  unknown.add(L"find.exe", {L"root", L"-type", L"u"});
+  auto ur = unknown.run();
+  EXPECT_EQ(ur.exit_code, 1);
+  EXPECT_TRUE(ur.stderr_text.find("Unknown argument to -type: u") !=
+              std::string::npos);
+
+  Pipeline doors;
+  doors.set_cwd(tmp.wpath());
+  doors.add(L"find.exe", {L"root", L"-type", L"D"});
+  auto dr = doors.run();
+  EXPECT_EQ(dr.exit_code, 1);
+  EXPECT_TRUE(dr.stderr_text.find("Solaris doors are not supported") !=
+              std::string::npos);
+
+  Pipeline joined;
+  joined.set_cwd(tmp.wpath());
+  joined.add(L"find.exe", {L"root", L"-type", L"fd"});
+  auto jr = joined.run();
+  EXPECT_EQ(jr.exit_code, 1);
+  EXPECT_TRUE(jr.stderr_text.find("Must separate multiple arguments to "
+                                  "-type using: ','") != std::string::npos);
+}
+
+
+TEST(find, issue_1377_type_accepts_b_c_s_letters) {
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "root" / "d");
+  tmp.write("root/f.txt", "x");
+
+  // [GNU] b/c/s are legal -type letters; a type that cannot occur in
+  // the fixture simply matches nothing, with exit status 0.
+  for (const wchar_t* letter : {L"b", L"c", L"s"}) {
+    Pipeline p;
+    p.set_cwd(tmp.wpath());
+    p.add(L"find.exe", {L"root", L"-type", letter});
+    auto r = p.run();
+    EXPECT_EQ(r.exit_code, 0);
+    EXPECT_TRUE(r.stdout_text.empty());
+    EXPECT_TRUE(r.stderr_text.empty());
+  }
+}
+
+TEST(find, issue_1378_L_reports_filesystem_loop_instead_of_expanding_it) {
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "root" / "d");
+  tmp.write("root/f.txt", "x");
+
+  if (!create_directory_symlink_or_skip(tmp.path / "root" / "d" / "loop",
+                                        tmp.path / "root")) {
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L"-L", L"root"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("File system loop detected") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("root/d/loop") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("same file system loop as 'root'") !=
+              std::string::npos);
+  // Bounded output: the cycle must not be expanded level after level.
+  EXPECT_TRUE(r.stdout_text.find("loop/d/loop") == std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("root/d/loop") == std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("root/f.txt") != std::string::npos);
+}
+
+TEST(find, issue_1379_printf_ctime_directives) {
+  TempDir tmp;
+  tmp.write("a.txt", "x");
+
+  // Creation = Mon 2023-01-02 03:04:05 local, access = Tue 2024-03-05
+  // 09:07:11 local, write = Wed 2022-06-15 22:33:44 local.
+  EXPECT_TRUE(set_file_times(tmp.path / "a.txt", 2023, 1, 2, 3, 4, 5,
+                             2024, 3, 5, 9, 7, 11, 2022, 6, 15, 22, 33,
+                             44));
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe",
+        {L"a.txt", L"-printf", L"%a|%c|%t\n"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  // [GNU] ctime layout with the ten-digit fraction before the year;
+  // the day of the month is space-padded like ctime(3).
+  EXPECT_EQ_TEXT(r.stdout_text,
+                 "Tue Mar  5 09:07:11.0000000000 2024|"
+                 "Mon Jan  2 03:04:05.0000000000 2023|"
+                 "Wed Jun 15 22:33:44.0000000000 2022\n");
+}
+
+TEST(find, issue_1379_printf_unknown_directive_keeps_percent) {
+  TempDir tmp;
+  tmp.write("f", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L"f", L"-printf", L"%Q|%5Q|\n"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  // [GNU] Unknown directives are echoed verbatim, '%' included, with
+  // the unrecognized-directive warning on stderr.
+  EXPECT_EQ_TEXT(r.stdout_text, "%Q|%5Q|\n");
+  EXPECT_TRUE(r.stderr_text.find("unrecognized format directive `%Q'") !=
+              std::string::npos);
+}
+
+TEST(find, issue_1379_printf_flag_semantics_per_conversion) {
+  TempDir tmp;
+  tmp.write("f", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe",
+        {L".", L"-name", L"f", L"-printf", L"%05p|%+5d|% 5d|%05d|\n"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  // [GNU] The 0 flag is ignored for %p (space padding to the stated
+  // width, so "./f" gains two spaces); '+' and ' ' apply to %d; 0
+  // zero-pads %d.  ./f is at depth 1.
+  EXPECT_EQ_TEXT(r.stdout_text, "  ./f|   +1|    1|00001|\n");
+}
+
+TEST(find, issue_1379_printf_epoch_is_exact_and_deterministic) {
+  TempDir tmp;
+  tmp.write("f", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L"f", L"-printf", L"%T@|%A@|%C@\n"});
+
+  auto r1 = p.run();
+  auto r2 = p.run();
+  EXPECT_EQ(r1.exit_code, 0);
+  // [GNU] Ten fractional digits, derived exactly from the file time:
+  // repeated runs must be identical (no clock-sampling jitter).
+  EXPECT_EQ_TEXT(r2.stdout_text, r1.stdout_text);
+  EXPECT_TRUE(r1.stdout_text.find(modification_time_seconds(
+                  tmp.path / "f")) != std::string::npos);
+  EXPECT_TRUE(r1.stdout_text.find(access_time_seconds(tmp.path / "f")) !=
+              std::string::npos);
+  EXPECT_TRUE(r1.stdout_text.find(creation_time_seconds(tmp.path / "f")) !=
+              std::string::npos);
+}
+
+TEST(find, issue_1380_unknown_predicates_are_answered_by_find) {
+  TempDir tmp;
+  tmp.write("a.txt", "");
+
+  // [GNU] Unknown tokens in predicate position are find's own error,
+  // not the generic option parser's.
+  Pipeline long_opt;
+  long_opt.set_cwd(tmp.wpath());
+  long_opt.add(L"find.exe", {L".", L"--zzz"});
+  auto lr = long_opt.run();
+  EXPECT_EQ(lr.exit_code, 1);
+  EXPECT_TRUE(lr.stderr_text.find("unknown predicate `--zzz'") !=
+              std::string::npos);
+  EXPECT_TRUE(lr.stderr_text.find("unrecognized option") ==
+              std::string::npos);
+
+  Pipeline bogus;
+  bogus.set_cwd(tmp.wpath());
+  bogus.add(L"find.exe", {L".", L"-bogus"});
+  auto br = bogus.run();
+  EXPECT_EQ(br.exit_code, 1);
+  EXPECT_TRUE(br.stderr_text.find("unknown predicate `-bogus'") !=
+              std::string::npos);
+  EXPECT_TRUE(br.stderr_text.find("invalid option") == std::string::npos);
+}
+
+TEST(find, issue_1380_global_options_reach_their_start_point) {
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "sub");
+  tmp.write("sub/f.txt", "x");
+  // Same-named file at the top level: if a global option silently
+  // drops the real start point and the walk falls back to ".", this
+  // file is printed too (as ./f.txt) and the exact-output assertions
+  // below fail.
+  tmp.write("f.txt", "x");
+
+  // [GNU] -D is a global option with an argument: "tree" is the debug
+  // category, "sub" is the start point.  Neither may be treated as a
+  // missing file operand, and the walk must cover "sub", not ".".
+  Pipeline debug_opt;
+  debug_opt.set_cwd(tmp.wpath());
+  debug_opt.add(L"find.exe", {L"-D", L"tree", L"sub", L"-name", L"f.txt"});
+  auto dr = debug_opt.run();
+  EXPECT_EQ(dr.exit_code, 0);
+  EXPECT_EQ_TEXT(dr.stdout_text, "sub/f.txt\n");
+  EXPECT_TRUE(dr.stderr_text.find("No such file or directory") ==
+              std::string::npos);
+
+  // The --debug long alias of -D (a WinuxCmd extension; GNU find has
+  // no such option) must reach the same start point, not be answered
+  // as a missing file operand.
+  Pipeline debug_long;
+  debug_long.set_cwd(tmp.wpath());
+  debug_long.add(L"find.exe",
+                 {L"--debug", L"tree", L"sub", L"-name", L"f.txt"});
+  auto dlr = debug_long.run();
+  EXPECT_EQ(dlr.exit_code, 0);
+  EXPECT_EQ_TEXT(dlr.stdout_text, "sub/f.txt\n");
+
+  // [GNU] -ignore_readdir_race is a positional option: accepted before
+  // and after the start point.
+  Pipeline race_before;
+  race_before.set_cwd(tmp.wpath());
+  race_before.add(L"find.exe",
+                  {L"-ignore_readdir_race", L"sub", L"-name", L"f.txt"});
+  auto rb = race_before.run();
+  EXPECT_EQ(rb.exit_code, 0);
+  EXPECT_EQ_TEXT(rb.stdout_text, "sub/f.txt\n");
+
+  Pipeline race_after;
+  race_after.set_cwd(tmp.wpath());
+  race_after.add(L"find.exe",
+                 {L"sub", L"-ignore_readdir_race", L"-name", L"f.txt"});
+  auto ra = race_after.run();
+  EXPECT_EQ(ra.exit_code, 0);
+  EXPECT_EQ_TEXT(ra.stdout_text, "sub/f.txt\n");
 }

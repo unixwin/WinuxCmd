@@ -131,8 +131,11 @@ auto split_literal_records(std::string_view content, std::string_view separator,
 auto split_regex_records(std::string_view content, const std::string& separator,
                          bool before) -> cp::Result<std::vector<std::string>> {
   std::vector<std::string> records;
+  // [GNU] tac.c compiles the -r separator as a basic regular expression
+  // (BRE): `\|` is alternation and a bare `|` is a literal character.
+  // Extended (ERE) inverts both (issue #1361).
   auto sep =
-      portable_regex::compile(portable_regex::Syntax::Extended, separator);
+      portable_regex::compile(portable_regex::Syntax::Basic, separator);
   if (!sep) {
     return std::unexpected("invalid regular expression");
   }

@@ -64,6 +64,9 @@ auto constexpr UNIQ_OPTIONS = std::array{
     // [GNU] option
     OPTION("-w", "--check-chars", "compare no more than N characters",
            INT_TYPE),
+    // [GNU] -NUM: digits inside a cluster or on their own are the
+    // check-chars count (uniq -D5); hidden like split's -NUM.
+    OPTION("-NUM", "", "", INT_TYPE),
     // [GNU] option
     OPTION("-z", "--zero-terminated", "line delimiter is NUL, not newline"),
     // [GNU] option
@@ -219,6 +222,9 @@ auto build_config(const CommandContext<UNIQ_OPTIONS.size()>& ctx)
 
   cfg.check_chars = ctx.get<int>("--check-chars", -1);
   if (cfg.check_chars < 0) cfg.check_chars = ctx.get<int>("-w", -1);
+  // [GNU] -NUM digits are the check-chars count when no explicit -w
+  // is given (uniq -D5); an explicit -w wins over -NUM here.
+  if (cfg.check_chars < 0) cfg.check_chars = ctx.get<int>("-NUM", -1);
 
   cfg.delimiter =
       (ctx.get<bool>("--zero-terminated", false) || ctx.get<bool>("-z", false))
@@ -227,6 +233,15 @@ auto build_config(const CommandContext<UNIQ_OPTIONS.size()>& ctx)
 
   if (cfg.skip_fields < 0 || cfg.skip_chars < 0 || cfg.check_chars < -1) {
     return std::unexpected("negative counts are not allowed");
+  }
+
+  // [GNU] An explicitly given negative -w/--check-chars has its own
+  // diagnostic; check_chars == -1 is the "no limit" default only when
+  // neither option was given.
+  bool check_given = ctx.has("-w") || ctx.has("--check-chars");
+  if (check_given && cfg.check_chars < 0) {
+    return std::unexpected(std::to_string(cfg.check_chars) +
+                           ": invalid number of bytes to compare");
   }
 
   if (ctx.has("--group")) {

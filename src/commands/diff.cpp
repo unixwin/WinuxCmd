@@ -101,6 +101,10 @@ auto constexpr DIFF_OPTIONS = std::array{
     OPTION("-u", "--unified", "output NUM (default 3) lines of unified context",
            OPTIONAL_INT_TYPE),
     OPTION("-U", "", "output NUM lines of unified context", INT_TYPE),
+    // [GNU] -NUM: digits inside a cluster or on their own set the
+    // context length for -c/-u (diff -c5, -5c, -c -5); hidden like
+    // split's -NUM (cmd_meta renders it as no help text).
+    OPTION("-NUM", "", "", INT_TYPE),
     OPTION("-e", "--ed", "output an ed script"),
     OPTION("-f", "--forward-ed", "output an ed script for the second file"),
     OPTION("-n", "--rcs", "output an RCS format diff"),
@@ -2039,12 +2043,31 @@ REGISTER_COMMAND(
   };
   Mode mode = Mode::Normal;
   int context = 3;
+  // [GNU] -NUM digits set the context length for -c/-u (diff -c5,
+  // -5c, -c -5): a pending value applies to a style seen before it
+  // and to a valueless -c/-u seen after it.
+  int pending_context = -1;
+
+  // [GNU] at most one output style: two different styles (including
+  // --normal) are "conflicting output style options" (diff -cu,
+  // -c -u, -c --normal); repeating the same style is fine.
+  bool style_seen = false;
+  auto set_mode = [&](Mode next) -> bool {
+    if (style_seen && mode != next) {
+      safeErrorPrint("diff: conflicting output style options\n");
+      safeErrorPrint("Try 'diff --help' for more information.\n");
+      return false;
+    }
+    style_seen = true;
+    mode = next;
+    return true;
+  };
 
   auto set_context = [&](int value, std::string_view option,
                          bool optional_value) -> bool {
     if (value < 0) {
       if (optional_value && value == -1) {
-        context = 3;
+        context = pending_context >= 0 ? pending_context : 3;
         return true;
       }
       safeErrorPrint("diff: invalid context length '");
@@ -2060,33 +2083,50 @@ REGISTER_COMMAND(
   for (const auto &occurrence : ctx.options.occurrences()) {
     if (!ctx.metas || occurrence.index >= ctx.metas->size()) continue;
     const auto &meta = (*ctx.metas)[occurrence.index];
-    if (meta.short_name == "-u" || meta.long_name == "--unified") {
-      mode = Mode::Unified;
+    if (meta.short_name == "-NUM") {
+      auto value = std::get_if<int>(&occurrence.value);
+      if (value) {
+        pending_context = *value;
+        if (style_seen &&
+            (mode == Mode::Context || mode == Mode::Unified)) {
+          context = *value;
+        }
+      }
+    } else if (meta.short_name == "-u" || meta.long_name == "--unified") {
+      if (!set_mode(Mode::Unified)) return 2;
       auto value = std::get_if<int>(&occurrence.value);
       if (value && !set_context(*value, "--unified", true)) return 1;
     } else if (meta.short_name == "-U") {
-      mode = Mode::Unified;
+      if (!set_mode(Mode::Unified)) return 2;
       auto value = std::get_if<int>(&occurrence.value);
       if (value && !set_context(*value, "-U", false)) return 1;
     } else if (meta.short_name == "-c" || meta.long_name == "--context") {
-      mode = Mode::Context;
+      if (!set_mode(Mode::Context)) return 2;
       auto value = std::get_if<int>(&occurrence.value);
       if (value && !set_context(*value, "--context", true)) return 1;
     } else if (meta.short_name == "-C") {
-      mode = Mode::Context;
+      if (!set_mode(Mode::Context)) return 2;
       auto value = std::get_if<int>(&occurrence.value);
       if (value && !set_context(*value, "-C", false)) return 1;
     } else if (meta.short_name == "-y" || meta.long_name == "--side-by-side") {
-      mode = Mode::SideBySide;
+      if (!set_mode(Mode::SideBySide)) return 2;
     } else if (meta.short_name == "-e" || meta.long_name == "--ed") {
-      mode = Mode::Ed;
+      if (!set_mode(Mode::Ed)) return 2;
     } else if (meta.short_name == "-f" || meta.long_name == "--forward-ed") {
-      mode = Mode::ForwardEd;
+      if (!set_mode(Mode::ForwardEd)) return 2;
     } else if (meta.short_name == "-n" || meta.long_name == "--rcs") {
-      mode = Mode::Rcs;
+      if (!set_mode(Mode::Rcs)) return 2;
     } else if (meta.long_name == "--normal") {
-      mode = Mode::Normal;
+      if (!set_mode(Mode::Normal)) return 2;
     }
+  }
+  // [GNU] -D/--ifdef is itself an output style, so it conflicts with
+  // any fixed style seen above (diff -Dfoo -c). The GFMT/LFMT family
+  // keeps its previous override behavior (not probed against GNU).
+  if (use_ifdef && style_seen) {
+    safeErrorPrint("diff: conflicting output style options\n");
+    safeErrorPrint("Try 'diff --help' for more information.\n");
+    return 2;
   }
   auto to_pipeline_mode = [](Mode m) -> OutputMode {
     switch (m) {

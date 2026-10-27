@@ -1129,22 +1129,38 @@ auto build_config(const CommandContext<GREP_OPTIONS.size()>& ctx,
     if (!value) continue;
 
     if (option_matches(meta, "-B", "--before-context")) {
+      if (*value < 0) {
+        return std::unexpected(std::to_string(*value) +
+                               ": invalid context length argument");
+      }
       cfg.context_requested = true;
       cfg.before_context = *value;
       continue;
     }
     if (option_matches(meta, "-A", "--after-context")) {
+      if (*value < 0) {
+        return std::unexpected(std::to_string(*value) +
+                               ": invalid context length argument");
+      }
       cfg.context_requested = true;
       cfg.after_context = *value;
       continue;
     }
     if (option_matches(meta, "-C", "--context")) {
+      if (*value < 0) {
+        return std::unexpected(std::to_string(*value) +
+                               ": invalid context length argument");
+      }
       cfg.context_requested = true;
       cfg.before_context = *value;
       cfg.after_context = *value;
       continue;
     }
     if (option_matches(meta, "-NUM", "")) {
+      if (*value < 0) {
+        return std::unexpected(std::to_string(*value) +
+                               ": invalid context length argument");
+      }
       cfg.context_requested = true;
       cfg.before_context = *value;
       cfg.after_context = *value;
