@@ -86,6 +86,40 @@ bool set_last_write_time(const std::filesystem::path& path, WORD year,
   return ok;
 }
 
+// Directory variant for access-time control: directories reject the
+// FILE_ATTRIBUTE_NORMAL open set_file_times uses, and only the access
+// time is set here (creation/write stay NULL). SetFileTime stamps the
+// change time to "now" as a side effect, which is what gives a
+// controlled atime-ctime gap for -used.
+bool set_directory_access_time(const std::filesystem::path& dir, WORD year,
+                               WORD month, WORD day, WORD hour, WORD minute,
+                               WORD second) {
+  HANDLE handle = CreateFileW(
+      dir.wstring().c_str(), FILE_WRITE_ATTRIBUTES,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+      OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+  if (handle == INVALID_HANDLE_VALUE) {
+    return false;
+  }
+
+  SYSTEMTIME local_st{};
+  local_st.wYear = year;
+  local_st.wMonth = month;
+  local_st.wDay = day;
+  local_st.wHour = hour;
+  local_st.wMinute = minute;
+  local_st.wSecond = second;
+
+  SYSTEMTIME utc_st{};
+  FILETIME access_time{};
+  const bool ok =
+      TzSpecificLocalTimeToSystemTime(nullptr, &local_st, &utc_st) != FALSE &&
+      SystemTimeToFileTime(&utc_st, &access_time) != FALSE &&
+      SetFileTime(handle, nullptr, &access_time, nullptr) != FALSE;
+  CloseHandle(handle);
+  return ok;
+}
+
 bool set_file_times(const std::filesystem::path& path, WORD creation_year,
                     WORD creation_month, WORD creation_day, WORD creation_hour,
                     WORD creation_minute, WORD creation_second,
@@ -837,6 +871,152 @@ TEST(find, issue_1311_used_measures_atime_minus_ctime_gap) {
   auto one_result = one.run();
   EXPECT_EQ(one_result.exit_code, 0);
   EXPECT_TRUE(one_result.stdout_text.find("wide.txt") == std::string::npos);
+}
+
+// [#1402] The -used family must judge every entry by timestamps sampled
+// BEFORE the traversal opens it for enumeration (GNU fts stats a
+// directory before opendir). A relatime-style mount raises a directory's
+// atime the first time its contents are read, so post-open sampling makes
+// winx include a directory whose real gap is negative or far outside the
+// window — the Wine-harness evidence behind the issue (a root operand
+// with atime-ctime = -5 ms still matched -used 1).
+//
+// NTFS keeps last-access updates off by default, so a local run cannot
+// always observe the bump itself; these pins hold the pre-open semantics
+// on any filesystem that does update atime (Wine CI), and hold the -used
+// window behavior for directory operands everywhere. Each run re-stamps
+// the fixture: a find traversal opens/enumerates the fixture and bumps
+// directory atimes on volumes where last-access updates are on, so runs
+// sharing a fixture would contaminate each other.
+
+TEST(find, issue1402_root_operand_negative_used_gap_excludes_directory) {
+  TempDir tmp;
+  tmp.write("f.txt", "x");
+  ASSERT_TRUE(std::filesystem::create_directory(tmp.path / L"inner"));
+
+  // Root operand: atime years before the change time the SetFileTime call
+  // stamps, i.e. the atime-ctime gap is clearly negative. GNU excludes a
+  // negative gap from every -used window (timespec-precise); truncated
+  // seconds would report gap 0 and wrongly match -used 1 — the exact
+  // shape of the #1402 evidence on `.`.
+  const auto stamp_fixture = [&tmp]() {
+    EXPECT_TRUE(set_directory_access_time(tmp.path, 2020, 1, 1, 0, 0, 0));
+    // Child directory and file with a future atime: gap years positive,
+    // so -used +100 matches them. The child exercises the pre-open
+    // capture for directories yielded by the recursive iterator.
+    EXPECT_TRUE(
+        set_directory_access_time(tmp.path / L"inner", 2030, 1, 1, 0, 0, 0));
+    EXPECT_TRUE(set_file_times(tmp.path / L"f.txt", 2026, 10, 26, 0, 0, 0,
+                               2030, 1, 1, 0, 0, 0, 2026, 10, 26, 0, 0, 0));
+  };
+
+  stamp_fixture();
+  Pipeline plus;
+  plus.set_cwd(tmp.wpath());
+  plus.add(L"find.exe", {L".", L"-used", L"+100", L"-print"});
+  auto plus_result = plus.run();
+  EXPECT_EQ(plus_result.exit_code, 0);
+  EXPECT_TRUE(plus_result.stdout_text.find("./inner") != std::string::npos);
+  EXPECT_TRUE(plus_result.stdout_text.find("./f.txt") != std::string::npos);
+  EXPECT_TRUE(plus_result.stdout_text.find(".\n") == std::string::npos);
+
+  // The negative-gap root stays out of the exact and negative windows too.
+  stamp_fixture();
+  Pipeline one;
+  one.set_cwd(tmp.wpath());
+  one.add(L"find.exe", {L".", L"-used", L"1", L"-print"});
+  auto one_result = one.run();
+  EXPECT_EQ(one_result.exit_code, 0);
+  EXPECT_TRUE(one_result.stdout_text.find(".\n") == std::string::npos);
+  EXPECT_TRUE(one_result.stdout_text.find("./inner") == std::string::npos);
+
+  stamp_fixture();
+  Pipeline minus;
+  minus.set_cwd(tmp.wpath());
+  minus.add(L"find.exe", {L".", L"-used", L"-1", L"-print"});
+  auto minus_result = minus.run();
+  EXPECT_EQ(minus_result.exit_code, 0);
+  EXPECT_TRUE(minus_result.stdout_text.find(".\n") == std::string::npos);
+}
+
+TEST(find, issue1402_depth_scan_samples_directory_times_before_enumeration) {
+  TempDir tmp;
+  tmp.write("d/f.txt", "x");
+
+  // -depth evaluates a directory after its whole subtree has been walked;
+  // #1402 requires its own -used verdict to come from the pre-open
+  // snapshot. On a filesystem that updates last-access, the old post-open
+  // sampling saw the bump the traversal itself caused and matched the
+  // directory against -used 1 even though its real gap is negative.
+  const auto stamp_fixture = [&tmp]() {
+    EXPECT_TRUE(set_directory_access_time(tmp.path, 2030, 1, 1, 0, 0, 0));
+    EXPECT_TRUE(
+        set_directory_access_time(tmp.path / L"d", 2020, 1, 1, 0, 0, 0));
+    EXPECT_TRUE(set_file_times(tmp.path / L"d/f.txt", 2026, 10, 26, 0, 0, 0,
+                               2020, 1, 1, 0, 0, 0, 2026, 10, 26, 0, 0, 0));
+  };
+
+  // Root gap years positive: -used +100 matches exactly the root line;
+  // d and f.txt are years negative and stay out under -depth order.
+  stamp_fixture();
+  Pipeline plus;
+  plus.set_cwd(tmp.wpath());
+  plus.add(L"find.exe", {L".", L"-depth", L"-used", L"+100", L"-print"});
+  auto plus_result = plus.run();
+  EXPECT_EQ(plus_result.exit_code, 0);
+  EXPECT_TRUE(plus_result.stdout_text.find(".\n") != std::string::npos);
+  EXPECT_TRUE(plus_result.stdout_text.find("./d\n") == std::string::npos);
+  EXPECT_TRUE(plus_result.stdout_text.find("./d/f.txt") == std::string::npos);
+
+  // -used 1 matches only gaps in [0, 1 day): nobody in this fixture
+  // qualifies, and in particular the directory must not be judged by the
+  // atime its own enumeration open raised (relatime/Wine would otherwise
+  // put the post-bump gap in this window).
+  stamp_fixture();
+  Pipeline one;
+  one.set_cwd(tmp.wpath());
+  one.add(L"find.exe", {L".", L"-depth", L"-used", L"1", L"-print"});
+  auto one_result = one.run();
+  EXPECT_EQ(one_result.exit_code, 0);
+  EXPECT_TRUE(one_result.stdout_text.find("./d\n") == std::string::npos);
+  EXPECT_TRUE(one_result.stdout_text.find("./d/f.txt") == std::string::npos);
+
+  // The default (non -depth) traversal must agree with the -depth verdict
+  // on the same fixture: the file set may not depend on the sampling
+  // order inside the traversal.
+  stamp_fixture();
+  Pipeline plain;
+  plain.set_cwd(tmp.wpath());
+  plain.add(L"find.exe", {L".", L"-used", L"+100", L"-print"});
+  auto plain_result = plain.run();
+  EXPECT_EQ(plain_result.exit_code, 0);
+  EXPECT_TRUE(plain_result.stdout_text.find(".\n") != std::string::npos);
+  EXPECT_TRUE(plain_result.stdout_text.find("./d\n") == std::string::npos);
+  EXPECT_TRUE(plain_result.stdout_text.find("./d/f.txt") == std::string::npos);
+}
+
+TEST(find, issue1402_expression_time_nodes_use_pre_open_times_for_directories) {
+  TempDir tmp;
+  tmp.write("d/f.txt", "x");
+
+  // The expression path must consume the same pre-open snapshot:
+  // `-name d -used +100` builds an expression tree whose Used node reads
+  // the entry's own timestamps. d's future atime gives a years-positive
+  // gap, so it matches; the untouched root line does not (-name d fails).
+  ASSERT_TRUE(
+      set_directory_access_time(tmp.path / L"d", 2030, 1, 1, 0, 0, 0));
+  ASSERT_TRUE(set_file_times(tmp.path / L"d/f.txt", 2026, 10, 26, 0, 0, 0,
+                             2020, 1, 1, 0, 0, 0, 2026, 10, 26, 0, 0, 0));
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe",
+        {L".", L"-depth", L"-name", L"d", L"-used", L"+100", L"-print"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("./d\n") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("f.txt") == std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find(".\n") == std::string::npos);
 }
 
 TEST(find, issue_1315_exec_spawn_failure_is_diagnosed_per_file) {

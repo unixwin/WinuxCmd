@@ -516,6 +516,62 @@ struct ExprNode {
   std::unique_ptr<ExprNode> right;
 };
 
+// [#1402] Bits naming the entry's own timestamps (FindFileTimeKind) that
+// the active predicates read. The traversal captures exactly these once,
+// before any open it performs on the entry, so -atime/-used-family
+// verdicts are judged on a stat taken in GNU's stat-before-opendir order.
+constexpr unsigned kSampleAccess = 1u << 0;
+constexpr unsigned kSampleBirth = 1u << 1;
+constexpr unsigned kSampleChange = 1u << 2;
+constexpr unsigned kSampleModify = 1u << 3;
+
+auto entry_time_sample_bit(FindFileTimeKind kind) -> unsigned {
+  switch (kind) {
+    case FindFileTimeKind::Access:
+      return kSampleAccess;
+    case FindFileTimeKind::Birth:
+      return kSampleBirth;
+    case FindFileTimeKind::Change:
+      return kSampleChange;
+    case FindFileTimeKind::Modify:
+      return kSampleModify;
+  }
+  return 0;
+}
+
+// Which timestamps an expression tree reads from the entry being judged:
+// the time-window family plus the -newerXY/-anewer/-cnewer comparisons
+// against the entry's own clock. Used to size the pre-open snapshot.
+auto expression_time_sample_mask(const ExprNode& expr) -> unsigned {
+  unsigned mask = 0;
+  switch (expr.kind) {
+    case ExprKind::ATime:
+    case ExprKind::AMin:
+      mask |= kSampleAccess;
+      break;
+    case ExprKind::CTime:
+    case ExprKind::CMin:
+    case ExprKind::CNewer:
+      mask |= kSampleChange;
+      break;
+    case ExprKind::MTime:
+    case ExprKind::MMin:
+      mask |= kSampleModify;
+      break;
+    case ExprKind::Used:
+      mask |= kSampleAccess | kSampleChange;
+      break;
+    case ExprKind::NewerXY:
+      mask |= entry_time_sample_bit(expr.time_kind);
+      break;
+    default:
+      break;
+  }
+  if (expr.left) mask |= expression_time_sample_mask(*expr.left);
+  if (expr.right) mask |= expression_time_sample_mask(*expr.right);
+  return mask;
+}
+
 struct ExecAction {
   bool prompt = false;
   bool aggregate = false;
@@ -569,6 +625,11 @@ struct Config {
   bool stay_on_filesystem = false;
   std::wstring xdev_volume_key;
   std::unique_ptr<ExprNode> expression;
+  // [#1402] Non-zero when any predicate reads the entry's own timestamps;
+  // the traversal then captures a pre-open EntryTimes snapshot per entry
+  // so time-family verdicts use GNU's stat-before-opendir order instead
+  // of times the traversal's own opens may have bumped.
+  unsigned time_sample_mask = 0;
 
   bool unsupported_used = false;
   bool had_error = false;
@@ -2511,6 +2572,30 @@ auto build_config(const CommandContext<FIND_OPTIONS.size()>& ctx)
     cfg.has_print = true;  // default action
   }
 
+  // [#1402] Which of the entry's own timestamps the active predicates
+  // read: the direct time filters contribute their kinds, an expression
+  // tree whatever its nodes read. When the mask is non-zero the traversal
+  // snapshots exactly those ticks before any open it performs on the
+  // entry, so -used/-atime-family verdicts use GNU's stat-before-opendir
+  // order instead of times the traversal's own opens may have bumped.
+  cfg.time_sample_mask = 0;
+  if (cfg.atime_filter || cfg.amin_filter) {
+    cfg.time_sample_mask |= entry_time_sample_bit(FindFileTimeKind::Access);
+  }
+  if (cfg.ctime_filter || cfg.cmin_filter) {
+    cfg.time_sample_mask |= entry_time_sample_bit(FindFileTimeKind::Change);
+  }
+  if (cfg.mtime_filter || cfg.mmin_filter) {
+    cfg.time_sample_mask |= entry_time_sample_bit(FindFileTimeKind::Modify);
+  }
+  if (cfg.used_filter) {
+    cfg.time_sample_mask |= entry_time_sample_bit(FindFileTimeKind::Access) |
+                            entry_time_sample_bit(FindFileTimeKind::Change);
+  }
+  if (cfg.expression) {
+    cfg.time_sample_mask |= expression_time_sample_mask(*cfg.expression);
+  }
+
   return cfg;
 }
 
@@ -2703,6 +2788,63 @@ auto age_reference_now_ticks(bool daystart) -> long long {
   return ticks ? *ticks : filetime_ticks(now_filetime);
 }
 
+// [#1402] GNU find's fts layer stats each starting point before it opens
+// the directory for enumeration, so a directory's own -atime/-used-family
+// verdicts never see the atime bump its own enumeration open causes (a
+// relatime-style mount raises the directory atime the first time its
+// contents are read, and Wine's directory emulation can raise it on the
+// open itself). Capturing the ticks the traversal may read — in one pass,
+// before that open — and feeding the cached values to every time-family
+// evaluation for the entry reproduces the GNU order.
+struct EntryTimes {
+  std::optional<long long> access;
+  std::optional<long long> change;
+  std::optional<long long> modify;
+  std::optional<long long> birth;
+};
+
+// Time source for the predicate helpers: the pre-open snapshot when one
+// was captured for this entry, otherwise a fresh probe (the previous
+// behavior, still used for entries judged outside the traversal).
+auto entry_time_ticks(const std::filesystem::path& p, FindFileTimeKind kind,
+                      const EntryTimes* pre_open)
+    -> std::optional<long long> {
+  if (pre_open) {
+    switch (kind) {
+      case FindFileTimeKind::Access:
+        return pre_open->access;
+      case FindFileTimeKind::Birth:
+        return pre_open->birth;
+      case FindFileTimeKind::Change:
+        return pre_open->change;
+      case FindFileTimeKind::Modify:
+        return pre_open->modify;
+    }
+    return std::nullopt;
+  }
+  return win32_file_time_ticks(p, kind);
+}
+
+// Snapshot only the timestamps the active predicates read (see
+// cfg.time_sample_mask); each kind costs one attribute-handle open.
+auto capture_pre_open_times(const std::filesystem::path& p, unsigned mask)
+    -> EntryTimes {
+  EntryTimes times;
+  if (mask & kSampleAccess) {
+    times.access = win32_file_time_ticks(p, FindFileTimeKind::Access);
+  }
+  if (mask & kSampleChange) {
+    times.change = win32_file_time_ticks(p, FindFileTimeKind::Change);
+  }
+  if (mask & kSampleModify) {
+    times.modify = win32_file_time_ticks(p, FindFileTimeKind::Modify);
+  }
+  if (mask & kSampleBirth) {
+    times.birth = win32_file_time_ticks(p, FindFileTimeKind::Birth);
+  }
+  return times;
+}
+
 // [#1311] GNU time predicates use two window families over the age in
 // whole seconds, with NO clamping of future timestamps (a negative age
 // simply falls wherever the window puts it):
@@ -2714,9 +2856,10 @@ auto age_reference_now_ticks(bool daystart) -> long long {
 // both families, not just for future files: e.g. a 61-second-old file
 // matches neither -mmin 1 nor -mmin 2 under the old model, but GNU
 // matches it with -mmin 2 only.
-auto file_age_seconds(const std::filesystem::path& p, FindFileTimeKind kind)
+auto file_age_seconds(const std::filesystem::path& p, FindFileTimeKind kind,
+                      const EntryTimes* pre_open = nullptr)
     -> std::optional<long long> {
-  auto ticks = win32_file_time_ticks(p, kind);
+  auto ticks = entry_time_ticks(p, kind, pre_open);
   if (!ticks) return std::nullopt;
   long long now_ticks = age_reference_now_ticks(false);
   return (now_ticks - *ticks) / 10000000LL;
@@ -2727,9 +2870,10 @@ auto file_age_seconds(const std::filesystem::path& p, FindFileTimeKind kind)
 // still counts as one day). Returns day_count * 86400 so callers keep
 // working in seconds.
 auto file_age_daystart_seconds(const std::filesystem::path& p,
-                               FindFileTimeKind kind)
+                               FindFileTimeKind kind,
+                               const EntryTimes* pre_open = nullptr)
     -> std::optional<long long> {
-  auto ticks = win32_file_time_ticks(p, kind);
+  auto ticks = entry_time_ticks(p, kind, pre_open);
   if (!ticks) return std::nullopt;
   FILETIME filetime{.dwLowDateTime = static_cast<DWORD>(*ticks & 0xFFFFFFFFLL),
                     .dwHighDateTime =
@@ -2757,10 +2901,11 @@ auto file_age_daystart_seconds(const std::filesystem::path& p,
 // file can carry atime a few hundred microseconds BEFORE ctime, and GNU
 // (timespec-precise) treats any negative gap as never-matching, while
 // truncating to seconds would falsely report gap 0 and match -used 1.
-auto used_gap_ticks(const std::filesystem::path& p)
+auto used_gap_ticks(const std::filesystem::path& p,
+                    const EntryTimes* pre_open = nullptr)
     -> std::optional<long long> {
-  auto access_ticks = win32_file_time_ticks(p, FindFileTimeKind::Access);
-  auto change_ticks = win32_file_time_ticks(p, FindFileTimeKind::Change);
+  auto access_ticks = entry_time_ticks(p, FindFileTimeKind::Access, pre_open);
+  auto change_ticks = entry_time_ticks(p, FindFileTimeKind::Change, pre_open);
   if (!access_ticks || !change_ticks) return std::nullopt;
   return *access_ticks - *change_ticks;
 }
@@ -2847,7 +2992,8 @@ auto format_ls_date(const std::filesystem::path& p) -> std::string {
 
 auto evaluate_expression(const ExprNode& expr, const std::filesystem::path& p,
                          const std::filesystem::directory_entry& e, int depth,
-                         const std::filesystem::path& root, Config& cfg)
+                         const std::filesystem::path& root, Config& cfg,
+                         const EntryTimes* pre_open_times = nullptr)
     -> bool {
   switch (expr.kind) {
     case ExprKind::Always:
@@ -2949,15 +3095,17 @@ auto evaluate_expression(const ExprNode& expr, const std::filesystem::path& p,
     case ExprKind::ATime: {
       if (!expr.time_pred) return false;
       auto age = cfg.daystart
-                     ? file_age_daystart_seconds(p, FindFileTimeKind::Access)
-                     : file_age_seconds(p, FindFileTimeKind::Access);
+                     ? file_age_daystart_seconds(p, FindFileTimeKind::Access,
+                                                 pre_open_times)
+                     : file_age_seconds(p, FindFileTimeKind::Access,
+                                        pre_open_times);
       return age &&
              time_matches(*expr.time_pred, *age, std::chrono::hours(24), true);
     }
 
     case ExprKind::AMin: {
       if (!expr.time_pred) return false;
-      auto age = file_age_seconds(p, FindFileTimeKind::Access);
+      auto age = file_age_seconds(p, FindFileTimeKind::Access, pre_open_times);
       return age &&
              time_matches(*expr.time_pred, *age, std::chrono::minutes(1),
                           false);
@@ -2966,15 +3114,17 @@ auto evaluate_expression(const ExprNode& expr, const std::filesystem::path& p,
     case ExprKind::CTime: {
       if (!expr.time_pred) return false;
       auto age = cfg.daystart
-                     ? file_age_daystart_seconds(p, FindFileTimeKind::Change)
-                     : file_age_seconds(p, FindFileTimeKind::Change);
+                     ? file_age_daystart_seconds(p, FindFileTimeKind::Change,
+                                                 pre_open_times)
+                     : file_age_seconds(p, FindFileTimeKind::Change,
+                                        pre_open_times);
       return age &&
              time_matches(*expr.time_pred, *age, std::chrono::hours(24), true);
     }
 
     case ExprKind::CMin: {
       if (!expr.time_pred) return false;
-      auto age = file_age_seconds(p, FindFileTimeKind::Change);
+      auto age = file_age_seconds(p, FindFileTimeKind::Change, pre_open_times);
       return age &&
              time_matches(*expr.time_pred, *age, std::chrono::minutes(1),
                           false);
@@ -2983,15 +3133,17 @@ auto evaluate_expression(const ExprNode& expr, const std::filesystem::path& p,
     case ExprKind::MTime: {
       if (!expr.time_pred) return false;
       auto age = cfg.daystart
-                     ? file_age_daystart_seconds(p, FindFileTimeKind::Modify)
-                     : file_age_seconds(p, FindFileTimeKind::Modify);
+                     ? file_age_daystart_seconds(p, FindFileTimeKind::Modify,
+                                                 pre_open_times)
+                     : file_age_seconds(p, FindFileTimeKind::Modify,
+                                        pre_open_times);
       return age &&
              time_matches(*expr.time_pred, *age, std::chrono::hours(24), true);
     }
 
     case ExprKind::MMin: {
       if (!expr.time_pred) return false;
-      auto age = file_age_seconds(p, FindFileTimeKind::Modify);
+      auto age = file_age_seconds(p, FindFileTimeKind::Modify, pre_open_times);
       return age &&
              time_matches(*expr.time_pred, *age, std::chrono::minutes(1),
                           false);
@@ -2999,7 +3151,7 @@ auto evaluate_expression(const ExprNode& expr, const std::filesystem::path& p,
 
     case ExprKind::Used: {
       if (!expr.time_pred) return false;
-      auto gap_ticks = used_gap_ticks(p);
+      auto gap_ticks = used_gap_ticks(p, pre_open_times);
       return gap_ticks && *gap_ticks >= 0 &&
              time_matches(*expr.time_pred, *gap_ticks / 10000000LL,
                           std::chrono::hours(24), false);
@@ -3014,16 +3166,17 @@ auto evaluate_expression(const ExprNode& expr, const std::filesystem::path& p,
 
     case ExprKind::NewerXY: {
       if (!expr.reference_ticks) return false;
-      auto ticks = win32_file_time_ticks(p, expr.time_kind);
+      auto ticks = entry_time_ticks(p, expr.time_kind, pre_open_times);
       return ticks && *ticks > *expr.reference_ticks;
     }
 
     case ExprKind::ANewer:
     case ExprKind::CNewer: {
       if (!expr.reference_ticks) return false;
-      auto ticks = win32_file_time_ticks(p, expr.kind == ExprKind::ANewer
+      auto ticks = entry_time_ticks(p, expr.kind == ExprKind::ANewer
                                                 ? FindFileTimeKind::Access
-                                                : FindFileTimeKind::Change);
+                                                : FindFileTimeKind::Change,
+                                    pre_open_times);
       return ticks && *ticks > *expr.reference_ticks;
     }
 
@@ -3115,22 +3268,29 @@ auto evaluate_expression(const ExprNode& expr, const std::filesystem::path& p,
 
     case ExprKind::Comma:
       if (!expr.left || !expr.right) return false;
-      (void)evaluate_expression(*expr.left, p, e, depth, root, cfg);
-      return evaluate_expression(*expr.right, p, e, depth, root, cfg);
+      (void)evaluate_expression(*expr.left, p, e, depth, root, cfg,
+                                pre_open_times);
+      return evaluate_expression(*expr.right, p, e, depth, root, cfg,
+                                 pre_open_times);
 
     case ExprKind::And:
       return expr.left && expr.right &&
-             evaluate_expression(*expr.left, p, e, depth, root, cfg) &&
-             evaluate_expression(*expr.right, p, e, depth, root, cfg);
+             evaluate_expression(*expr.left, p, e, depth, root, cfg,
+                                 pre_open_times) &&
+             evaluate_expression(*expr.right, p, e, depth, root, cfg,
+                                 pre_open_times);
 
     case ExprKind::Or:
       return expr.left && expr.right &&
-             (evaluate_expression(*expr.left, p, e, depth, root, cfg) ||
-              evaluate_expression(*expr.right, p, e, depth, root, cfg));
+             (evaluate_expression(*expr.left, p, e, depth, root, cfg,
+                                  pre_open_times) ||
+              evaluate_expression(*expr.right, p, e, depth, root, cfg,
+                                  pre_open_times));
 
     case ExprKind::Not:
       return expr.left &&
-             !evaluate_expression(*expr.left, p, e, depth, root, cfg);
+             !evaluate_expression(*expr.left, p, e, depth, root, cfg,
+                                  pre_open_times);
   }
 
   return false;
@@ -3138,12 +3298,14 @@ auto evaluate_expression(const ExprNode& expr, const std::filesystem::path& p,
 
 auto entry_matches(Config& cfg, const std::filesystem::path& p,
                    const std::filesystem::directory_entry& e, int depth,
-                   const std::filesystem::path& root) -> bool {
+                   const std::filesystem::path& root,
+                   const EntryTimes* pre_open_times) -> bool {
   cfg.prune_current = false;
   if (depth < cfg.mindepth || depth > cfg.maxdepth) return false;
 
   if (cfg.expression) {
-    return evaluate_expression(*cfg.expression, p, e, depth, root, cfg);
+    return evaluate_expression(*cfg.expression, p, e, depth, root, cfg,
+                               pre_open_times);
   }
 
   auto filename = path_to_utf8(p.filename());
@@ -3183,8 +3345,10 @@ auto entry_matches(Config& cfg, const std::filesystem::path& p,
 
   if (cfg.atime_filter) {
     auto age = cfg.daystart
-                   ? file_age_daystart_seconds(p, FindFileTimeKind::Access)
-                   : file_age_seconds(p, FindFileTimeKind::Access);
+                   ? file_age_daystart_seconds(p, FindFileTimeKind::Access,
+                                               pre_open_times)
+                   : file_age_seconds(p, FindFileTimeKind::Access,
+                                      pre_open_times);
     if (!age ||
         !time_matches(*cfg.atime_filter, *age, std::chrono::hours(24), true)) {
       return false;
@@ -3192,7 +3356,7 @@ auto entry_matches(Config& cfg, const std::filesystem::path& p,
   }
 
   if (cfg.amin_filter) {
-    auto age = file_age_seconds(p, FindFileTimeKind::Access);
+    auto age = file_age_seconds(p, FindFileTimeKind::Access, pre_open_times);
     if (!age ||
         !time_matches(*cfg.amin_filter, *age, std::chrono::minutes(1),
                       false)) {
@@ -3202,8 +3366,10 @@ auto entry_matches(Config& cfg, const std::filesystem::path& p,
 
   if (cfg.ctime_filter) {
     auto age = cfg.daystart
-                   ? file_age_daystart_seconds(p, FindFileTimeKind::Change)
-                   : file_age_seconds(p, FindFileTimeKind::Change);
+                   ? file_age_daystart_seconds(p, FindFileTimeKind::Change,
+                                               pre_open_times)
+                   : file_age_seconds(p, FindFileTimeKind::Change,
+                                      pre_open_times);
     if (!age ||
         !time_matches(*cfg.ctime_filter, *age, std::chrono::hours(24), true)) {
       return false;
@@ -3211,7 +3377,7 @@ auto entry_matches(Config& cfg, const std::filesystem::path& p,
   }
 
   if (cfg.cmin_filter) {
-    auto age = file_age_seconds(p, FindFileTimeKind::Change);
+    auto age = file_age_seconds(p, FindFileTimeKind::Change, pre_open_times);
     if (!age ||
         !time_matches(*cfg.cmin_filter, *age, std::chrono::minutes(1),
                       false)) {
@@ -3221,8 +3387,10 @@ auto entry_matches(Config& cfg, const std::filesystem::path& p,
 
   if (cfg.mtime_filter) {
     auto age = cfg.daystart
-                   ? file_age_daystart_seconds(p, FindFileTimeKind::Modify)
-                   : file_age_seconds(p, FindFileTimeKind::Modify);
+                   ? file_age_daystart_seconds(p, FindFileTimeKind::Modify,
+                                               pre_open_times)
+                   : file_age_seconds(p, FindFileTimeKind::Modify,
+                                      pre_open_times);
     if (!age ||
         !time_matches(*cfg.mtime_filter, *age, std::chrono::hours(24), true)) {
       return false;
@@ -3230,7 +3398,7 @@ auto entry_matches(Config& cfg, const std::filesystem::path& p,
   }
 
   if (cfg.mmin_filter) {
-    auto age = file_age_seconds(p, FindFileTimeKind::Modify);
+    auto age = file_age_seconds(p, FindFileTimeKind::Modify, pre_open_times);
     if (!age ||
         !time_matches(*cfg.mmin_filter, *age, std::chrono::minutes(1),
                       false)) {
@@ -3239,7 +3407,7 @@ auto entry_matches(Config& cfg, const std::filesystem::path& p,
   }
 
   if (cfg.used_filter) {
-    auto gap_ticks = used_gap_ticks(p);
+    auto gap_ticks = used_gap_ticks(p, pre_open_times);
     if (!gap_ticks || *gap_ticks < 0 ||
         !time_matches(*cfg.used_filter, *gap_ticks / 10000000LL,
                       std::chrono::hours(24), false)) {
@@ -4830,6 +4998,18 @@ auto scan_depth_first(const std::filesystem::path& root,
     return;
   }
 
+  // [#1402] Sample this entry's own timestamps before any open this call
+  // performs on it — the loop-detection identity probe under -L, and above
+  // all the directory enumeration below. GNU's fts stats a directory
+  // before opendir: a relatime-style mount raises the directory atime
+  // when its contents are first read, so judging the directory by a
+  // post-open stat would match on the bump the traversal itself caused.
+  std::optional<EntryTimes> pre_open_times;
+  if (cfg.time_sample_mask != 0) {
+    pre_open_times = capture_pre_open_times(p, cfg.time_sample_mask);
+  }
+  const EntryTimes* self_times = pre_open_times ? &*pre_open_times : nullptr;
+
   // [#1378] Loop detection applies to directories this call would
   // descend into while following symlinks; the root itself (depth 0)
   // starts a fresh ancestor chain.
@@ -4884,7 +5064,7 @@ auto scan_depth_first(const std::filesystem::path& root,
 
   if (cfg.quit) return;
 
-  bool matched = entry_matches(cfg, p, entry, depth, root);
+  bool matched = entry_matches(cfg, p, entry, depth, root, self_times);
   if (cfg.quit && !matched) return;
   if (matched) {
     apply_actions(p, entry, cfg);
@@ -4909,6 +5089,15 @@ auto scan_delete_depth_first(const std::filesystem::path& root,
     cfg.had_error = true;
     return;
   }
+
+  // [#1402] Same pre-open sampling as scan_depth_first: -delete implies
+  // -depth, so the directory's own verdict is evaluated after its whole
+  // subtree has been walked and must not observe the traversal's opens.
+  std::optional<EntryTimes> pre_open_times;
+  if (cfg.time_sample_mask != 0) {
+    pre_open_times = capture_pre_open_times(p, cfg.time_sample_mask);
+  }
+  const EntryTimes* self_times = pre_open_times ? &*pre_open_times : nullptr;
 
   // [#1378] Same loop detection as scan_depth_first.
   std::optional<FileIdentity> self_identity;
@@ -4963,7 +5152,7 @@ auto scan_delete_depth_first(const std::filesystem::path& root,
 
   if (cfg.quit) return;
 
-  bool matched = entry_matches(cfg, p, entry, depth, root);
+  bool matched = entry_matches(cfg, p, entry, depth, root, self_times);
   if (cfg.quit && !matched) return;
   if (matched) {
     apply_actions(p, entry, cfg);
@@ -4984,7 +5173,16 @@ auto scan_one_root(const std::filesystem::path& root, Config& cfg,
   std::filesystem::directory_entry root_entry(io_root, ec);
   if (!ec) {
     int d = 0;
-    bool matched = entry_matches(cfg, root, root_entry, d, root);
+    // [#1402] The recursive iterator below is the traversal's first
+    // enumeration open of the starting point; snapshot the root's own
+    // timestamps now so its -atime/-used-family verdict is judged on the
+    // pre-open stat, like GNU's fts stat-before-opendir.
+    std::optional<EntryTimes> pre_open_times;
+    if (cfg.time_sample_mask != 0) {
+      pre_open_times = capture_pre_open_times(root, cfg.time_sample_mask);
+    }
+    const EntryTimes* root_times = pre_open_times ? &*pre_open_times : nullptr;
+    bool matched = entry_matches(cfg, root, root_entry, d, root, root_times);
     if (cfg.quit && !matched) return;
     if (matched) {
       apply_actions(root, root_entry, cfg);
@@ -5065,7 +5263,16 @@ auto scan_one_root(const std::filesystem::path& root, Config& cfg,
         }
       }
       if (!looped) {
-        bool matched = entry_matches(cfg, p, de, d, root);
+        // [#1402] Capture before entry_matches: -empty enumerates this
+        // directory inside the predicate set, and the descent below opens
+        // it again; the time family must be judged on pre-open ticks.
+        std::optional<EntryTimes> pre_open_times;
+        if (cfg.time_sample_mask != 0) {
+          pre_open_times = capture_pre_open_times(p, cfg.time_sample_mask);
+        }
+        const EntryTimes* self_times =
+            pre_open_times ? &*pre_open_times : nullptr;
+        bool matched = entry_matches(cfg, p, de, d, root, self_times);
         if (cfg.quit && !matched) return;
         if (matched) {
           apply_actions(p, de, cfg);
