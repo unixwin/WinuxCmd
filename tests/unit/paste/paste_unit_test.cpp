@@ -208,3 +208,19 @@ TEST(paste, paste_preserves_cr_from_crlf_records_issue1204) {
   // per-file newline is re-added, so the bytes are name\r\tfield\r\n.
   EXPECT_EQ(r.stdout_text, std::string("a\r\t1\r\nb\r\t2\r\n", 12));
 }
+
+// #1306 guard: commands that genuinely take a short attached value
+// keep it: paste -d, still uses "," as the delimiter list.
+TEST(paste, paste_delimiter_attached_value_still_works) {
+  TempDir tmp;
+  tmp.write("a.txt", "a\nb\n");
+  tmp.write("b.txt", "1\n2\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"paste.exe", {L"-d,", L"a.txt", L"b.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "a,1\nb,2\n");
+}

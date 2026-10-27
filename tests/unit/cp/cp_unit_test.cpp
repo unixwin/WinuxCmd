@@ -1066,3 +1066,18 @@ TEST(cp, cp_same_file_mixed_dialects_reports_error) {
   EXPECT_TRUE(r.stderr_text.find("same file") != std::string::npos);
   EXPECT_EQ(tmp.read("f.txt"), "payload");
 }
+
+// #1303: --ver is --suffix's value, not an ambiguous abbreviation:
+// the copy succeeds instead of reporting ambiguity.
+TEST(cp, cp_suffix_value_that_looks_like_abbreviation_is_not_expanded) {
+  TempDir tmp;
+  tmp.write("a.txt", "payload");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"--suffix", L"--ver", L"a.txt", L"b.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(tmp.read("b.txt"), "payload");
+}
