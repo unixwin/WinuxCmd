@@ -34,6 +34,18 @@
 
 module;
 
+// Pre-include a C++ header so c++config.h's std declarations (e.g.
+// std::__is_constant_evaluated) are first seen with C++ linkage: pch.h's
+// windows.h chain (winnt.h -> x86intrin -> mm_malloc -> stdlib.h -> cstdlib)
+// would otherwise declare them inside winnt.h's extern "C" region, which
+// conflicts with the same declarations imported from module std (#1412).
+// The <filesystem> include below sits after pch.h, too late to serve this
+// role, so the guard is needed here as in the other pch-first fragments.
+#include <cstddef>
+// os_defines.h (via cstddef) defines NOMINMAX as 1; drop it so pch.h's own
+// bare definition below applies exactly as before, without a warning.
+#undef NOMINMAX
+
 // clang-format off: pch.h must include winsock2.h before Windows headers.
 #include "pch/pch.h"
 #include <filesystem>

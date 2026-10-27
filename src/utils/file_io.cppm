@@ -5,6 +5,19 @@
 /// @Copyright: Copyright © 2026 WinuxCmd
 module;
 
+// Pre-include a C++ header so c++config.h's std declarations (e.g.
+// std::__is_constant_evaluated) are first seen with C++ linkage: pch.h's
+// windows.h chain (winnt.h -> x86intrin -> mm_malloc -> stdlib.h -> cstdlib)
+// would otherwise declare them inside winnt.h's extern "C" region, which
+// conflicts with the same declarations imported from module std (#1412).
+#include <cstddef>
+// _fdopen (used below) comes from <stdio.h>; MSVC's header chain leaks it
+// into this TU, GCC's does not.
+#include <stdio.h>
+// os_defines.h (via cstddef) defines NOMINMAX as 1; drop it so pch.h's own
+// bare definition below applies exactly as before, without a warning.
+#undef NOMINMAX
+
 #include "pch/pch.h"
 export module utils:file_io;
 
@@ -70,6 +83,9 @@ auto read_handle_to_string(HANDLE file, std::string_view path)
 }
 }  // namespace
 
+// NOTE: no `export` on the declarations inside this block — an export
+// namespace already exports them, and a second `export` is ill-formed
+// under GCC (the #1401 defect shape; cf. version.cppm).
 export namespace file_io {
 
 // A trailing separator makes the operand require a directory target
@@ -115,7 +131,7 @@ auto failed_ofstream(int error) -> std::ofstream {
 // WinuxCmd readers/writers get POSIX open() blocking semantics:
 // opening for read blocks in ConnectNamedPipe until a writer arrives,
 // opening for write waits until a reader creates the endpoint.
-export auto open_fifo_read_handle(std::wstring_view path) -> HANDLE {
+auto open_fifo_read_handle(std::wstring_view path) -> HANDLE {
   const std::wstring pipe_name = native_path::winux_fifo_pipe_name_w(path);
   HANDLE pipe = CreateNamedPipeW(
       pipe_name.c_str(), PIPE_ACCESS_INBOUND,
@@ -130,7 +146,7 @@ export auto open_fifo_read_handle(std::wstring_view path) -> HANDLE {
   return pipe;
 }
 
-export auto open_fifo_write_handle(std::wstring_view path) -> HANDLE {
+auto open_fifo_write_handle(std::wstring_view path) -> HANDLE {
   const std::wstring pipe_name = native_path::winux_fifo_pipe_name_w(path);
   for (;;) {
     HANDLE pipe = CreateFileW(pipe_name.c_str(), GENERIC_WRITE, 0, nullptr,
@@ -189,7 +205,7 @@ auto open_fifo_write_stream(std::wstring_view path) -> std::ofstream {
   return std::ofstream(file);
 }
 
-export auto open_binary_file(std::string_view filename) -> std::ifstream {
+auto open_binary_file(std::string_view filename) -> std::ifstream {
   // /dev/stdin-family operands bind to the real fd 0 so piped input works
   // exactly like GNU (and a closed stdin reports failure, #1056/#973).
   if (native_path::pseudo_device_std_fd(filename) == std::optional<int>(0)) {
@@ -214,7 +230,7 @@ export auto open_binary_file(std::string_view filename) -> std::ifstream {
                        std::ios::binary);
 }
 
-export auto create_binary_file(std::string_view filename, bool append = false)
+auto create_binary_file(std::string_view filename, bool append = false)
     -> std::ofstream {
   // /dev/stdout- and /dev/stderr-family operands bind to the real fd so
   // output follows redirections like GNU instead of going to the console
@@ -244,7 +260,7 @@ export auto create_binary_file(std::string_view filename, bool append = false)
 // CRT reports EBADF on the first read while std::cin would silently yield
 // EOF. _lseek probes fd validity without disturbing pipes (ESPIPE) or
 // regular files (no-op).
-export auto stdin_is_bad() -> bool {
+auto stdin_is_bad() -> bool {
   errno = 0;
   return _lseek(0, 0, SEEK_CUR) == -1 && errno == EBADF;
 }
@@ -255,7 +271,7 @@ export auto stdin_is_bad() -> bool {
 // same bytes via a file operand come through intact. Commands that read
 // stdin themselves call this before their first read (the idiom cat/wc/tr
 // and the checksum family already use) so the pipe and operand forms agree.
-export auto set_stdin_binary() -> void {
+auto set_stdin_binary() -> void {
 #ifdef _WIN32
   _setmode(_fileno(stdin), _O_BINARY);
 #endif

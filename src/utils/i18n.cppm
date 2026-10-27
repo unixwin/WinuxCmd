@@ -1,5 +1,18 @@
 module;
 
+// Pre-include a C++ header so c++config.h's std declarations (e.g.
+// std::__is_constant_evaluated) are first seen with C++ linkage: the
+// windows.h chain (winnt.h -> x86intrin -> mm_malloc -> stdlib.h -> cstdlib)
+// would otherwise declare them inside winnt.h's extern "C" region, which
+// conflicts with the same declarations imported from module std (#1412).
+#include <cstddef>
+// This TU also uses a bare uint64_t (legacy_key below) that previously
+// leaked in from MSVC's header chain; GCC declares it via <cstdint>.
+#include <cstdint>
+// os_defines.h (via cstddef) defines NOMINMAX as 1; drop it so the bare
+// NOMINMAX definition used below applies exactly as before, without a warning.
+#undef NOMINMAX
+
 #include <windows.h>
 
 export module utils:i18n;

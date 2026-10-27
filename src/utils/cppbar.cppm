@@ -27,7 +27,11 @@ namespace cppbar {
 // Terminal Functions (Windows only)
 // ======================================================
 
-namespace terminal {
+// Exported at the namespace: the trailing `export using` block below can
+// only name entities with external linkage, and declarations in a named
+// module's purview have module linkage until exported (the #1401 defect
+// shape — MSVC accepts the using-only form, GCC rejects it).
+export namespace terminal {
 
 enum class Platform { Windows, Linux, MacOS, Unknown };
 
@@ -214,7 +218,7 @@ inline void disable_alternate_screen() {
 
 namespace color {
 
-struct RGB {
+export struct RGB {
   uint8_t r;
   uint8_t g;
   uint8_t b;
@@ -402,7 +406,7 @@ export class Color {
   static constexpr RGB bright_white_c() { return RGB(255, 255, 255); }
 };
 
-inline std::string apply_color(const std::string& text,
+export inline std::string apply_color(const std::string& text,
                                const Color& fg = Color(),
                                const Color& bg = Color()) {
   std::string result;
@@ -413,7 +417,7 @@ inline std::string apply_color(const std::string& text,
   return result;
 }
 
-inline std::string reset_color() { return "\033[0m"; }
+export inline std::string reset_color() { return "\033[0m"; }
 
 }  // namespace color
 
@@ -423,7 +427,7 @@ inline std::string reset_color() { return "\033[0m"; }
 
 namespace style {
 
-struct StyleConfig {
+export struct StyleConfig {
   std::string left_bracket;
   std::string right_bracket;
   std::string filled_char;
@@ -440,7 +444,7 @@ struct StyleConfig {
         tip_char(tc) {}
 };
 
-class Style {
+export class Style {
  public:
   enum class Type { Unicode, Ascii, Braille };
 
