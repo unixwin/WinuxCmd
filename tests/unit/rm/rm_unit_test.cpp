@@ -676,14 +676,9 @@ TEST(rm, rm_long_verbose_reports_removed_file_issue1298) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  // GNU names the item kind and prints no "(y/n)" suffix (#1327).
-  EXPECT_NE(r.stderr_text.find("remove regular empty file 'empty.txt'?"),
-            std::string::npos);
-  EXPECT_NE(r.stderr_text.find("remove regular file 'full.txt'?"),
-            std::string::npos);
-  EXPECT_EQ(r.stderr_text.find("(y/n)"), std::string::npos);
-  EXPECT_TRUE(std::filesystem::exists(tmp.path / "empty.txt"));
-  EXPECT_TRUE(std::filesystem::exists(tmp.path / "full.txt"));
+  EXPECT_EQ_TEXT(r.stdout_text, "removed 'f.txt'\n");
+  EXPECT_TRUE(r.stderr_text.empty());
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "f.txt"));
 }
 
 TEST(rm, rm_interactive_1327_missing_operand_no_prompt) {
@@ -695,9 +690,11 @@ TEST(rm, rm_interactive_1327_missing_operand_no_prompt) {
 
   auto r = p.run();
 
-  // The existence check precedes any prompt (#1327).
+  // The existence check precedes any prompt (#1327).  The cannot-remove
+  // diagnostic itself says "remove", so key on the prompt's trailing
+  // "'? " instead of the bare word.
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_EQ(r.stderr_text.find("remove"), std::string::npos);
+  EXPECT_EQ(r.stderr_text.find("'? "), std::string::npos);
   EXPECT_NE(r.stderr_text.find("No such file or directory"),
             std::string::npos);
 }
@@ -758,7 +755,4 @@ TEST(rm, rm_verbose_1328_recursive_paths) {
   // throughout (no extended \\?\ prefixes) (#1328).
   EXPECT_EQ(r.stdout_text, "removed 'd/f'\nremoved directory 'd'\n");
   EXPECT_FALSE(std::filesystem::exists(tmp.path / "d"));
-  EXPECT_EQ_TEXT(r.stdout_text, "removed 'f.txt'\n");
-  EXPECT_TRUE(r.stderr_text.empty());
-  EXPECT_FALSE(std::filesystem::exists(tmp.path / "f.txt"));
 }

@@ -235,7 +235,9 @@ auto format_mode_verbose(unsigned int mode, bool is_dir) -> std::string {
     perms[i + 1] = (mode & (0400u >> i)) ? rwx[i] : '-';
   }
   perms[10] = '\0';
-  return std::string(oct) + " (" + perms + ")";
+  // GNU prints the 9 permission chars only, dropping the type bit
+  // (coreutils chmod.c: &perms[1] after strmode).
+  return std::string(oct) + " (" + (perms + 1) + ")";
 }
 
 /**
