@@ -1,0 +1,135 @@
+name: FFI Prototype (winuxcore.dll)
+
+# Dedicated Windows MSVC build for the FFI prototype branch surface:
+# winuxcore.dll (ABI v2) + ffi-harness + demo doubles, with the staged
+# versioned layout uploaded as a traceable artifact (path + SHA-256 in
+# the run summary). The main build-winuxcmd.yml workflow remains the
+# whole-tree regression gate and is untouched.
+on:
+  pull_request:
+    branches: ["main", "master"]
+    paths:
+      - "src/ffi/**"
+      - "examples/ffi-harness/**"
+      - "CMakeLists.txt"
+      - "CMakePresets.json"
+      - ".github/workflows/ffi-prototype.yml"
+  push:
+    branches: ["feat/ffi-prototype"]
+    paths:
+      - "src/ffi/**"
+      - "examples/ffi-harness/**"
+      - "CMakeLists.txt"
+      - "CMakePresets.json"
+      - ".github/workflows/ffi-prototype.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-ffi-windows:
+    runs-on: windows-2025
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Locate Visual Studio toolchain
+        id: locate_vcvars
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) {
+            throw "vswhere.exe not found at $vswhere"
+          }
+          $vcvarsPath = & $vswhere `
+            -latest `
+            -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -find "VC\Auxiliary\Build\vcvarsall.bat" |
+            Select-Object -First 1
+          if ([string]::IsNullOrWhiteSpace($vcvarsPath)) {
+            throw "Failed to locate vcvarsall.bat via vswhere"
+          }
+          "vcvars_path=$vcvarsPath" >> $env:GITHUB_OUTPUT
+
+      - name: Configure CMake (FFI prototype)
+        shell: cmd
+        run: |
+          call "${{ steps.locate_vcvars.outputs.vcvars_path }}" x64
+          cmake -B build-ffi-proto ^
+            -G "Ninja" ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DBUILD_MODE=RELEASE ^
+            -DUSE_STATIC_CRT=ON ^
+            -DENABLE_TESTS=OFF ^
+            -DBUILD_FFI=ON ^
+            -DBUILD_FFI_HARNESS_DEMO=ON
+
+      - name: Build winuxcore.dll + harness + doubles
+        shell: cmd
+        run: |
+          call "${{ steps.locate_vcvars.outputs.vcvars_path }}" x64
+          cmake --build build-ffi-proto --target winuxcmd_ffi ffi-harness winuxcore_demo winuxcmd_demo winuxcmd
+
+      - name: Smoke matrix (real DLL vs real winuxcmd.exe)
+        shell: pwsh
+        run: |
+          $dll = Get-ChildItem -Path build-ffi-proto -Recurse -Filter winuxcore.dll |
+            Where-Object { $_.FullName -match "ffi-layout" } | Select-Object -First 1
+          if (-not $dll) { throw "staged winuxcore.dll not found" }
+          $tiers = Join-Path $dll.DirectoryName "tiers.tsv"
+          $harness = Get-ChildItem -Path build-ffi-proto -Recurse -Filter ffi-harness.exe | Select-Object -First 1
+          $exe = Get-ChildItem -Path build-ffi-proto -Recurse -Filter winuxcmd.exe | Select-Object -First 1
+          & examples/ffi-harness/smoke.ps1 `
+            -HarnessExe $harness.FullName `
+            -DllPath $dll.FullName `
+            -SpawnExe $exe.FullName `
+            -TiersPath $tiers `
+            -WorkDir (Join-Path $PWD "smoke-real") `
+            -VersionLabel $dll.Directory.Name
+
+      - name: Smoke matrix (demo doubles)
+        shell: pwsh
+        run: |
+          $dll = Get-ChildItem -Path build-ffi-proto -Recurse -Filter winuxcore.dll |
+            Where-Object { $_.FullName -notmatch "ffi-layout" } | Select-Object -First 1
+          $harness = Get-ChildItem -Path build-ffi-proto -Recurse -Filter ffi-harness.exe | Select-Object -First 1
+          $exe = Get-ChildItem -Path build-ffi-proto -Recurse -Filter winuxcmd-demo.exe | Select-Object -First 1
+          $tiers = Get-ChildItem -Path build-ffi-proto -Recurse -Filter tiers.tsv | Select-Object -First 1
+          & examples/ffi-harness/smoke.ps1 `
+            -HarnessExe $harness.FullName `
+            -DllPath $dll.FullName `
+            -SpawnExe $exe.FullName `
+            -TiersPath $tiers.FullName `
+            -WorkDir (Join-Path $PWD "smoke-demo") `
+            -VersionLabel "v0.0.0-demo"
+
+      - name: Record artifact provenance
+        shell: pwsh
+        run: |
+          $dll = Get-ChildItem -Path build-ffi-proto -Recurse -Filter winuxcore.dll |
+            Where-Object { $_.FullName -match "ffi-layout" } | Select-Object -First 1
+          $hash = (Get-FileHash $dll.FullName -Algorithm SHA256).Hash.ToLower()
+          $ver = (Get-Content PROJECT_VERSION -Raw).Trim()
+          @"
+          ## winuxcore.dll artifact provenance
+          | field | value |
+          |---|---|
+          | staged path (in artifact) | ``ffi-layout/usr/bin/ffi/v$ver/winuxcore.dll`` |
+          | SHA-256 | ``$hash`` |
+          | toolchain | windows-2025 runner, MSVC via vcvarsall x64, Ninja, Release, USE_STATIC_CRT=ON |
+          | baseline commit | ``${{ github.sha }}`` |
+          | winuxcmd version | ``$ver`` |
+          "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          Write-Host "winuxcore.dll sha256=$hash"
+
+      - name: Upload FFI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: winuxcore-ffi-prototype-${{ github.sha }}
+          path: |
+            build-ffi-proto/ffi-layout/**
+            build-ffi-proto/**/ffi-harness.exe
+          if-no-files-found: error

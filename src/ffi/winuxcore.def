@@ -1,0 +1,9 @@
+; winuxcore.dll — explicit export list for the FFI ABI v2 surface.
+; Exports are defined ONLY here (no --export-all-symbols, no dllexport
+; wildcarding) so the DLL's public surface stays exactly the three entry
+; points of src/ffi/winux_ffi.h.
+LIBRARY winuxcore
+EXPORTS
+    winux_ffi_abi_version
+    winux_ffi_init
+    winux_ffi_call
