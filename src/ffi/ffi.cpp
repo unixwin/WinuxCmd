@@ -33,9 +33,18 @@
  *     under the FFI lock for the call and restored afterwards;
  *   - calls are serialized by one process-level mutex (the borrow above
  *     mutates process-global state; see DESIGN §5);
+ *   - the invocation argv is borrowed into the CRT globals __argc/__wargv
+ *     for the call (see ArgvBorrow below);
  *   - every entry point is wrapped so no C++ exception crosses the DLL
  *     boundary (the dispatch chain is noexcept; an escaping exception
  *     would otherwise std::terminate the host).
+ *
+ * This translation unit is compiled /EHa (see CMakeLists.txt): the
+ * borrow/lock guards below are RAII objects in winux_ffi_call's frame,
+ * and an SEH fault raised inside dispatch must unwind THROUGH them so
+ * their destructors run. Under /EHsc such an unwind skips the
+ * destructors, which once left g_ffi_lock locked for the life of the
+ * process (every later call failing "resource deadlock would occur").
  */
 
 #include "winux_ffi.h"
@@ -44,6 +53,7 @@
 
 #include <fcntl.h>
 #include <io.h>
+#include <stdlib.h>
 
 import std;
 import core;
@@ -202,6 +212,49 @@ struct StdBorrow {
   }
 };
 
+// --- argv borrowing ----------------------------------------------------------
+// One in-tree consumer (rm) reads the invocation arguments through the CRT
+// globals __argc/__wargv. In the exe form those globals ARE the applet's own
+// arguments, so the read is sound there. In this DLL they are not: the
+// DLL's own CRT instance never ran an exe startup for the applet, so the
+// globals hold whatever the host process's CRT produced — observed in the
+// field as __argc >= 2 with __wargv == NULL, which made rm's scan read
+// __wargv[1] at address 0x8 and take an access violation before doing any
+// work. Borrow the ctx argv into the globals for the call instead:
+// __wargv[0] is the applet name (consumers scan from index 1, exactly like
+// the exe form) and ctx.argv follows verbatim. The narrow __argv is
+// deliberately not synthesized: no consumer in the tree reads it, and the
+// ctx carries wide strings only.
+struct ArgvBorrow {
+  std::vector<wchar_t *> slots;
+  int saved_argc = 0;
+  wchar_t **saved_wargv = nullptr;
+  bool active = false;
+
+  void apply(const winux_ffi_context *ctx) {
+    saved_argc = __argc;
+    saved_wargv = __wargv;
+    slots.reserve(static_cast<size_t>(ctx->argc) + 2);
+    slots.push_back(const_cast<wchar_t *>(ctx->applet));
+    for (int32_t i = 0; i < ctx->argc; ++i) {
+      // A NULL entry borrows as an empty string: consumers dereference
+      // every slot while scanning.
+      slots.push_back(ctx->argv[i] ? const_cast<wchar_t *>(ctx->argv[i])
+                                   : const_cast<wchar_t *>(L""));
+    }
+    slots.push_back(nullptr);
+    __argc = ctx->argc + 1;
+    __wargv = slots.data();
+    active = true;
+  }
+
+  ~ArgvBorrow() {
+    if (!active) return;
+    __argc = saved_argc;
+    __wargv = saved_wargv;
+  }
+};
+
 // Effective locale stamp from the live environment, mirroring the i18n
 // selector precedence (WINUX_LANG, then LC_ALL, then LC_MESSAGES, then LANG).
 std::wstring live_locale_stamp() {
@@ -294,9 +347,11 @@ int winux_ffi_call(const winux_ffi_context *ctx) {
     CwdBorrow cwd_borrow;
     EnvBorrow env_borrow;
     StdBorrow std_borrow;
+    ArgvBorrow argv_borrow;
     cwd_borrow.apply(ctx->cwd);
     env_borrow.apply(ctx->env_block);
     std_borrow.apply(ctx);
+    argv_borrow.apply(ctx);
 
     // Locale stamp tracking (DESIGN §1.4): the spawn form re-reads the
     // catalog per process; the in-process form must at least notice a
