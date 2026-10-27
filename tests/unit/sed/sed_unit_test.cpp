@@ -1940,3 +1940,123 @@ TEST(sed, issue_1284_suppressed_empty_match_is_not_counted) {
   EXPECT_EQ(rb.exit_code, 0);
   EXPECT_EQ_TEXT(rb.stdout_text, "XaXaX\nXaXaX\nXaX\nXaXaXaX\n");
 }
+
+namespace {
+
+// #1332/#1333: fixture helpers for names TempDir cannot express.
+// TempDir::write/read route through GetFullPathNameW, which strips a
+// trailing dot/space from the final component — exactly the fixture shape
+// under test — so trailing-dot/space fixtures are built and read through a
+// lexically assembled \\?\ path instead (no GetFullPathNameW involved).
+auto preserving_path(const TempDir& tmp, const std::string& rel)
+    -> std::wstring {
+  std::wstring out = L"\\\\?\\" + tmp.wpath();
+  if (!out.empty() && out.back() != L'\\') out.push_back(L'\\');
+  for (char ch : rel) {
+    out.push_back(static_cast<wchar_t>(static_cast<unsigned char>(ch)));
+  }
+  return out;
+}
+
+void write_preserving(const TempDir& tmp, const std::string& rel,
+                      const std::string& content) {
+  const std::wstring path = preserving_path(tmp, rel);
+  HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr,
+                            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  ASSERT_TRUE(file != INVALID_HANDLE_VALUE);
+  DWORD written = 0;
+  if (!content.empty()) {
+    WriteFile(file, content.data(), static_cast<DWORD>(content.size()),
+              &written, nullptr);
+  }
+  CloseHandle(file);
+}
+
+auto read_preserving(const TempDir& tmp, const std::string& rel)
+    -> std::string {
+  const std::wstring path = preserving_path(tmp, rel);
+  HANDLE file = CreateFileW(path.c_str(), GENERIC_READ,
+                            FILE_SHARE_READ | FILE_SHARE_WRITE |
+                                FILE_SHARE_DELETE,
+                            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+                            nullptr);
+  if (file == INVALID_HANDLE_VALUE) return {};
+  std::string out;
+  char buffer[4096];
+  DWORD read = 0;
+  while (ReadFile(file, buffer, sizeof(buffer), &read, nullptr) && read > 0) {
+    out.append(buffer, read);
+  }
+  CloseHandle(file);
+  return out;
+}
+
+}  // namespace
+
+TEST(sed, trailing_dot_read_issue1332) {
+  TempDir tmp;
+  tmp.write("name", "BBB\n");
+  write_preserving(tmp, "name.", "AAA\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sed.exe", {L"-n", L"p", L"name."});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "AAA\n");
+}
+
+TEST(sed, trailing_space_read_issue1332) {
+  TempDir tmp;
+  tmp.write("name", "BBB\n");
+  write_preserving(tmp, "name ", "SSS\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sed.exe", {L"-n", L"p", L"name "});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "SSS\n");
+}
+
+TEST(sed, trailing_dot_inplace_edits_dot_file_only_issue1332) {
+  TempDir tmp;
+  tmp.write("name", "lineB\n");
+  write_preserving(tmp, "name.", "lineC\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sed.exe", {L"-i", L"s/line/EDIT/", L"name."});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(tmp.read("name"), "lineB\n");
+  EXPECT_EQ_TEXT(read_preserving(tmp, "name."), "EDITC\n");
+}
+
+TEST(sed, nul_txt_reads_file_issue1333) {
+  TempDir tmp;
+  tmp.write("NUL.txt", "real-content\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sed.exe", {L"-n", L"p", L"NUL.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "real-content\n");
+}
+
+TEST(sed, bare_nul_still_device_issue1333) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sed.exe", {L"-n", L"p", L"NUL"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "");
+}

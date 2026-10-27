@@ -1889,6 +1889,99 @@ TEST(grep, issue_1283_drive_colon_operand_searches_carrier_file) {
   EXPECT_NE(r.stdout_text.find("hello"), std::string::npos);
 }
 
+namespace {
+
+// #1332: same fixture note as the sed tests — TempDir::write routes
+// through GetFullPathNameW, which strips a trailing dot/space from the
+// final component, so trailing-dot/space fixtures are built through a
+// lexically assembled \\?\ path instead.
+auto preserving_path_1332(const TempDir& tmp, const std::string& rel)
+    -> std::wstring {
+  std::wstring out = L"\\\\?\\" + tmp.wpath();
+  if (!out.empty() && out.back() != L'\\') out.push_back(L'\\');
+  for (char ch : rel) {
+    out.push_back(static_cast<wchar_t>(static_cast<unsigned char>(ch)));
+  }
+  return out;
+}
+
+void write_preserving_1332(const TempDir& tmp, const std::string& rel,
+                           const std::string& content) {
+  const std::wstring path = preserving_path_1332(tmp, rel);
+  HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr,
+                            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  ASSERT_TRUE(file != INVALID_HANDLE_VALUE);
+  DWORD written = 0;
+  if (!content.empty()) {
+    WriteFile(file, content.data(), static_cast<DWORD>(content.size()),
+              &written, nullptr);
+  }
+  CloseHandle(file);
+}
+
+}  // namespace
+
+TEST(grep, trailing_dot_read_issue1332) {
+  TempDir tmp;
+  tmp.write("name", "BBB\n");
+  write_preserving_1332(tmp, "name.", "AAA\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"grep.exe", {L"AAA", L"name."});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "AAA\n");
+}
+
+TEST(grep, trailing_space_read_issue1332) {
+  TempDir tmp;
+  tmp.write("name", "BBB\n");
+  write_preserving_1332(tmp, "name ", "SSS\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"grep.exe", {L"SSS", L"name "});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "SSS\n");
+}
+
+TEST(grep, nul_txt_reads_file_issue1333) {
+  TempDir tmp;
+  tmp.write("NUL.txt", "real-content\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"grep.exe", {L"real", L"NUL.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "real-content\n");
+
+  Pipeline pc;
+  pc.set_cwd(tmp.wpath());
+  pc.add(L"grep.exe", {L"-c", L"real", L"NUL.txt"});
+  auto rc = pc.run();
+
+  EXPECT_EQ(rc.exit_code, 0);
+  EXPECT_TRUE(rc.stdout_text.find("1") != std::string::npos);
+}
+
+TEST(grep, bare_nul_still_device_issue1333) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"grep.exe", {L"-c", L"real", L"NUL"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.find("0") != std::string::npos);
+}
+
 // ---------------------------------------------------------------------------
 // Issue #1368: GNU grep treats a failed stdout write as an EXIT_TROUBLE (2)
 // outcome ("grep: write error: <strerror>"). With stdout closed (`>&-`) the

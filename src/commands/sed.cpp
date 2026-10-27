@@ -71,6 +71,20 @@ auto constexpr SED_OPTIONS = std::array{
 namespace sed_pipeline {
 namespace cp = core::pipeline;
 
+// Open operands through the extended (\\?\) form so a trailing dot/space
+// leaf ("name.", "name ") names the on-disk file instead of the DOS-stripped
+// sibling (#1332), and a device-stem leaf ("NUL.txt") names the on-disk file
+// instead of the device (#1333, via native_path's extended form). A trailing
+// separator on a non-directory keeps the old normalized spelling so the
+// #1052 ENOTDIR enforcement still rejects the open.
+auto open_operand_path(const std::string& f) -> std::string {
+  auto operand = native_path::make_api_path_operand(f);
+  if (operand.had_trailing_separator) {
+    return wstring_to_utf8(operand.normalized);
+  }
+  return wstring_to_utf8(operand.extended);
+}
+
 struct Script {
   enum class Kind {
     Subst,
@@ -1341,7 +1355,7 @@ auto read_script_file(const std::string& path) -> cp::Result<std::string> {
   // [L2 self-parse] POSIX drive spellings (`/d/...`, `/cygdrive/d/...`)
   // resolve through the shared operand boundary like input operands do
   // (#1174); diagnostics keep the operand text as typed.
-  std::ifstream in(native_path::normalize_api_operand(path), std::ios::binary);
+  std::ifstream in(open_operand_path(path), std::ios::binary);
   if (!in.is_open())
     return std::unexpected("cannot open script file '" + path + "'");
   return std::string(std::istreambuf_iterator<char>{in},
@@ -1918,7 +1932,7 @@ auto write_file_once_truncated(ProcessRuntime& runtime, const std::string& path,
     runtime.truncated_write_files.insert(path);
   }
 
-  std::ofstream out(native_path::normalize_api_operand(path), mode);
+  std::ofstream out(open_operand_path(path), mode);
   if (!out.is_open()) {
     safeErrorPrint("sed: cannot open '" + path + "' for writing\n");
     return false;
@@ -1934,7 +1948,7 @@ auto write_file_once_truncated(ProcessRuntime& runtime, const std::string& path,
 auto read_whole_file_for_append(const std::string& path) -> std::string {
   // [L2 self-parse] POSIX drive spellings resolve through the shared
   // operand boundary like input operands do (#1174).
-  std::ifstream in(native_path::normalize_api_operand(path), std::ios::binary);
+  std::ifstream in(open_operand_path(path), std::ios::binary);
   if (!in.is_open()) {
     // [GNU] report and keep going (execute.c:565, r command is never
     // fatal: "sed: can't read FILE: reason" on stderr)
@@ -1955,7 +1969,7 @@ auto read_one_file_record_for_append(ProcessRuntime& runtime,
   if (inserted) {
     // [L2 self-parse] POSIX drive spellings resolve through the shared
     // operand boundary like input operands do (#1174).
-    it->second.open(native_path::normalize_api_operand(path), std::ios::binary);
+    it->second.open(open_operand_path(path), std::ios::binary);
     if (!it->second.is_open()) {
       // [GNU] report once and keep going (execute.c:565)
       safeErrorPrint("sed: can't read " + path + ": " +
@@ -2587,7 +2601,7 @@ auto process_files(const Config& cfg) -> int {
     // what gets replaced; `f` keeps the caller's text for diagnostics and
     // the `=`/F filename display (#1174).
     const std::string open_path =
-        f == "-" ? f : native_path::normalize_api_operand(f);
+        f == "-" ? f : open_operand_path(f);
     if (f == "-") {
       // [GNU] closed stdin (<&-) reports a read error instead of
       // dereferencing a bad stream (MSYS sed itself segfaults here).

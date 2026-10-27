@@ -210,6 +210,16 @@ auto constexpr GREP_OPTIONS = std::array{
 namespace grep_pipeline {
 namespace cp = core::pipeline;
 
+// Same rationale as sed's open_operand_path, in wide form for the
+// filesystem::path/_wfopen open sites (#1332/#1333).
+auto open_operand_path_w(const std::string& path) -> std::wstring {
+  auto operand = native_path::make_api_path_operand(path);
+  if (operand.had_trailing_separator) {
+    return operand.normalized;
+  }
+  return operand.extended;
+}
+
 enum class PatternMode { BasicRegex, ExtendedRegex, Fixed, PerlRegex };
 enum class BinaryMode { Binary, Text, WithoutMatch };
 
@@ -2071,8 +2081,7 @@ auto scan_stream(std::istream& in, std::string_view display_name,
 }
 
 auto read_file_binary(const std::string& path) -> cp::Result<std::string> {
-  std::ifstream in(std::filesystem::path(utf8_to_wstring(
-                       native_path::normalize_api_operand(path))),
+  std::ifstream in(std::filesystem::path(open_operand_path_w(path)),
                    std::ios::binary);
   if (!in.is_open()) {
     return std::unexpected("cannot open '" + path + "'");
@@ -2082,8 +2091,7 @@ auto read_file_binary(const std::string& path) -> cp::Result<std::string> {
 }
 
 auto read_file_text(const std::string& path) -> cp::Result<std::string> {
-  std::ifstream in(std::filesystem::path(utf8_to_wstring(
-                       native_path::normalize_api_operand(path))),
+  std::ifstream in(std::filesystem::path(open_operand_path_w(path)),
                    std::ios::binary);
   if (!in.is_open()) {
     return std::unexpected("cannot open '" + path + "'");
@@ -2114,8 +2122,7 @@ auto should_stream_file_fast_path(const std::string& path, const Config& cfg)
     -> bool {
   if (cfg.binary_mode == BinaryMode::WithoutMatch) return false;
 
-  std::ifstream in(std::filesystem::path(utf8_to_wstring(
-                       native_path::normalize_api_operand(path))),
+  std::ifstream in(std::filesystem::path(open_operand_path_w(path)),
                    std::ios::binary);
   if (!in.is_open()) return true;
 
@@ -2136,8 +2143,7 @@ auto should_stream_file_fast_path(const std::string& path, const Config& cfg)
 auto scan_file_streaming(const std::string& path, std::string_view display_name,
                          bool show_filename, Config& cfg)
     -> cp::Result<std::pair<bool, size_t>> {
-  std::ifstream in(std::filesystem::path(utf8_to_wstring(
-                       native_path::normalize_api_operand(path))),
+  std::ifstream in(std::filesystem::path(open_operand_path_w(path)),
                    std::ios::binary);
   if (!in.is_open()) {
     return std::unexpected("cannot open '" + path + "'");
@@ -2150,8 +2156,7 @@ auto scan_fixed_file_fast(const std::string& path,
                           Config& cfg) -> cp::Result<std::pair<bool, size_t>> {
   using FilePtr = std::unique_ptr<FILE, decltype(&::fclose)>;
   FilePtr file(
-      _wfopen(utf8_to_wstring(native_path::normalize_api_operand(path))
-                  .c_str(),
+      _wfopen(open_operand_path_w(path).c_str(),
               L"rb"),
       &::fclose);
   if (!file) {
@@ -2352,7 +2357,12 @@ auto append_search_path(Config& cfg, std::string_view input,
   // Probes and the recursive walk run on the resolved spelling so the MSYS
   // drive dialect ("/e") names the same target a native spelling would;
   // `f` keeps the caller's text for exclude matching and diagnostics
-  // (#1230).
+  // (#1230). The resolved spelling stays normalized (not the extended
+  // form the scan_* sites use): the walk builds child paths with
+  // generic_wstring (slash form), which does not round-trip a \\?\\ root
+  // through the operand boundary — a trailing-dot/device-stem DIRECTORY
+  // operand therefore still classifies like baseline, and file operands are
+  // unaffected because the scan_* open sites use the extended form.
   const std::string resolved = native_path::normalize_api_operand(f);
 
   std::error_code ec;

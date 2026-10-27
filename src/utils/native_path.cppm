@@ -690,6 +690,43 @@ auto has_device_name_leaf(std::wstring_view native) -> bool {
   return is_dos_device_name_w(stripped.substr(sep + 1));
 }
 
+// True when the final component is a DOS device stem carrying an extension
+// ("NUL.txt"): such a name denotes an on-disk file, but GetFullPathNameW
+// resolves the stem onto the device namespace ("\\.\NUL" under Wine; the
+// same DOS rule governs plain-path opens), so an extended form built from it
+// names no file (#1333). Bare device names ("NUL") never reach here through
+// make_api_path_operand_w (they return verbatim), and stems that merely
+// contain a device name ("ANUL.txt") are ordinary files.
+auto has_device_stem_with_extension_w(std::wstring_view native) -> bool {
+  const size_t sep = native.find_last_of(L"\\/");
+  const std::wstring_view leaf =
+      sep == std::wstring_view::npos ? native : native.substr(sep + 1);
+  const size_t dot = leaf.find(L'.');
+  if (dot == std::wstring_view::npos || dot == 0) return false;
+  const std::wstring_view stem = leaf.substr(0, dot);
+  static constexpr std::wstring_view kDevices[] = {
+      L"NUL", L"CON", L"PRN", L"AUX", L"CONIN$", L"CONOUT$",
+      L"COM1", L"COM2", L"COM3", L"COM4", L"COM5", L"COM6",
+      L"COM7", L"COM8", L"COM9", L"LPT1", L"LPT2", L"LPT3",
+      L"LPT4", L"LPT5", L"LPT6", L"LPT7", L"LPT8", L"LPT9"};
+  for (const auto device : kDevices) {
+    if (stem.size() != device.size()) continue;
+    bool equal = true;
+    for (size_t i = 0; i < stem.size(); ++i) {
+      wchar_t a = stem[i];
+      wchar_t b = device[i];
+      if (a >= L'a' && a <= L'z') a = static_cast<wchar_t>(a - L'a' + L'A');
+      if (b >= L'a' && b <= L'z') b = static_cast<wchar_t>(b - L'a' + L'A');
+      if (a != b) {
+        equal = false;
+        break;
+      }
+    }
+    if (equal) return true;
+  }
+  return false;
+}
+
 export auto to_extended_path(std::wstring_view path) -> std::wstring {
   if (path.size() >= 4 && path.compare(0, 4, L"\\\\?\\") == 0) {
     return std::wstring(path);
@@ -714,6 +751,13 @@ export auto to_extended_path(std::wstring_view path) -> std::wstring {
       !(native.size() >= 4 &&
         (native.compare(0, 4, L"\\\\?\\") == 0 ||
          native.compare(0, 4, L"\\\\.\\") == 0))) {
+    return to_extended_path_preserving(native);
+  }
+
+  // Device-stem leaves with an extension name on-disk files, but
+  // GetFullPathNameW resolves the stem onto the device namespace (#1333):
+  // route them through the lexical preserving form instead.
+  if (has_device_stem_with_extension_w(native)) {
     return to_extended_path_preserving(native);
   }
 
