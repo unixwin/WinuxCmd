@@ -120,6 +120,20 @@ export auto option_policy_for_command(std::string_view command)
     policy.allow_long_options = false;
     policy.allow_unknown_short_options_as_positionals = true;
   }
+  // [GNU] find owns its whole argument language: every token after the
+  // starting points is a predicate judged by find's own parser, and an
+  // unknown one must be answered with find's "unknown predicate"
+  // diagnostic, never by the generic option parser ("unrecognized
+  // option '--zzz'" / "invalid option -- 'b'" for -bogus) or by operand
+  // handling ("'-D': No such file or directory").  find has no long
+  // options of its own (the only long name, --debug, is handled by
+  // find's expression parser as the -D alias), and its single-dash
+  // predicates are never clusters, so unknown dash tokens pass through
+  // as positionals for find itself to judge (#1380).
+  if (command == "find") {
+    policy.allow_long_options = false;
+    policy.allow_unknown_short_options_as_positionals = true;
+  }
   return policy;
 }
 
