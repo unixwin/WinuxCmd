@@ -539,6 +539,8 @@ TEST(cat, issue_1288_glob_expands_past_max_path) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "glob\n");
+}
+
 TEST(cat, nul_txt_reads_file_issue1333) {
   TempDir tmp;
   tmp.write("NUL.txt", "real-content\n");
