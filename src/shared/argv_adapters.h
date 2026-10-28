@@ -13,21 +13,28 @@
 // of the caller's arguments so an explicit `-v BINMODE=...` still wins:
 // later assignments override earlier ones.
 //
-// Two binaries consume this table and cannot share a module: the package
-// shim (src/shims/winuxcmd_shim.cpp, a standalone CRT-only forwarder) and
-// the multiplexer (src/Main/main.cpp, the `winuxcmd <verb>` forward to an
-// opt/ payload). Each used to keep its own hand-copied copy of the rule,
-// in a different character width, kept in sync by a comment; this header
-// is the only copy now.
+// Consumers that cannot share a module: the package shim
+// (src/shims/winuxcmd_shim.cpp, a standalone CRT-only forwarder), the
+// multiplexer (src/Main/main.cpp, the `winuxcmd <verb>` forward to an
+// opt/ payload), and wpm's entry-link routing (src/commands/wpm.cpp).
+// Each used to keep its own hand-copied spelling of this rule, in
+// different character widths, kept in sync by comments; this header is
+// the only copy now.
+//
+// The API is deliberately plain C types (no std:: names): command TUs in
+// this tree take their std from the PCH + `import std`, and a textual
+// <string_view> include inside the unity-built commands TU redefines the
+// std module's entities. Callers pass .data()/.size() of their
+// string_view/wstring and wrap the returned pointer as they see fit.
 #pragma once
 
-#include <string_view>
+#include <stddef.h>
 
 namespace argv_adapters {
 
 struct Entry {
-  std::string_view command;  // ASCII payload name, matched case-insensitively
-  std::wstring_view prefix;  // spliced ahead of the caller's arguments
+  const char* command;     // ASCII payload name, matched case-insensitively
+  const wchar_t* prefix;   // spliced ahead of the caller's arguments
 };
 
 inline constexpr Entry kTable[] = {
@@ -35,40 +42,46 @@ inline constexpr Entry kTable[] = {
     {"gawk", L" -v BINMODE=3"},
 };
 
-inline bool name_equals(std::string_view name,
-                        std::string_view literal) noexcept {
-  if (name.size() != literal.size()) return false;
-  for (size_t i = 0; i < name.size(); ++i) {
+inline bool name_equals(const char* name, size_t name_len,
+                        const char* literal) noexcept {
+  size_t i = 0;
+  for (; literal[i] != '\0'; ++i) {
+    if (i >= name_len) return false;
     char c = name[i];
     if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
     if (c != literal[i]) return false;
   }
-  return true;
+  return i == name_len;
 }
 
-inline bool name_equals(std::wstring_view name,
-                        std::string_view literal) noexcept {
-  if (name.size() != literal.size()) return false;
-  for (size_t i = 0; i < name.size(); ++i) {
+inline bool name_equals(const wchar_t* name, size_t name_len,
+                        const char* literal) noexcept {
+  size_t i = 0;
+  for (; literal[i] != '\0'; ++i) {
+    if (i >= name_len) return false;
     wchar_t c = name[i];
     if (c >= L'A' && c <= L'Z') c = static_cast<wchar_t>(c - L'A' + L'a');
     if (c != static_cast<wchar_t>(literal[i])) return false;
   }
-  return true;
+  return i == name_len;
 }
 
-inline std::wstring_view prefix_for(std::string_view command) noexcept {
+// The argv prefix for a payload name, or nullptr when the payload is not
+// adapted. Narrow overload takes the UTF-8 name, wide overload the UTF-16
+// one; matching is ASCII case-insensitive either way.
+inline const wchar_t* prefix_for(const char* name, size_t name_len) noexcept {
   for (const auto& entry : kTable) {
-    if (name_equals(command, entry.command)) return entry.prefix;
+    if (name_equals(name, name_len, entry.command)) return entry.prefix;
   }
-  return {};
+  return nullptr;
 }
 
-inline std::wstring_view prefix_for(std::wstring_view command) noexcept {
+inline const wchar_t* prefix_for(const wchar_t* name,
+                                 size_t name_len) noexcept {
   for (const auto& entry : kTable) {
-    if (name_equals(command, entry.command)) return entry.prefix;
+    if (name_equals(name, name_len, entry.command)) return entry.prefix;
   }
-  return {};
+  return nullptr;
 }
 
 }  // namespace argv_adapters

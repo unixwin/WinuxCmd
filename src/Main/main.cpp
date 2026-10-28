@@ -221,8 +221,10 @@ static std::optional<int> forwardToOptPayload(std::string_view name,
   // one extra token (the verb) the payload must never see.
   const std::wstring raw = GetCommandLineW();
   const std::wstring rest(skip_command_line_tokens(raw, via_verb ? 2 : 1));
+  const wchar_t* adapter_prefix =
+      argv_adapters::prefix_for(name.data(), name.size());
   std::wstring command_line = L"\"" + payload.wstring() + L"\"" +
-                              std::wstring(argv_adapters::prefix_for(name));
+                              (adapter_prefix ? adapter_prefix : L"");
   if (!rest.empty()) command_line += L" " + rest;
 
   STARTUPINFOW si{};

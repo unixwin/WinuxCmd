@@ -226,8 +226,10 @@ int wmain(int /*argc*/, wchar_t** /*argv*/) {
     return kNotFound;
   }
 
+  const wchar_t* adapter_prefix =
+      argv_adapters::prefix_for(command.data(), command.size());
   std::wstring command_line = L"\"" + payload + L"\"" +
-                              std::wstring(argv_adapters::prefix_for(command)) +
+                              (adapter_prefix ? adapter_prefix : L"") +
                               std::wstring(arguments_after_program(GetCommandLineW()));
 
   // Hand the child *our* standard handles explicitly. A detached child does not

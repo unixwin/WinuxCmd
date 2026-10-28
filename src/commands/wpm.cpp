@@ -2609,7 +2609,7 @@ auto entry_dir(const fs::path& root) -> fs::path { return root / "bin"; }
 /// src/shared/argv_adapters.h (this file used to keep a third hand-copied
 /// spelling of the awk/gawk name check).
 auto opt_forward_adapted(std::string_view command) -> bool {
-  return !argv_adapters::prefix_for(command).empty();
+  return argv_adapters::prefix_for(command.data(), command.size()) != nullptr;
 }
 
 /// Where each command of a package resolves inside its payload, paired with
