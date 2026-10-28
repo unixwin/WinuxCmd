@@ -1699,8 +1699,12 @@ TEST(xargs, xargs_verbose_quotes_special_args_1322) {
 
   Pipeline q;
   q.set_cwd(tmp.wpath());
-  q.add(L"xargs.exe", {L"-t", L"cmd.exe", L"/C", L"echo"});
-  q.set_stdin("a'b'\n");
+  // A literal single quote cannot arrive through the default input
+  // syntax: ' is a grouping quote there and GNU strips it (a'b'
+  // parses to the item ab, and -t prints it bare).  Feed the item
+  // through -0, the verbatim channel; GNU -t then prints "a'b".
+  q.add(L"xargs.exe", {L"-t", L"-0", L"cmd.exe", L"/C", L"echo"});
+  q.set_stdin(std::string("a'b\0", 4));
 
   auto s = q.run();
 
