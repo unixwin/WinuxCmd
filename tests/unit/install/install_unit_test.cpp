@@ -526,3 +526,44 @@ TEST(install, issue1357_install_directory_source) {
   EXPECT_EQ_TEXT(r.stderr_text, "install: omitting directory 'sdir'\n");
   EXPECT_FALSE(std::filesystem::exists(tmp.path / "dest"));
 }
+
+// #1436: when the -b backup rename fails, install must diagnose and
+// abort the pair — DEST keeps its original content and the exit code is
+// nonzero. A non-empty directory occupying the backup name makes the
+// rename fail deterministically (the shape GNU reports as
+// "install: cannot backup 'dest'"). Before the fix the failure was
+// swallowed and DEST was overwritten without a backup, exit 0.
+TEST(install, issue1436_install_backup_failure_aborts_overwrite) {
+  TempDir tmp;
+  tmp.write("src", "new\n");
+  tmp.write("dest", "original\n");
+  std::filesystem::create_directory(tmp.path / "dest~");
+  tmp.write("dest~/occupant", "occupied");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"install.exe", {L"-b", L"src", L"dest"});
+  auto r = p.run();
+
+  EXPECT_NE(r.exit_code, 0);
+  EXPECT_CONTAINS(r.stderr_text, "cannot backup");
+  EXPECT_EQ_TEXT(tmp.read("dest"), "original\n");
+  EXPECT_EQ_TEXT(tmp.read("dest~/occupant"), "occupied");
+}
+
+// #1436 control: an unblocked -b still backs up and installs — the new
+// gate fires only on an actual rename failure.
+TEST(install, issue1436_install_backup_success_still_installs) {
+  TempDir tmp;
+  tmp.write("src", "new\n");
+  tmp.write("dest", "original\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"install.exe", {L"-b", L"src", L"dest"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(tmp.read("dest"), "new\n");
+  EXPECT_EQ_TEXT(tmp.read("dest~"), "original\n");
+}
