@@ -720,6 +720,21 @@ TEST(env, env_dash_token_after_assignment_is_command) {
 // to env: `env echo.exe --version` prints echo's version, not env's.
 TEST(env, env_wrapped_command_version_is_not_intercepted) {
   Pipeline p;
+  // env resolves the wrapped command through PATH alone (GNU execvp
+  // semantics; the application directory is deliberately not
+  // searched), so PATH must lead with the staged bin dir: without it
+  // the child is whatever foreign echo.exe the machine carries (on
+  // the CI runner, Git's coreutils echo, whose banner reads
+  // "echo (GNU coreutils)...") and the identity assertion below can
+  // never see this package's echo.
+  std::wstring path = ProjectPaths::detect_bin_dir().wstring();
+  wchar_t inherited[32768];
+  if (DWORD n = GetEnvironmentVariableW(L"PATH", inherited, 32768);
+      n > 0 && n < 32768) {
+    path += L";";
+    path.append(inherited, n);
+  }
+  p.set_env(L"PATH", path);
   p.add(L"env.exe", {L"echo.exe", L"--version"});
   auto r = p.run();
 
