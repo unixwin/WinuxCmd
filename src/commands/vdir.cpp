@@ -184,15 +184,6 @@ auto constexpr VDIR_OPTIONS = std::array{
 namespace vdir_pipeline {
 namespace cp = core::pipeline;
 
-auto build_vdir_command_line(std::span<const std::wstring> args)
-    -> std::wstring {
-  std::wstring cmd_line = L"ls.exe";
-  for (const auto& arg : args) {
-    append_windows_command_arg(cmd_line, arg);
-  }
-  return cmd_line;
-}
-
 auto run(const CommandContext<VDIR_OPTIONS.size()>& ctx) -> int {
   // Build ls arguments with -l (long) as default
   std::vector<std::string> ls_arg_storage;
@@ -212,42 +203,13 @@ auto run(const CommandContext<VDIR_OPTIONS.size()>& ctx) -> int {
     return CommandRegistry::dispatch("ls", ls_arg_views);
   }
 
-  SmallVector<std::wstring, 32> ls_args;
-  for (const auto& arg : ls_arg_storage) {
-    ls_args.push_back(utf8_to_wstring(arg));
-  }
-
-  std::wstring cmd_line = build_vdir_command_line(ls_args);
-
-  // The external fallback resolves `ls` with GNU execvp semantics
-  // (PATH-only; no application-directory, cwd, or System32 fallback).
-  auto ls_launch = winux::childproc::resolve_child_command(L"ls");
-  if (ls_launch.status != winux::childproc::ChildResolveStatus::Found) {
-    safeErrorPrintLn("vdir: failed to execute ls");
-    return 1;
-  }
-
-  STARTUPINFOW si = {sizeof(si)};
-  PROCESS_INFORMATION pi;
-  si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
-  si.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
-  si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
-  si.dwFlags = STARTF_USESTDHANDLES;
-
-  if (!CreateProcessW(ls_launch.path.c_str(), &cmd_line[0], NULL, NULL, TRUE, 0,
-                      NULL, NULL, &si, &pi)) {
-    safeErrorPrintLn("vdir: failed to execute ls");
-    return 1;
-  }
-
-  WaitForSingleObject(pi.hProcess, INFINITE);
-
-  DWORD exit_code;
-  GetExitCodeProcess(pi.hProcess, &exit_code);
-  CloseHandle(pi.hProcess);
-  CloseHandle(pi.hThread);
-
-  return static_cast<int>(exit_code);
+  // Unreachable in every built layout: ls.cpp is globbed into the same
+  // winuxcmd-commands library as this file, so "ls" is always registered
+  // in-process. (An external-spawn fallback for a split-applet layout that
+  // does not exist used to live here; it was removed as dead code. This
+  // branch keeps that fallback's failure shape.)
+  safeErrorPrintLn("vdir: failed to execute ls");
+  return 1;
 }
 
 }  // namespace vdir_pipeline

@@ -26,6 +26,7 @@ using cmd::meta::OptionType;
 
 // The diff command family shares one engine (see diff_engine.h).
 using diff_engine::build_script_hunks;
+using diff_engine::command_tail_from_raw_args;
 using diff_engine::compute_diff;
 using diff_engine::Edit;
 using diff_engine::EditType;
@@ -254,24 +255,6 @@ struct StyleCtx {
 auto find_function_line(const std::vector<std::string> &lines, size_t bound,
                         const portable_regex::Pattern *func_re,
                         bool func_show_c) -> std::string;
-
-// Reconstructs the "diff -ru a b" tail GNU echoes in -r headers and the
-// -l page header: argv[0] dropped, plus the subcommand token when
-// dispatched through the winuxcmd multiplexer.
-auto diff_command_tail() -> std::string {
-  int argc = 0;
-  LPWSTR *argv_w = CommandLineToArgvW(GetCommandLineW(), &argc);
-  if (!argv_w || argc < 1) return "diff";
-  std::string tail = "diff";
-  for (int i = 1; i < argc; ++i) {
-    std::string token = wstring_to_utf8(argv_w[i]);
-    if (i == 1 && token == "diff") continue;
-    tail += " ";
-    tail += token;
-  }
-  LocalFree(argv_w);
-  return tail;
-}
 
 auto split_lines(const std::string &text) -> std::vector<std::string> {
   std::vector<std::string> lines;
@@ -2196,7 +2179,8 @@ REGISTER_COMMAND(
   // end; error output stays unbuffered.
   bool paginate = ctx.has("-l") || ctx.has("--paginate");
   if (paginate) buffering_output = true;
-  const std::string command_tail = diff_command_tail();
+  const std::string command_tail =
+      command_tail_from_raw_args("diff", ctx.raw_args);
   auto finish = [&](int status) -> int {
     if (paginate) paginate_and_flush(command_tail);
     return status;

@@ -11,7 +11,6 @@ target_sources(container_module
     TYPE CXX_MODULES
     BASE_DIRS "${CMAKE_SOURCE_DIR}"
     FILES
-    "${CMAKE_SOURCE_DIR}/src/container/constexpr_map.cppm"
     "${CMAKE_SOURCE_DIR}/src/container/container.cppm"
     "${CMAKE_SOURCE_DIR}/src/container/small_vector.cppm"
 )

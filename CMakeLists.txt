@@ -598,7 +598,6 @@ macro(create_command_executable CMD)
             src/utils/pager.cppm
             src/container/container.cppm
             src/container/small_vector.cppm
-            src/container/constexpr_map.cppm
     )
 
     target_sources(${CMD} PRIVATE src/commands/${CMD}.cpp)

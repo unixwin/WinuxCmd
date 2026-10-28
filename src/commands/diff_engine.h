@@ -478,6 +478,32 @@ inline auto operand_is_stdin(const std::string &path) -> bool {
          native_path::pseudo_device_std_fd(path) == std::optional<int>(0);
 }
 
+// The operand text GNU echoes back: the "diff -ru a b" tail in -r headers
+// and the -l page header, and the last operand in "missing operand after
+// '%s'". The dispatcher already parsed the process command line and hands
+// it to every command as ctx.raw_args (argv[0] and the multiplexer verb
+// token already dropped), so these are computed from that span. The diff
+// family used to re-run CommandLineToArgvW on GetCommandLineW() once per
+// command to rebuild the same tokens - three hand-copied copies, two of
+// them verbatim duplicates - which also read the *host's* command line
+// when a command runs inside another process (FFI DLL form).
+inline auto command_tail_from_raw_args(
+    std::string_view prog, std::span<const std::string_view> raw_args)
+    -> std::string {
+  std::string tail{prog};
+  for (const auto arg : raw_args) {
+    tail += " ";
+    tail += arg;
+  }
+  return tail;
+}
+
+inline auto last_raw_argument(std::string_view prog,
+                              std::span<const std::string_view> raw_args)
+    -> std::string {
+  return raw_args.empty() ? std::string{prog} : std::string{raw_args.back()};
+}
+
 struct FileLines {
   std::vector<std::string> lines;
   bool ends_with_newline = false;  // final line was '\n'-terminated
