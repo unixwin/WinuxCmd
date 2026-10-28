@@ -181,21 +181,6 @@ REGISTER_COMMAND(
     return 2;
   };
 
-  auto last_raw_argument = []() -> std::string {
-    int argc = 0;
-    LPWSTR *argv_w = CommandLineToArgvW(GetCommandLineW(), &argc);
-    if (!argv_w || argc < 1) return "sdiff";
-    std::vector<std::string> tokens;
-    for (int i = 1; i < argc; ++i) {
-      std::string token = wstring_to_utf8(argv_w[i]);
-      if (i == 1 && token == "sdiff") continue;
-      tokens.push_back(token);
-    }
-    LocalFree(argv_w);
-    if (tokens.empty()) return "sdiff";
-    return tokens.back();
-  };
-
   SdiffConfig cfg;
   cfg.output_file = ctx.get<std::string>("-o", "");
   if (cfg.output_file.empty()) {
@@ -233,7 +218,8 @@ REGISTER_COMMAND(
   if (!files_result) {
     const std::string &error = files_result.error();
     if (error.rfind("missing operand", 0) == 0) {
-      return try_help("missing operand after '" + last_raw_argument() + "'");
+      return try_help("missing operand after '" +
+                      de::last_raw_argument("sdiff", ctx.raw_args) + "'");
     }
     return try_help(error);
   }

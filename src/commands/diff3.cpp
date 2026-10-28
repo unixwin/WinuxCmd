@@ -961,22 +961,6 @@ REGISTER_COMMAND(diff3,
     return 2;
   };
 
-  // Last raw argument, as GNU reports in "missing operand after '%s'".
-  auto last_raw_argument = []() -> std::string {
-    int argc = 0;
-    LPWSTR *argv_w = CommandLineToArgvW(GetCommandLineW(), &argc);
-    if (!argv_w || argc < 1) return "diff3";
-    std::vector<std::string> tokens;
-    for (int i = 1; i < argc; ++i) {
-      std::string token = wstring_to_utf8(argv_w[i]);
-      if (i == 1 && token == "diff3") continue;
-      tokens.push_back(token);
-    }
-    LocalFree(argv_w);
-    if (tokens.empty()) return "diff3";
-    return tokens.back();
-  };
-
   // -- Option flags (GNU diff3.c main) --
   enum : unsigned {
     kOptA = 1u,
@@ -1052,7 +1036,8 @@ REGISTER_COMMAND(diff3,
     // [GNU] "missing operand after '%s'" names the last raw argument,
     // option or not; zero operands name the program itself.
     if (error.rfind("missing operand", 0) == 0) {
-      return try_help("missing operand after '" + last_raw_argument() + "'");
+      return try_help("missing operand after '" +
+                      de::last_raw_argument("diff3", ctx.raw_args) + "'");
     }
     return try_help(error);
   }
