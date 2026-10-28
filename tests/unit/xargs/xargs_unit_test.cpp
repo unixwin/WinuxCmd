@@ -1189,7 +1189,12 @@ TEST(xargs, xargs_max_chars_splits_batches) {
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
-  p.add(L"xargs.exe", {L"-t", L"-s", L"21", L"cmd.exe", L"/C", L"echo"});
+  // GNU -s accounting counts every argv entry as len+1 (verified
+  // against GNU findutils: "echo three" fits -s 11, fails -s 10), so
+  // the base is 16 and "three" alone needs 22; -s 21 is a cannot-fit
+  // error under that ruler, not a split.  (-s 22 keeps the original
+  // intent: every item runs, in more than one batch.)
+  p.add(L"xargs.exe", {L"-t", L"-s", L"22", L"cmd.exe", L"/C", L"echo"});
   p.set_stdin("one\ntwo\nthree\n");
 
   auto r = p.run();
@@ -1427,10 +1432,12 @@ TEST(xargs, xargs_delimiter_does_not_force_exit_if_exceeded) {
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
-  // #1323: cmd.exe + /C + echo is 16 bytes, so -s 22 fits one item
-  // (16+6) but not two; -d still splits instead of aborting.  (-s 12
+  // #1323: cmd.exe + /C + echo is 16 bytes, so -s 23 fits one item
+  // (alpha 16+6, beta 16+5, and the last item keeps its trailing
+  // newline in -d mode -- GNU does not strip it -- so gamma\n counts
+  // 16+7) but never two; -d still splits instead of aborting.  (-s 12
   // would now be a cannot-fit error, since even the base exceeds it.)
-  p.add(L"xargs.exe", {L"-d", L",", L"-s", L"22", L"cmd.exe", L"/C", L"echo"});
+  p.add(L"xargs.exe", {L"-d", L",", L"-s", L"23", L"cmd.exe", L"/C", L"echo"});
   p.set_stdin("alpha,beta,gamma\n");
 
   auto r = p.run();
