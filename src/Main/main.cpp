@@ -4,6 +4,8 @@
 // Main entry point for WinuxCmd
 #include <windows.h>
 
+#include "../shared/argv_adapters.h"
+
 import std;
 import core;
 import utils;
@@ -67,32 +69,10 @@ static void printCommandSummary(std::string_view name, std::string_view desc,
   }
 }
 
-// unixwin/niubash#467: opt/ payloads that need a fixed argv prefix to match
-// the rest of the command layer. ezwinports gawk is a text-mode mingw build -
-// its CRT turns every \n into \r\n on write and folds \r\n into \n on read,
-// while every winuxcmd applet does binary stdio. The build carries gawk's
-// BINMODE feature (it ignores the BINMODE environment variable but honors
-// `-v BINMODE=3`), so the switch moves stdin/stdout/stderr - and files the
-// program opens for writing - to binary and the bytes match GNU awk. The
-// prefix goes ahead of the caller's arguments so an explicit
-// `-v BINMODE=...` still wins: later assignments override earlier ones.
-// Mirrors kArgvAdapters in src/shims/winuxcmd_shim.cpp, the path the small
-// forwarder takes.
-static bool name_iequals(std::string_view name, std::string_view literal) noexcept {
-  if (name.size() != literal.size()) return false;
-  for (size_t i = 0; i < name.size(); ++i) {
-    char c = name[i];
-    if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
-    if (c != literal[i]) return false;
-  }
-  return true;
-}
-
-static std::wstring_view opt_forward_argv_prefix(std::string_view name) noexcept {
-  constexpr std::wstring_view kGawkPrefix = L" -v BINMODE=3";
-  if (name_iequals(name, "awk") || name_iequals(name, "gawk")) return kGawkPrefix;
-  return {};
-}
+// The argv-adapter table (opt/ payloads that need a fixed argv prefix,
+// e.g. gawk's `-v BINMODE=3`; unixwin/niubash#467) lives in
+// src/shared/argv_adapters.h, shared with the package shim's forward
+// path - see that header for the full rationale.
 
 /// Skip `count` leading whitespace-separated tokens of a Windows command
 /// line, honouring the double-quoted token form. Used to drop the program
@@ -242,7 +222,7 @@ static std::optional<int> forwardToOptPayload(std::string_view name,
   const std::wstring raw = GetCommandLineW();
   const std::wstring rest(skip_command_line_tokens(raw, via_verb ? 2 : 1));
   std::wstring command_line = L"\"" + payload.wstring() + L"\"" +
-                              std::wstring(opt_forward_argv_prefix(name));
+                              std::wstring(argv_adapters::prefix_for(name));
   if (!rest.empty()) command_line += L" " + rest;
 
   STARTUPINFOW si{};
