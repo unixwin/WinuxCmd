@@ -44,6 +44,8 @@ namespace cp = core::pipeline;
 struct Config {
   bool all = false;
   bool save = false;
+  bool size = false;
+  bool speed = false;
   std::string device;
   SmallVector<std::string, 32> settings;
 };
@@ -60,9 +62,38 @@ auto build_config(const CommandContext<STTY_OPTIONS.size()>& ctx)
   }
 
   for (const auto& pos : ctx.positionals) {
+    // GNU getopt never delivers a registered option as an operand, but a
+    // boolean output-style flag that reaches the positional list through
+    // a forwarding layer is still the option it names, not a setting:
+    // #1430 saw `stty -a` rejected with "invalid argument '-a'" when -a
+    // arrived as a positional. Promote the flags wherever they appear;
+    // GNU's permutation of options out of the operand list does the same.
+    if (pos == "-a" || pos == "--all") {
+      cfg.all = true;
+      continue;
+    }
+    if (pos == "-g" || pos == "--save") {
+      cfg.save = true;
+      continue;
+    }
     cfg.settings.push_back(std::string(pos));
   }
   return cfg;
+}
+
+// Visible console geometry as {rows, columns}, queried from the target
+// handle itself (the stdin or -F device handle), never from stdout: GNU
+// reports the size of the device stty operates on, so `stty size` stays
+// correct when stdout is redirected to a file. Returns std::nullopt when
+// the handle has no console screen buffer to query.
+auto console_window_size(HANDLE hCon) -> std::optional<std::pair<int, int>> {
+  CONSOLE_SCREEN_BUFFER_INFO csbi{};
+  if (!GetConsoleScreenBufferInfo(hCon, &csbi)) {
+    return std::nullopt;
+  }
+  const int columns = csbi.srWindow.Right - csbi.srWindow.Left + 1;
+  const int rows = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
+  return std::pair{rows, columns};
 }
 
 // Map Windows console mode flags to human-readable settings
@@ -97,7 +128,14 @@ void print_console_settings(HANDLE hCon) {
   safePrintLn("");
 
   // Control flags
-  safePrintLn("speed 38400 baud; rows 50; columns 120; line = 0;");
+  int rows = 0;
+  int columns = 0;
+  if (const auto size = console_window_size(hCon)) {
+    rows = size->first;
+    columns = size->second;
+  }
+  safePrintLn("speed 38400 baud; rows " + std::to_string(rows) + "; columns " +
+              std::to_string(columns) + "; line = 0;");
 
   // Input settings
   if (mode & ENABLE_PROCESSED_INPUT)
@@ -239,8 +277,8 @@ auto is_known_noarg_setting(const std::string& name) -> bool {
   static const std::vector<std::string> names = {
       "sane",    "raw",     "cooked", "cbreak",  "ek",       "evenp",
       "parity",  "oddp",    "nl",     "pass8",   "litout",   "decctlq",
-      "tabs",    "lcase",   "LCASE",  "crt",     "dec",      "speed",
-      "size",    "parenb",  "parodd", "cs5",     "cs6",      "cs7",
+      "tabs",    "lcase",   "LCASE",  "crt",     "dec",      "parenb",
+      "parodd",  "cs5",     "cs6",    "cs7",
       "cs8",     "hupcl",   "hup",    "cstopb",  "cread",    "clocal",
       "crtscts", "ignbrk",  "brkint", "ignpar",  "parmrk",   "inpck",
       "istrip",  "inlcr",   "igncr",  "icrnl",   "ixon",     "ixoff",
@@ -259,6 +297,15 @@ auto is_known_noarg_setting(const std::string& name) -> bool {
   return false;
 }
 
+auto is_integer_value_setting(const std::string& name) -> bool {
+  static const std::vector<std::string> names = {
+      "rows", "cols", "columns", "line", "min", "time", "ispeed", "ospeed"};
+  for (const auto& candidate : names) {
+    if (name == candidate) return true;
+  }
+  return false;
+}
+
 auto validate_settings(const SmallVector<std::string, 32>& settings) -> bool {
   for (size_t i = 0; i < settings.size(); ++i) {
     const auto& setting = settings[i];
@@ -268,6 +315,15 @@ auto validate_settings(const SmallVector<std::string, 32>& settings) -> bool {
         safeErrorPrint("stty: missing argument to " +
                        std::string(1, static_cast<char>(39)));
         safeErrorPrint(name);
+        safeErrorPrintLn(std::string(1, static_cast<char>(39)));
+        print_try_help();
+        return false;
+      }
+      if (is_integer_value_setting(name) &&
+          !is_decimal_token(settings[i + 1])) {
+        safeErrorPrint("stty: invalid argument " +
+                       std::string(1, static_cast<char>(39)));
+        safeErrorPrint(settings[i + 1]);
         safeErrorPrintLn(std::string(1, static_cast<char>(39)));
         print_try_help();
         return false;
@@ -309,6 +365,63 @@ auto report_missing_device(const std::string& device) -> int {
   safeErrorPrint("stty: " + device + ": No such file or directory\n");
   return 1;
 }
+
+// `size` and `speed` are output-style requests in GNU stty, not modes:
+// each prints one value and, like -a/-g, may not be combined with mode
+// settings. #1430: both used to be swallowed as accepted no-op settings,
+// so `stty size` printed nothing and returned 0 on a real console. Split
+// them out of the settings list here; a value setting's argument is data
+// (e.g. the CHAR in `stty intr size`), never a request, and is copied
+// through without being matched.
+void extract_query_settings(Config& cfg) {
+  SmallVector<std::string, 32> modes;
+  for (size_t i = 0; i < cfg.settings.size(); ++i) {
+    const auto& setting = cfg.settings[i];
+    const auto name = normalized_setting_name(setting);
+    if (is_value_setting(name)) {
+      modes.push_back(setting);
+      if (i + 1 < cfg.settings.size()) {
+        modes.push_back(cfg.settings[++i]);
+      }
+      continue;
+    }
+    if (setting == "size") {
+      cfg.size = true;
+      continue;
+    }
+    if (setting == "speed") {
+      cfg.speed = true;
+      continue;
+    }
+    modes.push_back(setting);
+  }
+  cfg.settings.clear();
+  for (const auto& mode : modes) {
+    cfg.settings.push_back(mode);
+  }
+}
+
+// GNU `stty size`: print "<rows> <cols>" for the target device. When the
+// geometry cannot be obtained the command fails with an error; it never
+// prints nothing and returns 0.
+auto print_terminal_size(HANDLE hCon, const Config& cfg) -> int {
+  const auto size = console_window_size(hCon);
+  if (!size) {
+    const DWORD error = GetLastError();
+    safeErrorPrint("stty: ");
+    if (cfg.device.empty()) {
+      safeErrorPrint("standard input");
+    } else {
+      safeErrorPrint(cfg.device);
+    }
+    safeErrorPrintLn(": " + win32_posix_error_text(error));
+    return 1;
+  }
+  safePrintLn(std::to_string(size->first) + " " +
+              std::to_string(size->second));
+  return 0;
+}
+
 bool apply_setting(HANDLE hCon, const std::string& setting) {
   DWORD mode = 0;
   GetConsoleMode(hCon, &mode);
@@ -375,7 +488,7 @@ bool apply_setting(HANDLE hCon, const std::string& setting) {
     return true;  // Accept but no-op on Windows
   }
   if (name == "min" || name == "time" || name == "rows" || name == "cols" ||
-      name == "columns" || name == "line" || name == "speed") {
+      name == "columns" || name == "line") {
     return true;  // Accept but no-op on Windows
   }
 
@@ -383,14 +496,17 @@ bool apply_setting(HANDLE hCon, const std::string& setting) {
          is_decimal_token(setting);
 }
 
-auto run(const Config& cfg) -> int {
-  if (cfg.all && cfg.save) {
+auto run(Config cfg) -> int {
+  extract_query_settings(cfg);
+  const int output_styles = (cfg.all ? 1 : 0) + (cfg.save ? 1 : 0) +
+                            (cfg.size ? 1 : 0) + (cfg.speed ? 1 : 0);
+  if (output_styles > 1) {
     safeErrorPrintLn(
         "stty: the options for verbose and stty-readable output styles are");
     safeErrorPrintLn("mutually exclusive");
     return 1;
   }
-  if ((cfg.all || cfg.save) && !cfg.settings.empty()) {
+  if (output_styles > 0 && !cfg.settings.empty()) {
     safeErrorPrintLn(
         "stty: when specifying an output style, modes may not be set");
     return 1;
@@ -451,6 +567,20 @@ auto run(const Config& cfg) -> int {
     int result = ok ? 0 : 1;
     if (close_handle) CloseHandle(hCon);
     return result;
+  }
+
+  if (cfg.size) {
+    const int result = print_terminal_size(hCon, cfg);
+    if (close_handle) CloseHandle(hCon);
+    return result;
+  }
+
+  if (cfg.speed) {
+    // The console has no baud rate; report the nominal speed the -a
+    // listing claims, as a value rather than silence (#1430 family).
+    safePrintLn("38400");
+    if (close_handle) CloseHandle(hCon);
+    return 0;
   }
 
   if (cfg.save) {
@@ -526,7 +656,8 @@ REGISTER_COMMAND(
     "   min N         with -icanon, set N characters minimum for a read\n"
     "   ospeed N      set the output speed to N\n"
     " * rows N        tell the kernel that the terminal has N rows\n"
-    "   speed         print the terminal speed (accepted only)\n"
+    "   size          print the terminal size (rows and columns)\n"
+    "   speed         print the terminal speed\n"
     "   time N        with -icanon, set read timeout in tenths of a second\n"
     "\n"
     "Control settings:\n"
@@ -619,7 +750,8 @@ REGISTER_COMMAND(
     "\n"
     "Note: On Windows, only the settings listed as effective above (sane,\n"
     "raw, cooked, cbreak, echo, icanon and isig) change console behavior;\n"
-    "every other setting is accepted but silently ignored.",
+    "size and speed print the terminal size and speed; every other\n"
+    "setting is accepted but silently ignored.",
     "  stty           show all settings\n"
     "  stty -a        show all settings\n"
     "  stty -g        show machine-readable settings\n"
