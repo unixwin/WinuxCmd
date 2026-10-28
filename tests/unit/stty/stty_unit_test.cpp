@@ -99,3 +99,63 @@ TEST(stty, stty_output_style_rejects_settings) {
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_NE(r.stderr_text.find("modes may not be set"), std::string::npos);
 }
+
+// #1430: `size` is a GNU output-style request, not an apply-mode setting.
+// It used to be accepted as a no-op setting, printing nothing and
+// returning 0 on a real console.
+TEST(stty, stty_size_requires_terminal) {
+  Pipeline p;
+  p.add(L"stty.exe", {L"size"});
+  auto r = p.run();
+
+  expect_inappropriate_ioctl(r);
+}
+
+TEST(stty, stty_size_is_an_output_style) {
+  Pipeline p;
+  p.add(L"stty.exe", {L"size", L"sane"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_NE(r.stderr_text.find("modes may not be set"), std::string::npos);
+}
+
+TEST(stty, stty_size_and_all_are_mutually_exclusive) {
+  Pipeline p;
+  p.add(L"stty.exe", {L"-a", L"size"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_NE(r.stderr_text.find("mutually exclusive"), std::string::npos);
+}
+
+// #1430: `speed` is the same query family as `size`.
+TEST(stty, stty_speed_is_an_output_style) {
+  Pipeline p;
+  p.add(L"stty.exe", {L"speed", L"sane"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_NE(r.stderr_text.find("modes may not be set"), std::string::npos);
+}
+
+// #1430: the rows/cols value forms are valid GNU settings; they must
+// pass validation and reach the terminal check, not "invalid argument".
+TEST(stty, stty_rows_cols_value_form_accepted) {
+  Pipeline p;
+  p.add(L"stty.exe", {L"rows", L"40", L"cols", L"120"});
+  auto r = p.run();
+
+  expect_inappropriate_ioctl(r);
+  EXPECT_EQ(r.stderr_text.find("invalid argument"), std::string::npos);
+}
+
+TEST(stty, stty_rows_noninteger_value_rejected) {
+  Pipeline p;
+  p.add(L"stty.exe", {L"rows", L"abc"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_NE(r.stderr_text.find("invalid argument"), std::string::npos);
+  EXPECT_NE(r.stderr_text.find("abc"), std::string::npos);
+}
