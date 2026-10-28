@@ -608,6 +608,11 @@ REGISTER_COMMAND(
     bool target_exists = lstat_attrs(wtarget, target_attrs);
 
     if (target_exists) {
+      // An affirmative -i answer approves removing the destination,
+      // like GNU: the removal below must honour it, or the run falls
+      // into the no-force error branch and the link is never replaced
+      // (#1367 interactive case).
+      bool approved_removal = false;
       if (interactive && !force) {
         // [GNU] The prompt goes to stderr, like the cp/mv overwrite
         // prompts; declining is an error (GNU exits 1) (#1367).
@@ -618,6 +623,7 @@ REGISTER_COMMAND(
           error_count++;
           continue;
         }
+        approved_removal = true;
       }
 
       // Backup if requested
@@ -646,8 +652,8 @@ REGISTER_COMMAND(
           safePrint("'" + backup_name + "' ~ '" + target + "' " +
                     (symbolic ? "->" : "=>") + " '" + source + "'\n");
         }
-      } else if (force) {
-        // Remove existing target if force is set
+      } else if (force || approved_removal) {
+        // Remove existing target if force is set, or -i approved it
         auto result = remove_existing(target_api, target);
         if (!result) {
           safeErrorPrint("ln: ");
