@@ -3728,7 +3728,14 @@ TEST(find, issue_1309_ls_suppresses_default_print_and_has_all_fields) {
     if (ch == '\n') ++newline_count;
   }
   EXPECT_EQ(newline_count, 1u);
-  EXPECT_TRUE(r.stdout_text.find("./a.txt\n") == std::string::npos);
+  // No line consists of the bare path alone (that is what a leaked
+  // default -print would look like).  A substring check for
+  // "./a.txt\n" cannot express this: the -ls line itself ends with
+  // the path, so GNU's own correct output contains that substring as
+  // its tail (verified: GNU find . -name a.txt -ls prints one line
+  // ending in "./a.txt").
+  auto first_nl = r.stdout_text.find('\n');
+  EXPECT_TRUE(r.stdout_text.substr(0, first_nl) != "./a.txt");
 
   // GNU "ls -dils" shape: inode, blocks, mode, links, owner, group,
   // size, month, day, time-or-year, path.
