@@ -1072,17 +1072,38 @@ auto quote_command_line(std::string_view command,
 enum class Confirmation { Yes, No, Fatal };
 
 // #1320: GNU reads the -p answer from /dev/tty, never from the item
-// stream.  The Windows counterpart is CONIN$; it is tried first so a
-// redirected stdin (the normal -p case) still gets an interactive prompt.
-// Under Wine there is no console, so CONIN$ fails and the answer falls
-// back to stdin -- which only works when stdin was not already consumed
-// as the item source (e.g. with -a).  A read failure on either source is
-// loud (Fatal), never a silent skip with exit code 0.
+// stream, and fails loudly when the tty cannot be opened.  The Windows
+// counterpart of the tty is CONIN$, but a Windows process can own a
+// console that nobody attends: services, CI runners and test harnesses
+// allocate or inherit one while every standard stream is a pipe, and a
+// ReadFile on that console's input queue blocks forever.  CONIN$ is
+// therefore used as the answer source only when this process's own
+// output (stdout or stderr) is attached to a console -- positive
+// evidence that a user is watching this terminal.  In every other
+// posture the answer is read from stdin, the convention the cp/ln/rm
+// and find -ok prompts already use in this tree: harnesses and agent
+// drivers feed answers there, and with -a the item stream is a file so
+// stdin is free to answer.  A read failure on either source is loud
+// (Fatal), never a silent skip with exit code 0: when stdin was already
+// consumed as the item source, the read fails at EOF and the run
+// aborts instead of skipping every command.
+auto output_attached_to_console() -> bool {
+  auto is_console = [](DWORD which) -> bool {
+    DWORD mode = 0;
+    HANDLE h = GetStdHandle(which);
+    return h != nullptr && h != INVALID_HANDLE_VALUE &&
+           GetConsoleMode(h, &mode) != FALSE;
+  };
+  return is_console(STD_OUTPUT_HANDLE) || is_console(STD_ERROR_HANDLE);
+}
+
 auto read_confirmation() -> Confirmation {
-  HANDLE console =
-      CreateFileW(L"CONIN$", GENERIC_READ,
-                  FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
-                  0, nullptr);
+  HANDLE console = INVALID_HANDLE_VALUE;
+  if (output_attached_to_console()) {
+    console = CreateFileW(L"CONIN$", GENERIC_READ,
+                          FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                          OPEN_EXISTING, 0, nullptr);
+  }
   if (console != nullptr && console != INVALID_HANDLE_VALUE) {
     std::string line;
     char buffer[256];
