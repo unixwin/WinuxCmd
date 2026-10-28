@@ -11,6 +11,7 @@
 
 #include "core/command_macros.h"
 #include "pch/pch.h"
+#include "shared/argv_adapters.h"
 
 #pragma comment(lib, "bcrypt.lib")
 #pragma comment(lib, "urlmon.lib")
@@ -2604,11 +2605,11 @@ auto entry_dir(const fs::path& root) -> fs::path { return root / "bin"; }
 /// text-mode mingw build, and `-v BINMODE=3` is the only runtime lever it
 /// honors for binary stdio). Their PATH-entry link must route through a
 /// forwarder as well, or `bin\<cmd>` would reach the payload unadapted.
-/// Mirrors the adapter table in src/shims/winuxcmd_shim.cpp and
-/// opt_forward_argv_prefix in src/Main/main.cpp.
+/// The adapter set itself is the single table in
+/// src/shared/argv_adapters.h (this file used to keep a third hand-copied
+/// spelling of the awk/gawk name check).
 auto opt_forward_adapted(std::string_view command) -> bool {
-  const std::string lowered = lower_ascii(std::string(command));
-  return lowered == "awk" || lowered == "gawk";
+  return !argv_adapters::prefix_for(command).empty();
 }
 
 /// Where each command of a package resolves inside its payload, paired with
