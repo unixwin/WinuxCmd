@@ -1257,6 +1257,28 @@ auto print_parse_error_tail(std::string_view name) -> bool {
   return true;
 }
 
+// [GNU] Commands whose arguments are data strings rather than options:
+// long-option abbreviations are never expanded for them (`echo --hel`
+// prints "--hel"), and "--version" in an operand position is data, not a
+// flag. printf belongs here because printf.c parses options directly
+// rather than via getopt_long, precisely so that abbreviations such as
+// "--hel" are treated as the format string, not as --help; expr.c likewise
+// never abbreviates (`expr --hel` is an operand).
+//
+// This is the single source of truth for the set. The dispatcher's
+// abbreviation expansion and main.cpp's top-level --version pre-scan both
+// consult it through this function: #1215 was the two hand-copied tables
+// drifting apart (main's copy missed "expr", so `winuxcmd expr 1
+// --version` printed the top-level version and exited 0 while GNU and the
+// expr shim reject the operand with exit 2).
+export bool is_literal_arg_command(std::string_view cmd_name) noexcept {
+  static constexpr std::string_view kLiteralArgCommands[] = {
+      "echo", "yes", "test", "[", "true", "false", "printf", "expr"};
+  return std::ranges::any_of(
+      kLiteralArgCommands,
+      [cmd_name](std::string_view name) { return name == cmd_name; });
+}
+
 // Internal registry implementation class
 class RegistryImpl {
   std::unordered_map<std::string_view, CommandEntryErased> registry_;
@@ -1321,14 +1343,7 @@ class RegistryImpl {
     // same behaviour. Commands whose leading arguments are data strings are
     // excluded (e.g. `echo --hel` must print "--hel", not help).
     {
-      // [GNU] printf also belongs here: printf.c parses options directly
-      // rather than via getopt_long, precisely so that abbreviations such
-      // as "--hel" are treated as the format string, not as --help.
-      // expr.c likewise never abbreviates: `expr --hel` is an operand.
-      static constexpr std::string_view kLiteralArgCommands[] = {
-          "echo", "yes", "test", "[", "true", "false", "printf", "expr"};
-      const bool literal_args = std::ranges::any_of(
-          kLiteralArgCommands, [cmdName](auto n) { return n == cmdName; });
+      const bool literal_args = is_literal_arg_command(cmdName);
       if (!literal_args) {
         std::vector<std::string> abbrev_storage;
         std::optional<std::string> ambiguous;

@@ -584,15 +584,13 @@ int wmain(int argc, wchar_t* wargv[]) noexcept {
     // not honor "--version" in any position — e.g. `printf '%s\n' --version`
     // prints "--version" and `expr 1 --version` is a syntax error — so the
     // dispatcher's per-command rule applies to them instead of this scan.
-    // Keep this list in sync with the dispatcher's own literal-argument list
-    // (WinuxCmd #1215): without "expr" here, `winuxcmd expr 1 --version`
-    // printed the top-level "WinuxCmd <ver>" and exited 0, while the
-    // expr.exe shim (and GNU) reject the operand with exit 2.
-    static constexpr std::string_view kLiteralArgCommands[] = {
-        "echo", "yes", "test", "[", "true", "false", "printf", "expr"};
-    const bool literal_arg_command = std::ranges::any_of(
-        kLiteralArgCommands,
-        [cmd_name](std::string_view n) { return n == cmd_name; });
+    // The set itself is core's is_literal_arg_command, the single source of
+    // truth shared with the dispatcher's abbreviation expansion: WinuxCmd
+    // #1215 was this scan's hand-copied table missing "expr", so
+    // `winuxcmd expr 1 --version` printed the top-level "WinuxCmd <ver>"
+    // and exited 0, while the expr.exe shim (and GNU) reject the operand
+    // with exit 2.
+    const bool literal_arg_command = is_literal_arg_command(cmd_name);
     bool has_version = false;
     if (!literal_arg_command) {
       for (const auto& arg : cmd_args) {
