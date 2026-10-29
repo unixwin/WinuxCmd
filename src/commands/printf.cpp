@@ -591,7 +591,9 @@ RenderResult render_once(std::string_view format,
     size_t spec_start = i;
     FormatSpec spec = parse_format_spec(format, i);
     // [GNU] printf.c:663: an unrecognized conversion is fatal:
-    // "printf: '%y': invalid conversion specification", exit 1.
+    // "printf: %y: invalid conversion specification", exit 1. The
+    // pinned oracle (coreutils 9.4 under LC_ALL=C) prints the
+    // directive without quotes (#1445).
     if (!spec.valid || !is_known_conversion(spec.conversion)) {
       // pos points at the conversion character itself; include it in the
       // reported directive so "%y" is shown, not "%" (GNU %.*s at 663).
@@ -599,8 +601,8 @@ RenderResult render_once(std::string_view format,
       if (directive.empty()) directive = "%";
       had_error = true;
       result.stop_output = true;
-      safeErrorPrintLn("printf: '" + directive +
-                       "': invalid conversion specification");
+      safeErrorPrintLn("printf: " + directive +
+                       ": invalid conversion specification");
       return result;
     }
 
