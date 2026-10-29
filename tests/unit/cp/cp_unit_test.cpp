@@ -1212,3 +1212,32 @@ TEST(cp, cp_debug_still_legal_issue1411) {
   EXPECT_EXIT_CODE(r, 0);
   EXPECT_TRUE(std::filesystem::exists(tmp.path / "b.txt"));
 }
+
+// #1434: the stream copy reconciles the copied byte count against the
+// source size so a mid-stream read failure cannot exit 0 — the guard
+// itself must never misfire on a complete copy. EOF is not an error at
+// any size: empty, one byte, and multi-buffer files all copy byte-exact
+// with exit 0. (Fault-injection pins for the read/flush arms themselves
+// need a full-disk ramdisk; see audit E-4.)
+TEST(cp, issue1434_stream_copy_completes_at_eof_sizes) {
+  TempDir tmp;
+  tmp.write("empty.txt", "");
+  tmp.write("one.txt", "x");
+  std::string big(3 * 1024 * 1024, '\0');
+  for (size_t i = 0; i < big.size(); ++i) {
+    big[i] = static_cast<char>('a' + (i % 26));
+  }
+  tmp.write("big.txt", big);
+
+  for (const char* name : {"empty.txt", "one.txt", "big.txt"}) {
+    const std::string dest = std::string(name) + ".copy";
+    Pipeline p;
+    p.set_cwd(tmp.wpath());
+    p.add(L"cp.exe",
+          {std::wstring(name, name + strlen(name)),
+           std::wstring(dest.begin(), dest.end())});
+    auto r = p.run();
+    EXPECT_EQ(r.exit_code, 0);
+    EXPECT_EQ(tmp.read(dest), tmp.read(name));
+  }
+}

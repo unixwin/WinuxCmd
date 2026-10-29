@@ -1502,15 +1502,50 @@ auto copy_file(const std::string& srcPath, const std::string& destPath,
     }
   }
 
-  // Copy file content
-  dest << src.rdbuf();
-  if (dest.bad()) {
-    return std::unexpected("error writing '" + destPath + "'");
+  // Copy file content. All three error segments of the copy are
+  // accounted for (#1434): the transfer runs as an explicit sgetn loop
+  // that counts the bytes itself, because a mid-stream source read
+  // failure surfaces at the streambuf layer as EOF — a
+  // `dest << src.rdbuf()` insertion stops short without setting any
+  // state on src (and sets a benign failbit on dest when it inserts
+  // zero characters, which also poisons tellp). The copied count is
+  // reconciled against the source size captured up front; every write
+  // is state-checked; and the flush and close states are checked (the
+  // close is where a buffered write failure, classically ENOSPC,
+  // lands). A source that grows while copying is not an error (only a
+  // short copy is), and a non-seekable source skips the reconciliation.
+  // The sparse path checks every Win32 call the same way.
+  src.seekg(0, std::ios::end);
+  const std::streamoff src_size = src.tellg();
+  src.seekg(0, std::ios::beg);
+
+  std::vector<char> buffer(64 * 1024);
+  std::streamoff copied = 0;
+  for (;;) {
+    const std::streamsize got = src.rdbuf()->sgetn(
+        buffer.data(), static_cast<std::streamsize>(buffer.size()));
+    if (got <= 0) {
+      break;
+    }
+    dest.write(buffer.data(), got);
+    if (!dest) {
+      return std::unexpected("error writing '" + destPath + "'");
+    }
+    copied += got;
+  }
+  if (src_size >= 0 && copied < src_size) {
+    return std::unexpected("error reading '" + srcPath + "'");
   }
 
   // Flush and close the files
   dest.flush();
+  if (!dest) {
+    return std::unexpected("error writing '" + destPath + "'");
+  }
   dest.close();
+  if (dest.fail()) {
+    return std::unexpected("error writing '" + destPath + "'");
+  }
   src.close();
 
   return finish_copy(srcPath, destPath, ctx, verbose);
