@@ -347,6 +347,24 @@ auto first_difference(const char* lhs, const char* rhs, size_t count)
   return count;
 }
 
+// [GNU] cmp -b renders a byte as its octal value plus a printable
+// glyph (cmp.c): printable bytes stand for themselves, control bytes
+// use caret notation (^@ for NUL, ^A, ...), DEL is ^?, and bytes
+// >= 0200 carry an M- prefix over the rendering of the low seven
+// bits (#1443).
+auto byte_glyph(unsigned char c) -> std::string {
+  if (c >= 0x80) {
+    return "M-" + byte_glyph(static_cast<unsigned char>(c - 0x80));
+  }
+  if (c == 0x7f) return "^?";
+  if (c < 0x20) {
+    std::string glyph = "^";
+    glyph += static_cast<char>(c + 0x40);
+    return glyph;
+  }
+  return std::string(1, static_cast<char>(c));
+}
+
 auto print_difference(const Config& cfg, const std::string& file1,
                       const std::string& file2, size_t display_pos,
                       size_t line_number, unsigned char c1, unsigned char c2)
@@ -363,13 +381,23 @@ auto print_difference(const Config& cfg, const std::string& file1,
   safePrint(file1);
   safePrint(" ");
   safePrint(file2);
-  safePrint(" differ: byte ");
+  // [GNU] The plain message counts in characters ("differ: char N");
+  // only the -b form speaks of bytes, because it goes on to print the
+  // differing byte values themselves (cmp.c; #1443).
+  if (cfg.print_bytes) {
+    safePrint(" differ: byte ");
+  } else {
+    safePrint(" differ: char ");
+  }
   safePrint(std::to_string(display_pos));
   safePrint(", line ");
   safePrint(std::to_string(line_number));
   if (cfg.print_bytes) {
-    char buf[32];
-    snprintf(buf, sizeof(buf), " is %3o %3o", c1, c2);
+    const std::string glyph1 = byte_glyph(c1);
+    const std::string glyph2 = byte_glyph(c2);
+    char buf[64];
+    snprintf(buf, sizeof(buf), " is %3o %s %3o %s", c1, glyph1.c_str(), c2,
+             glyph2.c_str());
     safePrint(buf);
   }
   safePrintLn("");
