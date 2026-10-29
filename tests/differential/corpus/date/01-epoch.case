@@ -1,5 +1,12 @@
+# Fixed-epoch round trip, deliberately NOT a bare `date +%s`: the runner
+# executes the subject and the oracle sequentially, so two live clock reads
+# straddle a second boundary whenever the runs cross one, and the case then
+# reports OUT_DIFF for two correct answers (observed in run 40943010494,
+# after PASS in the three preceding baseline runs on the same host clock).
+# `-d @1234567890 +%s` keeps the +%s formatting coverage with an
+# input-determined answer.
 cmd: date
-args: +%s
+args: -d @1234567890 +%s
 timeout: 10
 source: github.com/unixwin/WinuxCmd
 tags: corpus-expansion round-4
