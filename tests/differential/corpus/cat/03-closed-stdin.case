@@ -9,9 +9,19 @@
 # utility. coreutils 8.32 and 9.4 are byte-identical on this path, so no oracle
 # version bump helps; only a real Linux runtime can be compared against.
 # See tests/differential/README.md for the `oracle:` precondition.
+#
+# The `oracle:` precondition covers the GNU side only. The subject side
+# has its own premise: `args: <&-` must reach the subject as a genuinely
+# closed descriptor. A native Windows launch delivers that, but in the
+# recorded baseline shape the subject is reached through the WSL interop
+# chain, which substitutes a handle of its own, so the subject walks a
+# different error path than the one pinned here. `subject: native` keeps
+# the case runnable under a native launch and SKIPped under interop
+# instead of recording the launch artifact as a product difference.
 cmd: cat
 args: <&-
 oracle: linux
+subject: native
 timeout: 10
 source: github.com/unixwin/WinuxCmd/issues/973
 tags: issue-973 closed-stdin

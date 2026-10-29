@@ -4,9 +4,15 @@
 # Same MSYS2 oracle artifact as corpus/cat/03-closed-stdin.case: the runtime
 # reports "tee: failed to set file descriptor text/binary mode: Bad file
 # descriptor" before tee(1) reads anything. Requires a real Linux oracle.
+#
+# Same subject-side premise as corpus/cat/03-closed-stdin.case: the closed
+# stdin must reach the subject as a genuinely closed descriptor, which
+# the WSL interop launch cannot deliver. See that case for the full
+# explanation of `subject: native`.
 cmd: tee
 args: /dev/null <&-
 oracle: linux
+subject: native
 timeout: 10
 source: github.com/unixwin/WinuxCmd/issues/973
 tags: issue-973 closed-stdin

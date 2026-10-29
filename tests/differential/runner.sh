@@ -51,6 +51,22 @@ case "$(uname -s 2>/dev/null)" in
   *) ORACLE_PLATFORM=unknown ;;
 esac
 
+# Launch shape of the subject (the WinuxCmd build under test). The oracle
+# platform above describes the *oracle's* runtime; this one describes how
+# the *subject* process is created. A case can depend on what the launch
+# delivers to the subject rather than on either program: a genuinely
+# closed stdin exists when a Windows shell creates the subject directly,
+# but a subject reached from a Linux shell (in practice the WSL interop
+# chain, the shape the baseline is recorded in) receives a substitute
+# handle instead, so an `args: <&-` premise never arrives as a closed
+# descriptor. Such cases declare `subject: native` and are SKIPped under
+# interop, which keeps KNOWN_DIFF meaning "executed, results differ"
+# instead of "the premise could not be delivered".
+case "$(uname -s 2>/dev/null)" in
+  MINGW*|MSYS*|CYGWIN*) SUBJECT_LAUNCH=native ;;
+  *) SUBJECT_LAUNCH=interop ;;
+esac
+
 # The oracle's wording depends on its locale: GNU quote() renders Unicode curly
 # quotes (U+2018/2019) under a UTF-8 locale and ASCII quotes under C, so the
 # same case was PASS on a machine whose oracle ran in C and KNOWN_DIFF on one
@@ -142,10 +158,10 @@ normalize_output() {
 }
 
 run_case() {
-  local case_file=$1 work wdir gdir line block cmd args timeout setup stdin files case_oracle case_oracle_min
+  local case_file=$1 work wdir gdir line block cmd args timeout setup stdin files case_oracle case_oracle_min case_subject
   work=$(mktemp -d) || return 2
   wdir="$work/w"; gdir="$work/g"; mkdir -p "$wdir" "$gdir"
-  cmd=""; args=""; timeout=10; setup=""; stdin=""; files=""; block=""; case_oracle=""; case_oracle_min=""
+  cmd=""; args=""; timeout=10; setup=""; stdin=""; files=""; block=""; case_oracle=""; case_oracle_min=""; case_subject=""
   while IFS= read -r line || [ -n "$line" ]; do
     if [ -n "$block" ]; then
       if [[ "$line" == "  "* ]]; then
@@ -161,6 +177,7 @@ run_case() {
       files:*) files=${line#files: };;
       oracle:*) case_oracle=${line#oracle: }; case_oracle=${case_oracle# };;
       oracle_version:*) case_oracle_min=${line#oracle_version: };;
+      subject:*) case_subject=${line#subject: }; case_subject=${case_subject# };;
       setup:\ \|) block=setup;;
       stdin:\ \|) block=stdin;;
     esac
@@ -171,6 +188,11 @@ run_case() {
     return 0
   fi
   if [ -n "$case_oracle" ] && [ "$case_oracle" != "$ORACLE_PLATFORM" ]; then
+    rm -rf "$work"
+    printf '%s\t%s\tSKIP\n' "${case_file#$ROOT/}" "$cmd"
+    return 0
+  fi
+  if [ -n "$case_subject" ] && [ "$case_subject" != "$SUBJECT_LAUNCH" ]; then
     rm -rf "$work"
     printf '%s\t%s\tSKIP\n' "${case_file#$ROOT/}" "$cmd"
     return 0

@@ -43,7 +43,20 @@ def main() -> int:
         if old is None:
             errors.append(f"new case: {key}={bucket}")
         elif bucket == "SKIP":
-            errors.append(f"unexplained skip: {key}")
+            # A skip the baseline itself records is explained: it is the
+            # case's declared verdict in the recorded shape, produced by
+            # a precondition (oracle:/subject:) that shape cannot
+            # satisfy. The skip stays visible in every run's census.
+            # Any other skip means the environment drifted from the
+            # recorded one, which is what this rule exists to catch.
+            if old != "SKIP":
+                errors.append(f"unexplained skip: {key}")
+        elif old == "SKIP":
+            # The recorded shape cannot run this case, so a verdict in
+            # that shape means the launch environment changed under the
+            # baseline. Demand a deliberate refresh instead of silently
+            # adopting a bucket that was never dispositioned.
+            errors.append(f"recorded skip produced a verdict: {key}: SKIP -> {bucket}")
         elif ORDER.get(bucket, 99) > ORDER.get(old, 99):
             errors.append(f"regression: {key}: {old} -> {bucket}")
     for key in expected.keys() - actual.keys():

@@ -729,7 +729,7 @@
       "command": "cat"
     },
     "corpus/cat/03-closed-stdin.case": {
-      "bucket": "OUT_DIFF",
+      "bucket": "SKIP",
       "command": "cat"
     },
     "corpus/cat/04-dev-stdin.case": {
@@ -937,7 +937,7 @@
       "command": "tee"
     },
     "corpus/tee/02-closed-stdin.case": {
-      "bucket": "OUT_DIFF",
+      "bucket": "SKIP",
       "command": "tee"
     },
     "corpus/test/01-dev-null-exists.case": {
