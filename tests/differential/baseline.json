@@ -73,11 +73,11 @@
       "command": "date"
     },
     "corpus/dd/01-count.case": {
-      "bucket": "KNOWN_DIFF",
+      "bucket": "PASS",
       "command": "dd"
     },
     "corpus/dd/02-skip.case": {
-      "bucket": "KNOWN_DIFF",
+      "bucket": "PASS",
       "command": "dd"
     },
     "corpus/dirname/01-basic.case": {
@@ -711,6 +711,354 @@
     "corpus/which/01-basic.case": {
       "bucket": "KNOWN_DIFF",
       "command": "which"
+    },
+    "corpus/base32/01-binary-stdin.case": {
+      "bucket": "PASS",
+      "command": "base32"
+    },
+    "corpus/base64/01-binary-stdin.case": {
+      "bucket": "PASS",
+      "command": "base64"
+    },
+    "corpus/basenc/01-binary-stdin.case": {
+      "bucket": "PASS",
+      "command": "basenc"
+    },
+    "corpus/cat/02-dev-null.case": {
+      "bucket": "PASS",
+      "command": "cat"
+    },
+    "corpus/cat/03-closed-stdin.case": {
+      "bucket": "OUT_DIFF",
+      "command": "cat"
+    },
+    "corpus/cat/04-dev-stdin.case": {
+      "bucket": "PASS",
+      "command": "cat"
+    },
+    "corpus/date/01-12hour-ampm.case": {
+      "bucket": "PASS",
+      "command": "date"
+    },
+    "corpus/date/02-12hour-nospace.case": {
+      "bucket": "PASS",
+      "command": "date"
+    },
+    "corpus/date/03-12hour-invalid.case": {
+      "bucket": "PASS",
+      "command": "date"
+    },
+    "corpus/date/04-loose-date.case": {
+      "bucket": "PASS",
+      "command": "date"
+    },
+    "corpus/date/05-loose-date-time.case": {
+      "bucket": "PASS",
+      "command": "date"
+    },
+    "corpus/date/06-slash-date.case": {
+      "bucket": "PASS",
+      "command": "date"
+    },
+    "corpus/date/07-rel-month.case": {
+      "bucket": "PASS",
+      "command": "date"
+    },
+    "corpus/date/08-rel-month-sum.case": {
+      "bucket": "PASS",
+      "command": "date"
+    },
+    "corpus/date/09-rel-days-back.case": {
+      "bucket": "PASS",
+      "command": "date"
+    },
+    "corpus/date/10-rel-year-rollover.case": {
+      "bucket": "PASS",
+      "command": "date"
+    },
+    "corpus/date/11-military-j.case": {
+      "bucket": "PASS",
+      "command": "date"
+    },
+    "corpus/date/12-military-J.case": {
+      "bucket": "PASS",
+      "command": "date"
+    },
+    "corpus/date/13-military-z.case": {
+      "bucket": "PASS",
+      "command": "date"
+    },
+    "corpus/date/14-military-k.case": {
+      "bucket": "PASS",
+      "command": "date"
+    },
+    "corpus/date/15-word-order.case": {
+      "bucket": "PASS",
+      "command": "date"
+    },
+    "corpus/date/16-word-order-ampm.case": {
+      "bucket": "PASS",
+      "command": "date"
+    },
+    "corpus/date/17-military-m.case": {
+      "bucket": "PASS",
+      "command": "date"
+    },
+    "corpus/date/18-military-t.case": {
+      "bucket": "PASS",
+      "command": "date"
+    },
+    "corpus/date/19-military-i.case": {
+      "bucket": "PASS",
+      "command": "date"
+    },
+    "corpus/date/20-ampm-midnight.case": {
+      "bucket": "PASS",
+      "command": "date"
+    },
+    "corpus/date/21-ampm-noon.case": {
+      "bucket": "PASS",
+      "command": "date"
+    },
+    "corpus/date/22-ampm-dotted.case": {
+      "bucket": "PASS",
+      "command": "date"
+    },
+    "corpus/date/23-rel-overflow.case": {
+      "bucket": "PASS",
+      "command": "date"
+    },
+    "corpus/date/24-military-uppercase-t.case": {
+      "bucket": "PASS",
+      "command": "date"
+    },
+    "corpus/date/25-military-colon-t.case": {
+      "bucket": "PASS",
+      "command": "date"
+    },
+    "corpus/find/01-printf-width-flags.case": {
+      "bucket": "PASS",
+      "command": "find"
+    },
+    "corpus/find/02-exec-semicol-failure-status.case": {
+      "bucket": "PASS",
+      "command": "find"
+    },
+    "corpus/grep/01-empty-pattern-file.case": {
+      "bucket": "PASS",
+      "command": "grep"
+    },
+    "corpus/grep/02-null-filename-separator.case": {
+      "bucket": "PASS",
+      "command": "grep"
+    },
+    "corpus/grep/03-files-without-match-exit-status.case": {
+      "bucket": "PASS",
+      "command": "grep"
+    },
+    "corpus/grep/04-quiet-error-exit-status.case": {
+      "bucket": "PASS",
+      "command": "grep"
+    },
+    "corpus/grep/05-conflicting-matchers.case": {
+      "bucket": "PASS",
+      "command": "grep"
+    },
+    "corpus/ls/01-dev-null.case": {
+      "bucket": "PASS",
+      "command": "ls"
+    },
+    "corpus/ls/02-dev-stdout.case": {
+      "bucket": "PASS",
+      "command": "ls"
+    },
+    "corpus/ls/03-dev-tty.case": {
+      "bucket": "PASS",
+      "command": "ls"
+    },
+    "corpus/ls/04-nul-literal.case": {
+      "bucket": "KNOWN_DIFF",
+      "command": "ls"
+    },
+    "corpus/od/01-invalid-utf8-operand.case": {
+      "bucket": "KNOWN_DIFF",
+      "command": "od"
+    },
+    "corpus/od/02-dev-null.case": {
+      "bucket": "PASS",
+      "command": "od"
+    },
+    "corpus/printf/01-rounding-e.case": {
+      "bucket": "PASS",
+      "command": "printf"
+    },
+    "corpus/printf/02-rounding-f.case": {
+      "bucket": "PASS",
+      "command": "printf"
+    },
+    "corpus/printf/03-rounding-tie.case": {
+      "bucket": "PASS",
+      "command": "printf"
+    },
+    "corpus/printf/04-rounding-negative.case": {
+      "bucket": "PASS",
+      "command": "printf"
+    },
+    "corpus/printf/05-rounding-flags.case": {
+      "bucket": "PASS",
+      "command": "printf"
+    },
+    "corpus/printf/06-overflow-saturate.case": {
+      "bucket": "PASS",
+      "command": "printf"
+    },
+    "corpus/seq/01-invalid-float.case": {
+      "bucket": "PASS",
+      "command": "seq"
+    },
+    "corpus/stat/04-dev-null-type.case": {
+      "bucket": "PASS",
+      "command": "stat"
+    },
+    "corpus/stat/05-dev-tty-type.case": {
+      "bucket": "PASS",
+      "command": "stat"
+    },
+    "corpus/stat/06-dev-null-name.case": {
+      "bucket": "PASS",
+      "command": "stat"
+    },
+    "corpus/tac/01-binary-stdin.case": {
+      "bucket": "PASS",
+      "command": "tac"
+    },
+    "corpus/tee/01-dev-null.case": {
+      "bucket": "PASS",
+      "command": "tee"
+    },
+    "corpus/tee/02-closed-stdin.case": {
+      "bucket": "OUT_DIFF",
+      "command": "tee"
+    },
+    "corpus/test/01-dev-null-exists.case": {
+      "bucket": "PASS",
+      "command": "test"
+    },
+    "corpus/test/02-dev-null-char.case": {
+      "bucket": "PASS",
+      "command": "test"
+    },
+    "corpus/test/03-dev-null-block.case": {
+      "bucket": "PASS",
+      "command": "test"
+    },
+    "corpus/test/04-dev-null-regular.case": {
+      "bucket": "PASS",
+      "command": "test"
+    },
+    "corpus/test/05-dev-null-readable.case": {
+      "bucket": "PASS",
+      "command": "test"
+    },
+    "corpus/test/06-dev-null-writable.case": {
+      "bucket": "PASS",
+      "command": "test"
+    },
+    "corpus/wc/01-ctrlz-binary-stdin.case": {
+      "bucket": "PASS",
+      "command": "wc"
+    },
+    "regressions/50-tac-empty-separator.case": {
+      "bucket": "EXIT_DIFF",
+      "command": "tac"
+    },
+    "regressions/51-sort-empty-tab.case": {
+      "bucket": "PASS",
+      "command": "sort"
+    },
+    "regressions/52-printf-invalid-conversion.case": {
+      "bucket": "OUT_DIFF",
+      "command": "printf"
+    },
+    "regressions/53-ln-no-force-exists.case": {
+      "bucket": "PASS",
+      "command": "ln"
+    },
+    "regressions/54-cp-update-none.case": {
+      "bucket": "PASS",
+      "command": "cp"
+    },
+    "regressions/55-find-type-letters.case": {
+      "bucket": "PASS",
+      "command": "find"
+    },
+    "regressions/55-sed-empty-match-after-nonempty.case": {
+      "bucket": "PASS",
+      "command": "sed"
+    },
+    "regressions/56-find-L-loop.case": {
+      "bucket": "EXIT_DIFF",
+      "command": "find"
+    },
+    "regressions/56-ls-color-optional.case": {
+      "bucket": "PASS",
+      "command": "ls"
+    },
+    "regressions/57-ln-backup-control.case": {
+      "bucket": "EXIT_DIFF",
+      "command": "ln"
+    },
+    "regressions/58-stat-printf-hex-escape.case": {
+      "bucket": "PASS",
+      "command": "stat"
+    },
+    "regressions/59-ls-quoting-locale-sort-abbrev.case": {
+      "bucket": "PASS",
+      "command": "ls"
+    },
+    "regressions/62-grep-negative-context.case": {
+      "bucket": "PASS",
+      "command": "grep"
+    },
+    "regressions/63-sed-address-escapes.case": {
+      "bucket": "PASS",
+      "command": "sed"
+    },
+    "regressions/64-sort-version-order.case": {
+      "bucket": "PASS",
+      "command": "sort"
+    },
+    "regressions/65-uniq-negative-width.case": {
+      "bucket": "PASS",
+      "command": "uniq"
+    },
+    "regressions/66-tail-zero-headers.case": {
+      "bucket": "PASS",
+      "command": "tail"
+    },
+    "regressions/67-echo-literal-E.case": {
+      "bucket": "PASS",
+      "command": "echo"
+    },
+    "regressions/70-env-ignore-environment-child-block.case": {
+      "bucket": "OUT_DIFF",
+      "command": "env"
+    },
+    "regressions/71-env-assignment-order-print.case": {
+      "bucket": "PASS",
+      "command": "env"
+    },
+    "regressions/72-env-child-options-passthrough.case": {
+      "bucket": "PASS",
+      "command": "env"
+    },
+    "regressions/73-timeout-kill-status.case": {
+      "bucket": "PASS",
+      "command": "timeout"
+    },
+    "regressions/74-timeout-term-status.case": {
+      "bucket": "PASS",
+      "command": "timeout"
     }
   }
 }
