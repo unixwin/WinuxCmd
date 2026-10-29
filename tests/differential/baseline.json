@@ -45,7 +45,7 @@
       "command": "cmp"
     },
     "corpus/cmp/14-differ.case": {
-      "bucket": "PASS",
+      "bucket": "OUT_DIFF",
       "command": "cmp"
     },
     "corpus/comm/02-basic.case": {
