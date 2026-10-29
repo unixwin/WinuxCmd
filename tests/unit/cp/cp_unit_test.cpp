@@ -1212,3 +1212,97 @@ TEST(cp, cp_debug_still_legal_issue1411) {
   EXPECT_EXIT_CODE(r, 0);
   EXPECT_TRUE(std::filesystem::exists(tmp.path / "b.txt"));
 }
+
+// #1434: the stream copy reconciles the copied byte count against the
+// source size so a mid-stream read failure cannot exit 0 — the guard
+// itself must never misfire on a complete copy. EOF is not an error at
+// any size: empty, one byte, and multi-buffer files all copy byte-exact
+// with exit 0. (Fault-injection pins for the read/flush arms themselves
+// need a full-disk ramdisk; see audit E-4.)
+TEST(cp, issue1434_stream_copy_completes_at_eof_sizes) {
+  TempDir tmp;
+  tmp.write("empty.txt", "");
+  tmp.write("one.txt", "x");
+  std::string big(3 * 1024 * 1024, '\0');
+  for (size_t i = 0; i < big.size(); ++i) {
+    big[i] = static_cast<char>('a' + (i % 26));
+  }
+  tmp.write("big.txt", big);
+
+  const std::pair<std::wstring, std::string> cases[] = {
+      {L"empty.txt", "empty.txt"},
+      {L"one.txt", "one.txt"},
+      {L"big.txt", "big.txt"},
+  };
+  for (const auto& [wide_name, name] : cases) {
+    const std::wstring dest = wide_name + L".copy";
+    Pipeline p;
+    p.set_cwd(tmp.wpath());
+    p.add(L"cp.exe", {wide_name, dest});
+    auto r = p.run();
+    EXPECT_EQ(r.exit_code, 0);
+    EXPECT_EQ(tmp.read(name + ".copy"), tmp.read(name));
+  }
+}
+
+// #1435: the into-itself guard compares path identity, not operand
+// strings. Equivalent spellings of "inside the source" — "./a", the
+// case variant "A", an absolute forward-slash form — used to walk past
+// the raw prefix test and self-nest to the depth cap, leaving a garbage
+// tree. The discriminating asserts are the diagnostic and the absence
+// of any created nesting (the depth cap also exits nonzero eventually).
+TEST(cp, issue1435_self_copy_equivalent_spellings_rejected) {
+  TempDir tmp;
+  tmp.write("a/f.txt", "data");
+
+  {
+    Pipeline p;
+    p.set_cwd(tmp.wpath());
+    p.add(L"cp.exe", {L"-r", L"a", L"./a"});
+    auto r = p.run();
+    EXPECT_NE(r.exit_code, 0);
+    EXPECT_CONTAINS(r.stderr_text, "into itself");
+    EXPECT_FALSE(std::filesystem::exists(tmp.path / "a" / "a"));
+  }
+
+  {
+    Pipeline p;
+    p.set_cwd(tmp.wpath());
+    p.add(L"cp.exe", {L"-r", L"a", L"A"});
+    auto r = p.run();
+    EXPECT_NE(r.exit_code, 0);
+    EXPECT_CONTAINS(r.stderr_text, "into itself");
+    EXPECT_FALSE(std::filesystem::exists(tmp.path / "a" / "a"));
+  }
+
+  {
+    std::wstring dest_abs = (tmp.path / "a" / "sub").wstring();
+    for (auto& ch : dest_abs) {
+      if (ch == L'\\') ch = L'/';
+    }
+    Pipeline p;
+    p.set_cwd(tmp.wpath());
+    p.add(L"cp.exe", {L"-r", L"a", dest_abs});
+    auto r = p.run();
+    EXPECT_NE(r.exit_code, 0);
+    EXPECT_CONTAINS(r.stderr_text, "into itself");
+    EXPECT_FALSE(std::filesystem::exists(tmp.path / "a" / "sub"));
+  }
+}
+
+// #1435 control: an ordinary recursive copy to a sibling still works —
+// the identity guard must not widen into refusing real copies.
+TEST(cp, issue1435_sibling_copy_still_works) {
+  TempDir tmp;
+  tmp.write("a/f.txt", "data");
+  tmp.write("a/sub/g.txt", "deep");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"-r", L"a", L"b"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(tmp.read("b/f.txt"), "data");
+  EXPECT_EQ(tmp.read("b/sub/g.txt"), "deep");
+}

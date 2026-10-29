@@ -206,22 +206,35 @@ auto directory_is_empty(const std::wstring& wpath) -> bool {
 }
 
 /**
- * @brief True when the operand itself is a reparse point (symlink or
- * junction).  GetFileAttributesW — and therefore
- * operand_target_attributes_w — reports the TARGET's attributes for a
- * link, so prompt selection probes the link itself through
- * FindFirstFileW, whose find data describes the link (#1327).
+ * @brief The operand's OWN attributes when it is a reparse point (symlink
+ * or junction), or nullopt when it is not one.  GetFileAttributesW — and
+ * therefore operand_target_attributes_w — reports the TARGET's attributes
+ * for a link, so classification probes the link itself through
+ * FindFirstFileW, whose find data describes the link (#1327).  The find
+ * data also describes a dangling link, whose target attributes read as
+ * INVALID_FILE_ATTRIBUTES even though the link itself exists.
  */
-auto operand_is_reparse_link(const std::wstring& wpath) -> bool {
+auto operand_link_attributes(const std::wstring& wpath)
+    -> std::optional<DWORD> {
   WIN32_FIND_DATAW findData;
   HANDLE hFind = FindFirstFileW(wpath.c_str(), &findData);
   if (hFind == INVALID_HANDLE_VALUE) {
-    return false;
+    return std::nullopt;
   }
-  const bool link =
-      (findData.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+  const DWORD attributes = findData.dwFileAttributes;
   FindClose(hFind);
-  return link;
+  if ((attributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0) {
+    return std::nullopt;
+  }
+  return attributes;
+}
+
+/**
+ * @brief True when the operand itself is a reparse point (symlink or
+ * junction); see operand_link_attributes.
+ */
+auto operand_is_reparse_link(const std::wstring& wpath) -> bool {
+  return operand_link_attributes(wpath).has_value();
 }
 
 /**
@@ -437,6 +450,11 @@ auto remove_path(const std::string& path, const RmConfig& cfg) -> bool {
   auto operand = native_path::make_api_path_operand(path);
   const std::wstring& wpath = operand.extended;
   DWORD attr = native_path::operand_target_attributes_w(operand);
+  // When the operand itself is a link, its own attributes — not the
+  // target's — drive classification (GNU's lstat rule, #1433).  The
+  // target probe above reports a directory for a link-to-directory and
+  // INVALID_FILE_ATTRIBUTES for a dangling link; both misclassify.
+  const std::optional<DWORD> link_attr = operand_link_attributes(wpath);
 
   if (cfg.recursive &&
       path_is_current_or_parent_directory(utf8_to_wstring(path))) {
@@ -479,7 +497,8 @@ auto remove_path(const std::string& path, const RmConfig& cfg) -> bool {
     }
   }
 
-  if (attr == INVALID_FILE_ATTRIBUTES) {
+  if (attr == INVALID_FILE_ATTRIBUTES &&
+      !(link_attr && !operand.had_trailing_separator)) {
     if (cfg.force) {
       return true;
     } else {
@@ -544,6 +563,21 @@ auto remove_path(const std::string& path, const RmConfig& cfg) -> bool {
     if (prompted && !response) {
       return true;  // user declined, treat as success
     }
+  }
+
+  // [GNU] A link operand is a leaf: rm unlinks the link itself, whatever
+  // the target is — "rm linkdir" succeeds without -r (the target-attribute
+  // branch below used to refuse it with "Is a directory") and "rm -r
+  // linkdir" leaves the target's contents untouched (the recursion below
+  // used to descend through the link) (#1433).  The link's own DIRECTORY
+  // bit selects the removal call, as for link children in the recursion.
+  // A trailing separator opts out: it dereferences the link, and the
+  // directory branches then apply to the target ("rm linkdir/").
+  if (link_attr && !operand.had_trailing_separator) {
+    if (*link_attr & FILE_ATTRIBUTE_DIRECTORY) {
+      return remove_empty_directory_path(wpath, path, cfg);
+    }
+    return remove_file_path(wpath, path, cfg);
   }
 
   if ((attr & FILE_ATTRIBUTE_DIRECTORY) && !cfg.recursive) {

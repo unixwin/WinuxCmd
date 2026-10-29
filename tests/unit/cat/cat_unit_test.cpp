@@ -630,3 +630,74 @@ TEST(cat, bare_nul_still_device_issue1333) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "");
 }
+
+// #1432: a ".." that reaches a shell-namespace mount base is clamped at
+// the base (the POSIX root rule rubash's map_logical_path applies), never
+// a pop of a base component. Before the fix, "/../escape.txt" under a
+// configured shell root resolved to the root's SIBLING file of the same
+// name — the shell and its coreutils children resolved one spelling to
+// two different files.
+TEST(cat, issue1432_shell_root_dotdot_clamps_at_root) {
+  TempDir base;
+  const std::filesystem::path root = base.path / "root";
+  std::filesystem::create_directory(root);
+  {
+    std::ofstream inside(root / "escape.txt", std::ios::binary);
+    inside << "inside\n";
+    std::ofstream outside(base.path / "escape.txt", std::ios::binary);
+    outside << "outside\n";
+  }
+
+  auto run_cat = [&](const wchar_t* operand) {
+    Pipeline p;
+    p.set_env(L"__RUBASH_SHELL_ROOT", root.wstring());
+    p.set_env(L"NIU_ROOT", L"");
+    p.set_env(L"WINUXSH_ROOT", L"");
+    p.set_env(L"RUBASH_ROOT", L"");
+    p.add(L"cat.exe", {operand});
+    return p.run();
+  };
+
+  auto plain = run_cat(L"/escape.txt");
+  EXPECT_EQ(plain.exit_code, 0);
+  EXPECT_EQ_TEXT(plain.stdout_text, "inside\n");
+
+  auto one_up = run_cat(L"/../escape.txt");
+  EXPECT_EQ(one_up.exit_code, 0);
+  EXPECT_EQ_TEXT(one_up.stdout_text, "inside\n");
+
+  auto two_up = run_cat(L"/../../escape.txt");
+  EXPECT_EQ(two_up.exit_code, 0);
+  EXPECT_EQ_TEXT(two_up.stdout_text, "inside\n");
+
+  // A ".." below the base still folds lexically (no on-disk "sub" needed).
+  auto folded = run_cat(L"/sub/../escape.txt");
+  EXPECT_EQ(folded.exit_code, 0);
+  EXPECT_EQ_TEXT(folded.stdout_text, "inside\n");
+}
+
+// #1432: the clamp applies at every shell_tree_map_w mount, not only the
+// payload root — here the /tmp mount (TMPDIR base).
+TEST(cat, issue1432_tmp_mount_dotdot_clamps_at_base) {
+  TempDir parent;
+  const std::filesystem::path tmpbase = parent.path / "tmpbase";
+  std::filesystem::create_directory(tmpbase);
+  {
+    std::ofstream inside(tmpbase / "escape.txt", std::ios::binary);
+    inside << "inside\n";
+    std::ofstream outside(parent.path / "escape.txt", std::ios::binary);
+    outside << "outside\n";
+  }
+
+  Pipeline p;
+  p.set_env(L"TMPDIR", tmpbase.wstring());
+  p.set_env(L"__RUBASH_SHELL_ROOT", parent.wpath());
+  p.set_env(L"NIU_ROOT", L"");
+  p.set_env(L"WINUXSH_ROOT", L"");
+  p.set_env(L"RUBASH_ROOT", L"");
+  p.add(L"cat.exe", {L"/tmp/../escape.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "inside\n");
+}

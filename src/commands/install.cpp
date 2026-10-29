@@ -795,6 +795,17 @@ auto run(const Config& cfg) -> int {
           if (cfg.verbose) {
             safePrintLn("(backup: '" + backup_path + "')");
           }
+        } else {
+          // [GNU] A failed backup aborts this pair: the user asked for
+          // a backup, so overwriting DEST without one — previously the
+          // failure was swallowed and the install exited 0 — destroys
+          // the original on a false promise (#1436). DEST has not been
+          // touched yet; diagnose and skip it, as the source validation
+          // above already does for its failures (#1357).
+          safeErrorPrintLn("install: cannot backup '" + dest +
+                           "': " + win32_posix_error_text(GetLastError()));
+          had_failure = true;
+          continue;
         }
       }
     }

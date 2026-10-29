@@ -1502,15 +1502,50 @@ auto copy_file(const std::string& srcPath, const std::string& destPath,
     }
   }
 
-  // Copy file content
-  dest << src.rdbuf();
-  if (dest.bad()) {
-    return std::unexpected("error writing '" + destPath + "'");
+  // Copy file content. All three error segments of the copy are
+  // accounted for (#1434): the transfer runs as an explicit sgetn loop
+  // that counts the bytes itself, because a mid-stream source read
+  // failure surfaces at the streambuf layer as EOF — a
+  // `dest << src.rdbuf()` insertion stops short without setting any
+  // state on src (and sets a benign failbit on dest when it inserts
+  // zero characters, which also poisons tellp). The copied count is
+  // reconciled against the source size captured up front; every write
+  // is state-checked; and the flush and close states are checked (the
+  // close is where a buffered write failure, classically ENOSPC,
+  // lands). A source that grows while copying is not an error (only a
+  // short copy is), and a non-seekable source skips the reconciliation.
+  // The sparse path checks every Win32 call the same way.
+  src.seekg(0, std::ios::end);
+  const std::streamoff src_size = src.tellg();
+  src.seekg(0, std::ios::beg);
+
+  std::vector<char> buffer(64 * 1024);
+  std::streamoff copied = 0;
+  for (;;) {
+    const std::streamsize got = src.rdbuf()->sgetn(
+        buffer.data(), static_cast<std::streamsize>(buffer.size()));
+    if (got <= 0) {
+      break;
+    }
+    dest.write(buffer.data(), got);
+    if (!dest) {
+      return std::unexpected("error writing '" + destPath + "'");
+    }
+    copied += got;
+  }
+  if (src_size >= 0 && copied < src_size) {
+    return std::unexpected("error reading '" + srcPath + "'");
   }
 
   // Flush and close the files
   dest.flush();
+  if (!dest) {
+    return std::unexpected("error writing '" + destPath + "'");
+  }
   dest.close();
+  if (dest.fail()) {
+    return std::unexpected("error writing '" + destPath + "'");
+  }
   src.close();
 
   return finish_copy(srcPath, destPath, ctx, verbose);
@@ -1519,6 +1554,46 @@ auto copy_file(const std::string& srcPath, const std::string& destPath,
 // ----------------------------------------------
 // 7. Copy directory recursively
 // ----------------------------------------------
+// Identity key for the into-itself check (#1435): the operand folded by
+// the shared API-path boundary (the form the opens below will use), made
+// absolute and lexically normalized, with ASCII case folded — NTFS names
+// compare case-insensitively, and the boundary's own ci helpers fold the
+// same range. An empty key means the fold failed; containment then
+// reports false and the copy proceeds as before.
+auto directory_identity_key(const std::string& path) -> std::wstring {
+  const auto operand = native_path::make_api_path_operand(path);
+  std::error_code ec;
+  const std::filesystem::path absolute = std::filesystem::absolute(
+      std::filesystem::path(operand.normalized), ec);
+  if (ec) {
+    return {};
+  }
+  std::wstring key = absolute.lexically_normal().wstring();
+  for (auto& ch : key) {
+    if (ch >= L'a' && ch <= L'z') {
+      ch = static_cast<wchar_t>(ch - L'a' + L'A');
+    }
+  }
+  return key;
+}
+
+// True when dest_key names src_key itself or a path inside it, on a
+// component boundary (a drive-root key already ends at its boundary).
+auto directory_key_contains(const std::wstring& src_key,
+                            const std::wstring& dest_key) -> bool {
+  if (src_key.empty() || dest_key.empty()) {
+    return false;
+  }
+  if (dest_key == src_key) {
+    return true;
+  }
+  if (dest_key.size() <= src_key.size() ||
+      dest_key.compare(0, src_key.size(), src_key) != 0) {
+    return false;
+  }
+  return src_key.back() == L'\\' || dest_key[src_key.size()] == L'\\';
+}
+
 // Helper function with depth limit
 auto copy_directory_helper(const std::string& srcPath,
                            const std::string& destPath,
@@ -1557,9 +1632,16 @@ auto copy_directory_helper(const std::string& srcPath,
     return true;
   }
 
-  // Prevent copying directory where destination is a subdirectory of source
-  if (destPath.find(srcPath) == 0 && destPath.size() > srcPath.size() &&
-      (destPath[srcPath.size()] == '\\' || destPath[srcPath.size()] == '/')) {
+  // Prevent copying a directory into itself or into its own subtree.
+  // The comparison runs on identity keys — each operand folded by the
+  // same path layer that will open it (dialect spellings resolved,
+  // absolute, lexically normalized) and compared case-insensitively —
+  // because the raw operand strings let equivalent spellings ("./a",
+  // "A" for "a", a drive form) walk straight past a prefix test and
+  // self-nest to the depth cap (#1435). GNU detects the same relation
+  // by (dev,ino) identity before copying anything.
+  if (directory_key_contains(directory_identity_key(srcPath),
+                             directory_identity_key(destPath))) {
     // OPTIMIZED: Avoid wstring concatenation
     safeErrorPrint("cp: cannot copy directory '");
     safeErrorPrint(srcPath);

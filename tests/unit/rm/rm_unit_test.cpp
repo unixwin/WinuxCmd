@@ -756,3 +756,109 @@ TEST(rm, rm_verbose_1328_recursive_paths) {
   EXPECT_EQ(r.stdout_text, "removed 'd/f'\nremoved directory 'd'\n");
   EXPECT_FALSE(std::filesystem::exists(tmp.path / "d"));
 }
+
+// #1433: rm classifies an operand by the link itself (GNU's lstat rule),
+// not by the target's attributes. "rm linkdir" used to refuse a
+// symlink-to-directory with "Is a directory"; "rm -r linkdir" used to
+// descend through the link and delete the target's contents.
+TEST(rm, issue1433_rm_directory_symlink_removes_link_only) {
+  TempDir tmp;
+  tmp.write("realdir/keep.txt", "keep");
+
+  std::error_code ec;
+  std::filesystem::create_directory_symlink(tmp.path / "realdir",
+                                            tmp.path / "linkdir", ec);
+  if (ec) {
+    // Same skip policy as the cp symlink tests.
+    std::cout
+        << "  SKIPPED (requires administrator privileges for symbolic links)\n";
+    return;
+  }
+  std::filesystem::create_directory_symlink(tmp.path / "realdir",
+                                            tmp.path / "linkdir_r", ec);
+  EXPECT_FALSE(ec);
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"rm.exe", {L"linkdir"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  std::error_code status_ec;
+  EXPECT_FALSE(
+      std::filesystem::exists(std::filesystem::symlink_status(
+          tmp.path / "linkdir", status_ec)));
+  EXPECT_EQ(tmp.read("realdir/keep.txt"), "keep");
+
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.add(L"rm.exe", {L"-r", L"linkdir_r"});
+  auto r2 = p2.run();
+
+  EXPECT_EQ(r2.exit_code, 0);
+  EXPECT_FALSE(
+      std::filesystem::exists(std::filesystem::symlink_status(
+          tmp.path / "linkdir_r", status_ec)));
+  // The recursive form must not descend through the link either.
+  EXPECT_EQ(tmp.read("realdir/keep.txt"), "keep");
+}
+
+// #1433: a directory junction is the same leaf shape (reparse point whose
+// own attributes name a directory); no privilege is needed to create one.
+TEST(rm, issue1433_rm_directory_junction_removes_link_only) {
+  TempDir tmp;
+  tmp.write("realdir/keep.txt", "keep");
+  EXPECT_TRUE(create_directory_junction(tmp.path / "linkdir",
+                                        tmp.path / "realdir"));
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"rm.exe", {L"linkdir"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "linkdir"));
+  EXPECT_EQ(tmp.read("realdir/keep.txt"), "keep");
+}
+
+// #1433: a dangling symlink exists as a link even though its target
+// attributes read as INVALID; rm unlinks it instead of reporting
+// "No such file or directory".
+TEST(rm, issue1433_rm_dangling_symlink_removes_link) {
+  TempDir tmp;
+
+  std::error_code ec;
+  std::filesystem::create_symlink(tmp.path / "missing-target",
+                                  tmp.path / "dangling", ec);
+  if (ec) {
+    std::cout
+        << "  SKIPPED (requires administrator privileges for symbolic links)\n";
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"rm.exe", {L"dangling"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  std::error_code status_ec;
+  EXPECT_FALSE(std::filesystem::exists(
+      std::filesystem::symlink_status(tmp.path / "dangling", status_ec)));
+}
+
+// #1433 control: a real directory without -r is still refused — the link
+// leaf rule must not widen into directory removal.
+TEST(rm, issue1433_rm_real_directory_still_refused_without_r) {
+  TempDir tmp;
+  tmp.write("realdir/keep.txt", "keep");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"rm.exe", {L"realdir"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_CONTAINS(r.stderr_text, "Is a directory");
+  EXPECT_EQ(tmp.read("realdir/keep.txt"), "keep");
+}

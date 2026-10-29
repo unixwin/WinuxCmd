@@ -193,10 +193,16 @@ inline auto home_parent_w() -> std::wstring {
 
 // Append a shell tail (the part after the mount name, with or without a
 // leading separator) to a native base, folding "." and ".." lexically like
-// rubash's map_logical_path.
+// rubash's map_logical_path. The tail's components fold against an initially
+// empty stack — exactly rubash's fold — and only the surviving components
+// are appended to the base: a ".." that reaches the mount base is a no-op
+// (the POSIX root clamp), never a pop of a base component. Seeding the
+// stack with the base itself let "/../x" escape the payload root and land
+// on a sibling of it, so one spelling resolved to different files in the
+// shell and in its coreutils children (#1432).
 inline auto join_tail(std::wstring_view tail, std::wstring base)
     -> std::wstring {
-  std::filesystem::path joined(std::move(base));
+  std::vector<std::wstring> components;
   size_t start = 0;
   for (;;) {
     const size_t end = tail.find(L'/', start);
@@ -204,12 +210,16 @@ inline auto join_tail(std::wstring_view tail, std::wstring base)
         start, end == std::wstring_view::npos ? std::wstring_view::npos
                                               : end - start);
     if (component == L"..") {
-      if (joined.has_parent_path()) joined = joined.parent_path();
+      if (!components.empty()) components.pop_back();
     } else if (!component.empty() && component != L".") {
-      joined /= std::wstring(component);
+      components.emplace_back(component);
     }
     if (end == std::wstring_view::npos) break;
     start = end + 1;
+  }
+  std::filesystem::path joined(std::move(base));
+  for (const auto& component : components) {
+    joined /= component;
   }
   return joined.wstring();
 }
