@@ -51,6 +51,22 @@ case "$(uname -s 2>/dev/null)" in
   *) ORACLE_PLATFORM=unknown ;;
 esac
 
+# Launch shape of the subject (the WinuxCmd build under test). The oracle
+# platform above describes the *oracle's* runtime; this one describes how
+# the *subject* process is created. A case can depend on what the launch
+# delivers to the subject rather than on either program: a genuinely
+# closed stdin exists when a Windows shell creates the subject directly,
+# but a subject reached from a Linux shell (in practice the WSL interop
+# chain, the shape the baseline is recorded in) receives a substitute
+# handle instead, so an `args: <&-` premise never arrives as a closed
+# descriptor. Such cases declare `subject: native` and are SKIPped under
+# interop, which keeps KNOWN_DIFF meaning "executed, results differ"
+# instead of "the premise could not be delivered".
+case "$(uname -s 2>/dev/null)" in
+  MINGW*|MSYS*|CYGWIN*) SUBJECT_LAUNCH=native ;;
+  *) SUBJECT_LAUNCH=interop ;;
+esac
+
 # The oracle's wording depends on its locale: GNU quote() renders Unicode curly
 # quotes (U+2018/2019) under a UTF-8 locale and ASCII quotes under C, so the
 # same case was PASS on a machine whose oracle ran in C and KNOWN_DIFF on one
@@ -116,11 +132,36 @@ shell_quote() {
   printf "'%s'" "${1//\'/\'\\''}"
 }
 
+# Output normalization for the comparison in run_case. Both sides pass
+# through the same filter, so a verdict still requires the outputs to agree
+# on everything the filter does not explicitly mask. The filter strips CR
+# (a superset of the CRLF check earlier in the chain) and masks the one
+# genuinely run-varying summary in the corpus: dd's transfer report.
+#
+# GNU dd ends its stderr summary with ", <elapsed> s, <rate>" - values that
+# change on every run and can never match byte-for-byte - and counts
+# records as "<full>+<partial>". WinuxCmd dd prints neither the timing
+# tail nor a partial count, so the mask drops everything after
+# "bytes copied," (the elapsed/rate tail and the optional human-readable
+# size in parentheses) and canonicalizes a "+0" partial count, leaving the
+# deterministic part of the summary - record totals and byte counts - to
+# be compared exactly.
+#
+# The partial mask is deliberately limited to "+0". A real partial-record
+# difference ("0+1 records in" from GNU vs "1 records in" from WinuxCmd)
+# still differs after normalization, so a genuine record-counting
+# divergence stays visible instead of being normalized away.
+normalize_output() {
+  tr -d '\r' | sed -E \
+    -e 's/^([0-9]+)\+0 records (in|out)$/\1 records \2/' \
+    -e 's/^([0-9]+ bytes)( \([^)]*\))? copied, .*/\1 copied/'
+}
+
 run_case() {
-  local case_file=$1 work wdir gdir line block cmd args timeout setup stdin files case_oracle case_oracle_min
+  local case_file=$1 work wdir gdir line block cmd args timeout setup stdin files case_oracle case_oracle_min case_subject
   work=$(mktemp -d) || return 2
   wdir="$work/w"; gdir="$work/g"; mkdir -p "$wdir" "$gdir"
-  cmd=""; args=""; timeout=10; setup=""; stdin=""; files=""; block=""; case_oracle=""; case_oracle_min=""
+  cmd=""; args=""; timeout=10; setup=""; stdin=""; files=""; block=""; case_oracle=""; case_oracle_min=""; case_subject=""
   while IFS= read -r line || [ -n "$line" ]; do
     if [ -n "$block" ]; then
       if [[ "$line" == "  "* ]]; then
@@ -136,6 +177,7 @@ run_case() {
       files:*) files=${line#files: };;
       oracle:*) case_oracle=${line#oracle: }; case_oracle=${case_oracle# };;
       oracle_version:*) case_oracle_min=${line#oracle_version: };;
+      subject:*) case_subject=${line#subject: }; case_subject=${case_subject# };;
       setup:\ \|) block=setup;;
       stdin:\ \|) block=stdin;;
     esac
@@ -146,6 +188,11 @@ run_case() {
     return 0
   fi
   if [ -n "$case_oracle" ] && [ "$case_oracle" != "$ORACLE_PLATFORM" ]; then
+    rm -rf "$work"
+    printf '%s\t%s\tSKIP\n' "${case_file#$ROOT/}" "$cmd"
+    return 0
+  fi
+  if [ -n "$case_subject" ] && [ "$case_subject" != "$SUBJECT_LAUNCH" ]; then
     rm -rf "$work"
     printf '%s\t%s\tSKIP\n' "${case_file#$ROOT/}" "$cmd"
     return 0
@@ -246,6 +293,10 @@ run_case() {
        cmp -s <(tr -d '\r' < "$werr") <(tr -d '\r' < "$gerr") &&
        [ "$files_equal" = true ]; then
     bucket=CRLF_DIFF
+  elif [ "$files_equal" = true ] &&
+       cmp -s <(normalize_output < "$wout") <(normalize_output < "$gout") &&
+       cmp -s <(normalize_output < "$werr") <(normalize_output < "$gerr"); then
+    bucket=PASS
   else
     bucket=OUT_DIFF
   fi

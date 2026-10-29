@@ -12,8 +12,15 @@ corpus/mkdir/30-exists.case	format: GNU 9.4 mkdir error uses locale-dependent cu
 corpus/readlink/01-resolve.case	platform: readlink -f resolves WSL path to Windows UNC (\wsl$Ubuntu-GitLab...); GNU returns the WSL absolute path
 corpus/envsubst/01-basic.case	environment: $HOME is /root on WSL-GNU vs Windows UserProfile on winux
 corpus/mktemp/01-basic.case	environment: tmpdir differs (WSL /tmp vs Windows TEMP)
-corpus/dd/01-count.case	environment: dd stderr includes non-deterministic timing info (bytes/sec) and format variation (+0 records)
-corpus/dd/02-skip.case	environment: dd stderr timing/format variation; file bytes are identical
+# dd/01-count and dd/02-skip are deliberately NOT whitelisted any more.
+# Their only differences were the volatile parts of dd's stderr summary -
+# GNU's elapsed-time/rate tail after "bytes copied," and the "+0"
+# partial-record notation - which runner.sh now masks symmetrically in
+# normalize_output. The cases therefore compare on the deterministic
+# record totals and byte counts (and on the copied file bytes, which
+# always matched) and PASS. A real partial-record difference is not
+# masked, so a future counting divergence turns these cases red again
+# instead of hiding behind an exemption.
 regressions/12-seq-limit.case	platform: winux seq is slower for 1M-line output; times out at runner's 10s limit while GNU seq completes fast
 corpus/namei/01-basic.case	platform: output format differs between GNU namei (util-linux) and WinuxCmd (Windows path resolution steps)
 corpus/namei/02-no-exist.case	platform: GNU namei exits 1 for non-existent paths; WinuxCmd exits 0
@@ -65,6 +72,21 @@ regressions/41-stdbuf-line-mode.case	platform: Git Bash oracle stdbuf itself fai
 # keeps KNOWN_DIFF meaning "executed, results differ".
 corpus/date/23-rel-overflow.case	format: same quoting-style-only difference as date/03 (invalid date); rc=1 and "invalid date" text identical
 regressions/30-sdiff-output-file.case	behavior: sdiff -o auto-merges non-interactively per issue #1127 P1; GNU prompts (prints % and reads stdin). The merged-file bytes agree; only the interactive prompt on stdout differs.
+# Baseline-job oracle delta (wave-1b adjudication): in the CI baseline
+# job (WSL Ubuntu 24.04) the only cal available is ncal's BSD cal -
+# bsdextrautils 2.39 ships no cal at all. ncal pads every row to 22
+# columns with trailing blanks and centres the title over 22 columns;
+# the applet implements the util-linux layout (20 columns, no trailing
+# padding, src/commands/cal.cpp kMonthWidth = 20) that the recorded
+# PASS was taken against. For 02 the delta is wider: -m is --monday
+# (week starts Monday) in util-linux and the applet, but a month
+# operand in ncal, so the two sides print different grids entirely.
+# No util-linux cal package exists for 24.04 to pin instead.
+corpus/cal/01-current.case	oracle: CI oracle is ncal (BSD cal) - 22-column rows with trailing padding vs the applet's util-linux 20-column layout; recorded PASS against a util-linux-semantics cal
+corpus/cal/02-month.case	oracle: same ncal delta as corpus/cal/01, plus -m is --monday to util-linux and the applet but a month operand to ncal
+regressions/56-find-L-loop.case	environment: find loop detection keys on the (volume serial, file index) identity of ancestor directories; through the \\wsl.localhost 9p share in the WSL-side runner the redirector does not return a matching identity for a directory re-reached through a symlink loop, so the subject does not stop where GNU stops. Same 9p family as regressions/23-cp-link-option and corpus/ln/35-hard
+regressions/57-ln-backup-control.case	environment: after the backup rename the case creates a symlink, and reparse-point creation through the \\wsl.localhost 9p share in the WSL-side runner is not supported by the redirector, so the subject exits non-zero where GNU (on the WSL ext4 side) succeeds. Same 9p family as corpus/ln/35-hard
+regressions/42-locale-keyword.case	environment: charmap is defined by the locale the subject runs under; in the WSL-side baseline job the runner's pinned LC_ALL does not reach the Windows subject through the interop chain (forwarding LC_ALL/LANG via WSLENV was tried and the verdict did not change - run 40941525029), so the subject answers from the host locale while the oracle answers for LC_ALL=C. Passes in the native runner shape, where the export reaches the subject; the applet itself honours LC_ALL (src/commands/locale.cpp)
 corpus/sdiff/11-ignore-blank-lines-display.case	behavior: GNU keeps -B-ignored blank-line hunks in the side-by-side display as ")"-gutter artifact rows (pairing shifts); WinuxCmd drops ignored hunks before display (diff_engine drop_ignored_hunks). Exit status and the -B -s face agree (case 10); only display rows differ.
 corpus/sdiff/15-strip-trailing-cr.case	format: GNU strips trailing CR on input, so its display drops the CRs as well; WinuxCmd strips CR for comparison only and displays the right file's original lines with CRs. CRLF-only display difference; the comparison verdict (exit status) agrees.
 corpus/sdiff/18-output-merge-left.case	behavior: sdiff -o auto-merges non-interactively per issue #1127 P1; GNU prompts (prints % and reads stdin) and exits 1 when the inputs differ, WinuxCmd exits 0. The merged-file bytes agree (stdin selects left); the prompt on stdout and the exit status differ.
