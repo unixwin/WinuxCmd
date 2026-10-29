@@ -7,7 +7,22 @@ import argparse
 import json
 from pathlib import Path
 
-ORDER = {"PASS": 0, "CRLF_DIFF": 1, "OUT_DIFF": 2, "EXIT_DIFF": 3, "SKIP": 4}
+ORDER = {
+    "PASS": 0,
+    # KNOWN_DIFF is the bucket runner.sh assigns when a case differs in a
+    # way whitelist.txt explains. It is an accepted terminal state, not a
+    # worsening, so it ranks with PASS: a recorded PASS that starts
+    # producing its whitelisted diff has not regressed, while a move from
+    # PASS or KNOWN_DIFF to any *unexplained* bucket below still fails.
+    # Without an entry the bucket scored 99, which cut both ways: an
+    # explained diff on a PASS case counted as a regression, and a
+    # recorded KNOWN_DIFF degrading to OUT_DIFF scored 2 < 99 and passed.
+    "KNOWN_DIFF": 0,
+    "CRLF_DIFF": 1,
+    "OUT_DIFF": 2,
+    "EXIT_DIFF": 3,
+    "SKIP": 4,
+}
 
 
 def main() -> int:
