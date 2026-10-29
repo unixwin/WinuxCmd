@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 caomengxuan666 <caomengxuan666@users.noreply.github.com>
 #include <array>
+#include <functional>
+#include <string>
 #include <string_view>
+#include <thread>
 
 #include "framework/winuxtest.h"
 
@@ -591,4 +594,174 @@ TEST(head, issue_1283_drive_colon_operand_reads_carrier_file) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "first\n");
+}
+
+// #1442: a fifo operand is a named pipe behind an on-disk marker. head
+// must stream it like GNU: stop at the Nth delimiter, never wait for EOF,
+// never poison the stream with seeks. The writer runs on a thread because
+// opening the marker for read blocks until a writer arrives (POSIX fifo
+// semantics, #1038 bridge); assertions stay on the main thread.
+namespace {
+auto run_fifo_writer(TempDir& tmp, const std::string& input, int& rc,
+                     std::string& error) -> void {
+  try {
+    Pipeline w;
+    w.set_cwd(tmp.wpath());
+    w.set_stdin(input);
+    w.add(L"tee.exe", {L"f"});
+    rc = w.run().exit_code;
+  } catch (const std::exception& e) {
+    error = e.what();
+  }
+}
+
+auto make_fifo_marker(TempDir& tmp) -> int {
+  Pipeline mk;
+  mk.set_cwd(tmp.wpath());
+  mk.add(L"mkfifo.exe", {L"f"});
+  return mk.run().exit_code;
+}
+}  // namespace
+
+TEST(head, head_fifo_operand_truncates_at_first_line_issue1442) {
+  TempDir tmp;
+  EXPECT_EQ(make_fifo_marker(tmp), 0);
+
+  int writer_rc = -1;
+  std::string writer_error;
+  std::thread writer(run_fifo_writer, std::ref(tmp), "l1\nl2\n",
+                     std::ref(writer_rc), std::ref(writer_error));
+
+  Pipeline h;
+  h.set_cwd(tmp.wpath());
+  h.add(L"head.exe", {L"-n", L"1", L"f"});
+  auto r = h.run();
+  writer.join();
+
+  EXPECT_TRUE(writer_error.empty());
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "l1\n");
+}
+
+TEST(head, head_fifo_operand_partial_writer_still_prints_first_line_issue1442) {
+  TempDir tmp;
+  EXPECT_EQ(make_fifo_marker(tmp), 0);
+
+  int writer_rc = -1;
+  std::string writer_error;
+  std::thread writer(run_fifo_writer, std::ref(tmp), "l1\n",
+                     std::ref(writer_rc), std::ref(writer_error));
+
+  Pipeline h;
+  h.set_cwd(tmp.wpath());
+  h.add(L"head.exe", {L"-n", L"1", L"f"});
+  auto r = h.run();
+  writer.join();
+
+  EXPECT_TRUE(writer_error.empty());
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "l1\n");
+}
+
+TEST(head, head_fifo_operand_stops_at_delimiter_without_eof_issue1442) {
+  TempDir tmp;
+  EXPECT_EQ(make_fifo_marker(tmp), 0);
+
+  // Input far exceeds the 64 KiB pipe buffer, so the writer cannot finish
+  // before head decides: if head waited for EOF, the writer would complete
+  // cleanly; if head stops at the first delimiter, the writer's later
+  // writes fail with a broken pipe and tee exits nonzero (warn mode).
+  std::string input;
+  for (int i = 0; i < 24000; ++i) {
+    input += "line000000\n";
+  }
+
+  int writer_rc = -1;
+  std::string writer_error;
+  std::string writer_stderr;
+  std::thread writer([&] {
+    try {
+      Pipeline w;
+      w.set_cwd(tmp.wpath());
+      w.set_stdin(input);
+      w.add(L"tee.exe", {L"f"});
+      auto r = w.run();
+      writer_rc = r.exit_code;
+      writer_stderr = r.stderr_text;
+    } catch (const std::exception& e) {
+      writer_error = e.what();
+    }
+  });
+
+  Pipeline h;
+  h.set_cwd(tmp.wpath());
+  h.add(L"head.exe", {L"-n", L"1", L"f"});
+  auto r = h.run();
+  writer.join();
+
+  EXPECT_TRUE(writer_error.empty());
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "line000000\n");
+  EXPECT_EQ(writer_rc, 1);
+  EXPECT_NE(writer_stderr.find("write error"), std::string::npos);
+}
+
+TEST(head, head_fifo_operand_byte_mode_issue1442) {
+  TempDir tmp;
+  EXPECT_EQ(make_fifo_marker(tmp), 0);
+
+  int writer_rc = -1;
+  std::string writer_error;
+  std::thread writer(run_fifo_writer, std::ref(tmp), "l1\nl2\n",
+                     std::ref(writer_rc), std::ref(writer_error));
+
+  Pipeline h;
+  h.set_cwd(tmp.wpath());
+  h.add(L"head.exe", {L"-c", L"4", L"f"});
+  auto r = h.run();
+  writer.join();
+
+  EXPECT_TRUE(writer_error.empty());
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "l1\n");
+}
+
+TEST(head, head_fifo_operand_zero_terminated_issue1442) {
+  TempDir tmp;
+  EXPECT_EQ(make_fifo_marker(tmp), 0);
+
+  int writer_rc = -1;
+  std::string writer_error;
+  std::thread writer(run_fifo_writer, std::ref(tmp), std::string("a\0b\0", 4),
+                     std::ref(writer_rc), std::ref(writer_error));
+
+  Pipeline h;
+  h.set_cwd(tmp.wpath());
+  h.add(L"head.exe", {L"-z", L"-n", L"1", L"f"});
+  auto r = h.run();
+  writer.join();
+
+  EXPECT_TRUE(writer_error.empty());
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(r.stdout_text, std::string("a\0", 2));
+}
+
+TEST(head, head_fifo_operand_all_but_last_line_issue1442) {
+  TempDir tmp;
+  EXPECT_EQ(make_fifo_marker(tmp), 0);
+
+  int writer_rc = -1;
+  std::string writer_error;
+  std::thread writer(run_fifo_writer, std::ref(tmp), "l1\nl2\nl3\n",
+                     std::ref(writer_rc), std::ref(writer_error));
+
+  Pipeline h;
+  h.set_cwd(tmp.wpath());
+  h.add(L"head.exe", {L"-n", L"-1", L"f"});
+  auto r = h.run();
+  writer.join();
+
+  EXPECT_TRUE(writer_error.empty());
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "l1\nl2\n");
 }

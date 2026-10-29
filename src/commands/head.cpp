@@ -380,6 +380,118 @@ auto output_first_records(std::istream& in, size_t records, char delimiter)
   }
 }
 
+// Pipe-operand streaming (#1442). A fifo operand is a Windows named pipe
+// behind an on-disk marker; it must never go through the ifstream paths
+// below: istream::read (xsgetn) loops until the request is FULL or EOF on
+// pipes, and the seek-based text-decode probe poisons the stream state
+// (tellg/seekg fail on pipes), which is exactly #1442 — a partial writer
+// yields silent zero output, and the decode path reads to EOF instead of
+// stopping at the Nth delimiter. These helpers therefore read the pipe
+// HANDLE directly with short ReadFile reads, mirroring the stdin fast path
+// in output_first_records (#1289/R2): head stops at the Nth delimiter and
+// leaves the rest to EPIPE, exactly like GNU head on pipes. Bytes pass
+// through raw (GNU does no text decoding on pipes). Each helper returns
+// false only on a read error other than EOF (broken pipe).
+auto output_pipe_first_records(HANDLE hPipe, size_t records, char delimiter)
+    -> bool {
+  if (records == 0) return true;
+  std::array<char, 8192> buffer{};
+  while (records > 0) {
+    DWORD got = 0;
+    if (!ReadFile(hPipe, buffer.data(), static_cast<DWORD>(buffer.size()),
+                  &got, nullptr)) {
+      return GetLastError() == ERROR_BROKEN_PIPE;
+    }
+    if (got == 0) return true;
+
+    size_t bytes_to_write = got;
+    for (size_t i = 0; i < got; ++i) {
+      if (buffer[i] == delimiter && --records == 0) {
+        bytes_to_write = i + 1;
+        break;
+      }
+    }
+    safePrint(std::string_view(buffer.data(), bytes_to_write));
+    if (records == 0) return true;
+  }
+  return true;
+}
+
+auto output_pipe_bytes(HANDLE hPipe, size_t bytes) -> bool {
+  std::array<char, 8192> buffer{};
+  while (bytes > 0) {
+    const DWORD want =
+        static_cast<DWORD>(std::min<size_t>(bytes, buffer.size()));
+    DWORD got = 0;
+    if (!ReadFile(hPipe, buffer.data(), want, &got, nullptr)) {
+      return GetLastError() == ERROR_BROKEN_PIPE;
+    }
+    if (got == 0) return true;
+    safePrint(std::string_view(buffer.data(), got));
+    bytes -= got;
+  }
+  return true;
+}
+
+auto output_pipe_all_but_last_records(HANDLE hPipe, size_t records,
+                                      char delimiter) -> bool {
+  std::deque<std::string> trailing_records;
+  std::string current;
+  std::array<char, 8192> buffer{};
+  for (;;) {
+    DWORD got = 0;
+    if (!ReadFile(hPipe, buffer.data(), static_cast<DWORD>(buffer.size()),
+                  &got, nullptr)) {
+      if (GetLastError() != ERROR_BROKEN_PIPE) return false;
+      break;
+    }
+    if (got == 0) break;
+    for (DWORD i = 0; i < got; ++i) {
+      const char ch = buffer[i];
+      current.push_back(ch);
+      if (ch == delimiter) {
+        trailing_records.push_back(std::move(current));
+        current.clear();
+        if (trailing_records.size() > records) {
+          safePrint(trailing_records.front());
+          trailing_records.pop_front();
+        }
+      }
+    }
+  }
+
+  if (!current.empty()) {
+    trailing_records.push_back(std::move(current));
+    if (trailing_records.size() > records) {
+      safePrint(trailing_records.front());
+      trailing_records.pop_front();
+    }
+  }
+  return true;
+}
+
+auto output_pipe_all_but_last_bytes(HANDLE hPipe, size_t bytes) -> bool {
+  std::deque<char> trailing;
+  std::array<char, 8192> buffer{};
+  for (;;) {
+    DWORD got = 0;
+    if (!ReadFile(hPipe, buffer.data(), static_cast<DWORD>(buffer.size()),
+                  &got, nullptr)) {
+      if (GetLastError() != ERROR_BROKEN_PIPE) return false;
+      break;
+    }
+    if (got == 0) break;
+    for (DWORD i = 0; i < got; ++i) {
+      trailing.push_back(buffer[i]);
+      if (trailing.size() > bytes) {
+        safePrint(trailing.front());
+        trailing.pop_front();
+      }
+    }
+  }
+  return true;
+}
+
 auto stream_bytes(std::istream& in, size_t bytes) -> void {
   std::array<char, 64 * 1024> buffer{};
   while (bytes > 0 && in.good()) {
@@ -628,6 +740,60 @@ REGISTER_COMMAND(
         any_error = true;
       }
     } else {
+      // #1442: a fifo operand is a non-seekable named pipe behind an
+      // on-disk marker. Detect it before opening: the seek-based decode
+      // probe and the seekable paths below poison pipe streams, and the
+      // decode path reads to EOF instead of stopping at the Nth
+      // delimiter. Stream the pipe HANDLE directly (helpers above).
+      // The handle is opened before the header, like the regular-file
+      // open below, so a failed open reports no header — GNU order.
+      const auto fifo_operand = native_path::make_api_path_operand(file);
+      if (native_path::is_winux_fifo_w(fifo_operand.normalized)) {
+        HANDLE hPipe = file_io::open_fifo_read_handle(fifo_operand.normalized);
+        if (hPipe == INVALID_HANDLE_VALUE) {
+          safeErrorPrint("head: cannot open '");
+          safeErrorPrint(file);
+          safeErrorPrint("' for reading: ");
+          safeErrorPrint(describe_open_failure(file));
+          safeErrorPrint("\n");
+          any_error = true;
+          continue;
+        }
+
+        emit_header();
+        bool ok = false;
+        if (config.spec.plus_form) {
+          ok = config.by_bytes
+                   ? output_pipe_bytes(hPipe,
+                                       static_cast<size_t>(config.spec.value))
+                   : output_pipe_first_records(
+                         hPipe, static_cast<size_t>(config.spec.value),
+                         config.delimiter);
+        } else if (config.by_bytes) {
+          ok = config.spec.all_but_last
+                   ? output_pipe_all_but_last_bytes(
+                         hPipe, static_cast<size_t>(config.spec.value))
+                   : output_pipe_bytes(hPipe,
+                                       static_cast<size_t>(config.spec.value));
+        } else {
+          ok = config.spec.all_but_last
+                   ? output_pipe_all_but_last_records(
+                         hPipe, static_cast<size_t>(config.spec.value),
+                         config.delimiter)
+                   : output_pipe_first_records(
+                         hPipe, static_cast<size_t>(config.spec.value),
+                         config.delimiter);
+        }
+        CloseHandle(hPipe);
+        if (!ok) {
+          safeErrorPrint("head: error reading '");
+          safeErrorPrint(file);
+          safeErrorPrint("'\n");
+          any_error = true;
+        }
+        continue;
+      }
+
       std::ifstream input = open_input_file(file);
       if (!input.is_open()) {
         std::string reason = describe_open_failure(file);
