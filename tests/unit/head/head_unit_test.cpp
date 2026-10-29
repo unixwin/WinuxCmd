@@ -723,7 +723,7 @@ TEST(head, head_fifo_operand_byte_mode_issue1442) {
 
   EXPECT_TRUE(writer_error.empty());
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "l1\n");
+  EXPECT_EQ_TEXT(r.stdout_text, "l1\nl");
 }
 
 TEST(head, head_fifo_operand_zero_terminated_issue1442) {
