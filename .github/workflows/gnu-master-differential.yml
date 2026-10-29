@@ -65,3 +65,44 @@ jobs:
         shell: pwsh
         run: |
           python tests/differential/master-oracle.py --winuxcmd build-vs/winuxcmd.exe --revision "$env:GNU_REVISION" --compare gnu-master-results.json
+
+  baseline:
+    # tests/differential/baseline.json is the only-grows ledger for the
+    # corpus runner: with --results, runner.sh ends by running
+    # compare-baseline.py, which fails the run on missing cases, unrecorded
+    # new cases, unexplained skips and bucket regressions. Until now no
+    # workflow ran the runner, so the gate existed only on maintainer
+    # machines. The runner needs a live Linux GNU oracle with the Windows
+    # build reachable - the environment the corpus and baseline were
+    # recorded in - so it runs inside WSL on the Windows runner.
+    # Ubuntu 24.04 ships coreutils 9.4, the recorded oracle; an older
+    # distro would SKIP the oracle_version >= 9.2 cases and trip the
+    # gate's unexplained-skip rule.
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build native Windows Release
+        shell: pwsh
+        run: |
+          ./scripts/build-with-vs.ps1 -Configuration Release -Target winuxcmd -CMakeExtraArgs @('-DBUILD_MODE=RELEASE', '-DENABLE_TESTS=OFF', '-DCMAKE_CXX_MODULE_STD=ON')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Set up WSL with the recorded GNU oracle (Ubuntu 24.04)
+        uses: Vampire/setup-wsl@v3
+        with:
+          distribution: Ubuntu-24.04
+          additional-packages: python3
+      - name: Run the differential corpus and the baseline gate
+        shell: pwsh
+        run: |
+          wsl -d Ubuntu-24.04 --cd $env:GITHUB_WORKSPACE -- env WINUXCMD_BIN=build-vs bash tests/differential/runner.sh --results baseline-results.tsv --report baseline-report.md
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Upload baseline run artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: differential-baseline
+          path: |
+            baseline-results.tsv
+            baseline-report.md
+          if-no-files-found: warn
