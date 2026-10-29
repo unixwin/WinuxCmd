@@ -248,16 +248,7 @@ run_case() {
     wcommand="exec $wquoted $(shell_quote "$cmd") $case_args"
   fi
   local gcommand="exec $gquoted $case_args"
-  # When this runner itself runs inside WSL (the CI baseline job), the
-  # subject is a Windows process reached through the interop chain, and
-  # only WSLENV-listed variables cross over to it. LC_ALL and LANG must
-  # be listed: without them the pinned locale above never reaches the
-  # subject, which then silently runs under the Windows host locale
-  # while the oracle runs under the pinned one - and `locale charmap`
-  # is defined by exactly that locale (regressions/42). On a native
-  # Windows runner the exports reach the subject directly and the
-  # WSLENV entries are inert.
-  (cd "$wdir" && export PATH="$(dirname "$wcmd"):$PATH" WINUX_LANG=en LC_ALL="$ORACLE_LOCALE" LANG="$ORACLE_LOCALE" WSLENV="WINUX_LANG/u:LC_ALL/u:LANG/u:${WSLENV:-}" && printf '%b' "$stdin" | MSYS2_ARG_CONV_EXCL='*' MSYS_NO_PATHCONV=1 \
+  (cd "$wdir" && export PATH="$(dirname "$wcmd"):$PATH" WINUX_LANG=en LC_ALL="$ORACLE_LOCALE" LANG="$ORACLE_LOCALE" WSLENV="WINUX_LANG/u:${WSLENV:-}" && printf '%b' "$stdin" | MSYS2_ARG_CONV_EXCL='*' MSYS_NO_PATHCONV=1 \
     "$timeout_cmd" "$timeout" bash -c "$wcommand" >"$wout" 2>"$werr"); wrc=$?
   (cd "$gdir" && export PATH="$(dirname "$gcmd"):$PATH" LC_ALL="$ORACLE_LOCALE" LANG="$ORACLE_LOCALE" && printf '%b' "$stdin" | MSYS2_ARG_CONV_EXCL='*' MSYS_NO_PATHCONV=1 \
     "$timeout_cmd" "$timeout" bash -c "$gcommand" >"$gout" 2>"$gerr"); grc=$?
