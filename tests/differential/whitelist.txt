@@ -72,3 +72,15 @@ regressions/41-stdbuf-line-mode.case	platform: Git Bash oracle stdbuf itself fai
 # keeps KNOWN_DIFF meaning "executed, results differ".
 corpus/date/23-rel-overflow.case	format: same quoting-style-only difference as date/03 (invalid date); rc=1 and "invalid date" text identical
 regressions/30-sdiff-output-file.case	behavior: sdiff -o auto-merges non-interactively per issue #1127 P1; GNU prompts (prints % and reads stdin). The merged-file bytes agree; only the interactive prompt on stdout differs.
+# Baseline-job oracle delta (wave-1b adjudication): in the CI baseline
+# job (WSL Ubuntu 24.04) the only cal available is ncal's BSD cal -
+# bsdextrautils 2.39 ships no cal at all. ncal pads every row to 22
+# columns with trailing blanks and centres the title over 22 columns;
+# the applet implements the util-linux layout (20 columns, no trailing
+# padding, src/commands/cal.cpp kMonthWidth = 20) that the recorded
+# PASS was taken against. For 02 the delta is wider: -m is --monday
+# (week starts Monday) in util-linux and the applet, but a month
+# operand in ncal, so the two sides print different grids entirely.
+# No util-linux cal package exists for 24.04 to pin instead.
+corpus/cal/01-current.case	oracle: CI oracle is ncal (BSD cal) - 22-column rows with trailing padding vs the applet's util-linux 20-column layout; recorded PASS against a util-linux-semantics cal
+corpus/cal/02-month.case	oracle: same ncal delta as corpus/cal/01, plus -m is --monday to util-linux and the applet but a month operand to ncal
