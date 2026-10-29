@@ -77,7 +77,10 @@ jobs:
     # recorded in - so it runs inside WSL on the Windows runner.
     # Ubuntu 24.04 ships coreutils 9.4, the recorded oracle; an older
     # distro would SKIP the oracle_version >= 9.2 cases and trip the
-    # gate's unexplained-skip rule.
+    # gate's unexplained-skip rule. GNU_BIN=/usr/bin is load-bearing:
+    # without it the runner resolves the oracle through the shell, where
+    # printf/test/echo/true/false are builtins rather than paths, and
+    # every case for those commands would SKIP instead of running.
     runs-on: windows-2025
     timeout-minutes: 60
     steps:
@@ -91,11 +94,13 @@ jobs:
         uses: Vampire/setup-wsl@v3
         with:
           distribution: Ubuntu-24.04
-          additional-packages: python3
+          # python3 runs compare-baseline.py; bsdextrautils provides cal,
+          # which the stock WSL image does not install.
+          additional-packages: python3 bsdextrautils
       - name: Run the differential corpus and the baseline gate
         shell: pwsh
         run: |
-          wsl -d Ubuntu-24.04 --cd $env:GITHUB_WORKSPACE -- env WINUXCMD_BIN=build-vs bash tests/differential/runner.sh --results baseline-results.tsv --report baseline-report.md
+          wsl -d Ubuntu-24.04 --cd $env:GITHUB_WORKSPACE -- env WINUXCMD_BIN=build-vs GNU_BIN=/usr/bin bash tests/differential/runner.sh --results baseline-results.tsv --report baseline-report.md
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Upload baseline run artifacts
         if: always()
