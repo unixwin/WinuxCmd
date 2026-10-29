@@ -12,8 +12,15 @@ corpus/mkdir/30-exists.case	format: GNU 9.4 mkdir error uses locale-dependent cu
 corpus/readlink/01-resolve.case	platform: readlink -f resolves WSL path to Windows UNC (\wsl$Ubuntu-GitLab...); GNU returns the WSL absolute path
 corpus/envsubst/01-basic.case	environment: $HOME is /root on WSL-GNU vs Windows UserProfile on winux
 corpus/mktemp/01-basic.case	environment: tmpdir differs (WSL /tmp vs Windows TEMP)
-corpus/dd/01-count.case	environment: dd stderr includes non-deterministic timing info (bytes/sec) and format variation (+0 records)
-corpus/dd/02-skip.case	environment: dd stderr timing/format variation; file bytes are identical
+# dd/01-count and dd/02-skip are deliberately NOT whitelisted any more.
+# Their only differences were the volatile parts of dd's stderr summary -
+# GNU's elapsed-time/rate tail after "bytes copied," and the "+0"
+# partial-record notation - which runner.sh now masks symmetrically in
+# normalize_output. The cases therefore compare on the deterministic
+# record totals and byte counts (and on the copied file bytes, which
+# always matched) and PASS. A real partial-record difference is not
+# masked, so a future counting divergence turns these cases red again
+# instead of hiding behind an exemption.
 regressions/12-seq-limit.case	platform: winux seq is slower for 1M-line output; times out at runner's 10s limit while GNU seq completes fast
 corpus/namei/01-basic.case	platform: output format differs between GNU namei (util-linux) and WinuxCmd (Windows path resolution steps)
 corpus/namei/02-no-exist.case	platform: GNU namei exits 1 for non-existent paths; WinuxCmd exits 0

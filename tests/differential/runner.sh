@@ -116,6 +116,31 @@ shell_quote() {
   printf "'%s'" "${1//\'/\'\\''}"
 }
 
+# Output normalization for the comparison in run_case. Both sides pass
+# through the same filter, so a verdict still requires the outputs to agree
+# on everything the filter does not explicitly mask. The filter strips CR
+# (a superset of the CRLF check earlier in the chain) and masks the one
+# genuinely run-varying summary in the corpus: dd's transfer report.
+#
+# GNU dd ends its stderr summary with ", <elapsed> s, <rate>" - values that
+# change on every run and can never match byte-for-byte - and counts
+# records as "<full>+<partial>". WinuxCmd dd prints neither the timing
+# tail nor a partial count, so the mask drops everything after
+# "bytes copied," (the elapsed/rate tail and the optional human-readable
+# size in parentheses) and canonicalizes a "+0" partial count, leaving the
+# deterministic part of the summary - record totals and byte counts - to
+# be compared exactly.
+#
+# The partial mask is deliberately limited to "+0". A real partial-record
+# difference ("0+1 records in" from GNU vs "1 records in" from WinuxCmd)
+# still differs after normalization, so a genuine record-counting
+# divergence stays visible instead of being normalized away.
+normalize_output() {
+  tr -d '\r' | sed -E \
+    -e 's/^([0-9]+)\+0 records (in|out)$/\1 records \2/' \
+    -e 's/^([0-9]+ bytes)( \([^)]*\))? copied, .*/\1 copied/'
+}
+
 run_case() {
   local case_file=$1 work wdir gdir line block cmd args timeout setup stdin files case_oracle case_oracle_min
   work=$(mktemp -d) || return 2
@@ -246,6 +271,10 @@ run_case() {
        cmp -s <(tr -d '\r' < "$werr") <(tr -d '\r' < "$gerr") &&
        [ "$files_equal" = true ]; then
     bucket=CRLF_DIFF
+  elif [ "$files_equal" = true ] &&
+       cmp -s <(normalize_output < "$wout") <(normalize_output < "$gout") &&
+       cmp -s <(normalize_output < "$werr") <(normalize_output < "$gerr"); then
+    bucket=PASS
   else
     bucket=OUT_DIFF
   fi
