@@ -1,0 +1,9 @@
+cmd: diff3
+args: -3 mine.txt orig.txt yours.txt
+timeout: 10
+setup: |
+  printf 'one\nTWO-mine\nthree\nfour\nfive\n' > mine.txt
+  printf 'one\ntwo\nthree\nfour\nfive\n' > orig.txt
+  printf 'one\nTWO-yours\nthree\nfour\nfive\n' > yours.txt
+source: github.com/unixwin/WinuxCmd/issues/1127
+tags: corpus-expansion issue-1127-p1

@@ -1,0 +1,8 @@
+cmd: sdiff
+args: --strip-trailing-cr f1.txt f2.txt
+timeout: 10
+setup: |
+  printf 'line1\nline2\n' > f1.txt
+  printf 'line1\r\nline2\r\n' > f2.txt
+source: github.com/unixwin/WinuxCmd/issues/1127
+tags: corpus-expansion issue-1127-p1
