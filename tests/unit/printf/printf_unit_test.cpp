@@ -80,6 +80,21 @@ TEST(printf, printf_respects_basic_width_and_precision) {
   EXPECT_EQ_TEXT(r.stderr_text, "");
 }
 
+TEST(printf, printf_invalid_conversion_specification_is_unquoted) {
+  Pipeline p;
+  p.add(L"printf.exe", {L"%y"});
+
+  auto r = p.run();
+
+  // [GNU] printf.c:663: the directive is reported without quotes —
+  // "printf: %y: invalid conversion specification" (coreutils 9.4
+  // under LC_ALL=C, #1445).
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ_TEXT(r.stdout_text, "");
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "printf: %y: invalid conversion specification\n");
+}
+
 TEST(printf, printf_warns_for_invalid_numeric_conversion) {
   Pipeline p;
   p.add(L"printf.exe", {L"%d:%g", L"abc", L"1.2tail"});

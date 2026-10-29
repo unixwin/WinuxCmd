@@ -79,14 +79,40 @@ TEST(tac, tac_before_attaches_separator_to_next_record) {
   EXPECT_EQ_TEXT(r.stdout_text, "::three:twoone");
 }
 
-TEST(tac, tac_empty_separator_is_rejected) {
+TEST(tac, tac_empty_separator_treats_input_as_one_record) {
   Pipeline p;
   p.set_stdin(std::string("a\0b\0c\0", 6));
   p.add(L"tac.exe", {L"--separator="});
 
   auto r = p.run();
 
-  // [GNU] tac.c:528: an empty separator is an error, not a NUL fallback.
+  // [GNU] An empty separator never occurs in the input, so the whole
+  // input is a single record and comes back verbatim (coreutils 9.4,
+  // #1444). The earlier pin here claimed tac.c rejects it outright;
+  // that holds only for the regex form (next test).
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(r.stdout_text, std::string("a\0b\0c\0", 6));
+}
+
+TEST(tac, tac_empty_separator_via_short_option_keeps_input_verbatim) {
+  Pipeline p;
+  p.set_stdin("a\nb\n");
+  p.add(L"tac.exe", {L"-s", L""});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "a\nb\n");
+}
+
+TEST(tac, tac_regex_empty_separator_is_rejected) {
+  Pipeline p;
+  p.set_stdin("a\nb\n");
+  p.add(L"tac.exe", {L"-r", L"--separator="});
+
+  auto r = p.run();
+
+  // [GNU] Only the regex form rejects an empty separator (#1444).
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_EQ_TEXT(r.stderr_text, "tac: separator cannot be empty\n");
 }
