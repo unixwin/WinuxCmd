@@ -94,9 +94,9 @@ jobs:
         uses: Vampire/setup-wsl@v3
         with:
           distribution: Ubuntu-24.04
-          # python3 runs compare-baseline.py; bsdextrautils provides cal,
-          # which the stock WSL image does not install.
-          additional-packages: python3 bsdextrautils
+          # python3 runs compare-baseline.py. The stock WSL image also
+          # lacks cal (provided by ncal) and the bsdextrautils tools.
+          additional-packages: python3 bsdextrautils ncal
       - name: Run the differential corpus and the baseline gate
         shell: pwsh
         run: |
