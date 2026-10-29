@@ -29,7 +29,54 @@ TEST(cmp, cmp_different_files) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_EQ_TEXT(r.stdout_text, "file1.txt file2.txt differ: byte 1, line 1\n");
+  // [GNU] the plain message counts in characters, not bytes (#1443).
+  EXPECT_EQ_TEXT(r.stdout_text, "file1.txt file2.txt differ: char 1, line 1\n");
+}
+
+TEST(cmp, cmp_print_bytes_uses_byte_wording_and_glyphs) {
+  TempDir tmp;
+  tmp.write("file1.txt", "hello\n");
+  tmp.write("file2.txt", "world\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cmp.exe", {L"-b", L"file1.txt", L"file2.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  // [GNU] -b keeps the "byte" wording and appends each differing byte
+  // as a width-3 octal value plus its printable glyph (#1443).
+  EXPECT_EQ_TEXT(r.stdout_text,
+                 "file1.txt file2.txt differ: byte 1, line 1 is 150 h 167 w\n");
+}
+
+TEST(cmp, cmp_print_bytes_control_and_high_byte_glyphs) {
+  TempDir tmp;
+  tmp.write_bytes("c1.bin", {'A', 0x01, 'Z', '\n'});
+  tmp.write_bytes("c2.bin", {'A', 0x02, 'Z', '\n'});
+  tmp.write_bytes("d1.bin", {static_cast<char>(0x80), '\n'});
+  tmp.write_bytes("d2.bin", {static_cast<char>(0xff), '\n'});
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cmp.exe", {L"-b", L"c1.bin", L"c2.bin"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  // [GNU] control bytes render in caret notation (#1443).
+  EXPECT_EQ_TEXT(r.stdout_text,
+                 "c1.bin c2.bin differ: byte 2, line 1 is   1 ^A   2 ^B\n");
+
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.add(L"cmp.exe", {L"-b", L"d1.bin", L"d2.bin"});
+  auto r2 = p2.run();
+
+  EXPECT_EQ(r2.exit_code, 1);
+  // [GNU] bytes >= 0200 render as M- over the low seven bits (#1443).
+  EXPECT_EQ_TEXT(r2.stdout_text,
+                 "d1.bin d2.bin differ: byte 1, line 1 is 200 M-^@ 377 M-^?\n");
 }
 
 TEST(cmp, cmp_quiet_mode) {
@@ -134,7 +181,7 @@ TEST(cmp, cmp_default_output_counts_byte_from_comparison_start_after_skip) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_EQ_TEXT(r.stdout_text, "file1.txt file2.txt differ: byte 1, line 1\n");
+  EXPECT_EQ_TEXT(r.stdout_text, "file1.txt file2.txt differ: char 1, line 1\n");
 }
 
 TEST(cmp, cmp_verbose_lists_all_differing_bytes) {
