@@ -45,7 +45,7 @@
       "command": "cmp"
     },
     "corpus/cmp/14-differ.case": {
-      "bucket": "OUT_DIFF",
+      "bucket": "PASS",
       "command": "cmp"
     },
     "corpus/comm/02-basic.case": {
@@ -969,7 +969,7 @@
       "command": "wc"
     },
     "regressions/50-tac-empty-separator.case": {
-      "bucket": "EXIT_DIFF",
+      "bucket": "PASS",
       "command": "tac"
     },
     "regressions/51-sort-empty-tab.case": {
@@ -977,7 +977,7 @@
       "command": "sort"
     },
     "regressions/52-printf-invalid-conversion.case": {
-      "bucket": "OUT_DIFF",
+      "bucket": "PASS",
       "command": "printf"
     },
     "regressions/53-ln-no-force-exists.case": {
