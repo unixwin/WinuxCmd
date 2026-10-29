@@ -711,6 +711,186 @@
     "corpus/which/01-basic.case": {
       "bucket": "KNOWN_DIFF",
       "command": "which"
+    },
+    "corpus/diff3/01-identical.case": {
+      "bucket": "PASS",
+      "command": "diff3"
+    },
+    "corpus/diff3/02-mine-only-change.case": {
+      "bucket": "PASS",
+      "command": "diff3"
+    },
+    "corpus/diff3/03-yours-only-change.case": {
+      "bucket": "PASS",
+      "command": "diff3"
+    },
+    "corpus/diff3/04-both-sides-nonoverlap.case": {
+      "bucket": "PASS",
+      "command": "diff3"
+    },
+    "corpus/diff3/05-conflict-same-line.case": {
+      "bucket": "PASS",
+      "command": "diff3"
+    },
+    "corpus/diff3/06-both-same-change.case": {
+      "bucket": "PASS",
+      "command": "diff3"
+    },
+    "corpus/diff3/07-mine-deletes-line.case": {
+      "bucket": "PASS",
+      "command": "diff3"
+    },
+    "corpus/diff3/08-delete-vs-edit-overlap.case": {
+      "bucket": "PASS",
+      "command": "diff3"
+    },
+    "corpus/diff3/09-empty-orig-both-add.case": {
+      "bucket": "PASS",
+      "command": "diff3"
+    },
+    "corpus/diff3/10-show-all-conflict.case": {
+      "bucket": "PASS",
+      "command": "diff3"
+    },
+    "corpus/diff3/11-show-overlap-conflict.case": {
+      "bucket": "PASS",
+      "command": "diff3"
+    },
+    "corpus/diff3/12-easy-only-conflict.case": {
+      "bucket": "PASS",
+      "command": "diff3"
+    },
+    "corpus/diff3/13-easy-only-long-nonoverlap.case": {
+      "bucket": "PASS",
+      "command": "diff3"
+    },
+    "corpus/diff3/14-overlap-only-conflict.case": {
+      "bucket": "PASS",
+      "command": "diff3"
+    },
+    "corpus/diff3/15-overlap-bracket-crossing.case": {
+      "bucket": "PASS",
+      "command": "diff3"
+    },
+    "corpus/diff3/16-ed-script-nonoverlap.case": {
+      "bucket": "PASS",
+      "command": "diff3"
+    },
+    "corpus/diff3/17-ed-script-write-quit.case": {
+      "bucket": "PASS",
+      "command": "diff3"
+    },
+    "corpus/diff3/18-merge-long-clean.case": {
+      "bucket": "PASS",
+      "command": "diff3"
+    },
+    "corpus/diff3/19-merge-conflict.case": {
+      "bucket": "PASS",
+      "command": "diff3"
+    },
+    "corpus/diff3/20-merge-labels.case": {
+      "bucket": "PASS",
+      "command": "diff3"
+    },
+    "corpus/diff3/21-merge-easy-only.case": {
+      "bucket": "PASS",
+      "command": "diff3"
+    },
+    "corpus/diff3/22-merge-overlap-only.case": {
+      "bucket": "PASS",
+      "command": "diff3"
+    },
+    "corpus/diff3/23-initial-tab-conflict.case": {
+      "bucket": "PASS",
+      "command": "diff3"
+    },
+    "corpus/diff3/24-show-all-long-crossing.case": {
+      "bucket": "PASS",
+      "command": "diff3"
+    },
+    "corpus/diff3/25-diff-program.case": {
+      "bucket": "PASS",
+      "command": "diff3"
+    },
+    "corpus/diff3/26-strip-trailing-cr.case": {
+      "bucket": "PASS",
+      "command": "diff3"
+    },
+    "corpus/sdiff/02-left-column.case": {
+      "bucket": "PASS",
+      "command": "sdiff"
+    },
+    "corpus/sdiff/03-suppress-common.case": {
+      "bucket": "PASS",
+      "command": "sdiff"
+    },
+    "corpus/sdiff/04-width-40.case": {
+      "bucket": "PASS",
+      "command": "sdiff"
+    },
+    "corpus/sdiff/05-delete-rows.case": {
+      "bucket": "PASS",
+      "command": "sdiff"
+    },
+    "corpus/sdiff/06-insert-rows.case": {
+      "bucket": "PASS",
+      "command": "sdiff"
+    },
+    "corpus/sdiff/07-ignore-case.case": {
+      "bucket": "PASS",
+      "command": "sdiff"
+    },
+    "corpus/sdiff/08-ignore-space-change.case": {
+      "bucket": "PASS",
+      "command": "sdiff"
+    },
+    "corpus/sdiff/09-ignore-all-space-long.case": {
+      "bucket": "PASS",
+      "command": "sdiff"
+    },
+    "corpus/sdiff/10-ignore-blank-lines-suppressed.case": {
+      "bucket": "PASS",
+      "command": "sdiff"
+    },
+    "corpus/sdiff/11-ignore-blank-lines-display.case": {
+      "bucket": "KNOWN_DIFF",
+      "command": "sdiff"
+    },
+    "corpus/sdiff/12-ignore-matching-lines.case": {
+      "bucket": "PASS",
+      "command": "sdiff"
+    },
+    "corpus/sdiff/13-expand-tabs-output.case": {
+      "bucket": "PASS",
+      "command": "sdiff"
+    },
+    "corpus/sdiff/14-ignore-tab-expansion.case": {
+      "bucket": "PASS",
+      "command": "sdiff"
+    },
+    "corpus/sdiff/15-strip-trailing-cr.case": {
+      "bucket": "KNOWN_DIFF",
+      "command": "sdiff"
+    },
+    "corpus/sdiff/16-minimal-simple.case": {
+      "bucket": "PASS",
+      "command": "sdiff"
+    },
+    "corpus/sdiff/17-text-basic.case": {
+      "bucket": "PASS",
+      "command": "sdiff"
+    },
+    "corpus/sdiff/18-output-merge-left.case": {
+      "bucket": "KNOWN_DIFF",
+      "command": "sdiff"
+    },
+    "corpus/sdiff/19-output-merge-mixed.case": {
+      "bucket": "KNOWN_DIFF",
+      "command": "sdiff"
+    },
+    "corpus/sdiff/20-output-identical.case": {
+      "bucket": "PASS",
+      "command": "sdiff"
     }
   }
 }

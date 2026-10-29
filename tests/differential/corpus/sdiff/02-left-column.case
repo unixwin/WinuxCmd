@@ -1,0 +1,8 @@
+cmd: sdiff
+args: -l f1.txt f2.txt
+timeout: 10
+setup: |
+  printf 'same\ndiff1\n' > f1.txt
+  printf 'same\ndiff2\n' > f2.txt
+source: github.com/unixwin/WinuxCmd/issues/1127
+tags: corpus-expansion issue-1127-p1
