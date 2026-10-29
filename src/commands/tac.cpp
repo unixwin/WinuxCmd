@@ -48,9 +48,12 @@ auto build_config(const CommandContext<TAC_OPTIONS.size()>& ctx)
   if (ctx.has("--separator") || ctx.has("-s")) {
     cfg.separator = ctx.get<std::string>("--separator", "");
     if (cfg.separator.empty()) cfg.separator = ctx.get<std::string>("-s", "");
-    // [GNU] tac.c:528 rejects an empty -s separator instead of falling
-    // back to a NUL byte.
-    if (cfg.separator.empty())
+    // [GNU] An empty separator is accepted for the literal split: it
+    // never occurs in the input, so the whole input is a single
+    // record (verified against the pinned oracle, coreutils 9.4).
+    // Only the regex form rejects it, with this same diagnostic
+    // (#1444).
+    if (cfg.regex && cfg.separator.empty())
       return std::unexpected("separator cannot be empty");
   }
 
@@ -101,6 +104,13 @@ auto normalize_newline_delimited_text(std::string_view content) -> std::string {
 auto split_literal_records(std::string_view content, std::string_view separator,
                            bool before) -> std::vector<std::string> {
   std::vector<std::string> records;
+  // [GNU] An empty separator never occurs in the input, so the whole
+  // input is a single record (#1444). (find() of an empty needle
+  // would match at every position and never advance.)
+  if (separator.empty()) {
+    if (!content.empty()) records.emplace_back(content);
+    return records;
+  }
   size_t record_start = 0;
   size_t search_start = 0;
 
