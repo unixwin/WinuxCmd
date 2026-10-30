@@ -345,8 +345,14 @@ auto output_first_records(std::istream& in, size_t records, char delimiter)
     std::array<char, 8192> buffer{};
     while (records > 0) {
       DWORD got = 0;
-      if (!ReadFile(hIn, buffer.data(), static_cast<DWORD>(buffer.size()),
-                    &got, nullptr)) {
+      // winux#1450 family: same ReadFile contract, plus VEOF (^D) line
+      // discipline when hIn is a line-input console (a zero-byte read at
+      // ^D-empty ends head early, like GNU head on a tty); pipe stdin is
+      // not a line-input console, so it falls through to plain ReadFile
+      // and this loop's pipe behavior is unchanged.
+      if (!file_io::read_stdin_record(hIn, buffer.data(),
+                                      static_cast<DWORD>(buffer.size()),
+                                      &got)) {
         break;  // EOF (broken pipe) or read error
       }
       if (got == 0) break;

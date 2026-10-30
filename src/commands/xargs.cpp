@@ -1109,7 +1109,13 @@ auto read_confirmation() -> Confirmation {
     char buffer[256];
     DWORD read = 0;
     bool got_line = false;
-    while (ReadFile(console, buffer, sizeof(buffer), &read, nullptr) &&
+    // winux#1450 family: same ReadFile contract, plus VEOF (^D) on the
+    // cooked console answer face — ^D at line start ends the read, so the
+    // missing-answer path below runs (Fatal), like GNU's tty EOF on the
+    // /dev/tty answer (#1320). Non-console faces fall through to plain
+    // ReadFile unchanged.
+    while (file_io::read_stdin_record(console, buffer, sizeof(buffer),
+                                      &read) &&
            read > 0) {
       for (DWORD i = 0; i < read; ++i) {
         if (buffer[i] == '\n') {
