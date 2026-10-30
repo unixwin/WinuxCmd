@@ -450,17 +450,34 @@ auto read_all_stdin() -> std::expected<std::string, std::string> {
   std::string content;
   std::array<char, kReadChunkSize> buffer{};
 
-  while (std::cin.good()) {
-    std::cin.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-    const auto bytes_read = std::cin.gcount();
-    if (bytes_read > 0) {
-      content.append(buffer.data(), static_cast<size_t>(bytes_read));
+  // winux#1450 family: read the raw stdin handle through read_stdin_record
+  // instead of std::cin so a cooked console stdin observes VEOF (^D) —
+  // binary-mode CRT reads on fd 0 dispatch to plain ReadFile, which never
+  // delivers the ^D EOF. Pipe and file handles are not line-input consoles,
+  // so read_stdin_record falls through to plain ReadFile and the bytes are
+  // identical to the previous std::cin loop there. Whole-input readers own
+  // fd 0 for the duration of this read; no CRT stream state is mixed in.
+  const HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
+  for (;;) {
+    DWORD bytes_read = 0;
+    if (!read_stdin_record(hIn, buffer.data(),
+                           static_cast<DWORD>(buffer.size()), &bytes_read)) {
+      // A closed pipe write end ends with ReadFile returning FALSE +
+      // ERROR_BROKEN_PIPE (or ERROR_NO_DATA / ERROR_HANDLE_EOF), not the
+      // TRUE + 0-byte EOF. The std::cin loop this replaces mapped that to a
+      // clean EOF, and GNU read(2) returns 0 there; the live-stdin ReadFile
+      // loops in this tree (cat, head) treat FALSE the same way. Any other
+      // status is a genuine read error, like std::cin.bad() before.
+      const DWORD err = GetLastError();
+      if (err == ERROR_BROKEN_PIPE || err == ERROR_NO_DATA ||
+          err == ERROR_HANDLE_EOF) {
+        break;
+      }
+      return std::unexpected(winux::i18n::translate(
+          "utils.file.error.read_stdin", "error reading from standard input"));
     }
-  }
-
-  if (std::cin.bad()) {
-    return std::unexpected(winux::i18n::translate(
-        "utils.file.error.read_stdin", "error reading from standard input"));
+    if (bytes_read == 0) break;
+    content.append(buffer.data(), bytes_read);
   }
 
   return content;

@@ -365,7 +365,10 @@ auto copy_stdin_to_dest(const std::string& dest) -> bool {
   char buf[64 * 1024];
   DWORD got = 0;
   bool ok = true;
-  while (ReadFile(in, buf, sizeof(buf), &got, nullptr) && got > 0) {
+  // winux#1450 family: same ReadFile contract, plus VEOF (^D) when stdin is
+  // a line-input console (^D-empty ends the copy, like GNU reading stdin
+  // until EOF on a tty); pipe/file stdin falls through to plain ReadFile.
+  while (file_io::read_stdin_record(in, buf, sizeof(buf), &got) && got > 0) {
     DWORD written = 0;
     if (!WriteFile(out, buf, got, &written, nullptr) || written != got) {
       ok = false;
