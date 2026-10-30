@@ -1205,7 +1205,7 @@
       "command": "sdiff"
     },
     "corpus/sdiff/12-ignore-matching-lines.case": {
-      "bucket": "EXIT_DIFF",
+      "bucket": "PASS",
       "command": "sdiff"
     },
     "corpus/sdiff/13-expand-tabs-output.case": {
