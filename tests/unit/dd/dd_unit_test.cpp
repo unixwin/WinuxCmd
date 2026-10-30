@@ -457,3 +457,142 @@ TEST(dd, dd_native_glob_expands_if_value_issue1374) {
   EXPECT_EQ_TEXT(copied, "only\n");
 }
 
+
+// ---- RLIMIT_FSIZE enforcement (issue #1453) -----------------------------
+// Windows has no setrlimit(); the POSIX parent declares the file-size
+// limit through the environment and dd enforces it at write time with the
+// GNU SIGXFSZ-death shape: silent (no diagnostic, no summary), exit
+// 128+25=153, output file capped at the limit.
+static std::string dd_read_file(const TempDir& tmp, const wchar_t* name) {
+  std::ifstream f(tmp.path / name, std::ios::binary);
+  return std::string((std::istreambuf_iterator<char>(f)),
+                     std::istreambuf_iterator<char>());
+}
+
+// ulimit -f 0 through the canonical WinuxCmd contract variable.
+TEST(dd, dd_rlimit_fsize_zero_kills_write_silently_issue1453) {
+  TempDir tmp;
+  tmp.write("in.bin", std::string(2048, 'x'));
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_env(L"WINUXCMD_RLIMIT_FSIZE", L"0");
+  p.add(L"dd.exe", {L"if=in.bin", L"of=out.bin", L"bs=1024", L"count=2"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 128 + 25);
+  EXPECT_EQ_TEXT(r.stderr_text, std::string());
+  EXPECT_EQ_TEXT(dd_read_file(tmp, L"out.bin"), std::string());
+}
+
+// The rubash ulimit emulation channel: "<soft>:<hard>" bytes, RLIM_INFINITY
+// sentinel 18446744073709551615 (rubash src/builtins/ulimit.rs).
+TEST(dd, dd_rubash_ulimit_f_zero_channel_issue1453) {
+  TempDir tmp;
+  tmp.write("in.bin", std::string(1024, 'x'));
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_env(L"__RUBASH_ULIMIT_F", L"0:18446744073709551615");
+  p.add(L"dd.exe", {L"if=in.bin", L"of=out.bin", L"bs=1024", L"count=1"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 128 + 25);
+  EXPECT_EQ_TEXT(dd_read_file(tmp, L"out.bin"), std::string());
+}
+
+// The crossing write is delivered only up to the limit (kernel shape).
+TEST(dd, dd_rlimit_fsize_truncates_crossing_write_issue1453) {
+  TempDir tmp;
+  tmp.write("in.bin", std::string(64, 'x'));
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_env(L"WINUXCMD_RLIMIT_FSIZE", L"10");
+  p.add(L"dd.exe",
+        {L"if=in.bin", L"of=out.bin", L"bs=4", L"obs=4", L"count=16"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 128 + 25);
+  EXPECT_EQ_TEXT(r.stderr_text, std::string());
+  EXPECT_EQ_TEXT(dd_read_file(tmp, L"out.bin"), std::string(10, 'x'));
+}
+
+// A write ending exactly AT the limit is legal (RLIMIT_FSIZE fires only
+// when a write would make the file exceed it).
+TEST(dd, dd_rlimit_fsize_exact_write_succeeds_issue1453) {
+  TempDir tmp;
+  tmp.write("in.bin", "12345678");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_env(L"WINUXCMD_RLIMIT_FSIZE", L"8");
+  p.add(L"dd.exe", {L"if=in.bin", L"of=out.bin", L"bs=8", L"obs=8", L"count=1"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(dd_read_file(tmp, L"out.bin"), std::string("12345678"));
+}
+
+// No limit declared: dd writes freely (regression guard for the guard).
+TEST(dd, dd_without_limit_writes_freely_issue1453) {
+  TempDir tmp;
+  tmp.write("in.bin", "abcdefgh");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"dd.exe", {L"if=in.bin", L"of=out.bin", L"bs=1024"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(dd_read_file(tmp, L"out.bin"), std::string("abcdefgh"));
+}
+
+// The canonical variable, literal "unlimited": enforcement disabled.
+TEST(dd, dd_rlimit_fsize_unlimited_literal_writes_freely_issue1453) {
+  TempDir tmp;
+  tmp.write("in.bin", "abcdefgh");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_env(L"WINUXCMD_RLIMIT_FSIZE", L"unlimited");
+  p.add(L"dd.exe", {L"if=in.bin", L"of=out.bin", L"bs=1024"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(dd_read_file(tmp, L"out.bin"), std::string("abcdefgh"));
+}
+
+// A malformed contract value warns once and disables enforcement.
+TEST(dd, dd_rlimit_fsize_invalid_value_warns_and_disables_issue1453) {
+  TempDir tmp;
+  tmp.write("in.bin", "abcdefgh");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_env(L"WINUXCMD_RLIMIT_FSIZE", L"abc");
+  p.add(L"dd.exe", {L"if=in.bin", L"of=out.bin", L"bs=1024"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.find("invalid WINUXCMD_RLIMIT_FSIZE") !=
+              std::string::npos);
+  EXPECT_EQ_TEXT(dd_read_file(tmp, L"out.bin"), std::string("abcdefgh"));
+}
+
+// Linux scopes RLIMIT_FSIZE to regular-file writes: pipes are exempt, so
+// `dd | cat` keeps working under ulimit -f.
+TEST(dd, dd_rlimit_fsize_does_not_apply_to_pipes_issue1453) {
+  TempDir tmp;
+  tmp.write("in.bin", "hello\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_env(L"WINUXCMD_RLIMIT_FSIZE", L"0");
+  // of= to stdout (a pipe under the harness) is exempt...
+  p.add(L"dd.exe", {L"if=in.bin", L"bs=1", L"count=5"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, std::string("hello"));
+}
