@@ -932,6 +932,10 @@
       "bucket": "PASS",
       "command": "tac"
     },
+    "corpus/tac/02-regex-empty-match.case": {
+      "bucket": "PASS",
+      "command": "tac"
+    },
     "corpus/tee/01-dev-null.case": {
       "bucket": "PASS",
       "command": "tee"

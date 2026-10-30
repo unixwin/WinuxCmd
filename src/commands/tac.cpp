@@ -150,24 +150,52 @@ auto split_regex_records(std::string_view content, const std::string& separator,
     return std::unexpected("invalid regular expression");
   }
 
-  size_t record_start = 0;
-  for (const auto& match : sep.pattern.find_all(content)) {
-    size_t pos = match.begin;
-    size_t len = match.end - match.begin;
-    if (len == 0)
-      return std::unexpected("separator regex matches empty string");
-    if (before) {
-      records.emplace_back(content.substr(record_start, pos - record_start));
-      record_start = pos;
-    } else {
-      size_t record_end = pos + len;
-      records.emplace_back(
-          content.substr(record_start, record_end - record_start));
-      record_start = record_end;
+  // [GNU #1447] Separator matches are discovered right to left, the
+  // way tac.c's backward re_search finds them: at each step, the match
+  // with the largest start in the not-yet-claimed prefix, longest at
+  // that start, lying inside the prefix (match_at on the prefix view
+  // reproduces the size-limited search, anchors included).  Records
+  // are the segments between consecutive match ends -- or match
+  // starts with -b.  A zero-length match is an ordinary separator
+  // under this model: the next search starts strictly left of it, so
+  // the walk always makes progress and a pattern that can match the
+  // empty string (x*, .*, ...) is accepted, as in GNU.
+  const auto &pattern = sep.pattern;
+  std::vector<std::pair<size_t, size_t>> matches;  // rightmost first
+  size_t cursor = content.size();
+  while (cursor > 0) {
+    const std::string_view prefix = content.substr(0, cursor);
+    std::optional<portable_regex::Match> found;
+    for (size_t start = cursor; start-- > 0;) {
+      if (auto match = pattern.match_at(prefix, start)) {
+        found = match;
+        break;
+      }
     }
+    if (!found) break;
+    matches.emplace_back(found->begin, found->end);
+    cursor = found->begin;
   }
-  if (record_start < content.size())
-    records.emplace_back(content.substr(record_start));
+
+  if (matches.empty()) {
+    if (!content.empty()) records.emplace_back(content);
+    return records;
+  }
+
+  // Walk the boundaries left to right (matches are stored rightmost
+  // first, and their ends -- resp. starts -- ascend in that walk).
+  // Empty segments print as nothing, so they are skipped.
+  size_t pos = 0;
+  for (size_t i = matches.size(); i-- > 0;) {
+    const size_t boundary = before ? matches[i].first : matches[i].second;
+    if (boundary > pos) {
+      records.emplace_back(content.substr(pos, boundary - pos));
+    }
+    pos = boundary;
+  }
+  if (pos < content.size()) {
+    records.emplace_back(content.substr(pos));
+  }
   return records;
 }
 
