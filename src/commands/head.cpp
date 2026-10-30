@@ -721,12 +721,31 @@ REGISTER_COMMAND(
       first_print = false;
     };
 
-    if (file == "-") {
+    // [GNU] "-" and /dev/stdin-family operands all read the real fd 0
+    // (#1452, cat/wc precedent #1056). Routing them through
+    // open_binary_file()'s dup'd-FILE* ifstream made head run the
+    // seekable-file decoder probe (stream_needs_text_decoding) on a pipe:
+    // the probe's seek-back fails there, poisons the stream state, and
+    // every later read yields nothing — head silently printed zero lines
+    // while exiting 0. Reading std::cin directly, like cat/wc, never seeks
+    // and keeps the live-pipe streaming path in output_first_records.
+    const bool stdin_operand =
+        file == "-" ||
+        native_path::pseudo_device_std_fd(file) == std::optional<int>(0);
+    if (stdin_operand) {
       emit_header();
-      // [GNU] A closed standard input (<&-) is a read error, not EOF (#973).
       if (file_io::stdin_is_bad()) {
-        safeErrorPrint(
-            "head: error reading 'standard input': Bad file descriptor\n");
+        // [GNU] A closed standard input (<&-) is a read error for "-",
+        // but the /proc/self/fd/0 symlink dangles under GNU, so the
+        // /dev/stdin-family failure is ENOENT (cat/wc #1056, head #973).
+        if (file == "-") {
+          safeErrorPrint(
+              "head: error reading 'standard input': Bad file descriptor\n");
+        } else {
+          safeErrorPrint("head: cannot open '");
+          safeErrorPrint(file);
+          safeErrorPrint("' for reading: No such file or directory\n");
+        }
         any_error = true;
         continue;
       }
@@ -736,7 +755,9 @@ REGISTER_COMMAND(
       file_io::set_stdin_binary();
       output_head(std::cin, config);
       if (std::cin.bad()) {
-        safeErrorPrint("head: error reading '-'\n");
+        safeErrorPrint("head: error reading '");
+        safeErrorPrint(file);
+        safeErrorPrint("'\n");
         any_error = true;
       }
     } else {

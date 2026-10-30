@@ -1,0 +1,16 @@
+cmd: head
+args: -3 /dev/stdin
+timeout: 10
+stdin: |
+  a01
+  a02
+  a03
+  a04
+  a05
+  a06
+  a07
+  a08
+  a09
+  a10
+source: github.com/unixwin/WinuxCmd/issues/1452
+tags: issue-1452 regression
