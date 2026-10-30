@@ -284,8 +284,11 @@ REGISTER_COMMAND(cat, "cat",
           (inType == FILE_TYPE_PIPE || inType == FILE_TYPE_CHAR)) {
         while (!stdout_write_gone()) {
           DWORD got = 0;
-          if (!ReadFile(hIn, buffer.data(),
-                        static_cast<DWORD>(buffer.size()), &got, nullptr)) {
+          // winux#1450: same ReadFile contract, plus VEOF (^D) line
+          // discipline when hIn is a line-input console.
+          if (!file_io::read_stdin_record(hIn, buffer.data(),
+                                          static_cast<DWORD>(buffer.size()),
+                                          &got)) {
             break;  // EOF (broken pipe) or read error
           }
           if (got == 0) break;
@@ -359,8 +362,11 @@ REGISTER_COMMAND(cat, "cat",
       std::array<char, 8192> buffer{};
       while (!stdout_write_gone()) {
         DWORD got = 0;
-        if (!ReadFile(hLiveIn, buffer.data(),
-                      static_cast<DWORD>(buffer.size()), &got, nullptr)) {
+        // winux#1450: same ReadFile contract, plus VEOF (^D) line
+        // discipline when hLiveIn is a line-input console.
+        if (!file_io::read_stdin_record(hLiveIn, buffer.data(),
+                                        static_cast<DWORD>(buffer.size()),
+                                        &got)) {
           break;  // EOF (broken pipe) or read error
         }
         if (got == 0) break;
