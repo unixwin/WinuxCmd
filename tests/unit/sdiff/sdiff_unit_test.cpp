@@ -198,11 +198,28 @@ TEST(sdiff, sdiff_output_file_auto_merges_non_interactively) {
   auto r = p.run();
 
   // Issue #1127 P1: -o merges without prompting.  Overlapping changes
-  // keep the left column; one-sided changes take their only side.  A
-  // completed merge exits 0 like GNU's completed interactive merge.
-  EXPECT_EQ(r.exit_code, 0);
+  // keep the left column; one-sided changes take their only side.
+  // [GNU #1441] A completed merge of differing inputs exits 1, like
+  // the subsidiary diff; the earlier pin of 0 rested on a wrong
+  // "completed interactive merge" reading of GNU.
+  EXPECT_EQ(r.exit_code, 1);
   EXPECT_FALSE(r.stdout_text.empty());
   EXPECT_EQ_TEXT(tmp.read("merged.txt"), "a\nleft\nkeep\nmore\n");
+}
+
+TEST(sdiff, sdiff_output_file_identical_inputs_exit_zero_issue1441) {
+  TempDir tmp;
+  tmp.write("a.txt", "same\n");
+  tmp.write("b.txt", "same\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sdiff.exe", {L"-o", L"merged.txt", L"a.txt", L"b.txt"});
+  auto r = p.run();
+
+  // [GNU #1441] Identical inputs merge trivially and exit 0.
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(tmp.read("merged.txt"), "same\n");
 }
 
 TEST(sdiff, sdiff_output_file_takes_right_for_right_only_changes) {
@@ -215,7 +232,9 @@ TEST(sdiff, sdiff_output_file_takes_right_for_right_only_changes) {
   p.add(L"sdiff.exe", {L"-o", L"merged.txt", L"a.txt", L"b.txt"});
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
+  // [GNU #1441] Insertion-only differences still make the inputs
+  // differ, so the completed merge exits 1.
+  EXPECT_EQ(r.exit_code, 1);
   EXPECT_EQ_TEXT(tmp.read("merged.txt"), "a\nb\nc\nD\nE\n");
 }
 
@@ -229,7 +248,9 @@ TEST(sdiff, sdiff_output_file_keeps_left_for_conflicting_rows) {
   p.add(L"sdiff.exe", {L"-o", L"merged.txt", L"a.txt", L"b.txt"});
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
+  // [GNU #1441] A paired change makes the inputs differ, so the
+  // completed merge exits 1.
+  EXPECT_EQ(r.exit_code, 1);
   EXPECT_EQ_TEXT(tmp.read("merged.txt"), "a\nB\nc\n");
 }
 

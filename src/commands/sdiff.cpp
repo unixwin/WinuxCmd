@@ -390,7 +390,12 @@ REGISTER_COMMAND(
     return 2;
   }
 
-  // [GNU] A completed merge reports the subsidiary diff's success, not
-  // the difference count.
-  return 0;
+  // [GNU] A completed merge reports the subsidiary diff's verdict: 1
+  // when the inputs differ (the script, after any -B/-I hunks are
+  // dropped, still holds a non-KEEP edit), 0 when they are the same
+  // (#1441).
+  const bool differ = std::any_of(
+      edits.begin(), edits.end(),
+      [](const de::Edit &edit) { return edit.type != de::EditType::KEEP; });
+  return differ ? 1 : 0;
 }
