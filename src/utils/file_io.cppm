@@ -277,6 +277,167 @@ auto set_stdin_binary() -> void {
 #endif
 }
 
+// ---- winux#1450: cooked-console VEOF (line-discipline ^D) emulation ----
+//
+// GNU filters reading a canonical tty get their EOF and mid-line flushes
+// from the kernel line discipline (termios VEOF): ^D with an empty
+// canonical buffer ends the input stream; ^D after pending characters
+// delivers those characters to the reader immediately, without a newline.
+// The Windows cooked console (ENABLE_LINE_INPUT) has no line discipline:
+// ReadFile returns only on Enter, and the 0x04 keystroke enters the line
+// buffer as a plain character, so an interactive `cat` never observes EOF
+// and swallows every line typed afterwards until ^C (winux#1450 baseline).
+//
+// read_stdin_record restores the contract on exactly that face — "stdin is
+// a console handle in line-input mode" — by filtering the records the
+// console delivers to ReadFile:
+//   - 0x04 with no pending characters in the current canonical line (line
+//     start) ends the input: the caller gets a zero-byte read, and the
+//     unread tail of that console record is re-injected into the console
+//     input queue (WriteConsoleInput) so the next reader — the shell —
+//     sees it, the way the tty queue does under Unix;
+//   - 0x04 after pending characters delivers the pending prefix to the
+//     caller as its own record (no newline) and the remaining bytes of the
+//     console record continue as the following record;
+//   - every other byte passes through untouched, including the \r\n the
+//     console appends, so pipe/file input (this reader is not armed there)
+//     and non-^D console bytes stay byte-identical to the plain ReadFile
+//     path.
+//
+// Known limits (documented, by scope):
+//   - Mid-line ^D flushes are delivered together with the rest of the same
+//     console record, so the consumer sees the flush only after the next
+//     Enter completes the line; releasing the prefix earlier would require
+//     raw-mode line-discipline emulation, which is out of scope here.
+//   - Only callers that route stdin through this helper get the semantics;
+//     std::cin-based whole-input readers (file_io::read_all_stdin) and
+//     applet-private loops (head, dd) still need to adopt it.
+//   - If WriteConsoleInput fails, the EOF tail is dropped rather than
+//     re-injected (the caller's EOF contract is unaffected).
+struct StdinRecordState {
+  HANDLE handle = nullptr;
+  bool probed = false;
+  bool armed = false;
+  bool eof = false;
+  bool line_pending = false;  // canonical buffer holds >=1 undelivered char
+  std::string pending;
+};
+
+thread_local StdinRecordState g_stdin_record;
+
+// Re-inject the unread tail of a console record into the console input
+// queue so the next reader (normally the shell) receives it, the way the
+// Unix tty queue retains input typed after the EOF ^D. WriteConsoleInput
+// appends behind pending events (per MSDN), so forward order preserves the
+// typed sequence. The cooked record ends lines with \r\n; each pair becomes
+// a single Enter key event so the shell does not observe a spurious second
+// newline.
+auto pushback_console_bytes(HANDLE handle, const char* bytes, size_t len)
+    -> void {
+  if (len == 0) return;
+  const UINT cp = GetConsoleCP();
+  const int wlen = MultiByteToWideChar(cp, 0, bytes,
+                                       static_cast<int>(len), nullptr, 0);
+  if (wlen <= 0) return;  // undecodable tail: drop (documented fallback)
+
+  std::wstring wide(static_cast<size_t>(wlen), L'\0');
+  if (MultiByteToWideChar(cp, 0, bytes, static_cast<int>(len), wide.data(),
+                          wlen) <= 0) {
+    return;
+  }
+
+  std::vector<INPUT_RECORD> records;
+  records.reserve(wide.size() * 2);
+  bool prev_was_cr = false;
+  for (wchar_t wc : wide) {
+    if (wc == L'\n') {
+      if (prev_was_cr) {  // CRLF pair -> one Enter event already queued
+        prev_was_cr = false;
+        continue;
+      }
+      wc = L'\r';  // lone LF is still a line terminator in cooked input
+    }
+    INPUT_RECORD rec{};
+    rec.EventType = KEY_EVENT;
+    rec.Event.KeyEvent.bKeyDown = TRUE;
+    rec.Event.KeyEvent.wRepeatCount = 1;
+    rec.Event.KeyEvent.wVirtualKeyCode = (wc == L'\r') ? VK_RETURN : 0;
+    rec.Event.KeyEvent.wVirtualScanCode = 0;
+    rec.Event.KeyEvent.uChar.UnicodeChar = wc;
+    rec.Event.KeyEvent.dwControlKeyState = 0;
+    records.push_back(rec);
+    rec.Event.KeyEvent.bKeyDown = FALSE;  // matching key-up
+    records.push_back(rec);
+    prev_was_cr = (wc == L'\r');
+  }
+
+  DWORD written = 0;
+  WriteConsoleInputW(handle, records.data(),
+                     static_cast<DWORD>(records.size()), &written);
+}
+
+// ReadFile-compatible stdin read with VEOF semantics on the cooked console
+// face (see the block comment above). Returns TRUE on success — including
+// the emulated EOF, which reports *got == 0 — and propagates ReadFile's
+// own status otherwise.
+auto read_stdin_record(HANDLE handle, char* buffer, DWORD size, DWORD* got)
+    -> bool {
+  if (!g_stdin_record.probed || g_stdin_record.handle != handle) {
+    g_stdin_record = StdinRecordState{};
+    g_stdin_record.handle = handle;
+    g_stdin_record.probed = true;
+    DWORD mode = 0;
+    g_stdin_record.armed = handle != INVALID_HANDLE_VALUE &&
+                           handle != nullptr && GetConsoleMode(handle, &mode) &&
+                           (mode & ENABLE_LINE_INPUT) != 0;
+  }
+  if (!g_stdin_record.armed) {
+    return ReadFile(handle, buffer, size, got, nullptr);
+  }
+
+  auto& state = g_stdin_record;
+  while (!state.eof && state.pending.empty()) {
+    std::array<char, 8192> raw{};
+    DWORD n = 0;
+    if (!ReadFile(handle, raw.data(),
+                  static_cast<DWORD>(raw.size()), &n, nullptr) ||
+        n == 0) {
+      state.eof = true;
+      break;
+    }
+    for (DWORD i = 0; i < n; ++i) {
+      const auto c = static_cast<unsigned char>(raw[i]);
+      if (c == 0x04) {  // VEOF
+        if (!state.line_pending) {
+          // ^D at line start: end the stream; the tail of this console
+          // record stays queued for the next reader.
+          pushback_console_bytes(handle, raw.data() + i + 1, n - i - 1);
+          state.eof = true;
+          break;
+        }
+        // ^D mid-line: flush the pending prefix as its own record; the
+        // remainder of the console record continues below (0x04 itself is
+        // consumed, like the line discipline does).
+        state.line_pending = false;
+        continue;
+      }
+      state.pending.push_back(static_cast<char>(c));
+      // The console ends a cooked record's lines with \r\n; the LF is the
+      // point where the canonical buffer empties.
+      state.line_pending = (c != '\n');
+    }
+  }
+
+  const DWORD out = static_cast<DWORD>(
+      std::min<size_t>(state.pending.size(), size));
+  if (out > 0) {
+    std::memcpy(buffer, state.pending.data(), out);
+    state.pending.erase(0, out);
+  }
+  *got = out;
+  return TRUE;
+}
+
 auto read_all_stdin() -> std::expected<std::string, std::string> {
   if (stdin_is_bad()) {
     return std::unexpected(winux::i18n::translate(
