@@ -1,0 +1,7 @@
+cmd: tac
+args: -r -s 'x*' letters.txt
+timeout: 10
+setup: |
+  printf 'axbxc' > letters.txt
+source: github.com/unixwin/WinuxCmd/issues/1447
+tags: corpus-expansion issue-1447

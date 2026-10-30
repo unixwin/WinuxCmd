@@ -932,6 +932,10 @@
       "bucket": "PASS",
       "command": "tac"
     },
+    "corpus/tac/02-regex-empty-match.case": {
+      "bucket": "PASS",
+      "command": "tac"
+    },
     "corpus/tee/01-dev-null.case": {
       "bucket": "PASS",
       "command": "tee"
@@ -1205,7 +1209,7 @@
       "command": "sdiff"
     },
     "corpus/sdiff/12-ignore-matching-lines.case": {
-      "bucket": "EXIT_DIFF",
+      "bucket": "PASS",
       "command": "sdiff"
     },
     "corpus/sdiff/13-expand-tabs-output.case": {

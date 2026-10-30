@@ -311,13 +311,49 @@ inline auto expand_tabs_lines(const std::vector<std::string> &lines,
   return result;
 }
 
-// -I/--ignore-matching-lines: ignore changes where every line matches.
+// The compiled -I/--ignore-matching-lines RE set (#1449).  GNU
+// diffutils compiles each -I argument as a basic regular expression
+// and searches every changed line with it; a change hunk is ignored
+// when all of its lines match at least one of the REs.  The patterns
+// live in the repo's shared portable_regex engine, with the same
+// Syntax::Basic choice the family already makes for
+// --show-function-line and tac -r.
+struct IgnoreMatchingPatterns {
+  std::vector<portable_regex::Pattern> patterns;
+
+  [[nodiscard]] auto empty() const -> bool { return patterns.empty(); }
+
+  [[nodiscard]] auto matches_line(const std::string &line) const -> bool {
+    for (const auto &pattern : patterns) {
+      if (pattern.find_first(line)) return true;
+    }
+    return false;
+  }
+};
+
+// Compiles the -I argument texts; on failure the offending text is
+// returned so the caller can diagnose it (GNU exits 2 before touching
+// the operands).
+inline auto compile_ignore_matching_patterns(
+    const std::vector<std::string> &texts)
+    -> std::expected<IgnoreMatchingPatterns, std::string> {
+  IgnoreMatchingPatterns compiled;
+  for (const auto &text : texts) {
+    auto result =
+        portable_regex::compile(portable_regex::Syntax::Basic, text);
+    if (!result) return std::unexpected(text);
+    compiled.patterns.push_back(std::move(result.pattern));
+  }
+  return compiled;
+}
+
+// -I/--ignore-matching-lines: drop the lines no -I RE matches.
 inline auto filter_matching_lines(const std::vector<std::string> &lines,
-                                  const std::string &pattern)
+                                  const IgnoreMatchingPatterns &matching)
     -> std::vector<std::string> {
   std::vector<std::string> result;
   for (const auto &line : lines) {
-    if (line.find(pattern) == std::string::npos) {
+    if (!matching.matches_line(line)) {
       result.push_back(line);
     }
   }
@@ -399,28 +435,31 @@ inline auto drop_ignored_hunks(
   return result;
 }
 
-// The ignored-hunk test shared by -B (all lines blank) and -I (all lines
-// match the RE): either rule suffices, per GNU analyze_hunk.
-inline auto make_blank_or_matching_predicate(const std::string &pattern)
+// The ignored-hunk test shared by -B and -I, in GNU's per-line
+// invisibility shape (analyze.c): a hunk is ignored when every changed
+// line is ignored, where a line is ignored iff -B covers it (the line
+// is blank) or an -I RE matches it (#1449).  The two rules mix freely
+// inside one hunk, and neither covers the other's lines: a blank line
+// is not ignored by -I alone, nor a matching line by -B alone.
+inline auto make_blank_or_matching_predicate(
+    bool ignore_blank_lines, const IgnoreMatchingPatterns &matching)
     -> std::function<bool(const std::vector<Edit> &,
                           const std::vector<std::string> &,
                           const std::vector<std::string> &, size_t, size_t)> {
-  return [pattern](const std::vector<Edit> &edits,
-                   const std::vector<std::string> &lines1,
-                   const std::vector<std::string> &lines2, size_t begin,
-                   size_t end) {
-    bool all_blank = true;
-    bool all_match = !pattern.empty();
-    for (size_t i = begin; i < end && (all_blank || all_match); ++i) {
+  return [ignore_blank_lines, matching](
+             const std::vector<Edit> &edits,
+             const std::vector<std::string> &lines1,
+             const std::vector<std::string> &lines2, size_t begin,
+             size_t end) {
+    for (size_t i = begin; i < end; ++i) {
       const std::string &line = edits[i].type == EditType::DEL
                                     ? lines1[edits[i].line1_index]
                                     : lines2[edits[i].line2_index];
-      if (!line_is_blank(line)) all_blank = false;
-      if (pattern.empty() || line.find(pattern) == std::string::npos) {
-        all_match = false;
-      }
+      const bool ignored = (ignore_blank_lines && line_is_blank(line)) ||
+                           matching.matches_line(line);
+      if (!ignored) return false;
     }
-    return all_blank || all_match;
+    return true;
   };
 }
 

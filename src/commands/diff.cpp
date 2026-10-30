@@ -1406,7 +1406,7 @@ struct PairConfig {
   bool unidirectional_new_file = false;
   int tabsize = 8;
   bool expand_tabs = false;
-  std::string ignore_matching;
+  diff_engine::IgnoreMatchingPatterns ignore_matching;
   OutputMode output_mode = OutputMode::Normal;
   int context = 3;
   int side_width = 130;
@@ -1598,7 +1598,8 @@ auto compare_file_pair(const std::string &file1, const std::string &file2,
   if (ignore_hunks) {
     script_edits = diff_engine::drop_ignored_hunks(
         compute_diff(cmp1, cmp2), lines1, lines2,
-        diff_engine::make_blank_or_matching_predicate(cfg.ignore_matching));
+        diff_engine::make_blank_or_matching_predicate(cfg.ignore_blank_lines,
+                                                      cfg.ignore_matching));
   }
 
   auto &compare_lines1 = cmp1;
@@ -1950,7 +1951,26 @@ REGISTER_COMMAND(
   }
   (void)horizon_lines;
 
-  cfg.ignore_matching = ctx.get<std::string>("--ignore-matching-lines", "");
+  // [GNU #1449] Every -I/--ignore-matching-lines occurrence adds one
+  // basic regular expression; an invalid RE is diagnosed at startup,
+  // before any operand is touched, with the same wording the
+  // --show-function-line RE uses below.
+  {
+    std::vector<std::string> ignore_texts;
+    for (const auto &occ :
+         ctx.string_occurrences({"-I", "--ignore-matching-lines"})) {
+      ignore_texts.push_back(std::string(occ.value));
+    }
+    auto compiled_ignore =
+        diff_engine::compile_ignore_matching_patterns(ignore_texts);
+    if (!compiled_ignore) {
+      safeErrorPrint("diff: invalid regular expression '");
+      safeErrorPrint(compiled_ignore.error());
+      safeErrorPrint("'\n");
+      return 2;
+    }
+    cfg.ignore_matching = std::move(*compiled_ignore);
+  }
   std::string ifdef_name =
       ctx.get<std::string>("-D", ctx.get<std::string>("--ifdef", ""));
   std::string from_file = ctx.get<std::string>("--from-file", "");

@@ -478,3 +478,84 @@ TEST(diff, diff_recursive_missing_directory_exits_2_issue1344) {
 
   EXPECT_EQ(r.exit_code, 2);
 }
+
+TEST(diff, diff_ignore_matching_lines_regex_issue1449) {
+  TempDir tmp;
+  tmp.write("f1.txt", "keep\nskip-1\nend\n");
+  tmp.write("f2.txt", "keep\nskip-2\nend\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"diff.exe", {L"-I", L"^skip-", L"f1.txt", L"f2.txt"});
+
+  auto r = p.run();
+
+  // [GNU #1449] -I takes a regular expression (a BRE): both changed
+  // lines match ^skip-, so the only change is ignored.  The old
+  // literal substring match never found "^skip-" in the lines.
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.empty());
+}
+
+TEST(diff, diff_ignore_matching_lines_partial_hunk_kept_issue1449) {
+  TempDir tmp;
+  tmp.write("g1.txt", "top\nmatchA\nplain1\nbot\n");
+  tmp.write("g2.txt", "top\nmatchB\nplain2\nbot\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"diff.exe", {L"-I", L"^match", L"g1.txt", L"g2.txt"});
+
+  auto r = p.run();
+
+  // [GNU #1449] A hunk is ignored only when ALL its changed lines
+  // match: plain1/plain2 do not match ^match, so the hunk stands.
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ_TEXT(r.stdout_text,
+                 "2,3c2,3\n"
+                 "< matchA\n"
+                 "< plain1\n"
+                 "---\n"
+                 "> matchB\n"
+                 "> plain2\n");
+}
+
+TEST(diff, diff_ignore_matching_lines_mixed_blank_hunk_issue1449) {
+  TempDir tmp;
+  tmp.write("p1.txt", "a\n\nkeep\n");
+  tmp.write("p2.txt", "a\nchg-1\nkeep\n");
+
+  // [GNU #1449] With -B and -I together the rules mix per line: the
+  // blank line is covered by -B, the chg-1 line by the RE, so the
+  // mixed hunk is ignored.
+  Pipeline both;
+  both.set_cwd(tmp.wpath());
+  both.add(L"diff.exe", {L"-B", L"-I", L"^chg-", L"p1.txt", L"p2.txt"});
+  auto both_run = both.run();
+  EXPECT_EQ(both_run.exit_code, 0);
+
+  // [GNU #1449] -I alone does not cover the blank line, so the same
+  // hunk stands.
+  Pipeline matching_only;
+  matching_only.set_cwd(tmp.wpath());
+  matching_only.add(L"diff.exe", {L"-I", L"^chg-", L"p1.txt", L"p2.txt"});
+  auto matching_only_run = matching_only.run();
+  EXPECT_EQ(matching_only_run.exit_code, 1);
+}
+
+TEST(diff, diff_ignore_matching_lines_invalid_regex_issue1449) {
+  TempDir tmp;
+  tmp.write("f1.txt", "a\n");
+  tmp.write("f2.txt", "b\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"diff.exe", {L"-I", L"[", L"f1.txt", L"f2.txt"});
+
+  auto r = p.run();
+
+  // [GNU #1449] An invalid -I RE is trouble (exit 2), diagnosed at
+  // startup before the operands are compared.
+  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_EQ_TEXT(r.stderr_text, "diff: invalid regular expression '['\n");
+}

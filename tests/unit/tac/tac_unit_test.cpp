@@ -163,6 +163,106 @@ TEST(tac, tac_issue1361_escaped_pipe_is_alternation_in_bre_separator) {
   EXPECT_EQ_TEXT(r.stdout_text, "cbyyax");
 }
 
+TEST(tac, tac_regex_separator_can_match_empty_issue1447) {
+  // [GNU #1447] A separator RE that can match the empty string is
+  // accepted (coreutils 9.4): the x's separate, and the empty matches
+  // add no records here.  The old code errored out at the first
+  // zero-length match.
+  TempDir tmp;
+  tmp.write("letters.txt", "axbxc");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"tac.exe", {L"-r", L"-s", L"x*", L"letters.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "cbxax");
+}
+
+TEST(tac, tac_regex_separator_empty_matches_split_chars_issue1447) {
+  // [GNU #1447] With no 'x' at all, the empty matches of x* are the
+  // only separators: every character becomes its own record.
+  TempDir tmp;
+  tmp.write("letters.txt", "abc");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"tac.exe", {L"-r", L"-s", L"x*", L"letters.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "cba");
+}
+
+TEST(tac, tac_regex_separator_empty_match_before_issue1447) {
+  // [GNU #1447] The empty-match model also holds with -b (separator
+  // attached before each record).
+  TempDir tmp;
+  tmp.write("letters.txt", "axbxc");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"tac.exe", {L"-b", L"-r", L"-s", L"x*", L"letters.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "cxbxa");
+}
+
+TEST(tac, tac_regex_separator_dot_star_issue1447) {
+  // [GNU #1447] .* matches at every position under the backward
+  // match model, so the input splits into single characters -- a
+  // forward longest-match walk would emit the input unchanged.
+  TempDir tmp;
+  tmp.write("letters.txt", "abc");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"tac.exe", {L"-r", L"-s", L".*", L"letters.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "cba");
+}
+
+TEST(tac, tac_regex_separator_backward_longest_issue1447) {
+  // [GNU #1447] Matches are found right to left, longest at each
+  // start: for x.* on axbxc the separators are "xb" and "xc", not
+  // the single greedy forward match "xbxc".
+  TempDir tmp;
+  tmp.write("letters.txt", "axbxc");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"tac.exe", {L"-r", L"-s", L"x.*", L"letters.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "xcaxb");
+}
+
+TEST(tac, tac_regex_separator_empty_match_trailing_issue1447) {
+  // [GNU #1447] A trailing separator that ends the input does not
+  // produce a trailing empty record.
+  TempDir tmp;
+  tmp.write("letters.txt", "axbxcx");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"tac.exe", {L"-r", L"-s", L"x*", L"letters.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "cxbxax");
+}
+
 TEST(tac, tac_stdin) {
   Pipeline p;
   p.set_stdin("line1\nline2\nline3\n");

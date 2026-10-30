@@ -90,7 +90,7 @@ struct SdiffConfig {
   bool ignore_trailing_space = false;
   bool ignore_tab_expansion = false;
   bool strip_trailing_cr = false;
-  std::string ignore_matching;
+  de::IgnoreMatchingPatterns ignore_matching;
 };
 
 auto resolve_files(const CommandContext<SDIFF_OPTIONS.size()> &ctx)
@@ -197,8 +197,6 @@ REGISTER_COMMAND(
       ctx.has("-Z") || ctx.has("--ignore-trailing-space");
   cfg.ignore_tab_expansion = ctx.has("-E") || ctx.has("--ignore-tab-expansion");
   cfg.strip_trailing_cr = ctx.has("--strip-trailing-cr");
-  cfg.ignore_matching = ctx.get<std::string>(
-      "-I", ctx.get<std::string>("--ignore-matching-lines", ""));
   (void)ctx.has("-a");
   (void)ctx.has("--text");
   (void)ctx.has("-d");
@@ -224,6 +222,28 @@ REGISTER_COMMAND(
     return try_help(error);
   }
   const auto [file1, file2] = *files_result;
+
+  // [GNU #1449] Every -I/--ignore-matching-lines occurrence adds one
+  // basic regular expression, compiled before the operands are touched
+  // (an invalid RE is diagnosed ahead of a missing input file, as GNU
+  // does; missing operands themselves are still reported above, by
+  // resolve_files).  The diagnostic is diff's, verbatim like the other
+  // forwarded diagnostics below.
+  {
+    std::vector<std::string> ignore_texts;
+    for (const auto &occ :
+         ctx.string_occurrences({"-I", "--ignore-matching-lines"})) {
+      ignore_texts.push_back(std::string(occ.value));
+    }
+    auto compiled_ignore = de::compile_ignore_matching_patterns(ignore_texts);
+    if (!compiled_ignore) {
+      safeErrorPrint("diff: invalid regular expression '");
+      safeErrorPrint(compiled_ignore.error());
+      safeErrorPrint("'\n");
+      return 2;
+    }
+    cfg.ignore_matching = std::move(*compiled_ignore);
+  }
 
   // [GNU] sdiff hands the operands to diff, whose diagnostics are verbatim
   // ("diff: <path>: ..."); each side is checked in order.
@@ -269,7 +289,8 @@ REGISTER_COMMAND(
   if (cfg.ignore_blank_lines || !cfg.ignore_matching.empty()) {
     edits = de::drop_ignored_hunks(
         edits, lines1, lines2,
-        de::make_blank_or_matching_predicate(cfg.ignore_matching));
+        de::make_blank_or_matching_predicate(cfg.ignore_blank_lines,
+                                             cfg.ignore_matching));
   }
 
   de::SdiffStyle style;
@@ -390,7 +411,12 @@ REGISTER_COMMAND(
     return 2;
   }
 
-  // [GNU] A completed merge reports the subsidiary diff's success, not
-  // the difference count.
-  return 0;
+  // [GNU] A completed merge reports the subsidiary diff's verdict: 1
+  // when the inputs differ (the script, after any -B/-I hunks are
+  // dropped, still holds a non-KEEP edit), 0 when they are the same
+  // (#1441).
+  const bool differ = std::any_of(
+      edits.begin(), edits.end(),
+      [](const de::Edit &edit) { return edit.type != de::EditType::KEEP; });
+  return differ ? 1 : 0;
 }
