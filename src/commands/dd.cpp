@@ -570,18 +570,135 @@ auto write_all(HANDLE output, const char* data, size_t size) -> bool {
   return true;
 }
 
+// ---- RLIMIT_FSIZE enforcement (WinuxCmd issue #1453) --------------------
+// Windows has no setrlimit()/RLIMIT_FSIZE, but a POSIX parent shell can
+// still *declare* a file-size limit to this process through its
+// environment. Two channels are honored, in precedence order:
+//
+//   WINUXCMD_RLIMIT_FSIZE=<bytes>
+//       Canonical opt-in contract: the soft file-size limit in decimal
+//       bytes. "unlimited" or an empty value disables enforcement; a
+//       malformed value warns and disables it.
+//   __RUBASH_ULIMIT_F=<soft>:<hard>
+//       rubash's Windows ulimit emulation fork-inheritance channel
+//       (rubash src/builtins/ulimit.rs: "<soft>:<hard>" decimal *bytes*,
+//       18446744073709551615 = RLIM_INFINITY). The soft value is taken as
+//       the RLIMIT_FSIZE soft limit, so `ulimit -f 0; exec dd ...` reaches
+//       dd exactly like it reaches a Linux child.
+//
+// GNU truth (coreutils dd under setrlimit(RLIMIT_FSIZE), Linux): the
+// write that would cross the limit is delivered only up to the limit and
+// the process is then killed by SIGXFSZ (default disposition) - dd prints
+// no diagnostic and no transfer summary, and the parent shell reports
+// "File size limit exceeded" with $? = 128+25 = 153. (With SIGXFSZ
+// blocked/ignored, write() instead fails EFBIG and dd prints
+// "dd: error writing 'FILE': File size limit exceeded" + summary, exit 1;
+// reproducing that shape needs the parent's trap state, which has no
+// channel, so only the death shape is emitted.)
+// Linux applies RLIMIT_FSIZE to regular-file writes only, so enforcement
+// is gated on GetFileType(hOut) == FILE_TYPE_DISK.
+inline constexpr std::uintmax_t kRlimInfinity =
+    std::numeric_limits<std::uintmax_t>::max();
+// SIGXFSZ death in shell exit-code terms: 128+25.
+inline constexpr int kSigXfszExit = 128 + 25;
+
+// Parse a strict decimal byte count; std::nullopt on any non-digit tail.
+auto parse_decimal_bytes(std::string_view text) -> std::optional<uint64_t> {
+  if (text.empty()) return std::nullopt;
+  uint64_t value = 0;
+  const auto [ptr, ec] =
+      std::from_chars(text.data(), text.data() + text.size(), value);
+  if (ec != std::errc{} || ptr != text.data() + text.size()) {
+    return std::nullopt;
+  }
+  return value;
+}
+
+// Resolve the declared soft file-size limit; "unlimited" when absent.
+auto declared_fsize_limit() -> std::uintmax_t {
+  if (const char* raw = std::getenv("WINUXCMD_RLIMIT_FSIZE")) {
+    const std::string_view sv{raw};
+    if (sv.empty() || sv == "unlimited") return kRlimInfinity;
+    if (const auto parsed = parse_decimal_bytes(sv)) return *parsed;
+    safeErrorPrintLn(winux::i18n::translate(
+        "command.dd.warning.invalid_rlimit_fsize",
+        "dd: warning: ignoring invalid WINUXCMD_RLIMIT_FSIZE value; file "
+        "size limit not enforced"));
+    return kRlimInfinity;
+  }
+  if (const char* raw = std::getenv("__RUBASH_ULIMIT_F")) {
+    const std::string_view sv{raw};
+    const auto colon = sv.find(':');
+    if (colon != std::string_view::npos) {
+      if (const auto soft = parse_decimal_bytes(sv.substr(0, colon))) {
+        return *soft;  // the kRlimInfinity sentinel means unlimited
+      }
+    }
+    // Third-party channel: an unparsable value is ignored silently.
+  }
+  return kRlimInfinity;
+}
+
+// Tracks the output file's write frontier against the declared cap and
+// meters each pending write the way the kernel meters RLIMIT_FSIZE: bytes
+// up to the limit are delivered, the crossing write is truncated there.
+struct FsizeGuard {
+  bool active = false;
+  std::uintmax_t cap = 0;
+  std::uintmax_t offset = 0;
+
+  static auto open(HANDLE output, std::uintmax_t soft_limit) -> FsizeGuard {
+    FsizeGuard guard;
+    if (soft_limit == kRlimInfinity) return guard;
+    if (GetFileType(output) != FILE_TYPE_DISK) return guard;
+    LARGE_INTEGER pos{};
+    if (!SetFilePointerEx(output, LARGE_INTEGER{}, &pos, FILE_CURRENT)) {
+      return guard;
+    }
+    guard.active = true;
+    guard.cap = soft_limit;
+    guard.offset = static_cast<std::uintmax_t>(pos.QuadPart);
+    return guard;
+  }
+
+  // How many bytes of `n` may still be written at the current offset;
+  // advances the frontier. A short result is the SIGXFSZ crossing.
+  [[nodiscard]] auto admit(std::uintmax_t n) -> std::uintmax_t {
+    if (!active) return n;
+    const std::uintmax_t remaining = cap > offset ? cap - offset : 0;
+    const std::uintmax_t take = std::min(n, remaining);
+    offset += take;
+    return take;
+  }
+};
+
+enum class FlushResult { ok, error, sigxfsz };
+
 auto flush_output_buffer(HANDLE output, std::vector<char>& pending,
-                         std::uintmax_t obs, CopyStats& stats, bool force)
-    -> bool {
+                         std::uintmax_t obs, CopyStats& stats, bool force,
+                         FsizeGuard& fsize) -> FlushResult {
   while (pending.size() >= obs || (force && !pending.empty())) {
     size_t chunk_size =
         pending.size() >= obs ? static_cast<size_t>(obs) : pending.size();
-    if (!write_all(output, pending.data(), chunk_size)) return false;
+    const std::uintmax_t allowed =
+        fsize.admit(static_cast<std::uintmax_t>(chunk_size));
+    if (allowed < static_cast<std::uintmax_t>(chunk_size)) {
+      // RLIMIT_FSIZE crossing: deliver the partial prefix (kernel
+      // behavior), then die by SIGXFSZ - silently, like GNU dd.
+      if (allowed > 0 && !write_all(output, pending.data(),
+                                    static_cast<size_t>(allowed))) {
+        return FlushResult::error;
+      }
+      return FlushResult::sigxfsz;
+    }
+    if (!write_all(output, pending.data(), chunk_size)) {
+      return FlushResult::error;
+    }
     ++stats.out_records;
     stats.bytes_copied += chunk_size;
     pending.erase(pending.begin(), pending.begin() + chunk_size);
   }
-  return true;
+  return FlushResult::ok;
 }
 
 auto report_stats(const Config& cfg, const CopyStats& stats) -> void {
@@ -977,6 +1094,13 @@ REGISTER_COMMAND(dd,
   CopyStats stats;
   bool read_failed = false;
   bool write_failed = false;
+  // RLIMIT_FSIZE: meter writes against the declared soft limit (issue
+  // #1453). Opened after the seek/truncate handling so the frontier starts
+  // at the real output position.
+  FsizeGuard fsize =
+      output_sink == OutputSink::handle
+          ? FsizeGuard::open(hOut, declared_fsize_limit())
+          : FsizeGuard{};
   std::uintmax_t bytes_remaining =
       cfg.count_is_bytes ? cfg.count
                          : std::numeric_limits<std::uintmax_t>::max();
@@ -1087,7 +1211,14 @@ REGISTER_COMMAND(dd,
       write_failed = true;
       break;
     }
-    if (!flush_output_buffer(hOut, output_buffer, cfg.obs, stats, false)) {
+    const FlushResult flushed_chunk = flush_output_buffer(
+        hOut, output_buffer, cfg.obs, stats, false, fsize);
+    if (flushed_chunk == FlushResult::sigxfsz) {
+      // GNU dd dies by SIGXFSZ mid-copy: no diagnostic, no summary.
+      close_handles();
+      return kSigXfszExit;
+    }
+    if (flushed_chunk == FlushResult::error) {
       safeErrorPrintLn(winux::i18n::format(
           "command.dd.error.write_named", "dd: error writing '{}': {}",
           cfg.output_given ? cfg.output_file : std::string("standard output"),
@@ -1108,7 +1239,14 @@ REGISTER_COMMAND(dd,
         write_failed = true;
       }
     } else {
-      flushed = flush_output_buffer(hOut, output_buffer, cfg.obs, stats, true);
+      const FlushResult tail = flush_output_buffer(hOut, output_buffer,
+                                                   cfg.obs, stats, true, fsize);
+      flushed = tail == FlushResult::ok;
+      if (tail == FlushResult::sigxfsz) {
+        // GNU dd dies by SIGXFSZ mid-copy: no diagnostic, no summary.
+        close_handles();
+        return kSigXfszExit;
+      }
       if (!flushed) {
         safeErrorPrintLn(winux::i18n::format(
             "command.dd.error.write_named", "dd: error writing '{}': {}",
