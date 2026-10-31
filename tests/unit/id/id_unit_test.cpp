@@ -124,6 +124,18 @@ TEST(id, id_group_list_zero_delimited) {
   EXPECT_EQ(r.stdout_text.back(), static_cast<char>(0));
 }
 
+// [#1462] id.c reports an unknown user as: id: '<name>': no such user.
+TEST(id, id_no_such_user) {
+  Pipeline p;
+  p.add(L"id.exe", {L"nosuchuserxyz"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("'nosuchuserxyz': no such user") !=
+              std::string::npos);
+}
+
 TEST(id, id_rejects_multiple_only_modes) {
   Pipeline p;
   p.add(L"id.exe", {L"-u", L"-g"});
