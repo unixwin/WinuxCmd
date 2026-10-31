@@ -17,7 +17,7 @@ TEST(reset, reset_basic) {
   // [#1462] GNU reset aims its reset strings at stderr (reset_start's
   // stream), leaving stdout clean; the byte used to go to stdout.
   EXPECT_TRUE(r.stdout_text.empty());
-  EXPECT_TRUE(r.stderr_text.find("\x1bc") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("\x1b" "c") != std::string::npos);
 }
 
 TEST(reset, reset_quiet) {
