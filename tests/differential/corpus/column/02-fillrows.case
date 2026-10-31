@@ -1,0 +1,10 @@
+cmd: column
+args: -c 20 --fillrows
+timeout: 10
+stdin: |
+  a
+  b
+  c
+  d
+source: github.com/unixwin/WinuxCmd
+tags: p2c-1127 oracle-verified
