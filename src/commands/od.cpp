@@ -62,12 +62,27 @@ auto constexpr OD_OPTIONS = std::array{
            STRING_TYPE),
     // [GNU] -f: select floating-point output
     OPTION("-f", "", "select floating-point output"),
-    // [GNU] -i: select signed decimal 2-byte output
-    OPTION("-i", "", "select signed decimal 2-byte output"),
-    // [GNU] -l: select signed decimal 4-byte output
-    OPTION("-l", "", "select signed decimal 4-byte output"),
+    // [GNU] -i: select signed decimal int output (-t dI)
+    OPTION("-i", "", "select signed decimal int output"),
+    // [GNU] -l: select signed decimal long output (-t dL)
+    OPTION("-l", "", "select signed decimal long output"),
     // [GNU] -s: select signed decimal 2-byte output
-    OPTION("-s", "", "select signed decimal 2-byte output")};
+    OPTION("-s", "", "select signed decimal 2-byte output"),
+    // [GNU] od.c CASE_OLD_ARG table: the remaining traditional format
+    // letters are obsolescent and undocumented in GNU, so they stay
+    // hidden here too (empty description, like tsort -w). Mapping:
+    // -D = u4, -e/-F = fD, -H/-X = x4, -h = x2, -I/-L = dL,
+    // -O = o4, -B = o2.
+    OPTION("-B", "", ""),
+    OPTION("-D", "", ""),
+    OPTION("-e", "", ""),
+    OPTION("-F", "", ""),
+    OPTION("-H", "", ""),
+    OPTION("-h", "", ""),
+    OPTION("-I", "", ""),
+    OPTION("-L", "", ""),
+    OPTION("-O", "", ""),
+    OPTION("-X", "", "")};
 
 // ======================================================
 // Helper functions
@@ -658,25 +673,50 @@ auto build_config(const CommandContext<OD_OPTIONS.size()>& ctx)
     }
   }
 
-  if (ctx.has("-a"))
-    cfg.specs.push_back({FormatKind::named_character, 1, false});
-  if (ctx.has("-b")) cfg.specs.push_back({FormatKind::octal, 1, false});
-  if (ctx.has("-c")) cfg.specs.push_back({FormatKind::character, 1, false});
-  if (ctx.has("-d"))
-    cfg.specs.push_back({FormatKind::unsigned_decimal, 2, false});
-  if (ctx.has("-f"))
-    cfg.specs.push_back(
-        {FormatKind::floating_point, 4, false});  // [GNU] -f == -t fF
-  if (ctx.has("-i"))
-    cfg.specs.push_back({FormatKind::signed_decimal, 4, false});  // [GNU] dI
-  if (ctx.has("-l"))
-    cfg.specs.push_back({FormatKind::signed_decimal, 8, false});  // [GNU] dL
-  if (ctx.has("-o")) cfg.specs.push_back({FormatKind::octal, 2, false});
-  if (ctx.has("-s"))
-    cfg.specs.push_back({FormatKind::signed_decimal, 2, false});  // [DIFFERS]
-  if (ctx.has("-x")) cfg.specs.push_back({FormatKind::hexadecimal, 2, false});
-  for (const auto& occurrence : ctx.get_all<std::string>("-t")) {
-    if (!append_format_specs(occurrence, cfg.specs)) return std::nullopt;
+  // [GNU] od.c: traditional format letters and -t specifications
+  // accumulate in argv order -- the output columns follow the order
+  // the user gave the options, so walk the parser's occurrence list
+  // instead of testing the flags in a fixed order.
+  auto flag_spec = [](std::string_view name)
+      -> std::optional<FormatSpec> {
+    using FK = FormatKind;
+    if (name == "-a") return FormatSpec{FK::named_character, 1, false};
+    if (name == "-b") return FormatSpec{FK::octal, 1, false};
+    if (name == "-c") return FormatSpec{FK::character, 1, false};
+    if (name == "-d") return FormatSpec{FK::unsigned_decimal, 2, false};
+    if (name == "-D") return FormatSpec{FK::unsigned_decimal, 4, false};
+    if (name == "-e" || name == "-F")
+      return FormatSpec{FK::floating_point, 8, false};  // [GNU] fD
+    if (name == "-f")
+      return FormatSpec{FK::floating_point, 4, false};  // [GNU] -f == -t fF
+    if (name == "-H" || name == "-X")
+      return FormatSpec{FK::hexadecimal, 4, false};  // [GNU] x4
+    if (name == "-h") return FormatSpec{FK::hexadecimal, 2, false};
+    if (name == "-i")
+      return FormatSpec{FK::signed_decimal, 4, false};  // [GNU] dI
+    if (name == "-l" || name == "-I" || name == "-L")
+      return FormatSpec{FK::signed_decimal, 8, false};  // [GNU] dL
+    if (name == "-o" || name == "-B")
+      return FormatSpec{FK::octal, 2, false};  // [GNU] o2
+    if (name == "-O") return FormatSpec{FK::octal, 4, false};
+    if (name == "-s")
+      return FormatSpec{FK::signed_decimal, 2, false};  // [DIFFERS]
+    if (name == "-x") return FormatSpec{FK::hexadecimal, 2, false};
+    return std::nullopt;
+  };
+  if (ctx.metas) {
+    for (const auto& occurrence : ctx.options.occurrences()) {
+      if (occurrence.index >= ctx.metas->size()) continue;
+      const auto& meta = (*ctx.metas)[occurrence.index];
+      if (meta.short_name == "-t") {
+        if (const auto* value =
+                std::get_if<std::string>(&occurrence.value)) {
+          if (!append_format_specs(*value, cfg.specs)) return std::nullopt;
+        }
+        continue;
+      }
+      if (auto spec = flag_spec(meta.short_name)) cfg.specs.push_back(*spec);
+    }
   }
   // [GNU] --strings/-S: dump NUL-terminated strings of >=N graphic
   // characters.  --strings takes an optional argument (default 3),

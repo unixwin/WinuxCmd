@@ -1,0 +1,10 @@
+cmd: od
+args: -t x1 -b f.bin
+timeout: 10
+setup: |
+  printf 'ab' > f.bin
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: issue-1462 audit-w2 od spec-order
+# GNU od accumulates format specifications in argv order: the hex
+# column from -t x1 precedes the octal column from -b. A fixed-order
+# flag walk prints the octal column first.

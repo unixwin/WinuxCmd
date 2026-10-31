@@ -1,0 +1,11 @@
+cmd: uniq
+args: --group=bogus
+timeout: 10
+stdin: |
+  a
+  a
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: issue-1462 audit-w2 uniq argmatch
+# GNU uniq.c XARGMATCH ("--group", ...): "uniq: invalid argument
+# 'bogus' for '--group'" + valid list (prepend, append, separate,
+# both) + try-help, exit 1.

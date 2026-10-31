@@ -17,7 +17,8 @@ auto constexpr PTX_OPTIONS = std::array{
     // [GNU]
     OPTION("-A", "--auto-reference",
            "output automatically generated references", BOOL_TYPE),
-    // [GNU]
+    // [EXT] GNU ptx has no -C/--copyright (ptx.c long_options and
+    // optstring carry neither); kept as a WinuxCmd extension.
     OPTION("-C", "--copyright", "display copyright and version", BOOL_TYPE),
     // [GNU]
     OPTION("-G", "--traditional", "use traditional non-GNU word splitting",
@@ -29,20 +30,18 @@ auto constexpr PTX_OPTIONS = std::array{
     OPTION("-M", "--macro-name", "macro name for formatted output",
            STRING_TYPE),
     // [GNU]
-    OPTION("-O", "",
-           "generate output as roff directives [DIFFERS: --format=roff not "
-           "supported]",
-           BOOL_TYPE),
+    OPTION("-O", "", "generate output as roff directives", BOOL_TYPE),
     // [GNU]
     OPTION("-R", "--right-side-refs", "put references in right margin",
            BOOL_TYPE),
     // [GNU]
     OPTION("-S", "--sentence-regexp", "regexp for sentence ends", STRING_TYPE),
     // [GNU]
-    OPTION("-T", "",
-           "generate output as TeX directives [DIFFERS: --format=tex not "
-           "supported]",
-           BOOL_TYPE),
+    OPTION("-T", "", "generate output as TeX directives", BOOL_TYPE),
+    // [GNU] --format=roff|tex (ptx.c long_options, val 10): the long
+    // spelling of -O/-T.
+    OPTION("", "--format", "set output format ('roff' or 'tex')",
+           STRING_TYPE),
     // [GNU]
     OPTION("-W", "--word-regexp", "regexp for words", STRING_TYPE),
     // [GNU]
@@ -150,12 +149,44 @@ auto build_config(const CommandContext<PTX_OPTIONS.size()>& ctx)
   cfg.input_references =
       ctx.get<bool>("--references", false) || ctx.get<bool>("-r", false);
 
-  if (ctx.get<bool>("-O", false) || ctx.get<bool>("--typeset-mode", false) ||
-      ctx.get<bool>("-t", false)) {
+  // [GNU] -O selects roff output, -T tex output, and --format=NAME
+  // (ptx.c case 10, XARGMATCH over {"roff", "tex"}) is their long
+  // spelling; when several are given the LAST one wins, so resolve
+  // them in argv order over the parser's occurrence list.
+  if (ctx.get<bool>("--typeset-mode", false) || ctx.get<bool>("-t", false)) {
     cfg.output_format = OutputFormat::Roff;
   }
-  if (ctx.get<bool>("-T", false)) {
-    cfg.output_format = OutputFormat::Tex;
+  if (ctx.metas) {
+    for (const auto& occurrence : ctx.options.occurrences()) {
+      if (occurrence.index >= ctx.metas->size()) continue;
+      const auto& meta = (*ctx.metas)[occurrence.index];
+      if (meta.short_name == "-O") {
+        cfg.output_format = OutputFormat::Roff;
+      } else if (meta.short_name == "-T") {
+        cfg.output_format = OutputFormat::Tex;
+      } else if (meta.long_name == "--format") {
+        const auto* raw = std::get_if<std::string>(&occurrence.value);
+        const std::string value = raw ? *raw : "";
+        auto matches = [&value](const char* name) {
+          return !value.empty() &&
+                 value.size() <= std::string_view(name).size() &&
+                 std::string_view(name).starts_with(value);
+        };
+        if (matches("roff") && !matches("tex")) {
+          cfg.output_format = OutputFormat::Roff;
+        } else if (matches("tex") && !matches("roff")) {
+          cfg.output_format = OutputFormat::Tex;
+        } else {
+          return std::unexpected(make_error(
+              "invalid argument '" + value +
+              "' for '--format'\nValid arguments are:\n  - 'roff'\n  - "
+              "'tex'\nTry 'ptx --help' for more information."));
+        }
+      }
+    }
+  } else {
+    if (ctx.get<bool>("-O", false)) cfg.output_format = OutputFormat::Roff;
+    if (ctx.get<bool>("-T", false)) cfg.output_format = OutputFormat::Tex;
   }
 
   cfg.truncation = option_value(ctx, "--flag-truncation", "-F");

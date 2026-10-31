@@ -1095,26 +1095,27 @@ void apply_global_sort_mode(Config& cfg, SortMode mode) {
 }
 
 auto parse_sort_mode_word(std::string_view text) -> std::optional<SortMode> {
-  auto lowered = ascii_lower_copy(text);
-  if (lowered == "general-numeric" || lowered == "g") {
-    return SortMode::GeneralNumeric;
+  // [GNU] sort.c XARGMATCH ("--sort", ...) over sort_args: the match is
+  // case-SENSITIVE and accepts any unique prefix of a table entry (the
+  // one-letter forms work because each initial is unique to one name).
+  static constexpr std::array<std::pair<std::string_view, SortMode>, 6>
+      kSortWords{{
+          {"general-numeric", SortMode::GeneralNumeric},
+          {"human-numeric", SortMode::HumanNumeric},
+          {"month", SortMode::Month},
+          {"numeric", SortMode::Numeric},
+          {"random", SortMode::Random},
+          {"version", SortMode::Version},
+      }};
+  if (text.empty()) return std::nullopt;
+  std::optional<SortMode> matched;
+  for (const auto& [name, mode] : kSortWords) {
+    if (name.starts_with(text)) {
+      if (matched) return std::nullopt;  // ambiguous prefix
+      matched = mode;
+    }
   }
-  if (lowered == "human-numeric" || lowered == "h") {
-    return SortMode::HumanNumeric;
-  }
-  if (lowered == "month" || lowered == "m") {
-    return SortMode::Month;
-  }
-  if (lowered == "numeric" || lowered == "n") {
-    return SortMode::Numeric;
-  }
-  if (lowered == "random" || lowered == "r") {
-    return SortMode::Random;
-  }
-  if (lowered == "version" || lowered == "v") {
-    return SortMode::Version;
-  }
-  return std::nullopt;
+  return matched;
 }
 
 auto effective_sort_mode_name(const Config& cfg, const KeySpec* key_spec)
@@ -1235,9 +1236,19 @@ auto apply_sort_ordering_options(Config& cfg,
       apply_global_sort_mode(cfg, SortMode::Version);
     } else if (option_matches(meta, "", "--sort")) {
       const auto* value = std::get_if<std::string>(&occurrence.value);
-      if (value == nullptr) return std::unexpected("invalid sort mode");
+      if (value == nullptr) {
+        return std::unexpected("invalid argument '' for '--sort'");
+      }
+      if (value->empty()) {
+        // Printed specially by the command entry point.
+        return std::unexpected("ambiguous argument '' for '--sort'");
+      }
       auto mode = parse_sort_mode_word(*value);
-      if (!mode) return std::unexpected("invalid sort mode");
+      if (!mode) {
+        // Printed specially by the command entry point.
+        return std::unexpected("invalid argument '" + *value +
+                               "' for '--sort'");
+      }
       apply_global_sort_mode(cfg, *mode);
     }
   }
@@ -2101,6 +2112,23 @@ REGISTER_COMMAND(sort, "sort", "sort [OPTION]... [FILE]...",
       safeErrorPrintLn("Valid arguments are:");
       safeErrorPrintLn("  - 'quiet', 'silent'");
       safeErrorPrintLn("  - 'diagnose-first'");
+      safeErrorPrintLn("Try 'sort --help' for more information.");
+      return 1;
+    }
+    // [GNU] same argmatch treatment for a bad --sort=ARG (sort.c
+    // XARGMATCH over sort_args): exit 1, valid-arguments list in
+    // sort_args table order.
+    if ((err.starts_with("invalid argument '") ||
+         err.starts_with("ambiguous argument '")) &&
+        err.ends_with("' for '--sort'")) {
+      safeErrorPrintLn("sort: " + err);
+      safeErrorPrintLn("Valid arguments are:");
+      safeErrorPrintLn("  - 'general-numeric'");
+      safeErrorPrintLn("  - 'human-numeric'");
+      safeErrorPrintLn("  - 'month'");
+      safeErrorPrintLn("  - 'numeric'");
+      safeErrorPrintLn("  - 'random'");
+      safeErrorPrintLn("  - 'version'");
       safeErrorPrintLn("Try 'sort --help' for more information.");
       return 1;
     }

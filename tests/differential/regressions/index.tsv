@@ -57,3 +57,14 @@
 57	#1341	uniq -w -1 must be rejected
 58	#1342	tail -z headers must use newline separators
 59	#1343	echo -e must print \E literally
+75	#1462	tsort ready queue must be FIFO with reverse-read successor order
+76	#1462	tsort extra operand is a usage error with try-help
+77	#1462	tsort odd-token diagnostic carries the input name
+78	#1462	tsort open failure uses the GNU errno diagnostic form
+79	#1462	od obsolescent letters -D -e -H -O must be accepted
+80	#1462	od format specifications accumulate in argv order
+81	#1462	ptx --format=tex selects the TeX output format
+82	#1462	ptx --format invalid value uses the argmatch diagnostic
+83	#1462	uniq --group invalid value uses the argmatch diagnostic
+84	#1462	sort --sort invalid value uses the argmatch diagnostic
+85	#1462	sort --sort accepts unique argmatch prefixes
