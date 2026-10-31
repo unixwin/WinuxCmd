@@ -39,7 +39,13 @@ auto constexpr CPIO_OPTIONS =
         OPTION("-m", "--preserve-modification-time",
                "preserve modification time"),
         // [GNU]
+        OPTION("-u", "--unconditional",
+               "replace files unconditionally (default: an existing file "
+               "that is newer or same age is not replaced)"),
+        // [GNU]
         OPTION("-v", "--verbose", "verbose output"),
+        // [GNU]
+        OPTION("", "--quiet", "do not print the number of blocks copied"),
         // [GNU]
         OPTION("-F", "--file", "use given archive FILE instead of stdin/stdout",
                STRING_TYPE),
@@ -71,11 +77,26 @@ struct CpioHeader {
   char check[8];      // checksum (for "070702")
 };
 
-// Convert hex string to number
+// Convert hex string to number. Parsed by hand (not std::stoull): a
+// corrupt or foreign header field must degrade to a partial value the
+// caller can reject, not throw through the command.
 unsigned long long hex_to_ull(const char* str, size_t len) {
-  char buffer[32] = {0};
-  strncpy_s(buffer, str, len);
-  return std::stoull(buffer, nullptr, 16);
+  unsigned long long value = 0;
+  for (size_t i = 0; i < len; ++i) {
+    const char c = str[i];
+    unsigned digit;
+    if (c >= '0' && c <= '9') {
+      digit = static_cast<unsigned>(c - '0');
+    } else if (c >= 'a' && c <= 'f') {
+      digit = static_cast<unsigned>(c - 'a') + 10;
+    } else if (c >= 'A' && c <= 'F') {
+      digit = static_cast<unsigned>(c - 'A') + 10;
+    } else {
+      break;
+    }
+    value = (value << 4) | digit;
+  }
+  return value;
 }
 
 // Convert number to hex string
@@ -154,36 +175,139 @@ bool write_file(const std::string& filename, const std::vector<char>& content) {
   return true;
 }
 
-// Windows equivalent for S_ISREG
-bool is_regular_file(DWORD attrs) {
-  return (attrs != INVALID_FILE_ATTRIBUTES) &&
-         !(attrs & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_DEVICE));
+// One stat of a filesystem object: everything the create and extract
+// paths need (attributes, size, mtime as Unix seconds).
+struct MemberStat {
+  bool exists = false;
+  bool is_dir = false;
+  bool readonly = false;
+  unsigned long long size = 0;
+  unsigned long long mtime = 0;  // seconds since the Unix epoch
+};
+
+auto stat_member(const std::string& name) -> MemberStat {
+  MemberStat st;
+  WIN32_FILE_ATTRIBUTE_DATA data{};
+  if (!GetFileAttributesExW(operand_path_w(name).c_str(),
+                            GetFileExInfoStandard, &data)) {
+    return st;
+  }
+  st.exists = true;
+  st.is_dir = (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+  st.readonly = (data.dwFileAttributes & FILE_ATTRIBUTE_READONLY) != 0;
+  st.size = (static_cast<unsigned long long>(data.nFileSizeHigh) << 32) |
+            data.nFileSizeLow;
+  ULARGE_INTEGER uli;
+  uli.LowPart = data.ftLastWriteTime.dwLowDateTime;
+  uli.HighPart = data.ftLastWriteTime.dwHighDateTime;
+  if (uli.QuadPart >= 116444736000000000ULL) {
+    st.mtime = (uli.QuadPart - 116444736000000000ULL) / 10000000ULL;
+  }
+  return st;
 }
 
-// Windows equivalent for S_ISDIR
-bool is_directory(DWORD attrs) {
-  return (attrs != INVALID_FILE_ATTRIBUTES) &&
-         (attrs & FILE_ATTRIBUTE_DIRECTORY);
+auto set_member_mtime(const std::string& name, unsigned long long mtime,
+                      bool is_dir) -> void {
+  std::wstring wfile = operand_path_w(name);
+  HANDLE hFile = CreateFileW(
+      wfile.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+      is_dir ? FILE_FLAG_BACKUP_SEMANTICS : FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (hFile == INVALID_HANDLE_VALUE) return;
+  ULARGE_INTEGER uli;
+  uli.QuadPart = mtime * 10000000ULL + 116444736000000000ULL;
+  FILETIME ft;
+  ft.dwLowDateTime = uli.LowPart;
+  ft.dwHighDateTime = uli.HighPart;
+  SetFileTime(hFile, nullptr, nullptr, &ft);
+  CloseHandle(hFile);
 }
 
-// Windows equivalent for S_ISFIFO
-bool is_pipe(DWORD attrs) {
-  return (attrs != INVALID_FILE_ATTRIBUTES) && (attrs & FILE_ATTRIBUTE_DEVICE);
+// CRC-format (070702) checksum: the sum of all data bytes modulo 2^32
+// (cpiohdr.h in GNU cpio: c_check is "the sum of the file's data bytes").
+auto data_checksum(const char* data, size_t size) -> unsigned long {
+  unsigned long sum = 0;
+  for (size_t i = 0; i < size; ++i) {
+    sum += static_cast<unsigned char>(data[i]);
+  }
+  return sum;
 }
 
-// Windows equivalent for S_ISCHR
-bool is_char_device(DWORD attrs) {
-  return (attrs != INVALID_FILE_ATTRIBUTES) && (attrs & FILE_ATTRIBUTE_DEVICE);
+// [GNU] Every completed copy-in/copy-out/copy-pass run reports
+// "%lu block(s)" on stderr, in units of the I/O block size (512 bytes
+// by default, global.c io_block_size), unless --quiet (copyin.c
+// process_copy_in tail, copyout.c, copypass.c).
+auto print_blocks(unsigned long long bytes, bool quiet) -> void {
+  if (quiet) return;
+  const unsigned long long blocks = (bytes + 511) / 512;
+  if (blocks == 1) {
+    safeErrorPrintLn("1 block");
+  } else {
+    safeErrorPrintLn(std::to_string(blocks) + " blocks");
+  }
 }
 
-// Get file type character
-char get_file_type(DWORD attrs) {
-  if (attrs == INVALID_FILE_ATTRIBUTES) return '?';
-  if (is_directory(attrs)) return 'd';
-  if (is_regular_file(attrs)) return '-';
-  if (is_pipe(attrs)) return 'p';
-  if (is_char_device(attrs)) return 'c';
-  return '?';
+// The 10-character ls-style mode string GNU's long_format builds with
+// filemode.c mode_string (copyin.c long_format).
+auto mode_string(unsigned long long mode) -> std::string {
+  std::string out(10, '-');
+  switch (mode & 0170000ULL) {
+    case 0040000ULL:
+      out[0] = 'd';
+      break;
+    case 0120000ULL:
+      out[0] = 'l';
+      break;
+    case 0010000ULL:
+      out[0] = 'p';
+      break;
+    case 0140000ULL:
+      out[0] = 's';
+      break;
+    case 0020000ULL:
+      out[0] = 'c';
+      break;
+    case 0060000ULL:
+      out[0] = 'b';
+      break;
+    case 0100000ULL:
+      out[0] = '-';
+      break;
+    default:
+      out[0] = '?';
+      break;
+  }
+  static constexpr char kRwx[] = "rwx";
+  for (int i = 0; i < 9; ++i) {
+    if (mode & (0400ULL >> i)) out[1 + i] = kRwx[i % 3];
+  }
+  if (mode & 04000ULL) out[3] = (out[3] == 'x') ? 's' : 'S';
+  if (mode & 02000ULL) out[6] = (out[6] == 'x') ? 's' : 'S';
+  if (mode & 01000ULL) out[9] = (out[9] == 'x') ? 't' : 'T';
+  return out;
+}
+
+// The date column of GNU's long_format: ctime text from position 4,
+// with the year spliced in for entries older than six months or in the
+// future (copyin.c long_format).
+auto list_date(unsigned long long mtime) -> std::string {
+  static constexpr const char* kMonths[] = {"Jan", "Feb", "Mar", "Apr",
+                                            "May", "Jun", "Jul", "Aug",
+                                            "Sep", "Oct", "Nov", "Dec"};
+  const std::time_t when = static_cast<std::time_t>(mtime);
+  std::tm local{};
+  localtime_s(&local, &when);
+  const std::time_t now = std::time(nullptr);
+  const bool recent =
+      when <= now && (now - when) < (31556952LL / 2);
+  char buf[32];
+  if (recent) {
+    sprintf_s(buf, sizeof(buf), "%s %2d %02d:%02d", kMonths[local.tm_mon],
+              local.tm_mday, local.tm_hour, local.tm_min);
+  } else {
+    sprintf_s(buf, sizeof(buf), "%s %2d  %04d", kMonths[local.tm_mon],
+              local.tm_mday, local.tm_year + 1900);
+  }
+  return buf;
 }
 }  // namespace
 
@@ -200,7 +324,10 @@ struct Config {
   bool pass_through = false;
   bool make_dirs = false;
   bool preserve_time = false;
+  bool unconditional = false;
   bool verbose = false;
+  bool quiet = false;
+  bool crc_format = false;
   std::string format;
   std::string owner;
   std::string file;
@@ -219,7 +346,10 @@ auto build_config(const CommandContext<CPIO_OPTIONS.size()>& ctx)
       ctx.get<bool>("-d", false) || ctx.get<bool>("--make-directories", false);
   cfg.preserve_time = ctx.get<bool>("-m", false) ||
                       ctx.get<bool>("--preserve-modification-time", false);
+  cfg.unconditional =
+      ctx.get<bool>("-u", false) || ctx.get<bool>("--unconditional", false);
   cfg.verbose = ctx.get<bool>("-v", false) || ctx.get<bool>("--verbose", false);
+  cfg.quiet = ctx.get<bool>("--quiet", false);
   cfg.format = ctx.get<std::string>("-H", "");
   if (cfg.format.empty()) {
     cfg.format = ctx.get<std::string>("--format", "");
@@ -234,22 +364,370 @@ auto build_config(const CommandContext<CPIO_OPTIONS.size()>& ctx)
   }
 
   if (!cfg.create && !cfg.extract && !cfg.list && !cfg.pass_through) {
-    return std::unexpected("missing option (-o/-i/-t/-p)");
+    // [GNU] main.c: "You must specify one of -oipt options."
+    return std::unexpected("You must specify one of -oipt options.");
   }
+  if (cfg.list && (cfg.create || cfg.pass_through)) {
+    return std::unexpected("--list is meaningless with --create/--pass-through");
+  }
+  // -t with -i is GNU's table mode, not an extraction.
+  if (cfg.list) cfg.extract = true;
 
-  // -H/--format is only valid with -o/--create
-  if (!cfg.create && !cfg.format.empty()) {
-    return std::unexpected("--format is only allowed with --create");
+  if (!cfg.format.empty()) {
+    // [GNU] main.c validates -H against the format name set and errors
+    // with: invalid archive format `%s'; valid formats are:
+    // crc newc odc bin ustar tar (all-caps also recognized).
+    std::string lower = cfg.format;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    static constexpr std::array kKnown = {"newc", "crc",  "odc",  "bin",
+                                          "ustar", "tar", "hpodc", "hpbin"};
+    if (std::find(kKnown.begin(), kKnown.end(), lower) == kKnown.end()) {
+      return std::unexpected("invalid archive format `" + cfg.format +
+                             "'; valid formats are:\n"
+                             "crc newc odc bin ustar tar "
+                             "(all-caps also recognized)");
+    }
+    if (cfg.create) {
+      // Only the two new-ASCII formats are written; the historical build
+      // silently wrote newc under any -H label, mislabeling archives.
+      if (lower != "newc" && lower != "crc") {
+        return std::unexpected("archive format '" + cfg.format +
+                               "' is not supported for --create "
+                               "(supported: newc, crc)");
+      }
+      cfg.crc_format = (lower == "crc");
+    } else {
+      // Reading auto-detects between the newc and crc magics; other
+      // formats are not read, and naming one is an error rather than a
+      // silent re-interpretation.
+      if (lower != "newc" && lower != "crc") {
+        return std::unexpected("archive format '" + cfg.format +
+                               "' is not supported for reading "
+                               "(supported: newc, crc)");
+      }
+    }
   }
 
   return cfg;
 }
 
+namespace {
+// Shared header walk for extract and list. Returns false when the
+// stream does not start with a new-ASCII magic at all.
+struct Member {
+  unsigned long long mode = 0;
+  unsigned long long uid = 0;
+  unsigned long long gid = 0;
+  unsigned long long nlink = 0;
+  unsigned long long mtime = 0;
+  unsigned long long filesize = 0;
+  unsigned long long check = 0;
+  bool crc = false;
+  std::string name;
+  size_t data_offset = 0;  // offset of the file data in the archive
+};
+
+auto parse_member(const std::vector<char>& archive, size_t pos, Member& out)
+    -> bool {
+  if (pos + sizeof(CpioHeader) > archive.size()) return false;
+  const auto* header =
+      reinterpret_cast<const CpioHeader*>(archive.data() + pos);
+  if (memcmp(header->magic, "070701", 6) == 0) {
+    out.crc = false;
+  } else if (memcmp(header->magic, "070702", 6) == 0) {
+    out.crc = true;
+  } else {
+    return false;
+  }
+  out.mode = hex_to_ull(header->mode, 8);
+  out.uid = hex_to_ull(header->uid, 8);
+  out.gid = hex_to_ull(header->gid, 8);
+  out.nlink = hex_to_ull(header->nlink, 8);
+  out.mtime = hex_to_ull(header->mtime, 8);
+  out.filesize = hex_to_ull(header->filesize, 8);
+  out.check = hex_to_ull(header->check, 8);
+  const unsigned long long namesize = hex_to_ull(header->namesize, 8);
+  if (namesize == 0) return false;
+  size_t name_offset = pos + sizeof(CpioHeader);
+  if (name_offset + namesize > archive.size()) return false;
+  out.name.assign(archive.data() + name_offset, namesize - 1);
+  size_t data = name_offset + namesize;
+  while (data % 4 != 0) ++data;
+  out.data_offset = data;
+  return true;
+}
+
+auto member_span_end(const Member& m) -> size_t {
+  size_t end = m.data_offset + static_cast<size_t>(m.filesize);
+  while (end % 4 != 0) ++end;
+  return end;
+}
+}  // namespace
+
+auto run_create(const Config& cfg, const std::string& input) -> int {
+  std::istringstream iss(input);
+  std::string line;
+  std::vector<char> archive;
+  bool failed = false;
+  const char* magic = cfg.crc_format ? "070702" : "070701";
+
+  auto append_padded = [&archive](const char* data, size_t size) {
+    archive.insert(archive.end(), data, data + size);
+    while (archive.size() % 4 != 0) archive.push_back(0);
+  };
+
+  while (std::getline(iss, line)) {
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    if (line.empty()) continue;
+
+    // Stat first: an unreadable or missing name is a per-file error
+    // ("cpio: <name>: <reason>", GNU copyout's stat failure path), and
+    // an empty file or a directory is a normal member. The historical
+    // build conflated "read_file returned nothing" with failure, which
+    // silently dropped every empty file and directory from archives.
+    const MemberStat st = stat_member(line);
+    if (!st.exists) {
+      safeErrorPrint("cpio: ");
+      safeErrorPrint(line);
+      safeErrorPrint(": ");
+      safeErrorPrintLn(win32_posix_error_text(GetLastError()));
+      failed = true;
+      continue;
+    }
+
+    std::vector<char> content;
+    if (!st.is_dir) {
+      content = read_file(line);
+      if (content.size() != st.size) {
+        safeErrorPrint("cpio: warning: cannot read file '");
+        safeErrorPrint(line);
+        safeErrorPrintLn("'");
+        failed = true;
+        continue;
+      }
+    }
+
+    CpioHeader header;
+    memcpy(header.magic, magic, 6);
+    ull_to_hex(0, header.inode, 8);
+    // Windows has no POSIX permission bits; store the closest stable
+    // mapping (read-only files lose the write bits), as stat does.
+    const unsigned long long mode =
+        st.is_dir ? (st.readonly ? 040555ULL : 040755ULL)
+                  : (st.readonly ? 0100444ULL : 0100644ULL);
+    ull_to_hex(mode, header.mode, 8);
+    ull_to_hex(0, header.uid, 8);
+    ull_to_hex(0, header.gid, 8);
+    ull_to_hex(st.is_dir ? 2 : 1, header.nlink, 8);
+    ull_to_hex(st.mtime, header.mtime, 8);
+    ull_to_hex(content.size(), header.filesize, 8);
+    ull_to_hex(0, header.devmajor, 8);
+    ull_to_hex(0, header.devminor, 8);
+    ull_to_hex(0, header.rdevmajor, 8);
+    ull_to_hex(0, header.rdevminor, 8);
+    ull_to_hex(line.length() + 1, header.namesize, 8);
+    ull_to_hex(cfg.crc_format
+                   ? data_checksum(content.data(), content.size())
+                   : 0,
+               header.check, 8);
+
+    // The header is NOT padded on its own: newc pads (header + name)
+    // and (data) each to a 4-byte boundary counted from the header
+    // start, and the running total is always 4-aligned at a member
+    // boundary, so padding the running total is the alignment rule.
+    archive.insert(archive.end(), reinterpret_cast<const char*>(&header),
+                   reinterpret_cast<const char*>(&header) +
+                       sizeof(CpioHeader));
+    archive.insert(archive.end(), line.begin(), line.end());
+    archive.push_back('\0');
+    while (archive.size() % 4 != 0) archive.push_back(0);
+
+    // [GNU] Copy-out verbose names go to stderr (copyout.c), never into
+    // the archive stream on stdout.
+    if (cfg.verbose) safeErrorPrintLn(line);
+
+    if (!st.is_dir) {
+      append_padded(content.data(), content.size());
+    }
+  }
+
+  // Trailer record. Every numeric field is an ASCII hex string, so the
+  // header starts as all-'0' characters (a NUL-filled field would not
+  // parse as hex on the read side).
+  static constexpr std::string_view kTrailerName = "TRAILER!!!";
+  CpioHeader end_header;
+  memset(&end_header, '0', sizeof(CpioHeader));
+  memcpy(end_header.magic, magic, 6);
+  ull_to_hex(1, end_header.nlink, 8);
+  ull_to_hex(kTrailerName.size() + 1, end_header.namesize, 8);
+  archive.insert(archive.end(), reinterpret_cast<const char*>(&end_header),
+                 reinterpret_cast<const char*>(&end_header) +
+                     sizeof(CpioHeader));
+  archive.insert(archive.end(), kTrailerName.begin(), kTrailerName.end());
+  archive.push_back('\0');
+  while (archive.size() % 4 != 0) archive.push_back(0);
+
+  if (!cfg.file.empty()) {
+    if (!write_file(cfg.file, archive)) {
+      safeErrorPrint("cpio: cannot open archive '");
+      safeErrorPrint(cfg.file);
+      safeErrorPrintLn("'");
+      return 1;
+    }
+  } else {
+    safePrint(std::string(archive.begin(), archive.end()));
+  }
+  print_blocks(archive.size(), cfg.quiet);
+  return failed ? 1 : 0;
+}
+
+auto run_extract(const Config& cfg, const std::vector<char>& archive) -> int {
+  size_t pos = 0;
+  bool any = false;
+  while (pos < archive.size()) {
+    Member m;
+    if (!parse_member(archive, pos, m)) {
+      if (!any) {
+        safeErrorPrintLn(
+            "cpio: unsupported archive format (bad magic number)");
+        return 1;
+      }
+      break;
+    }
+    if (m.name == "TRAILER!!!") break;
+    any = true;
+    const size_t end = member_span_end(m);
+    if (m.data_offset + m.filesize > archive.size()) break;
+    const char* data = archive.data() + m.data_offset;
+    const unsigned long long type = m.mode & 0170000ULL;
+
+    // [GNU] CRC archives are verified member by member as the data is
+    // consumed: "%s: checksum error (0x%x, should be 0x%x)" (copyin.c).
+    if (m.crc && type == 0100000ULL) {
+      const unsigned long computed =
+          data_checksum(data, static_cast<size_t>(m.filesize));
+      if (computed != m.check) {
+        char buf[64];
+        sprintf_s(buf, sizeof(buf), " (0x%lx, should be 0x%llx)", computed,
+                  m.check);
+        safeErrorPrintLn(winux::i18n::format(
+            "command.cpio.error.checksum",
+            "cpio: {}: checksum error{}", m.name, buf));
+      }
+    }
+
+    if (cfg.verbose) safePrintLn(m.name);
+
+    // Create leading directories where the member needs them (-d).
+    if (cfg.make_dirs) {
+      const std::wstring target = operand_path_w(m.name);
+      auto pos_sep = target.find_last_of(L"\\/");
+      if (pos_sep != std::wstring::npos) {
+        native_path::create_directories_w(target.substr(0, pos_sep));
+      }
+    }
+
+    if (type == 0040000ULL) {
+      // Directory member: GNU creates it (with -m, keeping its time).
+      native_path::create_directories_w(operand_path_w(m.name));
+      if (cfg.preserve_time) set_member_mtime(m.name, m.mtime, true);
+    } else if (type == 0100000ULL || type == 0ULL) {
+      // Regular file. [GNU] Without -u, an existing file that is newer
+      // or the same age as the member is NOT replaced: "%s not created:
+      // newer or same age version exists" (copyin.c).
+      if (!cfg.unconditional) {
+        const MemberStat existing = stat_member(m.name);
+        if (existing.exists && !existing.is_dir &&
+            m.mtime <= existing.mtime) {
+          safeErrorPrintLn(winux::i18n::format(
+              "command.cpio.error.not_created",
+              "cpio: {} not created: newer or same age version exists",
+              m.name));
+          pos = end;
+          continue;
+        }
+      }
+      std::vector<char> content(data, data + m.filesize);
+      if (!write_file(m.name, content)) {
+        safeErrorPrint("cpio: warning: cannot write file '");
+        safeErrorPrint(m.name);
+        safeErrorPrintLn("'");
+      } else if (cfg.preserve_time) {
+        set_member_mtime(m.name, m.mtime, false);
+      }
+    } else if (type == 0120000ULL) {
+      // Symbolic link member: the data is the target text.
+      std::string target_text(data, static_cast<size_t>(m.filesize));
+      std::wstring wtarget = operand_path_w(m.name);
+      // Remove a stale entry first (POSIX ln -f semantics of extraction).
+      DeleteFileW(wtarget.c_str());
+      if (!CreateSymbolicLinkW(wtarget.c_str(),
+                               utf8_to_wstring(target_text).c_str(),
+                               SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE)) {
+        safeErrorPrint("cpio: warning: cannot create symlink '");
+        safeErrorPrint(m.name);
+        safeErrorPrintLn("'");
+      }
+    } else {
+      safeErrorPrint("cpio: warning: unsupported file type for '");
+      safeErrorPrint(m.name);
+      safeErrorPrintLn("'");
+    }
+    pos = end;
+  }
+  print_blocks(archive.size(), cfg.quiet);
+  return 0;
+}
+
+auto run_list(const Config& cfg, const std::vector<char>& archive) -> int {
+  size_t pos = 0;
+  bool any = false;
+  while (pos < archive.size()) {
+    Member m;
+    if (!parse_member(archive, pos, m)) {
+      if (!any) {
+        safeErrorPrintLn(
+            "cpio: unsupported archive format (bad magic number)");
+        return 1;
+      }
+      break;
+    }
+    if (m.name == "TRAILER!!!") break;
+    any = true;
+    if (m.data_offset + m.filesize > archive.size()) break;
+
+    if (cfg.verbose) {
+      // [GNU] long_format (copyin.c): mode string, nlink, owner and
+      // group columns (numeric on Windows — there is no passwd file to
+      // resolve names from), size, ls-style date, name; a symlink shows
+      // its target after " -> ".
+      char head[128];
+      sprintf_s(head, sizeof(head), "%s %3llu %-8llu %-8llu %8llu ",
+                mode_string(m.mode).c_str(), m.nlink, m.uid, m.gid,
+                m.filesize);
+      std::string line_out = head + list_date(m.mtime) + " " + m.name;
+      if ((m.mode & 0170000ULL) == 0120000ULL) {
+        line_out += " -> ";
+        line_out.append(archive.data() + m.data_offset,
+                        static_cast<size_t>(m.filesize));
+      }
+      safePrintLn(line_out);
+    } else {
+      // [GNU] A plain table of contents is the member names only.
+      safePrintLn(m.name);
+    }
+    pos = member_span_end(m);
+  }
+  print_blocks(archive.size(), cfg.quiet);
+  return 0;
+}
+
 auto run(const Config& cfg) -> int {
-  // Read input (file list or archive). With -F/--file the archive is the
-  // named file (an argv operand, resolved through the shared boundary by
-  // read_file) instead of stdin; in create mode stdin always carries the
-  // file list.
+  // Read input (file list or archive). With -F/--file the archive is
+  // the named file (an argv operand, resolved through the shared
+  // boundary by read_file) instead of stdin; in create mode stdin
+  // always carries the file list.
   std::string input;
   if (!cfg.create && !cfg.file.empty()) {
     std::vector<char> archive_file = read_file(cfg.file);
@@ -267,278 +745,16 @@ auto run(const Config& cfg) -> int {
                  std::istreambuf_iterator<char>());
   }
 
-  if (cfg.create) {
-    // Create archive
-    std::istringstream iss(input);
-    std::string line;
-    std::vector<char> archive;
-
-    while (std::getline(iss, line)) {
-      // Remove trailing CR
-      if (!line.empty() && line.back() == '\r') {
-        line.pop_back();
-      }
-
-      if (line.empty()) continue;
-
-      // Read file
-      std::vector<char> content = read_file(line);
-      if (content.empty()) {
-        safeErrorPrint("cpio: warning: cannot read file '");
-        safeErrorPrint(line);
-        safeErrorPrintLn("'");
-        continue;
-      }
-
-      // Get file attributes
-      std::wstring wfile = operand_path_w(line);
-      DWORD attrs = GetFileAttributesW(wfile.c_str());
-      bool is_dir = is_directory(attrs);
-
-      // Create header
-      CpioHeader header;
-      memcpy(header.magic, "070701", 6);
-      ull_to_hex(0, header.inode, 8);
-      ull_to_hex(is_dir ? 040755 : 0100644, header.mode, 8);
-      ull_to_hex(0, header.uid, 8);
-      ull_to_hex(0, header.gid, 8);
-      ull_to_hex(1, header.nlink, 8);
-
-      // Get modification time
-      HANDLE hFile =
-          CreateFileW(wfile.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
-                      OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-      if (hFile != INVALID_HANDLE_VALUE) {
-        FILETIME ft;
-        GetFileTime(hFile, nullptr, nullptr, &ft);
-        ULARGE_INTEGER uli;
-        uli.LowPart = ft.dwLowDateTime;
-        uli.HighPart = ft.dwHighDateTime;
-        ull_to_hex((uli.QuadPart - 116444736000000000ULL) / 10000000ULL,
-                   header.mtime, 8);
-        CloseHandle(hFile);
-      } else {
-        ull_to_hex(0, header.mtime, 8);
-      }
-
-      ull_to_hex(content.size(), header.filesize, 8);
-      ull_to_hex(0, header.devmajor, 8);
-      ull_to_hex(0, header.devminor, 8);
-      ull_to_hex(0, header.rdevmajor, 8);
-      ull_to_hex(0, header.rdevminor, 8);
-      ull_to_hex(line.length() + 1, header.namesize, 8);
-      ull_to_hex(0, header.check, 8);
-
-      // Add header to archive
-      archive.insert(archive.end(), reinterpret_cast<char*>(&header),
-                     reinterpret_cast<char*>(&header) + sizeof(CpioHeader));
-
-      // Add filename to archive
-      archive.insert(archive.end(), line.begin(), line.end());
-      archive.push_back('\0');
-
-      // Pad to 4-byte boundary
-      while (archive.size() % 4 != 0) {
-        archive.push_back(0);
-      }
-
-      // Print verbose output in create mode
-      if (cfg.verbose) {
-        safePrintLn(line);
-      }
-
-      // Add file content to archive
-      if (!is_dir) {
-        archive.insert(archive.end(), content.begin(), content.end());
-        while (archive.size() % 4 != 0) {
-          archive.push_back(0);
-        }
-      }
-    }
-
-    // Add end marker
-    static constexpr std::string_view kTrailerName = "TRAILER!!!";
-    CpioHeader end_header;
-    memcpy(end_header.magic, "070701", 6);
-    memset(reinterpret_cast<char*>(&end_header) + 6, 0, sizeof(CpioHeader) - 6);
-    ull_to_hex(0, end_header.inode, 8);
-    ull_to_hex(0, end_header.mode, 8);
-    ull_to_hex(1, end_header.nlink, 8);
-    ull_to_hex(0, end_header.filesize, 8);
-    ull_to_hex(kTrailerName.size() + 1, end_header.namesize, 8);
-    ull_to_hex(0, end_header.check, 8);
-
-    archive.insert(archive.end(), reinterpret_cast<char*>(&end_header),
-                   reinterpret_cast<char*>(&end_header) + sizeof(CpioHeader));
-    archive.insert(archive.end(), kTrailerName.begin(), kTrailerName.end());
-    archive.push_back('\0');
-    while (archive.size() % 4 != 0) {
-      archive.push_back(0);
-    }
-
-    // Output archive: to the -F/--file target when given, else stdout.
-    if (!cfg.file.empty()) {
-      if (!write_file(cfg.file, archive)) {
-        safeErrorPrint("cpio: cannot open archive '");
-        safeErrorPrint(cfg.file);
-        safeErrorPrintLn("'");
-        return 1;
-      }
-    } else {
-      safePrint(std::string(archive.begin(), archive.end()));
-    }
-
-  } else if (cfg.extract) {
-    // Extract archive
-    std::vector<char> archive(input.begin(), input.end());
-    size_t pos = 0;
-
-    while (pos < archive.size()) {
-      if (pos + sizeof(CpioHeader) > archive.size()) break;
-
-      CpioHeader* header = reinterpret_cast<CpioHeader*>(archive.data() + pos);
-
-      // Check magic
-      if (memcmp(header->magic, "070701", 6) != 0 &&
-          memcmp(header->magic, "070702", 6) != 0) {
-        break;
-      }
-
-      // Parse header
-      unsigned long long namesize = hex_to_ull(header->namesize, 8);
-      unsigned long long filesize = hex_to_ull(header->filesize, 8);
-
-      pos += sizeof(CpioHeader);
-
-      // Get filename
-      std::string filename(archive.data() + pos, namesize - 1);
-      pos += namesize;
-
-      // Pad to 4-byte boundary
-      while (pos % 4 != 0) {
-        pos++;
-      }
-
-      // Check for end marker
-      if (filename == "TRAILER!!!") {
-        break;
-      }
-
-      // Extract file
-      if (cfg.verbose) {
-        safePrintLn(filename);
-      }
-
-      if (filesize > 0) {
-        if (pos + filesize > archive.size()) break;
-
-        std::vector<char> content(archive.data() + pos,
-                                  archive.data() + pos + filesize);
-        pos += filesize;
-
-        // Pad to 4-byte boundary
-        while (pos % 4 != 0) {
-          pos++;
-        }
-
-        // Create leading directories if -d/--make-directories: the parent
-        // of the resolved target path, recursively (best effort).
-        if (cfg.make_dirs) {
-          const std::wstring target = operand_path_w(filename);
-          auto pos_sep = target.find_last_of(L"\\/");
-          if (pos_sep != std::wstring::npos) {
-            native_path::create_directories_w(target.substr(0, pos_sep));
-          }
-        }
-
-        if (!write_file(filename, content)) {
-          safeErrorPrint("cpio: warning: cannot write file '");
-          safeErrorPrint(filename);
-          safeErrorPrintLn("'");
-        }
-
-        // Preserve modification time if -m/--preserve-modification-time
-        if (cfg.preserve_time) {
-          std::wstring wfile = operand_path_w(filename);
-          HANDLE hFile =
-              CreateFileW(wfile.c_str(), GENERIC_WRITE, 0, nullptr,
-                          OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-          if (hFile != INVALID_HANDLE_VALUE) {
-            // Convert mtime from hex header to Windows FILETIME
-            unsigned long long mtime_val = hex_to_ull(header->mtime, 8);
-            ULARGE_INTEGER uli;
-            uli.QuadPart = mtime_val * 10000000ULL + 116444736000000000ULL;
-            FILETIME ft;
-            ft.dwLowDateTime = uli.LowPart;
-            ft.dwHighDateTime = uli.HighPart;
-            SetFileTime(hFile, nullptr, nullptr, &ft);
-            CloseHandle(hFile);
-          }
-        }
-      }
-    }
-
-  } else if (cfg.list) {
-    // List archive contents
-    std::vector<char> archive(input.begin(), input.end());
-    size_t pos = 0;
-
-    while (pos < archive.size()) {
-      if (pos + sizeof(CpioHeader) > archive.size()) break;
-
-      CpioHeader* header = reinterpret_cast<CpioHeader*>(archive.data() + pos);
-
-      // Check magic
-      if (memcmp(header->magic, "070701", 6) != 0 &&
-          memcmp(header->magic, "070702", 6) != 0) {
-        break;
-      }
-
-      // Parse header
-      unsigned long long namesize = hex_to_ull(header->namesize, 8);
-      unsigned long long filesize = hex_to_ull(header->filesize, 8);
-      unsigned long long mode = hex_to_ull(header->mode, 8);
-
-      pos += sizeof(CpioHeader);
-
-      // Get filename
-      std::string filename(archive.data() + pos, namesize - 1);
-      pos += namesize;
-
-      // Pad to 4-byte boundary
-      while (pos % 4 != 0) {
-        pos++;
-      }
-
-      // Check for end marker
-      if (filename == "TRAILER!!!") {
-        break;
-      }
-
-      // Print file info
-      DWORD attrs = GetFileAttributesW(operand_path_w(filename).c_str());
-      char file_type = get_file_type(attrs);
-
-      char buf[256];
-      sprintf_s(buf, sizeof(buf), "%c %10llu %s", file_type, filesize,
-                filename.c_str());
-      safePrintLn(buf);
-
-      // Skip file content
-      pos += filesize;
-      while (pos % 4 != 0) {
-        pos++;
-      }
-    }
-  } else if (cfg.pass_through) {
-    // Copy-pass mode: read file list from stdin, copy to destination directory
-    // The first positional argument is the destination directory
+  if (cfg.create) return run_create(cfg, input);
+  if (cfg.pass_through) {
+    // Copy-pass mode is not implemented in this build.
     safeErrorPrintLn(
         "cpio: --pass-through (copy-pass) mode is not yet implemented");
     return 1;
   }
-
-  return 0;
+  std::vector<char> archive(input.begin(), input.end());
+  if (cfg.list) return run_list(cfg, archive);
+  return run_extract(cfg, archive);
 }
 
 }  // namespace cpio_pipeline
@@ -557,11 +773,13 @@ REGISTER_COMMAND(
 
     /* description */
     "Copy files to and from archives.\n"
-    "Copy files to and from cpio archives. Supports creating, extracting,\n"
-    "and listing archive contents. Uses new ASCII format (070701/070702).",
+    "Copy files to and from cpio archives in the new ASCII formats\n"
+    "(newc 070701, crc 070702 with checksum verification). Supports\n"
+    "creating, extracting, and listing archive contents.",
 
     /* examples */
     "  find . | cpio -o > archive.cpio\n"
+    "  find . | cpio -o -H crc > archive.cpio\n"
     "  cpio -i < archive.cpio\n"
     "  cpio -t < archive.cpio\n"
     "  cpio -idmv < archive.cpio",
