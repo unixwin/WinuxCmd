@@ -194,8 +194,11 @@ REGISTER_COMMAND(
     bool reportable = !is_epipe || mode == OutputErrorMode::kWarn ||
                       mode == OutputErrorMode::kExit;
     if (reportable) {
-      safeErrorPrintLn("tee: " + display_name + ": " +
-                       std::string(strerror(err)));
+      // [GNU] tee.c fail_output: the name goes through quotef, so a
+      // plain name prints bare and a special one is shell-quoted.
+      safeErrorPrintLn("tee: " +
+                       gnu_quotearg::shell_escape_quote(display_name) +
+                       ": " + std::string(strerror(err)));
       ok = false;
     } else if (mode == OutputErrorMode::kSigpipe) {
       // Traditional mode dies on SIGPIPE; there is no signal to
@@ -226,9 +229,11 @@ REGISTER_COMMAND(
       // Capture errno before printing: output helpers can clobber it.
       const int saved_errno = errno;
       // [GNU] tee.c:261-283: the diagnostic is quotef(file) -- a
-      // plain name prints bare -- and in the exit modes the open
-      // failure is fatal on the spot.
-      safeErrorPrintLn("tee: " + filename + ": " +
+      // plain name prints bare, a name with shell-special characters
+      // (e.g. a backslash) is quoted -- and in the exit modes the
+      // open failure is fatal on the spot.
+      safeErrorPrintLn("tee: " +
+                       gnu_quotearg::shell_escape_quote(filename) + ": " +
                        std::string(strerror(saved_errno)));
       if (mode == OutputErrorMode::kExit ||
           mode == OutputErrorMode::kExitNopipe) {
