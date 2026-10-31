@@ -144,9 +144,10 @@ TEST(paste, paste_reports_gnu_shaped_missing_input_diagnostic) {
 
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_TRUE(r.stdout_text.empty());
+  // [GNU] paste.c reports the bare quotef form.
   EXPECT_TRUE(r.stderr_text.find(
-                  "paste: cannot open 'missing.txt' for reading: No such file "
-                  "or directory") != std::string::npos);
+                  "paste: missing.txt: No such file or directory") !=
+              std::string::npos);
 }
 
 TEST(paste, paste_reports_is_a_directory_for_directory_input) {
@@ -161,8 +162,7 @@ TEST(paste, paste_reports_is_a_directory_for_directory_input) {
 
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_TRUE(r.stdout_text.empty());
-  EXPECT_TRUE(r.stderr_text.find(
-                  "paste: cannot open 'indir' for reading: Is a directory") !=
+  EXPECT_TRUE(r.stderr_text.find("paste: indir: Is a directory") !=
               std::string::npos);
 }
 
