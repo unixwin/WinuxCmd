@@ -52,7 +52,19 @@ auto constexpr LOGGER_OPTIONS = std::array{
     // [GNU] --rfc3164: use the obsolete BSD syslog protocol
     OPTION("", "--rfc3164", "use the obsolete BSD syslog protocol"),
     // [GNU] --rfc5424: use the syslog protocol (default for remote)
-    OPTION("", "--rfc5424", "use the syslog protocol (default for remote)")};
+    OPTION("", "--rfc5424", "use the syslog protocol (default for remote)"),
+    // [GNU] --msgid/--sd-id/--sd-param fill the RFC 5424 header fields
+    // (logger.c syslog_rfc5424_header); --octet-counting switches TCP
+    // framing to RFC 6587 octet counting (logger.c:448-457).
+    OPTION("", "--msgid", "set the RFC 5424 message id", STRING_TYPE),
+    OPTION("", "--sd-id", "add structured data with this id", STRING_TYPE),
+    OPTION("", "--sd-param", "add a parameter to the last structured data id",
+           STRING_TYPE),
+    OPTION("", "--octet-counting", "use RFC 6587 octet counting for TCP"),
+    // [GNU] -u/--socket and --journald address Unix syslog facilities
+    // with no Windows counterpart; declared and explicitly refused.
+    OPTION("-u", "--socket", "write to this Unix socket", STRING_TYPE),
+    OPTION("", "--journald", "write to the systemd journal")};
 
 namespace logger_pipeline {
 
@@ -65,11 +77,17 @@ struct Config {
   bool no_act = false;
   bool prio_prefix = false;
   bool rfc5424 = false;
+  bool rfc3164 = false;
+  bool octet_count = false;
   bool use_tcp = false;
+  std::string msgid;
+  std::string structured_data;  // prebuilt "[id param ...]" sequence
   std::string file;
   std::string server;
   std::string port = "514";
-  size_t max_size = 0;  // -S, 0 = no truncation
+  // [GNU] the message size defaults to 1024 (logger.c:1121); -S
+  // overrides it, and 0 disables truncation.
+  size_t max_size = 1024;
 };
 
 // [GNU] util-linux logger.c parses the -p argument against the syslog
@@ -279,7 +297,12 @@ auto send_remote(const Config& cfg, const std::string& wire, std::string& error)
                 static_cast<int>(results->ai_addrlen)) == SOCKET_ERROR) {
       ok = false;
     } else {
-      std::string framed = wire + "\n";
+      // [GNU] TCP framing appends a newline (octet stuffing) unless
+      // --octet-counting selects the RFC 6587 length prefix
+      // (logger.c:448-479).
+      std::string framed = cfg.octet_count
+                               ? std::to_string(wire.size()) + " " + wire
+                               : wire + "\n";
       ok = send(sock, framed.data(), static_cast<int>(framed.size()), 0) !=
            SOCKET_ERROR;
     }
@@ -297,6 +320,18 @@ auto send_remote(const Config& cfg, const std::string& wire, std::string& error)
 }
 
 auto run(const CommandContext<LOGGER_OPTIONS.size()>& ctx) -> int {
+  // [GNU] -u/--socket and --journald address Unix syslog facilities
+  // with no Windows counterpart; refuse explicitly instead of silently
+  // logging somewhere else.
+  if (ctx.has("-u") || ctx.has("--socket")) {
+    safeErrorPrintLn("logger: unix sockets are not supported on Windows");
+    return 1;
+  }
+  if (ctx.has("--journald")) {
+    safeErrorPrintLn("logger: --journald is not supported on Windows");
+    return 1;
+  }
+
   Config cfg;
   cfg.stderr_too =
       ctx.get<bool>("-s", false) || ctx.get<bool>("--stderr", false);
@@ -306,7 +341,44 @@ auto run(const CommandContext<LOGGER_OPTIONS.size()>& ctx) -> int {
   cfg.no_act = ctx.get<bool>("--no-act", false);
   cfg.prio_prefix = ctx.get<bool>("--prio-prefix", false);
   cfg.rfc5424 = ctx.get<bool>("--rfc5424", false);
+  cfg.rfc3164 = ctx.get<bool>("--rfc3164", false);
+  cfg.octet_count = ctx.get<bool>("--octet-counting", false);
+  cfg.msgid = ctx.get<std::string>("--msgid", "");
   cfg.use_tcp = ctx.get<bool>("-T", false) || ctx.get<bool>("--tcp", false);
+
+  // [GNU] RFC 5424 structured data (logger.c:590-612): each --sd-id
+  // starts an element, following --sd-param values attach to it; a
+  // param before any id and a repeated id are hard errors.
+  {
+    std::vector<std::pair<std::string, std::vector<std::string>>> elements;
+    for (const auto& occurrence :
+         ctx.string_occurrences({"--sd-id", "--sd-param"})) {
+      if (occurrence.short_name == "--sd-id" ||
+          occurrence.long_name == "--sd-id") {
+        for (const auto& [id, _] : elements) {
+          if (id == occurrence.value) {
+            safeErrorPrintLn("logger: structured data ID '" +
+                             occurrence.value + "' is not unique");
+            return 1;
+          }
+        }
+        elements.push_back({occurrence.value, {}});
+      } else {
+        if (elements.empty()) {
+          safeErrorPrintLn("logger: --sd-id was not specified for "
+                           "--sd-param " +
+                           occurrence.value);
+          return 1;
+        }
+        elements.back().second.push_back(occurrence.value);
+      }
+    }
+    for (const auto& [id, params] : elements) {
+      cfg.structured_data += "[" + id;
+      for (const auto& param : params) cfg.structured_data += " " + param;
+      cfg.structured_data += "]";
+    }
+  }
   cfg.file = ctx.get<std::string>("-f", ctx.get<std::string>("--file", ""));
   cfg.server =
       ctx.get<std::string>("-n", ctx.get<std::string>("--server", ""));
@@ -332,10 +404,26 @@ auto run(const CommandContext<LOGGER_OPTIONS.size()>& ctx) -> int {
     std::string size_text =
         ctx.get<std::string>("-S", ctx.get<std::string>("--size", ""));
     if (!size_text.empty()) {
-      if (auto sz = parse_small_int(size_text, 1 << 24)) {
-        cfg.max_size = static_cast<size_t>(*sz);
+      // [GNU] --size goes through strtosize_or_err (logger.c:1208):
+      // a plain number with an optional K/M/G suffix (powers of 1024).
+      auto sz = parse_small_int(size_text, 1 << 24);
+      size_t multiplier = 1;
+      if (!sz && size_text.size() > 1) {
+        const char suffix = size_text.back();
+        const size_t shift =
+            suffix == 'K' ? 10 : suffix == 'M' ? 20 : suffix == 'G' ? 30 : 0;
+        if (shift != 0) {
+          if (auto base = parse_small_int(size_text.substr(0, size_text.size() - 1),
+                                          1 << 24)) {
+            sz = *base;
+            multiplier = size_t{1} << shift;
+          }
+        }
+      }
+      if (sz) {
+        cfg.max_size = static_cast<size_t>(*sz) * multiplier;
       } else {
-        safeErrorPrintLn("logger: invalid size: " + size_text);
+        safeErrorPrintLn("logger: failed to parse size: '" + size_text + "'");
         return 1;
       }
     }
@@ -392,11 +480,17 @@ auto run(const CommandContext<LOGGER_OPTIONS.size()>& ctx) -> int {
     if (!cfg.no_act) {
       if (remote) {
         std::string wire;
-        if (cfg.rfc5424) {
+        // [GNU] RFC 5424 is the default protocol for remote servers;
+        // --rfc3164 selects the obsolete BSD format (logger.c usage,
+        // "the syslog protocol (the default for remote)").
+        if (cfg.rfc5424 || !cfg.rfc3164) {
           wire = "<" + std::to_string(entry.priority) + ">1 " +
                  rfc5424_timestamp() + " " + local_hostname() + " " + cfg.tag +
-                 " " + (cfg.include_pid ? pid : std::string("-")) + " - - " +
-                 text;
+                 " " + (cfg.include_pid ? pid : std::string("-")) + " " +
+                 (cfg.msgid.empty() ? std::string("-") : cfg.msgid) + " " +
+                 (cfg.structured_data.empty() ? std::string("-")
+                                              : cfg.structured_data) +
+                 " " + text;
         } else {
           wire = "<" + std::to_string(entry.priority) + ">" +
                  rfc3164_timestamp() + " " + local_hostname() + " " +
