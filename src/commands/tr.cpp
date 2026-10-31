@@ -662,13 +662,25 @@ auto build_config(const CommandContext<TR_OPTIONS.size()>& ctx)
           }
         }
       }
+      // [GNU] when complementing, string1's length for these
+      // checks is the size of the complemented DOMAIN (256 minus
+      // the distinct bytes in string1): 'tr -c a [:upper:]'
+      // reports the ends-in-class error, not the domain-mapping
+      // one (verified against GNU tr 9.4) (audit #1462).
+      size_t len1 = set1->chars.size();
+      if (cfg.complement) {
+        std::array<bool, 256> present{};
+        for (unsigned char c : set1->chars) present[c] = true;
+        size_t distinct = 0;
+        for (bool p : present) distinct += p ? 1 : 0;
+        len1 = 256 - distinct;
+      }
       // string2's effective length, with an indefinite repeat
       // resolved to fill string1 (get_s2_spec_stats).
       const size_t eff2 =
-          s2.indefinite_count > 0
-              ? std::max(s2.chars.size(), set1->chars.size())
-              : s2.chars.size();
-      if (!cfg.truncate_set1 && eff2 < set1->chars.size()) {
+          s2.indefinite_count > 0 ? std::max(s2.chars.size(), len1)
+                                  : s2.chars.size();
+      if (!cfg.truncate_set1 && eff2 < len1) {
         if (eff2 == 0) {
           return std::unexpected(make_dynamic_error(
               "when not truncating set1, string2 must be non-empty"));
@@ -681,16 +693,15 @@ auto build_config(const CommandContext<TR_OPTIONS.size()>& ctx)
       }
       if (cfg.complement && set1->has_char_class) {
         std::string eff = s2.chars;
-        if (s2.indefinite_count > 0 && eff.size() < set1->chars.size()) {
+        if (s2.indefinite_count > 0 && eff.size() < len1) {
           const size_t pos = std::min(s2.indefinite_pos, eff.size());
-          eff.insert(pos, set1->chars.size() - eff.size(),
-                     s2.indefinite_char);
+          eff.insert(pos, len1 - eff.size(), s2.indefinite_char);
         }
         const bool homogeneous =
             !eff.empty() &&
             std::all_of(eff.begin(), eff.end(),
                         [&](char c) { return c == eff[0]; });
-        if (!(eff.size() == set1->chars.size() && homogeneous)) {
+        if (!(eff.size() == len1 && homogeneous)) {
           return std::unexpected(make_dynamic_error(
               "when translating with complemented character "
               "classes,\nstring2 must map all characters in the "
