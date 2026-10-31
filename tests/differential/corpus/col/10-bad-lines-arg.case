@@ -1,0 +1,5 @@
+cmd: col
+oracle: linux
+args: -l junk
+source: tests/differential/corpus/col/10-bad-lines-arg.case
+tags: gnu-compat col bad-l-argument audit-w7

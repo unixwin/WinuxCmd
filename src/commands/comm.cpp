@@ -213,16 +213,17 @@ auto read_lines(const std::string& filename, char delimiter)
     }
   } else {
     auto comm_input_open_error = [](std::string_view path) -> std::string {
+      // [GNU] error (EXIT_FAILURE, errno, "%s", quotef (file)):
+      // "comm: <file>: <errno text>", for directories as for
+      // missing files (comm.c:303-305) (audit #1462).
       std::error_code ec;
       auto status = std::filesystem::status(
           std::filesystem::u8path(native_path::normalize_api_operand(path)),
           ec);
       if (!ec && status.type() == std::filesystem::file_type::directory) {
-        return std::string("cannot open '") + std::string(path) +
-               "' for reading: Is a directory";
+        return std::string(path) + ": Is a directory";
       }
-      return std::string("cannot open '") + std::string(path) +
-             "' for reading: No such file or directory";
+      return std::string(path) + ": No such file or directory";
     };
 
     // Read from file
@@ -277,13 +278,153 @@ void append_column_prefix(std::string& output, const Config& cfg, int column) {
   }
 }
 
+// [GNU] comm - - : both operands are the SAME stdin stream
+// (comm.c:303). Reads interleave one line at a time: FILE1's first
+// line is physical line 1, FILE2's is line 2, and each merge step
+// that consumes a line pulls the next physical line into that
+// stream. The old code slurped stdin into FILE1 and left FILE2
+// empty (audit #1462). This pull-based merge mirrors run()'s
+// semantics over a shared queue.
+auto run_both_stdin(const Config& cfg,
+                    const SmallVector<std::string, 1024>& shared) -> int {
+  const char record_delim = cfg.zero_terminated ? '\0' : '\n';
+  const bool check_enabled = cfg.order_check == OrderCheckMode::Enabled;
+  const bool check_disabled = cfg.order_check == OrderCheckMode::Disabled;
+  bool seen_unpairable = false;
+  bool issued_disorder[2] = {false, false};
+  bool disorder_seen[2] = {false, false};
+
+  size_t next = 0;  // shared physical read position
+  struct PullStream {
+    const SmallVector<std::string, 1024>* shared;
+    size_t* next;
+    std::optional<std::string> current;
+    std::optional<std::string> prev;
+    void pull() {
+      prev = current;
+      if (*next < shared->size()) {
+        current = (*shared)[(*next)++];
+      } else {
+        current.reset();
+      }
+    }
+  };
+  PullStream s1{&shared, &next};
+  PullStream s2{&shared, &next};
+  s1.pull();
+  s2.pull();
+
+  // Order check for the line just pulled into stream WHICH: in
+  // --check-order mode disorder is fatal before the line is used;
+  // in default mode the warning is issued once per file and only
+  // after an unpairable line has been seen.
+  auto check_pulled = [&](int which, PullStream& s) -> bool {
+    if (!s.prev || !s.current) return false;
+    if (*s.prev <= *s.current) return false;
+    disorder_seen[which - 1] = true;
+    if (check_disabled || issued_disorder[which - 1]) return false;
+    if (check_enabled) {
+      issued_disorder[which - 1] = true;
+      report_disorder(which);
+      return true;
+    }
+    if (seen_unpairable) {
+      issued_disorder[which - 1] = true;
+      report_disorder(which);
+    }
+    return false;
+  };
+
+  size_t count_col1 = 0, count_col2 = 0, count_col3 = 0;
+  while (s1.current || s2.current) {
+    int cmp_result = 0;
+    if (!s1.current) {
+      cmp_result = 1;
+    } else if (!s2.current) {
+      cmp_result = -1;
+    } else {
+      cmp_result = s1.current->compare(*s2.current);
+    }
+
+    if (cmp_result == 0) {
+      ++count_col3;
+      if (!cfg.suppress_col3) {
+        std::string output;
+        append_column_prefix(output, cfg, 3);
+        output += *s1.current;
+        print_record(output, record_delim);
+      }
+    } else {
+      seen_unpairable = true;
+      if (cmp_result < 0) {
+        ++count_col1;
+        if (!cfg.suppress_col1) {
+          print_record(*s1.current, record_delim);
+        }
+      } else {
+        ++count_col2;
+        if (!cfg.suppress_col2) {
+          std::string output;
+          append_column_prefix(output, cfg, 2);
+          output += *s2.current;
+          print_record(output, record_delim);
+        }
+      }
+    }
+
+    if (cmp_result <= 0) {
+      s1.pull();
+      if (check_pulled(1, s1)) return 1;
+    }
+    if (cmp_result >= 0) {
+      s2.pull();
+      if (check_pulled(2, s2)) return 1;
+    }
+  }
+
+  if (cfg.total) {
+    std::string output = std::to_string(count_col1);
+    output += cfg.output_delimiter;
+    output += std::to_string(count_col2);
+    output += cfg.output_delimiter;
+    output += std::to_string(count_col3);
+    output += cfg.output_delimiter;
+    output += "total";
+    print_record(output, record_delim);
+  }
+
+  // Default mode: a disorder noticed before any unpairable line is
+  // reported at the end if an unpairable line turned up later.
+  if (!check_disabled && !check_enabled) {
+    for (int w = 0; w < 2; ++w) {
+      if (disorder_seen[w] && !issued_disorder[w] && seen_unpairable) {
+        issued_disorder[w] = true;
+        report_disorder(w + 1);
+      }
+    }
+  }
+  if (issued_disorder[0] || issued_disorder[1]) {
+    safeErrorPrintLn(winux::i18n::translate(
+        "command.comm.error.not_sorted", "comm: input is not in sorted order"));
+    return 1;
+  }
+  return 0;
+}
+
 auto run(const Config& cfg) -> int {
   const char record_delim = cfg.zero_terminated ? '\0' : '\n';
   const std::string& file1 = cfg.files[0];
   const std::string& file2 = cfg.files[1];
 
-  // [GNU] comm.c: both operands "-" share the stdin stream; the first read
-  // consumes it and the second sees EOF, so every line lands in column 1.
+  if (file1 == "-" && file2 == "-") {
+    auto shared_result = read_lines("-", record_delim);
+    if (!shared_result) {
+      cp::report_error(shared_result, L"comm");
+      return 1;
+    }
+    return run_both_stdin(cfg, *shared_result);
+  }
+
   auto lines1_result = read_lines(file1, record_delim);
   if (!lines1_result) {
     cp::report_error(lines1_result, L"comm");

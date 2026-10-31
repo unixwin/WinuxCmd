@@ -28,12 +28,13 @@ auto constexpr FACTOR_OPTIONS = std::array{
 
 namespace {
 
-// [GNU] factor.c accepts leading whitespace and a leading '+' sign, but no
-// trailing characters.  Negative numbers are rejected.
+// [GNU] factor.c print_factors() skips leading SPACE characters (only
+// ' ', not all whitespace: a leading tab makes the operand invalid) and
+// one leading '+' sign, but allows no trailing characters.  Negative
+// numbers are rejected.
 auto parse_factor_operand(std::string_view text) -> std::optional<UInt> {
   size_t pos = 0;
-  while (pos < text.size() &&
-         std::isspace(static_cast<unsigned char>(text[pos]))) {
+  while (pos < text.size() && text[pos] == ' ') {
     ++pos;
   }
   if (pos < text.size() && text[pos] == '+') {
@@ -170,18 +171,19 @@ REGISTER_COMMAND(factor_cmd,
 
   if (ctx.positionals.empty()) {
     file_io::set_stdin_binary();
-    // [GNU] read whitespace-separated tokens from standard input
+    // [GNU] read tokens from standard input; factor.c:125 sets DELIM to
+    // "\n\t " for readtoken(), so only space, tab and newline separate
+    // tokens -- any other byte (e.g. '\r') stays inside the token and
+    // makes it an invalid operand.
     std::string line;
     while (std::getline(std::cin, line)) {
       size_t pos = 0;
       while (pos < line.size()) {
-        while (pos < line.size() &&
-               std::isspace(static_cast<unsigned char>(line[pos]))) {
+        while (pos < line.size() && (line[pos] == ' ' || line[pos] == '\t')) {
           ++pos;
         }
         const size_t begin = pos;
-        while (pos < line.size() &&
-               !std::isspace(static_cast<unsigned char>(line[pos]))) {
+        while (pos < line.size() && line[pos] != ' ' && line[pos] != '\t') {
           ++pos;
         }
         if (begin == pos) break;

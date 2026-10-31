@@ -117,3 +117,115 @@ TEST(pgrep, pgrep_count_no_match_returns_one) {
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_EQ(r.stdout_text, "0\n");
 }
+
+// procps pgrep.c: a bare invocation (no pattern, no criteria) is a
+// usage error, exit status 2.
+TEST(pgrep, pgrep_no_criteria_is_usage_error) {
+  Pipeline p;
+  p.add(L"pgrep.exe", {});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_TRUE(r.stderr_text.find("no matching criteria specified") !=
+              std::string::npos);
+}
+
+// -P selects by parent pid; the token child is a direct child of this
+// test process.
+TEST(pgrep, pgrep_parent_selects_child) {
+  auto child = start_token_child(L"WINUXCMD_PGREP_TOKEN_PARENT");
+  EXPECT_TRUE(child.valid());
+  if (!child.valid()) return;
+
+  Pipeline p;
+  p.add(L"pgrep.exe", {L"-P", std::to_wstring(GetCurrentProcessId())});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find(std::to_string(child.pid())) !=
+              std::string::npos);
+}
+
+// -n reduces the -P selection to the most recently started process,
+// which is the child just spawned.
+TEST(pgrep, pgrep_newest_selects_latest_child) {
+  auto child = start_token_child(L"WINUXCMD_PGREP_TOKEN_NEWEST");
+  EXPECT_TRUE(child.valid());
+  if (!child.valid()) return;
+
+  Pipeline p;
+  p.add(L"pgrep.exe", {L"-n", L"-P", std::to_wstring(GetCurrentProcessId())});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(r.stdout_text, std::to_string(child.pid()) + "\n");
+}
+
+// -F reads the pid from a pidfile.
+TEST(pgrep, pgrep_pidfile_selects_pid) {
+  auto child = start_token_child(L"WINUXCMD_PGREP_TOKEN_PIDFILE");
+  EXPECT_TRUE(child.valid());
+  if (!child.valid()) return;
+
+  TempDir td;
+  std::wstring pidfile = td.wpath() + L"\\child.pid";
+  HANDLE file = CreateFileW(pidfile.c_str(), GENERIC_WRITE, 0, nullptr,
+                            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  EXPECT_TRUE(file != INVALID_HANDLE_VALUE);
+  if (file == INVALID_HANDLE_VALUE) return;
+  const std::string text = std::to_string(child.pid()) + "\n";
+  DWORD written = 0;
+  WriteFile(file, text.data(), static_cast<DWORD>(text.size()), &written,
+            nullptr);
+  CloseHandle(file);
+
+  Pipeline p;
+  p.add(L"pgrep.exe", {L"-F", pidfile});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(r.stdout_text, std::to_string(child.pid()) + "\n");
+}
+
+// -u filters by the process owner; the child runs as this test
+// process's user.
+TEST(pgrep, pgrep_euid_matches_owner) {
+  auto child = start_token_child(L"WINUXCMD_PGREP_TOKEN_EUID");
+  EXPECT_TRUE(child.valid());
+  if (!child.valid()) return;
+
+  wchar_t user[256]{};
+  DWORD user_len = static_cast<DWORD>(std::size(user));
+  EXPECT_TRUE(GetUserNameW(user, &user_len) != FALSE);
+
+  Pipeline p;
+  p.add(L"pgrep.exe", {L"-u", std::wstring(user), L"-P",
+                       std::to_wstring(GetCurrentProcessId())});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find(std::to_string(child.pid())) !=
+              std::string::npos);
+}
+
+// -v inverts the whole match: the child of this process must NOT be
+// listed for -v -P <self>, while other processes are.
+TEST(pgrep, pgrep_inverse_excludes_matches) {
+  auto child = start_token_child(L"WINUXCMD_PGREP_TOKEN_INVERSE");
+  EXPECT_TRUE(child.valid());
+  if (!child.valid()) return;
+
+  Pipeline p;
+  p.add(L"pgrep.exe", {L"-v", L"-P", std::to_wstring(GetCurrentProcessId())});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find(std::to_string(child.pid())) ==
+              std::string::npos);
+}

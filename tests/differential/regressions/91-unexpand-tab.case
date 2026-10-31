@@ -1,0 +1,8 @@
+cmd: unexpand
+args: -t 4 f
+timeout: 10
+setup: |
+  printf '        x\n' > f
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: issue-1462 audit-w2 unexpand tablist
+# Eight leading blanks collapse to two tabs with -t 4.

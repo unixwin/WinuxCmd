@@ -1,0 +1,7 @@
+cmd: rev
+oracle: linux
+args: f.txt
+setup: |
+  printf 'abc' > f.txt
+source: tests/differential/corpus/rev/04-unterminated-record.case
+tags: gnu-compat rev unterminated audit-w7

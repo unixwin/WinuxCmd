@@ -1,0 +1,4 @@
+cmd: expr
+args: 007
+source: GNU coreutils 9.4 src/expr.c eval7 (a bare operand is a verbatim string value)
+tags: audit-w3a #1462

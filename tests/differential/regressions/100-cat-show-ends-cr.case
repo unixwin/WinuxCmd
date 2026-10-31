@@ -1,0 +1,9 @@
+cmd: cat
+args: -E f
+timeout: 10
+setup: |
+  printf 'a\r\nb\r\n' > f
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: issue-1462 audit-w2 cat show-ends crlf
+# -E shows the CR of a CRLF pair as ^M before the $ (cat.c
+# show_ends writes the pending CR visibly).

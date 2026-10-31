@@ -1,0 +1,6 @@
+cmd: base64
+args: -w 6
+stdin: |
+  1234
+source: GNU coreutils 9.4 src/basenc.c (wrap_write wraps the stream at COLS, even inside the final quantum)
+tags: audit-w3a #1462

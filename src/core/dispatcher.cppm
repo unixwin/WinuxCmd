@@ -140,6 +140,11 @@ auto rewrite_head_obsolete_args(std::span<std::string_view> args)
       case 'v':
         flags.emplace_back("-v");
         break;
+      case 'z':
+        // [GNU] '-2z' is the obsolete spelling of '-n 2 -z'
+        // (head.c parse_obsolete_option accepts z; #1462).
+        flags.emplace_back("-z");
+        break;
       default:
         return std::nullopt;
     }
@@ -162,6 +167,17 @@ auto rewrite_tail_obsolete_args(std::span<std::string_view> args)
   if (first.size() >= 2 && first[0] == '+' && first[1] != '+') {
     size_t suffix_pos = parse_decimal_prefix(first, 1);
     if (suffix_pos == 1) return std::nullopt;
+
+    // [GNU] the obsolete form exists only inside parse_obsolete_
+    // option's argc gate (tail.c:2062-2067): the option string
+    // plus at most one file operand, or a "--" in argv[2]. Outside
+    // the gate a leading '+' argument is a file name, not an
+    // option (audit #1462).
+    if (!(args.size() == 1 ||
+          (args.size() == 2 &&
+           !(args[1].size() > 1 && args[1][0] == '-')) ||
+          (args.size() <= 3 && args[1] == "--")))
+      return std::nullopt;
 
     std::string count(first.substr(1, suffix_pos - 1));
     std::string mode = "-n";
@@ -196,6 +212,32 @@ auto rewrite_tail_obsolete_args(std::span<std::string_view> args)
 
   if (first.size() < 2 || first[0] != '-' || first[1] == '-')
     return std::nullopt;
+
+  // [GNU] digit-less obsolete forms (tail.c parse_obsolete_option):
+  // with no digits the count defaults to 10 (x512 for 'b'), one
+  // unit letter, optional trailing 'f'. In the modern POSIX mode
+  // a bare '-c' is NOT obsolete (it is the live option missing its
+  // argument), so the accepted set is exactly -l, -b, -lf, -bf,
+  // -cf -- and only in the restricted context, like the compact
+  // forms below (audit #1462).
+  if (first == "-l" || first == "-b" || first == "-lf" ||
+      first == "-bf" || first == "-cf") {
+    if (args.size() > 2) return std::nullopt;
+    std::vector<std::string> rewritten;
+    if (first[1] == 'l') {
+      rewritten.emplace_back("-n");
+      rewritten.emplace_back("10");
+    } else if (first[1] == 'c') {
+      rewritten.emplace_back("-c");
+      rewritten.emplace_back("10");
+    } else {
+      rewritten.emplace_back("-c");
+      rewritten.emplace_back("10b");
+    }
+    if (first.size() == 3) rewritten.emplace_back("-f");
+    append_remaining_args(rewritten, args, 1);
+    return rewritten;
+  }
 
   size_t suffix_pos = parse_decimal_prefix(first, 1);
   if (suffix_pos == 1) return std::nullopt;
@@ -254,6 +296,7 @@ auto is_head_obsolete_count_arg(std::string_view arg) -> bool {
       case 'm':
       case 'q':
       case 'v':
+      case 'z':
         break;
       default:
         return false;
@@ -291,6 +334,44 @@ auto is_tail_obsolete_count_arg(std::string_view arg) -> bool {
 auto tail_invalid_obsolete_count_context(std::span<std::string_view> args)
     -> std::optional<std::string> {
   if (args.size() < 2) return std::nullopt;
+
+  // [GNU] an obsolete '-' count in FIRST position is valid only
+  // with at most one file operand (tail.c parse_obsolete_option's
+  // argc gate): 'tail -5 f1 f2' dies 'option used in invalid
+  // context -- 5'. The '+' forms are NOT errors outside the gate:
+  // a leading '+' is a file name in the standard form (tail.c:2080),
+  // so 'tail +2l f1 f2' opens '+2l' as an operand instead. Count
+  // the file operands after it with the same scan discipline as
+  // the loop below (audit #1462).
+  if (args[0][0] == '-' && is_tail_obsolete_count_arg(args[0])) {
+    size_t file_operands = 0;
+    bool stop = false;
+    bool skip_next = false;
+    for (size_t i = 1; i < args.size(); ++i) {
+      std::string_view arg = args[i];
+      if (skip_next) {
+        skip_next = false;
+        continue;
+      }
+      if (!stop && arg == "--") {
+        stop = true;
+        continue;
+      }
+      if (!stop && arg.size() > 1 && arg[0] == '-') {
+        if (arg == "-c" || arg == "--bytes" || arg == "-n" ||
+            arg == "--lines" || arg == "-s" ||
+            arg == "--sleep-interval" || arg == "--max-unchanged-stats" ||
+            arg == "--pid") {
+          skip_next = true;
+        }
+        continue;
+      }
+      ++file_operands;
+    }
+    if (file_operands > 1) {
+      return legacy_count_value(args[0]);
+    }
+  }
 
   bool stop_option_parsing = false;
   bool expect_value = false;

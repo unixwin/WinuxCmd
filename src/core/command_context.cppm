@@ -79,6 +79,14 @@ export auto option_policy_for_command(std::string_view command)
     // -l` silently consumes -l as xargs's own --max-lines (#1139).
     policy.stop_options_after_positionals = 1;
   }
+  if (command == "watch") {
+    // [GNU procps] watch.c parses with a leading-'+' optstring
+    // ("+bCced::ghq:n:prtwvx"): option processing stops at the first
+    // non-option argument (the watched command), so `watch ls -l`
+    // passes -l to ls instead of reporting it as an invalid watch
+    // option (#1127).
+    policy.stop_options_after_positionals = 1;
+  }
   // [GNU] printf.c and test.c never call getopt: "--help"/"--version" are
   // honored only as the sole argument (handled by the dispatcher), and
   // every other token is an operand.  Long-option tokens therefore stay

@@ -275,7 +275,9 @@ TEST(head, head_legacy_count_shorthand) {
   EXPECT_EQ_TEXT(r.stdout_text, "alpha\nbeta\n");
 }
 
-TEST(head, head_strips_utf8_bom_in_line_mode) {
+TEST(head, head_passes_utf8_bom_bytes_through_in_line_mode) {
+  // [GNU] head is byte-oriented (head.c): a UTF-8 BOM is ordinary
+  // leading bytes of the first line, never stripped (audit #1462).
   TempDir tmp;
   tmp.write("a.txt", "\xEF\xBB\xBFhello\nsecond\n");
 
@@ -285,10 +287,13 @@ TEST(head, head_strips_utf8_bom_in_line_mode) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "hello\n");
+  EXPECT_EQ_TEXT(r.stdout_text, "\xEF\xBB\xBFhello\n");
 }
 
-TEST(head, head_decodes_utf16le_input) {
+TEST(head, head_passes_utf16le_bytes_through) {
+  // [GNU] no transcoding either: the first line ends at the first
+  // 0x0A byte, so -n 1 returns the raw UTF-16LE bytes up to it
+  // (audit #1462).
   TempDir tmp;
   tmp.write_bytes("a.txt", {static_cast<char>(0xFF),
                             static_cast<char>(0xFE),
@@ -325,7 +330,9 @@ TEST(head, head_decodes_utf16le_input) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "hello\n");
+  EXPECT_EQ(r.stdout_text,
+            std::string("\xFF\xFE\x68\x00\x65\x00\x6C\x00\x6C\x00\x6F\x00\x0A",
+                        13));
 }
 
 TEST(head, head_obsolete_compact_byte_count) {

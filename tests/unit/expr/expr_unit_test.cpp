@@ -274,3 +274,14 @@ TEST(expr, issue1349_and_keeps_left_operand_semantics) {
   EXPECT_EXIT_CODE(r2, 1);
   EXPECT_EQ_TEXT(r2.stdout_text, "0\n");
 }
+
+// [#1462] With no expression, GNU expr reports "missing operand" via
+// usage(): the diagnostic carries the try-help line and exit status 2.
+TEST(expr, expr_missing_operand_has_try_help) {
+  Pipeline p;
+  p.add(L"expr.exe", {});
+  auto r = p.run();
+  EXPECT_EXIT_CODE(r, 2);
+  EXPECT_CONTAINS(r.stderr_text, "missing operand");
+  EXPECT_CONTAINS(r.stderr_text, "Try 'expr --help' for more information.");
+}

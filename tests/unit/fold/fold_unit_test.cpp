@@ -119,7 +119,10 @@ TEST(fold, fold_characters_option_counts_utf8_codepoints_without_splitting) {
                                             "b\n"));
 }
 
-TEST(fold, fold_default_mode_uses_display_width_for_utf8_wide_characters) {
+TEST(fold, fold_default_mode_counts_bytes_for_utf8_input) {
+  // [GNU] default fold counts bytes toward the width (fold.c has
+  // no display-width accounting), so -w 2 splits a multibyte
+  // character across lines (audit #1462).
   TempDir tmp;
   tmp.write_bytes("utf8.txt", {static_cast<char>(0xE4), static_cast<char>(0xB8),
                                static_cast<char>(0xAD), 'a',
@@ -133,11 +136,13 @@ TEST(fold, fold_default_mode_uses_display_width_for_utf8_wide_characters) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, std::string("\xE4\xB8\xAD"
+  EXPECT_EQ_TEXT(r.stdout_text, std::string("\xE4\xB8"
                                             "\n"
+                                            "\xAD"
                                             "a\n"
-                                            "\xE6\x96\x87"
+                                            "\xE6\x96"
                                             "\n"
+                                            "\x87"
                                             "b\n"));
 }
 
@@ -186,7 +191,10 @@ TEST(fold, fold_width_after_terminator_is_a_file_name) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stderr_text.find("cannot open '-3'") != std::string::npos);
+  // [GNU] After --, "-3" is a file operand; fold.c:138 reports the
+  // bare quotef form.
+  EXPECT_TRUE(r.stderr_text.find("fold: -3: No such file or directory") !=
+              std::string::npos);
 }
 
 TEST(fold, fold_negative_width_reports_invalid_number_of_columns) {
@@ -260,8 +268,8 @@ TEST(fold, fold_missing_input_reports_no_such_file) {
 
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_TRUE(r.stderr_text.find(
-                  "fold: cannot open 'missing.txt' for reading: No such file "
-                  "or directory") != std::string::npos);
+                  "fold: missing.txt: No such file or directory") !=
+              std::string::npos);
 }
 
 TEST(fold, fold_directory_input_reports_is_a_directory) {
@@ -275,8 +283,7 @@ TEST(fold, fold_directory_input_reports_is_a_directory) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stderr_text.find(
-                  "fold: cannot open 'indir' for reading: Is a directory") !=
+  EXPECT_TRUE(r.stderr_text.find("fold: indir: Is a directory") !=
               std::string::npos);
 }
 

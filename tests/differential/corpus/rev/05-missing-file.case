@@ -1,0 +1,5 @@
+cmd: rev
+oracle: linux
+args: missing.txt
+source: tests/differential/corpus/rev/05-missing-file.case
+tags: gnu-compat rev error-wording audit-w7

@@ -1,0 +1,9 @@
+cmd: wc
+args: somedir
+timeout: 10
+setup: |
+  mkdir somedir
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: issue-1462 audit-w2 wc directory
+# A directory operand prints its zero count line, then
+# "wc: somedir: Is a directory" on stderr, exit 1.

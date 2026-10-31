@@ -108,12 +108,18 @@ auto checked_pow(std::uintmax_t base, unsigned power)
   return result;
 }
 
-auto apply_suffix_multiplier(std::uintmax_t value, std::string_view suffix)
+auto apply_suffix_multiplier(std::uintmax_t value, std::string_view suffix,
+                               bool& out_of_range)
     -> std::optional<std::uintmax_t> {
+  // [GNU] xdectoumax suffix alphabet "bkKmMGTPEZYRQ0" (head.c:913):
+  // lowercase k/m are 1024 powers like K/M; lowercase g/t/p/e/z/y
+  // are NOT valid. The B/iB spellings are the 1000/1024 long
+  // forms (audit #1462).
   static constexpr std::array suffixes{
       CountSuffix{"", 1, 0},       CountSuffix{"b", 512, 1},
-      CountSuffix{"K", 1024, 1},   CountSuffix{"KB", 1000, 1},
-      CountSuffix{"KiB", 1024, 1}, CountSuffix{"M", 1024, 2},
+      CountSuffix{"k", 1024, 1},   CountSuffix{"K", 1024, 1},
+      CountSuffix{"KB", 1000, 1},  CountSuffix{"KiB", 1024, 1},
+      CountSuffix{"m", 1024, 2},   CountSuffix{"M", 1024, 2},
       CountSuffix{"MB", 1000, 2},  CountSuffix{"MiB", 1024, 2},
       CountSuffix{"G", 1024, 3},   CountSuffix{"GB", 1000, 3},
       CountSuffix{"GiB", 1024, 3}, CountSuffix{"T", 1024, 4},
@@ -131,9 +137,12 @@ auto apply_suffix_multiplier(std::uintmax_t value, std::string_view suffix)
   for (const auto& entry : suffixes) {
     if (entry.suffix != suffix) continue;
     auto multiplier = checked_pow(entry.base, entry.power);
-    if (!multiplier)
+    if (!multiplier) {
+      if (value != 0) out_of_range = true;
       return value == 0 ? std::optional<std::uintmax_t>{0} : std::nullopt;
+    }
     if (value > std::numeric_limits<std::uintmax_t>::max() / *multiplier) {
+      out_of_range = true;
       return std::nullopt;
     }
     return value * *multiplier;
@@ -142,20 +151,38 @@ auto apply_suffix_multiplier(std::uintmax_t value, std::string_view suffix)
   return std::nullopt;
 }
 
-auto parse_numeric_with_suffix(std::string_view text)
+auto parse_numeric_with_suffix(std::string_view text, bool& out_of_range)
     -> std::optional<std::uintmax_t> {
-  if (text.empty()) return std::nullopt;
+  out_of_range = false;
+  // [GNU] strtoumax skips leading whitespace and an optional '+'
+  // (head.c string_to_integer -> xdectoumax). A suffix with NO
+  // digits means 1 x suffix: 'head -c K' reads 1024 bytes. The
+  // old parser required at least one digit (audit #1462).
+  size_t begin = 0;
+  while (begin < text.size() &&
+         std::isspace(static_cast<unsigned char>(text[begin]))) {
+    ++begin;
+  }
+  std::string_view rest = text.substr(begin);
+  if (!rest.empty() && rest[0] == '+') rest = rest.substr(1);
+  if (rest.empty()) return std::nullopt;
 
   size_t i = 0;
-  while (i < text.size() && std::isdigit(static_cast<unsigned char>(text[i]))) {
+  while (i < rest.size() &&
+         std::isdigit(static_cast<unsigned char>(rest[i]))) {
     ++i;
   }
-  if (i == 0) return std::nullopt;
+  std::uintmax_t value = 1;
+  if (i > 0) {
+    auto parsed = parse_uint(rest.substr(0, i));
+    if (!parsed.has_value()) {
+      out_of_range = true;
+      return std::nullopt;
+    }
+    value = *parsed;
+  }
 
-  auto parsed = parse_uint(text.substr(0, i));
-  if (!parsed.has_value()) return std::nullopt;
-
-  return apply_suffix_multiplier(*parsed, text.substr(i));
+  return apply_suffix_multiplier(value, rest.substr(i), out_of_range);
 }
 
 auto parse_count_spec(std::string spec_text, std::string_view opt_name)
@@ -163,9 +190,14 @@ auto parse_count_spec(std::string spec_text, std::string_view opt_name)
   // [GNU] invalid-number diagnostics quote the offending operand:
   //   head: invalid number of lines: 'bogus'
   const std::string original = spec_text;
+  // [GNU] the diagnostic quotes the string handed to
+  // string_to_integer: the operand with a leading '-' (the elide
+  // marker head.c strips itself) removed, but a leading '+' kept
+  // (it is consumed inside strtoumax).
+  std::string quoted = original;
   auto invalid = [&]() {
     return std::unexpected("invalid number of " + std::string(opt_name) +
-                           ": '" + original + "'");
+                           ": '" + quoted + "'");
   };
   if (spec_text.empty()) {
     return invalid();
@@ -175,18 +207,27 @@ auto parse_count_spec(std::string spec_text, std::string_view opt_name)
   if (spec_text[0] == '-') {
     spec.all_but_last = true;
     spec_text = spec_text.substr(1);  // Avoid modifying original string
+    quoted = spec_text;
     if (spec_text.empty()) {
-      return invalid();
+      return std::unexpected("invalid number of " + std::string(opt_name) +
+                             ": '" + quoted + "'");
     }
   } else if (spec_text[0] == '+') {
     spec.plus_form = true;
-    spec_text = spec_text.substr(1);
-    if (spec_text.empty()) {
+    if (spec_text.size() == 1) {
       return invalid();
     }
   }
 
-  auto parsed = parse_numeric_with_suffix(spec_text);
+  bool out_of_range = false;
+  auto parsed = parse_numeric_with_suffix(spec_text, out_of_range);
+  if (!parsed.has_value() && out_of_range) {
+    // [GNU] xstrtol surfaces EOVERFLOW as a strerror suffix on the
+    // same diagnostic (head.c:914-915 via xdectoumax).
+    return std::unexpected("invalid number of " + std::string(opt_name) +
+                           ": '" + quoted +
+                           "': Value too large for defined data type");
+  }
   if (!parsed.has_value()) {
     return invalid();
   }
@@ -849,20 +890,19 @@ REGISTER_COMMAND(
           if (!handled) reset_to_beginning(input);
         }
         if (!handled) output_head(input, config);
-      } else if (config.delimiter == '\0') {
-        if (config.spec.all_but_last) {
-          handled = output_head_seekable_lines(input, config);
-          if (!handled) reset_to_beginning(input);
-        }
-        if (!handled) output_head(input, config);
-      } else if (!stream_needs_text_decoding(input)) {
-        if (config.spec.all_but_last) {
-          handled = output_head_seekable_lines(input, config);
-          if (!handled) reset_to_beginning(input);
-        }
-        if (!handled) output_head(input, config);
       } else {
-        output_text_head(input, config);
+        // [GNU] head is byte-oriented for regular files: a BOM or
+        // a NUL in the first bytes must NOT reroute line mode
+        // through the text decoder (which re-encodes and counts
+        // decoded records). The old code probed the sample with
+        // stream_needs_text_decoding and sent such files to
+        // output_text_head (audit #1462). Console/stdin decoding
+        // lives on a separate path and is unchanged.
+        if (config.spec.all_but_last) {
+          handled = output_head_seekable_lines(input, config);
+          if (!handled) reset_to_beginning(input);
+        }
+        if (!handled) output_head(input, config);
       }
       if (input.bad()) {
         safeErrorPrint("head: error reading '");

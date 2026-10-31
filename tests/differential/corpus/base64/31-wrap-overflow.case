@@ -1,0 +1,6 @@
+cmd: base64
+args: -w 99999999999999999999
+stdin: |
+  f
+source: GNU coreutils 9.4 src/basenc.c:1113 (LONGINT_OVERFLOW maps to wrap_column 0: no wrap, no trailing newline)
+tags: audit-w3a #1462

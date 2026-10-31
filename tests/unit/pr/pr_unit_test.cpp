@@ -210,7 +210,9 @@ TEST(pr, pr_missing_file_fails_but_continues) {
   EXPECT_TRUE(r.stdout_text.find("content") != std::string::npos);
 }
 
-TEST(pr, pr_newline_mode_trims_trailing_cr_from_crlf_records) {
+TEST(pr, pr_newline_mode_preserves_cr_from_crlf_records) {
+  // [GNU] pr prints record bytes verbatim (pr.c has no CR
+  // trimming); CRLF input keeps its CRs (audit #1462).
   TempDir tmp;
   tmp.write_bytes("test.txt", {'l', 'i', 'n', 'e', '1', '\r', '\n', 'l', 'i',
                                'n', 'e', '2', '\r', '\n'});
@@ -221,9 +223,7 @@ TEST(pr, pr_newline_mode_trims_trailing_cr_from_crlf_records) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ(r.stdout_text.find('\r'), std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("line1\n") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("line2\n") != std::string::npos);
+  EXPECT_EQ_TEXT(r.stdout_text, "line1\r\nline2\r\n");
 }
 
 // [#1212] fd 0 is text mode by default, so a pipe stopped at the first 0x1A

@@ -1,0 +1,9 @@
+cmd: head
+args: -n 1 f
+timeout: 10
+setup: |
+  printf '\357\273\277a\nb\n' > f
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: issue-1462 audit-w2 head bom byte-path
+# A UTF-8 BOM does not reroute a regular file through a text
+# decoder: the first line prints byte-exact (BOM + 'a').

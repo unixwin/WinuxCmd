@@ -1,0 +1,5 @@
+cmd: kill
+oracle: linux
+args: -l 0
+source: tests/differential/corpus/kill/04-list-zero.case
+tags: gnu-compat kill list-conversion audit-w7

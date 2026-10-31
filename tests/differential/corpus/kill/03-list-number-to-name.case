@@ -1,0 +1,5 @@
+cmd: kill
+oracle: linux
+args: -l 9
+source: tests/differential/corpus/kill/03-list-number-to-name.case
+tags: gnu-compat kill list-conversion audit-w7

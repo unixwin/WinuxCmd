@@ -1,0 +1,6 @@
+cmd: column
+oracle: linux
+args: -c bogus
+
+source: tests/differential/corpus/column/11-bad-width.case
+tags: gnu-compat column bad-width audit-w7

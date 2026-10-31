@@ -1,0 +1,7 @@
+cmd: more
+oracle: linux
+args: +2 f.txt
+setup: |
+  printf 'one\ntwo\nthree\n' > f.txt
+source: tests/differential/corpus/more/03-start-line-non-tty.case
+tags: gnu-compat more non-tty start-line audit-w7

@@ -37,7 +37,12 @@ TEST(cut, cut_with_delimiter_and_range) {
   EXPECT_EQ_TEXT(r.stdout_text, "y,z\nn,o\n");
 }
 
-TEST(cut, cut_whitespace_delimited_uses_tab_output) {
+// [GNU] cut has no -w/-F/--whitespace-delimited spellings: the
+// getopt string is "b:c:d:f:nsz" (cut.c) and a whitespace-delimited
+// mode does not exist. The spellings the old implementation invented
+// were removed by the #1462 audit; GNU answers them with the plain
+// invalid/unrecognized-option diagnostics pinned here.
+TEST(cut, cut_w_spelling_is_an_invalid_option) {
   TempDir tmp;
   tmp.write("a.txt", "a    b    c\n\tone two\n");
 
@@ -46,37 +51,12 @@ TEST(cut, cut_whitespace_delimited_uses_tab_output) {
   p.add(L"cut.exe", {L"-w", L"-f", L"1,2", L"a.txt"});
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "a\tb\n\tone\n");
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("invalid option -- 'w'") !=
+              std::string::npos);
 }
 
-TEST(cut, cut_whitespace_delimited_preserves_edge_empty_fields) {
-  TempDir tmp;
-  tmp.write("a.txt", "  a  b  \n");
-
-  Pipeline p;
-  p.set_cwd(tmp.wpath());
-  p.add(L"cut.exe", {L"-w", L"-f", L"1-4", L"a.txt"});
-  auto r = p.run();
-
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "\ta\tb\t\n");
-}
-
-TEST(cut, cut_whitespace_delimited_only_delimited_skips_undelimited_lines) {
-  TempDir tmp;
-  tmp.write("a.txt", "nodelem\na  b\n\n\t x\n");
-
-  Pipeline p;
-  p.set_cwd(tmp.wpath());
-  p.add(L"cut.exe", {L"-w", L"-f", L"2", L"-s", L"a.txt"});
-  auto r = p.run();
-
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "b\nx\n");
-}
-
-TEST(cut, cut_short_F_implies_whitespace_and_space_output) {
+TEST(cut, cut_F_spelling_is_an_invalid_option) {
   TempDir tmp;
   tmp.write("a.txt", "alpha   beta\tgamma\n");
 
@@ -85,24 +65,12 @@ TEST(cut, cut_short_F_implies_whitespace_and_space_output) {
   p.add(L"cut.exe", {L"-F", L"1,3", L"a.txt"});
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "alpha gamma\n");
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("invalid option -- 'F'") !=
+              std::string::npos);
 }
 
-TEST(cut, cut_short_F_uses_explicit_delimiter_but_space_output) {
-  TempDir tmp;
-  tmp.write("a.txt", "a:b:c\n");
-
-  Pipeline p;
-  p.set_cwd(tmp.wpath());
-  p.add(L"cut.exe", {L"-F", L"1,3", L"-d", L":", L"a.txt"});
-  auto r = p.run();
-
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "a c\n");
-}
-
-TEST(cut, cut_whitespace_delimited_trimmed_ignores_outer_blanks) {
+TEST(cut, cut_whitespace_delimited_long_spelling_is_unrecognized) {
   TempDir tmp;
   tmp.write("a.txt", "  alpha  beta  \n  solo  \n");
 
@@ -112,8 +80,10 @@ TEST(cut, cut_whitespace_delimited_trimmed_ignores_outer_blanks) {
         {L"--whitespace-delimited=trimmed", L"-f", L"1,2", L"-s", L"a.txt"});
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "alpha\tbeta\n");
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("unrecognized option "
+                                 "'--whitespace-delimited") !=
+              std::string::npos);
 }
 
 TEST(cut, cut_output_delimiter_empty_writes_nul) {
@@ -130,6 +100,8 @@ TEST(cut, cut_output_delimiter_empty_writes_nul) {
   EXPECT_EQ(r.stdout_text, std::string("a\0c\n", 4));
 }
 
+// [GNU] There is no -w for -d to conflict with: getopt rejects -w
+// itself before any combination is considered (cut.c optstring).
 TEST(cut, cut_rejects_combining_w_and_delimiter) {
   TempDir tmp;
 
@@ -139,9 +111,8 @@ TEST(cut, cut_rejects_combining_w_and_delimiter) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_EQ_TEXT(
-      r.stderr_text,
-      "cut: Only one of --delimiter (-d) or -w option can be specified\n");
+  EXPECT_TRUE(r.stderr_text.find("invalid option -- 'w'") !=
+              std::string::npos);
 }
 
 TEST(cut, cut_only_delimited_skips) {
@@ -300,6 +271,9 @@ TEST(cut, cut_fields_output_delimiter) {
   EXPECT_EQ_TEXT(r.stdout_text, "a|c\n1|3\n");
 }
 
+// [GNU] --output-delimiter has no short spelling in cut.c; -O is an
+// invalid option (the long form is pinned by
+// cut_fields_output_delimiter above).
 TEST(cut, cut_short_output_delimiter) {
   TempDir tmp;
   tmp.write("a.txt", "a:b:c\n");
@@ -309,8 +283,9 @@ TEST(cut, cut_short_output_delimiter) {
   p.add(L"cut.exe", {L"-d", L":", L"-f", L"1,3", L"-O", L"|", L"a.txt"});
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "a|c\n");
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("invalid option -- 'O'") !=
+              std::string::npos);
 }
 
 TEST(cut, cut_bytes_output_delimiter_between_non_overlapping_ranges) {
@@ -326,6 +301,9 @@ TEST(cut, cut_bytes_output_delimiter_between_non_overlapping_ranges) {
   EXPECT_EQ_TEXT(r.stdout_text, "ab|de\n");
 }
 
+// [GNU] -n is a pure no-op in cut.c:536-537 ("case 'n': break;"):
+// bytes are selected exactly as if it were absent, whether or not
+// the selection happens to cover a whole multibyte character.
 TEST(cut, cut_no_partial_keeps_complete_multibyte_characters) {
   TempDir tmp;
   std::vector<char> data = {static_cast<char>(0xC3), static_cast<char>(0xA9),
@@ -342,6 +320,9 @@ TEST(cut, cut_no_partial_keeps_complete_multibyte_characters) {
                                         static_cast<char>(0xA9), '\n'}));
 }
 
+// [GNU] Same no-op -n (cut.c:536-537): byte 1 alone is emitted even
+// though it splits the two-byte character; the former --no-partial
+// semantics that dropped it were an implementation invention.
 TEST(cut, cut_no_partial_omits_split_multibyte_characters) {
   TempDir tmp;
   std::vector<char> data = {static_cast<char>(0xC3), static_cast<char>(0xA9),
@@ -354,7 +335,8 @@ TEST(cut, cut_no_partial_omits_split_multibyte_characters) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "\n");
+  EXPECT_EQ(r.stdout_text,
+            std::string({static_cast<char>(0xC3), '\n'}));
 }
 
 TEST(cut, cut_complement_fields) {
@@ -392,9 +374,10 @@ TEST(cut, cut_missing_input_reports_no_such_file) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stderr_text.find(
-                  "cut: cannot open 'missing.txt' for reading: No such file "
-                  "or directory") != std::string::npos);
+  // [GNU] cut.c:455 reports the bare quotef form, not "cannot open
+  // ... for reading".
+  EXPECT_TRUE(r.stderr_text.find("cut: missing.txt: No such file or "
+                                 "directory") != std::string::npos);
 }
 
 TEST(cut, cut_directory_input_reports_is_a_directory) {
@@ -407,8 +390,7 @@ TEST(cut, cut_directory_input_reports_is_a_directory) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stderr_text.find(
-                  "cut: cannot open 'indir' for reading: Is a directory") !=
+  EXPECT_TRUE(r.stderr_text.find("cut: indir: Is a directory") !=
               std::string::npos);
 }
 
