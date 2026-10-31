@@ -1026,7 +1026,7 @@ auto process_command(const CommandContext<TOUCH_OPTIONS.size()>& ctx)
     };
     static constexpr TimeWord time_words[] = {
         {"atime", 1}, {"access", 1}, {"use", 1},
-        {"mtime", 2}, {"modify", 2}, {"change", 3},
+        {"mtime", 2}, {"modify", 2},
     };
     int matched_mask = 0;
     size_t matches = 0;
@@ -1052,7 +1052,7 @@ auto process_command(const CommandContext<TOUCH_OPTIONS.size()>& ctx)
           "' for '--time'\nValid arguments are:\n"
           "  - 'atime', 'access', 'use'\n"
           "  - 'mtime', 'modify'\n"
-          "  - 'change'");
+          "Try 'touch --help' for more information.");
     }
     if (matched_mask & 1) flag_a = true;
     if (matched_mask & 2) flag_m = true;

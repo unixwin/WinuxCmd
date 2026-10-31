@@ -45,7 +45,7 @@ auto evaluate_mode(std::string_view mode) -> cp::Result<unsigned> {
   if (octal) {
     unsigned long long value = 0;
     for (char ch : mode) value = value * 8 + static_cast<unsigned>(ch - '0');
-    if (value > 07777ULL) {
+    if (value > 0777ULL) {
       return std::unexpected("mode must specify only file permission bits");
     }
     return static_cast<unsigned>(value);

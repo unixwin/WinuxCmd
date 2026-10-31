@@ -272,6 +272,8 @@ struct OutputColumn {
 };
 
 auto make_output_error(std::string message) -> std::unexpected<std::string> {
+  // [GNU] --output decode failures end with the usage Try line.
+  message += "\nTry 'df --help' for more information.";
   return std::unexpected(std::move(message));
 }
 

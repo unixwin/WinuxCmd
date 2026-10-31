@@ -497,9 +497,9 @@ auto build_config(const CommandContext<RM_OPTIONS.size()>& ctx)
             "invalid argument '" + *value +
             "' for '--interactive'\n"
             "Valid arguments are:\n"
-            "  - 'never'\n"
+            "  - 'never', 'no', 'none'\n"
             "  - 'once'\n"
-            "  - 'always'\n"
+            "  - 'always', 'yes'\n"
             "Try 'rm --help' for more information.");
       }
       cfg.interactive = *mode;

@@ -712,7 +712,7 @@ REGISTER_COMMAND(
       // for this check (lstat semantics).
       if ((target_attrs & FILE_ATTRIBUTE_DIRECTORY) &&
           !(target_attrs & FILE_ATTRIBUTE_REPARSE_POINT)) {
-        safeErrorPrint("ln: '" + target + "': cannot overwrite directory\n");
+        safeErrorPrint("ln: " + target + ": cannot overwrite directory\n");
         error_count++;
         continue;
       }

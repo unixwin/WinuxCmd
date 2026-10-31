@@ -460,13 +460,14 @@ auto apply_preserve_list(std::string_view list, bool on, const char* option,
                              "' for '" + option +
                              "'\n"
                              "Valid arguments are:\n"
-                             "  'mode'\n"
-                             "  'timestamps'\n"
-                             "  'ownership'\n"
-                             "  'links'\n"
-                             "  'context'\n"
-                             "  'xattr'\n"
-                             "  'all'");
+                             "  - 'mode'\n"
+                             "  - 'timestamps'\n"
+                             "  - 'ownership'\n"
+                             "  - 'links'\n"
+                             "  - 'context'\n"
+                             "  - 'xattr'\n"
+                             "  - 'all'\n"
+                             "Try 'cp --help' for more information.");
     }
     if (matched == "all") {
       attrs.set_all(on);
@@ -896,8 +897,8 @@ auto parse_sparse_mode(const CommandContext<CP_OPTIONS.size()>& ctx)
   if (value == "never") return SparseMode::Never;
   return std::unexpected("invalid argument '" + value +
                          "' for '--sparse'\n"
-                         "Valid arguments are:\n  'never'\n  'auto'\n  "
-                         "'always'\n"
+                         "Valid arguments are:\n  - 'never'\n  - 'auto'\n  "
+                         "- 'always'\n"
                          "Try 'cp --help' for more information.");
 }
 
@@ -916,8 +917,8 @@ auto parse_reflink_mode(const CommandContext<CP_OPTIONS.size()>& ctx)
   if (value == "never") return ReflinkMode::Never;
   return std::unexpected("invalid argument '" + value +
                          "' for '--reflink'\n"
-                         "Valid arguments are:\n  'always'\n  'auto'\n  "
-                         "'never'\n"
+                         "Valid arguments are:\n  - 'always'\n  - 'auto'\n  "
+                         "- 'never'\n"
                          "Try 'cp --help' for more information.");
 }
 
@@ -1079,10 +1080,10 @@ auto parse_update_mode(const CommandContext<CP_OPTIONS.size()>& ctx)
   return std::unexpected("invalid argument '" + value +
                          "' for '--update'\n"
                          "Valid arguments are:\n"
-                         "  'all'\n"
-                         "  'none'\n"
-                         "  'none-fail'\n"
-                         "  'older'");
+                         "  - 'all'\n"
+                         "  - 'none'\n"
+                         "  - 'older'\n"
+                         "Try 'cp --help' for more information.");
 }
 
 // [GNU] --reflink: attempt a copy-on-write clone through

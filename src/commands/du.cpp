@@ -528,7 +528,7 @@ auto parse_du_time_mode(std::string_view value) -> std::optional<DuTimeMode> {
   static constexpr Word words[] = {
       {"atime", DuTimeMode::Access}, {"access", DuTimeMode::Access},
       {"use", DuTimeMode::Access},   {"ctime", DuTimeMode::Status},
-      {"status", DuTimeMode::Status}, {"mtime", DuTimeMode::Modification},
+      {"status", DuTimeMode::Status},
   };
   std::optional<DuTimeMode> matched;
   size_t matches = 0;
@@ -779,7 +779,8 @@ auto configure_du(const CommandContext<DU_OPTIONS.size()>& ctx)
   cfg.max_depth = ctx.get<int>("--max-depth", -1);
   if (cfg.count_all && cfg.summarize) {
     // [GNU] du.c:937-938: "...show all entries" (the noun was dropped).
-    return std::unexpected("cannot both summarize and show all entries");
+    return std::unexpected("cannot both summarize and show all entries\n"
+                           "Try 'du --help' for more information.");
   }
   if (ctx.get<int>("-d", -1) != -1) {
     cfg.max_depth = ctx.get<int>("-d", -1);
@@ -794,7 +795,8 @@ auto configure_du(const CommandContext<DU_OPTIONS.size()>& ctx)
     } else {
       return std::unexpected("warning: summarizing conflicts with "
                              "--max-depth=" +
-                             std::to_string(cfg.max_depth));
+                             std::to_string(cfg.max_depth) +
+                             "\nTry 'du --help' for more information.");
     }
   }
 
@@ -877,7 +879,7 @@ auto configure_du(const CommandContext<DU_OPTIONS.size()>& ctx)
           "' for '--time'\nValid arguments are:\n"
           "  - 'atime', 'access', 'use'\n"
           "  - 'ctime', 'status'\n"
-          "  - 'mtime'");
+          "Try 'du --help' for more information.");
     }
     cfg.show_time = true;
     cfg.time_word = occurrence.value;
@@ -891,22 +893,28 @@ auto configure_du(const CommandContext<DU_OPTIONS.size()>& ctx)
   for (const auto& occurrence : ctx.string_occurrences({"--time-style"})) {
     cfg.time_style = occurrence.value;
   }
+  bool time_style_from_env = false;
   if (cfg.time_style.empty()) {
     if (const char* env_style = std::getenv("TIME_STYLE")) {
       cfg.time_style = env_style;
+      time_style_from_env = true;
     }
   }
-  if (!cfg.time_style.empty() && !cfg.time_style.starts_with("+")) {
+  // [GNU] The style is validated only when --time is in effect
+  // (du.c:960-1005); the accepted set is full-iso/long-iso/iso, and a
+  // 'posix-' prefix is stripped only from the environment value.
+  if (cfg.show_time && !cfg.time_style.empty() &&
+      !cfg.time_style.starts_with("+")) {
     std::string_view style = cfg.time_style;
-    if (style.starts_with("posix-")) style.remove_prefix(6);
-    if (style != "full-iso" && style != "long-iso" && style != "iso" &&
-        style != "locale") {
-      return std::unexpected("invalid argument '" + cfg.time_style +
+    if (time_style_from_env && style.starts_with("posix-"))
+      style.remove_prefix(6);
+    if (style != "full-iso" && style != "long-iso" && style != "iso") {
+      return std::unexpected("invalid argument '" + std::string(style) +
                              "' for 'time style'\nValid arguments are:\n"
                              "  - 'full-iso'\n"
                              "  - 'long-iso'\n"
                              "  - 'iso'\n"
-                             "  - 'locale'");
+                             "Try 'du --help' for more information.");
     }
     cfg.time_style = std::string(style);
   }
@@ -1445,7 +1453,8 @@ auto print_disk_usage(const CommandContext<DU_OPTIONS.size()>& ctx)
       // combination rule is stated, then usage.
       return std::unexpected(
           "extra operand '" + std::string(ctx.positionals.front()) +
-          "'\nfile operands cannot be combined with --files0-from");
+          "'\nfile operands cannot be combined with --files0-from\n"
+          "Try 'du --help' for more information.");
     }
     auto file_list = read_files0_from(files0_from, &files0_names_ok);
     if (!file_list) {

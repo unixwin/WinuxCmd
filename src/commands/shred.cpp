@@ -65,14 +65,28 @@ REGISTER_COMMAND(
   {
     std::string n_value = ctx.get<std::string>("--iterations", "");
     if (n_value.empty()) n_value = ctx.get<std::string>("-n", "");
+    if (n_value.empty()) {
+      // Belt and braces: take the token after -n/--iterations
+      // verbatim from the raw argv when the typed lookup is empty.
+      for (size_t i = 0; i + 1 < ctx.raw_args.size(); ++i) {
+        if (ctx.raw_args[i] == "-n" || ctx.raw_args[i] == "--iterations") {
+          n_value = ctx.raw_args[i + 1];
+          break;
+        }
+      }
+    }
     if (!n_value.empty()) {
       const std::string& v = n_value;
       size_t pos = 0;
       while (pos < v.size() && (v[pos] == ' ' || v[pos] == '\t')) ++pos;
       bool overflow = false;
       bool invalid = false;
+      bool negative = false;
       if (pos < v.size() && v[pos] == '-') {
-        overflow = true;  // wraps to a huge uintmax, as in GNU
+        // [GNU] A negative count is diagnosed WITHOUT the overflow
+        // suffix; the suffix is for positive overflow only.
+        negative = true;
+        overflow = true;
       } else {
         if (pos < v.size() && v[pos] == '+') ++pos;
         const size_t digits_begin = pos;
@@ -99,7 +113,7 @@ REGISTER_COMMAND(
       }
       if (invalid || overflow) {
         safeErrorPrintLn("shred: invalid number of passes: '" + v + "'" +
-                         (overflow
+                         (overflow && !negative
                               ? ": Value too large for defined data type"
                               : ""));
         return 1;
@@ -142,6 +156,7 @@ REGISTER_COMMAND(
         safeErrorPrintLn("  - 'unlink'");
         safeErrorPrintLn("  - 'wipe'");
         safeErrorPrintLn("  - 'wipesync'");
+        safeErrorPrintLn("Try 'shred --help' for more information.");
         return 1;
       }
       remove_how = std::string(matched);
@@ -319,8 +334,8 @@ REGISTER_COMMAND(
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
         OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
     if (source_handle == INVALID_HANDLE_VALUE) {
-      safeErrorPrintLn("shred: '" + random_source +
-                       "': " + win32_posix_error_text(GetLastError()));
+      safeErrorPrintLn("shred: " + random_source +
+                       ": " + win32_posix_error_text(GetLastError()));
       if (crypt_ok) CryptReleaseContext(hProv, 0);
       return 1;
     }
