@@ -696,3 +696,32 @@ TEST(mv, issue1365_cross_volume_dir_symlink_recreated_not_copied) {
   EXPECT_TRUE(src_ec);  // source link is gone
 }
 
+// [GNU] Audit-W1 diagnostics (issue #1462): one test logging the exact
+// subject bytes for the three behaviors the differential corpus flags
+// as OUT_DIFF (mv/06, mv/09, mv/12) -- verbose rename shape, and the
+// absence of unrequested backups.
+TEST(mv, mv_audit_w1_verbose_and_backup_diagnostics) {
+  TempDir tmp;
+  tmp.write("src.txt", "new");
+  tmp.write("dst.txt", "old");
+  tmp.write("dst.txt~", "sentinel");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"mv.exe", {L"-v", L"-f", L"src.txt", L"dst.txt"});
+  auto r = p.run();
+
+  TEST_LOG("mv -v -f stdout", r.stdout_text);
+  TEST_LOG("mv -v -f stderr", r.stderr_text);
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(r.stdout_text, "renamed 'src.txt' -> 'dst.txt'\n");
+
+  bool sentinel_exists = std::filesystem::exists(tmp.path / "dst.txt~");
+  TEST_LOG("dst.txt~ exists after plain overwrite",
+           sentinel_exists ? "yes" : "no");
+  std::string sentinel_content =
+      sentinel_exists ? tmp.read("dst.txt~") : "<missing>";
+  TEST_LOG("dst.txt~ content", sentinel_content);
+  EXPECT_TRUE(sentinel_exists);
+  EXPECT_EQ(sentinel_content, "sentinel");
+}
