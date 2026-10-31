@@ -9,7 +9,11 @@
 
 #include "pch/pch.h"
 // include other header after pch.h
+#include <wtsapi32.h>  // For WTSEnumerateSessionsW, WTSQuerySessionInformationW
+
 #include "core/command_macros.h"
+
+#pragma comment(lib, "wtsapi32.lib")
 
 import std;
 import core;
@@ -41,50 +45,116 @@ auto build_config(const CommandContext<UPTIME_OPTIONS.size()>& ctx)
   return cfg;
 }
 
+// [GNU] procps uptime -p (library/uptime.c procps_uptime_sprint_short):
+// the duration is decomposed into decades/years/weeks/days/hours/minutes,
+// each larger unit taken only while the remainder strictly exceeds it,
+// nonzero components joined with ", ", and a minutes component is always
+// shown when nothing larger remains (so 30s renders "up 0 minutes").
 auto format_uptime(std::chrono::seconds uptime) -> std::string {
-  auto days = std::chrono::duration_cast<std::chrono::hours>(uptime) / 24;
-  auto hours = std::chrono::duration_cast<std::chrono::hours>(uptime) % 24;
-  auto minutes = std::chrono::duration_cast<std::chrono::minutes>(uptime) % 60;
+  long long rem = static_cast<long long>(uptime.count());
+  const long long original = rem;
 
-  std::string result;
-  if (days.count() > 0) {
-    result += std::to_string(days.count()) + " day";
-    if (days.count() > 1) result += "s";
-    if (hours.count() > 0 || minutes.count() > 0) result += ", ";
-  }
-  if (hours.count() > 0) {
-    result += std::to_string(hours.count()) + " hour";
-    if (hours.count() > 1) result += "s";
-    if (minutes.count() > 0) result += ", ";
-  }
-  if (minutes.count() > 0 || (days.count() == 0 && hours.count() == 0)) {
-    result += std::to_string(minutes.count()) + " minute";
-    if (minutes.count() != 1) result += "s";
+  auto take = [&rem](long long unit) -> long long {
+    if (rem > unit) {
+      const long long value = rem / unit;
+      rem -= value * unit;
+      return value;
+    }
+    return 0;
+  };
+
+  const long long decades = take(60LL * 60 * 24 * 365 * 10);
+  const long long years = take(60LL * 60 * 24 * 365);
+  const long long weeks = take(60LL * 60 * 24 * 7);
+  const long long days = take(60LL * 60 * 24);
+  const long long hours = take(60LL * 60);
+  const long long minutes = take(60LL);
+
+  std::string result = "up ";
+  bool first = true;
+  auto append = [&result, &first](long long value, const char* singular,
+                                  const char* plural) {
+    if (value == 0) return;
+    if (!first) result += ", ";
+    result += std::to_string(value);
+    result += " ";
+    result += (value > 1 ? plural : singular);
+    first = false;
+  };
+  append(decades, "decade", "decades");
+  append(years, "year", "years");
+  append(weeks, "week", "weeks");
+  append(days, "day", "days");
+  append(hours, "hour", "hours");
+  if (minutes > 0 || original < 60) {
+    if (!first) result += ", ";
+    result += std::to_string(minutes);
+    result += (minutes != 1 ? " minutes" : " minute");
   }
 
   return result;
 }
 
-// [GNU] the default uptime line renders the duration as a clock, e.g.
-// "up 22:03" / "up 2 days,  4:13", not "up 22 hours, 3 minutes"
-// (uutils #13027, #13453)
-auto format_uptime_clock(std::chrono::seconds uptime) -> std::string {
-  auto days = std::chrono::duration_cast<std::chrono::hours>(uptime) / 24;
-  auto hours = std::chrono::duration_cast<std::chrono::hours>(uptime) % 24;
-  auto minutes = std::chrono::duration_cast<std::chrono::minutes>(uptime) % 60;
-
-  char buf[64];
-  if (days.count() > 0) {
-    std::string day_part =
-        std::to_string(days.count()) + (days.count() == 1 ? " day" : " days");
-    snprintf(buf, sizeof(buf), "%s, %2d:%02d", day_part.c_str(),
-             static_cast<int>(hours.count()),
-             static_cast<int>(minutes.count()));
-  } else {
-    snprintf(buf, sizeof(buf), "%2d:%02d", static_cast<int>(hours.count()),
-             static_cast<int>(minutes.count()));
+// [GNU] procps count_users(): one per live login session. On Windows the
+// session table replaces utmp: count active sessions that carry a user.
+auto count_logged_in_users() -> int {
+  PWTS_SESSION_INFOW sessions = nullptr;
+  DWORD session_count = 0;
+  if (!WTSEnumerateSessionsW(WTS_CURRENT_SERVER_HANDLE, 0, 1, &sessions,
+                             &session_count)) {
+    return 1;
   }
-  return std::string(buf);
+
+  int users = 0;
+  for (DWORD i = 0; i < session_count; ++i) {
+    if (sessions[i].State != WTSActive) continue;
+    LPWSTR buffer = nullptr;
+    DWORD buffer_size = 0;
+    if (WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE,
+                                    sessions[i].SessionId, WTSUserName,
+                                    &buffer, &buffer_size) &&
+        buffer != nullptr && buffer_size > sizeof(wchar_t) &&
+        buffer[0] != L'\0') {
+      ++users;
+    }
+    if (buffer) WTSFreeMemory(buffer);
+  }
+  WTSFreeMemory(sessions);
+  return users > 0 ? users : 1;
+}
+
+// [GNU] the default uptime line (procps library/uptime.c
+// procps_uptime_sprint): " HH:MM:SS up <duration>, <N> user(s),
+// load average: ..." where the duration is "D day(s), H:MM" when days
+// remain, "H:MM" when hours remain, and "M min" under one hour.
+auto format_default_line(std::chrono::seconds uptime, int users,
+                         const std::string& now_text) -> std::string {
+  const long long total = static_cast<long long>(uptime.count());
+  const long long days = total / (60 * 60 * 24);
+  const long long hours = (total / (60 * 60)) % 24;
+  const long long minutes = (total / 60) % 60;
+
+  std::string line = " " + now_text + " up ";
+  char buf[96];
+  if (days > 0) {
+    snprintf(buf, sizeof(buf), "%lld %s, ", days, days > 1 ? "days" : "day");
+    line += buf;
+  }
+  if (hours > 0) {
+    snprintf(buf, sizeof(buf), "%2lld:%02lld, ", hours, minutes);
+    line += buf;
+  } else {
+    // procps takes this branch whenever no whole hours remain, even
+    // with days present ("2 days, 30 min, ...").
+    snprintf(buf, sizeof(buf), "%lld min, ", minutes);
+    line += buf;
+  }
+  // [DIFFERS] Windows exposes no load average; the figures are reported
+  // as N/A rather than fabricated (simulation-layer dependency).
+  snprintf(buf, sizeof(buf), "%2d %s,  load average: N/A, N/A, N/A", users,
+           users == 1 ? "user" : "users");
+  line += buf;
+  return line;
 }
 
 auto run(const Config& cfg) -> int {
@@ -109,15 +179,10 @@ auto run(const Config& cfg) -> int {
 
     safePrintLn(boot_ss.str());
   } else if (cfg.pretty) {
-    safePrint("up ");
     safePrintLn(format_uptime(uptime));
   } else {
-    safePrint(" ");
-    safePrint(time_ss.str());
-    safePrint(" up ");
-    safePrint(format_uptime_clock(uptime));
-    safePrint(",  ");
-    safePrintLn("load average: N/A, N/A, N/A");
+    safePrintLn(format_default_line(uptime, count_logged_in_users(),
+                                    time_ss.str()));
   }
 
   return 0;
@@ -136,6 +201,11 @@ REGISTER_COMMAND(
     "  uptime -s",
     "w(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", UPTIME_OPTIONS) {
   using namespace uptime_pipeline;
+
+  // [GNU] procps uptime rejects operands (usage error, exit 1).
+  if (!ctx.positionals.empty()) {
+    return cp::report_extra_operand("uptime", ctx.positionals.front());
+  }
 
   auto cfg_result = build_config(ctx);
   if (!cfg_result) {

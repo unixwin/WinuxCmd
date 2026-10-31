@@ -216,5 +216,23 @@ REGISTER_COMMAND(hostname, "hostname", "hostname [OPTION]...",
     return 1;
   }
 
+  // [GNU] hostname.c: one operand SETS the host name (hostname.c:99
+  // fails with "cannot set name to %s" when sethostname fails); a
+  // second operand is an extra-operand error (hostname.c:91). The
+  // applet silently ignored operands and printed the current name.
+  if (ctx.positionals.size() > 1) {
+    return cp::report_extra_operand("hostname", ctx.positionals[1]);
+  }
+  if (ctx.positionals.size() == 1) {
+    // [DIFFERS] Windows has no sethostname equivalent for this
+    // process; setting the computer name is an administrative,
+    // reboot-scoped operation, so the GNU failure is reported.
+    cp::report_custom_error(
+        L"hostname",
+        utf8_to_wstring("cannot set name to '" +
+                        std::string(ctx.positionals.front()) + "'"));
+    return 1;
+  }
+
   return run(*cfg_result);
 }

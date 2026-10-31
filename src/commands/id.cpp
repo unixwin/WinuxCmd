@@ -178,7 +178,8 @@ auto run(const Config& cfg) -> int {
   const bool default_format = only_count == 0;
 
   if (only_count > 1) {
-    safeErrorPrintLn("id: cannot print only of more than one choice");
+    // [GNU] id.c: cannot print "only" of more than one choice.
+    safeErrorPrintLn("id: cannot print \"only\" of more than one choice");
     return 1;
   }
   if (default_format && (cfg.print_real || cfg.print_name)) {
@@ -207,7 +208,8 @@ auto run(const Config& cfg) -> int {
     for (const auto& user : cfg.users) {
       if (!identity->user.name.empty() && user != identity->user.name &&
           user != identity->user.id) {
-        safeErrorPrintLn("id: " + user + ": no such user");
+        // [GNU] id.c: "%s: no such user" with the name quoted.
+        safeErrorPrintLn("id: '" + user + "': no such user");
         ok = false;
         continue;
       }

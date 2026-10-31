@@ -70,8 +70,14 @@ auto collect_user_groups(const std::string& user_str,
                                   MAX_PREFERRED_LENGTH, &entries, &total);
 
   if (status != NERR_Success) {
-    safeErrorPrintLn("groups: " + user_str + ": " +
-                     win32_posix_error_text(status));
+    // [GNU] groups.c reports an unknown user as %s: no such user
+    // with the name quoted; other failures keep the system text.
+    if (status == NERR_UserNotFound) {
+      safeErrorPrintLn("groups: '" + user_str + "': no such user");
+    } else {
+      safeErrorPrintLn("groups: " + user_str + ": " +
+                       win32_posix_error_text(status));
+    }
     if (raw) NetApiBufferFree(raw);
     return 1;
   }
