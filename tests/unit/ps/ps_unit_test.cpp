@@ -230,4 +230,43 @@ TEST(ps, ps_help) {
   EXPECT_TRUE(r.stdout_text.find("OPTIONS") != std::string::npos);
 }
 
+// [#1462] procps BSD face: `ps aux` is the user-format listing of
+// every process with a terminal, not a stray operand to ignore.
+TEST(ps, ps_bsd_aux) {
+  Pipeline p;
+  p.add(L"ps.exe", {L"aux"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_FALSE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stdout_text.find("USER") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("COMMAND") != std::string::npos);
+}
+
+// [#1462] A bare number operand is a BSD PID list.
+TEST(ps, ps_bsd_pid_operand) {
+  Pipeline p;
+  const auto pid = std::to_wstring(GetCurrentProcessId());
+  const auto pid_text = std::to_string(GetCurrentProcessId());
+  p.add(L"ps.exe", {pid, L"--no-headers"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find(pid_text) != std::string::npos);
+}
+
+// [#1462] A non-numeric, non-BSD operand is a syntax error.
+TEST(ps, ps_garbage_operand_rejected) {
+  Pipeline p;
+  p.add(L"ps.exe", {L"bogus!"});
+
+  auto r = p.run();
+
+  EXPECT_NE(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.find("process ID list syntax error") !=
+              std::string::npos);
+}
+
 // --version not supported
