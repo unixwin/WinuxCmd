@@ -47,7 +47,8 @@ auto constexpr FMT_OPTIONS = std::array{
     // [EXT] -X/--exact-skip-prefix: not in GNU fmt
     OPTION("-X", "--exact-skip-prefix",
            "do not ignore leading whitespace for -P", BOOL_TYPE),
-    // [GNU]
+    // [EXT] -T/--tab-width: GNU fmt has no such option; its tab
+    // width is the compile-time TABWIDTH 8.
     OPTION("-T", "--tab-width",
            "treat tabs as TABWIDTH spaces when measuring line length",
            STRING_TYPE),
@@ -71,6 +72,11 @@ struct Config {
   bool goal_set = false;
   bool width_set = false;
   std::string prefix;
+  // [GNU] set_prefix (fmt.c:457-474): the -p argument is trimmed of
+  // leading and trailing SPACES; prefix_lead_space is the count of
+  // leading spaces a line's indent must reach to be eligible.
+  int prefix_lead_space = 0;
+  bool prefix_given = false;
   std::string skip_prefix;
   bool exact_prefix = false;
   bool exact_skip_prefix = false;
@@ -131,7 +137,20 @@ auto build_config(const CommandContext<FMT_OPTIONS.size()>& ctx)
   if (prefix_opt.empty()) {
     prefix_opt = ctx.get<std::string>("-p", "");
   }
-  cfg.prefix = prefix_opt;
+  cfg.prefix_given = ctx.has("--prefix") || ctx.has("-p");
+  if (cfg.prefix_given) {
+    // [GNU] set_prefix: strip leading and trailing spaces (space
+    // only) from the argument; the trimmed string is the prefix.
+    // The old code matched and re-attached the raw argument
+    // (audit #1462).
+    size_t lead = 0;
+    while (lead < prefix_opt.size() && prefix_opt[lead] == ' ') ++lead;
+    size_t tail = prefix_opt.size();
+    while (tail > lead && prefix_opt[tail - 1] == ' ') --tail;
+    cfg.prefix_lead_space = static_cast<int>(lead);
+    cfg.prefix = prefix_opt.substr(lead, tail - lead);
+    if (cfg.prefix.empty() && lead == 0) cfg.prefix_given = false;
+  }
   cfg.exact_prefix =
       ctx.get<bool>("--exact-prefix", false) || ctx.get<bool>("-x", false);
 
@@ -147,9 +166,20 @@ auto build_config(const CommandContext<FMT_OPTIONS.size()>& ctx)
   if (width_opt.empty()) {
     width_opt = ctx.get<std::string>("-w", "");
   }
-  if (!width_opt.empty()) {
+  // [GNU] presence, not non-emptiness, triggers the parse: -w ''
+  // dies as "invalid width: ''" (audit #1462).
+  if (ctx.has("--width") || ctx.has("-w")) {
     auto width = parse_width_value(width_opt);
     if (!width) return std::unexpected(width.error());
+    // [GNU] max_width = xdectoumax (optarg, 0, MAXCHARS / 2, ...)
+    // with MAXCHARS 5000 (fmt.c:395-404): widths above 2500 die
+    // with "Numerical result out of range".
+    if (*width > 2500) {
+      return std::unexpected(
+          winux::i18n::format("command.fmt.error.invalid_width",
+                              "invalid width: '{}'", width_opt) +
+          ": Numerical result out of range");
+    }
     cfg.width = *width;
     cfg.width_set = true;
   }
@@ -168,7 +198,7 @@ auto build_config(const CommandContext<FMT_OPTIONS.size()>& ctx)
   if (goal_opt.empty()) {
     goal_opt = ctx.get<std::string>("-g", "");
   }
-  if (!goal_opt.empty()) {
+  if (ctx.has("--goal") || ctx.has("-g")) {
     auto goal = parse_width_value(goal_opt);
     if (!goal) return std::unexpected(goal.error());
     cfg.goal = *goal;
@@ -242,12 +272,8 @@ auto read_input(const std::string& filename) -> cp::Result<std::string> {
     if (f.fail() && !f.eof()) {
       return std::unexpected("error reading from file");
     }
-    // Skip UTF-8 BOM if present at the beginning
-    if (content.size() >= 3 && static_cast<unsigned char>(content[0]) == 0xEF &&
-        static_cast<unsigned char>(content[1]) == 0xBB &&
-        static_cast<unsigned char>(content[2]) == 0xBF) {
-      content = content.substr(3);
-    }
+    // [GNU] no BOM handling: a leading EF BB BF is input data
+    // (audit #1462; the old code stripped it for files only).
   }
 
   return content;
@@ -775,6 +801,17 @@ auto format_group(std::span<const Line> group, const Config& cfg,
     if (crown_like && group.size() > 1) {
       rest_indent = indentation_of(group[1].text);
     }
+    // [GNU] set_other_indent, tagged branch (fmt.c:516-529): a
+    // one-line tagged paragraph whose continuation indent would
+    // equal the first indent uses DEF_INDENT (3) when the first
+    // indent is 0, else 0 (audit #1462).
+    if (cfg.tagged_paragraph && group.size() == 1) {
+      const int first_cols =
+          fmt_display_width(first_indent, cfg.tab_width);
+      if (fmt_display_width(rest_indent, cfg.tab_width) == first_cols) {
+        rest_indent = std::string(first_cols == 0 ? 3 : 0, ' ');
+      }
+    }
   }
 
   // [EXT] The -P skip-prefix extension keeps the historical wrapping
@@ -865,25 +902,20 @@ auto format_content(const std::string& content, const Config& cfg)
   auto lines = split_lines(content);
   std::string out;
   std::vector<Line> paragraph;
-  std::string paragraph_indent;
+  int paragraph_first_col = 0;
+  int paragraph_other_col = -1;
   std::string paragraph_prefix;
 
   auto flush = [&](bool final_flush = false) {
     if (paragraph.empty()) return;
 
-    if (cfg.tagged_paragraph && paragraph.size() > 1 && cfg.prefix.empty() &&
-        indentation_of(paragraph[0].text) ==
-            indentation_of(paragraph[1].text)) {
-      out += format_group(std::span<const Line>(paragraph.data(), 1), cfg, "");
-      out += format_group(
-          std::span<const Line>(paragraph.data() + 1, paragraph.size() - 1),
-          cfg, "");
-    } else {
-      out += format_group(paragraph, cfg, paragraph_prefix);
-    }
+    // Paragraph membership is decided while collecting (below), so
+    // a group never needs re-splitting here.
+    out += format_group(paragraph, cfg, paragraph_prefix);
 
     paragraph.clear();
-    paragraph_indent.clear();
+    paragraph_first_col = 0;
+    paragraph_other_col = -1;
     paragraph_prefix.clear();
   };
 
@@ -920,7 +952,12 @@ auto format_content(const std::string& content, const Config& cfg)
 
     auto strip_prefix =
         prefix_match(line.text, cfg.prefix, !cfg.exact_prefix, true);
-    if (!cfg.prefix.empty() && !strip_prefix) {
+    const int line_indent_cols =
+        fmt_display_width(indentation_of(line.text), cfg.tab_width);
+    // [GNU] a line also fails the prefix when its indent column does
+    // not reach the prefix's leading-space count (fmt.c:563).
+    if (cfg.prefix_given &&
+        (!strip_prefix || line_indent_cols < cfg.prefix_lead_space)) {
       flush();
       out += line.text;
       if (line.has_newline) out.push_back('\n');
@@ -929,14 +966,25 @@ auto format_content(const std::string& content, const Config& cfg)
 
     if (is_blank_line(line.text)) {
       flush();
-      out += line.text;
-      if (line.has_newline) out.push_back('\n');
+      // [GNU] a blanks-only line is a paragraph separator; its
+      // blanks are consumed and a bare newline is emitted
+      // (fmt.c get_paragraph/copy_rest) (audit #1462).
+      if (line.has_newline) {
+        out.push_back('\n');
+      } else {
+        out += line.text;
+      }
       continue;
     }
 
     std::string current_prefix;
-    if (!cfg.prefix.empty()) {
-      current_prefix = line.text.substr(0, *strip_prefix);
+    if (cfg.prefix_given) {
+      // [GNU] output indents are rebuilt as that many spaces plus
+      // the trimmed prefix (put_paragraph), not the raw matched
+      // text (audit #1462).
+      current_prefix =
+          std::string(static_cast<size_t>(line_indent_cols), ' ') +
+          cfg.prefix;
     }
 
     if (cfg.split_only) {
@@ -945,23 +993,43 @@ auto format_content(const std::string& content, const Config& cfg)
       continue;
     }
 
-    std::string current_indent =
-        cfg.prefix.empty() || cfg.crown_margin || cfg.tagged_paragraph
-            ? indentation_of(line.text)
-            : current_prefix;
+    // [GNU] paragraph membership is decided on COLUMNS (in_column:
+    // a tab advances to the next multiple of 8), never on raw indent
+    // bytes -- a tab and eight spaces are the same indent
+    // (audit #1462).
+    const size_t content_start =
+        cfg.prefix_given ? strip_prefix.value_or(0)
+                         : leading_blank_count(line.text);
+    const int current_col = fmt_display_width(
+        line.text.substr(0, content_start), cfg.tab_width);
 
     bool starts_new_paragraph = false;
     if (!paragraph.empty()) {
-      if (!cfg.prefix.empty()) {
-        starts_new_paragraph = current_prefix != paragraph_prefix;
-      } else if (!cfg.crown_margin && !cfg.tagged_paragraph) {
-        starts_new_paragraph = current_indent != paragraph_indent;
+      if (cfg.crown_margin || cfg.tagged_paragraph) {
+        if (paragraph.size() == 1) {
+          // Crown: the second line always joins, and its column
+          // becomes other_indent. Tagged: the second line joins
+          // only with a different column (fmt.c:591-617).
+          starts_new_paragraph =
+              cfg.tagged_paragraph && current_col == paragraph_first_col;
+          if (!starts_new_paragraph) paragraph_other_col = current_col;
+        } else {
+          // Crown and tagged: later lines must match other_indent;
+          // a differing line starts a new paragraph.
+          starts_new_paragraph = current_col != paragraph_other_col;
+        }
+      } else if (cfg.prefix_given) {
+        starts_new_paragraph = current_prefix != paragraph_prefix ||
+                               current_col != paragraph_first_col;
+      } else {
+        starts_new_paragraph = current_col != paragraph_first_col;
       }
     }
     if (starts_new_paragraph) flush();
 
     if (paragraph.empty()) {
-      paragraph_indent = current_indent;
+      paragraph_first_col = current_col;
+      paragraph_other_col = -1;
       paragraph_prefix = current_prefix;
     }
     paragraph.push_back(line);
