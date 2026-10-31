@@ -182,15 +182,26 @@ auto parse_group_mode(std::string_view method, GroupMode default_mode)
   if (method == "prepend") return GroupMode::prepend;
   if (method == "append") return GroupMode::append;
   if (method == "both") return GroupMode::both;
-  return std::unexpected("invalid grouping method " + std::string(method));
+  // [GNU] uniq.c XARGMATCH ("--group", ...): argmatch diagnostic with
+  // the valid-argument list, in uniq.c's table order.
+  return std::unexpected(
+      "invalid argument '" + std::string(method) +
+      "' for '--group'\nValid arguments are:\n  - 'prepend'\n  - "
+      "'append'\n  - 'separate'\n  - 'both'\nTry 'uniq --help' for "
+      "more information.");
 }
 
 auto parse_all_repeated_mode(std::string_view method) -> cp::Result<GroupMode> {
   if (method.empty() || method == "none") return GroupMode::none;
   if (method == "prepend") return GroupMode::prepend;
   if (method == "separate") return GroupMode::separate;
-  return std::unexpected("invalid argument " + std::string(method) +
-                         " for --all-repeated");
+  // [GNU] uniq.c XARGMATCH ("--all-repeated", ...) over
+  // {"none", "prepend", "separate"}.
+  return std::unexpected(
+      "invalid argument '" + std::string(method) +
+      "' for '--all-repeated'\nValid arguments are:\n  - 'none'\n  - "
+      "'prepend'\n  - 'separate'\nTry 'uniq --help' for more "
+      "information.");
 }
 
 auto build_config(const CommandContext<UNIQ_OPTIONS.size()>& ctx)

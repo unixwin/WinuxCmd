@@ -78,14 +78,18 @@ TEST(cksum, cksum_short_length_alias_matches_long_form) {
   TempDir tmp;
   tmp.write("test.txt", "hello");
 
+  // [GNU] -l/--length is valid only with --algorithm=blake2b
+  // (cksum.c: "--length is only supported with
+  // --algorithm=blake2b"); the alias equivalence is exercised there.
   Pipeline short_form;
   short_form.set_cwd(tmp.wpath());
-  short_form.add(L"cksum.exe", {L"-l", L"8", L"test.txt"});
+  short_form.add(L"cksum.exe", {L"-a", L"blake2b", L"-l", L"8", L"test.txt"});
   auto short_result = short_form.run();
 
   Pipeline long_form;
   long_form.set_cwd(tmp.wpath());
-  long_form.add(L"cksum.exe", {L"--length=8", L"test.txt"});
+  long_form.add(L"cksum.exe",
+                 {L"-a", L"blake2b", L"--length=8", L"test.txt"});
   auto long_result = long_form.run();
 
   EXPECT_EQ(short_result.exit_code, 0);
@@ -189,7 +193,12 @@ TEST(cksum,
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.find("good.txt: OK") != std::string::npos);
-  EXPECT_EQ_TEXT(r.stderr_text, "");
+  // [GNU] The improperly-formatted summary is NOT gated on --warn:
+  // digest.c:1300-1307 prints it whenever some line was properly
+  // formatted and the mode is not --status.
+  EXPECT_TRUE(
+      r.stderr_text.find("cksum: WARNING: 1 line is improperly formatted") !=
+      std::string::npos);
 }
 
 TEST(cksum, cksum_check_warn_reports_malformed_line_location_and_summary) {
@@ -207,9 +216,11 @@ TEST(cksum, cksum_check_warn_reports_malformed_line_location_and_summary) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.find("good.txt: OK") != std::string::npos);
-  EXPECT_TRUE(r.stderr_text.find(
-                  "cksum: check.txt: 1: improperly formatted checksum line") !=
-              std::string::npos);
+  // [GNU] The --warn per-line diagnostic names the digest type in
+  // force (digest.c:1209): "... improperly formatted CRC checksum
+  // line" for the default algorithm.
+  EXPECT_TRUE(r.stderr_text.find("cksum: check.txt: 1: improperly formatted "
+                                 "CRC checksum line") != std::string::npos);
   EXPECT_TRUE(
       r.stderr_text.find("cksum: WARNING: 1 line is improperly formatted") !=
       std::string::npos);
@@ -230,7 +241,11 @@ TEST(cksum, cksum_check_strict_fails_when_any_line_is_malformed) {
 
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_TRUE(r.stdout_text.find("good.txt: OK") != std::string::npos);
-  EXPECT_EQ_TEXT(r.stderr_text, "");
+  // [GNU] --strict changes only the exit status; the summary still
+  // prints (digest.c:1300-1307 is not gated on --strict either).
+  EXPECT_TRUE(
+      r.stderr_text.find("cksum: WARNING: 1 line is improperly formatted") !=
+      std::string::npos);
 }
 
 TEST(cksum, cksum_check_reports_unreadable_listed_files) {
@@ -264,9 +279,12 @@ TEST(cksum, cksum_check_ignore_missing_skips_missing_files) {
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
+  // [GNU] An --ignore-missing run that verified nothing FAILS with
+  // the "no file was verified" note (digest.c:1316-1319, 1330-1335).
+  EXPECT_EQ(r.exit_code, 1);
   EXPECT_EQ_TEXT(r.stdout_text, "");
-  EXPECT_EQ_TEXT(r.stderr_text, "");
+  EXPECT_TRUE(r.stderr_text.find("cksum: check.txt: no file was verified") !=
+              std::string::npos);
 }
 
 TEST(cksum, cksum_check_mismatch_summary_counts_only_computed_records) {
@@ -286,8 +304,10 @@ TEST(cksum, cksum_check_mismatch_summary_counts_only_computed_records) {
   EXPECT_TRUE(
       r.stderr_text.find("cksum: WARNING: 1 listed file could not be read") !=
       std::string::npos);
+  // [GNU] digest.c:1320: "WARNING: %ju computed checksum did NOT
+  // match" -- there is no "of N" form.
   EXPECT_TRUE(r.stderr_text.find(
-                  "cksum: WARNING: 1 of 1 computed checksums did NOT match") !=
+                  "cksum: WARNING: 1 computed checksum did NOT match") !=
               std::string::npos);
 }
 
@@ -305,7 +325,7 @@ TEST(cksum, cksum_check_validates_size_field_in_untagged_records) {
   EXPECT_NE(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.find("good.txt: FAILED") != std::string::npos);
   EXPECT_TRUE(r.stderr_text.find(
-                  "cksum: WARNING: 1 of 1 computed checksums did NOT match") !=
+                  "cksum: WARNING: 1 computed checksum did NOT match") !=
               std::string::npos);
 }
 
@@ -360,7 +380,7 @@ TEST(cksum, cksum_check_quiet_suppresses_ok_lines_only) {
   EXPECT_TRUE(bad_result.stdout_text.find("good.txt: FAILED") !=
               std::string::npos);
   EXPECT_TRUE(bad_result.stderr_text.find(
-                  "cksum: WARNING: 1 of 1 computed checksums did NOT match") !=
+                  "cksum: WARNING: 1 computed checksum did NOT match") !=
               std::string::npos);
 }
 

@@ -23,6 +23,8 @@ corpus/readlink/03-no-newline-zero.case	environment: the setup creates symlinks,
 corpus/readlink/04-no-newline-multi.case	environment: the setup creates symlinks, and reparse-point creation through the \\wsl.localhost 9p share is not supported by the redirector, so the subject side sees a non-link (same family as regressions/57-ln-backup-control)
 corpus/realpath/37-dangling-default.case	platform: realpath prints the resolved path in Windows UNC spelling (\\\\wsl.localhost\...) where GNU prints the WSL absolute path; the resolved target itself matches (same class as corpus/readlink/01-resolve)
 corpus/realpath/38-relative-base-not-prefix.case	platform: realpath prints the resolved path in Windows UNC spelling (\\\\wsl.localhost\...) where GNU prints the WSL absolute path; the resolved target itself matches (same class as corpus/readlink/01-resolve)
+corpus/whereis/02-multi-dir-until-f.case	environment: both sides canonicalize -B dirs to absolute paths before printing hits (whereis.c:254), but the oracle's absolute root is its own mktemp sandbox in POSIX form while the subject's is the parallel sandbox in Windows UNC form, and normalize_output has no path-prefix masking - the spellings cannot byte-match although both name the same logical files
+corpus/whereis/03-unusual-count.case	environment: same sandbox-root spelling split as corpus/whereis/02 - the -u selection itself agrees (solo suppressed with exactly one entry, pair printed with two); only the canonicalized absolute path spellings differ by construction
 
 corpus/envsubst/01-basic.case	environment: $HOME is /root on WSL-GNU vs Windows UserProfile on winux
 
@@ -43,6 +45,22 @@ corpus/which/01-basic.case	environment: PATH differs between WSL (/usr/bin/sh) a
 corpus/cal/01-current.case	oracle: CI oracle is ncal (BSD cal) - 22-column rows with trailing padding vs the applet's util-linux 20-column layout; recorded PASS against a util-linux-semantics cal
 
 corpus/cal/02-month.case	oracle: same ncal delta as corpus/cal/01, plus -m is --monday to util-linux and the applet but a month operand to ncal
+
+corpus/cal/03-three-months.case	oracle: same ncal delta as corpus/cal/01 - ncal pads each month row to 22 columns with trailing spaces (monthrangeb %-*s plus separator), the applet prints the util-linux 20-column layout
+
+corpus/cal/04-julian.case	oracle: same ncal family as corpus/cal/01 - ncal's julian rows are padded wider than the applet's util-linux 27-column julian layout
+
+corpus/cal/05-month-name.case	oracle: same ncal delta as corpus/cal/01 - single-month rows carry ncal's trailing padding, applet prints util-linux layout
+
+corpus/cal/06-illegal-month.case	oracle: ncal parsemonth rejects month 13 via errx(EX_USAGE) so the oracle exits 64; the applet follows util-linux cal.c and exits 1 (EXIT_FAILURE) with the cal.c wording
+
+corpus/cal/07-monday-two-months.case	oracle: ncal -m takes a month argument and consumes -n, leaving 3 operands -> usage exit 64; the applet follows util-linux (-m is --monday, -n is the month count) and prints the 2-month span, exit 0
+
+corpus/cal/08-year.case	oracle: same ncal delta as corpus/cal/01 across the full-year grid - ncal pads every month row, the applet prints the util-linux layout
+
+corpus/cal/09-invalid-months-arg.case	oracle: -n is not an ncal option at all (not in its optstring), so ncal usage-exits 64; the applet implements util-linux -n and rejects the non-numeric argument with exit 1
+
+corpus/cal/10-junk-month.case	oracle: ncal parsemonth rejects the 'x' suffix via errx(EX_USAGE), exit 64; the applet follows util-linux cal.c and exits 1
 
 regressions/56-find-L-loop.case	environment: find loop detection keys on the (volume serial, file index) identity of ancestor directories; through the \\wsl.localhost 9p share in the WSL-side runner the redirector does not return a matching identity for a directory re-reached through a symlink loop, so the subject does not stop where GNU stops. Same 9p family as regressions/23-cp-link-option and corpus/ln/35-hard
 

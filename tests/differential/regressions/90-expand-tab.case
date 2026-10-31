@@ -1,0 +1,8 @@
+cmd: expand
+args: -t 4 f
+timeout: 10
+setup: |
+  printf 'a\tb\n' > f
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: issue-1462 audit-w2 expand tablist
+# A tab advances to the next multiple-of-4 stop.

@@ -54,6 +54,15 @@ auto constexpr KILL_OPTIONS = std::array{
     OPTION("-q", "--queue",
            "queue an integer signal payload (unsupported on Windows)",
            STRING_TYPE),
+    // [GNU] -a lifts the same-uid restriction on name operands
+    // (kill.c:510-541); -p prints pids instead of signaling and
+    // --verbose reports each signal as it is sent (kill.c kill_verbose).
+    OPTION("-a", "--all",
+           "do not restrict the name-to-pid conversion to the same uid"),
+    // [GNU]
+    OPTION("-p", "--pid", "print the process id"),
+    // [GNU]
+    OPTION("", "--verbose", "print the pid and signal being sent"),
     // [DIFFERS]
     OPTION("-l", "--list", "list signal names, or convert one signal",
            OPTIONAL_STRING_TYPE),
@@ -378,16 +387,26 @@ auto signal_number_to_name(int signal_number) -> std::optional<std::string> {
 
 auto convert_signal_token(std::string_view token)
     -> std::optional<std::string> {
-  if (auto number = parse_decimal(token)) {
-    if (*number < 0 || *number > kMaxSignal) return std::nullopt;
-    return signal_number_to_name(*number);
+  // [GNU] -l conversion prints the signal NAME in both directions
+  // (kill.c print_signal_name, kill.c:106-121): a number maps to its
+  // name and a name maps back to its canonical name.  Numeric input
+  // follows arg_to_signum with maskbit=1 (kill.c:176-191): a value at
+  // or above NSIG with bit 128 set is a wait status and loses the 128,
+  // so "kill -l 129" prints HUP.
+  if (!token.empty() && token.front() >= '0' && token.front() <= '9') {
+    auto number = parse_decimal(token);
+    if (!number) return std::nullopt;
+    int value = *number;
+    if (value >= kMaxSignal + 1 && (value & 128) != 0) value -= 128;
+    if (value < 0 || value > kMaxSignal) return std::nullopt;
+    return signal_number_to_name(value);
   }
 
   auto signal = get_signal_by_name(token);
   if (!signal || *signal < 0 || *signal > kMaxSignal) {
     return std::nullopt;
   }
-  return std::to_string(*signal);
+  return signal_number_to_name(*signal);
 }
 
 }  // namespace kill_constants
@@ -438,29 +457,54 @@ auto list_signals(bool table_format) -> cp::Result<bool> {
 auto convert_and_print_signal(std::string_view signal_arg) -> cp::Result<bool> {
   auto converted = kill_constants::convert_signal_token(signal_arg);
   if (!converted) {
-    // [GNU] operand2sig wording (uutils #14177)
-    return std::unexpected("'" + std::string(signal_arg) + "': invalid signal");
+    // [GNU] a failed -l conversion is "unknown signal: %s" (kill.c:290).
+    return std::unexpected("unknown signal: " + std::string(signal_arg));
   }
   safePrint(*converted);
   safePrint("\n");
   return true;
 }
 
+// [GNU] err_nosig (kill.c:169-174): "unknown signal %s; valid signals:"
+// followed by the signal list.  The list payload uses this command's own
+// plain listing shape (see list_signals).
+auto valid_signals_text() -> std::string {
+  std::string out;
+  int chars = 0;
+  for (const auto& sig : kill_constants::SIGNALS) {
+    out.append(sig.name);
+    out.push_back(' ');
+    chars += static_cast<int>(sig.name.size()) + 1;
+    if (chars >= 72) {
+      out.push_back('\n');
+      chars = 0;
+    }
+  }
+  out += "RT<N> RTMIN+<N> RTMAX-<N>";
+  return out;
+}
+
+auto unknown_signal_error(std::string_view name) -> std::string {
+  return "unknown signal " + std::string(name) + "; valid signals:\n" +
+         valid_signals_text();
+}
+
 // ----------------------------------------------
 // 2. Parse signal argument
 // ----------------------------------------------
 auto parse_signal(const std::string& signal_arg) -> cp::Result<int> {
+  // [GNU] a bad -s/-n signal specification goes through err_nosig
+  // (kill.c:169-174, called from the -s parse at kill.c:329).
   if (auto signal_num = kill_constants::parse_decimal(signal_arg)) {
     if (*signal_num < 0 || *signal_num > kill_constants::kMaxSignal) {
-      // [GNU] operand2sig wording (uutils #14177)
-      return std::unexpected("'" + signal_arg + "': invalid signal");
+      return std::unexpected(unknown_signal_error(signal_arg));
     }
     return *signal_num;
   }
 
   auto signal_num = kill_constants::get_signal_by_name(signal_arg);
   if (!signal_num) {
-    return std::unexpected("'" + signal_arg + "': invalid signal");
+    return std::unexpected(unknown_signal_error(signal_arg));
   }
   return *signal_num;
 }
@@ -555,27 +599,10 @@ auto validate_queue_option(const CommandContext<N>& ctx) -> cp::Result<bool> {
   return true;
 }
 
-template <size_t N>
-auto list_conversion_argument(const CommandContext<N>& ctx)
-    -> std::optional<std::string> {
-  for (const auto& occurrence : ctx.string_occurrences({"-l", "--list"})) {
-    if (!occurrence.value.empty()) {
-      return occurrence.value;
-    }
-  }
-
-  if (!ctx.positionals.empty()) {
-    return std::string(ctx.positionals.front());
-  }
-
-  return std::nullopt;
-}
-
 // ----------------------------------------------
 // 3. Terminate process
 // ----------------------------------------------
-auto terminate_process(DWORD pid, int signal, bool verbose)
-    -> cp::Result<bool> {
+auto terminate_process(DWORD pid, int signal) -> cp::Result<bool> {
   // Open process with necessary access rights
   DWORD access_rights =
       signal == 0
@@ -585,10 +612,13 @@ auto terminate_process(DWORD pid, int signal, bool verbose)
 
   if (hProcess == NULL) {
     DWORD error = GetLastError();
+    // [GNU] failure tails use the strerror wording: the warn shape is
+    // "sending signal to <arg> failed: <strerror>" (kill.c:453), so a
+    // missing process reads ESRCH and a protected one EPERM.
     if (error == ERROR_ACCESS_DENIED) {
-      return std::unexpected("permission denied");
+      return std::unexpected("Operation not permitted");
     } else if (error == ERROR_INVALID_PARAMETER) {
-      return std::unexpected("no such process");
+      return std::unexpected("No such process");
     } else {
       return std::unexpected("cannot open process");
     }
@@ -599,7 +629,7 @@ auto terminate_process(DWORD pid, int signal, bool verbose)
   if (GetExitCodeProcess(hProcess, &exitCode)) {
     if (exitCode != STILL_ACTIVE) {
       CloseHandle(hProcess);
-      return std::unexpected("process already terminated");
+      return std::unexpected("No such process");
     }
   }
 
@@ -662,45 +692,121 @@ auto terminate_process(DWORD pid, int signal, bool verbose)
     return std::unexpected("failed to terminate process");
   }
 
-  if (verbose) {
-    char buffer[256];
-    snprintf(buffer, sizeof(buffer), "Terminated process %lu\n", pid);
-    safePrint(buffer);
-  }
-
   return true;
 }
 
 // ----------------------------------------------
 // 4. Parse PID list
 // ----------------------------------------------
-auto parse_pids(const std::vector<std::string>& pid_args)
-    -> cp::Result<std::vector<DWORD>> {
-  std::vector<DWORD> pids;
+struct KillTarget {
+  DWORD pid;
+  std::string operand;  // original operand text, for diagnostics
+};
 
-  for (const auto& pid_str : pid_args) {
-    uint64_t pid_value = 0;
-    auto [ptr, ec] = std::from_chars(
-        pid_str.data(), pid_str.data() + pid_str.size(), pid_value);
-    if (ec != std::errc() || ptr != pid_str.data() + pid_str.size() ||
-        pid_value == 0 || pid_value > UINT32_MAX) {
-      return std::unexpected("invalid PID: " + pid_str);
+struct ResolvedTargets {
+  std::vector<KillTarget> targets;
+  // [GNU] the oracle counts attempted and failed operands (kill.c ct /
+  // nerrs) to derive its 0 / 1 / 64 exit status; a name operand that
+  // matches nothing is counted in both before any process is signaled.
+  int attempted = 0;
+  int failed = 0;
+};
+
+auto token_user_sid_bytes(HANDLE token) -> std::vector<unsigned char> {
+  DWORD size = 0;
+  GetTokenInformation(token, TokenUser, nullptr, 0, &size);
+  if (size == 0) return {};
+  std::vector<unsigned char> buffer(size);
+  if (!GetTokenInformation(token, TokenUser, buffer.data(), size, &size)) {
+    return {};
+  }
+  return buffer;
+}
+
+// [GNU] name operands match only the caller's own processes unless -a
+// was given (kill.c:510-541 compares the /proc entry owner's uid).
+auto process_owned_by_current_user(DWORD pid) -> bool {
+  static const std::vector<unsigned char> current_sid = [] {
+    std::vector<unsigned char> sid;
+    HANDLE token = nullptr;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+      sid = token_user_sid_bytes(token);
+      CloseHandle(token);
     }
-    pids.push_back(static_cast<DWORD>(pid_value));
+    return sid;
+  }();
+  if (current_sid.empty()) return false;
+
+  HANDLE proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+  if (proc == nullptr) return false;
+  bool owned = false;
+  HANDLE token = nullptr;
+  if (OpenProcessToken(proc, TOKEN_QUERY, &token)) {
+    auto sid = token_user_sid_bytes(token);
+    if (!sid.empty()) {
+      const auto* mine =
+          reinterpret_cast<const TOKEN_USER*>(current_sid.data());
+      const auto* theirs = reinterpret_cast<const TOKEN_USER*>(sid.data());
+      owned = EqualSid(mine->User.Sid, theirs->User.Sid) != FALSE;
+    }
+    CloseHandle(token);
+  }
+  CloseHandle(proc);
+  return owned;
+}
+
+auto process_name_matches(const std::wstring& exe_name,
+                          const std::wstring& wanted, bool exact) -> bool {
+  if (_wcsicmp(exe_name.c_str(), wanted.c_str()) == 0) return true;
+  if (exact) return false;
+  // Windows image names carry the extension; the oracle matches the
+  // process name itself, so accept the bare name for "name.exe" too.
+  return _wcsicmp(exe_name.c_str(), (wanted + L".exe").c_str()) == 0;
+}
+
+auto resolve_targets(const std::vector<std::string>& pid_args, bool all_users,
+                     bool exact) -> ResolvedTargets {
+  ResolvedTargets resolved;
+  std::optional<std::vector<Win32ProcessInfo>> processes;
+
+  for (const auto& arg : pid_args) {
+    uint64_t pid_value = 0;
+    auto [ptr, ec] = std::from_chars(arg.data(), arg.data() + arg.size(),
+                                     pid_value);
+    if (ec == std::errc() && ptr == arg.data() + arg.size() &&
+        pid_value <= UINT32_MAX) {
+      resolved.targets.push_back(
+          KillTarget{static_cast<DWORD>(pid_value), arg});
+      continue;
+    }
+
+    // [GNU] a non-numeric operand is a process name (kill.c:510-541):
+    // every process with a matching image name becomes a target.
+    if (!processes) processes = enumerate_win32_processes(false);
+    const std::wstring wanted = utf8_to_wstring(arg);
+    bool found = false;
+    for (const auto& proc : *processes) {
+      if (!process_name_matches(proc.name, wanted, exact)) continue;
+      if (!all_users && !process_owned_by_current_user(proc.pid)) continue;
+      resolved.targets.push_back(KillTarget{proc.pid, arg});
+      found = true;
+    }
+    if (!found) {
+      // [GNU] warnx shape (kill.c:540).
+      safeErrorPrintLn("kill: cannot find process \"" + arg + "\"");
+      ++resolved.attempted;
+      ++resolved.failed;
+    }
   }
 
-  if (pids.empty()) {
-    return std::unexpected("no process ID specified");
-  }
-
-  return pids;
+  return resolved;
 }
 
 // ----------------------------------------------
 // 5. Process command
 // ----------------------------------------------
 template <size_t N>
-auto process_command(const CommandContext<N>& ctx) -> cp::Result<bool> {
+auto process_command(const CommandContext<N>& ctx) -> cp::Result<int> {
   bool list = ctx.has("--list") || ctx.has("-l");
   bool table = ctx.get<bool>("--table", false);
   table |= ctx.get<bool>("-L", false);
@@ -709,18 +815,32 @@ auto process_command(const CommandContext<N>& ctx) -> cp::Result<bool> {
   // Handle list/table options
   if (list || table) {
     if (list && !table) {
-      // [GNU] a -SPEC operand (consumed as the -NUM signal form) cannot be
-      // combined with -l: operand2sig rejects the negative spec, so
-      // "kill -l -9" is an error, not a signal listing (uutils #7066).
-      if (ctx.count({"-NUM"}) > 0) {
-        return std::unexpected("'-" + std::to_string(ctx.get<int>("-NUM", 0)) +
-                               "': invalid signal");
+      // [GNU] -l takes at most one conversion argument (kill.c:283-292):
+      // it arrives as the option value ("--list=129", "-l=129"), as the
+      // single remaining operand ("kill -l 129"), or as a dash spec
+      // ("kill -l -9", which arg_to_signum rejects as a name).
+      std::vector<std::string> candidates;
+      for (const auto& occurrence : ctx.string_occurrences({"-l", "--list"})) {
+        if (!occurrence.value.empty()) candidates.push_back(occurrence.value);
       }
-      if (auto conversion_arg = list_conversion_argument(ctx)) {
-        return convert_and_print_signal(*conversion_arg);
+      if (candidates.empty()) {
+        for (auto arg : ctx.positionals) candidates.emplace_back(arg);
+      }
+      if (ctx.count({"-NUM"}) > 0) {
+        candidates.push_back("-" + std::to_string(ctx.get<int>("-NUM", 0)));
+      }
+      if (candidates.size() > 1) {
+        return std::unexpected("too many arguments");
+      }
+      if (candidates.size() == 1) {
+        auto converted = convert_and_print_signal(candidates.front());
+        if (!converted) return std::unexpected(converted.error());
+        return 0;
       }
     }
-    return list_signals(table);
+    auto listed = list_signals(table);
+    if (!listed) return std::unexpected(listed.error());
+    return 0;
   }
 
   auto queue_result = validate_queue_option(ctx);
@@ -755,7 +875,8 @@ auto process_command(const CommandContext<N>& ctx) -> cp::Result<bool> {
       }
       auto parsed = kill_constants::get_signal_by_name(spec);
       if (!parsed) {
-        return std::unexpected("'" + spec + "': invalid signal");
+        // [GNU] an unknown dash spec (kill.c:377-378).
+        return std::unexpected("invalid signal name or number: " + spec);
       }
       signal = *parsed;
       signal_explicit = true;
@@ -772,28 +893,50 @@ auto process_command(const CommandContext<N>& ctx) -> cp::Result<bool> {
     pid_args.push_back(std::string(arg));
   }
 
-  auto pids_result = parse_pids(pid_args);
-  if (!pids_result) {
-    return std::unexpected(pids_result.error());
+  // [GNU] options but no operands is an error (kill.c:384).
+  if (pid_args.empty()) {
+    return std::unexpected("not enough arguments");
   }
 
-  auto pids = *pids_result;
-  bool all_success = true;
+  const bool print_pid = ctx.has("-p") || ctx.has("--pid");
+  const bool verbose = ctx.has("--verbose");
+  // [GNU] --pid and --signal are mutually exclusive (kill.c:314,326,381).
+  if (print_pid && signal_explicit) {
+    return std::unexpected("--pid and --signal are mutually exclusive");
+  }
+
+  auto resolved = resolve_targets(pid_args, ctx.has("-a") || ctx.has("--all"),
+                                  ctx.has("-x") || ctx.has("--exact"));
+  int attempted = resolved.attempted;
+  int failed = resolved.failed;
 
   // Terminate each process
-  for (DWORD pid : pids) {
-    auto result = terminate_process(pid, signal, false);
+  for (const auto& target : resolved.targets) {
+    ++attempted;
+    // [GNU] kill_verbose reports before signaling (kill.c:435-439).
+    if (verbose) {
+      safePrintLn("sending signal " + std::to_string(signal) + " to pid " +
+                  std::to_string(target.pid));
+    }
+    if (print_pid) {
+      safePrintLn(std::to_string(target.pid));
+      continue;
+    }
+    auto result = terminate_process(target.pid, signal);
     if (!result) {
-      safeErrorPrint("kill: (");
-      safeErrorPrint(std::to_string(pid));
-      safeErrorPrint(") - ");
-      safeErrorPrint(result.error());
-      safeErrorPrint("\n");
-      all_success = false;
+      // [GNU] warn shape: "sending signal to <arg> failed" (kill.c:453).
+      safeErrorPrintLn("kill: sending signal to " + target.operand +
+                       " failed: " + result.error());
+      ++failed;
     }
   }
 
-  return all_success;
+  // [GNU] exit status (kill.c:553-558): 0 when every operand succeeded,
+  // 1 when every operand failed, KILL_EXIT_SOMEOK (64) for a partial
+  // success.
+  if (failed == 0) return 0;
+  if (failed == attempted) return 1;
+  return 64;
 }
 
 }  // namespace kill_pipeline
@@ -820,7 +963,7 @@ REGISTER_COMMAND(
     "-KILL.\n"
     "\n"
     "Note: On Windows, most signals are mapped to process termination,\n"
-    "except SIGTERM which attempts graceful shutdown first.",
+    "except SIGTERM and SIGINT, which attempt graceful shutdown first.",
 
     /* examples */
     "  kill 1234                Kill process 1234 with SIGTERM\n"
@@ -851,5 +994,7 @@ REGISTER_COMMAND(
     return 1;
   }
 
-  return *result ? 0 : 1;
+  // [GNU] process_command already derives the oracle exit status
+  // (0 / 1 / KILL_EXIT_SOMEOK 64, kill.c:553-558).
+  return *result;
 }

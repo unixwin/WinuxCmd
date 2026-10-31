@@ -1,0 +1,8 @@
+cmd: tail
+args: --follow=namex f
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: issue-1462 audit-w2 tail follow argmatch
+# GNU argmatch failure: "tail: invalid argument 'namex' for
+# '--follow'" + Valid arguments list + try-help, exit 1, before
+# any file is opened.

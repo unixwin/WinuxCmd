@@ -1,0 +1,7 @@
+cmd: b2sum
+args: -l 0 f.txt
+timeout: 10
+setup: |
+  printf 'hello\n' > f.txt
+source: GNU coreutils 9.4 src/digest.c (a -l of 0 is unspecified and selects the 512-bit default)
+tags: audit-w3a #1462

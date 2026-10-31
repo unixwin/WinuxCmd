@@ -1,0 +1,7 @@
+cmd: tsort
+args: no-such-file-1462
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: issue-1462 audit-w2 tsort open-error
+# GNU: "tsort: no-such-file-1462: No such file or directory", exit 1
+# (error (EXIT_FAILURE, errno, "%s", quotef (file)) in tsort.c).

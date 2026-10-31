@@ -212,13 +212,14 @@ auto calculate_sha256(const std::string& filename, bool text_mode = false)
     BCryptCloseAlgorithmProvider(hAlg, 0);
   };
 
-  if (filename == "-" || filename.empty()) {
+  if (filename == "-") {
     // [GNU] closed stdin (<&-) reports "-: Bad file descriptor" rather
-    // than hashing an empty stream.
+    // than hashing an empty stream.  An empty operand is NOT stdin:
+    // GNU opens it and fails ("'': No such file or directory"), so it
+    // falls through to the file branch below.
     if (file_io::stdin_is_bad()) {
       destroy_hash();
-      return std::unexpected(std::string(filename.empty() ? "-" : filename) +
-                             ": Bad file descriptor");
+      return std::unexpected(filename + ": Bad file descriptor");
     }
     // Read from stdin.  [#1195] fd 0 uses the CRT's text mode by default,
     // where fread() silently stops at the first 0x1A (Ctrl-Z) byte; like

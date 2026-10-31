@@ -191,7 +191,9 @@ TEST(join, join_reports_is_a_directory_for_directory_input) {
 
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_TRUE(r.stdout_text.empty());
-  EXPECT_TRUE(r.stderr_text.find("join: dir1: Is a directory") !=
+  // [GNU] join.c:497: the read failure is reported without the
+  // file name: "join: read error: Is a directory".
+  EXPECT_TRUE(r.stderr_text.find("join: read error: Is a directory") !=
               std::string::npos);
 }
 

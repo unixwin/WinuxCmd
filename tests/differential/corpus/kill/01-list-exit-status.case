@@ -1,0 +1,5 @@
+cmd: kill
+oracle: linux
+args: -l 129
+source: tests/differential/corpus/kill/01-list-exit-status.case
+tags: gnu-compat kill list-conversion audit-w7

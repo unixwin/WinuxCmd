@@ -1,0 +1,5 @@
+cmd: cal
+oracle: linux
+args: -n x
+source: tests/differential/corpus/cal/09-invalid-months-arg.case
+tags: gnu-compat cal error-wording exit-status audit-w7

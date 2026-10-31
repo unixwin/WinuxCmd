@@ -1,0 +1,7 @@
+cmd: column
+oracle: linux
+args: -t -R 2
+stdin: |
+  a 1\nbb 22\n
+source: tests/differential/corpus/column/16-table-right.case
+tags: gnu-compat column right audit-w7

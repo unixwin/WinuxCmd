@@ -16,6 +16,7 @@ class ScopedProcess {
   ~ScopedProcess() { cleanup(); }
 
   [[nodiscard]] bool valid() const { return active_; }
+  [[nodiscard]] DWORD pid() const { return process_info_.dwProcessId; }
   [[nodiscard]] bool is_running() const {
     if (!active_) return false;
     return WaitForSingleObject(process_info_.hProcess, 0) == WAIT_TIMEOUT;
@@ -113,4 +114,87 @@ TEST(killall, killall_quiet_no_match_returns_one) {
 
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_TRUE(r.stderr_text.empty());
+}
+
+// -l lists the signal names and exits 0 without needing a name.
+TEST(killall, killall_list_signals) {
+  Pipeline p;
+  p.add(L"killall.exe", {L"-l"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("HUP") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("TERM") != std::string::npos);
+}
+
+// A name with no matching process reports "<name>: no process found"
+// (psmisc) and exits 1.
+TEST(killall, killall_no_process_found_message) {
+  Pipeline p;
+  p.add(L"killall.exe", {L"winuxcmd-no-such-process-xyz"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(
+      r.stderr_text.find("winuxcmd-no-such-process-xyz: no process found") !=
+      std::string::npos);
+}
+
+// -r treats the name as a regular expression.
+TEST(killall, killall_regexp_terminates_match) {
+  auto child = start_unique_child(L"winuxcmd_killall_regexp_unique");
+  EXPECT_TRUE(child.valid());
+  if (!child.valid()) return;
+
+  Pipeline p;
+  p.add(L"killall.exe", {L"-r", L"winuxcmd_killall_regexp_.*"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_FALSE(child.is_running());
+}
+
+// -v reports each signaled process.
+TEST(killall, killall_verbose_reports_pid) {
+  auto child = start_unique_child(L"winuxcmd_killall_verbose_unique");
+  EXPECT_TRUE(child.valid());
+  if (!child.valid()) return;
+
+  Pipeline p;
+  p.add(L"killall.exe", {L"-v", L"-e", L"winuxcmd_killall_verbose_unique"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find(std::to_string(child.pid())) !=
+              std::string::npos);
+  EXPECT_FALSE(child.is_running());
+}
+
+// -y/-o filter by process age: a just-started child is younger than
+// an hour but not older than an hour.
+TEST(killall, killall_age_filters) {
+  auto child = start_unique_child(L"winuxcmd_killall_age_unique");
+  EXPECT_TRUE(child.valid());
+  if (!child.valid()) return;
+
+  {
+    Pipeline p;
+    p.add(L"killall.exe",
+          {L"-0", L"-y", L"1h", L"-e", L"winuxcmd_killall_age_unique"});
+    auto r = p.run();
+    EXPECT_EQ(r.exit_code, 0);
+    EXPECT_TRUE(child.is_running());
+  }
+  {
+    Pipeline p;
+    p.add(L"killall.exe",
+          {L"-0", L"-o", L"1h", L"-e", L"winuxcmd_killall_age_unique"});
+    auto r = p.run();
+    EXPECT_EQ(r.exit_code, 1);
+    EXPECT_TRUE(child.is_running());
+  }
 }

@@ -1,0 +1,5 @@
+cmd: kill
+oracle: linux
+args: -l USR1
+source: tests/differential/corpus/kill/07-list-usr1-name.case
+tags: gnu-compat kill list-conversion audit-w7

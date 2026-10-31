@@ -1,0 +1,5 @@
+cmd: renice
+oracle: linux
+args: abc
+source: tests/differential/corpus/renice/02-invalid-priority.case
+tags: gnu-compat renice error-wording exit-status audit-w7

@@ -72,9 +72,16 @@ TEST(cal, cal_single_year_outputs_year_calendar) {
   TEST_LOG("cal output", r.stdout_text);
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.find("January 2026") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("December 2026") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("July 2026") != std::string::npos);
+  // [GNU] a bare year operand sets header_year (misc-utils/cal.c:572):
+  // the year is printed once as a standalone heading and each month
+  // header is the bare month name (cal_output_header, cal.c:777-790).
+  // The "%s %04d" ("January 2026") header form is the single-month
+  // case (cal.c:791-797) -- and the BSD ncal year layout, which is
+  // not this product's oracle.
+  EXPECT_TRUE(r.stdout_text.find("2026") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("January") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("December") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("July") != std::string::npos);
 }
 TEST(cal, cal_monday_first_month) {
   Pipeline p;

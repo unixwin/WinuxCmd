@@ -1,0 +1,9 @@
+cmd: tsort
+args:
+timeout: 10
+stdin: |
+  a b c
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: issue-1462 audit-w2 tsort odd-tokens
+# GNU: "tsort: -: input contains an odd number of tokens", exit 1 --
+# the input name prefixes the diagnostic.

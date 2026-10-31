@@ -1,0 +1,5 @@
+cmd: look
+oracle: linux
+args: app missing-dict.txt
+source: tests/differential/corpus/look/04-missing-file.case
+tags: gnu-compat look error-wording audit-w7

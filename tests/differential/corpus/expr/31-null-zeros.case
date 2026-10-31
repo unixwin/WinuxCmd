@@ -1,0 +1,4 @@
+cmd: expr
+args: 00
+source: GNU coreutils 9.4 src/expr.c null() (an all-zeros string is null: prints 00, exits 1)
+tags: audit-w3a #1462

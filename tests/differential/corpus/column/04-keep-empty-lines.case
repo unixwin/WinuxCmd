@@ -1,0 +1,7 @@
+cmd: column
+oracle: linux
+args: -L
+stdin: |
+  a\n\nb\n
+source: tests/differential/corpus/column/04-keep-empty-lines.case
+tags: gnu-compat column keep-empty audit-w7

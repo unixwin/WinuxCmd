@@ -1,0 +1,6 @@
+cmd: basenc
+args: --z85
+stdin: |
+  abcde
+source: GNU coreutils 9.4 src/basenc.c:615 (z85 encode length error wording)
+tags: audit-w3a #1462

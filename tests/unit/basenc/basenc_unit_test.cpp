@@ -135,16 +135,29 @@ TEST(basenc, basenc_decode_ignore_garbage_recovers_payload) {
   EXPECT_EQ_TEXT(r.stdout_text, "hello");
 }
 
-TEST(basenc, basenc_rejects_multiple_selectors) {
+TEST(basenc, basenc_last_selector_wins) {
+  // [GNU] basenc.c:1122-1131: every encoding option in the getopt loop
+  // simply assigns base_type (basenc.c:1130 "base_type = opt"), so when
+  // several selectors are given the LAST one wins; GNU has no
+  // multiple-encoding diagnostic. "hello" in base32 is NBSWY3DP, in
+  // base64 is aGVsbG8=.
   Pipeline p;
   p.set_stdin("hello");
   p.add(L"basenc.exe", {L"--base64", L"--base32"});
 
   auto r = p.run();
 
-  EXPECT_NE(r.exit_code, 0);
-  EXPECT_TRUE(r.stderr_text.find("multiple encoding options") !=
-              std::string::npos);
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "NBSWY3DP\n");
+
+  Pipeline p2;
+  p2.set_stdin("hello");
+  p2.add(L"basenc.exe", {L"--base32", L"--base64"});
+
+  auto r2 = p2.run();
+
+  EXPECT_EQ(r2.exit_code, 0);
+  EXPECT_EQ_TEXT(r2.stdout_text, "aGVsbG8=\n");
 }
 
 TEST(basenc, basenc_rejects_extra_file_operand_with_help_hint) {
@@ -274,8 +287,11 @@ TEST(basenc, basenc_z85_rejects_non_block_sized_input) {
 
   auto r = p.run();
 
+  // [GNU] basenc.c:613-615 (z85_encode): a trailing partial quad fails
+  // with "invalid input (length must be multiple of 4 characters)".
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_CONTAINS(r.stderr_text, "invalid input length for z85 encoding");
+  EXPECT_CONTAINS(r.stderr_text,
+                  "invalid input (length must be multiple of 4 characters)");
 }
 
 TEST(basenc, basenc_z85_decode_rejects_values_outside_32_bit_range) {

@@ -1,0 +1,7 @@
+cmd: column
+oracle: linux
+args: -t -N name,num
+stdin: |
+  a 1\nbb 22\n
+source: tests/differential/corpus/column/06-table-names.case
+tags: gnu-compat column table-names audit-w7

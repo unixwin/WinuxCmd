@@ -1,0 +1,7 @@
+cmd: column
+oracle: linux
+args: list.txt
+setup: |
+  printf 'one\ntwo\nthree\n' > list.txt
+source: tests/differential/corpus/column/17-file-operand.case
+tags: gnu-compat column file audit-w7

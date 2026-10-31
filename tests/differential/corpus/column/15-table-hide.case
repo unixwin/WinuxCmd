@@ -1,0 +1,7 @@
+cmd: column
+oracle: linux
+args: -t -N a,b,c -H b
+stdin: |
+  1 2 3\n
+source: tests/differential/corpus/column/15-table-hide.case
+tags: gnu-compat column hide audit-w7

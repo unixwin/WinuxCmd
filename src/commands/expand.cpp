@@ -71,6 +71,13 @@ auto parse_tab_stops(const std::string& spec) -> cp::Result<Config::TabStops> {
   };
 
   bool repeat_specified = false;
+  bool slash_repeat = false;
+  bool plus_repeat = false;
+  // [GNU] a repeat specifier that is not the last value is a parse
+  // error in expand-common.c, but parsing continues so the validate
+  // phase can still diagnose a '/' + '+' combination; mirror that by
+  // deferring this error until after the token loop (audit #1462).
+  std::optional<std::string> repeat_not_last_error;
   for (size_t i = 0; i < tokens.size(); ++i) {
     const std::string& token = tokens[i];
     const bool repeat = token[0] == '/' || token[0] == '+';
@@ -83,6 +90,14 @@ auto parse_tab_stops(const std::string& spec) -> cp::Result<Config::TabStops> {
       ++digits_end;
     }
     if (digits_end < value.size()) {
+      // [GNU] expand-common.c: a '/' or '+' after digits is
+      // "'/' specifier not at start of number: '<rest>'" (audit
+      // #1462), not a generic invalid-character report.
+      if (value[digits_end] == '/' || value[digits_end] == '+') {
+        return std::unexpected(std::string("'") + value[digits_end] +
+                               "' specifier not at start of number: '" +
+                               std::string(value.substr(digits_end)) + "'");
+      }
       return std::unexpected(invalid_chars_error(value.substr(digits_end)));
     }
 
@@ -98,8 +113,13 @@ auto parse_tab_stops(const std::string& spec) -> cp::Result<Config::TabStops> {
     }
 
     if (repeat) {
-      if (i + 1 != tokens.size()) {
-        return std::unexpected("repeat tab stop must be last");
+      if (i + 1 != tokens.size() && !repeat_not_last_error) {
+        // [GNU] expand-common.c set_extend_size/set_increment_size:
+        // "'/' specifier only allowed with the last value" (audit
+        // #1462).
+        repeat_not_last_error =
+            std::string("'") + token[0] +
+            "' specifier only allowed with the last value";
       }
       if (parsed == 0) {
         return std::unexpected("tab size cannot be 0");
@@ -108,11 +128,26 @@ auto parse_tab_stops(const std::string& spec) -> cp::Result<Config::TabStops> {
       tab_stops.repeat_mode = token[0] == '/'
                                   ? Config::TabStops::RepeatMode::every_multiple
                                   : Config::TabStops::RepeatMode::after_last;
+      if (token[0] == '/') {
+        slash_repeat = true;
+      } else {
+        plus_repeat = true;
+      }
       repeat_specified = true;
       continue;
     }
 
     tab_stops.stops.push_back(parsed);
+  }
+
+  // [GNU] expand-common.c validate_tab_stops: the two repeat
+  // specifiers are mutually exclusive wherever they appear (audit
+  // #1462).
+  if (slash_repeat && plus_repeat) {
+    return std::unexpected("'/' specifier is mutually exclusive with '+'");
+  }
+  if (repeat_not_last_error) {
+    return std::unexpected(*repeat_not_last_error);
   }
 
   // GNU validates nonzero and ascending order after parsing everything.
@@ -177,15 +212,41 @@ auto build_config(const CommandContext<EXPAND_OPTIONS.size()>& ctx)
   cfg.initial_only =
       ctx.get<bool>("--initial", false) || ctx.get<bool>("-i", false);
 
-  auto tabs_opt = ctx.get<std::string>("--tabs", "");
-  if (tabs_opt.empty()) {
-    tabs_opt = ctx.get<std::string>("-t", "");
-  }
-
-  // [GNU] obsolescent -NUM operands add to the tab-stop list.
-  for (const int stop : ctx.get_all<int>("-NUM")) {
-    if (!tabs_opt.empty()) tabs_opt += ' ';
-    tabs_opt += std::to_string(stop);
+  // [GNU] expand-common.c: every -t appends its stops to ONE shared
+  // list (parse_tab_stops appends), and the obsolescent -NUM form
+  // adds its stop at its own argv position -- so "-t 4 -t 8" is the
+  // list {4, 8} and "-8 -t 4" is the (fatal) list {8, 4}, not
+  // last-wins or -t-first (audit #1462). Collect the specs in argv
+  // order from the occurrence list and parse them as one list.
+  std::string tabs_opt;
+  if (ctx.metas) {
+    for (const auto& occurrence : ctx.options.occurrences()) {
+      if (occurrence.index >= ctx.metas->size()) continue;
+      const auto& meta = (*ctx.metas)[occurrence.index];
+      std::string piece;
+      if (meta.short_name == "-t" || meta.long_name == "--tabs") {
+        if (const auto* value = std::get_if<std::string>(&occurrence.value)) {
+          piece = *value;
+        }
+      } else if (meta.short_name == "-NUM") {
+        if (const auto* value = std::get_if<int>(&occurrence.value)) {
+          piece = std::to_string(*value);
+        }
+      }
+      if (!piece.empty()) {
+        if (!tabs_opt.empty()) tabs_opt += ' ';
+        tabs_opt += piece;
+      }
+    }
+  } else {
+    tabs_opt = ctx.get<std::string>("--tabs", "");
+    if (tabs_opt.empty()) {
+      tabs_opt = ctx.get<std::string>("-t", "");
+    }
+    for (const int stop : ctx.get_all<int>("-NUM")) {
+      if (!tabs_opt.empty()) tabs_opt += ' ';
+      tabs_opt += std::to_string(stop);
+    }
   }
 
   if (!tabs_opt.empty()) {
@@ -347,13 +408,8 @@ auto run(const Config& cfg) -> int {
         all_ok = false;
         continue;
       }
-      // Skip UTF-8 BOM if present at the beginning
-      if (content.size() >= 3 &&
-          static_cast<unsigned char>(content[0]) == 0xEF &&
-          static_cast<unsigned char>(content[1]) == 0xBB &&
-          static_cast<unsigned char>(content[2]) == 0xBF) {
-        content = content.substr(3);
-      }
+      // [GNU] no BOM handling in expand-common.c: the BOM bytes are
+      // ordinary input bytes (audit #1462).
     }
 
     // Process line by line to maintain line breaks
