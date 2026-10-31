@@ -67,19 +67,24 @@ struct ReparseDataBuffer {
 // [GNU] --printf: like --format with backslash escapes
 // [DIFFERS] --cached: GNU cache controls are unavailable on Windows
 auto constexpr STAT_OPTIONS = std::array{
-    OPTION("-L", "--dereference", "follow symbolic links", BOOL_TYPE),
+    OPTION("-L", "--dereference", "follow links", BOOL_TYPE),
     OPTION("-f", "--file-system",
            "display file system status instead of file status", BOOL_TYPE),
-    OPTION("-c", "--format", "use the specified FORMAT instead of the default",
+    OPTION("-c", "--format",
+           "use the specified FORMAT instead of the default; output a "
+           "newline after each use of FORMAT",
            STRING_TYPE),
     OPTION("-t", "--terse", "print the information in terse form", BOOL_TYPE),
-    OPTION("", "--printf", "like --format, but interpret backslash escapes",
+    OPTION("", "--printf",
+           "like --format, but interpret backslash escapes, and do not "
+           "output a mandatory trailing newline; if you want a newline, "
+           "include \\n in FORMAT",
            STRING_TYPE),
     // [GNU] --cached is a required-argument caching hint (never/always/
     // default). It is accepted as a no-op on Windows.
     OPTION("", "--cached",
-           "use cached attribute data WHEN (hint only; always fresh on "
-           "Windows)",
+           "specify how to use cached attributes; see MODE below (hint "
+           "only; attributes are always queried fresh on Windows)",
            STRING_TYPE)};
 
 namespace stat_pipeline {

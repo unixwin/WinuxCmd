@@ -75,3 +75,6 @@ regressions/37-numfmt-options.case	pre-existing: --to=iec-i prints 1.5K instead 
 # The cases now carry `oracle_version: >= 9.2` and are SKIPped below that, which
 # keeps KNOWN_DIFF meaning "executed, results differ".
 corpus/date/23-rel-overflow.case	format: same quoting-style-only difference as date/03 (invalid date); rc=1 and "invalid date" text identical
+corpus/sed/02-version-too-new.case	format: GNU prefixes script errors with "-e expression #1, char N:"; winuxcmd prints "sed: <message>" - message text and exit code (1) identical
+corpus/sed/03-q-two-addresses.case	format: same script-error prefix difference as corpus/sed/02 (GNU "-e expression #1, char N:" vs winuxcmd "sed: <message>"); exit code 1 identical
+corpus/sed/05-line-zero-numeric-range.case	format: same script-error prefix difference as corpus/sed/02 (GNU "-e expression #1, char N:" vs winuxcmd "sed: <message>"); exit code 1 identical

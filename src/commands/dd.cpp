@@ -17,11 +17,16 @@ auto constexpr DD_OPTIONS = std::array{
     // [DIFFERS]
     OPTION("of", "", "write to FILE instead of stdout", STRING_TYPE),
     // [DIFFERS]
-    OPTION("ibs", "", "read up to BYTES bytes at a time", STRING_TYPE),
+    OPTION("ibs", "", "read up to BYTES bytes at a time (default: 512)",
+           STRING_TYPE),
     // [DIFFERS]
-    OPTION("obs", "", "write BYTES bytes at a time", STRING_TYPE),
+    OPTION("obs", "", "write BYTES bytes at a time (default: 512)",
+           STRING_TYPE),
     // [DIFFERS]
-    OPTION("bs", "", "read and write up to BYTES bytes at a time", STRING_TYPE),
+    OPTION("bs", "",
+           "read and write up to BYTES bytes at a time (default: 512); "
+           "overrides ibs and obs",
+           STRING_TYPE),
     // [DIFFERS]
     OPTION("cbs", "", "convert BYTES bytes at a time", STRING_TYPE),
     // [DIFFERS]
@@ -35,14 +40,21 @@ auto constexpr DD_OPTIONS = std::array{
     // [GNU] oseek=N: alias for seek=N (coreutils >= 9.1, uutils#5903)
     OPTION("oseek", "", "same as seek=N", STRING_TYPE),
     // [DIFFERS]
-    OPTION("conv", "", "convert as per comma-separated symbol list",
+    OPTION("conv", "", "convert the file as per the comma separated symbol "
+           "list",
            STRING_TYPE),
     // [DIFFERS]
-    OPTION("status", "", "control diagnostic output", STRING_TYPE),
+    OPTION("status", "",
+           "The LEVEL of information to print to stderr; 'none' suppresses "
+           "everything but error messages, 'noxfer' suppresses the final "
+           "transfer statistics, 'progress' is accepted; final statistics "
+           "are printed as the copy finishes",
+           STRING_TYPE),
     // [GNU] iflag: read flags
-    OPTION("iflag", "", "read as per comma-separated symbol list", STRING_TYPE),
+    OPTION("iflag", "", "read as per the comma separated symbol list",
+           STRING_TYPE),
     // [GNU] oflag: write flags
-    OPTION("oflag", "", "write as per comma-separated symbol list",
+    OPTION("oflag", "", "write as per the comma separated symbol list",
            STRING_TYPE)};
 
 namespace dd_pipeline {

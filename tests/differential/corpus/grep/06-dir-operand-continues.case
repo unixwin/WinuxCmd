@@ -1,0 +1,9 @@
+cmd: grep
+oracle: linux
+args: needle sub hay.txt
+timeout: 10
+setup: |
+  mkdir -p sub
+  printf 'hay\nneedle here\n' > hay.txt
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w5 grep dir-operand

@@ -265,6 +265,13 @@ REGISTER_COMMAND(cat, "cat",
                             const CommandContext<CAT_OPTIONS.size()> &ctx,
                             CatState &state) {
     if (fast_passthrough) {
+      // [perf #1127-P4] 64 KiB passthrough block (roadmap item 3, the
+      // uutils cat.rs shape): the disk arm below reads and forwards in
+      // 64 KiB chunks instead of 8 KiB, cutting per-chunk safePrint and
+      // streambuf overhead 8x. The byte stream is unchanged — chunk
+      // boundaries are invisible on pipe/file stdout. The live-stdin arm
+      // keeps its 8 KiB short-read shape on purpose: its chunking is the
+      // latency contract for dribbling producers (niubash D4 above).
       std::array<char, 8192> buffer{};
       // niubash D4: istream::read loops until the buffer is FULL (or EOF),
       // so `producer | cat` withholds a dribbling producer's output inside
@@ -296,11 +303,14 @@ REGISTER_COMMAND(cat, "cat",
         }
         return;
       }
+      std::array<char, 64 * 1024> file_buffer{};
       while (stream.good()) {
-        stream.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+        stream.read(file_buffer.data(),
+                    static_cast<std::streamsize>(file_buffer.size()));
         auto got = stream.gcount();
         if (got <= 0) break;
-        safePrint(std::string_view(buffer.data(), static_cast<size_t>(got)));
+        safePrint(
+            std::string_view(file_buffer.data(), static_cast<size_t>(got)));
         if (stdout_write_gone()) break;
       }
       return;
@@ -384,15 +394,61 @@ REGISTER_COMMAND(cat, "cat",
       return;
     }
 
-    char raw = 0;
-    while (stream.get(raw)) {
-      const bool line_done =
-          feed_char(static_cast<unsigned char>(raw));
-      // Line-flush so `cat -n` as a pipe tail streams with the producer;
-      // append_output still coalesces mid-line transforms into 64KiB.
-      if (line_done) flush_output_buffer(out);
-      if (out.empty() && stdout_write_gone()) {
-        break;
+    // [perf #1127-P4] ASCII-run fast path (roadmap item 4): the old loop
+    // fed the state machine one istream::get per byte. This arm now reads
+    // 64 KiB chunks and bulk-appends mid-line spans of bytes that
+    // print_visible_byte copies verbatim; every other byte goes through
+    // feed_char unchanged, so line-start bookkeeping, -s squeezing and
+    // the line-flush points are exactly the old ones. The verbatim set
+    // is read straight off print_visible_byte: LF is never verbatim (it
+    // ends lines); with -v only printable ASCII 0x20..0x7E is verbatim
+    // (TAB, ^X and M-x forms stay per-byte); without -v everything but
+    // LF — and TAB under -T — is verbatim.
+    auto byte_is_verbatim = [&](unsigned char c) -> bool {
+      if (c == 0x0A) return false;
+      if (flags.show_nonprinting) return c >= 0x20 && c <= 0x7E;
+      if (c == 0x09) return !flags.show_tabs;
+      return true;
+    };
+
+    std::array<char, 64 * 1024> chunk{};
+    bool stop = false;
+    while (!stop && stream) {
+      stream.read(chunk.data(), static_cast<std::streamsize>(chunk.size()));
+      const auto got = stream.gcount();
+      if (got <= 0) break;
+      const auto *bytes =
+          reinterpret_cast<const unsigned char *>(chunk.data());
+      size_t i = 0;
+      while (i < static_cast<size_t>(got)) {
+        const unsigned char c = bytes[i];
+        if (!state.at_line_start && byte_is_verbatim(c)) {
+          size_t j = i + 1;
+          while (j < static_cast<size_t>(got) &&
+                 byte_is_verbatim(bytes[j])) {
+            ++j;
+          }
+          append_output(out, std::string_view(chunk.data() + i, j - i));
+          i = j;
+          // Same early-out the per-byte loop had: append_output flushes
+          // at its coalesce threshold, and an empty buffer right after
+          // such a flush plus a gone stdout means stop draining input.
+          if (out.empty() && stdout_write_gone()) {
+            stop = true;
+            break;
+          }
+          continue;
+        }
+        const bool line_done = feed_char(c);
+        ++i;
+        // Line-flush so `cat -n` as a pipe tail streams with the
+        // producer; append_output still coalesces mid-line transforms
+        // into 64KiB.
+        if (line_done) flush_output_buffer(out);
+        if (out.empty() && stdout_write_gone()) {
+          stop = true;
+          break;
+        }
       }
     }
 
