@@ -135,7 +135,12 @@ struct ProbeResult {
 
 auto probe_existence(const std::string& path) -> ProbeResult {
   std::error_code ec;
-  auto status = std::filesystem::symlink_status(api_operand_w(path), ec);
+  // Route the probe through the shared API-path boundary (the expression
+  // cp.cpp's file-local api_operand_w wraps; #1140/#1145) so an MSYS-form
+  // operand (/d/x) stats the same file GNU's lstat sees on the as-typed
+  // name (pathchk.c:289), instead of a current-drive root-relative path.
+  auto status = std::filesystem::symlink_status(
+      native_path::make_api_path_operand(path).extended, ec);
   if (!ec) {
     (void)status;
     return {ProbeOutcome::kExists, {}};
