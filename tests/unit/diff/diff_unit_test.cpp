@@ -559,3 +559,40 @@ TEST(diff, diff_ignore_matching_lines_invalid_regex_issue1449) {
   EXPECT_EQ(r.exit_code, 2);
   EXPECT_EQ_TEXT(r.stderr_text, "diff: invalid regular expression '['\n");
 }
+
+// [GNU] diff -y with -I renders positionally over sections built
+// from the raw script (side.c): an ignored line joins the common
+// span and stays visible there.  The dropped 1:1 script used to
+// render this path lost the ignored line from the output entirely.
+TEST(diff, diff_side_by_side_ignore_matching_keeps_ignored_line) {
+  TempDir tmp;
+  tmp.write("file1.txt", "one\nskip-me\ntwo\nthree\n");
+  tmp.write("file2.txt", "one\ntwo\nTHREE\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"diff.exe", {L"-y", L"-I", L"^skip", L"file1.txt", L"file2.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);  // the three/THREE hunk survives
+  EXPECT_TRUE(r.stdout_text.find("skip-me") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("THREE") != std::string::npos);
+}
+
+// Same shape with no surviving hunk: exit 0, and the ignored line is
+// still rendered as part of the common span.
+TEST(diff, diff_side_by_side_ignore_matching_all_ignored) {
+  TempDir tmp;
+  tmp.write("file1.txt", "one\nskip-me\ntwo\n");
+  tmp.write("file2.txt", "one\ntwo\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"diff.exe", {L"-y", L"-I", L"^skip", L"file1.txt", L"file2.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("skip-me") != std::string::npos);
+}
