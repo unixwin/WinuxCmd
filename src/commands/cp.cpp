@@ -411,20 +411,128 @@ auto archive_enabled(const CommandContext<CP_OPTIONS.size()>& ctx) -> bool {
   return ctx.get<bool>("--archive", false) || ctx.get<bool>("-a", false);
 }
 
-auto preserve_metadata_enabled(const CommandContext<CP_OPTIONS.size()>& ctx)
-    -> bool {
-  // --no-preserve without argument disables all preservation
-  if (ctx.has("--no-preserve") &&
-      ctx.get<std::string>("--no-preserve", "").empty()) {
-    return false;
+// [GNU] The --preserve/--no-preserve attribute set (coreutils-9.4
+// cp.c:872-935 decode_preserve_arg): each option takes a comma list of
+// mode, timestamps, ownership, links, context, xattr, all; a bare
+// --preserve means 'all'.  -p contributes mode+ownership+timestamps and
+// -a/--archive contributes all.  Attribute names match exactly or by
+// unique prefix (argmatch); every name has a distinct first letter, so
+// prefixes are never ambiguous here.  Of the six attributes only mode
+// (the Windows file attributes) and timestamps have a Windows effect;
+// ownership, links, context and xattr are accepted and tracked so the
+// list arithmetic and validation match GNU.
+struct PreserveAttrs {
+  bool mode = false;
+  bool timestamps = false;
+  bool ownership = false;
+  bool links = false;
+  bool context = false;
+  bool xattr = false;
+
+  auto any() const -> bool {
+    return mode || timestamps || ownership || links || context || xattr;
   }
-  if (archive_enabled(ctx) || ctx.get<bool>("-p", false)) return true;
-  if (ctx.has("--preserve")) return true;
-  return false;
+  auto set_all(bool on) -> void {
+    mode = timestamps = ownership = links = context = xattr = on;
+  }
+};
+
+auto apply_preserve_list(std::string_view list, bool on, const char* option,
+                         PreserveAttrs& attrs) -> cp::Result<void> {
+  static constexpr std::array<std::string_view, 7> kNames = {
+      "mode", "timestamps", "ownership", "links", "context", "xattr", "all"};
+  size_t begin = 0;
+  while (true) {
+    const size_t comma = list.find(',', begin);
+    const std::string_view token =
+        list.substr(begin, comma == std::string_view::npos
+                               ? std::string_view::npos
+                               : comma - begin);
+    std::string_view matched;
+    for (const std::string_view name : kNames) {
+      if (name == token || (!token.empty() && name.starts_with(token))) {
+        matched = name;
+        break;
+      }
+    }
+    if (matched.empty()) {
+      return std::unexpected("invalid argument '" + std::string(token) +
+                             "' for '" + option +
+                             "'\n"
+                             "Valid arguments are:\n"
+                             "  'mode'\n"
+                             "  'timestamps'\n"
+                             "  'ownership'\n"
+                             "  'links'\n"
+                             "  'context'\n"
+                             "  'xattr'\n"
+                             "  'all'");
+    }
+    if (matched == "all") {
+      attrs.set_all(on);
+    } else if (matched == "mode") {
+      attrs.mode = on;
+    } else if (matched == "timestamps") {
+      attrs.timestamps = on;
+    } else if (matched == "ownership") {
+      attrs.ownership = on;
+    } else if (matched == "links") {
+      attrs.links = on;
+    } else if (matched == "context") {
+      attrs.context = on;
+    } else {
+      attrs.xattr = on;
+    }
+    if (comma == std::string_view::npos) break;
+    begin = comma + 1;
+  }
+  return {};
 }
 
-auto preserve_metadata(const std::string& srcPath, const std::string& destPath)
-    -> cp::Result<bool> {
+auto parse_preserve_attrs(const CommandContext<CP_OPTIONS.size()>& ctx)
+    -> cp::Result<PreserveAttrs> {
+  PreserveAttrs attrs;
+  if (archive_enabled(ctx)) attrs.set_all(true);
+  if (ctx.get<bool>("-p", false)) {
+    attrs.mode = true;
+    attrs.ownership = true;
+    attrs.timestamps = true;
+  }
+  // GNU applies the options in argv order; the context records presence
+  // and value only, so --preserve is applied before --no-preserve here.
+  if (ctx.has("--preserve")) {
+    const std::string value = ctx.get<std::string>("--preserve", "");
+    if (value.empty()) {
+      attrs.set_all(true);
+    } else if (auto r = apply_preserve_list(value, true, "--preserve", attrs);
+               !r) {
+      return std::unexpected(r.error());
+    }
+  }
+  if (ctx.has("--no-preserve")) {
+    const std::string value = ctx.get<std::string>("--no-preserve", "");
+    if (value.empty()) {
+      attrs.set_all(false);
+    } else if (auto r =
+                   apply_preserve_list(value, false, "--no-preserve", attrs);
+               !r) {
+      return std::unexpected(r.error());
+    }
+  }
+  return attrs;
+}
+
+// Parse variant for copy paths: run_cp_pipeline has already validated
+// the lists, so an error here is unreachable and degrades to no
+// preservation rather than failing a copy midway.
+auto preserve_attrs(const CommandContext<CP_OPTIONS.size()>& ctx)
+    -> PreserveAttrs {
+  auto parsed = parse_preserve_attrs(ctx);
+  return parsed ? *parsed : PreserveAttrs{};
+}
+
+auto preserve_metadata(const std::string& srcPath, const std::string& destPath,
+                       PreserveAttrs attrs) -> cp::Result<bool> {
   auto src_operand = native_path::make_api_path_operand(srcPath);
   auto dest_operand = native_path::make_api_path_operand(destPath);
 
@@ -434,33 +542,38 @@ auto preserve_metadata(const std::string& srcPath, const std::string& destPath)
     return std::unexpected("cannot read source metadata");
   }
 
-  const DWORD flags = (src_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
-                          ? FILE_FLAG_BACKUP_SEMANTICS
-                          : 0;
-  HANDLE handle =
-      CreateFileW(dest_operand.extended.c_str(), FILE_WRITE_ATTRIBUTES,
-                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                  nullptr, OPEN_EXISTING, flags, nullptr);
-  if (handle == INVALID_HANDLE_VALUE &&
-      GetLastError() == ERROR_FILE_NOT_FOUND &&
-      !(src_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
-    handle = CreateFileW(dest_operand.extended.c_str(), FILE_WRITE_ATTRIBUTES,
-                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                         nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
-  }
-  if (handle == INVALID_HANDLE_VALUE) {
-    return std::unexpected("cannot write destination metadata");
+  if (attrs.timestamps) {
+    const DWORD flags = (src_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+                            ? FILE_FLAG_BACKUP_SEMANTICS
+                            : 0;
+    HANDLE handle =
+        CreateFileW(dest_operand.extended.c_str(), FILE_WRITE_ATTRIBUTES,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    nullptr, OPEN_EXISTING, flags, nullptr);
+    if (handle == INVALID_HANDLE_VALUE &&
+        GetLastError() == ERROR_FILE_NOT_FOUND &&
+        !(src_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+      handle = CreateFileW(dest_operand.extended.c_str(),
+                           FILE_WRITE_ATTRIBUTES,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE |
+                               FILE_SHARE_DELETE,
+                           nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+    }
+    if (handle == INVALID_HANDLE_VALUE) {
+      return std::unexpected("cannot write destination metadata");
+    }
+
+    BOOL time_ok = SetFileTime(handle, &src_data.ftCreationTime,
+                               &src_data.ftLastAccessTime,
+                               &src_data.ftLastWriteTime);
+    CloseHandle(handle);
+    if (!time_ok) {
+      return std::unexpected("cannot preserve timestamps");
+    }
   }
 
-  BOOL time_ok =
-      SetFileTime(handle, &src_data.ftCreationTime, &src_data.ftLastAccessTime,
-                  &src_data.ftLastWriteTime);
-  CloseHandle(handle);
-  if (!time_ok) {
-    return std::unexpected("cannot preserve timestamps");
-  }
-
-  if (!SetFileAttributesW(dest_operand.extended.c_str(),
+  if (attrs.mode &&
+      !SetFileAttributesW(dest_operand.extended.c_str(),
                           src_data.dwFileAttributes)) {
     return std::unexpected("cannot preserve attributes");
   }
@@ -916,8 +1029,9 @@ auto create_symlink_copy(const std::string& srcPath,
 auto finish_copy(const std::string& srcPath, const std::string& destPath,
                  const CommandContext<CP_OPTIONS.size()>& ctx, bool verbose)
     -> cp::Result<bool> {
-  if (preserve_metadata_enabled(ctx)) {
-    auto preserveResult = preserve_metadata(srcPath, destPath);
+  const PreserveAttrs attrs = preserve_attrs(ctx);
+  if (attrs.any()) {
+    auto preserveResult = preserve_metadata(srcPath, destPath, attrs);
     if (!preserveResult) return preserveResult;
   }
   if (verbose) {
@@ -1437,9 +1551,18 @@ auto copy_file(const std::string& srcPath, const std::string& destPath,
   }
 
   if (attrs_only) {
-    // --attributes-only: copy only metadata, not file data
+    // --attributes-only: copy only metadata, not file data.  With no
+    // preserve-family option the copied set is mode + timestamps (the
+    // historical behavior here); an explicit --preserve/--no-preserve
+    // list (or -p/-a) selects the set instead.
+    PreserveAttrs attrs = preserve_attrs(ctx);
+    if (!ctx.has("--preserve") && !ctx.has("--no-preserve") &&
+        !ctx.get<bool>("-p", false) && !archive_enabled(ctx)) {
+      attrs.mode = true;
+      attrs.timestamps = true;
+    }
     {
-      auto preserveResult = preserve_metadata(srcPath, destPath);
+      auto preserveResult = preserve_metadata(srcPath, destPath, attrs);
       if (!preserveResult) return preserveResult;
     }
     if (verbose) {
@@ -1751,9 +1874,12 @@ auto copy_directory_helper(const std::string& srcPath,
 
   FindClose(hFind);
 
-  if (success && preserve_metadata_enabled(ctx)) {
-    auto preserveResult = preserve_metadata(srcPath, destPath);
-    if (!preserveResult) return preserveResult;
+  if (success) {
+    const PreserveAttrs attrs = preserve_attrs(ctx);
+    if (attrs.any()) {
+      auto preserveResult = preserve_metadata(srcPath, destPath, attrs);
+      if (!preserveResult) return preserveResult;
+    }
   }
 
   return success;
@@ -1961,6 +2087,11 @@ auto process_command(const CommandContext<N>& ctx) -> cp::Result<bool> {
   auto update_mode = parse_update_mode(ctx);
   if (!update_mode) {
     return std::unexpected(update_mode.error());
+  }
+  // [GNU] validate the --preserve/--no-preserve attribute lists once,
+  // before any copying starts (cp.c decode_preserve_arg).
+  if (auto attrs = parse_preserve_attrs(ctx); !attrs) {
+    return std::unexpected(attrs.error());
   }
   return validate_arguments(ctx)
       .and_then([&](std::pair<std::vector<std::string>, std::string> paths) {
