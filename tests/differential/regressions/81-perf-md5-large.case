@@ -1,0 +1,7 @@
+cmd: md5sum
+args: big.bin
+timeout: 10
+setup: |
+  head -c 300000 /dev/zero | tr '\0' 'a' > big.bin
+source: github.com/unixwin/WinuxCmd/issues/1127
+tags: issue-1127 regression perf
