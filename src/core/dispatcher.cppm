@@ -140,6 +140,11 @@ auto rewrite_head_obsolete_args(std::span<std::string_view> args)
       case 'v':
         flags.emplace_back("-v");
         break;
+      case 'z':
+        // [GNU] '-2z' is the obsolete spelling of '-n 2 -z'
+        // (head.c parse_obsolete_option accepts z; #1462).
+        flags.emplace_back("-z");
+        break;
       default:
         return std::nullopt;
     }
@@ -254,6 +259,7 @@ auto is_head_obsolete_count_arg(std::string_view arg) -> bool {
       case 'm':
       case 'q':
       case 'v':
+      case 'z':
         break;
       default:
         return false;
