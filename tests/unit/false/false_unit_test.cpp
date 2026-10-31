@@ -15,13 +15,17 @@ TEST(false_cmd, false_basic) {
   EXPECT_EQ(r.exit_code, 1);
 }
 
-TEST(false_cmd, false_version_succeeds) {
+// [GNU] true.c (which false.c instantiates with EXIT_STATUS =
+// EXIT_FAILURE): a sole --version prints the version via version_etc
+// and main still returns EXIT_STATUS, so `false --version` prints
+// and fails with 1.  Only `true --version` succeeds.
+TEST(false_cmd, false_version_prints_but_still_fails) {
   Pipeline p;
   p.add(L"false.exe", {L"--version"});
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(r.exit_code, 1);
   EXPECT_NE(r.stdout_text.find("false (WinuxCmd)"), std::string::npos);
   EXPECT_TRUE(r.stderr_text.empty());
 }
