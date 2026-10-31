@@ -1323,6 +1323,14 @@
     "corpus/xargs/01-exit-255-abort-sticky.case": {
       "bucket": "PASS",
       "command": "xargs"
+    },
+    "corpus/find/08-global-option-warning.case": {
+      "bucket": "PASS",
+      "command": "find"
+    },
+    "corpus/find/09-global-option-nowarn.case": {
+      "bucket": "PASS",
+      "command": "find"
     }
   }
 }

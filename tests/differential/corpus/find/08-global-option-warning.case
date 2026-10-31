@@ -1,0 +1,7 @@
+cmd: find
+args: . -name 'one.txt' -maxdepth 1
+timeout: 10
+setup: |
+  mkdir -p sub; printf x > one.txt; printf y > sub/one.txt
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w5 find global-option warning positional
