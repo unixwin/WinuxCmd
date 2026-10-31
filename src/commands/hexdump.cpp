@@ -205,6 +205,13 @@ auto parse_format_body(std::string_view body)
         item.kind = ConvKind::Escaped;
         item.conv = 'u';
         i += 2;
+      } else if (special == 'c') {
+        // [GNU] %_c is the escaped-character conversion used by the
+        // oracle's own -c format string (hexdump.c, the -c fs); it
+        // renders through the same escape table as %_u.
+        item.kind = ConvKind::Escaped;
+        item.conv = 'c';
+        i += 2;
       } else {
         return std::unexpected("bad %_ conversion");
       }
@@ -333,31 +340,23 @@ auto parse_format_string(std::string_view text, FormatProgram& program)
   return {};
 }
 
-// Load a -f format file: each line is a format string; '#' outside quotes
-// starts a comment.
+// Load a -f format file: each line is a format string.
 auto load_format_file(const std::string& path, FormatProgram& program)
     -> std::expected<void, std::string> {
   std::ifstream file(native_path::normalize_api_operand(path));
   if (!file) {
-    return std::unexpected("can't open format file '" + path + "'");
+    // [GNU] err shape from addfile (hexdump-parse.c:85).
+    return std::unexpected("can't read " + path +
+                           ": No such file or directory");
   }
   std::string line;
   while (std::getline(file, line)) {
-    // Strip comments outside quotes.
-    std::string stripped;
-    bool in_quotes = false;
-    for (size_t i = 0; i < line.size(); ++i) {
-      char c = line[i];
-      if (c == '\\' && in_quotes && i + 1 < line.size()) {
-        stripped.push_back(c);
-        stripped.push_back(line[++i]);
-        continue;
-      }
-      if (c == '"') in_quotes = !in_quotes;
-      if (c == '#' && !in_quotes) break;
-      stripped.push_back(c);
-    }
-    auto parsed = parse_format_string(stripped, program);
+    // [GNU] addfile (hexdump-parse.c:88-96) skips blank lines and lines
+    // whose first non-space character is '#'; every other line is
+    // parsed verbatim — there are no trailing comments.
+    const size_t first = line.find_first_not_of(" \t\r\f\v");
+    if (first == std::string::npos || line[first] == '#') continue;
+    auto parsed = parse_format_string(line, program);
     if (!parsed) return std::unexpected(parsed.error());
   }
   return {};
@@ -372,6 +371,103 @@ struct Config {
   FormatProgram program;
   SmallVector<std::string, 64> files;
 };
+
+// [GNU] -n/-s values go through strtosize (hexdump.c parse_args calls
+// strtosize_or_err): a strtoumax base-0 integer (0x hex, leading-0
+// octal), an optional fraction, and an optional size suffix — K/M/G/
+// T/P/E scale by powers of 1024, the XB forms by powers of 1000 and
+// the XiB forms by powers of 1024 (lib/strutils.c parse_size).
+auto parse_size_value(std::string_view text) -> std::optional<size_t> {
+  if (text.empty()) return std::nullopt;
+  size_t pos = 0;
+  if (text[pos] == '+') ++pos;
+
+  int base = 10;
+  if (text.size() - pos > 2 && text[pos] == '0' &&
+      (text[pos + 1] == 'x' || text[pos + 1] == 'X')) {
+    base = 16;
+    pos += 2;
+  } else if (text.size() - pos > 1 && text[pos] == '0') {
+    base = 8;
+  }
+
+  unsigned long long value = 0;
+  const size_t digits_begin = pos;
+  for (; pos < text.size(); ++pos) {
+    const char c = text[pos];
+    int digit = -1;
+    if (c >= '0' && c <= '9') digit = c - '0';
+    if (base == 16 && c >= 'a' && c <= 'f') digit = c - 'a' + 10;
+    if (base == 16 && c >= 'A' && c <= 'F') digit = c - 'A' + 10;
+    if (digit < 0 || digit >= base) break;
+    if (value >
+        (std::numeric_limits<unsigned long long>::max() -
+         static_cast<unsigned long long>(digit)) /
+            static_cast<unsigned long long>(base)) {
+      return std::nullopt;  // strtoumax range error
+    }
+    value = value * static_cast<unsigned long long>(base) +
+            static_cast<unsigned long long>(digit);
+  }
+  if (pos == digits_begin) return std::nullopt;
+
+  unsigned long long frac_num = 0;
+  unsigned long long frac_denom = 1;
+  bool has_frac = false;
+  if (pos < text.size() && text[pos] == '.') {
+    size_t fpos = pos + 1;
+    unsigned long long f = 0;
+    unsigned long long denom = 1;
+    bool any = false;
+    while (fpos < text.size() && text[fpos] >= '0' && text[fpos] <= '9') {
+      f = f * 10 + static_cast<unsigned long long>(text[fpos] - '0');
+      denom *= 10;
+      ++fpos;
+      any = true;
+    }
+    if (!any) return std::nullopt;
+    has_frac = true;
+    frac_num = f;
+    frac_denom = denom;
+    pos = fpos;
+    // parse_size: a fraction without a suffix is an error.
+    if (pos >= text.size()) return std::nullopt;
+  }
+  if (pos >= text.size()) return static_cast<size_t>(value);
+
+  const std::string_view suffix = text.substr(pos);
+  static constexpr std::string_view kLetters = "KMGTPE";
+  const size_t letter = kLetters.find(static_cast<char>(
+      std::toupper(static_cast<unsigned char>(suffix.front()))));
+  if (letter == std::string_view::npos) return std::nullopt;
+  const int power = static_cast<int>(letter) + 1;
+  unsigned long long scale_base = 1024;
+  if (suffix.size() == 3 && suffix[1] == 'i' &&
+      (suffix[2] == 'B' || suffix[2] == 'b')) {
+    scale_base = 1024;  // XiB
+  } else if (suffix.size() == 2 && (suffix[1] == 'B' || suffix[1] == 'b')) {
+    scale_base = 1000;  // XB
+  } else if (suffix.size() != 1) {
+    return std::nullopt;
+  }
+
+  unsigned long long scale = 1;
+  for (int i = 0; i < power; ++i) {
+    if (scale > std::numeric_limits<unsigned long long>::max() / scale_base) {
+      return std::nullopt;
+    }
+    scale *= scale_base;
+  }
+  if (value > std::numeric_limits<unsigned long long>::max() / scale) {
+    return std::nullopt;
+  }
+  unsigned long long result = value * scale;
+  if (has_frac) {
+    result += (scale / frac_denom) * frac_num +
+              ((scale % frac_denom) * frac_num) / frac_denom;
+  }
+  return static_cast<size_t>(result);
+}
 
 auto build_config(const CommandContext<HEXDUMP_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
@@ -422,20 +518,21 @@ auto build_config(const CommandContext<HEXDUMP_OPTIONS.size()>& ctx)
 
   auto length_opt = ctx.get<std::string>("-n", "");
   if (!length_opt.empty()) {
-    auto [ptr, ec] = std::from_chars(
-        length_opt.data(), length_opt.data() + length_opt.size(), cfg.length);
-    if (ec != std::errc() || ptr != length_opt.data() + length_opt.size()) {
-      return std::unexpected("invalid length");
+    auto parsed = parse_size_value(length_opt);
+    if (!parsed) {
+      // [GNU] strtosize_or_err shape (strutils.c:480-491).
+      return std::unexpected("failed to parse length: '" + length_opt + "'");
     }
+    cfg.length = *parsed;
   }
 
   auto skip_opt = ctx.get<std::string>("-s", "");
   if (!skip_opt.empty()) {
-    auto [ptr, ec] = std::from_chars(
-        skip_opt.data(), skip_opt.data() + skip_opt.size(), cfg.skip);
-    if (ec != std::errc() || ptr != skip_opt.data() + skip_opt.size()) {
-      return std::unexpected("invalid skip");
+    auto parsed = parse_size_value(skip_opt);
+    if (!parsed) {
+      return std::unexpected("failed to parse offset: '" + skip_opt + "'");
     }
+    cfg.skip = *parsed;
   }
 
   // [native-glob] #1374: file operands expand through the shared helper
@@ -514,24 +611,32 @@ auto line_units2(const std::vector<uint8_t>& data, size_t base_offset,
     -> std::string {
   std::string line = std::format("{:07x} ", base_offset + i);
   const size_t chunk = std::min<size_t>(16, data.size() - i);
-  bool first = true;
-  for (size_t j = 0; j < chunk; j += 2) {
-    uint16_t val = static_cast<uint16_t>(data[i + j]);
-    if (j + 1 < chunk) {
-      val = static_cast<uint16_t>(val |
-                                  (static_cast<uint16_t>(data[i + j + 1])
-                                   << 8));
+  // [GNU] a partial block is blank-padded to the full row width: bytes
+  // past the end of the block print as bpad blanks of the conversion's
+  // field width (hexdump-display.c:215-233), and the trailing space of
+  // the row's last unit is suppressed (the nospace rule,
+  // hexdump-parse.c:474), so every row of a mode has the same width.
+  const std::string blank_unit(
+      padded_words ? format_unit(0, true).size() : size_t{4}, ' ');
+  for (size_t j = 0; j < 16; j += 2) {
+    const bool present = j < chunk;
+    uint16_t val = 0;
+    if (present) {
+      val = static_cast<uint16_t>(data[i + j]);
+      if (j + 1 < chunk) {
+        val = static_cast<uint16_t>(val |
+                                    (static_cast<uint16_t>(data[i + j + 1])
+                                     << 8));
+      }
     }
     if (padded_words) {
-      line += format_unit(val, true);
+      line += present ? format_unit(val, true) : blank_unit;
     } else {
-      if (!first) line += " ";
-      line += format_unit(val, false);
+      if (j > 0) line += " ";
+      line += present ? format_unit(val, false) : blank_unit;
     }
-    first = false;
   }
-  // NOTE: the padded forms intentionally keep the trailing space after
-  // the last unit — that shape is pinned by the repo's -x/-d/-o tests.
+  if (padded_words && !line.empty() && line.back() == ' ') line.pop_back();
   return line;
 }
 
@@ -614,7 +719,9 @@ auto print_builtin(const std::vector<uint8_t>& data, size_t base_offset,
       dump_lines(data, base_offset, cfg.no_squeeze, [&](size_t i) {
         return line_units2(data, base_offset, i, true,
                            [](uint16_t v, bool) {
-                             return std::format("  {:06o} ", v);
+                             // [GNU] the -o unit is " %06o " (8 wide,
+                             // hexdump.c the -o fs), not 9.
+                             return std::format(" {:06o} ", v);
                            });
       });
       break;
@@ -718,6 +825,31 @@ auto escaped_char(uint8_t byte) -> std::string {
   return std::format("{:03o}", byte);
 }
 
+// [GNU] printf-style field padding for the character/string/escaped
+// conversions: the width parsed from the conversion spec (e.g. the 3 in
+// "%3_c") pads with spaces, right-aligned unless '-' was given.  The
+// integer conversions build their own printf spec instead.
+auto pad_field(std::string text, const FmtItem& item) -> std::string {
+  const std::string& spec = item.flags;
+  size_t i = 0;
+  bool left = false;
+  while (i < spec.size() &&
+         std::string_view("-+ #0'").find(spec[i]) != std::string_view::npos) {
+    if (spec[i] == '-') left = true;
+    ++i;
+  }
+  int width = 0;
+  while (i < spec.size() &&
+         std::isdigit(static_cast<unsigned char>(spec[i])) != 0) {
+    width = width * 10 + (spec[i] - '0');
+    ++i;
+  }
+  if (width <= static_cast<int>(text.size())) return text;
+  const std::string padding(
+      static_cast<size_t>(width) - text.size(), ' ');
+  return left ? text + padding : padding + text;
+}
+
 // Apply one format unit once at `cursor`; appends rendered text to `out`
 // and advances the cursor past the consumed bytes. Returns false when a
 // consuming application cannot start (input exhausted).
@@ -769,21 +901,25 @@ auto apply_unit(const FormatUnit& unit, const std::vector<uint8_t>& data,
         break;
       }
       case ConvKind::Char: {
+        // [GNU] %c writes the byte itself (printf %c semantics);
+        // non-printing bytes pass through raw instead of becoming '.'.
+        std::string segment;
         for (size_t k = 0; k < avail; ++k) {
-          uint8_t byte = data[local + k];
-          rendered += (byte >= 32 && byte <= 126)
-                          ? std::string(1, static_cast<char>(byte))
-                          : ".";
+          segment.push_back(static_cast<char>(data[local + k]));
         }
+        rendered += pad_field(std::move(segment), item);
         break;
       }
       case ConvKind::Str: {
+        // [GNU] %s writes the raw bytes up to the first NUL (printf %s
+        // semantics over the consumed byte count).
+        std::string segment;
         for (size_t k = 0; k < avail; ++k) {
-          uint8_t byte = data[local + k];
-          rendered += (byte >= 32 && byte <= 126)
-                          ? std::string(1, static_cast<char>(byte))
-                          : ".";
+          const uint8_t byte = data[local + k];
+          if (byte == 0) break;
+          segment.push_back(static_cast<char>(byte));
         }
+        rendered += pad_field(std::move(segment), item);
         break;
       }
       case ConvKind::PrintOrDot: {
@@ -796,7 +932,9 @@ auto apply_unit(const FormatUnit& unit, const std::vector<uint8_t>& data,
         break;
       }
       case ConvKind::Escaped: {
-        if (avail > 0) rendered += escaped_char(data[local]);
+        if (avail > 0) {
+          rendered += pad_field(escaped_char(data[local]), item);
+        }
         break;
       }
       case ConvKind::Addr:
@@ -942,9 +1080,11 @@ auto read_stream(const Config& cfg, std::vector<uint8_t>& data) -> int {
     std::ifstream file(native_path::normalize_api_operand(filename),
                        std::ios::binary);
     if (!file) {
-      safeErrorPrint("hexdump: '");
+      // [GNU] warn shape is unquoted: "hexdump: <file>: No such file or
+      // directory" (hexdump-display.c next()).
+      safeErrorPrint("hexdump: ");
       safeErrorPrint(filename);
-      safeErrorPrintLn("': No such file or directory");
+      safeErrorPrintLn(": No such file or directory");
       result = 1;
       return;
     }

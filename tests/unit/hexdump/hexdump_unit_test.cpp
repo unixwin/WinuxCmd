@@ -70,8 +70,10 @@ TEST(hexdump, hexdump_hex2_explicit_uses_padded_words) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
+  // [GNU] the row's last unit loses its trailing space (the nospace
+  // rule, hexdump-parse.c), so a full -x row is 71 columns, not 72.
   const std::string expected =
-      "0000000    3130    3332    3534    3736    3938    6261    6463    6665 "
+      "0000000    3130    3332    3534    3736    3938    6261    6463    6665"
       "\n"
       "0000010\n";
   EXPECT_EQ_TEXT(r.stdout_text, expected);
@@ -270,9 +272,12 @@ TEST(hexdump, hexdump_two_byte_modes_print_trailing_odd_byte_issue1373) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
+  // [GNU] a partial block is blank-padded to the full 71-column row
+  // (bpad, hexdump-display.c): the five missing units print as blanks.
   EXPECT_EQ_TEXT(r.stdout_text,
-                 "0000000    6261    6463    0065 \n"
-                 "0000005\n");
+                 std::string("0000000    6261    6463    0065") +
+                     std::string(40, ' ') + "\n"
+                     "0000005\n");
 }
 
 TEST(hexdump, hexdump_multiple_files_form_one_stream_issue1373) {
@@ -292,6 +297,121 @@ TEST(hexdump, hexdump_multiple_files_form_one_stream_issue1373) {
                  "0000020\n");
 }
 
+// [GNU] the -o unit is " %06o " (8 wide, hexdump.c), so a full -o row
+// is 71 columns like -x/-d; it used to render 9-wide units (80 cols).
+TEST(hexdump, hexdump_octal2_row_width_matches_gnu) {
+  TempDir tmp;
+  write_binary_file(tmp.path / "test.bin", "0123456789abcdef");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"hexdump.exe", {L"-o", L"test.bin"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text,
+                 "0000000  030460  031462  032464  033466  034470  061141  "
+                 "062143  063145\n"
+                 "0000010\n");
+}
+
+// [GNU] %_c is the escaped-character conversion of the oracle's own -c
+// format string; "%3_c" right-aligns the escape in a 3-wide field.
+TEST(hexdump, hexdump_e_escaped_char_conversion) {
+  TempDir tmp;
+  write_binary_file(tmp.path / "test.bin", "a\nb");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"hexdump.exe", {L"-e", L"3/1 \"%3_c\"", L"test.bin"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "  a \\n  b");
+}
+
+// [GNU] %s writes raw bytes and stops at the first NUL; it does not
+// mask non-printing bytes with '.'.
+TEST(hexdump, hexdump_e_string_stops_at_nul) {
+  TempDir tmp;
+  tmp.write_bytes("test.bin", {'h', 'i', 0, 'x', 'y'});
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"hexdump.exe", {L"-e", L"1/5 \"%s\"", L"test.bin"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "hi");
+}
+
+// [GNU] %c writes the byte itself, control bytes included.
+TEST(hexdump, hexdump_e_char_writes_raw_byte) {
+  TempDir tmp;
+  tmp.write_bytes("test.bin", {0x01, 'A'});
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"hexdump.exe", {L"-e", L"2/1 \"%c\"", L"test.bin"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, std::string("\x01" "A"));
+}
+
+// [GNU] -n/-s accept strtosize values: base-0 numbers and size
+// suffixes (hexdump.c parse_args via strtosize_or_err).
+TEST(hexdump, hexdump_length_accepts_hex_and_suffix) {
+  TempDir tmp;
+  write_binary_file(tmp.path / "test.bin", "Hello World");
+
+  Pipeline hex;
+  hex.set_cwd(tmp.wpath());
+  hex.add(L"hexdump.exe", {L"-n", L"0x5", L"-C", L"test.bin"});
+  auto rh = hex.run();
+  EXPECT_EQ(rh.exit_code, 0);
+  EXPECT_EQ_TEXT(rh.stdout_text,
+                 "00000000  48 65 6c 6c 6f                                    "
+                 "|Hello|\n"
+                 "00000005\n");
+
+  Pipeline suffix;
+  suffix.set_cwd(tmp.wpath());
+  suffix.add(L"hexdump.exe", {L"-n", L"1K", L"-C", L"test.bin"});
+  auto rs = suffix.run();
+  EXPECT_EQ(rs.exit_code, 0);
+  EXPECT_TRUE(rs.stdout_text.find("|Hello World|") != std::string::npos);
+}
+
+TEST(hexdump, hexdump_skip_accepts_octal) {
+  TempDir tmp;
+  write_binary_file(tmp.path / "test.bin", "Hello World");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"hexdump.exe", {L"-s", L"010", L"test.bin"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text,
+                 std::string("0000008 6c72 0064") + std::string(25, ' ') +
+                     "\n000000b\n");
+}
+
+TEST(hexdump, hexdump_bad_length_reports_parse_failure) {
+  TempDir tmp;
+  write_binary_file(tmp.path / "test.bin", "abc");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"hexdump.exe", {L"-n", L"bogus", L"test.bin"});
+  auto r = p.run();
+
+  EXPECT_NE(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.find("failed to parse length: 'bogus'") !=
+              std::string::npos);
+}
+
 // #1374: in WINUX_SHELL_GLOB=native mode hexdump expands its file
 // operands through the shared glob path like cat does.
 TEST(hexdump, hexdump_native_glob_expands_operands_issue1374) {
@@ -305,5 +425,9 @@ TEST(hexdump, hexdump_native_glob_expands_operands_issue1374) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "0000000 6e6f 796c 000a\n0000005\n");
+  // [GNU] the default mode's partial row is blank-padded to 47 columns
+  // as well (bpad blanks for the five missing units).
+  EXPECT_EQ_TEXT(r.stdout_text,
+                 std::string("0000000 6e6f 796c 000a") + std::string(25, ' ') +
+                     "\n0000005\n");
 }

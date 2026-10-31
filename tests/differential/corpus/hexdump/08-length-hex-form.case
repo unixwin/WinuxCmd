@@ -1,0 +1,7 @@
+cmd: hexdump
+oracle: linux
+args: -n 0x5 -C d.bin
+setup: |
+  printf 'Hello World' > d.bin
+source: tests/differential/corpus/hexdump/08-length-hex-form.case
+tags: gnu-compat hexdump strtosize audit-w7
