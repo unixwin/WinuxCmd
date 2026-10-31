@@ -161,3 +161,39 @@ TEST(less, less_relative_operand_unchanged_issue1385) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "relative-content\n");
 }
+
+// [refs #1127] The recorded P2c options are accepted; in the
+// non-console (piped) path they do not change passthrough output.
+// The interactive faces (follow, mouse wheel, incsearch preview,
+// --file-size prompt, rscroll marker, --line-num-width rendering)
+// need a real console and are covered by code + report notes.
+TEST(less, p2c_options_accepted_in_passthrough) {
+  TempDir tmp;
+  tmp.write("doc.txt", "alpha\nbeta\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"less.exe",
+        {L"--mouse", L"--incsearch", L"--follow-name", L"--no-histdups",
+         L"--no-keypad", L"--file-size", L"--line-num-width", L"4",
+         L"--rscroll", L">", L"doc.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "alpha\nbeta\n");
+}
+
+// [refs #1127] A negative --line-num-width is a usage error.
+TEST(less, negative_line_num_width_rejected) {
+  TempDir tmp;
+  tmp.write("doc.txt", "alpha\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"less.exe", {L"--line-num-width", L"-1", L"doc.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+}
