@@ -1,0 +1,45 @@
+# case path<TAB>reason
+#
+# Known differential gaps verified in the WSL-oracle shape: the runner
+# executing inside WSL (or in the CI baseline job) against a Linux GNU
+# oracle, with the subject reached through the WSL interop chain and
+# case work directories on the \\wsl.localhost 9p share. runner.sh loads
+# this file in addition to whitelist.txt only when the detected oracle
+# platform is linux (issue #1127 P3). Under any other oracle these cases
+# compare unexcused: most pass outright in the native shape (that is the
+# recorded evidence for the 9p family), and any that still differ
+# surfaces a real difference instead of hiding behind an excuse recorded
+# against a different runtime.
+
+regressions/23-cp-link-option.case	environment: CreateHardLinkW cannot hardlink across \\wsl.localhost 9p shares in the WSL-side runner; verified working (hardlink count 2) on native NTFS
+
+corpus/ln/35-hard.case	environment: same 9p hardlink limitation as cp -l; hard links created on NTFS match GNU
+
+# Round-4 environment/platform-only differences (not product defects)
+corpus/readlink/01-resolve.case	platform: readlink -f resolves WSL path to Windows UNC (\wsl$Ubuntu-GitLab...); GNU returns the WSL absolute path
+
+corpus/envsubst/01-basic.case	environment: $HOME is /root on WSL-GNU vs Windows UserProfile on winux
+
+corpus/mktemp/01-basic.case	environment: tmpdir differs (WSL /tmp vs Windows TEMP)
+
+corpus/which/01-basic.case	environment: PATH differs between WSL (/usr/bin/sh) and Windows (C:\Windows\System32\sh.exe)
+
+# Baseline-job oracle delta (wave-1b adjudication): in the CI baseline
+# job (WSL Ubuntu 24.04) the only cal available is ncal's BSD cal -
+# bsdextrautils 2.39 ships no cal at all. ncal pads every row to 22
+# columns with trailing blanks and centres the title over 22 columns;
+# the applet implements the util-linux layout (20 columns, no trailing
+# padding, src/commands/cal.cpp kMonthWidth = 20) that the recorded
+# PASS was taken against. For 02 the delta is wider: -m is --monday
+# (week starts Monday) in util-linux and the applet, but a month
+# operand in ncal, so the two sides print different grids entirely.
+# No util-linux cal package exists for 24.04 to pin instead.
+corpus/cal/01-current.case	oracle: CI oracle is ncal (BSD cal) - 22-column rows with trailing padding vs the applet's util-linux 20-column layout; recorded PASS against a util-linux-semantics cal
+
+corpus/cal/02-month.case	oracle: same ncal delta as corpus/cal/01, plus -m is --monday to util-linux and the applet but a month operand to ncal
+
+regressions/56-find-L-loop.case	environment: find loop detection keys on the (volume serial, file index) identity of ancestor directories; through the \\wsl.localhost 9p share in the WSL-side runner the redirector does not return a matching identity for a directory re-reached through a symlink loop, so the subject does not stop where GNU stops. Same 9p family as regressions/23-cp-link-option and corpus/ln/35-hard
+
+regressions/57-ln-backup-control.case	environment: after the backup rename the case creates a symlink, and reparse-point creation through the \\wsl.localhost 9p share in the WSL-side runner is not supported by the redirector, so the subject exits non-zero where GNU (on the WSL ext4 side) succeeds. Same 9p family as corpus/ln/35-hard
+
+regressions/42-locale-keyword.case	environment: charmap is defined by the locale the subject runs under; in the WSL-side baseline job the runner's pinned LC_ALL does not reach the Windows subject through the interop chain (forwarding LC_ALL/LANG via WSLENV was tried and the verdict did not change - run 40941525029), so the subject answers from the host locale while the oracle answers for LC_ALL=C. Passes in the native runner shape, where the export reaches the subject; the applet itself honours LC_ALL (src/commands/locale.cpp)
