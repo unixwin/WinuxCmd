@@ -348,8 +348,10 @@ std::string consume_string_argument(const std::vector<std::string_view>& args,
 
 // [GNU] printf.c keeps a file-scope posixly_correct flag (set from the
 // environment at startup); it suppresses the character-constant warning.
+// GNU sets it from getenv presence, so a present-but-empty value counts
+// (the Win32 length query returns 0 for an empty value).
 bool posixly_correct_enabled() {
-  return GetEnvironmentVariableW(L"POSIXLY_CORRECT", nullptr, 0) != 0;
+  return std::getenv("POSIXLY_CORRECT") != nullptr;
 }
 
 void warn_numeric(std::string_view arg, std::string_view message,
