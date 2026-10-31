@@ -1,0 +1,5 @@
+cmd: env
+args: -u A=B printenv
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w3b env cannot-unset invalid-argument

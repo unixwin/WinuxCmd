@@ -68,7 +68,10 @@ enum class EscapeMode {
 };
 
 auto posixly_correct_enabled() -> bool {
-  return GetEnvironmentVariableW(L"POSIXLY_CORRECT", nullptr, 0) != 0;
+  // [GNU] echo.c:115-118: POSIXLY_CORRECT is a presence test
+  // (getenv != NULL); a present-but-empty value counts.  The Win32
+  // length query returns 0 for an empty value, so use getenv.
+  return std::getenv("POSIXLY_CORRECT") != nullptr;
 }
 
 template <size_t N>
@@ -109,9 +112,15 @@ auto determine_escape_mode(const CommandContext<N>& ctx) -> EscapeMode {
  */
 auto build_text(std::span<const std::string_view> args)
     -> cp::Result<std::string> {
+  // [GNU] echo.c:254-262: a separator space is printed between
+  // arguments by position, even when an argument is empty, so
+  // 'echo "" x' prints ' x'.  Joining on accumulated-text emptiness
+  // dropped the separator after a leading empty argument.
   std::string text;
+  bool first = true;
   for (auto arg : args) {
-    if (!text.empty()) text += ' ';
+    if (!first) text += ' ';
+    first = false;
     text += arg;
   }
   return text;

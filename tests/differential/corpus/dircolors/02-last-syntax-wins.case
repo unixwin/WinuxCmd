@@ -1,0 +1,7 @@
+cmd: dircolors
+args: -b -c db.txt
+timeout: 10
+setup: |
+  printf 'DIR 01;34\n' > db.txt
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w3b dircolors syntax last-one-wins

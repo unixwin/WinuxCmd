@@ -99,36 +99,79 @@ REGISTER_COMMAND(
 
   std::vector<HANDLE> owned_handles;
 
-  if (nohup_is_terminal(stdin)) {
-    HANDLE nul = open_inheritable_file(L"NUL", GENERIC_READ, OPEN_EXISTING);
+  // [GNU] nohup.c:115-199: the three streams are probed independently
+  // and each diagnostic depends on which of them are terminals.
+  const bool ignoring_input = nohup_is_terminal(stdin);
+  const bool redirecting_stdout = nohup_is_terminal(stdout);
+  const bool redirecting_stderr = nohup_is_terminal(stderr);
+
+  if (ignoring_input) {
+    // [GNU] nohup.c:124-127: /dev/null is deliberately opened for
+    // *writing*, so any read by the command evokes an error, not EOF.
+    HANDLE nul = open_inheritable_file(L"NUL", GENERIC_WRITE, OPEN_EXISTING);
     if (nul == INVALID_HANDLE_VALUE) {
-      safeErrorPrintLn("nohup: failed to redirect input");
-      return 125;
+      safeErrorPrintLn("nohup: failed to render standard input unusable: " +
+                       nohup_windows_error_text(GetLastError()));
+      return nohup_usage_error_exit_code();
     }
     owned_handles.push_back(nul);
     si.hStdInput = nul;
+    // [GNU] nohup.c:129-130: the lone "ignoring input" notice appears
+    // only when neither output stream needed redirection.
+    if (!redirecting_stdout && !redirecting_stderr) {
+      safeErrorPrintLn("nohup: ignoring input");
+    }
   }
 
   bool stdout_redirected = false;
-  if (nohup_is_terminal(stdout)) {
+  if (redirecting_stdout) {
     HANDLE out =
         open_inheritable_file(L"nohup.out", FILE_APPEND_DATA, OPEN_ALWAYS);
+    std::string out_name = "nohup.out";
     if (out == INVALID_HANDLE_VALUE) {
-      safeErrorPrintLn("nohup: failed to open 'nohup.out'");
-      return 125;
+      // [GNU] nohup.c:149-170: fall back to $HOME/nohup.out and report
+      // each failed open with its error text before giving up.
+      const DWORD first_error = GetLastError();
+      const char* home = std::getenv("HOME");
+      bool tried_home = false;
+      if (home != nullptr && home[0] != '\0') {
+        tried_home = true;
+        out_name = std::string(home) + "/nohup.out";
+        out = open_inheritable_file(utf8_to_wstring(out_name).c_str(),
+                                    FILE_APPEND_DATA, OPEN_ALWAYS);
+      }
+      if (out == INVALID_HANDLE_VALUE) {
+        safeErrorPrintLn("nohup: failed to open 'nohup.out': " +
+                         nohup_windows_error_text(first_error));
+        if (tried_home) {
+          safeErrorPrintLn("nohup: failed to open '" + out_name +
+                           "': " +
+                           nohup_windows_error_text(GetLastError()));
+        }
+        return nohup_usage_error_exit_code();
+      }
     }
     owned_handles.push_back(out);
     si.hStdOutput = out;
     stdout_redirected = true;
-    safeErrorPrintLn(
-        "nohup: ignoring input and appending output to "
-        "'nohup.out'");
+    // [GNU] nohup.c:172-176: the "ignoring input and" prefix is present
+    // only when standard input really is being ignored.
+    safeErrorPrintLn(ignoring_input
+                         ? "nohup: ignoring input and appending output to '" +
+                               out_name + "'"
+                         : "nohup: appending output to '" + out_name + "'");
   }
 
-  if (nohup_is_terminal(stderr)) {
+  if (redirecting_stderr) {
     si.hStdError = si.hStdOutput;
-    if (stdout_redirected) {
-      safeErrorPrintLn("nohup: redirecting stderr to stdout");
+    // [GNU] nohup.c:186-194: when stdout was redirected the appending
+    // notice already covered it; the stderr notice is printed only
+    // when stdout was NOT redirected.
+    if (!stdout_redirected) {
+      safeErrorPrintLn(ignoring_input
+                           ? "nohup: ignoring input and redirecting stderr "
+                             "to stdout"
+                           : "nohup: redirecting stderr to stdout");
     }
   }
 

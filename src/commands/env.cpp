@@ -66,6 +66,10 @@ struct Config {
   // sorted map (#1352).
   std::vector<std::pair<std::string, std::string>> file_assignments;
   std::vector<std::pair<std::string, std::string>> assignments;
+  // First operand of the form "=value": GNU env feeds every operand
+  // containing '=' to putenv (env.c:838-842), where an empty name
+  // fails with EINVAL; it is not a command name.
+  std::string invalid_assignment;
   std::string env_file;
   std::string env_file_error;
   std::string chdir;
@@ -520,6 +524,10 @@ auto apply_split_arguments(Config& cfg, std::vector<std::string> split_args)
       cfg.assignments.emplace_back(assign->first, assign->second);
       continue;
     }
+    if (!arg.empty() && arg.front() == '=' && cfg.invalid_assignment.empty()) {
+      cfg.invalid_assignment = arg;
+      continue;
+    }
     in_command = true;
     cfg.command.emplace_back(std::move(arg));
   }
@@ -600,6 +608,11 @@ auto build_config(const CommandContext<ENV_OPTIONS.size()>& ctx)
     auto assign = parse_assignment(p);
     if (assign.has_value()) {
       cfg.assignments.emplace_back(assign->first, assign->second);
+      continue;
+    }
+
+    if (!p.empty() && p.front() == '=' && cfg.invalid_assignment.empty()) {
+      cfg.invalid_assignment = std::string(p);
       continue;
     }
 
@@ -793,6 +806,26 @@ auto run(const Config& cfg) -> int {
 
   if (cfg.null_terminated && !cfg.command.empty()) {
     cp::report_custom_error(L"env", L"cannot specify --null (-0) with command");
+    return 125;
+  }
+
+  // [GNU] env.c:181-184 (unset_envvars, run before the operand scan):
+  // unsetenv rejects an empty name or one containing '=' with EINVAL
+  // -> "cannot unset '<name>': Invalid argument", exit 125.
+  for (const auto& name : cfg.unset_names) {
+    if (name.empty() || name.find('=') != std::string::npos) {
+      safeErrorPrint("env: cannot unset '" + name +
+                     "': Invalid argument\n");
+      return 125;
+    }
+  }
+
+  // [GNU] env.c:838-842: an assignment operand with an empty name
+  // ("=value") fails in putenv -> "cannot set '<operand>': Invalid
+  // argument", exit 125; it is never treated as a command.
+  if (!cfg.invalid_assignment.empty()) {
+    safeErrorPrint("env: cannot set '" + cfg.invalid_assignment +
+                   "': Invalid argument\n");
     return 125;
   }
 

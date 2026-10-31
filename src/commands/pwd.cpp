@@ -58,7 +58,9 @@ enum class PathMode {
 auto determine_path_mode(const CommandContext<PWD_OPTIONS.size()>& ctx)
     -> PathMode {
   PathMode mode = PathMode::physical;
-  if (GetEnvironmentVariableW(L"POSIXLY_CORRECT", nullptr, 0) != 0) {
+  // [GNU] pwd.c:331: the POSIXLY_CORRECT default is a presence test
+  // (getenv != NULL); a present-but-empty value still counts.
+  if (std::getenv("POSIXLY_CORRECT") != nullptr) {
     mode = PathMode::logical;
   }
 
@@ -131,6 +133,19 @@ auto get_physical_current_directory() -> cp::Result<std::string> {
   }
 
   wCurrentDir.resize(result);
+
+  // [GNU] pwd.c:62,377-386: -P (and the physical fallback) prints the
+  // path with all symlinks resolved (xgetcwd).  GetCurrentDirectoryW
+  // returns the path as established, which may pass through a
+  // junction or symlinked directory; canonicalize it so -P differs
+  // from -L exactly there.  Fall back to the raw path on failure.
+  std::error_code ec;
+  std::filesystem::path resolved =
+      std::filesystem::canonical(std::filesystem::path(wCurrentDir), ec);
+  if (!ec && !resolved.empty()) {
+    return wstring_to_utf8(resolved.wstring());
+  }
+
   return wstring_to_utf8(wCurrentDir);
 }
 

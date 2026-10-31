@@ -672,8 +672,10 @@ TEST(date, date_reference_missing_dialect_operand_quotes_as_typed) {
   // A missing reference still fails, but the message quotes the operand
   // exactly as typed - the dialect fold happens only at the Win32 probe
   // boundary, like MSYS which echoes the spelling the user used.
+  // [GNU] date.c:609-612 (9.4): the diagnostic is the quotef form,
+  // error (EXIT_FAILURE, errno, "%s", quotef (reference)).
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_NE(r.stderr_text.find("failed to get modification time of '"),
+  EXPECT_NE(r.stderr_text.find("': No such file or directory"),
             std::string::npos);
   EXPECT_NE(r.stderr_text.find(date_dialect_detail::utf8_operand(operand)),
             std::string::npos);

@@ -1,0 +1,5 @@
+cmd: stty
+args: -F nofile 0:0:0:0:0:0:0:0:0:0
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w3b stty recover-form-accepted

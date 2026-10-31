@@ -40,6 +40,31 @@ struct FileInfo {
   }
 };
 
+// [GNU] test.c's -ef compares st_dev/st_ino from stat().  Windows has
+// no by-handle identity for character devices or pipes, and the
+// by-handle branch in stat_follow leaves the pair at 0 -- which made
+// ANY two devices compare -ef-equal (NUL -ef CON was true).  Device
+// identity is therefore keyed on the folded normalized path under a
+// sentinel volume serial (a real serial is a zero-extended DWORD and
+// can never equal it): the same device compares equal, distinct
+// devices do not.
+inline auto device_identity(const std::wstring& normalized)
+    -> unsigned long long {
+  unsigned long long hash = 1469598103934665603ULL;  // FNV-1a offset basis
+  for (wchar_t ch : normalized) {
+    wchar_t folded = ch == L'/' ? L'\\' : ch;
+    if (folded >= L'a' && folded <= L'z') {
+      folded = static_cast<wchar_t>(folded - L'a' + L'A');
+    }
+    hash ^= static_cast<unsigned long long>(folded);
+    hash *= 1099511628211ULL;  // FNV prime
+  }
+  return hash;
+}
+
+inline constexpr unsigned long long kDeviceVolumeSerial =
+    0xFFFFFFFFFFFFFFFFULL;
+
 /**
  * @brief stat() equivalent: opens the operand without
  * FILE_FLAG_OPEN_REPARSE_POINT so the final symlink/junction is followed
@@ -82,9 +107,13 @@ inline auto stat_follow(const std::string& path) -> FileInfo {
     // NUL, CON, ...  (-f must be false, -c true; issue 1063)
     info.exists = true;
     info.is_char_device = true;
+    info.volume_serial = kDeviceVolumeSerial;
+    info.file_index = device_identity(operand.normalized);
   } else if (type == FILE_TYPE_PIPE) {
     info.exists = true;
     info.is_pipe = true;
+    info.volume_serial = kDeviceVolumeSerial;
+    info.file_index = device_identity(operand.normalized);
   } else {
     BY_HANDLE_FILE_INFORMATION bh{};
     if (GetFileInformationByHandle(handle, &bh)) {
@@ -96,6 +125,13 @@ inline auto stat_follow(const std::string& path) -> FileInfo {
           native_path::is_winux_fifo_w(operand.normalized)) {
         info.is_pipe = true;
         info.size = 0;
+        // The marker is a regular file on disk: it has a real
+        // by-handle identity, and -ef must see it (two distinct
+        // markers are not the same file).
+        info.volume_serial = bh.dwVolumeSerialNumber;
+        info.file_index =
+            (static_cast<unsigned long long>(bh.nFileIndexHigh) << 32) |
+            bh.nFileIndexLow;
         CloseHandle(handle);
         return info;
       }
@@ -114,6 +150,24 @@ inline auto stat_follow(const std::string& path) -> FileInfo {
   }
   CloseHandle(handle);
   return info;
+}
+
+// [GNU] test.c:402-404: -r is euidaccess(file, R_OK) -- a real access
+// test, not existence.  Probe with a GENERIC_READ open: only an
+// access-denied failure proves the file unreadable; any other failure
+// (a sharing violation, say) says nothing about permission, so it
+// keeps the caller's existence verdict, as euidaccess ignores locks.
+inline auto read_access_probe(const std::string& path) -> bool {
+  const auto operand = native_path::make_api_path_operand(path);
+  HANDLE handle =
+      CreateFileW(operand.extended.c_str(), GENERIC_READ,
+                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                  nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+  if (handle != INVALID_HANDLE_VALUE) {
+    CloseHandle(handle);
+    return true;
+  }
+  return GetLastError() != ERROR_ACCESS_DENIED;
 }
 
 /**
@@ -549,7 +603,7 @@ class Parser {
           case 'e':
             return st.exists ? 0 : 1;
           case 'r':
-            return st.exists ? 0 : 1;
+            return st.exists && read_access_probe(arg) ? 0 : 1;
           case 'w':
             return st.exists && !st.is_readonly ? 0 : 1;
           case 'x':

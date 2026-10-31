@@ -805,8 +805,10 @@ auto echo_posixly_correct_literal_mode(std::string_view cmdName,
     return false;
   }
 
+  // [GNU] echo.c:115-118: presence of POSIXLY_CORRECT is what counts;
+  // a present-but-empty value still selects the POSIX behavior.
   const char *value = std::getenv("POSIXLY_CORRECT");
-  if (value == nullptr || value[0] == '\0') {
+  if (value == nullptr) {
     return false;
   }
 
@@ -1566,7 +1568,9 @@ class RegistryImpl {
 
     if (wants_help) {
       cmd::meta::Registry::print_help(cmdName);
-      return 0;
+      // [GNU] true.c with false.c's EXIT_STATUS: 'false --help'
+      // prints the help but exits with EXIT_FAILURE (1).
+      return cmdName == "false" ? 1 : 0;
     }
 
     if (!no_argument_option.empty()) {
@@ -1596,7 +1600,9 @@ class RegistryImpl {
       safePrintLn("There is NO WARRANTY, to the extent permitted by law.");
       safePrintLn("");
       safePrintLn("Written by WinuxCmd contributors.");
-      return 0;
+      // [GNU] true.c:75-79 with false.c's EXIT_STATUS: the version
+      // text is printed, then control returns EXIT_FAILURE (1).
+      return cmdName == "false" ? 1 : 0;
     }
 
     return it->second.handler(effective_args);

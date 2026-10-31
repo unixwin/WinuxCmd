@@ -1,0 +1,5 @@
+cmd: date
+args: --resolution '+%s'
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w3b date resolution-honors-format

@@ -1,0 +1,5 @@
+cmd: seq
+args: nan
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w3b seq nan not-a-number

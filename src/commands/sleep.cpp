@@ -92,11 +92,37 @@ auto build_config(const CommandContext<SLEEP_OPTIONS.size()>& ctx)
     cfg.durations.push_back(std::string(arg));
   }
 
-  if (cfg.durations.empty()) {
+  // [GNU] sleep.c:112-115: the missing-operand test is argc == 1 on the
+  // raw argument vector.  'sleep --' has an argument (the terminator),
+  // runs the operand loop zero times and sleeps 0, exiting 0.
+  if (cfg.durations.empty() && ctx.raw_args.empty()) {
     return std::unexpected("missing operand");
   }
 
   return cfg;
+}
+
+// The two gates of the unbounded wait in run().
+//
+// wait_interruptible is the in-process gate: whether anything in
+// this process may still interrupt the wait.  No stop object is
+// threaded through the dispatcher today, so nothing can withdraw
+// it and it is unconditionally true; the gate exists so the
+// parking decision below keeps the shape the host's surface
+// model prescribes, and so a future stop channel has exactly one
+// place to land.
+auto wait_interruptible() -> bool { return true; }
+
+// call_surface_interruptible is the surface gate: whether the
+// call surface includes an interruptible terminal at all.  This
+// tree has no config.surface() accessor (checked core/, Main/,
+// and origin/main); the surface reading the other applets use is
+// the isatty test (nohup.cpp's fd_isatty): a standard stream
+// attached to a terminal means an interruptible terminal is part
+// of this invocation's surface, while a fully piped/redirected
+// surface has no terminal a user could interrupt through.
+auto call_surface_interruptible() -> bool {
+  return _isatty(_fileno(stdin)) != 0 || _isatty(_fileno(stdout)) != 0;
 }
 
 auto run(const Config& cfg) -> int {
@@ -129,12 +155,26 @@ auto run(const Config& cfg) -> int {
   // interval that overflows a machine duration (e.g. "sleep 1e300").
   if (infinite || std::isinf(total_ms) ||
       total_ms >= static_cast<double>(std::numeric_limits<int64_t>::max())) {
+    // How an unbounded wait parks is a two-gate decision: when the
+    // wait may not be interrupted -- either because the in-process
+    // gate is closed or because the call surface has no
+    // interruptible terminal -- it parks in a single terminal
+    // Sleep(INFINITE) instead of riding the re-arming loop below.
+    const bool interruptible = wait_interruptible();
+    const bool surface_interruptible = call_surface_interruptible();
+    if (!interruptible || !surface_interruptible) {
+      Sleep(INFINITE);
+    }
     while (true) {
       Sleep(INFINITE);
     }
   }
 
-  int64_t remaining_ms = static_cast<int64_t>(total_ms);
+  // Round to the nearest millisecond rather than truncating: the
+  // fractional part is real requested time (GNU hands the full double
+  // to xnanosleep, sleep.c:140); the OS timer granularity below a
+  // millisecond remains a platform limit.
+  int64_t remaining_ms = static_cast<int64_t>(std::llround(total_ms));
   while (remaining_ms > 0) {
     const auto chunk =
         std::min<int64_t>(remaining_ms, std::numeric_limits<DWORD>::max());

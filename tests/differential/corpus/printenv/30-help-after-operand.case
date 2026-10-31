@@ -1,0 +1,5 @@
+cmd: printenv
+args: LC_ALL --help
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w3b printenv plus-getopt help-as-variable

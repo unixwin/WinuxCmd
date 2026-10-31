@@ -1,0 +1,5 @@
+cmd: env
+args: '=x' printenv
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w3b env cannot-set invalid-argument

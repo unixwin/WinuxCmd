@@ -103,6 +103,19 @@ int write_failure_status() {
   return ferror(stdout) ? 1 : 0;
 }
 
+// [GNU] yes.c:125-128: a non-EPIPE write failure is diagnosed as
+// 'yes: standard output: <error>' before exiting 1; only the SIGPIPE
+// death is silent.  Must be called with errno still holding the
+// failing fwrite's cause.
+int report_write_failure() {
+  int status = write_failure_status();
+  if (status == 1) {
+    safeErrorPrintLn("yes: standard output: " +
+                     std::string(std::strerror(errno)));
+  }
+  return status;
+}
+
 auto run(const Config& cfg) -> int {
 #ifdef _WIN32
   // [GNU] yes writes raw bytes: keep stdout in binary mode so '\n' is not
@@ -114,7 +127,7 @@ auto run(const Config& cfg) -> int {
     std::string line = cfg.output + "\n";
     for (size_t i = 0; i < *limit; ++i) {
       if (fwrite(line.data(), 1, line.size(), stdout) != line.size()) {
-        return write_failure_status();
+        return report_write_failure();
       }
     }
     return 0;
@@ -124,7 +137,7 @@ auto run(const Config& cfg) -> int {
   for (;;) {
     size_t written = fwrite(block.data(), 1, block.size(), stdout);
     if (written != block.size()) {
-      return write_failure_status();
+      return report_write_failure();
     }
   }
 }

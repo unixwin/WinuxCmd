@@ -1,0 +1,6 @@
+cmd: dirname
+args: C:/a
+timeout: 10
+oracle: msys
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w3b dirname drive-root rooted

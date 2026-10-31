@@ -1,0 +1,5 @@
+cmd: basename
+args: -za /x/a.txt /y/b.txt
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w3b basename multiple zero

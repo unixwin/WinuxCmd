@@ -1,0 +1,4 @@
+cmd: printf
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w3b printf missing-operand
