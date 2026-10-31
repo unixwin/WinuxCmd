@@ -98,11 +98,17 @@ struct CountBatch {
 struct Files0ReadResult {
   std::vector<std::string> paths;
   bool from_stdin = false;
+  // [GNU] per-record problems (zero-length names, '-' read from
+  // stdin) are reported and skipped, not fatal (audit #1462).
+  bool any_error = false;
 };
 
 struct DecodedChar {
   char32_t codepoint = 0;
   size_t bytes = 1;
+  // [GNU] false for a byte that is not part of a valid UTF-8
+  // sequence: -m does not count it as a character (audit #1462).
+  bool valid = true;
 };
 
 struct CountRequest {
@@ -153,23 +159,57 @@ auto validate_arguments(std::span<const std::string_view> args)
   return paths;
 }
 
-// [GNU] wc reports open failures as "wc: PATH: REASON" (#1041), e.g.
-// "wc: nosuch: No such file or directory".
-auto wc_input_open_error(std::string_view path) -> std::string {
+// [GNU] when a file NAME contains a newline, wc prints it in
+// quotef shell-escape form -- 'a'$'\n''b.txt' -- in count lines
+// and diagnostics alike; every other byte (even tab, CR, quotes)
+// prints raw (wc.c write_counts / quoteaf) (audit #1462).
+auto quote_name_for_output(const std::string& name) -> std::string {
+  if (name.find('\n') == std::string::npos) return name;
+  std::string out;
+  size_t start = 0;
+  while (true) {
+    const size_t pos = name.find('\n', start);
+    const std::string part =
+        name.substr(start, pos == std::string::npos ? pos : pos - start);
+    if (!part.empty()) {
+      out += "'";
+      for (char c : part) {
+        if (c == '\'') {
+          out += "'\\''";
+        } else {
+          out += c;
+        }
+      }
+      out += "'";
+    }
+    if (pos == std::string::npos) break;
+    out += "$'\\n'";
+    start = pos + 1;
+  }
+  return out;
+}
+
+auto wc_reason_only(std::string_view path) -> std::string {
   auto operand = native_path::make_api_path_operand(path);
   const DWORD attrs = native_path::operand_target_attributes_w(operand);
   if (operand.had_trailing_separator &&
       native_path::attributes_are_regular_file(attrs)) {
-    return std::string(path) + ": Not a directory";
+    return "Not a directory";
   }
   if (native_path::attributes_are_directory(attrs)) {
-    return std::string(path) + ": Is a directory";
+    return "Is a directory";
   }
   if (attrs != INVALID_FILE_ATTRIBUTES) {
-    // The operand exists but could not be opened for reading.
-    return std::string(path) + ": Permission denied";
+    return "Permission denied";
   }
-  return std::string(path) + ": No such file or directory";
+  return "No such file or directory";
+}
+
+// [GNU] wc reports open failures as "wc: PATH: REASON" (#1041), e.g.
+// "wc: nosuch: No such file or directory".
+auto wc_input_open_error(std::string_view path) -> std::string {
+  return quote_name_for_output(std::string(path)) + ": " +
+         wc_reason_only(path);
 }
 
 auto read_files0_from(const std::string& path) -> cp::Result<Files0ReadResult> {
@@ -188,18 +228,36 @@ auto read_files0_from(const std::string& path) -> cp::Result<Files0ReadResult> {
     // (#1055/#1056/#1061).
     file = file_io::open_binary_file(path);
     if (!file) {
-      return std::unexpected(wc_input_open_error(path));
+      // [GNU] an unopenable LIST file reports the "cannot open
+      // '<F>' for reading" shape, unlike operand failures
+      // (wc.c) (audit #1462).
+      return std::unexpected("cannot open '" + path +
+                             "' for reading: " + wc_reason_only(path));
     }
     input = &file;
   }
+  // [GNU] a bad record is reported and SKIPPED; the remaining
+  // names are still counted (wc.c). The old code aborted the
+  // whole list on the first bad record (audit #1462).
   std::string name;
+  size_t record_number = 0;
   while (std::getline(*input, name, '\0')) {
+    ++record_number;
     if (name.empty()) {
-      return std::unexpected("invalid zero-length file name");
+      safeErrorPrint("wc: ");
+      safeErrorPrint(path);
+      safeErrorPrint(":");
+      safeErrorPrint(std::to_string(record_number));
+      safeErrorPrint(": invalid zero-length file name\n");
+      result.any_error = true;
+      continue;
     }
     if (result.from_stdin && name == "-") {
-      return std::unexpected(
-          "when reading file names from stdin, no file name of '-' allowed");
+      safeErrorPrint(
+          "wc: when reading file names from stdin, no file name of '-' "
+          "allowed\n");
+      result.any_error = true;
+      continue;
     }
     result.paths.push_back(name);
   }
@@ -241,11 +299,36 @@ auto decode_utf8_char(std::string_view text, size_t pos) -> DecodedChar {
     if (cp >= 0x10000 && cp <= 0x10FFFF) return {cp, 4};
   }
 
-  return {first, 1};
+  // Not a valid sequence start: consumed as one byte, but it is
+  // not a character for -m (audit #1462).
+  return {first, 1, false};
 }
 
 auto is_ascii_space(char32_t cp) -> bool {
   return cp <= 0x7F && std::isspace(static_cast<unsigned char>(cp)) != 0;
+}
+
+// [GNU] word separators are iswspace in a UTF-8 locale (wc.c):
+// the ASCII set plus U+1680, U+2000-U+200A, U+2028, U+2029,
+// U+205F, U+3000 -- and, unless POSIXLY_CORRECT is set, the
+// no-break spaces U+00A0, U+2007, U+202F, U+2060 (audit #1462).
+auto is_word_separator(char32_t cp) -> bool {
+  if (cp == 0x1680 || (cp >= 0x2000 && cp <= 0x200A) || cp == 0x2028 ||
+      cp == 0x2029 || cp == 0x205F || cp == 0x3000) {
+    return true;
+  }
+  if (cp == 0x00A0 || cp == 0x2007 || cp == 0x202F || cp == 0x2060) {
+    return std::getenv("POSIXLY_CORRECT") == nullptr;
+  }
+  return false;
+}
+
+// [GNU] non-printable codepoints (C0/C1 controls, DEL) neither
+// start nor break a word for -w: they are simply not word
+// characters and not separators (wc.c iswprint/iswspace split)
+// (audit #1462).
+auto is_nonprintable(char32_t cp) -> bool {
+  return cp < 0x20 || cp == 0x7F || (cp >= 0x80 && cp <= 0x9F);
 }
 
 auto is_wide_codepoint(char32_t cp) -> bool {
@@ -259,6 +342,14 @@ auto is_wide_codepoint(char32_t cp) -> bool {
 
 auto display_width(char32_t cp) -> std::uintmax_t {
   if (cp < 0x20 || (cp >= 0x7F && cp < 0xA0)) return 0;
+  // [GNU] combining characters occupy no columns for -L
+  // (wcwidth == 0) (audit #1462).
+  if ((cp >= 0x0300 && cp <= 0x036F) || (cp >= 0x0483 && cp <= 0x0489) ||
+      (cp >= 0x1AB0 && cp <= 0x1AFF) || (cp >= 0x1DC0 && cp <= 0x1DFF) ||
+      (cp >= 0x20D0 && cp <= 0x20FF) || (cp >= 0xFE00 && cp <= 0xFE0F) ||
+      (cp >= 0xFE20 && cp <= 0xFE2F)) {
+    return 0;
+  }
   return is_wide_codepoint(cp) ? 2 : 1;
 }
 
@@ -347,8 +438,10 @@ auto count_stream(std::istream& input, std::string filename,
     }
     current_line_length = 0;
   };
-  auto consume_codepoint = [&](char32_t cp) {
-    if (request.chars) ++result.chars;
+  auto consume_codepoint = [&](char32_t cp, bool valid) {
+    // [GNU] -m counts characters; bytes that are not valid UTF-8
+    // are consumed but never counted (audit #1462).
+    if (request.chars && valid) ++result.chars;
     switch (cp) {
       case U'\n':
         if (request.lines) ++result.lines;
@@ -374,9 +467,17 @@ auto count_stream(std::istream& input, std::string filename,
         reset_word();
         break;
       default:
-        if (is_ascii_space(cp)) {
-          if (request.max_line_length) current_line_length += display_width(cp);
+        // [GNU] Unicode space separators end a word (and count
+        // their width for -L); non-printable codepoints do
+        // neither (audit #1462).
+        if (is_word_separator(cp)) {
+          if (request.max_line_length) {
+            current_line_length += display_width(cp);
+          }
           reset_word();
+          break;
+        }
+        if (is_nonprintable(cp)) {
           break;
         }
         if (request.max_line_length) current_line_length += display_width(cp);
@@ -392,7 +493,7 @@ auto count_stream(std::istream& input, std::string filename,
     while (i < data.size()) {
       const unsigned char first = static_cast<unsigned char>(data[i]);
       if (first < 0x80) {
-        consume_codepoint(first);
+        consume_codepoint(first, true);
         ++i;
         continue;
       }
@@ -402,7 +503,7 @@ auto count_stream(std::istream& input, std::string filename,
         return;
       }
       DecodedChar decoded = decode_utf8_char(data, i);
-      consume_codepoint(decoded.codepoint);
+      consume_codepoint(decoded.codepoint, decoded.valid);
       i += decoded.bytes;
     }
     carry.clear();
@@ -438,7 +539,8 @@ auto count_stdin(bool explicit_stdin, const CountRequest& request)
   return count_stream(std::cin, "-", explicit_stdin, request);
 }
 
-auto count_file(const std::string& path, const CountRequest& request)
+auto count_file(const std::string& path, const CountRequest& request,
+                std::string* error_out = nullptr)
     -> cp::Result<CountResult> {
   if (path == "-") {
     return count_stdin(true, request);
@@ -455,6 +557,14 @@ auto count_file(const std::string& path, const CountRequest& request)
 
   std::ifstream file = file_io::open_binary_file(path);
   if (!file) {
+    // [GNU] a directory operand still gets its (zero) count line,
+    // plus the diagnostic and a failing exit status (wc.c). The
+    // old code dropped the line entirely (audit #1462).
+    if (error_out != nullptr &&
+        wc_reason_only(path) == "Is a directory") {
+      *error_out = wc_input_open_error(path);
+      return make_empty_result(path, true);
+    }
     return std::unexpected(wc_input_open_error(path));
   }
 
@@ -577,16 +687,25 @@ auto process_command(const CommandContext<N>& ctx, const CountRequest& request)
     -> cp::Result<CountBatch> {
   std::vector<std::string> paths;
   bool files0_from_stdin = false;
+  bool files0_had_error = false;
+  // [GNU] --files0-from is about PRESENCE, not a non-empty value:
+  // '--files0-from=' means a list file named '' and fails to open
+  // (audit #1462).
+  const bool has_files0_from = ctx.has("--files0-from");
   const std::string files0_from =
       ctx.template get<std::string>("--files0-from", "");
-  if (!files0_from.empty()) {
+  if (has_files0_from) {
     if (!ctx.positionals.empty()) {
+      // [GNU] the exact two-line diagnostic (wc.c) (audit #1462);
+      // the old code used an invented one-liner.
       return std::unexpected(
-          "--files0-from disallows processing files named on the command line");
+          "extra operand '" + std::string(ctx.positionals[0]) +
+          "'\nfile operands cannot be combined with --files0-from");
     }
     auto file_list = read_files0_from(files0_from);
     if (!file_list) return std::unexpected(file_list.error());
     files0_from_stdin = file_list->from_stdin;
+    files0_had_error = file_list->any_error;
     paths = std::move(file_list->paths);
   } else {
     auto validated = validate_arguments(ctx.positionals);
@@ -599,7 +718,7 @@ auto process_command(const CommandContext<N>& ctx, const CountRequest& request)
   const bool stdin_bad = file_io::stdin_is_bad();
 
   CountBatch batch;
-  if (paths.empty() && files0_from.empty()) {
+  if (paths.empty() && !has_files0_from) {
     auto stdin_result = count_stdin(false, request);
     if (!stdin_result) return std::unexpected(stdin_result.error());
     batch.results.push_back(*stdin_result);
@@ -611,14 +730,18 @@ auto process_command(const CommandContext<N>& ctx, const CountRequest& request)
     return batch;
   }
 
-  if (paths.empty() && !files0_from.empty()) {
-    batch.any_error = true;
+  if (paths.empty() && has_files0_from) {
+    // [GNU] an empty name list counts nothing and succeeds
+    // (unless a bad record was reported while reading it)
+    // (audit #1462); the old code forced a failure.
+    batch.any_error = files0_had_error;
     return batch;
   }
 
   batch.requested_input_count = paths.size();
   for (const auto& path : paths) {
-    auto file_result = count_file(path, request);
+    std::string soft_error;
+    auto file_result = count_file(path, request, &soft_error);
     if (!file_result) {
       safeErrorPrint("wc: ");
       safeErrorPrint(file_result.error());
@@ -627,11 +750,18 @@ auto process_command(const CommandContext<N>& ctx, const CountRequest& request)
       continue;
     }
     batch.results.push_back(*file_result);
+    if (!soft_error.empty()) {
+      safeErrorPrint("wc: ");
+      safeErrorPrint(soft_error);
+      safeErrorPrint("\n");
+      batch.any_error = true;
+    }
     if (path == "-" && stdin_bad) {
       safeErrorPrint("wc: -: Bad file descriptor\n");
       batch.any_error = true;
     }
   }
+  if (files0_had_error) batch.any_error = true;
 
   return batch;
 }
@@ -727,6 +857,37 @@ REGISTER_COMMAND(
   CountRequest request{print_lines, print_words, print_chars, print_bytes,
                        print_max_line_length};
 
+  // [GNU] --total is resolved through argmatch BEFORE any file
+  // is opened (wc.c): unambiguous prefixes are accepted, and a
+  // bad value fails without touching the operands. The old code
+  // validated after counting, with an invented message
+  // (audit #1462).
+  std::string total_when = "auto";
+  {
+    const std::string total_arg = ctx.get<std::string>("--total", "auto");
+    static constexpr std::array candidates{"auto", "always", "only",
+                                           "never"};
+    std::vector<std::string_view> matches;
+    for (const char* candidate : candidates) {
+      if (std::string_view(candidate).starts_with(total_arg)) {
+        matches.emplace_back(candidate);
+      }
+    }
+    if (matches.size() == 1) {
+      total_when = std::string(matches[0]);
+    } else {
+      const bool ambiguous = matches.size() > 1;
+      cp::Result<void> err = std::unexpected(
+          std::string(ambiguous ? "ambiguous argument '"
+                                : "invalid argument '") +
+          total_arg +
+          "' for '--total'\nValid arguments are:\n  - 'auto'\n  - "
+          "'always'\n  - 'only'\n  - 'never'");
+      cp::report_error(err, L"wc");
+      return 1;
+    }
+  }
+
   auto result = process_command(ctx, request);
   if (!result) {
     cp::report_error(result, L"wc");
@@ -746,23 +907,14 @@ REGISTER_COMMAND(
     safeErrorPrint("\n");
   }
 
-  // Determine when to print total
-  std::string total_when = ctx.get<std::string>("--total", "auto");
+  // Determine when to print total (value already argmatch-resolved
+  // above, before any file was opened).
   bool print_total = false;
 
-  if (total_when == "always") {
-    print_total = true;
-  } else if (total_when == "never") {
-    print_total = false;
-  } else if (total_when == "only") {
+  if (total_when == "always" || total_when == "only") {
     print_total = true;
   } else if (total_when == "auto") {
     print_total = batch.requested_input_count > 1;
-  } else {
-    safeErrorPrint("wc: invalid --total value '");
-    safeErrorPrint(total_when);
-    safeErrorPrint("'\n");
-    return 1;
   }
 
   // Calculate total
@@ -810,7 +962,9 @@ REGISTER_COMMAND(
 
     if (show_filename) {
       if (!line.empty()) line.push_back(' ');
-      line.append(result.filename);
+      // [GNU] newline-bearing names print in quotef form
+      // (audit #1462).
+      line.append(quote_name_for_output(result.filename));
     }
 
     safePrintLn(line);
