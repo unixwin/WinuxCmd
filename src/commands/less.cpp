@@ -1039,7 +1039,7 @@ auto simple_pager(const Config& cfg, PagerDocument& doc,
             break;
           }
           if (replaced || now->size != stamp->size) {
-            auto fresh = load_seekable_document(filename);
+            auto fresh = winux::pager::load_seekable_document(filename);
             if (!fresh) {
               leave = true;
               break;
