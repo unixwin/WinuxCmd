@@ -195,10 +195,15 @@ auto parse_size(const std::string& size_str) -> cp::Result<int64_t> {
       Suffix{"E", k1024 * k1024 * k1024 * k1024 * k1024 * k1024},
       Suffix{"k", k1024},
       Suffix{"m", k1024 * k1024},
-      Suffix{"g", k1024 * k1024 * k1024},
-      Suffix{"t", k1024 * k1024 * k1024 * k1024},
-      Suffix{"p", k1024 * k1024 * k1024 * k1024 * k1024},
-      Suffix{"e", k1024 * k1024 * k1024 * k1024 * k1024 * k1024},
+      // [GNU] the multiplier alphabet is exactly "bEGKkMmPQRTYZ0"
+      // (split.c:1355): lowercase e/g/t/p are NOT suffixes, and the
+      // Q/R/Y/Z powers (1024^7 and up) exist -- they overflow int64
+      // for any nonzero value, so they carry a saturate sentinel
+      // (GNU parses them with OVERFLOW_OK) (audit #1462).
+      Suffix{"Q", -1},
+      Suffix{"R", -1},
+      Suffix{"Y", -1},
+      Suffix{"Z", -1},
       Suffix{"b", 512},
   };
 
@@ -211,8 +216,16 @@ auto parse_size(const std::string& size_str) -> cp::Result<int64_t> {
   int64_t value = 0;
   auto [ptr, ec] = std::from_chars(
       value_text.data(), value_text.data() + value_text.size(), value);
-  if (ec != std::errc() || ptr == value_text.data()) {
+  // [GNU] parse_n_units requires a FULL xstrtoimax parse: trailing
+  // junk ("10junk", "1.5K") is invalid, not a silent truncation
+  // (audit #1462).
+  if (ec != std::errc() || ptr != value_text.data() + value_text.size()) {
     return std::unexpected("invalid size format");
+  }
+  if (multiplier == -1) {
+    // Q/R/Y/Z sentinel: any positive value saturates, as with GNU's
+    // OVERFLOW_OK parse.
+    return value > 0 ? std::numeric_limits<int64_t>::max() : value;
   }
   return checked_mul(value, multiplier);
 }
@@ -255,17 +268,34 @@ auto build_config(const CommandContext<SPLIT_OPTIONS.size()>& ctx)
   const bool has_numeric_lines = ctx.has("-NUM");
   const int numeric_lines = ctx.get<int>("-NUM", 0);
 
-  int split_modes = 0;
-  if (!bytes_opt.empty()) ++split_modes;
-  if (!line_bytes_opt.empty()) ++split_modes;
-  if (!lines_opt.empty()) ++split_modes;
-  if (!number_opt.empty()) ++split_modes;
-  if (has_numeric_lines) ++split_modes;
+  // [GNU] FAIL_ONLY_ONE_WAY (split.c:1290-1295) counts every mode
+  // SELECTION, including a repeated option of the same kind: -l 2 -l 3
+  // dies too. Presence -- not a non-empty last value -- is what counts,
+  // so an explicitly empty mode value (-b '') is a selection that then
+  // fails its own parse (audit #1462).
+  auto occurrences_of = [&](const char* lng, const char* sht) {
+    return ctx.get_all<std::string>(lng).size() +
+           ctx.get_all<std::string>(sht).size();
+  };
+  const size_t bytes_count = occurrences_of("--bytes", "-b");
+  const size_t line_bytes_count = occurrences_of("--line-bytes", "-C");
+  const size_t lines_count = occurrences_of("--lines", "-l");
+  const size_t number_count = occurrences_of("--number", "-n");
+  const size_t numeric_count = ctx.get_all<int>("-NUM").size();
+  const int split_modes = static_cast<int>(bytes_count + line_bytes_count +
+                                           lines_count + number_count +
+                                           numeric_count);
   if (split_modes > 1) {
-    return std::unexpected("cannot split in more than one way");
+    return std::unexpected(
+        "cannot split in more than one way\nTry 'split --help' for more "
+        "information.");
   }
+  const bool bytes_given = bytes_count > 0;
+  const bool line_bytes_given = line_bytes_count > 0;
+  const bool lines_given = lines_count > 0;
+  const bool number_given = number_count > 0;
 
-  if (!bytes_opt.empty()) {
+  if (bytes_given) {
     auto size_result = parse_size(bytes_opt);
     if (!size_result || *size_result <= 0) {
       // GNU parse_n_units(msgid="invalid number of bytes"): parse failures,
@@ -277,7 +307,7 @@ auto build_config(const CommandContext<SPLIT_OPTIONS.size()>& ctx)
     cfg.mode = Config::Mode::Bytes;
   }
 
-  if (!line_bytes_opt.empty()) {
+  if (line_bytes_given) {
     auto size_result = parse_size(line_bytes_opt);
     if (!size_result || *size_result <= 0) {
       // GNU -C reuses the "invalid number of lines" message for line bytes.
@@ -288,7 +318,7 @@ auto build_config(const CommandContext<SPLIT_OPTIONS.size()>& ctx)
     cfg.mode = Config::Mode::LineBytes;
   }
 
-  if (!lines_opt.empty()) {
+  if (lines_given) {
     auto lines_result = parse_i64_full(lines_opt);
     if (!lines_result || *lines_result <= 0) {
       return std::unexpected(
@@ -307,7 +337,7 @@ auto build_config(const CommandContext<SPLIT_OPTIONS.size()>& ctx)
     cfg.mode = Config::Mode::Lines;
   }
 
-  if (!number_opt.empty()) {
+  if (number_given) {
     // GNU -n supports: N, k/N, l/N, l/k/N, r/N, and r/k/N. Mirrors GNU
     // parse_chunk: a pure number is k = n; in k/N form the k part must be
     // pure digits (otherwise the whole argument is rejected as an invalid
@@ -317,14 +347,15 @@ auto build_config(const CommandContext<SPLIT_OPTIONS.size()>& ctx)
     bool round_robin = false;
     std::string val = number_opt;
 
-    if (!val.empty() && val[0] == 'l') {
+    // [GNU] only the exact "l/" and "r/" prefixes select those modes;
+    // "l2" falls into parse_chunk and dies as an invalid number of
+    // chunks (audit #1462).
+    if (val.size() >= 2 && val[1] == '/' && val[0] == 'l') {
       line_mode = true;
-      val = val.substr(1);
-      if (!val.empty() && val[0] == '/') val = val.substr(1);
-    } else if (!val.empty() && val[0] == 'r') {
+      val = val.substr(2);
+    } else if (val.size() >= 2 && val[1] == '/' && val[0] == 'r') {
       round_robin = true;
-      val = val.substr(1);
-      if (!val.empty() && val[0] == '/') val = val.substr(1);
+      val = val.substr(2);
     }
 
     auto fail_chunks = [&](std::string_view arg) {
@@ -362,37 +393,73 @@ auto build_config(const CommandContext<SPLIT_OPTIONS.size()>& ctx)
                                   : Config::NumberMode::ApproximateBytes;
   }
 
-  if (ctx.has("--numeric-suffixes") || ctx.has("-d")) {
-    cfg.suffix_kind = Config::SuffixKind::Numeric;
-    auto start = ctx.get<std::string>("--numeric-suffixes", "");
-    if (start.empty()) start = ctx.get<std::string>("-d", "");
-    auto start_result = parse_suffix_start(start, 10);
-    if (!start_result) return std::unexpected(start_result.error());
-    cfg.suffix_start = *start_result;
-    cfg.suffix_start_explicit = !start.empty();
-  }
-
-  if (ctx.has("--hex-suffixes") || ctx.has("-x")) {
-    cfg.suffix_kind = Config::SuffixKind::Hex;
-    auto start = ctx.get<std::string>("--hex-suffixes", "");
-    if (start.empty()) start = ctx.get<std::string>("-x", "");
-    auto start_result = parse_suffix_start(start, 16);
-    if (!start_result) return std::unexpected(start_result.error());
-    cfg.suffix_start = *start_result;
-    cfg.suffix_start_explicit = !start.empty();
+  // [GNU] getopt processes -d and -x in argv order; the LAST of them
+  // sets the suffix alphabet (split -x -d produces numeric suffixes).
+  // The old code checked numeric first and hex second unconditionally
+  // (audit #1462).
+  {
+    bool suffix_kind_seen = false;
+    std::string numeric_start;
+    std::string hex_start;
+    if (ctx.metas) {
+      for (const auto& occurrence : ctx.options.occurrences()) {
+        if (occurrence.index >= ctx.metas->size()) continue;
+        const auto& meta = (*ctx.metas)[occurrence.index];
+        if (meta.short_name == "-d" || meta.long_name == "--numeric-suffixes") {
+          cfg.suffix_kind = Config::SuffixKind::Numeric;
+          suffix_kind_seen = true;
+          numeric_start =
+              std::get_if<std::string>(&occurrence.value)
+                  ? *std::get_if<std::string>(&occurrence.value)
+                  : "";
+        } else if (meta.short_name == "-x" ||
+                   meta.long_name == "--hex-suffixes") {
+          cfg.suffix_kind = Config::SuffixKind::Hex;
+          suffix_kind_seen = true;
+          hex_start = std::get_if<std::string>(&occurrence.value)
+                          ? *std::get_if<std::string>(&occurrence.value)
+                          : "";
+        }
+      }
+    }
+    if (!suffix_kind_seen &&
+        (ctx.has("--numeric-suffixes") || ctx.has("-d") ||
+         ctx.has("--hex-suffixes") || ctx.has("-x"))) {
+      // Fallback when no occurrence metadata is available.
+      if (ctx.has("--hex-suffixes") || ctx.has("-x")) {
+        cfg.suffix_kind = Config::SuffixKind::Hex;
+        hex_start = ctx.get<std::string>("--hex-suffixes", "");
+        if (hex_start.empty()) hex_start = ctx.get<std::string>("-x", "");
+      } else {
+        cfg.suffix_kind = Config::SuffixKind::Numeric;
+        numeric_start = ctx.get<std::string>("--numeric-suffixes", "");
+        if (numeric_start.empty()) {
+          numeric_start = ctx.get<std::string>("-d", "");
+        }
+      }
+      suffix_kind_seen = true;
+    }
+    if (suffix_kind_seen) {
+      const bool hex = cfg.suffix_kind == Config::SuffixKind::Hex;
+      const std::string& start = hex ? hex_start : numeric_start;
+      auto start_result = parse_suffix_start(start, hex ? 16 : 10);
+      if (!start_result) return std::unexpected(start_result.error());
+      cfg.suffix_start = *start_result;
+      cfg.suffix_start_explicit = !start.empty();
+    }
   }
 
   auto suffix_opt = ctx.get<std::string>("--suffix-length", "");
   if (suffix_opt.empty()) {
     suffix_opt = ctx.get<std::string>("-a", "");
   }
-  if (!suffix_opt.empty()) {
+  if (ctx.has("--suffix-length") || ctx.has("-a")) {
     auto suffix_length = parse_i64_full(suffix_opt);
-    if (!suffix_length) {
+    // [GNU] xdectoimax (optarg, 0, IDX_MAX, ..., "invalid suffix
+    // length"): no 32 cap (audit #1462).
+    if (!suffix_length || *suffix_length < 0 ||
+        *suffix_length > std::numeric_limits<int>::max()) {
       return std::unexpected("invalid suffix length");
-    }
-    if (*suffix_length < 0 || *suffix_length > 32) {
-      return std::unexpected("suffix length must be between 0 and 32");
     }
     cfg.suffix_length = static_cast<int>(*suffix_length);
     cfg.suffix_length_explicit = cfg.suffix_length != 0;
@@ -424,25 +491,33 @@ auto build_config(const CommandContext<SPLIT_OPTIONS.size()>& ctx)
 
   const bool has_long_separator = ctx.has("--separator");
   const bool has_short_separator = ctx.has("-t");
-  auto sep_opt = ctx.get<std::string>("--separator", "");
-  if (!has_long_separator && has_short_separator) {
-    sep_opt = ctx.get<std::string>("-t", "");
-  }
   if (has_long_separator || has_short_separator) {
     cfg.separator_explicit = true;
-    if (sep_opt.empty()) {
-      return std::unexpected("invalid separator");
+    // [GNU] split.c:1457-1479: the separator is exactly one character
+    // or the two-character spelling "\0" for NUL. The "\n"/"\t"
+    // spellings the old code mapped are multi-character separators
+    // in GNU, an empty value is its own diagnostic, and two
+    // DIFFERENT -t values die as well (audit #1462).
+    auto sep_values = ctx.get_all<std::string>("--separator");
+    auto short_sep_values = ctx.get_all<std::string>("-t");
+    sep_values.insert(sep_values.end(), short_sep_values.begin(),
+                      short_sep_values.end());
+    std::optional<std::string> sep_opt;
+    for (const auto& value : sep_values) {
+      if (sep_opt && value != *sep_opt) {
+        return std::unexpected("multiple separator characters specified");
+      }
+      sep_opt = value;
     }
-    if (sep_opt == "\\0" || sep_opt == "\0") {
+    if (!sep_opt || sep_opt->empty()) {
+      return std::unexpected("empty record separator");
+    }
+    if (*sep_opt == "\\0") {
       cfg.separator = '\0';
-    } else if (sep_opt == "\\n") {
-      cfg.separator = '\n';
-    } else if (sep_opt == "\\t") {
-      cfg.separator = '\t';
-    } else if (sep_opt.size() == 1) {
-      cfg.separator = sep_opt[0];
+    } else if (sep_opt->size() == 1) {
+      cfg.separator = (*sep_opt)[0];
     } else {
-      return std::unexpected("invalid separator");
+      return std::unexpected("multi-character separator '" + *sep_opt + "'");
     }
   }
 
@@ -501,7 +576,9 @@ auto generate_suffix(const Config& cfg, uint64_t part_num)
     int length = cfg.suffix_length;
     auto result = alpha_suffix(value, length);
     while (!result && !cfg.suffix_length_explicit && length < 32) {
-      length += 2;
+      // [GNU] next_file_name widens by ONE: after xzz comes xaaa,
+      // not a 4-character suffix (audit #1462).
+      length += 1;
       result = alpha_suffix(value, length);
     }
     return result;
@@ -541,7 +618,9 @@ auto write_chunk(const Config& cfg, uint64_t part_num, std::string_view chunk)
   }
 
   if (cfg.verbose) {
-    safeErrorPrint("creating file '" + filename + "'\n");
+    // [GNU] split.c create() prints "creating file '<name>'" to
+    // stdout, not stderr (audit #1462).
+    safePrint("creating file '" + filename + "'\n");
   }
 
   if (!cfg.filter_command.empty()) {
@@ -793,9 +872,13 @@ auto run(const Config& cfg) -> int {
     }
   }
 
-  if (input.empty()) {
+  if (input.empty() && cfg.mode != Config::Mode::Number) {
     return 0;  // Nothing to split
   }
+  // [GNU] every -n form creates all N output files even for empty
+  // input (bytes_split/lines_chunk_split "ensure files are created"
+  // loops, lines_rr pre-creation), subject to -e (audit #1462); the
+  // Number branches below write every chunk unconditionally.
 
   uint64_t part_num = 0;
   if (cfg.mode == Config::Mode::Lines) {
@@ -834,19 +917,34 @@ auto run(const Config& cfg) -> int {
 
     if (cfg.number_mode == Config::NumberMode::PreserveRecords) {
       auto records = collect_record_spans(input, cfg.separator);
-      const size_t total_records = records.size();
+
+      // [GNU] lines_chunk_split partitions the input BYTES into N
+      // near-equal ranges (the first size%N ranges are one byte
+      // longer); a record belongs to the file in whose range the
+      // record STARTS, so files hold varying record counts. The old
+      // code partitioned by record index, giving every file an
+      // equal number of records (audit #1462; verified against the
+      // 9.4 binary).
+      const size_t total_bytes = input.size();
+      const size_t n = static_cast<size_t>(cfg.num_chunks);
+      const size_t base = n == 0 ? 0 : total_bytes / n;
+      const size_t rem = n == 0 ? 0 : total_bytes % n;
+      auto range_start = [&](size_t i) {
+        return i * base + std::min(i, rem);
+      };
 
       auto record_chunk = [&](int64_t index) -> std::string_view {
-        const size_t start_record =
-            (static_cast<size_t>(index) * total_records) /
-            static_cast<size_t>(cfg.num_chunks);
-        const size_t end_record =
-            (static_cast<size_t>(index + 1) * total_records) /
-            static_cast<size_t>(cfg.num_chunks);
-        if (start_record >= end_record) return {};
-
-        const size_t start = records[start_record].start;
-        const size_t end = records[end_record - 1].end;
+        const size_t lo = range_start(static_cast<size_t>(index));
+        const size_t hi = range_start(static_cast<size_t>(index) + 1);
+        size_t start = std::string::npos;
+        size_t end = 0;
+        for (const auto& record : records) {
+          if (record.start >= lo && record.start < hi) {
+            if (start == std::string::npos) start = record.start;
+            end = record.end;
+          }
+        }
+        if (start == std::string::npos) return {};
         return std::string_view(input.data() + start, end - start);
       };
 
@@ -880,34 +978,33 @@ auto run(const Config& cfg) -> int {
         }
       }
     } else {
-      // Split into N roughly equal chunks.
-      int64_t chunk_size = static_cast<int64_t>(
-          input.size() / static_cast<size_t>(cfg.num_chunks));
-      if (chunk_size == 0) chunk_size = 1;
+      // [GNU] bytes_split is called with (file_size / N, file_size %
+      // N): the first rem chunks get one extra byte (10 bytes over
+      // -n 3 split 4/3/3); the old code gave the whole remainder to
+      // the last chunk (3/3/4) (audit #1462; verified against the
+      // 9.4 binary). All N chunks are written, including empty tail
+      // chunks when the input has fewer bytes than N.
+      const size_t total_bytes = input.size();
+      const size_t n = static_cast<size_t>(cfg.num_chunks);
+      const size_t base = n == 0 ? 0 : total_bytes / n;
+      const size_t rem = n == 0 ? 0 : total_bytes % n;
+      auto range_start = [&](size_t i) {
+        return i * base + std::min(i, rem);
+      };
 
       auto byte_chunk = [&](int64_t index) -> std::string_view {
-        size_t start = static_cast<size_t>(index * chunk_size);
-        if (start >= input.size()) return {};
-
-        size_t end;
-        if (index == cfg.num_chunks - 1) {
-          end = input.size();
-        } else {
-          end = static_cast<size_t>((index + 1) * chunk_size);
-        }
-        return std::string_view(input.data() + start, end - start);
+        const size_t start = range_start(static_cast<size_t>(index));
+        const size_t end = range_start(static_cast<size_t>(index) + 1);
+        if (start >= total_bytes) return {};
+        return std::string_view(input.data() + start,
+                                std::min(end, total_bytes) - start);
       };
 
       if (cfg.selected_chunk.has_value()) {
         safePrint(byte_chunk(*cfg.selected_chunk - 1));
       } else {
         for (int64_t i = 0; i < cfg.num_chunks; ++i) {
-          auto chunk = byte_chunk(i);
-          if (chunk.empty() &&
-              static_cast<size_t>(i * chunk_size) >= input.size()) {
-            break;
-          }
-          if (!write_number_chunk(chunk)) return 1;
+          if (!write_number_chunk(byte_chunk(i))) return 1;
         }
       }
     }
