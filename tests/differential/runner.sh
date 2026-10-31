@@ -13,6 +13,7 @@ WINUXCMD_EXE="${WINUXCMD_EXE:-winuxcmd.exe}"
 GNU_BIN="${GNU_BIN:-}"
 BASELINE="$ROOT/baseline.json"
 WHITELIST="$ROOT/whitelist.txt"
+NORMALIZE_SED="$ROOT/normalize.sed"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -25,17 +26,6 @@ while [ "$#" -gt 0 ]; do
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
-
-# Load the whitelist of known differential gaps (case path<TAB>reason).
-# These cases are reported as KNOWN_DIFF instead of failing the run.
-declare -A KNOWN_DIFFS
-if [ -f "$WHITELIST" ]; then
-  while IFS=$'\t' read -r case_path reason || [ -n "$case_path" ]; do
-    [ -z "$case_path" ] && continue
-    case "$case_path" in \#*) continue ;; esac
-    KNOWN_DIFFS["$case_path"]="$reason"
-  done < "$WHITELIST"
-fi
 
 # Platform of the GNU oracle runtime. A few GNU-visible behaviors are produced
 # by the POSIX runtime rather than by coreutils itself: the diagnostic for a
@@ -66,6 +56,41 @@ case "$(uname -s 2>/dev/null)" in
   MINGW*|MSYS*|CYGWIN*) SUBJECT_LAUNCH=native ;;
   *) SUBJECT_LAUNCH=interop ;;
 esac
+
+# Load the whitelists of known differential gaps (case path<TAB>reason).
+# These cases are reported as KNOWN_DIFF instead of failing the run.
+#
+# The whitelist is split by oracle platform (issue #1127 P3). whitelist.txt
+# holds entries that hold against any oracle; the runner additionally loads
+# whitelist-<platform>.txt for the detected oracle platform
+# (whitelist-linux.txt for the WSL-oracle shape, whitelist-msys.txt for an
+# MSYS2/Git Bash oracle) when that file exists, and a platform entry
+# overrides a common entry for the same case. An excuse recorded against
+# one oracle's runtime - newlib printf rounding under MSYS2, the ncal
+# delta in the WSL CI image, 9p-share behavior in the WSL-side runner -
+# must not excuse the case under the other oracle, where the case either
+# passes outright or surfaces a real difference for a maintainer to
+# disposition. Migration rule: baseline.json is recorded in the linux
+# (WSL) shape, so an entry may move into a platform file only when the
+# recorded shape does not rely on it (its case is recorded PASS, or the
+# entry's evidence is that shape's own); every case recorded non-PASS
+# stays excused under the recorded shape.
+declare -A KNOWN_DIFFS
+WHITELISTS_LOADED=""
+load_whitelist() {
+  local file=$1 case_path reason
+  [ -f "$file" ] || return 0
+  WHITELISTS_LOADED="${WHITELISTS_LOADED:+$WHITELISTS_LOADED, }$(basename "$file")"
+  while IFS=$'\t' read -r case_path reason || [ -n "$case_path" ]; do
+    [ -z "$case_path" ] && continue
+    case "$case_path" in \#*) continue ;; esac
+    KNOWN_DIFFS["$case_path"]="$reason"
+  done < "$file"
+}
+load_whitelist "$WHITELIST"
+if [ "$ORACLE_PLATFORM" = linux ] || [ "$ORACLE_PLATFORM" = msys ]; then
+  load_whitelist "$ROOT/whitelist-$ORACLE_PLATFORM.txt"
+fi
 
 # The oracle's wording depends on its locale: GNU quote() renders Unicode curly
 # quotes (U+2018/2019) under a UTF-8 locale and ASCII quotes under C, so the
@@ -135,26 +160,12 @@ shell_quote() {
 # Output normalization for the comparison in run_case. Both sides pass
 # through the same filter, so a verdict still requires the outputs to agree
 # on everything the filter does not explicitly mask. The filter strips CR
-# (a superset of the CRLF check earlier in the chain) and masks the one
-# genuinely run-varying summary in the corpus: dd's transfer report.
-#
-# GNU dd ends its stderr summary with ", <elapsed> s, <rate>" - values that
-# change on every run and can never match byte-for-byte - and counts
-# records as "<full>+<partial>". WinuxCmd dd prints neither the timing
-# tail nor a partial count, so the mask drops everything after
-# "bytes copied," (the elapsed/rate tail and the optional human-readable
-# size in parentheses) and canonicalizes a "+0" partial count, leaving the
-# deterministic part of the summary - record totals and byte counts - to
-# be compared exactly.
-#
-# The partial mask is deliberately limited to "+0". A real partial-record
-# difference ("0+1 records in" from GNU vs "1 records in" from WinuxCmd)
-# still differs after normalization, so a genuine record-counting
-# divergence stays visible instead of being normalized away.
+# (a superset of the CRLF check earlier in the chain) and then applies the
+# normalization layer in normalize.sed, which masks only genuinely
+# run-varying text (dd's transfer report timing, timestamp times-of-day)
+# and documents per rule why the mask cannot hide a real divergence.
 normalize_output() {
-  tr -d '\r' | sed -E \
-    -e 's/^([0-9]+)\+0 records (in|out)$/\1 records \2/' \
-    -e 's/^([0-9]+ bytes)( \([^)]*\))? copied, .*/\1 copied/'
+  tr -d '\r' | sed -E -f "$NORMALIZE_SED"
 }
 
 run_case() {
@@ -325,7 +336,7 @@ if [ "$case_count" -eq 0 ]; then
   echo "ERROR: differential corpus is empty: $CORPUS" >&2
   exit 2
 fi
-printf '# Differential report\n\nOracle: `%s`\n\nOracle locale: `%s`\n\n| Case | Result |\n|---|---|\n' "$oracle" "$ORACLE_LOCALE" > "$REPORT"
+printf '# Differential report\n\nOracle: `%s`\n\nOracle locale: `%s`\n\nWhitelists: `%s`\n\n| Case | Result |\n|---|---|\n' "$oracle" "$ORACLE_LOCALE" "${WHITELISTS_LOADED:-none}" > "$REPORT"
 results=$(mktemp)
 find "$CORPUS" -type f -name '*.case' | sort | while IFS= read -r file; do
   if [ -n "$ONLY" ] && ! awk -v wanted="$ONLY" '$0 == "cmd: " wanted { found=1 } END { exit !found }' "$file"; then

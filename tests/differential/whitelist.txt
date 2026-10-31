@@ -1,17 +1,21 @@
 # case path<TAB>reason
+#
+# Platform-independent known differential gaps: entries here hold against
+# any GNU oracle and are loaded on every run. Entries that hold only
+# against one oracle's runtime live in the platform files instead -
+# whitelist-linux.txt (WSL-oracle shape) and whitelist-msys.txt
+# (MSYS2/Git Bash oracle) - and runner.sh loads the one matching the
+# detected oracle platform on top of this file (issue #1127 P3).
+
 corpus/ls/04-nul-literal.case	platform: issue #1055 intentionally accepts bare DOS device NUL on native Windows; GNU treats NUL as an ordinary filename (exit 2). /dev/null remains separately checked.
+
 # Verified against GNU coreutils 9.4 (WSL) on the current build. The runner pins
 # WINUX_LANG=en and runs *both* sides under ORACLE_LOCALE (C by default), so a
 # verdict never depends on the locale of the shell that started the runner.
 regressions/21-id-group.case	platform: Windows has no POSIX gid; id -g prints the primary-group RID (197121) instead of /etc/group gid
-regressions/23-cp-link-option.case	environment: CreateHardLinkW cannot hardlink across \\wsl.localhost 9p shares in the WSL-side runner; verified working (hardlink count 2) on native NTFS
-corpus/ln/35-hard.case	environment: same 9p hardlink limitation as cp -l; hard links created on NTFS match GNU
+
 corpus/mkdir/30-exists.case	format: GNU 9.4 mkdir error uses locale-dependent curly quotes U+2018/2019; winuxcmd uses ASCII ' consistently
 
-# Round-4 environment/platform-only differences (not product defects)
-corpus/readlink/01-resolve.case	platform: readlink -f resolves WSL path to Windows UNC (\wsl$Ubuntu-GitLab...); GNU returns the WSL absolute path
-corpus/envsubst/01-basic.case	environment: $HOME is /root on WSL-GNU vs Windows UserProfile on winux
-corpus/mktemp/01-basic.case	environment: tmpdir differs (WSL /tmp vs Windows TEMP)
 # dd/01-count and dd/02-skip are deliberately NOT whitelisted any more.
 # Their only differences were the volatile parts of dd's stderr summary -
 # GNU's elapsed-time/rate tail after "bytes copied," and the "+0"
@@ -22,9 +26,11 @@ corpus/mktemp/01-basic.case	environment: tmpdir differs (WSL /tmp vs Windows TEM
 # masked, so a future counting divergence turns these cases red again
 # instead of hiding behind an exemption.
 regressions/12-seq-limit.case	platform: winux seq is slower for 1M-line output; times out at runner's 10s limit while GNU seq completes fast
+
 corpus/namei/01-basic.case	platform: output format differs between GNU namei (util-linux) and WinuxCmd (Windows path resolution steps)
+
 corpus/namei/02-no-exist.case	platform: output format differs (see 01-basic); the exit status converged in #1127 — both sides now exit 1 for non-existent paths
-corpus/which/01-basic.case	environment: PATH differs between WSL (/usr/bin/sh) and Windows (C:\Windows\System32\sh.exe)
+
 # Byte-verified 2026-09-11: these differ ONLY in message quoting style.
 # GNU quote() emits Unicode curly quotes U+2018/U+2019 under a UTF-8 locale
 # (C.UTF-8/en_US.UTF-8); WinuxCmd emits ASCII consistently. Text, stdout and
@@ -37,16 +43,14 @@ corpus/which/01-basic.case	environment: PATH differs between WSL (/usr/bin/sh) a
 # listed for runs that deliberately set ORACLE_LOCALE to a UTF-8 locale, which
 # is the only configuration in which the quoting style can differ.
 corpus/date/03-12hour-invalid.case	format: GNU Unicode curly quotes vs WinuxCmd ASCII quotes in invalid-date stderr; byte-identical under the default LC_ALL=C oracle
+
 corpus/seq/01-invalid-float.case	format: same quoting-style-only difference as date/03 (invalid float arg)
+
 corpus/od/01-invalid-utf8-operand.case	format: WinuxCmd renders the invalid-UTF-8 operand as '?' (replacement char); GNU 8.32 (newlib, C locale) renders it as ''$'\377''. rc/text identical (M3 wording batch)
 
-# Round-5 verified known differences (oracle-side or platform, not product defects)
-corpus/printf/01-rounding-e.case	oracle: newlib printf rounds 2.455 down to 2.45e+00; double true value is 2.45500...07 so UCRT/glibc half-up 2.46e+00 is correct (issue #984 evidence, Python-verified)
-corpus/printf/02-rounding-f.case	oracle: same newlib rounding defect as 01; WinuxCmd 2.46 matches glibc semantics
-corpus/printf/04-rounding-negative.case	oracle: same newlib rounding defect as 01 (-2.455 -> -2.46 correct)
 corpus/printf/06-overflow-saturate.case	format: same quoting-style-only difference as date/03 (overflow warning). stdout digits, saturated value and rc=1 are byte-identical (#967 uppercase wording verified)
+
 regressions/37-numfmt-options.case	pre-existing: --to=iec-i prints 1.5K instead of GNU 1.5Ki (issue #140 cluster, out of current batch scope; not a regression of the 2026-09-10 batch)
-regressions/41-stdbuf-line-mode.case	platform: Git Bash oracle stdbuf itself fails (libstdbuf.dll not found, rc=125); WinuxCmd succeeds natively (rc=0)
 
 # PR #996 review follow-up. date/23 pins "invalid relative amount must be
 # invalid date, not a crash"; its stderr differs only in quoting style (same
@@ -71,38 +75,6 @@ regressions/41-stdbuf-line-mode.case	platform: Git Bash oracle stdbuf itself fai
 # The cases now carry `oracle_version: >= 9.2` and are SKIPped below that, which
 # keeps KNOWN_DIFF meaning "executed, results differ".
 corpus/date/23-rel-overflow.case	format: same quoting-style-only difference as date/03 (invalid date); rc=1 and "invalid date" text identical
-# Baseline-job oracle delta (wave-1b adjudication): in the CI baseline
-# job (WSL Ubuntu 24.04) the only cal available is ncal's BSD cal -
-# bsdextrautils 2.39 ships no cal at all. ncal pads every row to 22
-# columns with trailing blanks and centres the title over 22 columns;
-# the applet implements the util-linux layout (20 columns, no trailing
-# padding, src/commands/cal.cpp kMonthWidth = 20) that the recorded
-# PASS was taken against. For 02 the delta is wider: -m is --monday
-# (week starts Monday) in util-linux and the applet, but a month
-# operand in ncal, so the two sides print different grids entirely.
-# No util-linux cal package exists for 24.04 to pin instead.
-corpus/cal/01-current.case	oracle: CI oracle is ncal (BSD cal) - 22-column rows with trailing padding vs the applet's util-linux 20-column layout; recorded PASS against a util-linux-semantics cal
-corpus/cal/02-month.case	oracle: same ncal delta as corpus/cal/01, plus -m is --monday to util-linux and the applet but a month operand to ncal
-corpus/cal/03-three-months.case	oracle: same ncal delta as corpus/cal/01 - ncal pads each month row to 22 columns with trailing spaces (monthrangeb %-*s plus separator), the applet prints the util-linux 20-column layout
-corpus/cal/04-julian.case	oracle: same ncal family as corpus/cal/01 - ncal's julian rows are padded wider than the applet's util-linux 27-column julian layout
-corpus/cal/05-month-name.case	oracle: same ncal delta as corpus/cal/01 - single-month rows carry ncal's trailing padding, applet prints util-linux layout
-corpus/cal/06-illegal-month.case	oracle: ncal parsemonth rejects month 13 via errx(EX_USAGE) so the oracle exits 64; the applet follows util-linux cal.c and exits 1 (EXIT_FAILURE) with the cal.c wording
-corpus/cal/07-monday-two-months.case	oracle: ncal -m takes a month argument and consumes -n, leaving 3 operands -> usage exit 64; the applet follows util-linux (-m is --monday, -n is the month count) and prints the 2-month span, exit 0
-corpus/cal/08-year.case	oracle: same ncal delta as corpus/cal/01 across the full-year grid - ncal pads every month row, the applet prints the util-linux layout
-corpus/cal/09-invalid-months-arg.case	oracle: -n is not an ncal option at all (not in its optstring), so ncal usage-exits 64; the applet implements util-linux -n and rejects the non-numeric argument with exit 1
-corpus/cal/10-junk-month.case	oracle: ncal parsemonth rejects the 'x' suffix via errx(EX_USAGE), exit 64; the applet follows util-linux cal.c and exits 1
-corpus/whereis/02-multi-dir-until-f.case	environment: both sides canonicalize -B dirs to absolute paths before printing hits (whereis.c:254), but the oracle's absolute root is its own mktemp sandbox in POSIX form while the subject's is the parallel sandbox in Windows UNC form, and normalize_output has no path-prefix masking - the spellings cannot byte-match although both name the same logical files
-corpus/whereis/03-unusual-count.case	environment: same sandbox-root spelling split as corpus/whereis/02 - the -u selection itself agrees (solo suppressed with exactly one entry, pair printed with two); only the canonicalized absolute path spellings differ by construction
-regressions/56-find-L-loop.case	environment: find loop detection keys on the (volume serial, file index) identity of ancestor directories; through the \\wsl.localhost 9p share in the WSL-side runner the redirector does not return a matching identity for a directory re-reached through a symlink loop, so the subject does not stop where GNU stops. Same 9p family as regressions/23-cp-link-option and corpus/ln/35-hard
-regressions/57-ln-backup-control.case	environment: after the backup rename the case creates a symlink, and reparse-point creation through the \\wsl.localhost 9p share in the WSL-side runner is not supported by the redirector, so the subject exits non-zero where GNU (on the WSL ext4 side) succeeds. Same 9p family as corpus/ln/35-hard
-regressions/42-locale-keyword.case	environment: charmap is defined by the locale the subject runs under; in the WSL-side baseline job the runner's pinned LC_ALL does not reach the Windows subject through the interop chain (forwarding LC_ALL/LANG via WSLENV was tried and the verdict did not change - run 40941525029), so the subject answers from the host locale while the oracle answers for LC_ALL=C. Passes in the native runner shape, where the export reaches the subject; the applet itself honours LC_ALL (src/commands/locale.cpp)
-corpus/ln/39-suffix-enables-backup.case	environment: hard-link creation through the \\wsl.localhost 9p share fails in the runner sandbox (same limitation as corpus/ln/35-hard); on native NTFS the -S backup is created and the link succeeds, matching GNU
-corpus/readlink/02-dangling-canonicalize.case	platform: readlink -f prints the resolved path in Windows UNC spelling (\\\\wsl.localhost\...) where GNU prints the WSL absolute path; the resolved target itself matches (same class as corpus/readlink/01-resolve)
-corpus/readlink/03-no-newline-zero.case	environment: the setup creates symlinks, and reparse-point creation through the \\wsl.localhost 9p share is not supported by the redirector, so the subject side sees a non-link (same family as regressions/57-ln-backup-control)
-corpus/readlink/04-no-newline-multi.case	environment: the setup creates symlinks, and reparse-point creation through the \\wsl.localhost 9p share is not supported by the redirector, so the subject side sees a non-link (same family as regressions/57-ln-backup-control)
-corpus/realpath/37-dangling-default.case	platform: realpath prints the resolved path in Windows UNC spelling (\\\\wsl.localhost\...) where GNU prints the WSL absolute path; the resolved target itself matches (same class as corpus/readlink/01-resolve)
-corpus/realpath/38-relative-base-not-prefix.case	platform: realpath prints the resolved path in Windows UNC spelling (\\\\wsl.localhost\...) where GNU prints the WSL absolute path; the resolved target itself matches (same class as corpus/readlink/01-resolve)
 corpus/sed/02-version-too-new.case	format: GNU prefixes script errors with "-e expression #1, char N:"; winuxcmd prints "sed: <message>" - message text and exit code (1) identical
 corpus/sed/03-q-two-addresses.case	format: same script-error prefix difference as corpus/sed/02 (GNU "-e expression #1, char N:" vs winuxcmd "sed: <message>"); exit code 1 identical
 corpus/sed/05-line-zero-numeric-range.case	format: same script-error prefix difference as corpus/sed/02 (GNU "-e expression #1, char N:" vs winuxcmd "sed: <message>"); exit code 1 identical
-corpus/updatedb/01-silent-success.case	environment: the WSL image's GNU updatedb.sh cannot run at all in the baseline job - it aborts with "updatedb needs to be able to execute '/usr/libexec/frcode', but cannot" (exit 1) because the image does not provide an executable frcode at the path the script was configured with (evidenced from the baseline job log, run 41213512747, where the subject side silently exits 0 and writes the correct 224-byte database). The subject's silent-success shape is the GNU contract and is pinned natively by the updatedb unit tests.

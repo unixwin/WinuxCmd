@@ -1,0 +1,18 @@
+# case path<TAB>reason
+#
+# Known differential gaps verified against an MSYS2/Git Bash oracle
+# (the newlib-based runtime). runner.sh loads this file in addition to
+# whitelist.txt only when the detected oracle platform is msys
+# (issue #1127 P3). These excuses describe the oracle's runtime, not
+# the subject: against a glibc oracle the same cases pass byte-for-byte
+# (they are recorded PASS in baseline.json), so they must not excuse
+# the cases in the WSL-oracle shape.
+
+# Round-5 verified known differences (oracle-side or platform, not product defects)
+corpus/printf/01-rounding-e.case	oracle: newlib printf rounds 2.455 down to 2.45e+00; double true value is 2.45500...07 so UCRT/glibc half-up 2.46e+00 is correct (issue #984 evidence, Python-verified)
+
+corpus/printf/02-rounding-f.case	oracle: same newlib rounding defect as 01; WinuxCmd 2.46 matches glibc semantics
+
+corpus/printf/04-rounding-negative.case	oracle: same newlib rounding defect as 01 (-2.455 -> -2.46 correct)
+
+regressions/41-stdbuf-line-mode.case	platform: Git Bash oracle stdbuf itself fails (libstdbuf.dll not found, rc=125); WinuxCmd succeeds natively (rc=0)
