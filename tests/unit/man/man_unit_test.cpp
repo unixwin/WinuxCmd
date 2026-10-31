@@ -81,13 +81,14 @@ TEST(man, config_file_must_exist) {
   tmp.write("man.conf", "# empty\n");
 
   Pipeline missing;
-  missing.add(L"man.exe", {L"-C", tmp.wpath("absent.conf"), L"ls"});
+  missing.add(L"man.exe", {L"-C", (tmp.path / "absent.conf").wstring(), L"ls"});
   auto r_missing = missing.run();
   EXPECT_EQ(r_missing.exit_code, 1);
   EXPECT_CONTAINS(r_missing.stderr_text, "cannot open config file");
 
   Pipeline present;
-  present.add(L"man.exe", {L"--config-file", tmp.wpath("man.conf"), L"ls"});
+  present.add(L"man.exe",
+              {L"--config-file", (tmp.path / "man.conf").wstring(), L"ls"});
   auto r_present = present.run();
   EXPECT_EQ(r_present.exit_code, 0);
 }

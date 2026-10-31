@@ -43,7 +43,7 @@ TEST(logger, file_option_logs_each_line) {
 
   Pipeline p;
   p.add(L"logger.exe",
-        {L"-s", L"-t", L"unit", L"-f", tmp.wpath("messages.txt")});
+        {L"-s", L"-t", L"unit", L"-f", (tmp.path / "messages.txt").wstring()});
 
   auto r = p.run();
 
