@@ -1,0 +1,9 @@
+cmd: ls
+args: -1 --sort=width
+timeout: 10
+setup: |
+  printf x > ccc
+  printf x > bb
+  printf x > a
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w1 oracle-coreutils-9.4 ls.c:911-919 sort-width-was-invalid
