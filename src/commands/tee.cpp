@@ -50,7 +50,7 @@ auto constexpr TEE_OPTIONS = std::array{
     OPTION("-p", "", "write errors to standard error"),
     // [GNU] --output-error
     OPTION("", "--output-error",
-           "set behavior on write error: 'warn' (default), 'warn-nopipe', "
+           "set behavior on write error: 'warn', 'warn-nopipe', "
            "'exit', 'exit-nopipe'",
            OPTIONAL_STRING_TYPE)};
 
@@ -88,16 +88,83 @@ REGISTER_COMMAND(
       ctx.get<bool>("-i", false) || ctx.get<bool>("--ignore-interrupts", false);
   bool diagnose = ctx.get<bool>("-p", false);
 
-  auto output_error = ctx.get<std::string>("--output-error", "");
-  if (output_error.empty()) {
-    output_error =
-        (diagnose || ctx.has("--output-error")) ? "warn-nopipe" : "warn";
-  } else if (output_error != "warn" && output_error != "warn-nopipe" &&
-             output_error != "exit" && output_error != "exit-nopipe") {
-    safeErrorPrint("tee: invalid argument '");
-    safeErrorPrint(output_error);
-    safeErrorPrint("' for '--output-error'\n");
-    return 1;
+  // [GNU] tee.c:48-57,132-167: the output-error mode machine.
+  // The default (neither -p nor --output-error) is the traditional
+  // sigpipe mode; -p and a bare --output-error select warn-nopipe;
+  // --output-error=MODE goes through XARGMATCH, so unambiguous
+  // abbreviations are accepted.  -p and --output-error are the
+  // same getopt option in GNU, so when both appear the last one
+  // in argv order wins.
+  enum class OutputErrorMode {
+    kSigpipe,
+    kWarn,
+    kWarnNopipe,
+    kExit,
+    kExitNopipe
+  };
+  OutputErrorMode mode = OutputErrorMode::kSigpipe;
+  {
+    auto resolve_mode_value = [&](const std::string& value) -> bool {
+      static constexpr std::array<std::pair<std::string_view,
+                                            OutputErrorMode>,
+                                  4>
+          kModes{{{"warn", OutputErrorMode::kWarn},
+                  {"warn-nopipe", OutputErrorMode::kWarnNopipe},
+                  {"exit", OutputErrorMode::kExit},
+                  {"exit-nopipe", OutputErrorMode::kExitNopipe}}};
+      for (const auto& [name, m] : kModes) {
+        if (value == name) {
+          mode = m;
+          return true;
+        }
+      }
+      int matches = 0;
+      for (const auto& [name, m] : kModes) {
+        if (name.starts_with(value) && !value.empty()) {
+          mode = m;
+          ++matches;
+        }
+      }
+      if (matches == 1) return true;
+      std::string msg = "invalid argument '" + value +
+                        "' for '--output-error'\n"
+                        "Valid arguments are:";
+      for (const auto& [name, m] : kModes) {
+        msg += "\n  - '";
+        msg += name;
+        msg += '\'';
+      }
+      msg += "\nTry 'tee --help' for more information.";
+      safeErrorPrintLn("tee: " + msg);
+      return false;
+    };
+
+    bool p_is_last = false;
+    if (ctx.has("--output-error") && diagnose && ctx.metas) {
+      int last_p = -1, last_oe = -1;
+      for (const auto& occurrence : ctx.options.occurrences()) {
+        if (!occurrence.consumed()) continue;
+        if (occurrence.name() == "-p") {
+          last_p = std::max(last_p, occurrence.global_index());
+        } else if (occurrence.name() == "--output-error") {
+          last_oe = std::max(last_oe, occurrence.global_index());
+        }
+      }
+      p_is_last = last_p > last_oe;
+    }
+
+    if (p_is_last) {
+      mode = OutputErrorMode::kWarnNopipe;
+    } else if (ctx.has("--output-error")) {
+      auto value = ctx.get<std::string>("--output-error", "");
+      if (value.empty()) {
+        mode = OutputErrorMode::kWarnNopipe;
+      } else if (!resolve_mode_value(value)) {
+        return 1;
+      }
+    } else if (diagnose) {
+      mode = OutputErrorMode::kWarnNopipe;
+    }
   }
 
   if (ignore_interrupts) {
@@ -110,10 +177,38 @@ REGISTER_COMMAND(
     output_files.push_back(std::string(arg));
   }
 
-  bool encountered_error = false;
+  bool ok = true;
+
+  // [GNU] tee.c fail_output / tee_files: a failed output is
+  // diagnosed once as 'tee: <name>: <error>' and removed; the
+  // remaining outputs keep receiving input.  Whether a failure is
+  // reported, and whether it is immediately fatal, depends on the
+  // mode (EPIPE is silent in the *-nopipe modes).
+  auto fail_output = [&](const std::string& display_name, int err) -> bool {
+    bool is_epipe = (err == EPIPE);
+    bool reportable = !is_epipe || mode == OutputErrorMode::kWarn ||
+                      mode == OutputErrorMode::kExit;
+    if (reportable) {
+      safeErrorPrintLn("tee: " + display_name + ": " +
+                       std::string(strerror(err)));
+      ok = false;
+    } else if (mode == OutputErrorMode::kSigpipe) {
+      // Traditional mode dies on SIGPIPE; there is no signal to
+      // die by here, so the run simply fails (PORT).
+      ok = false;
+    }
+    return reportable && (mode == OutputErrorMode::kExit ||
+                          mode == OutputErrorMode::kExitNopipe);
+  };
+
+  struct OutputSink {
+    std::string name;
+    std::ofstream stream;
+    bool alive = true;
+  };
+  SmallVector<OutputSink, 32> sinks;
 
   // Open output files
-  SmallVector<std::ofstream, 32> file_streams;
   for (const auto& filename : output_files) {
     // Resolve through the shared operand boundary so MSYS-style paths,
     // POSIX pseudo-devices (/dev/null -> NUL), and the /dev/std{out,err}
@@ -125,67 +220,74 @@ REGISTER_COMMAND(
     if (!file.is_open()) {
       // Capture errno before printing: output helpers can clobber it.
       const int saved_errno = errno;
-      safeErrorPrint("tee: '");
-      safeErrorPrint(filename);
-      safeErrorPrint("': ");
-      safeErrorPrint(strerror(saved_errno));
-      safeErrorPrint("\n");
-      encountered_error = true;
+      // [GNU] tee.c:261-283: the diagnostic is quotef(file) -- a
+      // plain name prints bare -- and in the exit modes the open
+      // failure is fatal on the spot.
+      safeErrorPrintLn("tee: " + filename + ": " +
+                       std::string(strerror(saved_errno)));
+      if (mode == OutputErrorMode::kExit ||
+          mode == OutputErrorMode::kExitNopipe) {
+        return 1;
+      }
+      ok = false;
       continue;
     }
 
-    file_streams.push_back(std::move(file));
+    sinks.push_back(OutputSink{filename, std::move(file), true});
   }
 
-  auto handle_write_error = [&]() -> bool {
-    safeErrorPrint("tee: write error\n");
-    return output_error == "exit" || output_error == "exit-nopipe";
-  };
+  bool stdout_alive = true;
+  size_t alive_count = sinks.size() + 1;
 
-  auto write_stdout_copy = [&](const char* data, size_t size) -> bool {
-    if (size == 0) return true;
-    if (fwrite(data, 1, size, stdout) != size) {
-      return false;
-    }
-    return true;
-  };
-
-  // Read from stdin and write exact bytes to all outputs.
+  // Read from stdin and write exact bytes to all live outputs.
   std::array<char, 8192> buffer{};
-  while (std::cin.good()) {
+  while (alive_count > 0 && std::cin.good()) {
     std::cin.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
     auto got = static_cast<size_t>(std::cin.gcount());
     if (got == 0) break;
 
-    if (!write_stdout_copy(buffer.data(), got)) {
-      handle_write_error();
-      // A closed downstream pipe cannot recover. Continuing would repeatedly
-      // hit the same error while consuming stdin indefinitely.
-      return 1;
+    if (stdout_alive &&
+        fwrite(buffer.data(), 1, got, stdout) != got) {
+      int err = errno != 0 ? errno : EIO;
+      stdout_alive = false;
+      --alive_count;
+      if (fail_output("standard output", err)) return 1;
     }
 
-    for (auto& file : file_streams) {
-      file.write(buffer.data(), static_cast<std::streamsize>(got));
-      if (file.fail()) {
-        encountered_error = true;
-        if (handle_write_error()) return 1;
+    for (auto& sink : sinks) {
+      if (!sink.alive) continue;
+      sink.stream.write(buffer.data(), static_cast<std::streamsize>(got));
+      if (sink.stream.fail()) {
+        int err = errno != 0 ? errno : EIO;
+        sink.alive = false;
+        --alive_count;
+        if (fail_output(sink.name, err)) return 1;
       }
     }
   }
 
   if (std::cin.bad()) {
-    safeErrorPrint("tee: read error\n");
+    // [GNU] tee.c:327: 'tee: read error: <errno text>'.
+    if (errno != 0) {
+      safeErrorPrintLn("tee: read error: " + std::string(strerror(errno)));
+    } else {
+      safeErrorPrintLn("tee: read error");
+    }
     return 1;
   }
 
-  // Close all files
-  for (auto& file : file_streams) {
-    file.close();
-    if (file.fail()) {
-      safeErrorPrint("tee: error closing file\n");
-      encountered_error = true;
+  // Close the files that are still outputs (removed outputs are
+  // not closed again, as in tee_files).
+  for (auto& sink : sinks) {
+    if (!sink.alive) continue;
+    sink.stream.close();
+    if (sink.stream.fail()) {
+      int err = errno != 0 ? errno : EIO;
+      safeErrorPrintLn("tee: " + sink.name + ": " +
+                       std::string(strerror(err)));
+      ok = false;
     }
   }
 
-  return encountered_error ? 1 : 0;
+  return ok ? 0 : 1;
 }

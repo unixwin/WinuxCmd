@@ -1144,6 +1144,22 @@
       "bucket": "SKIP",
       "command": "tee"
     },
+    "corpus/tee/04-exit-open-fatal.case": {
+      "bucket": "PASS",
+      "command": "tee"
+    },
+    "corpus/tee/05-open-failure-bare.case": {
+      "bucket": "PASS",
+      "command": "tee"
+    },
+    "corpus/tee/06-abbreviation.case": {
+      "bucket": "PASS",
+      "command": "tee"
+    },
+    "corpus/tee/07-invalid-mode.case": {
+      "bucket": "PASS",
+      "command": "tee"
+    },
     "corpus/test/01-dev-null-exists.case": {
       "bucket": "PASS",
       "command": "test"
