@@ -190,11 +190,14 @@ TEST(look, look_missing_dictionary_error_quotes_operand_spelling) {
   TEST_LOG_EXIT_CODE(r);
   TEST_LOG("look missing dictionary stderr", r.stderr_text);
 
-  // [GNU] the message quotes what the user typed, never the folded native
-  // form (MSYS prints the operand spelling, #1234 nit precedent).
+  // [GNU] util-linux look reports an unopenable dictionary with
+  // err(EXIT_FAILURE, "%s", file) (misc-utils/look.c:154-155): the
+  // operand spelling as typed, followed by the strerror text -- no
+  // "cannot open" wording and no quotes.
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_CONTAINS(r.stderr_text,
-                  "cannot open '" + look_dialect_detail::utf8(operand) + "'");
+                  look_dialect_detail::utf8(operand) +
+                      ": No such file or directory");
 }
 
 TEST(look, look_native_dictionary_still_opens) {
