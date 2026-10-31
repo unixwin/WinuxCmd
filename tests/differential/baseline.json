@@ -1100,6 +1100,14 @@
       "bucket": "PASS",
       "command": "test"
     },
+    "corpus/test/12-ef-distinct-devices.case": {
+      "bucket": "PASS",
+      "command": "test"
+    },
+    "corpus/test/13-ef-same-device.case": {
+      "bucket": "PASS",
+      "command": "test"
+    },
     "corpus/wc/01-ctrlz-binary-stdin.case": {
       "bucket": "PASS",
       "command": "wc"
