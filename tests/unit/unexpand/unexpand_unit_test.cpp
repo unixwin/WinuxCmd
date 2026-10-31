@@ -150,13 +150,19 @@ TEST(unexpand, unexpand_no_utf8_preserves_utf8_bom_bytes) {
                               static_cast<char>(0xBF), ' ', ' ', ' ', ' ', ' ',
                               ' ', ' ', ' ', 'x', '\n'});
 
+  // [GNU] no BOM handling (unexpand.c is byte-oriented): the BOM
+  // bytes are a non-blank prefix, so the blanks after a BOM are
+  // not initial blanks and stay unconverted without -a; with -a
+  // they convert on the byte columns the BOM occupies
+  // (audit #1462).
   Pipeline default_mode;
   default_mode.set_cwd(tmp.wpath());
   default_mode.add(L"unexpand.exe", {L"bom.txt"});
   auto default_result = default_mode.run();
 
   EXPECT_EQ(default_result.exit_code, 0);
-  EXPECT_EQ_TEXT(default_result.stdout_text, "\tx\n");
+  EXPECT_EQ(default_result.stdout_text,
+            std::string("\xEF\xBB\xBF        x\n", 13));
 
   Pipeline ascii_mode;
   ascii_mode.set_cwd(tmp.wpath());
