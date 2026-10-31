@@ -40,9 +40,9 @@ REGISTER_COMMAND(
     /* see also */
     "true(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", FALSE_OPTIONS) {
   // [GNU] false ignores every operand: no getopt is run and "--help"/
-  // "--version" are honored only as the sole argument (intercepted by the
-  // dispatcher, still printed with the exit status 0 every WinuxCmd help
-  // uses; coreutils 8.32+ takes the EXIT_FAILURE there), so this handler
+  // "--version" are honored only as the sole argument (intercepted by
+  // the dispatcher, which prints them but returns EXIT_FAILURE for
+  // false, per true.c with false.c's EXIT_STATUS), so this handler
   // only ever runs for the plain failure case or with operands to
   // disregard (WinuxCmd #1196).
   (void)ctx;

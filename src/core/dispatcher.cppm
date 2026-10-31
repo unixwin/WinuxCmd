@@ -1487,7 +1487,9 @@ class RegistryImpl {
 
     if (wants_help) {
       cmd::meta::Registry::print_help(cmdName);
-      return 0;
+      // [GNU] true.c with false.c's EXIT_STATUS: 'false --help'
+      // prints the help but exits with EXIT_FAILURE (1).
+      return cmdName == "false" ? 1 : 0;
     }
 
     if (!no_argument_option.empty()) {
@@ -1517,7 +1519,9 @@ class RegistryImpl {
       safePrintLn("There is NO WARRANTY, to the extent permitted by law.");
       safePrintLn("");
       safePrintLn("Written by WinuxCmd contributors.");
-      return 0;
+      // [GNU] true.c:75-79 with false.c's EXIT_STATUS: the version
+      // text is printed, then control returns EXIT_FAILURE (1).
+      return cmdName == "false" ? 1 : 0;
     }
 
     return it->second.handler(effective_args);

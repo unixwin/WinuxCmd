@@ -152,6 +152,10 @@
       "bucket": "PASS",
       "command": "false"
     },
+    "corpus/false/28-help-with-operand.case": {
+      "bucket": "PASS",
+      "command": "false"
+    },
     "corpus/find/06-single-match.case": {
       "bucket": "PASS",
       "command": "find"
@@ -525,6 +529,10 @@
       "command": "tr"
     },
     "corpus/true/26-rc.case": {
+      "bucket": "PASS",
+      "command": "true"
+    },
+    "corpus/true/27-help-with-operand.case": {
       "bucket": "PASS",
       "command": "true"
     },

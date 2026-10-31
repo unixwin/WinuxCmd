@@ -1,0 +1,5 @@
+cmd: true
+args: --help x
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w3b true help-not-sole ignored
