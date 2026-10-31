@@ -335,12 +335,19 @@ TEST(patch, patch_exit_codes) {
   auto ru = usage.run();
   EXPECT_EQ(ru.exit_code, 2);
 
-  // 2: cannot open target file.
+  // 1: the target file does not exist — GNU patch runs the
+  // file-name dialogue; the patch is on stdin, so the prompts read
+  // EOF and the file is skipped as ignored (pch.c:270-320).
   Pipeline missing;
   missing.set_cwd(tmp.wpath());
   missing.set_stdin("--- gone.txt\n+++ gone.txt\n@@ -1,1 +1,1 @@\n-a\n+b\n");
   missing.add(L"patch.exe", {});
-  EXPECT_EQ(missing.run().exit_code, 2);
+  auto rm = missing.run();
+  EXPECT_EQ(rm.exit_code, 1);
+  EXPECT_TRUE(rm.stdout_text.find("can't find file to patch at input "
+                                  "line 3") != std::string::npos);
+  EXPECT_TRUE(rm.stdout_text.find("1 out of 1 hunk ignored") !=
+              std::string::npos);
 }
 
 // `--- /dev/null` patches create the +++ target file.
@@ -381,6 +388,9 @@ TEST(patch, patch_empty_target_file) {
 }
 
 // [GNU] -N/--forward skips hunks that are already applied.
+// [GNU] -N on an already-applied patch: the first-hunk DWIM detects
+// the reversed patch and skips the whole file; the hunks count as
+// ignored (exit 1) and are rejected (patch.c:424-458, util.c:1043).
 TEST(patch, patch_forward_skips_already_applied) {
   TempDir tmp;
   tmp.write("f.txt", "world\n");
@@ -396,8 +406,14 @@ TEST(patch, patch_forward_skips_already_applied) {
   p.add(L"patch.exe", {L"-N"});
   auto r = p.run();
   TEST_LOG("patch forward stdout", r.stdout_text);
-  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(r.exit_code, 1);
   EXPECT_EQ_TEXT(tmp.read("f.txt"), "world\n");
+  EXPECT_TRUE(r.stdout_text.find("Reversed (or previously applied) patch "
+                                 "detected!  Skipping patch.") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("1 out of 1 hunk ignored -- saving rejects "
+                                 "to file f.txt.rej") != std::string::npos);
+  EXPECT_TRUE(tmp.read("f.txt.rej").find("-hello") != std::string::npos);
 }
 
 // [GNU] -R reverses old and new.
@@ -649,7 +665,10 @@ TEST(patch, patch_strip_applies_to_header_names_issue1345) {
     EXPECT_EQ(r.exit_code, 0);
     EXPECT_EQ_TEXT(tmp.read("src/f.txt"), "l1\nL2\nl3\n");
   }
-  // -p0 keeps the full header path and cannot find the file.
+  // -p0 keeps the full header path, which does not exist here: GNU
+  // patch runs the file-name dialogue; with the patch itself on
+  // stdin the prompts read EOF and the file is skipped as ignored
+  // (exit 1), leaving everything untouched (pch.c:270-320).
   {
     TempDir tmp;
     tmp.mkdir("src");
@@ -659,7 +678,7 @@ TEST(patch, patch_strip_applies_to_header_names_issue1345) {
     p.set_stdin(diff);
     p.add(L"patch.exe", {L"-p0"});
     auto r = p.run();
-    EXPECT_EQ(r.exit_code, 2);
+    EXPECT_EQ(r.exit_code, 1);
     EXPECT_EQ_TEXT(tmp.read("src/f.txt"), "l1\nl2\nl3\n");
   }
 }
@@ -830,4 +849,170 @@ TEST(patch, patch_input_operand_uses_shared_path_boundary_rootaudit1364) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(tmp.read("f.txt"), "world\n");
+}
+
+// [GNU] Reject files open with the patch's own header pair, carry the
+// hunk's function context, and use output coordinates: a reject after
+// a line-adding hunk is shifted by that hunk's delta
+// (abort_hunk_unified, patch.c:1273).
+TEST(patch, patch_reject_header_coordinates_and_context) {
+  TempDir tmp;
+  std::string original;
+  for (int i = 1; i <= 20; ++i) original += std::to_string(i) + "\n";
+  tmp.write("orig.txt", original);
+  std::string patch_data =
+      "--- orig.txt\n"
+      "+++ orig.txt\n"
+      "@@ -2,2 +2,4 @@\n"
+      " 2\n"
+      "+2a\n"
+      "+2b\n"
+      " 3\n"
+      "@@ -18,3 +18,3 @@ somefunc\n"
+      " 18\n"
+      "-19\n"
+      "+nineteen\n"
+      " 20\n";
+  // Line 19 already differs, so hunk 2 fails after hunk 1 added 2.
+  std::string work = original;
+  work.replace(work.find("\n19\n"), 4, "\nNINETEEN\n");
+  tmp.write("work.txt", work);
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin(patch_data);
+  p.add(L"patch.exe", {L"work.txt"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.find("Hunk #2 FAILED at 20.") !=
+              std::string::npos);
+  const std::string rej = tmp.read("work.txt.rej");
+  EXPECT_TRUE(rej.find("--- orig.txt\n+++ orig.txt\n") != std::string::npos);
+  EXPECT_TRUE(rej.find("@@ -20,3 +20,3 @@ somefunc") != std::string::npos);
+  EXPECT_TRUE(rej.find("-19") != std::string::npos);
+}
+
+// [GNU] Under --dry-run the banner is "checking file", failures still
+// print the summary (without the saving clause), and no reject file
+// appears (patch.c:632-670).
+TEST(patch, patch_dry_run_reports_summary_without_saving) {
+  TempDir tmp;
+  tmp.write("f.txt", "one\ntwo\n");
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("--- f.txt\n+++ f.txt\n@@ -1,1 +1,1 @@\n-nomatch\n+yes\n");
+  p.add(L"patch.exe", {L"--dry-run"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.find("checking file f.txt") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("1 out of 1 hunk FAILED") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("saving rejects") == std::string::npos);
+  EXPECT_TRUE(tmp.read("f.txt.rej").empty());
+}
+
+// [GNU] The offset in a success line is the cumulative in_offset, and
+// it keeps printing on later hunks whose own match is exact once the
+// standing offset is nonzero (patch.c:487-499).
+TEST(patch, patch_success_offset_is_cumulative) {
+  TempDir tmp;
+  tmp.write("f.txt", "pad\npad\na\nb\nc\n");
+  std::string patch_data =
+      "--- f.txt\n"
+      "+++ f.txt\n"
+      "@@ -1,1 +1,1 @@\n"
+      "-a\n"
+      "+A\n"
+      "@@ -2,1 +2,1 @@\n"
+      "-b\n"
+      "+B\n";
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin(patch_data);
+  p.add(L"patch.exe", {});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("Hunk #1 succeeded at 3 (offset 2 "
+                                 "lines).") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("Hunk #2 succeeded at 4 (offset 2 "
+                                 "lines).") != std::string::npos);
+}
+
+// [GNU] fatal() wording (util.c) and numeric_string diagnostics
+// (patch.c:1094): garbage input and bad -F/-p values.
+TEST(patch, patch_garbage_and_numeric_diagnostics) {
+  TempDir tmp;
+  tmp.write("f.txt", "hello\n");
+
+  Pipeline garbage;
+  garbage.set_cwd(tmp.wpath());
+  garbage.set_stdin("this is not a patch\n");
+  garbage.add(L"patch.exe", {});
+  auto rg = garbage.run();
+  EXPECT_EQ(rg.exit_code, 2);
+  EXPECT_TRUE(rg.stderr_text.find(
+                  "patch: **** Only garbage was found in the patch "
+                  "input.") != std::string::npos);
+
+  // An empty patch input is a silent success.
+  Pipeline empty;
+  empty.set_cwd(tmp.wpath());
+  empty.set_stdin("");
+  empty.add(L"patch.exe", {});
+  auto re = empty.run();
+  EXPECT_EQ(re.exit_code, 0);
+  EXPECT_TRUE(re.stdout_text.empty());
+  EXPECT_TRUE(re.stderr_text.empty());
+
+  Pipeline fuzz;
+  fuzz.set_cwd(tmp.wpath());
+  fuzz.set_stdin("");
+  fuzz.add(L"patch.exe", {L"-F", L"abc"});
+  auto rf = fuzz.run();
+  EXPECT_EQ(rf.exit_code, 2);
+  EXPECT_TRUE(rf.stderr_text.find("patch: **** fuzz factor abc is not a "
+                                  "number") != std::string::npos);
+
+  Pipeline strip;
+  strip.set_cwd(tmp.wpath());
+  strip.set_stdin("");
+  strip.add(L"patch.exe", {L"--strip=-1"});
+  auto rs = strip.run();
+  EXPECT_EQ(rs.exit_code, 2);
+  EXPECT_TRUE(rs.stderr_text.find("patch: **** strip count -1 is "
+                                  "negative") != std::string::npos);
+}
+
+// [GNU] -r - discards rejects: the summary loses its saving clause
+// and no file named "-" is created (patch.c:640).
+TEST(patch, patch_reject_file_dash_discards) {
+  TempDir tmp;
+  tmp.write("f.txt", "one\ntwo\n");
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("--- f.txt\n+++ f.txt\n@@ -1,1 +1,1 @@\n-nomatch\n+yes\n");
+  p.add(L"patch.exe", {L"-r", L"-"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.find("1 out of 1 hunk FAILED") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("saving rejects") == std::string::npos);
+  EXPECT_TRUE(tmp.read("-").empty());
+}
+
+// [GNU] --batch with a missing target: no prompts, the file counts as
+// ignored (pch.c:288).
+TEST(patch, patch_batch_missing_target_skips) {
+  TempDir tmp;
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("--- ghost.txt\n+++ ghost.txt\n@@ -1,1 +1,1 @@\n-a\n+b\n");
+  p.add(L"patch.exe", {L"--batch"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.find("No file to patch.  Skipping patch.") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("1 out of 1 hunk ignored") !=
+              std::string::npos);
 }

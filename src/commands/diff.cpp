@@ -1594,10 +1594,12 @@ auto compare_file_pair(const std::string &file1, const std::string &file2,
   // fall back into the unchanged flow and realign positionally.
   const bool ignore_hunks =
       cfg.ignore_blank_lines || !cfg.ignore_matching.empty();
+  std::vector<diff_engine::Edit> raw_edits;
   std::vector<diff_engine::Edit> script_edits;
   if (ignore_hunks) {
+    raw_edits = compute_diff(cmp1, cmp2);
     script_edits = diff_engine::drop_ignored_hunks(
-        compute_diff(cmp1, cmp2), lines1, lines2,
+        raw_edits, lines1, lines2,
         diff_engine::make_blank_or_matching_predicate(cfg.ignore_blank_lines,
                                                       cfg.ignore_matching));
   }
@@ -1640,6 +1642,36 @@ auto compare_file_pair(const std::string &file1, const std::string &file2,
                           final_edits);
       break;
     case OutputMode::SideBySide:
+      if (ignore_hunks) {
+        // [GNU] With -B/-I, side-by-side output renders positionally
+        // over sections built from the RAW script (side.c): an ignored
+        // hunk's lines join the surrounding common span and pair there.
+        // The dropped 1:1 script cannot express that span — unabsorbed
+        // ignored lines fall below later KEEP indices and vanish from
+        // the output — so this path uses the sdiff section renderer,
+        // exactly like the sdiff command itself.
+        const auto script = diff_engine::build_sdiff_script(
+            raw_edits, lines1, lines2,
+            diff_engine::make_blank_or_matching_predicate(
+                cfg.ignore_blank_lines, cfg.ignore_matching));
+        const diff_engine::SdiffStyle style{cfg.tabsize, cfg.expand_tabs};
+        const auto cols = diff_engine::sdiff_columns(
+            cfg.side_width, style.tabsize, style.expand_tabs);
+        const std::vector<std::string> shown1 =
+            cfg.strip_trailing_cr ? strip_trailing_cr_lines(lines1) : lines1;
+        const std::vector<std::string> shown2 =
+            cfg.strip_trailing_cr ? strip_trailing_cr_lines(lines2) : lines2;
+        std::string out;
+        for (const auto &section : script.sections) {
+          if (!section.is_hunk && cfg.suppress_common) continue;
+          diff_engine::append_sdiff_section_rows(
+              section, shown1, shown2, file1_input.ends_with_newline,
+              file2_input.ends_with_newline, cols, style, cfg.left_column,
+              out);
+        }
+        dput(out);
+        break;
+      }
       diff_engine::emit_side_by_side(
           final_edits, lines1, lines2, file1_input.ends_with_newline,
           file2_input.ends_with_newline, cfg.side_width, cfg.suppress_common,
