@@ -464,10 +464,14 @@ TEST(wc, wc_reports_is_a_directory_for_directory_input) {
 
   // [GNU] wc.c wc(): the read fails EISDIR and is diagnosed, but
   // the (zero) count line is still written -- only the exit
-  // status fails (verified against coreutils 9.4).
+  // status fails (verified against coreutils 9.4, whose own line
+  // is width-padded; compare with whitespace removed).
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stdout_text.find("0 0 0") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("indir") != std::string::npos);
+  std::string squashed;
+  for (char c : r.stdout_text) {
+    if (c != ' ' && c != '\r' && c != '\n') squashed += c;
+  }
+  EXPECT_TRUE(squashed.find("000indir") != std::string::npos);
   EXPECT_TRUE(r.stderr_text.find("wc: indir: Is a directory") !=
               std::string::npos);
 }
