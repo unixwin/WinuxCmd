@@ -296,6 +296,42 @@
       "bucket": "PASS",
       "command": "paste"
     },
+    "corpus/pathchk/01-not-a-directory.case": {
+      "bucket": "PASS",
+      "command": "pathchk"
+    },
+    "corpus/pathchk/02-missing-parent-ok.case": {
+      "bucket": "PASS",
+      "command": "pathchk"
+    },
+    "corpus/pathchk/03-portability-reserved-ok.case": {
+      "bucket": "PASS",
+      "command": "pathchk"
+    },
+    "corpus/pathchk/04-leading-dash.case": {
+      "bucket": "PASS",
+      "command": "pathchk"
+    },
+    "corpus/pathchk/05-nonportable-char.case": {
+      "bucket": "PASS",
+      "command": "pathchk"
+    },
+    "corpus/pathchk/06-component-limit.case": {
+      "bucket": "PASS",
+      "command": "pathchk"
+    },
+    "corpus/pathchk/07-empty-default.case": {
+      "bucket": "PASS",
+      "command": "pathchk"
+    },
+    "corpus/pathchk/08-empty-portability.case": {
+      "bucket": "PASS",
+      "command": "pathchk"
+    },
+    "corpus/pathchk/09-total-limit.case": {
+      "bucket": "PASS",
+      "command": "pathchk"
+    },
     "corpus/pwd/01-unknown-option.case": {
       "bucket": "PASS",
       "command": "pwd"
