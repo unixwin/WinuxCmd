@@ -1614,15 +1614,26 @@ auto compare_file_pair(const std::string &file1, const std::string &file2,
                                   [](const diff_engine::Edit &edit) {
                                     return edit.type != EditType::KEEP;
                                   });
-  if (compare_lines1 == compare_lines2 || (ignore_hunks && !has_real_changes)) {
+  const bool no_real_changes =
+      compare_lines1 == compare_lines2 || (ignore_hunks && !has_real_changes);
+  if (no_real_changes) {
     if (cfg.report_identical) {
       dput("Files ");
       dput(file1);
       dput(" and ");
       dput(file2);
       dput(" are identical\n");
+      return 0;
     }
-    return 0;
+    // [GNU diff.c:817-822, analyze.c:635, side.c:36-47] Side-by-side is
+    // a listing format: no_diff_means_no_output is false for
+    // OUTPUT_SDIFF unless --suppress-common-lines, so the output block
+    // runs even when no hunk survives and print_sdiff_script renders
+    // every common line.  Fall through to the format switch; the exit
+    // status below still reports 0.
+    if (cfg.output_mode != OutputMode::SideBySide || cfg.suppress_common) {
+      return 0;
+    }
   }
 
   // One edit script drives every output format (pre-dropped for -B/-I).
@@ -1764,7 +1775,7 @@ auto compare_file_pair(const std::string &file1, const std::string &file2,
     }
   }
 
-  return 1;
+  return no_real_changes ? 0 : 1;
 }
 
 // One directory-pair level: compare same-named files (with the "diff
