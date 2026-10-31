@@ -469,10 +469,11 @@ auto format_floating_point(const unsigned char* data, size_t available,
 
 auto append_ascii_trailer(std::string& line,
                           const std::vector<unsigned char>& data, size_t offset,
-                          size_t n_bytes, size_t bytes_per_line) -> void {
-  if (n_bytes < bytes_per_line) {
-    line.append((bytes_per_line - n_bytes) * 3, ' ');
-  }
+                          size_t n_bytes, size_t pad_spaces) -> void {
+  // [GNU] the hexl trailer is preceded by exactly the padding
+  // that fills the row to the shared block width (od.c:1213-1222),
+  // then "  >", the bytes as graphic-or-dot, and '<'.
+  line.append(pad_spaces, ' ');
   line.append("  >");
   for (size_t i = 0; i < n_bytes; ++i) {
     unsigned char c = data[offset + i];
@@ -496,28 +497,58 @@ auto append_formatted_line(std::string& output, const Config& cfg,
   }
 
   const int width = integer_field_width(spec);
-  for (size_t i = 0; i < n_bytes; i += spec.size) {
+
+  // [GNU] all specs of one block share a single row width:
+  // width_per_block is the max over specs of (field_width + 1) *
+  // fields_per_block, and each spec's pad_width makes up its
+  // difference (od.c:1944-1958). PRINT_FIELDS deals the pad out
+  // field by field -- adjusted_width = pad_remaining -
+  // pad * (i - 1) / fields + field_width -- so with several specs
+  // the narrower formats gain extra leading space and every row
+  // of the block ends up the same total width (od.c:425-447).
+  // A single spec always reduces to the plain width + 1 slot.
+  const int fields = static_cast<int>(cfg.bytes_per_line / spec.size);
+  int width_per_block = 0;
+  for (const auto& other : cfg.specs) {
+    const int other_fields =
+        static_cast<int>(cfg.bytes_per_line / other.size);
+    width_per_block = std::max(
+        width_per_block, (integer_field_width(other) + 1) * other_fields);
+  }
+  const int pad = width_per_block - width * fields;
+  const int present = static_cast<int>(
+      (n_bytes + spec.size - 1) / spec.size);
+  const int blank = fields - present;
+
+  int pad_remaining = pad;
+  for (int k = fields; k > blank; --k) {
+    const int next_pad = pad * (k - 1) / fields;
+    const int adjusted = pad_remaining - next_pad + width;
+    pad_remaining = next_pad;
+
+    const size_t i = static_cast<size_t>(fields - k) * spec.size;
     size_t available = std::min(spec.size, n_bytes - i);
-    std::ostringstream field;
-    field << ' ';
+    std::string text;
     if (spec.kind == FormatKind::character) {
-      field << std::setw(width) << format_character(data[offset + i]);
+      text = format_character(data[offset + i]);
     } else if (spec.kind == FormatKind::named_character) {
-      field << std::setw(width) << format_named_character(data[offset + i]);
+      text = format_named_character(data[offset + i]);
     } else if (spec.kind == FormatKind::floating_point) {
-      field << std::setw(width)
-            << format_floating_point(data.data() + offset + i, available,
-                                     spec.size, cfg.endian);
+      text = format_floating_point(data.data() + offset + i, available,
+                                   spec.size, cfg.endian);
     } else {
       uint64_t raw =
           load_integer(data, offset + i, available, spec.size, cfg.endian);
+      std::ostringstream digits;
       if (spec.kind == FormatKind::hexadecimal) {
-        field << std::setfill('0') << std::setw(width) << std::hex
-              << std::nouppercase << raw;
+        // [GNU] "%*.{width}x": digits zero-padded to the field
+        // width, the field space-padded to adjusted (od.c:731).
+        digits << std::setfill('0') << std::setw(width) << std::hex
+               << std::nouppercase << raw;
       } else if (spec.kind == FormatKind::octal) {
-        field << std::setfill('0') << std::setw(width) << std::oct << raw;
+        digits << std::setfill('0') << std::setw(width) << std::oct << raw;
       } else if (spec.kind == FormatKind::unsigned_decimal) {
-        field << std::setw(width) << std::dec << raw;
+        digits << std::dec << raw;
       } else {
         int64_t signed_value = static_cast<int64_t>(raw);
         if (available == spec.size && spec.size < sizeof(uint64_t) &&
@@ -525,14 +556,20 @@ auto append_formatted_line(std::string& output, const Config& cfg,
           signed_value =
               static_cast<int64_t>(raw | (~0ULL << (spec.size * CHAR_BIT)));
         }
-        field << std::setw(width) << std::dec << signed_value;
+        digits << std::dec << signed_value;
       }
+      text = digits.str();
     }
-    output += field.str();
+    if (static_cast<int>(text.size()) < adjusted) {
+      output.append(static_cast<size_t>(adjusted) - text.size(), ' ');
+    }
+    output += text;
   }
 
   if (spec.ascii_trailer) {
-    append_ascii_trailer(output, data, offset, n_bytes, cfg.bytes_per_line);
+    const int trailer_pad = blank * width + pad * blank / fields;
+    append_ascii_trailer(output, data, offset, n_bytes,
+                         static_cast<size_t>(trailer_pad));
   }
   output.push_back('\n');
 }
