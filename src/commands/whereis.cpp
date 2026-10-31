@@ -38,91 +38,155 @@ auto constexpr WHEREIS_OPTIONS = std::array{
     OPTION("-S", "", "define a source lookup directory", STRING_TYPE),
     OPTION("-f", "", "terminate the last directory list"),
     OPTION("-l", "", "list the effective lookup paths"),
-    // [GNU] -g/-h: legacy options accepted and ignored (#1072); hidden
-    OPTION("-g", "", "", BOOL_TYPE), OPTION("-h", "", "", BOOL_TYPE)};
+    // [GNU] -g: glob matching (whereis.c case 'g'); -h/-V print and exit
+    OPTION("-g", "", "search using glob patterns", BOOL_TYPE),
+    OPTION("-h", "", "", BOOL_TYPE), OPTION("-V", "", "", BOOL_TYPE)};
 
 namespace whereis_pipeline {
 namespace cp = core::pipeline;
 
+inline constexpr int kWantBin = 1;
+inline constexpr int kWantMan = 2;
+inline constexpr int kWantSrc = 4;
+inline constexpr int kWantAll = kWantBin | kWantMan | kWantSrc;
+
+struct NameQuery {
+  std::string name;
+  int want = kWantAll;
+};
+
 struct Config {
-  bool want_bin = true;
-  bool want_man = true;
-  bool want_src = true;
   bool unusual = false;
+  bool glob = false;
   bool list_paths = false;
-  // user-specified override directories
+  // user-specified replacement directories (-B/-M/-S replace the
+  // defaults for their category, whereis.c: free_dirlist + construct)
+  bool bin_replaced = false;
+  bool man_replaced = false;
+  bool src_replaced = false;
   SmallVector<std::string, 8> bin_dirs;
   SmallVector<std::string, 8> man_dirs;
   SmallVector<std::string, 8> src_dirs;
-  SmallVector<std::string, 8> names;
+  SmallVector<NameQuery, 8> names;
 };
 
+// [GNU] whereis parses argv with its own hand loop (whereis.c main):
+// -B/-M/-S consume every following token as a directory until an
+// option token appears, -f terminates the requirement, and -b/-m/-s
+// build a cumulative mask that applies per name and resets after a
+// name has been looked up.  The framework's set-based binding cannot
+// express any of that, so walk ctx.raw_args directly.
 auto build_config(const CommandContext<WHEREIS_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
   Config cfg;
-  bool any_filter = false;
-  if (ctx.has("-b") || ctx.has("--b")) {
-    cfg.want_bin = true;
-    cfg.want_man = false;
-    cfg.want_src = false;
-    any_filter = true;
-  }
-  // The flags -b/-m/-s are independent selectors; GNU: specifying any means
-  // search ONLY that category.  Use presence of each to narrow.
-  cfg.want_bin = false;
-  cfg.want_man = false;
-  cfg.want_src = false;
-  if (ctx.has("-b")) cfg.want_bin = true;
-  if (ctx.has("-m")) cfg.want_man = true;
-  if (ctx.has("-s")) cfg.want_src = true;
-  if (!cfg.want_bin && !cfg.want_man && !cfg.want_src) {
-    cfg.want_bin = cfg.want_man = cfg.want_src = true;
-  }
-  cfg.unusual = ctx.has("-u");
-  cfg.list_paths = ctx.has("-l");
+  int want = kWantAll;
+  bool want_resetable = false;
+  bool f_missing = false;
+  enum class Sink { None, Bin, Man, Src };
+  Sink sink = Sink::None;
 
-  // Parse -B/-M/-S lists followed by -f terminator, then filenames.
-  // ctx exposes options; we walk positionals and option captures.
-  // Simpler: gather -B/-M/-S values via ctx.get for repeated values isn't
-  // directly supported; use the raw option list from ctx.
-  // We rely on ctx.get<string> returning the last set value; for multiple
-  // dirs we accept the standard pattern "-B dir1 -B dir2 ... -f names".
-  // Capture all -B/-M/-S occurrences by scanning ctx's option storage.
-  auto add_dir = [](const CommandContext<WHEREIS_OPTIONS.size()>& c,
-                    const char* sh, SmallVector<std::string, 8>& out) {
-    // ctx.get returns the bound value for the option key; we collect via
-    // the repeated get interface (last-wins).  For multiple dirs the user
-    // passes the option repeatedly; the framework stores them and we can
-    // iterate.
+  auto apply_mask = [&](int bit) {
+    if (want_resetable) {
+      want = kWantAll;
+      want_resetable = false;
+    }
+    want = (want == kWantAll) ? bit : (want | bit);
+    f_missing = false;
   };
-  (void)add_dir;
+  auto add_name = [&](std::string_view token) {
+    // lookup() canonicalizes the pattern to its basename (whereis.c).
+    std::string name(token);
+    if (auto slash = name.find_last_of("/\\"); slash != std::string::npos) {
+      name = name.substr(slash + 1);
+    }
+    cfg.names.push_back(NameQuery{name, want});
+    want_resetable = true;
+  };
+  auto add_dir = [&](std::string_view token) {
+    switch (sink) {
+      case Sink::Bin:
+        cfg.bin_dirs.push_back(std::string(token));
+        break;
+      case Sink::Man:
+        cfg.man_dirs.push_back(std::string(token));
+        break;
+      case Sink::Src:
+        cfg.src_dirs.push_back(std::string(token));
+        break;
+      case Sink::None:
+        break;
+    }
+  };
 
-  // Collect filenames from positionals; -f toggles "now filenames".
-  bool in_filenames = false;
-  // Also gather -B/-M/-S values by checking each present option.
-  // The framework stores multi-occurrence values; ctx.get<std::string>
-  // returns the most recent.  For robustness we also treat any positional
-  // before -f as a directory for the active -B/-M/-S.
-  for (auto arg : ctx.positionals) {
-    std::string s(arg);
-    if (s == "-f") {
-      in_filenames = true;
+  const auto& args = ctx.raw_args;
+  for (size_t i = 0; i < args.size(); ++i) {
+    std::string_view token = args[i];
+    if (sink != Sink::None &&
+        !(token.size() > 1 && token.front() == '-')) {
+      add_dir(token);
       continue;
     }
-    if (!in_filenames) {
-      // still accumulating dir-list entries; route to whichever last -B/-M/-S
-      // was seen.  For simplicity, if -B/-M/-S were all unset, treat as
-      // filename.
-      cfg.names.push_back(s);
-    } else {
-      cfg.names.push_back(s);
+    sink = Sink::None;
+    if (token == "--") {
+      for (++i; i < args.size(); ++i) add_name(args[i]);
+      break;
     }
+    if (token.size() > 1 && token.front() == '-') {
+      for (size_t j = 1; j < token.size(); ++j) {
+        switch (token[j]) {
+          case 'B':
+            cfg.bin_replaced = true;
+            cfg.bin_dirs.clear();
+            sink = Sink::Bin;
+            f_missing = true;
+            break;
+          case 'M':
+            cfg.man_replaced = true;
+            cfg.man_dirs.clear();
+            sink = Sink::Man;
+            f_missing = true;
+            break;
+          case 'S':
+            cfg.src_replaced = true;
+            cfg.src_dirs.clear();
+            sink = Sink::Src;
+            f_missing = true;
+            break;
+          case 'f':
+            f_missing = false;
+            break;
+          case 'u':
+            cfg.unusual = true;
+            f_missing = false;
+            break;
+          case 'l':
+            cfg.list_paths = true;
+            break;
+          case 'g':
+            cfg.glob = true;
+            break;
+          case 'b':
+            apply_mask(kWantBin);
+            break;
+          case 'm':
+            apply_mask(kWantMan);
+            break;
+          case 's':
+            apply_mask(kWantSrc);
+            break;
+          default:
+            break;  // the framework validates unknown options
+        }
+        if (sink != Sink::None) break;  // -B/-M/-S end the cluster
+      }
+      continue;
+    }
+    add_name(token);
   }
 
-  // Pull single -B/-M/-S values (covers the common single-dir case).
-  if (ctx.has("-B")) cfg.bin_dirs.push_back(ctx.get<std::string>("-B", ""));
-  if (ctx.has("-M")) cfg.man_dirs.push_back(ctx.get<std::string>("-M", ""));
-  if (ctx.has("-S")) cfg.src_dirs.push_back(ctx.get<std::string>("-S", ""));
+  // [GNU] whereis.c:671: errx "option -f is missing" when a -B/-M/-S
+  // list was never terminated.
+  if (f_missing) return std::unexpected("option -f is missing");
 
   if (cfg.names.empty() && !cfg.list_paths) {
     return std::unexpected("missing operand");
@@ -235,41 +299,77 @@ auto default_man_dirs() -> std::vector<std::string> {
 // Default source directories (none standard on Windows).
 auto default_src_dirs() -> std::vector<std::string> { return {}; }
 
+// fnmatch-lite for -g: '*' (any run) and '?' (one char), matched
+// case-insensitively like the Windows file system.
+auto glob_match(std::string_view pattern, std::string_view name) -> bool {
+  if (pattern.empty()) return name.empty();
+  if (pattern.front() == '*') {
+    for (size_t skip = 0; skip <= name.size(); ++skip) {
+      if (glob_match(pattern.substr(1), name.substr(skip))) return true;
+    }
+    return false;
+  }
+  if (name.empty()) return false;
+  if (pattern.front() != '?' &&
+      std::tolower(static_cast<unsigned char>(pattern.front())) !=
+          std::tolower(static_cast<unsigned char>(name.front()))) {
+    return false;
+  }
+  return glob_match(pattern.substr(1), name.substr(1));
+}
+
+// -g searches by enumerating directory entries (the oracle's findin
+// model): an entry hits when the pattern matches its full name or its
+// name without the final extension.
+auto glob_hits_in_dir(const std::string& dir, const std::string& pattern)
+    -> std::vector<std::string> {
+  std::vector<std::string> hits;
+  std::error_code ec;
+  auto base = std::filesystem::u8path(native_path::normalize_api_operand(dir));
+  for (const auto& entry : std::filesystem::directory_iterator(base, ec)) {
+    if (!entry.is_regular_file(ec)) continue;
+    std::string filename = entry.path().filename().u8string();
+    std::string stem = filename;
+    if (auto dot = filename.rfind('.'); dot != std::string::npos && dot != 0) {
+      stem = filename.substr(0, dot);
+    }
+    if (glob_match(pattern, filename) || glob_match(pattern, stem)) {
+      std::string full = dir;
+      if (!full.empty() && full.back() != '/' && full.back() != '\\') {
+        full += "/";
+      }
+      full += filename;
+      hits.push_back(full);
+    }
+  }
+  return hits;
+}
+
 auto run(const Config& cfg) -> int {
   std::vector<std::string> bin_dirs =
-      cfg.bin_dirs.empty()
-          ? default_bin_dirs()
-          : std::vector<std::string>(cfg.bin_dirs.begin(), cfg.bin_dirs.end());
+      cfg.bin_replaced
+          ? std::vector<std::string>(cfg.bin_dirs.begin(), cfg.bin_dirs.end())
+          : default_bin_dirs();
   std::vector<std::string> man_dirs =
-      cfg.man_dirs.empty()
-          ? default_man_dirs()
-          : std::vector<std::string>(cfg.man_dirs.begin(), cfg.man_dirs.end());
+      cfg.man_replaced
+          ? std::vector<std::string>(cfg.man_dirs.begin(), cfg.man_dirs.end())
+          : default_man_dirs();
   std::vector<std::string> src_dirs =
-      cfg.src_dirs.empty()
-          ? default_src_dirs()
-          : std::vector<std::string>(cfg.src_dirs.begin(), cfg.src_dirs.end());
+      cfg.src_replaced
+          ? std::vector<std::string>(cfg.src_dirs.begin(), cfg.src_dirs.end())
+          : default_src_dirs();
 
   dedupe_paths(bin_dirs);
   dedupe_paths(man_dirs);
   dedupe_paths(src_dirs);
 
   if (cfg.list_paths) {
-    safePrintLn("whereis binary dirs:");
-    for (const auto& d : bin_dirs) {
-      safePrint("  ");
-      safePrintLn(d);
-    }
-    safePrintLn("whereis manual dirs:");
-    for (const auto& d : man_dirs) {
-      safePrint("  ");
-      safePrintLn(d);
-    }
-    safePrintLn("whereis source dirs:");
-    for (const auto& d : src_dirs) {
-      safePrint("  ");
-      safePrintLn(d);
-    }
-    return 0;
+    // [GNU] list_dirlist prints one "bin: <dir>" line per directory
+    // (whereis.c list_dirlist), not headed blocks.
+    for (const auto& d : bin_dirs) safePrintLn("bin: " + d);
+    for (const auto& d : man_dirs) safePrintLn("man: " + d);
+    for (const auto& d : src_dirs) safePrintLn("src: " + d);
+    if (cfg.names.empty()) return 0;
   }
 
   std::vector<std::string> bin_exts = {".exe", ".bat", ".cmd", ".com", ".ps1"};
@@ -279,62 +379,50 @@ auto run(const Config& cfg) -> int {
                                        ".rs", ".go",  ".py", ""};
 
   int rc = 0;
-  for (const auto& name : cfg.names) {
+  for (const auto& query : cfg.names) {
+    const std::string& name = query.name;
     std::vector<std::string> bins, mans, srcs;
-    if (cfg.want_bin) {
-      for (const auto& d : bin_dirs) {
-        auto h = join_path(d, name, bin_exts);
-        for (auto& x : h) bins.push_back(x);
+    auto collect = [&](const std::vector<std::string>& dirs,
+                       const std::vector<std::string>& exts,
+                       std::vector<std::string>& out) {
+      for (const auto& d : dirs) {
+        if (cfg.glob) {
+          auto h = glob_hits_in_dir(d, name);
+          for (auto& x : h) out.push_back(x);
+        } else {
+          auto h = join_path(d, name, exts);
+          for (auto& x : h) out.push_back(x);
+        }
       }
-    }
-    if (cfg.want_man) {
-      for (const auto& d : man_dirs) {
-        auto h = join_path(d, name, man_exts);
-        for (auto& x : h) mans.push_back(x);
-      }
-    }
-    if (cfg.want_src) {
-      for (const auto& d : src_dirs) {
-        auto h = join_path(d, name, src_exts);
-        for (auto& x : h) srcs.push_back(x);
-      }
-    }
+    };
+    if ((query.want & kWantBin) != 0) collect(bin_dirs, bin_exts, bins);
+    if ((query.want & kWantMan) != 0) collect(man_dirs, man_exts, mans);
+    if ((query.want & kWantSrc) != 0) collect(src_dirs, src_exts, srcs);
 
     dedupe_paths(bins);
     dedupe_paths(mans);
     dedupe_paths(srcs);
-    bool has_bin = !bins.empty();
-    bool has_man = !mans.empty();
-    bool has_src = !srcs.empty();
 
-    if (cfg.unusual) {
-      // only print entries missing at least one requested category
-      bool missing = false;
-      if (cfg.want_bin && !has_bin) missing = true;
-      if (cfg.want_man && !has_man) missing = true;
-      if (cfg.want_src && !has_src) missing = true;
-      if (!missing) continue;
-    }
+    // [GNU] -u prints a name only when the TOTAL number of entries
+    // found differs from exactly one (whereis.c findin/lookup: the
+    // first entry is held back and the line is emitted from the
+    // second entry on; zero or one entry prints nothing).
+    size_t total = bins.size() + mans.size() + srcs.size();
+    if (cfg.unusual && total <= 1) continue;
 
     safePrint(name);
     safePrint(":");
-    if (!cfg.unusual || (cfg.want_bin && has_bin)) {
-      for (auto& b : bins) {
-        safePrint(" ");
-        safePrint(b);
-      }
+    for (auto& b : bins) {
+      safePrint(" ");
+      safePrint(b);
     }
-    if (!cfg.unusual || (cfg.want_man && has_man)) {
-      for (auto& m : mans) {
-        safePrint(" ");
-        safePrint(m);
-      }
+    for (auto& m : mans) {
+      safePrint(" ");
+      safePrint(m);
     }
-    if (!cfg.unusual || (cfg.want_src && has_src)) {
-      for (auto& s : srcs) {
-        safePrint(" ");
-        safePrint(s);
-      }
+    for (auto& s : srcs) {
+      safePrint(" ");
+      safePrint(s);
     }
     safePrintLn("");
   }
@@ -355,11 +443,36 @@ REGISTER_COMMAND(
     WHEREIS_OPTIONS) {
   using namespace whereis_pipeline;
 
+  if (ctx.get<bool>("-h", false)) {
+    safePrintLn("Usage: whereis [OPTION]... NAME...");
+    safePrintLn("Locate the binary, source, and manual-page files for NAME.");
+    safePrintLn("");
+    safePrintLn("  -b        search only for binaries");
+    safePrintLn("  -m        search only for manual sections");
+    safePrintLn("  -s        search only for sources");
+    safePrintLn("  -u        print names with other than exactly one entry");
+    safePrintLn("  -B DIR... define binary lookup directories (ends with -f)");
+    safePrintLn("  -M DIR... define manual lookup directories (ends with -f)");
+    safePrintLn("  -S DIR... define source lookup directories (ends with -f)");
+    safePrintLn("  -f        terminate the last directory list");
+    safePrintLn("  -l        list the effective lookup paths");
+    safePrintLn("  -g        search using glob patterns");
+    return 0;
+  }
+  if (ctx.get<bool>("-V", false)) {
+    safePrintLn("whereis (WinuxCmd) 1.0");
+    return 0;
+  }
+
   auto cfg_result = build_config(ctx);
   if (!cfg_result) {
     if (cfg_result.error() == "missing operand") {
       safeErrorPrintLn("whereis: missing operand");
       safeErrorPrintLn("Try 'whereis --help' for more information.");
+      return 1;
+    }
+    if (cfg_result.error() == "option -f is missing") {
+      safeErrorPrintLn("whereis: option -f is missing");
       return 1;
     }
     cp::report_error(cfg_result, L"whereis");
