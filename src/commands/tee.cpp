@@ -141,16 +141,21 @@ REGISTER_COMMAND(
 
     bool p_is_last = false;
     if (ctx.has("--output-error") && diagnose && ctx.metas) {
-      int last_p = -1, last_oe = -1;
+      // -p and --output-error share one getopt slot in GNU
+      // (tee.c:63), and each occurrence reassigns the mode
+      // (tee.c:145-151), so the last of the pair in argv order
+      // wins.  occurrences() is argv-ordered and occurrence.index
+      // selects the meta, so track which of the pair came last.
+      bool last_was_p = false;
       for (const auto& occurrence : ctx.options.occurrences()) {
-        if (!occurrence.consumed()) continue;
-        if (occurrence.name() == "-p") {
-          last_p = std::max(last_p, occurrence.global_index());
-        } else if (occurrence.name() == "--output-error") {
-          last_oe = std::max(last_oe, occurrence.global_index());
+        const auto& meta = (*ctx.metas)[occurrence.index];
+        if (meta.short_name == "-p") {
+          last_was_p = true;
+        } else if (meta.long_name == "--output-error") {
+          last_was_p = false;
         }
       }
-      p_is_last = last_p > last_oe;
+      p_is_last = last_was_p;
     }
 
     if (p_is_last) {
