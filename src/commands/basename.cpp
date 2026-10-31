@@ -92,8 +92,16 @@ auto get_basename(std::string_view path, std::string_view suffix)
     result = result.substr(last_sep + 1);
   }
 
+  // [GNU] basename.c:108-115 (perform_basename): suffix stripping is
+  // skipped when the extracted name carries a file-system prefix, so
+  // 'basename c: :' returns 'c:' on drive-letter platforms.
+  const bool has_fs_prefix = result.size() >= 2 &&
+                             ((result[0] >= 'A' && result[0] <= 'Z') ||
+                              (result[0] >= 'a' && result[0] <= 'z')) &&
+                             result[1] == ':';
+
   // Remove suffix if specified
-  if (!suffix.empty() && result.size() > suffix.size()) {
+  if (!has_fs_prefix && !suffix.empty() && result.size() > suffix.size()) {
     if (result.substr(result.size() - suffix.size()) == suffix) {
       result = result.substr(0, result.size() - suffix.size());
     }

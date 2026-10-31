@@ -24,6 +24,14 @@
       "bucket": "PASS",
       "command": "basename"
     },
+    "corpus/basename/50-drive-suffix.case": {
+      "bucket": "PASS",
+      "command": "basename"
+    },
+    "corpus/basename/51-multiple-zero.case": {
+      "bucket": "PASS",
+      "command": "basename"
+    },
     "corpus/cat/basic.case": {
       "bucket": "PASS",
       "command": "cat"
