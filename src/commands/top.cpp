@@ -518,7 +518,10 @@ auto per_cpu_usages() -> std::vector<PerCpuUsage> {
 
   std::vector<SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION> current(256);
   ULONG returned = 0;
-  constexpr ULONG kProcessorPerformance = 1;
+  // SystemProcessorPerformanceInformation is class 8; class 1 is
+  // SystemProcessorInformation, a single small record whose byte count
+  // divides to zero processors below and silently empties the result.
+  constexpr ULONG kProcessorPerformance = 8;
   if (query(kProcessorPerformance, current.data(),
             static_cast<ULONG>(current.size() * sizeof(current[0])),
             &returned) != 0) {
