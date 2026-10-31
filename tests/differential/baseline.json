@@ -288,6 +288,18 @@
       "bucket": "PASS",
       "command": "printenv"
     },
+    "corpus/printenv/29-option-after-operand.case": {
+      "bucket": "PASS",
+      "command": "printenv"
+    },
+    "corpus/printenv/30-help-after-operand.case": {
+      "bucket": "PASS",
+      "command": "printenv"
+    },
+    "corpus/printenv/31-equals-name.case": {
+      "bucket": "PASS",
+      "command": "printenv"
+    },
     "corpus/printf/01-simple.case": {
       "bucket": "PASS",
       "command": "printf"
