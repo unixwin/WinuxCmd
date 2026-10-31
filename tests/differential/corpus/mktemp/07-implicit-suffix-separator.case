@@ -1,0 +1,5 @@
+cmd: mktemp
+args: 'XXX/a'
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w3b mktemp implicit-suffix-separator

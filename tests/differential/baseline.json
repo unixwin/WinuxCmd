@@ -252,6 +252,34 @@
       "bucket": "KNOWN_DIFF",
       "command": "mktemp"
     },
+    "corpus/mktemp/02-x-run-must-end.case": {
+      "bucket": "PASS",
+      "command": "mktemp"
+    },
+    "corpus/mktemp/03-t-separator.case": {
+      "bucket": "PASS",
+      "command": "mktemp"
+    },
+    "corpus/mktemp/04-tmpdir-absolute.case": {
+      "bucket": "PASS",
+      "command": "mktemp"
+    },
+    "corpus/mktemp/05-tmpdir-interior.case": {
+      "bucket": "KNOWN_DIFF",
+      "command": "mktemp"
+    },
+    "corpus/mktemp/06-suffix-precedence.case": {
+      "bucket": "PASS",
+      "command": "mktemp"
+    },
+    "corpus/mktemp/07-implicit-suffix-separator.case": {
+      "bucket": "PASS",
+      "command": "mktemp"
+    },
+    "corpus/mktemp/08-create-failure-template.case": {
+      "bucket": "PASS",
+      "command": "mktemp"
+    },
     "corpus/nice/01-plus-adjustment.case": {
       "bucket": "PASS",
       "command": "nice"
