@@ -1,0 +1,9 @@
+cmd: paste
+args: -s -d @ p1 p2
+timeout: 10
+setup: |
+  printf 'a1\na2\n' > p1
+  printf 'b1\nb2\n' > p2
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: issue-1462 audit-w2 paste serial
+# Serial mode joins each file's lines with the delimiter.

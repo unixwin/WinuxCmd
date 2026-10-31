@@ -1,0 +1,9 @@
+cmd: head
+args: -n -abc f
+timeout: 10
+setup: |
+  printf 'x\n' > f
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: issue-1462 audit-w2 head invalid-number
+# The diagnostic quotes the operand with the elide '-' stripped:
+# "head: invalid number of lines: 'abc'" + try-help, exit 1.
