@@ -98,7 +98,8 @@ TEST(tput, tput_missing_argument) {
   TEST_LOG_EXIT_CODE(r);
   TEST_LOG("tput stderr", r.stderr_text);
 
-  EXPECT_EQ(r.exit_code, 1);
+  // [GNU, #1460 oracle] no capname → usage on stderr, exit 2.
+  EXPECT_EQ(r.exit_code, 2);
   EXPECT_FALSE(r.stderr_text.empty());
 }
 
@@ -114,8 +115,10 @@ TEST(tput, tput_unknown_capability) {
   TEST_LOG_EXIT_CODE(r);
   TEST_LOG("tput stderr", r.stderr_text);
 
-  EXPECT_EQ(r.exit_code, 1);
-  EXPECT_FALSE(r.stderr_text.empty());
+  // [GNU, #1460 oracle] ncurses wording + exit 4.
+  EXPECT_EQ(r.exit_code, 4);
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "tput: unknown terminfo capability 'unknown'\n");
 }
 
 // [#1258] TERM matrix: the answer depends on the terminfo entry TERM names.
@@ -284,10 +287,14 @@ TEST(tput, tput_capname_sequence) {
 //   printf 'aq' | { tput lines; IFS= read -rsn1 k; ... }
 // must still see its 'aq' afterwards. The pure-Win32 pipeline keeps the
 // stdin pipe open and measures what the child left unconsumed.
+//
+// The failure arm uses an unknown capname: since #1460 numeric capabilities
+// are implemented, `tput lines` on xterm SUCCEEDS with "24" (rc 0) in GNU,
+// so the old `lines` case stopped exercising a failure path at all.
 TEST(tput, tput_failure_path_keeps_stdin_readable) {
   Pipeline p;
   p.set_env(L"TERM", L"xterm");
-  p.add(L"tput.exe", {L"lines"});
+  p.add(L"tput.exe", {L"nosuchcap"});
   p.set_stdin("aq");
   p.probe_stdin_leftover(true);
 
@@ -295,7 +302,7 @@ TEST(tput, tput_failure_path_keeps_stdin_readable) {
 
   TEST_LOG_EXIT_CODE(r);
   TEST_LOG("stdin leftover", r.stdin_leftover);
-  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ(r.exit_code, 4);
   EXPECT_EQ_TEXT(r.stdin_leftover, "aq");
 }
 
@@ -314,6 +321,8 @@ TEST(tput, tput_success_path_keeps_stdin_readable) {
   EXPECT_EQ_TEXT(r.stdin_leftover, "aq");
 }
 
+// [GNU, #1460 oracle] tput with no capname prints its usage on stderr and
+// exits 2 (ncurses 6.4 WSL attested) — not the historical rc 1.
 TEST(tput, tput_missing_argument_keeps_stdin_readable) {
   Pipeline p;
   p.add(L"tput.exe", {});
@@ -324,6 +333,97 @@ TEST(tput, tput_missing_argument_keeps_stdin_readable) {
 
   TEST_LOG_EXIT_CODE(r);
   TEST_LOG("stdin leftover", r.stdin_leftover);
-  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ(r.exit_code, 2);
   EXPECT_EQ_TEXT(r.stdin_leftover, "aq");
+}
+
+// ---- #1460: numeric capabilities and the ncurses-6.4 error contract ----
+
+// [GNU] `tput colors` / `pairs` answer the terminfo numbers with a newline.
+TEST(tput, tput_numeric_colors_pairs) {
+  Pipeline p;
+  p.set_env(L"TERM", L"xterm-256color");
+  p.add(L"tput.exe", {L"colors"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "256\n");
+
+  Pipeline q;
+  q.set_env(L"TERM", L"xterm-256color");
+  q.add(L"tput.exe", {L"pairs"});
+  auto rq = q.run();
+  EXPECT_EQ(rq.exit_code, 0);
+  EXPECT_EQ_TEXT(rq.stdout_text, "65536\n");
+}
+
+// [GNU] An absent numeric capability prints "-1" and exits 0 — vt100 has no
+// colors, linux has no cols/lines constants in the non-tty oracle.
+TEST(tput, tput_numeric_absent_prints_minus_one_rc0) {
+  Pipeline p;
+  p.set_env(L"TERM", L"vt100");
+  p.add(L"tput.exe", {L"colors"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "-1\n");
+}
+
+// [GNU] numeric answers stream one per line: `tput colors cols` → 256\n80\n.
+TEST(tput, tput_numeric_capname_sequence) {
+  Pipeline p;
+  p.set_env(L"TERM", L"xterm-256color");
+  p.add(L"tput.exe", {L"colors", L"cols"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "256\n80\n");
+}
+
+// [GNU] unknown capname: "tput: unknown terminfo capability 'nosuchcap'" and
+// exit 4 (ncurses 6.4 WSL attested; the old build said rc 1 with different
+// wording).
+TEST(tput, tput_unknown_capability_message_rc4) {
+  Pipeline p;
+  p.set_env(L"TERM", L"xterm-256color");
+  p.add(L"tput.exe", {L"nosuchcap"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 4);
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "tput: unknown terminfo capability 'nosuchcap'\n");
+}
+
+// [GNU] `tput setaf` with no operand prints the raw terminfo template.
+TEST(tput, tput_parameterized_missing_operand_raw_template) {
+  Pipeline p;
+  p.set_env(L"TERM", L"xterm-256color");
+  p.add(L"tput.exe", {L"setaf"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(
+      r.stdout_text,
+      "\x1b[%?%p1%{8}%<%t3%p1%d%e%p1%{16}%<%t9%p1%{8}%-%d%e38;5;%p1%d%;m");
+}
+
+// [GNU] a parameterized capability with a non-numeric operand formats with 0
+// and lets the loop diagnose the operand as the next (unknown) capname.
+TEST(tput, tput_parameterized_non_numeric_operand_formats_zero_rc4) {
+  Pipeline p;
+  p.set_env(L"TERM", L"xterm-256color");
+  p.add(L"tput.exe", {L"cup", L"abc"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 4);
+  EXPECT_EQ_TEXT(r.stdout_text, "\x1b[1;1H");
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "tput: unknown terminfo capability 'abc'\n");
+}
+
+// [GNU] a numeric capability ignores its trailing argv: `colors 9` prints 256
+// and then diagnoses '9' as an unknown capname (rc 4).
+TEST(tput, tput_numeric_ignores_trailing_operand_rc4) {
+  Pipeline p;
+  p.set_env(L"TERM", L"xterm-256color");
+  p.add(L"tput.exe", {L"colors", L"9"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 4);
+  EXPECT_EQ_TEXT(r.stdout_text, "256\n");
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "tput: unknown terminfo capability '9'\n");
 }

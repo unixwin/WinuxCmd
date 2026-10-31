@@ -87,18 +87,37 @@ constexpr TermCaps kVt100Caps{"\x1b[1m",
                               nullptr};
 
 struct TermEntry {
-  const TermCaps* caps;  // nullptr = every capability absent (TERM=dumb)
+  const TermCaps* caps;  // nullptr = every string capability absent (dumb)
   Colors colors;
+  // Numeric capabilities, oracle-verified on Ubuntu 24.04 / ncurses 6.4 in a
+  // non-tty context (WinuxCmd#1460). -1 = the capability is absent: ncurses
+  // prints "-1" and exits 0, it does NOT error.
+  int num_colors;
+  int num_pairs;
+  int num_cols;
+  int num_lines;
 };
 
-constexpr TermEntry kXtermEntry{&kXtermCaps, Colors::kXterm8};
-constexpr TermEntry kXterm256Entry{&kXtermCaps, Colors::kColors256};
-constexpr TermEntry kScreenEntry{&kScreenCaps, Colors::kXterm8};
-constexpr TermEntry kScreen256Entry{&kScreenCaps, Colors::kColors256};
-constexpr TermEntry kTmuxEntry{&kTmuxCaps, Colors::kColors256};
-constexpr TermEntry kLinuxEntry{&kLinuxCaps, Colors::kXterm8};
-constexpr TermEntry kVt100Entry{&kVt100Caps, Colors::kNone};
-constexpr TermEntry kDumbEntry{nullptr, Colors::kNone};
+constexpr TermEntry kXtermEntry{&kXtermCaps,    Colors::kXterm8, 8,  64, 80, 24};
+constexpr TermEntry kXterm256Entry{
+    &kXtermCaps, Colors::kColors256, 256, 65536, 80, 24};
+constexpr TermEntry kScreenEntry{&kScreenCaps,  Colors::kXterm8, 8,  64, 80, 24};
+constexpr TermEntry kScreen256Entry{
+    &kScreenCaps, Colors::kColors256, 256, 65536, 80, 24};
+constexpr TermEntry kTmuxEntry{
+    &kTmuxCaps, Colors::kColors256, 256, 65536, 80, 24};
+constexpr TermEntry kLinuxEntry{&kLinuxCaps,    Colors::kXterm8, 8,  64, -1, -1};
+constexpr TermEntry kVt100Entry{&kVt100Caps,    Colors::kNone, -1, -1, 80, 24};
+constexpr TermEntry kDumbEntry{nullptr,         Colors::kNone, -1, -1, 80, -1};
+
+// [GNU] Raw terminfo parameterized templates, byte-equal to the oracle. tput
+// prints a parameterized capability's template verbatim when its operand is
+// missing entirely (`tput setaf` with nothing after it).
+constexpr char kSetafTemplate[] =
+    "\x1b[%?%p1%{8}%<%t3%p1%d%e%p1%{16}%<%t9%p1%{8}%-%d%e38;5;%p1%d%;m";
+constexpr char kSetabTemplate[] =
+    "\x1b[%?%p1%{8}%<%t4%p1%d%e%p1%{16}%<%t10%p1%{8}%-%d%e48;5;%p1%d%;m";
+constexpr char kCupTemplate[] = "\x1b[%i%p1%d;%p2%dH";
 
 // [GNU] tput answers capability queries from the terminfo entry named by
 // TERM (or -T). This is the oracle-verified subset; an unlisted TERM falls
@@ -159,6 +178,25 @@ std::string format_color(std::string_view cap, Colors colors, long n) {
   return out;
 }
 
+// [GNU] tput writes numeric capability answers with a trailing newline:
+// `tput colors cols` → "256\n80\n". An absent capability ("-1") still exits 0.
+void write_numeric(int value) {
+  write_cap(std::to_string(value));
+  write_cap("\n");
+}
+
+// [GNU] When stdout is a real console, ncurses overrides the terminfo
+// cols/lines constants with the ioctl-queried size. GetConsoleScreenBufferInfo
+// is the Windows equivalent; on failure (pipe, redirected file) the static
+// terminfo values stand, matching the non-tty oracle.
+void apply_console_size(TermEntry& entry) {
+  CONSOLE_SCREEN_BUFFER_INFO info;
+  if (GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &info)) {
+    entry.num_cols = info.srWindow.Right - info.srWindow.Left + 1;
+    entry.num_lines = info.srWindow.Bottom - info.srWindow.Top + 1;
+  }
+}
+
 }  // namespace
 
 auto constexpr TPUT_OPTIONS =
@@ -177,8 +215,24 @@ REGISTER_COMMAND(tput,
                  /* copyright */ "Copyright © 2026 WinuxCmd",
                  /* options */ TPUT_OPTIONS) {
   if (ctx.positionals.empty()) {
-    safeErrorPrintLn("tput: missing capability name");
-    return 1;
+    // [GNU] tput with no capname prints its usage on stderr and exits 2.
+    safeErrorPrintLn(
+        "Usage: tput [options] [command]\n"
+        "\n"
+        "Options:\n"
+        "  -S <<       read commands from standard input\n"
+        "  -T TERM     use this instead of $TERM\n"
+        "  -V          print curses-version\n"
+        "  -v          verbose, show warnings\n"
+        "  -x          do not try to clear scrollback\n"
+        "\n"
+        "Commands:\n"
+        "  clear       clear the screen\n"
+        "  init        initialize the terminal\n"
+        "  reset       reinitialize the terminal\n"
+        "  capname     unlike clear/init/reset, print value for capability "
+        "\"capname\"");
+    return 2;
   }
 
   // [GNU] -T overrides $TERM; a missing/empty TERM is a usage-class error.
@@ -189,8 +243,9 @@ REGISTER_COMMAND(tput,
     safeErrorPrintLn("tput: No value for $TERM and no -T specified");
     return 2;
   }
-  const TermEntry* entry = lookup_term(term);
-  const bool has_entries = entry->caps != nullptr;
+  TermEntry entry = *lookup_term(term);
+  const bool has_entries = entry.caps != nullptr;
+  apply_console_size(entry);
 
   // GNU consumes argv as a stream: each capname is followed by the operands
   // its capability takes, so `tput cup 5 10 clear` emits both strings.
@@ -206,25 +261,44 @@ REGISTER_COMMAND(tput,
     if (cap == "rmcup") return &TermCaps::rmcup;
     return nullptr;
   };
+  const auto numeric_cap = [](std::string_view cap,
+                              const TermEntry& e) -> const int* {
+    if (cap == "colors") return &e.num_colors;
+    if (cap == "pairs") return &e.num_pairs;
+    if (cap == "cols") return &e.num_cols;
+    if (cap == "lines") return &e.num_lines;
+    return nullptr;
+  };
 
   size_t i = 0;
   while (i < ctx.positionals.size()) {
     const std::string_view cap = ctx.positionals[i];
+
+    // [GNU] Numeric capabilities never error on an absent value: they print
+    // it ("−1" when the entry lacks the capability) and exit 0.
+    if (const int* value = numeric_cap(cap, entry)) {
+      write_numeric(*value);
+      ++i;
+      continue;
+    }
+
     const bool parameterized =
         cap == "setaf" || cap == "setab" || cap == "cup";
     const auto member = no_param_cap(cap);
     if (!parameterized && member == nullptr && cap != "reset") {
-      safeErrorPrintLn("tput: unknown capability '" + std::string(cap) + "'");
-      return 1;
+      // [GNU] unknown terminfo capability: diagnose, stop, exit 4.
+      safeErrorPrintLn("tput: unknown terminfo capability '" +
+                       std::string(cap) + "'");
+      return 4;
     }
 
     // A recognized capability the terminfo entry lacks (vt100 civis, linux
-    // smcup, every capability on dumb) prints nothing and exits 1 — the
-    // ncurses absent-capability contract.
+    // smcup, every string capability on dumb) prints nothing and exits 1 —
+    // the ncurses absent-capability contract.
     if (!has_entries) return 1;
 
     if (member != nullptr) {
-      const char* slot = entry->caps->*member;
+      const char* slot = entry.caps->*member;
       if (slot == nullptr) return 1;
       write_cap(slot);
       ++i;
@@ -239,45 +313,46 @@ REGISTER_COMMAND(tput,
       continue;
     }
 
+    // [GNU] Parameterized capabilities consume only leading NUMERIC operands:
+    // `cup abc` formats with 0 and lets the loop diagnose 'abc' as the next
+    // capname (rc 4); a missing operand entirely prints the raw template.
+    const size_t max_operands = cap == "cup" ? 2 : 1;
+    long operands[2] = {0, 0};
+    size_t consumed = 1;
+    while (consumed <= max_operands &&
+           i + consumed < ctx.positionals.size()) {
+      const auto v = parse_operand(ctx.positionals[i + consumed]);
+      if (!v) break;
+      operands[consumed - 1] = *v;
+      ++consumed;
+    }
+
+    // No following argv at all → the raw template. A following non-numeric
+    // argv stays formatted-with-0 (it will be diagnosed as the next capname).
+    const bool has_next = i + 1 < ctx.positionals.size();
+
     if (cap == "cup") {
-      // [GNU] `cup Y X` → "\e[{Y+1};{X+1}H" (tparm %i, 1-based). cup pops
-      // exactly two operands: a missing one pads to 0 (`cup 3` → "\e[4;1H"),
-      // a present non-numeric one is an error.
-      const auto row = i + 1 < ctx.positionals.size()
-                           ? parse_operand(ctx.positionals[i + 1])
-                           : std::nullopt;
-      if (!row) break;
-      long column = 0;
-      size_t consumed = 2;
-      if (i + 2 < ctx.positionals.size()) {
-        const auto c = parse_operand(ctx.positionals[i + 2]);
-        if (!c) break;
-        column = *c;
-        consumed = 3;
+      if (consumed == 1 && !has_next) {
+        write_cap(kCupTemplate);
+        ++i;
+        continue;
       }
-      write_cap("\x1b[" + std::to_string(*row + 1) + ";" +
-                std::to_string(column + 1) + "H");
+      // tparm %i makes cup 1-based.
+      write_cap("\x1b[" + std::to_string(operands[0] + 1) + ";" +
+                std::to_string(operands[1] + 1) + "H");
       i += consumed;
       continue;
     }
 
-    // setaf/setab: one numeric operand.
-    const auto n = i + 1 < ctx.positionals.size()
-                       ? parse_operand(ctx.positionals[i + 1])
-                       : std::nullopt;
-    if (!n) break;
-    if (entry->colors == Colors::kNone) return 1;
-    write_cap(format_color(cap, entry->colors, *n));
-    i += 2;
-  }
-
-  // A recognized parameterized capability whose operands are missing or
-  // non-numeric is GNU's rc-4 diagnostic surface; report it as a failed
-  // invocation rather than silently succeeding.
-  if (i < ctx.positionals.size()) {
-    safeErrorPrintLn("tput: unknown capability '" +
-                     std::string(ctx.positionals[i]) + "'");
-    return 1;
+    // setaf/setab.
+    if (consumed == 1 && !has_next) {
+      write_cap(cap == "setaf" ? kSetafTemplate : kSetabTemplate);
+      ++i;
+      continue;
+    }
+    if (entry.colors == Colors::kNone) return 1;
+    write_cap(format_color(cap, entry.colors, operands[0]));
+    i += consumed;
   }
   return 0;
 }
