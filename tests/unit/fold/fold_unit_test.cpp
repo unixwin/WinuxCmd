@@ -119,7 +119,10 @@ TEST(fold, fold_characters_option_counts_utf8_codepoints_without_splitting) {
                                             "b\n"));
 }
 
-TEST(fold, fold_default_mode_uses_display_width_for_utf8_wide_characters) {
+TEST(fold, fold_default_mode_counts_bytes_for_utf8_input) {
+  // [GNU] default fold counts bytes toward the width (fold.c has
+  // no display-width accounting), so -w 2 splits a multibyte
+  // character across lines (audit #1462).
   TempDir tmp;
   tmp.write_bytes("utf8.txt", {static_cast<char>(0xE4), static_cast<char>(0xB8),
                                static_cast<char>(0xAD), 'a',
@@ -133,11 +136,13 @@ TEST(fold, fold_default_mode_uses_display_width_for_utf8_wide_characters) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, std::string("\xE4\xB8\xAD"
+  EXPECT_EQ_TEXT(r.stdout_text, std::string("\xE4\xB8"
                                             "\n"
+                                            "\xAD"
                                             "a\n"
-                                            "\xE6\x96\x87"
+                                            "\xE6\x96"
                                             "\n"
+                                            "\x87"
                                             "b\n"));
 }
 

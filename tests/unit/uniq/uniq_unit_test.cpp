@@ -178,7 +178,7 @@ TEST(uniq, uniq_all_repeated_rejects_group_only_methods) {
   EXPECT_NE(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.empty());
   EXPECT_TRUE(
-      r.stderr_text.find("invalid argument append for --all-repeated") !=
+      r.stderr_text.find("invalid argument 'append' for '--all-repeated'") !=
       std::string::npos);
 }
 
