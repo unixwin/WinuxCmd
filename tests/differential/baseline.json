@@ -912,6 +912,18 @@
       "bucket": "PASS",
       "command": "printf"
     },
+    "corpus/printf/11-char-const-trailing.case": {
+      "bucket": "PASS",
+      "command": "printf"
+    },
+    "corpus/printf/12-excess-args-warning.case": {
+      "bucket": "PASS",
+      "command": "printf"
+    },
+    "corpus/printf/13-missing-operand.case": {
+      "bucket": "PASS",
+      "command": "printf"
+    },
     "corpus/seq/01-invalid-float.case": {
       "bucket": "PASS",
       "command": "seq"
