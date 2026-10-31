@@ -15,7 +15,12 @@ TEST(getconf, getconf_all) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_FALSE(r.stdout_text.empty());
-  EXPECT_TRUE(r.stdout_text.find("System configuration") != std::string::npos);
+  // [GNU] glibc getconf -a prints a flat "NAME value" list with no
+  // section headers (glibc 2.39 getconf, reproduced: 320 entries,
+  // none of them a heading). Pin two stable members of the table
+  // instead of the old product's invented section title.
+  EXPECT_TRUE(r.stdout_text.find("PATH_MAX") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("PAGESIZE") != std::string::npos);
 }
 
 TEST(getconf, getconf_page_size) {
