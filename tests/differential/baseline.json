@@ -324,6 +324,26 @@
       "bucket": "PASS",
       "command": "seq"
     },
+    "corpus/seq/05-nan-operand.case": {
+      "bucket": "PASS",
+      "command": "seq"
+    },
+    "corpus/seq/06-lf-format.case": {
+      "bucket": "PASS",
+      "command": "seq"
+    },
+    "corpus/seq/07-width-format-conflict.case": {
+      "bucket": "PASS",
+      "command": "seq"
+    },
+    "corpus/seq/08-zero-increment-precedence.case": {
+      "bucket": "PASS",
+      "command": "seq"
+    },
+    "corpus/seq/09-invalid-option.case": {
+      "bucket": "PASS",
+      "command": "seq"
+    },
     "corpus/sleep/01-terminator-only.case": {
       "bucket": "PASS",
       "command": "sleep"
