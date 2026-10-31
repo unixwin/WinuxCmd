@@ -1331,6 +1331,18 @@
     "corpus/find/09-global-option-nowarn.case": {
       "bucket": "PASS",
       "command": "find"
+    },
+    "corpus/locate/01-missing-db.case": {
+      "bucket": "PASS",
+      "command": "locate"
+    },
+    "corpus/locate/02-limit-zero.case": {
+      "bucket": "PASS",
+      "command": "locate"
+    },
+    "corpus/updatedb/01-silent-success.case": {
+      "bucket": "PASS",
+      "command": "updatedb"
     }
   }
 }
