@@ -287,8 +287,11 @@ TEST(basenc, basenc_z85_rejects_non_block_sized_input) {
 
   auto r = p.run();
 
+  // [GNU] basenc.c:613-615 (z85_encode): a trailing partial quad fails
+  // with "invalid input (length must be multiple of 4 characters)".
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_CONTAINS(r.stderr_text, "invalid input length for z85 encoding");
+  EXPECT_CONTAINS(r.stderr_text,
+                  "invalid input (length must be multiple of 4 characters)");
 }
 
 TEST(basenc, basenc_z85_decode_rejects_values_outside_32_bit_range) {
