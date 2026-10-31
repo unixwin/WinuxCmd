@@ -1,0 +1,5 @@
+cmd: kill
+oracle: linux
+args: -l KILL
+source: tests/differential/corpus/kill/02-list-name-roundtrip.case
+tags: gnu-compat kill list-conversion audit-w7

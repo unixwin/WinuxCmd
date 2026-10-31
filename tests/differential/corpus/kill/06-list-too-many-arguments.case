@@ -1,0 +1,5 @@
+cmd: kill
+oracle: linux
+args: -l 9 extra
+source: tests/differential/corpus/kill/06-list-too-many-arguments.case
+tags: gnu-compat kill list-conversion error-wording audit-w7

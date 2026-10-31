@@ -1,0 +1,5 @@
+cmd: kill
+oracle: linux
+args:
+source: tests/differential/corpus/kill/09-no-arguments.case
+tags: gnu-compat kill error-wording audit-w7

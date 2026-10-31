@@ -1,0 +1,5 @@
+cmd: kill
+oracle: linux
+args: --list=129
+source: tests/differential/corpus/kill/11-list-equals-form.case
+tags: gnu-compat kill list-conversion audit-w7
