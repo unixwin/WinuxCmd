@@ -9,6 +9,7 @@
 
 #include "pch/pch.h"
 // include other header after pch.h
+#include <ws2tcpip.h>
 #include <wtsapi32.h>
 
 #include "core/command_macros.h"
@@ -109,14 +110,15 @@ auto query_wstring(DWORD session_id, WTS_INFO_CLASS kind) -> std::string {
   if (WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, session_id, kind,
                                   &buffer, &buffer_size) &&
       buffer != nullptr) {
-    result = utils::win32::utf16_to_utf8(buffer);
+    result = wstring_to_utf8(std::wstring(buffer));
   }
   if (buffer) WTSFreeMemory(buffer);
   return result;
 }
 
 auto query_client_from(DWORD session_id) -> std::string {
-  PWTS_CLIENT_ADDRESSW address = nullptr;
+  // The WTS structure is WTS_CLIENT_ADDRESS (no W suffix exists).
+  WTS_CLIENT_ADDRESS* address = nullptr;
   DWORD size = 0;
   std::string result;
   if (WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, session_id,
@@ -202,8 +204,7 @@ auto collect_session_processes() -> std::map<DWORD, SessionProcesses> {
       if (session_id == 0) continue;
 
       SessionProcesses& agg = by_session[session_id];
-      const std::string name =
-          utils::win32::utf16_to_utf8(entry.szExeFile);
+      const std::string name = wstring_to_utf8(entry.szExeFile);
 
       HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE,
                                    entry.th32ProcessID);
