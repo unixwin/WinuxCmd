@@ -857,14 +857,26 @@ auto timezone_offset_minutes(const FILETIME &utc, bool use_utc) -> int {
   return static_cast<int>(diff / (10000000LL * 60));
 }
 
-auto format_zone_offset(int minutes, bool colon) -> std::string {
-  char buf[8]{};
+auto format_zone_offset(int minutes, int colons) -> std::string {
+  char buf[16]{};
   char sign = minutes < 0 ? '-' : '+';
   int total = std::abs(minutes);
   int hours = total / 60;
   int mins = total % 60;
-  if (colon) {
+  if (colons == 1) {
     snprintf(buf, sizeof(buf), "%c%02d:%02d", sign, hours, mins);
+  } else if (colons == 2) {
+    // [GNU] %::z adds a seconds field (zone offsets here are whole
+    // minutes, so it is always 00).
+    snprintf(buf, sizeof(buf), "%c%02d:%02d:00", sign, hours, mins);
+  } else if (colons >= 3) {
+    // [GNU] %:::z prints the shortest precision that represents
+    // the offset exactly.
+    if (total == 0) {
+      snprintf(buf, sizeof(buf), "%c%02d", sign, hours);
+    } else {
+      snprintf(buf, sizeof(buf), "%c%02d:%02d", sign, hours, mins);
+    }
   } else {
     snprintf(buf, sizeof(buf), "%c%02d%02d", sign, hours, mins);
   }
@@ -881,7 +893,7 @@ auto timezone_name(const FILETIME &utc, bool use_utc) -> std::string {
   if (offset == -6 * 60) return "CST";
   if (offset == -7 * 60) return "MST";
   if (offset == -8 * 60) return "PST";
-  return format_zone_offset(offset, false);
+  return format_zone_offset(offset, 0);
 }
 
 auto day_of_year(const SYSTEMTIME &st) -> int {
@@ -932,6 +944,49 @@ auto apply_case(std::string text, bool to_uppcase, bool to_lowcase)
   return text;
 }
 
+// Serial day numbers (days since 1970-01-01) for the week-number
+// conversions, after Howard Hinnant's civil-calendar algorithms.
+auto days_from_civil(long y, unsigned m, unsigned d) -> long {
+  y -= m <= 2;
+  long era = (y >= 0 ? y : y - 399) / 400;
+  unsigned yoe = static_cast<unsigned>(y - era * 400);
+  unsigned doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+  unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  return era * 146097 + static_cast<long>(doe) - 719468;
+}
+
+auto civil_from_days(long z) -> std::tuple<long, unsigned, unsigned> {
+  z += 719468;
+  long era = (z >= 0 ? z : z - 146096) / 146097;
+  unsigned doe = static_cast<unsigned>(z - era * 146097);
+  unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+  long y = static_cast<long>(yoe) + era * 400;
+  unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+  unsigned mp = (5 * doy + 2) / 153;
+  unsigned d = doy - (153 * mp + 2) / 5 + 1;
+  unsigned m = mp + (mp < 10 ? 3 : -9);
+  return {y + (m <= 2), m, d};
+}
+
+auto day_of_year_ymd(long y, unsigned m, unsigned d) -> int {
+  int day = static_cast<int>(d);
+  for (unsigned month = 1; month < m; ++month) {
+    day += days_in_month(static_cast<int>(y), static_cast<int>(month));
+  }
+  return day;
+}
+
+// ISO 8601 year and week (%G/%V): the year of the Thursday of the
+// current week, and the number of that week within it.
+auto iso_year_week(const SYSTEMTIME &st) -> std::pair<long, int> {
+  long serial = days_from_civil(st.wYear, st.wMonth, st.wDay);
+  long iso_wday = ((serial + 3) % 7 + 7) % 7 + 1;  // Mon=1 .. Sun=7
+  long thursday = serial + (4 - iso_wday);
+  auto [iso_year, tm, td] = civil_from_days(thursday);
+  int week = (day_of_year_ymd(iso_year, tm, td) - 1) / 7 + 1;
+  return {iso_year, week};
+}
+
 auto format_time(const TimeValue &tv, const std::string &format)
     -> std::string {
   const SYSTEMTIME &st = tv.display;
@@ -947,7 +1002,7 @@ auto format_time(const TimeValue &tv, const std::string &format)
       bool to_uppcase = false;
       bool to_lowcase = false;
       bool change_case = false;
-      bool colon_zone = false;
+      int colon_count = 0;
       // [GNU] numeric width/padding flags: '-' (no pad), '_' (space pad),
       // '0' (zero pad, default) and a decimal width that overrides the
       // per-specifier default precision (%02j -> "01", %3N -> milliseconds).
@@ -963,8 +1018,10 @@ auto format_time(const TimeValue &tv, const std::string &format)
           to_uppcase = true;
         } else if (flag == '#') {
           change_case = true;
-        } else if (flag == ':' && !colon_zone) {
-          colon_zone = true;
+        } else if (flag == ':') {
+          // [GNU] one to three colons select the %z precision
+          // (%:z, %::z, %:::z); the count is part of the flag run.
+          ++colon_count;
         } else if (flag == '-') {
           no_pad = true;
         } else if (flag == '_') {
@@ -1158,6 +1215,51 @@ auto format_time(const TimeValue &tv, const std::string &format)
           // [GNU] %q: quarter of year (1-4).
           append_number(result, (st.wMonth - 1) / 3 + 1, 1);
           break;
+        case 'k':
+          // [GNU] %k: hour (0..23), space padded.
+          append_number(result, st.wHour, 2, ' ');
+          break;
+        case 'l': {
+          // [GNU] %l: hour (1..12), space padded.
+          int hour12 = st.wHour % 12 == 0 ? 12 : st.wHour % 12;
+          append_number(result, hour12, 2, ' ');
+          break;
+        }
+        case 'U': {
+          // [GNU] %U: week number, Sunday as first day (00..53).
+          int yday0 = day_of_year(st) - 1;
+          append_number(result, (yday0 - st.wDayOfWeek + 7) / 7, 2);
+          break;
+        }
+        case 'W': {
+          // [GNU] %W: week number, Monday as first day (00..53).
+          int yday0 = day_of_year(st) - 1;
+          int wday_mon = (st.wDayOfWeek + 6) % 7;
+          append_number(result, (yday0 - wday_mon + 7) / 7, 2);
+          break;
+        }
+        case 'V': {
+          // [GNU] %V: ISO week number (01..53).
+          append_number(result, iso_year_week(st).second, 2);
+          break;
+        }
+        case 'G':
+          // [GNU] %G: ISO week-based year, full.
+          append_number(result,
+                        static_cast<int>(iso_year_week(st).first), 4);
+          break;
+        case 'g': {
+          // [GNU] %g: ISO week-based year, last two digits.
+          long iso_year = iso_year_week(st).first;
+          append_number(result, static_cast<int>(iso_year % 100), 2);
+          break;
+        }
+        case '+':
+          // [GNU] %+: date and time in the default format, like %c
+          // with the zone name included.
+          result += apply_case(format_time(tv, "%a %b %e %H:%M:%S %Z %Y"),
+                               to_uppcase, to_lowcase);
+          break;
         case 'u':
           result +=
               static_cast<char>('0' + (st.wDayOfWeek == 0 ? 7 : st.wDayOfWeek));
@@ -1169,7 +1271,7 @@ auto format_time(const TimeValue &tv, const std::string &format)
           result += std::to_string(epoch_seconds(tv.utc));
           break;
         case 'z':
-          result += format_zone_offset(zone_minutes, colon_zone);
+          result += format_zone_offset(zone_minutes, colon_count);
           break;
         case 'Z': {
           // [GNU] %#Z prints the zone name in lower case.
@@ -1205,7 +1307,8 @@ auto current_time_value(bool use_utc) -> TimeValue {
   return make_time_value(utc, use_utc).value();
 }
 
-auto read_reference_time(std::string_view path) -> std::optional<FILETIME> {
+auto read_reference_time(std::string_view path, DWORD *error_out)
+    -> std::optional<FILETIME> {
   WIN32_FILE_ATTRIBUTE_DATA attributes{};
   // #1256: the operand may use any accepted POSIX drive spelling
   // ("/e/Data/file", "/cygdrive/e/Data/file", "/mnt/e/Data/file").  Handing
@@ -1219,6 +1322,7 @@ auto read_reference_time(std::string_view path) -> std::optional<FILETIME> {
       utf8_to_wstring(native_path::normalize_api_operand(path));
   if (!GetFileAttributesExW(api_path.c_str(), GetFileExInfoStandard,
                             &attributes)) {
+    if (error_out) *error_out = GetLastError();
     return std::nullopt;
   }
   return attributes.ftLastWriteTime;
@@ -1960,31 +2064,53 @@ auto emit_date_debug(const DateDebugInfo &dbg, const FILETIME &result,
   safeErrorPrintLn("date: output format: '" + format + "'");
 }
 
-auto normalize_timespec(std::string spec, bool default_date) -> std::string {
-  spec = lower_copy(trim_copy(spec));
-  if (spec.empty()) return default_date ? "date" : "seconds";
-  return spec;
+// [GNU] date.c:52-69,447-481: the -I/--rfc-3339 values go through
+// argmatch -- case-SENSITIVE, with unambiguous prefixes accepted
+// ('sec', 'n', 'da').  'nanoseconds' is not a candidate (only
+// 'ns'), and neither are differently-cased spellings; the old
+// normalize_timespec lowercased the value and accepted both.
+auto argmatch_timespec(std::string_view spec,
+                       std::span<const std::string_view> candidates)
+    -> std::optional<std::string_view> {
+  for (auto candidate : candidates) {
+    if (spec == candidate) return candidate;
+  }
+  std::optional<std::string_view> found;
+  for (auto candidate : candidates) {
+    if (!spec.empty() && candidate.starts_with(spec)) {
+      if (found) return std::nullopt;  // ambiguous prefix
+      found = candidate;
+    }
+  }
+  return found;
 }
 
-auto iso_format_for(std::string spec) -> std::optional<std::string> {
-  spec = normalize_timespec(std::move(spec), true);
-  if (spec == "date") return "%Y-%m-%d";
-  if (spec == "hours") return "%Y-%m-%dT%H%:z";
-  if (spec == "minutes") return "%Y-%m-%dT%H:%M%:z";
-  if (spec == "seconds") return "%Y-%m-%dT%H:%M:%S%:z";
+auto iso_format_for(const std::string &spec) -> std::optional<std::string> {
+  // A bare -I (no value) means 'date'.
+  std::string_view value = spec.empty() ? "date" : std::string_view(spec);
+  static constexpr std::array<std::string_view, 5> kSpecs{
+      "date", "hours", "minutes", "seconds", "ns"};
+  auto matched = argmatch_timespec(value, kSpecs);
+  if (!matched) return std::nullopt;
+  if (*matched == "date") return "%Y-%m-%d";
+  if (*matched == "hours") return "%Y-%m-%dT%H%:z";
+  if (*matched == "minutes") return "%Y-%m-%dT%H:%M%:z";
+  if (*matched == "seconds") return "%Y-%m-%dT%H:%M:%S%:z";
   // [GNU] -Ins uses the ISO 8601 decimal comma before nanoseconds
   // ("2026-09-14T08:27:11,355532700+00:00"), unlike --rfc-3339=ns which
   // keeps a dot (uutils#6387 / WinuxCmd#219).
-  if (spec == "ns" || spec == "nanoseconds") return "%Y-%m-%dT%H:%M:%S,%N%:z";
-  return std::nullopt;
+  return "%Y-%m-%dT%H:%M:%S,%N%:z";
 }
 
-auto rfc3339_format_for(std::string spec) -> std::optional<std::string> {
-  spec = normalize_timespec(std::move(spec), false);
-  if (spec == "date") return "%Y-%m-%d";
-  if (spec == "seconds") return "%Y-%m-%d %H:%M:%S%:z";
-  if (spec == "ns" || spec == "nanoseconds") return "%Y-%m-%d %H:%M:%S.%N%:z";
-  return std::nullopt;
+auto rfc3339_format_for(const std::string &spec)
+    -> std::optional<std::string> {
+  static constexpr std::array<std::string_view, 3> kSpecs{"date", "seconds",
+                                                          "ns"};
+  auto matched = argmatch_timespec(spec, kSpecs);
+  if (!matched) return std::nullopt;
+  if (*matched == "date") return "%Y-%m-%d";
+  if (*matched == "seconds") return "%Y-%m-%d %H:%M:%S%:z";
+  return "%Y-%m-%d %H:%M:%S.%N%:z";
 }
 
 // [GNU] posixtime: parse the POSIX MMDDhhmm[[CC]YY][.ss] set-date syntax
@@ -2068,10 +2194,14 @@ REGISTER_COMMAND(
     "  %D   date; same as %m/%d/%y\n"
     "  %e   day of month, space padded; same as %_d\n"
     "  %F   full date; like %Y-%m-%d\n"
+    "  %G   year of ISO week number (see %V); normally useful only with %V\n"
+    "  %g   year of ISO week number (see %V); normally useful only with %V\n"
     "  %h   same as %b\n"
     "  %H   hour (00..23)\n"
     "  %I   hour (01..12)\n"
     "  %j   day of year (001..366)\n"
+    "  %k   hour, space padded ( 0..23); same as %_H\n"
+    "  %l   hour, space padded ( 1..12); same as %_I\n"
     "  %m   month (01..12)\n"
     "  %M   minute (00..59)\n"
     "  %n   a newline\n"
@@ -2085,6 +2215,9 @@ REGISTER_COMMAND(
     "  %S   second (00..60)\n"
     "  %t   a tab\n"
     "  %T   time; same as %H:%M:%S\n"
+    "  %U   week number of year, with Sunday as first day of week (00..53)\n"
+    "  %V   ISO week number, with Monday as first day of week (01..53)\n"
+    "  %W   week number of year, with Monday as first day of week (00..53)\n"
     "  %u   day of week (1..7); 1 is Monday\n"
     "  %w   day of week (0..6); 0 is Sunday\n"
     "  %x   locale's date representation (e.g., 12/31/99)\n"
@@ -2093,6 +2226,8 @@ REGISTER_COMMAND(
     "  %Y   year\n"
     "  %z   +hhmm numeric time zone (e.g., -0400)\n"
     "  %:z  +hh:mm numeric time zone (e.g., -04:00)\n"
+    "  %::z  +hh:mm:ss numeric time zone (e.g., -04:00:00)\n"
+    "  %:::z  numeric time zone with : to precision (e.g., -04, +05:30)\n"
     "  %Z   alphabetic time zone abbreviation (e.g., EDT)\n"
     "\n"
     "By default, date pads numeric fields with zeroes.\n"
@@ -2148,15 +2283,19 @@ REGISTER_COMMAND(
                        (!reference_path.empty() ? 1 : 0) +
                        (has_resolution ? 1 : 0);
   if (specified_date > 1) {
+    // [GNU] date.c:509-514: the diagnostic is followed by usage
+    // (the Try-help line).
     safeErrorPrintLn(
         "date: the options to specify dates for printing are mutually "
         "exclusive");
+    safeErrorPrintLn("Try 'date --help' for more information.");
     return 1;
   }
   // [GNU] --set may not be combined with any printing date source
   if (is_set && specified_date) {
     safeErrorPrintLn(
         "date: the options to print and set the time may not be used together");
+    safeErrorPrintLn("Try 'date --help' for more information.");
     return 1;
   }
 
@@ -2171,29 +2310,30 @@ REGISTER_COMMAND(
   // [GNU] -R/-I/--rfc-3339 all set the output format; a '+' operand may not
   // override them ("multiple output formats specified").
   std::string format;
+  std::optional<std::string> iso_format, rfc3339_format;
   std::string iso_arg = ctx.get<std::string>("--iso-8601", "");
   if (!ctx.has("--iso-8601")) iso_arg = ctx.get<std::string>("-I", "");
   if (ctx.has("--iso-8601") || ctx.has("-I")) {
-    auto iso_format = iso_format_for(iso_arg);
+    iso_format = iso_format_for(iso_arg);
     if (!iso_format) {
       safeErrorPrint("date: invalid argument '");
       safeErrorPrint(iso_arg);
       safeErrorPrint("' for '--iso-8601'\n");
-      // [GNU] list the accepted timespecs plus the help hint.
+      // [GNU] list the accepted timespecs plus the help hint, in
+      // argmatch table order.
       safeErrorPrintLn("Valid arguments are:");
+      safeErrorPrintLn("  - 'date'");
       safeErrorPrintLn("  - 'hours'");
       safeErrorPrintLn("  - 'minutes'");
-      safeErrorPrintLn("  - 'date'");
       safeErrorPrintLn("  - 'seconds'");
       safeErrorPrintLn("  - 'ns'");
       safeErrorPrintLn("Try 'date --help' for more information.");
       return 1;
     }
-    format = *iso_format;
   }
   std::string rfc3339_arg = ctx.get<std::string>("--rfc-3339", "");
-  if (!rfc3339_arg.empty()) {
-    auto rfc3339_format = rfc3339_format_for(rfc3339_arg);
+  if (ctx.has("--rfc-3339")) {
+    rfc3339_format = rfc3339_format_for(rfc3339_arg);
     if (!rfc3339_format) {
       safeErrorPrint("date: invalid argument '");
       safeErrorPrint(rfc3339_arg);
@@ -2205,9 +2345,26 @@ REGISTER_COMMAND(
       safeErrorPrintLn("Try 'date --help' for more information.");
       return 1;
     }
-    format = *rfc3339_format;
   }
-  if (rfc2822) format = "%a, %d %b %Y %H:%M:%S %z";
+  // [GNU] date.c:447-503,540: a second format-specifying option is
+  // a hard error (error(EXIT_FAILURE) -- no usage line follows);
+  // the old code let --rfc-3339 silently overwrite -I, and -R
+  // overwrite both.
+  {
+    int format_options = (iso_format ? 1 : 0) + (rfc3339_format ? 1 : 0) +
+                         (rfc2822 ? 1 : 0);
+    if (format_options > 1) {
+      safeErrorPrintLn("date: multiple output formats specified");
+      return 1;
+    }
+  }
+  if (iso_format) {
+    format = *iso_format;
+  } else if (rfc3339_format) {
+    format = *rfc3339_format;
+  } else if (rfc2822) {
+    format = "%a, %d %b %Y %H:%M:%S %z";
+  }
 
   // [GNU] positional operand handling
   std::string posix_date_operand;
@@ -2216,6 +2373,7 @@ REGISTER_COMMAND(
       safeErrorPrint("date: extra operand '");
       safeErrorPrint(std::string(ctx.positionals[1]));
       safeErrorPrintLn("'");
+      safeErrorPrintLn("Try 'date --help' for more information.");
       return 1;
     }
     std::string operand{ctx.positionals[0]};
@@ -2278,7 +2436,10 @@ REGISTER_COMMAND(
     // [GNU] regardless of the outcome, the (attempted) new date is printed
     int exit_code = 0;
     if (!SetSystemTime(&utc_st)) {
-      safeErrorPrintLn("date: cannot set date");
+      // [GNU] date.c:640: error(0, errno, "cannot set date") -- the
+      // errno text follows the message.
+      safeErrorPrintLn("date: cannot set date: " +
+                       win32_posix_error_text(GetLastError()));
       exit_code = 1;
     }
     auto tv = make_time_value(*parsed, use_utc);
@@ -2290,11 +2451,14 @@ REGISTER_COMMAND(
 
   FILETIME selected_time{};
   if (!reference_path.empty()) {
-    auto reference_time = read_reference_time(reference_path);
+    DWORD reference_error = ERROR_SUCCESS;
+    auto reference_time =
+        read_reference_time(reference_path, &reference_error);
     if (!reference_time) {
-      safeErrorPrint("date: failed to get modification time of '");
-      safeErrorPrint(reference_path);
-      safeErrorPrint("'\n");
+      // [GNU] date.c:596-600: error(0, errno, "%s", quoteaf(file))
+      // -- 'date: '<file>': No such file or directory'.
+      safeErrorPrintLn("date: '" + reference_path +
+                       "': " + win32_posix_error_text(reference_error));
       return 1;
     }
     selected_time = *reference_time;
@@ -2312,10 +2476,15 @@ REGISTER_COMMAND(
     selected_time = *parsed;
     if (debug) emit_date_debug(dbg, *parsed, use_utc, format);
   } else if (has_resolution) {
-    // [GNU] date --resolution prints the available timestamp resolution;
-    // FILETIME ticks are 100 ns wide.
-    safePrintLn("0.000000100");
-    return 0;
+    // [GNU] date.c:562-568: --resolution formats the resolution
+    // instant -- the Epoch plus one 100 ns FILETIME tick -- with
+    // the selected format, so '--resolution +%s' prints 0 and the
+    // default format prints 0.000000100.  The old code printed the
+    // constant regardless of any user format.
+    ULARGE_INTEGER ticks{};
+    ticks.QuadPart = 116444736000000001ULL;  // Unix epoch + 100 ns
+    selected_time.dwLowDateTime = ticks.LowPart;
+    selected_time.dwHighDateTime = ticks.HighPart;
   } else if (posix_date_operand.empty()) {
     GetSystemTimeAsFileTime(&selected_time);
   }
@@ -2345,14 +2514,16 @@ REGISTER_COMMAND(
         return 1;
       }
       if (!SetSystemTime(&utc_st)) {
-        safeErrorPrintLn("date: cannot set date");
+        safeErrorPrintLn("date: cannot set date: " +
+                         win32_posix_error_text(GetLastError()));
         exit_code = 1;
       }
     } else {
       // SetLocalTime takes local wall-clock time (SetSystemTime would take
       // UTC); rebuild the UTC FILETIME for display afterwards.
       if (!SetLocalTime(&*parsed)) {
-        safeErrorPrintLn("date: cannot set date");
+        safeErrorPrintLn("date: cannot set date: " +
+                         win32_posix_error_text(GetLastError()));
         exit_code = 1;
       }
       SYSTEMTIME utc_st{};

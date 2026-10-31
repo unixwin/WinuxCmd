@@ -1076,6 +1076,38 @@
       "bucket": "PASS",
       "command": "date"
     },
+    "corpus/date/27-week-numbers.case": {
+      "bucket": "PASS",
+      "command": "date"
+    },
+    "corpus/date/28-zone-colons.case": {
+      "bucket": "PASS",
+      "command": "date"
+    },
+    "corpus/date/29-percent-plus.case": {
+      "bucket": "PASS",
+      "command": "date"
+    },
+    "corpus/date/30-format-conflict.case": {
+      "bucket": "PASS",
+      "command": "date"
+    },
+    "corpus/date/31-resolution-format.case": {
+      "bucket": "PASS",
+      "command": "date"
+    },
+    "corpus/date/32-iso-prefix.case": {
+      "bucket": "PASS",
+      "command": "date"
+    },
+    "corpus/date/33-iso-nanoseconds-rejected.case": {
+      "bucket": "PASS",
+      "command": "date"
+    },
+    "corpus/date/34-reference-missing.case": {
+      "bucket": "PASS",
+      "command": "date"
+    },
     "corpus/find/01-printf-width-flags.case": {
       "bucket": "PASS",
       "command": "find"
