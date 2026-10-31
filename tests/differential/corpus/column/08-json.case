@@ -1,0 +1,7 @@
+cmd: column
+oracle: linux
+args: -J -N name,num
+stdin: |
+  a 1\nbb 22\n
+source: tests/differential/corpus/column/08-json.case
+tags: gnu-compat column json audit-w7
