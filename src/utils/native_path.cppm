@@ -1429,6 +1429,29 @@ export auto canonicalize_path_w(std::wstring_view path, CanonMode mode,
     std::filesystem::path candidate = current / part;
     const DWORD attrs = attributes_w(candidate.wstring());
     if (!valid_attributes(attrs)) {
+      // [GNU] Invalid attributes do not prove a component is missing:
+      // attributes_w follows links (GetFileAttributesW), so a DANGLING
+      // symlink reports invalid attributes even though the link itself
+      // exists. Canonicalisation substitutes an existing link's target
+      // in every mode — readlink -f/-m and realpath print the target's
+      // path for a dangling leaf (#1462 RL-2/RP-1). Probe for a reparse
+      // target before treating the component as missing. Under
+      // CAN_EXISTING the substituted components are probed in turn and
+      // fail ENOENT, preserving -e's outcome for dangling links.
+      if (expand_symlinks) {
+        if (auto target = canonicalize_detail::symlink_target(candidate)) {
+          if (--symlink_budget <= 0) {
+            return std::unexpected(ELOOP);
+          }
+          auto target_parts = canonicalize_detail::components_of(*target);
+          if (target->is_absolute()) {
+            current = target->root_path();
+          }
+          pending.insert(pending.begin(), target_parts.begin(),
+                         target_parts.end());
+          continue;
+        }
+      }
       if (mode == CanonMode::missing) {
         current = candidate;  // keep appending; ".."-handling still works
         continue;

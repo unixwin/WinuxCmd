@@ -1,0 +1,7 @@
+cmd: readlink
+args: -f dangling
+timeout: 10
+setup: |
+  ln -s no-such-target dangling
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w1 oracle-coreutils-9.4 readlink.c:112-122 dangling-target-substituted

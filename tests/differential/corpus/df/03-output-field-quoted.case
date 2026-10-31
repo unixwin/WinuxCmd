@@ -1,0 +1,5 @@
+cmd: df
+args: --output=bogus .
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w1 oracle-coreutils-9.4 df.c:456-465 output-field-quoting
