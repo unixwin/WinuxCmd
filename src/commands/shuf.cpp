@@ -78,6 +78,7 @@ struct Config {
   bool repeat = false;
   bool zero_terminated = false;
   std::string input_range;
+  bool has_input_range = false;
   std::string output_file;
   std::string random_seed;
   std::string random_source;
@@ -524,7 +525,13 @@ auto emit_output(const Config& cfg, std::string_view output) -> int {
   if (!cfg.output_file.empty()) {
     std::ofstream out(cfg.output_file, std::ios::binary | std::ios::trunc);
     if (!out) {
-      cp::report_custom_error(L"shuf", L"cannot open output file");
+      // [GNU] shuf.c freopen failure: error (EXIT_FAILURE, errno, "%s",
+      // quotef (outfile)) -- the path and the reason are named
+      // (audit #1462).
+      cp::Result<int> open_result = std::unexpected(
+          "'" + cfg.output_file +
+          "': " + portable_digest::open_error_reason(cfg.output_file));
+      cp::report_error(open_result, L"shuf");
       return 1;
     }
     out.write(output.data(), static_cast<std::streamsize>(output.size()));
@@ -547,11 +554,19 @@ auto build_config(const CommandContext<SHUF_OPTIONS.size()>& ctx)
   cfg.zero_terminated =
       ctx.get<bool>("--zero-terminated", false) || ctx.get<bool>("-z", false);
 
-  auto range_opt = ctx.get<std::string>("--input-range", "");
-  if (range_opt.empty()) {
-    range_opt = ctx.get<std::string>("-i", "");
+  // [GNU] shuf.c case 'i': a second -i (either spelling) dies with
+  // "multiple -i options specified" during option parsing (audit #1462).
+  auto range_values = ctx.get_all<std::string>("--input-range");
+  auto short_range_values = ctx.get_all<std::string>("-i");
+  range_values.insert(range_values.end(), short_range_values.begin(),
+                      short_range_values.end());
+  if (range_values.size() > 1) {
+    return std::unexpected("multiple -i options specified");
   }
-  cfg.input_range = range_opt;
+  if (!range_values.empty()) {
+    cfg.input_range = range_values.front();
+    cfg.has_input_range = true;
+  }
 
   std::optional<size_t> min_count;
   auto head_count_values = ctx.get_all<std::string>("--head-count");
@@ -575,12 +590,27 @@ auto build_config(const CommandContext<SHUF_OPTIONS.size()>& ctx)
     cfg.head_count = *min_count;
   }
 
-  cfg.output_file = ctx.get<std::string>("--output", "");
-  if (cfg.output_file.empty()) {
-    cfg.output_file = ctx.get<std::string>("-o", "");
+  // [GNU] shuf.c case 'o' / RANDOM_SOURCE_OPTION: a second value that
+  // DIFFERS from the first dies; a repeated identical value is fine
+  // (audit #1462).
+  auto output_values = ctx.get_all<std::string>("--output");
+  auto short_output_values = ctx.get_all<std::string>("-o");
+  output_values.insert(output_values.end(), short_output_values.begin(),
+                       short_output_values.end());
+  for (const auto& value : output_values) {
+    if (!cfg.output_file.empty() && value != cfg.output_file) {
+      return std::unexpected("multiple output files specified");
+    }
+    cfg.output_file = value;
   }
   cfg.random_seed = ctx.get<std::string>("--random-seed", "");
-  cfg.random_source = ctx.get<std::string>("--random-source", "");
+  auto source_values = ctx.get_all<std::string>("--random-source");
+  for (const auto& value : source_values) {
+    if (!cfg.random_source.empty() && value != cfg.random_source) {
+      return std::unexpected("multiple random sources specified");
+    }
+    cfg.random_source = value;
+  }
   if (!cfg.random_seed.empty() && !cfg.random_source.empty()) {
     return std::unexpected(
         "the arguments '--random-seed <STRING>' and '--random-source <FILE>' "
@@ -607,6 +637,26 @@ auto build_config(const CommandContext<SHUF_OPTIONS.size()>& ctx)
     }
   }
 
+  // [GNU] shuf.c "Check invalid usage" block (after option parsing):
+  // error (0, 0, ...) followed by usage (EXIT_FAILURE), i.e. the message
+  // plus the Try line; the extra operand named is operand[0] with -i,
+  // operand[1] otherwise (audit #1462).
+  if (cfg.echo_mode && cfg.has_input_range) {
+    return std::unexpected(
+        "cannot combine -e and -i options\nTry 'shuf --help' for more "
+        "information.");
+  }
+  if (cfg.has_input_range && !ctx.positionals.empty()) {
+    return std::unexpected("extra operand '" +
+                           std::string(ctx.positionals[0]) +
+                           "'\nTry 'shuf --help' for more information.");
+  }
+  if (!cfg.echo_mode && !cfg.has_input_range && ctx.positionals.size() > 1) {
+    return std::unexpected("extra operand '" +
+                           std::string(ctx.positionals[1]) +
+                           "'\nTry 'shuf --help' for more information.");
+  }
+
   return cfg;
 }
 
@@ -615,17 +665,31 @@ auto run(const Config& cfg) -> int {
   // Set when -n defers sampling from a huge -i range.
   std::optional<std::pair<int64_t, int64_t>> deferred_range;
 
+  // [GNU] shuf.c: head_lines == 0 short-circuits input preparation
+  // entirely -- no file is opened, no error is possible (audit #1462).
+  // The -i range itself was already validated during option parsing in
+  // GNU, so the range branch below parses first, then applies this.
+  if (cfg.head_count && *cfg.head_count == 0 && !cfg.has_input_range) {
+    // GNU still freopens the -o file on this path, creating it empty.
+    return cfg.output_file.empty() ? 0
+                                   : emit_output(cfg, std::string_view{});
+  }
+
   if (cfg.echo_mode) {
     // Echo mode: treat each ARG as an input line
     for (const auto& arg : cfg.echo_args) {
       lines.push_back(arg);
     }
-  } else if (!cfg.input_range.empty()) {
+  } else if (cfg.has_input_range) {
     // Input range mode: generate numbers LO through HI
     auto range = split_range(cfg.input_range);
     if (!range) {
       cp::report_error(range, L"shuf");
       return 1;
+    }
+    if (cfg.head_count && *cfg.head_count == 0) {
+      return cfg.output_file.empty() ? 0
+                                     : emit_output(cfg, std::string_view{});
     }
     // [GNU] With -n, huge ranges are sampled without materializing every
     // number in between (uutils #11167). Only the default RNG path defers;
@@ -673,6 +737,16 @@ auto run(const Config& cfg) -> int {
         }
       }
     }
+  }
+
+  // [GNU] shuf.c: with -r and a nonzero head count, an empty input dies
+  // with "no lines to repeat" (covers empty file/stdin and -e with no
+  // ARGs) instead of succeeding silently (audit #1462).
+  if (lines.empty() && !deferred_range && cfg.repeat &&
+      (!cfg.head_count || *cfg.head_count != 0)) {
+    cp::Result<int> result = std::unexpected("no lines to repeat");
+    cp::report_error(result, L"shuf");
+    return 1;
   }
 
   if (lines.empty() && !deferred_range) {
