@@ -104,7 +104,7 @@ auto build_config(const CommandContext<WHO_OPTIONS.size()>& ctx)
     // layer, niu #758). A missing file is still the GNU error.
     std::error_code ec;
     if (!std::filesystem::exists(ctx.positionals.front(), ec)) {
-      return std::unexpected(ctx.positionals.front() +
+      return std::unexpected(std::string(ctx.positionals.front()) +
                              ": No such file or directory");
     }
   }

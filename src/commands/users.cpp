@@ -119,7 +119,7 @@ REGISTER_COMMAND(
     std::error_code ec;
     if (!std::filesystem::exists(ctx.positionals.front(), ec)) {
       cp::report_custom_error(
-          L"users", utf8_to_wstring(ctx.positionals.front() +
+          L"users", utf8_to_wstring(std::string(ctx.positionals.front()) +
                                     ": No such file or directory"));
       return 1;
     }
