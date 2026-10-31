@@ -146,8 +146,11 @@ REGISTER_COMMAND(
     bool is_path_var = lower == "path_max" || lower == "_posix_path_max" ||
                        lower == "name_max" || lower == "_posix_name_max";
     if (!is_path_var) {
-      safeErrorPrintLn("getconf: Unrecognized variable '" + typed + "'");
-      return 1;
+      // [glibc] getconf reports an unrecognized variable with the
+      // backtick/apostrophe quoting and exit status 2 (verified against
+      // glibc 2.39 getconf: "getconf: Unrecognized variable `NOSUCHVAR'").
+      safeErrorPrintLn("getconf: Unrecognized variable `" + typed + "'");
+      return 2;
     }
     std::string path(ctx.positionals[1]);
     std::error_code ec;
@@ -168,10 +171,11 @@ REGISTER_COMMAND(
     if (auto value = lookup(typed)) {
       safePrintLn(*value);
     } else {
-      // [glibc] an unknown variable is an error with a nonzero exit:
-      // "getconf: Unrecognized variable '<name as typed>'".
-      safeErrorPrintLn("getconf: Unrecognized variable '" + typed + "'");
-      exit_code = 1;
+      // [glibc] an unknown variable is an error with exit status 2:
+      // "getconf: Unrecognized variable `<name as typed>'" (glibc
+      // backtick/apostrophe quoting).
+      safeErrorPrintLn("getconf: Unrecognized variable `" + typed + "'");
+      exit_code = 2;
     }
   }
 
