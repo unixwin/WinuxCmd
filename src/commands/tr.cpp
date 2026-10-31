@@ -56,30 +56,36 @@ auto make_dynamic_error(std::string message) -> cp::Error {
 // backslash; reset per operand in parse_set and reported by build_config.
 thread_local bool g_saw_trailing_backslash = false;
 
-// Parse escape sequences
-auto parse_escape_sequence(std::string_view& str) -> char {
-  if (str.empty()) return '\\';
+// [GNU] an ambiguous octal escape (\400-\777) is diagnosed by
+// unquote (tr.c:471-512); the message is stashed here and reported
+// by build_config after the operand parses.
+thread_local std::string g_octal_warning;
+
+// Parse escape sequences. Returns one character, or two for an
+// ambiguous octal escape (see the octal case).
+auto parse_escape_sequence(std::string_view& str) -> std::string {
+  if (str.empty()) return "\\";
 
   char c = str[0];
   str = str.substr(1);
 
   switch (c) {
     case 'n':
-      return '\n';
+      return "\n";
     case 't':
-      return '\t';
+      return "\t";
     case 'r':
-      return '\r';
+      return "\r";
     case 'b':
-      return '\b';
+      return "\b";
     case 'f':
-      return '\f';
+      return "\f";
     case 'v':
-      return '\v';
+      return "\v";
     case 'a':
-      return '\a';
+      return "\a";
     case '\\':
-      return '\\';
+      return "\\";
     case '0':
     case '1':
     case '2':
@@ -88,18 +94,37 @@ auto parse_escape_sequence(std::string_view& str) -> char {
     case '5':
     case '6':
     case '7': {
-      // Parse octal \NNN
+      // Parse octal \NNN (at most 3 digits).
+      std::string digits(1, c);
       int value = c - '0';
-      int digits = 1;
-      while (digits < 3 && !str.empty() && str[0] >= '0' && str[0] <= '7') {
+      while (digits.size() < 3 && !str.empty() && str[0] >= '0' &&
+             str[0] <= '7') {
+        digits += str[0];
         value = value * 8 + (str[0] - '0');
         str = str.substr(1);
-        digits++;
       }
-      return static_cast<char>(value);
+      if (digits.size() == 3 && value > 255) {
+        // [GNU] the escape stops before the digit that would
+        // overflow a byte: the set gains the two-digit value AND
+        // the third digit as a literal character, with a warning
+        // (audit #1462). The old code cast the 3-digit value to
+        // char, yielding a single wrong byte and no warning.
+        const int two = (digits[0] - '0') * 8 + (digits[1] - '0');
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%03o", two);
+        g_octal_warning =
+            "warning: the ambiguous octal escape \\" + digits +
+            " is being interpreted as the 2-byte sequence \\" + buf +
+            ", " + digits[2];
+        std::string out;
+        out += static_cast<char>(two);
+        out += digits[2];
+        return out;
+      }
+      return std::string(1, static_cast<char>(value));
     }
     default:
-      return c;
+      return std::string(1, c);
   }
 }
 
@@ -107,8 +132,12 @@ auto ascii_class(std::string_view name) -> std::optional<std::string> {
   if (name == "lower") return std::string("abcdefghijklmnopqrstuvwxyz");
   if (name == "upper") return std::string("ABCDEFGHIJKLMNOPQRSTUVWXYZ");
   if (name == "digit") return std::string("0123456789");
-  if (name == "blank") return std::string(" \t");
-  if (name == "space") return std::string(" \t\n\r\v\f");
+  // [GNU] class members come out in ascending byte order (the
+  // get_next scan, tr.c:1055-1067): blank is TAB, SPACE and space
+  // is TAB, LF, VT, FF, CR, SPACE. Order matters for positional
+  // translation (audit #1462).
+  if (name == "blank") return std::string("\t ");
+  if (name == "space") return std::string("\t\n\v\f\r ");
   if (name == "alpha") {
     return std::string("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz");
   }
@@ -140,7 +169,15 @@ auto ascii_class(std::string_view name) -> std::optional<std::string> {
   return std::nullopt;
 }
 
-auto parse_atomic_token(std::string_view& str) -> cp::Result<std::string> {
+// What a parsed atom was, for GNU's validate() checks (tr.c:1435).
+struct AtomInfo {
+  bool is_class = false;
+  std::string class_name;
+  bool is_equiv = false;
+};
+
+auto parse_atomic_token(std::string_view& str, AtomInfo* info = nullptr)
+    -> cp::Result<std::string> {
   if (str.empty()) return std::unexpected("missing character");
 
   if (str[0] == '\\') {
@@ -151,7 +188,7 @@ auto parse_atomic_token(std::string_view& str) -> cp::Result<std::string> {
       g_saw_trailing_backslash = true;
       return std::string("\\");
     }
-    return std::string(1, parse_escape_sequence(str));
+    return parse_escape_sequence(str);
   }
 
   if (str.size() >= 4 && str[0] == '[' && str[1] == ':') {
@@ -160,9 +197,18 @@ auto parse_atomic_token(std::string_view& str) -> cp::Result<std::string> {
       std::string_view name = str.substr(2, close - 2);
       auto chars = ascii_class(name);
       if (!chars) {
+        // [GNU] an empty class name has its own diagnostic
+        // (tr.c:884) (audit #1462).
+        if (name.empty()) {
+          return std::unexpected("missing character class name '[::]'");
+        }
         return std::unexpected(
             make_dynamic_error(std::string("invalid character class '") +
                                std::string(name) + "'"));
+      }
+      if (info) {
+        info->is_class = true;
+        info->class_name = std::string(name);
       }
       str = str.substr(close + 2);
       return *chars;
@@ -235,8 +281,8 @@ auto parse_repeat_spec(std::string_view digits) -> cp::Result<RepeatSpec> {
   return spec;
 }
 
-auto parse_set_atom(std::string_view& str, RepeatSpec* repeat_out)
-    -> cp::Result<std::string> {
+auto parse_set_atom(std::string_view& str, RepeatSpec* repeat_out,
+                    AtomInfo* info = nullptr) -> cp::Result<std::string> {
   if (str.empty()) return std::unexpected("missing character");
 
   if (str[0] == '[') {
@@ -248,8 +294,17 @@ auto parse_set_atom(std::string_view& str, RepeatSpec* repeat_out)
         std::string_view equiv = body.substr(1, body.size() - 2);
         auto atom = parse_atomic_token(equiv);
         if (atom && equiv.empty() && atom->size() == 1) {
+          if (info) info->is_equiv = true;
           str = str.substr(close + 1);
           return *atom;
+        }
+        if (atom && equiv.empty()) {
+          // [GNU] a well-formed [=...=] whose content is not
+          // exactly one character is fatal (tr.c:913-925); the
+          // caller rewrites this sentinel with the operand text
+          // (audit #1462). The old code fell through and treated
+          // the construct as literal characters.
+          return std::unexpected("EQUIV_CLASS_SIZE:");
         }
       }
 
@@ -290,34 +345,66 @@ struct SetParseResult {
   // Index within `chars` where the indefinite repeat appeared; the fill
   // character must be inserted at this position, not appended.
   size_t indefinite_pos = 0;
+  // [GNU] validate() metadata (tr.c:1435-1495).
+  bool has_equiv_class = false;
+  bool has_char_class = false;
+  bool has_restricted_class = false;  // a class other than upper/lower
+  bool ends_with_class = false;       // last appended atom was a class
+  std::vector<size_t> element_starts;  // expanded offset of each element
+  // Expanded spans of [:upper:]/[:lower:] elements (validate_case_classes).
+  std::vector<std::pair<size_t, size_t>> case_spans;
 };
 
 auto parse_set(std::string_view str) -> cp::Result<SetParseResult> {
   g_saw_trailing_backslash = false;
+  const std::string_view operand = str;
   SetParseResult out;
   std::string& result = out.chars;
 
+  // [GNU] "<operand>: equivalence class operand must be a single
+  // character" -- parse_set_atom reports a sentinel; rewrite it
+  // with the full operand text here.
+  auto rewrite_error = [&](const cp::Error& err) -> cp::Error {
+    if (err == "EQUIV_CLASS_SIZE:") {
+      return make_dynamic_error(
+          "'" + std::string(operand) +
+          "': equivalence class operand must be a single character");
+    }
+    return err;
+  };
+
   while (!str.empty()) {
     RepeatSpec spec;
-    auto atom = parse_set_atom(str, &spec);
-    if (!atom) return std::unexpected(atom.error());
+    AtomInfo info;
+    auto atom = parse_set_atom(str, &spec, &info);
+    if (!atom) return std::unexpected(rewrite_error(atom.error()));
+    if (info.is_equiv) out.has_equiv_class = true;
+    if (info.is_class) {
+      out.has_char_class = true;
+      if (info.class_name != "upper" && info.class_name != "lower") {
+        out.has_restricted_class = true;
+      }
+    }
 
     if (spec.indefinite) {
       ++out.indefinite_count;
       out.indefinite_char = (*atom)[0];
       out.indefinite_pos = result.size();
+      out.ends_with_class = false;
       continue;  // contributes nothing until the fill phase
     }
     if (spec.count > 0) {
+      out.element_starts.push_back(result.size());
       result +=
           std::string(std::min(spec.count, kMaxMaterializedRepeat), (*atom)[0]);
+      out.ends_with_class = false;
       continue;
     }
 
     if (atom->size() == 1 && str.size() >= 2 && str[0] == '-') {
       std::string_view range_tail = str.substr(1);
       auto end_atom = parse_set_atom(range_tail, nullptr);
-      if (!end_atom) return std::unexpected(end_atom.error());
+      if (!end_atom) return std::unexpected(rewrite_error(end_atom.error()));
 
       if (end_atom->size() == 1) {
         unsigned char start = static_cast<unsigned char>((*atom)[0]);
@@ -331,17 +418,27 @@ auto parse_set(std::string_view str) -> cp::Result<SetParseResult> {
               std::string("range-endpoints of '") + range_text +
               "' are in reverse collating sequence order"));
         }
+        out.element_starts.push_back(result.size());
         for (unsigned int c = start; c <= end; ++c) {
           result += static_cast<char>(c);
         }
+        out.ends_with_class = false;
         str = range_tail;
       } else {
         result += *atom;
         result += '-';
+        out.ends_with_class = false;
         str = str.substr(1);
       }
     } else {
+      out.element_starts.push_back(result.size());
+      const size_t span_start = result.size();
       result += *atom;
+      if (info.is_class && (info.class_name == "upper" ||
+                            info.class_name == "lower")) {
+        out.case_spans.emplace_back(span_start, result.size());
+      }
+      out.ends_with_class = info.is_class;
     }
   }
 
@@ -498,35 +595,117 @@ auto build_config(const CommandContext<TR_OPTIONS.size()>& ctx)
     }
   };
 
+  auto warn_octal = [] {
+    if (!g_octal_warning.empty()) {
+      safeErrorPrintLn("tr: " + g_octal_warning);
+      g_octal_warning.clear();
+    }
+  };
+
   auto set1 = parse_set(ctx.positionals[0]);
   warn_trailing_backslash();
+  warn_octal();
   if (!set1) return std::unexpected(set1.error());
+
+  // In -ds mode, the second argument is the squeeze set, not the
+  // translation string.
+  std::optional<decltype(parse_set(ctx.positionals[0]))> set2;
+  if (ctx.positionals.size() > 1) {
+    set2 = parse_set(ctx.positionals[1]);
+    warn_trailing_backslash();
+    warn_octal();
+    if (!*set2) return std::unexpected((*set2).error());
+  }
+
+  // [GNU] validate() (tr.c:1435-1495), in GNU's order. The old code
+  // performed none of the translating checks (audit #1462).
+  const bool translating = !cfg.delete_mode;
   if (set1->indefinite_count > 0) {
     return std::unexpected(make_dynamic_error(
         "the [c*] repeat construct may not appear in string1"));
   }
   cfg.set1 = set1->chars;
 
-  // In -ds mode, the second argument is SET2 (set to squeeze), not SET2
-  // (translation)
-  if (ctx.positionals.size() > 1) {
-    auto set2 = parse_set(ctx.positionals[1]);
-    warn_trailing_backslash();
-    if (!set2) return std::unexpected(set2.error());
-    if (set2->indefinite_count > 1) {
+  if (set2) {
+    const auto& s2 = **set2;
+    if (s2.indefinite_count > 1) {
       return std::unexpected(make_dynamic_error(
           "only one [c*] repeat construct may appear in string2"));
     }
-    bool translating = !cfg.delete_mode;
-    if (set2->indefinite_count > 0) {
-      if (!translating) {
+    if (translating) {
+      if (s2.has_equiv_class) {
         return std::unexpected(make_dynamic_error(
-            "the [c*] construct may appear in string2 only when translating"));
+            "[=c=] expressions may not appear in string2 when "
+            "translating"));
       }
-      cfg.fill_char = set2->indefinite_char;
-      cfg.fill_pos = set2->indefinite_pos;
+      if (s2.has_restricted_class) {
+        return std::unexpected(make_dynamic_error(
+            "when translating, the only character classes that may "
+            "appear in\nstring2 are 'upper' and 'lower'"));
+      }
+      // validate_case_classes: a case class starting in string2
+      // must coincide with a case class starting in string1.
+      // (GNU skips the check entirely when complementing.)
+      if (!cfg.complement) {
+        for (const auto& span : s2.case_spans) {
+          if (span.first >= set1->chars.size()) break;
+          bool aligned = false;
+          for (const auto& s1_span : set1->case_spans) {
+            if (s1_span.first == span.first) {
+              aligned = true;
+              break;
+            }
+          }
+          if (!aligned) {
+            return std::unexpected(make_dynamic_error(
+                "misaligned [:upper:] and/or [:lower:] construct"));
+          }
+        }
+      }
+      // string2's effective length, with an indefinite repeat
+      // resolved to fill string1 (get_s2_spec_stats).
+      const size_t eff2 =
+          s2.indefinite_count > 0
+              ? std::max(s2.chars.size(), set1->chars.size())
+              : s2.chars.size();
+      if (!cfg.truncate_set1 && eff2 < set1->chars.size()) {
+        if (eff2 == 0) {
+          return std::unexpected(make_dynamic_error(
+              "when not truncating set1, string2 must be non-empty"));
+        }
+        if (s2.ends_with_class) {
+          return std::unexpected(make_dynamic_error(
+              "when translating with string1 longer than string2, "
+              "the latter string must not end with a character class"));
+        }
+      }
+      if (cfg.complement && set1->has_char_class) {
+        std::string eff = s2.chars;
+        if (s2.indefinite_count > 0 && eff.size() < set1->chars.size()) {
+          const size_t pos = std::min(s2.indefinite_pos, eff.size());
+          eff.insert(pos, set1->chars.size() - eff.size(),
+                     s2.indefinite_char);
+        }
+        const bool homogeneous =
+            !eff.empty() &&
+            std::all_of(eff.begin(), eff.end(),
+                        [&](char c) { return c == eff[0]; });
+        if (!(eff.size() == set1->chars.size() && homogeneous)) {
+          return std::unexpected(make_dynamic_error(
+              "when translating with complemented character "
+              "classes,\nstring2 must map all characters in the "
+              "domain to one"));
+        }
+      }
+      if (s2.indefinite_count > 0) {
+        cfg.fill_char = s2.indefinite_char;
+        cfg.fill_pos = s2.indefinite_pos;
+      }
+    } else if (s2.indefinite_count > 0) {
+      return std::unexpected(make_dynamic_error(
+          "the [c*] construct may appear in string2 only when translating"));
     }
-    cfg.set2 = set2->chars;
+    cfg.set2 = s2.chars;
   } else {
     cfg.set2 = "";  // Default empty set
   }
