@@ -472,8 +472,11 @@ auto report_inappropriate_ioctl(const Config& cfg) -> int {
 }
 
 auto report_missing_device(const std::string& device) -> int {
-  // [GNU] stty.c:1402-1403: the device is quoted in this diagnostic.
-  safeErrorPrint("stty: '" + device + "': No such file or directory\n");
+  // [GNU] stty.c:1402-1403: the diagnostic is quotef(device) -- a
+  // plain device name prints bare; quoting appears only when the
+  // name contains shell-special characters.
+  safeErrorPrint("stty: " + gnu_quotearg::shell_escape_quote(device) +
+                 ": No such file or directory\n");
   return 1;
 }
 
