@@ -19,16 +19,20 @@ using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
 auto constexpr COL_OPTIONS = std::array{
-    // [EXT]
-    OPTION("-b", "", "do not output backspaces"),
-    // [EXT]
-    OPTION("-f", "", "permit forward half line feeds"),
-    // [EXT]
-    OPTION("-p", "", "pass unknown control sequences"),
-    // [EXT]
-    OPTION("-x", "", "output spaces instead of tabs"),
-    // [EXT]
-    OPTION("-l", "", "buffer at least NUM lines (default 128)", STRING_TYPE)};
+    // [GNU] util-linux col.c long options (col.c longopts table)
+    OPTION("-b", "--no-backspaces", "do not output backspaces"),
+    // [GNU]
+    OPTION("-f", "--fine", "permit forward half line feeds"),
+    // [GNU]
+    OPTION("-p", "--pass", "pass unknown control sequences"),
+    // [GNU] -h, --tabs: compress spaces into tabs (the default)
+    OPTION("-h", "--tabs", "output tabs instead of multiple spaces"),
+    // [GNU] -x, --spaces: do not compress spaces into tabs
+    OPTION("-x", "--spaces", "output spaces instead of tabs"),
+    // [GNU] -l, --lines: buffer at least NUM lines in memory. The oracle
+    // default is 32 lines (BUFFER_MARGIN * 2 half-lines, col.c:88,651).
+    OPTION("-l", "--lines", "buffer at least NUM lines (default 32)",
+           STRING_TYPE)};
 
 namespace col_pipeline {
 namespace cp = core::pipeline;
@@ -37,32 +41,92 @@ struct Config {
   bool no_backspaces = false;
   bool forward_half = false;
   bool pass_unknown = false;
-  bool spaces_for_tabs = false;
-  size_t buffer_lines = 128;
+  bool compress_spaces = true;
+  size_t buffer_lines = 32;
 };
 
 auto build_config(const CommandContext<COL_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
   Config cfg;
 
-  cfg.no_backspaces = ctx.get<bool>("-b", false);
-  cfg.forward_half = ctx.get<bool>("-f", false);
-  cfg.pass_unknown = ctx.get<bool>("-p", false);
-  cfg.spaces_for_tabs = ctx.get<bool>("-x", false);
+  cfg.no_backspaces =
+      ctx.get<bool>("-b", false) || ctx.get<bool>("--no-backspaces", false);
+  cfg.forward_half =
+      ctx.get<bool>("-f", false) || ctx.get<bool>("--fine", false);
+  cfg.pass_unknown =
+      ctx.get<bool>("-p", false) || ctx.get<bool>("--pass", false);
+
+  // [GNU] -h/--tabs and -x/--spaces are mutually exclusive (col.c
+  // err_exclusive_options); -x turns the default space->tab compression
+  // off (col.c:571), -h turns it on (col.c:558).
+  const bool tabs_flag =
+      ctx.get<bool>("-h", false) || ctx.get<bool>("--tabs", false);
+  const bool spaces_flag =
+      ctx.get<bool>("-x", false) || ctx.get<bool>("--spaces", false);
+  if (tabs_flag && spaces_flag) {
+    return std::unexpected("--tabs and --spaces are mutually exclusive");
+  }
+  cfg.compress_spaces = !spaces_flag;
 
   auto lines_opt = ctx.get<std::string>("-l", "");
+  if (lines_opt.empty()) {
+    lines_opt = ctx.get<std::string>("--lines", "");
+  }
   if (!lines_opt.empty()) {
-    int val = 0;
+    unsigned long val = 0;
     auto [ptr, ec] = std::from_chars(lines_opt.data(),
                                      lines_opt.data() + lines_opt.size(), val);
-    if (ec != std::errc() || ptr != lines_opt.data() + lines_opt.size() ||
-        val < 1) {
-      return std::unexpected("invalid line count");
+    if (ec != std::errc() || ptr != lines_opt.data() + lines_opt.size()) {
+      return std::unexpected("bad -l argument");
     }
     cfg.buffer_lines = static_cast<size_t>(val);
   }
 
   return cfg;
+}
+
+// [GNU] Space->tab compression, following col.c:288-303 exactly: for a
+// gap of more than one space between the last emitted column and the
+// next character, emit (next/8 - last/8) tabs and pad the remainder
+// (next & 7) with spaces. Trailing gaps are dropped, as col drops
+// trailing blanks when a line is flushed.
+auto compress_line(const std::string& line) -> std::string {
+  std::string out;
+  size_t col_pos = 0;
+  size_t i = 0;
+  while (i < line.size()) {
+    if (line[i] == ' ') {
+      size_t run_start = i;
+      while (i < line.size() && line[i] == ' ') {
+        ++i;
+      }
+      if (i >= line.size()) {
+        break;  // trailing blanks are not emitted
+      }
+      const size_t target = col_pos + (i - run_start);
+      size_t nspace = target - col_pos;
+      if (nspace > 1) {
+        const size_t ntabs = target / 8 - col_pos / 8;
+        if (ntabs > 0) {
+          out.append(ntabs, '\t');
+          nspace = target & 7;
+        }
+      }
+      out.append(nspace, ' ');
+      col_pos = target;
+      continue;
+    }
+    if (line[i] == '\t') {
+      out.push_back('\t');
+      col_pos += 8 - (col_pos % 8);
+      ++i;
+      continue;
+    }
+    out.push_back(line[i]);
+    ++col_pos;
+    ++i;
+  }
+  return out;
 }
 
 auto run(const Config& cfg) -> int {
@@ -102,15 +166,11 @@ auto run(const Config& cfg) -> int {
         current_col = 0;
         break;
 
-      case '\t':  // Tab
-        if (cfg.spaces_for_tabs) {
-          size_t spaces = 8 - (current_col % 8);
-          lines.back().append(spaces, ' ');
-          current_col += spaces;
-        } else {
-          lines.back().push_back('\t');
-          current_col += 8 - (current_col % 8);
-        }
+      case '\t':  // Tab: advance to the next tab stop. The gap is
+                  // materialized at output time (tabs when compression
+                  // is on, spaces with -x/--spaces), as in col.c, where
+                  // input tabs only move the column position.
+        current_col += 8 - (current_col % 8);
         break;
 
       case '\v':  // Vertical tab (reverse line feed)
@@ -152,7 +212,7 @@ auto run(const Config& cfg) -> int {
     --output_count;
   }
   for (size_t i = 0; i < output_count; ++i) {
-    safePrintLn(lines[i]);
+    safePrintLn(cfg.compress_spaces ? compress_line(lines[i]) : lines[i]);
   }
 
   return 0;
@@ -169,11 +229,12 @@ REGISTER_COMMAND(
     "\n"
     "Mandatory arguments to long options are mandatory for short options too.\n"
     "\n"
-    "  -b    do not output backspaces\n"
-    "  -f    permit forward half line feeds\n"
-    "  -p    pass unknown control sequences\n"
-    "  -x    output spaces instead of tabs\n"
-    "  -l    buffer at least NUM lines (default 128)",
+    "  -b, --no-backspaces    do not output backspaces\n"
+    "  -f, --fine             permit forward half line feeds\n"
+    "  -h, --tabs             output tabs instead of multiple spaces\n"
+    "  -p, --pass             pass unknown control sequences\n"
+    "  -x, --spaces           output spaces instead of tabs\n"
+    "  -l, --lines NUM        buffer at least NUM lines (default 32)",
     "  col -b          filter backspaces\n"
     "  col -x          convert tabs to spaces\n"
     "  col -f          allow forward half line feeds",
