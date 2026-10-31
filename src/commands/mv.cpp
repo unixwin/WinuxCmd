@@ -1102,6 +1102,13 @@ auto process_command(const CommandContext<N>& ctx) -> cp::Result<bool> {
           if (!control) {
             return std::unexpected(control.error());
           }
+          // TEMP-DIAG (audit-w1): report the conflict-check verdict.
+          safeErrorPrint("DIAG mv conflict control has_value=");
+          safeErrorPrint(control.has_value() ? "1" : "0");
+          safeErrorPrint(" mode=");
+          safeErrorPrint(std::to_string(
+              static_cast<int>(*overwrite_mode)));
+          safeErrorPrint("\n");
           if (control.has_value() &&
               *overwrite_mode == OverwriteMode::no_clobber) {
             return std::unexpected(

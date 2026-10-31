@@ -2053,8 +2053,15 @@ auto process_command(const CommandContext<N>& ctx) -> cp::Result<bool> {
   // streams here, so accepting the flag is a compatible no-op (#1066).
   (void)ctx.get<bool>("--copy-contents", false);
 
+  // TEMP-DIAG (audit-w1): mark entry into cp's option validation.
+  safeErrorPrint("DIAG cp process_command validation reached\n");
   bool no_clobber =
       ctx.get<bool>("--no-clobber", false) || ctx.get<bool>("-n", false);
+  safeErrorPrint("DIAG cp no_clobber=");
+  safeErrorPrint(no_clobber ? "1" : "0");
+  safeErrorPrint(" backup_enabled=");
+  safeErrorPrint(backup_enabled(ctx) ? "1" : "0");
+  safeErrorPrint("\n");
   if (no_clobber) {
     // [GNU 9.4] -n is deprecated in favour of --update=none.
     safeErrorPrintLn(
