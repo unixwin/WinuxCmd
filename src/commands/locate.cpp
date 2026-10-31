@@ -376,12 +376,15 @@ auto run(const Config& cfg) -> int {
       DWORD error = 0;
       if (!read_db(element, db_lines, error)) {
         if (databases.user_selected) {
-          // [GNU] locate.c dolocate: a user-selected database that
-          // cannot be opened is reported as "locate: NAME: <error>"
-          // and the run ends there -- with status 0.
-          safeErrorPrint("locate: ");
+          // [GNU] locate.c search_one_database (line ~1350): a
+          // user-selected database that cannot be opened is reported
+          // as "locate: 'NAME': <error>" -- the name passes through
+          // quotearg_n_style with locale_quoting_style, which quotes
+          // it with single quotes in the C locale -- and the run ends
+          // there, with status 0.
+          safeErrorPrint("locate: '");
           safeErrorPrint(element);
-          safeErrorPrint(": ");
+          safeErrorPrint("': ");
           safeErrorPrintLn(win32_posix_error_text(error));
           return 0;
         }

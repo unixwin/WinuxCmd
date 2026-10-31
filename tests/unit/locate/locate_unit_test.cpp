@@ -243,11 +243,12 @@ TEST(locate, locate_missing_database_reports_and_exits_zero) {
 
   auto r = p.run();
 
-  // [GNU] locate.c dolocate: an unopenable user-selected database is
-  // reported as "locate: NAME: <error>" and the run ends with status 0.
+  // [GNU] locate.c search_one_database: an unopenable user-selected
+  // database is reported as "locate: 'NAME': <error>" (the name is
+  // quotearg-quoted) and the run ends with status 0.
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stderr_text.find("locate: no-such-db.txt: No such file "
-                                 "or directory") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("locate: 'no-such-db.txt': No such "
+                                 "file or directory") != std::string::npos);
 }
 
 TEST(locate, locate_limit_zero_prints_nothing) {
