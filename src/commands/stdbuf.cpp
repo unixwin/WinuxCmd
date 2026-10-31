@@ -94,11 +94,12 @@ auto parse_buffer_size(const std::string& str) -> std::optional<size_t> {
     ++digits;
   }
 
-  // [GNU] stdbuf.c:64-79 (parse_size via xstrtoumax): a size must
-  // start with at least one digit; a bare suffix ('K') is invalid,
-  // not an implied 1.
+  // [GNU] stdbuf.c parse_size via xstrtoumax: with no leading digits,
+  // a valid suffix alone implies the number 1 (xstrtol.c: "If there is
+  // no number but there is a valid suffix, assume the number is 1"),
+  // so a bare 'KiB' is 1024, not an invalid mode.
   if (digits == 0) {
-    return std::nullopt;
+    return parse_buffer_suffix(str);
   }
   std::uint64_t value = 0;
   {
