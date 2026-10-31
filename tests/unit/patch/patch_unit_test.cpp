@@ -1016,3 +1016,82 @@ TEST(patch, patch_batch_missing_target_skips) {
   EXPECT_TRUE(r.stdout_text.find("1 out of 1 hunk ignored") !=
               std::string::npos);
 }
+
+// [GNU] Default name preparation is basename (util.c fetchname with
+// strippath -1): when both a/b/f.txt and f.txt exist, the patch goes
+// to f.txt, not to the path-ful name.
+TEST(patch, patch_default_names_use_basename) {
+  TempDir tmp;
+  tmp.mkdir("a");
+  tmp.write("a/f.txt", "decoy\n");
+  tmp.write("f.txt", "hello\n");
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("--- a/f.txt\n+++ a/f.txt\n@@ -1,1 +1,1 @@\n-hello\n+world\n");
+  p.add(L"patch.exe", {});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(tmp.read("f.txt"), "world\n");
+  EXPECT_EQ_TEXT(tmp.read("a/f.txt"), "decoy\n");
+}
+
+// [GNU] best_name (pch.c:1039): with -p0 and several existing
+// candidates, fewest path components wins over old/new order.
+TEST(patch, patch_best_name_prefers_fewest_components) {
+  TempDir tmp;
+  tmp.mkdir("dir");
+  tmp.write("dir/longname.txt", "other\n");
+  tmp.write("s.txt", "hello\n");
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("--- dir/longname.txt\n+++ s.txt\n"
+              "@@ -1,1 +1,1 @@\n-hello\n+world\n");
+  p.add(L"patch.exe", {L"-p0"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(tmp.read("s.txt"), "world\n");
+  EXPECT_EQ_TEXT(tmp.read("dir/longname.txt"), "other\n");
+}
+
+// [GNU] -pN ignores a name with fewer than N slash-runs entirely
+// (util.c fetchname): here only the new name survives -p1.
+TEST(patch, patch_strip_ignores_name_with_too_few_slashes) {
+  TempDir tmp;
+  tmp.write("x.txt", "decoy\n");
+  tmp.write("y.txt", "hello\n");
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("--- x.txt\n+++ a/y.txt\n@@ -1,1 +1,1 @@\n-hello\n+world\n");
+  p.add(L"patch.exe", {L"-p1"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(tmp.read("y.txt"), "world\n");
+  EXPECT_EQ_TEXT(tmp.read("x.txt"), "decoy\n");
+}
+
+// [GNU] The Index name is discarded when a header name exists
+// (pch.c:870, non-POSIX): a missing header file goes to the dialogue
+// even though the Index file exists.  POSIX mode keeps it.
+TEST(patch, patch_index_name_discarded_beside_header_names) {
+  TempDir tmp;
+  tmp.write("decoy.txt", "hello\n");
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("Index: decoy.txt\n"
+              "--- missing.txt\n+++ missing.txt\n"
+              "@@ -1,1 +1,1 @@\n-hello\n+world\n");
+  p.add(L"patch.exe", {L"--batch"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ_TEXT(tmp.read("decoy.txt"), "hello\n");
+
+  Pipeline q;
+  q.set_cwd(tmp.wpath());
+  q.set_stdin("Index: decoy.txt\n"
+              "--- missing.txt\n+++ missing.txt\n"
+              "@@ -1,1 +1,1 @@\n-hello\n+world\n");
+  q.add(L"patch.exe", {L"--batch", L"--posix"});
+  auto r2 = q.run();
+  EXPECT_EQ(r2.exit_code, 0);
+  EXPECT_EQ_TEXT(tmp.read("decoy.txt"), "world\n");
+}
