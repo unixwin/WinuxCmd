@@ -79,7 +79,7 @@ auto format_attrs_long(DWORD attrs) -> std::string {
   return out;
 }
 
-auto print_one(std::string_view display_path) -> bool {
+auto print_one(std::string_view display_path, bool long_names) -> bool {
   auto operand = native_path::make_api_path_operand(display_path);
   DWORD attrs = GetFileAttributesW(operand.extended.c_str());
   if (attrs == INVALID_FILE_ATTRIBUTES) {
@@ -88,7 +88,9 @@ auto print_one(std::string_view display_path) -> bool {
     return false;
   }
 
-  safePrint(format_attrs(attrs));
+  // -l applies to plain file operands and -d listings too, not only to
+  // directory children (list_directory_children already honored it).
+  safePrint(long_names ? format_attrs_long(attrs) : format_attrs(attrs));
   safePrint(" ");
   safePrintLn(std::string(display_path));
   return true;
@@ -152,7 +154,7 @@ auto list_path(const Config& cfg, std::string_view path) -> bool {
   }
 
   if ((attrs & FILE_ATTRIBUTE_DIRECTORY) == 0 || cfg.directory) {
-    return print_one(path);
+    return print_one(path, cfg.long_names);
   }
 
   bool ok = true;

@@ -1,0 +1,8 @@
+cmd: readlink
+args: -n -z good
+timeout: 10
+setup: |
+  printf 'x' > target
+  ln -s target good
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w1 oracle-coreutils-9.4 readlink.c:162-168 no-newline-suppresses-nul

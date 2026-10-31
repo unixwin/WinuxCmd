@@ -1,0 +1,7 @@
+cmd: install
+args: -C -p a.txt b.txt
+timeout: 10
+setup: |
+  printf 'x' > a.txt
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w1 oracle-coreutils-9.4 install.c:1001-1013 compare-preserve-conflict

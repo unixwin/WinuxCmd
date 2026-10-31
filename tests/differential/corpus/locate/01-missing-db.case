@@ -1,0 +1,5 @@
+cmd: locate
+args: -d missing.db needle
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w5 locate missing-database exit-status

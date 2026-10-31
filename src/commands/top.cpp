@@ -140,37 +140,41 @@ struct TopConfig {
 constexpr auto TOP_OPTIONS = std::array{
     // [EXT] -b, --batch
     OPTION("-b", "--batch",
-           "batch mode: don't accept input, run until -n iterations"),
+           "run in non-interactive batch mode; run until the -n iteration "
+           "limit is reached"),
     // [EXT] -d, --delay
-    OPTION("-d", "--delay", "delay between updates, in seconds", INT_TYPE),
+    OPTION("-d", "--delay", "iterative delay as SECS (integer seconds)",
+           INT_TYPE),
     // [EXT] -n, --iterations
-    OPTION("-n", "--iterations", "number of iterations before exiting",
+    OPTION("-n", "--iterations", "exit on maximum iterations NUMBER",
            INT_TYPE),
     // [EXT] -p, --pid
-    OPTION("-p", "--pid", "monitor only processes with given PIDs",
-           STRING_TYPE),
+    OPTION("-p", "--pid", "monitor only the tasks in PIDLIST", STRING_TYPE),
     // [EXT] -u, --user
-    OPTION("-u", "--user", "monitor only processes with given user",
-           STRING_TYPE),
+    OPTION("-u", "--user", "show only processes owned by USER", STRING_TYPE),
     // [EXT] -U, --User
-    OPTION("-U", "--User", "monitor only processes with real user ID/name",
+    OPTION("-U", "--User",
+           "show only processes owned by USER (real user ID/name)",
            STRING_TYPE),
     // [EXT] -s, --secure-mode
-    OPTION("-s", "--secure-mode", "secure mode: disables some features"),
+    OPTION("-s", "--secure-mode",
+           "run with secure mode restrictions (disables kill/renice)"),
     // [EXT] -c, --command
     OPTION("-c", "--command", "show command line instead of process name"),
     // [EXT] -H, --threads
-    OPTION("-H", "--threads", "show threads as if they were processes"),
+    OPTION("-H", "--threads", "show tasks plus all their threads"),
     // [EXT] -o, --field-sort
-    OPTION("-o", "--field-sort", "override sort field", STRING_TYPE),
+    OPTION("-o", "--field-sort",
+           "force sorting on this named FIELD (CPU|MEM|TIME|PID|NAME)",
+           STRING_TYPE),
     // [EXT] -w, --width
-    OPTION("-w", "--width", "override output width", INT_TYPE),
+    OPTION("-w", "--width", "change print width to WIDTH", INT_TYPE),
     // [EXT] --rows
-    OPTION("", "--rows", "limit number of processes displayed", INT_TYPE),
+    OPTION("", "--rows", "limit number of displayed processes", INT_TYPE),
     // [EXT] -v, --version
-    OPTION("-v", "--version", "print version information"),
+    OPTION("-v", "--version", "output version information & exit"),
     // [EXT] --help
-    OPTION("", "--help", "display this help")};
+    OPTION("", "--help", "display this help text, then exit")};
 
 // ======================================================
 // Helper Functions

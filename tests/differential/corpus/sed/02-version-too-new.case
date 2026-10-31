@@ -1,0 +1,7 @@
+cmd: sed
+args: 'v 99.0' data.txt
+timeout: 10
+setup: |
+  printf 'one\ntwo\n' > data.txt
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w5 sed version-command

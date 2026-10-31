@@ -99,7 +99,7 @@ TEST(sync, sync_data_and_file_system_are_mutually_exclusive) {
   EXPECT_TRUE(r.stdout_text.empty());
   EXPECT_EQ_TEXT(
       r.stderr_text,
-      "sync: options --data and --file-system are mutually exclusive\n");
+      "sync: cannot specify both --data and --file-system\n");
 }
 
 TEST(sync, sync_file_system_option_is_accepted) {

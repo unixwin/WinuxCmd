@@ -1,0 +1,8 @@
+cmd: unlink
+args: ro.txt
+timeout: 10
+setup: |
+  printf 'x' > ro.txt
+  chmod 444 ro.txt
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w1 oracle-coreutils-9.4 unlink.c:82-83 readonly-file-unlinks

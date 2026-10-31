@@ -55,21 +55,31 @@ auto constexpr DATE_OPTIONS = std::array{
     OPTION("-d", "--date", "display time described by STRING, not 'now'",
            STRING_TYPE),
     // [DIFFERS]
-    OPTION("-u", "--utc", "Coordinated Universal Time (UTC)"),
+    OPTION("-u", "--utc", "print or set Coordinated Universal Time (UTC)"),
     // [DIFFERS]
-    OPTION("-R", "--rfc-email", "output RFC 5322 compliant date string"),
+    OPTION("-R", "--rfc-email",
+           "output date and time in RFC 5322 format. Example: Mon, 14 Aug "
+           "2006 02:34:56 -0600"),
     // [DIFFERS]
     OPTION("", "--rfc-2822", "output RFC 2822 compliant date string"),
     // [DIFFERS]
-    OPTION("-I", "--iso-8601", "output ISO 8601 date/time",
+    OPTION("-I", "--iso-8601",
+           "output date/time in ISO 8601 format. FMT='date' for date only "
+           "(the default), 'hours', 'minutes', 'seconds', or 'ns' for date "
+           "and time to the indicated precision. Example: "
+           "2006-08-14T02:34:56-06:00",
            OPTIONAL_STRING_TYPE),
     // [DIFFERS]
-    OPTION("", "--rfc-3339", "output RFC 3339 date/time", STRING_TYPE),
+    OPTION("", "--rfc-3339",
+           "output date/time in RFC 3339 format. FMT='date', 'seconds', or "
+           "'ns' for date and time to the indicated precision. Example: "
+           "2006-08-14 02:34:56-06:00",
+           STRING_TYPE),
     // [DIFFERS]
     OPTION("-r", "--reference", "display the last modification time of FILE",
            STRING_TYPE),
     // [DIFFERS]
-    OPTION("-f", "--file", "display date strings from DATEFILE, one per line",
+    OPTION("-f", "--file", "like --date; once for each line of DATEFILE",
            STRING_TYPE),
     // [DIFFERS]
     OPTION("", "--universal", "alias for --utc"),
@@ -79,7 +89,8 @@ auto constexpr DATE_OPTIONS = std::array{
     OPTION("", "--rfc-822", "", BOOL_TYPE),
     // [GNU] --debug: annotate the parsed date, and warn about dubious usage
     OPTION("", "--debug",
-           "annotate the parsed date, and warn about dubious usage to stderr"),
+           "annotate the parsed date, and warn about questionable usage to "
+           "stderr"),
     // [GNU] --resolution: output the available resolution of timestamps
     OPTION("", "--resolution", "output the available resolution of timestamps"),
     // [GNU] --set: set time described by STRING

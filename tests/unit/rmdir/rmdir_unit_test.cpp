@@ -87,7 +87,8 @@ TEST(rmdir, rmdir_parents_reports_non_empty_ancestor_failure) {
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_TRUE(r.stdout_text.empty());
   EXPECT_EQ_TEXT(r.stderr_text,
-                 "rmdir: failed to remove 'a': Directory not empty\n");
+                 "rmdir: failed to remove directory 'a': Directory "
+                 "not empty\n");
   EXPECT_TRUE(std::filesystem::exists(tmp.path / "a"));
   EXPECT_FALSE(std::filesystem::exists(tmp.path / "a" / "b"));
   EXPECT_FALSE(std::filesystem::exists(tmp.path / "a" / "b" / "c"));
@@ -159,7 +160,8 @@ TEST(rmdir, rmdir_parents_verbose_reports_failed_ancestor_attempt) {
                  "rmdir: removing directory, 'a/b'\n"
                  "rmdir: removing directory, 'a'\n");
   EXPECT_EQ_TEXT(r.stderr_text,
-                 "rmdir: failed to remove 'a': Directory not empty\n");
+                 "rmdir: failed to remove directory 'a': Directory "
+                 "not empty\n");
   EXPECT_TRUE(std::filesystem::exists(tmp.path / "a"));
   EXPECT_FALSE(std::filesystem::exists(tmp.path / "a" / "b"));
   EXPECT_FALSE(std::filesystem::exists(tmp.path / "a" / "b" / "c"));
