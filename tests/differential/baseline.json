@@ -280,6 +280,10 @@
       "bucket": "PASS",
       "command": "paste"
     },
+    "corpus/pwd/01-unknown-option.case": {
+      "bucket": "PASS",
+      "command": "pwd"
+    },
     "corpus/printenv/28-unset-var.case": {
       "bucket": "PASS",
       "command": "printenv"
