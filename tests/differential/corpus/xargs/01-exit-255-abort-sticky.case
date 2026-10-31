@@ -1,0 +1,11 @@
+cmd: xargs
+args: -P 2 -n 1 cmd /c
+stdin: |
+  fast255.bat
+  slow1.bat
+timeout: 15
+setup: |
+  printf '@exit /b 255\r\n' > fast255.bat
+  printf '@ping -n 2 127.0.0.1 >nul\r\n@exit /b 1\r\n' > slow1.bat
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w5 xargs exit-status parallel abort-255
