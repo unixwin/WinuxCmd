@@ -311,7 +311,8 @@ TEST(mv, mv_last_overwrite_option_can_select_interactive) {
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
+  // [GNU] Declining the prompt fails the file (exit 1).
+  EXPECT_EQ(r.exit_code, 1);
   EXPECT_NE(r.stderr_text.find("overwrite 'dest.txt'?"), std::string::npos);
   EXPECT_TRUE(std::filesystem::exists(tmp.path / "source.txt"));
   EXPECT_EQ(tmp.read("dest.txt"), "old content");
@@ -346,7 +347,8 @@ TEST(mv, mv_bare_interactive_long_option_prompts_like_always) {
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
+  // [GNU] Declining the prompt fails the file (exit 1).
+  EXPECT_EQ(r.exit_code, 1);
   EXPECT_NE(r.stderr_text.find("overwrite 'dest.txt'?"), std::string::npos);
   EXPECT_TRUE(std::filesystem::exists(tmp.path / "source.txt"));
   EXPECT_EQ(tmp.read("dest.txt"), "old content");
