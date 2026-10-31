@@ -1,0 +1,10 @@
+cmd: wc
+args: ctrl.txt
+timeout: 10
+setup: |
+  printf 'a\001\002b\n' > ctrl.txt
+  head -c 2 /dev/zero >> ctrl.txt
+  printf ' x\n' >> ctrl.txt
+  printf 'c\177d tail' >> ctrl.txt
+source: github.com/unixwin/WinuxCmd/issues/1127
+tags: issue-1127 regression

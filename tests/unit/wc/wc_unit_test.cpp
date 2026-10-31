@@ -418,6 +418,60 @@ TEST(wc, wc_counts_ascii_runs_across_buffers_issue1127) {
               std::string::npos);
 }
 
+// #1127-P4 round 2: GNU wc admits a character as a word constituent only
+// when it is printable (wc.c's iswprint gate); a character that is
+// neither a separator nor printable is word-transparent - it neither
+// starts nor ends a word. Control characters are non-printable in every
+// locale, so a run of NUL bytes is not a word even though it is not
+// whitespace either. This is the byte shape the differential case
+// regressions/76-perf-wc-runs actually builds: its setup names the NUL
+// byte to tr(1) through an argument a NUL cannot survive, so the "x
+// run" arrives as NUL bytes. GNU counts 3/6/70018 here, and so must we.
+TEST(wc, wc_counts_nul_run_as_transparent_issue1127) {
+  TempDir tmp;
+  std::string content;
+  content += std::string(70000, '\0');  // transparent: not a word
+  content += " y\na\tb c\n";            // words y, a, b, c; lines 1-2
+  content += "a\xc3\xa9" "b\n";         // one word (a + U+00E9 + b); line 3
+  content += "tail";                    // one word, unterminated
+  tmp.write("runs.txt", content);
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"wc.exe", {L"runs.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("    3     6 70018 runs.txt") !=
+              std::string::npos);
+}
+
+// #1127-P4 round 2: the same transparency for C0 controls inside a word,
+// DEL, a standalone NUL pair before a real word, and a C1 control
+// (U+0085) trailing a word character. GNU (C and C.UTF-8 alike): the
+// control characters change no word boundary, so the words below are
+// exactly ab, x, cd and tail.
+TEST(wc, wc_counts_control_characters_as_transparent_issue1127) {
+  TempDir tmp;
+  std::string content;
+  content += "a\x01\x02" "b\n";   // one word: a, C0 transparent, b
+  content += std::string(2, '\0');
+  content += " x\n";              // NULs transparent; x is one word
+  content += "c\x7f" "d";         // one word: c, DEL transparent, d
+  content += "\xc2\x85";          // U+0085 (C1) transparent inside the word
+  content += " tail";            // one word
+  tmp.write("ctrl.txt", content);
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"wc.exe", {L"ctrl.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // lines=2, words=4, bytes=5+2+3+3+2+5=20; width is 2 digits.
+  EXPECT_TRUE(r.stdout_text.find(" 2  4 20 ctrl.txt") != std::string::npos);
+}
+
 // #1127-P4: -m counts and -L widths over bulk-accounted runs, including
 // a tab stop expansion on a short line.
 TEST(wc, wc_chars_and_max_line_length_with_runs_issue1127) {

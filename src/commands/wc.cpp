@@ -248,6 +248,18 @@ auto is_ascii_space(char32_t cp) -> bool {
   return cp <= 0x7F && std::isspace(static_cast<unsigned char>(cp)) != 0;
 }
 
+// Control characters (C0, DEL and C1) are printable in no locale. GNU wc
+// admits a character as a word constituent only when it is printable
+// (the iswprint gate in wc.c's readers); a character that is neither a
+// separator nor printable is word-transparent - it neither starts nor
+// ends a word. That rule is locale-independent for control characters,
+// so it holds under both the oracle's C model and this port's
+// UTF-8-always model. display_width already maps exactly these ranges
+// to width 0.
+auto is_control_codepoint(char32_t cp) -> bool {
+  return cp < 0x20 || (cp >= 0x7F && cp < 0xA0);
+}
+
 auto is_wide_codepoint(char32_t cp) -> bool {
   return (cp >= 0x1100 && cp <= 0x115F) || (cp >= 0x2329 && cp <= 0x232A) ||
          (cp >= 0x2E80 && cp <= 0xA4CF) || (cp >= 0xAC00 && cp <= 0xD7A3) ||
@@ -380,6 +392,10 @@ auto count_stream(std::istream& input, std::string filename,
           break;
         }
         if (request.max_line_length) current_line_length += display_width(cp);
+        // Word-transparent characters (see is_control_codepoint): they
+        // are already counted as chars and contribute width 0 above,
+        // but they must not start a word.
+        if (is_control_codepoint(cp)) break;
         if (request.words && !in_word) {
           ++result.words;
           in_word = true;
