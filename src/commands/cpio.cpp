@@ -46,7 +46,34 @@ auto constexpr CPIO_OPTIONS =
         // [GNU]
         OPTION("-H", "--format", "use given archive FORMAT", STRING_TYPE),
         // [GNU]
-        OPTION("-R", "--owner", "set the ownership of all files", STRING_TYPE)};
+        OPTION("-R", "--owner", "set the ownership of all files", STRING_TYPE),
+        // [GNU] -A, --append: append to an existing archive (copy-out
+        // only, requires -F; cpio 2.15 main.c:616)
+        OPTION("-A", "--append", "append to an existing archive"),
+        // [GNU] --absolute-filenames: member names are taken literally
+        // (a leading '/' names the current drive's root)
+        OPTION("", "--absolute-filenames",
+               "do not strip leading file name slashes"),
+        // [GNU] --block-size: block size in units of 512 bytes
+        // (cpio 2.15 main.c:124-125)
+        OPTION("", "--block-size", "block size in units of 512 bytes",
+               STRING_TYPE),
+        // [GNU] -L, --dereference: follow symbolic links. The port
+        // already archives the target's content, so this is accepted
+        // and matches the standing behavior.
+        OPTION("-L", "--dereference", "follow symbolic links"),
+        // [GNU] --device-independent: renumber inodes and ignore
+        // device numbers (cpio 2.15 main.c:469-472)
+        OPTION("", "--device-independent",
+               "make the archive independent of device and inode numbers"),
+        // [GNU] --reproducible: alias of --device-independent
+        // (cpio 2.15 main.c:202-204)
+        OPTION("", "--reproducible", "alias of --device-independent"),
+        // [GNU] -D, --directory DIR: change to directory DIR
+        // (cpio 2.15 main.c:115-116)
+        OPTION("-D", "--directory", "change to directory DIR", STRING_TYPE),
+        // [GNU] -V, --dot: print a dot for each member processed
+        OPTION("-V", "--dot", "print a dot for each file processed")};
 
 // ======================================================
 // Helper functions
@@ -108,11 +135,39 @@ auto operand_path_w(const std::string& name) -> std::wstring {
   return operand.extended;
 }
 
-// Read file content
-std::vector<char> read_file(const std::string& filename) {
+// [GNU] --absolute-filenames: a POSIX-absolute member name is taken
+// literally instead of folding through the payload-root boundary:
+// '/' is the root of the current drive, '/c/...' the root of drive C.
+auto literal_member_path_w(const std::string& name) -> std::wstring {
+  if (!name.empty() && name.front() == '/') {
+    std::string rest = name.substr(1);
+    std::wstring root;
+    auto is_alpha = [](char c) {
+      return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+    };
+    if (rest.size() >= 2 && is_alpha(rest[0]) && rest[1] == '/') {
+      root.push_back(static_cast<wchar_t>(rest[0]));
+      root += L":\\";
+      rest = rest.substr(2);
+    } else {
+      wchar_t cwd[MAX_PATH];
+      if (GetCurrentDirectoryW(MAX_PATH, cwd) > 0 && cwd[1] == L':') {
+        root.assign(cwd, 3);  // "X:\"
+      }
+    }
+    if (!root.empty()) {
+      std::string tail = rest;
+      std::ranges::replace(tail, '/', '\\');
+      return root + utf8_to_wstring(tail);
+    }
+  }
+  return operand_path_w(name);
+}
+
+// Read file content (already-resolved path)
+std::vector<char> read_file_w(const std::wstring& wfilename) {
   std::vector<char> content;
 
-  std::wstring wfilename = operand_path_w(filename);
   HANDLE hFile =
       CreateFileW(wfilename.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
                   OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -136,9 +191,14 @@ std::vector<char> read_file(const std::string& filename) {
   return content;
 }
 
-// Write file content
-bool write_file(const std::string& filename, const std::vector<char>& content) {
-  std::wstring wfilename = operand_path_w(filename);
+// Read file content
+std::vector<char> read_file(const std::string& filename) {
+  return read_file_w(operand_path_w(filename));
+}
+
+// Write file content (already-resolved path)
+bool write_file_w(const std::wstring& wfilename,
+                  const std::vector<char>& content) {
   HANDLE hFile = CreateFileW(wfilename.c_str(), GENERIC_WRITE, 0, nullptr,
                              CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
 
@@ -152,6 +212,59 @@ bool write_file(const std::string& filename, const std::vector<char>& content) {
   CloseHandle(hFile);
 
   return true;
+}
+
+// Write file content
+bool write_file(const std::string& filename, const std::vector<char>& content) {
+  return write_file_w(operand_path_w(filename), content);
+}
+
+// Copy the modification time from one file to another (best effort).
+void copy_file_mtime(const std::wstring& src, const std::wstring& dst) {
+  HANDLE hSrc = CreateFileW(src.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (hSrc == INVALID_HANDLE_VALUE) return;
+  FILETIME ft;
+  const bool have_time = GetFileTime(hSrc, nullptr, nullptr, &ft) != FALSE;
+  CloseHandle(hSrc);
+  if (!have_time) return;
+  HANDLE hDst = CreateFileW(dst.c_str(), GENERIC_WRITE, 0, nullptr,
+                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (hDst != INVALID_HANDLE_VALUE) {
+    SetFileTime(hDst, nullptr, nullptr, &ft);
+    CloseHandle(hDst);
+  }
+}
+
+// Scan a newc archive for the offset of its TRAILER header (used by
+// --append: cpio 2.15 splices new members in before the trailer,
+// src/util.c:636 prepare_append).
+auto find_trailer_offset(const std::vector<char>& archive)
+    -> std::optional<size_t> {
+  size_t pos = 0;
+  while (pos + sizeof(CpioHeader) <= archive.size()) {
+    const CpioHeader* header =
+        reinterpret_cast<const CpioHeader*>(archive.data() + pos);
+    if (memcmp(header->magic, "070701", 6) != 0 &&
+        memcmp(header->magic, "070702", 6) != 0) {
+      return std::nullopt;
+    }
+    const unsigned long long namesize = hex_to_ull(header->namesize, 8);
+    const unsigned long long filesize = hex_to_ull(header->filesize, 8);
+    if (namesize < 1 || pos + sizeof(CpioHeader) + namesize > archive.size()) {
+      return std::nullopt;
+    }
+    const std::string name(archive.data() + pos + sizeof(CpioHeader),
+                           static_cast<size_t>(namesize) - 1);
+    if (name == "TRAILER!!!") {
+      return pos;
+    }
+    pos += sizeof(CpioHeader) + static_cast<size_t>(namesize);
+    while (pos % 4 != 0) ++pos;
+    pos += static_cast<size_t>(filesize);
+    while (pos % 4 != 0) ++pos;
+  }
+  return std::nullopt;
 }
 
 // Windows equivalent for S_ISREG
@@ -201,6 +314,14 @@ struct Config {
   bool make_dirs = false;
   bool preserve_time = false;
   bool verbose = false;
+  bool append = false;
+  bool absolute_filenames = false;
+  bool dereference = false;
+  bool device_independent = false;
+  bool dot = false;
+  unsigned long long block_bytes = 0;
+  std::string directory;
+  std::string destination;
   std::string format;
   std::string owner;
   std::string file;
@@ -220,6 +341,17 @@ auto build_config(const CommandContext<CPIO_OPTIONS.size()>& ctx)
   cfg.preserve_time = ctx.get<bool>("-m", false) ||
                       ctx.get<bool>("--preserve-modification-time", false);
   cfg.verbose = ctx.get<bool>("-v", false) || ctx.get<bool>("--verbose", false);
+  cfg.append = ctx.get<bool>("-A", false) || ctx.get<bool>("--append", false);
+  cfg.absolute_filenames = ctx.get<bool>("--absolute-filenames", false);
+  cfg.dereference =
+      ctx.get<bool>("-L", false) || ctx.get<bool>("--dereference", false);
+  cfg.device_independent = ctx.get<bool>("--device-independent", false) ||
+                           ctx.get<bool>("--reproducible", false);
+  cfg.dot = ctx.get<bool>("-V", false) || ctx.get<bool>("--dot", false);
+  cfg.directory = ctx.get<std::string>("-D", "");
+  if (cfg.directory.empty()) {
+    cfg.directory = ctx.get<std::string>("--directory", "");
+  }
   cfg.format = ctx.get<std::string>("-H", "");
   if (cfg.format.empty()) {
     cfg.format = ctx.get<std::string>("--format", "");
@@ -233,6 +365,20 @@ auto build_config(const CommandContext<CPIO_OPTIONS.size()>& ctx)
     cfg.file = ctx.get<std::string>("--file", "");
   }
 
+  // --block-size: a count of 512-byte blocks (cpio 2.15 main.c:124-125);
+  // a value below 1 is a usage error ("invalid block size", main.c:324).
+  std::string block_text = ctx.get<std::string>("--block-size", "");
+  if (!block_text.empty()) {
+    unsigned long long blocks = 0;
+    auto [ptr, ec] = std::from_chars(
+        block_text.data(), block_text.data() + block_text.size(), blocks);
+    if (ec != std::errc() || ptr != block_text.data() + block_text.size() ||
+        blocks < 1) {
+      return std::unexpected("invalid block size");
+    }
+    cfg.block_bytes = blocks * 512;
+  }
+
   if (!cfg.create && !cfg.extract && !cfg.list && !cfg.pass_through) {
     return std::unexpected("missing option (-o/-i/-t/-p)");
   }
@@ -242,16 +388,47 @@ auto build_config(const CommandContext<CPIO_OPTIONS.size()>& ctx)
     return std::unexpected("--format is only allowed with --create");
   }
 
+  // [GNU] --append is copy-out only and needs an archive file
+  // (cpio 2.15 main.c:616 and its usage checks).
+  if (cfg.append && !cfg.create) {
+    return std::unexpected("--append is only valid with -o/--create");
+  }
+  if (cfg.append && cfg.file.empty()) {
+    return std::unexpected(
+        "--append is used but no archive file name is "
+        "given (use -F or -O options)");
+  }
+
+  if (cfg.pass_through) {
+    if (ctx.positionals.empty()) {
+      return std::unexpected("copy-pass mode requires a destination directory");
+    }
+    cfg.destination = std::string(ctx.positionals[0]);
+  }
+
   return cfg;
+}
+
+// Resolve a member name to an on-disk path: through the payload-root
+// boundary by default (#1422 policy), literally with
+// --absolute-filenames.
+auto member_path_w(const Config& cfg, const std::string& name) -> std::wstring {
+  if (cfg.absolute_filenames) {
+    return literal_member_path_w(name);
+  }
+  return operand_path_w(name);
 }
 
 auto run(const Config& cfg) -> int {
   // Read input (file list or archive). With -F/--file the archive is the
   // named file (an argv operand, resolved through the shared boundary by
   // read_file) instead of stdin; in create mode stdin always carries the
-  // file list.
+  // file list. Input is read BEFORE the -D directory change, matching
+  // GNU, which opens the archive in main() and changes directory at the
+  // start of the copy phase (cpio 2.15 util.c:1504 change_dir, called
+  // from copyin.c:1447, copyout.c:633, copypass.c:83).
   std::string input;
-  if (!cfg.create && !cfg.file.empty()) {
+  if (!cfg.create && !cfg.pass_through && !cfg.file.empty()) {
     std::vector<char> archive_file = read_file(cfg.file);
     if (archive_file.empty() &&
         GetFileAttributesW(operand_path_w(cfg.file).c_str()) ==
@@ -267,12 +444,51 @@ auto run(const Config& cfg) -> int {
                  std::istreambuf_iterator<char>());
   }
 
+  // [GNU] -D/--directory: change to DIR before processing members; a
+  // missing DIR is created when -d is also given (cpio 2.15 util.c:1504).
+  if (!cfg.directory.empty()) {
+    const std::wstring dir_w = operand_path_w(cfg.directory);
+    if (GetFileAttributesW(dir_w.c_str()) == INVALID_FILE_ATTRIBUTES &&
+        cfg.make_dirs) {
+      native_path::create_directories_w(dir_w);
+    }
+    if (!SetCurrentDirectoryW(dir_w.c_str())) {
+      safeErrorPrint("cpio: cannot change to directory '");
+      safeErrorPrint(cfg.directory);
+      safeErrorPrintLn("'");
+      return 1;
+    }
+  }
+
   if (cfg.create) {
     // Create archive
     std::istringstream iss(input);
     std::string line;
     std::vector<char> archive;
 
+    // [GNU] --append: start from the existing archive with its trailer
+    // removed; the new trailer is written after the added members.
+    if (cfg.append) {
+      std::vector<char> existing = read_file(cfg.file);
+      if (existing.empty() &&
+          GetFileAttributesW(operand_path_w(cfg.file).c_str()) ==
+              INVALID_FILE_ATTRIBUTES) {
+        safeErrorPrint("cpio: cannot open archive '");
+        safeErrorPrint(cfg.file);
+        safeErrorPrintLn("'");
+        return 1;
+      }
+      auto trailer = find_trailer_offset(existing);
+      if (!trailer) {
+        safeErrorPrint("cpio: cannot append to '");
+        safeErrorPrint(cfg.file);
+        safeErrorPrintLn("': no cpio trailer found");
+        return 1;
+      }
+      archive.assign(existing.begin(), existing.begin() + *trailer);
+    }
+
+    unsigned long long next_inode = 1;
     while (std::getline(iss, line)) {
       // Remove trailing CR
       if (!line.empty() && line.back() == '\r') {
@@ -281,28 +497,33 @@ auto run(const Config& cfg) -> int {
 
       if (line.empty()) continue;
 
-      // Read file
-      std::vector<char> content = read_file(line);
-      if (content.empty()) {
+      // Get file attributes first: a genuinely empty file is archived
+      // like any other; only an unreadable one is skipped with a
+      // warning. (-L/--dereference matches the standing behavior: the
+      // target's content and attributes are what get archived.)
+      std::wstring wfile = operand_path_w(line);
+      DWORD attrs = GetFileAttributesW(wfile.c_str());
+      if (attrs == INVALID_FILE_ATTRIBUTES) {
         safeErrorPrint("cpio: warning: cannot read file '");
         safeErrorPrint(line);
         safeErrorPrintLn("'");
         continue;
       }
-
-      // Get file attributes
-      std::wstring wfile = operand_path_w(line);
-      DWORD attrs = GetFileAttributesW(wfile.c_str());
       bool is_dir = is_directory(attrs);
+      std::vector<char> content =
+          is_dir ? std::vector<char>{} : read_file(line);
 
       // Create header
       CpioHeader header;
       memcpy(header.magic, "070701", 6);
-      ull_to_hex(0, header.inode, 8);
+      // [GNU] --device-independent/--reproducible: inode numbers are
+      // renumbered sequentially and directory nlink is normalized
+      // (device fields are always written as 0 by this port).
+      ull_to_hex(cfg.device_independent ? next_inode++ : 0, header.inode, 8);
       ull_to_hex(is_dir ? 040755 : 0100644, header.mode, 8);
       ull_to_hex(0, header.uid, 8);
       ull_to_hex(0, header.gid, 8);
-      ull_to_hex(1, header.nlink, 8);
+      ull_to_hex(cfg.device_independent && is_dir ? 2 : 1, header.nlink, 8);
 
       // Get modification time
       HANDLE hFile =
@@ -354,6 +575,11 @@ auto run(const Config& cfg) -> int {
           archive.push_back(0);
         }
       }
+
+      // [GNU] -V/--dot: one dot per member (cpio 2.15 copyout.c:831).
+      if (cfg.dot) {
+        safeErrorPrint(".");
+      }
     }
 
     // Add end marker
@@ -374,6 +600,14 @@ auto run(const Config& cfg) -> int {
     archive.push_back('\0');
     while (archive.size() % 4 != 0) {
       archive.push_back(0);
+    }
+
+    // [GNU] --block-size: the finished archive is padded with zeros to
+    // a whole number of blocks.
+    if (cfg.block_bytes > 0) {
+      while (archive.size() % cfg.block_bytes != 0) {
+        archive.push_back(0);
+      }
     }
 
     // Output archive: to the -F/--file target when given, else stdout.
@@ -407,6 +641,7 @@ auto run(const Config& cfg) -> int {
       // Parse header
       unsigned long long namesize = hex_to_ull(header->namesize, 8);
       unsigned long long filesize = hex_to_ull(header->filesize, 8);
+      unsigned long long mode = hex_to_ull(header->mode, 8);
 
       pos += sizeof(CpioHeader);
 
@@ -424,34 +659,40 @@ auto run(const Config& cfg) -> int {
         break;
       }
 
-      // Extract file
+      const bool is_dir_member = (mode & 0170000ULL) == 0040000ULL;
+      const std::wstring target = member_path_w(cfg, filename);
+
+      // Read the member's content (may be empty)
+      std::vector<char> content;
+      if (filesize > 0) {
+        if (pos + filesize > archive.size()) break;
+        content.assign(archive.data() + pos, archive.data() + pos + filesize);
+      }
+      pos += filesize;
+      // Pad to 4-byte boundary
+      while (pos % 4 != 0) {
+        pos++;
+      }
+
+      // Extract member
       if (cfg.verbose) {
         safePrintLn(filename);
       }
 
-      if (filesize > 0) {
-        if (pos + filesize > archive.size()) break;
-
-        std::vector<char> content(archive.data() + pos,
-                                  archive.data() + pos + filesize);
-        pos += filesize;
-
-        // Pad to 4-byte boundary
-        while (pos % 4 != 0) {
-          pos++;
-        }
-
+      if (is_dir_member) {
+        // Directory members materialize as directories.
+        native_path::create_directories_w(target);
+      } else {
         // Create leading directories if -d/--make-directories: the parent
         // of the resolved target path, recursively (best effort).
         if (cfg.make_dirs) {
-          const std::wstring target = operand_path_w(filename);
           auto pos_sep = target.find_last_of(L"\\/");
           if (pos_sep != std::wstring::npos) {
             native_path::create_directories_w(target.substr(0, pos_sep));
           }
         }
 
-        if (!write_file(filename, content)) {
+        if (!write_file_w(target, content)) {
           safeErrorPrint("cpio: warning: cannot write file '");
           safeErrorPrint(filename);
           safeErrorPrintLn("'");
@@ -459,9 +700,8 @@ auto run(const Config& cfg) -> int {
 
         // Preserve modification time if -m/--preserve-modification-time
         if (cfg.preserve_time) {
-          std::wstring wfile = operand_path_w(filename);
           HANDLE hFile =
-              CreateFileW(wfile.c_str(), GENERIC_WRITE, 0, nullptr,
+              CreateFileW(target.c_str(), GENERIC_WRITE, 0, nullptr,
                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
           if (hFile != INVALID_HANDLE_VALUE) {
             // Convert mtime from hex header to Windows FILETIME
@@ -475,6 +715,11 @@ auto run(const Config& cfg) -> int {
             CloseHandle(hFile);
           }
         }
+      }
+
+      // [GNU] -V/--dot: one dot per member (cpio 2.15 copyin.c:1561ff).
+      if (cfg.dot) {
+        safeErrorPrint(".");
       }
     }
 
@@ -531,11 +776,69 @@ auto run(const Config& cfg) -> int {
       }
     }
   } else if (cfg.pass_through) {
-    // Copy-pass mode: read file list from stdin, copy to destination directory
-    // The first positional argument is the destination directory
-    safeErrorPrintLn(
-        "cpio: --pass-through (copy-pass) mode is not yet implemented");
-    return 1;
+    // Copy-pass mode: copy each stdin-listed file into the destination
+    // directory, preserving relative names.
+    const std::wstring dest_root = operand_path_w(cfg.destination);
+    if (cfg.make_dirs) {
+      native_path::create_directories_w(dest_root);
+    }
+    if (!is_directory(GetFileAttributesW(dest_root.c_str()))) {
+      safeErrorPrint("cpio: destination directory '");
+      safeErrorPrint(cfg.destination);
+      safeErrorPrintLn("' does not exist");
+      return 1;
+    }
+
+    int failures = 0;
+    std::istringstream iss(input);
+    std::string line;
+    while (std::getline(iss, line)) {
+      if (!line.empty() && line.back() == '\r') {
+        line.pop_back();
+      }
+      if (line.empty()) continue;
+
+      const std::wstring src_w = operand_path_w(line);
+      const DWORD attrs = GetFileAttributesW(src_w.c_str());
+      if (attrs == INVALID_FILE_ATTRIBUTES) {
+        safeErrorPrint("cpio: warning: cannot read file '");
+        safeErrorPrint(line);
+        safeErrorPrintLn("'");
+        ++failures;
+        continue;
+      }
+      const std::wstring dst_w = operand_path_w(cfg.destination + "/" + line);
+
+      if (is_directory(attrs)) {
+        native_path::create_directories_w(dst_w);
+      } else {
+        if (cfg.make_dirs) {
+          auto pos_sep = dst_w.find_last_of(L"\\/");
+          if (pos_sep != std::wstring::npos) {
+            native_path::create_directories_w(dst_w.substr(0, pos_sep));
+          }
+        }
+        if (!write_file_w(dst_w, read_file_w(src_w))) {
+          safeErrorPrint("cpio: warning: cannot write file '");
+          safeErrorPrint(line);
+          safeErrorPrintLn("'");
+          ++failures;
+          continue;
+        }
+        if (cfg.preserve_time) {
+          copy_file_mtime(src_w, dst_w);
+        }
+      }
+
+      if (cfg.verbose) {
+        safePrintLn(line);
+      }
+      // [GNU] -V/--dot: one dot per member (cpio 2.15 copypass.c).
+      if (cfg.dot) {
+        safeErrorPrint(".");
+      }
+    }
+    return failures > 0 ? 1 : 0;
   }
 
   return 0;
@@ -558,7 +861,14 @@ REGISTER_COMMAND(
     /* description */
     "Copy files to and from archives.\n"
     "Copy files to and from cpio archives. Supports creating, extracting,\n"
-    "and listing archive contents. Uses new ASCII format (070701/070702).",
+    "listing and copy-pass (-p DESTINATION). Uses new ASCII format\n"
+    "(070701/070702).  -A/--append splices new members in before the\n"
+    "trailer of the -F archive; --block-size pads the finished archive\n"
+    "to whole 512-byte blocks; --device-independent renumbers inode\n"
+    "numbers so archives are reproducible; -D/--directory changes the\n"
+    "working directory before members are processed; -V/--dot prints\n"
+    "one dot per member.  Without --absolute-filenames, member names\n"
+    "resolve through the shell's payload-root path boundary.",
 
     /* examples */
     "  find . | cpio -o > archive.cpio\n"
