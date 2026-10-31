@@ -1,0 +1,7 @@
+cmd: file
+args: --mime-encoding utf8.txt
+timeout: 10
+setup: |
+  printf '\320\277\321\200\320\270\320\262\320\265\321\202\n' > utf8.txt
+source: github.com/unixwin/WinuxCmd
+tags: p2c-1127 oracle-verified

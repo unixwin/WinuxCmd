@@ -1,0 +1,7 @@
+cmd: col
+args: --spaces
+timeout: 10
+stdin: |
+  a b
+source: github.com/unixwin/WinuxCmd
+tags: p2c-1127 oracle-verified
