@@ -324,6 +324,22 @@
       "bucket": "PASS",
       "command": "seq"
     },
+    "corpus/sleep/01-terminator-only.case": {
+      "bucket": "PASS",
+      "command": "sleep"
+    },
+    "corpus/sleep/02-missing-operand.case": {
+      "bucket": "PASS",
+      "command": "sleep"
+    },
+    "corpus/sleep/03-invalid-interval.case": {
+      "bucket": "PASS",
+      "command": "sleep"
+    },
+    "corpus/sleep/04-sum-operands.case": {
+      "bucket": "PASS",
+      "command": "sleep"
+    },
     "corpus/sha1sum/41-fixed.case": {
       "bucket": "PASS",
       "command": "sha1sum"

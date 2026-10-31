@@ -92,7 +92,10 @@ auto build_config(const CommandContext<SLEEP_OPTIONS.size()>& ctx)
     cfg.durations.push_back(std::string(arg));
   }
 
-  if (cfg.durations.empty()) {
+  // [GNU] sleep.c:112-115: the missing-operand test is argc == 1 on the
+  // raw argument vector.  'sleep --' has an argument (the terminator),
+  // runs the operand loop zero times and sleeps 0, exiting 0.
+  if (cfg.durations.empty() && ctx.raw_args.empty()) {
     return std::unexpected("missing operand");
   }
 
@@ -134,7 +137,11 @@ auto run(const Config& cfg) -> int {
     }
   }
 
-  int64_t remaining_ms = static_cast<int64_t>(total_ms);
+  // Round to the nearest millisecond rather than truncating: the
+  // fractional part is real requested time (GNU hands the full double
+  // to xnanosleep, sleep.c:140); the OS timer granularity below a
+  // millisecond remains a platform limit.
+  int64_t remaining_ms = static_cast<int64_t>(std::llround(total_ms));
   while (remaining_ms > 0) {
     const auto chunk =
         std::min<int64_t>(remaining_ms, std::numeric_limits<DWORD>::max());
