@@ -376,9 +376,14 @@ struct Config {
 // strtosize_or_err): a strtoumax base-0 integer (0x hex, leading-0
 // octal), an optional fraction, and an optional size suffix — K/M/G/
 // T/P/E scale by powers of 1024, the XB forms by powers of 1000 and
-// the XiB forms by powers of 1024 (lib/strutils.c parse_size).
-auto parse_size_value(std::string_view text) -> std::optional<size_t> {
-  if (text.empty()) return std::nullopt;
+// the XiB forms by powers of 1024 (lib/strutils.c parse_size).  On
+// failure strtosize_or_err reports through err(), so the message
+// carries the errno text: EINVAL for structural errors, ERANGE for
+// range errors (parse_size returns -EINVAL / -errno respectively);
+// the error strings below mirror that split.
+auto parse_size_value(std::string_view text)
+    -> std::expected<size_t, const char*> {
+  if (text.empty()) return std::unexpected("Invalid argument");
   size_t pos = 0;
   if (text[pos] == '+') ++pos;
 
@@ -404,12 +409,12 @@ auto parse_size_value(std::string_view text) -> std::optional<size_t> {
         (std::numeric_limits<unsigned long long>::max() -
          static_cast<unsigned long long>(digit)) /
             static_cast<unsigned long long>(base)) {
-      return std::nullopt;  // strtoumax range error
+      return std::unexpected("Numerical result out of range");
     }
     value = value * static_cast<unsigned long long>(base) +
             static_cast<unsigned long long>(digit);
   }
-  if (pos == digits_begin) return std::nullopt;
+  if (pos == digits_begin) return std::unexpected("Invalid argument");
 
   unsigned long long frac_num = 0;
   unsigned long long frac_denom = 1;
@@ -425,13 +430,13 @@ auto parse_size_value(std::string_view text) -> std::optional<size_t> {
       ++fpos;
       any = true;
     }
-    if (!any) return std::nullopt;
+    if (!any) return std::unexpected("Invalid argument");
     has_frac = true;
     frac_num = f;
     frac_denom = denom;
     pos = fpos;
     // parse_size: a fraction without a suffix is an error.
-    if (pos >= text.size()) return std::nullopt;
+    if (pos >= text.size()) return std::unexpected("Invalid argument");
   }
   if (pos >= text.size()) return static_cast<size_t>(value);
 
@@ -439,7 +444,8 @@ auto parse_size_value(std::string_view text) -> std::optional<size_t> {
   static constexpr std::string_view kLetters = "KMGTPE";
   const size_t letter = kLetters.find(static_cast<char>(
       std::toupper(static_cast<unsigned char>(suffix.front()))));
-  if (letter == std::string_view::npos) return std::nullopt;
+  if (letter == std::string_view::npos)
+    return std::unexpected("Invalid argument");
   const int power = static_cast<int>(letter) + 1;
   unsigned long long scale_base = 1024;
   if (suffix.size() == 3 && suffix[1] == 'i' &&
@@ -448,18 +454,18 @@ auto parse_size_value(std::string_view text) -> std::optional<size_t> {
   } else if (suffix.size() == 2 && (suffix[1] == 'B' || suffix[1] == 'b')) {
     scale_base = 1000;  // XB
   } else if (suffix.size() != 1) {
-    return std::nullopt;
+    return std::unexpected("Invalid argument");
   }
 
   unsigned long long scale = 1;
   for (int i = 0; i < power; ++i) {
     if (scale > std::numeric_limits<unsigned long long>::max() / scale_base) {
-      return std::nullopt;
+      return std::unexpected("Numerical result out of range");
     }
     scale *= scale_base;
   }
   if (value > std::numeric_limits<unsigned long long>::max() / scale) {
-    return std::nullopt;
+    return std::unexpected("Numerical result out of range");
   }
   unsigned long long result = value * scale;
   if (has_frac) {
@@ -520,8 +526,12 @@ auto build_config(const CommandContext<HEXDUMP_OPTIONS.size()>& ctx)
   if (!length_opt.empty()) {
     auto parsed = parse_size_value(length_opt);
     if (!parsed) {
-      // [GNU] strtosize_or_err shape (strutils.c:480-491).
-      return std::unexpected("failed to parse length: '" + length_opt + "'");
+      // [GNU] strtosize_or_err reports through err() (strutils.c:
+      // strtosize_or_err): the quoted value is followed by the errno
+      // text, e.g. "failed to parse length: 'bogus': Invalid
+      // argument".
+      return std::unexpected("failed to parse length: '" + length_opt +
+                             "': " + parsed.error());
     }
     cfg.length = *parsed;
   }
@@ -530,7 +540,8 @@ auto build_config(const CommandContext<HEXDUMP_OPTIONS.size()>& ctx)
   if (!skip_opt.empty()) {
     auto parsed = parse_size_value(skip_opt);
     if (!parsed) {
-      return std::unexpected("failed to parse offset: '" + skip_opt + "'");
+      return std::unexpected("failed to parse offset: '" + skip_opt +
+                             "': " + parsed.error());
     }
     cfg.skip = *parsed;
   }
@@ -1065,6 +1076,8 @@ auto print_formats(const std::vector<uint8_t>& data, size_t base_offset,
 
 auto read_stream(const Config& cfg, std::vector<uint8_t>& data) -> int {
   int result = 0;
+  int files_attempted = 0;
+  int files_failed = 0;
   auto read_one = [&](const std::string& filename) {
     if (filename.empty() || filename == "-") {
       file_io::set_stdin_binary();
@@ -1077,6 +1090,7 @@ auto read_stream(const Config& cfg, std::vector<uint8_t>& data) -> int {
       }
       return;
     }
+    ++files_attempted;
     std::ifstream file(native_path::normalize_api_operand(filename),
                        std::ios::binary);
     if (!file) {
@@ -1086,6 +1100,7 @@ auto read_stream(const Config& cfg, std::vector<uint8_t>& data) -> int {
       safeErrorPrint(filename);
       safeErrorPrintLn(": No such file or directory");
       result = 1;
+      ++files_failed;
       return;
     }
     data.insert(data.end(), std::istreambuf_iterator<char>(file),
@@ -1098,6 +1113,12 @@ auto read_stream(const Config& cfg, std::vector<uint8_t>& data) -> int {
     // [GNU] operands form ONE continuous stream (#1373): offsets keep
     // running across file boundaries instead of restarting per file.
     for (const auto& file : cfg.files) read_one(file);
+    // [GNU] when every file argument failed to open, get() adds the
+    // summary warning "all input file arguments failed"
+    // (hexdump-display.c:366).
+    if (files_attempted > 0 && files_failed == files_attempted) {
+      safeErrorPrintLn("hexdump: all input file arguments failed");
+    }
   }
   return result;
 }
