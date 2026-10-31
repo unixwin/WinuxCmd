@@ -25,6 +25,20 @@ auto constexpr TIMEOUT_OPTIONS = std::array{
     OPTION("-k", "--kill-after",
            "also send a KILL signal if COMMAND still running", STRING_TYPE),
     OPTION("-v", "--verbose", "diagnose to stderr any signal sent on timeout",
+           BOOL_TYPE),
+    // [GNU] timeout.c long_options: --preserve-status makes a timed-out
+    // command report the status it died with (128+signal) instead of 124.
+    OPTION("", "--preserve-status",
+           "exit with the status of COMMAND, even when timing out",
+           BOOL_TYPE),
+    // [GNU] --foreground: on POSIX this stops timeout from creating a
+    // separate process group for COMMAND.  The Windows launch model
+    // has no such separation to suppress -- the child shares the
+    // console and is waited on in the foreground by construction --
+    // so the option is accepted with its (vacuous) native effect.
+    OPTION("", "--foreground",
+           "run COMMAND in the foreground (native launch is always "
+           "foreground)",
            BOOL_TYPE)};
 
 namespace timeout_pipeline {
@@ -35,6 +49,7 @@ struct Config {
   int64_t kill_after_ms = 0;
   int signal = 15;  // SIGTERM
   bool verbose = false;
+  bool preserve_status = false;
   std::string command;
   SmallVector<std::string, 64> args;
 };
@@ -255,6 +270,7 @@ auto build_config(const CommandContext<TIMEOUT_OPTIONS.size()>& ctx)
   }
 
   cfg.verbose = ctx.get<bool>("-v", false) || ctx.get<bool>("--verbose", false);
+  cfg.preserve_status = ctx.get<bool>("--preserve-status", false);
 
   // Get duration and command from positionals
   if (ctx.positionals.empty()) {
@@ -273,7 +289,10 @@ auto build_config(const CommandContext<TIMEOUT_OPTIONS.size()>& ctx)
       cfg.args.push_back(std::string(ctx.positionals[i]));
     }
   } else {
-    return std::unexpected("missing command");
+    // [GNU] timeout.c main: `argc - optind < 2` reports the single
+    // diagnostic "missing operand" whether DURATION or COMMAND is
+    // the piece that is absent; there is no "missing command" string.
+    return std::unexpected("missing operand");
   }
 
   return cfg;
@@ -366,11 +385,14 @@ auto run(const Config& cfg) -> int {
 
     if (wait_result == WAIT_TIMEOUT) {
       // Process timed out, kill it
-      // [GNU] The status of a timeout kill is signal-dependent: 124 for
-      // the ordinary signal path, but a command killed by SIGKILL reports
-      // 128+SIGKILL = 137 (the shell convention) (#1350).
-      int timeout_status =
-          cfg.signal == 9 ? 128 + 9 : 124;
+      // [GNU] timeout.c:596-611: a command that dies of a signal
+      // reports 128+signal (the shell convention); a SIGKILL death
+      // forces that form even without --preserve-status (#1350),
+      // while a plain timeout without --preserve-status collapses
+      // to 124 (EXIT_TIMEDOUT).
+      int timeout_status = (cfg.preserve_status || cfg.signal == 9)
+                               ? 128 + cfg.signal
+                               : 124;
       bool sent_initial_termination = false;
       if (cfg.verbose) {
         safeErrorPrintLn("timeout: sending signal " +
@@ -443,7 +465,14 @@ REGISTER_COMMAND(
     "days.\n"
     "\n"
     "The command is executed as a child process and terminated when the\n"
-    "time limit expires.",
+    "time limit expires.\n"
+    "\n"
+    "Exit status:\n"
+    "  124  if COMMAND times out, and --preserve-status is not specified\n"
+    "  125  if the timeout command itself fails\n"
+    "  126  if COMMAND is found but cannot be invoked\n"
+    "  127  if COMMAND cannot be found\n"
+    "  137  if COMMAND (or timeout itself) is sent the KILL (9) signal",
     "  timeout 5s command\n"
     "  timeout 1m command args\n"
     "  timeout -k 10s 30s command",
@@ -454,11 +483,6 @@ REGISTER_COMMAND(
   if (!cfg_result) {
     if (cfg_result.error() == "missing operand") {
       safeErrorPrintLn("timeout: missing operand");
-      safeErrorPrintLn("Try 'timeout --help' for more information.");
-      return 125;
-    }
-    if (cfg_result.error() == "missing command") {
-      safeErrorPrintLn("timeout: missing command");
       safeErrorPrintLn("Try 'timeout --help' for more information.");
       return 125;
     }

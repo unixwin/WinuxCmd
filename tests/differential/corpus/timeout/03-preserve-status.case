@@ -1,0 +1,5 @@
+cmd: timeout
+args: --preserve-status 0.2 sleep 5
+timeout: 5
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w3b timeout preserve-status exit-143

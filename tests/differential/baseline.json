@@ -704,6 +704,14 @@
       "bucket": "PASS",
       "command": "timeout"
     },
+    "corpus/timeout/03-preserve-status.case": {
+      "bucket": "PASS",
+      "command": "timeout"
+    },
+    "corpus/timeout/04-missing-command.case": {
+      "bucket": "PASS",
+      "command": "timeout"
+    },
     "corpus/shuf/01-basic.case": {
       "bucket": "PASS",
       "command": "shuf"
