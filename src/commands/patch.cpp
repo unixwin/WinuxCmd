@@ -351,17 +351,33 @@ bool backup_file_to(const std::string& filename, const std::string& dest) {
   return CopyFileW(wsrc.c_str(), wdst.c_str(), FALSE) != FALSE;
 }
 
-std::string strip_path(const std::string& path, long long components) {
-  if (components <= 0) return path;
-  size_t pos = 0;
-  long long count = 0;
-  for (size_t i = 0; i < path.length() && count < components; ++i) {
+// [GNU] strip_leading_slashes (util.c) + fetchname: prepare a header
+// name for target selection.  With no -p (strip_specified false), only
+// the basename survives.  With -pN, N leading slash-runs are stripped
+// (a run of slashes counts once) and a name with fewer than N runs —
+// or nothing left after stripping — is ignored entirely (nullopt).
+std::optional<std::string> strip_name(const std::string& path,
+                                      bool strip_specified,
+                                      long long components) {
+  if (!strip_specified) {
+    const size_t slash = path.find_last_of("/\\");
+    std::string base =
+        slash == std::string::npos ? path : path.substr(slash + 1);
+    if (base.empty()) return std::nullopt;
+    return base;
+  }
+  long long s = components;
+  size_t cut = 0;  // start of the surviving tail
+  for (size_t i = 0; i < path.size();) {
     if (path[i] == '/' || path[i] == '\\') {
-      count++;
-      pos = i + 1;
+      while (i < path.size() && (path[i] == '/' || path[i] == '\\')) ++i;
+      if (--s >= 0) cut = i;
+    } else {
+      ++i;
     }
   }
-  return (pos < path.length()) ? path.substr(pos) : path;
+  if (s > 0 || cut >= path.size()) return std::nullopt;
+  return path.substr(cut);
 }
 
 Hunk reversed(const Hunk& h) {
@@ -1594,49 +1610,112 @@ REGISTER_COMMAND(
       }
       return out;
     };
-    auto stripped = [&](const std::string& name) -> std::string {
-      if (name.empty() || is_dev_null(name)) return name;
-      return strip_path(name, strip_components);
-    };
-
-    // [GNU] File-name selection (pch.c, another_hunk): the first of
-    // old / new / Index that exists wins; failing that, each name's
-    // basename in the current directory is tried.  An ORIGFILE operand
-    // names the target outright and is never stripped.
+    // [GNU] File-name selection (pch.c intuit_diff_type + best_name,
+    // pch.c:862-975/1039-1083): candidates are the prepared old / new /
+    // Index names; Index is discarded when a header name exists,
+    // unless POSIX mode (pch.c:870).  POSIX takes the first candidate
+    // that exists, in old/new/Index order; otherwise the best existing
+    // candidate wins — fewest path components, then shortest basename,
+    // then shortest name, then old/new/Index order.  When nothing
+    // exists and the old side says nonexistent (a creation), the
+    // candidate creating the fewest new directories wins, with the
+    // same tie-breaks.  An ORIGFILE operand names the target outright
+    // and is never stripped.
     std::string target;
     bool target_from_argv = false;
     if (!orig_file_arg.empty()) {
       target = with_dir(orig_file_arg);
       target_from_argv = true;
     } else {
-      const std::string names[3] = {group.old_name, group.new_name,
-                                    group.index_name};
-      for (const auto& n : names) {
-        if (n.empty() || is_dev_null(n)) continue;
-        std::string cand = with_dir(stripped(n));
-        if (file_exists(cand)) {
-          target = cand;
-          break;
-        }
+      struct Candidate {
+        std::string name;  // prepared (stripped) name
+        int order = 0;     // 0 old, 1 new, 2 index
+      };
+      std::vector<Candidate> candidates;
+      const std::string raw_names[3] = {group.old_name, group.new_name,
+                                        group.index_name};
+      for (int i = 0; i < 3; ++i) {
+        if (raw_names[i].empty() || is_dev_null(raw_names[i])) continue;
+        if (i == 2 && !posix_mode &&
+            (!raw_names[0].empty() || !raw_names[1].empty()))
+          continue;  // Index discarded beside a header name
+        if (auto prepared = strip_name(raw_names[i], strip_specified,
+                                       strip_components))
+          candidates.push_back({*prepared, i});
       }
-      if (target.empty()) {
-        for (const auto& n : names) {
-          if (n.empty() || is_dev_null(n)) continue;
-          std::string base = stripped(n);
-          const size_t slash = base.find_last_of("/\\");
-          if (slash != std::string::npos) base = base.substr(slash + 1);
-          if (base.empty()) continue;
-          std::string cand = with_dir(base);
-          if (file_exists(cand)) {
-            target = cand;
-            break;
+      auto components_of = [](const std::string& n) {
+        int count = 0;
+        for (size_t i = 0; i < n.size();) {
+          if (n[i] == '/' || n[i] == '\\') {
+            ++count;
+            while (i < n.size() && (n[i] == '/' || n[i] == '\\')) ++i;
+          } else {
+            ++i;
           }
         }
+        return count;
+      };
+      auto basename_len = [](const std::string& n) {
+        const size_t slash = n.find_last_of("/\\");
+        return slash == std::string::npos ? n.size() : n.size() - slash - 1;
+      };
+      auto best_of = [&](const std::vector<Candidate>& pool) -> std::string {
+        const Candidate* best = nullptr;
+        for (const auto& c : pool) {
+          if (!best) {
+            best = &c;
+            continue;
+          }
+          const int cc = components_of(c.name);
+          const int bc = components_of(best->name);
+          const size_t cb = basename_len(c.name);
+          const size_t bb = basename_len(best->name);
+          if (cc < bc || (cc == bc && (cb < bb ||
+                                       (cb == bb &&
+                                        (c.name.size() < best->name.size() ||
+                                         (c.name.size() == best->name.size() &&
+                                          c.order < best->order))))))
+            best = &c;
+        }
+        return best ? best->name : std::string();
+      };
+      std::vector<Candidate> existing;
+      for (const auto& c : candidates) {
+        if (file_exists(with_dir(c.name))) existing.push_back(c);
       }
-      if (target.empty() && creation) {
-        // [GNU] A creation patch (old side /dev/null) proceeds with
-        // an empty input; it never enters the dialogue below.
-        target = with_dir(stripped(group.new_name));
+      if (!existing.empty()) {
+        target = with_dir(posix_mode ? existing.front().name
+                                     : best_of(existing));
+      } else if (creation && !candidates.empty()) {
+        // [GNU] Creation (pch.c:949-975): fewest new directories.
+        auto new_dirs = [&](const std::string& n) {
+          int missing = 0;
+          const size_t slash = n.find_last_of("/\\");
+          if (slash == std::string::npos) return 0;
+          std::string accum;
+          for (size_t i = 0; i < slash;) {
+            size_t j = n.find_first_of("/\\", i);
+            if (j == std::string::npos || j > slash) j = slash;
+            if (j == i) {  // slash run: not a component of its own
+              i = j + 1;
+              continue;
+            }
+            if (!accum.empty()) accum += "/";
+            accum += n.substr(i, j - i);
+            if (!file_exists(with_dir(accum))) ++missing;
+            i = j + 1;
+          }
+          return missing;
+        };
+        int min_missing = std::numeric_limits<int>::max();
+        for (const auto& c : candidates) {
+          min_missing = std::min(min_missing, new_dirs(c.name));
+        }
+        std::vector<Candidate> nearest;
+        for (const auto& c : candidates) {
+          if (new_dirs(c.name) == min_missing) nearest.push_back(c);
+        }
+        target = with_dir(best_of(nearest));
       }
     }
 
@@ -1852,21 +1931,11 @@ REGISTER_COMMAND(
               flipped = !flipped;
               eff = flipped ? reversed(stored_hunk) : stored_hunk;
               att = attempt_locate(eff, pat);
-            } else {
-              safePrint("Apply anyway? [n] ");
-              std::string again;
-              const bool got2 =
-                  static_cast<bool>(std::getline(std::cin, again));
-              if (!(got2 && !again.empty() && again[0] == 'y')) {
-                if (!silent) safePrintLn("Skipping patch.");
-                skip_rest = true;
-                ++failed;
-                ++failed_total;
-                rejects.push_back({stored_hunk, st.out_offset});
-                continue;
-              }
-              // Apply anyway: fall through with att still failed.
             }
+            // [GNU] A declined flip has no second prompt: the swapped
+            // hunk is put back and this hunk simply fails through the
+            // normal path below (patch.c:439-451 — apply_anyway is an
+            // internal DWIM-suppression flag, not a question).
           }
         }
       }
