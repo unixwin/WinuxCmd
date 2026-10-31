@@ -247,7 +247,6 @@ auto build_sdiff_script(
 // The help text GNU prints to stderr for an unrecognized or badly
 // terminated merge command (sdiff.c give_help), byte for byte.
 inline constexpr std::string_view kInteractHelp =
-    "\n"
     "ed:\tEdit then use both versions, each decorated with a header.\n"
     "eb:\tEdit then use both versions.\n"
     "el or e1:\tEdit then use the left version.\n"

@@ -308,7 +308,6 @@ TEST(sdiff, sdiff_output_file_interactive_unknown_command_helps) {
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_EQ_TEXT(r.stdout_text, "a\t\t\t\t      |\tb\n%%");
   EXPECT_EQ_TEXT(r.stderr_text,
-                 "\n"
                  "ed:\tEdit then use both versions, each decorated with a "
                  "header.\n"
                  "eb:\tEdit then use both versions.\n"
