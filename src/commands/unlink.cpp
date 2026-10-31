@@ -53,6 +53,16 @@ auto remove_unlink_target(const std::wstring& path) -> bool {
     return RemoveDirectoryW(path.c_str()) != 0;
   }
 
+  // [GNU] unlink(2) never consults the file's own write permission —
+  // only the containing directory's — so a read-only file unlinks
+  // fine (unlink.c:82-83). DeleteFileW refuses read-only files, so
+  // the attribute is cleared first, mirroring rm's removal path.
+  if (attrs != INVALID_FILE_ATTRIBUTES &&
+      (attrs & FILE_ATTRIBUTE_READONLY) != 0 &&
+      (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+    SetFileAttributesW(path.c_str(), attrs & ~FILE_ATTRIBUTE_READONLY);
+  }
+
   return DeleteFileW(path.c_str()) != 0;
 }
 

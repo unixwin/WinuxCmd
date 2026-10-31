@@ -12,77 +12,144 @@ using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
 auto constexpr MKFIFO_OPTIONS = std::array{
-    // [DIFFERS]
+    // [GNU]
     OPTION("-m", "--mode", "set file permission bits", STRING_TYPE),
-    // [DIFFERS]
-    OPTION("-Z", "--security-context",
-           "set the SELinux security context to default type"),
-    // [DIFFERS]
-    OPTION("", "--context", "set the SELinux security context"),
+    // [GNU] -Z pairs with --context[=CTX] (system.h:344-345); the old
+    // declaration invented a --security-context long name and a
+    // separate argument-less --context flag.
+    OPTION("-Z", "--context", "set the SELinux security context",
+           OPTIONAL_STRING_TYPE),
 };
 
 namespace mkfifo_pipeline {
 namespace cp = core::pipeline;
 
-auto is_plausible_mode(std::string_view mode) -> bool {
-  if (mode.empty()) return false;
+// [GNU] mode_compile + the permission-bits gate (mkfifo.c:151-165):
+// the mode is applied to a 0666 base, and any resulting bit outside
+// S_IRWXUGO is fatal. The old plausibility sieve mapped readonly by
+// searching the TEXT for digits ("0400" contains '0' and was treated
+// as writable) and rejected multi-op and copy clauses outright.
+// Symbolic evaluation: clauses of [ugoa]* followed by one or more
+// (op, perms) pairs; perms may copy another class (g=u); 's'/'t'
+// raise the special bits the gate then rejects. An omitted who is
+// treated as 'a' (Windows has no umask to consult).
+auto evaluate_mode(std::string_view mode) -> cp::Result<unsigned> {
+  if (mode.empty()) return std::unexpected("invalid mode");
 
-  // Check for valid octal mode (1-4 octal digits)
-  bool octal = true;
-  size_t octal_count = 0;
-  for (char ch : mode) {
-    if (ch < '0' || ch > '7') {
-      octal = false;
-      break;
+  bool octal = std::ranges::all_of(mode, [](char ch) {
+    return ch >= '0' && ch <= '7';
+  });
+  if (octal) {
+    unsigned long long value = 0;
+    for (char ch : mode) value = value * 8 + static_cast<unsigned>(ch - '0');
+    if (value > 0777ULL) {
+      return std::unexpected("mode must specify only file permission bits");
     }
-    octal_count++;
+    return static_cast<unsigned>(value);
   }
-  if (octal && octal_count >= 1 && octal_count <= 4) return true;
 
-  // Check for valid symbolic mode: [ugoa]*[+-=][rwxst]*, comma-separated
-  bool valid_symbolic = true;
+  unsigned cur = 0666;
   size_t start = 0;
-  for (size_t i = 0; i <= mode.size(); i++) {
-    if (i == mode.size() || mode[i] == ',') {
-      std::string_view clause(mode.data() + start, i - start);
-      if (clause.empty()) {
-        valid_symbolic = false;
-        break;
-      }
-      // Check clause format: [ugoa]*[+-=][rwxst]*
-      size_t j = 0;
-      // Who part
-      while (j < clause.size() && (clause[j] == 'u' || clause[j] == 'g' ||
-                                   clause[j] == 'o' || clause[j] == 'a')) {
-        j++;
-      }
-      // Op part
-      if (j >= clause.size() ||
-          (clause[j] != '+' && clause[j] != '-' && clause[j] != '=')) {
-        valid_symbolic = false;
-        break;
-      }
-      j++;
-      // What part
-      while (j < clause.size()) {
-        if (clause[j] != 'r' && clause[j] != 'w' && clause[j] != 'x' &&
-            clause[j] != 's' && clause[j] != 't' && clause[j] != 'X') {
-          valid_symbolic = false;
-          break;
-        }
-        j++;
-      }
-      if (!valid_symbolic) break;
-      start = i + 1;
+  while (true) {
+    const size_t comma = mode.find(',', start);
+    const std::string_view clause =
+        mode.substr(start, comma == std::string_view::npos
+                               ? std::string_view::npos
+                               : comma - start);
+    if (clause.empty()) return std::unexpected("invalid mode");
+
+    size_t j = 0;
+    bool who_u = false, who_g = false, who_o = false;
+    while (j < clause.size() &&
+           (clause[j] == 'u' || clause[j] == 'g' || clause[j] == 'o' ||
+            clause[j] == 'a')) {
+      if (clause[j] == 'u' || clause[j] == 'a') who_u = true;
+      if (clause[j] == 'g' || clause[j] == 'a') who_g = true;
+      if (clause[j] == 'o' || clause[j] == 'a') who_o = true;
+      ++j;
     }
+    if (j == 0) {
+      who_u = who_g = who_o = true;
+    }
+
+    bool any_op = false;
+    while (j < clause.size()) {
+      const char op = clause[j];
+      if (op != '+' && op != '-' && op != '=') {
+        return std::unexpected("invalid mode");
+      }
+      ++j;
+      const size_t perm_begin = j;
+      while (j < clause.size() &&
+             std::string_view("rwxXstugo").find(clause[j]) !=
+                 std::string_view::npos) {
+        ++j;
+      }
+      const std::string_view perms = clause.substr(perm_begin, j - perm_begin);
+      any_op = true;
+
+      auto class_bits = [&](int cls) -> unsigned {
+        unsigned bits = 0;
+        for (char ch : perms) {
+          switch (ch) {
+            case 'r': bits |= 4; break;
+            case 'w': bits |= 2; break;
+            case 'x': bits |= 1; break;
+            case 'X': bits |= (cur & 0111) != 0 ? 1 : 0; break;
+            case 'u': bits |= (cur >> 6) & 7; break;
+            case 'g': bits |= (cur >> 3) & 7; break;
+            case 'o': bits |= cur & 7; break;
+            default: break;  // 's'/'t' handled as special bits below
+          }
+        }
+        (void)cls;
+        return bits;
+      };
+      const bool who[3] = {who_u, who_g, who_o};
+      for (int cls = 0; cls < 3; ++cls) {
+        if (!who[cls]) continue;
+        const int shift = 6 - 3 * cls;
+        const unsigned bits = class_bits(cls);
+        if (op == '+') {
+          cur |= bits << shift;
+        } else if (op == '-') {
+          cur &= ~(bits << shift);
+        } else {
+          cur = (cur & ~(7U << shift)) | (bits << shift);
+        }
+      }
+      unsigned special = 0;
+      for (char ch : perms) {
+        if (ch == 's') {
+          if (who_u) special |= 04000;
+          if (who_g) special |= 02000;
+        } else if (ch == 't') {
+          special |= 01000;
+        }
+      }
+      if (op == '-') {
+        cur &= ~special;
+      } else {
+        cur |= special;
+      }
+    }
+    if (!any_op) return std::unexpected("invalid mode");
+
+    if (comma == std::string_view::npos) break;
+    start = comma + 1;
   }
-  return valid_symbolic;
+
+  if ((cur & ~0777U) != 0) {
+    return std::unexpected("mode must specify only file permission bits");
+  }
+  return cur;
 }
 
 struct Config {
   std::vector<std::string> fifos;
-  std::string mode;
-  bool context_requested = false;
+  bool has_mode = false;
+  unsigned mode_value = 0;
+  std::string context_value;
 };
 
 auto add_fifo_args(Config& cfg, std::span<const std::string_view> args)
@@ -96,23 +163,25 @@ auto build_config(const CommandContext<MKFIFO_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
   Config cfg;
 
-  if (ctx.has("-m") || ctx.has("--mode")) {
-    std::string mode = ctx.get<std::string>("--mode", "");
-    if (mode.empty()) mode = ctx.get<std::string>("-m", "");
-    if (!is_plausible_mode(mode)) {
-      return std::unexpected("invalid mode");
-    }
-    cfg.mode = mode;
-  }
-
-  const bool context_requested =
-      ctx.get<bool>("-Z", false) || ctx.has("--context");
-
+  // [GNU] The missing-operand check precedes mode compilation
+  // (mkfifo.c:133 vs 154-157).
   if (ctx.positionals.empty()) {
     return std::unexpected("missing operand");
   }
 
-  cfg.context_requested = context_requested;
+  if (ctx.has("-m") || ctx.has("--mode")) {
+    std::string mode = ctx.get<std::string>("--mode", "");
+    if (mode.empty()) mode = ctx.get<std::string>("-m", "");
+    auto evaluated = evaluate_mode(mode);
+    if (!evaluated) return std::unexpected(evaluated.error());
+    cfg.has_mode = true;
+    cfg.mode_value = *evaluated;
+  }
+
+  cfg.context_value = ctx.get<std::string>("--context", "");
+  if (cfg.context_value.empty()) {
+    cfg.context_value = ctx.get<std::string>("-Z", "");
+  }
   add_fifo_args(cfg, std::span<const std::string_view>(ctx.positionals.data(),
                                                        ctx.positionals.size()));
 
@@ -120,11 +189,14 @@ auto build_config(const CommandContext<MKFIFO_OPTIONS.size()>& ctx)
 }
 
 auto run(const Config& cfg) -> int {
-  if (cfg.context_requested) {
-    safeErrorPrintLn(winux::i18n::translate(
-        "command.mkfifo.error.context-unsupported",
-        "mkfifo: SELinux security contexts are not supported on Windows"));
-    return 1;
+  // [GNU] On a kernel without SELinux, --context=CTX warns and the
+  // fifo is still created; a bare -Z is silently ignored
+  // (mkfifo.c:118-122). This used to be a hard failure that created
+  // nothing.
+  if (!cfg.context_value.empty()) {
+    safeErrorPrint(
+        "mkfifo: warning: ignoring --context; it requires an "
+        "SELinux/SMACK-enabled kernel\n");
   }
 
   int exit_code = 0;
@@ -146,14 +218,9 @@ auto run(const Config& cfg) -> int {
       continue;
     }
 
-    // A mode without any write bit maps to the DOS readonly attribute.
-    bool readonly = false;
-    if (!cfg.mode.empty() &&
-        cfg.mode.find_first_of("02367") == std::string::npos &&
-        std::ranges::all_of(cfg.mode,
-                            [](char ch) { return ch >= '0' && ch <= '7'; })) {
-      readonly = true;
-    }
+    // A mode without any write bit maps to the DOS readonly
+    // attribute, computed from the evaluated mode value.
+    const bool readonly = cfg.has_mode && (cfg.mode_value & 0222) == 0;
     const DWORD created =
         native_path::create_winux_fifo_w(operand.normalized, readonly);
     if (created != ERROR_SUCCESS) {

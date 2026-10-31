@@ -1,0 +1,7 @@
+cmd: du
+args: --time=mtime d
+timeout: 10
+setup: |
+  mkdir d
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w1 oracle-coreutils-9.4 du.c time-word-set argmatch

@@ -889,7 +889,14 @@ REGISTER_COMMAND(
 
   if ((!has_reference && ctx.positionals.size() < 2) ||
       (has_reference && ctx.positionals.empty())) {
-    safeErrorPrint("chmod: missing operand\n");
+    // [GNU] coreutils-9.4 chmod.c: a mode with no file operand gets the
+    // longer diagnostic; no mode at all gets the plain one.
+    if (!has_reference && ctx.positionals.size() == 1) {
+      safeErrorPrint("chmod: missing operand after '" +
+                     std::string(ctx.positionals[0]) + "'\n");
+    } else {
+      safeErrorPrint("chmod: missing operand\n");
+    }
     safeErrorPrint("Try 'chmod --help' for more information.\n");
     return 1;
   }

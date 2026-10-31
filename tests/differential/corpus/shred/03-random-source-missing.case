@@ -1,0 +1,7 @@
+cmd: shred
+args: --random-source=no-such-source.bin f
+timeout: 10
+setup: |
+  printf 'secret' > f
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w1 oracle-coreutils-9.4 shred.c:1199-1202 random-source-unopenable
