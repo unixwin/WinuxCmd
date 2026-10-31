@@ -60,6 +60,12 @@ auto is_drive_prefix(std::string_view path) -> bool {
 
 auto root_length(std::string_view path) -> size_t {
   if (is_drive_prefix(path)) {
+    // [GNU] dirname-lgpl.c:37-45 (dir_len): a drive prefix followed by a
+    // separator advances the prefix past that separator, so the root of
+    // 'c:/a' is 'c:/' (rooted), not 'c:' (drive-relative).
+    if (path.size() > 2 && is_separator(path[2])) {
+      return 3;
+    }
     return 2;
   }
   if (path.size() >= 2 && is_separator(path[0]) && is_separator(path[1]) &&

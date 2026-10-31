@@ -1,0 +1,5 @@
+cmd: dirname
+args: d/f//
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w3b dirname trailing-slashes

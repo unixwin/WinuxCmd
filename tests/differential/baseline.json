@@ -96,6 +96,14 @@
       "bucket": "PASS",
       "command": "dirname"
     },
+    "corpus/dirname/03-drive-root.case": {
+      "bucket": "PASS",
+      "command": "dirname"
+    },
+    "corpus/dirname/04-trailing-slashes.case": {
+      "bucket": "PASS",
+      "command": "dirname"
+    },
     "corpus/du/47-apparent-bytes.case": {
       "bucket": "PASS",
       "command": "du"
