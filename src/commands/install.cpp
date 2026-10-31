@@ -83,23 +83,50 @@ namespace cp = core::pipeline;
 // whether and how an overwritten destination is preserved (#1357).
 enum class BackupControl { none, simple, numbered, existing };
 
-auto parse_backup_control(std::string control) -> cp::Result<BackupControl> {
-  std::ranges::transform(control, control.begin(), [](unsigned char ch) {
-    return static_cast<char>(std::tolower(ch));
-  });
-  if (control.empty() || control == "existing" || control == "nil") {
+// [GNU] CONTROL resolution follows xget_version (lib/backup-find.c):
+// argmatch over the eight spellings — exact or unique prefix,
+// case-sensitive; a bare -b/--backup (no CONTROL) falls back to
+// $VERSION_CONTROL, then to 'existing'.
+auto parse_backup_control(const std::string& raw)
+    -> cp::Result<BackupControl> {
+  static constexpr std::pair<std::string_view, BackupControl> kNames[] = {
+      {"none", BackupControl::none},
+      {"off", BackupControl::none},
+      {"simple", BackupControl::simple},
+      {"never", BackupControl::simple},
+      {"existing", BackupControl::existing},
+      {"nil", BackupControl::existing},
+      {"numbered", BackupControl::numbered},
+      {"t", BackupControl::numbered},
+  };
+  for (auto [name, control] : kNames) {
+    if (raw == name) return control;
+  }
+  if (raw.empty()) {
+    if (const char* env = std::getenv("VERSION_CONTROL")) {
+      return parse_backup_control(std::string(env));
+    }
     return BackupControl::existing;
   }
-  if (control == "none" || control == "off") {
-    return BackupControl::none;
+  int matches = 0;
+  BackupControl matched = BackupControl::none;
+  for (auto [name, control] : kNames) {
+    if (name.starts_with(raw)) {
+      ++matches;
+      matched = control;
+    }
   }
-  if (control == "simple" || control == "never") {
-    return BackupControl::simple;
-  }
-  if (control == "numbered" || control == "t") {
-    return BackupControl::numbered;
-  }
-  return std::unexpected("invalid backup type");
+  if (matches == 1) return matched;
+  return std::unexpected(
+      std::string(matches > 1 ? "ambiguous argument '" : "invalid argument '") +
+      raw +
+      "' for 'backup type'\n"
+      "Valid arguments are:\n"
+      "  - 'none', 'off'\n"
+      "  - 'simple', 'never'\n"
+      "  - 'existing', 'nil'\n"
+      "  - 'numbered', 't'\n"
+      "Try 'install --help' for more information.");
 }
 
 struct Config {
@@ -153,7 +180,10 @@ auto parse_install_mode(std::string_view mode_text) -> cp::Result<ModeState> {
   }
 
   auto parse_numeric = [](std::string_view text) -> std::optional<unsigned> {
-    if (text.size() != 3 && text.size() != 4) {
+    // [GNU] mode_compile accepts octal strings of any length
+    // ("7", "75", "07555" all work); the old 3-or-4-digit gate
+    // rejected them as invalid modes.
+    if (text.empty() || text.size() > 6) {
       return std::nullopt;
     }
     unsigned mode = 0;
@@ -319,7 +349,8 @@ auto apply_mode_state(const std::string& path, const ModeState& mode_state)
 // (uutils#8963).  Components actually created are appended to `created`
 // (top-down) when non-null.  Returns false on failure.
 auto create_directories_gnu(const std::string& path,
-                            std::vector<std::string>* created) -> bool {
+                            std::vector<std::string>* created,
+                            DWORD* error_out = nullptr) -> bool {
   std::string cur;
   for (size_t i = 0; i < path.size(); ++i) {
     char ch = path[i];
@@ -332,13 +363,17 @@ auto create_directories_gnu(const std::string& path,
     if (comp.size() == 2 && comp[1] == ':') continue;  // drive root "C:"
     DWORD attrs = native_attributes(comp);
     if (attrs != INVALID_FILE_ATTRIBUTES) {
-      if (!(attrs & FILE_ATTRIBUTE_DIRECTORY)) return false;  // ENOTDIR
+      if (!(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+        if (error_out) *error_out = ERROR_DIRECTORY;  // ENOTDIR
+        return false;
+      }
       continue;
     }
     auto operand = native_path::make_api_path_operand(comp);
     if (!CreateDirectoryW(operand.extended.c_str(), nullptr)) {
       DWORD err = GetLastError();
       if (err == ERROR_ALREADY_EXISTS) continue;  // racing creators (#330)
+      if (error_out) *error_out = err;
       return false;
     }
     if (created) created->push_back(comp);
@@ -395,13 +430,14 @@ void append_source_operand(Config& cfg, const std::string& file_arg) {
 auto build_config(const CommandContext<INSTALL_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
   Config cfg;
-  // [GNU] -b is --backup without an argument (control "existing");
-  // --backup takes its CONTROL only in = form (#1357).
-  if (ctx.get<bool>("-b", false)) {
-    cfg.backup_control = BackupControl::existing;
-  } else if (ctx.has("--backup")) {
-    auto parsed =
-        parse_backup_control(ctx.get<std::string>("--backup", ""));
+  // [GNU] -b is --backup without an argument; --backup takes its
+  // CONTROL only in = form (#1357). -S alone also enables backups
+  // (install.c case 'S' sets make_backups).
+  if (ctx.get<bool>("-b", false) || ctx.has("--backup") || ctx.has("-S") ||
+      ctx.has("--suffix")) {
+    auto parsed = parse_backup_control(
+        ctx.has("--backup") ? ctx.get<std::string>("--backup", "")
+                            : std::string{});
     if (!parsed) {
       return std::unexpected(parsed.error());
     }
@@ -464,6 +500,66 @@ auto build_config(const CommandContext<INSTALL_OPTIONS.size()>& ctx)
     return std::unexpected(
         "cannot combine --target-directory (-t) and --no-target-directory "
         "(-T)\nTry 'install --help' for more information.");
+  }
+
+  // [GNU] A repeated -t is fatal during option processing
+  // (install.c:865-870).
+  if (ctx.count({"-t", "--target-directory"}) > 1) {
+    return std::unexpected(
+        "multiple target directories specified\n"
+        "Try 'install --help' for more information.");
+  }
+
+  // [GNU] Option-combination validation (install.c:917-922,
+  // 1001-1013): all four combinations used to proceed silently.
+  if (cfg.directory_mode && cfg.strip) {
+    return std::unexpected(
+        "the strip option may not be used when installing a directory");
+  }
+  if (cfg.directory_mode && !cfg.target_dir.empty()) {
+    return std::unexpected(
+        "target directory not allowed when installing a directory");
+  }
+  if (cfg.compare && cfg.preserve_timestamps) {
+    return std::unexpected(
+        "options --compare (-C) and --preserve-timestamps are mutually "
+        "exclusive\nTry 'install --help' for more information.");
+  }
+  if (cfg.compare && cfg.strip) {
+    return std::unexpected(
+        "options --compare (-C) and --strip are mutually exclusive\n"
+        "Try 'install --help' for more information.");
+  }
+
+  // [GNU] -o/-g names are validated fatally before any copying
+  // (install.c:539, 558); ownership itself stays unapplied on
+  // Windows. Purely numeric IDs are accepted, as getpwnam-based
+  // resolution accepts them.
+  auto account_resolves = [](const std::string& name) -> bool {
+    if (std::ranges::all_of(name, [](unsigned char ch) {
+          return std::isdigit(ch) != 0;
+        })) {
+      return true;
+    }
+    std::array<BYTE, SECURITY_MAX_SID_SIZE> sid{};
+    DWORD sid_size = static_cast<DWORD>(sid.size());
+    DWORD domain_chars = 0;
+    SID_NAME_USE use{};
+    if (LookupAccountNameW(nullptr, utf8_to_wstring(name).c_str(),
+                           reinterpret_cast<PSID>(sid.data()), &sid_size,
+                           nullptr, &domain_chars, &use)) {
+      return true;
+    }
+    // A valid name with an undersized domain buffer fails with
+    // ERROR_INSUFFICIENT_BUFFER; only ERROR_NONE_MAPPED means the
+    // account does not exist.
+    return GetLastError() != ERROR_NONE_MAPPED;
+  };
+  if (!cfg.owner.empty() && !account_resolves(cfg.owner)) {
+    return std::unexpected("invalid user '" + cfg.owner + "'");
+  }
+  if (!cfg.group.empty() && !account_resolves(cfg.group)) {
+    return std::unexpected("invalid group '" + cfg.group + "'");
   }
 
   if (ctx.positionals.empty()) {
@@ -546,8 +642,11 @@ auto files_match(const std::string& lhs, const std::string& rhs) -> bool {
   return true;
 }
 
+// Returns 0 on success, else the Win32 error. [GNU] change_timestamps
+// sets only atime/mtime from the source (install.c:466-481); the
+// destination's creation time used to be overwritten too.
 auto preserve_timestamps(const std::string& source, const std::string& dest)
-    -> bool {
+    -> DWORD {
   auto src_operand = native_path::make_api_path_operand(source);
   auto dst_operand = native_path::make_api_path_operand(dest);
   HANDLE hSource =
@@ -555,7 +654,7 @@ auto preserve_timestamps(const std::string& source, const std::string& dest)
                   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                   nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (hSource == INVALID_HANDLE_VALUE) {
-    return false;
+    return GetLastError();
   }
 
   HANDLE hDest =
@@ -563,31 +662,61 @@ auto preserve_timestamps(const std::string& source, const std::string& dest)
                   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                   nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (hDest == INVALID_HANDLE_VALUE) {
+    DWORD error = GetLastError();
     CloseHandle(hSource);
-    return false;
+    return error;
   }
 
   FILETIME creation{}, access{}, write{};
-  bool ok = GetFileTime(hSource, &creation, &access, &write) != 0;
-  if (ok) {
-    ok = SetFileTime(hDest, &creation, &access, &write) != 0;
+  DWORD error = 0;
+  if (!GetFileTime(hSource, &creation, &access, &write)) {
+    error = GetLastError();
+  } else if (!SetFileTime(hDest, nullptr, &access, &write)) {
+    error = GetLastError();
   }
 
   CloseHandle(hDest);
   CloseHandle(hSource);
-  return ok;
+  return error;
 }
 
-// [GNU] Numbered backups are "<dest>.~N~" with the first free N;
-// "existing" uses the numbered form when a numbered backup is already
-// present and the simple suffix otherwise (#1357).
-auto numbered_backup_path(const std::string& dest) -> std::string {
-  for (int version = 1;; ++version) {
-    std::string candidate = dest + ".~" + std::to_string(version) + "~";
-    if (native_attributes(candidate) == INVALID_FILE_ATTRIBUTES) {
-      return candidate;
+// [GNU] Numbered backups are "<dest>.~N~" with N = highest existing
+// N + 1 (lib/backupfile.c); "existing" uses the numbered form when
+// ANY numbered backup is already present and the simple suffix
+// otherwise. The old first-free-N rule diverged whenever the
+// sequence had gaps (.~1~ + .~3~ present: GNU makes .~4~).
+auto max_numbered_backup(const std::string& dest) -> int {
+  auto operand = native_path::make_api_path_operand(dest);
+  std::filesystem::path dest_path(operand.extended);
+  std::filesystem::path dir = dest_path.parent_path();
+  if (dir.empty()) dir = ".";
+  const std::string base = wstring_to_utf8(dest_path.filename().wstring());
+  const std::string prefix = base + ".~";
+  int max_version = 0;
+  std::error_code ec;
+  for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+    const std::string name =
+        wstring_to_utf8(entry.path().filename().wstring());
+    if (!name.starts_with(prefix) || name.size() <= prefix.size() + 1 ||
+        name.back() != '~') {
+      continue;
     }
+    const std::string digits =
+        name.substr(prefix.size(), name.size() - prefix.size() - 1);
+    if (!std::ranges::all_of(digits, [](unsigned char ch) {
+          return std::isdigit(ch) != 0;
+        })) {
+      continue;
+    }
+    int version = 0;
+    for (char ch : digits) version = version * 10 + (ch - '0');
+    if (version > max_version) max_version = version;
   }
+  return max_version;
+}
+
+auto numbered_backup_path(const std::string& dest) -> std::string {
+  return dest + ".~" + std::to_string(max_numbered_backup(dest) + 1) + "~";
 }
 
 auto select_backup_path(const std::string& dest, const Config& cfg)
@@ -596,7 +725,7 @@ auto select_backup_path(const std::string& dest, const Config& cfg)
     case BackupControl::numbered:
       return numbered_backup_path(dest);
     case BackupControl::existing:
-      if (native_attributes(dest + ".~1~") != INVALID_FILE_ATTRIBUTES) {
+      if (max_numbered_backup(dest) > 0) {
         return numbered_backup_path(dest);
       }
       return dest + cfg.backup_suffix;
@@ -616,6 +745,38 @@ auto run(const Config& cfg) -> int {
   }
   const ModeState desired_mode = *mode_result;
 
+  // [GNU] --strip-program without -s warns and proceeds
+  // (install.c:998-1000).
+  if (!cfg.strip_program.empty() && !cfg.strip) {
+    safeErrorPrint(
+        "install: WARNING: ignoring --strip-program option as -s option "
+        "was not specified\n");
+  }
+
+  // [GNU] -C is ignored (with a warning) when the mode carries
+  // non-permission bits (install.c:1015-1017).
+  bool compare_effective = cfg.compare;
+  if (cfg.compare && !cfg.mode.empty()) {
+    bool non_permission_bits = false;
+    bool all_digits = std::ranges::all_of(cfg.mode, [](unsigned char ch) {
+      return ch >= '0' && ch <= '7';
+    });
+    if (all_digits) {
+      unsigned value = 0;
+      for (char ch : cfg.mode) value = (value << 3U) + unsigned(ch - '0');
+      non_permission_bits = (value & ~0777U) != 0;
+    } else {
+      non_permission_bits =
+          cfg.mode.find_first_of("st") != std::string::npos;
+    }
+    if (non_permission_bits) {
+      safeErrorPrint(
+          "install: the --compare (-C) option is ignored when you specify "
+          "a mode with non-permission bits\n");
+      compare_effective = false;
+    }
+  }
+
   // Warn about unsupported features on Windows
   if (!cfg.group.empty()) {
     safeErrorPrint("install: warning: --group is not supported on Windows\n");
@@ -631,13 +792,21 @@ auto run(const Config& cfg) -> int {
   }
 
   if (cfg.directory_mode) {
+    // [GNU] Every -d operand is processed; failures aggregate into
+    // the exit status instead of aborting the loop (install.c
+    // main loop over operands).
+    bool dir_failure = false;
     for (const auto& dir : cfg.sources) {
       std::vector<std::string> created;
-      if (!create_directories_gnu(dir, &created)) {
+      DWORD create_error = 0;
+      if (!create_directories_gnu(dir, &created, &create_error)) {
+        // [GNU] The diagnostic carries the reason (install.c:699).
         safeErrorPrint("install: cannot create directory '");
         safeErrorPrint(dir);
-        safeErrorPrintLn("'");
-        return 1;
+        safeErrorPrint("': ");
+        safeErrorPrintLn(win32_posix_error_text(create_error));
+        dir_failure = true;
+        continue;
       }
       if (cfg.verbose) {
         // GNU announces every component it actually creates.
@@ -652,10 +821,11 @@ auto run(const Config& cfg) -> int {
         safeErrorPrint("install: cannot change permissions of '");
         safeErrorPrint(dir);
         safeErrorPrintLn("'");
-        return 1;
+        dir_failure = true;
+        continue;
       }
     }
-    return 0;
+    return dir_failure ? 1 : 0;
   }
 
   if (cfg.sources.size() < 2) {
@@ -716,6 +886,7 @@ auto run(const Config& cfg) -> int {
   bool had_failure = false;
   for (const auto& source : sources) {
     std::string dest = target;
+    std::string made_backup_path;
 
     if (target_is_dir) {
       size_t last_slash = source.find_last_of("/\\");
@@ -732,16 +903,12 @@ auto run(const Config& cfg) -> int {
     bool dest_mode_matches =
         dest_owner_writable.has_value() &&
         dest_owner_writable.value() == desired_mode.owner_write;
-    if (cfg.compare &&
+    if (compare_effective &&
         std::filesystem::exists(
             std::filesystem::path(
                 native_path::make_api_path_operand(dest).extended)) &&
         files_match(source, dest) && dest_mode_matches) {
-      if (cfg.verbose) {
-        safeErrorPrint("install: skipping identical destination '");
-        safeErrorPrint(dest);
-        safeErrorPrintLn("'");
-      }
+      // [GNU] A -C skip is silent, even with -v.
       continue;
     }
 
@@ -750,10 +917,13 @@ auto run(const Config& cfg) -> int {
       auto parent = dest_path.parent_path();
       if (!parent.empty()) {
         std::vector<std::string> created;
-        if (!create_directories_gnu(parent.string(), &created)) {
+        DWORD create_error = 0;
+        if (!create_directories_gnu(parent.string(), &created,
+                                    &create_error)) {
           safeErrorPrint("install: cannot create directory '");
           safeErrorPrint(parent.string());
-          safeErrorPrintLn("'");
+          safeErrorPrint("': ");
+          safeErrorPrintLn(win32_posix_error_text(create_error));
           had_failure = true;
           continue;
         }
@@ -795,9 +965,7 @@ auto run(const Config& cfg) -> int {
         if (MoveFileExW(dest_operand.extended.c_str(),
                         backup_operand.extended.c_str(),
                         MOVEFILE_REPLACE_EXISTING)) {
-          if (cfg.verbose) {
-            safePrintLn("(backup: '" + backup_path + "')");
-          }
+          made_backup_path = backup_path;
         } else {
           // [GNU] A failed backup aborts this pair: the user asked for
           // a backup, so overwriting DEST without one — previously the
@@ -814,12 +982,19 @@ auto run(const Config& cfg) -> int {
     }
 
     if (cfg.verbose) {
-      // GNU: 'src' -> 'dest'
+      // [GNU] One line per copy, with the backup named on the same
+      // line (copy.c:2082-2091).
       safePrint("'");
       safePrint(source);
       safePrint("' -> '");
       safePrint(dest);
-      safePrintLn("'");
+      safePrint("'");
+      if (!made_backup_path.empty()) {
+        safePrint(" (backup: '");
+        safePrint(made_backup_path);
+        safePrint("')");
+      }
+      safePrintLn("");
     }
 
     if (is_stdin_alias(source)) {
@@ -844,30 +1019,6 @@ auto run(const Config& cfg) -> int {
       }
     }
 
-    if (cfg.preserve_timestamps && !preserve_timestamps(source, dest)) {
-      safeErrorPrint("install: cannot preserve timestamps for '");
-      safeErrorPrint(dest);
-      safeErrorPrintLn("'");
-      had_failure = true;
-      continue;
-    }
-
-    // GNU install always applies the final mode after copying.  Windows has no
-    // group/other mode bits, so map the final owner-write bit to ReadOnly.
-    if (!apply_mode_state(dest, desired_mode)) {
-      safeErrorPrint("install: cannot change permissions of '");
-      safeErrorPrint(dest);
-      safeErrorPrintLn("'");
-      had_failure = true;
-      continue;
-    }
-    if (cfg.verbose && !cfg.mode.empty()) {
-      safePrint("install: set mode '");
-      safePrint(cfg.mode);
-      safePrint("' on '");
-      safePrint(dest);
-      safePrintLn("'");
-    }
 
     // Strip symbol tables if requested (Windows: call strip.exe if available)
     // [SECURITY] Launch strip via CreateProcessW with proper argv quoting
@@ -923,6 +1074,27 @@ auto run(const Config& cfg) -> int {
         had_failure = true;
         continue;
       }
+    }
+
+    if (cfg.preserve_timestamps) {
+      // [GNU] "cannot set timestamps for %s" + reason (install.c:478).
+      if (DWORD ts_error = preserve_timestamps(source, dest)) {
+        safeErrorPrint("install: cannot set timestamps for '");
+        safeErrorPrint(dest);
+        safeErrorPrint("': ");
+        safeErrorPrintLn(win32_posix_error_text(ts_error));
+        had_failure = true;
+        continue;
+      }
+    }
+    // GNU install always applies the final mode after copying.  Windows has no
+    // group/other mode bits, so map the final owner-write bit to ReadOnly.
+    if (!apply_mode_state(dest, desired_mode)) {
+      safeErrorPrint("install: cannot change permissions of '");
+      safeErrorPrint(dest);
+      safeErrorPrintLn("'");
+      had_failure = true;
+      continue;
     }
   }
 
