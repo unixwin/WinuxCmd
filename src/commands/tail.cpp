@@ -762,7 +762,8 @@ auto build_config(const CommandContext<N>& ctx) -> cp::Result<TailConfig> {
             std::string(ambiguous ? "ambiguous argument '"
                                   : "invalid argument '") +
             *value + "' for '--follow'\nValid arguments are:\n" +
-            "  - 'descriptor'\n  - 'name'");
+            "  - 'descriptor'\n  - 'name'\n" +
+            "Try 'tail --help' for more information.");
       };
       if (*value == "name" ||
           (!value->empty() &&
