@@ -168,6 +168,17 @@ auto rewrite_tail_obsolete_args(std::span<std::string_view> args)
     size_t suffix_pos = parse_decimal_prefix(first, 1);
     if (suffix_pos == 1) return std::nullopt;
 
+    // [GNU] the obsolete form exists only inside parse_obsolete_
+    // option's argc gate (tail.c:2062-2067): the option string
+    // plus at most one file operand, or a "--" in argv[2]. Outside
+    // the gate a leading '+' argument is a file name, not an
+    // option (audit #1462).
+    if (!(args.size() == 1 ||
+          (args.size() == 2 &&
+           !(args[1].size() > 1 && args[1][0] == '-')) ||
+          (args.size() <= 3 && args[1] == "--")))
+      return std::nullopt;
+
     std::string count(first.substr(1, suffix_pos - 1));
     std::string mode = "-n";
     std::string value = "+" + count;
@@ -324,12 +335,15 @@ auto tail_invalid_obsolete_count_context(std::span<std::string_view> args)
     -> std::optional<std::string> {
   if (args.size() < 2) return std::nullopt;
 
-  // [GNU] an obsolete count in FIRST position is valid only with
-  // at most one file operand (tail.c parse_obsolete_option's
+  // [GNU] an obsolete '-' count in FIRST position is valid only
+  // with at most one file operand (tail.c parse_obsolete_option's
   // argc gate): 'tail -5 f1 f2' dies 'option used in invalid
-  // context -- 5'. Count the file operands after it with the same
-  // scan discipline as the loop below (audit #1462).
-  if (is_tail_obsolete_count_arg(args[0])) {
+  // context -- 5'. The '+' forms are NOT errors outside the gate:
+  // a leading '+' is a file name in the standard form (tail.c:2080),
+  // so 'tail +2l f1 f2' opens '+2l' as an operand instead. Count
+  // the file operands after it with the same scan discipline as
+  // the loop below (audit #1462).
+  if (args[0][0] == '-' && is_tail_obsolete_count_arg(args[0])) {
     size_t file_operands = 0;
     bool stop = false;
     bool skip_next = false;
