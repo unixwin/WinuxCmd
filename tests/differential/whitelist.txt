@@ -23,7 +23,7 @@ corpus/mktemp/01-basic.case	environment: tmpdir differs (WSL /tmp vs Windows TEM
 # instead of hiding behind an exemption.
 regressions/12-seq-limit.case	platform: winux seq is slower for 1M-line output; times out at runner's 10s limit while GNU seq completes fast
 corpus/namei/01-basic.case	platform: output format differs between GNU namei (util-linux) and WinuxCmd (Windows path resolution steps)
-corpus/namei/02-no-exist.case	platform: GNU namei exits 1 for non-existent paths; WinuxCmd exits 0
+corpus/namei/02-no-exist.case	platform: output format differs (see 01-basic); the exit status converged in #1127 — both sides now exit 1 for non-existent paths
 corpus/which/01-basic.case	environment: PATH differs between WSL (/usr/bin/sh) and Windows (C:\Windows\System32\sh.exe)
 # Byte-verified 2026-09-11: these differ ONLY in message quoting style.
 # GNU quote() emits Unicode curly quotes U+2018/U+2019 under a UTF-8 locale
