@@ -493,10 +493,16 @@ void emit_tex_line(const SourceText& source, const Occurrence& occ,
                    const Config& cfg) {
   std::string before = printable(trim_left(trim_right(
       source.text.substr(occ.context_start, occ.start - occ.context_start))));
-  std::string keyafter = printable(trim_left(
-      trim_right(source.text.substr(occ.start, occ.context_end - occ.start))));
-  safePrintLn("\\" + cfg.macro_name + " {}{" + before + "}{" + keyafter +
-              "}{}");
+  // [GNU] TeX format (ptx.c): the keyword and the following
+  // context are separate brace groups, and the after group keeps
+  // its leading blank -- unlike roff, which merges the two into
+  // one field (audit #1462).
+  std::string key =
+      printable(source.text.substr(occ.start, occ.end - occ.start));
+  std::string after = printable(trim_right(
+      source.text.substr(occ.end, occ.context_end - occ.end)));
+  safePrintLn("\\" + cfg.macro_name + " {}{" + before + "}{" + key + "}{" +
+              after + "}{}");
 }
 
 auto run(const Config& cfg) -> int {
