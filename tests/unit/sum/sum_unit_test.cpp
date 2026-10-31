@@ -290,12 +290,15 @@ TEST(sum, sum_operand_after_double_dash_is_not_an_option_issue1370) {
 }
 
 TEST(sum, sum_long_options_last_wins_issue1370) {
+  // [GNU] sum has no --bsd long option (sum.c: -r is the BSD
+  // spelling); last-wins is pinned with the GNU spellings
+  // (audit #1462).
   TempDir tmp;
   tmp.write("f", "x\n");
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
-  p.add(L"sum.exe", {L"--sysv", L"--bsd", L"f"});
+  p.add(L"sum.exe", {L"--sysv", L"-r", L"f"});
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);

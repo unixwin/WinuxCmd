@@ -62,15 +62,18 @@ TEST(unexpand, unexpand_first_only_overrides_tabs_all) {
   EXPECT_EQ_TEXT(r.stdout_text, "\tx    y\n");
 }
 
-TEST(unexpand, unexpand_f_alias_matches_first_only) {
+TEST(unexpand, unexpand_rejects_non_gnu_f_option) {
+  // [GNU] unexpand has no -f: --first-only exists only as a long
+  // option (unexpand.c), so -f is an invalid option (audit #1462).
   Pipeline p;
   p.set_stdin("        x    y\n");
   p.add(L"unexpand.exe", {L"-a", L"-f"});
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "\tx    y\n");
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("invalid option -- 'f'") !=
+              std::string::npos);
 }
 
 TEST(unexpand, unexpand_tab_list) {

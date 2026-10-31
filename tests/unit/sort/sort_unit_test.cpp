@@ -538,13 +538,16 @@ TEST(sort, sort_human_numeric_compares_sign_before_suffix) {
   EXPECT_EQ_TEXT(r.stdout_text, "-1G\n0Q\n1\n1K\n");
 }
 
-TEST(sort, sort_long_sort_month_alias) {
+TEST(sort, sort_long_sort_month_word) {
+  // [GNU] --sort takes the full argmatch word (sort.c XARGMATCH);
+  // the one-letter form is the -M option, not a --sort spelling
+  // (audit #1462).
   TempDir tmp;
   tmp.write("m.txt", "Dec\nJan\nApr\n");
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
-  p.add(L"sort.exe", {L"--sort=M", L"m.txt"});
+  p.add(L"sort.exe", {L"--sort=month", L"m.txt"});
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
@@ -578,12 +581,16 @@ TEST(sort, sort_short_ordering_mode_last_option_wins) {
 }
 
 TEST(sort, sort_rejects_invalid_long_sort_word) {
+  // [GNU] an unmatched --sort word is an argmatch error, exit 1:
+  // "sort: invalid argument 'bad' for '--sort'" plus the valid
+  // list (audit #1462).
   Pipeline p;
   p.add(L"sort.exe", {L"--sort=bad"});
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 2);
-  EXPECT_TRUE(r.stderr_text.find("invalid sort mode") != std::string::npos);
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("invalid argument 'bad' for '--sort'") !=
+              std::string::npos);
 }
 
 TEST(sort, sort_month_sort) {
