@@ -787,12 +787,13 @@ auto format_mail_header(std::span<const Line> group, const Config& cfg)
 }
 
 auto format_group(std::span<const Line> group, const Config& cfg,
-                  std::string_view prefix_attachment) -> std::string {
+                  std::string_view prefix_attachment,
+                  std::string_view rest_prefix_attachment) -> std::string {
   std::string out;
   if (group.empty()) return out;
 
   std::string first_indent(prefix_attachment);
-  std::string rest_indent(prefix_attachment);
+  std::string rest_indent(rest_prefix_attachment);
   bool crown_like = cfg.crown_margin || cfg.tagged_paragraph;
 
   if (prefix_attachment.empty()) {
@@ -905,18 +906,21 @@ auto format_content(const std::string& content, const Config& cfg)
   int paragraph_first_col = 0;
   int paragraph_other_col = -1;
   std::string paragraph_prefix;
+  std::string paragraph_rest_prefix;
 
   auto flush = [&](bool final_flush = false) {
     if (paragraph.empty()) return;
 
     // Paragraph membership is decided while collecting (below), so
     // a group never needs re-splitting here.
-    out += format_group(paragraph, cfg, paragraph_prefix);
+    out += format_group(paragraph, cfg, paragraph_prefix,
+                        paragraph_rest_prefix);
 
     paragraph.clear();
     paragraph_first_col = 0;
     paragraph_other_col = -1;
     paragraph_prefix.clear();
+    paragraph_rest_prefix.clear();
   };
 
   for (size_t i = 0; i < lines.size(); ++i) {
@@ -977,22 +981,6 @@ auto format_content(const std::string& content, const Config& cfg)
       continue;
     }
 
-    std::string current_prefix;
-    if (cfg.prefix_given) {
-      // [GNU] output indents are rebuilt as that many spaces plus
-      // the trimmed prefix (put_paragraph), not the raw matched
-      // text (audit #1462).
-      current_prefix =
-          std::string(static_cast<size_t>(line_indent_cols), ' ') +
-          cfg.prefix;
-    }
-
-    if (cfg.split_only) {
-      flush();
-      out += split_only_line(line.text, cfg, current_prefix, strip_prefix);
-      continue;
-    }
-
     // [GNU] paragraph membership is decided on COLUMNS (in_column:
     // a tab advances to the next multiple of 8), never on raw indent
     // bytes -- a tab and eight spaces are the same indent
@@ -1002,6 +990,30 @@ auto format_content(const std::string& content, const Config& cfg)
                          : leading_blank_count(line.text);
     const int current_col = fmt_display_width(
         line.text.substr(0, content_start), cfg.tab_width);
+
+    std::string current_prefix;
+    if (cfg.prefix_given) {
+      // [GNU] put_line (fmt.c:986-991): prefix_indent spaces, the
+      // trimmed prefix, then padding up to the column where the
+      // first word starts. The padding is part of the rendered
+      // prefix: "> alpha" keeps its blank, ">alpha" stays attached,
+      // and the two are different paragraph shapes (audit #1462).
+      current_prefix =
+          std::string(static_cast<size_t>(line_indent_cols), ' ') +
+          cfg.prefix;
+      const int prefix_end_cols =
+          line_indent_cols + fmt_display_width(cfg.prefix, cfg.tab_width);
+      if (current_col > prefix_end_cols) {
+        current_prefix.append(
+            static_cast<size_t>(current_col - prefix_end_cols), ' ');
+      }
+    }
+
+    if (cfg.split_only) {
+      flush();
+      out += split_only_line(line.text, cfg, current_prefix, strip_prefix);
+      continue;
+    }
 
     bool starts_new_paragraph = false;
     if (!paragraph.empty()) {
@@ -1031,6 +1043,12 @@ auto format_content(const std::string& content, const Config& cfg)
       paragraph_first_col = current_col;
       paragraph_other_col = -1;
       paragraph_prefix = current_prefix;
+      paragraph_rest_prefix = current_prefix;
+    } else if (paragraph.size() == 1 &&
+               (cfg.crown_margin || cfg.tagged_paragraph)) {
+      // [GNU] continuation lines render at other_indent (put_line),
+      // which crown/tagged take from the second line (fmt.c:508-529).
+      paragraph_rest_prefix = current_prefix;
     }
     paragraph.push_back(line);
   }
