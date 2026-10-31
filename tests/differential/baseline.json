@@ -228,6 +228,26 @@
       "bucket": "KNOWN_DIFF",
       "command": "mktemp"
     },
+    "corpus/nice/01-plus-adjustment.case": {
+      "bucket": "PASS",
+      "command": "nice"
+    },
+    "corpus/nice/02-empty-adjustment.case": {
+      "bucket": "PASS",
+      "command": "nice"
+    },
+    "corpus/nice/03-adjustment-no-command.case": {
+      "bucket": "PASS",
+      "command": "nice"
+    },
+    "corpus/nice/04-command-not-found.case": {
+      "bucket": "PASS",
+      "command": "nice"
+    },
+    "corpus/nice/05-legacy-form.case": {
+      "bucket": "PASS",
+      "command": "nice"
+    },
     "corpus/nl/01-numbered.case": {
       "bucket": "PASS",
       "command": "nl"
