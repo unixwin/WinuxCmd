@@ -4,6 +4,22 @@
       "bucket": "PASS",
       "command": "b2sum"
     },
+    "corpus/b2sum/50-length-zero.case": {
+      "bucket": "PASS",
+      "command": "b2sum"
+    },
+    "corpus/b2sum/51-length-not-multiple.case": {
+      "bucket": "PASS",
+      "command": "b2sum"
+    },
+    "corpus/b2sum/52-length-too-large.case": {
+      "bucket": "PASS",
+      "command": "b2sum"
+    },
+    "corpus/b2sum/53-tagged-short-digest.case": {
+      "bucket": "PASS",
+      "command": "b2sum"
+    },
     "corpus/base32/23-encode.case": {
       "bucket": "PASS",
       "command": "base32"
@@ -16,6 +32,14 @@
       "bucket": "PASS",
       "command": "base64"
     },
+    "corpus/base64/30-wrap-mid-quantum.case": {
+      "bucket": "PASS",
+      "command": "base64"
+    },
+    "corpus/base64/31-wrap-overflow.case": {
+      "bucket": "PASS",
+      "command": "base64"
+    },
     "corpus/basename/01-basic.case": {
       "bucket": "PASS",
       "command": "basename"
@@ -23,6 +47,14 @@
     "corpus/basename/49-suffix.case": {
       "bucket": "PASS",
       "command": "basename"
+    },
+    "corpus/basenc/31-missing-encoding.case": {
+      "bucket": "PASS",
+      "command": "basenc"
+    },
+    "corpus/basenc/33-base16-lowercase.case": {
+      "bucket": "PASS",
+      "command": "basenc"
     },
     "corpus/cat/basic.case": {
       "bucket": "PASS",
@@ -736,6 +768,14 @@
       "bucket": "PASS",
       "command": "basenc"
     },
+    "corpus/basenc/30-last-selector-wins.case": {
+      "bucket": "PASS",
+      "command": "basenc"
+    },
+    "corpus/basenc/32-z85-length.case": {
+      "bucket": "PASS",
+      "command": "basenc"
+    },
     "corpus/cat/02-dev-null.case": {
       "bucket": "PASS",
       "command": "cat"
@@ -848,6 +888,22 @@
       "bucket": "PASS",
       "command": "date"
     },
+    "corpus/expr/30-leading-zeros.case": {
+      "bucket": "PASS",
+      "command": "expr"
+    },
+    "corpus/expr/31-null-zeros.case": {
+      "bucket": "PASS",
+      "command": "expr"
+    },
+    "corpus/expr/32-plus-verbatim.case": {
+      "bucket": "PASS",
+      "command": "expr"
+    },
+    "corpus/expr/33-length-verbatim.case": {
+      "bucket": "PASS",
+      "command": "expr"
+    },
     "corpus/find/01-printf-width-flags.case": {
       "bucket": "PASS",
       "command": "find"
@@ -891,6 +947,26 @@
     "corpus/ls/04-nul-literal.case": {
       "bucket": "KNOWN_DIFF",
       "command": "ls"
+    },
+    "corpus/numfmt/01-multiple-fields.case": {
+      "bucket": "PASS",
+      "command": "numfmt"
+    },
+    "corpus/numfmt/02-padding-zero.case": {
+      "bucket": "PASS",
+      "command": "numfmt"
+    },
+    "corpus/numfmt/03-header-zero.case": {
+      "bucket": "PASS",
+      "command": "numfmt"
+    },
+    "corpus/numfmt/04-delimiter-multi.case": {
+      "bucket": "PASS",
+      "command": "numfmt"
+    },
+    "corpus/numfmt/05-to-auto-try-help.case": {
+      "bucket": "PASS",
+      "command": "numfmt"
     },
     "corpus/od/01-invalid-utf8-operand.case": {
       "bucket": "KNOWN_DIFF",

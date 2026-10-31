@@ -114,16 +114,24 @@ inline std::string base64_encode(std::span<const uint8_t> data,
 
   const size_t remaining = data.size() - full_size;
   if (remaining > 0) {
-    if (wrap_width > 0 && column == wrap_width) {
-      result[out++] = '\n';
-      column = 0;
-    }
     const uint8_t b0 = data[full_size];
     const uint8_t b1 = remaining == 2 ? data[full_size + 1] : 0;
-    result[out++] = alpha[b0 >> 2];
-    result[out++] = alpha[((b0 & 0x03) << 4) | (b1 >> 4)];
-    result[out++] = remaining == 2 ? alpha[(b1 & 0x0f) << 2] : '=';
-    result[out++] = '=';
+    const char tail[4] = {alpha[b0 >> 2], alpha[((b0 & 0x03) << 4) | (b1 >> 4)],
+                          remaining == 2 ? alpha[(b1 & 0x0f) << 2] : '=', '='};
+    // [GNU] wrap_write() wraps the encoded stream at COLS characters
+    // regardless of quantum boundaries, so the final partial quantum is
+    // emitted character by character like the char-wise full-block path:
+    // with a width that is not a multiple of 4 the line break can fall
+    // inside the tail quantum (e.g. base64 -w 6 over "12345" yields
+    // "MTIzND\nU=").
+    for (char c : tail) {
+      if (wrap_width > 0 && column == wrap_width) {
+        result[out++] = '\n';
+        column = 0;
+      }
+      result[out++] = c;
+      ++column;
+    }
   }
 
   result.resize(out);
@@ -589,15 +597,16 @@ inline GnuDecodeResult base32_decode_gnu(std::string_view encoded,
   return result;
 }
 
-// GNU base16 decode: hex digits in either case ('\n' skipped, bytes emitted
-// as they decode; a dangling nibble or a garbage byte fails).  GNU's B16
-// macro accepts both 'A'-'F' and 'a'-'f' (basenc.c:530-542).
+// GNU base16 decode: uppercase hex digits only ('\n' skipped, bytes
+// emitted as they decode; a dangling nibble or a garbage byte fails).
+// basenc.c:491-494 (isbase16) accepts '0'-'9' and 'A'-'F' only, so
+// lowercase input is invalid (verified against GNU 9.4: "ab" fails with
+// "invalid input" while "AB" decodes).
 inline GnuDecodeResult base16_decode_gnu(std::string_view encoded,
                                          bool ignore_garbage) {
   auto hex_value = [](unsigned char c) -> int {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
     return -1;
   };
 

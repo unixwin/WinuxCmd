@@ -1,0 +1,7 @@
+cmd: basenc
+args: f.txt
+timeout: 10
+setup: |
+  printf 'f' > f.txt
+source: GNU coreutils 9.4 src/basenc.c ("missing encoding type" goes through usage: try-help line follows)
+tags: audit-w3a #1462
