@@ -78,6 +78,18 @@ auto run(const CommandContext<RENICE_OPTIONS.size()>& ctx) -> int {
     return 1;
   }
 
+  // [GNU] renice.c checks the argument count BEFORE parsing the
+  // priority: with a priority but no target (argc < 2 at renice.c:171)
+  // the report is "not enough arguments" even when the priority text
+  // itself is invalid; "invalid priority" (renice.c:181) is only
+  // reached once at least one target operand remains.
+  if (operands.empty()) {
+    safeErrorPrintLn("renice: not enough arguments");
+    safeErrorPrintLn(winux::i18n::format(
+        "common.try_help", "Try '{} --help' for more information.", "renice"));
+    return 1;
+  }
+
   auto niceness = parse_int(priority_text);
   if (!niceness) {
     // [GNU] renice.c:181: "invalid priority '<text>'" + try-help.
@@ -87,13 +99,6 @@ auto run(const CommandContext<RENICE_OPTIONS.size()>& ctx) -> int {
     return 1;
   }
   *niceness = std::clamp(*niceness, -20, 19);
-
-  if (operands.empty()) {
-    safeErrorPrintLn("renice: not enough arguments");
-    safeErrorPrintLn(winux::i18n::format(
-        "common.try_help", "Try '{} --help' for more information.", "renice"));
-    return 1;
-  }
 
   DWORD priority_class = win32_priority_class_for_niceness(*niceness);
   int status = 0;
