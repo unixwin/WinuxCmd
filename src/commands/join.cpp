@@ -284,7 +284,7 @@ auto build_config(const CommandContext<JOIN_OPTIONS.size()>& ctx)
   // first (join.c:917-924, 1064-1095): 'join -j 3 -1 2' reports
   // "incompatible join fields 2, 1". The old code always applied
   // -1, then -2, then -j (audit #1462).
-  auto apply_join_field_option = [&](const std::string& which,
+  auto apply_join_field_option = [&](std::string_view which,
                                      const std::string& value)
       -> cp::Result<void> {
     auto field = parse_positive_field(value);
