@@ -309,6 +309,26 @@ auto mv_make_backups(const CommandContext<MV_OPTIONS.size()>& ctx)
   return parsed.control;
 }
 
+// [GNU] Whether any backup option (-b, --backup in any form including
+// =none/=off, -S, --suffix) was given at all.  mv.c's conflict between
+// backups and --no-clobber keys on this givenness, not on the resolved
+// mode: verified against the oracle, `mv --backup=none -n a b` answers
+// with the mutual-exclusion error just like `--backup=simple` does,
+// while the backup itself is of course only made for an engaged mode.
+auto mv_backup_option_given(const CommandContext<MV_OPTIONS.size()>& ctx)
+    -> bool {
+  if (!ctx.metas) return false;
+  for (const auto& occurrence : ctx.options.occurrences()) {
+    if (occurrence.index >= ctx.metas->size()) continue;
+    const auto& meta = (*ctx.metas)[occurrence.index];
+    if (meta.short_name == "-b" || meta.long_name == "--backup" ||
+        meta.short_name == "-S" || meta.long_name == "--suffix") {
+      return true;
+    }
+  }
+  return false;
+}
+
 // [GNU] Highest N among existing "<path>.~N~" siblings, or 0 when none
 // (numbered backups take max + 1).
 auto mv_max_numbered_backup(const std::wstring& target) -> int {
@@ -1100,12 +1120,14 @@ auto process_command(const CommandContext<N>& ctx) -> cp::Result<bool> {
           if (!control) {
             return std::unexpected(control.error());
           }
-          // As in backup_existing_destination, the engagement test is
-          // on the optional inside the Result: testing the Result
-          // itself made the conflict fire for every bare -n.  GNU
-          // fires it only when backups were actually requested
-          // (mv.c:512-515: make_backups && I_ALWAYS_NO).
-          if (control->has_value() &&
+          // The conflict keys on the backup options being GIVEN, not
+          // on the engaged control: GNU answers the mutual-exclusion
+          // error for --backup=none -n as well (mv.c:512-515 with
+          // make_backups tracking option givenness), while a bare -n
+          // must fall through to the 'not replacing' skip.  The
+          // mv_make_backups call above still runs first so an invalid
+          // --backup value reports its argmatch error ahead of this.
+          if (mv_backup_option_given(ctx) &&
               *overwrite_mode == OverwriteMode::no_clobber) {
             return std::unexpected(
                 "options --backup and --no-clobber are mutually exclusive\n"
