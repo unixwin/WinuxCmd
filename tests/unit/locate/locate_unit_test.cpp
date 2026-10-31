@@ -201,7 +201,7 @@ TEST(locate, locate_null_separator_output) {
   EXPECT_EQ_TEXT(r.stdout_text, std::string("C:/w/a.cpp\0C:/w/b.cpp\0", 22));
 }
 
-TEST(locate, locate_statistics_prints_entries_to_stderr) {
+TEST(locate, locate_statistics_prints_entries_to_stdout) {
   TempDir tmp;
   write_db(tmp, "db.txt", "C:/w/a.cpp\nC:/w/b.cpp\n");
 
@@ -211,26 +211,30 @@ TEST(locate, locate_statistics_prints_entries_to_stderr) {
 
   auto r = p.run();
 
+  // [GNU] locate.c print_stats writes to stdout (printf), not stderr.
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stderr_text.find("Entries: 2") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("Entries: 2") != std::string::npos);
 }
 
-TEST(locate, locate_all_prints_every_entry) {
+TEST(locate, locate_all_requires_every_pattern) {
   TempDir tmp;
-  write_db(tmp, "db.txt", "C:/w/a.cpp\nC:/w/b.cpp\n");
+  write_db(tmp, "db.txt", "C:/w/a.cpp\nC:/w/b.cpp\nC:/x/ab.md\n");
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
-  p.add(L"locate.exe", {L"-d", L"db.txt", L"-A"});
+  p.add(L"locate.exe", {L"-d", L"db.txt", L"-A", L"a", L"cpp"});
 
   auto r = p.run();
 
+  // [GNU] locate.c: -A/--all sets op_and -- an entry must match every
+  // pattern; it is not a "print the whole database" mode.
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.find("C:/w/a.cpp") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("C:/w/b.cpp") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("C:/w/b.cpp") == std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("C:/x/ab.md") == std::string::npos);
 }
 
-TEST(locate, locate_missing_database_reports_and_exits_one) {
+TEST(locate, locate_missing_database_reports_and_exits_zero) {
   TempDir tmp;
 
   Pipeline p;
@@ -239,11 +243,14 @@ TEST(locate, locate_missing_database_reports_and_exits_one) {
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stderr_text.find("cannot open database") != std::string::npos);
+  // [GNU] locate.c dolocate: an unopenable user-selected database is
+  // reported as "locate: NAME: <error>" and the run ends with status 0.
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.find("locate: no-such-db.txt: No such file "
+                                 "or directory") != std::string::npos);
 }
 
-TEST(locate, locate_limit_zero_means_unlimited) {
+TEST(locate, locate_limit_zero_prints_nothing) {
   TempDir tmp;
   write_db(tmp, "db.txt", "C:/w/a.cpp\nC:/w/b.cpp\n");
 
@@ -253,9 +260,10 @@ TEST(locate, locate_limit_zero_means_unlimited) {
 
   auto r = p.run();
 
+  // [GNU] locate.c dolocate: a limit of 0 ends the search before any
+  // database is read; nothing is printed and the exit status is 0.
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.find("a.cpp") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("b.cpp") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.empty());
 }
 
 // #1364 (enclave rule): with a shell root configured, a database path
