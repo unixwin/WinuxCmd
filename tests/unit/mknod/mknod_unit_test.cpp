@@ -27,7 +27,10 @@ TEST(mknod, mknod_block_requires_major_minor) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_NE(r.stderr_text.find("requires major and minor"), std::string::npos);
+  EXPECT_NE(r.stderr_text.find("missing operand after 'b'"),
+            std::string::npos);
+  EXPECT_NE(r.stderr_text.find("require major and minor device numbers"),
+            std::string::npos);
 }
 
 TEST(mknod, mknod_fifo_rejects_major_minor) {

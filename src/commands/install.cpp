@@ -908,7 +908,11 @@ auto run(const Config& cfg) -> int {
             std::filesystem::path(
                 native_path::make_api_path_operand(dest).extended)) &&
         files_match(source, dest) && dest_mode_matches) {
-      // [GNU] A -C skip is silent, even with -v.
+      if (cfg.verbose) {
+        safeErrorPrint("install: skipping identical destination '");
+        safeErrorPrint(dest);
+        safeErrorPrintLn("'");
+      }
       continue;
     }
 

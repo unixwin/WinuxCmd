@@ -272,7 +272,10 @@ TEST(mv, mv_no_clobber_keeps_existing_destination) {
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
+  // [GNU] The skip is reported and the exit status is failure.
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_NE(r.stderr_text.find("not replacing 'dest.txt'"),
+            std::string::npos);
   EXPECT_TRUE(std::filesystem::exists(tmp.path / "source.txt"));
   EXPECT_EQ(tmp.read("dest.txt"), "old content");
 }
@@ -288,7 +291,10 @@ TEST(mv, mv_last_overwrite_option_can_select_no_clobber) {
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
+  // [GNU] Last overwrite option wins: -n skips, reports, and fails.
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_NE(r.stderr_text.find("not replacing 'dest.txt'"),
+            std::string::npos);
   EXPECT_TRUE(std::filesystem::exists(tmp.path / "source.txt"));
   EXPECT_EQ(tmp.read("dest.txt"), "old content");
 }

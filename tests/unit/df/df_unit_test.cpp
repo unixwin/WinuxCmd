@@ -265,7 +265,8 @@ TEST(df, df_output_rejects_empty_inline_field_list) {
   TEST_LOG("df.exe --output= stderr", r.stderr_text);
 
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_NE(r.stderr_text.find("option --output: field  unknown"),
+  // [GNU] The field name is quoted, even when empty.
+  EXPECT_NE(r.stderr_text.find("option --output: field '' unknown"),
             std::string::npos);
 }
 

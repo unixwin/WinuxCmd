@@ -692,8 +692,8 @@ REGISTER_COMMAND(
       if ((sfd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
           !(sfd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) &&
           !directory_link) {
-        safeErrorPrint("ln: '" + source +
-                       "': hard link not allowed for directory\n");
+        safeErrorPrint("ln: " + source +
+                       ": hard link not allowed for directory\n");
         error_count++;
         continue;
       }

@@ -688,7 +688,13 @@ auto move_single_path(const std::string& src_path, const std::string& dest_path,
   bool dest_exists =
       GetFileAttributesW(wdest_path.c_str()) != INVALID_FILE_ATTRIBUTES;
   if (overwrite_mode == OverwriteMode::no_clobber && dest_exists) {
-    return true;
+    // [GNU] I_ALWAYS_NO skip: "not replacing %s" and the file fails
+    // (copy.c:2438, 2425-2445); only --update=none skips silently
+    // with success.
+    safeErrorPrint("mv: not replacing '");
+    safeErrorPrint(dest_path);
+    safeErrorPrintLn("'");
+    return false;
   }
 
   // --update mode handling
@@ -719,7 +725,7 @@ auto move_single_path(const std::string& src_path, const std::string& dest_path,
       std::cin.get(response);
       std::cin.ignore(1024, '\n');
       if (response != 'y' && response != 'Y') {
-        return true;
+        return false;
       }
     }
   }
@@ -735,7 +741,7 @@ auto move_single_path(const std::string& src_path, const std::string& dest_path,
         return std::unexpected(confirmed.error());
       }
       if (!*confirmed) {
-        return true;
+        return false;
       }
     }
   }

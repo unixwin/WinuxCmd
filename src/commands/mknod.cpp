@@ -279,10 +279,15 @@ auto run(const Config& cfg) -> int {
   const auto operand = native_path::make_api_path_operand(cfg.name);
   if (native_path::operand_target_attributes_w(operand) !=
       INVALID_FILE_ATTRIBUTES) {
-    // [GNU] quotef: the name is quoted (mknod.c:256-257).
-    safeErrorPrint("mknod: '");
+    // [GNU] quotef (mknod.c:257): plain names print unquoted;
+    // single quotes appear only around names that need them.
+    const bool needs_quotes =
+        cfg.name.find_first_of(" \t\n'\"\\") != std::string::npos;
+    safeErrorPrint("mknod: ");
+    if (needs_quotes) safeErrorPrint("'");
     safeErrorPrint(cfg.name);
-    safeErrorPrint("': File exists\n");
+    if (needs_quotes) safeErrorPrint("'");
+    safeErrorPrint(": File exists\n");
     return 1;
   }
 
