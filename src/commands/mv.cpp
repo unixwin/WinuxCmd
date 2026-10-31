@@ -274,14 +274,33 @@ auto mv_backup_type_message(int error_kind, const std::string& value)
 
 // [GNU] Whether backups are in effect at all: -b, --backup, or -S
 // (mv.c:404-407: -S sets make_backups). The control value comes from
-// --backup when given.
+// --backup when given.  Judged from the parser's option occurrences,
+// like parse_overwrite_mode: with this table's duplicated long-only
+// entries, the name-based has()/get() probes reported backups as
+// given for a bare -n (the subject answered `mv -n a b` with the
+// --backup/--no-clobber mutual-exclusion error and made backups on
+// plain overwrites), while the occurrence scan reads the same
+// options correctly.
 auto mv_make_backups(const CommandContext<MV_OPTIONS.size()>& ctx)
     -> cp::Result<std::optional<MvBackupControl>> {
-  const bool given = ctx.get<bool>("-b", false) || ctx.has("--backup") ||
-                     ctx.has("-S") || ctx.has("--suffix");
-  if (!given) return std::nullopt;
+  bool given = false;
   std::string raw;
-  if (ctx.has("--backup")) raw = ctx.get<std::string>("--backup", "");
+  if (ctx.metas) {
+    for (const auto& occurrence : ctx.options.occurrences()) {
+      if (occurrence.index >= ctx.metas->size()) continue;
+      const auto& meta = (*ctx.metas)[occurrence.index];
+      if (meta.short_name == "-b" || meta.long_name == "--backup" ||
+          meta.short_name == "-S" || meta.long_name == "--suffix") {
+        given = true;
+      }
+      if (meta.long_name == "--backup") {
+        if (auto value = std::get_if<std::string>(&occurrence.value)) {
+          raw = *value;
+        }
+      }
+    }
+  }
+  if (!given) return std::nullopt;
   auto parsed = parse_mv_backup_control(raw);
   if (parsed.error_kind != 0) {
     return std::unexpected(mv_backup_type_message(parsed.error_kind, raw));
@@ -554,8 +573,20 @@ auto backup_existing_destination(
     return std::nullopt;
   }
 
-  std::string suffix = ctx.get<std::string>("--suffix", "");
-  if (suffix.empty()) suffix = ctx.get<std::string>("-S", "");
+  // Last -S/--suffix occurrence wins (occurrence scan, as in
+  // mv_make_backups).
+  std::string suffix;
+  if (ctx.metas) {
+    for (const auto& occurrence : ctx.options.occurrences()) {
+      if (occurrence.index >= ctx.metas->size()) continue;
+      const auto& meta = (*ctx.metas)[occurrence.index];
+      if (meta.short_name == "-S" || meta.long_name == "--suffix") {
+        if (auto value = std::get_if<std::string>(&occurrence.value)) {
+          suffix = *value;
+        }
+      }
+    }
+  }
   if (suffix.empty()) suffix = "~";
 
   std::wstring backup_path;
