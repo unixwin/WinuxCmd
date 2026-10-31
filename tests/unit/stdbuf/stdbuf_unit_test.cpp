@@ -85,6 +85,9 @@ TEST(stdbuf, stdbuf_attached_output_mode) {
   EXPECT_EQ(r.exit_code, 0);
 }
 
+// [GNU] xstrtol.c (behind stdbuf.c parse_size): with no leading
+// digits, a valid suffix alone implies the number 1, so a bare
+// 'KiB' is a 1024-byte buffer, not an invalid mode.
 TEST(stdbuf, stdbuf_accepts_bare_binary_suffix) {
   Pipeline p;
   p.add(L"stdbuf.exe", {L"--output=KiB", L"echo.exe", L"test"});
@@ -96,9 +99,13 @@ TEST(stdbuf, stdbuf_accepts_bare_binary_suffix) {
   TEST_LOG_EXIT_CODE(r);
 
   EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "test\n");
 }
 
-TEST(stdbuf, stdbuf_accepts_line_buffered_stdin) {
+// [GNU] stdbuf.c: -iL is diagnosed ("line buffering stdin is
+// meaningless") and rejected via usage (EXIT_CANCELED); it is not
+// an accepted mode.
+TEST(stdbuf, stdbuf_rejects_line_buffered_stdin) {
   Pipeline p;
   p.add(L"stdbuf.exe", {L"-iL", L"echo.exe", L"test"});
 
@@ -109,8 +116,10 @@ TEST(stdbuf, stdbuf_accepts_line_buffered_stdin) {
   TEST_LOG_EXIT_CODE(r);
   TEST_LOG("stdbuf stderr", r.stderr_text);
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "test\n");
+  EXPECT_EQ(r.exit_code, 125);
+  EXPECT_TRUE(r.stderr_text.find("line buffering stdin is meaningless") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stdout_text.empty());
 }
 
 TEST(stdbuf, stdbuf_accepts_line_buffered_stdout) {
@@ -126,7 +135,10 @@ TEST(stdbuf, stdbuf_accepts_line_buffered_stdout) {
   EXPECT_EQ_TEXT(r.stdout_text, "test\n");
 }
 
-TEST(stdbuf, stdbuf_rejects_zero_sized_buffer_mode) {
+// [GNU] stdbuf.c parse_size: 0 scaled by any suffix is still 0, and
+// size 0 is a valid mode (it selects no buffering, like '-o 0');
+// xstrtoumax accepts the '0KiB' spelling via its second-suffix rule.
+TEST(stdbuf, stdbuf_accepts_zero_sized_buffer_mode) {
   Pipeline p;
   p.add(L"stdbuf.exe", {L"--output=0KiB", L"echo.exe", L"test"});
 
@@ -137,8 +149,9 @@ TEST(stdbuf, stdbuf_rejects_zero_sized_buffer_mode) {
   TEST_LOG_EXIT_CODE(r);
   TEST_LOG("stdbuf stderr", r.stderr_text);
 
-  EXPECT_EQ(r.exit_code, 125);
-  EXPECT_TRUE(r.stderr_text.find("invalid mode '0KiB'") != std::string::npos);
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "test\n");
+  EXPECT_TRUE(r.stderr_text.empty());
 }
 // #1375: stdbuf's own option parsing stops at COMMAND; the wrapped
 // command's options pass through untouched. `stdbuf -oL ls -l` used to
