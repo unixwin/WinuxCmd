@@ -112,6 +112,14 @@
       "bucket": "PASS",
       "command": "echo"
     },
+    "corpus/echo/26-empty-first-operand.case": {
+      "bucket": "PASS",
+      "command": "echo"
+    },
+    "corpus/echo/27-empty-operands.case": {
+      "bucket": "PASS",
+      "command": "echo"
+    },
     "corpus/env/48-empty.case": {
       "bucket": "PASS",
       "command": "env"

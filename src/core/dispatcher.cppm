@@ -724,8 +724,10 @@ auto echo_posixly_correct_literal_mode(std::string_view cmdName,
     return false;
   }
 
+  // [GNU] echo.c:115-118: presence of POSIXLY_CORRECT is what counts;
+  // a present-but-empty value still selects the POSIX behavior.
   const char *value = std::getenv("POSIXLY_CORRECT");
-  if (value == nullptr || value[0] == '\0') {
+  if (value == nullptr) {
     return false;
   }
 
