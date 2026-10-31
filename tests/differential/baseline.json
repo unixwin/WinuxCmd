@@ -544,6 +544,30 @@
       "bucket": "PASS",
       "command": "stdbuf"
     },
+    "corpus/stty/01-negated-cs8.case": {
+      "bucket": "PASS",
+      "command": "stty"
+    },
+    "corpus/stty/02-drain-missing-device.case": {
+      "bucket": "PASS",
+      "command": "stty"
+    },
+    "corpus/stty/03-flush-missing-device.case": {
+      "bucket": "PASS",
+      "command": "stty"
+    },
+    "corpus/stty/04-pendin-rejected.case": {
+      "bucket": "PASS",
+      "command": "stty"
+    },
+    "corpus/stty/05-recover-form.case": {
+      "bucket": "PASS",
+      "command": "stty"
+    },
+    "corpus/stty/06-negated-value.case": {
+      "bucket": "PASS",
+      "command": "stty"
+    },
     "corpus/sum/39-fixed.case": {
       "bucket": "PASS",
       "command": "sum"
