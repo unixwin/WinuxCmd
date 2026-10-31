@@ -289,14 +289,6 @@ auto mv_make_backups(const CommandContext<MV_OPTIONS.size()>& ctx)
     for (const auto& occurrence : ctx.options.occurrences()) {
       if (occurrence.index >= ctx.metas->size()) continue;
       const auto& meta = (*ctx.metas)[occurrence.index];
-      // TEMP-DIAG (audit-w1): dump the occurrence stream.
-      safeErrorPrint("DIAG occ idx=");
-      safeErrorPrint(std::to_string(occurrence.index));
-      safeErrorPrint(" short=[");
-      safeErrorPrint(meta.short_name);
-      safeErrorPrint("] long=[");
-      safeErrorPrint(meta.long_name);
-      safeErrorPrint("]\n");
       if (meta.short_name == "-b" || meta.long_name == "--backup" ||
           meta.short_name == "-S" || meta.long_name == "--suffix") {
         given = true;
