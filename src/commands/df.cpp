@@ -1118,7 +1118,7 @@ auto print_disk_usage(const CommandContext<DF_OPTIONS.size()>& ctx)
         safeErrorPrint(path.display);
         safeErrorPrint("': ");
         safeErrorPrint(
-            winux::win32_error::win32_posix_error_text(disk_error));
+            win32_posix_error_text(disk_error));
         safeErrorPrint("\n");
         all_ok = false;
       }

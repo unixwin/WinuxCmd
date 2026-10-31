@@ -357,17 +357,18 @@ auto read_files0_from(const std::string& path, bool* names_ok)
   } else {
     // [L2 self-parse] POSIX drive spellings resolve through the shared
     // operand boundary like the traversal operands do (#1174).
-    const std::wstring api_path = native_path::normalize_api_operand(path);
+    const std::string api_path = native_path::normalize_api_operand(path);
     file.open(api_path, std::ios::binary);
     if (!file.is_open()) {
       // GNU appends the errno text; recover it with a probe open.
       std::string reason = "No such file or directory";
-      const HANDLE probe = CreateFileW(api_path.c_str(), GENERIC_READ,
+      const HANDLE probe = CreateFileW(utf8_to_wstring(api_path).c_str(),
+                                       GENERIC_READ,
                                        FILE_SHARE_READ, nullptr,
                                        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
                                        nullptr);
       if (probe == INVALID_HANDLE_VALUE) {
-        reason = winux::win32_error::win32_posix_error_text(GetLastError());
+        reason = win32_posix_error_text(GetLastError());
       } else {
         CloseHandle(probe);
       }
@@ -1229,7 +1230,7 @@ auto calculate_dir_size(const std::wstring& path,
       safeErrorPrint("du: cannot read directory '");
       safeErrorPrint(display);
       safeErrorPrint("': ");
-      safeErrorPrint(winux::win32_error::win32_posix_error_text(find_error));
+      safeErrorPrint(win32_posix_error_text(find_error));
       safeErrorPrint("\n");
       *had_error = true;
     }
