@@ -390,6 +390,70 @@ TEST(wc, wc_files0_from_reports_directory_list_input) {
               std::string::npos);
 }
 
+// #1127-P4: the general scanner accounts printable-ASCII runs in bulk.
+// Counts must equal the per-codepoint result on shapes built to cross
+// the 64 KiB read buffer: one huge word, runs split by single spaces
+// and tabs, a multibyte word, and a final unterminated line.
+TEST(wc, wc_counts_ascii_runs_across_buffers_issue1127) {
+  TempDir tmp;
+  std::string content;
+  content += std::string(70000, 'x');  // one word
+  content += ' ';
+  content += std::string(10, 'y');  // second word
+  content += '\n';                  // line 1
+  content += "a\tb c\n";            // line 2: words a, b, c
+  content += "\xc3\xa9\xc3\xa9\n";   // line 3: one word, 2 chars, 4 bytes
+  content += "tail";                // unterminated: one word
+  tmp.write("runs.txt", content);
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"wc.exe", {L"runs.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // lines=3, words=2+3+1+1=7, bytes=70012+6+5+4=70027; columns are
+  // padded to the digit width of the file size (5), as GNU does.
+  EXPECT_TRUE(r.stdout_text.find("    3     7 70027 runs.txt") !=
+              std::string::npos);
+}
+
+// #1127-P4: -m counts and -L widths over bulk-accounted runs, including
+// a tab stop expansion on a short line.
+TEST(wc, wc_chars_and_max_line_length_with_runs_issue1127) {
+  TempDir tmp;
+  std::string content;
+  content += std::string(70000, 'x');
+  content += " y\n";     // display width 70002, chars 70003 incl \n
+  content += "ab\tc\n";  // tab advances column 2 -> 8, width 9, chars 5
+  tmp.write("widths.txt", content);
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"wc.exe", {L"-m", L"-L", L"widths.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("70008 70002") != std::string::npos);
+}
+
+// #1127-P4: -c-only requests take the O(1) file-size probe; the printed
+// size must still be exact for a large binary file.
+TEST(wc, wc_bytes_only_large_file_issue1127) {
+  TempDir tmp;
+  std::string content(1048576, '\0');
+  for (size_t i = 0; i < content.size(); i += 4096) content[i] = 'z';
+  tmp.write("big.bin", content);
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"wc.exe", {L"-c", L"big.bin"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("1048576") != std::string::npos);
+}
+
 TEST(wc, wc_reports_gnu_shaped_missing_input_diagnostic) {
   TempDir tmp;
 
