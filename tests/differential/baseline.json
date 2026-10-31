@@ -1168,6 +1168,10 @@
       "bucket": "PASS",
       "command": "diff3"
     },
+    "corpus/diff3/27-show-all-labels.case": {
+      "bucket": "PASS",
+      "command": "diff3"
+    },
     "corpus/sdiff/02-left-column.case": {
       "bucket": "PASS",
       "command": "sdiff"
@@ -1205,7 +1209,7 @@
       "command": "sdiff"
     },
     "corpus/sdiff/11-ignore-blank-lines-display.case": {
-      "bucket": "KNOWN_DIFF",
+      "bucket": "PASS",
       "command": "sdiff"
     },
     "corpus/sdiff/12-ignore-matching-lines.case": {
@@ -1221,7 +1225,7 @@
       "command": "sdiff"
     },
     "corpus/sdiff/15-strip-trailing-cr.case": {
-      "bucket": "KNOWN_DIFF",
+      "bucket": "PASS",
       "command": "sdiff"
     },
     "corpus/sdiff/16-minimal-simple.case": {
@@ -1233,14 +1237,50 @@
       "command": "sdiff"
     },
     "corpus/sdiff/18-output-merge-left.case": {
-      "bucket": "KNOWN_DIFF",
+      "bucket": "PASS",
       "command": "sdiff"
     },
     "corpus/sdiff/19-output-merge-mixed.case": {
-      "bucket": "KNOWN_DIFF",
+      "bucket": "PASS",
       "command": "sdiff"
     },
     "corpus/sdiff/20-output-identical.case": {
+      "bucket": "PASS",
+      "command": "sdiff"
+    },
+    "corpus/sdiff/21-output-quit-early.case": {
+      "bucket": "PASS",
+      "command": "sdiff"
+    },
+    "corpus/sdiff/22-output-invalid-command.case": {
+      "bucket": "PASS",
+      "command": "sdiff"
+    },
+    "corpus/sdiff/23-output-silent-toggle.case": {
+      "bucket": "PASS",
+      "command": "sdiff"
+    },
+    "corpus/sdiff/24-output-suppress-flag.case": {
+      "bucket": "PASS",
+      "command": "sdiff"
+    },
+    "corpus/sdiff/25-output-merge-right.case": {
+      "bucket": "PASS",
+      "command": "sdiff"
+    },
+    "corpus/sdiff/26-output-delete-drop.case": {
+      "bucket": "PASS",
+      "command": "sdiff"
+    },
+    "corpus/sdiff/27-output-insert-omit.case": {
+      "bucket": "PASS",
+      "command": "sdiff"
+    },
+    "corpus/sdiff/28-ignore-blank-lines-shifted-pairing.case": {
+      "bucket": "PASS",
+      "command": "sdiff"
+    },
+    "corpus/sdiff/29-strip-cr-merge-output.case": {
       "bucket": "PASS",
       "command": "sdiff"
     }

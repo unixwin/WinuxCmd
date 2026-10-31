@@ -789,6 +789,91 @@ inline void sdiff_emit_row(const std::optional<std::string> &left,
   if (put_newline) out += "\n";
 }
 
+// One positional section of a side-by-side script: either a common span
+// (the raw line ranges between two change hunks, in each file
+// independently) or one change hunk (its deleted range in file1 and its
+// inserted range in file2).  GNU side.c walks the script in exactly
+// these sections: print_sdiff_common_lines renders the span between the
+// previous hunk and the next one positionally, so lines of a change
+// that an ignore option (-B/-I) removed from the script still occupy
+// display rows inside the surrounding common span (paired with whatever
+// line faces them, or as '('/ ')' one-sided rows) instead of being
+// re-paired into the script's common flow.
+struct SdiffSection {
+  bool is_hunk = false;
+  size_t left_begin = 0;   // first line index in file1
+  size_t left_end = 0;     // one past the last line index in file1
+  size_t right_begin = 0;  // first line index in file2
+  size_t right_end = 0;    // one past the last line index in file2
+};
+
+// Append one section's side-by-side rows to `out` (GNU side.c
+// print_sdiff_common_lines for a common span, print_sdiff_hunk for a
+// change hunk).  Common spans pair their lines positionally: paired
+// rows carry the ' ' separator, a right-only remainder prints with ')'
+// and a left-only remainder with '('; with left_column every left line
+// prints with '(' and the right side is not shown.  Change hunks pair
+// min(deletes, inserts) rows with '|', extra deletes print with '<'
+// and extra inserts with '>'.
+inline void append_sdiff_section_rows(const SdiffSection &section,
+                                      const std::vector<std::string> &lines1,
+                                      const std::vector<std::string> &lines2,
+                                      bool ends_with_newline1,
+                                      bool ends_with_newline2,
+                                      const SdiffColumns &cols,
+                                      const SdiffStyle &style,
+                                      bool left_column, std::string &out) {
+  auto has_nl1 = [&](size_t idx) {
+    return idx + 1 < lines1.size() || ends_with_newline1;
+  };
+  auto has_nl2 = [&](size_t idx) {
+    return idx + 1 < lines2.size() || ends_with_newline2;
+  };
+
+  if (!section.is_hunk) {
+    size_t i0 = section.left_begin;
+    size_t i1 = section.right_begin;
+    if (!left_column) {
+      while (i0 < section.left_end && i1 < section.right_end) {
+        sdiff_emit_row(lines1[i0], has_nl1(i0), ' ', lines2[i1], has_nl2(i1),
+                       cols, style, out);
+        ++i0;
+        ++i1;
+      }
+      while (i1 < section.right_end) {
+        sdiff_emit_row(std::nullopt, false, ')', lines2[i1], has_nl2(i1), cols,
+                       style, out);
+        ++i1;
+      }
+    }
+    while (i0 < section.left_end) {
+      sdiff_emit_row(lines1[i0], has_nl1(i0), '(', std::nullopt, false, cols,
+                     style, out);
+      ++i0;
+    }
+    return;
+  }
+
+  const size_t dels = section.left_end - section.left_begin;
+  const size_t inss = section.right_end - section.right_begin;
+  const size_t paired = std::min(dels, inss);
+  for (size_t r = 0; r < paired; ++r) {
+    sdiff_emit_row(lines1[section.left_begin + r],
+                   has_nl1(section.left_begin + r), '|',
+                   lines2[section.right_begin + r],
+                   has_nl2(section.right_begin + r), cols, style, out);
+  }
+  for (size_t r = paired; r < dels; ++r) {
+    sdiff_emit_row(lines1[section.left_begin + r],
+                   has_nl1(section.left_begin + r), '<', std::nullopt, false,
+                   cols, style, out);
+  }
+  for (size_t r = paired; r < inss; ++r) {
+    sdiff_emit_row(std::nullopt, false, '>', lines2[section.right_begin + r],
+                   has_nl2(section.right_begin + r), cols, style, out);
+  }
+}
+
 // Print the whole edit script as side-by-side rows (GNU side.c
 // print_sdiff_script).  Common lines print once per row with the right
 // copy aligned at column2_offset; changes pair min(deletes, inserts) rows

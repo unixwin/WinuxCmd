@@ -254,6 +254,74 @@ TEST(sdiff, sdiff_output_file_keeps_left_for_conflicting_rows) {
   EXPECT_EQ_TEXT(tmp.read("merged.txt"), "a\nB\nc\n");
 }
 
+TEST(sdiff, sdiff_output_file_interactive_right_choice) {
+  TempDir tmp;
+  tmp.write("a.txt", "a\n");
+  tmp.write("b.txt", "b\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("r\n");
+  p.add(L"sdiff.exe", {L"-o", L"merged.txt", L"-w", L"80", L"a.txt", L"b.txt"});
+  auto r = p.run();
+
+  // [GNU sdiff.c edit] The hunk is shown, a '%' prompt is printed,
+  // and the 'r' command merges the right version.  A completed merge
+  // of differing inputs exits 1 (#1441).
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ_TEXT(r.stdout_text, "a\t\t\t\t      |\tb\n%");
+  EXPECT_EQ_TEXT(tmp.read("merged.txt"), "b\n");
+}
+
+TEST(sdiff, sdiff_output_file_interactive_quit_leaves_partial) {
+  TempDir tmp;
+  tmp.write("a.txt", "1\nA\n2\nB\n3\n");
+  tmp.write("b.txt", "1\nX\n2\nY\n3\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("l\nq\n");
+  p.add(L"sdiff.exe", {L"-o", L"merged.txt", L"a.txt", L"b.txt"});
+  auto r = p.run();
+
+  // [GNU sdiff.c edit] 'q' quits with trouble status; the output
+  // file keeps exactly the prefix merged before the quit (the first
+  // hunk resolved left, plus the common line that followed it).
+  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_EQ_TEXT(tmp.read("merged.txt"), "1\nA\n2\n");
+}
+
+TEST(sdiff, sdiff_output_file_interactive_unknown_command_helps) {
+  TempDir tmp;
+  tmp.write("a.txt", "a\n");
+  tmp.write("b.txt", "b\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("?\nl\n");
+  p.add(L"sdiff.exe", {L"-o", L"merged.txt", L"-w", L"80", L"a.txt", L"b.txt"});
+  auto r = p.run();
+
+  // [GNU sdiff.c give_help] An unrecognized command prints the help
+  // text to stderr and prompts again; the following 'l' merges the
+  // left version.
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ_TEXT(r.stdout_text, "a\t\t\t\t      |\tb\n%%");
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "ed:\tEdit then use both versions, each decorated with a "
+                 "header.\n"
+                 "eb:\tEdit then use both versions.\n"
+                 "el or e1:\tEdit then use the left version.\n"
+                 "er or e2:\tEdit then use the right version.\n"
+                 "e:\tDiscard both versions then edit a new one.\n"
+                 "l or 1:\tUse the left version.\n"
+                 "r or 2:\tUse the right version.\n"
+                 "s:\tSilently include common lines.\n"
+                 "v:\tVerbosely include common lines.\n"
+                 "q:\tQuit.\n");
+  EXPECT_EQ_TEXT(tmp.read("merged.txt"), "a\n");
+}
+
 TEST(sdiff, sdiff_rejects_extra_operand_with_help_hint) {
   Pipeline p;
   p.add(L"sdiff.exe", {L"a.txt", L"b.txt", L"c.txt"});
