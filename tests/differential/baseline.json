@@ -48,6 +48,18 @@
       "bucket": "PASS",
       "command": "cmp"
     },
+    "corpus/cmp/15-verbose-offset-width.case": {
+      "bucket": "PASS",
+      "command": "cmp"
+    },
+    "corpus/cmp/16-print-bytes-first-diff.case": {
+      "bucket": "PASS",
+      "command": "cmp"
+    },
+    "corpus/cmp/17-positional-skips.case": {
+      "bucket": "PASS",
+      "command": "cmp"
+    },
     "corpus/comm/02-basic.case": {
       "bucket": "PASS",
       "command": "comm"

@@ -1594,10 +1594,12 @@ auto compare_file_pair(const std::string &file1, const std::string &file2,
   // fall back into the unchanged flow and realign positionally.
   const bool ignore_hunks =
       cfg.ignore_blank_lines || !cfg.ignore_matching.empty();
+  std::vector<diff_engine::Edit> raw_edits;
   std::vector<diff_engine::Edit> script_edits;
   if (ignore_hunks) {
+    raw_edits = compute_diff(cmp1, cmp2);
     script_edits = diff_engine::drop_ignored_hunks(
-        compute_diff(cmp1, cmp2), lines1, lines2,
+        raw_edits, lines1, lines2,
         diff_engine::make_blank_or_matching_predicate(cfg.ignore_blank_lines,
                                                       cfg.ignore_matching));
   }
@@ -1612,15 +1614,26 @@ auto compare_file_pair(const std::string &file1, const std::string &file2,
                                   [](const diff_engine::Edit &edit) {
                                     return edit.type != EditType::KEEP;
                                   });
-  if (compare_lines1 == compare_lines2 || (ignore_hunks && !has_real_changes)) {
+  const bool no_real_changes =
+      compare_lines1 == compare_lines2 || (ignore_hunks && !has_real_changes);
+  if (no_real_changes) {
     if (cfg.report_identical) {
       dput("Files ");
       dput(file1);
       dput(" and ");
       dput(file2);
       dput(" are identical\n");
+      return 0;
     }
-    return 0;
+    // [GNU diff.c:817-822, analyze.c:635, side.c:36-47] Side-by-side is
+    // a listing format: no_diff_means_no_output is false for
+    // OUTPUT_SDIFF unless --suppress-common-lines, so the output block
+    // runs even when no hunk survives and print_sdiff_script renders
+    // every common line.  Fall through to the format switch; the exit
+    // status below still reports 0.
+    if (cfg.output_mode != OutputMode::SideBySide || cfg.suppress_common) {
+      return 0;
+    }
   }
 
   // One edit script drives every output format (pre-dropped for -B/-I).
@@ -1640,6 +1653,36 @@ auto compare_file_pair(const std::string &file1, const std::string &file2,
                           final_edits);
       break;
     case OutputMode::SideBySide:
+      if (ignore_hunks) {
+        // [GNU] With -B/-I, side-by-side output renders positionally
+        // over sections built from the RAW script (side.c): an ignored
+        // hunk's lines join the surrounding common span and pair there.
+        // The dropped 1:1 script cannot express that span — unabsorbed
+        // ignored lines fall below later KEEP indices and vanish from
+        // the output — so this path uses the sdiff section renderer,
+        // exactly like the sdiff command itself.
+        const auto script = diff_engine::build_sdiff_script(
+            raw_edits, lines1, lines2,
+            diff_engine::make_blank_or_matching_predicate(
+                cfg.ignore_blank_lines, cfg.ignore_matching));
+        const diff_engine::SdiffStyle style{cfg.tabsize, cfg.expand_tabs};
+        const auto cols = diff_engine::sdiff_columns(
+            cfg.side_width, style.tabsize, style.expand_tabs);
+        const std::vector<std::string> shown1 =
+            cfg.strip_trailing_cr ? strip_trailing_cr_lines(lines1) : lines1;
+        const std::vector<std::string> shown2 =
+            cfg.strip_trailing_cr ? strip_trailing_cr_lines(lines2) : lines2;
+        std::string out;
+        for (const auto &section : script.sections) {
+          if (!section.is_hunk && cfg.suppress_common) continue;
+          diff_engine::append_sdiff_section_rows(
+              section, shown1, shown2, file1_input.ends_with_newline,
+              file2_input.ends_with_newline, cols, style, cfg.left_column,
+              out);
+        }
+        dput(out);
+        break;
+      }
       diff_engine::emit_side_by_side(
           final_edits, lines1, lines2, file1_input.ends_with_newline,
           file2_input.ends_with_newline, cfg.side_width, cfg.suppress_common,
@@ -1732,7 +1775,7 @@ auto compare_file_pair(const std::string &file1, const std::string &file2,
     }
   }
 
-  return 1;
+  return no_real_changes ? 0 : 1;
 }
 
 // One directory-pair level: compare same-named files (with the "diff
