@@ -357,7 +357,10 @@ class MergePrompter {
  private:
   static constexpr int kEof = -1;
 
-  auto get() -> int { return std::fgetc(stdin); }
+  auto get() -> int {
+    const int c = std::cin.get();
+    return c == std::char_traits<char>::eof() ? kEof : c;
+  }
 
   // skip_white: consume spaces and tabs (any isspace but '\n') and
   // return the first other character, or kEof at end of input.
