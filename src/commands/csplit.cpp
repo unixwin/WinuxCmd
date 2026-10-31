@@ -49,7 +49,9 @@ namespace cp = core::pipeline;
 auto resolve_input_file(const CommandContext<CSPLIT_OPTIONS.size()>& ctx)
     -> cp::Result<std::string> {
   if (ctx.positionals.empty()) {
-    return std::unexpected("missing input file");
+    // [GNU] csplit.c:1361: "missing operand" (+ usage) when no FILE
+    // is given at all (audit #1462).
+    return std::unexpected("missing operand");
   }
 
   std::string file_arg = std::string(ctx.positionals[0]);
@@ -83,12 +85,12 @@ auto build_config(const CommandContext<CSPLIT_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
   Config cfg;
 
-  auto prefix_opt = ctx.get<std::string>("--prefix", "");
-  if (prefix_opt.empty()) {
-    prefix_opt = ctx.get<std::string>("-f", "");
-  }
-  if (!prefix_opt.empty()) {
-    cfg.prefix = prefix_opt;
+  // [GNU] csplit.c: prefix = optarg unconditionally; an empty -f ''
+  // is a real prefix producing files named 00, 01, ... (audit #1462).
+  if (ctx.has("--prefix")) {
+    cfg.prefix = ctx.get<std::string>("--prefix", "");
+  } else if (ctx.has("-f")) {
+    cfg.prefix = ctx.get<std::string>("-f", "");
   }
 
   auto suffix_opt = ctx.get<std::string>("--suffix-format", "");
@@ -100,21 +102,27 @@ auto build_config(const CommandContext<CSPLIT_OPTIONS.size()>& ctx)
     cfg.suffix_format_specified = true;
   }
 
-  auto digits_opt = ctx.get<std::string>("--digits", "");
-  if (digits_opt.empty()) {
+  // [GNU] csplit.c:1334: digits = xdectoimax (optarg, 0,
+  // MIN (INT_MAX, IDX_MAX), ..., "invalid number") -- no 32 cap
+  // (audit #1462).
+  std::string digits_opt;
+  bool has_digits = false;
+  if (ctx.has("--digits")) {
+    digits_opt = ctx.get<std::string>("--digits", "");
+    has_digits = true;
+  } else if (ctx.has("-n")) {
     digits_opt = ctx.get<std::string>("-n", "");
+    has_digits = true;
   }
-  if (!digits_opt.empty()) {
-    int digits = 0;
+  if (has_digits) {
+    long long digits = 0;
     auto [ptr, ec] = std::from_chars(
         digits_opt.data(), digits_opt.data() + digits_opt.size(), digits);
-    if (ec != std::errc() || ptr != digits_opt.data() + digits_opt.size()) {
-      return std::unexpected("invalid digits value");
+    if (ec != std::errc() || ptr != digits_opt.data() + digits_opt.size() ||
+        digits < 0 || digits > std::numeric_limits<int>::max()) {
+      return std::unexpected("invalid number: '" + digits_opt + "'");
     }
-    cfg.digits = digits;
-    if (cfg.digits < 0 || cfg.digits > 32) {
-      return std::unexpected("digits value must be between 0 and 32");
-    }
+    cfg.digits = static_cast<int>(digits);
   }
 
   cfg.keep_files =
@@ -136,11 +144,13 @@ auto build_config(const CommandContext<CSPLIT_OPTIONS.size()>& ctx)
   }
 
   if (cfg.input_file.empty()) {
-    return std::unexpected("missing input file");
+    return std::unexpected("missing operand");
   }
 
   if (cfg.patterns.empty()) {
-    return std::unexpected("missing pattern");
+    // [GNU] csplit.c:1363: "missing operand after '<file>'" (+ usage)
+    // when a FILE but no PATTERN is given (audit #1462).
+    return std::unexpected("missing operand after '" + cfg.input_file + "'");
   }
 
   return cfg;
@@ -160,8 +170,12 @@ auto read_records(const std::string& filename)
     std::ifstream f(native_path::normalize_api_operand(filename),
                     std::ios::binary);
     if (!f) {
+      // [GNU] csplit.c:612: error (EXIT_FAILURE, errno, "cannot open
+      // %s for reading", quotef (filename)) -- the errno reason is
+      // part of the diagnostic (audit #1462).
       return std::unexpected(std::string("cannot open '") + filename +
-                             "' for reading");
+                             "' for reading: " +
+                             portable_digest::open_error_reason(filename));
     }
     input.assign(std::istreambuf_iterator<char>(f),
                  std::istreambuf_iterator<char>());
@@ -205,8 +219,17 @@ struct RepeatSpec {
 
 auto parse_offset(std::string_view text) -> cp::Result<int> {
   if (text.empty()) return 0;
+  // [GNU] csplit.c check_for_offset uses xstrtoimax: an unsigned
+  // offset is a positive one ("/re/5" == "/re/+5"); the usage text
+  // says the sign is optional (audit #1462).
   if (text[0] != '+' && text[0] != '-') {
-    return std::unexpected("invalid pattern offset");
+    int magnitude = 0;
+    auto [ptr, ec] =
+        std::from_chars(text.data(), text.data() + text.size(), magnitude);
+    if (ec != std::errc() || ptr != text.data() + text.size()) {
+      return std::unexpected("invalid pattern offset");
+    }
+    return magnitude;
   }
   int magnitude = 0;
   auto digits = text.substr(1);
@@ -224,23 +247,11 @@ auto parse_pattern(const std::string& text) -> cp::Result<ParsedPattern> {
 
   if (text[0] == '/' || text[0] == '%') {
     char delimiter = text[0];
-    bool escaped = false;
-    size_t close = std::string::npos;
-    for (size_t i = 1; i < text.size(); ++i) {
-      if (escaped) {
-        escaped = false;
-        continue;
-      }
-      if (text[i] == '\\') {
-        escaped = true;
-        continue;
-      }
-      if (text[i] == delimiter) {
-        close = i;
-        break;
-      }
-    }
-    if (close == std::string::npos) {
+    // [GNU] csplit.c:1097 extract_regexp: closing_delim = strrchr
+    // (str + 1, delim) -- the LAST delimiter closes the pattern, so
+    // /a/b/ is the regexp "a/b" with no offset (audit #1462).
+    size_t close = text.rfind(delimiter);
+    if (close == std::string::npos || close == 0) {
       return std::unexpected("missing pattern delimiter");
     }
 
@@ -255,14 +266,25 @@ auto parse_pattern(const std::string& text) -> cp::Result<ParsedPattern> {
     return pattern;
   }
 
+  // [GNU] integer patterns go through xstrtoumax, which accepts a
+  // leading '+'; 0 gets its own diagnostic (csplit.c:1153) (audit
+  // #1462).
+  std::string_view digits_text = text;
+  if (!digits_text.empty() && digits_text.front() == '+') {
+    digits_text.remove_prefix(1);
+  }
   size_t line_number = 0;
-  auto [ptr, ec] =
-      std::from_chars(text.data(), text.data() + text.size(), line_number);
+  auto [ptr, ec] = std::from_chars(digits_text.data(),
+                                   digits_text.data() + digits_text.size(),
+                                   line_number);
   if (ec != std::errc()) {
     return std::unexpected("invalid pattern");
   }
-  if (ptr != text.data() + text.size() || line_number == 0) {
+  if (ptr != digits_text.data() + digits_text.size()) {
     return std::unexpected("invalid line number");
+  }
+  if (line_number == 0) {
+    return std::unexpected("0: line number must be greater than zero");
   }
 
   ParsedPattern pattern;
@@ -273,8 +295,15 @@ auto parse_pattern(const std::string& text) -> cp::Result<ParsedPattern> {
 
 auto parse_repeat(const std::string& text) -> cp::Result<RepeatSpec> {
   RepeatSpec repeat;
-  if (text.size() < 3 || text.front() != '{' || text.back() != '}') {
+  if (text.empty() || text.front() != '{') {
     return repeat;
+  }
+  // [GNU] csplit.c parse_repeat_count is invoked whenever the token
+  // starts with '{' and fatally diagnoses a missing closing brace:
+  // "%s: '}' is required in repeat count" (audit #1462). The old code
+  // silently treated "{2" as a fresh pattern instead.
+  if (text.size() < 3 || text.back() != '}') {
+    return std::unexpected(text + ": '}' is required in repeat count");
   }
 
   repeat.has_repeat = true;
@@ -407,8 +436,11 @@ auto make_filename(const Config& cfg, int file_number)
     }
     ++conversions;
     size_t j = i + 1;
+    // [GNU] get_format_flags accepts the ' (thousands) flag; the old
+    // scan set omitted it and rejected valid formats like %'d (audit
+    // #1462).
     while (j < cfg.suffix_format.size() &&
-           std::string_view("-+ #0123456789.").find(cfg.suffix_format[j]) !=
+           std::string_view("-+ #'0123456789.").find(cfg.suffix_format[j]) !=
                std::string_view::npos) {
       ++j;
     }
@@ -416,6 +448,25 @@ auto make_filename(const Config& cfg, int file_number)
         std::string_view("diuoxX").find(cfg.suffix_format[j]) ==
             std::string_view::npos) {
       return std::unexpected("invalid suffix format");
+    }
+    // [GNU] check_format_conv_type: '#' is compatible only with
+    // o/x/X, and the ' flag only with d/i/u; anything else dies with
+    // "invalid flags in conversion specification: %<flag><conv>"
+    // (audit #1462).
+    const char conv = cfg.suffix_format[j];
+    const std::string_view flag_span =
+        std::string_view(cfg.suffix_format).substr(i + 1, j - (i + 1));
+    if ((conv == 'd' || conv == 'i' || conv == 'u') &&
+        flag_span.find('#') != std::string_view::npos) {
+      return std::unexpected(
+          std::string("invalid flags in conversion specification: %#") +
+          conv);
+    }
+    if ((conv == 'o' || conv == 'x' || conv == 'X') &&
+        flag_span.find('\'') != std::string_view::npos) {
+      return std::unexpected(
+          std::string("invalid flags in conversion specification: %'") +
+          conv);
     }
     i = j;
   }
@@ -724,8 +775,7 @@ REGISTER_COMMAND(
   auto cfg_result = build_config(ctx);
   if (!cfg_result) {
     cp::report_error(cfg_result, L"csplit");
-    if (cfg_result.error() == "missing input file" ||
-        cfg_result.error() == "missing pattern") {
+    if (cfg_result.error().starts_with("missing operand")) {
       safeErrorPrint("Try 'csplit --help' for more information.\n");
     }
     return 1;

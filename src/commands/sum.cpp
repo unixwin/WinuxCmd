@@ -20,9 +20,10 @@ using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
 auto constexpr SUM_OPTIONS = std::array{
-    // [GNU] -r, --bsd
-    OPTION("-r", "--bsd", "use BSD sum algorithm (1024-byte blocks)",
-           BOOL_TYPE),
+    // [GNU] -r has NO long form in GNU sum (digest.c longopts for
+    // HASH_ALGO_SUM lists only --sysv); a "--bsd" spelling is an
+    // unrecognized option there (audit #1462).
+    OPTION("-r", "", "use BSD sum algorithm (1024-byte blocks)", BOOL_TYPE),
     // [GNU] -s, --sysv
     OPTION("-s", "--sysv", "use System V sum algorithm (512-byte blocks)",
            BOOL_TYPE)};
@@ -56,7 +57,7 @@ auto choose_algorithm(const CommandContext<SUM_OPTIONS.size()>& ctx)
     const auto& meta = (*ctx.metas)[occurrence.index];
     if (meta.short_name == "-s" || meta.long_name == "--sysv") {
       algorithm = Config::Algorithm::Sysv;
-    } else if (meta.short_name == "-r" || meta.long_name == "--bsd") {
+    } else if (meta.short_name == "-r") {
       algorithm = Config::Algorithm::Bsd;
     }
   }
@@ -146,7 +147,13 @@ auto calculate_checksum(const std::string& filename, uint32_t& block_count,
   }
 
   if (input->bad()) {
-    return std::unexpected("error reading from file");
+    // [GNU] digest.c reports a read failure per file as
+    // "sum: '<file>': <strerror>"; the old fixed string named neither
+    // the file nor the reason (audit #1462).
+    if (filename == "-" || filename.empty()) {
+      return std::unexpected(std::string("-: Bad file descriptor"));
+    }
+    return std::unexpected(input_open_error(filename));
   }
 
   const uint32_t block_size =

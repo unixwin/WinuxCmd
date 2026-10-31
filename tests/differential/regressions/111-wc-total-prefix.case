@@ -1,0 +1,9 @@
+cmd: wc
+args: --total=al f1.txt
+timeout: 10
+setup: |
+  printf 'a b\nc\n' > f1.txt
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: issue-1462 audit-w2 wc total argmatch
+# --total accepts the unique prefix 'al' (always): the total
+# line prints even for a single file.
