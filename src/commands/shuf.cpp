@@ -556,10 +556,10 @@ auto build_config(const CommandContext<SHUF_OPTIONS.size()>& ctx)
 
   // [GNU] shuf.c case 'i': a second -i (either spelling) dies with
   // "multiple -i options specified" during option parsing (audit #1462).
+  // One get_all by either spelling already returns every occurrence
+  // of the shared meta slot; concatenating both spellings duplicated
+  // each value and made a single -i look like two.
   auto range_values = ctx.get_all<std::string>("--input-range");
-  auto short_range_values = ctx.get_all<std::string>("-i");
-  range_values.insert(range_values.end(), short_range_values.begin(),
-                      short_range_values.end());
   if (range_values.size() > 1) {
     return std::unexpected("multiple -i options specified");
   }
@@ -570,10 +570,6 @@ auto build_config(const CommandContext<SHUF_OPTIONS.size()>& ctx)
 
   std::optional<size_t> min_count;
   auto head_count_values = ctx.get_all<std::string>("--head-count");
-  auto short_head_count_values = ctx.get_all<std::string>("-n");
-  head_count_values.insert(head_count_values.end(),
-                           short_head_count_values.begin(),
-                           short_head_count_values.end());
   for (const auto& count_opt : head_count_values) {
     const auto count = parse_unsigned_number(count_opt);
     if (!count.ok && !count.overflow) {
@@ -594,9 +590,6 @@ auto build_config(const CommandContext<SHUF_OPTIONS.size()>& ctx)
   // DIFFERS from the first dies; a repeated identical value is fine
   // (audit #1462).
   auto output_values = ctx.get_all<std::string>("--output");
-  auto short_output_values = ctx.get_all<std::string>("-o");
-  output_values.insert(output_values.end(), short_output_values.begin(),
-                       short_output_values.end());
   for (const auto& value : output_values) {
     if (!cfg.output_file.empty() && value != cfg.output_file) {
       return std::unexpected("multiple output files specified");
