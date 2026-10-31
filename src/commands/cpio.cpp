@@ -561,7 +561,7 @@ auto literal_member_path_w(const std::string& name) -> std::wstring {
     if (GetCurrentDirectoryW(4, cwd_buf) > 0 && cwd_buf[1] == L':') {
       drive[0] = cwd_buf[0];
     }
-    return std::wstring(drive) + path;
+    return std::wstring(drive) + utf8_to_wstring(path);
   }
   return utf8_to_wstring(path);
 }
