@@ -1,0 +1,7 @@
+cmd: dircolors
+args: -b db2.txt
+timeout: 10
+setup: |
+  printf 'DIR\n' > db2.txt
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w3b dircolors invalid-line missing-second-token

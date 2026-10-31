@@ -88,6 +88,18 @@
       "bucket": "PASS",
       "command": "dd"
     },
+    "corpus/dircolors/01-two-letter-keyword.case": {
+      "bucket": "PASS",
+      "command": "dircolors"
+    },
+    "corpus/dircolors/02-last-syntax-wins.case": {
+      "bucket": "PASS",
+      "command": "dircolors"
+    },
+    "corpus/dircolors/03-missing-second-token.case": {
+      "bucket": "PASS",
+      "command": "dircolors"
+    },
     "corpus/dirname/01-basic.case": {
       "bucket": "PASS",
       "command": "dirname"
