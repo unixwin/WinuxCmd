@@ -27,34 +27,57 @@ auto constexpr NUMFMT_OPTIONS = std::array{
     OPTION("-d", "--delimiter",
            "use X instead of whitespace for field delimiter", STRING_TYPE),
     // [GNU]
-    OPTION("", "--from", "autoconvert from X", STRING_TYPE),
-    // [GNU]
-    OPTION("", "--to", "autoconvert to X", STRING_TYPE),
-    // [GNU]
-    OPTION("", "--round", "use METHOD for rounding", STRING_TYPE),
-    // [GNU]
-    OPTION("", "--padding", "pad numbers to width N", INT_TYPE),
-    // [EXT]
-    OPTION("", "--pad", "pad numbers to width N", INT_TYPE),
-    // [GNU]
-    OPTION("", "--suffix", "add STRING after formatted numbers", STRING_TYPE),
-    // [GNU] --field accepts cut(1)-style ranges (N, N-M, N-, -M, -, and
-    // comma separated lists); default is field 1 only.
-    OPTION("", "--field", "replace the numbers in these input fields",
+    OPTION("", "--from",
+           "auto-scale input numbers to UNITs; default is 'none'; see UNIT "
+           "below",
            STRING_TYPE),
     // [GNU]
-    OPTION("-f", "--format", "use printf style floating-point FORMAT",
+    OPTION("", "--to", "auto-scale output numbers to UNITs; see UNIT below",
+           STRING_TYPE),
+    // [GNU]
+    OPTION("", "--round",
+           "use METHOD for rounding when scaling; METHOD can be: up, down, "
+           "from-zero (default), towards-zero, nearest",
+           STRING_TYPE),
+    // [GNU]
+    OPTION("", "--padding",
+           "pad the output to N characters; positive N will right-align; "
+           "negative N will left-align; padding is ignored if the output "
+           "is wider than N; the default is to automatically pad if a "
+           "whitespace is found",
+           INT_TYPE),
+    // [EXT]
+    OPTION("", "--pad", "pad the output to N characters (same as --padding)",
+           INT_TYPE),
+    // [GNU] --suffix: the GNU text also promises accepting the suffix in
+    // input numbers; that half is not implemented here, so it is not
+    // documented.
+    OPTION("", "--suffix", "add SUFFIX to output numbers", STRING_TYPE),
+    // [GNU] --field accepts cut(1)-style ranges (N, N-M, N-, -M, -, and
+    // comma separated lists); default is field 1 only.
+    OPTION("", "--field",
+           "replace the numbers in these input fields (default=1); see "
+           "FIELDS below",
+           STRING_TYPE),
+    // [GNU]
+    OPTION("-f", "--format",
+           "use printf style floating-point FORMAT; see FORMAT below for "
+           "details",
            STRING_TYPE),
     // [GNU] --header[=N]: optional value; a bare --header means N=1 and the
     // next argument stays an input operand (uutils #13272)
-    OPTION("", "--header", "print the first N header lines unchanged",
+    OPTION("", "--header",
+           "print (without converting) the first N header lines; N "
+           "defaults to 1 if not specified",
            OPTIONAL_INT_TYPE),
     // [GNU]
-    OPTION("", "--grouping", "group digits with locale thousands separator",
+    OPTION("", "--grouping",
+           "use locale-defined grouping of digits, e.g. 1,000,000",
            BOOL_TYPE),
     // [GNU]
     OPTION("", "--invalid",
-           "set policy for invalid values: 'abort' (default), 'warn', 'ignore'",
+           "failure mode for invalid numbers: MODE can be: abort "
+           "(default), fail, warn, ignore",
            STRING_TYPE),
     // [GNU]
     OPTION("", "--debug", "print conversion diagnostics", BOOL_TYPE),
@@ -62,10 +85,12 @@ auto constexpr NUMFMT_OPTIONS = std::array{
     // line (numfmt.c {"-debug"}); aliases --debug. Empty description keeps
     // it out of --help like GNU.
     OPTION("", "---debug", "", BOOL_TYPE),
-    // [GNU] --from-unit: multiply input numbers by UNIT
-    OPTION("", "--from-unit", "multiply input numbers by UNIT", STRING_TYPE),
-    // [GNU] --to-unit: divide numbers by UNIT before formatting
-    OPTION("", "--to-unit", "divide numbers by UNIT before formatting",
+    // [GNU] --from-unit: specify the input unit size (default 1)
+    OPTION("", "--from-unit",
+           "specify the input unit size (instead of the default 1)",
+           STRING_TYPE),
+    // [GNU] --to-unit: the output unit size (default 1)
+    OPTION("", "--to-unit", "the output unit size (instead of the default 1)",
            STRING_TYPE),
     // [GNU] --unit-separator: use STRING between number and unit
     OPTION("", "--unit-separator", "use STRING between number and unit",

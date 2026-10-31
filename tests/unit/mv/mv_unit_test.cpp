@@ -272,7 +272,11 @@ TEST(mv, mv_no_clobber_keeps_existing_destination) {
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
+
+  // [GNU] The skip is reported and the exit status is failure.
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_NE(r.stderr_text.find("not replacing 'dest.txt'"),
+            std::string::npos);
   EXPECT_TRUE(std::filesystem::exists(tmp.path / "source.txt"));
   EXPECT_EQ(tmp.read("dest.txt"), "old content");
 }
@@ -288,7 +292,11 @@ TEST(mv, mv_last_overwrite_option_can_select_no_clobber) {
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
+
+  // [GNU] Last overwrite option wins: -n skips, reports, and fails.
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_NE(r.stderr_text.find("not replacing 'dest.txt'"),
+            std::string::npos);
   EXPECT_TRUE(std::filesystem::exists(tmp.path / "source.txt"));
   EXPECT_EQ(tmp.read("dest.txt"), "old content");
 }
@@ -305,7 +313,8 @@ TEST(mv, mv_last_overwrite_option_can_select_interactive) {
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
+  // [GNU] Declining the prompt fails the file (exit 1).
+  EXPECT_EQ(r.exit_code, 1);
   EXPECT_NE(r.stderr_text.find("overwrite 'dest.txt'?"), std::string::npos);
   EXPECT_TRUE(std::filesystem::exists(tmp.path / "source.txt"));
   EXPECT_EQ(tmp.read("dest.txt"), "old content");
@@ -340,7 +349,8 @@ TEST(mv, mv_bare_interactive_long_option_prompts_like_always) {
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
+  // [GNU] Declining the prompt fails the file (exit 1).
+  EXPECT_EQ(r.exit_code, 1);
   EXPECT_NE(r.stderr_text.find("overwrite 'dest.txt'?"), std::string::npos);
   EXPECT_TRUE(std::filesystem::exists(tmp.path / "source.txt"));
   EXPECT_EQ(tmp.read("dest.txt"), "old content");
@@ -684,3 +694,32 @@ TEST(mv, issue1365_cross_volume_dir_symlink_recreated_not_copied) {
   EXPECT_TRUE(src_ec);  // source link is gone
 }
 
+// [GNU] Audit-W1 diagnostics (issue #1462): one test logging the exact
+// subject bytes for the three behaviors the differential corpus flags
+// as OUT_DIFF (mv/06, mv/09, mv/12) -- verbose rename shape, and the
+// absence of unrequested backups.
+TEST(mv, mv_audit_w1_verbose_and_backup_diagnostics) {
+  TempDir tmp;
+  tmp.write("src.txt", "new");
+  tmp.write("dst.txt", "old");
+  tmp.write("dst.txt~", "sentinel");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"mv.exe", {L"-v", L"-f", L"src.txt", L"dst.txt"});
+  auto r = p.run();
+
+  TEST_LOG("mv -v -f stdout", r.stdout_text);
+  TEST_LOG("mv -v -f stderr", r.stderr_text);
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(r.stdout_text, "renamed 'src.txt' -> 'dst.txt'\n");
+
+  bool sentinel_exists = std::filesystem::exists(tmp.path / "dst.txt~");
+  TEST_LOG("dst.txt~ exists after plain overwrite",
+           sentinel_exists ? "yes" : "no");
+  std::string sentinel_content =
+      sentinel_exists ? tmp.read("dst.txt~") : "<missing>";
+  TEST_LOG("dst.txt~ content", sentinel_content);
+  EXPECT_TRUE(sentinel_exists);
+  EXPECT_EQ(sentinel_content, "sentinel");
+}

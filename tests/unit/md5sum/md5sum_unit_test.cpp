@@ -601,3 +601,36 @@ TEST(md5sum, md5sum_empty_operand_is_not_stdin) {
   EXPECT_CONTAINS(r.stderr_text, "No such file or directory");
   EXPECT_TRUE(r.stdout_text.empty());
 }
+
+// #1127-P4: the engine moved from CryptoAPI to CNG (BCrypt) with a
+// 64 KiB feed (was 8 KiB). Digests must match the published vectors on
+// inputs that cross several feed blocks: the 1,000,000 x 'a' example
+// and a 200,003-byte mixed pattern (not a block multiple), on the
+// file and stdin routes alike.
+TEST(md5sum, md5sum_cng_large_inputs_issue1127) {
+  TempDir tmp;
+  const std::string million_a(1000000, 'a');
+  tmp.write("a.bin", million_a);
+  std::string mixed;
+  mixed.reserve(200003);
+  for (int i = 0; i < 200003; ++i) {
+    mixed.push_back(static_cast<char>((i * 37 + 11) & 0xFF));
+  }
+  tmp.write("mixed.bin", mixed);
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"md5sum.exe", {L"a.bin", L"mixed.bin"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text,
+                 "7707d6ae4e027c70eea2a935c2296f21  a.bin\n"
+                 "628d5f94c94645c7b42964ec792d481b  mixed.bin\n");
+
+  Pipeline p2;
+  p2.set_stdin(million_a);
+  p2.add(L"md5sum.exe", {});
+  auto r2 = p2.run();
+  EXPECT_EQ(r2.exit_code, 0);
+  EXPECT_EQ_TEXT(r2.stdout_text, "7707d6ae4e027c70eea2a935c2296f21  -\n");
+}

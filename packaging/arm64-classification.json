@@ -1,0 +1,1483 @@
+{
+  "schema": 1,
+  "kind": "wpm-arm64-classification",
+  "rule": "unixwin/WinuxCmd#1127 P5 cascade: native -> wpm-artifacts -> x64-emulation",
+  "marker": "index package field \"arm64_emulation\": true (stamped by --apply)",
+  "source_index": {
+    "repo": "unixwin/wpm-source",
+    "version": "official-2026.10.28",
+    "updated": "2026-10-28",
+    "packages": 282
+  },
+  "summary": {
+    "total": 282,
+    "native": 116,
+    "x64_emulation": 166,
+    "route_wpm_artifacts": 26,
+    "route_upstream": 140,
+    "index_only": 0
+  },
+  "packages": {
+    "7zip": {
+      "class": "x64-emulation",
+      "x64_asset": "7za920.zip",
+      "route": "wpm-artifacts",
+      "reason": "x64 artifact is not a GitHub-release asset (www.7-zip.org); the fill pass cannot resolve it, so the native path is a wpm-artifacts mirror/build"
+    },
+    "act": {
+      "class": "native",
+      "arm64_asset": "act_Windows_arm64.zip"
+    },
+    "actionlint": {
+      "class": "native",
+      "arm64_asset": "actionlint_1.7.12_windows_arm64.zip"
+    },
+    "age": {
+      "class": "x64-emulation",
+      "x64_asset": "age-v1.3.1-windows-amd64.zip",
+      "route": "upstream",
+      "reason": "upstream FiloSottile/age@v1.3.1 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "aichat": {
+      "class": "x64-emulation",
+      "x64_asset": "aichat-v0.30.0-x86_64-pc-windows-msvc.zip",
+      "route": "upstream",
+      "reason": "upstream sigoden/aichat@v0.30.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "alertmanager": {
+      "class": "native",
+      "arm64_asset": "alertmanager-0.34.0.windows-arm64.zip"
+    },
+    "amass": {
+      "class": "x64-emulation",
+      "x64_asset": "amass_windows_amd64.tar.gz",
+      "route": "upstream",
+      "reason": "upstream owasp-amass/amass@v5.1.1 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "aria2": {
+      "class": "x64-emulation",
+      "x64_asset": "aria2-1.37.0-win-64bit-build1.zip",
+      "route": "upstream",
+      "reason": "upstream aria2/aria2@release-1.37.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "ast-grep": {
+      "class": "native",
+      "arm64_asset": "app-aarch64-pc-windows-msvc.zip"
+    },
+    "astradb": {
+      "class": "x64-emulation",
+      "x64_asset": "AstraDB-1.7.3-windows-amd64.zip",
+      "route": "upstream",
+      "reason": "upstream caomengxuan666/AstraDB@v1.7.3 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "atuin": {
+      "class": "x64-emulation",
+      "x64_asset": "atuin-x86_64-pc-windows-msvc.zip",
+      "route": "upstream",
+      "reason": "upstream atuinsh/atuin@v18.19.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "awk": {
+      "class": "x64-emulation",
+      "x64_asset": "gawk-5.4.1-win-x64.zip",
+      "route": "wpm-artifacts",
+      "reason": "x64 artifact already served from unixwin/wpm-artifacts; the native path is an arm64 build in that repo's workflow set"
+    },
+    "b3sum": {
+      "class": "x64-emulation",
+      "x64_asset": "b3sum_windows_x64_bin.exe",
+      "route": "upstream",
+      "reason": "upstream BLAKE3-team/BLAKE3@1.8.6 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "bandwhich": {
+      "class": "x64-emulation",
+      "x64_asset": "bandwhich-v0.23.1-x86_64-pc-windows-msvc.zip",
+      "route": "wpm-artifacts",
+      "reason": "x64 artifact is not a GitHub-release asset (github.com); the fill pass cannot resolve it, so the native path is a wpm-artifacts mirror/build"
+    },
+    "bat": {
+      "class": "native",
+      "arm64_asset": "bat-v0.26.1-aarch64-pc-windows-msvc.zip"
+    },
+    "bc": {
+      "class": "x64-emulation",
+      "x64_asset": "bc-7.0.3-windows.zip",
+      "route": "upstream",
+      "reason": "upstream gavinhoward/bc@7.0.3 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "biome": {
+      "class": "native",
+      "arm64_asset": "biome-win32-arm64.exe"
+    },
+    "bombardier": {
+      "class": "native",
+      "arm64_asset": "bombardier-windows-arm64.exe"
+    },
+    "bore": {
+      "class": "x64-emulation",
+      "x64_asset": "bore-v0.6.0-x86_64-pc-windows-msvc.zip",
+      "route": "upstream",
+      "reason": "upstream ekzhang/bore@v0.6.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "bottom": {
+      "class": "native",
+      "arm64_asset": "bottom_aarch64-pc-windows-msvc.zip"
+    },
+    "broot": {
+      "class": "x64-emulation",
+      "x64_asset": "broot_1.58.0.zip",
+      "route": "upstream",
+      "reason": "upstream Canop/broot@v1.58.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "brotli": {
+      "class": "native",
+      "arm64_asset": "brotli-arm64-windows-static.zip"
+    },
+    "bsdtar": {
+      "class": "x64-emulation",
+      "x64_asset": "tar_windows_x86_64.exe",
+      "route": "upstream",
+      "reason": "upstream hermeticbuild/bsdtar-prebuilt@v3.7.5-1 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "btop": {
+      "class": "x64-emulation",
+      "x64_asset": "btop4win-x64.zip",
+      "route": "upstream",
+      "reason": "upstream aristocratos/btop4win@v1.0.5 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "buf": {
+      "class": "native",
+      "arm64_asset": "buf-Windows-arm64.exe"
+    },
+    "bun": {
+      "class": "native",
+      "arm64_asset": "bun-windows-aarch64.zip"
+    },
+    "bzip2": {
+      "class": "x64-emulation",
+      "x64_asset": "bzip2-1.0.8.0-win-x64.zip",
+      "route": "upstream",
+      "reason": "upstream philr/bzip2-windows@v1.0.8.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "caddy": {
+      "class": "native",
+      "arm64_asset": "caddy_2.11.4_windows_arm64.zip"
+    },
+    "chezmoi": {
+      "class": "native",
+      "arm64_asset": "chezmoi_2.72.0_windows_arm64.zip"
+    },
+    "choose": {
+      "class": "x64-emulation",
+      "x64_asset": "choose-x86_64-pc-windows-gnu.exe",
+      "route": "upstream",
+      "reason": "upstream theryangeary/choose@v1.3.7 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "clink": {
+      "class": "x64-emulation",
+      "x64_asset": "clink.1.9.31.8c8e92.zip",
+      "route": "upstream",
+      "reason": "upstream chrisant996/clink@v1.9.31 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "cloudflared": {
+      "class": "x64-emulation",
+      "x64_asset": "cloudflared-windows-amd64.exe",
+      "route": "upstream",
+      "reason": "upstream cloudflare/cloudflared@2026.8.2 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "cmake": {
+      "class": "native",
+      "arm64_asset": "cmake-4.4.2-windows-arm64.zip"
+    },
+    "codex": {
+      "class": "x64-emulation",
+      "x64_asset": "niu-codex-0.1.1-windows-x86_64.zip",
+      "route": "upstream",
+      "reason": "upstream unixwin/codex@codex-v0.1.1 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "conftest": {
+      "class": "native",
+      "arm64_asset": "conftest_0.69.0_Windows_arm64.zip"
+    },
+    "consul": {
+      "class": "x64-emulation",
+      "x64_asset": "consul_2.0.0_windows_amd64.zip",
+      "route": "wpm-artifacts",
+      "reason": "x64 artifact is not a GitHub-release asset (releases.hashicorp.com); the fill pass cannot resolve it, so the native path is a wpm-artifacts mirror/build"
+    },
+    "cosign": {
+      "class": "x64-emulation",
+      "x64_asset": "cosign-windows-amd64.exe",
+      "route": "upstream",
+      "reason": "upstream sigstore/cosign@v3.1.3 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "cpufetch": {
+      "class": "x64-emulation",
+      "x64_asset": "cpufetch_x86-64_windows.exe",
+      "route": "upstream",
+      "reason": "upstream Dr-Noob/cpufetch@v1.07 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "crane": {
+      "class": "native",
+      "arm64_asset": "go-containerregistry_Windows_arm64.tar.gz"
+    },
+    "croc": {
+      "class": "native",
+      "arm64_asset": "croc_v11.2.4_Windows-ARM64.zip"
+    },
+    "csvlens": {
+      "class": "native",
+      "arm64_asset": "csvlens-aarch64-pc-windows-msvc.zip"
+    },
+    "csvq": {
+      "class": "x64-emulation",
+      "x64_asset": "csvq-v1.18.1-windows-amd64.tar.gz",
+      "route": "upstream",
+      "reason": "upstream mithrandie/csvq@v1.18.1 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "csvtk": {
+      "class": "x64-emulation",
+      "x64_asset": "csvtk_windows_amd64.exe.tar.gz",
+      "route": "upstream",
+      "reason": "upstream shenwei356/csvtk@v0.37.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "cue": {
+      "class": "native",
+      "arm64_asset": "cue_v0.17.0_windows_arm64.zip"
+    },
+    "curl": {
+      "class": "native",
+      "arm64_asset": "curl-8.21.0_7-win64a-mingw.zip"
+    },
+    "curlie": {
+      "class": "native",
+      "arm64_asset": "curlie_1.8.2_windows_arm64.zip"
+    },
+    "dasel": {
+      "class": "x64-emulation",
+      "x64_asset": "dasel_windows_amd64.exe",
+      "route": "upstream",
+      "reason": "upstream TomWright/dasel@v3.11.2 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "dbmate": {
+      "class": "x64-emulation",
+      "x64_asset": "dbmate-windows-amd64.exe",
+      "route": "upstream",
+      "reason": "upstream amacneil/dbmate@v2.35.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "delta": {
+      "class": "x64-emulation",
+      "x64_asset": "delta-0.19.2-x86_64-pc-windows-msvc.zip",
+      "route": "upstream",
+      "reason": "upstream dandavison/delta@0.19.2 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "deno": {
+      "class": "native",
+      "arm64_asset": "deno-aarch64-pc-windows-msvc.zip"
+    },
+    "devproxy": {
+      "class": "x64-emulation",
+      "x64_asset": "dev-proxy-win-x64-v3.3.0.zip",
+      "route": "upstream",
+      "reason": "upstream dotnet/dev-proxy@v3.3.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "difftastic": {
+      "class": "native",
+      "arm64_asset": "difft-aarch64-pc-windows-msvc.zip"
+    },
+    "direnv": {
+      "class": "native",
+      "arm64_asset": "direnv.windows-arm64"
+    },
+    "dive": {
+      "class": "native",
+      "arm64_asset": "dive_0.13.1_windows_arm64.zip"
+    },
+    "dnsx": {
+      "class": "x64-emulation",
+      "x64_asset": "dnsx_1.3.0_windows_amd64.zip",
+      "route": "upstream",
+      "reason": "upstream projectdiscovery/dnsx@v1.3.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "docker-compose": {
+      "class": "native",
+      "arm64_asset": "docker-compose-windows-aarch64.exe"
+    },
+    "doctl": {
+      "class": "native",
+      "arm64_asset": "doctl-1.167.0-windows-arm64.zip"
+    },
+    "dog": {
+      "class": "x64-emulation",
+      "x64_asset": "dog-v0.1.0-x86_64-pc-windows-msvc.zip",
+      "route": "upstream",
+      "reason": "upstream ogham/dog@v0.1.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "doggo": {
+      "class": "x64-emulation",
+      "x64_asset": "doggo-windows-x86_64.zip",
+      "route": "upstream",
+      "reason": "upstream mr-karan/doggo@v1.3.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "dprint": {
+      "class": "native",
+      "arm64_asset": "dprint-aarch64-pc-windows-msvc.zip"
+    },
+    "dua": {
+      "class": "native",
+      "arm64_asset": "dua-v2.42.1-aarch64-pc-windows-msvc.zip"
+    },
+    "duckdb": {
+      "class": "native",
+      "arm64_asset": "duckdb_cli-windows-arm64.zip"
+    },
+    "duf": {
+      "class": "native",
+      "arm64_asset": "duf_0.9.1_windows_arm64.zip"
+    },
+    "dust": {
+      "class": "x64-emulation",
+      "x64_asset": "dust-v1.2.4-x86_64-pc-windows-msvc.zip",
+      "route": "upstream",
+      "reason": "upstream bootandy/dust@v1.2.4 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "easytier": {
+      "class": "native",
+      "arm64_asset": "easytier-windows-arm64-v2.6.4.zip"
+    },
+    "edit": {
+      "class": "native",
+      "arm64_asset": "edit-2.0.0-aarch64-windows.zip"
+    },
+    "eget": {
+      "class": "x64-emulation",
+      "x64_asset": "eget-1.3.4-windows_amd64.zip",
+      "route": "upstream",
+      "reason": "upstream zyedidia/eget@v1.3.4 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "erdtree": {
+      "class": "x64-emulation",
+      "x64_asset": "erd-v3.1.2-x86_64-pc-windows-msvc.exe",
+      "route": "upstream",
+      "reason": "upstream solidiquis/erdtree@v3.1.2 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "etcd": {
+      "class": "x64-emulation",
+      "x64_asset": "etcd-v3.7.1-windows-amd64.zip",
+      "route": "upstream",
+      "reason": "upstream etcd-io/etcd@v3.7.1 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "eza": {
+      "class": "x64-emulation",
+      "x64_asset": "eza.exe_x86_64-pc-windows-gnu.zip",
+      "route": "upstream",
+      "reason": "upstream eza-community/eza@v0.23.5 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "f2": {
+      "class": "x64-emulation",
+      "x64_asset": "f2_2.2.2_windows_amd64.zip",
+      "route": "upstream",
+      "reason": "upstream ayoisaiah/f2@v2.2.2 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "fastfetch": {
+      "class": "native",
+      "arm64_asset": "fastfetch-windows-aarch64.zip"
+    },
+    "fd": {
+      "class": "native",
+      "arm64_asset": "fd-v10.4.2-aarch64-pc-windows-msvc.zip"
+    },
+    "feroxbuster": {
+      "class": "x64-emulation",
+      "x64_asset": "x86_64-windows-feroxbuster.exe.zip",
+      "route": "wpm-artifacts",
+      "reason": "x64 artifact is not a GitHub-release asset (github.com); the fill pass cannot resolve it, so the native path is a wpm-artifacts mirror/build"
+    },
+    "ffmpeg": {
+      "class": "x64-emulation",
+      "x64_asset": "ffmpeg-8.1.2-essentials_build.zip",
+      "route": "wpm-artifacts",
+      "reason": "x64 artifact is not a GitHub-release asset (www.gyan.dev); the fill pass cannot resolve it, so the native path is a wpm-artifacts mirror/build"
+    },
+    "ffuf": {
+      "class": "native",
+      "arm64_asset": "ffuf_2.2.1_windows_arm64.zip"
+    },
+    "fluent-bit": {
+      "class": "native",
+      "arm64_asset": "fluent-bit-5.1.0-winarm64.zip"
+    },
+    "flux": {
+      "class": "native",
+      "arm64_asset": "flux_2.9.4_windows_arm64.zip"
+    },
+    "fnm": {
+      "class": "x64-emulation",
+      "x64_asset": "fnm-windows.zip",
+      "route": "upstream",
+      "reason": "upstream Schniz/fnm@v1.39.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "fortio": {
+      "class": "x64-emulation",
+      "x64_asset": "fortio_win_1.75.2.zip",
+      "route": "upstream",
+      "reason": "upstream fortio/fortio@v1.75.2 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "fq": {
+      "class": "native",
+      "arm64_asset": "fq_0.17.0_windows_arm64.zip"
+    },
+    "frp": {
+      "class": "native",
+      "arm64_asset": "frp_0.71.0_windows_arm64.zip"
+    },
+    "fx": {
+      "class": "native",
+      "arm64_asset": "fx_windows_arm64.exe"
+    },
+    "fzf": {
+      "class": "native",
+      "arm64_asset": "fzf-0.74.2-windows_arm64.zip"
+    },
+    "gawk": {
+      "class": "x64-emulation",
+      "x64_asset": "gawk-5.4.1-unixwin2-win-x64.zip",
+      "route": "wpm-artifacts",
+      "reason": "x64 artifact already served from unixwin/wpm-artifacts; the native path is an arm64 build in that repo's workflow set"
+    },
+    "gdu": {
+      "class": "x64-emulation",
+      "x64_asset": "gdu_windows_amd64.exe.zip",
+      "route": "upstream",
+      "reason": "upstream dundee/gdu@v5.37.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "gh": {
+      "class": "native",
+      "arm64_asset": "gh_2.97.0_windows_arm64.zip"
+    },
+    "gh-dash": {
+      "class": "native",
+      "arm64_asset": "gh-dash_v4.25.2_windows-arm64.exe"
+    },
+    "git": {
+      "class": "native",
+      "arm64_asset": "niu-git-2.56.0.windows.4-arm64.zip",
+      "via": "alias_of: niugit"
+    },
+    "git-cliff": {
+      "class": "native",
+      "arm64_asset": "git-cliff-2.7.0-aarch64-pc-windows-msvc.zip"
+    },
+    "gitleaks": {
+      "class": "native",
+      "arm64_asset": "gitleaks_8.30.1_windows_arm64.zip"
+    },
+    "gitui": {
+      "class": "x64-emulation",
+      "x64_asset": "gitui-win.tar.gz",
+      "route": "upstream",
+      "reason": "upstream gitui-org/gitui@v0.28.1 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "glab": {
+      "class": "x64-emulation",
+      "x64_asset": "glab_1.22.0_Windows_x86_64.zip",
+      "route": "upstream",
+      "reason": "upstream profclems/glab@v1.22.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "glow": {
+      "class": "x64-emulation",
+      "x64_asset": "glow_2.1.2_Windows_x86_64.zip",
+      "route": "upstream",
+      "reason": "upstream charmbracelet/glow@v2.1.2 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "go": {
+      "class": "native",
+      "arm64_asset": "go1.27.0.windows-arm64.zip"
+    },
+    "goawk": {
+      "class": "x64-emulation",
+      "x64_asset": "goawk_v1.31.0_windows_amd64.zip",
+      "route": "upstream",
+      "reason": "upstream benhoyt/goawk@v1.31.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "gofumpt": {
+      "class": "x64-emulation",
+      "x64_asset": "gofumpt_v0.11.0_windows_amd64.exe",
+      "route": "upstream",
+      "reason": "upstream mvdan/gofumpt@v0.11.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "golangci-lint": {
+      "class": "native",
+      "arm64_asset": "golangci-lint-2.13.1-windows-arm64.zip"
+    },
+    "gopass": {
+      "class": "native",
+      "arm64_asset": "gopass-1.16.1-windows-arm64.zip"
+    },
+    "goreleaser": {
+      "class": "native",
+      "arm64_asset": "goreleaser_Windows_arm64.zip"
+    },
+    "gping": {
+      "class": "x64-emulation",
+      "x64_asset": "gping-Windows-msvc-x86_64.zip",
+      "route": "upstream",
+      "reason": "upstream orf/gping@gping-v1.20.4 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "grex": {
+      "class": "native",
+      "arm64_asset": "grex-v1.4.6-aarch64-pc-windows-msvc.zip"
+    },
+    "gron": {
+      "class": "native",
+      "arm64_asset": "gron-windows-arm64-0.7.1.zip"
+    },
+    "grpcurl": {
+      "class": "x64-emulation",
+      "x64_asset": "grpcurl_1.9.3_windows_x86_64.zip",
+      "route": "upstream",
+      "reason": "upstream fullstorydev/grpcurl@v1.9.3 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "grype": {
+      "class": "x64-emulation",
+      "x64_asset": "grype_0.116.1_windows_amd64.zip",
+      "route": "upstream",
+      "reason": "upstream anchore/grype@v0.116.1 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "gsudo": {
+      "class": "x64-emulation",
+      "x64_asset": "gsudo.portable.zip",
+      "route": "upstream",
+      "reason": "upstream gerardog/gsudo@v2.6.1 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "gum": {
+      "class": "x64-emulation",
+      "x64_asset": "gum_0.17.0_Windows_x86_64.zip",
+      "route": "upstream",
+      "reason": "upstream charmbracelet/gum@v0.17.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "gzip": {
+      "class": "x64-emulation",
+      "x64_asset": "gzip-1.3.12-1-bin.zip",
+      "route": "wpm-artifacts",
+      "reason": "x64 artifact is not a GitHub-release asset (downloads.sourceforge.net); the fill pass cannot resolve it, so the native path is a wpm-artifacts mirror/build"
+    },
+    "hadolint": {
+      "class": "x64-emulation",
+      "x64_asset": "hadolint-windows-x86_64.exe",
+      "route": "upstream",
+      "reason": "upstream hadolint/hadolint@v2.15.1 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "helix": {
+      "class": "x64-emulation",
+      "x64_asset": "helix-25.07.1-x86_64-windows.zip",
+      "route": "upstream",
+      "reason": "upstream helix-editor/helix@25.07.1 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "helm": {
+      "class": "native",
+      "arm64_asset": "helm-v4.2.4-windows-arm64.zip"
+    },
+    "hexyl": {
+      "class": "x64-emulation",
+      "x64_asset": "hexyl-v0.17.0-x86_64-pc-windows-msvc.zip",
+      "route": "upstream",
+      "reason": "upstream sharkdp/hexyl@v0.17.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "hey": {
+      "class": "x64-emulation",
+      "x64_asset": "hey_windows_amd64",
+      "route": "wpm-artifacts",
+      "reason": "x64 artifact is not a GitHub-release asset (storage.googleapis.com); the fill pass cannot resolve it, so the native path is a wpm-artifacts mirror/build"
+    },
+    "htmlq": {
+      "class": "x64-emulation",
+      "x64_asset": "htmlq-x86_64-windows.zip",
+      "route": "upstream",
+      "reason": "upstream mgdm/htmlq@v0.4.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "httpx": {
+      "class": "x64-emulation",
+      "x64_asset": "httpx_1.10.0_windows_amd64.zip",
+      "route": "upstream",
+      "reason": "upstream projectdiscovery/httpx@v1.10.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "hugo": {
+      "class": "native",
+      "arm64_asset": "hugo_0.165.0_windows-arm64.zip"
+    },
+    "hurl": {
+      "class": "x64-emulation",
+      "x64_asset": "hurl-8.0.1-x86_64-pc-windows-msvc.zip",
+      "route": "upstream",
+      "reason": "upstream Orange-OpenSource/hurl@8.0.1 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "hyperfine": {
+      "class": "x64-emulation",
+      "x64_asset": "hyperfine-v1.20.0-x86_64-pc-windows-msvc.zip",
+      "route": "upstream",
+      "reason": "upstream sharkdp/hyperfine@v1.20.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "imagemagick": {
+      "class": "native",
+      "arm64_asset": "ImageMagick-7.1.2-29-Q16-HDRI-arm64-dll.exe"
+    },
+    "iperf3": {
+      "class": "x64-emulation",
+      "x64_asset": "iperf-3.21-win64.zip",
+      "route": "upstream",
+      "reason": "upstream ar51an/iperf3-win-builds@3.21 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "jid": {
+      "class": "native",
+      "arm64_asset": "jid_windows_arm64.zip"
+    },
+    "jnv": {
+      "class": "x64-emulation",
+      "x64_asset": "jnv-x86_64-pc-windows-msvc.zip",
+      "route": "upstream",
+      "reason": "upstream ynqa/jnv@v0.7.1 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "jq": {
+      "class": "native",
+      "arm64_asset": "jq-windows-arm64.exe"
+    },
+    "jsongrep": {
+      "class": "x64-emulation",
+      "x64_asset": "jsongrep-0.9.0-x86_64-pc-windows-msvc.zip",
+      "route": "upstream",
+      "reason": "upstream micahkepe/jsongrep@v0.9.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "just": {
+      "class": "native",
+      "arm64_asset": "just-1.58.0-aarch64-pc-windows-msvc.zip"
+    },
+    "k6": {
+      "class": "x64-emulation",
+      "x64_asset": "k6-v1.8.1-windows-amd64.zip",
+      "route": "upstream",
+      "reason": "upstream grafana/k6@v1.8.1 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "k9s": {
+      "class": "native",
+      "arm64_asset": "k9s_Windows_arm64.zip"
+    },
+    "kail": {
+      "class": "native",
+      "arm64_asset": "kail_v0.17.4_windows_arm64.tar.gz"
+    },
+    "katana": {
+      "class": "native",
+      "arm64_asset": "katana_1.7.0_windows_arm64.zip"
+    },
+    "kind": {
+      "class": "x64-emulation",
+      "x64_asset": "kind-windows-amd64",
+      "route": "upstream",
+      "reason": "upstream kubernetes-sigs/kind@v0.32.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "kopia": {
+      "class": "x64-emulation",
+      "x64_asset": "kopia-0.23.1-windows-x64.zip",
+      "route": "upstream",
+      "reason": "upstream kopia/kopia@v0.23.1 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "kube-linter": {
+      "class": "native",
+      "arm64_asset": "kube-linter-windows_arm64.tar.gz"
+    },
+    "kubeconform": {
+      "class": "native",
+      "arm64_asset": "kubeconform-windows-arm64.zip"
+    },
+    "kubectl": {
+      "class": "native",
+      "arm64_asset": "kubectl.exe"
+    },
+    "kubectx": {
+      "class": "x64-emulation",
+      "x64_asset": "kubectx_v0.11.0_windows_x86_64.zip",
+      "route": "upstream",
+      "reason": "upstream ahmetb/kubectx@v0.11.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "kubeseal": {
+      "class": "x64-emulation",
+      "x64_asset": "kubeseal-0.39.1-windows-amd64.tar.gz",
+      "route": "upstream",
+      "reason": "upstream bitnami/sealed-secrets@v0.39.1 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "kustomize": {
+      "class": "x64-emulation",
+      "x64_asset": "kustomize_v5.8.1_windows_amd64.zip",
+      "route": "upstream",
+      "reason": "upstream kubernetes-sigs/kustomize@kustomize ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "lazydocker": {
+      "class": "native",
+      "arm64_asset": "lazydocker_0.25.2_Windows_arm64.zip"
+    },
+    "lazygit": {
+      "class": "native",
+      "arm64_asset": "lazygit_0.64.0_windows_arm64.zip"
+    },
+    "lefthook": {
+      "class": "native",
+      "arm64_asset": "lefthook_2.1.10_Windows_arm64.exe"
+    },
+    "lf": {
+      "class": "x64-emulation",
+      "x64_asset": "lf-windows-amd64.zip",
+      "route": "upstream",
+      "reason": "upstream gokcehan/lf@r42 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "llama.cpp": {
+      "class": "x64-emulation",
+      "x64_asset": "llama-b11065-bin-win-cpu-x64.zip",
+      "route": "upstream",
+      "reason": "upstream ggml-org/llama.cpp@b11065 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "llvm": {
+      "class": "native",
+      "arm64_asset": "clang%2Bllvm-22.1.8-aarch64-pc-windows-msvc.tar.xz"
+    },
+    "lnav": {
+      "class": "native",
+      "arm64_asset": "lnav-0.14.0-windows-arm64.zip"
+    },
+    "logcli": {
+      "class": "x64-emulation",
+      "x64_asset": "logcli-windows-amd64.exe.zip",
+      "route": "upstream",
+      "reason": "upstream grafana/loki@v3.7.6 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "logdy": {
+      "class": "x64-emulation",
+      "x64_asset": "logdy_windows_amd64.exe",
+      "route": "upstream",
+      "reason": "upstream logdyhq/logdy-core@v0.17.1 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "loki": {
+      "class": "x64-emulation",
+      "x64_asset": "loki-windows-amd64.exe.zip",
+      "route": "upstream",
+      "reason": "upstream grafana/loki@v3.7.6 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "lsd": {
+      "class": "x64-emulation",
+      "x64_asset": "lsd-v1.2.0-x86_64-pc-windows-msvc.zip",
+      "route": "upstream",
+      "reason": "upstream lsd-rs/lsd@v1.2.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "lychee": {
+      "class": "x64-emulation",
+      "x64_asset": "lychee-x86_64-pc-windows-msvc.zip",
+      "route": "upstream",
+      "reason": "upstream lycheeverse/lychee@lychee-v0.24.2 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "lz4": {
+      "class": "x64-emulation",
+      "x64_asset": "lz4_win64_v1_10_0.zip",
+      "route": "upstream",
+      "reason": "upstream lz4/lz4@v1.10.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "make": {
+      "class": "x64-emulation",
+      "x64_asset": "make-4.4.1-without-guile-w32-bin.zip",
+      "route": "wpm-artifacts",
+      "reason": "x64 artifact is not a GitHub-release asset (downloads.sourceforge.net); the fill pass cannot resolve it, so the native path is a wpm-artifacts mirror/build"
+    },
+    "masscan": {
+      "class": "x64-emulation",
+      "x64_asset": "masscan.exe",
+      "route": "wpm-artifacts",
+      "reason": "x64 artifact is not a GitHub-release asset (github.com); the fill pass cannot resolve it, so the native path is a wpm-artifacts mirror/build"
+    },
+    "mc": {
+      "class": "x64-emulation",
+      "x64_asset": "mc.exe",
+      "route": "wpm-artifacts",
+      "reason": "x64 artifact is not a GitHub-release asset (dl.min.io); the fill pass cannot resolve it, so the native path is a wpm-artifacts mirror/build"
+    },
+    "mcfly": {
+      "class": "x64-emulation",
+      "x64_asset": "mcfly-v0.9.4-x86_64-pc-windows-msvc.zip",
+      "route": "upstream",
+      "reason": "upstream cantino/mcfly@v0.9.4 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "mdbook": {
+      "class": "x64-emulation",
+      "x64_asset": "mdbook-v0.5.4-x86_64-pc-windows-msvc.zip",
+      "route": "upstream",
+      "reason": "upstream rust-lang/mdBook@v0.5.4 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "mdsf": {
+      "class": "x64-emulation",
+      "x64_asset": "mdsf-x86_64-pc-windows-msvc.tar.gz",
+      "route": "upstream",
+      "reason": "upstream hougesen/mdsf@v0.12.1 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "meilisearch": {
+      "class": "x64-emulation",
+      "x64_asset": "meilisearch-windows-amd64.exe",
+      "route": "upstream",
+      "reason": "upstream meilisearch/meilisearch@v1.53.1 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "micro": {
+      "class": "native",
+      "arm64_asset": "micro-2.0.15-win-arm64.zip"
+    },
+    "miller": {
+      "class": "native",
+      "arm64_asset": "miller-6.21.0-windows-arm64.zip"
+    },
+    "mimirtool": {
+      "class": "native",
+      "arm64_asset": "mimirtool-windows-arm64.exe"
+    },
+    "miniserve": {
+      "class": "x64-emulation",
+      "x64_asset": "miniserve-0.35.0-x86_64-pc-windows-msvc.exe",
+      "route": "upstream",
+      "reason": "upstream svenstaro/miniserve@v0.35.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "minisign": {
+      "class": "x64-emulation",
+      "x64_asset": "minisign-0.12-win64.zip",
+      "route": "upstream",
+      "reason": "upstream jedisct1/minisign@0.12 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "mise": {
+      "class": "native",
+      "arm64_asset": "mise-v2026.8.4-windows-arm64.zip"
+    },
+    "mkcert": {
+      "class": "native",
+      "arm64_asset": "mkcert-v1.4.4-windows-arm64.exe"
+    },
+    "mods": {
+      "class": "x64-emulation",
+      "x64_asset": "mods_1.8.1_Windows_x86_64.zip",
+      "route": "upstream",
+      "reason": "upstream charmbracelet/mods@v1.8.1 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "naabu": {
+      "class": "x64-emulation",
+      "x64_asset": "naabu_2.6.1_windows_amd64.zip",
+      "route": "upstream",
+      "reason": "upstream projectdiscovery/naabu@v2.6.1 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "nali": {
+      "class": "x64-emulation",
+      "x64_asset": "nali-windows-amd64-v0.8.1.zip",
+      "route": "upstream",
+      "reason": "upstream zu1k/nali@v0.8.1 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "navi": {
+      "class": "x64-emulation",
+      "x64_asset": "navi-v2.24.0-x86_64-pc-windows-gnu.zip",
+      "route": "upstream",
+      "reason": "upstream denisidoro/navi@v2.24.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "ncat": {
+      "class": "x64-emulation",
+      "x64_asset": "ncat-7.991-win-x64.zip",
+      "route": "wpm-artifacts",
+      "reason": "x64 artifact already served from unixwin/wpm-artifacts; the native path is an arm64 build in that repo's workflow set"
+    },
+    "neovim": {
+      "class": "native",
+      "arm64_asset": "nvim-win-arm64.zip"
+    },
+    "nerdctl": {
+      "class": "x64-emulation",
+      "x64_asset": "nerdctl-2.3.5-windows-amd64.tar.gz",
+      "route": "upstream",
+      "reason": "upstream containerd/nerdctl@v2.3.5 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "ninja": {
+      "class": "x64-emulation",
+      "x64_asset": "ninja-win.zip",
+      "route": "upstream",
+      "reason": "upstream ninja-build/ninja@v1.13.2 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "niugit": {
+      "class": "native",
+      "arm64_asset": "niu-git-2.56.0.windows.4-arm64.zip"
+    },
+    "node": {
+      "class": "native",
+      "arm64_asset": "node-v26.7.0-win-arm64.zip"
+    },
+    "nomad": {
+      "class": "x64-emulation",
+      "x64_asset": "nomad_2.0.5_windows_amd64.zip",
+      "route": "wpm-artifacts",
+      "reason": "x64 artifact is not a GitHub-release asset (releases.hashicorp.com); the fill pass cannot resolve it, so the native path is a wpm-artifacts mirror/build"
+    },
+    "notify": {
+      "class": "native",
+      "arm64_asset": "notify_1.0.7_windows_arm64.zip"
+    },
+    "nuclei": {
+      "class": "x64-emulation",
+      "x64_asset": "nuclei_3.11.1_windows_amd64.zip",
+      "route": "upstream",
+      "reason": "upstream projectdiscovery/nuclei@v3.11.1 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "nushell": {
+      "class": "native",
+      "arm64_asset": "nu-0.115.0-aarch64-pc-windows-msvc.zip"
+    },
+    "oha": {
+      "class": "x64-emulation",
+      "x64_asset": "oha-windows-amd64.exe",
+      "route": "upstream",
+      "reason": "upstream hatoo/oha@v1.15.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "openssh": {
+      "class": "native",
+      "arm64_asset": "OpenSSH-ARM64.zip"
+    },
+    "openssl": {
+      "class": "x64-emulation",
+      "x64_asset": "openssl-4.0.2-win-x64.zip",
+      "route": "wpm-artifacts",
+      "reason": "x64 artifact already served from unixwin/wpm-artifacts; the native path is an arm64 build in that repo's workflow set"
+    },
+    "opentofu": {
+      "class": "x64-emulation",
+      "x64_asset": "tofu_1.12.5_windows_amd64.zip",
+      "route": "upstream",
+      "reason": "upstream opentofu/opentofu@v1.12.5 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "oras": {
+      "class": "x64-emulation",
+      "x64_asset": "oras_1.3.3_windows_amd64.zip",
+      "route": "upstream",
+      "reason": "upstream oras-project/oras@v1.3.3 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "osv-scanner": {
+      "class": "native",
+      "arm64_asset": "osv-scanner_windows_arm64.exe"
+    },
+    "ouch": {
+      "class": "native",
+      "arm64_asset": "ouch-aarch64-pc-windows-msvc.zip"
+    },
+    "packer": {
+      "class": "x64-emulation",
+      "x64_asset": "packer_1.16.0_windows_amd64.zip",
+      "route": "wpm-artifacts",
+      "reason": "x64 artifact is not a GitHub-release asset (releases.hashicorp.com); the fill pass cannot resolve it, so the native path is a wpm-artifacts mirror/build"
+    },
+    "pandoc": {
+      "class": "x64-emulation",
+      "x64_asset": "pandoc-3.10.1-windows-x86_64.zip",
+      "route": "upstream",
+      "reason": "upstream jgm/pandoc@3.10.1 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "parallel": {
+      "class": "x64-emulation",
+      "x64_asset": "rush_windows_amd64.exe.tar.gz",
+      "route": "upstream",
+      "reason": "upstream shenwei356/rush@v0.9.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "pastel": {
+      "class": "x64-emulation",
+      "x64_asset": "pastel-v0.12.0-x86_64-pc-windows-msvc.zip",
+      "route": "upstream",
+      "reason": "upstream sharkdp/pastel@v0.12.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "peco": {
+      "class": "x64-emulation",
+      "x64_asset": "peco_0.6.0_windows_amd64.zip",
+      "route": "upstream",
+      "reason": "upstream peco/peco@v0.6.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "plantuml": {
+      "class": "x64-emulation",
+      "x64_asset": "native-plantuml-windows-amd64-1.2026.6.zip",
+      "route": "upstream",
+      "reason": "upstream plantuml/plantuml@v1.2026.6 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "portal": {
+      "class": "native",
+      "arm64_asset": "portal_1.2.3_Windows_arm64.zip"
+    },
+    "procs": {
+      "class": "x64-emulation",
+      "x64_asset": "procs-v0.14.12-x86_64-windows.zip",
+      "route": "upstream",
+      "reason": "upstream dalance/procs@v0.14.12 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "protobuf": {
+      "class": "x64-emulation",
+      "x64_asset": "protoc-36.1-win64.zip",
+      "route": "upstream",
+      "reason": "upstream protocolbuffers/protobuf@v36.1 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "proxify": {
+      "class": "x64-emulation",
+      "x64_asset": "proxify_0.0.12_windows_amd64.zip",
+      "route": "upstream",
+      "reason": "upstream projectdiscovery/proxify@v0.0.12 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "prqlc": {
+      "class": "x64-emulation",
+      "x64_asset": "prqlc-0.13.14-x86_64-pc-windows-msvc.zip",
+      "route": "upstream",
+      "reason": "upstream PRQL/prql@0.13.14 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "psmux": {
+      "class": "native",
+      "arm64_asset": "psmux-v3.4.0-windows-arm64.zip"
+    },
+    "pup": {
+      "class": "x64-emulation",
+      "x64_asset": "pup_v0.4.0_windows_amd64.zip",
+      "route": "upstream",
+      "reason": "upstream ericchiang/pup@v0.4.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "python": {
+      "class": "native",
+      "arm64_asset": "cpython-3.14.7%2B20260814-aarch64-pc-windows-msvc-install_only.tar.gz"
+    },
+    "qpdf": {
+      "class": "x64-emulation",
+      "x64_asset": "qpdf-12.4.0-msvc64.zip",
+      "route": "upstream",
+      "reason": "upstream qpdf/qpdf@v12.4.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "qsv": {
+      "class": "native",
+      "arm64_asset": "qsv-22.0.1-aarch64-pc-windows-msvc.zip"
+    },
+    "rclone": {
+      "class": "native",
+      "arm64_asset": "rclone-v1.74.4-windows-arm64.zip"
+    },
+    "redis": {
+      "class": "x64-emulation",
+      "x64_asset": "Redis-x64-5.0.14.1.zip",
+      "route": "upstream",
+      "reason": "upstream tporadowski/redis@v5.0.14.1 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "regctl": {
+      "class": "x64-emulation",
+      "x64_asset": "regctl-windows-amd64.exe",
+      "route": "upstream",
+      "reason": "upstream regclient/regclient@v0.11.5 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "resp-cli": {
+      "class": "x64-emulation",
+      "x64_asset": "resp-cli-windows.exe",
+      "route": "upstream",
+      "reason": "upstream caomengxuan666/resp-cli@v1.3.1 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "restic": {
+      "class": "x64-emulation",
+      "x64_asset": "restic_0.19.1_windows_amd64.zip",
+      "route": "upstream",
+      "reason": "upstream restic/restic@v0.19.1 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "ripgrep": {
+      "class": "native",
+      "arm64_asset": "ripgrep-15.2.0-aarch64-pc-windows-msvc.zip"
+    },
+    "rtk": {
+      "class": "x64-emulation",
+      "x64_asset": "rtk-x86_64-pc-windows-msvc.zip",
+      "route": "wpm-artifacts",
+      "reason": "x64 artifact is not a GitHub-release asset (github.com); the fill pass cannot resolve it, so the native path is a wpm-artifacts mirror/build"
+    },
+    "ruff": {
+      "class": "native",
+      "arm64_asset": "ruff-aarch64-pc-windows-msvc.zip"
+    },
+    "rush": {
+      "class": "x64-emulation",
+      "x64_asset": "rush_windows_amd64.exe.tar.gz",
+      "route": "upstream",
+      "reason": "upstream shenwei356/rush@v0.9.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "rust": {
+      "class": "x64-emulation",
+      "x64_asset": "rust-1.98.1-win-x64.zip",
+      "route": "wpm-artifacts",
+      "reason": "x64 artifact already served from unixwin/wpm-artifacts; the native path is an arm64 build in that repo's workflow set"
+    },
+    "scc": {
+      "class": "native",
+      "arm64_asset": "scc_Windows_arm64.zip"
+    },
+    "sd": {
+      "class": "x64-emulation",
+      "x64_asset": "sd-v1.1.0-x86_64-pc-windows-msvc.zip",
+      "route": "upstream",
+      "reason": "upstream chmln/sd@v1.1.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "shellcheck": {
+      "class": "x64-emulation",
+      "x64_asset": "shellcheck-v0.11.0.zip",
+      "route": "upstream",
+      "reason": "upstream koalaman/shellcheck@v0.11.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "shellharden": {
+      "class": "x64-emulation",
+      "x64_asset": "shellharden-x86_64-pc-windows-msvc.zip",
+      "route": "upstream",
+      "reason": "upstream anordal/shellharden@v4.3.1 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "shfmt": {
+      "class": "x64-emulation",
+      "x64_asset": "shfmt_v3.13.1_windows_amd64.exe",
+      "route": "upstream",
+      "reason": "upstream mvdan/sh@v3.13.1 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "sig": {
+      "class": "native",
+      "arm64_asset": "sigrs-aarch64-pc-windows-msvc.zip"
+    },
+    "skim": {
+      "class": "x64-emulation",
+      "x64_asset": "skim-x86_64-pc-windows-msvc.zip",
+      "route": "upstream",
+      "reason": "upstream skim-rs/skim@v5.6.5 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "sops": {
+      "class": "native",
+      "arm64_asset": "sops-v3.13.3.arm64.exe"
+    },
+    "speedtest": {
+      "class": "x64-emulation",
+      "x64_asset": "ookla-speedtest-1.2.0-win64.zip",
+      "route": "wpm-artifacts",
+      "reason": "x64 artifact is not a GitHub-release asset (install.speedtest.net); the fill pass cannot resolve it, so the native path is a wpm-artifacts mirror/build"
+    },
+    "sqlc": {
+      "class": "x64-emulation",
+      "x64_asset": "sqlc_1.31.1_windows_amd64.zip",
+      "route": "wpm-artifacts",
+      "reason": "x64 artifact is not a GitHub-release asset (downloads.sqlc.dev); the fill pass cannot resolve it, so the native path is a wpm-artifacts mirror/build"
+    },
+    "sqlite3": {
+      "class": "x64-emulation",
+      "x64_asset": "sqlite-tools-win-x64-3530400.zip",
+      "route": "wpm-artifacts",
+      "reason": "x64 artifact is not a GitHub-release asset (www.sqlite.org); the fill pass cannot resolve it, so the native path is a wpm-artifacts mirror/build"
+    },
+    "starship": {
+      "class": "native",
+      "arm64_asset": "starship-aarch64-pc-windows-msvc.zip"
+    },
+    "step": {
+      "class": "native",
+      "arm64_asset": "step_windows_0.30.6_arm64.zip"
+    },
+    "stern": {
+      "class": "native",
+      "arm64_asset": "stern_1.34.0_windows_arm64.zip"
+    },
+    "sttr": {
+      "class": "x64-emulation",
+      "x64_asset": "sttr_Windows_x86_64.zip",
+      "route": "wpm-artifacts",
+      "reason": "x64 artifact is not a GitHub-release asset (github.com); the fill pass cannot resolve it, so the native path is a wpm-artifacts mirror/build"
+    },
+    "subfinder": {
+      "class": "native",
+      "arm64_asset": "subfinder_2.15.0_windows_arm64.zip"
+    },
+    "surrealdb": {
+      "class": "x64-emulation",
+      "x64_asset": "surreal-v3.2.4.windows-amd64.exe",
+      "route": "upstream",
+      "reason": "upstream surrealdb/surrealdb@v3.2.4 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "syft": {
+      "class": "native",
+      "arm64_asset": "syft_1.50.0_windows_arm64.zip"
+    },
+    "sysinternals-suite": {
+      "class": "x64-emulation",
+      "x64_asset": "SysinternalsSuite.zip",
+      "route": "wpm-artifacts",
+      "reason": "x64 artifact is not a GitHub-release asset (download.sysinternals.com); the fill pass cannot resolve it, so the native path is a wpm-artifacts mirror/build"
+    },
+    "tabiew": {
+      "class": "native",
+      "arm64_asset": "tw-aarch64-pc-windows-msvc.exe"
+    },
+    "task": {
+      "class": "native",
+      "arm64_asset": "task_windows_arm64.zip"
+    },
+    "tealdeer": {
+      "class": "x64-emulation",
+      "x64_asset": "tealdeer-windows-x86_64-msvc.exe",
+      "route": "upstream",
+      "reason": "upstream tealdeer-rs/tealdeer@v1.8.1 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "termscp": {
+      "class": "native",
+      "arm64_asset": "termscp-v1.1.1-aarch64-pc-windows-msvc.zip"
+    },
+    "terragrunt": {
+      "class": "x64-emulation",
+      "x64_asset": "terragrunt_windows_amd64.exe",
+      "route": "upstream",
+      "reason": "upstream gruntwork-io/terragrunt@v1.1.3 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "terrascan": {
+      "class": "x64-emulation",
+      "x64_asset": "terrascan_1.19.9_Windows_x86_64.zip",
+      "route": "upstream",
+      "reason": "upstream tenable/terrascan@v1.19.9 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "tflint": {
+      "class": "x64-emulation",
+      "x64_asset": "tflint_windows_amd64.zip",
+      "route": "upstream",
+      "reason": "upstream terraform-linters/tflint@v0.64.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "tlsx": {
+      "class": "x64-emulation",
+      "x64_asset": "tlsx_1.3.0_windows_amd64.zip",
+      "route": "upstream",
+      "reason": "upstream projectdiscovery/tlsx@v1.3.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "tokei": {
+      "class": "x64-emulation",
+      "x64_asset": "tokei-x86_64-pc-windows-msvc.exe",
+      "route": "upstream",
+      "reason": "upstream XAMPPRocky/tokei@v12.1.2 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "toxiproxy": {
+      "class": "x64-emulation",
+      "x64_asset": "toxiproxy-cli-windows-amd64.exe",
+      "route": "upstream",
+      "reason": "upstream Shopify/toxiproxy@v2.12.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "trdsql": {
+      "class": "x64-emulation",
+      "x64_asset": "trdsql_v1.2.3_windows_amd64.zip",
+      "route": "upstream",
+      "reason": "upstream noborus/trdsql@v1.2.3 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "tre": {
+      "class": "x64-emulation",
+      "x64_asset": "tre-v0.4.0-x86_64-pc-windows-msvc.zip",
+      "route": "upstream",
+      "reason": "upstream dduan/tre@v0.4.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "trippy": {
+      "class": "native",
+      "arm64_asset": "trippy-0.13.0-aarch64-pc-windows-msvc.zip"
+    },
+    "trivy": {
+      "class": "x64-emulation",
+      "x64_asset": "trivy_0.73.0_windows-64bit.zip",
+      "route": "upstream",
+      "reason": "upstream aquasecurity/trivy@v0.73.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "trufflehog": {
+      "class": "native",
+      "arm64_asset": "trufflehog_3.97.0_windows_arm64.tar.gz"
+    },
+    "typos": {
+      "class": "x64-emulation",
+      "x64_asset": "typos-v1.49.0-x86_64-pc-windows-msvc.zip",
+      "route": "upstream",
+      "reason": "upstream crate-ci/typos@v1.49.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "typst": {
+      "class": "native",
+      "arm64_asset": "typst-aarch64-pc-windows-msvc.zip"
+    },
+    "ugrep": {
+      "class": "x64-emulation",
+      "x64_asset": "ugrep-windows-x64.zip",
+      "route": "upstream",
+      "reason": "upstream Genivia/ugrep@v7.8.4 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "uncover": {
+      "class": "x64-emulation",
+      "x64_asset": "uncover_1.2.1_windows_amd64.zip",
+      "route": "upstream",
+      "reason": "upstream projectdiscovery/uncover@v1.2.1 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "usql": {
+      "class": "x64-emulation",
+      "x64_asset": "usql-0.21.4-windows-amd64.zip",
+      "route": "upstream",
+      "reason": "upstream xo/usql@v0.21.4 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "uv": {
+      "class": "native",
+      "arm64_asset": "uv-aarch64-pc-windows-msvc.zip"
+    },
+    "vale": {
+      "class": "x64-emulation",
+      "x64_asset": "vale_3.22.0_Windows_64-bit.zip",
+      "route": "upstream",
+      "reason": "upstream vale-cli/vale@v3.22.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "vault": {
+      "class": "x64-emulation",
+      "x64_asset": "vault_2.0.4_windows_amd64.zip",
+      "route": "wpm-artifacts",
+      "reason": "x64 artifact is not a GitHub-release asset (releases.hashicorp.com); the fill pass cannot resolve it, so the native path is a wpm-artifacts mirror/build"
+    },
+    "vector": {
+      "class": "x64-emulation",
+      "x64_asset": "vector-0.57.0-x86_64-pc-windows-msvc.zip",
+      "route": "upstream",
+      "reason": "upstream vectordotdev/vector@v0.57.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "vegeta": {
+      "class": "native",
+      "arm64_asset": "vegeta_12.13.0_windows_arm64.zip"
+    },
+    "velero": {
+      "class": "x64-emulation",
+      "x64_asset": "velero-v1.18.2-windows-amd64.tar.gz",
+      "route": "upstream",
+      "reason": "upstream velero-io/velero@v1.18.2 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "vivid": {
+      "class": "x64-emulation",
+      "x64_asset": "vivid-v0.11.1-x86_64-pc-windows-msvc.zip",
+      "route": "upstream",
+      "reason": "upstream sharkdp/vivid@v0.11.1 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "volta": {
+      "class": "native",
+      "arm64_asset": "volta-2.0.2-windows-arm64.zip"
+    },
+    "watchexec": {
+      "class": "x64-emulation",
+      "x64_asset": "watchexec-2.5.1-x86_64-pc-windows-msvc.zip",
+      "route": "upstream",
+      "reason": "upstream watchexec/watchexec@v2.5.1 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "waypoint": {
+      "class": "x64-emulation",
+      "x64_asset": "waypoint_0.11.4_windows_amd64.zip",
+      "route": "wpm-artifacts",
+      "reason": "x64 artifact is not a GitHub-release asset (releases.hashicorp.com); the fill pass cannot resolve it, so the native path is a wpm-artifacts mirror/build"
+    },
+    "websocat": {
+      "class": "x64-emulation",
+      "x64_asset": "websocat.x86_64-pc-windows-gnu.exe",
+      "route": "upstream",
+      "reason": "upstream vi/websocat@v1.14.1 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "wezterm": {
+      "class": "x64-emulation",
+      "x64_asset": "WezTerm-windows-20240203-110809-5046fc22.zip",
+      "route": "upstream",
+      "reason": "upstream wezterm/wezterm@20240203-110809-5046fc22 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "wget": {
+      "class": "native",
+      "arm64_asset": "wget-1.21.4-winarm64.zip"
+    },
+    "winuxcmd": {
+      "class": "native",
+      "arm64_asset": "WinuxCmd-1.1.20-win-arm64.zip"
+    },
+    "winuxcmd-i18n-zh-cn": {
+      "class": "native",
+      "arm64_asset": "winuxcmd-i18n-zh-cn.zip"
+    },
+    "wpm-gui": {
+      "class": "x64-emulation",
+      "x64_asset": "wpm-gui-0.1.0-win-x64.zip",
+      "route": "upstream",
+      "reason": "upstream unixwin/wpm-gui@v0.1.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "wuzz": {
+      "class": "x64-emulation",
+      "x64_asset": "wuzz_windows_amd64.exe",
+      "route": "upstream",
+      "reason": "upstream asciimoo/wuzz@v0.5.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "xan": {
+      "class": "x64-emulation",
+      "x64_asset": "xan-x86_64-pc-windows-msvc.zip",
+      "route": "wpm-artifacts",
+      "reason": "x64 artifact is not a GitHub-release asset (github.com); the fill pass cannot resolve it, so the native path is a wpm-artifacts mirror/build"
+    },
+    "xh": {
+      "class": "x64-emulation",
+      "x64_asset": "xh-v0.26.2-x86_64-pc-windows-msvc.zip",
+      "route": "upstream",
+      "reason": "upstream ducaale/xh@v0.26.2 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "xmlstarlet": {
+      "class": "native",
+      "arm64_asset": "xmlstarlet-1.7.0-rc1-windows-arm64.zip"
+    },
+    "xsv": {
+      "class": "x64-emulation",
+      "x64_asset": "xsv-0.13.0-x86_64-pc-windows-msvc.zip",
+      "route": "upstream",
+      "reason": "upstream BurntSushi/xsv@0.13.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "xz": {
+      "class": "x64-emulation",
+      "x64_asset": "xz-5.8.3-windows.zip",
+      "route": "upstream",
+      "reason": "upstream tukaani-project/xz@v5.8.3 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "yazi": {
+      "class": "native",
+      "arm64_asset": "yazi-aarch64-pc-windows-msvc.zip"
+    },
+    "yek": {
+      "class": "x64-emulation",
+      "x64_asset": "yek-x86_64-pc-windows-msvc.zip",
+      "route": "upstream",
+      "reason": "upstream mohsen1/yek@v0.25.5 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "yq": {
+      "class": "native",
+      "arm64_asset": "yq_windows_arm64.zip"
+    },
+    "yt-dlp": {
+      "class": "native",
+      "arm64_asset": "yt-dlp_arm64.exe"
+    },
+    "zellij": {
+      "class": "x64-emulation",
+      "x64_asset": "zellij-no-web-x86_64-pc-windows-msvc.zip",
+      "route": "upstream",
+      "reason": "upstream zellij-org/zellij@v0.44.3 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "zip": {
+      "class": "native",
+      "arm64_asset": "zip30-arm64.zip"
+    },
+    "zizmor": {
+      "class": "x64-emulation",
+      "x64_asset": "zizmor-x86_64-pc-windows-msvc.zip",
+      "route": "upstream",
+      "reason": "upstream zizmorcore/zizmor@v1.29.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "zola": {
+      "class": "x64-emulation",
+      "x64_asset": "zola-v0.23.4-x86_64-pc-windows-msvc.zip",
+      "route": "upstream",
+      "reason": "upstream getzola/zola@v0.23.4 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "zoxide": {
+      "class": "native",
+      "arm64_asset": "zoxide-0.10.0-aarch64-pc-windows-msvc.zip"
+    },
+    "zstd": {
+      "class": "x64-emulation",
+      "x64_asset": "zstd-v1.5.7-win64.zip",
+      "route": "upstream",
+      "reason": "upstream facebook/zstd@v1.5.7 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    }
+  }
+}

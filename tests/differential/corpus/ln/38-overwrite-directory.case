@@ -1,0 +1,8 @@
+cmd: ln
+args: -T -f src.txt d
+timeout: 10
+setup: |
+  printf 'x' > src.txt
+  mkdir d
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w1 oracle-coreutils-9.4 ln.c:228-232 cannot-overwrite-directory

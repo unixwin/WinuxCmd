@@ -2406,9 +2406,178 @@ auto load_roots_from_files0(std::string_view source)
   return roots;
 }
 
+// [GNU] findutils parser.c found_parser (~line 596-615): a global option
+// (parser-table type ARG_OPTION: -maxdepth, -mindepth, -depth, -d,
+// -xdev, -mount, -noleaf, -files0-from, -ignore_readdir_race,
+// -noignore_readdir_race) that appears after the first non-option
+// argument earns a warning, because global options apply to the whole
+// command line regardless of position.  The "first non-option argument"
+// is the first *expression primary* (test, action or punctuation token)
+// found_parser dispatches; starting points never pass through it --
+// tree.c collects them beforehand with looks_like_expression (util.c)
+// -- so a global option that follows only paths does NOT warn, and the
+// warning names the first primary (e.g. "-name"), not a path.
+// Positional options (-follow, -daystart, -regextype, -warn, -nowarn)
+// and the leading options (-H, -L, -P, -D, -O) are exempt.  Warnings
+// default to ON only when standard input is a terminal and are off
+// otherwise (util.c set_option_defaults); -warn/-nowarn toggle them in
+// order, and POSIXLY_CORRECT suppresses them entirely
+// (should_issue_warnings, parser.c:565).
+auto warn_about_global_option_positions(
+    std::span<const std::string_view> args) -> void {
+  auto is_global_option = [](std::string_view arg) {
+    return arg == "-maxdepth" || arg == "-mindepth" || arg == "-depth" ||
+           arg == "-d" || arg == "-xdev" || arg == "-mount" ||
+           arg == "-noleaf" || arg == "-files0-from" ||
+           arg == "-ignore_readdir_race" || arg == "-noignore_readdir_race";
+  };
+  auto global_takes_value = [](std::string_view arg) {
+    return arg == "-maxdepth" || arg == "-mindepth" ||
+           arg == "-files0-from";
+  };
+  auto is_positional_option = [](std::string_view arg) {
+    return arg == "-follow" || arg == "-daystart" || arg == "-regextype" ||
+           arg == "-warn" || arg == "-nowarn";
+  };
+  auto is_leading_option = [](std::string_view arg) {
+    return arg == "-H" || arg == "-L" || arg == "-P" || arg == "-D" ||
+           arg == "--debug" || arg == "-O";
+  };
+  auto is_joined_optimise = [](std::string_view arg) {
+    return arg.size() > 2 && arg[0] == '-' && arg[1] == 'O' &&
+           std::all_of(arg.begin() + 2, arg.end(), [](char ch) {
+             return std::isdigit(static_cast<unsigned char>(ch)) != 0;
+           });
+  };
+  auto predicate_takes_value = [](std::string_view arg) {
+    return arg == "-name" || arg == "-iname" || arg == "-path" ||
+           arg == "-ipath" || arg == "-wholename" || arg == "-iwholename" ||
+           arg == "-regex" || arg == "-iregex" || arg == "-type" ||
+           arg == "-xtype" || arg == "-perm" || arg == "-inum" ||
+           arg == "-links" || arg == "-user" || arg == "-group" ||
+           arg == "-uid" || arg == "-gid" || arg == "-size" ||
+           arg == "-amin" || arg == "-atime" || arg == "-cmin" ||
+           arg == "-ctime" || arg == "-mtime" || arg == "-mmin" ||
+           arg == "-used" || arg == "-newer" || arg == "-anewer" ||
+           arg == "-cnewer" || arg == "-samefile" || arg == "-fstype" ||
+           arg == "-lname" || arg == "-ilname" || arg == "-fprint" ||
+           arg == "-fprint0" || arg == "-printf" || arg == "-fprintf" ||
+           is_newerxy_option(arg);
+  };
+
+  // [GNU] util.c looks_like_expression (leading scan): "-foo" is an
+  // expression, a bare "-" is a filename; "("/")"/"!"/"," as whole tokens
+  // are expression punctuation except that a leading ")" or "," is not.
+  auto looks_like_expression = [](std::string_view arg) {
+    if (arg.empty()) return false;
+    switch (arg[0]) {
+      case '-':
+        return arg.size() > 1;
+      case ')':
+      case ',':
+        return false;
+      case '!':
+      case '(':
+        return arg.size() == 1;
+      default:
+        return false;
+    }
+  };
+
+  const bool posixly_correct = std::getenv("POSIXLY_CORRECT") != nullptr;
+  // [GNU] util.c set_option_defaults: warnings default on only when
+  // standard input is a terminal; POSIXLY_CORRECT forces them off.
+  bool warnings = !posixly_correct && _isatty(_fileno(stdin)) != 0;
+  bool after_dashdash = false;
+  bool in_expression = false;
+  std::optional<std::string_view> first_nonoption;
+
+  for (size_t i = 0; i < args.size(); ++i) {
+    const auto arg = args[i];
+    if (!in_expression) {
+      // Leading phase (tree.c): the leading options come first, then
+      // the starting points.  Neither sets first_nonoption_arg in GNU --
+      // found_parser only ever sees expression primaries.
+      if (!after_dashdash &&
+          (is_leading_option(arg) || is_joined_optimise(arg))) {
+        if ((arg == "-D" || arg == "--debug" || arg == "-O") &&
+            i + 1 < args.size()) {
+          ++i;
+        }
+        continue;
+      }
+      if (arg == "--") {
+        after_dashdash = true;
+        continue;
+      }
+      if (!looks_like_expression(arg)) {
+        continue;  // a starting point
+      }
+      in_expression = true;
+    }
+    if (is_global_option(arg)) {
+      if (first_nonoption && warnings) {
+        safeErrorPrint("find: warning: you have specified the global "
+                       "option ");
+        safeErrorPrint(arg);
+        safeErrorPrint(" after the argument ");
+        safeErrorPrint(*first_nonoption);
+        safeErrorPrint(
+            ", but global options are not positional, i.e., ");
+        safeErrorPrint(arg);
+        safeErrorPrint(
+            " affects tests specified before it as well as those "
+            "specified after it.  Please specify global options before "
+            "other arguments.\n");
+      }
+      if (global_takes_value(arg) && i + 1 < args.size()) ++i;
+      continue;
+    }
+    if (arg == "-warn") {
+      warnings = !posixly_correct;
+      continue;
+    }
+    if (arg == "-nowarn") {
+      warnings = false;
+      continue;
+    }
+    if (is_positional_option(arg)) {
+      if (arg == "-regextype" && i + 1 < args.size()) ++i;
+      continue;
+    }
+    if (is_leading_option(arg) || is_joined_optimise(arg)) {
+      // -D/--debug and the separate -O form consume the next token.
+      if ((arg == "-D" || arg == "--debug" || arg == "-O") &&
+          i + 1 < args.size()) {
+        ++i;
+      }
+      continue;
+    }
+    if (arg == "-exec" || arg == "-execdir" || arg == "-ok" ||
+        arg == "-okdir") {
+      if (!first_nonoption) first_nonoption = arg;
+      // The command words and the terminator are not find tokens.
+      while (i + 1 < args.size()) {
+        ++i;
+        if (args[i] == ";" || args[i] == "+") break;
+      }
+      continue;
+    }
+    // Any other token — a test, an action, punctuation, or an
+    // unrecognized token the expression parser will report — is a
+    // non-option argument for warning purposes: found_parser records
+    // the first one's own spelling (e.g. "-name").
+    if (!first_nonoption) first_nonoption = arg;
+    if (predicate_takes_value(arg) && i + 1 < args.size()) ++i;
+  }
+}
+
 auto build_config(const CommandContext<FIND_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
   Config cfg;
+
+  warn_about_global_option_positions(std::span<const std::string_view>(
+      ctx.raw_args.data(), ctx.raw_args.size()));
 
   if (auto u = is_unsupported_used(ctx); u.has_value()) {
     return std::unexpected(*u);
