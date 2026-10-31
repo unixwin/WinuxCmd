@@ -11,8 +11,10 @@ using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
 constexpr auto TIME_OPTIONS =
-    // [GNU] -p, --posix
-    std::array{OPTION("-p", "--posix", "report timing in POSIX format")};
+    // [GNU] -p, --posix (GNU time spells the long form --portability)
+    std::array{OPTION("-p", "--posix",
+                      "use the portable output format (POSIX 1003.2 "
+                      "style: real, user and sys, in seconds)")};
 
 namespace time_pipeline {
 namespace cp = core::pipeline;
@@ -174,6 +176,13 @@ REGISTER_COMMAND(
     "\n"
     "With -p, print the same three lines in the POSIX 1003.2 style required\n"
     "by GNU time's --portability option.\n"
+    "\n"
+    "Times are printed in seconds with three decimal places; the default\n"
+    "format appends 's' to each value, the -p format does not.\n"
+    "\n"
+    "The exit status is that of COMMAND if it was invoked; otherwise 127\n"
+    "if COMMAND could not be found, 126 if it could be found but could\n"
+    "not be invoked, and 125 if time itself failed.\n"
     "\n"
     "[DIFFERS] GNU Time options that select the output format or destination\n"
     "(-f/--format, -o/--output, -a/--append, -v/--verbose, -q/--quiet) are\n"

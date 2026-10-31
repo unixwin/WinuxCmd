@@ -1,0 +1,7 @@
+cmd: locate
+args: -l 0 -d empty.db needle
+timeout: 10
+setup: |
+  printf '' > empty.db
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w5 locate limit-zero exit-status

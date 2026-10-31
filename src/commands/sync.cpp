@@ -21,14 +21,9 @@ using cmd::meta::OptionType;
 namespace {
 
 std::string format_open_error(const std::string& path, DWORD error) {
-  switch (error) {
-    case ERROR_FILE_NOT_FOUND:
-    case ERROR_PATH_NOT_FOUND:
-    case ERROR_INVALID_NAME:
-      return "error opening '" + path + "': No such file or directory";
-    default:
-      return "error opening '" + path + "'";
-  }
+  // [GNU] "error opening %s" always carries the errno text
+  // (sync.c:112); unmapped errors used to lose the reason entirely.
+  return "error opening '" + path + "': " + win32_posix_error_text(error);
 }
 
 }  // namespace
@@ -76,8 +71,9 @@ REGISTER_COMMAND(
       ctx.get<bool>("--file-system", false) || ctx.get<bool>("-f", false);
 
   if (sync_data && sync_fs) {
+    // [GNU] sync.c:209-211 wording.
     cp::Result<int> result = std::unexpected<cp::Error>(
-        "options --data and --file-system are mutually exclusive");
+        "cannot specify both --data and --file-system");
     cp::report_error(result, L"sync");
     return 1;
   }
@@ -130,13 +126,15 @@ REGISTER_COMMAND(
         // FlushFileBuffers() as a best-effort approximation.
       }
 
-      if (std::filesystem::is_directory(fs_path, path_ec)) {
-        continue;
-      }
-
-      HANDLE hFile = CreateFileW(fs_path.c_str(), GENERIC_WRITE,
-                                 FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-                                 OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+      // [GNU] Directories are ordinary operands (open + fsync on the
+      // directory); they used to be skipped silently, so
+      // `sync somedir` flushed nothing at all.
+      const bool is_dir = std::filesystem::is_directory(fs_path, path_ec);
+      HANDLE hFile = CreateFileW(
+          fs_path.c_str(), GENERIC_WRITE,
+          FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+          is_dir ? FILE_FLAG_BACKUP_SEMANTICS : FILE_ATTRIBUTE_NORMAL,
+          nullptr);
 
       if (hFile == INVALID_HANDLE_VALUE) {
         auto err = format_open_error(exp, GetLastError());
@@ -147,8 +145,11 @@ REGISTER_COMMAND(
       }
 
       if (!FlushFileBuffers(hFile)) {
+        DWORD flush_error = GetLastError();
         CloseHandle(hFile);
-        auto err = std::string("failed to flush '") + exp + "'";
+        // [GNU] "error syncing %s" + errno text (sync.c:154).
+        auto err = std::string("error syncing '") + exp +
+                   "': " + win32_posix_error_text(flush_error);
         cp::Result<int> result = std::unexpected(err);
         cp::report_error(result, L"sync");
         had_error = true;

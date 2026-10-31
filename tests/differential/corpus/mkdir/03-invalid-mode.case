@@ -1,0 +1,5 @@
+cmd: mkdir
+args: -m 888 newdir
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w1 oracle-coreutils-9.4 mkdir.c:290 invalid-mode-names-operand

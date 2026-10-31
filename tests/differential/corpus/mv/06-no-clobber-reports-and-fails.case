@@ -1,0 +1,8 @@
+cmd: mv
+args: -n src.txt dst.txt
+timeout: 10
+setup: |
+  printf 'new' > src.txt
+  printf 'old' > dst.txt
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w1 oracle-coreutils-9.4 copy.c:2438 not-replacing-exit-1

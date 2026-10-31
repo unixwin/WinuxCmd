@@ -1,0 +1,7 @@
+cmd: shred
+args: -n -1 f
+timeout: 10
+setup: |
+  printf 'secret' > f
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w1 oracle-coreutils-9.4 shred.c:1192-1196 xdectoumax-overflow

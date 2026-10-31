@@ -1206,3 +1206,110 @@ TEST(sort, sort_human_numeric_rank_dominates_magnitude_issue1371) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "-2G\n-1M\n-1500K\n");
 }
+
+#include <algorithm>
+#include <cstdio>
+
+// #1127-P4: an explicit tiny -S is honored literally now (it was
+// validated and dropped before), forcing many external runs; the
+// merged output must be identical to the default budget's, and the
+// same holds for --stable order across run boundaries and for the
+// percent and long-option spellings of the hint.
+TEST(sort, sort_buffer_size_forms_all_agree_issue1127) {
+  TempDir tmp;
+  std::string content;
+  std::vector<std::string> lines;
+  for (int i = 0; i < 200; ++i) {
+    std::string line = "k" + std::to_string((i * 37) % 10) + " v" +
+                       std::to_string(i);
+    lines.push_back(line);
+    content += line + "\n";
+  }
+  tmp.write("in.txt", content);
+
+  auto sorted_copy = lines;
+  std::sort(sorted_copy.begin(), sorted_copy.end());
+  std::string expected;
+  for (const auto& line : sorted_copy) expected += line + "\n";
+
+  const std::vector<std::vector<std::wstring>> arg_sets = {
+      {L"in.txt"},
+      {L"-S64", L"in.txt"},
+      {L"-S1K", L"in.txt"},
+      {L"-S1%", L"in.txt"},
+      {L"--buffer-size=2MiB", L"in.txt"},
+  };
+  for (const auto& args : arg_sets) {
+    Pipeline p;
+    p.set_cwd(tmp.wpath());
+    p.add(L"sort.exe", args);
+    auto r = p.run();
+    EXPECT_EQ(r.exit_code, 0);
+    EXPECT_EQ_TEXT(r.stdout_text, expected);
+  }
+}
+
+TEST(sort, sort_stable_order_survives_tiny_buffer_issue1127) {
+  TempDir tmp;
+  std::string content;
+  std::vector<std::string> lines;
+  for (int i = 0; i < 120; ++i) {
+    std::string line = "k" + std::to_string((i * 53) % 7) + " v" +
+                       std::to_string(i);
+    lines.push_back(line);
+    content += line + "\n";
+  }
+  tmp.write("in.txt", content);
+
+  auto stable_copy = lines;
+  std::stable_sort(stable_copy.begin(), stable_copy.end(),
+                   [](const std::string& a, const std::string& b) {
+                     return a.substr(0, a.find(' ')) <
+                            b.substr(0, b.find(' '));
+                   });
+  std::string expected;
+  for (const auto& line : stable_copy) expected += line + "\n";
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sort.exe", {L"-s", L"-k", L"1,1", L"-S64", L"in.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, expected);
+}
+
+// #1127-P4: the adaptive default budget (previously a hardcoded 8 MiB
+// chunk) must keep multi-run output exact on an input larger than the
+// old chunk size.
+TEST(sort, sort_adaptive_budget_large_input_issue1127) {
+  TempDir tmp;
+  // 500k fixed-width records in a deterministic scrambled order.
+  std::string content;
+  content.reserve(500000 * 9);
+  for (int i = 0; i < 500000; ++i) {
+    const int v = static_cast<int>((static_cast<long long>(i) * 48271) %
+                                   500000);
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "n%07d\n", v);
+    content += buf;
+  }
+  tmp.write("big.txt", content);
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sort.exe", {L"big.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // (i * 48271) mod 500000 is a permutation (48271 is coprime to
+  // 500000), so the sorted output is the ascending sequence itself.
+  std::string expected;
+  expected.reserve(500000 * 9);
+  for (int i = 0; i < 500000; ++i) {
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "n%07d\n", i);
+    expected += buf;
+  }
+  EXPECT_EQ_TEXT(r.stdout_text, expected);
+}

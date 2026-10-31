@@ -1,0 +1,5 @@
+cmd: mkfifo
+args: -m 0400 p1
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w1 oracle-coreutils-9.4 mkfifo.c:151-165 mode-value-evaluated
