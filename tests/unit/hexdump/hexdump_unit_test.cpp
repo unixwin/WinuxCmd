@@ -393,8 +393,14 @@ TEST(hexdump, hexdump_skip_accepts_octal) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
+  // [GNU] partial-block padding per text-utils/hexdump-display.c:
+  // each missing 2-byte unit is bpad()'d to "%4s " (bpad,
+  // hexdump-display.c:215-240; print F_BPAD :123-125) = 5 spaces,
+  // and the last rep's separator is suppressed via nospace
+  // (hexdump-display.c:269-279). Six units are missing here:
+  // "0064" + its separator (1) + 5 units x 5 + last unit (4) = 30.
   EXPECT_EQ_TEXT(r.stdout_text,
-                 std::string("0000008 6c72 0064") + std::string(25, ' ') +
+                 std::string("0000008 6c72 0064") + std::string(30, ' ') +
                      "\n000000b\n");
 }
 
