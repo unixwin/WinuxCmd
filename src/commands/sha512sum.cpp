@@ -10,11 +10,11 @@
 
 #include "pch/pch.h"
 // include other header after pch.h
-#include <wincrypt.h>
+#include <bcrypt.h>
 
 #include "core/command_macros.h"
 
-#pragma comment(lib, "advapi32.lib")
+#pragma comment(lib, "bcrypt.lib")
 
 import std;
 import core;
@@ -180,51 +180,61 @@ auto input_open_error(const std::string& filename) -> std::string {
   return filename + ": " + portable_digest::open_error_reason(filename);
 }
 
-// Calculate SHA512 hash using Windows CryptoAPI
+// Calculate SHA512 hash using Windows CNG (BCrypt)
 auto calculate_sha512(const std::string& filename, bool text_mode = false)
     -> cp::Result<std::string> {
-  HCRYPTPROV hProv = 0;
-  HCRYPTHASH hHash = 0;
+  BCRYPT_ALG_HANDLE hAlg = nullptr;
+  BCRYPT_HASH_HANDLE hHash = nullptr;
 
-  // Open cryptographic provider
-  // Note: SHA512 requires PROV_RSA_AES or a SHA512-capable provider
-  if (!CryptAcquireContext(&hProv, NULL, NULL, PROV_RSA_AES,
-                           CRYPT_VERIFYCONTEXT)) {
+  // [perf #1127-P4] CNG replaces the deprecated CryptoAPI provider path
+  // (roadmap item 5): BCrypt dispatches to the hardware implementation
+  // (SHA-NI where the CPU offers it) for the same digest, and the feed
+  // buffer grows from 8 KiB to 64 KiB. The shape mirrors the in-repo
+  // BCrypt idiom of wpm.cpp (sha256_file); the error strings remain the
+  // historical ones so failure output does not change.
+  if (BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_SHA512_ALGORITHM, nullptr, 0) != 0) {
     return std::unexpected("failed to acquire cryptographic context");
   }
 
-  // Create hash object using SHA512
-  if (!CryptCreateHash(hProv, CALG_SHA_512, 0, 0, &hHash)) {
-    CryptReleaseContext(hProv, 0);
+  DWORD object_size = 0;
+  DWORD data_size = 0;
+  BCryptGetProperty(hAlg, BCRYPT_OBJECT_LENGTH,
+                    reinterpret_cast<PUCHAR>(&object_size),
+                    sizeof(object_size), &data_size, 0);
+  std::vector<UCHAR> hash_object(object_size);
+  if (BCryptCreateHash(hAlg, &hHash, hash_object.data(), object_size,
+                       nullptr, 0, 0) != 0) {
+    BCryptCloseAlgorithmProvider(hAlg, 0);
     return std::unexpected("failed to create hash object");
   }
+  auto destroy_hash = [&] {
+    BCryptDestroyHash(hHash);
+    BCryptCloseAlgorithmProvider(hAlg, 0);
+  };
 
-  bool success = false;
   if (filename == "-" || filename.empty()) {
     // [GNU] closed stdin (<&-) reports "-: Bad file descriptor" rather
     // than hashing an empty stream.
     if (file_io::stdin_is_bad()) {
+      destroy_hash();
       return std::unexpected(std::string(filename.empty() ? "-" : filename) +
                              ": Bad file descriptor");
     }
     // Read from stdin.  [#1200] fd 0 uses the CRT's text mode by default,
     // where fread() silently stops at the first 0x1A (Ctrl-Z) byte; like
     // GNU, the digest must hash raw bytes, so switch stdin to binary mode
-    // before reading (same idiom as cat/wc/tr; the shared
-    // hash_file_hex helper does not cover this CryptoAPI path).
+    // before reading (same idiom as cat/wc/tr).
     _setmode(_fileno(stdin), _O_BINARY);
-    std::array<char, 8192> buffer;
+    std::array<char, 64 * 1024> buffer;
     size_t bytes_read;
 
     while ((bytes_read = fread(buffer.data(), 1, buffer.size(), stdin)) > 0) {
-      if (!CryptHashData(hHash, reinterpret_cast<BYTE*>(buffer.data()),
-                         static_cast<DWORD>(bytes_read), 0)) {
-        CryptDestroyHash(hHash);
-        CryptReleaseContext(hProv, 0);
+      if (BCryptHashData(hHash, reinterpret_cast<PUCHAR>(buffer.data()),
+                         static_cast<ULONG>(bytes_read), 0) != 0) {
+        destroy_hash();
         return std::unexpected("failed to hash data");
       }
     }
-    success = true;
   } else {
     // Read from file.  [GNU] -t/--text changes only the output marker,
     // never the bytes hashed: coreutils hashes raw file bytes in both
@@ -232,39 +242,34 @@ auto calculate_sha512(const std::string& filename, bool text_mode = false)
     std::ifstream file(native_path::normalize_api_operand(filename),
                        std::ios::binary);
     if (!file) {
-      CryptDestroyHash(hHash);
-      CryptReleaseContext(hProv, 0);
+      destroy_hash();
       return std::unexpected(input_open_error(filename));
     }
 
-    std::array<char, 8192> buffer;
+    std::array<char, 64 * 1024> buffer;
     while (file) {
       file.read(buffer.data(), buffer.size());
       std::streamsize bytes_read = file.gcount();
       if (bytes_read > 0) {
-        if (!CryptHashData(hHash, reinterpret_cast<BYTE*>(buffer.data()),
-                           static_cast<DWORD>(bytes_read), 0)) {
-          CryptDestroyHash(hHash);
-          CryptReleaseContext(hProv, 0);
+        if (BCryptHashData(hHash, reinterpret_cast<PUCHAR>(buffer.data()),
+                           static_cast<ULONG>(bytes_read), 0) != 0) {
+          destroy_hash();
           return std::unexpected("failed to hash data");
         }
       }
     }
-    success = !file.fail();
   }
 
   // Get hash value
   DWORD hash_len = 64;  // SHA512 produces 64 bytes
   std::array<BYTE, 64> hash_value{};
 
-  if (!CryptGetHashParam(hHash, HP_HASHVAL, hash_value.data(), &hash_len, 0)) {
-    CryptDestroyHash(hHash);
-    CryptReleaseContext(hProv, 0);
+  if (BCryptFinishHash(hHash, hash_value.data(), hash_len, 0) != 0) {
+    destroy_hash();
     return std::unexpected("failed to get hash value");
   }
 
-  CryptDestroyHash(hHash);
-  CryptReleaseContext(hProv, 0);
+  destroy_hash();
 
   // Convert to hex string
   std::string result;

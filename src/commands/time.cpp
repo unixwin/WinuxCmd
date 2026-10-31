@@ -18,7 +18,9 @@ constexpr auto TIME_OPTIONS = std::array{
     // [GNU] -p, --portability: report timing in POSIX format.
     // GNU time's long name for -p is --portability; --posix is
     // kept as a compatibility alias.
-    OPTION("-p", "--portability", "report timing in POSIX format"),
+    OPTION("-p", "--portability",
+           "use the portable output format (POSIX 1003.2 "
+           "style: real, user and sys, in seconds)"),
     OPTION("", "--posix", "same as --portability"),
     // [GNU] -f, --format FORMAT
     OPTION("-f", "--format",
@@ -459,13 +461,21 @@ REGISTER_COMMAND(
     "  sys  <system cpu time in seconds>\n"
     "\n"
     "With -p/--portability, the same three lines use the POSIX 1003.2\n"
-    "style.  With -f/--format, FORMAT selects the output instead: the\n"
+    "style required by GNU time's --portability option.  Times are\n"
+    "printed in seconds with three decimal places; the default format\n"
+    "appends 's' to each value, the -p format does not.\n"
+    "\n"
+    "With -f/--format, FORMAT selects the output instead: the\n"
     "resource specifiers %e (real), %E (real, [h:]m:ss), %U (user), %S\n"
     "(system), %P (percent of CPU), %M (maximum resident set size in\n"
     "Kbytes), %Z (page size), %R (minor page faults), %x (exit status)\n"
     "and %C (command line) are expanded; specifiers whose counters have\n"
     "no Windows source (%K %D %p %X %F %W %c %w %I %O %r %s %k) expand\n"
-    "to 0.  With -v/--verbose, a full field-by-field report is printed.",
+    "to 0.  With -v/--verbose, a full field-by-field report is printed.\n"
+    "\n"
+    "The exit status is that of COMMAND if it was invoked; otherwise 127\n"
+    "if COMMAND could not be found, 126 if it could be found but could\n"
+    "not be invoked, and 125 if time itself failed.",
     "  time true\n"
     "  time -p cmd.exe /c exit 7\n"
     "  time -o report.txt -f \"elapsed %e, status %x\" dir",
