@@ -1,0 +1,5 @@
+cmd: df
+args: -t SOMEFS -x SOMEFS .
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w1 oracle-coreutils-9.4 df.c:1749-1770 type-both-selected-excluded
