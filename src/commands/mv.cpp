@@ -576,7 +576,13 @@ auto backup_existing_destination(
     -> cp::Result<std::optional<std::string>> {
   auto control = mv_make_backups(ctx);
   if (!control) return std::unexpected(control.error());
-  if (!control.has_value()) return std::nullopt;
+  // The engagement test is on the optional inside the Result, not on
+  // the Result itself: has_value() on std::expected only says "no
+  // error" and is true even when no backup was requested, which made
+  // every overwrite create one.  GNU makes a backup only when one is
+  // requested (mv.c:315 make_backups defaults to false; mv.c:519-522
+  // backup_type stays no_backups otherwise).
+  if (!control->has_value()) return std::nullopt;
   if (GetFileAttributesW(dest_path.c_str()) == INVALID_FILE_ATTRIBUTES) {
     return std::nullopt;
   }
@@ -1102,14 +1108,12 @@ auto process_command(const CommandContext<N>& ctx) -> cp::Result<bool> {
           if (!control) {
             return std::unexpected(control.error());
           }
-          // TEMP-DIAG (audit-w1): report the conflict-check verdict.
-          safeErrorPrint("DIAG mv conflict control has_value=");
-          safeErrorPrint(control.has_value() ? "1" : "0");
-          safeErrorPrint(" mode=");
-          safeErrorPrint(std::to_string(
-              static_cast<int>(*overwrite_mode)));
-          safeErrorPrint("\n");
-          if (control.has_value() &&
+          // As in backup_existing_destination, the engagement test is
+          // on the optional inside the Result: testing the Result
+          // itself made the conflict fire for every bare -n.  GNU
+          // fires it only when backups were actually requested
+          // (mv.c:512-515: make_backups && I_ALWAYS_NO).
+          if (control->has_value() &&
               *overwrite_mode == OverwriteMode::no_clobber) {
             return std::unexpected(
                 "options --backup and --no-clobber are mutually exclusive\n"
