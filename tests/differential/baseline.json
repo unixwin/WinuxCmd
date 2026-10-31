@@ -460,6 +460,26 @@
       "bucket": "PASS",
       "command": "stat"
     },
+    "corpus/stdbuf/01-input-line-rejected.case": {
+      "bucket": "PASS",
+      "command": "stdbuf"
+    },
+    "corpus/stdbuf/02-gnu-env-contract.case": {
+      "bucket": "PASS",
+      "command": "stdbuf"
+    },
+    "corpus/stdbuf/03-bare-suffix-invalid.case": {
+      "bucket": "PASS",
+      "command": "stdbuf"
+    },
+    "corpus/stdbuf/04-mode-required.case": {
+      "bucket": "PASS",
+      "command": "stdbuf"
+    },
+    "corpus/stdbuf/05-double-zero-size.case": {
+      "bucket": "PASS",
+      "command": "stdbuf"
+    },
     "corpus/sum/39-fixed.case": {
       "bucket": "PASS",
       "command": "sum"
