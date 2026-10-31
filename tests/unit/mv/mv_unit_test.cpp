@@ -272,6 +272,8 @@ TEST(mv, mv_no_clobber_keeps_existing_destination) {
 
   auto r = p.run();
 
+  TEST_LOG("mv -n stderr", r.stderr_text);
+
   // [GNU] The skip is reported and the exit status is failure.
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_NE(r.stderr_text.find("not replacing 'dest.txt'"),
@@ -290,6 +292,8 @@ TEST(mv, mv_last_overwrite_option_can_select_no_clobber) {
   p.add(L"mv.exe", {L"source.txt", L"dest.txt", L"-f", L"-i", L"-n"});
 
   auto r = p.run();
+
+  TEST_LOG("mv -f -i -n stderr", r.stderr_text);
 
   // [GNU] Last overwrite option wins: -n skips, reports, and fails.
   EXPECT_EQ(r.exit_code, 1);
