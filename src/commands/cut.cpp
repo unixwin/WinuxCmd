@@ -253,13 +253,12 @@ auto build_config(const CommandContext<CUT_OPTIONS.size()>& ctx)
   // [GNU] ANY second list option -- even a repetition of the same
   // one, even with an empty value -- is fatal (cut.c:515-527), and
   // presence, not a non-empty value, is what counts (audit #1462).
+  // Count OCCURRENCES via ctx.count: the framework resolves the
+  // short and long spelling of an option to the SAME meta slot, so
+  // summing get_all() over both spellings counts every occurrence
+  // twice and made every valid list fatal.
   const size_t list_count =
-      ctx.get_all<std::string>("--bytes").size() +
-      ctx.get_all<std::string>("-b").size() +
-      ctx.get_all<std::string>("--characters").size() +
-      ctx.get_all<std::string>("-c").size() +
-      ctx.get_all<std::string>("--fields").size() +
-      ctx.get_all<std::string>("-f").size();
+      ctx.count({"--bytes", "-b", "--characters", "-c", "--fields", "-f"});
   if (list_count == 0) {
     return std::unexpected(
         "you must specify a list of bytes, characters, or fields");
