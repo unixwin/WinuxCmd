@@ -1,0 +1,88 @@
+name: Benchmark Speed Matrix
+
+# #1127 P4: report-only speed matrix (WinuxCmd vs GNU vs uutils) for the
+# performance-roadmap hot paths. Deliberately NOT a merge gate: wall
+# clock on shared runners is too noisy to fail builds on (see
+# tests/benchmark/README.md). The job summary carries the baseline
+# comparison so regressions stay visible in every run.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 5 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  speed-matrix:
+    runs-on: windows-2025
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Locate Visual Studio toolchain
+        id: locate_vcvars
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) {
+            throw "vswhere.exe not found at $vswhere"
+          }
+          $vcvarsPath = & $vswhere `
+            -latest `
+            -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -find "VC\Auxiliary\Build\vcvarsall.bat" |
+            Select-Object -First 1
+          if ([string]::IsNullOrWhiteSpace($vcvarsPath)) {
+            throw "Failed to locate vcvarsall.bat via vswhere"
+          }
+          "vcvars_path=$vcvarsPath" >> $env:GITHUB_OUTPUT
+
+      - name: Configure CMake (Release, x64)
+        shell: cmd
+        run: |
+          call "${{ steps.locate_vcvars.outputs.vcvars_path }}" x64
+          cmake -B build-x64 ^
+            -G "Ninja" ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_C_COMPILER_TARGET=x64 ^
+            -DCMAKE_CXX_COMPILER_TARGET=x64 ^
+            -DWINUXCMD_PACKAGE_ARCH=x64 ^
+            -DBUILD_MODE=RELEASE ^
+            -DUSE_STATIC_CRT=ON ^
+            -DENABLE_TESTS=OFF ^
+            -DCMAKE_CXX_STANDARD=23 ^
+            -DCMAKE_CXX_STANDARD_REQUIRED=ON ^
+            -DCMAKE_EXPERIMENTAL_CXX_MODULE_STD=ON ^
+            -DCMAKE_CXX_MODULE_STD=ON ^
+            -DCMAKE_CXX_FLAGS="/std:c++latest /EHsc"
+
+      - name: Build Project
+        shell: cmd
+        working-directory: build-x64
+        run: |
+          call "${{ steps.locate_vcvars.outputs.vcvars_path }}" x64
+          cmake --build . --config Release --parallel %NUMBER_OF_PROCESSORS%
+
+      - name: Run speed matrix (report-only)
+        shell: pwsh
+        run: |
+          python scripts/benchmark-speed-matrix.py `
+            --build-dir build-x64 `
+            --baseline tests/benchmark/baseline.json `
+            --json speed-matrix.json `
+            --markdown speed-matrix.md
+          Get-Content speed-matrix.md >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Upload matrix artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: speed-matrix
+          path: |
+            speed-matrix.json
+            speed-matrix.md

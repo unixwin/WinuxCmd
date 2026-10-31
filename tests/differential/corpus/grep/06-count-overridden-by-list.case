@@ -1,0 +1,7 @@
+cmd: grep
+args: -c -l needle hay.txt
+timeout: 10
+setup: |
+  printf 'needle\nneedle again\nhay\n' > hay.txt
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w5 grep count list-files

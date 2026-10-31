@@ -18,19 +18,26 @@ auto constexpr MAN_OPTIONS = std::array{
     // [EXT]
     OPTION("-l", "--list", "list all available commands"),
     // [GNU]
-    OPTION("-w", "--where", "print physical location of manual page"),
+    OPTION("-w", "--where",
+           "do not display the manual page, but print the location of "
+           "the page that would be displayed"),
     // [GNU]
-    OPTION("-P", "--pager", "use program PAGER to display output", STRING_TYPE),
+    OPTION("-P", "--pager",
+           "use program PAGER to display output [DIFFERS: accepted, but "
+           "the built-in pager is always used]",
+           STRING_TYPE),
     // [GNU]
     OPTION("-t", "--troff",
-           "use groff to format pages [DIFFERS: not available on Windows]"),
+           "use groff -mandoc to format the manual page to stdout "
+           "[DIFFERS: not available on Windows]"),
     // [GNU]
-    OPTION(
-        "-T", "--troff-device",
-        "use groff with selected device [DIFFERS: not available on Windows]"),
+    OPTION("-T", "--troff-device",
+           "change groff output to be suitable for a device other than "
+           "the default; implies -t [DIFFERS: not available on Windows]"),
     // [GNU]
     OPTION("-H", "--html",
-           "display HTML output [DIFFERS: not available on Windows]"),
+           "have groff produce HTML output and display it in a web "
+           "browser [DIFFERS: not available on Windows]"),
 };
 
 REGISTER_COMMAND(man,
