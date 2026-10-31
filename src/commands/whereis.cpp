@@ -270,6 +270,22 @@ auto join_path(const std::string& dir, const std::string& name,
   return hits;
 }
 
+// [GNU] whereis.c stores every dirlist entry canonicalized
+// (dirlist construction, whereis.c:254: ls->path =
+// canonicalize_path(dir)): -B/-M/-S directories and defaults alike are
+// resolved to absolute form before searching, and hit paths print in
+// that form.  canonicalize_path falls back to the input unchanged when
+// realpath fails (lib/canonicalize.c), mirrored here.
+auto canonical_dir(const std::string& dir) -> std::string {
+  std::error_code ec;
+  auto canon = std::filesystem::canonical(
+      std::filesystem::u8path(native_path::normalize_api_operand(dir)), ec);
+  if (ec) return dir;
+  std::string out = wstring_to_utf8(canon.wstring());
+  std::replace(out.begin(), out.end(), '\\', '/');
+  return out;
+}
+
 // Default binary search directories on Windows.
 auto default_bin_dirs() -> std::vector<std::string> {
   std::vector<std::string> dirs;
@@ -359,6 +375,10 @@ auto run(const Config& cfg) -> int {
       cfg.src_replaced
           ? std::vector<std::string>(cfg.src_dirs.begin(), cfg.src_dirs.end())
           : default_src_dirs();
+
+  for (auto& d : bin_dirs) d = canonical_dir(d);
+  for (auto& d : man_dirs) d = canonical_dir(d);
+  for (auto& d : src_dirs) d = canonical_dir(d);
 
   dedupe_paths(bin_dirs);
   dedupe_paths(man_dirs);
