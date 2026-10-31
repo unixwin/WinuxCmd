@@ -151,9 +151,15 @@ TEST(b2sum, b2sum_length_rejects_values_above_512_bits) {
   p.add(L"b2sum.exe", {L"-l", L"520"});
   auto r = p.run();
 
+  // [GNU] digest.c:1478-1485: a length above BLAKE2B_MAX_LEN*8 is rejected
+  // with "invalid length: '<arg>'" followed by "maximum digest length for
+  // 'BLAKE2b' is 512 bits". (520 is a multiple of 8, so the parse-time
+  // multiple-of-8 stage at digest.c:1399-1402 does not fire.)
   EXPECT_NE(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.find("invalid length: '520'") !=
+              std::string::npos);
   EXPECT_TRUE(
-      r.stderr_text.find("digest length must be a positive multiple of 8") !=
+      r.stderr_text.find("maximum digest length for 'BLAKE2b' is 512 bits") !=
       std::string::npos);
 }
 
