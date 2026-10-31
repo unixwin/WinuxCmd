@@ -328,7 +328,8 @@ auto glob_hits_in_dir(const std::string& dir, const std::string& pattern)
   auto base = std::filesystem::u8path(native_path::normalize_api_operand(dir));
   for (const auto& entry : std::filesystem::directory_iterator(base, ec)) {
     if (!entry.is_regular_file(ec)) continue;
-    std::string filename = entry.path().filename().u8string();
+    std::string filename =
+        wstring_to_utf8(entry.path().filename().wstring());
     std::string stem = filename;
     if (auto dot = filename.rfind('.'); dot != std::string::npos && dot != 0) {
       stem = filename.substr(0, dot);
