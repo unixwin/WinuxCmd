@@ -209,7 +209,11 @@ TEST(uniq, uniq_group_rejects_invalid_method) {
 
   EXPECT_NE(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.empty());
-  EXPECT_TRUE(r.stderr_text.find("invalid grouping method") !=
+  // [GNU] uniq.c XARGMATCH ("--group", ...) over the table at
+  // uniq.c (prepend/append/separate/both): the argmatch shape is
+  // "invalid argument '<v>' for '--group'" plus the valid list;
+  // no "invalid grouping method" text exists in GNU uniq.
+  EXPECT_TRUE(r.stderr_text.find("invalid argument 'bad' for '--group'") !=
               std::string::npos);
 }
 

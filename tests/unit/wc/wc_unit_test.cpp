@@ -277,7 +277,7 @@ TEST(wc, wc_files0_from_stdin_reads_nul_terminated_names) {
   EXPECT_TRUE(r.stdout_text.find("3 total") != std::string::npos);
 }
 
-TEST(wc, wc_files0_from_empty_file_is_an_error) {
+TEST(wc, wc_files0_from_empty_file_succeeds) {
   TempDir tmp;
   tmp.write_bytes("list.bin", {});
 
@@ -287,12 +287,15 @@ TEST(wc, wc_files0_from_empty_file_is_an_error) {
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 1);
+  // [GNU] wc.c: an empty --files0-from stream means "read
+  // nothing" -- no stdin fallback, no diagnostic, exit 0
+  // (verified against coreutils 9.4: rc=0, silent).
+  EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.empty());
   EXPECT_TRUE(r.stderr_text.empty());
 }
 
-TEST(wc, wc_files0_from_empty_stdin_is_an_error) {
+TEST(wc, wc_files0_from_empty_stdin_succeeds) {
   TempDir tmp;
 
   Pipeline p;
@@ -302,7 +305,8 @@ TEST(wc, wc_files0_from_empty_stdin_is_an_error) {
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 1);
+  // [GNU] wc.c: same empty-stream contract as the file form.
+  EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.empty());
   EXPECT_TRUE(r.stderr_text.empty());
 }
@@ -363,8 +367,13 @@ TEST(wc, wc_files0_from_rejects_named_operands) {
   auto r = p.run();
 
   EXPECT_NE(r.exit_code, 0);
-  EXPECT_TRUE(r.stderr_text.find("--files0-from disallows") !=
-              std::string::npos);
+  // [GNU] wc.c: the exact two-line diagnostic -- "extra operand
+  // '<name>'" then the cannot-be-combined line (the old pin's
+  // "--files0-from disallows" text is a pre-9.x shape).
+  EXPECT_TRUE(r.stderr_text.find("extra operand") != std::string::npos);
+  EXPECT_TRUE(
+      r.stderr_text.find("file operands cannot be combined with "
+                         "--files0-from") != std::string::npos);
 }
 
 TEST(wc, wc_files0_from_reports_gnu_shaped_missing_list_diagnostic) {
@@ -378,9 +387,13 @@ TEST(wc, wc_files0_from_reports_gnu_shaped_missing_list_diagnostic) {
 
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_TRUE(r.stdout_text.empty());
-  EXPECT_TRUE(
-      r.stderr_text.find("wc: missing.bin: No such file or directory") !=
-      std::string::npos);
+  // [GNU] wc.c: an unopenable LIST file takes the "cannot open
+  // '<F>' for reading" shape (wc.c fopen branch), not the operand
+  // shape "wc: <F>: <reason>" the old pin asserted.
+  EXPECT_TRUE(r.stderr_text.find("wc: cannot open 'missing.bin' for "
+                                 "reading") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("No such file or directory") !=
+              std::string::npos);
 }
 
 TEST(wc, wc_files0_from_reports_directory_list_input) {
@@ -395,8 +408,14 @@ TEST(wc, wc_files0_from_reports_directory_list_input) {
 
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_TRUE(r.stdout_text.empty());
-  EXPECT_TRUE(r.stderr_text.find("wc: indir: Is a directory") !=
+  // [GNU] wc.c: on POSIX the directory list fails at read time
+  // ("<F>: read error: Is a directory"); a directory cannot be
+  // opened for reading on Windows at all, so the reachable GNU
+  // branch here is the cannot-open one -- with the true reason.
+  // The old pin's "wc: indir: Is a directory" matches neither.
+  EXPECT_TRUE(r.stderr_text.find("wc: cannot open 'indir' for reading") !=
               std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("Is a directory") != std::string::npos);
 }
 
 TEST(wc, wc_reports_gnu_shaped_missing_input_diagnostic) {
@@ -443,8 +462,12 @@ TEST(wc, wc_reports_is_a_directory_for_directory_input) {
 
   auto r = p.run();
 
+  // [GNU] wc.c wc(): the read fails EISDIR and is diagnosed, but
+  // the (zero) count line is still written -- only the exit
+  // status fails (verified against coreutils 9.4).
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stdout_text.find("0 0 0") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("indir") != std::string::npos);
   EXPECT_TRUE(r.stderr_text.find("wc: indir: Is a directory") !=
               std::string::npos);
 }
