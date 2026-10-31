@@ -388,11 +388,16 @@ struct Filter {
         case '\033': {  // ESC: col.c:411-426
           if (i + 1 >= input.size()) break;
           unsigned char next = static_cast<unsigned char>(input[++i]);
-          if (next == '7')       // RLF
+          // [GNU] the recognized second bytes are the CONTROL codes
+          // 007/010/011, not the ASCII digits '7'/'8'/'9': col.c:80-82
+          // defines RLF as '\a', RHLF as BS, FHLF as TAB (the historic
+          // ESC-7/8/9 notation names the control bytes).  An ESC
+          // followed by a digit is an unknown escape, swallowed whole.
+          if (next == '\a')       // RLF (ESC 007)
             cur_line -= 2;
-          else if (next == '8')  // RHLF
+          else if (next == '\b')  // RHLF (ESC 010)
             cur_line -= 1;
-          else if (next == '9')  // FHLF
+          else if (next == '\t')  // FHLF (ESC 011)
             forward(1);
           // Any other escape is swallowed whole (col.c:423-424).
           break;
@@ -438,10 +443,20 @@ struct Filter {
 
     // col.c:699-703: nothing was ever moved or written -> no output.
     if (max_line == 0 && cur_col == 0) return;
-    flush_rows(node_line - origin + 1);
+    // [GNU] col.c:705 flushes through the LAST BUFFERED line (main
+    // walks ctl.l to the end of the line list before flush_lines), not
+    // through the row of the last stored character: after a reverse
+    // feed moves the store point back up, rows below it still hold
+    // characters that must be emitted.
+    const long long last_line = rows.empty()
+                                    ? node_line
+                                    : origin + static_cast<long long>(rows.size()) - 1;
+    flush_rows(static_cast<long long>(rows.size()));
     if (last_alt) out.push_back('\017');  // leave the G0 set active
-    // Trailing blank lines (col.c:709-715): recomputed from max_line.
-    nblank = max_line - node_line;
+    // Trailing blank lines (col.c:709-715): recomputed from max_line
+    // against the last buffered line (col.c's this_line after the
+    // walk), not against the last store row.
+    nblank = max_line - last_line;
     if (max_line & 1)
       ++nblank;
     else if (!nblank)

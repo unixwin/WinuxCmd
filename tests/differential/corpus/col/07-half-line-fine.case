@@ -2,6 +2,6 @@ cmd: col
 oracle: linux
 args: -f
 stdin: |
-  a\x1b9b\n
+  a\x1b\x09b\n
 source: tests/differential/corpus/col/07-half-line-fine.case
 tags: gnu-compat col fine half-line audit-w7
