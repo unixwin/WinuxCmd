@@ -5,11 +5,18 @@
 /// @Description: Implementation for sdiff command.
 ///     Side-by-side merge of file differences following GNU diffutils
 ///     3.10: the display is exactly `diff --side-by-side` output (GNU
-///     sdiff execs diff for it), and -o writes a merged file.  Without a
-///     terminal on stdin GNU sdiff would prompt per change and quit on
-///     EOF; this implementation auto-merges instead (issue #1127 P1):
-///     clean changes take their only side, overlapping changes keep the
-///     left column.
+///     sdiff execs diff for it), and -o merges interactively with
+///     GNU's own protocol (sdiff.c edit loop): every change hunk is
+///     shown, a '%' prompt is printed, and a one-letter command is
+///     read from stdin - l/r pick a side, s/v toggle whether common
+///     lines are displayed, the e* family edits the hunk in $EDITOR,
+///     q quits with exit status 2 and the output file left partial.
+///     One deliberate deviation (issue #1127 P1): where GNU turns EOF
+///     at a prompt into q, WinuxCmd falls back to auto-merging the
+///     current and remaining hunks non-interactively (clean changes
+///     take their only side, overlapping changes keep the left
+///     column) and reports the completed merge's verdict, so -o stays
+///     usable from scripts that provide no interaction at all.
 /// @Version: 0.2.0
 /// @License: MIT
 /// @Copyright: Copyright © 2026 WinuxCmd
@@ -150,6 +157,425 @@ auto normalize_for_compare(const std::vector<std::string> &lines,
   return out;
 }
 
+// ======================================================
+// Positional sections over the raw edit script
+// ======================================================
+
+// GNU renders and merges from the change script AFTER the ignore
+// options have removed the hunks they cover (analyze.c): an ignored
+// hunk's lines stop being changes and join the common span around
+// them, pairing positionally there (side.c print_sdiff_common_lines).
+// A 1:1 edit list cannot express that asymmetric span, so sdiff
+// builds sections directly from the raw script: consecutive non-KEEP
+// runs become hunks (or vanish into the common flow when the ignore
+// predicate covers them), and each common span is the raw line range
+// between the surviving hunks, in each file independently.
+struct SdiffScript {
+  std::vector<de::SdiffSection> sections;
+  bool differ = false;  // a non-ignored hunk exists
+};
+
+auto build_sdiff_script(
+    const std::vector<de::Edit> &edits,
+    const std::vector<std::string> &lines1,
+    const std::vector<std::string> &lines2,
+    const std::function<bool(const std::vector<de::Edit> &,
+                             const std::vector<std::string> &,
+                             const std::vector<std::string> &, size_t, size_t)>
+        &hunk_is_ignored) -> SdiffScript {
+  SdiffScript script;
+  size_t common_left = 0;
+  size_t common_right = 0;
+  size_t k = 0;
+  auto flush_common = [&](size_t left_end, size_t right_end) {
+    if (left_end == common_left && right_end == common_right) return;
+    de::SdiffSection section;
+    section.is_hunk = false;
+    section.left_begin = common_left;
+    section.left_end = left_end;
+    section.right_begin = common_right;
+    section.right_end = right_end;
+    script.sections.push_back(section);
+    common_left = left_end;
+    common_right = right_end;
+  };
+  while (k < edits.size()) {
+    if (edits[k].type == de::EditType::KEEP) {
+      ++k;
+      continue;
+    }
+    const size_t run_begin = k;
+    // A change run's ranges: the DEL indices are contiguous in file1
+    // and the INS indices in file2; a side with no edits anchors at
+    // the other side's cursor in its own file.
+    size_t left_begin = edits[k].line1_index;
+    size_t left_end = left_begin;
+    size_t right_begin = edits[k].line2_index;
+    size_t right_end = right_begin;
+    while (k < edits.size() && edits[k].type != de::EditType::KEEP) {
+      if (edits[k].type == de::EditType::DEL) {
+        left_end = edits[k].line1_index + 1;
+      } else {
+        right_end = edits[k].line2_index + 1;
+      }
+      ++k;
+    }
+    if (hunk_is_ignored &&
+        hunk_is_ignored(edits, lines1, lines2, run_begin, k)) {
+      continue;  // the run's lines join the surrounding common span
+    }
+    flush_common(left_begin, right_begin);
+    de::SdiffSection hunk;
+    hunk.is_hunk = true;
+    hunk.left_begin = left_begin;
+    hunk.left_end = left_end;
+    hunk.right_begin = right_begin;
+    hunk.right_end = right_end;
+    script.sections.push_back(hunk);
+    script.differ = true;
+    common_left = left_end;
+    common_right = right_end;
+  }
+  flush_common(lines1.size(), lines2.size());
+  return script;
+}
+
+// ======================================================
+// Interactive merge (GNU sdiff.c interact + edit)
+// ======================================================
+
+// The help text GNU prints to stderr for an unrecognized or badly
+// terminated merge command (sdiff.c give_help), byte for byte.
+inline constexpr std::string_view kInteractHelp =
+    "\n"
+    "ed:\tEdit then use both versions, each decorated with a header.\n"
+    "eb:\tEdit then use both versions.\n"
+    "el or e1:\tEdit then use the left version.\n"
+    "er or e2:\tEdit then use the right version.\n"
+    "e:\tDiscard both versions then edit a new one.\n"
+    "l or 1:\tUse the left version.\n"
+    "r or 2:\tUse the right version.\n"
+    "s:\tSilently include common lines.\n"
+    "v:\tVerbosely include common lines.\n"
+    "q:\tQuit.\n";
+
+enum class MergeCommand {
+  Left,
+  Right,
+  Suppress,  // 's': stop displaying common lines, ask again
+  Verbose,   // 'v': display common lines, ask again
+  Quit,
+  EditDecorated,  // 'ed'
+  EditBoth,       // 'eb'
+  EditLeft,       // 'el' / 'e1'
+  EditRight,      // 'er' / 'e2'
+  EditNew,        // 'e'
+  EndOfInput,     // EOF: the caller switches to auto-merge (#1127 P1)
+};
+
+// Reads merge commands from stdin with GNU sdiff.c's prompt protocol:
+// '%' on stdout before every read, whitespace skipped up to (but not
+// past) the newline, the line's remainder required to be blank, and
+// the help text on stderr when a command is not recognized.  GNU
+// turns EOF into 'q'; the prompter reports it as its own result so
+// the caller can apply the recorded auto-merge fallback instead.
+class MergePrompter {
+ public:
+  auto read_command() -> MergeCommand {
+    for (;;) {
+      safePrint("%");
+      const int cmd0 = skip_white();
+      if (cmd0 == kEof) return MergeCommand::EndOfInput;
+      switch (cmd0) {
+        case '1':
+        case 'l':
+        case '2':
+        case 'r':
+        case 's':
+        case 'v':
+        case 'q': {
+          if (!expect_blank_rest()) break;
+          switch (cmd0) {
+            case '1':
+            case 'l':
+              return MergeCommand::Left;
+            case '2':
+            case 'r':
+              return MergeCommand::Right;
+            case 's':
+              return MergeCommand::Suppress;
+            case 'v':
+              return MergeCommand::Verbose;
+            default:
+              return MergeCommand::Quit;
+          }
+        }
+        case 'e': {
+          const int cmd1 = skip_white();
+          if (cmd1 == kEof) return MergeCommand::EndOfInput;
+          switch (cmd1) {
+            case '1':
+            case 'l':
+            case '2':
+            case 'r':
+            case 'b':
+            case 'd':
+              if (!expect_blank_rest()) break;
+              switch (cmd1) {
+                case '1':
+                case 'l':
+                  return MergeCommand::EditLeft;
+                case '2':
+                case 'r':
+                  return MergeCommand::EditRight;
+                case 'b':
+                  return MergeCommand::EditBoth;
+                default:
+                  return MergeCommand::EditDecorated;
+              }
+              break;
+            case '\n':
+              return MergeCommand::EditNew;
+            default:
+              safeErrorPrint(kInteractHelp);
+              flush_line();
+              break;
+          }
+          break;
+        }
+        case '\n':
+          safeErrorPrint(kInteractHelp);
+          break;
+        default:
+          flush_line();
+          safeErrorPrint(kInteractHelp);
+          break;
+      }
+    }
+  }
+
+ private:
+  static constexpr int kEof = -1;
+
+  auto get() -> int { return std::fgetc(stdin); }
+
+  // skip_white: consume spaces and tabs (any isspace but '\n') and
+  // return the first other character, or kEof at end of input.
+  auto skip_white() -> int {
+    for (;;) {
+      const int c = get();
+      if (c == EOF) return kEof;
+      if (!std::isspace(static_cast<unsigned char>(c)) || c == '\n') return c;
+    }
+  }
+
+  void flush_line() {
+    int c;
+    while ((c = get()) != EOF && c != '\n') {
+    }
+  }
+
+  // After a command character the rest of the line must be blank;
+  // otherwise the help text is printed and the line is discarded.
+  auto expect_blank_rest() -> bool {
+    if (skip_white() == '\n') return true;
+    safeErrorPrint(kInteractHelp);
+    flush_line();
+    return false;
+  }
+};
+
+// The 'e' family: compose a temp file with the hunk's text (for 'ed',
+// each side decorated with a --- / +++ header naming the file and its
+// 1-based line range), hand it to $EDITOR - "ed" when EDITOR is unset,
+// exactly like GNU - and use the file's resulting bytes verbatim.  A
+// launch failure or a nonzero editor exit is trouble, reported with
+// GNU's subsidiary-program diagnostics.
+class MergeEditor {
+ public:
+  MergeEditor() = default;
+  MergeEditor(const MergeEditor &) = delete;
+  auto operator=(const MergeEditor &) -> MergeEditor & = delete;
+  ~MergeEditor() {
+    if (temp_created_) DeleteFileW(temp_path_.c_str());
+  }
+
+  // Appends the edited bytes for `hunk` to `merged`; returns false on
+  // trouble (the diagnostic has already been printed).
+  auto edit(MergeCommand command, const de::SdiffSection &hunk,
+            const std::vector<std::string> &lines1,
+            const std::vector<std::string> &lines2, bool ends_with_newline1,
+            bool ends_with_newline2, const std::string &name1,
+            const std::string &name2, std::string &merged) -> bool {
+    std::string content;
+    auto append_span = [&content](const std::vector<std::string> &lines,
+                                  size_t begin, size_t end,
+                                  bool ends_with_newline) {
+      for (size_t i = begin; i < end; ++i) {
+        content += lines[i];
+        if (i + 1 < lines.size() || ends_with_newline) content += '\n';
+      }
+    };
+    auto header = [](const char *mark, const std::string &name, size_t begin,
+                     size_t end) {
+      std::string line = mark + name + " " + std::to_string(begin + 1);
+      if (end - begin > 1) line += "," + std::to_string(end);
+      return line + "\n";
+    };
+    switch (command) {
+      case MergeCommand::EditDecorated:
+        if (hunk.left_end > hunk.left_begin) {
+          content += header("--- ", name1, hunk.left_begin, hunk.left_end);
+        }
+        append_span(lines1, hunk.left_begin, hunk.left_end,
+                    ends_with_newline1);
+        if (hunk.right_end > hunk.right_begin) {
+          content += header("+++ ", name2, hunk.right_begin, hunk.right_end);
+        }
+        append_span(lines2, hunk.right_begin, hunk.right_end,
+                    ends_with_newline2);
+        break;
+      case MergeCommand::EditBoth:
+        append_span(lines1, hunk.left_begin, hunk.left_end,
+                    ends_with_newline1);
+        append_span(lines2, hunk.right_begin, hunk.right_end,
+                    ends_with_newline2);
+        break;
+      case MergeCommand::EditLeft:
+        append_span(lines1, hunk.left_begin, hunk.left_end,
+                    ends_with_newline1);
+        break;
+      case MergeCommand::EditRight:
+        append_span(lines2, hunk.right_begin, hunk.right_end,
+                    ends_with_newline2);
+        break;
+      default:  // EditNew starts from an empty file
+        break;
+    }
+
+    if (!ensure_temp_file() || !write_temp(content)) {
+      safeErrorPrintLn("sdiff: cannot create temporary file");
+      return false;
+    }
+
+    const std::string program = editor_program();
+    const std::optional<int> status =
+        run_editor(program, wstring_to_utf8(temp_path_));
+    if (!status) {
+      safeErrorPrint("sdiff: subsidiary program '");
+      safeErrorPrint(program);
+      safeErrorPrintLn("' not found");
+      return false;
+    }
+    if (*status != 0) {
+      safeErrorPrint("sdiff: subsidiary program '");
+      safeErrorPrint(program);
+      safeErrorPrint("' failed (exit status ");
+      safeErrorPrintLn(std::to_string(*status) + ")");
+      return false;
+    }
+
+    std::string edited;
+    if (!read_temp(edited)) {
+      safeErrorPrintLn("sdiff: cannot read temporary file");
+      return false;
+    }
+    merged += edited;
+    return true;
+  }
+
+ private:
+  std::wstring temp_path_;
+  bool temp_created_ = false;
+
+  static auto editor_program() -> std::string {
+    if (const char *env = std::getenv("EDITOR")) return env;
+    return "ed";
+  }
+
+  auto ensure_temp_file() -> bool {
+    if (temp_created_) return true;
+    std::array<wchar_t, MAX_PATH> dir{};
+    if (GetTempPathW(static_cast<DWORD>(dir.size()), dir.data()) == 0) {
+      return false;
+    }
+    std::array<wchar_t, MAX_PATH> path{};
+    if (GetTempFileNameW(dir.data(), L"sdiff", 0, path.data()) == 0) {
+      return false;
+    }
+    temp_path_ = path.data();
+    temp_created_ = true;
+    return true;
+  }
+
+  auto write_temp(const std::string &content) -> bool {
+    HANDLE handle = CreateFileW(temp_path_.c_str(), GENERIC_WRITE, 0, nullptr,
+                                CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) return false;
+    DWORD written = 0;
+    const bool ok =
+        content.empty() ||
+        (WriteFile(handle, content.data(), static_cast<DWORD>(content.size()),
+                   &written, nullptr) &&
+         written == content.size());
+    CloseHandle(handle);
+    return ok;
+  }
+
+  auto read_temp(std::string &content) -> bool {
+    HANDLE handle = CreateFileW(temp_path_.c_str(), GENERIC_READ, 0, nullptr,
+                                OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) return false;
+    std::array<char, 8192> buffer{};
+    DWORD read = 0;
+    bool ok = true;
+    for (;;) {
+      if (!ReadFile(handle, buffer.data(), static_cast<DWORD>(buffer.size()),
+                    &read, nullptr)) {
+        ok = false;
+        break;
+      }
+      if (read == 0) break;
+      content.append(buffer.data(), read);
+    }
+    CloseHandle(handle);
+    return ok;
+  }
+
+  // Spawn the editor with the process's own standard handles, wait
+  // for it, and report its exit status (nullopt when it cannot be
+  // launched at all).  Resolution follows the same GNU execvp
+  // (PATH-only) semantics the diff3 subsidiary diff uses.
+  static auto run_editor(const std::string &program, const std::string &file)
+      -> std::optional<int> {
+    winux::childproc::ChildLaunchRequest request;
+    request.command = program;
+    request.args.emplace_back(file);
+    auto launch = winux::childproc::plan_child_launch(request);
+    if (launch.status != winux::childproc::ChildResolveStatus::Found) {
+      return std::nullopt;
+    }
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+    si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+    si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    PROCESS_INFORMATION pi{};
+    std::wstring cmdline = launch.command_line;
+    const BOOL spawned = CreateProcessW(
+        launch.application_name ? launch.application_name->c_str() : nullptr,
+        cmdline.data(), nullptr, nullptr, TRUE, 0, nullptr, nullptr, &si, &pi);
+    if (!spawned) return std::nullopt;
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD code = 0;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return static_cast<int>(code);
+  }
+};
+
 }  // namespace sdiff_pipeline
 
 REGISTER_COMMAND(
@@ -285,36 +711,68 @@ REGISTER_COMMAND(
                                          newline_insensitive);
   diff_engine::mark_incomplete_last_line(cmp2, in2.value().ends_with_newline,
                                          newline_insensitive);
-  auto edits = de::compute_diff(cmp1, cmp2);
+  const auto edits = de::compute_diff(cmp1, cmp2);
+
+  // Positional sections over the raw script, with the -B/-I ignore
+  // predicate applied per hunk (GNU analyze.c): ignored hunks are not
+  // changes, and their lines rejoin the common spans around them.
+  std::function<bool(const std::vector<de::Edit> &,
+                     const std::vector<std::string> &,
+                     const std::vector<std::string> &, size_t, size_t)>
+      hunk_is_ignored;
   if (cfg.ignore_blank_lines || !cfg.ignore_matching.empty()) {
-    edits = de::drop_ignored_hunks(
-        edits, lines1, lines2,
-        de::make_blank_or_matching_predicate(cfg.ignore_blank_lines,
-                                             cfg.ignore_matching));
+    hunk_is_ignored = de::make_blank_or_matching_predicate(
+        cfg.ignore_blank_lines, cfg.ignore_matching);
   }
+  const SdiffScript script =
+      build_sdiff_script(edits, lines1, lines2, hunk_is_ignored);
+
+  // [GNU --strip-trailing-cr] The CR is stripped when the input is
+  // read (io.c), so it never reaches the display; the rest of the
+  // ignore family normalizes comparison copies only.  The merged
+  // output still copies the original lines, like the line filters
+  // GNU sdiff reads its inputs through when it merges.
+  const std::vector<std::string> shown1 =
+      cfg.strip_trailing_cr ? de::strip_trailing_cr_lines(lines1) : lines1;
+  const std::vector<std::string> shown2 =
+      cfg.strip_trailing_cr ? de::strip_trailing_cr_lines(lines2) : lines2;
 
   de::SdiffStyle style;
   style.tabsize = cfg.tabsize;
   style.expand_tabs = cfg.expand_tabs;
-
-  // [GNU] The display is exactly `diff --side-by-side` output.
-  auto sink = [](std::string_view text) { safePrint(text); };
-  de::emit_side_by_side(edits, lines1, lines2, in1.value().ends_with_newline,
-                        in2.value().ends_with_newline, cfg.width,
-                        cfg.suppress_common, cfg.left_column, style, sink);
+  const de::SdiffColumns cols =
+      de::sdiff_columns(cfg.width, style.tabsize, style.expand_tabs);
+  const bool eol1 = in1.value().ends_with_newline;
+  const bool eol2 = in2.value().ends_with_newline;
+  auto append_rows = [&](const de::SdiffSection &section, std::string &out) {
+    de::append_sdiff_section_rows(section, shown1, shown2, eol1, eol2, cols,
+                                  style, cfg.left_column, out);
+  };
 
   if (cfg.output_file.empty()) {
-    if (cfg.ignore_blank_lines || !cfg.ignore_matching.empty()) {
-      // [GNU] Ignored hunks do not make the inputs differ.
-      const bool real = std::any_of(
-          edits.begin(), edits.end(),
-          [](const de::Edit &edit) { return edit.type != de::EditType::KEEP; });
-      return real ? 1 : 0;
+    // [GNU] Without -o the display is exactly `diff --side-by-side`.
+    std::string out;
+    for (const auto &section : script.sections) {
+      if (!section.is_hunk && cfg.suppress_common) continue;
+      append_rows(section, out);
+      if (!out.empty()) {
+        safePrint(out);
+        out.clear();
+      }
     }
-    return edits.empty() ? 0 : 1;
+    // [GNU] Ignored hunks do not make the inputs differ.
+    return script.differ ? 1 : 0;
   }
 
-  // -- -o: write the merged file (non-interactive auto-merge, #1127 P1) --
+  // -- -o: interactive merge (GNU sdiff.c interact + edit) --
+  if (de::operand_is_stdin(file1) || de::operand_is_stdin(file2)) {
+    safeErrorPrintLn("sdiff: cannot interactively merge standard input");
+    return 2;
+  }
+
+  // [GNU] The output file is created before the first prompt, and the
+  // merged lines are written as the walk proceeds, so quitting leaves
+  // exactly the prefix merged so far.
   HANDLE hFile =
       CreateFileW(utf8_to_wstring(cfg.output_file).c_str(), GENERIC_WRITE, 0,
                   nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -325,98 +783,122 @@ REGISTER_COMMAND(
     return 2;
   }
 
-  std::string merged;
-  auto merge_line = [&](const std::string &line, bool has_newline) {
-    merged += line;
-    if (has_newline) merged += "\n";
+  auto span_has_nl = [](const std::vector<std::string> &lines,
+                        bool ends_with_newline, size_t idx) {
+    return idx + 1 < lines.size() || ends_with_newline;
   };
-  auto left_has_nl = [&](size_t idx) {
-    return idx + 1 < lines1.size() || in1.value().ends_with_newline;
+  std::string pending;
+  bool write_failed = false;
+  auto flush_pending = [&]() {
+    if (pending.empty()) return;
+    DWORD written = 0;
+    if (!WriteFile(hFile, pending.data(),
+                   static_cast<DWORD>(pending.size()), &written, nullptr) ||
+        written != pending.size()) {
+      write_failed = true;
+    }
+    pending.clear();
   };
-  auto right_has_nl = [&](size_t idx) {
-    return idx + 1 < lines2.size() || in2.value().ends_with_newline;
+  auto append_span = [&](const std::vector<std::string> &lines,
+                         bool ends_with_newline, size_t begin, size_t end) {
+    for (size_t i = begin; i < end; ++i) {
+      pending += lines[i];
+      if (span_has_nl(lines, ends_with_newline, i)) pending += '\n';
+    }
+  };
+  // The recorded auto-merge (issue #1127 P1), used when stdin reaches
+  // EOF: paired and left-over deleted rows keep the left side,
+  // right-over inserted rows take the right side.
+  auto append_auto_merge = [&](const de::SdiffSection &hunk) {
+    append_span(lines1, eol1, hunk.left_begin, hunk.left_end);
+    const size_t paired =
+        std::min(hunk.left_end - hunk.left_begin,
+                 hunk.right_end - hunk.right_begin);
+    append_span(lines2, eol2, hunk.right_begin + paired, hunk.right_end);
   };
 
-  size_t k = 0;
-  while (k < edits.size()) {
-    if (edits[k].type == de::EditType::KEEP) {
-      while (k < edits.size() && edits[k].type == de::EditType::KEEP) {
-        merge_line(lines1[edits[k].line1_index],
-                   left_has_nl(edits[k].line1_index));
-        ++k;
-      }
+  MergePrompter prompter;
+  MergeEditor editor;
+  bool interactive = true;
+  bool suppress = cfg.suppress_common;
+  bool aborted = false;
+
+  for (const auto &section : script.sections) {
+    std::string rows;
+    if (!section.is_hunk) {
+      if (!suppress) append_rows(section, rows);
+      if (!rows.empty()) safePrint(rows);
+      // Common lines always reach the merged file from the left side;
+      // the right span (including any ')'-only lines) is skipped.
+      append_span(lines1, eol1, section.left_begin, section.left_end);
+      flush_pending();
       continue;
     }
-    std::vector<size_t> dels;
-    std::vector<size_t> ins;
-    while (k < edits.size() && edits[k].type != de::EditType::KEEP) {
-      if (edits[k].type == de::EditType::DEL) {
-        dels.push_back(edits[k].line1_index);
-      } else {
-        ins.push_back(edits[k].line2_index);
+    append_rows(section, rows);
+    if (!rows.empty()) safePrint(rows);
+    if (!interactive) {
+      append_auto_merge(section);
+      flush_pending();
+      continue;
+    }
+    bool resolved = false;
+    while (!resolved) {
+      const MergeCommand command = prompter.read_command();
+      switch (command) {
+        case MergeCommand::Left:
+          append_span(lines1, eol1, section.left_begin, section.left_end);
+          resolved = true;
+          break;
+        case MergeCommand::Right:
+          append_span(lines2, eol2, section.right_begin, section.right_end);
+          resolved = true;
+          break;
+        case MergeCommand::Suppress:
+          suppress = true;
+          break;
+        case MergeCommand::Verbose:
+          suppress = false;
+          break;
+        case MergeCommand::Quit:
+          aborted = true;
+          resolved = true;
+          break;
+        case MergeCommand::EndOfInput:
+          interactive = false;
+          append_auto_merge(section);
+          resolved = true;
+          break;
+        case MergeCommand::EditDecorated:
+        case MergeCommand::EditBoth:
+        case MergeCommand::EditLeft:
+        case MergeCommand::EditRight:
+        case MergeCommand::EditNew: {
+          std::string edited;
+          if (!editor.edit(command, section, lines1, lines2, eol1, eol2,
+                           file1, file2, edited)) {
+            CloseHandle(hFile);
+            return 2;
+          }
+          pending += edited;
+          resolved = true;
+          break;
+        }
       }
-      ++k;
     }
-    // Auto-merge choice: paired and left-over deleted rows keep the left
-    // side, right-over inserted rows take the right side.
-    const size_t paired = std::min(dels.size(), ins.size());
-    for (size_t row = 0; row < paired; ++row) {
-      merge_line(lines1[dels[row]], left_has_nl(dels[row]));
-    }
-    for (size_t row = paired; row < dels.size(); ++row) {
-      merge_line(lines1[dels[row]], left_has_nl(dels[row]));
-    }
-    for (size_t row = paired; row < ins.size(); ++row) {
-      merge_line(lines2[ins[row]], right_has_nl(ins[row]));
-    }
+    if (aborted) break;
+    flush_pending();
   }
 
-  // Positional tail: lines beyond the script merge in lockstep (this also
-  // covers identical inputs, where the script is empty).
-  size_t last1 = 0;
-  size_t last2 = 0;
-  for (const auto &edit : edits) {
-    if (edit.type != de::EditType::INS) {
-      last1 = std::max(last1, edit.line1_index + 1);
-    }
-    if (edit.type != de::EditType::DEL) {
-      last2 = std::max(last2, edit.line2_index + 1);
-    }
-  }
-  size_t t1 = last1;
-  size_t t2 = last2;
-  while (t1 < lines1.size() && t2 < lines2.size()) {
-    merge_line(lines1[t1], left_has_nl(t1));
-    ++t1;
-    ++t2;
-  }
-  while (t1 < lines1.size()) {
-    merge_line(lines1[t1], left_has_nl(t1));
-    ++t1;
-  }
-  while (t2 < lines2.size()) {
-    merge_line(lines2[t2], right_has_nl(t2));
-    ++t2;
-  }
-
-  DWORD written = 0;
-  const BOOL write_ok =
-      WriteFile(hFile, merged.data(), static_cast<DWORD>(merged.size()),
-                &written, nullptr);
   CloseHandle(hFile);
-  if (!write_ok) {
+  if (write_failed) {
     safeErrorPrint("sdiff: ");
     safeErrorPrint(cfg.output_file);
     safeErrorPrintLn(": write failed");
     return 2;
   }
-
+  if (aborted) return 2;
   // [GNU] A completed merge reports the subsidiary diff's verdict: 1
-  // when the inputs differ (the script, after any -B/-I hunks are
-  // dropped, still holds a non-KEEP edit), 0 when they are the same
-  // (#1441).
-  const bool differ = std::any_of(
-      edits.begin(), edits.end(),
-      [](const de::Edit &edit) { return edit.type != de::EditType::KEEP; });
-  return differ ? 1 : 0;
+  // when the inputs differ (after -B/-I filtering), 0 when they are
+  // the same (#1441).
+  return script.differ ? 1 : 0;
 }

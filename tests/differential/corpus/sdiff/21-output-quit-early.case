@@ -1,0 +1,12 @@
+cmd: sdiff
+args: -o merged.txt f1.txt f2.txt
+timeout: 10
+files: merged.txt
+stdin: |
+  l
+  q
+setup: |
+  printf '1\nA\n2\nB\n3\n' > f1.txt
+  printf '1\nX\n2\nY\n3\n' > f2.txt
+source: github.com/unixwin/WinuxCmd/issues/1127
+tags: corpus-expansion issue-1127-p1
