@@ -68,15 +68,30 @@ auto run(const CommandContext<RENICE_OPTIONS.size()>& ctx) -> int {
     operands = operands.subspan(1);
   }
 
+  // [GNU] no priority at all: util-linux renice.c:175 reports
+  // "not enough arguments" (with the try-help line), not a parse failure
+  // of the empty string.
+  if (priority_text.empty()) {
+    safeErrorPrintLn("renice: not enough arguments");
+    safeErrorPrintLn(winux::i18n::format(
+        "common.try_help", "Try '{} --help' for more information.", "renice"));
+    return 1;
+  }
+
   auto niceness = parse_int(priority_text);
   if (!niceness) {
+    // [GNU] renice.c:181: "invalid priority '<text>'" + try-help.
     safeErrorPrintLn("renice: invalid priority '" + priority_text + "'");
+    safeErrorPrintLn(winux::i18n::format(
+        "common.try_help", "Try '{} --help' for more information.", "renice"));
     return 1;
   }
   *niceness = std::clamp(*niceness, -20, 19);
 
   if (operands.empty()) {
-    safeErrorPrintLn("renice: missing process ID");
+    safeErrorPrintLn("renice: not enough arguments");
+    safeErrorPrintLn(winux::i18n::format(
+        "common.try_help", "Try '{} --help' for more information.", "renice"));
     return 1;
   }
 
@@ -115,7 +130,9 @@ auto run(const CommandContext<RENICE_OPTIONS.size()>& ctx) -> int {
       continue;
     }
 
-    safePrintLn(std::to_string(*pid) + ": old priority " +
+    // [GNU] util-linux renice.c:115 prints
+    // "<pid> (process ID) old priority <o>, new priority <n>".
+    safePrintLn(std::to_string(*pid) + " (process ID) old priority " +
                 std::to_string(old_nice) + ", new priority " +
                 std::to_string(*niceness));
   }
