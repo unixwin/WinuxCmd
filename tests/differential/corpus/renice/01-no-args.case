@@ -1,0 +1,5 @@
+cmd: renice
+oracle: linux
+args:
+source: tests/differential/corpus/renice/01-no-args.case
+tags: gnu-compat renice error-wording exit-status audit-w7

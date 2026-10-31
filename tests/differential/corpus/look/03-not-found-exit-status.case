@@ -1,0 +1,7 @@
+cmd: look
+oracle: linux
+args: zzz words.txt
+setup: |
+  printf 'apple\napply\napricot\nbanana\ncherry\n' > words.txt
+source: tests/differential/corpus/look/03-not-found-exit-status.case
+tags: gnu-compat look exit-status audit-w7

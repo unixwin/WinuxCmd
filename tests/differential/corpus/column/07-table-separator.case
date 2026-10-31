@@ -1,0 +1,7 @@
+cmd: column
+oracle: linux
+args: -t -s :
+stdin: |
+  a:1:\nb:22:x\n
+source: tests/differential/corpus/column/07-table-separator.case
+tags: gnu-compat column table-sep audit-w7

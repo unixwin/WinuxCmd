@@ -1,0 +1,7 @@
+cmd: column
+oracle: linux
+args: -x
+stdin: |
+  a\nbb\nccc\ndd\ne\nff\nggg\nhh\ni\njj\nkkk\nll\n
+source: tests/differential/corpus/column/02-fillrows.case
+tags: gnu-compat column fillrows audit-w7

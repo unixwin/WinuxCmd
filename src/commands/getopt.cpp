@@ -34,7 +34,10 @@ auto constexpr GETOPT_OPTIONS = std::array{
     // [GNU] -u, --unquoted: do not quote the output
     OPTION("-u", "--unquoted", "do not quote the output"),
     // [GNU] -a, --alternative: allow long options starting with single -
-    OPTION("-a", "--alternative", "allow long options starting with single -")};
+    OPTION("-a", "--alternative", "allow long options starting with single -"),
+    // [GNU] -h/-V: missing entirely before this audit (getopt.c:376-390)
+    OPTION("-h", "--help", "display this help and exit"),
+    OPTION("-V", "--version", "output version information and exit")};
 
 namespace getopt_pipeline {
 
@@ -469,6 +472,62 @@ auto run(const Config& cfg) -> int {
   return exit_code;
 }
 
+// [util-linux] getopt.c processes its own options sequentially: a bad
+// -s shell diagnosed before -T is reached exits 2, while -T reached first
+// exits 4 (getopt.c:445-449).  The framework binds options as a set, so
+// reproduce the ordering with a scan over raw_args: walk tokens in argv
+// order (getopt_long permutes, so non-option tokens do not stop the
+// scan; "--" does), validating each -s/--shell value when met and
+// returning the -T verdict when met.  Returns the exit code when the
+// scan decides the invocation, or nullopt to continue normally.
+auto prescan_test_or_bad_shell(const CommandContext<GETOPT_OPTIONS.size()>& ctx)
+    -> std::optional<int> {
+  const auto& args = ctx.raw_args;
+  auto shell_value_bad = [](std::string_view value) {
+    return !parse_shell(value).has_value();
+  };
+  for (size_t i = 0; i < args.size(); ++i) {
+    std::string_view arg = args[i];
+    if (arg == "--") break;
+    if (arg == "-T" || arg == "--test") return 4;
+    if (arg == "-s" || arg == "--shell") {
+      if (i + 1 >= args.size() || shell_value_bad(args[i + 1])) return 2;
+      ++i;
+      continue;
+    }
+    if (arg.starts_with("--shell=")) {
+      if (shell_value_bad(arg.substr(8))) return 2;
+      continue;
+    }
+    if (arg.starts_with("--")) {
+      // Other long options with values consume the following token.
+      if (arg == "--options" || arg == "--longoptions" || arg == "--name")
+        ++i;
+      continue;
+    }
+    if (arg.size() > 1 && arg[0] == '-') {
+      // Short-option cluster: scan letters; o/l/n/s swallow the rest of
+      // the token (or the next token) as their value.
+      for (size_t j = 1; j < arg.size(); ++j) {
+        char c = arg[j];
+        if (c == 'T') return 4;
+        if (c == 'o' || c == 'l' || c == 'n' || c == 's') {
+          std::string_view value;
+          if (j + 1 < arg.size()) {
+            value = arg.substr(j + 1);
+          } else if (i + 1 < args.size()) {
+            value = args[i + 1];
+            ++i;
+          }
+          if (c == 's' && (value.empty() || shell_value_bad(value))) return 2;
+          break;
+        }
+      }
+    }
+  }
+  return std::nullopt;
+}
+
 }  // namespace getopt_pipeline
 
 REGISTER_COMMAND(getopt, "getopt", "getopt <optstring> <parameters>",
@@ -481,11 +540,39 @@ REGISTER_COMMAND(getopt, "getopt", "getopt <optstring> <parameters>",
                  "  getopt -o ab:c -l alpha -- -a -b value --alpha file",
                  "env(1), xargs(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd",
                  GETOPT_OPTIONS) {
-  // [util-linux] -T tests whether this is the enhanced getopt: exit 4.
-  // The test result is returned before the optstring is required.
-  if (!getopt_pipeline::is_compatible_mode(ctx) &&
-      (ctx.has("-T") || ctx.has("--test"))) {
-    return 4;
+  if (ctx.get<bool>("--help", false) || ctx.get<bool>("-h", false)) {
+    safePrintLn("Usage: getopt [options] <optstring> <parameters>");
+    safePrintLn("Parse command options and print a normalized list.");
+    safePrintLn("");
+    safePrintLn("  -o, --options <string>    short option specification");
+    safePrintLn("  -l, --longoptions <list>  long options to be recognized");
+    safePrintLn("  -n, --name <name>         name used in diagnostics");
+    safePrintLn("  -q, --quiet               disable error reporting by getopt");
+    safePrintLn("  -Q, --quiet-output        no normal output");
+    safePrintLn("  -s, --shell <shell>       set quoting conventions (sh, bash, tcsh, csh)");
+    safePrintLn("  -T, --test                test for getopt(1) version (exit 4)");
+    safePrintLn("  -u, --unquoted            do not quote the output");
+    safePrintLn("  -a, --alternative         allow long options with a single -");
+    safePrintLn("  -h, --help                display this help and exit");
+    safePrintLn("  -V, --version             output version information and exit");
+    return 0;
+  }
+  if (ctx.get<bool>("--version", false) || ctx.get<bool>("-V", false)) {
+    safePrintLn("getopt (WinuxCmd) 1.0");
+    return 0;
+  }
+  // [util-linux] -T and a bad -s are decided in argv order (see
+  // prescan_test_or_bad_shell); the set-based check that used to sit
+  // here answered 4 for `getopt -s bogus -T`, where the oracle dies on
+  // the bad shell first with exit status 2.
+  if (!getopt_pipeline::is_compatible_mode(ctx)) {
+    if (auto verdict = getopt_pipeline::prescan_test_or_bad_shell(ctx)) {
+      if (*verdict == 2) {
+        safeErrorPrintLn("getopt: unknown shell after -s or --shell argument");
+        safeErrorPrintLn("Try 'getopt --help' for more information.");
+      }
+      return *verdict;
+    }
   }
   auto cfg = getopt_pipeline::build_config(ctx);
   if (!cfg) {
@@ -493,7 +580,6 @@ REGISTER_COMMAND(getopt, "getopt", "getopt <optstring> <parameters>",
     safeErrorPrintLn("Try 'getopt --help' for more information.");
     return 2;
   }
-  if (cfg->test) return 4;
   if (cfg->bad_shell) {
     safeErrorPrintLn("getopt: unknown shell after -s or --shell argument");
     safeErrorPrintLn("Try 'getopt --help' for more information.");

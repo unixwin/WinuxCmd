@@ -1,0 +1,7 @@
+cmd: col
+oracle: linux
+args: -x
+stdin: |
+  a       b\n
+source: tests/differential/corpus/col/05-spaces-no-compression.case
+tags: gnu-compat col spaces audit-w7

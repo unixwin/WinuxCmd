@@ -1,0 +1,5 @@
+cmd: getopt
+oracle: linux
+args: -T
+source: tests/differential/corpus/getopt/01-test-mode.case
+tags: gnu-compat getopt exit-status audit-w7

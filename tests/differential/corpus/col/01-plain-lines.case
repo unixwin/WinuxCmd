@@ -1,0 +1,7 @@
+cmd: col
+oracle: linux
+args: 
+stdin: |
+  alpha\nbeta\n
+source: tests/differential/corpus/col/01-plain-lines.case
+tags: gnu-compat col plain audit-w7

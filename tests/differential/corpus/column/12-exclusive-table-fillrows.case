@@ -1,0 +1,7 @@
+cmd: column
+oracle: linux
+args: -t -x
+stdin: |
+  a\n
+source: tests/differential/corpus/column/12-exclusive-table-fillrows.case
+tags: gnu-compat column exclusive audit-w7

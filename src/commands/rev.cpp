@@ -150,8 +150,9 @@ REGISTER_COMMAND(
                             native_path::normalize_api_operand(file))),
                         std::ios::binary);
     if (!input) {
-      safeErrorPrintLn("rev: cannot open '" + file +
-                       "': No such file or directory");
+      // [GNU] warn shape is unquoted (rev.c:165).
+      safeErrorPrintLn("rev: cannot open " + file +
+                       ": No such file or directory");
       exit_code = 1;
       continue;
     }

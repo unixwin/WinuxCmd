@@ -1,0 +1,7 @@
+cmd: hexdump
+oracle: linux
+args: -x d.bin
+setup: |
+  printf 'abcde' > d.bin
+source: tests/differential/corpus/hexdump/02-hex2-partial-padding.case
+tags: gnu-compat hexdump partial-padding audit-w7

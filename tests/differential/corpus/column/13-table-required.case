@@ -1,0 +1,7 @@
+cmd: column
+oracle: linux
+args: -N a,b
+stdin: |
+  a 1\n
+source: tests/differential/corpus/column/13-table-required.case
+tags: gnu-compat column table-required audit-w7
