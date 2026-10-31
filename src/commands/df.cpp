@@ -272,6 +272,8 @@ struct OutputColumn {
 };
 
 auto make_output_error(std::string message) -> std::unexpected<std::string> {
+  // [GNU] --output decode failures end with the usage Try line.
+  message += "\nTry 'df --help' for more information.";
   return std::unexpected(std::move(message));
 }
 
@@ -379,13 +381,14 @@ auto append_output_fields(std::vector<OutputField>& fields,
 
     auto field = parse_output_field(token);
     if (!field) {
-      return make_output_error("option --output: field " + std::string(token) +
-                               " unknown");
+      // [GNU] quote() wraps the field name (df.c:456-465).
+      return make_output_error("option --output: field '" +
+                               std::string(token) + "' unknown");
     }
     if (std::find(fields.begin(), fields.end(), *field) != fields.end()) {
-      return make_output_error("option --output: field " +
+      return make_output_error("option --output: field '" +
                                std::string(output_field_name(*field)) +
-                               " used more than once");
+                               "' used more than once");
     }
     fields.push_back(*field);
 
@@ -417,7 +420,7 @@ auto parse_output_columns(const CommandContext<N>& ctx,
       "target";
 
   if (has_empty_inline_output_value(ctx)) {
-    return make_output_error("option --output: field  unknown");
+    return make_output_error("option --output: field '' unknown");
   }
 
   for (const auto& occurrence : ctx.string_occurrences({"--output"})) {
@@ -495,14 +498,19 @@ struct DiskInfo {
   uint64_t available = 0;
 };
 
-auto get_disk_info(const std::string& path) -> std::optional<DiskInfo> {
+auto get_disk_info(const std::string& path, DWORD* error_out = nullptr)
+    -> std::optional<DiskInfo> {
+  auto fail = [&]() -> std::optional<DiskInfo> {
+    if (error_out != nullptr) *error_out = GetLastError();
+    return std::nullopt;
+  };
   std::wstring wpath = utf8_to_wstring(path);
   std::vector<wchar_t> full_path(MAX_PATH);
   DWORD full_len =
       GetFullPathNameW(wpath.c_str(), static_cast<DWORD>(full_path.size()),
                        full_path.data(), nullptr);
   if (full_len == 0) {
-    return std::nullopt;
+    return fail();
   }
   if (full_len >= full_path.size()) {
     full_path.resize(full_len + 1);
@@ -510,21 +518,21 @@ auto get_disk_info(const std::string& path) -> std::optional<DiskInfo> {
         GetFullPathNameW(wpath.c_str(), static_cast<DWORD>(full_path.size()),
                          full_path.data(), nullptr);
     if (full_len == 0 || full_len >= full_path.size()) {
-      return std::nullopt;
+      return fail();
     }
   }
 
   std::vector<wchar_t> volume_path(MAX_PATH);
   if (!GetVolumePathNameW(full_path.data(), volume_path.data(),
                           static_cast<DWORD>(volume_path.size()))) {
-    return std::nullopt;
+    return fail();
   }
 
   ULARGE_INTEGER free_bytes, total_bytes, total_free;
 
   if (!GetDiskFreeSpaceExW(volume_path.data(), &free_bytes, &total_bytes,
                            &total_free)) {
-    return std::nullopt;
+    return fail();
   }
 
   // Get volume information
@@ -770,8 +778,8 @@ auto format_percent(uint64_t used, uint64_t available) -> std::string {
 }
 
 auto output_cell(OutputField field, const DiskInfo& info,
-                 std::string_view requested_path, const OutputConfig& output)
-    -> std::string {
+                 std::string_view requested_path, const OutputConfig& output,
+                 bool synthetic_operand = false) -> std::string {
   uint64_t used = info.total - info.total_free;
   switch (field) {
     case OutputField::Source:
@@ -795,19 +803,27 @@ auto output_cell(OutputField field, const DiskInfo& info,
     case OutputField::Target:
       return info.mount_point;
     case OutputField::File:
-      return std::string(requested_path);
+      // [GNU] Auto-enumerated file systems have no operand file:
+      // get_dev substitutes "-" for the unspecified name (df.c:
+      // 1097-1098). The manufactured drive root used to leak here.
+      return synthetic_operand ? "-" : std::string(requested_path);
   }
   return "";
 }
 
 auto total_output_cell(OutputField field, uint64_t total, uint64_t used,
-                       uint64_t available, const OutputConfig& output)
-    -> std::string {
+                       uint64_t available, const OutputConfig& output,
+                       bool source_present = true) -> std::string {
   switch (field) {
     case OutputField::Source:
-    case OutputField::File:
-    case OutputField::Target:
       return "total";
+    case OutputField::File:
+      // [GNU] The total row's file field is "-" (df.c:1835-1842).
+      return "-";
+    case OutputField::Target:
+      // [GNU] "-" when the source column is shown; the word 'total'
+      // moves into the target only when source is absent.
+      return source_present ? "-" : "total";
     case OutputField::FsType:
     case OutputField::ITotal:
     case OutputField::IUsed:
@@ -956,14 +972,35 @@ auto print_disk_usage(const CommandContext<DF_OPTIONS.size()>& ctx)
   bool total = ctx.get<bool>("--total", false);
   bool custom_output = ctx.has("--output");
   bool all_fs = ctx.get<bool>("--all", false) || ctx.get<bool>("-a", false);
+  // [DEFERRED-DF-3] -a admitting pseudo/inaccessible file systems is
+  // not modeled: enumeration only materializes readable volumes.
+  (void)all_fs;
+  // [GNU] -l excludes remote file systems even combined with -a
+  // (df.c:1019: 'if (me_remote && show_local_fs) return;'). The old
+  // '&& !all_fs' made 'df -a -l' SHOW remote drives — the opposite.
   bool local_only =
-      (ctx.get<bool>("--local", false) || ctx.get<bool>("-l", false)) &&
-      !all_fs;
-  std::string include_type = ctx.get<std::string>("--type", "");
-  if (include_type.empty()) include_type = ctx.get<std::string>("-t", "");
-  if (include_type.empty()) include_type = ctx.get<std::string>("-F", "");
-  std::string exclude_type = ctx.get<std::string>("--exclude-type", "");
-  if (exclude_type.empty()) exclude_type = ctx.get<std::string>("-x", "");
+      ctx.get<bool>("--local", false) || ctx.get<bool>("-l", false);
+  // [GNU] -t/-x build LISTS: every occurrence accumulates (df.c:
+  // 650-676). One string each used to be retained, so a second -t
+  // silently replaced the first.
+  std::vector<std::string> include_types;
+  for (const auto& occ : ctx.string_occurrences({"--type", "-t", "-F"})) {
+    include_types.push_back(occ.value);
+  }
+  std::vector<std::string> exclude_types;
+  for (const auto& occ :
+       ctx.string_occurrences({"--exclude-type", "-x"})) {
+    exclude_types.push_back(occ.value);
+  }
+  // [GNU] A type in both lists is fatal before anything prints
+  // (df.c:1749-1770).
+  for (const auto& selected : include_types) {
+    if (std::find(exclude_types.begin(), exclude_types.end(), selected) !=
+        exclude_types.end()) {
+      return std::unexpected("file system type '" + selected +
+                             "' both selected and excluded");
+    }
+  }
 
   if (custom_output) {
     if (inodes) {
@@ -1071,13 +1108,20 @@ auto print_disk_usage(const CommandContext<DF_OPTIONS.size()>& ctx)
       }
     }
 
-    auto disk_info = get_disk_info(path.api);
+    DWORD disk_error = 0;
+    auto disk_info = get_disk_info(path.api, &disk_error);
 
     if (!disk_info) {
       if (!auto_enumerated_drives) {
-        safeErrorPrint("df: cannot access '");
+        // [GNU] The real errno is reported (df.c get_dev): an
+        // existing-but-unreadable file system (empty optical drive,
+        // disconnected mapping) is not "No such file or directory".
+        safeErrorPrint("df: '");
         safeErrorPrint(path.display);
-        safeErrorPrint("': No such file or directory\n");
+        safeErrorPrint("': ");
+        safeErrorPrint(
+            win32_posix_error_text(disk_error));
+        safeErrorPrint("\n");
         all_ok = false;
       }
       continue;
@@ -1086,26 +1130,40 @@ auto print_disk_usage(const CommandContext<DF_OPTIONS.size()>& ctx)
     const auto& info = *disk_info;
     uint64_t used = info.total - info.total_free;
 
-    // Filter by type
-    if (!include_type.empty()) {
-      std::string lower_type = info.type;
-      std::transform(lower_type.begin(), lower_type.end(), lower_type.begin(),
-                     ::tolower);
-      std::string lower_include = include_type;
-      std::transform(lower_include.begin(), lower_include.end(),
-                     lower_include.begin(), ::tolower);
-      if (lower_type != lower_include) continue;
+    // Filter by type. [PLATFORM-ADAPTATION] Matching stays
+    // case-insensitive: Windows volume APIs report canonical-case
+    // type names ("NTFS") where GNU compares its own table
+    // spellings exactly; the list/conflict semantics above are
+    // GNU's, the case folding is a documented local adaptation.
+    auto type_matches = [](const std::string& actual,
+                           const std::string& wanted) {
+      if (actual.size() != wanted.size()) return false;
+      for (size_t k = 0; k < actual.size(); ++k) {
+        if (std::tolower(static_cast<unsigned char>(actual[k])) !=
+            std::tolower(static_cast<unsigned char>(wanted[k]))) {
+          return false;
+        }
+      }
+      return true;
+    };
+    if (!include_types.empty()) {
+      bool selected = false;
+      for (const auto& wanted : include_types) {
+        if (type_matches(info.type, wanted)) {
+          selected = true;
+          break;
+        }
+      }
+      if (!selected) continue;
     }
-
-    if (!exclude_type.empty()) {
-      std::string lower_type = info.type;
-      std::transform(lower_type.begin(), lower_type.end(), lower_type.begin(),
-                     ::tolower);
-      std::string lower_exclude = exclude_type;
-      std::transform(lower_exclude.begin(), lower_exclude.end(),
-                     lower_exclude.begin(), ::tolower);
-      if (lower_type == lower_exclude) continue;
+    bool excluded = false;
+    for (const auto& wanted : exclude_types) {
+      if (type_matches(info.type, wanted)) {
+        excluded = true;
+        break;
+      }
     }
+    if (excluded) continue;
 
     // Filter out network drives if --local
     if (local_only) {
@@ -1118,8 +1176,8 @@ auto print_disk_usage(const CommandContext<DF_OPTIONS.size()>& ctx)
       std::vector<std::string> row;
       row.reserve(custom_columns.size());
       for (const auto& column : custom_columns) {
-        row.push_back(
-            output_cell(column.field, info, path.display, *output));
+        row.push_back(output_cell(column.field, info, path.display, *output,
+                                  auto_enumerated_drives));
       }
       custom_rows.push_back(std::move(row));
       header_printed = true;
@@ -1152,21 +1210,45 @@ auto print_disk_usage(const CommandContext<DF_OPTIONS.size()>& ctx)
 
   if (custom_output) {
     if (total && !custom_rows.empty()) {
+      const bool source_present =
+          std::any_of(custom_columns.begin(), custom_columns.end(),
+                      [](const OutputColumn& column) {
+                        return column.field == OutputField::Source;
+                      });
       std::vector<std::string> row;
       row.reserve(custom_columns.size());
       for (const auto& column : custom_columns) {
         row.push_back(total_output_cell(column.field, total_size, total_used,
-                                        total_available, *output));
+                                        total_available, *output,
+                                        source_present));
       }
       custom_rows.push_back(std::move(row));
+    }
+    // [GNU] print_table runs only when something was processed
+    // (df.c:1843-1850); a fully filtered run gets the diagnostic
+    // and exit 1, not a bare header.
+    if (custom_rows.empty()) {
+      if (all_ok) {
+        safeErrorPrint("df: no file systems processed\n");
+        return false;
+      }
+      return all_ok;
     }
     print_custom_output_table(custom_columns, custom_rows);
     return all_ok;
   }
 
-  // [GNU] the header prints even when no filesystem matched the -t/-x
-  // filters (df exits 0 with a bare header row).
-  if (!pending_rows.empty() || all_ok) {
+  // [GNU] When the filters (or -l) eliminate every file system,
+  // df prints NO table: it reports 'no file systems processed' on
+  // stderr and exits 1 (df.c:1843-1850). A previous comment here
+  // asserted the opposite and pinned a bare header with exit 0.
+  // When per-operand errors already failed the run, those stand
+  // alone, as in GNU.
+  if (pending_rows.empty() && all_ok) {
+    safeErrorPrint("df: no file systems processed\n");
+    return false;
+  }
+  if (!pending_rows.empty()) {
     // [GNU] Column width = max(header width, widest cell); numeric
     // columns right-align, filesystem/type/mount left-align, columns
     // separated by one space.
@@ -1203,6 +1285,9 @@ auto print_disk_usage(const CommandContext<DF_OPTIONS.size()>& ctx)
     if (total && printed_rows > 0) {
       total_row.filesystem = "total";
       total_row.type = "-";
+      // [GNU] The default-mode total row's target is "-" (df.c:
+      // 1835-1842); mount was never set, printing a trailing blank.
+      total_row.mount = "-";
       if (inodes) {
         total_row.total_cell = "-";
         total_row.used_cell = "-";

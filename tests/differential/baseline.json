@@ -48,6 +48,18 @@
       "bucket": "PASS",
       "command": "cmp"
     },
+    "corpus/cmp/15-verbose-offset-width.case": {
+      "bucket": "PASS",
+      "command": "cmp"
+    },
+    "corpus/cmp/16-print-bytes-first-diff.case": {
+      "bucket": "PASS",
+      "command": "cmp"
+    },
+    "corpus/cmp/17-positional-skips.case": {
+      "bucket": "PASS",
+      "command": "cmp"
+    },
     "corpus/comm/02-basic.case": {
       "bucket": "PASS",
       "command": "comm"
@@ -1283,6 +1295,62 @@
     "corpus/sdiff/29-strip-cr-merge-output.case": {
       "bucket": "PASS",
       "command": "sdiff"
+    },
+    "corpus/grep/06-dir-operand-continues.case": {
+      "bucket": "PASS",
+      "command": "grep"
+    },
+    "corpus/grep/06-lL-last-wins.case": {
+      "bucket": "PASS",
+      "command": "grep"
+    },
+    "corpus/grep/06-count-overridden-by-list.case": {
+      "bucket": "PASS",
+      "command": "grep"
+    },
+    "corpus/grep/06-only-matching-invert.case": {
+      "bucket": "PASS",
+      "command": "grep"
+    },
+    "corpus/sed/01-version-command.case": {
+      "bucket": "PASS",
+      "command": "sed"
+    },
+    "corpus/sed/04-line-zero-range.case": {
+      "bucket": "PASS",
+      "command": "sed"
+    },
+    "corpus/sed/02-version-too-new.case": {
+      "bucket": "KNOWN_DIFF",
+      "command": "sed"
+    },
+    "corpus/sed/03-q-two-addresses.case": {
+      "bucket": "KNOWN_DIFF",
+      "command": "sed"
+    },
+    "corpus/sed/05-line-zero-numeric-range.case": {
+      "bucket": "KNOWN_DIFF",
+      "command": "sed"
+    },
+    "corpus/find/08-global-option-warning.case": {
+      "bucket": "PASS",
+      "command": "find"
+    },
+    "corpus/find/09-global-option-nowarn.case": {
+      "bucket": "PASS",
+      "command": "find"
+    },
+    "corpus/locate/01-missing-db.case": {
+      "bucket": "PASS",
+      "command": "locate"
+    },
+    "corpus/locate/02-limit-zero.case": {
+      "bucket": "PASS",
+      "command": "locate"
+    },
+    "corpus/updatedb/01-silent-success.case": {
+      "bucket": "PASS",
+      "command": "updatedb"
     }
   }
 }

@@ -1,0 +1,8 @@
+cmd: mv
+args: -b -n a.txt b.txt
+timeout: 10
+setup: |
+  printf 'x' > a.txt
+  printf 'y' > b.txt
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w1 oracle-coreutils-9.4 mv.c:512-516 backup-noclobber-exclusive

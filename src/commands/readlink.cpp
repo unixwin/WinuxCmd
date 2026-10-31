@@ -105,10 +105,6 @@ auto readlink_error(const std::string& file, std::string_view reason)
   return "readlink: " + file + ": " + std::string(reason);
 }
 
-auto posixly_correct_is_set() -> bool {
-  return GetEnvironmentVariableW(L"POSIXLY_CORRECT", nullptr, 0) > 0;
-}
-
 auto strip_extended_prefix(std::wstring path) -> std::wstring {
   if (path.rfind(L"\\\\?\\UNC\\", 0) == 0) {
     return L"\\\\" + path.substr(8);
@@ -222,18 +218,24 @@ auto read_link_target(const std::wstring& path)
     return strip_extended_prefix(std::wstring(print_name));
   }
 
-  return std::unexpected("Unsupported reparse point");
+  // [GNU] areadlink fails EINVAL for anything that is not a link;
+  // an exotic reparse tag is no different (readlink.c error path).
+  // This used to return the non-GNU "Unsupported reparse point".
+  return std::unexpected("Invalid argument");
 }
 
 auto build_config(const CommandContext<READLINK_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
   Config cfg;
-  bool posixly_correct = posixly_correct_is_set();
   cfg.mode = Mode::link_target;
   cfg.no_newline =
       ctx.get<bool>("--no-newline", false) || ctx.get<bool>("-n", false);
   cfg.verbose = false;
-  cfg.quiet = !posixly_correct;
+  // [GNU] Diagnostics are off unless -v: readlink.c's verbose flag
+  // starts false and POSIXLY_CORRECT plays no role anywhere in
+  // readlink. An invented env branch used to make errors print by
+  // default under that variable and made -q/-s unable to silence.
+  cfg.quiet = true;
   for (const auto& occurrence : ctx.options.occurrences()) {
     if (!ctx.metas || occurrence.index >= READLINK_OPTIONS.size()) {
       continue;
@@ -264,9 +266,6 @@ auto build_config(const CommandContext<READLINK_OPTIONS.size()>& ctx)
 
     if (meta.long_name == "--quiet" || meta.short_name == "-q" ||
         meta.long_name == "--silent" || meta.short_name == "-s") {
-      if (posixly_correct) {
-        continue;
-      }
       cfg.verbose = false;
       cfg.quiet = true;
     }
@@ -299,9 +298,9 @@ auto run(const Config& cfg) -> int {
   bool all_ok = true;
   bool no_newline = cfg.no_newline;
   if (cfg.no_newline && cfg.files.size() > 1) {
-    safeErrorPrintLn(
-        "readlink: warning: ignoring --no-newline with multiple "
-        "arguments");
+    // [GNU] error(0, 0, ...) — no 'warning:' in this text
+    // (readlink.c:149-156).
+    safeErrorPrintLn("readlink: ignoring --no-newline with multiple arguments");
     no_newline = false;
   }
 
@@ -322,10 +321,11 @@ auto run(const Config& cfg) -> int {
     }
 
     safePrint(*resolved);
-    if (cfg.zero_terminated) {
-      safePrint('\0');
-    } else if (!no_newline) {
-      safePrint('\n');
+    // [GNU] -n suppresses the terminator entirely, -z included
+    // (readlink.c:162-168: 'if (! no_newline) putchar (...)'). The
+    // zero-first test used to emit a NUL under -n -z.
+    if (!no_newline) {
+      safePrint(cfg.zero_terminated ? '\0' : '\n');
     }
   }
 
