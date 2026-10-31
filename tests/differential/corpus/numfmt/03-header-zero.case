@@ -1,0 +1,6 @@
+cmd: numfmt
+args: --header=0
+stdin: |
+  x
+source: GNU coreutils 9.4 src/numfmt.c:1560 ("invalid header value '0'")
+tags: audit-w3a #1462

@@ -625,6 +625,9 @@ REGISTER_COMMAND(
     safeErrorPrint(::winux::i18n::format("command.numfmt.error.valid_to_args",
                                          "Valid arguments are:\n  - 'none'\n  "
                                          "- 'si'\n  - 'iec'\n  - 'iec-i'\n"));
+    // [GNU] argmatch failures end with usage(), i.e. the try-help line
+    // (as the --round/--invalid paths below already print).
+    safeErrorPrintLn("Try 'numfmt --help' for more information.");
     return 1;
   }
   bool to_si = to_unit == "si";
@@ -640,6 +643,7 @@ REGISTER_COMMAND(
         ::winux::i18n::format("command.numfmt.error.valid_from_args",
                               "Valid arguments are:\n  - 'none'\n  - 'auto'\n"
                               "  - 'si'\n  - 'iec'\n  - 'iec-i'\n"));
+    safeErrorPrintLn("Try 'numfmt --help' for more information.");
     return 1;
   }
   std::string format_str = ctx.get<std::string>("--format", "");
@@ -650,8 +654,41 @@ REGISTER_COMMAND(
   if (delimiter.empty()) {
     delimiter = ctx.get<std::string>("-d", "");
   }
+  // [GNU] numfmt.c:1530-1536: the delimiter must be a single character;
+  // an explicitly empty -d '' selects the NUL byte as the delimiter.
+  bool delimiter_given = false;
+  for (const auto& occurrence : ctx.options.occurrences()) {
+    if ((*ctx.metas)[occurrence.index].long_name == "--delimiter") {
+      delimiter_given = true;
+    }
+  }
+  if (delimiter_given && delimiter.size() > 1) {
+    safeErrorPrintLn("numfmt: " +
+                     ::winux::i18n::translate(
+                         "command.numfmt.error.delimiter_single_character",
+                         "the delimiter must be a single character"));
+    return 1;
+  }
+  if (delimiter_given && delimiter.empty()) {
+    delimiter.assign(1, '\0');
+  }
   int header = 0;
   header = ctx.get<int>("--header", 0);
+  // [GNU] numfmt.c:1558-1561: --header=0 is invalid; a bare --header
+  // means 1 and an absent --header means no header lines.
+  bool header_given = false;
+  for (const auto& occurrence : ctx.options.occurrences()) {
+    if ((*ctx.metas)[occurrence.index].long_name == "--header") {
+      header_given = true;
+    }
+  }
+  if (header_given && header == 0) {
+    safeErrorPrintLn(
+        "numfmt: " +
+        ::winux::i18n::format("command.numfmt.error.invalid_header_value",
+                              "invalid header value '{}'", "0"));
+    return 1;
+  }
   if (header < 0) {
     // bare --header (no =N): GNU defaults to one header line
     header = 1;
@@ -663,6 +700,22 @@ REGISTER_COMMAND(
       ctx.get<bool>("--debug", false) || ctx.get<bool>("---debug", false);
   std::string round_mode = ctx.get<std::string>("--round", "");
   int padding = ctx.get<int>("--padding", ctx.get<int>("--pad", 0));
+  // [GNU] numfmt.c:1511-1514: --padding=0 is invalid (xstrtol must yield
+  // a non-zero width; negative widths left-align and are fine).
+  bool padding_given = false;
+  for (const auto& occurrence : ctx.options.occurrences()) {
+    const auto& meta = (*ctx.metas)[occurrence.index];
+    if (meta.long_name == "--padding" || meta.long_name == "--pad") {
+      padding_given = true;
+    }
+  }
+  if (padding_given && padding == 0) {
+    safeErrorPrintLn(
+        "numfmt: " +
+        ::winux::i18n::format("command.numfmt.error.invalid_padding_value",
+                              "invalid padding value '{}'", "0"));
+    return 1;
+  }
   std::string suffix = ctx.get<std::string>("--suffix", "");
   std::string field_spec = ctx.get<std::string>("--field", "");
 
@@ -705,6 +758,22 @@ REGISTER_COMMAND(
     safeErrorPrintLn("numfmt: " + ::winux::i18n::translate(
                                       "command.numfmt.error.grouping_vs_to",
                                       "grouping cannot be combined with --to"));
+    return 1;
+  }
+
+  // [GNU] numfmt.c:1524-1527: a second --field specification is a hard
+  // error, not a replacement.
+  size_t field_spec_count = 0;
+  for (const auto& occurrence : ctx.options.occurrences()) {
+    if ((*ctx.metas)[occurrence.index].long_name == "--field") {
+      ++field_spec_count;
+    }
+  }
+  if (field_spec_count > 1) {
+    safeErrorPrintLn("numfmt: " +
+                     ::winux::i18n::translate(
+                         "command.numfmt.error.multiple_field_specifications",
+                         "multiple field specifications"));
     return 1;
   }
 

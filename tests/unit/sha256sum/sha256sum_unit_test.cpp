@@ -435,3 +435,15 @@ TEST(sha256sum, sha256sum_marker_text_default_and_last_option_wins_issue1205) {
   auto rlt = last_text.run();
   EXPECT_EQ(rlt.stdout_text, rd.stdout_text);
 }
+
+// [#1462] An empty operand is a file name, not stdin (digest.c fopen
+// semantics), matching GNU's "sha256sum: '': No such file or directory".
+TEST(sha256sum, sha256sum_empty_operand_is_not_stdin) {
+  Pipeline p;
+  p.set_stdin("hello\n");
+  p.add(L"sha256sum.exe", {L""});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_CONTAINS(r.stderr_text, "No such file or directory");
+  EXPECT_TRUE(r.stdout_text.empty());
+}

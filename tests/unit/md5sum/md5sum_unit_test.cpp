@@ -589,3 +589,15 @@ TEST(md5sum, issue_1288_ignore_missing_verifies_target_past_max_path) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_NE(r.stdout_text.find("target.txt: OK"), std::string::npos);
 }
+
+// [#1462] An empty operand is a file name, not stdin: GNU md5sum fails
+// with "md5sum: '': No such file or directory" and exit 1.
+TEST(md5sum, md5sum_empty_operand_is_not_stdin) {
+  Pipeline p;
+  p.set_stdin("hello\n");
+  p.add(L"md5sum.exe", {L""});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_CONTAINS(r.stderr_text, "No such file or directory");
+  EXPECT_TRUE(r.stdout_text.empty());
+}

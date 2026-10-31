@@ -1,0 +1,8 @@
+cmd: b2sum
+args: -c sums.txt
+timeout: 10
+setup: |
+  printf 'hello\n' > f.txt
+  printf 'BLAKE2b (f.txt) = 0000000000000000000000000000000000000000000000000000000000000000\n' > sums.txt
+source: GNU coreutils 9.4 src/digest.c bsd_split_3 (a suffixless tagged line must carry the full 128 hex digits; shorter is improperly formatted)
+tags: audit-w3a #1462
