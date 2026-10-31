@@ -152,8 +152,15 @@ TEST(diff, diff_ignore_all_space_side_by_side) {
 
   auto r = p.run();
 
+  // [GNU diff.c:817-822, analyze.c:635, side.c:36-47] -w makes the
+  // files compare equal (exit 0), but side-by-side is a listing
+  // format: no_diff_means_no_output is false for OUTPUT_SDIFF, so
+  // every common line still prints in two columns.  (The unified
+  // sibling above does print nothing.)
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stdout_text.find("alpha beta") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("alphabeta") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("same") != std::string::npos);
 }
 
 TEST(diff, diff_ignore_blank_lines_text_and_color_options) {
