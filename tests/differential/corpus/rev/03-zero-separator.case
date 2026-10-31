@@ -1,0 +1,7 @@
+cmd: rev
+oracle: linux
+args: -0 z.bin
+setup: |
+  printf 'ab\0cd\0' > z.bin
+source: tests/differential/corpus/rev/03-zero-separator.case
+tags: gnu-compat rev zero audit-w7
