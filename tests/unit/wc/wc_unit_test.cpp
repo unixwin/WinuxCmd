@@ -314,14 +314,19 @@ TEST(wc, wc_files0_from_rejects_zero_length_names) {
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
-  p.add(L"wc.exe", {L"--files0-from", L"list.bin"});
+  p.add(L"wc.exe", {L"-l", L"--files0-from", L"list.bin"});
 
   auto r = p.run();
 
+  // [GNU] wc.c: the empty record is diagnosed with the
+  // '<list>:<record#>:' prefix and SKIPPED -- the valid name is
+  // still counted, the total line still prints (the --total=auto
+  // basis counts every iterated name), and the exit status is 1.
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stdout_text.empty());
-  EXPECT_TRUE(r.stderr_text.find("wc: invalid zero-length file name") !=
-              std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("1 a.txt") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("1 total") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("wc: list.bin:2: invalid zero-length "
+                                 "file name") != std::string::npos);
 }
 
 TEST(wc, wc_files0_from_stdin_rejects_dash_name) {
@@ -331,12 +336,16 @@ TEST(wc, wc_files0_from_stdin_rejects_dash_name) {
   Pipeline p;
   p.set_cwd(tmp.wpath());
   p.set_stdin(std::string("a.txt\0-\0", 8));
-  p.add(L"wc.exe", {L"--files0-from", L"-"});
+  p.add(L"wc.exe", {L"-l", L"--files0-from", L"-"});
 
   auto r = p.run();
 
+  // [GNU] wc.c: a '-' name read from stdin is diagnosed and
+  // SKIPPED -- the valid name is still counted, the total line
+  // still prints, and the exit status is 1.
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stdout_text.find("1 a.txt") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("1 total") != std::string::npos);
   EXPECT_TRUE(r.stderr_text.find("wc: when reading file names from stdin, no "
                                  "file name of '-' allowed") !=
               std::string::npos);

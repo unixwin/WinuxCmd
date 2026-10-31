@@ -101,6 +101,10 @@ struct Files0ReadResult {
   // [GNU] per-record problems (zero-length names, '-' read from
   // stdin) are reported and skipped, not fatal (audit #1462).
   bool any_error = false;
+  // [GNU] every record read, including skipped bad ones: the
+  // --total=auto basis is argv_iter_n_args (wc.c main loop),
+  // which counts skipped records too (audit #1462).
+  size_t records_seen = 0;
 };
 
 struct DecodedChar {
@@ -261,6 +265,7 @@ auto read_files0_from(const std::string& path) -> cp::Result<Files0ReadResult> {
     }
     result.paths.push_back(name);
   }
+  result.records_seen = record_number;
   return result;
 }
 
@@ -688,6 +693,7 @@ auto process_command(const CommandContext<N>& ctx, const CountRequest& request)
   std::vector<std::string> paths;
   bool files0_from_stdin = false;
   bool files0_had_error = false;
+  size_t files0_records_seen = 0;
   // [GNU] --files0-from is about PRESENCE, not a non-empty value:
   // '--files0-from=' means a list file named '' and fails to open
   // (audit #1462).
@@ -706,6 +712,7 @@ auto process_command(const CommandContext<N>& ctx, const CountRequest& request)
     if (!file_list) return std::unexpected(file_list.error());
     files0_from_stdin = file_list->from_stdin;
     files0_had_error = file_list->any_error;
+    files0_records_seen = file_list->records_seen;
     paths = std::move(file_list->paths);
   } else {
     auto validated = validate_arguments(ctx.positionals);
@@ -738,7 +745,12 @@ auto process_command(const CommandContext<N>& ctx, const CountRequest& request)
     return batch;
   }
 
-  batch.requested_input_count = paths.size();
+  // [GNU] with --files0-from, the --total=auto basis counts every
+  // name the iterator produced, skipped bad records included
+  // (wc.c: 1 < argv_iter_n_args (ai)); plain operands have no
+  // skipped entries, so the path count is the basis there.
+  batch.requested_input_count =
+      has_files0_from ? files0_records_seen : paths.size();
   for (const auto& path : paths) {
     std::string soft_error;
     auto file_result = count_file(path, request, &soft_error);
