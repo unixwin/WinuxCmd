@@ -118,7 +118,10 @@ TEST(pathchk, pathchk_portability_rejects_nonportable_character) {
   auto r = p.run();
 
   EXPECT_NE(r.exit_code, 0);
-  EXPECT_TRUE(r.stderr_text.find("nonportable") != std::string::npos);
+  // [GNU] pathchk.c portable_chars_only: the wording is hyphenated,
+  // "non-portable character %s in file name %s".
+  EXPECT_TRUE(r.stderr_text.find("non-portable character") !=
+              std::string::npos);
 }
 
 TEST(pathchk, pathchk_long_option_portability_implies_P) {
@@ -138,7 +141,11 @@ TEST(pathchk, pathchk_p_checks_posix_component_length) {
   auto r = p.run();
 
   EXPECT_NE(r.exit_code, 0);
-  EXPECT_TRUE(r.stderr_text.find("too long") != std::string::npos);
+  // [GNU] pathchk.c component check: "limit %td exceeded by length
+  // %td of file name component %s" -- 14 is _POSIX_NAME_MAX, 16 is
+  // the length of 'abcdefghijklmnop'.
+  EXPECT_TRUE(r.stderr_text.find("limit 14 exceeded by length 16") !=
+              std::string::npos);
 }
 
 TEST(pathchk, pathchk_rejects_windows_reserved_name) {
