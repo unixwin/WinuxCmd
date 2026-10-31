@@ -22,6 +22,8 @@ using cmd::meta::OptionType;
 auto constexpr CMP_OPTIONS = std::array{
     // [GNU]
     OPTION("-b", "--print-bytes", "print differing bytes", BOOL_TYPE),
+    // [GNU] -c is the obsolescent alias of -b (cmp.c: "case 'c'").
+    OPTION("-c", "", "print differing bytes", BOOL_TYPE),
     // [GNU]
     OPTION("-i", "--ignore-initial", "skip specified number of initial bytes",
            STRING_TYPE),
@@ -142,72 +144,91 @@ auto parse_byte_count(std::string_view text) -> std::optional<size_t> {
   return static_cast<size_t>(*parsed);
 }
 
-auto parse_skip_pair(std::string_view text)
-    -> std::optional<std::pair<size_t, size_t>> {
-  if (text.empty()) return std::nullopt;
-
-  auto colon = text.find(':');
-  if (colon == std::string_view::npos) {
-    auto count = parse_byte_count(text);
-    if (!count) return std::nullopt;
-    return std::pair<size_t, size_t>{*count, *count};
-  }
-
-  auto left = parse_byte_count(text.substr(0, colon));
-  auto right = parse_byte_count(text.substr(colon + 1));
-  if (!left || !right) return std::nullopt;
-  return std::pair<size_t, size_t>{*left, *right};
-}
-
 auto build_config(const CommandContext<CMP_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
   Config cfg;
-  cfg.print_bytes =
-      ctx.get<bool>("--print-bytes", false) || ctx.get<bool>("-b", false);
+
+  // [GNU] Options take effect in argv order (the cmp.c getopt loop):
+  // -l/-s select the comparison type, and specifying both types is an
+  // error the moment the second one is seen (specify_comparison_type,
+  // cmp.c:149-154); each -i value MAX-combines into the per-file skip
+  // counts (specify_ignore_initial, cmp.c:134-145); repeated -n takes
+  // the MINIMUM (cmp.c:243-250).
+  int comparison_type = 0;  // 1 = -l (all diffs), 2 = -s (status only)
+  bool have_bytes = false;
   for (const auto& occurrence : ctx.options.occurrences()) {
     if (!ctx.metas || occurrence.index >= CMP_OPTIONS.size()) continue;
     const auto& meta = (*ctx.metas)[occurrence.index];
 
-    if (meta.long_name == "--verbose" || meta.short_name == "-l") {
+    if (meta.short_name == "-l" || meta.long_name == "--verbose") {
+      if (comparison_type == 2) {
+        return std::unexpected("options -l and -s are incompatible");
+      }
+      comparison_type = 1;
       cfg.verbose = true;
-      cfg.quiet = false;
       continue;
     }
 
-    if (meta.long_name == "--quiet" || meta.long_name == "--silent" ||
-        meta.short_name == "-s") {
+    if (meta.short_name == "-s" || meta.long_name == "--quiet" ||
+        meta.long_name == "--silent") {
+      if (comparison_type == 1) {
+        return std::unexpected("options -l and -s are incompatible");
+      }
+      comparison_type = 2;
       cfg.quiet = true;
-      cfg.verbose = false;
       continue;
     }
-  }
 
-  auto skip_opt = ctx.get<std::string>("--ignore-initial", "");
-  if (skip_opt.empty()) {
-    skip_opt = ctx.get<std::string>("-i", "");
-  }
-  if (!skip_opt.empty()) {
-    auto skip_pair = parse_skip_pair(skip_opt);
-    if (!skip_pair) {
-      // [GNU] cmp.c: "invalid --ignore-initial value '<arg>'".
-      return std::unexpected("invalid --ignore-initial value '" + skip_opt +
-                             "'");
+    if (meta.short_name == "-b" || meta.short_name == "-c" ||
+        meta.long_name == "--print-bytes") {
+      cfg.print_bytes = true;
+      continue;
     }
-    cfg.skip_bytes_file1 = skip_pair->first;
-    cfg.skip_bytes_file2 = skip_pair->second;
-  }
 
-  auto bytes_opt = ctx.get<std::string>("--bytes", "");
-  if (bytes_opt.empty()) {
-    bytes_opt = ctx.get<std::string>("-n", "");
-  }
-  if (!bytes_opt.empty()) {
-    auto parsed_bytes = parse_byte_count(bytes_opt);
-    if (!parsed_bytes) {
-      // [GNU] cmp.c: "invalid --bytes value '<arg>'".
-      return std::unexpected("invalid --bytes value '" + bytes_opt + "'");
+    if (meta.short_name == "-i" || meta.long_name == "--ignore-initial") {
+      const auto* value = std::get_if<std::string>(&occurrence.value);
+      if (!value) continue;
+      // [GNU] cmp.c:229-236: an optional ":SKIP2" part follows the
+      // first count; a lone count raises file 2's skip to at least
+      // file 1's.  A parse failure names the unparsed remainder.
+      const std::string_view text = *value;
+      const size_t colon = text.find(':');
+      const std::string_view first =
+          colon == std::string_view::npos ? text : text.substr(0, colon);
+      auto skip1 = parse_byte_count(first);
+      if (!skip1) {
+        return std::unexpected("invalid --ignore-initial value '" +
+                               std::string(text) + "'");
+      }
+      cfg.skip_bytes_file1 = std::max(cfg.skip_bytes_file1, *skip1);
+      if (colon != std::string_view::npos) {
+        const std::string_view rest = text.substr(colon + 1);
+        auto skip2 = parse_byte_count(rest);
+        if (!skip2) {
+          return std::unexpected("invalid --ignore-initial value '" +
+                                 std::string(rest) + "'");
+        }
+        cfg.skip_bytes_file2 = std::max(cfg.skip_bytes_file2, *skip2);
+      } else if (cfg.skip_bytes_file2 < cfg.skip_bytes_file1) {
+        cfg.skip_bytes_file2 = cfg.skip_bytes_file1;
+      }
+      continue;
     }
-    cfg.max_bytes = *parsed_bytes;
+
+    if (meta.short_name == "-n" || meta.long_name == "--bytes") {
+      const auto* value = std::get_if<std::string>(&occurrence.value);
+      if (!value) continue;
+      auto parsed_bytes = parse_byte_count(*value);
+      if (!parsed_bytes) {
+        // [GNU] cmp.c: "invalid --bytes value '<arg>'".
+        return std::unexpected("invalid --bytes value '" + *value + "'");
+      }
+      if (!have_bytes || *parsed_bytes < cfg.max_bytes) {
+        cfg.max_bytes = *parsed_bytes;
+      }
+      have_bytes = true;
+      continue;
+    }
   }
 
   SmallVector<std::string, 8> raw_positionals;
@@ -215,16 +236,40 @@ auto build_config(const CommandContext<CMP_OPTIONS.size()>& ctx)
     raw_positionals.push_back(std::string(arg));
   }
 
-  if (raw_positionals.size() < 2) {
-    return std::unexpected(
-        "missing operand after '" +
-        (raw_positionals.empty() ? std::string() : raw_positionals[0]) + "'");
+  // [GNU] cmp.c:264-266: with no operands at all, the diagnostic names
+  // the last word of the command line (argv[argc - 1]).
+  if (raw_positionals.empty()) {
+    const std::string last =
+        ctx.raw_args.empty() ? "cmp" : std::string(ctx.raw_args.back());
+    return std::unexpected("missing operand after '" + last + "'");
+  }
+
+  // [GNU] cmp.c:275-282: positional SKIP1/SKIP2 MAX-combine into the
+  // per-file skips, SKIP1 naming file 1 only; surplus operands are
+  // diagnosed only after the skips have been parsed.
+  if (raw_positionals.size() >= 3) {
+    auto skip1 = parse_byte_count(raw_positionals[2]);
+    if (!skip1) {
+      return std::unexpected("invalid --ignore-initial value '" +
+                             raw_positionals[2] + "'");
+    }
+    cfg.skip_bytes_file1 = std::max(cfg.skip_bytes_file1, *skip1);
+  }
+  if (raw_positionals.size() >= 4) {
+    auto skip2 = parse_byte_count(raw_positionals[3]);
+    if (!skip2) {
+      return std::unexpected("invalid --ignore-initial value '" +
+                             raw_positionals[3] + "'");
+    }
+    cfg.skip_bytes_file2 = std::max(cfg.skip_bytes_file2, *skip2);
   }
   if (raw_positionals.size() > 4) {
     return std::unexpected("extra operand '" + raw_positionals[4] + "'");
   }
 
-  for (size_t i = 0; i < 2; ++i) {
+  // [GNU] cmp.c:269-270: FILE2 defaults to "-" (standard input).
+  const size_t file_operands = std::min<size_t>(raw_positionals.size(), 2);
+  for (size_t i = 0; i < file_operands; ++i) {
     const auto& file_arg = raw_positionals[i];
     if (!contains_wildcard(file_arg)) {
       cfg.files.push_back(file_arg);
@@ -242,31 +287,11 @@ auto build_config(const CommandContext<CMP_OPTIONS.size()>& ctx)
     cfg.files.push_back(file_arg);
   }
 
-  if (cfg.files.size() < 2) {
-    return std::unexpected("missing operand after '" + cfg.files[0] + "'");
-  }
   if (cfg.files.size() > 2) {
     return std::unexpected("extra operand '" + cfg.files[2] + "'");
   }
-
-  if (raw_positionals.size() >= 3) {
-    auto skip1 = parse_byte_count(raw_positionals[2]);
-    if (!skip1) {
-      // [GNU] positional skips report as --ignore-initial values.
-      return std::unexpected("invalid --ignore-initial value '" +
-                             raw_positionals[2] + "'");
-    }
-    cfg.skip_bytes_file1 = *skip1;
-    cfg.skip_bytes_file2 = *skip1;
-  }
-
-  if (raw_positionals.size() >= 4) {
-    auto skip2 = parse_byte_count(raw_positionals[3]);
-    if (!skip2) {
-      return std::unexpected("invalid --ignore-initial value '" +
-                             raw_positionals[3] + "'");
-    }
-    cfg.skip_bytes_file2 = *skip2;
+  if (cfg.files.size() < 2) {
+    cfg.files.push_back("-");
   }
 
   return cfg;
@@ -367,13 +392,28 @@ auto byte_glyph(unsigned char c) -> std::string {
 
 auto print_difference(const Config& cfg, const std::string& file1,
                       const std::string& file2, size_t display_pos,
-                      size_t line_number, unsigned char c1, unsigned char c2)
-    -> void {
+                      size_t line_number, unsigned char c1, unsigned char c2,
+                      size_t offset_width) -> void {
   // [GNU] -l lists every differing byte; -b prints only the first
   // difference, appended to the normal "differ" message (cmp.c).
   if (cfg.verbose) {
+    // [GNU] cmp.c prints the byte number padded to offset_width,
+    // then " %3o %3o"; with -b the glyph columns join in:
+    // "%*s %3o %-4s %3o %s".
+    std::string number = std::to_string(display_pos);
+    if (number.size() < offset_width) {
+      number.insert(0, offset_width - number.size(), ' ');
+    }
     char buf[64];
-    snprintf(buf, sizeof(buf), "%zu %3o %3o", display_pos, c1, c2);
+    if (cfg.print_bytes) {
+      const std::string glyph1 = byte_glyph(c1);
+      const std::string glyph2 = byte_glyph(c2);
+      snprintf(buf, sizeof(buf), " %3o %-4s %3o %s", c1, glyph1.c_str(), c2,
+               glyph2.c_str());
+    } else {
+      snprintf(buf, sizeof(buf), " %3o %3o", c1, c2);
+    }
+    safePrint(number);
     safePrintLn(buf);
     return;
   }
@@ -464,6 +504,25 @@ auto run(const Config& cfg) -> int {
     return 1;
   }
 
+  // [GNU] offset_width (cmp.c): the widest byte number -l can print
+  // starts from the -n limit (TYPE_MAXIMUM(off_t) when unlimited) and
+  // is capped by each regular file's remaining length after its skip;
+  // the printed width is that value's decimal digit count.
+  size_t offset_width = 1;
+  {
+    std::uintmax_t widest =
+        cfg.max_bytes == SIZE_MAX
+            ? static_cast<std::uintmax_t>(
+                  std::numeric_limits<std::int64_t>::max())
+            : static_cast<std::uintmax_t>(cfg.max_bytes);
+    if (remaining1) widest = std::min(widest, *remaining1);
+    if (remaining2) widest = std::min(widest, *remaining2);
+    while (widest >= 10) {
+      widest /= 10;
+      ++offset_width;
+    }
+  }
+
   if (file1 == "-") {
     discard_stdin_prefix(cfg.skip_bytes_file1);
   } else {
@@ -507,7 +566,8 @@ auto run(const Config& cfg) -> int {
       if (!cfg.verbose) {
         print_difference(cfg, file1, file2, compared + diff + 1, line_number,
                          static_cast<unsigned char>(buffer1[diff]),
-                         static_cast<unsigned char>(buffer2[diff]));
+                         static_cast<unsigned char>(buffer2[diff]),
+                         offset_width);
         return 1;
       }
 
@@ -517,7 +577,7 @@ auto run(const Config& cfg) -> int {
         unsigned char c2 = static_cast<unsigned char>(buffer2[i]);
         if (c1 != c2) {
           print_difference(cfg, file1, file2, compared + i + 1, line_number, c1,
-                           c2);
+                           c2, offset_width);
         }
       }
     } else if (!cfg.verbose) {
@@ -597,8 +657,9 @@ REGISTER_COMMAND(
   auto cfg_result = build_config(ctx);
   if (!cfg_result) {
     // [GNU] cmp exits 2 (EXIT_TROUBLE) for usage errors and trouble.
-    if (cfg_result.error() == "missing operand after ''") {
-      cp::report_custom_error(L"cmp", L"missing operand");
+    if (cfg_result.error() == "options -l and -s are incompatible") {
+      safeErrorPrint("cmp: ");
+      safeErrorPrintLn(cfg_result.error());
       safeErrorPrintLn("Try 'cmp --help' for more information.");
       return 2;
     }

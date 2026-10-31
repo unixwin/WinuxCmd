@@ -672,8 +672,12 @@ TEST(du, du_files0_from_rejects_named_operands) {
   auto r = p.run();
 
   EXPECT_NE(r.exit_code, 0);
-  EXPECT_TRUE(r.stderr_text.find("--files0-from disallows") !=
+  // [GNU] du.c:1037-1043 wording.
+  EXPECT_TRUE(r.stderr_text.find("extra operand 'a.txt'") !=
               std::string::npos);
+  EXPECT_TRUE(
+      r.stderr_text.find("file operands cannot be combined with "
+                         "--files0-from") != std::string::npos);
 }
 
 TEST(du, du_later_block_size_option_overrides_human_readable) {
@@ -915,6 +919,23 @@ TEST(du, du_time) {
                              std::nullopt, older));
   EXPECT_TRUE(set_file_times(tmp.path / "root" / "subdir" / "newer.txt",
                              std::nullopt, std::nullopt, newer));
+  // [GNU] Directory operands contribute their own times to the max,
+  // so pin both directories to the older stamp; otherwise the root
+  // line would carry the directories' creation time, not the file's.
+  auto set_dir_time = [](const std::filesystem::path& path,
+                         const FILETIME& ft) {
+    HANDLE handle =
+        CreateFileW(path.wstring().c_str(), FILE_WRITE_ATTRIBUTES,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS,
+                    nullptr);
+    if (handle == INVALID_HANDLE_VALUE) return false;
+    bool ok = SetFileTime(handle, nullptr, nullptr, &ft) != 0;
+    CloseHandle(handle);
+    return ok;
+  };
+  EXPECT_TRUE(set_dir_time(tmp.path / "root" / "subdir", *older));
+  EXPECT_TRUE(set_dir_time(tmp.path / "root", *older));
   auto expected_time = path_selected_time_string(
       tmp.path / "root" / "subdir" / "newer.txt", "mtime");
   EXPECT_TRUE(expected_time.has_value());

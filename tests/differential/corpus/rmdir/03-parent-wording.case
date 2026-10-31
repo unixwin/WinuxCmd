@@ -1,0 +1,8 @@
+cmd: rmdir
+args: -p a/b
+timeout: 10
+setup: |
+  mkdir -p a/b
+  printf 'f' > a/file.txt
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w1 oracle-coreutils-9.4 rmdir.c:150 failed-to-remove-directory

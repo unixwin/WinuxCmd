@@ -1,0 +1,5 @@
+cmd: du
+args: -a -s .
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w1 oracle-coreutils-9.4 du.c:937-938 summarize-all-entries-wording

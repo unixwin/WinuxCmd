@@ -14,9 +14,15 @@
 regressions/23-cp-link-option.case	environment: CreateHardLinkW cannot hardlink across \\wsl.localhost 9p shares in the WSL-side runner; verified working (hardlink count 2) on native NTFS
 
 corpus/ln/35-hard.case	environment: same 9p hardlink limitation as cp -l; hard links created on NTFS match GNU
+corpus/ln/39-suffix-enables-backup.case	environment: hard-link creation through the \\wsl.localhost 9p share fails in the runner sandbox (same limitation as corpus/ln/35-hard); on native NTFS the -S backup is created and the link succeeds, matching GNU
 
 # Round-4 environment/platform-only differences (not product defects)
 corpus/readlink/01-resolve.case	platform: readlink -f resolves WSL path to Windows UNC (\wsl$Ubuntu-GitLab...); GNU returns the WSL absolute path
+corpus/readlink/02-dangling-canonicalize.case	platform: readlink -f prints the resolved path in Windows UNC spelling (\\\\wsl.localhost\...) where GNU prints the WSL absolute path; the resolved target itself matches (same class as corpus/readlink/01-resolve)
+corpus/readlink/03-no-newline-zero.case	environment: the setup creates symlinks, and reparse-point creation through the \\wsl.localhost 9p share is not supported by the redirector, so the subject side sees a non-link (same family as regressions/57-ln-backup-control)
+corpus/readlink/04-no-newline-multi.case	environment: the setup creates symlinks, and reparse-point creation through the \\wsl.localhost 9p share is not supported by the redirector, so the subject side sees a non-link (same family as regressions/57-ln-backup-control)
+corpus/realpath/37-dangling-default.case	platform: realpath prints the resolved path in Windows UNC spelling (\\\\wsl.localhost\...) where GNU prints the WSL absolute path; the resolved target itself matches (same class as corpus/readlink/01-resolve)
+corpus/realpath/38-relative-base-not-prefix.case	platform: realpath prints the resolved path in Windows UNC spelling (\\\\wsl.localhost\...) where GNU prints the WSL absolute path; the resolved target itself matches (same class as corpus/readlink/01-resolve)
 
 corpus/envsubst/01-basic.case	environment: $HOME is /root on WSL-GNU vs Windows UserProfile on winux
 
