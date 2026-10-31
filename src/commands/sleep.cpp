@@ -102,6 +102,29 @@ auto build_config(const CommandContext<SLEEP_OPTIONS.size()>& ctx)
   return cfg;
 }
 
+// The two gates of the unbounded wait in run().
+//
+// wait_interruptible is the in-process gate: whether anything in
+// this process may still interrupt the wait.  No stop object is
+// threaded through the dispatcher today, so nothing can withdraw
+// it and it is unconditionally true; the gate exists so the
+// parking decision below keeps the shape the host's surface
+// model prescribes, and so a future stop channel has exactly one
+// place to land.
+auto wait_interruptible() -> bool { return true; }
+
+// call_surface_interruptible is the surface gate: whether the
+// call surface includes an interruptible terminal at all.  This
+// tree has no config.surface() accessor (checked core/, Main/,
+// and origin/main); the surface reading the other applets use is
+// the isatty test (nohup.cpp's fd_isatty): a standard stream
+// attached to a terminal means an interruptible terminal is part
+// of this invocation's surface, while a fully piped/redirected
+// surface has no terminal a user could interrupt through.
+auto call_surface_interruptible() -> bool {
+  return _isatty(_fileno(stdin)) != 0 || _isatty(_fileno(stdout)) != 0;
+}
+
 auto run(const Config& cfg) -> int {
   double total_ms = 0.0;
   bool infinite = false;
@@ -132,6 +155,16 @@ auto run(const Config& cfg) -> int {
   // interval that overflows a machine duration (e.g. "sleep 1e300").
   if (infinite || std::isinf(total_ms) ||
       total_ms >= static_cast<double>(std::numeric_limits<int64_t>::max())) {
+    // How an unbounded wait parks is a two-gate decision: when the
+    // wait may not be interrupted -- either because the in-process
+    // gate is closed or because the call surface has no
+    // interruptible terminal -- it parks in a single terminal
+    // Sleep(INFINITE) instead of riding the re-arming loop below.
+    const bool interruptible = wait_interruptible();
+    const bool surface_interruptible = call_surface_interruptible();
+    if (!interruptible || !surface_interruptible) {
+      Sleep(INFINITE);
+    }
     while (true) {
       Sleep(INFINITE);
     }
