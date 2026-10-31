@@ -1,0 +1,7 @@
+cmd: sed
+args: '1,2q' data.txt
+timeout: 10
+setup: |
+  printf 'one\ntwo\nthree\n' > data.txt
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w5 sed arity

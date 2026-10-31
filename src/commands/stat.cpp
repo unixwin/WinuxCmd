@@ -67,19 +67,24 @@ struct ReparseDataBuffer {
 // [GNU] --printf: like --format with backslash escapes
 // [DIFFERS] --cached: GNU cache controls are unavailable on Windows
 auto constexpr STAT_OPTIONS = std::array{
-    OPTION("-L", "--dereference", "follow symbolic links", BOOL_TYPE),
+    OPTION("-L", "--dereference", "follow links", BOOL_TYPE),
     OPTION("-f", "--file-system",
            "display file system status instead of file status", BOOL_TYPE),
-    OPTION("-c", "--format", "use the specified FORMAT instead of the default",
+    OPTION("-c", "--format",
+           "use the specified FORMAT instead of the default; output a "
+           "newline after each use of FORMAT",
            STRING_TYPE),
     OPTION("-t", "--terse", "print the information in terse form", BOOL_TYPE),
-    OPTION("", "--printf", "like --format, but interpret backslash escapes",
+    OPTION("", "--printf",
+           "like --format, but interpret backslash escapes, and do not "
+           "output a mandatory trailing newline; if you want a newline, "
+           "include \\n in FORMAT",
            STRING_TYPE),
     // [GNU] --cached is a required-argument caching hint (never/always/
     // default). It is accepted as a no-op on Windows.
     OPTION("", "--cached",
-           "use cached attribute data WHEN (hint only; always fresh on "
-           "Windows)",
+           "specify how to use cached attributes; see MODE below (hint "
+           "only; attributes are always queried fresh on Windows)",
            STRING_TYPE)};
 
 namespace stat_pipeline {
@@ -764,11 +769,21 @@ auto render_format(std::string_view format, const std::string& filename,
       out.push_back('%');
       break;
     }
+    // [GNU] %H/%L modifier: major/minor selector, defined only before %d
+    // and %r (coreutils-9.4 stat.c print_it dispatch).  Any other use
+    // leaves 'H'/'L' as the directive character, which prints '?'.
+    char hl_mod = 0;
+    if ((format[pos] == 'H' || format[pos] == 'L') &&
+        pos + 1 < format.size() &&
+        (format[pos + 1] == 'd' || format[pos + 1] == 'r')) {
+      hl_mod = format[pos];
+      ++pos;
+    }
     const char code = format[pos];
     i = pos;
 
     // Whether the directive produces a number for '0'/precision padding.
-    const bool numeric = std::string_view("abdfghiorstTuDXYZW").find(code) !=
+    const bool numeric = std::string_view("abdfghiorstTuDXYZWR").find(code) !=
                          std::string_view::npos;
 
     std::string value;
@@ -834,7 +849,13 @@ auto render_format(std::string_view format, const std::string& filename,
         break;
       case 'r':
         // [GNU] %r: device number (st_rdev) in decimal. Windows has no
-        // block/character special files, so it is always 0.
+        // block/character special files, so it is always 0 (and so are
+        // its %Hr/%Lr major/minor parts).
+        value = "0";
+        break;
+      case 'R':
+        // [GNU] %R: device type in hex (st_rdev); always 0 on Windows
+        // for the same reason as %r.
         value = "0";
         break;
       case 't':
@@ -850,7 +871,18 @@ auto render_format(std::string_view format, const std::string& filename,
         value = std::to_string(stat.file_index);
         break;
       case 'd':
-        value = std::to_string(stat.volume_serial);
+        // [GNU] %d: device number in decimal (st_dev); %Hd/%Ld select
+        // its major/minor parts, decomposed from the same synthesized
+        // device value this implementation reports for %d.
+        if (hl_mod == 'H') {
+          value = std::to_string(((stat.volume_serial >> 8) & 0xfff) |
+                                 ((stat.volume_serial >> 32) & ~0xfffULL));
+        } else if (hl_mod == 'L') {
+          value = std::to_string((stat.volume_serial & 0xff) |
+                                 ((stat.volume_serial >> 12) & ~0xffULL));
+        } else {
+          value = std::to_string(stat.volume_serial);
+        }
         break;
       case 'D': {
         char buf[32];
@@ -1339,6 +1371,8 @@ REGISTER_COMMAND(stat, "stat", "stat [OPTION]... FILE...",
                  "  %B   the size in bytes of each block reported by %b\n"
                  "  %d   device number in decimal (st_dev)\n"
                  "  %D   device number in hex (st_dev)\n"
+                 "  %Hd  major device number in decimal\n"
+                 "  %Ld  minor device number in decimal\n"
                  "  %f   raw mode in hex\n"
                  "  %F   file type\n"
                  "  %g   group ID of owner\n"
@@ -1352,6 +1386,10 @@ REGISTER_COMMAND(stat, "stat", "stat [OPTION]... FILE...",
                  "  %s   total size, in bytes\n"
                  "  %r   device type in decimal (st_rdev)\n"
                  "  %R   device type in hex (st_rdev)\n"
+                 "  %Hr  major device type in decimal, for character/block "
+                 "device special files\n"
+                 "  %Lr  minor device type in decimal, for character/block "
+                 "device special files\n"
                  "  %t   major device type in hex, for character/block device "
                  "special files\n"
                  "  %T   minor device type in hex, for character/block device "

@@ -1,0 +1,5 @@
+cmd: mknod
+args: dev c 0xZZ 1
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w1 oracle-coreutils-9.4 mknod.c:236-245 invalid-major-device-number

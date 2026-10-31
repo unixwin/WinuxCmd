@@ -1066,10 +1066,19 @@ auto build_config(const CommandContext<GREP_OPTIONS.size()>& ctx,
       ctx.get<bool>("--only-matching", false) || ctx.get<bool>("-o", false);
   cfg.quiet = ctx.get<bool>("--quiet", false) ||
               ctx.get<bool>("--silent", false) || ctx.get<bool>("-q", false);
-  cfg.files_without_match = ctx.get<bool>("--files-without-match", false) ||
-                            ctx.get<bool>("-L", false);
-  cfg.files_with_matches = ctx.get<bool>("--files-with-matches", false) ||
-                           ctx.get<bool>("-l", false);
+  // [GNU] -l and -L set ONE list_files variable, so the last one given
+  // wins (grep.c case 'l'/'L'); they are not independent booleans.
+  for (const auto& occurrence : ctx.options.occurrences()) {
+    if (!ctx.metas || occurrence.index >= GREP_OPTIONS.size()) continue;
+    const auto& meta = (*ctx.metas)[occurrence.index];
+    if (option_matches(meta, "-L", "--files-without-match")) {
+      cfg.files_without_match = true;
+      cfg.files_with_matches = false;
+    } else if (option_matches(meta, "-l", "--files-with-matches")) {
+      cfg.files_with_matches = true;
+      cfg.files_without_match = false;
+    }
+  }
   cfg.count_only =
       ctx.get<bool>("--count", false) || ctx.get<bool>("-c", false);
   cfg.null_after_filename =
@@ -1744,6 +1753,12 @@ auto process_selected_record(std::string_view line, bool had_delim,
   std::string output_buf;
   output_buf.reserve(line.size() + 128);
   std::vector<MatchPiece> matches;
+
+  // [GNU] -o prints the parts of a line that MATCH the pattern.  With -v
+  // the selected lines are exactly the non-matching ones, so they have no
+  // matching parts and -o prints nothing for them (the line still counts
+  // as selected above).  GNU computes match offsets before inversion.
+  if (cfg.only_matching && cfg.invert_match) return true;
 
   if (cfg.only_matching && !cfg.invert_match) {
     matches = collect_matches_in_line(line, cfg);
@@ -2471,7 +2486,12 @@ auto append_search_path(Config& cfg, std::string_view input,
     return {};
   }
 
-  return std::unexpected("'" + f + "' is a directory");
+  // [GNU] a directory operand under -d read is a PER-OPERAND error
+  // ("grep: NAME: Is a directory", errseen), not a fatal gather failure:
+  // the remaining operands are still searched and the exit status is 2.
+  // Keep the operand in the input list; process() reports it in order.
+  out.push_back(f);
+  return {};
 }
 
 auto gather_files_for_input(Config& cfg, std::vector<std::string>& out)
@@ -2537,6 +2557,18 @@ auto process(Config& cfg) -> int {
     // #1368: once stdout can no longer take writes, scanning further files
     // only feeds a dead sink; GNU grep stops at the first failed write.
     if (is_stdout_pipe_closed() || is_stdout_write_failed()) break;
+    // [GNU] directory operand under -d read: report in operand order,
+    // mark the run as errored (final status 2), keep searching the rest.
+    if (input != "-" && cfg.directories == "read") {
+      std::error_code dir_ec;
+      if (std::filesystem::is_directory(
+              native_path::normalize_api_operand(input), dir_ec) &&
+          !dir_ec) {
+        cfg.has_error = true;
+        report_input_error(cfg, input, "Is a directory");
+        continue;
+      }
+    }
     std::pair<bool, size_t> scan_result{false, 0};
     auto display_name = record_name_for_output(input, cfg);
 
@@ -2650,7 +2682,10 @@ auto process(Config& cfg) -> int {
         any_file_without_match = true;
       }
 
-      if (cfg.count_only) {
+      // [GNU] -l/-L override -c: with a file listing in effect the counts
+      // are never printed (grep.c:2892-2900).
+      if (cfg.count_only && !cfg.files_with_matches &&
+          !cfg.files_without_match) {
         if (show_filename) {
           safePrint(display_name);
           safePrint(":");

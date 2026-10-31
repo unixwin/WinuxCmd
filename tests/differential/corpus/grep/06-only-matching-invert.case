@@ -1,0 +1,7 @@
+cmd: grep
+args: -o -v needle hay.txt
+timeout: 10
+setup: |
+  printf 'needle\nhay\nstraw\n' > hay.txt
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w5 grep only-matching invert

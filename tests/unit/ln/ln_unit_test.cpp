@@ -618,14 +618,15 @@ TEST(ln, ln_drive_dialect_create_failure_message_keeps_operand_spelling) {
   TEST_LOG_EXIT_CODE(r);
   TEST_LOG("ln dir-hardlink stderr", r.stderr_text);
 
-  // Hard-linking a directory fails on NTFS at the create stage; the source
-  // probe must have resolved the dialect source (no "failed to access").
+  // [GNU] A directory source is refused before any creation attempt
+  // (ln.c:202-208); the source probe must have resolved the dialect
+  // source (no "failed to access").
   EXPECT_NOT_CONTAINS(r.stderr_text, "failed to access");
   ASSERT_NE(r.exit_code, 0);
-  // Message quotes the operand spelling, not the folded "X:\..." form.
+  // Message keeps the operand spelling, not the folded "X:\..." form.
   EXPECT_CONTAINS(r.stderr_text,
-                  "failed to create hard link '" +
-                      ln_dialect_detail::utf8(target) + "'");
+                  ln_dialect_detail::utf8(source) +
+                      ": hard link not allowed for directory");
   EXPECT_NOT_CONTAINS(r.stderr_text, ":\\");
 }
 
@@ -654,12 +655,13 @@ TEST(ln, ln_fT_drive_dialect_remove_failure_message_keeps_operand_spelling) {
   TEST_LOG_EXIT_CODE(r);
   TEST_LOG("ln -fT stderr", r.stderr_text);
 
-  // The removal failed at the OS level and ln reported it...
+  // [GNU] -T treats the dest as a normal file: a directory dest is
+  // refused with "cannot overwrite directory" before -f removal is
+  // attempted, naming the operand spelling, not the folded form.
   ASSERT_NE(r.exit_code, 0);
-  EXPECT_CONTAINS(r.stderr_text, "failed to remove");
-  // ...quoting the operand spelling, not the folded form.
   EXPECT_CONTAINS(r.stderr_text,
-                  "failed to remove '" + ln_dialect_detail::utf8(target) + "'");
+                  ln_dialect_detail::utf8(target) +
+                      ": cannot overwrite directory");
   EXPECT_NOT_CONTAINS(r.stderr_text, ":\\");
   // The non-empty directory survived (nothing was force-removed).
   EXPECT_TRUE(std::filesystem::is_directory(tmp.path / L"nonempty1234"));

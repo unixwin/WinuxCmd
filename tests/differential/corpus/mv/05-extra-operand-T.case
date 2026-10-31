@@ -1,0 +1,7 @@
+cmd: mv
+args: -T a.txt b.txt c.txt
+timeout: 10
+setup: |
+  printf 'x' > a.txt
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w1 oracle-coreutils-9.4 mv.c:450-453 extra-operand-no-target-dir

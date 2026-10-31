@@ -1,0 +1,5 @@
+cmd: shred
+args: -s bogus
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w1 oracle-coreutils-9.4 shred.c:1184-1246 validation-before-operand

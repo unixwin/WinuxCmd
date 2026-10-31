@@ -1,0 +1,7 @@
+cmd: mv
+args: only.txt
+timeout: 10
+setup: |
+  printf 'x' > only.txt
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w1 oracle-coreutils-9.4 mv.c:430-438 missing-destination-operand

@@ -1,0 +1,7 @@
+cmd: rm
+args: --preserve-root=bogus f.txt
+timeout: 10
+setup: |
+  printf 'x' > f.txt
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w1 oracle-coreutils-9.4 rm.c:299-310 preserve-root-validation
