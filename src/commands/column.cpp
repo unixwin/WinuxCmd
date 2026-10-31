@@ -45,10 +45,9 @@ auto constexpr COLUMN_OPTIONS = std::array{
     OPTION("", "--output-fields",
            "specify which columns to include in JSON or XML output",
            STRING_TYPE),
-    // [EXT]
-    OPTION("-x", "--output-fields",
-           "specify which columns to include in JSON or XML output",
-           STRING_TYPE),
+    // [GNU] -x, --fillrows: fill rows before columns (util-linux
+    // column.c:820). WinuxCmd previously bound -x to --output-fields.
+    OPTION("-x", "--fillrows", "fill rows before columns", BOOL_TYPE),
     // [EXT]
     OPTION("", "--table-right", "columns to right align in table output",
            STRING_TYPE),
@@ -68,8 +67,10 @@ auto constexpr COLUMN_OPTIONS = std::array{
     // [EXT]
     OPTION("", "--table-empty", "don't use empty lines in table output",
            BOOL_TYPE),
-    // [EXT]
-    OPTION("-e", "--table-empty", "don't use empty lines in table output",
+    // [GNU] -e, --table-header-repeat: repeat the header for each page
+    // (util-linux column.c:758). WinuxCmd previously bound -e to
+    // --table-empty.
+    OPTION("-e", "--table-header-repeat", "repeat table header for each page",
            BOOL_TYPE),
     // [EXT]
     OPTION("", "--table-no-trunc", "don't truncate text in table output",
@@ -80,9 +81,12 @@ auto constexpr COLUMN_OPTIONS = std::array{
     // [EXT]
     OPTION("", "--table-noescape",
            "don't escape newline, tab, backslash in table output", BOOL_TYPE),
-    // [EXT]
-    OPTION("-E", "--table-noescape",
-           "don't escape newline, tab, backslash in table output", BOOL_TYPE),
+    // [GNU] -E, --table-noextreme: don't count long text from these
+    // columns when computing the table width (util-linux column.c:755).
+    // WinuxCmd previously bound -E to --table-noescape.
+    OPTION("-E", "--table-noextreme",
+           "don't count long text from the columns to column width",
+           STRING_TYPE),
     // [EXT]
     OPTION("", "--json", "use JSON output format for table", BOOL_TYPE),
     // [EXT]
@@ -147,6 +151,10 @@ struct Config {
   std::string table_hide_columns;  // [GNU] -H/--table-hide: columns to hide
   bool table_empty = false;
   bool table_noescape = false;
+  bool table_header_repeat = false;  // [GNU] -e/--table-header-repeat
+  std::string table_noextreme;       // [GNU] -E/--table-noextreme
+  bool fillrows = false;             // [GNU] -x/--fillrows
+  bool keep_empty_lines = false;     // [GNU] -L/--keep-empty-lines
   bool json_output = false;
   int output_width = 0;
   SmallVector<std::string, 64> files;
@@ -170,10 +178,12 @@ auto build_config(const CommandContext<COLUMN_OPTIONS.size()>& ctx)
     cfg.table_name = ctx.get<std::string>("-n", "");
   }
 
+  // [GNU] --output-fields is long-only; -x is --fillrows (column.c:820).
   cfg.output_fields = ctx.get<std::string>("--output-fields", "");
-  if (cfg.output_fields.empty()) {
-    cfg.output_fields = ctx.get<std::string>("-x", "");
-  }
+  cfg.fillrows =
+      ctx.get<bool>("--fillrows", false) || ctx.get<bool>("-x", false);
+  cfg.keep_empty_lines =
+      ctx.get<bool>("--keep-empty-lines", false) || ctx.get<bool>("-L", false);
 
   // [GNU] -r/--tree is read via raw_args in run() for tree-like output
   // [DIFFERS]
@@ -186,13 +196,20 @@ auto build_config(const CommandContext<COLUMN_OPTIONS.size()>& ctx)
   if (cfg.table_hide_columns.empty()) {
     cfg.table_hide_columns = ctx.get<std::string>("-H", "");
   }
-  cfg.table_empty =
-      ctx.get<bool>("--table-empty", false) || ctx.get<bool>("-e", false);
-  cfg.table_noescape =
-      ctx.get<bool>("--table-noescape", false) || ctx.get<bool>("-E", false);
+  // [GNU] --table-empty is long-only; -e is --table-header-repeat
+  // (column.c:758), and --table-noescape is long-only; -E is
+  // --table-noextreme (column.c:755).
+  cfg.table_empty = ctx.get<bool>("--table-empty", false);
+  cfg.table_header_repeat = ctx.get<bool>("--table-header-repeat", false) ||
+                            ctx.get<bool>("-e", false);
+  cfg.table_noescape = ctx.get<bool>("--table-noescape", false);
+  cfg.table_noextreme = ctx.get<std::string>("--table-noextreme", "");
+  if (cfg.table_noextreme.empty()) {
+    cfg.table_noextreme = ctx.get<std::string>("-E", "");
+  }
   cfg.json_output =
       ctx.get<bool>("--json", false) || ctx.get<bool>("-J", false);
-  cfg.output_width = ctx.get<int>("--columns", 0);
+  cfg.output_width = ctx.get<int>("--output-width", 0);
 
   for (auto arg : ctx.positionals) {
     std::string file_arg(arg);
@@ -394,6 +411,69 @@ auto table_escape(std::string_view text) -> std::string {
   return out;
 }
 
+// The display width for columnation: -c/--columns wins, then the
+// console window, then the util-linux fallback of 80.
+auto terminal_width(const Config& cfg) -> size_t {
+  if (cfg.columns > 0) return static_cast<size_t>(cfg.columns);
+  CONSOLE_SCREEN_BUFFER_INFO info{};
+  HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+  if (out != nullptr && out != INVALID_HANDLE_VALUE &&
+      GetConsoleScreenBufferInfo(out, &info)) {
+    const int width = info.srWindow.Right - info.srWindow.Left + 1;
+    if (width > 0) return static_cast<size_t>(width);
+  }
+  return 80;
+}
+
+// [GNU] Default columnation (util-linux column.c:669-731): entries are
+// laid out on a uniform pitch of (maxlength + TABSIZE) rounded down to
+// a tab stop; the number of columns is termwidth / pitch; by default
+// entries fill down each column first, with -x/--fillrows they fill
+// across each row. Padding uses tabs up to the last tab stop that does
+// not overshoot the entry's pitch slot, then spaces.
+auto print_columnated(const Config& cfg,
+                      const std::vector<std::string>& entries) -> void {
+  if (entries.empty()) return;
+  const size_t width = terminal_width(cfg);
+  size_t maxlength = 0;
+  for (const auto& entry : entries) {
+    maxlength = std::max(maxlength, entry.size());
+  }
+  const size_t pitch = (maxlength + 8) & ~size_t{7};
+  size_t numcols = pitch > 0 ? width / pitch : 1;
+  if (numcols == 0) numcols = 1;
+  if (numcols > entries.size()) numcols = entries.size();
+  size_t numrows = (entries.size() + numcols - 1) / numcols;
+  if (numrows == 0) numrows = 1;
+  numcols = (entries.size() + numrows - 1) / numrows;
+
+  std::string out;
+  for (size_t row = 0; row < numrows; ++row) {
+    size_t col = 0;
+    for (size_t c = 0; c < numcols; ++c) {
+      const size_t idx = cfg.fillrows ? row * numcols + c : row + c * numrows;
+      if (idx >= entries.size()) break;
+      if (c > 0) {
+        const size_t target = c * pitch;
+        while (col < target) {
+          const size_t next_tab = (col + 8) & ~size_t{7};
+          if (next_tab <= target && next_tab > col) {
+            out.push_back('\t');
+            col = next_tab;
+          } else {
+            out.push_back(' ');
+            ++col;
+          }
+        }
+      }
+      out += entries[idx];
+      col += entries[idx].size();
+    }
+    out.push_back('\n');
+  }
+  safePrint(out);
+}
+
 auto run(const Config& cfg) -> int {
   std::string all_content;
 
@@ -414,8 +494,16 @@ auto run(const Config& cfg) -> int {
 
     std::vector<std::vector<std::string>> table;
     size_t max_cols = 0;
+    // [GNU] -e/--table-header-repeat: a formfeed-only input line is a
+    // page break; the header row is repeated before the next row.
+    std::set<size_t> page_break_before;
+    bool pending_break = false;
 
     for (const auto& line : lines) {
+      if (cfg.table_header_repeat && line == "\f") {
+        pending_break = true;
+        continue;
+      }
       std::vector<std::string> row = split_table_line(line, cfg);
 
       if (row.size() > max_cols) {
@@ -423,6 +511,10 @@ auto run(const Config& cfg) -> int {
       }
 
       if (!cfg.table_empty || !row.empty()) {
+        if (pending_break && !table.empty()) {
+          page_break_before.insert(table.size());
+        }
+        pending_break = false;
         table.push_back(std::move(row));
       }
     }
@@ -478,9 +570,37 @@ auto run(const Config& cfg) -> int {
     const std::set<size_t> right_columns =
         parse_column_set(cfg.table_right_columns);
 
-    for (size_t row_idx = 0; row_idx < table.size(); ++row_idx) {
+    // [GNU] -E/--table-noextreme (libsmartcols calculate.c): when the
+    // table must shrink to fit the output width, the named columns are
+    // the ones whose widths give way; their long text is not counted
+    // toward the width budget.
+    const std::set<size_t> noextreme_columns =
+        parse_column_set(cfg.table_noextreme);
+    if (!noextreme_columns.empty() && max_cols > 0) {
+      const size_t limit = cfg.output_width > 0
+                               ? static_cast<size_t>(cfg.output_width)
+                               : terminal_width(cfg);
+      size_t total = output_separator.size() * (max_cols - 1);
+      for (size_t w : col_widths) total += w;
+      while (total > limit) {
+        size_t widest = 0;
+        size_t widest_idx = 0;
+        for (size_t idx : noextreme_columns) {
+          if (idx >= 1 && idx <= col_widths.size() &&
+              col_widths[idx - 1] > widest) {
+            widest = col_widths[idx - 1];
+            widest_idx = idx - 1;
+          }
+        }
+        if (widest <= 1) break;
+        --col_widths[widest_idx];
+        --total;
+      }
+    }
+
+    auto render_row = [&](size_t row_idx) {
       if (!cfg.table_hide_columns.empty() && row_idx == 0) {
-        continue;
+        return;
       }
 
       const auto& row = table[row_idx];
@@ -533,10 +653,25 @@ auto run(const Config& cfg) -> int {
       }
 
       safePrintLn(line_output);
+    };
+
+    for (size_t row_idx = 0; row_idx < table.size(); ++row_idx) {
+      if (row_idx > 0 && page_break_before.contains(row_idx)) {
+        render_row(0);
+      }
+      render_row(row_idx);
     }
   } else {
-    // Simple column output mode
-    safePrint(all_content);
+    // [GNU] Default columnation. Empty lines (blank after leading
+    // spaces) are dropped unless -L/--keep-empty-lines (column.c).
+    std::vector<std::string> entries;
+    for (auto& line : split_records(all_content)) {
+      const size_t first = line.find_first_not_of(" \t");
+      const bool blank = first == std::string::npos;
+      if (blank && !cfg.keep_empty_lines) continue;
+      entries.push_back(std::move(line));
+    }
+    print_columnated(cfg, entries);
   }
 
   return 0;
@@ -548,8 +683,13 @@ REGISTER_COMMAND(column, "column", "column [options] [file...]",
                  "Columnate lists.\n"
                  "\n"
                  "The column utility formats its input into multiple columns.\n"
-                 "Rows are filled before columns. Input is taken from file,\n"
-                 "or from standard input by default.",
+                 "By default the entries fill down each column first; with\n"
+                 "-x/--fillrows they fill across each row first.  In table\n"
+                 "mode (-t), -e/--table-header-repeat repeats the header row\n"
+                 "after each formfeed page break, and -E/--table-noextreme\n"
+                 "names the columns whose width gives way when the table\n"
+                 "must shrink to fit.  Input is taken from file, or from\n"
+                 "standard input by default.",
                  "  column -t -s , data.csv\n"
                  "  ls -l | column -t\n"
                  "  ps aux | column -t",
@@ -569,9 +709,13 @@ REGISTER_COMMAND(column, "column", "column [options] [file...]",
     safePrintLn("Usage: column [options] [file...]");
     safePrintLn(
         "  -c, --columns WIDTH  output is formatted for a display width");
+    safePrintLn("  -x, --fillrows       fill rows before columns");
     safePrintLn(
         "  -t, --table          determine the number of columns the input "
         "contains");
+    safePrintLn(
+        "  -e, --table-header-repeat  repeat table header for each page");
+    safePrintLn("  -E, --table-noextreme COLS don't count long text from COLS");
     safePrintLn(
         "  -s, --separator SEP  specify the possible input item delimiters");
     safePrintLn("  -J, --json           use JSON output format for table");

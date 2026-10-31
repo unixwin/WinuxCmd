@@ -235,3 +235,87 @@ TEST(column, column_stdin_ctrlz_matches_file_operand_issue1212) {
   EXPECT_FALSE(rf.stdout_text.empty());
   EXPECT_EQ(rs.stdout_text, rf.stdout_text);
 }
+
+// [refs #1127] Default mode now columnates (it previously echoed the
+// input): entries fill down columns on a tab-stop pitch (column.c).
+TEST(column, default_columnation_fills_columns) {
+  Pipeline p;
+  p.set_stdin("a\nb\nc\nd\n");
+  p.add(L"column.exe", {L"-c", L"20"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "a\tc\nb\td\n");
+}
+
+// [refs #1127] -x/--fillrows fills across rows first.
+TEST(column, fillrows_fills_rows_first) {
+  Pipeline p;
+  p.set_stdin("a\nb\nc\nd\n");
+  p.add(L"column.exe", {L"-c", L"20", L"--fillrows"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "a\tb\nc\td\n");
+}
+
+// [refs #1127] Blank lines are dropped by default and kept with -L.
+TEST(column, empty_lines_dropped_unless_kept) {
+  Pipeline dropped;
+  dropped.set_stdin("a\n\nb\n");
+  dropped.add(L"column.exe", {});
+  auto r_dropped = dropped.run();
+  EXPECT_EQ(r_dropped.exit_code, 0);
+  EXPECT_EQ_TEXT(r_dropped.stdout_text, "a\tb\n");
+
+  Pipeline kept;
+  kept.set_stdin("a\n\nb\n");
+  kept.add(L"column.exe", {L"-L"});
+  auto r_kept = kept.run();
+  EXPECT_EQ(r_kept.exit_code, 0);
+  EXPECT_EQ_TEXT(r_kept.stdout_text, "a\t\tb\n");
+}
+
+// [refs #1127] -e/--table-header-repeat repeats the header row after a
+// formfeed page break in table mode.
+TEST(column, table_header_repeat_on_formfeed) {
+  Pipeline p;
+  p.set_stdin("h1 h2\na b\n\f\nc d\n");
+  p.add(L"column.exe", {L"-t", L"--table-header-repeat"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  size_t first = r.stdout_text.find("h1");
+  EXPECT_NE(first, std::string::npos);
+  EXPECT_NE(r.stdout_text.find("h1", first + 1), std::string::npos);
+}
+
+// [refs #1127] -E/--table-noextreme: the named column's width gives
+// way when the table must fit the display width.
+TEST(column, table_noextreme_shrinks_named_column) {
+  Pipeline p;
+  p.set_stdin("name value\nshort averyverylongvalue\n");
+  p.add(L"column.exe", {L"-t", L"-c", L"12", L"-E", L"2"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_CONTAINS(r.stdout_text, "avery");
+  EXPECT_TRUE(r.stdout_text.find("verylong") == std::string::npos);
+}
+
+// [refs #1127] -x no longer means --output-fields; the long option
+// still selects fields on its own.
+TEST(column, output_fields_long_option_still_works) {
+  Pipeline p;
+  p.set_stdin("a b\nc d\n");
+  p.add(L"column.exe", {L"-t", L"--output-fields", L"2"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "b\nd\n");
+}
