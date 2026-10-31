@@ -60,12 +60,12 @@ auto is_drive_prefix(std::string_view path) -> bool {
 
 auto root_length(std::string_view path) -> size_t {
   if (is_drive_prefix(path)) {
-    // [GNU] dirname-lgpl.c:37-45 (dir_len): a drive prefix followed by a
-    // separator advances the prefix past that separator, so the root of
-    // 'c:/a' is 'c:/' (rooted), not 'c:' (drive-relative).
-    if (path.size() > 2 && is_separator(path[2])) {
-      return 3;
-    }
+    // [GNU] dirname-lgpl.c (dir_len) under the filename.h configuration
+    // the drive face is pinned against (corpus dirname/03 designates
+    // the MSYS oracle): FILE_SYSTEM_DRIVE_PREFIX_CAN_BE_RELATIVE is 0
+    // in the __CYGWIN__ branch, so the prefix never advances past a
+    // following separator and the directory part of 'c:/a' is 'c:',
+    // not 'c:/'.
     return 2;
   }
   if (path.size() >= 2 && is_separator(path[0]) && is_separator(path[1]) &&
