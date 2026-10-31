@@ -1,0 +1,10 @@
+cmd: od
+args: -D -e -H -O f.bin
+timeout: 10
+setup: |
+  printf 'abcdefgh' > f.bin
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: issue-1462 audit-w2 od legacy-letters
+# GNU od.c CASE_OLD_ARG: -D = u4, -e = fD, -H = x4, -O = o4. These
+# obsolescent letters must be accepted, not rejected as invalid
+# options.

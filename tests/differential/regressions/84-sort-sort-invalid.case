@@ -1,0 +1,11 @@
+cmd: sort
+args: --sort=bogus
+timeout: 10
+stdin: |
+  b
+  a
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: issue-1462 audit-w2 sort argmatch
+# GNU sort.c XARGMATCH ("--sort", ...): "sort: invalid argument
+# 'bogus' for '--sort'" + valid list in sort_args order + try-help,
+# exit 1.

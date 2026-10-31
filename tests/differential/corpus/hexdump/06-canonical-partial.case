@@ -1,0 +1,7 @@
+cmd: hexdump
+oracle: linux
+args: -C d.bin
+setup: |
+  printf 'abc' > d.bin
+source: tests/differential/corpus/hexdump/06-canonical-partial.case
+tags: gnu-compat hexdump canonical audit-w7

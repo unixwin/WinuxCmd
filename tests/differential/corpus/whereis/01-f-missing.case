@@ -1,0 +1,5 @@
+cmd: whereis
+oracle: linux
+args: -B /tmp ls
+source: tests/differential/corpus/whereis/01-f-missing.case
+tags: gnu-compat whereis error-wording exit-status audit-w7

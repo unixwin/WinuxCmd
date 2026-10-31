@@ -33,6 +33,7 @@ auto constexpr PR_OPTIONS = std::array{
     // [GNU]
     OPTION("-d", "", "double-space the output", BOOL_TYPE),
     // [GNU] -e takes an optional *attached* [CHAR[WIDTH]] argument only.
+    // [EXT] the long name --expand: GNU's long form is --expand-tabs only.
     OPTION("-e", "--expand", "expand input TABs", OPTIONAL_STRING_TYPE),
     // [GNU]
     OPTION("-f", "--form-feed", "use form feeds instead of newlines",
@@ -60,7 +61,7 @@ auto constexpr PR_OPTIONS = std::array{
     OPTION("-w", "--width", "set page width", STRING_TYPE),
     // [GNU]
     OPTION("-W", "--page-width", "set page width (default 72)", STRING_TYPE),
-    // [GNU]
+    // [GNU] short -b only; [EXT] GNU has no --balance-columns long form.
     OPTION("-b", "--balance-columns", "balance columns on the last page",
            BOOL_TYPE),
     // [GNU]
@@ -109,6 +110,9 @@ namespace cp = core::pipeline;
 
 struct Config {
   int start_page = 1;
+  // [GNU] +FIRST[:LAST] / --pages=FIRST[:LAST] (first_last_page,
+  // pr.c:804-833): printing stops after last_page.
+  int last_page = std::numeric_limits<int>::max();
   int columns = 1;
   bool double_space = false;
   // [GNU] -e/--expand-tabs: presence flag + validated width (default 8).
@@ -116,6 +120,9 @@ struct Config {
   int expand_width = 8;
   bool form_feed = false;
   std::string header;
+  // [GNU] -h "" is a real (empty) header: custom_header is set even
+  // when the argument is empty (pr.c:964-965).
+  bool header_set = false;
   int page_length = 66;
   // [GNU] -n/--number-lines: presence flag (numbering enabled) plus the
   // [SEP[DIGITS]] parameters — the separator character defaults to TAB and
@@ -151,7 +158,8 @@ struct Config {
   int output_tabs_width = 8;
   bool join_lines = false;
   bool merge = false;
-  std::string first_line_number;
+  // [GNU] -N is validated at option time (getoptnum, pr.c:991-995).
+  int first_line_number = 1;
   std::string sep_string;
   bool show_nonprinting = false;
   SmallVector<std::string, 64> files;
@@ -246,31 +254,64 @@ auto parse_number_spec(const std::string& label, const std::string& raw)
   return std::pair{sep, v};
 }
 
+// [GNU] first_last_page (pr.c:804-833): FIRST[:LAST] with FIRST >= 1
+// and LAST >= FIRST, both fully numeric. Returns nullopt for anything
+// else; the caller decides whether that is an error (--pages) or a
+// file name (the + operand form, pr.c case 1).
+auto parse_page_range(const std::string& arg)
+    -> std::optional<std::pair<int, int>> {
+  auto parse_part = [](const std::string& s) -> std::optional<int> {
+    if (s.empty()) return std::nullopt;
+    long long v = 0;
+    for (char c : s) {
+      if (c < '0' || c > '9') return std::nullopt;
+      v = v * 10 + (c - '0');
+      if (v > std::numeric_limits<int>::max()) return std::nullopt;
+    }
+    return static_cast<int>(v);
+  };
+  const size_t colon = arg.find(':');
+  auto first = parse_part(arg.substr(0, colon));
+  if (!first || *first < 1) return std::nullopt;
+  int last = std::numeric_limits<int>::max();
+  if (colon != std::string::npos) {
+    auto last_parsed = parse_part(arg.substr(colon + 1));
+    if (!last_parsed || *last_parsed < *first) return std::nullopt;
+    last = *last_parsed;
+  }
+  return std::pair{*first, last};
+}
+
 auto build_config(const CommandContext<PR_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
   Config cfg;
 
-  // Parse +PAGE option
+  // [GNU] A leading +FIRST[:LAST] operand sets the page range; an
+  // operand that merely starts with '+' but does not parse is a
+  // FILE name (pr.c case 1: first_last_page failure falls through
+  // to file_names). Only the first valid + operand is consumed;
+  // --pages (parsed below) dominates it.
+  bool page_spec_set = false;
   for (auto arg : ctx.positionals) {
     std::string arg_str(arg);
-    if (arg_str.size() > 0 && arg_str[0] == '+') {
-      try {
-        cfg.start_page = std::stoi(arg_str.substr(1));
-      } catch (...) {
-        return std::unexpected("invalid page number");
+    if (!page_spec_set && arg_str.size() > 1 && arg_str[0] == '+') {
+      if (auto range = parse_page_range(arg_str.substr(1))) {
+        cfg.start_page = range->first;
+        cfg.last_page = range->second;
+        page_spec_set = true;
+        continue;
       }
-    } else {
-      if (contains_wildcard(arg_str)) {
-        auto glob_result = glob_expand(arg_str);
-        if (glob_result.expanded) {
-          for (const auto& file : glob_result.files) {
-            cfg.files.push_back(wstring_to_utf8(file));
-          }
-          continue;
-        }
-      }
-      cfg.files.push_back(arg_str);
     }
+    if (contains_wildcard(arg_str)) {
+      auto glob_result = glob_expand(arg_str);
+      if (glob_result.expanded) {
+        for (const auto& file : glob_result.files) {
+          cfg.files.push_back(wstring_to_utf8(file));
+        }
+        continue;
+      }
+    }
+    cfg.files.push_back(arg_str);
   }
 
   // [GNU] --double-space is the long-name alias of -d.
@@ -313,6 +354,7 @@ auto build_config(const CommandContext<PR_OPTIONS.size()>& ctx)
     header_opt = ctx.get<std::string>("-h", "");
   }
   cfg.header = header_opt;
+  cfg.header_set = ctx.count({"-h", "--header"}) > 0;
 
   auto length_opt = ctx.get<std::string>("--length", "");
   if (length_opt.empty()) {
@@ -394,14 +436,26 @@ auto build_config(const CommandContext<PR_OPTIONS.size()>& ctx)
   if (col_opt.empty()) {
     col_opt = ctx.get<std::string>("-COLUMN", "");
   }
-  if (!col_opt.empty()) {
+  if (columns_explicit) {
+    // [GNU] parse_column_count -> getoptnum (s, 1, ..., "invalid
+    // number of columns") (pr.c:839-843).
     try {
-      cfg.columns = std::stoi(col_opt);
+      size_t pos = 0;
+      const int v = std::stoi(col_opt, &pos);
+      if (pos != col_opt.size()) {
+        return std::unexpected("invalid number of columns: '" + col_opt +
+                               "'");
+      }
+      if (v < 1) {
+        return std::unexpected("invalid number of columns: '" + col_opt +
+                               "': Numerical result out of range");
+      }
+      cfg.columns = v;
+    } catch (std::out_of_range&) {
+      return std::unexpected("invalid number of columns: '" + col_opt +
+                             "': Numerical result out of range");
     } catch (...) {
-      return std::unexpected("invalid column count");
-    }
-    if (cfg.columns < 1) {
-      return std::unexpected("column count must be at least 1");
+      return std::unexpected("invalid number of columns: '" + col_opt + "'");
     }
   }
 
@@ -444,7 +498,30 @@ auto build_config(const CommandContext<PR_OPTIONS.size()>& ctx)
   if (fln_opt.empty()) {
     fln_opt = ctx.get<std::string>("-N", "");
   }
-  cfg.first_line_number = fln_opt;
+  if (ctx.count({"-N", "--first-line-number"}) > 0) {
+    // [GNU] getoptnum (optarg, INT_MIN, &start_line_num, "'-N NUMBER'
+    // invalid starting line number") (pr.c:991-995): validated here,
+    // at option time -- the old code kept the raw string and let a
+    // bare std::stoi throw inside the pagination paths.
+    try {
+      size_t pos = 0;
+      const int v = std::stoi(fln_opt, &pos);
+      if (pos != fln_opt.size()) {
+        return std::unexpected("'-N NUMBER' invalid starting line "
+                               "number: '" +
+                               fln_opt + "'");
+      }
+      cfg.first_line_number = v;
+    } catch (std::out_of_range&) {
+      return std::unexpected("'-N NUMBER' invalid starting line "
+                             "number: '" +
+                             fln_opt + "': Numerical result out of range");
+    } catch (...) {
+      return std::unexpected("'-N NUMBER' invalid starting line "
+                             "number: '" +
+                             fln_opt + "'");
+    }
+  }
 
   cfg.sep_string_set = ctx.count({"-S", "--sep-string"}) > 0;
   auto sep_str = ctx.get<std::string>("--sep-string", "");
@@ -460,14 +537,18 @@ auto build_config(const CommandContext<PR_OPTIONS.size()>& ctx)
     cfg.form_feed = true;
   }
 
-  // [GNU] --pages is the long form of +PAGE.
-  auto pages_opt = ctx.get<std::string>("--pages", "");
-  if (!pages_opt.empty()) {
-    try {
-      cfg.start_page = std::stoi(pages_opt);
-    } catch (...) {
-      return std::unexpected("invalid page number");
+  // [GNU] --pages=FIRST[:LAST] is the long form of +PAGE and
+  // dominates it; a bad value is fatal with "invalid page range"
+  // (pr.c:913-922) -- unlike the + operand, it never falls back to
+  // a file name.
+  if (ctx.has("--pages")) {
+    auto pages_opt = ctx.get<std::string>("--pages", "");
+    auto range = parse_page_range(pages_opt);
+    if (!range) {
+      return std::unexpected("invalid page range '" + pages_opt + "'");
     }
+    cfg.start_page = range->first;
+    cfg.last_page = range->second;
   }
 
   auto pwidth_opt = ctx.get<std::string>("--page-width", "");
@@ -497,9 +578,23 @@ auto build_config(const CommandContext<PR_OPTIONS.size()>& ctx)
 auto read_lines(const std::string& filename)
     -> cp::Result<SmallVector<std::string, 1024>> {
   SmallVector<std::string, 1024> lines;
-  auto normalize_text_line = [](std::string& line) {
-    if (!line.empty() && line.back() == '\r') {
-      line.pop_back();
+  // [GNU] Lines are read raw: a trailing '\r' and a UTF-8 BOM are
+  // content, never stripped (audit #1462; the old code stripped
+  // both). A form feed inside a line ends the page (hold_file /
+  // read_line, pr.c:2426-2560): the line is split at each '\f' and
+  // the segment before it carries a trailing '\f' sentinel marking
+  // the forced page break; the pagination paths consume it.
+  auto append_line = [&lines](std::string line) {
+    bool found_ff = false;
+    size_t pos = 0;
+    while ((pos = line.find('\f', pos)) != std::string::npos) {
+      found_ff = true;
+      lines.push_back(line.substr(0, pos + 1));
+      line.erase(0, pos + 1);
+      pos = 0;
+    }
+    if (!line.empty() || !found_ff) {
+      lines.push_back(std::move(line));
     }
   };
 
@@ -512,34 +607,25 @@ auto read_lines(const std::string& filename)
     file_io::set_stdin_binary();
     std::string line;
     while (std::getline(std::cin, line)) {
-      normalize_text_line(line);
-      lines.push_back(line);
+      append_line(line);
     }
   } else {
     auto f = file_io::open_binary_file(filename);
     if (!f) {
-      // [GNU] cannot-open diagnostics carry the errno text; directories
-      // are reported GNU-style ("<path>: Is a directory").
+      // [GNU] open_file reports "pr: <name>: <errno text>" (quotef;
+      // plain for ordinary names), e.g. "pr: nosuch: No such file or
+      // directory" (audit #1462).
       auto operand = native_path::make_api_path_operand(filename);
       const DWORD attrs = native_path::operand_target_attributes_w(operand);
       if (native_path::attributes_are_directory(attrs)) {
         return std::unexpected(filename + ": Is a directory");
       }
-      return std::unexpected(std::string("cannot open '") + filename +
-                             "' for reading: No such file or directory");
+      return std::unexpected(filename + ": No such file or directory");
     }
 
     std::string line;
     while (std::getline(f, line)) {
-      // Skip UTF-8 BOM if present at the beginning of the first line
-      if (lines.empty() && line.size() >= 3 &&
-          static_cast<unsigned char>(line[0]) == 0xEF &&
-          static_cast<unsigned char>(line[1]) == 0xBB &&
-          static_cast<unsigned char>(line[2]) == 0xBF) {
-        line = line.substr(3);
-      }
-      normalize_text_line(line);
-      lines.push_back(line);
+      append_line(line);
     }
 
     if (f.fail() && !f.eof()) {
@@ -567,32 +653,32 @@ auto expand_tabs(const std::string& line, int tab_width) -> std::string {
   return result;
 }
 
-// Show control characters using hat notation (^X)
-auto show_control_chars_hat(const std::string& line) -> std::string {
+// [GNU] char_to_clump (pr.c): the tab character is handled before
+// any non-printing conversion, so -v never renders a tab; the -v
+// escape branch (use_esc_sequence) wins over the -c hat branch
+// (use_cntrl_prefix) for every non-printing byte when both flags
+// are given; -c renders bytes >= 0x80 in octal and lower control
+// bytes as ^X (audit #1462). The old code applied the two
+// transforms sequentially, converted '\t' to \011 under -v, and
+// left bytes >= 0x80 untouched under -c.
+auto convert_nonprinting(const std::string& line, bool esc_sequence,
+                         bool cntrl_prefix) -> std::string {
   std::string result;
   for (unsigned char c : line) {
-    if (c < 32 && c != '\t' && c != '\n') {
-      result += '^';
-      result += static_cast<char>(c + '@');
-    } else if (c == 127) {
-      result += "^?";
-    } else {
+    const bool nonprint = (c < 32 && c != '\t') || c == 127 || c >= 0x80;
+    if (!nonprint) {
       result += static_cast<char>(c);
-    }
-  }
-  return result;
-}
-
-// Show non-printing characters using octal backslash notation
-auto show_nonprinting_octal(const std::string& line) -> std::string {
-  std::string result;
-  for (unsigned char c : line) {
-    if (c < 32 || c > 126) {
+    } else if (esc_sequence) {
       char buf[8];
       snprintf(buf, sizeof(buf), "\\%03o", c);
       result += buf;
+    } else if (c < 0x80) {
+      result += '^';
+      result += static_cast<char>(c ^ 0100);
     } else {
-      result += static_cast<char>(c);
+      char buf[8];
+      snprintf(buf, sizeof(buf), "\\%03o", c);
+      result += buf;
     }
   }
   return result;
@@ -649,6 +735,7 @@ auto now_local_st() -> SYSTEMTIME {
       st.wDay = static_cast<WORD>(tmv.tm_mday);
       st.wHour = static_cast<WORD>(tmv.tm_hour);
       st.wMinute = static_cast<WORD>(tmv.tm_min);
+      st.wSecond = static_cast<WORD>(tmv.tm_sec);
       return st;
     }
   }
@@ -677,6 +764,7 @@ auto file_header_time(const std::string& filename) -> SYSTEMTIME {
         st.wDay = static_cast<WORD>(tmv.tm_mday);
         st.wHour = static_cast<WORD>(tmv.tm_hour);
         st.wMinute = static_cast<WORD>(tmv.tm_min);
+        st.wSecond = static_cast<WORD>(tmv.tm_sec);
         return st;
       }
     }
@@ -684,18 +772,116 @@ auto file_header_time(const std::string& filename) -> SYSTEMTIME {
   return now_local_st();
 }
 
+// [GNU] -D FORMAT is passed to nstrftime for the header date
+// (pr.c:950-952, 1663-1672); the old code ignored the format and
+// printed a hard-coded date (audit #1462). This is a strftime
+// subset covering the conversions pr headers and typical -D
+// arguments use, with C-locale English names; unknown conversions
+// pass through literally. Weekday and day-of-year are derived from
+// the date (days-from-civil), and %S is exact only where the time
+// producers populate seconds.
+auto format_with_strftime(const std::string& fmt, const SYSTEMTIME& st)
+    -> std::string {
+  static constexpr const char* kMonths[] = {
+      "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+  static constexpr const char* kMonthsFull[] = {
+      "January", "February", "March",     "April",   "May",      "June",
+      "July",    "August",   "September", "October", "November", "December"};
+  static constexpr const char* kDays[] = {"Sun", "Mon", "Tue", "Wed",
+                                          "Thu", "Fri", "Sat"};
+  static constexpr const char* kDaysFull[] = {
+      "Sunday",   "Monday", "Tuesday", "Wednesday",
+      "Thursday", "Friday", "Saturday"};
+  const int year = st.wYear;
+  const int month = std::clamp(static_cast<int>(st.wMonth), 1, 12);
+  const int day = std::clamp(static_cast<int>(st.wDay), 1, 31);
+  // Days from civil (Howard Hinnant's algorithm), 1970-01-01 == 0.
+  const int y_adj = year - (month <= 2 ? 1 : 0);
+  const long long era = (y_adj >= 0 ? y_adj : y_adj - 399) / 400;
+  const long long yoe = y_adj - era * 400;
+  const long long doy_civil =
+      (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1;
+  const long long doe = yoe * 365 + yoe / 4 - yoe / 100 + doy_civil;
+  const long long days = era * 146097 + doe - 719468;
+  const int wday = static_cast<int>((days + 4) % 7);  // 1970-01-01: Thu
+  const bool leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+  static constexpr int kCumDays[] = {0,  31, 59, 90,  120, 151,
+                                     181, 212, 243, 273, 304, 334};
+  const int yday =
+      kCumDays[month - 1] + day + (leap && month > 2 ? 1 : 0);  // 1-based
+  const int hour12 = (st.wHour % 12 == 0) ? 12 : st.wHour % 12;
+
+  std::string out;
+  char buf[32];
+  auto num = [&](const char* pattern, int v) {
+    snprintf(buf, sizeof(buf), pattern, v);
+    out += buf;
+  };
+  for (size_t i = 0; i < fmt.size(); ++i) {
+    if (fmt[i] != '%' || i + 1 >= fmt.size()) {
+      out += fmt[i];
+      continue;
+    }
+    const char spec = fmt[++i];
+    switch (spec) {
+      case 'Y': num("%04d", year); break;
+      case 'y': num("%02d", year % 100); break;
+      case 'm': num("%02d", month); break;
+      case 'd': num("%02d", day); break;
+      case 'e': num("%2d", day); break;
+      case 'H': num("%02d", st.wHour); break;
+      case 'I': num("%02d", hour12); break;
+      case 'k': num("%2d", st.wHour); break;
+      case 'l': num("%2d", hour12); break;
+      case 'M': num("%02d", st.wMinute); break;
+      case 'S': num("%02d", st.wSecond); break;
+      case 'p': out += (st.wHour < 12 ? "AM" : "PM"); break;
+      case 'P': out += (st.wHour < 12 ? "am" : "pm"); break;
+      case 'b':
+      case 'h': out += kMonths[month - 1]; break;
+      case 'B': out += kMonthsFull[month - 1]; break;
+      case 'a': out += kDays[wday]; break;
+      case 'A': out += kDaysFull[wday]; break;
+      case 'j': num("%03d", yday); break;
+      case 'F':
+        out += format_with_strftime("%Y-%m-%d", st);
+        break;
+      case 'T':
+        out += format_with_strftime("%H:%M:%S", st);
+        break;
+      case 'R':
+        out += format_with_strftime("%H:%M", st);
+        break;
+      case 'D':
+        out += format_with_strftime("%m/%d/%y", st);
+        break;
+      case '%': out += '%'; break;
+      default:
+        out += '%';
+        out += spec;
+        break;
+    }
+  }
+  return out;
+}
+
 // Format a date header
 auto format_date_header(const std::string& date_format, const SYSTEMTIME& st)
     -> std::string {
-  char buf[64];
-  if (date_format.empty()) {
-    // GNU pr's default header uses an ISO-like local timestamp.
-    snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d", st.wYear, st.wMonth,
-             st.wDay, st.wHour, st.wMinute);
-    return buf;
+  if (!date_format.empty()) {
+    // [GNU] -D FORMAT, via nstrftime (subset above).
+    return format_with_strftime(date_format, st);
   }
-  // Custom format not fully implemented, return default
-  snprintf(buf, sizeof(buf), "%04d-%02d-%02d", st.wYear, st.wMonth, st.wDay);
+  // [GNU] the default is "%Y-%m-%d %H:%M", except under
+  // POSIXLY_CORRECT with no hard LC_TIME locale, where it is
+  // "%b %e %H:%M %Y" (pr.c:1063-1066).
+  if (std::getenv("POSIXLY_CORRECT") != nullptr) {
+    return format_with_strftime("%b %e %H:%M %Y", st);
+  }
+  char buf[64];
+  snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d", st.wYear, st.wMonth,
+           st.wDay, st.wHour, st.wMinute);
   return buf;
 }
 
@@ -965,11 +1151,9 @@ auto prepare_cell_text(const Config& cfg, const ColumnLayout& L,
   if (cfg.expand_set || untabify) {
     text = expand_tabs(text, cfg.expand_width);
   }
-  if (cfg.show_control_chars) {
-    text = show_control_chars_hat(text);
-  }
-  if (cfg.show_nonprinting) {
-    text = show_nonprinting_octal(text);
+  if (cfg.show_control_chars || cfg.show_nonprinting) {
+    text = convert_nonprinting(text, cfg.show_nonprinting,
+                               cfg.show_control_chars);
   }
   if (L.truncate) {
     int limit = L.colw;
@@ -1008,7 +1192,7 @@ auto print_page_header(const Config& cfg, int page_num,
     -> void {
   if (!extremities_on(cfg)) return;
 
-  std::string header_text = cfg.header.empty() ? filename : cfg.header;
+  std::string header_text = cfg.header_set ? cfg.header : filename;
 
   // Build header line: date  header  page
   char page_str[32];
@@ -1053,12 +1237,28 @@ auto body_capacity(const Config& cfg) -> int {
   return std::max(1, cfg.page_length - 10);
 }
 
-// Print page trailer (blank lines for form feed)
-auto print_page_trailer(const Config& cfg) -> void {
-  if (!extremities_on(cfg)) return;
+// [GNU] pad_down (pr.c:2095-2105): when use_form_feed is set, a
+// single '\f' replaces ALL of the page-end newline padding; the
+// old code emitted the full blank-line padding AND an extra '\f'
+// (audit #1462).
+auto pad_page_end(const Config& cfg, int pad_lines) -> void {
   if (cfg.form_feed || cfg.form_feed_ff) {
     safePrint("\f");
+    return;
   }
+  for (int i = 0; i < pad_lines; ++i) {
+    safePrintLn("");
+  }
+}
+
+// A line carrying read_lines' form-feed sentinel ends with '\f';
+// column modes do not force page breaks on it (named residual),
+// so the sentinel is stripped before cell layout.
+auto strip_ff_sentinel(const std::string& line) -> std::string {
+  if (!line.empty() && line.back() == '\f') {
+    return line.substr(0, line.size() - 1);
+  }
+  return line;
 }
 
 // [GNU] -n[SEP[DIGITS]] line number field: the number right-justified in
@@ -1096,34 +1296,15 @@ auto paginate_file(const Config& cfg, SmallVector<std::string, 1024> all_lines,
   const int page_lines_total =
       extremities_on(cfg) ? body_slots + 10 : body_slots;
 
-  // [GNU] a start page beyond the file's page count is reported and the
-  // file is skipped (uutils #13557). pr.c reports this via error(0, ...),
-  // so the exit status is unaffected and later files are still printed.
-  if (cfg.start_page > 1) {
-    const size_t total_lines = all_lines.size();
-    int total_pages;
-    if (cfg.columns > 1) {
-      const size_t rows = (total_lines + cfg.columns - 1) / cfg.columns;
-      total_pages =
-          static_cast<int>((rows + lines_per_page - 1) / lines_per_page);
-    } else {
-      total_pages =
-          static_cast<int>((total_lines + lines_per_page - 1) / lines_per_page);
-    }
-    if (total_pages < 1) total_pages = 1;
-    if (cfg.start_page > total_pages) {
-      safeErrorPrintLn(winux::i18n::format(
-          "command.pr.error.page_exceeds",
-          "pr: starting page number {} exceeds page count {}", cfg.start_page,
-          total_pages));
-      return;
-    }
-  }
+  // [GNU] a start page beyond the file's page count is NOT an
+  // error: skip_to_page simply reaches EOF, the file prints
+  // nothing, and the exit status is unaffected. The old code
+  // printed an invented "exceeds page count" diagnostic
+  // (audit #1462); the skip logic below handles the case silently.
 
   // Process lines with all options
   std::string indent_str(cfg.indent, ' ');
-  int line_num =
-      cfg.first_line_number.empty() ? 1 : std::stoi(cfg.first_line_number);
+  int line_num = cfg.first_line_number;
   int page_num = 1;
   int lines_on_page = 0;
   bool in_page = false;
@@ -1141,7 +1322,7 @@ auto paginate_file(const Config& cfg, SmallVector<std::string, 1024> all_lines,
     const size_t total_lines = all_lines.size();
     const int cols = cfg.columns;
     size_t pos = 0;
-    while (pos < total_lines) {
+    while (pos < total_lines && page_num <= cfg.last_page) {
       const size_t chunk = std::min(static_cast<size_t>(lines_per_page) * cols,
                                     total_lines - pos);
       std::vector<std::vector<ColumnCell>> page_rows;
@@ -1152,8 +1333,9 @@ auto paginate_file(const Config& cfg, SmallVector<std::string, 1024> all_lines,
           ColumnCell& cell = page_rows[i / cols][i % cols];
           cell.present = true;
           cell.number = line_num + static_cast<long>(pos + i);
-          cell.text = prepare_cell_text(cfg, L, all_lines[pos + i],
-                                        cfg.number_lines_set);
+          cell.text = prepare_cell_text(
+              cfg, L, strip_ff_sentinel(all_lines[pos + i]),
+              cfg.number_lines_set);
         }
       } else {
         // [GNU] balance(): first chunk%cols columns get one extra line.
@@ -1171,8 +1353,9 @@ auto paginate_file(const Config& cfg, SmallVector<std::string, 1024> all_lines,
             ColumnCell& cell = page_rows[r][c];
             cell.present = true;
             cell.number = line_num + static_cast<long>(off + r);
-            cell.text = prepare_cell_text(cfg, L, all_lines[off + r],
-                                          cfg.number_lines_set);
+            cell.text = prepare_cell_text(
+                cfg, L, strip_ff_sentinel(all_lines[off + r]),
+                cfg.number_lines_set);
           }
           off += heights[c];
         }
@@ -1192,11 +1375,8 @@ auto paginate_file(const Config& cfg, SmallVector<std::string, 1024> all_lines,
           }
         }
         if (extremities_on(cfg) && !cfg.omit_pagination) {
-          for (int pad = page_lines_total - header_block_lines(cfg) - used;
-               pad > 0; --pad) {
-            safePrintLn("");
-          }
-          print_page_trailer(cfg);
+          pad_page_end(cfg,
+                       page_lines_total - header_block_lines(cfg) - used);
         }
       }
       pos += chunk;
@@ -1214,6 +1394,7 @@ auto paginate_file(const Config& cfg, SmallVector<std::string, 1024> all_lines,
         if (lines_on_page >= lines_per_page) {
           lines_on_page = 0;
           ++page_num;
+          if (page_num > cfg.last_page) return;
           if (page_num >= cfg.start_page) {
             started = true;
           }
@@ -1221,26 +1402,30 @@ auto paginate_file(const Config& cfg, SmallVector<std::string, 1024> all_lines,
         continue;
       }
 
+      // [GNU] LAST_PAGE: printing stops after last_page
+      // (first_last_page, pr.c:804-833).
+      if (page_num > cfg.last_page) return;
+
       if (!in_page) {
         print_page_header(cfg, page_num, header_name, date_str);
         in_page = true;
       }
 
-      std::string processed = line;
+      // A trailing '\f' is read_lines' forced-page-break sentinel,
+      // not content.
+      const bool ff_break = !line.empty() && line.back() == '\f';
+      std::string processed =
+          ff_break ? line.substr(0, line.size() - 1) : line;
 
       // Apply expand_tabs
       if (cfg.expand_set) {
         processed = expand_tabs(processed, cfg.expand_width);
       }
 
-      // Apply show_control_chars
-      if (cfg.show_control_chars) {
-        processed = show_control_chars_hat(processed);
-      }
-
-      // Apply show_nonprinting
-      if (cfg.show_nonprinting) {
-        processed = show_nonprinting_octal(processed);
+      // Apply -c/-v conversion (one pass, char_to_clump rules).
+      if (cfg.show_control_chars || cfg.show_nonprinting) {
+        processed = convert_nonprinting(processed, cfg.show_nonprinting,
+                                        cfg.show_control_chars);
       }
 
       // [GNU] -W truncates single-column lines at the page width; the old
@@ -1284,14 +1469,28 @@ auto paginate_file(const Config& cfg, SmallVector<std::string, 1024> all_lines,
         ++lines_on_page;
       }
 
-      if (lines_on_page >= body_slots) {
-        // [GNU] Every page is filled to the page length before the break.
-        for (int pad =
-                 page_lines_total - header_block_lines(cfg) - lines_on_page;
-             pad > 0; --pad) {
-          safePrintLn("");
+      // [GNU] an input form feed ends the page here (hold_file).
+      // With -t (keep_FF) the form feed itself is emitted as the
+      // page separation; with -T it was already neutralised by the
+      // omit_pagination check (the segment simply ends the line).
+      bool page_ended = false;
+      if (ff_break && !cfg.omit_pagination) {
+        if (cfg.omit_header) {
+          safePrint("\f");
+        } else {
+          pad_page_end(cfg, page_lines_total - header_block_lines(cfg) -
+                                lines_on_page);
         }
-        print_page_trailer(cfg);
+        ++page_num;
+        lines_on_page = 0;
+        in_page = false;
+        page_ended = true;
+      }
+
+      if (!page_ended && lines_on_page >= body_slots) {
+        // [GNU] Every page is filled to the page length before the break.
+        pad_page_end(cfg, page_lines_total - header_block_lines(cfg) -
+                              lines_on_page);
         ++page_num;
         lines_on_page = 0;
         in_page = false;
@@ -1301,17 +1500,17 @@ auto paginate_file(const Config& cfg, SmallVector<std::string, 1024> all_lines,
 
   // Final page trailer
   if (in_page && !cfg.omit_pagination) {
-    // [GNU] Pad the final page with blank lines up to the page length
-    // (Savannah #1728). -t omits headers *and* trailers, so no padding; the
-    // same applies when -l leaves no room for a body (page_length <= 10).
+    // [GNU] Pad the final page up to the page length (Savannah
+    // #1728); pad_page_end turns the padding into a single '\f'
+    // under -f. -t omits headers *and* trailers, so no newline
+    // padding; the same applies when -l leaves no room for a body
+    // (page_length <= 10).
     if (extremities_on(cfg)) {
-      int used = header_block_lines(cfg) + lines_on_page;
-      while (used < page_lines_total) {
-        safePrintLn("");
-        ++used;
-      }
+      pad_page_end(cfg, page_lines_total - header_block_lines(cfg) -
+                            lines_on_page);
+    } else if (cfg.form_feed || cfg.form_feed_ff) {
+      safePrint("\f");
     }
-    print_page_trailer(cfg);
   }
 }
 
@@ -1360,8 +1559,7 @@ auto run(const Config& cfg) -> int {
 
     const std::string date_str =
         format_date_header(cfg.date_format, now_local_st());
-    const int start_num =
-        cfg.first_line_number.empty() ? 1 : std::stoi(cfg.first_line_number);
+    const int start_num = cfg.first_line_number;
     const int lines_per_page = cfg.double_space
                                    ? std::max(1, body_capacity(cfg) / 2)
                                    : body_capacity(cfg);
@@ -1370,21 +1568,12 @@ auto run(const Config& cfg) -> int {
     const int page_lines_total =
         extremities_on(cfg) ? body_slots + 10 : body_slots;
 
-    // [GNU] a start page beyond the page count is reported, the file is
-    // skipped, and the exit status is unaffected (uutils #13557).
-    const int total_pages = std::max(
-        1, static_cast<int>((max_lines + lines_per_page - 1) / lines_per_page));
-    if (cfg.start_page > total_pages) {
-      safeErrorPrintLn(winux::i18n::format(
-          "command.pr.error.page_exceeds",
-          "pr: starting page number {} exceeds page count {}", cfg.start_page,
-          total_pages));
-      return all_ok ? 0 : 1;
-    }
+    // [GNU] a start page beyond the page count prints nothing,
+    // silently (see paginate_file).
 
     int page_num = 1;
     size_t row = 0;
-    while (row < max_lines) {
+    while (row < max_lines && page_num <= cfg.last_page) {
       const size_t end =
           std::min(row + static_cast<size_t>(lines_per_page), max_lines);
       if (page_num >= cfg.start_page) {
@@ -1399,8 +1588,9 @@ auto run(const Config& cfg) -> int {
               ColumnCell& cell = cells[static_cast<size_t>(c)];
               cell.present = true;
               cell.number = start_num + static_cast<long>(row);
-              cell.text = prepare_cell_text(cfg, L, file_lines[c][row],
-                                            cfg.number_lines_set);
+              cell.text = prepare_cell_text(
+                  cfg, L, strip_ff_sentinel(file_lines[c][row]),
+                  cfg.number_lines_set);
             }
           }
           emit_column_row(L, cells, start_num + static_cast<long>(row));
@@ -1411,11 +1601,8 @@ auto run(const Config& cfg) -> int {
           }
         }
         if (extremities_on(cfg) && !cfg.omit_pagination) {
-          for (int pad = page_lines_total - header_block_lines(cfg) - used;
-               pad > 0; --pad) {
-            safePrintLn("");
-          }
-          print_page_trailer(cfg);
+          pad_page_end(cfg,
+                       page_lines_total - header_block_lines(cfg) - used);
         }
       } else {
         row = end;

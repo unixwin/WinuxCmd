@@ -108,16 +108,17 @@ struct CPUSnapshot {
 /**
  * @brief Sort field enumeration
  */
-enum class SortField { CPU, MEM, TIME, PID, NAME };
+enum class SortField { CPU, MEM, TIME, PID, NAME, RES, VIRT, PR, USER };
 
 /**
  * @brief Pipeline configuration
  */
 struct TopConfig {
   bool batch_mode = false;
-  int delay = 3;
+  double delay = 3.0;
   int max_iterations = -1;
   SortField sort_field = SortField::CPU;
+  bool sort_descending = true;
   bool should_exit = false;
   int rows = 0;
 
@@ -132,49 +133,59 @@ struct TopConfig {
   std::set<DWORD> pid_filter;  // [EXT] -p, --pid
   bool secure_mode = false;    // [EXT] -s, --secure-mode
   int output_width = 0;        // [EXT] -w, --width
+  int summary_scale = 1;       // -E: 0=k 1=m 2=g 3=t 4=p 5=e
+  int task_scale = 1;          // -e: 0=k 1=m 2=g 3=t 4=p
+  bool single_cpu = false;     // -1: per-CPU summary lines
+  bool accum_time = false;     // -S: accepted; Windows does not
+                               // accumulate child CPU times (see
+                               // REPORT.md), so TIME+ is unchanged
 };
 
 /**
- * @brief TOP command options
+ * @brief TOP command options (procps top.c option set; the historical
+ * WinuxCmd long spellings --batch/--command/--threads/--User/
+ * --field-sort stay as help-invisible aliases)
  */
 constexpr auto TOP_OPTIONS = std::array{
-    // [EXT] -b, --batch
-    OPTION("-b", "--batch",
-           "run in non-interactive batch mode; run until the -n iteration "
-           "limit is reached"),
-    // [EXT] -d, --delay
-    OPTION("-d", "--delay", "iterative delay as SECS (integer seconds)",
-           INT_TYPE),
-    // [EXT] -n, --iterations
-    OPTION("-n", "--iterations", "exit on maximum iterations NUMBER",
-           INT_TYPE),
-    // [EXT] -p, --pid
-    OPTION("-p", "--pid", "monitor only the tasks in PIDLIST", STRING_TYPE),
-    // [EXT] -u, --user
-    OPTION("-u", "--user", "show only processes owned by USER", STRING_TYPE),
-    // [EXT] -U, --User
-    OPTION("-U", "--User",
-           "show only processes owned by USER (real user ID/name)",
+    OPTION("-1", "--single-cpu-toggle", "toggle single/separate CPU display"),
+    OPTION("-b", "--batch-mode",
+           "batch mode: don't accept input, run until -n iterations"),
+    OPTION("-c", "--cmdline-toggle",
+           "show command line instead of process name"),
+    OPTION("-d", "--delay", "delay between updates, in seconds", STRING_TYPE),
+    OPTION("-E", "--scale-summary-mem",
+           "set the memory scale for the summary (k, m, g, t, p, e)",
            STRING_TYPE),
-    // [EXT] -s, --secure-mode
-    OPTION("-s", "--secure-mode",
-           "run with secure mode restrictions (disables kill/renice)"),
-    // [EXT] -c, --command
-    OPTION("-c", "--command", "show command line instead of process name"),
-    // [EXT] -H, --threads
-    OPTION("-H", "--threads", "show tasks plus all their threads"),
-    // [EXT] -o, --field-sort
-    OPTION("-o", "--field-sort",
-           "force sorting on this named FIELD (CPU|MEM|TIME|PID|NAME)",
+    OPTION("-e", "--scale-task-mem",
+           "set the memory scale for task columns (k, m, g, t, p)",
            STRING_TYPE),
-    // [EXT] -w, --width
-    OPTION("-w", "--width", "change print width to WIDTH", INT_TYPE),
-    // [EXT] --rows
-    OPTION("", "--rows", "limit number of displayed processes", INT_TYPE),
-    // [EXT] -v, --version
-    OPTION("-v", "--version", "output version information & exit"),
-    // [EXT] --help
-    OPTION("", "--help", "display this help text, then exit")};
+    OPTION("-H", "--threads-show", "show threads as if they were processes"),
+    OPTION("-i", "--idle-toggle", "start with idle processes hidden"),
+    OPTION("-n", "--iterations", "number of iterations before exiting",
+           INT_TYPE),
+    OPTION("-O", "--list-fields", "list the available fields and exit"),
+    OPTION("-o", "--sort-override", "override sort field", STRING_TYPE),
+    OPTION("-p", "--pid", "monitor only processes with given PIDs",
+           STRING_TYPE),
+    OPTION("-S", "--accum-time-toggle",
+           "accumulate child CPU time in TIME+ (child times are not "
+           "accumulated on Windows)"),
+    OPTION("-s", "--secure-mode", "secure mode: disables some features"),
+    OPTION("-U", "--filter-any-user",
+           "monitor only processes with given real user ID/name", STRING_TYPE),
+    OPTION("-u", "--filter-only-euser",
+           "monitor only processes with given user", STRING_TYPE),
+    OPTION("-v", "--version", "print version information"),
+    OPTION("-w", "--width", "override output width", OPTIONAL_INT_TYPE),
+    OPTION("", "--rows", "limit number of processes displayed", INT_TYPE),
+    OPTION("", "--help", "display this help"),
+    // Compatibility aliases (parser sentinels, not shown in help).
+    OPTION("", "--batch", "", BOOL_TYPE),
+    OPTION("", "--command", "", BOOL_TYPE),
+    OPTION("", "--threads", "", BOOL_TYPE),
+    OPTION("", "--user", "", STRING_TYPE),
+    OPTION("", "--User", "", STRING_TYPE),
+    OPTION("", "--field-sort", "", STRING_TYPE)};
 
 // ======================================================
 // Helper Functions
@@ -480,6 +491,86 @@ class SystemMonitor {
 };
 
 // ======================================================
+// Per-CPU usage (top -1/--single-cpu-toggle)
+// ======================================================
+
+struct PerCpuUsage {
+  float user = 0.0f;
+  float sys = 0.0f;
+  float idle = 0.0f;
+};
+
+// Percentages per logical processor from
+// SystemProcessorPerformanceInformation deltas; the first call in the
+// process reports since-boot percentages.
+auto per_cpu_usages() -> std::vector<PerCpuUsage> {
+  using NtQuerySystemInformationFn =
+      NTSTATUS(NTAPI*)(ULONG, PVOID, ULONG, PULONG);
+  static auto query = []() -> NtQuerySystemInformationFn {
+    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    if (!ntdll) return nullptr;
+    return reinterpret_cast<NtQuerySystemInformationFn>(
+        GetProcAddress(ntdll, "NtQuerySystemInformation"));
+  }();
+  static std::vector<SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION> previous;
+  std::vector<PerCpuUsage> out;
+  if (!query) return out;
+
+  std::vector<SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION> current(256);
+  ULONG returned = 0;
+  // SystemProcessorPerformanceInformation is class 8; class 1 is
+  // SystemProcessorInformation, a single small record whose byte count
+  // divides to zero processors below and silently empties the result.
+  constexpr ULONG kProcessorPerformance = 8;
+  if (query(kProcessorPerformance, current.data(),
+            static_cast<ULONG>(current.size() * sizeof(current[0])),
+            &returned) != 0) {
+    return out;
+  }
+  const size_t count = returned / sizeof(current[0]);
+  current.resize(count);
+  out.resize(count);
+  auto ticks = [](const LARGE_INTEGER& value) -> unsigned long long {
+    return static_cast<unsigned long long>(value.QuadPart);
+  };
+  for (size_t i = 0; i < count; ++i) {
+    unsigned long long idle = ticks(current[i].IdleTime);
+    unsigned long long kernel = ticks(current[i].KernelTime);
+    unsigned long long user = ticks(current[i].UserTime);
+    if (i < previous.size()) {
+      idle -= ticks(previous[i].IdleTime);
+      kernel -= ticks(previous[i].KernelTime);
+      user -= ticks(previous[i].UserTime);
+    }
+    const unsigned long long total = kernel + user;
+    if (total > 0) {
+      out[i].user =
+          100.0f * static_cast<float>(user) / static_cast<float>(total);
+      out[i].idle =
+          100.0f * static_cast<float>(idle) / static_cast<float>(total);
+      const unsigned long long sys = kernel > idle ? kernel - idle : 0;
+      out[i].sys = 100.0f * static_cast<float>(sys) / static_cast<float>(total);
+    }
+  }
+  previous = std::move(current);
+  return out;
+}
+
+auto scale_unit_name(int scale) -> const char* {
+  static constexpr const char* kNames[] = {"KiB", "MiB", "GiB",
+                                           "TiB", "PiB", "EiB"};
+  if (scale < 0) scale = 0;
+  if (scale > 5) scale = 5;
+  return kNames[scale];
+}
+
+auto scale_bytes(unsigned long long bytes, int scale) -> double {
+  double divisor = 1024.0;
+  for (int i = 0; i < scale; ++i) divisor *= 1024.0;
+  return static_cast<double>(bytes) / divisor;
+}
+
+// ======================================================
 // Display Manager
 // ======================================================
 
@@ -514,7 +605,7 @@ class DisplayManager {
   }
 
   auto printHeader(const SystemStats& stats, const std::string& hostname,
-                   int update_interval) -> void {
+                   const TopConfig& cfg) -> void {
     setColor(FOREGROUND_GREEN | FOREGROUND_INTENSITY);
     safePrint("top - ");
     resetColor();
@@ -568,37 +659,69 @@ class DisplayManager {
     safePrint(task_buf);
     safePrint("\n");
 
-    // Print CPU usage
-    char cpu_buf[256];
-    snprintf(cpu_buf, sizeof(cpu_buf),
-             "%5.1f us, %5.1f sy, %5.1f ni, %5.1f id, %5.1f wa, %5.1f hi, "
-             "%5.1f si, %5.1f st",
-             stats.cpu_usage * 0.6f, stats.cpu_usage * 0.2f, 0.0f,
-             100.0f - stats.cpu_usage, 0.0f, 0.0f, 0.0f, 0.0f);
-    safePrint("%Cpu(s): ");
-    safePrint(cpu_buf);
-    safePrint("\n");
+    // Print CPU usage: one aggregate line, or one line per processor
+    // under -1/--single-cpu-toggle.
+    const auto per_cpu =
+        cfg.single_cpu ? per_cpu_usages() : std::vector<PerCpuUsage>{};
+    if (!per_cpu.empty()) {
+      const auto& cpus = per_cpu;
+      for (size_t i = 0; i < cpus.size(); ++i) {
+        char cpu_buf[256];
+        snprintf(cpu_buf, sizeof(cpu_buf),
+                 "%5.1f us, %5.1f sy, %5.1f ni, %5.1f id, %5.1f wa, "
+                 "%5.1f hi, %5.1f si, %5.1f st",
+                 cpus[i].user, cpus[i].sys, 0.0f, cpus[i].idle, 0.0f, 0.0f,
+                 0.0f, 0.0f);
+        char label[32];
+        snprintf(label, sizeof(label), "%%Cpu%zu : ", i);
+        safePrint(label);
+        safePrint(cpu_buf);
+        safePrint("\n");
+      }
+    }
+    if (per_cpu.empty()) {
+      char cpu_buf[256];
+      snprintf(cpu_buf, sizeof(cpu_buf),
+               "%5.1f us, %5.1f sy, %5.1f ni, %5.1f id, %5.1f wa, %5.1f "
+               "hi, %5.1f si, %5.1f st",
+               stats.cpu_usage * 0.6f, stats.cpu_usage * 0.2f, 0.0f,
+               100.0f - stats.cpu_usage, 0.0f, 0.0f, 0.0f, 0.0f);
+      safePrint("%Cpu(s): ");
+      safePrint(cpu_buf);
+      safePrint("\n");
+    }
 
-    // Print memory usage
-    double mem_total_gb = stats.total_memory / (1024.0 * 1024.0 * 1024.0);
-    double mem_used_gb = stats.used_memory / (1024.0 * 1024.0 * 1024.0);
-    double mem_free_gb = stats.available_memory / (1024.0 * 1024.0 * 1024.0);
-
+    // Print memory usage in the -E summary scale (default MiB).
+    const char* unit = scale_unit_name(cfg.summary_scale);
     char mem_buf[256];
     snprintf(mem_buf, sizeof(mem_buf),
              "%8.1f total, %8.1f free, %8.1f used, %8.1f cache",
-             mem_total_gb * 1024.0, mem_free_gb * 1024.0, mem_used_gb * 1024.0,
-             0.0);
-    safePrint("MiB Mem : ");
+             scale_bytes(stats.total_memory, cfg.summary_scale),
+             scale_bytes(stats.available_memory, cfg.summary_scale),
+             scale_bytes(stats.used_memory, cfg.summary_scale), 0.0);
+    safePrint(unit);
+    safePrint(" Mem : ");
     safePrint(mem_buf);
     safePrint("\n");
 
-    // Print swap info (Windows doesn't have traditional swap)
+    // Swap is the Windows paging file (same scale as memory).
+    MEMORYSTATUSEX mem_status{};
+    mem_status.dwLength = sizeof(mem_status);
+    double swap_total = 0.0;
+    double swap_free = 0.0;
+    double swap_used = 0.0;
+    if (GlobalMemoryStatusEx(&mem_status)) {
+      swap_total = scale_bytes(mem_status.ullTotalPageFile, cfg.summary_scale);
+      swap_free = scale_bytes(mem_status.ullAvailPageFile, cfg.summary_scale);
+      swap_used = swap_total - swap_free;
+    }
     char swap_buf[256];
     snprintf(swap_buf, sizeof(swap_buf),
-             "%8.1f total, %8.1f free, %8.1f used. %6.1f avail Mem", 0.0, 0.0,
-             0.0, mem_free_gb * 1024.0);
-    safePrint("MiB Swap: ");
+             "%8.1f total, %8.1f free, %8.1f used. %6.1f avail Mem", swap_total,
+             swap_free, swap_used,
+             scale_bytes(stats.available_memory, cfg.summary_scale));
+    safePrint(unit);
+    safePrint(" Swap: ");
     safePrint(swap_buf);
     safePrint("\n");
 
@@ -721,9 +844,10 @@ class DisplayManager {
       snprintf(buf, sizeof(buf), "%3d ", 0);
       safePrint(buf);
 
-      // Print memory info (VIRT: 7 chars, RES: 6 chars, SHR: 6 chars)
-      double virt_mb = proc.virtual_memory_bytes / (1024.0 * 1024.0);
-      double res_mb = proc.memory_bytes / (1024.0 * 1024.0);
+      // Print memory info (VIRT: 7 chars, RES: 6 chars, SHR: 6 chars),
+      // in the -e task scale (default MiB)
+      double virt_mb = scale_bytes(proc.virtual_memory_bytes, cfg.task_scale);
+      double res_mb = scale_bytes(proc.memory_bytes, cfg.task_scale);
       double shr_mb = 0.0;  // Windows doesn't have shared memory concept
       snprintf(buf, sizeof(buf), "%7.1f %6.1f %6.1f ", virt_mb, res_mb, shr_mb);
       safePrint(buf);
@@ -791,36 +915,79 @@ class DisplayManager {
 // Sort Functions
 // ======================================================
 
-auto sortByField(std::vector<ProcessInfo>& processes, SortField field) -> void {
+// The direction procps top uses for a field without a +/- prefix
+// (its Qsrt_NORMAL sense): utilization and size fields run largest
+// first; identity fields run in ascending order.
+auto sort_field_natural_descending(SortField field) -> bool {
+  switch (field) {
+    case SortField::PID:
+    case SortField::NAME:
+    case SortField::USER:
+    case SortField::PR:
+      return false;
+    default:
+      return true;
+  }
+}
+
+auto sortByField(std::vector<ProcessInfo>& processes, SortField field,
+                 bool descending) -> void {
+  auto order = [descending](auto a, auto b) {
+    return descending ? a > b : a < b;
+  };
   switch (field) {
     case SortField::CPU:
       std::sort(processes.begin(), processes.end(),
-                [](const ProcessInfo& a, const ProcessInfo& b) {
-                  return a.cpu_percent > b.cpu_percent;
+                [&](const ProcessInfo& a, const ProcessInfo& b) {
+                  return order(a.cpu_percent, b.cpu_percent);
                 });
       break;
     case SortField::MEM:
       std::sort(processes.begin(), processes.end(),
-                [](const ProcessInfo& a, const ProcessInfo& b) {
-                  return a.memory_bytes > b.memory_bytes;
+                [&](const ProcessInfo& a, const ProcessInfo& b) {
+                  return order(a.memory_percent, b.memory_percent);
+                });
+      break;
+    case SortField::RES:
+      std::sort(processes.begin(), processes.end(),
+                [&](const ProcessInfo& a, const ProcessInfo& b) {
+                  return order(a.memory_bytes, b.memory_bytes);
+                });
+      break;
+    case SortField::VIRT:
+      std::sort(processes.begin(), processes.end(),
+                [&](const ProcessInfo& a, const ProcessInfo& b) {
+                  return order(a.virtual_memory_bytes, b.virtual_memory_bytes);
                 });
       break;
     case SortField::TIME:
       std::sort(processes.begin(), processes.end(),
-                [](const ProcessInfo& a, const ProcessInfo& b) {
-                  return a.total_cpu_time > b.total_cpu_time;
+                [&](const ProcessInfo& a, const ProcessInfo& b) {
+                  return order(a.total_cpu_time, b.total_cpu_time);
                 });
       break;
     case SortField::PID:
       std::sort(processes.begin(), processes.end(),
-                [](const ProcessInfo& a, const ProcessInfo& b) {
-                  return a.pid < b.pid;
+                [&](const ProcessInfo& a, const ProcessInfo& b) {
+                  return order(a.pid, b.pid);
                 });
       break;
     case SortField::NAME:
       std::sort(processes.begin(), processes.end(),
-                [](const ProcessInfo& a, const ProcessInfo& b) {
-                  return a.name_utf8 < b.name_utf8;
+                [&](const ProcessInfo& a, const ProcessInfo& b) {
+                  return order(a.name_utf8, b.name_utf8);
+                });
+      break;
+    case SortField::USER:
+      std::sort(processes.begin(), processes.end(),
+                [&](const ProcessInfo& a, const ProcessInfo& b) {
+                  return order(a.username, b.username);
+                });
+      break;
+    case SortField::PR:
+      std::sort(processes.begin(), processes.end(),
+                [&](const ProcessInfo& a, const ProcessInfo& b) {
+                  return order(a.priority, b.priority);
                 });
       break;
   }
@@ -832,78 +999,170 @@ auto sortByField(std::vector<ProcessInfo>& processes, SortField field) -> void {
 namespace top_pipeline {
 namespace cp = core::pipeline;
 
+// procps top.c mkfloat(): a delay is a non-negative number with an
+// optional fractional part ("1", "1.5", ".5"); anything else errors.
+auto parse_top_delay(const std::string& text) -> std::optional<double> {
+  if (text.empty()) return std::nullopt;
+  char* end = nullptr;
+  const double value = std::strtod(text.c_str(), &end);
+  if (end == text.c_str() || *end != '\0' || value < 0) return std::nullopt;
+  return value;
+}
+
+auto parse_top_scale(const std::string& text, bool summary)
+    -> std::optional<int> {
+  if (text.size() != 1) return std::nullopt;
+  const char c =
+      static_cast<char>(std::tolower(static_cast<unsigned char>(text[0])));
+  const char* set = summary ? "kmgtpe" : "kmgtp";
+  const char* hit = std::strchr(set, c);
+  if (!hit) return std::nullopt;
+  return static_cast<int>(hit - set);
+}
+
 // 1. Parse configuration
 auto parse_config(const CommandContext<TOP_OPTIONS.size()>& ctx)
     -> cp::Result<TopConfig> {
   TopConfig cfg;
 
-  cfg.batch_mode =
-      ctx.get<bool>("--batch", false) || ctx.get<bool>("-b", false);
+  cfg.batch_mode = ctx.get<bool>("--batch-mode", false) ||
+                   ctx.get<bool>("--batch", false) ||
+                   ctx.get<bool>("-b", false);
 
-  cfg.delay = ctx.get<int>("--delay", cfg.delay);
-  if (cfg.delay < 1) cfg.delay = 1;
+  // -d is fractional in procps top (top.c case 'd' uses mkfloat).
+  if (ctx.has("-d") || ctx.has("--delay")) {
+    const auto text = ctx.get<std::string>("--delay", "");
+    auto delay = parse_top_delay(text);
+    if (!delay) {
+      return std::unexpected("invalid delay: '" + text + "'");
+    }
+    cfg.delay = *delay;
+  }
 
   cfg.max_iterations = ctx.get<int>("--iterations", cfg.max_iterations);
 
-  std::string sort_str = ctx.get<std::string>("--field-sort", "");
-  if (sort_str.empty()) sort_str = ctx.get<std::string>("-o", "");
-  if (!sort_str.empty()) {
-    if (sort_str == "CPU")
-      cfg.sort_field = SortField::CPU;
-    else if (sort_str == "MEM")
-      cfg.sort_field = SortField::MEM;
-    else if (sort_str == "TIME")
-      cfg.sort_field = SortField::TIME;
-    else if (sort_str == "PID")
-      cfg.sort_field = SortField::PID;
-    else if (sort_str == "NAME")
-      cfg.sort_field = SortField::NAME;
+  // -o: last occurrence wins; an optional leading '+' (natural
+  // direction) or '-' (reversed) precedes the field name (top.c).
+  auto sort_occs =
+      ctx.string_occurrences({"-o", "--sort-override", "--field-sort"});
+  if (!sort_occs.empty()) {
+    std::string name = sort_occs.back().value;
+    std::optional<bool> direction;
+    if (!name.empty() && (name[0] == '+' || name[0] == '-')) {
+      direction = name[0] == '+';
+      name.erase(0, 1);
+    }
+    std::optional<SortField> field;
+    if (name == "%CPU" || name == "CPU") {
+      field = SortField::CPU;
+    } else if (name == "%MEM" || name == "MEM") {
+      field = SortField::MEM;
+    } else if (name == "TIME+" || name == "TIME") {
+      field = SortField::TIME;
+    } else if (name == "PID") {
+      field = SortField::PID;
+    } else if (name == "COMMAND" || name == "NAME") {
+      field = SortField::NAME;
+    } else if (name == "RES") {
+      field = SortField::RES;
+    } else if (name == "VIRT") {
+      field = SortField::VIRT;
+    } else if (name == "PR") {
+      field = SortField::PR;
+    } else if (name == "USER") {
+      field = SortField::USER;
+    }
+    if (!field) {
+      return std::unexpected("unknown field '" + name + "'");
+    }
+    cfg.sort_field = *field;
+    const bool natural = sort_field_natural_descending(*field);
+    // '+' selects the natural direction, '-' reverses it.
+    cfg.sort_descending =
+        direction.has_value() ? (*direction ? natural : !natural) : natural;
   }
 
   cfg.rows = ctx.get<int>("--rows", 0);
   if (cfg.rows < 0) cfg.rows = 0;
 
-  // [EXT] -p, --pid: filter by PIDs (comma-separated)
-  std::string pid_str = ctx.get<std::string>("--pid", "");
-  if (pid_str.empty()) pid_str = ctx.get<std::string>("-p", "");
-  if (!pid_str.empty()) {
-    std::istringstream iss(pid_str);
+  // -p: repeatable and comma-separated (top.c case 'p'); a pid of 0
+  // names top's own process, and +/-/. in a pid is an error there.
+  for (auto occ : ctx.string_occurrences({"-p", "--pid"})) {
+    std::istringstream iss(occ.value);
     std::string token;
     while (std::getline(iss, token, ',')) {
-      DWORD pid = static_cast<DWORD>(std::stoul(token));
-      cfg.pid_filter.insert(pid);
+      unsigned long pid = 0;
+      const auto [ptr, ec] =
+          std::from_chars(token.data(), token.data() + token.size(), pid);
+      if (ec != std::errc() || ptr != token.data() + token.size()) {
+        return std::unexpected("invalid pid: '" + token + "'");
+      }
+      if (pid == 0) pid = GetCurrentProcessId();
+      cfg.pid_filter.insert(static_cast<DWORD>(pid));
     }
   }
 
-  // [EXT] -u, --user: filter by user name
-  std::string user_str = ctx.get<std::string>("--user", "");
+  // -u (effective) and -U (real): on Windows both test the process
+  // token owner. Combined with -p they are a selection clash (top.c).
+  std::string user_str = ctx.get<std::string>("--filter-only-euser", "");
+  if (user_str.empty()) user_str = ctx.get<std::string>("--user", "");
   if (user_str.empty()) user_str = ctx.get<std::string>("-u", "");
-  if (!user_str.empty()) {
-    cfg.user_filter = user_str;
+  if (!user_str.empty()) cfg.user_filter = user_str;
+  std::string user_real_str = ctx.get<std::string>("--filter-any-user", "");
+  if (user_real_str.empty()) {
+    user_real_str = ctx.get<std::string>("--User", "");
   }
-
-  // [EXT] -U, --User: filter by real user ID/name (same as -u on Windows)
-  std::string user_real_str = ctx.get<std::string>("--User", "");
-  if (user_real_str.empty()) user_real_str = ctx.get<std::string>("-U", "");
-  if (!user_real_str.empty()) {
-    cfg.user_filter = user_real_str;
+  if (user_real_str.empty()) {
+    user_real_str = ctx.get<std::string>("-U", "");
+  }
+  if (!user_real_str.empty()) cfg.user_filter = user_real_str;
+  if (!cfg.pid_filter.empty() && !cfg.user_filter.empty()) {
+    return std::unexpected(
+        "conflicting process selection options: -p with -u/-U");
   }
 
   // [EXT] -s, --secure-mode: disable interactive kill/renice
   cfg.secure_mode =
       ctx.get<bool>("--secure-mode", false) || ctx.get<bool>("-s", false);
 
-  // [EXT] -c, --command: show command line instead of process name
-  cfg.show_full_command =
-      ctx.get<bool>("--command", false) || ctx.get<bool>("-c", false);
+  // -c: show command line instead of process name
+  cfg.show_full_command = ctx.get<bool>("--cmdline-toggle", false) ||
+                          ctx.get<bool>("--command", false) ||
+                          ctx.get<bool>("-c", false);
 
-  // [EXT] -H, --threads: show threads as if they were processes
-  cfg.show_threads =
-      ctx.get<bool>("--threads", false) || ctx.get<bool>("-H", false);
+  // -H: show threads as if they were processes
+  cfg.show_threads = ctx.get<bool>("--threads-show", false) ||
+                     ctx.get<bool>("--threads", false) ||
+                     ctx.get<bool>("-H", false);
 
-  // [EXT] -w, --width: override output width
-  cfg.output_width = ctx.get<int>("--width", 0);
-  if (cfg.output_width <= 0) cfg.output_width = ctx.get<int>("-w", 0);
+  cfg.ignore_idle =
+      ctx.get<bool>("-i", false) || ctx.get<bool>("--idle-toggle", false);
+  cfg.single_cpu =
+      ctx.get<bool>("-1", false) || ctx.get<bool>("--single-cpu-toggle", false);
+  cfg.accum_time =
+      ctx.get<bool>("-S", false) || ctx.get<bool>("--accum-time-toggle", false);
+
+  if (ctx.has("-E") || ctx.has("--scale-summary-mem")) {
+    const auto text = ctx.get<std::string>("--scale-summary-mem", "");
+    auto scale = parse_top_scale(text, true);
+    if (!scale) {
+      return std::unexpected("invalid memory scale: '" + text + "'");
+    }
+    cfg.summary_scale = *scale;
+  }
+  if (ctx.has("-e") || ctx.has("--scale-task-mem")) {
+    const auto text = ctx.get<std::string>("--scale-task-mem", "");
+    auto scale = parse_top_scale(text, false);
+    if (!scale) {
+      return std::unexpected("invalid memory scale: '" + text + "'");
+    }
+    cfg.task_scale = *scale;
+  }
+
+  // -w takes an optional value (top.c "w::"); no value keeps the
+  // terminal width.
+  const int width = ctx.get<int>("--width", -1);
+  if (width >= 0) cfg.output_width = width;
 
   return cfg;
 }
@@ -911,6 +1170,14 @@ auto parse_config(const CommandContext<TOP_OPTIONS.size()>& ctx)
 // 2. Check for help or version
 auto check_help_version(const CommandContext<TOP_OPTIONS.size()>& ctx)
     -> cp::Result<bool> {
+  // -O/--list-fields prints the field names and exits (top.c case 'O').
+  if (ctx.get<bool>("--list-fields", false) || ctx.get<bool>("-O", false)) {
+    safePrint(
+        "PID\nUSER\nPR\nNI\nVIRT\nRES\nSHR\nS\n%CPU\n%MEM\nTIME+\n"
+        "COMMAND\n");
+    return true;  // Should exit
+  }
+
   if (ctx.get<bool>("--help", false)) {
     const std::string help =
         "Usage: top [options]\n"
@@ -922,20 +1189,39 @@ auto check_help_version(const CommandContext<TOP_OPTIONS.size()>& ctx)
         "are controlled by the options below.\n"
         "\n"
         "Options:\n"
-        " -b, --batch        run in non-interactive batch mode; run until\n"
+        " -1, --single-cpu-toggle\n"
+        "                    toggle single/separate CPU display\n"
+        " -b, --batch-mode   run in non-interactive batch mode; run until\n"
         "                    the -n iteration limit is reached\n"
-        " -c, --command      show command line instead of process name\n"
-        " -d, --delay SECS   iterative delay as SECS (integer seconds)\n"
-        " -H, --threads      show tasks plus all their threads\n"
+        " -c, --cmdline-toggle\n"
+        "                    show command line instead of process name\n"
+        " -d, --delay SECS   iterative delay as SECS (fractional seconds\n"
+        "                    are accepted)\n"
+        " -E, --scale-summary-mem UNIT\n"
+        "                    set the summary memory scale (k, m, g, t, p,\n"
+        "                    e)\n"
+        " -e, --scale-task-mem UNIT\n"
+        "                    set the task memory scale (k, m, g, t, p)\n"
+        " -H, --threads-show show tasks plus all their threads\n"
+        " -i, --idle-toggle  start with idle processes hidden\n"
         " -n, --iterations N exit on maximum iterations NUMBER\n"
-        " -o, --field-sort F force sorting on this named FIELD\n"
-        "                    (CPU|MEM|TIME|PID|NAME)\n"
+        " -O, --list-fields  list the available fields, then exit\n"
+        " -o, --sort-override FIELD\n"
+        "                    force sorting on this named FIELD, with an\n"
+        "                    optional + (natural) or - (reversed) prefix\n"
+        "                    (%CPU|%MEM|TIME+|PID|USER|PR|VIRT|RES|\n"
+        "                    COMMAND)\n"
         " -p, --pid PIDS     monitor only the tasks in PIDLIST\n"
+        " -S, --accum-time-toggle\n"
+        "                    accumulate child CPU time in TIME+ (child\n"
+        "                    times are not accumulated on Windows)\n"
         " -s, --secure-mode  run with secure mode restrictions (disables\n"
         "                    kill/renice)\n"
-        " -u, --user USER    show only processes owned by USER\n"
-        " -U, --User USER    show only processes owned by USER (real\n"
-        "                    user ID/name)\n"
+        " -u, --filter-only-euser USER\n"
+        "                    show only processes owned by USER\n"
+        " -U, --filter-any-user USER\n"
+        "                    show only processes owned by USER (real user\n"
+        "                    ID/name)\n"
         " -w, --width WIDTH  change print width [,use WIDTH]\n"
         "     --rows N       limit number of displayed processes\n"
         "\n"
@@ -1001,7 +1287,7 @@ auto run_top(TopConfig& cfg) -> cp::Result<bool> {
   SystemStats stats = monitor.getSystemStats();
   enumerator.calculateCPUUsage(processes, prev_cpu, curr_cpu,
                                static_cast<size_t>(stats.cpu_count));
-  sortByField(processes, cfg.sort_field);
+  sortByField(processes, cfg.sort_field, cfg.sort_descending);
   stats.cpu_usage = monitor.calculateSystemCPUUsage(prev_cpu, curr_cpu);
   stats.total_processes = static_cast<DWORD>(processes.size());
   stats.running_processes = 1;
@@ -1024,7 +1310,7 @@ auto run_top(TopConfig& cfg) -> cp::Result<bool> {
 
     const size_t display_rows =
         cfg.rows > 0 ? static_cast<size_t>(cfg.rows) : 50;
-    display.printHeader(stats, hostname, cfg.delay);
+    display.printHeader(stats, hostname, cfg);
     display.printProcessList(processes, stats, display_rows, cfg);
 
     if (!cfg.batch_mode) {
@@ -1041,22 +1327,30 @@ auto run_top(TopConfig& cfg) -> cp::Result<bool> {
 
             case 'P':
               cfg.sort_field = SortField::CPU;
-              sortByField(processes, cfg.sort_field);
+              cfg.sort_descending =
+                  sort_field_natural_descending(cfg.sort_field);
+              sortByField(processes, cfg.sort_field, cfg.sort_descending);
               break;
 
             case 'M':
               cfg.sort_field = SortField::MEM;
-              sortByField(processes, cfg.sort_field);
+              cfg.sort_descending =
+                  sort_field_natural_descending(cfg.sort_field);
+              sortByField(processes, cfg.sort_field, cfg.sort_descending);
               break;
 
             case 'T':
               cfg.sort_field = SortField::TIME;
-              sortByField(processes, cfg.sort_field);
+              cfg.sort_descending =
+                  sort_field_natural_descending(cfg.sort_field);
+              sortByField(processes, cfg.sort_field, cfg.sort_descending);
               break;
 
             case 'N':
               cfg.sort_field = SortField::PID;
-              sortByField(processes, cfg.sort_field);
+              cfg.sort_descending =
+                  sort_field_natural_descending(cfg.sort_field);
+              sortByField(processes, cfg.sort_field, cfg.sort_descending);
               break;
 
             case 'C':
@@ -1076,7 +1370,7 @@ auto run_top(TopConfig& cfg) -> cp::Result<bool> {
               safePrint("\nEnter new delay (seconds): ");
               char input[32];
               if (fgets(input, sizeof(input), stdin)) {
-                int new_delay = atoi(input);
+                const double new_delay = atof(input);
                 if (new_delay > 0) {
                   cfg.delay = new_delay;
                 }
@@ -1168,14 +1462,14 @@ auto run_top(TopConfig& cfg) -> cp::Result<bool> {
           if (ch != 'Q' && ch != 27) {
             display.clearScreen();
             display.setCursorPos(0, 0);
-            display.printHeader(stats, hostname, cfg.delay);
+            display.printHeader(stats, hostname, cfg);
             display.printProcessList(processes, stats, display_rows, cfg);
           }
         }
         Sleep(100);
       }
     } else {
-      Sleep(cfg.delay * 1000);
+      Sleep(static_cast<DWORD>(cfg.delay * 1000.0));
     }
 
     if (running) {
@@ -1184,7 +1478,7 @@ auto run_top(TopConfig& cfg) -> cp::Result<bool> {
       processes = enumerator.enumerate(cfg.show_threads);
       enumerator.calculateCPUUsage(processes, prev_cpu, curr_cpu,
                                    static_cast<size_t>(stats.cpu_count));
-      sortByField(processes, cfg.sort_field);
+      sortByField(processes, cfg.sort_field, cfg.sort_descending);
       stats = monitor.getSystemStats();
       stats.cpu_usage = monitor.calculateSystemCPUUsage(prev_cpu, curr_cpu);
       stats.total_processes = static_cast<DWORD>(processes.size());

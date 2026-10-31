@@ -1,0 +1,5 @@
+cmd: cal
+oracle: linux
+args: -y 2026
+source: tests/differential/corpus/cal/08-year.case
+tags: gnu-compat cal year-layout audit-w7

@@ -1,0 +1,5 @@
+cmd: getconf
+oracle: linux
+args: NOSUCHVAR
+source: tests/differential/corpus/getconf/01-unrecognized-variable.case
+tags: gnu-compat getconf error-wording exit-status audit-w7

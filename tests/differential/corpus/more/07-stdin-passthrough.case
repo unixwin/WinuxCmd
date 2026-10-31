@@ -1,0 +1,8 @@
+cmd: more
+oracle: linux
+args:
+stdin: |
+  piped one
+  piped two
+source: tests/differential/corpus/more/07-stdin-passthrough.case
+tags: gnu-compat more non-tty stdin audit-w7

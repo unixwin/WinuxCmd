@@ -1,0 +1,4 @@
+cmd: expr
+args: + 007
+source: GNU coreutils 9.4 src/expr.c eval6 ("+ TOKEN" yields the token verbatim as a string)
+tags: audit-w3a #1462

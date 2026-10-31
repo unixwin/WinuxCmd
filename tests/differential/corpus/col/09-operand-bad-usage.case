@@ -1,0 +1,5 @@
+cmd: col
+oracle: linux
+args: somefile
+source: tests/differential/corpus/col/09-operand-bad-usage.case
+tags: gnu-compat col bad-usage audit-w7

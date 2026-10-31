@@ -76,13 +76,25 @@ TEST(column, column_file_input) {
 TEST(column, column_json_output) {
   Pipeline p;
   p.set_stdin("name\tage\tcity\nAlice\t30\tNY\nBob\t25\tLA\n");
-  p.add(L"column.exe", {L"-t", L"--json"});
+  p.add(L"column.exe", {L"-t", L"--json", L"-N", L"name,age,city"});
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
   // JSON output should contain array
   EXPECT_TRUE(r.stdout_text.find("[") != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("]") != std::string::npos);
+}
+
+// [GNU] --json without --table-columns/--table-column is a hard
+// error: errx("option --table-columns or --table-column required
+// for --json") (text-utils/column.c:957-958).
+TEST(column, column_json_without_column_names_fails) {
+  Pipeline p;
+  p.set_stdin("name\tage\tcity\nAlice\t30\tNY\n");
+  p.add(L"column.exe", {L"-t", L"--json"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
 }
 
 TEST(column, column_output_width) {
@@ -142,7 +154,7 @@ TEST(column, column_fill_columns) {
   EXPECT_EQ(r.exit_code, 0);
 }
 
-TEST(column, column_table_mode_trims_trailing_cr_from_crlf_records) {
+TEST(column, column_table_mode_keeps_trailing_cr_from_crlf_records) {
   TempDir tmp;
   tmp.write_bytes("crlf.txt",
                   {'n', 'a', 'm', 'e', '\t', 'a',  'g', 'e', '\r', '\n',
@@ -155,7 +167,11 @@ TEST(column, column_table_mode_trims_trailing_cr_from_crlf_records) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.find('\r') == std::string::npos);
+  // [GNU] util-linux column never strips a trailing CR: read_input
+  // truncates the line only at '\n' (text-utils/column.c:615-618)
+  // and the default input separator is "\t " (column.c:841), so the
+  // CR stays part of the last cell and is printed with it.
+  EXPECT_TRUE(r.stdout_text.find("age\r") != std::string::npos);
   EXPECT_EQ_TEXT(r.stdout_text,
                  "name   age\n"
                  "Alice  30\n");
@@ -171,9 +187,12 @@ TEST(column, column_missing_input_reports_no_such_file) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
+  // [GNU] an unopenable operand is warn("%s", name) and skipped
+  // (text-utils/column.c:966-972): "column: <name>: <strerror>",
+  // no "cannot open", no quotes, no "for reading".
   EXPECT_TRUE(r.stderr_text.find(
-                  "column: cannot open 'missing.txt' for reading: No such "
-                  "file or directory") != std::string::npos);
+                  "column: missing.txt: No such file or directory") !=
+              std::string::npos);
 }
 
 TEST(column, column_directory_input_reports_is_a_directory) {
@@ -187,33 +206,28 @@ TEST(column, column_directory_input_reports_is_a_directory) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
+  // [GNU] on the oracle a directory fopen()s fine and the failure
+  // surfaces at read time: err("read failed") in read_input
+  // (text-utils/column.c:608-611), i.e. "column: read failed: Is a
+  // directory".
   EXPECT_TRUE(r.stderr_text.find(
-                  "column: cannot open 'indir' for reading: Is a directory") !=
+                  "column: read failed: Is a directory") !=
               std::string::npos);
 }
 
 TEST(column, column_new_layout_options) {
-  // [adjudication: the TEST was wrong, not the product] The original
-  // invocation (-x 1,2 -N A,B,C -E -t) is invalid for GNU column in
-  // three independent ways (util-linux 2.39.3 text-utils/column.c):
-  // -x/--fillrows takes no argument (:799), so "1,2" became a file
-  // operand; -E/--table-noextreme requires an argument (:813), so it
-  // swallowed "-t" as its value; and -t/-x are mutually exclusive
-  // (:828-832). The three option faces are exercised separately, in
-  // valid shapes, at the original assertion level.
-  Pipeline fillrows;
-  fillrows.set_stdin("a\nb\nc\n1\n2\n3\n");
-  fillrows.add(L"column.exe", {L"-x", L"-c", L"12"});
-  auto rf = fillrows.run();
-  EXPECT_EQ(rf.exit_code, 0);
-  EXPECT_FALSE(rf.stdout_text.empty());
-
-  Pipeline table;
-  table.set_stdin("a\tb\tc\n1\t2\t3\n");
-  table.add(L"column.exe", {L"-t", L"-N", L"A,B,C", L"-E", L"C"});
-  auto rt = table.run();
-  EXPECT_EQ(rt.exit_code, 0);
-  EXPECT_FALSE(rt.stdout_text.empty());
+  Pipeline p;
+  p.set_stdin("a\tb\tc\n1\t2\t3\n");
+  // [GNU] option shapes per text-utils/column.c's option table:
+  // -N (--table-columns) takes the name list (:807), -E
+  // (--table-noextreme) requires a column argument (:813). The old
+  // argv was unparseable as intended: -x is no_argument (:799), so
+  // "1,2" became a file operand, and -E swallowed "-t" as its
+  // argument.
+  p.add(L"column.exe", {L"-t", L"-N", L"A,B,C", L"-E", L"3"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_FALSE(r.stdout_text.empty());
 }
 
 TEST(column, column_width_option_c_is_accepted) {

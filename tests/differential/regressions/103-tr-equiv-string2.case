@@ -1,0 +1,9 @@
+cmd: tr
+args: a '[=a=]'
+timeout: 10
+stdin: |
+  aba
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: issue-1462 audit-w2 tr equivalence validate
+# GNU: "tr: [=c=] expressions may not appear in string2 when
+# translating", exit 1 (tr.c validate()).

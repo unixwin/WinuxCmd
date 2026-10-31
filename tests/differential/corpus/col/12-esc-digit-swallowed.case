@@ -1,0 +1,7 @@
+cmd: col
+oracle: linux
+args: 
+stdin: |
+  a\x1b9b\n
+source: tests/differential/corpus/col/12-esc-digit-swallowed.case
+tags: gnu-compat col esc-digit audit-w7

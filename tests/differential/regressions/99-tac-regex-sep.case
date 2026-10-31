@@ -1,0 +1,8 @@
+cmd: tac
+args: -r -s x
+timeout: 10
+stdin: |
+  axbxc
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: issue-1462 audit-w2 tac regex-separator
+# Records split on the regex separator 'x' print in reverse.

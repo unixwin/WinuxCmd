@@ -1,0 +1,5 @@
+cmd: cal
+oracle: linux
+args: -m -n 2 1 2027
+source: tests/differential/corpus/cal/07-monday-two-months.case
+tags: gnu-compat cal monday span audit-w7

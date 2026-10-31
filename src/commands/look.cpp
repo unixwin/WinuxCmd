@@ -118,9 +118,11 @@ auto line_for_compare(std::string_view line, const std::string& terminator,
   return out;
 }
 
-// Read all lines from a file.
-auto read_lines(const std::string& filename, std::vector<std::string>& out)
-    -> bool {
+// Read all lines from a file.  On failure, `error` receives the
+// strerror-style reason the oracle's err() would append (look.c:155,164:
+// "look: <file>: <reason>").
+auto read_lines(const std::string& filename, std::vector<std::string>& out,
+                std::string& error) -> bool {
   // #1242: the dictionary operand may use any accepted POSIX drive spelling
   // ("/e/words", "/cygdrive/e/words", "/mnt/e/words").  Opening the raw text
   // made CreateFileW resolve a leading "/e" against the CURRENT drive, so
@@ -133,7 +135,19 @@ auto read_lines(const std::string& filename, std::vector<std::string>& out)
       utf8_to_wstring(native_path::normalize_api_operand(filename));
   HANDLE h = CreateFileW(wfn.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
                          OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (h == INVALID_HANDLE_VALUE) return false;
+  if (h == INVALID_HANDLE_VALUE) {
+    DWORD gle = GetLastError();
+    DWORD attr = GetFileAttributesW(wfn.c_str());
+    if (attr != INVALID_FILE_ATTRIBUTES &&
+        (attr & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+      error = "Is a directory";
+    } else if (gle == ERROR_ACCESS_DENIED) {
+      error = "Permission denied";
+    } else {
+      error = "No such file or directory";
+    }
+    return false;
+  }
   LARGE_INTEGER sz{};
   if (!GetFileSizeEx(h, &sz) || sz.QuadPart < 0) {
     CloseHandle(h);
@@ -189,12 +203,13 @@ auto run(const Config& cfg) -> int {
   }
 
   std::vector<std::string> lines;
-  if (!read_lines(cfg.file, lines)) {
-    safeErrorPrintLn("look: cannot open '" + cfg.file + "'");
+  std::string open_error;
+  if (!read_lines(cfg.file, lines, open_error)) {
+    safeErrorPrintLn("look: " + cfg.file + ": " + open_error);
     return 1;
   }
 
-  if (lines.empty()) return 0;
+  if (lines.empty()) return 1;
 
   // Binary search for the lower bound of the key prefix.
   std::string key =
@@ -232,7 +247,9 @@ auto run(const Config& cfg) -> int {
       ++printed;
     }
   }
-  return 0;
+  // [GNU] look exits 0 only when a match was printed; a search that finds
+  // nothing exits 1 (util-linux look.c:196: return (front ? 0 : 1)).
+  return printed > 0 ? 0 : 1;
 }
 
 }  // namespace look_pipeline

@@ -3,7 +3,7 @@
 module;
 
 #include <cstdint>
-#include <cstdio>   // For stdin (the digest tools' fd-0 read path)
+#include <cstdio>  // For stdin (the digest tools' fd-0 read path)
 #ifdef _WIN32
 #include <fcntl.h>  // For _setmode, _O_BINARY
 #include <io.h>     // For _fileno
@@ -1070,7 +1070,7 @@ auto hash_file_hex(HashAlgorithm algorithm, const std::string& filename,
     -> std::expected<std::string, std::string> {
   std::istream* input = &std::cin;
   std::ifstream file;
-  if (!filename.empty() && filename != "-") {
+  if (filename != "-") {
     // Route through open_binary_file so /dev/stdin-family operands bind the
     // real fd 0 (closed stdin reports an error instead of blocking on
     // CONIN$, and pipes/hashable data flow through, #1091).
@@ -1430,6 +1430,14 @@ inline auto sum_parse_check_line(std::string_view line,
       std::from_chars(line.data() + num_start, line.data() + j, bits);
       if (bits <= 0 || bits % 8 != 0 || bits > 512) return std::nullopt;
       tag_hex_bytes = static_cast<size_t>(bits / 4);
+    }
+    if (tag_hex_bytes == 0) {
+      // [GNU] digest.c bsd_split_3(): a tagged line without a "-<bits>"
+      // suffix must carry the algorithm's full digest (512 bits = 128 hex
+      // digits for BLAKE2b, the only auto-length caller); the per-line
+      // auto-detection applies to untagged lines only.  A short suffixless
+      // tagged line is improperly formatted, not a shorter digest.
+      tag_hex_bytes = 128;
     }
     if (j < line.size() && line[j] == ' ') ++j;
     if (j < line.size() && line[j] == '(') {

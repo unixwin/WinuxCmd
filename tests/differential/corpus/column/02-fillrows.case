@@ -1,10 +1,7 @@
 cmd: column
-args: -c 20 --fillrows
-timeout: 10
+oracle: linux
+args: -x
 stdin: |
-  a
-  b
-  c
-  d
-source: github.com/unixwin/WinuxCmd
-tags: p2c-1127 oracle-verified
+  a\nbb\nccc\ndd\ne\nff\nggg\nhh\ni\njj\nkkk\nll\n
+source: tests/differential/corpus/column/02-fillrows.case
+tags: gnu-compat column fillrows audit-w7

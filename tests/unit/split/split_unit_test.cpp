@@ -94,9 +94,14 @@ TEST(split, split_number_line_mode_preserves_crlf_records) {
 
   auto r = p.run();
 
+  // [GNU] lines_chunk_split partitions the input BYTES into N
+  // near-equal ranges and a record belongs to the file in whose
+  // range it starts (split.c): 9 bytes over 2 files gives ranges
+  // [0,5) and [5,9), so partaa holds the records starting at 0
+  // and 3. Records keep their CRLF bytes verbatim (audit #1462).
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(tmp.read("partaa"), "a\r\n");
-  EXPECT_EQ_TEXT(tmp.read("partab"), "b\r\nc\r\n");
+  EXPECT_EQ(tmp.read("partaa"), "a\r\nb\r\n");
+  EXPECT_EQ(tmp.read("partab"), "c\r\n");
 }
 
 TEST(split, split_number_mode_reassembles_without_overlap) {
@@ -143,8 +148,12 @@ TEST(split, split_number_line_k_of_n_mode_preserves_records_to_stdout) {
 
   auto r = p.run();
 
+  // [GNU] the l/K/N selection follows the same byte-range
+  // partition as l/N (split.c): 10 bytes over 3 ranges puts the
+  // records starting at bytes 4 and 6 -- 'c' and 'd' -- in
+  // chunk 2 (audit #1462).
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "b\nc\n");
+  EXPECT_EQ_TEXT(r.stdout_text, "c\nd\n");
   EXPECT_FALSE(std::filesystem::exists(tmp.path / "partaa"));
 }
 
@@ -223,7 +232,7 @@ TEST(split, split_rejects_empty_separator) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stderr_text.find("split: invalid separator") !=
+  EXPECT_TRUE(r.stderr_text.find("split: empty record separator") !=
               std::string::npos);
 }
 
@@ -259,11 +268,14 @@ TEST(split, split_verbose_reports_created_files) {
 
   auto r = p.run();
 
+  // [GNU] --verbose reports go to STDOUT (split.c create()),
+  // not stderr (audit #1462).
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ(r.stderr_text,
+  EXPECT_EQ(r.stdout_text,
             "creating file 'partaa'\n"
             "creating file 'partab'\n"
             "creating file 'partac'\n");
+  EXPECT_TRUE(r.stderr_text.empty());
 }
 
 TEST(split, split_rejects_multiple_split_modes) {

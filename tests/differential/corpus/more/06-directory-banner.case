@@ -1,0 +1,7 @@
+cmd: more
+oracle: linux
+args: sub
+setup: |
+  mkdir sub
+source: tests/differential/corpus/more/06-directory-banner.case
+tags: gnu-compat more directory audit-w7

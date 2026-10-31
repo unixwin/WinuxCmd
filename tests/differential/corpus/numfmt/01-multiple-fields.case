@@ -1,0 +1,4 @@
+cmd: numfmt
+args: --field 1 --field 2 5
+source: GNU coreutils 9.4 src/numfmt.c:1526 ("multiple field specifications")
+tags: audit-w3a #1462

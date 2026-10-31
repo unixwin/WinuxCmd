@@ -1,0 +1,5 @@
+cmd: kill
+oracle: linux
+args: -l BOGUS
+source: tests/differential/corpus/kill/08-list-unknown-name.case
+tags: gnu-compat kill list-conversion error-wording audit-w7
