@@ -193,12 +193,27 @@ TEST(column, column_directory_input_reports_is_a_directory) {
 }
 
 TEST(column, column_new_layout_options) {
-  Pipeline p;
-  p.set_stdin("a\tb\tc\n1\t2\t3\n");
-  p.add(L"column.exe", {L"-x", L"1,2", L"-N", L"A,B,C", L"-E", L"-t"});
-  auto r = p.run();
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_FALSE(r.stdout_text.empty());
+  // [adjudication: the TEST was wrong, not the product] The original
+  // invocation (-x 1,2 -N A,B,C -E -t) is invalid for GNU column in
+  // three independent ways (util-linux 2.39.3 text-utils/column.c):
+  // -x/--fillrows takes no argument (:799), so "1,2" became a file
+  // operand; -E/--table-noextreme requires an argument (:813), so it
+  // swallowed "-t" as its value; and -t/-x are mutually exclusive
+  // (:828-832). The three option faces are exercised separately, in
+  // valid shapes, at the original assertion level.
+  Pipeline fillrows;
+  fillrows.set_stdin("a\nb\nc\n1\n2\n3\n");
+  fillrows.add(L"column.exe", {L"-x", L"-c", L"12"});
+  auto rf = fillrows.run();
+  EXPECT_EQ(rf.exit_code, 0);
+  EXPECT_FALSE(rf.stdout_text.empty());
+
+  Pipeline table;
+  table.set_stdin("a\tb\tc\n1\t2\t3\n");
+  table.add(L"column.exe", {L"-t", L"-N", L"A,B,C", L"-E", L"C"});
+  auto rt = table.run();
+  EXPECT_EQ(rt.exit_code, 0);
+  EXPECT_FALSE(rt.stdout_text.empty());
 }
 
 TEST(column, column_width_option_c_is_accepted) {
