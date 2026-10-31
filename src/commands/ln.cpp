@@ -88,7 +88,13 @@ namespace cp = core::pipeline;
 
 auto join_target_path(const std::string &directory, const std::string &source)
     -> std::string {
+  // [GNU] last_name strips trailing slashes before taking the basename
+  // (ln.c:666-673): "sub/" links as "sub", not as the empty string.
   std::string filename = source;
+  while (filename.size() > 1 &&
+         (filename.back() == '/' || filename.back() == '\\')) {
+    filename.pop_back();
+  }
   size_t sep = filename.find_last_of("/\\");
   if (sep != std::string::npos) {
     filename = filename.substr(sep + 1);
@@ -134,15 +140,12 @@ struct LnBackupParse {
   int error_kind = 0;  // 0 = ok, 1 = invalid, 2 = ambiguous
 };
 
-// [GNU] --backup CONTROL parsing follows argmatch: an exact name wins,
-// otherwise a unique prefix of one of the eight names; no match is
-// "invalid" and several matches are "ambiguous". Matching is done on the
-// lowercased value; a bare --backup (empty value) means existing.
+// [GNU] --backup CONTROL parsing follows argmatch (xget_version): an
+// exact name wins, otherwise a unique prefix of one of the eight names;
+// no match is "invalid" and several matches are "ambiguous". Matching is
+// case-sensitive; a bare --backup (empty value) means existing.
 auto parse_ln_backup_control(const std::string &raw) -> LnBackupParse {
-  std::string value = raw;
-  std::ranges::transform(value, value.begin(), [](unsigned char ch) {
-    return static_cast<char>(std::tolower(ch));
-  });
+  const std::string &value = raw;
   static constexpr std::pair<std::string_view, LnBackupControl> kNames[] = {
       {"none", LnBackupControl::none},
       {"off", LnBackupControl::none},
@@ -317,6 +320,58 @@ auto lstat_attrs(const std::wstring &wpath, DWORD &attrs) -> bool {
   return true;
 }
 
+// [GNU] File identity for the same-file and just-created guards
+// (ln.c:234-300): volume serial + file index of the directory entry
+// itself (the handle is opened on the reparse point, not its target),
+// plus the link count for the SAME_INODE refinement.
+struct LnFileIdentity {
+  uint64_t volume = 0;
+  uint64_t index = 0;
+  uint32_t links = 0;
+};
+
+auto ln_file_identity(const std::string &api_path)
+    -> std::optional<LnFileIdentity> {
+  HANDLE handle = CreateFileW(
+      utf8_to_wstring(api_path).c_str(), FILE_READ_ATTRIBUTES,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+      OPEN_EXISTING,
+      FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+  if (handle == INVALID_HANDLE_VALUE) return std::nullopt;
+  BY_HANDLE_FILE_INFORMATION info{};
+  std::optional<LnFileIdentity> result;
+  if (GetFileInformationByHandle(handle, &info)) {
+    result = LnFileIdentity{
+        info.dwVolumeSerialNumber,
+        (static_cast<uint64_t>(info.nFileIndexHigh) << 32) |
+            info.nFileIndexLow,
+        info.nNumberOfLinks};
+  }
+  CloseHandle(handle);
+  return result;
+}
+
+// [GNU] SAME_INODE plus the ln.c refinement: two names for one inode
+// are "the same file" for removal purposes only when the file has a
+// single link, or when both names spell the same directory entry.
+auto ln_same_file(const std::string &source_api, const std::string &dest_api)
+    -> bool {
+  auto source_id = ln_file_identity(source_api);
+  auto dest_id = ln_file_identity(dest_api);
+  if (!source_id || !dest_id) return false;
+  if (source_id->volume != dest_id->volume ||
+      source_id->index != dest_id->index) {
+    return false;
+  }
+  if (source_id->links <= 1) return true;
+  std::error_code ec;
+  auto source_abs = std::filesystem::absolute(utf8_to_wstring(source_api), ec);
+  if (ec) return false;
+  auto dest_abs = std::filesystem::absolute(utf8_to_wstring(dest_api), ec);
+  if (ec) return false;
+  return _wcsicmp(source_abs.c_str(), dest_abs.c_str()) == 0;
+}
+
 /**
  * @brief Remove existing file/directory
  * @param path Path to remove (folded API form, see the #1234 call site)
@@ -387,16 +442,43 @@ REGISTER_COMMAND(
 
   bool symbolic =
       ctx.get<bool>("-s", false) || ctx.get<bool>("--symbolic", false);
-  bool force = ctx.get<bool>("-f", false) || ctx.get<bool>("--force", false);
+  // [GNU] -f and -i are last-one-wins in argv order: -f clears a
+  // previous -i and vice versa (ln.c:506-513), so resolve them from
+  // the occurrence stream rather than as independent booleans.
+  bool force = false;
+  bool interactive = false;
+  // [GNU] -L/-P edit one logical flag in argv order (ln.c:514-522).
+  bool logical = false;
+  if (ctx.metas) {
+    for (const auto &occurrence : ctx.options.occurrences()) {
+      if (occurrence.index >= LN_OPTIONS.size()) continue;
+      const auto &meta = LN_OPTIONS[occurrence.index];
+      if (meta.short_name == "-f" || meta.long_name == "--force") {
+        force = true;
+        interactive = false;
+      } else if (meta.short_name == "-i" ||
+                 meta.long_name == "--interactive") {
+        interactive = true;
+        force = false;
+      } else if (meta.short_name == "-L" || meta.long_name == "--logical" ||
+                 meta.long_name == "--dereference") {
+        logical = true;
+      } else if (meta.short_name == "-P" || meta.long_name == "--physical") {
+        logical = false;
+      }
+    }
+  }
   bool verbose =
       ctx.get<bool>("-v", false) || ctx.get<bool>("--verbose", false);
-  bool interactive =
-      ctx.get<bool>("-i", false) || ctx.get<bool>("--interactive", false);
+  std::string backup_suffix = ctx.get<std::string>("--suffix", "");
+  if (backup_suffix.empty()) backup_suffix = ctx.get<std::string>("-S", "");
   // [GNU] -b is --backup with no argument (CONTROL defaults to
   // existing); --backup takes an optional CONTROL parsed by argmatch
-  // rules. When both are given, the --backup value wins.
+  // rules. When both are given, the --backup value wins. -S alone also
+  // enables backups (ln.c:550-553).
   bool backup_flag = ctx.get<bool>("-b", false);
-  bool backup_given = backup_flag || ctx.has("--backup");
+  bool backup_given = backup_flag || ctx.has("--backup") ||
+                      ctx.has("-S") || ctx.has("--suffix");
   LnBackupControl backup_control = LnBackupControl::none;
   if (backup_given) {
     if (ctx.has("--backup")) {
@@ -414,8 +496,6 @@ REGISTER_COMMAND(
     }
   }
   bool backup = backup_control != LnBackupControl::none;
-  std::string backup_suffix = ctx.get<std::string>("--suffix", "");
-  if (backup_suffix.empty()) backup_suffix = ctx.get<std::string>("-S", "");
   if (backup && backup_suffix.empty()) backup_suffix = "~";
   std::string target_dir = ctx.get<std::string>("--target-directory", "");
   if (target_dir.empty()) target_dir = ctx.get<std::string>("-t", "");
@@ -426,18 +506,10 @@ REGISTER_COMMAND(
   // lstat() behaviour.
   bool no_dereference =
       ctx.get<bool>("-n", false) || ctx.get<bool>("--no-dereference", false);
-  // [DIFFERS] -L/--logical/--dereference: on Windows, CreateHardLinkW
-  // already dereferences symlinks transparently, so this flag is
-  // effectively a no-op for hard links.
-  bool logical = ctx.get<bool>("-L", false) ||
-                 ctx.get<bool>("--logical", false) ||
-                 ctx.get<bool>("--dereference", false);
-  // [DIFFERS] -P/--physical: on Windows, hard links are always created
-  // directly to the target without following symlinks (the default).
-  bool physical =
-      ctx.get<bool>("-P", false) || ctx.get<bool>("--physical", false);
-  // [DIFFERS] -d/--directory/-F: hard links to directories are not
-  // supported on Windows.
+  // [DIFFERS] -d/--directory/-F: the flag is recorded, but Windows
+  // cannot hard-link a directory; without it a directory source gets
+  // the GNU diagnostic at creation time, with it the CreateHardLinkW
+  // failure text surfaces (see the per-job source check).
   bool directory_link = ctx.get<bool>("-d", false) ||
                         ctx.get<bool>("--directory", false) ||
                         ctx.get<bool>("-F", false);
@@ -447,16 +519,11 @@ REGISTER_COMMAND(
   bool relative =
       ctx.get<bool>("-r", false) || ctx.get<bool>("--relative", false);
 
-  // [DIFFERS] -d/--directory/-F: not supported on Windows.
-  if (directory_link) {
-    safeErrorPrintLn(winux::i18n::translate(
-        "command.ln.error.directory-hardlink-unsupported",
-        "ln: hard links to directories are not supported on Windows"));
-    return 1;
-  }
-  if (logical && physical) {
-    safeErrorPrintLn(
-        "ln: options --logical and --physical are mutually exclusive");
+  // [GNU] A repeated -t is fatal during option processing
+  // (ln.c:529-531).
+  if (ctx.count({"-t", "--target-directory"}) > 1) {
+    safeErrorPrint("ln: multiple target directories specified\n");
+    safeErrorPrint("Try 'ln --help' for more information.\n");
     return 1;
   }
 
@@ -472,13 +539,10 @@ REGISTER_COMMAND(
   std::vector<std::pair<std::string, std::string>> link_jobs;
 
   if (!target_dir.empty()) {
-    if (ctx.positionals.empty()) {
-      safeErrorPrint("ln: missing file operand\n");
-      safeErrorPrint("Try 'ln --help' for more information.\n");
-      return 1;
-    }
-    // GNU 9.11 ln.c: missing -t dir reports "failed to access"; an
-    // existing non-directory reports "target 'x' is not a directory".
+    // GNU 9.11 ln.c: the -t directory is validated during option
+    // processing, before the missing-operand check (ln.c:529-543):
+    // missing -t dir reports "failed to access"; an existing
+    // non-directory reports "target 'x' is not a directory".
     // The attribute probe folds the drive dialect first (#1234): a raw
     // "/e/Data" spelling resolves against the current drive and the check
     // would answer for "<cwd>:\e\Data".
@@ -491,6 +555,11 @@ REGISTER_COMMAND(
     }
     if (!(td_attrs & FILE_ATTRIBUTE_DIRECTORY)) {
       safeErrorPrint("ln: target '" + target_dir + "' is not a directory\n");
+      return 1;
+    }
+    if (ctx.positionals.empty()) {
+      safeErrorPrint("ln: missing file operand\n");
+      safeErrorPrint("Try 'ln --help' for more information.\n");
       return 1;
     }
     for (auto arg : ctx.positionals) {
@@ -542,8 +611,15 @@ REGISTER_COMMAND(
     // Same dialect fold as the -t branch (#1234).
     const auto td_operand = native_path::make_api_path_operand(target_dir);
     DWORD td_attrs = GetFileAttributesW(td_operand.extended.c_str());
+    // [GNU] -n applies to the multi-operand form too (ln.c:605-620): a
+    // symlink-to-directory last operand is treated as a normal file,
+    // so it is not a valid target directory.
+    std::error_code td_ec;
+    const bool td_is_symlink = std::filesystem::is_symlink(
+        std::filesystem::symlink_status(td_operand.normalized, td_ec));
     if (td_attrs == INVALID_FILE_ATTRIBUTES ||
-        !(td_attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+        !(td_attrs & FILE_ATTRIBUTE_DIRECTORY) ||
+        (no_dereference && td_is_symlink)) {
       // GNU 9.11 ln.c: errno-style "target 'x': <reason>".
       safeErrorPrint("ln: target '" + target_dir +
                      (td_attrs == INVALID_FILE_ATTRIBUTES
@@ -558,9 +634,19 @@ REGISTER_COMMAND(
     }
   }
 
+  // [GNU] -r requires -s (ln.c:571-572); checked after the operand
+  // rules above, before any link is created.
+  if (relative && !symbolic) {
+    safeErrorPrint("ln: cannot do --relative without --symbolic\n");
+    return 1;
+  }
+
   size_t target_count = link_jobs.size();
   size_t success_count = 0;
   size_t error_count = 0;
+  // [GNU] Identities of destinations created by this run, for the
+  // just-created guard (ln.c:234-242).
+  std::set<std::pair<uint64_t, uint64_t>> created_dests;
 
   for (const auto &[job_source, target] : link_jobs) {
     std::string source = job_source;
@@ -599,6 +685,18 @@ REGISTER_COMMAND(
         continue;
       }
       FindClose(sh);
+      // [GNU] A directory source is refused with its own diagnostic
+      // unless -d/-F was given (ln.c:202-208). With -d the request
+      // falls through and the platform refusal surfaces from
+      // CreateHardLinkW, since Windows cannot hard-link a directory.
+      if ((sfd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
+          !(sfd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) &&
+          !directory_link) {
+        safeErrorPrint("ln: '" + source +
+                       "': hard link not allowed for directory\n");
+        error_count++;
+        continue;
+      }
     }
 
     // Check if target exists (lstat semantics: a dangling symlink
@@ -607,13 +705,46 @@ REGISTER_COMMAND(
     DWORD target_attrs = 0;
     bool target_exists = lstat_attrs(wtarget, target_attrs);
 
+    bool made_backup = false;
     if (target_exists) {
+      // [GNU] A directory destination is refused before force, backup
+      // or prompting (ln.c:228-232). A reparse point is not a directory
+      // for this check (lstat semantics).
+      if ((target_attrs & FILE_ATTRIBUTE_DIRECTORY) &&
+          !(target_attrs & FILE_ATTRIBUTE_REPARSE_POINT)) {
+        safeErrorPrint("ln: '" + target + "': cannot overwrite directory\n");
+        error_count++;
+        continue;
+      }
+      if (backup || force || interactive) {
+        // [GNU] Never remove a destination this run just created
+        // (ln.c:234-242).
+        if (auto dest_id = ln_file_identity(target_api)) {
+          if (created_dests.contains(
+                  {dest_id->volume, dest_id->index})) {
+            safeErrorPrint("ln: will not overwrite just-created '" + target +
+                           "' with '" + source + "'\n");
+            error_count++;
+            continue;
+          }
+        }
+        // [GNU] Never let -f/backup removal delete the source itself
+        // (ln.c:260-300): the guard applies to backup of hard links
+        // and to -f removal.
+        if (((backup && !symbolic) || force) &&
+            ln_same_file(source_api, target_api)) {
+          safeErrorPrint("ln: '" + source + "' and '" + target +
+                         "' are the same file\n");
+          error_count++;
+          continue;
+        }
+      }
       // An affirmative -i answer approves removing the destination,
       // like GNU: the removal below must honour it, or the run falls
       // into the no-force error branch and the link is never replaced
       // (#1367 interactive case).
       bool approved_removal = false;
-      if (interactive && !force) {
+      if (interactive) {
         // [GNU] The prompt goes to stderr, like the cp/mv overwrite
         // prompts; declining is an error (GNU exits 1) (#1367).
         safeErrorPrint("ln: replace '" + target + "'? ");
@@ -627,7 +758,7 @@ REGISTER_COMMAND(
       }
 
       // Backup if requested
-      if (backup && target_exists) {
+      if (backup) {
         std::string backup_name;
         if (backup_control == LnBackupControl::numbered) {
           backup_name = ln_numbered_backup_name(target_api);
@@ -642,10 +773,14 @@ REGISTER_COMMAND(
         DeleteFileW(wbackup.c_str());
         RemoveDirectoryW(wbackup.c_str());
         if (!MoveFileW(wtarget.c_str(), wbackup.c_str())) {
-          safeErrorPrint("ln: cannot backup '" + target + "'\n");
+          // [GNU] The failure carries its reason (ln.c:296-303).
+          safeErrorPrint("ln: cannot backup '" + target +
+                         "': " + ln_windows_error_text(GetLastError()) +
+                         "\n");
           error_count++;
           continue;
         }
+        made_backup = true;
         if (verbose) {
           // [GNU] "'<backup>' ~ '<dest>' -> '<src>'" for symlinks, "=>"
           // for hard links.
@@ -677,11 +812,14 @@ REGISTER_COMMAND(
 
     // Create the link.  The folded forms drive the Win32 calls; the raw
     // operand text rides along for messages, like MSYS prints them (#1234).
+    // [GNU] When a backup was made, the combined backup line printed
+    // above is the only verbose line (ln.c:345-367).
     auto result = symbolic
-                      ? create_symlink(source_api, target_api, verbose, source,
-                                       target)
-                      : create_hardlink(source_api, target_api, verbose,
-                                        source, target);
+                      ? create_symlink(source_api, target_api,
+                                       verbose && !made_backup, source, target)
+                      : create_hardlink(source_api, target_api,
+                                        verbose && !made_backup, source,
+                                        target);
 
     if (!result) {
       safeErrorPrint("ln: ");
@@ -690,6 +828,9 @@ REGISTER_COMMAND(
       error_count++;
     } else {
       success_count++;
+      if (auto dest_id = ln_file_identity(target_api)) {
+        created_dests.insert({dest_id->volume, dest_id->index});
+      }
     }
   }
 
