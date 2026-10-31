@@ -799,8 +799,10 @@ auto move_single_path(const std::string& src_path, const std::string& dest_path,
   }
 
   // Try to rename first
+  bool used_copy_fallback = false;
   if (!MoveFileExW(wsrc_path.c_str(), wdest_path.c_str(),
                    MOVEFILE_REPLACE_EXISTING)) {
+    used_copy_fallback = true;
     if (ctx.has("--no-copy")) {
       return std::unexpected(
           "rename failed and copying is disabled by --no-copy");
@@ -891,8 +893,11 @@ auto move_single_path(const std::string& src_path, const std::string& dest_path,
   bool verbose = ctx.get<bool>("--verbose", false) ||
                  ctx.get<bool>("-v", false) || ctx.get<bool>("--debug", false);
   if (verbose) {
-    // [GNU] The verbose line names the backup (copy.c:2085-2088).
-    safePrint("'");
+    // [GNU] A rename reports "renamed '<src>' -> '<dest>'"; the copy
+    // fallback reports "copied '<src>' -> '<dest>'" and then
+    // "removed '<src>'" (mv.c do_move / copy.c verbose).  The backup
+    // note rides the first line (copy.c:2085-2088).
+    safePrint(used_copy_fallback ? "copied '" : "renamed '");
     safePrint(src_path);
     safePrint("' -> '");
     safePrint(dest_path);
@@ -903,6 +908,11 @@ auto move_single_path(const std::string& src_path, const std::string& dest_path,
       safePrint("')");
     }
     safePrint("\n");
+    if (used_copy_fallback) {
+      safePrint("removed '");
+      safePrint(src_path);
+      safePrint("'\n");
+    }
   }
 
   return true;
