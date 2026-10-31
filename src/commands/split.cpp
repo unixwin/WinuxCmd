@@ -273,9 +273,12 @@ auto build_config(const CommandContext<SPLIT_OPTIONS.size()>& ctx)
   // dies too. Presence -- not a non-empty last value -- is what counts,
   // so an explicitly empty mode value (-b '') is a selection that then
   // fails its own parse (audit #1462).
+  // Count OCCURRENCES via ctx.count: the framework resolves the
+  // short and long spelling of an option to the SAME meta slot, so
+  // summing get_all() over both spellings counts every selection
+  // twice and made every single-mode invocation "more than one way".
   auto occurrences_of = [&](const char* lng, const char* sht) {
-    return ctx.get_all<std::string>(lng).size() +
-           ctx.get_all<std::string>(sht).size();
+    return ctx.count({lng, sht});
   };
   const size_t bytes_count = occurrences_of("--bytes", "-b");
   const size_t line_bytes_count = occurrences_of("--line-bytes", "-C");
@@ -498,10 +501,10 @@ auto build_config(const CommandContext<SPLIT_OPTIONS.size()>& ctx)
     // spellings the old code mapped are multi-character separators
     // in GNU, an empty value is its own diagnostic, and two
     // DIFFERENT -t values die as well (audit #1462).
+    // One get_all by either spelling already returns every
+    // occurrence of the shared meta slot; concatenating both
+    // spellings duplicated each value.
     auto sep_values = ctx.get_all<std::string>("--separator");
-    auto short_sep_values = ctx.get_all<std::string>("-t");
-    sep_values.insert(sep_values.end(), short_sep_values.begin(),
-                      short_sep_values.end());
     std::optional<std::string> sep_opt;
     for (const auto& value : sep_values) {
       if (sep_opt && value != *sep_opt) {
