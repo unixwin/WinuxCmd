@@ -100,6 +100,14 @@
       "bucket": "PASS",
       "command": "env"
     },
+    "corpus/env/02-unset-invalid-name.case": {
+      "bucket": "PASS",
+      "command": "env"
+    },
+    "corpus/env/03-empty-name-assignment.case": {
+      "bucket": "PASS",
+      "command": "env"
+    },
     "corpus/envsubst/01-basic.case": {
       "bucket": "KNOWN_DIFF",
       "command": "envsubst"
