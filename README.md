@@ -91,7 +91,7 @@ for f in *.log; do
 done | sort -t: -k2 -rn | head -5
 ```
 
-- **Real bash semantics** — `if`/`for`/functions/arrays/pipelines run on [niubash](https://github.com/unixwin/niubash), powered by its [rubash](https://github.com/unixwin/rubash) engine, green across the GNU Bash upstream test suite (86/86).
+- **Real bash semantics** — `if`/`for`/functions/arrays/pipelines run on [niubash](https://github.com/unixwin/niubash), powered by its [rubash](https://github.com/unixwin/rubash) engine, green across niubash's local GNU Bash upstream gate (86/86).
 - **Agent-friendly** — `niu -c` is quiet and deterministic: no banners, stable stdout/stderr, exact exit codes. The shell your AI tooling already speaks.
 - **Zero glue** — niubash injects WinuxCmd's command links onto the `PATH` at startup, so `grep`, `sed` and `find` above are the real binaries you're looking at right now.
 

@@ -86,7 +86,7 @@ for f in *.log; do
 done | sort -t: -k2 -rn | head -5
 ```
 
-- **真·bash 语义** —— `if`/`for`/函数/数组/管道跑在 [niubash](https://github.com/unixwin/niubash) 上（由其 [rubash](https://github.com/unixwin/rubash) 引擎驱动），GNU Bash 上游测试套件 86/86 全绿。
+- **真·bash 语义** —— `if`/`for`/函数/数组/管道跑在 [niubash](https://github.com/unixwin/niubash) 上（由其 [rubash](https://github.com/unixwin/rubash) 引擎驱动），niubash 本地 GNU Bash 上游门禁 86/86 全绿。
 - **对 AI agent 友好** —— `niu -c` 安静且确定：无 banner、stdout/stderr 稳定、退出码精确传递。你的 AI 工具天生就会说的 shell。
 - **零胶水** —— niubash 启动时把 WinuxCmd 的命令链接注入 `PATH`，上面示例里的 `grep`、`sed`、`find` 就是真二进制本尊。
 
