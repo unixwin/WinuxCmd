@@ -140,6 +140,40 @@ TEST(who, who_message_long) {
   EXPECT_TRUE(r.stderr_text.empty());
 }
 
+// [#1462] coreutils who.c takes zero, one (FILE), or two ("am i")
+// operands: a third operand is an "extra operand" error, exit 1.
+TEST(who, who_extra_operand) {
+  Pipeline p;
+  p.add(L"who.exe", {L"a", L"b", L"c"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_CONTAINS(r.stderr_text, "extra operand");
+}
+
+// [#1462] A missing utmp FILE operand is the GNU error, exit 1.
+TEST(who, who_missing_file) {
+  Pipeline p;
+  p.add(L"who.exe", {L"no_such_utmp_file_xyz"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_CONTAINS(r.stderr_text, "No such file or directory");
+}
+
+// [#1462] The two-operand "am i" form lists only the caller's line.
+TEST(who, who_am_i) {
+  Pipeline p;
+  p.add(L"who.exe", {L"am", L"i"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_FALSE(r.stdout_text.empty());
+}
+
 TEST(who, who_lookup) {
   Pipeline p;
   p.add(L"who.exe", {L"--lookup"});
