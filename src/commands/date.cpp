@@ -1265,12 +1265,11 @@ auto format_time(const TimeValue &tv, const std::string &format)
           append_number(result, static_cast<int>(iso_year % 100), 2);
           break;
         }
-        case '+':
-          // [GNU] %+: date and time in the default format, like %c
-          // with the zone name included.
-          result += apply_case(format_time(tv, "%a %b %e %H:%M:%S %Z %Y"),
-                               to_uppcase, to_lowcase);
-          break;
+        // No 'case +' here: [GNU] coreutils date does not preprocess %+ and
+        // glibc strftime (2.39, the pinned differential oracle) has no %+
+        // conversion, so it falls through to the literal-passthrough default
+        // and `date +%+` prints "%+" verbatim (differential date/29).  The
+        // old %c-with-zone expansion was invented locally.
         case 'u':
           result +=
               static_cast<char>('0' + (st.wDayOfWeek == 0 ? 7 : st.wDayOfWeek));
@@ -2331,11 +2330,15 @@ REGISTER_COMMAND(
       safeErrorPrint(iso_arg);
       safeErrorPrint("' for '--iso-8601'\n");
       // [GNU] list the accepted timespecs plus the help hint, in
-      // argmatch table order.
+      // argmatch table order.  coreutils 9.4's iso_8601 argmatch list
+      // reads "hours, minutes, date, seconds, ns" (date.c's
+      // iso_8601_args string), which is NOT the enum's definition
+      // order -- the differential oracle (differential date/33) prints
+      // 'hours' first.
       safeErrorPrintLn("Valid arguments are:");
-      safeErrorPrintLn("  - 'date'");
       safeErrorPrintLn("  - 'hours'");
       safeErrorPrintLn("  - 'minutes'");
+      safeErrorPrintLn("  - 'date'");
       safeErrorPrintLn("  - 'seconds'");
       safeErrorPrintLn("  - 'ns'");
       safeErrorPrintLn("Try 'date --help' for more information.");
@@ -2466,10 +2469,15 @@ REGISTER_COMMAND(
     auto reference_time =
         read_reference_time(reference_path, &reference_error);
     if (!reference_time) {
-      // [GNU] date.c:596-600: error(0, errno, "%s", quoteaf(file))
-      // -- 'date: '<file>': No such file or directory'.
-      safeErrorPrintLn("date: '" + reference_path +
-                       "': " + win32_posix_error_text(reference_error));
+      // [GNU] date.c:596-600: error(0, errno, "%s", quotef(file)) -- the
+      // -r FILE diagnostic quotes the operand only when it needs quoting
+      // (shell_always_safe characters print bare): `date -r nofile.txt`
+      // prints "date: nofile.txt: No such file or directory" while a name
+      // with spaces prints quoted (differential date/34; coreutils 9.4
+      // quotef == shell quotearg with locale C).
+      safeErrorPrintLn("date: " +
+                       gnu_quotearg::shell_escape_quote(reference_path) +
+                       ": " + win32_posix_error_text(reference_error));
       return 1;
     }
     selected_time = *reference_time;

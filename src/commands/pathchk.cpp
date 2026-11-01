@@ -148,7 +148,13 @@ auto probe_existence(const std::string& path) -> ProbeResult {
   if (ec == std::errc::no_such_file_or_directory) {
     return {ProbeOutcome::kNotThere, {}};
   }
-  // POSIX errno wording for the shapes a name probe can hit.
+  // POSIX errno wording for the shapes a name probe can hit.  MSVC's
+  // filesystem reports Win32 failures in std::system_category() carrying
+  // the native error code, so `regfile/file` surfaces ERROR_DIRECTORY
+  // (whose system message is "The directory name is invalid.") instead of
+  // the generic not_a_directory value -- route the native code through the
+  // shared Win32->POSIX mapping so the diagnostic reads "Not a directory"
+  // like GNU lstat's errno text (differential pathchk/01).
   std::string text;
   if (ec == std::errc::not_a_directory) {
     text = "Not a directory";
@@ -156,6 +162,12 @@ auto probe_existence(const std::string& path) -> ProbeResult {
     text = "File name too long";
   } else if (ec == std::errc::permission_denied) {
     text = "Permission denied";
+  } else if (ec.category() == std::system_category()) {
+    const std::string mapped =
+        win32_posix_error_text(static_cast<unsigned long>(ec.value()));
+    // The shared helper falls back to the same system message for
+    // unmapped codes, so the two branches agree there.
+    text = mapped;
   } else {
     text = ec.message();
   }

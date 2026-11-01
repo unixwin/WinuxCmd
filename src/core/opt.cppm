@@ -99,6 +99,10 @@ export struct OptionParsePolicy {
   // Some utilities accept operands such as -5 or -n after their syntax
   // establishes that the remaining arguments are operands.
   bool allow_unknown_short_options_as_positionals = false;
+  // Mirror for long options: commands that parse argv themselves (procps
+  // kill) report unknown "--token" arguments with their own diagnostic, so
+  // the token must reach the command body as an operand.
+  bool allow_unknown_long_options_as_positionals = false;
   // Stop option parsing after this many positional operands. A value of zero
   // keeps the traditional parser behavior.
   size_t stop_options_after_positionals = 0;
@@ -264,6 +268,14 @@ export ParseResultRuntime parse_command_runtime(
         if (possibilities.size() != 1) {
           meta = nullptr;
           if (possibilities.empty()) {
+            // Commands whose argument language is not getopt_long-shaped
+            // (procps kill parses argv itself) judge unknown long tokens
+            // with their own diagnostics, so the token stays an operand
+            // for the command body to reject.
+            if (policy.allow_unknown_long_options_as_positionals) {
+              push_positional(arg);
+              continue;
+            }
             // #1305: GNU keeps the "=value" in the diagnostic
             // ("unrecognized option '--unknown=x'"); only the ambiguous
             // report below uses the bare name.

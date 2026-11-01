@@ -100,7 +100,11 @@ TEST(kill, list_signals) {
   EXPECT_TRUE(r.stdout_text.find("KILL") != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("TERM") != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("USR1") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("RTMIN+<N>") != std::string::npos);
+  // [GNU] procps-ng 4.0.4 kill -l: the 31 Linux names in two rows and
+  // nothing else -- no RTMIN/RTMAX spellings, no extension tails.
+  EXPECT_TRUE(r.stdout_text.find("STKFLT") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("SYS") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("RTMIN") == std::string::npos);
 }
 
 TEST(kill, list_signals_long) {
@@ -133,9 +137,11 @@ TEST(kill, list_signals_table) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.find(" 1 HUP") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("30 USR1") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("32 RTMIN") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("64 RTMAX") != std::string::npos);
+  // [GNU] Linux ABI numbering: USR1 is 10 on the graded procps oracle;
+  // the table stops at 31 SYS with no RT rows.
+  EXPECT_TRUE(r.stdout_text.find("10 USR1") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("31 SYS") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("RTMIN") == std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("KILL") != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("TERM") != std::string::npos);
 }
@@ -153,15 +159,16 @@ TEST(kill, list_signals_table_long) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.find(" 1 HUP") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("32 RTMIN") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("31 SYS") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("RTMIN") == std::string::npos);
 }
 
-// [GNU] util-linux kill.c: the -l arm (kill.c:281-296) resolves the
-// argument with arg_to_signum and prints it back through
-// print_signal_name (kill.c:106-121) -- a name argument therefore prints
-// its canonical NAME, never its number. (Printing the number for a name
-// is procps kill semantics, not this oracle.)
-TEST(kill, convert_signal_name_to_canonical_name_inline) {
+// [GNU] procps-ng 4.0.4 kill (the graded /usr/bin/kill oracle): the -l
+// arm prints the NUMBER for a name argument and the NAME for a number.
+// (An earlier revision modeled util-linux/uutils kill, which echoes the
+// canonical name in both directions; the differential corpus graded
+// against /usr/bin/kill settled the direction -- WinuxCmd #1486.)
+TEST(kill, convert_signal_name_to_number_inline) {
   Pipeline p;
   p.add(L"kill.exe", {L"-lHUP"});
 
@@ -173,10 +180,10 @@ TEST(kill, convert_signal_name_to_canonical_name_inline) {
   TEST_LOG("kill.exe -lHUP output", r.stdout_text);
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "HUP\n");
+  EXPECT_EQ_TEXT(r.stdout_text, "1\n");
 }
 
-TEST(kill, convert_sig_prefixed_name_to_canonical_name_with_space) {
+TEST(kill, convert_sig_prefixed_name_to_number_with_space) {
   Pipeline p;
   p.add(L"kill.exe", {L"-l", L"SIGHUP"});
 
@@ -188,7 +195,23 @@ TEST(kill, convert_sig_prefixed_name_to_canonical_name_with_space) {
   TEST_LOG("kill.exe -l SIGHUP output", r.stdout_text);
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "HUP\n");
+  EXPECT_EQ_TEXT(r.stdout_text, "1\n");
+}
+
+TEST(kill, convert_signal_name_to_number_linux_abi) {
+  Pipeline p;
+  p.add(L"kill.exe", {L"-l", L"USR1"});
+
+  TEST_LOG_CMD_LIST("kill.exe", L"-l", L"USR1");
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("kill.exe -l USR1 output", r.stdout_text);
+
+  EXPECT_EQ(r.exit_code, 0);
+  // Linux ABI: USR1 is 10 on the procps oracle.
+  EXPECT_EQ_TEXT(r.stdout_text, "10\n");
 }
 
 TEST(kill, convert_signal_number_to_name_inline) {
@@ -206,7 +229,9 @@ TEST(kill, convert_signal_number_to_name_inline) {
   EXPECT_EQ_TEXT(r.stdout_text, "HUP\n");
 }
 
-TEST(kill, convert_realtime_signal_number_to_name) {
+// [GNU] procps -l accepts only 1..31: every other number warns
+// "kill: unknown signal name N" on stderr and still exits 0.
+TEST(kill, convert_out_of_range_number_warns_and_exits_zero) {
   Pipeline p;
   p.add(L"kill.exe", {L"-l", L"34"});
 
@@ -215,15 +240,17 @@ TEST(kill, convert_realtime_signal_number_to_name) {
   auto r = p.run();
 
   TEST_LOG_EXIT_CODE(r);
-  TEST_LOG("kill.exe -l 34 output", r.stdout_text);
+  TEST_LOG("kill.exe -l 34 stderr", r.stderr_text);
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "RT2\n");
+  EXPECT_TRUE(r.stdout_text.find("RT") == std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("kill: unknown signal name 34") !=
+              std::string::npos);
 }
 
-// [GNU] same -l contract as above: RTMIN+1 resolves to a realtime
-// signal whose canonical printed form is "RT1" (kill.c:116-118).
-TEST(kill, convert_realtime_signal_name_to_canonical_name) {
+// [GNU] procps has no RTMIN/RTMAX resolution in -l: the name warns
+// "kill: unknown signal name RTMIN+1" and the exit status stays 0.
+TEST(kill, convert_realtime_name_warns_and_exits_zero) {
   Pipeline p;
   p.add(L"kill.exe", {L"-lRTMIN+1"});
 
@@ -232,10 +259,49 @@ TEST(kill, convert_realtime_signal_name_to_canonical_name) {
   auto r = p.run();
 
   TEST_LOG_EXIT_CODE(r);
-  TEST_LOG("kill.exe -lRTMIN+1 output", r.stdout_text);
+  TEST_LOG("kill.exe -lRTMIN+1 stderr", r.stderr_text);
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "RT1\n");
+  EXPECT_TRUE(r.stderr_text.find("kill: unknown signal name RTMIN+1") !=
+              std::string::npos);
+}
+
+// [GNU] procps converts only the FIRST -l operand and ignores the rest:
+// `kill -l 9 extra` prints KILL and exits 0.
+TEST(kill, convert_uses_first_operand_and_ignores_extras) {
+  Pipeline p;
+  p.add(L"kill.exe", {L"-l", L"9", L"extra"});
+
+  TEST_LOG_CMD_LIST("kill.exe", L"-l", L"9", L"extra");
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("kill.exe -l 9 extra output", r.stdout_text);
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "KILL\n");
+}
+
+// [GNU] procps rejects unknown option letters with
+// "kill: invalid argument X" plus its usage block, exit 1.
+TEST(kill, unknown_option_reports_invalid_argument) {
+  Pipeline p;
+  p.add(L"kill.exe", {L"-p", L"424242"});
+
+  TEST_LOG_CMD_LIST("kill.exe", L"-p", L"424242");
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("kill.exe -p 424242 stderr", r.stderr_text);
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("kill: invalid argument p\n") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("Usage:") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("For more details see kill(1).") !=
+              std::string::npos);
 }
 
 TEST(kill, invalid_pid) {
@@ -253,6 +319,9 @@ TEST(kill, invalid_pid) {
   EXPECT_TRUE(r.stderr_text.find("kill:") != std::string::npos);
 }
 
+// [GNU] procps never validates -s at parse time: the failed signal only
+// surfaces at delivery, and a dead pid reports ESRCH first --
+// "kill: (1234): No such process" (probed on the /usr/bin/kill oracle).
 TEST(kill, invalid_signal_name) {
   Pipeline p;
   p.add(L"kill.exe", {L"-s", L"INVALID", L"1234"});
@@ -265,8 +334,8 @@ TEST(kill, invalid_signal_name) {
   TEST_LOG("kill.exe -s INVALID stderr", r.stderr_text);
 
   EXPECT_NE(r.exit_code, 0);
-  EXPECT_TRUE(r.stderr_text.find("unknown signal") != std::string::npos ||
-              r.stderr_text.find("invalid signal") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("kill: (1234): No such process") !=
+              std::string::npos);
 }
 
 TEST(kill, invalid_signal_number) {
@@ -281,11 +350,10 @@ TEST(kill, invalid_signal_number) {
   TEST_LOG("kill.exe -s 999 stderr", r.stderr_text);
 
   EXPECT_NE(r.exit_code, 0);
-  // [GNU] -s with an unresolvable argument goes through err_nosig
-  // (kill.c:169-174, called at kill.c:330): "unknown signal %s; valid
-  // signals:" followed by the table -- not the "invalid signal name or
-  // number" errx, which only serves -<sig> style arguments (kill.c:378).
-  EXPECT_TRUE(r.stderr_text.find("unknown signal") != std::string::npos);
+  // Same deferred shape as invalid_signal_name: ESRCH outranks the
+  // invalid signal for a dead pid on the procps oracle.
+  EXPECT_TRUE(r.stderr_text.find("kill: (1234): No such process") !=
+              std::string::npos);
 }
 
 TEST(kill, no_pid_specified) {
@@ -300,17 +368,19 @@ TEST(kill, no_pid_specified) {
   TEST_LOG("kill.exe (no args) stderr", r.stderr_text);
 
   EXPECT_NE(r.exit_code, 0);
-  // [GNU] parse_arguments ends with errx("not enough arguments") when
-  // no operand remains (kill.c:383-384).
-  EXPECT_TRUE(r.stderr_text.find("not enough arguments") !=
+  // [GNU] procps-ng 4.0.4 kill with no operand prints its usage block
+  // ("Usage:\n kill [options] <pid> [...]") to stderr and exits 1 --
+  // there is no "not enough arguments" diagnostic.
+  EXPECT_TRUE(r.stderr_text.find("Usage:") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("kill [options] <pid> [...]") !=
               std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("not enough arguments") == std::string::npos);
 }
 
-// [GNU] a non-numeric operand is a process NAME in util-linux kill:
-// the operand loop (kill.c:502-541) falls back to a /proc name lookup
-// and warns "cannot find process \"%s\"" when nothing matches. There
-// is no "invalid PID" diagnostic for this shape.
-TEST(kill, name_operand_reports_cannot_find_process) {
+// [GNU] procps-ng 4.0.4 kill takes PIDs only: a non-numeric operand is
+// "kill: failed to parse argument: 'X'" at exit 1 -- the graded oracle
+// has no process-name lookup (that was util-linux/uutils shape).
+TEST(kill, non_numeric_operand_fails_to_parse) {
   Pipeline p;
   p.add(L"kill.exe", {L"abc"});
 
@@ -322,7 +392,7 @@ TEST(kill, name_operand_reports_cannot_find_process) {
   TEST_LOG("kill.exe abc stderr", r.stderr_text);
 
   EXPECT_NE(r.exit_code, 0);
-  EXPECT_TRUE(r.stderr_text.find("cannot find process \"abc\"") !=
+  EXPECT_TRUE(r.stderr_text.find("kill: failed to parse argument: 'abc'") !=
               std::string::npos);
 }
 

@@ -1441,7 +1441,7 @@
       "command": "echo"
     },
     "regressions/70-env-ignore-environment-child-block.case": {
-      "bucket": "OUT_DIFF",
+      "bucket": "PASS",
       "command": "env"
     },
     "regressions/71-env-assignment-order-print.case": {
@@ -1889,11 +1889,11 @@
       "command": "hexdump"
     },
     "corpus/kill/01-list-exit-status.case": {
-      "bucket": "OUT_DIFF",
+      "bucket": "PASS",
       "command": "kill"
     },
     "corpus/kill/02-list-name-roundtrip.case": {
-      "bucket": "OUT_DIFF",
+      "bucket": "PASS",
       "command": "kill"
     },
     "corpus/kill/03-list-number-to-name.case": {
@@ -1901,39 +1901,39 @@
       "command": "kill"
     },
     "corpus/kill/04-list-zero.case": {
-      "bucket": "OUT_DIFF",
+      "bucket": "PASS",
       "command": "kill"
     },
     "corpus/kill/05-list-unknown-number.case": {
-      "bucket": "EXIT_DIFF",
+      "bucket": "PASS",
       "command": "kill"
     },
     "corpus/kill/06-list-too-many-arguments.case": {
-      "bucket": "EXIT_DIFF",
+      "bucket": "PASS",
       "command": "kill"
     },
     "corpus/kill/07-list-usr1-name.case": {
-      "bucket": "OUT_DIFF",
+      "bucket": "PASS",
       "command": "kill"
     },
     "corpus/kill/08-list-unknown-name.case": {
-      "bucket": "EXIT_DIFF",
+      "bucket": "PASS",
       "command": "kill"
     },
     "corpus/kill/09-no-arguments.case": {
-      "bucket": "OUT_DIFF",
+      "bucket": "PASS",
       "command": "kill"
     },
     "corpus/kill/10-list-rtmin.case": {
-      "bucket": "OUT_DIFF",
+      "bucket": "PASS",
       "command": "kill"
     },
     "corpus/kill/11-list-equals-form.case": {
-      "bucket": "OUT_DIFF",
+      "bucket": "PASS",
       "command": "kill"
     },
     "corpus/kill/12-print-pid.case": {
-      "bucket": "EXIT_DIFF",
+      "bucket": "PASS",
       "command": "kill"
     },
     "corpus/look/03-not-found-exit-status.case": {

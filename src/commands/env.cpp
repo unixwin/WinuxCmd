@@ -66,10 +66,6 @@ struct Config {
   // sorted map (#1352).
   std::vector<std::pair<std::string, std::string>> file_assignments;
   std::vector<std::pair<std::string, std::string>> assignments;
-  // First operand of the form "=value": GNU env feeds every operand
-  // containing '=' to putenv (env.c:838-842), where an empty name
-  // fails with EINVAL; it is not a command name.
-  std::string invalid_assignment;
   std::string env_file;
   std::string env_file_error;
   std::string chdir;
@@ -524,8 +520,13 @@ auto apply_split_arguments(Config& cfg, std::vector<std::string> split_args)
       cfg.assignments.emplace_back(assign->first, assign->second);
       continue;
     }
-    if (!arg.empty() && arg.front() == '=' && cfg.invalid_assignment.empty()) {
-      cfg.invalid_assignment = arg;
+    if (!arg.empty() && arg.front() == '=') {
+      // [GNU] glibc putenv() performs no name validation, so coreutils
+      // env 9.4 accepts an empty-name assignment ("=value") and carries
+      // it into the child environ verbatim (differential env/03: `env
+      // '=x' printenv` exits 0 with "=x" as the last entry).  It is an
+      // assignment, never a command name.
+      cfg.assignments.emplace_back("", arg.substr(1));
       continue;
     }
     in_command = true;
@@ -611,8 +612,11 @@ auto build_config(const CommandContext<ENV_OPTIONS.size()>& ctx)
       continue;
     }
 
-    if (!p.empty() && p.front() == '=' && cfg.invalid_assignment.empty()) {
-      cfg.invalid_assignment = std::string(p);
+    if (!p.empty() && p.front() == '=') {
+      // [GNU] glibc putenv() accepts an empty name, so "=value" is a
+      // carried assignment, not a command (see the -S scan above;
+      // differential env/03).
+      cfg.assignments.emplace_back("", std::string(p.substr(1)));
       continue;
     }
 
@@ -639,6 +643,15 @@ auto print_env(const EnvEntries& vars, bool null_terminated) -> void {
 auto build_environment_block(const EnvEntries& vars) -> std::vector<wchar_t> {
   std::vector<wchar_t> block;
   for (const auto& [key, value] : vars) {
+    // [DIFFERS] a Windows environment block cannot carry an empty-name
+    // entry (CreateProcessW rejects the whole block with
+    // ERROR_INVALID_PARAMETER), and "=X" spellings are reserved there for
+    // per-drive working directories.  GNU glibc putenv() accepts and
+    // forwards them, so `env '=x' cmd` keeps the assignment for env's own
+    // printed output but drops it from the child's block rather than
+    // failing the spawn (the assignment itself stays accepted; the empty
+    // block entry is a documented platform divergence).
+    if (key.empty()) continue;
     auto entry = utf8_to_wstring(key + "=" + value);
     block.insert(block.end(), entry.begin(), entry.end());
     block.push_back(L'\0');
@@ -818,15 +831,6 @@ auto run(const Config& cfg) -> int {
                      "': Invalid argument\n");
       return 125;
     }
-  }
-
-  // [GNU] env.c:838-842: an assignment operand with an empty name
-  // ("=value") fails in putenv -> "cannot set '<operand>': Invalid
-  // argument", exit 125; it is never treated as a command.
-  if (!cfg.invalid_assignment.empty()) {
-    safeErrorPrint("env: cannot set '" + cfg.invalid_assignment +
-                   "': Invalid argument\n");
-    return 125;
   }
 
   auto vars = materialize_environment(cfg);
