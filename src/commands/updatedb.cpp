@@ -140,6 +140,21 @@ auto absolute_path(const std::string& path) -> std::string {
   return wstring_to_utf8(buffer);
 }
 
+// --prunepaths: a stored path is pruned when it equals a prune prefix
+// or sits under it (matched on path-component boundaries).
+auto is_pruned_path(const std::string& stored,
+                    const std::vector<std::string>& pruned_prefixes) -> bool {
+  for (const auto& prefix : pruned_prefixes) {
+    std::string norm_prefix = normalize_stored(prefix);
+    if (stored == norm_prefix || (stored.size() > norm_prefix.size() &&
+                                  stored.starts_with(norm_prefix) &&
+                                  stored[norm_prefix.size()] == '/')) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // Recursively walk a directory and collect all file/directory paths.
 // [GNU] updatedb.sh skip_names / PRUNEFS: pruned directories are never
 // descended into, and their paths are not recorded either.
@@ -162,19 +177,7 @@ auto walk_dir(const std::string& dir, const Config& cfg,
 
     std::string stored = normalize_stored(full);
 
-    // --prunepaths: skip directories whose stored path is a pruned prefix
-    // (matched on path-component boundaries).
-    bool pruned = false;
-    for (const auto& prefix : pruned_prefixes) {
-      std::string norm_prefix = normalize_stored(prefix);
-      if (stored == norm_prefix || (stored.size() > norm_prefix.size() &&
-                                    stored.starts_with(norm_prefix) &&
-                                    stored[norm_prefix.size()] == '/')) {
-        pruned = true;
-        break;
-      }
-    }
-    if (pruned) continue;
+    if (is_pruned_path(stored, pruned_prefixes)) continue;
 
     // -x/--exclude-dir: never descend into directories whose *name* matches
     // the given wildcard pattern.
@@ -192,7 +195,11 @@ auto walk_dir(const std::string& dir, const Config& cfg,
 
     results.push_back(stored);
 
-    if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+    // [GNU] the find in updatedb.sh runs without -L: a symlinked
+    // directory is recorded but never descended into.  The Windows
+    // shape of that rule is the reparse point.
+    if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY &&
+        !(fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
       walk_dir(full, cfg, pruned_prefixes, results);
     }
   } while (FindNextFileW(h, &fd));
@@ -258,7 +265,33 @@ auto run(const Config& cfg) -> int {
     if (cfg.verbose) {
       safePrintLn("Walking " + root + "...");
     }
-    walk_dir(root, cfg, pruned_prefixes, paths);
+    // [GNU] updatedb.sh runs find over the search paths and find prints
+    // every starting point itself, so each root belongs in the
+    // database (unless the root itself is pruned).  A root naming a
+    // file is a valid starting point; a root that does not exist fails
+    // the whole run, like the failing find pipeline in updatedb.sh
+    // (which then leaves the previous database in place).
+    if (is_pruned_path(normalize_stored(root), pruned_prefixes)) continue;
+    DWORD attrs = GetFileAttributesW(utf8_to_wstring(root).c_str());
+    if (attrs == INVALID_FILE_ATTRIBUTES) {
+      DWORD error = GetLastError();
+      safeErrorPrint("updatedb: ");
+      safeErrorPrint(root);
+      safeErrorPrint(": ");
+      safeErrorPrintLn(win32_posix_error_text(error));
+      return 1;
+    }
+    paths.push_back(normalize_stored(root));
+    if (attrs & FILE_ATTRIBUTE_DIRECTORY) {
+      walk_dir(root, cfg, pruned_prefixes, paths);
+    }
+  }
+
+  // [GNU] updatedb.sh: an empty new database is refused (the previous
+  // database is kept), but the run still exits 0.
+  if (paths.empty()) {
+    safeErrorPrintLn("updatedb: new database would be empty");
+    return 0;
   }
 
   if (cfg.verbose) {
@@ -278,11 +311,10 @@ auto run(const Config& cfg) -> int {
     return 1;
   }
 
+  // [GNU] updatedb.sh is silent on success; only --verbose speaks.
   if (cfg.verbose) {
     safePrint("Database written to " + cfg.output + ".");
     safePrintLn("");
-  } else {
-    safePrintLn("Database created at " + cfg.output);
   }
   return 0;
 }

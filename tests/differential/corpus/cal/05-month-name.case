@@ -1,0 +1,5 @@
+cmd: cal
+oracle: linux
+args: March 2026
+source: tests/differential/corpus/cal/05-month-name.case
+tags: gnu-compat cal month-name audit-w7

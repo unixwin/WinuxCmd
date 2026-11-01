@@ -1,0 +1,11 @@
+cmd: nl
+args: -n rz -w 3 -s :
+timeout: 10
+stdin: |
+  one
+  
+  three
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: issue-1462 audit-w2 nl format
+# Right-justified zero-padded numbers with a custom separator;
+# the blank line stays unnumbered (default body style 't').

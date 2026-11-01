@@ -55,6 +55,12 @@ REGISTER_COMMAND(tic, "tic",
         "[-1aCDcfGgIKLNrsTtUx] source-file");
     return 1;
   }
-  safePrintLn("tic: terminfo compilation not supported on Windows");
-  return 0;
+  // [DIFFERS] There is no terminfo compiler on Windows, so nothing was
+  // compiled: say so on stderr and exit nonzero. The historical build
+  // printed this on stdout and returned 0, telling scripts the compile
+  // had succeeded when no database entry was written.
+  safeErrorPrintLn(winux::i18n::format(
+      "command.tic.error.compilation_unsupported",
+      "tic: terminfo compilation not supported on Windows"));
+  return 1;
 }

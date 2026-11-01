@@ -27,8 +27,10 @@ auto constexpr UNEXPAND_OPTIONS = std::array{
     // [GNU] option
     OPTION("-a", "--all", "convert all spaces, not just leading ones",
            BOOL_TYPE),
-    // [EXT] GNU --first-only has no short option
-    OPTION("-f", "--first-only", "convert only leading sequences of blanks",
+    // [GNU] --first-only has NO short option in GNU unexpand
+    // (unexpand.c longopts); the old -f alias accepted what GNU
+    // rejects as an invalid option (audit #1462).
+    OPTION("", "--first-only", "convert only leading sequences of blanks",
            BOOL_TYPE),
     // [EXT] option
     OPTION("-U", "--no-utf8",
@@ -79,7 +81,8 @@ auto add_tab_stop(std::uintmax_t stop, Config::TabStops& tab_stops)
 // uses the '/' (every multiple) or '+' (relative to last stop) repeat
 // form, which must be the last item of the spec.
 auto parse_tab_stops(std::string_view spec, Config::TabStops& tab_stops,
-                     bool& repeat_specified) -> cp::Result<void> {
+                     bool& repeat_specified, bool& slash_repeat,
+                     bool& plus_repeat) -> cp::Result<void> {
   if (spec.empty()) {
     return {};
   }
@@ -114,6 +117,14 @@ auto parse_tab_stops(std::string_view spec, Config::TabStops& tab_stops,
       ++digits_end;
     }
     if (digits_end < value.size()) {
+      // [GNU] expand-common.c: a '/' or '+' after digits is
+      // "'/' specifier not at start of number: '<rest>'" (audit
+      // #1462), not a generic invalid-character report.
+      if (value[digits_end] == '/' || value[digits_end] == '+') {
+        return std::unexpected(std::string("'") + value[digits_end] +
+                               "' specifier not at start of number: '" +
+                               std::string(value.substr(digits_end)) + "'");
+      }
       return std::unexpected(invalid_chars_error(value.substr(digits_end)));
     }
 
@@ -130,7 +141,10 @@ auto parse_tab_stops(std::string_view spec, Config::TabStops& tab_stops,
 
     if (repeat) {
       if (i + 1 != tokens.size()) {
-        return std::unexpected("repeat tab stop must be last");
+        // [GNU] expand-common.c: "'/' specifier only allowed with
+        // the last value" (and the '+' twin) (audit #1462).
+        return std::unexpected(std::string("'") + token[0] +
+                               "' specifier only allowed with the last value");
       }
       if (parsed == 0) {
         return std::unexpected("tab size cannot be 0");
@@ -139,6 +153,11 @@ auto parse_tab_stops(std::string_view spec, Config::TabStops& tab_stops,
       tab_stops.repeat_mode = token[0] == '/'
                                   ? Config::TabStops::RepeatMode::every_multiple
                                   : Config::TabStops::RepeatMode::after_last;
+      if (token[0] == '/') {
+        slash_repeat = true;
+      } else {
+        plus_repeat = true;
+      }
       repeat_specified = true;
       continue;
     }
@@ -191,8 +210,7 @@ auto build_config(const CommandContext<UNEXPAND_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
   Config cfg;
   cfg.all_spaces = ctx.get<bool>("--all", false) || ctx.get<bool>("-a", false);
-  cfg.first_only =
-      ctx.get<bool>("--first-only", false) || ctx.get<bool>("-f", false);
+  cfg.first_only = ctx.get<bool>("--first-only", false);
   cfg.no_utf8 = ctx.get<bool>("--no-utf8", false) || ctx.get<bool>("-U", false);
 
   // [GNU] unexpand.c parses options with getopt optstring
@@ -206,6 +224,8 @@ auto build_config(const CommandContext<UNEXPAND_OPTIONS.size()>& ctx)
   // whole-line conversion like -a; the digit form alone does not.
   Config::TabStops tab_stops;
   bool repeat_specified = false;
+  bool slash_repeat = false;
+  bool plus_repeat = false;
   bool tab_spec_seen = false;
   bool have_tabval = false;
   std::uintmax_t tabval = 0;
@@ -217,7 +237,8 @@ auto build_config(const CommandContext<UNEXPAND_OPTIONS.size()>& ctx)
       // [GNU] case 't': convert_entire_line = true.
       cfg.all_spaces = true;
       if (const auto* value = std::get_if<std::string>(&occurrence.value)) {
-        if (auto parsed = parse_tab_stops(*value, tab_stops, repeat_specified);
+        if (auto parsed = parse_tab_stops(*value, tab_stops, repeat_specified,
+                                          slash_repeat, plus_repeat);
             !parsed) {
           return std::unexpected(parsed.error());
         }
@@ -245,6 +266,13 @@ auto build_config(const CommandContext<UNEXPAND_OPTIONS.size()>& ctx)
     if (auto added = add_tab_stop(tabval, tab_stops); !added) {
       return std::unexpected(added.error());
     }
+  }
+  // [GNU] expand-common.c validate_tab_stops: a '/' specifier
+  // combined with a '+' specifier is fatal wherever they appear --
+  // the old code let a later spec silently overwrite the earlier
+  // repeat mode (audit #1462).
+  if (slash_repeat && plus_repeat) {
+    return std::unexpected("'/' specifier is mutually exclusive with '+'");
   }
   if (tab_spec_seen || have_tabval) {
     // [GNU] finalize_tab_stops(): a single stop without an explicit repeat
@@ -368,6 +396,17 @@ auto unexpand_line(const std::string& line, const Config::TabStops& tab_stops,
     result += c;
   }
 
+  // [GNU] unexpand.c flushes the pending blanks when the EOF
+  // pseudo-character is processed; the old code dropped them, so an
+  // unterminated final line lost its trailing blanks (printf 'ab  '
+  // produced "ab") (audit #1462).
+  if (!pending_blank.empty()) {
+    if (pending_blank.size() > 1 && one_blank_before_tab_stop) {
+      pending_blank[0] = '\t';
+    }
+    result += pending_blank;
+  }
+
   return result;
 }
 
@@ -414,13 +453,10 @@ auto run(const Config& cfg) -> int {
         all_ok = false;
         continue;
       }
-      // Default mode treats UTF-8 input like GNU/coreutils and drops a BOM.
-      if (!cfg.no_utf8 && content.size() >= 3 &&
-          static_cast<unsigned char>(content[0]) == 0xEF &&
-          static_cast<unsigned char>(content[1]) == 0xBB &&
-          static_cast<unsigned char>(content[2]) == 0xBF) {
-        content = content.substr(3);
-      }
+      // [GNU] no BOM handling: the BOM bytes are a non-blank prefix,
+      // so leading blanks after a BOM are not "initial" blanks
+      // (audit #1462). The -U/--no-utf8 extension remains accepted
+      // but no longer changes BOM handling.
     }
 
     // Process line by line to maintain line breaks

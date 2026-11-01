@@ -1,0 +1,5 @@
+cmd: kill
+oracle: linux
+args: -l RTMIN
+source: tests/differential/corpus/kill/10-list-rtmin.case
+tags: gnu-compat kill list-conversion audit-w7

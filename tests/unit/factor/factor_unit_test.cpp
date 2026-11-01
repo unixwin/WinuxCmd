@@ -146,3 +146,25 @@ TEST(factor, factor_stdin_ctrlz_not_truncated_issue1212) {
 
   EXPECT_TRUE(r.stdout_text.find("30:") != std::string::npos);
 }
+
+// [#1462] GNU factor.c:125 reads stdin tokens with DELIM "\n\t " only, so
+// a CR stays inside the token and makes it invalid (it is not a factor
+// separator); a token-initial tab is likewise not skipped by
+// print_factors (only ' ' is).
+TEST(factor, factor_stdin_cr_token_is_invalid) {
+  Pipeline p;
+  p.set_stdin("12\r\n");
+  p.add(L"factor.exe", {});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_CONTAINS(r.stderr_text, "not a valid positive integer");
+}
+
+TEST(factor, factor_leading_tab_operand_is_invalid) {
+  Pipeline p;
+  p.add(L"factor.exe", {L"\t12"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_CONTAINS(r.stderr_text, "not a valid positive integer");
+}

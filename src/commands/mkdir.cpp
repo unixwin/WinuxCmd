@@ -216,7 +216,7 @@ auto apply_directory_mode(const std::string& path, std::string_view mode)
           native_path::normalize_api_operand(path))));
   DWORD attrs = GetFileAttributesW(wpath.c_str());
   if (attrs == INVALID_FILE_ATTRIBUTES) {
-    return std::unexpected("cannot read directory attributes");
+    return std::unexpected("cannot change permissions of");
   }
 
   if (*writable) {
@@ -225,7 +225,7 @@ auto apply_directory_mode(const std::string& path, std::string_view mode)
     attrs |= FILE_ATTRIBUTE_READONLY;
   }
   if (!SetFileAttributesW(wpath.c_str(), attrs)) {
-    return std::unexpected("cannot set directory mode");
+    return std::unexpected("cannot change permissions of");
   }
   return {};
 }
@@ -236,14 +236,26 @@ auto build_config(const CommandContext<MKDIR_OPTIONS.size()>& ctx)
   cfg.parents = ctx.get<bool>("--parents", false) || ctx.get<bool>("-p", false);
   cfg.verbose = ctx.get<bool>("--verbose", false) || ctx.get<bool>("-v", false);
   if (ctx.has("--mode") || ctx.has("-m")) {
-    // [DIFFERS] - SELinux not available on Windows
-    (void)ctx.has("--context");
     std::string mode = ctx.get<std::string>("--mode", "");
     if (mode.empty()) mode = ctx.get<std::string>("-m", "");
-    if (mode.empty()) return std::unexpected("invalid mode");
     auto writable = mode_allows_write(mode);
-    if (!writable) return std::unexpected(writable.error());
+    if (!writable) {
+      // [GNU] The diagnostic names the offending mode (mkdir.c:290).
+      return std::unexpected("invalid mode '" + mode + "'");
+    }
     cfg.mode = mode;
+  }
+  // [GNU] On a kernel without SELinux/SMACK, a --context VALUE earns
+  // one warning and the directory is still created; a bare -Z is
+  // silently ignored (mkdir.c:243-248).
+  {
+    std::string context = ctx.get<std::string>("--context", "");
+    if (context.empty()) context = ctx.get<std::string>("-Z", "");
+    if (!context.empty()) {
+      safeErrorPrint(
+          "mkdir: warning: ignoring --context; it requires an "
+          "SELinux/SMACK-enabled kernel\n");
+    }
   }
   return cfg;
 }
@@ -294,6 +306,7 @@ auto report_parents_create_failure(const std::string& path) -> void {
  */
 auto report_create_failure(const std::string& path, DWORD error) -> void {
   const char* reason;
+  std::string reason_text;
   switch (error) {
     case ERROR_ALREADY_EXISTS:
       reason = "File exists";
@@ -313,13 +326,17 @@ auto report_create_failure(const std::string& path, DWORD error) -> void {
       reason = "File name too long";
       break;
     default:
-      reason = "No such file or directory";
+      // [GNU] The diagnostic carries the actual error (mkdir-p.c:200);
+      // unknown Win32 errors used to be misreported as ENOENT.
+      reason_text = win32_posix_error_text(error);
+      reason = reason_text.c_str();
       break;
   }
+  if (reason_text.empty()) reason_text = reason;
   safeErrorPrint("mkdir: cannot create directory '");
   safeErrorPrint(path);
   safeErrorPrint("': ");
-  safeErrorPrint(reason);
+  safeErrorPrint(reason_text);
   safeErrorPrint("\n");
 }
 
@@ -422,7 +439,7 @@ auto create_directory(const std::string& path, const Config& config) -> bool {
       if (!mode_result) {
         safeErrorPrint("mkdir: ");
         safeErrorPrint(mode_result.error());
-        safeErrorPrint(": '");
+        safeErrorPrint(" '");
         safeErrorPrint(path);
         safeErrorPrint("'\n");
         return false;
@@ -451,7 +468,7 @@ auto create_directory(const std::string& path, const Config& config) -> bool {
       if (!mode_result) {
         safeErrorPrint("mkdir: ");
         safeErrorPrint(mode_result.error());
-        safeErrorPrint(": '");
+        safeErrorPrint(" '");
         safeErrorPrint(path);
         safeErrorPrint("'\n");
         return false;
@@ -489,18 +506,21 @@ auto process_paths(const std::vector<std::string>& paths, const Config& config)
  */
 auto process_command(const CommandContext<MKDIR_OPTIONS.size()>& ctx)
     -> cp::Result<bool> {
-  auto config = build_config(ctx);
-  if (!config) return std::unexpected(config.error());
-
   std::vector<std::string> paths;
   for (auto arg : ctx.positionals) {
     paths.push_back(std::string(arg));
   }
 
-  return check_paths(paths).and_then(
-      [&](const std::vector<std::string>& valid_paths) {
-        return process_paths(valid_paths, *config);
-      });
+  // [GNU] The missing-operand check precedes mode compilation
+  // (mkdir.c:259 vs 290): `mkdir -m 888` reports the missing operand,
+  // not the invalid mode.
+  auto checked = check_paths(paths);
+  if (!checked) return std::unexpected(checked.error());
+
+  auto config = build_config(ctx);
+  if (!config) return std::unexpected(config.error());
+
+  return process_paths(*checked, *config);
 }
 }  // namespace mkdir_pipeline
 

@@ -115,7 +115,8 @@ struct Script {
     ReadFileLine,
     WriteFile,
     WriteFirstFile,
-    ClearPattern
+    ClearPattern,
+    Version
   } kind;
   portable_regex::Pattern pattern;  // for Subst
   // [GNU] s///m and s///M modifiers (REG_NEWLINE): ^ and $ also match at
@@ -502,6 +503,45 @@ auto parse_subst(std::string_view expr, portable_regex::Syntax syntax,
   return s;
 }
 
+// [GNU] strverscmp-lite for the `v` command gate: digit runs compare
+// numerically, other bytes lexically.  Only used for the "is the requested
+// version newer than this sed (4.9)" decision, where GNU applies
+// strverscmp (sed-4.9/sed/compile.c:1064-1076).
+auto version_is_newer_than(std::string_view requested,
+                           std::string_view current) -> bool {
+  size_t a = 0, b = 0;
+  auto digit_run = [](std::string_view v, size_t& i) {
+    size_t start = i;
+    while (i < v.size() &&
+           std::isdigit(static_cast<unsigned char>(v[i])) != 0) {
+      ++i;
+    }
+    return v.substr(start, i - start);
+  };
+  while (a < requested.size() && b < current.size()) {
+    bool a_digit =
+        std::isdigit(static_cast<unsigned char>(requested[a])) != 0;
+    bool b_digit = std::isdigit(static_cast<unsigned char>(current[b])) != 0;
+    if (a_digit && b_digit) {
+      auto ra = digit_run(requested, a);
+      auto rb = digit_run(current, b);
+      auto lz_a = ra.find_first_not_of('0');
+      auto lz_b = rb.find_first_not_of('0');
+      auto ta = lz_a == std::string_view::npos ? std::string_view{}
+                                               : ra.substr(lz_a);
+      auto tb = lz_b == std::string_view::npos ? std::string_view{}
+                                               : rb.substr(lz_b);
+      if (ta.size() != tb.size()) return ta.size() > tb.size();
+      if (ta != tb) return ta > tb;
+    } else {
+      if (requested[a] != current[b]) return requested[a] > current[b];
+      ++a;
+      ++b;
+    }
+  }
+  return a < requested.size();
+}
+
 auto parse_simple_cmd(std::string_view line) -> cp::Result<Script> {
   if (line.empty()) return std::unexpected("empty script line");
   char c = line[0];
@@ -646,6 +686,20 @@ auto parse_simple_cmd(std::string_view line) -> cp::Result<Script> {
         return std::unexpected("invalid q command exit code");
       }
       s.quit_exit_code = static_cast<int>(exit_code & 0xFFu);
+    }
+    return s;
+  }
+  if (c == 'v') {
+    // [GNU] `v VERSION` refuses to run under a sed older than VERSION
+    // (compile.c:1064-1076, PACKAGE_VERSION here is 4.9); with no
+    // argument the compared version defaults to "4.0".  Otherwise the
+    // command is a no-op.
+    Script s;
+    s.kind = Script::Kind::Version;
+    std::string version = label_body(rest);
+    if (version.empty()) version = "4.0";
+    if (version_is_newer_than(version, "4.9")) {
+      return std::unexpected("expected newer version of sed");
     }
     return s;
   }
@@ -1393,7 +1447,25 @@ auto script_is_posix_forbidden(const Script& script) -> bool {
          script.kind == Script::Kind::TestNoBranch ||
          script.kind == Script::Kind::ReadFileLine ||
          script.kind == Script::Kind::WriteFirstFile ||
+         script.kind == Script::Kind::Version ||
          script.kind == Script::Kind::ClearPattern;
+}
+
+// [GNU] Address-shape rules enforced at compile time
+// (sed-4.9/sed/compile.c:1020-1027, 1155-1158):
+//  * address 0 is only valid with a regexp second address (0,/RE/), or
+//    alone on the `r' command; anything else is INVALID_LINE_0.
+//  * `q' and `Q' accept at most one address (ONE_ADDR).
+auto validate_address_pair(const Script::Address& addr1,
+                           const Script::Address& addr2, bool read_file_cmd)
+    -> cp::Result<void> {
+  if (addr1.kind == Script::Address::Kind::Line && addr1.line_no == 0) {
+    const bool ok = addr2.kind == Script::Address::Kind::Regex ||
+                    (addr2.kind == Script::Address::Kind::None &&
+                     read_file_cmd);
+    if (!ok) return std::unexpected("invalid usage of line address 0");
+  }
+  return {};
 }
 
 auto validate_script_capabilities(const std::vector<Script>& scripts,
@@ -1405,6 +1477,23 @@ auto validate_script_capabilities(const std::vector<Script>& scripts,
     }
     if (cfg.posix && script_is_posix_forbidden(script)) {
       return std::unexpected("--posix rejects GNU sed extensions");
+    }
+    if ((script.kind == Script::Kind::Quit ||
+         script.kind == Script::Kind::QuitSilent) &&
+        script.addr2.kind != Script::Address::Kind::None) {
+      return std::unexpected("command only uses one address");
+    }
+    if (auto ok = validate_address_pair(
+            script.addr1, script.addr2,
+            script.kind == Script::Kind::ReadFile);
+        !ok) {
+      return std::unexpected(ok.error());
+    }
+    for (const auto& group : script.group_addresses) {
+      if (auto ok = validate_address_pair(group.addr1, group.addr2, false);
+          !ok) {
+        return std::unexpected(ok.error());
+      }
     }
   }
   return {};
@@ -2299,6 +2388,8 @@ auto run_scripts_for_cycle(ExecutionContext& ctx) -> void {
         std::swap(ctx.current_had_delimiter, ctx.runtime.hold_had_delimiter);
         break;
       case Script::Kind::Label:
+        break;
+      case Script::Kind::Version:
         break;
       case Script::Kind::Branch:
         pc = s.jump_index;

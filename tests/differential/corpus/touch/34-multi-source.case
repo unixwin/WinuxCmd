@@ -1,0 +1,8 @@
+cmd: touch
+args: -r ref -t 202601010000 target
+timeout: 10
+setup: |
+  printf 'x' > ref
+  printf 'y' > target
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w1 oracle-coreutils-9.4 touch.c:336-340 more-than-one-source

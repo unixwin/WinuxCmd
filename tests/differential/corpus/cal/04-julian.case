@@ -1,0 +1,5 @@
+cmd: cal
+oracle: linux
+args: -j 3 2026
+source: tests/differential/corpus/cal/04-julian.case
+tags: gnu-compat cal julian audit-w7

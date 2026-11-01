@@ -162,6 +162,9 @@ REGISTER_COMMAND(cat, "cat",
     size_t line_num = 1;
     bool at_line_start = true;
     bool previous_line_empty = false;
+    // [GNU] a CR seen under -E is held until the next byte decides
+    // whether it precedes a LF (cat.c pending_cr).
+    bool pending_cr = false;
   };
 
   struct CatFlags {
@@ -217,8 +220,15 @@ REGISTER_COMMAND(cat, "cat",
   };
 
   auto print_line_number = [&](size_t &line_num, std::string &out) {
+    // [GNU] the number field starts at width 6 and WIDENS as the
+    // count grows (next_line_num, cat.c:133): line 1,000,000 prints
+    // as "1000000\t". The old code wrapped modulo 1,000,000
+    // (audit #1462).
     char buf[32];
-    int len = snprintf(buf, sizeof(buf), "%6zu\t", (line_num % 1000000));
+    int digits = 1;
+    for (size_t v = line_num; v >= 10; v /= 10) ++digits;
+    const int width = digits > 6 ? digits : 6;
+    int len = snprintf(buf, sizeof(buf), "%*zu\t", width, line_num);
     line_num++;
     append_output(out, std::string_view(buf, static_cast<size_t>(len)));
   };
@@ -265,6 +275,13 @@ REGISTER_COMMAND(cat, "cat",
                             const CommandContext<CAT_OPTIONS.size()> &ctx,
                             CatState &state) {
     if (fast_passthrough) {
+      // [perf #1127-P4] 64 KiB passthrough block (roadmap item 3, the
+      // uutils cat.rs shape): the disk arm below reads and forwards in
+      // 64 KiB chunks instead of 8 KiB, cutting per-chunk safePrint and
+      // streambuf overhead 8x. The byte stream is unchanged — chunk
+      // boundaries are invisible on pipe/file stdout. The live-stdin arm
+      // keeps its 8 KiB short-read shape on purpose: its chunking is the
+      // latency contract for dribbling producers (niubash D4 above).
       std::array<char, 8192> buffer{};
       // niubash D4: istream::read loops until the buffer is FULL (or EOF),
       // so `producer | cat` withholds a dribbling producer's output inside
@@ -296,11 +313,14 @@ REGISTER_COMMAND(cat, "cat",
         }
         return;
       }
+      std::array<char, 64 * 1024> file_buffer{};
       while (stream.good()) {
-        stream.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+        stream.read(file_buffer.data(),
+                    static_cast<std::streamsize>(file_buffer.size()));
         auto got = stream.gcount();
         if (got <= 0) break;
-        safePrint(std::string_view(buffer.data(), static_cast<size_t>(got)));
+        safePrint(
+            std::string_view(file_buffer.data(), static_cast<size_t>(got)));
         if (stdout_write_gone()) break;
       }
       return;
@@ -334,11 +354,24 @@ REGISTER_COMMAND(cat, "cat",
         state.at_line_start = false;
       }
 
+      if (state.pending_cr) {
+        state.pending_cr = false;
+        if (c == 0x0A) {
+          // [GNU] CR immediately before LF under -E renders as ^M
+          // (cat.c:475); any other CR stays raw.
+          append_output(out, "^M");
+        } else {
+          append_output_char(out, static_cast<char>(0x0D));
+        }
+      }
+
       if (c == 0x0A) {
         if (flags.show_ends) append_output_char(out, static_cast<char>(0x24));
         append_output_char(out, static_cast<char>(0x0A));
         state.at_line_start = true;
         completed_line = true;
+      } else if (c == 0x0D && flags.show_ends && !flags.show_nonprinting) {
+        state.pending_cr = true;
       } else {
         print_visible_byte(c, flags, stream, out);
       }
@@ -380,22 +413,76 @@ REGISTER_COMMAND(cat, "cat",
           }
         }
       }
+      if (state.pending_cr) {
+        append_output_char(out, static_cast<char>(0x0D));
+        state.pending_cr = false;
+      }
       flush_output_buffer(out);
       return;
     }
 
-    char raw = 0;
-    while (stream.get(raw)) {
-      const bool line_done =
-          feed_char(static_cast<unsigned char>(raw));
-      // Line-flush so `cat -n` as a pipe tail streams with the producer;
-      // append_output still coalesces mid-line transforms into 64KiB.
-      if (line_done) flush_output_buffer(out);
-      if (out.empty() && stdout_write_gone()) {
-        break;
+    // [perf #1127-P4] ASCII-run fast path (roadmap item 4): the old loop
+    // fed the state machine one istream::get per byte. This arm now reads
+    // 64 KiB chunks and bulk-appends mid-line spans of bytes that
+    // print_visible_byte copies verbatim; every other byte goes through
+    // feed_char unchanged, so line-start bookkeeping, -s squeezing and
+    // the line-flush points are exactly the old ones. The verbatim set
+    // is read straight off print_visible_byte: LF is never verbatim (it
+    // ends lines); with -v only printable ASCII 0x20..0x7E is verbatim
+    // (TAB, ^X and M-x forms stay per-byte); without -v everything but
+    // LF — and TAB under -T — is verbatim.
+    auto byte_is_verbatim = [&](unsigned char c) -> bool {
+      if (c == 0x0A) return false;
+      if (flags.show_nonprinting) return c >= 0x20 && c <= 0x7E;
+      if (c == 0x09) return !flags.show_tabs;
+      return true;
+    };
+
+    std::array<char, 64 * 1024> chunk{};
+    bool stop = false;
+    while (!stop && stream) {
+      stream.read(chunk.data(), static_cast<std::streamsize>(chunk.size()));
+      const auto got = stream.gcount();
+      if (got <= 0) break;
+      const auto *bytes =
+          reinterpret_cast<const unsigned char *>(chunk.data());
+      size_t i = 0;
+      while (i < static_cast<size_t>(got)) {
+        const unsigned char c = bytes[i];
+        if (!state.at_line_start && byte_is_verbatim(c)) {
+          size_t j = i + 1;
+          while (j < static_cast<size_t>(got) &&
+                 byte_is_verbatim(bytes[j])) {
+            ++j;
+          }
+          append_output(out, std::string_view(chunk.data() + i, j - i));
+          i = j;
+          // Same early-out the per-byte loop had: append_output flushes
+          // at its coalesce threshold, and an empty buffer right after
+          // such a flush plus a gone stdout means stop draining input.
+          if (out.empty() && stdout_write_gone()) {
+            stop = true;
+            break;
+          }
+          continue;
+        }
+        const bool line_done = feed_char(c);
+        ++i;
+        // Line-flush so `cat -n` as a pipe tail streams with the
+        // producer; append_output still coalesces mid-line transforms
+        // into 64KiB.
+        if (line_done) flush_output_buffer(out);
+        if (out.empty() && stdout_write_gone()) {
+          stop = true;
+          break;
+        }
       }
     }
 
+    if (state.pending_cr) {
+      append_output_char(out, static_cast<char>(0x0D));
+      state.pending_cr = false;
+    }
     flush_output_buffer(out);
   };
 
@@ -408,7 +495,10 @@ REGISTER_COMMAND(cat, "cat",
     if (path == "-") {
       process_stream(std::cin, ctx, state);
       if (std::cin.bad()) {
-        safeErrorPrint("'-\n");
+        // [GNU] error (0, errno, "%s", quotef (infile)) (cat.c:186):
+        // "cat: -: <strerror>"; the old code printed a bare "'-"
+        // fragment with no prefix or reason (audit #1462).
+        safeErrorPrint("cat: -: Input/output error\n");
         return false;
       }
       return true;
@@ -426,9 +516,10 @@ REGISTER_COMMAND(cat, "cat",
       }
       process_stream(std::cin, ctx, state);
       if (std::cin.bad()) {
-        safeErrorPrint("cat: error reading '");
+        // [GNU] "cat: <operand>: <strerror>" (cat.c:186).
+        safeErrorPrint("cat: ");
         safeErrorPrint(path);
-        safeErrorPrint("'\n");
+        safeErrorPrint(": Input/output error\n");
         return false;
       }
       return true;
@@ -472,12 +563,47 @@ REGISTER_COMMAND(cat, "cat",
       return false;
     }
 
+    // [GNU] input file is output file (cat.c:713): when stdout is
+    // a regular file with the same volume/file identity as a
+    // non-empty input, cat fails the operand and copies nothing.
+    {
+      HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+      BY_HANDLE_FILE_INFORMATION out_info{};
+      if (hOut != nullptr && hOut != INVALID_HANDLE_VALUE &&
+          GetFileType(hOut) == FILE_TYPE_DISK &&
+          GetFileInformationByHandle(hOut, &out_info)) {
+        HANDLE hIn = CreateFileW(
+            operand.extended.c_str(), GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (hIn != INVALID_HANDLE_VALUE) {
+          BY_HANDLE_FILE_INFORMATION in_info{};
+          const bool same = GetFileInformationByHandle(hIn, &in_info) &&
+                            in_info.dwVolumeSerialNumber ==
+                                out_info.dwVolumeSerialNumber &&
+                            in_info.nFileIndexHigh == out_info.nFileIndexHigh &&
+                            in_info.nFileIndexLow == out_info.nFileIndexLow;
+          const bool nonempty =
+              in_info.nFileSizeHigh != 0 || in_info.nFileSizeLow != 0;
+          CloseHandle(hIn);
+          if (same && nonempty) {
+            safeErrorPrint("cat: ");
+            safeErrorPrint(path);
+            safeErrorPrint(": input file is output file\n");
+            return false;
+          }
+        }
+      }
+    }
+
     process_stream(file, ctx, state);
 
     if (file.bad()) {
-      safeErrorPrint("cat: error reading '");
+      // [GNU] "cat: <operand>: <strerror>" (cat.c:342); the old
+      // "error reading '<file>'" wording is not GNU's.
+      safeErrorPrint("cat: ");
       safeErrorPrint(path);
-      safeErrorPrint("'");
+      safeErrorPrint(": Input/output error");
       safeErrorPrint("\n");
       return false;
     }

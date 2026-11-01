@@ -1,0 +1,9 @@
+cmd: whereis
+oracle: linux
+args: -B d1 d2 -f thing
+setup: |
+  mkdir -p d1 d2
+  printf 'x\n' > d1/thing
+  printf 'x\n' > d2/thing
+source: tests/differential/corpus/whereis/02-multi-dir-until-f.case
+tags: gnu-compat whereis dir-list audit-w7

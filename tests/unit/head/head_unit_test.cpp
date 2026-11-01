@@ -275,7 +275,9 @@ TEST(head, head_legacy_count_shorthand) {
   EXPECT_EQ_TEXT(r.stdout_text, "alpha\nbeta\n");
 }
 
-TEST(head, head_strips_utf8_bom_in_line_mode) {
+TEST(head, head_passes_utf8_bom_bytes_through_in_line_mode) {
+  // [GNU] head is byte-oriented (head.c): a UTF-8 BOM is ordinary
+  // leading bytes of the first line, never stripped (audit #1462).
   TempDir tmp;
   tmp.write("a.txt", "\xEF\xBB\xBFhello\nsecond\n");
 
@@ -285,10 +287,13 @@ TEST(head, head_strips_utf8_bom_in_line_mode) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "hello\n");
+  EXPECT_EQ_TEXT(r.stdout_text, "\xEF\xBB\xBFhello\n");
 }
 
-TEST(head, head_decodes_utf16le_input) {
+TEST(head, head_passes_utf16le_bytes_through) {
+  // [GNU] no transcoding either: the first line ends at the first
+  // 0x0A byte, so -n 1 returns the raw UTF-16LE bytes up to it
+  // (audit #1462).
   TempDir tmp;
   tmp.write_bytes("a.txt", {static_cast<char>(0xFF),
                             static_cast<char>(0xFE),
@@ -325,7 +330,9 @@ TEST(head, head_decodes_utf16le_input) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "hello\n");
+  EXPECT_EQ(r.stdout_text,
+            std::string("\xFF\xFE\x68\x00\x65\x00\x6C\x00\x6C\x00\x6F\x00\x0A",
+                        13));
 }
 
 TEST(head, head_obsolete_compact_byte_count) {
@@ -703,7 +710,13 @@ TEST(head, head_fifo_operand_stops_at_delimiter_without_eof_issue1442) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "line000000\n");
   EXPECT_EQ(writer_rc, 1);
-  EXPECT_NE(writer_stderr.find("write error"), std::string::npos);
+  // No stderr form is pinned for the writer: in GNU's default
+  // (sigpipe) output-error mode a broken output kills tee by signal
+  // with no diagnostic at all, and this port's emulation fails the
+  // run silently.  The old "write error" needle pinned the pre-audit
+  // tee's blanket diagnostic, which the W3b tee rewrite removed in
+  // favour of tee.c's quotef fail_output forms; writer_rc == 1 is
+  // the assertion that the writer observed the break.
 }
 
 TEST(head, head_fifo_operand_byte_mode_issue1442) {

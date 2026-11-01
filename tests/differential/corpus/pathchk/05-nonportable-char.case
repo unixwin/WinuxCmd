@@ -1,0 +1,5 @@
+cmd: pathchk
+args: -p 'a b/c'
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w3b pathchk non-portable-character wording

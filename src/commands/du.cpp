@@ -342,7 +342,12 @@ auto load_exclude_patterns_from_file(const std::string& path)
   return lines;
 }
 
-auto read_files0_from(const std::string& path)
+// [GNU] --files0-from diagnostics (du.c:1018-1115): an unopenable
+// list is fatal with "cannot open '<F>' for reading: <reason>"; an
+// empty name or (when reading stdin) a name of '-' is diagnosed with
+// the list name and record number, marks the run failed, and
+// processing continues. Both cases used to be silent here.
+auto read_files0_from(const std::string& path, bool* names_ok)
     -> cp::Result<std::vector<std::string>> {
   std::istream* input = nullptr;
   std::ifstream file;
@@ -352,19 +357,49 @@ auto read_files0_from(const std::string& path)
   } else {
     // [L2 self-parse] POSIX drive spellings resolve through the shared
     // operand boundary like the traversal operands do (#1174).
-    file.open(native_path::normalize_api_operand(path), std::ios::binary);
+    const std::string api_path = native_path::normalize_api_operand(path);
+    file.open(api_path, std::ios::binary);
     if (!file.is_open()) {
-      return std::unexpected("cannot open file list '" + path + "'");
+      // GNU appends the errno text; recover it with a probe open.
+      std::string reason = "No such file or directory";
+      const HANDLE probe = CreateFileW(utf8_to_wstring(api_path).c_str(),
+                                       GENERIC_READ,
+                                       FILE_SHARE_READ, nullptr,
+                                       OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+                                       nullptr);
+      if (probe == INVALID_HANDLE_VALUE) {
+        reason = win32_posix_error_text(GetLastError());
+      } else {
+        CloseHandle(probe);
+      }
+      return std::unexpected("cannot open '" + path + "' for reading: " +
+                             reason);
     }
     input = &file;
   }
 
   std::vector<std::string> paths;
   std::string name;
+  uint64_t record = 0;
   while (std::getline(*input, name, '\0')) {
-    if (!name.empty()) {
-      paths.push_back(name);
+    ++record;
+    if (name.empty()) {
+      safeErrorPrint("du: ");
+      safeErrorPrint(path);
+      safeErrorPrint(":");
+      safeErrorPrint(std::to_string(record));
+      safeErrorPrint(": invalid zero-length file name\n");
+      if (names_ok != nullptr) *names_ok = false;
+      continue;
     }
+    if (path == "-" && name == "-") {
+      safeErrorPrint(
+          "du: when reading file names from stdin, no file name of "
+          "'-' allowed\n");
+      if (names_ok != nullptr) *names_ok = false;
+      continue;
+    }
+    paths.push_back(name);
   }
   return paths;
 }
@@ -449,6 +484,11 @@ struct DuConfig {
 
 struct UsageSummary {
   uint64_t size = 0;
+  // [GNU] The total WITHOUT --separate-dirs pruning: du -Sc reports
+  // the grand total of everything counted, while -S only changes
+  // what each printed directory line contains (du.c:654 accumulates
+  // tot_dui from every file's dui_to_print, -S or not).
+  uint64_t full_size = 0;
   FILETIME latest_time{};
   bool has_time = false;
 };
@@ -471,16 +511,38 @@ auto print_scaled_size(uint64_t size, const OutputConfig& cfg) -> void {
             cfg.display_suffix);
 }
 
+// [GNU] The --time word universe (du.c, time_args/time_types):
+// atime/access/use select access time, ctime/status select status
+// time, mtime (also the bare --time default) selects modification
+// time. argmatch semantics: unique prefixes match, ambiguous or
+// unknown words fail. The applet used to also accept the non-GNU
+// words 'modification' and 'modified' and rejected all prefixes.
 auto parse_du_time_mode(std::string_view value) -> std::optional<DuTimeMode> {
-  if (value.empty() || value == "mtime" || value == "modification" ||
-      value == "modified") {
+  if (value.empty()) {
     return DuTimeMode::Modification;
   }
-  if (value == "atime" || value == "access" || value == "use") {
-    return DuTimeMode::Access;
+  struct Word {
+    std::string_view text;
+    DuTimeMode mode;
+  };
+  static constexpr Word words[] = {
+      {"atime", DuTimeMode::Access}, {"access", DuTimeMode::Access},
+      {"use", DuTimeMode::Access},   {"ctime", DuTimeMode::Status},
+      {"status", DuTimeMode::Status},
+  };
+  std::optional<DuTimeMode> matched;
+  size_t matches = 0;
+  for (const Word& word : words) {
+    if (word.text == value) {
+      return word.mode;
+    }
+    if (word.text.starts_with(value)) {
+      matched = word.mode;
+      ++matches;
+    }
   }
-  if (value == "ctime" || value == "status") {
-    return DuTimeMode::Status;
+  if (matches == 1) {
+    return matched;
   }
   return std::nullopt;
 }
@@ -539,17 +601,12 @@ auto format_time_long_iso(FILETIME file_time,
   }
 
   if (style == "iso" || style == "posix") {
-    // iso: "01-01 12:34" (same year) or "2025-01-01 12:34" (different year)
-    SYSTEMTIME now{};
-    GetLocalTime(&now);
+    // [GNU] du --time-style=iso prints the DATE ONLY ("%Y-%m-%d");
+    // the same-year/time-of-day elision this branch used to do is
+    // ls's iso style, not du's.
     char buf[32];
-    if (st.wYear == now.wYear) {
-      snprintf(buf, sizeof(buf), "%02d-%02d %02d:%02d", st.wMonth, st.wDay,
-               st.wHour, st.wMinute);
-    } else {
-      snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d", st.wYear,
-               st.wMonth, st.wDay, st.wHour, st.wMinute);
-    }
+    snprintf(buf, sizeof(buf), "%04d-%02d-%02d", st.wYear, st.wMonth,
+             st.wDay);
     return std::string(buf);
   }
 
@@ -721,10 +778,26 @@ auto configure_du(const CommandContext<DU_OPTIONS.size()>& ctx)
 
   cfg.max_depth = ctx.get<int>("--max-depth", -1);
   if (cfg.count_all && cfg.summarize) {
-    return std::unexpected("cannot both summarize and show all");
+    // [GNU] du.c:937-938: "...show all entries" (the noun was dropped).
+    return std::unexpected("cannot both summarize and show all entries\n"
+                           "Try 'du --help' for more information.");
   }
   if (ctx.get<int>("-d", -1) != -1) {
     cfg.max_depth = ctx.get<int>("-d", -1);
+  }
+  // [GNU] -s with --max-depth (du.c:940-947): depth 0 warns and
+  // proceeds; any other explicit depth warns and fails with usage.
+  if (cfg.summarize && cfg.max_depth >= 0) {
+    if (cfg.max_depth == 0) {
+      safeErrorPrint(
+          "du: warning: summarizing is the same as using "
+          "--max-depth=0\n");
+    } else {
+      return std::unexpected("warning: summarizing conflicts with "
+                             "--max-depth=" +
+                             std::to_string(cfg.max_depth) +
+                             "\nTry 'du --help' for more information.");
+    }
   }
 
   auto output = configure_output(ctx);
@@ -735,8 +808,11 @@ auto configure_du(const CommandContext<DU_OPTIONS.size()>& ctx)
 
   for (const auto& occurrence : ctx.string_occurrences({"--threshold", "-t"})) {
     auto threshold = parse_threshold_size(occurrence.value);
-    if (!threshold) {
-      return std::unexpected("invalid threshold size");
+    // [GNU] du.c:841-849: '-0' is neither negative nor positive and
+    // is rejected by name, as is any unparseable value.
+    if (!threshold || (occurrence.value.starts_with("-") && *threshold == 0)) {
+      return std::unexpected("invalid --threshold argument '" +
+                             std::string(occurrence.value) + "'");
     }
 
     if (*threshold < 0) {
@@ -797,16 +873,57 @@ auto configure_du(const CommandContext<DU_OPTIONS.size()>& ctx)
   for (const auto& occurrence : ctx.string_occurrences({"--time"})) {
     auto parsed = parse_du_time_mode(occurrence.value);
     if (!parsed) {
-      return std::unexpected("invalid time value");
+      // [GNU] XARGMATCH failure shape for --time.
+      return std::unexpected(
+          "invalid argument '" + std::string(occurrence.value) +
+          "' for '--time'\nValid arguments are:\n"
+          "  - 'atime', 'access', 'use'\n"
+          "  - 'ctime', 'status'\n"
+          "Try 'du --help' for more information.");
     }
     cfg.show_time = true;
     cfg.time_word = occurrence.value;
     cfg.time_mode = *parsed;
   }
 
-  // --time-style: format for time display
+  // [GNU] --time-style is validated against the GNU style set and
+  // defaults from the TIME_STYLE environment variable (du.c:
+  // 960-1005); 'posix-' prefixes select the same formats. This used
+  // to be stored unvalidated, so a bogus style silently formatted.
   for (const auto& occurrence : ctx.string_occurrences({"--time-style"})) {
     cfg.time_style = occurrence.value;
+  }
+  bool time_style_from_env = false;
+  if (cfg.time_style.empty()) {
+    if (const char* env_style = std::getenv("TIME_STYLE")) {
+      cfg.time_style = env_style;
+      time_style_from_env = true;
+    }
+  }
+  // [GNU] The style is validated only when --time is in effect
+  // (du.c:960-1005); the accepted set is full-iso/long-iso/iso, and a
+  // 'posix-' prefix is stripped only from the environment value.
+  if (cfg.show_time && !cfg.time_style.empty() &&
+      !cfg.time_style.starts_with("+")) {
+    std::string_view style = cfg.time_style;
+    if (time_style_from_env && style.starts_with("posix-"))
+      style.remove_prefix(6);
+    if (style != "full-iso" && style != "long-iso" && style != "iso") {
+      return std::unexpected("invalid argument '" + std::string(style) +
+                             "' for 'time style'\nValid arguments are:\n"
+                             "  - 'full-iso'\n"
+                             "  - 'long-iso'\n"
+                             "  - 'iso'\n"
+                             "Try 'du --help' for more information.");
+    }
+    cfg.time_style = std::string(style);
+  }
+
+  // [GNU] du.c: the --inodes warning, printed once.
+  if (cfg.show_inodes && cfg.apparent_size) {
+    safeErrorPrint(
+        "du: warning: options --apparent-size and -b are ineffective "
+        "with --inodes\n");
   }
 
   return cfg;
@@ -1031,30 +1148,101 @@ auto append_entry_name(const std::wstring& dir, const wchar_t* name)
  * @param summarize Only show totals for arguments
  * @return Total size
  */
+// [GNU] -x compares file systems, and a file system here is a
+// VOLUME (serial number), not a drive-letter spelling (du.c's
+// devlist/FTS cross-device rule): a bind or subst alias of the same
+// volume is the same file system, a different volume mounted under
+// the same letter is not. Returns 0 when unknown.
+auto volume_serial_of(const std::wstring& path) -> uint32_t {
+  HANDLE hFile = CreateFileW(
+      path.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+      nullptr, OPEN_EXISTING,
+      FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+  if (hFile == INVALID_HANDLE_VALUE) {
+    return 0;
+  }
+  BY_HANDLE_FILE_INFORMATION info{};
+  uint32_t serial = 0;
+  if (GetFileInformationByHandle(hFile, &info)) {
+    serial = info.dwVolumeSerialNumber;
+  }
+  CloseHandle(hFile);
+  return serial;
+}
+
+// Identity of the link ITSELF (the reparse point is opened, not
+// followed), for hard-link-style dedup of symlink encounters.
+auto get_link_inode_key(const std::wstring& path) -> std::wstring {
+  HANDLE hFile = CreateFileW(
+      path.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+      nullptr, OPEN_EXISTING,
+      FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+  if (hFile == INVALID_HANDLE_VALUE) {
+    return L"";
+  }
+  BY_HANDLE_FILE_INFORMATION info{};
+  std::wstring key;
+  if (GetFileInformationByHandle(hFile, &info)) {
+    const uint64_t index =
+        (static_cast<uint64_t>(info.nFileIndexHigh) << 32) | info.nFileIndexLow;
+    key = std::to_wstring(info.dwVolumeSerialNumber) + L":" +
+          std::to_wstring(index);
+  }
+  CloseHandle(hFile);
+  return key;
+}
+
+// A symlink's own contribution: st_size of the link for apparent
+// size, its own allocation (size rounded up to the volume cluster,
+// mirroring get_file_size's model) otherwise.
+auto link_entry_size(const WIN32_FIND_DATAW& data, const std::wstring& path,
+                     bool apparent) -> uint64_t {
+  const uint64_t size =
+      (static_cast<uint64_t>(data.nFileSizeHigh) << 32) | data.nFileSizeLow;
+  if (apparent || size == 0) {
+    return size;
+  }
+  const uint64_t cluster = get_volume_cluster_size(path);
+  if (cluster == 0) {
+    return size;
+  }
+  return (size + cluster - 1) / cluster * cluster;
+}
+
 auto calculate_dir_size(const std::wstring& path,
                         std::unordered_map<std::wstring, uint64_t>& sizes,
                         std::unordered_map<std::wstring, FILETIME>& times,
                         int current_depth, const DuConfig& cfg,
                         std::unordered_set<std::wstring>& seen_inodes,
                         std::unordered_set<std::wstring>& visited_dirs,
-                        const std::wstring& root_drive = L"",
+                        uint32_t root_volume = 0,
                         // [GNU] Entries are printed in traversal post-order:
                         // a directory line follows its subtree, so the operand
                         // directory prints last (Savannah #13956).
-                        std::vector<std::wstring>* print_order = nullptr)
+                        std::vector<std::wstring>* print_order = nullptr,
+                        bool* had_error = nullptr)
     -> UsageSummary {
   WIN32_FIND_DATAW find_data;
   std::wstring search_path = append_entry_name(path, L"*");
   HANDLE hFind = FindFirstFileW(search_path.c_str(), &find_data);
 
   if (hFind == INVALID_HANDLE_VALUE) {
+    // [GNU] An unreadable directory is diagnosed and fails the run
+    // (du.c process_file error path); an empty one fails the search
+    // with ERROR_FILE_NOT_FOUND and stays silent. This used to
+    // swallow both cases.
+    const DWORD find_error = GetLastError();
+    if (find_error == ERROR_ACCESS_DENIED && had_error != nullptr) {
+      std::string display = wstring_to_utf8(path);
+      std::replace(display.begin(), display.end(), '\\', '/');
+      safeErrorPrint("du: cannot read directory '");
+      safeErrorPrint(display);
+      safeErrorPrint("': ");
+      safeErrorPrint(win32_posix_error_text(find_error));
+      safeErrorPrint("\n");
+      *had_error = true;
+    }
     return {};
-  }
-
-  // Determine root drive for --one-file-system
-  std::wstring drive = root_drive;
-  if (drive.empty() && path.size() >= 2 && path[1] == L':') {
-    drive = path.substr(0, 2);
   }
 
   UsageSummary summary;
@@ -1064,6 +1252,7 @@ auto calculate_dir_size(const std::wstring& path,
   // added into it (see the file branch below).
   if (cfg.show_inodes) {
     summary.size += 1;
+    summary.full_size += 1;
   }
   WIN32_FILE_ATTRIBUTE_DATA path_data{};
   const bool have_path_data =
@@ -1084,18 +1273,63 @@ auto calculate_dir_size(const std::wstring& path,
       continue;
     }
 
-    // --one-file-system: skip directories on different drives
-    if (cfg.one_file_system && !drive.empty() && full_path.size() >= 2 &&
-        full_path[1] == L':') {
-      std::wstring file_drive = full_path.substr(0, 2);
-      if (file_drive != drive) {
-        continue;
-      }
-    }
-
     const int child_depth = current_depth + 1;
 
+    // [GNU] DU-1: under the default (-P) policy — and under -H,
+    // which dereferences only operands — a symlink encountered in
+    // traversal contributes ITSELF: its own size, its own inode for
+    // dedup, its own times, and a directory symlink is NOT entered.
+    // cfg.no_dereference was parsed but never read, and traversal
+    // followed every link, so the default behavior was -L's.
+    if ((find_data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) &&
+        !cfg.dereference) {
+      uint64_t link_size =
+          link_entry_size(find_data, full_path, cfg.apparent_size);
+      bool counted = true;
+      if (!cfg.count_links) {
+        const std::wstring inode_key = get_link_inode_key(full_path);
+        if (!inode_key.empty() && !seen_inodes.insert(inode_key).second) {
+          counted = false;
+          link_size = 0;
+        }
+      }
+      const uint64_t entry_count = cfg.show_inodes ? (counted ? 1 : 0)
+                                                   : link_size;
+      summary.size += entry_count;
+      summary.full_size += entry_count;
+      if (cfg.show_time) {
+        WIN32_FILE_ATTRIBUTE_DATA link_data{};
+        link_data.ftCreationTime = find_data.ftCreationTime;
+        link_data.ftLastAccessTime = find_data.ftLastAccessTime;
+        link_data.ftLastWriteTime = find_data.ftLastWriteTime;
+        const FILETIME link_time =
+            get_selected_time(link_data, cfg.time_mode);
+        update_latest_time(summary, link_time);
+        if (cfg.count_all && counted &&
+            (cfg.max_depth < 0 || child_depth <= cfg.max_depth)) {
+          times[full_path] = link_time;
+        }
+      }
+      if (counted && cfg.count_all &&
+          (cfg.max_depth < 0 || child_depth <= cfg.max_depth)) {
+        sizes[full_path] = entry_count;
+        if (print_order != nullptr) {
+          print_order->push_back(full_path);
+        }
+      }
+      continue;
+    }
+
     if (find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+      // [GNU] -x: a directory on a different VOLUME than the
+      // operand root is skipped entirely (not counted, not
+      // entered, not printed) — by serial, not drive letter.
+      if (cfg.one_file_system && root_volume != 0) {
+        const uint32_t child_volume = volume_serial_of(full_path);
+        if (child_volume != 0 && child_volume != root_volume) {
+          continue;
+        }
+      }
       // [GNU] Subtrees already traversed under an earlier argument contribute
       // nothing to this parent (Savannah #10397).
       const std::wstring child_key = du_dir_key(full_path);
@@ -1107,12 +1341,13 @@ auto calculate_dir_size(const std::wstring& path,
       // (FindFirstFile already handles this for most cases)
 
       // Recursively calculate subdirectory size
-      UsageSummary child_summary =
-          calculate_dir_size(full_path, sizes, times, child_depth, cfg,
-                             seen_inodes, visited_dirs, drive, print_order);
+      UsageSummary child_summary = calculate_dir_size(
+          full_path, sizes, times, child_depth, cfg, seen_inodes,
+          visited_dirs, root_volume, print_order, had_error);
       if (!cfg.separate_dirs) {
         summary.size += child_summary.size;
       }
+      summary.full_size += child_summary.full_size;
       if (child_summary.has_time) {
         update_latest_time(summary, child_summary.latest_time);
       }
@@ -1151,6 +1386,7 @@ auto calculate_dir_size(const std::wstring& path,
       } else {
         summary.size += file_size;
       }
+      summary.full_size += entry_count;
       if (cfg.show_time) {
         WIN32_FILE_ATTRIBUTE_DATA file_data{};
         if (GetFileAttributesExW(full_path.c_str(), GetFileExInfoStandard,
@@ -1178,19 +1414,20 @@ auto calculate_dir_size(const std::wstring& path,
 
   FindClose(hFind);
 
+  // [GNU] A directory's OWN time always enters its tmax (du.c
+  // process_file): the newest entry in the subtree wins, but the
+  // directory itself is a candidate too. The old code consulted it
+  // only when no descendant had a time at all.
+  if (cfg.show_time && have_path_data) {
+    update_latest_time(summary, get_selected_time(path_data, cfg.time_mode));
+  }
+
   if (cfg.max_depth < 0 || current_depth <= cfg.max_depth) {
     sizes[path] = summary.size;
     if (print_order != nullptr) {
       print_order->push_back(path);
     }
     if (cfg.show_time && summary.has_time) {
-      times[path] = summary.latest_time;
-    }
-  }
-
-  if (cfg.show_time && !summary.has_time && have_path_data) {
-    update_latest_time(summary, get_selected_time(path_data, cfg.time_mode));
-    if (cfg.max_depth < 0 || current_depth <= cfg.max_depth) {
       times[path] = summary.latest_time;
     }
   }
@@ -1208,13 +1445,18 @@ auto print_disk_usage(const CommandContext<DU_OPTIONS.size()>& ctx)
   // Use SmallVector for file paths (max 32 paths) - all stack-allocated
   SmallVector<std::string, 32> paths{};
 
+  bool files0_names_ok = true;
   const std::string files0_from = ctx.get<std::string>("--files0-from", "");
   if (!files0_from.empty()) {
     if (!ctx.positionals.empty()) {
+      // [GNU] du.c:1037-1043: the extra operand is named, then the
+      // combination rule is stated, then usage.
       return std::unexpected(
-          "--files0-from disallows processing paths named on the command line");
+          "extra operand '" + std::string(ctx.positionals.front()) +
+          "'\nfile operands cannot be combined with --files0-from\n"
+          "Try 'du --help' for more information.");
     }
-    auto file_list = read_files0_from(files0_from);
+    auto file_list = read_files0_from(files0_from, &files0_names_ok);
     if (!file_list) {
       return std::unexpected(file_list.error());
     }
@@ -1341,7 +1583,23 @@ auto print_disk_usage(const CommandContext<DU_OPTIONS.size()>& ctx)
     std::unordered_map<std::wstring, uint64_t> sizes;
     std::unordered_map<std::wstring, FILETIME> times;
 
-    if (attrs & FILE_ATTRIBUTE_DIRECTORY) {
+    // [GNU] DU-1 (operand half): GetFileAttributesW follows links,
+    // so a symlink-to-directory operand looks like a directory here.
+    // Under the default policy (and -H without -D semantics for
+    // non-arg entries aside, operands need -H/-D or -L to be
+    // followed) the operand is the LINK itself: one entry, counted
+    // like a file operand below.
+    bool operand_is_unfollowed_link = false;
+    {
+      std::error_code lec;
+      const auto lst =
+          std::filesystem::symlink_status(std::filesystem::path(wpath), lec);
+      operand_is_unfollowed_link =
+          !lec && std::filesystem::is_symlink(lst) && !cfg.dereference &&
+          !cfg.dereference_args;
+    }
+
+    if ((attrs & FILE_ATTRIBUTE_DIRECTORY) && !operand_is_unfollowed_link) {
       // [GNU] Skip an argument directory that was already traversed under an
       // earlier argument (Savannah #10397).
       const std::wstring arg_key = du_dir_key(wpath);
@@ -1352,13 +1610,21 @@ auto print_disk_usage(const CommandContext<DU_OPTIONS.size()>& ctx)
       // follows its subtree, so the operand directory prints last
       // (Savannah #13956).
       std::vector<std::wstring> order;
-      // Calculate directory size
+      // Calculate directory size (-x anchors on the operand volume)
+      const uint32_t root_volume =
+          cfg.one_file_system ? volume_serial_of(wpath) : 0;
+      bool operand_error = false;
       UsageSummary dir_summary = calculate_dir_size(
-          wpath, sizes, times, 0, cfg, seen_inodes, visited_dirs, L"", &order);
+          wpath, sizes, times, 0, cfg, seen_inodes, visited_dirs,
+          root_volume, &order, &operand_error);
+      if (operand_error) {
+        all_ok = false;
+      }
 
-      // Print directory size
+      // Print directory size. [GNU] -c accumulates the FULL total:
+      // -S changes printed lines, never what -c sums (DU-3).
       uint64_t dir_size = sizes[wpath];
-      grand_total += dir_size;
+      grand_total += dir_summary.full_size;
 
       auto print_entry = [&](const std::wstring& entry_path, uint64_t size,
                              bool is_operand_root) {
@@ -1421,8 +1687,19 @@ auto print_disk_usage(const CommandContext<DU_OPTIONS.size()>& ctx)
         }
       }
     } else {
-      // It's a file
-      uint64_t file_size = get_file_size(wpath, cfg.apparent_size);
+      // It's a file (or an unfollowed symlink operand, DU-1).
+      uint64_t file_size = 0;
+      if (operand_is_unfollowed_link) {
+        WIN32_FIND_DATAW link_data{};
+        const HANDLE hFind =
+            FindFirstFileW(wpath.c_str(), &link_data);
+        if (hFind != INVALID_HANDLE_VALUE) {
+          file_size = link_entry_size(link_data, wpath, cfg.apparent_size);
+          FindClose(hFind);
+        }
+      } else {
+        file_size = get_file_size(wpath, cfg.apparent_size);
+      }
       // [GNU] The seen-inode table spans the whole invocation (#1351):
       // a file operand whose inode was already counted — by an earlier
       // operand or inside an earlier directory traversal — prints
@@ -1430,7 +1707,9 @@ auto print_disk_usage(const CommandContext<DU_OPTIONS.size()>& ctx)
       // --count-links counts each encounter once at face value; it
       // never scales the size by the link count.
       if (!cfg.count_links) {
-        const std::wstring inode_key = get_inode_key(wpath);
+        const std::wstring inode_key = operand_is_unfollowed_link
+                                           ? get_link_inode_key(wpath)
+                                           : get_inode_key(wpath);
         if (!inode_key.empty() && !seen_inodes.insert(inode_key).second) {
           continue;
         }
@@ -1446,8 +1725,23 @@ auto print_disk_usage(const CommandContext<DU_OPTIONS.size()>& ctx)
         UsageSummary file_summary;
         if (cfg.show_time) {
           WIN32_FILE_ATTRIBUTE_DATA file_data{};
-          if (GetFileAttributesExW(wpath.c_str(), GetFileExInfoStandard,
-                                   &file_data)) {
+          bool have_data = false;
+          if (operand_is_unfollowed_link) {
+            WIN32_FIND_DATAW link_data{};
+            const HANDLE hFind = FindFirstFileW(wpath.c_str(), &link_data);
+            if (hFind != INVALID_HANDLE_VALUE) {
+              file_data.ftCreationTime = link_data.ftCreationTime;
+              file_data.ftLastAccessTime = link_data.ftLastAccessTime;
+              file_data.ftLastWriteTime = link_data.ftLastWriteTime;
+              have_data = true;
+              FindClose(hFind);
+            }
+          } else if (GetFileAttributesExW(wpath.c_str(),
+                                          GetFileExInfoStandard,
+                                          &file_data)) {
+            have_data = true;
+          }
+          if (have_data) {
             file_summary.latest_time =
                 get_selected_time(file_data, cfg.time_mode);
             file_summary.has_time = true;
@@ -1467,7 +1761,10 @@ auto print_disk_usage(const CommandContext<DU_OPTIONS.size()>& ctx)
     }
   }
 
-  if (cfg.total && passes_threshold(cfg, grand_total)) {
+  // [GNU] The total line is unconditional (du.c:1135); --threshold
+  // filters per-entry lines only. It used to vanish whenever the
+  // grand total itself missed the threshold.
+  if (cfg.total) {
     safePrint(L"");
     if (cfg.show_inodes) {
       safePrint(std::to_string(grand_total));
@@ -1478,7 +1775,7 @@ auto print_disk_usage(const CommandContext<DU_OPTIONS.size()>& ctx)
     print_record_terminator(cfg.null_terminated);
   }
 
-  return all_ok;
+  return all_ok && files0_names_ok;
 }
 
 }  // namespace du_pipeline

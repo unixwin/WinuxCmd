@@ -207,7 +207,8 @@ TEST(realpath, realpath_rejects_empty_operand) {
 
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_TRUE(r.stdout_text.empty());
-  EXPECT_EQ_TEXT(r.stderr_text, "realpath: invalid operand: empty string\n");
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "realpath: '': No such file or directory\n");
 }
 
 TEST(realpath, realpath_rejects_empty_relative_to) {

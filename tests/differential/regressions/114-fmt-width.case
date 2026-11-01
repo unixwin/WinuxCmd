@@ -1,0 +1,8 @@
+cmd: fmt
+args: -w 20
+timeout: 10
+stdin: |
+  the quick brown fox jumps over the lazy dog
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: issue-1462 audit-w2 fmt width
+# Refill to width 20 (goal 93% of width per fmt.c).

@@ -1,0 +1,9 @@
+cmd: cmp
+oracle_version: >=9
+args: a.txt b.txt 2 1
+timeout: 10
+setup: |
+  printf 'XXhello\n' > a.txt
+  printf 'Yhello\n' > b.txt
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w6 issue-1462

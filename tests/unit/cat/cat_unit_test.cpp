@@ -701,3 +701,78 @@ TEST(cat, issue1432_tmp_mount_dotdot_clamps_at_base) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "inside\n");
 }
+
+// #1127-P4: the passthrough arm forwards 64 KiB blocks (was 8 KiB).
+// Output must stay byte-identical for content larger than one block,
+// including NUL bytes and a size that is not a block multiple, across
+// two operands.
+TEST(cat, cat_passthrough_large_binary_exact_issue1127) {
+  TempDir tmp;
+  std::string content;
+  content.reserve(200000);
+  for (int i = 0; i < 200000; ++i) {
+    content.push_back(static_cast<char>(i & 0xFF));
+  }
+  tmp.write("big.bin", content);
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cat.exe", {L"big.bin", L"big.bin"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, content + content);
+}
+
+// #1127-P4: the transform arm bulk-copies verbatim ASCII runs around
+// the bytes it renders specially. With -v, a >64 KiB printable run
+// passes through untouched and control/high bytes keep their GNU
+// ^X / M-x forms at and after the chunk edge.
+TEST(cat, cat_show_nonprinting_long_run_issue1127) {
+  TempDir tmp;
+  const std::string run(70000, 'x');
+  tmp.write("mixed.txt", run + "\x01\x7f\x80\xc3\xa9\tend\nshort\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cat.exe", {L"-v", L"mixed.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // 0x01 -> ^A, 0x7f -> ^?, 0x80 -> M-^@, the C3 A9 pair -> M-C M-)
+  // (each high byte rendered separately), TAB stays TAB under -v.
+  EXPECT_EQ_TEXT(r.stdout_text, run + "^A^?M-^@M-CM-)\tend\nshort\n");
+}
+
+// #1127-P4: line-start bookkeeping (numbering, blank squeezing, line
+// ends) must be identical when a single line straddles the transform
+// chunk boundary.
+TEST(cat, cat_number_squeeze_ends_long_lines_issue1127) {
+  TempDir tmp;
+  const std::string long_line(70000, 'a');
+  tmp.write("lines.txt", long_line + "\n\n\n\nb\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cat.exe", {L"-n", L"-s", L"-E", L"lines.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text,
+                 "     1\t" + long_line + "$\n     2\t$\n     3\tb$\n");
+}
+
+// #1127-P4: -T rendering at the tail of a long verbatim run.
+TEST(cat, cat_show_tabs_after_long_run_issue1127) {
+  TempDir tmp;
+  const std::string run(70000, 'a');
+  tmp.write("tabs.txt", run + "\tx\nnext\tline\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cat.exe", {L"-T", L"tabs.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, run + "^Ix\nnext^Iline\n");
+}

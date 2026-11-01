@@ -211,7 +211,16 @@ bool ls_is_terminal(FILE *stream) {
 namespace ls_pipeline {
 namespace cp = core::pipeline;
 
-enum class SortMode { Name, Size, Time, Version, Extension, Type, None };
+enum class SortMode {
+  Name,
+  Size,
+  Time,
+  Version,
+  Extension,
+  Type,
+  Width,
+  None
+};
 enum class IndicatorStyle { None, Slash, FileType, Classify };
 enum class TimeMode { Modification, Access, Status, Birth };
 enum class TimeStyle { Default, Locale, FullIso, LongIso, Iso, CustomFormat };
@@ -1316,6 +1325,7 @@ auto parse_sort_mode(std::string_view value) -> std::optional<SortMode> {
   if (value == "version") return SortMode::Version;
   if (value == "extension") return SortMode::Extension;
   if (value == "type") return SortMode::Type;
+  if (value == "width") return SortMode::Width;
   if (value == "none") return SortMode::None;
   return std::nullopt;
 }
@@ -1328,7 +1338,7 @@ auto parse_sort_mode(std::string_view value) -> std::optional<SortMode> {
 auto resolve_sort_mode_value(std::string_view value) -> cp::Result<SortMode> {
   if (auto parsed = parse_sort_mode(value)) return *parsed;
   static constexpr std::string_view kNames[] = {
-      "name", "size", "time", "version", "extension", "type", "none",
+      "name", "size", "time", "version", "extension", "type", "width", "none",
   };
   int matches = 0;
   SortMode matched = SortMode::Name;
@@ -1351,6 +1361,7 @@ auto resolve_sort_mode_value(std::string_view value) -> cp::Result<SortMode> {
       "  - 'version'\n"
       "  - 'extension'\n"
       "  - 'type'\n"
+      "  - 'width'\n"
       "  - 'none'\n"
       "Try 'ls --help' for more information.";
   return std::unexpected(message);
@@ -3161,6 +3172,20 @@ auto list_directory(const std::string &path,
                     bool a_dir = is_directory_entry(a);
                     bool b_dir = is_directory_entry(b);
                     if (a_dir != b_dir) return a_dir;  // dirs first
+                    return a.name < b.name;
+                  });
+        break;
+      case SortMode::Width:
+        // [GNU] --sort=width: order by the display width of the quoted
+        // file name, breaking ties by name (coreutils-9.4 ls.c
+        // cmp_width via fileinfo_name_width).
+        std::sort(entries.begin(), entries.end(),
+                  [&](const EntryInfo &a, const EntryInfo &b) {
+                    size_t width_a = string_display_width(
+                        apply_quoting_mode(a.name, *quoting_mode));
+                    size_t width_b = string_display_width(
+                        apply_quoting_mode(b.name, *quoting_mode));
+                    if (width_a != width_b) return width_a < width_b;
                     return a.name < b.name;
                   });
         break;

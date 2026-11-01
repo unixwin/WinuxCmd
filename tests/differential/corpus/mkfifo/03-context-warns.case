@@ -1,0 +1,5 @@
+cmd: mkfifo
+args: --context=user_u:object_r:fifo_file_t:s0 p1
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w1 oracle-coreutils-9.4 mkfifo.c:118-122 context-warn-and-create

@@ -3,6 +3,7 @@
  */
 #include "core/command_macros.h"
 #include "pch/pch.h"
+#include "terminfo_table.h"
 import std;
 import core;
 import utils;
@@ -10,131 +11,8 @@ import container;
 
 namespace {
 
-// [GNU ncurses] One terminal's no-parameter capability strings, verified
-// byte-for-byte against the WSL oracle (Ubuntu 24.04, ncurses 6.4 — the same
-// table rubash#884's inline arm carries). nullptr = the capability is absent
-// for that terminal: ncurses tput prints nothing and exits 1.
-struct TermCaps {
-  const char* bold;
-  const char* sgr0;
-  const char* clear;
-  const char* civis;
-  const char* cnorm;
-  const char* el;
-  const char* ed;
-  const char* smcup;
-  const char* rmcup;
-};
+using namespace terminfo_table;
 
-// The setaf/setab parameter families, per the oracle:
-// - Xterm8 (8-color entries xterm/screen/linux): N formats verbatim into the
-//   termcap fallback "\e[3%p1%dm"/"\e[4%p1%dm" — setaf 10 = "\e[310m".
-// - Colors256 (xterm-256color/screen-256color/tmux-256color): N < 8 →
-//   "\e[3Nm"/"\e[4Nm"; 8-15 → the bright pair "\e[9Nm"/"\e[10Nm" (no ";5;"
-//   palette segment — setaf 9 = "\e[91m"); N >= 16 → "\e[38;5;Nm"/"\e[48;5;Nm".
-enum class Colors { kNone, kXterm8, kColors256 };
-
-constexpr TermCaps kXtermCaps{"\x1b[1m",
-                              "\x1b(B\x1b[m",
-                              "\x1b[H\x1b[2J\x1b[3J",
-                              "\x1b[?25l",
-                              "\x1b[?12l\x1b[?25h",
-                              "\x1b[K",
-                              "\x1b[J",
-                              "\x1b[?1049h\x1b[22;0;0t",
-                              "\x1b[?1049l\x1b[23;0;0t"};
-
-constexpr TermCaps kScreenCaps{"\x1b[1m",
-                               "\x1b[m\x0f",
-                               "\x1b[H\x1b[J",
-                               "\x1b[?25l",
-                               "\x1b[34h\x1b[?25h",
-                               "\x1b[K",
-                               "\x1b[J",
-                               "\x1b[?1049h",
-                               "\x1b[?1049l"};
-
-// tmux-256color's clear carries E3 where plain screen's does not — the one
-// string that differs from kScreenCaps.
-constexpr TermCaps kTmuxCaps{"\x1b[1m",
-                             "\x1b[m\x0f",
-                             "\x1b[H\x1b[J\x1b[3J",
-                             "\x1b[?25l",
-                             "\x1b[34h\x1b[?25h",
-                             "\x1b[K",
-                             "\x1b[J",
-                             "\x1b[?1049h",
-                             "\x1b[?1049l"};
-
-constexpr TermCaps kLinuxCaps{"\x1b[1m",
-                              "\x1b[m\x0f",
-                              "\x1b[H\x1b[J\x1b[3J",
-                              "\x1b[?25l\x1b[?1c",
-                              "\x1b[?25h\x1b[?0c",
-                              "\x1b[K",
-                              "\x1b[J",
-                              nullptr,
-                              nullptr};
-
-constexpr TermCaps kVt100Caps{"\x1b[1m",
-                              "\x1b[m\x0f",
-                              "\x1b[H\x1b[J",
-                              nullptr,
-                              nullptr,
-                              "\x1b[K",
-                              "\x1b[J",
-                              nullptr,
-                              nullptr};
-
-struct TermEntry {
-  const TermCaps* caps;  // nullptr = every string capability absent (dumb)
-  Colors colors;
-  // Numeric capabilities, oracle-verified on Ubuntu 24.04 / ncurses 6.4 in a
-  // non-tty context (WinuxCmd#1460). -1 = the capability is absent: ncurses
-  // prints "-1" and exits 0, it does NOT error.
-  int num_colors;
-  int num_pairs;
-  int num_cols;
-  int num_lines;
-};
-
-constexpr TermEntry kXtermEntry{&kXtermCaps,    Colors::kXterm8, 8,  64, 80, 24};
-constexpr TermEntry kXterm256Entry{
-    &kXtermCaps, Colors::kColors256, 256, 65536, 80, 24};
-constexpr TermEntry kScreenEntry{&kScreenCaps,  Colors::kXterm8, 8,  64, 80, 24};
-constexpr TermEntry kScreen256Entry{
-    &kScreenCaps, Colors::kColors256, 256, 65536, 80, 24};
-constexpr TermEntry kTmuxEntry{
-    &kTmuxCaps, Colors::kColors256, 256, 65536, 80, 24};
-constexpr TermEntry kLinuxEntry{&kLinuxCaps,    Colors::kXterm8, 8,  64, -1, -1};
-constexpr TermEntry kVt100Entry{&kVt100Caps,    Colors::kNone, -1, -1, 80, 24};
-constexpr TermEntry kDumbEntry{nullptr,         Colors::kNone, -1, -1, 80, -1};
-
-// [GNU] Raw terminfo parameterized templates, byte-equal to the oracle. tput
-// prints a parameterized capability's template verbatim when its operand is
-// missing entirely (`tput setaf` with nothing after it).
-constexpr char kSetafTemplate[] =
-    "\x1b[%?%p1%{8}%<%t3%p1%d%e%p1%{16}%<%t9%p1%{8}%-%d%e38;5;%p1%d%;m";
-constexpr char kSetabTemplate[] =
-    "\x1b[%?%p1%{8}%<%t4%p1%d%e%p1%{16}%<%t10%p1%{8}%-%d%e48;5;%p1%d%;m";
-constexpr char kCupTemplate[] = "\x1b[%i%p1%d;%p2%dH";
-
-// [GNU] tput answers capability queries from the terminfo entry named by
-// TERM (or -T). This is the oracle-verified subset; an unlisted TERM falls
-// back to the xterm family — the historical pre-TERM behavior emitted ANSI
-// sequences unconditionally, and nearly every other common Windows-side
-// TERM value (ansi, cygwin, alacritty, wezterm…) is xterm-flavored.
-const TermEntry* lookup_term(std::string_view term) {
-  if (term == "xterm") return &kXtermEntry;
-  if (term == "xterm-256color") return &kXterm256Entry;
-  if (term == "screen") return &kScreenEntry;
-  if (term == "screen-256color") return &kScreen256Entry;
-  if (term == "tmux-256color") return &kTmuxEntry;
-  if (term == "linux") return &kLinuxEntry;
-  if (term == "vt100") return &kVt100Entry;
-  if (term == "dumb") return &kDumbEntry;
-  return &kXtermEntry;
-}
 
 // Capability strings are terminal protocol bytes, not natural language:
 // they bypass i18n translation and are written verbatim. Routing them

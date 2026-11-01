@@ -1,0 +1,7 @@
+cmd: tsort
+args: one two
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: issue-1462 audit-w2 tsort extra-operand
+# GNU: "tsort: extra operand 'two'" + try-help, exit 1, before any
+# input is read (the operands need not exist).

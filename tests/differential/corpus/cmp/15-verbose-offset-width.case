@@ -1,0 +1,11 @@
+cmd: cmp
+oracle_version: >=9
+args: -l a.txt b.txt
+timeout: 10
+setup: |
+  head -c 1001 /dev/zero | tr '\0' 'a' > a.txt
+  head -c 1001 /dev/zero | tr '\0' 'a' > b.txt
+  printf 'b' | dd of=b.txt bs=1 seek=4 conv=notrunc 2>/dev/null
+  printf 'b' | dd of=b.txt bs=1 seek=1000 conv=notrunc 2>/dev/null
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w6 issue-1462

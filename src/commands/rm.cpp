@@ -87,7 +87,7 @@ constexpr auto RM_OPTIONS = std::array{
 namespace rm_pipeline {
 namespace cp = core::pipeline;
 
-enum class InteractiveMode { never, once, always };
+enum class InteractiveMode { never, once, always, sometimes };
 
 struct RmConfig {
   bool force = false;
@@ -99,6 +99,10 @@ struct RmConfig {
   bool no_preserve_root = false;
   bool preserve_root = true;
   bool preserve_root_all = false;
+  // [GNU] RMI_SOMETIMES (the default when no -i/-I/-f/--interactive is
+  // given) prompts only for write-protected entries, and only when
+  // standard input is a terminal (rm.c:189-199, remove.c:213-221).
+  bool stdin_is_tty = false;
 };
 
 auto get_system_error_message(DWORD error) -> std::wstring {
@@ -154,6 +158,26 @@ auto prompt_remove_typed(std::string_view path, std::string_view noun)
     -> bool {
   safeErrorPrint(winux::i18n::format("command.rm.prompt.remove_typed",
                                      "rm: remove {} '{}'? ", noun, path));
+  return read_yes_no_response();
+}
+
+/**
+ * @brief Prompt for a write-protected item.  [GNU] remove.c:316-317:
+ * "remove write-protected <kind> '<path>'?" — used both by -i and by
+ * the default RMI_SOMETIMES mode when a prompt fires at all.
+ */
+auto prompt_remove_write_protected(std::string_view path,
+                                   std::string_view noun) -> bool {
+  safeErrorPrint(winux::i18n::format(
+      "command.rm.prompt.remove_write_protected",
+      "rm: remove write-protected {} '{}'? ", noun, path));
+  return read_yes_no_response();
+}
+
+auto prompt_descend_write_protected_directory(std::string_view path) -> bool {
+  safeErrorPrint(winux::i18n::format(
+      "command.rm.prompt.descend_write_protected_directory",
+      "rm: descend into write-protected directory '{}'? ", path));
   return read_yes_no_response();
 }
 
@@ -260,13 +284,18 @@ auto child_display_path(const std::string& parent_display,
 auto check_paths(const std::vector<std::string>& paths)
     -> cp::Result<std::vector<std::string>> {
   if (paths.empty()) {
-    return std::unexpected("missing file operand");
+    // [GNU] rm's wording is "missing operand" (rm.c:334-337), unlike
+    // the "missing file operand" of cp/mv/ln.
+    return std::unexpected("missing operand");
   }
   return paths;
 }
 
 auto is_root_path(std::string_view path) -> bool {
-  if (path == "/" || path == "\\") {
+  // [GNU] The check is by identity (dev/ino of "/"), so any spelling
+  // that resolves to the root counts — including a run of separators
+  // alone ("//", "\\\\"), which the old exact-match test missed.
+  if (!path.empty() && path.find_first_not_of("/\\") == std::string_view::npos) {
     return true;
   }
 
@@ -292,25 +321,42 @@ auto get_volume_root(const std::wstring& path) -> std::wstring {
 }
 
 auto confirm_bulk_remove(size_t path_count, bool recursive) -> bool {
+  // [GNU] ngettext singular/plural, no "(y/n)" suffix (rm.c:351-364).
   safeErrorPrint("rm: remove ");
   safeErrorPrint(std::to_string(path_count));
-  safeErrorPrint(recursive ? " arguments recursively? (y/n) "
-                           : " arguments? (y/n) ");
+  safeErrorPrint(path_count == 1 ? " argument" : " arguments");
+  safeErrorPrint(recursive ? " recursively? " : "? ");
   return read_yes_no_response();
 }
 
+// [GNU] --interactive WHEN follows argmatch (rm.c:84-96, 258-286): an
+// exact spelling wins, otherwise a prefix that matches spellings of a
+// single mode. (The yes/no/none spellings are the applet's extension
+// of the oracle's never/once/always set.)
 auto parse_interactive_mode(std::string_view value)
     -> std::optional<InteractiveMode> {
-  if (value.empty() || value == "always" || value == "yes") {
+  if (value.empty()) {
     return InteractiveMode::always;
   }
-  if (value == "once") {
-    return InteractiveMode::once;
+  static constexpr std::pair<std::string_view, InteractiveMode> kNames[] = {
+      {"never", InteractiveMode::never},
+      {"no", InteractiveMode::never},
+      {"none", InteractiveMode::never},
+      {"once", InteractiveMode::once},
+      {"always", InteractiveMode::always},
+      {"yes", InteractiveMode::always},
+  };
+  for (auto [name, mode] : kNames) {
+    if (value == name) return mode;
   }
-  if (value == "never" || value == "no" || value == "none") {
-    return InteractiveMode::never;
+  std::optional<InteractiveMode> matched;
+  for (auto [name, mode] : kNames) {
+    if (name.starts_with(value)) {
+      if (matched && *matched != mode) return std::nullopt;
+      matched = mode;
+    }
   }
-  return std::nullopt;
+  return matched;
 }
 
 auto path_is_current_or_parent_directory(std::wstring_view path) -> bool {
@@ -337,14 +383,23 @@ auto remove_empty_directory_path(const std::wstring& wpath,
                                  std::string_view display_path,
                                  const RmConfig& cfg) -> bool {
   DWORD attr = GetFileAttributesW(wpath.c_str());
+  // [GNU] RMI_SOMETIMES: a write-protected directory prompts before
+  // removal when stdin is a terminal (remove.c:213-221, 316-317).
+  if (cfg.interactive == InteractiveMode::sometimes && cfg.stdin_is_tty &&
+      attr != INVALID_FILE_ATTRIBUTES &&
+      (attr & FILE_ATTRIBUTE_READONLY) != 0) {
+    if (!prompt_remove_write_protected(display_path, "directory")) {
+      return true;  // declined: success, directory kept
+    }
+  }
   clear_readonly_attribute(wpath, attr);
   if (!RemoveDirectoryW(wpath.c_str())) {
-    DWORD error = GetLastError();
-    std::wstring errorMsg = get_system_error_message(error);
-    safeErrorPrint("rm: cannot remove directory '");
+    // [GNU] One diagnostic shape for every removal failure:
+    // "cannot remove '<path>': <strerror>" (remove.c:430, 458).
+    safeErrorPrint("rm: cannot remove '");
     safeErrorPrint(display_path);
     safeErrorPrint("': ");
-    safeErrorPrint(errorMsg);
+    safeErrorPrint(win32_posix_error_text(GetLastError()));
     safeErrorPrint("\n");
     return false;
   }
@@ -361,15 +416,29 @@ auto remove_empty_directory_path(const std::wstring& wpath,
 
 auto remove_file_path(const std::wstring& wpath, std::string_view display_path,
                       const RmConfig& cfg) -> bool {
-  DWORD attr = GetFileAttributesW(wpath.c_str());
+  WIN32_FILE_ATTRIBUTE_DATA data{};
+  const bool have_data = GetFileAttributesExW(wpath.c_str(),
+                                              GetFileExInfoStandard, &data);
+  DWORD attr = have_data ? data.dwFileAttributes : INVALID_FILE_ATTRIBUTES;
+  // [GNU] RMI_SOMETIMES: a write-protected file prompts before removal
+  // when stdin is a terminal; without the prompt the old code silently
+  // cleared the attribute and deleted (remove.c:213-221, 316-317).
+  if (cfg.interactive == InteractiveMode::sometimes && cfg.stdin_is_tty &&
+      attr != INVALID_FILE_ATTRIBUTES &&
+      (attr & FILE_ATTRIBUTE_READONLY) != 0) {
+    const bool empty_file =
+        have_data && data.nFileSizeHigh == 0 && data.nFileSizeLow == 0;
+    if (!prompt_remove_write_protected(
+            display_path, empty_file ? "regular empty file" : "regular file")) {
+      return true;  // declined: success, file kept
+    }
+  }
   clear_readonly_attribute(wpath, attr);
   if (!DeleteFileW(wpath.c_str())) {
-    DWORD error = GetLastError();
-    std::wstring errorMsg = get_system_error_message(error);
-    safeErrorPrint("rm: cannot remove file '");
+    safeErrorPrint("rm: cannot remove '");
     safeErrorPrint(display_path);
     safeErrorPrint("': ");
-    safeErrorPrint(errorMsg);
+    safeErrorPrint(win32_posix_error_text(GetLastError()));
     safeErrorPrint("\n");
     return false;
   }
@@ -391,20 +460,15 @@ auto build_config(const CommandContext<RM_OPTIONS.size()>& ctx)
       ctx.get<bool>("--dir", false) || ctx.get<bool>("-d", false);
   cfg.verbose = ctx.get<bool>("--verbose", false) || ctx.get<bool>("-v", false);
   cfg.one_file_system = ctx.get<bool>("--one-file-system", false);
-  cfg.no_preserve_root = ctx.get<bool>("--no-preserve-root", false);
-  std::string preserve_val = ctx.get<std::string>("--preserve-root", "");
-  bool explicit_preserve = ctx.has("--preserve-root");
-  if (explicit_preserve) {
-    cfg.preserve_root = true;
-    cfg.preserve_root_all = (preserve_val == "all");
-  } else {
-    cfg.preserve_root = !cfg.no_preserve_root;
-  }
+  DWORD console_mode = 0;
+  cfg.stdin_is_tty =
+      GetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), &console_mode) != 0;
 
   if (!ctx.metas) {
     return cfg;
   }
 
+  bool saw_prompt_option = false;
   for (const auto& occurrence : ctx.options.occurrences()) {
     if (occurrence.index >= ctx.metas->size()) {
       continue;
@@ -414,22 +478,53 @@ auto build_config(const CommandContext<RM_OPTIONS.size()>& ctx)
     if (meta.short_name == "-f" || meta.long_name == "--force") {
       cfg.force = true;
       cfg.interactive = InteractiveMode::never;
+      saw_prompt_option = true;
     } else if (meta.short_name == "-i") {
       cfg.force = false;
       cfg.interactive = InteractiveMode::always;
+      saw_prompt_option = true;
     } else if (meta.short_name == "-I") {
       cfg.force = false;
       cfg.interactive = InteractiveMode::once;
+      saw_prompt_option = true;
     } else if (meta.long_name == "--interactive") {
       cfg.force = false;
+      saw_prompt_option = true;
       auto value = std::get_if<std::string>(&occurrence.value);
       auto mode = parse_interactive_mode(value ? *value : std::string_view{});
       if (!mode.has_value()) {
-        return std::unexpected("invalid argument '" + *value +
-                               "' for '--interactive'");
+        return std::unexpected(
+            "invalid argument '" + *value +
+            "' for '--interactive'\n"
+            "Valid arguments are:\n"
+            "  - 'never', 'no', 'none'\n"
+            "  - 'once'\n"
+            "  - 'always', 'yes'\n"
+            "Try 'rm --help' for more information.");
       }
       cfg.interactive = *mode;
+    } else if (meta.long_name == "--no-preserve-root") {
+      // [GNU] --preserve-root/--no-preserve-root toggle one boolean in
+      // argv order; the later option wins (rm.c:295-322).
+      cfg.preserve_root = false;
+      cfg.preserve_root_all = false;
+    } else if (meta.long_name == "--preserve-root") {
+      auto value = std::get_if<std::string>(&occurrence.value);
+      const std::string text = value ? *value : std::string{};
+      if (!text.empty() && text != "all") {
+        return std::unexpected("unrecognized --preserve-root argument: '" +
+                               text + "'");
+      }
+      cfg.preserve_root = true;
+      cfg.preserve_root_all = (text == "all");
     }
+  }
+  cfg.no_preserve_root = !cfg.preserve_root;
+
+  // [GNU] With no prompting option at all, rm runs in RMI_SOMETIMES
+  // mode: prompt only for write-protected entries, only on a terminal.
+  if (!saw_prompt_option) {
+    cfg.interactive = InteractiveMode::sometimes;
   }
 
   return cfg;
@@ -456,18 +551,28 @@ auto remove_path(const std::string& path, const RmConfig& cfg) -> bool {
   // INVALID_FILE_ATTRIBUTES for a dangling link; both misclassify.
   const std::optional<DWORD> link_attr = operand_link_attributes(wpath);
 
-  if (cfg.recursive &&
-      path_is_current_or_parent_directory(utf8_to_wstring(path))) {
+  // [GNU] The '.'/'..' refusal is unconditional (remove.c:470-478);
+  // it used to be gated on -r here, so `rm -d .` attempted the removal.
+  if (path_is_current_or_parent_directory(utf8_to_wstring(path))) {
     safeErrorPrint("rm: refusing to remove '.' or '..' directory: skipping '");
     safeErrorPrint(path);
     safeErrorPrint("'\n");
     return false;
   }
 
-  if (cfg.preserve_root && is_root_path(path)) {
-    safeErrorPrint("rm: it is dangerous to operate recursively on root '");
-    safeErrorPrint(path);
-    safeErrorPrint("'\n");
+  // [GNU] The root failsafe is an identity check loaded only for
+  // recursive runs (rm.c:340-347): a bare `rm /` without -r reports
+  // "Is a directory" from the directory branch below instead.
+  // Wording follows lib/root-dev-ino.h ROOT_DEV_INO_WARN.
+  if (cfg.recursive && cfg.preserve_root && is_root_path(path)) {
+    if (path == "/" || path == "\\") {
+      safeErrorPrint("rm: it is dangerous to operate recursively on '/'\n");
+    } else {
+      safeErrorPrint("rm: it is dangerous to operate recursively on '");
+      safeErrorPrint(path);
+      safeErrorPrint("' (same as '/')\n");
+    }
+    safeErrorPrint("rm: use --no-preserve-root to override this failsafe\n");
     return false;
   }
 
@@ -499,15 +604,25 @@ auto remove_path(const std::string& path, const RmConfig& cfg) -> bool {
 
   if (attr == INVALID_FILE_ATTRIBUTES &&
       !(link_attr && !operand.had_trailing_separator)) {
-    if (cfg.force) {
+    // [GNU] -f ignores only the "guaranteed nonexistent" errnos
+    // (ENOENT, ENOTDIR, EINVAL, EILSEQ — remove.c:330-360); any other
+    // probe failure is a real error even under -f.
+    DWORD probe_error = 0;
+    GetFileAttributesW(wpath.c_str());
+    probe_error = GetLastError();
+    const bool nonexistent = probe_error == ERROR_FILE_NOT_FOUND ||
+                             probe_error == ERROR_PATH_NOT_FOUND ||
+                             probe_error == ERROR_INVALID_NAME;
+    if (cfg.force && nonexistent) {
       return true;
-    } else {
-      // OPTIMIZED: Avoid wstring concatenation
-      safeErrorPrint("rm: cannot remove '");
-      safeErrorPrint(path);
-      safeErrorPrint("': No such file or directory\n");
-      return false;
     }
+    safeErrorPrint("rm: cannot remove '");
+    safeErrorPrint(path);
+    safeErrorPrint("': ");
+    safeErrorPrint(nonexistent ? "No such file or directory"
+                               : win32_posix_error_text(probe_error));
+    safeErrorPrint("\n");
+    return false;
   }
 
   if (operand.had_trailing_separator &&
@@ -539,8 +654,14 @@ auto remove_path(const std::string& path, const RmConfig& cfg) -> bool {
     } else if (is_directory) {
       if (cfg.recursive) {
         top_dir_empty = directory_is_empty(wpath);
-        response = top_dir_empty ? prompt_remove_directory(path)
-                                 : prompt_descend_directory(path);
+        // [GNU] Under -i a write-protected directory gets the
+        // write-protected descend prompt (remove.c:278-279).
+        response =
+            top_dir_empty
+                ? prompt_remove_directory(path)
+                : ((attr & FILE_ATTRIBUTE_READONLY) != 0
+                       ? prompt_descend_write_protected_directory(path)
+                       : prompt_descend_directory(path));
       } else if (cfg.remove_empty_dir) {
         top_dir_empty = directory_is_empty(wpath);
         if (top_dir_empty) {
@@ -553,12 +674,18 @@ auto remove_path(const std::string& path, const RmConfig& cfg) -> bool {
       }
     } else {
       WIN32_FILE_ATTRIBUTE_DATA data{};
+      const bool have_data =
+          GetFileAttributesExW(wpath.c_str(), GetFileExInfoStandard, &data);
       const bool empty_file =
-          GetFileAttributesExW(wpath.c_str(), GetFileExInfoStandard,
-                               &data) &&
-          data.nFileSizeHigh == 0 && data.nFileSizeLow == 0;
-      response = prompt_remove_typed(
-          path, empty_file ? "regular empty file" : "regular file");
+          have_data && data.nFileSizeHigh == 0 && data.nFileSizeLow == 0;
+      const std::string_view noun =
+          empty_file ? "regular empty file" : "regular file";
+      // [GNU] Under -i a write-protected file gets the
+      // write-protected prompt form (remove.c:316-317).
+      response = (have_data &&
+                  (data.dwFileAttributes & FILE_ATTRIBUTE_READONLY) != 0)
+                     ? prompt_remove_write_protected(path, noun)
+                     : prompt_remove_typed(path, noun);
     }
     if (prompted && !response) {
       return true;  // user declined, treat as success
@@ -612,12 +739,13 @@ auto remove_path(const std::string& path, const RmConfig& cfg) -> bool {
       if (cfg.one_file_system && !root_volume.empty()) {
         std::wstring current_volume = get_volume_root(dirPath);
         if (!current_volume.empty() && current_volume != root_volume) {
-          if (cfg.verbose) {
-            safePrint("skipping directory '");
-            safePrint(dirDisplay);
-            safePrintLn("' on a different file system");
-          }
-          return true;
+          // [GNU] A -x skip is always reported on stderr and fails
+          // the run (remove.c:557-567); it used to be a verbose-only
+          // stdout note that left the exit status at 0.
+          safeErrorPrint("rm: skipping '");
+          safeErrorPrint(dirDisplay);
+          safeErrorPrint("', since it's on a different device\n");
+          return false;
         }
       }
 
@@ -635,12 +763,11 @@ auto remove_path(const std::string& path, const RmConfig& cfg) -> bool {
       if (hFind == INVALID_HANDLE_VALUE) {
         DWORD error = GetLastError();
         if (error != ERROR_FILE_NOT_FOUND) {
-          // Directory is inaccessible or other error
-          std::wstring errorMsg = get_system_error_message(error);
-          safeErrorPrint("rm: cannot access directory '");
+          // [GNU] FTS_DNR wording (remove.c:509-513).
+          safeErrorPrint("rm: cannot read directory '");
           safeErrorPrint(dirDisplay);
           safeErrorPrint("': ");
-          safeErrorPrint(errorMsg);
+          safeErrorPrint(win32_posix_error_text(error));
           safeErrorPrint("\n");
           return false;
         }
@@ -656,13 +783,29 @@ auto remove_path(const std::string& path, const RmConfig& cfg) -> bool {
               // Prompt before descending into subdirectories.  Empty
               // subdirectories get no descend prompt: their own removal
               // prompt happens at the end of the recursion (#1327).
-              if (cfg.interactive == InteractiveMode::always &&
-                  !(findData.dwFileAttributes &
+              const bool item_write_protected =
+                  (findData.dwFileAttributes & FILE_ATTRIBUTE_READONLY) != 0;
+              if (!(findData.dwFileAttributes &
                     FILE_ATTRIBUTE_REPARSE_POINT) &&
                   !directory_is_empty(itemPath)) {
-                if (!prompt_descend_directory(itemDisplay)) {
-                  all_removed = false;  // user declined, leave subtree
-                  continue;
+                if (cfg.interactive == InteractiveMode::always) {
+                  const bool declined =
+                      item_write_protected
+                          ? !prompt_descend_write_protected_directory(
+                                itemDisplay)
+                          : !prompt_descend_directory(itemDisplay);
+                  if (declined) {
+                    all_removed = false;  // user declined, leave subtree
+                    continue;
+                  }
+                } else if (cfg.interactive == InteractiveMode::sometimes &&
+                           cfg.stdin_is_tty && item_write_protected) {
+                  // [GNU] RMI_SOMETIMES descend prompt for a
+                  // write-protected directory (remove.c:278-279).
+                  if (!prompt_descend_write_protected_directory(itemDisplay)) {
+                    all_removed = false;
+                    continue;
+                  }
                 }
               }
               // Store subdirectory for later recursive deletion
@@ -678,7 +821,14 @@ auto remove_path(const std::string& path, const RmConfig& cfg) -> bool {
                            findData.nFileSizeLow == 0) {
                   noun = "regular empty file";
                 }
-                if (!prompt_remove_typed(itemDisplay, noun)) {
+                // [GNU] Write-protected entries get the
+                // write-protected prompt form under -i too
+                // (remove.c:316-317).
+                const bool declined =
+                    (findData.dwFileAttributes & FILE_ATTRIBUTE_READONLY) != 0
+                        ? !prompt_remove_write_protected(itemDisplay, noun)
+                        : !prompt_remove_typed(itemDisplay, noun);
+                if (declined) {
                   all_removed = false;  // user declined
                   continue;
                 }
@@ -746,6 +896,17 @@ auto remove_path(const std::string& path, const RmConfig& cfg) -> bool {
       }
       return remove_empty_directory_path(dirPath, dirDisplay, cfg);
     };
+
+    // [GNU] RMI_SOMETIMES: a write-protected, non-empty top-level
+    // directory gets the descend prompt before anything inside it is
+    // touched (remove.c:278-279).
+    if (cfg.interactive == InteractiveMode::sometimes && cfg.stdin_is_tty &&
+        (attr & FILE_ATTRIBUTE_READONLY) != 0 &&
+        !directory_is_empty(wpath)) {
+      if (!prompt_descend_write_protected_directory(path)) {
+        return true;  // declined: success, tree kept
+      }
+    }
 
     // Start recursive directory deletion.  A top-level empty directory
     // already got its "remove directory" prompt above, so the recursion
@@ -885,8 +1046,8 @@ REGISTER_COMMAND(
 
   auto result = process_command(ctx);
   if (!result) {
-    if (result.error() == "missing file operand") {
-      safeErrorPrintLn("rm: missing file operand");
+    if (result.error() == "missing operand") {
+      safeErrorPrintLn("rm: missing operand");
       safeErrorPrintLn("Try 'rm --help' for more information.");
       return 1;
     }

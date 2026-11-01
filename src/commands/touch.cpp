@@ -803,7 +803,11 @@ auto parse_touch_timestamp(const std::string& input)
     return std::nullopt;
   }
   if (!is_digits(main)) return std::nullopt;
-  if (!seconds_part.empty() &&
+  // [GNU] A present '.' REQUIRES the total suffix to be exactly
+  // ".ss" (posixtm.c:100-107): a trailing dot with no digits is
+  // invalid. The old guard skipped the check when the fraction was
+  // empty, accepting '01010000.'.
+  if (dot != std::string::npos &&
       (seconds_part.size() != 2 || !is_digits(seconds_part))) {
     return std::nullopt;
   }
@@ -828,6 +832,17 @@ auto parse_touch_timestamp(const std::string& input)
   int minute = *parse_int(std::string_view(main).substr(pos + 6, 2));
   int second = seconds_part.empty() ? 0 : *parse_int(seconds_part);
 
+  // [GNU] posixtm admits leap seconds (ss 60/61), which mktime
+  // normalizes into the following minute (posixtm.c:195-205).
+  // SYSTEMTIME cannot hold them, so convert with 0 and add the
+  // seconds onto the resulting FILETIME. (Pre-1601 years stay
+  // rejected: the FILETIME epoch is a hard platform floor.)
+  int leap_seconds = 0;
+  if (second > 59) {
+    leap_seconds = second;
+    second = 0;
+  }
+
   SYSTEMTIME st{};
   st.wYear = static_cast<WORD>(year);
   st.wMonth = static_cast<WORD>(month);
@@ -835,7 +850,16 @@ auto parse_touch_timestamp(const std::string& input)
   st.wHour = static_cast<WORD>(hour);
   st.wMinute = static_cast<WORD>(minute);
   st.wSecond = static_cast<WORD>(second);
-  return zone_time_to_filetime(st, std::nullopt);
+  auto converted = zone_time_to_filetime(st, std::nullopt);
+  if (converted && leap_seconds > 0) {
+    ULARGE_INTEGER ticks{};
+    ticks.LowPart = converted->dwLowDateTime;
+    ticks.HighPart = converted->dwHighDateTime;
+    ticks.QuadPart += static_cast<uint64_t>(leap_seconds) * 10000000ULL;
+    converted->dwLowDateTime = ticks.LowPart;
+    converted->dwHighDateTime = ticks.HighPart;
+  }
+  return converted;
 }
 
 auto file_open_flags(bool no_dereference) -> DWORD {
@@ -872,6 +896,16 @@ auto read_times_from_file(const std::wstring& wpath, bool no_dereference,
 
 auto touch_operand_error(std::string_view path, DWORD error) -> std::string {
   return "touch: cannot touch '" + std::string(path) + "': " +
+         win32_posix_error_text(error, {.invalid_name_as_missing = true});
+}
+
+// [GNU] touch.c separates the open/create failure ("cannot touch
+// %s: <err>", :194) from the time-setting failure ("setting times
+// of %s: <err>", :200). Both post-open failures here used to print
+// 'cannot touch' with NO reason text at all.
+auto touch_setting_times_error(std::string_view path, DWORD error)
+    -> std::string {
+  return "touch: setting times of '" + std::string(path) + "': " +
          win32_posix_error_text(error, {.invalid_name_as_missing = true});
 }
 
@@ -915,6 +949,10 @@ auto apply_touch_one(const std::string& path,
 
   if (!h) {
     DWORD e = GetLastError();
+    // [GNU] With -h the failure is a time-setting failure on the
+    // link itself: "setting times of '<f>': No such file or
+    // directory" for a missing file, not "cannot touch".
+    const bool setting_times_form = no_dereference;
     // [GNU] -c/--no-create skips files that do not exist. A literal-glob
     // operand with no matches (GNU glob semantics: unmatched patterns stay
     // literal) may name a file that cannot exist on this filesystem at all
@@ -926,15 +964,14 @@ auto apply_touch_one(const std::string& path,
          e == ERROR_INVALID_NAME || e == ERROR_INVALID_PARAMETER)) {
       return true;
     }
-    safeErrorPrintLn(touch_operand_error(path, e));
+    safeErrorPrintLn(setting_times_form ? touch_setting_times_error(path, e)
+                                        : touch_operand_error(path, e));
     return false;
   }
 
   FILETIME c{}, cur_a{}, cur_m{};
   if (!GetFileTime(h.get(), &c, &cur_a, &cur_m)) {
-    safeErrorPrint("touch: cannot touch '");
-    safeErrorPrint(path);
-    safeErrorPrint("'\n");
+    safeErrorPrintLn(touch_operand_error(path, GetLastError()));
     return false;
   }
 
@@ -963,9 +1000,7 @@ auto apply_touch_one(const std::string& path,
   bool ok = SetFileTime(h.get(), nullptr, pa, pm) != 0;
 
   if (!ok) {
-    safeErrorPrint("touch: cannot touch '");
-    safeErrorPrint(path);
-    safeErrorPrint("'\n");
+    safeErrorPrintLn(touch_setting_times_error(path, GetLastError()));
     return false;
   }
 
@@ -974,23 +1009,53 @@ auto apply_touch_one(const std::string& path,
 
 auto process_command(const CommandContext<TOUCH_OPTIONS.size()>& ctx)
     -> cp::Result<bool> {
-  if (ctx.positionals.empty()) return std::unexpected("missing file operand");
-
   bool flag_a = ctx.get<bool>("-a", false);
   bool flag_m = ctx.get<bool>("-m", false);
 
-  std::string time_word = ctx.get<std::string>("--time", "");
-  if (!time_word.empty()) {
-    if (time_word == "access" || time_word == "atime" || time_word == "use") {
-      flag_a = true;
-      flag_m = false;
-    } else if (time_word == "modify" || time_word == "mtime") {
-      flag_a = false;
-      flag_m = true;
-    } else {
-      return std::unexpected("invalid argument '" + time_word +
-                             "' for '--time'");
+  // [GNU] --time is ADDITIVE: each occurrence ORs its mask into the
+  // selection (touch.c:319-322, change_times |= XARGMATCH(...)), on
+  // top of -a/-m. It used to REPLACE the selection (discarding a
+  // sibling -a/-m) and only the last occurrence was ever read.
+  // Values are argmatch-matched: any unambiguous prefix of the GNU
+  // word set works, synonyms share a mask (T2/T3).
+  for (const auto& occurrence : ctx.string_occurrences({"--time"})) {
+    const std::string_view word = occurrence.value;
+    struct TimeWord {
+      std::string_view text;
+      int mask;  // 1 = atime, 2 = mtime
+    };
+    static constexpr TimeWord time_words[] = {
+        {"atime", 1}, {"access", 1}, {"use", 1},
+        {"mtime", 2}, {"modify", 2},
+    };
+    int matched_mask = 0;
+    size_t matches = 0;
+    bool ambiguous = false;
+    for (const TimeWord& candidate : time_words) {
+      if (candidate.text == word) {
+        matched_mask = candidate.mask;
+        matches = 1;
+        ambiguous = false;
+        break;
+      }
+      if (candidate.text.starts_with(word)) {
+        if (matched_mask != 0 && matched_mask != candidate.mask) {
+          ambiguous = true;
+        }
+        matched_mask = candidate.mask;
+        ++matches;
+      }
     }
+    if (matches == 0 || ambiguous) {
+      return std::unexpected(
+          "invalid argument '" + std::string(word) +
+          "' for '--time'\nValid arguments are:\n"
+          "  - 'atime', 'access', 'use'\n"
+          "  - 'mtime', 'modify'\n"
+          "Try 'touch --help' for more information.");
+    }
+    if (matched_mask & 1) flag_a = true;
+    if (matched_mask & 2) flag_m = true;
   }
 
   bool update_access = flag_a;
@@ -1006,9 +1071,35 @@ auto process_command(const CommandContext<TOUCH_OPTIONS.size()>& ctx)
   bool no_dereference =
       ctx.get<bool>("--no-dereference", false) || ctx.get<bool>("-h", false);
 
-  std::optional<TimePair> ref_times = std::nullopt;
+  // [GNU] Time sources (touch.c:336-340): -t conflicts with -r and
+  // with -d ("cannot specify times from more than one source");
+  // -r and -d COMBINE, the -d string being evaluated against the
+  // reference times (T5 below). Repeated -d/-t keep only the LAST
+  // occurrence, evaluated once — occurrences used to be CHAINED,
+  // each result seeding the next (T4).
+  std::string last_date_value;
+  std::string last_stamp_value;
+  bool has_date = false;
+  bool has_stamp = false;
+  for (const auto& occurrence :
+       ctx.string_occurrences({"--date", "-d", "-t"})) {
+    if (occurrence.short_name == "-t") {
+      has_stamp = true;
+      last_stamp_value = occurrence.value;
+    } else {
+      has_date = true;
+      last_date_value = occurrence.value;
+    }
+  }
+
   std::string ref_path = ctx.get<std::string>("--reference", "");
   if (ref_path.empty()) ref_path = ctx.get<std::string>("-r", "");
+
+  if (has_stamp && (has_date || !ref_path.empty())) {
+    return std::unexpected("cannot specify times from more than one source");
+  }
+
+  std::optional<TimePair> ref_times = std::nullopt;
   if (!ref_path.empty()) {
     // [GNU] single-line diagnostic with the errno text:
     // "touch: failed to get attributes of 'dang': No such file or directory"
@@ -1023,31 +1114,48 @@ auto process_command(const CommandContext<TOUCH_OPTIONS.size()>& ctx)
   }
 
   std::optional<TimePair> date_times = std::nullopt;
-  FILETIME base_time{};
-  if (ref_times.has_value()) {
-    base_time = ref_times->mtime;
-  } else {
-    GetSystemTimeAsFileTime(&base_time);
-  }
-
-  for (const auto& occurrence :
-       ctx.string_occurrences({"--date", "-d", "-t"})) {
-    std::optional<FILETIME> ft;
-    if (occurrence.short_name == "-t") {
-      ft = parse_touch_timestamp(occurrence.value);
-    } else {
-      ft = parse_gnu_date_string(occurrence.value, base_time);
-    }
+  if (has_stamp) {
+    auto ft = parse_touch_timestamp(last_stamp_value);
     if (!ft.has_value()) {
-      // [GNU] one diagnostic line carries the offending string:
-      // "touch: invalid date format 'xyz'"
-      return std::unexpected("invalid date format '" + occurrence.value + "'");
+      return std::unexpected("invalid date format '" + last_stamp_value + "'");
     }
     date_times = TimePair{*ft, *ft};
-    base_time = *ft;
+  } else if (has_date) {
+    if (ref_times.has_value()) {
+      // [GNU] -r + -d: the string is evaluated against the
+      // reference ATIME for the atime field and the reference MTIME
+      // for the mtime field (touch.c:354-360). A single mtime base
+      // used to serve both (T5).
+      auto atime_result =
+          parse_gnu_date_string(last_date_value, ref_times->atime);
+      auto mtime_result =
+          parse_gnu_date_string(last_date_value, ref_times->mtime);
+      if (!atime_result.has_value() || !mtime_result.has_value()) {
+        return std::unexpected("invalid date format '" + last_date_value +
+                               "'");
+      }
+      date_times = TimePair{*atime_result, *mtime_result};
+    } else {
+      FILETIME now{};
+      GetSystemTimeAsFileTime(&now);
+      auto ft = parse_gnu_date_string(last_date_value, now);
+      if (!ft.has_value()) {
+        return std::unexpected("invalid date format '" + last_date_value +
+                               "'");
+      }
+      date_times = TimePair{*ft, *ft};
+    }
   }
 
   (void)ctx.get<bool>("-f", false);
+
+  // [GNU] All validation above precedes the missing-operand check
+  // (touch.c: option errors abort during/right after getopt;
+  // missing operand is diagnosed last, with the try-help line —
+  // T6). This check used to be the FIRST statement here.
+  if (ctx.positionals.empty()) {
+    return std::unexpected("missing file operand");
+  }
 
   bool all_ok = true;
   for (auto p : ctx.positionals) {
@@ -1066,6 +1174,33 @@ auto process_command(const CommandContext<TOUCH_OPTIONS.size()>& ctx)
       expanded.push_back(file_arg);
     }
     for (const auto& f : expanded) {
+      if (f == "-") {
+        // [GNU] Operand '-' retimes standard output (touch.c:
+        // 127-128) instead of naming a literal file (T1).
+        HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+        FILETIME set_a{}, set_m{};
+        if (date_times.has_value()) {
+          set_a = date_times->atime;
+          set_m = date_times->mtime;
+        } else if (ref_times.has_value()) {
+          set_a = ref_times->atime;
+          set_m = ref_times->mtime;
+        } else {
+          GetSystemTimeAsFileTime(&set_a);
+          set_m = set_a;
+        }
+        FILETIME* pa = update_access ? &set_a : nullptr;
+        FILETIME* pm = update_modify ? &set_m : nullptr;
+        if (out == nullptr || out == INVALID_HANDLE_VALUE ||
+            SetFileTime(out, nullptr, pa, pm) == 0) {
+          safeErrorPrintLn(touch_setting_times_error(
+              "-", out == nullptr || out == INVALID_HANDLE_VALUE
+                       ? ERROR_INVALID_HANDLE
+                       : GetLastError()));
+          all_ok = false;
+        }
+        continue;
+      }
       if (!apply_touch_one(f, ctx, update_access, update_modify, no_create,
                            no_dereference, ref_times, date_times)) {
         all_ok = false;
@@ -1093,6 +1228,14 @@ REGISTER_COMMAND(touch, "touch", "touch [OPTION]... FILE...",
   using namespace touch_pipeline;
   auto result = process_command(ctx);
   if (!result) {
+    // [GNU] Usage-class failures carry the try-help line
+    // (usage(EXIT_FAILURE) in touch.c).
+    if (result.error() == "missing file operand" ||
+        result.error() == "cannot specify times from more than one source") {
+      safeErrorPrintLn("touch: " + result.error());
+      safeErrorPrintLn("Try 'touch --help' for more information.");
+      return 1;
+    }
     cp::report_error(result, L"touch");
     return 1;
   }

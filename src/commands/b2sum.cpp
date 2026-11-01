@@ -93,18 +93,43 @@ auto build_config(const CommandContext<B2SUM_OPTIONS.size()>& ctx)
     length_opt = ctx.get<std::string>("-l", "");
   }
   if (!length_opt.empty()) {
-    auto [ptr, ec] =
-        std::from_chars(length_opt.data(),
-                        length_opt.data() + length_opt.size(), cfg.digest_bits);
-    if (ec != std::errc() || ptr != length_opt.data() + length_opt.size()) {
-      return std::unexpected("invalid digest length");
+    // [GNU] digest.c: -l is parsed with xdectoumax ("invalid length"),
+    // then validated in two stages: a non-multiple of 8 reports
+    // "length is not a multiple of 8" at option-parse time, and a value
+    // above 512 reports the BLAKE2b maximum later in main().  A length
+    // of 0 is "unspecified" and selects the 512-bit default.  Junk and
+    // a leading '-' fail inside xdectoumax with the single
+    // "invalid length: '<arg>'" line (leading whitespace and a '+' sign
+    // are accepted; overflow appends the EOVERFLOW strerror, mirrored
+    // by winux::i18n::translate_error).
+    const std::string& raw = length_opt;
+    size_t pos = 0;
+    while (pos < raw.size() &&
+           std::isspace(static_cast<unsigned char>(raw[pos]))) {
+      ++pos;
     }
-    if (cfg.digest_bits <= 0 || cfg.digest_bits > 512 ||
-        cfg.digest_bits % 8 != 0) {
+    errno = 0;
+    char* end = nullptr;
+    const unsigned long long parsed =
+        std::strtoull(raw.c_str() + pos, &end, 10);
+    const bool negative = pos < raw.size() && raw[pos] == '-';
+    if (negative || end == raw.c_str() + pos || *end != '\0') {
+      return std::unexpected("invalid length: '" + raw + "'");
+    }
+    if (errno == ERANGE) {
+      return std::unexpected("invalid length: '" + raw +
+                             "': Value too large for defined data type");
+    }
+    if (parsed % 8 != 0) {
+      return std::unexpected("invalid length: '" + raw +
+                             "'\nb2sum: length is not a multiple of 8");
+    }
+    if (parsed > 512) {
       return std::unexpected(
-          "digest length must be a positive multiple of 8 and at most 512 "
-          "bits");
+          "invalid length: '" + raw +
+          "'\nb2sum: maximum digest length for 'BLAKE2b' is 512 bits");
     }
+    if (parsed != 0) cfg.digest_bits = static_cast<int>(parsed);
   }
 
   cfg.check_mode =
@@ -229,7 +254,8 @@ auto run(const Config& cfg) -> int {
       continue;
     }
 
-    // GNU/MSYS defaults to binary marker on Windows; --text uses a space.
+    // The marker follows the -b/-t resolution in build_config (text "  "
+    // by default, "*" with -b); the bytes hashed are always raw.
     std::string output;
     if (cfg.tag) {
       std::string tag = "BLAKE2b";
@@ -267,7 +293,11 @@ REGISTER_COMMAND(
   auto cfg_result = build_config(ctx);
   if (!cfg_result) {
     cp::report_error(cfg_result, L"b2sum");
-    safeErrorPrintLn("Try 'b2sum --help' for more information.");
+    // [GNU] -l failures are diagnosed by error() in digest.c, not by
+    // usage(), so they carry no "Try ... --help" line.
+    if (!cfg_result.error().starts_with("invalid length:")) {
+      safeErrorPrintLn("Try 'b2sum --help' for more information.");
+    }
     return 1;
   }
 

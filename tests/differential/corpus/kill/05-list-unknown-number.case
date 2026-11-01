@@ -1,0 +1,5 @@
+cmd: kill
+oracle: linux
+args: -l 9999
+source: tests/differential/corpus/kill/05-list-unknown-number.case
+tags: gnu-compat kill list-conversion error-wording audit-w7

@@ -129,7 +129,7 @@ TEST(csplit, csplit_missing_input_reports_help_hint) {
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_TRUE(r.stdout_text.empty());
   EXPECT_EQ(r.stderr_text,
-            "csplit: missing input file\n"
+            "csplit: missing operand\n"
             "Try 'csplit --help' for more information.\n");
 }
 
@@ -149,7 +149,7 @@ TEST(csplit, csplit_missing_pattern_reports_help_hint) {
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_TRUE(r.stdout_text.empty());
   EXPECT_EQ(r.stderr_text,
-            "csplit: missing pattern\n"
+            "csplit: missing operand after 'test.txt'\n"
             "Try 'csplit --help' for more information.\n");
 }
 

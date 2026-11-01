@@ -156,7 +156,12 @@ TEST(kill, list_signals_table_long) {
   EXPECT_TRUE(r.stdout_text.find("32 RTMIN") != std::string::npos);
 }
 
-TEST(kill, convert_signal_name_to_number_inline) {
+// [GNU] util-linux kill.c: the -l arm (kill.c:281-296) resolves the
+// argument with arg_to_signum and prints it back through
+// print_signal_name (kill.c:106-121) -- a name argument therefore prints
+// its canonical NAME, never its number. (Printing the number for a name
+// is procps kill semantics, not this oracle.)
+TEST(kill, convert_signal_name_to_canonical_name_inline) {
   Pipeline p;
   p.add(L"kill.exe", {L"-lHUP"});
 
@@ -168,10 +173,10 @@ TEST(kill, convert_signal_name_to_number_inline) {
   TEST_LOG("kill.exe -lHUP output", r.stdout_text);
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "1\n");
+  EXPECT_EQ_TEXT(r.stdout_text, "HUP\n");
 }
 
-TEST(kill, convert_sig_prefixed_name_to_number_with_space) {
+TEST(kill, convert_sig_prefixed_name_to_canonical_name_with_space) {
   Pipeline p;
   p.add(L"kill.exe", {L"-l", L"SIGHUP"});
 
@@ -183,7 +188,7 @@ TEST(kill, convert_sig_prefixed_name_to_number_with_space) {
   TEST_LOG("kill.exe -l SIGHUP output", r.stdout_text);
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "1\n");
+  EXPECT_EQ_TEXT(r.stdout_text, "HUP\n");
 }
 
 TEST(kill, convert_signal_number_to_name_inline) {
@@ -216,7 +221,9 @@ TEST(kill, convert_realtime_signal_number_to_name) {
   EXPECT_EQ_TEXT(r.stdout_text, "RT2\n");
 }
 
-TEST(kill, convert_realtime_signal_name_to_number) {
+// [GNU] same -l contract as above: RTMIN+1 resolves to a realtime
+// signal whose canonical printed form is "RT1" (kill.c:116-118).
+TEST(kill, convert_realtime_signal_name_to_canonical_name) {
   Pipeline p;
   p.add(L"kill.exe", {L"-lRTMIN+1"});
 
@@ -228,7 +235,7 @@ TEST(kill, convert_realtime_signal_name_to_number) {
   TEST_LOG("kill.exe -lRTMIN+1 output", r.stdout_text);
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "33\n");
+  EXPECT_EQ_TEXT(r.stdout_text, "RT1\n");
 }
 
 TEST(kill, invalid_pid) {
@@ -274,7 +281,11 @@ TEST(kill, invalid_signal_number) {
   TEST_LOG("kill.exe -s 999 stderr", r.stderr_text);
 
   EXPECT_NE(r.exit_code, 0);
-  EXPECT_TRUE(r.stderr_text.find("invalid signal") != std::string::npos);
+  // [GNU] -s with an unresolvable argument goes through err_nosig
+  // (kill.c:169-174, called at kill.c:330): "unknown signal %s; valid
+  // signals:" followed by the table -- not the "invalid signal name or
+  // number" errx, which only serves -<sig> style arguments (kill.c:378).
+  EXPECT_TRUE(r.stderr_text.find("unknown signal") != std::string::npos);
 }
 
 TEST(kill, no_pid_specified) {
@@ -289,11 +300,17 @@ TEST(kill, no_pid_specified) {
   TEST_LOG("kill.exe (no args) stderr", r.stderr_text);
 
   EXPECT_NE(r.exit_code, 0);
-  EXPECT_TRUE(r.stderr_text.find("no process ID") != std::string::npos ||
-              r.stderr_text.find("PID") != std::string::npos);
+  // [GNU] parse_arguments ends with errx("not enough arguments") when
+  // no operand remains (kill.c:383-384).
+  EXPECT_TRUE(r.stderr_text.find("not enough arguments") !=
+              std::string::npos);
 }
 
-TEST(kill, invalid_pid_format) {
+// [GNU] a non-numeric operand is a process NAME in util-linux kill:
+// the operand loop (kill.c:502-541) falls back to a /proc name lookup
+// and warns "cannot find process \"%s\"" when nothing matches. There
+// is no "invalid PID" diagnostic for this shape.
+TEST(kill, name_operand_reports_cannot_find_process) {
   Pipeline p;
   p.add(L"kill.exe", {L"abc"});
 
@@ -305,7 +322,8 @@ TEST(kill, invalid_pid_format) {
   TEST_LOG("kill.exe abc stderr", r.stderr_text);
 
   EXPECT_NE(r.exit_code, 0);
-  EXPECT_TRUE(r.stderr_text.find("invalid PID") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("cannot find process \"abc\"") !=
+              std::string::npos);
 }
 
 TEST(kill, kill_with_sigterm) {

@@ -182,21 +182,34 @@ auto join_input_open_error(std::string_view filename) -> std::string {
       std::filesystem::u8path(native_path::normalize_api_operand(filename)),
       ec);
   if (!ec && status.type() == std::filesystem::file_type::directory) {
-    return std::string(filename) + ": Is a directory";
+    // [GNU] fopen on a directory succeeds; the failure surfaces at
+    // read time as "join: read error: Is a directory" (join.c:497)
+    // (audit #1462).
+    return "read error: Is a directory";
   }
   return std::string(filename) + ": No such file or directory";
 }
 
 auto output_separator(const Config& cfg) -> std::string {
+  // [GNU] with -t '' the tab character IS '\n', and it is also the
+  // output separator (join.c:602, 668) (audit #1462).
+  if (cfg.whole_line) return "\n";
   if (!cfg.explicit_separator) return " ";
   return std::string(1, cfg.separator);
 }
 
 auto parse_file_number(const std::string& value, std::string_view option)
     -> cp::Result<int> {
-  if (value == "1") return 1;
-  if (value == "2") return 2;
-  // [GNU] -a/-v share the field-number diagnostic.
+  // [GNU] the argument goes through xstrtol and only the VALUE is
+  // checked against 1/2 (join.c:1040-1055), so '01' is accepted;
+  // the old code compared the exact strings "1"/"2" (audit #1462).
+  int parsed = 0;
+  auto [ptr, ec] =
+      std::from_chars(value.data(), value.data() + value.size(), parsed);
+  if (ec == std::errc() && ptr == value.data() + value.size() &&
+      (parsed == 1 || parsed == 2)) {
+    return parsed;
+  }
   return std::unexpected(
       winux::i18n::format("common.error.invalid_field_number",
                           "invalid field number: '{}'", value));
@@ -204,58 +217,41 @@ auto parse_file_number(const std::string& value, std::string_view option)
 
 auto parse_output_format(const std::string& format)
     -> cp::Result<std::vector<OutputField>> {
+  // [GNU] add_field_list/decode_field_spec (join.c:850-914): items
+  // are split on comma/blank/tab and EVERY item is decoded --
+  // empty items (from '-o \"\"', a trailing separator, or doubled
+  // separators) are fatal, with the offending item quoted. The
+  // old parser silently skipped empty tokens and used generic
+  // messages (audit #1462).
   std::vector<OutputField> fields;
-  std::string token;
-
-  auto flush_token = [&]() -> cp::Result<int> {
-    if (token.empty()) return 0;
-    if (token == "0") {
-      fields.push_back(OutputField{0, 0});
-      token.clear();
-      return 0;
+  size_t start = 0;
+  while (true) {
+    const size_t pos = format.find_first_of(", \t", start);
+    const std::string token =
+        format.substr(start, pos == std::string::npos ? pos : pos - start);
+    if (token.empty() || (token[0] != '0' && token[0] != '1' &&
+                          token[0] != '2')) {
+      return std::unexpected("invalid file number in field spec: '" + token +
+                             "'");
     }
-
-    auto dot = token.find('.');
-    if (dot == std::string::npos || dot == 0 || dot + 1 >= token.size()) {
-      return std::unexpected("invalid output field list");
-    }
-
-    std::string file_part = token.substr(0, dot);
-    std::string field_part = token.substr(dot + 1);
-    if (file_part != "1" && file_part != "2") {
-      return std::unexpected("invalid output file number");
-    }
-
-    auto field = parse_positive_field(field_part);
-    if (!field) {
-      return std::unexpected(field.error());
-    }
-
-    fields.push_back(OutputField{file_part == "1" ? 1 : 2, *field});
-    token.clear();
-    return 0;
-  };
-
-  for (char ch : format) {
-    if (ch == ',' || ch == ' ' || ch == '\t') {
-      auto result = flush_token();
-      if (!result) {
-        return std::unexpected(result.error());
+    if (token[0] == '0') {
+      if (token.size() != 1) {
+        return std::unexpected("invalid field specifier: '" + token + "'");
       }
-      continue;
+      fields.push_back(OutputField{0, 0});
+    } else {
+      if (token.size() < 2 || token[1] != '.') {
+        return std::unexpected("invalid field specifier: '" + token + "'");
+      }
+      auto field = parse_positive_field(token.substr(2));
+      if (!field) {
+        return std::unexpected(field.error());
+      }
+      fields.push_back(OutputField{token[0] - '0', *field});
     }
-    token.push_back(ch);
+    if (pos == std::string::npos) break;
+    start = pos + 1;
   }
-
-  auto result = flush_token();
-  if (!result) {
-    return std::unexpected(result.error());
-  }
-
-  if (fields.empty()) {
-    return std::unexpected("empty output field list");
-  }
-
   return fields;
 }
 
@@ -283,65 +279,153 @@ auto build_config(const CommandContext<JOIN_OPTIONS.size()>& ctx)
     return {};
   };
 
-  auto field1_opt = ctx.get<std::string>("-1", "");
-  if (!field1_opt.empty()) {
-    auto field = parse_positive_field(field1_opt);
+  // [GNU] -1/-2/-j are applied as they are ENCOUNTERED (getopt
+  // order), and set_join_field reports the already-set value
+  // first (join.c:917-924, 1064-1095): 'join -j 3 -1 2' reports
+  // "incompatible join fields 2, 1". The old code always applied
+  // -1, then -2, then -j (audit #1462).
+  auto apply_join_field_option = [&](std::string_view which,
+                                     const std::string& value)
+      -> cp::Result<void> {
+    auto field = parse_positive_field(value);
     if (!field) return std::unexpected(field.error());
-    if (auto r = set_field(1, *field); !r) return std::unexpected(r.error());
-  }
-
-  auto field2_opt = ctx.get<std::string>("-2", "");
-  if (!field2_opt.empty()) {
-    auto field = parse_positive_field(field2_opt);
-    if (!field) return std::unexpected(field.error());
-    if (auto r = set_field(2, *field); !r) return std::unexpected(r.error());
-  }
-
-  auto j_opt = ctx.get<std::string>("-j", "");
-  if (!j_opt.empty()) {
-    auto field = parse_positive_field(j_opt);
-    if (!field) return std::unexpected(field.error());
-    if (auto r = set_field(1, *field); !r) return std::unexpected(r.error());
-    if (auto r = set_field(2, *field); !r) return std::unexpected(r.error());
-  }
-
-  if (ctx.has("-t")) {
-    auto sep_opt = ctx.get<std::string>("-t", "");
-    cfg.explicit_separator = true;
-    if (sep_opt.empty()) {
-      cfg.whole_line = true;
-    } else if (sep_opt == "\\0") {
-      cfg.separator = '\0';
-    } else {
-      if (sep_opt.size() != 1) {
-        return std::unexpected("separator must be a single character");
+    if (which == "-1" || which == "-j") {
+      if (auto r = set_field(1, *field); !r) {
+        return std::unexpected(r.error());
       }
-      cfg.separator = sep_opt[0];
+    }
+    if (which == "-2" || which == "-j") {
+      if (auto r = set_field(2, *field); !r) {
+        return std::unexpected(r.error());
+      }
+    }
+    return {};
+  };
+  bool saw_join_field_option = false;
+  if (ctx.metas) {
+    for (const auto& occurrence : ctx.options.occurrences()) {
+      if (occurrence.index >= ctx.metas->size()) continue;
+      const auto& meta = (*ctx.metas)[occurrence.index];
+      if (meta.short_name != "-1" && meta.short_name != "-2" &&
+          meta.short_name != "-j") {
+        continue;
+      }
+      saw_join_field_option = true;
+      const auto* value = std::get_if<std::string>(&occurrence.value);
+      auto r = apply_join_field_option(meta.short_name,
+                                       value ? *value : "");
+      if (!r) return std::unexpected(r.error());
+    }
+  }
+  if (!saw_join_field_option) {
+    for (const char* name : {"-1", "-2", "-j"}) {
+      auto opt = ctx.get<std::string>(name, "");
+      if (ctx.has(name)) {
+        auto r = apply_join_field_option(name, opt);
+        if (!r) return std::unexpected(r.error());
+      }
+    }
+  }
+
+  // [GNU] -t (join.c case 't'): the tab is a single character;
+  // '' means '\n' (whole line) and the two-character spelling
+  // "\\0" means NUL. A different second -t is "incompatible
+  // tabs"; a longer value is "multi-character tab '<arg>'".
+  {
+    bool tab_seen = false;
+    char tab_char = 0;
+    for (const auto& sep_opt : ctx.get_all<std::string>("-t")) {
+      char newtab = 0;
+      if (sep_opt.empty()) {
+        newtab = '\n';
+      } else if (sep_opt == "\\0") {
+        newtab = '\0';
+      } else if (sep_opt.size() == 1) {
+        newtab = sep_opt[0];
+      } else {
+        return std::unexpected("multi-character tab '" + sep_opt + "'");
+      }
+      if (tab_seen && tab_char != newtab) {
+        return std::unexpected("incompatible tabs");
+      }
+      tab_seen = true;
+      tab_char = newtab;
+    }
+    if (tab_seen) {
+      cfg.explicit_separator = true;
+      cfg.separator = tab_char;
+      cfg.whole_line = tab_char == '\n';
     }
   }
 
   cfg.ignore_case =
       ctx.get<bool>("--ignore-case", false) || ctx.get<bool>("-i", false);
-  cfg.check_order = ctx.get<bool>("--check-order", false) &&
-                    !ctx.get<bool>("--nocheck-order", false);
-  cfg.nocheck_order = ctx.get<bool>("--nocheck-order", false);
+  // [GNU] --check-order/--nocheck-order set one state in argv
+  // order; the LAST one wins (join.c:1125-1131). The old code let
+  // --nocheck-order always win (audit #1462).
+  if (ctx.metas) {
+    for (const auto& occurrence : ctx.options.occurrences()) {
+      if (occurrence.index >= ctx.metas->size()) continue;
+      const auto& meta = (*ctx.metas)[occurrence.index];
+      if (meta.long_name == "--check-order") {
+        cfg.check_order = true;
+        cfg.nocheck_order = false;
+      } else if (meta.long_name == "--nocheck-order") {
+        cfg.check_order = false;
+        cfg.nocheck_order = true;
+      }
+    }
+  } else {
+    cfg.check_order = ctx.get<bool>("--check-order", false) &&
+                      !ctx.get<bool>("--nocheck-order", false);
+    cfg.nocheck_order = ctx.get<bool>("--nocheck-order", false);
+  }
   cfg.header = ctx.get<bool>("--header", false);
   cfg.zero_terminated =
       ctx.get<bool>("--zero-terminated", false) || ctx.get<bool>("-z", false);
 
-  auto empty_opt = ctx.get<std::string>("-e", "");
-  cfg.empty_field = empty_opt;
+  // [GNU] a second, DIFFERENT -e value is fatal (join.c:1057-1062);
+  // an empty first value still counts as set.
+  {
+    bool empty_field_seen = false;
+    for (const auto& value : ctx.get_all<std::string>("-e")) {
+      if (empty_field_seen && value != cfg.empty_field) {
+        return std::unexpected(
+            "conflicting empty-field replacement strings");
+      }
+      empty_field_seen = true;
+      cfg.empty_field = value;
+    }
+  }
 
-  cfg.output_format = ctx.get<std::string>("-o", "");
-  if (!cfg.output_format.empty()) {
-    if (cfg.output_format == "auto") {
-      cfg.output_auto = true;
-    } else {
-      auto fields = parse_output_format(cfg.output_format);
+  // [GNU] every -o appends to the output list (add_field_list);
+  // a real list takes precedence over 'auto' in prjoin
+  // (join.c:1097-1105, 614-650). The old code kept only the last
+  // -o value (audit #1462).
+  {
+    std::vector<std::string> real_lists;
+    bool saw_auto = false;
+    for (const auto& value : ctx.get_all<std::string>("-o")) {
+      if (value == "auto") {
+        saw_auto = true;
+      } else {
+        real_lists.push_back(value);
+      }
+    }
+    if (!real_lists.empty()) {
+      std::string joined;
+      for (size_t i = 0; i < real_lists.size(); ++i) {
+        if (i) joined += ',';
+        joined += real_lists[i];
+      }
+      cfg.output_format = joined;
+      auto fields = parse_output_format(joined);
       if (!fields) {
         return std::unexpected(fields.error());
       }
       cfg.output_fields = std::move(*fields);
+    } else if (saw_auto) {
+      cfg.output_auto = true;
     }
   }
 

@@ -18,9 +18,13 @@ import utils;
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
-auto constexpr CLEAR_OPTIONS =
+auto constexpr CLEAR_OPTIONS = std::array{
+    // [GNU] -x: do not try to clear the scrollback (the E3 sequence)
+    OPTION("-x", "", "do not clear scrollback", BOOL_TYPE),
     // [EXT]
-    std::array{OPTION("", "", "clear terminal screen", STRING_TYPE)};
+    OPTION("-V", "", "print curses-version", BOOL_TYPE),
+    // [EXT]
+    OPTION("", "", "clear terminal screen", STRING_TYPE)};
 
 REGISTER_COMMAND(
     clear,
@@ -40,10 +44,21 @@ REGISTER_COMMAND(
     "reset(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", CLEAR_OPTIONS) {
   namespace cp = core::pipeline;
 
+  if (ctx.get<bool>("-V", false)) {
+    safePrintLn("ncurses 6.6.20251230");
+    return 0;
+  }
+
   // Send ANSI escape sequence to clear screen and move cursor to home
   // \033[2J - Clear entire screen
   // \033[H  - Move cursor to home position (top-left)
-  safePrint("\033[H\033[2J\033[3J");
+  // \033[3J - Clear scrollback (the terminfo E3 extension); GNU clear
+  // omits it under -x (ncurses clear.c: "-x do not try to clear
+  // scrollback").
+  safePrint("\033[H\033[2J");
+  if (!ctx.get<bool>("-x", false)) {
+    safePrint("\033[3J");
+  }
 
   return 0;
 }

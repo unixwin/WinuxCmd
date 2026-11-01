@@ -68,17 +68,37 @@ auto run(const CommandContext<RENICE_OPTIONS.size()>& ctx) -> int {
     operands = operands.subspan(1);
   }
 
+  // [GNU] no priority at all: util-linux renice.c:175 reports
+  // "not enough arguments" (with the try-help line), not a parse failure
+  // of the empty string.
+  if (priority_text.empty()) {
+    safeErrorPrintLn("renice: not enough arguments");
+    safeErrorPrintLn(winux::i18n::format(
+        "common.try_help", "Try '{} --help' for more information.", "renice"));
+    return 1;
+  }
+
+  // [GNU] renice.c checks the argument count BEFORE parsing the
+  // priority: with a priority but no target (argc < 2 at renice.c:171)
+  // the report is "not enough arguments" even when the priority text
+  // itself is invalid; "invalid priority" (renice.c:181) is only
+  // reached once at least one target operand remains.
+  if (operands.empty()) {
+    safeErrorPrintLn("renice: not enough arguments");
+    safeErrorPrintLn(winux::i18n::format(
+        "common.try_help", "Try '{} --help' for more information.", "renice"));
+    return 1;
+  }
+
   auto niceness = parse_int(priority_text);
   if (!niceness) {
+    // [GNU] renice.c:181: "invalid priority '<text>'" + try-help.
     safeErrorPrintLn("renice: invalid priority '" + priority_text + "'");
+    safeErrorPrintLn(winux::i18n::format(
+        "common.try_help", "Try '{} --help' for more information.", "renice"));
     return 1;
   }
   *niceness = std::clamp(*niceness, -20, 19);
-
-  if (operands.empty()) {
-    safeErrorPrintLn("renice: missing process ID");
-    return 1;
-  }
 
   DWORD priority_class = win32_priority_class_for_niceness(*niceness);
   int status = 0;
@@ -115,7 +135,9 @@ auto run(const CommandContext<RENICE_OPTIONS.size()>& ctx) -> int {
       continue;
     }
 
-    safePrintLn(std::to_string(*pid) + ": old priority " +
+    // [GNU] util-linux renice.c:115 prints
+    // "<pid> (process ID) old priority <o>, new priority <n>".
+    safePrintLn(std::to_string(*pid) + " (process ID) old priority " +
                 std::to_string(old_nice) + ", new priority " +
                 std::to_string(*niceness));
   }

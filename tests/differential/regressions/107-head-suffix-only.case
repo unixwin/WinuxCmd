@@ -1,0 +1,9 @@
+cmd: head
+args: -c K f
+timeout: 10
+setup: |
+  printf 'hello\n' > f
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: issue-1462 audit-w2 head xdectoumax
+# A bare suffix means 1 x suffix: -c K reads 1024 bytes, so the
+# whole file prints (xdectoumax grammar, head.c:913).

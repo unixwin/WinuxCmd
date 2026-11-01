@@ -83,15 +83,17 @@ auto constexpr TAIL_OPTIONS = std::array{
            "use -n +NUM to skip NUM-1 lines at the start",
            STRING_TYPE),
     // [GNU] --max-unchanged-stats
+    // STRING (not INT) so an unparsable value reaches build_config
+    // and gets tail's own diagnostic, not the framework's (#1462).
     OPTION("", "--max-unchanged-stats",
            "with --follow=name, reopen a FILE which has not changed\n"
            "size after N iterations to see if it has been renamed\n"
            "[IMPLEMENTED]",
-           INT_TYPE),
-    // [GNU] --pid
+           STRING_TYPE),
+    // [GNU] --pid (STRING for the same reason: "invalid PID: '<v>'")
     OPTION("", "--pid",
            "with -f, terminate after process ID, PID dies [IMPLEMENTED]",
-           INT_TYPE),
+           STRING_TYPE),
     // [GNU] -q, --quiet
     OPTION("-q", "--quiet", "never output headers giving file names"),
     // [GNU] --silent
@@ -129,10 +131,14 @@ struct TailConfig {
   bool explicit_retry = false;
   bool retry = false;
   bool debug = false;
-  std::vector<DWORD> follow_pids;
+  // [GNU] --pid is a single value: a later --pid replaces an
+  // earlier one, and --pid=0 means "no pid" (tail.c) (#1462).
+  std::optional<DWORD> follow_pid;
   bool stdin_mode = false;
   char delimiter = '\n';
-  std::chrono::milliseconds sleep_interval{1000};
+  // [GNU] -s keeps full double precision (xstrtod); truncating to
+  // whole milliseconds made '-s 0.0005' sleep 0 (#1462).
+  std::chrono::duration<double> sleep_interval{1.0};
   std::uintmax_t max_unchanged_stats = 5;
 };
 
@@ -164,12 +170,16 @@ auto checked_pow(std::uintmax_t base, unsigned power)
   return result;
 }
 
-auto apply_suffix_multiplier(std::uintmax_t value, std::string_view suffix)
+auto apply_suffix_multiplier(std::uintmax_t value, std::string_view suffix,
+                               bool& out_of_range)
     -> std::optional<std::uintmax_t> {
+  // [GNU] same xdectoumax alphabet as head (tail.c string_to_integer
+  // uses the identical suffix set): lowercase k/m included (#1462).
   static constexpr std::array suffixes{
       CountSuffix{"", 1, 0},       CountSuffix{"b", 512, 1},
-      CountSuffix{"K", 1024, 1},   CountSuffix{"KB", 1000, 1},
-      CountSuffix{"KiB", 1024, 1}, CountSuffix{"M", 1024, 2},
+      CountSuffix{"k", 1024, 1},   CountSuffix{"K", 1024, 1},
+      CountSuffix{"KB", 1000, 1},  CountSuffix{"KiB", 1024, 1},
+      CountSuffix{"m", 1024, 2},   CountSuffix{"M", 1024, 2},
       CountSuffix{"MB", 1000, 2},  CountSuffix{"MiB", 1024, 2},
       CountSuffix{"G", 1024, 3},   CountSuffix{"GB", 1000, 3},
       CountSuffix{"GiB", 1024, 3}, CountSuffix{"T", 1024, 4},
@@ -187,9 +197,12 @@ auto apply_suffix_multiplier(std::uintmax_t value, std::string_view suffix)
   for (const auto& entry : suffixes) {
     if (entry.suffix != suffix) continue;
     auto multiplier = checked_pow(entry.base, entry.power);
-    if (!multiplier)
+    if (!multiplier) {
+      if (value != 0) out_of_range = true;
       return value == 0 ? std::optional<std::uintmax_t>{0} : std::nullopt;
+    }
     if (value > std::numeric_limits<std::uintmax_t>::max() / *multiplier) {
+      out_of_range = true;
       return std::nullopt;
     }
     return value * *multiplier;
@@ -207,24 +220,41 @@ struct NumericParse {
 };
 
 auto parse_numeric_with_suffix_status(std::string_view text) -> NumericParse {
-  if (text.empty()) return {};
+  // [GNU] strtoumax skips leading whitespace; a suffix with no
+  // digits means 1 x suffix. An UNKNOWN suffix is a plain invalid
+  // number -- the old code reported every scaling failure as
+  // EOVERFLOW, so 'tail -c 1g' claimed the value was too large
+  // (audit #1462).
+  size_t begin = 0;
+  while (begin < text.size() &&
+         std::isspace(static_cast<unsigned char>(text[begin]))) {
+    ++begin;
+  }
+  std::string_view rest = text.substr(begin);
+  // A '+' after whitespace is consumed by strtoumax; it does NOT
+  // set from_start (tail.c tests optarg[0] itself for that).
+  if (!rest.empty() && rest[0] == '+') rest = rest.substr(1);
+  if (rest.empty()) return {};
 
   size_t i = 0;
-  while (i < text.size() && std::isdigit(static_cast<unsigned char>(text[i]))) {
+  while (i < rest.size() &&
+         std::isdigit(static_cast<unsigned char>(rest[i]))) {
     ++i;
   }
-  if (i == 0) return {};
-
-  std::uintmax_t base = 0;
-  auto [ptr, ec] = std::from_chars(text.data(), text.data() + i, base);
-  if (ec == std::errc::result_out_of_range) {
-    return {.value = 0, .ok = false, .overflow = true};
+  std::uintmax_t base = 1;
+  if (i > 0) {
+    auto [ptr, ec] = std::from_chars(rest.data(), rest.data() + i, base);
+    if (ec == std::errc::result_out_of_range) {
+      return {.value = 0, .ok = false, .overflow = true};
+    }
+    if (ec != std::errc() || ptr != rest.data() + i) return {};
   }
-  if (ec != std::errc() || ptr != text.data() + i) return {};
 
-  auto scaled = apply_suffix_multiplier(base, text.substr(i));
+  bool out_of_range = false;
+  auto scaled =
+      apply_suffix_multiplier(base, rest.substr(i), out_of_range);
   if (!scaled.has_value()) {
-    return {.value = 0, .ok = false, .overflow = true};
+    return {.value = 0, .ok = false, .overflow = out_of_range};
   }
   return {.value = *scaled, .ok = true, .overflow = false};
 }
@@ -272,7 +302,7 @@ auto parse_count_spec(std::string spec_text, std::string_view opt_name)
 }
 
 auto parse_sleep_interval(std::string_view text)
-    -> std::optional<std::chrono::milliseconds> {
+    -> std::optional<std::chrono::duration<double>> {
   if (text.empty()) return std::nullopt;
   std::string s(text);
   char* end = nullptr;
@@ -281,8 +311,29 @@ auto parse_sleep_interval(std::string_view text)
   if (errno != 0 || end != s.c_str() + s.size() || seconds < 0.0) {
     return std::nullopt;
   }
-  return std::chrono::duration_cast<std::chrono::milliseconds>(
-      std::chrono::duration<double>(seconds));
+  return std::chrono::duration<double>(seconds);
+}
+
+// [GNU] uintmax operands with no suffix alphabet (--pid,
+// --max-unchanged-stats): strtoumax skips whitespace and an
+// optional '+', then requires digits to the end of the string.
+auto parse_uintmax_strict(std::string_view text)
+    -> std::optional<std::uintmax_t> {
+  size_t begin = 0;
+  while (begin < text.size() &&
+         std::isspace(static_cast<unsigned char>(text[begin]))) {
+    ++begin;
+  }
+  std::string_view rest = text.substr(begin);
+  if (!rest.empty() && rest[0] == '+') rest = rest.substr(1);
+  if (rest.empty()) return std::nullopt;
+  std::uintmax_t value = 0;
+  auto [ptr, ec] =
+      std::from_chars(rest.data(), rest.data() + rest.size(), value);
+  if (ec != std::errc() || ptr != rest.data() + rest.size()) {
+    return std::nullopt;
+  }
+  return value;
 }
 
 auto process_is_alive(DWORD pid) -> bool {
@@ -293,13 +344,13 @@ auto process_is_alive(DWORD pid) -> bool {
   return wait_rc == WAIT_TIMEOUT;
 }
 
-auto all_follow_pids_dead(const TailConfig& config) -> bool {
-  if (config.follow_pids.empty()) return false;
-  return std::ranges::none_of(config.follow_pids, process_is_alive);
+auto follow_pid_dead(const TailConfig& config) -> bool {
+  if (!config.follow_pid) return false;
+  return !process_is_alive(*config.follow_pid);
 }
 
 auto should_stop_follow(const TailConfig& config) -> bool {
-  if (all_follow_pids_dead(config)) return true;
+  if (follow_pid_dead(config)) return true;
   return (GetAsyncKeyState(VK_CONTROL) & 0x8000) &&
          (GetAsyncKeyState('C') & 0x8000);
 }
@@ -351,6 +402,30 @@ auto read_file_identity(const std::string& file)
   auto status = read_file_status(file);
   if (!status) return std::nullopt;
   return status->identity;
+}
+
+// [GNU] -f follows a redirected regular-file stdin by its
+// descriptor (tail.c tail_file fstats fd 0 and follows it). The
+// follow machinery works on paths, so resolve fd 0 to its final
+// path; appends through the original descriptor are appends to
+// that same file (audit #1462).
+auto stdin_follow_path() -> std::optional<std::string> {
+  HANDLE handle = GetStdHandle(STD_INPUT_HANDLE);
+  if (handle == nullptr || handle == INVALID_HANDLE_VALUE) {
+    return std::nullopt;
+  }
+  std::wstring buffer(32768, L'\0');
+  const DWORD written = GetFinalPathNameByHandleW(
+      handle, buffer.data(), static_cast<DWORD>(buffer.size()),
+      FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+  if (written == 0 || written >= buffer.size()) return std::nullopt;
+  buffer.resize(written);
+  if (buffer.rfind(L"\\\\?\\UNC\\", 0) == 0) {
+    buffer = L"\\\\" + buffer.substr(8);
+  } else if (buffer.rfind(L"\\\\?\\", 0) == 0) {
+    buffer = buffer.substr(4);
+  }
+  return wstring_to_utf8(buffer);
 }
 
 auto streampos_to_size(std::streampos pos) -> std::uintmax_t {
@@ -672,12 +747,36 @@ auto build_config(const CommandContext<N>& ctx) -> cp::Result<TailConfig> {
         config.follow_by_name = false;
         continue;
       }
-      if (*value == "name") {
+      // [GNU] --follow's value goes through argmatch (tail.c):
+      // any unambiguous prefix of 'descriptor'/'name' is valid;
+      // '' is AMBIGUOUS (it prefixes both), anything else is
+      // invalid, and both failures list the valid arguments.
+      // The old code accepted only the two full spellings (plus
+      // '' as descriptor) and said 'invalid follow mode'
+      // (audit #1462).
+      auto argmatch_error = [&]() {
+        const bool ambiguous =
+            std::string_view("descriptor").starts_with(*value) &&
+            std::string_view("name").starts_with(*value);
+        return std::unexpected(
+            std::string(ambiguous ? "ambiguous argument '"
+                                  : "invalid argument '") +
+            *value + "' for '--follow'\nValid arguments are:\n" +
+            "  - 'descriptor'\n  - 'name'\n" +
+            "Try 'tail --help' for more information.");
+      };
+      if (*value == "name" ||
+          (!value->empty() &&
+           std::string_view("name").starts_with(*value) &&
+           !std::string_view("descriptor").starts_with(*value))) {
         config.follow_by_name = true;
-      } else if (*value == "descriptor" || value->empty()) {
+      } else if (*value == "descriptor" ||
+                 (!value->empty() &&
+                  std::string_view("descriptor").starts_with(*value) &&
+                  !std::string_view("name").starts_with(*value))) {
         config.follow_by_name = false;
       } else {
-        return std::unexpected("invalid follow mode");
+        return argmatch_error();
       }
     }
   }
@@ -685,28 +784,68 @@ auto build_config(const CommandContext<N>& ctx) -> cp::Result<TailConfig> {
                   config.follow_by_name;
   config.explicit_retry = ctx.get<bool>("--retry", false);
   config.retry = config.retry || config.explicit_retry;
-  for (int pid : ctx.template get_all<int>("--pid")) {
-    if (pid < 0) return std::unexpected("invalid process ID");
-    config.follow_pids.push_back(static_cast<DWORD>(pid));
+  // [GNU] --pid: one uintmax value; the LAST occurrence wins and
+  // 0 clears it. Bad values report "invalid PID: '<v>'" (tail.c).
+  // The old code accumulated every --pid in a vector and let the
+  // framework's int parser own the diagnostic (audit #1462).
+  for (const auto& pid_text : ctx.template get_all<std::string>("--pid")) {
+    auto pid = parse_uintmax_strict(pid_text);
+    if (!pid) {
+      return std::unexpected("invalid PID: '" + pid_text + "'");
+    }
+    if (*pid == 0) {
+      config.follow_pid.reset();
+    } else {
+      config.follow_pid = static_cast<DWORD>(*pid);
+    }
   }
 
   if (ctx.has("--max-unchanged-stats")) {
-    int max_unchanged_stats = ctx.get<int>("--max-unchanged-stats", -1);
-    if (max_unchanged_stats < 0) {
-      return std::unexpected("invalid max unchanged stats");
+    auto text = ctx.get<std::string>("--max-unchanged-stats", "");
+    auto parsed = parse_uintmax_strict(text);
+    if (!parsed) {
+      return std::unexpected(
+          "invalid maximum number of unchanged stats between opens: '" +
+          text + "'");
     }
-    config.max_unchanged_stats =
-        static_cast<std::uintmax_t>(max_unchanged_stats);
+    config.max_unchanged_stats = *parsed;
   }
 
-  std::string sleep_arg = ctx.get<std::string>("--sleep-interval", "");
-  if (sleep_arg.empty()) sleep_arg = ctx.get<std::string>("-s", "");
-  if (!sleep_arg.empty()) {
-    auto parsed_sleep = parse_sleep_interval(sleep_arg);
-    if (!parsed_sleep) {
-      return std::unexpected("invalid sleep interval");
+  // [GNU] -s/--sleep-interval: the LAST occurrence of either
+  // spelling wins; a bad value reports
+  // "invalid number of seconds: '<v>'" (tail.c). The old code
+  // preferred --sleep-interval regardless of order and truncated
+  // to whole milliseconds (audit #1462).
+  {
+    std::optional<std::string> sleep_arg;
+    if (ctx.metas) {
+      for (const auto& occurrence : ctx.options.occurrences()) {
+        if (occurrence.index >= N) continue;
+        const auto& meta = (*ctx.metas)[occurrence.index];
+        if (!option_matches(meta, "-s", "--sleep-interval")) continue;
+        if (const auto* value =
+                std::get_if<std::string>(&occurrence.value)) {
+          sleep_arg = *value;
+        }
+      }
     }
-    config.sleep_interval = *parsed_sleep;
+    if (!sleep_arg) {
+      auto from_long = ctx.get<std::string>("--sleep-interval", "");
+      auto from_short = ctx.get<std::string>("-s", "");
+      if (!from_long.empty()) {
+        sleep_arg = from_long;
+      } else if (!from_short.empty()) {
+        sleep_arg = from_short;
+      }
+    }
+    if (sleep_arg) {
+      auto parsed_sleep = parse_sleep_interval(*sleep_arg);
+      if (!parsed_sleep) {
+        return std::unexpected("invalid number of seconds: '" + *sleep_arg +
+                               "'");
+      }
+      config.sleep_interval = *parsed_sleep;
+    }
   }
 
   auto unsupported = check_unsupported(ctx);
@@ -784,16 +923,13 @@ auto debug_follow_start(const TailConfig& config, size_t file_count) -> void {
   safeErrorPrint(" for ");
   safeErrorPrint(std::to_string(file_count));
   safeErrorPrint(file_count == 1 ? " file\n" : " files\n");
-  if (!config.follow_pids.empty()) {
-    safeErrorPrint("tail: monitoring ");
-    safeErrorPrint(std::to_string(config.follow_pids.size()));
-    safeErrorPrint(config.follow_pids.size() == 1 ? " process ID\n"
-                                                  : " process IDs\n");
+  if (config.follow_pid) {
+    safeErrorPrint("tail: monitoring 1 process ID\n");
   }
 }
 
 auto emit_ignored_pid_warning(const TailConfig& config) -> void {
-  if (config.follow || config.follow_pids.empty()) return;
+  if (config.follow || !config.follow_pid) return;
   safeErrorPrint(
       "tail: warning: PID ignored; --pid=PID is useful only when following\n");
 }
@@ -1015,6 +1151,14 @@ REGISTER_COMMAND(
   }
   if (files.empty()) files.push_back("-");
 
+  // [GNU] a zero count with neither -f/--follow nor a '+' form
+  // exits successfully WITHOUT opening anything -- not even a
+  // nonexistent operand errors, and no headers print
+  // (tail.c:2378) (audit #1462).
+  if (!config.follow && !config.spec.from_start && config.spec.value == 0) {
+    return 0;
+  }
+
   bool any_error = false;
   bool first_print = true;
   bool multi = files.size() > 1;
@@ -1047,7 +1191,15 @@ REGISTER_COMMAND(
       }
       config.stdin_mode = true;
       file_io::set_stdin_binary();
-      if (config.by_bytes || config.delimiter == '\0') {
+      HANDLE stdin_handle = GetStdHandle(STD_INPUT_HANDLE);
+      const DWORD stdin_type =
+          stdin_handle ? GetFileType(stdin_handle) : FILE_TYPE_UNKNOWN;
+      // [GNU] stdin content is bytes: line mode went through the
+      // text decoder unconditionally, re-encoding redirected
+      // input. Only a real console keeps the decoder path
+      // (audit #1462).
+      if (config.by_bytes || config.delimiter == '\0' ||
+          stdin_type != FILE_TYPE_CHAR) {
         output_tail(std::cin, config);
       } else {
         output_text_tail(std::cin, config);
@@ -1055,6 +1207,26 @@ REGISTER_COMMAND(
       if (std::cin.bad()) {
         safeErrorPrint("tail: error reading '-'\n");
         any_error = true;
+      }
+      // [GNU] -f follows a regular-file stdin (tail.c follows the
+      // fd when fstat says S_ISREG); pipes and consoles are not
+      // followed. The old code never registered a stdin target,
+      // so 'tail -f < file' exited immediately (audit #1462).
+      if (config.follow && stdin_type == FILE_TYPE_DISK) {
+        if (auto path = stdin_follow_path()) {
+          FollowTarget target;
+          target.file = *path;
+          target.identity = read_file_identity(*path);
+          if (!config.follow_by_name) {
+            target.descriptor = open_input_file(*path);
+            if (target.descriptor.is_open()) {
+              target.descriptor.seekg(0, std::ios::end);
+              target.offset = target.descriptor.tellg();
+              if (target.offset == std::streampos(-1)) target.offset = 0;
+            }
+          }
+          follow_targets_to_run.push_back(std::move(target));
+        }
       }
     } else {
       auto input = open_input_file(file);
@@ -1089,17 +1261,14 @@ REGISTER_COMMAND(
       }
 
       emit_header();
+      // [GNU] regular files take the byte path unconditionally:
+      // a BOM/NUL sample must not reroute them through the text
+      // decoder (same head fix; audit #1462).
       bool used_fast_path = false;
       if (config.by_bytes) {
         used_fast_path = output_tail_seekable_bytes(input, config);
-      } else if (config.delimiter == '\0') {
-        used_fast_path = output_tail_seekable_lines(input, config);
-      } else if (!stream_needs_text_decoding(input)) {
-        used_fast_path = output_tail_seekable_lines(input, config);
-        if (!used_fast_path) output_tail(input, config);
       } else {
-        output_text_tail(input, config);
-        used_fast_path = true;
+        used_fast_path = output_tail_seekable_lines(input, config);
       }
       if (!used_fast_path) {
         output_tail(input, config);

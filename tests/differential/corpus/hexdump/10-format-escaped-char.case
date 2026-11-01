@@ -1,0 +1,7 @@
+cmd: hexdump
+oracle: linux
+args: -e '3/1 "%3_c"' d.bin
+setup: |
+  printf 'a\nb' > d.bin
+source: tests/differential/corpus/hexdump/10-format-escaped-char.case
+tags: gnu-compat hexdump format-engine audit-w7

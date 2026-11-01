@@ -151,9 +151,15 @@ TEST(b2sum, b2sum_length_rejects_values_above_512_bits) {
   p.add(L"b2sum.exe", {L"-l", L"520"});
   auto r = p.run();
 
+  // [GNU] digest.c:1478-1485: a length above BLAKE2B_MAX_LEN*8 is rejected
+  // with "invalid length: '<arg>'" followed by "maximum digest length for
+  // 'BLAKE2b' is 512 bits". (520 is a multiple of 8, so the parse-time
+  // multiple-of-8 stage at digest.c:1399-1402 does not fire.)
   EXPECT_NE(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.find("invalid length: '520'") !=
+              std::string::npos);
   EXPECT_TRUE(
-      r.stderr_text.find("digest length must be a positive multiple of 8") !=
+      r.stderr_text.find("maximum digest length for 'BLAKE2b' is 512 bits") !=
       std::string::npos);
 }
 
@@ -547,4 +553,16 @@ TEST(b2sum, b2sum_marker_text_default_and_last_option_wins_issue1205) {
   last_text.add(L"b2sum.exe", {L"-b", L"-t"});
   auto rlt = last_text.run();
   EXPECT_EQ(rlt.stdout_text, rd.stdout_text);
+}
+
+// [#1462] An empty operand goes through the open path (and fails), never
+// through stdin -- portable_digest::hash_file_hex shared-helper rule.
+TEST(b2sum, b2sum_empty_operand_is_not_stdin) {
+  Pipeline p;
+  p.set_stdin("hello\n");
+  p.add(L"b2sum.exe", {L""});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_CONTAINS(r.stderr_text, "No such file or directory");
+  EXPECT_TRUE(r.stdout_text.empty());
 }

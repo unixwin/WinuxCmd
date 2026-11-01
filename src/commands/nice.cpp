@@ -44,14 +44,34 @@ auto nice_windows_error_text(DWORD error) -> std::string {
 }
 
 auto parse_adjustment_value(std::string_view raw) -> std::optional<int> {
+  // [GNU] nice.c:164-174: the adjustment goes through xstrtol, whose
+  // strtol base accepts leading whitespace and a leading '+' sign;
+  // std::from_chars accepts neither, so normalize first.  An empty
+  // value has no digits and is invalid, exactly like xstrtol("").
+  while (!raw.empty() &&
+         (raw.front() == ' ' || raw.front() == '\t' || raw.front() == '\n' ||
+          raw.front() == '\v' || raw.front() == '\f' || raw.front() == '\r')) {
+    raw.remove_prefix(1);
+  }
+  while (!raw.empty() &&
+         (raw.back() == ' ' || raw.back() == '\t' || raw.back() == '\n' ||
+          raw.back() == '\v' || raw.back() == '\f' || raw.back() == '\r')) {
+    raw.remove_suffix(1);
+  }
   if (raw.empty()) {
     return std::nullopt;
+  }
+  bool negative = raw.front() == '-';
+  if (raw.front() == '+') {
+    raw.remove_prefix(1);
+    if (raw.empty()) {
+      return std::nullopt;
+    }
   }
 
   int value = 0;
   auto [ptr, ec] = std::from_chars(raw.data(), raw.data() + raw.size(), value);
   if (ec == std::errc::result_out_of_range) {
-    bool negative = raw.front() == '-';
     return negative ? -kNiceNoOverflowBound : kNiceNoOverflowBound;
   }
   if (ec != std::errc() || ptr != raw.data() + raw.size()) {
@@ -86,12 +106,14 @@ REGISTER_COMMAND(
   int adjustment = 10;  // Default adjustment
   bool has_explicit_adjustment = false;
 
-  // Parse adjustment option
-  std::string parsed_adjustment = ctx.get<std::string>("-n", "");
-  if (parsed_adjustment.empty()) {
-    parsed_adjustment = ctx.get<std::string>("--adjustment", "");
-  }
-  if (!parsed_adjustment.empty()) {
+  // Parse adjustment option.  Presence is decided by occurrence, not by
+  // a non-empty value: [GNU] nice.c:164-174 validates the given string
+  // itself, so '-n ""' is 'invalid adjustment' rather than no adjustment.
+  auto adjustment_occurrences =
+      ctx.string_occurrences({"--adjustment", "-n"});
+  if (!adjustment_occurrences.empty()) {
+    std::string parsed_adjustment =
+        std::string(adjustment_occurrences.back().value);
     auto adjustment_value = parse_adjustment_value(parsed_adjustment);
     if (!adjustment_value) {
       safeErrorPrintLn("nice: invalid adjustment '" + parsed_adjustment + "'");
@@ -105,7 +127,7 @@ REGISTER_COMMAND(
   // If no command provided, print current priority
   if (ctx.positionals.empty()) {
     if (has_explicit_adjustment) {
-      safeErrorPrintLn("nice: A command must be given with an adjustment.");
+      safeErrorPrintLn("nice: a command must be given with an adjustment");
       safeErrorPrintLn("Try 'nice --help' for more information.");
       return 125;
     }
@@ -126,8 +148,7 @@ REGISTER_COMMAND(
   if (launch.status != winux::childproc::ChildResolveStatus::Found) {
     const DWORD resolve_error =
         winux::childproc::child_status_to_win32_error(launch.status);
-    safeErrorPrintLn("nice: failed to run command '" +
-                     std::string(ctx.positionals[0]) +
+    safeErrorPrintLn("nice: '" + std::string(ctx.positionals[0]) +
                      "': " + nice_windows_error_text(resolve_error));
     return nice_command_status_from_create_error(resolve_error);
   }
@@ -150,8 +171,7 @@ REGISTER_COMMAND(
                       launch.command_line.data(), nullptr, nullptr, FALSE,
                       CREATE_SUSPENDED, nullptr, nullptr, &si, &pi)) {
     DWORD error = GetLastError();
-    safeErrorPrintLn("nice: failed to run command '" +
-                     std::string(ctx.positionals[0]) +
+    safeErrorPrintLn("nice: '" + std::string(ctx.positionals[0]) +
                      "': " + nice_windows_error_text(error));
     return nice_command_status_from_create_error(error);
   }
@@ -176,8 +196,7 @@ REGISTER_COMMAND(
     WaitForSingleObject(pi.hProcess, INFINITE);
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
-    safeErrorPrintLn("nice: failed to run command '" +
-                     std::string(ctx.positionals[0]) +
+    safeErrorPrintLn("nice: '" + std::string(ctx.positionals[0]) +
                      "': " + nice_windows_error_text(error));
     return nice_command_status_from_create_error(error);
   }

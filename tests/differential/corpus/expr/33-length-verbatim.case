@@ -1,0 +1,4 @@
+cmd: expr
+args: length 007
+source: GNU coreutils 9.4 src/expr.c eval6/eval7 (length of the verbatim string "007" is 3)
+tags: audit-w3a #1462

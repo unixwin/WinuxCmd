@@ -48,11 +48,10 @@ auto build_config(const CommandContext<TAC_OPTIONS.size()>& ctx)
   if (ctx.has("--separator") || ctx.has("-s")) {
     cfg.separator = ctx.get<std::string>("--separator", "");
     if (cfg.separator.empty()) cfg.separator = ctx.get<std::string>("-s", "");
-    // [GNU] An empty separator is accepted for the literal split: it
-    // never occurs in the input, so the whole input is a single
-    // record (verified against the pinned oracle, coreutils 9.4).
-    // Only the regex form rejects it, with this same diagnostic
-    // (#1444).
+    // [GNU] An empty separator is accepted for the literal split,
+    // where it means a single NUL byte (tac.c:540; see
+    // split_literal_records). Only the regex form rejects it, with
+    // this same diagnostic (#1444).
     if (cfg.regex && cfg.separator.empty())
       return std::unexpected("separator cannot be empty");
   }
@@ -104,13 +103,13 @@ auto normalize_newline_delimited_text(std::string_view content) -> std::string {
 auto split_literal_records(std::string_view content, std::string_view separator,
                            bool before) -> std::vector<std::string> {
   std::vector<std::string> records;
-  // [GNU] An empty separator never occurs in the input, so the whole
-  // input is a single record (#1444). (find() of an empty needle
-  // would match at every position and never advance.)
-  if (separator.empty()) {
-    if (!content.empty()) records.emplace_back(content);
-    return records;
-  }
+  // [GNU] An empty -s is a separator of length 1 whose byte is NUL:
+  // match_length = *separator ? strlen (separator) : 1 (tac.c:540).
+  // Verified against the 9.4 binary: 'a\0b\0c' with -s '' prints
+  // 'cb\0a\0'. The earlier "never occurs" reading (#1444) holds
+  // only for NUL-free input (audit #1462).
+  std::string nul_separator(1, '\0');
+  if (separator.empty()) separator = nul_separator;
   size_t record_start = 0;
   size_t search_start = 0;
 
@@ -147,7 +146,7 @@ auto split_regex_records(std::string_view content, const std::string& separator,
   auto sep =
       portable_regex::compile(portable_regex::Syntax::Basic, separator);
   if (!sep) {
-    return std::unexpected("invalid regular expression");
+    return std::unexpected("Invalid regular expression");
   }
 
   // [GNU #1447] Separator matches are discovered right to left, the
@@ -209,6 +208,24 @@ auto output_reversed_records(const std::vector<std::string>& records) -> void {
 }
 
 auto run(const Config& cfg) -> int {
+  // [GNU] the -r separator is compiled ONCE, before any file is
+  // touched (tac.c:534): a bad pattern aborts with the regex
+  // compiler's diagnostic even when the first operand is missing.
+  // The old code compiled lazily per file and reported a generic
+  // lowercase message per file (audit #1462). (For patterns other
+  // than the common ones the regerror wording may still differ
+  // from portable_regex's taxonomy; '[' gives GNU's exact
+  // "Invalid regular expression".)
+  if (cfg.regex) {
+    auto compiled =
+        portable_regex::compile(portable_regex::Syntax::Basic, cfg.separator);
+    if (!compiled) {
+      cp::Result<int> result = std::unexpected("Invalid regular expression");
+      cp::report_error(result, L"tac");
+      return 1;
+    }
+  }
+
   // [GNU] tac.c: an unreadable operand is diagnosed but does not stop the
   // remaining files; the exit status only turns nonzero once every operand
   // has been processed.
@@ -216,7 +233,17 @@ auto run(const Config& cfg) -> int {
   for (const auto& file : cfg.files) {
     auto content = read_source(file);
     if (!content) {
-      cp::report_error(content, L"tac");
+      // [GNU] tac's own open wording is "failed to open %s for
+      // reading" (tac.c:460); the shared reader produces head/tail's
+      // "cannot open ..." form, so translate the prefix.
+      std::string message = content.error();
+      if (message.starts_with("cannot open ")) {
+        message.replace(0, 12, "failed to open ");
+        cp::Result<std::string> mapped = std::unexpected(message);
+        cp::report_error(mapped, L"tac");
+      } else {
+        cp::report_error(content, L"tac");
+      }
       any_error = true;
       continue;
     }

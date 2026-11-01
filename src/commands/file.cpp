@@ -56,7 +56,27 @@ auto constexpr FILE_OPTIONS = std::array{
     // [GNU]
     OPTION("-N", "--no-pad", "do not pad output"),
     // [GNU]
-    OPTION("-z", "--uncompress", "try to decompress compressed files")};
+    OPTION("-z", "--uncompress", "try to decompress compressed files"),
+    // [GNU] -e, --exclude TEST: exclude a test stage (may be repeated)
+    OPTION("-e", "--exclude", "exclude the named test from classification",
+           STRING_TYPE),
+    // [GNU] --exclude-quiet TEST: like --exclude, ignoring unknown tests
+    OPTION("", "--exclude-quiet", "exclude a test, ignoring unknown tests",
+           STRING_TYPE),
+    // [GNU] --mime-encoding: output only the character encoding
+    OPTION("", "--mime-encoding", "output the MIME encoding"),
+    // [DIFFERS] --extension: extensions come from the built-in signature
+    // table, not from a full magic database
+    OPTION("", "--extension", "output a slash-separated list of extensions"),
+    // [DIFFERS] --apple: CREATOR/TYPE pairs follow the built-in table
+    OPTION("", "--apple", "output the Apple CREATOR/TYPE"),
+    // [GNU] -l, --list: list the built-in magic table
+    OPTION("-l", "--list", "list the built-in magic table"),
+    // [DIFFERS] -C, --compile: the magic database is built in
+    OPTION("-C", "--compile",
+           "compile a magic file [DIFFERS: not available on Windows]"),
+    // [GNU] -d, --debug: print debugging messages
+    OPTION("-d", "--debug", "print debugging messages")};
 
 // ======================================================
 // Pipeline components
@@ -162,8 +182,7 @@ auto classify_by_shebang(const std::vector<unsigned char>& data)
   std::vector<std::string> tokens;
   size_t pos = 0;
   while (pos < line.size()) {
-    while (pos < line.size() &&
-           (line[pos] == ' ' || line[pos] == '\t')) {
+    while (pos < line.size() && (line[pos] == ' ' || line[pos] == '\t')) {
       ++pos;
     }
     size_t start = pos;
@@ -350,55 +369,140 @@ auto classify_text(const std::vector<unsigned char>& data)
   const std::string suffix = line_terminator_suffix(data);
   if (!has_nul && utf8_valid) {
     if (has_multibyte) {
-      return {"Unicode text, UTF-8 text" + suffix,
-              "text/plain; charset=utf-8"};
+      return {"Unicode text, UTF-8 text" + suffix, "text/plain; charset=utf-8"};
     }
     if (printable == data.size()) {
       return {"ASCII text" + suffix, "text/plain; charset=us-ascii"};
     }
   }
   // Mostly-printable high-byte content with no NUL: ISO-8859 family.
-  if (!has_nul && data.size() > 0 &&
-      printable * 10 >= data.size() * 9) {
+  if (!has_nul && data.size() > 0 && printable * 10 >= data.size() * 9) {
     return {"ISO-8859 text" + suffix, "text/plain; charset=iso-8859-1"};
   }
   return {"data", "application/octet-stream; charset=binary"};
 }
 
-auto classify_content(const std::wstring& wpath) -> FileClassification {
+// [GNU] --exclude test names (file(1)): the stages of file's test
+// pipeline that can be switched off. The port's pipeline has soft
+// (magic), ascmagic (shebang/language) and text stages; the encoding
+// stage lives inside the text analysis. apptype/compress/elf/tar name
+// stages this port does not run and are accepted as no-ops.
+struct Exclusions {
+  bool soft = false;
+  bool ascmagic = false;
+  bool encoding = false;
+  bool text = false;
+};
+
+auto known_test_name(std::string_view name) -> bool {
+  static constexpr std::string_view kNames[] = {
+      "apptype",  "ascmagic", "compress", "elf",
+      "encoding", "soft",     "tar",      "text"};
+  return std::ranges::find(kNames, name) != std::end(kNames);
+}
+
+auto apply_test_name(Exclusions& excl, std::string_view name) -> void {
+  if (name == "soft") excl.soft = true;
+  if (name == "ascmagic") excl.ascmagic = true;
+  if (name == "encoding") excl.encoding = true;
+  if (name == "text") excl.text = true;
+}
+
+// The full per-file answer set: the classic description/MIME pair plus
+// the --extension and --apple values (DOC-BASED: GNU derives both from
+// its magic database entries; the port derives them from its built-in
+// signature table, mirroring file-5.45's answers for the formats it
+// knows: JPEG 8BIMJPEG, GIF 8BIMGIFf, BMP ????BMPp, UNKNUNKN elsewhere).
+struct FullClassification {
+  FileClassification classification;
+  std::string extension;
+  std::string apple = "UNKNUNKN";
+};
+
+auto classify_content(const std::wstring& wpath, const Exclusions& excl)
+    -> FullClassification {
   std::error_code ec;
-  const auto size =
-      std::filesystem::file_size(std::filesystem::path(
-                                     native_path::normalize_api_operand_w(wpath)),
-                                 ec);
+  const auto size = std::filesystem::file_size(
+      std::filesystem::path(native_path::normalize_api_operand_w(wpath)), ec);
   if (!ec && size == 0) {
-    return {"empty", "inode/x-empty; charset=binary"};
+    return {{"empty", "inode/x-empty; charset=binary"}, ""};
   }
 
   const auto data = read_file_prefix(wpath, 256 * 1024);
   if (data.empty()) {
-    return {"data", "application/octet-stream; charset=binary"};
+    return {{"data", "application/octet-stream; charset=binary"}, ""};
   }
-  if (auto magic = classify_by_magic(data)) return *magic;
-  if (auto script = classify_by_shebang(data)) return *script;
-  if (looks_like_json(data)) {
-    return {"JSON text data", "application/json; charset=us-ascii"};
+  if (!excl.soft) {
+    if (auto magic = classify_by_magic(data)) {
+      FullClassification full{*magic, ""};
+      if (magic->mime.starts_with("application/pdf")) {
+        full.extension = "pdf";
+      } else if (magic->mime.starts_with("image/png")) {
+        full.extension = "png";
+      } else if (magic->mime.starts_with("image/jpeg")) {
+        full.extension = "jpeg/jpg/jpe/jfif";
+        full.apple = "8BIMJPEG";
+      } else if (magic->mime.starts_with("image/gif")) {
+        full.extension = "gif";
+        full.apple = "8BIMGIFf";
+      } else if (magic->mime.starts_with("application/zip")) {
+        full.extension = "zip";
+      } else if (magic->mime.starts_with("application/gzip")) {
+        full.extension = "gz";
+      } else if (magic->mime.starts_with("image/bmp")) {
+        full.extension = "bmp";
+        full.apple = "????BMPp";
+      } else if (magic->mime.starts_with("application/x-dosexec")) {
+        full.extension = "exe";
+      }
+      return full;
+    }
   }
-  return classify_text(data);
+  if (!excl.ascmagic) {
+    if (auto script = classify_by_shebang(data)) {
+      return {*script, ""};
+    }
+  }
+  if (!excl.text) {
+    if (looks_like_json(data)) {
+      return {{"JSON text data", "application/json; charset=us-ascii"}, ""};
+    }
+    FileClassification text = classify_text(data);
+    if (excl.encoding &&
+        text.mime.find("charset=binary") == std::string::npos &&
+        text.mime.find("charset=us-ascii") == std::string::npos) {
+      // [GNU] With the encoding tests excluded, non-ASCII content can
+      // no longer be proven text and falls back to "data".
+      text = {"data", "application/octet-stream; charset=binary"};
+    }
+    return {text, ""};
+  }
+  return {{"data", "application/octet-stream; charset=binary"}, ""};
 }
+
+auto mime_encoding_of(const std::string& mime) -> std::string {
+  const std::string marker = "charset=";
+  if (auto pos = mime.find(marker); pos != std::string::npos) {
+    return mime.substr(pos + marker.size());
+  }
+  return "binary";
+}
+
+enum class OutputMode { Description, Mime, MimeEncoding, Extension, Apple };
 
 /**
  * @brief Process a single file
  * @param path File path
  * @param brief Brief mode (no filename prefix)
  * @param symlink Follow symlinks
- * @param mime Output MIME type instead of description
+ * @param mode Which output value to render for regular files
+ * @param excl Test stages excluded via -e/--exclude[-quiet]
  * @return The full output line for this operand. Like GNU file(1), an
  *         operand that cannot be opened yields a "cannot open" line on
  *         stdout; it is not an error of the command as a whole.
  */
-auto process_file(const std::string& path, bool brief, bool symlink, bool mime)
-    -> std::string {
+auto process_file(const std::string& path, bool brief, bool symlink,
+                  OutputMode mode, const Exclusions& excl) -> std::string {
   std::wstring wpath =
       utf8_to_wstring(native_path::normalize_api_operand(path));
 
@@ -415,21 +519,38 @@ auto process_file(const std::string& path, bool brief, bool symlink, bool mime)
 
   // Check if it's a directory
   if (attrs & FILE_ATTRIBUTE_DIRECTORY) {
-    type = mime ? "inode/directory; charset=binary" : "directory";
+    type = mode == OutputMode::Mime ? "inode/directory; charset=binary"
+           : mode == OutputMode::MimeEncoding ? "binary"
+           : mode == OutputMode::Extension    ? ""
+           : mode == OutputMode::Apple        ? "UNKNUNKN"
+                                              : "directory";
   }
   // Check if it's a reparse point (symlink or junction)
   else if (attrs & FILE_ATTRIBUTE_REPARSE_POINT) {
-    type = mime ? "inode/symlink; charset=binary" : "symbolic link";
+    type = mode == OutputMode::Mime           ? "inode/symlink; charset=binary"
+           : mode == OutputMode::MimeEncoding ? "binary"
+           : mode == OutputMode::Extension    ? ""
+           : mode == OutputMode::Apple        ? "UNKNUNKN"
+                                              : "symbolic link";
   }
   // Regular file
   else {
     // A WinuxCmd fifo marker (#1038) classifies as a named pipe.
     if ((attrs & FILE_ATTRIBUTE_SYSTEM) != 0 &&
         native_path::is_winux_fifo_w(wpath)) {
-      type = mime ? "inode/fifo; charset=binary" : "fifo (named pipe)";
+      type = mode == OutputMode::Mime           ? "inode/fifo; charset=binary"
+             : mode == OutputMode::MimeEncoding ? "binary"
+             : mode == OutputMode::Extension    ? ""
+             : mode == OutputMode::Apple        ? "UNKNUNKN"
+                                                : "fifo (named pipe)";
     } else {
-      auto classification = classify_content(wpath);
-      type = mime ? classification.mime : classification.description;
+      auto full = classify_content(wpath, excl);
+      type = mode == OutputMode::Mime ? full.classification.mime
+             : mode == OutputMode::MimeEncoding
+                 ? mime_encoding_of(full.classification.mime)
+             : mode == OutputMode::Extension ? full.extension
+             : mode == OutputMode::Apple     ? full.apple
+                                             : full.classification.description;
     }
   }
 
@@ -447,6 +568,33 @@ auto process_file(const std::string& path, bool brief, bool symlink, bool mime)
  */
 auto process_files(const CommandContext<FILE_OPTIONS.size()>& ctx)
     -> cp::Result<bool> {
+  // [DIFFERS] -C/--compile: there is no external magic file to compile.
+  // Like GNU, this mode needs no file operands.
+  if (ctx.get<bool>("--compile", false) || ctx.get<bool>("-C", false)) {
+    safeErrorPrint(
+        "file: [DIFFERS] --compile is not available on Windows: "
+        "the magic database is built in\n");
+    return false;
+  }
+
+  // -l/--list: dump the built-in signature table (a simplified form of
+  // GNU's compiled-magic listing) and exit; no operands are needed.
+  if (ctx.get<bool>("--list", false) || ctx.get<bool>("-l", false)) {
+    safePrintLn(
+        "file: built-in magic table [DIFFERS: no external magic "
+        "file on Windows]");
+    safePrintLn("0\tstring\t%PDF-\tPDF document");
+    safePrintLn("0\tstring\t\\x89PNG\tPNG image data");
+    safePrintLn("0\tstring\t\\xff\\xd8\\xff\tJPEG image data");
+    safePrintLn("0\tstring\tGIF8\tGIF image data");
+    safePrintLn("0\tstring\tPK\\x03\\x04\tZip archive data");
+    safePrintLn("0\tstring\t\\x1f\\x8b\tgzip compressed data");
+    safePrintLn("0\tstring\tBM\tPC bitmap image data");
+    safePrintLn("0\tstring\t\\x7fELF\tELF executable");
+    safePrintLn("0\tstring\tMZ\tMS-DOS executable");
+    return true;
+  }
+
   // Use SmallVector for file paths (max 64 files) - all stack-allocated
   SmallVector<std::string, 64> paths{};
 
@@ -495,7 +643,7 @@ auto process_files(const CommandContext<FILE_OPTIONS.size()>& ctx)
       ctx.get<bool>("--dereference", false) || ctx.get<bool>("-L", false);
   bool no_deref =
       ctx.get<bool>("--no-dereference", false) || ctx.get<bool>("-h", false);
-  bool mime = ctx.get<bool>("--mime", false) || ctx.get<bool>("-i", false);
+  bool debug = ctx.get<bool>("--debug", false) || ctx.get<bool>("-d", false);
   bool checking_format =
       ctx.get<bool>("--checking-printout", false) || ctx.get<bool>("-c", false);
   bool keep_going =
@@ -506,6 +654,49 @@ auto process_files(const CommandContext<FILE_OPTIONS.size()>& ctx)
   bool uncompress =
       ctx.get<bool>("--uncompress", false) || ctx.get<bool>("-z", false);
   bool has_magic_file = ctx.has("--magic-file") || ctx.has("-m");
+
+  // -e/--exclude and --exclude-quiet: values may be repeated and may
+  // carry comma-separated test names. An unknown test name is an error
+  // for --exclude and silently ignored for --exclude-quiet.
+  Exclusions excl;
+  auto apply_exclude_value = [&](const std::string& raw, bool quiet) -> bool {
+    size_t start = 0;
+    while (start <= raw.size()) {
+      const size_t comma = raw.find(',', start);
+      const std::string name =
+          raw.substr(start, comma == std::string::npos ? std::string::npos
+                                                       : comma - start);
+      if (!name.empty()) {
+        if (known_test_name(name)) {
+          apply_test_name(excl, name);
+        } else if (!quiet) {
+          safeErrorPrint("file: '" + name + "' is not a valid test\n");
+          return false;
+        }
+      }
+      if (comma == std::string::npos) break;
+      start = comma + 1;
+    }
+    return true;
+  };
+  for (const auto& value : ctx.get_all<std::string>("--exclude")) {
+    if (!apply_exclude_value(value, false)) return false;
+  }
+  for (const auto& value : ctx.get_all<std::string>("--exclude-quiet")) {
+    if (!apply_exclude_value(value, true)) return false;
+  }
+
+  // Output mode: the last of -i/--mime, --mime-encoding, --extension
+  // and --apple on the command line wins.
+  OutputMode mode = OutputMode::Description;
+  for (const auto& occurrence : ctx.options.occurrences()) {
+    if (!ctx.metas || occurrence.index >= FILE_OPTIONS.size()) continue;
+    const auto& meta = (*ctx.metas)[occurrence.index];
+    if (meta.long_name == "--mime") mode = OutputMode::Mime;
+    if (meta.long_name == "--mime-encoding") mode = OutputMode::MimeEncoding;
+    if (meta.long_name == "--extension") mode = OutputMode::Extension;
+    if (meta.long_name == "--apple") mode = OutputMode::Apple;
+  }
 
   // [DIFFERS] -c/--checking-printout: print checking format then exit
   if (checking_format) {
@@ -532,10 +723,16 @@ auto process_files(const CommandContext<FILE_OPTIONS.size()>& ctx)
 
   (void)keep_going;  // GNU reports every operand; there is no early stop.
 
+  if (debug) {
+    safeErrorPrintLn("file: [debug] using built-in magic tests");
+  }
   for (size_t i = 0; i < paths.size(); ++i) {
     const auto& path = paths[i];
+    if (debug) {
+      safeErrorPrintLn("file: [debug] classifying '" + path + "'");
+    }
     safePrintLn(utf8_to_wstring(
-        process_file(path, brief, symlink && !no_deref, mime)));
+        process_file(path, brief, symlink && !no_deref, mode, excl)));
   }
 
   return true;
@@ -558,7 +755,13 @@ REGISTER_COMMAND(
     "The first test that succeeds causes the file type to be printed.\n"
     "On Windows, file type detection is likewise based on the file's\n"
     "contents and attributes (directory, symlink, regular file) — the\n"
-    "file name extension is never used to guess the type.",
+    "file name extension is never used to guess the type.\n\n"
+    "--mime-encoding prints only the character encoding, --extension\n"
+    "and --apple print values derived from the built-in signature\n"
+    "table, and -e/--exclude TEST removes a test stage (soft, ascmagic,\n"
+    "encoding or text) from the pipeline.  -l/--list prints the\n"
+    "built-in magic table; -C/--compile is not available because the\n"
+    "magic database is built in.",
 
     /* examples */
     "  file document.txt\n"

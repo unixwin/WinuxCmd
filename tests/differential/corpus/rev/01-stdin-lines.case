@@ -1,0 +1,8 @@
+cmd: rev
+oracle: linux
+args:
+stdin: |
+  abc
+  def
+source: tests/differential/corpus/rev/01-stdin-lines.case
+tags: gnu-compat rev stdin audit-w7

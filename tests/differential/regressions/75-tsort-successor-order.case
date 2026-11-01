@@ -1,0 +1,11 @@
+cmd: tsort
+args:
+timeout: 10
+stdin: |
+  m a
+  m z
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: issue-1462 audit-w2 tsort queue-order
+# GNU tsort queues ready nodes FIFO; successors join the tail in
+# successor-list (reverse reading) order, so this prints m, z, a --
+# not the lexicographic m, a, z a priority-set walk would give.

@@ -152,8 +152,15 @@ TEST(diff, diff_ignore_all_space_side_by_side) {
 
   auto r = p.run();
 
+  // [GNU diff.c:817-822, analyze.c:635, side.c:36-47] -w makes the
+  // files compare equal (exit 0), but side-by-side is a listing
+  // format: no_diff_means_no_output is false for OUTPUT_SDIFF, so
+  // every common line still prints in two columns.  (The unified
+  // sibling above does print nothing.)
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stdout_text.find("alpha beta") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("alphabeta") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("same") != std::string::npos);
 }
 
 TEST(diff, diff_ignore_blank_lines_text_and_color_options) {
@@ -558,4 +565,41 @@ TEST(diff, diff_ignore_matching_lines_invalid_regex_issue1449) {
   // startup before the operands are compared.
   EXPECT_EQ(r.exit_code, 2);
   EXPECT_EQ_TEXT(r.stderr_text, "diff: invalid regular expression '['\n");
+}
+
+// [GNU] diff -y with -I renders positionally over sections built
+// from the raw script (side.c): an ignored line joins the common
+// span and stays visible there.  The dropped 1:1 script used to
+// render this path lost the ignored line from the output entirely.
+TEST(diff, diff_side_by_side_ignore_matching_keeps_ignored_line) {
+  TempDir tmp;
+  tmp.write("file1.txt", "one\nskip-me\ntwo\nthree\n");
+  tmp.write("file2.txt", "one\ntwo\nTHREE\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"diff.exe", {L"-y", L"-I", L"^skip", L"file1.txt", L"file2.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);  // the three/THREE hunk survives
+  EXPECT_TRUE(r.stdout_text.find("skip-me") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("THREE") != std::string::npos);
+}
+
+// Same shape with no surviving hunk: exit 0, and the ignored line is
+// still rendered as part of the common span.
+TEST(diff, diff_side_by_side_ignore_matching_all_ignored) {
+  TempDir tmp;
+  tmp.write("file1.txt", "one\nskip-me\ntwo\n");
+  tmp.write("file2.txt", "one\ntwo\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"diff.exe", {L"-y", L"-I", L"^skip", L"file1.txt", L"file2.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("skip-me") != std::string::npos);
 }

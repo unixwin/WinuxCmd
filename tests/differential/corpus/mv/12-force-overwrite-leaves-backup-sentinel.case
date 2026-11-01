@@ -1,0 +1,10 @@
+cmd: mv
+args: -f src.txt dst.txt
+timeout: 10
+setup: |
+  printf 'new' > src.txt
+  printf 'old' > dst.txt
+  printf 'sentinel' > 'dst.txt~'
+files: dst.txt~
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w1 oracle-coreutils-9.4 mv.c:512-516 no-backup-without-request

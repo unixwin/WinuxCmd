@@ -1,0 +1,5 @@
+cmd: stty
+args: -F nofile drain
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w3b stty drain-accepted missing-device-quoted

@@ -1,0 +1,20 @@
+cmd: pr
+args: -t -l 5 +2
+timeout: 10
+stdin: |
+  1
+  2
+  3
+  4
+  5
+  6
+  7
+  8
+  9
+  10
+  11
+  12
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: issue-1462 audit-w2 pr pages
+# +2 starts printing at page 2 (lines 6..12 with -l 5), no end
+# page given; -t suppresses headers so output is deterministic.

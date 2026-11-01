@@ -324,7 +324,9 @@ TEST(tail, tail_legacy_count_shorthand) {
   EXPECT_EQ_TEXT(r2.stdout_text, "pha\nbeta\ngamma\n");
 }
 
-TEST(tail, tail_strips_utf8_bom_in_line_mode) {
+TEST(tail, tail_passes_utf8_bom_bytes_through_in_line_mode) {
+  // [GNU] tail is byte-oriented (tail.c): a UTF-8 BOM is ordinary
+  // leading bytes of the first line, never stripped (audit #1462).
   TempDir tmp;
   tmp.write("a.txt", "\xEF\xBB\xBFhello\nsecond\n");
 
@@ -334,10 +336,13 @@ TEST(tail, tail_strips_utf8_bom_in_line_mode) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "hello\nsecond\n");
+  EXPECT_EQ_TEXT(r.stdout_text, "\xEF\xBB\xBFhello\nsecond\n");
 }
 
-TEST(tail, tail_decodes_utf16le_input) {
+TEST(tail, tail_passes_utf16le_bytes_through) {
+  // [GNU] no transcoding: lines end at 0x0A bytes, so the last
+  // "line" of UTF-16LE input is the lone 0x00 byte after the final
+  // 0x0A (audit #1462).
   TempDir tmp;
   tmp.write_bytes("a.txt", {static_cast<char>(0xFF),
                             static_cast<char>(0xFE),
@@ -374,7 +379,7 @@ TEST(tail, tail_decodes_utf16le_input) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "second\n");
+  EXPECT_EQ(r.stdout_text, std::string(1, '\0'));
 }
 
 TEST(tail, tail_obsolete_compact_byte_count) {
@@ -449,7 +454,12 @@ TEST(tail, tail_obsolete_from_start_compact_line_suffix) {
 }
 
 TEST(tail,
-     tail_obsolete_from_start_compact_line_suffix_supports_multiple_files) {
+     tail_plus_obsolete_form_is_a_file_operand_with_multiple_files) {
+  // [GNU] parse_obsolete_option's argc gate (tail.c:2062-2067)
+  // admits the obsolete form only with at most one file operand;
+  // with two, a leading '+' is a file name in the standard form
+  // (tail.c:2080), so '+2l' is opened as an operand and the real
+  // files print whole (audit #1462).
   TempDir tmp;
   tmp.write("a.txt", "a1\na2\na3\n");
   tmp.write("b.txt", "b1\nb2\nb3\n");
@@ -459,9 +469,11 @@ TEST(tail,
   p.add(L"tail.exe", {L"+2l", L"a.txt", L"b.txt"});
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("tail: cannot open '+2l' for reading: ") !=
+              std::string::npos);
   EXPECT_EQ_TEXT(r.stdout_text,
-                 "==> a.txt <==\na2\na3\n\n==> b.txt <==\nb2\nb3\n");
+                 "==> a.txt <==\na1\na2\na3\n\n==> b.txt <==\nb1\nb2\nb3\n");
 }
 
 TEST(tail, tail_last_header_option_wins) {
@@ -635,7 +647,12 @@ TEST(tail, tail_retry_and_pid_follow_missing_file_until_it_appears) {
   EXPECT_EQ_TEXT(r.stdout_text, "line1\nline2\n");
 }
 
-TEST(tail, tail_repeated_pid_waits_until_all_processes_exit) {
+TEST(tail, tail_repeated_pid_last_wins) {
+  // [GNU] --pid is a scalar in tail.c: a repeated --pid replaces
+  // the previous value (last wins, 0 clears), it does not
+  // accumulate a wait set. With the short-lived pid first and the
+  // long-lived one last, tail keeps following past the short pid's
+  // death and still sees the append at 2.5s (audit #1462).
   TempDir tmp;
   tmp.write("live.txt", "start\n");
 
@@ -654,8 +671,9 @@ TEST(tail, tail_repeated_pid_waits_until_all_processes_exit) {
   Pipeline p;
   p.set_cwd(tmp.wpath());
   p.add(L"tail.exe", {L"-n", L"0", L"-f", L"--sleep-interval", L"0.05",
-                      L"--pid", std::to_wstring(long_sentinel.pid()), L"--pid",
-                      std::to_wstring(short_sentinel.pid()), L"live.txt"});
+                      L"--pid", std::to_wstring(short_sentinel.pid()),
+                      L"--pid", std::to_wstring(long_sentinel.pid()),
+                      L"live.txt"});
 
   auto r = p.run();
   writer.join();

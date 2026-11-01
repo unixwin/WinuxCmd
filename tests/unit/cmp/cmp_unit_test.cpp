@@ -94,7 +94,9 @@ TEST(cmp, cmp_quiet_mode) {
   EXPECT_TRUE(r.stdout_text.empty());
 }
 
-TEST(cmp, cmp_last_output_mode_option_wins_to_verbose) {
+// [GNU] -l and -s select different comparison types; specifying both
+// is a usage error in either order (specify_comparison_type, cmp.c).
+TEST(cmp, cmp_verbose_and_quiet_are_incompatible) {
   TempDir tmp;
   tmp.write("file1.txt", "hello\n");
   tmp.write("file2.txt", "world\n");
@@ -105,26 +107,28 @@ TEST(cmp, cmp_last_output_mode_option_wins_to_verbose) {
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 1);
-  EXPECT_FALSE(r.stdout_text.empty());
-}
-
-TEST(cmp, cmp_last_output_mode_option_wins_to_quiet) {
-  TempDir tmp;
-  tmp.write("file1.txt", "hello\n");
-  tmp.write("file2.txt", "world\n");
-
-  Pipeline p;
-  p.set_cwd(tmp.wpath());
-  p.add(L"cmp.exe", {L"-l", L"--quiet", L"file1.txt", L"file2.txt"});
-
-  auto r = p.run();
-
-  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ(r.exit_code, 2);
   EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "cmp: options -l and -s are incompatible\n"
+                 "Try 'cmp --help' for more information.\n");
+
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.add(L"cmp.exe", {L"-l", L"--quiet", L"file1.txt", L"file2.txt"});
+
+  auto r2 = p2.run();
+
+  EXPECT_EQ(r2.exit_code, 2);
+  EXPECT_TRUE(r2.stdout_text.empty());
+  EXPECT_EQ_TEXT(r2.stderr_text,
+                 "cmp: options -l and -s are incompatible\n"
+                 "Try 'cmp --help' for more information.\n");
 }
 
-TEST(cmp, cmp_positional_skip1_skips_both_files) {
+// [GNU] Positional SKIP1 applies to file 1 only (cmp.c: the operand
+// loop calls specify_ignore_initial once per file, in order).
+TEST(cmp, cmp_positional_skip1_applies_to_first_file_only) {
   TempDir tmp;
   tmp.write("file1.txt", "xhello\n");
   tmp.write("file2.txt", "yhello\n");
@@ -135,8 +139,9 @@ TEST(cmp, cmp_positional_skip1_skips_both_files) {
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ_TEXT(r.stdout_text,
+                 "file1.txt file2.txt differ: char 1, line 1\n");
 }
 
 TEST(cmp, cmp_positional_skip1_and_skip2_skip_independently) {
@@ -234,6 +239,8 @@ TEST(cmp, cmp_wildcard_expansion_does_not_reinterpret_extra_file_as_skip) {
   EXPECT_TRUE(r.stderr_text.find("extra operand") != std::string::npos);
 }
 
+// [GNU] With no operands the diagnostic names the last word of the
+// command line (cmp.c: "missing operand after '%s'", argv[argc - 1]).
 TEST(cmp, cmp_missing_operands_report_help_hint) {
   Pipeline p;
   p.add(L"cmp.exe", {});
@@ -242,22 +249,26 @@ TEST(cmp, cmp_missing_operands_report_help_hint) {
 
   EXPECT_EQ(r.exit_code, 2);
   EXPECT_TRUE(r.stdout_text.empty());
-  EXPECT_EQ_TEXT(
-      r.stderr_text,
-      "cmp: missing operand\nTry 'cmp --help' for more information.\n");
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "cmp: missing operand after 'cmp'\nTry 'cmp --help' for "
+                 "more information.\n");
 }
 
-TEST(cmp, cmp_single_operand_reports_help_hint) {
+// [GNU] FILE2 defaults to "-" (standard input), cmp.c:269-270.
+TEST(cmp, cmp_single_operand_compares_against_stdin) {
+  TempDir tmp;
+  tmp.write("a.txt", "x\n");
+
   Pipeline p;
-  p.add(L"cmp.exe", {L"a"});
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("");
+  p.add(L"cmp.exe", {L"a.txt"});
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_EQ(r.exit_code, 1);
   EXPECT_TRUE(r.stdout_text.empty());
-  EXPECT_EQ_TEXT(r.stderr_text,
-                 "cmp: missing operand after 'a'\nTry 'cmp --help' for more "
-                 "information.\n");
+  EXPECT_EQ_TEXT(r.stderr_text, "cmp: EOF on - which is empty\n");
 }
 
 TEST(cmp, cmp_extra_operand_reports_help_hint) {
@@ -486,4 +497,101 @@ TEST(cmp, issue1347_cmp_eof_on_stdin) {
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_TRUE(r.stdout_text.empty());
   EXPECT_EQ_TEXT(r.stderr_text, "cmp: EOF on - which is empty\n");
+}
+
+// [GNU] -l pads byte numbers to offset_width: the widest position the
+// comparison can print (cmp.c).  Two 1000-byte files give width 4.
+TEST(cmp, cmp_verbose_pads_byte_numbers_to_offset_width) {
+  TempDir tmp;
+  std::vector<char> a(1000, 'a'), b(1000, 'a');
+  b[4] = 'b';
+  b[999] = 'b';
+  tmp.write_bytes("a.bin", a);
+  tmp.write_bytes("b.bin", b);
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cmp.exe", {L"-l", L"a.bin", L"b.bin"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ_TEXT(r.stdout_text, "   5 141 142\n1000 141 142\n");
+}
+
+// [GNU] -l with -b adds the glyph columns: "%*s %3o %-4s %3o %s".
+TEST(cmp, cmp_verbose_print_bytes_shows_glyph_columns) {
+  TempDir tmp;
+  tmp.write("f1", "abXde");
+  tmp.write("f2", "abYde");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cmp.exe", {L"-l", L"-b", L"f1", L"f2"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ_TEXT(r.stdout_text, "3 130 X    131 Y\n");
+}
+
+// [GNU] -c is the obsolescent alias of -b (cmp.c).
+TEST(cmp, cmp_c_is_print_bytes_alias) {
+  TempDir tmp;
+  tmp.write_bytes("f1", {0x00});
+  tmp.write_bytes("f2", {0x01});
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cmp.exe", {L"-c", L"f1", L"f2"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ_TEXT(r.stdout_text,
+                 "f1 f2 differ: byte 1, line 1 is   0 ^@   1 ^A\n");
+}
+
+// [GNU] Repeated -n takes the minimum of all occurrences (cmp.c).
+TEST(cmp, cmp_bytes_option_takes_minimum_of_repeats) {
+  TempDir tmp;
+  tmp.write("f1", "aXc");
+  tmp.write("f2", "aYc");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cmp.exe", {L"-n", L"3", L"-n", L"1", L"f1", L"f2"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.add(L"cmp.exe", {L"-n", L"1", L"-n", L"3", L"f1", L"f2"});
+  auto r2 = p2.run();
+  EXPECT_EQ(r2.exit_code, 0);
+
+  Pipeline p3;
+  p3.set_cwd(tmp.wpath());
+  p3.add(L"cmp.exe", {L"-n", L"3", L"f1", L"f2"});
+  auto r3 = p3.run();
+  EXPECT_EQ(r3.exit_code, 1);
+}
+
+// [GNU] Repeated -i values combine per file with MAX
+// (specify_ignore_initial, cmp.c), independent of their order.
+TEST(cmp, cmp_ignore_initial_repeats_take_maximum) {
+  TempDir tmp;
+  tmp.write("f1", "XYZabc");
+  tmp.write("f2", "UVWabd");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cmp.exe", {L"-i", L"1", L"-i", L"3", L"-l", L"f1", L"f2"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ_TEXT(r.stdout_text, "3 143 144\n");
+
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.add(L"cmp.exe", {L"-i", L"3", L"-i", L"1", L"-l", L"f1", L"f2"});
+  auto r2 = p2.run();
+  EXPECT_EQ(r2.exit_code, 1);
+  EXPECT_EQ_TEXT(r2.stdout_text, "3 143 144\n");
 }

@@ -178,7 +178,7 @@ TEST(uniq, uniq_all_repeated_rejects_group_only_methods) {
   EXPECT_NE(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.empty());
   EXPECT_TRUE(
-      r.stderr_text.find("invalid argument append for --all-repeated") !=
+      r.stderr_text.find("invalid argument 'append' for '--all-repeated'") !=
       std::string::npos);
 }
 
@@ -209,7 +209,11 @@ TEST(uniq, uniq_group_rejects_invalid_method) {
 
   EXPECT_NE(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.empty());
-  EXPECT_TRUE(r.stderr_text.find("invalid grouping method") !=
+  // [GNU] uniq.c XARGMATCH ("--group", ...) over the table at
+  // uniq.c (prepend/append/separate/both): the argmatch shape is
+  // "invalid argument '<v>' for '--group'" plus the valid list;
+  // no "invalid grouping method" text exists in GNU uniq.
+  EXPECT_TRUE(r.stderr_text.find("invalid argument 'bad' for '--group'") !=
               std::string::npos);
 }
 
@@ -340,5 +344,76 @@ TEST(uniq, uniq_native_glob_expands_input_operand_issue1374) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "dup\nuniq\n");
+}
+
+// #1127-P4: modes that never print later records (default, -c, -d, -u)
+// keep only the first record of each group plus a counter. A 300k-line
+// duplicate run must still collapse exactly, with exact counts.
+TEST(uniq, uniq_huge_duplicate_run_issue1127) {
+  std::string input;
+  input.reserve(300000 * 5 + 16);
+  for (int i = 0; i < 300000; ++i) input += "same\n";
+  input += "other\n";
+
+  {
+    Pipeline p;
+    p.set_stdin(input);
+    p.add(L"uniq.exe", {});
+    auto r = p.run();
+    EXPECT_EQ(r.exit_code, 0);
+    EXPECT_EQ_TEXT(r.stdout_text, "same\nother\n");
+  }
+  {
+    Pipeline p;
+    p.set_stdin(input);
+    p.add(L"uniq.exe", {L"-c"});
+    auto r = p.run();
+    EXPECT_EQ(r.exit_code, 0);
+    EXPECT_EQ_TEXT(r.stdout_text, " 300000 same\n      1 other\n");
+  }
+  {
+    Pipeline p;
+    p.set_stdin(input);
+    p.add(L"uniq.exe", {L"-d"});
+    auto r = p.run();
+    EXPECT_EQ(r.exit_code, 0);
+    EXPECT_EQ_TEXT(r.stdout_text, "same\n");
+  }
+  {
+    Pipeline p;
+    p.set_stdin(input);
+    p.add(L"uniq.exe", {L"-u"});
+    auto r = p.run();
+    EXPECT_EQ(r.exit_code, 0);
+    EXPECT_EQ_TEXT(r.stdout_text, "other\n");
+  }
+}
+
+// #1127-P4: --group and -D print every record of a group, so they keep
+// the whole group buffered; their output must still contain each line.
+TEST(uniq, uniq_group_modes_emit_every_record_issue1127) {
+  std::string input;
+  input.reserve(5000 * 4 + 8);
+  for (int i = 0; i < 5000; ++i) input += "dup\n";
+  input += "solo\n";
+  const std::string dup_block = input.substr(0, 5000 * 4);
+
+  {
+    Pipeline p;
+    p.set_stdin(input);
+    p.add(L"uniq.exe", {L"-D"});
+    auto r = p.run();
+    EXPECT_EQ(r.exit_code, 0);
+    EXPECT_EQ_TEXT(r.stdout_text, dup_block);
+  }
+  {
+    Pipeline p;
+    p.set_stdin(input);
+    p.add(L"uniq.exe", {L"--group"});
+    auto r = p.run();
+    EXPECT_EQ(r.exit_code, 0);
+    // --group=separate: one blank line between groups, none trailing.
+    EXPECT_EQ_TEXT(r.stdout_text, dup_block + "\nsolo\n");
+  }
 }
 

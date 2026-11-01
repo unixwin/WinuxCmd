@@ -1,0 +1,7 @@
+cmd: stat
+args: -c %R f.txt
+timeout: 10
+setup: |
+  printf 'abc\n' > f.txt
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w1 oracle-coreutils-9.4 stat.c:1816 %R-was-unimplemented

@@ -144,6 +144,13 @@ struct KeySpec {
   bool reverse = false;
 };
 
+// Parsed -S/--buffer-size value: either an absolute byte count or a
+// percentage of total physical memory (GNU's % suffix form).
+struct BufferSizeHint {
+  std::uintmax_t bytes = 0;
+  unsigned int percent = 0;
+};
+
 struct Config {
   bool ignore_leading_blanks = false;
   bool dictionary_order = false;
@@ -170,6 +177,7 @@ struct Config {
   std::string temporary_directory_hint;
   std::string random_source;
   std::string parallel_hint;
+  std::optional<BufferSizeHint> buffer_size_hint;
   uint64_t random_seed = 0;
   std::vector<KeySpec> keys;
   SmallVector<std::string, 64>
@@ -1095,26 +1103,27 @@ void apply_global_sort_mode(Config& cfg, SortMode mode) {
 }
 
 auto parse_sort_mode_word(std::string_view text) -> std::optional<SortMode> {
-  auto lowered = ascii_lower_copy(text);
-  if (lowered == "general-numeric" || lowered == "g") {
-    return SortMode::GeneralNumeric;
+  // [GNU] sort.c XARGMATCH ("--sort", ...) over sort_args: the match is
+  // case-SENSITIVE and accepts any unique prefix of a table entry (the
+  // one-letter forms work because each initial is unique to one name).
+  static constexpr std::array<std::pair<std::string_view, SortMode>, 6>
+      kSortWords{{
+          {"general-numeric", SortMode::GeneralNumeric},
+          {"human-numeric", SortMode::HumanNumeric},
+          {"month", SortMode::Month},
+          {"numeric", SortMode::Numeric},
+          {"random", SortMode::Random},
+          {"version", SortMode::Version},
+      }};
+  if (text.empty()) return std::nullopt;
+  std::optional<SortMode> matched;
+  for (const auto& [name, mode] : kSortWords) {
+    if (name.starts_with(text)) {
+      if (matched) return std::nullopt;  // ambiguous prefix
+      matched = mode;
+    }
   }
-  if (lowered == "human-numeric" || lowered == "h") {
-    return SortMode::HumanNumeric;
-  }
-  if (lowered == "month" || lowered == "m") {
-    return SortMode::Month;
-  }
-  if (lowered == "numeric" || lowered == "n") {
-    return SortMode::Numeric;
-  }
-  if (lowered == "random" || lowered == "r") {
-    return SortMode::Random;
-  }
-  if (lowered == "version" || lowered == "v") {
-    return SortMode::Version;
-  }
-  return std::nullopt;
+  return matched;
 }
 
 auto effective_sort_mode_name(const Config& cfg, const KeySpec* key_spec)
@@ -1235,9 +1244,19 @@ auto apply_sort_ordering_options(Config& cfg,
       apply_global_sort_mode(cfg, SortMode::Version);
     } else if (option_matches(meta, "", "--sort")) {
       const auto* value = std::get_if<std::string>(&occurrence.value);
-      if (value == nullptr) return std::unexpected("invalid sort mode");
+      if (value == nullptr) {
+        return std::unexpected("invalid argument '' for '--sort'");
+      }
+      if (value->empty()) {
+        // Printed specially by the command entry point.
+        return std::unexpected("ambiguous argument '' for '--sort'");
+      }
       auto mode = parse_sort_mode_word(*value);
-      if (!mode) return std::unexpected("invalid sort mode");
+      if (!mode) {
+        // Printed specially by the command entry point.
+        return std::unexpected("invalid argument '" + *value +
+                               "' for '--sort'");
+      }
       apply_global_sort_mode(cfg, *mode);
     }
   }
@@ -1249,27 +1268,29 @@ struct SizeSuffix {
   std::uintmax_t multiplier;
 };
 
-auto parse_buffer_size_hint(std::string_view text) -> bool {
-  if (text.empty()) return false;
+auto parse_buffer_size_value(std::string_view text)
+    -> std::optional<BufferSizeHint> {
+  if (text.empty()) return std::nullopt;
 
   size_t number_end = 0;
   while (number_end < text.size() &&
          std::isdigit(static_cast<unsigned char>(text[number_end])) != 0) {
     ++number_end;
   }
-  if (number_end == 0) return false;
+  if (number_end == 0) return std::nullopt;
 
   std::uintmax_t value = 0;
   auto number = text.substr(0, number_end);
   auto [ptr, ec] =
       std::from_chars(number.data(), number.data() + number.size(), value);
   if (ec != std::errc() || ptr != number.data() + number.size()) {
-    return false;
+    return std::nullopt;
   }
 
   auto suffix = text.substr(number_end);
   if (suffix == "%") {
-    return value <= 100;
+    if (value > 100) return std::nullopt;
+    return BufferSizeHint{0, static_cast<unsigned int>(value)};
   }
 
   static constexpr std::array suffixes{
@@ -1300,11 +1321,18 @@ auto parse_buffer_size_hint(std::string_view text) -> bool {
 
   for (const auto& entry : suffixes) {
     if (entry.suffix != suffix) continue;
-    return value <=
-           std::numeric_limits<std::uintmax_t>::max() / entry.multiplier;
+    if (value >
+        std::numeric_limits<std::uintmax_t>::max() / entry.multiplier) {
+      return std::nullopt;
+    }
+    return BufferSizeHint{value * entry.multiplier, 0};
   }
 
-  return false;
+  return std::nullopt;
+}
+
+auto parse_buffer_size_hint(std::string_view text) -> bool {
+  return parse_buffer_size_value(text).has_value();
 }
 
 auto parse_parallel_hint(std::string_view text) -> bool {
@@ -1488,9 +1516,12 @@ auto build_config(const CommandContext<SORT_OPTIONS.size()>& ctx)
 
   std::string buffer_size = ctx.get<std::string>("--buffer-size", "");
   if (buffer_size.empty()) buffer_size = ctx.get<std::string>("-S", "");
-  if ((ctx.has("--buffer-size") || ctx.has("-S")) &&
-      !parse_buffer_size_hint(buffer_size)) {
-    return std::unexpected("invalid buffer size");
+  if (ctx.has("--buffer-size") || ctx.has("-S")) {
+    auto parsed_buffer_size = parse_buffer_size_value(buffer_size);
+    if (!parsed_buffer_size) {
+      return std::unexpected("invalid buffer size");
+    }
+    cfg.buffer_size_hint = *parsed_buffer_size;
   }
 
   if (ctx.has("--parallel") && !parse_parallel_hint(cfg.parallel_hint)) {
@@ -1850,8 +1881,69 @@ struct ExternalRun {
   bool has_current = false;
 };
 
+// [perf #1127-P4] Adaptive external-sort chunk budget (roadmap item 6,
+// the uutils buffer_hint shape). The old code hardcoded 8 MiB runs, so
+// a 1 GiB sort paid ~128 merge inputs. The budget now scales: an
+// explicit -S/--buffer-size wins and is honored as given (the GNU
+// meaning of the hint this command previously validated and dropped;
+// % is of total RAM), otherwise the budget is min(total input x 1.5,
+// total RAM / 4) clamped to [8 MiB, 1 GiB]. The chunk size is
+// invisible in the output:
+// runs merge through the same comparator (last-resort whole-line
+// comparison orders equal keys by content, and --stable merges runs
+// in input order), so every budget yields byte-identical output —
+// only the run count, and with it the merge fan-in, changes.
+auto total_physical_memory_bytes() -> std::uintmax_t {
+  MEMORYSTATUSEX status{};
+  status.dwLength = sizeof(status);
+  if (!GlobalMemoryStatusEx(&status)) return 0;
+  return static_cast<std::uintmax_t>(status.ullTotalPhys);
+}
+
+auto resolve_chunk_budget(const Config& cfg) -> size_t {
+  constexpr std::uintmax_t kFloor = 8ULL * 1024 * 1024;
+  constexpr std::uintmax_t kCeiling = 1024ULL * 1024 * 1024;
+  const std::uintmax_t ram = total_physical_memory_bytes();
+
+  std::uintmax_t budget = 0;
+  if (cfg.buffer_size_hint) {
+    // An explicit -S is honored as given (GNU semantics: it is the
+    // main-memory buffer size), bounded only by the 1 GiB safety cap;
+    // the 8 MiB floor below applies to the adaptive default alone.
+    if (cfg.buffer_size_hint->percent > 0) {
+      budget = ram / 100 * cfg.buffer_size_hint->percent;
+    } else {
+      budget = cfg.buffer_size_hint->bytes;
+    }
+    if (budget == 0) budget = 1;
+    if (budget > kCeiling) budget = kCeiling;
+    return static_cast<size_t>(budget);
+  }
+  {
+    std::uintmax_t total_input = 0;
+    for (const auto& file : cfg.files) {
+      if (file == "-") continue;
+      std::error_code ec;
+      const auto operand = native_path::make_api_path_operand(file);
+      const auto size = std::filesystem::file_size(
+          std::filesystem::path(operand.extended), ec);
+      if (ec) continue;
+      total_input += static_cast<std::uintmax_t>(size);
+      if (total_input > kCeiling) break;
+    }
+    budget = total_input + total_input / 2;
+    if (ram > 0) {
+      const std::uintmax_t ram_cap = ram / 4;
+      if (budget > ram_cap) budget = ram_cap;
+    }
+  }
+  if (budget < kFloor) budget = kFloor;
+  if (budget > kCeiling) budget = kCeiling;
+  return static_cast<size_t>(budget);
+}
+
 auto external_sort(const Config& cfg) -> cp::Result<int> {
-  constexpr size_t kChunkBytes = 8 * 1024 * 1024;
+  const size_t kChunkBytes = resolve_chunk_budget(cfg);
   std::vector<std::filesystem::path> temporary_paths;
   std::vector<ExternalRun> runs;
   size_t run_number = 0;
@@ -2101,6 +2193,23 @@ REGISTER_COMMAND(sort, "sort", "sort [OPTION]... [FILE]...",
       safeErrorPrintLn("Valid arguments are:");
       safeErrorPrintLn("  - 'quiet', 'silent'");
       safeErrorPrintLn("  - 'diagnose-first'");
+      safeErrorPrintLn("Try 'sort --help' for more information.");
+      return 1;
+    }
+    // [GNU] same argmatch treatment for a bad --sort=ARG (sort.c
+    // XARGMATCH over sort_args): exit 1, valid-arguments list in
+    // sort_args table order.
+    if ((err.starts_with("invalid argument '") ||
+         err.starts_with("ambiguous argument '")) &&
+        err.ends_with("' for '--sort'")) {
+      safeErrorPrintLn("sort: " + err);
+      safeErrorPrintLn("Valid arguments are:");
+      safeErrorPrintLn("  - 'general-numeric'");
+      safeErrorPrintLn("  - 'human-numeric'");
+      safeErrorPrintLn("  - 'month'");
+      safeErrorPrintLn("  - 'numeric'");
+      safeErrorPrintLn("  - 'random'");
+      safeErrorPrintLn("  - 'version'");
       safeErrorPrintLn("Try 'sort --help' for more information.");
       return 1;
     }

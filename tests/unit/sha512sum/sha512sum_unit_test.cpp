@@ -497,3 +497,44 @@ TEST(sha512sum, sha512sum_stdin_plain_text_sanity_issue1200) {
           "9e37f9c5cc88436a31737330c1c8eccb2c2f9f374d62f716432a32d50fac") !=
       std::string::npos);  // GNU sha512 of "hi\n"
 }
+
+// #1127-P4: the engine moved from CryptoAPI to CNG (BCrypt) with a
+// 64 KiB feed (was 8 KiB). Digests must match the published vectors on
+// inputs that cross several feed blocks: the FIPS 1,000,000 x 'a'
+// example and a 200,003-byte mixed pattern (not a block multiple), on
+// the file and stdin routes alike.
+TEST(sha512sum, sha512sum_cng_large_inputs_issue1127) {
+  TempDir tmp;
+  const std::string million_a(1000000, 'a');
+  tmp.write("a.bin", million_a);
+  std::string mixed;
+  mixed.reserve(200003);
+  for (int i = 0; i < 200003; ++i) {
+    mixed.push_back(static_cast<char>((i * 37 + 11) & 0xFF));
+  }
+  tmp.write("mixed.bin", mixed);
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sha512sum.exe", {L"a.bin", L"mixed.bin"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(
+      r.stdout_text,
+      "e718483d0ce769644e2e42c7bc15b4638e1f98b13b2044285632a803afa973ebde0f"
+      "f244877ea60a4cb0432ce577c31beb009c5c2c49aa2e4eadb217ad8cc09b"
+      "  a.bin\n"
+      "b1a2d294bb371d56f24fa004e76515c9185fe308523caa8a07126b43a6b6913bbc029"
+      "077d40263342e05eacf2b11eb576fa0acf45ba2f904a2efb0acbd783a85"
+      "  mixed.bin\n");
+
+  Pipeline p2;
+  p2.set_stdin(million_a);
+  p2.add(L"sha512sum.exe", {});
+  auto r2 = p2.run();
+  EXPECT_EQ(r2.exit_code, 0);
+  EXPECT_EQ_TEXT(r2.stdout_text,
+                 "e718483d0ce769644e2e42c7bc15b4638e1f98b13b2044285632a803afa973e"
+                 "bde0ff244877ea60a4cb0432ce577c31beb009c5c2c49aa2e4eadb217ad8c"
+                 "c09b  -\n");
+}

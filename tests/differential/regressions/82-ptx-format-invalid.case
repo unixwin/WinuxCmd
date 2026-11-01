@@ -1,0 +1,9 @@
+cmd: ptx
+args: --format=bogus
+timeout: 10
+stdin: |
+  the quick brown fox
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: issue-1462 audit-w2 ptx format argmatch
+# GNU: "ptx: invalid argument 'bogus' for '--format'" + the valid
+# arguments list ('roff', 'tex') + try-help, exit 1.

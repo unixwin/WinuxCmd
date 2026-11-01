@@ -1,0 +1,4 @@
+cmd: numfmt
+args: --to=auto 5
+source: GNU coreutils 9.4 src/numfmt.c (argmatch failure lists valid arguments and ends with the try-help line)
+tags: audit-w3a #1462

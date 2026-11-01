@@ -1,0 +1,9 @@
+cmd: csplit
+args: -f part cs.txt /^c$/
+timeout: 10
+setup: |
+  printf 'a\nb\nc\nd\n' > cs.txt
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: issue-1462 audit-w2 csplit pattern
+# Pattern split prints each piece's byte count (4 and 4) and
+# writes both piece files.

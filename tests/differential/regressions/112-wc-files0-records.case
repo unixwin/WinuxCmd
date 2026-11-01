@@ -1,0 +1,11 @@
+cmd: wc
+args: --files0-from=list
+timeout: 10
+setup: |
+  printf 'a b\nc\n' > f1.txt
+  printf 'f1.txt\0\0f1.txt\0' > list
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: issue-1462 audit-w2 wc files0-from records
+# The zero-length record reports "wc: list:2: invalid
+# zero-length file name" and is skipped; both real names are
+# counted and the exit status is 1.

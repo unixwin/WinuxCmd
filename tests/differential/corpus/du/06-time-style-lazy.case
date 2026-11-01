@@ -1,0 +1,7 @@
+cmd: du
+args: --time-style=bogus f
+timeout: 10
+setup: |
+  printf '' > f
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w1 oracle-coreutils-9.4 du.c:960-1005 time-style-validated-only-with-time

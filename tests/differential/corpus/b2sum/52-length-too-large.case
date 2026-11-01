@@ -1,0 +1,7 @@
+cmd: b2sum
+args: -l 520 f.txt
+timeout: 10
+setup: |
+  printf 'hello\n' > f.txt
+source: GNU coreutils 9.4 src/digest.c (multiple of 8 above 512: "invalid length" plus the BLAKE2b maximum line)
+tags: audit-w3a #1462

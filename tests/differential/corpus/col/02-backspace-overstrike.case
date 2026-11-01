@@ -1,0 +1,7 @@
+cmd: col
+oracle: linux
+args: 
+stdin: |
+  ab\b\bc\n
+source: tests/differential/corpus/col/02-backspace-overstrike.case
+tags: gnu-compat col backspace audit-w7

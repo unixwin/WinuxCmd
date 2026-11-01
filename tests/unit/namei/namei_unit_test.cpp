@@ -225,3 +225,113 @@ TEST(namei, namei_native_form_still_resolves) {
   EXPECT_CONTAINS(r.stdout_text, "f wbfile.txt");
   EXPECT_NOT_CONTAINS(r.stdout_text, "(No such file or directory)");
 }
+
+// ===== util-linux namei options (#1127) =====
+
+// -m/--modes replaces the type glyph with a 10-character mode string.
+TEST(namei, namei_modes_prints_mode_string) {
+  TempDir tmp;
+  tmp.write("wbdir/wbfile.txt", "x");
+  const std::wstring operand = tmp.wpath() + L"\\wbdir\\wbfile.txt";
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  namei_dialect_detail::clear_shell_root_env(p);
+  p.add(L"namei.exe", {L"-m", operand});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_CONTAINS(r.stdout_text, "drwx");
+  EXPECT_CONTAINS(r.stdout_text, "wbfile.txt");
+  EXPECT_NOT_CONTAINS(r.stdout_text, "(No such file or directory)");
+}
+
+// -o/--owners adds owner and group columns.
+TEST(namei, namei_owners_prints_columns) {
+  TempDir tmp;
+  tmp.write("wbdir/wbfile.txt", "x");
+  const std::wstring operand = tmp.wpath() + L"\\wbdir\\wbfile.txt";
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  namei_dialect_detail::clear_shell_root_env(p);
+  p.add(L"namei.exe", {L"-o", operand});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_CONTAINS(r.stdout_text, "wbdir");
+  EXPECT_CONTAINS(r.stdout_text, "wbfile.txt");
+  EXPECT_NOT_CONTAINS(r.stdout_text, "(No such file or directory)");
+}
+
+// -x/--mountpoints marks mount points (volume roots on Windows) 'D'.
+TEST(namei, namei_mountpoints_marks_root) {
+  TempDir tmp;
+  tmp.write("wbdir/wbfile.txt", "x");
+  const std::wstring operand = tmp.wpath() + L"\\wbdir\\wbfile.txt";
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  namei_dialect_detail::clear_shell_root_env(p);
+  p.add(L"namei.exe", {L"-x", operand});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  const std::string root_line =
+      std::string("D ") +
+      static_cast<char>(std::toupper(static_cast<unsigned char>(
+          static_cast<char>(namei_dialect_detail::drive_letter(tmp.path))))) +
+      ":\\";
+  EXPECT_CONTAINS(r.stdout_text, root_line);
+}
+
+// -Z/--context appends the (unavailable on Windows) context marker.
+TEST(namei, namei_context_marker) {
+  TempDir tmp;
+  tmp.write("wbdir/wbfile.txt", "x");
+  const std::wstring operand = tmp.wpath() + L"\\wbdir\\wbfile.txt";
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  namei_dialect_detail::clear_shell_root_env(p);
+  p.add(L"namei.exe", {L"-Z", operand});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_CONTAINS(r.stdout_text, "?");
+  EXPECT_CONTAINS(r.stdout_text, "wbfile.txt");
+}
+
+// -l/--long combines modes, owners and vertical output.
+TEST(namei, namei_long_format) {
+  TempDir tmp;
+  tmp.write("wbdir/wbfile.txt", "x");
+  const std::wstring operand = tmp.wpath() + L"\\wbdir\\wbfile.txt";
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  namei_dialect_detail::clear_shell_root_env(p);
+  p.add(L"namei.exe", {L"-l", operand});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_CONTAINS(r.stdout_text, "drwx");
+  EXPECT_CONTAINS(r.stdout_text, "wbfile.txt");
+}
+
+// A missing component now exits 1, matching util-linux namei
+// (print_namei failure propagates to EXIT_FAILURE).
+TEST(namei, namei_missing_component_exits_one) {
+  TempDir tmp;
+  tmp.write("wbdir/wbfile.txt", "x");
+  const std::wstring operand = tmp.wpath() + L"\\wbdir\\absent1237";
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  namei_dialect_detail::clear_shell_root_env(p);
+  p.add(L"namei.exe", {operand});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_CONTAINS(r.stdout_text, "(No such file or directory)");
+}

@@ -1,0 +1,8 @@
+cmd: cat
+args: -v mixed.txt
+timeout: 10
+setup: |
+  head -c 200000 /dev/zero | tr '\0' 'x' > mixed.txt
+  printf '\001\177\200\303\251\tend\nshort\n' >> mixed.txt
+source: github.com/unixwin/WinuxCmd/issues/1127
+tags: issue-1127 regression perf

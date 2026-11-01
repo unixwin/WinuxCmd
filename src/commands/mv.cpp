@@ -213,9 +213,163 @@ auto strip_trailing_slashes(std::string path) -> std::string {
   return path;
 }
 
+enum class MvBackupControl { none, simple, numbered, existing };
+
+struct MvBackupParse {
+  MvBackupControl control = MvBackupControl::none;
+  int error_kind = 0;  // 0 = ok, 1 = invalid, 2 = ambiguous
+};
+
+// [GNU] --backup CONTROL follows argmatch via xget_version (mv.c:519-522):
+// exact name or unique prefix of none/off, simple/never, existing/nil,
+// numbered/t; case-sensitive. A bare -b/--backup falls back to the
+// VERSION_CONTROL environment variable, then to 'existing'.
+auto parse_mv_backup_control(const std::string& raw) -> MvBackupParse {
+  static constexpr std::pair<std::string_view, MvBackupControl> kNames[] = {
+      {"none", MvBackupControl::none},
+      {"off", MvBackupControl::none},
+      {"simple", MvBackupControl::simple},
+      {"never", MvBackupControl::simple},
+      {"existing", MvBackupControl::existing},
+      {"nil", MvBackupControl::existing},
+      {"numbered", MvBackupControl::numbered},
+      {"t", MvBackupControl::numbered},
+  };
+  for (auto [name, control] : kNames) {
+    if (raw == name) return {control, 0};
+  }
+  if (raw.empty()) {
+    if (const char* env = std::getenv("VERSION_CONTROL")) {
+      return parse_mv_backup_control(std::string(env));
+    }
+    return {MvBackupControl::existing, 0};
+  }
+  int matches = 0;
+  MvBackupControl matched = MvBackupControl::none;
+  for (auto [name, control] : kNames) {
+    if (name.starts_with(raw)) {
+      ++matches;
+      matched = control;
+    }
+  }
+  if (matches == 1) return {matched, 0};
+  return {MvBackupControl::none, matches == 0 ? 1 : 2};
+}
+
+auto mv_backup_type_message(int error_kind, const std::string& value)
+    -> std::string {
+  std::string message =
+      error_kind == 2 ? "ambiguous argument '" : "invalid argument '";
+  message += value;
+  message +=
+      "' for 'backup type'\n"
+      "Valid arguments are:\n"
+      "  - 'none', 'off'\n"
+      "  - 'simple', 'never'\n"
+      "  - 'existing', 'nil'\n"
+      "  - 'numbered', 't'\n"
+      "Try 'mv --help' for more information.";
+  return message;
+}
+
+// [GNU] Whether backups are in effect at all: -b, --backup, or -S
+// (mv.c:404-407: -S sets make_backups). The control value comes from
+// --backup when given.  Judged from the parser's option occurrences,
+// like parse_overwrite_mode: with this table's duplicated long-only
+// entries, the name-based has()/get() probes reported backups as
+// given for a bare -n (the subject answered `mv -n a b` with the
+// --backup/--no-clobber mutual-exclusion error and made backups on
+// plain overwrites), while the occurrence scan reads the same
+// options correctly.
+auto mv_make_backups(const CommandContext<MV_OPTIONS.size()>& ctx)
+    -> cp::Result<std::optional<MvBackupControl>> {
+  bool given = false;
+  std::string raw;
+  if (ctx.metas) {
+    for (const auto& occurrence : ctx.options.occurrences()) {
+      if (occurrence.index >= ctx.metas->size()) continue;
+      const auto& meta = (*ctx.metas)[occurrence.index];
+      if (meta.short_name == "-b" || meta.long_name == "--backup" ||
+          meta.short_name == "-S" || meta.long_name == "--suffix") {
+        given = true;
+      }
+      if (meta.long_name == "--backup") {
+        if (auto value = std::get_if<std::string>(&occurrence.value)) {
+          raw = *value;
+        }
+      }
+    }
+  }
+  if (!given) return std::nullopt;
+  auto parsed = parse_mv_backup_control(raw);
+  if (parsed.error_kind != 0) {
+    return std::unexpected(mv_backup_type_message(parsed.error_kind, raw));
+  }
+  if (parsed.control == MvBackupControl::none) return std::nullopt;
+  return parsed.control;
+}
+
+// [GNU] Whether any backup option (-b, --backup in any form including
+// =none/=off, -S, --suffix) was given at all.  mv.c's conflict between
+// backups and --no-clobber keys on this givenness, not on the resolved
+// mode: verified against the oracle, `mv --backup=none -n a b` answers
+// with the mutual-exclusion error just like `--backup=simple` does,
+// while the backup itself is of course only made for an engaged mode.
+auto mv_backup_option_given(const CommandContext<MV_OPTIONS.size()>& ctx)
+    -> bool {
+  if (!ctx.metas) return false;
+  for (const auto& occurrence : ctx.options.occurrences()) {
+    if (occurrence.index >= ctx.metas->size()) continue;
+    const auto& meta = (*ctx.metas)[occurrence.index];
+    if (meta.short_name == "-b" || meta.long_name == "--backup" ||
+        meta.short_name == "-S" || meta.long_name == "--suffix") {
+      return true;
+    }
+  }
+  return false;
+}
+
+// [GNU] Highest N among existing "<path>.~N~" siblings, or 0 when none
+// (numbered backups take max + 1).
+auto mv_max_numbered_backup(const std::wstring& target) -> int {
+  std::filesystem::path target_path(target);
+  std::filesystem::path dir = target_path.parent_path();
+  if (dir.empty()) dir = ".";
+  const std::string base = wstring_to_utf8(target_path.filename().wstring());
+  const std::string prefix = base + ".~";
+  int max_version = 0;
+  std::error_code ec;
+  for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+    const std::string name =
+        wstring_to_utf8(entry.path().filename().wstring());
+    if (!name.starts_with(prefix) || name.size() <= prefix.size() + 1 ||
+        name.back() != '~') {
+      continue;
+    }
+    const std::string digits =
+        name.substr(prefix.size(), name.size() - prefix.size() - 1);
+    if (!std::ranges::all_of(digits, [](unsigned char ch) {
+          return std::isdigit(ch) != 0;
+        })) {
+      continue;
+    }
+    int version = 0;
+    for (char ch : digits) version = version * 10 + (ch - '0');
+    if (version > max_version) max_version = version;
+  }
+  return max_version;
+}
+
 auto parse_arguments(const CommandContext<MV_OPTIONS.size()>& ctx)
     -> cp::Result<MoveContext> {
   MoveContext move_ctx;
+
+  // [GNU] A repeated -t is fatal during option processing (mv.c:367-370).
+  if (ctx.count({"-t", "--target-directory"}) > 1) {
+    return std::unexpected(
+        "multiple target directories specified\n"
+        "Try 'mv --help' for more information.");
+  }
 
   // Get target directory if specified
   std::string target_dir = ctx.get<std::string>("--target-directory", "");
@@ -225,8 +379,10 @@ auto parse_arguments(const CommandContext<MV_OPTIONS.size()>& ctx)
   move_ctx.no_target_directory = ctx.get<bool>("-T", false) ||
                                  ctx.get<bool>("--no-target-directory", false);
   if (!target_dir.empty() && move_ctx.no_target_directory) {
+    // [GNU] mv.c:445-449, with the short forms named.
     return std::unexpected(
-        "cannot combine --target-directory and --no-target-directory");
+        "cannot combine --target-directory (-t) and "
+        "--no-target-directory (-T)");
   }
 
   // Parse --update[=UPDATE] mode
@@ -247,15 +403,41 @@ auto parse_arguments(const CommandContext<MV_OPTIONS.size()>& ctx)
       }
     }
     if (explicit_update.has_value()) {
-      if (*explicit_update == "all") {
-        move_ctx.update_mode = UpdateMode::all;
-      } else if (*explicit_update == "none") {
-        move_ctx.update_mode = UpdateMode::none;
-      } else if (*explicit_update == "older") {
-        move_ctx.update_mode = UpdateMode::older;
+      // [GNU] argmatch: exact name or unique prefix of all/none/older
+      // (mv.c:55-63, 375-400).
+      static constexpr std::pair<std::string_view, UpdateMode> kUpdateNames[] =
+          {{"all", UpdateMode::all},
+           {"none", UpdateMode::none},
+           {"older", UpdateMode::older}};
+      std::optional<UpdateMode> matched;
+      int matches = 0;
+      for (auto [name, mode] : kUpdateNames) {
+        if (*explicit_update == name) {
+          matched = mode;
+          matches = 1;
+          break;
+        }
+      }
+      if (!matched) {
+        for (auto [name, mode] : kUpdateNames) {
+          if (name.starts_with(*explicit_update)) {
+            ++matches;
+            matched = mode;
+          }
+        }
+      }
+      if (matched && matches == 1) {
+        move_ctx.update_mode = *matched;
       } else {
-        return std::unexpected("invalid argument '" + *explicit_update +
-                               "' for '--update'");
+        return std::unexpected(
+            std::string(matches > 1 ? "ambiguous argument '" : "invalid argument '") +
+            *explicit_update +
+            "' for '--update'\n"
+            "Valid arguments are:\n"
+            "  - 'all'\n"
+            "  - 'none'\n"
+            "  - 'older'\n"
+            "Try 'mv --help' for more information.");
       }
     } else if (weak_older) {
       move_ctx.update_mode = UpdateMode::older;
@@ -273,8 +455,19 @@ auto parse_arguments(const CommandContext<MV_OPTIONS.size()>& ctx)
     }
   } else {
     // Regular case: last argument is destination
-    if (ctx.positionals.size() < 2) {
+    if (ctx.positionals.empty()) {
       return std::unexpected("missing file operand");
+    }
+    if (ctx.positionals.size() == 1) {
+      // [GNU] mv.c:430-438: one operand names the missing destination.
+      return std::unexpected("missing destination file operand after '" +
+                             std::string(ctx.positionals[0]) + "'");
+    }
+    if (move_ctx.no_target_directory && ctx.positionals.size() > 2) {
+      // [GNU] mv.c:450-453: -T admits exactly two operands.
+      return std::unexpected("extra operand '" +
+                             std::string(ctx.positionals[2]) + "'\n" +
+                             "Try 'mv --help' for more information.");
     }
 
     for (size_t i = 0; i < ctx.positionals.size() - 1; ++i) {
@@ -384,25 +577,62 @@ auto is_source_newer(const std::wstring& src_path,
                          &dest_data.ftLastWriteTime) > 0;
 }
 
-auto backup_existing_destination(const std::wstring& dest_path,
-                                 const CommandContext<MV_OPTIONS.size()>& ctx)
-    -> cp::Result<bool> {
-  bool backup = ctx.get<bool>("-b", false) || ctx.has("--backup");
-  if (!backup) return true;
+// [GNU] Make the backup of an existing destination honouring the
+// --backup CONTROL (mv.c:519-522); the value was previously ignored
+// and every backup was a simple suffix backup. Returns the backup's
+// display path when one was made (for the verbose line,
+// copy.c:2085-2088).
+auto backup_existing_destination(
+    const std::wstring& dest_path, const std::string& dest_display,
+    const CommandContext<MV_OPTIONS.size()>& ctx)
+    -> cp::Result<std::optional<std::string>> {
+  auto control = mv_make_backups(ctx);
+  if (!control) return std::unexpected(control.error());
+  // The engagement test is on the optional inside the Result, not on
+  // the Result itself: has_value() on std::expected only says "no
+  // error" and is true even when no backup was requested, which made
+  // every overwrite create one.  GNU makes a backup only when one is
+  // requested (mv.c:315 make_backups defaults to false; mv.c:519-522
+  // backup_type stays no_backups otherwise).
+  if (!control->has_value()) return std::nullopt;
   if (GetFileAttributesW(dest_path.c_str()) == INVALID_FILE_ATTRIBUTES) {
-    return true;
+    return std::nullopt;
   }
 
-  std::string suffix = ctx.get<std::string>("--suffix", "");
-  if (suffix.empty()) suffix = ctx.get<std::string>("-S", "");
+  // Last -S/--suffix occurrence wins (occurrence scan, as in
+  // mv_make_backups).
+  std::string suffix;
+  if (ctx.metas) {
+    for (const auto& occurrence : ctx.options.occurrences()) {
+      if (occurrence.index >= ctx.metas->size()) continue;
+      const auto& meta = (*ctx.metas)[occurrence.index];
+      if (meta.short_name == "-S" || meta.long_name == "--suffix") {
+        if (auto value = std::get_if<std::string>(&occurrence.value)) {
+          suffix = *value;
+        }
+      }
+    }
+  }
   if (suffix.empty()) suffix = "~";
 
-  std::wstring backup_path = dest_path + utf8_to_wstring(suffix);
+  std::wstring backup_path;
+  std::string backup_display;
+  if (**control == MvBackupControl::numbered ||
+      (**control == MvBackupControl::existing &&
+       mv_max_numbered_backup(dest_path) > 0)) {
+    const std::string numbered =
+        ".~" + std::to_string(mv_max_numbered_backup(dest_path) + 1) + "~";
+    backup_path = dest_path + utf8_to_wstring(numbered);
+    backup_display = dest_display + numbered;
+  } else {
+    backup_path = dest_path + utf8_to_wstring(suffix);
+    backup_display = dest_display + suffix;
+  }
   if (!MoveFileExW(dest_path.c_str(), backup_path.c_str(),
                    MOVEFILE_REPLACE_EXISTING)) {
     return std::unexpected("cannot create backup for destination");
   }
-  return true;
+  return backup_display;
 }
 
 namespace mv_win32_compat {
@@ -515,16 +745,28 @@ auto move_single_path(const std::string& src_path, const std::string& dest_path,
   bool dest_exists =
       GetFileAttributesW(wdest_path.c_str()) != INVALID_FILE_ATTRIBUTES;
   if (overwrite_mode == OverwriteMode::no_clobber && dest_exists) {
-    return true;
+    // [GNU] I_ALWAYS_NO skip: "not replacing %s" and the file fails
+    // (copy.c:2438, 2425-2445); only --update=none skips silently
+    // with success.
+    safeErrorPrint("mv: not replacing '");
+    safeErrorPrint(dest_path);
+    safeErrorPrintLn("'");
+    return false;
   }
 
   // --update mode handling
   if (update_mode == UpdateMode::none && dest_exists) {
     return true;
   }
-  if (update_mode == UpdateMode::older && dest_exists &&
-      !is_source_newer(wsrc_path, wdest_path)) {
-    return true;
+  if (update_mode == UpdateMode::older && dest_exists) {
+    // [GNU] The update skip never applies to directories
+    // (copy.c:2353: `x->update && !S_ISDIR (src_mode)`).
+    DWORD src_attrs = GetFileAttributesW(wsrc_path.c_str());
+    const bool src_is_dir = src_attrs != INVALID_FILE_ATTRIBUTES &&
+                            (src_attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    if (!src_is_dir && !is_source_newer(wsrc_path, wdest_path)) {
+      return true;
+    }
   }
 
   // [GNU] With no -f/-i/-n, an unwritable destination is confirmed once
@@ -540,7 +782,7 @@ auto move_single_path(const std::string& src_path, const std::string& dest_path,
       std::cin.get(response);
       std::cin.ignore(1024, '\n');
       if (response != 'y' && response != 'Y') {
-        return true;
+        return false;
       }
     }
   }
@@ -556,13 +798,56 @@ auto move_single_path(const std::string& src_path, const std::string& dest_path,
         return std::unexpected(confirmed.error());
       }
       if (!*confirmed) {
-        return true;
+        return false;
       }
     }
   }
 
-  auto backup_result = backup_existing_destination(wdest_path, ctx);
-  if (!backup_result) return backup_result;
+  // [GNU] Same-file guard (copy.c:2344-2350): renaming a file onto
+  // itself must fail, not silently succeed through
+  // MOVEFILE_REPLACE_EXISTING. Two names for one inode count as the
+  // same file only for a single-link file or the same directory
+  // entry (the same_name refinement).
+  if (dest_exists && overwrite_mode != OverwriteMode::no_clobber) {
+    auto identity_of = [](const std::wstring& path)
+        -> std::optional<std::tuple<uint64_t, uint64_t, uint32_t>> {
+      UniqueHandle handle(CreateFileW(
+          path.c_str(), FILE_READ_ATTRIBUTES,
+          FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+          OPEN_EXISTING,
+          FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+          nullptr));
+      if (!handle) return std::nullopt;
+      BY_HANDLE_FILE_INFORMATION info{};
+      if (!GetFileInformationByHandle(handle.get(), &info)) {
+        return std::nullopt;
+      }
+      return std::tuple{static_cast<uint64_t>(info.dwVolumeSerialNumber),
+                        (static_cast<uint64_t>(info.nFileIndexHigh) << 32) |
+                            info.nFileIndexLow,
+                        info.nNumberOfLinks};
+    };
+    auto src_id = identity_of(wsrc_path);
+    auto dst_id = identity_of(wdest_path);
+    if (src_id && dst_id && std::get<0>(*src_id) == std::get<0>(*dst_id) &&
+        std::get<1>(*src_id) == std::get<1>(*dst_id)) {
+      // Same inode: the same file when it has a single link, or when
+      // both operands spell the same directory entry.
+      const bool same_entry =
+          std::get<2>(*src_id) <= 1 ||
+          _wcsicmp(strip_nt_prefix(wsrc_path).c_str(),
+                   strip_nt_prefix(wdest_path).c_str()) == 0;
+      if (same_entry) {
+        return std::unexpected("'" + src_path + "' and '" + dest_path +
+                               "' are the same file");
+      }
+    }
+  }
+
+  auto backup_result =
+      backup_existing_destination(wdest_path, dest_path, ctx);
+  if (!backup_result) return std::unexpected(backup_result.error());
+  const std::optional<std::string> made_backup = *backup_result;
 
   if (dest_exists) {
     DWORD attrs = GetFileAttributesW(wdest_path.c_str());
@@ -571,8 +856,10 @@ auto move_single_path(const std::string& src_path, const std::string& dest_path,
   }
 
   // Try to rename first
+  bool used_copy_fallback = false;
   if (!MoveFileExW(wsrc_path.c_str(), wdest_path.c_str(),
                    MOVEFILE_REPLACE_EXISTING)) {
+    used_copy_fallback = true;
     if (ctx.has("--no-copy")) {
       return std::unexpected(
           "rename failed and copying is disabled by --no-copy");
@@ -637,10 +924,16 @@ auto move_single_path(const std::string& src_path, const std::string& dest_path,
                                "', into itself, '" + dest_path + "'");
       }
       std::error_code ec;
+      // [GNU] The copy fallback preserves links (mv.c:135 sets
+      // preserve_links for the fallback): copy_symlinks keeps nested
+      // symlinks as links instead of duplicating their targets'
+      // contents. (Hard-link grouping inside the tree is not yet
+      // preserved.)
       std::filesystem::copy(
           std::filesystem::path(wsrc_path), std::filesystem::path(wdest_path),
           std::filesystem::copy_options::recursive |
-              std::filesystem::copy_options::overwrite_existing,
+              std::filesystem::copy_options::overwrite_existing |
+              std::filesystem::copy_options::copy_symlinks,
           ec);
       if (ec) {
         return std::unexpected("cannot copy '" + src_path + "' to '" +
@@ -657,12 +950,26 @@ auto move_single_path(const std::string& src_path, const std::string& dest_path,
   bool verbose = ctx.get<bool>("--verbose", false) ||
                  ctx.get<bool>("-v", false) || ctx.get<bool>("--debug", false);
   if (verbose) {
-    // OPTIMIZED: Avoid multiple wstring conversions and concatenations
-    safePrint("'");
+    // [GNU] A rename reports "renamed '<src>' -> '<dest>'"; the copy
+    // fallback reports "copied '<src>' -> '<dest>'" and then
+    // "removed '<src>'" (mv.c do_move / copy.c verbose).  The backup
+    // note rides the first line (copy.c:2085-2088).
+    safePrint(used_copy_fallback ? "copied '" : "renamed '");
     safePrint(src_path);
     safePrint("' -> '");
     safePrint(dest_path);
-    safePrint("'\n");
+    safePrint("'");
+    if (made_backup) {
+      safePrint(" (backup: '");
+      safePrint(*made_backup);
+      safePrint("')");
+    }
+    safePrint("\n");
+    if (used_copy_fallback) {
+      safePrint("removed '");
+      safePrint(src_path);
+      safePrint("'\n");
+    }
   }
 
   return true;
@@ -806,6 +1113,28 @@ auto process_command(const CommandContext<N>& ctx) -> cp::Result<bool> {
                                 verbose);
         }
 
+        // [GNU] --backup and --no-clobber are mutually exclusive
+        // (mv.c:512-516); the check runs before anything is moved.
+        {
+          auto control = mv_make_backups(ctx);
+          if (!control) {
+            return std::unexpected(control.error());
+          }
+          // The conflict keys on the backup options being GIVEN, not
+          // on the engaged control: GNU answers the mutual-exclusion
+          // error for --backup=none -n as well (mv.c:512-515 with
+          // make_backups tracking option givenness), while a bare -n
+          // must fall through to the 'not replacing' skip.  The
+          // mv_make_backups call above still runs first so an invalid
+          // --backup value reports its argmatch error ahead of this.
+          if (mv_backup_option_given(ctx) &&
+              *overwrite_mode == OverwriteMode::no_clobber) {
+            return std::unexpected(
+                "options --backup and --no-clobber are mutually exclusive\n"
+                "Try 'mv --help' for more information.");
+          }
+        }
+
         auto dest_exists = check_path_exists(move_ctx.dest_path);
         if (!dest_exists) {
           return std::unexpected(dest_exists.error());
@@ -820,8 +1149,19 @@ auto process_command(const CommandContext<N>& ctx) -> cp::Result<bool> {
         }
         if ((move_ctx.target_directory_option ||
              move_ctx.source_paths.size() > 1) &&
-            !dest_is_dir) {
-          return std::unexpected("target is not a directory");
+            !move_ctx.no_target_directory && !dest_is_dir) {
+          // [GNU] The diagnostic names the target and the reason:
+          // "target directory %s" for -t (mv.c:458-462), "target %s"
+          // for the multi-operand form (mv.c:492-496), each with the
+          // errno text.
+          const std::string reason = *dest_exists
+                                         ? "Not a directory"
+                                         : "No such file or directory";
+          return std::unexpected(
+              std::string(move_ctx.target_directory_option
+                              ? "target directory '"
+                              : "target '") +
+              move_ctx.dest_path + "': " + reason);
         }
 
         // [GNU] A trailing separator makes DEST a directory operand

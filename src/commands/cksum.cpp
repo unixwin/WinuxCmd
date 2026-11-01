@@ -224,9 +224,29 @@ auto build_config(const CommandContext<CKSUM_OPTIONS.size()>& ctx)
   }
 
   cfg.ignore_missing = ctx.has("--ignore-missing");
-  cfg.quiet = ctx.has("--quiet");
-  cfg.status = ctx.has("--status");
-  cfg.warn = ctx.has("--warn") || ctx.has("-w");
+  // [GNU] digest.c: --status, --quiet and -w/--warn are one sequential
+  // state in getopt processing -- each clears the other two, so the
+  // LAST occurrence wins (audit #1462). Three independent has() flags
+  // made "--status --quiet" behave as --status.
+  if (ctx.metas) {
+    for (const auto& occurrence : ctx.options.occurrences()) {
+      if (occurrence.index >= CKSUM_OPTIONS.size()) continue;
+      const auto& meta = (*ctx.metas)[occurrence.index];
+      if (meta.long_name == "--status") {
+        cfg.status = true;
+        cfg.quiet = false;
+        cfg.warn = false;
+      } else if (meta.long_name == "--quiet") {
+        cfg.quiet = true;
+        cfg.status = false;
+        cfg.warn = false;
+      } else if (meta.short_name == "-w" || meta.long_name == "--warn") {
+        cfg.warn = true;
+        cfg.status = false;
+        cfg.quiet = false;
+      }
+    }
+  }
   cfg.strict = ctx.has("--strict");
   if (ctx.has("--tag")) cfg.tag_mode = 1;
   if (ctx.has("--untagged")) cfg.tag_mode = 0;
@@ -284,19 +304,20 @@ auto validate_config(const Config& cfg) -> bool {
     return false;
   };
 
-  if (cfg.digest_length && cfg.algorithm != Algorithm::BLAKE2B &&
-      cfg.algorithm != Algorithm::CRC) {
-    return fail("--length is only supported with --algorithm=blake2b");
+  // [GNU] digest.c: the multiple-of-8 check fires while parsing -l,
+  // for every algorithm (digest.c case 'l'); the blake2b-only check
+  // fires afterwards in main (digest.c:1474-1477) and has NO CRC
+  // exemption -- "cksum -l 512 file" dies there (audit #1462).
+  if (cfg.digest_length % 8 != 0) {
+    fail("invalid length: '" + cfg.length_str + "'");
+    return fail("length is not a multiple of 8");
   }
-  if (cfg.algorithm == Algorithm::BLAKE2B) {
-    if (cfg.digest_length > 512) {
-      fail("invalid length: '" + cfg.length_str + "'");
-      return fail("maximum digest length for 'BLAKE2b' is 512 bits");
-    }
-    if (cfg.digest_length % 8 != 0) {
-      fail("invalid length: '" + cfg.length_str + "'");
-      return fail("length is not a multiple of 8");
-    }
+  if (cfg.algorithm == Algorithm::BLAKE2B && cfg.digest_length > 512) {
+    fail("invalid length: '" + cfg.length_str + "'");
+    return fail("maximum digest length for 'BLAKE2b' is 512 bits");
+  }
+  if (cfg.digest_length && cfg.algorithm != Algorithm::BLAKE2B) {
+    return fail("--length is only supported with --algorithm=blake2b");
   }
 
   if (cfg.check_mode && cfg.algorithm_specified && is_legacy(cfg.algorithm)) {
@@ -312,10 +333,10 @@ auto validate_config(const Config& cfg) -> bool {
         "the --zero option is not supported when verifying checksums");
   }
 
-  if (cfg.tag_mode == 1 && cfg.check_mode) {
-    return usage_fail(
-        "the --tag option is meaningless when verifying checksums");
-  }
+  // [GNU] the "--tag is meaningless when verifying" usage error is
+  // compiled only for the non-cksum digest programs (#if
+  // !HASH_ALGO_CKSUM, digest.c:1540-1548); cksum --tag -c verifies
+  // normally (audit #1462).
 
   if (cfg.binary >= 0 && cfg.check_mode) {
     return usage_fail(
@@ -781,10 +802,16 @@ auto check_one_file(const std::string& checkfile_name, const Config& cfg,
         (legacy && is_stdin && legacy->filename == "-")) {
       ++n_misformatted_lines;
       if (cfg.warn) {
+        // [GNU] digest.c:1205-1212: the diagnostic names the digest
+        // type in force (DIGEST_TYPE_STRING = algorithm_tags of the
+        // detected or selected algorithm) (audit #1462).
+        const std::string type_name =
+            entry != nullptr ? std::string(entry->tag)
+                             : std::string(algorithm_entry(cfg.algorithm).tag);
         safeErrorPrintLn(
             "cksum: " + portable_digest::detail::sum_quotef(display_name) +
             ": " + std::to_string(line_number) +
-            ": improperly formatted checksum line");
+            ": improperly formatted " + type_name + " checksum line");
       }
       continue;
     }
@@ -862,7 +889,10 @@ auto check_one_file(const std::string& checkfile_name, const Config& cfg,
         "cksum: " + portable_digest::detail::sum_quotef(display_name) +
         ": no properly formatted checksum lines found");
   } else if (!cfg.status) {
-    if (cfg.warn && n_misformatted_lines != 0) {
+    // [GNU] digest.c:1305-1328: the WARNING summaries print whenever
+    // not --status; the misformatted one is NOT gated on -w (audit
+    // #1462).
+    if (n_misformatted_lines != 0) {
       safeErrorPrintLn(
           "cksum: WARNING: " + std::to_string(n_misformatted_lines) +
           (n_misformatted_lines == 1 ? " line is improperly formatted"
@@ -876,19 +906,23 @@ auto check_one_file(const std::string& checkfile_name, const Config& cfg,
     }
     if (n_mismatched_checksums != 0) {
       safeErrorPrintLn(
-          "cksum: WARNING: " + std::to_string(n_mismatched_checksums) + " of " +
-          std::to_string(n_computed_checksums) +
-          " computed checksums did NOT match");
+          "cksum: WARNING: " + std::to_string(n_mismatched_checksums) +
+          (n_mismatched_checksums == 1 ? " computed checksum did NOT match"
+                                       : " computed checksums did NOT match"));
+    }
+    if (cfg.ignore_missing && !matched_checksums) {
+      safeErrorPrintLn(
+          "cksum: " + portable_digest::detail::sum_quotef(display_name) +
+          ": no file was verified");
     }
   }
 
-  // [GNU] --ignore-missing records that skipped every file still count
-  // as a successful check; nothing was computed, nothing failed.
-  bool ok = properly_formatted_lines && n_mismatched_checksums == 0 &&
-            n_open_or_read_failures == 0 &&
+  // [GNU] digest.c:1330-1335: the return requires matched_checksums
+  // unconditionally -- an --ignore-missing run that verified nothing
+  // FAILS (with the "no file was verified" note above) (audit #1462).
+  bool ok = properly_formatted_lines && matched_checksums &&
+            n_mismatched_checksums == 0 && n_open_or_read_failures == 0 &&
             (!cfg.strict || n_misformatted_lines == 0);
-  if (!matched_checksums && !(cfg.ignore_missing && n_computed_checksums == 0))
-    ok = false;
   return ok;
 }
 
@@ -963,12 +997,9 @@ auto run(const Config& cfg) -> int {
         display_length = blocks;
       }
 
-      if (cfg.debug) {
-        safeErrorPrint("cksum: algorithm: " + std::string(entry.name) + "\n");
-        safeErrorPrint("cksum: file: " + file + "\n");
-        safeErrorPrint("cksum: bytes: " + std::to_string(display_length) +
-                       "\n");
-      }
+      // [GNU] --debug has no per-file output in 9.4 (see the digest
+      // branch note); the three invented lines were removed (audit
+      // #1462).
 
       // [GNU] the legacy formats print the filename only when operands were
       // given on the command line.
@@ -987,11 +1018,11 @@ auto run(const Config& cfg) -> int {
         continue;
       }
 
-      if (cfg.debug) {
-        safeErrorPrint("cksum: algorithm: " + std::string(entry.name) + "\n");
-        safeErrorPrint("cksum: file: " + file + "\n");
-        safeErrorPrint("cksum: length: " + std::to_string(length_bits) + "\n");
-      }
+      // [GNU] --debug in 9.4 only reports pclmul support for the CRC
+      // algorithm (cksum.c:150-160) and prints nothing for all other
+      // algorithms; the invented per-file lines were removed (audit
+      // #1462). The CRC pclmul line is build-dependent and remains a
+      // named residual in REPORT.md.
 
       output_digest_file(cfg, entry, length_bits, *hex, file, binary);
     }

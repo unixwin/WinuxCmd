@@ -54,12 +54,24 @@ auto decode_base32(std::string_view input, bool ignore_garbage)
   return encoding::base32_decode_gnu(input, BASE32_ALPHABET, ignore_garbage);
 }
 
-// [GNU] the wrap size is validated by xstrtol: any non-numeric token or a
-// negative value dies with "invalid wrap size: '<raw>'" (uutils #14084).
+// [GNU] the wrap size is validated by xstrtoimax (basenc.c:1106-1113):
+// leading whitespace and a '+' sign are accepted; on overflow GNU sets
+// wrap_column to 0 (wrapping off, no trailing newline); a value that
+// fits intmax but exceeds int keeps its (huge) width; any other
+// non-numeric token or a negative value dies with
+// "invalid wrap size: '<raw>'" (uutils #14084).
 auto parse_wrap_size(const std::string& raw)
     -> std::expected<int, std::string> {
-  size_t digit_start = 0;
-  if (!raw.empty() && (raw[0] == '+' || raw[0] == '-')) digit_start = 1;
+  size_t pos = 0;
+  while (pos < raw.size() &&
+         std::isspace(static_cast<unsigned char>(raw[pos]))) {
+    ++pos;
+  }
+  size_t digit_start = pos;
+  if (digit_start < raw.size() &&
+      (raw[digit_start] == '+' || raw[digit_start] == '-')) {
+    ++digit_start;
+  }
   const bool numeric =
       digit_start < raw.size() &&
       std::ranges::all_of(
@@ -68,9 +80,20 @@ auto parse_wrap_size(const std::string& raw)
   if (numeric) {
     errno = 0;
     const long long value = std::strtoll(raw.c_str(), nullptr, 10);
-    if (errno == 0 && value >= 0 && value <= 2147483647LL) {
-      return static_cast<int>(value);
+    if (value < 0) {
+      return std::unexpected("invalid wrap size: '" + raw + "'");
     }
+    if (errno == ERANGE) {
+      // basenc.c:1113: s_err == LONGINT_OVERFLOW maps to wrap_column 0.
+      return 0;
+    }
+    if (value > 2147483647LL) {
+      // GNU keeps the intmax width; INT_MAX is indistinguishable in
+      // practice (no output line reaches 2^31 columns) and preserves
+      // the wrap > 0 trailing-newline rule.
+      return 2147483647;
+    }
+    return static_cast<int>(value);
   }
   return std::unexpected("invalid wrap size: '" + raw + "'");
 }

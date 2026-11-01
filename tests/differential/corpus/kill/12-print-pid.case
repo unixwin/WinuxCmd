@@ -1,0 +1,5 @@
+cmd: kill
+oracle: linux
+args: -p 424242
+source: tests/differential/corpus/kill/12-print-pid.case
+tags: gnu-compat kill print-pid audit-w7

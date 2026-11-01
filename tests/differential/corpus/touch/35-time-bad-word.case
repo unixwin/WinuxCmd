@@ -1,0 +1,7 @@
+cmd: touch
+args: --time=bogus target
+timeout: 10
+setup: |
+  printf 'y' > target
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w1 oracle-coreutils-9.4 touch.c:319-322 argmatch-valid-arguments

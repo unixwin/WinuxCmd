@@ -137,7 +137,11 @@ auto invalid_number_error(std::string_view key, std::string_view fallback,
 
 auto validate_numbering_style(const std::string& style,
                               std::string_view section) -> cp::Result<int> {
-  if (style == "t" || style == "a" || style == "n") {
+  // [GNU] nl.c build_type_arg switches on the FIRST character only:
+  // -b ax, -b t2 and -h nnn are accepted and behave as a/t/n (audit
+  // #1462).
+  if (!style.empty() &&
+      (style[0] == 't' || style[0] == 'a' || style[0] == 'n')) {
     return 0;
   }
   if (style.starts_with("p")) {
@@ -327,18 +331,25 @@ auto build_config(const CommandContext<NL_OPTIONS.size()>& ctx)
 }
 
 auto should_number_line(const std::string& style, const std::string& line,
-                        int& blank_count, long long join_blank_lines) -> bool {
-  if (style == "n") {
+                        int& blank_count, long long join_blank_lines,
+                        bool terminated) -> bool {
+  // [GNU] only the first style character is significant (build_type_arg
+  // / proc_text in nl.c) (audit #1462).
+  const char kind = style.empty() ? 't' : style[0];
+  if (kind == 'n') {
     blank_count = 0;
     return false;
   }
 
-  if (style == "t") {
+  if (kind == 't') {
     blank_count = 0;
-    return !line.empty();
+    // [GNU] nl.c:358: the test is 1 < line_buf.length where the length
+    // INCLUDES the newline, so a one-character unterminated final line
+    // counts as empty and stays unnumbered (audit #1462).
+    return line.size() + (terminated ? 1 : 0) > 1;
   }
 
-  if (style.starts_with("p")) {
+  if (kind == 'p') {
     blank_count = 0;
     auto pattern =
         portable_regex::compile(portable_regex::Syntax::Basic, style.substr(1));
@@ -368,21 +379,30 @@ auto style_for_section(const Config& cfg, Section section)
 
 auto format_line_number(long long line_number, const Config& cfg)
     -> std::string {
-  char num_buf[64];
   // snprintf field widths are int; widths above INT_MAX saturate.
   const int width =
       cfg.number_width > static_cast<long long>(std::numeric_limits<int>::max())
           ? std::numeric_limits<int>::max()
           : static_cast<int>(cfg.number_width);
 
+  // [GNU] the field is printed with printf directly, so any width is
+  // honored; a fixed 64-byte buffer truncated -w 100 at 63 chars
+  // (audit #1462). Size the buffer to the requested width.
+  std::string num_buf(static_cast<size_t>(width > 0 ? width : 0) + 32, '\0');
+  int written;
   if (cfg.number_format == "ln") {
-    snprintf(num_buf, sizeof(num_buf), "%-*lld", width, line_number);
+    written = snprintf(num_buf.data(), num_buf.size(), "%-*lld", width,
+                       line_number);
   } else if (cfg.number_format == "rz") {
-    snprintf(num_buf, sizeof(num_buf), "%0*lld", width, line_number);
+    written = snprintf(num_buf.data(), num_buf.size(), "%0*lld", width,
+                       line_number);
   } else {
-    snprintf(num_buf, sizeof(num_buf), "%*lld", width, line_number);
+    written = snprintf(num_buf.data(), num_buf.size(), "%*lld", width,
+                       line_number);
   }
-
+  if (written > 0) {
+    num_buf.resize(static_cast<size_t>(written));
+  }
   return num_buf;
 }
 
@@ -395,20 +415,26 @@ auto unnumbered_prefix(const Config& cfg) -> std::string {
 
 auto print_data_line(const std::string& line, const Config& cfg,
                      Section section, long long& line_number,
-                     int& blank_count) {
-  bool should_number = should_number_line(style_for_section(cfg, section), line,
-                                          blank_count, cfg.join_blank_lines);
+                     int& blank_count, bool terminated) {
+  bool should_number =
+      should_number_line(style_for_section(cfg, section), line, blank_count,
+                         cfg.join_blank_lines, terminated);
 
   if (should_number) {
     safePrint(format_line_number(line_number, cfg));
     safePrint(cfg.separator);
-    safePrintLn(line);
-    line_number += cfg.line_increment;
-    return;
+  } else {
+    safePrint(unnumbered_prefix(cfg));
   }
-
-  safePrint(unnumbered_prefix(cfg));
-  safePrintLn(line);
+  // [GNU] lines are copied byte-exactly: an unterminated final line
+  // produces output with no trailing newline (audit #1462).
+  safePrint(line);
+  if (terminated) {
+    safePrint("\n");
+  }
+  if (should_number) {
+    line_number += cfg.line_increment;
+  }
 }
 
 auto handle_section_delimiter(const std::string& line, const Config& cfg,
@@ -437,44 +463,51 @@ auto handle_section_delimiter(const std::string& line, const Config& cfg,
 }
 
 auto process_line(const std::string& line, const Config& cfg, Section& section,
-                  long long& line_number, int& blank_count) {
+                  long long& line_number, int& blank_count,
+                  bool terminated = true) {
   if (handle_section_delimiter(line, cfg, section, line_number, blank_count)) {
     return;
   }
 
-  print_data_line(line, cfg, section, line_number, blank_count);
+  print_data_line(line, cfg, section, line_number, blank_count, terminated);
 }
 
 auto run(const Config& cfg) -> int {
   auto nl_input_open_error = [](std::string_view path) -> std::string {
+    // [GNU] nl.c:451: error (0, errno, "%s", quotef (filename)) -- the
+    // bare-filename form "nl: <file>: <reason>" (audit #1462).
     std::error_code ec;
     auto status = std::filesystem::status(
         std::filesystem::u8path(native_path::normalize_api_operand(path)),
         ec);
     if (!ec && status.type() == std::filesystem::file_type::directory) {
-      return std::string("cannot open '") + std::string(path) +
-             "' for reading: Is a directory";
+      return std::string(path) + ": Is a directory";
     }
-    return std::string("cannot open '") + std::string(path) +
-           "' for reading: No such file or directory";
+    return std::string(path) + ": " +
+           portable_digest::open_error_reason(path);
   };
 
   long long line_number = cfg.starting_number;
   int blank_count = 0;
   Section section = Section::Body;
+  // [GNU] main accumulates ok &= nl_file (...) -- a failure on one
+  // operand never aborts the remaining ones (audit #1462).
+  bool all_ok = true;
 
   for (const auto& file : cfg.files) {
     if (file == "-") {
       // [GNU] closed stdin (<&-) errors "nl: -: Bad file descriptor".
       if (file_io::stdin_is_bad()) {
         safeErrorPrintLn("nl: -: Bad file descriptor");
-        return 1;
+        all_ok = false;
+        continue;
       }
       // Read from stdin
       file_io::set_stdin_binary();
       std::string line;
       while (std::getline(std::cin, line)) {
-        process_line(line, cfg, section, line_number, blank_count);
+        const bool terminated = !std::cin.eof();
+        process_line(line, cfg, section, line_number, blank_count, terminated);
       }
     } else {
       // Read from file
@@ -484,33 +517,27 @@ auto run(const Config& cfg) -> int {
         auto err = nl_input_open_error(file);
         cp::Result<int> result = std::unexpected(err);
         cp::report_error(result, L"nl");
-        return 1;
+        all_ok = false;
+        continue;
       }
 
-      bool first_line = true;
       std::string line;
       while (std::getline(f, line)) {
-        // Skip UTF-8 BOM if present at the beginning of the first line
-        if (first_line && line.size() >= 3 &&
-            static_cast<unsigned char>(line[0]) == 0xEF &&
-            static_cast<unsigned char>(line[1]) == 0xBB &&
-            static_cast<unsigned char>(line[2]) == 0xBF) {
-          line = line.substr(3);
-        }
-        first_line = false;
-
-        process_line(line, cfg, section, line_number, blank_count);
+        // [GNU] no BOM handling: the BOM bytes are part of the first
+        // line's text (audit #1462).
+        const bool terminated = !f.eof();
+        process_line(line, cfg, section, line_number, blank_count, terminated);
       }
 
       if (f.fail() && !f.eof()) {
         cp::Result<int> result = std::unexpected("error reading from file");
         cp::report_error(result, L"nl");
-        return 1;
+        all_ok = false;
       }
     }
   }
 
-  return 0;
+  return all_ok ? 0 : 1;
 }
 
 }  // namespace nl_pipeline

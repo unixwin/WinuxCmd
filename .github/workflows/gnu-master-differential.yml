@@ -66,6 +66,41 @@ jobs:
         run: |
           python tests/differential/master-oracle.py --winuxcmd build-vs/winuxcmd.exe --revision "$env:GNU_REVISION" --compare gnu-master-results.json
 
+  baseline-growth:
+    # Only-grows gate for the ledger itself (issue #1127 P3):
+    # check-baseline-growth.py compares the baseline.json in this change
+    # against the base revision's and fails on a dropped case, a worsened
+    # recorded bucket, or a shrunken recorded PASS count. update-baseline.py
+    # re-records whatever a run produced, so without this gate a bad run
+    # could be committed as the new ledger and lower the bar silently.
+    #
+    # This is deliberately a separate, static job: it runs no corpus
+    # case, so it cannot false-red on live-run noise (the corpus has a
+    # case that is red on main in the live shape; in the ledger files it
+    # is identical on both sides and compares equal) and it needs no
+    # WSL setup, build, or cache, so WSL/cache infrastructure failures
+    # cannot fail it either.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Fail if baseline.json shrank against the base revision
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+          fi
+          OLD="$RUNNER_TEMP/baseline-old.json"
+          if [ -n "$BASE" ] && git show "$BASE:tests/differential/baseline.json" > "$OLD" 2>/dev/null; then
+            python3 tests/differential/check-baseline-growth.py "$OLD" tests/differential/baseline.json
+          else
+            echo "no baseline.json at base revision; nothing to grow from"
+          fi
+
   baseline:
     # tests/differential/baseline.json is the only-grows ledger for the
     # corpus runner: with --results, runner.sh ends by running

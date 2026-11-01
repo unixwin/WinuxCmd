@@ -1,0 +1,7 @@
+cmd: hexdump
+oracle: linux
+args: -e '1/5 "%s"' d.bin
+setup: |
+  printf 'hi\0xy' > d.bin
+source: tests/differential/corpus/hexdump/11-format-string-nul.case
+tags: gnu-compat hexdump format-engine audit-w7

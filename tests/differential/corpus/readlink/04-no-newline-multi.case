@@ -1,0 +1,10 @@
+cmd: readlink
+args: -n l1 l2
+timeout: 10
+setup: |
+  printf 'x' > t1
+  printf 'y' > t2
+  ln -s t1 l1
+  ln -s t2 l2
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w1 oracle-coreutils-9.4 readlink.c:149-156 ignoring-no-newline-wording

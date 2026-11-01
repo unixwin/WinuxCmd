@@ -1,0 +1,7 @@
+cmd: rev
+oracle: linux
+args: f.txt
+setup: |
+  printf 'hello\nworld\n' > f.txt
+source: tests/differential/corpus/rev/02-file-operand.case
+tags: gnu-compat rev file audit-w7

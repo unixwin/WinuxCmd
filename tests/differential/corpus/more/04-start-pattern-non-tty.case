@@ -1,0 +1,7 @@
+cmd: more
+oracle: linux
+args: +/beta f.txt
+setup: |
+  printf 'alpha\nbeta\ngamma\n' > f.txt
+source: tests/differential/corpus/more/04-start-pattern-non-tty.case
+tags: gnu-compat more non-tty start-pattern audit-w7

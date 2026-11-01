@@ -618,3 +618,96 @@ export auto win32_terminate_process(DWORD pid) -> Win32ProcessActionResult {
   WaitForSingleObject(process.get(), 5000);
   return {true, 0, {}};
 }
+
+// ===========================================================================
+// Per-process attribute queries backing the procps-family selectors
+// (pgrep/pkill/killall -u/-U/-G/-s/-n/-o/-O/-w). Each returns nullopt /
+// empty when the process cannot be opened or the attribute is not
+// available, so selectors treat the process as non-matching instead of
+// failing the whole scan.
+// ===========================================================================
+
+export auto win32_process_account(DWORD pid)
+    -> std::optional<Win32AccountInfo> {
+  UniqueHandle process(
+      OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid));
+  if (!process) return std::nullopt;
+  HANDLE raw_token = nullptr;
+  if (!OpenProcessToken(process.get(), TOKEN_QUERY, &raw_token)) {
+    return std::nullopt;
+  }
+  UniqueHandle token(raw_token);
+  auto user_data = win32_token_information(token.get(), TokenUser);
+  if (user_data.empty()) return std::nullopt;
+  auto* token_user = reinterpret_cast<TOKEN_USER*>(user_data.data());
+  return win32_account_from_sid(token_user->User.Sid);
+}
+
+export auto win32_process_primary_group(DWORD pid)
+    -> std::optional<Win32AccountInfo> {
+  UniqueHandle process(
+      OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid));
+  if (!process) return std::nullopt;
+  HANDLE raw_token = nullptr;
+  if (!OpenProcessToken(process.get(), TOKEN_QUERY, &raw_token)) {
+    return std::nullopt;
+  }
+  UniqueHandle token(raw_token);
+  auto group_data = win32_token_information(token.get(), TokenPrimaryGroup);
+  if (group_data.empty()) return std::nullopt;
+  auto* token_group = reinterpret_cast<TOKEN_PRIMARY_GROUP*>(group_data.data());
+  return win32_account_from_sid(token_group->PrimaryGroup);
+}
+
+export auto win32_process_session_id(DWORD pid) -> std::optional<DWORD> {
+  DWORD session = 0;
+  if (!ProcessIdToSessionId(pid, &session)) return std::nullopt;
+  return session;
+}
+
+export auto win32_process_creation_filetime(DWORD pid)
+    -> std::optional<unsigned long long> {
+  UniqueHandle process(
+      OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid));
+  if (!process) return std::nullopt;
+  FILETIME creation{};
+  FILETIME exit_time{};
+  FILETIME kernel_time{};
+  FILETIME user_time{};
+  if (!GetProcessTimes(process.get(), &creation, &exit_time, &kernel_time,
+                       &user_time)) {
+    return std::nullopt;
+  }
+  ULARGE_INTEGER value{};
+  value.LowPart = creation.dwLowDateTime;
+  value.HighPart = creation.dwHighDateTime;
+  return value.QuadPart;
+}
+
+export auto win32_process_thread_ids(DWORD pid) -> std::vector<DWORD> {
+  std::vector<DWORD> tids;
+  HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+  if (snap == INVALID_HANDLE_VALUE) return tids;
+  THREADENTRY32 entry{};
+  entry.dwSize = sizeof(entry);
+  if (Thread32First(snap, &entry)) {
+    do {
+      if (entry.th32OwnerProcessID == pid) tids.push_back(entry.th32ThreadID);
+    } while (Thread32Next(snap, &entry));
+  }
+  CloseHandle(snap);
+  return tids;
+}
+
+export auto win32_process_image_path(DWORD pid) -> std::wstring {
+  UniqueHandle process(
+      OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid));
+  if (!process) return L"";
+  std::wstring path(1024, L'\0');
+  DWORD size = static_cast<DWORD>(path.size());
+  if (!QueryFullProcessImageNameW(process.get(), 0, path.data(), &size)) {
+    return L"";
+  }
+  path.resize(size);
+  return path;
+}

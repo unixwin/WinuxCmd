@@ -307,3 +307,15 @@ TEST(numfmt, numfmt_stdin_ctrlz_not_truncated_issue1212) {
   EXPECT_EQ(r.exit_code, 2);
   EXPECT_TRUE(r.stderr_text.find("invalid number") != std::string::npos);
 }
+
+// [#1462] GNU numfmt.c:1530: -d '' selects the NUL byte as the field
+// delimiter, so a blank inside the line does NOT split fields: field 2
+// does not exist here and the line passes through unchanged.
+TEST(numfmt, numfmt_empty_delimiter_means_nul) {
+  Pipeline p;
+  p.set_stdin("a b\n");
+  p.add(L"numfmt.exe", {L"-d", L"", L"--field", L"2"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "a b\n");
+}

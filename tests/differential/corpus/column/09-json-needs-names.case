@@ -1,0 +1,7 @@
+cmd: column
+oracle: linux
+args: -J
+stdin: |
+  a 1\n
+source: tests/differential/corpus/column/09-json-needs-names.case
+tags: gnu-compat column json-error audit-w7

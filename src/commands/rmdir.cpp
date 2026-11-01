@@ -31,14 +31,26 @@ auto parent_path(std::string path) -> std::string {
   if (path.empty()) return {};
 
   auto pos = path.find_last_of("\\/");
-  if (pos == std::string::npos || pos == 0) return {};
-  if (pos == 2 && path.size() >= 3 && path[1] == ':') return {};
+  if (pos == std::string::npos) return {};
+
+  // [GNU] remove_parents strips textually down to the root and
+  // attempts the root itself (rmdir.c:112-166), so the parent of a
+  // path directly under a root is the root; the root's own parent
+  // does not exist. The UNC share root is the one exception: it is
+  // not a removable directory and is never attempted.
+  std::string parent;
+  if (pos == 0) {
+    parent = path.substr(0, 1);
+  } else if (pos == 2 && path.size() >= 3 && path[1] == ':') {
+    parent = path.substr(0, 3);
+  } else {
+    parent = path.substr(0, pos);
+  }
+  if (parent == path) return {};
   if (auto root_len = native_path::unc_root_length(path);
-      root_len && pos <= *root_len) {
+      root_len && parent == path.substr(0, *root_len)) {
     return {};
   }
-
-  auto parent = path.substr(0, pos);
   if (parent == "." || parent == "..") return {};
   return parent;
 }
@@ -75,9 +87,16 @@ auto has_dot_final_component(std::string_view path) -> bool {
   return leaf == ".";
 }
 
+// [GNU] Parent failures read "failed to remove directory %s" — except
+// ENOTDIR, which keeps the operand form "failed to remove %s"
+// (rmdir.c:145-160, 287).
 auto report_remove_failure(const std::string& utf8_path,
-                           std::string_view reason) -> bool {
-  safeErrorPrint("rmdir: failed to remove '");
+                           std::string_view reason, bool is_parent) -> bool {
+  safeErrorPrint("rmdir: failed to remove ");
+  if (is_parent && reason != "Not a directory") {
+    safeErrorPrint("directory ");
+  }
+  safeErrorPrint("'");
   safeErrorPrint(utf8_path);
   safeErrorPrint("': ");
   safeErrorPrint(std::string(reason));
@@ -85,8 +104,26 @@ auto report_remove_failure(const std::string& utf8_path,
   return false;
 }
 
+enum class RemoveOutcome { removed, ignored, failed };
+
+auto directory_is_nonempty(const std::wstring& wpath) -> bool {
+  WIN32_FIND_DATAW findData;
+  HANDLE hFind = FindFirstFileW((wpath + L"\\*").c_str(), &findData);
+  if (hFind == INVALID_HANDLE_VALUE) return false;
+  bool nonempty = false;
+  do {
+    std::wstring_view name(findData.cFileName);
+    if (name != L"." && name != L"..") {
+      nonempty = true;
+      break;
+    }
+  } while (FindNextFileW(hFind, &findData));
+  FindClose(hFind);
+  return nonempty;
+}
+
 auto remove_one(const std::string& utf8_path, bool ignore_non_empty,
-                bool verbose) -> bool {
+                bool verbose, bool is_parent) -> RemoveOutcome {
   auto operand = native_path::make_api_path_operand(utf8_path);
   const std::wstring& wpath = operand.extended;
   if (verbose) {
@@ -95,16 +132,21 @@ auto remove_one(const std::string& utf8_path, bool ignore_non_empty,
     safePrint("'\n");
   }
 
+  auto fail = [&](std::string_view reason) -> RemoveOutcome {
+    report_remove_failure(utf8_path, reason, is_parent);
+    return RemoveOutcome::failed;
+  };
+
   // [GNU] rmdir(2) on a "dir/." operand fails EINVAL.
   if (has_dot_final_component(utf8_path)) {
-    return report_remove_failure(utf8_path, "Invalid argument");
+    return fail("Invalid argument");
   }
 
   DWORD attrs = native_path::operand_target_attributes_w(operand);
   if (operand.had_trailing_separator && attrs != INVALID_FILE_ATTRIBUTES &&
       (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0 &&
       !native_path::attributes_are_reparse_point(attrs)) {
-    return report_remove_failure(utf8_path, "Not a directory");
+    return fail("Not a directory");
   }
 
   // [GNU] rmdir(2) never removes a final-component symlink or junction:
@@ -115,36 +157,46 @@ auto remove_one(const std::string& utf8_path, bool ignore_non_empty,
   // RemoveDirectoryW would silently delete the reparse point itself, so
   // refuse before calling it (uutils#9980, issue 279/1062).
   if (native_path::attributes_are_reparse_point(attrs)) {
-    return report_remove_failure(utf8_path, operand.had_trailing_separator
-                                                ? "Symbolic link not followed"
-                                                : "Not a directory");
+    return fail(operand.had_trailing_separator
+                    ? "Symbolic link not followed"
+                    : "Not a directory");
   }
 
   if (RemoveDirectoryW(wpath.c_str())) {
-    return true;
+    return RemoveOutcome::removed;
   }
 
   DWORD e = GetLastError();
-  if (e == ERROR_DIR_NOT_EMPTY && ignore_non_empty) return true;
+  // [GNU] ignorable_failure (rmdir.c:98-105): ENOTEMPTY/EEXIST are
+  // ignorable outright; EACCES/EPERM/EROFS/EBUSY only when the
+  // directory is verified non-empty.
+  if (ignore_non_empty) {
+    if (e == ERROR_DIR_NOT_EMPTY) return RemoveOutcome::ignored;
+    if ((e == ERROR_ACCESS_DENIED || e == ERROR_WRITE_PROTECT ||
+         e == ERROR_CURRENT_DIRECTORY || e == ERROR_BUSY) &&
+        directory_is_nonempty(wpath)) {
+      return RemoveOutcome::ignored;
+    }
+  }
 
   if (e == ERROR_PATH_NOT_FOUND || e == ERROR_FILE_NOT_FOUND) {
-    return report_remove_failure(utf8_path, "No such file or directory");
+    return fail("No such file or directory");
   }
   if (e == ERROR_DIRECTORY) {
-    return report_remove_failure(utf8_path, "Not a directory");
+    return fail("Not a directory");
   }
   if (e == ERROR_DIR_NOT_EMPTY) {
-    return report_remove_failure(utf8_path, "Directory not empty");
+    return fail("Directory not empty");
   }
   if (e == ERROR_CURRENT_DIRECTORY || e == ERROR_BUSY) {
     // GNU rmdir("..") reports ENOTEMPTY.
-    return report_remove_failure(utf8_path, "Directory not empty");
+    return fail("Directory not empty");
   }
   if (e == ERROR_ACCESS_DENIED || e == ERROR_WRITE_PROTECT) {
-    return report_remove_failure(utf8_path, "Permission denied");
+    return fail("Permission denied");
   }
 
-  return report_remove_failure(utf8_path, wstring_to_utf8(win32_error_text(e)));
+  return fail(wstring_to_utf8(win32_error_text(e)));
 }
 
 auto process_command(const CommandContext<RMDIR_OPTIONS.size()>& ctx)
@@ -161,21 +213,29 @@ auto process_command(const CommandContext<RMDIR_OPTIONS.size()>& ctx)
 
   for (auto arg : ctx.positionals) {
     std::string cur(arg);
-    if (!remove_one(cur, ignore_non_empty, verbose)) {
+    RemoveOutcome outcome = remove_one(cur, ignore_non_empty, verbose, false);
+    if (outcome == RemoveOutcome::failed) {
       ok_all = false;
       continue;
     }
 
-    if (!parents) continue;
+    // [GNU] An ignorable failure leaves the exit status alone but
+    // stops the ascent: the operand's parents are not attempted
+    // (rmdir.c:249-250), and the same holds inside remove_parents
+    // (rmdir.c:139-166).
+    if (!parents || outcome == RemoveOutcome::ignored) continue;
 
     while (true) {
       std::string p = parent_path(cur);
       if (p.empty()) break;
 
-      if (!remove_one(p, ignore_non_empty, verbose)) {
+      RemoveOutcome parent_outcome =
+          remove_one(p, ignore_non_empty, verbose, true);
+      if (parent_outcome == RemoveOutcome::failed) {
         ok_all = false;
         break;
       }
+      if (parent_outcome == RemoveOutcome::ignored) break;
       cur = p;
     }
   }

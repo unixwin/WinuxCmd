@@ -182,15 +182,26 @@ auto parse_group_mode(std::string_view method, GroupMode default_mode)
   if (method == "prepend") return GroupMode::prepend;
   if (method == "append") return GroupMode::append;
   if (method == "both") return GroupMode::both;
-  return std::unexpected("invalid grouping method " + std::string(method));
+  // [GNU] uniq.c XARGMATCH ("--group", ...): argmatch diagnostic with
+  // the valid-argument list, in uniq.c's table order.
+  return std::unexpected(
+      "invalid argument '" + std::string(method) +
+      "' for '--group'\nValid arguments are:\n  - 'prepend'\n  - "
+      "'append'\n  - 'separate'\n  - 'both'\nTry 'uniq --help' for "
+      "more information.");
 }
 
 auto parse_all_repeated_mode(std::string_view method) -> cp::Result<GroupMode> {
   if (method.empty() || method == "none") return GroupMode::none;
   if (method == "prepend") return GroupMode::prepend;
   if (method == "separate") return GroupMode::separate;
-  return std::unexpected("invalid argument " + std::string(method) +
-                         " for --all-repeated");
+  // [GNU] uniq.c XARGMATCH ("--all-repeated", ...) over
+  // {"none", "prepend", "separate"}.
+  return std::unexpected(
+      "invalid argument '" + std::string(method) +
+      "' for '--all-repeated'\nValid arguments are:\n  - 'none'\n  - "
+      "'prepend'\n  - 'separate'\nTry 'uniq --help' for more "
+      "information.");
 }
 
 auto build_config(const CommandContext<UNIQ_OPTIONS.size()>& ctx)
@@ -364,8 +375,16 @@ auto run(const Config& cfg) -> int {
   bool first_emitted_group = false;
   std::vector<std::string> group;
   std::string key;
+  // [perf #1127-P4] Streaming window (roadmap item 7): modes that print
+  // only a group's first record (plain, -c, -d, -u) used to buffer every
+  // record of the group, so one huge duplicate run cost unbounded
+  // memory. Those modes now keep just the first record plus a counter.
+  // --group and -D print every record of a group, so they keep the full
+  // buffer exactly as before (keep_all_records).
+  const bool keep_all_records = cfg.group_all || cfg.output_later_repeated;
+  size_t group_count = 0;
   auto emit_group = [&](const std::vector<std::string>& records) {
-    const size_t count = records.size();
+    const size_t count = group_count;
     if (should_emit(count, cfg)) {
       // [GNU] uniq.c: a separator precedes the group for prepend/both, and
       // (once a group has been printed) also for append/separate, so groups
@@ -401,12 +420,16 @@ auto run(const Config& cfg) -> int {
   std::string line;
   while (std::getline(*input, line, cfg.delimiter)) {
     auto line_key = comparison_key(line, cfg);
-    if (!group.empty() && line_key != key) {
+    if (group_count > 0 && line_key != key) {
       emit_group(group);
       group.clear();
+      group_count = 0;
     }
-    if (group.empty()) key = std::move(line_key);
-    group.push_back(std::move(line));
+    if (group_count == 0) key = std::move(line_key);
+    if (keep_all_records || group_count == 0) {
+      group.push_back(std::move(line));
+    }
+    ++group_count;
     line.clear();
   }
   if (input->bad()) {
@@ -414,7 +437,7 @@ auto run(const Config& cfg) -> int {
     if (stdout_mode != -1) _setmode(_fileno(stdout), stdout_mode);
     return 1;
   }
-  if (!group.empty()) emit_group(group);
+  if (group_count > 0) emit_group(group);
 
   // [GNU] append/both end the output with a single trailing separator.
   if (first_emitted_group && (cfg.group_mode == GroupMode::append ||

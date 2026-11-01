@@ -1,0 +1,5 @@
+cmd: more
+oracle: linux
+args: missing.txt
+source: tests/differential/corpus/more/05-missing-file.case
+tags: gnu-compat more error-wording audit-w7

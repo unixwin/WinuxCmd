@@ -1,0 +1,7 @@
+cmd: updatedb
+args: --localpaths=. --output=out.db
+timeout: 10
+setup: |
+  mkdir -p sub; printf x > one.txt; printf y > sub/two.txt
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w5 updatedb silent-success

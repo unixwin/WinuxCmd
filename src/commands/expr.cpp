@@ -95,8 +95,12 @@ auto coerce_i64(const Value& value) -> std::optional<long long> {
 [[nodiscard]] auto is_null(const Value& value) -> bool {
   if (value.kind == Value::Kind::Integer) return value.integer.is_zero();
 
+  // [GNU] expr.c null(): a string is null when it is empty or consists
+  // of an optional '-' followed by one or more '0's ("0", "00", "-0").
   std::string_view s = value.text;
-  return s.empty();
+  if (s.empty()) return true;
+  if (s[0] == '-') s.remove_prefix(1);
+  return !s.empty() && std::ranges::all_of(s, [](char c) { return c == '0'; });
 }
 
 [[nodiscard]] auto trim_integer_zeros(std::string_view digits)
@@ -398,10 +402,9 @@ class Parser {
   auto eval_keyword(bool evaluate) -> Value {
     if (next("+")) {
       require_more_args();
-      std::string token(args_[pos_++]);
-      auto parsed = parse_integer(token);
-      if (parsed) return Value::make_integer(*parsed);
-      return Value::make_string(token);
+      // [GNU] expr.c eval6(): "+ TOKEN" yields the token as a STRING
+      // value, verbatim; integer coercion happens at the use site.
+      return Value::make_string(std::string(args_[pos_++]));
     }
 
     if (next("length")) {
@@ -453,10 +456,11 @@ class Parser {
       return value;
     }
     if (next(")")) throw ExprError{"syntax error: unexpected ')'"};
-    std::string token(args_[pos_++]);
-    auto parsed = parse_integer(token);
-    if (parsed) return Value::make_integer(*parsed);
-    return Value::make_string(token);
+    // [GNU] expr.c eval7(): a bare operand is a STRING value, verbatim
+    // ("expr 007" prints 007 and "expr 00" is the null string "00");
+    // it is coerced to an integer only by arithmetic, by comparisons
+    // when both sides look like integers, and by the null test.
+    return Value::make_string(std::string(args_[pos_++]));
   }
 };
 
@@ -496,6 +500,18 @@ REGISTER_COMMAND(
 
     /* see also */
     "test(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", EXPR_OPTIONS) {
+  if (ctx.positionals.empty()) {
+    // [GNU] expr.c main(): the missing-operand failure is reported via
+    // usage(), so it alone carries the "Try ... --help" line; all other
+    // syntax/runtime errors use error() without it.
+    safeErrorPrintLn("expr: " +
+                     ::winux::i18n::translate("common.error.missing_operand",
+                                              "missing operand"));
+    safeErrorPrintLn(::winux::i18n::format(
+        "common.try_help", "Try '{} --help' for more information.", "expr"));
+    return 2;
+  }
+
   try {
     Parser parser(ctx.positionals);
     Value value = parser.parse();

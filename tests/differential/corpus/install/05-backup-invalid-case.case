@@ -1,0 +1,8 @@
+cmd: install
+args: --backup=Numbered a.txt b.txt
+timeout: 10
+setup: |
+  printf 'x' > a.txt
+  printf 'y' > b.txt
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w1 oracle-coreutils-9.4 backup-find.c:71-76 backup-case-sensitive

@@ -1,0 +1,7 @@
+cmd: sync
+args: -d -f f.txt
+timeout: 10
+setup: |
+  printf 'x' > f.txt
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w1 oracle-coreutils-9.4 sync.c:209-211 cannot-specify-both

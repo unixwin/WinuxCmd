@@ -1,0 +1,7 @@
+cmd: more
+oracle: linux
+args: -s f.txt
+setup: |
+  printf 'one\n\n\n\ntwo\n' > f.txt
+source: tests/differential/corpus/more/02-squeeze-non-tty.case
+tags: gnu-compat more non-tty squeeze audit-w7

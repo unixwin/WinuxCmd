@@ -1,0 +1,7 @@
+cmd: column
+oracle: linux
+args: 
+stdin: |
+  xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\nshort\n
+source: tests/differential/corpus/column/03-simple-mode.case
+tags: gnu-compat column simple audit-w7

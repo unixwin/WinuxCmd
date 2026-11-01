@@ -1,0 +1,4 @@
+cmd: numfmt
+args: -d ab 5
+source: GNU coreutils 9.4 src/numfmt.c:1534 ("the delimiter must be a single character")
+tags: audit-w3a #1462

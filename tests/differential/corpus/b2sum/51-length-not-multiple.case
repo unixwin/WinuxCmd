@@ -1,0 +1,7 @@
+cmd: b2sum
+args: -l 7 f.txt
+timeout: 10
+setup: |
+  printf 'hello\n' > f.txt
+source: GNU coreutils 9.4 src/digest.c (-l not a multiple of 8: "invalid length" plus "length is not a multiple of 8", no try-help)
+tags: audit-w3a #1462

@@ -1429,12 +1429,24 @@ auto execute_command(const std::string &command,
     size_t completed_index = wait_any_child(running);
     int child_status = wait_child(running[completed_index]);
     if (child_status != 0) {
-      exit_code = map_child_exit_status(child_status);
+      int mapped = map_child_exit_status(child_status);
+      // [GNU] xargs.c wait_for_proc: a 255 exit or a fatal-signal death
+      // leaves via error() at once with 124/125, so the first fatal
+      // outcome reaped fixes the final status.  Children reaped while
+      // draining a -P run must not overwrite it with the plain nonzero
+      // mapping (123).
+      if (exit_code != 124 && exit_code != 125) exit_code = mapped;
       if (child_status == 255) {
         // #1319: GNU prints the abort diagnostic for a 255 child.
         safeErrorPrint("xargs: ");
         safeErrorPrint(command);
         safeErrorPrint(": exited with status 255; aborting\n");
+        stop_launching = true;
+      } else if (mapped == 125 && child_status < 0) {
+        // [GNU] xargs.c wait_for_proc: a signal death is likewise fatal
+        // (125) and aborts the run.  The Windows shape of a signal death
+        // is a negative (NTSTATUS-shaped) exit code; there is no signal
+        // number to name in a diagnostic.
         stop_launching = true;
       }
     }
@@ -1959,7 +1971,11 @@ REGISTER_COMMAND(
                         max_args, max_chars, exit_if_exceeded, max_procs,
                         verbose, interactive, stdin_mode, process_slot_var);
     if (status != 0) exit_code = status;
-    if (status == 124 || status == 126 || status == 127) return status;
+    // [GNU] xargs.c: the fatal outcomes (124/125 from wait_for_proc,
+    // 126/127 from a failed exec) leave immediately; later -L groups
+    // must not run, let alone overwrite the status with 123.
+    if (status == 124 || status == 125 || status == 126 || status == 127)
+      return status;
   }
   return exit_code;
 }

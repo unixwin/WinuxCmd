@@ -1,0 +1,7 @@
+cmd: pathchk
+args: regfile/file
+timeout: 10
+setup: |
+  touch regfile
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w3b pathchk not-a-directory lstat

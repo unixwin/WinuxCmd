@@ -1,0 +1,8 @@
+cmd: grep
+args: -l -L needle yes.txt no.txt
+timeout: 10
+setup: |
+  printf 'needle\n' > yes.txt
+  printf 'hay\n' > no.txt
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w5 grep list-files

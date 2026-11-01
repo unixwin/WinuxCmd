@@ -353,7 +353,8 @@ void print_directory_banner(const std::string& filename) {
   safePrint("\n*** " + filename + ": directory ***\n\n");
 }
 
-auto copy_file_to_stdout(const std::string& filename) -> int {
+auto copy_file_to_stdout(const std::string& filename, const Config& cfg,
+                         bool print_banner, bool honor_positioning) -> int {
   if (filename.empty() || filename == "-") {
     file_io::set_stdin_binary();
     return copy_stream_to_stdout(std::cin);
@@ -370,7 +371,42 @@ auto copy_file_to_stdout(const std::string& filename) -> int {
   if (!file) {
     return report_cannot_open(filename, "Permission denied");
   }
-  return copy_stream_to_stdout(file);
+  if (print_banner) {
+    // [GNU] when main()'s preamble set print_banner, display_file()
+    // prints print_separator(':', 14), the file name and a second
+    // separator before the contents (more.c:1917-1932).
+    safePrint("::::::::::::::\n");
+    safePrint(filename);
+    safePrint("\n::::::::::::::\n");
+  }
+  if (!honor_positioning ||
+      (cfg.start_line == 0 && cfg.search_pattern.empty())) {
+    return copy_stream_to_stdout(file);
+  }
+  // [GNU] +NUM/+/PATTERN positioning runs in display_file()'s
+  // first_file block (skip_lines / search) before copy_file() dumps
+  // the rest (more.c:1898-1905): copy the raw bytes starting at the
+  // positioned line.
+  std::string content{std::istreambuf_iterator<char>(file),
+                      std::istreambuf_iterator<char>()};
+  std::vector<size_t> offsets{0};
+  for (size_t i = 0; i + 1 < content.size(); ++i) {
+    if (content[i] == '\n') offsets.push_back(i + 1);
+  }
+  size_t idx = std::min(cfg.start_line, offsets.size() - 1);
+  if (!cfg.search_pattern.empty()) {
+    for (size_t i = idx; i < offsets.size(); ++i) {
+      const size_t end =
+          i + 1 < offsets.size() ? offsets[i + 1] : content.size();
+      if (content.substr(offsets[i], end - offsets[i])
+                  .find(cfg.search_pattern) != std::string::npos) {
+        idx = i;
+        break;
+      }
+    }
+  }
+  safePrint(std::string_view(content).substr(offsets[idx]));
+  return 0;
 }
 auto read_display_lines(const std::string& filename)
     -> std::expected<std::vector<std::string>, std::string> {
@@ -417,31 +453,6 @@ auto prepare_start_line(std::vector<std::string>& lines, const Config& cfg)
     }
   }
   return start_line;
-}
-auto display_file_noninteractive(const std::string& filename, const Config& cfg)
-    -> int {
-  if (!filename.empty() && filename != "-") {
-    const auto probe = probe_file_operand(filename);
-    if (probe.kind == MoreFileProbe::Kind::Directory) {
-      print_directory_banner(filename);
-      return 0;
-    }
-    if (probe.kind == MoreFileProbe::Kind::OpenError) {
-      return report_cannot_open(filename, probe.error);
-    }
-  }
-  auto lines_result = read_display_lines(filename);
-  if (!lines_result) {
-    safeErrorPrint("more: ");
-    safeErrorPrintLn(lines_result.error());
-    return 1;
-  }
-  auto lines = std::move(*lines_result);
-  size_t start_line = prepare_start_line(lines, cfg);
-  for (size_t i = start_line; i < lines.size(); ++i) {
-    safePrintLn(lines[i]);
-  }
-  return 0;
 }
 auto display_file(const std::string& filename, const Config& cfg,
                   size_t file_index, size_t file_count) -> MoreResult {
@@ -680,33 +691,44 @@ auto run(const Config& cfg) -> int {
   }
 
   if (!isOutputConsole()) {
-    bool needs_line_processing =
-        cfg.squeeze_blank || cfg.start_line > 0 || !cfg.search_pattern.empty();
+    // [util-linux more] when stdout is not a terminal, display_file()
+    // raw-copies each file with copy_file() (more.c:1936-1937): the
+    // screen machinery — including -s squeezing — never runs, file
+    // errors are plain warnings (checkf, more.c:459), and the process
+    // still leaves through more_exit() with EXIT_SUCCESS (more.c:789),
+    // so this branch returns 0 regardless of per-file failures.
     if (cfg.files.empty()) {
-      return needs_line_processing ? display_file_noninteractive("", cfg)
-                                   : copy_file_to_stdout("");
+      // No operands: a redirected stdin is the input, copied raw by
+      // main()'s preamble (more.c:2115-2117).
+      (void)copy_file_to_stdout("", cfg, false, false);
+      return 0;
     }
-    int result = 0;
+    const bool stdin_redirected = !isInputConsole();
+    if (stdin_redirected) {
+      // [GNU] main() first consumes a non-tty stdin as the initial
+      // input; the preamble then forces print_banner and clears
+      // first_file (more.c:2121-2123), so every file operand gets the
+      // ':' separator banner and +NUM/+/PATTERN positioning is
+      // dropped for the whole run.
+      (void)copy_file_to_stdout("", cfg, false, false);
+    }
     for (const auto& file : cfg.files) {
-      int file_result = needs_line_processing
-                            ? display_file_noninteractive(file, cfg)
-                            : copy_file_to_stdout(file);
-      if (file_result != 0) {
-        result = 1;
-      }
+      (void)copy_file_to_stdout(file, cfg,
+                                /*print_banner=*/stdin_redirected,
+                                /*honor_positioning=*/!stdin_redirected);
     }
-    return result;
+    return 0;
   }
   if (cfg.files.empty()) {
     return display_file("", cfg, 0, 1).code;
   }
 
-  int result = 0;
   size_t index = 0;
   while (index < cfg.files.size()) {
     MoreResult file_result =
         display_file(cfg.files[index], cfg, index, cfg.files.size());
-    if (file_result.code != 0) result = 1;
+    // [GNU] per-file failures are warnings only; they never set the
+    // exit status (more.c:789: more_exit is EXIT_SUCCESS).
     if (file_result.action == MoreAction::PrevFile) {
       size_t count = file_result.count == 0 ? 1 : file_result.count;
       index = index > count ? index - count : 0;
@@ -719,7 +741,7 @@ auto run(const Config& cfg) -> int {
     }
     break;
   }
-  return result;
+  return 0;
 }
 
 }  // namespace more_pipeline

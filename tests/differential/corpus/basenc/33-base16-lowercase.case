@@ -1,0 +1,6 @@
+cmd: basenc
+args: --base16 -d
+stdin: |
+  ab
+source: GNU coreutils 9.4 src/basenc.c:491-494 (isbase16 accepts uppercase only; lowercase is invalid input)
+tags: audit-w3a #1462

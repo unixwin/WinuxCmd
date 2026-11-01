@@ -1,0 +1,7 @@
+cmd: file
+args: --mime-encoding ascii.txt
+timeout: 10
+setup: |
+  printf 'plain ascii text\n' > ascii.txt
+source: github.com/unixwin/WinuxCmd
+tags: p2c-1127 oracle-verified

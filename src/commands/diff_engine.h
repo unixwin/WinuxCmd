@@ -874,6 +874,88 @@ inline void append_sdiff_section_rows(const SdiffSection &section,
   }
 }
 
+// ======================================================
+// Positional sections over the raw edit script
+// ======================================================
+
+// GNU renders and merges from the change script AFTER the ignore
+// options have removed the hunks they cover (analyze.c): an ignored
+// hunk's lines stop being changes and join the common span around
+// them, pairing positionally there (side.c print_sdiff_common_lines).
+// A 1:1 edit list cannot express that asymmetric span, so the section
+// builder works directly from the raw script: consecutive non-KEEP
+// runs become hunks (or vanish into the common flow when the ignore
+// predicate covers them), and each common span is the raw line range
+// between the surviving hunks, in each file independently.
+struct SdiffScript {
+  std::vector<SdiffSection> sections;
+  bool differ = false;  // a non-ignored hunk exists
+};
+
+inline auto build_sdiff_script(
+    const std::vector<Edit> &edits, const std::vector<std::string> &lines1,
+    const std::vector<std::string> &lines2,
+    const std::function<bool(const std::vector<Edit> &,
+                             const std::vector<std::string> &,
+                             const std::vector<std::string> &, size_t, size_t)>
+        &hunk_is_ignored) -> SdiffScript {
+  SdiffScript script;
+  size_t common_left = 0;
+  size_t common_right = 0;
+  size_t k = 0;
+  auto flush_common = [&](size_t left_end, size_t right_end) {
+    if (left_end == common_left && right_end == common_right) return;
+    SdiffSection section;
+    section.is_hunk = false;
+    section.left_begin = common_left;
+    section.left_end = left_end;
+    section.right_begin = common_right;
+    section.right_end = right_end;
+    script.sections.push_back(section);
+    common_left = left_end;
+    common_right = right_end;
+  };
+  while (k < edits.size()) {
+    if (edits[k].type == EditType::KEEP) {
+      ++k;
+      continue;
+    }
+    const size_t run_begin = k;
+    // A change run's ranges: the DEL indices are contiguous in file1
+    // and the INS indices in file2; a side with no edits anchors at
+    // the other side's cursor in its own file.
+    size_t left_begin = edits[k].line1_index;
+    size_t left_end = left_begin;
+    size_t right_begin = edits[k].line2_index;
+    size_t right_end = right_begin;
+    while (k < edits.size() && edits[k].type != EditType::KEEP) {
+      if (edits[k].type == EditType::DEL) {
+        left_end = edits[k].line1_index + 1;
+      } else {
+        right_end = edits[k].line2_index + 1;
+      }
+      ++k;
+    }
+    if (hunk_is_ignored &&
+        hunk_is_ignored(edits, lines1, lines2, run_begin, k)) {
+      continue;  // the run's lines join the surrounding common span
+    }
+    flush_common(left_begin, right_begin);
+    SdiffSection hunk;
+    hunk.is_hunk = true;
+    hunk.left_begin = left_begin;
+    hunk.left_end = left_end;
+    hunk.right_begin = right_begin;
+    hunk.right_end = right_end;
+    script.sections.push_back(hunk);
+    script.differ = true;
+    common_left = left_end;
+    common_right = right_end;
+  }
+  flush_common(lines1.size(), lines2.size());
+  return script;
+}
+
 // Print the whole edit script as side-by-side rows (GNU side.c
 // print_sdiff_script).  Common lines print once per row with the right
 // copy aligned at column2_offset; changes pair min(deletes, inserts) rows

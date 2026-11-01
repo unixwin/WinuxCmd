@@ -1,0 +1,10 @@
+cmd: whereis
+oracle: linux
+args: -B bd -M md -f -u solo pair
+setup: |
+  mkdir -p bd md
+  printf 'x\n' > bd/solo
+  printf 'x\n' > bd/pair
+  printf 'x\n' > md/pair.1
+source: tests/differential/corpus/whereis/03-unusual-count.case
+tags: gnu-compat whereis unusual audit-w7

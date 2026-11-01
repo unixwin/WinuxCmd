@@ -1,0 +1,11 @@
+cmd: fmt
+args: -p '>>'
+timeout: 10
+stdin: |
+  >> hello world this is
+  >> a test of fmt
+  >> more text follows
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: issue-1462 audit-w2 fmt prefix
+# -p selects only '>>'-prefixed lines for refilling; the three
+# lines form one paragraph and are rejoined under the prefix.

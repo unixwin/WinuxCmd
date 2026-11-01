@@ -38,7 +38,7 @@ struct Config {
   bool count_bytes = false;
   bool count_characters = false;
   bool break_at_spaces = false;
-  int width = 80;
+  long long width = 80;
   SmallVector<std::string, 64> files;
 };
 
@@ -47,23 +47,35 @@ struct FoldUnit {
   char32_t codepoint = U'\0';
 };
 
-auto parse_width(std::string_view value) -> cp::Result<int> {
-  long long parsed = 0;
-  auto [ptr, ec] =
-      std::from_chars(value.data(), value.data() + value.size(), parsed);
-  // Match GNU fold (xnumtoumax): a zero or overflowing width is reported as
-  // an ERANGE-style failure, while unparseable or negative values keep the
-  // "invalid number of columns" diagnostic with the value quoted.
-  if (ec == std::errc::result_out_of_range ||
-      (ec == std::errc() && ptr == value.data() + value.size() &&
-       parsed == 0)) {
-    return std::unexpected("Numerical result out of range");
+auto parse_width(std::string_view value) -> cp::Result<long long> {
+  // [GNU] fold.c:281: width = xdectoumax (optarg, 1, SIZE_MAX -
+  // TAB_WIDTH - 1, ..., "invalid number of columns") -- a leading '+'
+  // is accepted, huge widths are honored rather than wrapped through
+  // int, and zero/overflow carry the full "invalid number of
+  // columns: '<arg>': Numerical result out of range" form (audit
+  // #1462).
+  std::string_view digits = value;
+  if (!digits.empty() && digits.front() == '+') {
+    digits.remove_prefix(1);
   }
-  if (ec != std::errc() || ptr != value.data() + value.size() || parsed < 0) {
+  unsigned long long parsed = 0;
+  auto [ptr, ec] =
+      std::from_chars(digits.data(), digits.data() + digits.size(), parsed);
+  if (ec == std::errc::result_out_of_range ||
+      (ec == std::errc() && ptr == digits.data() + digits.size() &&
+       (parsed == 0 ||
+        parsed > static_cast<unsigned long long>(
+                     std::numeric_limits<long long>::max())))) {
+    return std::unexpected("invalid number of columns: '" +
+                           std::string(value) +
+                           "': Numerical result out of range");
+  }
+  if (ec != std::errc() || ptr != digits.data() + digits.size() ||
+      digits.empty()) {
     return std::unexpected("invalid number of columns: '" + std::string(value) +
                            "'");
   }
-  return static_cast<int>(parsed);
+  return static_cast<long long>(parsed);
 }
 
 auto build_config(const CommandContext<FOLD_OPTIONS.size()>& ctx)
@@ -76,12 +88,16 @@ auto build_config(const CommandContext<FOLD_OPTIONS.size()>& ctx)
   cfg.break_at_spaces =
       ctx.get<bool>("--spaces", false) || ctx.get<bool>("-s", false);
 
-  auto width_opt = ctx.get<std::string>("--width", "");
-  if (width_opt.empty()) {
+  // [GNU] an explicitly empty -w '' is an invalid width, not an
+  // absent option (audit #1462); presence, not emptiness, decides.
+  std::optional<std::string> width_opt;
+  if (ctx.has("--width")) {
+    width_opt = ctx.get<std::string>("--width", "");
+  } else if (ctx.has("-w")) {
     width_opt = ctx.get<std::string>("-w", "");
   }
-  if (!width_opt.empty()) {
-    auto width = parse_width(width_opt);
+  if (width_opt) {
+    auto width = parse_width(*width_opt);
     if (!width) return std::unexpected(width.error());
     cfg.width = *width;
   }
@@ -194,7 +210,10 @@ auto display_column(std::string_view text, bool count_bytes,
                     bool count_characters) -> size_t {
   size_t column = 0;
   for (size_t i = 0; i < text.size();) {
-    FoldUnit unit = count_bytes
+    // [GNU] the default mode counts BYTES (getc loop + adjust_column
+    // in fold.c); UTF-8 decoding belongs only to the -c extension
+    // mode (audit #1462).
+    FoldUnit unit = (count_bytes || !count_characters)
                         ? FoldUnit{1, static_cast<unsigned char>(text[i])}
                         : decode_utf8_unit(text, i);
     column = next_column(unit, column, count_bytes, count_characters);
@@ -205,8 +224,9 @@ auto display_column(std::string_view text, bool count_bytes,
 
 // Fold content while preserving existing line endings, including a final line
 // without a trailing newline.
-auto fold_content(const std::string& content, int width, bool count_bytes,
-                  bool count_characters, bool break_at_spaces) -> std::string {
+auto fold_content(const std::string& content, long long width,
+                  bool count_bytes, bool count_characters,
+                  bool break_at_spaces) -> std::string {
   std::string result;
   std::string current;
   size_t column = 0;
@@ -235,7 +255,7 @@ auto fold_content(const std::string& content, int width, bool count_bytes,
       continue;
     }
 
-    FoldUnit unit = count_bytes
+    FoldUnit unit = (count_bytes || !count_characters)
                         ? FoldUnit{1, static_cast<unsigned char>(content[i])}
                         : decode_utf8_unit(content, i);
     std::string_view bytes(content.data() + i, unit.byte_count);
@@ -263,16 +283,17 @@ auto fold_content(const std::string& content, int width, bool count_bytes,
 
 auto run(const Config& cfg) -> int {
   auto fold_input_open_error = [](std::string_view path) -> std::string {
+    // [GNU] fold.c:138: error (0, errno, "%s", quotef (filename)) --
+    // the bare form "fold: <file>: <reason>" (audit #1462).
     std::error_code ec;
     auto status = std::filesystem::status(
         std::filesystem::u8path(native_path::normalize_api_operand(path)),
         ec);
     if (!ec && status.type() == std::filesystem::file_type::directory) {
-      return std::string("cannot open '") + std::string(path) +
-             "' for reading: Is a directory";
+      return std::string(path) + ": Is a directory";
     }
-    return std::string("cannot open '") + std::string(path) +
-           "' for reading: No such file or directory";
+    return std::string(path) + ": " +
+           portable_digest::open_error_reason(path);
   };
 
   bool all_ok = true;
@@ -309,12 +330,8 @@ auto run(const Config& cfg) -> int {
         all_ok = false;
         continue;
       }
-      if (content.size() >= 3 &&
-          static_cast<unsigned char>(content[0]) == 0xEF &&
-          static_cast<unsigned char>(content[1]) == 0xBB &&
-          static_cast<unsigned char>(content[2]) == 0xBF) {
-        content = content.substr(3);
-      }
+      // [GNU] no BOM handling: the bytes are folded like any others
+      // (audit #1462).
     }
 
     auto folded = fold_content(content, cfg.width, cfg.count_bytes,

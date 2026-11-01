@@ -1,0 +1,7 @@
+cmd: col
+oracle: linux
+args: 
+stdin: |
+  one\ntwo\vone2\n
+source: tests/differential/corpus/col/06-reverse-line-feed.case
+tags: gnu-compat col reverse-feed audit-w7

@@ -1,0 +1,4 @@
+cmd: numfmt
+args: --padding=0 5
+source: GNU coreutils 9.4 src/numfmt.c:1513 ("invalid padding value '0'")
+tags: audit-w3a #1462

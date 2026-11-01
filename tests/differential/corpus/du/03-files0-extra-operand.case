@@ -1,0 +1,8 @@
+cmd: du
+args: --files0-from=list0.txt extra
+timeout: 10
+setup: |
+  printf 'a\0' > list0.txt
+  printf 'x' > a
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w1 oracle-coreutils-9.4 du.c:1037-1043 files0-extra-operand

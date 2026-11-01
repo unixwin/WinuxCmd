@@ -277,7 +277,7 @@ TEST(wc, wc_files0_from_stdin_reads_nul_terminated_names) {
   EXPECT_TRUE(r.stdout_text.find("3 total") != std::string::npos);
 }
 
-TEST(wc, wc_files0_from_empty_file_is_an_error) {
+TEST(wc, wc_files0_from_empty_file_succeeds) {
   TempDir tmp;
   tmp.write_bytes("list.bin", {});
 
@@ -287,12 +287,15 @@ TEST(wc, wc_files0_from_empty_file_is_an_error) {
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 1);
+  // [GNU] wc.c: an empty --files0-from stream means "read
+  // nothing" -- no stdin fallback, no diagnostic, exit 0
+  // (verified against coreutils 9.4: rc=0, silent).
+  EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.empty());
   EXPECT_TRUE(r.stderr_text.empty());
 }
 
-TEST(wc, wc_files0_from_empty_stdin_is_an_error) {
+TEST(wc, wc_files0_from_empty_stdin_succeeds) {
   TempDir tmp;
 
   Pipeline p;
@@ -302,7 +305,8 @@ TEST(wc, wc_files0_from_empty_stdin_is_an_error) {
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 1);
+  // [GNU] wc.c: same empty-stream contract as the file form.
+  EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.empty());
   EXPECT_TRUE(r.stderr_text.empty());
 }
@@ -314,14 +318,19 @@ TEST(wc, wc_files0_from_rejects_zero_length_names) {
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
-  p.add(L"wc.exe", {L"--files0-from", L"list.bin"});
+  p.add(L"wc.exe", {L"-l", L"--files0-from", L"list.bin"});
 
   auto r = p.run();
 
+  // [GNU] wc.c: the empty record is diagnosed with the
+  // '<list>:<record#>:' prefix and SKIPPED -- the valid name is
+  // still counted, the total line still prints (the --total=auto
+  // basis counts every iterated name), and the exit status is 1.
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stdout_text.empty());
-  EXPECT_TRUE(r.stderr_text.find("wc: invalid zero-length file name") !=
-              std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("1 a.txt") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("1 total") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("wc: list.bin:2: invalid zero-length "
+                                 "file name") != std::string::npos);
 }
 
 TEST(wc, wc_files0_from_stdin_rejects_dash_name) {
@@ -331,12 +340,16 @@ TEST(wc, wc_files0_from_stdin_rejects_dash_name) {
   Pipeline p;
   p.set_cwd(tmp.wpath());
   p.set_stdin(std::string("a.txt\0-\0", 8));
-  p.add(L"wc.exe", {L"--files0-from", L"-"});
+  p.add(L"wc.exe", {L"-l", L"--files0-from", L"-"});
 
   auto r = p.run();
 
+  // [GNU] wc.c: a '-' name read from stdin is diagnosed and
+  // SKIPPED -- the valid name is still counted, the total line
+  // still prints, and the exit status is 1.
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stdout_text.find("1 a.txt") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("1 total") != std::string::npos);
   EXPECT_TRUE(r.stderr_text.find("wc: when reading file names from stdin, no "
                                  "file name of '-' allowed") !=
               std::string::npos);
@@ -354,8 +367,13 @@ TEST(wc, wc_files0_from_rejects_named_operands) {
   auto r = p.run();
 
   EXPECT_NE(r.exit_code, 0);
-  EXPECT_TRUE(r.stderr_text.find("--files0-from disallows") !=
-              std::string::npos);
+  // [GNU] wc.c: the exact two-line diagnostic -- "extra operand
+  // '<name>'" then the cannot-be-combined line (the old pin's
+  // "--files0-from disallows" text is a pre-9.x shape).
+  EXPECT_TRUE(r.stderr_text.find("extra operand") != std::string::npos);
+  EXPECT_TRUE(
+      r.stderr_text.find("file operands cannot be combined with "
+                         "--files0-from") != std::string::npos);
 }
 
 TEST(wc, wc_files0_from_reports_gnu_shaped_missing_list_diagnostic) {
@@ -369,9 +387,13 @@ TEST(wc, wc_files0_from_reports_gnu_shaped_missing_list_diagnostic) {
 
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_TRUE(r.stdout_text.empty());
-  EXPECT_TRUE(
-      r.stderr_text.find("wc: missing.bin: No such file or directory") !=
-      std::string::npos);
+  // [GNU] wc.c: an unopenable LIST file takes the "cannot open
+  // '<F>' for reading" shape (wc.c fopen branch), not the operand
+  // shape "wc: <F>: <reason>" the old pin asserted.
+  EXPECT_TRUE(r.stderr_text.find("wc: cannot open 'missing.bin' for "
+                                 "reading") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("No such file or directory") !=
+              std::string::npos);
 }
 
 TEST(wc, wc_files0_from_reports_directory_list_input) {
@@ -386,8 +408,132 @@ TEST(wc, wc_files0_from_reports_directory_list_input) {
 
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_TRUE(r.stdout_text.empty());
-  EXPECT_TRUE(r.stderr_text.find("wc: indir: Is a directory") !=
+  // [GNU] wc.c: on POSIX the directory list fails at read time
+  // ("<F>: read error: Is a directory"); a directory cannot be
+  // opened for reading on Windows at all, so the reachable GNU
+  // branch here is the cannot-open one -- with the true reason.
+  // The old pin's "wc: indir: Is a directory" matches neither.
+  EXPECT_TRUE(r.stderr_text.find("wc: cannot open 'indir' for reading") !=
               std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("Is a directory") != std::string::npos);
+}
+
+// #1127-P4: the general scanner accounts printable-ASCII runs in bulk.
+// Counts must equal the per-codepoint result on shapes built to cross
+// the 64 KiB read buffer: one huge word, runs split by single spaces
+// and tabs, a multibyte word, and a final unterminated line.
+TEST(wc, wc_counts_ascii_runs_across_buffers_issue1127) {
+  TempDir tmp;
+  std::string content;
+  content += std::string(70000, 'x');  // one word
+  content += ' ';
+  content += std::string(10, 'y');  // second word
+  content += '\n';                  // line 1
+  content += "a\tb c\n";            // line 2: words a, b, c
+  content += "\xc3\xa9\xc3\xa9\n";   // line 3: one word, 2 chars, 4 bytes
+  content += "tail";                // unterminated: one word
+  tmp.write("runs.txt", content);
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"wc.exe", {L"runs.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // lines=3, words=2+3+1+1=7, bytes=70012+6+5+4=70027; columns are
+  // padded to the digit width of the file size (5), as GNU does.
+  EXPECT_TRUE(r.stdout_text.find("    3     7 70027 runs.txt") !=
+              std::string::npos);
+}
+
+// #1127-P4 round 2: GNU wc admits a character as a word constituent only
+// when it is printable (wc.c's iswprint gate); a character that is
+// neither a separator nor printable is word-transparent - it neither
+// starts nor ends a word. Control characters are non-printable in every
+// locale, so a run of NUL bytes is not a word even though it is not
+// whitespace either. This is the byte shape the differential case
+// regressions/76-perf-wc-runs actually builds: its setup names the NUL
+// byte to tr(1) through an argument a NUL cannot survive, so the "x
+// run" arrives as NUL bytes. GNU counts 3/6/70018 here, and so must we.
+TEST(wc, wc_counts_nul_run_as_transparent_issue1127) {
+  TempDir tmp;
+  std::string content;
+  content += std::string(70000, '\0');  // transparent: not a word
+  content += " y\na\tb c\n";            // words y, a, b, c; lines 1-2
+  content += "a\xc3\xa9" "b\n";         // one word (a + U+00E9 + b); line 3
+  content += "tail";                    // one word, unterminated
+  tmp.write("runs.txt", content);
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"wc.exe", {L"runs.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("    3     6 70018 runs.txt") !=
+              std::string::npos);
+}
+
+// #1127-P4 round 2: the same transparency for C0 controls inside a word,
+// DEL, a standalone NUL pair before a real word, and a C1 control
+// (U+0085) trailing a word character. GNU (C and C.UTF-8 alike): the
+// control characters change no word boundary, so the words below are
+// exactly ab, x, cd and tail.
+TEST(wc, wc_counts_control_characters_as_transparent_issue1127) {
+  TempDir tmp;
+  std::string content;
+  content += "a\x01\x02" "b\n";   // one word: a, C0 transparent, b
+  content += std::string(2, '\0');
+  content += " x\n";              // NULs transparent; x is one word
+  content += "c\x7f" "d";         // one word: c, DEL transparent, d
+  content += "\xc2\x85";          // U+0085 (C1) transparent inside the word
+  content += " tail";            // one word
+  tmp.write("ctrl.txt", content);
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"wc.exe", {L"ctrl.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // lines=2, words=4, bytes=5+2+3+3+2+5=20; width is 2 digits.
+  EXPECT_TRUE(r.stdout_text.find(" 2  4 20 ctrl.txt") != std::string::npos);
+}
+
+// #1127-P4: -m counts and -L widths over bulk-accounted runs, including
+// a tab stop expansion on a short line.
+TEST(wc, wc_chars_and_max_line_length_with_runs_issue1127) {
+  TempDir tmp;
+  std::string content;
+  content += std::string(70000, 'x');
+  content += " y\n";     // display width 70002, chars 70003 incl \n
+  content += "ab\tc\n";  // tab advances column 2 -> 8, width 9, chars 5
+  tmp.write("widths.txt", content);
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"wc.exe", {L"-m", L"-L", L"widths.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("70008 70002") != std::string::npos);
+}
+
+// #1127-P4: -c-only requests take the O(1) file-size probe; the printed
+// size must still be exact for a large binary file.
+TEST(wc, wc_bytes_only_large_file_issue1127) {
+  TempDir tmp;
+  std::string content(1048576, '\0');
+  for (size_t i = 0; i < content.size(); i += 4096) content[i] = 'z';
+  tmp.write("big.bin", content);
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"wc.exe", {L"-c", L"big.bin"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("1048576") != std::string::npos);
 }
 
 TEST(wc, wc_reports_gnu_shaped_missing_input_diagnostic) {
@@ -434,8 +580,16 @@ TEST(wc, wc_reports_is_a_directory_for_directory_input) {
 
   auto r = p.run();
 
+  // [GNU] wc.c wc(): the read fails EISDIR and is diagnosed, but
+  // the (zero) count line is still written -- only the exit
+  // status fails (verified against coreutils 9.4, whose own line
+  // is width-padded; compare with whitespace removed).
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stdout_text.empty());
+  std::string squashed;
+  for (char c : r.stdout_text) {
+    if (c != ' ' && c != '\r' && c != '\n') squashed += c;
+  }
+  EXPECT_TRUE(squashed.find("000indir") != std::string::npos);
   EXPECT_TRUE(r.stderr_text.find("wc: indir: Is a directory") !=
               std::string::npos);
 }

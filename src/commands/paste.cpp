@@ -50,7 +50,10 @@ auto parse_delimiters(std::string_view input)
     }
 
     if (i + 1 >= input.size()) {
-      return std::unexpected("delimiter list ends with an unescaped backslash");
+      // [GNU] the diagnostic quotes the offending list (paste.c:506-514).
+      return std::unexpected(
+          "delimiter list ends with an unescaped backslash: " +
+          std::string(input));
     }
 
     char escaped = input[++i];
@@ -200,16 +203,16 @@ auto build_config(const CommandContext<PASTE_OPTIONS.size()>& ctx)
 
 // Read all lines from a file
 auto paste_input_open_error(std::string_view filename) -> std::string {
+  // [GNU] error (..., "%s", quotef (file)) shape: "paste: <file>:
+  // <errno text>" (paste.c:237, 385) (audit #1462).
   std::error_code ec;
   auto status = std::filesystem::status(
       std::filesystem::u8path(native_path::normalize_api_operand(filename)),
       ec);
   if (!ec && status.type() == std::filesystem::file_type::directory) {
-    return std::string("cannot open '") + std::string(filename) +
-           "' for reading: Is a directory";
+    return std::string(filename) + ": Is a directory";
   }
-  return std::string("cannot open '") + std::string(filename) +
-         "' for reading: No such file or directory";
+  return std::string(filename) + ": No such file or directory";
 }
 
 auto read_lines(const std::string& filename, char delimiter = '\n')
@@ -252,30 +255,18 @@ auto read_lines(const std::string& filename, char delimiter = '\n')
     std::string content((std::istreambuf_iterator<char>(f)),
                         std::istreambuf_iterator<char>());
 
+    // [GNU] paste is byte-oriented: a UTF-8 BOM is content, never
+    // stripped (the old code stripped it for files but not stdin)
+    // (audit #1462).
     size_t start = 0;
     for (size_t i = 0; i < content.size(); ++i) {
       if (content[i] == delimiter) {
-        std::string line = content.substr(start, i - start);
-        // Skip UTF-8 BOM if present at the beginning of the first line
-        if (lines.empty() && line.size() >= 3 &&
-            static_cast<unsigned char>(line[0]) == 0xEF &&
-            static_cast<unsigned char>(line[1]) == 0xBB &&
-            static_cast<unsigned char>(line[2]) == 0xBF) {
-          line = line.substr(3);
-        }
-        lines.push_back(line);
+        lines.push_back(content.substr(start, i - start));
         start = i + 1;
       }
     }
     if (start < content.size()) {
-      std::string line = content.substr(start);
-      if (lines.empty() && line.size() >= 3 &&
-          static_cast<unsigned char>(line[0]) == 0xEF &&
-          static_cast<unsigned char>(line[1]) == 0xBB &&
-          static_cast<unsigned char>(line[2]) == 0xBF) {
-        line = line.substr(3);
-      }
-      lines.push_back(line);
+      lines.push_back(content.substr(start));
     }
   }
 
@@ -294,11 +285,16 @@ auto run(const Config& cfg) -> int {
 
   if (cfg.serial) {
     // Serial mode: paste files one after another
+    bool all_ok = true;
     for (const auto& file : cfg.files) {
       auto lines_result = read_lines(file, record_delim);
       if (!lines_result) {
+        // [GNU] a failed fopen is non-fatal per file in serial
+        // mode: diagnose, mark the run failed, continue with the
+        // remaining files (paste.c:382-389) (audit #1462).
         cp::report_error(lines_result, L"paste");
-        return 1;
+        all_ok = false;
+        continue;
       }
 
       std::string merged_line;
@@ -308,11 +304,14 @@ auto run(const Config& cfg) -> int {
         }
         merged_line += (*lines_result)[i];
       }
-      if (!lines_result->empty()) {
-        safePrint(merged_line);
-        safePrint(std::string_view(&record_delim, 1));
-      }
+      // [GNU] paste_serial ends a file whose last character is not
+      // the line delimiter with a delimiter; for a completely
+      // empty file the "last character" is EOF, so a lone
+      // delimiter is printed (paste.c:424-431) (audit #1462).
+      safePrint(merged_line);
+      safePrint(std::string_view(&record_delim, 1));
     }
+    return all_ok ? 0 : 1;
   } else {
     // Parallel mode: merge lines from all files
     // Use std::vector to avoid stack overflow (SmallVector was allocating too

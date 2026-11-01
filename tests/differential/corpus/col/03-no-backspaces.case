@@ -1,0 +1,7 @@
+cmd: col
+oracle: linux
+args: -b
+stdin: |
+  ab\b\bc\n
+source: tests/differential/corpus/col/03-no-backspaces.case
+tags: gnu-compat col no-backspaces audit-w7

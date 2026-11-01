@@ -1,0 +1,7 @@
+cmd: realpath
+args: dangling
+timeout: 10
+setup: |
+  ln -s no-such-target dangling
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w1 oracle-coreutils-9.4 realpath.c default-mode dangling-target

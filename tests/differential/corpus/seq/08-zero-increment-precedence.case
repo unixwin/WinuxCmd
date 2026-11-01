@@ -1,0 +1,5 @@
+cmd: seq
+args: 1 0 abc
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w3b seq precedence zero-increment-before-last

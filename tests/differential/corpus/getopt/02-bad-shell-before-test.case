@@ -1,0 +1,5 @@
+cmd: getopt
+oracle: linux
+args: -s bogus -T
+source: tests/differential/corpus/getopt/02-bad-shell-before-test.case
+tags: gnu-compat getopt exit-status error-wording audit-w7

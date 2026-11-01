@@ -1,0 +1,10 @@
+cmd: wc
+args: runs.txt
+timeout: 10
+setup: |
+  head -c 70000 /dev/zero | sed 's/[^x]/x/g' > runs.txt
+  printf ' y\na\tb c\n' >> runs.txt
+  printf 'a\303\251b\n' >> runs.txt
+  printf 'tail' >> runs.txt
+source: github.com/unixwin/WinuxCmd/issues/1127
+tags: issue-1127 regression perf

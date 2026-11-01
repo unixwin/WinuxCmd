@@ -1,0 +1,7 @@
+cmd: uniq
+args: --group u.txt
+timeout: 10
+setup: |
+  printf 'dup\ndup\ndup\nsolo\ndup\ndup\nlast\n' > u.txt
+source: github.com/unixwin/WinuxCmd/issues/1127
+tags: issue-1127 regression perf

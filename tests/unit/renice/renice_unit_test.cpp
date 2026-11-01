@@ -93,5 +93,9 @@ TEST(renice, renice_requires_pid) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stderr_text.find("missing process ID") != std::string::npos);
+  // [GNU] priority with no id operand hits the argc check:
+  // warnx("not enough arguments") + try-help (sys-utils/renice.c:
+  // 173-176). There is no "missing process ID" diagnostic.
+  EXPECT_TRUE(r.stderr_text.find("not enough arguments") !=
+              std::string::npos);
 }

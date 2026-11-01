@@ -1,0 +1,9 @@
+cmd: join
+args: -o 1.1 -o 2.2 j1 j2
+timeout: 10
+setup: |
+  printf 'a 1\n' > j1
+  printf 'a 2\n' > j2
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: issue-1462 audit-w2 join output-list
+# Repeated -o options accumulate: output is "a 2".

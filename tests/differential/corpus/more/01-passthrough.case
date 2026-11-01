@@ -1,0 +1,7 @@
+cmd: more
+oracle: linux
+args: f.txt
+setup: |
+  printf 'one\ntwo\nthree\n' > f.txt
+source: tests/differential/corpus/more/01-passthrough.case
+tags: gnu-compat more non-tty audit-w7

@@ -1,0 +1,7 @@
+cmd: touch
+args: -t 01010000. target
+timeout: 10
+setup: |
+  printf 'y' > target
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w1 oracle-coreutils-9.4 posixtm.c:100-107 trailing-dot-invalid

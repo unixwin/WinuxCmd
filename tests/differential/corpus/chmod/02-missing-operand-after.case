@@ -1,0 +1,5 @@
+cmd: chmod
+args: 755
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w1 oracle-coreutils-9.4 chmod.c:528-534 missing-operand-after

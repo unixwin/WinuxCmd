@@ -24,9 +24,11 @@ using cmd::meta::OptionType;
 // ======================================================
 
 auto constexpr PATCH_OPTIONS = std::array{
-    // [GNU] -p, --strip=NUM: strip NUM leading components from file names
+    // [GNU] -p, --strip=NUM: strip NUM leading components from file names.
+    // STRING_TYPE so the value is validated by patch's own
+    // numeric_string clone (GNU wording), not the framework parser.
     OPTION("-p", "--strip", "strip NUM leading components from file names",
-           INT_TYPE),
+           STRING_TYPE),
     // [GNU] -i, --input=FILE: read patch from FILE
     OPTION("-i", "--input", "read patch from FILE", STRING_TYPE),
     // [GNU] -z, --suffix=SUF: set backup suffix (default ".orig")
@@ -50,8 +52,9 @@ auto constexpr PATCH_OPTIONS = std::array{
     OPTION("", "--remove-empty-files", "remove empty output files"),
     // [GNU] -f, --force: force this patch, even if it seems reversed
     OPTION("-f", "--force", "force this patch, even if it seems reversed"),
-    // [GNU] -F, --fuzz=NUM: set maximum fuzz factor (default 2)
-    OPTION("-F", "--fuzz", "set maximum fuzz factor", INT_TYPE),
+    // [GNU] -F, --fuzz=NUM: set maximum fuzz factor (default 2).
+    // STRING_TYPE for the same numeric_string reason as -p.
+    OPTION("-F", "--fuzz", "set maximum fuzz factor", STRING_TYPE),
     // [GNU] -o, --output=FILE: output to FILE instead of the patched file
     OPTION("-o", "--output", "output to FILE instead of the patched file",
            STRING_TYPE),
@@ -141,6 +144,13 @@ struct HunkLine {
   std::string text;
 };
 
+// One line of a context-diff section: tag is ' ' (context), '-' (old
+// only), '+' (new only) or '!' (changed; present on both sides).
+struct SecLine {
+  char tag = ' ';
+  std::string text;
+};
+
 struct Hunk {
   long long old_start = 0;
   long long old_count = 0;
@@ -153,13 +163,42 @@ struct Hunk {
   // exactly old_start (already delta-adjusted at parse time), with no
   // offset search and no fuzz.
   bool exact_position = false;
+  // [GNU] Text after the closing "@@" of a unified hunk header (the
+  // function context, leading space included); reprinted in rejects
+  // (abort_hunk_unified, patch.c:1293).
+  std::string func_context;
+  // Context-diff hunks keep their two original sections so rejects can
+  // be written in context form (abort_hunk_context, patch.c:1330).
+  std::vector<SecLine> ctx_old;
+  std::vector<SecLine> ctx_new;
+  long long ctx_old_first = 0;
+  long long ctx_old_count = 0;
+  long long ctx_new_first = 0;
+  long long ctx_new_count = 0;
 };
+
+enum class PatchFormat { unified, context, normal };
 
 // One `--- / +++ ` header pair and its hunk group.
 struct FilePatch {
   std::string old_name;
   std::string new_name;
   std::vector<Hunk> hunks;
+  PatchFormat format = PatchFormat::unified;
+  std::string index_name;  // from an "Index: " line, if any
+  // Verbatim header text after the "--- "/"*** " resp. "+++ "/"--- "
+  // marker (file name plus timestamp, as written); reject files
+  // reprint it (print_header_line, patch.c:1261).
+  std::string old_header_raw;
+  std::string new_header_raw;
+  // Raw-input line span [lead_begin, first_hunk_li) precedes the first
+  // hunk: header lines plus any skipped text.  GNU prints it in the
+  // "The text leading up to this was:" block when no file is found
+  // (skip_to, pch.c:1096).  first_hunk_line is 1-based for the
+  // "can't find file to patch at input line N" diagnostic (pch.c:277).
+  size_t lead_begin = 0;
+  size_t first_hunk_li = 0;
+  long long first_hunk_line = 0;
 };
 
 std::string header_name(const std::string& rest) {
@@ -177,6 +216,8 @@ bool parse_hunk_header(const std::string& line, Hunk& hunk) {
   if (line.length() < 6 || line.substr(0, 4) != "@@ -") return false;
   size_t at_pos = line.find("@@", 4);
   if (at_pos == std::string::npos) return false;
+  // [GNU] Everything past the closing "@@" is the function context.
+  hunk.func_context = line.substr(at_pos + 2);
 
   auto parse_range = [](const std::string& part, long long& start,
                         long long& count) {
@@ -282,6 +323,21 @@ bool write_file_raw(const std::string& filename, const std::string& content) {
   return true;
 }
 
+bool append_file_raw(const std::string& filename, const std::string& content) {
+  std::wstring wfilename = utf8_to_wstring(filename);
+  HANDLE hFile = CreateFileW(wfilename.c_str(), GENERIC_WRITE, 0, nullptr,
+                             OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (hFile == INVALID_HANDLE_VALUE) return false;
+  SetFilePointer(hFile, 0, nullptr, FILE_END);
+  DWORD written = 0;
+  if (!content.empty()) {
+    WriteFile(hFile, content.data(), static_cast<DWORD>(content.size()),
+              &written, nullptr);
+  }
+  CloseHandle(hFile);
+  return true;
+}
+
 bool file_exists(const std::string& filename) {
   std::wstring wfile = utf8_to_wstring(filename);
   DWORD attrs = GetFileAttributesW(wfile.c_str());
@@ -295,17 +351,33 @@ bool backup_file_to(const std::string& filename, const std::string& dest) {
   return CopyFileW(wsrc.c_str(), wdst.c_str(), FALSE) != FALSE;
 }
 
-std::string strip_path(const std::string& path, int components) {
-  if (components <= 0) return path;
-  size_t pos = 0;
-  int count = 0;
-  for (size_t i = 0; i < path.length() && count < components; ++i) {
+// [GNU] strip_leading_slashes (util.c) + fetchname: prepare a header
+// name for target selection.  With no -p (strip_specified false), only
+// the basename survives.  With -pN, N leading slash-runs are stripped
+// (a run of slashes counts once) and a name with fewer than N runs —
+// or nothing left after stripping — is ignored entirely (nullopt).
+std::optional<std::string> strip_name(const std::string& path,
+                                      bool strip_specified,
+                                      long long components) {
+  if (!strip_specified) {
+    const size_t slash = path.find_last_of("/\\");
+    std::string base =
+        slash == std::string::npos ? path : path.substr(slash + 1);
+    if (base.empty()) return std::nullopt;
+    return base;
+  }
+  long long s = components;
+  size_t cut = 0;  // start of the surviving tail
+  for (size_t i = 0; i < path.size();) {
     if (path[i] == '/' || path[i] == '\\') {
-      count++;
-      pos = i + 1;
+      while (i < path.size() && (path[i] == '/' || path[i] == '\\')) ++i;
+      if (--s >= 0) cut = i;
+    } else {
+      ++i;
     }
   }
-  return (pos < path.length()) ? path.substr(pos) : path;
+  if (s > 0 || cut >= path.size()) return std::nullopt;
+  return path.substr(cut);
 }
 
 Hunk reversed(const Hunk& h) {
@@ -317,6 +389,22 @@ Hunk reversed(const Hunk& h) {
   r.old_no_newline = h.new_no_newline;
   r.new_no_newline = h.old_no_newline;
   r.exact_position = h.exact_position;
+  r.func_context = h.func_context;
+  // Context sections swap sides; '-' lines become '+' lines and back.
+  auto swap_section = [](const std::vector<SecLine>& sec, char from, char to) {
+    std::vector<SecLine> out;
+    out.reserve(sec.size());
+    for (const auto& l : sec) {
+      out.push_back({l.tag == from ? to : l.tag, l.text});
+    }
+    return out;
+  };
+  r.ctx_old = swap_section(h.ctx_new, '+', '-');
+  r.ctx_new = swap_section(h.ctx_old, '-', '+');
+  r.ctx_old_first = h.ctx_new_first;
+  r.ctx_old_count = h.ctx_new_count;
+  r.ctx_new_first = h.ctx_old_first;
+  r.ctx_new_count = h.ctx_old_count;
   r.lines.reserve(h.lines.size());
   for (const auto& l : h.lines) {
     char tag = l.tag == '-' ? '+' : (l.tag == '+' ? '-' : ' ');
@@ -460,6 +548,10 @@ struct FileState {
   std::vector<TLine> out;
   long long copy_ptr = 0;   // next input line (0-based) not yet emitted
   long long in_offset = 0;  // running offset from previous hunks
+  // [GNU] out_offset (patch.c): cumulative new-minus-old line count of
+  // the hunks applied so far; positions in diagnostics and reject
+  // headers are output coordinates (old position + out_offset).
+  long long out_offset = 0;
   bool crlf = false;
   bool exists = false;
 };
@@ -513,13 +605,6 @@ std::string range_str(long long start, long long count) {
 // ======================================================
 // Context and normal (ed-style) diff parsing
 // ======================================================
-
-// One line of a context-diff section: tag is ' ' (context), '-' (old
-// only), '+' (new only) or '!' (changed; present on both sides).
-struct SecLine {
-  char tag = ' ';
-  std::string text;
-};
 
 // Parse "*** A[,B] ****" / "--- A[,B] ----" range headers.  A single
 // number means a one-line range.
@@ -720,8 +805,23 @@ size_t parse_context_hunk(const std::vector<std::string>& lines, size_t sep,
     }
   }
   if (!have_old_range && !have_new_range) return sep + 1;  // not a hunk
-  cur.hunks.push_back(
-      convert_context_hunk(of, ol, old_seq, nf, new_seq, old_nn, new_nn));
+  Hunk h = convert_context_hunk(of, ol, old_seq, nf, new_seq, old_nn, new_nn);
+  // Retain the original sections and ranges for context-form rejects.
+  h.ctx_old = old_seq;
+  h.ctx_new = new_seq;
+  if (have_old_range) {
+    h.ctx_old_first = of;
+    h.ctx_old_count = ol - of + 1;
+  }
+  if (have_new_range) {
+    h.ctx_new_first = nf;
+    h.ctx_new_count = nl - nf + 1;
+  }
+  if (cur.hunks.empty()) {
+    cur.first_hunk_li = sep;
+    cur.first_hunk_line = static_cast<long long>(sep) + 1;
+  }
+  cur.hunks.push_back(std::move(h));
   return i;
 }
 
@@ -795,36 +895,92 @@ REGISTER_COMMAND(
   const bool posix_mode = posixly_env || ctx.has("--posix");
 
   // ----- option decoding ---------------------------------------------
-  // [GNU] -p/--strip is an INT option: read it with get<int>. (Reading
-  // it as bool/string always yielded the defaults, so the strip count
-  // silently stayed 0 and header file names were opened literally.)
-  int strip_components = 0;
-  if (ctx.has("-p")) {
-    strip_components = ctx.get<int>("-p", 0);
-  } else if (ctx.has("--strip")) {
-    strip_components = ctx.get<int>("--strip", 0);
-  }
-  if (strip_components < 0) {
-    safeErrorPrintLn("patch: **** strip count " +
-                     std::to_string(strip_components) + " is negative");
-    return 2;
+  // [GNU] numeric_string (patch.c:1094-1125): -p/-F values are parsed
+  // by patch itself — optional sign, decimal digits only, 32-bit range
+  // — and every failure is a fatal with patch's own wording.
+  auto quotearg_simple = [](const std::string& s) -> std::string {
+    if (s.empty()) return "''";
+    for (unsigned char c : s) {
+      if (!std::isalnum(c) && c != '_' && c != '@' && c != '%' && c != '+' &&
+          c != '=' && c != ':' && c != ',' && c != '.' && c != '/' &&
+          c != '-') {
+        std::string out = "'";
+        for (char ch : s) {
+          if (ch == '\'') out += "'\\''";
+          else out += ch;
+        }
+        return out + "'";
+      }
+    }
+    return s;
+  };
+  auto numeric_string = [&](const std::string& string, const char* argtype,
+                            long long& out) -> bool {
+    size_t i = 0;
+    long long sign = 1;
+    if (i < string.size() && (string[i] == '-' || string[i] == '+')) {
+      sign = string[i] == '-' ? -1 : 1;
+      ++i;
+    }
+    long long value = 0;
+    bool any_digits = false;
+    for (; i < string.size(); ++i) {
+      const unsigned char c = static_cast<unsigned char>(string[i]);
+      if (c < '0' || c > '9') {
+        safeErrorPrintLn(std::string("patch: **** ") + argtype + " " +
+                         quotearg_simple(string) + " is not a number");
+        return false;
+      }
+      any_digits = true;
+      value = value * 10 + sign * (c - '0');
+      if (value > std::numeric_limits<int>::max() ||
+          value < std::numeric_limits<int>::min()) {
+        safeErrorPrintLn(std::string("patch: **** ") + argtype + " " +
+                         quotearg_simple(string) + " is too large");
+        return false;
+      }
+    }
+    if (!any_digits) {
+      safeErrorPrintLn(std::string("patch: **** ") + argtype + " " +
+                       quotearg_simple(string) + " is not a number");
+      return false;
+    }
+    if (value < 0) {
+      safeErrorPrintLn(std::string("patch: **** ") + argtype + " " +
+                       quotearg_simple(string) + " is negative");
+      return false;
+    }
+    out = value;
+    return true;
+  };
+
+  // [GNU] -p with no argument-taking default: an unspecified strip is
+  // "auto" (name as written, then basename); see target selection.
+  const bool strip_specified = ctx.has("-p") || ctx.has("--strip");
+  long long strip_components = 0;
+  if (strip_specified) {
+    const std::string value = ctx.has("-p")
+                                  ? ctx.get<std::string>("-p", "")
+                                  : ctx.get<std::string>("--strip", "");
+    if (!numeric_string(value, "strip count", strip_components)) return 2;
   }
 
   long long maxfuzz = kDefaultFuzz;
   if (ctx.has("-F") || ctx.has("--fuzz")) {
-    const int value =
-        ctx.has("-F") ? ctx.get<int>("-F", 2) : ctx.get<int>("--fuzz", 2);
-    if (value < 0) {
-      safeErrorPrintLn("patch: fuzz factor must not be negative");
-      return 2;
-    }
-    maxfuzz = value;
+    const std::string value = ctx.has("-F")
+                                  ? ctx.get<std::string>("-F", "")
+                                  : ctx.get<std::string>("--fuzz", "");
+    if (!numeric_string(value, "fuzz factor", maxfuzz)) return 2;
   }
 
   bool reverse =
       ctx.get<bool>("-R", false) || ctx.get<bool>("--reverse", false);
+  // [GNU] -f and -t are distinct: -f suppresses the reversed-patch
+  // DWIM entirely, while -t/--batch answers its questions by flipping
+  // (ok_to_reverse, util.c:1043).  Both suppress file-name prompts.
   const bool force =
-      ctx.get<bool>("-f", false) || ctx.get<bool>("--force", false) ||
+      ctx.get<bool>("-f", false) || ctx.get<bool>("--force", false);
+  const bool batch =
       ctx.get<bool>("-t", false) || ctx.get<bool>("--batch", false);
   const bool forward = ctx.has("-N") || ctx.has("--forward");
   const bool silent =
@@ -1107,14 +1263,17 @@ REGISTER_COMMAND(
                            ctx.has("-n") || ctx.has("--normal") ||
                            ctx.has("-e") || ctx.has("--ed");
   if (force_other && !force_unified) {
-    safeErrorPrintLn("patch: Only garbage was found in the patch input.");
+    // [GNU] fatal() prefix (util.c): "patch: **** ...".
+    safeErrorPrintLn("patch: **** Only garbage was found in the patch input.");
     return 2;
   }
 
   // ----- parse into per-file hunk groups -----------------------------
+  // raw_lines outlives the parse block: the missing-file dialogue in
+  // the apply loop reprints a group's leading lines from it.
   std::vector<FilePatch> groups;
+  std::vector<std::string> raw_lines;
   {
-    std::vector<std::string> raw_lines;
     {
       std::istringstream iss(patch_content);
       std::string line;
@@ -1128,15 +1287,19 @@ REGISTER_COMMAND(
     bool group_open = false;
     bool in_hunk = false;
     Hunk cur_hunk;
+    size_t cur_hunk_li = 0;  // raw line index of cur_hunk's "@@" header
     long long oc = 0;
     long long nc = 0;
     char last_tag = 0;
     // Format of the group currently being read.  A group with no hunks
     // is not a patch at all: GNU patch reports such input ("--- /+++"
     // headers alone, a context header pair alone, ...) as garbage.
-    enum class GroupFormat { unified, context, normal };
-    GroupFormat cur_format = GroupFormat::unified;
+    PatchFormat cur_format = PatchFormat::unified;
     long long normal_delta = 0;  // cumulative line delta, normal groups
+    size_t scan_li = 0;          // line index currently being scanned
+    size_t group_end_li = 0;     // first line past the open group's hunks
+    size_t pending_lead_begin = 0;  // lead start for the next group
+    std::string pending_index;      // last "Index: " name seen
 
     auto close_hunk = [&]() {
       if (in_hunk) {
@@ -1146,21 +1309,28 @@ REGISTER_COMMAND(
           if (l.tag != '+') cur_hunk.old_count++;
           if (l.tag != '-') cur_hunk.new_count++;
         }
+        if (cur.hunks.empty()) {
+          cur.first_hunk_li = cur_hunk_li;
+          cur.first_hunk_line = static_cast<long long>(cur_hunk_li) + 1;
+        }
         cur.hunks.push_back(cur_hunk);
         cur_hunk = Hunk();
         in_hunk = false;
         oc = nc = 0;
         last_tag = 0;
+        group_end_li = scan_li;
       }
     };
     auto close_group = [&]() {
       close_hunk();
       if (group_open && !cur.hunks.empty()) {
+        cur.format = cur_format;
         groups.push_back(cur);
+        pending_lead_begin = group_end_li;
       }
       cur = FilePatch();
       group_open = false;
-      cur_format = GroupFormat::unified;
+      cur_format = PatchFormat::unified;
       normal_delta = 0;
     };
 
@@ -1214,6 +1384,10 @@ REGISTER_COMMAND(
         read_side(new_count, '>', '+', h.new_no_newline);
       }
       if (malformed) return head_idx + 1;
+      if (cur.hunks.empty()) {
+        cur.first_hunk_li = head_idx;
+        cur.first_hunk_line = static_cast<long long>(head_idx) + 1;
+      }
       h.old_count = old_count;
       h.new_count = new_count;
       // 'a' inserts AFTER old line nof; 'c'/'d' start AT old line nof.
@@ -1228,6 +1402,7 @@ REGISTER_COMMAND(
     };
 
     for (size_t li = 0; li < raw_lines.size(); ++li) {
+      scan_li = li;
       const std::string& line = raw_lines[li];
       // Hunk body lines take priority over header detection: a removed
       // line whose text is "--- ..." must still count toward the hunk.
@@ -1241,9 +1416,11 @@ REGISTER_COMMAND(
       // Context format: inside a context group, a separator line starts
       // the next hunk; anything else ends the group and is reprocessed
       // below as a potential new group header.
-      if (group_open && cur_format == GroupFormat::context) {
+      if (group_open && cur_format == PatchFormat::context) {
         if (is_context_separator(line)) {
-          li = parse_context_hunk(raw_lines, li, cur) - 1;
+          const size_t next = parse_context_hunk(raw_lines, li, cur);
+          group_end_li = next;
+          li = next - 1;
           continue;
         }
         if (line.empty()) continue;  // tolerate blank lines between hunks
@@ -1259,24 +1436,40 @@ REGISTER_COMMAND(
         close_group();
         cur.old_name = header_name(line.substr(4));
         cur.new_name = header_name(raw_lines[li + 1].substr(4));
+        cur.old_header_raw = line.substr(4);
+        cur.new_header_raw = raw_lines[li + 1].substr(4);
+        cur.lead_begin = pending_lead_begin;
+        cur.index_name = pending_index;
+        pending_index.clear();
         group_open = true;
-        cur_format = GroupFormat::context;
+        cur_format = PatchFormat::context;
         ++li;  // consume the "--- new" line
         continue;
       }
       if (line.length() >= 4 && line.compare(0, 4, "--- ") == 0) {
         close_group();
         cur.old_name = header_name(line.substr(4));
+        cur.old_header_raw = line.substr(4);
+        cur.lead_begin = pending_lead_begin;
+        cur.index_name = pending_index;
+        pending_index.clear();
         group_open = true;
         continue;
       }
       if (line.length() >= 4 && line.compare(0, 4, "+++ ") == 0) {
         if (!group_open) {
-          cur.new_name = header_name(line.substr(4));
-          group_open = true;
-        } else {
-          cur.new_name = header_name(line.substr(4));
+          cur.lead_begin = pending_lead_begin;
+          cur.index_name = pending_index;
+          pending_index.clear();
         }
+        cur.new_name = header_name(line.substr(4));
+        cur.new_header_raw = line.substr(4);
+        group_open = true;
+        continue;
+      }
+      // An "Index: " line names the file for the group that follows.
+      if (!in_hunk && line.length() >= 7 && line.compare(0, 7, "Index: ") == 0) {
+        pending_index = header_name(line.substr(7));
         continue;
       }
       // Normal (ed-style) format: a bare "A[,B]a|c|d X[,Y]" command
@@ -1286,13 +1479,19 @@ REGISTER_COMMAND(
         long long nof, nol, nnf, nnl;
         char nop;
         if (parse_normal_head(line, nof, nol, nop, nnf, nnl)) {
-          if (!group_open || cur_format != GroupFormat::normal) {
+          if (!group_open || cur_format != PatchFormat::normal) {
             close_group();
             group_open = true;
-            cur_format = GroupFormat::normal;
+            cur_format = PatchFormat::normal;
+            cur.lead_begin = pending_lead_begin;
+            cur.index_name = pending_index;
+            pending_index.clear();
             normal_delta = 0;
           }
-          li = parse_normal_body(li, nof, nol, nop, nnf, nnl) - 1;
+          const size_t next =
+              parse_normal_body(li, nof, nol, nop, nnf, nnl);
+          group_end_li = next;
+          li = next - 1;
           continue;
         }
       }
@@ -1301,6 +1500,7 @@ REGISTER_COMMAND(
           parse_hunk_header(line, parsed)) {
         close_hunk();
         cur_hunk = parsed;
+        cur_hunk_li = li;
         in_hunk = true;
         oc = nc = 0;
         last_tag = 0;
@@ -1357,7 +1557,12 @@ REGISTER_COMMAND(
   }
 
   if (groups.empty()) {
-    safeErrorPrintLn("patch: Only garbage was found in the patch input.");
+    // [GNU] A completely empty patch input is not an error: another_
+    // file simply finds nothing to do and patch exits 0 (pch.c:214:
+    // the garbage fatal requires a nonempty input).  Anything else
+    // without a single hunk group is garbage.
+    if (patch_content.empty()) return 0;
+    safeErrorPrintLn("patch: **** Only garbage was found in the patch input.");
     return 2;
   }
 
@@ -1371,45 +1576,214 @@ REGISTER_COMMAND(
   std::string combined_out;  // for -o across groups
   bool reject_file_written = false;
   std::string reject_out;  // accumulated content for -r
+  // Reject files created during this run: a later group patching the
+  // same target appends, like GNU's temp-file hand-off (patch.c:660).
+  std::set<std::string> rej_files_created;
+
+  // [GNU] Per-file summary (patch.c:632): "N out of M hunk(s) FAILED"
+  // — or "ignored" when the file was skipped whole.
+  auto summary_text = [](long long failed_count, size_t total,
+                         bool ignored) {
+    return std::to_string(failed_count) + " out of " +
+           std::to_string(static_cast<long long>(total)) +
+           (total == 1 ? " hunk" : " hunks") +
+           (ignored ? " ignored" : " FAILED");
+  };
 
   for (auto& group : groups) {
     if (reverse) {
       std::swap(group.old_name, group.new_name);
+      std::swap(group.old_header_raw, group.new_header_raw);
       for (auto& h : group.hunks) h = reversed(h);
     }
 
     const bool creation = is_dev_null(group.old_name);
     const bool deletion = is_dev_null(group.new_name);
 
-    std::string target;
-    if (creation) {
-      target = group.new_name;
-    } else if (deletion) {
-      target = group.old_name;
-    } else {
-      target = group.new_name.empty() ? group.old_name : group.new_name;
-    }
-    if (!orig_file_arg.empty()) target = orig_file_arg;
-
-    if (target.empty() || is_dev_null(target)) {
-      safeErrorPrintLn("patch: cannot find file to patch");
-      return 2;
-    }
-    if (!is_dev_null(target)) {
-      target = strip_path(target, strip_components);
-    }
-    if (!directory.empty()) {
-      std::string sep = (!directory.empty() &&
-                         (directory.back() == '/' || directory.back() == '\\'))
-                            ? ""
-                            : "/";
-      target = directory + sep + target;
-      for (char& c : target) {
+    auto with_dir = [&](const std::string& name) -> std::string {
+      if (directory.empty() || name.empty()) return name;
+      std::string sep =
+          (directory.back() == '/' || directory.back() == '\\') ? "" : "/";
+      std::string out = directory + sep + name;
+      for (char& c : out) {
         if (c == '\\') c = '/';
+      }
+      return out;
+    };
+    // [GNU] File-name selection (pch.c intuit_diff_type + best_name,
+    // pch.c:862-975/1039-1083): candidates are the prepared old / new /
+    // Index names; Index is discarded when a header name exists,
+    // unless POSIX mode (pch.c:870).  POSIX takes the first candidate
+    // that exists, in old/new/Index order; otherwise the best existing
+    // candidate wins — fewest path components, then shortest basename,
+    // then shortest name, then old/new/Index order.  When nothing
+    // exists and the old side says nonexistent (a creation), the
+    // candidate creating the fewest new directories wins, with the
+    // same tie-breaks.  An ORIGFILE operand names the target outright
+    // and is never stripped.
+    std::string target;
+    bool target_from_argv = false;
+    if (!orig_file_arg.empty()) {
+      target = with_dir(orig_file_arg);
+      target_from_argv = true;
+    } else {
+      struct Candidate {
+        std::string name;  // prepared (stripped) name
+        int order = 0;     // 0 old, 1 new, 2 index
+      };
+      std::vector<Candidate> candidates;
+      const std::string raw_names[3] = {group.old_name, group.new_name,
+                                        group.index_name};
+      for (int i = 0; i < 3; ++i) {
+        if (raw_names[i].empty() || is_dev_null(raw_names[i])) continue;
+        if (i == 2 && !posix_mode &&
+            (!raw_names[0].empty() || !raw_names[1].empty()))
+          continue;  // Index discarded beside a header name
+        if (auto prepared = strip_name(raw_names[i], strip_specified,
+                                       strip_components))
+          candidates.push_back({*prepared, i});
+      }
+      auto components_of = [](const std::string& n) {
+        int count = 0;
+        for (size_t i = 0; i < n.size();) {
+          if (n[i] == '/' || n[i] == '\\') {
+            ++count;
+            while (i < n.size() && (n[i] == '/' || n[i] == '\\')) ++i;
+          } else {
+            ++i;
+          }
+        }
+        return count;
+      };
+      auto basename_len = [](const std::string& n) {
+        const size_t slash = n.find_last_of("/\\");
+        return slash == std::string::npos ? n.size() : n.size() - slash - 1;
+      };
+      auto best_of = [&](const std::vector<Candidate>& pool) -> std::string {
+        const Candidate* best = nullptr;
+        for (const auto& c : pool) {
+          if (!best) {
+            best = &c;
+            continue;
+          }
+          const int cc = components_of(c.name);
+          const int bc = components_of(best->name);
+          const size_t cb = basename_len(c.name);
+          const size_t bb = basename_len(best->name);
+          if (cc < bc || (cc == bc && (cb < bb ||
+                                       (cb == bb &&
+                                        (c.name.size() < best->name.size() ||
+                                         (c.name.size() == best->name.size() &&
+                                          c.order < best->order))))))
+            best = &c;
+        }
+        return best ? best->name : std::string();
+      };
+      std::vector<Candidate> existing;
+      for (const auto& c : candidates) {
+        if (file_exists(with_dir(c.name))) existing.push_back(c);
+      }
+      if (!existing.empty()) {
+        target = with_dir(posix_mode ? existing.front().name
+                                     : best_of(existing));
+      } else if (creation && !candidates.empty()) {
+        // [GNU] Creation (pch.c:949-975): fewest new directories.
+        auto new_dirs = [&](const std::string& n) {
+          int missing = 0;
+          const size_t slash = n.find_last_of("/\\");
+          if (slash == std::string::npos) return 0;
+          std::string accum;
+          for (size_t i = 0; i < slash;) {
+            size_t j = n.find_first_of("/\\", i);
+            if (j == std::string::npos || j > slash) j = slash;
+            if (j == i) {  // slash run: not a component of its own
+              i = j + 1;
+              continue;
+            }
+            if (!accum.empty()) accum += "/";
+            accum += n.substr(i, j - i);
+            if (!file_exists(with_dir(accum))) ++missing;
+            i = j + 1;
+          }
+          return missing;
+        };
+        int min_missing = std::numeric_limits<int>::max();
+        for (const auto& c : candidates) {
+          min_missing = std::min(min_missing, new_dirs(c.name));
+        }
+        std::vector<Candidate> nearest;
+        for (const auto& c : candidates) {
+          if (new_dirs(c.name) == min_missing) nearest.push_back(c);
+        }
+        target = with_dir(best_of(nearest));
       }
     }
 
-    say("patching file " + quote_name(target));
+    // [GNU] No candidate exists: the file-name dialogue (pch.c:270-
+    // 320).  The group's hunks are counted as ignored, no rejects are
+    // written, and the run continues with the next file.
+    bool argv_missing = false;
+    if (target.empty()) {
+      if (!silent) {
+        say("can't find file to patch at input line " +
+            std::to_string(group.first_hunk_line));
+        if (group.format != PatchFormat::normal) {
+          say(strip_specified
+                  ? "Perhaps you used the wrong -p or --strip option?"
+                  : "Perhaps you should have used the -p or --strip option?");
+        }
+        safePrintLn("The text leading up to this was:");
+        safePrintLn("--------------------------");
+        for (size_t li = group.lead_begin;
+             li < group.first_hunk_li && li < raw_lines.size(); ++li) {
+          safePrintLn("|" + raw_lines[li]);
+        }
+        safePrintLn("--------------------------");
+      }
+      bool skip_group = false;
+      if (force || batch) {
+        say("No file to patch.  Skipping patch.");
+        skip_group = true;
+      } else {
+        // Prompts go to stdout; answers are read from stdin (patch's
+        // tty).  An exhausted stdin yields the default "yes, skip".
+        while (target.empty() && !skip_group) {
+          safePrint("File to patch: ");
+          std::string answer;
+          const bool got = static_cast<bool>(std::getline(std::cin, answer));
+          if (got && !answer.empty()) {
+            std::string cand = with_dir(answer);
+            if (file_exists(cand)) {
+              target = cand;
+              break;
+            }
+            safeErrorPrintLn(answer + ": No such file or directory");
+          }
+          safePrint("Skip this patch? [y] ");
+          std::string again;
+          const bool got2 = static_cast<bool>(std::getline(std::cin, again));
+          if (!got2 || again.empty() || again[0] != 'n') {
+            say("Skipping patch.");
+            skip_group = true;
+          }
+        }
+      }
+      if (skip_group) {
+        failed_total += static_cast<long long>(group.hunks.size());
+        say(summary_text(static_cast<long long>(group.hunks.size()),
+                         group.hunks.size(), true));
+        continue;
+      }
+    }
+    if (target_from_argv && !creation && !file_exists(target)) {
+      // [GNU] An ORIGFILE named on the command line is never prompted
+      // for: the hunks run against a missing input and the output
+      // stage then fatals (see below), exit 2.
+      argv_missing = !dry_run;
+    }
+
+    say(std::string(dry_run ? "checking file " : "patching file ") +
+        quote_name(target));
 
     FileState st;
     st.exists = file_exists(target);
@@ -1420,7 +1794,7 @@ REGISTER_COMMAND(
         return 2;
       }
       st.input = split_lines(raw, st.crlf);
-    } else if (!creation) {
+    } else if (!creation && !argv_missing) {
       // A nonexistent file is only valid when the patch creates it (old
       // side /dev/null).  An existing empty file is a valid target.
       safeErrorPrintLn("patch: cannot open file '" + target +
@@ -1440,76 +1814,139 @@ REGISTER_COMMAND(
     }
 
     // ----- apply hunks (locate_hunk semantics) ------------------------
-    std::vector<Hunk> rejects;
+    // A reject records the hunk in the orientation in effect when it
+    // failed, plus the output offset at that moment (patch.c:1290).
+    struct RejectRec {
+      Hunk hunk;
+      long long out_offset = 0;
+    };
+    std::vector<RejectRec> rejects;
     long long failed = 0;
     long long hunk_no = 0;
-    bool mismatch = false;  // fuzz > 0 or offset != 0 for this file
+    bool mismatch = false;   // fuzz > 0 or offset != 0 for this file
+    bool skip_rest = false;  // whole-file skip (reversed DWIM)
+    bool flipped = false;    // DWIM flipped this file's orientation
+    bool dwim_decided = false;
 
-    for (const auto& hunk : group.hunks) {
-      ++hunk_no;
-      std::vector<std::string> pat = pattern_of(hunk);
+    auto attempt_locate = [&](const Hunk& h, std::vector<std::string>& pat_out)
+        -> Attempt {
+      pat_out = pattern_of(h);
       long long prefix_context = 0;
       long long suffix_context = 0;
       {
         // Count leading and trailing context (' ') lines of the hunk.
         long long idx = 0;
-        while (idx < static_cast<long long>(hunk.lines.size()) &&
-               hunk.lines[static_cast<size_t>(idx)].tag == ' ') {
+        while (idx < static_cast<long long>(h.lines.size()) &&
+               h.lines[static_cast<size_t>(idx)].tag == ' ') {
           ++prefix_context;
           ++idx;
         }
-        idx = static_cast<long long>(hunk.lines.size()) - 1;
-        while (idx >= 0 && hunk.lines[static_cast<size_t>(idx)].tag == ' ') {
+        idx = static_cast<long long>(h.lines.size()) - 1;
+        while (idx >= 0 && h.lines[static_cast<size_t>(idx)].tag == ' ') {
           ++suffix_context;
           --idx;
         }
       }
-
       Attempt att;
-      if (hunk.exact_position) {
+      if (h.exact_position) {
         // [GNU] normal (ed-style) hunks carry no context to search
         // with: the old lines must match at exactly the stated
         // position (the parser folded in the cumulative delta of
         // earlier hunks of the group).  No offset search, no fuzz.
-        att.where0 = hunk.old_start - 1;
+        att.where0 = h.old_start - 1;
         att.offset = 0;
         att.fuzz = 0;
         att.ok = att.where0 >= st.copy_ptr &&
-                 att.where0 + static_cast<long long>(pat.size()) <=
+                 att.where0 + static_cast<long long>(pat_out.size()) <=
                      static_cast<long long>(st.input.size());
-        for (size_t k = 0; att.ok && k < pat.size(); ++k) {
-          if (st.input[static_cast<size_t>(att.where0) + k].text != pat[k]) {
+        for (size_t k = 0; att.ok && k < pat_out.size(); ++k) {
+          if (st.input[static_cast<size_t>(att.where0) + k].text !=
+              pat_out[k]) {
             att.ok = false;
           }
         }
-      } else {
-        att = try_hunk(st, pat, prefix_context, suffix_context,
-                       hunk.old_start, maxfuzz, ignore_ws);
+        return att;
       }
+      return try_hunk(st, pat_out, prefix_context, suffix_context,
+                      h.old_start, maxfuzz, ignore_ws);
+    };
 
-      if (!att.ok && forward && !hunk.exact_position) {
-        // [GNU] -N/--forward: diagnose reversed or already-applied hunks
-        // and skip them without applying.
-        Attempt rev_att;
-        {
-          Hunk rev = reversed(hunk);
-          std::vector<std::string> rpat = pattern_of(rev);
-          rev_att = try_hunk(st, rpat, prefix_context, suffix_context,
-                             rev.old_start, maxfuzz, ignore_ws);
-        }
-        if (rev_att.ok) {
-          say("Hunk #" + std::to_string(hunk_no) + " ignored at " +
-              std::to_string(hunk.old_start + st.in_offset) + ".");
-          continue;
+    for (const auto& stored_hunk : group.hunks) {
+      ++hunk_no;
+      if (skip_rest) {
+        // [GNU] Once the file is skipped, its remaining hunks are
+        // only counted and rejected (patch.c:476-487).
+        ++failed;
+        ++failed_total;
+        rejects.push_back({stored_hunk, st.out_offset});
+        continue;
+      }
+      Hunk eff = flipped ? reversed(stored_hunk) : stored_hunk;
+      std::vector<std::string> pat;
+      Attempt att = attempt_locate(eff, pat);
+
+      if (!att.ok && hunk_no == 1 && !dwim_decided && !force) {
+        // [GNU] First-hunk reversed DWIM (patch.c:424-458): when the
+        // forward hunk does not match but the swapped one does, the
+        // patch is reversed (or was already applied).  -N skips the
+        // whole file; --batch flips it; otherwise the user is asked.
+        dwim_decided = true;
+        std::vector<std::string> spat;
+        Attempt sw = attempt_locate(reversed(eff), spat);
+        if (sw.ok) {
+          const bool reversed_now = reverse != flipped;
+          const std::string detected =
+              std::string(reversed_now
+                              ? "Unreversed"
+                              : "Reversed (or previously applied)") +
+              " patch detected!";
+          if (forward) {
+            if (!silent) {
+              safePrint(detected);
+              safePrintLn("  Skipping patch.");
+            }
+            skip_rest = true;
+            ++failed;
+            ++failed_total;
+            rejects.push_back({stored_hunk, st.out_offset});
+            continue;
+          }
+          if (batch) {
+            if (!silent) {
+              safePrint(detected);
+              safePrintLn(reversed_now ? "  Ignoring -R."
+                                       : "  Assuming -R.");
+            }
+            flipped = !flipped;
+            eff = flipped ? reversed(stored_hunk) : stored_hunk;
+            att = attempt_locate(eff, pat);
+          } else {
+            safePrint(detected);
+            safePrint(reversed_now ? "  Ignore -R? [n] "
+                                   : "  Assume -R? [n] ");
+            std::string answer;
+            const bool got =
+                static_cast<bool>(std::getline(std::cin, answer));
+            if (got && !answer.empty() && answer[0] == 'y') {
+              flipped = !flipped;
+              eff = flipped ? reversed(stored_hunk) : stored_hunk;
+              att = attempt_locate(eff, pat);
+            }
+            // [GNU] A declined flip has no second prompt: the swapped
+            // hunk is put back and this hunk simply fails through the
+            // normal path below (patch.c:439-451 — apply_anyway is an
+            // internal DWIM-suppression flag, not a question).
+          }
         }
       }
 
       if (!att.ok) {
         ++failed;
         ++failed_total;
+        // [GNU] FAILED positions are output coordinates (patch.c:478).
         say("Hunk #" + std::to_string(hunk_no) + " FAILED at " +
-            std::to_string(hunk.old_start + st.in_offset) + ".");
-        rejects.push_back(hunk);
+            std::to_string(eff.old_start + st.out_offset) + ".");
+        rejects.push_back({eff, st.out_offset});
         continue;
       }
 
@@ -1530,7 +1967,7 @@ REGISTER_COMMAND(
       long long pidx = 0;  // absolute pattern line index
       const long long pat_lines_total = static_cast<long long>(pat.size());
       long long last_out = -1;
-      for (const auto& pl : hunk.lines) {
+      for (const auto& pl : eff.lines) {
         if (pl.tag == ' ') {
           // Context lines dropped by fuzz stay in the file untouched.
           if (pidx < att.pf || pidx >= pat_lines_total - att.sf) {
@@ -1550,21 +1987,30 @@ REGISTER_COMMAND(
           last_out = static_cast<long long>(st.out.size()) - 1;
         }
       }
-      if (last_out >= 0 && hunk.new_no_newline) {
+      if (last_out >= 0 && eff.new_no_newline) {
         st.out[static_cast<size_t>(last_out)].nl = false;
       }
       st.copy_ptr = window_start + window_len;
 
-      if (att.fuzz > 0 || att.offset != 0) {
+      // [GNU] Bookkeeping (patch.c:476-499): in_offset is cumulative
+      // across the file's hunks, the reported position is the output
+      // coordinate (match position + out_offset from before this
+      // hunk), and the success line prints whenever fuzz or the
+      // standing in_offset is nonzero.
+      const long long out_before = st.out_offset;
+      st.in_offset += att.offset;
+      st.out_offset += eff.new_count - eff.old_count;
+      if (att.fuzz > 0 || st.in_offset != 0) {
         mismatch = true;
         std::string msg = "Hunk #" + std::to_string(hunk_no) +
-                          " succeeded at " + std::to_string(where0 + 1);
+                          " succeeded at " +
+                          std::to_string(att.where0 + 1 + out_before);
         if (att.fuzz > 0) {
           msg += " with fuzz " + std::to_string(att.fuzz);
         }
-        if (att.offset != 0) {
-          msg += " (offset " + std::to_string(att.offset) + " " +
-                 plural_lines(att.offset) + ")";
+        if (st.in_offset != 0) {
+          msg += " (offset " + std::to_string(st.in_offset) + " " +
+                 plural_lines(st.in_offset) + ")";
         }
         say(msg + ".");
       }
@@ -1576,36 +2022,149 @@ REGISTER_COMMAND(
       st.out.push_back(st.input[static_cast<size_t>(i)]);
     }
 
-    // ----- rejects -----------------------------------------------------
-    std::string rej_path =
-        reject_file_opt.empty() ? target + ".rej" : reject_file_opt;
-    if (!rejects.empty() && !dry_run) {
-      std::string content;
-      for (const auto& hunk : rejects) {
-        content +=
-            "@@ -" + range_str(hunk.old_start + st.in_offset, hunk.old_count) +
-            " +" + range_str(hunk.new_start + st.in_offset, hunk.new_count) +
-            " @@\n";
-        for (const auto& l : hunk.lines) {
-          content += std::string(1, l.tag) + l.text + "\n";
-        }
-        if (hunk.old_no_newline || hunk.new_no_newline) {
-          content += "\\ No newline at end of file\n";
-        }
-      }
-      if (!reject_file_opt.empty()) {
-        reject_out += content;
-      } else if (!write_file_raw(rej_path, content)) {
-        safeErrorPrintLn("patch: cannot create reject file '" + rej_path + "'");
-        return 2;
-      }
-      const std::string summary =
-          std::to_string(failed) + " out of " +
-          std::to_string(static_cast<long long>(group.hunks.size())) +
-          (group.hunks.size() == 1 ? " hunk" : " hunks") +
-          " FAILED -- saving rejects to file " + quote_name(rej_path);
-      say(summary);
+    if (argv_missing) {
+      // [GNU] The output stage cannot reopen a named-but-missing
+      // ORIGFILE: fatal, with no summary and no rejects (the pfatal in
+      // output_file, patch.c).
+      safeErrorPrintLn("patch: **** Can't reopen file " + target +
+                       " : No such file or directory");
+      return 2;
     }
+
+    // ----- rejects + summary (patch.c:625-670) ------------------------
+    // The first reject of a file carries the header (an Index: line
+    // when present, then the header pair verbatim from the input);
+    // hunk coordinates are output coordinates using the out_offset
+    // snapshot taken when the hunk failed (abort_hunk_unified /
+    // abort_hunk_context, patch.c:1273/1330).
+    auto render_rejects = [&]() -> std::string {
+      std::string content;
+      const std::string& old_raw =
+          flipped ? group.new_header_raw : group.old_header_raw;
+      const std::string& new_raw =
+          flipped ? group.old_header_raw : group.new_header_raw;
+      auto ctx_range = [](long long first, long long count) -> std::string {
+        if (count <= 0) return "0";
+        if (count == 1) return std::to_string(first);
+        return std::to_string(first) + "," +
+               std::to_string(first + count - 1);
+      };
+      bool first = true;
+      for (const auto& rec : rejects) {
+        const Hunk& h = rec.hunk;
+        if (group.format == PatchFormat::unified) {
+          if (first) {
+            if (!group.index_name.empty()) {
+              content += "Index: " + group.index_name + "\n";
+            }
+            content += "--- " + old_raw + "\n";
+            content += "+++ " + new_raw + "\n";
+          }
+          content += "@@ -" +
+                     range_str(h.old_start + rec.out_offset, h.old_count) +
+                     " +" +
+                     range_str(h.new_start + rec.out_offset, h.new_count) +
+                     " @@" + h.func_context + "\n";
+          // [GNU] Rejects are normalized: '-' lines precede '+' lines
+          // within each change block (abort_hunk_unified).
+          size_t li2 = 0;
+          while (li2 < h.lines.size()) {
+            if (h.lines[li2].tag == ' ') {
+              content += " " + h.lines[li2].text + "\n";
+              ++li2;
+              continue;
+            }
+            std::string minus_lines, plus_lines;
+            while (li2 < h.lines.size() && h.lines[li2].tag != ' ') {
+              if (h.lines[li2].tag == '-') {
+                minus_lines += "-" + h.lines[li2].text + "\n";
+              } else {
+                plus_lines += "+" + h.lines[li2].text + "\n";
+              }
+              ++li2;
+            }
+            content += minus_lines + plus_lines;
+          }
+          if (h.old_no_newline || h.new_no_newline) {
+            content += "\\ No newline at end of file\n";
+          }
+        } else {
+          // Context form; normal-diff input lands here too, because
+          // abort_hunk dispatches everything non-unified to
+          // abort_hunk_context (patch.c:1399).
+          if (first) {
+            if (!group.index_name.empty()) {
+              content += "Index: " + group.index_name + "\n";
+            }
+            content += "*** " + (old_raw.empty() ? target : old_raw) + "\n";
+            content += "--- " + (new_raw.empty() ? target : new_raw) + "\n";
+          }
+          content += "***************" + h.func_context + "\n";
+          long long ofirst = h.ctx_old_first, ocount = h.ctx_old_count;
+          long long nfirst = h.ctx_new_first, ncount = h.ctx_new_count;
+          const std::vector<SecLine>* osec = &h.ctx_old;
+          const std::vector<SecLine>* nsec = &h.ctx_new;
+          std::vector<SecLine> synth_old, synth_new;
+          if (osec->empty() && nsec->empty() && ocount == 0 && ncount == 0) {
+            // Normal-diff hunk: its sections are the - / + lines.
+            ofirst = h.old_start;
+            ocount = h.old_count;
+            nfirst = h.new_start;
+            ncount = h.new_count;
+            for (const auto& l : h.lines) {
+              if (l.tag == '-') synth_old.push_back({'-', l.text});
+              else if (l.tag == '+') synth_new.push_back({'+', l.text});
+            }
+            osec = &synth_old;
+            nsec = &synth_new;
+          }
+          content += "*** " + ctx_range(ofirst + rec.out_offset, ocount) +
+                     " ****\n";
+          for (const auto& l : *osec) {
+            content += std::string(1, l.tag) + " " + l.text + "\n";
+          }
+          content += "--- " + ctx_range(nfirst + rec.out_offset, ncount) +
+                     " ----\n";
+          for (const auto& l : *nsec) {
+            content += std::string(1, l.tag) + " " + l.text + "\n";
+          }
+        }
+        first = false;
+      }
+      return content;
+    };
+
+    const std::string rej_path =
+        !reject_file_opt.empty()
+            ? reject_file_opt
+            : (output_file.empty() ? target : output_file) + ".rej";
+    if (!rejects.empty()) {
+      // [GNU] The summary prints whenever hunks failed — also under
+      // --dry-run; the saving clause appears only when rejects really
+      // go to a named file (patch.c:636-670).
+      const bool write_rej = !dry_run && reject_file_opt != "-";
+      if (write_rej) {
+        std::string content = render_rejects();
+        if (!reject_file_opt.empty()) {
+          reject_out += content;
+        } else {
+          const bool append = rej_files_created.count(rej_path) != 0;
+          const bool ok = append ? append_file_raw(rej_path, content)
+                                 : write_file_raw(rej_path, content);
+          if (!ok) {
+            safeErrorPrintLn("patch: cannot create reject file '" + rej_path +
+                             "'");
+            return 2;
+          }
+          rej_files_created.insert(rej_path);
+        }
+      }
+      say(summary_text(failed, group.hunks.size(), skip_rest) +
+          (write_rej ? " -- saving rejects to file " + quote_name(rej_path)
+                     : ""));
+    }
+
+    if (skip_rest) continue;  // whole-file skip: target stays untouched
 
     // ----- backup ------------------------------------------------------
     const bool backup =
@@ -1650,7 +2209,8 @@ REGISTER_COMMAND(
     }
     any_output_written = true;
   }
-  if (!reject_out.empty() && !reject_file_opt.empty() && !dry_run) {
+  if (!reject_out.empty() && !reject_file_opt.empty() &&
+      reject_file_opt != "-" && !dry_run) {
     if (!write_file_raw(reject_file_opt, reject_out)) {
       safeErrorPrintLn("patch: cannot create reject file '" + reject_file_opt +
                        "'");

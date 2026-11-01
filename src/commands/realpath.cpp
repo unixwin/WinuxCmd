@@ -82,12 +82,13 @@ enum class CanonicalizationMode {
 struct Config {
   CanonicalizationMode mode = CanonicalizationMode::permissive;
   bool quiet = false;
-  bool no_symlinks = false;
+  // [GNU] -L/-P/-s edit ONE mode word in argv order (realpath.c):
+  // -L sets CAN_NOLINKS + logical, -P clears CAN_NOLINKS + logical,
+  // -s sets CAN_NOLINKS and clears logical. Independent any-of
+  // booleans made '-s -P' never expand and '-P -L' physical.
+  bool nolinks = false;  // CAN_NOLINKS bit
+  bool logical = false;  // logical mode: two-pass canonicalisation
   bool zero_terminated = false;
-  bool logical = false;   // -L: resolve ".." before symlinks (accepted, Windows
-                          // normalization)
-  bool physical = false;  // -P: resolve symlinks before ".." (accepted, Windows
-                          // normalization)
   std::string relative_to;
   std::string relative_base;
   SmallVector<std::string, 32> paths{};
@@ -141,14 +142,34 @@ auto to_canon_mode(CanonicalizationMode mode) -> native_path::CanonMode {
 }
 
 // [GNU] realpath canonicalizes like canonicalize_filename_mode: each
-// component is looked up and symlink targets are substituted as they are
-// found (intermediate links like "ldir/f" resolve, a dangling leaf still
-// yields its target's path under the default permissive mode).
+// component is looked up and symlink targets are substituted as they
+// are found (intermediate links like "ldir/f" resolve, a dangling
+// leaf still yields its target's path under the default permissive
+// mode — the shared walker substitutes a dangling link's target,
+// #1462 RP-1). Logical mode canonicalises twice (realpath.c
+// realpath_canon): first without following links so '.'/'..' fold
+// lexically, then again following them.
 auto canonicalize_operand(const std::string& path, const Config& cfg)
     -> PathResult {
+  const native_path::CanonMode canon_mode = to_canon_mode(cfg.mode);
+  if (cfg.logical) {
+    auto first = native_path::canonicalize_path_w(
+        utf8_to_wstring(path), canon_mode, /*expand_symlinks=*/false,
+        /*logical=*/true);
+    if (!first) {
+      return {false, {}, canon_error(path, first.error())};
+    }
+    auto second = native_path::canonicalize_path_w(*first, canon_mode,
+                                                    /*expand_symlinks=*/true,
+                                                    /*logical=*/false);
+    if (!second) {
+      return {false, {}, canon_error(path, second.error())};
+    }
+    return {true, wstring_to_utf8(*second), {}};
+  }
   auto resolved = native_path::canonicalize_path_w(
-      utf8_to_wstring(path), to_canon_mode(cfg.mode), !cfg.no_symlinks,
-      cfg.logical && !cfg.physical);
+      utf8_to_wstring(path), canon_mode, /*expand_symlinks=*/!cfg.nolinks,
+      /*logical=*/false);
   if (!resolved) {
     return {false, {}, canon_error(path, resolved.error())};
   }
@@ -200,6 +221,16 @@ auto apply_relative_options(const std::string& resolved, const Config& cfg)
     return resolved;
   }
 
+  // [GNU] A --relative-base that is not a prefix of --relative-to
+  // discards the --relative-to entirely (realpath.c:262-276:
+  // can_relative_to = nullptr), so every result prints absolute.
+  // The gate below alone printed relative paths in that case.
+  if (!cfg.relative_base.empty() && !cfg.relative_to.empty() &&
+      !is_under_base(utf8_to_wstring(cfg.relative_to),
+                     utf8_to_wstring(cfg.relative_base))) {
+    return resolved;
+  }
+
   std::error_code ec;
   std::filesystem::path resolved_path = utf8_to_wstring(resolved);
   std::filesystem::path base = utf8_to_wstring(
@@ -225,9 +256,11 @@ auto apply_relative_options(const std::string& resolved, const Config& cfg)
   return wstring_to_utf8(relative.generic_wstring());
 }
 
-auto emit_error(const std::string& message, bool zero_terminated) -> void {
+auto emit_error(const std::string& message) -> void {
+  // [GNU] -z changes only the STDOUT record terminator; error()
+  // diagnostics stay newline-terminated (realpath.c process_path).
   safeErrorPrint(message);
-  safeErrorPrint(zero_terminated ? char{'\0'} : char{'\n'});
+  safeErrorPrint(char{'\n'});
 }
 
 auto build_config(const CommandContext<REALPATH_OPTIONS.size()>& ctx)
@@ -244,16 +277,20 @@ auto build_config(const CommandContext<REALPATH_OPTIONS.size()>& ctx)
       cfg.mode = CanonicalizationMode::existing;
     } else if (meta.long_name == "--canonicalize" || meta.short_name == "-E") {
       cfg.mode = CanonicalizationMode::permissive;
+    } else if (meta.long_name == "--logical" || meta.short_name == "-L") {
+      cfg.nolinks = true;
+      cfg.logical = true;
+    } else if (meta.long_name == "--physical" || meta.short_name == "-P") {
+      cfg.nolinks = false;
+      cfg.logical = false;
+    } else if (meta.long_name == "--strip" || meta.short_name == "-s" ||
+               meta.long_name == "--no-symlinks") {
+      cfg.nolinks = true;
+      cfg.logical = false;
     }
   }
 
   cfg.quiet = ctx.get<bool>("--quiet", false) || ctx.get<bool>("-q", false);
-  cfg.no_symlinks = ctx.get<bool>("--strip", false) ||
-                    ctx.get<bool>("-s", false) ||
-                    ctx.get<bool>("--no-symlinks", false);
-  cfg.logical = ctx.get<bool>("--logical", false) || ctx.get<bool>("-L", false);
-  cfg.physical =
-      ctx.get<bool>("--physical", false) || ctx.get<bool>("-P", false);
   cfg.zero_terminated =
       ctx.get<bool>("--zero", false) || ctx.get<bool>("-z", false);
 
@@ -285,8 +322,13 @@ auto build_config(const CommandContext<REALPATH_OPTIONS.size()>& ctx)
 
   for (const auto& arg : ctx.positionals) {
     std::string file_arg(arg);
+    // [GNU] An empty operand is a per-operand failure in
+    // process_paths ("realpath: '': No such file or directory"),
+    // not a whole-run abort (realpath.c:156-183). It used to kill
+    // the run before any operand was processed.
     if (file_arg.empty()) {
-      return std::unexpected(empty_operand_error());
+      cfg.paths.push_back(file_arg);
+      continue;
     }
     if (contains_wildcard(file_arg)) {
       auto glob_result = glob_expand(file_arg);
@@ -313,11 +355,18 @@ auto process_paths(const Config& cfg) -> bool {
 
   for (size_t i = 0; i < cfg.paths.size(); ++i) {
     const auto& path = cfg.paths[i];
+    if (path.empty()) {
+      if (!cfg.quiet) {
+        emit_error("realpath: '': No such file or directory");
+      }
+      all_ok = false;
+      continue;
+    }
     PathResult resolved = canonicalize_operand(path, cfg);
 
     if (!resolved) {
       if (!cfg.quiet) {
-        emit_error(resolved.error, cfg.zero_terminated);
+        emit_error(resolved.error);
       }
       all_ok = false;
       continue;
@@ -344,10 +393,10 @@ REGISTER_COMMAND(
 
     /* synopsis */
     "print the resolved absolute path",
-    "Print the resolved absolute path for each FILE. If no FILE is given,\n"
-    "print the resolved absolute path of the current directory.\n\n"
-    "All components of the path must exist (no symlinks are followed).\n"
-    "The last component may be non-existent.\n\n"
+    "Print the resolved absolute path for each FILE. A FILE operand\n"
+    "is required.\n\n"
+    "By default, all but the last component of each path must exist,\n"
+    "and symlinks are followed.\n\n"
     "Options:\n"
     "  -E, --canonicalize           all but the last component must exist\n"
     "  -m, --canonicalize-missing   no path components need to exist\n"

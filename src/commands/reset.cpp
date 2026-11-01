@@ -81,22 +81,62 @@ REGISTER_COMMAND(reset, "reset", "reset [options] [terminal]",
     // size is system-dependent, so we simply note this is a no-op
   }
 
-  if (shell_output) {
-    safePrintLn("TERM=xterm;");
+  // [GNU ncurses] tset resolves the terminal type once: the operand if
+  // given, else $TERM (progs/tset.c). The historical build hardcoded
+  // "xterm" for -s and ignored the type everywhere else.
+  std::string term;
+  if (!ctx.positionals.empty()) {
+    term = std::string(ctx.positionals.front());
+  } else if (const char* env = std::getenv("TERM"); env != nullptr) {
+    term = env;
+  } else {
+    term = "xterm";
+  }
+
+  // [GNU] -q is "display term only" (tset's noset): print the type on
+  // stdout and change nothing. It used to suppress the reset sequence
+  // but print nothing at all.
+  if (quiet) {
+    safePrintLn(term);
     return 0;
   }
 
-  if (report_stderr && !ctx.positionals.empty()) {
-    safeErrorPrintLn(std::string(ctx.positionals.front()));
-  }
-
-  if (!quiet) {
-    safePrint("\033c");
-  }
+  // [GNU] Invoked as reset, tset aims its reset strings at stderr:
+  // reset_start(stderr, ...) (tset.c, reset_cmd.c), which is what
+  // leaves stdout clean for -q type printing and for the classic
+  // eval $(reset -s) capture. The historical build wrote the reset
+  // byte to stdout, so `reset > file` filed the byte away and never
+  // reset the terminal. The reset therefore goes to stderr here,
+  // ahead of the -r report, in GNU's emission order.
+  safeErrorPrint("\033c");
 
   if (initialize) {
-    safePrint("\033[?25h");
-    safePrint("\033[0m");
+    safeErrorPrint("\033[?25h");
+    safeErrorPrint("\033[0m");
+  }
+
+  // [GNU] -r reports the type on stderr: "Terminal type is %s.\n"
+  // (tset.c). It used to echo the first operand back, and only when an
+  // operand was given.
+  if (report_stderr) {
+    safeErrorPrintLn("Terminal type is " + term + ".");
+  }
+
+  if (shell_output) {
+    // [GNU] print_shell_commands (tset.c): POSIX shells get
+    // "TERM=%s;\n"; a SHELL whose name ends in "csh" gets the setenv
+    // form bracketed by set/unset noglob. -s does not suppress the
+    // reset itself (above); the streams are separate exactly so both
+    // can happen.
+    const char* shell_env = std::getenv("SHELL");
+    const std::string shell = shell_env != nullptr ? shell_env : "";
+    if (shell.size() >= 3 && shell.ends_with("csh")) {
+      safePrintLn("set noglob;");
+      safePrintLn("setenv TERM " + term + ";");
+      safePrintLn("unset noglob;");
+    } else {
+      safePrintLn("TERM=" + term + ";");
+    }
   }
 
   return 0;

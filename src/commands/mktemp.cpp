@@ -98,6 +98,7 @@ struct Config {
   bool dry_run = false;
   bool quiet = false;
   bool use_tmpdir_flag = false;
+  bool dest_dir_mode = false;
   std::string tmpdir;
   std::string template_str;
   std::string suffix;
@@ -297,21 +298,6 @@ auto default_temporary_directory() -> cp::Result<std::string> {
   return native_display_path(std::filesystem::path(buffer));
 }
 
-// [GNU] the template (plus suffix) must contain a run of at least 3
-// consecutive X's in its final path component.
-auto has_x_run_of_three(std::string_view templ) -> bool {
-  size_t run = 0;
-  for (char c : templ) {
-    if (c == 'X') {
-      ++run;
-      if (run >= 3) return true;
-    } else {
-      run = 0;
-    }
-  }
-  return false;
-}
-
 auto build_config(const CommandContext<MKTEMP_OPTIONS.size()>& ctx)
     -> cp::Result<Config> {
   Config cfg;
@@ -350,11 +336,8 @@ auto build_config(const CommandContext<MKTEMP_OPTIONS.size()>& ctx)
   }
 
   cfg.suffix = ctx.get<std::string>("--suffix", "");
-  if (cfg.suffix.find('/') != std::string::npos ||
-      cfg.suffix.find('\\') != std::string::npos) {
-    return std::unexpected("invalid suffix '" + cfg.suffix +
-                           "', contains directory separator");
-  }
+  cfg.dest_dir_mode =
+      ctx.count({"--tmpdir", "-p"}) > 0 || ctx.positionals.empty();
 
   // Get template from positionals
   if (!ctx.positionals.empty()) {
@@ -370,31 +353,24 @@ auto build_config(const CommandContext<MKTEMP_OPTIONS.size()>& ctx)
     }
   }
 
-  // -t flag: interpret template as single file name component, relative
-  // to $TMPDIR (or default temp dir). Strip any directory from template.
-  if (cfg.use_tmpdir_flag) {
-    cfg.template_str = path_utf8(utf8_path(cfg.template_str).filename());
-    if (cfg.template_str.empty()) {
-      cfg.template_str = "tmp.XXXXXXXXXX";
-    }
-    if (cfg.tmpdir.empty()) {
-      auto default_tmpdir = default_temporary_directory();
-      if (!default_tmpdir) {
-        return std::unexpected(default_tmpdir.error());
-      }
-      cfg.tmpdir = *default_tmpdir;
-    }
-  }
-
-  // [GNU] The X-run rules (mktemp.c) (#1358): without --suffix, the
-  // template's final component must contain a run of at least 3 X's.
-  // With --suffix, the template itself must END in a run of at least 3
-  // X's — the suffix's characters never count toward the run, and a
-  // template not ending in X is rejected with its own diagnostic.
+  // [GNU] The X-run rules, in mktemp.c's order (222-258), applied to
+  // the template exactly as given:
+  //  * with --suffix, the template must END in X (checked first);
+  //    the "suffix" whose separator is policed is the region after
+  //    the last X of the combined string;
+  //  * without --suffix, the region after the template's last X is
+  //    the implicit suffix: a separator there is the same error;
+  //  * the X count is the run ENDING where that suffix begins, so
+  //    'XXXXaXb' has a run of 1 and is rejected.
   if (!cfg.suffix.empty()) {
     if (cfg.template_str.empty() || cfg.template_str.back() != 'X') {
       return std::unexpected("with --suffix, template '" +
                              cfg.template_str + "' must end in X");
+    }
+    if (cfg.suffix.find('/') != std::string::npos ||
+        cfg.suffix.find('\\') != std::string::npos) {
+      return std::unexpected("invalid suffix '" + cfg.suffix +
+                             "', contains directory separator");
     }
     size_t run = 0;
     for (size_t i = cfg.template_str.size();
@@ -406,14 +382,54 @@ auto build_config(const CommandContext<MKTEMP_OPTIONS.size()>& ctx)
                              cfg.template_str + cfg.suffix + "'");
     }
   } else {
-    std::string component = path_utf8(
-        utf8_path(normalize_win_shell_path(cfg.template_str)).filename());
-    if (component.empty()) {
-      component = cfg.template_str;
+    size_t last_x = cfg.template_str.find_last_of('X');
+    std::string tail =
+        last_x == std::string::npos ? "" : cfg.template_str.substr(last_x + 1);
+    if (tail.find('/') != std::string::npos) {
+      return std::unexpected("invalid suffix '" + tail +
+                             "', contains directory separator");
     }
-    if (!has_x_run_of_three(component)) {
+    size_t run = 0;
+    size_t upto = last_x == std::string::npos ? 0 : last_x + 1;
+    for (size_t i = upto; i > 0 && cfg.template_str[i - 1] == 'X'; --i) {
+      ++run;
+    }
+    if (run < 3) {
       return std::unexpected("too few X's in template '" +
                              cfg.template_str + "'");
+    }
+  }
+
+  // [GNU] Destination-directory rules (mktemp.c:260-295), after the
+  // X validation.
+  if (cfg.use_tmpdir_flag) {
+    // -t: $TMPDIR beats a -p DIR, which beats the default (the old
+    // code silently stripped any directory from the template
+    // instead of diagnosing it, and let -p beat $TMPDIR).
+    if (auto env_dir = getenv_path(L"TMPDIR")) {
+      cfg.tmpdir = *env_dir;
+      cfg.tmpdir_dialect = display_dialect_of(cfg.tmpdir);
+    } else if (cfg.tmpdir.empty()) {
+      auto default_tmpdir = default_temporary_directory();
+      if (!default_tmpdir) {
+        return std::unexpected(default_tmpdir.error());
+      }
+      cfg.tmpdir = *default_tmpdir;
+    }
+    if (cfg.template_str.find('/') != std::string::npos) {
+      return std::unexpected("invalid template, '" + cfg.template_str +
+                             "', contains directory separator");
+    }
+  } else if (cfg.dest_dir_mode) {
+    const std::string& t = cfg.template_str;
+    bool absolute = !t.empty() && (t.front() == '/' || t.front() == '\\' ||
+                                   (t.size() >= 2 &&
+                                    std::isalpha(static_cast<unsigned char>(
+                                        t[0])) &&
+                                    t[1] == ':'));
+    if (absolute) {
+      return std::unexpected("invalid template, '" + t +
+                             "'; with --tmpdir, it may not be absolute");
     }
   }
 
@@ -467,8 +483,11 @@ auto run(const Config& cfg) -> int {
 
   if (!cfg.tmpdir.empty()) {
     base_dir = utf8_path(fold_dir_operand(cfg.tmpdir));
-    template_component = path_utf8(
-        utf8_path(normalize_win_shell_path(cfg.template_str)).filename());
+    // [GNU] mktemp.c:297-299 (file_name_concat): with a destination
+    // directory the template is appended as given -- interior
+    // separators are preserved ('-p DIR sub/XXXXXX' creates inside
+    // sub/), not truncated to the final component.
+    template_component = cfg.template_str;
   } else {
     std::filesystem::path template_path =
         utf8_path(fold_dir_operand(cfg.template_str));
@@ -492,7 +511,21 @@ auto run(const Config& cfg) -> int {
   template_str += cfg.suffix;
   auto [xxx_pos, xxx_len] = *run_info;
 
-  // Generate unique filename
+  // [GNU] mktemp.c:301-325: a creation failure is diagnosed with
+  // the FULL destination template (directory + template, X's
+  // intact), never the bare template operand.
+  std::filesystem::path dest_template_path =
+      base_dir.empty() ? utf8_path(template_str)
+                       : (base_dir / utf8_path(template_str));
+  std::string dest_template = dest_template_path.is_absolute()
+                                  ? native_display_path(dest_template_path)
+                                  : path_utf8(dest_template_path);
+  dest_template = to_display_dialect(dest_template, cfg.tmpdir_dialect);
+
+  // Generate a unique name and create it.  Creation is atomic
+  // (CREATE_NEW / CreateDirectoryW): the old check-then-create
+  // sequence (exists probe, then a truncating ofstream) could
+  // claim a name another process had just taken.
   std::string temp_file;
   int max_attempts = 100;
 
@@ -513,15 +546,51 @@ auto run(const Config& cfg) -> int {
                     ? native_display_path(candidate_path)
                     : path_utf8(candidate_path);
 
-    // Check if file/directory already exists
-    DWORD attrs = GetFileAttributesW(utf8_to_wstring(temp_file).c_str());
-    if (attrs == INVALID_FILE_ATTRIBUTES) {
-      // File doesn't exist, we can use this name
-      break;
+    if (cfg.dry_run) {
+      DWORD attrs = GetFileAttributesW(utf8_to_wstring(temp_file).c_str());
+      if (attrs == INVALID_FILE_ATTRIBUTES) {
+        break;  // Name is free; nothing is created in dry-run mode.
+      }
+      temp_file.clear();
+      continue;
     }
 
-    // File exists, try again
-    temp_file.clear();
+    DWORD create_error = ERROR_SUCCESS;
+    if (cfg.make_directory) {
+      if (CreateDirectoryW(utf8_to_wstring(temp_file).c_str(), NULL)) {
+        break;
+      }
+      create_error = GetLastError();
+    } else {
+      HANDLE handle = CreateFileW(utf8_to_wstring(temp_file).c_str(),
+                                  GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+                                  FILE_ATTRIBUTE_NORMAL, nullptr);
+      if (handle != INVALID_HANDLE_VALUE) {
+        CloseHandle(handle);
+        break;
+      }
+      create_error = GetLastError();
+    }
+    if (create_error == ERROR_FILE_EXISTS ||
+        create_error == ERROR_ALREADY_EXISTS) {
+      temp_file.clear();
+      continue;  // Lost the race for this name; draw another.
+    }
+
+    if (!cfg.quiet) {
+      if (cfg.make_directory) {
+        safeErrorPrintLn(winux::i18n::format(
+            "command.mktemp.error.failed_create_directory_template",
+            "mktemp: failed to create directory via template '{}': {}",
+            dest_template, win32_posix_error_text(create_error)));
+      } else {
+        safeErrorPrintLn(winux::i18n::format(
+            "command.mktemp.error.failed_create_file_template",
+            "mktemp: failed to create file via template '{}': {}",
+            dest_template, win32_posix_error_text(create_error)));
+      }
+    }
+    return 1;
   }
 
   if (temp_file.empty()) {
@@ -531,39 +600,6 @@ auto run(const Config& cfg) -> int {
       cp::report_error(result2, L"mktemp");
     }
     return 1;
-  }
-
-  // Create file or directory (unless dry-run)
-  if (!cfg.dry_run) {
-    // [GNU] diagnostics keep the original template and the errno text:
-    // "failed to create file via template 'T': No such file or directory"
-    // (uutils #13720).
-    if (cfg.make_directory) {
-      if (!CreateDirectoryW(utf8_to_wstring(temp_file).c_str(), NULL)) {
-        if (!cfg.quiet) {
-          safeErrorPrintLn(winux::i18n::format(
-              "command.mktemp.error.failed_create_directory_template",
-              "mktemp: failed to create directory via template '{}': {}",
-              cfg.template_str, win32_posix_error_text(GetLastError())));
-        }
-        return 1;
-      }
-    } else {
-      // Create file
-      errno = 0;
-      std::ofstream f(utf8_path(temp_file), std::ios::binary);
-      if (!f) {
-        if (!cfg.quiet) {
-          const int err = errno != 0 ? errno : ENOENT;
-          safeErrorPrintLn(winux::i18n::format(
-              "command.mktemp.error.failed_create_file_template",
-              "mktemp: failed to create file via template '{}': {}",
-              cfg.template_str, std::string(std::strerror(err))));
-        }
-        return 1;
-      }
-      f.close();
-    }
   }
 
   // [GNU] The printed name keeps the -p/--tmpdir dialect the caller used

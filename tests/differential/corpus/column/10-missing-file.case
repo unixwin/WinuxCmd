@@ -1,0 +1,6 @@
+cmd: column
+oracle: linux
+args: -t missing.txt
+
+source: tests/differential/corpus/column/10-missing-file.case
+tags: gnu-compat column missing-file audit-w7

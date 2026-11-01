@@ -24,7 +24,20 @@ REGISTER_COMMAND(tsort,
                  /* options */ TSORT_OPTIONS) {
   std::string input;
 
-  if (ctx.positionals.empty()) {
+  // [GNU] tsort.c main(): a second operand is a usage error, reported
+  // before any input is read, followed by the try-help line.
+  if (ctx.positionals.size() > 1) {
+    safeErrorPrintLn("tsort: extra operand '" +
+                     std::string(ctx.positionals[1]) + "'");
+    safeErrorPrintLn("Try 'tsort --help' for more information.");
+    return 1;
+  }
+
+  // [GNU] tsort.c:435: the operand "-" names standard input, exactly
+  // like omitting the operand.
+  const bool use_stdin =
+      ctx.positionals.empty() || ctx.positionals[0] == "-";
+  if (use_stdin) {
     file_io::set_stdin_binary();
     // Read from stdin
     input.assign(std::istreambuf_iterator<char>(std::cin),
@@ -39,7 +52,16 @@ REGISTER_COMMAND(tsort,
                     OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
 
     if (hFile == INVALID_HANDLE_VALUE) {
-      safeErrorPrintLn("tsort: cannot open '" + filename + "'");
+      // [GNU] tsort.c tsort(): error (EXIT_FAILURE, errno, "%s",
+      // quotef (file)) -- "tsort: FILE: No such file or directory".
+      const DWORD attrs = GetFileAttributesW(wfilename.c_str());
+      const char* reason =
+          (attrs != INVALID_FILE_ATTRIBUTES &&
+           (attrs & FILE_ATTRIBUTE_DIRECTORY))
+              ? "Is a directory"
+          : (attrs != INVALID_FILE_ATTRIBUTES) ? "Permission denied"
+                                               : "No such file or directory";
+      safeErrorPrintLn("tsort: " + filename + ": " + reason);
       return 1;
     }
 
@@ -63,9 +85,13 @@ REGISTER_COMMAND(tsort,
   std::string tok;
   while (tok_ss >> tok) tokens.push_back(tok);
   if (tokens.size() % 2 != 0) {
-    safeErrorPrintLn(
-        ::winux::i18n::format("command.tsort.error.odd_tokens",
-                              "tsort: input contains an odd number of tokens"));
+    // [GNU] tsort.c:472: error (EXIT_FAILURE, 0, "%s: input contains an
+    // odd number of tokens", quotef (file)) -- the input name (or "-"
+    // for standard input) prefixes the message.
+    safeErrorPrintLn(::winux::i18n::format(
+        "command.tsort.error.odd_tokens",
+        "tsort: {}: input contains an odd number of tokens",
+        ctx.positionals.empty() ? "-" : std::string(ctx.positionals[0])));
     return 1;
   }
 
@@ -105,9 +131,15 @@ REGISTER_COMMAND(tsort,
   }
   for (const auto& [node, deps] : graph)
     for (const auto& dependency : deps) ++remaining[dependency];
-  std::set<std::string> ready;
-  for (const auto& [node, degree] : remaining)
-    if (degree == 0) ready.insert(node);
+  // [GNU] tsort.c T4-T7: the ready set is a FIFO queue, not a priority
+  // set. scan_zeros seeds it in tree-walk (lexicographic) order; when a
+  // node is emitted, its successors join the tail in successor-list
+  // order, and record_relation PREPENDS each successor, so that order
+  // is the reverse of the order the relations were read. (With edges
+  // "m a" then "m z" read in that order, GNU prints m, z, a.)
+  std::deque<std::string> ready;
+  for (const auto& n : nodes)
+    if (remaining[n] == 0) ready.push_back(n);
   size_t emitted = 0;
   bool had_loop = false;
   while (emitted < nodes.size()) {
@@ -154,16 +186,18 @@ REGISTER_COMMAND(tsort,
         safeErrorPrintLn("tsort: " + member);
       }
       // Break the loop at the start node.
-      ready.insert(start);
+      ready.push_back(start);
       remaining[start] = 0;
     }
-    auto node = *ready.begin();
-    ready.erase(ready.begin());
+    auto node = ready.front();
+    ready.pop_front();
     safePrintLn(node);
     ++emitted;
     remaining[node] = -1;  // mark emitted
-    for (const auto& dependency : graph[node])
-      if (--remaining[dependency] == 0) ready.insert(dependency);
+    // Successors in GNU successor-list order: reverse recording order.
+    const auto& deps = graph[node];
+    for (auto it = deps.rbegin(); it != deps.rend(); ++it)
+      if (--remaining[*it] == 0) ready.push_back(*it);
   }
   if (had_loop) {
     return 1;

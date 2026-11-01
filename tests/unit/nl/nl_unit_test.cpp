@@ -179,9 +179,10 @@ TEST(nl, nl_missing_input_reports_no_such_file) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
+  // [GNU] nl.c reports the bare quotef form.
   EXPECT_TRUE(r.stderr_text.find(
-                  "nl: cannot open 'missing.txt' for reading: No such file "
-                  "or directory") != std::string::npos);
+                  "nl: missing.txt: No such file or directory") !=
+              std::string::npos);
 }
 
 TEST(nl, nl_directory_input_reports_is_a_directory) {
@@ -195,8 +196,7 @@ TEST(nl, nl_directory_input_reports_is_a_directory) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stderr_text.find(
-                  "nl: cannot open 'indir' for reading: Is a directory") !=
+  EXPECT_TRUE(r.stderr_text.find("nl: indir: Is a directory") !=
               std::string::npos);
 }
 

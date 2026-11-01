@@ -57,3 +57,44 @@
 57	#1341	uniq -w -1 must be rejected
 58	#1342	tail -z headers must use newline separators
 59	#1343	echo -e must print \E literally
+75	#1462	tsort ready queue must be FIFO with reverse-read successor order
+76	#1462	tsort extra operand is a usage error with try-help
+77	#1462	tsort odd-token diagnostic carries the input name
+78	#1462	tsort open failure uses the GNU errno diagnostic form
+79	#1462	od obsolescent letters -D -e -H -O must be accepted
+80	#1462	od format specifications accumulate in argv order
+81	#1462	ptx --format=tex selects the TeX output format
+82	#1462	ptx --format invalid value uses the argmatch diagnostic
+83	#1462	uniq --group invalid value uses the argmatch diagnostic
+84	#1462	sort --sort invalid value uses the argmatch diagnostic
+85	#1462	sort --sort accepts unique argmatch prefixes
+86	#1462	cksum default CRC on a regular file
+87	#1462	csplit pattern split piece sizes and files
+88	#1462	nl -n rz -w 3 with custom separator and blank line
+89	#1462	fold -w 5 hard wrap
+90	#1462	expand -t 4 advances to multiple-of-4 stops
+91	#1462	unexpand -t 4 collapses leading blanks to tabs
+92	#1462	split -n 3 byte partitions are 4/3/3 with --verbose
+93	#1462	fmt -p prefix paragraph refill
+94	#1462	pr -t -l 5 +2 starts at page 2
+95	#1462	paste -s serial mode with custom delimiter
+96	#1462	comm standard three-column merge
+97	#1462	comm open failure uses the bare GNU form
+98	#1462	tac reverses lines
+99	#1462	tac -r -s regex separator
+100	#1462	cat -E shows CR of CRLF as ^M
+101	#1462	cut decreasing range diagnostic
+102	#1462	cut -d : -f 2 field extraction
+103	#1462	tr equivalence class in string2 is fatal
+104	#1462	tr range translation
+105	#1462	join repeated -o accumulates
+106	#1462	join -o 0.5 invalid field specifier diagnostic
+107	#1462	head -c K suffix-only value means 1 x suffix
+108	#1462	head invalid number quotes operand without elide '-'
+109	#1462	tail -n 0 with missing operand exits 0
+110	#1462	tail --follow invalid value uses argmatch diagnostic
+111	#1462	wc --total unique prefix accepted
+112	#1462	wc --files0-from bad record skipped, others counted
+113	#1462	wc directory operand prints zero line plus diagnostic
+114	#1462	fmt -w 20 refill
+115	#1462	head UTF-8 BOM file stays on the byte path

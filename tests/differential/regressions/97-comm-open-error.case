@@ -1,0 +1,7 @@
+cmd: comm
+args: missing1 missing2
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: issue-1462 audit-w2 comm open-error
+# GNU: "comm: missing1: No such file or directory", exit 1 --
+# the bare quotef form (no quotes around the name).

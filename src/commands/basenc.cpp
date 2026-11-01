@@ -29,7 +29,8 @@ auto constexpr BASENC_OPTIONS = std::array{
            "wrap encoded lines after COLS character (default 76). Use 0 to "
            "disable line wrapping",
            STRING_TYPE),
-    // [GNU]
+    // [EXT] GNU basenc has no -b; this legacy baseN selector is a
+    // WinuxCmd extension (kept for compatibility, tagged accordingly).
     OPTION("-b", "", "legacy baseN selector", STRING_TYPE),
     // [GNU]
     OPTION("", "--base64", "same as base64 program", BOOL_TYPE),
@@ -272,7 +273,9 @@ auto decode_base58(std::string_view input, bool ignore_garbage)
 auto encode_z85(std::string_view input, int wrap)
     -> std::expected<std::string, std::string> {
   if (input.size() % 4 != 0) {
-    return std::unexpected("invalid input length for z85 encoding");
+    // [GNU] basenc.c:615 (z85_encode failure wording).
+    return std::unexpected(
+        "invalid input (length must be multiple of 4 characters)");
   }
 
   std::string result;
@@ -319,12 +322,24 @@ auto parse_legacy_selector(std::string_view selector)
   return std::unexpected("invalid encoding '" + std::string(selector) + "'");
 }
 
-// [GNU] the wrap size is validated by xstrtol: any non-numeric token or a
-// negative value dies with "invalid wrap size: '<raw>'" (uutils #14084).
+// [GNU] the wrap size is validated by xstrtoimax (basenc.c:1106-1113):
+// leading whitespace and a '+' sign are accepted; on overflow GNU sets
+// wrap_column to 0 (wrapping off, no trailing newline); a value that
+// fits intmax but exceeds int keeps its (huge) width; any other
+// non-numeric token or a negative value dies with
+// "invalid wrap size: '<raw>'" (uutils #14084).
 auto parse_wrap_size(const std::string& raw)
     -> std::expected<int, std::string> {
-  size_t digit_start = 0;
-  if (!raw.empty() && (raw[0] == '+' || raw[0] == '-')) digit_start = 1;
+  size_t pos = 0;
+  while (pos < raw.size() &&
+         std::isspace(static_cast<unsigned char>(raw[pos]))) {
+    ++pos;
+  }
+  size_t digit_start = pos;
+  if (digit_start < raw.size() &&
+      (raw[digit_start] == '+' || raw[digit_start] == '-')) {
+    ++digit_start;
+  }
   const bool numeric =
       digit_start < raw.size() &&
       std::ranges::all_of(
@@ -333,9 +348,20 @@ auto parse_wrap_size(const std::string& raw)
   if (numeric) {
     errno = 0;
     const long long value = std::strtoll(raw.c_str(), nullptr, 10);
-    if (errno == 0 && value >= 0 && value <= 2147483647LL) {
-      return static_cast<int>(value);
+    if (value < 0) {
+      return std::unexpected("invalid wrap size: '" + raw + "'");
     }
+    if (errno == ERANGE) {
+      // basenc.c:1113: s_err == LONGINT_OVERFLOW maps to wrap_column 0.
+      return 0;
+    }
+    if (value > 2147483647LL) {
+      // GNU keeps the intmax width; INT_MAX is indistinguishable in
+      // practice (no output line reaches 2^31 columns) and preserves
+      // the wrap > 0 trailing-newline rule.
+      return 2147483647;
+    }
+    return static_cast<int>(value);
   }
   return std::unexpected("invalid wrap size: '" + raw + "'");
 }
@@ -350,31 +376,50 @@ auto build_config(const CommandContext<BASENC_OPTIONS.size()>& ctx)
   if (!wrap) return std::unexpected(wrap.error());
   cfg.wrap = *wrap;
 
-  int selector_count = 0;
-  auto select = [&](Encoding encoding) {
-    cfg.encoding = encoding;
-    ++selector_count;
-  };
-
-  if (ctx.has("-b")) {
-    auto parsed = parse_legacy_selector(ctx.get<std::string>("-b", ""));
-    if (!parsed) return std::unexpected(parsed.error());
-    select(*parsed);
+  // [GNU] basenc.c: every encoding option assigns base_type in its
+  // getopt case, so when several selectors are given the LAST one on
+  // the command line wins; repeating them is not an error.  Walk the
+  // occurrences in command-line order to mirror that.
+  bool selector_seen = false;
+  for (const auto& occurrence : ctx.options.occurrences()) {
+    const auto& meta = (*ctx.metas)[occurrence.index];
+    if (meta.short_name == "-b") {
+      const auto* value = std::get_if<std::string>(&occurrence.value);
+      auto parsed = parse_legacy_selector(value ? *value : "");
+      if (!parsed) return std::unexpected(parsed.error());
+      cfg.encoding = *parsed;
+      selector_seen = true;
+    } else if (meta.long_name == "--base64") {
+      cfg.encoding = Encoding::Base64;
+      selector_seen = true;
+    } else if (meta.long_name == "--base64url") {
+      cfg.encoding = Encoding::Base64Url;
+      selector_seen = true;
+    } else if (meta.long_name == "--base58") {
+      cfg.encoding = Encoding::Base58;
+      selector_seen = true;
+    } else if (meta.long_name == "--base32") {
+      cfg.encoding = Encoding::Base32;
+      selector_seen = true;
+    } else if (meta.long_name == "--base32hex") {
+      cfg.encoding = Encoding::Base32Hex;
+      selector_seen = true;
+    } else if (meta.long_name == "--base16") {
+      cfg.encoding = Encoding::Base16;
+      selector_seen = true;
+    } else if (meta.long_name == "--base2lsbf") {
+      cfg.encoding = Encoding::Base2Lsbf;
+      selector_seen = true;
+    } else if (meta.long_name == "--base2msbf") {
+      cfg.encoding = Encoding::Base2Msbf;
+      selector_seen = true;
+    } else if (meta.long_name == "--z85") {
+      cfg.encoding = Encoding::Z85;
+      selector_seen = true;
+    }
   }
-  if (ctx.get<bool>("--base64", false)) select(Encoding::Base64);
-  if (ctx.get<bool>("--base64url", false)) select(Encoding::Base64Url);
-  if (ctx.get<bool>("--base58", false)) select(Encoding::Base58);
-  if (ctx.get<bool>("--base32", false)) select(Encoding::Base32);
-  if (ctx.get<bool>("--base32hex", false)) select(Encoding::Base32Hex);
-  if (ctx.get<bool>("--base16", false)) select(Encoding::Base16);
-  if (ctx.get<bool>("--base2lsbf", false)) select(Encoding::Base2Lsbf);
-  if (ctx.get<bool>("--base2msbf", false)) select(Encoding::Base2Msbf);
-  if (ctx.get<bool>("--z85", false)) select(Encoding::Z85);
 
-  if (selector_count == 0) return std::unexpected("missing encoding type");
-  if (selector_count > 1) {
-    return std::unexpected("multiple encoding options specified");
-  }
+  if (!selector_seen) return std::unexpected("missing encoding type");
 
   SmallVector<std::string, 16> files;
   for (auto arg : ctx.positionals) {
@@ -491,7 +536,11 @@ REGISTER_COMMAND(
   if (!cfg_result) {
     safeErrorPrintLn("basenc: " +
                      winux::i18n::translate_error(cfg_result.error()));
-    if (cfg_result.error().starts_with("extra operand '")) {
+    // [GNU] extra-operand and missing-encoding failures go through
+    // usage(), which appends the "Try ... --help" line; plain error()
+    // failures (invalid wrap size) do not.
+    if (cfg_result.error().starts_with("extra operand '") ||
+        cfg_result.error() == "missing encoding type") {
       safeErrorPrintLn("Try 'basenc --help' for more information.");
     }
     return 1;

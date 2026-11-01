@@ -1,0 +1,7 @@
+cmd: column
+oracle: linux
+args: -t -l 2
+stdin: |
+  a b c d\n
+source: tests/differential/corpus/column/14-columns-limit.case
+tags: gnu-compat column limit audit-w7

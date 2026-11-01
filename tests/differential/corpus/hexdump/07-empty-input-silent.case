@@ -1,0 +1,5 @@
+cmd: hexdump
+oracle: linux
+args:
+source: tests/differential/corpus/hexdump/07-empty-input-silent.case
+tags: gnu-compat hexdump empty-input audit-w7

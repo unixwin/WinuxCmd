@@ -86,12 +86,13 @@ TEST(tac, tac_empty_separator_treats_input_as_one_record) {
 
   auto r = p.run();
 
-  // [GNU] An empty separator never occurs in the input, so the whole
-  // input is a single record and comes back verbatim (coreutils 9.4,
-  // #1444). The earlier pin here claimed tac.c rejects it outright;
-  // that holds only for the regex form (next test).
+  // [GNU] An empty separator is a separator of length 1 whose byte
+  // is NUL (tac.c:540: match_length = *separator ? strlen : 1), so
+  // the NUL-terminated records reverse like any others: the 9.4
+  // binary prints 'c\0b\0a\0' for this input. The #1444 "never
+  // occurs / single record" reading holds only for NUL-free input.
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ(r.stdout_text, std::string("a\0b\0c\0", 6));
+  EXPECT_EQ(r.stdout_text, std::string("c\0b\0a\0", 6));
 }
 
 TEST(tac, tac_empty_separator_via_short_option_keeps_input_verbatim) {
@@ -315,9 +316,11 @@ TEST(tac, tac_missing_input_reports_no_such_file) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
+  // [GNU] tac's own open wording is "failed to open %s for reading"
+  // (tac.c:460).
   EXPECT_TRUE(r.stderr_text.find(
-                  "tac: cannot open 'missing.txt' for reading: No such file "
-                  "or directory") != std::string::npos);
+                  "tac: failed to open 'missing.txt' for reading: "
+                  "No such file or directory") != std::string::npos);
 }
 
 TEST(tac, tac_directory_input_reports_is_a_directory) {
@@ -331,9 +334,13 @@ TEST(tac, tac_directory_input_reports_is_a_directory) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
+  // [GNU] On Windows the directory operand fails at open time, so
+  // it takes tac's open wording (tac.c:460) with the Is-a-directory
+  // reason; GNU's own "indir: read error" site (tac.c:474) is the
+  // Linux shape, where opening a directory succeeds.
   EXPECT_TRUE(r.stderr_text.find(
-                  "tac: cannot open 'indir' for reading: Is a directory") !=
-              std::string::npos);
+                  "tac: failed to open 'indir' for reading: "
+                  "Is a directory") != std::string::npos);
 }
 
 TEST(tac, tac_file_with_trailing_separator_reports_not_directory) {
@@ -348,10 +355,9 @@ TEST(tac, tac_file_with_trailing_separator_reports_not_directory) {
 
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_TRUE(r.stdout_text.empty());
-  EXPECT_TRUE(
-      r.stderr_text.find(
-          "tac: cannot open 'file.txt/' for reading: Not a directory") !=
-      std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("tac: failed to open 'file.txt/' for "
+                                 "reading: Not a directory") !=
+              std::string::npos);
 }
 
 // ---------------------------------------------------------------------------

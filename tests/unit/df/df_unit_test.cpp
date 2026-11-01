@@ -265,7 +265,8 @@ TEST(df, df_output_rejects_empty_inline_field_list) {
   TEST_LOG("df.exe --output= stderr", r.stderr_text);
 
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_NE(r.stderr_text.find("option --output: field  unknown"),
+  // [GNU] The field name is quoted, even when empty.
+  EXPECT_NE(r.stderr_text.find("option --output: field '' unknown"),
             std::string::npos);
 }
 
@@ -328,7 +329,12 @@ TEST(df, df_print_type) {
   EXPECT_NE(r.stdout_text.find("Mounted on"), std::string::npos);
 }
 
-TEST(df, df_type_filter_no_matches_keeps_header) {
+// [GNU] df.c:1843-1850: when the -t/-x filters eliminate every file
+// system, df prints NO table — it reports "no file systems
+// processed" on stderr and exits 1. This test previously pinned the
+// opposite (bare header, exit 0); that expectation contradicted the
+// oracle and was corrected by the #1462 W1 audit.
+TEST(df, df_type_filter_no_matches_fails_without_table) {
   TempDir tmp;
 
   Pipeline p;
@@ -342,10 +348,11 @@ TEST(df, df_type_filter_no_matches_keeps_header) {
   TEST_LOG_EXIT_CODE(r);
   TEST_LOG("df.exe -t no-match output", r.stdout_text);
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_NE(r.stdout_text.find("Filesystem"), std::string::npos);
-  EXPECT_NE(r.stdout_text.find("Mounted on"), std::string::npos);
-  EXPECT_EQ(r.stdout_text.find("\ntotal"), std::string::npos);
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ(r.stdout_text.find("Filesystem"), std::string::npos);
+  EXPECT_EQ(r.stdout_text.find("Mounted on"), std::string::npos);
+  EXPECT_NE(r.stderr_text.find("no file systems processed"),
+            std::string::npos);
 }
 
 TEST(df, df_inodes_shape) {

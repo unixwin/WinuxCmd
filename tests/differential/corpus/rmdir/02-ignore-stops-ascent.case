@@ -1,0 +1,8 @@
+cmd: rmdir
+args: --ignore-fail-on-non-empty -v -p x/y/z
+timeout: 10
+setup: |
+  mkdir -p x/y/z
+  printf 'f' > x/y/file.txt
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w1 oracle-coreutils-9.4 rmdir.c:139-166 ignorable-stops-ascent

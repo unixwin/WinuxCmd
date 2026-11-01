@@ -1,0 +1,7 @@
+cmd: sort
+args: -S64 in.txt
+timeout: 10
+setup: |
+  printf 'k3 v01\nk1 v02\nk3 v03\nk2 v04\nk1 v05\nk3 v06\nk2 v07\nk1 v08\nk3 v09\nk2 v10\nk1 v11\nk3 v12\nk2 v13\nk1 v14\nk3 v15\nk2 v16\nk1 v17\nk3 v18\nk2 v19\nk1 v20\nk3 v21\nk2 v22\nk1 v23\nk3 v24\n' > in.txt
+source: github.com/unixwin/WinuxCmd/issues/1127
+tags: issue-1127 regression perf
