@@ -102,7 +102,7 @@ WinuxCmd follows the Google C++ Style Guide with some modifications:
 Use the provided format script to ensure consistent formatting:
 
 ```bash
-winuxsh scripts/format.sh
+scripts/format.sh
 ```
 
 ### Linting
