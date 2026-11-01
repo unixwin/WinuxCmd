@@ -376,9 +376,9 @@ run_case() {
     wcommand="exec $wquoted $(shell_quote "$cmd") $case_args"
   fi
   local gcommand="exec $gquoted $case_args"
-  (cd "$wdir" && export PATH="$(dirname "$wcmd"):$PATH" WINUX_LANG=en LC_ALL="$ORACLE_LOCALE" LANG="$ORACLE_LOCALE" WSLENV="WINUX_LANG/u:${WSLENV:-}" && printf '%b' "$stdin" | MSYS2_ARG_CONV_EXCL='*' MSYS_NO_PATHCONV=1 \
+  (cd "$wdir" && export PATH="$(dirname "$wcmd"):$PATH" WINUX_LANG=en WINUX_DIFFVAR=differential LC_ALL="$ORACLE_LOCALE" LANG="$ORACLE_LOCALE" WSLENV="WINUX_LANG/u:WINUX_DIFFVAR:${WSLENV:-}" && printf '%b' "$stdin" | MSYS2_ARG_CONV_EXCL='*' MSYS_NO_PATHCONV=1 \
     "$timeout_cmd" "$timeout" bash -c "$wcommand" >"$wout" 2>"$werr"); wrc=$?
-  (cd "$gdir" && export PATH="$(dirname "$gcmd"):$PATH" LC_ALL="$ORACLE_LOCALE" LANG="$ORACLE_LOCALE" && printf '%b' "$stdin" | MSYS2_ARG_CONV_EXCL='*' MSYS_NO_PATHCONV=1 \
+  (cd "$gdir" && export PATH="$(dirname "$gcmd"):$PATH" WINUX_DIFFVAR=differential LC_ALL="$ORACLE_LOCALE" LANG="$ORACLE_LOCALE" && printf '%b' "$stdin" | MSYS2_ARG_CONV_EXCL='*' MSYS_NO_PATHCONV=1 \
     "$timeout_cmd" "$timeout" bash -c "$gcommand" >"$gout" 2>"$gerr"); grc=$?
   files_equal=true
   if [ -n "$files" ]; then
@@ -409,9 +409,28 @@ run_case() {
   if [ "$bucket" != PASS ] && [ -n "${KNOWN_DIFFS["${case_file#$ROOT/}"]+x}" ]; then
     bucket=KNOWN_DIFF
   fi
+  if [ "$bucket" != PASS ] && [ "$bucket" != SKIP ] &&
+     [ "$bucket" != KNOWN_DIFF ]; then
+    {
+      printf '## %s (%s)\n\n' "${case_file#$ROOT/}" "$bucket"
+      printf 'subject rc=%s, oracle rc=%s\n\n' "$wrc" "$grc"
+      printf 'subject stdout:\n\n```\n'; cat "$wout"; printf '\n```\n'
+      printf 'subject stderr:\n\n```\n'; cat "$werr"; printf '\n```\n'
+      printf 'oracle stdout:\n\n```\n'; cat "$gout"; printf '\n```\n'
+      printf 'oracle stderr:\n\n```\n'; cat "$gerr"; printf '\n```\n\n'
+    } >> "$EVIDENCE"
+  fi
   printf '%s\t%s\t%s\n' "${case_file#$ROOT/}" "$cmd" "$bucket"
   rm -rf "$work"
 }
+
+# Byte-level evidence for every unexplained mismatch, appended to the
+# report so a red run carries its own reproduction data (whitelist
+# entries cite this evidence; a CI-only divergence is otherwise
+# undiagnosable from the bucket alone).
+EVIDENCE="$ROOT/failures-evidence.md"
+: > "$EVIDENCE"
+printf '# Failing case evidence\n\n' >> "$EVIDENCE"
 
 oracle_cmd=$(find_oracle cat)
 oracle=$({ "$oracle_cmd" --version 2>/dev/null || true; } | head -1 | tr -d '\r')
@@ -485,6 +504,9 @@ if [ -f "$COMMANDS_FILE" ]; then
       printf "Declared commands: %d\\nCovered commands: %d\\nMissing commands: %s\\n",
              length(expected), covered, (missing ? missing : "none")
     }' "$COMMANDS_FILE" "$results" >> "$REPORT"
+fi
+if [ -s "$EVIDENCE" ]; then
+  cat "$EVIDENCE" >> "$REPORT"
 fi
 total=$(wc -l < "$results")
 pass=$(awk -F '\t' '$3 == "PASS" { count++ } END { print count + 0 }' "$results")

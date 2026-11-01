@@ -72,6 +72,27 @@ wpm install jq
 
 Test-release binaries are code-signed via the [SignPath Foundation](https://signpath.org); formal release signing is pending SignPath approval.
 
+## 📦 Editions (1.2.0+)
+
+WinuxCmd ships in two editions built from the same source:
+
+| | **Default edition** | **Full edition** |
+|---|---|---|
+| Assets | `WinuxCmd-<version>-win-<arch>.*` | `WinuxCmd-<version>-win-<arch>-full.*` |
+| Entry links | All commands **except** the full-only names below | All 178 entries |
+| wpm index | yes | **not indexed** — standalone download only |
+
+**Full-only commands:** the default edition does not create entry links for
+**`[`** · **`env`** · **`false`** · **`kill`** · **`test`** · **`time`** ·
+**`true`**. These commands' user-facing semantics are defined by your host
+shell's builtins, so an `kill.exe`-style entry on `PATH` advertises a
+dispatch the builtin actually owns. The commands remain fully implemented in
+the multicall binary — `winuxcmd kill -9 <pid>` works in both editions.
+`echo`, `printf` and `pwd` deliberately keep their entries. The full edition
+materializes every entry link; its asset name always carries the `-full`
+qualifier, and the definition of the split lives in one place
+([`src/core/package_edition.h`](src/core/package_edition.h)).
+
 ## 🚀 Why WinuxCmd
 
 - 🪟 **Native, not emulated** — talks to Win32 APIs directly. Understands `C:\`, UNC paths and NTFS ACLs (with `cygpath` and `getfacl` for bridging). No VM, no runtime DLLs, instant startup.
@@ -266,6 +287,9 @@ See the [GNU Comparison Report](DOCS/en/gnu_comparison_report.md).
 ```bash
 # Build
 ./scripts/build-with-vs.ps1
+
+# Build the full edition (all entry links, "-full" asset names)
+cmake -B build-full -G Ninja -DCMAKE_BUILD_TYPE=Release -DWINUXCMD_PACKAGE_EDITION=full
 
 # Run tests
 ./scripts/build-with-vs.ps1 -Target winuxcmd-tests

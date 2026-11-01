@@ -247,11 +247,9 @@ TEST(timeout, timeout_missing_command) {
   EXPECT_EQ(r.exit_code, 125);
   EXPECT_TRUE(r.stdout_text.empty());
   // [GNU] timeout.c:513-514 sends a short invocation straight to
-  // usage (EXIT_CANCELED) with no dedicated message; the framework's
-  // missing-operand form is what this port reports, exactly as for
-  // the no-argument case below.  GNU has no "missing command" text.
+  // usage (EXIT_CANCELED) with no dedicated message: stderr carries
+  // ONLY the "Try 'timeout --help'" hint (differential timeout/04).
   EXPECT_EQ_TEXT(r.stderr_text,
-                 "timeout: missing operand\n"
                  "Try 'timeout --help' for more information.\n");
 }
 
@@ -262,8 +260,8 @@ TEST(timeout, timeout_missing_operand_reports_help_hint) {
 
   EXPECT_EQ(r.exit_code, 125);
   EXPECT_TRUE(r.stdout_text.empty());
+  // Same usage-only shape as `timeout 5`: one Try line, no message.
   EXPECT_EQ_TEXT(r.stderr_text,
-                 "timeout: missing operand\n"
                  "Try 'timeout --help' for more information.\n");
 }
 

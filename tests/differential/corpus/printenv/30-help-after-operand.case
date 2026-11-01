@@ -1,5 +1,8 @@
 cmd: printenv
-args: LC_ALL --help
+args: WINUX_DIFFVAR --help
 timeout: 10
 source: github.com/unixwin/WinuxCmd/issues/1462
 tags: audit-w3b printenv plus-getopt help-as-variable
+# See 29-option-after-operand.case: WINUX_DIFFVAR is runner-exported to
+# both sides (WSLENV-verbatim), because a WSL-side LC_ALL never reaches
+# the Windows subject through the interop launch.

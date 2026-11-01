@@ -9,6 +9,14 @@ export auto option_policy_for_command(std::string_view command)
   policy.allow_unknown_short_options_as_positionals =
       command == "printf" || command == "expr" || command == "test" ||
       command == "[" || command == "stty" || command == "kill";
+  if (command == "kill") {
+    // [GNU] procps-ng kill (the differential oracle at /usr/bin/kill) parses
+    // argv itself and answers an unknown option with its own
+    // "kill: invalid argument X" + usage block; both unknown short and
+    // unknown long tokens must reach the command body as operands for
+    // that diagnostic (differential kill/12, `kill -p 424242`).
+    policy.allow_unknown_long_options_as_positionals = true;
+  }
   if (command == "uniq" || command == "diff" || command == "split") {
     // #1306: GNU getopt gives these commands' optional short options no
     // attached value inside a cluster: -D/-c/-d are flags there and the

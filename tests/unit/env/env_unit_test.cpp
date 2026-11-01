@@ -605,8 +605,10 @@ TEST(env, env_file_drive_dialect_operand_resolves_named_drive) {
 // receives exactly the command-line assignments, in the order given.
 TEST(env, env_ignore_environment_child_block_exact_and_ordered) {
   TempDir tmp;
+  // #1438: no env.exe entry in the default edition; the multicall binary
+  // copied under the entry name dispatches the same way.
   std::filesystem::copy_file(
-      std::filesystem::path(WINUXCMD_BIN_DIR) / "env.exe", tmp.path / "env.exe",
+      ProjectPaths::entry_binary(L"env.exe"), tmp.path / "env.exe",
       std::filesystem::copy_options::overwrite_existing);
 
   Pipeline p;

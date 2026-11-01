@@ -49,6 +49,27 @@ set_property(CACHE BUILD_MODE PROPERTY STRINGS "DEV" "RELEASE" "DEBUG_RELEASE" "
 option(WINUXCMD_ENABLE_PCRE2 "Enable PCRE2-backed grep -P support" ON)
 option(WINUXCMD_PCRE2_JIT "Enable PCRE2 JIT support" OFF)
 
+# Command-set edition shipped by this build (#1438, ruling of 2026-10-30):
+#   default - every registered command stays runnable through the multicall
+#             dispatcher, but the entry links for the shell-builtin shadow
+#             names (see src/core/package_edition.h) are not materialized;
+#   full    - every registered entry link is materialized (asset names carry
+#             a "-full" suffix; this edition is not distributed via wpm).
+set(WINUXCMD_PACKAGE_EDITION "default" CACHE STRING
+    "Entry-link edition: default (shell-builtin shadow names stripped) or full (all entries)")
+set_property(CACHE WINUXCMD_PACKAGE_EDITION PROPERTY STRINGS "default" "full")
+if(NOT WINUXCMD_PACKAGE_EDITION STREQUAL "default" AND
+   NOT WINUXCMD_PACKAGE_EDITION STREQUAL "full")
+    message(FATAL_ERROR
+            "Unsupported WINUXCMD_PACKAGE_EDITION='${WINUXCMD_PACKAGE_EDITION}'. "
+            "Use default or full.")
+endif()
+if(WINUXCMD_PACKAGE_EDITION STREQUAL "full")
+    set(WINUXCMD_PACKAGE_EDITION_SUFFIX "-full")
+else()
+    set(WINUXCMD_PACKAGE_EDITION_SUFFIX "")
+endif()
+
 set(WINUXCMD_CXX_DIALECT "23" CACHE STRING "C++ dialect canary: 23, 26, or latest")
 set_property(CACHE WINUXCMD_CXX_DIALECT PROPERTY STRINGS "23" "26" "latest")
 if (NOT WINUXCMD_CXX_DIALECT STREQUAL "23" AND
@@ -173,6 +194,54 @@ if(WINUXCMD_ENABLE_PCRE2)
     )
     FetchContent_MakeAvailable(winuxcmd_pcre2)
     set(WINUXCMD_PCRE2_TARGET pcre2-8-static)
+
+    # The release payload must ship the runtime only. PCRE2 registers
+    # unconditional install() rules - headers, static import libs, CMake
+    # package config, pkgconfig files, man pages, html/txt docs and the
+    # pcre2-config script - which turned every standalone archive into a
+    # full PCRE2 SDK tree (~7.8 MB of include/ lib/ share/ plus
+    # usr/bin/pcre2-config that no consumer of the command package reads).
+    # Registered after PCRE2's own rules, this pass strips that SDK tree
+    # from every staged install tree - archive and installer alike - before
+    # CPack packs it (unixwin/WinuxCmd#1438). Only PCRE2-populated paths are
+    # removed, and the shared parent directories are pruned only when the
+    # strip left them empty.
+    install(CODE [[
+        set(_sdk_prefix "${CMAKE_INSTALL_PREFIX}")
+        file(GLOB _sdk_files
+            "${_sdk_prefix}/include/pcre2*.h"
+            "${_sdk_prefix}/lib/pcre2*.lib"
+            "${_sdk_prefix}/lib/pkgconfig/libpcre2*.pc"
+            "${_sdk_prefix}/bin/pcre2-config*"
+            "${_sdk_prefix}/usr/bin/pcre2-config*")
+        if(_sdk_files)
+            file(REMOVE ${_sdk_files})
+        endif()
+        file(REMOVE_RECURSE
+            "${_sdk_prefix}/lib/cmake/pcre2"
+            "${_sdk_prefix}/share/doc/pcre2")
+        file(GLOB _sdk_man_files
+            "${_sdk_prefix}/share/man/man1/pcre2*"
+            "${_sdk_prefix}/share/man/man3/pcre2*")
+        if(_sdk_man_files)
+            file(REMOVE ${_sdk_man_files})
+        endif()
+        # Deepest-first: a child directory must be judged (and removed)
+        # before its parent, or the parent's glob still sees the child and
+        # skips the prune. `bin` is pruned too because a fresh configure
+        # lets PCRE2 drop pcre2-config there (GNUInstallDirs defaults the
+        # bindir before the parent project pins usr/bin); `usr/bin` is
+        # never pruned - the project's own payload lands there after this
+        # strip.
+        foreach(_sdk_dir lib/pkgconfig lib/cmake include
+                share/man/man1 share/man/man3 share/man share/doc share
+                lib bin)
+            file(GLOB _sdk_children "${_sdk_prefix}/${_sdk_dir}/*")
+            if(NOT _sdk_children)
+                file(REMOVE_RECURSE "${_sdk_prefix}/${_sdk_dir}")
+            endif()
+        endforeach()
+    ]])
 endif()
 
 set(WINUXCMD_IMPORT_STD_LEVELS "${CMAKE_CXX_COMPILER_IMPORT_STD}")
@@ -454,6 +523,15 @@ target_compile_definitions(winuxcmd-commands PRIVATE
 if(WINUXCMD_ENABLE_PCRE2)
     target_compile_definitions(winuxcmd-commands PRIVATE WINUXCMD_ENABLE_PCRE2)
     target_link_libraries(winuxcmd-commands PRIVATE ${WINUXCMD_PCRE2_TARGET})
+endif()
+
+if(WINUXCMD_PACKAGE_EDITION STREQUAL "full")
+    # Entry-link edition switch read by src/core/package_edition.h (see the
+    # single command-name list there); only the wpm link-management paths
+    # consult it, so the winuxcmd-commands target is the sole definition
+    # point (unixwin/WinuxCmd#1438).
+    target_compile_definitions(winuxcmd-commands PRIVATE
+            WINUXCMD_PACKAGE_EDITION_FULL=1)
 endif()
 
 # Link options
@@ -747,9 +825,9 @@ if (WIN32)
     endif ()
 
     if (WINUXCMD_RESOLVED_PACKAGE_ARCH STREQUAL "arm64")
-        set(CPACK_PACKAGE_FILE_NAME "${CPACK_PACKAGE_NAME}-${CPACK_PACKAGE_VERSION}-win-arm64")
+        set(CPACK_PACKAGE_FILE_NAME "${CPACK_PACKAGE_NAME}-${CPACK_PACKAGE_VERSION}-win-arm64${WINUXCMD_PACKAGE_EDITION_SUFFIX}")
     else ()
-        set(CPACK_PACKAGE_FILE_NAME "${CPACK_PACKAGE_NAME}-${CPACK_PACKAGE_VERSION}-win-x64")
+        set(CPACK_PACKAGE_FILE_NAME "${CPACK_PACKAGE_NAME}-${CPACK_PACKAGE_VERSION}-win-x64${WINUXCMD_PACKAGE_EDITION_SUFFIX}")
     endif ()
 endif ()
 
@@ -793,6 +871,7 @@ message(STATUS "Map Info Generation: ${GENERATE_MAP_INFO}")
 message(STATUS "Unity Build: ${ENABLE_UNITY_BUILD}")
 message(STATUS "Static CRT: ${USE_STATIC_CRT}")
 message(STATUS "PCRE2 grep -P: ${WINUXCMD_ENABLE_PCRE2} (JIT=${WINUXCMD_PCRE2_JIT})")
+message(STATUS "Package edition: ${WINUXCMD_PACKAGE_EDITION} (entry links for shell-builtin shadow names: ${WINUXCMD_PACKAGE_EDITION_SUFFIX})")
 message(STATUS "Note: Run `winuxcmd wpm links rebuild` in bin directory to generate command links")
 message(STATUS "=================================================================")
 

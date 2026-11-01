@@ -574,6 +574,13 @@ auto command_names() -> std::vector<std::string> {
   std::vector<std::string> names;
   for (const auto& [name, desc] : CommandRegistry::getAllCommands()) {
     (void)desc;
+    // Edition split (#1438): the default edition never advertises the
+    // shell-builtin shadow names as entry links, whatever the registry
+    // holds. The single name list lives in core:dispatcher's
+    // winux_edition namespace.
+    if constexpr (!winux_edition::ships_full_entries()) {
+      if (winux_edition::is_full_only_command(name)) continue;
+    }
     names.emplace_back(name);
   }
   if (std::ranges::find(names, std::string(kInternalToolName)) == names.end()) {
@@ -591,10 +598,30 @@ auto legacy_link_names() -> std::vector<std::string> {
   return {"jq", "link"};
 }
 
+/// Names this build owns in usr\bin even though it never creates them: the
+/// historical legacy links, plus - in the default edition - the full-only
+/// names of the #1438 split. Drives the uninstall sweep
+/// (`wpm links remove`) and the package-mapping takeover rule (a stale name
+/// may be replaced without --force); the upgrade retirement itself runs in
+/// retire_edition_links.
+auto link_sweep_names() -> std::vector<std::string> {
+  std::vector<std::string> names = legacy_link_names();
+  if constexpr (!winux_edition::ships_full_entries()) {
+    for (const auto& name : winux_edition::kFullOnlyCommandNames) {
+      names.emplace_back(std::string(name));
+    }
+  }
+  return names;
+}
+
+/// Stale-link names a package file mapping may take over without --force:
+/// the historical legacy links plus, in the default edition, the full-only
+/// entry names of the #1438 split (this image no longer creates them, so a
+/// payload claiming the name must not be blocked by its leftover hardlink).
 auto is_legacy_link_name(std::string_view name) -> bool {
   std::string wanted = exe_suffix(name);
   wanted = lower_ascii(wanted);
-  for (const auto& legacy : legacy_link_names()) {
+  for (const auto& legacy : link_sweep_names()) {
     if (wanted == lower_ascii(exe_suffix(legacy))) return true;
   }
   return false;
@@ -602,7 +629,7 @@ auto is_legacy_link_name(std::string_view name) -> bool {
 
 auto cleanup_link_names() -> std::vector<std::string> {
   auto names = command_names();
-  for (const auto& legacy : legacy_link_names()) names.emplace_back(legacy);
+  for (const auto& sweep : link_sweep_names()) names.emplace_back(sweep);
   std::ranges::sort(names);
   names.erase(std::ranges::unique(names).begin(), names.end());
   return names;
@@ -701,6 +728,69 @@ auto remove_stale_legacy_links(const fs::path& root, const fs::path& source,
     }
   }
 
+  return {removed, failed};
+}
+
+/// Default-edition retirement of the full-only entry names (#1438). A 1.1.x
+/// install - or a previous full-edition install - carries kill.exe/test.exe/
+/// ... hardlinks in usr\bin; on a default-edition image those entries must
+/// go, or the upgrade leaves an exe entry shadowing the host-shell builtin
+/// on PATH. The names are WinuxCmd's own command namespace inside
+/// usr\bin (the same contract the relink loop applies to every current
+/// command name, unixwin/WinuxCmd#1206): any regular file sitting at one of
+/// them is retired, whatever inode it currently points at - the upgrade
+/// path rewrites winuxcmd.exe, so the stale links usually hardlink the
+/// PREVIOUS image and a same_file guard would never fire. The running
+/// image's own name and directories are spared; the single name list comes
+/// from core:dispatcher's edition namespace.
+auto retire_edition_links(const fs::path& root, const fs::path& current,
+                          bool dry_run, bool verbose) -> std::pair<int, int> {
+  int removed = 0;
+  int failed = 0;
+  if constexpr (winux_edition::ships_full_entries()) {
+    (void)root;
+    (void)current;
+    (void)dry_run;
+    (void)verbose;
+    return {removed, failed};
+  }
+  const fs::path target_dir = canonical_bin_dir(root);
+  for (const auto& name : winux_edition::kFullOnlyCommandNames) {
+    const fs::path target = target_dir / exe_suffix(name);
+    std::error_code ec;
+    if (!fs::exists(target, ec)) continue;
+    if (same_path_name(current, target)) {
+      safePrintLn(wpm_text("command.wpm.status.keep_running",
+                           "wpm: keeping running executable: {}",
+                           target.string()));
+      continue;
+    }
+    if (fs::is_directory(target, ec)) {
+      safeErrorPrintLn(wpm_text("command.wpm.error.refuse_directory",
+                                "wpm: refusing to replace directory: {}",
+                                target.string()));
+      ++failed;
+      continue;
+    }
+    if (dry_run) {
+      safePrintLn(wpm_text("command.wpm.status.remove_legacy",
+                           "remove legacy link {}", target.string()));
+      ++removed;
+      continue;
+    }
+    if (delete_file_name(target)) {
+      ++removed;
+      if (verbose)
+        safePrintLn(wpm_text("command.wpm.status.removed_legacy",
+                             "removed legacy link {}", target.string()));
+    } else {
+      safeErrorPrintLn(wpm_text("command.wpm.error.remove_legacy",
+                                "wpm: failed to remove legacy link '{}': {}",
+                                target.string(),
+                                win32_error_text(GetLastError())));
+      ++failed;
+    }
+  }
   return {removed, failed};
 }
 
@@ -811,6 +901,12 @@ auto rebuild_links(const fs::path& root, bool force, bool dry_run, bool verbose)
   auto [stale_removed, stale_failed] =
       remove_stale_legacy_links(root, source, current, dry_run, verbose);
   failed += stale_failed;
+  // The default edition also retires the full-only entry names a previous
+  // image left in usr\bin (#1438); the full edition is a no-op here.
+  auto [edition_removed, edition_failed] =
+      retire_edition_links(root, current, dry_run, verbose);
+  stale_removed += edition_removed;
+  failed += edition_failed;
 
   for (const auto& name : command_names()) {
     fs::path target = canonical_bin_dir(root) / exe_suffix(name);
@@ -950,7 +1046,9 @@ auto rebuild_links(const fs::path& root, bool force, bool dry_run, bool verbose)
 /// but point somewhere else. That is the residue of an update which could not
 /// replace one of them - the command then runs an older build forever, and
 /// nothing else notices (unixwin/WinuxCmd#1206). Absent names are not stale:
-/// the command set is created, never guaranteed complete.
+/// the command set is created, never guaranteed complete. In the default
+/// edition the full-only entry names are stale whenever their file exists:
+/// the image no longer creates them at all (#1438).
 auto stale_command_links(const fs::path& root) -> std::vector<std::string> {
   std::vector<std::string> stale;
   const fs::path canonical_source = canonical_winuxcmd_path(root);
@@ -968,6 +1066,14 @@ auto stale_command_links(const fs::path& root) -> std::vector<std::string> {
     if (same_file(source, target)) continue;
     if (same_path_name(current, target)) continue;  // the running image
     stale.emplace_back(name);
+  }
+  if constexpr (!winux_edition::ships_full_entries()) {
+    const fs::path target_dir = canonical_bin_dir(root);
+    for (const auto& name : winux_edition::kFullOnlyCommandNames) {
+      std::error_code target_ec;
+      if (fs::exists(target_dir / exe_suffix(name), target_ec))
+        stale.emplace_back(std::string(name));
+    }
   }
   return stale;
 }

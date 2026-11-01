@@ -669,15 +669,19 @@ TEST(date, date_reference_missing_dialect_operand_quotes_as_typed) {
   TEST_LOG_EXIT_CODE(r);
   TEST_LOG("date -r missing operand stderr", r.stderr_text);
 
-  // A missing reference still fails, but the message quotes the operand
-  // exactly as typed - the dialect fold happens only at the Win32 probe
-  // boundary, like MSYS which echoes the spelling the user used.
-  // [GNU] date.c:609-612 (9.4): the diagnostic is the quotef form,
-  // error (EXIT_FAILURE, errno, "%s", quotef (reference)).
+  // A missing reference still fails; the operand echoes exactly as
+  // typed - the dialect fold happens only at the Win32 probe boundary.
+  // [GNU] date.c:596-600 (9.4): quotef() quotes only names that need
+  // quoting, so a plain name like this one prints UNQUOTED --
+  // "date: <operand>: No such file or directory" (differential date/34).
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_NE(r.stderr_text.find("': No such file or directory"),
+  EXPECT_NE(r.stderr_text.find(": No such file or directory"),
             std::string::npos);
   EXPECT_NE(r.stderr_text.find(date_dialect_detail::utf8_operand(operand)),
+            std::string::npos);
+  EXPECT_EQ(r.stderr_text.find("'" +
+                                date_dialect_detail::utf8_operand(operand) +
+                                "'"),
             std::string::npos);
 }
 

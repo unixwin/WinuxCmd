@@ -7,6 +7,27 @@ import argparse
 import json
 from pathlib import Path
 
+
+def declared_shape_skip(case_key: str) -> bool:
+    """True when the case file itself opts into a launch shape.
+
+    A case declaring ``oracle:`` or ``subject:`` runs only in that shape;
+    under any other shape runner.sh SKIPs it by construction, which is
+    the case's own declaration at work - not environment drift.  Such a
+    skip is explained regardless of what the ledger recorded for it (the
+    migration rule records baseline.json in the linux/interop shape,
+    where msys-oracle and native-subject cases never execute).
+    """
+    case_path = Path(__file__).resolve().parent / case_key
+    try:
+        text = case_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return any(
+        line.startswith("oracle:") or line.startswith("subject:")
+        for line in text.splitlines())
+
+
 ORDER = {
     "PASS": 0,
     # KNOWN_DIFF is the bucket runner.sh assigns when a case differs in a
@@ -47,9 +68,12 @@ def main() -> int:
             # case's declared verdict in the recorded shape, produced by
             # a precondition (oracle:/subject:) that shape cannot
             # satisfy. The skip stays visible in every run's census.
-            # Any other skip means the environment drifted from the
-            # recorded one, which is what this rule exists to catch.
-            if old != "SKIP":
+            # A skip for a case whose file declares its own shape is
+            # equally explained - the declaration is the reason it cannot
+            # run here. Any other skip means the environment drifted
+            # from the recorded one, which is what this rule exists to
+            # catch.
+            if old != "SKIP" and not declared_shape_skip(key):
                 errors.append(f"unexplained skip: {key}")
         elif old == "SKIP":
             # The recorded shape cannot run this case, so a verdict in

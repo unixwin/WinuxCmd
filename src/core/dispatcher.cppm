@@ -1362,6 +1362,44 @@ export bool is_literal_arg_command(std::string_view cmd_name) noexcept {
       [cmd_name](std::string_view name) { return name == cmd_name; });
 }
 
+// Edition split of the entry-link surface (#1438, ruling of 2026-10-30).
+//
+// Every name here keeps its full implementation in both editions - the
+// multicall dispatcher still accepts `winuxcmd kill ...` - but the DEFAULT
+// edition does not materialize a per-name entry link next to winuxcmd.exe:
+// the user-facing semantics of these commands are defined by the host
+// shell's builtins, so an on-PATH exe entry advertises a dispatch the
+// builtin actually owns, and the exe form cannot be reconciled with the
+// builtin mechanism. `echo`, `printf` and `pwd` deliberately stay in the
+// default edition: they have real file-form work under rubash#2147's
+// literal-file gate. The FULL edition materializes every registered entry.
+//
+// Build wiring: the CMake option WINUXCMD_PACKAGE_EDITION (`default` or
+// `full`) defines WINUXCMD_PACKAGE_EDITION_FULL for the winuxcmd-commands
+// target when it is `full`. Every consumer - wpm links rebuild/remove/
+// verify, any packaging-side census, index generation - must read the names
+// through this one declaration; re-declaring the list anywhere else (a
+// second exclusion list in a packaging script, a hand-edited index files
+// array) is the defect class #1438 rules out.
+export namespace winux_edition {
+inline constexpr std::string_view kFullOnlyCommandNames[] = {
+    "[", "env", "false", "kill", "test", "time", "true"};
+
+// True when this build ships the full entry set.
+consteval bool ships_full_entries() noexcept {
+#ifdef WINUXCMD_PACKAGE_EDITION_FULL
+  return true;
+#else
+  return false;
+#endif
+}
+
+inline constexpr bool is_full_only_command(std::string_view name) noexcept {
+  return std::ranges::find(kFullOnlyCommandNames, name) !=
+         std::ranges::end(kFullOnlyCommandNames);
+}
+}  // namespace winux_edition
+
 // Internal registry implementation class
 class RegistryImpl {
   std::unordered_map<std::string_view, CommandEntryErased> registry_;
@@ -1641,6 +1679,34 @@ class RegistryImpl {
     }
     return result;
   }
+
+  // [verb form] `winuxcmd <cmd> ... --version` prints the top-level banner
+  // only when "--version" is one of <cmd>'s own option tokens under the
+  // rule run() applies: the per-command interception policy (nohup stops
+  // at the wrapped command, printf/test/[ honour it only as the sole
+  // argument) and the #1303 role classification (wrapper operands, value
+  // options and "--" are not options). Without this, `winuxcmd env echo
+  // --version` stole the child's --version -- which #1438 turns into a
+  // product-path defect, since the default edition reaches env/kill/...
+  // only through the verb form. One source of truth with run(), so
+  // main.cpp keeps no hand-copied table (WinuxCmd #1215).
+  bool verb_form_wants_version(std::string_view cmdName,
+                               std::span<std::string_view> args) {
+    if (is_literal_arg_command(cmdName)) return false;
+    auto it = registry_.find(cmdName);
+    if (it == registry_.end()) return false;
+    const CommandBehavior behavior = behavior_for(cmdName);
+    if (!behavior.standard_interception_enabled(args)) return false;
+    if (behavior.help_version_only_when_sole_argument) {
+      return args.size() == 1 && args[0] == "--version";
+    }
+    const std::vector<ArgRole> roles =
+        classify_args_for_dispatch(cmdName, args, it->second.options);
+    for (size_t i = 0; i < args.size(); ++i) {
+      if (roles[i] == ArgRole::Option && args[i] == "--version") return true;
+    }
+    return false;
+  }
 };
 
 // Get singleton instance
@@ -1699,6 +1765,13 @@ export class CommandRegistry {
     auto all = getImpl().list();
     return std::ranges::any_of(
         all, [cmdName](const auto &item) { return item.first == cmdName; });
+  }
+
+  // Verb-form `--version` scan (main.cpp): true only when --version is the
+  // command's own option token under the dispatcher's interception rule.
+  static bool verbFormWantsVersion(std::string_view cmdName,
+                                   std::span<std::string_view> args) noexcept {
+    return getImpl().verb_form_wants_version(cmdName, args);
   }
 
   // Print man page for a command
