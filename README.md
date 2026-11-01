@@ -78,7 +78,7 @@ Release binaries are code-signed via the [SignPath Foundation](https://signpath.
 - 🧠 **GNU where it counts** — `find` alone implements 88 options (full expression parser, `-exec`/`-execdir`/`-ok`, `-printf`); `grep` ships PCRE2; `sed` supports in-place `-i` editing.
 - 📦 **WPM built in** — a package manager for the tools that shouldn't be reimplemented: jq, ripgrep, fd, fzf, bat, make, neovim, curl, wget…
 - 🧪 **Tested like it matters** — 3,659 unit tests, plus a 178-case differential suite byte-compared against authoritative upstream sources (GNU coreutils 9.7, findutils 4.10.0, grep 3.12, sed 4.9, patch 2.7.6, util-linux 2.41, procps-ng 4.0.4). Every command audited line-by-line; reports in `tests/differential/audit-*.md`.
-- ⚡ **Small, fast, PGO-built** — 3.79 MB for 176 commands, statically linked, zero dependencies, ~19 ms cold start. Published x64 binaries are Profile-Guided Optimization builds trained on real workloads (sort −18%, nl −17% vs the same code without PGO). Methodology and data: `docs/performance-roadmap.md`.
+- ⚡ **Small, fast, PGO-built** — 3.79 MB for 176 commands, statically linked, zero dependencies, ~19 ms cold start. Published x64 binaries are Profile-Guided Optimization builds trained on real workloads (sort −18%, nl −17% vs the same code without PGO). Methodology and data: `DOCS/performance-roadmap.md`.
 
 ## 🐂 Better together: the niubash shell
 
