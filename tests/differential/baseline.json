@@ -2567,6 +2567,14 @@
     "regressions/99-tac-regex-sep.case": {
       "bucket": "PASS",
       "command": "tac"
+    },
+    "regressions/121-readlink-f-posix-separators.case": {
+      "bucket": "PASS",
+      "command": "readlink"
+    },
+    "regressions/122-readlink-m-missing-posix-separators.case": {
+      "bucket": "PASS",
+      "command": "readlink"
     }
   }
 }

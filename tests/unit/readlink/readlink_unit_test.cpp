@@ -598,3 +598,76 @@ TEST(readlink, readlink_f_cygdrive_directory_prefix_is_drive_root_dir) {
   EXPECT_EQ_TEXT(normalize_path_text(r.stdout_text),
                  normalize_path_text(dir.path.string() + "\n"));
 }
+
+// ===== #1491 regression: canonicalize modes print '/' separators =====
+//
+// [GNU] readlink -f/-e/-m print the canonicalize_filename_mode() name, which
+// lib/canonicalize.c assembles with '/' by construction (WSL coreutils 9.4
+// probe: 'readlink -f d/f.txt' → '/tmp/.../d/f.txt', zero backslashes). A '\'
+// separator breaks the shell's pattern word arithmetic that consumes the
+// output (bats-core: BATS_ROOT=$(cd -P -- "${BATS_PATH%/*/*}" && pwd -P)).
+
+TEST(readlink, readlink_f_output_uses_posix_separators) {
+  TempDir tmp;
+  tmp.mkdir("d");
+  tmp.write("d/f.txt", "content");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"readlink.exe", {L"-f", L"d\\f.txt"});
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("readlink -f output", r.stdout_text);
+
+  EXPECT_EQ(r.exit_code, 0);
+  // The canonical name must be consumable by the shell: forward separators
+  // only, even for a backslash-spelled operand.
+  EXPECT_TRUE(r.stdout_text.find('\\') == std::string::npos);
+  EXPECT_FALSE(r.stdout_text.find('/') == std::string::npos);
+  // ...and it still names the same file (drive spelling aside).
+  EXPECT_EQ_TEXT(
+      normalize_path_text(r.stdout_text),
+      normalize_path_text((tmp.path / "d" / "f.txt").string() + "\n"));
+}
+
+TEST(readlink, readlink_e_output_uses_posix_separators) {
+  TempDir tmp;
+  tmp.write("present.txt", "hello");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"readlink.exe", {L"-e", L"present.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find('\\') == std::string::npos);
+  EXPECT_FALSE(r.stdout_text.find('/') == std::string::npos);
+}
+
+TEST(readlink, readlink_f_bats_root_word_arithmetic_works) {
+  // End-to-end shape of the bats-core launcher: strip two '/'-separated
+  // components off the readlink -f output and cd -P into the result.
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "suite" / "bin");
+  tmp.write("suite/bin/tool", "#!/bin/sh\n");
+
+  std::string line;
+  {
+    Pipeline p;
+    p.set_cwd(tmp.path / "suite" / "bin");
+    p.add(L"readlink.exe", {L"-f", L"tool"});
+    auto r = p.run();
+    ASSERT_EQ(r.exit_code, 0);
+    line = r.stdout_text;
+    while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) {
+      line.pop_back();
+    }
+  }
+
+  const size_t cut = line.rfind('/');
+  ASSERT_NE(cut, std::string::npos);
+  const std::string root = line.substr(0, line.rfind('/', cut - 1));
+  const std::string suite_root = (tmp.path / "suite").string();
+  EXPECT_EQ_TEXT(normalize_path_text(root), normalize_path_text(suite_root));
+}
