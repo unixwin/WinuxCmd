@@ -90,7 +90,7 @@ done | sort -t: -k2 -rn | head -5
 - **对 AI agent 友好** —— `niu -c` 安静且确定：无 banner、stdout/stderr 稳定、退出码精确传递。你的 AI 工具天生就会说的 shell。
 - **零胶水** —— niubash 启动时把 WinuxCmd 的命令链接注入 `PATH`，上面示例里的 `grep`、`sed`、`find` 就是真二进制本尊。
 
-3 MB 的 exe 单独能打；装上 [niubash](https://github.com/unixwin/niubash)（v1.0.0），整条 bash 工作流都是你的。
+3 MB 的 exe 单独能打；装上 [niubash](https://github.com/unixwin/niubash)（v1.4.4），整条 bash 工作流都是你的。
 
 ## 📦 WPM 包管理器
 

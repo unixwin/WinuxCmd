@@ -95,7 +95,7 @@ done | sort -t: -k2 -rn | head -5
 - **Agent-friendly** — `niu -c` is quiet and deterministic: no banners, stable stdout/stderr, exact exit codes. The shell your AI tooling already speaks.
 - **Zero glue** — niubash injects WinuxCmd's command links onto the `PATH` at startup, so `grep`, `sed` and `find` above are the real binaries you're looking at right now.
 
-Ship WinuxCmd alone in a 3 MB exe, or drop in [niubash](https://github.com/unixwin/niubash) (v1.0.0) and get the whole bash workflow.
+Ship WinuxCmd alone in a 3 MB exe, or drop in [niubash](https://github.com/unixwin/niubash) (v1.4.4) and get the whole bash workflow.
 
 ## 📦 WPM package manager
 
