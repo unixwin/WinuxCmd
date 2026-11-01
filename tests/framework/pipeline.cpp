@@ -224,12 +224,27 @@ CommandResult Pipeline::run() {
     // stderr: all go to same pipe
     si.hStdError = final_err_w;
     std::wstring exe = cmds_[i].exe;
+    std::vector<std::wstring> args = cmds_[i].args;
 
     if (exe_dir_ && exe.find(L'\\') == std::wstring::npos &&
         exe.find(L'/') == std::wstring::npos) {
-      exe = *exe_dir_ + L"\\" + exe;
+      std::wstring candidate = *exe_dir_ + L"\\" + exe;
+      // #1438: the default edition materializes no entry for the seven
+      // host-semantics names (kill test [ true false env time); the applet
+      // stays reachable through the multicall verb. A missing entry is
+      // routed as `winuxcmd.exe <verb>` instead of failing CreateProcessW,
+      // so the unit suite runs against the shipped default tree.
+      if (exe.ends_with(L".exe") &&
+          GetFileAttributesW(candidate.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        const std::wstring multicall = *exe_dir_ + L"\\winuxcmd.exe";
+        if (GetFileAttributesW(multicall.c_str()) != INVALID_FILE_ATTRIBUTES) {
+          args.insert(args.begin(), exe.substr(0, exe.size() - 4));
+          candidate = multicall;
+        }
+      }
+      exe = candidate;
     }
-    auto cmdline = build_cmd(exe, cmds_[i].args);
+    auto cmdline = build_cmd(exe, args);
     const wchar_t *cwd = cwd_ ? cwd_->c_str() : nullptr;
     auto build_env_block = [this]() -> std::vector<wchar_t> {
       struct ci_less {
