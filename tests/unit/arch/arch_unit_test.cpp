@@ -32,6 +32,23 @@ TEST(arch, arch_version_succeeds) {
   EXPECT_TRUE(r.stderr_text.empty());
 }
 
+// [#1462] arch is uname -m: both must print the same machine name
+// (the native architecture, even for a WOW64 process).
+TEST(arch, arch_matches_uname_m) {
+  Pipeline pa;
+  pa.add(L"arch.exe", {});
+
+  Pipeline pu;
+  pu.add(L"uname.exe", {L"-m"});
+
+  auto ra = pa.run();
+  auto ru = pu.run();
+
+  EXPECT_EQ(ra.exit_code, 0);
+  EXPECT_EQ(ru.exit_code, 0);
+  EXPECT_EQ_TEXT(ra.stdout_text, ru.stdout_text);
+}
+
 // [#1215] arch takes no operands: GNU coreutils reports
 // "arch: extra operand 'extra'" and exits 1 instead of printing the answer.
 TEST(arch, arch_extra_operand_rejected_issue1215) {

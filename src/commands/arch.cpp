@@ -37,9 +37,11 @@ auto build_config(const CommandContext<ARCH_OPTIONS.size()>& ctx)
 }
 
 auto run(const Config& cfg) -> int {
-  // Get system architecture
+  // [GNU] arch is uname -m: report the NATIVE machine, as uname.cpp
+  // does. GetSystemInfo reports the emulated architecture for a
+  // WOW64 process, which would make arch and uname -m disagree.
   SYSTEM_INFO si;
-  GetSystemInfo(&si);
+  GetNativeSystemInfo(&si);
 
   const char* arch = "unknown";
 
