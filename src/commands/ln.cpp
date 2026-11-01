@@ -20,6 +20,14 @@ import utils;
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
+// Windows 10 14972+ / SDK: with Developer Mode enabled, an unprivileged
+// process may create symbolic links when this flag is passed. Older Windows
+// rejects the flag itself with ERROR_INVALID_PARAMETER, so the caller must
+// retry without it (see create_symlink).
+#ifndef SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE
+#define SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE (0x2)
+#endif
+
 /**
  * @brief LN command options definition
  *
@@ -260,6 +268,30 @@ auto create_hardlink(const std::string &source, const std::string &target,
                          "': " + ln_windows_error_text(error));
 }
 
+// [Windows] #1491: opt-in MSYS-style copy fallback. GNU ln has no fallback:
+// a failed symlink() is reported through the 'failed to create symbolic
+// link %s -> %s' error path (ln.c, 9.4) and ln exits 1, so the default keeps
+// GNU fidelity. Ecosystem scripts that must survive a no-privilege host
+// (bats-core links the test file before every suite) set
+// WINUX_LN_FALLBACK=copy to request a plain file copy when -s fails for lack
+// of the symlink privilege, the same downgrade MSYS performs for `ln -s`
+// when MSYS=winsymlinks is unset.
+auto symlink_copy_fallback_requested() -> bool {
+  const char* raw = std::getenv("WINUX_LN_FALLBACK");
+  if (raw == nullptr) return false;
+  std::string value(raw);
+  std::ranges::transform(value, value.begin(),
+                         [](unsigned char ch) { return std::tolower(ch); });
+  return value == "copy";
+}
+
+// Privilege-class failures of CreateSymbolicLinkW: the caller lacks
+// SeCreateSymbolicLinkPrivilege and Developer Mode is off (or the OS predates
+// the unprivileged flag).
+auto is_symlink_privilege_error(DWORD error) -> bool {
+  return error == ERROR_PRIVILEGE_NOT_HELD || error == ERROR_INVALID_PARAMETER;
+}
+
 /**
  * @brief Create a symbolic link
  * @param source Source file/directory path (folded API form, #1234)
@@ -288,7 +320,13 @@ auto create_symlink(const std::string &source, const std::string &target,
   // [GNU] a symlink source may be dangling; creation must not fail when the
   // source does not exist (uutils #13667)
 
-  if (CreateSymbolicLinkW(wtarget.c_str(), wsource.c_str(), flags)) {
+  // #1491: try the Developer Mode flag first, so an unprivileged user with
+  // Developer Mode enabled gets a real symlink instead of a failure. On
+  // Windows that predates the flag the call fails with
+  // ERROR_INVALID_PARAMETER and the retry below restores the old behaviour;
+  // an elevated token passes either way.
+  if (CreateSymbolicLinkW(wtarget.c_str(), wsource.c_str(),
+                          flags | SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE)) {
     if (verbose) {
       safePrint("'");
       safePrint(target_display);
@@ -300,6 +338,34 @@ auto create_symlink(const std::string &source, const std::string &target,
   }
 
   DWORD error = GetLastError();
+  if (is_symlink_privilege_error(error)) {
+    if (CreateSymbolicLinkW(wtarget.c_str(), wsource.c_str(), flags)) {
+      if (verbose) {
+        safePrint("'");
+        safePrint(target_display);
+        safePrint("' -> '");
+        safePrint(source_display);
+        safePrint("'\n");
+      }
+      return {};
+    }
+    error = GetLastError();
+  }
+
+  // #1491: opt-in copy downgrade for hosts without the symlink privilege.
+  // Only a regular-file source can be downgraded this way; a dangling or
+  // directory source keeps the GNU-style refusal above. Like the MSYS
+  // downgrade it mirrors, the copy is SILENT: bats-core asserts byte-exact
+  // TAP streams that merge stderr, so a notice here breaks the very
+  // ecosystem the opt-in exists to unblock.
+  if (is_symlink_privilege_error(error) && symlink_copy_fallback_requested() &&
+      attrs != INVALID_FILE_ATTRIBUTES && !is_directory) {
+    if (CopyFileW(wsource.c_str(), wtarget.c_str(), FALSE)) {
+      return {};
+    }
+    error = GetLastError();
+  }
+
   return std::unexpected("failed to create symbolic link '" + target_display +
                          "': " + ln_windows_error_text(error));
 }

@@ -757,3 +757,124 @@ TEST(ln, issue1367_dangling_destination_backup_and_force) {
   EXPECT_EQ(std::filesystem::read_symlink(tmp.path / "e", ec),
             std::filesystem::path("t"));
 }
+
+
+// ===== #1491: unprivileged -s and the WINUX_LN_FALLBACK=copy downgrade =====
+//
+// A probe for "can this process create real symlinks": elevated tokens and
+// Developer Mode sessions can, plain unprivileged sessions cannot. The tests
+// below assert both branches without assuming which host runs them.
+
+namespace {
+
+auto ln_can_create_real_symlinks(const std::filesystem::path& probe_dir)
+    -> bool {
+  std::error_code ec;
+  std::filesystem::create_symlink("t", probe_dir / "probe", ec);
+  bool ok = !ec;
+  std::filesystem::remove(probe_dir / "probe", ec);
+  return ok;
+}
+
+}  // namespace
+
+TEST(ln, ln_s_without_fallback_reports_gnu_style_failure) {
+  TempDir tmp;
+  tmp.write("original.txt", "hello\n");
+  if (ln_can_create_real_symlinks(tmp.path)) {
+    std::cout << "  SKIPPED (this session can create symbolic links)\n";
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_env(L"WINUX_LN_FALLBACK", L"");
+  p.add(L"ln.exe", {L"-s", L"original.txt", L"link.txt"});
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("ln -s stderr", r.stderr_text);
+
+  // [GNU] Without the opt-in, the privilege failure keeps GNU ln's contract:
+  // report and exit 1, never a silent copy.
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "ln: failed to create symbolic link 'link.txt': Operation "
+                 "not permitted\n");
+}
+
+TEST(ln, ln_s_copy_fallback_copies_regular_file) {
+  TempDir tmp;
+  tmp.write("original.txt", "hello\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_env(L"WINUX_LN_FALLBACK", L"copy");
+  p.add(L"ln.exe", {L"-s", L"original.txt", L"link.txt"});
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("ln -s fallback stdout", r.stdout_text);
+  TEST_LOG("ln -s fallback stderr", r.stderr_text);
+
+  // On a privileged host a real link is created; on an unprivileged host the
+  // opt-in downgrade copies the file. Either way bats' `set -e` survives.
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(tmp.read("link.txt"), "hello\n");
+  // The downgrade is silent, like the MSYS one it mirrors: bats-core merges
+  // stderr into its TAP stream and asserts it byte-exact, so a notice here
+  // would break the ecosystem the opt-in exists to unblock (#1491).
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.empty());
+}
+
+TEST(ln, ln_s_copy_fallback_missing_source_keeps_gnu_error) {
+  TempDir tmp;
+  if (ln_can_create_real_symlinks(tmp.path)) {
+    std::cout << "  SKIPPED (this session can create symbolic links)\n";
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_env(L"WINUX_LN_FALLBACK", L"copy");
+  p.add(L"ln.exe", {L"-s", L"missing.txt", L"link.txt"});
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("ln -s dangling fallback stderr", r.stderr_text);
+
+  // [GNU] A dangling symlink source is legal for a real link; a copy cannot
+  // represent it, so the opt-in downgrade must not turn the failure into a
+  // misleading copy error - the GNU-style refusal stands.
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "link.txt"));
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "ln: failed to create symbolic link 'link.txt': Operation "
+                 "not permitted\n");
+}
+
+TEST(ln, ln_s_copy_fallback_directory_source_keeps_gnu_error) {
+  TempDir tmp;
+  tmp.mkdir("adir");
+  if (ln_can_create_real_symlinks(tmp.path)) {
+    std::cout << "  SKIPPED (this session can create symbolic links)\n";
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_env(L"WINUX_LN_FALLBACK", L"copy");
+  p.add(L"ln.exe", {L"-s", L"adir", L"link"});
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("ln -s dir fallback stderr", r.stderr_text);
+
+  // The downgrade covers regular files only (bats-core's shape); a directory
+  // source keeps the honest link failure instead of a half-copy.
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "link"));
+  EXPECT_CONTAINS(r.stderr_text, "failed to create symbolic link 'link'");
+}
