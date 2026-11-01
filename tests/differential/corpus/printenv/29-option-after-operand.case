@@ -1,5 +1,12 @@
 cmd: printenv
-args: LC_ALL -0
+args: WINUX_DIFFVAR -0
 timeout: 10
 source: github.com/unixwin/WinuxCmd/issues/1462
 tags: audit-w3b printenv plus-getopt operand-boundary
+# The looked-up variable must be one the interop launch shape delivers to
+# the Windows subject with the same value the Linux oracle sees. LC_ALL
+# (used when the case was written) is pinned only on the WSL side and
+# never crosses the interop boundary; SHLVL proved host-shell-nesting
+# dependent. The runner exports WINUX_DIFFVAR to both sides and lists it
+# in WSLENV (no flag = verbatim sharing), so the subject receives the
+# premise by construction.
