@@ -70,7 +70,7 @@ wpm install jq
 
 ## 🔏 Code signing
 
-Release binaries are code-signed via the [SignPath Foundation](https://signpath.org).
+Test-release binaries are code-signed via the [SignPath Foundation](https://signpath.org); formal release signing is pending SignPath approval.
 
 ## 🚀 Why WinuxCmd
 
