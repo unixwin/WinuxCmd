@@ -1,0 +1,11 @@
+cmd: cat
+args: -e f
+timeout: 10
+setup: |
+  printf 'a\r\nb\r' > f
+source: github.com/unixwin/WinuxCmd/issues/1479
+tags: issue-1479 regression cat show-nonprinting crlf
+# -e sets show_nonprinting with show_ends (cat.c:592): every CR
+# renders ^M through the quoting loop, including the trailing
+# one, which gets no $. Guards the -v family against the -E
+# pending-CR fix.

@@ -1,0 +1,14 @@
+cmd: cat
+args: -E f
+timeout: 10
+setup: |
+  head -c 65535 /dev/zero | tr '\0' 'a' > f
+  printf '\r' >> f
+  printf 'x\n' >> f
+source: github.com/unixwin/WinuxCmd/issues/1479
+tags: issue-1479 regression cat show-ends crlf chunk-boundary
+# The CR is the last byte of the first 64 KiB chunk and the next
+# chunk starts with a plain byte. A pending CR followed by a
+# non-LF stays a raw CR in place (cat.c:393): it must be resolved
+# by the state machine, not skipped by a verbatim run and not
+# flushed stray at end of file.

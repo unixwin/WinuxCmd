@@ -1,0 +1,11 @@
+cmd: cat
+args: f
+timeout: 10
+setup: |
+  head -c 70000 /dev/zero | tr '\0' 'a' > f
+  printf '\r\n' >> f
+source: github.com/unixwin/WinuxCmd/issues/1479
+tags: issue-1479 regression cat passthrough crlf
+# No transform flag: the byte stream is the output, so the
+# 64 KiB passthrough must stay engaged and byte-identical on a
+# CRLF file larger than one chunk (cat.c:725 simple_cat gate).
