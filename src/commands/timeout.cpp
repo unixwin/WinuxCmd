@@ -482,7 +482,11 @@ REGISTER_COMMAND(
   auto cfg_result = build_config(ctx);
   if (!cfg_result) {
     if (cfg_result.error() == "missing operand") {
-      safeErrorPrintLn("timeout: missing operand");
+      // [GNU] timeout.c with no COMMAND goes straight to
+      // usage(EXIT_TIMEDOUT): stderr carries ONLY the "Try 'timeout
+      // --help'" line -- no "missing operand" diagnostic precedes it
+      // (differential timeout/04: `timeout 5` prints exactly one line,
+      // exit 125).
       safeErrorPrintLn("Try 'timeout --help' for more information.");
       return 125;
     }

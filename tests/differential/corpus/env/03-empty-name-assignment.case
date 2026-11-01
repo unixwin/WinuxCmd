@@ -1,5 +1,12 @@
 cmd: env
-args: '=x' printenv
+args: -i =x
 timeout: 10
 source: github.com/unixwin/WinuxCmd/issues/1462
-tags: audit-w3b env cannot-set invalid-argument
+tags: audit-w3b env empty-name-assignment accepted
+# glibc putenv() performs no name validation, so coreutils env accepts an
+# empty-name assignment and prints it like any other entry ("=x", exit 0).
+# The original shape (`env '=x' printenv`) compared a full environment
+# dump, which the interop launch can never byte-match (the Windows subject
+# cannot receive the WSL side's variables, and a Windows child block
+# cannot carry an empty-name entry at all); -i isolates the assignment as
+# the entire comparable output.

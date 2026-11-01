@@ -140,9 +140,9 @@ TEST(nice, nice_invalid_adjustment_reports_usage_error) {
 
   EXPECT_EQ(r.exit_code, 125);
   EXPECT_TRUE(r.stdout_text.empty());
-  EXPECT_EQ_TEXT(r.stderr_text,
-                 "nice: invalid adjustment '-2+4'\n"
-                 "Try 'nice --help' for more information.\n");
+  // [GNU] nice.c:164-174 reports through error() alone -- no
+  // "Try 'nice --help'" tail on this path (differential nice/02).
+  EXPECT_EQ_TEXT(r.stderr_text, "nice: invalid adjustment '-2+4'\n");
 }
 
 TEST(nice, nice_invalid_option_returns_125) {

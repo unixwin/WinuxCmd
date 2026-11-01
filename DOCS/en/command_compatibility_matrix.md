@@ -24,7 +24,7 @@ Scope excludes `wpm` by release policy.
 ## Regex And Shell Boundary
 
 - Shell parsing owns quoting, pipes, redirects, variable expansion, and shell glob expansion.
-- Winuxsh may expand shell globs before invoking commands; PowerShell often passes native wildcard-looking arguments through, so WinuxCmd keeps command-level wildcard expansion only for file-like operands.
+- niubash may expand shell globs before invoking commands; PowerShell often passes native wildcard-looking arguments through, so WinuxCmd keeps command-level wildcard expansion only for file-like operands.
 - Command regex is owned by the command: `grep`, `sed`, `find -regex`, `csplit`, `nl`, and `tac -r` must compile and evaluate patterns internally.
 - Regex/script operands must stay literal and must not be reinterpreted as file globs. Examples: `grep -E 'a|b'`, `sed 's/a/b/'`, and `find . -name '*.cpp'` are command data, not path expansion requests.
 
