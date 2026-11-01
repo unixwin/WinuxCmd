@@ -2071,6 +2071,38 @@
     "corpus/updatedb/01-silent-success.case": {
       "bucket": "PASS",
       "command": "updatedb"
+    },
+    "corpus/wc/12-control-transparent.case": {
+      "bucket": "PASS",
+      "command": "wc"
+    },
+    "regressions/75-tsort-successor-order.case": {
+      "bucket": "PASS",
+      "command": "tsort"
+    },
+    "regressions/76-tsort-extra-operand.case": {
+      "bucket": "PASS",
+      "command": "tsort"
+    },
+    "regressions/77-tsort-odd-tokens.case": {
+      "bucket": "PASS",
+      "command": "tsort"
+    },
+    "regressions/78-tsort-missing-file.case": {
+      "bucket": "PASS",
+      "command": "tsort"
+    },
+    "regressions/79-od-legacy-letters.case": {
+      "bucket": "PASS",
+      "command": "od"
+    },
+    "regressions/80-od-spec-order.case": {
+      "bucket": "PASS",
+      "command": "od"
+    },
+    "regressions/81-ptx-format-tex.case": {
+      "bucket": "PASS",
+      "command": "ptx"
     }
   }
 }
