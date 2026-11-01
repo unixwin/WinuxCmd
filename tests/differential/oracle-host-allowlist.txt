@@ -1,0 +1,44 @@
+# Oracle host allowlist (issue #1478). Format: command<TAB>reason.
+#
+# runner.sh anchors every oracle to GNU_BIN. A command that GNU_BIN does
+# not carry resolves from the host PATH ONLY when it is named here; the
+# fallback is never silent - the runner warns on stderr and records the
+# host binary in the report's "Oracle resolution" table.
+#
+# Every entry below is a command GNU coreutils does not build, so a
+# coreutils-only oracle tree legitimately lacks it. An entry does NOT
+# bless the host binary's identity: distros package these commands from
+# different projects than the product's contract (on Ubuntu, kill is
+# procps, not the util-linux kill.c WinuxCmd implements; cal is BSD
+# ncal, not util-linux cal). When a command's identity matters, point
+# GNU_BIN at a tree that carries the right build instead of relying on
+# this list, and keep the affected cases whitelisted until then.
+cal	util-linux (BSD ncal on Ubuntu; identity differs from util-linux cal)
+col	util-linux / bsdextrautils
+column	util-linux / bsdextrautils
+getopt	util-linux
+hexdump	util-linux / bsdextrautils
+kill	util-linux (procps on Ubuntu; identity differs from util-linux kill.c - issue #1478)
+look	util-linux / bsdextrautils
+more	util-linux
+namei	util-linux
+renice	util-linux
+rev	util-linux
+whereis	util-linux
+cmp	diffutils, not coreutils
+diff	diffutils, not coreutils
+diff3	diffutils, not coreutils
+sdiff	diffutils, not coreutils
+find	findutils, not coreutils
+locate	findutils / plocate, not coreutils
+updatedb	findutils / plocate, not coreutils
+xargs	findutils, not coreutils
+grep	GNU grep is its own package, not coreutils
+sed	GNU sed is its own package, not coreutils
+envsubst	gettext, not coreutils
+getconf	glibc, not coreutils
+locale	glibc, not coreutils
+file	file(1) package, not coreutils
+unix2dos	dos2unix package, not coreutils
+which	which package, not coreutils
+xxd	xxd package, not coreutils

@@ -98,3 +98,8 @@
 113	#1462	wc directory operand prints zero line plus diagnostic
 114	#1462	fmt -w 20 refill
 115	#1462	head UTF-8 BOM file stays on the byte path
+116	#1479	cat -E CR on the 64 KiB chunk edge before LF renders ^M
+117	#1479	cat -E CR on the chunk edge before a plain byte stays raw in place
+118	#1479	cat -E CR matrix: raw / ^M before LF / raw at EOF
+119	#1479	cat -e renders every CR ^M, trailing CR gets no $
+120	#1479	cat no-flag passthrough stays byte-identical past 64 KiB

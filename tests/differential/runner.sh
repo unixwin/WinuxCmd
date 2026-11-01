@@ -120,13 +120,58 @@ version_ge() {
   }'
 }
 
+# Oracle resolution (issue #1478). A differential verdict is only as good
+# as the identity of the program answering for the oracle, so resolution
+# is anchored and audited:
+#
+# - With GNU_BIN set, a command resolves ONLY inside that tree (plain or
+#   .exe). Nothing falls through to the host silently: the old bare-name
+#   fallback let the host answer for any command the tree did not carry,
+#   which is how procps /usr/bin/kill came to grade the util-linux kill
+#   corpus (and how a shell builtin token could stand in for a binary in
+#   non-exec lookup forms).
+# - A command the tree does not carry may still be compared against a
+#   host binary when it is named in oracle-host-allowlist.txt - the
+#   explicit list of commands GNU coreutils does not build (util-linux,
+#   diffutils, findutils, ...). Every such use is warned about on stderr
+#   and recorded in the report's resolution table, so a verdict that
+#   rests on a host binary is visibly qualified.
+# - With GNU_BIN unset the runner is in ungoverned host mode: every
+#   command resolves from PATH. That mode exists for ad-hoc local runs;
+#   it starts with a loud warning and the report records every command
+#   as host-resolved. The gated baseline run always sets GNU_BIN.
+#
+# Host lookup uses `type -P`, which searches PATH for an executable file
+# only: unlike `command -v` it can never return a shell builtin, function
+# or alias token for names like echo/printf/test/kill.
+HOST_ALLOWLIST="$ROOT/oracle-host-allowlist.txt"
+declare -A ORACLE_HOST_ALLOWED
+if [ -f "$HOST_ALLOWLIST" ]; then
+  while IFS=$'\t' read -r allow_name allow_reason || [ -n "$allow_name" ]; do
+    [ -z "$allow_name" ] && continue
+    case "$allow_name" in \#*) continue ;; esac
+    ORACLE_HOST_ALLOWED["$allow_name"]=1
+  done < "$HOST_ALLOWLIST"
+fi
+
+oracle_host_allowed() {
+  [ -n "${ORACLE_HOST_ALLOWED["$1"]+x}" ]
+}
+
+# Resolution results, filled by audit_oracle_resolution before any case
+# runs and consumed by run_case: command -> binary path ("" when
+# unresolved), and command -> source (gnu-bin | host-allowlist | host |
+# missing).
+declare -A ORACLE_RESOLUTION
+declare -A ORACLE_SOURCE
+
 find_oracle() {
   if [ -n "$GNU_BIN" ] && [ -x "$GNU_BIN/$1" ]; then
     printf '%s/%s' "$GNU_BIN" "$1"
   elif [ -n "$GNU_BIN" ] && [ -x "$GNU_BIN/$1.exe" ]; then
     printf '%s/%s.exe' "$GNU_BIN" "$1"
-  else
-    command -v "$1" 2>/dev/null || command -v "$1.exe" 2>/dev/null || true
+  elif [ -z "$GNU_BIN" ] || oracle_host_allowed "$1"; then
+    type -P "$1" 2>/dev/null || type -P "$1.exe" 2>/dev/null || true
   fi
 }
 
@@ -135,8 +180,8 @@ find_timeout() {
     printf '%s/timeout.exe' "$GNU_BIN"
   elif [ -n "$GNU_BIN" ] && [ -x "$GNU_BIN/timeout" ]; then
     printf '%s/timeout' "$GNU_BIN"
-  else
-    command -v timeout 2>/dev/null || true
+  elif [ -z "$GNU_BIN" ] || oracle_host_allowed timeout; then
+    type -P timeout 2>/dev/null || true
   fi
 }
 
@@ -149,8 +194,52 @@ absolute_command() {
     if [[ "$value" != /* ]]; then value="$PWD/$value"; fi
     (CDPATH= cd -- "$(dirname "$value")" && printf '%s/%s' "$PWD" "$(basename "$value")")
   else
-    command -v "$value" 2>/dev/null || true
+    type -P "$value" 2>/dev/null || true
   fi
+}
+
+# Resolve every selected command once, up front, and make the outcome
+# impossible to miss: each non-anchored resolution is warned about on
+# stderr here, and the report header carries the full table. run_case
+# consumes this table instead of resolving on its own, so the program
+# that answers a case is always the one recorded here.
+case_files=()
+audit_oracle_resolution() {
+  local file cmd path source
+  local -A seen=()
+  for file in "${case_files[@]}"; do
+    cmd=$(awk '$0 ~ /^cmd: / { print $2; exit }' "$file")
+    [ -n "$cmd" ] && seen["$cmd"]=1
+  done
+  if [ -z "$GNU_BIN" ]; then
+    echo "WARNING: GNU_BIN is unset; every oracle resolves from the host PATH, so verdicts grade host binaries rather than a pinned GNU tree" >&2
+  fi
+  for cmd in "${!seen[@]}"; do
+    path=$(find_oracle "$cmd")
+    if [ -z "$path" ]; then
+      source=missing
+    elif [ -n "$GNU_BIN" ] && { [ "$path" = "$GNU_BIN/$cmd" ] || [ "$path" = "$GNU_BIN/$cmd.exe" ]; }; then
+      source=gnu-bin
+    elif [ -z "$GNU_BIN" ]; then
+      source=host
+    else
+      source=host-allowlist
+    fi
+    ORACLE_RESOLUTION["$cmd"]="$path"
+    ORACLE_SOURCE["$cmd"]="$source"
+    case "$source" in
+      host-allowlist)
+        echo "WARNING: oracle for '$cmd' is not in GNU_BIN; using allowlisted host binary $path (see oracle-host-allowlist.txt)" >&2 ;;
+      host)
+        echo "WARNING: oracle for '$cmd' resolved from host PATH: $path" >&2 ;;
+      missing)
+        if [ -n "$GNU_BIN" ] && oracle_host_allowed "$cmd"; then
+          echo "WARNING: no oracle for '$cmd': not in GNU_BIN and no host binary found (it is host-allowlisted); its cases will SKIP" >&2
+        else
+          echo "WARNING: no oracle for '$cmd': not in GNU_BIN and not host-allowlisted; its cases will SKIP" >&2
+        fi ;;
+    esac
+  done
 }
 
 shell_quote() {
@@ -237,7 +326,13 @@ run_case() {
       wuses_dispatcher=true
     fi
   fi
-  gcmd=$(find_oracle "$cmd")
+  # The oracle binary is the one audit_oracle_resolution recorded before
+  # the run; resolve on the spot only if this command was not audited.
+  if [ -n "${ORACLE_RESOLUTION["$cmd"]+x}" ]; then
+    gcmd=${ORACLE_RESOLUTION["$cmd"]}
+  else
+    gcmd=$(find_oracle "$cmd")
+  fi
   if [ ! -x "$gcmd" ]; then
     rm -rf "$work"
     printf '%s\t%s\tSKIP\n' "${case_file#$ROOT/}" "$cmd"
@@ -336,12 +431,25 @@ if [ "$case_count" -eq 0 ]; then
   echo "ERROR: differential corpus is empty: $CORPUS" >&2
   exit 2
 fi
-printf '# Differential report\n\nOracle: `%s`\n\nOracle locale: `%s`\n\nWhitelists: `%s`\n\n| Case | Result |\n|---|---|\n' "$oracle" "$ORACLE_LOCALE" "${WHITELISTS_LOADED:-none}" > "$REPORT"
-results=$(mktemp)
-find "$CORPUS" -type f -name '*.case' | sort | while IFS= read -r file; do
+case_files=()
+while IFS= read -r file; do
   if [ -n "$ONLY" ] && ! awk -v wanted="$ONLY" '$0 == "cmd: " wanted { found=1 } END { exit !found }' "$file"; then
     continue
   fi
+  case_files+=("$file")
+done < <(find "$CORPUS" -type f -name '*.case' | sort)
+audit_oracle_resolution
+{
+  printf '# Differential report\n\nOracle: `%s`\n\nOracle locale: `%s`\n\nWhitelists: `%s`\n\nOracle bin: `%s`\n\nOracle timeout: `%s`\n\n## Oracle resolution\n\n| Command | Binary | Source |\n|---|---|---|\n' "$oracle" "$ORACLE_LOCALE" "${WHITELISTS_LOADED:-none}" "${GNU_BIN:-(unset: host PATH)}" "$timeout_cmd"
+  if [ "${#ORACLE_RESOLUTION[@]}" -gt 0 ]; then
+    while IFS= read -r cmd; do
+      printf '| %s | %s | %s |\n' "$cmd" "${ORACLE_RESOLUTION[$cmd]:-(unresolved)}" "${ORACLE_SOURCE[$cmd]}"
+    done < <(printf '%s\n' "${!ORACLE_RESOLUTION[@]}" | sort)
+  fi
+  printf '\n| Case | Result |\n|---|---|\n'
+} > "$REPORT"
+results=$(mktemp)
+for file in "${case_files[@]}"; do
   run_case "$file"
 done | tee "$results" >> "$REPORT"
 if [ -n "$RESULTS_FILE" ]; then

@@ -36,6 +36,26 @@ TEST(nproc, nproc_all) {
   EXPECT_GT(num, 0);
 }
 
+// [#1462] lib/nproc.c: default = processors available to the
+// process (affinity), --all = installed; --all is never smaller.
+TEST(nproc, nproc_all_not_less_than_default) {
+  Pipeline d;
+  d.set_env(L"OMP_NUM_THREADS", L"");
+  d.set_env(L"OMP_THREAD_LIMIT", L"");
+  d.add(L"nproc.exe", {});
+  auto rd = d.run();
+
+  Pipeline a;
+  a.set_env(L"OMP_NUM_THREADS", L"");
+  a.set_env(L"OMP_THREAD_LIMIT", L"");
+  a.add(L"nproc.exe", {L"--all"});
+  auto ra = a.run();
+
+  EXPECT_EQ(rd.exit_code, 0);
+  EXPECT_EQ(ra.exit_code, 0);
+  EXPECT_GE(std::stoi(ra.stdout_text), std::stoi(rd.stdout_text));
+}
+
 TEST(nproc, nproc_ignore) {
   Pipeline p;
   p.add(L"nproc.exe", {L"--ignore", L"1"});

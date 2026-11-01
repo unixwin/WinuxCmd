@@ -7,6 +7,22 @@ The runner is a gate, not a smoke test. It fails for an empty corpus, missing
 oracle, unexplained skip, exit-code difference, or output difference. Use
 `--results FILE` to retain machine-readable TSV output for baseline comparison.
 
+## Oracle resolution
+
+A verdict is only as good as the identity of the program answering for the
+oracle, so resolution is anchored (issue #1478). With `GNU_BIN` set, a
+command resolves only inside that tree; nothing falls through to the host
+by bare name. A command the tree does not carry resolves from the host
+PATH only when `oracle-host-allowlist.txt` names it (the commands GNU
+coreutils does not build: util-linux, diffutils, findutils, ...), and
+every such use warns on stderr. With `GNU_BIN` unset the runner is in
+ungoverned host mode and warns about that instead. Before any case runs,
+the runner resolves every selected command once and prints the full
+table - command, binary, source (`gnu-bin`, `host-allowlist`, `host`,
+`missing`) - into the report header, so a verdict that rests on a host
+binary (for example procps `kill` standing in for util-linux `kill.c`)
+is visibly qualified rather than silent.
+
 Each case supports `cmd`, `args`, `stdin`, `setup`, `timeout`, `source`,
 `tags`, `oracle`, and `subject`. `stdin` and `setup` use a following block
 indented by two spaces.

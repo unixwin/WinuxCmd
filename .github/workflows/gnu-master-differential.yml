@@ -113,9 +113,10 @@ jobs:
     # Ubuntu 24.04 ships coreutils 9.4, the recorded oracle; an older
     # distro would SKIP the oracle_version >= 9.2 cases and trip the
     # gate's unexplained-skip rule. GNU_BIN=/usr/bin is load-bearing:
-    # without it the runner resolves the oracle through the shell, where
-    # printf/test/echo/true/false are builtins rather than paths, and
-    # every case for those commands would SKIP instead of running.
+    # it anchors every oracle resolution to this recorded tree (issue
+    # #1478); without it the runner drops to ungoverned host-PATH
+    # resolution, warns loudly, and records every verdict in the report
+    # as host-resolved instead of tree-resolved.
     runs-on: windows-2025
     timeout-minutes: 60
     steps:

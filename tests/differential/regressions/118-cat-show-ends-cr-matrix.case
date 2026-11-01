@@ -1,0 +1,10 @@
+cmd: cat
+args: -E f
+timeout: 10
+setup: |
+  printf 'a\rb\r\nc\r' > f
+source: github.com/unixwin/WinuxCmd/issues/1479
+tags: issue-1479 regression cat show-ends crlf
+# The -E CR matrix in one small file: a CR before a non-LF stays
+# raw, a CR before a LF renders ^M before the $, and a trailing
+# CR at end of file is written raw (cat.c:475/372/793).
