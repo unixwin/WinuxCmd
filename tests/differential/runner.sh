@@ -409,7 +409,8 @@ run_case() {
   if [ "$bucket" != PASS ] && [ -n "${KNOWN_DIFFS["${case_file#$ROOT/}"]+x}" ]; then
     bucket=KNOWN_DIFF
   fi
-  if [ "$bucket" != PASS ] && [ "$bucket" != SKIP ]; then
+  if [ "$bucket" != PASS ] && [ "$bucket" != SKIP ] &&
+     [ "$bucket" != KNOWN_DIFF ]; then
     {
       printf '## %s (%s)\n\n' "${case_file#$ROOT/}" "$bucket"
       printf 'subject rc=%s, oracle rc=%s\n\n' "$wrc" "$grc"

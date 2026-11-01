@@ -160,7 +160,7 @@ auto probe_existence(const std::string& path) -> ProbeResult {
   // operand (/d/x) stats the same file GNU's lstat sees on the as-typed
   // name (pathchk.c:289), instead of a current-drive root-relative path.
   const std::wstring api_path =
-      utf8_to_wstring(native_path::make_api_path_operand(path).extended);
+      native_path::make_api_path_operand(path).extended;
   auto status = std::filesystem::symlink_status(api_path, ec);
   if (!ec) {
     (void)status;
