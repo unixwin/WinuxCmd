@@ -18,8 +18,8 @@ using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
 auto constexpr NPROC_OPTIONS =
-    // [DIFFERS] --all: On Windows, GetSystemInfo always returns the total
-    // count, so --all and default behavior are identical.
+    // [GNU] --all prints every installed processor; the default
+    // prints the processors available to this process (affinity).
     std::array{OPTION("", "--all", "print number of all installed processors"),
                // [GNU]
                OPTION("", "--ignore", "ignore N processors", STRING_TYPE)};
@@ -120,7 +120,26 @@ REGISTER_COMMAND(
   GetSystemInfo(&sysInfo);
   const DWORD numProcessors = sysInfo.dwNumberOfProcessors;
 
-  unsigned long long nproc = numProcessors;
+  // [GNU] lib/nproc.c: the default count is the processors AVAILABLE
+  // to the process (its affinity set), while --all reports every
+  // installed processor. The old code used the installed count for
+  // both (the [DIFFERS] note claimed they coincide on Windows; they
+  // do not once affinity is restricted, e.g. by start /affinity).
+  unsigned long long available = numProcessors;
+  DWORD_PTR process_mask = 0;
+  DWORD_PTR system_mask = 0;
+  if (GetProcessAffinityMask(GetCurrentProcess(), &process_mask,
+                             &system_mask) &&
+      process_mask != 0) {
+    unsigned long long count = 0;
+    for (DWORD_PTR m = process_mask; m != 0; m >>= 1) {
+      count += m & 1;
+    }
+    available = count;
+  }
+
+  unsigned long long nproc =
+      ctx.get<bool>("--all", false) ? numProcessors : available;
   if (!ctx.get<bool>("--all", false)) {
     // Number of available processors.  [GNU] lib/nproc.c honors the OpenMP
     // environment variables: a valid OMP_NUM_THREADS replaces the count

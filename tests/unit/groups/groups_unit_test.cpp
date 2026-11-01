@@ -30,5 +30,7 @@ TEST(groups, groups_with_user) {
 
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_TRUE(r.stdout_text.empty());
-  EXPECT_CONTAINS(r.stderr_text, "user name could not be found");
+  // [#1462] GNU groups.c shape: groups: '<name>': no such user.
+  // The old pin asserted the raw Win32 diagnostic text instead.
+  EXPECT_CONTAINS(r.stderr_text, "'testuser': no such user");
 }

@@ -435,6 +435,47 @@ auto build_config(const CommandContext<PS_OPTIONS.size()>& ctx)
     }
   }
 
+  // [GNU] procps ps also accepts BSD-style operands: a bare number
+  // list is a PID list, and a bare letter cluster is a BSD option
+  // bundle (aux == -a -u -x in effect). Anything else is a syntax
+  // error ("process ID list syntax error"). Without this, `ps aux`
+  // and `ps 123` silently printed the default listing.
+  for (auto arg : ctx.positionals) {
+    const std::string token(arg);
+    const bool pid_list =
+        !token.empty() &&
+        std::ranges::all_of(token, [](char c) {
+          return (c >= '0' && c <= '9') || c == ',';
+        });
+    if (pid_list) {
+      if (auto error = append_pid_filter(token, cfg.pid_filter)) {
+        return std::unexpected(*error);
+      }
+      continue;
+    }
+    constexpr std::string_view kBsdLetters = "aefluwxyj";
+    const bool bsd_bundle =
+        !token.empty() &&
+        std::ranges::all_of(token, [&](char c) {
+          return kBsdLetters.find(c) != std::string_view::npos;
+        });
+    if (!bsd_bundle) {
+      return std::unexpected("process ID list syntax error");
+    }
+    for (const char c : token) {
+      switch (c) {
+        case 'a': cfg.select_associated = true; break;
+        case 'e': cfg.all_processes = true; break;
+        case 'f': cfg.full_format = true; break;
+        case 'l': cfg.long_format = true; break;
+        case 'u': cfg.user_format = true; break;
+        case 'w': cfg.wide_output = true; break;
+        case 'x': cfg.lift_tty_restriction = true; break;
+        default: break;  // 'y', 'j': accepted, no separate face here
+      }
+    }
+  }
+
   return cfg;
 }
 
@@ -798,9 +839,16 @@ auto run(const Config& cfg) -> int {
     processes.erase(it, processes.end());
   }
 
-  // Apply selection mode filtering
-  if (!cfg.all_processes) {
-    // Determine target user for default filtering
+  // Apply selection mode filtering. [GNU] procps default selection
+  // is "same euid, same tty as the invoker"; the Windows tty face is
+  // the logon session, so the default is same user + same session.
+  // -x lifts the session restriction (same user, every session);
+  // -a selects every process that has a session, for any user. An
+  // explicit PID list is itself the selection and bypasses this.
+  if (!cfg.all_processes && cfg.pid_filter.empty()) {
+    DWORD my_session = 0;
+    ProcessIdToSessionId(GetCurrentProcessId(), &my_session);
+
     std::wstring target_user;
     if (!cfg.user_filter.empty()) {
       target_user = utf8_to_wstring(cfg.user_filter);
@@ -814,13 +862,13 @@ auto run(const Config& cfg) -> int {
 
     auto it = std::remove_if(
         processes.begin(), processes.end(), [&](const ProcessInfo& p) {
-          // Exclude session leaders (ppid == 0, i.e., System Idle and System)
-          if (cfg.select_associated && p.ppid == 0) {
-            return true;
+          if (cfg.select_associated) {
+            // -a: must have a terminal (here: a session), any user.
+            return !p.has_console;
           }
 
-          // Filter by terminal (has_console) unless -x lifts the restriction
-          if (!cfg.lift_tty_restriction && !p.has_console) {
+          // Same-terminal restriction unless -x lifts it.
+          if (!cfg.lift_tty_restriction && p.session_id != my_session) {
             return true;
           }
 
