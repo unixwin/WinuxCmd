@@ -16,13 +16,30 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Two editions per architecture (#1438): `default` strips the
+        # shell-builtin shadow entry links (kill/test/[/true/false/env/time,
+        # see src/core/package_edition.h), `full` materializes every
+        # registered entry under a "-full" asset name and is NOT indexed in
+        # wpm. Tests and PGO run on the default x64 job only - the editions
+        # share the command implementations, and the full job exists for the
+        # entry-set difference.
         include:
           - arch: x64
             vcvars_arg: x64
             package_arch: x64
+            edition: default
+          - arch: x64
+            vcvars_arg: x64
+            package_arch: x64
+            edition: full
           - arch: arm64
             vcvars_arg: x64_arm64
             package_arch: arm64
+            edition: default
+          - arch: arm64
+            vcvars_arg: x64_arm64
+            package_arch: arm64
+            edition: full
 
     steps:
       - name: Checkout Repository
@@ -73,9 +90,10 @@ jobs:
             -DCMAKE_C_COMPILER_TARGET=${{ matrix.arch }} ^
             -DCMAKE_CXX_COMPILER_TARGET=${{ matrix.arch }} ^
             -DWINUXCMD_PACKAGE_ARCH=${{ matrix.package_arch }} ^
+            -DWINUXCMD_PACKAGE_EDITION=${{ matrix.edition }} ^
             -DBUILD_MODE=RELEASE ^
             -DUSE_STATIC_CRT=ON ^
-            -DENABLE_TESTS=${{ matrix.package_arch == 'x64' && 'ON' || 'OFF' }} ^
+            -DENABLE_TESTS=${{ matrix.package_arch == 'x64' && matrix.edition == 'default' && 'ON' || 'OFF' }} ^
             -DCMAKE_CXX_STANDARD=23 ^
             -DCMAKE_CXX_STANDARD_REQUIRED=ON ^
             -DCMAKE_EXPERIMENTAL_CXX_MODULE_STD=ON ^
@@ -89,10 +107,11 @@ jobs:
           call "${{ steps.locate_vcvars.outputs.vcvars_path }}" ${{ matrix.vcvars_arg }}
           cmake --build . --config Release --parallel %NUMBER_OF_PROCESSORS%
 
-      # PGO (x64 only): profile collection must run the instrumented binary
-      # on the host arch, so the cross-compiled arm64 job stays non-PGO.
+      # PGO (default x64 only): profile collection must run the instrumented
+      # binary on the host arch, so the cross-compiled arm64 jobs and the
+      # full-edition job (same code, entry-set-only difference) stay non-PGO.
       - name: PGO instrumented build (x64)
-        if: matrix.package_arch == 'x64'
+        if: matrix.package_arch == 'x64' && matrix.edition == 'default'
         shell: cmd
         run: |
           call "${{ steps.locate_vcvars.outputs.vcvars_path }}" x64
@@ -113,7 +132,7 @@ jobs:
           cmake --build build-x64-pgo-train --config Release --parallel %NUMBER_OF_PROCESSORS%
 
       - name: PGO collect profile (x64)
-        if: matrix.package_arch == 'x64'
+        if: matrix.package_arch == 'x64' && matrix.edition == 'default'
         shell: pwsh
         run: |
           $profileDir = Join-Path $PWD "build-x64-pgo-train\pgo"
@@ -133,7 +152,7 @@ jobs:
           Copy-Item (Join-Path $PWD "build-x64-pgo-train\winuxcmd.pgd") $profileDir -Force
 
       - name: PGO rebuild with profile (x64)
-        if: matrix.package_arch == 'x64'
+        if: matrix.package_arch == 'x64' && matrix.edition == 'default'
         shell: cmd
         run: |
           call "${{ steps.locate_vcvars.outputs.vcvars_path }}" x64
@@ -159,7 +178,7 @@ jobs:
       # #1260) are absorbed by re-running only the failed tests serially once
       # via scripts/ctest-gate.ps1; a test that also fails serially still reds.
       - name: Run Unit Tests (ctest)
-        if: matrix.package_arch == 'x64'
+        if: matrix.package_arch == 'x64' && matrix.edition == 'default'
         shell: cmd
         working-directory: build-${{ matrix.package_arch }}
         run: |
@@ -182,31 +201,41 @@ jobs:
           set "VER=${{ steps.extract_version.outputs.project_version }}"
           set "ARCH=${{ matrix.package_arch }}"
           set "BUILD_DIR=build-%ARCH%"
-          
+          REM The full edition keeps its "-full" qualifier in the asset name
+          REM (#1438); CPack already bakes the suffix into the file name, the
+          REM rename normalizes the version part either way.
+          set "SUFFIX="
+          if "${{ matrix.edition }}"=="full" set "SUFFIX=-full"
+
           REM Rename Runtime packages
-          for %%f in ("%BUILD_DIR%\WinuxCmd-*.7z") do ren "%%f" "WinuxCmd-%VER%-win-%ARCH%.7z"
-          for %%f in ("%BUILD_DIR%\WinuxCmd-*.zip") do ren "%%f" "WinuxCmd-%VER%-win-%ARCH%.zip"
-          for %%f in ("%BUILD_DIR%\WinuxCmd-*.tar.gz") do ren "%%f" "WinuxCmd-%VER%-win-%ARCH%.tar.gz"
+          for %%f in ("%BUILD_DIR%\WinuxCmd-*.7z") do ren "%%f" "WinuxCmd-%VER%-win-%ARCH%%SUFFIX%.7z"
+          for %%f in ("%BUILD_DIR%\WinuxCmd-*.zip") do ren "%%f" "WinuxCmd-%VER%-win-%ARCH%%SUFFIX%.zip"
+          for %%f in ("%BUILD_DIR%\WinuxCmd-*.tar.gz") do ren "%%f" "WinuxCmd-%VER%-win-%ARCH%%SUFFIX%.tar.gz"
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: WinuxCmd-${{ steps.extract_version.outputs.project_version }}-${{ matrix.package_arch }}
+          name: WinuxCmd-${{ steps.extract_version.outputs.project_version }}-${{ matrix.package_arch }}${{ matrix.edition == 'full' && '-full' || '' }}
           path: |
             build-${{ matrix.package_arch }}/WinuxCmd-${{ steps.extract_version.outputs.project_version }}-win-${{ matrix.package_arch }}.7z
             build-${{ matrix.package_arch }}/WinuxCmd-${{ steps.extract_version.outputs.project_version }}-win-${{ matrix.package_arch }}.zip
             build-${{ matrix.package_arch }}/WinuxCmd-${{ steps.extract_version.outputs.project_version }}-win-${{ matrix.package_arch }}.tar.gz
+            build-${{ matrix.package_arch }}/WinuxCmd-${{ steps.extract_version.outputs.project_version }}-win-${{ matrix.package_arch }}-full.7z
+            build-${{ matrix.package_arch }}/WinuxCmd-${{ steps.extract_version.outputs.project_version }}-win-${{ matrix.package_arch }}-full.zip
+            build-${{ matrix.package_arch }}/WinuxCmd-${{ steps.extract_version.outputs.project_version }}-win-${{ matrix.package_arch }}-full.tar.gz
           retention-days: 1
           if-no-files-found: error
 
       - name: Install Inno Setup
-        if: github.ref_type == 'tag'
+        if: github.ref_type == 'tag' && matrix.edition == 'default'
         shell: pwsh
         run: |
           choco install innosetup -y --no-progress
 
+      # The #1438 ruling defines the installer for the default edition only;
+      # full ships as archives under the "-full" asset names.
       - name: Build Installer
-        if: github.ref_type == 'tag'
+        if: github.ref_type == 'tag' && matrix.edition == 'default'
         shell: pwsh
         run: |
           ./scripts/build-installer.ps1 `
@@ -263,6 +292,18 @@ jobs:
           name: WinuxCmd-${{ steps.final_version.outputs.version }}-arm64
           path: artifacts/arm64
 
+      - name: Download x64 Full Packages
+        uses: actions/download-artifact@v8
+        with:
+          name: WinuxCmd-${{ steps.final_version.outputs.version }}-x64-full
+          path: artifacts/x64-full
+
+      - name: Download ARM64 Full Packages
+        uses: actions/download-artifact@v8
+        with:
+          name: WinuxCmd-${{ steps.final_version.outputs.version }}-arm64-full
+          path: artifacts/arm64-full
+
       - name: Download x64 Installer
         uses: actions/download-artifact@v8
         with:
@@ -291,6 +332,12 @@ jobs:
             artifacts/arm64/*.7z
             artifacts/arm64/*.zip
             artifacts/arm64/*.tar.gz
+            artifacts/x64-full/*.7z
+            artifacts/x64-full/*.zip
+            artifacts/x64-full/*.tar.gz
+            artifacts/arm64-full/*.7z
+            artifacts/arm64-full/*.zip
+            artifacts/arm64-full/*.tar.gz
             artifacts/installers/x64/*.exe
             artifacts/installers/arm64/*.exe
           tag_name: ${{ github.ref_name }}
@@ -301,6 +348,11 @@ jobs:
             ### Architectures:
             - **x64**: Windows 64-bit
             - **ARM64**: Windows ARM64 (cross-compiled)
+            
+            ### Full-only commands (edition split, #1438):
+            The default edition does not create entry links for **`[`**, **`env`**, **`false`**, **`kill`**, **`test`**, **`time`**, **`true`** — these commands' user-facing semantics are defined by your host shell's builtins (`winuxcmd <name> ...` still works). The full edition materializes every entry and ships under the `-full` asset names; it is **not** distributed through wpm:
+            - WinuxCmd-${{ steps.final_version.outputs.version }}-win-x64-full.7z / .zip / .tar.gz
+            - WinuxCmd-${{ steps.final_version.outputs.version }}-win-arm64-full.7z / .zip / .tar.gz
             
             ### Files included:
             - WinuxCmd-${{ steps.final_version.outputs.version }}-win-x64.7z / .zip / .tar.gz
@@ -433,6 +485,12 @@ jobs:
         run: python3 scripts/check_i18n_drift.py --i18n-repo i18n-repo
 
   update-wpm-source-index:
+    # Indexes the DEFAULT edition only (#1438): the full edition is a
+    # standalone asset family ("-full" names) and must never enter the wpm
+    # index. Entry links are not listed here either - `wpm links rebuild`
+    # derives them from the shipped binary itself, so the index, the niu
+    # bundle pin and the binary share the one edition definition in
+    # src/core/package_edition.h.
     runs-on: ubuntu-latest
     needs: release
     if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
