@@ -35,7 +35,7 @@ You're on Windows and you need `grep -rn`, `sed -i`, `find -exec`, `xargs -0` �
 
 | | | | | |
 |:---:|:---:|:---:|:---:|:---:|
-| **176** | **1,924** | **178 cases** | **2,420** | **~4 MB** |
+| **176** | **1,924** | **178 cases** | **3,659** | **~4 MB** |
 | commands | options¹ | GNU diff · 93% pass | unit tests · 99.6% pass | single binary |
 
 > ¹ 1,924 = `OPTION(` macro count in `src/commands/`. Command count excludes the internal `wpm` manager and the `[` bracket alias of `test`. Differential corpus: 178 cases across 84 commands (165 pass / 13 known platform diffs, `tests/differential/baseline.json`). See the [GNU comparison report](DOCS/en/gnu_comparison_report.md).
@@ -77,7 +77,7 @@ Release binaries are code-signed via the [SignPath Foundation](https://signpath.
 - 🪟 **Native, not emulated** — talks to Win32 APIs directly. Understands `C:\`, UNC paths and NTFS ACLs (with `cygpath` and `getfacl` for bridging). No VM, no runtime DLLs, instant startup.
 - 🧠 **GNU where it counts** — `find` alone implements 88 options (full expression parser, `-exec`/`-execdir`/`-ok`, `-printf`); `grep` ships PCRE2; `sed` supports in-place `-i` editing.
 - 📦 **WPM built in** — a package manager for the tools that shouldn't be reimplemented: jq, ripgrep, fd, fzf, bat, make, neovim, curl, wget…
-- 🧪 **Tested like it matters** — 2,742 unit tests, plus a 178-case differential suite byte-compared against authoritative upstream sources (GNU coreutils 9.7, findutils 4.10.0, grep 3.12, sed 4.9, patch 2.7.6, util-linux 2.41, procps-ng 4.0.4). Every command audited line-by-line; reports in `tests/differential/audit-*.md`.
+- 🧪 **Tested like it matters** — 3,659 unit tests, plus a 178-case differential suite byte-compared against authoritative upstream sources (GNU coreutils 9.7, findutils 4.10.0, grep 3.12, sed 4.9, patch 2.7.6, util-linux 2.41, procps-ng 4.0.4). Every command audited line-by-line; reports in `tests/differential/audit-*.md`.
 - ⚡ **Small, fast, PGO-built** — 3.79 MB for 176 commands, statically linked, zero dependencies, ~19 ms cold start. Published x64 binaries are Profile-Guided Optimization builds trained on real workloads (sort −18%, nl −17% vs the same code without PGO). Methodology and data: `docs/performance-roadmap.md`.
 
 ## 🐂 Better together: the niubash shell
@@ -124,7 +124,7 @@ Details in the [WPM User Guide](DOCS/en/wpm_guide.md).
 | **GNU compat** | **93% diff pass** | 95% | 60% | 99% | 70% |
 | **Native Win32** | ✅ | ❌ | ✅ | ❌ | ❌ |
 | **Package manager** | ✅ WPM | ❌ | ❌ | apt-cyg | ❌ |
-| **Test cases** | **2,420** | ~2,000 | 0 | — | ~100 |
+| **Test cases** | **3,659** | ~2,000 | 0 | — | ~100 |
 | **Binary size** | **~3 MB** | ~5 MB | — | 1 GB+ | — |
 | **Startup** | **Instant** | Instant | — | 2–5 s | — |
 | **Maintained** | ✅ 2026 | ✅ | ❌ since 2012 | ✅ | ❌ |
@@ -234,7 +234,7 @@ Consistently in the same league as uutils — and within ~10–15% of native GNU
 
 ## 🧪 Testing and GNU verification
 
-- **2,420 automated unit tests** — **99.6% pass rate**
+- **3,659 automated unit tests** — **99.6% pass rate**
 - **Differential corpus**: 178 test cases (131 corpus + 47 regressions, covering **84 commands**), executed against a GNU coreutils 9.7 oracle with identical inputs — **165 pass / 13 tracked diffs (93%)**, machine-checked in `tests/differential/baseline.json`
 - Automated GNU comparison: `scripts/compare_outputs.sh` and `gnu_comparison_tests.sh`; per-case runner: `tests/differential/runner.sh`
 
