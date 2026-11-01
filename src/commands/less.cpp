@@ -65,7 +65,29 @@ auto constexpr LESS_OPTIONS = std::array{
     // [EXT]
     OPTION("-z", "--window", "set scrolling window size", INT_TYPE),
     // [EXT]
-    OPTION("-NUM", "", "same as -z NUM", INT_TYPE)};
+    OPTION("-NUM", "", "same as -z NUM", INT_TYPE),
+    // [GNU] --file-size: display the file size in the prompt
+    OPTION("", "--file-size", "display the size of the file in the prompt",
+           BOOL_TYPE),
+    // [GNU] --follow-name: follow the file by name in follow mode (F)
+    OPTION("", "--follow-name", "follow the file by name in follow mode",
+           BOOL_TYPE),
+    // [GNU] --incsearch: search incrementally as the pattern is typed
+    OPTION("", "--incsearch", "incremental search", BOOL_TYPE),
+    // [GNU] --line-num-width: width of the line number field
+    OPTION("", "--line-num-width", "set the width of the line number field",
+           INT_TYPE),
+    // [GNU] --mouse: enable mouse wheel scrolling
+    OPTION("", "--mouse", "enable mouse support (wheel scrolling)", BOOL_TYPE),
+    // [GNU] --no-histdups: keep no duplicates in the search history
+    OPTION("", "--no-histdups",
+           "do not keep duplicate entries in the search history", BOOL_TYPE),
+    // [GNU] --no-keypad: do not initialize the terminal keypad
+    OPTION("", "--no-keypad",
+           "accepted placeholder; no keypad init strings are sent", BOOL_TYPE),
+    // [GNU] --rscroll: character marking a chopped line (default '>')
+    OPTION("", "--rscroll", "set the character used to mark chopped lines",
+           STRING_TYPE)};
 
 namespace less_pipeline {
 namespace cp = core::pipeline;
@@ -85,6 +107,14 @@ struct Config {
   bool raw_control_color = false;  // -R accepted; ANSI SGR is passed through.
   bool no_init = false;            // --no-init accepted; no alternate screen.
   int window_size = -1;            // -z, -NUM
+  bool file_size = false;          // --file-size: byte counts in the prompt
+  bool follow_name = false;        // --follow-name
+  bool incsearch = false;          // --incsearch
+  int line_num_width = 6;          // --line-num-width
+  bool mouse = false;              // --mouse
+  bool no_histdups = false;        // --no-histdups
+  bool no_keypad = false;          // --no-keypad accepted; nothing to init.
+  std::string rscroll = ">";       // --rscroll
   bool default_stdin = false;
   SmallVector<std::string, 16> files;
 };
@@ -117,6 +147,19 @@ auto build_config(const CommandContext<LESS_OPTIONS.size()>& ctx)
   cfg.raw_control_color =
       ctx.get<bool>("--RAW-CONTROL-CHARS", false) || ctx.get<bool>("-R", false);
   cfg.no_init = ctx.get<bool>("--no-init", false);
+  cfg.file_size = ctx.get<bool>("--file-size", false);
+  cfg.follow_name = ctx.get<bool>("--follow-name", false);
+  cfg.incsearch = ctx.get<bool>("--incsearch", false);
+  cfg.line_num_width = ctx.get<int>("--line-num-width", 6);
+  if (cfg.line_num_width < 0) {
+    return std::unexpected("invalid line number width");
+  }
+  cfg.mouse = ctx.get<bool>("--mouse", false);
+  cfg.no_histdups = ctx.get<bool>("--no-histdups", false);
+  cfg.no_keypad = ctx.get<bool>("--no-keypad", false);
+  if (ctx.has("--rscroll")) {
+    cfg.rscroll = ctx.get<std::string>("--rscroll", ">");
+  }
 
   for (const auto& occurrence : ctx.options.occurrences()) {
     if (!ctx.metas || occurrence.index >= LESS_OPTIONS.size()) continue;
@@ -220,6 +263,9 @@ enum class PagerAction {
   ReverseSearch,
   Repaint,
   Status,
+  Follow,
+  WheelUp,
+  WheelDown,
   Quit
 };
 
@@ -241,16 +287,32 @@ struct MatchLocation {
   size_t end = 0;
 };
 
-auto redraw_search_text(wchar_t prompt, std::wstring_view text) -> void {
+// Defined further below; forward-declared for the incremental-search
+// preview used while a search pattern is being typed.
+auto compile_search(const Config& cfg, std::string_view text, bool forward)
+    -> std::optional<SearchState>;
+auto find_search_match(const PagerDocument& doc, const SearchState& search,
+                       size_t anchor_line, bool forward)
+    -> std::optional<MatchLocation>;
+
+auto redraw_search_text(wchar_t prompt, std::wstring_view text,
+                        std::wstring_view suffix = {}) -> void {
   safePrint("\r\033[K");
   safePrint(std::wstring_view(&prompt, 1));
   safePrint(text);
+  if (!suffix.empty()) safePrint(suffix);
 }
 
 auto push_search_history(std::vector<std::wstring>& history,
-                         std::wstring_view text) -> void {
+                         std::wstring_view text, bool no_histdups) -> void {
   if (text.empty()) return;
   if (!history.empty() && history.back() == text) return;
+  // [GNU] --no-histdups: an older identical entry is removed, not just
+  // a duplicate of the most recent one.
+  if (no_histdups) {
+    std::erase_if(history,
+                  [&](const std::wstring& entry) { return entry == text; });
+  }
   history.emplace_back(text);
 }
 
@@ -263,13 +325,23 @@ struct PromptResult {
   std::string text;
 };
 
+// [GNU] --incsearch preview: called with the pattern text as it is
+// being typed; returns a status suffix (for example " [line 12]") that
+// is shown after the pattern. Empty when incremental search is off.
+using SearchPreview = std::function<std::wstring(std::wstring_view)>;
+
 auto read_search_text(HANDLE input, wchar_t prompt, bool quit_on_intr,
-                      std::vector<std::wstring>& history) -> PromptResult {
+                      std::vector<std::wstring>& history, bool no_histdups,
+                      const SearchPreview& preview) -> PromptResult {
   std::wstring text;
   std::optional<std::wstring> draft;
   size_t history_index = history.size();
   safePrint("\r\033[K");
   safePrint(std::wstring_view(&prompt, 1));
+
+  auto redraw = [&]() {
+    redraw_search_text(prompt, text, preview ? preview(text) : std::wstring{});
+  };
 
   INPUT_RECORD record{};
   DWORD read = 0;
@@ -283,7 +355,7 @@ auto read_search_text(HANDLE input, wchar_t prompt, bool quit_on_intr,
     if (key.wVirtualKeyCode == VK_ESCAPE) return {PagerAction::None, {}};
     if (key.wVirtualKeyCode == VK_RETURN) {
       safePrint("\n");
-      push_search_history(history, text);
+      push_search_history(history, text, no_histdups);
       return {PagerAction::None, wstring_to_utf8(text)};
     }
     if (key.wVirtualKeyCode == VK_UP || key.wVirtualKeyCode == VK_DOWN) {
@@ -301,7 +373,7 @@ auto read_search_text(HANDLE input, wchar_t prompt, bool quit_on_intr,
 
       text = history_index < history.size() ? history[history_index]
                                             : draft.value_or(std::wstring{});
-      redraw_search_text(prompt, text);
+      redraw();
       continue;
     }
     if (key.wVirtualKeyCode == VK_BACK) {
@@ -309,7 +381,7 @@ auto read_search_text(HANDLE input, wchar_t prompt, bool quit_on_intr,
         text.pop_back();
         history_index = history.size();
         draft.reset();
-        redraw_search_text(prompt, text);
+        redraw();
       }
       continue;
     }
@@ -319,7 +391,11 @@ auto read_search_text(HANDLE input, wchar_t prompt, bool quit_on_intr,
       text.push_back(ch);
       history_index = history.size();
       draft.reset();
-      safePrint(std::wstring_view(&ch, 1));
+      if (preview) {
+        redraw();
+      } else {
+        safePrint(std::wstring_view(&ch, 1));
+      }
     }
   }
   return {PagerAction::Quit, {}};
@@ -413,11 +489,22 @@ auto read_number_command(HANDLE input, char first_digit, bool quit_on_intr)
 }
 
 auto read_pager_command(HANDLE input, bool quit_on_intr,
-                        std::vector<std::wstring>& search_history)
-    -> PagerCommand {
+                        std::vector<std::wstring>& search_history,
+                        const Config& cfg, const PagerDocument* doc,
+                        size_t anchor_line) -> PagerCommand {
   INPUT_RECORD record{};
   DWORD read = 0;
   while (ReadConsoleInputW(input, &record, 1, &read)) {
+    // [GNU] --mouse: wheel notches scroll three lines.
+    if (record.EventType == MOUSE_EVENT && cfg.mouse) {
+      const auto& mouse = record.Event.MouseEvent;
+      if ((mouse.dwEventFlags & MOUSE_WHEELED) != 0) {
+        const short delta = static_cast<short>(mouse.dwButtonState >> 16);
+        return {
+            delta > 0 ? PagerAction::WheelUp : PagerAction::WheelDown, {}, 3};
+      }
+      continue;
+    }
     if (record.EventType != KEY_EVENT || !record.Event.KeyEvent.bKeyDown) {
       continue;
     }
@@ -426,6 +513,7 @@ auto read_pager_command(HANDLE input, bool quit_on_intr,
     if (quit_on_intr && is_interrupt_key(key)) return {PagerAction::Quit, {}};
     char ch = key.uChar.AsciiChar;
     if (ch == 'q' || ch == 'Q') return {PagerAction::Quit, {}};
+    if (ch == 'F') return {PagerAction::Follow, {}};
     if (ch == 'b' || ch == 'B' || ch == 2) {
       return {PagerAction::PrevPage, {}};
     }
@@ -454,17 +542,32 @@ auto read_pager_command(HANDLE input, bool quit_on_intr,
     if (ch == 'n') return {PagerAction::RepeatSearch, {}};
     if (ch == 'N') return {PagerAction::ReverseSearch, {}};
     if (ch == ':') return read_colon_command(input, quit_on_intr);
-    if (ch == '/') {
-      auto result = read_search_text(input, L'/', quit_on_intr, search_history);
+    if (ch == '/' || ch == '?') {
+      const bool forward = ch == '/';
+      // [GNU] --incsearch: as the pattern is typed, show where its
+      // first match from the current screen anchor would land. (The
+      // full screen-jump preview of GNU less is not reproduced; the
+      // prompt reports the target line or that there is no match.)
+      SearchPreview preview;
+      if (cfg.incsearch && doc != nullptr) {
+        preview = [&cfg, doc, anchor_line,
+                   forward](std::wstring_view text) -> std::wstring {
+          if (text.empty()) return {};
+          auto compiled =
+              compile_search(cfg, wstring_to_utf8(std::wstring(text)), forward);
+          if (!compiled) return L" [invalid pattern]";
+          auto match = find_search_match(*doc, *compiled, anchor_line, forward);
+          if (!match) return L" [no match]";
+          return L" [line " + std::to_wstring(match->line + 1) + L"]";
+        };
+      }
+      auto result = read_search_text(input, forward ? L'/' : L'?', quit_on_intr,
+                                     search_history, cfg.no_histdups, preview);
       return result.action == PagerAction::Quit
                  ? PagerCommand{PagerAction::Quit, {}}
-                 : PagerCommand{PagerAction::SearchForward, result.text};
-    }
-    if (ch == '?') {
-      auto result = read_search_text(input, L'?', quit_on_intr, search_history);
-      return result.action == PagerAction::Quit
-                 ? PagerCommand{PagerAction::Quit, {}}
-                 : PagerCommand{PagerAction::SearchBackward, result.text};
+                 : PagerCommand{forward ? PagerAction::SearchForward
+                                        : PagerAction::SearchBackward,
+                                result.text};
     }
 
     switch (key.wVirtualKeyCode) {
@@ -573,7 +676,10 @@ auto print_pager_line(const Config& cfg, size_t line_index,
   std::string rendered;
   size_t content_offset = 0;
   if (cfg.show_line_numbers) {
-    auto prefix = std::format("{:>6}\t", line_index + 1);
+    // [GNU] --line-num-width sets the width of the number field
+    // (default 6).
+    auto prefix = std::format("{:>{}}\t", line_index + 1,
+                              static_cast<size_t>(cfg.line_num_width));
     content_offset = prefix.size();
     rendered += prefix;
   }
@@ -588,6 +694,12 @@ auto print_pager_line(const Config& cfg, size_t line_index,
   if (cfg.chop_long_lines && width > 0 &&
       rendered.size() > static_cast<size_t>(width)) {
     rendered.resize(static_cast<size_t>(width));
+    // [GNU] --rscroll: when a line is chopped, its last visible column
+    // shows the rscroll character (default '>'); an empty string
+    // disables the marker.
+    if (!cfg.rscroll.empty()) {
+      rendered.back() = cfg.rscroll.front();
+    }
     if (current_range &&
         current_range->first >= static_cast<size_t>(rendered.size())) {
       current_range.reset();
@@ -619,9 +731,9 @@ auto render_page(const Config& cfg, const PagerDocument& doc, size_t top_line,
   }
 }
 
-auto print_prompt(const PagerDocument& doc, size_t file_index,
-                  size_t file_count, size_t top_line, size_t total_lines,
-                  size_t page_size, bool at_eof) -> void {
+auto print_prompt(const Config& cfg, const PagerDocument& doc,
+                  size_t file_index, size_t file_count, size_t top_line,
+                  size_t total_lines, size_t page_size, bool at_eof) -> void {
   safePrint(":");
   if (at_eof) {
     safePrint("(END) ");
@@ -644,6 +756,28 @@ auto print_prompt(const PagerDocument& doc, size_t file_index,
   safePrint(std::to_string(bottom_line));
   safePrint("/");
   safePrint(std::to_string(total_lines));
+  if (cfg.file_size) {
+    // [GNU] --file-size: also show the byte position of the end of
+    // the visible window against the total size.
+    const std::uint64_t total =
+        doc.seekable ? doc.file_size : doc.content.size();
+    std::uint64_t shown = total;
+    if (doc.seekable) {
+      if (bottom_line < doc.line_offsets.size()) {
+        shown = doc.line_offsets[bottom_line];
+      }
+    } else {
+      std::uint64_t sum = 0;
+      for (size_t i = 0; i < bottom_line && i < doc.memory_lines.size(); ++i) {
+        sum += doc.memory_lines[i].size() + 1;
+      }
+      shown = std::min(sum, total);
+    }
+    safePrint("  bytes ");
+    safePrint(std::to_string(shown));
+    safePrint("/");
+    safePrint(std::to_string(total));
+  }
   safePrint("  SPACE:next  b:back  /:search  :n/:p  g/G  q");
 }
 
@@ -666,8 +800,39 @@ struct PagerResult {
   size_t count = 0;
 };
 
-auto simple_pager(const Config& cfg, const PagerDocument& doc,
-                  size_t file_index, size_t file_count) -> PagerResult {
+// Identity + size snapshot of a file on disk, for follow mode (F):
+// the volume serial and file index identify the file object, so a
+// replaced file is distinguishable from a grown one.
+struct FileStamp {
+  DWORD volume = 0;
+  ULONGLONG index = 0;
+  std::uint64_t size = 0;
+};
+
+auto file_stamp(const std::wstring& wpath) -> std::optional<FileStamp> {
+  HANDLE raw =
+      CreateFileW(wpath.c_str(), GENERIC_READ,
+                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                  nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (raw == INVALID_HANDLE_VALUE) return std::nullopt;
+  UniqueHandle handle(raw);
+  BY_HANDLE_FILE_INFORMATION info{};
+  if (!GetFileInformationByHandle(handle.get(), &info)) {
+    return std::nullopt;
+  }
+  ULARGE_INTEGER index{};
+  index.HighPart = info.nFileIndexHigh;
+  index.LowPart = info.nFileIndexLow;
+  LARGE_INTEGER size{};
+  size.HighPart = info.nFileSizeHigh;
+  size.LowPart = info.nFileSizeLow;
+  return FileStamp{info.dwVolumeSerialNumber, index.QuadPart,
+                   static_cast<std::uint64_t>(size.QuadPart)};
+}
+
+auto simple_pager(const Config& cfg, PagerDocument& doc,
+                  const std::string& filename, size_t file_index,
+                  size_t file_count) -> PagerResult {
   auto [width, height] = console_size();
   int page_size = page_size_for(cfg, height);
 
@@ -691,6 +856,17 @@ auto simple_pager(const Config& cfg, const PagerDocument& doc,
     return {0, PagerAction::Quit};
   }
 
+  // [GNU] --mouse: ask the console for mouse input (wheel events);
+  // ConsoleInputMode's destructor restores the original mode.
+  if (cfg.mouse) {
+    DWORD mode = 0;
+    if (GetConsoleMode(input_mode.input(), &mode)) {
+      SetConsoleMode(input_mode.input(),
+                     (mode | ENABLE_MOUSE_INPUT | ENABLE_EXTENDED_FLAGS) &
+                         ~ENABLE_QUICK_EDIT_MODE);
+    }
+  }
+
   size_t top_line = 0;
   int eof_count = 0;
   std::optional<SearchState> last_search;
@@ -712,13 +888,14 @@ auto simple_pager(const Config& cfg, const PagerDocument& doc,
     render_page(cfg, doc, top_line, page_size, width,
                 last_search ? &*last_search : nullptr,
                 last_match ? &*last_match : nullptr);
-    print_prompt(doc, file_index, file_count, top_line, doc.line_count(),
+    print_prompt(cfg, doc, file_index, file_count, top_line, doc.line_count(),
                  static_cast<size_t>(page_size), at_eof);
 
     if (at_eof && cfg.quit_first_eof) return {0, PagerAction::Quit};
 
-    PagerCommand command = read_pager_command(input_mode.input(),
-                                              cfg.quit_on_intr, search_history);
+    PagerCommand command =
+        read_pager_command(input_mode.input(), cfg.quit_on_intr, search_history,
+                           cfg, &doc, top_line);
     PagerAction action = command.action;
     if (action == PagerAction::Quit) return {0, PagerAction::Quit};
 
@@ -800,6 +977,85 @@ auto simple_pager(const Config& cfg, const PagerDocument& doc,
         eof_count = 0;
         break;
       }
+      case PagerAction::WheelDown:
+        if (top_line >= max_top) {
+          ++eof_count;
+          if (cfg.quit_at_eof && eof_count >= 2) {
+            return {0, PagerAction::Quit};
+          }
+        } else {
+          top_line = std::min(max_top, top_line + command.number);
+          last_match.reset();
+          eof_count = 0;
+        }
+        break;
+      case PagerAction::WheelUp:
+        top_line = top_line > command.number ? top_line - command.number : 0;
+        last_match.reset();
+        eof_count = 0;
+        break;
+      case PagerAction::Follow: {
+        // [GNU] F: wait for more data at EOF, like `tail -f`. Only
+        // seekable file documents can be followed. The file is polled
+        // every 250 ms: growth or truncation reloads it and jumps to
+        // the end. If the file is REPLACED (identity change), follow
+        // stops unless --follow-name was given, in which case the new
+        // file is picked up by name. A keypress ends the wait (the key
+        // is not replayed); with -K, a quit key exits the pager.
+        if (!doc.seekable) break;
+        const std::wstring follow_path =
+            utf8_to_wstring(doc.path.empty() ? doc.name : doc.path);
+        auto stamp = file_stamp(follow_path);
+        if (!stamp) break;
+        top_line = max_top;
+        bool leave = false;
+        while (!leave) {
+          render_page(cfg, doc, top_line, page_size, width,
+                      last_search ? &*last_search : nullptr,
+                      last_match ? &*last_match : nullptr);
+          print_prompt(cfg, doc, file_index, file_count, top_line,
+                       doc.line_count(), static_cast<size_t>(page_size), true);
+          if (WaitForSingleObject(input_mode.input(), 250) == WAIT_OBJECT_0) {
+            PagerCommand fc =
+                read_pager_command(input_mode.input(), cfg.quit_on_intr,
+                                   search_history, cfg, &doc, top_line);
+            if (fc.action == PagerAction::Quit) {
+              if (cfg.quit_on_intr) return {0, PagerAction::Quit};
+              leave = true;
+            } else if (fc.action != PagerAction::None) {
+              leave = true;
+            }
+            continue;
+          }
+          auto now = file_stamp(follow_path);
+          if (!now) {
+            leave = true;
+            break;
+          }
+          const bool replaced =
+              now->volume != stamp->volume || now->index != stamp->index;
+          if (replaced && !cfg.follow_name) {
+            leave = true;
+            break;
+          }
+          if (replaced || now->size != stamp->size) {
+            auto fresh = winux::pager::load_seekable_document(filename);
+            if (!fresh) {
+              leave = true;
+              break;
+            }
+            doc = std::move(*fresh);
+            stamp = now;
+            const size_t new_max =
+                doc.line_count() > static_cast<size_t>(page_size)
+                    ? doc.line_count() - static_cast<size_t>(page_size)
+                    : 0;
+            top_line = new_max;
+          }
+        }
+        eof_count = 0;
+        break;
+      }
       case PagerAction::SearchForward:
       case PagerAction::SearchBackward: {
         bool forward = action == PagerAction::SearchForward;
@@ -874,7 +1130,8 @@ auto run(const Config& cfg) -> int {
 
   size_t index = 0;
   while (index < docs.size()) {
-    PagerResult result = simple_pager(cfg, docs[index], index, docs.size());
+    PagerResult result =
+        simple_pager(cfg, docs[index], cfg.files[index], index, docs.size());
     if (result.code != 0) return result.code;
     if (result.action == PagerAction::NextFile) {
       size_t count = result.count == 0 ? 1 : result.count;
@@ -900,7 +1157,14 @@ REGISTER_COMMAND(
     "Allows backward movement in the file as well as forward movement.\n"
     "\n"
     "Interactive commands include SPACE/f, ENTER/j/e, k/y, b, d/u, g/G, "
-    "NUMg, NUM%, /, ?, n, N, :n, :p, :f, =, Ctrl-G, r/R, and q.",
+    "NUMg, NUM%, /, ?, n, N, :n, :p, :f, =, Ctrl-G, r/R, F, and q.\n"
+    "F waits for more data at end-of-file (follow mode); with\n"
+    "--follow-name a replaced file is picked up by name.  --file-size\n"
+    "adds byte counts to the prompt, --line-num-width sets the width\n"
+    "of the -N number field, --rscroll picks the character shown at\n"
+    "the edge of a chopped (-S) line, --mouse enables wheel scrolling,\n"
+    "--incsearch reports the match line while a pattern is typed, and\n"
+    "--no-histdups keeps the search history free of duplicates.",
     "  less file.txt\n"
     "  less -N file.txt          # Show line numbers\n"
     "  less -E file.txt          # Quit at end of file\n"

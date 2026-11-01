@@ -99,3 +99,25 @@ TEST(locale, locale_charmap_follows_the_selected_locale) {
   EXPECT_EQ(ctype_result.exit_code, 0);
   EXPECT_EQ_TEXT(ctype_result.stdout_text, "ANSI_X3.4-1968\n");
 }
+
+// [#1127 P2c] glibc's long name for -a is --all-locales.
+TEST(locale, locale_all_locales_long_option) {
+  Pipeline p;
+  p.add(L"locale.exe", {L"--all-locales"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("C.UTF-8") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("POSIX") != std::string::npos);
+}
+
+// [#1127 P2c] --usage prints a short usage message and exits 0.
+TEST(locale, locale_usage_option) {
+  Pipeline p;
+  p.add(L"locale.exe", {L"--usage"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("Usage: locale") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("--all-locales") != std::string::npos);
+}

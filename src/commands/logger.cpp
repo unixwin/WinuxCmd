@@ -64,6 +64,11 @@ auto constexpr LOGGER_OPTIONS = std::array{
     // [GNU] -u/--socket and --journald address Unix syslog facilities
     // with no Windows counterpart; declared and explicitly refused.
     OPTION("-u", "--socket", "write to this Unix socket", STRING_TYPE),
+    // [GNU] --socket-errors takes a required argument (logger.c:1141)
+    // and only steers whether local delivery errors are reported;
+    // its parse contract is implemented in run().
+    OPTION("", "--socket-errors",
+           "print connection errors when using Unix sockets", STRING_TYPE),
     OPTION("", "--journald", "write to the systemd journal")};
 
 namespace logger_pipeline {
@@ -75,6 +80,9 @@ struct Config {
   bool include_pid = false;
   bool skip_empty = false;
   bool no_act = false;
+  // [GNU] resolved --socket-errors mode (logger.c:1297-1310): auto
+  // reports errors only for --no-act or -s runs (logger.c:1305).
+  bool socket_errors = false;
   bool prio_prefix = false;
   bool rfc5424 = false;
   bool rfc3164 = false;
@@ -346,6 +354,24 @@ auto run(const CommandContext<LOGGER_OPTIONS.size()>& ctx) -> int {
   cfg.msgid = ctx.get<std::string>("--msgid", "");
   cfg.use_tcp = ctx.get<bool>("-T", false) || ctx.get<bool>("--tcp", false);
 
+  // [GNU] --socket-errors (logger.c:891-901, 1253-1255): "on" and
+  // "off" set the mode directly; "auto" -- and any other value, with
+  // a warning -- fall back to auto, which reports errors only for
+  // --no-act or -s runs (logger.c:1305).  The mode starts at auto
+  // (logger.c:1129), so it is resolved even without the option.
+  cfg.socket_errors = cfg.no_act || cfg.stderr_too;
+  {
+    std::string mode = ctx.get<std::string>("--socket-errors", "");
+    if (mode == "on") {
+      cfg.socket_errors = true;
+    } else if (mode == "off") {
+      cfg.socket_errors = false;
+    } else if (!mode.empty() && mode != "auto") {
+      safeErrorPrintLn("logger: invalid argument: " + mode +
+                       ": using automatic errors");
+    }
+  }
+
   // [GNU] RFC 5424 structured data (logger.c:590-612): each --sd-id
   // starts an element, following --sd-param values attach to it; a
   // param before any id and a repeated id are hard errors.
@@ -504,9 +530,14 @@ auto run(const CommandContext<LOGGER_OPTIONS.size()>& ctx) -> int {
         }
       } else {
         OutputDebugStringW(utf8_to_wstring(rendered).c_str());
-        // [GNU] a failed write is a failed command (logger exits
-        // nonzero when the log write fails).
-        if (!write_event_log(rendered, entry.priority & 7)) status = 1;
+        // [GNU] a failed local write fails the command only when
+        // socket errors are reported: with them off, the oracle
+        // silently drops the local socket failure (logger.c:271-275
+        // gates the fatal open error on unix_socket_errors).
+        if (!write_event_log(rendered, entry.priority & 7) &&
+            cfg.socket_errors) {
+          status = 1;
+        }
       }
     }
     if (cfg.stderr_too) safeErrorPrintLn(rendered);

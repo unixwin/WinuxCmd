@@ -23,8 +23,10 @@ using cmd::meta::OptionType;
 // ======================================================
 
 auto constexpr LOCALE_OPTIONS =
-    std::array{// [GNU]
-               OPTION("-a", "--all", "print all available locales"),
+    std::array{// [GNU] -a, --all-locales (glibc name; --all kept as an
+               // alias)
+               OPTION("-a", "--all-locales", "print all available locales"),
+               OPTION("", "--all", "same as --all-locales"),
                // [GNU]
                OPTION("-c", "--category-name",
                       "print the names of defined locale categories"),
@@ -35,6 +37,8 @@ auto constexpr LOCALE_OPTIONS =
                OPTION("-m", "--charmaps", "print available character maps"),
                // [GNU] -v, --verbose: print more information
                OPTION("-v", "--verbose", "print more information"),
+               // [GNU] --usage: print a short usage message and exit
+               OPTION("", "--usage", "print a short usage message and exit"),
                // [GNU]
                OPTION("", "", "print locale information", STRING_TYPE)};
 
@@ -151,7 +155,37 @@ REGISTER_COMMAND(locale,
                  /* author */ "WinuxCmd",
                  /* copyright */ "Copyright © 2026 WinuxCmd",
                  /* options */ LOCALE_OPTIONS) {
-  bool show_all = ctx.get<bool>("-a", false) || ctx.get<bool>("--all", false);
+  // [GNU] --usage prints a short usage message and exits, before any
+  // other mode is considered (glibc locale behavior).
+  if (ctx.get<bool>("--usage", false)) {
+    safePrintLn("Usage: locale [OPTION...] name");
+    safePrintLn("  or:  locale [OPTION...] [-a|-m] [OPTION...]");
+    safePrintLn("");
+    safePrintLn("Get locale-specific information.");
+    safePrintLn("");
+    safePrintLn(
+        "Mandatory arguments to long options are also mandatory "
+        "for any corresponding");
+    safePrintLn("short options.");
+    safePrintLn("");
+    safePrintLn("  -a, --all-locales    print all available locales");
+    safePrintLn(
+        "  -c, --category-name  print the names of defined locale "
+        "categories");
+    safePrintLn(
+        "  -k, --keyword-name   print the names and values of "
+        "keyword definitions");
+    safePrintLn("  -m, --charmaps       print available character maps");
+    safePrintLn("  -v, --verbose        print more information");
+    safePrintLn(
+        "      --usage          print this short usage message "
+        "and exit");
+    return 0;
+  }
+
+  bool show_all = ctx.get<bool>("-a", false) ||
+                  ctx.get<bool>("--all-locales", false) ||
+                  ctx.get<bool>("--all", false);
   bool show_charmaps =
       ctx.get<bool>("-m", false) || ctx.get<bool>("--charmaps", false);
   bool show_category_names =
