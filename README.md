@@ -121,7 +121,7 @@ Details in the [WPM User Guide](DOCS/en/wpm_guide.md).
 |---------|:--------:|:-------------:|:--------:|:------:|:-------:|
 | **Commands** | **176** | ~100 | ~90 | ~200 | ~300 |
 | **Options** | **1,924** | ~600 | ~200 | Full | ~500 |
-| **GNU compat** | **81% diff pass** | 95% | 60% | 99% | 70% |
+| **GNU compat** | **93% diff pass** | 95% | 60% | 99% | 70% |
 | **Native Win32** | ✅ | ❌ | ✅ | ❌ | ❌ |
 | **Package manager** | ✅ WPM | ❌ | ❌ | apt-cyg | ❌ |
 | **Test cases** | **2,420** | ~2,000 | 0 | — | ~100 |
