@@ -430,9 +430,16 @@ REGISTER_COMMAND(cat, "cat",
     // is read straight off print_visible_byte: LF is never verbatim (it
     // ends lines); with -v only printable ASCII 0x20..0x7E is verbatim
     // (TAB, ^X and M-x forms stay per-byte); without -v everything but
-    // LF — and TAB under -T — is verbatim.
+    // LF — and TAB under -T — is verbatim. One more byte is excepted
+    // without -v: a CR under -E is not copied at all — feed_char holds
+    // it as pending_cr until the next byte decides ^M vs raw (cat.c:
+    // 475) — and while a CR is pending, the next byte, verbatim or not,
+    // must go through feed_char so the pending CR is resolved in place
+    // (cat.c:372/393), even when the CR sat on a chunk edge (#1479).
     auto byte_is_verbatim = [&](unsigned char c) -> bool {
       if (c == 0x0A) return false;
+      if (c == 0x0D && flags.show_ends && !flags.show_nonprinting)
+        return false;
       if (flags.show_nonprinting) return c >= 0x20 && c <= 0x7E;
       if (c == 0x09) return !flags.show_tabs;
       return true;
@@ -449,7 +456,8 @@ REGISTER_COMMAND(cat, "cat",
       size_t i = 0;
       while (i < static_cast<size_t>(got)) {
         const unsigned char c = bytes[i];
-        if (!state.at_line_start && byte_is_verbatim(c)) {
+        if (!state.at_line_start && !state.pending_cr &&
+            byte_is_verbatim(c)) {
           size_t j = i + 1;
           while (j < static_cast<size_t>(got) &&
                  byte_is_verbatim(bytes[j])) {

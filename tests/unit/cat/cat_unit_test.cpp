@@ -432,6 +432,59 @@ TEST(cat, cat_show_ends_crlf_outputs_caret_m) {
   EXPECT_EQ_TEXT(r.stdout_text, "alpha^M$\n");
 }
 
+// #1479: -E sets show_ends WITHOUT show_nonprinting (cat.c:625),
+// so the CR of a CRLF pair is held as pending_cr and rendered ^M
+// (cat.c:475). The transform ASCII-run fast path must not bulk-
+// copy a CR past that state machine.
+TEST(cat, cat_show_ends_only_crlf_outputs_caret_m) {
+  TempDir tmp;
+  tmp.write("crlf.txt", "alpha\r\nbeta\r\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cat.exe", {L"-E", L"crlf.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "alpha^M$\nbeta^M$\n");
+}
+
+// #1479: a CR before a non-LF stays raw in place, and a trailing
+// CR at end of file is written raw (cat.c:393/793).
+TEST(cat, cat_show_ends_cr_matrix) {
+  TempDir tmp;
+  tmp.write("matrix.txt", "a\rb\r\nc\r");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cat.exe", {L"-E", L"matrix.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "a\rb^M$\nc\r");
+}
+
+// #1479: the pending CR straddling the 64 KiB chunk edge — CR is
+// the chunk's last byte, LF the next chunk's first — still
+// renders ^M before the $.
+TEST(cat, cat_show_ends_cr_at_chunk_edge) {
+  TempDir tmp;
+  const std::string body = std::string(65535, 'a') + "\r\nend\n";
+  tmp.write("edge.txt", body);
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cat.exe", {L"-E", L"edge.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text,
+                 std::string(65535, 'a') + "^M$\nend$\n");
+}
+
 TEST(cat, cat_squeeze_blank_keeps_space_only_lines) {
   TempDir tmp;
   tmp.write("blank.txt", "\n\n \n\n\nx\n");

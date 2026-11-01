@@ -1,0 +1,13 @@
+cmd: cat
+args: -E f
+timeout: 10
+setup: |
+  head -c 65535 /dev/zero | tr '\0' 'a' > f
+  printf '\r\n' >> f
+  printf 'end\n' >> f
+source: github.com/unixwin/WinuxCmd/issues/1479
+tags: issue-1479 regression cat show-ends crlf chunk-boundary
+# The CR is the last byte of the first 64 KiB chunk and the LF is
+# the first byte of the next. -E must still render the CR as ^M
+# before the $: GNU holds it as pending_cr across the buffer edge
+# (cat.c:475) instead of copying it raw.
