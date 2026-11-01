@@ -6,7 +6,7 @@
 
 **Real Unix commands. Real Windows paths. One ~3 MB executable.**
 No WSL · No Cygwin · No MSYS2 · No path-translation pain
-**v1.0.0 stable is out.** 🎉
+**v1.1.20 stable is out.** 🎉
 
 **[unixwin.dev](https://unixwin.dev) — Docs & downloads**
 

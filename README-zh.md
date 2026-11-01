@@ -6,7 +6,7 @@
 
 **真正的 Unix 命令，原生的 Windows 路径，一个约 3 MB 的 exe。**
 无需 WSL · 无需 Cygwin · 无需 MSYS2 · 没有路径转换的坑
-**v1.0.0 正式版已发布。** 🎉
+**v1.1.20 正式版已发布。** 🎉
 
 **[unixwin.dev](https://unixwin.dev) — 文档与下载 (Docs & downloads)**
 
