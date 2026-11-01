@@ -380,6 +380,85 @@ std::optional<std::string> strip_name(const std::string& path,
   return path.substr(cut);
 }
 
+// [GNU] filename_is_safe (util.c:1686) + name_is_valid (pch.c:394),
+// in the enclave form ruled for this product (#1462).  GNU refuses a
+// header name that is absolute or carries a ".." component, because
+// a patch must stay inside the working tree.  Here the same intent
+// is judged after the product's own path normalization
+// (native_path::make_api_path_operand, the shared path boundary):
+// a prepared header name is dangerous iff the path it will actually
+// be opened as lands outside the invocation sandbox — the -d
+// directory, or the working directory when no -d is given.  Two
+// spelling classes are decided before the landing test:
+//   - Raw drive-letter spellings (C:\..., C:/..., C:...) are
+//     refused as a class.  A patch file addresses a drive through
+//     the sanctioned POSIX spellings (/c/..., /cygdrive/c/...,
+//     /mnt/c/...), never by leaking a native absolute path.
+//   - A separator-leading name the boundary folds onto a drive —
+//     a sanctioned drive spelling above, or a shell-tree mount
+//     under a configured shell root (the mapping clamps ".." at
+//     the mount base) — is accepted: it names a sanctioned place.
+// A ".." chain that folds back inside the sandbox (sub/../file)
+// is accepted, where GNU's spelling test would refuse it: the
+// enclave form judges the landing spot, not the spelling.  The
+// ORIGFILE operand and the -o/-r paths are the invoker's own
+// names, never header names, and are not judged here (GNU checks
+// only the names a patch file carries).
+std::wstring plain_absolute_form(std::wstring_view extended) {
+  if (extended.starts_with(L"\\\\?\\UNC\\")) {
+    return L"\\\\" + std::wstring(extended.substr(8));
+  }
+  if (extended.starts_with(L"\\\\?\\")) {
+    return std::wstring(extended.substr(4));
+  }
+  return std::wstring(extended);
+}
+
+bool folded_path_is_within(const std::wstring& path,
+                           const std::wstring& base) {
+  auto fold = [](wchar_t ch) {
+    return (ch >= L'a' && ch <= L'z')
+               ? static_cast<wchar_t>(ch - L'a' + L'A')
+               : ch;
+  };
+  if (path.size() < base.size()) return false;
+  for (size_t i = 0; i < base.size(); ++i) {
+    if (fold(path[i]) != fold(base[i])) return false;
+  }
+  if (path.size() == base.size()) return true;
+  if (!base.empty() && (base.back() == L'\\' || base.back() == L'/')) {
+    return true;
+  }
+  return path[base.size()] == L'\\' || path[base.size()] == L'/';
+}
+
+bool header_name_is_dangerous(const std::string& prepared,
+                              const std::string& effective,
+                              const std::wstring& anchor_plain) {
+  const std::wstring name_w = native_path::from_utf8(prepared);
+  // Raw drive-letter spellings are refused as a class (see above).
+  if (name_w.size() >= 2 &&
+      ((name_w[0] >= L'A' && name_w[0] <= L'Z') ||
+       (name_w[0] >= L'a' && name_w[0] <= L'z')) &&
+      name_w[1] == L':') {
+    return true;
+  }
+  if (!name_w.empty() && (name_w[0] == L'/' || name_w[0] == L'\\')) {
+    // Separator-leading (absolute) spelling: accepted when the
+    // boundary folds it onto a drive, i.e. a sanctioned drive
+    // spelling or a shell-tree mount (see above).
+    const std::wstring normalized =
+        native_path::make_api_path_operand(prepared).normalized;
+    if (normalized.size() >= 3 && normalized[1] == L':' &&
+        (normalized[2] == L'\\' || normalized[2] == L'/')) {
+      return false;
+    }
+  }
+  const std::wstring landed = plain_absolute_form(
+      native_path::make_api_path_operand(effective).extended);
+  return !folded_path_is_within(landed, anchor_plain);
+}
+
 Hunk reversed(const Hunk& h) {
   Hunk r;
   r.old_start = h.new_start;
@@ -1571,6 +1650,15 @@ REGISTER_COMMAND(
     if (!silent) safePrintLn(msg);
   };
 
+  // The invocation sandbox for the header-name safety filter
+  // (header_name_is_dangerous): the -d directory when given, else
+  // the working directory, resolved through the shared path
+  // boundary once for the whole run.
+  const std::wstring anchor_plain = plain_absolute_form(
+      native_path::make_api_path_operand(
+          directory.empty() ? "." : directory)
+          .extended);
+
   long long failed_total = 0;
   bool any_output_written = false;
   std::string combined_out;  // for -o across groups
@@ -1679,14 +1767,66 @@ REGISTER_COMMAND(
         }
         return best ? best->name : std::string();
       };
+      // [GNU] name_is_valid (pch.c:394), enclave form (#1462): a
+      // candidate the safety filter refuses is diagnosed once per
+      // group (GNU's invalid_names cache) and drops out of
+      // selection; the remaining candidates are ranked as usual.
+      // When every existing candidate is refused, the creation
+      // selection below still runs, as GNU falls through to it
+      // when no usable name exists.
+      std::set<std::string> refused_names;
+      auto refuse_candidate = [&](const Candidate& c) -> bool {
+        if (!header_name_is_dangerous(c.name, with_dir(c.name),
+                                      anchor_plain)) {
+          return false;
+        }
+        if (refused_names.insert(c.name).second) {
+          say(winux::i18n::format(
+              "command.patch.warning.ignoring_dangerous_name",
+              "Ignoring potentially dangerous file name {}",
+              quote_name(c.name)));
+        }
+        return true;
+      };
+      // The best-ranked safe name in a pool, refusing (and
+      // removing) each better-ranked dangerous name in turn.
+      auto best_safe_of = [&](std::vector<Candidate> pool) {
+        while (!pool.empty()) {
+          const std::string best = best_of(pool);
+          auto it = std::find_if(pool.begin(), pool.end(),
+                                 [&](const Candidate& c) {
+                                   return c.name == best;
+                                 });
+          if (!refuse_candidate(*it)) return best;
+          pool.erase(std::remove_if(pool.begin(), pool.end(),
+                                    [&](const Candidate& c) {
+                                      return c.name == best;
+                                    }),
+                     pool.end());
+        }
+        return std::string();
+      };
+
       std::vector<Candidate> existing;
       for (const auto& c : candidates) {
         if (file_exists(with_dir(c.name))) existing.push_back(c);
       }
+      std::string chosen;
       if (!existing.empty()) {
-        target = with_dir(posix_mode ? existing.front().name
-                                     : best_of(existing));
-      } else if (creation && !candidates.empty()) {
+        if (posix_mode) {
+          // [GNU] POSIX takes the first existing candidate that
+          // is valid, in old/new/Index order (pch.c:891).
+          for (const auto& c : existing) {
+            if (!refuse_candidate(c)) {
+              chosen = c.name;
+              break;
+            }
+          }
+        } else {
+          chosen = best_safe_of(existing);
+        }
+      }
+      if (chosen.empty() && creation && !candidates.empty()) {
         // [GNU] Creation (pch.c:949-975): fewest new directories.
         auto new_dirs = [&](const std::string& n) {
           int missing = 0;
@@ -1715,8 +1855,9 @@ REGISTER_COMMAND(
         for (const auto& c : candidates) {
           if (new_dirs(c.name) == min_missing) nearest.push_back(c);
         }
-        target = with_dir(best_of(nearest));
+        chosen = best_safe_of(nearest);
       }
+      if (!chosen.empty()) target = with_dir(chosen);
     }
 
     // [GNU] No candidate exists: the file-name dialogue (pch.c:270-
