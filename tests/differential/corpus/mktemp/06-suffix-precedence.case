@@ -1,0 +1,5 @@
+cmd: mktemp
+args: --suffix /x 'tmp.XXY'
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w3b mktemp suffix-end-in-x-precedence

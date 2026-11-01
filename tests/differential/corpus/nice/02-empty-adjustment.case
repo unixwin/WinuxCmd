@@ -1,0 +1,5 @@
+cmd: nice
+args: -n "" true
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w3b nice adjustment empty-invalid

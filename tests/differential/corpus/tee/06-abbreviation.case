@@ -1,0 +1,7 @@
+cmd: tee
+args: --output-error=warn-n out.txt
+timeout: 10
+stdin: |
+  data
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w3b tee output-error argmatch-abbreviation

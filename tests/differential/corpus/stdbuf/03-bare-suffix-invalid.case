@@ -1,0 +1,5 @@
+cmd: stdbuf
+args: -o K true
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w3b stdbuf bare-suffix invalid-mode

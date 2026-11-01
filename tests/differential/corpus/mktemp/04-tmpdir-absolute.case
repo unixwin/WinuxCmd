@@ -1,0 +1,5 @@
+cmd: mktemp
+args: -p . /x/XXXXXX
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w3b mktemp tmpdir-absolute-rejected

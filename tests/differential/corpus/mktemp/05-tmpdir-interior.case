@@ -1,0 +1,7 @@
+cmd: mktemp
+args: -p . 'sub/XXXXXX'
+timeout: 10
+setup: |
+  mkdir sub
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w3b mktemp tmpdir-interior-slashes-preserved

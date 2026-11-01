@@ -452,16 +452,11 @@ auto parse_db_stream(std::istream& in, std::string_view filename, bool internal,
               break;
             }
           }
-          if (code == nullptr) {
-            // [GNU-ext] also accept the two-letter LS_COLORS keys
-            // directly (the compiled-in database below uses them).
-            for (const auto& [slack, ls_code] : kSlackCodes) {
-              if (iequals(keyword, ls_code)) {
-                code = ls_code;
-                break;
-              }
-            }
-          }
+          // [GNU] dircolors.c:364-380: only the slack keywords are
+          // recognized; a two-letter LS_COLORS key used as a database
+          // keyword ('di 01;34') is an unrecognized-keyword error.
+          // (The compiled-in database is written with slack keywords,
+          // so nothing internal depends on accepting the codes.)
           if (code != nullptr) {
             entries.push_back({code, std::string(arg)});
           } else {
@@ -545,10 +540,29 @@ auto guess_shell_is_csh() -> bool {
 }
 
 auto run(const CommandContext<DIRCOLORS_OPTIONS.size()>& ctx) -> int {
-  bool bourne = ctx.get<bool>("-b", false) || ctx.get<bool>("--sh", false) ||
-                ctx.get<bool>("--bourne-shell", false);
-  bool csh = ctx.get<bool>("-c", false) || ctx.get<bool>("--csh", false) ||
-             ctx.get<bool>("--c-shell", false);
+  // [GNU] dircolors.c:431-450: each -b/-c occurrence assigns the
+  // output syntax, so when both are given the LAST one wins
+  // ('dircolors -b -c' emits C-shell code).  Two independent booleans
+  // tested Bourne-first made '-b -c' emit Bourne code.
+  bool syntax_seen = false;
+  bool csh_selected = false;
+  for (const auto& occurrence : ctx.options.occurrences()) {
+    if (!ctx.metas || occurrence.index >= DIRCOLORS_OPTIONS.size()) {
+      continue;
+    }
+    const auto& meta = (*ctx.metas)[occurrence.index];
+    if (meta.short_name == "-b" || meta.long_name == "--sh" ||
+        meta.long_name == "--bourne-shell") {
+      syntax_seen = true;
+      csh_selected = false;
+    } else if (meta.short_name == "-c" || meta.long_name == "--csh" ||
+               meta.long_name == "--c-shell") {
+      syntax_seen = true;
+      csh_selected = true;
+    }
+  }
+  bool bourne = syntax_seen && !csh_selected;
+  bool csh = syntax_seen && csh_selected;
   bool print_db =
       ctx.get<bool>("-p", false) || ctx.get<bool>("--print-database", false);
   bool print_colors = ctx.get<bool>("--print-ls-colors", false);
