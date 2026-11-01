@@ -67,6 +67,24 @@ wpm install jq
 | **便携版** | 解压 `WinuxCmd-<版本>-win-x64.zip`，加入 `PATH` 即可使用 |
 | **从源码构建** | VS 2022 + CMake 3.30 + Ninja，见[从源码构建](#️-从源码构建) |
 
+## 📦 版本形态（1.2.0+）
+
+WinuxCmd 由同一份源码构建出两个版本形态：
+
+| | **默认版** | **Full 版** |
+|---|---|---|
+| 资产名 | `WinuxCmd-<版本>-win-<架构>.*` | `WinuxCmd-<版本>-win-<架构>-full.*` |
+| 入口链接 | 全部命令，**除**下述 Full-only 名单 | 全部 178 个入口 |
+| wpm 索引 | 收录 | **不收录** —— 仅独立下载 |
+
+**Full-only 命令：** 默认版不为 **`[`**、**`env`**、**`false`**、**`kill`**、
+**`test`**、**`time`**、**`true`** 生成入口链接——这些命令面向用户的语义由
+宿主 shell 的内建机制定义，PATH 上的同名 exe 入口声称的分流实际由内建所有。
+命令本体在多合一二进制中完整保留，两个版本里 `winuxcmd kill -9 <pid>` 均可
+使用。`echo`、`printf`、`pwd` 按裁定保留入口。Full 版落实全部入口链接；资产
+名恒带 `-full` 限定；该划分的定义只存在于
+[`src/core/package_edition.h`](src/core/package_edition.h) 一处。
+
 ## 🚀 为什么选 WinuxCmd
 
 - 🪟 **原生，不是模拟** —— 直接调用 Win32 API，理解 `C:\`、UNC 路径和 NTFS ACL（内置 `cygpath`、`getfacl` 做桥接）。无虚拟机、无运行时 DLL、启动即开。

@@ -4,6 +4,30 @@ All notable changes to WinuxCmd are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow the
 repository release tags.
 
+## [1.2.0] - Unreleased
+
+### Changed
+
+- **edition split (default vs full, #1438)**: the default edition no longer
+  materializes entry links for `[`, `env`, `false`, `kill`, `test`, `time`,
+  `true` — commands whose user-facing semantics the host shell's builtins
+  define. The commands stay fully implemented and dispatchable through the
+  multicall binary (`winuxcmd kill ...`); `echo`, `printf`, `pwd` keep their
+  entries. A `wpm links rebuild` on a default-edition install also sweeps
+  stale hardlinks of these names left by a 1.1.x install. The name list is
+  defined once in `src/core/package_edition.h`; `WINUXCMD_PACKAGE_EDITION=full`
+  builds the full edition, which materializes all 178 entries under the
+  `-full` asset names (`WinuxCmd-<version>-win-<arch>-full.*`) and is not
+  distributed through wpm.
+
+### Removed
+
+- **PCRE2 SDK tree from release payloads**: PCRE2's unconditional install
+  rules shipped headers, static import libs, CMake/pkgconfig metadata, man
+  pages and HTML docs (~7.8 MB) inside every standalone archive and the
+  installer stage. The runtime-only strip runs in the install tree now, so
+  archives carry `usr/bin` plus the project docs and nothing else (#1438).
+
 ## [1.1.20] - 2026-10-22
 
 ### Fixed

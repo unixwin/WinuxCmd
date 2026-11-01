@@ -54,4 +54,19 @@ struct ProjectPaths {
   static std::filesystem::path exe(const std::wstring& name) {
     return detect_bin_dir() / name;
   }
+
+  /**
+   * @brief Source file for a command entry a test wants to copy elsewhere.
+   *
+   * #1438: the default edition materializes no entry for the seven
+   * host-semantics names (kill test [ true false env time). A copy of the
+   * multicall binary under the entry name dispatches by argv[0] exactly
+   * like the hardlinked entry, so tests that stage `env.exe` into a temp
+   * dir keep working on the shipped default tree.
+   */
+  static std::filesystem::path entry_binary(const std::wstring& name) {
+    const auto entry = detect_bin_dir() / name;
+    if (std::filesystem::exists(entry)) return entry;
+    return detect_bin_dir() / L"winuxcmd.exe";
+  }
 };
