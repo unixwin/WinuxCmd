@@ -1095,3 +1095,248 @@ TEST(patch, patch_index_name_discarded_beside_header_names) {
   EXPECT_EQ(r2.exit_code, 0);
   EXPECT_EQ_TEXT(tmp.read("decoy.txt"), "world\n");
 }
+
+// [GNU] filename_is_safe (util.c:1686) + name_is_valid (pch.c:394),
+// in the enclave form ruled on #1462: a header name is refused —
+// "Ignoring potentially dangerous file name <name>", once per
+// group — when the path it lands on after the product's own path
+// normalization falls outside the invocation sandbox (the -d
+// directory, else the working directory).  The helpers below
+// plant an existing file in the TempDir's parent so a dangerous
+// name has a real target it would otherwise patch.
+namespace patch_w6_detail {
+
+int count_occurrences(const std::string& haystack,
+                      const std::string& needle) {
+  int count = 0;
+  size_t pos = 0;
+  while ((pos = haystack.find(needle, pos)) != std::string::npos) {
+    ++count;
+    pos += needle.size();
+  }
+  return count;
+}
+
+std::filesystem::path plant_outside_file(const TempDir& tmp,
+                                         const wchar_t* leaf,
+                                         const std::string& content) {
+  const std::filesystem::path out = tmp.path.parent_path() / leaf;
+  std::error_code ec;
+  std::filesystem::remove(out, ec);
+  std::ofstream os(out, std::ios::binary | std::ios::trunc);
+  os << content;
+  os.close();
+  return out;
+}
+
+std::string read_whole_file(const std::filesystem::path& p) {
+  std::ifstream is(p, std::ios::binary);
+  return std::string(std::istreambuf_iterator<char>(is),
+                     std::istreambuf_iterator<char>());
+}
+
+void remove_file(const std::filesystem::path& p) {
+  std::error_code ec;
+  std::filesystem::remove(p, ec);
+}
+
+// The rooted POSIX spelling of a native absolute path: drop the
+// drive "X:" and keep the rest with forward slashes, so the name
+// resolves on the process current drive.
+std::string rooted_posix_form(const std::filesystem::path& p) {
+  std::string text = p.string().substr(2);
+  for (char& c : text) {
+    if (c == '\\') c = '/';
+  }
+  return text;
+}
+
+std::string narrow(const std::wstring& wide) {
+  std::string out;
+  out.reserve(wide.size());
+  for (wchar_t ch : wide) out.push_back(static_cast<char>(ch));
+  return out;
+}
+
+}  // namespace patch_w6_detail
+
+// An absolute POSIX name that resolves on the current drive,
+// outside the working directory, is refused; the file it names is
+// left untouched and the group is skipped.  The old and new names
+// are identical, yet the diagnostic prints once (GNU's
+// invalid_names cache).
+TEST(patch, patch_dangerous_absolute_posix_name_refused_w6) {
+  using namespace patch_w6_detail;
+  TempDir tmp;
+  const auto outside =
+      plant_outside_file(tmp, L"winux_w6_rooted.txt", "hello\n");
+  const std::string rooted = rooted_posix_form(outside);
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("--- " + rooted + "\n+++ " + rooted +
+              "\n@@ -1,1 +1,1 @@\n-hello\n+world\n");
+  // Standalone mode for this run: with a shell root configured the
+  // spelling would map into the payload root instead of resolving
+  // on the current drive.
+  p.set_env(L"__RUBASH_SHELL_ROOT", L"");
+  p.set_env(L"NIU_ROOT", L"");
+  p.set_env(L"WINUXSH_ROOT", L"");
+  p.set_env(L"RUBASH_ROOT", L"");
+  p.add(L"patch.exe", {L"-p0", L"--batch"});
+  auto r = p.run();
+  const std::string after = read_whole_file(outside);
+  remove_file(outside);
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ(count_occurrences(r.stdout_text,
+                              "Ignoring potentially dangerous "
+                              "file name " +
+                                  rooted),
+            1);
+  EXPECT_EQ_TEXT(after, "hello\n");
+}
+
+// A ".." chain that climbs out of the working directory is
+// refused the same way.
+TEST(patch, patch_dangerous_dotdot_climb_out_refused_w6) {
+  using namespace patch_w6_detail;
+  TempDir tmp;
+  const auto outside =
+      plant_outside_file(tmp, L"winux_w6_climb.txt", "hello\n");
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("--- ../winux_w6_climb.txt\n"
+              "+++ ../winux_w6_climb.txt\n"
+              "@@ -1,1 +1,1 @@\n-hello\n+world\n");
+  p.add(L"patch.exe", {L"-p0", L"--batch"});
+  auto r = p.run();
+  const std::string after = read_whole_file(outside);
+  remove_file(outside);
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ(count_occurrences(r.stdout_text,
+                              "Ignoring potentially dangerous "
+                              "file name ../winux_w6_climb.txt"),
+            1);
+  EXPECT_EQ_TEXT(after, "hello\n");
+}
+
+// A raw drive-letter absolute name is refused as a class, in
+// either separator spelling, even though the file it names
+// exists: a patch file must use the /c/ spelling instead.
+TEST(patch, patch_dangerous_drive_letter_name_refused_w6) {
+  using namespace patch_w6_detail;
+  TempDir tmp;
+  const auto outside =
+      plant_outside_file(tmp, L"winux_w6_drive.txt", "hello\n");
+  const std::string native = outside.string();
+  std::string forward = native;
+  for (char& c : forward) {
+    if (c == '\\') c = '/';
+  }
+  for (const std::string& name : {native, forward}) {
+    Pipeline p;
+    p.set_cwd(tmp.wpath());
+    p.set_stdin("--- " + name + "\n+++ " + name +
+                "\n@@ -1,1 +1,1 @@\n-hello\n+world\n");
+    p.add(L"patch.exe", {L"-p0", L"--batch"});
+    auto r = p.run();
+    EXPECT_EQ(r.exit_code, 1);
+    EXPECT_EQ(count_occurrences(r.stdout_text,
+                                "Ignoring potentially dangerous "
+                                "file name " +
+                                    name),
+              1);
+  }
+  const std::string after = read_whole_file(outside);
+  remove_file(outside);
+  EXPECT_EQ_TEXT(after, "hello\n");
+}
+
+// The sanctioned /c/ drive spelling is accepted: creation through
+// it selects the spelled target (checked under --dry-run, which
+// reports the file it would patch and writes nothing).
+TEST(patch, patch_drive_spelling_name_accepted_w6) {
+  using namespace patch_w6_detail;
+  TempDir tmp;
+  const std::string spelled = narrow(
+      patch_dialect_detail::slash_drive_form(tmp.path / L"created.txt"));
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("--- /dev/null\n+++ " + spelled +
+              "\n@@ -0,0 +1,1 @@\n+fresh\n");
+  p.add(L"patch.exe", {L"-p0", L"--dry-run"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("checking file " + spelled) !=
+              std::string::npos);
+  EXPECT_EQ(count_occurrences(r.stdout_text,
+                              "Ignoring potentially dangerous"),
+            0);
+  EXPECT_TRUE(tmp.read("created.txt").empty());
+}
+
+// An ordinary relative name inside a subdirectory is accepted
+// and patched as usual.
+TEST(patch, patch_relative_subdir_name_accepted_w6) {
+  using namespace patch_w6_detail;
+  TempDir tmp;
+  tmp.mkdir("sub");
+  tmp.write("sub/file.txt", "hello\n");
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("--- sub/file.txt\n+++ sub/file.txt\n"
+              "@@ -1,1 +1,1 @@\n-hello\n+world\n");
+  p.add(L"patch.exe", {L"-p0"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(tmp.read("sub/file.txt"), "world\n");
+  EXPECT_EQ(count_occurrences(r.stdout_text,
+                              "Ignoring potentially dangerous"),
+            0);
+}
+
+// A ".." that normalizes back inside the sandbox is accepted:
+// the enclave form judges the landing spot, where GNU's spelling
+// test refuses any ".." component outright.
+TEST(patch, patch_dotdot_staying_inside_accepted_w6) {
+  using namespace patch_w6_detail;
+  TempDir tmp;
+  tmp.mkdir("sub");
+  tmp.write("file.txt", "hello\n");
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("--- sub/../file.txt\n+++ sub/../file.txt\n"
+              "@@ -1,1 +1,1 @@\n-hello\n+world\n");
+  p.add(L"patch.exe", {L"-p0"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(tmp.read("file.txt"), "world\n");
+  EXPECT_EQ(count_occurrences(r.stdout_text,
+                              "Ignoring potentially dangerous"),
+            0);
+}
+
+// POSIX selection walks the existing candidates in order: the
+// first one is dangerous (it climbs out of the -d directory) and
+// is refused with the diagnostic; selection falls back to the
+// next, safe name, which is patched — the outside file is not.
+TEST(patch, patch_posix_falls_back_past_dangerous_name_w6) {
+  using namespace patch_w6_detail;
+  TempDir tmp;
+  tmp.mkdir("sub");
+  tmp.write("file.txt", "hello\n");
+  tmp.write("sub/inner.txt", "hello\n");
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("--- ../file.txt\n+++ inner.txt\n"
+              "@@ -1,1 +1,1 @@\n-hello\n+world\n");
+  p.add(L"patch.exe",
+        {L"-p0", L"--posix", L"--directory", L"sub"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(count_occurrences(r.stdout_text,
+                              "Ignoring potentially dangerous "
+                              "file name ../file.txt"),
+            1);
+  EXPECT_EQ_TEXT(tmp.read("sub/inner.txt"), "world\n");
+  EXPECT_EQ_TEXT(tmp.read("file.txt"), "hello\n");
+}
