@@ -402,6 +402,36 @@ jobs:
           gh pr merge "$pr_url" --repo unixwin/winuxcmd-i18n --squash --delete-branch || \
             gh pr merge "$pr_url" --repo unixwin/winuxcmd-i18n --squash --delete-branch --auto
 
+  i18n-drift:
+    # Drift detection for the published locale catalogs (issue #1127 P3):
+    # extract the English catalog from this source and diff it against the
+    # catalogs published in unixwin/winuxcmd-i18n. The diff must not grow
+    # beyond scripts/i18n-drift-baseline.json, which records the standing
+    # lag between master source and the reviewed translation batches, so
+    # this job is green on master as it stands and turns red exactly when
+    # a change adds source strings without their catalog sync (or a
+    # catalog key breaks) - the drift this gate exists to catch. A
+    # deliberate string change records its growth in the same PR via
+    # scripts/check_i18n_drift.py --update-baseline.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout WinuxCmd
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+      - name: Checkout I18N catalogs
+        # Public repository; an anonymous read clone is all the check
+        # needs (unlike sync-i18n-catalog, which pushes and therefore
+        # uses the I18N_REPO_TOKEN secret).
+        shell: bash
+        run: git clone --depth 1 https://github.com/unixwin/winuxcmd-i18n.git i18n-repo
+      - name: Extract and diff against the published catalogs
+        shell: bash
+        run: python3 scripts/check_i18n_drift.py --i18n-repo i18n-repo
+
   update-wpm-source-index:
     runs-on: ubuntu-latest
     needs: release

@@ -31,3 +31,23 @@ handle instead, so a case pinning coreutils' closed-stdin diagnostics would
 measure the launch chain instead of the product. Cases carrying a mismatching
 `subject` are reported as `SKIP`, not compared, for the same reason as
 `oracle`. Omit `subject` when a case is comparable under any launch shape.
+
+The whitelist of known differential gaps is split by oracle platform.
+`whitelist.txt` holds entries that hold against any oracle; the runner
+additionally loads `whitelist-linux.txt` (the WSL-oracle shape) or
+`whitelist-msys.txt` (an MSYS2/Git Bash oracle) for the detected oracle
+platform, and a platform entry overrides a common entry for the same case.
+An excuse recorded against one oracle's runtime — newlib printf rounding,
+the WSL CI image's ncal, 9p-share behavior — must not excuse the case under
+the other oracle, where it either passes outright or surfaces a real
+difference. Because `baseline.json` is recorded in the WSL shape, an entry
+may move into a platform file only when the recorded shape does not rely on
+it (every case recorded non-PASS keeps its excuse under Linux).
+
+Outputs that differ only in genuinely run-varying text are compared through
+the normalization layer in `normalize.sed` (dd's timing tail, timestamp
+times-of-day) before a case counts as different; the file documents per rule
+what is masked and what is deliberately not masked. Locale sensitivity is
+handled by pinning, not masking: the runner runs both sides under
+`ORACLE_LOCALE` (`C` by default), so a verdict never depends on the host
+locale.
