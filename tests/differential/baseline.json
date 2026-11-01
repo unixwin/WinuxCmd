@@ -61,7 +61,7 @@
       "command": "basename"
     },
     "corpus/basename/50-drive-suffix.case": {
-      "bucket": "SKIP",
+      "bucket": "PASS",
       "command": "basename"
     },
     "corpus/basename/51-multiple-zero.case": {
@@ -629,7 +629,7 @@
       "command": "dirname"
     },
     "corpus/dirname/03-drive-root.case": {
-      "bucket": "SKIP",
+      "bucket": "PASS",
       "command": "dirname"
     },
     "corpus/dirname/04-trailing-slashes.case": {
@@ -1913,7 +1913,7 @@
       "command": "test"
     },
     "corpus/test/13-ef-same-device.case": {
-      "bucket": "SKIP",
+      "bucket": "PASS",
       "command": "test"
     },
     "corpus/timeout/01-complete.case": {
