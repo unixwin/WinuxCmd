@@ -1679,6 +1679,34 @@ class RegistryImpl {
     }
     return result;
   }
+
+  // [verb form] `winuxcmd <cmd> ... --version` prints the top-level banner
+  // only when "--version" is one of <cmd>'s own option tokens under the
+  // rule run() applies: the per-command interception policy (nohup stops
+  // at the wrapped command, printf/test/[ honour it only as the sole
+  // argument) and the #1303 role classification (wrapper operands, value
+  // options and "--" are not options). Without this, `winuxcmd env echo
+  // --version` stole the child's --version -- which #1438 turns into a
+  // product-path defect, since the default edition reaches env/kill/...
+  // only through the verb form. One source of truth with run(), so
+  // main.cpp keeps no hand-copied table (WinuxCmd #1215).
+  bool verb_form_wants_version(std::string_view cmdName,
+                               std::span<std::string_view> args) {
+    if (is_literal_arg_command(cmdName)) return false;
+    auto it = registry_.find(cmdName);
+    if (it == registry_.end()) return false;
+    const CommandBehavior behavior = behavior_for(cmdName);
+    if (!behavior.standard_interception_enabled(args)) return false;
+    if (behavior.help_version_only_when_sole_argument) {
+      return args.size() == 1 && args[0] == "--version";
+    }
+    const std::vector<ArgRole> roles =
+        classify_args_for_dispatch(cmdName, args, it->second.options);
+    for (size_t i = 0; i < args.size(); ++i) {
+      if (roles[i] == ArgRole::Option && args[i] == "--version") return true;
+    }
+    return false;
+  }
 };
 
 // Get singleton instance
@@ -1737,6 +1765,13 @@ export class CommandRegistry {
     auto all = getImpl().list();
     return std::ranges::any_of(
         all, [cmdName](const auto &item) { return item.first == cmdName; });
+  }
+
+  // Verb-form `--version` scan (main.cpp): true only when --version is the
+  // command's own option token under the dispatcher's interception rule.
+  static bool verbFormWantsVersion(std::string_view cmdName,
+                                   std::span<std::string_view> args) noexcept {
+    return getImpl().verb_form_wants_version(cmdName, args);
   }
 
   // Print man page for a command

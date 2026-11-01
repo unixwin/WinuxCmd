@@ -561,27 +561,16 @@ int wmain(int argc, wchar_t* wargv[]) noexcept {
 
                                                args.size() - 1);
 
-    // Check for --version in command arguments.  [GNU] Commands whose
-    // arguments are data (echo, yes, test, [, true, false, printf, expr) do
-    // not honor "--version" in any position — e.g. `printf '%s\n' --version`
-    // prints "--version" and `expr 1 --version` is a syntax error — so the
-    // dispatcher's per-command rule applies to them instead of this scan.
-    // The set itself is core's is_literal_arg_command, the single source of
-    // truth shared with the dispatcher's abbreviation expansion: WinuxCmd
-    // #1215 was this scan's hand-copied table missing "expr", so
-    // `winuxcmd expr 1 --version` printed the top-level "WinuxCmd <ver>"
-    // and exited 0, while the expr.exe shim (and GNU) reject the operand
-    // with exit 2.
-    const bool literal_arg_command = is_literal_arg_command(cmd_name);
-    bool has_version = false;
-    if (!literal_arg_command) {
-      for (const auto& arg : cmd_args) {
-        if (arg == "--version") {
-          has_version = true;
-          break;
-        }
-      }
-    }
+    // Check for --version in command arguments.  The decision is the
+    // dispatcher's (CommandRegistry::verbFormWantsVersion): literal-argument
+    // commands (echo, yes, test, [, true, false, printf, expr) never honor
+    // "--version" (WinuxCmd #1215 was this scan's hand-copied table missing
+    // "expr"), and wrapper commands own only the options before the wrapped
+    // command (`winuxcmd env echo --version` runs echo's --version, #1303
+    // roles) -- a product-path case once #1438 leaves env/kill/... reachable
+    // only through the verb form in the default edition.
+    const bool has_version =
+        CommandRegistry::verbFormWantsVersion(cmd_name, cmd_args);
 
     if (has_version && CommandRegistry::hasCommand(cmd_name)) {
       safePrintLn(L"WinuxCmd " + utf8_to_wstring(WinuxCmd::VERSION_STRING));

@@ -1030,3 +1030,41 @@ TEST(winuxcmd, winuxcmd_expr_version_alone_prints_expr_version_issue1215) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.find("expr (WinuxCmd)") != std::string::npos);
 }
+
+// [#1438] The default edition reaches env (and kill/test/[/true/false/time)
+// only through the verb form, so the verb scan must not steal a wrapped
+// command's --version: `winuxcmd env echo.exe --version` runs echo's
+// --version (#1303 roles), not the top-level banner.
+TEST(winuxcmd, winuxcmd_env_wrapped_version_belongs_to_child_issue1438) {
+  Pipeline p;
+  // env resolves the wrapped command through PATH alone, so PATH must lead
+  // with the staged bin dir (see the env suite's identity test).
+  std::wstring path = ProjectPaths::detect_bin_dir().wstring();
+  wchar_t inherited[32768];
+  if (DWORD n = GetEnvironmentVariableW(L"PATH", inherited, 32768);
+      n > 0 && n < 32768) {
+    path += L";";
+    path.append(inherited, n);
+  }
+  p.set_env(L"PATH", path);
+  p.add(L"winuxcmd.exe", {L"env", L"echo.exe", L"--version"});
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("echo (WinuxCmd)") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.rfind("WinuxCmd ", 0) != 0);
+}
+
+// [#1438] --version as the command's own option keeps the top-level banner
+// in the verb form.
+TEST(winuxcmd, winuxcmd_ls_version_option_prints_toplevel_banner_issue1438) {
+  Pipeline p;
+  p.add(L"winuxcmd.exe", {L"ls", L"--version"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.rfind("WinuxCmd ", 0) == 0);
+}
