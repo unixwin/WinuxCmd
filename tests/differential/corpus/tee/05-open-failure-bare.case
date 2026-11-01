@@ -1,0 +1,7 @@
+cmd: tee
+args: no/dir/f
+timeout: 10
+stdin: |
+  data
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w3b tee open-failure unquoted-diagnostic continues

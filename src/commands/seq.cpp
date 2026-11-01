@@ -112,6 +112,14 @@ auto parse_number(std::string_view text) -> cp::Result<double> {
   errno = 0;
   double parsed = std::strtod(value.c_str(), &end);
 
+  if (end != value.c_str() && *end == '\0' && errno != ERANGE &&
+      std::isnan(parsed)) {
+    // [GNU] seq.c:157-162: a parseable NaN is its own diagnostic,
+    // distinct from a malformed floating point argument.
+    return error_result<double>("invalid 'not-a-number' argument: '" + value +
+                                "'");
+  }
+
   if (end == value.c_str() || *end != '\0' || errno == ERANGE ||
       std::isnan(parsed)) {
     // [GNU] message uses a colon between the argument kind and the quoted
@@ -222,6 +230,12 @@ auto validate_format(std::string_view format) -> cp::Result<bool> {
              std::isdigit(static_cast<unsigned char>(format[i])) != 0) {
         ++i;
       }
+    }
+
+    // [GNU] seq.c:238-272 (long_double_format): an optional 'L' length
+    // modifier precedes the conversion ('%Lf' is valid).
+    if (i < format.size() && format[i] == 'L') {
+      ++i;
     }
 
     if (i >= format.size() || !is_floating_conversion(format[i])) {
@@ -340,13 +354,16 @@ auto build_config(const CommandContext<SEQ_OPTIONS.size()>& ctx)
             }
             break;  // the rest of the token was the value
           }
-          return error_result<Config>("invalid option '-" +
+          // [GNU] getopt's short-option diagnostic form.
+          return error_result<Config>("invalid option -- '" +
                                       std::string(1, c) + "'");
         }
         continue;
       }
 
-      return error_result<Config>("invalid option '" + std::string(arg) + "'");
+      // [GNU] getopt's long-option diagnostic form.
+      return error_result<Config>("unrecognized option '" +
+                                  std::string(arg) + "'");
     }
 
     operands.push_back(arg);
@@ -358,38 +375,8 @@ auto build_config(const CommandContext<SEQ_OPTIONS.size()>& ctx)
     return std::unexpected("missing operand");
   }
 
-  if (num_args == 1) {
-    // seq LAST
-    auto last = parse_number(operands[0]);
-    if (!last) return std::unexpected(last.error());
-    cfg.last = *last;
-  } else if (num_args == 2) {
-    // seq FIRST LAST
-    auto first = parse_number(operands[0]);
-    if (!first) return std::unexpected(first.error());
-    auto last = parse_number(operands[1]);
-    if (!last) return std::unexpected(last.error());
-    cfg.first = *first;
-    cfg.last = *last;
-  } else if (num_args == 3) {
-    // seq FIRST INCREMENT LAST
-    auto first = parse_number(operands[0]);
-    if (!first) return std::unexpected(first.error());
-    auto increment = parse_number(operands[1]);
-    if (!increment) return std::unexpected(increment.error());
-    auto last = parse_number(operands[2]);
-    if (!last) return std::unexpected(last.error());
-    cfg.first = *first;
-    cfg.increment = *increment;
-    cfg.last = *last;
-  } else {
+  if (num_args > 3) {
     return error_result<Config>("extra operand '" + std::string(operands[3]) +
-                                "'");
-  }
-
-  if (cfg.increment == 0.0) {
-    return error_result<Config>("invalid Zero increment value: '" +
-                                std::string(operands[num_args == 3 ? 1 : 0]) +
                                 "'");
   }
 
@@ -398,6 +385,9 @@ auto build_config(const CommandContext<SEQ_OPTIONS.size()>& ctx)
   // (head, grep -m, ...) decides how much is produced. An upfront count
   // cap made `seq 1000000001 | head -3` fail before printing anything.
 
+  // [GNU] seq.c:637-691: the format is validated and the -w/-f conflict
+  // is diagnosed before any operand is scanned, so those errors win
+  // over malformed operands.
   if (!cfg.format.empty()) {
     auto format = validate_format(cfg.format);
     if (!format) return std::unexpected(format.error());
@@ -427,6 +417,9 @@ auto build_config(const CommandContext<SEQ_OPTIONS.size()>& ctx)
         ++i;
       }
     }
+    if (i < f.size() && f[i] == 'L') {
+      ++i;  // length modifier, validated above
+    }
     ++i;  // skip the conversion character (validate_format ensured it)
     for (; i < f.size(); i += (f[i] == '%') + 1) {
       ++cfg.format_suffix_len;
@@ -436,6 +429,38 @@ auto build_config(const CommandContext<SEQ_OPTIONS.size()>& ctx)
   if (cfg.equal_width && !cfg.format.empty()) {
     return error_result<Config>(
         "format string may not be specified when printing equal width strings");
+  }
+
+  if (num_args == 1) {
+    // seq LAST
+    auto last = parse_number(operands[0]);
+    if (!last) return std::unexpected(last.error());
+    cfg.last = *last;
+  } else if (num_args == 2) {
+    // seq FIRST LAST
+    auto first = parse_number(operands[0]);
+    if (!first) return std::unexpected(first.error());
+    auto last = parse_number(operands[1]);
+    if (!last) return std::unexpected(last.error());
+    cfg.first = *first;
+    cfg.last = *last;
+  } else {
+    // seq FIRST INCREMENT LAST
+    auto first = parse_number(operands[0]);
+    if (!first) return std::unexpected(first.error());
+    auto increment = parse_number(operands[1]);
+    if (!increment) return std::unexpected(increment.error());
+    cfg.first = *first;
+    cfg.increment = *increment;
+    // [GNU] seq.c:683-688: a zero increment is diagnosed before LAST
+    // is scanned, so it wins over a malformed LAST.
+    if (cfg.increment == 0.0) {
+      return error_result<Config>("invalid Zero increment value: '" +
+                                  std::string(operands[1]) + "'");
+    }
+    auto last = parse_number(operands[2]);
+    if (!last) return std::unexpected(last.error());
+    cfg.last = *last;
   }
 
   // [GNU] get_default_format: the default precision is the maximum of

@@ -346,6 +346,14 @@ std::string consume_string_argument(const std::vector<std::string_view>& args,
   return std::string(args[arg_index++]);
 }
 
+// [GNU] printf.c keeps a file-scope posixly_correct flag (set from the
+// environment at startup); it suppresses the character-constant warning.
+// GNU sets it from getenv presence, so a present-but-empty value counts
+// (the Win32 length query returns 0 for an empty value).
+bool posixly_correct_enabled() {
+  return std::getenv("POSIXLY_CORRECT") != nullptr;
+}
+
 void warn_numeric(std::string_view arg, std::string_view message,
                   bool& had_error) {
   safeErrorPrintLn("printf: '" + std::string(arg) +
@@ -364,10 +372,15 @@ bool consume_character_constant(std::string_view arg, long long& value,
   }
 
   value = static_cast<unsigned char>(arg[1]);
-  if (arg.size() > 2) {
-    warn_numeric(arg,
-                 "character(s) following character constant have been ignored",
-                 had_error);
+  if (arg.size() > 2 && !posixly_correct_enabled()) {
+    // [GNU] printf.c:82 (cfcc_msg) + printf.c:190-192 (STRTOX): text
+    // after a character constant earns a *warning* naming the trailing
+    // text itself (unquoted), and the exit status is NOT affected --
+    // it is not a numeric conversion error.  POSIXLY_CORRECT
+    // suppresses the warning entirely.
+    safeErrorPrintLn("printf: warning: " + std::string(arg.substr(2)) +
+                     ": character(s) following character constant have "
+                     "been ignored");
   }
   return true;
 }
@@ -674,7 +687,10 @@ REGISTER_COMMAND(printf_cmd,
                  "echo(1), sprintf(3)", "WinuxCmd", "Copyright © 2026 WinuxCmd",
                  PRINTF_OPTIONS) {
   if (ctx.positionals.empty()) {
-    safeErrorPrintLn("printf: missing format argument");
+    // [GNU] printf.c:703-704: the diagnostic is "missing operand",
+    // followed by the try-help line from usage (EXIT_FAILURE).
+    safeErrorPrintLn("printf: missing operand");
+    safeErrorPrintLn("Try 'printf --help' for more information.");
     return 1;
   }
 
@@ -683,9 +699,11 @@ REGISTER_COMMAND(printf_cmd,
   size_t arg_index = 1;
   bool had_error = false;
 
+  bool format_stopped = false;
   do {
     auto rendered = render_once(format, ctx.positionals, arg_index, had_error);
     result += rendered.text;
+    format_stopped = rendered.stop_output;
     if (rendered.stop_output || !rendered.had_argument_directive ||
         !rendered.consumed_argument) {
       break;
@@ -693,6 +711,18 @@ REGISTER_COMMAND(printf_cmd,
   } while (arg_index < ctx.positionals.size());
 
   safePrint(std::string_view(result));
+
+  // [GNU] printf.c:718-722: once the format stops consuming arguments,
+  // any left over earn "warning: ignoring excess arguments, starting
+  // with '<first>'" (exit status unaffected).  A format that stopped
+  // mid-way (\c or a fatal directive) never reaches this warning in
+  // GNU -- print_esc_char's \c exits the process outright and an
+  // invalid conversion is fatal -- so it is gated on a clean finish.
+  if (!format_stopped && arg_index < ctx.positionals.size()) {
+    safeErrorPrintLn("printf: warning: ignoring excess arguments, "
+                     "starting with '" +
+                     std::string(ctx.positionals[arg_index]) + "'");
+  }
 
   // [GNU] printf.c registers close_stdout (printf.c:701): a failed stdout
   // write surfaces as "printf: write error: <strerror>" with exit status 1

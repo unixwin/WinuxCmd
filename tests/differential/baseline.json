@@ -48,6 +48,14 @@
       "bucket": "PASS",
       "command": "basename"
     },
+    "corpus/basename/50-drive-suffix.case": {
+      "bucket": "PASS",
+      "command": "basename"
+    },
+    "corpus/basename/51-multiple-zero.case": {
+      "bucket": "PASS",
+      "command": "basename"
+    },
     "corpus/basenc/31-missing-encoding.case": {
       "bucket": "PASS",
       "command": "basenc"
@@ -124,11 +132,31 @@
       "bucket": "PASS",
       "command": "dd"
     },
+    "corpus/dircolors/01-two-letter-keyword.case": {
+      "bucket": "PASS",
+      "command": "dircolors"
+    },
+    "corpus/dircolors/02-last-syntax-wins.case": {
+      "bucket": "PASS",
+      "command": "dircolors"
+    },
+    "corpus/dircolors/03-missing-second-token.case": {
+      "bucket": "PASS",
+      "command": "dircolors"
+    },
     "corpus/dirname/01-basic.case": {
       "bucket": "PASS",
       "command": "dirname"
     },
     "corpus/dirname/02-root.case": {
+      "bucket": "PASS",
+      "command": "dirname"
+    },
+    "corpus/dirname/03-drive-root.case": {
+      "bucket": "PASS",
+      "command": "dirname"
+    },
+    "corpus/dirname/04-trailing-slashes.case": {
       "bucket": "PASS",
       "command": "dirname"
     },
@@ -140,7 +168,23 @@
       "bucket": "PASS",
       "command": "echo"
     },
+    "corpus/echo/26-empty-first-operand.case": {
+      "bucket": "PASS",
+      "command": "echo"
+    },
+    "corpus/echo/27-empty-operands.case": {
+      "bucket": "PASS",
+      "command": "echo"
+    },
     "corpus/env/48-empty.case": {
+      "bucket": "PASS",
+      "command": "env"
+    },
+    "corpus/env/02-unset-invalid-name.case": {
+      "bucket": "PASS",
+      "command": "env"
+    },
+    "corpus/env/03-empty-name-assignment.case": {
       "bucket": "PASS",
       "command": "env"
     },
@@ -161,6 +205,10 @@
       "command": "factor"
     },
     "corpus/false/27-rc.case": {
+      "bucket": "PASS",
+      "command": "false"
+    },
+    "corpus/false/28-help-with-operand.case": {
       "bucket": "PASS",
       "command": "false"
     },
@@ -248,6 +296,54 @@
       "bucket": "KNOWN_DIFF",
       "command": "mktemp"
     },
+    "corpus/mktemp/02-x-run-must-end.case": {
+      "bucket": "PASS",
+      "command": "mktemp"
+    },
+    "corpus/mktemp/03-t-separator.case": {
+      "bucket": "PASS",
+      "command": "mktemp"
+    },
+    "corpus/mktemp/04-tmpdir-absolute.case": {
+      "bucket": "PASS",
+      "command": "mktemp"
+    },
+    "corpus/mktemp/05-tmpdir-interior.case": {
+      "bucket": "KNOWN_DIFF",
+      "command": "mktemp"
+    },
+    "corpus/mktemp/06-suffix-precedence.case": {
+      "bucket": "PASS",
+      "command": "mktemp"
+    },
+    "corpus/mktemp/07-implicit-suffix-separator.case": {
+      "bucket": "PASS",
+      "command": "mktemp"
+    },
+    "corpus/mktemp/08-create-failure-template.case": {
+      "bucket": "PASS",
+      "command": "mktemp"
+    },
+    "corpus/nice/01-plus-adjustment.case": {
+      "bucket": "PASS",
+      "command": "nice"
+    },
+    "corpus/nice/02-empty-adjustment.case": {
+      "bucket": "PASS",
+      "command": "nice"
+    },
+    "corpus/nice/03-adjustment-no-command.case": {
+      "bucket": "PASS",
+      "command": "nice"
+    },
+    "corpus/nice/04-command-not-found.case": {
+      "bucket": "PASS",
+      "command": "nice"
+    },
+    "corpus/nice/05-legacy-form.case": {
+      "bucket": "PASS",
+      "command": "nice"
+    },
     "corpus/nl/01-numbered.case": {
       "bucket": "PASS",
       "command": "nl"
@@ -272,7 +368,59 @@
       "bucket": "PASS",
       "command": "paste"
     },
+    "corpus/pathchk/01-not-a-directory.case": {
+      "bucket": "PASS",
+      "command": "pathchk"
+    },
+    "corpus/pathchk/02-missing-parent-ok.case": {
+      "bucket": "PASS",
+      "command": "pathchk"
+    },
+    "corpus/pathchk/03-portability-reserved-ok.case": {
+      "bucket": "PASS",
+      "command": "pathchk"
+    },
+    "corpus/pathchk/04-leading-dash.case": {
+      "bucket": "PASS",
+      "command": "pathchk"
+    },
+    "corpus/pathchk/05-nonportable-char.case": {
+      "bucket": "PASS",
+      "command": "pathchk"
+    },
+    "corpus/pathchk/06-component-limit.case": {
+      "bucket": "PASS",
+      "command": "pathchk"
+    },
+    "corpus/pathchk/07-empty-default.case": {
+      "bucket": "PASS",
+      "command": "pathchk"
+    },
+    "corpus/pathchk/08-empty-portability.case": {
+      "bucket": "PASS",
+      "command": "pathchk"
+    },
+    "corpus/pathchk/09-total-limit.case": {
+      "bucket": "PASS",
+      "command": "pathchk"
+    },
+    "corpus/pwd/01-unknown-option.case": {
+      "bucket": "PASS",
+      "command": "pwd"
+    },
     "corpus/printenv/28-unset-var.case": {
+      "bucket": "PASS",
+      "command": "printenv"
+    },
+    "corpus/printenv/29-option-after-operand.case": {
+      "bucket": "PASS",
+      "command": "printenv"
+    },
+    "corpus/printenv/30-help-after-operand.case": {
+      "bucket": "PASS",
+      "command": "printenv"
+    },
+    "corpus/printenv/31-equals-name.case": {
       "bucket": "PASS",
       "command": "printenv"
     },
@@ -323,6 +471,42 @@
     "corpus/seq/03-float.case": {
       "bucket": "PASS",
       "command": "seq"
+    },
+    "corpus/seq/05-nan-operand.case": {
+      "bucket": "PASS",
+      "command": "seq"
+    },
+    "corpus/seq/06-lf-format.case": {
+      "bucket": "PASS",
+      "command": "seq"
+    },
+    "corpus/seq/07-width-format-conflict.case": {
+      "bucket": "PASS",
+      "command": "seq"
+    },
+    "corpus/seq/08-zero-increment-precedence.case": {
+      "bucket": "PASS",
+      "command": "seq"
+    },
+    "corpus/seq/09-invalid-option.case": {
+      "bucket": "PASS",
+      "command": "seq"
+    },
+    "corpus/sleep/01-terminator-only.case": {
+      "bucket": "PASS",
+      "command": "sleep"
+    },
+    "corpus/sleep/02-missing-operand.case": {
+      "bucket": "PASS",
+      "command": "sleep"
+    },
+    "corpus/sleep/03-invalid-interval.case": {
+      "bucket": "PASS",
+      "command": "sleep"
+    },
+    "corpus/sleep/04-sum-operands.case": {
+      "bucket": "PASS",
+      "command": "sleep"
     },
     "corpus/sha1sum/41-fixed.case": {
       "bucket": "PASS",
@@ -383,6 +567,50 @@
     "corpus/stat/37-file-type.case": {
       "bucket": "PASS",
       "command": "stat"
+    },
+    "corpus/stdbuf/01-input-line-rejected.case": {
+      "bucket": "PASS",
+      "command": "stdbuf"
+    },
+    "corpus/stdbuf/02-gnu-env-contract.case": {
+      "bucket": "PASS",
+      "command": "stdbuf"
+    },
+    "corpus/stdbuf/03-bare-suffix-invalid.case": {
+      "bucket": "PASS",
+      "command": "stdbuf"
+    },
+    "corpus/stdbuf/04-mode-required.case": {
+      "bucket": "PASS",
+      "command": "stdbuf"
+    },
+    "corpus/stdbuf/05-double-zero-size.case": {
+      "bucket": "PASS",
+      "command": "stdbuf"
+    },
+    "corpus/stty/01-negated-cs8.case": {
+      "bucket": "PASS",
+      "command": "stty"
+    },
+    "corpus/stty/02-drain-missing-device.case": {
+      "bucket": "PASS",
+      "command": "stty"
+    },
+    "corpus/stty/03-flush-missing-device.case": {
+      "bucket": "PASS",
+      "command": "stty"
+    },
+    "corpus/stty/04-pendin-rejected.case": {
+      "bucket": "PASS",
+      "command": "stty"
+    },
+    "corpus/stty/05-recover-form.case": {
+      "bucket": "PASS",
+      "command": "stty"
+    },
+    "corpus/stty/06-negated-value.case": {
+      "bucket": "PASS",
+      "command": "stty"
     },
     "corpus/sum/39-fixed.case": {
       "bucket": "PASS",
@@ -465,6 +693,10 @@
       "command": "tr"
     },
     "corpus/true/26-rc.case": {
+      "bucket": "PASS",
+      "command": "true"
+    },
+    "corpus/true/27-help-with-operand.case": {
       "bucket": "PASS",
       "command": "true"
     },
@@ -748,6 +980,14 @@
       "bucket": "PASS",
       "command": "timeout"
     },
+    "corpus/timeout/03-preserve-status.case": {
+      "bucket": "PASS",
+      "command": "timeout"
+    },
+    "corpus/timeout/04-missing-command.case": {
+      "bucket": "PASS",
+      "command": "timeout"
+    },
     "corpus/shuf/01-basic.case": {
       "bucket": "PASS",
       "command": "shuf"
@@ -888,6 +1128,38 @@
       "bucket": "PASS",
       "command": "date"
     },
+    "corpus/date/27-week-numbers.case": {
+      "bucket": "PASS",
+      "command": "date"
+    },
+    "corpus/date/28-zone-colons.case": {
+      "bucket": "PASS",
+      "command": "date"
+    },
+    "corpus/date/29-percent-plus.case": {
+      "bucket": "PASS",
+      "command": "date"
+    },
+    "corpus/date/30-format-conflict.case": {
+      "bucket": "PASS",
+      "command": "date"
+    },
+    "corpus/date/31-resolution-format.case": {
+      "bucket": "PASS",
+      "command": "date"
+    },
+    "corpus/date/32-iso-prefix.case": {
+      "bucket": "PASS",
+      "command": "date"
+    },
+    "corpus/date/33-iso-nanoseconds-rejected.case": {
+      "bucket": "PASS",
+      "command": "date"
+    },
+    "corpus/date/34-reference-missing.case": {
+      "bucket": "PASS",
+      "command": "date"
+    },
     "corpus/expr/30-leading-zeros.case": {
       "bucket": "PASS",
       "command": "expr"
@@ -1000,6 +1272,18 @@
       "bucket": "PASS",
       "command": "printf"
     },
+    "corpus/printf/11-char-const-trailing.case": {
+      "bucket": "PASS",
+      "command": "printf"
+    },
+    "corpus/printf/12-excess-args-warning.case": {
+      "bucket": "PASS",
+      "command": "printf"
+    },
+    "corpus/printf/13-missing-operand.case": {
+      "bucket": "PASS",
+      "command": "printf"
+    },
     "corpus/seq/01-invalid-float.case": {
       "bucket": "PASS",
       "command": "seq"
@@ -1032,6 +1316,22 @@
       "bucket": "SKIP",
       "command": "tee"
     },
+    "corpus/tee/04-exit-open-fatal.case": {
+      "bucket": "PASS",
+      "command": "tee"
+    },
+    "corpus/tee/05-open-failure-bare.case": {
+      "bucket": "PASS",
+      "command": "tee"
+    },
+    "corpus/tee/06-abbreviation.case": {
+      "bucket": "PASS",
+      "command": "tee"
+    },
+    "corpus/tee/07-invalid-mode.case": {
+      "bucket": "PASS",
+      "command": "tee"
+    },
     "corpus/test/01-dev-null-exists.case": {
       "bucket": "PASS",
       "command": "test"
@@ -1053,6 +1353,14 @@
       "command": "test"
     },
     "corpus/test/06-dev-null-writable.case": {
+      "bucket": "PASS",
+      "command": "test"
+    },
+    "corpus/test/12-ef-distinct-devices.case": {
+      "bucket": "PASS",
+      "command": "test"
+    },
+    "corpus/test/13-ef-same-device.case": {
       "bucket": "PASS",
       "command": "test"
     },

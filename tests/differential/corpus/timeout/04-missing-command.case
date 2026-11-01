@@ -1,0 +1,5 @@
+cmd: timeout
+args: 5
+timeout: 5
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w3b timeout missing-operand

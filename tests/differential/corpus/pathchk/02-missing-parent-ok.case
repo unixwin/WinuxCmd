@@ -1,0 +1,5 @@
+cmd: pathchk
+args: missingdir/file
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w3b pathchk missing-parent passes

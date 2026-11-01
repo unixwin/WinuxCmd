@@ -1,0 +1,6 @@
+cmd: test
+args: NUL -ef NUL
+timeout: 10
+oracle: msys
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w3b test ef same-device

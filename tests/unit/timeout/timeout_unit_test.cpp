@@ -66,10 +66,13 @@ TEST(timeout, timeout_kill_after) {
   EXPECT_EQ(r.exit_code, 0);
 }
 
-TEST(timeout, timeout_invented_foreground_rejected_issue1411) {
-  // #1411: timeout's -f/--foreground was an accepted-but-inert pseudo
-  // option on Windows; it is dropped, so GNU's spelling is rejected
-  // like any unknown option.
+// #1411 follow-up: the audit first treated -f/--foreground and
+// -p/--preserve-status as invented options, but [GNU] timeout.c
+// long_options has both long forms ({"foreground", ...} and
+// {"preserve-status", ...}); only the short spellings -f/-p are
+// absent from GNU.  The product accepts and implements the long
+// forms, so pin exactly that split.
+TEST(timeout, timeout_foreground_long_form_only_issue1411) {
   Pipeline p;
   p.add(L"timeout.exe", {L"-f", L"5", L"echo.exe", L"test"});
   auto r = p.run();
@@ -82,15 +85,11 @@ TEST(timeout, timeout_invented_foreground_rejected_issue1411) {
   p2.add(L"timeout.exe", {L"--foreground", L"5", L"echo.exe", L"test"});
   auto r2 = p2.run();
 
-  EXPECT_EQ(r2.exit_code, 125);
-  EXPECT_TRUE(r2.stdout_text.empty());
-  EXPECT_TRUE(r2.stderr_text.find("unrecognized option '--foreground'") !=
-              std::string::npos);
+  EXPECT_EQ(r2.exit_code, 0);
+  EXPECT_EQ_TEXT(r2.stdout_text, "test\n");
 }
 
-TEST(timeout, timeout_invented_preserve_status_rejected_issue1411) {
-  // #1411: -p/--preserve-status was an accepted-but-inert pseudo option
-  // on Windows; it is dropped.
+TEST(timeout, timeout_preserve_status_long_form_only_issue1411) {
   Pipeline p;
   p.add(L"timeout.exe", {L"-p", L"5", L"echo.exe", L"test"});
   auto r = p.run();
@@ -99,14 +98,16 @@ TEST(timeout, timeout_invented_preserve_status_rejected_issue1411) {
   EXPECT_TRUE(r.stdout_text.empty());
   EXPECT_TRUE(r.stderr_text.find("invalid option -- 'p'") != std::string::npos);
 
+  // The long form is real: a timed-out command's death status is
+  // preserved (128 + SIGTERM = 143) instead of collapsing to 124.
   Pipeline p2;
   p2.add(L"timeout.exe",
          {L"--preserve-status", L"0.2", L"sleep.exe", L"5"});
   auto r2 = p2.run();
 
-  EXPECT_EQ(r2.exit_code, 125);
+  EXPECT_EQ(r2.exit_code, 143);
   EXPECT_TRUE(r2.stdout_text.empty());
-  EXPECT_TRUE(r2.stderr_text.find("unrecognized option '--preserve-status'") !=
+  EXPECT_TRUE(r2.stderr_text.find("unrecognized option") ==
               std::string::npos);
 }
 
@@ -245,8 +246,12 @@ TEST(timeout, timeout_missing_command) {
 
   EXPECT_EQ(r.exit_code, 125);
   EXPECT_TRUE(r.stdout_text.empty());
+  // [GNU] timeout.c:513-514 sends a short invocation straight to
+  // usage (EXIT_CANCELED) with no dedicated message; the framework's
+  // missing-operand form is what this port reports, exactly as for
+  // the no-argument case below.  GNU has no "missing command" text.
   EXPECT_EQ_TEXT(r.stderr_text,
-                 "timeout: missing command\n"
+                 "timeout: missing operand\n"
                  "Try 'timeout --help' for more information.\n");
 }
 

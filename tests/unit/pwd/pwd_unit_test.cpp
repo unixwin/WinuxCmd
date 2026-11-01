@@ -2,6 +2,22 @@
 // Copyright (c) 2026 caomengxuan666 <caomengxuan666@users.noreply.github.com>
 #include "framework/winuxtest.h"
 
+namespace {
+
+// GetTempPathW spells the harness temp root with the runner
+// account's 8.3 short name (C:\Users\RUNNER~1\...), while a physical
+// cwd is always reported in its long form.  Physical-output
+// expectations therefore compare against the canonical spelling of
+// the same directory; tests that echo $PWD verbatim keep using the
+// as-typed spelling.
+auto physical_spelling(const TempDir& tmp) -> std::string {
+  std::error_code ec;
+  const auto canon = std::filesystem::canonical(tmp.path, ec);
+  return ec ? tmp.path.string() : canon.string();
+}
+
+}  // namespace
+
 TEST(pwd, pwd_basic) {
   TempDir tmp;
 
@@ -22,7 +38,7 @@ TEST(pwd, pwd_basic) {
   // Should end with newline
   EXPECT_TRUE(r.stdout_text.back() == '\n');
   // Should contain the temp directory path
-  EXPECT_TRUE(r.stdout_text.find(tmp.path.string()) != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find(physical_spelling(tmp)) != std::string::npos);
 }
 
 TEST(pwd, pwd_logical) {
@@ -41,7 +57,7 @@ TEST(pwd, pwd_logical) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_FALSE(r.stdout_text.empty());
-  EXPECT_TRUE(r.stdout_text.find(tmp.path.string()) != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find(physical_spelling(tmp)) != std::string::npos);
 }
 
 TEST(pwd, pwd_physical) {
@@ -60,7 +76,7 @@ TEST(pwd, pwd_physical) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_FALSE(r.stdout_text.empty());
-  EXPECT_TRUE(r.stdout_text.find(tmp.path.string()) != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find(physical_spelling(tmp)) != std::string::npos);
 }
 
 TEST(pwd, pwd_long_option_logical) {
@@ -79,7 +95,7 @@ TEST(pwd, pwd_long_option_logical) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_FALSE(r.stdout_text.empty());
-  EXPECT_TRUE(r.stdout_text.find(tmp.path.string()) != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find(physical_spelling(tmp)) != std::string::npos);
 }
 
 TEST(pwd, pwd_long_option_physical) {
@@ -98,7 +114,7 @@ TEST(pwd, pwd_long_option_physical) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_FALSE(r.stdout_text.empty());
-  EXPECT_TRUE(r.stdout_text.find(tmp.path.string()) != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find(physical_spelling(tmp)) != std::string::npos);
 }
 
 TEST(pwd, pwd_logical_uses_pwd_environment) {
@@ -148,7 +164,7 @@ TEST(pwd, pwd_physical_overrides_posixly_correct_default) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.find(tmp.path.string()) != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find(physical_spelling(tmp)) != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("logical-posix-view") == std::string::npos);
 }
 
@@ -181,7 +197,7 @@ TEST(pwd, pwd_physical_last_occurrence_wins_over_logical) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.find(tmp.path.string()) != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find(physical_spelling(tmp)) != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("logical-view") == std::string::npos);
 }
 
@@ -196,7 +212,7 @@ TEST(pwd, pwd_logical_ignores_relative_pwd_environment) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.find(tmp.path.string()) != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find(physical_spelling(tmp)) != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("relative\\logical-view") ==
               std::string::npos);
 }
@@ -214,7 +230,7 @@ TEST(pwd, pwd_logical_ignores_nonexistent_absolute_pwd_environment) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.find(tmp.path.string()) != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find(physical_spelling(tmp)) != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("missing-logical-view") == std::string::npos);
 }
 
@@ -232,7 +248,7 @@ TEST(pwd, pwd_logical_ignores_wrong_absolute_pwd_environment) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.find(tmp.path.string()) != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find(physical_spelling(tmp)) != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("\\other") == std::string::npos);
 }
 
@@ -249,7 +265,7 @@ TEST(pwd, pwd_logical_ignores_pwd_environment_with_dot_component) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.find(tmp.path.string()) != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find(physical_spelling(tmp)) != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("\\.\\") == std::string::npos);
 }
 
@@ -267,7 +283,7 @@ TEST(pwd, pwd_logical_ignores_pwd_environment_with_dotdot_component) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.find(tmp.path.string()) != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find(physical_spelling(tmp)) != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("child\\..") == std::string::npos);
 }
 
@@ -321,7 +337,7 @@ TEST(pwd, pwd_extra_non_option_arguments_warn_but_succeed) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.find(tmp.path.string()) != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find(physical_spelling(tmp)) != std::string::npos);
   EXPECT_EQ_TEXT(r.stderr_text, "pwd: ignoring non-option arguments\n");
 }
 
@@ -342,7 +358,7 @@ TEST(pwd, pwd_multiple_options) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_FALSE(r.stdout_text.empty());
   // Physical option should take precedence
-  EXPECT_TRUE(r.stdout_text.find(tmp.path.string()) != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find(physical_spelling(tmp)) != std::string::npos);
 }
 
 TEST(pwd, pwd_empty_directory) {

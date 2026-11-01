@@ -98,6 +98,13 @@ export auto option_policy_for_command(std::string_view command)
     policy.allow_long_options = false;
     policy.stop_options_after_positionals = 1;
   }
+  if (command == "printenv") {
+    // [GNU] printenv.c:99: the optstring is "+iu:0" — the leading
+    // '+' stops option parsing at the first non-option argument,
+    // so `printenv HOME -0` looks up a variable literally named
+    // '-0' (and `--help` after an operand is a variable name too).
+    policy.stop_options_after_positionals = 1;
+  }
   if (command == "test" || command == "[") {
     policy.allow_long_options = false;
   }

@@ -1,0 +1,5 @@
+cmd: pathchk
+args: -p CON
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w3b pathchk portability skips-windows-checks

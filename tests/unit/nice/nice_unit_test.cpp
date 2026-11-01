@@ -172,8 +172,11 @@ TEST(nice, nice_explicit_adjustment_without_command_reports_usage_error) {
 
   EXPECT_EQ(r.exit_code, 125);
   EXPECT_TRUE(r.stdout_text.empty());
+  // [GNU] nice.c:181: the message is lowercase with no period --
+  // error (0, 0, "a command must be given with an adjustment") --
+  // followed by usage (EXIT_CANCELED).
   EXPECT_EQ_TEXT(r.stderr_text,
-                 "nice: A command must be given with an adjustment.\n"
+                 "nice: a command must be given with an adjustment\n"
                  "Try 'nice --help' for more information.\n");
 }
 
@@ -188,8 +191,9 @@ TEST(nice, nice_long_adjustment_without_command_reports_usage_error) {
 
   EXPECT_EQ(r.exit_code, 125);
   EXPECT_TRUE(r.stdout_text.empty());
+  // [GNU] nice.c:181: lowercase, no period (see the -n form above).
   EXPECT_EQ_TEXT(r.stderr_text,
-                 "nice: A command must be given with an adjustment.\n"
+                 "nice: a command must be given with an adjustment\n"
                  "Try 'nice --help' for more information.\n");
 }
 
@@ -207,10 +211,12 @@ TEST(nice, nice_missing_command_reports_gnu_style_error_and_127) {
 
   EXPECT_EQ(r.exit_code, 127);
   EXPECT_TRUE(r.stdout_text.empty());
-  EXPECT_EQ_TEXT(
-      r.stderr_text,
-      "nice: failed to run command 'definitely-not-a-command': No such file "
-      "or directory\n");
+  // [GNU] nice.c:215-218: an execvp failure is reported as
+  // error (0, errno, "%s", quote (argv[i])) -- the bare quotef form,
+  // not timeout/stdbuf's "failed to run command" wording.
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "nice: 'definitely-not-a-command': No such file or "
+                 "directory\n");
 }
 
 

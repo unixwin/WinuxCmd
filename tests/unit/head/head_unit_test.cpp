@@ -710,7 +710,13 @@ TEST(head, head_fifo_operand_stops_at_delimiter_without_eof_issue1442) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "line000000\n");
   EXPECT_EQ(writer_rc, 1);
-  EXPECT_NE(writer_stderr.find("write error"), std::string::npos);
+  // No stderr form is pinned for the writer: in GNU's default
+  // (sigpipe) output-error mode a broken output kills tee by signal
+  // with no diagnostic at all, and this port's emulation fails the
+  // run silently.  The old "write error" needle pinned the pre-audit
+  // tee's blanket diagnostic, which the W3b tee rewrite removed in
+  // favour of tee.c's quotef fail_output forms; writer_rc == 1 is
+  // the assertion that the writer observed the break.
 }
 
 TEST(head, head_fifo_operand_byte_mode_issue1442) {

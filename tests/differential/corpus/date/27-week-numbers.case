@@ -1,0 +1,5 @@
+cmd: date
+args: -u -d @0 '+%U %V %W %G %g %k %l'
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w3b date week-numbers iso space-padded-hour

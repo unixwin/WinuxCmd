@@ -60,6 +60,7 @@ auto checked_pow(std::size_t base, unsigned power) -> std::optional<size_t> {
 auto parse_buffer_suffix(std::string_view suffix) -> std::optional<size_t> {
   static constexpr std::array suffixes{
       BufferSizeSuffix{"", 1, 0},       BufferSizeSuffix{"K", 1024, 1},
+      BufferSizeSuffix{"k", 1024, 1},
       BufferSizeSuffix{"KB", 1000, 1},  BufferSizeSuffix{"kB", 1000, 1},
       BufferSizeSuffix{"KiB", 1024, 1}, BufferSizeSuffix{"M", 1024, 2},
       BufferSizeSuffix{"MB", 1000, 2},  BufferSizeSuffix{"MiB", 1024, 2},
@@ -93,9 +94,15 @@ auto parse_buffer_size(const std::string& str) -> std::optional<size_t> {
     ++digits;
   }
 
-  std::uint64_t value = 1;
-  if (digits > 0) {
-    value = 0;
+  // [GNU] stdbuf.c parse_size via xstrtoumax: with no leading digits,
+  // a valid suffix alone implies the number 1 (xstrtol.c: "If there is
+  // no number but there is a valid suffix, assume the number is 1"),
+  // so a bare 'KiB' is 1024, not an invalid mode.
+  if (digits == 0) {
+    return parse_buffer_suffix(str);
+  }
+  std::uint64_t value = 0;
+  {
     auto number = std::string_view(str).substr(0, digits);
     auto [ptr, ec] =
         std::from_chars(number.data(), number.data() + number.size(), value);
@@ -120,10 +127,11 @@ auto parse_buffer_size(const std::string& str) -> std::optional<size_t> {
 auto validate_buffer_mode(std::string_view stream_name, const std::string& mode)
     -> bool {
   if (mode.empty()) return true;
-  if (mode == "0") return true;
   if (mode == "L") return true;
+  // [GNU] any size that parses is valid, including 0 in any spelling
+  // ('0', '00', '0K'): it selects no buffering.
   auto size = parse_buffer_size(mode);
-  return size.has_value() && *size > 0;
+  return size.has_value();
 }
 
 // Set buffering mode for a stream
@@ -143,8 +151,12 @@ auto set_stream_buffering(FILE* stream, const std::string& mode) -> bool {
   }
 
   auto size = parse_buffer_size(mode);
-  if (!size.has_value() || *size == 0) {
+  if (!size.has_value()) {
     return false;
+  }
+  if (*size == 0) {
+    setvbuf(stream, nullptr, _IONBF, 0);  // Unbuffered ('00', '0K', ...)
+    return true;
   }
 
   setvbuf(stream, nullptr, _IOFBF, *size);  // Fully buffered
@@ -210,6 +222,21 @@ REGISTER_COMMAND(
   std::string error_mode = ctx.get<std::string>("-e", "");
   if (error_mode.empty()) error_mode = ctx.get<std::string>("--error", "");
 
+  // [GNU] stdbuf.c:335-336: leading whitespace of a MODE is skipped
+  // before the value is examined (so '-i " L"' is the L refusal and
+  // '-o " 0"' is size 0).
+  auto strip_leading_whitespace = [](std::string& mode) {
+    size_t pos = mode.find_first_not_of(" \t\n\v\f\r");
+    if (pos == std::string::npos) {
+      mode.clear();
+    } else if (pos > 0) {
+      mode.erase(0, pos);
+    }
+  };
+  strip_leading_whitespace(input_mode);
+  strip_leading_whitespace(output_mode);
+  strip_leading_whitespace(error_mode);
+
   // [GNU] stdbuf.c: the buffering MODE operand is validated while parsing
   // options, so an invalid mode is diagnosed even when COMMAND is missing.
   // An explicitly empty MODE ("stdbuf -i ''") is invalid too.
@@ -218,6 +245,14 @@ REGISTER_COMMAND(
                      winux::i18n::format("command.stdbuf.error.invalid_mode",
                                          "invalid mode '{}'", mode));
   };
+  // [GNU] stdbuf.c:340-346: an input MODE starting with 'L' is refused
+  // while the option is parsed, before anything else is diagnosed.
+  if (input_given && !input_mode.empty() && input_mode.front() == 'L') {
+    safeErrorPrintLn("stdbuf: line buffering stdin is meaningless");
+    safeErrorPrintLn(winux::i18n::format(
+        "common.try_help", "Try '{} --help' for more information.", "stdbuf"));
+    return kStdbufUsageErrorExitCode;
+  }
   if ((input_given && input_mode.empty()) ||
       !validate_buffer_mode("standard input", input_mode)) {
     invalid_mode(input_mode);
@@ -286,6 +321,31 @@ REGISTER_COMMAND(
   auto old_e =
       set_child_buffer_mode("WINUX_STDBUF_E", resolve_mode(error_mode));
 
+  // [GNU] stdbuf.c:271-300: the documented contract a child reads is
+  // _STDBUF_I/_STDBUF_O/_STDBUF_E ('L' or a decimal byte size).
+  // Publish those names alongside the internal WINUX_* ones so a
+  // child implementing the GNU contract sees its modes; like GNU,
+  // only streams that were given a mode are touched.
+  std::optional<std::optional<std::string>> old_gnu_i, old_gnu_o, old_gnu_e;
+  if (!input_mode.empty()) {
+    old_gnu_i = set_child_buffer_mode("_STDBUF_I", resolve_mode(input_mode));
+  }
+  if (!output_mode.empty()) {
+    old_gnu_o = set_child_buffer_mode("_STDBUF_O", resolve_mode(output_mode));
+  }
+  if (!error_mode.empty()) {
+    old_gnu_e = set_child_buffer_mode("_STDBUF_E", resolve_mode(error_mode));
+  }
+
+  auto restore_all = [&]() {
+    restore_child_buffer_mode("WINUX_STDBUF_I", old_i);
+    restore_child_buffer_mode("WINUX_STDBUF_O", old_o);
+    restore_child_buffer_mode("WINUX_STDBUF_E", old_e);
+    if (old_gnu_i) restore_child_buffer_mode("_STDBUF_I", *old_gnu_i);
+    if (old_gnu_o) restore_child_buffer_mode("_STDBUF_O", *old_gnu_o);
+    if (old_gnu_e) restore_child_buffer_mode("_STDBUF_E", *old_gnu_e);
+  };
+
   // Execute command
   STARTUPINFOW si = {sizeof(si)};
   PROCESS_INFORMATION pi;
@@ -299,9 +359,7 @@ REGISTER_COMMAND(
   }
   auto launch = winux::childproc::plan_child_launch(stdbuf_launch_request);
   if (launch.status != winux::childproc::ChildResolveStatus::Found) {
-    restore_child_buffer_mode("WINUX_STDBUF_I", old_i);
-    restore_child_buffer_mode("WINUX_STDBUF_O", old_o);
-    restore_child_buffer_mode("WINUX_STDBUF_E", old_e);
+    restore_all();
     const DWORD resolve_error =
         winux::childproc::child_status_to_win32_error(launch.status);
     safeErrorPrintLn("stdbuf: failed to run command '" +
@@ -313,9 +371,7 @@ REGISTER_COMMAND(
   if (!CreateProcessW(launch.application_name->c_str(),
                       launch.command_line.data(), nullptr, nullptr, TRUE, 0,
                       nullptr, nullptr, &si, &pi)) {
-    restore_child_buffer_mode("WINUX_STDBUF_I", old_i);
-    restore_child_buffer_mode("WINUX_STDBUF_O", old_o);
-    restore_child_buffer_mode("WINUX_STDBUF_E", old_e);
+    restore_all();
     DWORD error = GetLastError();
     safeErrorPrintLn("stdbuf: failed to run command '" +
                      std::string(ctx.positionals[0]) +
@@ -332,9 +388,7 @@ REGISTER_COMMAND(
   CloseHandle(pi.hProcess);
   CloseHandle(pi.hThread);
 
-  restore_child_buffer_mode("WINUX_STDBUF_I", old_i);
-  restore_child_buffer_mode("WINUX_STDBUF_O", old_o);
-  restore_child_buffer_mode("WINUX_STDBUF_E", old_e);
+  restore_all();
 
   return static_cast<int>(exit_code);
 }

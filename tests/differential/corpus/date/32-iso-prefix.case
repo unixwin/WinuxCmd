@@ -1,0 +1,5 @@
+cmd: date
+args: -u -d @0 -Isec
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/1462
+tags: audit-w3b date iso-argmatch-prefix

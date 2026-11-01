@@ -207,12 +207,51 @@ void print_machine_readable(HANDLE hCon) {
     return;
   }
 
-  // Output in stty-readable format: colon-separated hex values
-  // intr:03 quit:1c erase:7f kill:15 eof:04 eol:ff eol2:ff swtch:ff
-  // start:13 stop:13 susp:1a rprnt:12 werase:17 lnext:16 discard:0f
-  safePrintLn(
-      "00:0:4:7f:11:1:1:0:3:1c:15:12:16:0:f:0:1:0:0:0:0:0:0:"
-      "0:0:0:0:0:0:0:0:0:0:0:0:0");
+  // [GNU] stty.c:2105-2113 (display_recoverable): the -g form is
+  // iflag:oflag:cflag:lflag:line:cc...:ispeed:ospeed, hex, and it
+  // describes the CURRENT state -- the old output was a hard-coded
+  // constant that claimed the same flags after 'stty -echo' as
+  // before it.  The flag words below are built from the console
+  // mode with the same mappings print_console_settings reports
+  // (PORT: the termios bit semantics themselves do not exist on a
+  // Windows console; the cc values are the console defaults the
+  // -a listing shows).
+  auto hex = [](unsigned long value) {
+    std::string out;
+    const char* digits = "0123456789abcdef";
+    if (value == 0) return std::string("0");
+    while (value != 0) {
+      out.insert(out.begin(), digits[value & 0xF]);
+      value >>= 4;
+    }
+    return out;
+  };
+
+  const bool processed = (mode & ENABLE_PROCESSED_INPUT) != 0;
+  const bool line_input = (mode & ENABLE_LINE_INPUT) != 0;
+  const bool echo_input = (mode & ENABLE_ECHO_INPUT) != 0;
+
+  unsigned long iflag = processed ? 0x100 : 0;         // ICRNL
+  unsigned long oflag = 0;                             // -opost
+  unsigned long cflag = 0x30 | 0x80;                   // CS8 | CREAD
+  unsigned long lflag = 0;
+  if (processed) lflag |= 0x1;                         // ISIG
+  if (line_input) lflag |= 0x2 | 0x40;                 // ICANON | ECHOK
+  if (echo_input) lflag |= 0x8 | 0x200 | 0x800;        // ECHO | ECHOCTL | ECHOKE
+
+  std::string out = hex(iflag) + ":" + hex(oflag) + ":" + hex(cflag) + ":" +
+                    hex(lflag) + ":0:";
+  // cc in glibc order: intr quit erase kill eof time min swtch
+  // start stop susp eol rprnt discard werase lnext eol2.
+  const std::array<const char*, 17> cc = {
+      "3", "1c", "7f", "15", "4", "0", processed ? "1" : "0", "ff",
+      "13", "13", "1a", "ff", "12", "f", "17", "16", "ff"};
+  for (const char* value : cc) {
+    out += value;
+    out += ":";
+  }
+  out += "38400:38400";
+  safePrintLn(out);
 }
 
 bool apply_sane(HANDLE hCon) {
@@ -257,7 +296,8 @@ auto is_value_setting(const std::string& name) -> bool {
   static const std::vector<std::string> names = {
       "intr",    "quit",    "erase",  "kill",  "eof",   "eol",   "eol2",
       "swtch",   "start",   "stop",   "susp",  "dsusp", "rprnt", "werase",
-      "lnext",   "discard", "status", "min",   "time",  "rows",  "cols",
+      "lnext",   "discard", "flush",  "status", "min",   "time",  "rows",
+      "cols",
       "columns", "line",    "ispeed", "ospeed"};
   for (const auto& candidate : names) {
     if (name == candidate) return true;
@@ -290,11 +330,57 @@ auto is_known_noarg_setting(const std::string& name) -> bool {
       "icanon",  "iexten",  "echo",   "echoe",   "crterase", "echok",
       "echonl",  "noflsh",  "xcase",  "tostop",  "echoprt",  "prterase",
       "echoctl", "ctlecho", "echoke", "crtkill", "flusho",   "extproc",
-      "pendin"};
+      "drain"};
   for (const auto& candidate : names) {
     if (name == candidate) return true;
   }
   return false;
+}
+
+// [GNU] stty.c mode tables: only REV settings may be negated with
+// '-'.  Character-size names (cs5-cs8), the delay families, and the
+// combination settings (sane, raw, evenp, ...) are not REV, so
+// '-cs8' is an invalid argument, not "cs8, negated".
+auto is_reversible_setting(const std::string& name) -> bool {
+  static const std::vector<std::string> names = {
+      "parenb",  "parodd",  "hupcl",   "hup",     "cstopb",  "cread",
+      "clocal",  "crtscts", "ignbrk",  "brkint",  "ignpar",  "parmrk",
+      "inpck",   "istrip",  "inlcr",   "igncr",   "icrnl",   "ixon",
+      "ixoff",   "tandem",  "iuclc",   "ixany",   "imaxbel", "iutf8",
+      "opost",   "olcuc",   "ocrnl",   "onlcr",   "onocr",   "onlret",
+      "ofill",   "ofdel",   "isig",    "icanon",  "iexten",  "echo",
+      "echoe",   "crterase", "echok",  "echonl",  "noflsh",  "xcase",
+      "tostop",  "echoprt", "prterase", "echoctl", "ctlecho", "echoke",
+      "crtkill", "flusho",  "extproc", "drain"};
+  for (const auto& candidate : names) {
+    if (name == candidate) return true;
+  }
+  return false;
+}
+
+// The -g recover form: one colon-separated argument of hex fields
+// (stty.c display_recoverable / recover_mode).  Field count and
+// the termios layout behind the values are platform-shaped
+// (PORT); the shape -- colon-joined hex fields -- is the contract
+// that must round-trip.
+auto is_recover_form(const std::string& setting) -> bool {
+  if (setting.find(':') == std::string::npos) return false;
+  size_t fields = 0;
+  size_t start = 0;
+  while (start <= setting.size()) {
+    size_t colon = setting.find(':', start);
+    std::string_view field = std::string_view(setting).substr(
+        start, colon == std::string::npos ? std::string::npos
+                                          : colon - start);
+    if (field.empty() || field.size() > 8) return false;
+    for (char c : field) {
+      if (!std::isxdigit(static_cast<unsigned char>(c))) return false;
+    }
+    ++fields;
+    if (colon == std::string::npos) break;
+    start = colon + 1;
+  }
+  return fields >= 10;
 }
 
 auto is_integer_value_setting(const std::string& name) -> bool {
@@ -310,6 +396,19 @@ auto validate_settings(const SmallVector<std::string, 32>& settings) -> bool {
   for (size_t i = 0; i < settings.size(); ++i) {
     const auto& setting = settings[i];
     const auto name = normalized_setting_name(setting);
+    if (is_recover_form(setting)) {
+      continue;
+    }
+    const bool negated = setting.size() > 1 && setting.front() == '-';
+    if (is_value_setting(name) && negated) {
+      // [GNU] a control-character name cannot be negated.
+      safeErrorPrint("stty: invalid argument " +
+                     std::string(1, static_cast<char>(39)));
+      safeErrorPrint(setting);
+      safeErrorPrintLn(std::string(1, static_cast<char>(39)));
+      print_try_help();
+      return false;
+    }
     if (is_value_setting(name)) {
       if (i + 1 >= settings.size()) {
         safeErrorPrint("stty: missing argument to " +
@@ -330,6 +429,17 @@ auto validate_settings(const SmallVector<std::string, 32>& settings) -> bool {
       }
       ++i;
       continue;
+    }
+    if (is_known_noarg_setting(name) && negated &&
+        !is_reversible_setting(name)) {
+      // [GNU] only REV settings take a '-' prefix (stty.c:1149-1152,
+      // 1391-1396: validation precedes any device access).
+      safeErrorPrint("stty: invalid argument " +
+                     std::string(1, static_cast<char>(39)));
+      safeErrorPrint(setting);
+      safeErrorPrintLn(std::string(1, static_cast<char>(39)));
+      print_try_help();
+      return false;
     }
     if (is_known_noarg_setting(name) || is_decimal_token(setting)) {
       continue;
@@ -362,7 +472,11 @@ auto report_inappropriate_ioctl(const Config& cfg) -> int {
 }
 
 auto report_missing_device(const std::string& device) -> int {
-  safeErrorPrint("stty: " + device + ": No such file or directory\n");
+  // [GNU] stty.c:1402-1403: the diagnostic is quotef(device) -- a
+  // plain device name prints bare; quoting appears only when the
+  // name contains shell-special characters.
+  safeErrorPrint("stty: " + gnu_quotearg::shell_escape_quote(device) +
+                 ": No such file or directory\n");
   return 1;
 }
 
@@ -426,6 +540,12 @@ bool apply_setting(HANDLE hCon, const std::string& setting) {
   DWORD mode = 0;
   GetConsoleMode(hCon, &mode);
 
+  if (is_recover_form(setting)) {
+    // The -g recover form restores a saved state; the console has
+    // no termios fields to restore into, so a well-formed form is
+    // accepted as a no-op (PORT: field semantics do not exist here).
+    return true;
+  }
   if (setting == "sane") {
     return apply_sane(hCon);
   }
@@ -474,7 +594,7 @@ bool apply_setting(HANDLE hCon, const std::string& setting) {
       "ixon",    "ixoff",   "iuclc",  "ixany",  "imaxbel", "iutf8",  "opost",
       "olcuc",   "ocrnl",   "onlcr",  "onocr",  "onlret",  "ofill",  "ofdel",
       "echoctl", "echoprt", "echoke", "echok",  "echonl",  "noflsh", "tostop",
-      "flusho",  "extproc", "pendin", "echoe"};
+      "flusho",  "extproc", "drain", "echoe"};
 
   for (const auto& a : accepted) {
     if (name == a) return true;
