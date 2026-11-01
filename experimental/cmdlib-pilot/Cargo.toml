@@ -1,0 +1,31 @@
+# WinuxCmd 2.0 cmdlib pilot (issue #1488)
+#
+# Experimental standalone cargo project: library-form `pwd` with explicit IO
+# injection + a LoadLibraryW host demo. NOT wired into the main CMake build
+# and not referenced by any existing target. See DOCS/2.0-cmdlib-design.md.
+
+[package]
+name = "cmdlib-pilot"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "WinuxCmd 2.0 command-library pilot (#1488): explicit-IO library-form pwd. Experimental; not part of the main build."
+
+# Standalone on purpose: this pilot must never join a future workspace at the
+# repository root without an explicit decision.
+[workspace]
+
+[lib]
+name = "wcmd_cmdlib"
+path = "src/lib.rs"
+# One source, three artifact forms (design doc §3): the ABI face is the C
+# header shape of WcmdIoCtx; cdylib/staticlib prove both deployment forms,
+# rlib feeds the in-crate integration tests.
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+# The host demo deliberately does NOT link the library above: it LoadLibraryW's
+# the built cdylib at runtime, exactly like a real shell host would (design
+# doc §4 and §7).
+[[bin]]
+name = "cmdlib-pilot-host"
+path = "src/host/main.rs"
