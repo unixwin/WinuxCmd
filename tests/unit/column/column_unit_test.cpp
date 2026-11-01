@@ -307,9 +307,14 @@ TEST(column, empty_lines_dropped_unless_kept) {
   EXPECT_EQ_TEXT(r_kept.stdout_text, "a\t\tb\n");
 }
 
-// [refs #1127] -e/--table-header-repeat repeats the header row after a
-// formfeed page break in table mode.
-TEST(column, table_header_repeat_on_formfeed) {
+// [refs #1127] -e/--table-header-repeat has no header to repeat
+// without named columns: the oracle enables header repeat on the
+// table only when -N/-C names exist (column.c:246-248) and prints
+// no header at all without them (noheadings), so the first input
+// line is data.  Repetition itself is driven by page length in
+// lines (libsmartcols print.c: header_next = termlines_used +
+// termheight), never by formfeed lines in the input.
+TEST(column, table_header_repeat_needs_named_columns) {
   Pipeline p;
   p.set_stdin("h1 h2\na b\n\f\nc d\n");
   p.add(L"column.exe", {L"-t", L"--table-header-repeat"});
@@ -319,7 +324,7 @@ TEST(column, table_header_repeat_on_formfeed) {
   EXPECT_EQ(r.exit_code, 0);
   size_t first = r.stdout_text.find("h1");
   EXPECT_NE(first, std::string::npos);
-  EXPECT_NE(r.stdout_text.find("h1", first + 1), std::string::npos);
+  EXPECT_EQ(r.stdout_text.find("h1", first + 1), std::string::npos);
 }
 
 // [refs #1127] -E/--table-noextreme: the named column's width gives
@@ -336,12 +341,16 @@ TEST(column, table_noextreme_shrinks_named_column) {
   EXPECT_TRUE(r.stdout_text.find("verylong") == std::string::npos);
 }
 
-// [refs #1127] -x no longer means --output-fields; the long option
-// still selects fields on its own.
-TEST(column, output_fields_long_option_still_works) {
+// [refs #1127] There is no --output-fields in the oracle: the
+// longopts table (column.c:796-826) has no such entry and -x is
+// --fillrows (column.c:799).  Selecting a subset of columns is
+// spelled -H/--table-hide (longopts, column.c:796-826): hiding
+// column 1 leaves
+// only column 2 in the output.
+TEST(column, table_hide_long_option_selects_columns) {
   Pipeline p;
   p.set_stdin("a b\nc d\n");
-  p.add(L"column.exe", {L"-t", L"--output-fields", L"2"});
+  p.add(L"column.exe", {L"-t", L"--table-hide", L"1"});
 
   auto r = p.run();
 

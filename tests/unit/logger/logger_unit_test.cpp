@@ -114,16 +114,21 @@ TEST(logger, invalid_socket_errors_value_warns) {
   EXPECT_CONTAINS(r.stderr_text, "invalid argument");
 }
 
-// [refs #1127] --journald reads a FIELD=value entry and logs MESSAGE.
-TEST(logger, journald_entry_message_is_logged) {
+// [refs #1127] --journald exists in the oracle only under
+// HAVE_LIBSYSTEMD: journald_entry (logger.c:337-338), the longopts
+// entry (logger.c:1157-1159) and its dispatch (logger.c:1281-1290)
+// are all ifdef-gated, so on a platform without libsystemd the
+// option is not part of logger's surface at all.  WinuxCmd declares
+// it and refuses it explicitly, the same treatment as -u/--socket.
+TEST(logger, journald_is_refused) {
   Pipeline p;
   p.add(L"logger.exe", {L"--journald", L"-s", L"-t", L"unit"});
   p.set_stdin("MESSAGE=hello journal\nPRIORITY=5\nSYSLOG_IDENTIFIER=svc\n\n");
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_CONTAINS(r.stderr_text, "hello journal");
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_CONTAINS(r.stderr_text, "--journald is not supported");
 }
 
 // [refs #1127] --msgid/--sd-id/--sd-param are accepted (they shape the
