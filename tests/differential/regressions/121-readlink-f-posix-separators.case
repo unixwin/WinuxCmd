@@ -1,0 +1,15 @@
+cmd: readlink
+args: -f d/f.txt | tr -d 'A-Za-z0-9:/._-'
+timeout: 10
+setup: |
+  mkdir -p d
+  printf x > d/f.txt
+source: github.com/unixwin/WinuxCmd/issues/1491
+tags: issue-1491 readlink canonicalize posix-separators
+# [GNU] readlink -f prints the canonicalize_filename_mode() name, which
+# lib/canonicalize.c assembles with '/' separators (WSL coreutils 9.4 probe
+# of 'readlink -f d/f.txt': /-separated, zero backslashes). The tr filter
+# deletes every character a legal path may carry except a backslash, so both
+# sides print nothing here; a subject that emits Windows '\' separators
+# leaves them behind in the output and the case fails. The absolute prefix
+# itself (/tmp/... vs D:\...) never reaches the comparison.
