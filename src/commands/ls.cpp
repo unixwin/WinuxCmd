@@ -255,6 +255,14 @@ struct SizeConfig {
 };
 
 auto get_terminal_width() -> int;
+auto resolve_output_width(const CommandContext<LS_OPTIONS.size()> &ctx) -> int;
+
+// [GNU] ls.c:2307/1871: line_length 0 means "no limit" (one unwrapped
+// line). Sentinel used by the width chain below; large enough that the
+// layout engines never wrap, while column counts stay bounded by the
+// entry count.
+constexpr int kLsNoLineLimit = INT_MAX;
+auto decode_line_length(std::string_view spec) -> int;
 auto parse_indicator_style(std::string_view value)
     -> std::optional<IndicatorStyle>;
 auto long_format_requested(const CommandContext<LS_OPTIONS.size()> &ctx)
@@ -2099,12 +2107,26 @@ auto print_grid(const std::vector<EntryInfo> &entries,
 
   const auto rendered = build_rendered_entries(entries, ctx);
 
-  int width = ctx.get<int>("-w", 0);
-  if (width <= 0) {
-    width = ctx.get<int>("--width", 0);
-  }
-  if (width <= 0) {
-    width = get_terminal_width();
+  int width = resolve_output_width(ctx);
+
+  // [GNU] ls.c:4142-4153: a zero ("no limit") line length makes -C and -x
+  // switch to print_with_separator(' '), which joins every entry with
+  // exactly two spaces on one unwrapped line (ls.c:5227-5233) — no column
+  // layout and no tab alignment.
+  if (width == kLsNoLineLimit) {
+    bool first = true;
+    for (const auto &entry : rendered) {
+      if (!first) {
+        safePrint(L"  ");
+      }
+      first = false;
+      if (dired_requested(ctx)) {
+        dired_note_text_entry(entry.name_offset, entry.name_length);
+      }
+      safePrint(entry.text);
+    }
+    safePrintLn(L"");
+    return;
   }
 
   auto compute_column_widths = [&](int candidate_cols) {
@@ -2789,16 +2811,112 @@ auto get_file_owner_and_group(std::wstring_view path, bool use_numeric = false)
           accounts.group.name.empty() ? "UNKNOWN" : accounts.group.name};
 }
 
+// [GNU] Width-source priority is defined by coreutils ls.c decode_switches()
+// (v9.4 ls.c:2270-2307): -w/--width wins; otherwise the live terminal width
+// on stdout (TIOCGWINSZ analog: GetConsoleScreenBufferInfo srWindow on the
+// stdout console handle); otherwise the COLUMNS environment variable parsed
+// with decode_line_length semantics; otherwise 80 (#1504).
+
+// [GNU] ls.c:1866-1884 decode_line_length(): xstrtoumax base-0 semantics,
+// probed against GNU 9.4. Leading whitespace is skipped; '+', decimal, 0x
+// hex and leading-0 octal are accepted; 0 and values too large to fit mean
+// "no limit"; '-', trailing junk, or no digits at all are invalid (-1).
+auto decode_line_length(std::string_view spec) -> int {
+  auto is_space = [](char c) {
+    return c == ' ' || c == '\t' || c == '\n' || c == '\v' || c == '\f' ||
+           c == '\r';
+  };
+  size_t i = 0;
+  while (i < spec.size() && is_space(spec[i])) ++i;
+  if (i < spec.size() && spec[i] == '+') ++i;
+  int base = 10;
+  if (i + 1 < spec.size() && spec[i] == '0' &&
+      (spec[i + 1] == 'x' || spec[i + 1] == 'X')) {
+    base = 16;
+    i += 2;
+  } else if (i < spec.size() && spec[i] == '0') {
+    base = 8;
+  }
+  constexpr unsigned long long kPtrdiffMax = 0x7fffffffffffffffULL;
+  unsigned long long value = 0;
+  bool overflowed = false;
+  const size_t start = i;
+  for (; i < spec.size(); ++i) {
+    const char c = spec[i];
+    unsigned digit;
+    if (c >= '0' && c <= '9')
+      digit = static_cast<unsigned>(c - '0');
+    else if (c >= 'a' && c <= 'f')
+      digit = static_cast<unsigned>(10 + (c - 'a'));
+    else if (c >= 'A' && c <= 'F')
+      digit = static_cast<unsigned>(10 + (c - 'A'));
+    else
+      break;
+    if (digit >= static_cast<unsigned>(base)) break;
+    if (value > (kPtrdiffMax - digit) / static_cast<unsigned long long>(base))
+      overflowed = true;
+    else
+      value = value * static_cast<unsigned long long>(base) + digit;
+  }
+  if (i == start || i != spec.size()) return -1;  // no digits / trailing junk
+  if (overflowed || value == 0 || value > kPtrdiffMax) return kLsNoLineLimit;
+  if (value > static_cast<unsigned long long>(INT_MAX)) return kLsNoLineLimit;
+  return static_cast<int>(value);
+}
+
 /**
- * @brief Get terminal width
- * @return Terminal width in columns
+ * @brief Get output width using the GNU ls priority chain
+ * @return Width in columns, or kLsNoLineLimit for "no limit"
+ *
+ * Live console width on stdout wins whenever available (GNU ls.c:2283-2286);
+ * COLUMNS is only consulted when it is not (ls.c:2292-2303); default 80
+ * (ls.c:2307). The invalid-COLUMNS diagnostic fires once per process,
+ * matching GNU's single decode_switches() pass.
  */
 auto get_terminal_width() -> int {
   CONSOLE_SCREEN_BUFFER_INFO csbi;
   if (GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &csbi)) {
-    return csbi.srWindow.Right - csbi.srWindow.Left + 1;
+    int width = csbi.srWindow.Right - csbi.srWindow.Left + 1;
+    if (width > 0) {
+      return width;
+    }
   }
-  return 80;  // Default to 80 columns if we can't get terminal width
+  static bool columns_warning_emitted = false;
+  char *columns = nullptr;
+  size_t columns_len = 0;
+  if (_dupenv_s(&columns, &columns_len, "COLUMNS") == 0 && columns != nullptr) {
+    const std::string_view spec(columns);
+    if (!spec.empty()) {
+      const int decoded = decode_line_length(spec);
+      if (decoded >= 0) {
+        std::free(columns);
+        return decoded;
+      }
+      if (!columns_warning_emitted) {
+        columns_warning_emitted = true;
+        // [GNU] ls.c:2299-2302 message text; the quote() marks are the
+        // UTF-8 form GNU emits under C.UTF-8.
+        safeErrorPrintLn(
+            "ls: ignoring invalid width in environment variable COLUMNS: "
+            "\xE2\x80\x98" +
+            std::string(spec) + "\xE2\x80\x99");
+      }
+    }
+    std::free(columns);
+  }
+  return 80;  // [GNU] ls.c:2307 default
+}
+
+// [GNU] ls.c:2270: an explicit -w/--width wins over every width source, and
+// 0 means "no limit" (ls.c:1871 treats too-large values as 0) rather than
+// "unset". Both spellings share one registry entry, so one has() check
+// covers -w and --width.
+auto resolve_output_width(const CommandContext<LS_OPTIONS.size()> &ctx) -> int {
+  if (ctx.has("-w")) {
+    const int width = ctx.get<int>("-w", 0);
+    return width <= 0 ? kLsNoLineLimit : width;
+  }
+  return get_terminal_width();
 }
 
 /**
@@ -2903,13 +3021,7 @@ auto print_columns(const std::vector<EntryInfo> &entries,
   }
 
   // Get terminal width or use specified width
-  int width = ctx.get<int>("-w", 0);
-  if (width <= 0) {
-    width = ctx.get<int>("--width", 0);
-  }
-  if (width <= 0) {
-    width = get_terminal_width();
-  }
+  int width = resolve_output_width(ctx);
 
   // Calculate column widths to fill the terminal
   size_t max_display_width = 0;
@@ -2927,6 +3039,12 @@ auto print_columns(const std::vector<EntryInfo> &entries,
 
   int cols = width / base_col_width;
   if (cols < 1) cols = 1;
+  // More columns than entries is never useful (GNU never lays out empty
+  // columns), and bounding here keeps a kLsNoLineLimit width from
+  // allocating an unbounded column vector.
+  if (cols > static_cast<int>(entries.size())) {
+    cols = static_cast<int>(entries.size());
+  }
   int rows = (entries.size() + cols - 1) / cols;
 
   // Calculate total width used by all columns
@@ -3437,13 +3555,7 @@ auto list_directory(const std::string &path,
       print_directory_total_line(entries, size_cfg, ctx);
     }
     auto rendered = build_rendered_entries(entries, ctx);
-    int width = ctx.get<int>("-w", 0);
-    if (width <= 0) {
-      width = ctx.get<int>("--width", 0);
-    }
-    if (width <= 0) {
-      width = get_terminal_width();
-    }
+    int width = resolve_output_width(ctx);
     print_rendered_entries(rendered, static_cast<size_t>(width), ctx);
     safePrintLn(L"");
   } else if (format_mode == FormatMode::OnePerLine) {

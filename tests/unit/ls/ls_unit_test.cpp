@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 caomengxuan666 <caomengxuan666@users.noreply.github.com>
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
@@ -1919,6 +1920,191 @@ TEST(ls, ls_explicit_columns_override_non_tty_default) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "a.txt  b.txt\n");
+}
+
+// [GNU #1504] coreutils ls.c decode_switches() (v9.4 ls.c:2270-2307): when
+// stdout is not a terminal, the COLUMNS environment variable is the width
+// source (piped stdout cannot report a console size). Values 0 / too large
+// mean "no limit"; invalid values produce the GNU diagnostic on stderr and
+// are ignored (falling back to 80); an explicit -w/--width beats COLUMNS.
+// These tests run ls.exe as a subprocess with piped stdout, so the console
+// query fails and the COLUMNS branch is live.
+namespace {
+
+// 12 entries, display widths 10..21 chars: at width 80 that is 3 columns
+// (4 lines), at width 10 one per line (12 lines), unlimited one line.
+std::vector<std::string> make_width_fixture_entries() {
+  std::vector<std::string> names;
+  for (int i = 0; i < 12; ++i) {
+    names.push_back(std::string("name") + (i < 10 ? "0" : "") +
+                    std::to_string(i) + "-" + std::string(3 + (i % 12), 'x'));
+  }
+  return names;
+}
+
+size_t count_lines(const std::string& text) {
+  return static_cast<size_t>(std::count(text.begin(), text.end(), '\n'));
+}
+
+}  // namespace
+
+TEST(ls, ls_columns_env_sets_width_when_stdout_not_a_tty) {
+  TempDir tmp;
+  for (const auto& name : make_width_fixture_entries()) {
+    tmp.write(name, "x");
+  }
+
+  Pipeline narrow;
+  narrow.set_cwd(tmp.wpath());
+  narrow.set_env(L"COLUMNS", L"10");
+  narrow.add(L"ls.exe", {L"-C"});
+  auto narrow_result = narrow.run();
+  EXPECT_EQ(narrow_result.exit_code, 0);
+  EXPECT_EQ(count_lines(narrow_result.stdout_text), size_t{12});
+
+  Pipeline wide;
+  wide.set_cwd(tmp.wpath());
+  wide.set_env(L"COLUMNS", L"80");
+  wide.add(L"ls.exe", {L"-C"});
+  auto wide_result = wide.run();
+  EXPECT_EQ(wide_result.exit_code, 0);
+  // GNU maximizes columns: at 80 this fixture is 4 columns over 3 lines.
+  EXPECT_EQ(count_lines(wide_result.stdout_text), size_t{3});
+}
+
+TEST(ls, ls_columns_env_zero_means_no_limit) {
+  TempDir tmp;
+  for (const auto& name : make_width_fixture_entries()) {
+    tmp.write(name, "x");
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_env(L"COLUMNS", L"0");
+  p.add(L"ls.exe", {L"-C"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(count_lines(r.stdout_text), size_t{1});
+}
+
+TEST(ls, ls_columns_env_overflow_means_no_limit) {
+  TempDir tmp;
+  for (const auto& name : make_width_fixture_entries()) {
+    tmp.write(name, "x");
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_env(L"COLUMNS", L"999999999999999999999999");
+  p.add(L"ls.exe", {L"-C"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(count_lines(r.stdout_text), size_t{1});
+}
+
+TEST(ls, ls_columns_env_invalid_warns_and_falls_back_to_80) {
+  TempDir tmp;
+  for (const auto& name : make_width_fixture_entries()) {
+    tmp.write(name, "x");
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_env(L"COLUMNS", L"abc");
+  p.add(L"ls.exe", {L"-C"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // [GNU] ls.c:2299-2302 message text (UTF-8 quote marks as under C.UTF-8).
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "ls: ignoring invalid width in environment variable "
+                 "COLUMNS: \xE2\x80\x98"
+                 "abc"
+                 "\xE2\x80\x99\n");
+  // 80-column default layout: GNU maximizes columns, giving 4 columns over
+  // 3 lines for this fixture.
+  EXPECT_EQ(count_lines(r.stdout_text), size_t{3});
+}
+
+TEST(ls, ls_width_option_beats_columns_env) {
+  TempDir tmp;
+  for (const auto& name : make_width_fixture_entries()) {
+    tmp.write(name, "x");
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_env(L"COLUMNS", L"80");
+  p.add(L"ls.exe", {L"-C", L"-w", L"10"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // -w 10 wins over COLUMNS=80: one entry per line.
+  EXPECT_EQ(count_lines(r.stdout_text), size_t{12});
+}
+
+TEST(ls, ls_width_option_zero_means_no_limit) {
+  TempDir tmp;
+  for (const auto& name : make_width_fixture_entries()) {
+    tmp.write(name, "x");
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_env(L"COLUMNS", L"10");
+  p.add(L"ls.exe", {L"-C", L"-w", L"0"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // [GNU] -w 0 = no limit (single unwrapped line), not "unset": it must not
+  // fall through to COLUMNS=10.
+  EXPECT_EQ(count_lines(r.stdout_text), size_t{1});
+}
+
+TEST(ls, ls_columns_env_empty_is_ignored_like_gnu) {
+  TempDir tmp;
+  for (const auto& name : make_width_fixture_entries()) {
+    tmp.write(name, "x");
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_env(L"COLUMNS", L"");
+  p.add(L"ls.exe", {L"-C"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // [GNU] ls.c:2295 `if (p && *p)`: an empty COLUMNS is not consulted at
+  // all, so the 80-column default layout applies and nothing is warned.
+  EXPECT_EQ(count_lines(r.stdout_text), size_t{3});
+  EXPECT_EQ_TEXT(r.stderr_text, "");
+}
+
+TEST(ls, dir_inherits_ls_columns_width_fallback) {
+  TempDir tmp;
+  for (const auto& name : make_width_fixture_entries()) {
+    tmp.write(name, "x");
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_env(L"COLUMNS", L"10");
+  p.add(L"dir.exe", {});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // dir dispatches into the ls pipeline, so it inherits the COLUMNS
+  // fallback (GNU dir == `ls -C -b`).
+  EXPECT_EQ(count_lines(r.stdout_text), size_t{12});
 }
 
 TEST(
