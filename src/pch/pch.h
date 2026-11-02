@@ -36,6 +36,17 @@
 // #include <cstdio>   // For printf, fflush
 #include <cstdlib>  // For basic functions
 #include <cstring>  // For strlen
+#include <ctime>    // For localtime_s, strftime, std::time_t. MSVC 14.51 no
+                   // longer reaches <time.h> transitively through the
+                   // windows.h chain, and several commands (cpio, logger,
+                   // pinky, ...) rely on it.
 #include <cwchar>   // For wprintf, fwprintf
+// std::string_view for headers that spell it in their signatures
+// (terminfo_table.h). Kept here, not in the header: in the unity build the
+// header is reached AFTER an earlier command's 'import std;', and a real
+// std header included past an import is a redefinition error (MSVC 14.51
+// unity TU: iosfwd/__msvc_string_view.hpp C2953/C2995). The PCH include
+// path runs before every import.
+#include <string_view>
 
 #endif  // PCH_H

@@ -105,6 +105,23 @@ auto readlink_error(const std::string& file, std::string_view reason)
   return "readlink: " + file + ": " + std::string(reason);
 }
 
+// [GNU] readlink -f/-e/-m print the canonicalize_filename_mode() result
+// verbatim (readlink.c, 9.4: 'fputs (value, stdout)'), and that canonical
+// name is assembled with '/' separators by construction (lib/canonicalize.c,
+// 9.4: 'if (!ISSLASH (dest[-1])) *dest++ = '/';' — WSL coreutils 9.4 probe:
+// 'readlink -f d/f.txt' → '/tmp/.../d/f.txt', zero backslashes). On Windows
+// the resolver's canonical spelling (GetFinalPathNameByHandleW) uses '\'.
+// #1491: a '\' separator cannot be consumed by the shell's pattern word
+// arithmetic ('${BATS_PATH%/*/*}' in bats-core), so the canonicalize modes
+// render the resolved name in the repo's shell-facing display form — '/'
+// separators, like find.cpp's path_to_utf8 — while the drive spelling the
+// resolver chose is kept. The no-mode form (readlink link) prints the
+// stored target text verbatim, like GNU areadlink.
+auto to_display_separators(std::wstring path) -> std::wstring {
+  std::replace(path.begin(), path.end(), L'\\', L'/');
+  return path;
+}
+
 auto strip_extended_prefix(std::wstring path) -> std::wstring {
   if (path.rfind(L"\\\\?\\UNC\\", 0) == 0) {
     return L"\\\\" + path.substr(8);
@@ -309,7 +326,12 @@ auto run(const Config& cfg) -> int {
       if (cfg.mode == Mode::link_target) {
         return read_link_target(utf8_to_wstring(file));
       }
-      return canonicalize_path(utf8_to_wstring(file), cfg.mode);
+      auto canonical = canonicalize_path(utf8_to_wstring(file), cfg.mode);
+      if (canonical) {
+        // [GNU] Canonical names are '/'-separated; see to_display_separators.
+        *canonical = to_display_separators(std::move(*canonical));
+      }
+      return canonical;
     }();
 
     if (!resolved) {

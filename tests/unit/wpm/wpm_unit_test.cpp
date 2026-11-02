@@ -2057,6 +2057,73 @@ TEST(wpm, wpm_shim_packages_use_the_forwarder_when_present) {
   EXPECT_CONTAINS(tmp.read(".wpm/shims.map"), "tool.exe");
 }
 
+// #1492: a reinstall whose index mapping moved the payload must reconcile
+// shims.map even when the shim link itself is already current: the forwarder
+// answers with "the payload for '<cmd>' is missing" against the stale entry
+// otherwise (unixwin/wpm-source#108 shape: opt\<pkg>\<cmd>.exe ->
+// opt\<pkg>\bin\<cmd>.exe).
+TEST(wpm, wpm_force_reinstall_reconciles_shim_map_for_current_links) {
+  TempDir tmp;
+  const auto artifact_path = tmp.path / L"source" / L"tool.exe";
+  const auto root_exe = canonical_exe(tmp.path, L"winuxcmd.exe");
+  std::filesystem::create_directories(root_exe.parent_path());
+  std::filesystem::copy_file(build_winuxcmd_path(), root_exe,
+                             std::filesystem::copy_options::overwrite_existing);
+  tmp.write("source/tool.exe", "external exe\n");
+  tmp.write("usr/bin/winuxcmd-shim.exe", "forwarder stub\n");
+
+  const auto shim_index_json = [&tmp, &artifact_path](const std::string& to) {
+    return "{\n"
+           "  \"schema\": 1,\n"
+           "  \"name\": \"fixture\",\n"
+           "  \"version\": \"fixture-shim-move\",\n"
+           "  \"packages\": [\n"
+           "    {\"name\":\"tool\",\"version\":\"1.0.0\","
+           "\"description\":\"shim move fixture\",\"kind\":\"external\","
+           "\"commands\":[\"tool\"],\"artifacts\":{\"" +
+           current_arch_key() +
+           "\":{\"type\":\"exe\","
+           "\"sha256\":\"5140f4f6bf8b5691b7bccc1c4f00a2027dae00b2110d38"
+           "a1e090af291226f322\",\"layout\":\"shim\","
+           "\"urls\":[\"" +
+           file_url(artifact_path) +
+           "\"],\"files\":[{\"from\":\"tool.exe\",\"to\":\"" + to +
+           "\"}]}}}\n"
+           "  ]\n"
+           "}\n";
+  };
+
+  // First install: the payload lands at opt\tool\tool.exe and the map says
+  // so.
+  tmp.write(".wpm/indexes/official.json", shim_index_json("tool.exe"));
+  Pipeline first;
+  first.add(L"winuxcmd.exe",
+            {L"wpm", L"install", L"tool", L"--root", tmp.wpath()});
+  EXPECT_EQ(first.run().exit_code, 0);
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / L"opt" / L"tool" /
+                                      L"tool.exe"));
+  const auto shim = tmp.path / L"usr" / L"bin" / L"tool.exe";
+  const auto forwarder = tmp.path / L"usr" / L"bin" / L"winuxcmd-shim.exe";
+  EXPECT_TRUE(same_file(forwarder, shim));
+  EXPECT_CONTAINS(tmp.read(".wpm/shims.map"), "tool=opt\\tool\\tool.exe");
+
+  // The index mapping deepens the payload; --force reinstalls. The shim link
+  // is already current (hardlink of the forwarder), so the map reconciliation
+  // is the only thing that can heal the forwarder's payload path.
+  tmp.write(".wpm/indexes/official.json", shim_index_json("bin/tool.exe"));
+  Pipeline reinstall;
+  reinstall.add(L"winuxcmd.exe",
+                {L"wpm", L"install", L"tool", L"--force", L"--root",
+                 tmp.wpath()});
+  const auto reinstall_result = reinstall.run();
+  EXPECT_EQ(reinstall_result.exit_code, 0);
+  EXPECT_TRUE(std::filesystem::exists(
+      tmp.path / L"opt" / L"tool" / L"bin" / L"tool.exe"));
+  EXPECT_NOT_CONTAINS(tmp.read(".wpm/shims.map"), "tool=opt\\tool\\tool.exe");
+  EXPECT_CONTAINS(tmp.read(".wpm/shims.map"),
+                  "tool=opt\\tool\\bin\\tool.exe");
+}
+
 // The PATH-entry link (<root>\bin\<cmd>.exe) normally hardlinks the payload
 // itself - that saves a forwarding process per call. Commands the forwarders
 // answer with an argv adapter (gawk's `-v BINMODE=3`, unixwin/niubash#467)

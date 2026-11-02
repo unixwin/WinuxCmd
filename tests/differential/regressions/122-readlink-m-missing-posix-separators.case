@@ -1,0 +1,10 @@
+cmd: readlink
+args: -m a/b/c.txt | tr -d 'A-Za-z0-9:/._-'
+timeout: 10
+source: github.com/unixwin/WinuxCmd/issues/1491
+tags: issue-1491 readlink canonicalize-missing posix-separators
+# Same invariant as regressions/121 on the CAN_MISSING mode: -m canonicalizes
+# a not-yet-existing leaf, and GNU prints the /-separated name
+# (canonicalize_filename_mode CAN_MISSING). The tr filter leaves only stray
+# backslashes, so both sides print nothing; Windows '\' separators fail.
+# No setup: the operand is deliberately absent in every component.

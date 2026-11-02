@@ -3383,6 +3383,31 @@ auto create_package_shims(const fs::path& root, const nlohmann::json& pkg,
   // the previous behaviour, so nothing breaks on an older root.
   const fs::path forwarder = package_shim_source(root);
   const fs::path shim_source = forwarder.empty() ? self_exe : forwarder;
+  // #1492: the map entry must be reconciled for EVERY command of the package,
+  // including ones whose shim link is already current: a reinstall that moves
+  // the payload (index `files` change) leaves the map pointing at the old
+  // location otherwise, and the forwarder dies with "payload is missing".
+  const auto record_shim_payload = [&](const std::string& command) -> bool {
+    if (forwarder.empty()) return true;
+    // Point the forwarder at this package's payload for this command.
+    const auto artifact_for_shim = artifact_for_current_arch(pkg);
+    ec.clear();
+    const fs::path payload =
+        artifact_for_shim
+            ? shim_payload_for(root, package, command, *artifact_for_shim)
+            : package_payload_dir(root, package) / exe_suffix(command);
+    if (fs::is_regular_file(payload, ec)) {
+      const fs::path relative = fs::relative(payload, root, ec);
+      if (!ec && set_shim_map_entry(root, command, relative.string()) == false) {
+        safeErrorPrintLn(wpm_text("command.wpm.error.shim_map",
+                                  "wpm: failed to record the payload for "
+                                  "'{}' in {}",
+                                  command, shim_map_path(root).string()));
+        return false;
+      }
+    }
+    return true;
+  };
   int created = 0;
   int unchanged = 0;
   for (const auto& item : pkg["commands"]) {
@@ -3393,6 +3418,8 @@ auto create_package_shims(const fs::path& root, const nlohmann::json& pkg,
     if (fs::exists(shim, ec)) {
       if (same_file(shim_source, shim) || files_equal(shim_source, shim)) {
         ++unchanged;
+        // The link is current, but the payload it forwards to may have moved.
+        if (!record_shim_payload(command)) return false;
         continue;
       }
       if (!force) {
@@ -3410,25 +3437,7 @@ auto create_package_shims(const fs::path& root, const nlohmann::json& pkg,
                                 shim.string(), ec.message()));
       return false;
     }
-    if (!forwarder.empty()) {
-      // Point the forwarder at this package's payload for this command.
-      const auto artifact_for_shim = artifact_for_current_arch(pkg);
-      const fs::path payload = artifact_for_shim
-                                   ? shim_payload_for(root, package, command,
-                                                      *artifact_for_shim)
-                                   : package_payload_dir(root, package) /
-                                         exe_suffix(command);
-      if (fs::is_regular_file(payload, ec)) {
-        const fs::path relative = fs::relative(payload, root, ec);
-        if (!ec && set_shim_map_entry(root, command, relative.string()) == false) {
-          safeErrorPrintLn(wpm_text("command.wpm.error.shim_map",
-                                    "wpm: failed to record the payload for "
-                                    "'{}' in {}",
-                                    command, shim_map_path(root).string()));
-          return false;
-        }
-      }
-    }
+    if (!record_shim_payload(command)) return false;
     ++created;
   }
   // Alias creation moved to create_package_aliases() for use with both layouts
