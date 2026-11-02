@@ -1091,8 +1091,10 @@ auto read_stream(const Config& cfg, std::vector<uint8_t>& data) -> int {
       return;
     }
     ++files_attempted;
-    std::ifstream file(native_path::normalize_api_operand(filename),
-                       std::ios::binary);
+    // #1493: open through the shared layer so a fifo marker (#1038)
+    // bridges to the named-pipe rendezvous; hexdump reads sequentially
+    // like its od sibling.
+    std::ifstream file = file_io::open_binary_file(filename);
     if (!file) {
       // [GNU] warn shape is unquoted: "hexdump: <file>: No such file or
       // directory" (hexdump-display.c next()).

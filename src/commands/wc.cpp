@@ -616,15 +616,25 @@ auto count_file(const std::string& path, const CountRequest& request,
   if (request.only_bytes()) {
     std::error_code ec;
     // Probe size on the extended API path so >MAX_PATH operands do not fall
-    // back to the streaming path needlessly (#1061).
+    // back to the streaming path needlessly (#1061). GNU takes this
+    // st_size shortcut only for regular files (wc.c: S_ISREG): a fifo
+    // must be READ, and a WinuxCmd fifo marker (#1038) is a regular file
+    // on NTFS whose 7 st_size bytes are the marker, not the payload —
+    // so exclude markers and count the bridged pipe bytes instead
+    // (#1493).
     const auto operand = native_path::make_api_path_operand(path);
-    const auto size =
-        std::filesystem::file_size(std::filesystem::path(operand.extended), ec);
-    if (!ec) {
+    const bool is_fifo_marker =
+        native_path::is_winux_fifo_w(operand.normalized);
+    const auto size = is_fifo_marker
+                          ? std::uintmax_t{0}
+                          : std::filesystem::file_size(
+                                std::filesystem::path(operand.extended), ec);
+    if (!is_fifo_marker && !ec) {
       CountResult result = make_empty_result(path, true);
       result.bytes = static_cast<std::uintmax_t>(size);
       return result;
     }
+    ec.clear();
   }
 
   return count_stream(file, path, true, request);
@@ -666,6 +676,13 @@ auto compute_number_width(const CountBatch& batch,
 
     const auto operand = native_path::make_api_path_operand(result.filename);
     const auto path = std::filesystem::path(operand.extended);
+    // [GNU] a fifo is not S_ISREG, so it never contributes to the
+    // stat-based width total (wc.c). A WinuxCmd fifo marker (#1038) IS a
+    // regular file on NTFS; treat it as non-regular like GNU does (#1493).
+    if (native_path::is_winux_fifo_w(operand.normalized)) {
+      saw_non_regular = true;
+      continue;
+    }
     std::error_code ec;
     const auto status = std::filesystem::status(path, ec);
     if (ec || !std::filesystem::is_regular_file(status)) {

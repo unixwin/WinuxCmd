@@ -510,9 +510,9 @@ auto run(const Config& cfg) -> int {
         process_line(line, cfg, section, line_number, blank_count, terminated);
       }
     } else {
-      // Read from file
-      std::ifstream f(native_path::normalize_api_operand(file),
-                      std::ios::binary);
+      // Read from file. #1493: shared open layer so a fifo marker (#1038)
+      // rendezvous-blocks instead of numbering the 7 marker bytes.
+      std::ifstream f = file_io::open_binary_file(file);
       if (!f) {
         auto err = nl_input_open_error(file);
         cp::Result<int> result = std::unexpected(err);

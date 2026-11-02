@@ -404,8 +404,9 @@ auto read_file(const std::string& filename) -> cp::Result<FileData> {
       return std::unexpected("error reading from standard input");
     }
   } else {
-    std::ifstream f(native_path::normalize_api_operand(filename),
-                    std::ios::binary);
+    // #1493: shared open layer so a fifo marker (#1038) rendezvous-blocks
+    // and checksums the writer's bytes, not the 7 marker bytes.
+    std::ifstream f = file_io::open_binary_file(filename);
     if (!f) {
       return std::unexpected(input_open_error(filename));
     }
@@ -431,9 +432,10 @@ auto read_crc_file(const std::string& filename)
                              ": Bad file descriptor");
     }
   } else {
-    file.open(
-        std::filesystem::u8path(native_path::normalize_api_operand(filename)),
-        std::ios::binary);
+    // #1493: open through the shared layer so a fifo marker (#1038)
+    // rendezvous-blocks and hashes the writer's bytes (this is the main
+    // CRC operand path), not the 7 marker bytes.
+    file = file_io::open_binary_file(filename);
     if (!file) {
       return std::unexpected(input_open_error(filename));
     }
@@ -741,10 +743,11 @@ auto check_one_file(const std::string& checkfile_name, const Config& cfg,
   if (!is_stdin) {
     // #1288: open and probe the check file through its operand's
     // extended spelling; the normalized narrow spelling fails past
-    // MAX_PATH.
+    // MAX_PATH. #1493: the shared open layer also bridges a fifo
+    // marker (#1038) to the named-pipe rendezvous.
     const auto check_operand =
         native_path::make_api_path_operand(checkfile_name);
-    checkfile.open(std::filesystem::path(check_operand.extended));
+    checkfile = file_io::open_binary_file(checkfile_name);
     if (!checkfile) {
       // [GNU] fopen() succeeds on a directory and the first getline() then
       // fails: GNU reports "<file>: read error", not "Is a directory".
