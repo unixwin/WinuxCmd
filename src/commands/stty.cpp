@@ -250,6 +250,14 @@ void print_machine_readable(HANDLE hCon) {
     out += value;
     out += ":";
   }
+  // GNU's recoverable string carries 36 fields in total (4 flag words,
+  // line, 29 cc slots, ispeed, ospeed); the console has values for 17 cc
+  // slots, the remaining Linux slots pad as 0 so the emitted field count
+  // matches what is_recover_form accepts and `stty $(stty -g)` keeps
+  // round-tripping (differential stty/05).
+  for (int filler = 0; filler < 12; ++filler) {
+    out += "0:";
+  }
   out += "38400:38400";
   safePrintLn(out);
 }
@@ -359,10 +367,12 @@ auto is_reversible_setting(const std::string& name) -> bool {
 }
 
 // The -g recover form: one colon-separated argument of hex fields
-// (stty.c display_recoverable / recover_mode).  Field count and
-// the termios layout behind the values are platform-shaped
-// (PORT); the shape -- colon-joined hex fields -- is the contract
-// that must round-trip.
+// (stty.c display_recoverable / recover_mode).  The pinned GNU oracle
+// (coreutils 9.4, Linux termios) emits and accepts EXACTLY 36 fields
+// (NCCS=19 control chars + the mode words), and every other field count
+// is "invalid argument" -- e.g. the 10-field string of differential
+// stty/05 is rejected BEFORE the -F device is ever opened (validation
+// precedes device access, stty.c:1149ff).
 auto is_recover_form(const std::string& setting) -> bool {
   if (setting.find(':') == std::string::npos) return false;
   size_t fields = 0;
@@ -380,7 +390,7 @@ auto is_recover_form(const std::string& setting) -> bool {
     if (colon == std::string::npos) break;
     start = colon + 1;
   }
-  return fields >= 10;
+  return fields == 36;
 }
 
 auto is_integer_value_setting(const std::string& name) -> bool {

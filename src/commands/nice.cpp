@@ -116,8 +116,11 @@ REGISTER_COMMAND(
         std::string(adjustment_occurrences.back().value);
     auto adjustment_value = parse_adjustment_value(parsed_adjustment);
     if (!adjustment_value) {
+      // [GNU] nice.c:164-174 rejects the adjustment through error(), which
+      // prints the diagnostic alone -- coreutils nice appends no
+      // "Try 'nice --help'" tail on this path (differential nice/02:
+      // `nice -n "" true` -> one stderr line, exit 125).
       safeErrorPrintLn("nice: invalid adjustment '" + parsed_adjustment + "'");
-      safeErrorPrintLn("Try 'nice --help' for more information.");
       return 125;
     }
     adjustment = *adjustment_value;

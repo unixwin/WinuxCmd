@@ -133,22 +133,52 @@ struct ProbeResult {
   std::string error_text;  // POSIX wording when outcome == kError
 };
 
+// POSIX lstat answers ENOTDIR, not ENOENT, when a non-final path
+// component exists as a file ("regfile/file"); Win32 filesystems disagree
+// about which error crosses that shape (NTFS yields ERROR_DIRECTORY, the
+// 9p/UNC view of a WSL directory can yield a not-found class instead), so
+// the not-there verdict is confirmed by walking the component chain: the
+// first existing prefix that is not a directory pins ENOTDIR (differential
+// pathchk/01, which exited 0 through the runner's UNC working directory).
+auto file_component_in_chain(const std::wstring& api_path) -> bool {
+  for (size_t i = 0; i < api_path.size(); ++i) {
+    if (api_path[i] != L'\\' && api_path[i] != L'/') continue;
+    if (i == 0) continue;
+    std::wstring prefix = api_path.substr(0, i);
+    if (prefix.size() > 2 && prefix.back() == L':') continue;  // drive root
+    DWORD attrs = GetFileAttributesW(prefix.c_str());
+    if (attrs == INVALID_FILE_ATTRIBUTES) continue;      // missing: fine
+    if ((attrs & FILE_ATTRIBUTE_DIRECTORY) == 0) return true;
+  }
+  return false;
+}
+
 auto probe_existence(const std::string& path) -> ProbeResult {
   std::error_code ec;
   // Route the probe through the shared API-path boundary (the expression
   // cp.cpp's file-local api_operand_w wraps; #1140/#1145) so an MSYS-form
   // operand (/d/x) stats the same file GNU's lstat sees on the as-typed
   // name (pathchk.c:289), instead of a current-drive root-relative path.
-  auto status = std::filesystem::symlink_status(
-      native_path::make_api_path_operand(path).extended, ec);
+  const std::wstring api_path =
+      native_path::make_api_path_operand(path).extended;
+  auto status = std::filesystem::symlink_status(api_path, ec);
   if (!ec) {
     (void)status;
     return {ProbeOutcome::kExists, {}};
   }
   if (ec == std::errc::no_such_file_or_directory) {
+    if (file_component_in_chain(api_path)) {
+      return {ProbeOutcome::kError, "Not a directory"};
+    }
     return {ProbeOutcome::kNotThere, {}};
   }
-  // POSIX errno wording for the shapes a name probe can hit.
+  // POSIX errno wording for the shapes a name probe can hit.  MSVC's
+  // filesystem reports Win32 failures in std::system_category() carrying
+  // the native error code, so `regfile/file` surfaces ERROR_DIRECTORY
+  // (whose system message is "The directory name is invalid.") instead of
+  // the generic not_a_directory value -- route the native code through the
+  // shared Win32->POSIX mapping so the diagnostic reads "Not a directory"
+  // like GNU lstat's errno text (differential pathchk/01).
   std::string text;
   if (ec == std::errc::not_a_directory) {
     text = "Not a directory";
@@ -156,6 +186,12 @@ auto probe_existence(const std::string& path) -> ProbeResult {
     text = "File name too long";
   } else if (ec == std::errc::permission_denied) {
     text = "Permission denied";
+  } else if (ec.category() == std::system_category()) {
+    const std::string mapped =
+        win32_posix_error_text(static_cast<unsigned long>(ec.value()));
+    // The shared helper falls back to the same system message for
+    // unmapped codes, so the two branches agree there.
+    text = mapped;
   } else {
     text = ec.message();
   }
