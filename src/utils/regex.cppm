@@ -42,6 +42,13 @@ struct Match {
 
 struct CompileResult;
 
+// Set when a match call (find_first / match_at / matches_entire / find_all)
+// hit the internal work budget and returned a conservative no-match instead of
+// exhausting every parse. Per-thread; clear before the next match if consumed.
+// The budget only trips on pattern/length combinations whose exploration is
+// super-polynomial even after repeat memoization (WinuxCmd #1495 family).
+export inline thread_local bool work_limit_exceeded = false;
+
 namespace detail {
 
 constexpr int kUnlimited = -1;
@@ -634,7 +641,12 @@ class Pattern {
     if (engine_ == Engine::Pcre2) return pcre2_find(text, start, true);
 #endif
 
-    auto states = match_node(root_, text, make_initial_state(start));
+    StepBudget budget;
+    auto states = match_node(root_, text, make_initial_state(start), budget);
+    if (budget.exceeded) {
+      work_limit_exceeded = true;
+      return std::nullopt;
+    }
     if (states.empty()) return std::nullopt;
 
     auto best = std::max_element(
@@ -650,8 +662,13 @@ class Pattern {
     if (engine_ == Engine::Pcre2) return pcre2_find(text, start, false);
 #endif
 
+    StepBudget budget;
     for (size_t cursor = start; cursor <= text.size();) {
-      auto states = match_node(root_, text, make_initial_state(cursor));
+      auto states = match_node(root_, text, make_initial_state(cursor), budget);
+      if (budget.exceeded) {
+        work_limit_exceeded = true;
+        return std::nullopt;
+      }
       if (states.empty()) {
         ++cursor;
         // Do not restart mid-codepoint: a continuation byte is never a
@@ -695,7 +712,12 @@ class Pattern {
       return match && match->begin == 0 && match->end == text.size();
     }
 #endif
-    auto states = match_node(root_, text, make_initial_state(0));
+    StepBudget budget;
+    auto states = match_node(root_, text, make_initial_state(0), budget);
+    if (budget.exceeded) {
+      work_limit_exceeded = true;
+      return false;
+    }
     return std::ranges::any_of(
         states, [&](const State& st) { return st.pos == text.size(); });
   }
@@ -723,6 +745,67 @@ class Pattern {
     size_t pos = 0;
     std::vector<Submatch> captures;
   };
+
+  // Work budget for a single find_first / match_at / matches_entire call.
+  // The engine returns EVERY parse of the pattern (leftmost-longest needs the
+  // full state set), so a repeat node whose body is itself unbounded
+  // (`^\(.*\)*$`, WinuxCmd #1495) used to enumerate all 2^(n-1) chunk
+  // decompositions of the line: exponential time and unbounded memory.
+  // Guard rails, in order:
+  //  1. collect_repeat memoizes per (iteration count, full match state), so
+  //     each subproblem is expanded once (polynomial: O(n^(2c+1)) worst case
+  //     for c captures, vs. exponential before).
+  //  2. `out` is deduplicated incrementally; unique_states() kept first
+  //     occurrences, and skipping an already-seen state produces the exact
+  //     same first-occurrence sequence, so match results are byte-identical
+  //     to the unbounded exploration.
+  //  3. Hard caps on steps / memo size / output size turn any residual
+  //     blowup into a conservative no-match (flagged via
+  //     work_limit_exceeded) instead of an unbounded hang. Legit workloads
+  //     stay far below: the caps only bind on pathological
+  //     nested-quantifier x long-line combinations.
+  struct StepBudget {
+    size_t steps = 0;
+    bool exceeded = false;
+  };
+
+  static constexpr size_t kStepLimit = 1u << 26;
+  static constexpr size_t kVisitedLimit = 300000;
+  static constexpr size_t kOutLimit = 300000;
+
+  // Memo key for collect_repeat: a repeat subproblem is a pure function of
+  // (node, completed-iteration count, full state). When min is 0 and max is
+  // unlimited, every count-dependent branch is constant, so the count is
+  // dropped from the key (a state reached at different depths explores
+  // identically) - this collapses the memo to O(states), not O(states*n).
+  struct VisitKey {
+    int count = 0;
+    State state;
+  };
+  struct VisitKeyHash {
+    auto operator()(const VisitKey& key) const noexcept -> size_t {
+      size_t h = 14695981039346656037ull;
+      auto mix = [&h](size_t value) {
+        h ^= value;
+        h *= 1099511628211ull;
+      };
+      mix(static_cast<size_t>(key.count));
+      mix(key.state.pos);
+      for (const auto& sub : key.state.captures) {
+        mix(sub.begin);
+        mix(sub.end);
+        mix(sub.matched ? 1u : 0u);
+      }
+      return h;
+    }
+  };
+  struct VisitKeyEqual {
+    auto operator()(const VisitKey& lhs, const VisitKey& rhs) const -> bool {
+      return lhs.count == rhs.count && states_equal(lhs.state, rhs.state);
+    }
+  };
+  using VisitSet =
+      std::unordered_set<VisitKey, VisitKeyHash, VisitKeyEqual>;
 
 #ifdef WINUXCMD_ENABLE_PCRE2
   [[nodiscard]] auto pcre2_find(std::string_view text, size_t start,
@@ -831,8 +914,13 @@ class Pattern {
   }
 
   [[nodiscard]] auto match_node(size_t node_id, std::string_view text,
-                                const State& state) const
+                                const State& state,
+                                StepBudget& budget) const
       -> std::vector<State> {
+    if (++budget.steps > kStepLimit) {
+      budget.exceeded = true;
+      return {};
+    }
     if (node_id >= nodes_.size()) return {};
     const auto& node = nodes_[node_id];
     switch (node.kind) {
@@ -889,18 +977,19 @@ class Pattern {
         }
         return {};
       case detail::NodeKind::Sequence:
-        return match_sequence(node.children, 0, text, state);
+        return match_sequence(node.children, 0, text, state, budget);
       case detail::NodeKind::Alternation: {
         std::vector<State> out;
         for (size_t child : node.children) {
-          auto child_states = match_node(child, text, state);
+          auto child_states = match_node(child, text, state, budget);
           out.insert(out.end(), std::make_move_iterator(child_states.begin()),
                      std::make_move_iterator(child_states.end()));
+          if (budget.exceeded) return {};
         }
         return unique_states(std::move(out));
       }
       case detail::NodeKind::Capture: {
-        auto states = match_node(node.child, text, state);
+        auto states = match_node(node.child, text, state, budget);
         for (auto& next : states) {
           if (node.capture_index >= next.captures.size()) {
             next.captures.resize(node.capture_index + 1);
@@ -926,50 +1015,92 @@ class Pattern {
         return {std::move(next)};
       }
       case detail::NodeKind::Repeat:
-        return match_repeat(node, text, state);
+        return match_repeat(node, text, state, budget);
     }
     return {};
   }
 
   [[nodiscard]] auto match_sequence(const std::vector<size_t>& children,
                                     size_t index, std::string_view text,
-                                    const State& state) const
+                                    const State& state,
+                                    StepBudget& budget) const
       -> std::vector<State> {
     if (index >= children.size()) return {state};
 
     std::vector<State> out;
-    auto child_states = match_node(children[index], text, state);
+    auto child_states = match_node(children[index], text, state, budget);
     for (const auto& child_state : child_states) {
-      auto tail_states = match_sequence(children, index + 1, text, child_state);
+      auto tail_states =
+          match_sequence(children, index + 1, text, child_state, budget);
       out.insert(out.end(), std::make_move_iterator(tail_states.begin()),
                  std::make_move_iterator(tail_states.end()));
+      if (budget.exceeded) return {};
     }
     return unique_states(std::move(out));
+  }
+
+  // Append `state` to `out` unless an equal state was already appended.
+  // unique_states() (the previous post-pass) keeps first occurrences in push
+  // order, so skipping repeats incrementally yields the identical sequence.
+  auto push_unique(std::vector<State>& out, VisitSet& seen, const State& state,
+                   StepBudget& budget) const -> void {
+    if (out.size() >= kOutLimit) {
+      budget.exceeded = true;
+      return;
+    }
+    if (seen.insert(VisitKey{0, state}).second) {
+      out.push_back(state);
+    }
   }
 
   auto collect_repeat(const detail::Node& node, std::string_view text,
-                      const State& state, int count,
-                      std::vector<State>& out) const -> void {
-    if (node.max_repeat != detail::kUnlimited && count >= node.max_repeat) {
-      if (count >= node.min_repeat) out.push_back(state);
+                      const State& state, int count, std::vector<State>& out,
+                      VisitSet& visited, VisitSet& out_seen,
+                      StepBudget& budget) const -> void {
+    if (budget.exceeded) return;
+    if (visited.size() >= kVisitedLimit) {
+      budget.exceeded = true;
       return;
     }
 
-    auto child_states = match_node(node.child, text, state);
-    for (const auto& next : child_states) {
-      if (next.pos == state.pos) continue;
-      collect_repeat(node, text, next, count + 1, out);
+    // Memo: this exact (iterations completed, state) subproblem explores and
+    // emits exactly the same states as its first exploration, all of which
+    // are already in `out_seen`; skipping it preserves `out` byte-for-byte
+    // (first-occurrence order) while cutting the 2^(n-1) chunk
+    // decompositions of `\(.*\)*` down to one visit per distinct state.
+    const bool count_free =
+        node.min_repeat == 0 && node.max_repeat == detail::kUnlimited;
+    if (!visited.insert(VisitKey{count_free ? 0 : count, state}).second) {
+      return;
     }
-    if (count >= node.min_repeat) out.push_back(state);
+
+    if (node.max_repeat != detail::kUnlimited && count >= node.max_repeat) {
+      if (count >= node.min_repeat) push_unique(out, out_seen, state, budget);
+      return;
+    }
+
+    auto child_states = match_node(node.child, text, state, budget);
+    for (const auto& next : child_states) {
+      // POSIX/GNU: an iteration of a quantified group that matches empty
+      // ends the loop - only advancing iterations recurse.
+      if (next.pos == state.pos) continue;
+      collect_repeat(node, text, next, count + 1, out, visited, out_seen,
+                     budget);
+      if (budget.exceeded) return;
+    }
+    if (count >= node.min_repeat) push_unique(out, out_seen, state, budget);
   }
 
   [[nodiscard]] auto match_repeat(const detail::Node& node,
-                                  std::string_view text,
-                                  const State& state) const
+                                  std::string_view text, const State& state,
+                                  StepBudget& budget) const
       -> std::vector<State> {
     std::vector<State> out;
-    collect_repeat(node, text, state, 0, out);
-    return unique_states(std::move(out));
+    VisitSet visited;
+    VisitSet out_seen;
+    collect_repeat(node, text, state, 0, out, visited, out_seen, budget);
+    if (budget.exceeded) return {};
+    return out;  // incrementally deduplicated by push_unique
   }
 };
 

@@ -2060,3 +2060,81 @@ TEST(sed, bare_nul_still_device_issue1333) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "");
 }
+
+// WinuxCmd #1495: a quantifier over a group that itself holds an unbounded
+// subpattern (`^\(.*\)*$`) used to enumerate all 2^(n-1) chunk
+// decompositions of the line - hang plus unbounded memory (~115MB/s).
+// utils/regex.cppm collect_repeat now memoizes per (iteration count, full
+// match state), so these complete in polynomial time.
+TEST(sed, nested_quantifier_issue1495_no_catastrophic_backtracking) {
+  TempDir tmp;
+  std::string line32 = "abcdefghijklmnopqrstuvwxyz012345\n";
+  std::string line128;
+  for (int i = 0; i < 8; ++i) line128 += "abcdefghijklmnop";
+  line128 += '\n';
+  tmp.write("in32.txt", line32);
+  tmp.write("in128.txt", line128);
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sed.exe", {L"s/^\\(.*\\)*$/X/", L"in32.txt"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "X\n");
+
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.add(L"sed.exe", {L"s/^\\(.*\\)*$/X/", L"in128.txt"});
+  auto r2 = p2.run();
+  EXPECT_EQ(r2.exit_code, 0);
+  EXPECT_EQ_TEXT(r2.stdout_text, "X\n");
+}
+
+// #1495 capture shapes: the engine's pick among equal-length parses is kept
+// byte-identical to the pre-fix exploration order (first occurrence wins).
+// The gnu oracle picks [abcdefgh] / [abc] here and the engine agrees for
+// these shapes; the doubly-nested and \{2,\} picks still diverge from glibc
+// (last-non-empty-iteration rule) - pre-existing, tracked separately.
+TEST(sed, nested_quantifier_issue1495_capture_selection_is_stable) {
+  TempDir tmp;
+  tmp.write("in8.txt", "abcdefgh\n");
+  tmp.write("in3.txt", "abc\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sed.exe", {L"s/^\\(.*\\)*$/[\\1]/", L"in8.txt"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "[abcdefgh]\n");
+
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.add(L"sed.exe", {L"s/^\\(.*\\)*$/[\\1]/", L"in3.txt"});
+  auto r2 = p2.run();
+  EXPECT_EQ(r2.exit_code, 0);
+  EXPECT_EQ_TEXT(r2.stdout_text, "[abc]\n");
+}
+
+// #1495 real-world source: the bash-it composure metafor() script line that
+// made `_bash-it-describe` hang with 40GB+ of memory. It must terminate and
+// extract the description exactly like GNU sed 4.8.
+TEST(sed, nested_quantifier_issue1495_bashit_metafor_line) {
+  TempDir tmp;
+  tmp.write("ag.aliases.bash",
+            "# shellcheck shell=bash\n"
+            "about-alias 'the silver searcher (ag) aliases'\n"
+            "url \"https://geoff.greer.fm/ag/\"\n"
+            "alias ag='ag --smart-case --pager=\"less -MIRFX\"'\n");
+
+  // Byte-exact copy of helpers.bash metafor(): a literal TAB inside [...].
+  const wchar_t* script =
+      L"/about-alias / s/['\";]*$//;s/^[\t]*\\(: _\\)*about-alias "
+      L"['\"]*\\([^([].*\\)*$/\\2/p";
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sed.exe", {L"-n", script, L"ag.aliases.bash"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "the silver searcher (ag) aliases\n");
+}
