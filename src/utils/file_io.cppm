@@ -72,6 +72,18 @@ auto read_handle_to_string(HANDLE file, std::string_view path)
     DWORD bytes_read = 0;
     if (!ReadFile(file, buffer.data(), static_cast<DWORD>(buffer.size()),
                   &bytes_read, nullptr)) {
+      // A fifo-bridge handle (#1038) ends like any named pipe: once the
+      // writer closes, ReadFile fails with ERROR_BROKEN_PIPE (or
+      // ERROR_NO_DATA / ERROR_HANDLE_EOF), not TRUE + 0 bytes. GNU
+      // read(2) returns 0 there, and the accumulated bytes must survive
+      // (#1493) — the same rule read_all_stdin applies to fd 0. Regular
+      // files never produce these statuses, so their behavior is
+      // unchanged.
+      const DWORD err = GetLastError();
+      if (err == ERROR_BROKEN_PIPE || err == ERROR_NO_DATA ||
+          err == ERROR_HANDLE_EOF) {
+        break;
+      }
       return std::unexpected(winux::i18n::format("utils.file.error.read",
                                                  "error reading '{}'", path));
     }

@@ -579,8 +579,12 @@ auto read_file_bytes(const std::string& filename,
                      std::optional<size_t> max_bytes) -> bool {
   if (max_bytes && data.size() >= *max_bytes) return true;
 
-  std::ifstream input(native_path::normalize_api_operand(filename),
-                      std::ios::binary);
+  // #1493: open the operand through the shared layer so a WinuxCmd fifo
+  // marker (#1038) bridges to the named-pipe rendezvous (block until a
+  // writer, then read the written bytes) instead of reading the 7 marker
+  // bytes as file content. od consumes the stream sequentially, so a
+  // pipe-backed stream is indistinguishable from a file here.
+  std::ifstream input = file_io::open_binary_file(filename);
   if (!input) {
     // [GNU] od reports "<name>: <reason>"; a directory operand reads as
     // "Is a directory" on GNU (uutils #12993)

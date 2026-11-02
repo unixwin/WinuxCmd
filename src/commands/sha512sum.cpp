@@ -240,8 +240,9 @@ auto calculate_sha512(const std::string& filename, bool text_mode = false)
     // Read from file.  [GNU] -t/--text changes only the output marker,
     // never the bytes hashed: coreutils hashes raw file bytes in both
     // modes, so no CRLF translation may happen here.
-    std::ifstream file(native_path::normalize_api_operand(filename),
-                       std::ios::binary);
+    // #1493: shared open layer so a fifo marker (#1038) rendezvous-blocks
+    // and hashes the writer's bytes, not the 7 marker bytes.
+    std::ifstream file = file_io::open_binary_file(filename);
     if (!file) {
       destroy_hash();
       return std::unexpected(input_open_error(filename));

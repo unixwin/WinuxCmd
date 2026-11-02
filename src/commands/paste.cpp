@@ -245,9 +245,10 @@ auto read_lines(const std::string& filename, char delimiter = '\n')
       lines.push_back(std::move(line));
     }
   } else {
-    // Read from file
-    std::ifstream f(native_path::normalize_api_operand(filename),
-                    std::ios::binary);
+    // Read from file. #1493: go through the shared open layer so a fifo
+    // marker (#1038) rendezvous-blocks and yields the writer's bytes
+    // instead of the 7 marker bytes as one line.
+    std::ifstream f = file_io::open_binary_file(filename);
     if (!f) {
       return std::unexpected(paste_input_open_error(filename));
     }

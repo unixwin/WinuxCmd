@@ -226,9 +226,10 @@ auto read_lines(const std::string& filename, char delimiter)
       return std::string(path) + ": No such file or directory";
     };
 
-    // Read from file
-    std::ifstream f(native_path::normalize_api_operand(filename),
-                    std::ios::binary);
+    // Read from file. #1493: go through the shared open layer so a fifo
+    // marker (#1038) rendezvous-blocks and yields the writer's bytes
+    // instead of the 7 marker bytes as one line.
+    std::ifstream f = file_io::open_binary_file(filename);
     if (!f) {
       return std::unexpected(comm_input_open_error(filename));
     }
