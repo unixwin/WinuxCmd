@@ -4,7 +4,41 @@ All notable changes to WinuxCmd are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow the
 repository release tags.
 
-## [1.2.0] - Unreleased
+## [1.2.1] - 2026-11-02
+
+### Fixed
+
+- **sed nested-quantifier hang (#1495)**: the `portable_regex` engine's
+  `collect_repeat` enumerated every parse of a repetition recursively with no
+  memoization, so a nested quantifier such as `s/^\(.*\)*$/X/` over a 32-char
+  line split it into every ordered chunk decomposition (exponential). Repeat
+  exploration is now memoized, and nested quantifiers no longer backtrack
+  catastrophically (Refs rubash#2481).
+- **sed POSIX subexpression capture rules (#1496)**: capture groups were
+  numbered in closing order instead of the opening order POSIX.1-2017 XBD 9.1
+  prescribes (glibc numbers by the opening delimiter), and empty loop
+  iterations were discarded instead of being counted toward `\{m,n\}` lower
+  bounds. Both are fixed in `src/utils/regex.cppm`; `s/^\(\(x\)*\)*$/[\1|[\2]]/`
+  over `xxxx` now matches GNU sed (`[xxxx|[x]]`).
+- **readlink `/` separators and unprivileged `ln -s` (#1491)**:
+  `readlink -f/-e/-m` now print `/`-separated canonical names (GNU
+  `canonicalize_filename_mode` assembles them with `/` by construction); the
+  drive spelling the resolver chose is kept, and the no-mode form still prints
+  the stored target verbatim. `ln -s` now tries `CreateSymbolicLinkW` with
+  `SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE` first, so Developer Mode
+  creates real symlinks without elevation; the silent copy downgrade stays
+  opt-in (GNU `ln` has no downgrade to mirror).
+- **wpm `--force` shims.map refresh and local MSVC build break (#1492,
+  #1497)**: `wpm --force` now refreshes the stale shims.map entries reported by
+  #1492, and the missing `<ctime>` / `<string_view>` includes that broke
+  local MSVC 14.51 source builds are added.
+- **FIFO marker read-side bridge (#1493)**: reader applets that opened
+  operands through a raw `std::ifstream` bypassed the `!<fifo>` marker bridge
+  and read the marker bytes as content; those operand opens now route through
+  `file_io::open_binary_file`, so `od -c p` and friends rendezvous with the
+  writer like the shared readers do.
+
+## [1.2.0] - 2026-11-01
 
 ### Changed
 
