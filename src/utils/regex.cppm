@@ -260,11 +260,17 @@ class Parser {
     return add_node(std::move(n));
   }
 
-  auto make_capture(size_t child) -> size_t {
+  // POSIX/glibc number subexpressions by the order of their OPENING
+  // delimiter (XBD 9.1: subexpressions are counted from left to right;
+  // measured on GNU sed: `s/^((x)*)*$/[\1|\2]/` over `xxxx` prints
+  // `[xxxx|x]`, i.e. the outer group is \1). Callers therefore allocate
+  // the index BEFORE parsing the group body - not when it closes, which
+  // numbered `\(\(x\)*\)*` inner-first and swapped \1/\2 (WinuxCmd #1496).
+  auto make_capture(size_t child, size_t capture_index) -> size_t {
     Node n;
     n.kind = NodeKind::Capture;
     n.child = child;
-    n.capture_index = ++capture_count_;
+    n.capture_index = capture_index;
     return add_node(std::move(n));
   }
 
@@ -433,12 +439,13 @@ class Parser {
       return parse_char_class();
     }
     if (syntax_ == Syntax::Extended && ch == '(') {
+      size_t capture_index = ++capture_count_;  // opening-order numbering
       size_t expr = parse_expression();
       if (failed()) return expr;
       if (!consume_if(')')) {
         set_error("unmatched '(' in regular expression");
       }
-      return make_capture(expr);
+      return make_capture(expr, capture_index);
     }
     if (ch == '\\') {
       return parse_escape_atom();
@@ -481,6 +488,7 @@ class Parser {
       return *shorthand;
     }
     if (syntax_ == Syntax::Basic && escaped == '(') {
+      size_t capture_index = ++capture_count_;  // opening-order numbering
       size_t expr = parse_expression();
       if (failed()) return expr;
       if (!is_group_end_at_current()) {
@@ -488,7 +496,7 @@ class Parser {
         return expr;
       }
       consume_group_end();
-      return make_capture(expr);
+      return make_capture(expr, capture_index);
     }
     return make_literal(escaped);
   }
@@ -804,8 +812,7 @@ class Pattern {
       return lhs.count == rhs.count && states_equal(lhs.state, rhs.state);
     }
   };
-  using VisitSet =
-      std::unordered_set<VisitKey, VisitKeyHash, VisitKeyEqual>;
+  using VisitSet = std::unordered_set<VisitKey, VisitKeyHash, VisitKeyEqual>;
 
 #ifdef WINUXCMD_ENABLE_PCRE2
   [[nodiscard]] auto pcre2_find(std::string_view text, size_t start,
@@ -914,8 +921,7 @@ class Pattern {
   }
 
   [[nodiscard]] auto match_node(size_t node_id, std::string_view text,
-                                const State& state,
-                                StepBudget& budget) const
+                                const State& state, StepBudget& budget) const
       -> std::vector<State> {
     if (++budget.steps > kStepLimit) {
       budget.exceeded = true;
@@ -1053,6 +1059,30 @@ class Pattern {
     }
   }
 
+  // glibc update_regs (posix/regexec.c, update_regs, OP_CLOSE_SUBEXP empty
+  // branch) undoes a trailing empty iteration of a repeated optional group -
+  // "We transited through an empty match for an optional subexpression, like
+  // (a?)* ... Copy back the old content of the registers" - whenever the
+  // group already has a committed non-empty match; the empty match is only
+  // accepted when the group has no non-empty match yet. In state terms: the
+  // empty parse of the repeat body is undone iff it rewrote a capture that
+  // held a non-empty match before it.
+  [[nodiscard]] static auto empty_iteration_undone(const State& before,
+                                                   const State& after) -> bool {
+    const size_t shared =
+        std::min(before.captures.size(), after.captures.size());
+    for (size_t i = 1; i < shared; ++i) {
+      const auto& prev = before.captures[i];
+      const auto& next = after.captures[i];
+      if (prev.matched && prev.end > prev.begin &&
+          (next.begin != prev.begin || next.end != prev.end ||
+           next.matched != prev.matched)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   auto collect_repeat(const detail::Node& node, std::string_view text,
                       const State& state, int count, std::vector<State>& out,
                       VisitSet& visited, VisitSet& out_seen,
@@ -1080,15 +1110,57 @@ class Pattern {
     }
 
     auto child_states = match_node(node.child, text, state, budget);
+    // The body's first (priority-order) empty parse, kept for the exit-state
+    // selection below. child_states is in exploration priority order, so the
+    // first empty state is the one a greedy leftmost-first walk (glibc
+    // set_regs / proceed_next_node) would take.
+    const State* empty_iteration = nullptr;
     for (const auto& next : child_states) {
       // POSIX/GNU: an iteration of a quantified group that matches empty
       // ends the loop - only advancing iterations recurse.
-      if (next.pos == state.pos) continue;
+      if (next.pos == state.pos) {
+        if (empty_iteration == nullptr) empty_iteration = &next;
+        continue;
+      }
       collect_repeat(node, text, next, count + 1, out, visited, out_seen,
                      budget);
       if (budget.exceeded) return;
     }
-    if (count >= node.min_repeat) push_unique(out, out_seen, state, budget);
+
+    // Exit-state selection. Stopping here means no more advancing
+    // iterations, but glibc's set_regs walk then runs the repeat's
+    // REMAINING copies on the body's empty parse (the greedy walk enters
+    // every remaining copy; proceed_next_node's "(a*)*" anti-loop rule
+    // stops an unbounded star after one empty iteration). Those empty
+    // copies decide the surviving captures:
+    //  - Unbounded max, or bounded max == min+1: the LAST copy is the
+    //    opt-marked first optional copy of glibc parse_dup_op's
+    //    X^m (((X?X)?X)?...) expansion, and update_regs (OP_CLOSE_SUBEXP
+    //    empty branch) restores the registers to the last non-empty commit
+    //    - "Copy back the old content of the registers" - or records the
+    //    empty match when the group has none yet. This is what makes
+    //    `^\(.*\)\{2,\}$` capture the whole line as one full iteration
+    //    plus one empty one (WinuxCmd #1496).
+    //  - Bounded max != min+1: an unmarked copy runs last, and its empty
+    //    match is accepted without committing - the empty parse's captures
+    //    overwrite the group (measured: `\(a*\)\{2\}` on `aaa` yields an
+    //    empty \1 under GNU sed, while `\{2,3\}` and `\{1,2\}` keep the
+    //    full `aaa`).
+    // The empty iterations also count toward the {m,n} lower bound, which
+    // is why the exit below is emitted even when count < min_repeat.
+    const State* exit_state = &state;
+    if (empty_iteration != nullptr) {
+      const bool trailing_copy_is_marked =
+          node.max_repeat == detail::kUnlimited ||
+          node.max_repeat == node.min_repeat + 1;
+      exit_state = (trailing_copy_is_marked &&
+                    empty_iteration_undone(state, *empty_iteration))
+                       ? &state
+                       : empty_iteration;
+    }
+    if (count >= node.min_repeat || empty_iteration != nullptr) {
+      push_unique(out, out_seen, *exit_state, budget);
+    }
   }
 
   [[nodiscard]] auto match_repeat(const detail::Node& node,

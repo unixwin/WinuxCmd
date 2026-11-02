@@ -1881,7 +1881,6 @@ TEST(sed, sed_option_error_prints_full_usage) {
   EXPECT_TRUE(r.stderr_text.find("Try 'sed --help'") == std::string::npos);
 }
 
-
 TEST(sed, issue_1284_empty_match_after_nonempty_match_is_not_substituted) {
   // GNU: an empty match immediately after a non-empty match is not a
   // match at all. `2 g x` with s/[0-9]*/N/g: the matches are "2", the
@@ -1975,11 +1974,10 @@ void write_preserving(const TempDir& tmp, const std::string& rel,
 auto read_preserving(const TempDir& tmp, const std::string& rel)
     -> std::string {
   const std::wstring path = preserving_path(tmp, rel);
-  HANDLE file = CreateFileW(path.c_str(), GENERIC_READ,
-                            FILE_SHARE_READ | FILE_SHARE_WRITE |
-                                FILE_SHARE_DELETE,
-                            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
-                            nullptr);
+  HANDLE file =
+      CreateFileW(path.c_str(), GENERIC_READ,
+                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                  nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (file == INVALID_HANDLE_VALUE) return {};
   std::string out;
   char buffer[4096];
@@ -2137,4 +2135,228 @@ TEST(sed, nested_quantifier_issue1495_bashit_metafor_line) {
   auto r = p.run();
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "the silver searcher (ag) aliases\n");
+}
+
+// WinuxCmd #1496: capture selection under nested quantifiers must follow
+// glibc regexec semantics. Two root causes fixed in utils/regex.cppm:
+//  1. capture groups are numbered by OPENING-delimiter order (POSIX XBD 9.1
+//     counts subexpressions from left to right); they used to be numbered
+//     when they CLOSED, so `\(\(x\)*\)*` numbered the inner group first and
+//     printed `[x|[xxxx]]` where GNU sed prints `[xxxx|[x]]`.
+//  2. a repeat iteration that matches empty ends the loop but still counts
+//     toward the {m,n} lower bound, and glibc update_regs (posix/regexec.c,
+//     OP_CLOSE_SUBEXP empty branch) restores the last non-empty commit for
+//     the trailing opt-marked copy, so `^\(.*\)\{2,\}$` captures the whole
+//     line (one full iteration + one empty one) instead of the last chunk.
+// All expectations below are byte-for-byte WSL GNU sed 4.8/4.9 output.
+TEST(sed, nested_quantifier_issue1496_group_numbering_is_opening_order) {
+  TempDir tmp;
+  tmp.write("inx4.txt", "xxxx\n");
+  tmp.write("inabab.txt", "abab\n");
+  tmp.write("inxyxy.txt", "xyxy\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sed.exe", {L"s/^\\(\\(x\\)*\\)*$/[\\1|[\\2]]/", L"inx4.txt"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "[xxxx|[x]]\n");
+
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.add(L"sed.exe",
+         {L"s/^\\(\\(\\(x\\)*\\)*\\)*$/[\\1|[\\2]|[\\3]]/", L"inx4.txt"});
+  auto r2 = p2.run();
+  EXPECT_EQ(r2.exit_code, 0);
+  EXPECT_EQ_TEXT(r2.stdout_text, "[xxxx|[xxxx]|[x]]\n");
+
+  Pipeline p3;
+  p3.set_cwd(tmp.wpath());
+  p3.add(L"sed.exe", {L"-E", L"s/^((x)*)*$/[\\1|\\2]/", L"inx4.txt"});
+  auto r3 = p3.run();
+  EXPECT_EQ(r3.exit_code, 0);
+  EXPECT_EQ_TEXT(r3.stdout_text, "[xxxx|x]\n");
+
+  // Repeated groups capture the LAST iteration's span (glibc set_regs
+  // re-opens the subexpression on every iteration).
+  Pipeline p4;
+  p4.set_cwd(tmp.wpath());
+  p4.add(L"sed.exe", {L"s/^\\(a\\(b\\)*\\)*$/[\\1|[\\2]]/", L"inabab.txt"});
+  auto r4 = p4.run();
+  EXPECT_EQ(r4.exit_code, 0);
+  EXPECT_EQ_TEXT(r4.stdout_text, "[ab|[b]]\n");
+
+  Pipeline p5;
+  p5.set_cwd(tmp.wpath());
+  p5.add(L"sed.exe", {L"s/^\\(x\\(y*\\)\\)*$/[\\1|[\\2]]/", L"inxyxy.txt"});
+  auto r5 = p5.run();
+  EXPECT_EQ(r5.exit_code, 0);
+  EXPECT_EQ_TEXT(r5.stdout_text, "[xy|[y]]\n");
+}
+
+// `\(.*\)\{2,\}` must capture the whole line: one full iteration plus one
+// empty iteration that satisfies the {2,} lower bound without clobbering
+// the committed capture (WinuxCmd #1496 headline shape; used to print the
+// last chunk `[c]` / `[5]`).
+TEST(sed, nested_quantifier_issue1496_empty_iteration_counts_toward_min) {
+  TempDir tmp;
+  tmp.write("inabcabc.txt", "abcabc\n");
+  tmp.write("in32.txt", "abcdefghijklmnopqrstuvwxyz012345\n");
+  tmp.write("inempty.txt", "\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sed.exe", {L"s/^\\(.*\\)\\{2,\\}$/[\\1]/", L"inabcabc.txt"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "[abcabc]\n");
+
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.add(L"sed.exe", {L"s/^\\(.*\\)\\{2,\\}$/[\\1]/", L"in32.txt"});
+  auto r2 = p2.run();
+  EXPECT_EQ(r2.exit_code, 0);
+  EXPECT_EQ_TEXT(r2.stdout_text, "[abcdefghijklmnopqrstuvwxyz012345]\n");
+
+  // Empty line: two empty iterations satisfy {2,} and the group records an
+  // empty match.
+  Pipeline p3;
+  p3.set_cwd(tmp.wpath());
+  p3.add(L"sed.exe", {L"s/^\\(.*\\)\\{2,\\}$/[\\1]/", L"inempty.txt"});
+  auto r3 = p3.run();
+  EXPECT_EQ(r3.exit_code, 0);
+  EXPECT_EQ_TEXT(r3.stdout_text, "[]\n");
+}
+
+// Bounded intervals: glibc parse_dup_op expands `X{m,n}` as X^m plus
+// right-nested optionals where only the FIRST optional copy is opt-marked,
+// so the net effect of the trailing empty iterations depends on whether the
+// LAST copy is that marked one (max == min+1, or unbounded): marked ->
+// restore the last non-empty commit; unmarked -> the empty match stands.
+TEST(sed, nested_quantifier_issue1496_bounded_interval_empty_copies) {
+  TempDir tmp;
+  tmp.write("inaaa.txt", "aaa\n");
+  tmp.write("inabcabc.txt", "abcabc\n");
+
+  // {2}: the second (unmarked) copy runs empty and its empty match stands.
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sed.exe", {L"s/^\\(a*\\)\\{2\\}$/[\\1]/", L"inaaa.txt"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "[]\n");
+
+  Pipeline p1;
+  p1.set_cwd(tmp.wpath());
+  p1.add(L"sed.exe", {L"s/^\\(.*\\)\\{2\\}$/[\\1]/", L"inabcabc.txt"});
+  auto r1 = p1.run();
+  EXPECT_EQ(r1.exit_code, 0);
+  EXPECT_EQ_TEXT(r1.stdout_text, "[]\n");
+
+  // {2,3} / {1,2}: max == min+1, the trailing empty copy is the marked one,
+  // so the full-line commit is restored.
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.add(L"sed.exe", {L"s/^\\(a*\\)\\{2,3\\}$/[\\1]/", L"inaaa.txt"});
+  auto r2 = p2.run();
+  EXPECT_EQ(r2.exit_code, 0);
+  EXPECT_EQ_TEXT(r2.stdout_text, "[aaa]\n");
+
+  Pipeline p3;
+  p3.set_cwd(tmp.wpath());
+  p3.add(L"sed.exe", {L"s/^\\(a*\\)\\{1,2\\}$/[\\1]/", L"inaaa.txt"});
+  auto r3 = p3.run();
+  EXPECT_EQ(r3.exit_code, 0);
+  EXPECT_EQ_TEXT(r3.stdout_text, "[aaa]\n");
+
+  // {1,3}: an unmarked optional copy runs last - the empty match stands.
+  Pipeline p4;
+  p4.set_cwd(tmp.wpath());
+  p4.add(L"sed.exe", {L"s/^\\(a*\\)\\{1,3\\}$/[\\1]/", L"inaaa.txt"});
+  auto r4 = p4.run();
+  EXPECT_EQ(r4.exit_code, 0);
+  EXPECT_EQ_TEXT(r4.stdout_text, "[]\n");
+}
+
+// POSIX leftmost-longest subexpression selection among equal-length parses:
+// `(a|ab)(c|bcd)(d*)` over `abcd` matches the whole string and captures
+// `a`, `bcd`, and the empty string - not `ab`/`c`/`d` (glibc set_regs walks
+// branches in written order subject to the longest overall match).
+TEST(sed, nested_quantifier_issue1496_posix_alternation_selection) {
+  TempDir tmp;
+  tmp.write("inabcd.txt", "abcd\n");
+  tmp.write("inxabcd.txt", "xabcd\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sed.exe",
+        {L"-E", L"s/^(a|ab)(c|bcd)(d*)$/[\\1|\\2|\\3]/", L"inabcd.txt"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "[a|bcd|]\n");
+
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.add(L"sed.exe", {L"s/^\\(a\\|ab\\)\\(c\\|bcd\\)\\(d*\\)$/[\\1|\\2|\\3]/",
+                      L"inabcd.txt"});
+  auto r2 = p2.run();
+  EXPECT_EQ(r2.exit_code, 0);
+  EXPECT_EQ_TEXT(r2.stdout_text, "[a|bcd|]\n");
+
+  // Unanchored: the match is leftmost (starts at the `a`), not the `ab`.
+  Pipeline p3;
+  p3.set_cwd(tmp.wpath());
+  p3.add(L"sed.exe",
+         {L"-E", L"s/(a|ab)(c|bcd)(d*)/[\\1|\\2|\\3]/", L"inxabcd.txt"});
+  auto r3 = p3.run();
+  EXPECT_EQ(r3.exit_code, 0);
+  EXPECT_EQ_TEXT(r3.stdout_text, "x[a|bcd|]\n");
+
+  // Left-to-right greediness across adjacent captures: the earlier `.*`
+  // takes the longest share.
+  Pipeline p4;
+  p4.set_cwd(tmp.wpath());
+  p4.add(L"sed.exe", {L"s/^\\(.*\\)\\(.*\\)$/[\\1|\\2]/", L"inabcd.txt"});
+  auto r4 = p4.run();
+  EXPECT_EQ(r4.exit_code, 0);
+  EXPECT_EQ_TEXT(r4.stdout_text, "[abcd|]\n");
+}
+
+// Repeat-of-alternation: the greedy walk commits the LAST non-empty
+// iteration, preferring the branch that reaches the longest overall match.
+TEST(sed, nested_quantifier_issue1496_repeat_of_alternation_last_iteration) {
+  TempDir tmp;
+  tmp.write("inaaa.txt", "aaa\n");
+  tmp.write("inabab.txt", "abab\n");
+  tmp.write("inaab.txt", "aab\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sed.exe", {L"s/^\\(a*\\)*$/[\\1]/", L"inaaa.txt"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "[aaa]\n");
+
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.add(L"sed.exe", {L"s/^\\(a*\\)\\+$/[\\1]/", L"inaaa.txt"});
+  auto r2 = p2.run();
+  EXPECT_EQ(r2.exit_code, 0);
+  EXPECT_EQ_TEXT(r2.stdout_text, "[aaa]\n");
+
+  Pipeline p3;
+  p3.set_cwd(tmp.wpath());
+  p3.add(L"sed.exe", {L"s/^\\([ab]\\)*$/[\\1]/", L"inabab.txt"});
+  auto r3 = p3.run();
+  EXPECT_EQ(r3.exit_code, 0);
+  EXPECT_EQ_TEXT(r3.stdout_text, "[b]\n");
+
+  // `\(a\|ab\)\{2,\}` over `aab`: GNU captures `ab` (the a+ab parse whose
+  // last iteration is longer), not `a`.
+  Pipeline p4;
+  p4.set_cwd(tmp.wpath());
+  p4.add(L"sed.exe", {L"s/^\\(a\\|ab\\)\\{2,\\}$/[\\1]/", L"inaab.txt"});
+  auto r4 = p4.run();
+  EXPECT_EQ(r4.exit_code, 0);
+  EXPECT_EQ_TEXT(r4.stdout_text, "[ab]\n");
 }
