@@ -1416,11 +1416,6 @@ auto build_config(const CommandContext<SORT_OPTIONS.size()>& ctx)
   // "--check=" is an ambiguity, and anything else is an invalid argument.
   bool want_check = false;
   bool want_check_quiet = false;
-  bool check_inline_empty = false;
-  for (std::string_view raw : ctx.raw_args) {
-    if (raw == "--") break;
-    if (raw == "--check=") check_inline_empty = true;
-  }
   for (const auto& occurrence : ctx.options.occurrences()) {
     if (!ctx.metas || occurrence.index >= SORT_OPTIONS.size()) continue;
     const auto& meta = (*ctx.metas)[occurrence.index];
@@ -1437,7 +1432,10 @@ auto build_config(const CommandContext<SORT_OPTIONS.size()>& ctx)
     const auto* value = std::get_if<std::string>(&occurrence.value);
     const std::string text = value != nullptr ? *value : std::string();
     if (text.empty()) {
-      if (check_inline_empty) {
+      // [GNU] "--check=" is an ambiguity; a bare --check is the plain
+      // check. The parser records which shape occurred (#1513); this
+      // used to scan raw argv for the literal "--check=" spelling.
+      if (occurrence.value_attached) {
         // Printed specially by the command entry point.
         return std::unexpected("ambiguous argument '' for '--check'");
       }

@@ -747,6 +747,14 @@ auto build_config(const CommandContext<N>& ctx) -> cp::Result<TailConfig> {
         config.follow_by_name = false;
         continue;
       }
+      // [GNU] tail.c:2169-2176: argmatch runs only when optarg != nullptr;
+      // a bare --follow selects descriptor mode (#1513). An attached
+      // empty value ("--follow=") is NOT bare: it falls through to the
+      // argmatch below and fails as ambiguous, like GNU.
+      if (!occurrence.value_attached) {
+        config.follow_by_name = false;
+        continue;
+      }
       // [GNU] --follow's value goes through argmatch (tail.c):
       // any unambiguous prefix of 'descriptor'/'name' is valid;
       // '' is AMBIGUOUS (it prefixes both), anything else is

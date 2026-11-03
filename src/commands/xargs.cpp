@@ -322,7 +322,11 @@ auto normalize_batch_options(const CommandContext<XARGS_OPTIONS.size()> &ctx)
 
       switch_family(BatchOptionFamily::Replace);
       options.replace_str = *value;
-      if (options.replace_str.empty() && !option_matches(meta, "-I", "")) {
+      // [GNU] xargs.c:549-554: replace_pat is optarg when one is
+      // attached ("--replace=" keeps the empty string) and "{}" only
+      // for a bare -i/--replace (#1513).
+      if (options.replace_str.empty() && !option_matches(meta, "-I", "") &&
+          !occurrence.value_attached) {
         options.replace_str = "{}";
       }
     }

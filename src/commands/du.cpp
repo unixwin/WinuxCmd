@@ -871,7 +871,11 @@ auto configure_du(const CommandContext<DU_OPTIONS.size()>& ctx)
   cfg.separate_dirs =
       ctx.get<bool>("--separate-dirs", false) || ctx.get<bool>("-S", false);
   for (const auto& occurrence : ctx.string_occurrences({"--time"})) {
-    auto parsed = parse_du_time_mode(occurrence.value);
+    // [GNU] a bare --time means the modification time; an attached
+    // empty value ("--time=") is an argmatch failure (#1513).
+    auto parsed = (occurrence.has_value && occurrence.value.empty())
+                      ? std::optional<DuTimeMode>{}
+                      : parse_du_time_mode(occurrence.value);
     if (!parsed) {
       // [GNU] XARGMATCH failure shape for --time.
       return std::unexpected(

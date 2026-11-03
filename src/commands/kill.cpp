@@ -547,7 +547,13 @@ auto process_command(const CommandContext<N>& ctx) -> int {
       // positional ("kill -l 129").
       std::vector<std::string> candidates;
       for (const auto& occurrence : ctx.string_occurrences({"-l", "--list"})) {
-        if (!occurrence.value.empty()) candidates.push_back(occurrence.value);
+        // [GNU] procps kill.c:99-113: an attached value is converted
+        // even when empty ("--list=" -> "unknown signal name "), while
+        // a bare -l falls through to the positional / list-all paths
+        // (#1513).
+        if (!occurrence.value.empty() || occurrence.has_value) {
+          candidates.push_back(occurrence.value);
+        }
       }
       if (candidates.empty() && !ctx.positionals.empty()) {
         candidates.emplace_back(ctx.positionals.front());

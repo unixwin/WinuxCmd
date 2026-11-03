@@ -174,6 +174,17 @@ auto parse_overwrite_mode(const CommandContext<N>& ctx)
     } else if (meta.long_name == "--interactive") {
       auto value = std::get_if<std::string>(&occurrence.value);
       const std::string when = value ? *value : std::string{};
+      if (when.empty() && occurrence.value_attached) {
+        // [GNU] "--interactive=" goes through argmatch and fails as
+        // ambiguous; only a bare --interactive means 'always' (#1513).
+        return std::unexpected(
+            "ambiguous argument '' for '--interactive'\n"
+            "Valid arguments are:\n"
+            "  - 'never'\n"
+            "  - 'once'\n"
+            "  - 'always'\n"
+            "Try 'mv --help' for more information.");
+      }
       if (when.empty() || when == "always") {
         mode = OverwriteMode::interactive_always;
       } else if (when == "never") {
@@ -284,6 +295,8 @@ auto mv_backup_type_message(int error_kind, const std::string& value)
 auto mv_make_backups(const CommandContext<MV_OPTIONS.size()>& ctx)
     -> cp::Result<std::optional<MvBackupControl>> {
   bool given = false;
+  bool backup_seen = false;
+  bool backup_attached = true;
   std::string raw;
   if (ctx.metas) {
     for (const auto& occurrence : ctx.options.occurrences()) {
@@ -294,6 +307,8 @@ auto mv_make_backups(const CommandContext<MV_OPTIONS.size()>& ctx)
         given = true;
       }
       if (meta.long_name == "--backup") {
+        backup_seen = true;
+        backup_attached = occurrence.value_attached;
         if (auto value = std::get_if<std::string>(&occurrence.value)) {
           raw = *value;
         }
@@ -301,6 +316,12 @@ auto mv_make_backups(const CommandContext<MV_OPTIONS.size()>& ctx)
     }
   }
   if (!given) return std::nullopt;
+  // [GNU] xget_version: an attached empty CONTROL ("--backup=") is an
+  // ambiguous argmatch failure; only a bare --backup falls back to
+  // $VERSION_CONTROL / 'existing' (#1513).
+  if (backup_seen && backup_attached && raw.empty()) {
+    return std::unexpected(mv_backup_type_message(2, raw));
+  }
   auto parsed = parse_mv_backup_control(raw);
   if (parsed.error_kind != 0) {
     return std::unexpected(mv_backup_type_message(parsed.error_kind, raw));
@@ -389,15 +410,24 @@ auto parse_arguments(const CommandContext<MV_OPTIONS.size()>& ctx)
   // [GNU] Explicit --update=VALUE forms are last-wins among themselves;
   // -u and a bare --update are weak: they select 'older' only when no
   // explicit --update=VALUE appears anywhere on the command line
-  // (coreutils 9.4 measured; #1326).  A bare --update is indistinguishable
-  // from --update= in the parser (both store ""), so "" stays 'older'
-  // here; GNU rejects --update= as ambiguous — a documented gap.
+  // (coreutils 9.4 measured; #1326).  The parser now records whether an
+  // occurrence carried an attached value (#1513), so "--update=" is
+  // told apart from a bare --update and rejected as ambiguous, as GNU
+  // does.
   {
     std::optional<std::string> explicit_update;
     bool weak_older = ctx.get<bool>("-u", false);
     for (const auto& occ : ctx.string_occurrences({"--update"})) {
       if (!occ.value.empty()) {
         explicit_update = occ.value;
+      } else if (occ.has_value) {
+        return std::unexpected(
+            "ambiguous argument '' for '--update'\n"
+            "Valid arguments are:\n"
+            "  - 'all'\n"
+            "  - 'none'\n"
+            "  - 'older'\n"
+            "Try 'mv --help' for more information.");
       } else {
         weak_older = true;
       }

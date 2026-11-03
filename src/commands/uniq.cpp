@@ -175,9 +175,16 @@ auto is_unsupported_used(const CommandContext<UNIQ_OPTIONS.size()>& ctx)
   return std::nullopt;
 }
 
-auto parse_group_mode(std::string_view method, GroupMode default_mode)
-    -> cp::Result<GroupMode> {
-  if (method.empty()) return default_mode;
+auto parse_group_mode(std::string_view method) -> cp::Result<GroupMode> {
+  // [GNU] only attached values reach here (a bare --group is resolved by
+  // the caller, uniq.c:591-593); "" is an argmatch failure -- it prefixes
+  // every candidate, so GNU calls it ambiguous (#1513).
+  if (method.empty()) {
+    return std::unexpected(
+        "ambiguous argument '' for '--group'\nValid arguments are:\n  - "
+        "'prepend'\n  - 'append'\n  - 'separate'\n  - 'both'\nTry 'uniq "
+        "--help' for more information.");
+  }
   if (method == "separate") return GroupMode::separate;
   if (method == "prepend") return GroupMode::prepend;
   if (method == "append") return GroupMode::append;
@@ -192,7 +199,16 @@ auto parse_group_mode(std::string_view method, GroupMode default_mode)
 }
 
 auto parse_all_repeated_mode(std::string_view method) -> cp::Result<GroupMode> {
-  if (method.empty() || method == "none") return GroupMode::none;
+  // [GNU] only attached values reach here (a bare -D/--all-repeated is
+  // resolved by the caller, uniq.c:579-586); "" is an argmatch failure
+  // (#1513).
+  if (method.empty()) {
+    return std::unexpected(
+        "ambiguous argument '' for '--all-repeated'\nValid arguments "
+        "are:\n  - 'none'\n  - 'prepend'\n  - 'separate'\nTry 'uniq "
+        "--help' for more information.");
+  }
+  if (method == "none") return GroupMode::none;
   if (method == "prepend") return GroupMode::prepend;
   if (method == "separate") return GroupMode::separate;
   // [GNU] uniq.c XARGMATCH ("--all-repeated", ...) over
@@ -255,17 +271,32 @@ auto build_config(const CommandContext<UNIQ_OPTIONS.size()>& ctx)
                            ": invalid number of bytes to compare");
   }
 
-  if (ctx.has("--group")) {
-    auto group_mode = parse_group_mode(ctx.get<std::string>("--group", ""),
-                                       GroupMode::separate);
-    if (!group_mode) return std::unexpected(group_mode.error());
+  // [GNU] uniq.c:579-597: --group and --all-repeated take optional
+  // arguments; a bare occurrence (optarg == nullptr) selects the
+  // compiled-in default (separate / none), an attached value goes
+  // through argmatch -- including "", which fails (#1513).
+  auto group_occurrences = ctx.string_occurrences({"--group"});
+  auto repeated_occurrences =
+      ctx.string_occurrences({"--all-repeated", "-D"});
+  if (!group_occurrences.empty()) {
+    const auto& occurrence = group_occurrences.back();
     cfg.group_all = true;
-    cfg.group_mode = *group_mode;
-  } else if (ctx.has("--all-repeated")) {
-    auto group_mode =
-        parse_all_repeated_mode(ctx.get<std::string>("--all-repeated", ""));
-    if (!group_mode) return std::unexpected(group_mode.error());
-    cfg.group_mode = *group_mode;
+    if (!occurrence.has_value) {
+      cfg.group_mode = GroupMode::separate;
+    } else {
+      auto group_mode = parse_group_mode(occurrence.value);
+      if (!group_mode) return std::unexpected(group_mode.error());
+      cfg.group_mode = *group_mode;
+    }
+  } else if (!repeated_occurrences.empty()) {
+    const auto& occurrence = repeated_occurrences.back();
+    if (!occurrence.has_value) {
+      cfg.group_mode = GroupMode::none;
+    } else {
+      auto group_mode = parse_all_repeated_mode(occurrence.value);
+      if (!group_mode) return std::unexpected(group_mode.error());
+      cfg.group_mode = *group_mode;
+    }
   }
 
   const bool output_option_used = cfg.show_count || cfg.repeated_only ||

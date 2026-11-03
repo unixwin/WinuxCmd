@@ -549,6 +549,14 @@ REGISTER_COMMAND(
   if (backup_given) {
     if (ctx.has("--backup")) {
       std::string raw_control = ctx.get<std::string>("--backup", "");
+      // [GNU] "--backup=" is an ambiguous argmatch failure; only a bare
+      // --backup takes the default control (#1513).
+      auto backup_occurrences = ctx.string_occurrences({"--backup"});
+      if (!backup_occurrences.empty() && backup_occurrences.back().has_value &&
+          raw_control.empty()) {
+        safeErrorPrint("ln: " + ln_backup_type_message(2, raw_control) + "\n");
+        return 1;
+      }
       auto parsed = parse_ln_backup_control(raw_control);
       if (parsed.error_kind != 0) {
         safeErrorPrint("ln: " +

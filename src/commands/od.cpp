@@ -687,14 +687,17 @@ auto build_config(const CommandContext<OD_OPTIONS.size()>& ctx)
   }
 
   if (ctx.has("--width") || ctx.has("-w")) {
-    const auto values = ctx.get_all<std::string>("--width");
-    const std::string& width = values.back();
-    if (width.empty()) {
+    auto width_occurrences = ctx.string_occurrences({"--width", "-w"});
+    const auto& last = width_occurrences.back();
+    if (!last.has_value) {
       cfg.bytes_per_line = 32;  // [GNU] bare -w means -w32
     } else {
-      auto parsed = parse_count(width);
+      // [GNU] an attached value is parsed as a count, so "--width="
+      // fails like any other bad count instead of taking the bare
+      // default (#1513).
+      auto parsed = parse_count(last.value);
       if (parsed.status != CountResult::Status::ok || parsed.value == 0) {
-        report_count_error(option_spelling(ctx, "-w", "--width"), width,
+        report_count_error(option_spelling(ctx, "-w", "--width"), last.value,
                            parsed);
         return std::nullopt;
       }
@@ -764,7 +767,10 @@ auto build_config(const CommandContext<OD_OPTIONS.size()>& ctx)
   // -S a required one; the last occurrence wins.
   for (const auto& occ : ctx.string_occurrences({"-S", "--strings"})) {
     cfg.strings_mode = true;
-    if (occ.value.empty()) {
+    if (!occ.has_value) {
+      // [GNU] a bare --strings uses the default minimum of 3; an
+      // attached value ("--strings=" included) is parsed as a count
+      // below and fails there when malformed (#1513).
       cfg.string_min = 3;
       continue;
     }

@@ -404,6 +404,13 @@ auto build_config(const CommandContext<SPLIT_OPTIONS.size()>& ctx)
     bool suffix_kind_seen = false;
     std::string numeric_start;
     std::string hex_start;
+    // [GNU] split.c:1508-1530: the start counts as GIVEN whenever an
+    // attached argument is present (optarg != nullptr), even "0" or
+    // ""; that is what disables suffix auto-widening. A bare -d/-x
+    // gives no start. The parser records attachedness per occurrence
+    // (#1513).
+    bool numeric_start_given = false;
+    bool hex_start_given = false;
     if (ctx.metas) {
       for (const auto& occurrence : ctx.options.occurrences()) {
         if (occurrence.index >= ctx.metas->size()) continue;
@@ -411,6 +418,7 @@ auto build_config(const CommandContext<SPLIT_OPTIONS.size()>& ctx)
         if (meta.short_name == "-d" || meta.long_name == "--numeric-suffixes") {
           cfg.suffix_kind = Config::SuffixKind::Numeric;
           suffix_kind_seen = true;
+          numeric_start_given = occurrence.value_attached;
           numeric_start =
               std::get_if<std::string>(&occurrence.value)
                   ? *std::get_if<std::string>(&occurrence.value)
@@ -419,6 +427,7 @@ auto build_config(const CommandContext<SPLIT_OPTIONS.size()>& ctx)
                    meta.long_name == "--hex-suffixes") {
           cfg.suffix_kind = Config::SuffixKind::Hex;
           suffix_kind_seen = true;
+          hex_start_given = occurrence.value_attached;
           hex_start = std::get_if<std::string>(&occurrence.value)
                           ? *std::get_if<std::string>(&occurrence.value)
                           : "";
@@ -433,12 +442,14 @@ auto build_config(const CommandContext<SPLIT_OPTIONS.size()>& ctx)
         cfg.suffix_kind = Config::SuffixKind::Hex;
         hex_start = ctx.get<std::string>("--hex-suffixes", "");
         if (hex_start.empty()) hex_start = ctx.get<std::string>("-x", "");
+        hex_start_given = !hex_start.empty();
       } else {
         cfg.suffix_kind = Config::SuffixKind::Numeric;
         numeric_start = ctx.get<std::string>("--numeric-suffixes", "");
         if (numeric_start.empty()) {
           numeric_start = ctx.get<std::string>("-d", "");
         }
+        numeric_start_given = !numeric_start.empty();
       }
       suffix_kind_seen = true;
     }
@@ -448,7 +459,7 @@ auto build_config(const CommandContext<SPLIT_OPTIONS.size()>& ctx)
       auto start_result = parse_suffix_start(start, hex ? 16 : 10);
       if (!start_result) return std::unexpected(start_result.error());
       cfg.suffix_start = *start_result;
-      cfg.suffix_start_explicit = !start.empty();
+      cfg.suffix_start_explicit = hex ? hex_start_given : numeric_start_given;
     }
   }
 
