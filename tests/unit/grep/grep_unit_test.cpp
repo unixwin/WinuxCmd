@@ -1093,7 +1093,12 @@ TEST(grep, grep_decodes_utf16le_input) {
   EXPECT_EQ_TEXT(r.stdout_text, "hello\n");
 }
 
-TEST(grep, grep_only_matching_warns_and_ignores_context) {
+TEST(grep, grep_only_matching_silently_ignores_context) {
+  // [GNU] grep 3.11 silently ignores context options with -o: the
+  // only-matching print path never consults them, and no warning
+  // about context exists anywhere in grep-3.11/src/grep.c.  The
+  // earlier "context options have no effect with -o" warning was
+  // invented locally (audit lane A5, finding G15).
   TempDir tmp;
   tmp.write("a.txt", "before\nabc123def123\nafter\n");
 
@@ -1105,8 +1110,7 @@ TEST(grep, grep_only_matching_warns_and_ignores_context) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "123\n123\n");
-  EXPECT_TRUE(r.stderr_text.find("warning") != std::string::npos);
-  EXPECT_TRUE(r.stderr_text.find("context") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.empty());
 }
 
 TEST(grep, grep_word_regexp) {
@@ -1241,12 +1245,16 @@ TEST(grep, grep_devices_action_accepts_read_and_skip) {
 }
 
 TEST(grep, grep_devices_rejects_invalid_action) {
+  // [GNU] grep-3.11/src/grep.c:2528-2536 (case 'D'): an unrecognized
+  // --devices value dies with "unknown devices method" and exit
+  // EXIT_TROUBLE (2).  The earlier "invalid devices action" text was
+  // invented locally (audit lane A5, finding G21).
   Pipeline p;
   p.add(L"grep.exe", {L"--devices=bad", L"needle"});
 
   auto r = p.run();
   EXPECT_EQ(r.exit_code, 2);
-  EXPECT_TRUE(r.stderr_text.find("invalid devices action") !=
+  EXPECT_TRUE(r.stderr_text.find("unknown devices method") !=
               std::string::npos);
 }
 

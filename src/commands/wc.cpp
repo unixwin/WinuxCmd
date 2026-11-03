@@ -548,7 +548,12 @@ auto count_stream(std::istream& input, std::string filename,
         return;
       }
       DecodedChar decoded = decode_utf8_char(data, i);
-      consume_codepoint(decoded.codepoint, decoded.valid);
+      // [GNU] wc.c's mbrtowc (size_t)-1 path: an undecodable byte is
+      // skipped outright — it is not a character, does not touch the
+      // word state, and contributes no display width.  Feeding the
+      // raw byte value (e.g. 0xFF) through the generic arm instead
+      // started a word and added width 1.
+      if (decoded.valid) consume_codepoint(decoded.codepoint, true);
       i += decoded.bytes;
     }
     carry.clear();
@@ -670,6 +675,29 @@ auto compute_number_width(const CountBatch& batch,
 
   for (const auto& result : results) {
     if (!result.display_filename || result.filename == "-") {
+      if (result.filename == "-") {
+        // [GNU] get_input_fstatus (wc.c:722-741): a "-" operand
+        // contributes an fstat of fd 0 — a regular-file stdin adds
+        // its SIZE to the regular total; only a non-regular stdin
+        // forces the minimum width 7.  The old code forced 7 for
+        // every "-" operand.
+        HANDLE stdin_handle = GetStdHandle(STD_INPUT_HANDLE);
+        LARGE_INTEGER stdin_size{};
+        if (stdin_handle != nullptr &&
+            stdin_handle != INVALID_HANDLE_VALUE &&
+            GetFileType(stdin_handle) == FILE_TYPE_DISK &&
+            GetFileSizeEx(stdin_handle, &stdin_size) &&
+            stdin_size.QuadPart >= 0) {
+          const auto size =
+              static_cast<std::uintmax_t>(stdin_size.QuadPart);
+          const auto remaining =
+              std::numeric_limits<std::uintmax_t>::max() - regular_total;
+          regular_total = size > remaining
+                              ? std::numeric_limits<std::uintmax_t>::max()
+                              : regular_total + size;
+          continue;
+        }
+      }
       saw_non_regular = true;
       continue;
     }

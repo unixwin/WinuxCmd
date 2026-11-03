@@ -182,13 +182,18 @@ auto is_selected(int index, const std::vector<Range>& ranges) -> bool {
 
 auto cut_input_open_error(std::string_view input_path) -> std::string {
   // [GNU] "cut: <file>: <errno text>" (cut.c:470-478) (audit #1462).
+  // The reason must come from the actual failure: an existing but
+  // unreadable file is EACCES, not ENOENT.  The stream open does not
+  // surface errno, so classify by probing the path.
   std::error_code ec;
-  if (std::filesystem::is_directory(
-          std::filesystem::u8path(
-              native_path::normalize_api_operand(input_path)),
-          ec) &&
-      !ec) {
+  const auto path = std::filesystem::u8path(
+      native_path::normalize_api_operand(input_path));
+  if (std::filesystem::is_directory(path, ec) && !ec) {
     return std::string(input_path) + ": Is a directory";
+  }
+  ec.clear();
+  if (std::filesystem::exists(path, ec) && !ec) {
+    return std::string(input_path) + ": Permission denied";
   }
 
   return std::string(input_path) + ": No such file or directory";

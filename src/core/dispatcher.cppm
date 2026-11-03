@@ -57,6 +57,10 @@ struct CommandBehavior {
   int parse_error_exit_code = 1;
   ArgsValidationHook validate_args = nullptr;
   std::string_view validation_prefix;
+  // Per-command shape of the obsolete-count context diagnostic:
+  // tail says "option used in invalid context", head says "invalid
+  // trailing option" and adds the Try-help line (head.c:1066-1069).
+  bool validation_uses_trailing_option_wording = false;
   std::array<ArgsRewriteHook, kMaxRewriteHooks> rewrite_hooks{};
   size_t rewrite_hook_count = 0;
   SpecialDispatchHook special_dispatch = nullptr;
@@ -159,6 +163,31 @@ auto rewrite_head_obsolete_args(std::span<std::string_view> args)
   return rewritten;
 }
 
+struct TailObsoleteSuffix {
+  char unit = 0;
+  bool follow = false;
+};
+
+// [GNU] tail.c parse_obsolete_option's suffix grammar, shared by
+// both signs: after the digits, at most ONE unit letter (b/c/l),
+// then at most one 'f', then the end of the string.  A free-form
+// letter scan over-accepts shapes GNU rejects (-5lc, -5fb).
+auto parse_tail_obsolete_suffix(std::string_view arg, size_t suffix_pos)
+    -> std::optional<TailObsoleteSuffix> {
+  TailObsoleteSuffix out;
+  size_t i = suffix_pos;
+  if (i < arg.size() && (arg[i] == 'b' || arg[i] == 'c' || arg[i] == 'l')) {
+    out.unit = arg[i];
+    ++i;
+  }
+  if (i < arg.size() && arg[i] == 'f') {
+    out.follow = true;
+    ++i;
+  }
+  if (i != arg.size()) return std::nullopt;
+  return out;
+}
+
 auto rewrite_tail_obsolete_args(std::span<std::string_view> args)
     -> std::optional<std::vector<std::string>> {
   if (args.empty()) return std::nullopt;
@@ -183,29 +212,23 @@ auto rewrite_tail_obsolete_args(std::span<std::string_view> args)
     std::string mode = "-n";
     std::string value = "+" + count;
 
-    for (size_t i = suffix_pos; i < first.size(); ++i) {
-      switch (first[i]) {
-        case 'l':
-          mode = "-n";
-          value = "+" + count;
-          break;
-        case 'c':
-          mode = "-c";
-          value = "+" + count;
-          break;
-        case 'b':
-          mode = "-c";
-          value = "+" + count + "b";
-          break;
-        default:
-          return std::nullopt;
-      }
+    auto suffix = parse_tail_obsolete_suffix(first, suffix_pos);
+    if (!suffix) return std::nullopt;
+    if (suffix->unit == 'c') {
+      mode = "-c";
+    } else if (suffix->unit == 'b') {
+      mode = "-c";
+      value = "+" + count + "b";
     }
 
     std::vector<std::string> rewritten;
-    rewritten.reserve(args.size() + 1);
+    rewritten.reserve(args.size() + 2);
     rewritten.emplace_back(mode);
     rewritten.emplace_back(value);
+    // [GNU] the '+' form accepts the trailing 'f' too
+    // (parse_obsolete_option's grammar is shared by both signs);
+    // dropping it treated "+5f" as a file name.
+    if (suffix->follow) rewritten.emplace_back("-f");
     append_remaining_args(rewritten, args, 1);
     return rewritten;
   }
@@ -248,35 +271,21 @@ auto rewrite_tail_obsolete_args(std::span<std::string_view> args)
   std::string count(first.substr(1, suffix_pos - 1));
   std::string mode = "-n";
   std::string value = count;
-  bool follow = false;
 
-  for (size_t i = suffix_pos; i < first.size(); ++i) {
-    switch (first[i]) {
-      case 'l':
-        mode = "-n";
-        value = count;
-        break;
-      case 'c':
-        mode = "-c";
-        value = count;
-        break;
-      case 'b':
-        mode = "-c";
-        value = count + "b";
-        break;
-      case 'f':
-        follow = true;
-        break;
-      default:
-        return std::nullopt;
-    }
+  auto suffix = parse_tail_obsolete_suffix(first, suffix_pos);
+  if (!suffix) return std::nullopt;
+  if (suffix->unit == 'c') {
+    mode = "-c";
+  } else if (suffix->unit == 'b') {
+    mode = "-c";
+    value = count + "b";
   }
 
   std::vector<std::string> rewritten;
   rewritten.reserve(args.size() + 2);
   rewritten.emplace_back(mode);
   rewritten.emplace_back(value);
-  if (follow) rewritten.emplace_back("-f");
+  if (suffix->follow) rewritten.emplace_back("-f");
   append_remaining_args(rewritten, args, 1);
   return rewritten;
 }
@@ -314,21 +323,13 @@ auto is_tail_obsolete_count_arg(std::string_view arg) -> bool {
 
     size_t suffix_pos = parse_decimal_prefix(arg, 1);
     if (suffix_pos == 1) return false;
-    for (size_t i = suffix_pos; i < arg.size(); ++i) {
-      if (arg[i] != 'l' && arg[i] != 'c' && arg[i] != 'b') return false;
-    }
-    return true;
+    return parse_tail_obsolete_suffix(arg, suffix_pos).has_value();
   }
 
   if (arg[0] != '-' || arg[1] == '-') return false;
   size_t suffix_pos = parse_decimal_prefix(arg, 1);
   if (suffix_pos == 1) return false;
-  for (size_t i = suffix_pos; i < arg.size(); ++i) {
-    if (arg[i] != 'l' && arg[i] != 'c' && arg[i] != 'b' && arg[i] != 'f') {
-      return false;
-    }
-  }
-  return true;
+  return parse_tail_obsolete_suffix(arg, suffix_pos).has_value();
 }
 
 auto tail_invalid_obsolete_count_context(std::span<std::string_view> args)
@@ -1002,6 +1003,7 @@ auto behavior_for(std::string_view name) -> CommandBehavior {
   if (name == "head") {
     behavior.validate_args = head_invalid_obsolete_count_context;
     behavior.validation_prefix = "head";
+    behavior.validation_uses_trailing_option_wording = true;
     append_rewrite_hook(behavior, rewrite_head_obsolete_args);
   } else if (name == "tail") {
     behavior.validate_args = tail_invalid_obsolete_count_context;
@@ -1434,10 +1436,20 @@ class RegistryImpl {
 
     if (behavior.validate_args != nullptr) {
       if (auto invalid_arg = behavior.validate_args(args)) {
-        safeErrorPrintLn(
-            winux::i18n::format("core.error.invalid_option_context",
-                                "{}: option used in invalid context -- {}",
-                                behavior.validation_prefix, *invalid_arg));
+        if (behavior.validation_uses_trailing_option_wording) {
+          safeErrorPrintLn(winux::i18n::format(
+              "core.error.invalid_trailing_option",
+              "{}: invalid trailing option -- {}",
+              behavior.validation_prefix, *invalid_arg));
+          safeErrorPrintLn(winux::i18n::format(
+              "common.try_help", "Try '{} --help' for more information.",
+              behavior.validation_prefix));
+        } else {
+          safeErrorPrintLn(
+              winux::i18n::format("core.error.invalid_option_context",
+                                  "{}: option used in invalid context -- {}",
+                                  behavior.validation_prefix, *invalid_arg));
+        }
         return behavior.parse_error_exit_code;
       }
     }
