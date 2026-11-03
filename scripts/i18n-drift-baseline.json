@@ -5,9 +5,19 @@
   "locales": {
     "zh-CN": {
       "missing": [
+        "command.egrep.option.fixed-regexp",
+        "command.fgrep.option.fixed-regexp",
+        "command.grep.option.fixed-regexp",
+        "core.error.invalid_trailing_option",
+        "legacy.1e913398a826bdcf",
+        "legacy.3808006640d52ccc",
+        "legacy.693dbfdf3bcc6888",
+        "legacy.c93f19032ae6f961",
         "legacy.cf964c601bdedf9b"
       ],
       "extra": [
+        "legacy.58ae36712a346f28",
+        "legacy.e8f0fb830c91b78d",
         "legacy.fb7036112fc1426e"
       ]
     }

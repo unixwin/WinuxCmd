@@ -137,6 +137,8 @@ auto constexpr GREP_OPTIONS = std::array{
     OPTION("-E", "--extended-regexp",
            "PATTERNS are extended regular expressions"),
     OPTION("-F", "--fixed-strings", "PATTERNS are strings"),
+    // [GNU] grep.c registers --fixed-regexp as a second long alias of -F.
+    OPTION("", "--fixed-regexp", "PATTERNS are strings"),
     OPTION("-G", "--basic-regexp", "PATTERNS are basic regular expressions"),
     OPTION("-P", "--perl-regexp", "PATTERNS are Perl regular expressions"),
     OPTION("-e", "--regexp", "use PATTERNS for matching", STRING_TYPE),
@@ -298,9 +300,13 @@ struct Config {
   bool files_with_matches = false;
   bool count_only = false;
   bool null_after_filename = false;
-  // [GNU quirk] `grep -f EMPTY` prints the matching lines yet exits 1
-  // (verified against GNU 9.4; the empty pattern selects lines but the
-  // exit status reports no-match).
+  // [GNU] an empty pattern source (keycc == 0) is modelled by grep.c as
+  // an empty key with out_invert flipped (grep.c:2843-2850): without -v
+  // nothing is selected and grep exits 1 before opening operands; with
+  // -v every line is selected. The scan below keeps an empty pattern
+  // list (matches nothing) and process() applies the flip's exit
+  // semantics; the forced "return 1" an earlier build had here broke
+  // the -v case.
   bool empty_pattern_from_file = false;
   bool recursive = false;
   bool recursive_directory_operand = false;
@@ -320,6 +326,16 @@ struct Config {
   std::string group_separator = "--";
   bool no_group_separator = false;
   bool initial_tab = false;
+  // [GNU] --label= (even empty) is a real label; presence, not emptiness,
+  // decides (grep.c LABEL_OPTION / input_filename).
+  bool label_given = false;
+  bool unix_byte_offsets = false;
+  // Set when the operand list defaulted to "." for a bare recursive run;
+  // GNU strips the resulting "./" prefix (omit_dot_slash).
+  bool implicit_cwd_operand = false;
+  // [GNU] prtext's separator state is process-wide (a static in grep.c),
+  // not per file: a later file's first context group still gets "--".
+  bool group_separator_printed = false;
 };
 
 auto getenv_string(const char* name) -> std::string {
@@ -949,7 +965,16 @@ auto load_patterns_from_file(const std::string& path)
   } else {
     auto in = file_io::open_binary_file(path);
     if (!in.is_open()) {
-      return std::unexpected("cannot open pattern file '" + path + "'");
+      // [GNU] grep.c 'f' / --exclude-from failures are reported as
+      // die(EXIT_TROUBLE, errno, "%s", optarg): "grep: FILE: <reason>".
+      std::error_code fec;
+      std::string reason = "Permission denied";
+      if (!std::filesystem::exists(path, fec)) {
+        reason = "No such file or directory";
+      } else if (std::filesystem::is_directory(path, fec)) {
+        reason = "Is a directory";
+      }
+      return std::unexpected(path + ": " + reason);
     }
     buf = read_text_stream(in);
   }
@@ -998,7 +1023,8 @@ auto build_config(const CommandContext<GREP_OPTIONS.size()>& ctx,
     // [GNU] a second, different matcher is a hard error (grep.c:2108-2110);
     // repeating the same matcher stays legal.  Only EXPLICIT matchers count:
     // the command's default mode (egrep -> -E) must not conflict with -P.
-    if (option_matches(meta, "-F", "--fixed-strings")) {
+    if (option_matches(meta, "-F", "--fixed-strings") ||
+        option_matches(meta, "", "--fixed-regexp")) {
       if (explicit_matcher && *explicit_matcher != PatternMode::Fixed) {
         return std::unexpected("conflicting matchers specified");
       }
@@ -1069,6 +1095,9 @@ auto build_config(const CommandContext<GREP_OPTIONS.size()>& ctx,
       ctx.get<bool>("--line-number", false) || ctx.get<bool>("-n", false);
   cfg.line_buffered = ctx.get<bool>("--line-buffered", false);
   cfg.label = ctx.get<std::string>("--label", "");
+  cfg.label_given = ctx.has("--label");
+  cfg.unix_byte_offsets = ctx.get<bool>("--unix-byte-offsets", false) ||
+                          ctx.get<bool>("-u", false);
   cfg.only_matching =
       ctx.get<bool>("--only-matching", false) || ctx.get<bool>("-o", false);
   cfg.quiet = ctx.get<bool>("--quiet", false) ||
@@ -1120,34 +1149,64 @@ auto build_config(const CommandContext<GREP_OPTIONS.size()>& ctx,
     } else if (binary_files == "without-match") {
       cfg.binary_mode = BinaryMode::WithoutMatch;
     } else {
-      return std::unexpected("invalid binary-files type '" + binary_files +
-                             "'");
+      // [GNU] grep.c: die (EXIT_TROUBLE, 0, "unknown binary-files type").
+      return std::unexpected("unknown binary-files type");
     }
   }
 
-  cfg.recursive = ctx.get<bool>("--recursive", false) ||
-                  ctx.get<bool>("-r", false) ||
-                  ctx.get<bool>("--dereference-recursive", false) ||
-                  ctx.get<bool>("-R", false);
-  cfg.dereference_recursive = ctx.get<bool>("--dereference-recursive", false) ||
-                              ctx.get<bool>("-R", false);
-  cfg.directories = ctx.get<std::string>("--directories", "");
-  if (cfg.directories.empty()) cfg.directories = ctx.get<std::string>("-d", "");
-  if (cfg.directories.empty())
-    cfg.directories = cfg.recursive ? "recurse" : "read";
+  // [GNU] -d, -r and -R are processed sequentially in grep.c's option
+  // switch, so the LAST of them wins: -r/-R assign directories=recurse
+  // (-r also resets the fts options to physical, -R selects logical),
+  // while -d assigns its argument and leaves the deref choice alone.
+  {
+    std::string dir_action;
+    bool have_dir_action = false;
+    bool deref = false;
+    for (const auto& occurrence : ctx.options.occurrences()) {
+      if (!ctx.metas || occurrence.index >= GREP_OPTIONS.size()) continue;
+      const auto& meta = (*ctx.metas)[occurrence.index];
+      if (option_matches(meta, "-r", "--recursive")) {
+        dir_action = "recurse";
+        have_dir_action = true;
+        deref = false;
+      } else if (option_matches(meta, "-R", "--dereference-recursive")) {
+        dir_action = "recurse";
+        have_dir_action = true;
+        deref = true;
+      } else if (option_matches(meta, "-d", "--directories")) {
+        if (const auto* value = std::get_if<std::string>(&occurrence.value)) {
+          dir_action = *value;
+          have_dir_action = true;
+        }
+      }
+    }
+    cfg.dereference_recursive = deref;
+    cfg.directories = have_dir_action ? dir_action : "read";
+    cfg.recursive = cfg.directories == "recurse";
+  }
   if (cfg.directories != "read" && cfg.directories != "recurse" &&
       cfg.directories != "skip") {
-    return std::unexpected("invalid directories action '" + cfg.directories +
-                           "'");
+    // [GNU] -d goes through XARGMATCH: "invalid argument 'X' for
+    // '--directories'".
+    return std::unexpected("invalid argument '" + cfg.directories +
+                           "' for '--directories'");
   }
 
   cfg.devices = ctx.get<std::string>("--devices", "");
   if (cfg.devices.empty()) cfg.devices = ctx.get<std::string>("-D", "");
   if (cfg.devices.empty()) cfg.devices = "read";
   if (cfg.devices != "read" && cfg.devices != "skip") {
-    return std::unexpected("invalid devices action '" + cfg.devices + "'");
+    // [GNU] grep.c: die (EXIT_TROUBLE, 0, "unknown devices method").
+    return std::unexpected("unknown devices method");
   }
 
+  // [GNU] grep.c keeps TWO context levels: explicit -A/-B values
+  // (out_after/out_before) and a default_context set by -C/-NUM; after
+  // parsing, the default fills only the sides no explicit option set
+  // (grep.c:2514-2527, 2904-2907) — regardless of option order.
+  std::optional<int> default_context;
+  bool explicit_before = false;
+  bool explicit_after = false;
   for (const auto& occurrence : ctx.options.occurrences()) {
     if (!ctx.metas || occurrence.index >= GREP_OPTIONS.size()) continue;
     const auto& meta = (*ctx.metas)[occurrence.index];
@@ -1161,6 +1220,7 @@ auto build_config(const CommandContext<GREP_OPTIONS.size()>& ctx,
       }
       cfg.context_requested = true;
       cfg.before_context = *value;
+      explicit_before = true;
       continue;
     }
     if (option_matches(meta, "-A", "--after-context")) {
@@ -1170,6 +1230,7 @@ auto build_config(const CommandContext<GREP_OPTIONS.size()>& ctx,
       }
       cfg.context_requested = true;
       cfg.after_context = *value;
+      explicit_after = true;
       continue;
     }
     if (option_matches(meta, "-C", "--context")) {
@@ -1178,8 +1239,7 @@ auto build_config(const CommandContext<GREP_OPTIONS.size()>& ctx,
                                ": invalid context length argument");
       }
       cfg.context_requested = true;
-      cfg.before_context = *value;
-      cfg.after_context = *value;
+      default_context = *value;
       continue;
     }
     if (option_matches(meta, "-NUM", "")) {
@@ -1188,10 +1248,13 @@ auto build_config(const CommandContext<GREP_OPTIONS.size()>& ctx,
                                ": invalid context length argument");
       }
       cfg.context_requested = true;
-      cfg.before_context = *value;
-      cfg.after_context = *value;
+      default_context = *value;
       continue;
     }
+  }
+  if (default_context) {
+    if (!explicit_before) cfg.before_context = *default_context;
+    if (!explicit_after) cfg.after_context = *default_context;
   }
 
   std::optional<std::string> color_opt;
@@ -1205,14 +1268,23 @@ auto build_config(const CommandContext<GREP_OPTIONS.size()>& ctx,
     color_opt = occurrence.has_value ? occurrence.value : "auto";
   }
   std::string color_mode = color_opt.value_or("auto");
-  if (color_mode == "always") {
-    cfg.color = true;
-  } else if (color_mode == "auto") {
-    cfg.color = grep_is_terminal(stdout);
-  } else if (color_mode == "never") {
-    cfg.color = false;
-  } else {
-    return std::unexpected("invalid color mode '" + color_mode + "'");
+  // [GNU] grep.c COLOR_OPTION accepts, case-insensitively
+  // (c_strcasecmp): always|yes|force, never|no|none, auto|tty|if-tty.
+  {
+    std::string lower = color_mode;
+    for (auto& ch : lower) {
+      ch = static_cast<char>(
+          std::tolower(static_cast<unsigned char>(ch)));
+    }
+    if (lower == "always" || lower == "yes" || lower == "force") {
+      cfg.color = true;
+    } else if (lower == "auto" || lower == "tty" || lower == "if-tty") {
+      cfg.color = grep_is_terminal(stdout);
+    } else if (lower == "never" || lower == "no" || lower == "none") {
+      cfg.color = false;
+    } else {
+      return std::unexpected("invalid color mode '" + color_mode + "'");
+    }
   }
 
   std::string grep_color = getenv_string("GREP_COLOR");
@@ -1312,6 +1384,7 @@ auto build_config(const CommandContext<GREP_OPTIONS.size()>& ctx,
   if (cfg.files.empty()) {
     if (cfg.directories == "recurse") {
       cfg.files.push_back(".");
+      cfg.implicit_cwd_operand = true;
     } else {
       cfg.files.push_back("-");
     }
@@ -1323,7 +1396,7 @@ auto build_config(const CommandContext<GREP_OPTIONS.size()>& ctx,
 auto record_name_for_output(std::string_view input_name, const Config& cfg)
     -> std::string {
   if (input_name == "-") {
-    if (!cfg.label.empty()) return cfg.label;
+    if (cfg.label_given) return cfg.label;
     return "(standard input)";
   }
   return std::string(input_name);
@@ -1792,7 +1865,10 @@ auto process_selected_record(std::string_view line, bool had_delim,
       output_buf.clear();
       append_prefix(output_buf, cfg, show_filename, display_name, line_no,
                     offset + m.begin);
-      if (cfg.initial_tab) output_buf.push_back('\t');
+      if (cfg.initial_tab && (show_filename || cfg.line_number ||
+          cfg.byte_offset) &&
+          !line.empty())
+        output_buf.push_back('\t');
       if (cfg.color) {
         append_colored(output_buf, cfg.color_config,
                        cfg.color_config.matched_selected,
@@ -1807,7 +1883,10 @@ auto process_selected_record(std::string_view line, bool had_delim,
   } else {
     append_prefix(output_buf, cfg, show_filename, display_name, line_no,
                   offset);
-    if (cfg.initial_tab) output_buf.push_back('\t');
+    if (cfg.initial_tab && (show_filename || cfg.line_number ||
+          cfg.byte_offset) &&
+          !line.empty())
+        output_buf.push_back('\t');
     if (cfg.color && !cfg.invert_match) {
       matches = collect_matches_in_line(line, cfg);
     }
@@ -1906,7 +1985,10 @@ auto process_fixed_fast_record(std::string_view line, bool /*had_delim*/,
   std::string output_buf;
   output_buf.reserve(line.size() + 128);
   append_prefix(output_buf, cfg, show_filename, display_name, line_no, offset);
-  if (cfg.initial_tab) output_buf.push_back('\t');
+  if (cfg.initial_tab && (show_filename || cfg.line_number ||
+          cfg.byte_offset) &&
+          !line.empty())
+        output_buf.push_back('\t');
   output_buf.append(line);
   output_buf.push_back(delim);
   safePrint(output_buf);
@@ -1992,16 +2074,15 @@ auto scan_text(const std::string& text, std::string_view display_name,
     }
   }
 
-  bool first_group = true;
   for (const auto& [gs, ge] : groups) {
-    if (!first_group) {
+    if (cfg.group_separator_printed) {
       if (!cfg.no_group_separator) {
         safePrint(cfg.group_separator);
         safePrint("\n");
         flush_if_line_buffered(cfg);
       }
     }
-    first_group = false;
+    cfg.group_separator_printed = true;
 
     for (size_t i = gs; i <= ge; ++i) {
       const auto [b, e] = records[i];
@@ -2020,7 +2101,10 @@ auto scan_text(const std::string& text, std::string_view display_name,
         }
         line_buf.reserve(line.size() + 128);
         append_prefix(line_buf, cfg, show_filename, display_name, i + 1, b);
-        if (cfg.initial_tab) line_buf.push_back('\t');
+        if (cfg.initial_tab && (show_filename || cfg.line_number ||
+            cfg.byte_offset) &&
+            !line.empty())
+          line_buf.push_back('\t');
         append_line_with_color(line_buf, line, matches, cfg, true);
         if (had_delim) {
           line_buf.append(1, delim);
@@ -2038,7 +2122,10 @@ auto scan_text(const std::string& text, std::string_view display_name,
         }
         append_prefix(line_buf, cfg, show_filename, display_name, i + 1, b,
                       '-');
-        if (cfg.initial_tab) line_buf.push_back('\t');
+        if (cfg.initial_tab && (show_filename || cfg.line_number ||
+            cfg.byte_offset) &&
+            !line.empty())
+          line_buf.push_back('\t');
         append_line_with_color(line_buf, line, matches, cfg, false);
         if (had_delim) {
           line_buf.append(1, delim);
@@ -2502,10 +2589,30 @@ auto append_search_path(Config& cfg, std::string_view input,
                                              std::filesystem::directory_options
                                                  ::skip_permission_denied,
                                              iter_ec);
-      if (iter_ec) continue;
+      if (iter_ec) {
+        // [GNU] an unreadable directory is FTS_DNR: diagnosed (unless
+        // -s) and counted as an error (exit 2), not silently skipped.
+        if (!cfg.no_messages) {
+          safeErrorPrint("grep: ");
+          safeErrorPrint(wstring_to_utf8(cur.dir));
+          safeErrorPrint(": ");
+          safeErrorPrintLn(iter_ec.message());
+        }
+        cfg.has_error = true;
+        continue;
+      }
       std::filesystem::directory_iterator end;
       for (; it != end; it.increment(iter_ec)) {
-        if (iter_ec) break;
+        if (iter_ec) {
+          if (!cfg.no_messages) {
+            safeErrorPrint("grep: ");
+            safeErrorPrint(wstring_to_utf8(cur.dir));
+            safeErrorPrint(": ");
+            safeErrorPrintLn(iter_ec.message());
+          }
+          cfg.has_error = true;
+          break;
+        }
         const auto& e = *it;
         std::error_code entry_ec;
         if (e.is_directory(entry_ec) && !entry_ec) {
@@ -2517,10 +2624,14 @@ auto append_search_path(Config& cfg, std::string_view input,
           if (reparse) {
             auto key = canonical_key(e.path());
             if (!visited_dirs.insert(key).second) {
-              safeErrorPrint("grep: warning: ");
-              safeErrorPrintLn(
-                  wstring_to_utf8(e.path().wstring()) +
-                  ": cyclic directory junction; skipped");
+              // [GNU] the FTS_DC loop warning is a suppressible_error:
+              // -s silences it (grep.c:1687-1690).
+              if (!cfg.no_messages) {
+                safeErrorPrint("grep: warning: ");
+                safeErrorPrintLn(
+                    wstring_to_utf8(e.path().wstring()) +
+                    ": cyclic directory junction; skipped");
+              }
               continue;
             }
           }
@@ -2529,9 +2640,22 @@ auto append_search_path(Config& cfg, std::string_view input,
         }
         std::error_code file_ec;
         if (e.is_regular_file(file_ec) && !file_ec) {
+          // [GNU] under plain -r the walk is FTS_PHYSICAL: a symlink or
+          // junction FILE is an FTS_SL entry and is skipped, not
+          // searched; only -R (FTS_LOGICAL) follows it (grep.c:606-607,
+          // 1726-1727). is_regular_file follows links, so gate on the
+          // reparse attribute explicitly.
+          if (!cfg.dereference_recursive && is_reparse_dir(e.path())) {
+            continue;
+          }
           std::string filepath = wstring_to_utf8(e.path().generic_wstring());
           std::string filename = wstring_to_utf8(e.path().filename().wstring());
           if (!should_search_file(cfg, filename)) continue;
+          // [GNU] omit_dot_slash: names from the implicit "." operand
+          // lose their "./" prefix (grep.c:1674-1676).
+          if (cfg.implicit_cwd_operand && filepath.starts_with("./")) {
+            filepath = filepath.substr(2);
+          }
           out.push_back(filepath);
         }
       }
@@ -2570,6 +2694,21 @@ auto gather_files_for_input(Config& cfg, std::vector<std::string>& out)
 }
 
 auto process(Config& cfg) -> int {
+  // [GNU] grep.c prints the -u obsolescence warning while parsing,
+  // before any input is touched (grep.c:2574-2577).
+  if (cfg.unix_byte_offsets) {
+    safeErrorPrint(
+        "grep: warning: --unix-byte-offsets (-u) is obsolete\n");
+  }
+  // [GNU] grep.c:2911-2914: with -m 0 (or an empty pattern set whose
+  // post-flip invert makes selection impossible) and list_files !=
+  // LISTFILES_NONMATCHING, grep exits EXIT_FAILURE before opening any
+  // operand — a missing operand is NOT diagnosed.
+  if (cfg.max_count == 0 && !cfg.files_without_match) return 1;
+  if (cfg.empty_pattern_from_file && !cfg.invert_match &&
+      !cfg.files_without_match) {
+    return 1;
+  }
   std::vector<std::string> inputs;
   auto gather = gather_files_for_input(cfg, inputs);
   if (!gather) {
@@ -2593,9 +2732,9 @@ auto process(Config& cfg) -> int {
   bool any_file_without_match = false;
 
   if (cfg.only_matching && cfg.context_requested) {
-    if (!cfg.no_messages && !cfg.quiet) {
-      safeErrorPrint("grep: warning: context options have no effect with -o\n");
-    }
+    // [GNU] -o with context options is accepted silently: context
+    // lines simply produce no output through the prline path. (An
+    // earlier build printed an invented warning here.)
     cfg.before_context = 0;
     cfg.after_context = 0;
   }
@@ -2758,10 +2897,12 @@ auto process(Config& cfg) -> int {
   if (int write_error_rc = report_stdout_write_error("grep", 2)) {
     return write_error_rc;
   }
-  // [GNU] errors exit 2 even under -q; quiet only suppresses the message
-  // (suppressible_error / errseen, grep.c:667,3035).
+  // [GNU] under -q, grep exits ON the first match with exit_failure,
+  // which -q itself reset to 0 (grep.c:2700-2702, 1490): an error seen
+  // before the match does not turn the status into 2. Without a match,
+  // errors exit 2 (errseen, grep.c:3032).
+  if (cfg.quiet && any_selected_global) return 0;
   if (cfg.has_error) return 2;
-  if (cfg.empty_pattern_from_file) return 1;
   // -L (files-without-match): exit 0 if any file was printed (had no matches),
   // exit 1 if all files matched (none printed).
   // [GNU] -L follows the same rule as normal mode: exit 0 iff at least one

@@ -290,6 +290,13 @@ auto parse_set_atom(std::string_view& str, RepeatSpec* repeat_out,
     if (close != std::string_view::npos) {
       std::string_view body = str.substr(1, close - 1);
 
+      if (body == "==") {
+        // [GNU] tr.c:882-888: an equivalence class with no character
+        // in it is a hard error, not literal '[', '=', '=' characters.
+        return std::unexpected(
+            "missing equivalence class character '[==]'");
+      }
+
       if (body.size() >= 3 && body.front() == '=' && body.back() == '=') {
         std::string_view equiv = body.substr(1, body.size() - 2);
         auto atom = parse_atomic_token(equiv);
@@ -482,7 +489,7 @@ auto parse_set(std::string_view str) -> cp::Result<SetParseResult> {
 // Build translation table
 void build_translation_table(const std::string& set1, const std::string& set2,
                              bool complement, bool truncate_set1,
-                             char fill_char, size_t fill_pos,
+                             bool has_fill, char fill_char, size_t fill_pos,
                              std::array<char, 256>& table) {
   // Initialize table to no change
   for (int i = 0; i < 256; ++i) {
@@ -511,7 +518,7 @@ void build_translation_table(const std::string& set1, const std::string& set2,
 
   // GNU: an indefinite repeat [c*] in string2 expands to bring string2 up
   // to string1's effective length, inserted at the repeat's own position.
-  if (fill_char != '\0' && effective_set2.size() < effective_set1.size()) {
+  if (has_fill && effective_set2.size() < effective_set1.size()) {
     size_t count = effective_set1.size() - effective_set2.size();
     if (fill_pos > effective_set2.size()) fill_pos = effective_set2.size();
     effective_set2.insert(fill_pos, count, fill_char);
@@ -584,6 +591,9 @@ struct Config {
   std::string set1;
   std::string set2;
   // GNU [c*] fill state for string2 (only meaningful when translating).
+  // has_fill is separate from the character value: [\0*] fills with
+  // NUL, so '\0' cannot double as the "no fill" sentinel.
+  bool has_fill = false;
   char fill_char = 0;
   size_t fill_pos = 0;
 };
@@ -743,6 +753,7 @@ auto build_config(const CommandContext<TR_OPTIONS.size()>& ctx)
         }
       }
       if (s2.indefinite_count > 0) {
+        cfg.has_fill = true;
         cfg.fill_char = s2.indefinite_char;
         cfg.fill_pos = s2.indefinite_pos;
       }
@@ -777,8 +788,8 @@ auto run(const Config& cfg) -> int {
     delete_set = build_delete_set(cfg.set1, cfg.complement);
   } else {
     build_translation_table(cfg.set1, cfg.set2, cfg.complement,
-                            cfg.truncate_set1, cfg.fill_char, cfg.fill_pos,
-                            trans_table);
+                            cfg.truncate_set1, cfg.has_fill, cfg.fill_char,
+                            cfg.fill_pos, trans_table);
   }
 
   if (cfg.squeeze) {
@@ -787,7 +798,7 @@ auto run(const Config& cfg) -> int {
     if (!cfg.set2.empty()) {
       squeeze_set = build_squeeze_set(cfg.set2, false);
       // An indefinite [c*] in string2 is part of the squeeze set too.
-      if (cfg.fill_char != '\0' && cfg.set2.size() < cfg.set1.size()) {
+      if (cfg.has_fill && cfg.set2.size() < cfg.set1.size()) {
         squeeze_set[static_cast<unsigned char>(cfg.fill_char)] = true;
       }
     } else {

@@ -554,7 +554,14 @@ TEST(sort, sort_long_sort_month_word) {
   EXPECT_EQ_TEXT(r.stdout_text, "Jan\nApr\nDec\n");
 }
 
-TEST(sort, sort_ordering_mode_last_option_wins) {
+TEST(sort, sort_ordering_mode_conflict_is_incompatible) {
+  // [GNU] coreutils-9.4/src/sort.c:4466-4487: --sort=WORD maps to a
+  // letter and falls through to set_ordering on the global key,
+  // which only ever SETS flags; a later mode never clears an earlier
+  // one.  With two modes accumulated, check_ordering_compatibility
+  // (sort.c:4134-4150) errors "options '-nV' are incompatible" and
+  // exits SORT_FAILURE (2) — there is no last-option-wins rule
+  // (audit lane A5, finding S2).
   TempDir tmp;
   tmp.write("v.txt", "1.10\n1.2\n");
 
@@ -563,11 +570,18 @@ TEST(sort, sort_ordering_mode_last_option_wins) {
   p.add(L"sort.exe", {L"--sort=numeric", L"--sort=version", L"v.txt"});
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "1.2\n1.10\n");
+  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_EQ_TEXT(r.stdout_text, "");
+  EXPECT_TRUE(r.stderr_text.find("options '-nV' are incompatible") !=
+              std::string::npos);
 }
 
-TEST(sort, sort_short_ordering_mode_last_option_wins) {
+TEST(sort, sort_short_ordering_mode_conflict_is_incompatible) {
+  // [GNU] same as above via the short spellings: -V and -n both set
+  // flags on the global key (sort.c:4470-4487), and the accumulated
+  // pair is rejected by check_ordering_compatibility
+  // (sort.c:4134-4150) with exit SORT_FAILURE (2); key_to_opts
+  // renders the pair in canonical order as '-nV'.
   TempDir tmp;
   tmp.write("v.txt", "1.10\n1.2\n");
 
@@ -576,8 +590,10 @@ TEST(sort, sort_short_ordering_mode_last_option_wins) {
   p.add(L"sort.exe", {L"-V", L"-n", L"v.txt"});
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "1.10\n1.2\n");
+  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_EQ_TEXT(r.stdout_text, "");
+  EXPECT_TRUE(r.stderr_text.find("options '-nV' are incompatible") !=
+              std::string::npos);
 }
 
 TEST(sort, sort_rejects_invalid_long_sort_word) {

@@ -413,10 +413,9 @@ REGISTER_COMMAND(cat, "cat",
           }
         }
       }
-      if (state.pending_cr) {
-        append_output_char(out, static_cast<char>(0x0D));
-        state.pending_cr = false;
-      }
+      // [GNU] a pending CR is NOT flushed at an operand boundary:
+      // cat.c's pending_cr is a single global carried across files
+      // and written once, after the last operand (see process()).
       flush_output_buffer(out);
       return;
     }
@@ -487,10 +486,8 @@ REGISTER_COMMAND(cat, "cat",
       }
     }
 
-    if (state.pending_cr) {
-      append_output_char(out, static_cast<char>(0x0D));
-      state.pending_cr = false;
-    }
+    // [GNU] pending_cr carries across operands (see the HANDLE
+    // path above); it is flushed once by process() at the very end.
     flush_output_buffer(out);
   };
 
@@ -637,6 +634,15 @@ REGISTER_COMMAND(cat, "cat",
     if (!process_file(file, ctx, state)) {
       exit_code = 1;
     }
+  }
+
+  // [GNU] cat.c:793-796: a CR still pending after the LAST operand
+  // is written out raw, once.  Flushing it at every operand boundary
+  // turned a CR at the end of file1 + LF at the start of file2 into
+  // a raw CR byte instead of the ^M rendering.
+  if (state.pending_cr) {
+    state.pending_cr = false;
+    safePrint(std::string_view("\x0D", 1));
   }
 
   // [GNU] cat.c write_error() (system.h:960): the first failed stdout write

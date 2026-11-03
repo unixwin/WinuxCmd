@@ -74,7 +74,13 @@ TEST(head, head_last_count_option_wins) {
   EXPECT_EQ_TEXT(r2.stdout_text, "al");
 }
 
-TEST(head, head_obsolete_count_after_options_reports_invalid_context) {
+TEST(head, head_obsolete_count_after_options_reports_invalid_trailing_option) {
+  // [GNU] coreutils-9.4/src/head.c:956 (obsolete -NUM is recognized
+  // only as argv[1]) and head.c:1024,1066-1069 (digits are in the
+  // getopt string but have no case, so the default arm reports
+  // "invalid trailing option -- %c" and usage (EXIT_FAILURE)).
+  // "option used in invalid context" is tail's wording
+  // (src/tail.c:2230), not head's (audit lane A5, finding H4).
   TempDir tmp;
   tmp.write("a.txt", "1\n2\n3\n4\n5\n");
 
@@ -85,7 +91,7 @@ TEST(head, head_obsolete_count_after_options_reports_invalid_context) {
 
   EXPECT_NE(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "");
-  EXPECT_NE(r.stderr_text.find("head: option used in invalid context -- 5"),
+  EXPECT_NE(r.stderr_text.find("head: invalid trailing option -- 5"),
             std::wstring::npos);
   EXPECT_EQ(r.stderr_text.find("unrecognized option"), std::wstring::npos);
 }
@@ -195,17 +201,22 @@ TEST(head, head_KB_suffix_is_decimal_bytes) {
   EXPECT_EQ(r.stdout_text.size(), 1000u);
 }
 
-TEST(head, head_rejects_lowercase_kB_suffix) {
+TEST(head, head_accepts_lowercase_kB_suffix) {
+  // [GNU] coreutils-9.4/lib/xstrtol.c:143-166: the first suffix
+  // letter picks the power ('k' and 'K' are both in head's suffix
+  // list "bkKmMGTPEZYRQ0", src/head.c:911-915) and a trailing 'B'
+  // selects base 1000, so 1kB is 1000 bytes, not an error (audit
+  // lane A5, finding H1/T5).
   TempDir tmp;
-  tmp.write("a.txt", "0123456789abcdef");
+  tmp.write("a.txt", std::string(1200, 'x'));
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
   p.add(L"head.exe", {L"-c", L"1kB", L"a.txt"});
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stderr_text.find("invalid") != std::string::npos);
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(r.stdout_text.size(), 1000u);
 }
 
 TEST(head, head_accepts_extended_representable_count_suffixes) {

@@ -304,6 +304,14 @@ auto get_entry_extension(const std::wstring &name) -> std::wstring {
   return ext;
 }
 
+auto get_entry_extension_raw(const std::wstring &name) -> std::wstring {
+  size_t dot_pos = name.find_last_of(L".");
+  if (dot_pos == std::wstring::npos || dot_pos + 1 >= name.size()) {
+    return {};
+  }
+  return name.substr(dot_pos + 1);
+}
+
 auto is_archive_extension(std::wstring_view ext) -> bool {
   for (const auto *candidate : ls_constants::COMPRESSED_EXTS) {
     if (ext == candidate) {
@@ -691,7 +699,10 @@ auto escape_display_name(const std::wstring &name) -> std::wstring {
         rendered += L"\\\"";
         break;
       default:
-        if (ch >= 0x20 && ch < 0x7f && std::iswprint(static_cast<wint_t>(ch))) {
+        // [GNU] quotearg's escape styles pass PRINTABLE characters
+        // through raw, whatever their range; the old hard-coded
+        // ASCII window mangled names like "€.txt" into € form.
+        if (std::iswprint(static_cast<wint_t>(ch))) {
           rendered.push_back(ch);
         } else if (ch <= 0xFF) {
           append_hex(static_cast<unsigned int>(ch), 2, L'x');
@@ -1258,71 +1269,103 @@ auto resolve_display_entry(const EntryInfo &entry,
   return {display_find_data, metadata_name};
 }
 
-auto compare_version_strings(std::wstring_view a, std::wstring_view b) -> int {
+// [GNU] filevercmp (lib/filevercmp.c), wide-char form with ASCII
+// classification: order() ranks end-of-string at -1, '~' at -2,
+// digits at 0, letters at their code value, everything else above
+// all letters; digit runs compare by value via first-difference
+// tracking after leading-zero skips, and a side whose digit run
+// continues is GREATER (an exhausted non-digit side does not beat
+// a digit).  The previous hand-rolled loop case-folded letters and
+// ranked an exhausted side above a digit ("a" after "a1").
+auto version_order_w(wchar_t c, bool at_end) -> int {
+  if (at_end) return -1;
+  if (c == L'~') return -2;
+  if (c >= L'0' && c <= L'9') return 0;
+  if ((c >= L'a' && c <= L'z') || (c >= L'A' && c <= L'Z')) {
+    return static_cast<int>(c);
+  }
+  return static_cast<int>(c) + 256;
+}
+
+auto verrevcmp_w(std::wstring_view a, std::wstring_view b) -> int {
   size_t i = 0;
   size_t j = 0;
-
-  auto is_digit = [](wchar_t ch) {
-    return std::iswdigit(static_cast<wint_t>(ch)) != 0;
-  };
-
+  auto is_digit = [](wchar_t c) { return c >= L'0' && c <= L'9'; };
   while (i < a.size() || j < b.size()) {
-    const bool a_digit = i < a.size() && is_digit(a[i]);
-    const bool b_digit = j < b.size() && is_digit(b[j]);
-
-    if (a_digit && b_digit) {
-      size_t a_start = i;
-      size_t b_start = j;
-      while (i < a.size() && is_digit(a[i])) ++i;
-      while (j < b.size() && is_digit(b[j])) ++j;
-
-      while (a_start < i && a[a_start] == L'0') ++a_start;
-      while (b_start < j && b[b_start] == L'0') ++b_start;
-
-      const size_t a_len = i - a_start;
-      const size_t b_len = j - b_start;
-      if (a_len < b_len) return -1;
-      if (a_len > b_len) return 1;
-
-      for (size_t k = 0; k < a_len; ++k) {
-        const wchar_t ac = a[a_start + k];
-        const wchar_t bc = b[b_start + k];
-        if (ac < bc) return -1;
-        if (ac > bc) return 1;
-      }
-      continue;
-    }
-
-    if (a_digit != b_digit) {
-      return a_digit ? -1 : 1;
-    }
-
-    if (i < a.size() && j < b.size()) {
-      const wchar_t ac = a[i];
-      const wchar_t bc = b[j];
-      if (ac != bc) {
-        const wchar_t al = std::towlower(ac);
-        const wchar_t bl = std::towlower(bc);
-        if (al < bl) return -1;
-        if (al > bl) return 1;
-        if (ac < bc) return -1;
-        if (ac > bc) return 1;
-      }
+    int first_diff = 0;
+    while ((i < a.size() && !is_digit(a[i])) ||
+           (j < b.size() && !is_digit(b[j]))) {
+      const int ac = version_order_w(i < a.size() ? a[i] : L'\0', i >= a.size());
+      const int bc = version_order_w(j < b.size() ? b[j] : L'\0', j >= b.size());
+      if (ac != bc) return ac < bc ? -1 : 1;
       ++i;
       ++j;
-      continue;
     }
-
-    if (i < a.size()) return 1;
-    if (j < b.size()) return -1;
+    while (i < a.size() && a[i] == L'0') ++i;
+    while (j < b.size() && b[j] == L'0') ++j;
+    while (i < a.size() && j < b.size() && is_digit(a[i]) && is_digit(b[j])) {
+      if (first_diff == 0) first_diff = static_cast<int>(a[i]) - static_cast<int>(b[j]);
+      ++i;
+      ++j;
+    }
+    if (i < a.size() && is_digit(a[i])) return 1;
+    if (j < b.size() && is_digit(b[j])) return -1;
+    if (first_diff != 0) return first_diff < 0 ? -1 : 1;
   }
+  return 0;
+}
 
+auto file_prefixlen_w(std::wstring_view s) -> size_t {
+  auto is_alnum = [](wchar_t c) {
+    return (c >= L'0' && c <= L'9') || (c >= L'a' && c <= L'z') ||
+           (c >= L'A' && c <= L'Z');
+  };
+  auto is_alpha = [](wchar_t c) {
+    return (c >= L'a' && c <= L'z') || (c >= L'A' && c <= L'Z');
+  };
+  size_t cut = s.size();
+  while (cut > 1) {
+    size_t q = cut;
+    while (q > 0 && (is_alnum(s[q - 1]) || s[q - 1] == L'~')) --q;
+    if (q == 0 || q == cut) break;
+    if (s[q - 1] != L'.') break;
+    if (!is_alpha(s[q]) && s[q] != L'~') break;
+    if (q - 1 == 0) break;
+    cut = q - 1;
+  }
+  return cut;
+}
+
+auto compare_version_strings(std::wstring_view a, std::wstring_view b) -> int {
+  // [GNU] filenvercmp's special cases, then the two-pass
+  // prefix/suffix comparison (mirrors sort.cpp's port).
+  if (a.empty() || b.empty()) {
+    if (a.empty() && b.empty()) return 0;
+    return a.empty() ? -1 : 1;
+  }
+  if (a == L".") return b == L"." ? 0 : -1;
+  if (b == L".") return 1;
+  if (a == L"..") return b == L".." ? 0 : -1;
+  if (b == L"..") return 1;
+  const bool a_dot = a[0] == L'.';
+  const bool b_dot = b[0] == L'.';
+  if (a_dot != b_dot) return a_dot ? -1 : 1;
+
+  const size_t a_prefix = file_prefixlen_w(a);
+  const size_t b_prefix = file_prefixlen_w(b);
+  const int cmp = verrevcmp_w(a.substr(0, a_prefix), b.substr(0, b_prefix));
+  if (cmp != 0) return cmp;
+  if (a_prefix < a.size() || b_prefix < b.size()) {
+    return verrevcmp_w(a, b);
+  }
   return 0;
 }
 
 auto compare_extensions(const EntryInfo &a, const EntryInfo &b) -> bool {
-  const std::wstring a_ext = get_entry_extension(a.name);
-  const std::wstring b_ext = get_entry_extension(b.name);
+  // [GNU] -X compares extensions bytewise (ls.c:3913-3925); folding
+  // case here reordered ".Z" after ".a".
+  const std::wstring a_ext = get_entry_extension_raw(a.name);
+  const std::wstring b_ext = get_entry_extension_raw(b.name);
   if (a_ext < b_ext) return true;
   if (a_ext > b_ext) return false;
   return a.name < b.name;
@@ -1413,9 +1456,32 @@ auto parse_format_mode(std::string_view value) -> std::optional<FormatMode> {
   return std::nullopt;
 }
 
+// [GNU] ls.c's when table (ls.c:938-949), shared by --color and
+// --hyperlink: argmatch accepts any unambiguous prefix.
+auto ls_argmatch_prefix(std::string_view value,
+                        std::initializer_list<std::string_view> names)
+    -> std::optional<std::string_view> {
+  std::optional<std::string_view> hit;
+  for (auto name : names) {
+    if (name == value) return name;
+    if (!value.empty() && name.starts_with(value)) {
+      if (hit.has_value() && *hit != name) return std::nullopt;
+      hit = name;
+    }
+  }
+  return hit;
+}
+
 auto parse_indicator_style(std::string_view value)
     -> std::optional<IndicatorStyle> {
-  if (value.empty() || value == "none") return IndicatorStyle::None;
+  if (value.empty()) return IndicatorStyle::None;
+  // [GNU] XARGMATCH ("--indicator-style", ...): unambiguous prefixes
+  // are valid values, not just the full spellings.
+  if (auto full = ls_argmatch_prefix(
+          value, {"none", "slash", "file-type", "classify"})) {
+    value = *full;
+  }
+  if (value == "none") return IndicatorStyle::None;
   if (value == "slash") return IndicatorStyle::Slash;
   if (value == "file-type") return IndicatorStyle::FileType;
   if (value == "classify") return IndicatorStyle::Classify;
@@ -1495,20 +1561,36 @@ auto parse_time_style(std::string_view value) -> std::optional<TimeStyle> {
 
 auto format_mode_explicitly_requested(
     const CommandContext<LS_OPTIONS.size()> &ctx) -> bool {
+  // Positional, like resolve_format_mode: a -f that cancels a long
+  // format also cancels its "explicit" mark, so the output falls
+  // back to the tty/pipe defaults exactly as GNU's format_opt = -1.
+  bool explicit_request = false;
+  bool long_active = false;
   for (const auto &occurrence : ctx.options.occurrences()) {
     if (occurrence.index >= LS_OPTIONS.size()) continue;
     const auto &meta = LS_OPTIONS[occurrence.index];
 
     if (meta.short_name == "-m" || meta.short_name == "-x" ||
-        meta.short_name == "-1" || meta.short_name == "-C" ||
-        meta.short_name == "-l" || meta.short_name == "-g" ||
-        meta.short_name == "-n" || meta.short_name == "-o" ||
-        meta.long_name == "--format") {
-      return true;
+        meta.short_name == "-1" || meta.short_name == "-C") {
+      explicit_request = true;
+      long_active = false;
+    } else if (meta.short_name == "-l" || meta.short_name == "-g" ||
+               meta.short_name == "-n" || meta.short_name == "-o" ||
+               meta.long_name == "--full-time") {
+      explicit_request = true;
+      long_active = true;
+    } else if (meta.long_name == "--format") {
+      explicit_request = true;
+      auto value = std::get_if<std::string>(&occurrence.value);
+      auto parsed = value ? parse_format_mode(*value) : std::nullopt;
+      long_active = parsed && *parsed == FormatMode::Long;
+    } else if (meta.short_name == "-f" && long_active) {
+      explicit_request = false;
+      long_active = false;
     }
   }
 
-  return false;
+  return explicit_request;
 }
 
 auto resolve_dereference_mode(const CommandContext<LS_OPTIONS.size()> &ctx)
@@ -1592,6 +1674,14 @@ auto resolve_format_mode(const CommandContext<LS_OPTIONS.size()> &ctx)
     if (meta.short_name == "-l" || meta.short_name == "-g" ||
         meta.short_name == "-n" || meta.short_name == "-o") {
       mode = FormatMode::Long;
+      continue;
+    }
+
+    if (meta.short_name == "-f") {
+      // [GNU] ls.c case 'f': cancels a long format selected EARLIER
+      // (format_opt = -1, back to the defaults); a later -l in this
+      // same positional loop wins again.
+      if (mode == FormatMode::Long) mode = FormatMode::Columns;
       continue;
     }
 
@@ -1797,14 +1887,14 @@ auto is_recent_ls_time(const FILETIME &file_time) -> bool {
   file_value.LowPart = file_time.dwLowDateTime;
   file_value.HighPart = file_time.dwHighDateTime;
 
+  // [GNU] ls.c:4462-4466: "recent" is six_months_ago < t < now,
+  // strictly, with six_months_ago = now - (31556952 / 2) seconds.
+  // A truncated 182-day window plus a one-hour future grace made
+  // near-boundary and future files render with the wrong form.
   constexpr uint64_t kTicksPerSecond = 10'000'000ULL;
-  constexpr uint64_t kTicksPerHour = 60ULL * 60ULL * kTicksPerSecond;
-  constexpr uint64_t kTicksPerDay = 24ULL * kTicksPerHour;
-  constexpr uint64_t kRecentWindowTicks = (365ULL / 2ULL) * kTicksPerDay;
+  constexpr uint64_t kRecentWindowTicks = 15'778'476ULL * kTicksPerSecond;
 
-  if (file_value.QuadPart > now_value.QuadPart) {
-    return (file_value.QuadPart - now_value.QuadPart) <= kTicksPerHour;
-  }
+  if (file_value.QuadPart >= now_value.QuadPart) return false;
   return (now_value.QuadPart - file_value.QuadPart) < kRecentWindowTicks;
 }
 
@@ -1933,8 +2023,17 @@ auto get_time_string(const WIN32_FIND_DATAW &find_data, TimeMode mode,
     return format_strftime_like(
         st, file_time, resolve_custom_time_format(file_time, selection.format));
   }
-  snprintf(buf, sizeof(buf), "%s %2d %02d:%02d", month_abbrs[st.wMonth],
-           st.wDay, st.wHour, st.wMinute);
+  // [GNU] the DEFAULT style splits exactly like the locale style
+  // (ls.c:4458-4470): recent files show the time of day, older and
+  // future files show the year.  This branch used to print the time
+  // form unconditionally.
+  if (is_recent_ls_time(file_time)) {
+    snprintf(buf, sizeof(buf), "%s %2d %02d:%02d", month_abbrs[st.wMonth],
+             st.wDay, st.wHour, st.wMinute);
+  } else {
+    snprintf(buf, sizeof(buf), "%s %2d  %04d", month_abbrs[st.wMonth],
+             st.wDay, st.wYear);
+  }
   return std::string(buf);
 }
 
@@ -1990,13 +2089,109 @@ auto resolve_color_mode(const CommandContext<LS_OPTIONS.size()> &ctx)
   return std::unexpected(message);
 }
 
+// [GNU] ls.c case 'f' sets print_block_size = false at its
+// position; a later -s/--size sets it again.  Positional scan.
+auto print_block_size_enabled(const CommandContext<LS_OPTIONS.size()> &ctx)
+    -> bool {
+  bool enabled = false;
+  for (const auto &occurrence : ctx.options.occurrences()) {
+    if (occurrence.index >= LS_OPTIONS.size()) continue;
+    const auto &meta = LS_OPTIONS[occurrence.index];
+    if (meta.short_name == "-s" || meta.long_name == "--size") {
+      enabled = true;
+    } else if (meta.short_name == "-f") {
+      enabled = false;
+    }
+  }
+  return enabled;
+}
+}
+
 auto resolve_color_enabled(const CommandContext<LS_OPTIONS.size()> &ctx)
     -> bool {
+  // [GNU] positional semantics: --color assigns print_with_color at
+  // its position, and -f clears it at its position (ls.c case 'f');
+  // the last of the two decides. The value itself (bare = always,
+  // attached = argmatch over the when table) is resolved by
+  // resolve_color_mode over the last --color occurrence (#1513).
+  bool suppressed_by_f = false;
+  for (const auto &occurrence : ctx.options.occurrences()) {
+    if (occurrence.index >= LS_OPTIONS.size()) continue;
+    const auto &meta = LS_OPTIONS[occurrence.index];
+    if (meta.long_name == "--color") {
+      suppressed_by_f = false;
+    } else if (meta.short_name == "-f") {
+      suppressed_by_f = true;
+    }
+  }
+  if (suppressed_by_f) return false;
   auto mode = resolve_color_mode(ctx);
   if (!mode) return ls_is_terminal(stdout);
   if (*mode == ColorWhen::Always) return true;
   if (*mode == ColorWhen::Never) return false;
   return ls_is_terminal(stdout);
+}
+
+// [GNU] XARGMATCH failure text for a WHEN-valued option (ls.c):
+// "invalid argument '<v>' for '<opt>'" + the valid-arguments list +
+// the Try-help line; argmatch_die exits with LS_FAILURE (2).
+auto argmatch_error_text(std::string_view value, std::string_view option,
+                         std::initializer_list<std::string_view> valid)
+    -> std::string {
+  bool ambiguous = false;
+  for (auto name : valid) {
+    if (name.starts_with(value) && name != value) {
+      ambiguous = true;
+    }
+  }
+  std::string text = std::string(ambiguous ? "ambiguous argument '"
+                                           : "invalid argument '") +
+                     std::string(value) + "' for '" +
+                     std::string(option) + "'\nValid arguments are:";
+  for (auto name : valid) {
+    text += "\n  - '";
+    text += name;
+    text += "'";
+  }
+  text += "\nTry 'ls --help' for more information.";
+  return text;
+}
+
+auto validate_color_option(const CommandContext<LS_OPTIONS.size()> &ctx)
+    -> std::optional<std::string> {
+  for (const auto &occurrence : ctx.options.occurrences()) {
+    if (occurrence.index >= LS_OPTIONS.size()) continue;
+    const auto &meta = LS_OPTIONS[occurrence.index];
+    if (meta.long_name != "--color") continue;
+    auto value = std::get_if<std::string>(&occurrence.value);
+    // [GNU] a bare --color means always and needs no validation; an
+    // attached value -- including "" from --color= -- goes through
+    // argmatch (#1513: value_attached carries the distinction).
+    if (!occurrence.value_attached) continue;
+    if (!value) continue;
+    if (!ls_argmatch_prefix(*value, {"always", "yes", "force", "never",
+                                     "no", "none", "auto", "tty",
+                                     "if-tty"})) {
+      return argmatch_error_text(*value, "--color",
+                                 {"always", "yes", "force", "never", "no",
+                                  "none", "auto", "tty", "if-tty"});
+    }
+  }
+  return std::nullopt;
+}
+
+auto validate_indicator_style_option(
+    const CommandContext<LS_OPTIONS.size()> &ctx)
+    -> std::optional<std::string> {
+  if (!ctx.has("--indicator-style")) return std::nullopt;
+  const std::string value = ctx.get<std::string>("--indicator-style", "");
+  if (value.empty() ||
+      !ls_argmatch_prefix(value, {"none", "slash", "file-type",
+                                  "classify"})) {
+    return argmatch_error_text(value, "--indicator-style",
+                               {"none", "slash", "file-type", "classify"});
+  }
+  return std::nullopt;
 }
 
 auto use_zero_terminated_output(const CommandContext<LS_OPTIONS.size()> &ctx)
@@ -2518,6 +2713,10 @@ auto format_human_size(uint64_t size, bool si) -> std::string {
     snprintf(buf, sizeof(buf), "%.0f", value);
   } else if (value < 10.0) {
     snprintf(buf, sizeof(buf), "%.1f%c", value, units[unit_index]);
+  } else if (std::round(value) >= base && unit_index < 6) {
+    // [GNU] human.c: a value that ROUNDS UP to the base promotes to
+    // 1.0 of the next unit (1048575 bytes is "1.0M", not "1024K").
+    snprintf(buf, sizeof(buf), "%.1f%c", 1.0, units[unit_index + 1]);
   } else {
     snprintf(buf, sizeof(buf), "%.0f%c", value, units[unit_index]);
   }
@@ -2796,7 +2995,7 @@ auto build_listing_prefix(const std::wstring &path,
       prefix.push_back(' ');
     }
   }
-  if (ctx.get<bool>("-s", false) || ctx.get<bool>("--size", false)) {
+  if (print_block_size_enabled(ctx)) {
     prefix += get_allocated_blocks_string(path, find_data, size_cfg);
     prefix.push_back(' ');
   }
@@ -3171,8 +3370,12 @@ auto list_directory(const std::string &path,
 
   TimeMode time_mode = time_selection->mode;
   SortMode sort_mode = sort_selection->mode;
+  // [GNU] ls.c:2387-2391: specifying a time field implies time
+  // sorting only for ctime/atime/btime — --time=mtime (the default
+  // field) never does.
   if (!sort_selection->explicit_sort && format_mode != FormatMode::Long &&
-      time_selection->explicit_time) {
+      time_selection->explicit_time &&
+      time_mode != TimeMode::Modification) {
     sort_mode = SortMode::Time;
   }
 
@@ -3265,8 +3468,7 @@ auto list_directory(const std::string &path,
                           !ctx.get<bool>("-G", false) &&
                           !ctx.get<bool>("--no-group", false);
   const bool show_author = ctx.get<bool>("--author", false);
-  const bool show_blocks =
-      ctx.get<bool>("-s", false) || ctx.get<bool>("--size", false);
+  const bool show_blocks = print_block_size_enabled(ctx);
 
   if (long_format) {
     const bool show_inode =
@@ -3635,8 +3837,7 @@ auto list_file(const std::string &path,
   const bool show_author = ctx.get<bool>("--author", false);
   bool show_inode =
       ctx.get<bool>("-i", false) || ctx.get<bool>("--inode", false);
-  bool show_blocks =
-      ctx.get<bool>("-s", false) || ctx.get<bool>("--size", false);
+  bool show_blocks = print_block_size_enabled(ctx);
 
   if (long_format) {
     // Long format output for single file
@@ -3693,12 +3894,9 @@ auto list_file(const std::string &path,
       safePrint(" ");
     }
 
-    // 5. File size (right-aligned, pad to at least 8 chars)
-    if (size.length() < 8) {
-      for (size_t i = 0; i < 8 - size.length(); i++) {
-        safePrint(" ");
-      }
-    }
+    // 5. File size.  [GNU] a single-operand -l pads the size only
+    // to its own width (ls.c:3663-3675 computes widths from the
+    // operands themselves); there is no minimum width of 8.
     safePrint(std::string_view(size));
     safePrint(" ");
 
@@ -4179,6 +4377,19 @@ REGISTER_COMMAND(
     ls_pipeline::g_hyperlink_enabled = *link;
   } else {
     ls_pipeline::g_hyperlink_enabled = false;
+  }
+  // [GNU] --color / --indicator-style values go through XARGMATCH
+  // (ls.c:2156-2160, 2186-2188): an invalid value is a hard error
+  // (argmatch_die -> LS_FAILURE = 2) before any listing, never a
+  // silent fall back to defaults.
+  if (auto color_error = ls_pipeline::validate_color_option(ctx)) {
+    safeErrorPrintLn("ls: " + *color_error);
+    return 2;
+  }
+  if (auto style_error =
+          ls_pipeline::validate_indicator_style_option(ctx)) {
+    safeErrorPrintLn("ls: " + *style_error);
+    return 2;
   }
   set_stdout_byte_counting(ls_pipeline::dired_requested(ctx));
 
