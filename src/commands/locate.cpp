@@ -73,7 +73,7 @@ struct Config {
   bool wholename = false;
   bool statistics = false;
   bool limit_set = false;
-  int limit = 0;
+  std::int64_t limit = 0;
   bool database_given = false;
   std::string database;  // raw -d value when database_given
   SmallVector<std::string, 8> patterns;
@@ -121,9 +121,9 @@ auto build_config(const CommandContext<LOCATE_OPTIONS.size()>& ctx)
   // option was given instead of treating 0 as "no limit".
   cfg.limit_set = ctx.has("-l") || ctx.has("--limit");
   if (ctx.has("-l")) {
-    cfg.limit = ctx.get<int>("-l", 0);
+    cfg.limit = ctx.get<std::int64_t>("-l", 0);
   } else if (ctx.has("--limit")) {
-    cfg.limit = ctx.get<int>("--limit", 0);
+    cfg.limit = ctx.get<std::int64_t>("--limit", 0);
   }
   if (cfg.limit < 0) {
     return std::unexpected("invalid negative limit");

@@ -475,7 +475,7 @@ struct DuConfig {
   DuTimeMode time_mode = DuTimeMode::Modification;
   std::string time_word;   // --time
   std::string time_style;  // --time-style
-  int max_depth = -1;
+  std::int64_t max_depth = -1;
   ThresholdMode threshold_mode = ThresholdMode::None;
   uint64_t threshold_size = 0;
   SmallVector<std::string, 16> exclude_patterns;
@@ -776,14 +776,14 @@ auto configure_du(const CommandContext<DU_OPTIONS.size()>& ctx)
   cfg.summarize =
       ctx.get<bool>("--summarize", false) || ctx.get<bool>("-s", false);
 
-  cfg.max_depth = ctx.get<int>("--max-depth", -1);
+  cfg.max_depth = ctx.get<std::int64_t>("--max-depth", -1);
   if (cfg.count_all && cfg.summarize) {
     // [GNU] du.c:937-938: "...show all entries" (the noun was dropped).
     return std::unexpected("cannot both summarize and show all entries\n"
                            "Try 'du --help' for more information.");
   }
   if (ctx.get<int>("-d", -1) != -1) {
-    cfg.max_depth = ctx.get<int>("-d", -1);
+    cfg.max_depth = ctx.get<std::int64_t>("-d", -1);
   }
   // [GNU] -s with --max-depth (du.c:940-947): depth 0 warns and
   // proceeds; any other explicit depth warns and fails with usage.

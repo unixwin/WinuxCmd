@@ -697,8 +697,8 @@ REGISTER_COMMAND(
   if (delimiter_given && delimiter.empty()) {
     delimiter.assign(1, '\0');
   }
-  int header = 0;
-  header = ctx.get<int>("--header", 0);
+  std::int64_t header = 0;
+  header = ctx.get<std::int64_t>("--header", 0);
   // [GNU] numfmt.c:1558-1561: --header=0 is invalid; a bare --header
   // means 1 and an absent --header means no header lines.
   bool header_given = false;
@@ -724,7 +724,8 @@ REGISTER_COMMAND(
   bool debug =
       ctx.get<bool>("--debug", false) || ctx.get<bool>("---debug", false);
   std::string round_mode = ctx.get<std::string>("--round", "");
-  int padding = ctx.get<int>("--padding", ctx.get<int>("--pad", 0));
+  const std::int64_t padding = ctx.get<std::int64_t>(
+      "--padding", ctx.get<std::int64_t>("--pad", 0));
   // [GNU] numfmt.c:1511-1514: --padding=0 is invalid (xstrtol must yield
   // a non-zero width; negative widths left-align and are fine).
   bool padding_given = false;
