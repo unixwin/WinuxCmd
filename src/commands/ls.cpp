@@ -2105,7 +2105,6 @@ auto print_block_size_enabled(const CommandContext<LS_OPTIONS.size()> &ctx)
   }
   return enabled;
 }
-}
 
 auto resolve_color_enabled(const CommandContext<LS_OPTIONS.size()> &ctx)
     -> bool {
