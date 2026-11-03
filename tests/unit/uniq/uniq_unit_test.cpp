@@ -417,3 +417,43 @@ TEST(uniq, uniq_group_modes_emit_every_record_issue1127) {
   }
 }
 
+
+// ---------------------------------------------------------------------------
+// Issue #1513: a bare --group selects the default separate mode
+// (uniq.c:579-597); an attached empty value is not bare and is
+// rejected by the XARGMATCH, like any other bogus mode.
+// ---------------------------------------------------------------------------
+TEST(uniq, uniq_bare_group_uses_separate_mode_issue1513) {
+  TempDir tmp;
+  tmp.write("a.txt", "a\na\nb\n");
+
+  Pipeline bare;
+  bare.set_cwd(tmp.wpath());
+  bare.add(L"uniq.exe", {L"--group", L"a.txt"});
+  auto bare_result = bare.run();
+
+  Pipeline explicit_mode;
+  explicit_mode.set_cwd(tmp.wpath());
+  explicit_mode.add(L"uniq.exe", {L"--group=separate", L"a.txt"});
+  auto explicit_result = explicit_mode.run();
+
+  // The invariant: bare --group behaves exactly like the default
+  // mode spelled out -- it is not an empty-mode error.
+  EXPECT_EQ(bare_result.exit_code, 0);
+  EXPECT_EQ(bare_result.stdout_text, explicit_result.stdout_text);
+}
+
+TEST(uniq, uniq_group_attached_empty_is_invalid_issue1513) {
+  TempDir tmp;
+  tmp.write("a.txt", "a\na\nb\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"uniq.exe", {L"--group=", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_NE(r.exit_code, 0);
+  // GNU 9.4 argmatch reports the empty prefix as ambiguous.
+  EXPECT_TRUE(r.stderr_text.find("ambiguous argument '' for '--group'") !=
+              std::string::npos);
+}

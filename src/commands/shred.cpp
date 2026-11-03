@@ -131,7 +131,14 @@ REGISTER_COMMAND(
   std::string remove_how = "wipesync";
   if (ctx.has("--remove")) {
     auto how = ctx.get<std::string>("--remove", "");
-    if (!how.empty()) {
+    // [GNU] a bare --remove selects the wipesync default; an attached
+    // value goes through argmatch, so "--remove=" fails as ambiguous
+    // (it prefixes all three words) instead of taking the default
+    // (#1513).
+    auto remove_occurrences = ctx.string_occurrences({"--remove"});
+    bool attached = !remove_occurrences.empty() &&
+                    remove_occurrences.back().has_value;
+    if (!how.empty() || attached) {
       static constexpr std::string_view remove_words[] = {"unlink", "wipe",
                                                           "wipesync"};
       std::string_view matched;

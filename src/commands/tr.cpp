@@ -343,6 +343,31 @@ auto parse_set_atom(std::string_view& str, RepeatSpec* repeat_out,
   return parse_atomic_token(str);
 }
 
+// [GNU] A range endpoint is the single raw character after '-'
+// (build_spec_list, tr.c:984-995): escapes are resolved, but a
+// [:class:], [=c=] or [c*n] construct in endpoint position is NOT
+// special -- '[' itself is the endpoint byte, so "a-[:digit:]" is the
+// reverse range 'a'..'[' and fails, and for a start byte below '['
+// the construct text after the range is read as ordinary characters.
+// An ambiguous octal escape can yield a second byte; the caller
+// re-reads it as the next element, like GNU's unescaped stream.
+auto parse_range_endpoint(std::string_view& str) -> cp::Result<std::string> {
+  if (str.empty()) return std::unexpected("missing character");
+
+  if (str[0] == '\\') {
+    str = str.substr(1);
+    if (str.empty()) {
+      g_saw_trailing_backslash = true;
+      return std::string("\\");
+    }
+    return parse_escape_sequence(str);
+  }
+
+  char c = str[0];
+  str = str.substr(1);
+  return std::string(1, c);
+}
+
 // Parse a character set string, tracking [c*] indefinite repeats so the
 // caller can apply GNU validation and string2 fill semantics.
 struct SetParseResult {
@@ -367,6 +392,10 @@ auto parse_set(std::string_view str) -> cp::Result<SetParseResult> {
   const std::string_view operand = str;
   SetParseResult out;
   std::string& result = out.chars;
+  // Backing store for the range-endpoint splice (see the range branch):
+  // when an endpoint escape yields a leftover byte, `str` is re-pointed
+  // at leftover + remaining tail held here.
+  std::string splice_storage;
 
   // [GNU] "<operand>: equivalence class operand must be a single
   // character" -- parse_set_atom reports a sentinel; rewrite it
@@ -408,34 +437,39 @@ auto parse_set(std::string_view str) -> cp::Result<SetParseResult> {
       continue;
     }
 
-    if (atom->size() == 1 && str.size() >= 2 && str[0] == '-') {
+    // [GNU] ranges are recognized only after a plain character: an
+    // equivalence-class element is a construct, and a '-' after it is
+    // an ordinary character (build_spec_list's fall-through reads the
+    // '-' itself as a normal char).
+    if (atom->size() == 1 && !info.is_equiv && str.size() >= 2 &&
+        str[0] == '-') {
       std::string_view range_tail = str.substr(1);
-      auto end_atom = parse_set_atom(range_tail, nullptr);
+      auto end_atom = parse_range_endpoint(range_tail);
       if (!end_atom) return std::unexpected(rewrite_error(end_atom.error()));
 
-      if (end_atom->size() == 1) {
-        unsigned char start = static_cast<unsigned char>((*atom)[0]);
-        unsigned char end = static_cast<unsigned char>((*end_atom)[0]);
-        if (start > end) {
-          std::string range_text;
-          range_text += (*atom)[0];
-          range_text += '-';
-          range_text += (*end_atom)[0];
-          return std::unexpected(make_dynamic_error(
-              std::string("range-endpoints of '") + range_text +
-              "' are in reverse collating sequence order"));
-        }
-        out.element_starts.push_back(result.size());
-        for (unsigned int c = start; c <= end; ++c) {
-          result += static_cast<char>(c);
-        }
-        out.ends_with_class = false;
-        str = range_tail;
+      unsigned char start = static_cast<unsigned char>((*atom)[0]);
+      unsigned char end = static_cast<unsigned char>((*end_atom)[0]);
+      if (start > end) {
+        std::string range_text;
+        range_text += (*atom)[0];
+        range_text += '-';
+        range_text += (*end_atom)[0];
+        return std::unexpected(make_dynamic_error(
+            std::string("range-endpoints of '") + range_text +
+            "' are in reverse collating sequence order"));
+      }
+      out.element_starts.push_back(result.size());
+      for (unsigned int c = start; c <= end; ++c) {
+        result += static_cast<char>(c);
+      }
+      out.ends_with_class = false;
+      if (end_atom->size() > 1) {
+        // An ambiguous octal escape produced a second byte: GNU's
+        // unescaped stream holds it as the next element.
+        splice_storage = end_atom->substr(1) + std::string(range_tail);
+        str = splice_storage;
       } else {
-        result += *atom;
-        result += '-';
-        out.ends_with_class = false;
-        str = str.substr(1);
+        str = range_tail;
       }
     } else {
       out.element_starts.push_back(result.size());

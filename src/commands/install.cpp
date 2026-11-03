@@ -83,6 +83,18 @@ namespace cp = core::pipeline;
 // whether and how an overwritten destination is preserved (#1357).
 enum class BackupControl { none, simple, numbered, existing };
 
+auto backup_type_error(bool ambiguous, const std::string& raw) -> std::string {
+  return std::string(ambiguous ? "ambiguous argument '" : "invalid argument '") +
+         raw +
+         "' for 'backup type'\n"
+         "Valid arguments are:\n"
+         "  - 'none', 'off'\n"
+         "  - 'simple', 'never'\n"
+         "  - 'existing', 'nil'\n"
+         "  - 'numbered', 't'\n"
+         "Try 'install --help' for more information.";
+}
+
 // [GNU] CONTROL resolution follows xget_version (lib/backup-find.c):
 // argmatch over the eight spellings — exact or unique prefix,
 // case-sensitive; a bare -b/--backup (no CONTROL) falls back to
@@ -117,16 +129,7 @@ auto parse_backup_control(const std::string& raw)
     }
   }
   if (matches == 1) return matched;
-  return std::unexpected(
-      std::string(matches > 1 ? "ambiguous argument '" : "invalid argument '") +
-      raw +
-      "' for 'backup type'\n"
-      "Valid arguments are:\n"
-      "  - 'none', 'off'\n"
-      "  - 'simple', 'never'\n"
-      "  - 'existing', 'nil'\n"
-      "  - 'numbered', 't'\n"
-      "Try 'install --help' for more information.");
+  return std::unexpected(backup_type_error(matches > 1, raw));
 }
 
 struct Config {
@@ -435,6 +438,15 @@ auto build_config(const CommandContext<INSTALL_OPTIONS.size()>& ctx)
   // (install.c case 'S' sets make_backups).
   if (ctx.get<bool>("-b", false) || ctx.has("--backup") || ctx.has("-S") ||
       ctx.has("--suffix")) {
+    // [GNU] "--backup=" is an ambiguous argmatch failure; only a bare
+    // --backup falls back to $VERSION_CONTROL / 'existing' (#1513).
+    if (ctx.has("--backup")) {
+      auto backup_occurrences = ctx.string_occurrences({"--backup"});
+      if (!backup_occurrences.empty() && backup_occurrences.back().has_value &&
+          backup_occurrences.back().value.empty()) {
+        return std::unexpected(backup_type_error(true, ""));
+      }
+    }
     auto parsed = parse_backup_control(
         ctx.has("--backup") ? ctx.get<std::string>("--backup", "")
                             : std::string{});

@@ -1002,6 +1002,13 @@ auto load_patterns_from_file(const std::string& path)
   return lines;
 }
 
+// [GNU] grep.c:2869 calls usage (EXIT_TROUBLE) when no pattern is
+// given: exactly the two usage lines on stderr (grep.c:1969-1974), not
+// a prefixed "grep: ..." diagnostic. build_config reports the case
+// with this sentinel; execute_with_default_mode renders the GNU shape
+// (#1510).
+inline constexpr std::string_view kMissingPatternsError = "missing PATTERNS";
+
 auto build_config(const CommandContext<GREP_OPTIONS.size()>& ctx,
                   PatternMode default_mode = PatternMode::BasicRegex)
     -> cp::Result<Config> {
@@ -1253,7 +1260,12 @@ auto build_config(const CommandContext<GREP_OPTIONS.size()>& ctx,
   std::optional<std::string> color_opt;
   for (const auto& occurrence :
        ctx.string_occurrences({"--color", "--colour"})) {
-    color_opt = occurrence.value.empty() ? "auto" : occurrence.value;
+    // [GNU] grep.c:2749-2768: a bare --color (optarg == nullptr) selects
+    // color_option = 2, i.e. auto (grep.c:2916-2917 resolves 2 through
+    // the tty check) -- unlike ls, whose bare --color means always.
+    // An attached value is judged as written, so "--color=" reaches the
+    // invalid-mode error below instead of collapsing into auto (#1513).
+    color_opt = occurrence.has_value ? occurrence.value : "auto";
   }
   std::string color_mode = color_opt.value_or("auto");
   // [GNU] grep.c COLOR_OPTION accepts, case-insensitively
@@ -1345,7 +1357,7 @@ auto build_config(const CommandContext<GREP_OPTIONS.size()>& ctx,
 
   if (raw_patterns.empty() && !pattern_source_provided) {
     if (positionals.empty()) {
-      return std::unexpected("missing PATTERNS");
+      return std::unexpected(std::string(kMissingPatternsError));
     }
     auto split = split_lines(positionals.front());
     for (const auto& p : split) raw_patterns.push_back(p);
@@ -1354,7 +1366,7 @@ auto build_config(const CommandContext<GREP_OPTIONS.size()>& ctx,
   }
 
   if (raw_patterns.empty() && !pattern_source_provided) {
-    return std::unexpected("missing PATTERNS");
+    return std::unexpected(std::string(kMissingPatternsError));
   }
   if (raw_patterns.empty() && pattern_source_provided) {
     // [GNU] an empty pattern file selects NOTHING: no output, exit 1
@@ -1396,45 +1408,10 @@ auto flush_if_line_buffered(const Config& cfg) -> void {
   }
 }
 
-auto collect_prefixed_regex_matches(std::string_view line, const Pattern& p,
-                                    const Config& cfg,
-                                    std::string& lowered_line)
-    -> std::vector<MatchPiece> {
-  std::vector<MatchPiece> matches;
-  if (!p.regex || p.fast_prefix.empty()) return matches;
-
-  std::string_view haystack = line;
-  std::string_view prefix = p.fast_prefix;
-  if (cfg.ignore_case) {
-    if (lowered_line.empty() && !line.empty()) {
-      lowered_line = ascii_lower_copy(line);
-    }
-    haystack = lowered_line;
-    prefix = p.lowered_fast_prefix;
-  }
-
-  size_t cursor = 0;
-  while (cursor <= haystack.size()) {
-    size_t pos = haystack.find(prefix, cursor);
-    if (pos == std::string_view::npos) break;
-
-    auto match = p.regex->match_at(line, pos);
-    if (match) {
-      MatchPiece m{match->begin, match->end};
-      if (!cfg.word_regexp || word_boundary_ok(line, m.begin, m.end)) {
-        matches.push_back(m);
-      }
-      cursor = m.end > m.begin ? m.end : m.begin + 1;
-    } else {
-      cursor = pos + 1;
-    }
-  }
-  return matches;
-}
-
 auto collect_prefixed_class_repeat_matches(std::string_view line,
                                            const Pattern& p, const Config& cfg,
-                                           std::string& lowered_line)
+                                           std::string& lowered_line,
+                                           size_t start = 0)
     -> std::vector<MatchPiece> {
   std::vector<MatchPiece> matches;
   if (!p.fast_class_repeat || p.fast_prefix.empty()) return matches;
@@ -1449,7 +1426,7 @@ auto collect_prefixed_class_repeat_matches(std::string_view line,
     prefix = p.lowered_fast_prefix;
   }
 
-  size_t cursor = 0;
+  size_t cursor = start;
   while (cursor <= haystack.size()) {
     size_t pos = haystack.find(prefix, cursor);
     if (pos == std::string_view::npos) break;
@@ -1481,7 +1458,8 @@ auto collect_prefixed_class_repeat_matches(std::string_view line,
 
 auto find_first_prefixed_regex_match(std::string_view line, const Pattern& p,
                                      const Config& cfg,
-                                     std::string& lowered_line)
+                                     std::string& lowered_line,
+                                     size_t start = 0)
     -> std::optional<MatchPiece> {
   if (!p.regex || p.fast_prefix.empty()) return std::nullopt;
 
@@ -1495,7 +1473,7 @@ auto find_first_prefixed_regex_match(std::string_view line, const Pattern& p,
     prefix = p.lowered_fast_prefix;
   }
 
-  size_t cursor = 0;
+  size_t cursor = start;
   while (cursor <= haystack.size()) {
     size_t pos = haystack.find(prefix, cursor);
     if (pos == std::string_view::npos) break;
@@ -1524,90 +1502,137 @@ auto find_first_prefixed_class_repeat_match(std::string_view line,
   return matches.front();
 }
 
+// First accepted match of the single pattern P at or after START, or
+// nullopt. Each pattern kind searches with its own fast path; the
+// word-boundary filter skips rejected candidates the same way the old
+// per-pattern collectors did.
+auto find_first_match_at_or_after(std::string_view line, const Pattern& p,
+                                  const Config& cfg,
+                                  std::string& lowered_line, size_t start)
+    -> std::optional<MatchPiece> {
+  if (cfg.mode == PatternMode::Fixed) {
+    size_t cursor = start;
+    while (true) {
+      size_t pos = std::string_view::npos;
+      size_t len = 0;
+      if (cfg.ignore_case) {
+        if (lowered_line.empty() && !line.empty()) {
+          lowered_line = ascii_lower_copy(line);
+        }
+        pos = lowered_line.find(p.lowered, cursor);
+        len = p.lowered.size();
+      } else {
+        pos = line.find(p.raw, cursor);
+        len = p.raw.size();
+      }
+
+      if (pos == std::string_view::npos) return std::nullopt;
+      MatchPiece m{pos, pos + len};
+      if (!cfg.word_regexp || word_boundary_ok(line, m.begin, m.end)) {
+        return m;
+      }
+      cursor = m.begin + 1;
+    }
+  }
+
+  if (!p.regex.has_value()) return std::nullopt;
+
+  if (p.fast_class_repeat) {
+    auto matches = collect_prefixed_class_repeat_matches(line, p, cfg,
+                                                         lowered_line, start);
+    if (matches.empty()) return std::nullopt;
+    return matches.front();
+  }
+
+  if (!p.fast_prefix.empty()) {
+    return find_first_prefixed_regex_match(line, p, cfg, lowered_line, start);
+  }
+
+  size_t cursor = start;
+  while (cursor <= line.size()) {
+    auto match = p.regex->find_first(line, cursor);
+    if (!match) return std::nullopt;
+    MatchPiece m{match->begin, match->end};
+    if (!cfg.word_regexp || word_boundary_ok(line, m.begin, m.end)) {
+      return m;
+    }
+    cursor = m.end > m.begin ? m.end : m.begin + 1;
+  }
+  return std::nullopt;
+}
+
 auto collect_matches_in_line(std::string_view line, const Config& cfg)
     -> std::vector<MatchPiece> {
   std::vector<MatchPiece> out;
   std::string lowered_line;
 
-  for (const auto& p : cfg.patterns) {
-    if (p.raw.empty()) {
-      out.push_back(MatchPiece{0, 0});
-      continue;
-    }
+  if (cfg.line_regexp) {
+    for (const auto& p : cfg.patterns) {
+      if (p.raw.empty()) {
+        out.push_back(MatchPiece{0, 0});
+        continue;
+      }
 
-    if (cfg.mode == PatternMode::Fixed) {
-      if (cfg.line_regexp) {
+      if (cfg.mode == PatternMode::Fixed) {
         bool eq = cfg.ignore_case ? (ascii_lower_copy(line) == p.lowered)
                                   : (line == p.raw);
         if (eq) out.push_back(MatchPiece{0, line.size()});
         continue;
       }
 
-      size_t cursor = 0;
-      while (true) {
-        size_t pos = std::string_view::npos;
-        size_t len = 0;
-        if (cfg.ignore_case) {
-          if (lowered_line.empty() && !line.empty()) {
-            lowered_line = ascii_lower_copy(line);
-          }
-          pos = lowered_line.find(p.lowered, cursor);
-          len = p.lowered.size();
-        } else {
-          pos = line.find(p.raw, cursor);
-          len = p.raw.size();
-        }
+      if (!p.regex.has_value()) continue;
 
-        if (pos == std::string_view::npos) break;
-        MatchPiece m{pos, pos + len};
-        if (!cfg.word_regexp || word_boundary_ok(line, m.begin, m.end)) {
-          out.push_back(m);
-        }
-        cursor = m.begin + 1;
-      }
-      continue;
-    }
-
-    if (!p.regex.has_value()) continue;
-
-    if (cfg.line_regexp) {
       if (p.regex->matches_entire(line)) {
         out.push_back(MatchPiece{0, line.size()});
       }
-      continue;
     }
 
-    if (p.fast_class_repeat) {
-      auto matches =
-          collect_prefixed_class_repeat_matches(line, p, cfg, lowered_line);
-      out.insert(out.end(), matches.begin(), matches.end());
-      continue;
-    }
-
-    if (!p.fast_prefix.empty()) {
-      auto matches = collect_prefixed_regex_matches(line, p, cfg, lowered_line);
-      out.insert(out.end(), matches.begin(), matches.end());
-      continue;
-    }
-
-    for (const auto& match : p.regex->find_all(line)) {
-      MatchPiece m{match.begin, match.end};
-      if (!cfg.word_regexp || word_boundary_ok(line, m.begin, m.end)) {
-        out.push_back(m);
-      }
-    }
+    std::sort(out.begin(), out.end(),
+              [](const MatchPiece& a, const MatchPiece& b) {
+                if (a.begin != b.begin) return a.begin < b.begin;
+                return a.end < b.end;
+              });
+    out.erase(std::unique(out.begin(), out.end(),
+                          [](const MatchPiece& a, const MatchPiece& b) {
+                            return a.begin == b.begin && a.end == b.end;
+                          }),
+              out.end());
+    return out;
   }
 
-  std::sort(out.begin(), out.end(),
-            [](const MatchPiece& a, const MatchPiece& b) {
-              if (a.begin != b.begin) return a.begin < b.begin;
-              return a.end < b.end;
-            });
-  out.erase(std::unique(out.begin(), out.end(),
-                        [](const MatchPiece& a, const MatchPiece& b) {
-                          return a.begin == b.begin && a.end == b.end;
-                        }),
-            out.end());
+  bool has_nonempty_pattern = false;
+  for (const auto& p : cfg.patterns) {
+    if (p.raw.empty()) {
+      // An empty pattern contributes its single empty match, as before;
+      // the printers skip empty pieces.
+      if (out.empty()) out.push_back(MatchPiece{0, 0});
+    } else {
+      has_nonempty_pattern = true;
+    }
+  }
+  if (!has_nonempty_pattern) return out;
+
+  // [GNU] -o and --color report the leftmost-longest match over the
+  // WHOLE pattern set at each scan position (grep's combined matcher),
+  // not every pattern's matches independently: with -e foo -e foobar on
+  // "foobar" the only piece is "foobar", and fixed strings no longer
+  // produce overlapping pieces ("aa" on "aaa" matches once) (#1508).
+  size_t cursor = 0;
+  while (cursor <= line.size()) {
+    std::optional<MatchPiece> best;
+    for (const auto& p : cfg.patterns) {
+      if (p.raw.empty()) continue;
+      auto m = find_first_match_at_or_after(line, p, cfg, lowered_line, cursor);
+      if (!m) continue;
+      if (!best || m->begin < best->begin ||
+          (m->begin == best->begin && m->end > best->end)) {
+        best = m;
+      }
+    }
+    if (!best) break;
+    out.push_back(*best);
+    cursor = best->end > best->begin ? best->end : best->begin + 1;
+  }
   return out;
 }
 
@@ -2239,6 +2264,34 @@ auto should_stream_file_fast_path(const std::string& path, const Config& cfg)
       contains_binary_bytes(view, cfg)) {
     return false;
   }
+
+  // [GNU] grep.c:1554-1565 judges binary-ness over the whole buffer it
+  // reads, and for a regular file that buffer is effectively the whole
+  // file -- so a first NUL past the 64 KiB sample still makes the file
+  // binary. The sample alone used to send such files down the text
+  // streaming path (#1507). When per-line output will actually be
+  // printed (the only case where the verdict is observable; the modes
+  // scan_binary_default delegates to text scanning are exempt), extend
+  // the probe over the rest of a regular file before trusting the
+  // streaming path. Non-regular inputs keep the sample behavior.
+  if (cfg.binary_mode == BinaryMode::Binary && !cfg.null_data &&
+      !cfg.quiet && !cfg.files_with_matches && !cfg.files_without_match &&
+      !cfg.count_only && got == sample.size()) {
+    std::error_code ec;
+    if (std::filesystem::is_regular_file(
+            std::filesystem::path(open_operand_path_w(path)), ec) &&
+        !ec) {
+      while (in) {
+        in.read(sample.data(), static_cast<std::streamsize>(sample.size()));
+        const auto n =
+            static_cast<size_t>(std::max<std::streamsize>(in.gcount(), 0));
+        if (n == 0) break;
+        if (contains_binary_bytes(std::string_view(sample.data(), n), cfg)) {
+          return false;
+        }
+      }
+    }
+  }
   return true;
 }
 
@@ -2863,6 +2916,13 @@ auto execute_with_default_mode(CommandContext<GREP_OPTIONS.size()>& ctx,
                                const wchar_t* command_name) -> int {
   auto config = build_config(ctx, default_mode);
   if (!config) {
+    if (config.error() == kMissingPatternsError) {
+      const std::string name = wstring_to_utf8(command_name);
+      safeErrorPrintLn("Usage: " + name + " [OPTION]... PATTERNS [FILE]...");
+      safeErrorPrintLn(winux::i18n::format(
+          "common.try_help", "Try '{} --help' for more information.", name));
+      return 2;
+    }
     cp::report_error(config, command_name);
     return 2;
   }

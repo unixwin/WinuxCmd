@@ -1038,14 +1038,24 @@ void dired_note_text_entry(uint64_t name_offset, uint64_t name_length) {
 }
 
 // [GNU] --hyperlink[=WHEN] wraps each name in an OSC 8 escape with a
-// file://HOST/path URI.  Bare --hyperlink means "always".
+// file://HOST/path URI.  Bare --hyperlink means "always" (ls.c:2171-
+// 2180: XARGMATCH runs only when optarg != nullptr); an attached empty
+// value ("--hyperlink=") is an argmatch failure, not a bare occurrence
+// (#1513).
 auto hyperlink_mode(const CommandContext<LS_OPTIONS.size()> &ctx)
     -> cp::Result<bool> {
   if (!ctx.has("--hyperlink")) {
     return false;
   }
+  auto occurrences = ctx.string_occurrences({"--hyperlink"});
+  if (!occurrences.empty() && !occurrences.back().has_value) {
+    return true;
+  }
   const std::string when = ctx.get<std::string>("--hyperlink", "");
-  if (when.empty() || when == "always" || when == "yes" || when == "force") {
+  if (when.empty()) {
+    return std::unexpected("invalid --hyperlink argument ''");
+  }
+  if (when == "always" || when == "yes" || when == "force") {
     return true;
   }
   if (when == "never" || when == "no" || when == "none") {
@@ -2032,6 +2042,53 @@ auto make_generic_display_path(std::string path) -> std::string {
   return path;
 }
 
+enum class ColorWhen { Always, Never, Auto };
+
+// [GNU] --color[=WHEN] (ls.c:2156-2169, when_args at ls.c:938-950): a
+// bare --color means always; an attached value goes through argmatch
+// over always/yes/force, never/no/none, auto/tty/if-tty -- exact or
+// unambiguous prefix, where several spellings of one mode still match
+// ("n" -> never). "" prefixes every spelling of every mode, so it is
+// ambiguous (#1513).
+auto resolve_color_mode(const CommandContext<LS_OPTIONS.size()> &ctx)
+    -> cp::Result<ColorWhen> {
+  auto occurrences = ctx.string_occurrences({"--color"});
+  if (occurrences.empty()) return ColorWhen::Auto;
+  const auto &occurrence = occurrences.back();
+  if (!occurrence.has_value) return ColorWhen::Always;
+
+  const std::string &value = occurrence.value;
+  static constexpr std::pair<std::string_view, ColorWhen> kNames[] = {
+      {"always", ColorWhen::Always}, {"yes", ColorWhen::Always},
+      {"force", ColorWhen::Always},  {"never", ColorWhen::Never},
+      {"no", ColorWhen::Never},      {"none", ColorWhen::Never},
+      {"auto", ColorWhen::Auto},     {"tty", ColorWhen::Auto},
+      {"if-tty", ColorWhen::Auto},
+  };
+  for (auto [name, when] : kNames) {
+    if (value == name) return when;
+  }
+  std::optional<ColorWhen> matched;
+  bool ambiguous = false;
+  for (auto [name, when] : kNames) {
+    if (!name.starts_with(value)) continue;
+    if (matched && *matched != when) ambiguous = true;
+    matched = when;
+  }
+  if (matched && !ambiguous) return *matched;
+  std::string message =
+      ambiguous ? "ambiguous argument '" : "invalid argument '";
+  message += value;
+  message +=
+      "' for '--color'\n"
+      "Valid arguments are:\n"
+      "  - 'always', 'yes', 'force'\n"
+      "  - 'never', 'no', 'none'\n"
+      "  - 'auto', 'tty', 'if-tty'\n"
+      "Try 'ls --help' for more information.";
+  return std::unexpected(message);
+}
+
 // [GNU] ls.c case 'f' sets print_block_size = false at its
 // position; a later -s/--size sets it again.  Positional scan.
 auto print_block_size_enabled(const CommandContext<LS_OPTIONS.size()> &ctx)
@@ -2053,30 +2110,24 @@ auto resolve_color_enabled(const CommandContext<LS_OPTIONS.size()> &ctx)
     -> bool {
   // [GNU] positional semantics: --color assigns print_with_color at
   // its position, and -f clears it at its position (ls.c case 'f');
-  // the last of the two decides.
-  std::string color_option = "auto";
+  // the last of the two decides. The value itself (bare = always,
+  // attached = argmatch over the when table) is resolved by
+  // resolve_color_mode over the last --color occurrence (#1513).
   bool suppressed_by_f = false;
   for (const auto &occurrence : ctx.options.occurrences()) {
     if (occurrence.index >= LS_OPTIONS.size()) continue;
     const auto &meta = LS_OPTIONS[occurrence.index];
     if (meta.long_name == "--color") {
-      auto value = std::get_if<std::string>(&occurrence.value);
-      color_option = value ? *value : "";
       suppressed_by_f = false;
     } else if (meta.short_name == "-f") {
       suppressed_by_f = true;
     }
   }
   if (suppressed_by_f) return false;
-  // [GNU] Bare --color means --color=always (verified: piped output still
-  // carries escapes under GNU 9.4, unlike --color=auto).
-  if (color_option.empty()) return true;
-  auto full = ls_argmatch_prefix(
-      color_option, {"always", "yes", "force", "never", "no", "none",
-                     "auto", "tty", "if-tty"});
-  if (!full) return false;  // unreachable: validate_color_option ran first
-  if (*full == "always" || *full == "yes" || *full == "force") return true;
-  if (*full == "never" || *full == "no" || *full == "none") return false;
+  auto mode = resolve_color_mode(ctx);
+  if (!mode) return ls_is_terminal(stdout);
+  if (*mode == ColorWhen::Always) return true;
+  if (*mode == ColorWhen::Never) return false;
   return ls_is_terminal(stdout);
 }
 
@@ -2088,7 +2139,7 @@ auto argmatch_error_text(std::string_view value, std::string_view option,
     -> std::string {
   bool ambiguous = false;
   for (auto name : valid) {
-    if (!value.empty() && name.starts_with(value) && name != value) {
+    if (name.starts_with(value) && name != value) {
       ambiguous = true;
     }
   }
@@ -2112,7 +2163,11 @@ auto validate_color_option(const CommandContext<LS_OPTIONS.size()> &ctx)
     const auto &meta = LS_OPTIONS[occurrence.index];
     if (meta.long_name != "--color") continue;
     auto value = std::get_if<std::string>(&occurrence.value);
-    if (!value || value->empty()) continue;  // bare --color: always
+    // [GNU] a bare --color means always and needs no validation; an
+    // attached value -- including "" from --color= -- goes through
+    // argmatch (#1513: value_attached carries the distinction).
+    if (!occurrence.value_attached) continue;
+    if (!value) continue;
     if (!ls_argmatch_prefix(*value, {"always", "yes", "force", "never",
                                      "no", "none", "auto", "tty",
                                      "if-tty"})) {
@@ -3089,17 +3144,7 @@ auto print_columns(const std::vector<EntryInfo> &entries,
   }
 
   // Check if color is enabled based on --color option
-  bool color_enabled = true;  // Default to enabled
-  std::string color_option = ctx.get<std::string>("--color", "auto");
-  if (color_option == "never") {
-    color_enabled = false;
-  } else if (color_option == "auto") {
-    color_enabled = ls_is_terminal(stdout);
-  } else if (color_option.empty()) {
-    // [GNU] Bare --color means --color=always (verified: piped output
-    // still carries escapes under GNU 9.4, unlike --color=auto).
-    color_enabled = true;
-  }
+  bool color_enabled = resolve_color_enabled(ctx);
 
   // Get terminal width or use specified width
   int width = ctx.get<int>("-w", 0);
@@ -4302,6 +4347,17 @@ REGISTER_COMMAND(
     LS_OPTIONS) {
   using namespace ls_pipeline;
   using namespace core::pipeline;
+
+  // [GNU] --color[=WHEN]: validate the argument up front (ls.c:2156-
+  // 2169 XARGMATCH) so an invalid or ambiguous value fails before any
+  // listing output, like --hyperlink below (#1513).
+  if (ctx.has("--color")) {
+    auto color = ls_pipeline::resolve_color_mode(ctx);
+    if (!color) {
+      safeErrorPrintLn("ls: " + color.error());
+      return 2;
+    }
+  }
 
   // [GNU] --hyperlink[=WHEN]: validate the argument up front so an invalid
   // value fails before any listing output.

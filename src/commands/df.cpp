@@ -402,8 +402,13 @@ auto append_output_fields(std::vector<OutputField>& fields,
 
 template <size_t N>
 auto has_empty_inline_output_value(const CommandContext<N>& ctx) -> bool {
-  for (std::string_view arg : ctx.raw_args) {
-    if (arg == "--output=") {
+  // [GNU] "--output=" (an attached empty value) names an empty field;
+  // a bare --output selects all fields. The parser records the
+  // distinction per occurrence (#1513); this used to scan raw argv for
+  // the literal "--output=" spelling, which missed abbreviated forms
+  // ("--out=").
+  for (const auto& occurrence : ctx.string_occurrences({"--output"})) {
+    if (occurrence.has_value && occurrence.value.empty()) {
       return true;
     }
   }

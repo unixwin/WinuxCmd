@@ -2323,8 +2323,15 @@ REGISTER_COMMAND(
   std::optional<std::string> iso_format, rfc3339_format;
   std::string iso_arg = ctx.get<std::string>("--iso-8601", "");
   if (!ctx.has("--iso-8601")) iso_arg = ctx.get<std::string>("-I", "");
+  // [GNU] a bare -I/--iso-8601 means 'date'; an attached empty value
+  // ("--iso-8601=") is an argmatch failure, not the bare case (#1513).
+  auto iso_occurrences = ctx.string_occurrences({"--iso-8601"});
+  if (iso_occurrences.empty()) iso_occurrences = ctx.string_occurrences({"-I"});
+  bool iso_attached_empty = !iso_occurrences.empty() &&
+                            iso_occurrences.back().has_value &&
+                            iso_occurrences.back().value.empty();
   if (ctx.has("--iso-8601") || ctx.has("-I")) {
-    iso_format = iso_format_for(iso_arg);
+    iso_format = iso_attached_empty ? std::nullopt : iso_format_for(iso_arg);
     if (!iso_format) {
       safeErrorPrint("date: invalid argument '");
       safeErrorPrint(iso_arg);
@@ -2347,7 +2354,14 @@ REGISTER_COMMAND(
   }
   std::string rfc3339_arg = ctx.get<std::string>("--rfc-3339", "");
   if (ctx.has("--rfc-3339")) {
-    rfc3339_format = rfc3339_format_for(rfc3339_arg);
+    // [GNU] a bare --rfc-3339 means 'date'; "--rfc-3339=" is an
+    // argmatch failure (#1513).
+    auto rfc3339_occurrences = ctx.string_occurrences({"--rfc-3339"});
+    bool rfc3339_attached_empty = !rfc3339_occurrences.empty() &&
+                                  rfc3339_occurrences.back().has_value &&
+                                  rfc3339_occurrences.back().value.empty();
+    rfc3339_format =
+        rfc3339_attached_empty ? std::nullopt : rfc3339_format_for(rfc3339_arg);
     if (!rfc3339_format) {
       safeErrorPrint("date: invalid argument '");
       safeErrorPrint(rfc3339_arg);

@@ -613,6 +613,22 @@ auto requested_backup_control(const CommandContext<CP_OPTIONS.size()>& ctx)
     return BackupControl::existing;
   }
   if (ctx.has("--backup")) {
+    // [GNU] xget_version (cp.c:1233-1236): a bare --backup takes the
+    // default control; an attached value goes through argmatch, so
+    // "--backup=" fails as ambiguous instead of selecting the default
+    // (#1513).
+    auto occurrences = ctx.string_occurrences({"--backup"});
+    if (!occurrences.empty() && occurrences.back().has_value &&
+        occurrences.back().value.empty()) {
+      return std::unexpected(
+          "ambiguous argument '' for 'backup type'\n"
+          "Valid arguments are:\n"
+          "  - 'none', 'off'\n"
+          "  - 'simple', 'never'\n"
+          "  - 'existing', 'nil'\n"
+          "  - 'numbered', 't'\n"
+          "Try 'cp --help' for more information.");
+    }
     return parse_backup_control(ctx.get<std::string>("--backup", ""));
   }
   return BackupControl::none;
@@ -902,8 +918,11 @@ auto parse_sparse_mode(const CommandContext<CP_OPTIONS.size()>& ctx)
                          "Try 'cp --help' for more information.");
 }
 
-// [GNU] --reflink[=WHEN]: bare --reflink means 'auto'; 'always' reports the
-// clone failure while 'auto' silently falls back to a plain copy (#1066).
+// [GNU] --reflink[=WHEN]: bare --reflink means 'always' (cp.c:1003-
+// 1008: optarg == nullptr -> REFLINK_ALWAYS); 'always' reports the
+// clone failure while 'auto' silently falls back to a plain copy
+// (#1066). An attached value goes through argmatch, so "--reflink="
+// fails instead of collapsing into the bare case (#1513).
 enum class ReflinkMode { Never, Auto, Always };
 
 auto parse_reflink_mode(const CommandContext<CP_OPTIONS.size()>& ctx)
@@ -911,8 +930,12 @@ auto parse_reflink_mode(const CommandContext<CP_OPTIONS.size()>& ctx)
   if (!ctx.has("--reflink")) {
     return ReflinkMode::Never;
   }
+  auto occurrences = ctx.string_occurrences({"--reflink"});
+  if (!occurrences.empty() && !occurrences.back().has_value) {
+    return ReflinkMode::Always;
+  }
   const std::string value = ctx.get<std::string>("--reflink", "");
-  if (value.empty() || value == "auto") return ReflinkMode::Auto;
+  if (value == "auto") return ReflinkMode::Auto;
   if (value == "always") return ReflinkMode::Always;
   if (value == "never") return ReflinkMode::Never;
   return std::unexpected("invalid argument '" + value +
@@ -1071,6 +1094,18 @@ auto parse_update_mode(const CommandContext<CP_OPTIONS.size()>& ctx)
   }
   const std::string value = ctx.get<std::string>("--update", "");
   if (value.empty()) {
+    // [GNU] a bare --update means 'older'; "--update=" is an argmatch
+    // failure (ambiguous), not the bare case (#1513).
+    auto occurrences = ctx.string_occurrences({"--update"});
+    if (!occurrences.empty() && occurrences.back().has_value) {
+      return std::unexpected(
+          "ambiguous argument '' for '--update'\n"
+          "Valid arguments are:\n"
+          "  - 'all'\n"
+          "  - 'none'\n"
+          "  - 'older'\n"
+          "Try 'cp --help' for more information.");
+    }
     return UpdateMode::Older;
   }
   if (value == "all") return UpdateMode::All;

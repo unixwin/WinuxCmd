@@ -2223,17 +2223,27 @@ REGISTER_COMMAND(
 
   bool recursive = ctx.has("-r") || ctx.has("--recursive");
 
-  // --color[=WHEN]: plain --color means auto (color when stdout is a
-  // terminal); 'always' forces it on, 'never' off.
+  // --color[=WHEN] (diff.c:1114-1124 specify_colors_style): a bare
+  // --color means auto (color when stdout is a terminal); 'always'
+  // forces it on, 'never' off; any other attached value -- "" included
+  // -- is an "invalid color" error (#1513).
   DiffColors colors;
   if (ctx.has("--color")) {
-    std::string when = "auto";
+    auto color_occurrences = ctx.string_occurrences({"--color"});
+    bool bare = !color_occurrences.empty() &&
+                !color_occurrences.back().has_value;
     auto value = ctx.get<std::string>("--color", "");
-    if (!value.empty()) when = value;
+    std::string when = bare ? "auto" : value;
     if (when == "always") {
       colors.on = true;
     } else if (when == "auto") {
       colors.on = shouldUseAnsiColorStdout();
+    } else if (when == "never") {
+      colors.on = false;
+    } else {
+      safeErrorPrint("diff: invalid color '" + when + "'\n");
+      safeErrorPrint("Try 'diff --help' for more information.\n");
+      return 2;
     }
   }
   cfg.style.colors = colors.on ? &colors : nullptr;

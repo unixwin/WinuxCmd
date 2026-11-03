@@ -10,6 +10,16 @@ export using OptionValue = std::variant<bool, int, std::string>;
 export struct OptionOccurrence {
   size_t index = 0;
   OptionValue value;
+  // [GNU] getopt distinguishes an option that carries an attached value
+  // ("--follow=name", "--color=", "-i.bak") from a bare occurrence whose
+  // optional argument is absent (optarg == nullptr: "--follow",
+  // "--color", "-i"). OptionalString occurrences used to store "" for
+  // both shapes, so consumers could not tell "--follow" (descriptor
+  // mode) from "--follow=" (an empty value argmatch must reject)
+  // (#1513). The parser now records the distinction here; the value
+  // itself stays "" for both shapes so get<std::string> consumers see
+  // no change. Meaningful only for OptionalString occurrences.
+  bool value_attached = true;
 };
 
 export template <size_t N>
@@ -23,8 +33,8 @@ class ParsedOptions {
   constexpr ParsedOptions() = default;
 
   // Simple set method
-  void set(size_t index, OptionValue v) {
-    occurrences_.push_back(OptionOccurrence{index, v});
+  void set(size_t index, OptionValue v, bool value_attached = true) {
+    occurrences_.push_back(OptionOccurrence{index, v, value_attached});
     values_[index] = std::move(v);
     present_.set(index);
   }
@@ -64,8 +74,9 @@ export class ParsedOptionsRuntime {
 
   void reset(size_t) { occurrences_.clear(); }
 
-  void set(size_t index, OptionValue v) {
-    occurrences_.push_back(OptionOccurrence{index, std::move(v)});
+  void set(size_t index, OptionValue v, bool value_attached = true) {
+    occurrences_.push_back(
+        OptionOccurrence{index, std::move(v), value_attached});
   }
 
   std::span<OptionOccurrence> occurrences() { return occurrences_; }
@@ -374,7 +385,8 @@ export ParseResultRuntime parse_command_runtime(
 
         case OptionType::OptionalString:
           result.options.set(
-              idx, has_inline_value ? std::string(value) : std::string());
+              idx, has_inline_value ? std::string(value) : std::string(),
+              has_inline_value);
           break;
 
         case OptionType::TerminatedString:
@@ -478,9 +490,11 @@ export ParseResultRuntime parse_command_runtime(
             break;
           }
           case OptionType::OptionalString:
-            result.options.set(idx, exact_has_inline_value
-                                        ? std::string(exact_value)
-                                        : std::string());
+            result.options.set(idx,
+                               exact_has_inline_value
+                                   ? std::string(exact_value)
+                                   : std::string(),
+                               exact_has_inline_value);
             break;
           case OptionType::TerminatedString:
             if (exact_has_inline_value) {
@@ -689,13 +703,16 @@ export ParseResultRuntime parse_command_runtime(
           }
 
           case OptionType::OptionalString: {
-            // #1306: same rule as OptionalInt above.
+            // #1306: same rule as OptionalInt above. #1513: a cluster
+            // remainder is an attached value (getopt's optarg); a bare
+            // flag at the end of the cluster is not.
             if (policy.allow_optional_short_attached_values &&
                 pos + 1 < arg.size()) {
-              result.options.set(idx, std::string(arg.substr(pos + 1)));
+              result.options.set(idx, std::string(arg.substr(pos + 1)),
+                                 true);
               pos = arg.size();
             } else {
-              result.options.set(idx, std::string());
+              result.options.set(idx, std::string(), false);
             }
             break;
           }
@@ -745,7 +762,8 @@ ParseResult<N> parse_command(std::span<std::string_view> args,
 
   for (auto& occurrence : runtime.options.occurrences()) {
     if (occurrence.index < N) {
-      result.options.set(occurrence.index, std::move(occurrence.value));
+      result.options.set(occurrence.index, std::move(occurrence.value),
+                         occurrence.value_attached);
     }
   }
 

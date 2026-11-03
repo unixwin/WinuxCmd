@@ -3609,3 +3609,37 @@ TEST(ls, issue1368_closed_stdout_reports_write_error_and_exits_2) {
   EXPECT_CONTAINS(r.stderr_text, "ls: write error: ");
   EXPECT_CONTAINS(r.stderr_text, "Bad file descriptor");
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1513: a bare --color means always (ls.c:2156-2169); an
+// attached empty value goes through the when_args argmatch
+// (ls.c:938-950) and is rejected -- the two shapes must not collapse
+// into the same empty string.
+// ---------------------------------------------------------------------------
+TEST(ls, ls_color_attached_empty_is_invalid_issue1513) {
+  TempDir tmp;
+  tmp.write("file1.txt", "content1");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ls.exe", {L"--color="});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 2);
+  // GNU 9.4 argmatch reports the empty prefix as ambiguous.
+  EXPECT_TRUE(r.stderr_text.find("ambiguous argument ''") !=
+              std::string::npos);
+}
+
+TEST(ls, ls_bare_color_is_accepted_issue1513) {
+  TempDir tmp;
+  tmp.write("file1.txt", "content1");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ls.exe", {L"--color"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("file1.txt") != std::string::npos);
+}

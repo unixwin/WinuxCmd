@@ -335,8 +335,11 @@ auto confirm_bulk_remove(size_t path_count, bool recursive) -> bool {
 // of the oracle's never/once/always set.)
 auto parse_interactive_mode(std::string_view value)
     -> std::optional<InteractiveMode> {
+  // [GNU] only attached values reach here; a bare --interactive is
+  // resolved by the caller. "" prefix-matches spellings of several
+  // modes below and comes back nullopt (ambiguous) (#1513).
   if (value.empty()) {
-    return InteractiveMode::always;
+    return std::nullopt;
   }
   static constexpr std::pair<std::string_view, InteractiveMode> kNames[] = {
       {"never", InteractiveMode::never},
@@ -491,10 +494,17 @@ auto build_config(const CommandContext<RM_OPTIONS.size()>& ctx)
       cfg.force = false;
       saw_prompt_option = true;
       auto value = std::get_if<std::string>(&occurrence.value);
-      auto mode = parse_interactive_mode(value ? *value : std::string_view{});
+      // [GNU] rm.c:258-286: argmatch runs only on an attached value; a
+      // bare --interactive means 'always' (#1513).
+      auto mode = !occurrence.value_attached
+                      ? std::optional<InteractiveMode>(InteractiveMode::always)
+                      : parse_interactive_mode(
+                            value ? *value : std::string_view{});
       if (!mode.has_value()) {
         return std::unexpected(
-            "invalid argument '" + *value +
+            std::string(value && value->empty() ? "ambiguous argument '"
+                                                : "invalid argument '") +
+            *value +
             "' for '--interactive'\n"
             "Valid arguments are:\n"
             "  - 'never', 'no', 'none'\n"
@@ -511,12 +521,15 @@ auto build_config(const CommandContext<RM_OPTIONS.size()>& ctx)
     } else if (meta.long_name == "--preserve-root") {
       auto value = std::get_if<std::string>(&occurrence.value);
       const std::string text = value ? *value : std::string{};
-      if (!text.empty() && text != "all") {
+      // [GNU] rm.c:299-309: an attached argument must be exactly "all"
+      // ("" included); a bare --preserve-root just sets the flag
+      // (#1513).
+      if (occurrence.value_attached && text != "all") {
         return std::unexpected("unrecognized --preserve-root argument: '" +
                                text + "'");
       }
       cfg.preserve_root = true;
-      cfg.preserve_root_all = (text == "all");
+      cfg.preserve_root_all = occurrence.value_attached && text == "all";
     }
   }
   cfg.no_preserve_root = !cfg.preserve_root;

@@ -162,7 +162,19 @@ REGISTER_COMMAND(
       mode = OutputErrorMode::kWarnNopipe;
     } else if (ctx.has("--output-error")) {
       auto value = ctx.get<std::string>("--output-error", "");
-      if (value.empty()) {
+      // [GNU] tee.c:145-151: XARGMATCH runs only on an attached value;
+      // a bare --output-error selects warn-nopipe, while
+      // "--output-error=" fails argmatch (#1513).
+      bool attached = true;
+      if (ctx.metas) {
+        for (const auto& occurrence : ctx.options.occurrences()) {
+          if (occurrence.index >= ctx.metas->size()) continue;
+          if ((*ctx.metas)[occurrence.index].long_name == "--output-error") {
+            attached = occurrence.value_attached;
+          }
+        }
+      }
+      if (!attached) {
         mode = OutputErrorMode::kWarnNopipe;
       } else if (!resolve_mode_value(value)) {
         return 1;
