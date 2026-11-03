@@ -383,9 +383,15 @@ auto make_default_random_seed() -> uint64_t {
   return mix64(seed);
 }
 
+// [GNU] sort.c's blank table (system.h field_sep / blanks[]) contains
+// only space and tab (plus the line delimiter, which never occurs inside
+// a record).  VT, FF and CR are ordinary characters for field splitting
+// and blank skipping — std::isspace wrongly admits them.
+auto is_blank_byte(char c) -> bool { return c == ' ' || c == '\t'; }
+
 auto ltrim_ascii(std::string_view s) -> std::string_view {
   size_t i = 0;
-  while (i < s.size() && std::isspace(static_cast<unsigned char>(s[i])) != 0) {
+  while (i < s.size() && is_blank_byte(s[i])) {
     ++i;
   }
   return s.substr(i);
@@ -521,6 +527,60 @@ auto parse_key_position(std::string_view text)
   return pos;
 }
 
+struct ObsoleteKeyPosition {
+  size_t fields = 0;
+  std::optional<size_t> chars;
+  std::string_view modifiers;
+};
+
+// [GNU] the operand half of the obsolete +POS1/-POS2 syntax: digits,
+// an optional .digits char offset, then ordering letters only.  Any
+// other shape means the operand is an ordinary file name.
+auto parse_obsolete_key_position(std::string_view text)
+    -> std::optional<ObsoleteKeyPosition> {
+  if (text.empty() ||
+      std::isdigit(static_cast<unsigned char>(text[0])) == 0) {
+    return std::nullopt;
+  }
+  ObsoleteKeyPosition out;
+  size_t i = 0;
+  size_t fields = 0;
+  while (i < text.size() &&
+         std::isdigit(static_cast<unsigned char>(text[i])) != 0) {
+    const size_t digit = static_cast<size_t>(text[i] - '0');
+    fields = fields > (std::numeric_limits<size_t>::max() - digit) / 10
+                 ? std::numeric_limits<size_t>::max()
+                 : fields * 10 + digit;
+    ++i;
+  }
+  out.fields = fields;
+  if (i < text.size() && text[i] == '.') {
+    ++i;
+    if (i >= text.size() ||
+        std::isdigit(static_cast<unsigned char>(text[i])) == 0) {
+      return std::nullopt;
+    }
+    size_t chars = 0;
+    while (i < text.size() &&
+           std::isdigit(static_cast<unsigned char>(text[i])) != 0) {
+      const size_t digit = static_cast<size_t>(text[i] - '0');
+      chars = chars > (std::numeric_limits<size_t>::max() - digit) / 10
+                  ? std::numeric_limits<size_t>::max()
+                  : chars * 10 + digit;
+      ++i;
+    }
+    out.chars = chars;
+  }
+  for (size_t j = i; j < text.size(); ++j) {
+    if (std::string_view("bdfghiMnRrV").find(text[j]) ==
+        std::string_view::npos) {
+      return std::nullopt;
+    }
+  }
+  out.modifiers = text.substr(i);
+  return out;
+}
+
 auto parse_key_spec(std::string_view text) -> cp::Result<KeySpec> {
   if (text.empty())
     return std::unexpected("invalid key spec '" + std::string(text) + "'");
@@ -564,15 +624,13 @@ auto get_field_span_by_whitespace(std::string_view line, size_t index)
   size_t field = 0;
   size_t i = 0;
   while (i < line.size()) {
-    while (i < line.size() &&
-           std::isspace(static_cast<unsigned char>(line[i])) != 0) {
+    while (i < line.size() && is_blank_byte(line[i])) {
       ++i;
     }
     if (i >= line.size()) break;
 
     size_t start = i;
-    while (i < line.size() &&
-           std::isspace(static_cast<unsigned char>(line[i])) == 0) {
+    while (i < line.size() && !is_blank_byte(line[i])) {
       ++i;
     }
     ++field;
@@ -608,73 +666,166 @@ auto get_field_span(std::string_view line, size_t index, const Config& cfg)
   return get_field_span_by_whitespace(line, index);
 }
 
-auto resolve_key_start(std::string_view line, const FieldSpan& span,
-                       const KeySpec& key, bool ignore_leading_blanks)
-    -> size_t {
-  if (!span.found) return line.size();
-  if (!key.start_char.has_value()) return span.start;
-  size_t base = span.start;
-  if (ignore_leading_blanks) {
-    while (base < span.end &&
-           std::isspace(static_cast<unsigned char>(line[base])) != 0) {
-      ++base;
-    }
-  }
-  return std::min(base + *key.start_char - 1, span.end);
+// [GNU] sort.c default_key_compare + the inheritance loop in main: a
+// key that specifies NO ordering option of its own (no mode, no d/i/f,
+// no b) — and does not specify -r either — inherits the WHOLE global
+// option set; a key with any ordering option of its own uses only its
+// own.  Inheritance is all-or-nothing, never a per-flag OR.
+auto key_has_own_ordering_options(const KeySpec& key) -> bool {
+  return key.dictionary_order || key.ignore_nonprinting || key.ignore_case ||
+         key.ignore_leading_blanks || key.numeric_sort ||
+         key.general_numeric || key.human_numeric || key.month_sort ||
+         key.version_sort || key.random_sort;
 }
 
-auto resolve_key_end(std::string_view line, const FieldSpan& span,
-                     const KeySpec& key, bool ignore_leading_blanks) -> size_t {
-  if (!span.found) return line.size();
-  if (!key.end_char.has_value()) return span.end;
-  if (*key.end_char == 0) return span.end;
-  size_t base = span.start;
-  if (ignore_leading_blanks) {
-    while (base < span.end &&
-           std::isspace(static_cast<unsigned char>(line[base])) != 0) {
-      ++base;
-    }
+struct EffectiveOptions {
+  bool ignore_leading_blanks = false;
+  bool dictionary_order = false;
+  bool ignore_case = false;
+  bool ignore_nonprinting = false;
+  bool numeric_sort = false;
+  bool version_sort = false;
+  bool human_numeric = false;
+  bool month_sort = false;
+  bool general_numeric = false;
+  bool random_sort = false;
+};
+
+auto effective_options(const Config& cfg, const KeySpec* key_spec)
+    -> EffectiveOptions {
+  EffectiveOptions eff;
+  const bool inherit = key_spec == nullptr ||
+                       (!key_has_own_ordering_options(*key_spec) &&
+                        !key_spec->reverse);
+  if (inherit) {
+    eff.ignore_leading_blanks = cfg.ignore_leading_blanks;
+    eff.dictionary_order = cfg.dictionary_order;
+    eff.ignore_case = cfg.ignore_case;
+    eff.ignore_nonprinting = cfg.ignore_nonprinting;
+    eff.numeric_sort = cfg.numeric_sort;
+    eff.version_sort = cfg.version_sort;
+    eff.human_numeric = cfg.human_numeric;
+    eff.month_sort = cfg.month_sort;
+    eff.general_numeric = cfg.general_numeric;
+    eff.random_sort = cfg.random_sort;
+  } else {
+    eff.ignore_leading_blanks = key_spec->ignore_leading_blanks;
+    eff.dictionary_order = key_spec->dictionary_order;
+    eff.ignore_case = key_spec->ignore_case;
+    eff.ignore_nonprinting = key_spec->ignore_nonprinting;
+    eff.numeric_sort = key_spec->numeric_sort;
+    eff.version_sort = key_spec->version_sort;
+    eff.human_numeric = key_spec->human_numeric;
+    eff.month_sort = key_spec->month_sort;
+    eff.general_numeric = key_spec->general_numeric;
+    eff.random_sort = key_spec->random_sort;
   }
-  return std::min(base + *key.end_char, span.end);
+  return eff;
+}
+
+// [GNU] begfield (sort.c), whitespace mode: skipping a field skips its
+// leading blank run AND its content, so a key start lands on the blank
+// run preceding the field — the separator blanks are part of the key.
+// 'b' then skips that run, and SCHAR advances from there; positions
+// clamp only to the end of the line.
+auto begfield_ws(std::string_view line, size_t fields_to_skip,
+                 bool skip_blanks, size_t schar) -> size_t {
+  const size_t lim = line.size();
+  size_t ptr = 0;
+  while (ptr < lim && fields_to_skip > 0) {
+    --fields_to_skip;
+    while (ptr < lim && is_blank_byte(line[ptr])) ++ptr;
+    while (ptr < lim && !is_blank_byte(line[ptr])) ++ptr;
+  }
+  if (skip_blanks) {
+    while (ptr < lim && is_blank_byte(line[ptr])) ++ptr;
+  }
+  return std::min(lim, ptr + schar);
+}
+
+// [GNU] limfield (sort.c), whitespace mode: ECHAR == 0 covers the whole
+// end field; otherwise ECHAR advances from the end field's start (after
+// its 'b' skip).  Positions clamp only to the end of the line — the
+// field-end clamp is POSIX_UNSPECIFIED and #ifdef-ed out in the oracle.
+auto limfield_ws(std::string_view line, size_t end_field, size_t echar,
+                 bool skip_blanks) -> size_t {
+  const size_t lim = line.size();
+  size_t ptr = 0;
+  size_t eword = end_field - 1;
+  if (echar == 0) ++eword;
+  while (ptr < lim && eword > 0) {
+    --eword;
+    while (ptr < lim && is_blank_byte(line[ptr])) ++ptr;
+    while (ptr < lim && !is_blank_byte(line[ptr])) ++ptr;
+  }
+  if (echar != 0) {
+    if (skip_blanks) {
+      while (ptr < lim && is_blank_byte(line[ptr])) ++ptr;
+    }
+    ptr = std::min(lim, ptr + echar);
+  }
+  return ptr;
 }
 
 auto extract_key(std::string_view line, const Config& cfg,
                  const KeySpec* key_spec) -> std::string_view {
   if (key_spec == nullptr) return line;
 
-  const auto start_span = get_field_span(line, key_spec->start_field, cfg);
-  const bool ignore_blanks =
-      cfg.ignore_leading_blanks || key_spec->ignore_leading_blanks;
-  size_t start = resolve_key_start(line, start_span, *key_spec, ignore_blanks);
+  const auto eff = effective_options(cfg, key_spec);
+  const bool ignore_blanks = eff.ignore_leading_blanks;
+  size_t start = 0;
   size_t end = line.size();
-  if (key_spec->end_field.has_value()) {
-    const auto end_span = get_field_span(line, *key_spec->end_field, cfg);
-    end = resolve_key_end(line, end_span, *key_spec, ignore_blanks);
+
+  if (cfg.field_separator.has_value()) {
+    const char sep = *cfg.field_separator;
+    const auto start_span =
+        get_field_span_by_separator(line, key_spec->start_field, sep);
+    size_t base = start_span.found ? start_span.start : line.size();
+    if (ignore_blanks) {
+      while (base < line.size() && is_blank_byte(line[base])) ++base;
+    }
+    start = key_spec->start_char.has_value()
+                ? std::min(line.size(), base + *key_spec->start_char - 1)
+                : base;
+    if (key_spec->end_field.has_value()) {
+      const auto end_span =
+          get_field_span_by_separator(line, *key_spec->end_field, sep);
+      if (!key_spec->end_char.has_value() || *key_spec->end_char == 0) {
+        end = end_span.found ? end_span.end : line.size();
+      } else {
+        size_t ebase = end_span.found ? end_span.start : line.size();
+        if (ignore_blanks) {
+          while (ebase < line.size() && is_blank_byte(line[ebase])) ++ebase;
+        }
+        end = std::min(line.size(), ebase + *key_spec->end_char);
+      }
+    }
+  } else {
+    const size_t schar =
+        key_spec->start_char.has_value() ? *key_spec->start_char - 1 : 0;
+    start = begfield_ws(line, key_spec->start_field - 1, ignore_blanks, schar);
+    if (key_spec->end_field.has_value()) {
+      end = limfield_ws(line, *key_spec->end_field,
+                        key_spec->end_char.value_or(0), ignore_blanks);
+    }
   }
 
   if (end < start) end = start;
-  std::string_view key = line.substr(start, end - start);
-
-  if (cfg.ignore_leading_blanks || key_spec->ignore_leading_blanks) {
-    key = ltrim_ascii(key);
-  }
-  return key;
+  return line.substr(start, end - start);
 }
 
 auto effective_dictionary_order(const Config& cfg, const KeySpec* key_spec)
     -> bool {
-  return cfg.dictionary_order ||
-         (key_spec != nullptr && key_spec->dictionary_order);
+  return effective_options(cfg, key_spec).dictionary_order;
 }
 
 auto effective_ignore_case(const Config& cfg, const KeySpec* key_spec) -> bool {
-  return cfg.ignore_case || (key_spec != nullptr && key_spec->ignore_case);
+  return effective_options(cfg, key_spec).ignore_case;
 }
 
 auto effective_ignore_nonprinting(const Config& cfg, const KeySpec* key_spec)
     -> bool {
-  return cfg.ignore_nonprinting ||
-         (key_spec != nullptr && key_spec->ignore_nonprinting);
+  return effective_options(cfg, key_spec).ignore_nonprinting;
 }
 
 auto make_random_sort_key(std::string_view line, const Config& cfg,
@@ -778,6 +929,140 @@ struct HumanNumber {
   int suffix_rank = 0;
   long double value = 0.0L;
 };
+
+// [GNU] strnumcmp (lib/strnumcmp-in.h), C-locale form (decimal point
+// '.', no thousands separator): compares two numeric strings exactly,
+// digit run by digit run, so arbitrarily long numbers order correctly.
+// Behavioural port of the oracle algorithm: sign handling first (a
+// negative with any nonzero magnitude beats every non-negative), then
+// leading-zero skipping, common digit prefix, fraction comparison when
+// one side ends at the decimal point, else integer-length comparison
+// with the first differing digit as the tiebreak.
+auto strnumcmp_fraccompare(std::string_view a, std::string_view b) -> int {
+  auto at = [](std::string_view s, size_t i) -> int {
+    return i < s.size() ? static_cast<unsigned char>(s[i]) : -1;
+  };
+  auto isdig = [](int c) -> bool { return c >= '0' && c <= '9'; };
+  if (at(a, 0) == '.' && at(b, 0) == '.') {
+    size_t ia = 0;
+    size_t ib = 0;
+    while (true) {
+      ++ia;
+      ++ib;
+      if (at(a, ia) != at(b, ib)) break;
+      if (!isdig(at(a, ia))) return 0;
+    }
+    if (isdig(at(a, ia)) && isdig(at(b, ib))) return at(a, ia) - at(b, ib);
+    if (isdig(at(a, ia))) {
+      while (at(a, ia) == '0') ++ia;
+      return isdig(at(a, ia)) ? 1 : 0;
+    }
+    if (isdig(at(b, ib))) {
+      while (at(b, ib) == '0') ++ib;
+      return isdig(at(b, ib)) ? -1 : 0;
+    }
+    return 0;
+  }
+  if (at(a, 0) == '.') {
+    size_t ia = 1;
+    while (at(a, ia) == '0') ++ia;
+    return isdig(at(a, ia)) ? 1 : 0;
+  }
+  if (at(b, 0) == '.') {
+    size_t ib = 1;
+    while (at(b, ib) == '0') ++ib;
+    return isdig(at(b, ib)) ? -1 : 0;
+  }
+  return 0;
+}
+
+auto strnumcmp_sv(std::string_view a, std::string_view b) -> int {
+  auto at = [](std::string_view s, size_t i) -> int {
+    return i < s.size() ? static_cast<unsigned char>(s[i]) : -1;
+  };
+  auto isdig = [](int c) -> bool { return c >= '0' && c <= '9'; };
+  size_t ia = 0;
+  size_t ib = 0;
+  int tmpa = at(a, ia);
+  int tmpb = at(b, ib);
+
+  if (tmpa == '-') {
+    do {
+      tmpa = at(a, ++ia);
+    } while (tmpa == '0');
+    if (tmpb != '-') {
+      if (tmpa == '.') {
+        do {
+          tmpa = at(a, ++ia);
+        } while (tmpa == '0');
+      }
+      if (isdig(tmpa)) return -1;
+      while (tmpb == '0') tmpb = at(b, ++ib);
+      if (tmpb == '.') {
+        do {
+          tmpb = at(b, ++ib);
+        } while (tmpb == '0');
+      }
+      return isdig(tmpb) ? -1 : 0;
+    }
+    do {
+      tmpb = at(b, ++ib);
+    } while (tmpb == '0');
+    while (tmpa == tmpb && isdig(tmpa)) {
+      tmpa = at(a, ++ia);
+      tmpb = at(b, ++ib);
+    }
+    if ((tmpa == '.' && !isdig(tmpb)) || (tmpb == '.' && !isdig(tmpa))) {
+      // The oracle calls fraccompare (b, a) in the both-negative arm.
+      return strnumcmp_fraccompare(b.substr(ib), a.substr(ia));
+    }
+    const int tmp = tmpb - tmpa;
+    size_t log_a = 0;
+    for (; isdig(tmpa); ++log_a) tmpa = at(a, ++ia);
+    size_t log_b = 0;
+    for (; isdig(tmpb); ++log_b) tmpb = at(b, ++ib);
+    if (log_a != log_b) return log_a < log_b ? 1 : -1;
+    if (log_a == 0) return 0;
+    return tmp;
+  }
+
+  if (tmpb == '-') {
+    do {
+      tmpb = at(b, ++ib);
+    } while (tmpb == '0');
+    if (tmpb == '.') {
+      do {
+        tmpb = at(b, ++ib);
+      } while (tmpb == '0');
+    }
+    if (isdig(tmpb)) return 1;
+    while (tmpa == '0') tmpa = at(a, ++ia);
+    if (tmpa == '.') {
+      do {
+        tmpa = at(a, ++ia);
+      } while (tmpa == '0');
+    }
+    return isdig(tmpa) ? 1 : 0;
+  }
+
+  while (tmpa == '0') tmpa = at(a, ++ia);
+  while (tmpb == '0') tmpb = at(b, ++ib);
+  while (tmpa == tmpb && isdig(tmpa)) {
+    tmpa = at(a, ++ia);
+    tmpb = at(b, ++ib);
+  }
+  if ((tmpa == '.' && !isdig(tmpb)) || (tmpb == '.' && !isdig(tmpa))) {
+    return strnumcmp_fraccompare(a.substr(ia), b.substr(ib));
+  }
+  const int tmp = tmpa - tmpb;
+  size_t log_a = 0;
+  for (; isdig(tmpa); ++log_a) tmpa = at(a, ++ia);
+  size_t log_b = 0;
+  for (; isdig(tmpb); ++log_b) tmpb = at(b, ++ib);
+  if (log_a != log_b) return log_a < log_b ? -1 : 1;
+  if (log_a == 0) return 0;
+  return tmp;
+}
 
 auto human_suffix_rank(char c) -> int {
   if (c == 'k' || c == 'K') return 1;
@@ -967,18 +1252,13 @@ auto compare_single_key(std::string_view a, std::string_view b,
   auto key_a = extract_key(a, cfg, key_spec);
   auto key_b = extract_key(b, cfg, key_spec);
 
-  const bool random_sort =
-      cfg.random_sort || (key_spec != nullptr && key_spec->random_sort);
-  const bool version_sort =
-      cfg.version_sort || (key_spec != nullptr && key_spec->version_sort);
-  const bool numeric_sort =
-      cfg.numeric_sort || (key_spec != nullptr && key_spec->numeric_sort);
-  const bool human_numeric =
-      cfg.human_numeric || (key_spec != nullptr && key_spec->human_numeric);
-  const bool month_sort =
-      cfg.month_sort || (key_spec != nullptr && key_spec->month_sort);
-  const bool general_numeric =
-      cfg.general_numeric || (key_spec != nullptr && key_spec->general_numeric);
+  const auto eff = effective_options(cfg, key_spec);
+  const bool random_sort = eff.random_sort;
+  const bool version_sort = eff.version_sort;
+  const bool numeric_sort = eff.numeric_sort;
+  const bool human_numeric = eff.human_numeric;
+  const bool month_sort = eff.month_sort;
+  const bool general_numeric = eff.general_numeric;
 
   if (random_sort) {
     std::string random_key_a = make_random_sort_key(a, cfg, key_spec);
@@ -999,24 +1279,28 @@ auto compare_single_key(std::string_view a, std::string_view b,
     if (cmp != 0) return cmp;
     return 0;
   } else if (numeric_sort) {
-    auto n_a = parse_numeric_prefix(key_a);
-    auto n_b = parse_numeric_prefix(key_b);
-    if (n_a.value < n_b.value) return -1;
-    if (n_a.value > n_b.value) return 1;
-    return 0;
+    // [GNU] numcompare -> strnumcmp: exact string comparison, no
+    // floating-point conversion (a long double ties digit strings
+    // that differ past its precision, e.g. 1e30-scale neighbours).
+    return strnumcmp_sv(key_a, key_b);
   } else if (human_numeric) {
     return compare_human_numbers(parse_human_number(key_a),
                                  parse_human_number(key_b));
   } else if (month_sort) {
+    // [GNU] keycompare's month arm is diff = getmonth(a) - getmonth(b)
+    // with non-months ranking 0: the result decides the key outright.
+    // Falling through to a text comparison of the same key when both
+    // sides are non-months (or rank equal) is not GNU behaviour — the
+    // key ties and the next key / last resort decides.
     auto a_month = parse_month_rank(key_a);
     auto b_month = parse_month_rank(key_b);
-    if (a_month.has_value() && b_month.has_value()) {
-      if (*a_month < *b_month) return -1;
-      if (*a_month > *b_month) return 1;
-      return 0;
-    } else if (a_month.has_value() != b_month.has_value()) {
-      return a_month.has_value() ? 1 : -1;
-    }
+    // getmonth ranks are 1..12 with 0 for non-months; parse_month_rank
+    // is 0-based, hence the +1.
+    const int a_rank = a_month.has_value() ? *a_month + 1 : 0;
+    const int b_rank = b_month.has_value() ? *b_month + 1 : 0;
+    if (a_rank < b_rank) return -1;
+    if (a_rank > b_rank) return 1;
+    return 0;
   } else if (general_numeric) {
     return compare_general_numbers(parse_general_number(key_a),
                                    parse_general_number(key_b));
@@ -1079,7 +1363,10 @@ void clear_global_sort_modes(Config& cfg) {
 }
 
 void apply_global_sort_mode(Config& cfg, SortMode mode) {
-  clear_global_sort_modes(cfg);
+  // [GNU] global mode options ACCUMULATE on the global key (main's
+  // switch sets gkey flags one by one); they are never cleared by a
+  // later option.  Conflicting modes are diagnosed after inheritance
+  // by check_incompatible_modes below (sort.c:4134-4150).
   switch (mode) {
     case SortMode::GeneralNumeric:
       cfg.general_numeric = true;
@@ -1100,6 +1387,53 @@ void apply_global_sort_mode(Config& cfg, SortMode mode) {
       cfg.version_sort = true;
       break;
   }
+}
+
+// [GNU] key_to_opts (sort.c), minus the b/r members: the compatibility
+// check clears skipsblanks/skipeblanks/reverse before rendering, so the
+// reported option string never contains them.
+auto effective_opts_string(const EffectiveOptions& eff) -> std::string {
+  std::string opts;
+  if (eff.dictionary_order) opts += 'd';
+  if (eff.ignore_case) opts += 'f';
+  if (eff.general_numeric) opts += 'g';
+  if (eff.human_numeric) opts += 'h';
+  if (eff.ignore_nonprinting) opts += 'i';
+  if (eff.month_sort) opts += 'M';
+  if (eff.numeric_sort) opts += 'n';
+  if (eff.random_sort) opts += 'R';
+  if (eff.version_sort) opts += 'V';
+  return opts;
+}
+
+// [GNU] check_ordering_compatibility (sort.c:4134-4150): over every
+// effective key (after global inheritance), more than one comparison
+// mode — numeric + general-numeric + human-numeric + month + (version
+// | random | dictionary | nonprinting) — is a hard error.
+auto check_ordering_compatibility(const Config& cfg)
+    -> std::optional<std::string> {
+  auto incompatible = [](const EffectiveOptions& eff)
+      -> std::optional<std::string> {
+    const int modes = (eff.numeric_sort ? 1 : 0) +
+                      (eff.general_numeric ? 1 : 0) +
+                      (eff.human_numeric ? 1 : 0) + (eff.month_sort ? 1 : 0) +
+                      ((eff.version_sort || eff.random_sort ||
+                        eff.dictionary_order || eff.ignore_nonprinting)
+                           ? 1
+                           : 0);
+    if (modes > 1) {
+      return std::string("options '-") + effective_opts_string(eff) +
+             "' are incompatible";
+    }
+    return std::nullopt;
+  };
+  if (cfg.keys.empty()) {
+    return incompatible(effective_options(cfg, nullptr));
+  }
+  for (const auto& key : cfg.keys) {
+    if (auto err = incompatible(effective_options(cfg, &key))) return err;
+  }
+  return std::nullopt;
 }
 
 auto parse_sort_mode_word(std::string_view text) -> std::optional<SortMode> {
@@ -1480,10 +1814,32 @@ auto build_config(const CommandContext<SORT_OPTIONS.size()>& ctx)
           ? '\0'
           : '\n';
 
-  // [GNU] only the last -o would matter, but more than one output file is
-  // rejected outright ("multiple output files specified").
-  if (ctx.count({"-o", "--output"}) > 1) {
-    return std::unexpected("multiple output files specified");
+  // [GNU] sort.c:4740: the ordering-compatibility check runs before
+  // the -o and check-mode incompatibility checks below.  It runs on
+  // the keys known so far (-k and globals); obsolete +POS keys are
+  // re-checked after operand parsing.
+  for (const auto& key_text : ctx.get_all<std::string>("--key")) {
+    auto key = parse_key_spec(key_text);
+    if (!key) return std::unexpected(key.error());
+    cfg.keys.push_back(*key);
+  }
+  if (auto incompat = check_ordering_compatibility(cfg)) {
+    return std::unexpected(*incompat);
+  }
+
+  // [GNU] sort.c:4573-4577: a repeated -o is rejected only when a
+  // later value DIFFERS from the first ("multiple output files
+  // specified"); repeating the same output file is accepted.
+  {
+    auto outputs = ctx.get_all<std::string>("--output");
+    for (const auto& extra : ctx.get_all<std::string>("-o")) {
+      outputs.push_back(extra);
+    }
+    for (size_t i = 1; i < outputs.size(); ++i) {
+      if (outputs[i] != outputs[0]) {
+        return std::unexpected("multiple output files specified");
+      }
+    }
   }
   cfg.output_file = ctx.get<std::string>("--output", "");
   if (cfg.output_file.empty()) cfg.output_file = ctx.get<std::string>("-o", "");
@@ -1562,12 +1918,6 @@ auto build_config(const CommandContext<SORT_OPTIONS.size()>& ctx)
     }
   }
 
-  for (const auto& key_text : ctx.get_all<std::string>("--key")) {
-    auto key = parse_key_spec(key_text);
-    if (!key) return std::unexpected(key.error());
-    cfg.keys.push_back(*key);
-  }
-
   const bool any_random_key =
       std::any_of(cfg.keys.begin(), cfg.keys.end(),
                   [](const KeySpec& key) { return key.random_sort; });
@@ -1592,8 +1942,44 @@ auto build_config(const CommandContext<SORT_OPTIONS.size()>& ctx)
       cfg.files.push_back(file);
     }
   } else {
-    for (auto p : ctx.positionals) {
-      std::string file_arg(p);
+    for (size_t pi = 0; pi < ctx.positionals.size(); ++pi) {
+      std::string file_arg(ctx.positionals[pi]);
+      // [GNU] obsolete +POS1 [-POS2] operands (sort.c:4414-4462):
+      // traditional usage is enabled by default, so a positional that
+      // parses as +FIELDS[.CHARS][ordering letters] is a key spec, not
+      // a file; an immediately following -FIELDS[.CHARS][letters]
+      // positional supplies the key end.  Anything else stays a file.
+      if (file_arg.size() > 1 && file_arg[0] == '+') {
+        auto obsolete = parse_obsolete_key_position(
+            std::string_view(file_arg).substr(1));
+        if (obsolete.has_value()) {
+          KeySpec key;
+          key.start_field = obsolete->fields + 1;
+          if (obsolete->chars.has_value()) {
+            key.start_char = *obsolete->chars + 1;
+          }
+          for (char c : obsolete->modifiers) apply_key_modifier(key, c);
+          if (pi + 1 < ctx.positionals.size()) {
+            std::string next_arg(ctx.positionals[pi + 1]);
+            if (next_arg.size() > 1 && next_arg[0] == '-') {
+              auto endpos = parse_obsolete_key_position(
+                  std::string_view(next_arg).substr(1));
+              if (endpos.has_value()) {
+                key.end_field = endpos->fields + 1;
+                if (endpos->chars.has_value()) {
+                  key.end_char = *endpos->chars;
+                }
+                for (char c : endpos->modifiers) {
+                  apply_key_modifier(key, c);
+                }
+                ++pi;
+              }
+            }
+          }
+          cfg.keys.push_back(key);
+          continue;
+        }
+      }
       if (contains_wildcard(file_arg)) {
         auto glob_result = glob_expand(file_arg);
         if (glob_result.expanded) {
@@ -1606,6 +1992,12 @@ auto build_config(const CommandContext<SORT_OPTIONS.size()>& ctx)
       cfg.files.push_back(file_arg);
     }
     if (cfg.files.empty()) cfg.files.push_back("-");
+  }
+
+  // Obsolete +POS keys were appended during operand parsing; GNU's
+  // single compatibility pass (sort.c:4740) covers them too.
+  if (auto incompat = check_ordering_compatibility(cfg)) {
+    return std::unexpected(*incompat);
   }
 
   if (cfg.mode != OperationMode::Sort && cfg.files.size() > 1) {

@@ -90,12 +90,6 @@ auto parse_uint(std::string_view text) -> std::optional<std::uintmax_t> {
   return value;
 }
 
-struct CountSuffix {
-  std::string_view suffix;
-  std::uintmax_t base;
-  unsigned power;
-};
-
 auto checked_pow(std::uintmax_t base, unsigned power)
     -> std::optional<std::uintmax_t> {
   std::uintmax_t result = 1;
@@ -111,44 +105,85 @@ auto checked_pow(std::uintmax_t base, unsigned power)
 auto apply_suffix_multiplier(std::uintmax_t value, std::string_view suffix,
                                bool& out_of_range)
     -> std::optional<std::uintmax_t> {
-  // [GNU] xdectoumax suffix alphabet "bkKmMGTPEZYRQ0" (head.c:913):
-  // lowercase k/m are 1024 powers like K/M; lowercase g/t/p/e/z/y
-  // are NOT valid. The B/iB spellings are the 1000/1024 long
-  // forms (audit #1462).
-  static constexpr std::array suffixes{
-      CountSuffix{"", 1, 0},       CountSuffix{"b", 512, 1},
-      CountSuffix{"k", 1024, 1},   CountSuffix{"K", 1024, 1},
-      CountSuffix{"KB", 1000, 1},  CountSuffix{"KiB", 1024, 1},
-      CountSuffix{"m", 1024, 2},   CountSuffix{"M", 1024, 2},
-      CountSuffix{"MB", 1000, 2},  CountSuffix{"MiB", 1024, 2},
-      CountSuffix{"G", 1024, 3},   CountSuffix{"GB", 1000, 3},
-      CountSuffix{"GiB", 1024, 3}, CountSuffix{"T", 1024, 4},
-      CountSuffix{"TB", 1000, 4},  CountSuffix{"TiB", 1024, 4},
-      CountSuffix{"P", 1024, 5},   CountSuffix{"PB", 1000, 5},
-      CountSuffix{"PiB", 1024, 5}, CountSuffix{"E", 1024, 6},
-      CountSuffix{"EB", 1000, 6},  CountSuffix{"EiB", 1024, 6},
-      CountSuffix{"Z", 1024, 7},   CountSuffix{"ZB", 1000, 7},
-      CountSuffix{"ZiB", 1024, 7}, CountSuffix{"Y", 1024, 8},
-      CountSuffix{"YB", 1000, 8},  CountSuffix{"YiB", 1024, 8},
-      CountSuffix{"R", 1024, 9},   CountSuffix{"RB", 1000, 9},
-      CountSuffix{"RiB", 1024, 9}, CountSuffix{"Q", 1024, 10},
-      CountSuffix{"QB", 1000, 10}, CountSuffix{"QiB", 1024, 10}};
+  // [GNU] xstrtol's suffix GRAMMAR (lib/xstrtol.c), with head.c:913's
+  // alphabet "bkKmMGTPEZYRQ0": the FIRST letter selects the power
+  // (b = 512 flat; k/K/m/M/G/T/P/E/Z/Y/R/Q = powers 1..10); an
+  // optional SECOND suffix then selects the base — 'B' or the
+  // obsolescent 'D' means powers of 1000, 'iB' powers of 1024, and
+  // no second suffix means 1024.  An enumerated spelling table
+  // misses combinations the grammar accepts (1kB, 1mD, ...).
+  if (suffix.empty()) return value;
 
-  for (const auto& entry : suffixes) {
-    if (entry.suffix != suffix) continue;
-    auto multiplier = checked_pow(entry.base, entry.power);
-    if (!multiplier) {
-      if (value != 0) out_of_range = true;
-      return value == 0 ? std::optional<std::uintmax_t>{0} : std::nullopt;
-    }
-    if (value > std::numeric_limits<std::uintmax_t>::max() / *multiplier) {
-      out_of_range = true;
+  unsigned power = 0;
+  switch (suffix[0]) {
+    case 'b':
+      // 'b' takes no second suffix; anything after it is invalid.
+      if (suffix.size() != 1) return std::nullopt;
+      if (value > std::numeric_limits<std::uintmax_t>::max() / 512) {
+        out_of_range = true;
+        return std::nullopt;
+      }
+      return value * 512;
+    case 'k':
+    case 'K':
+      power = 1;
+      break;
+    case 'm':
+    case 'M':
+      power = 2;
+      break;
+    case 'G':
+      power = 3;
+      break;
+    case 'T':
+      power = 4;
+      break;
+    case 'P':
+      power = 5;
+      break;
+    case 'E':
+      power = 6;
+      break;
+    case 'Z':
+      power = 7;
+      break;
+    case 'Y':
+      power = 8;
+      break;
+    case 'R':
+      power = 9;
+      break;
+    case 'Q':
+      power = 10;
+      break;
+    default:
       return std::nullopt;
-    }
-    return value * *multiplier;
   }
 
-  return std::nullopt;
+  std::uintmax_t base = 1024;
+  size_t consumed = 1;
+  if (suffix.size() > 1) {
+    if (suffix[1] == 'B' || suffix[1] == 'D') {
+      base = 1000;
+      consumed = 2;
+    } else if (suffix[1] == 'i' && suffix.size() > 2 && suffix[2] == 'B') {
+      consumed = 3;
+    } else {
+      return std::nullopt;
+    }
+  }
+  if (suffix.size() != consumed) return std::nullopt;
+
+  auto multiplier = checked_pow(base, power);
+  if (!multiplier) {
+    if (value != 0) out_of_range = true;
+    return value == 0 ? std::optional<std::uintmax_t>{0} : std::nullopt;
+  }
+  if (value > std::numeric_limits<std::uintmax_t>::max() / *multiplier) {
+    out_of_range = true;
+    return std::nullopt;
+  }
+  return value * *multiplier;
 }
 
 auto parse_numeric_with_suffix(std::string_view text, bool& out_of_range)
@@ -232,6 +267,15 @@ auto parse_count_spec(std::string spec_text, std::string_view opt_name)
     return invalid();
   }
   spec.value = *parsed;
+  // [GNU] head.c:1077-1082: byte elision is bounded by OFF_T_MAX —
+  // xdectoumax's uintmax range would otherwise let a magnitude like
+  // 9223372036854775808 through, where it silently elides nothing.
+  if (spec.all_but_last && opt_name == "bytes" &&
+      spec.value > static_cast<std::uintmax_t>(
+                        std::numeric_limits<std::int64_t>::max())) {
+    return std::unexpected("invalid number of bytes: '" + original +
+                           "': Value too large for defined data type");
+  }
   return spec;
 }
 
@@ -866,6 +910,12 @@ REGISTER_COMMAND(
       if (!input.is_open()) {
         std::string reason = describe_open_failure(file);
         if (is_directory_open_failure(reason)) {
+          // [GNU] head_file opens a directory successfully (POSIX
+          // O_RDONLY), so head() prints the header before the read
+          // fails with EISDIR (head.c head_file/head).  The Windows
+          // stream open fails instead; emit the header here so the
+          // observable sequence matches.
+          emit_header();
           safeErrorPrint("head: error reading '");
           safeErrorPrint(file);
           safeErrorPrint("': ");

@@ -64,8 +64,9 @@ auto constexpr UNIQ_OPTIONS = std::array{
     // [GNU] option
     OPTION("-w", "--check-chars", "compare no more than N characters",
            INT_TYPE),
-    // [GNU] -NUM: digits inside a cluster or on their own are the
-    // check-chars count (uniq -D5); hidden like split's -NUM.
+    // [GNU] -NUM: the obsolete option — its digits are the number of
+    // fields to skip (uniq.c's digit cases), NOT a check-chars count;
+    // hidden like split's -NUM.
     OPTION("-NUM", "", "", INT_TYPE),
     // [GNU] option
     OPTION("-z", "--zero-terminated", "line delimiter is NUL, not newline"),
@@ -141,16 +142,21 @@ auto split_records(std::string_view content, char delimiter)
 auto skip_n_fields(std::string_view line, int n) -> std::string_view {
   if (n <= 0) return line;
 
+  // [GNU] find_field (uniq.c) skips field_sep characters (system.h):
+  // blank (space/tab) or '\n' — the '\n' member matters for -z input,
+  // whose records may contain newlines.  std::isspace additionally
+  // treats VT, FF and CR as separators, which GNU does not.
+  auto is_field_sep = [](char c) {
+    return c == ' ' || c == '\t' || c == '\n';
+  };
   size_t i = 0;
   int fields = 0;
   while (i < line.size() && fields < n) {
-    while (i < line.size() &&
-           std::isspace(static_cast<unsigned char>(line[i])) != 0) {
+    while (i < line.size() && is_field_sep(line[i])) {
       ++i;
     }
     if (i >= line.size()) break;
-    while (i < line.size() &&
-           std::isspace(static_cast<unsigned char>(line[i])) == 0) {
+    while (i < line.size() && !is_field_sep(line[i])) {
       ++i;
     }
     ++fields;
@@ -175,9 +181,30 @@ auto is_unsupported_used(const CommandContext<UNIQ_OPTIONS.size()>& ctx)
   return std::nullopt;
 }
 
+// [GNU] argmatch (lib/argmatch.c) accepts any unambiguous prefix of a
+// table entry; an exact match always wins, and an ambiguous prefix is
+// an error just like a non-match.
+auto argmatch_prefix(std::string_view value,
+                     std::initializer_list<std::string_view> names)
+    -> std::optional<std::string_view> {
+  std::optional<std::string_view> hit;
+  for (auto name : names) {
+    if (name == value) return name;
+    if (!value.empty() && name.starts_with(value)) {
+      if (hit.has_value() && *hit != name) return std::nullopt;
+      hit = name;
+    }
+  }
+  return hit;
+}
+
 auto parse_group_mode(std::string_view method, GroupMode default_mode)
     -> cp::Result<GroupMode> {
   if (method.empty()) return default_mode;
+  if (auto full = argmatch_prefix(method, {"separate", "prepend", "append",
+                                            "both"})) {
+    method = *full;
+  }
   if (method == "separate") return GroupMode::separate;
   if (method == "prepend") return GroupMode::prepend;
   if (method == "append") return GroupMode::append;
@@ -192,7 +219,11 @@ auto parse_group_mode(std::string_view method, GroupMode default_mode)
 }
 
 auto parse_all_repeated_mode(std::string_view method) -> cp::Result<GroupMode> {
-  if (method.empty() || method == "none") return GroupMode::none;
+  if (method.empty()) return GroupMode::none;
+  if (auto full = argmatch_prefix(method, {"none", "prepend", "separate"})) {
+    method = *full;
+  }
+  if (method == "none") return GroupMode::none;
   if (method == "prepend") return GroupMode::prepend;
   if (method == "separate") return GroupMode::separate;
   // [GNU] uniq.c XARGMATCH ("--all-repeated", ...) over
@@ -233,17 +264,42 @@ auto build_config(const CommandContext<UNIQ_OPTIONS.size()>& ctx)
 
   cfg.check_chars = ctx.get<int>("--check-chars", -1);
   if (cfg.check_chars < 0) cfg.check_chars = ctx.get<int>("-w", -1);
-  // [GNU] -NUM digits are the check-chars count when no explicit -w
-  // is given (uniq -D5); an explicit -w wins over -NUM here.
-  if (cfg.check_chars < 0) cfg.check_chars = ctx.get<int>("-NUM", -1);
+  // [GNU] the obsolete -NUM option sets the number of FIELDS to skip
+  // (uniq.c's digit cases accumulate into skip_fields); it has never
+  // been a check-chars count.  It shares the skip_fields variable with
+  // -f: when no explicit -f/--skip-fields was given, the accumulated
+  // -NUM digits win (the shared parser hands each -NUM occurrence to
+  // us as one raw value; digits accumulate across occurrences).
+  if (!ctx.has("-f") && !ctx.has("--skip-fields")) {
+    auto obsolete_values = ctx.get_all<int>("-NUM");
+    if (!obsolete_values.empty()) {
+      // Accumulate the DIGITS across occurrences (uniq.c's
+      // DECIMAL_DIGIT_ACCUMULATE): "-1 -5" means skip 15 fields.
+      long long accumulated = 0;
+      for (int raw : obsolete_values) {
+        for (char c : std::to_string(raw)) {
+          if (c >= '0' && c <= '9') accumulated = accumulated * 10 + (c - '0');
+        }
+      }
+      cfg.skip_fields = static_cast<int>(std::min<long long>(
+          accumulated, std::numeric_limits<int>::max()));
+    }
+  }
 
   cfg.delimiter =
       (ctx.get<bool>("--zero-terminated", false) || ctx.get<bool>("-z", false))
           ? '\0'
           : '\n';
 
-  if (cfg.skip_fields < 0 || cfg.skip_chars < 0 || cfg.check_chars < -1) {
-    return std::unexpected("negative counts are not allowed");
+  // [GNU] size_opt (uniq.c) reports each negative count with its own
+  // message: "<value>: invalid number of ... to skip".
+  if (cfg.skip_fields < 0) {
+    return std::unexpected(std::to_string(cfg.skip_fields) +
+                           ": invalid number of fields to skip");
+  }
+  if (cfg.skip_chars < 0) {
+    return std::unexpected(std::to_string(cfg.skip_chars) +
+                           ": invalid number of bytes to skip");
   }
 
   // [GNU] An explicitly given negative -w/--check-chars has its own
@@ -287,6 +343,33 @@ auto build_config(const CommandContext<UNIQ_OPTIONS.size()>& ctx)
   std::vector<std::string> expanded_input;
   std::vector<std::string_view> operands(ctx.positionals.begin(),
                                          ctx.positionals.end());
+  // [GNU] an operand of the form +NUM is the obsolete skip-chars
+  // option (uniq.c's case 1: a whole-token unsigned parse), never a
+  // file name; the last one wins, as with repeated -s.
+  {
+    std::vector<std::string_view> files_only;
+    for (auto operand : operands) {
+      bool consumed = false;
+      if (operand.size() > 1 && operand[0] == '+') {
+        long long value = 0;
+        bool all_digits = true;
+        for (size_t i = 1; i < operand.size(); ++i) {
+          if (operand[i] < '0' || operand[i] > '9') {
+            all_digits = false;
+            break;
+          }
+          value = value * 10 + (operand[i] - '0');
+        }
+        if (all_digits) {
+          cfg.skip_chars = static_cast<int>(std::min<long long>(
+              value, std::numeric_limits<int>::max()));
+          consumed = true;
+        }
+      }
+      if (!consumed) files_only.push_back(operand);
+    }
+    operands = std::move(files_only);
+  }
   if (!operands.empty() && contains_wildcard(operands[0])) {
     expanded_input = expand_file_operand(operands[0]);
     operands.clear();
