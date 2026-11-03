@@ -453,5 +453,7 @@ TEST(uniq, uniq_group_attached_empty_is_invalid_issue1513) {
   auto r = p.run();
 
   EXPECT_NE(r.exit_code, 0);
-  EXPECT_TRUE(r.stderr_text.find("invalid argument") != std::string::npos);
+  // GNU 9.4 argmatch reports the empty prefix as ambiguous.
+  EXPECT_TRUE(r.stderr_text.find("ambiguous argument '' for '--group'") !=
+              std::string::npos);
 }

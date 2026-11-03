@@ -3626,7 +3626,8 @@ TEST(ls, ls_color_attached_empty_is_invalid_issue1513) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 2);
-  EXPECT_TRUE(r.stderr_text.find("invalid argument ''") !=
+  // GNU 9.4 argmatch reports the empty prefix as ambiguous.
+  EXPECT_TRUE(r.stderr_text.find("ambiguous argument ''") !=
               std::string::npos);
 }
 
