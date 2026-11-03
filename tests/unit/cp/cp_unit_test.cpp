@@ -731,7 +731,10 @@ TEST(cp, cp_no_dereference_recreates_dangling_symlink) {
 }
 
 // [GNU] --reflink=auto silently falls back to a normal copy when the
-// filesystem cannot clone (NTFS); bare --reflink means auto (#1066).
+// filesystem cannot clone (NTFS) (#1066). A bare --reflink is NOT
+// auto: cp.c's REFLINK_OPTION case maps optarg == nullptr to
+// REFLINK_ALWAYS, so the bare shape carries the always contract
+// (clone, or fail with the diagnostic) pinned by the second half.
 TEST(cp, cp_reflink_auto_falls_back_to_copy) {
   TempDir tmp;
   tmp.write("src.txt", "payload");
@@ -747,8 +750,13 @@ TEST(cp, cp_reflink_auto_falls_back_to_copy) {
   p2.set_cwd(tmp.wpath());
   p2.add(L"cp.exe", {L"--reflink", L"src.txt", L"dest2.txt"});
   auto r2 = p2.run();
-  EXPECT_EQ(r2.exit_code, 0);
-  EXPECT_EQ(tmp.read("dest2.txt"), "payload");
+  if (r2.exit_code != 0) {
+    EXPECT_TRUE(
+        r2.stderr_text.find("failed to clone 'dest2.txt' from 'src.txt'") !=
+        std::string::npos);
+  } else {
+    EXPECT_EQ(tmp.read("dest2.txt"), "payload");
+  }
 }
 
 // [GNU] --reflink=always must either clone (ReFS) or fail with the
