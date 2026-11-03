@@ -1064,6 +1064,19 @@ auto strnumcmp_sv(std::string_view a, std::string_view b) -> int {
   return tmp;
 }
 
+// [GNU] numcompare (sort.c:1996-2004): the blank skipping lives in
+// numcompare, NOT in strnumcmp — both operands have their leading
+// blanks (space/tab) removed before the exact comparison.  This is
+// load-bearing: a key extracted in whitespace mode starts at the
+// blank run preceding its field (begfield), so without the skip every
+// numeric key ties at the leading blank and the sort degenerates to
+// the last-resort whole-line comparison.
+auto numcompare_sv(std::string_view a, std::string_view b) -> int {
+  while (!a.empty() && is_blank_byte(a.front())) a.remove_prefix(1);
+  while (!b.empty() && is_blank_byte(b.front())) b.remove_prefix(1);
+  return strnumcmp_sv(a, b);
+}
+
 auto human_suffix_rank(char c) -> int {
   if (c == 'k' || c == 'K') return 1;
   constexpr std::string_view suffixes = "MGTPEZYRQ";
@@ -1282,7 +1295,8 @@ auto compare_single_key(std::string_view a, std::string_view b,
     // [GNU] numcompare -> strnumcmp: exact string comparison, no
     // floating-point conversion (a long double ties digit strings
     // that differ past its precision, e.g. 1e30-scale neighbours).
-    return strnumcmp_sv(key_a, key_b);
+    // numcompare first skips leading blanks on both sides.
+    return numcompare_sv(key_a, key_b);
   } else if (human_numeric) {
     return compare_human_numbers(parse_human_number(key_a),
                                  parse_human_number(key_b));
