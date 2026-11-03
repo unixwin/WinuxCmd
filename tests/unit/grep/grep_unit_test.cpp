@@ -2135,3 +2135,79 @@ TEST(grep, grep_color_attached_empty_is_not_bare_issue1513) {
   EXPECT_TRUE(r.stderr_text.find("invalid color mode ''") !=
               std::string::npos);
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1509: grep's count/context options parse at intmax width in
+// GNU (grep.c:829-845 context_length_arg and the -m case at
+// grep.c:2680-2692 both use xstrtoimax and accept overflow up to
+// intmax_t). Values above INT_MAX must ceiling, not error.
+// ---------------------------------------------------------------------------
+TEST(grep, grep_max_count_above_int_max_issue1509) {
+  TempDir tmp;
+  tmp.write("a.txt", "alpha\nbeta\nalpha\nalpha\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"grep.exe", {L"-m", L"3000000000", L"alpha", L"a.txt"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "alpha\nalpha\nalpha\n");
+}
+
+TEST(grep, grep_context_above_int_max_issue1509) {
+  TempDir tmp;
+  tmp.write("a.txt", "one\nneedle\ntwo\nthree\n");
+
+  Pipeline after;
+  after.set_cwd(tmp.wpath());
+  after.add(L"grep.exe", {L"-A", L"3000000000", L"needle", L"a.txt"});
+  auto ra = after.run();
+  EXPECT_EQ(ra.exit_code, 0);
+  EXPECT_EQ_TEXT(ra.stdout_text, "needle\ntwo\nthree\n");
+
+  Pipeline before;
+  before.set_cwd(tmp.wpath());
+  before.add(L"grep.exe", {L"--before-context=3000000000", L"needle",
+                           L"a.txt"});
+  auto rb = before.run();
+  EXPECT_EQ(rb.exit_code, 0);
+  EXPECT_EQ_TEXT(rb.stdout_text, "one\nneedle\n");
+
+  Pipeline ctx;
+  ctx.set_cwd(tmp.wpath());
+  ctx.add(L"grep.exe", {L"-C", L"3000000000", L"needle", L"a.txt"});
+  auto rc = ctx.run();
+  EXPECT_EQ(rc.exit_code, 0);
+  EXPECT_EQ_TEXT(rc.stdout_text, "one\nneedle\ntwo\nthree\n");
+}
+
+TEST(grep, grep_count_above_int64_max_still_errors_issue1509) {
+  TempDir tmp;
+  tmp.write("a.txt", "alpha\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"grep.exe",
+        {L"-m", L"99999999999999999999999", L"alpha", L"a.txt"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_TRUE(r.stderr_text.find("invalid argument "
+                                 "'99999999999999999999999'") !=
+              std::string::npos);
+}
+
+TEST(grep, grep_negative_context_still_errors_issue1509) {
+  TempDir tmp;
+  tmp.write("a.txt", "needle\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"grep.exe", {L"--after-context=-5", L"needle", L"a.txt"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_TRUE(r.stderr_text.find("-5: invalid context length argument") !=
+              std::string::npos);
+}
