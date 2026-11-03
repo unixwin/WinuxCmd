@@ -189,17 +189,22 @@ TEST(tail, tail_KB_suffix_is_decimal_bytes) {
   EXPECT_EQ_TEXT(r.stdout_text.substr(0, 4), "tail");
 }
 
-TEST(tail, tail_rejects_lowercase_kB_suffix) {
+TEST(tail, tail_accepts_lowercase_kB_suffix) {
+  // [GNU] coreutils-9.4/lib/xstrtol.c:143-166: the first suffix
+  // letter picks the power ('k' and 'K' are both in tail's suffix
+  // list "bkKmMGTPEZYRQ0", src/tail.c:2163-2166) and a trailing 'B'
+  // selects base 1000, so 1kB is 1000 bytes, not an error (audit
+  // lane A5, finding H1/T5).
   TempDir tmp;
-  tmp.write("a.txt", "0123456789abcdef");
+  tmp.write("a.txt", std::string(1200, 'x'));
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
   p.add(L"tail.exe", {L"-c", L"1kB", L"a.txt"});
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stderr_text.find("invalid") != std::string::npos);
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(r.stdout_text.size(), 1000u);
 }
 
 TEST(tail, tail_accepts_extended_representable_count_suffixes) {
