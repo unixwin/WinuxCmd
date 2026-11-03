@@ -171,6 +171,10 @@ export struct StringOptionOccurrence {
   std::string_view short_name;
   std::string_view long_name;
   std::string value;
+  // [GNU] true when the occurrence carried an attached value
+  // ("--opt=value", "--opt=", "-ovalue"); false for a bare OptionalString
+  // occurrence, where GNU getopt reports optarg == nullptr (#1513).
+  bool has_value = true;
 };
 
 export template <size_t N>
@@ -254,8 +258,9 @@ struct CommandContext {
       if (!wanted) continue;
 
       if (auto value = std::get_if<std::string>(&occurrence.value)) {
-        out.push_back(
-            StringOptionOccurrence{meta.short_name, meta.long_name, *value});
+        out.push_back(StringOptionOccurrence{meta.short_name, meta.long_name,
+                                             *value,
+                                             occurrence.value_attached});
       }
     }
     return out;
