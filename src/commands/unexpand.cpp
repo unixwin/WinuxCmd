@@ -244,7 +244,7 @@ auto build_config(const CommandContext<UNEXPAND_OPTIONS.size()>& ctx)
         }
       }
     } else if (meta.short_name == "-NUM") {
-      if (const auto* value = std::get_if<int>(&occurrence.value)) {
+      if (const auto* value = std::get_if<std::int64_t>(&occurrence.value)) {
         if (!have_tabval) {
           tabval = 0;
           have_tabval = true;

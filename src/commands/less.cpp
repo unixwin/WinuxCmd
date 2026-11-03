@@ -164,11 +164,14 @@ auto build_config(const CommandContext<LESS_OPTIONS.size()>& ctx)
   for (const auto& occurrence : ctx.options.occurrences()) {
     if (!ctx.metas || occurrence.index >= LESS_OPTIONS.size()) continue;
     const auto& meta = (*ctx.metas)[occurrence.index];
-    const auto* value = std::get_if<int>(&occurrence.value);
+    const auto* value = std::get_if<std::int64_t>(&occurrence.value);
     if (!value) continue;
     if (option_matches(meta, "-z", "--window") ||
         option_matches(meta, "-NUM", "")) {
-      cfg.window_size = *value;
+      cfg.window_size = static_cast<int>(std::clamp(
+          *value,
+          static_cast<std::int64_t>(std::numeric_limits<int>::min()),
+          static_cast<std::int64_t>(std::numeric_limits<int>::max())));
     }
   }
 

@@ -291,7 +291,7 @@ auto normalize_batch_options(const CommandContext<XARGS_OPTIONS.size()> &ctx)
     const auto &meta = (*ctx.metas)[occurrence.index];
 
     if (option_matches(meta, "-n", "--max-args")) {
-      const auto *value = std::get_if<int>(&occurrence.value);
+      const auto *value = std::get_if<std::int64_t>(&occurrence.value);
       if (!value) continue;
 
       if (options.active_family == BatchOptionFamily::Replace && *value == 1) {
@@ -299,18 +299,26 @@ auto normalize_batch_options(const CommandContext<XARGS_OPTIONS.size()> &ctx)
       }
 
       switch_family(BatchOptionFamily::MaxArgs);
-      options.max_args = *value;
+      options.max_args = static_cast<int>(std::clamp(
+          *value,
+          static_cast<std::int64_t>(std::numeric_limits<int>::min()),
+          static_cast<std::int64_t>(std::numeric_limits<int>::max())));
       options.max_args_present = true;
       continue;
     }
 
     if (option_matches(meta, "-L", "--max-lines") ||
         option_matches(meta, "-l", "")) {
-      const auto *value = std::get_if<int>(&occurrence.value);
+      const auto *value = std::get_if<std::int64_t>(&occurrence.value);
       if (!value) continue;
 
       switch_family(BatchOptionFamily::MaxLines);
-      options.max_lines = *value < 0 ? 1 : *value;
+      options.max_lines =
+          *value < 0
+              ? 1
+              : static_cast<int>(std::min(
+                    *value, static_cast<std::int64_t>(
+                                std::numeric_limits<int>::max())));
       options.max_lines_present = true;
       continue;
     }
