@@ -5,7 +5,14 @@ export module core:opt;
 import std;
 import :cmd_meta;
 
-export using OptionValue = std::variant<bool, int, std::string>;
+// [GNU] Integer option values are stored at int64 width (#1509): GNU's
+// numeric option parsers (xstrtoimax/xstrtoumax in grep, coreutils,
+// findutils, diffutils) read into intmax_t/uintmax_t, so a 32-bit store
+// rejected values GNU accepts (grep -m 3000000000). Consumers that
+// still model an int read through get<int>, which saturates the stored
+// value into the int range; consumers whose oracle is 64-bit read
+// get<std::int64_t> and keep the full width.
+export using OptionValue = std::variant<bool, std::int64_t, std::string>;
 
 export struct OptionOccurrence {
   size_t index = 0;
@@ -47,6 +54,19 @@ class ParsedOptions {
 
     if (auto p = std::get_if<T>(&values_[index])) return *p;
 
+    // #1509: integer occurrences are stored as std::int64_t; an int
+    // consumer saturates into the int range instead of failing, so
+    // un-migrated consumers keep working (their own range checks still
+    // see a value outside any sub-int bound they validate).
+    if constexpr (std::is_same_v<T, int>) {
+      if (auto p = std::get_if<std::int64_t>(&values_[index])) {
+        return static_cast<int>(std::clamp(
+            *p,
+            static_cast<std::int64_t>(std::numeric_limits<int>::min()),
+            static_cast<std::int64_t>(std::numeric_limits<int>::max())));
+      }
+    }
+
     return default_value;
   }
 
@@ -57,6 +77,16 @@ class ParsedOptions {
       if (occurrence.index != index) continue;
       if (auto p = std::get_if<T>(&occurrence.value)) {
         values.push_back(*p);
+        continue;
+      }
+      // #1509: same int saturation bridge as get<int> above.
+      if constexpr (std::is_same_v<T, int>) {
+        if (auto p = std::get_if<std::int64_t>(&occurrence.value)) {
+          values.push_back(static_cast<int>(std::clamp(
+              *p,
+              static_cast<std::int64_t>(std::numeric_limits<int>::min()),
+              static_cast<std::int64_t>(std::numeric_limits<int>::max()))));
+        }
       }
     }
     return values;
@@ -219,7 +249,7 @@ export ParseResultRuntime parse_command_runtime(
   };
 
   auto parse_int_value = [&](std::string_view option, std::string_view value,
-                             int& out) -> bool {
+                             std::int64_t& out) -> bool {
     std::string str(value);
     auto [ptr, ec] = std::from_chars(str.data(), str.data() + str.size(), out);
     if (ec != std::errc() || ptr != str.data() + str.size()) {
@@ -320,7 +350,7 @@ export ParseResultRuntime parse_command_runtime(
           break;
 
         case OptionType::Int: {
-          int v = 0;
+          std::int64_t v = 0;
           std::string str;
 
           // #1302: an explicit empty value ("--opt=") is a value, not a
@@ -366,11 +396,11 @@ export ParseResultRuntime parse_command_runtime(
 
         case OptionType::OptionalInt: {
           if (!has_inline_value) {
-            result.options.set(idx, -1);
+            result.options.set(idx, std::int64_t{-1});
             break;
           }
 
-          int v = 0;
+          std::int64_t v = 0;
           std::string str(value);
           auto [ptr, ec] =
               std::from_chars(str.data(), str.data() + str.size(), v);
@@ -436,7 +466,7 @@ export ParseResultRuntime parse_command_runtime(
             result.options.set(idx, true);
             break;
           case OptionType::Int: {
-            int v = 0;
+            std::int64_t v = 0;
             std::string str;
             // #1302, single-dash long form: an explicit empty value is
             // a value, not a missing one.
@@ -473,11 +503,11 @@ export ParseResultRuntime parse_command_runtime(
             break;
           case OptionType::OptionalInt: {
             if (!exact_has_inline_value) {
-              result.options.set(idx, -1);
+              result.options.set(idx, std::int64_t{-1});
               break;
             }
 
-            int v = 0;
+            std::int64_t v = 0;
             std::string str(exact_value);
             auto [ptr, ec] =
                 std::from_chars(str.data(), str.data() + str.size(), v);
@@ -565,7 +595,7 @@ export ParseResultRuntime parse_command_runtime(
             return result;
           }
 
-          int v = 0;
+          std::int64_t v = 0;
           if (!parse_int_value(numeric_meta->short_name, arg.substr(1), v)) {
             return result;
           }
@@ -602,7 +632,7 @@ export ParseResultRuntime parse_command_runtime(
                    std::isdigit(static_cast<unsigned char>(arg[end])) != 0) {
               ++end;
             }
-            int v = 0;
+            std::int64_t v = 0;
             if (!parse_int_value(numeric_meta->short_name,
                                  arg.substr(pos, end - pos), v)) {
               return result;
@@ -654,7 +684,7 @@ export ParseResultRuntime parse_command_runtime(
             }
 
             if (meta->type == OptionType::Int) {
-              int v = 0;
+              std::int64_t v = 0;
               auto [ptr, ec] =
                   std::from_chars(str.data(), str.data() + str.size(), v);
 
@@ -683,12 +713,12 @@ export ParseResultRuntime parse_command_runtime(
             // cluster for commands that keep it (sed -i.bak).
             if (!policy.allow_optional_short_attached_values ||
                 pos + 1 >= arg.size()) {
-              result.options.set(idx, -1);
+              result.options.set(idx, std::int64_t{-1});
               break;
             }
 
             std::string str(arg.substr(pos + 1));
-            int v = 0;
+            std::int64_t v = 0;
             auto [ptr, ec] =
                 std::from_chars(str.data(), str.data() + str.size(), v);
             if (ec != std::errc() || ptr != str.data() + str.size()) {
