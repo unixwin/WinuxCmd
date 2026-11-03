@@ -277,3 +277,46 @@ TEST(tr, tr_undocumented_A_flag_is_noop) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "bbc");
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1512: a range endpoint is the single raw character after '-'
+// (build_spec_list, tr.c:984-995) -- never a [:class:] / [=c=] / [c*n]
+// construct. "a-[:digit:]" is the reverse range 'a'..'[' and fails;
+// for a start byte below '[', the construct text after the range is
+// read as ordinary characters.
+// ---------------------------------------------------------------------------
+TEST(tr, tr_range_endpoint_class_construct_is_reverse_range_issue1512) {
+  Pipeline p;
+  p.set_stdin("abc");
+  p.add(L"tr.exe", {L"a-[:digit:]", L"x"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("range-endpoints of 'a-[' are in "
+                                 "reverse collating sequence order") !=
+              std::string::npos);
+}
+
+TEST(tr, tr_range_endpoint_bracket_then_literal_text_issue1512) {
+  Pipeline p;
+  p.set_stdin("5:d");
+  p.add(L"tr.exe", {L"0-[:digit:]", L"**********"});
+
+  auto r = p.run();
+  // Set 1 is the range '0'..'[' plus the literal characters
+  // ':' 'd' 'i' 'g' 'i' 't' ':' ']' -- so '5', ':' and 'd' all map.
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "***");
+}
+
+TEST(tr, tr_equiv_element_does_not_start_a_range_issue1512) {
+  Pipeline p;
+  p.set_stdin("a-x");
+  p.add(L"tr.exe", {L"[=a=]-x", L"ABC"});
+
+  auto r = p.run();
+  // Set 1 is {'a', '-', 'x'}: the '-' after an equivalence-class
+  // element is an ordinary character, not a range operator.
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "ABC");
+}

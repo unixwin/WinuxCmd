@@ -532,3 +532,98 @@ TEST(cut, cut_large_input_bytes_mode_streams_with_bounded_memory) {
   EXPECT_EQ(r.stdout_text.size(), expected.size());
   EXPECT_TRUE(r.stdout_text == expected);
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1511: with -z and -d "" the field delimiter IS the record
+// delimiter. GNU cut_fields treats the whole input as one record whose
+// fields are the segments between NUL bytes; a trailing NUL terminates
+// the record rather than separating an empty last field (cut.c:276-437).
+// ---------------------------------------------------------------------------
+TEST(cut, cut_zero_terminated_empty_delim_selects_fields_issue1511) {
+  TempDir tmp;
+  tmp.write_bytes("a.dat", {'a', '\0', 'b', '\0', 'c', '\0'});
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cut.exe", {L"-z", L"-d", L"", L"-f", L"2", L"a.dat"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  const std::string expected = std::string("b") + '\0';
+  EXPECT_EQ(r.stdout_text, expected);
+}
+
+TEST(cut, cut_zero_terminated_empty_delim_field_one_issue1511) {
+  TempDir tmp;
+  tmp.write_bytes("a.dat", {'a', '\0', 'b', '\0', 'c', '\0'});
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cut.exe", {L"-z", L"-d", L"", L"-f", L"1", L"a.dat"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  const std::string expected = std::string("a") + '\0';
+  EXPECT_EQ(r.stdout_text, expected);
+}
+
+TEST(cut, cut_zero_terminated_empty_delim_out_of_range_field_issue1511) {
+  TempDir tmp;
+  tmp.write_bytes("a.dat", {'a', '\0', 'b', '\0'});
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cut.exe", {L"-z", L"-d", L"", L"-f", L"5", L"a.dat"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  // The record IS delimited, so the (empty) selection still earns its
+  // terminator -- the same shape as cut -d: -f5 on "a:b".
+  const std::string expected(1, '\0');
+  EXPECT_EQ(r.stdout_text, expected);
+}
+
+TEST(cut, cut_zero_terminated_empty_delim_unterminated_tail_issue1511) {
+  TempDir tmp;
+  tmp.write_bytes("a.dat", {'a', '\0', 'b', '\0', 'c'});
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cut.exe", {L"-z", L"-d", L"", L"-f", L"3", L"a.dat"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  const std::string expected = std::string("c") + '\0';
+  EXPECT_EQ(r.stdout_text, expected);
+}
+
+TEST(cut, cut_zero_terminated_empty_delim_only_delimited_issue1511) {
+  TempDir tmp;
+  tmp.write_bytes("a.dat", {'a', 'b', 'c'});
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cut.exe", {L"-z", L"-s", L"-d", L"", L"-f", L"1", L"a.dat"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(r.stdout_text, std::string());
+}
+
+TEST(cut, cut_zero_terminated_empty_delim_complement_issue1511) {
+  TempDir tmp;
+  tmp.write_bytes("a.dat", {'a', '\0', 'b', '\0', 'c', '\0'});
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cut.exe",
+        {L"-z", L"--complement", L"-d", L"", L"-f", L"2", L"a.dat"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  std::string expected = "a";
+  expected.push_back('\0');
+  expected += "c";
+  expected.push_back('\0');
+  EXPECT_EQ(r.stdout_text, expected);
+}

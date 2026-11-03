@@ -941,3 +941,35 @@ TEST(tail, issue_1283_drive_colon_operand_reads_carrier_file) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "second\n");
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1513: a bare --follow selects descriptor mode (tail.c:2169-2176
+// only argmatches an attached value); an attached empty value is not
+// bare and is rejected by the argmatch.
+// ---------------------------------------------------------------------------
+TEST(tail, tail_bare_follow_selects_descriptor_mode_issue1513) {
+  TempDir tmp;
+  tmp.write("a.txt", "alpha\nbeta\ngamma\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"tail.exe",
+        {L"--follow", L"--pid", L"999999", L"-n", L"1", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "gamma\n");
+}
+
+TEST(tail, tail_follow_attached_empty_is_invalid_issue1513) {
+  TempDir tmp;
+  tmp.write("a.txt", "alpha\nbeta\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"tail.exe", {L"--follow=", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_NE(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.find("for '--follow'") != std::string::npos);
+}

@@ -2004,3 +2004,126 @@ TEST(grep, issue1368_closed_stdout_reports_write_error_and_exits_2) {
   EXPECT_CONTAINS(r.stderr_text, "grep: write error: ");
   EXPECT_CONTAINS(r.stderr_text, "Bad file descriptor");
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1507: GNU's binary verdict covers the whole buffer, not a
+// first-chunk sample (grep.c:1554-1565 checks the buffer for a NUL;
+// the binary notice is printed when the first NUL arrives after real
+// lines). A NUL past the streaming probe's sample must still flip a
+// regular file from streamed text lines to "binary file matches".
+// ---------------------------------------------------------------------------
+TEST(grep, grep_binary_detection_scans_past_streaming_sample_issue1507) {
+  TempDir tmp;
+  std::string content = "needle here\n";
+  content += std::string(70'000, 'x');
+  content.push_back('\n');
+  content.push_back('\0');
+  content += "trailing needle\n";
+  tmp.write_bytes("binary.dat",
+                  std::vector<char>(content.begin(), content.end()));
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"grep.exe", {L"needle", L"binary.dat"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "");
+  EXPECT_TRUE(r.stderr_text.find("binary.dat: binary file matches") !=
+              std::string::npos);
+}
+
+TEST(grep, grep_large_text_file_still_streams_matches_issue1507) {
+  TempDir tmp;
+  std::string content = "needle here\n";
+  content += std::string(70'000, 'x');
+  content += "\nlast needle\n";
+  tmp.write("big.txt", content);
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"grep.exe", {L"needle", L"big.txt"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("needle here") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("last needle") != std::string::npos);
+  EXPECT_EQ_TEXT(r.stderr_text, "");
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1508: -o pieces are the leftmost-longest match over the whole
+// pattern set (POSIX/GNU), not one piece per pattern in pattern order,
+// and the scan resumes after the emitted piece.
+// ---------------------------------------------------------------------------
+TEST(grep, grep_only_matching_leftmost_longest_across_patterns_issue1508) {
+  TempDir tmp;
+  tmp.write("a.txt", "foobar\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"grep.exe", {L"-o", L"-e", L"foo", L"-e", L"foobar", L"a.txt"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "foobar\n");
+}
+
+TEST(grep, grep_only_matching_alternation_prefers_longest_issue1508) {
+  TempDir tmp;
+  tmp.write("a.txt", "foobar\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"grep.exe", {L"-E", L"-o", L"foo|foobar", L"a.txt"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "foobar\n");
+}
+
+TEST(grep, grep_only_matching_fixed_advances_past_match_issue1508) {
+  Pipeline p;
+  p.set_stdin("aaa\n");
+  p.add(L"grep.exe", {L"-F", L"-o", L"-e", L"aa"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "aa\n");
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1510: with no pattern at all, GNU prints its two-line usage
+// error and exits 2 (grep.c:1969-1974, usage(EXIT_TROUBLE)) -- not a
+// prefixed one-line diagnostic.
+// ---------------------------------------------------------------------------
+TEST(grep, grep_no_pattern_prints_gnu_usage_error_issue1510) {
+  Pipeline p;
+  p.add(L"grep.exe", {});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "Usage: grep [OPTION]... PATTERNS [FILE]...\n"
+                 "Try 'grep --help' for more information.\n");
+  EXPECT_EQ_TEXT(r.stdout_text, "");
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1513: an attached empty --color= is not a bare --color. Bare
+// means auto (grep.c:2768 + 2916-2917); the attached empty value is
+// validated as a mode and rejected, like any other bogus mode string.
+// ---------------------------------------------------------------------------
+TEST(grep, grep_color_attached_empty_is_not_bare_issue1513) {
+  TempDir tmp;
+  tmp.write("a.txt", "needle\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"grep.exe", {L"--color=", L"needle", L"a.txt"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_TRUE(r.stderr_text.find("invalid color mode ''") !=
+              std::string::npos);
+}
