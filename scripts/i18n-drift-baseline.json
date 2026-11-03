@@ -1,8 +1,15 @@
 {
   "format": 1,
-  "recorded_at": "2026-11-01T13:37:47.485007+00:00",
+  "recorded_at": "2026-11-03T15:59:19.924710+00:00",
   "note": "Pre-existing drift between master source extraction and the published locale catalogs, recorded when the drift gate landed (issue #1127 P3). May only shrink as translation sync batches land; growth in a PR must be deliberate and visible here.",
   "locales": {
-    "zh-CN": {}
+    "zh-CN": {
+      "missing": [
+        "legacy.cf964c601bdedf9b"
+      ],
+      "extra": [
+        "legacy.fb7036112fc1426e"
+      ]
+    }
   }
 }

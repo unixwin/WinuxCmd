@@ -400,6 +400,139 @@ auto record_has_field_delimiter(std::string_view rec, const Config& cfg)
   return rec.find(cfg.delimiter) != std::string::npos;
 }
 
+// [GNU] Field mode when the field delimiter IS the record delimiter
+// (-z -d "" , or -d with the newline character): the record-at-a-time
+// model cannot express this case -- every getline segment looks like
+// a single un-delimited field. GNU cut_fields (cut.c:276-437) is a
+// character-stream algorithm instead: the whole input is ONE record
+// whose fields are the segments between delimiter bytes, and a
+// delimiter byte is a field separator unless it is the last byte of
+// the stream, where it terminates the record (the getc/ungetc peek,
+// cut.c:356-367,400-419). This is a transliteration of that loop,
+// specialized to delim == line_delim (so the record-end branch always
+// emits the terminator, cut.c:418-419). main() maps -d "" to '\0'
+// (cut.c:521-523), which is how build_config stores it.
+auto run_fields_stream(std::istream& input, const Config& cfg) -> int {
+  const int delim = static_cast<unsigned char>(cfg.delimiter);
+  const bool suppress = cfg.only_delimited;
+  const std::string out_delim =
+      cfg.output_delimiter_set ? cfg.output_delimiter
+                               : std::string(1, cfg.delimiter);
+
+  auto print_kth = [&](long long k) {
+    const int idx = k > std::numeric_limits<int>::max()
+                        ? std::numeric_limits<int>::max()
+                        : static_cast<int>(k);
+    bool selected = is_selected(idx, cfg.ranges);
+    return cfg.complement ? !selected : selected;
+  };
+
+  std::string output;
+  output.reserve(kOutputFlushThreshold);
+  auto flush_if_full = [&]() -> std::optional<int> {
+    if (output.size() >= kOutputFlushThreshold) return flush_output(output);
+    return std::nullopt;
+  };
+
+  if (input.peek() == std::char_traits<char>::eof()) {
+    return 0;  // GNU: first getc is EOF -- nothing to do.
+  }
+
+  const bool buffer_first_field = suppress ^ !print_kth(1);
+  long long field_idx = 1;
+  bool found_any_selected_field = false;
+  int c = 0;  // last terminator consumed (GNU's c); EOF is -1.
+
+  auto get = [&]() -> int { return input.get(); };
+
+  while (true) {
+    if (field_idx == 1 && buffer_first_field) {
+      // getndelim2: buffer field 1 through its terminator byte.
+      std::string field_1;
+      bool hit_delim = false;
+      int ch;
+      while ((ch = get()) != std::char_traits<char>::eof()) {
+        field_1.push_back(static_cast<char>(ch));
+        if (ch == delim) {
+          hit_delim = true;
+          break;
+        }
+      }
+      if (field_1.empty()) break;  // EOF: no more records.
+
+      c = 0;
+      if (!hit_delim) {
+        // The first field extends to the end of the record (here: end
+        // of stream) without a delimiter.
+        if (!suppress) {
+          output.append(field_1);
+          if (field_1.back() != static_cast<char>(delim)) {
+            output.push_back(static_cast<char>(delim));
+          }
+          c = delim;
+        }
+        if (auto rc = flush_if_full()) return *rc;
+        continue;
+      }
+
+      if (print_kth(1)) {
+        output.append(field_1.substr(0, field_1.size() - 1));
+        // With delim == line_delim, don't treat the last delimiter as
+        // a field separator: peek at the next byte.
+        int last_c = get();
+        if (last_c != std::char_traits<char>::eof()) {
+          input.unget();
+          found_any_selected_field = true;
+        }
+      }
+      ++field_idx;  // next_item
+    }
+
+    if (print_kth(field_idx)) {
+      if (found_any_selected_field) output.append(out_delim);
+      found_any_selected_field = true;
+      int ch;
+      while ((ch = get()) != std::char_traits<char>::eof() && ch != delim) {
+        output.push_back(static_cast<char>(ch));
+      }
+      c = ch;
+    } else {
+      int ch;
+      while ((ch = get()) != std::char_traits<char>::eof() && ch != delim) {
+      }
+      c = ch;
+    }
+
+    // The delim == line_delim peek: a delimiter followed by more input
+    // separates fields; a delimiter at EOF terminates the record.
+    if (c == delim) {
+      int last_c = get();
+      if (last_c != std::char_traits<char>::eof()) {
+        input.unget();
+      } else {
+        c = std::char_traits<char>::eof();
+      }
+    }
+
+    if (c == delim) {
+      ++field_idx;  // next_item
+    } else {
+      // Record end (c == EOF; the line_delim case is the same byte).
+      if (found_any_selected_field || !(suppress && field_idx == 1)) {
+        output.push_back(static_cast<char>(delim));
+      }
+      if (c == std::char_traits<char>::eof()) break;
+      field_idx = 1;
+      found_any_selected_field = false;
+    }
+
+    if (auto rc = flush_if_full()) return *rc;
+  }
+
+  if (auto rc = flush_output(output)) return *rc;
+  return 0;
+}
+
 auto can_use_fast_field_stream(const Config& cfg) -> bool {
   const char record_delim = cfg.zero_terminated ? '\0' : '\n';
   return cfg.mode == Mode::fields && !cfg.complement &&
@@ -465,6 +598,12 @@ auto run_file(const std::string& path, const Config& cfg) -> int {
   }
 
   const char record_delim = cfg.zero_terminated ? '\0' : '\n';
+  // [GNU] delimiter == record delimiter needs the character-stream
+  // algorithm (cut.c cut_fields); the record-at-a-time loop below
+  // cannot see fields in that shape (#1511).
+  if (cfg.mode == Mode::fields && cfg.delimiter == record_delim) {
+    return run_fields_stream(*input, cfg);
+  }
   const bool fast_fields = can_use_fast_field_stream(cfg);
   std::string record;
   std::string output;
