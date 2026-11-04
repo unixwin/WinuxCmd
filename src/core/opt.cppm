@@ -52,7 +52,16 @@ class ParsedOptions {
   T get(size_t index, T default_value = {}) const {
     if (!present_.test(index)) return default_value;
 
-    if (auto p = std::get_if<T>(&values_[index])) return *p;
+    // The exact-type read must stay behind if constexpr: std::get_if<T>
+    // requires T to be one of the variant's alternatives (a hard
+    // static_assert on MSVC), so instantiating it for a bridged type
+    // such as int fails compilation even though the branch would never
+    // be taken at runtime.
+    if constexpr (std::is_same_v<T, bool> ||
+                  std::is_same_v<T, std::int64_t> ||
+                  std::is_same_v<T, std::string>) {
+      if (auto p = std::get_if<T>(&values_[index])) return *p;
+    }
 
     // #1509: integer occurrences are stored as std::int64_t; an int
     // consumer saturates into the int range instead of failing, so
@@ -75,9 +84,13 @@ class ParsedOptions {
     std::vector<T> values;
     for (const auto& occurrence : occurrences_) {
       if (occurrence.index != index) continue;
-      if (auto p = std::get_if<T>(&occurrence.value)) {
-        values.push_back(*p);
-        continue;
+      if constexpr (std::is_same_v<T, bool> ||
+                    std::is_same_v<T, std::int64_t> ||
+                    std::is_same_v<T, std::string>) {
+        if (auto p = std::get_if<T>(&occurrence.value)) {
+          values.push_back(*p);
+          continue;
+        }
       }
       // #1509: same int saturation bridge as get<int> above.
       if constexpr (std::is_same_v<T, int>) {

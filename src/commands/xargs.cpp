@@ -160,7 +160,26 @@ auto last_option_value(const CommandContext<N> &ctx,
     if (occurrence.index >= N) continue;
     const auto &meta = (*ctx.metas)[occurrence.index];
     if (!option_matches(meta, short_name, long_name)) continue;
-    if (const auto *parsed = std::get_if<T>(&occurrence.value)) value = *parsed;
+    // #1509: occurrences store integers as std::int64_t; an int reader
+    // saturates through the same bridge as ParsedOptions::get<int>.
+    // std::get_if<T> cannot be instantiated for int at all (T must be
+    // one of the variant's alternatives), so every read stays behind
+    // if constexpr.
+    if constexpr (std::is_same_v<T, std::int64_t>) {
+      if (const auto *parsed = std::get_if<std::int64_t>(&occurrence.value))
+        value = *parsed;
+    } else if constexpr (std::is_same_v<T, int>) {
+      if (const auto *parsed = std::get_if<std::int64_t>(&occurrence.value)) {
+        value = static_cast<int>(std::clamp(
+            *parsed,
+            static_cast<std::int64_t>(std::numeric_limits<int>::min()),
+            static_cast<std::int64_t>(std::numeric_limits<int>::max())));
+      }
+    } else if constexpr (std::is_same_v<T, bool> ||
+                         std::is_same_v<T, std::string>) {
+      if (const auto *parsed = std::get_if<T>(&occurrence.value))
+        value = *parsed;
+    }
   }
   return value;
 }
