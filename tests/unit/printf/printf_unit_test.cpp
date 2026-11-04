@@ -242,3 +242,71 @@ TEST(printf, issue1368_closed_stdout_reports_write_error) {
   EXPECT_CONTAINS(r.stderr_text, "printf: write error: ");
   EXPECT_CONTAINS(r.stderr_text, "Bad file descriptor");
 }
+
+// ---------------------------------------------------------------------------
+// Issue #471: printf %a renders in the glibc %La form (the leading
+// digit is the significand's top nibble and the exponent is exp-3,
+// e.g. 1.5 -> 0xcp-3), not the old newlib-style normalized 0x1.8p+0.
+// The 8.32-vs-9.4 oracle question is settled: both print %a through
+// the same strtold + %La chain, so the form is version-independent.
+// ---------------------------------------------------------------------------
+TEST(printf, printf_hex_float_glibc_form_issue471) {
+  Pipeline p;
+  p.add(L"printf.exe", {L"%a\\n%a\\n%a\\n", L"1.5", L"3", L"0.1"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text,
+                 "0xcp-3\n0xcp-2\n0xc.ccccccccccccdp-7\n");
+}
+
+TEST(printf, printf_hex_float_precision_and_carry_issue471) {
+  Pipeline p;
+  p.add(L"printf.exe",
+        {L"%.2a\\n%.0a\\n%#a\\n%A\\n", L"1.5", L"0xf.fffffffffffffffp-3",
+         L"1.5", L"1.5"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  // %.0a of the all-ones significand carries out of the top nibble:
+  // glibc renders digit 1 with the exponent raised by 4.
+  EXPECT_EQ_TEXT(r.stdout_text, "0xc.00p-3\n0x1p+1\n0xc.p-3\n0XCp-3\n");
+}
+
+TEST(printf, printf_hex_float_wide_significand_issue471) {
+  Pipeline p;
+  p.add(L"printf.exe",
+        {L"%a\\n%.20a\\n", L"0x1.23456789abcdef123456789p+100",
+         L"0x1.23456789abcdef123456789p+100"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text,
+                 "0x9.1a2b3c4d5e6f789p+97\n"
+                 "0x9.1a2b3c4d5e6f78900000p+97\n");
+}
+
+TEST(printf, printf_hex_float_subnormal_issue471) {
+  Pipeline p;
+  p.add(L"printf.exe",
+        {L"%a\\n%a\\n%.3a\\n", L"0x1p-16445",
+         L"0x0.fffffffffffffffp-16382", L"0x0.123456789abcdefp-16382"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text,
+                 "0x0.000000000000001p-16385\n"
+                 "0x7.ffffffffffffff8p-16385\n"
+                 "0x0.91ap-16385\n");
+}
+
+TEST(printf, printf_hex_float_zero_sign_width_issue471) {
+  Pipeline p;
+  p.add(L"printf.exe",
+        {L"%a\\n%a\\n%a\\n%020a\\n", L"0", L"-0", L"-1.5", L"1.5"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text,
+                 "0x0p+0\n-0x0p+0\n-0xcp-3\n0x00000000000000cp-3\n");
+}
