@@ -766,3 +766,87 @@ TEST(split, split_bytes_suffix_overflow_saturates_issue289) {
   EXPECT_EQ(tmp.read("partaa"), "abc");
   EXPECT_FALSE(std::filesystem::exists(tmp.path / "partab"));
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1524: GNU strtoint_die (split.c:1301-1305) appends the errno
+// text exactly when the failing scan overflowed (ERANGE). Overflow
+// deaths gain ": Numerical result out of range"; pure-invalid and
+// clean range deaths keep the bare shape (see the exact-match battery
+// in split_invalid_size_messages_quote_argument above).
+// ---------------------------------------------------------------------------
+TEST(split, split_overflow_deaths_carry_erange_suffix_issue1524) {
+  TempDir tmp;
+  tmp.write("input.txt", "abc");
+
+  // The overflowed k/N head: whole argument quoted, suffix appended.
+  Pipeline head;
+  head.set_cwd(tmp.wpath());
+  head.add(L"split.exe",
+           {L"-n", L"9999999999999999999/2", L"input.txt", L"part"});
+  auto rh = head.run();
+  EXPECT_EQ(rh.exit_code, 1);
+  EXPECT_EQ_TEXT(rh.stderr_text,
+                 "split: invalid number of chunks: "
+                 "'9999999999999999999/2': Numerical result out of "
+                 "range\n");
+
+  // An invalid-suffix death whose digit run overflowed (-l).
+  Pipeline lines;
+  lines.set_cwd(tmp.wpath());
+  lines.add(L"split.exe",
+            {L"-l", L"9999999999999999999x", L"input.txt", L"part"});
+  auto rl = lines.run();
+  EXPECT_EQ(rl.exit_code, 1);
+  EXPECT_EQ_TEXT(rl.stderr_text,
+                 "split: invalid number of lines: "
+                 "'9999999999999999999x': Numerical result out of "
+                 "range\n");
+
+  // Same shape through parse_size (-b).
+  Pipeline bytes;
+  bytes.set_cwd(tmp.wpath());
+  bytes.add(L"split.exe",
+            {L"-b", L"9999999999999999999x", L"input.txt", L"part"});
+  auto rb = bytes.run();
+  EXPECT_EQ(rb.exit_code, 1);
+  EXPECT_EQ_TEXT(rb.stderr_text,
+                 "split: invalid number of bytes: "
+                 "'9999999999999999999x': Numerical result out of "
+                 "range\n");
+
+  // A negative overflow clamps to INTMAX_MIN in GNU and dies on the
+  // range check with errno still ERANGE.
+  Pipeline negative;
+  negative.set_cwd(tmp.wpath());
+  negative.add(L"split.exe",
+               {L"-l", L"-9999999999999999999", L"input.txt", L"part"});
+  auto rn = negative.run();
+  EXPECT_EQ(rn.exit_code, 1);
+  EXPECT_EQ_TEXT(rn.stderr_text,
+                 "split: invalid number of lines: "
+                 "'-9999999999999999999': Numerical result out of "
+                 "range\n");
+}
+
+TEST(split, split_non_overflow_deaths_have_no_erange_suffix_issue1524) {
+  TempDir tmp;
+  tmp.write("input.txt", "abc");
+
+  // Invalid suffix on a clean scan (EINVAL) and a zero range death:
+  // GNU appends nothing for either.
+  Pipeline junk;
+  junk.set_cwd(tmp.wpath());
+  junk.add(L"split.exe", {L"-l", L"2fb", L"input.txt", L"part"});
+  auto rj = junk.run();
+  EXPECT_EQ(rj.exit_code, 1);
+  EXPECT_EQ_TEXT(rj.stderr_text, "split: invalid number of lines: '2fb'\n");
+
+  Pipeline npart;
+  npart.set_cwd(tmp.wpath());
+  npart.add(L"split.exe", {L"-n", L"1/2x", L"input.txt", L"part"});
+  auto rz = npart.run();
+  // The N part dies through parse_n_units on a clean scan: quoted
+  // alone, no suffix.
+  EXPECT_EQ(rz.exit_code, 1);
+  EXPECT_EQ_TEXT(rz.stderr_text, "split: invalid number of chunks: '2x'\n");
+}
