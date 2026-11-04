@@ -639,3 +639,63 @@ TEST(diff, diff_unified_context_above_int64_max_still_errors_issue1509) {
   EXPECT_EQ(r.exit_code, 2);
   EXPECT_TRUE(r.stderr_text.find("invalid argument") != std::string::npos);
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1521: diff context lengths parse with strtoimax and clamp
+// (diff.c:358-367): the (INT64_MAX, UINT64_MAX] band must be accepted
+// for -U/-C/-NUM and the -c/-u attached forms, not die in the shared
+// parser.
+// ---------------------------------------------------------------------------
+TEST(diff, diff_unified_context_unsigned_band_issue1521) {
+  TempDir tmp;
+  tmp.write("file1.txt", "line1\nline2\nline3\n");
+  tmp.write("file2.txt", "line1\nlineX\nline3\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"diff.exe",
+        {L"-U", L"9999999999999999999", L"file1.txt", L"file2.txt"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.find("@@ -1,3 +1,3 @@") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("lineX") != std::string::npos);
+}
+
+TEST(diff, diff_context_forms_unsigned_band_issue1521) {
+  TempDir tmp;
+  tmp.write("file1.txt", "line1\nline2\nline3\n");
+  tmp.write("file2.txt", "line1\nlineX\nline3\n");
+
+  Pipeline copied;
+  copied.set_cwd(tmp.wpath());
+  copied.add(L"diff.exe",
+             {L"-C", L"18446744073709551615", L"file1.txt", L"file2.txt"});
+  auto rc = copied.run();
+  EXPECT_EQ(rc.exit_code, 1);
+  EXPECT_TRUE(rc.stdout_text.find("lineX") != std::string::npos);
+
+  Pipeline attached;
+  attached.set_cwd(tmp.wpath());
+  attached.add(L"diff.exe",
+               {L"--unified=9999999999999999999", L"file1.txt",
+                L"file2.txt"});
+  auto ra = attached.run();
+  EXPECT_EQ(ra.exit_code, 1);
+  EXPECT_TRUE(ra.stdout_text.find("@@ -1,3 +1,3 @@") != std::string::npos);
+}
+
+TEST(diff, diff_negative_context_still_errors_issue1521) {
+  TempDir tmp;
+  tmp.write("file1.txt", "line1\n");
+  tmp.write("file2.txt", "line2\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"diff.exe", {L"-U", L"-5", L"file1.txt", L"file2.txt"});
+
+  auto r = p.run();
+  EXPECT_NE(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.find("invalid context length '-5'") !=
+              std::string::npos);
+}
