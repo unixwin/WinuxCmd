@@ -381,6 +381,15 @@ auto mv_max_numbered_backup(const std::wstring& target) -> int {
   return max_version;
 }
 
+// [GNU] copy.c renders every operand in diagnostics and prompts
+// through quoteaf (shell_escape_always_quoting_style, system.h): a
+// name carrying control or non-printable bytes is $'\ooo'-escaped,
+// never embedded raw (#374). Ordinary names render exactly as the
+// hand-written '...' quoting they replace.
+auto quote_operand(const std::string& path) -> std::string {
+  return gnu_quotearg::shell_escape_quote_always(path);
+}
+
 auto parse_arguments(const CommandContext<MV_OPTIONS.size()>& ctx)
     -> cp::Result<MoveContext> {
   MoveContext move_ctx;
@@ -525,15 +534,6 @@ auto parse_arguments(const CommandContext<MV_OPTIONS.size()>& ctx)
 // ENOENT (#1140). Diagnostics keep quoting the operand as typed.
 auto api_operand_w(std::string_view path) -> std::wstring {
   return native_path::make_api_path_operand(path).extended;
-}
-
-// [GNU] copy.c renders every operand in diagnostics and prompts
-// through quoteaf (shell_escape_always_quoting_style, system.h): a
-// name carrying control or non-printable bytes is $'\ooo'-escaped,
-// never embedded raw (#374). Ordinary names render exactly as the
-// hand-written '...' quoting they replace.
-auto quote_operand(const std::string& path) -> std::string {
-  return gnu_quotearg::shell_escape_quote_always(path);
 }
 
 // True when candidate equals base or lives somewhere below it, comparing
