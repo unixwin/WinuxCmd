@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 caomengxuan666 <caomengxuan666@users.noreply.github.com>
 #include <chrono>
+#include <cstdio>
 
 #include "framework/winuxtest.h"
 
@@ -755,9 +756,14 @@ TEST(mv, mv_same_file_escapes_control_byte_issue374) {
 
   auto r = p.run();
   EXPECT_EQ(r.exit_code, 1);
+  if (r.stderr_text.find("''$'\\001' and ''$'\\001' are the same "
+                         "file") == std::string::npos) {
+    // Diagnostic for the #374 lane: which branch a self-move takes.
+    std::fprintf(stderr, "mv same-file actual stderr: %s\n",
+                 r.stderr_text.c_str());
+  }
   EXPECT_TRUE(r.stderr_text.find("''$'\\001' and ''$'\\001' are the same "
-                                 "file") != std::string::npos)
-      << "actual stderr: " << r.stderr_text;
+                                 "file") != std::string::npos);
   EXPECT_TRUE(r.stderr_text.find('\x01') == std::string::npos);
 }
 
