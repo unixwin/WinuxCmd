@@ -503,7 +503,10 @@ auto read_one(const std::string& filename, std::string& content, int& eval)
     eval = -1;  // fatal
     return false;
   }
-  std::ifstream file(path, std::ios::binary);
+  // [GNU] #342: byte-faithful open (see fold); the narrow ctor
+  // mangles non-ASCII operand names through the ANSI code page.
+  // (The directory probe above keeps the normalized path.)
+  std::ifstream file = file_io::open_binary_file(filename);
   if (!file.is_open()) {
     safeErrorPrintLn("column: " + filename +
                      ": No such file or directory");

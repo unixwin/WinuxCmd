@@ -311,7 +311,9 @@ auto load_exclude_patterns_from_file(const std::string& path)
     -> cp::Result<std::vector<std::string>> {
   // [L2 self-parse] POSIX drive spellings resolve through the shared
   // operand boundary like the traversal operands do (#1174).
-  std::ifstream in(native_path::normalize_api_operand(path), std::ios::binary);
+  // [GNU] #342: byte-faithful open (see fold); the narrow ctor
+  // mangles non-ASCII operand names through the ANSI code page.
+  std::ifstream in = file_io::open_binary_file(path);
   if (!in.is_open()) {
     return std::unexpected("cannot open exclude file '" + path + "'");
   }

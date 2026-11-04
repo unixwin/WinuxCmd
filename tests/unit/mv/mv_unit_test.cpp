@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 caomengxuan666 <caomengxuan666@users.noreply.github.com>
 #include <chrono>
+#include <cstdio>
 
 #include "framework/winuxtest.h"
 
@@ -722,4 +723,97 @@ TEST(mv, mv_audit_w1_verbose_and_backup_diagnostics) {
   TEST_LOG("dst.txt~ content", sentinel_content);
   EXPECT_TRUE(sentinel_exists);
   EXPECT_EQ(sentinel_content, "sentinel");
+}
+
+// ---------------------------------------------------------------------------
+// Issue #374: mv renders operands in diagnostics through GNU quoteaf
+// (shell_escape_always_quoting_style, copy.c/system.h): a name with a
+// raw 0x01 byte is $'\001'-escaped, never embedded raw.
+// ---------------------------------------------------------------------------
+TEST(mv, mv_cannot_stat_escapes_control_byte_issue374) {
+  TempDir tmp;
+  tmp.write("placeholder.txt", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"mv.exe", {L"x\x01y", L"destdir"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("cannot stat 'x'$'\\001''y': No such "
+                                 "file or directory") != std::string::npos);
+  // The raw control byte must not appear in the diagnostic.
+  EXPECT_TRUE(r.stderr_text.find('\x01') == std::string::npos);
+}
+
+TEST(mv, mv_same_file_escapes_control_byte_issue374) {
+  TempDir tmp;
+  // [GNU] quoteaf restyles a name carrying a single quote into the
+  // "..." form (probed: "a'b" and "a'b" are the same file); the old
+  // hand-written '...' quoting produced the broken 'a'b'. The
+  // control-byte faces of the same helper are pinned by
+  // mv_cannot_stat_escapes_control_byte_issue374 - a same-file pin
+  // needs an existing file, and on the CI host no file with a
+  // control character in its name can be created through the
+  // harness APIs at all (write_all's CreateFileW lands nothing
+  // findable for a lone 0x01 name or an embedded 0x1B name; the
+  // probe in the absolute-path twin below carries the error codes).
+  tmp.write("a'b", "data");
+  EXPECT_TRUE(
+      std::filesystem::exists(tmp.path / std::filesystem::path(L"a'b")));
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"mv.exe", {L"a'b", L"a'b"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("\"a'b\" and \"a'b\" are the same "
+                                 "file") != std::string::npos);
+}
+
+TEST(mv, mv_same_file_absolute_path_escapes_control_byte_issue374) {
+  TempDir tmp;
+  const auto file = tmp.path / std::filesystem::path(L"a'b");
+  temp_dir_detail::write_all(file, "data", 4);
+  EXPECT_TRUE(std::filesystem::exists(file));
+
+  // The probe that ran in the previous head settled the creation
+  // question: CreateFileW rejects a control-char filename with
+  // ERROR_INVALID_NAME (123) on BOTH the DOS and the extended
+  // spelling on this host, so no such file can exist here at all.
+
+  Pipeline p;
+  p.add(L"mv.exe", {file.wstring(), file.wstring()});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 1);
+  // quoteaf quotes the whole operand as given. The "..." restyle
+  // the relative pin sees applies only when the string carries no
+  // character that stays special inside double quotes; a Windows
+  // path's backslashes disqualify it, so an absolute operand takes
+  // the '\'' form instead - the same choice GNU quotearg makes for
+  // a backslash-bearing name (probed: 'a\b'\''c'). The pin anchors
+  // on the tail of the second rendering.
+  if (r.stderr_text.find("a'\\''b' are the same "
+                         "file") == std::string::npos) {
+    std::fprintf(stderr, "mv same-file absolute actual stderr: %s\n",
+                 r.stderr_text.c_str());
+  }
+  EXPECT_TRUE(r.stderr_text.find("a'\\''b' are the same "
+                                 "file") != std::string::npos);
+}
+
+TEST(mv, mv_verbose_plain_names_keep_simple_quoting_issue374) {
+  TempDir tmp;
+  tmp.write("plain name.txt", "data");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"mv.exe", {L"-v", L"plain name.txt", L"renamed.txt"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("renamed 'plain name.txt' -> "
+                                 "'renamed.txt'") != std::string::npos);
 }

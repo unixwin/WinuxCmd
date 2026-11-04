@@ -194,7 +194,9 @@ auto read_env_file(std::string_view path)
            "': No such file or directory";
   };
 
-  std::ifstream in(resolved, std::ios::binary);
+  // [GNU] #342: byte-faithful open (see fold); the narrow ctor
+  // mangles non-ASCII operand names through the ANSI code page.
+  std::ifstream in = file_io::open_binary_file(path);
   if (!in.is_open()) {
     return std::unexpected(input_open_error(path));
   }

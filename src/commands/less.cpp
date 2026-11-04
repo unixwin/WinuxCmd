@@ -213,8 +213,9 @@ auto read_file_content(const std::string& filename) -> cp::Result<std::string> {
     // #1385: the file operand is an argv operand: open it through the shared
     // operand boundary so a shell-namespace spelling names the payload root,
     // not the current drive root. Errors report the operand as typed.
-    std::ifstream file(native_path::normalize_api_operand(filename),
-                       std::ios::binary);
+    // [GNU] #342: byte-faithful open (see fold); the narrow ctor
+    // mangles non-ASCII operand names through the ANSI code page.
+    std::ifstream file = file_io::open_binary_file(filename);
     if (!file) {
       return std::unexpected(std::string("cannot open '") + filename +
                              "' for reading");

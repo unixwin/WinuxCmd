@@ -381,6 +381,15 @@ auto mv_max_numbered_backup(const std::wstring& target) -> int {
   return max_version;
 }
 
+// [GNU] copy.c renders every operand in diagnostics and prompts
+// through quoteaf (shell_escape_always_quoting_style, system.h): a
+// name carrying control or non-printable bytes is $'\ooo'-escaped,
+// never embedded raw (#374). Ordinary names render exactly as the
+// hand-written '...' quoting they replace.
+auto quote_operand(const std::string& path) -> std::string {
+  return gnu_quotearg::shell_escape_quote_always(path);
+}
+
 auto parse_arguments(const CommandContext<MV_OPTIONS.size()>& ctx)
     -> cp::Result<MoveContext> {
   MoveContext move_ctx;
@@ -490,14 +499,15 @@ auto parse_arguments(const CommandContext<MV_OPTIONS.size()>& ctx)
     }
     if (ctx.positionals.size() == 1) {
       // [GNU] mv.c:430-438: one operand names the missing destination.
-      return std::unexpected("missing destination file operand after '" +
-                             std::string(ctx.positionals[0]) + "'");
+      return std::unexpected(
+          "missing destination file operand after " +
+          quote_operand(std::string(ctx.positionals[0])));
     }
     if (move_ctx.no_target_directory && ctx.positionals.size() > 2) {
       // [GNU] mv.c:450-453: -T admits exactly two operands.
-      return std::unexpected("extra operand '" +
-                             std::string(ctx.positionals[2]) + "'\n" +
-                             "Try 'mv --help' for more information.");
+      return std::unexpected(
+          "extra operand " + quote_operand(std::string(ctx.positionals[2])) +
+          "\n" + "Try 'mv --help' for more information.");
     }
 
     for (size_t i = 0; i < ctx.positionals.size() - 1; ++i) {
@@ -550,8 +560,8 @@ auto check_is_directory(const std::string& path) -> cp::Result<bool> {
   std::wstring wpath = api_operand_w(path);
   DWORD attr = GetFileAttributesW(wpath.c_str());
   if (attr == INVALID_FILE_ATTRIBUTES) {
-    return std::unexpected("cannot access '" + path +
-                           "': No such file or directory");
+    return std::unexpected("cannot access " + quote_operand(path) +
+                           ": No such file or directory");
   }
   return (attr & FILE_ATTRIBUTE_DIRECTORY) != 0;
 }
@@ -581,10 +591,8 @@ auto build_dest_path(const std::string& src_path, const std::string& dest_path,
 }
 
 auto confirm_overwrite(const std::string& dest_path) -> cp::Result<bool> {
-  // OPTIMIZED: Avoid wstring concatenation
-  safeErrorPrint("mv: overwrite '");
-  safeErrorPrint(dest_path);
-  safeErrorPrint("'? ");
+  // [GNU] copy.c:2008: the overwrite prompt renders through quoteaf.
+  safeErrorPrint("mv: overwrite " + quote_operand(dest_path) + "? ");
   char response;
   std::cin.get(response);
   std::cin.ignore(1024, '\n');
@@ -778,9 +786,7 @@ auto move_single_path(const std::string& src_path, const std::string& dest_path,
     // [GNU] I_ALWAYS_NO skip: "not replacing %s" and the file fails
     // (copy.c:2438, 2425-2445); only --update=none skips silently
     // with success.
-    safeErrorPrint("mv: not replacing '");
-    safeErrorPrint(dest_path);
-    safeErrorPrintLn("'");
+    safeErrorPrintLn("mv: not replacing " + quote_operand(dest_path));
     return false;
   }
 
@@ -805,9 +811,8 @@ auto move_single_path(const std::string& src_path, const std::string& dest_path,
       _isatty(_fileno(stdin))) {
     DWORD attrs = GetFileAttributesW(wdest_path.c_str());
     if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_READONLY)) {
-      safeErrorPrint("mv: replace '");
-      safeErrorPrint(dest_path);
-      safeErrorPrint("', overriding mode 0444 (r--r--r--)? ");
+      safeErrorPrint("mv: replace " + quote_operand(dest_path) +
+                     ", overriding mode 0444 (r--r--r--)? ");
       char response = '\0';
       std::cin.get(response);
       std::cin.ignore(1024, '\n');
@@ -868,8 +873,9 @@ auto move_single_path(const std::string& src_path, const std::string& dest_path,
           _wcsicmp(strip_nt_prefix(wsrc_path).c_str(),
                    strip_nt_prefix(wdest_path).c_str()) == 0;
       if (same_entry) {
-        return std::unexpected("'" + src_path + "' and '" + dest_path +
-                               "' are the same file");
+        return std::unexpected(quote_operand(src_path) + " and " +
+                               quote_operand(dest_path) +
+                               " are the same file");
       }
     }
   }
@@ -899,8 +905,8 @@ auto move_single_path(const std::string& src_path, const std::string& dest_path,
     // First, check if source is a file
     DWORD src_attr = GetFileAttributesW(wsrc_path.c_str());
     if (src_attr == INVALID_FILE_ATTRIBUTES) {
-      return std::unexpected("cannot access '" + src_path +
-                             "': No such file or directory");
+      return std::unexpected("cannot access " + quote_operand(src_path) +
+                             ": No such file or directory");
     }
 
     // [GNU] Check if source is a reparse point (symlink/junction)
@@ -914,8 +920,8 @@ auto move_single_path(const std::string& src_path, const std::string& dest_path,
       // contents while still reporting success.
       const auto link_text = read_link_text_verbatim(wsrc_path);
       if (!link_text) {
-        return std::unexpected("cannot read symlink target of '" + src_path +
-                               "'");
+        return std::unexpected("cannot read symlink target of " +
+                               quote_operand(src_path));
       }
       const bool is_dir = (src_attr & FILE_ATTRIBUTE_DIRECTORY) != 0;
       DWORD flags = SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE;
@@ -925,8 +931,8 @@ auto move_single_path(const std::string& src_path, const std::string& dest_path,
               win32_normalize_symlink_target(*link_text).c_str(), flags)) {
         // Never degrade into a content copy: a failed recreation is an
         // error, like GNU mv failing to recreate the link.
-        return std::unexpected("cannot create symbolic link '" + dest_path +
-                               "': " +
+        return std::unexpected("cannot create symbolic link " +
+                               quote_operand(dest_path) + ": " +
                                win32_posix_error_text(GetLastError()));
       }
       // Remove the source link itself.  A directory link needs
@@ -938,8 +944,8 @@ auto move_single_path(const std::string& src_path, const std::string& dest_path,
                  : (DeleteFileW(wsrc_path.c_str()) ||
                     RemoveDirectoryW(wsrc_path.c_str()));
       if (!removed) {
-        return std::unexpected("cannot remove source link '" + src_path +
-                               "'");
+        return std::unexpected("cannot remove source link " +
+                               quote_operand(src_path));
       }
     } else {
       // [GNU] MoveFileExW cannot rename across volumes (and some tools hold
@@ -950,8 +956,9 @@ auto move_single_path(const std::string& src_path, const std::string& dest_path,
       if ((src_attr & FILE_ATTRIBUTE_DIRECTORY) != 0 &&
           path_is_at_or_below(wsrc_path, wdest_path)) {
         // [GNU] copy.c:2091: "cannot copy a directory, %s, into itself, %s"
-        return std::unexpected("cannot copy a directory, '" + src_path +
-                               "', into itself, '" + dest_path + "'");
+        return std::unexpected("cannot copy a directory, " +
+                               quote_operand(src_path) + ", into itself, " +
+                               quote_operand(dest_path));
       }
       std::error_code ec;
       // [GNU] The copy fallback preserves links (mv.c:135 sets
@@ -966,13 +973,14 @@ auto move_single_path(const std::string& src_path, const std::string& dest_path,
               std::filesystem::copy_options::copy_symlinks,
           ec);
       if (ec) {
-        return std::unexpected("cannot copy '" + src_path + "' to '" +
-                               dest_path + "': " + ec.message());
+        return std::unexpected("cannot copy " + quote_operand(src_path) +
+                               " to " + quote_operand(dest_path) + ": " +
+                               ec.message());
       }
       std::filesystem::remove_all(std::filesystem::path(wsrc_path), ec);
       if (ec) {
-        return std::unexpected("cannot remove '" + src_path +
-                               "': " + ec.message());
+        return std::unexpected("cannot remove " + quote_operand(src_path) +
+                               ": " + ec.message());
       }
     }
   }
@@ -984,21 +992,20 @@ auto move_single_path(const std::string& src_path, const std::string& dest_path,
     // fallback reports "copied '<src>' -> '<dest>'" and then
     // "removed '<src>'" (mv.c do_move / copy.c verbose).  The backup
     // note rides the first line (copy.c:2085-2088).
-    safePrint(used_copy_fallback ? "copied '" : "renamed '");
-    safePrint(src_path);
-    safePrint("' -> '");
-    safePrint(dest_path);
-    safePrint("'");
+    safePrint(used_copy_fallback ? "copied " : "renamed ");
+    safePrint(quote_operand(src_path));
+    safePrint(" -> ");
+    safePrint(quote_operand(dest_path));
     if (made_backup) {
-      safePrint(" (backup: '");
-      safePrint(*made_backup);
-      safePrint("')");
+      safePrint(" (backup: ");
+      safePrint(quote_operand(*made_backup));
+      safePrint(")");
     }
     safePrint("\n");
     if (used_copy_fallback) {
-      safePrint("removed '");
-      safePrint(src_path);
-      safePrint("'\n");
+      safePrint("removed ");
+      safePrint(quote_operand(src_path));
+      safePrint("\n");
     }
   }
 
@@ -1018,11 +1025,12 @@ auto process_single_source(const std::string& src_path,
     std::string stripped = strip_trailing_slashes(src_path);
     DWORD attrs = GetFileAttributesW(api_operand_w(stripped).c_str());
     if (attrs == INVALID_FILE_ATTRIBUTES) {
-      return std::unexpected("cannot stat '" + src_path +
-                             "': No such file or directory");
+      return std::unexpected("cannot stat " + quote_operand(src_path) +
+                             ": No such file or directory");
     }
     if (!(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
-      return std::unexpected("cannot stat '" + src_path + "': Not a directory");
+      return std::unexpected("cannot stat " + quote_operand(src_path) +
+                             ": Not a directory");
     }
     if (attrs & FILE_ATTRIBUTE_REPARSE_POINT) {
       std::string final_dest = move_ctx.dest_path;
@@ -1030,8 +1038,9 @@ auto process_single_source(const std::string& src_path,
         std::wstring wsrc = utf8_to_wstring(stripped);
         final_dest += "\\" + wstring_to_utf8(PathFindFileNameW(wsrc.data()));
       }
-      return std::unexpected("cannot move '" + src_path + "' to '" +
-                             final_dest + "': Not a directory");
+      return std::unexpected("cannot move " + quote_operand(src_path) +
+                             " to " + quote_operand(final_dest) +
+                             ": Not a directory");
     }
     // A real directory keeps moving normally.
   }
@@ -1041,8 +1050,8 @@ auto process_single_source(const std::string& src_path,
     return std::unexpected(src_exists.error());
   }
   if (!*src_exists) {
-    return std::unexpected("cannot stat '" + src_path +
-                           "': No such file or directory");
+    return std::unexpected("cannot stat " + quote_operand(src_path) +
+                           ": No such file or directory");
   }
 
   auto final_dest = build_dest_path(src_path, move_ctx.dest_path, dest_is_dir);
@@ -1066,13 +1075,13 @@ auto exchange_paths(const std::string& src_path, const std::string& dest_path,
   std::wstring wdest = native_path::make_api_path_operand(dest_path).normalized;
   DWORD src_attr = GetFileAttributesW(wsrc.c_str());
   if (src_attr == INVALID_FILE_ATTRIBUTES) {
-    return std::unexpected("cannot stat '" + src_path +
-                           "': No such file or directory");
+    return std::unexpected("cannot stat " + quote_operand(src_path) +
+                           ": No such file or directory");
   }
   DWORD dest_attr = GetFileAttributesW(wdest.c_str());
   if (dest_attr == INVALID_FILE_ATTRIBUTES) {
-    return std::unexpected("cannot stat '" + dest_path +
-                           "': No such file or directory");
+    return std::unexpected("cannot stat " + quote_operand(dest_path) +
+                           ": No such file or directory");
   }
   // RENAME_EXCHANGE requires same filesystem; cheap check: same volume root.
   wchar_t src_root[MAX_PATH] = {};
@@ -1080,8 +1089,9 @@ auto exchange_paths(const std::string& src_path, const std::string& dest_path,
   if (GetVolumePathNameW(wsrc.c_str(), src_root, MAX_PATH) &&
       GetVolumePathNameW(wdest.c_str(), dest_root, MAX_PATH) &&
       _wcsicmp(src_root, dest_root) != 0) {
-    return std::unexpected("cannot exchange '" + src_path + "' and '" +
-                           dest_path + "': different volumes");
+    return std::unexpected("cannot exchange " + quote_operand(src_path) +
+                           " and " + quote_operand(dest_path) +
+                           ": different volumes");
   }
   std::filesystem::path tmp =
       std::filesystem::path(wsrc).parent_path() /
@@ -1096,26 +1106,26 @@ auto exchange_paths(const std::string& src_path, const std::string& dest_path,
     }
   };
   if (!MoveFileExW(wsrc.c_str(), wtmp.c_str(), 0)) {
-    return std::unexpected("cannot move '" + src_path +
-                           "': rename to temporary failed");
+    return std::unexpected("cannot move " + quote_operand(src_path) +
+                           ": rename to temporary failed");
   }
   if (!MoveFileExW(wdest.c_str(), wsrc.c_str(), 0)) {
     rollback();
-    return std::unexpected("cannot move '" + dest_path + "' to '" + src_path +
-                           "'");
+    return std::unexpected("cannot move " + quote_operand(dest_path) +
+                           " to " + quote_operand(src_path));
   }
   if (!MoveFileExW(wtmp.c_str(), wdest.c_str(), 0)) {
     // Try to put dest back before restoring src.
     MoveFileExW(wsrc.c_str(), wdest.c_str(), 0);
     rollback();
-    return std::unexpected("cannot move temporary to '" + dest_path + "'");
+    return std::unexpected("cannot move temporary to " +
+                           quote_operand(dest_path));
   }
   if (verbose) {
-    safePrint("'");
-    safePrint(src_path);
-    safePrint("' <-> '");
-    safePrint(dest_path);
-    safePrint("'\n");
+    safePrint(quote_operand(src_path));
+    safePrint(" <-> ");
+    safePrint(quote_operand(dest_path));
+    safePrint("\n");
   }
   return true;
 }
@@ -1189,9 +1199,9 @@ auto process_command(const CommandContext<N>& ctx) -> cp::Result<bool> {
                                          : "No such file or directory";
           return std::unexpected(
               std::string(move_ctx.target_directory_option
-                              ? "target directory '"
-                              : "target '") +
-              move_ctx.dest_path + "': " + reason);
+                              ? "target directory "
+                              : "target ") +
+              quote_operand(move_ctx.dest_path) + ": " + reason);
         }
 
         // [GNU] A trailing separator makes DEST a directory operand
@@ -1207,8 +1217,9 @@ auto process_command(const CommandContext<N>& ctx) -> cp::Result<bool> {
             (move_ctx.dest_path.back() == '/' ||
              move_ctx.dest_path.back() == '\\');
         if (dest_trailing_sep && !dest_is_dir) {
-          return std::unexpected("failed to access '" + move_ctx.dest_path +
-                                 "': Not a directory");
+          return std::unexpected("failed to access " +
+                                 quote_operand(move_ctx.dest_path) +
+                                 ": Not a directory");
         }
 
         // --interactive=once: prompt once before removing more than three

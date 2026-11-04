@@ -534,17 +534,33 @@ REGISTER_COMMAND(
     for (const auto& job : jobs) {
       const std::string& exp = job.display;
       // [GNU] "-" wipes standard output instead of a named file
-      // (shred.c: wipefd(STDOUT_FILENO, ...), uutils #12288). It is only
-      // valid when stdout is a regular file; pipes/consoles fail with
-      // "invalid file type".
+      // (shred.c:1257-1259: wipefd(STDOUT_FILENO, ...), uutils
+      // #12288). do_wipefd (shred.c:816-853) rejects only a terminal
+      // character device, a FIFO, and a socket with "invalid file
+      // type"; every other type — regular files, non-terminal
+      // character devices like NUL, other devices — is wiped. The
+      // old gate accepted FILE_TYPE_DISK only and rejected the rest
+      // (#917).
       HANDLE hFile = INVALID_HANDLE_VALUE;
       DWORD open_error = 0;
       bool is_stdout = exp == "-";
       std::wstring wfilename;
       if (is_stdout) {
         hFile = GetStdHandle(STD_OUTPUT_HANDLE);
-        if (hFile == nullptr || hFile == INVALID_HANDLE_VALUE ||
-            GetFileType(hFile) != FILE_TYPE_DISK) {
+        bool invalid_type =
+            hFile == nullptr || hFile == INVALID_HANDLE_VALUE;
+        if (!invalid_type) {
+          const DWORD type = GetFileType(hFile);
+          if (type == FILE_TYPE_PIPE) {
+            invalid_type = true;  // S_ISFIFO
+          } else if (type == FILE_TYPE_CHAR) {
+            DWORD console_mode = 0;
+            if (GetConsoleMode(hFile, &console_mode)) {
+              invalid_type = true;  // S_ISCHR && isatty
+            }
+          }
+        }
+        if (invalid_type) {
           safeErrorPrintLn("shred: -: invalid file type");
           exit_code = 1;
           continue;
@@ -591,9 +607,13 @@ REGISTER_COMMAND(
         continue;
       }
 
-      LARGE_INTEGER fileSize;
-      GetFileSizeEx(hFile, &fileSize);
-      LONGLONG size = fileSize.QuadPart;
+      // A non-regular target (a character device like NUL) reports
+      // no size; the wipe then covers nothing without an explicit
+      // -s and still succeeds, instead of reading an uninitialized
+      // size (#917).
+      LARGE_INTEGER fileSize{};
+      LONGLONG size =
+          GetFileSizeEx(hFile, &fileSize) ? fileSize.QuadPart : 0;
 
       if (size_limit) {
         // [GNU] -s N shreds exactly N bytes: the file grows when N

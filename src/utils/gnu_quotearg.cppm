@@ -288,4 +288,21 @@ inline std::string shell_escape_quote(std::string_view arg) {
   return out;
 }
 
+// shell_escape_always_quoting_style (GNU quoteaf; copy.c renders every
+// operand in its diagnostics and prompts through it): the emission is
+// identical to shell_escape_quote, but quoting is never elided — a
+// name that needs no escaping still comes back wrapped in '...'.
+// Because the quoted form is always longer than the bare argument,
+// equality with the input identifies the elided case exactly.
+// Verified byte-for-byte against GNU 9.4 mv (a quoteaf consumer) on a
+// 38-case battery covering control bytes, quotes, backslashes,
+// spaces, and UTF-8 (#374).
+inline std::string shell_escape_quote_always(std::string_view arg) {
+  std::string quoted = shell_escape_quote(arg);
+  if (quoted == arg) {
+    return "'" + std::string(arg) + "'";
+  }
+  return quoted;
+}
+
 }  // namespace gnu_quotearg

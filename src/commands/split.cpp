@@ -59,8 +59,10 @@ auto constexpr SPLIT_OPTIONS = std::array{
     // [GNU] -u, --unbuffered
     OPTION("-u", "--unbuffered",
            "immediately copy input to output with '-n r/...'"),
-    // [GNU] -NUMBER: obsolete shorthand for -l NUMBER; hidden like GNU
-    OPTION("-NUM", "", "", INT_TYPE),
+    // [GNU] -NUMBER: obsolete shorthand for -l NUMBER; hidden like GNU.
+    // #1519: the line count is a parse_n_units quantity, so -NUM uses
+    // the parser's unsigned type (the int64 read saturates the band).
+    OPTION("-NUM", "", "", UINT_TYPE),
     // [GNU] ---io-blksize=SIZE: hidden debugging option (triple dash)
     OPTION("", "---io-blksize", "", STRING_TYPE)};
 
@@ -115,9 +117,13 @@ struct Config {
 };
 
 auto checked_mul(int64_t value, int64_t multiplier) -> cp::Result<int64_t> {
-  if (value <= 0 || multiplier <= 0 ||
-      value > std::numeric_limits<int64_t>::max() / multiplier) {
+  if (value <= 0 || multiplier <= 0) {
     return std::unexpected("invalid size");
+  }
+  // [GNU] xstrtoimax saturates on multiplier overflow (OVERFLOW_OK,
+  // split.c:1305-1307); it does not fail (#289).
+  if (value > std::numeric_limits<int64_t>::max() / multiplier) {
+    return std::numeric_limits<int64_t>::max();
   }
   return value * multiplier;
 }
@@ -145,6 +151,70 @@ auto parse_i64_full(std::string_view value) -> cp::Result<int64_t> {
     return std::unexpected("invalid integer");
   }
   return parsed;
+}
+
+// [GNU] One xstrtoimax scan, as parse_chunk and parse_n_units perform
+// it (split.c:1317-1345): leading whitespace and an optional sign are
+// skipped, digits accumulate with overflow clamping to the intmax
+// extreme (split.c's OVERFLOW_OK — the extreme value does the right
+// thing anyway), and the scan stops at the first non-digit.
+// "consumed" counts from the start of the input, whitespace and sign
+// included, like strtoimax's end pointer (#289).
+struct IntmaxScan {
+  int64_t value = 0;
+  size_t consumed = 0;
+  bool any_digits = false;
+  bool overflow = false;
+};
+
+auto scan_intmax(std::string_view text) -> IntmaxScan {
+  IntmaxScan scan;
+  size_t i = 0;
+  while (i < text.size() &&
+         std::isspace(static_cast<unsigned char>(text[i]))) {
+    ++i;
+  }
+  bool negative = false;
+  if (i < text.size() && (text[i] == '+' || text[i] == '-')) {
+    negative = text[i] == '-';
+    ++i;
+  }
+  const uint64_t limit =
+      static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) +
+      (negative ? uint64_t{1} : uint64_t{0});
+  uint64_t magnitude = 0;
+  for (; i < text.size() && text[i] >= '0' && text[i] <= '9'; ++i) {
+    scan.any_digits = true;
+    const uint64_t digit = static_cast<uint64_t>(text[i] - '0');
+    if (!scan.overflow) {
+      if (magnitude > (limit - digit) / 10) {
+        scan.overflow = true;
+        magnitude = limit;
+      } else {
+        magnitude = magnitude * 10 + digit;
+      }
+    }
+  }
+  scan.consumed = i;
+  if (negative) {
+    scan.value = magnitude == uint64_t{1} << 63
+                     ? std::numeric_limits<int64_t>::min()
+                     : -static_cast<int64_t>(magnitude);
+  } else {
+    scan.value = static_cast<int64_t>(magnitude);
+  }
+  return scan;
+}
+
+// [GNU] parse_n_units with no multipliers (split.c:1317-1325): the
+// whole argument must scan as one positive number; overflow clamps
+// to INTMAX_MAX instead of failing (#289).
+auto parse_positive_units(std::string_view text) -> cp::Result<int64_t> {
+  const auto scan = scan_intmax(text);
+  if (!scan.any_digits || scan.consumed != text.size() || scan.value < 1) {
+    return std::unexpected("invalid number");
+  }
+  return scan.value;
 }
 
 auto parse_size(const std::string& size_str) -> cp::Result<int64_t> {
@@ -218,8 +288,15 @@ auto parse_size(const std::string& size_str) -> cp::Result<int64_t> {
       value_text.data(), value_text.data() + value_text.size(), value);
   // [GNU] parse_n_units requires a FULL xstrtoimax parse: trailing
   // junk ("10junk", "1.5K") is invalid, not a silent truncation
-  // (audit #1462).
-  if (ec != std::errc() || ptr != value_text.data() + value_text.size()) {
+  // (audit #1462). A digit run that overflows int64 clamps to
+  // INTMAX_MAX instead (OVERFLOW_OK, #289); a negative overflow
+  // still fails and is rejected by the caller's positivity check.
+  if (ec == std::errc::result_out_of_range &&
+      ptr == value_text.data() + value_text.size() &&
+      !value_text.starts_with('-')) {
+    value = std::numeric_limits<int64_t>::max();
+  } else if (ec != std::errc() ||
+             ptr != value_text.data() + value_text.size()) {
     return std::unexpected("invalid size format");
   }
   if (multiplier == -1) {
@@ -322,7 +399,9 @@ auto build_config(const CommandContext<SPLIT_OPTIONS.size()>& ctx)
   }
 
   if (lines_given) {
-    auto lines_result = parse_i64_full(lines_opt);
+    // [GNU] -l is parse_n_units (split.c:1417): overflow clamps to
+    // INTMAX_MAX instead of failing (#289).
+    auto lines_result = parse_positive_units(lines_opt);
     if (!lines_result || *lines_result <= 0) {
       return std::unexpected(
           quoted_number_error("invalid number of lines", lines_opt));
@@ -341,14 +420,29 @@ auto build_config(const CommandContext<SPLIT_OPTIONS.size()>& ctx)
   }
 
   if (number_given) {
-    // GNU -n supports: N, k/N, l/N, l/k/N, r/N, and r/k/N. Mirrors GNU
-    // parse_chunk: a pure number is k = n; in k/N form the k part must be
-    // pure digits (otherwise the whole argument is rejected as an invalid
-    // number of chunks), the N part must parse fully, and k must satisfy
-    // 0 < k <= n ("invalid chunk number" quotes only the k part).
+    // GNU -n supports: N, k/N, l/N, l/k/N, r/N, and r/k/N. Mirrors
+    // case 'n' (split.c:1428-1447) feeding parse_chunk
+    // (split.c:1328-1345): whitespace is skipped before the l// r/
+    // prefix test, the head number is scanned xstrtoimax-style with
+    // overflow clamping (OVERFLOW_OK), a clean head ending at '/'
+    // selects the k/N form — whose N part goes through parse_n_units
+    // (failures quote the N text) and whose k must then satisfy
+    // 0 < k <= n ("invalid chunk number" quotes only the k part) —
+    // and anything else must be one positive number for the whole
+    // argument (failures quote it whole, including an overflowed k/N
+    // head like "9999999999999999999/2") (#289).
     bool line_mode = false;
     bool round_robin = false;
     std::string val = number_opt;
+
+    // [GNU] split.c:1431-1433: skip any whitespace before the prefix
+    // checks; the diagnostics below quote the argument from here on.
+    size_t first = 0;
+    while (first < val.size() &&
+           std::isspace(static_cast<unsigned char>(val[first]))) {
+      ++first;
+    }
+    val = val.substr(first);
 
     // [GNU] only the exact "l/" and "r/" prefixes select those modes;
     // "l2" falls into parse_chunk and dies as an invalid number of
@@ -365,30 +459,27 @@ auto build_config(const CommandContext<SPLIT_OPTIONS.size()>& ctx)
       return quoted_number_error("invalid number of chunks", arg);
     };
 
-    const size_t slash = val.find('/');
-    if (slash == std::string::npos) {
-      auto num_result = parse_i64_full(val);
-      if (!num_result || *num_result <= 0) {
-        return std::unexpected(fail_chunks(val));
-      }
-      cfg.num_chunks = *num_result;
-    } else {
-      const std::string k_text(val.substr(0, slash));
-      const std::string n_text(val.substr(slash + 1));
-      auto k_result = parse_i64_full(k_text);
-      if (!k_result) {
-        return std::unexpected(fail_chunks(val));
-      }
-      auto n_result = parse_i64_full(n_text);
-      if (!n_result || *n_result <= 0) {
+    const auto head = scan_intmax(val);
+    const std::string_view rest = std::string_view(val).substr(head.consumed);
+    if (head.any_digits && !head.overflow && !rest.empty() &&
+        rest.front() == '/') {
+      const std::string k_text(val.substr(0, head.consumed));
+      const std::string n_text(rest.substr(1));
+      auto n_result = parse_positive_units(n_text);
+      if (!n_result) {
         return std::unexpected(fail_chunks(n_text));
       }
-      if (*k_result <= 0 || *k_result > *n_result) {
+      if (head.value <= 0 || head.value > *n_result) {
         return std::unexpected(
             quoted_number_error("invalid chunk number", k_text));
       }
-      cfg.selected_chunk = *k_result;
+      cfg.selected_chunk = head.value;
       cfg.num_chunks = *n_result;
+    } else {
+      if (!head.any_digits || !rest.empty() || head.value <= 0) {
+        return std::unexpected(fail_chunks(val));
+      }
+      cfg.num_chunks = head.value;
     }
     cfg.mode = Config::Mode::Number;
     cfg.number_mode = round_robin ? Config::NumberMode::RoundRobin
@@ -981,14 +1072,24 @@ auto run(const Config& cfg) -> int {
                                      record.end - record.start));
         }
       } else {
-        std::vector<std::string> chunks(num_chunks);
+        // #289: with an xstrtoimax-clamped N (up to INT64_MAX), a
+        // vector of N buckets would exhaust memory before the first
+        // record is distributed. Records only ever land in the first
+        // min(N, record count) buckets, so storage is capped there;
+        // the remaining chunks are written empty below, which is
+        // exactly what the un-capped tail buckets produced.
+        const size_t bucket_count = std::min(num_chunks, records.size());
+        std::vector<std::string> chunks(bucket_count);
         for (size_t i = 0; i < records.size(); ++i) {
           const auto& record = records[i];
-          chunks[i % num_chunks].append(input.data() + record.start,
-                                        record.end - record.start);
+          chunks[i % bucket_count].append(input.data() + record.start,
+                                          record.end - record.start);
         }
         for (const auto& chunk : chunks) {
           if (!write_number_chunk(chunk)) return 1;
+        }
+        for (size_t extra = bucket_count; extra < num_chunks; ++extra) {
+          if (!write_number_chunk(std::string_view{})) return 1;
         }
       }
     } else {

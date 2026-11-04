@@ -35,8 +35,10 @@ auto constexpr UNEXPAND_OPTIONS = std::array{
     // [EXT] option
     OPTION("-U", "--no-utf8",
            "interpret input file as 8-bit ASCII rather than UTF-8", BOOL_TYPE),
-    // [GNU] obsolescent -NUM is an alias for --tabs=NUM
-    OPTION("-NUM", "", "same as --tabs=NUM", INT_TYPE)};
+    // [GNU] obsolescent -NUM is an alias for --tabs=NUM.
+    // #1519: tab stops are uintmax quantities, so -NUM uses the
+    // parser's unsigned type.
+    OPTION("-NUM", "", "same as --tabs=NUM", UINT_TYPE)};
 
 namespace unexpand_pipeline {
 namespace cp = core::pipeline;
@@ -244,14 +246,23 @@ auto build_config(const CommandContext<UNEXPAND_OPTIONS.size()>& ctx)
         }
       }
     } else if (meta.short_name == "-NUM") {
+      // #1519: a band value is stored as std::uint64_t, a smaller one
+      // as std::int64_t; either renders back to its decimal digits.
+      std::string digits;
       if (const auto* value = std::get_if<std::int64_t>(&occurrence.value)) {
+        digits = std::to_string(*value);
+      } else if (const auto* value =
+                     std::get_if<std::uint64_t>(&occurrence.value)) {
+        digits = std::to_string(*value);
+      }
+      if (!digits.empty()) {
         if (!have_tabval) {
           tabval = 0;
           have_tabval = true;
         }
         // The -NUM option yields one decimal string per occurrence; appending
         // its digits is equivalent to GNU's per-digit accumulation.
-        for (const char ch : std::to_string(*value)) {
+        for (const char ch : digits) {
           const auto digit = static_cast<unsigned>(ch - '0');
           if (tabval >
               (std::numeric_limits<std::uintmax_t>::max() - digit) / 10) {
@@ -435,9 +446,10 @@ auto run(const Config& cfg) -> int {
       content.assign(std::istreambuf_iterator<char>(std::cin),
                      std::istreambuf_iterator<char>());
     } else {
-      // Read from file
-      std::ifstream f(native_path::normalize_api_operand(file),
-                      std::ios::binary);
+      // Read from file. [GNU] #342: byte-faithful open (see fold);
+      // the narrow ctor mangles non-ASCII operand names through the
+      // ANSI code page.
+      std::ifstream f = file_io::open_binary_file(file);
       if (!f) {
         auto err = input_open_error(file);
         cp::Result<int> result = std::unexpected(err);

@@ -311,9 +311,12 @@ auto run(const Config& cfg) -> int {
       content.assign(std::istreambuf_iterator<char>(std::cin),
                      std::istreambuf_iterator<char>());
     } else {
-      // Read from file
-      std::ifstream f(native_path::normalize_api_operand(file),
-                      std::ios::binary);
+      // Read from file. [GNU] #342: open through the byte-faithful
+      // boundary (file_io::open_binary_file resolves the operand to
+      // its wide API path); the narrow std::ifstream ctor decodes the
+      // operand through the ANSI code page and mangles names whose
+      // bytes are not ASCII (a 0xFF name failed to open at all).
+      std::ifstream f = file_io::open_binary_file(file);
       if (!f) {
         auto err = fold_input_open_error(file);
         cp::Result<int> result = std::unexpected(err);

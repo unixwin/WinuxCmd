@@ -259,8 +259,12 @@ inline Ext80 normalize(const Big& N, int shift, bool sticky_extra,
   }
   if (exp2 < -16382) {
     // Subnormal range: mantissa slides right of the 64-bit window.
+    // ERANGE only when the shift actually drops nonzero bits: an
+    // exactly representable subnormal (e.g. the hex float 0x1p-16445)
+    // converts without error in glibc strtold, and coreutils printf
+    // exits 0 for it, while an inexact subnormal (1e-4935) warns and
+    // exits 1 (#471 pins both faces).
     int sh = -16382 - exp2;
-    range_err = true;
     uint64_t m = mant;
     bool round_bit = sh <= 64 && ((m >> (sh - 1)) & 1) != 0;
     bool st = sticky;
@@ -268,6 +272,7 @@ inline Ext80 normalize(const Big& N, int shift, bool sticky_extra,
       uint64_t lowmask = sh - 1 >= 64 ? ~0ull : ((1ull << (sh - 1)) - 1);
       st |= (m & lowmask) != 0;
     }
+    if (round_bit || st) range_err = true;
     m = sh >= 64 ? 0 : (m >> sh);
     if (round_bit && (st || (m & 1) != 0)) ++m;
     if (m == 0) {
@@ -823,7 +828,7 @@ inline std::string format(const Ext80& v, const FormatOpts& o) {
     return out;
   }
 
-  // ---- %a / %A : normalized hex float (MSYS2/newlib GNU style) ----
+  // ---- %a / %A : hex float, glibc %La form (#471) ----
   if (conv == 'a') {
     std::string out;
     if (v.kind == Ext80::Kind::zero) {
@@ -836,61 +841,61 @@ inline std::string format(const Ext80& v, const FormatOpts& o) {
       }
       out += upper ? "P+0" : "p+0";
     } else {
-      // leading hex digit + 63 fraction bits for normals; for
-      // subnormals the leading digit is 0 and the un-normalized
-      // 64-bit significand (at exp -16382) is the fraction field.
-      bool subnormal = v.exp < -16382;
-      uint64_t frac;  // 64 fraction bits (normal: frac63 << 1)
-      int lead;
-      int pe;
-      if (subnormal) {
-        int shift = -16382 - v.exp;  // 1..63
-        lead = 0;
-        frac = v.mant >> shift;
-        pe = -16382;
-      } else {
-        lead = 1;
-        frac = (v.mant & ~(1ull << 63)) << 1;
-        pe = v.exp;
-      }
-      if (prec >= 0 && prec < 16) {
-        // round the 64 fraction bits to 4*prec bits, half-even
-        int keep = 4 * prec;
-        int drop = 64 - keep;
-        uint64_t kept = drop >= 64 ? 0 : (frac >> drop);
-        bool rb = ((frac >> (drop - 1)) & 1) != 0;
-        bool st = (frac & ((1ull << (drop - 1)) - 1)) != 0;
-        // last kept digit is the lead digit when keep == 0
-        bool lsb_odd = keep == 0 ? (lead & 1) != 0 : (kept & 1) != 0;
-        if (rb && (st || lsb_odd)) {
-          ++kept;
-          if (kept >> keep) {  // carried into the integer digit
-            lead += 1;
-            kept = 0;
+      // [GNU] glibc %La form (#471): coreutils printf prints %a
+      // arguments through the C library's %La (printf.c:427-455 in
+      // 9.4; the 8.32 chain at printf.c:356 + 665-673 is identical),
+      // whose leading digit is the TOP NIBBLE of the 64-bit
+      // significand and whose printed exponent is exp - 3 — for
+      // normals and subnormals alike (a subnormal's significand is
+      // stored unnormalized at exp == -16382, so its lead digit is
+      // simply 0..7). The old renderer normalized to a leading 1
+      // (newlib style) and printed 0x1.8p+0 for 1.5 where GNU prints
+      // 0xcp-3. The form below is validated against glibc on a
+      // 4,480-case battery of exact significand/exponent pairs.
+      int pe = v.exp - 3;
+      uint64_t d = v.mant;
+      if (prec >= 0) {
+        // Round the significand to lead + prec nibbles, half-even on
+        // the dropped bits.
+        int keep_bits = 4 * (prec + 1);
+        int drop = 64 - keep_bits;
+        if (drop > 0) {
+          uint64_t kept = d >> drop;
+          uint64_t rem = d & ((1ull << drop) - 1);
+          uint64_t half = 1ull << (drop - 1);
+          if (rem > half || (rem == half && (kept & 1) != 0)) ++kept;
+          if ((kept >> keep_bits) != 0) {
+            // Carry out of the top nibble: glibc renders digit 1
+            // with the exponent raised by 4 (0xf.ffp-3 at %.0a is
+            // 0x1p+1, not 0x8p-2).
+            d = 1ull << 60;
+            pe += 4;
+          } else {
+            d = kept << drop;
           }
         }
-        frac = kept << drop;
       }
-      char d = static_cast<char>('0' + lead);
-      out += upper ? "0X" : "0x";
-      out.push_back(d);
       std::string nibbles;
       nibbles.reserve(16);
       for (int i = 0; i < 16; ++i) {
-        int nib = static_cast<int>((frac >> (60 - 4 * i)) & 0xF);
+        int nib = static_cast<int>((d >> (60 - 4 * i)) & 0xF);
         nibbles.push_back(static_cast<char>(
-            nib < 10 ? '0' + nib : (upper ? 'A' : 'a') + nib - 10));
+            nib < 10 ? '0' + nib
+                     : (upper ? 'A' : 'a') + (nib - 10)));
       }
+      out += upper ? "0X" : "0x";
+      out.push_back(nibbles[0]);
       if (prec < 0) {
-        while (!nibbles.empty() && nibbles.back() == '0') nibbles.pop_back();
-        if (!nibbles.empty() || o.alt) {
+        std::string frac = nibbles.substr(1);
+        while (!frac.empty() && frac.back() == '0') frac.pop_back();
+        if (!frac.empty() || o.alt) {
           out.push_back('.');
-          out += nibbles;
+          out += frac;
         }
       } else {
         if (prec > 0 || o.alt) out.push_back('.');
         for (int i = 0; i < prec; ++i) {
-          out.push_back(i < 16 ? nibbles[i] : '0');
+          out.push_back(i < 15 ? nibbles[1 + i] : '0');
         }
       }
       out.push_back(upper ? 'P' : 'p');

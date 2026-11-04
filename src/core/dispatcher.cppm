@@ -1134,6 +1134,7 @@ auto classify_args_for_dispatch(
                                  bool has_inline_value) {
     switch (meta->type) {
       case cmd::meta::OptionType::Int:
+      case cmd::meta::OptionType::UInt:
       case cmd::meta::OptionType::String:
         if (!has_inline_value && i + 1 < args.size()) {
           roles[++i] = ArgRole::Value;
@@ -1239,7 +1240,11 @@ auto classify_args_for_dispatch(
                      policy.allow_optional_short_attached_values) ||
                     (m.type == cmd::meta::OptionType::Int &&
                      policy.allow_short_attached_values) ||
+                    (m.type == cmd::meta::OptionType::UInt &&
+                     policy.allow_short_attached_values) ||
                     (m.type == cmd::meta::OptionType::OptionalInt &&
+                     policy.allow_optional_short_attached_values) ||
+                    (m.type == cmd::meta::OptionType::OptionalUInt &&
                      policy.allow_optional_short_attached_values)) {
                   glued_to_value_option = true;
                   break;
@@ -1283,6 +1288,7 @@ auto classify_args_for_dispatch(
           case cmd::meta::OptionType::Bool:
             break;
           case cmd::meta::OptionType::Int:
+          case cmd::meta::OptionType::UInt:
           case cmd::meta::OptionType::String:
             if (policy.allow_short_attached_values &&
                 pos + 1 < arg.size()) {
@@ -1293,6 +1299,7 @@ auto classify_args_for_dispatch(
             }
             break;
           case cmd::meta::OptionType::OptionalInt:
+          case cmd::meta::OptionType::OptionalUInt:
           case cmd::meta::OptionType::OptionalString:
             // With attached values the rest of the cluster is the
             // value; without them the cluster keeps walking (#1306).

@@ -282,3 +282,20 @@ TEST(expand, expand_stdin_ctrlz_matches_file_operand_issue1212) {
   EXPECT_FALSE(rf.stdout_text.empty());
   EXPECT_EQ(rs.stdout_text, rf.stdout_text);
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1519: the obsolete -NUM tab stop is a uintmax quantity; the
+// unsigned band is accepted (input without tabs passes through).
+// ---------------------------------------------------------------------------
+TEST(expand, expand_obsolete_num_unsigned_band_issue1519) {
+  TempDir tmp;
+  tmp.write("test.txt", "alpha beta\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"expand.exe", {L"-9999999999999999999", L"test.txt"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "alpha beta\n");
+}

@@ -369,7 +369,9 @@ auto copy_file_to_stdout(const std::string& filename, const Config& cfg,
   if (probe.kind == MoreFileProbe::Kind::OpenError) {
     return report_cannot_open(filename, probe.error);
   }
-  std::ifstream file(filename, std::ios::binary);
+  // [GNU] #342: byte-faithful open (see fold); the narrow ctor
+  // mangles non-ASCII operand names through the ANSI code page.
+  std::ifstream file = file_io::open_binary_file(filename);
   if (!file) {
     return report_cannot_open(filename, "Permission denied");
   }

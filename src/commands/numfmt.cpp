@@ -65,11 +65,13 @@ auto constexpr NUMFMT_OPTIONS = std::array{
            "details",
            STRING_TYPE),
     // [GNU] --header[=N]: optional value; a bare --header means N=1 and the
-    // next argument stays an input operand (uutils #13272)
+    // next argument stays an input operand (uutils #13272). #1519: the
+    // value is xstrtoumax in GNU (numfmt.c:1558), so the option uses
+    // the parser's unsigned optional type.
     OPTION("", "--header",
            "print (without converting) the first N header lines; N "
            "defaults to 1 if not specified",
-           OPTIONAL_INT_TYPE),
+           OPTIONAL_UINT_TYPE),
     // [GNU]
     OPTION("", "--grouping",
            "use locale-defined grouping of digits, e.g. 1,000,000",

@@ -457,3 +457,51 @@ TEST(uniq, uniq_group_attached_empty_is_invalid_issue1513) {
   EXPECT_TRUE(r.stderr_text.find("ambiguous argument '' for '--group'") !=
               std::string::npos);
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1519: uniq's counts are size_opt values in GNU (uniq.c:233,
+// xstrtoumax into uintmax_t, clamped to SIZE_MAX): the unsigned band
+// is accepted for -f/-s/-w and the obsolete -NUM form, while a
+// negative count keeps its consumer diagnostic.
+// ---------------------------------------------------------------------------
+TEST(uniq, uniq_skip_fields_unsigned_band_issue1519) {
+  TempDir tmp;
+  tmp.write("a.txt", "a b\na c\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"uniq.exe", {L"-f", L"9999999999999999999", L"a.txt"});
+  auto r = p.run();
+
+  // All fields skipped: both lines share the empty key, so only the
+  // first survives.
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "a b\n");
+}
+
+TEST(uniq, uniq_obsolete_num_unsigned_band_issue1519) {
+  TempDir tmp;
+  tmp.write("a.txt", "a b\na c\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"uniq.exe", {L"-18446744073709551615", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "a b\n");
+}
+
+TEST(uniq, uniq_skip_fields_negative_message_kept_issue1519) {
+  TempDir tmp;
+  tmp.write("a.txt", "a b\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"uniq.exe", {L"-f", L"-1", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_NE(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.find("-1: invalid number of fields to skip") !=
+              std::string::npos);
+}
