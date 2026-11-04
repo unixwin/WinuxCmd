@@ -78,8 +78,9 @@ auto load_file(const std::string& path)
   // through the shared normalize_api_operand boundary here - the single
   // point every caller opens through - while the error messages below keep
   // the verbatim spelling, like MSYS prints what the user typed.
-  std::ifstream file(native_path::normalize_api_operand(path),
-                     std::ios::binary);
+  // [GNU] #342: byte-faithful open (see fold); the narrow ctor
+  // mangles non-ASCII operand names through the ANSI code page.
+  std::ifstream file = file_io::open_binary_file(path);
   if (!file) return std::unexpected("cannot open '" + path + "'");
   file.seekg(0, std::ios::end);
   std::streamoff size = file.tellg();

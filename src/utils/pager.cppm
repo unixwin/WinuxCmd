@@ -17,6 +17,7 @@ export module utils:pager;
 
 import std;
 import :console;
+import :file_io;
 import :i18n;
 import :native_path;
 
@@ -119,7 +120,10 @@ export class Document {
     if (index >= line_count()) return std::string{};
     if (!seekable) return memory_lines[index];
 
-    std::ifstream file(path.empty() ? name : path, std::ios::binary);
+    // #342: byte-faithful open (file_io::open_binary_file); the
+    // narrow ctor mangles non-ASCII names through the ANSI code page.
+    std::ifstream file =
+        file_io::open_binary_file(path.empty() ? name : path);
     if (!file) {
       return std::unexpected(std::string("cannot open '") + name +
                              "' for reading");
@@ -170,7 +174,10 @@ export auto load_seekable_document(const std::string& filename)
   // operand boundary so a shell-namespace spelling names the payload root,
   // not the current drive root. `name` keeps the operand as typed.
   const std::string open_path = native_path::normalize_api_operand(filename);
-  std::ifstream file(open_path, std::ios::binary);
+  // #342: byte-faithful open (file_io::open_binary_file) from the
+  // operand as typed; the narrow ctor mangles non-ASCII names
+  // through the ANSI code page.
+  std::ifstream file = file_io::open_binary_file(filename);
   if (!file) {
     return std::unexpected(std::string("cannot open '") + filename +
                            "' for reading");

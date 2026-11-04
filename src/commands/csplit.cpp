@@ -167,8 +167,9 @@ auto read_records(const std::string& filename)
       return std::unexpected("error reading from file");
     }
   } else {
-    std::ifstream f(native_path::normalize_api_operand(filename),
-                    std::ios::binary);
+    // [GNU] #342: byte-faithful open (see fold); the narrow ctor
+    // mangles non-ASCII operand names through the ANSI code page.
+    std::ifstream f = file_io::open_binary_file(filename);
     if (!f) {
       // [GNU] csplit.c:612: error (EXIT_FAILURE, errno, "cannot open
       // %s for reading", quotef (filename)) -- the errno reason is

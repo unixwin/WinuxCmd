@@ -747,7 +747,9 @@ auto run(const Config& cfg) -> int {
   }
 
   if (!cfg.random_source.empty()) {
-    std::ifstream random_source(cfg.random_source, std::ios::binary);
+    // [GNU] #342: byte-faithful open (see fold); the narrow ctor
+    // mangles non-ASCII operand names through the ANSI code page.
+    std::ifstream random_source = file_io::open_binary_file(cfg.random_source);
     if (!random_source) {
       cp::Result<int> open_result =
           std::unexpected("cannot open random source");

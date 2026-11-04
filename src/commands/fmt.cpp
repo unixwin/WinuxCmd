@@ -260,9 +260,10 @@ auto read_input(const std::string& filename) -> cp::Result<std::string> {
     content.assign(std::istreambuf_iterator<char>(std::cin),
                    std::istreambuf_iterator<char>());
   } else {
-    // Read from file
-    std::ifstream f(native_path::normalize_api_operand(filename),
-                    std::ios::binary);
+    // Read from file. [GNU] #342: byte-faithful open (see fold);
+    // the narrow ctor mangles non-ASCII operand names through the
+    // ANSI code page.
+    std::ifstream f = file_io::open_binary_file(filename);
     if (!f) {
       return std::unexpected(input_open_error(filename));
     }

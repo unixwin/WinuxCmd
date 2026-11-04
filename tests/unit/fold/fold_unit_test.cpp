@@ -312,3 +312,26 @@ TEST(fold, fold_stdin_ctrlz_matches_file_operand_issue1212) {
   EXPECT_FALSE(rf.stdout_text.empty());
   EXPECT_EQ(rs.stdout_text, rf.stdout_text);
 }
+
+// ---------------------------------------------------------------------------
+// Issue #342: a file operand whose name is not ASCII (here U+00FF,
+// whose UTF-8 spelling carries the 0xBF/0xFF-class bytes) must open
+// through the byte-faithful boundary; the narrow std::ifstream ctor
+// decoded the operand through the ANSI code page and the open failed.
+// ---------------------------------------------------------------------------
+TEST(fold, fold_opens_non_ascii_filename_issue342) {
+  TempDir tmp;
+  const std::wstring name = L"\xFF.txt";
+  {
+    std::ofstream out(tmp.path / name, std::ios::binary);
+    out << "alpha beta gamma\n";
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"fold.exe", {L"-w", L"80", name});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("alpha beta gamma") != std::string::npos);
+}

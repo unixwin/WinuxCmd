@@ -400,8 +400,9 @@ auto run(const Config& cfg) -> int {
                      std::istreambuf_iterator<char>());
     } else {
       // Read from file
-      std::ifstream f(native_path::normalize_api_operand(file),
-                      std::ios::binary);
+      // [GNU] #342: byte-faithful open (see fold); the narrow ctor
+      // mangles non-ASCII operand names through the ANSI code page.
+      std::ifstream f = file_io::open_binary_file(file);
       if (!f) {
         auto err = expand_input_open_error(file);
         cp::Result<int> result = std::unexpected(err);

@@ -339,9 +339,10 @@ auto extract_strings_from_file(const std::string& filename, const Config& cfg)
       data.insert(data.end(), buf, buf + std::cin.gcount());
     }
   } else {
-    // Read from file
-    std::ifstream file(native_path::normalize_api_operand(filename),
-                       std::ios::binary);
+    // Read from file. [GNU] #342: byte-faithful open (see fold);
+    // the narrow ctor mangles non-ASCII operand names through the
+    // ANSI code page.
+    std::ifstream file = file_io::open_binary_file(filename);
     if (!file) {
       safeErrorPrint("strings: '");
       safeErrorPrint(filename);
