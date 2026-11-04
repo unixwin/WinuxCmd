@@ -750,6 +750,18 @@ TEST(mv, mv_same_file_escapes_control_byte_issue374) {
   TempDir tmp;
   tmp.write("\x01", "data");
 
+  // Localization for the #374 lane: the first CI run showed mv
+  // answering "cannot stat" for this file, so prove creation landed
+  // under the wide spelling before blaming the move.
+  const bool created =
+      std::filesystem::exists(tmp.path / std::filesystem::path(L"\x01"));
+  if (!created) {
+    std::fprintf(stderr,
+                 "mv same-file: TempDir::write did not create the "
+                 "control-name file\n");
+  }
+  EXPECT_TRUE(created);
+
   Pipeline p;
   p.set_cwd(tmp.wpath());
   p.add(L"mv.exe", {L"\x01", L"\x01"});
@@ -758,8 +770,30 @@ TEST(mv, mv_same_file_escapes_control_byte_issue374) {
   EXPECT_EQ(r.exit_code, 1);
   if (r.stderr_text.find("''$'\\001' and ''$'\\001' are the same "
                          "file") == std::string::npos) {
-    // Diagnostic for the #374 lane: which branch a self-move takes.
     std::fprintf(stderr, "mv same-file actual stderr: %s\n",
+                 r.stderr_text.c_str());
+  }
+  EXPECT_TRUE(r.stderr_text.find("''$'\\001' and ''$'\\001' are the same "
+                                 "file") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find('\x01') == std::string::npos);
+}
+
+TEST(mv, mv_same_file_absolute_path_escapes_control_byte_issue374) {
+  TempDir tmp;
+  // Same pin through an absolute wide-spelled operand, with the file
+  // created through the wide path directly (the fold #342 pattern).
+  const auto file = tmp.path / std::filesystem::path(L"\x01");
+  temp_dir_detail::write_all(file, "data", 4);
+  EXPECT_TRUE(std::filesystem::exists(file));
+
+  Pipeline p;
+  p.add(L"mv.exe", {file.wstring(), file.wstring()});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 1);
+  if (r.stderr_text.find("''$'\\001' and ''$'\\001' are the same "
+                         "file") == std::string::npos) {
+    std::fprintf(stderr, "mv same-file absolute actual stderr: %s\n",
                  r.stderr_text.c_str());
   }
   EXPECT_TRUE(r.stderr_text.find("''$'\\001' and ''$'\\001' are the same "
