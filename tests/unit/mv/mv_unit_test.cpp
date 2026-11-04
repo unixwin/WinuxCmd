@@ -778,33 +778,20 @@ TEST(mv, mv_same_file_absolute_path_escapes_control_byte_issue374) {
   temp_dir_detail::write_all(file, "data", 4);
   EXPECT_TRUE(std::filesystem::exists(file));
 
-  // Diagnostic probe for the #374 lane (to be removed once read):
-  // can this host create a control-char file at all, on either
-  // spelling, and what does CreateFileW say?
-  {
-    const auto probe = tmp.path / std::filesystem::path(L"probe\x01n");
-    HANDLE h = CreateFileW(probe.wstring().c_str(), GENERIC_WRITE, 0,
-                           nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL,
-                           nullptr);
-    std::fprintf(stderr, "probe dos spelling: handle=%p err=%lu\n",
-                 static_cast<void*>(h), GetLastError());
-    if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
-    const std::wstring ext = temp_dir_detail::extended_path(probe);
-    h = CreateFileW(ext.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-                    FILE_ATTRIBUTE_NORMAL, nullptr);
-    std::fprintf(stderr, "probe extended spelling: handle=%p err=%lu\n",
-                 static_cast<void*>(h), GetLastError());
-    if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
-    std::fprintf(stderr, "probe exists after attempts: %d\n",
-                 std::filesystem::exists(probe) ? 1 : 0);
-  }
+  // The probe that ran in the previous head settled the creation
+  // question: CreateFileW rejects a control-char filename with
+  // ERROR_INVALID_NAME (123) on BOTH the DOS and the extended
+  // spelling on this host, so no such file can exist here at all.
 
   Pipeline p;
   p.add(L"mv.exe", {file.wstring(), file.wstring()});
 
   auto r = p.run();
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stderr_text.find("\"a'b\" and \"a'b\" are the same "
+  // quoteaf quotes the whole operand as given: the absolute path
+  // renders as one "..." string per side, so the pin anchors on
+  // the tail of the second rendering.
+  EXPECT_TRUE(r.stderr_text.find("a'b\" are the same "
                                  "file") != std::string::npos);
 }
 
