@@ -130,7 +130,14 @@ auto run(const Config& cfg) -> int {
 
   if (!cfg.file.empty()) {
     // Read hostname from file
-    std::ifstream ifs(native_path::normalize_api_operand(cfg.file));
+    // [GNU] #1522: open through the wide path operand (the narrow
+    // ctor decoded the UTF-8 name through the ANSI code page, the
+    // #342 class), but keep the stream in TEXT mode: the first line
+    // is printed verbatim below, so the CRLF translation this reader
+    // has always had IS observable (a binary open would leak the
+    // '\r' into the printed name).
+    auto operand = native_path::make_api_path_operand(cfg.file);
+    std::ifstream ifs(std::filesystem::path(operand.extended));
     if (!ifs) {
       WSACleanup();
       cp::Result<int> result =
