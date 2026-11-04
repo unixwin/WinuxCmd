@@ -229,7 +229,8 @@ auto build_config(const CommandContext<EXPAND_OPTIONS.size()>& ctx)
           piece = *value;
         }
       } else if (meta.short_name == "-NUM") {
-        if (const auto* value = std::get_if<int>(&occurrence.value)) {
+        if (const auto* value =
+                std::get_if<std::int64_t>(&occurrence.value)) {
           piece = std::to_string(*value);
         }
       }
@@ -243,7 +244,7 @@ auto build_config(const CommandContext<EXPAND_OPTIONS.size()>& ctx)
     if (tabs_opt.empty()) {
       tabs_opt = ctx.get<std::string>("-t", "");
     }
-    for (const int stop : ctx.get_all<int>("-NUM")) {
+    for (const std::int64_t stop : ctx.get_all<std::int64_t>("-NUM")) {
       if (!tabs_opt.empty()) tabs_opt += ' ';
       tabs_opt += std::to_string(stop);
     }

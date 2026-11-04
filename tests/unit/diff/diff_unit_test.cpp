@@ -603,3 +603,39 @@ TEST(diff, diff_side_by_side_ignore_matching_all_ignored) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.find("skip-me") != std::string::npos);
 }
+
+// Issue #1509: diff context parses with strtoimax in GNU and clamps at
+// CONTEXT_MAX ((LIN_MAX-1)/2, diff.c:358-375, system.h:135), so a
+// unified context above INT_MAX ceilings to the whole file instead of
+// erroring at the old shared-parser 32-bit ceiling.
+TEST(diff, diff_unified_context_above_int_max_issue1509) {
+  TempDir tmp;
+  tmp.write("file1.txt", "line1\nline2\nline3\n");
+  tmp.write("file2.txt", "line1\nlineX\nline3\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"diff.exe", {L"-U", L"3000000000", L"file1.txt", L"file2.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.find("@@ -1,3 +1,3 @@") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("lineX") != std::string::npos);
+}
+
+TEST(diff, diff_unified_context_above_int64_max_still_errors_issue1509) {
+  TempDir tmp;
+  tmp.write("file1.txt", "line1\n");
+  tmp.write("file2.txt", "line2\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"diff.exe",
+        {L"-U", L"99999999999999999999999", L"file1.txt", L"file2.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_TRUE(r.stderr_text.find("invalid argument") != std::string::npos);
+}

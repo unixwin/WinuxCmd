@@ -2088,11 +2088,15 @@ REGISTER_COMMAND(
     Format
   };
   Mode mode = Mode::Normal;
-  int context = 3;
+  // [GNU] diff.c parses context lengths with strtoimax and clamps at
+  // CONTEXT_MAX ((LIN_MAX - 1) / 2, diffutils system.h:135) into a
+  // ptrdiff_t field, so the local value is int64 (#1509); it is
+  // saturated into Config's int below, past any real file's line count.
+  std::int64_t context = 3;
   // [GNU] -NUM digits set the context length for -c/-u (diff -c5,
   // -5c, -c -5): a pending value applies to a style seen before it
   // and to a valueless -c/-u seen after it.
-  int pending_context = -1;
+  std::int64_t pending_context = -1;
 
   // [GNU] at most one output style: two different styles (including
   // --normal) are "conflicting output style options" (diff -cu,
@@ -2109,7 +2113,7 @@ REGISTER_COMMAND(
     return true;
   };
 
-  auto set_context = [&](int value, std::string_view option,
+  auto set_context = [&](std::int64_t value, std::string_view option,
                          bool optional_value) -> bool {
     if (value < 0) {
       if (optional_value && value == -1) {
@@ -2130,7 +2134,7 @@ REGISTER_COMMAND(
     if (!ctx.metas || occurrence.index >= ctx.metas->size()) continue;
     const auto &meta = (*ctx.metas)[occurrence.index];
     if (meta.short_name == "-NUM") {
-      auto value = std::get_if<int>(&occurrence.value);
+      auto value = std::get_if<std::int64_t>(&occurrence.value);
       if (value) {
         pending_context = *value;
         if (style_seen &&
@@ -2140,19 +2144,19 @@ REGISTER_COMMAND(
       }
     } else if (meta.short_name == "-u" || meta.long_name == "--unified") {
       if (!set_mode(Mode::Unified)) return 2;
-      auto value = std::get_if<int>(&occurrence.value);
+      auto value = std::get_if<std::int64_t>(&occurrence.value);
       if (value && !set_context(*value, "--unified", true)) return 1;
     } else if (meta.short_name == "-U") {
       if (!set_mode(Mode::Unified)) return 2;
-      auto value = std::get_if<int>(&occurrence.value);
+      auto value = std::get_if<std::int64_t>(&occurrence.value);
       if (value && !set_context(*value, "-U", false)) return 1;
     } else if (meta.short_name == "-c" || meta.long_name == "--context") {
       if (!set_mode(Mode::Context)) return 2;
-      auto value = std::get_if<int>(&occurrence.value);
+      auto value = std::get_if<std::int64_t>(&occurrence.value);
       if (value && !set_context(*value, "--context", true)) return 1;
     } else if (meta.short_name == "-C") {
       if (!set_mode(Mode::Context)) return 2;
-      auto value = std::get_if<int>(&occurrence.value);
+      auto value = std::get_if<std::int64_t>(&occurrence.value);
       if (value && !set_context(*value, "-C", false)) return 1;
     } else if (meta.short_name == "-y" || meta.long_name == "--side-by-side") {
       if (!set_mode(Mode::SideBySide)) return 2;
@@ -2198,7 +2202,9 @@ REGISTER_COMMAND(
   // they take precedence over the fixed-format modes.
   if (use_ifdef || use_formats) mode = Mode::Format;
   cfg.output_mode = to_pipeline_mode(mode);
-  cfg.context = context;
+  cfg.context = static_cast<int>(std::min(
+      context,
+      static_cast<std::int64_t>(std::numeric_limits<int>::max())));
 
   // -p/-F function context only decorates unified/context headers.
   portable_regex::Pattern func_pattern_storage;

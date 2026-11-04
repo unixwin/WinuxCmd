@@ -285,7 +285,8 @@ struct Config {
   bool null_data = false;
   bool no_messages = false;
   bool invert_match = false;
-  int max_count = -1;
+  // [GNU] grep.c stores max_count as intmax_t (xstrtoimax, #1509).
+  std::int64_t max_count = -1;
   bool byte_offset = false;
   bool line_number = false;
   bool line_buffered = false;
@@ -315,8 +316,9 @@ struct Config {
   std::optional<FixedMatcher> fixed_matcher;
   SmallVector<std::string, 64> files;
   bool has_error = false;
-  int before_context = 0;
-  int after_context = 0;
+  // [GNU] context lengths are intmax_t in grep.c (context_length_arg).
+  std::int64_t before_context = 0;
+  std::int64_t after_context = 0;
   bool context_requested = false;
   bool color = false;
   ColorConfig color_config;
@@ -1087,8 +1089,8 @@ auto build_config(const CommandContext<GREP_OPTIONS.size()>& ctx,
       ctx.get<bool>("--no-messages", false) || ctx.get<bool>("-s", false);
   cfg.invert_match =
       ctx.get<bool>("--invert-match", false) || ctx.get<bool>("-v", false);
-  cfg.max_count = ctx.get<int>("--max-count", -1);
-  if (cfg.max_count < 0) cfg.max_count = ctx.get<int>("-m", -1);
+  cfg.max_count = ctx.get<std::int64_t>("--max-count", -1);
+  if (cfg.max_count < 0) cfg.max_count = ctx.get<std::int64_t>("-m", -1);
   cfg.byte_offset =
       ctx.get<bool>("--byte-offset", false) || ctx.get<bool>("-b", false);
   cfg.line_number =
@@ -1204,13 +1206,13 @@ auto build_config(const CommandContext<GREP_OPTIONS.size()>& ctx,
   // (out_after/out_before) and a default_context set by -C/-NUM; after
   // parsing, the default fills only the sides no explicit option set
   // (grep.c:2514-2527, 2904-2907) — regardless of option order.
-  std::optional<int> default_context;
+  std::optional<std::int64_t> default_context;
   bool explicit_before = false;
   bool explicit_after = false;
   for (const auto& occurrence : ctx.options.occurrences()) {
     if (!ctx.metas || occurrence.index >= GREP_OPTIONS.size()) continue;
     const auto& meta = (*ctx.metas)[occurrence.index];
-    const auto* value = std::get_if<int>(&occurrence.value);
+    const auto* value = std::get_if<std::int64_t>(&occurrence.value);
     if (!value) continue;
 
     if (option_matches(meta, "-B", "--before-context")) {

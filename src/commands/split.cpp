@@ -266,7 +266,7 @@ auto build_config(const CommandContext<SPLIT_OPTIONS.size()>& ctx)
   // [GNU] obsolete "-NUMBER" operand is another way to request -l NUMBER;
   // it conflicts with any other split mode like -l itself does.
   const bool has_numeric_lines = ctx.has("-NUM");
-  const int numeric_lines = ctx.get<int>("-NUM", 0);
+  const std::int64_t numeric_lines = ctx.get<std::int64_t>("-NUM", 0);
 
   // [GNU] FAIL_ONLY_ONE_WAY (split.c:1290-1295) counts every mode
   // SELECTION, including a repeated option of the same kind: -l 2 -l 3
@@ -284,7 +284,7 @@ auto build_config(const CommandContext<SPLIT_OPTIONS.size()>& ctx)
   const size_t line_bytes_count = occurrences_of("--line-bytes", "-C");
   const size_t lines_count = occurrences_of("--lines", "-l");
   const size_t number_count = occurrences_of("--number", "-n");
-  const size_t numeric_count = ctx.get_all<int>("-NUM").size();
+  const size_t numeric_count = ctx.get_all<std::int64_t>("-NUM").size();
   const int split_modes = static_cast<int>(bytes_count + line_bytes_count +
                                            lines_count + number_count +
                                            numeric_count);

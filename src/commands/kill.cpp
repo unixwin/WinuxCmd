@@ -375,10 +375,10 @@ auto signal_from_option_occurrences(
     }
 
     if (meta.short_name == "-NUM") {
-      auto value = std::get_if<int>(&occurrence.value);
+      auto value = std::get_if<std::int64_t>(&occurrence.value);
       if (value) {
         if (*value >= 0 && *value <= kill_constants::kMaxSignal) {
-          signal = *value;
+          signal = static_cast<int>(*value);
         } else {
           // [GNU] procps keeps scanning: -99 becomes an invalid signal
           // that fails per-target at delivery time.

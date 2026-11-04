@@ -87,12 +87,14 @@ auto build_config(const CommandContext<MORE_OPTIONS.size()>& ctx)
   for (const auto& occurrence : ctx.options.occurrences()) {
     if (!ctx.metas || occurrence.index >= MORE_OPTIONS.size()) continue;
     const auto& meta = (*ctx.metas)[occurrence.index];
-    const auto* value = std::get_if<int>(&occurrence.value);
+    const auto* value = std::get_if<std::int64_t>(&occurrence.value);
     if (!value) continue;
     if (option_matches(meta, "-n", "--lines") ||
         option_matches(meta, "-NUM", "")) {
       if (*value < 1) return std::unexpected("invalid line count");
-      cfg.lines_per_page = static_cast<size_t>(*value);
+      cfg.lines_per_page = static_cast<size_t>(std::min(
+          *value,
+          static_cast<std::int64_t>(std::numeric_limits<int>::max())));
     }
   }
 
