@@ -55,22 +55,25 @@ auto constexpr UNIQ_OPTIONS = std::array{
     // [GNU] #1519: -f/-s/-w are size_opt counts (uniq.c:233, xstrtoumax),
     // so they use the parser's unsigned type; the consumer's negative
     // diagnostics are unaffected (negatives still store signed).
+    // #1523: size_opt also accepts LONGINT_OVERFLOW and clamps to
+    // SIZE_MAX (uniq.c:237-247), so the declarations use the clamping
+    // unsigned type -- past UINT64_MAX is accepted, not an error.
     OPTION("-f", "--skip-fields", "avoid comparing the first N fields",
-           UINT_TYPE),
+           UINT_CLAMP_TYPE),
     // [GNU] option
     OPTION("-i", "--ignore-case", "ignore differences in case"),
     // [GNU] option
     OPTION("-s", "--skip-chars", "avoid comparing the first N characters",
-           UINT_TYPE),
+           UINT_CLAMP_TYPE),
     // [GNU] option
     OPTION("-u", "--unique", "only print unique lines"),
     // [GNU] option
     OPTION("-w", "--check-chars", "compare no more than N characters",
-           UINT_TYPE),
+           UINT_CLAMP_TYPE),
     // [GNU] -NUM: the obsolete option — its digits are the number of
     // fields to skip (uniq.c's digit cases), NOT a check-chars count;
     // hidden like split's -NUM.
-    OPTION("-NUM", "", "", UINT_TYPE),
+    OPTION("-NUM", "", "", UINT_CLAMP_TYPE),
     // [GNU] option
     OPTION("-z", "--zero-terminated", "line delimiter is NUL, not newline"),
     // [GNU] option

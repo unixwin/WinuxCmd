@@ -505,3 +505,51 @@ TEST(uniq, uniq_skip_fields_negative_message_kept_issue1519) {
   EXPECT_TRUE(r.stderr_text.find("-1: invalid number of fields to skip") !=
               std::string::npos);
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1523: size_opt accepts LONGINT_OVERFLOW and clamps to
+// SIZE_MAX (uniq.c:237-247), so a count past UINT64_MAX is accepted
+// for -f/-s/-w and the obsolete -NUM form instead of dying in the
+// shared parser with "invalid argument".
+// ---------------------------------------------------------------------------
+TEST(uniq, uniq_skip_fields_above_uint64_clamps_issue1523) {
+  TempDir tmp;
+  tmp.write("a.txt", "a b\na c\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"uniq.exe", {L"-f", L"18446744073709551616", L"a.txt"});
+  auto r = p.run();
+
+  // Clamped: all fields skipped, both lines share the empty key.
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "a b\n");
+}
+
+TEST(uniq, uniq_skip_chars_above_uint64_clamps_issue1523) {
+  TempDir tmp;
+  tmp.write("a.txt", "xa\nxb\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"uniq.exe",
+        {L"--skip-chars=99999999999999999999999", L"a.txt"});
+  auto r = p.run();
+
+  // Clamped past the whole line: both keys are empty, one survives.
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "xa\n");
+}
+
+TEST(uniq, uniq_obsolete_num_above_uint64_clamps_issue1523) {
+  TempDir tmp;
+  tmp.write("a.txt", "a b\na c\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"uniq.exe", {L"-18446744073709551616", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "a b\n");
+}

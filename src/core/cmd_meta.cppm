@@ -30,7 +30,14 @@ export enum class OptionType {
   // counts): values in (INT64_MAX, UINT64_MAX] are accepted and stored
   // exactly instead of failing the int64 parse.
   UInt,
-  OptionalUInt
+  OptionalUInt,
+  // #1523: like UInt, but the GNU parser also accepts LONGINT_OVERFLOW
+  // and clamps (uniq's size_opt, uniq.c:237-247: LONGINT_OK and
+  // LONGINT_OVERFLOW both break, then MIN(size, SIZE_MAX)): a positive
+  // value past UINT64_MAX is stored as UINT64_MAX instead of failing.
+  // Signed-first storage is unchanged, so negative diagnostics keep
+  // their shape exactly as with UInt.
+  UIntClamp
 };
 
 export struct OptionMeta {
@@ -173,6 +180,7 @@ auto option_argument_suffix(const OptionMeta& opt) -> std::string_view {
       return "";
     case OptionType::Int:
     case OptionType::UInt:
+    case OptionType::UIntClamp:
       return " NUM";
     case OptionType::String:
     case OptionType::TerminatedString:
