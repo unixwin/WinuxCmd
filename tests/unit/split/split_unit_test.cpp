@@ -622,3 +622,147 @@ TEST(split, issue_1288_number_mode_reads_input_past_max_path) {
   EXPECT_TRUE(std::filesystem::exists(tmp.path / "outaa"));
   EXPECT_TRUE(std::filesystem::exists(tmp.path / "outab"));
 }
+
+// ---------------------------------------------------------------------------
+// Issue #289: split's numeric parsers are xstrtoimax with OVERFLOW_OK
+// in GNU (split.c:1305-1307, parse_chunk 1328-1345, parse_n_units
+// 1317-1325): values above INT64_MAX clamp to INTMAX_MAX instead of
+// failing the parse.
+// ---------------------------------------------------------------------------
+TEST(split, split_number_band_n_reaches_input_open_issue289) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"split.exe",
+        {L"-n", L"18446744073709551616", L"missing.txt", L"part"});
+
+  auto r = p.run();
+  // The parse accepted the clamped count; the run fails at the input
+  // open, exactly like GNU.
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("cannot open 'missing.txt' for reading") !=
+              std::string::npos);
+}
+
+TEST(split, split_number_k_of_n_band_issue289) {
+  TempDir tmp;
+  tmp.write("input.txt", "abc");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"split.exe",
+        {L"-n", L"3/18446744073709551616", L"input.txt", L"part"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "c");
+}
+
+TEST(split, split_number_round_robin_k_of_n_band_issue289) {
+  TempDir tmp;
+  tmp.write("input.txt", "l1\nl2\nl3\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"split.exe",
+        {L"-n", L"r/2/18446744073709551616", L"input.txt", L"part"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "l2\n");
+}
+
+TEST(split, split_number_round_robin_more_chunks_than_records_issue289) {
+  TempDir tmp;
+  tmp.write("input.txt", "l1\nl2\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"split.exe", {L"-n", L"r/5", L"input.txt", L"rr"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  // All five chunk files exist; the tail chunks are empty.
+  EXPECT_EQ(tmp.read("rraa"), "l1\n");
+  EXPECT_EQ(tmp.read("rrab"), "l2\n");
+  EXPECT_EQ(tmp.read("rrac"), "");
+  EXPECT_EQ(tmp.read("rrad"), "");
+  EXPECT_EQ(tmp.read("rrae"), "");
+}
+
+TEST(split, split_number_leading_whitespace_issue289) {
+  TempDir tmp;
+  tmp.write("input.txt", "abcdef");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"split.exe", {L"-n", L" 2", L"input.txt", L"part"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(tmp.read("partaa"), "abc");
+  EXPECT_EQ(tmp.read("partab"), "def");
+}
+
+TEST(split, split_number_invalid_shapes_kept_issue289) {
+  TempDir tmp;
+  tmp.write("input.txt", "abc");
+
+  Pipeline p1;
+  p1.set_cwd(tmp.wpath());
+  p1.add(L"split.exe", {L"-n", L"5K", L"input.txt", L"part"});
+  auto r1 = p1.run();
+  EXPECT_EQ(r1.exit_code, 1);
+  EXPECT_TRUE(r1.stderr_text.find("invalid number of chunks: '5K'") !=
+              std::string::npos);
+
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.add(L"split.exe", {L"-n", L"1/0", L"input.txt", L"part"});
+  auto r2 = p2.run();
+  EXPECT_EQ(r2.exit_code, 1);
+  EXPECT_TRUE(r2.stderr_text.find("invalid number of chunks: '0'") !=
+              std::string::npos);
+
+  // An overflowed k/N head dies with the whole argument quoted.
+  Pipeline p3;
+  p3.set_cwd(tmp.wpath());
+  p3.add(L"split.exe",
+         {L"-n", L"9999999999999999999/2", L"input.txt", L"part"});
+  auto r3 = p3.run();
+  EXPECT_EQ(r3.exit_code, 1);
+  EXPECT_TRUE(r3.stderr_text.find("invalid number of chunks: "
+                                  "'9999999999999999999/2'") !=
+              std::string::npos);
+}
+
+TEST(split, split_lines_band_clamps_issue289) {
+  TempDir tmp;
+  tmp.write("input.txt", "a\nb\nc\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"split.exe",
+        {L"-l", L"9999999999999999999", L"input.txt", L"part"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(tmp.read("partaa"), "a\nb\nc\n");
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "partab"));
+}
+
+TEST(split, split_bytes_suffix_overflow_saturates_issue289) {
+  TempDir tmp;
+  tmp.write("input.txt", "abc");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"split.exe",
+        {L"-b", L"9000000000000000000K", L"input.txt", L"part"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(tmp.read("partaa"), "abc");
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "partab"));
+}
