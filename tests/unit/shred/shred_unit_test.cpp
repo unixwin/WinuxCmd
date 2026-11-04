@@ -565,3 +565,85 @@ TEST(shred, shred_negative_passes_rejected_issue1348) {
               std::string::npos);
   EXPECT_EQ(tmp.read("victim.txt"), "still here");
 }
+
+// ---------------------------------------------------------------------------
+// Issue #917: "shred -" wipes stdout. GNU do_wipefd (shred.c:816-853)
+// rejects only a terminal, a FIFO, and a socket; regular files and
+// non-terminal character devices (NUL) are wiped. The old gate
+// accepted FILE_TYPE_DISK only. The Pipeline harness always pipes
+// stdout (the rejected shape), so the accepted shapes are spawned by
+// hand with stdout bound to a file / the NUL device.
+// ---------------------------------------------------------------------------
+namespace {
+
+auto run_shred_with_stdout(HANDLE stdout_handle, const std::wstring& args,
+                            const std::wstring& cwd) -> DWORD {
+  const std::wstring exe = ProjectPaths::exe(L"shred.exe").wstring();
+  std::wstring cmd_line = L"\"" + exe + L"\" " + args;
+  STARTUPINFOW startup{};
+  startup.cb = sizeof(startup);
+  startup.dwFlags = STARTF_USESTDHANDLES;
+  startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+  startup.hStdOutput = stdout_handle;
+  startup.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+  PROCESS_INFORMATION process_info{};
+  BOOL ok = CreateProcessW(nullptr, cmd_line.data(), nullptr, nullptr, TRUE,
+                           CREATE_NO_WINDOW, nullptr, cwd.c_str(), &startup,
+                           &process_info);
+  EXPECT_TRUE(ok != FALSE);
+  if (!ok) return static_cast<DWORD>(-1);
+  WaitForSingleObject(process_info.hProcess, INFINITE);
+  DWORD exit_code = static_cast<DWORD>(-1);
+  GetExitCodeProcess(process_info.hProcess, &exit_code);
+  CloseHandle(process_info.hThread);
+  CloseHandle(process_info.hProcess);
+  return exit_code;
+}
+
+auto open_inheritable(const std::wstring& path, DWORD access) -> HANDLE {
+  SECURITY_ATTRIBUTES attrs{};
+  attrs.nLength = sizeof(attrs);
+  attrs.bInheritHandle = TRUE;
+  return CreateFileW(path.c_str(), access, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                     &attrs, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+}
+
+}  // namespace
+
+TEST(shred, shred_dash_stdout_regular_file_issue917) {
+  TempDir tmp;
+  tmp.write("out.bin", "abcdef");
+
+  HANDLE out = open_inheritable((tmp.path / L"out.bin").wstring(),
+                                GENERIC_READ | GENERIC_WRITE);
+  ASSERT_TRUE(out != INVALID_HANDLE_VALUE);
+  DWORD rc = run_shred_with_stdout(out, L"-s 6 -", tmp.wpath());
+  CloseHandle(out);
+
+  EXPECT_EQ(rc, 0u);
+  // Exactly six bytes were overwritten in place.
+  std::string content = tmp.read("out.bin");
+  EXPECT_EQ(content.size(), 6u);
+  EXPECT_NE(content, "abcdef");
+}
+
+TEST(shred, shred_dash_stdout_nul_device_issue917) {
+  TempDir tmp;
+
+  HANDLE out = open_inheritable(L"NUL", GENERIC_WRITE);
+  ASSERT_TRUE(out != INVALID_HANDLE_VALUE);
+  DWORD rc = run_shred_with_stdout(out, L"-", tmp.wpath());
+  CloseHandle(out);
+
+  EXPECT_EQ(rc, 0u);
+}
+
+TEST(shred, shred_dash_stdout_pipe_still_rejected_issue917) {
+  Pipeline p;
+  p.add(L"shred.exe", {L"-"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("shred: -: invalid file type") !=
+              std::string::npos);
+}
