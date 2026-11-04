@@ -791,6 +791,11 @@ TEST(mv, mv_same_file_absolute_path_escapes_control_byte_issue374) {
   // quoteaf quotes the whole operand as given: the absolute path
   // renders as one "..." string per side, so the pin anchors on
   // the tail of the second rendering.
+  if (r.stderr_text.find("a'b\" are the same "
+                         "file") == std::string::npos) {
+    std::fprintf(stderr, "mv same-file absolute actual stderr: %s\n",
+                 r.stderr_text.c_str());
+  }
   EXPECT_TRUE(r.stderr_text.find("a'b\" are the same "
                                  "file") != std::string::npos);
 }
