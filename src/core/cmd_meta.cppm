@@ -24,7 +24,13 @@ export enum class OptionType {
   String,
   OptionalInt,
   OptionalString,
-  TerminatedString
+  TerminatedString,
+  // #1519: unsigned counterparts of Int/OptionalInt for options whose
+  // GNU parser is xstrtoumax (locate -l, numfmt --header, uniq's size
+  // counts): values in (INT64_MAX, UINT64_MAX] are accepted and stored
+  // exactly instead of failing the int64 parse.
+  UInt,
+  OptionalUInt
 };
 
 export struct OptionMeta {
@@ -166,11 +172,13 @@ auto option_argument_suffix(const OptionMeta& opt) -> std::string_view {
     case OptionType::Bool:
       return "";
     case OptionType::Int:
+    case OptionType::UInt:
       return " NUM";
     case OptionType::String:
     case OptionType::TerminatedString:
       return " ARG";
     case OptionType::OptionalInt:
+    case OptionType::OptionalUInt:
       return "[=NUM]";
     case OptionType::OptionalString:
       return "[=ARG]";
