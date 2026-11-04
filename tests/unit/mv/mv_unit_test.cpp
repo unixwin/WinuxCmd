@@ -723,3 +723,53 @@ TEST(mv, mv_audit_w1_verbose_and_backup_diagnostics) {
   EXPECT_TRUE(sentinel_exists);
   EXPECT_EQ(sentinel_content, "sentinel");
 }
+
+// ---------------------------------------------------------------------------
+// Issue #374: mv renders operands in diagnostics through GNU quoteaf
+// (shell_escape_always_quoting_style, copy.c/system.h): a name with a
+// raw 0x01 byte is $'\001'-escaped, never embedded raw.
+// ---------------------------------------------------------------------------
+TEST(mv, mv_cannot_stat_escapes_control_byte_issue374) {
+  TempDir tmp;
+  tmp.write("placeholder.txt", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"mv.exe", {L"x\x01y", L"destdir"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("cannot stat 'x'$'\\001''y': No such "
+                                 "file or directory") != std::string::npos);
+  // The raw control byte must not appear in the diagnostic.
+  EXPECT_TRUE(r.stderr_text.find('\x01') == std::string::npos);
+}
+
+TEST(mv, mv_same_file_escapes_control_byte_issue374) {
+  TempDir tmp;
+  tmp.write("\x01", "data");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"mv.exe", {L"\x01", L"\x01"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("''$'\\001' and ''$'\\001' are the same "
+                                 "file") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find('\x01') == std::string::npos);
+}
+
+TEST(mv, mv_verbose_plain_names_keep_simple_quoting_issue374) {
+  TempDir tmp;
+  tmp.write("plain name.txt", "data");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"mv.exe", {L"-v", L"plain name.txt", L"renamed.txt"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("renamed 'plain name.txt' -> "
+                                 "'renamed.txt'") != std::string::npos);
+}
