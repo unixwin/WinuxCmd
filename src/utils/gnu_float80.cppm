@@ -259,8 +259,12 @@ inline Ext80 normalize(const Big& N, int shift, bool sticky_extra,
   }
   if (exp2 < -16382) {
     // Subnormal range: mantissa slides right of the 64-bit window.
+    // ERANGE only when the shift actually drops nonzero bits: an
+    // exactly representable subnormal (e.g. the hex float 0x1p-16445)
+    // converts without error in glibc strtold, and coreutils printf
+    // exits 0 for it, while an inexact subnormal (1e-4935) warns and
+    // exits 1 (#471 pins both faces).
     int sh = -16382 - exp2;
-    range_err = true;
     uint64_t m = mant;
     bool round_bit = sh <= 64 && ((m >> (sh - 1)) & 1) != 0;
     bool st = sticky;
@@ -268,6 +272,7 @@ inline Ext80 normalize(const Big& N, int shift, bool sticky_extra,
       uint64_t lowmask = sh - 1 >= 64 ? ~0ull : ((1ull << (sh - 1)) - 1);
       st |= (m & lowmask) != 0;
     }
+    if (round_bit || st) range_err = true;
     m = sh >= 64 ? 0 : (m >> sh);
     if (round_bit && (st || (m & 1) != 0)) ++m;
     if (m == 0) {

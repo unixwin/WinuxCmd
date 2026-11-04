@@ -756,7 +756,8 @@ TEST(mv, mv_same_file_escapes_control_byte_issue374) {
   auto r = p.run();
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_TRUE(r.stderr_text.find("''$'\\001' and ''$'\\001' are the same "
-                                 "file") != std::string::npos);
+                                 "file") != std::string::npos)
+      << "actual stderr: " << r.stderr_text;
   EXPECT_TRUE(r.stderr_text.find('\x01') == std::string::npos);
 }
 

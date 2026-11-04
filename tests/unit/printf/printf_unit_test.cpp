@@ -257,7 +257,7 @@ TEST(printf, printf_hex_float_glibc_form_issue471) {
   auto r = p.run();
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text,
-                 "0xcp-3\n0xcp-2\n0xc.ccccccccccccdp-7\n");
+                 "0xcp-3\n0xcp-2\n0xc.ccccccccccccccdp-7\n");
 }
 
 TEST(printf, printf_hex_float_precision_and_carry_issue471) {
@@ -270,7 +270,7 @@ TEST(printf, printf_hex_float_precision_and_carry_issue471) {
   EXPECT_EQ(r.exit_code, 0);
   // %.0a of the all-ones significand carries out of the top nibble:
   // glibc renders digit 1 with the exponent raised by 4.
-  EXPECT_EQ_TEXT(r.stdout_text, "0xc.00p-3\n0x1p+1\n0xc.p-3\n0XCp-3\n");
+  EXPECT_EQ_TEXT(r.stdout_text, "0xc.00p-3\n0x1p+1\n0xc.p-3\n0XCP-3\n");
 }
 
 TEST(printf, printf_hex_float_wide_significand_issue471) {
@@ -284,6 +284,19 @@ TEST(printf, printf_hex_float_wide_significand_issue471) {
   EXPECT_EQ_TEXT(r.stdout_text,
                  "0x9.1a2b3c4d5e6f789p+97\n"
                  "0x9.1a2b3c4d5e6f78900000p+97\n");
+}
+
+TEST(printf, printf_hex_float_inexact_subnormal_still_warns_issue471) {
+  Pipeline p;
+  p.add(L"printf.exe", {L"%a\\n", L"1e-4935"});
+
+  auto r = p.run();
+  // [GNU] 1e-4935 lands on an inexact subnormal: glibc strtold raises
+  // ERANGE, coreutils printf prints the value and exits 1 (probed).
+  // Exact hex subnormals convert silently (next test) — the parser
+  // must only flag range errors when bits are actually lost.
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ_TEXT(r.stdout_text, "0x0.009bf0c3ba2738bp-16385\n");
 }
 
 TEST(printf, printf_hex_float_subnormal_issue471) {

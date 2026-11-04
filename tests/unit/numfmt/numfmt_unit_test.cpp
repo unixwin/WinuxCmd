@@ -343,7 +343,8 @@ TEST(numfmt, numfmt_header_above_uint64_still_errors_issue1519) {
   p.add(L"numfmt.exe", {L"--header=18446744073709551616"});
 
   auto r = p.run();
-  EXPECT_EQ(r.exit_code, 2);
+  // GNU numfmt exits 1 (EXIT_FAILURE) on an invalid number, probed.
+  EXPECT_EQ(r.exit_code, 1);
   EXPECT_TRUE(r.stderr_text.find("invalid argument "
                                  "'18446744073709551616'") !=
               std::string::npos);
@@ -355,7 +356,7 @@ TEST(numfmt, numfmt_padding_unsigned_band_still_errors_issue1519) {
   p.add(L"numfmt.exe", {L"--padding=9999999999999999999"});
 
   auto r = p.run();
-  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_EQ(r.exit_code, 1);
   EXPECT_TRUE(r.stderr_text.find("invalid argument "
                                  "'9999999999999999999'") !=
               std::string::npos);
