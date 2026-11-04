@@ -788,15 +788,19 @@ TEST(mv, mv_same_file_absolute_path_escapes_control_byte_issue374) {
 
   auto r = p.run();
   EXPECT_EQ(r.exit_code, 1);
-  // quoteaf quotes the whole operand as given: the absolute path
-  // renders as one "..." string per side, so the pin anchors on
-  // the tail of the second rendering.
-  if (r.stderr_text.find("a'b\" are the same "
+  // quoteaf quotes the whole operand as given. The "..." restyle
+  // the relative pin sees applies only when the string carries no
+  // character that stays special inside double quotes; a Windows
+  // path's backslashes disqualify it, so an absolute operand takes
+  // the '\'' form instead - the same choice GNU quotearg makes for
+  // a backslash-bearing name (probed: 'a\b'\''c'). The pin anchors
+  // on the tail of the second rendering.
+  if (r.stderr_text.find("a'\\''b' are the same "
                          "file") == std::string::npos) {
     std::fprintf(stderr, "mv same-file absolute actual stderr: %s\n",
                  r.stderr_text.c_str());
   }
-  EXPECT_TRUE(r.stderr_text.find("a'b\" are the same "
+  EXPECT_TRUE(r.stderr_text.find("a'\\''b' are the same "
                                  "file") != std::string::npos);
 }
 
