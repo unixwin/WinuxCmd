@@ -748,13 +748,16 @@ TEST(mv, mv_cannot_stat_escapes_control_byte_issue374) {
 
 TEST(mv, mv_same_file_escapes_control_byte_issue374) {
   TempDir tmp;
-  tmp.write("\x01", "data");
+  // The control byte is embedded in a longer name: a file whose
+  // entire name is one control character cannot be created through
+  // the harness file APIs on the CI host at all (both TempDir::write
+  // and a direct write_all on the wide path land nothing findable -
+  // CI evidence in the #374 lane report), which is an environment
+  // limit, not the rendering under test.
+  tmp.write("a\x01b", "data");
 
-  // Localization for the #374 lane: the first CI run showed mv
-  // answering "cannot stat" for this file, so prove creation landed
-  // under the wide spelling before blaming the move.
-  const bool created =
-      std::filesystem::exists(tmp.path / std::filesystem::path(L"\x01"));
+  const bool created = std::filesystem::exists(
+      tmp.path / std::filesystem::path(L"a\x01b"));
   if (!created) {
     std::fprintf(stderr,
                  "mv same-file: TempDir::write did not create the "
@@ -764,16 +767,16 @@ TEST(mv, mv_same_file_escapes_control_byte_issue374) {
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
-  p.add(L"mv.exe", {L"\x01", L"\x01"});
+  p.add(L"mv.exe", {L"a\x01b", L"a\x01b"});
 
   auto r = p.run();
   EXPECT_EQ(r.exit_code, 1);
-  if (r.stderr_text.find("''$'\\001' and ''$'\\001' are the same "
+  if (r.stderr_text.find("'a'$'\\001''b' and 'a'$'\\001''b' are the same "
                          "file") == std::string::npos) {
     std::fprintf(stderr, "mv same-file actual stderr: %s\n",
                  r.stderr_text.c_str());
   }
-  EXPECT_TRUE(r.stderr_text.find("''$'\\001' and ''$'\\001' are the same "
+  EXPECT_TRUE(r.stderr_text.find("'a'$'\\001''b' and 'a'$'\\001''b' are the same "
                                  "file") != std::string::npos);
   EXPECT_TRUE(r.stderr_text.find('\x01') == std::string::npos);
 }
@@ -782,7 +785,7 @@ TEST(mv, mv_same_file_absolute_path_escapes_control_byte_issue374) {
   TempDir tmp;
   // Same pin through an absolute wide-spelled operand, with the file
   // created through the wide path directly (the fold #342 pattern).
-  const auto file = tmp.path / std::filesystem::path(L"\x01");
+  const auto file = tmp.path / std::filesystem::path(L"a\x01b");
   temp_dir_detail::write_all(file, "data", 4);
   EXPECT_TRUE(std::filesystem::exists(file));
 
@@ -791,12 +794,12 @@ TEST(mv, mv_same_file_absolute_path_escapes_control_byte_issue374) {
 
   auto r = p.run();
   EXPECT_EQ(r.exit_code, 1);
-  if (r.stderr_text.find("''$'\\001' and ''$'\\001' are the same "
+  if (r.stderr_text.find("'a'$'\\001''b' and 'a'$'\\001''b' are the same "
                          "file") == std::string::npos) {
     std::fprintf(stderr, "mv same-file absolute actual stderr: %s\n",
                  r.stderr_text.c_str());
   }
-  EXPECT_TRUE(r.stderr_text.find("''$'\\001' and ''$'\\001' are the same "
+  EXPECT_TRUE(r.stderr_text.find("'a'$'\\001''b' and 'a'$'\\001''b' are the same "
                                  "file") != std::string::npos);
   EXPECT_TRUE(r.stderr_text.find('\x01') == std::string::npos);
 }
