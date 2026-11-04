@@ -26,8 +26,10 @@ auto constexpr EXPAND_OPTIONS =
                // [GNU]
                OPTION("-i", "--initial",
                       "only convert tabs at the beginning of lines", BOOL_TYPE),
-               // [GNU] obsolescent -NUM is an alias for --tabs=NUM
-               OPTION("-NUM", "", "same as --tabs=NUM", INT_TYPE)};
+               // [GNU] obsolescent -NUM is an alias for --tabs=NUM.
+               // #1519: tab stops are uintmax quantities, so -NUM uses
+               // the parser's unsigned type.
+               OPTION("-NUM", "", "same as --tabs=NUM", UINT_TYPE)};
 
 namespace expand_pipeline {
 namespace cp = core::pipeline;
@@ -229,8 +231,14 @@ auto build_config(const CommandContext<EXPAND_OPTIONS.size()>& ctx)
           piece = *value;
         }
       } else if (meta.short_name == "-NUM") {
+        // #1519: a band value is stored as std::uint64_t, a smaller
+        // one as std::int64_t; both render back to the decimal string
+        // the tab-stop parser consumes.
         if (const auto* value =
                 std::get_if<std::int64_t>(&occurrence.value)) {
+          piece = std::to_string(*value);
+        } else if (const auto* value =
+                       std::get_if<std::uint64_t>(&occurrence.value)) {
           piece = std::to_string(*value);
         }
       }
@@ -244,7 +252,7 @@ auto build_config(const CommandContext<EXPAND_OPTIONS.size()>& ctx)
     if (tabs_opt.empty()) {
       tabs_opt = ctx.get<std::string>("-t", "");
     }
-    for (const std::int64_t stop : ctx.get_all<std::int64_t>("-NUM")) {
+    for (const std::uint64_t stop : ctx.get_all<std::uint64_t>("-NUM")) {
       if (!tabs_opt.empty()) tabs_opt += ' ';
       tabs_opt += std::to_string(stop);
     }

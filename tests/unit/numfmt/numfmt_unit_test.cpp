@@ -319,3 +319,44 @@ TEST(numfmt, numfmt_empty_delimiter_means_nul) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "a b\n");
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1519: numfmt --header is an xstrtoumax value in GNU
+// (numfmt.c:1558): the (INT64_MAX, UINT64_MAX] band is accepted, a
+// value above UINT64_MAX still errors, and the signed --padding
+// option keeps rejecting the band.
+// ---------------------------------------------------------------------------
+TEST(numfmt, numfmt_header_unsigned_band_issue1519) {
+  Pipeline p;
+  p.set_stdin("1000\n2000\n");
+  p.add(L"numfmt.exe", {L"--header=9999999999999999999"});
+
+  auto r = p.run();
+  // Every line is a header line: passed through unconverted.
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "1000\n2000\n");
+}
+
+TEST(numfmt, numfmt_header_above_uint64_still_errors_issue1519) {
+  Pipeline p;
+  p.set_stdin("1000\n");
+  p.add(L"numfmt.exe", {L"--header=18446744073709551616"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_TRUE(r.stderr_text.find("invalid argument "
+                                 "'18446744073709551616'") !=
+              std::string::npos);
+}
+
+TEST(numfmt, numfmt_padding_unsigned_band_still_errors_issue1519) {
+  Pipeline p;
+  p.set_stdin("1000\n");
+  p.add(L"numfmt.exe", {L"--padding=9999999999999999999"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_TRUE(r.stderr_text.find("invalid argument "
+                                 "'9999999999999999999'") !=
+              std::string::npos);
+}

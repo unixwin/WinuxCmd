@@ -37,7 +37,9 @@ auto constexpr LOCATE_OPTIONS = std::array{
     OPTION("-i", "--ignore-case", "ignore case in search"),
     // [GNU] locate.c:1405 "-l, --limit=N": GNU has no -n option,
     // so the previous non-GNU -n alias is not advertised.
-    OPTION("-l", "--limit", "limit results to at most N entries", INT_TYPE),
+    // [GNU] #1519: the limit is an xstrtoumax value (locate.c:1677),
+    // so -l is declared with the parser's unsigned type.
+    OPTION("-l", "--limit", "limit results to at most N entries", UINT_TYPE),
     OPTION("-L", "--follow",
            "accepted for GNU compatibility; the database stores "
            "plain paths and never follows links"),
@@ -73,7 +75,7 @@ struct Config {
   bool wholename = false;
   bool statistics = false;
   bool limit_set = false;
-  std::int64_t limit = 0;
+  std::uint64_t limit = 0;
   bool database_given = false;
   std::string database;  // raw -d value when database_given
   SmallVector<std::string, 8> patterns;
@@ -120,13 +122,16 @@ auto build_config(const CommandContext<LOCATE_OPTIONS.size()>& ctx)
   // limit in GNU (nothing is printed, exit status 0), so track that the
   // option was given instead of treating 0 as "no limit".
   cfg.limit_set = ctx.has("-l") || ctx.has("--limit");
-  if (ctx.has("-l")) {
-    cfg.limit = ctx.get<std::int64_t>("-l", 0);
-  } else if (ctx.has("--limit")) {
-    cfg.limit = ctx.get<std::int64_t>("--limit", 0);
-  }
-  if (cfg.limit < 0) {
-    return std::unexpected("invalid negative limit");
+  if (cfg.limit_set) {
+    // [GNU] #1519: a negative occurrence is still stored signed by
+    // the parser, so the rejection keeps its shape; a value in the
+    // unsigned band reads back saturated-positive through the signed
+    // view and exact through the unsigned one.
+    const std::string_view limit_name = ctx.has("-l") ? "-l" : "--limit";
+    if (ctx.get<std::int64_t>(limit_name, 0) < 0) {
+      return std::unexpected("invalid negative limit");
+    }
+    cfg.limit = ctx.get<std::uint64_t>(limit_name, 0);
   }
   if (ctx.has("-d")) {
     cfg.database = ctx.get<std::string>("-d", "");

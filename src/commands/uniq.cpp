@@ -52,22 +52,25 @@ auto constexpr UNIQ_OPTIONS = std::array{
     OPTION("-D", "--all-repeated", "print all duplicate lines",
            OPTIONAL_STRING_TYPE),
     // [GNU] option
+    // [GNU] #1519: -f/-s/-w are size_opt counts (uniq.c:233, xstrtoumax),
+    // so they use the parser's unsigned type; the consumer's negative
+    // diagnostics are unaffected (negatives still store signed).
     OPTION("-f", "--skip-fields", "avoid comparing the first N fields",
-           INT_TYPE),
+           UINT_TYPE),
     // [GNU] option
     OPTION("-i", "--ignore-case", "ignore differences in case"),
     // [GNU] option
     OPTION("-s", "--skip-chars", "avoid comparing the first N characters",
-           INT_TYPE),
+           UINT_TYPE),
     // [GNU] option
     OPTION("-u", "--unique", "only print unique lines"),
     // [GNU] option
     OPTION("-w", "--check-chars", "compare no more than N characters",
-           INT_TYPE),
+           UINT_TYPE),
     // [GNU] -NUM: the obsolete option — its digits are the number of
     // fields to skip (uniq.c's digit cases), NOT a check-chars count;
     // hidden like split's -NUM.
-    OPTION("-NUM", "", "", INT_TYPE),
+    OPTION("-NUM", "", "", UINT_TYPE),
     // [GNU] option
     OPTION("-z", "--zero-terminated", "line delimiter is NUL, not newline"),
     // [GNU] option

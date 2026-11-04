@@ -284,3 +284,38 @@ TEST(locate, locate_database_path_uses_shell_root_issue1364) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.find("main.cpp") != std::string::npos);
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1519: locate -l is an xstrtoumax value in GNU (locate.c:1677),
+// so the (INT64_MAX, UINT64_MAX] band is accepted; the recorded
+// negative rejection keeps its shape.
+// ---------------------------------------------------------------------------
+TEST(locate, locate_limit_unsigned_band_issue1519) {
+  TempDir tmp;
+  write_db(tmp, "db.txt", "C:/work/main.cpp\nC:/work/src/util.cpp\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"locate.exe",
+        {L"-d", L"db.txt", L"-l", L"9999999999999999999", L"cpp"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("C:/work/main.cpp") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("C:/work/src/util.cpp") !=
+              std::string::npos);
+}
+
+TEST(locate, locate_limit_negative_still_rejected_issue1519) {
+  TempDir tmp;
+  write_db(tmp, "db.txt", "C:/work/main.cpp\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"locate.exe", {L"-d", L"db.txt", L"-l", L"-1", L"cpp"});
+
+  auto r = p.run();
+  EXPECT_NE(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.find("invalid negative limit") !=
+              std::string::npos);
+}
