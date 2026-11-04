@@ -53,3 +53,28 @@ TEST(hostname, hostname_long) {
   // Should return the full hostname
   EXPECT_FALSE(r.stdout_text.empty());
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1522: a -F FILE whose name is not ASCII (U+00FF) must open
+// through the wide path operand; the narrow std::ifstream ctor
+// decoded the UTF-8 spelling through the ANSI code page and the open
+// failed. The stream stays in TEXT mode: the first line is printed
+// verbatim, so a CRLF file must print without the '\r' -- that is
+// exactly what the text-mode translation has always produced.
+// ---------------------------------------------------------------------------
+TEST(hostname, hostname_file_opens_non_ascii_filename_issue1522) {
+  TempDir tmp;
+  const std::wstring name = L"\xFF.txt";
+  {
+    std::ofstream out(tmp.path / name, std::ios::binary);
+    out << "myhost\r\n";
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"hostname.exe", {L"-F", name});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "myhost\n");
+}

@@ -137,9 +137,23 @@ auto strip_leading_plus(std::string_view value) -> std::string_view {
 
 // Mirrors GNU split's strtoint_die: every rejected NUMBER is diagnosed as
 // "<msgid>: '<arg>'" with the offending argument quoted as a whole.
-auto quoted_number_error(std::string_view msgid, std::string_view arg)
-    -> std::string {
-  return std::string(msgid) + ": '" + std::string(arg) + "'";
+// [GNU] #1524 family adjudication: strtoint_die (split.c:1301-1305) is
+// error(EXIT_FAILURE, errno == EINVAL ? 0 : errno, ...) -- the errno
+// text (": Numerical result out of range", ERANGE) is appended exactly
+// when the failing xstrtoimax scan overflowed: an invalid-suffix death
+// whose digit run also overflowed (LONGINT_INVALID_SUFFIX_CHAR_WITH_
+// OVERFLOW), or a range death on an overflowed scan (a negative
+// overflow clamped to INTMAX_MIN). Pure-invalid deaths (EINVAL) and
+// semantic range deaths on a clean scan (0, -5) carry errno 0/EINVAL
+// and get no suffix. Callers pass erange=true only for those overflow
+// deaths; "invalid chunk number" never routes through strtoint_die in
+// GNU (it is a plain error(..., 0, ...) at split.c:1340-1342) and
+// never takes the suffix.
+auto quoted_number_error(std::string_view msgid, std::string_view arg,
+                         bool erange = false) -> std::string {
+  std::string message = std::string(msgid) + ": '" + std::string(arg) + "'";
+  if (erange) message += ": Numerical result out of range";
+  return message;
 }
 
 auto parse_i64_full(std::string_view value) -> cp::Result<int64_t> {
@@ -204,6 +218,14 @@ auto scan_intmax(std::string_view text) -> IntmaxScan {
     scan.value = static_cast<int64_t>(magnitude);
   }
   return scan;
+}
+
+// [GNU] #1524: whether a death on TEXT carries the ERANGE suffix --
+// the scan that produced the death overflowed on a digit run (see
+// quoted_number_error). A scan with no digits is a pure EINVAL death.
+auto number_scan_erange(std::string_view text) -> bool {
+  const auto scan = scan_intmax(text);
+  return scan.overflow && scan.any_digits;
 }
 
 // [GNU] parse_n_units with no multipliers (split.c:1317-1325): the
@@ -381,7 +403,8 @@ auto build_config(const CommandContext<SPLIT_OPTIONS.size()>& ctx)
       // GNU parse_n_units(msgid="invalid number of bytes"): parse failures,
       // bad suffixes, overflow, and non-positive values all quote the arg.
       return std::unexpected(
-          quoted_number_error("invalid number of bytes", bytes_opt));
+          quoted_number_error("invalid number of bytes", bytes_opt,
+                              number_scan_erange(bytes_opt)));
     }
     cfg.chunk_size = *size_result;
     cfg.mode = Config::Mode::Bytes;
@@ -392,7 +415,8 @@ auto build_config(const CommandContext<SPLIT_OPTIONS.size()>& ctx)
     if (!size_result || *size_result <= 0) {
       // GNU -C reuses the "invalid number of lines" message for line bytes.
       return std::unexpected(
-          quoted_number_error("invalid number of lines", line_bytes_opt));
+          quoted_number_error("invalid number of lines", line_bytes_opt,
+                              number_scan_erange(line_bytes_opt)));
     }
     cfg.chunk_size = *size_result;
     cfg.mode = Config::Mode::LineBytes;
@@ -404,7 +428,8 @@ auto build_config(const CommandContext<SPLIT_OPTIONS.size()>& ctx)
     auto lines_result = parse_positive_units(lines_opt);
     if (!lines_result || *lines_result <= 0) {
       return std::unexpected(
-          quoted_number_error("invalid number of lines", lines_opt));
+          quoted_number_error("invalid number of lines", lines_opt,
+                              number_scan_erange(lines_opt)));
     }
     cfg.chunk_lines = *lines_result;
     cfg.mode = Config::Mode::Lines;
@@ -455,8 +480,12 @@ auto build_config(const CommandContext<SPLIT_OPTIONS.size()>& ctx)
       val = val.substr(2);
     }
 
+    // [GNU] #1524: both strtoint_die deaths in parse_chunk carry the
+    // suffix iff the quoted text's own scan overflowed (the whole
+    // argument for a bad head, the N text for a bad N part).
     auto fail_chunks = [&](std::string_view arg) {
-      return quoted_number_error("invalid number of chunks", arg);
+      return quoted_number_error("invalid number of chunks", arg,
+                                 number_scan_erange(arg));
     };
 
     const auto head = scan_intmax(val);
@@ -585,7 +614,8 @@ auto build_config(const CommandContext<SPLIT_OPTIONS.size()>& ctx)
     auto size_result = parse_size(io_blksize);
     if (!size_result || *size_result <= 0) {
       return std::unexpected(
-          quoted_number_error("invalid IO block size", io_blksize));
+          quoted_number_error("invalid IO block size", io_blksize,
+                              number_scan_erange(io_blksize)));
     }
   }
 

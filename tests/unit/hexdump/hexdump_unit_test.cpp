@@ -437,3 +437,29 @@ TEST(hexdump, hexdump_native_glob_expands_operands_issue1374) {
                  std::string("0000000 6e6f 796c 000a") + std::string(25, ' ') +
                      "\n0000005\n");
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1522: a -f format FILE whose name is not ASCII (U+00FF) must
+// open through the wide path operand; the narrow std::ifstream ctor
+// decoded the UTF-8 spelling through the ANSI code page and the open
+// failed. The stream stays in text mode, so a CRLF format file parses
+// exactly like the LF spelling (the isspace-based format parser
+// absorbs the '\r' either way).
+// ---------------------------------------------------------------------------
+TEST(hexdump, hexdump_f_opens_non_ascii_filename_issue1522) {
+  TempDir tmp;
+  write_binary_file(tmp.path / "test.bin", "abcde");
+  const std::wstring name = L"\xFF.txt";
+  {
+    std::ofstream out(tmp.path / name, std::ios::binary);
+    out << "1/1 \"%02x\\n\"\r\n";
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"hexdump.exe", {L"-f", name, L"test.bin"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "61\n62\n63\n64\n65\n");
+}

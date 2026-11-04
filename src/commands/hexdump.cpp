@@ -343,7 +343,14 @@ auto parse_format_string(std::string_view text, FormatProgram& program)
 // Load a -f format file: each line is a format string.
 auto load_format_file(const std::string& path, FormatProgram& program)
     -> std::expected<void, std::string> {
-  std::ifstream file(native_path::normalize_api_operand(path));
+  // [GNU] #1522: open through the wide path operand (the narrow ctor
+  // decoded the UTF-8 name through the ANSI code page, the #342
+  // class), but keep the stream in TEXT mode: format lines are parsed
+  // with isspace-based skipping (which already absorbs a translated
+  // or untranslated '\r' identically), so the CRLF translation this
+  // reader has always had stays byte-for-byte.
+  auto operand = native_path::make_api_path_operand(path);
+  std::ifstream file(std::filesystem::path(operand.extended));
   if (!file) {
     // [GNU] err shape from addfile (hexdump-parse.c:85).
     return std::unexpected("can't read " + path +

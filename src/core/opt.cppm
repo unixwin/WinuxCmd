@@ -328,8 +328,16 @@ export ParseResultRuntime parse_command_runtime(
   // A negative value always lands in the signed store, so consumer
   // diagnostics for negatives keep their shape, and a value beyond
   // uint64_t still fails with the shared invalid-argument error.
+  // #1523: UIntClamp options (uniq's size_opt family) additionally
+  // accept a positive value past uint64_t, storing UINT64_MAX — the
+  // LONGINT_OVERFLOW clamp; every reader bridge then saturates it
+  // exactly like GNU's MIN(size, SIZE_MAX).
   auto parse_int_value = [&](std::string_view option, std::string_view value,
-                             bool unsigned_path, OptionValue& out) -> bool {
+                             OptionType type, OptionValue& out) -> bool {
+    const bool unsigned_path = type == OptionType::UInt ||
+                               type == OptionType::UIntClamp ||
+                               type == OptionType::OptionalUInt;
+    const bool clamp_overflow = type == OptionType::UIntClamp;
     std::string str(value);
     std::int64_t v = 0;
     auto [ptr, ec] = std::from_chars(str.data(), str.data() + str.size(), v);
@@ -343,6 +351,11 @@ export ParseResultRuntime parse_command_runtime(
           std::from_chars(str.data(), str.data() + str.size(), u);
       if (uec == std::errc() && uptr == str.data() + str.size()) {
         out = u;
+        return true;
+      }
+      if (clamp_overflow && uec == std::errc::result_out_of_range &&
+          uptr == str.data() + str.size()) {
+        out = std::numeric_limits<std::uint64_t>::max();
         return true;
       }
     }
@@ -441,7 +454,8 @@ export ParseResultRuntime parse_command_runtime(
           break;
 
         case OptionType::Int:
-        case OptionType::UInt: {
+        case OptionType::UInt:
+        case OptionType::UIntClamp: {
           std::string str;
 
           // #1302: an explicit empty value ("--opt=") is a value, not a
@@ -460,8 +474,7 @@ export ParseResultRuntime parse_command_runtime(
           }
 
           OptionValue v;
-          if (!parse_int_value(name, str, meta->type == OptionType::UInt,
-                               v)) {
+          if (!parse_int_value(name, str, meta->type, v)) {
             return result;
           }
 
@@ -492,8 +505,7 @@ export ParseResultRuntime parse_command_runtime(
           }
 
           OptionValue v;
-          if (!parse_int_value(name, value,
-                               meta->type == OptionType::OptionalUInt, v)) {
+          if (!parse_int_value(name, value, meta->type, v)) {
             return result;
           }
 
@@ -554,7 +566,8 @@ export ParseResultRuntime parse_command_runtime(
             result.options.set(idx, true);
             break;
           case OptionType::Int:
-          case OptionType::UInt: {
+          case OptionType::UInt:
+          case OptionType::UIntClamp: {
             std::string str;
             // #1302, single-dash long form: an explicit empty value is
             // a value, not a missing one.
@@ -569,8 +582,7 @@ export ParseResultRuntime parse_command_runtime(
             }
 
             OptionValue v;
-            if (!parse_int_value(exact_name, str,
-                                 exact_meta->type == OptionType::UInt, v)) {
+            if (!parse_int_value(exact_name, str, exact_meta->type, v)) {
               return result;
             }
 
@@ -596,9 +608,8 @@ export ParseResultRuntime parse_command_runtime(
             }
 
             OptionValue v;
-            if (!parse_int_value(
-                    exact_name, exact_value,
-                    exact_meta->type == OptionType::OptionalUInt, v)) {
+            if (!parse_int_value(exact_name, exact_value,
+                                 exact_meta->type, v)) {
               return result;
             }
 
@@ -651,6 +662,8 @@ export ParseResultRuntime parse_command_runtime(
                      policy.allow_short_attached_values) ||
                     (m.type == OptionType::UInt &&
                      policy.allow_short_attached_values) ||
+                    (m.type == OptionType::UIntClamp &&
+                     policy.allow_short_attached_values) ||
                     (m.type == OptionType::OptionalInt &&
                      policy.allow_optional_short_attached_values) ||
                     (m.type == OptionType::OptionalUInt &&
@@ -682,17 +695,15 @@ export ParseResultRuntime parse_command_runtime(
           if (numeric_meta->type != OptionType::Int &&
               numeric_meta->type != OptionType::OptionalInt &&
               numeric_meta->type != OptionType::UInt &&
+              numeric_meta->type != OptionType::UIntClamp &&
               numeric_meta->type != OptionType::OptionalUInt) {
             set_unrecognized_option(arg);
             return result;
           }
 
           OptionValue v;
-          if (!parse_int_value(
-                  numeric_meta->short_name, arg.substr(1),
-                  numeric_meta->type == OptionType::UInt ||
-                      numeric_meta->type == OptionType::OptionalUInt,
-                  v)) {
+          if (!parse_int_value(numeric_meta->short_name, arg.substr(1),
+                               numeric_meta->type, v)) {
             return result;
           }
           result.options.set(numeric_meta->index, std::move(v));
@@ -729,11 +740,9 @@ export ParseResultRuntime parse_command_runtime(
               ++end;
             }
             OptionValue v;
-            if (!parse_int_value(
-                    numeric_meta->short_name, arg.substr(pos, end - pos),
-                    numeric_meta->type == OptionType::UInt ||
-                        numeric_meta->type == OptionType::OptionalUInt,
-                    v)) {
+            if (!parse_int_value(numeric_meta->short_name,
+                                 arg.substr(pos, end - pos),
+                                 numeric_meta->type, v)) {
               return result;
             }
             result.options.set(numeric_meta->index, std::move(v));
@@ -769,6 +778,7 @@ export ParseResultRuntime parse_command_runtime(
           // ----- value option -----
           case OptionType::Int:
           case OptionType::UInt:
+          case OptionType::UIntClamp:
           case OptionType::String: {
             std::string str;
 
@@ -784,12 +794,12 @@ export ParseResultRuntime parse_command_runtime(
             }
 
             if (meta->type == OptionType::Int ||
-                meta->type == OptionType::UInt) {
+                meta->type == OptionType::UInt ||
+                meta->type == OptionType::UIntClamp) {
               std::array<char, 3> short_name = {'-', ch, '\0'};
               OptionValue v;
               if (!parse_int_value(std::string_view(short_name.data(), 2),
-                                   str, meta->type == OptionType::UInt,
-                                   v)) {
+                                   str, meta->type, v)) {
                 return result;
               }
 
@@ -820,9 +830,7 @@ export ParseResultRuntime parse_command_runtime(
             std::array<char, 3> short_name = {'-', ch, '\0'};
             OptionValue v;
             if (!parse_int_value(std::string_view(short_name.data(), 2),
-                                 str,
-                                 meta->type == OptionType::OptionalUInt,
-                                 v)) {
+                                 str, meta->type, v)) {
               return result;
             }
 

@@ -153,7 +153,10 @@ auto constexpr GREP_OPTIONS = std::array{
     OPTION("-z", "--null-data", "a data line ends in 0 byte, not newline"),
     OPTION("-s", "--no-messages", "suppress error messages"),
     OPTION("-v", "--invert-match", "select non-matching lines"),
-    OPTION("-m", "--max-count", "stop after NUM selected lines", INT_TYPE),
+    // [GNU] #1521: -m is xstrtoimax with LONGINT_OVERFLOW accepted
+    // (grep.c:2681-2692), so the band clamps to INTMAX_MAX via the
+    // unsigned declaration; negatives still store signed.
+    OPTION("-m", "--max-count", "stop after NUM selected lines", UINT_TYPE),
     OPTION("-b", "--byte-offset", "print the byte offset with output lines"),
     OPTION("-n", "--line-number", "print line number with output lines"),
     OPTION("", "--line-buffered", "flush output on every line"),
@@ -188,12 +191,15 @@ auto constexpr GREP_OPTIONS = std::array{
     OPTION("-c", "--count", "print only a count of selected lines per FILE"),
     OPTION("-T", "--initial-tab", "make tabs line up (if needed)"),
     OPTION("-Z", "--null", "print 0 byte after FILE name"),
+    // [GNU] #1521: context lengths go through context_length_arg
+    // (grep.c:826-841, xstrtoimax, LONGINT_OVERFLOW accepted), the
+    // same clamp family as -m.
     OPTION("-B", "--before-context", "print NUM lines of leading context",
-           INT_TYPE),
+           UINT_TYPE),
     OPTION("-A", "--after-context", "print NUM lines of trailing context",
-           INT_TYPE),
-    OPTION("-C", "--context", "print NUM lines of output context", INT_TYPE),
-    OPTION("-NUM", "", "same as --context=NUM", INT_TYPE),
+           UINT_TYPE),
+    OPTION("-C", "--context", "print NUM lines of output context", UINT_TYPE),
+    OPTION("-NUM", "", "same as --context=NUM", UINT_TYPE),
     OPTION("", "--group-separator", "print separator between groups",
            STRING_TYPE),
     OPTION("", "--no-group-separator", "do not print group separator"),
@@ -1212,7 +1218,17 @@ auto build_config(const CommandContext<GREP_OPTIONS.size()>& ctx,
   for (const auto& occurrence : ctx.options.occurrences()) {
     if (!ctx.metas || occurrence.index >= GREP_OPTIONS.size()) continue;
     const auto& meta = (*ctx.metas)[occurrence.index];
-    const auto* value = std::get_if<std::int64_t>(&occurrence.value);
+    // [GNU] #1521: a band context value arrives in the unsigned store;
+    // read it through the saturating bridge (a bare get_if<int64_t>
+    // would silently drop the occurrence, the #1519 trap).
+    std::optional<std::int64_t> value;
+    if (auto p = std::get_if<std::int64_t>(&occurrence.value)) {
+      value = *p;
+    } else if (auto p = std::get_if<std::uint64_t>(&occurrence.value)) {
+      value = static_cast<std::int64_t>(std::min(
+          *p, static_cast<std::uint64_t>(
+                  std::numeric_limits<std::int64_t>::max())));
+    }
     if (!value) continue;
 
     if (option_matches(meta, "-B", "--before-context")) {

@@ -58,3 +58,30 @@ TEST(dircolors, print_ls_colors_uses_display_format_for_custom_database) {
   EXPECT_EQ(r.stdout_text, "\x1b[01;34mdi\t01;34\x1b[0m\n");
   EXPECT_TRUE(r.stderr_text.empty());
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1522: a database FILE whose name is not ASCII (U+00FF) must
+// open through the wide path operand; the narrow std::ifstream ctor
+// decoded the UTF-8 spelling through the ANSI code page and the open
+// failed. The stream stays in text mode (CRLF semantics preserved --
+// parse_db_line treats '\r' as whitespace either way), so a CRLF
+// database parses exactly like the LF spelling.
+// ---------------------------------------------------------------------------
+TEST(dircolors, dircolors_opens_non_ascii_filename_issue1522) {
+  TempDir tmp;
+  const std::wstring name = L"\xFF.txt";
+  {
+    std::ofstream out(tmp.path / name, std::ios::binary);
+    out << "DIR 01;34\r\nFILE 00\r\n";
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_env(L"TERM", L"xterm");
+  p.add(L"dircolors.exe", {L"-b", name});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("LS_COLORS='di=01;34:fi=00:") !=
+              std::string::npos);
+}

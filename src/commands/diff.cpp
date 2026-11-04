@@ -96,16 +96,19 @@ auto constexpr DIFF_OPTIONS = std::array{
     OPTION("-q", "--brief", "report only when files differ"),
     OPTION("-s", "--report-identical-files",
            "report when two files are the same"),
+    // [GNU] #1521: context lengths parse with strtoimax and clamp
+    // (diff.c:358-367), so the band rides the unsigned declarations;
+    // negatives still store signed and keep the diagnostic below.
     OPTION("-c", "--context", "output NUM (default 3) lines of copied context",
-           OPTIONAL_INT_TYPE),
-    OPTION("-C", "", "output NUM lines of copied context", INT_TYPE),
+           OPTIONAL_UINT_TYPE),
+    OPTION("-C", "", "output NUM lines of copied context", UINT_TYPE),
     OPTION("-u", "--unified", "output NUM (default 3) lines of unified context",
-           OPTIONAL_INT_TYPE),
-    OPTION("-U", "", "output NUM lines of unified context", INT_TYPE),
+           OPTIONAL_UINT_TYPE),
+    OPTION("-U", "", "output NUM lines of unified context", UINT_TYPE),
     // [GNU] -NUM: digits inside a cluster or on their own set the
     // context length for -c/-u (diff -c5, -5c, -c -5); hidden like
     // split's -NUM (cmd_meta renders it as no help text).
-    OPTION("-NUM", "", "", INT_TYPE),
+    OPTION("-NUM", "", "", UINT_TYPE),
     OPTION("-e", "--ed", "output an ed script"),
     OPTION("-f", "--forward-ed", "output an ed script for the second file"),
     OPTION("-n", "--rcs", "output an RCS format diff"),
@@ -2130,11 +2133,26 @@ REGISTER_COMMAND(
     return true;
   };
 
+  // [GNU] #1521: a band context value arrives in the unsigned store;
+  // read occurrences through the saturating bridge (a bare
+  // get_if<int64_t> would silently drop the occurrence, the #1519
+  // trap). The bare -c/-u sentinel (-1) still arrives signed.
+  auto occurrence_int64 =
+      [](const auto &v) -> std::optional<std::int64_t> {
+    if (auto p = std::get_if<std::int64_t>(&v)) return *p;
+    if (auto p = std::get_if<std::uint64_t>(&v)) {
+      return static_cast<std::int64_t>(std::min(
+          *p, static_cast<std::uint64_t>(
+                  std::numeric_limits<std::int64_t>::max())));
+    }
+    return std::nullopt;
+  };
+
   for (const auto &occurrence : ctx.options.occurrences()) {
     if (!ctx.metas || occurrence.index >= ctx.metas->size()) continue;
     const auto &meta = (*ctx.metas)[occurrence.index];
     if (meta.short_name == "-NUM") {
-      auto value = std::get_if<std::int64_t>(&occurrence.value);
+      auto value = occurrence_int64(occurrence.value);
       if (value) {
         pending_context = *value;
         if (style_seen &&
@@ -2144,19 +2162,19 @@ REGISTER_COMMAND(
       }
     } else if (meta.short_name == "-u" || meta.long_name == "--unified") {
       if (!set_mode(Mode::Unified)) return 2;
-      auto value = std::get_if<std::int64_t>(&occurrence.value);
+      auto value = occurrence_int64(occurrence.value);
       if (value && !set_context(*value, "--unified", true)) return 1;
     } else if (meta.short_name == "-U") {
       if (!set_mode(Mode::Unified)) return 2;
-      auto value = std::get_if<std::int64_t>(&occurrence.value);
+      auto value = occurrence_int64(occurrence.value);
       if (value && !set_context(*value, "-U", false)) return 1;
     } else if (meta.short_name == "-c" || meta.long_name == "--context") {
       if (!set_mode(Mode::Context)) return 2;
-      auto value = std::get_if<std::int64_t>(&occurrence.value);
+      auto value = occurrence_int64(occurrence.value);
       if (value && !set_context(*value, "--context", true)) return 1;
     } else if (meta.short_name == "-C") {
       if (!set_mode(Mode::Context)) return 2;
-      auto value = std::get_if<std::int64_t>(&occurrence.value);
+      auto value = occurrence_int64(occurrence.value);
       if (value && !set_context(*value, "-C", false)) return 1;
     } else if (meta.short_name == "-y" || meta.long_name == "--side-by-side") {
       if (!set_mode(Mode::SideBySide)) return 2;

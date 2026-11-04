@@ -319,3 +319,26 @@ TEST(locate, locate_limit_negative_still_rejected_issue1519) {
   EXPECT_TRUE(r.stderr_text.find("invalid negative limit") !=
               std::string::npos);
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1523 (locate disposition): unlike uniq's size_opt, locate's
+// -l does NOT clamp on overflow -- locate.c:1677-1681 routes any
+// err != LONGINT_OK (LONGINT_OVERFLOW included) to xstrtol_fatal, so
+// a value past UINT64_MAX stays a parse error here. The asymmetry is
+// GNU's own, verified from findutils 4.9.0 source.
+// ---------------------------------------------------------------------------
+TEST(locate, locate_limit_above_uint64_still_errors_issue1523) {
+  TempDir tmp;
+  write_db(tmp, "db.txt", "C:/work/main.cpp\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"locate.exe",
+        {L"-d", L"db.txt", L"-l", L"18446744073709551616", L"cpp"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_TRUE(r.stderr_text.find("invalid argument "
+                                 "'18446744073709551616'") !=
+              std::string::npos);
+}

@@ -1135,6 +1135,7 @@ auto classify_args_for_dispatch(
     switch (meta->type) {
       case cmd::meta::OptionType::Int:
       case cmd::meta::OptionType::UInt:
+      case cmd::meta::OptionType::UIntClamp:
       case cmd::meta::OptionType::String:
         if (!has_inline_value && i + 1 < args.size()) {
           roles[++i] = ArgRole::Value;
@@ -1242,6 +1243,8 @@ auto classify_args_for_dispatch(
                      policy.allow_short_attached_values) ||
                     (m.type == cmd::meta::OptionType::UInt &&
                      policy.allow_short_attached_values) ||
+                    (m.type == cmd::meta::OptionType::UIntClamp &&
+                     policy.allow_short_attached_values) ||
                     (m.type == cmd::meta::OptionType::OptionalInt &&
                      policy.allow_optional_short_attached_values) ||
                     (m.type == cmd::meta::OptionType::OptionalUInt &&
@@ -1289,6 +1292,7 @@ auto classify_args_for_dispatch(
             break;
           case cmd::meta::OptionType::Int:
           case cmd::meta::OptionType::UInt:
+          case cmd::meta::OptionType::UIntClamp:
           case cmd::meta::OptionType::String:
             if (policy.allow_short_attached_values &&
                 pos + 1 < arg.size()) {

@@ -2211,3 +2211,58 @@ TEST(grep, grep_negative_context_still_errors_issue1509) {
   EXPECT_TRUE(r.stderr_text.find("-5: invalid context length argument") !=
               std::string::npos);
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1521: grep's -m and context options are xstrtoimax parsers
+// that accept LONGINT_OVERFLOW and clamp to INTMAX_MAX (grep.c:826-841
+// context_length_arg; grep.c:2681-2692 for -m): the (INT64_MAX,
+// UINT64_MAX] band must be accepted, not die in the shared parser.
+// ---------------------------------------------------------------------------
+TEST(grep, grep_max_count_unsigned_band_issue1521) {
+  TempDir tmp;
+  tmp.write("a.txt", "alpha\nbeta\nalpha\nalpha\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"grep.exe", {L"-m", L"9999999999999999999", L"alpha", L"a.txt"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "alpha\nalpha\nalpha\n");
+}
+
+TEST(grep, grep_context_unsigned_band_issue1521) {
+  TempDir tmp;
+  tmp.write("a.txt", "one\nneedle\ntwo\nthree\n");
+
+  Pipeline after;
+  after.set_cwd(tmp.wpath());
+  after.add(L"grep.exe",
+            {L"-A", L"9999999999999999999", L"needle", L"a.txt"});
+  auto ra = after.run();
+  EXPECT_EQ(ra.exit_code, 0);
+  EXPECT_EQ_TEXT(ra.stdout_text, "needle\ntwo\nthree\n");
+
+  Pipeline ctx;
+  ctx.set_cwd(tmp.wpath());
+  ctx.add(L"grep.exe",
+          {L"--context=18446744073709551615", L"needle", L"a.txt"});
+  auto rc = ctx.run();
+  EXPECT_EQ(rc.exit_code, 0);
+  EXPECT_EQ_TEXT(rc.stdout_text, "one\nneedle\ntwo\nthree\n");
+}
+
+TEST(grep, grep_negative_max_count_shape_kept_issue1521) {
+  TempDir tmp;
+  tmp.write("a.txt", "alpha\n");
+
+  // A band value must not disturb the signed store: -1 still parses
+  // as the signed sentinel the consumer has always seen.
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"grep.exe", {L"-B", L"-1", L"alpha", L"a.txt"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_TRUE(r.stderr_text.find("-1: invalid context length argument") !=
+              std::string::npos);
+}

@@ -621,7 +621,14 @@ auto run(const CommandContext<DIRCOLORS_OPTIONS.size()>& ctx) -> int {
     if (filename == "-") {
       ok = parse_db_stream(std::cin, filename, /*internal=*/false, entries);
     } else {
-      std::ifstream file(native_path::normalize_api_operand(filename));
+      // [GNU] #1522: open through the wide path operand (the narrow
+      // ctor decoded the UTF-8 name through the ANSI code page, the
+      // #342 class), but keep the stream in TEXT mode: parse_db_line
+      // treats '\r' as whitespace, so the CRLF translation this
+      // reader has always had is semantically invisible here, and
+      // dropping it (open_binary_file) would be an unforced change.
+      auto operand = native_path::make_api_path_operand(filename);
+      std::ifstream file(std::filesystem::path(operand.extended));
       if (!file) {
         safeErrorPrintLn("dircolors: '" + filename +
                          "': " + portable_digest::open_error_reason(filename));
