@@ -325,7 +325,11 @@ TEST(locate, locate_limit_negative_still_rejected_issue1519) {
 // -l does NOT clamp on overflow -- locate.c:1677-1681 routes any
 // err != LONGINT_OK (LONGINT_OVERFLOW included) to xstrtol_fatal, so
 // a value past UINT64_MAX stays a parse error here. The asymmetry is
-// GNU's own, verified from findutils 4.9.0 source.
+// GNU's own, verified from findutils 4.9.0 source. The exit status
+// is 1, not 2: xstrtol_fatal exits via gnulib's exit_failure
+// (EXIT_FAILURE), findutils' house value -- the original pin's 2
+// imported grep/diff's convention and was corrected by the captain
+// after the #1525 post-merge CI run showed the product exiting 1.
 // ---------------------------------------------------------------------------
 TEST(locate, locate_limit_above_uint64_still_errors_issue1523) {
   TempDir tmp;
@@ -337,7 +341,7 @@ TEST(locate, locate_limit_above_uint64_still_errors_issue1523) {
         {L"-d", L"db.txt", L"-l", L"18446744073709551616", L"cpp"});
 
   auto r = p.run();
-  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_EQ(r.exit_code, 1);
   EXPECT_TRUE(r.stderr_text.find("invalid argument "
                                  "'18446744073709551616'") !=
               std::string::npos);

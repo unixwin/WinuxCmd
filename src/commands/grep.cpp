@@ -154,9 +154,12 @@ auto constexpr GREP_OPTIONS = std::array{
     OPTION("-s", "--no-messages", "suppress error messages"),
     OPTION("-v", "--invert-match", "select non-matching lines"),
     // [GNU] #1521: -m is xstrtoimax with LONGINT_OVERFLOW accepted
-    // (grep.c:2681-2692), so the band clamps to INTMAX_MAX via the
-    // unsigned declaration; negatives still store signed.
-    OPTION("-m", "--max-count", "stop after NUM selected lines", UINT_TYPE),
+    // (grep.c:2681-2692), so it clamps to INTMAX_MAX via the clamp
+    // declaration — past UINT64_MAX included (captain adjudication
+    // closing #1521's residual: GNU's acceptance is unbounded);
+    // negatives still store signed.
+    OPTION("-m", "--max-count", "stop after NUM selected lines",
+           UINT_CLAMP_TYPE),
     OPTION("-b", "--byte-offset", "print the byte offset with output lines"),
     OPTION("-n", "--line-number", "print line number with output lines"),
     OPTION("", "--line-buffered", "flush output on every line"),
@@ -195,11 +198,12 @@ auto constexpr GREP_OPTIONS = std::array{
     // (grep.c:826-841, xstrtoimax, LONGINT_OVERFLOW accepted), the
     // same clamp family as -m.
     OPTION("-B", "--before-context", "print NUM lines of leading context",
-           UINT_TYPE),
+           UINT_CLAMP_TYPE),
     OPTION("-A", "--after-context", "print NUM lines of trailing context",
-           UINT_TYPE),
-    OPTION("-C", "--context", "print NUM lines of output context", UINT_TYPE),
-    OPTION("-NUM", "", "same as --context=NUM", UINT_TYPE),
+           UINT_CLAMP_TYPE),
+    OPTION("-C", "--context", "print NUM lines of output context",
+           UINT_CLAMP_TYPE),
+    OPTION("-NUM", "", "same as --context=NUM", UINT_CLAMP_TYPE),
     OPTION("", "--group-separator", "print separator between groups",
            STRING_TYPE),
     OPTION("", "--no-group-separator", "do not print group separator"),

@@ -2182,7 +2182,12 @@ TEST(grep, grep_context_above_int_max_issue1509) {
   EXPECT_EQ_TEXT(rc.stdout_text, "one\nneedle\ntwo\nthree\n");
 }
 
-TEST(grep, grep_count_above_int64_max_still_errors_issue1509) {
+// Captain adjudication on #1521's residual-of-residual (post-#1525
+// verification): GNU grep's acceptance is unbounded -- xstrtoimax
+// takes LONGINT_OVERFLOW and clamps (grep.c:2681-2692) -- so a value
+// past UINT64_MAX clamps like the band does; the original #1509 pin
+// asserted exit 2 and was wrong. -m now rides UINT_CLAMP_TYPE.
+TEST(grep, grep_count_above_uint64_clamps_issue1509) {
   TempDir tmp;
   tmp.write("a.txt", "alpha\n");
 
@@ -2192,10 +2197,8 @@ TEST(grep, grep_count_above_int64_max_still_errors_issue1509) {
         {L"-m", L"99999999999999999999999", L"alpha", L"a.txt"});
 
   auto r = p.run();
-  EXPECT_EQ(r.exit_code, 2);
-  EXPECT_TRUE(r.stderr_text.find("invalid argument "
-                                 "'99999999999999999999999'") !=
-              std::string::npos);
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "alpha\n");
 }
 
 TEST(grep, grep_negative_context_still_errors_issue1509) {
