@@ -97,18 +97,21 @@ auto constexpr DIFF_OPTIONS = std::array{
     OPTION("-s", "--report-identical-files",
            "report when two files are the same"),
     // [GNU] #1521: context lengths parse with strtoimax and clamp
-    // (diff.c:358-367), so the band rides the unsigned declarations;
-    // negatives still store signed and keep the diagnostic below.
+    // (diff.c:358-367): the valued forms ride the clamp declarations
+    // (past UINT64_MAX included, captain adjudication closing #1521's
+    // residual); the optional -c/-u rows stay OPTIONAL_UINT until an
+    // OptionalUIntClamp type exists (#1527); negatives still store
+    // signed and keep the diagnostic below.
     OPTION("-c", "--context", "output NUM (default 3) lines of copied context",
            OPTIONAL_UINT_TYPE),
-    OPTION("-C", "", "output NUM lines of copied context", UINT_TYPE),
+    OPTION("-C", "", "output NUM lines of copied context", UINT_CLAMP_TYPE),
     OPTION("-u", "--unified", "output NUM (default 3) lines of unified context",
            OPTIONAL_UINT_TYPE),
-    OPTION("-U", "", "output NUM lines of unified context", UINT_TYPE),
+    OPTION("-U", "", "output NUM lines of unified context", UINT_CLAMP_TYPE),
     // [GNU] -NUM: digits inside a cluster or on their own set the
     // context length for -c/-u (diff -c5, -5c, -c -5); hidden like
     // split's -NUM (cmd_meta renders it as no help text).
-    OPTION("-NUM", "", "", UINT_TYPE),
+    OPTION("-NUM", "", "", UINT_CLAMP_TYPE),
     OPTION("-e", "--ed", "output an ed script"),
     OPTION("-f", "--forward-ed", "output an ed script for the second file"),
     OPTION("-n", "--rcs", "output an RCS format diff"),

@@ -624,7 +624,12 @@ TEST(diff, diff_unified_context_above_int_max_issue1509) {
   EXPECT_TRUE(r.stdout_text.find("lineX") != std::string::npos);
 }
 
-TEST(diff, diff_unified_context_above_int64_max_still_errors_issue1509) {
+// Captain adjudication on #1521's residual-of-residual (post-#1525
+// verification): GNU diff clamps unboundedly too (strtoimax +
+// CONTEXT_MAX, diff.c:358-367), so a value past UINT64_MAX yields
+// the whole file as one hunk; the original #1509 pin asserted
+// exit 2 and was wrong. -U now rides UINT_CLAMP_TYPE.
+TEST(diff, diff_unified_context_above_uint64_clamps_issue1509) {
   TempDir tmp;
   tmp.write("file1.txt", "line1\n");
   tmp.write("file2.txt", "line2\n");
@@ -636,8 +641,9 @@ TEST(diff, diff_unified_context_above_int64_max_still_errors_issue1509) {
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 2);
-  EXPECT_TRUE(r.stderr_text.find("invalid argument") != std::string::npos);
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.find("@@ -1 +1 @@") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("line2") != std::string::npos);
 }
 
 // ---------------------------------------------------------------------------

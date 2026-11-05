@@ -55,14 +55,21 @@ TEST(hostname, hostname_long) {
 }
 
 // ---------------------------------------------------------------------------
-// Issue #1522: a -F FILE whose name is not ASCII (U+00FF) must open
-// through the wide path operand; the narrow std::ifstream ctor
-// decoded the UTF-8 spelling through the ANSI code page and the open
-// failed. The stream stays in TEXT mode: the first line is printed
-// verbatim, so a CRLF file must print without the '\r' -- that is
-// exactly what the text-mode translation has always produced.
+// Issue #1522, captain-corrected after the #1525 post-merge CI run:
+// hostname has NO live -F reader to fix. The applet models coreutils
+// hostname: build_config lists -F/--file in its unsupported-option
+// rejection table and never populates Config::file, so `hostname -F`
+// is rejected as an unknown option (exit 1, nothing on stdout) before
+// any file access, and the file branch in run() is unreachable. The
+// residuals lane's original pin asserted the file is read and
+// printed; CI showed exit 1 / empty stdout -- the rejection working
+// as designed. #1522's live narrow-ctor readers were dircolors and
+// hexdump (their pins stand). The remaining incoherence -- help
+// advertises -F while the parser rejects it and the read branch
+// sits dead -- is filed as #1526. This pin asserts the designed
+// rejection so the dead surface cannot silently change shape.
 // ---------------------------------------------------------------------------
-TEST(hostname, hostname_file_opens_non_ascii_filename_issue1522) {
+TEST(hostname, hostname_file_option_rejected_by_design_issue1522) {
   TempDir tmp;
   const std::wstring name = L"\xFF.txt";
   {
@@ -75,6 +82,6 @@ TEST(hostname, hostname_file_opens_non_ascii_filename_issue1522) {
   p.add(L"hostname.exe", {L"-F", name});
 
   auto r = p.run();
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "myhost\n");
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
 }
