@@ -495,6 +495,95 @@ auto format_package_alias_chain(const std::vector<std::string>& chain)
   return text;
 }
 
+// A bundle is an index entry that installs nothing of its own and names a
+// group of packages via `installs`: [...] — the toolchain-bundle shape the
+// `mingw`/`build-base` entries use. Expansion happens once at the install
+// entry points: the bundle name itself never reaches install_package (it has
+// no artifacts), members recurse with a visiting chain so bundles referencing
+// bundles cannot loop, and the result is deduplicated order-preserving so a
+// member listed twice (or already installed) is one download at most — the
+// per-package already_installed skip then makes re-runs free.
+constexpr size_t kMaxPackageBundleDepth = 4;
+
+struct ExpandedBundles {
+  std::vector<std::string> names;
+  bool ok = true;
+};
+
+auto package_bundle_members(const nlohmann::json& pkg)
+    -> std::vector<std::string> {
+  std::vector<std::string> members;
+  if (!pkg.contains("installs") || !pkg["installs"].is_array()) return members;
+  for (const auto& member : pkg["installs"]) {
+    if (member.is_string()) members.push_back(member.get<std::string>());
+  }
+  return members;
+}
+
+auto expand_package_bundles_impl(const nlohmann::json& index,
+                                 std::string_view name,
+                                 std::vector<std::string>& chain,
+                                 std::vector<std::string>& seen,
+                                 std::vector<std::string>& out) -> bool {
+  if (std::ranges::find(chain, name) != chain.end()) {
+    safeErrorPrintLn("wpm: '" + std::string(name) +
+                     "' is part of a bundle cycle: " +
+                     format_package_alias_chain(chain));
+    return false;
+  }
+  if (std::ranges::find(seen, name) != seen.end()) return true;
+  seen.push_back(std::string(name));
+  auto pkg = find_package(index, name);
+  if (!pkg) {
+    safeErrorPrintLn("wpm: bundle member not found in index: " +
+                     std::string(name));
+    return false;
+  }
+  const auto members = package_bundle_members(*pkg);
+  if (members.empty()) {
+    out.push_back(std::string(name));
+    return true;
+  }
+  std::string member_list;
+  for (const auto& member : members) {
+    if (!member_list.empty()) member_list += ", ";
+    member_list += member;
+  }
+  // [bundle] progress on stderr: install --json keeps stdout pure (#1156).
+  safeErrorPrintLn("wpm: '" + std::string(name) +
+                    "' is a bundle: installing " +
+                    member_list);
+  chain.push_back(std::string(name));
+  if (chain.size() > kMaxPackageBundleDepth) {
+    safeErrorPrintLn("wpm: bundle nesting too deep at '" + std::string(name) +
+                     "'");
+    chain.pop_back();
+    return false;
+  }
+  for (const auto& member : members) {
+    if (!expand_package_bundles_impl(index, member, chain, seen, out))
+      return false;
+  }
+  chain.pop_back();
+  return true;
+}
+
+// Expands bundle entries in the requested list, keeping order and dropping
+// duplicates. Returns std::nullopt after printing a diagnostic if any bundle
+// is malformed; the caller should fail that install.
+auto expand_package_bundles(const nlohmann::json& index,
+                            std::span<const std::string_view> packages)
+    -> std::optional<std::vector<std::string>> {
+  std::vector<std::string> out;
+  std::vector<std::string> seen;
+  for (const auto package : packages) {
+    std::vector<std::string> chain;
+    if (!expand_package_bundles_impl(index, package, chain, seen, out))
+      return std::nullopt;
+  }
+  return out;
+}
+
 auto detect_arch_key() -> std::string {
   SYSTEM_INFO info{};
   GetNativeSystemInfo(&info);
@@ -4126,6 +4215,37 @@ auto install_packages(const Options& opts,
                       std::span<const std::string_view> packages) -> int {
   int failed = 0;
   nlohmann::json results = nlohmann::json::array();
+  // [bundle] expand `installs: [...]` entries once up front: the bundle name
+  // itself never reaches install_package, members dedupe order-preserving,
+  // and already-installed members take the benign already_installed path.
+  std::optional<std::vector<std::string>> expanded;
+  {
+    auto index = load_index(opts.root);
+    expanded = expand_package_bundles(index, packages);
+  }
+  if (!expanded) {
+    // A bundle cycle / missing member / nesting overflow: report the named
+    // bundle(s) as failed instead of half-installing.
+    for (const auto package : packages) {
+      if (opts.json) {
+        nlohmann::json result = {{"name", std::string(package)},
+                                 {"status", "error"},
+                                 {"dry_run", opts.dry_run},
+                                 {"errors", nlohmann::json::array()}};
+        results.push_back(std::move(result));
+      }
+      ++failed;
+    }
+    if (opts.json) {
+      nlohmann::json payload = {
+          {"schema", 1}, {"results", std::move(results)}, {"failed", failed}};
+      safePrintLn(payload.dump(2));
+    }
+    return 1;
+  }
+  std::vector<std::string_view> expanded_views(expanded->begin(),
+                                               expanded->end());
+  packages = expanded_views;
   for (const auto package : packages) {
     nlohmann::json result;
     if (install_package(opts, package, opts.json ? &result : nullptr) != 0) {
@@ -5761,6 +5881,8 @@ auto show_info(const Options& opts, std::string_view name) -> int {
     payload["schema"] = 1;
     if (const auto target = package_alias_target(*pkg); !target.empty())
       payload["alias_of"] = target;
+    if (const auto members = package_bundle_members(*pkg); !members.empty())
+      payload["installs"] = members;
     safePrintLn(payload.dump(2));
     return 0;
   }
@@ -5768,6 +5890,14 @@ auto show_info(const Options& opts, std::string_view name) -> int {
   safePrintLn("Version: " + pkg->value("version", ""));
   if (const auto target = package_alias_target(*pkg); !target.empty())
     safePrintLn("Alias of: " + target);
+  if (const auto members = package_bundle_members(*pkg); !members.empty()) {
+    std::string list;
+    for (const auto& member : members) {
+      if (!list.empty()) list += ", ";
+      list += member;
+    }
+    safePrintLn("Bundle of: " + list);
+  }
   safePrintLn("Kind: " + pkg->value("kind", ""));
   safePrintLn("Category: " + pkg->value("category", ""));
   safePrintLn("License: " + pkg->value("license", ""));
