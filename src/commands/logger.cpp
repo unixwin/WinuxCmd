@@ -4,6 +4,8 @@
 /// @Version: 0.1.0
 /// @License: MIT
 
+#include <ctime>  // localtime_s; not transitively declared by the pch
+
 #include "core/command_macros.h"
 #include "pch/pch.h"
 
