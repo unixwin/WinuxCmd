@@ -2472,6 +2472,58 @@ std::string alias_fixture_index_json(const std::filesystem::path& artifact_path)
          "}\n";
 }
 
+// An index with two installable packages and a family of bundle entries
+// over them: a plain bundle, one listing a member twice, a nested bundle,
+// a cycle, a bundle naming a member the index does not contain, and a
+// bundle whose `installs` field is not a list.
+std::string bundle_fixture_index_json(
+    const std::filesystem::path& alpha_path,
+    const std::filesystem::path& beta_path) {
+  auto exe_entry = [](const std::string& name,
+                      const std::filesystem::path& artifact_path) {
+    return std::string("{\"name\":\"") + name +
+           "\",\"version\":\"1.0.0\","
+           "\"description\":\"bundle member\",\"kind\":\"external\","
+           "\"commands\":[\"" +
+           name + "\"],\"artifacts\":{\"" +
+           std::string(current_arch_key()) +
+           "\":{\"type\":\"exe\","
+           "\"sha256\":\"5140f4f6bf8b5691b7bccc1c4f00a2027dae00b2110d38a1e090a"
+           "f291226f322\",\"urls\":[\"" +
+           file_url(artifact_path) + "\"],\"files\":[{\"from\":\"" + name +
+           ".exe\",\"to\":\"" + name + ".exe\"}]}}}";
+  };
+  return std::string(
+             "{\n"
+             "  \"schema\": 1,\n"
+             "  \"name\": \"fixture\",\n"
+             "  \"version\": \"fixture-bundle\",\n"
+             "  \"packages\": [\n"
+             "    ") +
+         exe_entry("alpha", alpha_path) + ",\n    " +
+         exe_entry("beta", beta_path) +
+         ",\n"
+         "    {\"name\":\"toolkit\",\"version\":\"1.0.0\","
+         "\"description\":\"bundle of alpha and beta\",\"kind\":\"bundle\","
+         "\"installs\":[\"alpha\",\"beta\"]},\n"
+         "    {\"name\":\"dupkit\",\"version\":\"1.0.0\","
+         "\"kind\":\"bundle\",\"installs\":[\"alpha\",\"alpha\",\"beta\"]},\n"
+         "    {\"name\":\"inner\",\"version\":\"1.0.0\","
+         "\"kind\":\"bundle\",\"installs\":[\"alpha\"]},\n"
+         "    {\"name\":\"outer\",\"version\":\"1.0.0\","
+         "\"kind\":\"bundle\",\"installs\":[\"inner\",\"beta\"]},\n"
+         "    {\"name\":\"cycle-a\",\"version\":\"1.0.0\","
+         "\"kind\":\"bundle\",\"installs\":[\"cycle-b\"]},\n"
+         "    {\"name\":\"cycle-b\",\"version\":\"1.0.0\","
+         "\"kind\":\"bundle\",\"installs\":[\"cycle-a\"]},\n"
+         "    {\"name\":\"broken\",\"version\":\"1.0.0\","
+         "\"kind\":\"bundle\",\"installs\":[\"alpha\",\"ghost\"]},\n"
+         "    {\"name\":\"badlist\",\"version\":\"1.0.0\","
+         "\"kind\":\"bundle\",\"installs\":\"alpha\"}\n"
+         "  ]\n"
+         "}\n";
+}
+
 }  // namespace
 
 TEST(wpm, wpm_shim_map_points_at_a_non_conventional_payload) {
@@ -2579,6 +2631,190 @@ TEST(wpm, wpm_install_rejects_alias_cycles_and_missing_targets) {
   auto dangling_result = dangling.run();
   EXPECT_NE(dangling_result.exit_code, 0);
   EXPECT_CONTAINS(dangling_result.stderr_text, "is not in the index");
+}
+
+namespace {
+
+// Stages a root whose local index is the bundle fixture: two installable
+// packages (alpha, beta) plus the bundle family over them.
+auto stage_bundle_root(TempDir& tmp) -> void {
+  const auto alpha_path = tmp.path / L"source" / L"alpha.exe";
+  const auto beta_path = tmp.path / L"source" / L"beta.exe";
+  const auto root_exe = canonical_exe(tmp.path, L"winuxcmd.exe");
+  std::filesystem::create_directories(root_exe.parent_path());
+  std::filesystem::copy_file(build_winuxcmd_path(), root_exe,
+                             std::filesystem::copy_options::overwrite_existing);
+  tmp.write("source/alpha.exe", "external exe\n");
+  tmp.write("source/beta.exe", "external exe\n");
+  tmp.write(".wpm/indexes/official.json",
+            bundle_fixture_index_json(alpha_path, beta_path));
+}
+
+}  // namespace
+
+TEST(wpm, wpm_bundle_installs_its_members) {
+  TempDir tmp;
+  stage_bundle_root(tmp);
+
+  Pipeline install;
+  install.add(L"winuxcmd.exe",
+              {L"wpm", L"install", L"toolkit", L"--root", tmp.wpath()});
+  auto r = install.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_CONTAINS(r.stderr_text, "'toolkit' is a bundle: installing alpha, "
+                                 "beta");
+  EXPECT_CONTAINS(r.stdout_text, "requested=2 failed=0");
+  EXPECT_EQ(tmp.read("usr/bin/alpha.exe"), "external exe\n");
+  EXPECT_EQ(tmp.read("usr/bin/beta.exe"), "external exe\n");
+}
+
+TEST(wpm, wpm_bundle_dedupes_repeated_members) {
+  TempDir tmp;
+  stage_bundle_root(tmp);
+
+  // dupkit lists alpha twice: the expanded request is alpha + beta, once
+  // each, in first-seen order.
+  Pipeline install;
+  install.add(L"winuxcmd.exe",
+              {L"wpm", L"install", L"dupkit", L"--root", tmp.wpath()});
+  auto r = install.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_CONTAINS(r.stdout_text, "requested=2 failed=0");
+  EXPECT_EQ(tmp.read("usr/bin/alpha.exe"), "external exe\n");
+  EXPECT_EQ(tmp.read("usr/bin/beta.exe"), "external exe\n");
+}
+
+TEST(wpm, wpm_bundle_skips_members_already_installed) {
+  TempDir tmp;
+  stage_bundle_root(tmp);
+
+  Pipeline first;
+  first.add(L"winuxcmd.exe",
+            {L"wpm", L"install", L"alpha", L"--root", tmp.wpath()});
+  ASSERT_EQ(first.run().exit_code, 0);
+
+  Pipeline install;
+  install.add(L"winuxcmd.exe",
+              {L"wpm", L"install", L"toolkit", L"--root", tmp.wpath()});
+  auto r = install.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_CONTAINS(r.stdout_text, "already installed alpha");
+  EXPECT_CONTAINS(r.stdout_text, "requested=2 failed=0");
+  EXPECT_EQ(tmp.read("usr/bin/beta.exe"), "external exe\n");
+}
+
+TEST(wpm, wpm_bundle_nested_bundle_expands) {
+  TempDir tmp;
+  stage_bundle_root(tmp);
+
+  Pipeline install;
+  install.add(L"winuxcmd.exe",
+              {L"wpm", L"install", L"outer", L"--root", tmp.wpath()});
+  auto r = install.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_CONTAINS(r.stdout_text, "requested=2 failed=0");
+  EXPECT_EQ(tmp.read("usr/bin/alpha.exe"), "external exe\n");
+  EXPECT_EQ(tmp.read("usr/bin/beta.exe"), "external exe\n");
+}
+
+TEST(wpm, wpm_bundle_cycle_is_refused) {
+  TempDir tmp;
+  stage_bundle_root(tmp);
+
+  Pipeline install;
+  install.add(L"winuxcmd.exe",
+              {L"wpm", L"install", L"cycle-a", L"--root", tmp.wpath()});
+  auto r = install.run();
+  EXPECT_NE(r.exit_code, 0);
+  EXPECT_CONTAINS(r.stderr_text, "bundle cycle");
+  EXPECT_CONTAINS(r.stderr_text, "cycle-a -> cycle-b -> cycle-a");
+}
+
+TEST(wpm, wpm_bundle_missing_member_installs_nothing) {
+  TempDir tmp;
+  stage_bundle_root(tmp);
+
+  // A bundle naming a member the index does not contain is broken as a
+  // group: nothing from it installs, not even the resolvable members.
+  Pipeline install;
+  install.add(L"winuxcmd.exe",
+              {L"wpm", L"install", L"broken", L"--root", tmp.wpath()});
+  auto r = install.run();
+  EXPECT_NE(r.exit_code, 0);
+  EXPECT_CONTAINS(r.stderr_text, "bundle member not found in index: ghost");
+  EXPECT_FALSE(
+      std::filesystem::exists(tmp.path / L"usr" / L"bin" / L"alpha.exe"));
+}
+
+TEST(wpm, wpm_bundle_malformed_installs_list_is_rejected) {
+  TempDir tmp;
+  stage_bundle_root(tmp);
+
+  Pipeline install;
+  install.add(L"winuxcmd.exe",
+              {L"wpm", L"install", L"badlist", L"--root", tmp.wpath()});
+  auto r = install.run();
+  EXPECT_NE(r.exit_code, 0);
+  EXPECT_CONTAINS(r.stderr_text, "malformed 'installs' list");
+}
+
+TEST(wpm, wpm_install_batch_keeps_plain_names_out_of_bundle_expansion) {
+  TempDir tmp;
+  stage_bundle_root(tmp);
+
+  // The unknown name makes install refresh the index before it gives up;
+  // stage the same fixture as a configured source so that refresh lands
+  // on the fixture again instead of replacing it.
+  const auto index_path = tmp.path / L"fixture-bundle-index.json";
+  tmp.write("fixture-bundle-index.json",
+            bundle_fixture_index_json(tmp.path / L"source" / L"alpha.exe",
+                                      tmp.path / L"source" / L"beta.exe"));
+  Pipeline add;
+  add.add(L"winuxcmd.exe",
+          {L"wpm", L"source", L"add", L"fixture",
+           widen_ascii(file_url(index_path)), L"--root", tmp.wpath()});
+  EXPECT_EQ(add.run().exit_code, 0);
+  Pipeline use;
+  use.add(L"winuxcmd.exe",
+          {L"wpm", L"source", L"use", L"fixture", L"--root", tmp.wpath()});
+  EXPECT_EQ(use.run().exit_code, 0);
+
+  // Regression pin: bundle expansion must not intercept plain names. A
+  // batch mixing a bundle with an unknown package installs the bundle's
+  // members and reports the unknown name through the canonical
+  // install_package diagnostic — never as a "bundle member".
+  Pipeline install;
+  install.add(L"winuxcmd.exe", {L"wpm", L"install", L"toolkit", L"nosuch",
+                                L"--root", tmp.wpath()});
+  auto r = install.run();
+  EXPECT_NE(r.exit_code, 0);
+  EXPECT_EQ(tmp.read("usr/bin/alpha.exe"), "external exe\n");
+  EXPECT_EQ(tmp.read("usr/bin/beta.exe"), "external exe\n");
+  EXPECT_CONTAINS(r.stderr_text,
+                  "package not found after index update: nosuch");
+  EXPECT_NOT_CONTAINS(r.stderr_text, "bundle member not found");
+  EXPECT_CONTAINS(r.stdout_text, "requested=3 failed=1");
+}
+
+TEST(wpm, wpm_info_reports_bundle_members) {
+  TempDir tmp;
+  stage_bundle_root(tmp);
+
+  Pipeline info;
+  info.add(L"winuxcmd.exe",
+           {L"wpm", L"info", L"toolkit", L"--root", tmp.wpath()});
+  auto r = info.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_CONTAINS(r.stdout_text, "Bundle of: alpha, beta");
+
+  Pipeline info_json;
+  info_json.add(L"winuxcmd.exe", {L"wpm", L"info", L"--json", L"toolkit",
+                                  L"--root", tmp.wpath()});
+  auto json_result = info_json.run();
+  EXPECT_EQ(json_result.exit_code, 0);
+  EXPECT_CONTAINS(json_result.stdout_text, "\"installs\"");
+  EXPECT_CONTAINS(json_result.stdout_text, "\"alpha\"");
+  EXPECT_CONTAINS(json_result.stdout_text, "\"beta\"");
 }
 
 TEST(wpm, wpm_outdated_uses_receipt_version_after_index_update) {
