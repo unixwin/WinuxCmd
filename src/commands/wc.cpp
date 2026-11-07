@@ -512,36 +512,84 @@ auto count_stream(std::istream& input, std::string filename,
   auto process_buffer = [&](std::string_view data, bool final_chunk) {
     size_t i = 0;
     while (i < data.size()) {
+      // [perf] 7-bit ASCII fast loop: while the buffer stays ASCII,
+      // consume_codepoint's per-byte call, its switch dispatch, and the
+      // is_word_separator/is_nonprintable calls all collapse to fixed
+      // ASCII arms — printable 0x21..0x7E is bulk-accounted (+1 char,
+      // +1 width, word constituent; identical to the run path it
+      // replaces), whitespace and controls take the ASCII arms of
+      // consume_codepoint spelled out below, and every remaining C0
+      // control plus DEL only counts one character (-m) while staying
+      // word-transparent with width 0. The loop stops at the first
+      // byte >= 0x80 and hands it to the multibyte decoder below, so a
+      // mixed file pays one scan pass over its ASCII stretches and the
+      // pure-ASCII file pays no decoding at all. Word, line, char and
+      // width state are the same variables the per-codepoint path
+      // uses, so resuming after a multibyte sequence is exact.
+      size_t j = i;
+      while (j < data.size()) {
+        const unsigned char c = static_cast<unsigned char>(data[j]);
+        if (c >= 0x80) break;
+        if (c >= 0x21 && c <= 0x7E) {
+          // Printable non-space run: purely additive per byte in
+          // consume_codepoint — one char each, display width 1 each,
+          // word state that only the span's first byte can change.
+          size_t k = j + 1;
+          while (k < data.size()) {
+            const unsigned char next = static_cast<unsigned char>(data[k]);
+            if (next < 0x21 || next > 0x7E) break;
+            ++k;
+          }
+          const size_t run = k - j;
+          if (request.chars) result.chars += run;
+          if (request.max_line_length) current_line_length += run;
+          if (request.words && !in_word) {
+            ++result.words;
+            in_word = true;
+          }
+          j = k;
+          continue;
+        }
+        // ASCII whitespace/control: one character (-m) plus the
+        // matching arm of consume_codepoint's switch.
+        if (request.chars) ++result.chars;
+        switch (c) {
+          case 0x0A:
+            if (request.lines) ++result.lines;
+            finish_display_line();
+            reset_word();
+            break;
+          case 0x0D:
+          case 0x0C:
+            finish_display_line();
+            reset_word();
+            break;
+          case 0x09:
+            if (request.max_line_length) {
+              current_line_length += 8 - (current_line_length % 8);
+            }
+            reset_word();
+            break;
+          case 0x20:
+            if (request.max_line_length) ++current_line_length;
+            reset_word();
+            break;
+          case 0x0B:
+            reset_word();
+            break;
+          default:
+            // Remaining C0 controls and DEL: is_word_separator is
+            // false below 0x80 and is_nonprintable is true, so the
+            // generic arm neither starts nor widens anything.
+            break;
+        }
+        ++j;
+      }
+      i = j;
+      if (i >= data.size()) break;
+      // The ASCII loop exits only on a byte >= 0x80; this arm is the
+      // multibyte decoder it defers to.
       const unsigned char first = static_cast<unsigned char>(data[i]);
-      if (first >= 0x21 && first <= 0x7E) {
-        // [perf #1127-P4] ASCII-run fast path (roadmap item 4): a span of
-        // printable non-space ASCII has a purely additive per-byte effect
-        // in consume_codepoint — one char each, display width 1 each,
-        // and word state that only the span's first byte can change — so
-        // the span is accounted in bulk. Every byte outside 0x21..0x7E
-        // (whitespace, controls, UTF-8 leads) keeps the exact
-        // per-codepoint path below.
-        size_t j = i + 1;
-        while (j < data.size()) {
-          const unsigned char next = static_cast<unsigned char>(data[j]);
-          if (next < 0x21 || next > 0x7E) break;
-          ++j;
-        }
-        const size_t run = j - i;
-        if (request.chars) result.chars += run;
-        if (request.max_line_length) current_line_length += run;
-        if (request.words && !in_word) {
-          ++result.words;
-          in_word = true;
-        }
-        i = j;
-        continue;
-      }
-      if (first < 0x80) {
-        consume_codepoint(first, true);
-        ++i;
-        continue;
-      }
       const size_t expected = utf8_expected_bytes(first);
       if (!final_chunk && expected > data.size() - i) {
         carry.assign(data.substr(i));

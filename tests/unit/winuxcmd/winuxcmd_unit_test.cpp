@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 caomengxuan666 <caomengxuan666@users.noreply.github.com>
 #include <algorithm>
+#include <cstdio>
 #include <ctime>
 #include <iterator>
 #include <numeric>
@@ -539,6 +540,73 @@ TEST(winuxcmd, i18n_catalog_found_at_wpm_install_root) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.find("USAGE-I18N-PROBE:") != std::string::npos);
+}
+
+// FNV-1a digest of a translated literal, i.e. exactly the key derivation
+// scripts/i18n_batch.py and utils/i18n.cppm's legacy_key share.
+namespace {
+std::string legacy_probe_key(const std::string& text) {
+  unsigned long long hash = 14695981039346656037ull;
+  for (const char ch : text) {
+    hash ^= static_cast<unsigned char>(ch);
+    hash *= 1099511628211ull;
+  }
+  char buf[32];
+  std::snprintf(buf, sizeof(buf), "%016llx", hash);
+  return std::string("legacy.") + buf;
+}
+}  // namespace
+
+// The legacy-translation length gate (perf): catalog keys are digests of
+// short source literals, so bulk output (a cat chunk) can never be a key
+// and must pass through verbatim even when the catalog carries the digest
+// of that very text as a key, while short output under the gate still
+// translates.
+TEST(winuxcmd, i18n_legacy_length_gate_bulk_output_stays_verbatim) {
+  TempDir root;
+  const auto exe_src = ProjectPaths::exe(L"winuxcmd.exe");
+  ASSERT_TRUE(std::filesystem::exists(exe_src));
+
+  root.mkdir("usr/bin");
+  std::filesystem::copy_file(exe_src,
+                             root.path / "usr" / "bin" / "winuxcmd.exe",
+                             std::filesystem::copy_options::overwrite_existing);
+
+  // 300 bytes: over the 256-byte key gate, far under cat's 64 KiB chunk
+  // size, so cat reaches safePrint as a single oversized call.
+  const std::string bulk(300, 'A');
+  const std::string catalog =
+      "{\"messages\": {\"" + legacy_probe_key("1") +
+      "\": \"ONE-TRANSLATED\", \"" + legacy_probe_key(bulk) +
+      "\": \"BULK-TRANSLATED\"}}";
+  root.write(".wpm/i18n/zh-CN/catalog.json", catalog);
+  root.write("bulk.txt", bulk);
+
+  // Short output under the gate still translates: wc prints its stdin
+  // count line "1" through safePrintLn -> translate_legacy.
+  {
+    Pipeline p;
+    p.set_env(L"WINUX_LANG", L"zh-CN");
+    p.set_stdin("x\n");
+    p.add((root.path / "usr" / "bin" / "winuxcmd.exe").wstring(),
+          {L"wc", L"-l"});
+    auto r = p.run();
+    EXPECT_EQ(r.exit_code, 0);
+    EXPECT_EQ_TEXT(r.stdout_text, "ONE-TRANSLATED\n");
+  }
+
+  // Bulk output over the gate never translates, catalog key present or not.
+  {
+    Pipeline p;
+    p.set_env(L"WINUX_LANG", L"zh-CN");
+    p.set_cwd(root.wpath());
+    p.add((root.path / "usr" / "bin" / "winuxcmd.exe").wstring(),
+          {L"cat", L"bulk.txt"});
+    auto r = p.run();
+    EXPECT_EQ(r.exit_code, 0);
+    EXPECT_EQ_TEXT(r.stdout_text, bulk);
+    EXPECT_TRUE(r.stdout_text.find("BULK-TRANSLATED") == std::string::npos);
+  }
 }
 
 // ---- bare `winuxcmd` output redesign (#1155) ----

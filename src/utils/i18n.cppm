@@ -73,6 +73,19 @@ std::string legacy_key(std::string_view text) {
   return "legacy." + std::format("{:016x}", hash);
 }
 
+// Class invariant of the legacy catalog: keys are FNV-1a digests of literals
+// extracted from source by scripts/i18n_batch.py, which only scans string
+// literals sitting directly inside safePrint/safeErrorPrint/std::unexpected
+// calls. The longest such literal in the tree today is 92 bytes (verified by
+// re-running the extraction regex over src/), so any text longer than this
+// can never match a catalog entry. A larger buffer — e.g. cat's 64 KiB
+// passthrough chunk — would pay two full passes (FNV-1a byte loop plus the
+// fallback copy) and three heap allocations per chunk for a lookup that is
+// guaranteed to miss, so it falls back verbatim. This is a property of the
+// catalog format, not a symptom blacklist: nothing outside the extraction
+// tool ever writes a legacy.* key.
+constexpr size_t kMaxLegacyKeyTextLength = 256;
+
 std::string normalize_locale(std::string locale) {
   for (char& ch : locale) {
     if (ch == '_') ch = '-';
@@ -620,6 +633,9 @@ export std::string translate_help_hint(std::string_view text) {
 }
 
 export std::string translate_legacy(std::string_view text) {
+  // Length gate (see kMaxLegacyKeyTextLength): over the limit the lookup is
+  // guaranteed to miss, so return the fallback verbatim without hashing.
+  if (text.size() > kMaxLegacyKeyTextLength) return std::string(text);
   return translate(legacy_key(text), text);
 }
 
