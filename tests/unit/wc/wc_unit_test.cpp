@@ -593,3 +593,62 @@ TEST(wc, wc_reports_is_a_directory_for_directory_input) {
   EXPECT_TRUE(r.stderr_text.find("wc: indir: Is a directory") !=
               std::string::npos);
 }
+
+// [perf] 7-bit ASCII fast loop: the tight scanner must reproduce the
+// ASCII arms of the per-codepoint path exactly. Every C0 control keeps
+// its consume_codepoint effect: \n counts a line and closes a display
+// line, \r and \f close a display line, \t expands to the next tab
+// stop for -L, space adds one column, \v only breaks words, DEL and
+// the remaining C0 controls count one character (-m) but are
+// word-transparent with width 0 ("e\x7Ff" stays ONE word).
+TEST(wc, wc_ascii_fast_path_controls_word_and_width_exact) {
+  Pipeline p;
+  // "e\x7F" "f\n": the split keeps \x7F from lexing as hex escape \x7Ff.
+  p.set_stdin("ab\vc\fd\r\ne\x7F" "f\n");
+  p.add(L"wc.exe", {L"-l", L"-w", L"-m", L"-c", L"-L"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "      2       4      12      12       3\n");
+}
+
+// [perf] The fast loop hands a byte >= 0x80 to the multibyte decoder and
+// resumes afterwards, so a multibyte character continues the word it
+// lands in, and one carried across the 64 KiB read boundary (the \xC3
+// at chunk end) still counts once for -m.
+TEST(wc, wc_ascii_fast_path_multibyte_inside_and_across_chunks) {
+  // 65535 'a' fill chunk 1; the \xC3 of the split U+00E9 is byte 65536.
+  std::string input(65535, 'a');
+  input += "\xC3\xA9\nbbb\n";
+
+  Pipeline long_input;
+  long_input.set_stdin(input);
+  long_input.add(L"wc.exe", {L"-w", L"-m", L"-c"});
+  auto long_result = long_input.run();
+
+  Pipeline inline_multibyte;
+  inline_multibyte.set_stdin("word\xe4\xb8\xadword\n");
+  inline_multibyte.add(L"wc.exe", {L"-w", L"-m", L"-c"});
+  auto inline_result = inline_multibyte.run();
+
+  EXPECT_EQ(long_result.exit_code, 0);
+  EXPECT_EQ_TEXT(long_result.stdout_text, "      2   65541   65542\n");
+  EXPECT_EQ(inline_result.exit_code, 0);
+  EXPECT_EQ_TEXT(inline_result.stdout_text, "      1      10      12\n");
+}
+
+// [perf] -L over the fast path: tab-stop expansion and wide-character
+// widths must match the per-codepoint path (a=1 col, \t to col 8,
+// U+4E2D is wide = 2 cols).
+TEST(wc, wc_ascii_fast_path_max_line_width_tabs_and_wide_chars) {
+  Pipeline width;
+  width.set_stdin("a\t\xe4\xb8\xad\n");
+  width.add(L"wc.exe", {L"-L", L"-m", L"-c"});
+  auto width_result = width.run();
+
+  EXPECT_EQ(width_result.exit_code, 0);
+  // Field order is fixed (chars, bytes, max line length) regardless of the
+  // option order on the command line.
+  EXPECT_EQ_TEXT(width_result.stdout_text, "      4       6      10\n");
+}
