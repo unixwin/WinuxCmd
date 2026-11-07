@@ -649,6 +649,13 @@ class Pattern {
     if (engine_ == Engine::Pcre2) return pcre2_find(text, start, true);
 #endif
 
+    // Necessary conditions for a match anchored at `start`; when they fail
+    // up front the interpreter attempt cannot succeed either (fast_).
+    if (fast_.anchored && start > 0) return std::nullopt;
+    if (!fast_.prefix.empty() && !prefix_matches_at(text, start)) {
+      return std::nullopt;
+    }
+
     StepBudget budget;
     auto states = match_node(root_, text, make_initial_state(start), budget);
     if (budget.exceeded) {
@@ -671,6 +678,66 @@ class Pattern {
 #endif
 
     StepBudget budget;
+
+    if (fast_.anchored) {
+      // Every possible match begins at absolute position 0, and state
+      // positions are absolute: only the attempt at `start` == 0 can
+      // succeed, and no attempt at all can when start > 0.
+      if (start > 0) return std::nullopt;
+      return local_attempt(text, 0, budget);
+    }
+
+    if (fast_.pure_literal) {
+      // The whole pattern is a literal run: a prefix candidate is the
+      // match, no interpreter attempt needed. This is byte-identical to
+      // local_attempt's result for a literal-only tree (spans and group 0).
+      for (size_t cursor = start; cursor <= text.size();) {
+        const size_t pos = find_prefix_candidate(text, cursor);
+        if (pos == std::string_view::npos) return std::nullopt;
+        Match match;
+        match.begin = pos;
+        match.end = pos + fast_.prefix.size();
+        match.captures.assign(
+            1, Submatch{pos, match.end, true});
+        return match;
+      }
+      return std::nullopt;
+    }
+
+    if (!fast_.prefix.empty()) {
+      // memchr-jump between the positions the required literal prefix
+      // rules in, instead of attempting the interpreter everywhere.
+      for (size_t cursor = start; cursor <= text.size();) {
+        const size_t pos = find_prefix_candidate(text, cursor);
+        if (pos == std::string_view::npos) return std::nullopt;
+        auto attempt = local_attempt(text, pos, budget);
+        if (budget.exceeded || attempt.has_value()) return attempt;
+        cursor = pos + 1;
+      }
+      return std::nullopt;
+    }
+
+    if (!fast_.first_any) {
+      // Same traversal as the legacy loop below, but the interpreter runs
+      // only where the first consumed byte may satisfy the pattern.
+      for (size_t cursor = start; cursor <= text.size();) {
+        if (cursor < text.size() &&
+            fast_.first[static_cast<unsigned char>(text[cursor])]) {
+          auto attempt = local_attempt(text, cursor, budget);
+          if (budget.exceeded || attempt.has_value()) return attempt;
+        }
+        ++cursor;
+        // Do not restart mid-codepoint: a continuation byte is never a
+        // character boundary, so trying it would let `.` slice UTF-8.
+        while (cursor < text.size() &&
+               detail::utf8_continuation(
+                   static_cast<unsigned char>(text[cursor]))) {
+          ++cursor;
+        }
+      }
+      return std::nullopt;
+    }
+
     for (size_t cursor = start; cursor <= text.size();) {
       auto states = match_node(root_, text, make_initial_state(cursor), budget);
       if (budget.exceeded) {
@@ -720,6 +787,8 @@ class Pattern {
       return match && match->begin == 0 && match->end == text.size();
     }
 #endif
+    // A full match must begin with the required literal prefix (fast_).
+    if (!fast_.prefix.empty() && !prefix_matches_at(text, 0)) return false;
     StepBudget budget;
     auto states = match_node(root_, text, make_initial_state(0), budget);
     if (budget.exceeded) {
@@ -1174,6 +1243,361 @@ class Pattern {
     if (budget.exceeded) return {};
     return out;  // incrementally deduplicated by push_unique
   }
+
+  // --- Default-path acceleration (WinuxCmd #1531) -----------------------
+  //
+  // The local engine used to attempt a full parse at EVERY position of
+  // find_first, each attempt allocating result vectors, so literal patterns
+  // like `fox` scanned lines tens of times slower than the -F fixed-string
+  // path. GNU grep drives its matchers with literal / character-set
+  // prefilters computed at compile time (kwset / dfa "must" analysis); we
+  // mirror that at engine level so every local-engine consumer (grep
+  // BRE/ERE, sed, expr, find, ...) gets it from the same parsed node tree -
+  // no text-layer re-lexing, so the fast path cannot diverge from the
+  // interpreter that still validates every candidate:
+  //
+  //  - anchored: the pattern's first consumable element is '^', so every
+  //    possible match begins at absolute position 0 (AnchorStart compares
+  //    absolute positions). find_first needs the single attempt at 0 and
+  //    none when start > 0.
+  //  - prefix: bytes every match MUST begin with (a run of Literal nodes,
+  //    single-member classes, {m} expansions of literal bodies, zero-width
+  //    assertions skipped). find_first memchr-jumps between candidates and
+  //    runs the interpreter only there; match_at / matches_entire reject
+  //    up front. Legacy traversal attempts `start` and then, after every
+  //    failed attempt, the next non-UTF-8-continuation byte; candidates
+  //    from a prefix whose first byte is ASCII or a lead byte always sit
+  //    on such positions, so skipping non-candidates cannot change which
+  //    positions get attempted (a continuation-range first byte is
+  //    rejected in build_fast_path for exactly that reason).
+  //  - first: 256-bit set of bytes a match's first consumed byte may be.
+  //    Positions outside the set always fail; the scan keeps the legacy
+  //    advance rule and only skips the (futile) interpreter attempt.
+  //
+  // All three are necessary conditions, never sufficient: every candidate
+  // still goes through the unmodified interpreter. Anything not modeled
+  // (alternations, backreferences, dot, patterns that can match empty,
+  // first sets dense enough to be useless) falls back to the legacy scan.
+  struct FastPath {
+    bool anchored = false;
+    bool first_any = true;
+    bool pure_literal = false;
+    std::string prefix;
+    std::array<bool, 256> first{};
+  };
+  FastPath fast_;
+
+  static constexpr size_t kMaxFastPrefix = 32;
+  static constexpr size_t kNotPureLiteral = static_cast<size_t>(-1);
+
+  // Byte length iff the whole subtree is a chain of Literal nodes (no
+  // anchors, no captures, no classes) - the whitelist condition under which
+  // a prefix candidate IS the match, byte-for-byte what the interpreter
+  // would report. Anything else falls back to the interpreter.
+  [[nodiscard]] auto pure_literal_length(size_t node_id) const -> size_t {
+    if (node_id >= nodes_.size()) return kNotPureLiteral;
+    const auto& node = nodes_[node_id];
+    switch (node.kind) {
+      case detail::NodeKind::Literal:
+        return 1;
+      case detail::NodeKind::Sequence: {
+        size_t total = 0;
+        for (size_t child : node.children) {
+          const size_t len = pure_literal_length(child);
+          if (len == kNotPureLiteral) return kNotPureLiteral;
+          total += len;
+        }
+        return total;
+      }
+      default:
+        return kNotPureLiteral;
+    }
+  }
+
+  // Exact per-byte replication of class_matches() over all 256 byte values.
+  [[nodiscard]] auto expand_class_set(const detail::Node& node) const
+      -> std::array<bool, 256> {
+    std::array<bool, 256> set{};
+    for (int byte = 0; byte < 256; ++byte) {
+      if (class_matches(node,
+                        static_cast<char>(static_cast<unsigned char>(byte)))) {
+        set[static_cast<size_t>(byte)] = true;
+      }
+    }
+    return set;
+  }
+
+  // Bytes t satisfying chars_equal(t, ch) - the engine's own literal rule.
+  [[nodiscard]] auto literal_byte_set(char ch) const
+      -> std::array<bool, 256> {
+    std::array<bool, 256> set{};
+    if (!ignore_case_) {
+      set[static_cast<unsigned char>(ch)] = true;
+      return set;
+    }
+    const char folded = detail::fold_ascii(ch);
+    set[static_cast<unsigned char>(folded)] = true;
+    if (std::isalpha(static_cast<unsigned char>(folded))) {
+      set[static_cast<unsigned char>(
+          std::toupper(static_cast<unsigned char>(folded)))] = true;
+    }
+    return set;
+  }
+
+  struct FirstInfo {
+    std::array<bool, 256> bytes{};
+    bool any = false;
+    bool can_be_empty = false;
+  };
+
+  // True iff every possible match of the node begins at absolute position
+  // 0, i.e. the first thing it can consume-or-assert is AnchorStart.
+  [[nodiscard]] auto analyze_anchored(size_t node_id) const -> bool {
+    if (node_id >= nodes_.size()) return false;
+    const auto& node = nodes_[node_id];
+    switch (node.kind) {
+      case detail::NodeKind::AnchorStart:
+        return true;
+      case detail::NodeKind::Empty:
+        return false;
+      case detail::NodeKind::Capture:
+        return analyze_anchored(node.child);
+      case detail::NodeKind::Sequence:
+        for (size_t child : node.children) {
+          if (nodes_[child].kind == detail::NodeKind::Empty) continue;
+          return analyze_anchored(child);
+        }
+        return false;
+      case detail::NodeKind::Alternation:
+        return std::ranges::all_of(node.children,
+                                   [this](size_t child) {
+                                     return analyze_anchored(child);
+                                   });
+      default:
+        return false;
+    }
+  }
+
+  [[nodiscard]] auto analyze_first(size_t node_id) const -> FirstInfo {
+    FirstInfo info;
+    if (node_id >= nodes_.size()) {
+      info.can_be_empty = true;
+      return info;
+    }
+    const auto& node = nodes_[node_id];
+    switch (node.kind) {
+      case detail::NodeKind::Empty:
+      case detail::NodeKind::AnchorStart:
+      case detail::NodeKind::AnchorEnd:
+      case detail::NodeKind::WordStart:
+      case detail::NodeKind::WordEnd:
+      case detail::NodeKind::WordBoundary:
+      case detail::NodeKind::WordBoundaryNot:
+        info.can_be_empty = true;
+        return info;
+      case detail::NodeKind::Literal:
+        info.bytes = literal_byte_set(node.literal);
+        return info;
+      case detail::NodeKind::Dot:
+        info.any = true;
+        return info;
+      case detail::NodeKind::CharClass:
+        info.bytes = expand_class_set(node);
+        return info;
+      case detail::NodeKind::Sequence: {
+        bool all_empty = true;
+        for (size_t child : node.children) {
+          auto sub = analyze_first(child);
+          for (size_t b = 0; b < 256; ++b) {
+            info.bytes[b] = info.bytes[b] || sub.bytes[b];
+          }
+          info.any = info.any || sub.any;
+          if (!sub.can_be_empty) {
+            all_empty = false;
+            break;
+          }
+        }
+        info.can_be_empty = all_empty;
+        return info;
+      }
+      case detail::NodeKind::Alternation:
+        for (size_t child : node.children) {
+          auto sub = analyze_first(child);
+          for (size_t b = 0; b < 256; ++b) {
+            info.bytes[b] = info.bytes[b] || sub.bytes[b];
+          }
+          info.any = info.any || sub.any;
+          info.can_be_empty = info.can_be_empty || sub.can_be_empty;
+        }
+        return info;
+      case detail::NodeKind::Capture:
+        return analyze_first(node.child);
+      case detail::NodeKind::BackReference:
+        // Matches an unknown (possibly empty, possibly arbitrary) span.
+        info.any = true;
+        info.can_be_empty = true;
+        return info;
+      case detail::NodeKind::Repeat: {
+        auto sub = analyze_first(node.child);
+        info.bytes = sub.bytes;
+        info.any = sub.any;
+        info.can_be_empty = node.min_repeat == 0 || sub.can_be_empty;
+        return info;
+      }
+    }
+    info.can_be_empty = true;
+    return info;
+  }
+
+  // Appends the literal bytes every match must begin with. Returns false
+  // when the walk hit a construct that breaks the fixed byte run (or the
+  // cap was reached); the prefix accumulated so far stays valid either way.
+  [[nodiscard]] auto extract_required_prefix(size_t node_id,
+                                             std::string& out) const -> bool {
+    if (node_id >= nodes_.size()) return false;
+    if (out.size() >= kMaxFastPrefix) return false;
+    const auto& node = nodes_[node_id];
+    switch (node.kind) {
+      case detail::NodeKind::Literal:
+        out.push_back(node.literal);
+        return out.size() < kMaxFastPrefix;
+      case detail::NodeKind::Empty:
+      case detail::NodeKind::AnchorStart:
+      case detail::NodeKind::AnchorEnd:
+      case detail::NodeKind::WordStart:
+      case detail::NodeKind::WordEnd:
+      case detail::NodeKind::WordBoundary:
+      case detail::NodeKind::WordBoundaryNot:
+        // Zero-width: the bytes before and after stay consecutive.
+        return true;
+      case detail::NodeKind::Capture:
+        return extract_required_prefix(node.child, out);
+      case detail::NodeKind::CharClass: {
+        auto set = expand_class_set(node);
+        size_t hits = 0;
+        size_t only = 0;
+        for (size_t b = 0; b < 256; ++b) {
+          if (set[b]) {
+            ++hits;
+            only = b;
+          }
+        }
+        if (hits != 1) return false;
+        out.push_back(static_cast<char>(only));
+        return out.size() < kMaxFastPrefix;
+      }
+      case detail::NodeKind::Sequence:
+        for (size_t child : node.children) {
+          if (!extract_required_prefix(child, out)) return false;
+        }
+        return true;
+      case detail::NodeKind::Repeat: {
+        // {m,} / {m,n} of a literal body requires m fixed copies at the
+        // start (a{3}, (ab){2}); everything past the minimum is variable,
+        // so the walk stops after appending them.
+        if (node.min_repeat <= 0) return false;
+        const size_t start = out.size();
+        if (!extract_required_prefix(node.child, out)) return false;
+        const std::string segment = out.substr(start);
+        if (segment.empty()) return false;
+        for (int copy = 1;
+             copy < node.min_repeat && out.size() < kMaxFastPrefix; ++copy) {
+          out += segment;
+        }
+        return false;
+      }
+      default:
+        // Dot, Alternation, BackReference.
+        return false;
+    }
+  }
+
+  auto build_fast_path() -> void {
+    fast_ = FastPath{};
+    fast_.anchored = analyze_anchored(root_);
+    const FirstInfo info = analyze_first(root_);
+    fast_.first = info.bytes;
+    // A pattern that can match empty yields a match at every position; a
+    // first-byte scan would miss those empty matches, so fall back.
+    fast_.first_any = info.any || info.can_be_empty;
+
+    std::string prefix;
+    extract_required_prefix(root_, prefix);
+    if (!prefix.empty()) {
+      const auto c0 = static_cast<unsigned char>(prefix[0]);
+      if (c0 >= 0x80 && c0 < 0xC0) {
+        // A continuation-range first byte would place candidates on
+        // positions the legacy traversal never attempts (it skips UTF-8
+        // continuation runs after each failed attempt); keep the plain scan.
+        prefix.clear();
+      }
+    }
+    fast_.prefix = std::move(prefix);
+
+    if (capture_count_ == 0 && !fast_.prefix.empty()) {
+      const size_t literal_len = pure_literal_length(root_);
+      fast_.pure_literal =
+          literal_len != kNotPureLiteral && literal_len <= kMaxFastPrefix &&
+          literal_len == fast_.prefix.size();
+    }
+  }
+
+  // Prefix bytes must appear at `pos` under the engine's own comparison
+  // rule (chars_equal folds ASCII under ignore_case).
+  [[nodiscard]] auto prefix_matches_at(std::string_view text,
+                                       size_t pos) const -> bool {
+    const std::string& prefix = fast_.prefix;
+    if (pos + prefix.size() > text.size()) return false;
+    for (size_t i = 0; i < prefix.size(); ++i) {
+      if (!chars_equal(text[pos + i], prefix[i])) return false;
+    }
+    return true;
+  }
+
+  // Leftmost position >= from where the required prefix matches, or npos.
+  [[nodiscard]] auto find_prefix_candidate(std::string_view text,
+                                           size_t from) const -> size_t {
+    const std::string& prefix = fast_.prefix;
+    const auto c0 = static_cast<unsigned char>(prefix[0]);
+    if (!ignore_case_ || !std::isalpha(c0)) {
+      // The first byte compares exactly, so a memchr jump covers every
+      // candidate; remaining bytes go through prefix_matches_at.
+      size_t pos = from;
+      while (pos < text.size()) {
+        const void* hit =
+            std::memchr(text.data() + pos, c0, text.size() - pos);
+        if (hit == nullptr) return std::string_view::npos;
+        pos = static_cast<size_t>(static_cast<const char*>(hit) - text.data());
+        if (prefix_matches_at(text, pos)) return pos;
+        ++pos;
+      }
+      return std::string_view::npos;
+    }
+    // Case-folded first byte: plain byte walk with folded comparison.
+    const char target = detail::fold_ascii(static_cast<char>(c0));
+    for (size_t pos = from; pos + prefix.size() <= text.size(); ++pos) {
+      if (detail::fold_ascii(text[pos]) != target) continue;
+      if (prefix_matches_at(text, pos)) return pos;
+    }
+    return std::string_view::npos;
+  }
+
+  // One interpreter attempt anchored at `pos` - the exact body of the
+  // legacy find_first loop iteration.
+  [[nodiscard]] auto local_attempt(std::string_view text, size_t pos,
+                                   StepBudget& budget) const
+      -> std::optional<Match> {
+    auto states = match_node(root_, text, make_initial_state(pos), budget);
+    if (budget.exceeded) {
+      work_limit_exceeded = true;
+      return std::nullopt;
+    }
+    if (states.empty()) return std::nullopt;
+    auto best = std::max_element(
+        states.begin(), states.end(),
+        [](const State& lhs, const State& rhs) { return lhs.pos < rhs.pos; });
+    return make_match(pos, *best);
+  }
 };
 
 struct CompileResult {
@@ -1249,6 +1673,7 @@ auto compile(Syntax syntax, std::string_view pattern, bool ignore_case = false)
       return CompileResult{Pattern{}, "invalid back reference"};
     }
   }
+  compiled.build_fast_path();
   return CompileResult{std::move(compiled), {}};
 }
 
