@@ -9,6 +9,7 @@
 /// @Version: 0.1.0
 /// @License: MIT
 /// @Copyright: Copyright © 2026 WinuxCmd
+#include <string_view>
 #pragma once
 
 #include "pch/pch.h"

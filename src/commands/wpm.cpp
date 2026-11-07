@@ -495,6 +495,152 @@ auto format_package_alias_chain(const std::vector<std::string>& chain)
   return text;
 }
 
+// A bundle is an index entry that installs nothing of its own — it carries
+// no artifacts — and names a group of packages via `installs`: [...] — the
+// toolchain-bundle shape the `mingw`/`build-base` entries use. Expansion
+// happens once at the install entry points, against the same index view
+// install_package resolves through: the bundle name itself never reaches
+// install_package, members recurse with a visiting chain so bundles
+// referencing bundles cannot loop, and expansion output is deduplicated
+// order-preserving so a member listed twice (or already installed) is one
+// download at most — the per-package already_installed skip then makes
+// re-runs free.
+//
+// Only names the index actually contains take part in expansion. A
+// requested name the index does not contain passes through untouched:
+// install_package owns the refresh-and-report flow for it and answers with
+// the canonical "package not found after index update" diagnostic. Failing
+// such a name here, against a possibly stale local index, would break
+// every install staged through a not-yet-fetched source.
+constexpr size_t kMaxPackageBundleDepth = 4;
+
+auto package_has_artifacts(const nlohmann::json& pkg) -> bool {
+  return pkg.contains("artifacts") && pkg["artifacts"].is_object() &&
+         !pkg["artifacts"].empty();
+}
+
+// The bundle's member names, or std::nullopt when the entry declares an
+// `installs` field that is not a list of names. An entry without an
+// `installs` field yields an empty list.
+auto package_bundle_members(const nlohmann::json& pkg)
+    -> std::optional<std::vector<std::string>> {
+  if (!pkg.contains("installs")) return std::vector<std::string>{};
+  if (!pkg["installs"].is_array()) return std::nullopt;
+  std::vector<std::string> members;
+  for (const auto& member : pkg["installs"]) {
+    if (!member.is_string()) return std::nullopt;
+    members.push_back(member.get<std::string>());
+  }
+  return members;
+}
+
+// A bundle installs nothing of its own: an entry with artifacts installs
+// itself, and its `installs` field, if any, is inert metadata.
+auto package_is_bundle(const nlohmann::json& pkg) -> bool {
+  if (package_has_artifacts(pkg)) return false;
+  const auto members = package_bundle_members(pkg);
+  return members.has_value() && !members->empty();
+}
+
+// Expands one bundle entry into `out`. `chain` holds the bundles currently
+// being expanded (cycle detection); `seen` holds every name expansion has
+// already emitted (dedupe). Members resolve in the same index: a member
+// the index does not contain is a broken bundle, not a pass-through case.
+auto expand_bundle_entry(const nlohmann::json& index, const nlohmann::json& pkg,
+                         std::string_view name,
+                         std::vector<std::string>& chain,
+                         std::vector<std::string>& seen,
+                         std::vector<std::string>& out) -> bool {
+  const auto members = package_bundle_members(pkg);
+  if (!members) {
+    safeErrorPrintLn("wpm: bundle '" + std::string(name) +
+                     "' has a malformed 'installs' list");
+    return false;
+  }
+  std::string member_list;
+  for (const auto& member : *members) {
+    if (!member_list.empty()) member_list += ", ";
+    member_list += member;
+  }
+  // [bundle] progress on stderr: install --json keeps stdout pure (#1156).
+  safeErrorPrintLn("wpm: '" + std::string(name) +
+                   "' is a bundle: installing " + member_list);
+  chain.push_back(std::string(name));
+  if (chain.size() > kMaxPackageBundleDepth) {
+    safeErrorPrintLn("wpm: bundle nesting too deep at '" +
+                     std::string(name) + "'");
+    chain.pop_back();
+    return false;
+  }
+  for (const auto& member : *members) {
+    if (std::ranges::find(chain, member) != chain.end()) {
+      auto cycle_chain = chain;
+      cycle_chain.push_back(member);
+      safeErrorPrintLn("wpm: '" + member +
+                       "' is part of a bundle cycle: " +
+                       format_package_alias_chain(cycle_chain));
+      chain.pop_back();
+      return false;
+    }
+    if (std::ranges::find(seen, member) != seen.end()) continue;
+    auto member_pkg = find_package(index, member);
+    if (!member_pkg) {
+      safeErrorPrintLn("wpm: bundle member not found in index: " + member);
+      chain.pop_back();
+      return false;
+    }
+    if (package_is_bundle(*member_pkg)) {
+      if (!expand_bundle_entry(index, *member_pkg, member, chain, seen, out)) {
+        chain.pop_back();
+        return false;
+      }
+      continue;
+    }
+    if (!package_has_artifacts(*member_pkg) &&
+        member_pkg->contains("installs") &&
+        !package_bundle_members(*member_pkg).has_value()) {
+      safeErrorPrintLn("wpm: bundle '" + member +
+                       "' has a malformed 'installs' list");
+      chain.pop_back();
+      return false;
+    }
+    seen.push_back(member);
+    out.push_back(member);
+  }
+  chain.pop_back();
+  return true;
+}
+
+// Expands bundle entries in the requested list, keeping order. Plain
+// packages, aliases and names the index does not contain pass through in
+// place — install_package resolves each of them. Returns std::nullopt
+// after printing a diagnostic when a bundle is malformed (cycle, missing
+// member, bad `installs` list, nesting overflow); the caller should fail
+// that install rather than half-install the group.
+auto expand_package_bundles(const nlohmann::json& index,
+                            std::span<const std::string_view> packages)
+    -> std::optional<std::vector<std::string>> {
+  std::vector<std::string> out;
+  std::vector<std::string> seen;
+  for (const auto package : packages) {
+    const auto pkg = find_package(index, package);
+    if (!pkg || !package_is_bundle(*pkg)) {
+      if (pkg && !package_has_artifacts(*pkg) && pkg->contains("installs") &&
+          !package_bundle_members(*pkg).has_value()) {
+        safeErrorPrintLn("wpm: bundle '" + std::string(package) +
+                         "' has a malformed 'installs' list");
+        return std::nullopt;
+      }
+      out.push_back(std::string(package));
+      continue;
+    }
+    std::vector<std::string> chain;
+    if (!expand_bundle_entry(index, *pkg, package, chain, seen, out))
+      return std::nullopt;
+  }
+  return out;
+}
+
 auto detect_arch_key() -> std::string {
   SYSTEM_INFO info{};
   GetNativeSystemInfo(&info);
@@ -4126,6 +4272,49 @@ auto install_packages(const Options& opts,
                       std::span<const std::string_view> packages) -> int {
   int failed = 0;
   nlohmann::json results = nlohmann::json::array();
+  // [bundle] expand `installs: [...]` entries once up front: the bundle name
+  // itself never reaches install_package, members dedupe order-preserving,
+  // and already-installed members take the benign already_installed path.
+  // Expansion reads the index view install_package resolves through, so
+  // when a requested name is missing from the local index, refresh once
+  // first — the same first move install_package makes for a single name —
+  // and a bundle (or package) only a fetched source carries still
+  // resolves. Names still missing after the refresh pass through and fail
+  // inside install_package with its canonical diagnostic.
+  std::optional<std::vector<std::string>> expanded;
+  {
+    auto index = load_index(opts.root);
+    for (const auto package : packages) {
+      if (find_package(index, package)) continue;
+      if (refresh_index_once(opts, "package not found in local index"))
+        index = load_index(opts.root);
+      break;
+    }
+    expanded = expand_package_bundles(index, packages);
+  }
+  if (!expanded) {
+    // A bundle cycle / missing member / nesting overflow: report the named
+    // bundle(s) as failed instead of half-installing.
+    for (const auto package : packages) {
+      if (opts.json) {
+        nlohmann::json result = {{"name", std::string(package)},
+                                 {"status", "error"},
+                                 {"dry_run", opts.dry_run},
+                                 {"errors", nlohmann::json::array()}};
+        results.push_back(std::move(result));
+      }
+      ++failed;
+    }
+    if (opts.json) {
+      nlohmann::json payload = {
+          {"schema", 1}, {"results", std::move(results)}, {"failed", failed}};
+      safePrintLn(payload.dump(2));
+    }
+    return 1;
+  }
+  std::vector<std::string_view> expanded_views(expanded->begin(),
+                                               expanded->end());
+  packages = expanded_views;
   for (const auto package : packages) {
     nlohmann::json result;
     if (install_package(opts, package, opts.json ? &result : nullptr) != 0) {
@@ -5761,6 +5950,8 @@ auto show_info(const Options& opts, std::string_view name) -> int {
     payload["schema"] = 1;
     if (const auto target = package_alias_target(*pkg); !target.empty())
       payload["alias_of"] = target;
+    if (package_is_bundle(*pkg))
+      payload["installs"] = *package_bundle_members(*pkg);
     safePrintLn(payload.dump(2));
     return 0;
   }
@@ -5768,6 +5959,15 @@ auto show_info(const Options& opts, std::string_view name) -> int {
   safePrintLn("Version: " + pkg->value("version", ""));
   if (const auto target = package_alias_target(*pkg); !target.empty())
     safePrintLn("Alias of: " + target);
+  if (const auto bundle_members = package_bundle_members(*pkg);
+      package_is_bundle(*pkg) && bundle_members) {
+    std::string list;
+    for (const auto& member : *bundle_members) {
+      if (!list.empty()) list += ", ";
+      list += member;
+    }
+    safePrintLn("Bundle of: " + list);
+  }
   safePrintLn("Kind: " + pkg->value("kind", ""));
   safePrintLn("Category: " + pkg->value("category", ""));
   safePrintLn("License: " + pkg->value("license", ""));

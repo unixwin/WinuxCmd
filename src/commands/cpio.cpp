@@ -7,6 +7,8 @@
 /// @License: MIT
 /// @Copyright: Copyright © 2026 WinuxCmd
 
+#include <ctime>  // localtime_s (list_date); not transitively declared by the pch
+
 #include "core/command_macros.h"
 #include "pch/pch.h"
 
