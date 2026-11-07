@@ -122,6 +122,7 @@
 #define UINT_TYPE cmd::meta::OptionType::UInt
 #define UINT_CLAMP_TYPE cmd::meta::OptionType::UIntClamp
 #define OPTIONAL_UINT_TYPE cmd::meta::OptionType::OptionalUInt
+#define OPTIONAL_UINT_CLAMP_TYPE cmd::meta::OptionType::OptionalUIntClamp
 #define OPTIONAL_STRING_TYPE cmd::meta::OptionType::OptionalString
 #define TERMINATED_STRING_TYPE cmd::meta::OptionType::TerminatedString
 #undef OPTION_TYPE

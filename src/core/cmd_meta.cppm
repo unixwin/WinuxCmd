@@ -37,7 +37,15 @@ export enum class OptionType {
   // value past UINT64_MAX is stored as UINT64_MAX instead of failing.
   // Signed-first storage is unchanged, so negative diagnostics keep
   // their shape exactly as with UInt.
-  UIntClamp
+  UIntClamp,
+  // #1527: the optional-argument counterpart of UIntClamp (diff's
+  // -c/-u/--context/--unified: diff.c parses the optional value with
+  // xstrtoimax and clamps at CONTEXT_MAX, system.h:135, so an
+  // out-of-range positive value keeps the diff running instead of
+  // failing; an attached empty value ("--context=") reads as 0).
+  // Signed-first storage and the bare-option -1 sentinel are unchanged
+  // from OptionalUInt.
+  OptionalUIntClamp
 };
 
 export struct OptionMeta {
@@ -187,6 +195,7 @@ auto option_argument_suffix(const OptionMeta& opt) -> std::string_view {
       return " ARG";
     case OptionType::OptionalInt:
     case OptionType::OptionalUInt:
+    case OptionType::OptionalUIntClamp:
       return "[=NUM]";
     case OptionType::OptionalString:
       return "[=ARG]";

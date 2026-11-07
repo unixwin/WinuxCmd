@@ -1248,6 +1248,8 @@ auto classify_args_for_dispatch(
                     (m.type == cmd::meta::OptionType::OptionalInt &&
                      policy.allow_optional_short_attached_values) ||
                     (m.type == cmd::meta::OptionType::OptionalUInt &&
+                     policy.allow_optional_short_attached_values) ||
+                    (m.type == cmd::meta::OptionType::OptionalUIntClamp &&
                      policy.allow_optional_short_attached_values)) {
                   glued_to_value_option = true;
                   break;
@@ -1304,6 +1306,7 @@ auto classify_args_for_dispatch(
             break;
           case cmd::meta::OptionType::OptionalInt:
           case cmd::meta::OptionType::OptionalUInt:
+          case cmd::meta::OptionType::OptionalUIntClamp:
           case cmd::meta::OptionType::OptionalString:
             // With attached values the rest of the cluster is the
             // value; without them the cluster keeps walking (#1306).
