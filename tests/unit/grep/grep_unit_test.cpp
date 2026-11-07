@@ -270,7 +270,11 @@ TEST(grep, grep_color_env_is_deprecated_but_applied) {
               std::string::npos);
 }
 
-TEST(grep, grep_color_rejects_invalid_when) {
+// ---------------------------------------------------------------------------
+// Issue #1516: an unrecognized --color value is usage (EXIT_SUCCESS) in
+// grep.c - the full help on stdout, status 0, no diagnostic.
+// ---------------------------------------------------------------------------
+TEST(grep, grep_color_invalid_when_prints_usage_stdout_issue1516) {
   TempDir tmp;
   tmp.write("a.txt", "alpha\n");
 
@@ -279,8 +283,13 @@ TEST(grep, grep_color_rejects_invalid_when) {
   p.add(L"grep.exe", {L"--color=bad", L"alpha", L"a.txt"});
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 2);
-  EXPECT_TRUE(r.stderr_text.find("invalid color mode") != std::string::npos);
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find(
+                  "Usage: grep [OPTION]... PATTERNS [FILE]...") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("PATTERNS can contain multiple patterns") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.empty());
 }
 
 TEST(grep, grep_ignore_case_and_line_number) {
@@ -2118,9 +2127,11 @@ TEST(grep, grep_no_pattern_prints_gnu_usage_error_issue1510) {
 }
 
 // ---------------------------------------------------------------------------
-// Issue #1513: an attached empty --color= is not a bare --color. Bare
-// means auto (grep.c:2768 + 2916-2917); the attached empty value is
-// validated as a mode and rejected, like any other bogus mode string.
+// Issue #1513/#1516: an attached empty --color= is not a bare --color
+// (it does not collapse into auto), but grep.c answers every
+// unrecognized value - the empty string included - with
+// usage (EXIT_SUCCESS): the full help on stdout, status 0. The 2026-11-07
+// GNU grep 3.11 oracle probe superseded #1513's rejection verdict.
 // ---------------------------------------------------------------------------
 TEST(grep, grep_color_attached_empty_is_not_bare_issue1513) {
   TempDir tmp;
@@ -2131,9 +2142,11 @@ TEST(grep, grep_color_attached_empty_is_not_bare_issue1513) {
   p.add(L"grep.exe", {L"--color=", L"needle", L"a.txt"});
 
   auto r = p.run();
-  EXPECT_EQ(r.exit_code, 2);
-  EXPECT_TRUE(r.stderr_text.find("invalid color mode ''") !=
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find(
+                  "Usage: grep [OPTION]... PATTERNS [FILE]...") !=
               std::string::npos);
+  EXPECT_TRUE(r.stderr_text.empty());
 }
 
 // ---------------------------------------------------------------------------

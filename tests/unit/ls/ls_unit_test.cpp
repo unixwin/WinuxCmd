@@ -3643,3 +3643,105 @@ TEST(ls, ls_bare_color_is_accepted_issue1513) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.find("file1.txt") != std::string::npos);
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1504: ls.c compute_line_length() priority is a valid terminal
+// width on stdout, then the COLUMNS environment variable, then 80.
+// Tests run piped (no console on stdout), so the COLUMNS branch is
+// exercised directly. Byte expectations come from the WSL GNU
+// coreutils 9.4 oracle probe 2026-11-07.
+// ---------------------------------------------------------------------------
+namespace ls_columns_test {
+std::vector<std::string> twenty_four_names() {
+  std::vector<std::string> names;
+  for (int i = 1; i <= 24; ++i) {
+    names.push_back("file_" + std::to_string(i));
+  }
+  return names;
+}
+}  // namespace ls_columns_test
+
+TEST(ls, ls_columns_env_40_gives_gnu_grid_issue1504) {
+  TempDir tmp;
+  for (const auto &name : ls_columns_test::twenty_four_names()) {
+    tmp.write(name, "");
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_env(L"COLUMNS", L"40");
+  p.add(L"ls.exe", {L"-C"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text,
+                 "file_1\t file_15  file_20  file_4\n"
+                 "file_10  file_16  file_21  file_5\n"
+                 "file_11  file_17  file_22  file_6\n"
+                 "file_12  file_18  file_23  file_7\n"
+                 "file_13  file_19  file_24  file_8\n"
+                 "file_14  file_2   file_3   file_9\n");
+  EXPECT_EQ_TEXT(r.stderr_text, "");
+}
+
+TEST(ls, ls_columns_invalid_warns_and_falls_back_to_80_issue1504) {
+  TempDir tmp;
+  for (const auto &name : ls_columns_test::twenty_four_names()) {
+    tmp.write(name, "");
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_env(L"COLUMNS", L"abc");
+  p.add(L"ls.exe", {L"-C"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.find("ls: ignoring invalid width in environment "
+                                 "variable COLUMNS: 'abc'") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("file_1\t file_12  file_15") !=
+              std::string::npos);
+}
+
+TEST(ls, ls_columns_zero_means_one_row_issue1504) {
+  TempDir tmp;
+  for (const auto &name : ls_columns_test::twenty_four_names()) {
+    tmp.write(name, "");
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_env(L"COLUMNS", L"0");
+  p.add(L"ls.exe", {L"-C"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text,
+                 "file_1  file_10  file_11  file_12  file_13  file_14  "
+                 "file_15  file_16  file_17  file_18  file_19  file_2  "
+                 "file_20  file_21  file_22  file_23  file_24  file_3  "
+                 "file_4  file_5  file_6  file_7  file_8  file_9\n");
+}
+
+TEST(ls, ls_minus_m_columns_env_wraps_issue1504) {
+  TempDir tmp;
+  for (const auto &name : ls_columns_test::twenty_four_names()) {
+    tmp.write(name, "");
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_env(L"COLUMNS", L"40");
+  p.add(L"ls.exe", {L"-m"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text,
+                 "file_1, file_10, file_11, file_12,\n"
+                 "file_13, file_14, file_15, file_16,\n"
+                 "file_17, file_18, file_19, file_2,\n"
+                 "file_20, file_21, file_22, file_23,\n"
+                 "file_24, file_3, file_4, file_5, file_6,\n"
+                 "file_7, file_8, file_9\n");
+}

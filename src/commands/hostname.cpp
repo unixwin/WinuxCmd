@@ -63,7 +63,15 @@ struct Config {
   bool fqdn = false;
   bool domain = false;
   bool node = false;
+  // -F/--file: [GNU] supported since hostname.c main() wires it through
+  // read_file()/set_name() (issue #1526).  has_file distinguishes an
+  // attached empty value ("--file=", fopen("") -> ENOENT) from the
+  // option being absent.
+  bool has_file = false;
   std::string file;
+  // [GNU] hostname.c main(): a positional operand together with -F is
+  // usage(stderr), exit(-1) -> 255.
+  bool file_operand_conflict = false;
 };
 
 auto build_config(const CommandContext<HOSTNAME_OPTIONS.size()>& ctx)
@@ -85,7 +93,6 @@ auto build_config(const CommandContext<HOSTNAME_OPTIONS.size()>& ctx)
       {"-a", "--alias"},
       {"-A", "--all-fqdns"},
       {"-d", "--domain"},
-      {"-F", "--file"},
       {"-y", "--yp"},
       {"-n", "--node"}};
   for (const auto& opt : unsupported) {
@@ -107,8 +114,95 @@ auto build_config(const CommandContext<HOSTNAME_OPTIONS.size()>& ctx)
   (void)cfg.domain;
   (void)cfg.node;
 
+  // [GNU] hostname.c main(): -F/--file is a required-argument option
+  // handled through read_file() before any display path.
+  if (ctx.has("-F") || ctx.has("--file")) {
+    cfg.has_file = true;
+    cfg.file = ctx.get<std::string>("-F", "");
+    if (cfg.file.empty()) {
+      cfg.file = ctx.get<std::string>("--file", "");
+    }
+  }
+
   return cfg;
 }
+
+namespace detail {
+
+// [GNU] hostname.c check_name(): RFC 1035 2.3.1 - alphanumeric first
+// and last, only alnum/'-'/'.' inside, no '.'/'-' adjacency pairs.
+auto is_host_char(char c) -> bool {
+  return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
+         (c >= 'A' && c <= 'Z');
+}
+
+auto check_name(const std::string& name) -> bool {
+  const size_t len = name.size();
+  if (len == 0 || !is_host_char(name[0]) || !is_host_char(name[len - 1])) {
+    return false;
+  }
+  for (size_t i = 0; i < len; ++i) {
+    const char c = name[i];
+    if (!is_host_char(c) && c != '-' && c != '.') {
+      return false;
+    }
+    if (c == '-' && ((i > 0 && name[i - 1] == '.') ||
+                     (i + 1 < len && name[i + 1] == '.'))) {
+      return false;
+    }
+    if (c == '.' && i > 0 && name[i - 1] == '.') {
+      return false;
+    }
+  }
+  return true;
+}
+
+auto is_name_space(char c) -> bool {
+  return c == ' ' || c == '\t' || c == '\n' || c == '\v' || c == '\f' ||
+         c == '\r';
+}
+
+// [GNU] hostname.c usage(stderr) body, verbatim; exit(-1) -> 255.
+constexpr std::string_view kDebianUsage =
+    "Usage: hostname [-b] {hostname|-F file}         set host name (from "
+    "file)\n"
+    "       hostname [-a|-A|-d|-f|-i|-I|-s|-y]       display formatted name\n"
+    "       hostname                                 display host name\n"
+    "\n"
+    "       {yp,nis,}domainname {nisdomain|-F file}  set NIS domain name "
+    "(from file)\n"
+    "       {yp,nis,}domainname                      display NIS domain name\n"
+    "\n"
+    "       dnsdomainname                            display dns domain name\n"
+    "\n"
+    "       hostname -V|--version|-h|--help          print info and exit\n"
+    "\n"
+    "Program name:\n"
+    "       {yp,nis,}domainname=hostname -y\n"
+    "       dnsdomainname=hostname -d\n"
+    "\n"
+    "Program options:\n"
+    "    -a, --alias            alias names\n"
+    "    -A, --all-fqdns        all long host names (FQDNs)\n"
+    "    -b, --boot             set default hostname if none available\n"
+    "    -d, --domain           DNS domain name\n"
+    "    -f, --fqdn, --long     long host name (FQDN)\n"
+    "    -F, --file             read host name or NIS domain name from given "
+    "file\n"
+    "    -i, --ip-address       addresses for the host name\n"
+    "    -I, --all-ip-addresses all addresses for the host\n"
+    "    -s, --short            short host name\n"
+    "    -y, --yp, --nis        NIS/YP domain name\n"
+    "\n"
+    "Description:\n"
+    "   This command can get or set the host name or the NIS domain name. You "
+    "can\n"
+    "   also get the DNS domain or the FQDN (fully qualified domain name).\n"
+    "   Unless you are using bind or NIS for host lookups you can change the\n"
+    "   FQDN (Fully Qualified Domain Name) and the DNS domain name (which is\n"
+    "   part of the FQDN) in the /etc/hosts file.\n";
+
+}  // namespace detail
 
 auto run(const Config& cfg) -> int {
   // Initialize Winsock
@@ -128,21 +222,86 @@ auto run(const Config& cfg) -> int {
     return 1;
   }
 
-  if (!cfg.file.empty()) {
-    // Read hostname from file
-    std::ifstream ifs(native_path::normalize_api_operand(cfg.file));
-    if (!ifs) {
+  if (cfg.has_file) {
+    // [GNU] hostname.c read_file(): a failed fopen is err(1, NULL) ->
+    // "hostname: <strerror>" on stderr, exit 1.  #1522/#1528: open
+    // through the wide path operand; the narrow ctor decoded the UTF-8
+    // name through the ANSI code page (the #342 class).  The stream
+    // stays in TEXT mode: a translated CRLF only turns '\r' into a
+    // trailing-isspace byte, which set_name()'s trim absorbs, so the
+    // semantics are byte-identical to GNU's fgets view of the file.
+    // #1526: -F was previously rejected as an unsupported option.
+    auto operand = native_path::make_api_path_operand(cfg.file);
+    std::ifstream file(std::filesystem::path(operand.extended));
+    if (!file) {
       WSACleanup();
-      cp::Result<int> result =
-          std::unexpected("cannot open file '" + cfg.file + "'");
+      cp::Result<int> result = std::unexpected(
+          portable_digest::open_error_reason(cfg.file));
       cp::report_error(result, L"hostname");
       return 1;
     }
+    // [GNU] read_file(): take the first line that is neither blank
+    // (buf[0] == '\n') nor starts with '#', stripping only the trailing
+    // newline (so a carriage return survives into set_name()'s trim,
+    // exactly like GNU's fgets view).  A file with no usable line leaves
+    // the calloc'd empty buffer, i.e. an empty name.
+    std::string name;
+    bool have_line = false;
     std::string line;
-    if (std::getline(ifs, line)) {
-      safePrintLn(line);
+    while (std::getline(file, line)) {
+      if (line.empty() || line.front() == '#') {
+        continue;
+      }
+      name = line;
+      have_line = true;
+      break;
     }
-  } else if (cfg.show_ip || cfg.show_all_ips) {
+
+    // [GNU] hostname.c main(): the operand conflict (usage(stderr),
+    // exit(-1) -> 255) is decided before set_name() validates anything.
+    if (cfg.file_operand_conflict) {
+      WSACleanup();
+      safeErrorPrint(std::string(detail::kDebianUsage));
+      return 255;
+    }
+
+    // [GNU] set_name(DEFAULT): strip leading/trailing isspace, then
+    // check_name(); an invalid name is errx(1, "the specified hostname
+    // is invalid") -> "hostname: ..." exit 1.
+    size_t begin = 0;
+    while (begin < name.size() && detail::is_name_space(name[begin])) {
+      ++begin;
+    }
+    size_t end = name.size();
+    while (end > begin && detail::is_name_space(name[end - 1])) {
+      --end;
+    }
+    name = name.substr(begin, end - begin);
+    if (!detail::check_name(name)) {
+      WSACleanup();
+      cp::Result<int> result =
+          std::unexpected("the specified hostname is invalid");
+      cp::report_error(result, L"hostname");
+      return 1;
+    }
+    // [GNU] sethostname() rejects len > HOST_NAME_MAX (64 on Linux)
+    // with EINVAL, reported as errx(1, "name too long").
+    if (name.size() > 64) {
+      WSACleanup();
+      cp::Result<int> result = std::unexpected("name too long");
+      cp::report_error(result, L"hostname");
+      return 1;
+    }
+    // [DIFFERS] GNU calls sethostname() here, silent on success.  On
+    // Windows the host name is a reboot-scoped, administrative API
+    // (SetComputerNameEx), so this build accepts the file, validates it
+    // with GNU's full read_file/set_name/check_name pipeline, and
+    // completes with the GNU success status without changing the host.
+    WSACleanup();
+    return 0;
+  }
+
+  if (cfg.show_ip || cfg.show_all_ips) {
     // Get host info
     hostent* host_info = gethostbyname(hostname);
     if (!host_info) {
@@ -214,6 +373,14 @@ REGISTER_COMMAND(hostname, "hostname", "hostname [OPTION]...",
   if (!cfg_result) {
     cp::report_error(cfg_result, L"hostname");
     return 1;
+  }
+
+  // [GNU] hostname.c main(): with -F the file is opened and its operand
+  // conflict decided before any display path or name validation, so the
+  // whole invocation routes through the file branch (issue #1526).
+  if (cfg_result->has_file) {
+    cfg_result->file_operand_conflict = !ctx.positionals.empty();
+    return run(*cfg_result);
   }
 
   // [GNU] hostname.c: one operand SETS the host name (hostname.c:99

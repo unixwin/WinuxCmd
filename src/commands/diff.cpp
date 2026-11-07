@@ -97,16 +97,18 @@ auto constexpr DIFF_OPTIONS = std::array{
     OPTION("-s", "--report-identical-files",
            "report when two files are the same"),
     // [GNU] #1521: context lengths parse with strtoimax and clamp
-    // (diff.c:358-367): the valued forms ride the clamp declarations
-    // (past UINT64_MAX included, captain adjudication closing #1521's
-    // residual); the optional -c/-u rows stay OPTIONAL_UINT until an
-    // OptionalUIntClamp type exists (#1527); negatives still store
-    // signed and keep the diagnostic below.
+    // (diff.c:358-367): the valued and optional forms both ride the
+    // clamp declarations (past UINT64_MAX included, captain
+    // adjudication closing #1521's residual), so an out-of-range
+    // positive value keeps diffing at an effectively unlimited context
+    // (#1527); an attached empty value ("--context=") reads as 0
+    // context lines (diffutils 3.10 probe 2026-11-07). Negatives still
+    // store signed and keep the diagnostic below.
     OPTION("-c", "--context", "output NUM (default 3) lines of copied context",
-           OPTIONAL_UINT_TYPE),
+           OPTIONAL_UINT_CLAMP_TYPE),
     OPTION("-C", "", "output NUM lines of copied context", UINT_CLAMP_TYPE),
     OPTION("-u", "--unified", "output NUM (default 3) lines of unified context",
-           OPTIONAL_UINT_TYPE),
+           OPTIONAL_UINT_CLAMP_TYPE),
     OPTION("-U", "", "output NUM lines of unified context", UINT_CLAMP_TYPE),
     // [GNU] -NUM: digits inside a cluster or on their own set the
     // context length for -c/-u (diff -c5, -5c, -c -5); hidden like
@@ -2129,7 +2131,9 @@ REGISTER_COMMAND(
       safeErrorPrint("diff: invalid context length '");
       safeErrorPrint(std::to_string(value));
       safeErrorPrint("'\n");
-      safeErrorPrint("Try 'diff --help' for more information.\n");
+      // [GNU] diffutils prefixes the try-help hint with the program
+      // name (diff: Try 'diff --help' for more information.).
+      safeErrorPrint("diff: Try 'diff --help' for more information.\n");
       return false;
     }
     context = value;
@@ -2166,19 +2170,22 @@ REGISTER_COMMAND(
     } else if (meta.short_name == "-u" || meta.long_name == "--unified") {
       if (!set_mode(Mode::Unified)) return 2;
       auto value = occurrence_int64(occurrence.value);
-      if (value && !set_context(*value, "--unified", true)) return 1;
+      // [GNU] an invalid context length is an EXIT_TROUBLE outcome (2),
+      // not the differing-files status (diff --context=-5 probe
+      // 2026-11-07: rc=2).
+      if (value && !set_context(*value, "--unified", true)) return 2;
     } else if (meta.short_name == "-U") {
       if (!set_mode(Mode::Unified)) return 2;
       auto value = occurrence_int64(occurrence.value);
-      if (value && !set_context(*value, "-U", false)) return 1;
+      if (value && !set_context(*value, "-U", false)) return 2;
     } else if (meta.short_name == "-c" || meta.long_name == "--context") {
       if (!set_mode(Mode::Context)) return 2;
       auto value = occurrence_int64(occurrence.value);
-      if (value && !set_context(*value, "--context", true)) return 1;
+      if (value && !set_context(*value, "--context", true)) return 2;
     } else if (meta.short_name == "-C") {
       if (!set_mode(Mode::Context)) return 2;
       auto value = occurrence_int64(occurrence.value);
-      if (value && !set_context(*value, "-C", false)) return 1;
+      if (value && !set_context(*value, "-C", false)) return 2;
     } else if (meta.short_name == "-y" || meta.long_name == "--side-by-side") {
       if (!set_mode(Mode::SideBySide)) return 2;
     } else if (meta.short_name == "-e" || meta.long_name == "--ed") {

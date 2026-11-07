@@ -332,13 +332,23 @@ export ParseResultRuntime parse_command_runtime(
   // accept a positive value past uint64_t, storing UINT64_MAX — the
   // LONGINT_OVERFLOW clamp; every reader bridge then saturates it
   // exactly like GNU's MIN(size, SIZE_MAX).
+  // #1527: OptionalUIntClamp options (diff's -c/-u family) carry the
+  // same overflow clamp, and their attached EMPTY value ("--context=")
+  // stores 0 — GNU's optional_arg parser treats the empty string as
+  // zero context lines and keeps diffing (diffutils 3.10 --context=
+  // probe 2026-11-07: diff runs, rc=1).
   auto parse_int_value = [&](std::string_view option, std::string_view value,
                              OptionType type, OptionValue& out) -> bool {
-    const bool unsigned_path = type == OptionType::UInt ||
-                               type == OptionType::UIntClamp ||
-                               type == OptionType::OptionalUInt;
-    const bool clamp_overflow = type == OptionType::UIntClamp;
+    const bool unsigned_path =
+        type == OptionType::UInt || type == OptionType::UIntClamp ||
+        type == OptionType::OptionalUInt || type == OptionType::OptionalUIntClamp;
+    const bool clamp_overflow =
+        type == OptionType::UIntClamp || type == OptionType::OptionalUIntClamp;
     std::string str(value);
+    if (str.empty() && type == OptionType::OptionalUIntClamp) {
+      out = std::int64_t{0};
+      return true;
+    }
     std::int64_t v = 0;
     auto [ptr, ec] = std::from_chars(str.data(), str.data() + str.size(), v);
     if (ec == std::errc() && ptr == str.data() + str.size()) {
@@ -498,7 +508,8 @@ export ParseResultRuntime parse_command_runtime(
         }
 
         case OptionType::OptionalInt:
-        case OptionType::OptionalUInt: {
+        case OptionType::OptionalUInt:
+        case OptionType::OptionalUIntClamp: {
           if (!has_inline_value) {
             result.options.set(idx, std::int64_t{-1});
             break;
@@ -601,7 +612,8 @@ export ParseResultRuntime parse_command_runtime(
             }
             break;
           case OptionType::OptionalInt:
-          case OptionType::OptionalUInt: {
+          case OptionType::OptionalUInt:
+          case OptionType::OptionalUIntClamp: {
             if (!exact_has_inline_value) {
               result.options.set(idx, std::int64_t{-1});
               break;
@@ -667,6 +679,8 @@ export ParseResultRuntime parse_command_runtime(
                     (m.type == OptionType::OptionalInt &&
                      policy.allow_optional_short_attached_values) ||
                     (m.type == OptionType::OptionalUInt &&
+                     policy.allow_optional_short_attached_values) ||
+                    (m.type == OptionType::OptionalUIntClamp &&
                      policy.allow_optional_short_attached_values)) {
                   glued_to_value_option = true;
                   break;
@@ -813,7 +827,8 @@ export ParseResultRuntime parse_command_runtime(
           }
 
           case OptionType::OptionalInt:
-          case OptionType::OptionalUInt: {
+          case OptionType::OptionalUInt:
+          case OptionType::OptionalUIntClamp: {
             // #1306: when a command opts out of short attached values
             // (uniq/diff/split), the flag is recorded with no value and
             // the rest of the cluster keeps parsing as further short

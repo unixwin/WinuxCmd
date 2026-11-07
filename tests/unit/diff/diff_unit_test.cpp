@@ -705,3 +705,95 @@ TEST(diff, diff_negative_context_still_errors_issue1521) {
   EXPECT_TRUE(r.stderr_text.find("invalid context length '-5'") !=
               std::string::npos);
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1527: the optional -c/-u/--context/--unified forms clamp the
+// same way as the valued -C/-U/-NUM rows (GNU parses the optional
+// value with the same xstrtoimax + CONTEXT_MAX path), and an attached
+// EMPTY value ("--context=") reads as 0 context lines (diffutils 3.10
+// probe 2026-11-07: diff runs, rc=1, hunks carry no context). The
+// negative-value try-help hint carries the "diff: " prefix like GNU.
+// ---------------------------------------------------------------------------
+TEST(diff, diff_long_optional_context_overflow_clamps_issue1527) {
+  TempDir tmp;
+  tmp.write("file1.txt", "line1\nline2\nline3\n");
+  tmp.write("file2.txt", "line1\nlineX\nline3\n");
+
+  Pipeline unified;
+  unified.set_cwd(tmp.wpath());
+  unified.add(L"diff.exe",
+              {L"--unified=99999999999999999999999", L"file1.txt",
+               L"file2.txt"});
+  auto ru = unified.run();
+  EXPECT_EQ(ru.exit_code, 1);
+  EXPECT_TRUE(ru.stdout_text.find("@@ -1,3 +1,3 @@") != std::string::npos);
+  EXPECT_TRUE(ru.stdout_text.find("-line2") != std::string::npos);
+  EXPECT_TRUE(ru.stdout_text.find("+lineX") != std::string::npos);
+
+  Pipeline context;
+  context.set_cwd(tmp.wpath());
+  context.add(L"diff.exe",
+              {L"--context=99999999999999999999999", L"file1.txt",
+               L"file2.txt"});
+  auto rc = context.run();
+  EXPECT_EQ(rc.exit_code, 1);
+  EXPECT_TRUE(rc.stdout_text.find("*** 1,3 ****") != std::string::npos);
+  EXPECT_TRUE(rc.stdout_text.find("! lineX") != std::string::npos);
+}
+
+TEST(diff, diff_attached_optional_context_overflow_clamps_issue1527) {
+  TempDir tmp;
+  tmp.write("file1.txt", "line1\n");
+  tmp.write("file2.txt", "line2\n");
+
+  Pipeline c;
+  c.set_cwd(tmp.wpath());
+  c.add(L"diff.exe", {L"-c99999999999999999999999", L"file1.txt",
+                      L"file2.txt"});
+  auto r = c.run();
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.find("! line2") != std::string::npos);
+
+  Pipeline u;
+  u.set_cwd(tmp.wpath());
+  u.add(L"diff.exe", {L"-u99999999999999999999999", L"file1.txt",
+                      L"file2.txt"});
+  auto r2 = u.run();
+  EXPECT_EQ(r2.exit_code, 1);
+  EXPECT_TRUE(r2.stdout_text.find("-line1") != std::string::npos);
+}
+
+TEST(diff, diff_empty_attached_context_reads_as_zero_issue1527) {
+  TempDir tmp;
+  tmp.write("file1.txt", "line1\nline2\nline3\n");
+  tmp.write("file2.txt", "line1\nlineX\nline3\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"diff.exe", {L"--context=", L"file1.txt", L"file2.txt"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 1);
+  // Zero context: only the changed line group prints, with no
+  // neighbouring context lines around it.
+  EXPECT_TRUE(r.stdout_text.find("*** 2 ****") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("  line1") == std::string::npos);
+}
+
+TEST(diff, diff_negative_context_try_hint_carries_program_prefix) {
+  TempDir tmp;
+  tmp.write("file1.txt", "line1\n");
+  tmp.write("file2.txt", "line2\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"diff.exe", {L"--context=-5", L"file1.txt", L"file2.txt"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_TRUE(r.stderr_text.find("invalid context length '-5'") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "diff: Try 'diff --help' for more information.") !=
+              std::string::npos);
+}

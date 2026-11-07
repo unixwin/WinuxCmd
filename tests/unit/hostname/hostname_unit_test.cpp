@@ -64,12 +64,16 @@ TEST(hostname, hostname_long) {
 // residuals lane's original pin asserted the file is read and
 // printed; CI showed exit 1 / empty stdout -- the rejection working
 // as designed. #1522's live narrow-ctor readers were dircolors and
-// hexdump (their pins stand). The remaining incoherence -- help
-// advertises -F while the parser rejects it and the read branch
-// sits dead -- is filed as #1526. This pin asserts the designed
-// rejection so the dead surface cannot silently change shape.
+// hexdump (their pins stand). The incoherence was filed as #1526 and
+// is FIXED here: -F/--file now runs GNU hostname.c's read_file()/
+// set_name()/check_name() pipeline. This pin keeps the non-ASCII
+// operand from the original #1522 probe -- it must open through the
+// wide path (#1528, the narrow ctor decodes UTF-8 through the ANSI
+// code page, the #342 class), succeed per GNU's set-name semantics
+// (silent, exit 0; this build cannot actually sethostname on Windows)
+// and print nothing.
 // ---------------------------------------------------------------------------
-TEST(hostname, hostname_file_option_rejected_by_design_issue1522) {
+TEST(hostname, hostname_file_reads_wide_path_operand_issue1526) {
   TempDir tmp;
   const std::wstring name = L"\xFF.txt";
   {
@@ -82,6 +86,125 @@ TEST(hostname, hostname_file_option_rejected_by_design_issue1522) {
   p.add(L"hostname.exe", {L"-F", name});
 
   auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.empty());
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1526: GNU hostname.c (Debian) -F semantics, byte-probed
+// against the WSL oracle 2026-11-07.
+// ---------------------------------------------------------------------------
+TEST(hostname, hostname_file_missing_reports_errno_shape) {
+  Pipeline p;
+  p.add(L"hostname.exe", {L"-F", L"no-such-host-file-xyz"});
+
+  auto r = p.run();
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("hostname: No such file or directory") !=
+              std::string::npos);
+}
+
+TEST(hostname, hostname_file_empty_is_invalid_name) {
+  TempDir tmp;
+  tmp.write("empty.txt", "");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"hostname.exe", {L"-F", L"empty.txt"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "hostname: the specified hostname is invalid") !=
+              std::string::npos);
+}
+
+TEST(hostname, hostname_file_trims_space_and_skips_comments_and_blank_lines) {
+  TempDir tmp;
+  // "  padded  \n\n" trims to "padded"; "# comment\nreal\n" skips the
+  // comment line (hostname.c read_file: buf[0] == '#' or '\n').
+  tmp.write("pad.txt", "  padded  \n\n");
+  tmp.write("hash.txt", "# comment\nreal\n");
+  tmp.write("blank.txt", "\n\nname2\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"hostname.exe", {L"-F", L"pad.txt"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.empty());
+
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.add(L"hostname.exe", {L"--file=hash.txt"});
+  auto r2 = p2.run();
+  EXPECT_EQ(r2.exit_code, 0);
+
+  Pipeline p3;
+  p3.set_cwd(tmp.wpath());
+  p3.add(L"hostname.exe", {L"-F", L"blank.txt"});
+  auto r3 = p3.run();
+  EXPECT_EQ(r3.exit_code, 0);
+}
+
+TEST(hostname, hostname_file_invalid_name_chars_rejected) {
+  TempDir tmp;
+  // "ab#cd" -> check_name() fails on '#' and never falls through to
+  // the second line; a CRLF file trims the '\r' and succeeds.
+  tmp.write("bad.txt", "ab#cd\nx\n");
+  tmp.write("bang.txt", "bad!name\n");
+  tmp.write("crlf.txt", "ok-name\r\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"hostname.exe", {L"-F", L"bad.txt"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "hostname: the specified hostname is invalid") !=
+              std::string::npos);
+
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.add(L"hostname.exe", {L"-F", L"bang.txt"});
+  auto r2 = p2.run();
+  EXPECT_EQ(r2.exit_code, 1);
+
+  Pipeline p3;
+  p3.set_cwd(tmp.wpath());
+  p3.add(L"hostname.exe", {L"-F", L"crlf.txt"});
+  auto r3 = p3.run();
+  EXPECT_EQ(r3.exit_code, 0);
+}
+
+TEST(hostname, hostname_file_over_long_name_reports_name_too_long) {
+  TempDir tmp;
+  tmp.write("long.txt", std::string(99, 'a') + "\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"hostname.exe", {L"-F", L"long.txt"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("hostname: name too long") !=
+              std::string::npos);
+}
+
+TEST(hostname, hostname_file_with_operand_is_usage_stderr_255) {
+  TempDir tmp;
+  tmp.write("hn.txt", "probe-host\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"hostname.exe", {L"-F", L"hn.txt", L"extra"});
+
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 255);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find(
+                  "Usage: hostname [-b] {hostname|-F file}") !=
+              std::string::npos);
 }

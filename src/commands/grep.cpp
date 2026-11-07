@@ -1021,6 +1021,15 @@ auto load_patterns_from_file(const std::string& path)
 // (#1510).
 inline constexpr std::string_view kMissingPatternsError = "missing PATTERNS";
 
+// [GNU] grep.c COLOR_OPTION: an unrecognized --color/--colour value
+// calls usage (EXIT_SUCCESS) — the full help on stdout with status 0,
+// no diagnostic (grep 3.11 probe 2026-11-07 covers both a bogus value
+// and the attached empty value, undoing the #1513 rejection). Report
+// the case with this sentinel; execute_with_default_mode renders the
+// GNU shape (#1516).
+inline constexpr std::string_view kColorUsageSuccessError =
+    "invalid color mode";
+
 auto build_config(const CommandContext<GREP_OPTIONS.size()>& ctx,
                   PatternMode default_mode = PatternMode::BasicRegex)
     -> cp::Result<Config> {
@@ -1286,7 +1295,9 @@ auto build_config(const CommandContext<GREP_OPTIONS.size()>& ctx,
     // color_option = 2, i.e. auto (grep.c:2916-2917 resolves 2 through
     // the tty check) -- unlike ls, whose bare --color means always.
     // An attached value is judged as written, so "--color=" reaches the
-    // invalid-mode error below instead of collapsing into auto (#1513).
+    // invalid-mode branch below instead of collapsing into auto; GNU
+    // answers it with usage (EXIT_SUCCESS), not an auto collapse
+    // (#1513/#1516).
     color_opt = occurrence.has_value ? occurrence.value : "auto";
   }
   std::string color_mode = color_opt.value_or("auto");
@@ -1305,7 +1316,8 @@ auto build_config(const CommandContext<GREP_OPTIONS.size()>& ctx,
     } else if (lower == "never" || lower == "no" || lower == "none") {
       cfg.color = false;
     } else {
-      return std::unexpected("invalid color mode '" + color_mode + "'");
+      // [GNU] grep.c: usage (EXIT_SUCCESS) — help on stdout, status 0.
+      return std::unexpected(std::string(kColorUsageSuccessError));
     }
   }
 
@@ -2944,6 +2956,14 @@ auto execute_with_default_mode(CommandContext<GREP_OPTIONS.size()>& ctx,
       safeErrorPrintLn(winux::i18n::format(
           "common.try_help", "Try '{} --help' for more information.", name));
       return 2;
+    }
+    // [GNU] #1516: an unrecognized --color/--colour value is answered
+    // with usage (EXIT_SUCCESS) in grep.c — the full help on stdout,
+    // status 0, no diagnostic.
+    if (config.error() == kColorUsageSuccessError) {
+      std::ignore = cmd::meta::Registry::print_help(
+          wstring_to_utf8(command_name));
+      return 0;
     }
     cp::report_error(config, command_name);
     return 2;

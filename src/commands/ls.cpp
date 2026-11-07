@@ -2263,7 +2263,8 @@ auto print_rendered_entries(const std::vector<RenderedEntry> &entries,
     if (i > 0) {
       const size_t separator_reserve =
           2 + ((i + 1) < entries.size() ? static_cast<size_t>(1) : 0);
-      if (line_width > 0 &&
+      // [GNU] #1504: width 0 is "unlimited" — no wrapping.
+      if (width > 0 && line_width > 0 &&
           line_width + separator_reserve + entries[i].visible_width > width) {
         safePrint(",\n");
         line_width = 0;
@@ -2355,6 +2356,24 @@ auto print_grid(const std::vector<EntryInfo> &entries,
   }
   if (width <= 0) {
     width = get_terminal_width();
+  }
+
+  // [GNU] #1504: a width of 0 (COLUMNS=0 or -w 0) is "unlimited":
+  // calculate_columns() puts every entry on one row with plain
+  // two-space gutters and no tab alignment.
+  if (width == 0) {
+    for (size_t idx = 0; idx < rendered.size(); ++idx) {
+      if (dired_requested(ctx)) {
+        dired_note_text_entry(rendered[idx].name_offset,
+                              rendered[idx].name_length);
+      }
+      safePrint(rendered[idx].text);
+      if (idx + 1 < rendered.size()) {
+        safePrint("  ");
+      }
+    }
+    safePrintLn(L"");
+    return;
   }
 
   auto compute_column_widths = [&](int candidate_cols) {
@@ -3046,13 +3065,50 @@ auto get_file_owner_and_group(std::wstring_view path, bool use_numeric = false)
 /**
  * @brief Get terminal width
  * @return Terminal width in columns
+ *
+ * [GNU] #1504: ls.c compute_line_length() priority is -w (decided by the
+ * callers above), then a valid terminal width on stdout, then the
+ * COLUMNS environment variable, then the 80-column default.  The tty
+ * probe outranks COLUMNS: a 40-column pty with COLUMNS=200 lays out at
+ * 40 (probe 2026-11-07).  COLUMNS parses with strtol semantics —
+ * leading blanks and a sign allowed, full consumption required, value
+ * in [0, INT_MAX]; anything else warns ("ignoring invalid width in
+ * environment variable COLUMNS") and falls through to 80.  0 means
+ * unlimited, i.e. everything on one row.  The value is computed once
+ * per invocation, exactly like GNU's single compute_line_length() call.
  */
 auto get_terminal_width() -> int {
+  static int cached_width = -2;
+  if (cached_width != -2) {
+    return cached_width;
+  }
   CONSOLE_SCREEN_BUFFER_INFO csbi;
   if (GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &csbi)) {
-    return csbi.srWindow.Right - csbi.srWindow.Left + 1;
+    const LONG window_cols = csbi.srWindow.Right - csbi.srWindow.Left + 1;
+    if (window_cols > 0) {
+      cached_width = static_cast<int>(window_cols);
+      return cached_width;
+    }
   }
-  return 80;  // Default to 80 columns if we can't get terminal width
+  const char *columns = std::getenv("COLUMNS");
+  if (columns != nullptr && *columns != '\0') {
+    errno = 0;
+    char *end = nullptr;
+    const long parsed = std::strtol(columns, &end, 10);
+    if (errno == 0 && end == columns + std::strlen(columns) && parsed >= 0 &&
+        parsed <= static_cast<long>(std::numeric_limits<int>::max())) {
+      cached_width = static_cast<int>(parsed);
+      return cached_width;
+    }
+    // [DIFFERS] GNU quote() renders locale quotes; this build emits
+    // ASCII single quotes.
+    safeErrorPrint("ls: ignoring invalid width in environment variable "
+                   "COLUMNS: '");
+    safeErrorPrint(std::string(columns));
+    safeErrorPrint("'\n");
+  }
+  cached_width = 80;  // Default to 80 columns if we can't get terminal width
+  return cached_width;
 }
 
 /**
