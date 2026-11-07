@@ -1,0 +1,8 @@
+; Export list for the harness test-double DLL (demo_dll.cpp).
+; Same three symbols as the real winuxcore.def, so the harness cannot
+; tell the double from the real DLL by surface — only by behaviour.
+LIBRARY winuxcore
+EXPORTS
+    winux_ffi_abi_version
+    winux_ffi_init
+    winux_ffi_call
