@@ -965,6 +965,17 @@ auto move_aside(const fs::path& target, fs::path* parked_out) -> bool;
 /// walks the receipts to find shim packages the map does not know yet.
 auto receipts_dir(const fs::path& root) -> fs::path;
 
+/// Defined with the shim helpers below; the command-link rebuild resolves a
+/// package's payloads through the same resolver the install path uses.
+auto shim_payload_for(const fs::path& root, const std::string& package,
+                      const std::string& command,
+                      const nlohmann::json& artifact) -> fs::path;
+
+/// Defined with the index helpers below; the command-link rebuild needs the
+/// current-arch artifact of an installed package to resolve its payloads.
+auto artifact_for_current_arch(const nlohmann::json& pkg)
+    -> std::optional<nlohmann::json>;
+
 /// Commands of installed `layout: shim` packages that the map does not know
 /// yet. An installation that received the forwarder through a self-update has
 /// receipts and payloads but no `.wpm/shims.map`, and its shims are still
@@ -1013,8 +1024,15 @@ auto missing_shim_map_entries(
             return entry.first == command;
           });
       if (known) continue;
+      // Resolve through the install path's resolver, not the naming
+      // convention alone: a directory-mapped payload (mingw's tree under
+      // opt\<pkg>\bin) is invisible to the convention, so the rebuild could
+      // never register it and the forwarder stayed mute (unixwin/WinuxCmd
+      // #1537).
+      const auto artifact = artifact_for_current_arch(*pkg);
       const fs::path payload =
-          package_payload_dir(root, package) / exe_suffix(command);
+          artifact ? shim_payload_for(root, package, command, *artifact)
+                   : package_payload_dir(root, package) / exe_suffix(command);
       std::error_code payload_ec;
       if (!fs::is_regular_file(payload, payload_ec)) continue;
       const fs::path relative = fs::relative(payload, root, ec);
@@ -2864,12 +2882,33 @@ auto opt_forward_adapted(std::string_view command) -> bool {
   return argv_adapters::prefix_for(command.data(), command.size()) != nullptr;
 }
 
+/// Whether the payload binary keeps DLLs of its own in its directory. Such a
+/// payload only runs in place: started through a hardlink in another
+/// directory, the loader looks for those DLLs next to the link and the
+/// process dies before main (0xC0000135, unixwin/WinuxCmd#1535).
+auto payload_has_sibling_dlls(const fs::path& payload) -> bool {
+  std::error_code ec;
+  const fs::path dir = payload.parent_path();
+  if (dir.empty()) return false;
+  for (const auto& entry : fs::directory_iterator(dir, ec)) {
+    if (ec) break;
+    std::error_code type_ec;
+    if (!entry.is_regular_file(type_ec)) continue;
+    if (lower_ascii(entry.path().extension().string()) == ".dll") return true;
+  }
+  return false;
+}
+
 /// Where each command of a package resolves inside its payload, paired with
 /// the entry link the host PATH needs: `<root>/bin/<cmd>` as a hardlink to the
 /// real binary - never a launcher (a link is free, a forwarding process costs
-/// ~20 ms per invocation). Declaring the links here means install, update and
-/// uninstall keep the PATH set in sync instead of leaving stale binaries
-/// behind when the payload moves on (unixwin/niubash#376 rule 5).
+/// ~20 ms per invocation). Two kinds of command cannot take the free link and
+/// route through the forwarder instead: argv-adapted commands (the adapter
+/// would be bypassed) and payloads with private DLLs beside them (the loader
+/// would look for the DLLs in `bin\` and fail). Declaring the links here means
+/// install, update and uninstall keep the PATH set in sync instead of leaving
+/// stale binaries behind when the payload moves on (unixwin/niubash#376
+/// rule 5).
 auto package_entry_links(const fs::path& root, const nlohmann::json& pkg,
                          const nlohmann::json& artifact)
     -> std::vector<std::pair<fs::path, fs::path>> {
@@ -2883,14 +2922,21 @@ auto package_entry_links(const fs::path& root, const nlohmann::json& pkg,
     if (command.empty()) continue;
     fs::path payload;
     if (artifact_layout(artifact) == "shim") {
-      payload = package_payload_dir(root, package) / exe_suffix(command);
+      // One resolver for every consumer of a command's payload: the naming
+      // convention, per-file mappings, and directory-mapped trees
+      // (unixwin/WinuxCmd#1537).
+      payload = shim_payload_for(root, package, command, artifact);
       // unixwin/niubash#467: commands the forwarders answer with an argv
       // adapter (gawk's `-v BINMODE=3`) must route the PATH-entry link through
       // a forwarder as well - a link to the payload itself would bypass the
-      // adapter and leak the payload's raw stdio behaviour. Prefer the small
-      // forwarder; an installation that predates it still forwards correctly
-      // through winuxcmd.exe's opt-payload dispatch.
-      if (opt_forward_adapted(command)) {
+      // adapter and leak the payload's raw stdio behaviour. The same holds
+      // for a payload with private DLLs beside it: a hardlink in `bin\` runs
+      // the payload with `bin\` as its application directory, the DLLs stay
+      // behind in the payload directory, and the process dies with
+      // 0xC0000135 (unixwin/WinuxCmd#1535). Prefer the small forwarder; an
+      // installation that predates it still forwards correctly through
+      // winuxcmd.exe's opt-payload dispatch.
+      if (opt_forward_adapted(command) || payload_has_sibling_dlls(payload)) {
         payload = package_shim_source(root);
         if (payload.empty()) payload = canonical_winuxcmd_path(root);
       }
@@ -3472,8 +3518,12 @@ auto package_command_count(const nlohmann::json& pkg) -> int {
 /// `opt\<pkg>\<command>.exe`, but a payload that must keep its own directory
 /// layout (codex ships `bin/codex.exe` beside `codex-resources/`) declares the
 /// destination in its `files` mapping instead - and the entry link for flat
-/// layouts has always been resolved that way. Look in both places, in that
-/// order, so a package never ends up with a shim that cannot find its payload.
+/// layouts has always been resolved that way. A directory-level mapping (the
+/// mingw shape: a whole tree mapped onto the payload root) declares no
+/// per-command destination at all, so the mapped tree is searched for the
+/// command's executable. Look in all three places, in that order, so a
+/// package never ends up with a shim that cannot find its payload
+/// (unixwin/WinuxCmd#1537).
 auto shim_payload_for(const fs::path& root, const std::string& package,
                       const std::string& command, const nlohmann::json& artifact)
     -> fs::path {
@@ -3488,6 +3538,14 @@ auto shim_payload_for(const fs::path& root, const std::string& package,
           artifact_destination_for_mapping(root, artifact, package, mapping);
       if (!destination) continue;
       if (destination->filename() == exe_suffix(command)) return *destination;
+    }
+    for (const auto& mapping : artifact["files"]) {
+      if (!mapping_is_directory(mapping)) continue;
+      auto destination =
+          artifact_destination_for_mapping(root, artifact, package, mapping);
+      if (!destination) continue;
+      if (auto found = find_file_recursive(*destination, exe_suffix(command)))
+        return *found;
     }
   }
   return conventional;
