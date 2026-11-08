@@ -5,17 +5,17 @@
   "marker": "index package field \"arm64_emulation\": true (stamped by --apply)",
   "source_index": {
     "repo": "unixwin/wpm-source",
-    "version": "official-2026.10.28",
-    "updated": "2026-10-28",
-    "packages": 282
+    "version": "official-2026.11.08",
+    "updated": "2026-11-08",
+    "packages": 289
   },
   "summary": {
-    "total": 282,
-    "native": 116,
-    "x64_emulation": 166,
-    "route_wpm_artifacts": 26,
+    "total": 289,
+    "native": 117,
+    "x64_emulation": 167,
+    "route_wpm_artifacts": 27,
     "route_upstream": 140,
-    "index_only": 0
+    "index_only": 5
   },
   "packages": {
     "7zip": {
@@ -76,6 +76,12 @@
       "route": "upstream",
       "reason": "upstream atuinsh/atuin@v18.19.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
     },
+    "autoconf": {
+      "class": "index-only"
+    },
+    "automake": {
+      "class": "index-only"
+    },
     "awk": {
       "class": "x64-emulation",
       "x64_asset": "gawk-5.4.1-win-x64.zip",
@@ -133,10 +139,8 @@
       "arm64_asset": "brotli-arm64-windows-static.zip"
     },
     "bsdtar": {
-      "class": "x64-emulation",
-      "x64_asset": "tar_windows_x86_64.exe",
-      "route": "upstream",
-      "reason": "upstream hermeticbuild/bsdtar-prebuilt@v3.7.5-1 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+      "class": "native",
+      "arm64_asset": "tar_windows_arm64.exe"
     },
     "btop": {
       "class": "x64-emulation",
@@ -147,6 +151,9 @@
     "buf": {
       "class": "native",
       "arm64_asset": "buf-Windows-arm64.exe"
+    },
+    "build-base": {
+      "class": "index-only"
     },
     "bun": {
       "class": "native",
@@ -729,6 +736,9 @@
       "route": "upstream",
       "reason": "upstream gokcehan/lf@r42 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
     },
+    "libtool": {
+      "class": "index-only"
+    },
     "llama.cpp": {
       "class": "x64-emulation",
       "x64_asset": "llama-b11065-bin-win-cpu-x64.zip",
@@ -778,6 +788,9 @@
       "x64_asset": "lz4_win64_v1_10_0.zip",
       "route": "upstream",
       "reason": "upstream lz4/lz4@v1.10.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "m4": {
+      "class": "index-only"
     },
     "make": {
       "class": "x64-emulation",
@@ -832,6 +845,12 @@
     "mimirtool": {
       "class": "native",
       "arm64_asset": "mimirtool-windows-arm64.exe"
+    },
+    "mingw": {
+      "class": "x64-emulation",
+      "x64_asset": "winlibs-x86_64-posix-seh-gcc-16.2.0-mingw-w64ucrt-14.0.0-r3.zip",
+      "route": "upstream",
+      "reason": "upstream brechtsanders/winlibs_mingw@16.2.0posix-23.1.3-14.0.0-ucrt-r3 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
     },
     "miniserve": {
       "class": "x64-emulation",
@@ -992,6 +1011,12 @@
       "x64_asset": "peco_0.6.0_windows_amd64.zip",
       "route": "upstream",
       "reason": "upstream peco/peco@v0.6.0 ships no Windows arm64 asset (add-arm64.py no-candidate); re-running the fill pass picks one up if upstream ever publishes it"
+    },
+    "pkg-config": {
+      "class": "x64-emulation",
+      "x64_asset": "pkg-config-0.28-w32-bin.zip",
+      "route": "wpm-artifacts",
+      "reason": "x64 artifact is not a GitHub-release asset (downloads.sourceforge.net); the fill pass cannot resolve it, so the native path is a wpm-artifacts mirror/build"
     },
     "plantuml": {
       "class": "x64-emulation",
@@ -1383,7 +1408,7 @@
     },
     "winuxcmd": {
       "class": "native",
-      "arm64_asset": "WinuxCmd-1.1.20-win-arm64.zip"
+      "arm64_asset": "WinuxCmd-1.2.1-win-arm64.zip"
     },
     "winuxcmd-i18n-zh-cn": {
       "class": "native",
