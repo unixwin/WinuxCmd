@@ -338,6 +338,11 @@ struct Config {
   std::string group_separator = "--";
   bool no_group_separator = false;
   bool initial_tab = false;
+  // [GNU] grep.c's offset_width: the field width print_offset applies to
+  // BOTH the line number and the byte offset ("%*"PRIdMAX). It stays 0
+  // unless align_tabs (-T) is in effect; process() recomputes it per
+  // input from that input's size (grep.c:1541-1550).
+  int offset_width = 0;
   // [GNU] --label= (even empty) is a real label; presence, not emptiness,
   // decides (grep.c LABEL_OPTION / input_filename).
   bool label_given = false;
@@ -1753,6 +1758,24 @@ auto line_matches(std::string_view line, const Config& cfg) -> bool {
   return find_first_match_in_line(line, cfg).has_value();
 }
 
+// [GNU] grep.c print_offset: a line number or byte offset is printed
+// right-aligned in a field of cfg.offset_width ("%*"PRIdMAX); the
+// padding spaces sit inside the field's color span, exactly like
+// pr_sgr_start_if/printf/pr_sgr_end_if. Width 0 pads nothing.
+auto append_offset_field(std::string& out, const Config& cfg,
+                         std::string_view color, size_t value) -> void {
+  auto s = std::to_string(value);
+  if (cfg.offset_width > 0 &&
+      s.size() < static_cast<size_t>(cfg.offset_width)) {
+    s.insert(0, static_cast<size_t>(cfg.offset_width) - s.size(), ' ');
+  }
+  if (cfg.color) {
+    append_colored(out, cfg.color_config, color, s);
+  } else {
+    out.append(s);
+  }
+}
+
 auto append_prefix(std::string& out, const Config& cfg, bool show_filename,
                    std::string_view display_name, size_t line_no, size_t offset,
                    char separator = ':') -> void {
@@ -1774,13 +1797,7 @@ auto append_prefix(std::string& out, const Config& cfg, bool show_filename,
     }
   }
   if (cfg.line_number) {
-    if (cfg.color) {
-      auto s = std::to_string(line_no);
-      append_colored(out, cfg.color_config, cfg.color_config.line_number, s);
-    } else {
-      auto s = std::to_string(line_no);
-      out.append(s);
-    }
+    append_offset_field(out, cfg, cfg.color_config.line_number, line_no);
     if (cfg.color) {
       append_colored_char(out, cfg.color_config, cfg.color_config.separator,
                           separator);
@@ -1789,12 +1806,7 @@ auto append_prefix(std::string& out, const Config& cfg, bool show_filename,
     }
   }
   if (cfg.byte_offset) {
-    auto s = std::to_string(offset);
-    if (cfg.color) {
-      append_colored(out, cfg.color_config, cfg.color_config.byte_offset, s);
-    } else {
-      out.append(s);
-    }
+    append_offset_field(out, cfg, cfg.color_config.byte_offset, offset);
     if (cfg.color) {
       append_colored_char(out, cfg.color_config, cfg.color_config.separator,
                           separator);
@@ -2727,6 +2739,60 @@ auto gather_files_for_input(Config& cfg, std::vector<std::string>& out)
   return {};
 }
 
+// [GNU] grep.c:1541-1550: with align_tabs, offset_width is the decimal
+// digit count of the largest value a line number or byte offset can
+// take for this input, bounded by the input size (line numbers are
+// origin-1, so the bound grows by one when line numbers are printed);
+// an input with no usable size (pipe, console, device) falls back to
+// INTMAX_MAX, i.e. a width of 19.
+auto grep_offset_width(bool size_usable, std::uint64_t size, bool out_line)
+    -> int {
+  auto num = size_usable
+                 ? size
+                 : static_cast<std::uint64_t>(
+                       std::numeric_limits<std::int64_t>::max());
+  if (out_line &&
+      num < static_cast<std::uint64_t>(
+                std::numeric_limits<std::int64_t>::max())) {
+    ++num;
+  }
+  int width = 0;
+  do {
+    ++width;
+  } while ((num /= 10) != 0);
+  return width;
+}
+
+// [GNU] usable_st_size for a named operand: a regular file's size is
+// the bound; anything else (device, fifo bridge, vanished file) has no
+// usable size.
+auto operand_usable_size(const std::string& input, std::uint64_t& size)
+    -> bool {
+  const std::filesystem::path path(open_operand_path_w(input));
+  std::error_code ec;
+  if (!std::filesystem::is_regular_file(path, ec) || ec) return false;
+  const auto file_size = std::filesystem::file_size(path, ec);
+  if (ec) return false;
+  size = static_cast<std::uint64_t>(file_size);
+  return true;
+}
+
+// [GNU] the same bound for standard input comes from fstat(0): a disk
+// file redirected into stdin reports its size, a pipe or console does
+// not (GetFileType != FILE_TYPE_DISK).
+auto stdin_usable_size(std::uint64_t& size) -> bool {
+  const auto handle =
+      reinterpret_cast<HANDLE>(_get_osfhandle(_fileno(stdin)));
+  if (handle == INVALID_HANDLE_VALUE) return false;
+  if (GetFileType(handle) != FILE_TYPE_DISK) return false;
+  LARGE_INTEGER file_size{};
+  if (!GetFileSizeEx(handle, &file_size) || file_size.QuadPart < 0) {
+    return false;
+  }
+  size = static_cast<std::uint64_t>(file_size.QuadPart);
+  return true;
+}
+
 auto process(Config& cfg) -> int {
   // [GNU] grep.c prints the -u obsolescence warning while parsing,
   // before any input is touched (grep.c:2574-2577).
@@ -2797,6 +2863,20 @@ auto process(Config& cfg) -> int {
     }
     std::pair<bool, size_t> scan_result{false, 0};
     auto display_name = record_name_for_output(input, cfg);
+
+    // [GNU] grep.c computes offset_width once per input at the top of
+    // grep() (1541-1550); without -T it is 0 and print_offset pads
+    // nothing (#1515).
+    if (!cfg.initial_tab) {
+      cfg.offset_width = 0;
+    } else {
+      std::uint64_t input_size = 0;
+      const bool size_usable =
+          (input == "-") ? stdin_usable_size(input_size)
+                         : operand_usable_size(input, input_size);
+      cfg.offset_width =
+          grep_offset_width(size_usable, input_size, cfg.line_number);
+    }
 
     bool use_context = (cfg.before_context > 0 || cfg.after_context > 0) &&
                        !cfg.only_matching && !cfg.count_only &&
