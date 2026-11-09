@@ -29,7 +29,16 @@ CPP_BIN="${CPP_BIN:-$TREE/build-vs/usr/bin/winuxcmd.exe}"
 ART="$RUST2/target/gate"
 GNU_REMOTE_ROOT="/tmp/winuxcmd-gate"
 GNU_MIRROR="$ART/gnu"
-TREE_MNT="/mnt/d/repo/wc-20rust"
+# WSL view of this checkout. Derived from $TREE (/d/repo/x -> /mnt/d/repo/x)
+# instead of a hard-coded worktree path, so the gate runs from any worktree;
+# override with TREE_MNT=... when the drive mapping differs.
+if [ -z "${TREE_MNT:-}" ]; then
+    case "$TREE" in
+        /[a-zA-Z]/*) TREE_MNT="/mnt/$(printf %s "${TREE:1:1}" | tr 'A-Z' 'a-z')${TREE:2}" ;;
+        [a-zA-Z]:/*) TREE_MNT="/mnt/$(printf %s "${TREE:0:1}" | tr 'A-Z' 'a-z')${TREE:2}" ;;
+        *) TREE_MNT="$TREE" ;;
+    esac
+fi
 
 mkdir -p "$ART/scratch" "$GNU_MIRROR"
 

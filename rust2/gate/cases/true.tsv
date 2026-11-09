@@ -5,7 +5,7 @@ t02-extra	strict				extra	args	here
 t03-bogus-long	strict				--bogus
 t04-dashdash	strict				--
 t05-dash	strict				-
-t06-help-extra	win				--help	extra
+t06-help-extra	strict				--help	extra
 t07-version	win				--version
 t08-stdin-ignored	strict			hello-data
 t09-triple-dash	strict				---
@@ -13,7 +13,7 @@ t10-abbrev-unknown	strict				--qui
 t11-short-unknown	strict				-z
 t12-operand-looking	strict				/dev/null
 t13-env-irrelevant	strict		FOO=bar	
-t14-version-extra	win				--version	extra
+t14-version-extra	strict				--version	extra
 t15-case-sensitive	strict				--Help
 t16-space-arg	strict				 
 t17-double-dashdash	strict				--	--

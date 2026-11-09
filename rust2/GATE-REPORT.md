@@ -22,8 +22,8 @@ with `bash gate/make-report.sh`.
 
 | command | cases | strict | exit | win | note | GNU-gated result | C++ parity (rc+stdout) |
 |---|---|---|---|---|---|---|---|
-| true | 20 | 17 | 0 | 3 | 0 | GREEN | 17/20 |
-| false | 20 | 17 | 0 | 0 | 3 | GREEN | 17/20 |
+| true | 20 | 19 | 0 | 1 | 0 | GREEN | 19/20 |
+| false | 20 | 19 | 0 | 1 | 0 | GREEN | 19/20 |
 | test | 45 | 43 | 0 | 2 | 0 | GREEN | 42/45 |
 | bracket | 26 | 25 | 0 | 1 | 0 | GREEN | 26/26 |
 | basename | 30 | 30 | 0 | 0 | 0 | GREEN | 30/30 |
@@ -38,10 +38,19 @@ with `bash gate/make-report.sh`.
 | chown | 16 | 12 | 0 | 4 | 0 | GREEN | 9/16 |
 | df | 15 | 3 | 2 | 8 | 2 | GREEN | 3/15 |
 
-**Total cases: 338. GNU-gated (strict+exit): all GREEN; win-only: all GREEN; notes: 3.**
+**Total cases: 338. GNU-gated (strict+exit): all GREEN; win-only: all GREEN; notes: 2 (df).**
 
-C++ 1.x parity summary: 266/338 cases byte/rc-equal to the Rust pilot;
-72 diverge (path forms, verbose message prefixes, false --help/--version
-handling, rmdir -p trailing slash, chmod --reference behavior, df drive paths).
+C++ 1.x parity summary: 270/338 cases byte/rc-equal to the Rust pilot;
+68 diverge (path forms, verbose message prefixes, sole `--version` text,
+rmdir -p trailing slash, chmod --reference behavior, df drive paths).
 These are recorded per case in `target/gate/ledger.tsv` (column `r=c:no`) and
 are inherited 1.x behaviors the 2.0 replacement intentionally re-derives from GNU.
+
+**Refresh (#1488 wiring wave, true/false):** the pilot's `true`/`false`
+honored `--help`/`--version` in any position and returned 0 for `false
+--help`/`--version`; GNU (true.c, `argc == 2`, EXIT_STATUS kept) honors them
+only as the sole argument and `false` keeps status 1. truefalse.rs now follows
+the sole-argument rule, so t06/t14/f06/f14 were promoted to `strict` and f07
+became `win` (branded version text, like t07). Rows re-measured with
+`bash gate/run-gate.sh true false`: 38 GNU-gated + 2 win, all green. The
+three former `note` rows were the pilot diverging, not the C++ applet.
