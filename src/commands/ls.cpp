@@ -2396,21 +2396,35 @@ auto print_grid(const std::vector<EntryInfo> &entries,
     }
     return widths;
   };
-  auto total_grid_width = [](const std::vector<size_t> &widths) -> size_t {
+  // [GNU] ls.c calculate_columns with init_column_info: a candidate
+  // of k columns starts from a per-column baseline of
+  // MIN_COLUMN_WIDTH (3), not from the raw name widths. Each column's
+  // effective width is max(3, name width + 2), except the last
+  // column's, which is max(3, name width); the running line length is
+  // the sum of the effective widths. GNU re-tests validity
+  // (line_len < line_length) only when a column grows past its
+  // current width, so a candidate whose columns never grow (summed
+  // effective width == 3k) stays valid even at or past the line
+  // width. The candidate count is likewise capped at
+  // ceil(width / MIN_COLUMN_WIDTH) (ls.c: max_idx).
+  auto candidate_line_len = [](const std::vector<size_t> &widths) -> size_t {
     size_t total = 0;
     for (size_t i = 0; i < widths.size(); ++i) {
-      total += widths[i];
-      if (i + 1 < widths.size()) total += 2;
+      size_t real = widths[i] + (i + 1 < widths.size() ? 2 : 0);
+      total += std::max<size_t>(real, 3);
     }
     return total;
   };
+  const int max_cols_by_width = (width + 2) / 3;
   int max_cols = static_cast<int>(std::min<size_t>(
-      entries.size(), static_cast<size_t>(std::max(width, 1))));
+      entries.size(), static_cast<size_t>(std::max(max_cols_by_width, 1))));
   int cols = 1;
   std::vector<size_t> col_widths = compute_column_widths(cols);
   for (int candidate_cols = max_cols; candidate_cols >= 1; --candidate_cols) {
     auto candidate_widths = compute_column_widths(candidate_cols);
-    if (total_grid_width(candidate_widths) < static_cast<size_t>(width)) {
+    size_t line_len = candidate_line_len(candidate_widths);
+    if (line_len < static_cast<size_t>(width) ||
+        line_len == 3 * static_cast<size_t>(candidate_cols)) {
       cols = candidate_cols;
       col_widths = std::move(candidate_widths);
       break;
