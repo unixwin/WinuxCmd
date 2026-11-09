@@ -124,3 +124,33 @@ strings (main surface).
     (d2u.cpp).
 
 Note on bloat: these are fixes to EXISTING commands, no new commands.
+
+## Gap-fill round addendum (2026-11-09, #1488/#1545): w test coverage + differential gate
+
+The inventory scan (#1545) showed w as the only audited command with no
+tests. Added `tests/unit/w/w_unit_test.cpp`: 13 session-count-independent
+pins — header block present by default and suppressed by -h/--no-header,
+-s short tail (IDLE WHAT, no LOGIN@/JCPU), -f toggles FROM off, -i forces
+FROM on, -p/-o accepted, [user] filter with no match leaves exactly the
+two header lines and exits 0, invalid short/long option wording + exit 1,
+--help/--version exit 0.
+
+Differential gate vs the WSL oracle (`w from procps-ng 4.0.4`,
+`build-vs/audit-results/w-gnu-probe.sh` vs the WinuxCmd side): exit codes
+match on every comparable face — --help/--version exit 0, `w -Z` /
+`w --bogus-option` exit 1 with byte-identical first-line diagnostics
+(`w: invalid option -- 'Z'` / `w: unrecognized option '--bogus-option'`),
+extra operands accepted silently (exit 0), -s/-h option faces match.
+Help/version wording follows the repo's dispatcher-intercepted blocks
+(notes, per the W7 tzset ruling).
+
+One residual recorded, no change: the column headers. Ours is
+byte-identical to the upstream procps-ng v4.0.4 git source
+(src/w.c:799-806, fetched to `build-vs/audit-results/procps-w-4.0.4.c`:
+`%-*s` FROM at fromlen-1, tails `"  LOGIN@   IDLE   JCPU   PCPU WHAT"` /
+`"   IDLE WHAT"`, 67/45 columns), but the Ubuntu-built 4.0.4 binary on
+the oracle host prints one column more in both tails (`PCPU  WHAT`,
+68/46 columns; measured under LC_ALL=C/en_US/zh_CN — not a runtime
+gettext effect, i.e. a distro-carried patch vs the git tag). Per the
+GNU-source-is-the-specification rule the upstream source is kept as the
+contract.
