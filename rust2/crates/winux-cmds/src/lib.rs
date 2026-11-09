@@ -16,6 +16,7 @@ pub mod bre;
 pub mod canon;
 pub mod chmod;
 pub mod chown;
+pub mod digestsum;
 pub mod df;
 pub mod digest;
 pub mod digestsum;
@@ -81,6 +82,9 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("sleep", sleep::sleep_cmd),
         ("tac", tac::tac_cmd),
         ("truncate", truncate::truncate_cmd),
+        ("b2sum", digestsum::b2sum_cmd),
+        ("sha224sum", digestsum::sha224sum_cmd),
+        ("sha384sum", digestsum::sha384sum_cmd),
     ]
 }
 
