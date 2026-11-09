@@ -2,8 +2,8 @@
 // Copyright (c) 2026 caomengxuan666 <caomengxuan666@users.noreply.github.com>
 /// @contributors:
 ///   - caomengxuan666 <2507560089@qq.com>
-/// @Description: Implementation for false command.
-/// @Version: 0.1.0
+/// @Description: false command - registration + rust2 bridge (#1488).
+/// @Version: 0.2.0
 /// @License: MIT
 /// @Copyright: Copyright © 2026 WinuxCmd
 
@@ -14,6 +14,7 @@
 import std;
 import core;
 import utils;
+import rust2_bridge;
 
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
@@ -39,12 +40,11 @@ REGISTER_COMMAND(
 
     /* see also */
     "true(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", FALSE_OPTIONS) {
-  // [GNU] false ignores every operand: no getopt is run and "--help"/
-  // "--version" are honored only as the sole argument (intercepted by
-  // the dispatcher, which prints them but returns EXIT_FAILURE for
-  // false, per true.c with false.c's EXIT_STATUS), so this handler
-  // only ever runs for the plain failure case or with operands to
-  // disregard (WinuxCmd #1196).
-  (void)ctx;
-  return 1;
+  // #1488 mechanical replacement: the semantics live in the rust2 library
+  // (rust2/crates/winux-cmds/src/truefalse.rs, false_cmd); the C++ side
+  // keeps only this registration. The dispatcher still intercepts a sole
+  // "--help"/"--version" (prints, then EXIT_FAILURE for false per true.c
+  // with false.c's EXIT_STATUS), so the handler sees the plain failure case
+  // or operands to disregard (#1196).
+  return winux::rust2::run_command("false", ctx.raw_args);
 }

@@ -49,6 +49,32 @@ set_property(CACHE BUILD_MODE PROPERTY STRINGS "DEV" "RELEASE" "DEBUG_RELEASE" "
 option(WINUXCMD_ENABLE_PCRE2 "Enable PCRE2-backed grep -P support" ON)
 option(WINUXCMD_PCRE2_JIT "Enable PCRE2 JIT support" OFF)
 
+# WinuxCmd 2.0 command library (#1488 mechanical replacement). Commands in
+# WINUXCMD_RUST2_COMMANDS have no C++ implementation any more: their
+# src/commands/<name>.cpp is a registration whose handler calls the rust2
+# staticlib (rust2/crates/winuxcmd-ffi, built by cargo below). The option
+# defaults ON only when cargo is found, so a machine without Rust still
+# configures and builds; it then ships without the commands listed here
+# (replaced commands are not dual-tracked, see rust2/REPLACEMENT-RECIPE.md).
+find_program(WINUXCMD_CARGO_EXECUTABLE cargo
+        HINTS "$ENV{CARGO_HOME}/bin" "$ENV{USERPROFILE}/.cargo/bin")
+if(WINUXCMD_CARGO_EXECUTABLE)
+    set(WINUXCMD_ENABLE_RUST2_DEFAULT ON)
+else()
+    set(WINUXCMD_ENABLE_RUST2_DEFAULT OFF)
+endif()
+option(WINUXCMD_ENABLE_RUST2
+       "Link the rust2 command library (replaced commands) into winuxcmd.exe; needs cargo"
+       ${WINUXCMD_ENABLE_RUST2_DEFAULT})
+if(WINUXCMD_ENABLE_RUST2 AND NOT WINUXCMD_CARGO_EXECUTABLE)
+    message(FATAL_ERROR
+            "WINUXCMD_ENABLE_RUST2=ON but cargo was not found. Install Rust "
+            "(https://rustup.rs) or configure with -DWINUXCMD_ENABLE_RUST2=OFF.")
+endif()
+# Commands whose implementation is the rust2 library (one name per replaced
+# applet; the recipe's per-command step appends here).
+set(WINUXCMD_RUST2_COMMANDS "true;false")
+
 # Command-set edition shipped by this build (#1438, ruling of 2026-10-30):
 #   default - every registered command stays runnable through the multicall
 #             dispatcher, but the entry links for the shell-builtin shadow
@@ -478,6 +504,16 @@ foreach(_banned _reason IN ZIP_LISTS
     endif()
 endforeach()
 
+if(NOT WINUXCMD_ENABLE_RUST2)
+    # Without the rust2 library the replaced commands have no implementation:
+    # drop their registrations rather than keep a second C++ copy (#1488:
+    # replaced commands are never dual-tracked). The bridge module goes too.
+    foreach(_rust2_cmd IN LISTS WINUXCMD_RUST2_COMMANDS)
+        list(FILTER COMMAND_SOURCES EXCLUDE REGEX "/src/commands/${_rust2_cmd}\\.cpp$")
+    endforeach()
+    message(STATUS "rust2 command library: OFF (not built: ${WINUXCMD_RUST2_COMMANDS})")
+endif()
+
 target_sources(winuxcmd-commands PRIVATE ${COMMAND_SOURCES})
 
 # Link module interface library (for settings only)
@@ -487,6 +523,9 @@ target_link_libraries(winuxcmd-commands PRIVATE winuxcmd-modules)
 file(GLOB_RECURSE CXX_MODULE_FILES CONFIGURE_DEPENDS
         "src/**/*.cppm"
 )
+if(NOT WINUXCMD_ENABLE_RUST2)
+    list(FILTER CXX_MODULE_FILES EXCLUDE REGEX "/src/bridge/rust2_bridge\\.cppm$")
+endif()
 
 target_sources(winuxcmd-commands
         PUBLIC
@@ -553,6 +592,62 @@ endif ()
 target_include_directories(winuxcmd-commands PRIVATE ${SRC_DIR} ${CMAKE_BINARY_DIR})
 
 message(STATUS "Commands library created with ${COMMAND_SOURCES_COUNT} files")
+
+# ====================================================
+# rust2 command library (staticlib, #1488)
+# ====================================================
+# Link shape: staticlib, not cdylib. The FFI post-mortem (#1487/niubash#727)
+# traced the breakage to the DLL boundary - load-time CRT stdio binding in a
+# separately linked module. A staticlib is folded into winuxcmd.exe by the
+# same link.exe run: one image, one CRT, no load-time binding. The Rust side
+# is built with +crt-static so its objects ask for libcmt (/MT), matching
+# CMAKE_MSVC_RUNTIME_LIBRARY above; with USE_STATIC_CRT=OFF it keeps rustc's
+# default msvcrt (/MD).
+if(WINUXCMD_ENABLE_RUST2)
+    set(WINUXCMD_RUST2_DIR "${CMAKE_SOURCE_DIR}/rust2")
+    # Separate CARGO_TARGET_DIR per build tree: never touches rust2/target
+    # (the gate/driver tree) and never shares artifacts across CMake trees.
+    set(WINUXCMD_RUST2_TARGET_DIR "${CMAKE_BINARY_DIR}/rust2-target" CACHE PATH
+        "CARGO_TARGET_DIR used for the rust2 staticlib build")
+    set(WINUXCMD_RUST2_LIB "${WINUXCMD_RUST2_TARGET_DIR}/release/winuxcmd_ffi.lib")
+    set(WINUXCMD_RUST2_RUSTC_FLAGS)
+    if(USE_STATIC_CRT)
+        list(APPEND WINUXCMD_RUST2_RUSTC_FLAGS -C target-feature=+crt-static)
+    endif()
+    file(GLOB_RECURSE WINUXCMD_RUST2_SOURCES CONFIGURE_DEPENDS
+            "${WINUXCMD_RUST2_DIR}/crates/*.rs"
+            "${WINUXCMD_RUST2_DIR}/crates/*/Cargo.toml")
+    # `cargo rustc --crate-type staticlib` builds only the staticlib artifact
+    # of winuxcmd-ffi (the crate also declares cdylib for host experiments).
+    # --locked: the workspace has no external crates; never resolve online.
+    add_custom_command(
+            OUTPUT "${WINUXCMD_RUST2_LIB}"
+            COMMAND ${CMAKE_COMMAND} -E env
+                    "CARGO_TARGET_DIR=${WINUXCMD_RUST2_TARGET_DIR}"
+                    "${WINUXCMD_CARGO_EXECUTABLE}" rustc --release --locked
+                    --manifest-path "${WINUXCMD_RUST2_DIR}/Cargo.toml"
+                    -p winuxcmd-ffi --lib --crate-type staticlib
+                    -- ${WINUXCMD_RUST2_RUSTC_FLAGS}
+            DEPENDS ${WINUXCMD_RUST2_SOURCES}
+                    "${WINUXCMD_RUST2_DIR}/Cargo.toml"
+                    "${WINUXCMD_RUST2_DIR}/Cargo.lock"
+            WORKING_DIRECTORY "${WINUXCMD_RUST2_DIR}"
+            COMMENT "cargo: building rust2 command library (winuxcmd_ffi.lib)"
+            VERBATIM)
+    add_custom_target(winuxcmd-rust2 DEPENDS "${WINUXCMD_RUST2_LIB}")
+
+    add_library(winuxcmd-rust2-lib STATIC IMPORTED GLOBAL)
+    # System libraries rustc reports for this staticlib
+    # (`cargo rustc ... -- --print native-static-libs`; the CRT entry is the
+    # /defaultlib directive embedded in the archive). Re-run that command and
+    # update this list if a rust2 change makes the link fail with LNK2019.
+    set_target_properties(winuxcmd-rust2-lib PROPERTIES
+            IMPORTED_LOCATION "${WINUXCMD_RUST2_LIB}"
+            INTERFACE_LINK_LIBRARIES "advapi32;kernel32;ntdll;userenv;ws2_32;dbghelp")
+    add_dependencies(winuxcmd-commands winuxcmd-rust2)
+    target_link_libraries(winuxcmd-commands PRIVATE winuxcmd-rust2-lib)
+    message(STATUS "rust2 command library: ON (${WINUXCMD_RUST2_COMMANDS}) via ${WINUXCMD_CARGO_EXECUTABLE}")
+endif()
 
 # Link commands library to main executable
 target_link_libraries(winuxcmd PRIVATE winuxcmd-commands winuxcmd-modules)

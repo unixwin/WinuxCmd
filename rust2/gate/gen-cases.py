@@ -67,7 +67,11 @@ true_rows = [
             ("bogus-long", "strict", TRUE_FALSE_ARGS[2]),
             ("dashdash", "strict", TRUE_FALSE_ARGS[3]),
             ("dash", "strict", TRUE_FALSE_ARGS[4]),
-            ("help-extra", "win", TRUE_FALSE_ARGS[5]),
+            # not-sole --help/--version are operands (true.c argc == 2):
+            # silent, so stdout is byte-gated (promoted from win in the
+            # #1488 wiring wave once truefalse.rs honored the sole rule).
+            ("help-extra", "strict", TRUE_FALSE_ARGS[5]),
+            # sole --version: text is product-branded ("(WinuxCmd)"), rc only.
             ("version", "win", TRUE_FALSE_ARGS[6]),
             ("stdin-ignored", "strict", TRUE_FALSE_ARGS[7]),
             ("triple-dash", "strict", TRUE_FALSE_ARGS[8]),
@@ -75,7 +79,7 @@ true_rows = [
             ("short-unknown", "strict", TRUE_FALSE_ARGS[10]),
             ("operand-looking", "strict", TRUE_FALSE_ARGS[11]),
             ("env-irrelevant", "strict", TRUE_FALSE_ARGS[12]),
-            ("version-extra", "win", TRUE_FALSE_ARGS[13]),
+            ("version-extra", "strict", TRUE_FALSE_ARGS[13]),
             ("case-sensitive", "strict", TRUE_FALSE_ARGS[14]),
             ("space-arg", "strict", TRUE_FALSE_ARGS[15]),
             ("double-dashdash", "strict", TRUE_FALSE_ARGS[16]),
@@ -98,15 +102,19 @@ false_rows = [
             ("bogus-long", "strict", TRUE_FALSE_ARGS[2]),
             ("dashdash", "strict", TRUE_FALSE_ARGS[3]),
             ("dash", "strict", TRUE_FALSE_ARGS[4]),
-            ("help-extra", "note", TRUE_FALSE_ARGS[5]),
-            ("version", "note", TRUE_FALSE_ARGS[6]),
+            # These three were `note` while the pilot returned 0 for
+            # `false --help/--version` and printed help for non-sole
+            # positions; with the sole-argument rule they match GNU
+            # (false.c keeps EXIT_FAILURE after printing), see truefalse.rs.
+            ("help-extra", "strict", TRUE_FALSE_ARGS[5]),
+            ("version", "win", TRUE_FALSE_ARGS[6]),
             ("stdin-ignored", "strict", TRUE_FALSE_ARGS[7]),
             ("triple-dash", "strict", TRUE_FALSE_ARGS[8]),
             ("abbrev-unknown", "strict", TRUE_FALSE_ARGS[9]),
             ("short-unknown", "strict", TRUE_FALSE_ARGS[10]),
             ("operand-looking", "strict", TRUE_FALSE_ARGS[11]),
             ("env-irrelevant", "strict", TRUE_FALSE_ARGS[12]),
-            ("version-extra", "note", TRUE_FALSE_ARGS[13]),
+            ("version-extra", "strict", TRUE_FALSE_ARGS[13]),
             ("case-sensitive", "strict", TRUE_FALSE_ARGS[14]),
             ("space-arg", "strict", TRUE_FALSE_ARGS[15]),
             ("double-dashdash", "strict", TRUE_FALSE_ARGS[16]),
