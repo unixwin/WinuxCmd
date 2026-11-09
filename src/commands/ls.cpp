@@ -138,8 +138,13 @@ auto constexpr LS_OPTIONS = std::array{
         "and sort by name; otherwise: sort by access time, newest first"),
     OPTION("-U", "", "do not sort; list entries in directory order"),
     OPTION("-v", "", "natural sort of (version) numbers within text"),
+    // [GNU] -w takes a number in xstrtoumax base-0 syntax via
+    // decode_line_length (ls.c:1867): "0x20" is 32, "010" is 8, and 0
+    // or an overflowing value means "no limit" — none of which the
+    // framework's base-10 int parse can express, so (like -T above) the
+    // raw string is kept and decoded by ls itself (#1536).
     OPTION("-w", "--width", "set output width to COLS. 0 means no limit",
-           INT_TYPE),
+           STRING_TYPE),
     OPTION("-x", "", "list entries by lines instead of by columns"),
     OPTION("-X", "", "sort alphabetically by entry extension"),
     OPTION("-Z", "--context", "print any security context of each file"),
@@ -255,6 +260,15 @@ struct SizeConfig {
 };
 
 auto get_terminal_width() -> int;
+
+// [GNU] ls.c:2307 with ls.c:1871: a decoded line length of 0 means "no
+// limit" (one unwrapped line). The width chain carries that state as
+// this sentinel instead of 0, so a decided "-w 0" / COLUMNS=0 can never
+// be mistaken for "unset" by a layout consumer (#1536).
+constexpr int kLsNoLineLimit = INT_MAX;
+auto decode_line_length(std::string_view spec) -> int;
+auto resolve_output_width(const CommandContext<LS_OPTIONS.size()> &ctx)
+    -> int;
 auto parse_indicator_style(std::string_view value)
     -> std::optional<IndicatorStyle>;
 auto long_format_requested(const CommandContext<LS_OPTIONS.size()> &ctx)
@@ -2350,18 +2364,13 @@ auto print_grid(const std::vector<EntryInfo> &entries,
 
   const auto rendered = build_rendered_entries(entries, ctx);
 
-  int width = ctx.get<int>("-w", 0);
-  if (width <= 0) {
-    width = ctx.get<int>("--width", 0);
-  }
-  if (width <= 0) {
-    width = get_terminal_width();
-  }
+  const int width = resolve_output_width(ctx);
 
-  // [GNU] #1504: a width of 0 (COLUMNS=0 or -w 0) is "unlimited":
-  // calculate_columns() puts every entry on one row with plain
-  // two-space gutters and no tab alignment.
-  if (width == 0) {
+  // [GNU] ls.c:4142-4153: a "no limit" line length (a decided -w 0,
+  // COLUMNS=0, or an overflowing width) makes -C and -x alike print
+  // every entry on one unwrapped line with plain two-space gutters
+  // and no tab alignment (print_with_separator(' ')).
+  if (width == kLsNoLineLimit) {
     for (size_t idx = 0; idx < rendered.size(); ++idx) {
       if (dired_requested(ctx)) {
         dired_note_text_entry(rendered[idx].name_offset,
@@ -2479,6 +2488,23 @@ auto validate_arguments(const CommandContext<LS_OPTIONS.size()> &ctx)
     auto parsed = parse_tab_size_value(raw);
     if (!parsed || *parsed == 0) {
       return std::unexpected("invalid tab size: '" + raw + "'");
+    }
+  }
+
+  // [GNU] ls.c:2023-2027: -w is decoded by decode_line_length during
+  // the option pass, and an undecodable value dies there with
+  // "invalid line width" (LS_FAILURE, i.e. exit 2 via the caller's
+  // prefix table). quote() marks are the UTF-8 form, as for the
+  // COLUMNS warning in get_terminal_width().
+  for (const auto &occurrence : ctx.options.occurrences()) {
+    if (occurrence.index >= LS_OPTIONS.size()) continue;
+    const auto &meta = LS_OPTIONS[occurrence.index];
+    if (meta.short_name != "-w" && meta.long_name != "--width") continue;
+    const auto *value = std::get_if<std::string>(&occurrence.value);
+    const std::string raw = value ? *value : std::string();
+    if (decode_line_length(raw) < 0) {
+      return std::unexpected("invalid line width: \xE2\x80\x98" + raw +
+                             "\xE2\x80\x99");
     }
   }
 
@@ -3062,20 +3088,76 @@ auto get_file_owner_and_group(std::wstring_view path, bool use_numeric = false)
           accounts.group.name.empty() ? "UNKNOWN" : accounts.group.name};
 }
 
+// [GNU] ls.c:1867-1886 decode_line_length(): xstrtoumax base-0
+// semantics, shared by -w (ls.c:2024) and COLUMNS (ls.c:2297).
+// Leading whitespace is skipped; '+', decimal, 0x hex and leading-0
+// octal are accepted; 0 and values too large to fit mean "no limit";
+// '-', trailing junk, or no digits at all are invalid (-1). Probed
+// against GNU 9.4: "010" -> 8, "0x20" -> 32, " 40" -> 40, "40 " /
+// "08" / "0x" / "-5" invalid, a 26-digit value is "no limit", never
+// an error (#1536).
+auto decode_line_length(std::string_view spec) -> int {
+  auto is_space = [](char c) {
+    return c == ' ' || c == '\t' || c == '\n' || c == '\v' || c == '\f' ||
+           c == '\r';
+  };
+  size_t i = 0;
+  while (i < spec.size() && is_space(spec[i])) ++i;
+  if (i < spec.size() && spec[i] == '+') ++i;
+  int base = 10;
+  if (i + 1 < spec.size() && spec[i] == '0' &&
+      (spec[i + 1] == 'x' || spec[i + 1] == 'X')) {
+    base = 16;
+    i += 2;
+  } else if (i < spec.size() && spec[i] == '0') {
+    base = 8;
+  }
+  constexpr unsigned long long kPtrdiffMax = 0x7fffffffffffffffULL;
+  unsigned long long value = 0;
+  bool overflowed = false;
+  const size_t start = i;
+  for (; i < spec.size(); ++i) {
+    const char c = spec[i];
+    unsigned digit;
+    if (c >= '0' && c <= '9')
+      digit = static_cast<unsigned>(c - '0');
+    else if (c >= 'a' && c <= 'f')
+      digit = static_cast<unsigned>(10 + (c - 'a'));
+    else if (c >= 'A' && c <= 'F')
+      digit = static_cast<unsigned>(10 + (c - 'A'));
+    else
+      break;
+    if (digit >= static_cast<unsigned>(base)) break;
+    if (value > (kPtrdiffMax - digit) / static_cast<unsigned long long>(base))
+      overflowed = true;
+    else
+      value = value * static_cast<unsigned long long>(base) + digit;
+  }
+  if (i == start || i != spec.size()) return -1;  // no digits / trailing junk
+  // [GNU] 0, an overflow past PTRDIFF_MAX, and any value too large to
+  // carry in this int width domain all mean "no limit" (ls.c:1874-1883
+  // maps LONGINT_OVERFLOW and val > PTRDIFF_MAX to 0).
+  if (overflowed || value == 0 ||
+      value > static_cast<unsigned long long>(INT_MAX)) {
+    return kLsNoLineLimit;
+  }
+  return static_cast<int>(value);
+}
+
 /**
  * @brief Get terminal width
- * @return Terminal width in columns
+ * @return Terminal width in columns, or kLsNoLineLimit for "no limit"
  *
- * [GNU] #1504: ls.c compute_line_length() priority is -w (decided by the
- * callers above), then a valid terminal width on stdout, then the
- * COLUMNS environment variable, then the 80-column default.  The tty
- * probe outranks COLUMNS: a 40-column pty with COLUMNS=200 lays out at
- * 40 (probe 2026-11-07).  COLUMNS parses with strtol semantics —
- * leading blanks and a sign allowed, full consumption required, value
- * in [0, INT_MAX]; anything else warns ("ignoring invalid width in
- * environment variable COLUMNS") and falls through to 80.  0 means
- * unlimited, i.e. everything on one row.  The value is computed once
- * per invocation, exactly like GNU's single compute_line_length() call.
+ * [GNU] #1504: ls.c compute_line_length() priority is -w (decided by
+ * resolve_output_width), then a valid terminal width on stdout, then
+ * the COLUMNS environment variable, then the 80-column default.  The
+ * tty probe outranks COLUMNS: a 40-column pty with COLUMNS=200 lays
+ * out at 40 (probe 2026-11-07).  COLUMNS decodes with
+ * decode_line_length() (ls.c:2297); an invalid value warns ("ignoring
+ * invalid width in environment variable COLUMNS") and falls through
+ * to 80, while 0 or an overflowing value means "no limit".  The value
+ * is computed once per invocation, exactly like GNU's single
+ * compute_line_length() call.
  */
 auto get_terminal_width() -> int {
   static int cached_width = -2;
@@ -3092,23 +3174,49 @@ auto get_terminal_width() -> int {
   }
   const char *columns = std::getenv("COLUMNS");
   if (columns != nullptr && *columns != '\0') {
-    errno = 0;
-    char *end = nullptr;
-    const long parsed = std::strtol(columns, &end, 10);
-    if (errno == 0 && end == columns + std::strlen(columns) && parsed >= 0 &&
-        parsed <= static_cast<long>(std::numeric_limits<int>::max())) {
-      cached_width = static_cast<int>(parsed);
+    const int decoded = decode_line_length(columns);
+    if (decoded >= 0) {
+      cached_width = decoded;
       return cached_width;
     }
-    // [DIFFERS] GNU quote() renders locale quotes; this build emits
-    // ASCII single quotes.
+    // [GNU] ls.c:2299-2302: the value is rendered with quote(), whose
+    // marks are the locale's quotation marks — the UTF-8 U+2018/U+2019
+    // form under C.UTF-8 (#1536).
     safeErrorPrint("ls: ignoring invalid width in environment variable "
-                   "COLUMNS: '");
+                   "COLUMNS: \xE2\x80\x98");
     safeErrorPrint(std::string(columns));
-    safeErrorPrint("'\n");
+    safeErrorPrint("\xE2\x80\x99\n");
   }
   cached_width = 80;  // Default to 80 columns if we can't get terminal width
   return cached_width;
+}
+
+// [GNU] ls.c:2270-2307: an explicit -w/--width is decoded first and
+// wins over every other width source; its 0 is a decided "no limit",
+// never "unset", so presence — not the value — decides whether the
+// terminal/COLUMNS chain runs at all (#1536). Both spellings share
+// one registry entry, and the last occurrence wins, as in GNU's
+// getopt sequence.
+auto resolve_output_width(const CommandContext<LS_OPTIONS.size()> &ctx)
+    -> int {
+  const std::string *raw = nullptr;
+  for (const auto &occurrence : ctx.options.occurrences()) {
+    if (occurrence.index >= LS_OPTIONS.size()) continue;
+    const auto &meta = LS_OPTIONS[occurrence.index];
+    if (meta.short_name != "-w" && meta.long_name != "--width") continue;
+    if (const auto *value = std::get_if<std::string>(&occurrence.value)) {
+      raw = value;
+    }
+  }
+  if (raw != nullptr) {
+    const int decoded = decode_line_length(*raw);
+    if (decoded >= 0) {
+      return decoded;
+    }
+    // Unreachable through process_command: validate_arguments has
+    // already rejected an undecodable -w with the GNU diagnostic.
+  }
+  return get_terminal_width();
 }
 
 /**
@@ -3173,118 +3281,6 @@ auto calculate_layout(const std::vector<std::wstring> &entries,
   int rows = (entries.size() + best_cols - 1) / best_cols;
 
   return {best_cols, rows};
-}
-
-/**
- * @brief Print entries in column format
- * @param entries List of entries
- * @param ctx Command context
- */
-auto print_columns(const std::vector<EntryInfo> &entries,
-                   const CommandContext<LS_OPTIONS.size()> &ctx) {
-  if (entries.empty()) {
-    return;
-  }
-
-  std::vector<std::string> prefixes;
-  std::vector<std::wstring> display_names;
-  prefixes.reserve(entries.size());
-  display_names.reserve(entries.size());
-  for (const auto &entry : entries) {
-    auto [display_find_data, metadata_name] = resolve_display_entry(entry, ctx);
-    prefixes.push_back(
-        build_listing_prefix(entry.full_path, display_find_data, ctx));
-    display_names.push_back(render_display_name(entry.name, entry.full_path,
-                                                display_find_data, ctx,
-                                                entry.command_line_operand));
-  }
-
-  // Check if color is enabled based on --color option
-  bool color_enabled = resolve_color_enabled(ctx);
-
-  // Get terminal width or use specified width
-  int width = ctx.get<int>("-w", 0);
-  if (width <= 0) {
-    width = ctx.get<int>("--width", 0);
-  }
-  if (width <= 0) {
-    width = get_terminal_width();
-  }
-
-  // Calculate column widths to fill the terminal
-  size_t max_display_width = 0;
-  for (size_t i = 0; i < display_names.size(); ++i) {
-    const auto &entry = display_names[i];
-    max_display_width = std::max(
-        max_display_width, prefixes[i].size() + string_display_width(entry));
-  }
-
-  // Calculate base column width
-  int base_col_width = static_cast<int>(max_display_width) + 2;
-  if (base_col_width <= 0) {
-    base_col_width = 1;
-  }
-
-  int cols = width / base_col_width;
-  if (cols < 1) cols = 1;
-  int rows = (entries.size() + cols - 1) / cols;
-
-  // Calculate total width used by all columns
-  int total_used_width = cols * base_col_width;
-  int remaining_space = width - total_used_width;
-
-  // Distribute remaining space among columns
-  std::vector<int> col_widths(cols, base_col_width);
-  if (remaining_space > 0 && cols > 0) {
-    int extra_per_col = remaining_space / cols;
-    int extra_remaining = remaining_space % cols;
-
-    for (int i = 0; i < cols; ++i) {
-      col_widths[i] += extra_per_col;
-      if (i < extra_remaining) {
-        col_widths[i] += 1;
-      }
-    }
-  }
-
-  // Print entries in columns
-  for (int row = 0; row < rows; ++row) {
-    for (int col = 0; col < cols; ++col) {
-      size_t index = row + col * rows;
-      if (index < entries.size()) {
-        const auto &entry = entries[index];
-        const auto &prefix = prefixes[index];
-        const auto &display_name = display_names[index];
-
-        safePrint(std::string_view(prefix));
-        const std::wstring entry_color(
-            get_color_for_entry(entry.name, entry.find_data));
-        if (color_enabled && !entry_color.empty()) {
-          safePrint(color_prefix_sequence());
-          safePrint(entry_color);
-        }
-
-        safePrint(wstring_to_utf8(display_name));
-        if (color_enabled && !entry_color.empty()) {
-          safePrint(COLOR_RESET);
-        }
-
-        if (col < cols - 1) {
-          size_t current_width =
-              prefix.size() + string_display_width(display_name);
-          int spaces_needed = col_widths[col] - static_cast<int>(current_width);
-          if (spaces_needed > 0) {
-            for (int i = 0; i < spaces_needed; ++i) {
-              safePrint(L" ");
-            }
-          } else {
-            safePrint(L"  ");
-          }
-        }
-      }
-    }
-    safePrintLn(L"");
-  }
 }
 
 /**
@@ -3740,13 +3736,7 @@ auto list_directory(const std::string &path,
       print_directory_total_line(entries, size_cfg, ctx);
     }
     auto rendered = build_rendered_entries(entries, ctx);
-    int width = ctx.get<int>("-w", 0);
-    if (width <= 0) {
-      width = ctx.get<int>("--width", 0);
-    }
-    if (width <= 0) {
-      width = get_terminal_width();
-    }
+    const int width = resolve_output_width(ctx);
     print_rendered_entries(rendered, static_cast<size_t>(width), ctx);
     safePrintLn(L"");
   } else if (format_mode == FormatMode::OnePerLine) {
@@ -4487,8 +4477,10 @@ REGISTER_COMMAND(
       return 2;
     }
     // [GNU] Bad command-line option values (e.g. "invalid tab size: '-1'")
-    // are serious usage errors: exit 2, not 1 (uutils #12835).
-    if (error.starts_with("invalid tab size")) {
+    // are serious usage errors: exit 2, not 1 (uutils #12835). The
+    // "invalid line width" diagnostic is LS_FAILURE in ls.c:2026 too.
+    if (error.starts_with("invalid tab size") ||
+        error.starts_with("invalid line width")) {
       report_error(result, L"ls");
       return 2;
     }

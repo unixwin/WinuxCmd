@@ -3697,9 +3697,11 @@ TEST(ls, ls_columns_invalid_warns_and_falls_back_to_80_issue1504) {
 
   auto r = p.run();
   EXPECT_EQ(r.exit_code, 0);
+  // [GNU] #1536: quote() marks are the UTF-8 ‘’ form, not ASCII.
   EXPECT_TRUE(r.stderr_text.find("ls: ignoring invalid width in environment "
-                                 "variable COLUMNS: 'abc'") !=
-              std::string::npos);
+                                 "variable COLUMNS: \xE2\x80\x98"
+                                 "abc"
+                                 "\xE2\x80\x99") != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("file_1\t file_12  file_15") !=
               std::string::npos);
 }
