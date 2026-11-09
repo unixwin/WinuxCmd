@@ -6,22 +6,39 @@
 //! registry both the CLI driver and the cdylib ABI use.
 
 pub mod argopt;
+pub mod b64core;
 pub mod basename;
+pub mod basenc;
+pub mod bre;
 pub mod canon;
 pub mod chmod;
 pub mod chown;
 pub mod df;
+pub mod digest;
+pub mod digestsum;
+pub mod digest;
 pub mod dirname;
 pub mod fsutil;
+pub mod getconf;
+pub mod hostname;
+pub mod id;
 pub mod mkdir;
 pub mod modemap;
+pub mod nproc;
 pub mod printenv;
 pub mod pwd;
 pub mod readlink;
 pub mod realpath;
 pub mod rmdir;
+pub mod sleep;
+pub mod tac;
 pub mod test_cmd;
 pub mod truefalse;
+pub mod truncate;
+pub mod uname;
+pub mod unlink;
+pub mod whoami;
+pub mod winsys;
 
 use std::ffi::OsString;
 
