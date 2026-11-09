@@ -304,8 +304,7 @@ auto time_ival7(long long seconds, int centi, bool oldstyle) -> std::string {
     } else if (seconds > 60) {
       snprintf(buf, sizeof(buf), " %2lld:%02lld ", seconds / 60, seconds % 60);
     } else {
-      snprintf(buf, sizeof(buf), " %2lld.%02ds", seconds,
-               static_cast<long long>(centi));
+      snprintf(buf, sizeof(buf), " %2lld.%02ds", seconds, centi);
     }
   }
   return std::string(buf);
