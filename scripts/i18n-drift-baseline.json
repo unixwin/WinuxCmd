@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "recorded_at": "2026-11-07T01:20:18.301330+00:00",
+  "recorded_at": "2026-11-09T02:49:45.428042+00:00",
   "note": "Pre-existing drift between master source extraction and the published locale catalogs, recorded when the drift gate landed (issue #1127 P3). May only shrink as translation sync batches land; growth in a PR must be deliberate and visible here.",
   "locales": {
     "zh-CN": {
@@ -23,12 +23,22 @@
         "legacy.cf964c601bdedf9b"
       ],
       "extra": [
+        "command.pinky.option.lookup",
+        "legacy.0dd8f6031bba80d5",
+        "legacy.1171ad640b28c83c",
         "legacy.15720dc6f6908b5c",
+        "legacy.1ba4ef81e33e6de8",
         "legacy.58ae36712a346f28",
         "legacy.61d84c02c77c3ecd",
+        "legacy.633616abe53daa05",
         "legacy.69f7198afe78ab48",
         "legacy.7dd0e16f1c06dfb4",
+        "legacy.918315ef66894645",
+        "legacy.af63994c86017ab3",
+        "legacy.af63a14c8601884b",
+        "legacy.af63ac4c86019afc",
         "legacy.b5e6b1ccdfd750ef",
+        "legacy.d4c4e1038c50071b",
         "legacy.e8f0fb830c91b78d",
         "legacy.fb7036112fc1426e"
       ]
