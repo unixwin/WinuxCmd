@@ -40,6 +40,7 @@ pub mod test_cmd;
 pub mod sleep;
 pub mod tac;
 pub mod truefalse;
+pub mod truncate;
 pub mod unlink;
 pub mod whoami;
 pub mod truncate;
@@ -79,6 +80,7 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("unlink", unlink::unlink_cmd),
         ("sleep", sleep::sleep_cmd),
         ("tac", tac::tac_cmd),
+        ("truncate", truncate::truncate_cmd),
     ]
 }
 
