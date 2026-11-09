@@ -7,6 +7,8 @@
 
 pub mod argopt;
 pub mod b64core;
+pub mod basenc;
+pub mod b64core;
 pub mod basename;
 pub mod basenc;
 pub mod bre;
@@ -64,6 +66,8 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("chmod", chmod::chmod_cmd),
         ("chown", chown::chown_cmd),
         ("df", df::df_cmd),
+        ("base64", basenc::base64_cmd),
+        ("base32", basenc::base32_cmd),
     ]
 }
 
