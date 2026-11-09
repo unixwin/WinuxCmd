@@ -6,22 +6,38 @@
 //! registry both the CLI driver and the cdylib ABI use.
 
 pub mod argopt;
+pub mod b64core;
 pub mod basename;
+pub mod basenc;
+pub mod bre;
 pub mod canon;
 pub mod chmod;
 pub mod chown;
 pub mod df;
+pub mod digest;
+pub mod digestsum;
 pub mod dirname;
 pub mod fsutil;
+pub mod getconf;
+pub mod hostname;
+pub mod id;
 pub mod mkdir;
 pub mod modemap;
+pub mod nproc;
 pub mod printenv;
 pub mod pwd;
 pub mod readlink;
 pub mod realpath;
 pub mod rmdir;
+pub mod sleep;
+pub mod tac;
 pub mod test_cmd;
 pub mod truefalse;
+pub mod truncate;
+pub mod uname;
+pub mod unlink;
+pub mod whoami;
+pub mod winsys;
 
 use std::ffi::OsString;
 
@@ -47,6 +63,17 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("chmod", chmod::chmod_cmd),
         ("chown", chown::chown_cmd),
         ("df", df::df_cmd),
+        ("base64", basenc::base64_cmd),
+        ("base32", basenc::base32_cmd),
+        ("whoami", whoami::whoami_cmd),
+        ("nproc", nproc::nproc_cmd),
+        ("unlink", unlink::unlink_cmd),
+        ("sleep", sleep::sleep_cmd),
+        ("tac", tac::tac_cmd),
+        ("truncate", truncate::truncate_cmd),
+        ("b2sum", digestsum::b2sum_cmd),
+        ("sha224sum", digestsum::sha224sum_cmd),
+        ("sha384sum", digestsum::sha384sum_cmd),
     ]
 }
 

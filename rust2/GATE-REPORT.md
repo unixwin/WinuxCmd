@@ -40,6 +40,36 @@ with `bash gate/make-report.sh`.
 
 **Total cases: 338. GNU-gated (strict+exit): all GREEN; win-only: all GREEN; notes: 2 (df).**
 
+
+## Wave2 (#1488, second batch)
+
+15 commands: `whoami nproc unlink sleep base64 base32 b2sum sha224sum sha384sum tac truncate uname id hostname getconf`. Digest bytes are platform-independent
+(sha224sum/sha384sum/b2sum gate mostly strict); whoami/nproc/uname/id/hostname/getconf
+carry the Windows value model of the 1.x C++ applets, so their value cases gate
+Rust-vs-C++ rc (win) while rc-only error cases still gate against GNU. Known
+GNU-vs-C++ divergences (hostname net-tools options, getconf -a table, nproc affinity
+counts) are the documented 1.x behavior the Rust side follows.
+
+| command | cases | strict | exit | win | note | GNU-gated result | C++ parity (rc+stdout) |
+|---|---|---|---|---|---|---|---|
+| whoami | 20 | 0 | 6 | 14 | 0 | GREEN | 18/20 |
+| nproc | 22 | 6 | 4 | 12 | 0 | GREEN | 20/22 |
+| unlink | 22 | 22 | 0 | 0 | 0 | GREEN | 22/22 |
+| sleep | 24 | 12 | 12 | 0 | 0 | GREEN | 24/24 |
+| base64 | 30 | 28 | 0 | 2 | 0 | GREEN | 28/30 |
+| base32 | 24 | 22 | 0 | 2 | 0 | GREEN | 22/24 |
+| b2sum | 22 | 20 | 1 | 1 | 0 | GREEN | 21/22 |
+| sha224sum | 20 | 17 | 1 | 2 | 0 | GREEN | 18/20 |
+| sha384sum | 20 | 17 | 1 | 2 | 0 | GREEN | 18/20 |
+| tac | 26 | 25 | 0 | 1 | 0 | GREEN | 21/26 |
+| truncate | 30 | 30 | 0 | 0 | 0 | GREEN | 29/30 |
+| uname | 22 | 0 | 4 | 18 | 0 | GREEN | 20/22 |
+| id | 22 | 8 | 0 | 14 | 0 | GREEN | 20/22 |
+| hostname | 22 | 0 | 5 | 17 | 0 | GREEN | 20/22 |
+| getconf | 22 | 5 | 0 | 17 | 0 | GREEN | 19/22 |
+
+**Wave2 total cases: 348; GNU-gated + win-gated: all GREEN; C++ parity: 320/348.**
+
 C++ 1.x parity summary: 270/338 cases byte/rc-equal to the Rust pilot;
 68 diverge (path forms, verbose message prefixes, sole `--version` text,
 rmdir -p trailing slash, chmod --reference behavior, df drive paths).

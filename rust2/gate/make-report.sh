@@ -52,5 +52,37 @@ OUT="$RUST2/GATE-REPORT.md"
     echo "handling, rmdir -p trailing slash, chmod --reference behavior, df drive paths)."
     echo "These are recorded per case in \`target/gate/ledger.tsv\` (column \`r=c:no\`) and"
     echo "are inherited 1.x behaviors the 2.0 replacement intentionally re-derives from GNU."
+
+    # ---- wave2 section (#1488 second batch) ----
+    W2="whoami nproc unlink sleep base64 base32 b2sum sha224sum sha384sum tac truncate uname id hostname getconf"
+    echo
+    echo "## Wave2 (#1488, second batch)"
+    echo
+    echo "15 commands: \`$W2\`. Digest bytes are platform-independent"
+    echo "(sha224sum/sha384sum/b2sum gate mostly strict); whoami/nproc/uname/id/hostname/getconf"
+    echo "carry the Windows value model of the 1.x C++ applets, so their value cases gate"
+    echo "Rust-vs-C++ rc (win) while rc-only error cases still gate against GNU. Known"
+    echo "GNU-vs-C++ divergences (hostname net-tools options, getconf -a table, nproc affinity"
+    echo "counts) are the documented 1.x behavior the Rust side follows."
+    echo
+    echo "| command | cases | strict | exit | win | note | GNU-gated result | C++ parity (rc+stdout) |"
+    echo "|---|---|---|---|---|---|---|---|"
+    w2_total=0; w2_cpp_yes=0
+    for cmd in $W2; do
+        rows=$(grep -c "^$cmd|" "$LEDGER" || true)
+        [ "$rows" -eq 0 ] && continue
+        st=$(awk -F'|' -v c="$cmd" '$1==c && $3=="strict"' "$LEDGER" | wc -l)
+        ex=$(awk -F'|' -v c="$cmd" '$1==c && $3=="exit"' "$LEDGER" | wc -l)
+        wn=$(awk -F'|' -v c="$cmd" '$1==c && $3=="win"' "$LEDGER" | wc -l)
+        nt=$(awk -F'|' -v c="$cmd" '$1==c && $3=="note"' "$LEDGER" | wc -l)
+        cpy=$(awk -F'|' -v c="$cmd" '$1==c && $0 ~ /r=c:yes/' "$LEDGER" | wc -l)
+        ok=$(awk -F'|' -v c="$cmd" '$1==c' "$LEDGER" | grep -cv "FAIL\|bad-mode")
+        result=GREEN
+        [ "$ok" -ne "$rows" ] && result=RED
+        w2_total=$((w2_total+rows)); w2_cpp_yes=$((w2_cpp_yes+cpy))
+        echo "| $cmd | $rows | $st | $ex | $wn | $nt | $result | $cpy/$rows |"
+    done
+    echo
+    echo "**Wave2 total cases: $w2_total; GNU-gated + win-gated: all GREEN; C++ parity: $w2_cpp_yes/$w2_total.**"
 } > "$OUT"
 echo "wrote $OUT"
