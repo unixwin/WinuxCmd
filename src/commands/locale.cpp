@@ -84,6 +84,106 @@ std::string effective_codeset() {
   return "UTF-8";
 }
 
+// [GNU] glibc locale(1) answers NAME operands from a fixed set of locale
+// item names (glibc categories.def) plus the special names locale_special
+// handles; `charmap` is one of those specials while `codeset` is not
+// (glibc 2.39: `locale codeset` -> `locale: unknown name "codeset"`).
+// This is the whitelist of names this applet can answer on Windows; any
+// other operand is the GNU "unknown name" error.
+auto constexpr KNOWN_KEYWORDS = std::array{
+    "charmap",
+    "decimal_point",
+    "thousands_sep",
+    "yesexpr",
+    "noexpr",
+    "yesstr",
+    "nostr",
+    "era",
+    "day",
+    "abday",
+    "mon",
+    "abmon",
+    "int_curr_symbol",
+    "currency_symbol",
+    "mon_decimal_point",
+    "mon_thousands_sep",
+    "positive_sign",
+    "negative_sign",
+    "frac_digits",
+    "int_frac_digits",
+    "p_cs_precedes",
+    "p_sep_by_space",
+    "n_cs_precedes",
+    "n_sep_by_space",
+};
+
+// [GNU] glibc print_item() renders -k values by item type: string items
+// as name="value" (quoted even when empty), byte/word items (the numeric
+// monetary flags) unquoted, and the era stringlist as a bare name= when
+// empty (glibc locale/programs/locale.c print_item).
+auto is_numeric_keyword(const std::string& keyword) -> bool {
+  return keyword == "frac_digits" || keyword == "int_frac_digits" ||
+         keyword == "p_cs_precedes" || keyword == "p_sep_by_space" ||
+         keyword == "n_cs_precedes" || keyword == "n_sep_by_space";
+}
+
+auto is_known_keyword(const std::string& keyword) -> bool {
+  return std::find(KNOWN_KEYWORDS.begin(), KNOWN_KEYWORDS.end(), keyword) !=
+         KNOWN_KEYWORDS.end();
+}
+
+// The value the applet's simulation model answers for a known keyword.
+auto keyword_value(const std::string& keyword) -> std::string {
+  const auto value = get_system_locale();
+  if (keyword == "charmap") return effective_codeset();
+  if (keyword == "decimal_point") return ".";
+  if (keyword == "thousands_sep") return "";
+  if (keyword == "yesexpr") return "^[yY]";
+  if (keyword == "noexpr") return "^[nN]";
+  if (keyword == "yesstr") return "yes";
+  if (keyword == "nostr") return "no";
+  if (keyword == "era") return "";
+  if (keyword == "day")
+    return "Sunday;Monday;Tuesday;Wednesday;Thursday;Friday;Saturday";
+  if (keyword == "abday") return "Sun;Mon;Tue;Wed;Thu;Fri;Sat";
+  if (keyword == "mon")
+    return "January;February;March;April;May;June;July;August;September;"
+           "October;November;December";
+  if (keyword == "abmon") return "Jan;Feb;Mar;Apr;May;Jun;Jul;Aug;Sep;Oct;"
+                                "Nov;Dec";
+  if (keyword == "int_curr_symbol") return "USD ";
+  if (keyword == "currency_symbol") return "$";
+  if (keyword == "mon_decimal_point") return ".";
+  if (keyword == "mon_thousands_sep") return ",";
+  if (keyword == "positive_sign" || keyword == "negative_sign") return "";
+  return "1";  // numeric monetary flags (frac_digits, *_cs_precedes, ...)
+}
+
+// [GNU] A NAME operand in the plain or -k mode is either the special
+// charmap or one of the glibc item names; anything else is diagnosed as
+// `locale: unknown name "X"` and exits 1 (glibc locale_special.c).
+auto report_unknown_name(const std::string& name) -> int {
+  safeErrorPrintLn("locale: unknown name \"" + name + "\"");
+  return 1;
+}
+
+// Print one keyword value: bare value in answer mode, `name="value"` in
+// -k mode (strings quoted, numeric flags unquoted, empty era bare).
+void print_keyword(const std::string& keyword, bool keyword_mode) {
+  const std::string value = keyword_value(keyword);
+  if (!keyword_mode) {
+    safePrintLn(value);
+    return;
+  }
+  if (keyword == "era") {
+    safePrintLn(keyword + "=" + value);
+  } else if (is_numeric_keyword(keyword)) {
+    safePrintLn(keyword + "=" + value);
+  } else {
+    safePrintLn(keyword + "=\"" + value + "\"");
+  }
+}
+
 // Get all available locales
 std::vector<std::string> get_available_locales() {
   std::vector<std::string> locales;
@@ -211,8 +311,17 @@ REGISTER_COMMAND(locale,
     return 0;
   }
 
-  // -c/--category-name: print names of defined locale categories
+  // -c/--category-name: print names of defined locale categories.
+  // [GNU] glibc locale(1) writes nothing unless NAME operands are given:
+  // a bare `-c` is silent and exits 0 (glibc 2.39 locale.c main(): only
+  // the "no argument at all" branch dumps the environment, -c/-k feed
+  // the per-NAME loop). The per-category value dump needs a locale
+  // archive Windows does not carry (simulation layer, niu #758), so the
+  // named form keeps answering the category-name list.
   if (show_category_names) {
+    if (ctx.positionals.empty()) {
+      return 0;
+    }
     safePrintLn("LC_CTYPE");
     safePrintLn("LC_NUMERIC");
     safePrintLn("LC_TIME");
@@ -228,150 +337,37 @@ REGISTER_COMMAND(locale,
     return 0;
   }
 
-  // -k/--keyword-name: print keyword names and values
+  // -k/--keyword-name: print keyword names and values.
+  // [GNU] bare -k is silent (see -c above); each NAME operand must be a
+  // known item name, else the "unknown name" error, exit 1.
   if (show_keyword_names) {
-    if (!ctx.positionals.empty()) {
-      const auto keyword = std::string(ctx.positionals.front());
-      const auto value = get_system_locale();
-      if (keyword == "charmap") {
-        safePrintLn("charmap=" + effective_codeset());
-      } else if (keyword == "codeset") {
-        safePrintLn("codeset=" + effective_codeset());
-      } else if (keyword == "collate") {
-        safePrintLn("collate=" + value);
-      } else if (keyword == "ctype") {
-        safePrintLn("ctype=" + value);
-      } else if (keyword == "monetary") {
-        safePrintLn("monetary=" + value);
-      } else if (keyword == "numeric") {
-        safePrintLn("numeric=" + value);
-      } else if (keyword == "time") {
-        safePrintLn("time=" + value);
-      } else {
-        safePrintLn(keyword + "=" + value);
+    if (ctx.positionals.empty()) {
+      return 0;
+    }
+    for (const auto& positional : ctx.positionals) {
+      const auto keyword = std::string(positional);
+      if (!is_known_keyword(keyword)) {
+        return report_unknown_name(keyword);
       }
-    } else {
-      // No keyword specified: print all locale keywords and values
-      safePrintLn("LANG=" + get_system_locale());
-      safePrintLn(
-          "LC_CTYPE="
-          " + get_system_locale() + "
-          "");
-      safePrintLn(
-          "LC_NUMERIC="
-          " + get_system_locale() + "
-          "");
-      safePrintLn(
-          "LC_TIME="
-          " + get_system_locale() + "
-          "");
-      safePrintLn(
-          "LC_COLLATE="
-          " + get_system_locale() + "
-          "");
-      safePrintLn(
-          "LC_MONETARY="
-          " + get_system_locale() + "
-          "");
-      safePrintLn(
-          "LC_MESSAGES="
-          " + get_system_locale() + "
-          "");
-      safePrintLn("charmap=" + effective_codeset());
-      safePrintLn("codeset=" + effective_codeset());
+      print_keyword(keyword, /*keyword_mode=*/true);
     }
     return 0;
   }
 
   if (!ctx.positionals.empty()) {
-    const auto keyword = std::string(ctx.positionals.front());
-    const auto value = get_system_locale();
-    if (keyword == "charmap") {
-      safePrintLn(effective_codeset());
-      return 0;
+    // [GNU] a NAME operand is answered from the item-name whitelist; an
+    // unknown name is `locale: unknown name "X"`, exit 1 (glibc
+    // locale_special.c, observed on glibc 2.39: `locale codeset` is an
+    // unknown name, `mon` is the LC_TIME full-month item — `month` is
+    // not a name at all). Several NAMEs are answered in argv order.
+    for (const auto& positional : ctx.positionals) {
+      const auto keyword = std::string(positional);
+      if (!is_known_keyword(keyword)) {
+        return report_unknown_name(keyword);
+      }
+      print_keyword(keyword, /*keyword_mode=*/false);
     }
-    if (keyword == "default_language") {
-      safePrintLn(value.substr(0, value.find_first_of("_-")));
-      return 0;
-    }
-    if (keyword == "decimal_point") {
-      safePrintLn(".");
-      return 0;
-    }
-    if (keyword == "thousands_sep") {
-      safePrintLn("");
-      return 0;
-    }
-    if (keyword == "codeset") {
-      safePrintLn(effective_codeset());
-      return 0;
-    }
-    if (keyword == "yesexpr") {
-      safePrintLn("^[yY]");
-      return 0;
-    }
-    if (keyword == "noexpr") {
-      safePrintLn("^[nN]");
-      return 0;
-    }
-    if (keyword == "yesstr") {
-      safePrintLn("yes");
-      return 0;
-    }
-    if (keyword == "nostr") {
-      safePrintLn("no");
-      return 0;
-    }
-    if (keyword == "era") {
-      safePrintLn("");
-      return 0;
-    }
-    if (keyword == "day") {
-      safePrintLn("Sunday;Monday;Tuesday;Wednesday;Thursday;Friday;Saturday");
-      return 0;
-    }
-    if (keyword == "abday") {
-      safePrintLn("Sun;Mon;Tue;Wed;Thu;Fri;Sat");
-      return 0;
-    }
-    if (keyword == "month") {
-      safePrintLn(
-          "January;February;March;April;May;June;July;August;September;October;"
-          "November;December");
-      return 0;
-    }
-    if (keyword == "abmon") {
-      safePrintLn("Jan;Feb;Mar;Apr;May;Jun;Jul;Aug;Sep;Oct;Nov;Dec");
-      return 0;
-    }
-    if (keyword == "int_curr_symbol") {
-      safePrintLn("USD ");
-      return 0;
-    }
-    if (keyword == "currency_symbol") {
-      safePrintLn("$");
-      return 0;
-    }
-    if (keyword == "mon_decimal_point") {
-      safePrintLn(".");
-      return 0;
-    }
-    if (keyword == "mon_thousands_sep") {
-      safePrintLn(",");
-      return 0;
-    }
-    if (keyword == "positive_sign" || keyword == "negative_sign") {
-      safePrintLn("");
-      return 0;
-    }
-    if (keyword == "frac_digits" || keyword == "int_frac_digits" ||
-        keyword == "p_cs_precedes" || keyword == "p_sep_by_space" ||
-        keyword == "n_cs_precedes" || keyword == "n_sep_by_space") {
-      safePrintLn("1");
-      return 0;
-    }
-    safeErrorPrintLn("locale: unknown keyword '" + keyword + "'");
-    return 1;
+    return 0;
   }
 
   // Print current locale settings

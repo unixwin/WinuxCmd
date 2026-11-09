@@ -121,3 +121,80 @@ TEST(locale, locale_usage_option) {
   EXPECT_TRUE(r.stdout_text.find("Usage: locale") != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("--all-locales") != std::string::npos);
 }
+
+// [GNU] glibc locale(1) writes nothing unless NAME operands are given:
+// a bare -c (locale.c main(): only the no-argument branch dumps the
+// environment) is silent and exits 0.
+TEST(locale, locale_bare_c_is_silent) {
+  Pipeline p;
+  p.add(L"locale.exe", {L"-c"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "");
+}
+
+// [GNU] bare -k is likewise silent, exit 0.
+TEST(locale, locale_bare_k_is_silent) {
+  Pipeline p;
+  p.add(L"locale.exe", {L"-k"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "");
+  EXPECT_TRUE(r.stderr_text.empty());
+}
+
+// [GNU] an unknown NAME operand is `locale: unknown name "X"`, exit 1
+// (glibc locale_special.c wording; glibc 2.39 rejects `codeset`,
+// `month` and `default_language` — `mon` is the real LC_TIME item).
+TEST(locale, locale_unknown_name_wording) {
+  Pipeline bogus;
+  bogus.add(L"locale.exe", {L"codeset"});
+  auto bogus_result = bogus.run();
+  EXPECT_EQ(bogus_result.exit_code, 1);
+  EXPECT_EQ_TEXT(bogus_result.stdout_text, "");
+  EXPECT_EQ_TEXT(bogus_result.stderr_text, "locale: unknown name \"codeset\"\n");
+
+  Pipeline empty;
+  empty.add(L"locale.exe", {L""});
+  auto empty_result = empty.run();
+  EXPECT_EQ(empty_result.exit_code, 1);
+  EXPECT_EQ_TEXT(empty_result.stderr_text, "locale: unknown name \"\"\n");
+
+  Pipeline kmode;
+  kmode.add(L"locale.exe", {L"-k", L"nosuchkw123"});
+  auto kmode_result = kmode.run();
+  EXPECT_EQ(kmode_result.exit_code, 1);
+  EXPECT_EQ_TEXT(kmode_result.stderr_text,
+                 "locale: unknown name \"nosuchkw123\"\n");
+}
+
+// [GNU] `mon` is the LC_TIME full-month item (glibc categories.def);
+// the C-locale value is the ;-joined English month list.
+TEST(locale, locale_mon_keyword) {
+  Pipeline p;
+  p.add(L"locale.exe", {L"mon"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text,
+                 "January;February;March;April;May;June;July;August;September;"
+                 "October;November;December\n");
+}
+
+// [GNU] glibc print_item(): -k renders string items as name="value"
+// (quoted), numeric monetary flags unquoted, in argv order.
+TEST(locale, locale_k_mode_quoting) {
+  Pipeline charmap;
+  charmap.add(L"locale.exe", {L"-k", L"charmap"});
+  auto charmap_result = charmap.run();
+  EXPECT_EQ(charmap_result.exit_code, 0);
+  EXPECT_CONTAINS(charmap_result.stdout_text, "charmap=\"");
+
+  Pipeline both;
+  both.add(L"locale.exe", {L"-k", L"decimal_point", L"frac_digits"});
+  auto both_result = both.run();
+  EXPECT_EQ(both_result.exit_code, 0);
+  EXPECT_EQ_TEXT(both_result.stdout_text, "decimal_point=\".\"\nfrac_digits=1\n");
+}

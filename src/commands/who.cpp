@@ -68,6 +68,7 @@ struct Config {
   bool include_mesg = false;
   bool include_idle = false;  // -u: idle + pid columns
   bool my_line_only = false;  // -m or the two-operand "am i" form
+  bool no_records = false;    // FILE operand names an unreadable file
   std::optional<std::string> unsupported;
 };
 
@@ -99,13 +100,16 @@ auto build_config(const CommandContext<WHO_OPTIONS.size()>& ctx)
   if (ctx.positionals.size() == 2) {
     cfg.my_line_only = true;
   } else if (ctx.positionals.size() == 1) {
-    // [DIFFERS] A utmp FILE operand is accepted, but its records are not
+    // [GNU] coreutils who.c has no FILE existence validation: a FILE
+    // operand that cannot be opened simply yields zero utmp records and
+    // a silent exit 0 (observed on coreutils 9.4: `who /no/such/utmp`
+    // prints nothing, exits 0 — utmpxname()/getutent() fail lazily).
+    // [DIFFERS] An existing FILE is accepted but its records are not
     // parsed: the session table replaces utmp on Windows (simulation
-    // layer, niu #758). A missing file is still the GNU error.
+    // layer, niu #758).
     std::error_code ec;
     if (!std::filesystem::exists(ctx.positionals.front(), ec)) {
-      return std::unexpected(std::string(ctx.positionals.front()) +
-                             ": No such file or directory");
+      cfg.no_records = true;
     }
   }
 
@@ -131,7 +135,7 @@ auto build_config(const CommandContext<WHO_OPTIONS.size()>& ctx)
   if (cfg.unsupported) {
     return std::unexpected(
         winux::i18n::translate("command.who.error.unsupported_option",
-                               "who: option is not supported on Windows: ") +
+                               "option is not supported on Windows: ") +
         *cfg.unsupported);
   }
   return cfg;
@@ -319,9 +323,9 @@ auto rtrim(std::string value) -> std::string {
 }
 
 // [GNU] coreutils who.c print_line(): "%-8s" user, optional " x" mesg,
-// " %-12s" line, " %-16s" time, optional " %-6s" idle and " %10s" pid
-// (both suppressed in short output), " %-8s" comment; trailing spaces
-// are stripped.
+// " %-12s" line, " %-*s" time (time_format_width 12 in the C/POSIX
+// branch), optional " %-6s" idle and " %10s" pid (both suppressed in
+// short output), " %-8s" comment; trailing spaces are stripped.
 auto print_line(const Config& cfg, const std::string& user, char state,
                 const std::string& line, const std::string& time_str,
                 const std::string& idle, const std::string& pid,
@@ -332,7 +336,7 @@ auto print_line(const Config& cfg, const std::string& user, char state,
     out += state;
   }
   out += " " + pad_right(line, 12);
-  out += " " + pad_right(time_str, 16);
+  out += " " + pad_right(time_str, 12);
   if (cfg.include_idle && !cfg.short_output) {
     out += " " + pad_right(idle, 6);
     out += " " + pad_left(pid, 10);
@@ -341,18 +345,24 @@ auto print_line(const Config& cfg, const std::string& user, char state,
   return rtrim(out);
 }
 
+// [GNU] coreutils who.c:803-811: the C/POSIX time face is "%b %e %H:%M"
+// (12 columns, space-padded day) and time_format_width is 12; the
+// "%Y-%m-%d %H:%M" 16-column face is the hard-locale branch only.
 auto format_logon(long long logon_time) -> std::string {
   if (logon_time < 0) return {};
   const std::time_t t = static_cast<std::time_t>(logon_time);
   std::tm local{};
   localtime_s(&local, &t);
   char buf[32];
-  strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M", &local);
+  strftime(buf, sizeof(buf), "%b %e %H:%M", &local);
   return std::string(buf);
 }
 
 auto run(const Config& cfg) -> int {
-  auto entries = enumerate_entries(cfg.include_idle);
+  // [GNU] an unreadable FILE operand answers zero records; only the -H
+  // heading (if requested) is printed, and the run still exits 0.
+  auto entries = cfg.no_records ? std::vector<WhoEntry>{}
+                                : enumerate_entries(cfg.include_idle);
 
   if (cfg.my_line_only && !cfg.short_list) {
     DWORD my_session = 0;

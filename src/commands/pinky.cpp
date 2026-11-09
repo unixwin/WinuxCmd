@@ -38,10 +38,10 @@ auto constexpr PINKY_OPTIONS = std::array{
     OPTION("-p", "", "omit the user plan file in long format", BOOL_TYPE),
     // [GNU]
     // [DIFFERS] - short format is already the default
-    OPTION("-s", "", "do short format output", BOOL_TYPE),
-    // [GNU]
-    // [DIFFERS] - hostname lookup not applicable on Windows
-    OPTION("", "--lookup", "attempt to canonicalize hostnames", BOOL_TYPE)};
+    OPTION("-s", "", "do short format output", BOOL_TYPE)};
+// [GNU] coreutils 9.4 pinky declares NO long options besides --help and
+// --version (src/pinky.c longopts); a prior revision accepted an invented
+// --lookup, which GNU rejects as an unrecognized option.
 
 namespace {
 auto current_user_name() -> std::string {
@@ -208,8 +208,10 @@ auto print_short_entry(const SessionEntry& entry, bool include_fullname,
     const std::time_t t = static_cast<std::time_t>(entry.logon_time);
     std::tm local{};
     localtime_s(&local, &t);
+    // [GNU] pinky.c time_format "%b %e %H:%M": the day is space-padded,
+    // not zero-padded ("Nov  9", not "Nov 09").
     char buf[32];
-    strftime(buf, sizeof(buf), "%b %d %H:%M", &local);
+    strftime(buf, sizeof(buf), "%b %e %H:%M", &local);
     out += buf;
   }
   while (!out.empty() && out.back() == ' ') out.pop_back();
@@ -268,13 +270,18 @@ REGISTER_COMMAND(pinky, "pinky", "pinky [OPTION]... [USER]...",
   (void)ctx.get<bool>("-h", false);
   (void)ctx.get<bool>("-p", false);
   (void)ctx.get<bool>("-s", false);
-  (void)ctx.get<bool>("--lookup", false);
 
   if (long_format) {
     if (ctx.positionals.empty()) {
+      // [GNU] coreutils pinky.c usage(): the diagnostic carries the
+      // standard "Try 'pinky --help'" hint and exits 1.
       safeErrorPrintLn(
           "pinky: no username specified; at least one must be specified when "
           "using -l");
+      safeErrorPrintLn(
+          winux::i18n::format("common.try_help",
+                              "Try '{} --help' for more information.",
+                              "pinky"));
       return 1;
     }
     for (auto arg : ctx.positionals)
