@@ -1,0 +1,4 @@
+# Windows libtest deadlocks on very high core counts (32 logical CPUs here)
+# when every test grabs a capture thread; keep concurrency bounded.
+[alias]
+t = "test -- --test-threads=4"
