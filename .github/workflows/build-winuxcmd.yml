@@ -6,6 +6,11 @@ on:
     tags: [ "v*" ]
   pull_request:
     branches: [ "main", "master" ]
+  # Manual re-runs: push events occasionally fail to fan out (observed on
+  # PR #1547, where a second push produced no runs at all), and this
+  # workflow carries the i18n-drift gate that a branch update must be able
+  # to re-verify without a no-op commit.
+  workflow_dispatch:
 
 permissions:
   contents: write

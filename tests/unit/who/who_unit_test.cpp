@@ -152,15 +152,31 @@ TEST(who, who_extra_operand) {
   EXPECT_CONTAINS(r.stderr_text, "extra operand");
 }
 
-// [#1462] A missing utmp FILE operand is the GNU error, exit 1.
+// [#1462] coreutils who.c has no FILE existence validation: an
+// unopenable FILE operand yields zero records and a silent exit 0
+// (observed on coreutils 9.4: `who /no/such/utmp` prints nothing).
 TEST(who, who_missing_file) {
   Pipeline p;
   p.add(L"who.exe", {L"no_such_utmp_file_xyz"});
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 1);
-  EXPECT_CONTAINS(r.stderr_text, "No such file or directory");
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.empty());
+}
+
+// [GNU] scan_entries() prints the heading before the (empty) record
+// loop, so `-H FILE` still shows the header with no rows.
+TEST(who, who_missing_file_heading_only) {
+  Pipeline p;
+  p.add(L"who.exe", {L"-H", L"no_such_utmp_file_xyz"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.empty());
+  EXPECT_EQ_TEXT(r.stdout_text, "NAME     LINE         TIME         COMMENT\n");
 }
 
 // [#1462] The two-operand "am i" form lists only the caller's line.
@@ -182,4 +198,31 @@ TEST(who, who_lookup) {
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_TRUE(r.stdout_text.empty());
   EXPECT_CONTAINS(r.stderr_text, "not supported on Windows");
+}
+
+// [#1462] The refusal is reported through report_error(), which already
+// prepends "who: "; the diagnostic itself must not repeat the prefix.
+TEST(who, who_unsupported_option_single_prefix) {
+  Pipeline p;
+  p.add(L"who.exe", {L"-b"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "who: option is not supported on Windows: --boot\n");
+}
+
+// [GNU] coreutils who.c:803-811: in the C/POSIX branch the TIME field is
+// 12 columns and the -u header gains " %-6s" IDLE and " %10s" PID.
+TEST(who, who_heading_users_field_widths) {
+  Pipeline p;
+  p.add(L"who.exe", {L"-H", L"-u"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  const std::string expected =
+      "NAME     LINE         TIME         IDLE          PID COMMENT\n";
+  EXPECT_TRUE(r.stdout_text.rfind(expected, 0) == 0);
+  EXPECT_TRUE(r.stdout_text.find("TIME             IDLE") == std::string::npos);
 }

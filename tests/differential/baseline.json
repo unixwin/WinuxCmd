@@ -840,6 +840,10 @@
       "bucket": "PASS",
       "command": "grep"
     },
+    "corpus/grep/07-initial-tab-width.case": {
+      "bucket": "PASS",
+      "command": "grep"
+    },
     "corpus/head/01-n-lines.case": {
       "bucket": "PASS",
       "command": "head"
