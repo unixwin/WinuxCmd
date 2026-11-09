@@ -1,0 +1,14 @@
+[package]
+name = "winuxcmd-driver"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "winuxcmd-driver"
+path = "src/main.rs"
+
+[dependencies]
+winux-core = { path = "../winux-core" }
+winux-cmds = { path = "../winux-cmds" }

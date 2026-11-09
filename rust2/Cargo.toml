@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/winux-core",
+    "crates/winux-cmds",
+    "crates/winuxcmd-ffi",
+    "crates/winuxcmd-driver",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["WinuxCmd 2.0 wave1 pilot"]
+
+[profile.release]
+debug = false
