@@ -27,6 +27,7 @@ pub mod id;
 pub mod mkdir;
 pub mod modemap;
 pub mod nproc;
+pub mod nproc;
 pub mod printenv;
 pub mod pwd;
 pub mod readlink;
@@ -35,7 +36,10 @@ pub mod rmdir;
 pub mod sleep;
 pub mod tac;
 pub mod test_cmd;
+pub mod sleep;
 pub mod truefalse;
+pub mod unlink;
+pub mod whoami;
 pub mod truncate;
 pub mod uname;
 pub mod unlink;
@@ -68,6 +72,10 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("df", df::df_cmd),
         ("base64", basenc::base64_cmd),
         ("base32", basenc::base32_cmd),
+        ("whoami", whoami::whoami_cmd),
+        ("nproc", nproc::nproc_cmd),
+        ("unlink", unlink::unlink_cmd),
+        ("sleep", sleep::sleep_cmd),
     ]
 }
 
