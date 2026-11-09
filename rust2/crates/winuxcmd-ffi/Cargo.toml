@@ -5,9 +5,17 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 
+# Two link shapes from one ABI source:
+# * cdylib    - load-time host binding (niu/rubash provider experiments)
+# * staticlib - linked straight into winuxcmd.exe by the #1488 mechanical
+#   replacement wave. Static is the sanctioned in-process shape: no DLL
+#   boundary, no load-time CRT stdio binding (the #1487/#727 root causes).
+# Both artifacts share the same `winuxcmd_run` ABI and its catch_unwind
+# boundary; CMake consumes the staticlib (`winuxcmd_ffi.lib`) plus the
+# `native-static-libs` list rustc emits for it.
 [lib]
 name = "winuxcmd_ffi"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
 winux-core = { path = "../winux-core" }
