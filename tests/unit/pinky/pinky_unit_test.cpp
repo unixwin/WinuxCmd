@@ -57,3 +57,35 @@ TEST(pinky, pinky_long_unknown_user) {
       r.stdout_text,
       "Login name: nosuchuser                  In real life:  ???\n");
 }
+
+// [#1462] coreutils pinky usage(): the -l-without-username diagnostic
+// carries the standard "Try 'pinky --help'" hint and exits 1.
+TEST(pinky, pinky_l_no_username_try_help) {
+  Pipeline p;
+  p.add(L"pinky.exe", {L"-l"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "pinky: no username specified; at least one must be specified when "
+      "using -l\n"
+      "Try 'pinky --help' for more information.\n");
+}
+
+// [GNU] coreutils 9.4 pinky declares no long options beyond
+// --help/--version (src/pinky.c longopts): --lookup is unrecognized.
+TEST(pinky, pinky_lookup_long_option_rejected) {
+  Pipeline p;
+  p.add(L"pinky.exe", {L"--lookup"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "pinky: unrecognized option '--lookup'\n"
+                 "Try 'pinky --help' for more information.\n");
+}
