@@ -2410,7 +2410,7 @@ auto print_grid(const std::vector<EntryInfo> &entries,
   std::vector<size_t> col_widths = compute_column_widths(cols);
   for (int candidate_cols = max_cols; candidate_cols >= 1; --candidate_cols) {
     auto candidate_widths = compute_column_widths(candidate_cols);
-    if (total_grid_width(candidate_widths) <= static_cast<size_t>(width)) {
+    if (total_grid_width(candidate_widths) < static_cast<size_t>(width)) {
       cols = candidate_cols;
       col_widths = std::move(candidate_widths);
       break;
