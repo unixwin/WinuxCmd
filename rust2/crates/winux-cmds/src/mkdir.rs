@@ -25,28 +25,13 @@ const OPTS: &[OptSpec] = &[
         takes_value: false,
     },
     OptSpec {
-        short: None,
-        long: "par",
-        takes_value: false,
-    },
-    OptSpec {
         short: Some('m'),
         long: "mode",
         takes_value: true,
     },
     OptSpec {
-        short: None,
-        long: "mod",
-        takes_value: true,
-    },
-    OptSpec {
         short: Some('v'),
         long: "verbose",
-        takes_value: false,
-    },
-    OptSpec {
-        short: None,
-        long: "verb",
         takes_value: false,
     },
 ];

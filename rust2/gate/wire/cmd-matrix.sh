@@ -130,6 +130,7 @@ TABLE
 20|||--:abc
 21|||-a:-s:.c:f1.c:f2.c
 22|||-s.c:abc.c
+23|||a\\b
 TABLE
       ;;
     dirname)
@@ -150,6 +151,7 @@ TABLE
 14|||a:b
 15|||--
 16|||@EMPTY@
+17|||a\\b
 TABLE
       ;;
     readlink)

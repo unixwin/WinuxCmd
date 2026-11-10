@@ -20,18 +20,8 @@ const OPTS: &[OptSpec] = &[
         takes_value: false,
     },
     OptSpec {
-        short: None,
-        long: "can-ex",
-        takes_value: false,
-    },
-    OptSpec {
         short: Some('m'),
         long: "canonicalize-missing",
-        takes_value: false,
-    },
-    OptSpec {
-        short: None,
-        long: "can-mis",
         takes_value: false,
     },
     OptSpec {
@@ -39,9 +29,11 @@ const OPTS: &[OptSpec] = &[
         long: "quiet",
         takes_value: false,
     },
+    // GNU realpath's second spelling of -q is its own long option
+    // (--silent), not an abbreviation.
     OptSpec {
         short: None,
-        long: "sil",
+        long: "silent",
         takes_value: false,
     },
     OptSpec {
@@ -52,11 +44,6 @@ const OPTS: &[OptSpec] = &[
     OptSpec {
         short: Some('z'),
         long: "zero",
-        takes_value: false,
-    },
-    OptSpec {
-        short: None,
-        long: "ze",
         takes_value: false,
     },
     OptSpec {
@@ -83,7 +70,7 @@ pub fn realpath_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         let _ = usage_error(io, "realpath", "missing operand");
         return Ok(1);
     }
-    let quiet = p.has("quiet");
+    let quiet = p.has("quiet") || p.has("silent");
     let zero = p.has("zero");
     let strip = p.has("strip");
     let canon = if strip {

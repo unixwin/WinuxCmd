@@ -20,28 +20,13 @@ const OPTS: &[OptSpec] = &[
         takes_value: false,
     },
     OptSpec {
-        short: None,
-        long: "mul",
-        takes_value: false,
-    },
-    OptSpec {
         short: Some('s'),
         long: "suffix",
         takes_value: true,
     },
     OptSpec {
-        short: None,
-        long: "suf",
-        takes_value: true,
-    },
-    OptSpec {
         short: Some('z'),
         long: "zero",
-        takes_value: false,
-    },
-    OptSpec {
-        short: None,
-        long: "ze",
         takes_value: false,
     },
 ];
@@ -85,7 +70,11 @@ pub fn basename_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         }
         None => "",
     };
-    let multiple = p.has("multiple") || p.has("mul") || !suffix.is_empty();
+    // GNU basename.c: --suffix/-s (with ANY value, even the empty one)
+    // implies multiple mode (probed 9.4: `basename --suf= a/x a/y` ->
+    // "x\0y" multiple outputs). The --mul/--suf/--ze spellings are
+    // unambiguous abbreviations that argopt collapses onto these keys.
+    let multiple = p.has("multiple") || p.has("suffix");
 
     let names: Vec<String> = p
         .positionals
@@ -178,5 +167,30 @@ mod tests {
         let args = ["-z".into(), "-s".into(), ".txt".into(), "a.txt".into()];
         super::basename_cmd(&args, &mut io.split(), &ctx).unwrap();
         assert_eq!(io.out(), "a\0");
+    }
+
+    #[test]
+    fn abbreviation_spellings_and_empty_suffix_imply_multiple() {
+        // Probed GNU coreutils 9.4: --mul/--suf/--ze are unambiguous
+        // abbreviations of --multiple/--suffix/--zero (getopt_long), and
+        // --suffix with ANY value (even empty) implies multiple mode:
+        // `basename --suf= a/x a/y` -> "x\0y".
+        let cases: &[(&[&str], &str)] = &[
+            (&["--mul", "/a/b/c", "/a/d/e"], "c\ne\n"),
+            (&["--suf", ".c", "/a/f.c"], "f\n"),
+            (&["--suf=.c", "/a/f.c"], "f\n"),
+            (&["--ze", "-a", "/a/b"], "b\0"),
+            (&["--suf=", "/a/f.c", "/a/g.c"], "f.c\ng.c\n"),
+        ];
+        for (args, expected) in cases {
+            let owned: Vec<std::ffi::OsString> =
+                args.iter().map(std::ffi::OsString::from).collect();
+            let mut io = MemIo::new("");
+            let sc = ScratchCtx::new("basename-abbrev");
+            let ctx = sc.ctx();
+            let r = super::basename_cmd(&owned, &mut io.split(), &ctx).unwrap();
+            assert_eq!(r, 0, "args={args:?}");
+            assert_eq!(io.out(), *expected, "args={args:?}");
+        }
     }
 }

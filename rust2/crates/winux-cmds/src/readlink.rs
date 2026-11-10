@@ -23,18 +23,8 @@ const OPTS: &[OptSpec] = &[
         takes_value: false,
     },
     OptSpec {
-        short: None,
-        long: "no-new",
-        takes_value: false,
-    },
-    OptSpec {
         short: Some('f'),
         long: "canonicalize",
-        takes_value: false,
-    },
-    OptSpec {
-        short: None,
-        long: "can",
         takes_value: false,
     },
     OptSpec {
@@ -43,18 +33,8 @@ const OPTS: &[OptSpec] = &[
         takes_value: false,
     },
     OptSpec {
-        short: None,
-        long: "can-ex",
-        takes_value: false,
-    },
-    OptSpec {
         short: Some('m'),
         long: "canonicalize-missing",
-        takes_value: false,
-    },
-    OptSpec {
-        short: None,
-        long: "can-mis",
         takes_value: false,
     },
     OptSpec {
@@ -63,18 +43,8 @@ const OPTS: &[OptSpec] = &[
         takes_value: false,
     },
     OptSpec {
-        short: None,
-        long: "ze",
-        takes_value: false,
-    },
-    OptSpec {
         short: Some('v'),
         long: "verbose",
-        takes_value: false,
-    },
-    OptSpec {
-        short: None,
-        long: "verb",
         takes_value: false,
     },
 ];

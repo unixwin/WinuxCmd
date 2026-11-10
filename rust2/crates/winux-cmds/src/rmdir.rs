@@ -22,22 +22,12 @@ const OPTS: &[OptSpec] = &[
     },
     OptSpec {
         short: None,
-        long: "par",
-        takes_value: false,
-    },
-    OptSpec {
-        short: None,
         long: "ignore-fail-on-non-empty",
         takes_value: false,
     },
     OptSpec {
         short: Some('v'),
         long: "verbose",
-        takes_value: false,
-    },
-    OptSpec {
-        short: None,
-        long: "verb",
         takes_value: false,
     },
 ];
