@@ -19,6 +19,7 @@ version = "0.1.0"
 dependencies = [
  "winux-cmds",
  "winux-core",
+ "winuxcmd-ffi",
 ]
 
 [[package]]

@@ -12,3 +12,6 @@ path = "src/main.rs"
 [dependencies]
 winux-core = { path = "../winux-core" }
 winux-cmds = { path = "../winux-cmds" }
+# rlib link of the ABI surface for the --abi / --abi-stream modes
+# (the streaming-stdin validation path; see rust2/README.md).
+winuxcmd-ffi = { path = "../winuxcmd-ffi" }
