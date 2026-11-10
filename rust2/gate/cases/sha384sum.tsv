@@ -20,3 +20,11 @@ s384a17-longer-input	strict			The quick brown fox jumps over the lazy dog
 s384a18-stdb-then-t	strict			abc	-b	-t
 s384a19-version	win				--version
 s384a20-empty-file	strict	printf '' > g8			g8
+s384c01-ok	strict	printf abc > f; printf 'cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7  f\n' > ck			-c	ck
+s384c02-fail	strict	printf de > g; printf 'cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7  g\n' > ck			-c	ck
+s384c03-tag-rt	strict	printf abc > f; printf 'SHA384 (f) = cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7\n' > ck			-c	ck
+s384c04-wrong-len-tag	strict	printf abc > f; printf 'SHA384 (f) = 23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7\n' > ck			-c	ck
+s384c05-min-boundary	strict	printf 'cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7 x\n' > ck			-c	ck
+s384c06-min-below	strict	printf 'cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a x\n' > ck			-c	ck
+s384c07-crlf	strict	printf abc > f; printf 'cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7  f\r\n' > ck			-c	ck
+s384c08-mixed-multi	strict	printf abc > f; printf 'cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7  f\ncb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7  nope\n' > ck			-c	ck
