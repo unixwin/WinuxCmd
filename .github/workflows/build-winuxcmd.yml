@@ -15,6 +15,13 @@ on:
 permissions:
   contents: write
 
+env:
+  # Pinned Rust toolchain for the rust2 command library (#1488). Matches the
+  # windows-2025 runner image today, so the pin costs no extra download; when
+  # the image moves past it, rustup installs exactly this version once and
+  # all four legs stay reproducible instead of drifting with image updates.
+  RUST2_TOOLCHAIN: "1.99.1"
+
 jobs:
   build-windows:
     runs-on: windows-2025
@@ -85,13 +92,40 @@ jobs:
 
           "vcvars_path=$vcvarsPath" >> $env:GITHUB_OUTPUT
 
-      # CMake builds the rust2 staticlib with cargo --target for the C++
-      # target arch (#1552); the ARM64 std library is not part of the
-      # runner image's default Rust installation.
-      - name: Install Rust ARM64 target
-        if: matrix.package_arch == 'arm64'
+      # ------------------------------------------------------------------
+      # Rust toolchain for the rust2 command library (#1488). A build WITH
+      # Rust is the first-class product: WINUXCMD_ENABLE_RUST2 defaults ON
+      # when cargo is found, and the replaced commands (currently
+      # true;false) are dropped from the build when it is OFF - there is no
+      # C++ fallback to degrade to (#1550: replaced commands are never
+      # dual-tracked). CI therefore pins the toolchain and installs BOTH
+      # MSVC targets on EVERY leg (not arm64-only): cargo must build the
+      # staticlib with --target for the C++ target arch (#1552, and the
+      # LNK2001 arm64 failures of run 42581933801), and the aarch64 std
+      # library is not part of the runner image's default installation.
+      # The x64 and arm64 applet sets can never be allowed to diverge.
+      # ------------------------------------------------------------------
+      - name: Set up pinned Rust toolchain (rust2)
         shell: cmd
-        run: '"%USERPROFILE%\.cargo\bin\rustup.exe" target add aarch64-pc-windows-msvc'
+        run: |
+          "%USERPROFILE%\.cargo\bin\rustup.exe" toolchain install %RUST2_TOOLCHAIN% --profile minimal --no-self-update
+          "%USERPROFILE%\.cargo\bin\rustup.exe" default %RUST2_TOOLCHAIN%
+          "%USERPROFILE%\.cargo\bin\rustup.exe" target add x86_64-pc-windows-msvc aarch64-pc-windows-msvc
+          "%USERPROFILE%\.cargo\bin\rustup.exe" show
+
+      # The rust2 workspace has zero external crates (std only), so the
+      # registry/git cache is pure hygiene (and future-proofs the day a
+      # dependency lands). The per-tree rust2-target dirs are deliberately
+      # NOT cached: a fresh checkout changes source mtimes, so cargo
+      # recompiles the three crates from scratch every run and caching
+      # would only upload dead weight.
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-rust2-${{ runner.os }}-${{ env.RUST2_TOOLCHAIN }}-${{ hashFiles('rust2/Cargo.lock', 'rust2/crates/*/Cargo.toml') }}
 
       - name: Configure CMake (Release Mode)
         shell: cmd
@@ -104,6 +138,7 @@ jobs:
             -DCMAKE_CXX_COMPILER_TARGET=${{ matrix.arch }} ^
             -DWINUXCMD_PACKAGE_ARCH=${{ matrix.package_arch }} ^
             -DWINUXCMD_PACKAGE_EDITION=${{ matrix.edition }} ^
+            -DWINUXCMD_ENABLE_RUST2=ON ^
             -DBUILD_MODE=RELEASE ^
             -DUSE_STATIC_CRT=ON ^
             -DENABLE_TESTS=${{ matrix.package_arch == 'x64' && matrix.edition == 'default' && 'ON' || 'OFF' }} ^
@@ -120,6 +155,35 @@ jobs:
           call "${{ steps.locate_vcvars.outputs.vcvars_path }}" ${{ matrix.vcvars_arg }}
           cmake --build . --config Release --parallel %NUMBER_OF_PROCESSORS%
 
+      # One greppable line stating the WINUXCMD_ENABLE_RUST2 state of this
+      # leg, plus a marker file uploaded with the packages that the
+      # rust2-surface-check job compares across x64/arm64. The configure
+      # above passes -DWINUXCMD_ENABLE_RUST2=ON explicitly, so CMake would
+      # have already FATAL_ERROR'd without cargo; this step additionally
+      # proves the per-triple staticlib actually landed (#1553: the lib
+      # lives in the per-triple directory, never at rust2-target/release).
+      - name: Record rust2 build surface
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $arch = "${{ matrix.package_arch }}"
+          $triple = if ($arch -eq 'arm64') { 'aarch64-pc-windows-msvc' } else { 'x86_64-pc-windows-msvc' }
+          $lib = "build-$arch/rust2-target/$triple/release/winuxcmd_ffi.lib"
+          if (-not (Test-Path $lib)) {
+            Write-Host "::error::WINUXCMD_ENABLE_RUST2 surface missing ($lib). CI builds must carry the rust2 command library; the replaced commands (true;false) do not exist without it."
+            exit 1
+          }
+          $rustc = (& "$env:USERPROFILE\.cargo\bin\cargo.exe" rustc --version).Trim()
+          Write-Host "RUST2_STATUS=ON (true;false) arch=$arch triple=$triple toolchain=${{ env.RUST2_TOOLCHAIN }} $rustc"
+          @(
+            "rust2=ON",
+            "commands=true;false",
+            "arch=$arch",
+            "triple=$triple",
+            "toolchain=${{ env.RUST2_TOOLCHAIN }}",
+            $rustc
+          ) | Set-Content -Path "build-$arch/rust2-build-status.txt" -Encoding ascii
+
       # PGO (default x64 only): profile collection must run the instrumented
       # binary on the host arch, so the cross-compiled arm64 jobs and the
       # full-edition job (same code, entry-set-only difference) stay non-PGO.
@@ -133,6 +197,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release ^
             -DCMAKE_CXX_COMPILER_TARGET=x64 ^
             -DWINUXCMD_PACKAGE_ARCH=x64 ^
+            -DWINUXCMD_ENABLE_RUST2=ON ^
             -DBUILD_MODE=RELEASE ^
             -DUSE_STATIC_CRT=ON ^
             -DENABLE_TESTS=OFF ^
@@ -174,6 +239,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release ^
             -DCMAKE_CXX_COMPILER_TARGET=x64 ^
             -DWINUXCMD_PACKAGE_ARCH=x64 ^
+            -DWINUXCMD_ENABLE_RUST2=ON ^
             -DBUILD_MODE=RELEASE ^
             -DUSE_STATIC_CRT=ON ^
             -DENABLE_TESTS=ON ^
@@ -236,6 +302,7 @@ jobs:
             build-${{ matrix.package_arch }}/WinuxCmd-${{ steps.extract_version.outputs.project_version }}-win-${{ matrix.package_arch }}-full.7z
             build-${{ matrix.package_arch }}/WinuxCmd-${{ steps.extract_version.outputs.project_version }}-win-${{ matrix.package_arch }}-full.zip
             build-${{ matrix.package_arch }}/WinuxCmd-${{ steps.extract_version.outputs.project_version }}-win-${{ matrix.package_arch }}-full.tar.gz
+            build-${{ matrix.package_arch }}/rust2-build-status.txt
           retention-days: 1
           if-no-files-found: error
 
