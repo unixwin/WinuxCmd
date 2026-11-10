@@ -85,6 +85,14 @@ jobs:
 
           "vcvars_path=$vcvarsPath" >> $env:GITHUB_OUTPUT
 
+      # CMake builds the rust2 staticlib with cargo --target for the C++
+      # target arch (#1552); the ARM64 std library is not part of the
+      # runner image's default Rust installation.
+      - name: Install Rust ARM64 target
+        if: matrix.package_arch == 'arm64'
+        shell: cmd
+        run: '"%USERPROFILE%\.cargo\bin\rustup.exe" target add aarch64-pc-windows-msvc'
+
       - name: Configure CMake (Release Mode)
         shell: cmd
         run: |
