@@ -63,8 +63,10 @@ pub fn mkdir_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let mode = p.value_of("mode");
     if let Some(m) = mode {
         if let Err(bad) = modemap::validate_mode(m) {
-            let msg = format!("invalid mode {}", q(&bad));
-            let _ = usage_error(io, "mkdir", &msg);
+            // [GNU] mkdir.c:290: invalid mode is a RUNTIME operand error,
+            // not a usage error - no Try hint (probed 9.4: exactly one
+            // stderr line, rc 1).
+            let _ = writeln!(io.stderr, "mkdir: invalid mode {}", q(&bad));
             return Ok(1);
         }
     }

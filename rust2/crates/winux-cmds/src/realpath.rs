@@ -194,7 +194,13 @@ fn relativize(ctx: &Ctx, base_dir: &str, target: &str, below_only: bool) -> Stri
     let bc: Vec<&str> = bt.split('/').filter(|s| !s.is_empty()).collect();
     let tc: Vec<&str> = tt.split('/').filter(|s| !s.is_empty()).collect();
     let mut common = 0usize;
-    while common < bc.len() && common < tc.len() && bc[common] == tc[common] {
+    // Windows spellings are case-variants (ctx.cwd may carry a lowercase
+    // drive where the canonicalized target is uppercase): the common
+    // prefix walks case-insensitively.
+    while common < bc.len()
+        && common < tc.len()
+        && bc[common].eq_ignore_ascii_case(tc[common])
+    {
         common += 1;
     }
     // Component-boundary below-check: a matching character prefix is not

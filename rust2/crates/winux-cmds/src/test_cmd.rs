@@ -345,7 +345,8 @@ fn unary_operator(op: &str, arg: &str, ctx: &Ctx) -> Result<bool, TestError> {
         "-e" => Ok(metadata_of(ctx, arg, false).is_some()),
         // [WinuxCmd] the kFifoMarker emulation is NOT a regular file to
         // the shell layer: -f is false for a marker FIFO (1.x parser).
-        "-f" => Ok(!is_fifo_marker(ctx, arg)
+        "-f" => Ok(!is_dos_char_device(arg)
+            && !is_fifo_marker(ctx, arg)
             && metadata_of(ctx, arg, true)
                 .map(|m| m.is_file())
                 .unwrap_or(false)),

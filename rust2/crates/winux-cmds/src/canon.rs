@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 use winux_core::{strip_verbatim, Ctx};
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum CanonMode {
     /// readlink -f / realpath default: all but last must exist
     AllButLast,
@@ -253,7 +253,20 @@ pub fn canonicalize_operand(
         ctx.cwd.join(&effective)
     };
     match mode {
-        CanonMode::NoCheck => Ok(normalize_lex_native(ctx, &effective)),
+        CanonMode::NoCheck => {
+            let out = normalize_lex_native(ctx, &effective);
+            // [GNU] -m resolves symlinks without existence requirements: a
+            // dangling leaf link resolves to its target's path.
+            if let Ok(target) = std::fs::read_link(&out) {
+                let parent = match std::path::Path::new(&out).parent() {
+                    Some(pp) => pp.to_string_lossy().into_owned(),
+                    None => String::new(),
+                };
+                let joined = format!("{}\\{}", parent, target.to_string_lossy());
+                return Ok(normalize_lex_native(ctx, &joined));
+            }
+            Ok(out)
+        }
         CanonMode::AllMustExist => {
             if has_overlong_component(&effective) {
                 return Err(name_too_long());
@@ -296,11 +309,21 @@ pub fn canonicalize_operand(
             if !std::path::Path::new(&parent_out).is_dir() {
                 return Err(std::io::Error::from(std::io::ErrorKind::NotADirectory));
             }
+            let parent_out2 = parent_out.clone();
             let mut out = parent_out;
             if !out.ends_with('/') && !out.ends_with('\\') && !last.is_empty() {
                 out.push('\\');
             }
             out.push_str(&last);
+            // [GNU] AllButLast resolves the FINAL symlink even when its
+            // target does not exist (readlink -f dang, dang -> z_absent_tgt
+            // -> <parent>/z_absent_tgt, rc 0): the OS canonicalize failed on
+            // the dangling link, so splice the link target onto the
+            // canonical parent and fold it lexically.
+            if let Ok(target) = std::fs::read_link(&path) {
+                let joined = format!("{}\\{}", parent_out2, target.to_string_lossy());
+                return Ok(normalize_lex_native(ctx, &joined));
+            }
             // [GNU] The last-component exemption ignores trailing slashes: a
             // MISSING leaf followed only by separators still canonicalizes,
             // but an existing non-directory leaf with a trailing separator
@@ -349,5 +372,45 @@ mod tests {
         assert_eq!(prepare_operand("a/b/"), "a/b/");
         assert_eq!(prepare_operand("/c/Users/x"), "C:\\Users\\x");
         assert_eq!(prepare_operand("/cygdrive/c/x/"), "C:\\x");
+    }
+}
+
+#[cfg(test)]
+mod dangling_tests {
+    use super::{canonicalize_operand, CanonMode};
+    use winux_core::test_support::{MemIo, ScratchCtx};
+
+    fn try_symlink(sc: &ScratchCtx, target: &str, link: &str) -> bool {
+        let out = std::process::Command::new("cmd")
+            .args(["/C", "mklink"])
+            .arg(sc.path(link))
+            .arg(target)
+            .output();
+        match out {
+            Ok(o) if o.status.success() => true,
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn all_but_last_and_missing_resolve_dangling_leaf() {
+        // Probed GNU 9.4: readlink -f dang / realpath dang / realpath -m dang
+        // with dang -> z_absent_tgt all print <parent>/z_absent_tgt, rc 0.
+        let sc = ScratchCtx::new("canon-dang");
+        let ctx = sc.ctx();
+        if !try_symlink(&sc, "z_absent_tgt", "dang") {
+            return; // environment cannot create symlinks
+        }
+        for mode in [CanonMode::AllButLast, CanonMode::NoCheck] {
+            let r = canonicalize_operand(&ctx, "dang", mode).unwrap();
+            assert!(
+                r.ends_with("z_absent_tgt"),
+                "mode={mode:?} must resolve the dangling leaf to its target, got {r}"
+            );
+            assert!(!r.contains("dang"), "mode={mode:?} got {r}");
+        }
+        // -e still fails on the dangling link (all components must exist)
+        let r = canonicalize_operand(&ctx, "dang", CanonMode::AllMustExist);
+        assert!(r.is_err());
     }
 }
