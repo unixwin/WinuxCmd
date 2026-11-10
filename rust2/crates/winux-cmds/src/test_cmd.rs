@@ -21,7 +21,10 @@ const UNOPS: &[&str] = &[
 ];
 
 const BINOPS: &[&str] = &[
-    "=", "!=", "<", ">", "-eq", "-ne", "-lt", "-le", "-gt", "-ge", "-nt", "-ot", "-ef",
+    "=", "!=", "==", "<", ">", "-eq", "-ne", "-lt", "-le", "-gt", "-ge", "-nt", "-ot", "-ef",
+    // [GNU] the AND/OR operators are binops in the 3-argument form
+    // (probed 9.4: a -a b -> 0, a -a EMPTY -> 1).
+    "-a", "-o",
 ];
 
 struct TestError {
@@ -219,7 +222,10 @@ impl<'a> Parser<'a> {
         }
         // binary operand form: lhs op rhs
         if let Some(next) = self.argv.get(self.pos + 1) {
-            if is_binop(next) {
+            // -a/-o are binops but bind at the expr/and levels (parse_expr/
+            // parse_and), never here — GNU: -a tighter than -o, both looser
+            // than every comparison.
+            if is_binop(next) && next != "-a" && next != "-o" {
                 let rhs = match self.argv.get(self.pos + 2) {
                     Some(r) => r.clone(),
                     None => return Err(err(format!("missing argument after {}", q(next)))),
@@ -251,8 +257,11 @@ impl<'a> Parser<'a> {
 
 fn binary_operator(lhs: &str, op: &str, rhs: &str, ctx: &Ctx) -> Result<bool, TestError> {
     match op {
-        "=" => Ok(lhs == rhs),
+        "=" | "==" => Ok(lhs == rhs),
         "!=" => Ok(lhs != rhs),
+        // [GNU] expr-level AND/OR over one-argument (non-empty string) tests
+        "-a" => Ok(!lhs.is_empty() && !rhs.is_empty()),
+        "-o" => Ok(!lhs.is_empty() || !rhs.is_empty()),
         "<" => Ok(lhs < rhs),
         ">" => Ok(lhs > rhs),
         "-eq" | "-ne" | "-lt" | "-le" | "-gt" | "-ge" => {
@@ -548,7 +557,7 @@ mod tests {
 mod two_arg_tests {
     use winux_core::test_support::{MemIo, ScratchCtx};
 
-    fn run(args: &[&str]) -> (i32, String, String) {
+    fn run(args: &[&str]) -> (u32, String, String) {
         let owned: Vec<std::ffi::OsString> =
             args.iter().map(std::ffi::OsString::from).collect();
         let mut io = MemIo::new("");

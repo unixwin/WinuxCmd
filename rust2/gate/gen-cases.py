@@ -177,7 +177,11 @@ test_rows = [
     ("ts40-G-group", "strict", "printf xy > f2", "", "", ["-G", "f2"]),
     ("ts41-O-owner", "strict", "printf xy > f2", "", "", ["-O", "f2"]),
     ("ts42-x-file", "strict", "printf xy > f2", "", "", ["-x", "f2"]),
-    ("ts43-help-flag", "strict", "", "", "", ["--help"]),
+    # The 1.x applet prints the WinuxCmd-branded help for the sole
+    # --help (dispatcher interception, asserted by the C++ unit tests);
+    # GNU test prints nothing (rc 0). The wired exe inherits the product
+    # contract, so the row is record-only (r=c parity holds).
+    ("ts43-help-flag", "note", "", "", "", ["--help"]),
     ("ts44-lt10", "strict", "", "", "", ["2", "-lt", "10"]),
     ("ts45-gt10", "strict", "", "", "", ["2", "-gt", "10"]),
 ]
