@@ -192,7 +192,7 @@ jobs:
             "triple=$triple",
             "toolchain=${{ env.RUST2_TOOLCHAIN }}",
             "rustc=$rustc"
-          ) | Set-Content -Path "build-$arch/rust2-build-status.txt" -Encoding ascii
+          ) | Set-Content -Path "build-$arch/rust2-build-status-$arch.txt" -Encoding ascii
 
       # PGO (default x64 only): profile collection must run the instrumented
       # binary on the host arch, so the cross-compiled arm64 jobs and the
@@ -312,7 +312,7 @@ jobs:
             build-${{ matrix.package_arch }}/WinuxCmd-${{ steps.extract_version.outputs.project_version }}-win-${{ matrix.package_arch }}-full.7z
             build-${{ matrix.package_arch }}/WinuxCmd-${{ steps.extract_version.outputs.project_version }}-win-${{ matrix.package_arch }}-full.zip
             build-${{ matrix.package_arch }}/WinuxCmd-${{ steps.extract_version.outputs.project_version }}-win-${{ matrix.package_arch }}-full.tar.gz
-            build-${{ matrix.package_arch }}/rust2-build-status.txt
+            build-${{ matrix.package_arch }}/rust2-build-status-${{ matrix.package_arch }}.txt
           retention-days: 1
           if-no-files-found: error
 
@@ -354,7 +354,7 @@ jobs:
   # parity is enforced on four layers instead:
   #   1. PE machine type of each shipped winuxcmd.exe (x64 0x8664 vs
   #      arm64 0xAA64) - both images really were built for their arch;
-  #   2. the per-leg rust2-build-status.txt markers (rust2=ON, same
+  #   2. the per-leg rust2-build-status-<arch>.txt markers (rust2=ON, same
   #      command set, same pinned toolchain and rustc) are equal apart
   #      from the arch fields - neither leg lost or degraded rust2;
   #   3. the x64 exe actually dispatches the replaced commands: exit
@@ -417,14 +417,14 @@ jobs:
           if ($x64Machine -ne 0x8664) { throw ("x64 winuxcmd.exe has wrong PE machine 0x{0:X4}" -f $x64Machine) }
           if ($armMachine -ne 0xAA64) { throw ("arm64 winuxcmd.exe has wrong PE machine 0x{0:X4}" -f $armMachine) }
 
-          # The per-leg markers flatten to the artifact root on download;
-          # the artifact directory names end in -x64 / -arm64.
-          $x64Marker = (Get-ChildItem pkgs -Recurse -Filter rust2-build-status.txt |
-            Where-Object { $_.FullName -match '-x64\\' } | Select-Object -First 1).FullName
-          $armMarker = (Get-ChildItem pkgs -Recurse -Filter rust2-build-status.txt |
-            Where-Object { $_.FullName -match '-arm64\\' } | Select-Object -First 1).FullName
-          if (-not $x64Marker) { throw 'x64 rust2-build-status.txt marker not found' }
-          if (-not $armMarker) { throw 'arm64 rust2-build-status.txt marker not found' }
+          # Per-arch marker names: download-artifact@v8 extracts
+          # pattern-matched artifacts flat into `path`, so a shared marker
+          # name would collide/overwrite across the two downloads.
+          Get-ChildItem pkgs -Recurse | ForEach-Object { Write-Host "pkgs: $($_.FullName)" }
+          $x64Marker = (Get-ChildItem pkgs -Recurse -Filter rust2-build-status-x64.txt | Select-Object -First 1).FullName
+          $armMarker = (Get-ChildItem pkgs -Recurse -Filter rust2-build-status-arm64.txt | Select-Object -First 1).FullName
+          if (-not $x64Marker) { throw 'x64 rust2-build-status-x64.txt marker not found' }
+          if (-not $armMarker) { throw 'arm64 rust2-build-status-arm64.txt marker not found' }
           $x64M = @{}
           $armM = @{}
           Get-Content $x64Marker | ForEach-Object { $k, $v = $_ -split '=', 2; $x64M[$k] = $v }
