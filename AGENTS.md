@@ -6,6 +6,12 @@ when `WINUX_LANG` selects a catalog under `.wpm/i18n/<locale>/catalog.json`.
 # How to build 
 - Always use the scripts/build-with-vs.ps1 to build the project.
 - Remember use scripts/format.py or scripts/format.sh to format the files.
+- Rust toolchain (rust2 command library, #1488): install rustup plus
+  both MSVC targets (`rustup target add x86_64-pc-windows-msvc
+  aarch64-pc-windows-msvc`). `WINUXCMD_ENABLE_RUST2` defaults ON when
+  cargo is found; without Rust the replaced commands (currently
+  `true`, `false`) are absent from the build - no C++ fallback. A
+  local arm64 (`x64_arm64`) build fails without the `aarch64` target.
 
 ## Source changes
 

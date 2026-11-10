@@ -268,7 +268,7 @@ wpm（包管理器）, mpicalc, regtool, mkpasswd, mkgroup, mkfifo, mknod, clear
 
 ## 🛠️ 从源码构建
 
-**前提条件：** Visual Studio 2022+ · CMake 3.30+ · Ninja
+**前提条件：** Visual Studio 2022+ · CMake 3.30+ · Ninja · Rust 工具链（见下）
 
 ```bash
 # 构建
@@ -278,6 +278,29 @@ wpm（包管理器）, mpicalc, regtool, mkpasswd, mkgroup, mkfifo, mknod, clear
 ./scripts/build-with-vs.ps1 -Target winuxcmd-tests
 build-vs/tests/winuxcmd-tests.exe
 ```
+
+### Rust 工具链要求（rust2 命令库，#1488）
+
+WinuxCmd 2.0 将部分 applet 替换为 Rust 实现
+（`rust2/crates/winuxcmd-ffi`），以 staticlib 形式在同一次链接中并入
+`winuxcmd.exe` —— 没有任何需要单独安装或分发的 Rust 产物。
+
+- **安装 [rustup](https://rustup.rs)（stable）并添加两个 MSVC target：**
+  `rustup target add x86_64-pc-windows-msvc aarch64-pc-windows-msvc`。
+  即使宿主是 x64，交叉构建 arm64（`vcvarsall x64_arm64`）时也必须装
+  `aarch64` target —— cargo 按 C++ 目标架构以 `--target` 构建
+  staticlib，而 ARM64 std 库不在默认安装里。CI 会在
+  `.github/workflows/build-winuxcmd.yml` 中钉住工具链版本
+  （`RUST2_TOOLCHAIN`）。
+- **开关语义：** CMake 选项 `WINUXCMD_ENABLE_RUST2` 在找到 cargo 时默认
+  **ON**，找不到时默认 **OFF**；cargo 缺失时显式传
+  `-DWINUXCMD_ENABLE_RUST2=ON` 会在 configure 阶段直接报错。
+- **无 Rust 时的降级行为：** 没有 C++ 回退。无 Rust 构建会直接从
+  applet 集合里去掉被替换的命令（当前为 `true` 和 `false`）——
+  永不做双轨保留（#1550），即命令面变小。
+- **跨架构一致性：** CI 强制 x64 与 arm64 包携带相同的 rust2 命令面
+  （`rust2-surface-check` job）；本地 arm64 构建若未装 `aarch64`
+  target 会在 configure/链接阶段失败。
 
 ## 🤝 参与贡献
 
