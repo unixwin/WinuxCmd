@@ -107,42 +107,6 @@ fmt buffers whole paragraphs (GNU flushes at 5000 chars / 1000 words).
 **Wave3a total: 240 cases; GNU-gated + win-gated: all GREEN; notes: 4 (st10
 %C rc, ln22/ln24/ln25 unprivileged symlink creation). C++ parity: 219/240.**
 
-
-## Wiring wave1 remainder (#1488, third batch)
-
-10 command entries wired into winuxcmd.exe and their C++ bodies deleted:
-`pwd printenv basename dirname readlink realpath mkdir rmdir test [ sync`
-(`test` and `[` share the rust2 test_cmd). Product-side gates per command
-harness (RUST_BIN = build-vs exe, CPP_BIN = baseline exe) + argument
-matrix (gate/wire/cmd-matrix.sh, one shared cwd; old vs new byte parity
-on rc/stdout/stderr) + the command's ctest slice. Library-side: full
-`gate/run-gate.sh` with the driver stays at the four pre-existing
-unregistered-command failures (getconf/hostname/id/uname: their registry
-entries were never merged to main, 88 rows rc=127 "unknown command";
-out of this wave's scope).
-
-Library fixes surfaced by the wiring gates (each GNU-probed, own
-commit): pwd $PWD dot/dotdot rejection; printenv -0/--null + getopt("+")
-operand stop + NAME=VALUE full dump; argopt getopt_long unambiguous
-abbreviation (fake alias entries deleted from six tables); basename -s
-any-value-implies-multiple; readlink -q/-s spellings, last-wins
-verbosity, -n over -z, '/'-separator canonicalize output; realpath -E
-extension, mode-word last-wins, ENAMETOOLONG/ENOTDIR walks, trailing
-separators, base validation, below-only --relative-base, native -m
-spellings, resolver operand folds (#1145/#1172/#1231/#1246/#1283);
-mkdir -Z no-op, operand-drive fold, -m leaf-only with -p, symbolic modes
-against the a=rwx base; rmdir --path alias; test "-a"/"-o"/"==" binops
-with GNU precedence, 2-argument GNU wording, -p/-f kFifoMarker
-recognition; sync as a new library module (FlushFileBuffers semantics,
-no operand globbing).
-
-Case-table changes: test.ts43-help-flag strict -> note (the wired exe
-prints the WinuxCmd-branded sole-argument help; GNU test prints nothing;
-r=c parity holds — the dispatcher contract the 1.x applet shipped).
-sync.tsv added (22 cases). Matrix rows added for the wave in
-gate/wire/cmd-matrix.sh (one deliberate stdout divergence recorded per
-command where the 1.x applet stripped '\' and GNU treats it as data).
-
 C++ 1.x parity summary: 270/338 cases byte/rc-equal to the Rust pilot;
 68 diverge (path forms, verbose message prefixes, sole `--version` text,
 rmdir -p trailing slash, chmod --reference behavior, df drive paths).
@@ -158,7 +122,6 @@ became `win` (branded version text, like t07). Rows re-measured with
 `bash gate/run-gate.sh true false`: 38 GNU-gated + 2 win, all green. The
 three former `note` rows were the pilot diverging, not the C++ applet.
 
-<<<<<<< HEAD
 **Refresh (#1488 rust2 wave1 deepening, chmod/chown/df):** the pilot's
 platform-subset commands were pushed to "everything Windows can honestly
 do", GNU semantics per coreutils 9.4 probed under WSL:
@@ -202,7 +165,8 @@ parity 76/117 (the C++ 1.x applets lack the new option surfaces).
 Pre-existing main-side gap noticed while re-running the full gate:
 `uname`/`id`/`hostname`/`getconf` modules exist on main but are not in
 `lib.rs` `registry()`, so their 88 gate cases exit 127 — wiring lane scope.
-=======
+
+
 ## Wiring wave1 remainder (#1488, third batch)
 
 10 command entries wired into winuxcmd.exe and their C++ bodies deleted:
@@ -237,4 +201,3 @@ r=c parity holds — the dispatcher contract the 1.x applet shipped).
 sync.tsv added (22 cases). Matrix rows added for the wave in
 gate/wire/cmd-matrix.sh (one deliberate stdout divergence recorded per
 command where the 1.x applet stripped '\' and GNU treats it as data).
->>>>>>> ad0da3c6 (docs(rust2): wiring wave1 remainder gate report (#1488))
