@@ -191,7 +191,7 @@ jobs:
             "arch=$arch",
             "triple=$triple",
             "toolchain=${{ env.RUST2_TOOLCHAIN }}",
-            $rustc
+            "rustc=$rustc"
           ) | Set-Content -Path "build-$arch/rust2-build-status.txt" -Encoding ascii
 
       # PGO (default x64 only): profile collection must run the instrumented
