@@ -19,9 +19,29 @@ const OPTS: &[OptSpec] = &[
         long: "canonicalize-existing",
         takes_value: false,
     },
+    // [EXT] not in GNU coreutils realpath; the 1.x applet carries it.
+    OptSpec {
+        short: Some('E'),
+        long: "canonicalize",
+        takes_value: false,
+    },
     OptSpec {
         short: Some('m'),
         long: "canonicalize-missing",
+        takes_value: false,
+    },
+    // [GNU] realpath.c mode word: -L logical, -P physical. Accepted
+    // spellings; the symlink-order refinement they select is a no-op on
+    // this resolver (no separate two-pass walk), the rc/output contract
+    // is unchanged (probed 9.4: both accepted, output as default).
+    OptSpec {
+        short: Some('L'),
+        long: "logical",
+        takes_value: false,
+    },
+    OptSpec {
+        short: Some('P'),
+        long: "physical",
         takes_value: false,
     },
     OptSpec {
@@ -29,16 +49,14 @@ const OPTS: &[OptSpec] = &[
         long: "quiet",
         takes_value: false,
     },
-    // GNU realpath's second spelling of -q is its own long option
-    // (--silent), not an abbreviation.
-    OptSpec {
-        short: None,
-        long: "silent",
-        takes_value: false,
-    },
     OptSpec {
         short: Some('s'),
         long: "strip",
+        takes_value: false,
+    },
+    OptSpec {
+        short: None,
+        long: "no-symlinks",
         takes_value: false,
     },
     OptSpec {
@@ -70,9 +88,11 @@ pub fn realpath_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         let _ = usage_error(io, "realpath", "missing operand");
         return Ok(1);
     }
-    let quiet = p.has("quiet") || p.has("silent");
+    let quiet = p.has("quiet");
     let zero = p.has("zero");
-    let strip = p.has("strip");
+    // -s and --no-symlinks are the same option (realpath.c registers both
+    // spellings onto 's').
+    let strip = p.has("strip") || p.has("no-symlinks");
     let canon = if strip {
         CanonMode::NoCheck // -s: lexical only, no symlink resolution
     } else if p.has("canonicalize-existing") {
@@ -80,6 +100,7 @@ pub fn realpath_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     } else if p.has("canonicalize-missing") {
         CanonMode::NoCheck
     } else {
+        // default, and [EXT] -E/--canonicalize (all but the last must exist)
         CanonMode::AllButLast
     };
     let rel_to = p.value_of("relative-to").map(|s| s.to_string());
