@@ -455,6 +455,10 @@ jobs:
           if ($stray) { throw ("stray rust2/toolchain files in packages: " + ($stray.FullName -join ', ')) }
 
           Write-Host "RUST2 SURFACE CHECK: consistent - x64 0x8664 + arm64 0xAA64, rust2=ON, commands=$($x64M['commands']), toolchain=$($x64M['toolchain']), $($x64M['rustc'])"
+          # pwsh propagates the LAST native command's $LASTEXITCODE as the step
+          # result; the probe helpers (rustc queries, file tests) can leave a
+          # stale 1 behind even when every assertion above passed. Pin success.
+          exit 0
 
   release:
     runs-on: ubuntu-latest
