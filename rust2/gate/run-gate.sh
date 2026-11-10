@@ -18,8 +18,24 @@
 #   exit   : exit status must equal GNU; stdout is platform-form-bound (recorded)
 #   win    : no GNU comparison (platform-inherent output); Rust vs C++ status
 #
+# Case-table names vs program names: a TSV stem may differ from the program
+# name all three sides must invoke. `bracket.tsv` tests the `[` program —
+# invoking the stem "bracket" instead silently turned all 26 rows into
+# command-not-found on EVERY side (rc 127 == 127 == 127), i.e. vacuous-green
+# (found by the #1488 QC sweep, 2026-11-10). INVOCATION_NAME maps the TSV
+# stem to the program name passed to Rust dispatch / C++ dispatcher /
+# GNU `env`; the ledger keeps the TSV stem as the grouping label.
+#
 # Usage: bash gate/run-gate.sh [command ...]
 set -u
+
+# invocation program name for a case-table command stem
+invocation_name() {
+    case "$1" in
+        bracket) printf '[' ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
 
 GATE_DIR="$(cd "$(dirname "$0")" && pwd)"
 RUST2="$(cd "$GATE_DIR/.." && pwd)"
@@ -92,6 +108,8 @@ run_case() {
 
     local envpre
     envpre=$(env_prefix "$envstr")
+    local prog
+    prog=$(invocation_name "$cmd")
 
     # ---------- windows sides (Rust driver, C++ dispatcher) ----------
     local side exe sdir exe_q
@@ -104,7 +122,7 @@ run_case() {
             [ -n "$setup" ] && printf '%s\n' "$setup"
             printf 'printf %%s %s > .stdin\n' "$(qsh "$stdin")"
             printf '%s %s %s' "$envpre" "$WIN_TIMEOUT" "$exe_q"
-            printf ' %s' "$(qsh "$cmd")"
+            printf ' %s' "$(qsh "$prog")"
             local a
             for a in "${args[@]}"; do
                 printf ' %s' "$(qsh "$a")"
@@ -136,7 +154,7 @@ run_case() {
                 printf ' %s' "$(qsh "$kv")"
             done
         fi
-        printf ' %s' "$cmd"
+        printf ' %s' "$prog"
         local a
         for a in "${args[@]}"; do
             printf ' %s' "$(qsh "$a")"

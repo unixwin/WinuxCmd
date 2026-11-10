@@ -1,0 +1,6 @@
+# gate/note-registry.tsv — expected-deviation registry for note-mode cases.
+# Columns: cmd <TAB> case-id <TAB> expected deviation (free text, no tabs).
+# Every note-mode row in gate/cases/*.tsv must have an entry here; missing
+# entries are reported as UNDOCUMENTED by gate/qc_note_audit.py.
+df	df12-output-subset	GNU df supports --output but rejects the Windows drive path under WSL (rc 1, empty stdout); the 1.x C++ applet prints a table (rc 0). Rust pilot documents the C++ drive-path model.
+df	df13-drive-path	Operand C:\Windows is a Windows drive path: GNU under WSL sees no such file and exits 1; the 1.x C++ applet resolves the drive and prints a filesystem table (rc 0), which the Rust pilot follows.
