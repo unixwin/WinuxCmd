@@ -155,7 +155,7 @@ fn fold_carrier_colons(s: &str) -> Option<String> {
 /// folded operand is native-dialect input. The shell-tree mapping
 /// (niubash#346) is inert without a configured shell root and is not
 /// carried here.
-fn prepare_operand(operand: &str) -> String {
+pub(crate) fn prepare_operand(operand: &str) -> String {
     let stripped = strip_trailing_seps(operand);
     let prefix_folded = fold_posix_drive_prefix(stripped);
     if let Some(folded) = fold_drive_dialect(&prefix_folded) {
