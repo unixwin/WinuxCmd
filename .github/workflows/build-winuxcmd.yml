@@ -105,6 +105,16 @@ jobs:
       # library is not part of the runner image's default installation.
       # The x64 and arm64 applet sets can never be allowed to diverge.
       # ------------------------------------------------------------------
+      # The pin installs under its own rustup slot (1.99.1-...), separate
+      # from the image's `stable` alias - cache it so only the first leg
+      # ever downloads it; later legs (and future runs) restore it with
+      # the aarch64 std library already inside.
+      - name: Cache pinned rust2 toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/.rustup/toolchains/1.99.1-x86_64-pc-windows-msvc
+          key: rustup-toolchain-${{ runner.os }}-${{ env.RUST2_TOOLCHAIN }}-msvc
+
       - name: Set up pinned Rust toolchain (rust2)
         shell: cmd
         run: |
