@@ -136,13 +136,13 @@ TABLE
     dirname)
       cat <<'TABLE'
 01|||
-02|||/a/b/c
+02|||a/b/c
 03|||a
 04|||/
 05|||//
 06|||a/b/
 07|||a//b
-08|||-z:/a/b/c
+08|||-z:a/b/c
 09|||--help
 10|||--version
 11|||--help:x
