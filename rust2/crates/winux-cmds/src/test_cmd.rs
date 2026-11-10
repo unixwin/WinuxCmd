@@ -114,10 +114,15 @@ fn two_arguments(argv: &[String], ctx: &Ctx) -> Result<bool, TestError> {
         // e.g. `test 1 =` -> missing rhs
         return Err(err(format!("missing argument after {}", q(&argv[1]))));
     }
-    // [GNU] test.c posixtest case 2: a first token that is neither "!" nor
-    // a unary operator leaves the SECOND token as the only candidate
-    // binary operand — "missing argument after 'x'" for `test --help x`
-    // (probed 9.4), never a "unary operator expected" naming the first.
+    // [GNU] probed 9.4, posixtest case 2: the AND/OR operators "-a"/"-o"
+    // in the operator position report "'-a': unary operator expected"
+    // (`test -o x`, `test -a x`); every other non-unary first token leaves
+    // the SECOND token as the only candidate binary operand — "missing
+    // argument after 'x'" for `test --help x`, "--version x", "-eq x",
+    // "-nt x", "-zz x" and the bare `test 1 2`.
+    if argv[0] == "-a" || argv[0] == "-o" {
+        return Err(err(format!("{}: unary operator expected", q(&argv[0]))));
+    }
     Err(err(format!("missing argument after {}", q(&argv[1]))))
 }
 
