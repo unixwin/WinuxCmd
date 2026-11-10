@@ -46,15 +46,15 @@ run_case() {
 setup_fixture() {
   case "$CMD" in
     readlink)
-      printf 'rm -rf link regfile; printf x > regfile; ln -s regfile link\n' ;;
+      rm -rf link regfile; printf x > regfile; ln -s regfile link ;;
     realpath)
-      printf 'rm -rf rpsub rpfile; mkdir -p rpsub; printf x > rpfile\n' ;;
+      rm -rf rpsub rpfile; mkdir -p rpsub; printf x > rpfile ;;
     mkdir)
-      printf 'rm -rf d1 d2 dm dv dp existing; mkdir -p existing\n' ;;
+      rm -rf d1 d2 dm dv dp d--x existing a; mkdir -p existing ;;
     rmdir)
-      printf 'rm -rf pa full d1 d2; mkdir -p d1 d2 pa/pb/pc full/inner\n' ;;
+      rm -rf pa full d1 d2; mkdir -p d1 d2 pa/pb/pc full/inner ;;
     sync)
-      printf 'rm -f synctarget; printf x > synctarget\n' ;;
+      rm -f synctarget; printf x > synctarget ;;
     *) : ;;
   esac
 }
