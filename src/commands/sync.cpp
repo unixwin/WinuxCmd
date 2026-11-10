@@ -3,7 +3,7 @@
 /// @contributors:
 ///   - caomengxuan666 <2507560089@qq.com>
 /// @Description: Implementation for sync command.
-/// @Version: 0.1.0
+/// @Version: 0.2.0
 /// @License: MIT
 /// @Copyright: Copyright © 2026 WinuxCmd
 
@@ -14,19 +14,10 @@
 import std;
 import core;
 import utils;
+import rust2_bridge;
 
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
-
-namespace {
-
-std::string format_open_error(const std::string& path, DWORD error) {
-  // [GNU] "error opening %s" always carries the errno text
-  // (sync.c:112); unmapped errors used to lose the reason entirely.
-  return "error opening '" + path + "': " + win32_posix_error_text(error);
-}
-
-}  // namespace
 
 auto constexpr SYNC_OPTIONS =
     // [GNU] -d, --data
@@ -57,108 +48,11 @@ REGISTER_COMMAND(
 
     /* see also */
     "fsync(2)", "WinuxCmd", "Copyright © 2026 WinuxCmd", SYNC_OPTIONS) {
-  namespace cp = core::pipeline;
-
-  // [GNU] -d/--data: On Linux, fdatasync() flushes data without metadata.
-  // On Windows, FlushFileBuffers() flushes both data and metadata; there is
-  // no data-only mode. The flag is accepted for GNU compatibility but has no
-  // behavioral difference.
-  bool sync_data = ctx.get<bool>("--data", false) || ctx.get<bool>("-d", false);
-  // [GNU] -f/--file-system: On Linux, syncfs() flushes the containing
-  // filesystem. On Windows, there is no syncfs() equivalent, so we fall back to
-  // FlushFileBuffers() on each file (best-effort approximation).
-  bool sync_fs =
-      ctx.get<bool>("--file-system", false) || ctx.get<bool>("-f", false);
-
-  if (sync_data && sync_fs) {
-    // [GNU] sync.c:209-211 wording.
-    cp::Result<int> result = std::unexpected<cp::Error>(
-        "cannot specify both --data and --file-system");
-    cp::report_error(result, L"sync");
-    return 1;
-  }
-
-  if (sync_data && ctx.positionals.empty()) {
-    cp::Result<int> result =
-        std::unexpected<cp::Error>("--data needs at least one argument");
-    cp::report_error(result, L"sync");
-    return 1;
-  }
-
-  if (ctx.positionals.empty()) {
-    // Sync all file systems - Windows doesn't have a direct equivalent
-    // so we just return success
-    return 0;
-  }
-
-  // Sync specified files
-  bool had_error = false;
-  for (auto file : ctx.positionals) {
-    std::string file_arg(file);
-    std::vector<std::string> expanded;
-    if (contains_wildcard(file_arg)) {
-      auto glob_result = glob_expand(file_arg);
-      if (glob_result.expanded) {
-        for (const auto& f : glob_result.files) {
-          expanded.push_back(wstring_to_utf8(f));
-        }
-      } else {
-        expanded.push_back(file_arg);
-      }
-    } else {
-      expanded.push_back(file_arg);
-    }
-    for (const auto& exp : expanded) {
-      std::error_code path_ec;
-      const std::filesystem::path fs_path =
-          utf8_to_wstring(native_path::normalize_api_operand(exp));
-
-      if (sync_fs) {
-        if (!std::filesystem::exists(fs_path, path_ec)) {
-          auto err = format_open_error(exp, ERROR_FILE_NOT_FOUND);
-          cp::Result<int> result = std::unexpected(err);
-          cp::report_error(result, L"sync");
-          had_error = true;
-          continue;
-        }
-        // [DIFFERS from GNU] GNU syncfs() flushes the entire filesystem.
-        // Windows has no syncfs() equivalent; fall through to
-        // FlushFileBuffers() as a best-effort approximation.
-      }
-
-      // [GNU] Directories are ordinary operands (open + fsync on the
-      // directory); they used to be skipped silently, so
-      // `sync somedir` flushed nothing at all.
-      const bool is_dir = std::filesystem::is_directory(fs_path, path_ec);
-      HANDLE hFile = CreateFileW(
-          fs_path.c_str(), GENERIC_WRITE,
-          FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
-          is_dir ? FILE_FLAG_BACKUP_SEMANTICS : FILE_ATTRIBUTE_NORMAL,
-          nullptr);
-
-      if (hFile == INVALID_HANDLE_VALUE) {
-        auto err = format_open_error(exp, GetLastError());
-        cp::Result<int> result = std::unexpected(err);
-        cp::report_error(result, L"sync");
-        had_error = true;
-        continue;
-      }
-
-      if (!FlushFileBuffers(hFile)) {
-        DWORD flush_error = GetLastError();
-        CloseHandle(hFile);
-        // [GNU] "error syncing %s" + errno text (sync.c:154).
-        auto err = std::string("error syncing '") + exp +
-                   "': " + win32_posix_error_text(flush_error);
-        cp::Result<int> result = std::unexpected(err);
-        cp::report_error(result, L"sync");
-        had_error = true;
-        continue;
-      }
-
-      CloseHandle(hFile);
-    }
-  }
-
-  return had_error ? 1 : 0;
+  // #1488 mechanical replacement: the semantics live in the rust2 library
+  // (rust2/crates/winux-cmds/src/sync.rs, sync_cmd); the C++ side keeps
+  // only this registration — the FlushFileBuffers walk and the operand
+  // glob expansion are deleted (GNU never globs operands; the caller's
+  // shell does). ctx.raw_args passes the operands verbatim because GNU
+  // sync.c parses its own getopt run.
+  return winux::rust2::run_command("sync", ctx.raw_args);
 }
