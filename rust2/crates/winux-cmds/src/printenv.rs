@@ -57,7 +57,12 @@ pub fn printenv_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let sep: &[u8] = if null_separator { b"\0" } else { b"\n" };
     let out = &mut *io.stdout;
     if names.is_empty() {
-        for (_k, v) in ctx.env.entries() {
+        // GNU dumps the whole environ as NAME=VALUE lines (probed 9.4:
+        // `printenv` starts "SHELL=/bin/bash..."); the value-only form was
+        // a pilot bug the win-mode rows never gated.
+        for (k, v) in ctx.env.entries() {
+            out.write_all(k.to_string_lossy().as_bytes())?;
+            out.write_all(b"=")?;
             out.write_all(v.to_string_lossy().as_bytes())?;
             out.write_all(sep)?;
         }
@@ -119,7 +124,8 @@ mod tests {
         let ctx = sc.ctx();
         let r = super::printenv_cmd(&[], &mut io.split(), &ctx).unwrap();
         assert_eq!(r, 0);
-        assert_eq!(io.out(), "1\n2\n");
+        // GNU dumps NAME=VALUE lines, not bare values.
+        assert_eq!(io.out(), "AAA=1\nBBB=2\n");
     }
 
     #[test]
@@ -160,7 +166,7 @@ mod tests {
         let args = ["-0".into()];
         let r = super::printenv_cmd(&args, &mut io.split(), &ctx).unwrap();
         assert_eq!(r, 0);
-        assert_eq!(io.out(), "1\0".to_string() + "2\0");
+        assert_eq!(io.out(), "A1=1\0".to_string() + "B2=2\0");
     }
 
     #[test]
