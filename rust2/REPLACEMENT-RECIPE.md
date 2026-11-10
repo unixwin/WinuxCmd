@@ -126,9 +126,15 @@ must pass on both old and new exe.
 
 ## 5. One-time work still required before some waves
 
-- **Streaming stdin (ABI v2).** v1 passes stdin as a whole buffer; the bridge
-  forwards none. Wiring a stdin reader (`cat`, `tr`, `sort`, ...) through v1
-  would turn streaming into slurp-then-run. Needs a handle/callback ABI.
+- **Streaming stdin (ABI v2).** ~~v1 passes stdin as a whole buffer; the
+  bridge forwards none.~~ **Available now, additive:** `winuxcmd_run_stream`
+  (pull callback `winuxcmd_stream_read_fn` + user_data -> `impl Read`;
+  host-stops-feeding convention is status 124). The C++ side has NOT adopted
+  it yet — the bridge still forwards no stdin — so wiring the first stdin
+  reader (`cat`, `tr`, `sort`, ...) is a bridge+header+v2 adoption commit
+  (`winuxcmd_abi_version` 1 -> 2 together with `rust2_abi.h`), not a plain
+  mechanical replacement. Contract, ownership and thread model:
+  [README.md](README.md) "Streaming stdin ABI (v2)".
 - **Raw output path.** The bridge drains Rust stdout through `safePrint`,
   which applies the i18n legacy catalog lookup (`translate_legacy`) to the
   whole string when a catalog is loaded. Harmless for true/false (no output)

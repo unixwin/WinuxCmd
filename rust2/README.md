@@ -131,9 +131,184 @@ Gate rules and the full result table live in `GATE-REPORT.md`.
    [`REPLACEMENT-RECIPE.md`](REPLACEMENT-RECIPE.md) (never dual-track in the
    same tree). Wired so far: `true`, `false`.
 
+## Streaming stdin ABI (v2, additive; #1488, #1550 follow-up)
+
+### The problem
+
+ABI v1 (`winuxcmd_run`) slurps stdin: the host hands one whole buffer and
+the boundary copies it into a `Vec` (`stdin_buf` -> `to_vec()`), so a 64 MiB
+input costs a full extra copy at the ABI layer on top of whatever the
+command itself accumulates, and "read a chunk, write a chunk" (`cat`/`tr`
+class) cannot be expressed at all. Commands that read stdin could not be
+wired without turning streaming into slurp-then-run
+([REPLACEMENT-RECIPE.md](REPLACEMENT-RECIPE.md) section 5, item 1).
+
+### Choice: pull callback (function pointer + user_data), not a shared ring buffer
+
+Two shapes were on the table; the pull callback is the one implemented.
+
+1. **Pull callback (chosen).** The host registers one "fill this buffer"
+   function; Rust calls it synchronously whenever the command asks for more
+   input.
+   * The rust2 shape contract is synchronous and single-threaded (see
+     *Threading model* below). A ring buffer needs a producer on one side —
+     a thread plus locks or lock-free indices — and splits buffer ownership
+     across two parties with a wakeup protocol. The pull callback keeps one
+     thread and one owner per call.
+   * The callback maps 1:1 onto `std::io::Read::read` (partial reads are
+     legal, `0` is EOF, exactly like `read(2)`). Every command already
+     consumes `Io.stdin: &mut dyn Read`, so the whole command layer is
+     streaming-capable with **zero command-file changes** — streaming is
+     purely an ABI/core/driver property.
+   * No ring allocation, no retained pointers: the host owns the buffer for
+     the duration of one call, Rust borrows it and forgets it.
+2. **Shared ring buffer (not chosen).** It only pays off when a host wants
+   overlapped producer/consumer pipelining; nothing in the 2.0 wiring needs
+   that. If a host does later, it can layer it *behind* the pull callback
+   (the callback is free to serve bytes from a ring filled by another
+   thread) — no ABI change required, which is exactly why the simpler
+   shape goes first.
+
+### Signature (C form, for the future `rust2_abi.h` adoption commit)
+
+```c
+/* Fill buf (cap bytes, cap >= 1) with the next stdin bytes. Returns:
+ *   > 0   bytes filled (may be < cap; partial read is a valid result)
+ *   0     end of stream
+ *  -1     host stopped feeding: timeout / interrupted (see 124 below)
+ *  -2     host read failure (any other negative is reserved, treated as -2)
+ * The pointer is borrowed for the duration of the call and never stored. */
+typedef long long winuxcmd_stream_read_fn(void* user_data,
+                                          unsigned char* buf, size_t cap);
+
+/* Like winuxcmd_run, but stdin arrives through the host callback.
+ * stdin_read == NULL means empty stdin (as stdin_buf == NULL in v1).
+ * stdout/stderr keep the v1 shape: Rust-owned buffers freed with
+ * winuxcmd_free_buf. */
+int winuxcmd_run_stream(const char* name, int argc,
+                        const char* const* argv, const char* const* envp,
+                        const char* cwd,
+                        winuxcmd_stream_read_fn* stdin_read,
+                        void* stdin_user_data,
+                        winuxcmd_cbuf* stdout_buf,
+                        winuxcmd_cbuf* stderr_buf);
+```
+
+Rust mirror: `winux_core::stream::StreamReadFn` (the fn-pointer type),
+`winux_core::stream::StreamReader` (the `impl Read` wrapper), and the
+`winuxcmd_run_stream` export in `winuxcmd-ffi`.
+
+**Additive, not a bump.** `winuxcmd_abi_version()` stays `1`: v1 symbols
+and semantics are byte-for-byte unchanged, and the C++ bridge
+(`rust2_bridge.cppm`) refuses on a version mismatch, so bumping from the
+Rust side alone would break wired commands. The version goes to `2` in the
+same commit that adopts `winuxcmd_run_stream` on the C++ side (header +
+bridge + `WINUXCMD_RUST2_ABI_VERSION`, per the header's own rule). Hosts
+detect v2 support by symbol presence (`winuxcmd_run_stream` in
+`dumpbin /LINKERMEMBER:1 winuxcmd_ffi.lib`).
+
+### Callback contract
+
+| return | meaning | Rust-side mapping |
+|---|---|---|
+| `> 0` | bytes filled; **must be `<= cap`**; partial reads legal, no minimum | `Ok(n)` from `Read::read` |
+| `0` | end of stream | `Ok(0)` (EOF) |
+| `-1` (`STREAM_TIMED_OUT`) | host stopped feeding (timeout / interrupt) | `io::Error` kind `TimedOut`; the run **returns status 124** (below) |
+| `-2` (`STREAM_IO_ERROR`) | host read failure (other negatives reserved, same treatment) | `io::Error` kind `Other`; propagates per the command's own contract (e.g. `tac` -> rc 1; a `?`-propagating command -> 125) |
+
+The `StreamReader` wrapper clamps an out-of-contract `n > cap` to `cap`
+(defensive; a host that does that is already broken) and never calls the
+callback with `cap == 0`. Bytes beyond the returned `n` are not read.
+
+**Timeout convention: 124.** When the host reports `-1` at any point, the
+run returns **124** regardless of the command's own status (a command may
+have swallowed the read error internally — the flag is tracked at the
+wrapper, not inferred from the status). 124 is GNU's convention:
+coreutils `timeout(1)` exits 124 when the child times out
+(`winux_core::stream::STREAM_TIMEOUT_STATUS`). Partial output written
+before the stop stays in `stdout_buf`; the host decides whether to keep it.
+
+### Buffer ownership, lifetime, thread model
+
+* **Ownership.** The callback's `buf` is host-owned memory. Rust borrows it
+  for the duration of the single callback invocation and never stores the
+  pointer; `user_data` is passed through opaquely and never dereferenced by
+  Rust. Output buffers (`stdout_buf`/`stderr_buf`) stay Rust-owned until
+  `winuxcmd_free_buf`, exactly as in v1.
+* **Lifetime.** The reader lives only inside one `winuxcmd_run_stream`
+  call. The host must keep `stdin_read`/`stdin_user_data` valid for the
+  whole call and must not free or mutate the buffer concurrently with the
+  call.
+* **Threading model: single-threaded.** The callback is invoked
+  synchronously on the caller's thread, in the order the command reads.
+  `StreamReader` holds a raw pointer, so it is `!Send + !Sync` at compile
+  time — the streaming run cannot be moved across threads by construction.
+  A host that wants a producer thread owns it behind its own callback; the
+  ABI makes no thread demands and takes no locks.
+
+### The Windows handle red line (#1487 lesson)
+
+**Rust never touches a CRT fd, process stdio, or a console/pipe HANDLE.**
+The host reads its own console/pipe/file and hands over plain byte
+buffers; the Rust side sees only the callback and the buffer contents. No
+`GetStdHandle`, no `std::io::stdin`, no fd 0 in the library or ABI layer —
+the only place process stdio is touched is the CLI driver, whose adapter
+exists precisely to convert process handles into the explicit-buffer
+protocol (the #1487/#727 root cause was exactly a load-time CRT stdio
+binding across the boundary; the streaming ABI adds no new binding).
+
+### Output side
+
+stdout/stderr keep the v1 shape: Rust-owned `CBuf`s the host drains after
+the call. This is the sanctioned "reuse the existing byte buffer" option:
+output capture is already the v1 contract (a returned buffer, freed by
+`winuxcmd_free_buf`), and its memory cost is the output size, which is
+inherent to capture — the streaming input ABI adds no new copy on top of
+it. A streaming *write* callback can be added later as another additive
+symbol if a host demonstrates the need; until then the buffer is not a
+bottleneck the input path has.
+
+### Validation
+
+`crates/winuxcmd-ffi` unit tests (`stream_tests`) prove: segmented feeding
+(1 B / 7 B / 64 KiB uneven segments) is byte-identical to whole-buffer v1
+across ASCII, multi-byte UTF-8 (split mid-character), no-trailing-newline
+and empty inputs for `tac` and `base64`; host-stops-feeding returns 124;
+host read failure surfaces as the command's own rc; NULL reader is empty
+stdin. The 64 MiB end-to-end ledger (three input kinds, `cmp` equality,
+`PeakWorkingSetSize`/`PeakPagefileUsage` sampling via the driver's
+`--abi`/`--abi-stream`/`--mem-report` modes) lives in
+`gate/stream-check.sh`; its current numbers are at the end of this file.
+
+**Measured ledger (2026-11-10, `bash gate/stream-check.sh`, 64 MiB inputs,
+`cargo test` 147/147 green — the 16 `stream_tests` included):**
+
+* Byte equality: 21/21 comparisons PASS — {`tac`, `base64`, `base64 -d`
+  roundtrip} x {random ASCII text, multi-byte UTF-8 (CJK + emoji), no
+  trailing newline} x {v2 default chunking, `--feed-chunk 65536`,
+  `--feed-chunk 997` (uneven)}, each `cmp`-identical to the v1 whole-buffer
+  run on stdout AND stderr AND rc.
+* Memory peaks (`peak_pagefile_bytes`, the commit-charged peak; working-set
+  peaks also recorded in the artifacts):
+
+  | command | v1 whole-buffer | v2 streaming | ABI copy removed |
+  |---|---|---|---|
+  | `tac` | 392.7 MiB | 264.5 MiB | >= 128.2 MiB (~2x input) |
+  | `base64` | 473.3 MiB | 344.1 MiB | >= 129.2 MiB (~2x input) |
+
+  The ~2x-input gap is the driver slurp plus the ABI `stdin_buf -> Vec`
+  copy that v2 eliminates; what remains is the commands' own internal
+  accumulation (`tac` reverses in memory, `base64` slurps by design —
+  unchanged command code). A `cat`/`tr`-class command wired later gets the
+  flat end-to-end profile for free. Reproduce:
+  `bash rust2/gate/stream-check.sh` (artifacts under
+  `rust2/target/stream-check/`, gitignored).
+
 ## Out of scope for this pilot
 
 * No `chmod`/`chown`/`df` full POSIX semantics. (Wiring into the dispatcher
   started with the replacement wave; see the recipe.)
 * Symlink-creating setups need Developer Mode; without it the gate runs
   link-sensitive cases in `win`/`exit` classification only.
+* No command is *wired* through the streaming ABI yet (that is the next
+  replacement wave; this change is pure ABI/core/driver support).
