@@ -3,21 +3,18 @@
 /// @contributors:
 ///   - caomengxuan666 <2507560089@qq.com>
 /// @Description: Implementation for [ command (alias for test).
-/// @Version: 0.1.0
+/// @Version: 0.2.0
 /// @License: MIT
 /// @Copyright: Copyright © 2026 WinuxCmd
 
-#include "core/command_macros.h"
 #include "pch/pch.h"
+// include other header after pch.h
+#include "core/command_macros.h"
 
 import std;
 import core;
 import utils;
-import container;
-
-// Shared GNU-faithful test/[ parser and stat() helpers (issues 236, 963,
-// 1063).  Must come after `import utils;` for native_path::.
-#include "commands/test_expr.hpp"
+import rust2_bridge;
 
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
@@ -109,28 +106,6 @@ auto constexpr BRACKET_OPTIONS =
         // [GNU] -ef
         OPTION("-ef", "", "file1 and file2 have the same device and inode")};
 
-namespace bracket_command {
-auto materialize_raw_args(const std::vector<std::string_view>& raw_args)
-    -> std::vector<std::string> {
-  std::vector<std::string> args;
-  args.reserve(raw_args.size());
-  for (auto arg : raw_args) args.emplace_back(arg);
-  return args;
-}
-
-auto evaluate_bracket_expression(std::span<const std::string> args,
-                                 std::string* error_message) -> int {
-  // [GNU] `[` shares test's parser exactly (test_expr.hpp), mirroring
-  // coreutils test.c semantics and diagnostics.
-  test_expr::Parser parser(args);
-  const int status = parser.parse();
-  if (error_message != nullptr) {
-    *error_message = parser.error();
-  }
-  return status;
-}
-}  // namespace bracket_command
-
 // ======================================================
 // Main command implementation
 // ======================================================
@@ -149,18 +124,12 @@ REGISTER_COMMAND(bracket,
                  /* author */ "WinuxCmd",
                  /* copyright */ "Copyright © 2026 WinuxCmd",
                  /* options */ BRACKET_OPTIONS) {
-  auto args = bracket_command::materialize_raw_args(ctx.raw_args);
-  if (args.empty() || args.back() != "]") {
-    safeErrorPrintLn("[: missing ']'");
-    return 2;
-  }
-
-  args.pop_back();
-  std::string error_message;
-  const int status =
-      bracket_command::evaluate_bracket_expression(args, &error_message);
-  if (!error_message.empty()) {
-    safeErrorPrintLn("[: " + winux::i18n::translate_error(error_message));
-  }
-  return status;
+  // #1488 mechanical replacement: the semantics live in the rust2 library
+  // (rust2/crates/winux-cmds/src/test_cmd.rs, bracket_cmd — coreutils
+  // test.c's argv[0] == "[" face, which requires the closing ]); the C++
+  // side keeps only this registration. [ never calls getopt: --help/
+  // --version are honored only as the sole argument (dispatcher) and
+  // every other token is expression data, so ctx.raw_args is exactly the
+  // language GNU test.c parses.
+  return winux::rust2::run_command("[", ctx.raw_args);
 }

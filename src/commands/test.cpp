@@ -3,24 +3,18 @@
 /// @contributors:
 ///   - caomengxuan666 <2507560089@qq.com>
 /// @Description: Implementation for test command.
-/// @Version: 0.1.0
+/// @Version: 0.2.0
 /// @License: MIT
 /// @Copyright: Copyright © 2026 WinuxCmd
-// FULLY IMPLEMENTED - All standard test operations supported
 
-#include "core/command_macros.h"
 #include "pch/pch.h"
+// include other header after pch.h
+#include "core/command_macros.h"
 
 import std;
 import core;
 import utils;
-import container;
-
-// Shared GNU-faithful test/[ parser and stat() helpers (issues 236, 963,
-// 1063).  Must come after `import utils;` for native_path::.
-#include "commands/test_expr.hpp"
-
-namespace fs = std::filesystem;
+import rust2_bridge;
 
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
@@ -116,34 +110,6 @@ auto constexpr TEST_OPTIONS =
                "read")};
 
 // ======================================================
-// Helper functions
-// ======================================================
-
-namespace {
-std::vector<std::string> materialize_test_args(
-    const std::vector<std::string_view>& raw_args) {
-  std::vector<std::string> args;
-  args.reserve(raw_args.size());
-  for (auto arg : raw_args) {
-    args.emplace_back(arg);
-  }
-  return args;
-}
-
-int evaluate_test_expression(std::span<const std::string> args,
-                             std::string* error_message = nullptr) {
-  // [GNU] Shared parser identical to `[` (test_expr.hpp), mirroring
-  // coreutils test.c semantics and diagnostics.
-  test_expr::Parser parser(args);
-  const int status = parser.parse();
-  if (error_message != nullptr) {
-    *error_message = parser.error();
-  }
-  return status;
-}
-}  // namespace
-
-// ======================================================
 // Main command implementation
 // ======================================================
 
@@ -165,11 +131,12 @@ REGISTER_COMMAND(
     /* author */ "WinuxCmd",
     /* copyright */ "Copyright © 2026 WinuxCmd",
     /* options */ TEST_OPTIONS) {
-  auto args = materialize_test_args(ctx.raw_args);
-  std::string error_message;
-  const int status = evaluate_test_expression(args, &error_message);
-  if (!error_message.empty()) {
-    safeErrorPrintLn("test: " + winux::i18n::translate_error(error_message));
-  }
-  return status;
+  // #1488 mechanical replacement: the semantics live in the rust2 library
+  // (rust2/crates/winux-cmds/src/test_cmd.rs, test_cmd); the C++ side
+  // keeps only this registration — the shared test_expr.hpp parser and
+  // its stat() helpers are deleted with it. test/[ never call getopt:
+  // the dispatcher honors --help/--version only as the sole argument and
+  // every other token is an operand, so ctx.raw_args is exactly the
+  // expression language GNU test.c parses.
+  return winux::rust2::run_command("test", ctx.raw_args);
 }
