@@ -617,6 +617,59 @@ export void safeErrorPrint(std::string_view sv) {
   }
 }
 
+// ----------------------------------------------------------------------------
+// Raw (non-translating) writers — data output exit for the rust2 bridge
+// (#1488).
+//
+// Rust command output is already final GNU-compatible bytes. Routing it
+// through safePrint/safeErrorPrint applies the legacy i18n catalog lookup
+// (translate_legacy, FNV-1a key over the whole payload), so command DATA —
+// basename's result line, printenv's value, pwd's path — could be silently
+// replaced by whichever catalog entry hashes to those bytes. The length
+// gate (#1533) only narrows the lookup; a data path must bypass translation
+// entirely, the same way GNU write(1) never consults a message catalog for
+// operand-derived bytes. Everything else mirrors safePrint/safeErrorPrint
+// exactly: capture handles, console-vs-file detection, byte counting,
+// SIGPIPE mapping and write-failure notes are shared with the translating
+// exit.
+// ----------------------------------------------------------------------------
+export void safePrintRaw(std::string_view sv) {
+  HANDLE h = getStdOut();
+  if (isStdoutConsole()) {
+    detail::wchar_buffer buf(sv);
+    if (buf.valid()) {
+      if (!detail::writeConsoleW(h, buf.data(), buf.size())) {
+        note_stdout_write_failure();
+      }
+    }
+  } else {
+    if (!detail::writeFile(h, sv.data(), sv.size())) {
+      note_stdout_write_failure();
+    }
+  }
+  if (g_count_stdout_bytes) {
+    g_stdout_bytes_written += sv.size();
+  }
+}
+
+export void safeErrorPrintRaw(std::string_view sv) {
+  HANDLE h = getStdErr();
+  if (isStderrConsole()) {
+    detail::wchar_buffer buf(sv);
+    if (buf.valid()) {
+      if (!detail::writeConsoleW(h, buf.data(), buf.size()) &&
+          isBrokenPipeError(GetLastError())) {
+        g_stderr_pipe_closed = true;
+      }
+    }
+  } else {
+    if (!detail::writeFile(h, sv.data(), sv.size()) &&
+        isBrokenPipeError(GetLastError())) {
+      g_stderr_pipe_closed = true;
+    }
+  }
+}
+
 export void safePrintLn(std::string_view sv) {
   safePrint(winux::i18n::translate_legacy(sv));
   safePrint("\n");

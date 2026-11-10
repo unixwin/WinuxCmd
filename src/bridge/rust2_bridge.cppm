@@ -111,12 +111,18 @@ int run_command(const char* name, std::span<std::string_view> args) noexcept {
   // stdout before stderr: the Rust side buffered both, so their relative
   // interleaving is not observable anyway; GNU's order for the commands
   // wired so far (no interleaved writes) is preserved either way.
+  //
+  // Both streams drain through the RAW writers (safePrintRaw /
+  // safeErrorPrintRaw): Rust output is already final GNU-compatible text,
+  // and the legacy catalog lookup in the translating writers would key on
+  // the whole payload — command data (a basename result, an env value)
+  // must reach the handle byte-for-byte (#1488; see console.cppm).
   if (out.ptr != nullptr && out.len > 0) {
-    safePrint(
+    safePrintRaw(
         std::string_view(reinterpret_cast<const char*>(out.ptr), out.len));
   }
   if (err.ptr != nullptr && err.len > 0) {
-    safeErrorPrint(
+    safeErrorPrintRaw(
         std::string_view(reinterpret_cast<const char*>(err.ptr), err.len));
   }
   winuxcmd_free_buf(&out);
