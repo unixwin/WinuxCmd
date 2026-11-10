@@ -609,7 +609,37 @@ if(WINUXCMD_ENABLE_RUST2)
     # (the gate/driver tree) and never shares artifacts across CMake trees.
     set(WINUXCMD_RUST2_TARGET_DIR "${CMAKE_BINARY_DIR}/rust2-target" CACHE PATH
         "CARGO_TARGET_DIR used for the rust2 staticlib build")
-    set(WINUXCMD_RUST2_LIB "${WINUXCMD_RUST2_TARGET_DIR}/release/winuxcmd_ffi.lib")
+    # The staticlib must be built for the same machine the C++ link targets.
+    # cargo without --target builds for the *host* triple: on an x64 host the
+    # arm64 build (vcvars x64_arm64) silently got an x86_64 winuxcmd_ffi.lib
+    # whose objects cannot resolve the bridge's ABI symbols for an ARM64
+    # link (LNK2001 winuxcmd_abi_version / winuxcmd_run / winuxcmd_free_buf,
+    # #1552). Resolve the target arch from the same signals the package arch
+    # resolution below uses (explicit WINUXCMD_PACKAGE_ARCH, then the vcvars
+    # target environment, then the processor), map it to a Rust target
+    # triple, and always pass --target so the artifact lands in the
+    # per-triple directory on both architectures. Prerequisite: the std
+    # library for the triple must be installed
+    # (`rustup target add aarch64-pc-windows-msvc` for arm64 builds).
+    set(WINUXCMD_RUST2_TARGET_TRIPLE "" CACHE STRING
+        "Rust target triple for the rust2 staticlib (empty = derive from the C++ target arch)")
+    if(NOT WINUXCMD_RUST2_TARGET_TRIPLE)
+        if(DEFINED WINUXCMD_PACKAGE_ARCH AND NOT WINUXCMD_PACKAGE_ARCH STREQUAL "")
+            string(TOLOWER "${WINUXCMD_PACKAGE_ARCH}" _rust2_arch)
+        elseif(DEFINED ENV{VSCMD_ARG_TGT_ARCH} AND NOT "$ENV{VSCMD_ARG_TGT_ARCH}" STREQUAL "")
+            string(TOLOWER "$ENV{VSCMD_ARG_TGT_ARCH}" _rust2_arch)
+        elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "ARM64|aarch64")
+            set(_rust2_arch "arm64")
+        else()
+            set(_rust2_arch "x64")
+        endif()
+        if(_rust2_arch STREQUAL "arm64")
+            set(WINUXCMD_RUST2_TARGET_TRIPLE "aarch64-pc-windows-msvc")
+        else()
+            set(WINUXCMD_RUST2_TARGET_TRIPLE "x86_64-pc-windows-msvc")
+        endif()
+    endif()
+    set(WINUXCMD_RUST2_LIB "${WINUXCMD_RUST2_TARGET_DIR}/${WINUXCMD_RUST2_TARGET_TRIPLE}/release/winuxcmd_ffi.lib")
     set(WINUXCMD_RUST2_RUSTC_FLAGS)
     if(USE_STATIC_CRT)
         list(APPEND WINUXCMD_RUST2_RUSTC_FLAGS -C target-feature=+crt-static)
@@ -627,6 +657,7 @@ if(WINUXCMD_ENABLE_RUST2)
                     "${WINUXCMD_CARGO_EXECUTABLE}" rustc --release --locked
                     --manifest-path "${WINUXCMD_RUST2_DIR}/Cargo.toml"
                     -p winuxcmd-ffi --lib --crate-type staticlib
+                    --target "${WINUXCMD_RUST2_TARGET_TRIPLE}"
                     -- ${WINUXCMD_RUST2_RUSTC_FLAGS}
             DEPENDS ${WINUXCMD_RUST2_SOURCES}
                     "${WINUXCMD_RUST2_DIR}/Cargo.toml"
