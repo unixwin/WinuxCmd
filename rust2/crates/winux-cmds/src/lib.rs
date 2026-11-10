@@ -41,6 +41,8 @@ pub mod tac;
 pub mod tee;
 pub mod test_cmd;
 pub mod touch;
+pub mod sync;
+
 pub mod truefalse;
 pub mod truncate;
 pub mod uname;
@@ -57,6 +59,7 @@ type CmdFn = fn(&[OsString], &mut Io, &Ctx) -> CmdResult;
 /// Registry: command name -> library function.
 pub fn registry() -> Vec<(&'static str, CmdFn)> {
     vec![
+        ("sync", sync::sync_cmd),
         ("true", truefalse::true_cmd),
         ("false", truefalse::false_cmd),
         ("test", test_cmd::test_cmd),

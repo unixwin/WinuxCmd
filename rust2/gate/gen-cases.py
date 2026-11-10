@@ -476,6 +476,36 @@ df_rows = [
 ]
 
 # ---------------------------------------------------------------------------
+# wiring wave1 remainder (#1488): sync
+# ---------------------------------------------------------------------------
+sync_rows = [
+    # sync: FlushFileBuffers semantics, probed against WSL coreutils 9.4.
+    # probed against WSL coreutils 9.4.
+    ("sy01-plain", "exit", "", "", "", []),
+    ("sy02-file", "exit", "printf x > st", "", "", ["st"]),
+    ("sy03-dir", "exit", "mkdir -p sdir", "", "", ["sdir"]),
+    ("sy04-missing", "exit", "", "", "", ["missing-xyz"]),
+    ("sy05-d-alone", "exit", "", "", "", ["-d"]),
+    ("sy06-d-file", "exit", "printf x > st", "", "", ["-d", "st"]),
+    ("sy07-f-alone", "exit", "", "", "", ["-f"]),
+    ("sy08-f-file", "exit", "printf x > st", "", "", ["-f", "st"]),
+    ("sy09-d-f", "exit", "", "", "", ["-d", "-f"]),
+    ("sy10-long-d-f", "exit", "", "", "", ["--data", "--file-system"]),
+    ("sy11-help", "win", "", "", "", ["--help"]),
+    ("sy12-version", "win", "", "", "", ["--version"]),
+    ("sy13-help-extra", "exit", "", "", "", ["--help", "x"]),
+    ("sy14-bogus", "exit", "", "", "", ["--bogus"]),
+    ("sy15-z", "exit", "", "", "", ["-z"]),
+    ("sy16-dashdash", "exit", "", "", "", ["--"]),
+    ("sy17-dash", "exit", "", "", "", ["-"]),
+    ("sy18-mixed-missing", "exit", "printf x > st", "", "", ["st", "missing-xyz"]),
+    ("sy19-d-missing", "exit", "", "", "", ["-d", "missing-xyz"]),
+    ("sy20-f-missing", "exit", "", "", "", ["-f", "missing-xyz"]),
+    ("sy21-wildcard-literal", "exit", "", "", "", ["st*"]),
+    ("sy22-f-dir", "exit", "mkdir -p sd2", "", "", ["-f", "sd2"]),
+]
+
+# ---------------------------------------------------------------------------
 # wave2 (#1488 second batch): whoami nproc unlink sleep base64 base32 b2sum
 # sha224sum sha384sum tac truncate uname id hostname getconf
 # ---------------------------------------------------------------------------
@@ -1426,7 +1456,7 @@ def collect():
         ("id", id_rows), ("hostname", hostname_rows), ("getconf", getconf_rows),
         ("seq", seq_rows), ("fold", fold_rows), ("paste", paste_rows),
         ("tee", tee_rows), ("fmt", fmt_rows), ("stat", stat_rows),
-        ("touch", touch_rows), ("ln", ln_rows),
+        ("touch", touch_rows), ("ln", ln_rows), ("sync", sync_rows),
     ]
 
 
