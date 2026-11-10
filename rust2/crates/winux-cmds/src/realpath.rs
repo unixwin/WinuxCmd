@@ -149,7 +149,17 @@ pub fn realpath_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             match value {
                 Ok(v) => {
                     let v = if let Some(base) = base_dir.as_deref() {
-                        relativize(ctx, base, &v, relative_base_mode)
+                        let rel = relativize(ctx, base, &v, relative_base_mode);
+                        if rel == v {
+                            // TEMP DIAGNOSTIC (revert after CI): why did
+                            // the relativize fall back to absolute?
+                            let bt = canonicalize_operand(ctx, base, CanonMode::NoCheck)
+                                .unwrap_or_default();
+                            let _ = writeln!(io.stderr,
+                                "DBG rel-fallback base=[{}] bt=[{}] v=[{}] cwd=[{}]",
+                                base, bt, v, ctx.cwd.to_string_lossy());
+                        }
+                        rel
                     } else {
                         v
                     };
@@ -211,6 +221,10 @@ fn relativize(ctx: &Ctx, base_dir: &str, target: &str, below_only: bool) -> Stri
         return target.to_string();
     }
     if common == 0 {
+        // TEMP DIAGNOSTIC (revert after CI): no common prefix at all -
+        // print both sides.
+        eprintln!("DBG rel-common0 bt=[{}] tc=[{}] base=[{}] target=[{}]",
+            bt, tt, base_dir, target);
         return target.to_string(); // no common prefix: absolute fallback
     }
     let mut ups = Vec::new();
