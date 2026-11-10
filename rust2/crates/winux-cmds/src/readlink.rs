@@ -117,7 +117,15 @@ pub fn readlink_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             let name = operand.to_string_lossy().into_owned();
             let value = match canon {
                 Some(cm) => match crate::canon::canonicalize_operand(ctx, &name, cm) {
-                    Ok(v) => Some(v),
+                    // [GNU] lib/canonicalize.c assembles the canonical name
+                    // with '/' by construction (9.4 probe: `readlink -f
+                    // d/f.txt` -> '/tmp/.../d/f.txt', zero backslashes). A
+                    // '\' breaks the shell word arithmetic that consumes
+                    // the output (bats-core "${BATS_PATH%/*/*}", #1491),
+                    // so the canonicalize modes render the resolved name
+                    // in the '/' display form. The no-mode form prints the
+                    // stored target text verbatim, like GNU areadlink.
+                    Ok(v) => Some(v.replace('\\', "/")),
                     Err(e) => {
                         if verbose {
                             let _ = writeln!(
