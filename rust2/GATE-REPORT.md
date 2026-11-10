@@ -70,6 +70,43 @@ counts) are the documented 1.x behavior the Rust side follows.
 
 **Wave2 total cases: 348; GNU-gated + win-gated: all GREEN; C++ parity: 320/348.**
 
+
+## Wave3a (#1488, third batch)
+
+8 commands: `seq fold paste tee fmt stat touch ln` (240 cases). All five text
+commands gate strictly against GNU coreutils 9.4 byte-for-byte (seq's
+arbitrary-precision integer fast path + f64 long-double path, fold.c's
+byte/column algorithm, paste.c's parallel/serial delbuf algorithm, tee.c's
+EPIPE-silent failure model, fmt.c's full cost DP). stat renders GNU's exact
+default/terse/-c format shapes over the Windows value model of the 1.x
+applets (uid 0x30000+RID, POSIX-shaped mode words, volume-serial device),
+so its value cases gate Rust-vs-C++ rc (win) while rc-only and platform-neutral
+stdout cases stay strict against GNU. touch sets times through SetFileTime with
+a DST-aware TzSpecificLocalTime conversion (no CRT timezone touch) and a probed
+GNU parse-datetime subset (-d ISO/@epoch/time-only/-t [[CC]YY]MMDDhhmm[.ss]).
+ln uses CreateHardLinkW and CreateSymbolicLinkW (unprivileged flag; the 1.x
+C++ lacks it, so symlink-creation cases are `note`: GNU rc 0, Rust rc 0,
+C++ rc 1). Known GNU-vs-C++ divergences the Rust side follows GNU on:
+`stat -c %C` rc (GNU 0, C++ 1), `ln -i` decline rc (GNU 1, C++ 0 observed as
+no-op), tee fold trailing-space (fold C++ drops it). Documented subset: touch
+relative dates ("next monday") are rejected like GNU rejects unparseable
+dates; seq f64 vs 80-bit long double only differs >16 significant digits;
+fmt buffers whole paragraphs (GNU flushes at 5000 chars / 1000 words).
+
+| command | cases | strict | exit | win | note | GNU-gated result | C++ parity (rc+stdout) |
+|---|---|---|---|---|---|---|---|
+| seq | 50 | 50 | 0 | 0 | 0 | GREEN | 46/50 |
+| fold | 26 | 26 | 0 | 0 | 0 | GREEN | 26/26 |
+| paste | 38 | 37 | 0 | 1 | 0 | GREEN | 38/38 |
+| tee | 24 | 21 | 1 | 2 | 0 | GREEN | 22/24 |
+| fmt | 26 | 25 | 0 | 1 | 0 | GREEN | 25/26 |
+| stat | 22 | 9 | 1 | 11 | 1 | GREEN | 14/22 |
+| touch | 29 | 28 | 0 | 1 | 0 | GREEN | 27/29 |
+| ln | 25 | 19 | 1 | 2 | 3 | GREEN | 21/25 |
+
+**Wave3a total: 240 cases; GNU-gated + win-gated: all GREEN; notes: 4 (st10
+%C rc, ln22/ln24/ln25 unprivileged symlink creation). C++ parity: 219/240.**
+
 C++ 1.x parity summary: 270/338 cases byte/rc-equal to the Rust pilot;
 68 diverge (path forms, verbose message prefixes, sole `--version` text,
 rmdir -p trailing slash, chmod --reference behavior, df drive paths).

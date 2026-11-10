@@ -17,21 +17,30 @@ pub mod df;
 pub mod digest;
 pub mod digestsum;
 pub mod dirname;
+pub mod fmt;
+pub mod fold;
+pub mod fs_win;
 pub mod fsutil;
 pub mod getconf;
 pub mod hostname;
 pub mod id;
+pub mod ln;
 pub mod mkdir;
 pub mod modemap;
 pub mod nproc;
+pub mod paste;
 pub mod printenv;
 pub mod pwd;
 pub mod readlink;
 pub mod realpath;
 pub mod rmdir;
+pub mod seq;
 pub mod sleep;
+pub mod stat;
 pub mod tac;
+pub mod tee;
 pub mod test_cmd;
+pub mod touch;
 pub mod truefalse;
 pub mod truncate;
 pub mod uname;
@@ -74,6 +83,15 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("b2sum", digestsum::b2sum_cmd),
         ("sha224sum", digestsum::sha224sum_cmd),
         ("sha384sum", digestsum::sha384sum_cmd),
+        // wave3a (#1488): alphabetical insertions
+        ("fmt", fmt::fmt_cmd),
+        ("fold", fold::fold_cmd),
+        ("paste", paste::paste_cmd),
+        ("seq", seq::seq_cmd),
+        ("tee", tee::tee_cmd),
+        ("stat", stat::stat_cmd),
+        ("touch", touch::touch_cmd),
+        ("ln", ln::ln_cmd),
     ]
 }
 
