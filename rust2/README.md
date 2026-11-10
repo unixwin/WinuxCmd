@@ -280,6 +280,30 @@ stdin. The 64 MiB end-to-end ledger (three input kinds, `cmp` equality,
 `--abi`/`--abi-stream`/`--mem-report` modes) lives in
 `gate/stream-check.sh`; its current numbers are at the end of this file.
 
+**Measured ledger (2026-11-10, `bash gate/stream-check.sh`, 64 MiB inputs,
+`cargo test` 147/147 green — the 16 `stream_tests` included):**
+
+* Byte equality: 21/21 comparisons PASS — {`tac`, `base64`, `base64 -d`
+  roundtrip} x {random ASCII text, multi-byte UTF-8 (CJK + emoji), no
+  trailing newline} x {v2 default chunking, `--feed-chunk 65536`,
+  `--feed-chunk 997` (uneven)}, each `cmp`-identical to the v1 whole-buffer
+  run on stdout AND stderr AND rc.
+* Memory peaks (`peak_pagefile_bytes`, the commit-charged peak; working-set
+  peaks also recorded in the artifacts):
+
+  | command | v1 whole-buffer | v2 streaming | ABI copy removed |
+  |---|---|---|---|
+  | `tac` | 392.7 MiB | 264.5 MiB | >= 128.2 MiB (~2x input) |
+  | `base64` | 473.3 MiB | 344.1 MiB | >= 129.2 MiB (~2x input) |
+
+  The ~2x-input gap is the driver slurp plus the ABI `stdin_buf -> Vec`
+  copy that v2 eliminates; what remains is the commands' own internal
+  accumulation (`tac` reverses in memory, `base64` slurps by design —
+  unchanged command code). A `cat`/`tr`-class command wired later gets the
+  flat end-to-end profile for free. Reproduce:
+  `bash rust2/gate/stream-check.sh` (artifacts under
+  `rust2/target/stream-check/`, gitignored).
+
 ## Out of scope for this pilot
 
 * No `chmod`/`chown`/`df` full POSIX semantics. (Wiring into the dispatcher
