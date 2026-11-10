@@ -34,11 +34,11 @@ with `bash gate/make-report.sh`.
 | rmdir | 22 | 22 | 0 | 0 | 0 | GREEN | 21/22 |
 | readlink | 24 | 8 | 16 | 0 | 0 | GREEN | 10/24 |
 | realpath | 22 | 6 | 15 | 1 | 0 | GREEN | 9/22 |
-| chmod | 22 | 21 | 1 | 0 | 0 | GREEN | 21/22 |
-| chown | 16 | 12 | 0 | 4 | 0 | GREEN | 9/16 |
-| df | 15 | 3 | 2 | 8 | 2 | GREEN | 3/15 |
+| chmod | 45 | 41 | 4 | 0 | 0 | GREEN | 43/45 |
+| chown | 37 | 22 | 6 | 5 | 4 | GREEN | 22/37 |
+| df | 35 | 10 | 10 | 13 | 2 | GREEN | 11/35 |
 
-**Total cases: 338. GNU-gated (strict+exit): all GREEN; win-only: all GREEN; notes: 2 (df).**
+**Total cases: 402. GNU-gated (strict+exit): all GREEN; win-only: all GREEN; notes: 6 (chown 4, df 2).**
 
 
 ## Wave2 (#1488, second batch)
@@ -84,3 +84,47 @@ the sole-argument rule, so t06/t14/f06/f14 were promoted to `strict` and f07
 became `win` (branded version text, like t07). Rows re-measured with
 `bash gate/run-gate.sh true false`: 38 GNU-gated + 2 win, all green. The
 three former `note` rows were the pilot diverging, not the C++ applet.
+
+**Refresh (#1488 rust2 wave1 deepening, chmod/chown/df):** the pilot's
+platform-subset commands were pushed to "everything Windows can honestly
+do", GNU semantics per coreutils 9.4 probed under WSL:
+
+- `chmod` — full GNU modechange grammar in `modemap.rs`: multi-op clauses
+  (`u+r-w`), omitted-who umask exclusion (`=w` on 044/umask 022 -> 0200),
+  `X` on dirs/pre-executable files only, copy forms (`u=g`, `u+g`),
+  special bits (`s`->u/g, `t`->o, misplaced silently no-op like GNU
+  `g+t`), `=` replacing the affected who's special bits, octal values
+  fitting 0o7777 (`00000644` ok, `077777` invalid). `-R` keeps GNU fts
+  preorder, skips symlinks, refuses filesystem roots (upstream default
+  preserve-root; the WSL oracle build has it disabled — never aim `-R`
+  at `/` in the gate). `-v`/`-c` follow GNU wording
+  (`mode of 'f' changed from 0644 (rw-r--r--) to 0755 (rwxr-xr-x)`),
+  `-f` suppresses diagnostics. NTFS persistence stays the documented
+  subset: read-only attribute tracks owner-write; x/s/t bits live in the
+  in-memory model only. Cases 22 -> 45 (strict 21 -> 41).
+- `chown` — real ownership changes via advapi32 SetNamedSecurityInfoW:
+  owner-to-self and owner+group apply where the OS grants WRITE_OWNER;
+  the unprivileged desktop denial maps to GNU's `changing ownership of
+  'f': Operation not permitted` rc 1 (probed: even same-group
+  GROUP_SECURITY_INFORMATION is rc 5 ERROR_ACCESS_DENIED without
+  SeRestorePrivilege). Numeric uid/gid stay validated no-ops (no Windows
+  model); `owner:` trailing colon follows GNU (`root:` ok, `1234:`
+  invalid spec), `--from` filters by SID, `--reference` copies both
+  SIDs, `-v`/`-c` follow GNU describe_change wording. Cases 16 -> 37
+  (strict 12 -> 22; 4 notes: OS-denied group set, cpp pilot diverges).
+- `df` — GNU 12-column `--output` model (source,fstype,itotal,iused,
+  iavail,ipcent,size,used,avail,pcent,file) with GNU's field-error
+  wordings, `-t`/`-x` exact fstype filters, `--total` summary row,
+  `-i`, `-B`/`--block-size` with SI/binary suffixes and ceil division,
+  dynamic column widths, `df <path>` mount-point resolution with
+  same-fs dedup, fstype from GetVolumeInformationW, bounded probe for
+  remote drives. Inode columns report 0 with `IUse%` `-` (no NTFS
+  inode counts — documented deviation); source column is the drive
+  letter / UNC share (value model). Cases 15 -> 35.
+
+Rows re-measured with `bash gate/run-gate.sh chmod chown df` (45 + 37 +
+35 = 117 cases): GNU-gated strict/exit 73 + win 18, all green; C++
+parity 76/117 (the C++ 1.x applets lack the new option surfaces).
+Pre-existing main-side gap noticed while re-running the full gate:
+`uname`/`id`/`hostname`/`getconf` modules exist on main but are not in
+`lib.rs` `registry()`, so their 88 gate cases exit 127 — wiring lane scope.
