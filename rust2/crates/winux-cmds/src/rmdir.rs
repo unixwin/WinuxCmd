@@ -25,6 +25,12 @@ const OPTS: &[OptSpec] = &[
         long: "ignore-fail-on-non-empty",
         takes_value: false,
     },
+    // [GNU] --path: deprecated hidden alias for -p/--parents (#1075).
+    OptSpec {
+        short: None,
+        long: "path",
+        takes_value: false,
+    },
     OptSpec {
         short: Some('v'),
         long: "verbose",
@@ -44,7 +50,7 @@ pub fn rmdir_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         let _ = usage_error(io, "rmdir", "missing operand");
         return Ok(1);
     }
-    let parents = p.has("parents");
+    let parents = p.has("parents") || p.has("path");
     let ignore_nonempty = p.has("ignore-fail-on-non-empty");
     let verbose = p.has("verbose");
 
