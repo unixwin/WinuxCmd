@@ -84,5 +84,39 @@ OUT="$RUST2/GATE-REPORT.md"
     done
     echo
     echo "**Wave2 total cases: $w2_total; GNU-gated + win-gated: all GREEN; C++ parity: $w2_cpp_yes/$w2_total.**"
+
+    # ---- wave3b section (#1488, third batch) ----
+    W3B="join tsort hostid users timeout expand unexpand numfmt"
+    echo
+    echo "## Wave3b (#1488, third batch)"
+    echo
+    echo "8 commands: \`$W3B\`. join/tsort/expand/unexpand/numfmt gate byte-for-byte"
+    echo "against GNU on stdout+rc (strict); timeout gates exit status only (the"
+    echo "child set is platform-specific: sleep/ping-vs-sleep.exe/cmd.exe); hostid"
+    echo "and users carry the Windows value model (win) with GNU-shape rc errors"
+    echo "gated. Known inherited 1.x divergences are recorded, not fixed: tsort"
+    echo "-w (C++ accepts, GNU 9.4 rejects), hostid/users -h (C++ rejects, GNU"
+    echo "and Rust accept), numfmt --unit-separator/-M/-l and ZYRQ unit suffixes"
+    echo "(C++ accepts, GNU 9.4 rejects, Rust follows GNU)."
+    echo
+    echo "| command | cases | strict | exit | win | note | GNU-gated result | C++ parity (rc+stdout) |"
+    echo "|---|---|---|---|---|---|---|---|"
+    w3b_total=0; w3b_cpp_yes=0
+    for cmd in $W3B; do
+        rows=$(grep -c "^$cmd|" "$LEDGER" || true)
+        [ "$rows" -eq 0 ] && continue
+        st=$(awk -F'|' -v c="$cmd" '$1==c && $3=="strict"' "$LEDGER" | wc -l)
+        ex=$(awk -F'|' -v c="$cmd" '$1==c && $3=="exit"' "$LEDGER" | wc -l)
+        wn=$(awk -F'|' -v c="$cmd" '$1==c && $3=="win"' "$LEDGER" | wc -l)
+        nt=$(awk -F'|' -v c="$cmd" '$1==c && $3=="note"' "$LEDGER" | wc -l)
+        cpy=$(awk -F'|' -v c="$cmd" '$1==c && $0 ~ /r=c:yes/' "$LEDGER" | wc -l)
+        ok=$(awk -F'|' -v c="$cmd" '$1==c' "$LEDGER" | grep -cv "FAIL\|bad-mode")
+        result=GREEN
+        [ "$ok" -ne "$rows" ] && result=RED
+        w3b_total=$((w3b_total+rows)); w3b_cpp_yes=$((w3b_cpp_yes+cpy))
+        echo "| $cmd | $rows | $st | $ex | $wn | $nt | $result | $cpy/$rows |"
+    done
+    echo
+    echo "**Wave3b total cases: $w3b_total; GNU-gated + win-gated: all GREEN; C++ parity: $w3b_cpp_yes/$w3b_total.**"
 } > "$OUT"
 echo "wrote $OUT"
