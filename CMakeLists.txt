@@ -73,7 +73,7 @@ if(WINUXCMD_ENABLE_RUST2 AND NOT WINUXCMD_CARGO_EXECUTABLE)
 endif()
 # Commands whose implementation is the rust2 library (one name per replaced
 # applet; the recipe's per-command step appends here).
-set(WINUXCMD_RUST2_COMMANDS "true;false;pwd;printenv;basename;dirname")
+set(WINUXCMD_RUST2_COMMANDS "true;false;pwd;printenv;basename;dirname;readlink")
 
 # Command-set edition shipped by this build (#1438, ruling of 2026-10-30):
 #   default - every registered command stays runnable through the multicall

@@ -3,61 +3,21 @@
 /// @contributors:
 ///   - caomengxuan666 <2507560089@qq.com>
 /// @Description: Implementation for readlink.
-/// @Version: 0.1.0
+/// @Version: 0.2.0
 /// @License: MIT
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
 // include other header after pch.h
-#include <winioctl.h>
-
 #include "core/command_macros.h"
 
 import std;
 import core;
 import utils;
-import container;
+import rust2_bridge;
 
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
-
-#ifndef IO_REPARSE_TAG_SYMLINK
-#define IO_REPARSE_TAG_SYMLINK (0xA000000CL)
-#endif
-
-#ifndef IO_REPARSE_TAG_MOUNT_POINT
-#define IO_REPARSE_TAG_MOUNT_POINT (0xA0000003L)
-#endif
-
-namespace readlink_win32_compat {
-#pragma pack(push, 1)
-struct ReparseDataBuffer {
-  ULONG ReparseTag;
-  USHORT ReparseDataLength;
-  USHORT Reserved;
-  union {
-    struct {
-      USHORT SubstituteNameOffset;
-      USHORT SubstituteNameLength;
-      USHORT PrintNameOffset;
-      USHORT PrintNameLength;
-      ULONG Flags;
-      WCHAR PathBuffer[1];
-    } SymbolicLinkReparseBuffer;
-    struct {
-      USHORT SubstituteNameOffset;
-      USHORT SubstituteNameLength;
-      USHORT PrintNameOffset;
-      USHORT PrintNameLength;
-      WCHAR PathBuffer[1];
-    } MountPointReparseBuffer;
-    struct {
-      UCHAR DataBuffer[1];
-    } GenericReparseBuffer;
-  };
-};
-#pragma pack(pop)
-}  // namespace readlink_win32_compat
 
 auto constexpr READLINK_OPTIONS = std::array{
     // [DIFFERS]
@@ -81,281 +41,6 @@ auto constexpr READLINK_OPTIONS = std::array{
     // [DIFFERS]
     OPTION("-z", "--zero", "end each output line with NUL", BOOL_TYPE)};
 
-namespace readlink_pipeline {
-namespace cp = core::pipeline;
-
-enum class Mode {
-  link_target,
-  canonicalize,
-  canonicalize_existing,
-  canonicalize_missing,
-};
-
-struct Config {
-  Mode mode = Mode::link_target;
-  bool no_newline = false;
-  bool quiet = false;
-  bool verbose = false;
-  bool zero_terminated = false;
-  SmallVector<std::string, 64> files;
-};
-
-auto readlink_error(const std::string& file, std::string_view reason)
-    -> std::string {
-  return "readlink: " + file + ": " + std::string(reason);
-}
-
-// [GNU] readlink -f/-e/-m print the canonicalize_filename_mode() result
-// verbatim (readlink.c, 9.4: 'fputs (value, stdout)'), and that canonical
-// name is assembled with '/' separators by construction (lib/canonicalize.c,
-// 9.4: 'if (!ISSLASH (dest[-1])) *dest++ = '/';' — WSL coreutils 9.4 probe:
-// 'readlink -f d/f.txt' → '/tmp/.../d/f.txt', zero backslashes). On Windows
-// the resolver's canonical spelling (GetFinalPathNameByHandleW) uses '\'.
-// #1491: a '\' separator cannot be consumed by the shell's pattern word
-// arithmetic ('${BATS_PATH%/*/*}' in bats-core), so the canonicalize modes
-// render the resolved name in the repo's shell-facing display form — '/'
-// separators, like find.cpp's path_to_utf8 — while the drive spelling the
-// resolver chose is kept. The no-mode form (readlink link) prints the
-// stored target text verbatim, like GNU areadlink.
-auto to_display_separators(std::wstring path) -> std::wstring {
-  std::replace(path.begin(), path.end(), L'\\', L'/');
-  return path;
-}
-
-auto strip_extended_prefix(std::wstring path) -> std::wstring {
-  if (path.rfind(L"\\\\?\\UNC\\", 0) == 0) {
-    return L"\\\\" + path.substr(8);
-  }
-  if (path.rfind(L"\\\\?\\", 0) == 0) {
-    return path.substr(4);
-  }
-  if (path.rfind(L"\\??\\", 0) == 0) {
-    return path.substr(4);
-  }
-  return path;
-}
-
-auto open_path_handle(const std::wstring& path, bool follow_reparse)
-    -> UniqueHandle {
-  DWORD flags = FILE_FLAG_BACKUP_SEMANTICS;
-  if (!follow_reparse) {
-    flags |= FILE_FLAG_OPEN_REPARSE_POINT;
-  }
-
-  return UniqueHandle(
-      CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES,
-                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                  nullptr, OPEN_EXISTING, flags, nullptr));
-}
-
-// [GNU] -f, -e and -m are canonicalize_filename_mode() CAN_ALL_BUT_LAST,
-// CAN_EXISTING and CAN_MISSING: every component is resolved and symlink
-// targets are substituted as they are found, so "ldir/f" resolves through
-// the intermediate link and a dangling leaf still prints its target's path
-// under -f/-m (uutils #10249).
-auto canonicalize_path(const std::wstring& original, Mode mode)
-    -> std::expected<std::wstring, std::string> {
-  native_path::CanonMode canon_mode = native_path::CanonMode::all_but_last;
-  if (mode == Mode::canonicalize_existing) {
-    canon_mode = native_path::CanonMode::existing;
-  } else if (mode == Mode::canonicalize_missing) {
-    canon_mode = native_path::CanonMode::missing;
-  }
-
-  auto resolved = native_path::canonicalize_path_w(original, canon_mode);
-  if (!resolved) {
-    switch (resolved.error()) {
-      case ELOOP:
-        return std::unexpected(
-            winux::i18n::format("command.readlink.error.too_many_symlinks",
-                                "Too many levels of symbolic links"));
-      case ENOTDIR:
-        return std::unexpected("Not a directory");
-      case ENAMETOOLONG:
-        return std::unexpected(winux::i18n::format(
-            "command.readlink.error.file_name_too_long", "File name too long"));
-      default:
-        return std::unexpected("No such file or directory");
-    }
-  }
-  return *resolved;
-}
-
-auto read_link_target(const std::wstring& path)
-    -> std::expected<std::wstring, std::string> {
-  DWORD attrs = GetFileAttributesW(path.c_str());
-  if (attrs == INVALID_FILE_ATTRIBUTES) {
-    return std::unexpected(win32_posix_error_text(GetLastError()));
-  }
-
-  if ((attrs & FILE_ATTRIBUTE_REPARSE_POINT) == 0) {
-    return std::unexpected("Invalid argument");
-  }
-
-  UniqueHandle handle = open_path_handle(path, false);
-  if (!handle) {
-    return std::unexpected(win32_posix_error_text(GetLastError()));
-  }
-
-  std::array<std::byte, MAXIMUM_REPARSE_DATA_BUFFER_SIZE> buffer{};
-  DWORD returned = 0;
-  if (!DeviceIoControl(handle.get(), FSCTL_GET_REPARSE_POINT, nullptr, 0,
-                       buffer.data(), static_cast<DWORD>(buffer.size()),
-                       &returned, nullptr)) {
-    return std::unexpected(win32_posix_error_text(GetLastError()));
-  }
-
-  auto* reparse = reinterpret_cast<readlink_win32_compat::ReparseDataBuffer*>(
-      buffer.data());
-  if (reparse->ReparseTag == IO_REPARSE_TAG_SYMLINK) {
-    const auto& sl = reparse->SymbolicLinkReparseBuffer;
-    std::wstring_view print_name(
-        sl.PathBuffer + sl.PrintNameOffset / sizeof(wchar_t),
-        sl.PrintNameLength / sizeof(wchar_t));
-    if (print_name.empty()) {
-      std::wstring_view substitute_name(
-          sl.PathBuffer + sl.SubstituteNameOffset / sizeof(wchar_t),
-          sl.SubstituteNameLength / sizeof(wchar_t));
-      return strip_extended_prefix(std::wstring(substitute_name));
-    }
-    return strip_extended_prefix(std::wstring(print_name));
-  }
-
-  if (reparse->ReparseTag == IO_REPARSE_TAG_MOUNT_POINT) {
-    const auto& mp = reparse->MountPointReparseBuffer;
-    std::wstring_view print_name(
-        mp.PathBuffer + mp.PrintNameOffset / sizeof(wchar_t),
-        mp.PrintNameLength / sizeof(wchar_t));
-    if (print_name.empty()) {
-      std::wstring_view substitute_name(
-          mp.PathBuffer + mp.SubstituteNameOffset / sizeof(wchar_t),
-          mp.SubstituteNameLength / sizeof(wchar_t));
-      return strip_extended_prefix(std::wstring(substitute_name));
-    }
-    return strip_extended_prefix(std::wstring(print_name));
-  }
-
-  // [GNU] areadlink fails EINVAL for anything that is not a link;
-  // an exotic reparse tag is no different (readlink.c error path).
-  // This used to return the non-GNU "Unsupported reparse point".
-  return std::unexpected("Invalid argument");
-}
-
-auto build_config(const CommandContext<READLINK_OPTIONS.size()>& ctx)
-    -> cp::Result<Config> {
-  Config cfg;
-  cfg.mode = Mode::link_target;
-  cfg.no_newline =
-      ctx.get<bool>("--no-newline", false) || ctx.get<bool>("-n", false);
-  cfg.verbose = false;
-  // [GNU] Diagnostics are off unless -v: readlink.c's verbose flag
-  // starts false and POSIXLY_CORRECT plays no role anywhere in
-  // readlink. An invented env branch used to make errors print by
-  // default under that variable and made -q/-s unable to silence.
-  cfg.quiet = true;
-  for (const auto& occurrence : ctx.options.occurrences()) {
-    if (!ctx.metas || occurrence.index >= READLINK_OPTIONS.size()) {
-      continue;
-    }
-
-    const auto& meta = (*ctx.metas)[occurrence.index];
-    if (meta.long_name == "--canonicalize-missing" || meta.short_name == "-m") {
-      cfg.mode = Mode::canonicalize_missing;
-      continue;
-    }
-
-    if (meta.long_name == "--canonicalize-existing" ||
-        meta.short_name == "-e") {
-      cfg.mode = Mode::canonicalize_existing;
-      continue;
-    }
-
-    if (meta.long_name == "--canonicalize" || meta.short_name == "-f") {
-      cfg.mode = Mode::canonicalize;
-      continue;
-    }
-
-    if (meta.long_name == "--verbose" || meta.short_name == "-v") {
-      cfg.verbose = true;
-      cfg.quiet = false;
-      continue;
-    }
-
-    if (meta.long_name == "--quiet" || meta.short_name == "-q" ||
-        meta.long_name == "--silent" || meta.short_name == "-s") {
-      cfg.verbose = false;
-      cfg.quiet = true;
-    }
-  }
-  cfg.zero_terminated =
-      ctx.get<bool>("--zero", false) || ctx.get<bool>("-z", false);
-
-  for (auto arg : ctx.positionals) {
-    std::string file_arg(arg);
-    if (contains_wildcard(file_arg)) {
-      auto glob_result = glob_expand(file_arg);
-      if (glob_result.expanded) {
-        for (const auto& file : glob_result.files) {
-          cfg.files.push_back(wstring_to_utf8(file));
-        }
-        continue;
-      }
-    }
-    cfg.files.push_back(file_arg);
-  }
-
-  if (cfg.files.empty()) {
-    return std::unexpected("missing operand");
-  }
-
-  return cfg;
-}
-
-auto run(const Config& cfg) -> int {
-  bool all_ok = true;
-  bool no_newline = cfg.no_newline;
-  if (cfg.no_newline && cfg.files.size() > 1) {
-    // [GNU] error(0, 0, ...) — no 'warning:' in this text
-    // (readlink.c:149-156).
-    safeErrorPrintLn("readlink: ignoring --no-newline with multiple arguments");
-    no_newline = false;
-  }
-
-  for (const auto& file : cfg.files) {
-    auto resolved = [&]() -> std::expected<std::wstring, std::string> {
-      if (cfg.mode == Mode::link_target) {
-        return read_link_target(utf8_to_wstring(file));
-      }
-      auto canonical = canonicalize_path(utf8_to_wstring(file), cfg.mode);
-      if (canonical) {
-        // [GNU] Canonical names are '/'-separated; see to_display_separators.
-        *canonical = to_display_separators(std::move(*canonical));
-      }
-      return canonical;
-    }();
-
-    if (!resolved) {
-      all_ok = false;
-      if (!cfg.quiet) {
-        safeErrorPrintLn(readlink_error(file, resolved.error()));
-      }
-      continue;
-    }
-
-    safePrint(*resolved);
-    // [GNU] -n suppresses the terminator entirely, -z included
-    // (readlink.c:162-168: 'if (! no_newline) putchar (...)'). The
-    // zero-first test used to emit a NUL under -n -z.
-    if (!no_newline) {
-      safePrint(cfg.zero_terminated ? '\0' : '\n');
-    }
-  }
-
-  return all_ok ? 0 : 1;
-}
-
-}  // namespace readlink_pipeline
-
 REGISTER_COMMAND(
     readlink, "readlink", "readlink [OPTION]... FILE...",
     "Print value of a symbolic link or canonical file name.\n"
@@ -370,19 +55,13 @@ REGISTER_COMMAND(
     "  readlink -e file",
     "ln(1), realpath(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd",
     READLINK_OPTIONS) {
-  using namespace readlink_pipeline;
-
-  auto cfg_result = build_config(ctx);
-  if (!cfg_result) {
-    if (cfg_result.error() == "missing operand") {
-      safeErrorPrintLn("readlink: missing operand");
-      safeErrorPrintLn("Try 'readlink --help' for more information.");
-      return 1;
-    }
-
-    cp::report_error(cfg_result, L"readlink");
-    return 1;
-  }
-
-  return run(*cfg_result);
+  // #1488 mechanical replacement: the semantics live in the rust2 library
+  // (rust2/crates/winux-cmds/src/readlink.rs, readlink_cmd); the C++ side
+  // keeps only this registration — the raw reparse-buffer decode, the
+  // canonicalization walks and the terminator policy are deleted. The
+  // handler receives ctx.raw_args verbatim because GNU readlink.c parses
+  // its own getopt run (its -q/-s/-v verbosity is a last-wins enum).
+  // Link targets and canonical names are DATA and reach stdout through
+  // the bridge's raw (non-translating) writers.
+  return winux::rust2::run_command("readlink", ctx.raw_args);
 }
