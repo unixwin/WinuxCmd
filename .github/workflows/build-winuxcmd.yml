@@ -183,7 +183,7 @@ jobs:
             Write-Host "::error::WINUXCMD_ENABLE_RUST2 surface missing ($lib). CI builds must carry the rust2 command library; the replaced commands (true;false) do not exist without it."
             exit 1
           }
-          $rustc = (& "$env:USERPROFILE\.cargo\bin\cargo.exe" rustc --version).Trim()
+          $rustc = (& "$env:USERPROFILE\.cargo\bin\rustc.exe" --version).Trim()
           Write-Host "RUST2_STATUS=ON (true;false) arch=$arch triple=$triple toolchain=${{ env.RUST2_TOOLCHAIN }} $rustc"
           @(
             "rust2=ON",
