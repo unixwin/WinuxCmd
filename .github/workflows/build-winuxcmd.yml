@@ -338,9 +338,119 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+  # Cross-arch Rust surface consistency (#1488): the x64 and arm64 legs
+  # must carry the SAME rust2 command library. The arm64 binary cannot be
+  # executed on the x64 runner (Windows does not emulate ARM64 on x64), so
+  # parity is enforced on four layers instead:
+  #   1. PE machine type of each shipped winuxcmd.exe (x64 0x8664 vs
+  #      arm64 0xAA64) - both images really were built for their arch;
+  #   2. the per-leg rust2-build-status.txt markers (rust2=ON, same
+  #      command set, same pinned toolchain and rustc) are equal apart
+  #      from the arch fields - neither leg lost or degraded rust2;
+  #   3. the x64 exe actually dispatches the replaced commands: exit
+  #      codes of true/false and true --version/false --version must be
+  #      0/1/0/1 (GNU rule, coreutils true.c: --version honored as the
+  #      sole argument, false keeps EXIT_STATUS 1 - the same rule the
+  #      rust2 gate pins in rust2/gate/cases/{true,false}.tsv);
+  #   4. no stray rust2/toolchain files (winuxcmd_ffi lib, rlib/rmeta,
+  #      pdb) leak into the packages: the staticlib is folded into
+  #      winuxcmd.exe at link time, so there is nothing to distribute.
+  # Behavioral parity of the arm64 slice itself is gate-covered
+  # (rust2/gate run under emulation-free differential testing); a native
+  # arm64 behavioral probe would need a windows-11-arm runner and can
+  # replace layer 3's arch asymmetry later without changing the contract.
+  rust2-surface-check:
+    runs-on: windows-2025
+    needs: build-windows
+    steps:
+      - name: Download x64 packages
+        uses: actions/download-artifact@v8
+        with:
+          pattern: WinuxCmd-*-x64
+          path: pkgs
+
+      - name: Download arm64 packages
+        uses: actions/download-artifact@v8
+        with:
+          pattern: WinuxCmd-*-arm64
+          path: pkgs
+
+      - name: Compare Rust surfaces (x64 vs arm64)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $x64Zip  = (Get-ChildItem pkgs -Recurse -Filter *-win-x64.zip   | Select-Object -First 1).FullName
+          $armZip  = (Get-ChildItem pkgs -Recurse -Filter *-win-arm64.zip | Select-Object -First 1).FullName
+          if (-not $x64Zip) { throw 'x64 package zip not found' }
+          if (-not $armZip) { throw 'arm64 package zip not found' }
+          Expand-Archive $x64Zip -DestinationPath ex-x64
+          Expand-Archive $armZip -DestinationPath ex-arm64
+
+          function Get-PEMachine([string]$path) {
+            $fs = [System.IO.File]::OpenRead($path)
+            try {
+              $br = New-Object System.IO.BinaryReader($fs)
+              $fs.Seek(0x3C, [System.IO.SeekOrigin]::Begin) | Out-Null
+              $peOff = $br.ReadInt32()
+              $fs.Seek($peOff, [System.IO.SeekOrigin]::Begin) | Out-Null
+              if ($br.ReadUInt32() -ne 0x00004550) { throw "not a PE image: $path" }
+              return $br.ReadUInt16()
+            } finally { $fs.Dispose() }
+          }
+
+          $x64Exe = (Get-ChildItem ex-x64   -Recurse -Filter winuxcmd.exe | Select-Object -First 1).FullName
+          $armExe = (Get-ChildItem ex-arm64 -Recurse -Filter winuxcmd.exe | Select-Object -First 1).FullName
+          $x64Machine = Get-PEMachine $x64Exe
+          $armMachine = Get-PEMachine $armExe
+          Write-Host ("PE machine: x64=0x{0:X4} arm64=0x{1:X4}" -f $x64Machine, $armMachine)
+          if ($x64Machine -ne 0x8664) { throw ("x64 winuxcmd.exe has wrong PE machine 0x{0:X4}" -f $x64Machine) }
+          if ($armMachine -ne 0xAA64) { throw ("arm64 winuxcmd.exe has wrong PE machine 0x{0:X4}" -f $armMachine) }
+
+          # The per-leg markers flatten to the artifact root on download;
+          # the artifact directory names end in -x64 / -arm64.
+          $x64Marker = (Get-ChildItem pkgs -Recurse -Filter rust2-build-status.txt |
+            Where-Object { $_.FullName -match '-x64\\' } | Select-Object -First 1).FullName
+          $armMarker = (Get-ChildItem pkgs -Recurse -Filter rust2-build-status.txt |
+            Where-Object { $_.FullName -match '-arm64\\' } | Select-Object -First 1).FullName
+          if (-not $x64Marker) { throw 'x64 rust2-build-status.txt marker not found' }
+          if (-not $armMarker) { throw 'arm64 rust2-build-status.txt marker not found' }
+          $x64M = @{}
+          $armM = @{}
+          Get-Content $x64Marker | ForEach-Object { $k, $v = $_ -split '=', 2; $x64M[$k] = $v }
+          Get-Content $armMarker | ForEach-Object { $k, $v = $_ -split '=', 2; $armM[$k] = $v }
+          if ($x64M['rust2'] -ne 'ON') { throw "x64 leg did not build rust2: rust2=$($x64M['rust2'])" }
+          foreach ($key in 'commands', 'toolchain', 'rustc') {
+            if ($x64M[$key] -ne $armM[$key]) {
+              throw "rust2 surface mismatch across arches: $key x64='$($x64M[$key])' arm64='$($armM[$key])'"
+            }
+          }
+
+          # GNU exit-code contract (true.c / false.c, sole-argument rule)
+          & $x64Exe true  *> $null; $trueRc = $LASTEXITCODE
+          & $x64Exe false *> $null; $falseRc = $LASTEXITCODE
+          & $x64Exe true  --version *> $null; $trueVersionRc = $LASTEXITCODE
+          & $x64Exe false --version *> $null; $falseVersionRc = $LASTEXITCODE
+          Write-Host "x64 behavior: true=$trueRc false=$falseRc true --version=$trueVersionRc false --version=$falseVersionRc"
+          if ($trueRc -ne 0)          { throw "true exited $trueRc, expected 0" }
+          if ($falseRc -ne 1)         { throw "false exited $falseRc, expected 1" }
+          if ($trueVersionRc -ne 0)   { throw "true --version exited $trueVersionRc, expected 0" }
+          if ($falseVersionRc -ne 1)  { throw "false --version exited $falseVersionRc, expected 1" }
+
+          # Packaging guard (#1488): the staticlib is folded into
+          # winuxcmd.exe by the same link run - nothing rust2-shaped may
+          # ship as a separate file.
+          $stray = Get-ChildItem ex-x64, ex-arm64 -Recurse -File |
+            Where-Object { $_.Name -match 'winuxcmd_ffi|rust2|\.rlib$|\.rmeta$|\.pdb$' }
+          if ($stray) { throw ("stray rust2/toolchain files in packages: " + ($stray.FullName -join ', ')) }
+
+          Write-Host "RUST2 SURFACE CHECK: consistent - x64 0x8664 + arm64 0xAA64, rust2=ON, commands=$($x64M['commands']), toolchain=$($x64M['toolchain']), $($x64M['rustc'])"
+
   release:
     runs-on: ubuntu-latest
-    needs: build-windows
+    needs:
+      - build-windows
+      - rust2-surface-check
     if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
     permissions:
       contents: write
