@@ -114,9 +114,10 @@ fn two_arguments(argv: &[String], ctx: &Ctx) -> Result<bool, TestError> {
         // e.g. `test 1 =` -> missing rhs
         return Err(err(format!("missing argument after {}", q(&argv[1]))));
     }
-    if argv[0].starts_with('-') {
-        return Err(err(format!("{}: unary operator expected", q(&argv[0]))));
-    }
+    // [GNU] test.c posixtest case 2: a first token that is neither "!" nor
+    // a unary operator leaves the SECOND token as the only candidate
+    // binary operand — "missing argument after 'x'" for `test --help x`
+    // (probed 9.4), never a "unary operator expected" naming the first.
     Err(err(format!("missing argument after {}", q(&argv[1]))))
 }
 
@@ -535,5 +536,43 @@ mod tests {
         assert_eq!(run(&["-x", "d"], &sc).0, 0);
         assert_eq!(run(&["-r", "f"], &sc).0, 0);
         assert_eq!(run(&["-w", "f"], &sc).0, 0);
+    }
+}
+
+#[cfg(test)]
+mod two_arg_tests {
+    use winux_core::test_support::{MemIo, ScratchCtx};
+
+    fn run(args: &[&str]) -> (i32, String, String) {
+        let owned: Vec<std::ffi::OsString> =
+            args.iter().map(std::ffi::OsString::from).collect();
+        let mut io = MemIo::new("");
+        let sc = ScratchCtx::new("test2");
+        let ctx = sc.ctx();
+        let r = super::test_cmd(&owned, &mut io.split(), &ctx).unwrap();
+        (r, io.out(), io.err())
+    }
+
+    #[test]
+    fn two_arg_non_operator_second_token_gnu_wording() {
+        // Probed GNU 9.4: `test --help x` -> "missing argument after 'x'"
+        // rc 2; the pilot said "'--help': unary operator expected".
+        let (r, _o, e) = run(&["--help", "x"]);
+        assert_eq!(r, 2);
+        assert!(e.contains("missing argument after 'x'"), "err={e}");
+
+        let (r, _o, e) = run(&["--version", "x"]);
+        assert_eq!(r, 2);
+        assert!(e.contains("missing argument after 'x'"), "err={e}");
+
+        // first-token shapes keep their GNU wordings
+        let (r, _o, e) = run(&["x", "--help"]);
+        assert_eq!(r, 2);
+        assert!(e.contains("missing argument after '--help'"), "err={e}");
+
+        // `test --foo` is a single non-empty STRING (rc 0)
+        let (r, _o, e) = run(&["--foo"]);
+        assert_eq!(r, 0);
+        assert!(e.is_empty());
     }
 }
