@@ -141,13 +141,6 @@ pub fn realpath_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         }
     }
 
-    // TEMP DIAGNOSTIC (revert after CI)
-    if args.iter().any(|a| a.to_string_lossy().contains("relative-to")) {
-        let dbg_flags = format!("{:?}", p.flags);
-        let dbg_pos = format!("{:?}", p.positionals);
-        let dbg_canon = format!("{canon:?}");
-        eprintln!("DBG2 rel_to={rel_to:?} rel_base={rel_base:?} flags={dbg_flags} pos={dbg_pos} base_dir={base_dir:?} canon={dbg_canon}");
-    }
     let mut failed = false;
     {
         let out = &mut *io.stdout;
@@ -157,17 +150,7 @@ pub fn realpath_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             match value {
                 Ok(v) => {
                     let v = if let Some(base) = base_dir.as_deref() {
-                        let rel = relativize(ctx, base, &v, relative_base_mode);
-                        if rel == v {
-                            // TEMP DIAGNOSTIC (revert after CI): why did
-                            // the relativize fall back to absolute?
-                            let bt = canonicalize_operand(ctx, base, CanonMode::NoCheck)
-                                .unwrap_or_default();
-                            let _ = writeln!(io.stderr,
-                                "DBG rel-fallback base=[{}] bt=[{}] v=[{}] cwd=[{}]",
-                                base, bt, v, ctx.cwd.to_string_lossy());
-                        }
-                        rel
+                        relativize(ctx, base, &v, relative_base_mode)
                     } else {
                         v
                     };
@@ -206,7 +189,15 @@ pub fn realpath_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
 /// `--relative-base=/a/b /a/c` -> "/a/c", `--relative-base=/a /a/b` ->
 /// "b", `--relative-base=/a/b /a` -> "/a").
 fn relativize(ctx: &Ctx, base_dir: &str, target: &str, below_only: bool) -> String {
-    let base = canonicalize_operand(ctx, base_dir, CanonMode::NoCheck).unwrap_or_default();
+    // Canonicalize the base through the SAME filesystem machinery as the
+    // target, so the two spellings are comparable: the CI runner TEMP dir
+    // carries a spelling variant (8.3/case/junction) that made the
+    // lexical ctx.cwd-anchored base never match the canonicalized target,
+    // and every --relative-to fell back to absolute (CI-only red).
+    // Missing bases keep the lexical form (absolute fallback follows).
+    let base = canonicalize_operand(ctx, base_dir, CanonMode::AllMustExist)
+        .or_else(|_| canonicalize_operand(ctx, base_dir, CanonMode::NoCheck))
+        .unwrap_or_default();
     let bt = base.replace('\\', "/");
     let tt = target.replace('\\', "/");
     let bc: Vec<&str> = bt.split('/').filter(|s| !s.is_empty()).collect();
@@ -229,10 +220,6 @@ fn relativize(ctx: &Ctx, base_dir: &str, target: &str, below_only: bool) -> Stri
         return target.to_string();
     }
     if common == 0 {
-        // TEMP DIAGNOSTIC (revert after CI): no common prefix at all -
-        // print both sides.
-        eprintln!("DBG rel-common0 bt=[{}] tc=[{}] base=[{}] target=[{}]",
-            bt, tt, base_dir, target);
         return target.to_string(); // no common prefix: absolute fallback
     }
     let mut ups = Vec::new();
@@ -343,9 +330,6 @@ mod trailing_tests {
         let sc = ScratchCtx::new("realpath-ts");
         let ctx = sc.ctx();
         std::fs::write(sc.path("file.txt"), "x").unwrap();
-        let direct =
-            crate::canon::canonicalize_operand(&ctx, "file.txt/", crate::canon::CanonMode::AllButLast);
-        eprintln!("DIRECT={:?}", direct);
         let mut io = MemIo::new("");
         let args = ["file.txt/".into()];
         let r = super::realpath_cmd(&args, &mut io.split(), &ctx).unwrap();
