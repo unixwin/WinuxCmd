@@ -1,9 +1,14 @@
 //! `readlink` — GNU coreutils semantics (probed against coreutils 9.4).
 //!
-//! Default mode prints symlink values (rc 1, silent, for non-symlinks).
-//! Canonicalize modes are mutually exclusive (`-f` all-but-last exist,
-//! `-e` all exist, `-m` none required); failures are silent unless `-v`.
-//! `-n` omits the newline, `-z` uses NUL. Multiple operands supported.
+//! Default mode prints symlink values; failures are silent unless the
+//! verbosity is VERBOSE. `-q`/`--quiet` and `-s`/`--silent` are accepted
+//! spellings of SILENT and `-v` of VERBOSE — the LAST of them on the
+//! command line wins (`-v -q` stays silent, `-s -v` talks). `-n` omits
+//! the terminator entirely, `-z` included (readlink.c puts the NUL behind
+//! the same `if (! no_newline)` guard); with MULTIPLE operands `-n` is
+//! ignored with the "ignoring --no-newline with multiple arguments"
+//! warning and the normal terminators are emitted. `-z` uses NUL.
+//! Multiple operands supported; rc 1 when any operand failed.
 //!
 //! Windows pilot note: NTFS symlinks/junctions carry Windows-form targets,
 //! so default-mode target VALUE is environment-bound (no privilege to
@@ -23,18 +28,8 @@ const OPTS: &[OptSpec] = &[
         takes_value: false,
     },
     OptSpec {
-        short: None,
-        long: "no-new",
-        takes_value: false,
-    },
-    OptSpec {
         short: Some('f'),
         long: "canonicalize",
-        takes_value: false,
-    },
-    OptSpec {
-        short: None,
-        long: "can",
         takes_value: false,
     },
     OptSpec {
@@ -43,28 +38,19 @@ const OPTS: &[OptSpec] = &[
         takes_value: false,
     },
     OptSpec {
-        short: None,
-        long: "can-ex",
-        takes_value: false,
-    },
-    OptSpec {
         short: Some('m'),
         long: "canonicalize-missing",
         takes_value: false,
     },
     OptSpec {
-        short: None,
-        long: "can-mis",
+        short: Some('q'),
+        long: "quiet",
         takes_value: false,
     },
+    // GNU readlink's second silent spelling is its own short option.
     OptSpec {
-        short: Some('z'),
-        long: "zero",
-        takes_value: false,
-    },
-    OptSpec {
-        short: None,
-        long: "ze",
+        short: Some('s'),
+        long: "silent",
         takes_value: false,
     },
     OptSpec {
@@ -73,8 +59,8 @@ const OPTS: &[OptSpec] = &[
         takes_value: false,
     },
     OptSpec {
-        short: None,
-        long: "verb",
+        short: Some('z'),
+        long: "zero",
         takes_value: false,
     },
 ];
@@ -91,21 +77,35 @@ pub fn readlink_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         let _ = usage_error(io, "readlink", "missing operand");
         return Ok(1);
     }
-    if p.has("no-newline") && p.has("zero") {
-        let _ = usage_error(io, "readlink", "cannot combine --zero with --no-newline");
-        return Ok(1);
-    }
-    let no_newline = p.has("no-newline");
     let zero = p.has("zero");
-    let verbose = p.has("verbose");
+    // readlink.c verbosity: the last of -q/-s/-v on the command line wins
+    // (probed 9.4: `-v -q` stays silent, `-s -v` reports). Default silent.
+    let mut verbose = false;
+    for flag in &p.flags {
+        if flag == "verbose" {
+            verbose = true;
+        } else if flag == "quiet" || flag == "silent" {
+            verbose = false;
+        }
+    }
+    let mut no_newline = p.has("no-newline");
+    if no_newline && p.positionals.len() > 1 {
+        // [GNU] readlink.c:149-156: the warning goes to stderr and the
+        // normal terminators are emitted for every operand.
+        let _ = writeln!(
+            io.stderr,
+            "readlink: ignoring --no-newline with multiple arguments"
+        );
+        no_newline = false;
+    }
     // GNU 9.4 accepts repeated canonicalize flags (last one on the command
     // line wins), so walk p.flags in order instead of rejecting combinations
     let mut canon: Option<CanonMode> = None;
     for flag in &p.flags {
         canon = match flag.as_str() {
-            "canonicalize-existing" | "can-ex" => Some(CanonMode::AllMustExist),
-            "canonicalize" | "can" => Some(CanonMode::AllButLast),
-            "canonicalize-missing" | "can-mis" => Some(CanonMode::NoCheck),
+            "canonicalize-existing" => Some(CanonMode::AllMustExist),
+            "canonicalize" => Some(CanonMode::AllButLast),
+            "canonicalize-missing" => Some(CanonMode::NoCheck),
             _ => canon,
         };
     }
@@ -117,7 +117,15 @@ pub fn readlink_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             let name = operand.to_string_lossy().into_owned();
             let value = match canon {
                 Some(cm) => match crate::canon::canonicalize_operand(ctx, &name, cm) {
-                    Ok(v) => Some(v),
+                    // [GNU] lib/canonicalize.c assembles the canonical name
+                    // with '/' by construction (9.4 probe: `readlink -f
+                    // d/f.txt` -> '/tmp/.../d/f.txt', zero backslashes). A
+                    // '\' breaks the shell word arithmetic that consumes
+                    // the output (bats-core "${BATS_PATH%/*/*}", #1491),
+                    // so the canonicalize modes render the resolved name
+                    // in the '/' display form. The no-mode form prints the
+                    // stored target text verbatim, like GNU areadlink.
+                    Ok(v) => Some(v.replace('\\', "/")),
                     Err(e) => {
                         if verbose {
                             let _ = writeln!(
@@ -148,10 +156,15 @@ pub fn readlink_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             match value {
                 Some(v) => {
                     out.write_all(v.as_bytes())?;
-                    if zero {
-                        out.write_all(b"\0")?;
-                    } else if !no_newline {
-                        out.write_all(b"\n")?;
+                    // [GNU] readlink.c:162-168: the NUL lives behind the
+                    // same `if (! no_newline)` guard — -n suppresses the
+                    // terminator entirely, -z included.
+                    if !no_newline {
+                        if zero {
+                            out.write_all(b"\0")?;
+                        } else {
+                            out.write_all(b"\n")?;
+                        }
                     }
                 }
                 None => failed = true,
@@ -173,6 +186,61 @@ fn name_abs(ctx: &Ctx, name: &str) -> std::path::PathBuf {
 #[cfg(test)]
 mod tests {
     use winux_core::test_support::{MemIo, ScratchCtx};
+
+    #[test]
+    fn quiet_spellings_and_last_wins_verbosity() {
+        // Probed GNU 9.4: -q/--quiet/-s/--silent are accepted spellings of
+        // SILENT and -v of VERBOSE; the last one on the line wins.
+        let sc = ScratchCtx::new("readlink-quiet");
+        let ctx = sc.ctx();
+        std::fs::write(sc.path("f"), "x").unwrap();
+        for args in [
+            vec!["-q", "f"],
+            vec!["--quiet", "f"],
+            vec!["-s", "f"],
+            vec!["--silent", "f"],
+        ] {
+            let owned: Vec<std::ffi::OsString> =
+                args.iter().map(std::ffi::OsString::from).collect();
+            let mut io = MemIo::new("");
+            let r = super::readlink_cmd(&owned, &mut io.split(), &ctx).unwrap();
+            assert_eq!(r, 1, "args={args:?}");
+            assert_eq!(io.err(), "", "args={args:?}");
+        }
+        // -v -q stays silent; -s -v reports.
+        let owned: Vec<std::ffi::OsString> = ["-v", "-q", "f"].iter().map(std::ffi::OsString::from).collect();
+        let mut io = MemIo::new("");
+        super::readlink_cmd(&owned, &mut io.split(), &ctx).unwrap();
+        assert_eq!(io.err(), "");
+
+        let owned: Vec<std::ffi::OsString> = ["-s", "-v", "f"].iter().map(std::ffi::OsString::from).collect();
+        let mut io = MemIo::new("");
+        super::readlink_cmd(&owned, &mut io.split(), &ctx).unwrap();
+        assert!(io.err().contains("f:"), "verbose after silent must report");
+    }
+
+    #[test]
+    fn no_newline_suppresses_zero_too_and_multi_warns() {
+        // Probed GNU 9.4: -n wins over -z for a single operand (no
+        // terminator at all); with multiple operands -n is ignored with
+        // the warning and the normal terminators are emitted.
+        let sc = ScratchCtx::new("readlink-nz");
+        let ctx = sc.ctx();
+        std::fs::write(sc.path("f"), "x").unwrap();
+        // -f mode works without symlinks (all-but-last exist).
+        let owned: Vec<std::ffi::OsString> = ["-n", "-z", "-f", "f"].iter().map(std::ffi::OsString::from).collect();
+        let mut io = MemIo::new("");
+        let r = super::readlink_cmd(&owned, &mut io.split(), &ctx).unwrap();
+        assert_eq!(r, 0);
+        assert!(!io.out().ends_with('\0'), "-n must suppress the NUL, got {:?}", io.out());
+
+        let owned: Vec<std::ffi::OsString> = ["-n", "-f", "f", "f"].iter().map(std::ffi::OsString::from).collect();
+        let mut io = MemIo::new("");
+        let r = super::readlink_cmd(&owned, &mut io.split(), &ctx).unwrap();
+        assert_eq!(r, 0);
+        assert_eq!(io.out().matches('\n').count(), 2, "multi-operand -n warns and emits newlines");
+        assert!(io.err().contains("ignoring --no-newline with multiple arguments"));
+    }
 
     #[test]
     fn default_mode_non_symlink_is_rc1_silent() {

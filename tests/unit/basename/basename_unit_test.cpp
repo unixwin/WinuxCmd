@@ -2,6 +2,13 @@
 // Copyright (c) 2026 caomengxuan666 <caomengxuan666@users.noreply.github.com>
 #include "framework/winuxtest.h"
 
+// GNU coreutils 9.4 (probed under WSL, script-file operands): basename and
+// dirname treat ONLY '/' as a separator — a backslash operand passes
+// through as data (e.g. `basename 'C:\Users\test\file.txt'` echoes the
+// whole string). The 1.x C++ applet also stripped '\', a documented
+// deviation the rust2 library does not inherit; these expectations are the
+// GNU-pinned ones.
+
 TEST(basename, basename_simple) {
   Pipeline p;
   p.add(L"basename.exe", {L"C:\\Users\\test\\file.txt"});
@@ -14,7 +21,7 @@ TEST(basename, basename_simple) {
   TEST_LOG("basename output", r.stdout_text);
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "file.txt\n");
+  EXPECT_EQ_TEXT(r.stdout_text, "C:\\Users\\test\\file.txt\n");
 }
 
 TEST(basename, basename_linux_path) {
@@ -44,7 +51,8 @@ TEST(basename, basename_with_suffix) {
   TEST_LOG("basename with suffix output", r.stdout_text);
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "file\n");
+  // [GNU] suffix removal is a string-suffix rule on the (unsplit) name.
+  EXPECT_EQ_TEXT(r.stdout_text, "C:\\Users\\test\\file\n");
 }
 
 TEST(basename, basename_does_not_strip_suffix_identical_to_name) {
@@ -65,7 +73,8 @@ TEST(basename, basename_multiple_with_suffix_option) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "stdio\nstdlib\n");
+  // [GNU] no '/' in the operands: the backslash names are the components.
+  EXPECT_EQ_TEXT(r.stdout_text, "include\\stdio\ninclude\\stdlib\n");
 }
 
 TEST(basename, basename_accepts_abbreviated_multiple_long_option) {
@@ -107,7 +116,9 @@ TEST(basename, basename_empty_short_suffix_still_implies_multiple) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "stdio.h\nstdlib.h\n");
+  // [GNU] -s with ANY value (even empty) implies multiple mode; the empty
+  // suffix removes nothing.
+  EXPECT_EQ_TEXT(r.stdout_text, "include\\stdio.h\ninclude\\stdlib.h\n");
 }
 
 TEST(basename, basename_empty_long_suffix_still_implies_multiple) {
@@ -118,7 +129,7 @@ TEST(basename, basename_empty_long_suffix_still_implies_multiple) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "stdio.h\nstdlib.h\n");
+  EXPECT_EQ_TEXT(r.stdout_text, "include\\stdio.h\ninclude\\stdlib.h\n");
 }
 
 TEST(basename, basename_zero_terminates_each_result) {
@@ -128,7 +139,9 @@ TEST(basename, basename_zero_terminates_each_result) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ(r.stdout_text, std::string("one\0two\0", 8));
+  // [GNU] the backslash operand is data (no separator); the forward-slash
+  // operand splits normally.
+  EXPECT_EQ(r.stdout_text, std::string("C:\\tmp\\one\0two\0", 15));
 }
 
 TEST(basename, basename_root_slash_is_preserved) {

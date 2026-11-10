@@ -177,7 +177,11 @@ test_rows = [
     ("ts40-G-group", "strict", "printf xy > f2", "", "", ["-G", "f2"]),
     ("ts41-O-owner", "strict", "printf xy > f2", "", "", ["-O", "f2"]),
     ("ts42-x-file", "strict", "printf xy > f2", "", "", ["-x", "f2"]),
-    ("ts43-help-flag", "strict", "", "", "", ["--help"]),
+    # The 1.x applet prints the WinuxCmd-branded help for the sole
+    # --help (dispatcher interception, asserted by the C++ unit tests);
+    # GNU test prints nothing (rc 0). The wired exe inherits the product
+    # contract, so the row is record-only (r=c parity holds).
+    ("ts43-help-flag", "note", "", "", "", ["--help"]),
     ("ts44-lt10", "strict", "", "", "", ["2", "-lt", "10"]),
     ("ts45-gt10", "strict", "", "", "", ["2", "-gt", "10"]),
 ]
@@ -469,6 +473,36 @@ df_rows = [
     ("df13-drive-path", "note", "", "", "", ["C:\\Windows"]),
     ("df14-relative-deep", "exit", "mkdir -p sub/deep", "", "", ["sub/deep"]),
     ("df15-block-size-k", "win", "", "", "", ["-k", "C:\\"]),
+]
+
+# ---------------------------------------------------------------------------
+# wiring wave1 remainder (#1488): sync
+# ---------------------------------------------------------------------------
+sync_rows = [
+    # sync: FlushFileBuffers semantics, probed against WSL coreutils 9.4.
+    # probed against WSL coreutils 9.4.
+    ("sy01-plain", "exit", "", "", "", []),
+    ("sy02-file", "exit", "printf x > st", "", "", ["st"]),
+    ("sy03-dir", "exit", "mkdir -p sdir", "", "", ["sdir"]),
+    ("sy04-missing", "exit", "", "", "", ["missing-xyz"]),
+    ("sy05-d-alone", "exit", "", "", "", ["-d"]),
+    ("sy06-d-file", "exit", "printf x > st", "", "", ["-d", "st"]),
+    ("sy07-f-alone", "exit", "", "", "", ["-f"]),
+    ("sy08-f-file", "exit", "printf x > st", "", "", ["-f", "st"]),
+    ("sy09-d-f", "exit", "", "", "", ["-d", "-f"]),
+    ("sy10-long-d-f", "exit", "", "", "", ["--data", "--file-system"]),
+    ("sy11-help", "win", "", "", "", ["--help"]),
+    ("sy12-version", "win", "", "", "", ["--version"]),
+    ("sy13-help-extra", "exit", "", "", "", ["--help", "x"]),
+    ("sy14-bogus", "exit", "", "", "", ["--bogus"]),
+    ("sy15-z", "exit", "", "", "", ["-z"]),
+    ("sy16-dashdash", "exit", "", "", "", ["--"]),
+    ("sy17-dash", "exit", "", "", "", ["-"]),
+    ("sy18-mixed-missing", "exit", "printf x > st", "", "", ["st", "missing-xyz"]),
+    ("sy19-d-missing", "exit", "", "", "", ["-d", "missing-xyz"]),
+    ("sy20-f-missing", "exit", "", "", "", ["-f", "missing-xyz"]),
+    ("sy21-wildcard-literal", "exit", "", "", "", ["st*"]),
+    ("sy22-f-dir", "exit", "mkdir -p sd2", "", "", ["-f", "sd2"]),
 ]
 
 # ---------------------------------------------------------------------------
@@ -1422,7 +1456,7 @@ def collect():
         ("id", id_rows), ("hostname", hostname_rows), ("getconf", getconf_rows),
         ("seq", seq_rows), ("fold", fold_rows), ("paste", paste_rows),
         ("tee", tee_rows), ("fmt", fmt_rows), ("stat", stat_rows),
-        ("touch", touch_rows), ("ln", ln_rows),
+        ("touch", touch_rows), ("ln", ln_rows), ("sync", sync_rows),
     ]
 
 

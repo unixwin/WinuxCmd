@@ -42,6 +42,6 @@ ts39-L-link	win	touch t9; ln -s t9 flink 2>/dev/null || true			-L	flink
 ts40-G-group	strict	printf xy > f2			-G	f2
 ts41-O-owner	strict	printf xy > f2			-O	f2
 ts42-x-file	strict	printf xy > f2			-x	f2
-ts43-help-flag	strict				--help
+ts43-help-flag	note				--help
 ts44-lt10	strict				2	-lt	10
 ts45-gt10	strict				2	-gt	10

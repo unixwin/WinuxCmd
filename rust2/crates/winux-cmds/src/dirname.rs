@@ -9,18 +9,11 @@ use std::ffi::OsString;
 use crate::argopt::{self, OptSpec};
 use winux_core::{usage_error, CmdResult, Ctx, Io};
 
-const OPTS: &[OptSpec] = &[
-    OptSpec {
-        short: Some('z'),
-        long: "zero",
-        takes_value: false,
-    },
-    OptSpec {
-        short: None,
-        long: "ze",
-        takes_value: false,
-    },
-];
+const OPTS: &[OptSpec] = &[OptSpec {
+    short: Some('z'),
+    long: "zero",
+    takes_value: false,
+}];
 
 /// GNU dirname of one path.
 pub fn dir_name(path: &str) -> String {

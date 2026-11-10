@@ -21,7 +21,10 @@ const UNOPS: &[&str] = &[
 ];
 
 const BINOPS: &[&str] = &[
-    "=", "!=", "<", ">", "-eq", "-ne", "-lt", "-le", "-gt", "-ge", "-nt", "-ot", "-ef",
+    "=", "!=", "==", "<", ">", "-eq", "-ne", "-lt", "-le", "-gt", "-ge", "-nt", "-ot", "-ef",
+    // [GNU] the AND/OR operators are binops in the 3-argument form
+    // (probed 9.4: a -a b -> 0, a -a EMPTY -> 1).
+    "-a", "-o",
 ];
 
 struct TestError {
@@ -114,7 +117,13 @@ fn two_arguments(argv: &[String], ctx: &Ctx) -> Result<bool, TestError> {
         // e.g. `test 1 =` -> missing rhs
         return Err(err(format!("missing argument after {}", q(&argv[1]))));
     }
-    if argv[0].starts_with('-') {
+    // [GNU] probed 9.4, posixtest case 2: the AND/OR operators "-a"/"-o"
+    // in the operator position report "'-a': unary operator expected"
+    // (`test -o x`, `test -a x`); every other non-unary first token leaves
+    // the SECOND token as the only candidate binary operand — "missing
+    // argument after 'x'" for `test --help x`, "--version x", "-eq x",
+    // "-nt x", "-zz x" and the bare `test 1 2`.
+    if argv[0] == "-a" || argv[0] == "-o" {
         return Err(err(format!("{}: unary operator expected", q(&argv[0]))));
     }
     Err(err(format!("missing argument after {}", q(&argv[1]))))
@@ -213,7 +222,10 @@ impl<'a> Parser<'a> {
         }
         // binary operand form: lhs op rhs
         if let Some(next) = self.argv.get(self.pos + 1) {
-            if is_binop(next) {
+            // -a/-o are binops but bind at the expr/and levels (parse_expr/
+            // parse_and), never here — GNU: -a tighter than -o, both looser
+            // than every comparison.
+            if is_binop(next) && next != "-a" && next != "-o" {
                 let rhs = match self.argv.get(self.pos + 2) {
                     Some(r) => r.clone(),
                     None => return Err(err(format!("missing argument after {}", q(next)))),
@@ -245,8 +257,11 @@ impl<'a> Parser<'a> {
 
 fn binary_operator(lhs: &str, op: &str, rhs: &str, ctx: &Ctx) -> Result<bool, TestError> {
     match op {
-        "=" => Ok(lhs == rhs),
+        "=" | "==" => Ok(lhs == rhs),
         "!=" => Ok(lhs != rhs),
+        // [GNU] expr-level AND/OR over one-argument (non-empty string) tests
+        "-a" => Ok(!lhs.is_empty() && !rhs.is_empty()),
+        "-o" => Ok(!lhs.is_empty() || !rhs.is_empty()),
         "<" => Ok(lhs < rhs),
         ">" => Ok(lhs > rhs),
         "-eq" | "-ne" | "-lt" | "-le" | "-gt" | "-ge" => {
@@ -328,9 +343,13 @@ fn unary_operator(op: &str, arg: &str, ctx: &Ctx) -> Result<bool, TestError> {
         "-n" => Ok(!arg.is_empty()),
         "-z" => Ok(arg.is_empty()),
         "-e" => Ok(metadata_of(ctx, arg, false).is_some()),
-        "-f" => Ok(metadata_of(ctx, arg, true)
-            .map(|m| m.is_file())
-            .unwrap_or(false)),
+        // [WinuxCmd] the kFifoMarker emulation is NOT a regular file to
+        // the shell layer: -f is false for a marker FIFO (1.x parser).
+        "-f" => Ok(!is_dos_char_device(arg)
+            && !is_fifo_marker(ctx, arg)
+            && metadata_of(ctx, arg, true)
+                .map(|m| m.is_file())
+                .unwrap_or(false)),
         "-d" => Ok(metadata_of(ctx, arg, true)
             .map(|m| m.is_dir())
             .unwrap_or(false)),
@@ -363,9 +382,14 @@ fn unary_operator(op: &str, arg: &str, ctx: &Ctx) -> Result<bool, TestError> {
         }
         // Unix permission bits do not exist on Windows
         "-u" | "-g" | "-k" => Ok(false),
-        // device types: NTFS has no block devices/FIFOs/sockets; char devices
-        // are the DOS reserved device names (NUL, CON, PRN, AUX, COM1-9, LPT1-9)
-        "-b" | "-p" | "-S" => Ok(false),
+        // device types: NTFS has no block devices/sockets; FIFOs exist only
+        // as the WinuxCmd kFifoMarker emulation (mkfifo/mknod write
+        // "!<fifo>" + FILE_ATTRIBUTE_SYSTEM), which -p must recognize
+        // (the 1.x parser did; the mkfifo/mknod unit rows pin it). Char
+        // devices are the DOS reserved device names (NUL, CON, PRN, AUX,
+        // COM1-9, LPT1-9).
+        "-b" | "-S" => Ok(false),
+        "-p" => Ok(is_fifo_marker(ctx, arg)),
         "-c" => Ok(is_dos_char_device(arg)),
         // ownership checks approximate the WSL-root oracle (everything the
         // harness can see is owned by root/euid)
@@ -378,6 +402,35 @@ fn unary_operator(op: &str, arg: &str, ctx: &Ctx) -> Result<bool, TestError> {
 /// DOS/Windows reserved character-device names, matched whole-token and
 /// case-insensitive (`test -c NUL` -> true), mirroring GNU's `-c` on
 /// character specials.
+/// The WinuxCmd FIFO emulation: a regular file whose first bytes are
+/// kFifoMarker ("!<fifo>") carrying FILE_ATTRIBUTE_SYSTEM (see
+/// native_path.cppm is_winux_fifo_w; mkfifo/mknod create it).
+fn is_fifo_marker(ctx: &Ctx, name: &str) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    let path = {
+        let p = std::path::Path::new(name);
+        if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            ctx.cwd.join(p)
+        }
+    };
+    let md = match std::fs::metadata(&path) {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    if md.file_attributes() & 0x4 == 0 {
+        // FILE_ATTRIBUTE_SYSTEM
+        return false;
+    }
+    let mut head = [0u8; 7];
+    match std::fs::File::open(&path).and_then(|mut f| std::io::Read::read_exact(&mut f, &mut head)) {
+        Ok(()) => head == *b"!<fifo>",
+        Err(_) => false,
+    }
+}
+
 fn is_dos_char_device(name: &str) -> bool {
     // POSIX-spelled null device maps onto NUL (the 1.x C++ applet does the
     // same, which is what the win-mode gate compares against)
@@ -535,5 +588,91 @@ mod tests {
         assert_eq!(run(&["-x", "d"], &sc).0, 0);
         assert_eq!(run(&["-r", "f"], &sc).0, 0);
         assert_eq!(run(&["-w", "f"], &sc).0, 0);
+    }
+}
+
+#[cfg(test)]
+mod two_arg_tests {
+    use winux_core::test_support::{MemIo, ScratchCtx};
+
+    fn run(args: &[&str]) -> (u32, String, String) {
+        let owned: Vec<std::ffi::OsString> =
+            args.iter().map(std::ffi::OsString::from).collect();
+        let mut io = MemIo::new("");
+        let sc = ScratchCtx::new("test2");
+        let ctx = sc.ctx();
+        let r = super::test_cmd(&owned, &mut io.split(), &ctx).unwrap();
+        (r, io.out(), io.err())
+    }
+
+    #[test]
+    fn two_arg_non_operator_second_token_gnu_wording() {
+        // Probed GNU 9.4: `test --help x` -> "missing argument after 'x'"
+        // rc 2; the pilot said "'--help': unary operator expected".
+        let (r, _o, e) = run(&["--help", "x"]);
+        assert_eq!(r, 2);
+        assert!(e.contains("missing argument after 'x'"), "err={e}");
+
+        let (r, _o, e) = run(&["--version", "x"]);
+        assert_eq!(r, 2);
+        assert!(e.contains("missing argument after 'x'"), "err={e}");
+
+        // first-token shapes keep their GNU wordings
+        let (r, _o, e) = run(&["x", "--help"]);
+        assert_eq!(r, 2);
+        assert!(e.contains("missing argument after '--help'"), "err={e}");
+
+        // `test --foo` is a single non-empty STRING (rc 0)
+        let (r, _o, e) = run(&["--foo"]);
+        assert_eq!(r, 0);
+        assert!(e.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod fifo_marker_tests {
+    use winux_core::test_support::{MemIo, ScratchCtx};
+
+    #[test]
+    fn unary_p_recognizes_the_winuxcmd_fifo_marker() {
+        // mkfifo's emulation: "!<fifo>" + FILE_ATTRIBUTE_SYSTEM. The 1.x
+        // parser reported it via -p (mkfifo/mknod unit rows pin the shape).
+        let sc = ScratchCtx::new("test-fifo");
+        let ctx = sc.ctx();
+        std::fs::write(sc.path("pipe1"), "!<fifo>payload").unwrap();
+        let md = std::fs::metadata(sc.path("pipe1")).unwrap();
+        use std::os::windows::fs::MetadataExt;
+        // FILE_ATTRIBUTE_SYSTEM = 0x4
+        let attrs = md.file_attributes();
+        std::fs::write(sc.path("pipe1"), "!<fifo>payload").unwrap();
+        std::fs::set_permissions(sc.path("pipe1"), {
+            let mut perms = std::fs::metadata(sc.path("pipe1")).unwrap().permissions();
+            perms.set_readonly(false);
+            perms
+        }).unwrap();
+        let _ = attrs;
+        // set the SYSTEM attribute via the win32 call the C++ suite uses
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn SetFileAttributesW(lpFileName: *const u16, dwFileAttributes: u32) -> i32;
+        }
+        let wide: Vec<u16> = sc
+            .path("pipe1")
+            .to_string_lossy()
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let ok = unsafe { SetFileAttributesW(wide.as_ptr(), attrs | 0x4) };
+        assert!(ok != 0, "SetFileAttributesW failed");
+        let mut io = MemIo::new("");
+        let args = ["-p".into(), "pipe1".into()];
+        let r = super::test_cmd(&args, &mut io.split(), &ctx).unwrap();
+        assert_eq!(r, 0, "-p must recognize the marker FIFO");
+
+        // -f on the FIFO is false (it is not a regular file to the shell)
+        let mut io = MemIo::new("");
+        let args = ["-f".into(), "pipe1".into()];
+        let r = super::test_cmd(&args, &mut io.split(), &ctx).unwrap();
+        assert_eq!(r, 1);
     }
 }

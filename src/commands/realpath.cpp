@@ -3,7 +3,7 @@
 /// @contributors:
 ///   - @contributor1 caomengxuan666 2507560089@qq.com
 /// @Description: Implementation for realpath - print the absolute path of files
-/// @Version: 0.1.0
+/// @Version: 0.2.0
 /// @License: MIT
 /// @Copyright: Copyright © 2026 WinuxCmd
 
@@ -14,34 +14,11 @@
 import std;
 import core;
 import utils;
-import container;
+import rust2_bridge;
 
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
-/**
- * @brief REALPATH command options definition
- *
- * This array defines all the options supported by the realpath command.
- * Each option is described with its short form, long form, and description.
- * The implementation status is also indicated for each option.
- *
- * @par Options:
- * - @a -e, @a --canonicalize-existing: all components of the path must exist
- * [IMPLEMENTED]
- * - @a -E, @a --canonicalize: all but the last component must exist
- * [IMPLEMENTED]
- * - @a -m, @a --canonicalize-missing: no path components need to exist
- * [IMPLEMENTED]
- * - @a -L, @a --logical: accepted; Windows path normalization is used
- * [PARTIAL]
- * - @a -P, @a --physical: accepted; Windows path normalization is used
- * [PARTIAL]
- * - @a -q, @a --quiet: suppress error messages [IMPLEMENTED]
- * - @a -s, @a --strip: do not expand symlinks [ACCEPTED]
- * - @a -z, @a --zero: end output with NUL byte instead of newline
- * [IMPLEMENTED]
- */
 auto constexpr REALPATH_OPTIONS = std::array{
     // [DIFFERS]
     OPTION("-e", "--canonicalize-existing",
@@ -66,325 +43,6 @@ auto constexpr REALPATH_OPTIONS = std::array{
            STRING_TYPE),
     // [DIFFERS]
     OPTION("-z", "--zero", "end output with NUL byte instead of newline")};
-
-// ======================================================
-// Pipeline components
-// ======================================================
-namespace realpath_pipeline {
-namespace cp = core::pipeline;
-
-enum class CanonicalizationMode {
-  permissive,
-  existing,
-  missing,
-};
-
-struct Config {
-  CanonicalizationMode mode = CanonicalizationMode::permissive;
-  bool quiet = false;
-  // [GNU] -L/-P/-s edit ONE mode word in argv order (realpath.c):
-  // -L sets CAN_NOLINKS + logical, -P clears CAN_NOLINKS + logical,
-  // -s sets CAN_NOLINKS and clears logical. Independent any-of
-  // booleans made '-s -P' never expand and '-P -L' physical.
-  bool nolinks = false;  // CAN_NOLINKS bit
-  bool logical = false;  // logical mode: two-pass canonicalisation
-  bool zero_terminated = false;
-  std::string relative_to;
-  std::string relative_base;
-  SmallVector<std::string, 32> paths{};
-};
-
-struct PathResult {
-  bool ok = false;
-  std::string value;
-  std::string error;
-
-  explicit operator bool() const { return ok; }
-};
-
-auto access_error(const std::string& path) -> std::string {
-  return "realpath: " + path + ": No such file or directory";
-}
-
-auto empty_operand_error() -> std::string {
-  return "invalid operand: empty string";
-}
-
-auto not_directory_error(const std::string& path) -> std::string {
-  return "realpath: " + path + ": Not a directory";
-}
-
-auto canon_error(const std::string& path, int err) -> std::string {
-  switch (err) {
-    case ELOOP:
-      return "realpath: " + path + ": Too many levels of symbolic links";
-    case ENOTDIR:
-      return not_directory_error(path);
-    case ENAMETOOLONG:
-      return "realpath: " + path + ": " +
-             winux::i18n::format("command.realpath.error.file_name_too_long",
-                                 "File name too long");
-    default:
-      return access_error(path);
-  }
-}
-
-auto to_canon_mode(CanonicalizationMode mode) -> native_path::CanonMode {
-  switch (mode) {
-    case CanonicalizationMode::existing:
-      return native_path::CanonMode::existing;
-    case CanonicalizationMode::missing:
-      return native_path::CanonMode::missing;
-    case CanonicalizationMode::permissive:
-    default:
-      return native_path::CanonMode::all_but_last;
-  }
-}
-
-// [GNU] realpath canonicalizes like canonicalize_filename_mode: each
-// component is looked up and symlink targets are substituted as they
-// are found (intermediate links like "ldir/f" resolve, a dangling
-// leaf still yields its target's path under the default permissive
-// mode — the shared walker substitutes a dangling link's target,
-// #1462 RP-1). Logical mode canonicalises twice (realpath.c
-// realpath_canon): first without following links so '.'/'..' fold
-// lexically, then again following them.
-auto canonicalize_operand(const std::string& path, const Config& cfg)
-    -> PathResult {
-  const native_path::CanonMode canon_mode = to_canon_mode(cfg.mode);
-  if (cfg.logical) {
-    auto first = native_path::canonicalize_path_w(
-        utf8_to_wstring(path), canon_mode, /*expand_symlinks=*/false,
-        /*logical=*/true);
-    if (!first) {
-      return {false, {}, canon_error(path, first.error())};
-    }
-    auto second = native_path::canonicalize_path_w(*first, canon_mode,
-                                                    /*expand_symlinks=*/true,
-                                                    /*logical=*/false);
-    if (!second) {
-      return {false, {}, canon_error(path, second.error())};
-    }
-    return {true, wstring_to_utf8(*second), {}};
-  }
-  auto resolved = native_path::canonicalize_path_w(
-      utf8_to_wstring(path), canon_mode, /*expand_symlinks=*/!cfg.nolinks,
-      /*logical=*/false);
-  if (!resolved) {
-    return {false, {}, canon_error(path, resolved.error())};
-  }
-  return {true, wstring_to_utf8(*resolved), {}};
-}
-
-auto resolve_relative_option(const std::string& path, const Config& cfg)
-    -> PathResult {
-  auto resolved = canonicalize_operand(path, cfg);
-  if (!resolved) {
-    return resolved;
-  }
-
-  // GNU treats the -e/-m mode of the operand the same for --relative-to /
-  // --relative-base, but the base must still be a usable directory.
-  if (cfg.mode == CanonicalizationMode::existing) {
-    DWORD attrs = GetFileAttributesW(utf8_to_wstring(resolved.value).c_str());
-    if (attrs == INVALID_FILE_ATTRIBUTES ||
-        !(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
-      return {false, {}, not_directory_error(path)};
-    }
-  }
-  return resolved;
-}
-
-auto is_under_base(const std::filesystem::path& path,
-                   const std::filesystem::path& base) -> bool {
-  auto path_it = path.begin();
-  auto base_it = base.begin();
-  while (path_it != path.end() && base_it != base.end()) {
-    auto lhs = path_it->wstring();
-    auto rhs = base_it->wstring();
-    std::ranges::transform(lhs, lhs.begin(),
-                           [](wchar_t ch) { return std::towlower(ch); });
-    std::ranges::transform(rhs, rhs.begin(),
-                           [](wchar_t ch) { return std::towlower(ch); });
-    if (lhs != rhs) {
-      return false;
-    }
-    ++path_it;
-    ++base_it;
-  }
-  return base_it == base.end();
-}
-
-auto apply_relative_options(const std::string& resolved, const Config& cfg)
-    -> std::string {
-  if (cfg.relative_to.empty() && cfg.relative_base.empty()) {
-    return resolved;
-  }
-
-  // [GNU] A --relative-base that is not a prefix of --relative-to
-  // discards the --relative-to entirely (realpath.c:262-276:
-  // can_relative_to = nullptr), so every result prints absolute.
-  // The gate below alone printed relative paths in that case.
-  if (!cfg.relative_base.empty() && !cfg.relative_to.empty() &&
-      !is_under_base(utf8_to_wstring(cfg.relative_to),
-                     utf8_to_wstring(cfg.relative_base))) {
-    return resolved;
-  }
-
-  std::error_code ec;
-  std::filesystem::path resolved_path = utf8_to_wstring(resolved);
-  std::filesystem::path base = utf8_to_wstring(
-      cfg.relative_to.empty() ? cfg.relative_base : cfg.relative_to);
-  base = std::filesystem::absolute(base, ec).lexically_normal();
-  if (ec) {
-    return resolved;
-  }
-
-  if (!cfg.relative_base.empty()) {
-    std::filesystem::path relative_base =
-        std::filesystem::absolute(utf8_to_wstring(cfg.relative_base), ec)
-            .lexically_normal();
-    if (ec || !is_under_base(resolved_path.lexically_normal(), relative_base)) {
-      return resolved;
-    }
-  }
-
-  auto relative = std::filesystem::relative(resolved_path, base, ec);
-  if (ec) {
-    return resolved;
-  }
-  return wstring_to_utf8(relative.generic_wstring());
-}
-
-auto emit_error(const std::string& message) -> void {
-  // [GNU] -z changes only the STDOUT record terminator; error()
-  // diagnostics stay newline-terminated (realpath.c process_path).
-  safeErrorPrint(message);
-  safeErrorPrint(char{'\n'});
-}
-
-auto build_config(const CommandContext<REALPATH_OPTIONS.size()>& ctx)
-    -> cp::Result<Config> {
-  Config cfg;
-
-  for (const auto& occurrence : ctx.options.occurrences()) {
-    if (occurrence.index >= REALPATH_OPTIONS.size()) continue;
-    const auto& meta = (*ctx.metas)[occurrence.index];
-    if (meta.long_name == "--canonicalize-missing" || meta.short_name == "-m") {
-      cfg.mode = CanonicalizationMode::missing;
-    } else if (meta.long_name == "--canonicalize-existing" ||
-               meta.short_name == "-e") {
-      cfg.mode = CanonicalizationMode::existing;
-    } else if (meta.long_name == "--canonicalize" || meta.short_name == "-E") {
-      cfg.mode = CanonicalizationMode::permissive;
-    } else if (meta.long_name == "--logical" || meta.short_name == "-L") {
-      cfg.nolinks = true;
-      cfg.logical = true;
-    } else if (meta.long_name == "--physical" || meta.short_name == "-P") {
-      cfg.nolinks = false;
-      cfg.logical = false;
-    } else if (meta.long_name == "--strip" || meta.short_name == "-s" ||
-               meta.long_name == "--no-symlinks") {
-      cfg.nolinks = true;
-      cfg.logical = false;
-    }
-  }
-
-  cfg.quiet = ctx.get<bool>("--quiet", false) || ctx.get<bool>("-q", false);
-  cfg.zero_terminated =
-      ctx.get<bool>("--zero", false) || ctx.get<bool>("-z", false);
-
-  for (const auto& arg : ctx.raw_args) {
-    if (arg == "--relative-to=" || arg == "--relative-base=") {
-      return std::unexpected(empty_operand_error());
-    }
-  }
-
-  for (const auto& occurrence :
-       ctx.string_occurrences({"--relative-to", "--relative-base"})) {
-    if (occurrence.value.empty()) {
-      return std::unexpected(empty_operand_error());
-    }
-    auto normalized = resolve_relative_option(occurrence.value, cfg);
-    if (!normalized) {
-      return std::unexpected(normalized.error);
-    }
-    if (occurrence.long_name == "--relative-to") {
-      cfg.relative_to = normalized.value;
-    } else if (occurrence.long_name == "--relative-base") {
-      cfg.relative_base = normalized.value;
-    }
-  }
-
-  if (ctx.positionals.empty()) {
-    return std::unexpected("missing operand");
-  }
-
-  for (const auto& arg : ctx.positionals) {
-    std::string file_arg(arg);
-    // [GNU] An empty operand is a per-operand failure in
-    // process_paths ("realpath: '': No such file or directory"),
-    // not a whole-run abort (realpath.c:156-183). It used to kill
-    // the run before any operand was processed.
-    if (file_arg.empty()) {
-      cfg.paths.push_back(file_arg);
-      continue;
-    }
-    if (contains_wildcard(file_arg)) {
-      auto glob_result = glob_expand(file_arg);
-      if (glob_result.expanded) {
-        for (const auto& file : glob_result.files) {
-          cfg.paths.push_back(wstring_to_utf8(file));
-        }
-        continue;
-      }
-    }
-    cfg.paths.push_back(file_arg);
-  }
-
-  return cfg;
-}
-
-/**
- * @brief Process paths and print their absolute paths
- * @param cfg Command configuration
- * @return Result with success status
- */
-auto process_paths(const Config& cfg) -> bool {
-  bool all_ok = true;
-
-  for (size_t i = 0; i < cfg.paths.size(); ++i) {
-    const auto& path = cfg.paths[i];
-    if (path.empty()) {
-      if (!cfg.quiet) {
-        emit_error("realpath: '': No such file or directory");
-      }
-      all_ok = false;
-      continue;
-    }
-    PathResult resolved = canonicalize_operand(path, cfg);
-
-    if (!resolved) {
-      if (!cfg.quiet) {
-        emit_error(resolved.error);
-      }
-      all_ok = false;
-      continue;
-    }
-
-    resolved.value = apply_relative_options(resolved.value, cfg);
-    safePrint(resolved.value);
-    if (cfg.zero_terminated) {
-      safePrint(char{'\0'});
-    } else {
-      safePrintLn(L"");
-    }
-  }
-
-  return all_ok;
-}
-
-}  // namespace realpath_pipeline
 
 REGISTER_COMMAND(
     realpath,
@@ -413,19 +71,12 @@ REGISTER_COMMAND(
     "  realpath file.txt",
     "readlink(1)", "caomengxuan666", "Copyright © 2026 WinuxCmd",
     REALPATH_OPTIONS) {
-  using namespace realpath_pipeline;
-
-  auto result = build_config(ctx);
-  if (!result) {
-    if (result.error() == "missing operand") {
-      safeErrorPrintLn("realpath: missing operand");
-      safeErrorPrintLn("Try 'realpath --help' for more information.");
-      return 1;
-    }
-
-    cp::report_error(result, L"realpath");
-    return 1;
-  }
-
-  return process_paths(*result) ? 0 : 1;
+  // #1488 mechanical replacement: the semantics live in the rust2 library
+  // (rust2/crates/winux-cmds/src/realpath.rs, realpath_cmd); the C++ side
+  // keeps only this registration — the canonicalization pipeline and the
+  // relativize step are deleted. ctx.raw_args passes the operands
+  // verbatim because GNU realpath.c parses its own getopt run. Resolved
+  // paths are DATA and reach stdout through the bridge's raw
+  // (non-translating) writers.
+  return winux::rust2::run_command("realpath", ctx.raw_args);
 }

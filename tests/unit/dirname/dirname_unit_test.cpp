@@ -2,6 +2,13 @@
 // Copyright (c) 2026 caomengxuan666 <caomengxuan666@users.noreply.github.com>
 #include "framework/winuxtest.h"
 
+// GNU coreutils 9.4 (probed under WSL, script-file operands): dirname
+// treats ONLY '/' as a separator — a backslash operand carries no
+// separator and reduces to "." — and the "//" window survives only when
+// more of the path follows ("dirname //a" is "/", "dirname //a/b" is
+// "//a"). The 1.x C++ applet implemented the Cygwin face (drive prefixes,
+// '\' separators); these expectations are the GNU-pinned ones.
+
 TEST(dirname, dirname_simple) {
   Pipeline p;
   p.add(L"dirname.exe", {L"C:\\Users\\test\\file.txt"});
@@ -14,7 +21,7 @@ TEST(dirname, dirname_simple) {
   TEST_LOG("dirname output", r.stdout_text);
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "C:\\Users\\test\n");
+  EXPECT_EQ_TEXT(r.stdout_text, ".\n");
 }
 
 TEST(dirname, dirname_linux_path) {
@@ -96,9 +103,10 @@ TEST(dirname, dirname_triple_slash_path_collapses_to_single) {
   EXPECT_EQ_TEXT(r.stdout_text, "/\n/\n///a\n");
 }
 
-// [GNU] Exactly two leading slashes stay implementation-defined and GNU
-// preserves them; dropping the basename must not fold a "//" root run
-// back into a longer collapse ("dirname //a" is "//").
+// [GNU] Exactly two leading slashes are implementation-defined; the GNU
+// (glibc) face keeps the "//" window only when more of the path follows
+// (probed 9.4: "dirname //a" is "/", "dirname //a/b" is "//a",
+// "dirname //a//" is "/").
 TEST(dirname, dirname_double_slash_root_stays_after_basename_drop) {
   Pipeline p;
   p.add(L"dirname.exe", {L"//a", L"//a/b", L"//a//"});
@@ -106,7 +114,7 @@ TEST(dirname, dirname_double_slash_root_stays_after_basename_drop) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "//\n//a\n//\n");
+  EXPECT_EQ_TEXT(r.stdout_text, "/\n//a\n/\n");
 }
 
 // [GNU] The trailing-slash matrix keeps the shared semantics: interior
@@ -160,7 +168,11 @@ TEST(dirname, dirname_drive_paths_preserve_drive_prefix) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "C:\nC:\nC:\nC:\nC:\nC:\n");
+  // [GNU] coreutils 9.4 (probed): the drive prefix is Windows-shape data —
+  // only '/' separates, so the backslash drive operands reduce to "." and
+  // only 'C:/foo' keeps its drive prefix; 'C:/' alone has no interior
+  // component and reduces to ".".
+  EXPECT_EQ_TEXT(r.stdout_text, ".\n.\n.\nC:\n.\n.\n");
 }
 
 TEST(dirname, dirname_unc_paths_preserve_double_separator_root) {
@@ -183,17 +195,10 @@ TEST(dirname, dirname_unc_paths_preserve_double_separator_root) {
 
   auto r = p.run();
 
-  std::string expected = "//\n//server\n";
-  expected.push_back(92);
-  expected.push_back(92);
-  expected.push_back(10);
-  expected.push_back(92);
-  expected.push_back(92);
-  expected += "server";
-  expected.push_back(92);
-  expected += "share\n";
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ(r.stdout_text, expected);
+  // [GNU] coreutils 9.4 (probed): "//server" reduces to "/" (a trailing
+  // component above the "//" window folds), "//server/share" keeps the
+  // "//" window; the pure-backslash operands are "." — no '/' separator.
+  EXPECT_EQ_TEXT(r.stdout_text, "/\n//server\n.\n.\n");
 }
 TEST(dirname, dirname_zero_terminates_each_result) {
   Pipeline p;
@@ -203,8 +208,9 @@ TEST(dirname, dirname_zero_terminates_each_result) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  std::string expected("C:\\Users\\test", 13);
-  expected.push_back('\0');
+  // [GNU] the backslash operand has no '/' separator: it reduces to ".".
+  std::string expected(".\n", 2);
+  expected.back() = '\0';
   expected += "/home/user/test";
   expected.push_back('\0');
   EXPECT_EQ(r.stdout_text, expected);

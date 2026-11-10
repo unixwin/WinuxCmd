@@ -53,7 +53,11 @@ pub fn pwd_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
 
     let result = if use_logical {
         match ctx.env.get("PWD") {
-            Some(p) if is_absolute(&p.to_string_lossy()) && same_dir(&cwd, &p) => {
+            Some(p)
+                if is_absolute(&p.to_string_lossy())
+                    && !has_relative_components(&p.to_string_lossy())
+                    && same_dir(&cwd, &p) =>
+            {
                 p.to_string_lossy().into_owned()
             }
             _ => physical.to_string_lossy().into_owned(),
@@ -69,6 +73,17 @@ fn is_absolute(p: &str) -> bool {
     std::path::Path::new(p).is_absolute()
 }
 
+/// GNU rejects a $PWD whose components include "." or ".." (coreutils
+/// pwd.c logical_getcwd; probed against coreutils 9.4: `PWD=<dir>/.`,
+/// `PWD=<dir>/./x`, `PWD=<dir>/x/../y` all fall back to the physical
+/// spelling, while trailing and redundant slashes — `<dir>/`, `<a>//b` —
+/// are accepted verbatim). Split on both separators: on Windows $PWD may
+/// carry either spelling.
+fn has_relative_components(p: &str) -> bool {
+    p.split(['/', '\\'])
+        .any(|c| c == "." || c == "..")
+}
+
 fn same_dir(cwd: &std::path::Path, pwd: &std::ffi::OsStr) -> bool {
     let pwd_path = std::path::Path::new(pwd);
     match (std::fs::canonicalize(cwd), std::fs::canonicalize(pwd_path)) {
@@ -80,6 +95,7 @@ fn same_dir(cwd: &std::path::Path, pwd: &std::ffi::OsStr) -> bool {
 #[cfg(test)]
 mod tests {
     use winux_core::test_support::{MemIo, ScratchCtx};
+    use winux_core::Ctx;
 
     #[test]
     fn physical_default() {
@@ -127,5 +143,55 @@ mod tests {
         let r = super::pwd_cmd(&args, &mut io.split(), &ctx).unwrap();
         assert_eq!(r, 0);
         assert!(io.err().contains("ignoring non-option arguments"));
+    }
+
+    #[test]
+    fn logical_rejects_pwd_with_relative_components() {
+        // GNU coreutils 9.4 (logical_getcwd): a $PWD containing "." or ".."
+        // components is not used verbatim even when it names the same
+        // directory — `pwd -L` falls back to the physical spelling. Each
+        // probe names the scratch dir itself, so only the component rule
+        // (not the same-dir check) can reject it.
+        let base = ScratchCtx::new("pwd-dot-base");
+        for suffix in ["/.", "/sub/..", "/./", "\\."] {
+            std::fs::create_dir_all(base.path("sub")).unwrap();
+            let pwd = format!("{}{suffix}", base.dir.to_string_lossy());
+            let mut io = MemIo::new("");
+            let mut sc = ScratchCtx::new("pwd-dot");
+            sc.env.set("PWD", pwd.as_ref());
+            // The command's cwd must be the dir PWD names, so same_dir holds.
+            let ctx = Ctx {
+                cwd: base.dir.clone(),
+                env: &sc.env,
+            };
+            let args = ["-L".into()];
+            let r = super::pwd_cmd(&args, &mut io.split(), &ctx).unwrap();
+            assert_eq!(r, 0);
+            let out = io.out();
+            assert!(
+                !out.contains("/./") && !out.contains("/../") && !out.contains("\\.")
+                    && !out.contains("\\.."),
+                "PWD={pwd} must not be echoed verbatim, got {out}"
+            );
+            assert!(
+                out.trim_end().ends_with(
+                    base.dir.file_name().unwrap().to_string_lossy().as_ref()
+                ),
+                "PWD={pwd} must fall back to physical, got {out}"
+            );
+        }
+    }
+
+    #[test]
+    fn logical_accepts_redundant_slashes_verbatim() {
+        // GNU keeps redundant slashes in an accepted $PWD verbatim
+        // (`PWD=//tmp/x` -> `//tmp/x`, `PWD=/tmp//x` -> `/tmp//x`).
+        assert!(!super::has_relative_components("//a/b"));
+        assert!(!super::has_relative_components("/a//b"));
+        assert!(!super::has_relative_components("/a/b/"));
+        assert!(super::has_relative_components("/a/./b"));
+        assert!(super::has_relative_components("/a/../b"));
+        assert!(super::has_relative_components("/a/b/.."));
+        assert!(super::has_relative_components("\\a\\."));
     }
 }
