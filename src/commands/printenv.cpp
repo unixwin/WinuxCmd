@@ -3,7 +3,7 @@
 /// @contributors:
 ///   - caomengxuan666 <2507560089@qq.com>
 /// @Description: Implementation for printenv command.
-/// @Version: 0.1.0
+/// @Version: 0.2.0
 /// @License: MIT
 /// @Copyright: Copyright © 2026 WinuxCmd
 
@@ -14,6 +14,7 @@
 import std;
 import core;
 import utils;
+import rust2_bridge;
 
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
@@ -21,24 +22,6 @@ using cmd::meta::OptionType;
 auto constexpr PRINTENV_OPTIONS = std::array{
     // [GNU]
     OPTION("-0", "--null", "end each output line with NUL, not newline")};
-
-namespace {
-void print_separator(bool null_terminated) {
-  if (null_terminated) {
-    safePrint(std::string_view("\0", 1));
-  } else {
-    safePrint("\n");
-  }
-}
-
-bool is_hidden_windows_env_entry(const std::wstring& entry) {
-  return !entry.empty() && entry.front() == L'=';
-}
-
-bool is_invalid_printenv_variable_name(std::string_view name) {
-  return name.find('=') != std::string_view::npos;
-}
-}  // namespace
 
 REGISTER_COMMAND(
     printenv,
@@ -63,52 +46,13 @@ REGISTER_COMMAND(
     /* see also */
     "env(1), set(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd",
     PRINTENV_OPTIONS) {
-  namespace cp = core::pipeline;
-
-  bool null_terminated =
-      ctx.get<bool>("--null", false) || ctx.get<bool>("-0", false);
-
-  if (ctx.positionals.empty()) {
-    // Print all environment variables
-    wchar_t* env_block = GetEnvironmentStringsW();
-    if (!env_block) {
-      safeErrorPrintLn("printenv: cannot read environment");
-      return 1;
-    }
-
-    for (wchar_t* env = env_block; *env; env += wcslen(env) + 1) {
-      std::wstring wenv(env);
-      if (is_hidden_windows_env_entry(wenv)) {
-        continue;
-      }
-      std::string utf8_env = wstring_to_utf8(wenv);
-      safePrint(utf8_env);
-      print_separator(null_terminated);
-    }
-    FreeEnvironmentStringsW(env_block);
-  } else {
-    // Print specified environment variables
-    bool all_found = true;
-    for (auto var : ctx.positionals) {
-      std::string var_name(var);
-      if (is_invalid_printenv_variable_name(var_name)) {
-        all_found = false;
-        continue;
-      }
-
-      std::wstring wvar = utf8_to_wstring(var_name);
-      wchar_t* value = _wgetenv(wvar.c_str());
-
-      if (value) {
-        safePrint(wstring_to_utf8(std::wstring(value)));
-        print_separator(null_terminated);
-      } else {
-        all_found = false;
-      }
-    }
-
-    return all_found ? 0 : 1;
-  }
-
-  return 0;
+  // #1488 mechanical replacement: the semantics live in the rust2 library
+  // (rust2/crates/winux-cmds/src/printenv.rs, printenv_cmd); the C++ side
+  // keeps only this registration. ctx.raw_args passes the operands
+  // verbatim because GNU printenv.c parses its own getopt("+0") run and
+  // the leading '+' stops at the first NAME — the Rust library owns the
+  // same boundary. Note env VALUES reach stdout through the bridge's raw
+  // (non-translating) writers: a variable's bytes are data, never catalog
+  // text.
+  return winux::rust2::run_command("printenv", ctx.raw_args);
 }
