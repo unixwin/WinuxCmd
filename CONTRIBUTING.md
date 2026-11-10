@@ -23,6 +23,15 @@ Thank you for considering contributing to WinuxCmd! This document provides guide
 - CMake 3.21 or later
 - Windows 10 or later
 - Git
+- Rust toolchain via [rustup](https://rustup.rs) — the rust2 command
+  library (#1488) needs cargo plus **both** MSVC targets:
+  ```bash
+  rustup target add x86_64-pc-windows-msvc aarch64-pc-windows-msvc
+  ```
+  `WINUXCMD_ENABLE_RUST2` defaults ON when cargo is found. Without Rust
+  the replaced commands (currently `true`, `false`) are simply absent
+  from the build — there is no C++ fallback. Details:
+  [README "Rust toolchain requirements"](README.md#rust-toolchain-requirements-rust2-command-library-1488).
 
 ### Setting Up the Development Environment
 

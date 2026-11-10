@@ -282,7 +282,7 @@ See the [GNU Comparison Report](DOCS/en/gnu_comparison_report.md).
 
 ## 🛠️ Building from source
 
-**Prerequisites:** Visual Studio 2022+ · CMake 3.30+ · Ninja
+**Prerequisites:** Visual Studio 2022+ · CMake 3.30+ · Ninja · Rust toolchain (see below)
 
 ```bash
 # Build
@@ -295,6 +295,32 @@ cmake -B build-full -G Ninja -DCMAKE_BUILD_TYPE=Release -DWINUXCMD_PACKAGE_EDITI
 ./scripts/build-with-vs.ps1 -Target winuxcmd-tests
 build-vs/tests/winuxcmd-tests.exe
 ```
+
+### Rust toolchain requirements (rust2 command library, #1488)
+
+WinuxCmd 2.0 replaces selected applets with a Rust implementation
+(`rust2/crates/winuxcmd-ffi`), built as a staticlib and folded into
+`winuxcmd.exe` by the same link run — there are no separate Rust
+artifacts to install or distribute.
+
+- **Install [rustup](https://rustup.rs) (stable) plus both MSVC targets:**
+  `rustup target add x86_64-pc-windows-msvc aarch64-pc-windows-msvc`.
+  The `aarch64` target is required even on an x64 host when you
+  cross-build arm64 (`vcvarsall x64_arm64`) — cargo builds the staticlib
+  with `--target` for the C++ target architecture, and the ARM64 std
+  library is not part of a default installation. CI pins the toolchain
+  version (`RUST2_TOOLCHAIN` in `.github/workflows/build-winuxcmd.yml`).
+- **Switch semantics:** the CMake option `WINUXCMD_ENABLE_RUST2` defaults
+  **ON** when cargo is found and **OFF** when it is not; passing
+  `-DWINUXCMD_ENABLE_RUST2=ON` without cargo is a configure-time error.
+- **Degradation without Rust:** there is no C++ fallback. A rust-less
+  build simply omits the replaced commands (currently `true` and
+  `false`) from the applet set — they are never dual-tracked (#1550) —
+  so a Rust-less build has a smaller command surface.
+- **Cross-arch consistency:** CI enforces that the x64 and arm64
+  packages carry the same rust2 surface (`rust2-surface-check` job);
+  a local arm64 build fails at configure/link time without the
+  `aarch64` target installed.
 
 **Profile-Guided Optimization (x64):** release CI builds the published x64
 binary with PGO automatically — instrumented build, training workloads,
