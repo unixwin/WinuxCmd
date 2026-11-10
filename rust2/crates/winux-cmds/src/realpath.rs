@@ -114,6 +114,7 @@ pub fn realpath_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let rel_base = p.value_of("relative-base").map(|s| s.to_string());
     let relative_base_mode = rel_base.is_some();
 
+
     // [GNU] An empty --relative-to/--relative-base value is an invalid
     // operand, not the cwd: the command reports it once and exits 1 with
     // no operand output (1.x wording kept: "invalid operand: empty
@@ -140,6 +141,13 @@ pub fn realpath_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         }
     }
 
+    // TEMP DIAGNOSTIC (revert after CI)
+    if args.iter().any(|a| a.to_string_lossy().contains("relative-to")) {
+        let dbg_flags = format!("{:?}", p.flags);
+        let dbg_pos = format!("{:?}", p.positionals);
+        let dbg_canon = format!("{canon:?}");
+        eprintln!("DBG2 rel_to={rel_to:?} rel_base={rel_base:?} flags={dbg_flags} pos={dbg_pos} base_dir={base_dir:?} canon={dbg_canon}");
+    }
     let mut failed = false;
     {
         let out = &mut *io.stdout;
