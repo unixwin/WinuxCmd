@@ -20,8 +20,10 @@ pub mod dirname;
 pub mod fmt;
 pub mod fold;
 pub mod fs_win;
+pub mod expand;
 pub mod fsutil;
 pub mod getconf;
+pub mod hostid;
 pub mod hostname;
 pub mod id;
 pub mod ln;
@@ -29,6 +31,8 @@ pub mod mkdir;
 pub mod modemap;
 pub mod nproc;
 pub mod paste;
+pub mod join;
+pub mod numfmt;
 pub mod printenv;
 pub mod pwd;
 pub mod readlink;
@@ -41,10 +45,14 @@ pub mod tac;
 pub mod tee;
 pub mod test_cmd;
 pub mod touch;
+pub mod timeout;
 pub mod truefalse;
 pub mod truncate;
+pub mod tsort;
 pub mod uname;
+pub mod unexpand;
 pub mod unlink;
+pub mod users;
 pub mod whoami;
 pub mod winsys;
 
@@ -76,6 +84,10 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("base32", basenc::base32_cmd),
         ("whoami", whoami::whoami_cmd),
         ("nproc", nproc::nproc_cmd),
+        ("uname", uname::uname_cmd),
+        ("id", id::id_cmd),
+        ("hostname", hostname::hostname_cmd),
+        ("getconf", getconf::getconf_cmd),
         ("unlink", unlink::unlink_cmd),
         ("sleep", sleep::sleep_cmd),
         ("tac", tac::tac_cmd),
@@ -92,6 +104,14 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("stat", stat::stat_cmd),
         ("touch", touch::touch_cmd),
         ("ln", ln::ln_cmd),
+        ("join", join::join_cmd),
+        ("tsort", tsort::tsort_cmd),
+        ("hostid", hostid::hostid_cmd),
+        ("users", users::users_cmd),
+        ("timeout", timeout::timeout_cmd),
+        ("expand", expand::expand_cmd),
+        ("unexpand", unexpand::unexpand_cmd),
+        ("numfmt", numfmt::numfmt_cmd),
     ]
 }
 

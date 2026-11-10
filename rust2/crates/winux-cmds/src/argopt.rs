@@ -45,6 +45,22 @@ fn long_by_name<'a>(opts: &'a [OptSpec], name: &str) -> Option<&'a OptSpec> {
     opts.iter().find(|o| o.long == name)
 }
 
+/// getopt_long unambiguous-abbreviation resolution: an exact match wins;
+/// otherwise the unique long name starting with `name` is canonical.
+/// Ambiguous and unknown prefixes yield the GNU diagnostics getopt_long
+/// produces ("option '--x' is ambiguous" / "unrecognized option '--x'").
+fn resolve_long<'a>(opts: &'a [OptSpec], name: &str) -> Result<&'a OptSpec, String> {
+    if let Some(spec) = long_by_name(opts, name) {
+        return Ok(spec);
+    }
+    let matches: Vec<&OptSpec> = opts.iter().filter(|o| o.long.starts_with(name)).collect();
+    match matches.len() {
+        1 => Ok(matches[0]),
+        0 => Err(format!("unrecognized option '--{name}'")),
+        _ => Err(format!("option '--{name}' is ambiguous")),
+    }
+}
+
 fn short_by_char<'a>(opts: &'a [OptSpec], c: char) -> Option<&'a OptSpec> {
     opts.iter().find(|o| o.short == Some(c))
 }
@@ -87,20 +103,26 @@ pub fn parse(
                 Some((n, v)) => (n.to_string(), Some(v.to_string())),
                 None => (rest.to_string(), None),
             };
-            let canonical = if name == HELP || name == VERSION {
+            let special = name == HELP || name == VERSION;
+            let canonical = if special {
                 name.clone()
             } else {
-                match long_by_name(opts, &name) {
-                    Some(o) => o.long.to_string(),
-                    None => {
-                        let msg = format!("unrecognized option '--{name}'");
+                match resolve_long(opts, &name) {
+                    Ok(o) => o.long.to_string(),
+                    Err(msg) => {
                         let _ = usage_error(io, prog, &msg);
                         return Err(usage_status);
                     }
                 }
             };
-            let spec = long_by_name(opts, &canonical);
-            if spec.map(|s| s.takes_value).unwrap_or(false) {
+            let takes_value = if special {
+                false
+            } else {
+                long_by_name(opts, &canonical)
+                    .map(|s| s.takes_value)
+                    .unwrap_or(false)
+            };
+            if takes_value {
                 let val = match inline_val {
                     Some(v) => v,
                     None => {
@@ -117,6 +139,12 @@ pub fn parse(
                 };
                 out.values.push((canonical, val));
             } else {
+                // getopt_long rejects an inline argument on a flag
+                if inline_val.is_some() {
+                    let msg = format!("option '--{}' doesn't allow an argument", canonical);
+                    let _ = usage_error(io, prog, &msg);
+                    return Err(usage_status);
+                }
                 out.flags.push(canonical);
             }
             i += 1;
