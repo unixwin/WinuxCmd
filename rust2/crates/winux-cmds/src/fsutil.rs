@@ -17,6 +17,7 @@ pub fn reason(e: &io::Error) -> &'static str {
         io::ErrorKind::NotADirectory => "Not a directory",
         io::ErrorKind::DirectoryNotEmpty => "Directory not empty",
         io::ErrorKind::IsADirectory => "Is a directory",
+        io::ErrorKind::InvalidInput => "File name too long",
         _ => "Invalid argument",
     }
 }

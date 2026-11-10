@@ -93,18 +93,52 @@ pub fn realpath_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     // -s and --no-symlinks are the same option (realpath.c registers both
     // spellings onto 's').
     let strip = p.has("strip") || p.has("no-symlinks");
+    // [GNU] realpath.c mode word: the LAST of -e/-m/-E in argv order wins
+    // (probed 9.4: `-e -m f` resolves permissively, `-m -e f` demands
+    // existence). -s stays the lexical no-symlinks walk.
+    let mut mode_word: Option<CanonMode> = None;
+    for flag in &p.flags {
+        match flag.as_str() {
+            "canonicalize-existing" => mode_word = Some(CanonMode::AllMustExist),
+            "canonicalize-missing" => mode_word = Some(CanonMode::NoCheck),
+            "canonicalize" => mode_word = Some(CanonMode::AllButLast),
+            _ => {}
+        }
+    }
     let canon = if strip {
-        CanonMode::NoCheck // -s: lexical only, no symlink resolution
-    } else if p.has("canonicalize-existing") {
-        CanonMode::AllMustExist
-    } else if p.has("canonicalize-missing") {
         CanonMode::NoCheck
     } else {
-        // default, and [EXT] -E/--canonicalize (all but the last must exist)
-        CanonMode::AllButLast
+        mode_word.unwrap_or(CanonMode::AllButLast)
     };
     let rel_to = p.value_of("relative-to").map(|s| s.to_string());
     let rel_base = p.value_of("relative-base").map(|s| s.to_string());
+    let relative_base_mode = rel_base.is_some();
+
+    // [GNU] An empty --relative-to/--relative-base value is an invalid
+    // operand, not the cwd: the command reports it once and exits 1 with
+    // no operand output (1.x wording kept: "invalid operand: empty
+    // string"; GNU 9.4 fails the base canonicalization instead).
+    for value in rel_to.iter().chain(rel_base.iter()) {
+        if value.is_empty() {
+            let _ = writeln!(io.stderr, "realpath: invalid operand: empty string");
+            return Ok(1);
+        }
+    }
+
+    // [GNU] With an existence-checking mode BOTH bases are canonicalized
+    // under the same mode, so a FILE base reports "Not a directory" and
+    // the run fails (probed 9.4).
+    let base_dir = rel_base.as_deref().or(rel_to.as_deref()).map(String::from);
+    if canon == CanonMode::AllMustExist {
+        for base in rel_to.iter().chain(rel_base.iter()) {
+            if let Ok(m) = std::fs::metadata(ctx.cwd.join(base)) {
+                if !m.is_dir() {
+                    let _ = writeln!(io.stderr, "realpath: {}: Not a directory", base);
+                    return Ok(1);
+                }
+            }
+        }
+    }
 
     let mut failed = false;
     {
@@ -114,8 +148,8 @@ pub fn realpath_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             let value = canonicalize_operand(ctx, &name, canon);
             match value {
                 Ok(v) => {
-                    let v = if let Some(base_dir) = rel_base.as_deref().or(rel_to.as_deref()) {
-                        relativize(ctx, base_dir, &v)
+                    let v = if let Some(base) = base_dir.as_deref() {
+                        relativize(ctx, base, &v, relative_base_mode)
                     } else {
                         v
                     };
@@ -148,7 +182,12 @@ pub fn realpath_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     Ok(if failed { 1 } else { 0 })
 }
 
-fn relativize(ctx: &Ctx, base_dir: &str, target: &str) -> String {
+/// GNU relativization: --relative-to always relativizes;
+/// --relative-base relativizes only when the target is BELOW the base —
+/// an outside target keeps its absolute form (probed 9.4:
+/// `--relative-base=/a/b /a/c` -> "/a/c", `--relative-base=/a /a/b` ->
+/// "b", `--relative-base=/a/b /a` -> "/a").
+fn relativize(ctx: &Ctx, base_dir: &str, target: &str, below_only: bool) -> String {
     let base = canonicalize_operand(ctx, base_dir, CanonMode::NoCheck).unwrap_or_default();
     let bt = base.replace('\\', "/");
     let tt = target.replace('\\', "/");
@@ -157,6 +196,13 @@ fn relativize(ctx: &Ctx, base_dir: &str, target: &str) -> String {
     let mut common = 0usize;
     while common < bc.len() && common < tc.len() && bc[common] == tc[common] {
         common += 1;
+    }
+    // Component-boundary below-check: a matching character prefix is not
+    // enough ("/a/bc" does not live below "/a/b"), and --relative-base
+    // leaves targets outside the base absolute.
+    let below = common == bc.len();
+    if below_only && !below {
+        return target.to_string();
     }
     if common == 0 {
         return target.to_string(); // no common prefix: absolute fallback
@@ -257,5 +303,30 @@ mod tests {
         let args = ["--relative-to=a".into(), "a/b/f".into()];
         super::realpath_cmd(&args, &mut io.split(), &ctx).unwrap();
         assert_eq!(io.out().trim_end(), "b/f");
+    }
+}
+
+#[cfg(test)]
+mod trailing_tests {
+    use winux_core::test_support::{MemIo, ScratchCtx};
+
+    #[test]
+    fn trailing_separator_on_existing_file_is_not_a_directory() {
+        let sc = ScratchCtx::new("realpath-ts");
+        let ctx = sc.ctx();
+        std::fs::write(sc.path("file.txt"), "x").unwrap();
+        let direct =
+            crate::canon::canonicalize_operand(&ctx, "file.txt/", crate::canon::CanonMode::AllButLast);
+        eprintln!("DIRECT={:?}", direct);
+        let mut io = MemIo::new("");
+        let args = ["file.txt/".into()];
+        let r = super::realpath_cmd(&args, &mut io.split(), &ctx).unwrap();
+        assert_eq!(r, 1, "out={:?} err={:?}", io.out(), io.err());
+        assert!(io.err().contains("Not a directory"));
+        // missing leaf with trailing separators still resolves
+        let mut io = MemIo::new("");
+        let args = ["missing/".into()];
+        let r = super::realpath_cmd(&args, &mut io.split(), &ctx).unwrap();
+        assert_eq!(r, 0);
     }
 }

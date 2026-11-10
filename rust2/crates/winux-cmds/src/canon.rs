@@ -167,6 +167,71 @@ fn prepare_operand(operand: &str) -> String {
     operand.to_string()
 }
 
+/// ENAMETOOLONG marker for fsutil::reason: a component over NAME_MAX in an
+/// existence-checking mode reports "File name too long" ([GNU] #370).
+fn name_too_long() -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidInput, "name too long")
+}
+
+/// True when any component of the (folded) operand exceeds NAME_MAX (255).
+fn has_overlong_component(effective: &str) -> bool {
+    effective
+        .split(['/', '\\'])
+        .filter(|c| !c.is_empty() && *c != "." && *c != "..")
+        .any(|c| c.chars().count() > 255)
+}
+
+/// The -m lexical walk over the FOLDED operand, native-spelled:
+/// "X:\..." anchors at the drive root, a POSIX-rooted "/x" that no fold
+/// claimed resolves under the cwd (the C++ resolver's current_directory
+/// start), everything joins with '\' — the spelling the 1.x applet's -m
+/// prints (kept native by #1491-adjacent display rules; the tests pin
+/// "E:\...\absent.txt", "X:\", "<cwd>\nodrive").
+fn normalize_lex_native(ctx: &Ctx, effective: &str) -> String {
+    let cwd = ctx.cwd.to_string_lossy().into_owned();
+    let (root, rest): (String, &str) = if effective.len() >= 2
+        && effective.as_bytes()[1] == b':'
+        && is_drive_letter(effective.as_bytes()[0])
+    {
+        // Native drive form: the drive root anchors the walk.
+        let mut r = String::new();
+        r.push(effective.as_bytes()[0] as char);
+        r.push_str(":\\");
+        let skip = if effective.len() > 2
+            && (effective.as_bytes()[2] == b'\\' || effective.as_bytes()[2] == b'/')
+        {
+            3
+        } else {
+            2
+        };
+        (r, &effective[skip.min(effective.len())..])
+    } else if effective.starts_with('/') || effective.starts_with('\\') {
+        // POSIX-rooted spelling no fold claimed: the C++ resolver walks it
+        // from the current directory.
+        (cwd.clone(), &effective[1..])
+    } else {
+        (cwd.clone(), effective)
+    };
+    let mut stack: Vec<&str> = Vec::new();
+    for part in rest.split(['/', '\\']) {
+        match part {
+            "" | "." => {}
+            ".." => {
+                stack.pop();
+            }
+            other => stack.push(other),
+        }
+    }
+    let mut out = root;
+    for part in stack {
+        if !out.ends_with('\\') {
+            out.push('\\');
+        }
+        out.push_str(part);
+    }
+    out
+}
+
 pub fn canonicalize_operand(
     ctx: &Ctx,
     operand: &str,
@@ -178,22 +243,44 @@ pub fn canonicalize_operand(
         return Err(std::io::Error::from(std::io::ErrorKind::NotFound));
     }
     let effective = prepare_operand(operand);
+    // [GNU] A trailing separator makes the final component a directory
+    // requirement: an existing regular file ("file.txt/") fails even in
+    // the permissive mode, while a missing leaf still resolves.
+    let needs_directory = operand.ends_with('/') || operand.ends_with('\\');
     let path = if Path::new(&effective).is_absolute() {
         PathBuf::from(&effective)
     } else {
         ctx.cwd.join(&effective)
     };
     match mode {
-        CanonMode::NoCheck => Ok(crate::fsutil::normalize_lex(ctx, &effective)),
+        CanonMode::NoCheck => Ok(normalize_lex_native(ctx, &effective)),
         CanonMode::AllMustExist => {
+            if has_overlong_component(&effective) {
+                return Err(name_too_long());
+            }
             let p = std::fs::canonicalize(&path)?;
-            Ok(strip_verbatim(p).to_string_lossy().into_owned())
+            let out = strip_verbatim(p).to_string_lossy().into_owned();
+            if needs_directory && !std::path::Path::new(&out).is_dir() {
+                return Err(std::io::Error::from(std::io::ErrorKind::NotFound));
+            }
+            Ok(out)
         }
         CanonMode::AllButLast => {
-            if let Ok(p) = std::fs::canonicalize(&path) {
-                return Ok(strip_verbatim(p).to_string_lossy().into_owned());
+            if has_overlong_component(&effective) {
+                return Err(name_too_long());
             }
-            // last component may be missing: canonicalize the parent
+            if let Ok(p) = std::fs::canonicalize(&path) {
+                let out = strip_verbatim(p).to_string_lossy().into_owned();
+                // [GNU] A trailing separator on an existing non-directory is
+                // ENOTDIR even in the permissive mode.
+                if needs_directory && !std::path::Path::new(&out).is_dir() {
+                    return Err(std::io::Error::from(std::io::ErrorKind::NotADirectory));
+                }
+                return Ok(out);
+            }
+            // Last component may be missing: canonicalize the parent, which
+            // must exist AND be a directory ([GNU] traversing a regular file
+            // reports ENOTDIR even when the remaining component is last).
             let parent = path.parent().unwrap_or(Path::new("."));
             let last = path
                 .file_name()
@@ -205,11 +292,28 @@ pub fn canonicalize_operand(
                 ctx.cwd.join(parent)
             };
             let canon_parent = std::fs::canonicalize(&parent_abs)?;
-            let mut out = strip_verbatim(canon_parent).to_string_lossy().into_owned();
+            let parent_out = strip_verbatim(canon_parent).to_string_lossy().into_owned();
+            if !std::path::Path::new(&parent_out).is_dir() {
+                return Err(std::io::Error::from(std::io::ErrorKind::NotADirectory));
+            }
+            let mut out = parent_out;
             if !out.ends_with('/') && !out.ends_with('\\') && !last.is_empty() {
                 out.push('\\');
             }
             out.push_str(&last);
+            // [GNU] The last-component exemption ignores trailing slashes: a
+            // MISSING leaf followed only by separators still canonicalizes,
+            // but an existing non-directory leaf with a trailing separator
+            // is ENOTDIR (the OS canonicalize failed on the separator, so
+            // the leaf kind is judged explicitly here).
+            if needs_directory && !last.is_empty() {
+                let leaf = std::path::Path::new(&out);
+                if let Ok(m) = std::fs::metadata(leaf) {
+                    if !m.is_dir() {
+                        return Err(std::io::Error::from(std::io::ErrorKind::NotADirectory));
+                    }
+                }
+            }
             Ok(out)
         }
     }
