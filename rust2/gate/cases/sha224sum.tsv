@@ -20,3 +20,33 @@ s224a17-longer-input	strict			The quick brown fox jumps over the lazy dog
 s224a18-stdb-then-t	strict			abc	-b	-t
 s224a19-version	win				--version
 s224a20-empty-file	strict	printf '' > e8			e8
+s224c01-ok	strict	printf abc > f; printf '23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7  f\n' > ck			-c	ck
+s224c02-fail	strict	printf de > g; printf '23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7  g\n' > ck			-c	ck
+s224c03-missing	strict	printf '23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7  nope\n' > ck			-c	ck
+s224c04-quiet-fail	strict	printf de > g; printf '23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7  g\n' > ck			-c	--quiet	ck
+s224c05-quiet-ok	strict	printf abc > f; printf '23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7  f\n' > ck			-c	--quiet	ck
+s224c06-status-fail	strict	printf de > g; printf '23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7  g\n' > ck			-c	--status	ck
+s224c07-status-ok	strict	printf abc > f; printf '23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7  f\n' > ck			-c	--status	ck
+s224c08-empty-checkfile	strict	printf '' > ck			-c	ck
+s224c09-garbage	strict	printf 'garbage\n' > ck			-c	ck
+s224c10-okplusgarbage	strict	printf abc > f; printf '23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7  f\ngarbage\n' > ck			-c	ck
+s224c11-strict	strict	printf abc > f; printf '23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7  f\ngarbage\n' > ck			-c	--strict	ck
+s224c12-warn	strict	printf abc > f; printf '23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7  f\ngarbage\n' > ck			-c	-w	ck
+s224c13-binary-star	strict	printf abc > f; printf '23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7 *f\n' > ck			-c	ck
+s224c14-crlf	strict	printf abc > f; printf '23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7  f\r\n' > ck			-c	ck
+s224c15-uppercase	strict	printf abc > f; printf '23097D223405D8228642A477BDA255B32AADBCE4BDA0B3F7E36C9DA7  f\n' > ck			-c	ck
+s224c16-badlength	strict	printf abc > f; printf '23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9d  f\n' > ck			-c	ck
+s224c17-bsd-reversed	strict	printf abc > f; printf '23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7 f\n' > ck			-c	ck
+s224c18-bsd-then-standard	strict	printf abc > f; printf '23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7 f\n23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7  f\n' > ck			-c	ck
+s224c19-tag-rt	strict	printf abc > f; printf 'SHA224 (f) = 23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7\n' > ck			-c	ck
+s224c20-tag-openssl	strict	printf abc > f; printf 'SHA224(f) = 23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7\n' > ck			-c	ck
+s224c21-comment	strict	printf abc > f; printf '# comment\n\n23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7  f\n' > ck			-c	ck
+s224c22-ignore-missing	strict	printf '23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7  nope\n' > ck			-c	--ignore-missing	ck
+s224c23-ignore-missing-mixed	strict	printf abc > f; printf '23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7  nope\n23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7  f\n' > ck			-c	--ignore-missing	ck
+s224c24-two-files	strict	printf abc > f; printf de > g; printf '23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7  f\n' > ck1; printf '23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7  g\n' > ck2			-c	ck1	ck2
+s224c25-bflag-with-check	strict	printf abc > f			-b	-c	f
+s224c26-quiet-no-check	strict	printf abc > f			--quiet	f
+s224c27-zero-with-check	strict	printf abc > f; printf '23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7  f\n' > ck			-z	-c	ck
+s224c28-tag-with-check	strict	printf abc > f			--tag	-c	f
+s224c29-status-warn-garbage	strict	printf 'garbage\n' > ck			-c	--status	-w	ck
+s224c30-check-stdin	strict	printf abc > f		23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7  f	-c	-

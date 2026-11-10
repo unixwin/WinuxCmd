@@ -22,3 +22,14 @@ b2a19-help	win				--help
 b2a20-len328	strict			abc	-l	328
 b2a21-text	strict			abc	-t
 b2a22-dash-operand	strict			abc	-
+b2c01-ok	strict	printf abc > f; printf 'ba80a53f981c4d0d6a2797b69f12f6e94c212f14685ac4b74b12bb6fdbffa2d17d87c5392aab792dc252d5de4533cc9518d38aa8dbf1925ab92386edd4009923  f\n' > ck			-c	ck
+b2c02-fail	strict	printf de > g; printf 'ba80a53f981c4d0d6a2797b69f12f6e94c212f14685ac4b74b12bb6fdbffa2d17d87c5392aab792dc252d5de4533cc9518d38aa8dbf1925ab92386edd4009923  g\n' > ck			-c	ck
+b2c03-tag128-rt	strict	printf abc > f; printf 'BLAKE2b-128 (f) = cf4ab791c62b8d2b2109c90275287816\n' > ck			-c	ck
+b2c04-tag-plain-short-digest	strict	printf abc > f; printf 'BLAKE2b (f) = cf4ab791c62b8d2b2109c90275287816\n' > ck			-c	ck
+b2c05-auto-len128	strict	printf abc > f; printf 'cf4ab791c62b8d2b2109c90275287816  f\n' > ck			-c	ck
+b2c06-tiny8	strict	printf abc > f; printf '6b f\n' > ck			-c	ck
+b2c07-l512-with-tag128	strict	printf abc > f; printf 'BLAKE2b-128 (f) = cf4ab791c62b8d2b2109c90275287816\n' > ck			-l	512	-c	ck
+b2c08-tag-len-bad	strict	printf abc > f; printf 'BLAKE2b-130 (f) = cf4ab791c62b8d2b2109c90275287816\n' > ck			-c	ck
+b2c09-tag-rt-full	strict	printf abc > f; printf 'BLAKE2b (f) = ba80a53f981c4d0d6a2797b69f12f6e94c212f14685ac4b74b12bb6fdbffa2d17d87c5392aab792dc252d5de4533cc9518d38aa8dbf1925ab92386edd4009923\n' > ck			-c	ck
+b2c10-warn-garbage	strict	printf 'garbage\n' > ck			-c	-w	ck
+b2c11-missing-target	strict	printf 'ba80a53f981c4d0d6a2797b69f12f6e94c212f14685ac4b74b12bb6fdbffa2d17d87c5392aab792dc252d5de4533cc9518d38aa8dbf1925ab92386edd4009923  nope\n' > ck			-c	ck
