@@ -381,18 +381,30 @@ pub fn paste_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             });
         } else {
             let op = crate::fs_win::map_device(op);
-            let path = if std::path::Path::new(op).is_absolute() {
-                std::path::PathBuf::from(op)
-            } else {
-                ctx.cwd.join(op)
-            };
+            // the one operand boundary (drive dialect, carrier colons,
+            // shell tree — the 1.x native_path layer)
+            let path = std::path::PathBuf::from(crate::fs_win::api_path(&ctx.cwd, op));
             match std::fs::File::open(&path) {
                 Ok(f) => sources.push(Slot {
                     src: Rc::new(RefCell::new(Some(Box::new(f)))),
                     closed: false,
                 }),
                 Err(e) => {
-                    let _ = writeln!(io.stderr, "paste: {op}: {}", reason_str(&e));
+                    // [GNU] a directory operand reads EISDIR (probed
+                    // coreutils 9.4: `paste indir` -> "paste: indir: Is a
+                    // directory" rc 1); Windows opens fail with
+                    // ERROR_ACCESS_DENIED before any read, so the
+                    // directory attribute supplies the POSIX shape
+                    let reason = if e.kind() == std::io::ErrorKind::PermissionDenied
+                        && crate::fs_win::file_meta(&ctx.cwd, op, true)
+                            .map(|m| m.is_dir)
+                            .unwrap_or(false)
+                    {
+                        "Is a directory"
+                    } else {
+                        reason_str(&e)
+                    };
+                    let _ = writeln!(io.stderr, "paste: {op}: {reason}");
                     if serial {
                         // serial continues with the remaining files
                         sources.push(Slot {
