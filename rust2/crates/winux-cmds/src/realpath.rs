@@ -114,7 +114,6 @@ pub fn realpath_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let rel_base = p.value_of("relative-base").map(|s| s.to_string());
     let relative_base_mode = rel_base.is_some();
 
-
     // [GNU] An empty --relative-to/--relative-base value is an invalid
     // operand, not the cwd: the command reports it once and exits 1 with
     // no operand output (1.x wording kept: "invalid operand: empty
@@ -206,10 +205,7 @@ fn relativize(ctx: &Ctx, base_dir: &str, target: &str, below_only: bool) -> Stri
     // Windows spellings are case-variants (ctx.cwd may carry a lowercase
     // drive where the canonicalized target is uppercase): the common
     // prefix walks case-insensitively.
-    while common < bc.len()
-        && common < tc.len()
-        && bc[common].eq_ignore_ascii_case(tc[common])
-    {
+    while common < bc.len() && common < tc.len() && bc[common].eq_ignore_ascii_case(tc[common]) {
         common += 1;
     }
     // Component-boundary below-check: a matching character prefix is not

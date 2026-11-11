@@ -111,7 +111,9 @@ fn open_and_flush(ctx: &Ctx, operand: &str) -> std::io::Result<()> {
             ctx.cwd.join(p)
         }
     };
-    let is_dir = std::fs::metadata(&path).map(|m| m.is_dir()).unwrap_or(false);
+    let is_dir = std::fs::metadata(&path)
+        .map(|m| m.is_dir())
+        .unwrap_or(false);
     let mut opts = std::fs::OpenOptions::new();
     if is_dir {
         // The 1.x resolver opened directories with GENERIC_WRITE +

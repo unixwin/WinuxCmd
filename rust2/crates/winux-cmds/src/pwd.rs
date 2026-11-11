@@ -80,8 +80,7 @@ fn is_absolute(p: &str) -> bool {
 /// are accepted verbatim). Split on both separators: on Windows $PWD may
 /// carry either spelling.
 fn has_relative_components(p: &str) -> bool {
-    p.split(['/', '\\'])
-        .any(|c| c == "." || c == "..")
+    p.split(['/', '\\']).any(|c| c == "." || c == "..")
 }
 
 fn same_dir(cwd: &std::path::Path, pwd: &std::ffi::OsStr) -> bool {
@@ -169,14 +168,15 @@ mod tests {
             assert_eq!(r, 0);
             let out = io.out();
             assert!(
-                !out.contains("/./") && !out.contains("/../") && !out.contains("\\.")
+                !out.contains("/./")
+                    && !out.contains("/../")
+                    && !out.contains("\\.")
                     && !out.contains("\\.."),
                 "PWD={pwd} must not be echoed verbatim, got {out}"
             );
             assert!(
-                out.trim_end().ends_with(
-                    base.dir.file_name().unwrap().to_string_lossy().as_ref()
-                ),
+                out.trim_end()
+                    .ends_with(base.dir.file_name().unwrap().to_string_lossy().as_ref()),
                 "PWD={pwd} must fall back to physical, got {out}"
             );
         }

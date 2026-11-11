@@ -208,12 +208,18 @@ mod tests {
             assert_eq!(io.err(), "", "args={args:?}");
         }
         // -v -q stays silent; -s -v reports.
-        let owned: Vec<std::ffi::OsString> = ["-v", "-q", "f"].iter().map(std::ffi::OsString::from).collect();
+        let owned: Vec<std::ffi::OsString> = ["-v", "-q", "f"]
+            .iter()
+            .map(std::ffi::OsString::from)
+            .collect();
         let mut io = MemIo::new("");
         super::readlink_cmd(&owned, &mut io.split(), &ctx).unwrap();
         assert_eq!(io.err(), "");
 
-        let owned: Vec<std::ffi::OsString> = ["-s", "-v", "f"].iter().map(std::ffi::OsString::from).collect();
+        let owned: Vec<std::ffi::OsString> = ["-s", "-v", "f"]
+            .iter()
+            .map(std::ffi::OsString::from)
+            .collect();
         let mut io = MemIo::new("");
         super::readlink_cmd(&owned, &mut io.split(), &ctx).unwrap();
         assert!(io.err().contains("f:"), "verbose after silent must report");
@@ -228,18 +234,34 @@ mod tests {
         let ctx = sc.ctx();
         std::fs::write(sc.path("f"), "x").unwrap();
         // -f mode works without symlinks (all-but-last exist).
-        let owned: Vec<std::ffi::OsString> = ["-n", "-z", "-f", "f"].iter().map(std::ffi::OsString::from).collect();
+        let owned: Vec<std::ffi::OsString> = ["-n", "-z", "-f", "f"]
+            .iter()
+            .map(std::ffi::OsString::from)
+            .collect();
         let mut io = MemIo::new("");
         let r = super::readlink_cmd(&owned, &mut io.split(), &ctx).unwrap();
         assert_eq!(r, 0);
-        assert!(!io.out().ends_with('\0'), "-n must suppress the NUL, got {:?}", io.out());
+        assert!(
+            !io.out().ends_with('\0'),
+            "-n must suppress the NUL, got {:?}",
+            io.out()
+        );
 
-        let owned: Vec<std::ffi::OsString> = ["-n", "-f", "f", "f"].iter().map(std::ffi::OsString::from).collect();
+        let owned: Vec<std::ffi::OsString> = ["-n", "-f", "f", "f"]
+            .iter()
+            .map(std::ffi::OsString::from)
+            .collect();
         let mut io = MemIo::new("");
         let r = super::readlink_cmd(&owned, &mut io.split(), &ctx).unwrap();
         assert_eq!(r, 0);
-        assert_eq!(io.out().matches('\n').count(), 2, "multi-operand -n warns and emits newlines");
-        assert!(io.err().contains("ignoring --no-newline with multiple arguments"));
+        assert_eq!(
+            io.out().matches('\n').count(),
+            2,
+            "multi-operand -n warns and emits newlines"
+        );
+        assert!(io
+            .err()
+            .contains("ignoring --no-newline with multiple arguments"));
     }
 
     #[test]
