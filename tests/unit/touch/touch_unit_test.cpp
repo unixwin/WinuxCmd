@@ -151,7 +151,11 @@ TEST(touch, touch_missing_trailing_separator_is_not_created) {
   auto r = p.run();
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_FALSE(std::filesystem::exists(tmp.path / "missing.txt"));
-  EXPECT_TRUE(r.stderr_text.find("touch: cannot touch 'missing.txt/'") !=
+  // GNU probed (coreutils 9.4): a missing path with a trailing separator
+  // keeps the setting-times form with the ENOENT reason: "touch: setting
+  // times of 'missing.txt/': No such file or directory" rc 1, nothing
+  // created (the 1.x "cannot touch" wording was the divergence).
+  EXPECT_TRUE(r.stderr_text.find("touch: setting times of 'missing.txt/'") !=
               std::string::npos);
 }
 
