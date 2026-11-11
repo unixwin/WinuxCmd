@@ -851,17 +851,19 @@ pub fn join_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             match std::fs::read(resolve(ctx, name)) {
                 Ok(b) => buf = b,
                 Err(_) => {
-                    let reason = if std::fs::metadata(resolve(ctx, name))
+                    if std::fs::metadata(resolve(ctx, name))
                         .map(|m| m.is_dir())
                         .unwrap_or(false)
                     {
                         // [GNU] fopen on a directory succeeds; the failure
-                        // surfaces at read time (join.c:497)
-                        "read error: Is a directory".to_string()
+                        // surfaces at READ time and is reported WITHOUT the
+                        // file name (probed WSL 9.4: "join: read error: Is
+                        // a directory" rc 1 -- the read_error() path, not
+                        // the fopen strerror path that carries quotef()).
+                        let _ = writeln!(io.stderr, "join: read error: Is a directory");
                     } else {
-                        "No such file or directory".to_string()
-                    };
-                    let _ = writeln!(io.stderr, "join: {name}: {reason}");
+                        let _ = writeln!(io.stderr, "join: {name}: No such file or directory");
+                    }
                     return Err(());
                 }
             }
