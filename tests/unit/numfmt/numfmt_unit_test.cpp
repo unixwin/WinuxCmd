@@ -149,8 +149,11 @@ TEST(numfmt, numfmt_debug_reports_conversions) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ(r.stdout_text, "1.5K\n");
-  EXPECT_NE(r.stderr_text.find("numfmt: debug: converted '1500' -> '1.5K'"),
-            std::string::npos);
+  // [GNU] coreutils 9.4 --debug reports padding/field diagnostics only;
+  // a plain --to conversion logs nothing on stderr (probed 2026-11-11).
+  // The 1.x "debug: converted 'X' -> 'Y'" line was a WinuxCmd invention
+  // and is not inherited.
+  EXPECT_TRUE(r.stderr_text.empty());
 }
 
 TEST(numfmt, numfmt_debug_reports_invalid_input) {
@@ -160,9 +163,12 @@ TEST(numfmt, numfmt_debug_reports_invalid_input) {
   auto r = p.run();
 
   EXPECT_NE(r.exit_code, 0);
-  EXPECT_NE(
-      r.stderr_text.find("numfmt: debug: failed to parse input 'notanumber'"),
-      std::string::npos);
+  // [GNU] 9.4 diagnostic pair for a bare invalid number with --debug:
+  // the "no conversion option specified" hint, then the invalid-number
+  // error (probed 2026-11-11). The 1.x "debug: failed to parse input"
+  // line was a WinuxCmd invention and is not inherited.
+  EXPECT_NE(r.stderr_text.find("numfmt: no conversion option specified"),
+            std::string::npos);
   EXPECT_NE(r.stderr_text.find("numfmt: invalid number: 'notanumber'"),
             std::string::npos);
 }
@@ -290,7 +296,13 @@ TEST(numfmt, numfmt_grouping_reformats_only_integer_part) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "1,234,567.891\n");
+  // [GNU] --grouping is locale-defined (numfmt.c uses the C locale's
+  // grouping table): in the default C locale there is no thousands
+  // separator, so the number is echoed unchanged, fractional part
+  // included (coreutils 9.4 probed 2026-11-11). The 1.x unconditional
+  // "1,234,567.891" grouping was a WinuxCmd divergence and is not
+  // inherited.
+  EXPECT_EQ_TEXT(r.stdout_text, "1234567.891\n");
 }
 
 // [#1212] text mode stopped at 0x1A and silently exited 0; the full stream

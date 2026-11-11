@@ -29,13 +29,17 @@ TEST(users, users_extra_operand) {
   EXPECT_CONTAINS(r.stderr_text, "extra operand");
 }
 
-// [#1462] A missing FILE operand is the GNU error, exit 1.
-TEST(users, users_missing_file) {
+
+// [#1488 wiring wave3b] A missing FILE operand is NOT an error: WSL
+// coreutils 9.4 measures `users <missing-file>` as silent empty output,
+// exit 0 (who.c reads utmp; an unreadable/absent utmp is empty). The
+// pre-wiring 1.x exe exited 1 here -- that divergence is not inherited.
+TEST(users, users_missing_file_gnu_silent_zero) {
   Pipeline p;
   p.add(L"users.exe", {L"no_such_utmp_file_xyz"});
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 1);
-  EXPECT_CONTAINS(r.stderr_text, "No such file or directory");
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.empty());
 }

@@ -230,6 +230,18 @@ export struct OptionParsePolicy {
   // digit option anywhere else is diagnosed by fmt.c itself as
   //   invalid option -- N; -WIDTH is recognized only when it is the first
   bool obsolete_numeric_width_hint = false;
+  // [GNU] expand/unexpand own the grammar inside a digit-led short token:
+  // expand.c:48 builds its optstring as "it:0::1::...9::" (digits take
+  // OPTIONAL arguments) and expand.c:204-215 hands `optarg - 1` — the
+  // leading digit plus the whole rest of the token, commas and blanks
+  // included — to parse_tab_stops as one spec; unexpand.c:272 uses the
+  // optstring ",0123456789at:", where digits and comma are plain option
+  // characters accumulated per character in its default case. In both
+  // grammars getopt's cluster rule never diagnoses the interior of such a
+  // token ("invalid option -- ','" cannot happen), so the whole token must
+  // reach the command body, which produces the GNU diagnostics itself
+  // (expand-common.c:208 invalid character; unexpand.c:277 '?' -> usage).
+  bool digit_led_short_tokens_as_positionals = false;
 };
 
 export ParseResultRuntime parse_command_runtime(
@@ -693,6 +705,17 @@ export ParseResultRuntime parse_command_runtime(
             continue;
           }
         }
+      }
+
+      // [GNU] digit-led short tokens are command-owned grammar for the
+      // tab commands (see OptionParsePolicy documentation): the whole
+      // token is a spec operand for the body to judge, so the -NUM rule
+      // and the cluster scanner below must not touch it.
+      if (policy.digit_led_short_tokens_as_positionals && arg.size() > 1 &&
+          arg[0] == '-' && arg[1] != '-' &&
+          std::isdigit(static_cast<unsigned char>(arg[1])) != 0) {
+        push_positional(arg);
+        continue;
       }
 
       if (policy.allow_numeric_short_options && arg.size() > 1 &&

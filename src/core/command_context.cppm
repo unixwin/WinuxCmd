@@ -139,6 +139,17 @@ export auto option_policy_for_command(std::string_view command)
   // [GNU] fmt's obsolete "-WIDTH" width is argv[1]-only; digit options in
   // other positions get fmt.c's own diagnostic.
   policy.obsolete_numeric_width_hint = command == "fmt";
+  if (command == "expand" || command == "unexpand") {
+    // [GNU] coreutils 9.4: expand.c:48 optstring "it:0::1::...9::" gives
+    // every digit an OPTIONAL argument and expand.c:204-215 passes
+    // `optarg - 1` (digit + whole rest of the token) to parse_tab_stops
+    // as one tab-list spec; unexpand.c:272 optstring ",0123456789at:"
+    // accumulates digits and commas per character. The interior of a
+    // digit-led token is therefore command-owned — `expand -4,8` converts
+    // (WSL 9.4 probe) where a generic cluster scan would say
+    // "invalid option -- ','" — so the token passes whole to the body.
+    policy.digit_led_short_tokens_as_positionals = true;
+  }
   // [GNU] coreutils truefalse.c never calls getopt: every operand is
   // ignored ("true -x -q --whatever" exits with the plain status and no
   // diagnostics), and --help/--version are honored only as the sole

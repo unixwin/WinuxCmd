@@ -123,9 +123,11 @@ TEST(expand, expand_missing_input_reports_no_such_file) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stderr_text.find(
-                  "expand: cannot open 'missing.txt' for reading: No such "
-                  "file or directory") != std::string::npos);
+  // [GNU] expand.c reports the open failure through its own error path —
+  // "expand: FILE: reason" (coreutils 9.4 probed 2026-11-11) — not the
+  // 1.x "cannot open 'F' for reading" wording.
+  EXPECT_TRUE(r.stderr_text.find("expand: missing.txt: No such file or "
+                                 "directory") != std::string::npos);
 }
 
 TEST(expand, expand_directory_input_reports_is_a_directory) {
@@ -139,8 +141,8 @@ TEST(expand, expand_directory_input_reports_is_a_directory) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stderr_text.find(
-                  "expand: cannot open 'indir' for reading: Is a directory") !=
+  // [GNU] same "expand: FILE: reason" shape for the directory operand.
+  EXPECT_TRUE(r.stderr_text.find("expand: indir: Is a directory") !=
               std::string::npos);
 }
 

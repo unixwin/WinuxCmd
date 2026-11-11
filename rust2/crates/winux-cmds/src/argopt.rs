@@ -62,6 +62,9 @@ enum LongMatch<'a> {
 /// help/version options (probed GNU coreutils 9.4: `basename --hel` prints
 /// help, `basename --mul f1 f2` enables multiple mode, `readlink --can x`
 /// is rejected with "option '--can' is ambiguous; possibilities: ...").
+/// Ambiguous and unknown prefixes yield the GNU diagnostics getopt_long
+/// produces ("option '--x' is ambiguous; possibilities: ..." /
+/// "unrecognized option '--x'").
 fn match_long<'a>(opts: &'a [OptSpec], name: &str) -> LongMatch<'a> {
     if name == HELP {
         return LongMatch::Help;
@@ -192,6 +195,12 @@ pub fn parse(
                 };
                 out.values.push((record_key, val));
             } else {
+                // getopt_long rejects an inline argument on a flag
+                if inline_val.is_some() {
+                    let msg = format!("option '--{}' doesn't allow an argument", record_key);
+                    let _ = usage_error(io, prog, &msg);
+                    return Err(usage_status);
+                }
                 out.flags.push(record_key);
             }
             i += 1;

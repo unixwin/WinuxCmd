@@ -55,6 +55,14 @@ setup_fixture() {
       rm -rf pa full d1 d2; mkdir -p d1 d2 pa/pb/pc full/inner ;;
     sync)
       rm -f synctarget; printf x > synctarget ;;
+    join)
+      rm -f jf1 jf2 jc1 jh1 jh2 juns
+      printf 'a 1\nb 2\nc 3\n' > jf1
+      printf 'a X\nb Y\nd Z\n' > jf2
+      printf 'a,1\nb,2\n' > jc1
+      printf 'K V\na 1\n' > jh1
+      printf 'K W\na Q\n' > jh2
+      printf 'b 2\na 1\n' > juns ;;
     *) : ;;
   esac
 }
@@ -313,6 +321,136 @@ TABLE
 17|||-d:synctarget
 18|||a:b:c
 19|||-d
+TABLE
+      ;;
+    hostid)
+      # #1488 wiring wave3b: hostid takes no operands (GNU hostid.c reports
+      # "extra operand" rc 1). The printed id is the platform value model
+      # (win): old exe hashed MachineGuid, new exe follows the rust2 model —
+      # the id VALUE differs by design and the ledger records it.
+      cat <<'TABLE'
+01|||
+02|||--help
+03|||--version
+04|||-
+05|||--bogus
+06|||-h
+07|||x
+08|||x:y
+09|||--
+10|||-x
+11|||--help:x
+12|||--version:x
+13|||/dev/null
+14|||.:.
+15|||a:b:c
+TABLE
+      ;;
+    users)
+      # #1488 wiring wave3b: users takes at most one operand (the utmp FILE,
+      # a missing path is the GNU error rc 1, a second operand is "extra
+      # operand" rc 1). The printed list is the platform value model (win);
+      # the 1.x WTS session-state filter is not inherited.
+      cat <<'TABLE'
+01|||
+02|||--help
+03|||--version
+04|||-h
+05|||--bogus
+06|||-z
+07|||missing-file-xyz
+08|||a:b
+09|||a:b:c
+10|||--
+11|||--help:x
+12|||--version:x
+13|||-h:x
+14|||.
+15|||-:-
+TABLE
+      ;;
+    tsort)
+      # #1488 wiring wave3b: tsort reads whitespace-separated token pairs
+      # from stdin or FILE; stdin rows carry one-line inputs (no newlines
+      # in the matrix table). Known 1.x divergence recorded, not inherited:
+      # -w (C++ accepts, GNU 9.4 rejects with usage rc 1; Rust follows GNU).
+      cat <<'TABLE'
+01|||
+02|||a b c d
+03|||a b b a
+04|||a b a b
+05|||a b c
+06|||a a
+07|||m a m z
+08|||a b b c
+09||1 2|-
+10|||--help
+11|||--version
+12|||-w
+13|||--bogus
+14|||missing-file-xyz
+15|||a:b
+16|||-
+17|||--
+TABLE
+      ;;
+    join)
+      # #1488 wiring wave3b: join joins FILE1 FILE2 (or stdin for "-"/one
+      # operand). Fixture (setup_fixture): jf1/jf2 blank-separated sorted,
+      # jc1 comma-separated, jh1/jh2 with headers, juns unsorted. stdin
+      # rows carry one line without trailing newline.
+      cat <<'TABLE'
+01|||jf1:jf2
+02|||-t:,:jc1:jc1
+03|||-1:2:-2:1:jf1:jf2
+04|||-j:1:jf1:jf2
+05|||-o:0 1.2:jf1:jf2
+06|||-o:1.2:2.2:jf1:jf2
+07|||-e:MISSING:-o:1.2:2.2:jf1:jf2
+08|||-a:1:jf1:jf2
+09|||-v:2:jf1:jf2
+10|||-i:jf1:jf2
+11|||--header:jh1:jh2
+12|||-z:jf1:jf2
+13|||jf1
+14||a 1|
+15|||missing-file-xyz:jf1
+16|||--help
+17|||--version
+18|||--bogus
+19|||-z:jf1:jf2:jc1
+20|||--check-order:juns:jf2
+21||a 1|-:jf2
+TABLE
+      ;;
+    timeout)
+      # #1488 wiring wave3b: the exit-code contract (124 timed out,
+      # 125 timeout itself failed, 126 found-not-invocable, 127 not
+      # found, 137 KILL) gates exit-only; the child set is
+      # platform-bound (true/sleep on both sides; GNU wraps coreutils,
+      # the exe wraps its own multicall children). -k/-s/--preserve-
+      # status rows exercise the 124/137 matrix.
+      cat <<'TABLE'
+01|||1:true
+02|||1s:true
+03|||1s:sleep:10
+04|||-k:2:1:sleep:10
+05|||-k:1s:1s:sleep:10
+06|||-s:KILL:1:sleep:10
+07|||-s:TERM:1:sleep:10
+08|||--preserve-status:1:sleep:10
+09|||--preserve-status:1:true
+10|||--foreground:1:true
+11|||-v:1:sleep:10
+12|||--help
+13|||--version
+14|||--bogus
+15|||1
+16|||abc:true
+17|||1m:missing-cmd-xyz
+18|||0.1s:true
+19|||-s:BOGUS:1:true
+20|||--:1:true
 TABLE
       ;;
     *)

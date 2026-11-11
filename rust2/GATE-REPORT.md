@@ -38,8 +38,13 @@ with `bash gate/make-report.sh`.
 | chown | 37 | 22 | 6 | 5 | 4 | GREEN | 22/37 |
 | df | 36 | 15 | 10 | 9 | 2 | GREEN | 13/36 |
 
-**Total cases: 402. GNU-gated (strict+exit): all GREEN; win-only: all GREEN; notes: 6 (chown 4, df 2).**
+**Total cases: 854 — wave1 338, wave3a 240, wave3b 276 (below). GNU-gated (strict+exit): all GREEN; win-only: all GREEN; notes: 3.**
 
+C++ 1.x parity summary: 270/338 cases byte/rc-equal to the Rust pilot;
+68 diverge (path forms, verbose message prefixes, false --help/--version
+handling, rmdir -p trailing slash, chmod --reference behavior, df drive paths).
+These are recorded per case in `target/gate/ledger.tsv` (column `r=c:no`) and
+are inherited 1.x behaviors the 2.0 replacement intentionally re-derives from GNU.
 
 ## Wave2 (#1488, second batch)
 
@@ -223,3 +228,42 @@ df36) gate strict; the stale df12-output-subset/df13-drive-path note
 rows (ids that predate the wave1-deepening table) are gone and the
 remaining df notes df24/df33 are documented in note-registry.tsv. Full
 gate re-run: 932 GNU-gated + 134 win cases, all green.
+
+## Wave3b (#1488, third batch)
+
+8 commands: `join tsort hostid users timeout expand unexpand numfmt`. join/tsort/expand/unexpand/numfmt gate byte-for-byte
+against GNU on stdout+rc (strict); timeout gates exit status only (the
+child set is platform-specific: sleep/ping-vs-sleep.exe/cmd.exe); hostid
+and users carry the Windows value model (win) with GNU-shape rc errors
+gated. Known inherited 1.x divergences are recorded, not fixed: tsort
+-w (C++ accepts, GNU 9.4 rejects), hostid/users -h (C++ rejects, GNU
+and Rust accept), numfmt --unit-separator/-M/-l and ZYRQ unit suffixes
+(C++ accepts, GNU 9.4 rejects, Rust follows GNU).
+
+| command | cases | strict | exit | win | note | GNU-gated result | C++ parity (rc+stdout) |
+|---|---|---|---|---|---|---|---|
+| join | 51 | 36 | 15 | 0 | 0 | GREEN | 51/51 |
+| tsort | 25 | 17 | 6 | 2 | 0 | GREEN | 23/25 |
+| hostid | 20 | 0 | 12 | 7 | 1 | GREEN | 12/20 |
+| users | 20 | 0 | 15 | 4 | 1 | GREEN | 8/20 |
+| timeout | 30 | 0 | 30 | 0 | 0 | GREEN | 28/30 |
+| expand | 30 | 19 | 11 | 0 | 0 | GREEN | 28/30 |
+| unexpand | 26 | 21 | 5 | 0 | 0 | GREEN | 24/26 |
+| numfmt | 74 | 49 | 25 | 0 | 0 | GREEN | 66/74 |
+
+**Wave3b total cases: 276; GNU-gated + win-gated: all GREEN; C++ parity: 240/276.**
+
+Wiring follow-up (wave3b, 2026-11-11): expand/unexpand/numfmt/join/tsort/
+hostid/users/timeout handlers are now one `winux::rust2::run_command` call
+each. The wiring gates re-ran the tables with the wired product exe as the
+rust side: 130/130 GNU-gated GREEN for expand+unexpand+numfmt. Two rows
+ flipped from C++-parity to explained `r=c:no` (`expand/ex10`,
+`unexpand/ue16`): the 1.x dispatcher's option pre-parser rejected the
+GNU obsolescent comma lists `-4,8` / `-4,8,12` with "invalid option --
+','" before the handler ran; the wired product now follows GNU —
+expand.c:48 optstring `it:0::1::...9::` (digits take optional arguments,
+expand.c:204 `parse_tab_stops(optarg - 1)` consumes digit + whole rest of
+the token) and unexpand.c:272 optstring `,0123456789at:` (digits and comma
+are plain per-character option chars). The generic cluster rule is
+disabled for these two commands via
+`OptionParsePolicy::digit_led_short_tokens_as_positionals`.
