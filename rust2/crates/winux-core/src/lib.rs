@@ -160,6 +160,25 @@ impl EnvSource for MapEnv {
     }
 }
 
+/// Win32-block lookup for the process-resolution tier: PATH, PATHEXT,
+/// COMSPEC and friends as the loader/search layer sees them. The ABI
+/// snapshot mirrors a Win32 environment block (GetEnvironmentStringsW),
+/// where the canonical writer casing is the parent's — "Path" from a
+/// PowerShell/cmd parent, "PATH" from an MSYS one — and
+/// GetEnvironmentVariableW matches case-insensitively, first occurrence
+/// wins. An exact-name match there misses the block's only entry and
+/// spawns the System32-default invention of the #1567 wiring regression.
+/// This is deliberately NOT `EnvSource::get`: environ-semantics commands
+/// (printenv `gfoo` vs `GFoo`, gate row pe10-lowercase) must keep GNU's
+/// exact POSIX match, so the case-insensitive tier is an explicit,
+/// resolution-only escape hatch.
+pub fn win32_env_get(env: &dyn EnvSource, key: &str) -> Option<OsString> {
+    env.entries()
+        .into_iter()
+        .find(|(k, _)| k.to_string_lossy().eq_ignore_ascii_case(key))
+        .map(|(_, v)| v)
+}
+
 /// Process-environment adapter used by the thin CLI driver (the only place
 /// process state is allowed to be read; library functions never touch it).
 pub struct ProcessEnv;
@@ -266,5 +285,33 @@ pub mod test_support {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.dir);
         }
+    }
+
+    #[test]
+    fn win32_env_get_is_case_insensitive_first_match() {
+        // The resolution tier mirrors GetEnvironmentVariableW over the
+        // snapshot block: case-insensitive, first occurrence wins (#1567
+        // wiring regression: a "Path"-keyed block from a PowerShell parent
+        // made the rust2 timeout invent the System32 default for PATH).
+        let mut env = MapEnv::new();
+        env.set("Path", r"C:\one");
+        assert_eq!(
+            win32_env_get(&env, "PATH").map(|v| v.to_string_lossy().into_owned()),
+            Some(r"C:\one".to_string())
+        );
+        // first occurrence in block order wins over later variants
+        env.set("PATH", r"C:\two");
+        assert_eq!(
+            win32_env_get(&env, "PaTh").map(|v| v.to_string_lossy().into_owned()),
+            Some(r"C:\one".to_string())
+        );
+        assert_eq!(win32_env_get(&env, "PATHEXT"), None);
+        // MapEnv::get stays exact for the environ-semantics commands
+        // (printenv `gfoo` vs `GFoo`, gate row pe10-lowercase)
+        assert_eq!(env.get("path"), None);
+        assert_eq!(
+            env.get("PATH").map(|v| v.to_string_lossy().into_owned()),
+            Some(r"C:\two".to_string())
+        );
     }
 }
