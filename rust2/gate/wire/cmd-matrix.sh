@@ -642,6 +642,36 @@ TABLE
 25|||-az
 TABLE
       ;;
+    getconf)
+      cat <<'TABLE'
+01|||PATH_MAX
+02|||ARG_MAX
+03|||NAME_MAX
+04|||_POSIX_PATH_MAX
+05|||pagesize
+06|||PAGESIZE
+07|||NPROCESSORS_ONLN
+08|||_NPROCESSORS_CONF
+09|||PHYS_PAGES
+10|||avphys_pages
+11|||NOSUCHVAR
+12|||-a
+13|||--all
+14|||-v:POSIX-V6-ilp32-off32:PATH_MAX
+15|||--help
+16|||--version
+17|||--help:x
+18|||-h
+19|||--bogus
+20|||
+21|||PATH_MAX:.
+22|||NAME_MAX:nosuchdir
+23|||ARG_MAX:.
+24|||PATH_MAX:.:extra
+25|||path_max:.
+26|||--
+TABLE
+      ;;
     *)
       echo "cmd-matrix.sh: no case table for $CMD" >&2
       exit 2
