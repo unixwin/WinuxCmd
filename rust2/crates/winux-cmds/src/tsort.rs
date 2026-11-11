@@ -21,18 +21,29 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::OsString;
 use std::io::{Read, Write};
 
+use crate::argopt;
 use crate::fsutil::resolve;
 use winux_core::{CmdResult, Ctx, Io};
 
 pub fn tsort_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
+    // GNU tsort main() parses argv with getopt_long against an EMPTY option
+    // table plus the virtual help/version entries (probed WSL coreutils
+    // 9.4): `--` ends option processing and is never an operand (`tsort --
+    // ` reads stdin rc 0; `tsort -- --` opens the file `--`), operands
+    // permute after options (`tsort a --help` prints usage rc 0), an
+    // unregistered short option gets `invalid option -- 'w'` + try-help
+    // rc 1 (the 1.x C++ exe silently accepted -w; that divergence is not
+    // inherited). usage_status is 1 (tsort.c: usage(EXIT_TSOPT_FAILURE)).
+    let p = match argopt::parse("tsort", args, &[], io, ctx, 1) {
+        Ok(p) => p,
+        Err(s) => return Ok(s),
+    };
     // --help/--version: the branded text is the product dispatcher's job;
     // the library answers with GNU's success status.
-    if args.iter().any(|a| {
-        let t = a.to_string_lossy();
-        t == "--help" || t == "--version"
-    }) {
+    if p.has("help") || p.has("version") {
         return Ok(0);
     }
+    let args = &p.positionals;
     // Operands: at most one (the "-" operand names standard input, exactly
     // like omitting the operand).
     if args.len() > 1 {
