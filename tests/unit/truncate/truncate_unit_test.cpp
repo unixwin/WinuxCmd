@@ -84,8 +84,12 @@ TEST(truncate, truncate_missing_trailing_separator_is_not_created) {
 
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_FALSE(std::filesystem::exists(tmp.path / "missing.txt"));
-  EXPECT_TRUE(r.stderr_text.find("truncate: cannot resize 'missing.txt/'") !=
-              std::string::npos);
+  // [GNU] truncate.c opens with O_CREAT, so a missing `name/` is EISDIR:
+  // "cannot open 'missing.txt/' for writing: Is a directory" (probed WSL
+  // 9.4 + MSYS). The 1.x body's "cannot resize" wording was a 1.x gap.
+  EXPECT_TRUE(r.stderr_text.find(
+                  "truncate: cannot open 'missing.txt/' for writing: "
+                  "Is a directory") != std::string::npos);
 }
 
 TEST(truncate, truncate_file_with_trailing_separator_reports_not_directory) {
@@ -100,8 +104,12 @@ TEST(truncate, truncate_file_with_trailing_separator_reports_not_directory) {
 
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_EQ(tmp.read("file.txt"), "abcdef");
-  EXPECT_TRUE(r.stderr_text.find("truncate: cannot resize 'file.txt/': Not a "
-                                 "directory") != std::string::npos);
+  // [GNU] an existing file followed by a trailing slash is ENOTDIR
+  // (probed WSL 9.4 + MSYS): "cannot open 'file.txt/' for writing: Not
+  // a directory".
+  EXPECT_TRUE(r.stderr_text.find("truncate: cannot open 'file.txt/' for "
+                                 "writing: Not a directory") !=
+              std::string::npos);
 }
 
 TEST(truncate, truncate_relative_extend) {
@@ -205,7 +213,7 @@ TEST(truncate, truncate_reference_operand_is_literal_not_globbed) {
   EXPECT_EQ(std::filesystem::file_size(tmp.path / "test.txt"), 3);
 }
 
-TEST(truncate, truncate_file_operand_glob_expands) {
+TEST(truncate, truncate_file_operand_glob_is_literal) {
   TempDir tmp;
   tmp.write("a.txt", "abc");
   tmp.write("b.txt", "defg");
@@ -217,10 +225,20 @@ TEST(truncate, truncate_file_operand_glob_expands) {
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ(std::filesystem::file_size(tmp.path / "a.txt"), 1);
-  EXPECT_EQ(std::filesystem::file_size(tmp.path / "b.txt"), 1);
+  // [GNU] Operands are literal (the shell globs; truncate.c:94 treats the
+  // FILE operand literally, unlink.c precedent): GNU would create a file
+  // literally named `*.txt`. On Windows `*` is an invalid file-name
+  // character, so the O_CREAT open fails and truncate reports it — the
+  // platform-inherent shape of GNU's literal-operand rule; no existing
+  // file is touched.
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "*.txt"));
+  EXPECT_EQ(std::filesystem::file_size(tmp.path / "a.txt"), 3);
+  EXPECT_EQ(std::filesystem::file_size(tmp.path / "b.txt"), 4);
   EXPECT_EQ(std::filesystem::file_size(tmp.path / "c.log"), 5);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "truncate: cannot open '*.txt' for writing") !=
+              std::string::npos);
 }
 
 // [#1360] A -s value with leading whitespace is valid: the number
