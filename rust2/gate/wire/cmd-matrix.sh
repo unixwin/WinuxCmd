@@ -613,6 +613,35 @@ TABLE
 24|||-snrvm
 TABLE
       ;;
+    id)
+      cat <<'TABLE'
+01|||
+02|||-u
+03|||-g
+04|||-G
+05|||-n
+06|||-un
+07|||-gn
+08|||-Gn
+09|||-ur
+10|||-a
+11|||-Z
+12|||-z
+13|||--zero
+14|||--help
+15|||--version
+16|||--help:x
+17|||-h
+18|||--bogus
+19|||--:extra
+20|||cmx
+21|||nosuchuser
+22|||-u:nosuchuser
+23|||-ug
+24|||-nr
+25|||-az
+TABLE
+      ;;
     *)
       echo "cmd-matrix.sh: no case table for $CMD" >&2
       exit 2
