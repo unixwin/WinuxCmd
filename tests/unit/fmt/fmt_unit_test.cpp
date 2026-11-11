@@ -120,79 +120,69 @@ TEST(fmt, fmt_prefix_attachment_change_starts_new_paragraph) {
                  "> epsilon\n");
 }
 
-TEST(fmt, fmt_exact_prefix_does_not_match_after_indentation) {
-  // [EXT] -x: with exact prefix matching the indented "  > ..." line does
-  // not match and passes through verbatim; "> delta epsilon" matches at
-  // column 0 and is reformatted like any other prefixed paragraph (GNU
-  // reformats lone matching lines too).
+// GNU fmt has no -x exact-prefix option (probed coreutils 9.4,
+// 2026-11-11: "fmt: invalid option -- 'x'" + Try line, rc 1); the 1.x
+// extension is not inherited by the 2.0 replacement. GNU's -p itself is
+// pinned by the other prefix rows.
+TEST(fmt, fmt_rejects_exact_prefix_x_like_gnu) {
   auto r = run_command(fmt_exe(), {L"-p", L">", L"-x", L"-w", L"12"},
                        "  > alpha beta gamma\n> delta epsilon\n");
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text,
-                 "  > alpha beta gamma\n"
-                 "> delta\n"
-                 "> epsilon\n");
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("fmt: invalid option -- 'x'") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("Try 'fmt --help'") != std::string::npos);
 }
 
-TEST(fmt, fmt_skip_prefix_leaves_matching_lines_verbatim) {
-  auto r = run_command(fmt_exe(), {L"-P", L"SKIP", L"-w", L"12"},
-                       "alpha beta gamma\nSKIP left intact words\n"
-                       "delta epsilon zeta\n");
+// GNU fmt has no P option (probed coreutils 9.4, 2026-11-11: {
+//   "P"} -> "fmt: invalid option -- 'P'" + Try line, rc 1); the 1.x
+// skip_prefix_P extension is not inherited by the 2.0 replacement.
+TEST(fmt, fmt_rejects_skip_prefix_P_like_gnu) {
+  Pipeline p;
+  p.set_stdin("alpha beta gamma\n");
+  p.add(fmt_exe(), {L"-P", L"-w", L"12"});
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text,
-                 "alpha beta\n"
-                 "gamma\n"
-                 "SKIP left intact words\n"
-                 "delta epsilon\n"
-                 "zeta\n");
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("fmt: invalid option -- 'P'") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("Try 'fmt --help'") != std::string::npos);
 }
 
-TEST(fmt, fmt_exact_skip_prefix_keeps_indented_line_formatting) {
-  auto r = run_command(fmt_exe(), {L"-P", L"SKIP", L"-X", L"-w", L"12"},
-                       "  SKIP left intact words\nSKIP exact line words\n"
-                       "alpha beta gamma\n");
+// GNU fmt has no X option (probed coreutils 9.4, 2026-11-11: {
+//   "X"} -> "fmt: invalid option -- 'X'" + Try line, rc 1); the 1.x
+// skip_prefix_X extension is not inherited by the 2.0 replacement.
+TEST(fmt, fmt_rejects_skip_prefix_X_like_gnu) {
+  Pipeline p;
+  p.set_stdin("alpha beta gamma\n");
+  p.add(fmt_exe(), {L"-X", L"-w", L"12"});
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text,
-                 "  SKIP left\n"
-                 "  intact words\n"
-                 "SKIP exact line words\n"
-                 "alpha beta\n"
-                 "gamma\n");
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("fmt: invalid option -- 'X'") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("Try 'fmt --help'") != std::string::npos);
 }
 
-TEST(fmt, fmt_preserve_headers_detects_and_reflows_header_lines) {
-  auto r = run_command(
-      fmt_exe(), {L"-m", L"-w", L"20"},
-      "Subject: alpha beta gamma delta\nBody words here keep wrapping maybe\n");
-
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text,
-                 "Subject: alpha beta\n"
-                 "  gamma delta\n"
-                 "Body words here\n"
-                 "keep wrapping maybe\n");
-}
-
-TEST(fmt, fmt_preserve_headers_merges_continuation_lines) {
+// GNU fmt has no m option (probed coreutils 9.4, 2026-11-11: {
+//   "m"} -> "fmt: invalid option -- 'm'" + Try line, rc 1); the 1.x
+// mail_mode_m extension is not inherited by the 2.0 replacement.
+// GNU fmt has no -m mail-header mode (probed coreutils 9.4, 2026-11-11:
+// "fmt: invalid option -- 'm'" + Try line, rc 1); the 1.x extension is
+// not inherited by the 2.0 replacement.
+TEST(fmt, fmt_rejects_mail_mode_m_like_gnu) {
   auto r = run_command(fmt_exe(), {L"-m", L"-w", L"20"},
                        "From: alpha beta gamma delta\n"
                        "Subject: one two three four five six\n"
                        "\tcontinued words here again\n"
                        "Body words here keep wrapping maybe\n");
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text,
-                 "From: alpha beta gamma\n"
-                 "  delta\n"
-                 "Subject: one two\n"
-                 "  three four five\n"
-                 "  six continued\n"
-                 "  words here again\n"
-                 "Body words here\n"
-                 "keep wrapping maybe\n");
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("fmt: invalid option -- 'm'") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("Try 'fmt --help'") != std::string::npos);
 }
 
 TEST(fmt, fmt_uniform_spacing_normalizes_to_input_sentence_marks) {
@@ -233,15 +223,20 @@ TEST(fmt, fmt_default_tab_width_counts_indent_as_eight_columns) {
   EXPECT_EQ_TEXT(r.stdout_text, "\talpha\n\tbeta\n\tgamma\n\tdelta\n");
 }
 
-TEST(fmt, fmt_tab_width_option_changes_indent_measurement_but_preserves_tabs) {
+// GNU fmt has NO -T option (probed coreutils 9.4, 2026-11-11: `fmt -w 16
+// -T 4` -> "fmt: invalid option -- 'T'" + Try line, rc 1). The 1.x -T tab
+// width extension is not inherited by the 2.0 replacement.
+TEST(fmt, fmt_rejects_T_option_like_gnu) {
   Pipeline p;
   p.set_stdin("\talpha beta gamma delta\n");
   p.add(fmt_exe(), {L"-w", L"16", L"-T", L"4"});
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "\talpha beta\n\tgamma delta\n");
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("fmt: invalid option -- 'T'") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("Try 'fmt --help'") != std::string::npos);
 }
 
 TEST(fmt, fmt_crown_margin_uses_second_line_indent) {
@@ -296,9 +291,12 @@ TEST(fmt, fmt_directory_input_reports_is_a_directory) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stderr_text.find(
-                  "fmt: cannot open 'indir' for reading: Is a directory") !=
-              std::string::npos);
+  // GNU probed (coreutils 9.4, 2026-11-11): a directory operand opens on
+  // POSIX and the READ fails, so fmt reports the bare "fmt: read error"
+  // line, rc 1, no operand name and no errno text. Windows fails the OPEN
+  // (ERROR_ACCESS_DENIED) and the rust2 side maps the directory attribute
+  // to the same GNU shape.
+  EXPECT_TRUE(r.stderr_text.find("fmt: read error") != std::string::npos);
 }
 
 // [#1212] fd 0 is text mode by default, so a pipe stopped at the first 0x1A
