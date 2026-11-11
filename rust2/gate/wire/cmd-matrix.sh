@@ -70,6 +70,14 @@ setup_fixture() {
     touch)
       rm -rf tref ta tb; printf seed > tref; printf seed > ta; printf seed > tb
       touch -d '2026-01-02 03:04:05' tref ta tb ;;
+    ln)
+      # sl1..sl4 are the -s destinations and ln1/lfresh/lv1 the hard-link
+      # destinations; without them in the rm list both sides leak them
+      # across runs (the WSL side and the wired exe CAN create symlinks on
+      # DrvFs here), and the later rows report "File exists"/the -i prompt
+      # instead of the canonical clean-state result.
+      rm -rf aln bln dln sln fresh blbak sl1 sl2 sl3 sl4 ln1 lfresh lv1
+      printf A1 > aln; printf xx > bln; mkdir -p dln ;;
     *) : ;;
   esac
 }
@@ -491,6 +499,35 @@ TABLE
 24|||--help:x
 25|||--bogus
 26|||
+TABLE
+      ;;
+    ln)
+      cat <<'TABLE'
+01|||aln:ln1
+02|||aln:bln
+03|||-f:aln:bln
+04||n|-i:aln:bln
+05||y|-i:aln:bln
+06|||-i:aln:lfresh
+07|||-s:aln:sl1
+08|||-s:lmissing:sl2
+09|||-s:-f:aln:sl1
+10|||-v:aln:lv1
+11|||-t:dln:aln
+12|||-T:aln:bln
+13|||-b:aln:bln
+14|||-b:-S:~b:aln:bln
+15|||--backup:aln:bln
+16|||aln:bln:dln
+17|||-s:dln:sldd
+18|||-v:-s:aln:sl3
+19|||--help
+20|||--version
+21|||--bogus
+22|||
+23|||aln
+24|||--:bln
+25|||-s:-i:aln:sl4
 TABLE
       ;;
     *)
