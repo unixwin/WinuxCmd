@@ -11,34 +11,35 @@ normalizing brand/path/line-ending/whitespace — demote-to-note
 candidates for the command lane), **structural** (normalized bodies
 still differ — human review), **probe-fail** (harness error).
 
-Driver provenance: `drivers: rust(main)=D:/repo/wc-20inv/rust2/target/debug/winuxcmd-driver.exe; rust(wave2)=D:/repo/wc-wave2/rust2/target/debug/winuxcmd-driver.exe; cpp=D:/repo/wc-wave2/build-vs/usr/bin/winuxcmd.exe; bash(setup)=C:\Users\cmx\AppData\Local\Programs\Niubash\winuxcmd\usr\bin\bash.EXE; gnu=WSL /usr/bin coreutils`
+Driver provenance: `drivers: rust(main)=D:/repo/wc-helpfix/rust2/target/debug/winuxcmd-driver.exe; rust(wave2)=D:/repo/wc-helpfix/rust2/target/debug/winuxcmd-driver.exe; cpp=D:/repo/wc-helpfix/build-vs/usr/bin/winuxcmd.exe; bash(setup)=C:\Users\cmx\AppData\Local\Programs\Niubash\winuxcmd\usr\bin\bash.EXE; gnu=WSL /usr/bin coreutils`
 
 ## Per-command summary
 
 | command | win cases | aligned | wording | structural | probe-fail |
 |---|---|---|---|---|---|
-| b2sum | 1 | 0 | 0 | 1 | 0 |
-| base32 | 2 | 0 | 0 | 2 | 0 |
-| base64 | 2 | 0 | 0 | 2 | 0 |
 | bracket | 1 | 1 | 0 | 0 | 0 |
-| chown | 4 | 4 | 0 | 0 | 0 |
-| df | 8 | 0 | 5 | 3 | 0 |
+| chown | 5 | 5 | 0 | 0 | 0 |
+| df | 9 | 1 | 0 | 8 | 0 |
 | false | 1 | 0 | 0 | 1 | 0 |
-| getconf | 17 | 14 | 0 | 3 | 0 |
-| hostname | 17 | 15 | 0 | 2 | 0 |
-| id | 14 | 12 | 0 | 2 | 0 |
-| nproc | 12 | 10 | 0 | 2 | 0 |
-| printenv | 2 | 0 | 0 | 2 | 0 |
+| fmt | 1 | 0 | 0 | 1 | 0 |
+| getconf | 16 | 14 | 0 | 2 | 0 |
+| hostname | 15 | 15 | 0 | 0 | 0 |
+| id | 12 | 12 | 0 | 0 | 0 |
+| ln | 2 | 1 | 0 | 1 | 0 |
+| nproc | 10 | 10 | 0 | 0 | 0 |
+| paste | 1 | 1 | 0 | 0 | 0 |
+| printenv | 3 | 1 | 0 | 2 | 0 |
 | pwd | 10 | 0 | 0 | 10 | 0 |
 | realpath | 1 | 0 | 0 | 1 | 0 |
-| sha224sum | 2 | 0 | 0 | 2 | 0 |
-| sha384sum | 2 | 0 | 0 | 2 | 0 |
-| tac | 1 | 0 | 0 | 1 | 0 |
+| stat | 11 | 4 | 0 | 7 | 0 |
+| sync | 2 | 0 | 0 | 2 | 0 |
+| tee | 2 | 0 | 0 | 2 | 0 |
 | test | 2 | 2 | 0 | 0 | 0 |
+| touch | 1 | 0 | 0 | 1 | 0 |
 | true | 1 | 0 | 0 | 1 | 0 |
-| uname | 18 | 16 | 0 | 2 | 0 |
-| whoami | 14 | 12 | 0 | 2 | 0 |
-| **total** | **132** | **86** | **5** | **41** | **0** |
+| uname | 16 | 16 | 0 | 0 | 0 |
+| whoami | 12 | 12 | 0 | 0 | 0 |
+| **total** | **134** | **95** | **0** | **39** | **0** |
 
 ## Wording-only differences (structure equal, text differs)
 
@@ -46,115 +47,114 @@ Same shape after normalization — likely pure wording. Each is a
 candidate for a `note` demotion or an explicit normalization rule;
 decisions belong to the command lane.
 
-- **df/df04-listing** — equal after normalization (brand/path/case/space)
-  - rust: `Filesystem    1K-blocks       Used  Available Use% Mounted on\nC:\    ...`
-  - cpp:  `Filesystem  1K-blocks       Used  Available Use% Mounted on\nC:\      ...`
-- **df/df06-posix** — equal after normalization (brand/path/case/space)
-  - rust: `Filesystem   1024-blocks       Used  Available Capacity Mounted on\nC:...`
-  - cpp:  `Filesystem 1024-blocks       Used  Available Capacity Mounted on\nC:\ ...`
-- **df/df07-c-drive** — equal after normalization (brand/path/case/space)
-  - rust: `Filesystem    1K-blocks       Used  Available Use% Mounted on\nC:\    ...`
-  - cpp:  `Filesystem 1K-blocks      Used Available Use% Mounted on\nC:\        2...`
-- **df/df11-all-flag** — equal after normalization (brand/path/case/space)
-  - rust: `Filesystem    1K-blocks       Used  Available Use% Mounted on\nC:\    ...`
-  - cpp:  `Filesystem  1K-blocks       Used  Available Use% Mounted on\nC:\      ...`
-- **df/df15-block-size-k** — equal after normalization (brand/path/case/space)
-  - rust: `Filesystem    1K-blocks       Used  Available Use% Mounted on\nC:\    ...`
-  - cpp:  `Filesystem 1K-blocks      Used Available Use% Mounted on\nC:\        2...`
+- none this sweep
 
 ## Structural differences (needs human review)
 
-- **b2sum/b2a19-help** — 1 vs 30 normalized lines
+- **df/df04-listing** — 8 vs 8 normalized lines
   - `--- cpp`
   - `+++ rust`
-  - `@@ -1,30 +0,0 @@`
-  - `-Usage: b2sum [OPTION]... [FILE]...`
-  - `-`
-  - `-Print or check BLAKE2 (512-bit) checksums.`
-  - `-`
-  - `-With no FILE, or when FILE is -, read standard input.`
-  - `-`
-  - `-Uses 's portable BLAKE2b implementation, matching GNU b2sum's default 512-bit digest and --length truncation behavior.`
-  - `-`
-  - `-OPTIONS:`
-  - `- -l, --length ARG digest length in bits; must be multiple of 8`
-  - `- -b, --binary read in binary mode (default)`
-- **base32/b32a23-help** — 1 vs 22 normalized lines
-  - `--- cpp`
-  - `+++ rust`
-  - `@@ -1,22 +0,0 @@`
-  - `-Usage: base32 [OPTION]... [FILE]`
-  - `-`
-  - `-Base32 encode or decode FILE, or standard input, to standard output.`
-  - `-With no FILE, or when FILE is -, read standard input.`
-  - `-The input may contain newlines when decoding. Use --ignore-garbage to`
-  - `-attempt to recover from any other non-alphabet bytes.`
-  - `-`
-  - `-OPTIONS:`
-  - `- -d, --decode decode data`
-  - `- -i, --ignore-garbage when decoding, ignore non-alphabet characters`
-  - `- -w, --wrap ARG wrap encoded lines after COLS character (default 76).`
-- **base32/b32a24-version** — 1 vs 1 normalized lines
-  - `--- cpp`
-  - `+++ rust`
-  - `@@ -1 +0,0 @@`
-  - `-1.2.1`
-- **base64/b64a28-help** — 1 vs 26 normalized lines
-  - `--- cpp`
-  - `+++ rust`
-  - `@@ -1,26 +0,0 @@`
-  - `-Usage: base64 [OPTION]... [FILE]`
-  - `-`
-  - `-Encode or decode FILE, or standard input, to standard output.`
-  - `-With no FILE, or when FILE is -, read standard input.`
-  - `-`
-  - `-The data are encoded as described for the base64 alphabet in RFC`
-  - `-4648. When decoding, the input may contain newlines in addition`
-  - `-to the bytes of the formal base64 alphabet. Use --ignore-garbage`
-  - `-to attempt to recover from any other non-alphabet bytes in the`
-  - `-encoded stream.`
-  - `-`
-- **base64/b64a29-version** — 1 vs 1 normalized lines
-  - `--- cpp`
-  - `+++ rust`
-  - `@@ -1 +0,0 @@`
-  - `-1.2.1`
+  - `@@ -2,7 +2,7 @@`
+  - `-c:/ 230611856 188950480 41661376 82% c:/`
+  - `-d:/ 745443324 592194168 153249156 80% d:/`
+  - `-e:/ 3906885628 2198727868 1708157760 57% e:/`
+  - `-f:/ 239650684 98664084 140986600 42% f:/`
+  - `-j:/ 242040720 204028408 38012312 85% j:/`
+  - `-k:/ 734015484 482561468 251454016 66% k:/`
+  - `-l:/ 2930248700 654904052 2275344648 23% l:/`
+  - `+C: 230611856 188950480 41661376 82% C:`
+  - `+D: 745443324 592194168 153249156 80% D:`
+  - `+E: 3906885628 2198727868 1708157760 57% E:`
+  - `+F: 239650684 98664084 140986600 42% F:`
 - **df/df05-human** — 8 vs 8 normalized lines
   - `--- cpp`
   - `+++ rust`
   - `@@ -2,7 +2,7 @@`
-  - `-c:/ 220G 179G 42G 82% c:/`
-  - `-d:/ 711G 557G 155G 79% d:/`
+  - `-c:/ 220G 181G 40G 82% c:/`
+  - `-d:/ 711G 565G 147G 80% d:/`
   - `-e:/ 3.7T 2.1T 1.6T 57% e:/`
   - `-f:/ 229G 95G 135G 42% f:/`
   - `-j:/ 231G 195G 37G 85% j:/`
   - `-k:/ 701G 461G 240G 66% k:/`
-  - `-l:/ 2.8T 621G 2.2T 23% l:/`
-  - `+c:/ 219.9G 178.3G 41.6G 82% c:/`
-  - `+d:/ 710.9G 556.2G 154.7G 79% d:/`
-  - `+e:/ 3.6T 2.0T 1.6T 57% e:/`
-  - `+f:/ 228.5G 94.1G 134.5G 42% f:/`
-- **df/df09-h-drive** — 2 vs 2 normalized lines
+  - `-l:/ 2.8T 625G 2.2T 23% l:/`
+  - `+C: 220G 180G 40G 82% C:`
+  - `+D: 711G 565G 146G 80% D:`
+  - `+E: 3.6T 2.0T 1.6T 57% E:`
+  - `+F: 229G 94G 134G 42% F:`
+- **df/df06-posix** — 8 vs 8 normalized lines
   - `--- cpp`
   - `+++ rust`
-  - `@@ -2 +2 @@`
-  - `-c:/ 220G 179G 42G 82% c:/`
-  - `+c:/ 219.9G 178.3G 41.6G 82% c:/`
+  - `@@ -2,7 +2,7 @@`
+  - `-c:/ 230611856 188950480 41661376 82% c:/`
+  - `-d:/ 745443324 592194168 153249156 80% d:/`
+  - `-e:/ 3906885628 2198727868 1708157760 57% e:/`
+  - `-f:/ 239650684 98664084 140986600 42% f:/`
+  - `-j:/ 242040720 204028408 38012312 85% j:/`
+  - `-k:/ 734015484 482561468 251454016 66% k:/`
+  - `-l:/ 2930248700 654904052 2275344648 23% l:/`
+  - `+C: 230611856 188950480 41661376 82% C:`
+  - `+D: 745443324 592194168 153249156 80% D:`
+  - `+E: 3906885628 2198727868 1708157760 57% E:`
+  - `+F: 239650684 98664084 140986600 42% F:`
 - **df/df10-si** — 8 vs 8 normalized lines
   - `--- cpp`
   - `+++ rust`
   - `@@ -2,7 +2,7 @@`
-  - `-c:/ 237G 192G 45G 82% c:/`
-  - `-d:/ 764G 598G 167G 79% d:/`
+  - `-c:/ 237G 194G 43G 82% c:/`
+  - `-d:/ 764G 607G 157G 80% d:/`
   - `-e:/ 4.1T 2.3T 1.8T 57% e:/`
   - `-f:/ 246G 102G 145G 42% f:/`
   - `-j:/ 248G 209G 39G 85% j:/`
   - `-k:/ 752G 495G 258G 66% k:/`
-  - `-l:/ 3.1T 667G 2.4T 23% l:/`
-  - `+c:/ 236.1GB 191.5GB 44.7GB 82% c:/`
-  - `+d:/ 763.3GB 597.2GB 166.1GB 79% d:/`
-  - `+e:/ 4.0TB 2.3TB 1.7TB 57% e:/`
-  - `+f:/ 245.4GB 101.0GB 144.4GB 42% f:/`
+  - `-l:/ 3.1T 671G 2.4T 23% l:/`
+  - `+C: 236G 193G 43G 82% C:`
+  - `+D: 763G 606G 157G 80% D:`
+  - `+E: 4.0T 2.3T 1.7T 57% E:`
+  - `+F: 245G 101G 144G 42% F:`
+- **df/df11-all-flag** — 8 vs 8 normalized lines
+  - `--- cpp`
+  - `+++ rust`
+  - `@@ -2,7 +2,7 @@`
+  - `-c:/ 230611856 188950480 41661376 82% c:/`
+  - `-d:/ 745443324 592194172 153249152 80% d:/`
+  - `-e:/ 3906885628 2198727868 1708157760 57% e:/`
+  - `-f:/ 239650684 98664084 140986600 42% f:/`
+  - `-j:/ 242040720 204028408 38012312 85% j:/`
+  - `-k:/ 734015484 482561468 251454016 66% k:/`
+  - `-l:/ 2930248700 654904052 2275344648 23% l:/`
+  - `+C: 230611856 188950480 41661376 82% C:`
+  - `+D: 745443324 592194172 153249152 80% D:`
+  - `+E: 3906885628 2198727868 1708157760 57% E:`
+  - `+F: 239650684 98664084 140986600 42% F:`
+- **df/df12-output-all-columns** — 8 vs 8 normalized lines
+  - `--- cpp`
+  - `+++ rust`
+  - `@@ -2,7 +2,7 @@`
+  - `-c:/ NTFS - - - - 230611856 188950480 41661376 82% - c:/`
+  - `-d:/ NTFS - - - - 745443324 592194172 153249152 80% - d:/`
+  - `-e:/ NTFS - - - - 3906885628 2198727868 1708157760 57% - e:/`
+  - `-f:/ NTFS - - - - 239650684 98664084 140986600 42% - f:/`
+  - `-j:/ NTFS - - - - 242040720 204028408 38012312 85% - j:/`
+  - `-k:/ NTFS - - - - 734015484 482561468 251454016 66% - k:/`
+  - `-l:/ NTFS - - - - 2930248700 654904052 2275344648 23% - l:/`
+  - `+C: NTFS 0 0 0 - 230611856 188950480 41661376 82% C:`
+  - `+D: NTFS 0 0 0 - 745443324 592194172 153249152 80% D:`
+  - `+E: NTFS 0 0 0 - 3906885628 2198727868 1708157760 57% E:`
+  - `+F: NTFS 0 0 0 - 239650684 98664084 140986600 42% F:`
+- **df/df30-B-2048** — 2 vs 2 normalized lines
+  - `--- cpp`
+  - `+++ rust`
+  - `@@ -1,2 +1,2 @@`
+  - `-Filesystem 2048B-blocks Used Available Use% Mounted on`
+  - `-d:/ 372721662 296097086 76624576 80% d:/`
+  - `+Filesystem 2K-blocks Used Available Use% Mounted on`
+  - `+D: 372721662 296097086 76624576 80% d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/rust/df/df30-B-2048`
+- **df/df31-i-view** — 2 vs 2 normalized lines
+  - `--- cpp`
+  - `+++ rust`
+  - `@@ -2 +2 @@`
+  - `-d:/ - - - - d:/`
+  - `+D: 0 0 0 - d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/rust/df/df31-i-view`
 - **false/f07-version** — 1 vs 7 normalized lines
   - `--- cpp`
   - `+++ rust`
@@ -167,114 +167,55 @@ decisions belong to the command lane.
   - `-`
   - `-Written by contributors.`
   - `+false 0.1.0`
+- **fmt/fm26-help** — 1 vs 33 normalized lines
+  - `--- cpp`
+  - `+++ rust`
+  - `@@ -1,33 +0,0 @@`
+  - `-Usage: fmt [OPTION]... [FILE]...`
+  - `-`
+  - `-Reformat paragraphs.`
+  - `-`
+  - `-With no FILE, or when FILE is -, read standard input.`
+  - `-`
+  - `-Note: This is a simplified implementation. Advanced features`
+  - `-like crown margin and tagged paragraphs are not fully supported.`
+  - `-`
+  - `-OPTIONS:`
+  - `- -c, --crown-margin preserve indentation of the first two lines`
 - **getconf/gc11-all** — 10 vs 10 normalized lines
   - `--- cpp`
   - `+++ rust`
   - `@@ -10 +10 @@`
-  - `-AVPHYS_PAGES 8671308`
-  - `+AVPHYS_PAGES 8672917`
-- **getconf/gc19-help** — 1 vs 28 normalized lines
-  - `--- cpp`
-  - `+++ rust`
-  - `@@ -1,28 +0,0 @@`
-  - `-Usage: getconf [OPTION]... [VARIABLE_NAME]...`
-  - `-getconf [OPTION]... PATH_VAR PATH`
-  - `-`
-  - `-Display configuration variable values.`
-  - `-`
-  - `-With two operands, the first is a path variable and the second a`
-  - `-path it is evaluated for. With no VARIABLE_NAME (and no -a) this`
-  - `-is a usage error, as in glibc getconf.`
-  - `-On Windows, this provides limited system configuration information.`
-  - `-`
-  - `-Options:`
+  - `-AVPHYS_PAGES 8532151`
+  - `+AVPHYS_PAGES 8533114`
 - **getconf/gc22-avphys** — 1 vs 1 normalized lines
   - `--- cpp`
   - `+++ rust`
   - `@@ -1 +1 @@`
-  - `-8668324`
-  - `+8669213`
-- **hostname/hn19-help** — 1 vs 31 normalized lines
+  - `-8532333`
+  - `+8533548`
+- **ln/ln21-help** — 1 vs 44 normalized lines
   - `--- cpp`
   - `+++ rust`
-  - `@@ -1,31 +0,0 @@`
-  - `-Usage: hostname [OPTION]...`
+  - `@@ -1,44 +0,0 @@`
+  - `-Usage: ln [OPTION]... [FILE]...`
   - `-`
-  - `-Print or set system name.`
+  - `-Create links between files. By default, make hard links.`
   - `-`
-  - `-Print the name of the current host.`
-  - `-`
-  - `-Note: This implementation only supports printing hostname.`
-  - `-Setting hostname is not implemented on Windows.`
-  - `-`
-  - `-OPTIONS:`
-  - `- -b, --boot set default hostname if none available`
-- **hostname/hn20-version** — 1 vs 1 normalized lines
+  - `- -s, --symbolic make symbolic links instead of hard links`
+  - `- -f, --force remove existing destination files`
+  - `- -i, --interactive prompt whether to remove destinations`
+  - `- -b, --backup make a backup of each existing destination`
+  - `- -S, --suffix=SUFFIX override the usual backup suffix`
+  - `- -t, --target-directory=DIRECTORY specify the target directory`
+  - `- -T, --no-target-directory treat LINK_NAME as a normal file`
+- **printenv/pe19-help-flag** — 16 vs 23 normalized lines
   - `--- cpp`
   - `+++ rust`
-  - `@@ -1 +0,0 @@`
-  - `-1.2.1`
-- **id/id18-help** — 1 vs 29 normalized lines
-  - `--- cpp`
-  - `+++ rust`
-  - `@@ -1,29 +0,0 @@`
-  - `-Usage: id [OPTION]... [USER]`
-  - `-`
-  - `-Print user and group information for the specified USER,`
-  - `-or (when USER omitted) for the current user.`
-  - `-`
-  - `-Note: This is a Windows implementation. Windows doesn't have`
-  - `-POSIX UIDs/GIDs, so this command provides limited functionality.`
-  - `-It mainly displays the username.`
-  - `-`
-  - `-OPTIONS:`
-  - `- -a ignore, for compatibility with other versions`
-- **id/id22-version** — 1 vs 1 normalized lines
-  - `--- cpp`
-  - `+++ rust`
-  - `@@ -1 +0,0 @@`
-  - `-1.2.1`
-- **nproc/np10-help** — 1 vs 20 normalized lines
-  - `--- cpp`
-  - `+++ rust`
-  - `@@ -1,20 +0,0 @@`
-  - `-Usage: nproc [OPTION]...`
-  - `-`
-  - `-Print the number of processing units available.`
-  - `-`
-  - `-This is useful for scripts that need to know how many parallel`
-  - `-processes can be started.`
-  - `-`
-  - `-OPTIONS:`
-  - `- --all print number of all installed processors`
-  - `- --ignore ARG ignore N processors`
-  - `- --help display this help and exit`
-- **nproc/np21-version** — 1 vs 1 normalized lines
-  - `--- cpp`
-  - `+++ rust`
-  - `@@ -1 +0,0 @@`
-  - `-1.2.1`
-- **printenv/pe14-full-dump** — 92 vs 92 normalized lines
-  - `--- cpp`
-  - `+++ rust`
-  - `@@ -1,92 +1,92 @@`
-  - `-AAA=1`
-  - `-ALLUSERSPROFILE=c:/ProgramData`
-  - `-APPDATA=c:/Users/cmx/AppData/Roaming`
-  - `-CAPON_LLVM_BIN=d:/CaponAVIS_toolchain/llvm-21.1.8/bin`
-  - `-CAPON_TOOLCHAIN_BIN=d:/CaponAVIS_toolchain/bin`
-  - `-CHROME_CRASHPAD_PIPE_NAME=//./pipe/crashpad_33616_KHDJUWXKNXTQWNEY`
-  - `-CLAUDE_CODE_SESSION_ID=sess_subagent_agent_64661d42-b063-488b-b2dc-00ccb039756e`
-  - `-CLAUDE_PROJECT_DIR=d:/repo/rubash`
-  - `-CLAUDE_SESSION_ID=sess_subagent_agent_64661d42-b063-488b-b2dc-00ccb039756e`
-  - `-COMMONPROGRAMFILES=c:/Program Files/Common Files`
-  - `-COMMONPROGRAMFILES(X86)=c:/Program Files (x86)/Common Files`
-- **printenv/pe19-help-flag** — 1 vs 23 normalized lines
-  - `--- cpp`
-  - `+++ rust`
-  - `@@ -1,23 +0,0 @@`
-  - `-Usage: printenv [OPTION]... [VARIABLE]...`
-  - `-`
+  - `@@ -1,0 +2,2 @@`
+  - `+Print the values of the specified environment VARIABLE(s).`
+  - `+If no VARIABLE is specified, print name and value pairs for them all.`
+  - `@@ -3,10 +4,0 @@`
   - `-Print all or part of environment.`
   - `-`
   - `-If no VARIABLE is specified, print all environment variables.`
@@ -283,128 +224,199 @@ decisions belong to the command lane.
   - `-`
   - `-Options:`
   - `- -0, --null end each output line with NUL, not newline`
-  - `-`
+- **printenv/pe21-version** — 7 vs 1 normalized lines
+  - `--- cpp`
+  - `+++ rust`
+  - `@@ -1 +1,7 @@`
+  - `-1.2.1`
+  - `+printenv 9.4`
+  - `+Copyright (C) 2023 Free Software Foundation, Inc.`
+  - `+License GPLv3+: GNU GPL version 3 or later <https://gnu.org/licenses/gpl.html>.`
+  - `+This is free software: you are free to change and redistribute it.`
+  - `+There is NO WARRANTY, to the extent permitted by law.`
+  - `+`
+  - `+Written by David MacKenzie and Richard Mlynarik.`
 - **pwd/pw01-plain** — 1 vs 1 normalized lines
   - `--- cpp`
   - `+++ rust`
   - `@@ -1 +1 @@`
-  - `-d:/repo/wc-20inv/rust2/target/gate-qc/scratch/cpp/pwd/pw01-plain`
-  - `+d:/repo/wc-20inv/rust2/target/gate-qc/scratch/rust/pwd/pw01-plain`
+  - `-d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/cpp/pwd/pw01-plain`
+  - `+d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/rust/pwd/pw01-plain`
 - **pwd/pw02-physical** — 1 vs 1 normalized lines
   - `--- cpp`
   - `+++ rust`
   - `@@ -1 +1 @@`
-  - `-d:/repo/wc-20inv/rust2/target/gate-qc/scratch/cpp/pwd/pw02-physical`
-  - `+d:/repo/wc-20inv/rust2/target/gate-qc/scratch/rust/pwd/pw02-physical`
+  - `-d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/cpp/pwd/pw02-physical`
+  - `+d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/rust/pwd/pw02-physical`
 - **pwd/pw03-logical** — 1 vs 1 normalized lines
   - `--- cpp`
   - `+++ rust`
   - `@@ -1 +1 @@`
-  - `-d:/repo/wc-20inv/rust2/target/gate-qc/scratch/cpp/pwd/pw03-logical`
-  - `+d:/repo/wc-20inv/rust2/target/gate-qc/scratch/rust/pwd/pw03-logical`
+  - `-d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/cpp/pwd/pw03-logical`
+  - `+d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/rust/pwd/pw03-logical`
 - **pwd/pw04-l-with-pwd** — 1 vs 1 normalized lines
   - `--- cpp`
   - `+++ rust`
   - `@@ -1 +1 @@`
-  - `-d:/repo/wc-20inv/rust2/target/gate-qc/scratch/cpp/pwd/pw04-l-with-pwd`
-  - `+d:/repo/wc-20inv/rust2/target/gate-qc/scratch/rust/pwd/pw04-l-with-pwd`
+  - `-d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/cpp/pwd/pw04-l-with-pwd`
+  - `+d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/rust/pwd/pw04-l-with-pwd`
 - **pwd/pw05-l-bad-pwd** — 1 vs 1 normalized lines
   - `--- cpp`
   - `+++ rust`
   - `@@ -1 +1 @@`
-  - `-d:/repo/wc-20inv/rust2/target/gate-qc/scratch/cpp/pwd/pw05-l-bad-pwd`
-  - `+d:/repo/wc-20inv/rust2/target/gate-qc/scratch/rust/pwd/pw05-l-bad-pwd`
+  - `-d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/cpp/pwd/pw05-l-bad-pwd`
+  - `+d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/rust/pwd/pw05-l-bad-pwd`
 - **pwd/pw06-posixly-physical** — 1 vs 1 normalized lines
   - `--- cpp`
   - `+++ rust`
   - `@@ -1 +1 @@`
-  - `-d:/repo/wc-20inv/rust2/target/gate-qc/scratch/cpp/pwd/pw06-posixly-physical`
-  - `+d:/repo/wc-20inv/rust2/target/gate-qc/scratch/rust/pwd/pw06-posixly-physical`
+  - `-d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/cpp/pwd/pw06-posixly-physical`
+  - `+d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/rust/pwd/pw06-posixly-physical`
 - **pwd/pw07-posixly-default** — 1 vs 1 normalized lines
   - `--- cpp`
   - `+++ rust`
   - `@@ -1 +1 @@`
-  - `-d:/repo/wc-20inv/rust2/target/gate-qc/scratch/cpp/pwd/pw07-posixly-default`
-  - `+d:/repo/wc-20inv/rust2/target/gate-qc/scratch/rust/pwd/pw07-posixly-default`
+  - `-d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/cpp/pwd/pw07-posixly-default`
+  - `+d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/rust/pwd/pw07-posixly-default`
 - **pwd/pw10-both-last-p** — 1 vs 1 normalized lines
   - `--- cpp`
   - `+++ rust`
   - `@@ -1 +1 @@`
-  - `-d:/repo/wc-20inv/rust2/target/gate-qc/scratch/cpp/pwd/pw10-both-last-p`
-  - `+d:/repo/wc-20inv/rust2/target/gate-qc/scratch/rust/pwd/pw10-both-last-p`
+  - `-d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/cpp/pwd/pw10-both-last-p`
+  - `+d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/rust/pwd/pw10-both-last-p`
 - **pwd/pw11-both-last-l** — 1 vs 1 normalized lines
   - `--- cpp`
   - `+++ rust`
   - `@@ -1 +1 @@`
-  - `-d:/repo/wc-20inv/rust2/target/gate-qc/scratch/cpp/pwd/pw11-both-last-l`
-  - `+d:/repo/wc-20inv/rust2/target/gate-qc/scratch/rust/pwd/pw11-both-last-l`
+  - `-d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/cpp/pwd/pw11-both-last-l`
+  - `+d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/rust/pwd/pw11-both-last-l`
 - **pwd/pw12-posixly-no-pwd** — 1 vs 1 normalized lines
   - `--- cpp`
   - `+++ rust`
   - `@@ -1 +1 @@`
-  - `-d:/repo/wc-20inv/rust2/target/gate-qc/scratch/cpp/pwd/pw12-posixly-no-pwd`
-  - `+d:/repo/wc-20inv/rust2/target/gate-qc/scratch/rust/pwd/pw12-posixly-no-pwd`
+  - `-d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/cpp/pwd/pw12-posixly-no-pwd`
+  - `+d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/rust/pwd/pw12-posixly-no-pwd`
 - **realpath/rp16-symlink** — 1 vs 1 normalized lines
   - `--- cpp`
   - `+++ rust`
   - `@@ -1 +1 @@`
-  - `-d:/repo/wc-20inv/rust2/target/gate-qc/scratch/cpp/realpath/rp16-symlink/flink`
-  - `+d:/repo/wc-20inv/rust2/target/gate-qc/scratch/rust/realpath/rp16-symlink/flink`
-- **sha224sum/s224a12-help** — 1 vs 30 normalized lines
+  - `-d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/cpp/realpath/rp16-symlink/flink`
+  - `+d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/rust/realpath/rp16-symlink/flink`
+- **stat/st01-default-reg** — 8 vs 8 normalized lines
   - `--- cpp`
   - `+++ rust`
-  - `@@ -1,30 +0,0 @@`
-  - `-Usage: sha224sum [OPTION]... [FILE]...`
+  - `@@ -1 +1 @@`
+  - `-File: reg`
+  - `+File: 'reg'`
+  - `@@ -3,6 +3,6 @@`
+  - `-Device: 18467,0 Inode: 3377699722106724 Links: 2`
+  - `-Access: (0644/-rw-r--r--) Uid: (197609/ cmx) Gid: (197121/ UNKNOWN)`
+  - `-Access: 2026-11-11 08:06:53.146382500 +0800`
+  - `-Modify: 2026-11-11 08:06:53.146382500 +0800`
+  - `-Change: 2026-11-11 08:06:53.164386400 +0800`
+  - `- Birth: 2026-11-11 08:06:53.146382500 +0800`
+  - `+Device: 4823h/18467d Inode: 3377699722106412 Links: 2`
+  - `+Access: (0644/-rw-r--r--) Uid: (197609/ cmx) Gid: (197121/ None)`
+- **stat/st02-default-dir** — 8 vs 8 normalized lines
+  - `--- cpp`
+  - `+++ rust`
+  - `@@ -1 +1 @@`
+  - `-File: dir`
+  - `+File: 'dir'`
+  - `@@ -3,6 +3,6 @@`
+  - `-Device: 18467,0 Inode: 3659174698817384 Links: 1`
+  - `-Access: (0755/drwxr-xr-x) Uid: (197609/ cmx) Gid: (197121/ UNKNOWN)`
+  - `-Access: 2026-11-11 08:06:53.313394600 +0800`
+  - `-Modify: 2026-11-11 08:06:53.313394600 +0800`
+  - `-Change: 2026-11-11 08:06:53.313394600 +0800`
+  - `- Birth: 2026-11-11 08:06:53.313394600 +0800`
+  - `+Device: 4823h/18467d Inode: 3377699722106416 Links: 1`
+  - `+Access: (0755/drwxr-xr-x) Uid: (197609/ cmx) Gid: (197121/ None)`
+- **stat/st06-c-ug** — 1 vs 1 normalized lines
+  - `--- cpp`
+  - `+++ rust`
+  - `@@ -1 +1 @@`
+  - `-197609|197121|cmx|UNKNOWN`
+  - `+197609|197121|cmx|None`
+- **stat/st07-c-dev** — 1 vs 1 normalized lines
+  - `--- cpp`
+  - `+++ rust`
+  - `@@ -1 +1 @@`
+  - `-4823|18467|3659174698817398|2`
+  - `+4823|18467|3377699722106430|2`
+- **stat/st08-c-times-epoch** — 1 vs 1 normalized lines
+  - `--- cpp`
+  - `+++ rust`
+  - `@@ -1 +1 @@`
+  - `-1794355614|1794355614|1794355614|1794355614`
+  - `+12274381854|12274381854|12274381854|12274381827`
+- **stat/st09-c-times-str** — 1 vs 1 normalized lines
+  - `--- cpp`
+  - `+++ rust`
+  - `@@ -1 +1 @@`
+  - `-2026-11-11 08:06:54.568503000 +0800|2026-11-11 08:06:54.568503000 +0800|2026-11-11 08:06:54.586504300 +0800|2026-11-11 08:06:54.568503000 +0800`
+  - `+2026-11-11 08:06:54.478909500 +0800|2026-11-11 08:06:54.478909500 +0800|2026-11-11 08:06:54.478909500 +0800|2026-11-11 08:06:27.660487400 +0800`
+- **stat/st11-terse** — 1 vs 1 normalized lines
+  - `--- cpp`
+  - `+++ rust`
+  - `@@ -1 +1 @@`
+  - `-reg 3 1 81a4 197609 197121 4823 3377699722106751 2 0 0 1794355614 1794355614 1794355614 1794355614 4096`
+  - `+reg 3 1 81a4 197609 197121 4823 3659174698817095 2 0 0 12274381854 12274381854 12274381854 12274381827 4096`
+- **sync/sy11-help** — 1 vs 24 normalized lines
+  - `--- cpp`
+  - `+++ rust`
+  - `@@ -1,24 +0,0 @@`
+  - `-Usage: sync [OPTION]... [FILE]...`
   - `-`
-  - `-Compute and check SHA224 message digest.`
+  - `-Synchronize cached writes to persistent storage.`
   - `-`
-  - `-With no FILE, or when FILE is -, read standard input.`
+  - `-If one or more files are specified, sync only those files.`
+  - `- -d, --data sync only file data, no unneeded metadata`
+  - `- -f, --file-system sync the file systems that contain the files`
+  - `-Otherwise, all file system buffers are synchronized.`
   - `-`
-  - `-SHA224 produces a 224-bit (28-byte) hash value, typically rendered as a 56-digit hexadecimal number.`
-  - `-Uses 's portable SHA-224 implementation with the RFC 3874 initial state and digest length.`
+  - `-Note: On Windows, this uses FlushFileBuffers to flush file buffers.`
   - `-`
-  - `-OPTIONS:`
-  - `- -b, --binary read in binary mode (default)`
-- **sha224sum/s224a19-version** — 1 vs 1 normalized lines
+- **sync/sy12-version** — 1 vs 1 normalized lines
   - `--- cpp`
   - `+++ rust`
   - `@@ -1 +0,0 @@`
   - `-1.2.1`
-- **sha384sum/s384a12-help** — 1 vs 30 normalized lines
+- **tee/te14-help** — 1 vs 22 normalized lines
   - `--- cpp`
   - `+++ rust`
-  - `@@ -1,30 +0,0 @@`
-  - `-Usage: sha384sum [OPTION]... [FILE]...`
+  - `@@ -1,22 +0,0 @@`
+  - `-Usage: tee [OPTION]... [FILE]...`
   - `-`
-  - `-Compute and check SHA384 message digest.`
+  - `-Copy standard input to each FILE, and also to standard output.`
   - `-`
-  - `-With no FILE, or when FILE is -, read standard input.`
-  - `-`
-  - `-SHA384 produces a 384-bit (48-byte) hash value, typically rendered as a 96-digit hexadecimal number.`
-  - `-Uses 's portable SHA-384 implementation with the FIPS-180-2 initial state and digest length.`
+  - `-FILE operands are opened literally; '-' names a file called '-'.`
   - `-`
   - `-OPTIONS:`
-  - `- -b, --binary read in binary mode (default)`
-- **sha384sum/s384a19-version** — 1 vs 1 normalized lines
+  - `- -a, --append append to the given FILEs, do not overwrite`
+  - `- -i, --ignore-interrupts ignore interrupt signals`
+  - `- -p write errors to standard error`
+  - `- --output-error[=ARG] set behavior on write error: 'warn', 'warn-nopipe',`
+- **tee/te24-version** — 1 vs 1 normalized lines
   - `--- cpp`
   - `+++ rust`
   - `@@ -1 +0,0 @@`
   - `-1.2.1`
-- **tac/ta24-help** — 1 vs 25 normalized lines
+- **touch/to29-help** — 1 vs 26 normalized lines
   - `--- cpp`
   - `+++ rust`
-  - `@@ -1,25 +0,0 @@`
-  - `-Usage: tac [OPTION]... [FILE]...`
+  - `@@ -1,26 +0,0 @@`
+  - `-Usage: touch [OPTION]... FILE...`
   - `-`
-  - `-Concatenate and print files in reverse.`
+  - `-Update the access and modification times of each FILE to the current time.`
+  - `-A FILE argument that does not exist is created empty, unless -c or -h is supplied.`
   - `-`
-  - `-Write each FILE to standard output, last line first.`
-  - `-With no FILE, or when FILE is -, read standard input.`
-  - `-`
-  - `-Records are separated by newline by default. Use -s to choose another separator,`
-  - `--b to attach separators before records, and -r to treat the separator as a regex.`
-  - `-`
-  - `-`
+  - `-OPTIONS:`
+  - `- -a change only the access time`
+  - `- -c, --no-create do not create any files`
+  - `- -d, --date ARG parse STRING and use it instead of current time`
+  - `- -f (ignored)`
+  - `- -h, --no-dereference affect symbolic link instead of referenced file`
 - **true/t07-version** — 1 vs 7 normalized lines
   - `--- cpp`
   - `+++ rust`
@@ -417,46 +429,6 @@ decisions belong to the command lane.
   - `-`
   - `-Written by contributors.`
   - `+true 0.1.0`
-- **uname/un17-help** — 1 vs 28 normalized lines
-  - `--- cpp`
-  - `+++ rust`
-  - `@@ -1,28 +0,0 @@`
-  - `-Usage: uname [OPTION]...`
-  - `-`
-  - `-Print certain system information.`
-  - `-`
-  - `-With no OPTION, same as -s.`
-  - `-`
-  - `-Note: This implementation provides Windows-specific information.`
-  - `-`
-  - `-OPTIONS:`
-  - `- -a, --all print all information`
-  - `- -s, --kernel-name print the kernel name`
-- **uname/un18-version** — 1 vs 1 normalized lines
-  - `--- cpp`
-  - `+++ rust`
-  - `@@ -1 +0,0 @@`
-  - `-1.2.1`
-- **whoami/wa05-help** — 1 vs 22 normalized lines
-  - `--- cpp`
-  - `+++ rust`
-  - `@@ -1,22 +0,0 @@`
-  - `-Usage: whoami [OPTION]`
-  - `-`
-  - `-Print effective userid.`
-  - `-`
-  - `-Print the user name associated with the current effective user ID.`
-  - `-Same as id -un.`
-  - `-`
-  - `-Note: This implementation only supports basic username printing.`
-  - `-Advanced features are not implemented.`
-  - `-`
-  - `-OPTIONS:`
-- **whoami/wa06-version** — 1 vs 1 normalized lines
-  - `--- cpp`
-  - `+++ rust`
-  - `@@ -1 +0,0 @@`
-  - `-1.2.1`
 
 ## Re-run
 

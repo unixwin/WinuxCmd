@@ -21,52 +21,52 @@ Columns:
 |---|---|---|---|---|---|---|---|---|---|
 | true | 20 | 19 | 0 | 1 | 0 | 95% | 19/20 | GREEN | 0 |
 | false | 20 | 19 | 0 | 1 | 0 | 95% | 19/20 | GREEN | 0 |
-| test | 45 | 42 | 0 | 2 | 1 | 93% | 42/45 | GREEN | 0 |
-| bracket | 26 | 25 | 0 | 1 | 0 | 96% | 26/26 | GREEN | 25 |
+| test | 45 | 42 | 0 | 2 | 1 | 93% | 44/45 | GREEN | 0 |
+| bracket | 26 | 25 | 0 | 1 | 0 | 96% | 26/26 | GREEN | 0 |
 | basename | 30 | 30 | 0 | 0 | 0 | 100% | 30/30 | GREEN | 0 |
 | dirname | 22 | 22 | 0 | 0 | 0 | 100% | 22/22 | GREEN | 0 |
-| printenv | 20 | 15 | 3 | 2 | 0 | 90% | 16/20 | GREEN | 0 |
+| printenv | 21 | 15 | 3 | 3 | 0 | 86% | 17/21 | GREEN | 0 |
 | pwd | 12 | 0 | 2 | 10 | 0 | 17% | 1/12 | GREEN | 0 |
 | mkdir | 22 | 22 | 0 | 0 | 0 | 100% | 22/22 | GREEN | 0 |
-| rmdir | 22 | 22 | 0 | 0 | 0 | 100% | 21/22 | GREEN | 0 |
+| rmdir | 22 | 22 | 0 | 0 | 0 | 100% | 22/22 | GREEN | 0 |
 | readlink | 24 | 8 | 16 | 0 | 0 | 100% | 10/24 | GREEN | 0 |
 | realpath | 22 | 6 | 15 | 1 | 0 | 95% | 9/22 | GREEN | 0 |
-| chmod | 22 | 21 | 1 | 0 | 0 | 100% | 21/22 | GREEN | 0 |
-| chown | 16 | 12 | 0 | 4 | 0 | 75% | 9/16 | GREEN | 0 |
-| df | 15 | 3 | 2 | 8 | 2 | 33% | 3/15 | GREEN | 0 |
-| whoami | 20 | 0 | 6 | 14 | 0 | 30% | 18/20 | GREEN | 0 |
-| nproc | 22 | 6 | 4 | 12 | 0 | 45% | 20/22 | GREEN | 0 |
+| chmod | 22 | 21 | 1 | 0 | 0 | 100% | 43/45 | GREEN | 0 |
+| chown | 16 | 12 | 0 | 4 | 0 | 75% | 22/37 | GREEN | 0 |
+| df | 36 | 15 | 10 | 9 | 2 | 69% | 13/36 | GREEN | 0 |
+| whoami | 20 | 2 | 6 | 12 | 0 | 40% | 18/20 | GREEN | 0 |
+| nproc | 22 | 8 | 4 | 10 | 0 | 55% | 20/22 | GREEN | 0 |
 | unlink | 22 | 22 | 0 | 0 | 0 | 100% | 22/22 | GREEN | 0 |
 | sleep | 24 | 12 | 12 | 0 | 0 | 100% | 24/24 | GREEN | 0 |
-| base64 | 30 | 28 | 0 | 2 | 0 | 93% | 28/30 | GREEN | 0 |
-| base32 | 24 | 22 | 0 | 2 | 0 | 92% | 22/24 | GREEN | 0 |
-| b2sum | 33 | 31 | 1 | 1 | 0 | 97% | 21/22 | GREEN | 0 |
-| sha224sum | 50 | 47 | 1 | 2 | 0 | 96% | 18/20 | GREEN | 0 |
-| sha384sum | 28 | 25 | 1 | 2 | 0 | 93% | 18/20 | GREEN | 0 |
-| tac | 26 | 25 | 0 | 1 | 0 | 96% | 21/26 | GREEN | 0 |
+| base64 | 30 | 30 | 0 | 0 | 0 | 100% | 28/30 | GREEN | 0 |
+| base32 | 24 | 24 | 0 | 0 | 0 | 100% | 22/24 | GREEN | 0 |
+| b2sum | 34 | 33 | 1 | 0 | 0 | 100% | 32/34 | GREEN | 0 |
+| sha224sum | 50 | 49 | 1 | 0 | 0 | 100% | 48/50 | GREEN | 0 |
+| sha384sum | 28 | 27 | 1 | 0 | 0 | 100% | 26/28 | GREEN | 0 |
+| tac | 27 | 27 | 0 | 0 | 0 | 100% | 21/27 | GREEN | 0 |
 | truncate | 30 | 30 | 0 | 0 | 0 | 100% | 29/30 | GREEN | 0 |
-| uname | 22 | 0 | 4 | 18 | 0 | 18% | 0/22 | 22 FAIL | 0 |
-| id | 22 | 8 | 0 | 14 | 0 | 36% | 0/22 | 22 FAIL | 0 |
-| hostname | 22 | 0 | 5 | 17 | 0 | 23% | 0/22 | 22 FAIL | 0 |
-| getconf | 22 | 5 | 0 | 17 | 0 | 23% | 0/22 | 22 FAIL | 0 |
-| seq | 50 | 50 | 0 | 0 | 0 | 100% | - | - | - |
-| fold | 26 | 26 | 0 | 0 | 0 | 100% | - | - | - |
-| paste | 38 | 37 | 0 | 1 | 0 | 97% | - | - | - |
-| tee | 24 | 21 | 1 | 2 | 0 | 92% | - | - | - |
-| fmt | 26 | 25 | 0 | 1 | 0 | 96% | - | - | - |
-| stat | 22 | 9 | 1 | 11 | 1 | 45% | - | - | - |
-| touch | 29 | 28 | 0 | 1 | 0 | 97% | - | - | - |
-| ln | 25 | 19 | 1 | 2 | 3 | 80% | - | - | - |
+| uname | 22 | 2 | 4 | 16 | 0 | 27% | 20/22 | GREEN | 0 |
+| id | 22 | 10 | 0 | 12 | 0 | 45% | 20/22 | GREEN | 0 |
+| hostname | 22 | 2 | 5 | 15 | 0 | 32% | 20/22 | GREEN | 0 |
+| getconf | 23 | 7 | 0 | 16 | 0 | 30% | 19/23 | GREEN | 0 |
+| seq | 50 | 50 | 0 | 0 | 0 | 100% | 46/50 | GREEN | 0 |
+| fold | 26 | 26 | 0 | 0 | 0 | 100% | 26/26 | GREEN | 0 |
+| paste | 38 | 37 | 0 | 1 | 0 | 97% | 38/38 | GREEN | 0 |
+| tee | 24 | 21 | 1 | 2 | 0 | 92% | 22/24 | GREEN | 0 |
+| fmt | 26 | 25 | 0 | 1 | 0 | 96% | 25/26 | GREEN | 0 |
+| stat | 22 | 9 | 1 | 11 | 1 | 45% | 14/22 | GREEN | 0 |
+| touch | 29 | 28 | 0 | 1 | 0 | 97% | 27/29 | GREEN | 0 |
+| ln | 25 | 19 | 1 | 2 | 3 | 80% | 21/25 | GREEN | 0 |
 | sync | 22 | 0 | 20 | 2 | 0 | 91% | 19/22 | GREEN | 0 |
-| **total** | **997** | | | | 7 | **84%** | 530/708 | 88 FAIL | 25 |
+| **total** | **1022** | | | | 7 | **86%** | 926/1066 | GREEN | 0 |
 
 ## Worst 5 by GNU-direct ratio
 
 - **pwd** — 17% GNU-direct (2/12; win-heavy value-model command)
-- **uname** — 18% GNU-direct (4/22; win-heavy value-model command)
-- **hostname** — 23% GNU-direct (5/22; win-heavy value-model command)
-- **getconf** — 23% GNU-direct (5/22; win-heavy value-model command)
-- **whoami** — 30% GNU-direct (6/20; win-heavy value-model command)
+- **uname** — 27% GNU-direct (6/22; win-heavy value-model command)
+- **getconf** — 30% GNU-direct (7/23; win-heavy value-model command)
+- **hostname** — 32% GNU-direct (7/22; win-heavy value-model command)
+- **whoami** — 40% GNU-direct (8/20; win-heavy value-model command)
 
 GNU-direct is expected low for Windows value-model commands
 (whoami/uname/id/hostname/getconf/pwd/df): their success output is
