@@ -10,10 +10,12 @@
 //! Digests are identical across platforms, so GNU-side cases gate
 //! strictly on stdout bytes + rc.
 //!
-//! b2sum adds `-l/--length BITS`: the LAST occurrence wins; values must be
-//! 1..=512 and a multiple of 8 — violations report `invalid length: 'X'`
-//! plus a second diagnostic line (`length is not a multiple of 8` /
-//! `maximum digest length for 'BLAKE2b' is 512 bits`) and rc 1.
+//! b2sum adds `-l/--length BITS`: the LAST occurrence wins; 0 selects the
+//! BLAKE2b 512-bit default (digest.c post-getopt: `digest_length == 0 ->
+//! BLAKE2B_MAX_LEN * 8`), any other value must be 8..=512 and a multiple
+//! of 8 — violations report `invalid length: 'X'` plus a second diagnostic
+//! line (`length is not a multiple of 8` / `maximum digest length for
+//! 'BLAKE2b' is 512 bits`) and rc 1.
 //!
 //! `--check` machinery (ported from GNU coreutils 9.4 `src/digest.c`
 //! `digest_check`/`split_3`, probed byte-for-byte against WSL coreutils
@@ -367,6 +369,14 @@ fn run(
     if allows_length {
         if let Some(raw) = p.value_of("length") {
             match parse_length(raw) {
+                // GNU digest.c (post-getopt, BLAKE2 branch): a length of 0
+                // is "unspecified" and falls back to the 512-bit default —
+                // `b2sum -l 0 f` prints the same 512-bit hex as `-l 512`
+                // with rc 0 (probed WSL coreutils 9.4). xdectoumax accepts
+                // 0 at the option position (no error there); only the
+                // multiple-of-8 check runs during getopt, the 0 -> default
+                // fold and the >512 check run after it.
+                Ok(0) => {}
                 Ok(v) => bits = v,
                 Err(kind) => {
                     let _ = writeln!(io.stderr, "{prog}: invalid length: '{raw}'");
@@ -378,13 +388,6 @@ fn run(
                             let _ = writeln!(
                                 io.stderr,
                                 "{prog}: maximum digest length for '{}' is 512 bits",
-                                algo.name()
-                            );
-                        }
-                        LengthError::TooShort => {
-                            let _ = writeln!(
-                                io.stderr,
-                                "{prog}: minimum digest length for '{}' is 1 bits",
                                 algo.name()
                             );
                         }
@@ -546,9 +549,12 @@ enum LengthError {
     NotANumber,
     NotMultiple,
     TooLong,
-    TooShort,
 }
 
+/// `-l` value validation (GNU digest.c: xdectoumax(0..) at the option
+/// position, then the post-getopt BLAKE2 checks). 0 is VALID here: the
+/// caller folds it onto the algorithm default. A leading `+` matches
+/// xstrtoumax's number grammar.
 fn parse_length(raw: &str) -> Result<usize, LengthError> {
     let s = raw.strip_prefix('+').unwrap_or(raw);
     let Ok(v) = s.parse::<usize>() else {
@@ -557,10 +563,7 @@ fn parse_length(raw: &str) -> Result<usize, LengthError> {
     if v > 512 {
         return Err(LengthError::TooLong);
     }
-    if v == 0 {
-        return Err(LengthError::TooShort);
-    }
-    if v % 8 != 0 {
+    if v != 0 && v % 8 != 0 {
         return Err(LengthError::NotMultiple);
     }
     Ok(v)
@@ -1179,6 +1182,23 @@ mod tests {
         let (r, _, err) = run("b2sum", &["-l", "xyz"], "abc");
         assert_eq!(r, 1);
         assert!(err.contains("invalid length: 'xyz'"));
+        // -l 0 is "unspecified" and selects the 512-bit default
+        // (digest.c: `if (digest_length == 0) digest_length = 512;`).
+        // probed WSL GNU coreutils 9.4: byte-identical to `-l 512`, rc 0.
+        let (r0, out0, err0) = run("b2sum", &["-l", "0"], "abc");
+        assert_eq!(r0, 0, "-l 0 rc");
+        assert!(err0.is_empty(), "-l 0 stderr: {err0}");
+        let (r512, out512, _) = run("b2sum", &["-l", "512"], "abc");
+        assert_eq!(out0, out512, "-l 0 must equal the 512-bit default");
+        assert_eq!(r0, r512);
+        assert_eq!(out0.len(), 128 + "  -\n".len());
+        // long form + leading '+' (xstrtoumax number grammar)
+        let (r, out, _) = run("b2sum", &["--length=0"], "abc");
+        assert_eq!(r, 0);
+        assert_eq!(out, out0);
+        let (r, out, _) = run("b2sum", &["-l", "+0"], "abc");
+        assert_eq!(r, 0);
+        assert_eq!(out, out0);
     }
 
     #[test]
