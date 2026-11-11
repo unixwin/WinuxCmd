@@ -839,11 +839,9 @@ pub fn fmt_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 }
                 continue;
             }
-            let path = if std::path::Path::new(op).is_absolute() {
-                std::path::PathBuf::from(op)
-            } else {
-                ctx.cwd.join(op)
-            };
+            // the one operand boundary (drive dialect, carrier colons,
+            // shell tree — the 1.x native_path layer)
+            let path = std::path::PathBuf::from(crate::fs_win::api_path(&ctx.cwd, op));
             match std::fs::read(&path) {
                 Ok(data) => {
                     let mut f = make_fmt(
@@ -864,10 +862,28 @@ pub fn fmt_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     }
                 }
                 Err(e) => {
-                    let reason = match e.kind() {
-                        std::io::ErrorKind::NotFound => "No such file or directory",
-                        std::io::ErrorKind::PermissionDenied => "Permission denied",
-                        _ => "Invalid argument",
+                    // [GNU] a directory operand: POSIX opens it fine and the
+                    // READ fails, so fmt reports its bare read-error line
+                    // (probed coreutils 9.4 2026-11-11: `fmt indir` ->
+                    // "fmt: read error" rc 1, no operand name, no errno
+                    // text); Windows fails the OPEN with
+                    // ERROR_ACCESS_DENIED, so the directory attribute
+                    // routes to the GNU shape here. A missing file keeps
+                    // the probed cannot-open shape.
+                    let reason = if e.kind() == std::io::ErrorKind::PermissionDenied
+                        && crate::fs_win::file_meta(&ctx.cwd, op, true)
+                            .map(|m| m.is_dir)
+                            .unwrap_or(false)
+                    {
+                        let _ = writeln!(io.stderr, "fmt: read error");
+                        ok = false;
+                        continue;
+                    } else {
+                        match e.kind() {
+                            std::io::ErrorKind::NotFound => "No such file or directory",
+                            std::io::ErrorKind::PermissionDenied => "Permission denied",
+                            _ => "Invalid argument",
+                        }
                     };
                     let _ = writeln!(io.stderr, "fmt: cannot open '{op}' for reading: {reason}");
                     ok = false;
