@@ -90,6 +90,10 @@ setup_fixture() {
       rm -rf pf1 pf2 pf3 pqin
       printf 'a\nb\nc\n' > pf1; printf '1\n2\n3\n4\n' > pf2
       printf 'only\n' > pf3; printf 'q\nr\n' > pqin ;;
+    fold)
+      rm -rf flong fwords
+      printf 'The quick brown fox jumps over the lazy dog again and again.\n' > flong
+      printf 'supercalifragilisticexpialidocious antidisestablishmentarianism word\n' > fwords ;;
     *) : ;;
   esac
 }
@@ -652,6 +656,30 @@ TABLE
 19|||-d:|:pf1:pf2
 20|||-s:-d:,:pf1:pf2
 21|||-d,:pf1:pf2
+TABLE
+      ;;
+    fold)
+      cat <<'TABLE'
+01|||flong
+02|||-w:10:flong
+03|||-w10:flong
+04|||--width=10:flong
+05|||-s:-w:14:flong
+06|||-b:-w:5:flong
+07|||-w:3:fwords
+08||The quick brown fox jumps over the lazy dog.|
+09||abcdefghij|-w:4:-
+10|||-w:5:flong:fwords
+11|||fmissing
+12|||-w:0:flong
+13|||-w:-3:flong
+14|||-10:flong
+15|||--help
+16|||--version
+17|||--bogus
+18|||-w
+19|||--:flong
+20|||-c:-w:10:flong
 TABLE
       ;;
     *)
