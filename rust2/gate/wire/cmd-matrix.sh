@@ -338,6 +338,29 @@ TABLE
 15|||a:b:c
 TABLE
       ;;
+    users)
+      # #1488 wiring wave3b: users takes at most one operand (the utmp FILE,
+      # a missing path is the GNU error rc 1, a second operand is "extra
+      # operand" rc 1). The printed list is the platform value model (win);
+      # the 1.x WTS session-state filter is not inherited.
+      cat <<'TABLE'
+01|||
+02|||--help
+03|||--version
+04|||-h
+05|||--bogus
+06|||-z
+07|||missing-file-xyz
+08|||a:b
+09|||a:b:c
+10|||--
+11|||--help:x
+12|||--version:x
+13|||-h:x
+14|||.
+15|||-:-
+TABLE
+      ;;
     *)
       echo "cmd-matrix.sh: no case table for $CMD" >&2
       exit 2
