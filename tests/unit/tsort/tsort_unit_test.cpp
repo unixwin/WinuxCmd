@@ -60,14 +60,18 @@ TEST(tsort, tsort_empty_input_is_not_an_error) {
   EXPECT_TRUE(r.stderr_text.empty());
 }
 
-// [GNU] -w is accepted and ignored (POSIX.1-2024) (issue #1085).
-TEST(tsort, tsort_w_flag_is_noop) {
+// [#1488 wiring wave3b] GNU 9.4 REJECTS -w: getopt_long has no -w entry,
+// so it is `invalid option -- 'w'` + try-help, exit 1 (probed under WSL;
+// issue #1085's accepted-and-ignored model was the 1.x C++ behavior and
+// is not inherited by the rust2 replacement).
+TEST(tsort, tsort_w_flag_rejected_like_gnu) {
   Pipeline p;
   p.set_stdin("a b\nb c\n");
   p.add(L"tsort.exe", {L"-w"});
   auto r = p.run();
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "a\nb\nc\n");
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_CONTAINS(r.stderr_text, "invalid option -- 'w'");
 }
 
 // [#1212] a valid pair after 0x1A must survive (text mode treated it as EOF).

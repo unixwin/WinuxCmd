@@ -361,6 +361,31 @@ TABLE
 15|||-:-
 TABLE
       ;;
+    tsort)
+      # #1488 wiring wave3b: tsort reads whitespace-separated token pairs
+      # from stdin or FILE; stdin rows carry one-line inputs (no newlines
+      # in the matrix table). Known 1.x divergence recorded, not inherited:
+      # -w (C++ accepts, GNU 9.4 rejects with usage rc 1; Rust follows GNU).
+      cat <<'TABLE'
+01|||
+02|||a b c d
+03|||a b b a
+04|||a b a b
+05|||a b c
+06|||a a
+07|||m a m z
+08|||a b b c
+09||1 2|-
+10|||--help
+11|||--version
+12|||-w
+13|||--bogus
+14|||missing-file-xyz
+15|||a:b
+16|||-
+17|||--
+TABLE
+      ;;
     *)
       echo "cmd-matrix.sh: no case table for $CMD" >&2
       exit 2
