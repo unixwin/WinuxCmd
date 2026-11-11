@@ -237,13 +237,85 @@ pub mod imp {
     /// are absolutized against `base` first. Forward slashes are folded to
     /// backslashes because \\?\-prefixed paths get no normalization.
     /// Map the POSIX device paths the 1.x C++ applets honor onto their
-    /// Windows DOS devices (native_path::file_attribute_data_w family).
+    /// Windows DOS devices (native_path::resolve_pseudo_device_w family).
     pub fn map_device(operand: &str) -> &str {
-        match operand {
-            "/dev/null" => "NUL",
-            "/dev/zero" => "NUL",
-            _ => operand,
+        match dos_device_canonical(operand) {
+            Some(dev) => dev,
+            None => operand,
         }
+    }
+
+    /// Whole-operand DOS device recognition (1.x native_path.cppm
+    /// resolve_pseudo_device_w + is_dos_device_name_w, the #276 boundary):
+    /// POSIX pseudo-device spellings fold onto their Windows devices
+    /// (/dev/null -> NUL, /dev/tty -> CONIN$) and the bare reserved names
+    /// are recognized case-insensitively (MSYS rewrites /dev/null to "nul"
+    /// in native argv). A device name only resolves when it is the WHOLE
+    /// operand — "dir\\NUL" names an ordinary file, and so does
+    /// "\\\\?\\C:\\dir\\NUL". Returns the canonical Windows device name.
+    fn dos_device_canonical(operand: &str) -> Option<&'static str> {
+        match operand {
+            "/dev/null" | "/dev/zero" => return Some("NUL"),
+            "/dev/tty" => return Some("CONIN$"),
+            _ => {}
+        }
+        if operand.contains('/') || operand.contains('\\') {
+            return None;
+        }
+        const DOS_DEVICES: [&str; 24] = [
+            "NUL", "CON", "PRN", "AUX", "CONIN$", "CONOUT$", "COM1", "COM2", "COM3", "COM4",
+            "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6",
+            "LPT7", "LPT8", "LPT9",
+        ];
+        let upper = operand.to_ascii_uppercase();
+        DOS_DEVICES.into_iter().find(|d| *d == upper)
+    }
+
+    /// CreateFileW open-probe for a DOS device name — the existence gate
+    /// that replaces the CRT stat / GetFileAttributesExW path, both of
+    /// which reject device names outright (1.x native_path
+    /// file_attribute_data_w). Plain GENERIC_READ without
+    /// FILE_READ_ATTRIBUTES: the null device answers a read open but
+    /// refuses attribute-only access with ACCESS_DENIED (probed kernel32:
+    /// CreateFileW("NUL", GENERIC_READ|0x800000) -> gle 5, GENERIC_READ ->
+    /// a valid handle). Returns whether the device opened.
+    pub fn probe_dos_device(name: &str) -> bool {
+        let w = wide(name);
+        let handle = unsafe {
+            CreateFileW(
+                w.as_ptr(),
+                GENERIC_READ,
+                FILE_SHARE_ALL,
+                std::ptr::null_mut(),
+                OPEN_EXISTING,
+                0,
+                std::ptr::null_mut(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE || handle.is_null() {
+            return false;
+        }
+        unsafe { CloseHandle(handle) };
+        true
+    }
+
+    /// Metadata for a DOS device operand: the attribute record is
+    /// synthesized (zeroed times/size, one link, character_device flag)
+    /// because the device handle answers no GetFileInformationByHandle
+    /// (ERROR_INVALID_FUNCTION) and cannot feed the ordinary snapshot.
+    /// GNU reports /dev/null as a character special file of size 0
+    /// (#276); %n keeps the operand text at the caller.
+    fn dos_device_meta(dev: &'static str) -> Result<FileMeta, u32> {
+        if !probe_dos_device(dev) && raw_attributes(dev).is_none() {
+            // neither an open nor an attribute answer: report the probe
+            // error (raw_attributes was the last failing call)
+            return Err(kernel32_last_error());
+        }
+        Ok(FileMeta {
+            links: 1,
+            character_device: true,
+            ..FileMeta::default()
+        })
     }
 
     /// Fold literal colons in the operand's final component onto the
@@ -410,9 +482,10 @@ pub mod imp {
         let operand = map_device(operand);
         // A DOS device name keeps its device magic only WITHOUT the \\?\
         // prefix ("\\?\D:\dir\NUL" is a literal file named NUL, not the
-        // null device), so the mapped form passes through verbatim.
-        if operand == "NUL" {
-            return "NUL".to_string();
+        // null device), so the canonical device name passes through
+        // verbatim (any reserved name: NUL, CON, COM4, ...).
+        if dos_device_canonical(operand).is_some() {
+            return operand.to_string();
         }
         let posix_folded = fold_posix_drive_prefix(operand);
         let operand: &str = posix_folded.as_deref().unwrap_or(operand);
@@ -526,6 +599,12 @@ pub mod imp {
     /// Open the path and snapshot its metadata. `lstat` keeps reparse
     /// points unopened (symlink operands report the link itself).
     pub fn file_meta(base: &Path, operand: &str, lstat: bool) -> Result<FileMeta, u32> {
+        // DOS device operands take the synthesized device record before the
+        // ordinary handle snapshot (see dos_device_meta): the C++ 1.x stat
+        // applet took the same attribute-record path (#276).
+        if let Some(dev) = dos_device_canonical(operand) {
+            return dos_device_meta(dev);
+        }
         let extended = api_path(base, operand);
         let mut meta = FileMeta::default();
         // symlink check first: affects both open flags and reporting
@@ -1060,5 +1139,50 @@ mod api_path_probes {
             let out = imp::api_path(Path::new(r"D:\wd"), "/d/repo/x/f.txt");
             assert_eq!(out, r"\\?\D:\repo\x\f.txt", "dialect fold");
         }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn dos_device_names_resolve() {
+        // POSIX pseudo-devices and bare reserved names (1.x
+        // resolve_pseudo_device_w / is_dos_device_name_w)
+        assert_eq!(imp::map_device("/dev/null"), "NUL");
+        assert_eq!(imp::map_device("/dev/zero"), "NUL");
+        assert_eq!(imp::map_device("/dev/tty"), "CONIN$");
+        assert_eq!(imp::map_device("nul"), "NUL");
+        assert_eq!(imp::map_device("ConIN$"), "CONIN$");
+        assert_eq!(imp::map_device("com4"), "COM4");
+        assert_eq!(imp::map_device("LPT7"), "LPT7");
+        // whole operand only: a separator or extension names an ordinary file
+        assert_eq!(imp::map_device("dir/NUL"), "dir/NUL");
+        assert_eq!(imp::map_device("dir\\NUL"), "dir\\NUL");
+        assert_eq!(imp::map_device("nul.txt"), "nul.txt");
+        assert_eq!(imp::map_device("NULX"), "NULX");
+        assert_eq!(imp::map_device("COM0"), "COM0");
+        assert_eq!(imp::map_device("COM10"), "COM10");
+        // the device name passes through api_path verbatim (no \\?\ prefix)
+        assert_eq!(imp::api_path(Path::new("wd"), "/dev/null"), "NUL");
+        assert_eq!(imp::api_path(Path::new("wd"), "con"), "CON");
+        // api_path("/dev/tty") under the cwd tree... device, so verbatim too
+        assert_eq!(imp::api_path(Path::new("wd"), "/dev/tty"), "CONIN$");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn nul_device_probe_and_meta() {
+        // the CI-safe device assertion: CreateFileW opens NUL
+        assert!(imp::probe_dos_device("NUL"));
+        // file_meta synthesizes a character-device record (GNU %F
+        // "character special file", size 0) instead of the CRT stat
+        // EINVAL/EPERM refusal (#276)
+        let m = imp::file_meta(Path::new("wd"), "/dev/null", true).expect("/dev/null meta");
+        assert!(m.character_device);
+        assert!(!m.is_dir && !m.is_symlink);
+        assert_eq!(m.size, 0);
+        assert_eq!(m.links, 1);
+        let m = imp::file_meta(Path::new("wd"), "NUL", false).expect("NUL meta");
+        assert!(m.character_device);
+        // a device name with a separator is an ordinary (missing) file
+        assert!(imp::file_meta(Path::new("wd"), "dir/NUL", true).is_err());
     }
 }

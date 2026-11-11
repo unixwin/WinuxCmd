@@ -1094,6 +1094,28 @@ mod tests {
     }
 
     #[test]
+    fn dev_null_is_character_special() {
+        // #276: GNU reports /dev/null (and /dev/tty) as a character special
+        // file; %n keeps the operand text. probed WSL coreutils 9.4:
+        // `stat -c %F /dev/null` -> "character special file", rc 0.
+        let sc = ScratchCtx::new("stat-devnull");
+        let (r, out, err) = run_sc(&sc, &["-c", "%F", "/dev/null"]);
+        assert_eq!(r, 0, "rc");
+        assert_eq!(err, "", "stderr");
+        assert_eq!(out, "character special file\n");
+        let (r, out, _) = run_sc(&sc, &["-c", "%n", "/dev/null"]);
+        assert_eq!(r, 0);
+        assert_eq!(out, "/dev/null\n");
+        // bare MSYS-rewritten spelling and the /dev/tty pseudo-device
+        let (r, out, _) = run_sc(&sc, &["-c", "%F|%s", "NUL"]);
+        assert_eq!(r, 0);
+        assert_eq!(out, "character special file|0\n");
+        let (r, out, _) = run_sc(&sc, &["-c", "%F", "/dev/tty"]);
+        assert_eq!(r, 0, "/dev/tty rc");
+        assert_eq!(out, "character special file\n");
+    }
+
+    #[test]
     fn printf_mode() {
         let sc = setup("stat-printf");
         let (r, out, _) = run_sc(&sc, &["--printf", "%n\\n", "reg"]);
