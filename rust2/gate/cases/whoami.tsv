@@ -4,8 +4,8 @@ wa01-plain	win
 wa02-extra	exit				extra
 wa03-bogus	win				--bogus
 wa04-dashdash	win				--
-wa05-help	strict				--help
-wa06-version	strict				--version
+wa05-help	win				--help
+wa06-version	win				--version
 wa07-stdin-ignored	win			hello-data
 wa08-two-operands	exit				a	b
 wa09-dashdash-extra	exit				--	extra

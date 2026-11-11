@@ -453,6 +453,26 @@ TABLE
 20|||--:1:true
 TABLE
       ;;
+    whoami)
+      cat <<'TABLE'
+01|||
+02|||extra
+03|||a:b
+04|||-h
+05|||--help
+06|||--version
+07|||--help:x
+08|||--bogus
+09|||-z
+10|||--
+11|||@EMPTY@
+12|||-
+13|||--:extra
+14|||--Help
+15|||--no-such-option
+16|||WINUXSH_USER=
+TABLE
+      ;;
     *)
       echo "cmd-matrix.sh: no case table for $CMD" >&2
       exit 2
