@@ -82,6 +82,7 @@ setup_fixture() {
       rm -rf sreg sdir shard
       printf abc > sreg; mkdir -p sdir; ln -f sreg shard 2>/dev/null
       touch -d '2026-01-02 03:04:05' sreg sdir shard 2>/dev/null ;;
+    seq) : ;;
     *) : ;;
   esac
 }
@@ -567,6 +568,35 @@ TABLE
 26|||
 27|||-c:%n
 28|||-f:-c:%n:sreg
+TABLE
+      ;;
+    seq)
+      cat <<'TABLE'
+01|||5
+02|||1:5
+03|||1:2:9
+04|||-w:1:10
+05|||-w:08:10
+06|||-s:,:1:3
+07|||-s: :1:3
+08|||-f:%.2f:1:3
+09|||-f:%05.1f:1.5:2:7
+10|||1.5:2
+11|||-0.5:0.25:0.5
+12|||5:1
+13|||-w:-1:1
+14|||1e2:1e2
+15|||--:-1:1
+16|||-s:@EMPTY@:1:3
+17|||abc
+18|||1:2:3:4
+19|||-f:%!d:1:3
+20|||-w:1.0:2.0
+21|||--help
+22|||--version
+23|||--bogus
+24|||
+25|||-.5:.5
 TABLE
       ;;
     *)
