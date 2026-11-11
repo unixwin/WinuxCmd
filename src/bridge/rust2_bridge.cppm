@@ -71,14 +71,14 @@ auto current_directory_utf8() -> std::string {
 constexpr int kAbiFailureStatus = 125;
 
 // rust2 commands whose library implementation reads fd 0 (winux_core::Io's
-// stdin). For exactly these names the bridge forwards stdin through the
-// v1 whole-buffer ABI (winuxcmd_run's stdin_buf), slurped with
-// file_io::read_all_stdin. Every other rust2 command keeps the
-// pass-nothing contract — their fd 0 stays untouched, so later consumers
-// in the same pipeline stage keep unread bytes and spawned children
-// (timeout's wrapped command) inherit the live handle. The set is declared
-// here, not probed, because the v1 entry cannot ask the library; the
-// streaming v2 ABI (winuxcmd_run_stream) is the long-term replacement
+// stdin) in EVERY invocation shape. For exactly these names run_command
+// forwards stdin through the v1 whole-buffer ABI (winuxcmd_run's
+// stdin_buf), slurped with file_io::read_all_stdin. Every other rust2
+// command keeps the pass-nothing contract — their fd 0 stays untouched, so
+// later consumers in the same pipeline stage keep unread bytes and spawned
+// children (timeout's wrapped command) inherit the live handle. The set is
+// declared here, not probed, because the v1 entry cannot ask the library;
+// the streaming v2 ABI (winuxcmd_run_stream) is the long-term replacement
 // (rust2/REPLACEMENT-RECIPE.md §5). Wave3b (#1488): numfmt reads stdin
 // only in its no-operand form; the slurp happens before that is known,
 // which is the accepted whole-buffer cost.
@@ -91,17 +91,24 @@ auto rust2_reads_stdin(const char* name) -> bool {
                    view) != kRust2StdinCommands.end();
 }
 
-}  // namespace
+// Standard input as one ABI v1 whole buffer, slurped through the ONE
+// Windows stdin read path (file_io::read_all_stdin: console VEOF (^Z/^D)
+// observation, binary mode, broken-pipe EOF). A closed or otherwise
+// unreadable stdin yields an empty buffer: ABI v1 has no stdin error
+// channel, so the GNU read-error diagnostics for a closed stdin (#973
+// family) stay a streaming-v2 item.
+auto slurp_stdin_binary() -> std::string {
+  if (auto content = file_io::read_all_stdin()) {
+    return std::move(*content);
+  }
+  return {};
+}
 
-export namespace winux::rust2 {
-
-/// Run rust2 library command `name` with the dispatcher's operands.
-///
-/// stdin is forwarded ONLY for the declared stdin readers (see
-/// kRust2StdinCommands), as the v1 whole buffer: slurp-then-run. All other
-/// commands keep the pass-nothing contract, which keeps fd 0 live for
-/// pipeline consumers and spawned children.
-int run_command(const char* name, std::span<std::string_view> args) noexcept {
+// Shared body: turn the dispatcher's operands + process state into the ABI
+// call and drain the returned buffers through the RAW console writers.
+auto run_common(const char* name, std::span<std::string_view> args,
+                const unsigned char* stdin_buf, size_t stdin_len) noexcept
+    -> int {
   if (winuxcmd_abi_version() != WINUXCMD_RUST2_ABI_VERSION) {
     safeErrorPrintLn(std::string(name) +
                      ": rust2 command library ABI version mismatch");
@@ -122,27 +129,12 @@ int run_command(const char* name, std::span<std::string_view> args) noexcept {
 
   const std::string cwd = current_directory_utf8();
 
-  // stdin: whole-buffer forwarding for the declared stdin readers only.
-  // A slurp error (closed fd 0) hands the command empty stdin — the v1
-  // buffer ABI cannot carry the error, so the EOF shape is the closest the
-  // boundary can express (GNU's own "Bad file descriptor" wording stays
-  // with the streaming v2 ABI).
-  std::string stdin_storage;
-  const unsigned char* stdin_ptr = nullptr;
-  size_t stdin_len = 0;
-  if (rust2_reads_stdin(name)) {
-    if (auto content = file_io::read_all_stdin()) {
-      stdin_storage = std::move(*content);
-    }
-    stdin_ptr = reinterpret_cast<const unsigned char*>(stdin_storage.data());
-    stdin_len = stdin_storage.size();
-  }
-
   winuxcmd_cbuf out{nullptr, 0, 0};
   winuxcmd_cbuf err{nullptr, 0, 0};
-  const int status = winuxcmd_run(
-      name, static_cast<int>(argv.size()), argv.empty() ? nullptr : argv.data(),
-      envp.data(), cwd.c_str(), stdin_ptr, stdin_len, &out, &err);
+  const int status = winuxcmd_run(name, static_cast<int>(argv.size()),
+                                  argv.empty() ? nullptr : argv.data(),
+                                  envp.data(), cwd.c_str(), stdin_buf,
+                                  stdin_len, &out, &err);
 
   // stdout before stderr: the Rust side buffered both, so their relative
   // interleaving is not observable anyway; GNU's order for the commands
@@ -164,6 +156,59 @@ int run_command(const char* name, std::span<std::string_view> args) noexcept {
   winuxcmd_free_buf(&out);
   winuxcmd_free_buf(&err);
   return status;
+}
+
+}  // namespace
+
+export namespace winux::rust2 {
+
+/// Run rust2 library command `name` with the dispatcher's operands.
+///
+/// stdin is forwarded ONLY for the declared stdin readers (see
+/// kRust2StdinCommands), as the v1 whole buffer: slurp-then-run. All other
+/// commands keep the pass-nothing contract, which keeps fd 0 live for
+/// pipeline consumers and spawned children.
+int run_command(const char* name, std::span<std::string_view> args) noexcept {
+  if (rust2_reads_stdin(name)) {
+    std::string stdin_storage = slurp_stdin_binary();
+    return run_common(
+        name, args,
+        stdin_storage.empty()
+            ? nullptr
+            : reinterpret_cast<const unsigned char*>(stdin_storage.data()),
+        stdin_storage.size());
+  }
+  return run_common(name, args, nullptr, 0);
+}
+
+/// Run rust2 library command `name`, forwarding standard input as the ABI v1
+/// whole buffer (#1488 wave3a stdin class: tee / paste / fold / fmt / ln -i).
+///
+/// The slurp happens BEFORE the command runs, so only invocations whose GNU
+/// shape actually consumes stdin may call this entry — that condition is the
+/// wiring site's knowledge and is stated in each command's comment:
+/// tee always; paste/fold/fmt when there is no file operand or a "-"
+/// operand; ln when -i/--interactive may prompt. A per-invocation entry is
+/// needed because these readers are CONDITIONAL (paste f1 f2 must leave fd 0
+/// untouched, the way run_command's pass-nothing contract does), which the
+/// declared-reader name list behind run_command cannot express.
+///
+/// Whole-buffer means GNU's incremental reads become slurp-then-run: for a
+/// pipe producer the same bytes are consumed, but output happens only at
+/// EOF, and an interactive `ln -i` sees its first prompt only after the
+/// console reaches EOF (Ctrl+Z). That is the accepted v1 tradeoff, the same
+/// one run_command's declared readers carry; streaming stdin
+/// (winuxcmd_run_stream, ABI v2) is the later wave (see
+/// rust2/REPLACEMENT-RECIPE.md §5).
+int run_command_with_stdin(const char* name,
+                           std::span<std::string_view> args) noexcept {
+  std::string stdin_data = slurp_stdin_binary();
+  return run_common(name, args,
+                    stdin_data.empty()
+                        ? nullptr
+                        : reinterpret_cast<const unsigned char*>(
+                            stdin_data.data()),
+                    stdin_data.size());
 }
 
 }  // namespace winux::rust2
