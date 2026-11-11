@@ -28,6 +28,64 @@ pub fn split_slashes(p: &str) -> Vec<&str> {
     p.split('/').filter(|c| !c.is_empty()).collect()
 }
 
+/// GNU quotef-style quoting for stderr diagnostics: quote with `'...'`
+/// when the name is empty or contains characters outside the safe set
+/// (`missing.txt` stays bare, `*.txt` and the empty name print as
+/// `'*.txt'` / `''` — probed GNU 9.4, WSL + MSYS).
+pub fn quotef(name: &str) -> String {
+    let safe = !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_.-/:@%^+,".contains(&b));
+    if safe {
+        name.to_string()
+    } else {
+        format!("'{name}'")
+    }
+}
+
+/// GNU strerror for a failed open of a literal operand, recovered from the
+/// Windows-native failure: empty names and invalid-name artifacts (literal
+/// `*.txt`, trailing `/`) cannot be opened natively, so the operand string
+/// plus a metadata probe reconstructs what open(2) reports on GNU — probed
+/// byte-identical on WSL 9.4 and MSYS (target/wc2b-probe probes).
+///
+/// `create` selects the O_CREAT semantics GNU truncate runs with: a missing
+/// `name/` is EISDIR because the trailing slash demands a directory, while
+/// a plain open (basenc/digest/tac) reports ENOENT for the same operand.
+pub fn gnu_open_reason(ctx: &Ctx, operand: &str, e: &io::Error, create: bool) -> String {
+    if operand.is_empty() {
+        // open("", ...) is ENOENT on GNU; the empty name never resolves
+        // to the cwd the way a Windows CreateFile("") would.
+        return "No such file or directory".to_string();
+    }
+    if let Some(stripped) = operand.strip_suffix('/') {
+        let exists = !stripped.is_empty() && std::fs::metadata(resolve(ctx, stripped)).is_ok();
+        return if exists {
+            "Not a directory".to_string()
+        } else if create {
+            "Is a directory".to_string()
+        } else {
+            "No such file or directory".to_string()
+        };
+    }
+    // A directory operand "opens" on Linux and dies at the read (EISDIR);
+    // Windows-native opens fail outright, so recover the reason via a
+    // metadata check.
+    if std::fs::metadata(resolve(ctx, operand))
+        .map(|m| m.is_dir())
+        .unwrap_or(false)
+    {
+        return "Is a directory".to_string();
+    }
+    if !create && reason(e) == "Invalid argument" {
+        // Windows-invalid-name artifact for a target that does not exist:
+        // GNU reports ENOENT because open(2) never accepts the name.
+        return "No such file or directory".to_string();
+    }
+    reason(e).to_string()
+}
+
 /// Join `base` with a lexical component.
 pub fn join_lex(base: &Path, comp: &str) -> PathBuf {
     base.join(comp)

@@ -357,15 +357,55 @@ fn run(
             }
         });
     }
-    // -b / -t: last wins; --tag overrides the mode marker entirely.
+    // GNU digest.c parses -l with xdectoumax at its getopt position (the
+    // GETOPT_LENGTH case), so an invalid length is diagnosed before
+    // main()'s post-getopt option-combination checks and before any file
+    // is opened; the 1.x body parsed it in build_config ahead of the combo
+    // errors the same way (`b2sum --tag --check -l bogus` reports
+    // `invalid length`, probed byte-equal on GNU/old/new).
+    let mut bits = algo.default_bits();
+    if allows_length {
+        if let Some(raw) = p.value_of("length") {
+            match parse_length(raw) {
+                Ok(v) => bits = v,
+                Err(kind) => {
+                    let _ = writeln!(io.stderr, "{prog}: invalid length: '{raw}'");
+                    match kind {
+                        LengthError::NotMultiple => {
+                            let _ = writeln!(io.stderr, "{prog}: length is not a multiple of 8");
+                        }
+                        LengthError::TooLong => {
+                            let _ = writeln!(
+                                io.stderr,
+                                "{prog}: maximum digest length for '{}' is 512 bits",
+                                algo.name()
+                            );
+                        }
+                        LengthError::TooShort => {
+                            let _ = writeln!(
+                                io.stderr,
+                                "{prog}: minimum digest length for '{}' is 1 bits",
+                                algo.name()
+                            );
+                        }
+                        LengthError::NotANumber => {}
+                    }
+                    return Ok(1);
+                }
+            }
+        }
+    }
+    // -b / -t: last wins (GNU digest.c toggles binary_mode per getopt
+    // occurrence); --tag overrides the mode marker entirely.
     // None = neither given (GNU's binary == -1).
-    let mode_flag = if p.has("text") {
-        Some(false)
-    } else if p.has("binary") {
-        Some(true)
-    } else {
-        None
-    };
+    let mut mode_flag: Option<bool> = None;
+    for f in &p.flags {
+        match f.as_str() {
+            "text" => mode_flag = Some(false),
+            "binary" => mode_flag = Some(true),
+            _ => {}
+        }
+    }
     let binary = mode_flag == Some(true);
     let tag = p.has("tag");
     let zero = p.has("zero");
@@ -412,39 +452,6 @@ fn run(
                 &format!("the {opt} option is meaningful only when verifying checksums"),
                 io,
             );
-        }
-    }
-
-    let mut bits = algo.default_bits();
-    if allows_length {
-        if let Some(raw) = p.value_of("length") {
-            match parse_length(raw) {
-                Ok(v) => bits = v,
-                Err(kind) => {
-                    let _ = writeln!(io.stderr, "{prog}: invalid length: '{raw}'");
-                    match kind {
-                        LengthError::NotMultiple => {
-                            let _ = writeln!(io.stderr, "{prog}: length is not a multiple of 8");
-                        }
-                        LengthError::TooLong => {
-                            let _ = writeln!(
-                                io.stderr,
-                                "{prog}: maximum digest length for '{}' is 512 bits",
-                                algo.name()
-                            );
-                        }
-                        LengthError::TooShort => {
-                            let _ = writeln!(
-                                io.stderr,
-                                "{prog}: minimum digest length for '{}' is 1 bits",
-                                algo.name()
-                            );
-                        }
-                        LengthError::NotANumber => {}
-                    }
-                    return Ok(1);
-                }
-            }
         }
     }
 
@@ -498,17 +505,16 @@ fn run(
                     buf
                 }
                 Err(e) => {
-                    let reason = crate::fsutil::reason(&e);
-                    let note = if e.kind() == std::io::ErrorKind::IsADirectory
-                        || std::fs::metadata(resolve(ctx, file))
-                            .map(|m| m.is_dir())
-                            .unwrap_or(false)
-                    {
-                        format!("{file}: Is a directory")
-                    } else {
-                        format!("{file}: {reason}")
-                    };
-                    let _ = writeln!(io.stderr, "{prog}: {note}");
+                    // GNU digest_file: a directory operand reports
+                    // `%s: Is a directory` in hash mode (the read dies with
+                    // EISDIR), every other open failure is
+                    // `%s: <strerror>` with quotef quoting — including the
+                    // empty name (`b2sum: '': No such file or directory`)
+                    // and literal `*.txt` globs. Windows-native opens fail
+                    // with EACCES/ERROR_INVALID_NAME, so the reason comes
+                    // from the shared GNU recovery helper.
+                    let reason = crate::fsutil::gnu_open_reason(ctx, file, &e, false);
+                    let _ = writeln!(io.stderr, "{prog}: {}: {reason}", quotef(file.as_bytes()));
                     failed = true;
                     continue;
                 }
@@ -810,17 +816,10 @@ fn write_escaped<W: std::io::Write + ?Sized>(out: &mut W, name: &[u8]) -> std::i
 
 /// Approximation of gnulib `quotef` for stderr diagnostics: quote with
 /// `'...'` when the name is empty or contains characters outside the
-/// common safe set. stderr wording is recorded by the gate, not gated.
+/// common safe set. Delegates to the shared fsutil helper (the same rule
+/// basenc quotes with).
 pub(crate) fn quotef(name: &[u8]) -> String {
-    let s = String::from_utf8_lossy(name);
-    let safe = !s.is_empty()
-        && s.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"_.-/:@%^+,".contains(&b));
-    if safe {
-        s.into_owned()
-    } else {
-        format!("'{s}'")
-    }
+    crate::fsutil::quotef(&String::from_utf8_lossy(name))
 }
 
 fn plural<'a>(n: u64, one: &'a str, many: &'a str) -> &'a str {
@@ -881,10 +880,19 @@ fn check_file(
                 }
             }
             Err(e) => {
-                let reason = if e.kind() == std::io::ErrorKind::NotFound {
-                    crate::fsutil::reason(&e).to_string()
+                // GNU digest_check reads the checkfile with getline: a
+                // directory "opens" on Linux and dies at read time, which
+                // reports the shared `%s: read error` site (probed
+                // byte-identical on WSL 9.4 + MSYS). Windows-native opens
+                // fail outright, so recover the read-error shape via a
+                // metadata check like target_open_reason does.
+                let is_dir = std::fs::metadata(resolve(ctx, operand))
+                    .map(|m| m.is_dir())
+                    .unwrap_or(false);
+                let reason = if is_dir {
+                    "read error".to_string()
                 } else {
-                    target_open_reason(&e, operand, ctx)
+                    crate::fsutil::gnu_open_reason(ctx, operand, &e, false)
                 };
                 let _ = writeln!(
                     io.stderr,

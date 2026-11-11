@@ -120,6 +120,26 @@ fn run(name: &str, codec: &b64core::Codec, args: &[OsString], io: &mut Io, ctx: 
             }
         });
     }
+    // GNU basenc.c validates --wrap with xstrtoimax at its getopt position
+    // (basenc.c:1106-1113), before any operand is examined — and in decode
+    // mode too, where the wrap column is simply unused. The 1.x body
+    // validated in build_config ahead of the extra-operand check and the
+    // input read, the same observable order (`base64 -w bogus missing`
+    // reports the wrap size, not the file; `base64 -d -w bogus mf` never
+    // decodes; probed byte-equal on GNU/old/new).
+    let wrap = match p.value_of("wrap") {
+        Some(raw) => match b64core::parse_wrap(raw) {
+            Ok(w) => w,
+            Err(()) => {
+                // GNU basenc.c: error (0, 0, "invalid wrap size: %s")
+                // without usage() — no "Try ... --help" line (the 1.x
+                // body printed the same single diagnostic line).
+                let _ = writeln!(io.stderr, "{name}: invalid wrap size: '{raw}'");
+                return Ok(1);
+            }
+        },
+        None => 76,
+    };
     if p.positionals.len() > 1 {
         let shown = p.positionals[1].to_string_lossy().into_owned();
         let _ = usage_error(io, name, &format!("extra operand '{}'", shown));
@@ -143,8 +163,28 @@ fn run(name: &str, codec: &b64core::Codec, args: &[OsString], io: &mut Io, ctx: 
                         std::io::copy(&mut f, &mut input)?;
                     }
                     Err(e) => {
-                        let reason = crate::fsutil::reason(&e);
-                        let _ = writeln!(io.stderr, "{name}: {shown}: {reason}");
+                        // GNU basenc opens the operand then reads it: a
+                        // directory dies at read (`base64: read error: Is a
+                        // directory`, no operand in the message), while an
+                        // invalid-name operand (literal `*.txt`, trailing
+                        // `/`, the empty name) dies at open with ENOENT —
+                        // all probed byte-identical on WSL 9.4 + MSYS.
+                        // Windows-native opens fail with EACCES /
+                        // ERROR_INVALID_NAME instead, so recover GNU's
+                        // shapes via metadata + the shared helper.
+                        if std::fs::metadata(resolve(ctx, &shown))
+                            .map(|m| m.is_dir())
+                            .unwrap_or(false)
+                        {
+                            let _ = writeln!(io.stderr, "{name}: read error: Is a directory");
+                            return Ok(1);
+                        }
+                        let reason = crate::fsutil::gnu_open_reason(ctx, &shown, &e, false);
+                        let _ = writeln!(
+                            io.stderr,
+                            "{name}: {}: {reason}",
+                            crate::fsutil::quotef(&shown)
+                        );
                         return Ok(1);
                     }
                 }
@@ -168,17 +208,6 @@ fn run(name: &str, codec: &b64core::Codec, args: &[OsString], io: &mut Io, ctx: 
             }
         }
     } else {
-        let wrap = match p.value_of("wrap") {
-            Some(raw) => match b64core::parse_wrap(raw) {
-                Ok(w) => w,
-                Err(()) => {
-                    let msg = format!("invalid wrap size: '{}'", raw);
-                    let _ = usage_error(io, name, &msg);
-                    return Ok(1);
-                }
-            },
-            None => 76,
-        };
         let enc = b64core::encode(codec, &input, wrap);
         out.write_all(&enc)?;
         Ok(0)
