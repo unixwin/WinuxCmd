@@ -10,12 +10,19 @@
 //! Time sources — GNU order measured against coreutils 9.4 (WSL probes,
 //! 2026-11-11, rust2/target/gate/w3a/probe/touch-precedence*.sh):
 //! * `-d`/`--date` — a GNU parse-datetime subset, probed against coreutils
-//!   9.4: ISO 8601 "YYYY-MM-DD[ T]HH[:MM[:SS[.frac]]]", date-only, time-only
-//!   (today), "@SECONDS" epoch, optional trailing timezone
-//!   (+HHMM / +HH:MM / Z / UTC / GMT). Relative forms ("next monday",
-//!   "1 day ago") are NOT part of the subset and report GNU's
-//!   `invalid date format 'X'` (documented divergence: no "Try" line, as
-//!   the 1.x C++ build also printed).
+//!   9.4: ISO 8601 "YYYY-MM-DD[ T]HH[:MM[:SS[.frac]]]", basic "THHMM",
+//!   date-only, time-only (today), bare hour, compact "YYYYMMDD[HHMM[SS]]",
+//!   loose single-digit fields, slash dates, "@SECONDS" epoch, military
+//!   zone letters ("1430Z", "9:30j"), weekday items ("monday", "next
+//!   monday", "last friday"), relative items ("3 days ago", "+2 hours",
+//!   "1 fortnight", now/today/yesterday/tomorrow, month/year calendar
+//!   shifts with month-end clamping), a combined "<base> <relative item>"
+//!   ("2026-03-31 1 month ago"), and a trailing timezone
+//!   (+HHMM / +HH:MM / Z / UTC / GMT). Relative forms anchor at the -r
+//!   reference time when both are given (touch.c:354-360 evaluates the
+//!   string against the reference ATIME for the atime field and the
+//!   reference MTIME for the mtime field; probed: `-r ref -d '+1 day'`
+//!   lands a day past each reference stamp).
 //! * `-t` — [[CC]YY]MMDDhhmm[.ss] fixed format; YY 69-99 -> 19xx,
 //!   00-68 -> 20xx; .ss is exactly two digits 0-60 (probed: .99 rejected).
 //!   Parsed INLINE at its argv position: a bad stamp errors immediately,
@@ -37,9 +44,20 @@
 //! for missing operands; without it missing files are created (rc 1 on
 //! failure, later operands still processed). -h/--no-dereference opens
 //! reparse points directly. No operand is `missing file operand`, rc 1.
-//! `-` is a plain file name (POSIX, like GNU touch).
+//! Operands keep the direct-invocation contract of the 1.x build (tests/
+//! unit/touch/touch_unit_test.cpp, all GNU-rc-probed where GNU has an
+//! opinion): `-` retimes standard output (POSIX; GNU touch.c:127-128) and
+//! does NOT name a literal file; a wildcard operand (`*?[`) expands over
+//! the named directory like the 1.x utils glob (unmatched patterns stay
+//! literal, the GNU glob default); a trailing separator fails with GNU's
+//! "setting times of '<op>': <reason>" on a non-directory and succeeds on
+//! a directory (probed: `touch dir/` rc 0, `touch f.txt/` and `touch
+//! nope/` rc 1 with that wording). "D:name" spells the literal carrier
+//! file in the cwd (U+F03A fold, #1283; fs_win::api_path is the one
+//! operand boundary).
 
 use std::ffi::OsString;
+use std::path::Path;
 
 use crate::fs_win::{self, FileTime, SystemTime};
 use winux_core::{usage_error, CmdResult, Ctx, Io};
@@ -265,7 +283,8 @@ pub fn touch_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let now_ft = FileTime::from_epoch(now.as_secs() as i64, now.subsec_nanos());
     let mut ref_atime: Option<FileTime> = None;
     let mut ref_mtime: Option<FileTime> = None;
-    let mut new_time: Option<FileTime> = None;
+    let mut date_atime: Option<FileTime> = None;
+    let mut date_mtime: Option<FileTime> = None;
     // [GNU] -t combined with any other time source is rejected before the
     // reference stat (probed: `-r missing -t ok` reports "more than one
     // source", not the stat failure). -d + -r is legal; the -d time wins.
@@ -297,8 +316,25 @@ pub fn touch_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         }
     }
     if let Some(d) = &opts.date {
-        match parse_datetime(d) {
-            Some(ft) => new_time = Some(ft),
+        // [GNU] touch.c:354-360: with -r the -d string is evaluated against
+        // the reference ATIME for the atime field and the reference MTIME
+        // for the mtime field, so relative items anchor per field
+        // (probed: `-r ref -d '+1 day'` lands a day past each reference
+        // stamp). Without -r both fields use now; an absolute string then
+        // parses to the same value either way.
+        let (a_base, m_base) = match (ref_atime, ref_mtime) {
+            (Some(a), Some(m)) => (a, m),
+            _ => (now_ft, now_ft),
+        };
+        match parse_datetime(d, a_base) {
+            Some(ft) => date_atime = Some(ft),
+            None => {
+                let _ = writeln!(io.stderr, "touch: invalid date format '{d}'");
+                return Ok(1);
+            }
+        }
+        match parse_datetime(d, m_base) {
+            Some(ft) => date_mtime = Some(ft),
             None => {
                 let _ = writeln!(io.stderr, "touch: invalid date format '{d}'");
                 return Ok(1);
@@ -306,7 +342,8 @@ pub fn touch_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         }
     }
     if opts.stamp.is_some() {
-        new_time = stamp_time;
+        date_atime = stamp_time;
+        date_mtime = stamp_time;
     }
     // [GNU] the missing-operand check follows time-source resolution
     // (probed: `-d garbage` with no operands reports the date;
@@ -316,13 +353,13 @@ pub fn touch_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         return Ok(1);
     }
     let mut ok = true;
-    for op in &operands {
+    'operands: for op in &operands {
         // GNU: an explicit -d/-t time wins over -r (probed: -d + -r succeeds
         // with the -d time applied); -r alone copies BOTH times from the
         // reference; with neither, both get the current time. -a/-m then
         // select which of the two actually gets written.
-        let (want_atime, want_mtime) = if let Some(t) = new_time {
-            (Some(t), Some(t))
+        let (want_atime, want_mtime) = if let (Some(a), Some(m)) = (date_atime, date_mtime) {
+            (Some(a), Some(m))
         } else if opts.reference.is_some() {
             (ref_atime, ref_mtime)
         } else {
@@ -338,43 +375,124 @@ pub fn touch_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             (false, true) => want_mtime,
             (_, _) => want_mtime,
         };
-        // missing file: create unless -c
-        let missing = fs_win::file_meta(&ctx.cwd, op, true).is_err();
-        if missing && !opts.no_create {
-            if let Err(e) = fs_win::create_file(&ctx.cwd, op) {
+        // [GNU] touch.c:127-128: the '-' operand retimes standard output
+        // (POSIX) instead of naming a literal file. An untimable stdout
+        // (pipe/console) reports the same setting-times failure GNU does.
+        if op == "-" {
+            if let Err(e) = fs_win::set_stdout_file_times(atime, mtime) {
                 let _ = writeln!(
                     io.stderr,
-                    "touch: cannot touch '{op}': {}",
+                    "touch: setting times of '-': {}",
                     fs_win::win32_reason(e)
                 );
                 ok = false;
-                continue;
+            }
+            continue 'operands;
+        }
+        // [GNU] a trailing separator names the operand through the slash:
+        // a directory succeeds (probed `touch dir/` rc 0); anything else
+        // fails with the setting-times wording and the OS reason (probed:
+        // `touch f.txt/` -> "Not a directory", `touch nope/` -> "No such
+        // file or directory", both rc 1; the old 1.x wording "cannot
+        // touch" is the recorded divergence). -c on a missing path stays
+        // silent like the plain missing case.
+        if op.ends_with('/') || op.ends_with('\\') {
+            let stripped = op.trim_end_matches(['/', '\\']);
+            match fs_win::file_meta(&ctx.cwd, stripped, true) {
+                Ok(m) if m.is_dir => {
+                    // touch the directory through the stripped spelling
+                    if let Err(e) = fs_win::set_file_times(
+                        &ctx.cwd,
+                        stripped,
+                        None,
+                        atime,
+                        mtime,
+                        true,
+                        opts.no_dereference,
+                    ) {
+                        let _ = writeln!(
+                            io.stderr,
+                            "touch: setting times of '{op}': {}",
+                            fs_win::win32_reason(e)
+                        );
+                        ok = false;
+                    }
+                    continue 'operands;
+                }
+                Ok(_) => {
+                    // [GNU] probed `touch f.txt/` (existing regular file):
+                    // "touch: setting times of 'f.txt/': Not a directory", rc 1
+                    let _ = writeln!(
+                        io.stderr,
+                        "touch: setting times of '{op}': {}",
+                        fs_win::win32_reason(267)
+                    );
+                    ok = false;
+                    continue 'operands;
+                }
+                Err(e) => {
+                    if opts.no_create {
+                        // GNU -c on a missing path stays silent
+                        continue 'operands;
+                    }
+                    let _ = writeln!(
+                        io.stderr,
+                        "touch: setting times of '{op}': {}",
+                        fs_win::win32_reason(e)
+                    );
+                    ok = false;
+                    continue 'operands;
+                }
             }
         }
-        let is_dir = fs_win::file_meta(&ctx.cwd, op, true)
-            .map(|m| m.is_dir)
-            .unwrap_or(false);
-        match fs_win::set_file_times(
-            &ctx.cwd,
-            op,
-            None,
-            atime,
-            mtime,
-            is_dir,
-            opts.no_dereference,
-        ) {
-            Ok(()) => {}
-            Err(e) => {
-                if missing && opts.no_create {
-                    // GNU -c on a missing file: silent success
+        // Direct-invocation glob contract (1.x utils glob_expand): a
+        // wildcard operand expands over the named directory; an unmatched
+        // pattern stays literal (the GNU glob default), so GNU's
+        // creates-a-literal-'*'-file diagnostic keeps a shape.
+        let expanded = if contains_wildcard(op) {
+            glob_expand_in(&ctx.cwd, op)
+        } else {
+            None
+        };
+        for f in expanded.unwrap_or_else(|| vec![op.clone()]) {
+            // missing file: create unless -c
+            let missing = fs_win::file_meta(&ctx.cwd, &f, true).is_err();
+            if missing && !opts.no_create {
+                if let Err(e) = fs_win::create_file(&ctx.cwd, &f) {
+                    let _ = writeln!(
+                        io.stderr,
+                        "touch: cannot touch '{f}': {}",
+                        fs_win::win32_reason(e)
+                    );
+                    ok = false;
                     continue;
                 }
-                let _ = writeln!(
-                    io.stderr,
-                    "touch: setting times of '{op}': {}",
-                    fs_win::win32_reason(e)
-                );
-                ok = false;
+            }
+            let is_dir = fs_win::file_meta(&ctx.cwd, &f, true)
+                .map(|m| m.is_dir)
+                .unwrap_or(false);
+            match fs_win::set_file_times(
+                &ctx.cwd,
+                &f,
+                None,
+                atime,
+                mtime,
+                is_dir,
+                opts.no_dereference,
+            ) {
+                Ok(()) => {}
+                Err(e) => {
+                    if missing && opts.no_create {
+                        // GNU -c on a missing file: silent success
+                        continue;
+                    }
+                    let _ = writeln!(
+                        io.stderr,
+                        "touch: setting times of '{f}': {}",
+                        fs_win::win32_reason(e)
+                    );
+                    ok = false;
+                }
             }
         }
     }
@@ -389,11 +507,39 @@ fn take_val(inline: Option<String>, args: &[OsString], idx: &mut usize) -> Optio
     args.get(*idx).map(|v| v.to_string_lossy().into_owned())
 }
 
-/// parse_datetime(): the GNU parse-datetime subset (ISO 8601 / @epoch /
-/// time-only / date-only / trailing zone). Returns a UTC FILETIME.
-fn parse_datetime(s: &str) -> Option<FileTime> {
+/// parse_datetime(): the GNU parse-datetime subset, probed against
+/// coreutils 9.4 (grammar inventory in the module docs). Dispatch order
+/// mirrors the 1.x build (which mirrors parse-datetime's item classes):
+/// fixed (ISO/compact/epoch) -> military zone -> weekday -> relative ->
+/// combined. `base` anchors relative items (the -r reference time when
+/// one is given, else now; probed touch.c:354-360 behavior). Returns a
+/// UTC FILETIME.
+fn parse_datetime(s: &str, base: FileTime) -> Option<FileTime> {
     let s = s.trim();
     // GNU probed: an empty date is today at local midnight (rc 0)
+    if s.is_empty() {
+        return midnight_of(base);
+    }
+    if let Some(ft) = parse_fixed(s) {
+        return Some(ft);
+    }
+    if let Some(ft) = parse_military(s) {
+        return Some(ft);
+    }
+    if let Some(ft) = parse_weekday(s, base) {
+        return Some(ft);
+    }
+    if let Some(ft) = parse_relative(s, base) {
+        return Some(ft);
+    }
+    parse_combined(s, base, 0)
+}
+
+/// Fixed wall-clock forms: @epoch, ISO "YYYY-MM-DD[ T]HH[:MM[:SS[.frac]]]",
+/// loose single-digit fields, slash dates, basic "THHMM[SS]", compact
+/// "YYYYMMDD[HHMM[SS]]", date-only, time-only, trailing timezone.
+fn parse_fixed(s: &str) -> Option<FileTime> {
+    let s = s.trim();
     // @epoch seconds (integer or decimal)
     if let Some(epoch) = s.strip_prefix('@') {
         let (int_part, frac) = match epoch.split_once('.') {
@@ -416,16 +562,85 @@ fn parse_datetime(s: &str) -> Option<FileTime> {
         let secs: i64 = int_part.parse().ok()?;
         return Some(FileTime::from_epoch(secs, frac));
     }
+    // ISO 8601 basic format "THHMM[SS]" (probed coreutils 9.4: `touch -d
+    // T1430` rc 0 = 14:30 today)
+    let b = s.as_bytes();
+    if b.len() >= 5
+        && (b[0] == b'T' || b[0] == b't')
+        && b[1..].iter().all(|c| c.is_ascii_digit())
+        && (b.len() == 5 || b.len() == 7)
+    {
+        let today = local_today()?;
+        let h: u32 = s[1..3].parse().ok()?;
+        let mi: u32 = s[3..5].parse().ok()?;
+        let ss: u32 = if b.len() == 7 {
+            s[5..7].parse().ok()?
+        } else {
+            0
+        };
+        if h > 23 || mi > 59 || ss > 59 {
+            return None;
+        }
+        let st = SystemTime {
+            year: today.0 as u16,
+            month: today.1 as u16,
+            day_of_week: 0,
+            day: today.2 as u16,
+            hour: h as u16,
+            minute: mi as u16,
+            second: ss as u16,
+            milliseconds: 0,
+        };
+        return finish_fixed(&st, i32::MIN);
+    }
     // split date/time first, THEN a trailing timezone from the time part
     // (a whole-string zone scan would eat "-DD" out of a date)
     let (date_part, time_part0) = split_datetime(s)?;
     let (time_part, zone_min) = split_zone(time_part0)?;
     let _ = time_part0;
-    // date_part: "" (time-only), "YYYY-MM-DD" or "YYYYMMDD"?
-    // GNU accepts YYYY-MM-DD; time HH:MM[:SS[.frac]].
     let today = local_today()?;
     let (year, month, day) = if date_part.is_empty() {
         (today.0, today.1, today.2)
+    } else if date_part.bytes().all(|b| b.is_ascii_digit()) {
+        // compact "YYYYMMDD[HHMM[SS]]" (probed: 8/12/14 digits accepted;
+        // the 12/14-digit hour/minute(/second) tail rides the same parse
+        // as the -t stamp fields). A 6-digit body is rejected like the
+        // 1.x build; GNU's verdict on 6 digits is not recorded here.
+        match date_part.len() {
+            8 => {
+                let y: i64 = date_part[..4].parse().ok()?;
+                let m: u32 = date_part[4..6].parse().ok()?;
+                let d: u32 = date_part[6..8].parse().ok()?;
+                (y, m, d)
+            }
+            12 | 14 => {
+                let y: i64 = date_part[..4].parse().ok()?;
+                let m: u32 = date_part[4..6].parse().ok()?;
+                let d: u32 = date_part[6..8].parse().ok()?;
+                let h: u32 = date_part[8..10].parse().ok()?;
+                let mi: u32 = date_part[10..12].parse().ok()?;
+                let s2: u32 = if date_part.len() == 14 {
+                    date_part[12..14].parse().ok()?
+                } else {
+                    0
+                };
+                if m == 0 || m > 12 || d == 0 || d > 31 || h > 23 || mi > 59 || s2 > 59 {
+                    return None;
+                }
+                let st = SystemTime {
+                    year: y as u16,
+                    month: m as u16,
+                    day_of_week: 0,
+                    day: d as u16,
+                    hour: h as u16,
+                    minute: mi as u16,
+                    second: s2 as u16,
+                    milliseconds: 0,
+                };
+                return finish_fixed(&st, zone_min);
+            }
+            _ => return None,
+        }
     } else {
         parse_ymd(date_part)?
     };
@@ -444,17 +659,19 @@ fn parse_datetime(s: &str) -> Option<FileTime> {
         second: second as u16,
         milliseconds: (nanos / 1_000_000) as u16,
     };
-    if zone_min == i32::MIN {
-        // local time
-        fs_win::from_local(&st)
-    } else {
-        // interpret as UTC then shift by the given offset (local = utc+min;
-        // so utc = local - min): build a wall time and subtract the offset
-        // by converting through the epoch.
-        let _ = fs_win::from_local(&st)?;
-        // correct: treat st as UTC wall clock instead
-        let utc_ft = utc_wall_to_filetime(&st)?;
+    finish_fixed(&st, zone_min)
+}
 
+/// Zone application for a broken-down wall time (local when zone_min is
+/// i32::MIN, else UTC shifted by the offset).
+fn finish_fixed(st: &SystemTime, zone_min: i32) -> Option<FileTime> {
+    if zone_min == i32::MIN {
+        fs_win::from_local(st)
+    } else {
+        // interpret st as UTC wall clock and shift by the given offset
+        // (local = utc+min; so utc = local - min)
+        let _ = fs_win::from_local(st)?;
+        let utc_ft = utc_wall_to_filetime(st)?;
         let adjusted = utc_ft.as_u64() as i64 - (zone_min as i64) * 600_000_000i64;
         Some(FileTime::from_u64(adjusted as u64))
     }
@@ -538,7 +755,7 @@ fn split_zone(s: &str) -> Option<(&str, i32)> {
     Some((t, local))
 }
 
-/// Split "DATE TIME" / "TDATE" / date-only / time-only.
+/// Split "DATE TIME" / "TDATE" / date-only / time-only / basic "THHMM[SS]".
 fn split_datetime(body: &str) -> Option<(&str, &str)> {
     if let Some(pos) = body.find(['T', 't']) {
         // 2004-02-29T16:21:42 (the T must sit between digits)
@@ -554,8 +771,8 @@ fn split_datetime(body: &str) -> Option<(&str, &str)> {
     if let Some(pos) = body.find(' ') {
         return Some((&body[..pos], body[pos + 1..].trim_start()));
     }
-    // date-only (has '-') or time-only (has ':')
-    if body.contains('-') {
+    // date-only (has '-' or is the compact all-digit form) or time-only
+    if body.contains('-') || (!body.is_empty() && body.bytes().all(|b| b.is_ascii_digit())) {
         Some((body, ""))
     } else {
         Some(("", body))
@@ -563,8 +780,18 @@ fn split_datetime(body: &str) -> Option<(&str, &str)> {
 }
 
 fn parse_ymd(s: &str) -> Option<(i64, u32, u32)> {
-    let parts: Vec<&str> = s.split('-').collect();
-    if parts.len() != 3 {
+    // ISO "YYYY-MM-DD"; loose single-digit fields are GNU-accepted
+    // ("2026-6-27"), so widths are variable. Slash dates ("2026/05/06",
+    // probed rc 0) take the same shape on '/'.
+    let (sep, alt): (char, char) = if s.contains('-') {
+        ('-', '/')
+    } else if s.contains('/') {
+        ('/', '-')
+    } else {
+        return None;
+    };
+    let parts: Vec<&str> = s.split(sep).collect();
+    if parts.len() != 3 || parts.iter().any(|p| p.contains(alt)) {
         return None;
     }
     if parts
@@ -624,6 +851,511 @@ fn local_today() -> Option<(i64, u32, u32)> {
     let ft = FileTime::from_epoch(now.as_secs() as i64, now.subsec_nanos());
     let (local, _) = fs_win::to_local(ft.as_u64() as i64)?;
     Some((local.year as i64, local.month as u32, local.day as u32))
+}
+
+/// 00:00:00 of `ft`'s local date (the effective zone), DST aware.
+fn midnight_of(ft: FileTime) -> Option<FileTime> {
+    let (mut local, _) = fs_win::to_local(ft.as_u64() as i64)?;
+    local.hour = 0;
+    local.minute = 0;
+    local.second = 0;
+    local.milliseconds = 0;
+    fs_win::from_local(&local)
+}
+
+fn days_in_month(y: i64, m: u32) -> u32 {
+    match m {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 {
+                29
+            } else {
+                28
+            }
+        }
+        _ => 0,
+    }
+}
+
+/// Day of week (0 = Sunday) for a civil date.
+fn civil_dow(y: i64, m: u32, d: u32) -> u32 {
+    let days = days_from_civil(y, m as i64, d as i64);
+    (((days + 4) % 7 + 7) % 7) as u32
+}
+
+/// [GNU] military timezone specs (parse-datetime.y military_table, ported
+/// from the 1.x build): "<HH|HHMM><L>" or a lone "<L>" meaning today
+/// 00:00 in that zone. A-I = UTC+1..+9, K-M = UTC+10..+12 (J is skipped
+/// in the alphabet), N-Y = UTC-1..-12, Z = UTC, J = the local zone. 'T'
+/// is not a zone. "<HH>:<MM>[:<SS>]<L>" is accepted too ("9:30j").
+fn parse_military(s: &str) -> Option<FileTime> {
+    let t = s.trim();
+    let bytes = t.as_bytes();
+    let (h, mi, sec, letter) = if bytes.len() >= 2
+        && bytes[bytes.len() - 1].is_ascii_alphabetic()
+        && bytes[..bytes.len() - 1]
+            .iter()
+            .all(|c| c.is_ascii_digit() || *c == b':')
+    {
+        // "9:30j" / "1430Z" / "16z"
+        let letter = bytes[bytes.len() - 1] as char;
+        let body = &t[..t.len() - 1];
+        let parts: Vec<&str> = body.split(':').collect();
+        match parts.len() {
+            1 => {
+                let digits = parts[0];
+                if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+                    return None;
+                }
+                let (h, mi) = match digits.len() {
+                    1 | 2 => (digits.parse::<u32>().ok()?, 0),
+                    3 | 4 => (
+                        digits[..digits.len() - 2].parse::<u32>().ok()?,
+                        digits[digits.len() - 2..].parse::<u32>().ok()?,
+                    ),
+                    _ => return None,
+                };
+                (h, mi, 0u32, letter)
+            }
+            2 | 3 => {
+                if !parts
+                    .iter()
+                    .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+                {
+                    return None;
+                }
+                let h: u32 = parts[0].parse().ok()?;
+                let mi: u32 = parts[1].parse().ok()?;
+                let sec: u32 = if parts.len() == 3 {
+                    parts[2].parse().ok()?
+                } else {
+                    0
+                };
+                (h, mi, sec, letter)
+            }
+            _ => return None,
+        }
+    } else if bytes.len() == 1 && bytes[0].is_ascii_alphabetic() {
+        (0u32, 0u32, 0u32, bytes[0] as char)
+    } else {
+        return None;
+    };
+    let letter = letter.to_ascii_lowercase();
+    if letter == 't' || h > 23 || mi > 59 || sec > 59 {
+        return None;
+    }
+    let east: Option<i32> = match letter {
+        'j' => None, // 'J' = the local zone
+        'a'..='i' => Some(((letter as u8 - b'a') as i32 + 1) * 60),
+        'k'..='m' => Some(((letter as u8 - b'a') as i32) * 60),
+        'z' => Some(0),
+        'n'..='y' => Some(-((letter as u8 - b'n') as i32 + 1) * 60),
+        _ => return None,
+    };
+    let today = local_today()?;
+    let st = SystemTime {
+        year: today.0 as u16,
+        month: today.1 as u16,
+        day_of_week: 0,
+        day: today.2 as u16,
+        hour: h as u16,
+        minute: mi as u16,
+        second: sec as u16,
+        milliseconds: 0,
+    };
+    match east {
+        None => fs_win::from_local(&st),
+        Some(min) => {
+            let utc_ft = utc_wall_to_filetime(&st)?;
+            let adjusted = utc_ft.as_u64() as i64 - (min as i64) * 600_000_000i64;
+            Some(FileTime::from_u64(adjusted as u64))
+        }
+    }
+}
+
+fn weekday_number(name: &str) -> Option<u32> {
+    let n = name.to_ascii_lowercase();
+    Some(match n.as_str() {
+        "sunday" | "sun" => 0,
+        "monday" | "mon" => 1,
+        "tuesday" | "tue" | "tues" => 2,
+        "wednesday" | "wed" => 3,
+        "thursday" | "thu" | "thur" | "thurs" => 4,
+        "friday" | "fri" => 5,
+        "saturday" | "sat" => 6,
+        _ => return None,
+    })
+}
+
+/// [GNU] Weekday items (issue #1382): "Monday", "next Monday", "last
+/// Monday". A bare name is the nearest such day, today counting (+0..6);
+/// "next" pushes a same-day match a full week out (+7), "last" mirrors it
+/// backwards (-7..0 with same-day at -7). The result is 00:00:00 of the
+/// target date in the effective zone.
+fn parse_weekday(s: &str, base: FileTime) -> Option<FileTime> {
+    let t = s.trim();
+    let lower = t.to_ascii_lowercase();
+    enum Mode {
+        Bare,
+        Next,
+        Last,
+    }
+    let (mode, name) = if let Some(rest) = lower.strip_prefix("next ") {
+        (Mode::Next, rest.trim())
+    } else if let Some(rest) = lower.strip_prefix("last ") {
+        (Mode::Last, rest.trim())
+    } else {
+        (Mode::Bare, lower.as_str())
+    };
+    let target = weekday_number(name.trim())?;
+    let (local, _) = fs_win::to_local(base.as_u64() as i64)?;
+    let base_dow = civil_dow(local.year as i64, local.month as u32, local.day as u32);
+    let delta = (target + 7 - base_dow) % 7;
+    let offset: i64 = match mode {
+        Mode::Bare => delta as i64,
+        Mode::Next => {
+            if delta == 0 {
+                7
+            } else {
+                delta as i64
+            }
+        }
+        Mode::Last => {
+            if delta == 0 {
+                -7
+            } else {
+                delta as i64 - 7
+            }
+        }
+    };
+    let shifted = FileTime::from_u64((base.as_u64() as i64 + offset * 86_400_000_000i64) as u64);
+    midnight_of(shifted)
+}
+
+/// [GNU] Relative items: now/today/yesterday/tomorrow; "<amount> <unit>[
+/// ago]"; amount may carry a sign and next/last stand for +/-1. Units:
+/// seconds/minutes/hours/days/weeks/fortnights plus month(s)/year(s) as
+/// calendar shifts with month-end clamping (all probed coreutils 9.4 rc
+/// 0: "3 days ago", "+2 hours", "1 fortnight", "2 fortnights").
+fn parse_relative(s: &str, base: FileTime) -> Option<FileTime> {
+    let t = s.trim().to_ascii_lowercase();
+    match t.as_str() {
+        "now" => return Some(base),
+        "today" => return midnight_of(base),
+        "yesterday" => {
+            return Some(FileTime::from_u64(
+                (base.as_u64() as i64 - 86_400_000_000i64) as u64,
+            ))
+        }
+        "tomorrow" => {
+            return Some(FileTime::from_u64(
+                (base.as_u64() as i64 + 86_400_000_000i64) as u64,
+            ))
+        }
+        _ => {}
+    }
+    let (body, ago) = match t.strip_suffix(" ago") {
+        Some(b) => (b.trim_end(), true),
+        None => (t.as_str(), false),
+    };
+    let mut tokens = body.split_whitespace();
+    let amount_word = tokens.next()?;
+    let unit = tokens.next()?;
+    if tokens.next().is_some() {
+        return None;
+    }
+    let mut amount: i64 = match amount_word {
+        "next" => 1,
+        "last" => -1,
+        w => {
+            if w.is_empty()
+                || !w
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || b == b'+' || b == b'-')
+            {
+                return None;
+            }
+            w.parse::<i64>().ok()?
+        }
+    };
+    if ago {
+        amount = -amount;
+    }
+    // [GNU] month/year are calendar units, not fixed second counts:
+    // "3 months ago" rolls the wall-clock month back three positions.
+    match unit {
+        "month" | "months" => shift_months(base, amount),
+        "year" | "years" => shift_months(base, amount.saturating_mul(12)),
+        "second" | "seconds" | "sec" | "secs" => add_seconds_ft(base, amount),
+        "minute" | "minutes" | "min" | "mins" => add_seconds_ft(base, amount.saturating_mul(60)),
+        "hour" | "hours" => add_seconds_ft(base, amount.saturating_mul(3600)),
+        "day" | "days" => add_seconds_ft(base, amount.saturating_mul(86_400)),
+        "week" | "weeks" => add_seconds_ft(base, amount.saturating_mul(7 * 86_400)),
+        // [GNU] a fortnight is fourteen days (issue #1382)
+        "fortnight" | "fortnights" => add_seconds_ft(base, amount.saturating_mul(14 * 86_400)),
+        _ => None,
+    }
+}
+
+fn add_seconds_ft(base: FileTime, secs: i64) -> Option<FileTime> {
+    Some(FileTime::from_u64(
+        (base.as_u64() as i64 + secs * 10_000_000i64) as u64,
+    ))
+}
+
+/// [GNU] month/year are calendar units (1.x shift_months, coreutils
+/// touch.c date relative handling): roll the wall-clock month by `months`
+/// positions, clamping the day into the target month (Mar 31 - 1 month ->
+/// Feb 28/29; Feb 29 - 1 year -> Feb 28).
+fn shift_months(base: FileTime, months: i64) -> Option<FileTime> {
+    let (mut st, _) = fs_win::to_local(base.as_u64() as i64)?;
+    let total = st.year as i64 * 12 + (st.month as i64 - 1) + months;
+    let mut year = total.div_euclid(12);
+    let mut month = total.rem_euclid(12) + 1;
+    if year < 1601 || year > 9999 {
+        return None;
+    }
+    let mut day = st.day as i64;
+    while day > days_in_month(year, month as u32) as i64 {
+        day -= days_in_month(year, month as u32) as i64;
+        month += 1;
+        if month > 12 {
+            month = 1;
+            year += 1;
+            if year > 9999 {
+                return None;
+            }
+        }
+    }
+    st.year = year as u16;
+    st.month = month as u16;
+    st.day = day as u16;
+    fs_win::from_local(&st)
+}
+
+/// [GNU] A date string may end with one relative item applied to a base
+/// timestamp ("2026-03-31 1 month ago" -> 2026-03-03) or one weekday item
+/// ("2020-01-02 Monday"; issue #1382). Split the trailing item off and
+/// parse the remainder as the base (recursion bounded like the 1.x).
+fn parse_combined(s: &str, base: FileTime, depth: u32) -> Option<FileTime> {
+    if depth > 4 {
+        return None;
+    }
+    let t = s.trim();
+    if t.is_empty() {
+        return None;
+    }
+    let tokens: Vec<&str> = t.split_whitespace().collect();
+    // tail shapes: <head> <amount|next|last> <unit> [ago|hence]
+    //              <head> [next|last] <weekday>
+    if tokens.len() >= 3 {
+        let last = tokens[tokens.len() - 1].to_ascii_lowercase();
+        let unit_idx = if last == "ago" || last == "hence" {
+            tokens.len() - 2
+        } else {
+            tokens.len() - 1
+        };
+        let unit = tokens[unit_idx].to_ascii_lowercase();
+        let is_unit = matches!(
+            unit.as_str(),
+            "fortnight"
+                | "fortnights"
+                | "second"
+                | "seconds"
+                | "sec"
+                | "secs"
+                | "minute"
+                | "minutes"
+                | "min"
+                | "mins"
+                | "hour"
+                | "hours"
+                | "day"
+                | "days"
+                | "week"
+                | "weeks"
+                | "month"
+                | "months"
+                | "year"
+                | "years"
+        );
+        if is_unit && unit_idx >= 1 {
+            let amount_word = tokens[unit_idx - 1];
+            let is_amount = amount_word == "next"
+                || amount_word == "last"
+                || (!amount_word.is_empty()
+                    && amount_word
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || b == b'+' || b == b'-'));
+            if is_amount {
+                let head = tokens[..unit_idx - 1].join(" ");
+                if head.is_empty() {
+                    return None;
+                }
+                let base_ft = parse_head(&head, base, depth)?;
+                let mut rel = format!("{amount_word} {unit}");
+                if unit_idx + 1 < tokens.len() && unit_idx != tokens.len() - 1 {
+                    rel.push(' ');
+                    rel.push_str(tokens[tokens.len() - 1]);
+                }
+                return parse_relative(&rel, base_ft);
+            }
+        }
+    }
+    // weekday tail
+    if tokens.len() >= 2 {
+        let mut idx = tokens.len() - 1;
+        let mut modifier = "";
+        let last = tokens[idx].to_ascii_lowercase();
+        if weekday_number(&last).is_some() {
+            if idx >= 1 {
+                let prev = tokens[idx - 1].to_ascii_lowercase();
+                if prev == "next" || prev == "last" {
+                    modifier = &tokens[idx - 1];
+                    idx -= 1;
+                }
+            }
+            let head = tokens[..idx].join(" ");
+            if !head.is_empty() {
+                let base_ft = parse_head(&head, base, depth)?;
+                let item = if modifier.is_empty() {
+                    last
+                } else {
+                    format!("{modifier} {last}")
+                };
+                return parse_weekday(&item, base_ft);
+            }
+        }
+    }
+    None
+}
+
+fn parse_head(head: &str, base: FileTime, depth: u32) -> Option<FileTime> {
+    if let Some(ft) = parse_fixed(head) {
+        return Some(ft);
+    }
+    if let Some(ft) = parse_combined(head, base, depth + 1) {
+        return Some(ft);
+    }
+    parse_relative(head, base)
+}
+
+fn contains_wildcard(s: &str) -> bool {
+    s.contains('*') || s.contains('?') || s.contains('[')
+}
+
+/// POSIX fnmatch subset ('*', '?', '[class]' with '!' negation and
+/// ranges; a leading '.' is not matched by '*' or '?', the GNU glob
+/// default). Case-sensitive like the 1.x POSIX re-check.
+fn wildcard_match(pat: &str, name: &str) -> bool {
+    let p: Vec<char> = pat.chars().collect();
+    let n: Vec<char> = name.chars().collect();
+    fn m(p: &[char], n: &[char]) -> bool {
+        if p.is_empty() {
+            return n.is_empty();
+        }
+        match p[0] {
+            '*' => {
+                if n.is_empty() || n[0] == '.' {
+                    return false; // leading dot is not matched by '*'
+                }
+                let mut i = 0usize;
+                loop {
+                    if m(&p[1..], &n[i..]) {
+                        return true;
+                    }
+                    if i >= n.len() {
+                        return false;
+                    }
+                    i += 1;
+                }
+            }
+            '?' => !n.is_empty() && n[0] != '.' && m(&p[1..], &n[1..]),
+            '[' => {
+                if n.is_empty() {
+                    return false;
+                }
+                let c = n[0];
+                let close = match p[1..].iter().position(|&x| x == ']') {
+                    Some(i) => i + 1,
+                    None => return false,
+                };
+                let body = &p[1..close];
+                let (negated, body) = match body.first() {
+                    Some('!') => (true, &body[1..]),
+                    _ => (false, body),
+                };
+                let mut hit = false;
+                let mut i = 0usize;
+                while i < body.len() {
+                    if i + 2 < body.len() && body[i + 1] == '-' {
+                        if c >= body[i] && c <= body[i + 2] {
+                            hit = true;
+                        }
+                        i += 3;
+                    } else {
+                        if c == body[i] {
+                            hit = true;
+                        }
+                        i += 1;
+                    }
+                }
+                if negated {
+                    hit = !hit;
+                }
+                hit && m(&p[close + 1..], &n[1..])
+            }
+            c => !n.is_empty() && n[0] == c && m(&p[1..], &n[1..]),
+        }
+    }
+    m(&p, &n)
+}
+
+/// Direct-invocation glob contract (1.x utils glob_expand): a wildcard
+/// operand expands over the named directory; '.'/'..' never match; an
+/// unmatched pattern yields None so the caller keeps it literal (the GNU
+/// glob default: unmatched patterns stay literal so diagnostics stay
+/// useful). A literal existing path with no '[' is NOT globbed (the 1.x
+/// literal-first rule).
+fn glob_expand_in(base: &Path, pattern: &str) -> Option<Vec<String>> {
+    if !contains_wildcard(pattern) {
+        return None;
+    }
+    let has_class = pattern.contains('[');
+    if !has_class && std::path::Path::new(&fs_win::api_path(base, pattern)).exists() {
+        return None; // literal path wins
+    }
+    let (dir_part, leaf) = match pattern.rfind(['/', '\\']) {
+        Some(i) => (&pattern[..i], &pattern[i + 1..]),
+        None => ("", pattern),
+    };
+    let dir_path = if dir_part.is_empty() {
+        base.to_path_buf()
+    } else {
+        base.join(dir_part)
+    };
+    let mut out = Vec::new();
+    let entries = std::fs::read_dir(&dir_path).ok()?;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name == "." || name == ".." {
+            continue;
+        }
+        if wildcard_match(leaf, &name) {
+            if dir_part.is_empty() {
+                out.push(name.into_owned());
+            } else {
+                out.push(format!("{dir_part}/{name}"));
+            }
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
 }
 
 /// -t STAMP: [[CC]YY]MMDDhhmm[.ss]
@@ -941,5 +1673,118 @@ mod tests {
         assert_eq!(r, 1);
         assert!(sc.path("ok1").exists());
         assert!(io.err().contains("cannot touch 'nodir/f'"));
+    }
+
+    #[test]
+    fn gnu_grammar_extensions() {
+        // compact YYYYMMDD[HHMM[SS]] (probed rc 0); loose fields; slash date
+        assert_eq!(run(&["-d", "20250102030405", "compact"]).0, 0);
+        assert_eq!(run(&["-d", "2026-6-7 8:30", "loose"]).0, 0);
+        assert_eq!(run(&["-d", "2026/05/06 07:08", "slash"]).0, 0);
+        assert_eq!(run(&["-d", "T1430", "basic"]).0, 0);
+        // relative items: fortnight (issue #1382), ago, plus-sign
+        assert_eq!(run(&["-d", "1 fortnight", "fort1"]).0, 0);
+        assert_eq!(run(&["-d", "2 fortnights", "fort2"]).0, 0);
+        assert_eq!(run(&["-d", "3 days ago", "ago3"]).0, 0);
+        assert_eq!(run(&["-d", "+2 hours", "plus2"]).0, 0);
+        // weekday items
+        assert_eq!(run(&["-d", "next monday", "nmon"]).0, 0);
+        assert_eq!(run(&["-d", "last friday", "lfri"]).0, 0);
+        assert_eq!(run(&["-d", "monday", "bmon"]).0, 0);
+        // combined: fixed base + relative item. [GNU] month arithmetic is
+        // calendar-position arithmetic with forward day roll (1.x, probed
+        // coreutils 9.4): Mar 31 minus one month = Mar 3, NOT Feb 28.
+        let sc = ScratchCtx::new("touch-combined");
+        {
+            let mut io = MemIo::new("");
+            let ctx = sc.ctx();
+            let owned: Vec<OsString> = ["-d", "2026-03-31 1 month ago", "clamped"]
+                .iter()
+                .map(Into::into)
+                .collect();
+            let r = touch_cmd(&owned, &mut io.split(), &ctx).unwrap();
+            assert_eq!(r, 0);
+        }
+        let local = fs_win::to_local(
+            fs_win::file_meta(&sc.dir, "clamped", true)
+                .unwrap()
+                .mtime
+                .as_u64() as i64,
+        )
+        .unwrap()
+        .0;
+        assert_eq!(
+            (local.year, local.month, local.day),
+            (2026, 3, 3),
+            "Mar 31 minus one month rolls the overflow days forward (GNU)"
+        );
+    }
+
+    #[test]
+    fn reference_anchors_relative_date() {
+        // [GNU] touch.c:354-360 (probed): -r + -d evaluates the string
+        // against the reference atime/mtime per field, so "+1 day" lands a
+        // day past each reference stamp.
+        let sc = ScratchCtx::new("touch-refanchor");
+        {
+            let mut io = MemIo::new("");
+            let ctx = sc.ctx();
+            let owned: Vec<OsString> = ["-d", "@1500000000", "ref"]
+                .iter()
+                .map(Into::into)
+                .collect();
+            assert_eq!(touch_cmd(&owned, &mut io.split(), &ctx).unwrap(), 0);
+        }
+        {
+            let mut io = MemIo::new("");
+            let ctx = sc.ctx();
+            let owned: Vec<OsString> = ["-r", "ref", "-d", "+1 day", "target"]
+                .iter()
+                .map(Into::into)
+                .collect();
+            assert_eq!(touch_cmd(&owned, &mut io.split(), &ctx).unwrap(), 0);
+        }
+        assert_eq!(mtime_epoch(&sc, "target"), 1500000000 + 86_400);
+    }
+
+    #[test]
+    fn trailing_separator_and_glob() {
+        let sc = ScratchCtx::new("touch-sep-glob");
+        std::fs::write(sc.path("file.txt"), "payload").unwrap();
+        std::fs::create_dir(sc.path("sub")).unwrap();
+        std::fs::write(sc.path("aa1.txt"), "1").unwrap();
+        std::fs::write(sc.path("aa2.txt"), "2").unwrap();
+        let set = |args: &[&str]| {
+            let mut io = MemIo::new("");
+            let ctx = sc.ctx();
+            let owned: Vec<OsString> = args.iter().map(Into::into).collect();
+            let r = touch_cmd(&owned, &mut io.split(), &ctx).unwrap();
+            (r, io.err())
+        };
+        // existing regular file + trailing separator: GNU probed wording
+        let (r, e) = set(&["file.txt/"]);
+        assert_eq!(r, 1);
+        assert!(e.contains("setting times of 'file.txt/': Not a directory"));
+        // missing path + separator: same wording, ENOENT reason
+        let (r, e) = set(&["nope/"]);
+        assert_eq!(r, 1);
+        assert!(e.contains("setting times of 'nope/': No such file or directory"));
+        // directory + separator succeeds
+        let (r, e) = set(&["sub/"]);
+        assert_eq!((r, e.as_str()), (0, ""));
+        // glob expansion (direct-invocation contract): both matches touched
+        let (r, e) = set(&["aa*.txt"]);
+        assert_eq!((r, e.as_str()), (0, ""));
+        assert!(sc.path("aa1.txt").exists());
+        assert!(sc.path("aa2.txt").exists());
+        // unmatched pattern stays literal (GNU glob default). On Windows a
+        // literal '*'-name cannot be created (ERROR_INVALID_NAME), the same
+        // rc 1 the 1.x build reports for `touch 'zz*.txt'`; -c stays silent.
+        let (r, _) = set(&["-c", "zz*.txt"]);
+        assert_eq!(r, 0);
+        assert!(!sc.path("zz*.txt").exists());
+        let (r, e) = set(&["zz*.txt"]);
+        assert_eq!(r, 1);
+        assert!(e.contains("cannot touch 'zz*.txt'"));
     }
 }

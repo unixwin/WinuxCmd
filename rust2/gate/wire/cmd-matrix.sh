@@ -63,6 +63,13 @@ setup_fixture() {
       printf 'K V\na 1\n' > jh1
       printf 'K W\na Q\n' > jh2
       printf 'b 2\na 1\n' > juns ;;
+    # wave3a wiring (#1488): fixed-clock fixtures so timestamp/verbose
+    # output stays byte-stable across the old and new exe runs. `touch -d`
+    # below is the SIDE'S OWN touch (MSYS GNU touch on the exe sides, GNU
+    # coreutils on the WSL side) so both write identical atime/mtime.
+    touch)
+      rm -rf tref ta tb; printf seed > tref; printf seed > ta; printf seed > tb
+      touch -d '2026-01-02 03:04:05' tref ta tb ;;
     *) : ;;
   esac
 }
@@ -451,6 +458,39 @@ TABLE
 18|||0.1s:true
 19|||-s:BOGUS:1:true
 20|||--:1:true
+TABLE
+      ;;
+    # wave3a wiring matrices (#1488). Row shape: id|env|stdin|args
+    # (args ':'-joined). exes run in one shared cwd per side; the GNU side
+    # is the rc oracle (stdout/stderr shapes are platform-bound where noted).
+    touch)
+      cat <<'TABLE'
+01|||ta
+02|||-c:tmissing
+03|||-c:ta
+04|||-a:ta
+05|||-m:ta
+06|||-c:-a:tmissing
+07|||-d:2026-05-06 07:08:09:td1
+08|||-d:@1767225600:td2
+09|||-d:2026-05-06:td3
+10|||-t:202605060708.09:tt1
+11|||-t:05060708:tt2
+12|||-t:2605060708.09:tt3
+13|||-r:tref:tr1
+14|||-r:tmissing:tr2
+15|||-d:2026-05-06 07:08:09:-t:202605060708.09:tmix
+16|||-a:-m:ta
+17|||--no-create:tmissing2
+18|||--date=2026-05-06 07:08:09:td4
+19|||-f:ta
+20|||ta:tb
+21|||--:ta
+22|||--help
+23|||--version
+24|||--help:x
+25|||--bogus
+26|||
 TABLE
       ;;
     *)

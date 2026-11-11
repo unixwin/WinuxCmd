@@ -154,6 +154,7 @@ pub mod imp {
             info: *mut c_void,
             size: DWORD,
         ) -> i32;
+        fn GetStdHandle(which: DWORD) -> Handle;
         fn SetFileTime(
             h: Handle,
             ctime: *const FileTime,
@@ -244,8 +245,49 @@ pub mod imp {
         }
     }
 
+    /// Fold literal colons in the operand's final component onto the
+    /// private-use carrier U+F03A (#1283; 1.x native_path.cppm
+    /// fold_carrier_colons_w). A ':' in a final component is never a drive
+    /// colon (those live in earlier components) and Win32 reads it as an
+    /// alternate-data-stream separator, while the shell's own path layer
+    /// stores such names on disk with ':' encoded as U+F03A — the spelling
+    /// redirects actually create and MSYS resolves. The bare drive ("D:")
+    /// keeps its drive meaning, and verbatim/device spellings ("\\?\\",
+    /// "\\\\.\\") pass through untouched (they are checked by the caller
+    /// before the fold here, since api_path adds the \\?\ prefix only
+    /// after this fold).
+    fn fold_carrier_colons(normalized: &str) -> Option<String> {
+        if normalized.starts_with(r"\\?\") || normalized.starts_with(r"\\.\") {
+            return None;
+        }
+        let sep = normalized.rfind(['\\', '/']);
+        let tail = match sep {
+            Some(i) => &normalized[i + 1..],
+            None => normalized,
+        };
+        if !tail.contains(':') {
+            return None;
+        }
+        // bare "D:" — the drive itself, not a file name
+        if sep.is_none() && normalized.chars().count() == 2 {
+            return None;
+        }
+        let tail_begin = sep.map(|i| i + 1).unwrap_or(0);
+        let mut out = String::with_capacity(normalized.len());
+        for (i, ch) in normalized.char_indices() {
+            if i >= tail_begin && ch == ':' {
+                out.push('\u{F03A}');
+            } else {
+                out.push(ch);
+            }
+        }
+        Some(out)
+    }
+
     pub fn api_path(base: &Path, operand: &str) -> String {
         let operand = map_device(operand);
+        let folded = fold_carrier_colons(operand);
+        let operand: &str = folded.as_deref().unwrap_or(operand);
         let p = if Path::new(operand).is_absolute() {
             std::path::PathBuf::from(operand)
         } else {
@@ -547,6 +589,30 @@ pub mod imp {
         FileTime { low: 0, high: 0 }
     }
 
+    /// Retime the process's standard output handle — the POSIX `touch -`
+    /// operand (GNU touch.c:127-128 retimes stdout instead of naming a
+    /// literal file). Returns the Win32 error on failure (pipes and other
+    /// untimable handles reject SetFileTime, the same EINVAL shape GNU
+    /// reports under a redirected-pipe consumer).
+    pub fn set_stdout_file_times(
+        atime: Option<FileTime>,
+        mtime: Option<FileTime>,
+    ) -> Result<(), u32> {
+        const STD_OUTPUT_HANDLE: DWORD = (-11i32) as u32; // (DWORD)-11
+        let handle = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
+        if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+            return Err(6); // ERROR_INVALID_HANDLE
+        }
+        let a = atime.unwrap_or_else(zero_ft);
+        let m = mtime.unwrap_or_else(zero_ft);
+        let rc = unsafe { SetFileTime(handle, std::ptr::null(), &a, &m) };
+        if rc == 0 {
+            Err(kernel32_last_error())
+        } else {
+            Ok(())
+        }
+    }
+
     /// Create the file if missing and set both times (GNU touch default).
     pub fn create_file(base: &Path, operand: &str) -> Result<(), u32> {
         let extended = api_path(base, operand);
@@ -750,6 +816,12 @@ pub mod imp {
     ) -> Result<(), u32> {
         Err(1)
     }
+    pub fn set_stdout_file_times(
+        _atime: Option<FileTime>,
+        _mtime: Option<FileTime>,
+    ) -> Result<(), u32> {
+        Err(1)
+    }
     pub fn create_file(_base: &Path, _operand: &str) -> Result<(), u32> {
         Err(1)
     }
@@ -787,12 +859,16 @@ pub use imp::*;
 /// 1.x C++ applets use; 1314 is the documented no-Developer-Mode case).
 pub fn win32_reason(err: u32) -> &'static str {
     match err {
-        2 => "No such file or directory",    // ERROR_FILE_NOT_FOUND
-        3 => "No such file or directory",    // ERROR_PATH_NOT_FOUND
-        5 => "Permission denied",            // ERROR_ACCESS_DENIED
-        80 => "File exists",                 // ERROR_FILE_EXISTS
-        183 => "File exists",                // ERROR_ALREADY_EXISTS
-        206 => "File name too long",         // ERROR_FILENAME_EXCED_RANGE
+        2 => "No such file or directory", // ERROR_FILE_NOT_FOUND
+        3 => "No such file or directory", // ERROR_PATH_NOT_FOUND
+        5 => "Permission denied",         // ERROR_ACCESS_DENIED
+        80 => "File exists",              // ERROR_FILE_EXISTS
+        183 => "File exists",             // ERROR_ALREADY_EXISTS
+        206 => "File name too long",      // ERROR_FILENAME_EXCED_RANGE
+        267 => "Not a directory",         // ERROR_DIRECTORY (ENOTDIR shape;
+        // touch's trailing-separator operand reports GNU's exact wording
+        // with it: probed `touch f.txt/` -> "setting times of 'f.txt/':
+        // Not a directory")
         2062 => "No such file or directory", // ERROR_CANT_ACCESS_FILE alt
         1314 => "Operation not permitted",   // ERROR_PRIVILEGE_NOT_HELD
         1 => "Operation not permitted",      // ERROR_INVALID_FUNCTION

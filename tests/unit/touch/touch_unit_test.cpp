@@ -166,8 +166,12 @@ TEST(touch, touch_file_with_trailing_separator_reports_not_directory) {
   auto r = p.run();
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_EQ(tmp.read("file.txt"), "payload");
-  EXPECT_TRUE(r.stderr_text.find("touch: cannot touch 'file.txt/': Not a "
-                                 "directory") != std::string::npos);
+  // GNU probed (coreutils 9.4, 2026-11-11): an existing regular file with
+  // a trailing separator is a time-setting failure, not a create failure:
+  // "touch: setting times of 'file.txt/': Not a directory" rc 1. The 1.x
+  // wording "cannot touch" was the recorded divergence (wave3a wiring).
+  EXPECT_TRUE(r.stderr_text.find("touch: setting times of 'file.txt/': Not "
+                                 "a directory") != std::string::npos);
 }
 
 TEST(touch, touch_reference_updates_target_time) {
