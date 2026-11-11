@@ -94,6 +94,10 @@ setup_fixture() {
       rm -rf flong fwords
       printf 'The quick brown fox jumps over the lazy dog again and again.\n' > flong
       printf 'supercalifragilisticexpialidocious antidisestablishmentarianism word\n' > fwords ;;
+    fmt)
+      rm -rf fpara fpre
+      printf 'This is the first paragraph of the sample text used by the fmt matrix. It has enough words to wrap around several times when the width is small.\n\nThis is the second paragraph.\n' > fpara
+      printf '  indented line one\n  indented line two\n' > fpre ;;
     *) : ;;
   esac
 }
@@ -680,6 +684,32 @@ TABLE
 18|||-w
 19|||--:flong
 20|||-c:-w:10:flong
+TABLE
+      ;;
+    fmt)
+      cat <<'TABLE'
+01|||fpara
+02|||-w:30:fpara
+03|||--width=40:fpara
+04|||-s:fpara
+05|||-u:fpara
+06|||-c:fpre
+07|||-t:fpre
+08|||-g:20:fpara
+09|||-p:  :fpre
+10||This is the first paragraph of the sample text used by the fmt matrix. It has enough words to wrap around several times when the width is small.|
+11||This is the first paragraph of the sample text used by the fmt matrix. It has enough words to wrap around several times when the width is small.|-w:30
+12|||fmissing
+13|||fpara:fpre
+14|||-w:5:fpara
+15|||-w:1000000:fpara
+16|||--help
+17|||--version
+18|||--bogus
+19|||
+20|||-w
+21|||-w:30:fpara:fpre:fpara
+22|||-d
 TABLE
       ;;
     *)
