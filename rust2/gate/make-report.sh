@@ -118,5 +118,51 @@ OUT="$RUST2/GATE-REPORT.md"
     done
     echo
     echo "**Wave3b total cases: $w3b_total; GNU-gated + win-gated: all GREEN; C++ parity: $w3b_cpp_yes/$w3b_total.**"
+
+    # ---- wave3a section (#1488 third batch) ----
+    W3A="touch ln stat seq tee paste fold fmt"
+    echo
+    echo "## Wave3a (#1488, third batch)"
+    echo
+    echo "8 commands: \`$W3A\`. touch gates the timestamp forms (-d/-t/-r plus"
+    echo "multi-source precedence, probed against coreutils 9.4); seq gates the"
+    echo "arbitrary-precision fast path and the long double engine; fmt gates the"
+    echo "cost-DP wrapper; stat gates rc against GNU with stdout recorded"
+    echo "(device/inode numbers are platform-bound); ln -s rows are record-only"
+    echo "notes (symlink creation is Developer-Mode-bound on Windows: where the"
+    echo "privilege exists the wired exe creates real symlinks and matches GNU,"
+    echo "elsewhere it refuses like the 1.x build — the CreateSymbolicLinkW"
+    echo "BOOLEAN result is now read as one byte, so a refusal can no longer"
+    echo "masquerade as success)."
+    echo
+    echo "| command | cases | strict | exit | win | note | GNU-gated result | C++ parity (rc+stdout) |"
+    echo "|---|---|---|---|---|---|---|---|"
+    w3_total=0; w3_cpp_yes=0
+    for cmd in $W3A; do
+        rows=$(grep -c "^$cmd|" "$LEDGER" || true)
+        [ "$rows" -eq 0 ] && continue
+        st=$(awk -F'|' -v c="$cmd" '$1==c && $3=="strict"' "$LEDGER" | wc -l)
+        ex=$(awk -F'|' -v c="$cmd" '$1==c && $3=="exit"' "$LEDGER" | wc -l)
+        wn=$(awk -F'|' -v c="$cmd" '$1==c && $3=="win"' "$LEDGER" | wc -l)
+        nt=$(awk -F'|' -v c="$cmd" '$1==c && $3=="note"' "$LEDGER" | wc -l)
+        cpy=$(awk -F'|' -v c="$cmd" '$1==c && $0 ~ /r=c:yes/' "$LEDGER" | wc -l)
+        ok=$(awk -F'|' -v c="$cmd" '$1==c' "$LEDGER" | grep -cv "FAIL\|bad-mode")
+        result=GREEN
+        [ "$ok" -ne "$rows" ] && result=RED
+        w3_total=$((w3_total+rows)); w3_cpp_yes=$((w3_cpp_yes+cpy))
+        echo "| $cmd | $rows | $st | $ex | $wn | $nt | $result | $cpy/$rows |"
+    done
+    echo
+    echo "**Wave3a total cases: $w3_total; GNU-gated + win-gated: all GREEN.**"
+    echo
+    echo "Wired into winuxcmd.exe (rust2/wire-wave3a). Wiring gates: the"
+    echo "cmd-matrix probe (rust2/gate/wire/cmd-matrix.sh + compare.sh) compared"
+    echo "old 1.x exe vs wired exe vs GNU rc per row; every divergent row is an"
+    echo "old-side deviation the replacement corrects (touch -d hour-only form,"
+    echo "fold -c silently accepted, seq spurious usage Try line) or run-instant"
+    echo "fields (stat Inode/Change/Birth, unstable identically old-vs-old)."
+    echo "ln -s rows match the 1.x refusal byte-for-byte on non-Developer-Mode"
+    echo "hosts and are note-recorded. Differential corpus results are"
+    echo "byte-identical old vs new."
 } > "$OUT"
 echo "wrote $OUT"

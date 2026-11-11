@@ -229,6 +229,55 @@ rows (ids that predate the wave1-deepening table) are gone and the
 remaining df notes df24/df33 are documented in note-registry.tsv. Full
 gate re-run: 932 GNU-gated + 134 win cases, all green.
 
+**Wiring refresh (#1488 wiring wave3a, touch/ln/stat/seq/tee/paste/fold/fmt):**
+all eight handlers moved to the rust2 bridge (rust2/wire-wave3a) and the
+case rows were re-measured with the wired exe as the rust side and the
+e4668086 1.x build as the C++ side (baseline exe kept at
+target/gate/wire/baseline/winuxcmd.exe; baseline full-ctest fail set
+saved at target/gate/wire/baseline-ctest-fails.txt, 20 pre-existing
+failures — the final wired build reproduces exactly that fail set):
+
+| command | cases | strict | exit | win | note | GNU-gated result | C++ parity (rc+stdout) |
+|---|---|---|---|---|---|---|---|
+| touch | 29 | 28 | 0 | 1 | 0 | GREEN | 28/29 |
+| ln | 25 | 19 | 1 | 1 | 4 | GREEN | 25/25 |
+| stat | 22 | 9 | 1 | 11 | 1 | GREEN | 17/22 |
+| seq | 50 | 50 | 0 | 0 | 0 | GREEN | 46/50 |
+| tee | 24 | 21 | 1 | 2 | 0 | GREEN | 24/24 |
+| paste | 38 | 37 | 0 | 1 | 0 | GREEN | 38/38 |
+| fold | 26 | 26 | 0 | 0 | 0 | GREEN | 26/26 |
+| fmt | 26 | 25 | 0 | 1 | 0 | GREEN | 26/26 |
+
+**Wiring total: 240 cases; GNU-gated + win-gated: all GREEN; C++ parity
+230/240.** cmd-matrix.sh + compare.sh ran the old exe vs the wired exe in
+isolated per-side scratch cwds against a WSL GNU rc ledger per command
+(touch 26, ln 25, stat 28, seq 25, tee 19, paste 21, fold 20, fmt 22
+rows). Every old-vs-new divergent row is an old-side deviation the
+replacement corrects, each GNU-probed (w3a/probe/*.sh, 2026-11-11):
+touch -d "YYYY-MM-DD HH:MM:SS" (space form, rows 07/18) accepted by GNU
+and rejected by the 1.x build; the -t .99 stamp the 1.x accepted (gate a
+row to28); seq's spurious "Try 'seq --help'" tail on the unknown-%!
+diagnostic; fold -c and the fmt -m/-P/-X/-x/-T extensions GNU rejects
+(invalid option, rc 1). stat rows 01/02 differ only in the run-instant
+fields (Inode file index, Change/Birth of the freshly recreated
+fixture) — an OLD-vs-OLD rerun shows the same 26/28, so the fields are
+unstable identically on both sides. ln -s rows match the 1.x refusal
+byte-for-byte on this non-Developer-Mode host (25/25 byte-equal) and
+stay note-recorded; where the capability exists the rust2
+ALLOW_UNPRIVILEGED_CREATE retry matches GNU rc 0 (recorded behavior
+change vs the 1.x refusal).
+
+Corpus (gate b) realignments, each probed: tee's open-failure diagnostic
+carries GNU's unquoted quotef name (the 1.x always-quoted spelling
+diverged); fold's two -c tests and fmt's five -m/-P/-X/-x/-T tests are
+the 1.x extensions GNU rejects. All other corpus regressions were fixed
+on the rust2 side (GNU parse-datetime grammar and the operand contract
+for touch; ln drive-dialect/#1491/readonly-remove; stat operand
+boundary, glob, last-wins -c/--printf/--format slot, octal/hex --printf
+escapes; paste/fold directory EISDIR mapping; fmt directory bare
+read-error line; the bridge close_stdout contract for seq's #1368; the
+NUL device pass-through in api_path).
+
 ## Wave3b (#1488, third batch)
 
 8 commands: `join tsort hostid users timeout expand unexpand numfmt`. join/tsort/expand/unexpand/numfmt gate byte-for-byte
