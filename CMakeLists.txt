@@ -75,11 +75,6 @@ endif()
 # applet; the recipe's per-command step appends here).
 set(WINUXCMD_RUST2_COMMANDS "b2sum;base32;base64;basename;dirname;expand;false;getconf;hostid;hostname;id;join;mkdir;nproc;numfmt;printenv;pwd;readlink;realpath;rmdir;sha224sum;sha384sum;sleep;sync;tac;test;test_bracket;timeout;true;truncate;tsort;uname;unexpand;unlink;users;whoami")
 
-set(WINUXCMD_RUST2_COMMANDS "true;false;pwd;printenv;basename;dirname;readlink;realpath;mkdir;rmdir;test;test_bracket;sync;hostid;users;tsort;join;timeout;expand;unexpand;numfmt;base64;base32")
-set(WINUXCMD_RUST2_COMMANDS "true;false;pwd;printenv;basename;dirname;readlink;realpath;mkdir;rmdir;test;test_bracket;sync;hostid;users;tsort;join;timeout;expand;unexpand;numfmt;base64;base32;b2sum")
-set(WINUXCMD_RUST2_COMMANDS "true;false;pwd;printenv;basename;dirname;readlink;realpath;mkdir;rmdir;test;test_bracket;sync;hostid;users;tsort;join;timeout;expand;unexpand;numfmt;base64;base32;b2sum;sha224sum")
-set(WINUXCMD_RUST2_COMMANDS "true;false;pwd;printenv;basename;dirname;readlink;realpath;mkdir;rmdir;test;test_bracket;sync;hostid;users;tsort;join;timeout;expand;unexpand;numfmt;base64;base32;b2sum;sha224sum;sha384sum")
-set(WINUXCMD_RUST2_COMMANDS "true;false;pwd;printenv;basename;dirname;readlink;realpath;mkdir;rmdir;test;test_bracket;sync;hostid;users;tsort;join;timeout;expand;unexpand;numfmt;base64;base32;b2sum;sha224sum;sha384sum;tac")
 
 
 # Command-set edition shipped by this build (#1438, ruling of 2026-10-30):
