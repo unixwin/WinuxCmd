@@ -252,4 +252,18 @@ and Rust accept), numfmt --unit-separator/-M/-l and ZYRQ unit suffixes
 | numfmt | 74 | 49 | 25 | 0 | 0 | GREEN | 66/74 |
 
 **Wave3b total cases: 276; GNU-gated + win-gated: all GREEN; C++ parity: 240/276.**
->>>>>>> rust2/wave3b
+
+Wiring follow-up (wave3b, 2026-11-11): expand/unexpand/numfmt/join/tsort/
+hostid/users/timeout handlers are now one `winux::rust2::run_command` call
+each. The wiring gates re-ran the tables with the wired product exe as the
+rust side: 130/130 GNU-gated GREEN for expand+unexpand+numfmt. Two rows
+ flipped from C++-parity to explained `r=c:no` (`expand/ex10`,
+`unexpand/ue16`): the 1.x dispatcher's option pre-parser rejected the
+GNU obsolescent comma lists `-4,8` / `-4,8,12` with "invalid option --
+','" before the handler ran; the wired product now follows GNU —
+expand.c:48 optstring `it:0::1::...9::` (digits take optional arguments,
+expand.c:204 `parse_tab_stops(optarg - 1)` consumes digit + whole rest of
+the token) and unexpand.c:272 optstring `,0123456789at:` (digits and comma
+are plain per-character option chars). The generic cluster rule is
+disabled for these two commands via
+`OptionParsePolicy::digit_led_short_tokens_as_positionals`.
