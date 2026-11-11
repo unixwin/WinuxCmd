@@ -136,6 +136,21 @@ auto run_common(const char* name, std::span<std::string_view> args,
                                   envp.data(), cwd.c_str(), stdin_buf,
                                   stdin_len, &out, &err);
 
+  // [GNU] close_stdout contract for the closed-fd shape (issue #1368,
+  // probed coreutils 9.4): a command that PRODUCED stdout bytes against a
+  // closed fd 1 reports "<name>: write error: Bad file descriptor" and
+  // fails (rc 1); a command that wrote nothing stays silent with its own
+  // status (`true >&-` rc 0). The v1 ABI buffers stdout, so the write
+  // failure surfaces here at the drain instead of inside the library —
+  // the same place GNU's global close_stdout hook reports it. Broken-pipe
+  // write failures stay with the streaming v2 ABI (recipe §5).
+  if (out.ptr != nullptr && out.len > 0 && _fileno(stdout) < 0) {
+    safeErrorPrintLn(std::string(name) + ": write error: Bad file descriptor");
+    winuxcmd_free_buf(&out);
+    winuxcmd_free_buf(&err);
+    return 1;
+  }
+
   // stdout before stderr: the Rust side buffered both, so their relative
   // interleaving is not observable anyway; GNU's order for the commands
   // wired so far (no interleaved writes) is preserved either way.
