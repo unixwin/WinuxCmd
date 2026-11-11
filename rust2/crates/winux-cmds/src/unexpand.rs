@@ -175,7 +175,12 @@ fn unexpand_line(line: &str, ts: &TabStops, all_spaces: bool) -> String {
             } else if c == '\u{8}' {
                 column = column.saturating_sub(1);
             } else {
-                column = column.saturating_add(1);
+                // [GNU] unexpand.c reads bytes with getc and column++ per
+                // byte (unexpand.c:158/221): a multi-byte character occupies
+                // as many columns as its UTF-8 bytes (a UTF-8 BOM occupies
+                // three; WSL 9.4 probe: "BOM + 8 spaces" under -a converts
+                // 5 spaces to the tab at column 8 and keeps 3).
+                column = column.saturating_add(c.len_utf8() as u64);
             }
 
             if !pending_blank.is_empty() {
@@ -216,7 +221,11 @@ pub fn unexpand_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let mut have_pending = false;
     let mut slash_repeat = false;
     let mut plus_repeat = false;
-    let mut explicit_tabs = false;
+    // [GNU] unexpand.c:279/282: only -a and -t set convert_entire_line;
+    // the obsolescent digit accumulation (default case) does NOT, so
+    // `unexpand -4` converts leading blanks only (WSL 9.4 probe:
+    // "a        b" stays unchanged under -4).
+    let mut t_seen = false;
     let mut rest: Vec<OsString> = Vec::with_capacity(args.len());
     let mut i = 0usize;
     let mut no_more_options = false;
@@ -235,7 +244,7 @@ pub fn unexpand_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             // long option: --tabs[=SPEC], --all, --first-only, --help/version
             let long = &body[1..];
             if let Some(spec) = long.strip_prefix("tabs=") {
-                explicit_tabs = true;
+                t_seen = true;
                 if let Err(e) = add_spec(&mut ts, spec, &mut slash_repeat, &mut plus_repeat) {
                     let _ = writeln!(io.stderr, "unexpand: {e}");
                     return Ok(1);
@@ -245,7 +254,7 @@ pub fn unexpand_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             }
             if long == "tabs" {
                 // consume the detached value here so occurrence order holds
-                explicit_tabs = true;
+                t_seen = true;
                 let spec = args.get(i + 1).map(|a| a.to_string_lossy().into_owned());
                 match spec {
                     Some(spec) => {
@@ -279,8 +288,10 @@ pub fn unexpand_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         while ci < chars.len() {
             let c = chars[ci];
             if c.is_ascii_digit() {
-                // obsolescent digit run: rest of this argv element
-                explicit_tabs = true;
+                // obsolescent digit run: rest of this argv element.
+                // [GNU] the default case of unexpand.c only accumulates the
+                // stop value — it does not set convert_entire_line, so the
+                // digit form alone keeps leading-only conversion.
                 for ch in &chars[ci..] {
                     if ch.is_ascii_digit() {
                         pending = pending
@@ -302,7 +313,7 @@ pub fn unexpand_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 consumed = true;
                 break;
             } else if c == 't' {
-                explicit_tabs = true;
+                t_seen = true;
                 let val: String = chars[ci + 1..].iter().collect();
                 if val.is_empty() {
                     let spec = args.get(i + 1).map(|a| a.to_string_lossy().into_owned());
@@ -354,7 +365,7 @@ pub fn unexpand_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     // not consume (bundled clusters like -at4) still contributes its stops.
     for (k, v) in &p.values {
         if k == "tabs" {
-            explicit_tabs = true;
+            t_seen = true;
             if let Err(e) = add_spec(&mut ts, v, &mut slash_repeat, &mut plus_repeat) {
                 let _ = writeln!(io.stderr, "unexpand: {e}");
                 return Ok(1);
@@ -385,9 +396,10 @@ pub fn unexpand_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         ts.mode = Mode::None;
     }
 
-    // [GNU] -t (and the obsolescent -NUM form) imply whole-line
-    // conversion; --first-only cancels both -a and that implication.
-    let all_spaces = (p.has("all") || explicit_tabs) && !p.has("first-only");
+    // [GNU] -a and -t imply whole-line conversion (unexpand.c:279/282);
+    // the obsolescent digit form does not (default case). --first-only
+    // cancels both (unexpand.c:308-309).
+    let all_spaces = (p.has("all") || t_seen) && !p.has("first-only");
 
     let files: Vec<String> = if p.positionals.is_empty() {
         vec!["-".to_string()]
@@ -492,6 +504,10 @@ mod tests {
         expect(&["-8"], "        x\n", "\tx\n");
         expect(&["-45"], "        ab\n", "        ab\n");
         expect(&["-4,8"], "        ab\n", "\t\tab\n");
+        // [GNU] the digit form does NOT imply -a (unexpand.c default case
+        // accumulates without touching convert_entire_line): mid-line
+        // blanks stay spaces (WSL 9.4 probe 2026-11-11).
+        expect(&["-4"], "a        b\n", "a        b\n");
     }
 
     #[test]
