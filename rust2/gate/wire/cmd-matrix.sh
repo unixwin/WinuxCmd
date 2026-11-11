@@ -78,6 +78,10 @@ setup_fixture() {
       # instead of the canonical clean-state result.
       rm -rf aln bln dln sln fresh blbak sl1 sl2 sl3 sl4 ln1 lfresh lv1
       printf A1 > aln; printf xx > bln; mkdir -p dln ;;
+    stat)
+      rm -rf sreg sdir shard
+      printf abc > sreg; mkdir -p sdir; ln -f sreg shard 2>/dev/null
+      touch -d '2026-01-02 03:04:05' sreg sdir shard 2>/dev/null ;;
     *) : ;;
   esac
 }
@@ -528,6 +532,41 @@ TABLE
 23|||aln
 24|||--:bln
 25|||-s:-i:aln:sl4
+TABLE
+      ;;
+    stat)
+      # stdout shapes are platform-bound (device/inode numbers, NTFS vs
+      # ext4): the GNU ledger is the rc oracle; old-vs-new must be byte-equal
+      # on the shared NTFS fixture (fixed atime/mtime via the side's touch).
+      cat <<'TABLE'
+01|||sreg
+02|||-t:sreg
+03|||-c:%n:sreg
+04|||-c:%s:sreg
+05|||-c:%A:sreg
+06|||-c:%a:sreg
+07|||-c:%F:sreg
+08|||-c:%h:sreg
+09|||-c:%y:sreg
+10|||-c:%Y:sreg
+11|||-c:%x:sreg
+12|||-c:%X:sreg
+13|||-c:%n %s %A:sreg
+14|||--printf=%s\\n:sreg
+15|||-c:%F:sdir
+16|||-c:%n:smissing
+17|||-c:%n:sreg:sdir
+18|||-c:%b:sreg
+19|||-c:%o:sreg
+20|||-c:%D:sreg
+21|||-c:%C:sreg
+22|||-c:%!:sreg
+23|||--help
+24|||--version
+25|||--bogus
+26|||
+27|||-c:%n
+28|||-f:-c:%n:sreg
 TABLE
       ;;
     *)
