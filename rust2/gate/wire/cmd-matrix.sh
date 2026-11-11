@@ -55,6 +55,14 @@ setup_fixture() {
       rm -rf pa full d1 d2; mkdir -p d1 d2 pa/pb/pc full/inner ;;
     sync)
       rm -f synctarget; printf x > synctarget ;;
+    join)
+      rm -f jf1 jf2 jc1 jh1 jh2 juns
+      printf 'a 1\nb 2\nc 3\n' > jf1
+      printf 'a X\nb Y\nd Z\n' > jf2
+      printf 'a,1\nb,2\n' > jc1
+      printf 'K V\na 1\n' > jh1
+      printf 'K W\na Q\n' > jh2
+      printf 'b 2\na 1\n' > juns ;;
     *) : ;;
   esac
 }
@@ -384,6 +392,35 @@ TABLE
 15|||a:b
 16|||-
 17|||--
+TABLE
+      ;;
+    join)
+      # #1488 wiring wave3b: join joins FILE1 FILE2 (or stdin for "-"/one
+      # operand). Fixture (setup_fixture): jf1/jf2 blank-separated sorted,
+      # jc1 comma-separated, jh1/jh2 with headers, juns unsorted. stdin
+      # rows carry one line without trailing newline.
+      cat <<'TABLE'
+01|||jf1:jf2
+02|||-t:,:jc1:jc1
+03|||-1:2:-2:1:jf1:jf2
+04|||-j:1:jf1:jf2
+05|||-o:0 1.2:jf1:jf2
+06|||-o:1.2:2.2:jf1:jf2
+07|||-e:MISSING:-o:1.2:2.2:jf1:jf2
+08|||-a:1:jf1:jf2
+09|||-v:2:jf1:jf2
+10|||-i:jf1:jf2
+11|||--header:jh1:jh2
+12|||-z:jf1:jf2
+13|||jf1
+14||a 1|
+15|||missing-file-xyz:jf1
+16|||--help
+17|||--version
+18|||--bogus
+19|||-z:jf1:jf2:jc1
+20|||--check-order:juns:jf2
+21||a 1|-:jf2
 TABLE
       ;;
     *)
