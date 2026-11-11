@@ -585,6 +585,34 @@ TABLE
 29|||-sF:hnfile
 TABLE
       ;;
+    uname)
+      cat <<'TABLE'
+01|||
+02|||-a
+03|||-s
+04|||-n
+05|||-r
+06|||-v
+07|||-m
+08|||-p
+09|||-i
+10|||-o
+11|||-s:-n:-r
+12|||--all
+13|||--kernel-name
+14|||--sysname
+15|||--release
+16|||--help
+17|||--version
+18|||--help:x
+19|||-h
+20|||--bogus
+21|||extra-operand
+22|||-a:extra
+23|||--
+24|||-snrvm
+TABLE
+      ;;
     *)
       echo "cmd-matrix.sh: no case table for $CMD" >&2
       exit 2
