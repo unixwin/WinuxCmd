@@ -68,10 +68,10 @@ counts) are the documented 1.x behavior the Rust side follows.
 | sha384sum | 28 | 27 | 1 | 0 | 0 | GREEN | 26/28 |
 | tac | 27 | 27 | 0 | 0 | 0 | GREEN | 21/27 |
 | truncate | 30 | 30 | 0 | 0 | 0 | GREEN | 29/30 |
-| uname | 22 | 2 | 4 | 16 | 0 | GREEN | 20/22 |
-| id | 22 | 10 | 0 | 12 | 0 | GREEN | 20/22 |
-| hostname | 22 | 2 | 5 | 15 | 0 | GREEN | 20/22 |
-| getconf | 23 | 7 | 0 | 16 | 0 | GREEN | 19/23 |
+| uname | 22 | 0 | 4 | 18 | 0 | GREEN | 20/22 |
+| id | 22 | 8 | 0 | 14 | 0 | GREEN | 20/22 |
+| hostname | 22 | 0 | 5 | 17 | 0 | GREEN | 20/22 |
+| getconf | 23 | 5 | 0 | 18 | 0 | GREEN | 19/23 |
 
 **Wave2 total cases: 348; GNU-gated + win-gated: all GREEN; C++ parity: 320/348.**
 
@@ -267,3 +267,29 @@ the token) and unexpand.c:272 optstring `,0123456789at:` (digits and comma
 are plain per-character option chars). The generic cluster rule is
 disabled for these two commands via
 `OptionParsePolicy::digit_led_short_tokens_as_positionals`.
+
+**Wiring wave2a (#1488, 2026-11-11):** `whoami nproc unlink sleep hostname
+uname id getconf` moved from the 1.x C++ bodies to the rust2 staticlib
+(one handler = one `winux::rust2::run_command` call, C++ body deleted).
+Case-table changes from the wired product surface: hn19-help/hn20-version
+(un17/un18, id18/id22, gc19/gc23 likewise) demoted strict -> win — the
+dispatcher's branded sole `--help`/`--version` interception runs before
+the handler and is byte-identical old vs new (the printenv/true-false
+precedent). hostname gained the dispatcher canonicalization on the Rust
+side: a registered long spelling (`--short`) sets ctx.has("-s") too, so
+the net-tools rejection reports the short-form message scanned in the
+C++ unsupported[] table order. unlink gained the 1.x Windows failure-text
+chain (describe_unlink_failure + win32_posix_error_text
+invalid_name_as_missing, trailing separators stripped before probes per
+#1052; `unlink ""` -> ENOENT without touching the cwd).
+
+Per-command product gates (RUST_BIN=wired exe vs CPP_BIN=baseline exe,
+plus gate/wire/cmd-matrix.sh old-vs-new): run-gate.sh unlink 22/22,
+sleep 24/24, hostname 22/22, uname 22/22, id 22/22, getconf 23/23 — all
+green. Matrix old-vs-new byte parity: unlink 21/21, sleep 17/17, hostname
+29/29, uname 24/24, id 25/25, getconf 26 rc/stderr + 23 stdout (rows 10/
+12/13 drift in AVPHYS_PAGES between any two runs — GlobalMemoryStatus
+volatile; the old exe drifts the same way; all other table lines
+byte-identical). GNU rc oracle holds every row except the documented
+Windows-value-model classes (hostname net-tools/set-operand [DIFFERS],
+id USER operand, getconf Windows table + pathconf existence check).

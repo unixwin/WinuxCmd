@@ -164,7 +164,12 @@ TEST(unlink, unlink_directory_symlink_removes_link_only_if_available) {
   EXPECT_TRUE(std::filesystem::exists(tmp.path / "target-dir" / "payload.txt"));
 }
 
-TEST(unlink, unlink_wildcard_multiple_matches_reports_extra_operand_help_hint) {
+TEST(unlink, unlink_wildcard_multiple_matches_stays_literal_gnu_semantics) {
+  // #1488 rust2 wiring: the 1.x body glob-expanded wildcard operands
+  // (extra operand on 2+ matches); unlink.c:94 main treats argv operands
+  // literally (WSL coreutils 9.4 probed: `unlink '*.txt'` with matches
+  // present reports `No such file or directory`, rc 1). The replacement
+  // keeps the operand literal like GNU.
   TempDir tmp;
   tmp.write("a.txt", "a");
   tmp.write("b.txt", "b");
@@ -177,9 +182,9 @@ TEST(unlink, unlink_wildcard_multiple_matches_reports_extra_operand_help_hint) {
 
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_TRUE(r.stdout_text.empty());
-  EXPECT_EQ_TEXT(r.stderr_text,
-                 "unlink: extra operand 'b.txt'\n"
-                 "Try 'unlink --help' for more information.\n");
+  EXPECT_EQ_TEXT(
+      r.stderr_text,
+      "unlink: cannot unlink '*.txt': No such file or directory\n");
   EXPECT_TRUE(std::filesystem::exists(tmp.path / "a.txt"));
   EXPECT_TRUE(std::filesystem::exists(tmp.path / "b.txt"));
 }

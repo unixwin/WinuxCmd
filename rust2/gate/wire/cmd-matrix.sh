@@ -63,6 +63,16 @@ setup_fixture() {
       printf 'K V\na 1\n' > jh1
       printf 'K W\na Q\n' > jh2
       printf 'b 2\na 1\n' > juns ;;
+    # unlink rows 19/20 exercise wildcard operands against real matches:
+    # GNU unlink.c treats argv literally (ENOENT), the 1.x C++ body
+    # glob-expanded (extra operand when 2+ matches) — the new exe is
+    # expected to follow GNU there, an explained r=c:no class.
+    unlink)
+      rm -f mxu1 mxu2 w1 w2; printf x > mxu1; printf x > w1 w2 ;;
+    hostname)
+      rm -f hnfile hnmissing hnbad
+      printf 'myhost\n' > hnfile
+      printf -- '-badname\n' > hnbad ;;
     *) : ;;
   esac
 }
@@ -451,6 +461,215 @@ TABLE
 18|||0.1s:true
 19|||-s:BOGUS:1:true
 20|||--:1:true
+TABLE
+      ;;
+    whoami)
+      cat <<'TABLE'
+01|||
+02|||extra
+03|||a:b
+04|||-h
+05|||--help
+06|||--version
+07|||--help:x
+08|||--bogus
+09|||-z
+10|||--
+11|||@EMPTY@
+12|||-
+13|||--:extra
+14|||--Help
+15|||--no-such-option
+16|||WINUXSH_USER=
+TABLE
+      ;;
+    nproc)
+      cat <<'TABLE'
+01|||
+02|||--all
+03|||-a
+04|||--ignore=2
+05|||--ignore=0
+06|||--ignore=+1
+07|||--ignore:2
+08|||--ignore
+09|||--ignore=bad
+10|||--ignore=-1
+11|||extra
+12|||-h
+13|||--help
+14|||--version
+15|||--help:x
+16|||--bogus
+17|||-z
+18|||--
+19|||@EMPTY@
+TABLE
+      ;;
+    unlink)
+      cat <<'TABLE'
+01|||mxu1
+02|||missing-file-xyz
+03|||-x:mxu1
+04|||--help
+05|||--version
+06|||--help:x
+07|||--bogus
+08|||-h
+09|||
+10|||mxu1:mxu2
+11|||--
+12|||--:mxu1
+13|||@EMPTY@
+14|||-
+15|||.
+16|||..
+17|||mxu1//
+18|||w1
+19|||w*
+20|||w?1
+21|||reg//
+TABLE
+      ;;
+    sleep)
+      cat <<'TABLE'
+01|||0
+02|||0.001
+03|||1
+04|||0:0
+05|||0.001s:0.001s
+06|||1x
+07|||--help
+08|||--version
+09|||--help:x
+10|||-h
+11|||--bogus
+12|||-1
+13|||
+14|||--
+15|||abc
+16|||0.001:xyz
+17|||0.001m:0.001h
+TABLE
+      ;;
+    hostname)
+      cat <<'TABLE'
+01|||
+02|||newname
+03|||a:b
+04|||--help
+05|||--version
+06|||-h
+07|||-V
+08|||--bogus
+09|||--short
+10|||-s
+11|||-i
+12|||-f
+13|||-d
+14|||-I
+15|||-y
+16|||-n
+17|||-a
+18|||-A
+19|||-b
+20|||-F:hnfile
+21|||--file:hnfile
+22|||--file=hnfile
+23|||-F:hnmissing
+24|||-F:hnbad
+25|||-F:hnbad:x
+26|||--version:x
+27|||--
+28|||-F
+29|||-sF:hnfile
+TABLE
+      ;;
+    uname)
+      cat <<'TABLE'
+01|||
+02|||-a
+03|||-s
+04|||-n
+05|||-r
+06|||-v
+07|||-m
+08|||-p
+09|||-i
+10|||-o
+11|||-s:-n:-r
+12|||--all
+13|||--kernel-name
+14|||--sysname
+15|||--release
+16|||--help
+17|||--version
+18|||--help:x
+19|||-h
+20|||--bogus
+21|||extra-operand
+22|||-a:extra
+23|||--
+24|||-snrvm
+TABLE
+      ;;
+    id)
+      cat <<'TABLE'
+01|||
+02|||-u
+03|||-g
+04|||-G
+05|||-n
+06|||-un
+07|||-gn
+08|||-Gn
+09|||-ur
+10|||-a
+11|||-Z
+12|||-z
+13|||--zero
+14|||--help
+15|||--version
+16|||--help:x
+17|||-h
+18|||--bogus
+19|||--:extra
+20|||cmx
+21|||nosuchuser
+22|||-u:nosuchuser
+23|||-ug
+24|||-nr
+25|||-az
+TABLE
+      ;;
+    getconf)
+      cat <<'TABLE'
+01|||PATH_MAX
+02|||ARG_MAX
+03|||NAME_MAX
+04|||_POSIX_PATH_MAX
+05|||pagesize
+06|||PAGESIZE
+07|||NPROCESSORS_ONLN
+08|||_NPROCESSORS_CONF
+09|||PHYS_PAGES
+10|||avphys_pages
+11|||NOSUCHVAR
+12|||-a
+13|||--all
+14|||-v:POSIX-V6-ilp32-off32:PATH_MAX
+15|||--help
+16|||--version
+17|||--help:x
+18|||-h
+19|||--bogus
+20|||
+21|||PATH_MAX:.
+22|||NAME_MAX:nosuchdir
+23|||ARG_MAX:.
+24|||PATH_MAX:.:extra
+25|||path_max:.
+26|||--
 TABLE
       ;;
     *)

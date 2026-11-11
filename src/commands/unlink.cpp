@@ -3,7 +3,7 @@
 /// @contributors:
 ///   - caomengxuan666 <2507560089@qq.com>
 /// @Description: Implementation for unlink command.
-/// @Version: 0.1.0
+/// @Version: 0.2.0
 /// @License: MIT
 /// @Copyright: Copyright © 2026 WinuxCmd
 
@@ -14,6 +14,7 @@
 import std;
 import core;
 import utils;
+import rust2_bridge;
 
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
@@ -21,52 +22,6 @@ using cmd::meta::OptionType;
 auto constexpr UNLINK_OPTIONS =
     // [GNU] option
     std::array{OPTION("", "", "remove single file", STRING_TYPE)};
-
-namespace {
-
-auto windows_error_text(DWORD error) -> std::string {
-  Win32ErrorTextOptions options;
-  options.invalid_name_as_missing = true;
-  return win32_posix_error_text(error, options);
-}
-
-auto describe_unlink_failure(const std::wstring& path, DWORD error)
-    -> std::string {
-  DWORD attrs = GetFileAttributesW(path.c_str());
-  if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY)) {
-    return "Is a directory";
-  }
-  if (path.find(L'*') != std::wstring::npos ||
-      path.find(L'?') != std::wstring::npos ||
-      path.find(L'[') != std::wstring::npos) {
-    return "No such file or directory";
-  }
-
-  return windows_error_text(error);
-}
-
-auto remove_unlink_target(const std::wstring& path) -> bool {
-  DWORD attrs = GetFileAttributesW(path.c_str());
-  if (attrs != INVALID_FILE_ATTRIBUTES &&
-      (attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0 &&
-      (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0) {
-    return RemoveDirectoryW(path.c_str()) != 0;
-  }
-
-  // [GNU] unlink(2) never consults the file's own write permission —
-  // only the containing directory's — so a read-only file unlinks
-  // fine (unlink.c:82-83). DeleteFileW refuses read-only files, so
-  // the attribute is cleared first, mirroring rm's removal path.
-  if (attrs != INVALID_FILE_ATTRIBUTES &&
-      (attrs & FILE_ATTRIBUTE_READONLY) != 0 &&
-      (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0) {
-    SetFileAttributesW(path.c_str(), attrs & ~FILE_ATTRIBUTE_READONLY);
-  }
-
-  return DeleteFileW(path.c_str()) != 0;
-}
-
-}  // namespace
 
 REGISTER_COMMAND(unlink,
                  /* name */
@@ -84,59 +39,10 @@ REGISTER_COMMAND(unlink,
                  /* see also */
                  "rm(1), link(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd",
                  UNLINK_OPTIONS) {
-  namespace cp = core::pipeline;
-
-  if (ctx.positionals.empty()) {
-    safeErrorPrintLn("unlink: missing operand");
-    safeErrorPrintLn("Try 'unlink --help' for more information.");
-    return 1;
-  }
-  if (ctx.positionals.size() > 1) {
-    safeErrorPrintLn("unlink: extra operand '" +
-                     std::string(ctx.positionals[1]) + "'");
-    safeErrorPrintLn("Try 'unlink --help' for more information.");
-    return 1;
-  }
-
-  std::string filename = std::string(ctx.positionals[0]);
-  std::vector<std::string> expanded;
-  if (contains_wildcard(filename)) {
-    auto glob_result = glob_expand(filename);
-    if (glob_result.expanded) {
-      for (const auto& f : glob_result.files) {
-        expanded.push_back(wstring_to_utf8(f));
-      }
-    }
-    if (expanded.empty()) {
-      expanded.push_back(filename);
-    }
-  } else {
-    expanded.push_back(filename);
-  }
-
-  if (expanded.size() != 1) {
-    safeErrorPrintLn("unlink: extra operand '" + expanded[1] + "'");
-    safeErrorPrintLn("Try 'unlink --help' for more information.");
-    return 1;
-  }
-
-  std::wstring wfilename = utf8_to_wstring(expanded[0]);
-  auto operand = native_path::make_api_path_operand_w(wfilename);
-  DWORD attrs = native_path::operand_target_attributes_w(operand);
-  if (operand.had_trailing_separator && attrs != INVALID_FILE_ATTRIBUTES &&
-      (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0) {
-    safeErrorPrintLn("unlink: cannot unlink '" + expanded[0] +
-                     "': Not a directory");
-    return 1;
-  }
-
-  BOOL result = remove_unlink_target(operand.extended);
-  if (!result) {
-    DWORD error = GetLastError();
-    safeErrorPrintLn("unlink: cannot unlink '" + expanded[0] +
-                     "': " + describe_unlink_failure(operand.extended, error));
-    return 1;
-  }
-
-  return 0;
+  // #1488 mechanical replacement: the semantics live in the rust2 library
+  // (rust2/crates/winux-cmds/src/unlink.rs, unlink_cmd); the C++ side keeps
+  // only this registration — the DeleteFileW/RemoveDirectoryW removal path
+  // is deleted. ctx.raw_args passes the operands verbatim because GNU
+  // unlink.c parses its own argv (exactly one operand, no options).
+  return winux::rust2::run_command("unlink", ctx.raw_args);
 }
