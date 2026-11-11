@@ -22,6 +22,7 @@ pub mod fold;
 pub mod fs_win;
 pub mod expand;
 pub mod fsutil;
+pub mod glob;
 pub mod getconf;
 pub mod gnuhelp;
 pub mod hostid;

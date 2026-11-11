@@ -315,7 +315,9 @@ pub mod imp {
                 && rest.as_bytes()[0].is_ascii_alphabetic()
                 && is_sep(rest.as_bytes()[1])
             {
-                return Some(format!("/{}{}", &rest[..1], &rest[2..]));
+                // rest IS "<d>/<tail>" — the MSYS spelling just needs
+                // the leading slash back
+                return Some(format!("/{rest}"));
             }
             return None;
         }
@@ -325,7 +327,7 @@ pub mod imp {
                 && rest.as_bytes()[0].is_ascii_alphabetic()
                 && is_sep(rest.as_bytes()[1])
             {
-                return Some(format!("/{}{}", &rest[..1], &rest[2..]));
+                return Some(format!("/{rest}"));
             }
             return None;
         }
@@ -354,6 +356,56 @@ pub mod imp {
         Some(out.replace('/', "\\"))
     }
 
+    /// The configured shell install root (1.x shell_ns::root): the
+    /// environment names the winuxsh/rubash tree the remaining
+    /// "/"-prefixed operands resolve through.
+    fn shell_root_env() -> Option<String> {
+        for name in [
+            "__RUBASH_SHELL_ROOT",
+            "NIU_ROOT",
+            "WINUXSH_ROOT",
+            "RUBASH_ROOT",
+        ] {
+            if let Some(v) = std::env::var_os(name) {
+                let v = v.to_string_lossy().into_owned();
+                if !v.is_empty() {
+                    return Some(v);
+                }
+            }
+        }
+        None
+    }
+
+    /// [1.x shell_tree_to_native_w] a remaining "/"-prefixed operand (the
+    /// drive-dialect folds claimed "/d/..." already) resolves through the
+    /// shell tree: root + tail, with the MSYS open order's ".exe" leaf
+    /// retry ("/usr/bin/seq" -> root/usr/bin/seq.exe when only the .exe
+    /// exists). No root configured -> unchanged.
+    fn fold_shell_tree(operand: &str) -> Option<String> {
+        if operand.is_empty() || !operand.starts_with('/') {
+            return None;
+        }
+        let root = shell_root_env()?;
+        let base = root.replace('/', "\\");
+        let base = base.trim_end_matches('\\').to_string();
+        let tail = operand[1..].replace('/', "\\");
+        let mut mapped = if tail.is_empty() {
+            base
+        } else {
+            format!("{base}\\{tail}")
+        };
+        if !mapped.is_empty() && !mapped.ends_with('\\') {
+            let missing = file_meta(Path::new(""), &mapped, true).is_err();
+            if missing {
+                let exe = format!("{mapped}.exe");
+                if file_meta(Path::new(""), &exe, true).is_ok() {
+                    mapped = exe;
+                }
+            }
+        }
+        Some(mapped)
+    }
+
     pub fn api_path(base: &Path, operand: &str) -> String {
         let operand = map_device(operand);
         let posix_folded = fold_posix_drive_prefix(operand);
@@ -362,6 +414,8 @@ pub mod imp {
         let operand: &str = dialect_folded.as_deref().unwrap_or(operand);
         let folded = fold_carrier_colons(operand);
         let operand: &str = folded.as_deref().unwrap_or(operand);
+        let shell_mapped = fold_shell_tree(operand);
+        let operand: &str = shell_mapped.as_deref().unwrap_or(operand);
         let p = if Path::new(operand).is_absolute() {
             std::path::PathBuf::from(operand)
         } else {
@@ -982,5 +1036,23 @@ pub fn win32_reason(err: u32) -> &'static str {
         1 => "Operation not permitted",      // ERROR_INVALID_FUNCTION
         1920 => "No such file or directory", // ERROR_CANT_ACCESS_FILE
         _ => "Invalid argument",
+    }
+}
+
+#[cfg(test)]
+mod api_path_probes {
+    use super::*;
+
+    #[test]
+    fn probe_drive_folds() {
+        #[cfg(windows)]
+        {
+            let out = imp::api_path(Path::new(r"D:\wd"), "/cygdrive/d/repo/x/f.txt");
+            assert_eq!(out, r"\\?\D:\repo\x\f.txt", "cygdrive fold");
+            let out = imp::api_path(Path::new(r"D:\wd"), "/mnt/d/repo/x/f.txt");
+            assert_eq!(out, r"\\?\D:\repo\x\f.txt", "mnt fold");
+            let out = imp::api_path(Path::new(r"D:\wd"), "/d/repo/x/f.txt");
+            assert_eq!(out, r"\\?\D:\repo\x\f.txt", "dialect fold");
+        }
     }
 }

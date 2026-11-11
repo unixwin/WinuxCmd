@@ -59,6 +59,8 @@
 use std::ffi::OsString;
 use std::path::Path;
 
+use crate::glob::{contains_wildcard, glob_expand_in};
+
 use crate::fs_win::{self, FileTime, SystemTime};
 use winux_core::{usage_error, CmdResult, Ctx, Io};
 
@@ -1239,123 +1241,6 @@ fn parse_head(head: &str, base: FileTime, depth: u32) -> Option<FileTime> {
         return Some(ft);
     }
     parse_relative(head, base)
-}
-
-fn contains_wildcard(s: &str) -> bool {
-    s.contains('*') || s.contains('?') || s.contains('[')
-}
-
-/// POSIX fnmatch subset ('*', '?', '[class]' with '!' negation and
-/// ranges; a leading '.' is not matched by '*' or '?', the GNU glob
-/// default). Case-sensitive like the 1.x POSIX re-check.
-fn wildcard_match(pat: &str, name: &str) -> bool {
-    let p: Vec<char> = pat.chars().collect();
-    let n: Vec<char> = name.chars().collect();
-    fn m(p: &[char], n: &[char]) -> bool {
-        if p.is_empty() {
-            return n.is_empty();
-        }
-        match p[0] {
-            '*' => {
-                if n.is_empty() || n[0] == '.' {
-                    return false; // leading dot is not matched by '*'
-                }
-                let mut i = 0usize;
-                loop {
-                    if m(&p[1..], &n[i..]) {
-                        return true;
-                    }
-                    if i >= n.len() {
-                        return false;
-                    }
-                    i += 1;
-                }
-            }
-            '?' => !n.is_empty() && n[0] != '.' && m(&p[1..], &n[1..]),
-            '[' => {
-                if n.is_empty() {
-                    return false;
-                }
-                let c = n[0];
-                let close = match p[1..].iter().position(|&x| x == ']') {
-                    Some(i) => i + 1,
-                    None => return false,
-                };
-                let body = &p[1..close];
-                let (negated, body) = match body.first() {
-                    Some('!') => (true, &body[1..]),
-                    _ => (false, body),
-                };
-                let mut hit = false;
-                let mut i = 0usize;
-                while i < body.len() {
-                    if i + 2 < body.len() && body[i + 1] == '-' {
-                        if c >= body[i] && c <= body[i + 2] {
-                            hit = true;
-                        }
-                        i += 3;
-                    } else {
-                        if c == body[i] {
-                            hit = true;
-                        }
-                        i += 1;
-                    }
-                }
-                if negated {
-                    hit = !hit;
-                }
-                hit && m(&p[close + 1..], &n[1..])
-            }
-            c => !n.is_empty() && n[0] == c && m(&p[1..], &n[1..]),
-        }
-    }
-    m(&p, &n)
-}
-
-/// Direct-invocation glob contract (1.x utils glob_expand): a wildcard
-/// operand expands over the named directory; '.'/'..' never match; an
-/// unmatched pattern yields None so the caller keeps it literal (the GNU
-/// glob default: unmatched patterns stay literal so diagnostics stay
-/// useful). A literal existing path with no '[' is NOT globbed (the 1.x
-/// literal-first rule).
-fn glob_expand_in(base: &Path, pattern: &str) -> Option<Vec<String>> {
-    if !contains_wildcard(pattern) {
-        return None;
-    }
-    let has_class = pattern.contains('[');
-    if !has_class && std::path::Path::new(&fs_win::api_path(base, pattern)).exists() {
-        return None; // literal path wins
-    }
-    let (dir_part, leaf) = match pattern.rfind(['/', '\\']) {
-        Some(i) => (&pattern[..i], &pattern[i + 1..]),
-        None => ("", pattern),
-    };
-    let dir_path = if dir_part.is_empty() {
-        base.to_path_buf()
-    } else {
-        base.join(dir_part)
-    };
-    let mut out = Vec::new();
-    let entries = std::fs::read_dir(&dir_path).ok()?;
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if name == "." || name == ".." {
-            continue;
-        }
-        if wildcard_match(leaf, &name) {
-            if dir_part.is_empty() {
-                out.push(name.into_owned());
-            } else {
-                out.push(format!("{dir_part}/{name}"));
-            }
-        }
-    }
-    if out.is_empty() {
-        None
-    } else {
-        Some(out)
-    }
 }
 
 /// -t STAMP: [[CC]YY]MMDDhhmm[.ss]

@@ -19,6 +19,9 @@
 //! if anything failed.
 
 use std::ffi::OsString;
+use std::path::Path;
+
+use crate::glob::{contains_wildcard, glob_expand_in};
 use std::io::Write;
 
 use crate::fs_win::{self, FileTime};
@@ -312,11 +315,10 @@ fn mount_point(ctx: &Ctx, name: &str) -> String {
 }
 
 fn resolve(ctx: &Ctx, p: &str) -> std::path::PathBuf {
-    if std::path::Path::new(p).is_absolute() {
-        std::path::PathBuf::from(p)
-    } else {
-        ctx.cwd.join(p)
-    }
+    // the one operand boundary (fs_win::api_path): drive-dialect folds,
+    // the carrier-colon fold, dot-segment collapse and the shell-tree
+    // mapping all happen there, exactly like the 1.x operand layer
+    std::path::PathBuf::from(fs_win::api_path(&ctx.cwd, p))
 }
 
 /// Expand one -c/--printf format for one entry. Returns whether a field
@@ -409,9 +411,60 @@ fn unescape(fmt: &str) -> String {
             Some('t') => out.push('\t'),
             Some('r') => out.push('\r'),
             Some('\\') => out.push('\\'),
-            Some('0') => out.push('\0'),
             Some('v') => out.push('\x0b'),
             Some('f') => out.push('\x0c'),
+            // [GNU] printf escapes (probed coreutils 9.4: `--printf
+            // '%n\t\011\010\x41'` -> name, tab, tab, backspace, 'A'):
+            // \NNN is 1-3 OCTAL digits, \xHH hex
+            Some(c) if c.is_ascii_digit() && c != '8' && c != '9' => {
+                let mut value = c.to_digit(8).unwrap();
+                let mut taken = 1;
+                while taken < 3 {
+                    match chars.peek() {
+                        Some(n) if (*n).is_ascii_digit() && *n != '8' && *n != '9' => {
+                            value = value * 8 + (*n).to_digit(8).unwrap();
+                            chars.next();
+                            taken += 1;
+                        }
+                        _ => break,
+                    }
+                }
+                let _ = taken;
+                match char::from_u32(value) {
+                    Some(ch) => out.push(ch),
+                    None => {
+                        out.push('\\');
+                        out.push(c);
+                    }
+                }
+            }
+            Some('x') => {
+                let mut value = 0u32;
+                let mut taken = 0;
+                while taken < 2 {
+                    match chars.peek().and_then(|n| n.to_digit(16)) {
+                        Some(d) => {
+                            value = value.saturating_mul(16).saturating_add(d);
+                            chars.next();
+                            taken += 1;
+                        }
+                        None => break,
+                    }
+                }
+                if taken == 0 {
+                    out.push('\\');
+                    out.push('x');
+                } else {
+                    match char::from_u32(value) {
+                        Some(ch) => out.push(ch),
+                        None => {
+                            out.push('\\');
+                            out.push('x');
+                        }
+                    }
+                }
+            }
+            Some('\'') => out.push('\''),
             Some(other) => {
                 out.push('\\');
                 out.push(other);
@@ -677,8 +730,15 @@ pub fn stat_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let mut follow = false;
     let mut terse = false;
     let mut fs_mode = false;
+    // [GNU] stat.c: -c/--printf/--format all assign ONE format slot, so
+    // the LAST one on the command line wins (probed coreutils 9.4:
+    // `--printf %n -c %s` prints the size, `-c %s --printf %n` prints the
+    // name); printf_escapes records whether the winning assignment was
+    // --printf. -t is an independent FLAG: an explicit format beats it
+    // regardless of order (`-c %n -t` prints the name; probed), and it
+    // only renders when the format slot is empty.
     let mut format: Option<String> = None;
-    let mut printf: Option<String> = None;
+    let mut printf_escapes = false;
     let mut operands: Vec<String> = Vec::new();
     let mut idx = 0usize;
     while idx < args.len() {
@@ -722,20 +782,21 @@ pub fn stat_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                                 }
                             }
                         };
-                        printf = Some(unescape(&v));
+                        format = Some(unescape(&v));
+                        printf_escapes = true;
                     }
                 },
                 "format" => match inline {
                     Some(v) => {
                         format = Some(v);
-                        terse = false;
+                        printf_escapes = false;
                     }
                     None => {
                         idx += 1;
                         match args.get(idx) {
                             Some(v) => {
                                 format = Some(v.to_string_lossy().into_owned());
-                                terse = false;
+                                printf_escapes = false;
                             }
                             None => {
                                 let _ = usage_error(
@@ -750,7 +811,6 @@ pub fn stat_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 },
                 "terse" => {
                     terse = true;
-                    format = None;
                 }
                 "file-system" => fs_mode = true,
                 "help" | "version" => return Ok(0),
@@ -771,7 +831,6 @@ pub fn stat_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 'L' => follow = true,
                 't' => {
                     terse = true;
-                    format = None;
                 }
                 'f' => fs_mode = true,
                 'c' => {
@@ -794,7 +853,7 @@ pub fn stat_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                         }
                     };
                     format = Some(v);
-                    terse = false;
+                    printf_escapes = false;
                 }
                 c => {
                     let _ = usage_error(io, "stat", &format!("invalid option -- '{c}'"));
@@ -811,79 +870,88 @@ pub fn stat_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     }
     let mut ok = true;
     for op in &operands {
-        let meta = match fs_win::file_meta(&ctx.cwd, op, !follow) {
-            Ok(m) => m,
-            Err(e) => {
-                let _ = writeln!(
-                    io.stderr,
-                    "stat: cannot statx '{op}': {}",
-                    fs_win::win32_reason(e)
-                );
-                ok = false;
+        // direct-invocation glob contract (1.x utils glob_expand; the
+        // shared module carries the rules): wildcard operands expand over
+        // the named directory, unmatched patterns stay literal
+        let expanded = if contains_wildcard(op) {
+            glob_expand_in(&ctx.cwd, op)
+        } else {
+            None
+        };
+        for op in expanded.unwrap_or_else(|| vec![op.clone()]) {
+            let meta = match fs_win::file_meta(&ctx.cwd, &op, !follow) {
+                Ok(m) => m,
+                Err(e) => {
+                    let _ = writeln!(
+                        io.stderr,
+                        "stat: cannot statx '{op}': {}",
+                        fs_win::win32_reason(e)
+                    );
+                    ok = false;
+                    continue;
+                }
+            };
+            let (owner, group) = fs_win::file_accounts(&ctx.cwd, &op);
+            let entry = StatEntry {
+                name: op.clone(),
+                meta,
+                owner,
+                group,
+            };
+            if fs_mode {
+                // GNU stat -f: the default fs shape, or the FS directive table
+                // for an explicit format; an explicit format beats -t (same
+                // slot model as the file side)
+                let info = collect_fs_info(&entry, ctx);
+                match &info {
+                    Some(info) if format.is_none() && !terse => {
+                        render_fs_default(&entry.name, info, io.stdout)?;
+                    }
+                    Some(info) => {
+                        let (fmt, process_escapes, append_nl) = match &format {
+                            Some(f) => (f.clone(), printf_escapes, !printf_escapes),
+                            None => (FS_TERSE_FORMAT.to_string(), false, true),
+                        };
+                        render_fs_format(&fmt, &entry.name, info, process_escapes, io.stdout)?;
+                        if append_nl {
+                            io.stdout.write_all(b"\n")?;
+                        }
+                    }
+                    None => {}
+                }
                 continue;
             }
-        };
-        let (owner, group) = fs_win::file_accounts(&ctx.cwd, op);
-        let entry = StatEntry {
-            name: op.clone(),
-            meta,
-            owner,
-            group,
-        };
-        if fs_mode {
-            // GNU stat -f: the default fs shape, or the FS directive table
-            // for an explicit -c/--printf/-t format.
-            let explicit = format.is_some() || printf.is_some() || terse;
-            let info = collect_fs_info(&entry, ctx);
-            match &info {
-                Some(info) if !explicit => {
-                    render_fs_default(&entry.name, info, io.stdout)?;
+            // [GNU] the LAST of -c/--printf/--format assigns the one format
+            // slot (printf_escapes says whether it was --printf); an explicit
+            // format beats -t regardless of order (probed `-c %n -t` prints
+            // the name); plain -t renders the terse line
+            let (fmt, process_escapes, append_nl) = if let Some(f) = &format {
+                (f.clone(), printf_escapes, !printf_escapes)
+            } else if terse {
+                (TERSE_FORMAT.to_string(), false, true)
+            } else {
+                // dedicated renderer, byte-aligned with the 1.x C++ default
+                let failed = render_default(&entry, follow, ctx, io.stdout)?;
+                if failed {
+                    ok = false;
                 }
-                Some(info) => {
-                    let (fmt, process_escapes, append_nl) = if let Some(pf) = &printf {
-                        (pf.clone(), true, false)
-                    } else if let Some(f) = &format {
-                        (f.clone(), false, true)
-                    } else {
-                        (FS_TERSE_FORMAT.to_string(), false, true)
-                    };
-                    render_fs_format(&fmt, &entry.name, info, process_escapes, io.stdout)?;
-                    if append_nl {
-                        io.stdout.write_all(b"\n")?;
-                    }
-                }
-                None => {}
-            }
-            continue;
-        }
-        let (fmt, process_escapes, append_nl) = if let Some(pf) = &printf {
-            (pf.clone(), true, false)
-        } else if let Some(f) = &format {
-            (f.clone(), false, true)
-        } else if terse {
-            (TERSE_FORMAT.to_string(), false, true)
-        } else {
-            // dedicated renderer, byte-aligned with the 1.x C++ default
-            let failed = render_default(&entry, follow, ctx, io.stdout)?;
-            if failed {
+                continue;
+            };
+            let ctx_failed = render_format(
+                &fmt,
+                &entry,
+                follow,
+                ctx,
+                io.stderr,
+                process_escapes,
+                io.stdout,
+            )?;
+            if ctx_failed {
                 ok = false;
             }
-            continue;
-        };
-        let ctx_failed = render_format(
-            &fmt,
-            &entry,
-            follow,
-            ctx,
-            io.stderr,
-            process_escapes,
-            io.stdout,
-        )?;
-        if ctx_failed {
-            ok = false;
-        }
-        if append_nl {
-            io.stdout.write_all(b"\n")?;
+            if append_nl {
+                io.stdout.write_all(b"\n")?;
+            }
         }
     }
     Ok(if ok { 0 } else { 1 })
