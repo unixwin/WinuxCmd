@@ -122,9 +122,11 @@ TEST(unexpand, unexpand_missing_input_reports_no_such_file) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stderr_text.find(
-                  "unexpand: cannot open 'missing.txt' for reading: No such "
-                  "file or directory") != std::string::npos);
+  // [GNU] unexpand.c reports the open failure through its own error path —
+  // "unexpand: FILE: reason" (coreutils 9.4 probed 2026-11-11) — not the
+  // 1.x "cannot open 'F' for reading" wording.
+  EXPECT_TRUE(r.stderr_text.find("unexpand: missing.txt: No such file or "
+                                 "directory") != std::string::npos);
 }
 
 TEST(unexpand, unexpand_directory_input_reports_is_a_directory) {
@@ -138,10 +140,9 @@ TEST(unexpand, unexpand_directory_input_reports_is_a_directory) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(
-      r.stderr_text.find(
-          "unexpand: cannot open 'indir' for reading: Is a directory") !=
-      std::string::npos);
+  // [GNU] same "unexpand: FILE: reason" shape for the directory operand.
+  EXPECT_TRUE(r.stderr_text.find("unexpand: indir: Is a directory") !=
+              std::string::npos);
 }
 
 TEST(unexpand, unexpand_no_utf8_preserves_utf8_bom_bytes) {
@@ -164,13 +165,27 @@ TEST(unexpand, unexpand_no_utf8_preserves_utf8_bom_bytes) {
   EXPECT_EQ(default_result.stdout_text,
             std::string("\xEF\xBB\xBF        x\n", 13));
 
+  // [GNU] -a converts on BYTE columns (unexpand.c getc + column++ per
+  // byte, WSL 9.4 probed 2026-11-11): the 3 BOM bytes occupy columns
+  // 0-2, so 5 of the 8 spaces collapse to the tab at column 8 and 3
+  // stay spaces. The 1.x "-U/--no-utf8" extension is not inherited —
+  // GNU rejects -U as an invalid option.
   Pipeline ascii_mode;
   ascii_mode.set_cwd(tmp.wpath());
-  ascii_mode.add(L"unexpand.exe", {L"-U", L"-a", L"bom.txt"});
+  ascii_mode.add(L"unexpand.exe", {L"-a", L"bom.txt"});
   auto ascii_result = ascii_mode.run();
 
   EXPECT_EQ(ascii_result.exit_code, 0);
   EXPECT_EQ(ascii_result.stdout_text, std::string("\xEF\xBB\xBF\t   x\n", 9));
+
+  Pipeline u_rejected;
+  u_rejected.set_cwd(tmp.wpath());
+  u_rejected.add(L"unexpand.exe", {L"-U", L"bom.txt"});
+  auto u_result = u_rejected.run();
+
+  EXPECT_EQ(u_result.exit_code, 1);
+  EXPECT_NE(u_result.stderr_text.find("unexpand: invalid option -- 'U'"),
+            std::string::npos);
 }
 
 TEST(unexpand, unexpand_tab_stop_error_messages_match_gnu) {
