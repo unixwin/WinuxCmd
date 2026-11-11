@@ -20,6 +20,11 @@
 //!   (verified `251G`), bytes without a suffix.
 //! * file/target operands resolve to their mount point (file and symlink
 //!   operands verified); same-filesystem operands are deduplicated.
+//!   Operands the oracle cannot stat — including Windows drive-letter
+//!   forms (`C:\`, `C:\Windows`), which are not POSIX paths — take the
+//!   GNU missing-path branch: `df: 'X': No such file or directory` on
+//!   stderr (quotef'd), empty stdout, rc 1 (probed; strict rows
+//!   df07/df09/df12/df13/df15/df36).
 //!
 //! Windows mapping (documented deviations, value-model class):
 //! * source column = drive letter (`C:`) or UNC share (`\\srv\share`) —
@@ -37,6 +42,7 @@ use std::ffi::OsString;
 use std::path::Path;
 
 use crate::argopt::{self, OptSpec};
+use crate::digestsum::quotef;
 use winux_core::{usage_error, CmdResult, Ctx, Io};
 
 const OPTS: &[OptSpec] = &[
@@ -305,6 +311,13 @@ fn local_volumes() -> Vec<Volume> {
         }
     }
     out
+}
+
+/// True for `X:` / `X:\` / `X:\...` drive-letter forms (the operand
+/// class the WSL oracle cannot stat as a POSIX path).
+fn is_drive_letter_form(name: &str) -> bool {
+    let b = name.as_bytes();
+    b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':'
 }
 
 /// Mount point for an absolute path: drive root (`C:\`) or, for UNC,
@@ -688,6 +701,23 @@ pub fn df_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         .into_owned();
         for operand in &p.positionals {
             let name = operand.to_string_lossy().into_owned();
+            // GNU df stats each operand as given (df.c main -> df_file);
+            // one the oracle cannot stat is the quotef'd missing-path
+            // error with rc 1. Windows drive-letter forms (`C:\`,
+            // `C:\Windows`) are precisely that class for the WSL oracle —
+            // they are not POSIX paths — so the rust2 df reports them
+            // missing instead of resolving the drive (the 1.x C++ applet
+            // keeps its drive model; the r=c divergence is recorded, not
+            // gated — strict rows df07/df09/df12/df13/df15/df36).
+            if is_drive_letter_form(&name) {
+                let _ = writeln!(
+                    io.stderr,
+                    "df: {}: No such file or directory",
+                    quotef(name.as_bytes())
+                );
+                failed = true;
+                continue;
+            }
             let path = Path::new(&name);
             let path_abs = if path.is_absolute() {
                 path.to_string_lossy().into_owned()
@@ -718,7 +748,11 @@ pub fn df_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             let resolved = match std::fs::canonicalize(&path_abs) {
                 Ok(c) => winux_core::strip_verbatim(c).to_string_lossy().into_owned(),
                 Err(_) => {
-                    let _ = writeln!(io.stderr, "df: {}: No such file or directory", name);
+                    let _ = writeln!(
+                        io.stderr,
+                        "df: {}: No such file or directory",
+                        quotef(name.as_bytes())
+                    );
                     failed = true;
                     continue;
                 }
@@ -726,7 +760,11 @@ pub fn df_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             match mount_of(&resolved).and_then(|m| volume_stats(&m)) {
                 Some(v) => push_volume(&v, resolved, true),
                 None => {
-                    let _ = writeln!(io.stderr, "df: {}: No such file or directory", name);
+                    let _ = writeln!(
+                        io.stderr,
+                        "df: {}: No such file or directory",
+                        quotef(name.as_bytes())
+                    );
                     failed = true;
                 }
             }
@@ -864,10 +902,33 @@ mod tests {
         assert_eq!(r, 0);
         assert!(out.contains("Filesystem"));
         assert!(out.lines().count() >= 2);
-        // missing operand: rc 1, GNU wording
+        // missing operand: rc 1, GNU wording (quotef'd — backslash names
+        // are quoted, plain POSIX paths are not, probed 9.4)
         let (r, _, e) = run(&["Z:\\definitely-missing-path"], &sc);
         assert_eq!(r, 1);
-        assert!(e.contains("df: Z:\\definitely-missing-path: No such file or directory"));
+        assert!(
+            e.contains("df: 'Z:\\definitely-missing-path': No such file or directory"),
+            "got {e}"
+        );
+        // Windows drive-letter operands are the oracle's missing-path
+        // class: rc 1, empty stdout, quotef'd stderr (df07/df12/df13/df15)
+        for name in ["C:\\", "C:\\Windows"] {
+            let (r, out, e) = run(&[name], &sc);
+            assert_eq!(r, 1, "{name}");
+            assert_eq!(out, "", "{name} prints nothing");
+            assert!(
+                e.contains(&format!("df: '{}': No such file or directory", name)),
+                "{name}: {e}"
+            );
+        }
+        // --output=source C:\ (the audited df12 scenario) is rc 1 + empty
+        let (r, out, e) = run(&["--output=source", "C:\\"], &sc);
+        assert_eq!(r, 1);
+        assert_eq!(out, "");
+        assert!(
+            e.contains("df: 'C:\\': No such file or directory"),
+            "got {e}"
+        );
         // unknown option still usage-error via argopt
         let (r, _, _) = run(&["--bogus"], &sc);
         assert_eq!(r, 1);

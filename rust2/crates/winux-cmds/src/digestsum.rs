@@ -811,7 +811,7 @@ fn write_escaped<W: std::io::Write + ?Sized>(out: &mut W, name: &[u8]) -> std::i
 /// Approximation of gnulib `quotef` for stderr diagnostics: quote with
 /// `'...'` when the name is empty or contains characters outside the
 /// common safe set. stderr wording is recorded by the gate, not gated.
-fn quotef(name: &[u8]) -> String {
+pub(crate) fn quotef(name: &[u8]) -> String {
     let s = String::from_utf8_lossy(name);
     let safe = !s.is_empty()
         && s.bytes()
