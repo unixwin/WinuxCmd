@@ -20,6 +20,13 @@ mkdir -p "$OUT"
 LEDGER="$OUT/ledger.tsv"
 : > "$LEDGER"
 
+# Fixture scratch: setup_fixture runs in the script's cwd, and some cases
+# CREATE files the table calls "missing" (truncate -s on a fresh name), so
+# the cwd is state, not neutral ground. Run each side in its own scratch
+# dir under $OUT so sides never see each other's leftovers.
+mkdir -p "$OUT/scratch"
+cd "$OUT/scratch"
+
 run_case() {
   local cname="$1" id="$2" envspec="$3" stdin_data="$4"; shift 4
   local o="$OUT/$cname-$id.out" e="$OUT/$cname-$id.err" rc
@@ -73,6 +80,28 @@ setup_fixture() {
       rm -f hnfile hnmissing hnbad
       printf 'myhost\n' > hnfile
       printf -- '-badname\n' > hnbad ;;
+    base64|base32)
+      rm -f mf mdec; printf foobar > mf; printf Zm9vYmFy > mdec ;;
+    b2sum)
+      # 'abc' BLAKE2b-512 from the gate tables; check rows reuse it.
+      rm -f mf ck ck.bad ck.missing ck.garbage; printf abc > mf;
+      printf 'ba80a53f981c4d0d6a2797b69f12f6e94c212f14685ac4b74b12bb6fdbffa2d17d87c5392aab792dc252d5de4533cc9518d38aa8dbf1925ab92386edd4009923  mf\n' > ck
+      printf '00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000  mf\n' > ck.bad
+      printf 'ba80a53f981c4d0d6a2797b69f12f6e94c212f14685ac4b74b12bb6fdbffa2d17d87c5392aab792dc252d5de4533cc9518d38aa8dbf1925ab92386edd4009923  no-such-file-xyz\n' > ck.missing
+      printf 'not a checksum line at all\n' > ck.garbage ;;
+    sha224sum)
+      printf '23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7  mf\n' > ck
+      printf '0000000000000000000000000000000000000000000000000000000000  mf\n' > ck.bad
+      printf '23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7  no-such-file-xyz\n' > ck.missing
+    sha384sum)
+      printf 'cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7  mf\n' > ck
+      printf '000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000  mf\n' > ck.bad
+      printf 'cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7  no-such-file-xyz\n' > ck.missing
+    tac)
+      rm -f tf; printf 'a\nb\nc\n' > tf ;;
+    truncate)
+      rm -f trf; printf 0123456789ABCDEF > trf ;;
+
     *) : ;;
   esac
 }
@@ -461,6 +490,226 @@ TABLE
 18|||0.1s:true
 19|||-s:BOGUS:1:true
 20|||--:1:true
+    base64)
+      cat <<'TABLE'
+01|||
+02||abc||
+03||abc|-d
+04||Zm9vYmFy|-d
+05||Zm9vYmFy|-d:-i
+06||Zm9v |-d
+07|||-w:2:mf
+08|||-w:0:mf
+09|||--wrap=2:mf
+10|||-w2:mf
+11|||-w:bogus:mf
+12|||-w:-1:mf
+13|||missing-file-xyz
+14|||mf:mf
+15|||--help
+16|||--version
+17|||--help:x
+18|||--bogus
+19|||-z
+20|||--:mf
+21|||-
+22||Zm9vYmFy|-d:-
+23|||mdec
+24|||-i
+25||YWJj|-d
+26|||-w:bogus:missing-file-xyz
+27|||-d:-w:bogus:mf
+28|||-w:bogus:mf:extra
+TABLE
+      ;;
+    base32)
+      cat <<'TABLE'
+01|||
+02||abc||
+03||MFRGG===|-d
+04||MZXW6YTBOI======|-d
+05||MZXW6YTBOI======|-d:-i
+06||MZXW6YTBOI|-d
+07||MZ|-d
+08|||-w:4:mf
+09|||-w:0:mf
+10|||--wrap=4:mf
+11|||-w4:mf
+12|||-w:bogus:mf
+13|||-w:-1:mf
+14|||missing-file-xyz
+15|||mf:mf
+16|||--help
+17|||--version
+18|||--help:x
+19|||--bogus
+20|||-z
+21|||--:mf
+22|||-
+23|||mdec
+24||ME======|-d
+25||ME======|-d:-i
+26|||-w:bogus:missing-file-xyz
+27|||-d:-w:bogus:mf
+28|||-w:bogus:mf:extra
+TABLE
+      ;;
+    b2sum)
+      cat <<'TABLE'
+01|||
+02||abc||
+03|||mf
+04|||-b:mf
+05|||-t:mf
+06|||-z:mf
+07|||--tag:mf
+08|||-l:128:mf
+09|||-l:512:mf
+10|||-l:bogus:mf
+11|||-l:520:mf
+12|||--check:ck
+13|||--check:ck.bad
+14|||--check:ck.missing
+15|||--check:ck.garbage
+16|||-w:--check:ck.garbage
+17|||--quiet:--check:ck.bad
+18|||--status:--check:ck.bad
+19|||--strict:--check:ck.garbage
+20|||--ignore-missing:--check:ck.missing
+21||ba80a53f981c4d0d6a2797b69f12f6e94c212f14685ac4b74b12bb6fdbffa2d17d87c5392aab792dc252d5de4533cc9518d38aa8dbf1925ab92386edd4009923  mf|-c
+22|||--tag:mf:-c
+23|||-b:-c:ck
+24|||--zero:--check:ck
+25|||--quiet
+26|||--help
+27|||--version
+28|||--bogus
+29|||-q
+30|||mf:mf
+31|||--:mf
+32|||-
+33|||--tag:--check:-l:bogus
+34|||-l:bogus:missing-file-xyz
+TABLE
+      ;;
+    sha224sum)
+      cat <<'TABLE'
+01|||
+02||abc||
+03|||mf
+04|||-b:mf
+05|||-t:mf
+06|||-z:mf
+07|||--tag:mf
+08|||--check:ck
+09|||--check:ck.bad
+10|||--check:ck.missing
+11|||--check:ck.garbage
+12|||-w:--check:ck.garbage
+13|||--quiet:--check:ck.bad
+14|||--status:--check:ck.bad
+15|||--strict:--check:ck.garbage
+16|||--ignore-missing:--check:ck.missing
+17||23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7  mf|-c
+18|||-l:224:mf
+19|||-b:mf:-c
+20|||--quiet
+21|||--help
+22|||--version
+23|||--bogus
+24|||-q
+25|||mf:mf
+26|||--:mf
+27|||-
+TABLE
+      ;;
+    sha384sum)
+      cat <<'TABLE'
+01|||
+02||abc||
+03|||mf
+04|||-b:mf
+05|||-t:mf
+06|||-z:mf
+07|||--tag:mf
+08|||--check:ck
+09|||--check:ck.bad
+10|||--check:ck.missing
+11|||--check:ck.garbage
+12|||-w:--check:ck.garbage
+13|||--quiet:--check:ck.bad
+14|||--status:--check:ck.bad
+15|||--strict:--check:ck.garbage
+16|||--ignore-missing:--check:ck.missing
+17||cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7  mf|-c
+18|||-l:384:mf
+19|||-b:mf:-c
+20|||--quiet
+21|||--help
+22|||--version
+23|||--bogus
+24|||-q
+25|||mf:mf
+26|||--:mf
+27|||-
+TABLE
+      ;;
+    tac)
+      cat <<'TABLE'
+01||abc||
+02||abc|-b
+03||abc|-r
+04||abc|-s:x
+05||a1b2|-s:1
+06|||tf
+07|||-b:tf
+08|||-r:tf
+09|||-s:c:tf
+10|||-r:-s:[a-c]:tf
+11|||-r:-s:x*:tf
+12|||-s:@EMPTY@:tf
+13|||missing-file-xyz
+14|||tf:tf
+15|||-r:-s:[:tf
+16|||-r:-s:@EMPTY@:tf
+17|||--help
+18|||--version
+19|||--bogus
+20|||--:tf
+21|||-
+22||a1b2c|-r:-s:[0-9]
+23||a1b2c|-r:-b:-s:[0-9]
+24||x|-s:@EMPTY@
+TABLE
+      ;;
+    truncate)
+      cat <<'TABLE'
+01|||-s:10:trf
+02|||--size=5:trf
+03|||-s:+2:trf
+04|||-s:-2:trf
+05|||-s:%5:trf
+06|||-s:/5:trf
+07|||-s:>10:trf
+08|||-s:<20:trf
+09|||-s:1K:trf
+10|||-s:1KiB:trf
+11|||-s:1kB:trf
+12|||-s:@EMPTY@:trf
+13|||
+14|||-s:5
+15|||-s:bogus:trf
+16|||-r:trf:trf
+17|||-r:missing-file-xyz:-s:5:trf
+18|||-c:-s:5:missing-file-xyz
+19|||-s:5:missing-file-xyz
+20|||-o:-s:1K:trf
+21|||--help
+22|||--version
+23|||--bogus
+24|||-x
+25|||--:trf
+26|||-c:-s:10:trf
 TABLE
       ;;
     whoami)
