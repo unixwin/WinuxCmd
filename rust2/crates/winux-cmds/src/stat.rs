@@ -24,31 +24,23 @@ use std::io::Write;
 use crate::fs_win::{self, FileTime};
 use winux_core::{usage_error, CmdResult, Ctx, Io};
 
-/// GNU stat.c default format (verified against coreutils 9.4 output).
-const DEFAULT_FORMAT: &str = concat!(
-    "  File: %N\n",
-    "  Size: %-20s\tBlocks: %-10b IO Block: %-6o %F\n",
-    "Device: %Dh/%dd\tInode: %-10i  Links: %h\n",
-    "Access: (%04a/%10.10A)  Uid: (%5u/%8U)   Gid: (%5g/%8G)\n",
-    "Access: %x\n",
-    "Modify: %y\n",
-    "Change: %z\n",
-    " Birth: %w\n"
-);
+/// GNU stat.c default layout, byte-aligned with the 1.x C++ renderer it
+/// replaces (git HEAD src/commands/stat.cpp print_stat): the File line is
+/// UNQUOTED with an optional " -> target" suffix, Size/Blocks/IO Block pad
+/// to 10/10/6, the device prints as "<volume serial>,0", and the inode
+/// pads to 11 before a single-space "Links:". coreutils 9.4 on DrvFs shows
+/// the same shape (unquoted name, comma device) modulo platform fields.
+/// No trailing "\n": GNU stat.c appends the terminating newline once after
+/// a -t/-c render (probed coreutils 9.4: `stat -t f` ends in one \n, while
+/// `stat -c '%n\n'` keeps the two escape chars literal and STILL appends a
+/// real \n — the append is unconditional, so a \n in the format would
+/// double it).
+const TERSE_FORMAT: &str = "%n %s %b %f %u %g %D %i %h %t %T %X %Y %Z %W %o";
 
-/// GNU stat.c terse format.
-const TERSE_FORMAT: &str = "%n %s %b %f %u %g %D %i %h %t %T %X %Y %Z %W %o\n";
-
-/// GNU stat.c filesystem default format (informational; -f renders its
-/// own shape inline).
-#[allow(dead_code)]
-const FS_DEFAULT_FORMAT: &str = concat!(
-    "  File: \"%n\"\n",
-    "    ID: %d Namelen: %c Type: %T\n",
-    "Block size: %s Fundamental block size: %S\n",
-    "Blocks: Total: %b Free: %f Available: %a\n",
-    "Inodes: Total: %c Free: %d\n"
-);
+/// GNU stat.c terse filesystem format (stat.c FS_NORM_TERMINATE form); the
+/// terminating newline is the unconditional -t/-c append, not the format
+/// (probed coreutils 9.4 `stat -f -t f`: exactly one \n).
+const FS_TERSE_FORMAT: &str = "%n %i %l %t %s %S %b %f %a %c %d";
 
 #[derive(Clone)]
 enum Field {
@@ -210,13 +202,28 @@ fn quote_name(s: &str) -> String {
     format!("'{s}'")
 }
 
-/// Compute the field for a directive letter.
+/// [GNU] stat prints "UNKNOWN" where the group name cannot be resolved
+/// (1.x display_group_name: empty or the literal Windows "None" group,
+/// git HEAD src/commands/stat.cpp:332).
+fn group_display(name: &str) -> String {
+    if name.is_empty() || name == "None" {
+        "UNKNOWN".to_string()
+    } else {
+        name.to_string()
+    }
+}
+
+/// Compute the field for a directive letter. `ctx_failed` flips when the
+/// requested field cannot be produced (GNU %C: rc 1 per GNU stat -c %C on
+/// a volume without security contexts — probed coreutils 9.4, rc 1 with
+/// '?' on stdout and the "failed to get security context" note).
 fn field_for(
     letter: char,
     entry: &StatEntry,
     follow: bool,
     ctx: &Ctx,
     stderr: &mut dyn Write,
+    ctx_failed: &mut bool,
 ) -> Field {
     let m = &entry.meta;
     let mw = mode_word(m);
@@ -255,13 +262,7 @@ fn field_for(
                 entry.owner.1.clone()
             }
         }
-        'G' => {
-            if entry.group.1.is_empty() {
-                "UNKNOWN".to_string()
-            } else {
-                entry.group.1.clone()
-            }
-        }
+        'G' => group_display(&entry.group.1),
         'X' => return Field::Num(m.atime.to_epoch().0),
         'Y' => return Field::Num(m.mtime.to_epoch().0),
         'Z' => return Field::Num(m.ctime.to_epoch().0),
@@ -276,6 +277,7 @@ fn field_for(
                 "stat: failed to get security context of '{}': No data available",
                 entry.name
             );
+            *ctx_failed = true;
             "?".to_string()
         }
         'm' => mount_point(ctx, &entry.name),
@@ -317,7 +319,8 @@ fn resolve(ctx: &Ctx, p: &str) -> std::path::PathBuf {
     }
 }
 
-/// Expand one -c/--printf format for one entry.
+/// Expand one -c/--printf format for one entry. Returns whether a field
+/// failure occurred (GNU: %C on a context-less volume fails the entry).
 fn render_format(
     fmt: &str,
     entry: &StatEntry,
@@ -326,7 +329,8 @@ fn render_format(
     stderr: &mut dyn Write,
     process_escapes: bool,
     out: &mut dyn Write,
-) -> std::io::Result<()> {
+) -> std::io::Result<bool> {
+    let mut ctx_failed = false;
     let bytes = fmt.as_bytes();
     let mut i = 0usize;
     while i < bytes.len() {
@@ -380,7 +384,7 @@ fn render_format(
         }
         let letter = bytes[i] as char;
         i += 1;
-        let field = field_for(letter, entry, follow, ctx, stderr);
+        let field = field_for(letter, entry, follow, ctx, stderr, &mut ctx_failed);
         let rendered = field.render(&spec);
         if process_escapes && letter.is_ascii_alphabetic() {
             out.write_all(rendered.as_bytes())?;
@@ -388,7 +392,7 @@ fn render_format(
             out.write_all(rendered.as_bytes())?;
         }
     }
-    Ok(())
+    Ok(ctx_failed)
 }
 
 /// Process backslash escapes for --printf.
@@ -418,18 +422,23 @@ fn unescape(fmt: &str) -> String {
     out
 }
 
-fn stat_fs_format(entry: &StatEntry, ctx: &Ctx, out: &mut dyn Write) -> std::io::Result<()> {
-    // -f: report the containing volume (Windows values, GNU shape)
+/// Filesystem facts for -f (volume query), shared by the default fs shape
+/// and the explicit fs-mode format table (GNU stat -f directive set).
+struct FsInfo {
+    id_hex: u32,     // %i "file system ID in hex"
+    namelen: u64,    // %l
+    fs_type: String, // %T human form
+    block: u64,      // %s
+    fblock: u64,     // %S
+    total: u64,      // %b
+    free: u64,       // %f
+    avail: u64,      // %a
+}
+
+#[allow(clippy::needless_return)]
+fn collect_fs_info(entry: &StatEntry, ctx: &Ctx) -> Option<FsInfo> {
     #[cfg(windows)]
     {
-        #[repr(C)]
-        #[allow(dead_code)]
-        struct Ulid {
-            high: u64,
-            low: u64,
-        }
-        let full = fs_win::imp::api_path(&ctx.cwd, &entry.name);
-        let _ = &full;
         #[link(name = "kernel32")]
         extern "system" {
             fn GetVolumeInformationW(
@@ -497,30 +506,171 @@ fn stat_fs_format(entry: &StatEntry, ctx: &Ctx, out: &mut dyn Write) -> std::io:
         } else {
             (0, 0, 0)
         };
-        out.write_all(format!("  File: \"{}\"\n", entry.name).as_bytes())?;
-        out.write_all(
-            format!(
-                "    ID: {:08x} Namelen: {} Type: {}\n",
-                serial
-                    .to_be_bytes()
-                    .iter()
-                    .fold(0u64, |acc, b| (acc << 8) | *b as u64)
-                    & 0xffff_ffff,
-                namelen,
-                fs_type
-            )
-            .as_bytes(),
-        )?;
-        out.write_all(format!("Block size: 4096 Fundamental block size: 4096\n").as_bytes())?;
-        out.write_all(format!("Blocks: Total: {t} Free: {f} Available: {a}\n").as_bytes())?;
-        out.write_all(format!("Inodes: Total: 0 Free: 0\n").as_bytes())?;
-        Ok(())
+        // GNU prints the fs ID from the byte-folded serial (1.x shape).
+        let id_hex = serial
+            .to_be_bytes()
+            .iter()
+            .fold(0u32, |acc: u32, b: &u8| (acc << 8) | *b as u32);
+        return Some(FsInfo {
+            id_hex,
+            namelen,
+            fs_type,
+            block: 4096,
+            fblock: 4096,
+            total: t,
+            free: f,
+            avail: a,
+        });
     }
     #[cfg(not(windows))]
     {
-        let _ = (entry, ctx, out);
-        Ok(())
+        let _ = (entry, ctx);
+        return None;
     }
+}
+
+/// Default -f shape (GNU layout with Windows values; the 1.x shape it
+/// replaces rendered the same block).
+fn render_fs_default(name: &str, info: &FsInfo, out: &mut dyn Write) -> std::io::Result<()> {
+    writeln!(out, "  File: \"{}\"", name)?;
+    writeln!(
+        out,
+        "    ID: {:08x} Namelen: {} Type: {}",
+        info.id_hex, info.namelen, info.fs_type
+    )?;
+    writeln!(
+        out,
+        "Block size: {} Fundamental block size: {}",
+        info.block, info.fblock
+    )?;
+    writeln!(
+        out,
+        "Blocks: Total: {} Free: {} Available: {}",
+        info.total, info.free, info.avail
+    )?;
+    writeln!(out, "Inodes: Total: 0 Free: 0")?;
+    Ok(())
+}
+
+/// GNU stat -f with an explicit format/printf/-t: the FS directive table
+/// (coreutils stat.c fs_use_format fields). %c/%d report 0 (Windows volumes
+/// expose no inode counts); %t is the fs-type magic, 0 on Windows.
+fn render_fs_format(
+    fmt: &str,
+    name: &str,
+    info: &FsInfo,
+    process_escapes: bool,
+    out: &mut dyn Write,
+) -> std::io::Result<()> {
+    let rendered = fmt
+        .chars()
+        .flat_map(|c| std::iter::once(c))
+        .collect::<Vec<char>>();
+    let mut i = 0usize;
+    let mut body = String::new();
+    while i < rendered.len() {
+        let c = rendered[i];
+        if c != '%' {
+            body.push(c);
+            i += 1;
+            continue;
+        }
+        i += 1;
+        if i >= rendered.len() {
+            body.push('%');
+            break;
+        }
+        let letter = rendered[i];
+        i += 1;
+        match letter {
+            '%' => body.push('%'),
+            'n' => body.push_str(name),
+            'i' => body.push_str(&format!("{:08x}", info.id_hex)),
+            'l' => body.push_str(&info.namelen.to_string()),
+            't' => body.push('0'),
+            'T' => body.push_str(&info.fs_type),
+            's' => body.push_str(&info.block.to_string()),
+            'S' => body.push_str(&info.fblock.to_string()),
+            'b' => body.push_str(&info.total.to_string()),
+            'f' => body.push_str(&info.free.to_string()),
+            'a' => body.push_str(&info.avail.to_string()),
+            'c' | 'd' => body.push('0'),
+            _ => body.push('?'),
+        }
+    }
+    let _ = process_escapes;
+    out.write_all(body.as_bytes())?;
+    Ok(())
+}
+
+/// The GNU default file listing, byte-aligned with the 1.x C++ renderer it
+/// replaces (git HEAD src/commands/stat.cpp print_stat default branch).
+/// Returns true when a context (%C) failure occurred; the default layout
+/// carries no %C, so this stays false.
+fn render_default(
+    entry: &StatEntry,
+    follow: bool,
+    ctx: &Ctx,
+    out: &mut dyn Write,
+) -> std::io::Result<bool> {
+    let m = &entry.meta;
+    let pad_right = |s: String, w: usize| format!("{:<width$}", s, width = w);
+    let pad_left = |s: String, w: usize| format!("{:>width$}", s, width = w);
+    //   File: <name>[ -> <target>]  (unquoted: 1.x and coreutils 9.4 shape)
+    write!(out, "  File: {}", entry.name)?;
+    if m.is_symlink && !follow {
+        if let Ok(target) = std::fs::read_link(resolve(ctx, &entry.name)) {
+            write!(out, " -> {}", target.to_string_lossy())?;
+        }
+    }
+    writeln!(out)?;
+    writeln!(
+        out,
+        "  Size: {}\tBlocks: {} IO Block: {} {}",
+        pad_right(m.size.to_string(), 10),
+        pad_right(m.size.div_ceil(512).to_string(), 10),
+        pad_right("4096".to_string(), 6),
+        file_type_name(m)
+    )?;
+    // [GNU] "Device: <dev>,<sub>": Windows exposes the volume serial as the
+    // device with subunit 0 (1.x comment, stat.cpp:1283).
+    writeln!(
+        out,
+        "Device: {},0\tInode: {} Links: {}",
+        m.volume_serial,
+        pad_right(m.index.to_string(), 11),
+        m.links
+    )?;
+    let uid = if entry.owner.0.is_empty() {
+        "0"
+    } else {
+        &entry.owner.0
+    };
+    let gid = if entry.group.0.is_empty() {
+        "0"
+    } else {
+        &entry.group.0
+    };
+    let owner_name = if entry.owner.1.is_empty() {
+        "UNKNOWN".to_string()
+    } else {
+        entry.owner.1.clone()
+    };
+    writeln!(
+        out,
+        "Access: ({:04o}/{})  Uid: ({}/{})   Gid: ({}/{})",
+        mode_word(m) & 0o7777,
+        access_string(m),
+        pad_left(uid.to_string(), 5),
+        pad_left(owner_name, 8),
+        pad_left(gid.to_string(), 5),
+        pad_left(group_display(&entry.group.1), 8)
+    )?;
+    writeln!(out, "Access: {}", format_filetime(&m.atime))?;
+    writeln!(out, "Modify: {}", format_filetime(&m.mtime))?;
+    writeln!(out, "Change: {}", format_filetime(&m.ctime))?;
+    writeln!(out, " Birth: {}", format_filetime(&m.btime))?;
+    Ok(false)
 }
 
 pub fn stat_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
@@ -681,7 +831,29 @@ pub fn stat_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             group,
         };
         if fs_mode {
-            stat_fs_format(&entry, ctx, io.stdout)?;
+            // GNU stat -f: the default fs shape, or the FS directive table
+            // for an explicit -c/--printf/-t format.
+            let explicit = format.is_some() || printf.is_some() || terse;
+            let info = collect_fs_info(&entry, ctx);
+            match &info {
+                Some(info) if !explicit => {
+                    render_fs_default(&entry.name, info, io.stdout)?;
+                }
+                Some(info) => {
+                    let (fmt, process_escapes, append_nl) = if let Some(pf) = &printf {
+                        (pf.clone(), true, false)
+                    } else if let Some(f) = &format {
+                        (f.clone(), false, true)
+                    } else {
+                        (FS_TERSE_FORMAT.to_string(), false, true)
+                    };
+                    render_fs_format(&fmt, &entry.name, info, process_escapes, io.stdout)?;
+                    if append_nl {
+                        io.stdout.write_all(b"\n")?;
+                    }
+                }
+                None => {}
+            }
             continue;
         }
         let (fmt, process_escapes, append_nl) = if let Some(pf) = &printf {
@@ -691,9 +863,14 @@ pub fn stat_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         } else if terse {
             (TERSE_FORMAT.to_string(), false, true)
         } else {
-            (DEFAULT_FORMAT.to_string(), false, true)
+            // dedicated renderer, byte-aligned with the 1.x C++ default
+            let failed = render_default(&entry, follow, ctx, io.stdout)?;
+            if failed {
+                ok = false;
+            }
+            continue;
         };
-        render_format(
+        let ctx_failed = render_format(
             &fmt,
             &entry,
             follow,
@@ -702,6 +879,9 @@ pub fn stat_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             process_escapes,
             io.stdout,
         )?;
+        if ctx_failed {
+            ok = false;
+        }
         if append_nl {
             io.stdout.write_all(b"\n")?;
         }
@@ -771,9 +951,10 @@ mod tests {
         assert!(out.trim_end().ends_with(" +0800") || out.contains(':'));
         assert_eq!(out.matches('.').count(), 1);
         assert!(out.contains(' '));
-        // %C prints ? and a stderr note, rc stays 0
+        // %C prints ? and a stderr note, and fails the entry (GNU probed
+        // coreutils 9.4: `stat -c %C reg` -> rc 1)
         let (r, out, err) = run_sc(&sc, &["-c", "%C", "reg"]);
-        assert_eq!(r, 0);
+        assert_eq!(r, 1);
         assert_eq!(out.trim_end(), "?");
         assert!(err.contains("failed to get security context"));
         // unknown directive prints ? and rc 0
@@ -790,16 +971,18 @@ mod tests {
         let sc = setup("stat-def");
         let (r, out, _) = run_sc(&sc, &["reg"]);
         assert_eq!(r, 0);
-        // GNU default shape line by line
+        // GNU default shape line by line (unquoted File line, comma device,
+        // byte-aligned with the 1.x C++ renderer: probed coreutils 9.4 on
+        // DrvFs + the old exe matrix, 2026-11-11)
         let lines: Vec<&str> = out.split('\n').collect();
-        assert!(lines[0].starts_with("  File: 'reg'"));
+        assert!(lines[0].starts_with("  File: reg"));
+        assert!(!lines[0].contains('\''));
         assert!(lines[1].starts_with("  Size: 3"));
         assert!(lines[1].contains("Blocks: 1"));
         assert!(lines[1].contains("IO Block: 4096"));
         assert!(lines[1].contains("regular empty file") || lines[1].contains("regular file"));
         assert!(lines[2].starts_with("Device: "));
-        assert!(lines[2].contains("h/"));
-        assert!(lines[2].contains("d\tInode: "));
+        assert!(lines[2].contains(",0\t"));
         assert!(lines[2].contains("Links: 1"));
         assert!(lines[3].starts_with("Access: (0644/"));
         assert!(lines[3].contains("Uid:"));
