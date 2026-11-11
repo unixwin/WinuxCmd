@@ -473,6 +473,29 @@ TABLE
 16|||WINUXSH_USER=
 TABLE
       ;;
+    nproc)
+      cat <<'TABLE'
+01|||
+02|||--all
+03|||-a
+04|||--ignore=2
+05|||--ignore=0
+06|||--ignore=+1
+07|||--ignore:2
+08|||--ignore
+09|||--ignore=bad
+10|||--ignore=-1
+11|||extra
+12|||-h
+13|||--help
+14|||--version
+15|||--help:x
+16|||--bogus
+17|||-z
+18|||--
+19|||@EMPTY@
+TABLE
+      ;;
     *)
       echo "cmd-matrix.sh: no case table for $CMD" >&2
       exit 2
