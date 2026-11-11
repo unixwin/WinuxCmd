@@ -272,7 +272,11 @@ TEST(timeout, timeout_invalid_duration) {
 
   EXPECT_EQ(r.exit_code, 125);
   EXPECT_TRUE(r.stdout_text.empty());
-  EXPECT_EQ_TEXT(r.stderr_text, "timeout: invalid time interval 'abc'\n");
+  // [GNU] invalid DURATION is a usage error: diagnostic + try-help line
+  // (probed WSL 9.4 rc 125; the pre-wiring 1.x exe omitted the hint).
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "timeout: invalid time interval 'abc'\n"
+                 "Try 'timeout --help' for more information.\n");
 }
 
 TEST(timeout, timeout_invalid_signal) {
@@ -282,7 +286,11 @@ TEST(timeout, timeout_invalid_signal) {
 
   EXPECT_EQ(r.exit_code, 125);
   EXPECT_TRUE(r.stdout_text.empty());
-  EXPECT_EQ_TEXT(r.stderr_text, "timeout: 'INVALID': invalid signal\n");
+  // [GNU] invalid signal spec is a usage error: diagnostic + try-help
+  // (probed WSL 9.4 rc 125; the pre-wiring 1.x exe omitted the hint).
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "timeout: 'INVALID': invalid signal\n"
+                 "Try 'timeout --help' for more information.\n");
 }
 
 // [GNU] Issue #1384: the full Linux signal table is accepted by name
@@ -318,7 +326,11 @@ TEST(timeout, timeout_invalid_kill_after_reports_gnu_style_usage_error) {
 
   EXPECT_EQ(r.exit_code, 125);
   EXPECT_TRUE(r.stdout_text.empty());
-  EXPECT_EQ_TEXT(r.stderr_text, "timeout: invalid time interval 'xyz'\n");
+  // [GNU] invalid -k interval: diagnostic + try-help (probed WSL 9.4
+  // rc 125; the pre-wiring 1.x exe omitted the hint).
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "timeout: invalid time interval 'xyz'\n"
+                 "Try 'timeout --help' for more information.\n");
 }
 
 TEST(timeout, timeout_invalid_option_returns_125_with_help_hint) {

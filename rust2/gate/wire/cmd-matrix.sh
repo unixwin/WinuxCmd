@@ -423,6 +423,36 @@ TABLE
 21||a 1|-:jf2
 TABLE
       ;;
+    timeout)
+      # #1488 wiring wave3b: the exit-code contract (124 timed out,
+      # 125 timeout itself failed, 126 found-not-invocable, 127 not
+      # found, 137 KILL) gates exit-only; the child set is
+      # platform-bound (true/sleep on both sides; GNU wraps coreutils,
+      # the exe wraps its own multicall children). -k/-s/--preserve-
+      # status rows exercise the 124/137 matrix.
+      cat <<'TABLE'
+01|||1:true
+02|||1s:true
+03|||1s:sleep:10
+04|||-k:2:1:sleep:10
+05|||-k:1s:1s:sleep:10
+06|||-s:KILL:1:sleep:10
+07|||-s:TERM:1:sleep:10
+08|||--preserve-status:1:sleep:10
+09|||--preserve-status:1:true
+10|||--foreground:1:true
+11|||-v:1:sleep:10
+12|||--help
+13|||--version
+14|||--bogus
+15|||1
+16|||abc:true
+17|||1m:missing-cmd-xyz
+18|||0.1s:true
+19|||-s:BOGUS:1:true
+20|||--:1:true
+TABLE
+      ;;
     *)
       echo "cmd-matrix.sh: no case table for $CMD" >&2
       exit 2
