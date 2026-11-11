@@ -257,45 +257,71 @@ fn expand_line(
 
 /// Normalize argv: the obsolescent `-NUM[,NUM...]` form becomes --tabs, so
 /// the whole digits run (including comma continuations) is one spec piece.
-/// A digit-led arg with other trailing characters is the GNU invalid-option
-/// path ("expand: invalid option -- 'x'").
-fn preprocess_obsolescent(
-    args: &[OsString],
-    prog: &str,
-    io: &mut Io,
-) -> Result<Vec<OsString>, u32> {
+/// [GNU] expand.c:48 builds the shortopt string as
+/// `it:0::1::2::3::4::5::6::7::8::9::` — every digit is an OPTIONAL-ARGUMENT
+/// option — and expand.c:204-215 hands `optarg - 1` (the leading digit plus
+/// the whole rest of the token, commas, blanks and any other characters
+/// included) to parse_tab_stops as ONE spec. Whatever follows the digit is
+/// therefore the tab-list parser's to judge (expand-common.c:208 emits
+/// "tab size contains invalid character(s)" for a bad character; blanks
+/// separate values, expand-common.c:139), never getopt's.
+///
+/// Two getopt position rules bound the conversion:
+/// - a token in the VALUE slot of `-t`/`--tabs` is data, never an option
+///   (glibc getopt consumes the required argument whatever it starts
+///   with), so `expand -t -4` errors with the '-4' spec (WSL 9.4 probe)
+///   instead of converting;
+/// - after `--` everything is an operand.
+fn preprocess_obsolescent(args: &[OsString]) -> Vec<OsString> {
     let mut out = Vec::with_capacity(args.len());
+    let mut no_more_options = false;
+    let mut expects_value = false;
     for a in args {
-        let text = a.to_string_lossy();
+        let text = a.to_string_lossy().into_owned();
+        if !no_more_options && text == "--" {
+            no_more_options = true;
+            expects_value = false;
+            out.push(a.clone());
+            continue;
+        }
+        if expects_value || no_more_options {
+            // data position: the token is a value/operand verbatim
+            expects_value = false;
+            out.push(a.clone());
+            continue;
+        }
         let mut chars = text.chars();
         if chars.next() == Some('-') {
             let rest: String = chars.collect();
             let mut rchars = rest.chars();
             if rchars.next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
-                if rest.chars().all(|c| c.is_ascii_digit() || c == ',') {
-                    out.push(OsString::from(format!("--tabs={rest}")));
-                } else {
-                    let bad = rest
-                        .chars()
-                        .find(|c| !c.is_ascii_digit() && *c != ',')
-                        .unwrap();
-                    let msg = format!("invalid option -- '{bad}'");
-                    let _ = winux_core::usage_error(io, prog, &msg);
-                    return Err(1);
-                }
+                out.push(OsString::from(format!("--tabs={rest}")));
                 continue;
+            }
+            // does this option leave -t/--tabs awaiting a detached value?
+            if rest == "t" {
+                expects_value = true;
+            } else if let Some(long) = rest.strip_prefix('-') {
+                // long option without an inline value that resolves to
+                // --tabs (abbreviation, glibc getopt rule)
+                if !long.contains('=') && "tabs".starts_with(long) && !long.is_empty() {
+                    expects_value = true;
+                }
+            } else if let Some(last) = rest.chars().last() {
+                // a cluster whose LAST short flag is the value-taking t
+                // ("-it", "-it" bundles) leaves the value slot open
+                if last == 't' {
+                    expects_value = true;
+                }
             }
         }
         out.push(a.clone());
     }
-    Ok(out)
+    out
 }
 
 pub fn expand_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
-    let args = match preprocess_obsolescent(args, "expand", io) {
-        Ok(a) => a,
-        Err(s) => return Ok(s),
-    };
+    let args = preprocess_obsolescent(args);
     let p = match argopt::parse("expand", &args, OPTS, io, ctx, 1) {
         Ok(p) => p,
         Err(s) => return Ok(s),
@@ -424,10 +450,33 @@ mod tests {
     fn obsolescent_forms() {
         expect(&["-45"], "ab\tcd\n", &format!("ab{}cd\n", " ".repeat(43)));
         expect(&["-4,8"], "ab\tcd\n", "ab  cd\n");
-        // digit-led arg with trailing junk is the invalid-option path
+        // [GNU] everything after the leading digit is the spec parser's to
+        // judge (expand.c:204-215 parse_tab_stops(optarg - 1)): trailing
+        // junk is the tab-list invalid-character diagnostic, NOT getopt's
+        // invalid option (WSL 9.4 probed 2026-11-11).
         let (r, _, err) = run(&["-4x"], "ab\tcd\n");
         assert_eq!(r, 1);
-        assert!(err.contains("invalid option -- 'x'"));
+        assert!(err.contains("tab size contains invalid character(s): 'x'"));
+        let (r, _, err) = run(&["-4,8x"], "ab\tcd\n");
+        assert_eq!(r, 1);
+        assert!(err.contains("tab size contains invalid character(s): 'x'"));
+        // blanks separate spec values inside one token (GNU '-4 8' converts)
+        expect(&["-4 8"], "ab\tcd\tef\n", "ab  cd  ef\n");
+    }
+
+    #[test]
+    fn obsolescent_value_slot_and_end_of_options() {
+        // [GNU] a token in -t's required-argument slot is data whatever it
+        // starts with: getopt consumes it before the digit options can,
+        // so the spec is "-4" and parse_tab_stops rejects the '-'
+        // (WSL 9.4 probe 2026-11-11).
+        let (r, _, err) = run(&["-t", "-4"], "ab\tcd\n");
+        assert_eq!(r, 1);
+        assert!(err.contains("invalid character(s): '-4'"), "{err}");
+        // operands after -- stay operands
+        let (r, _, err) = run(&["--", "-4"], "ab\tcd\n");
+        assert_eq!(r, 1);
+        assert!(err.contains("-4"), "{err}");
     }
 
     #[test]
