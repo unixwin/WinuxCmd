@@ -413,6 +413,266 @@ fn check_line_order(
     true
 }
 
+/// [GNU] set_join_field (join.c): a conflicting re-set is fatal; the
+/// diagnostic names the fields 0-based ("incompatible join fields 0, 1").
+fn apply_field(
+    which: u8,
+    value: i64,
+    cfg: &mut Config,
+    field1_seen: &mut bool,
+    field2_seen: &mut bool,
+) -> Result<(), String> {
+    let (slot, seen) = if which == 1 {
+        (&mut cfg.field1, field1_seen)
+    } else {
+        (&mut cfg.field2, field2_seen)
+    };
+    if *seen && *slot != value {
+        return Err(format!(
+            "incompatible join fields {}, {}",
+            *slot - 1,
+            value - 1
+        ));
+    }
+    *seen = true;
+    *slot = value;
+    Ok(())
+}
+
+/// GNU join.c main() tracks what each option left pending through
+/// `operand_status`: after `-o LIST` the next operand MIGHT_BE_O_ARG, after
+/// an attached `-j1`/`-j2` it MIGHT_BE_J1/J2_ARG, otherwise MUST_BE_OPERAND.
+/// add_file_name() then resolves a THIRD file name as the pending option's
+/// argument instead of erroring — the obsolescent forms (all probed against
+/// WSL coreutils 9.4, target/probes):
+///
+/// * `join -o 1.2 2.2 f1 f2` — "2.2" joins the -o list, files f1 f2,
+///   output `1 X`/`2 Y` rc 0.
+/// * `join -o 1.2 2.2 abc f1 f2` — chained absorption, "abc" decodes as a
+///   spec and dies `invalid file number in field spec: 'abc'` rc 1.
+/// * `join X -o 1.2 f1 f2` — X is a real operand, so the third name
+///   resolves f1 (the SECOND slot) as the -o argument: dies
+///   `invalid file number in field spec: 'f1'` rc 1.
+/// * `join -j1 2 f1 f2` — field 1 of file 1 is 2, rc 0; `-j1` without a
+///   separate argument falls back to `-j 1`.
+/// * `join f1 f2 f3` — plain extra operand, rc 1 (unchanged).
+///
+/// argopt::parse keeps values and operands in separate vectors, so this
+/// walk replays raw argv for the order-sensitive options only (-o/-1/-2/-j
+/// apply at option time, exactly in getopt order); -t/-e/-a/-v and the
+/// flags stay on the Parsed result (order-insensitive against this
+/// machine). Returns (real_lists, saw_auto, file names, jcount leftovers).
+#[allow(clippy::type_complexity)]
+fn scan_order_sensitive(
+    args: &[OsString],
+    io: &mut Io,
+    cfg: &mut Config,
+    field1_seen: &mut bool,
+    field2_seen: &mut bool,
+) -> Result<(Vec<String>, bool, Vec<String>, [usize; 2]), ()> {
+    #[derive(Clone, Copy, PartialEq)]
+    enum OpStatus {
+        Operand,
+        OArg,
+        J1Arg,
+        J2Arg,
+    }
+
+    // Short options that take a value (join.c optstring "a:e:1:2:j:o:t:v:z"
+    // plus flag chars); every other spelling is argopt's to reject before
+    // this walk runs.
+    fn takes_value(c: char) -> bool {
+        matches!(c, 'a' | 'e' | 'j' | 'o' | 't' | 'v' | '1' | '2')
+    }
+
+    let mut real_lists: Vec<String> = Vec::new();
+    let mut saw_auto = false;
+    let mut names: Vec<String> = Vec::new();
+    let mut status: Vec<OpStatus> = Vec::new();
+    let mut jcount = [0usize; 2];
+    let mut no_more_options = false;
+    let mut prev = OpStatus::Operand;
+    let mut i = 0usize;
+
+    while i < args.len() {
+        let tok = args[i].to_string_lossy().into_owned();
+        if !no_more_options && tok == "--" {
+            // [GNU] operands after "--" are MUST_BE_OPERAND: the post-getopt
+            // add_file_name loop resets prev_optc_status.
+            no_more_options = true;
+            prev = OpStatus::Operand;
+            i += 1;
+            continue;
+        }
+        if !no_more_options && tok.starts_with("--") {
+            // Long options of join are all flags (argopt validated the
+            // token, --help/--version already returned).
+            prev = OpStatus::Operand;
+            i += 1;
+            continue;
+        }
+        if !no_more_options && tok.len() > 1 && tok.starts_with('-') {
+            // getopt cluster: leading flag chars, then an optional
+            // value-taking char whose argument is the rest of the token
+            // (attached) or the next argv entry.
+            let mut chars = tok.chars();
+            let _dash = chars.next();
+            let mut value_of: Option<char> = None;
+            for c in chars.by_ref() {
+                if takes_value(c) {
+                    value_of = Some(c);
+                    break;
+                }
+            }
+            match value_of {
+                None => {
+                    prev = OpStatus::Operand;
+                    i += 1;
+                }
+                Some(c) => {
+                    let rest: String = tok
+                        .splitn(2, c)
+                        .nth(1)
+                        .unwrap_or("")
+                        .to_string();
+                    let attached = !rest.is_empty();
+                    let val = if attached {
+                        rest
+                    } else {
+                        i += 1;
+                        args.get(i)
+                            .map(|a| a.to_string_lossy().into_owned())
+                            .unwrap_or_default()
+                    };
+                    match c {
+                        'o' => {
+                            if val == "auto" {
+                                saw_auto = true;
+                                prev = OpStatus::Operand;
+                            } else {
+                                // add_field_list at OPTION time.
+                                real_lists.push(val);
+                                prev = OpStatus::OArg;
+                            }
+                        }
+                        'j' if attached && val == "1" => {
+                            jcount[0] += 1;
+                            prev = OpStatus::J1Arg;
+                        }
+                        'j' if attached && val == "2" => {
+                            jcount[1] += 1;
+                            prev = OpStatus::J2Arg;
+                        }
+                        'j' => {
+                            let field = match parse_positive_field(&val) {
+                                Ok(f) => f,
+                                Err(e) => {
+                                    let _ = writeln!(io.stderr, "join: {e}");
+                                    return Err(());
+                                }
+                            };
+                            if let Err(e) = apply_field(1, field, cfg, field1_seen, field2_seen)
+                                .and_then(|_| {
+                                    apply_field(2, field, cfg, field1_seen, field2_seen)
+                                })
+                            {
+                                let _ = writeln!(io.stderr, "join: {e}");
+                                return Err(());
+                            }
+                            prev = OpStatus::Operand;
+                        }
+                        '1' | '2' => {
+                            let field = match parse_positive_field(&val) {
+                                Ok(f) => f,
+                                Err(e) => {
+                                    let _ = writeln!(io.stderr, "join: {e}");
+                                    return Err(());
+                                }
+                            };
+                            let which = if c == '1' { 1 } else { 2 };
+                            if let Err(e) =
+                                apply_field(which, field, cfg, field1_seen, field2_seen)
+                            {
+                                let _ = writeln!(io.stderr, "join: {e}");
+                                return Err(());
+                            }
+                            prev = OpStatus::Operand;
+                        }
+                        _ => {
+                            // -a/-e/-t/-v values are consumed here for
+                            // classification; their semantics stay on the
+                            // Parsed result.
+                            prev = OpStatus::Operand;
+                        }
+                    }
+                    i += 1;
+                }
+            }
+            continue;
+        }
+        // Operand: add_file_name (join.c).
+        if names.len() == 2 && prev != OpStatus::Operand {
+            let idx = if status[0] == OpStatus::Operand { 1 } else { 0 };
+            let arg = names[idx].clone();
+            match status[idx] {
+                OpStatus::Operand => {
+                    let _ = usage_error(io, "join", &format!("extra operand '{arg}'"));
+                    return Err(());
+                }
+                OpStatus::J1Arg | OpStatus::J2Arg => {
+                    let field = match parse_positive_field(&arg) {
+                        Ok(f) => f,
+                        Err(e) => {
+                            let _ = writeln!(io.stderr, "join: {e}");
+                            return Err(());
+                        }
+                    };
+                    let which = if status[idx] == OpStatus::J1Arg {
+                        jcount[0] -= 1;
+                        1
+                    } else {
+                        jcount[1] -= 1;
+                        2
+                    };
+                    if let Err(e) = apply_field(which, field, cfg, field1_seen, field2_seen) {
+                        let _ = writeln!(io.stderr, "join: {e}");
+                        return Err(());
+                    }
+                }
+                OpStatus::OArg => {
+                    // add_field_list at ABSORPTION time (join.c call order).
+                    real_lists.push(arg);
+                }
+            }
+            if idx == 0 {
+                names[0] = names[1].clone();
+                status[0] = status[1];
+            }
+            names.pop();
+            status.pop();
+        }
+        names.push(tok);
+        status.push(prev);
+        i += 1;
+    }
+
+    // [GNU] a "-j1"/"-j2" whose argument never arrived falls back to
+    // "-j 1" / "-j 2" for both fields.
+    for (i_, count) in jcount.iter().enumerate() {
+        if *count != 0 {
+            let field = (i_ + 1) as i64;
+            if let Err(e) = apply_field(1, field, cfg, field1_seen, field2_seen)
+                .and_then(|_| apply_field(2, field, cfg, field1_seen, field2_seen))
+            {
+                let _ = writeln!(io.stderr, "join: {e}");
+                return Err(());
+            }
+        }
+    }
+
+    Ok((real_lists, saw_auto, names, jcount))
+}
+
 pub fn join_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let p = match argopt::parse("join", args, OPTS, io, ctx, 1) {
         Ok(p) => p,
@@ -450,45 +710,16 @@ pub fn join_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     // reports the already-set value first.
     let mut field1_seen = false;
     let mut field2_seen = false;
-    let mut set_field = |which: u8, value: i64, cfg: &mut Config| -> Result<(), String> {
-        let (slot, seen) = if which == 1 {
-            (&mut cfg.field1, &mut field1_seen)
-        } else {
-            (&mut cfg.field2, &mut field2_seen)
-        };
-        if *seen && *slot != value {
-            return Err(format!(
-                "incompatible join fields {}, {}",
-                *slot - 1,
-                value - 1
-            ));
-        }
-        *seen = true;
-        *slot = value;
-        Ok(())
+    let (real_lists, saw_auto, file_names, _jcount) = match scan_order_sensitive(
+        args,
+        io,
+        &mut cfg,
+        &mut field1_seen,
+        &mut field2_seen,
+    ) {
+        Ok(x) => x,
+        Err(()) => return Ok(1),
     };
-    for (k, v) in &p.values {
-        if !matches!(k.as_str(), "1" | "2" | "j") {
-            continue;
-        }
-        let field = match parse_positive_field(v) {
-            Ok(f) => f,
-            Err(e) => {
-                let _ = writeln!(io.stderr, "join: {e}");
-                return Ok(1);
-            }
-        };
-        let r = match k.as_str() {
-            "1" => set_field(1, field, &mut cfg),
-            "2" => set_field(2, field, &mut cfg),
-            "j" => set_field(1, field, &mut cfg).and_then(|_| set_field(2, field, &mut cfg)),
-            _ => Ok(()),
-        };
-        if let Err(e) = r {
-            let _ = writeln!(io.stderr, "join: {e}");
-            return Ok(1);
-        }
-    }
 
     // -t: one byte; '' means '\n' (whole-line), "\0" spelling means NUL.
     let mut tab_seen = false;
@@ -551,15 +782,8 @@ pub fn join_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     }
 
     // [GNU] every -o appends to the output list; a real list beats auto.
-    let mut real_lists: Vec<&str> = Vec::new();
-    let mut saw_auto = false;
-    for (_, v) in p.values.iter().filter(|(k, _)| k == "o") {
-        if v == "auto" {
-            saw_auto = true;
-        } else {
-            real_lists.push(v);
-        }
-    }
+    // The list pieces were collected at option/absorption time by
+    // scan_order_sensitive.
     if !real_lists.is_empty() {
         let joined = real_lists.join(",");
         match parse_output_format(&joined) {
@@ -591,15 +815,15 @@ pub fn join_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         }
     }
 
-    for a in &p.positionals {
-        cfg.files.push(a.to_string_lossy().into_owned());
-    }
+    // File operands come from the add_file_name machine (absorption
+    // resolved); GNU reports a missing second operand against g_names[0].
+    cfg.files = file_names;
     if cfg.files.is_empty() {
         let _ = usage_error(io, "join", "missing operand");
         return Ok(1);
     }
     if cfg.files.len() < 2 {
-        let msg = format!("missing operand after '{}'", cfg.last_raw_arg);
+        let msg = format!("missing operand after '{}'", cfg.files[0]);
         let _ = usage_error(io, "join", &msg);
         return Ok(1);
     }
@@ -1260,5 +1484,73 @@ mod tests {
         let (r, out, _) = run_files(&[(F1, F1C), (F2, F2C)], &["-o", "1.1 2.1", F1, F2], "");
         assert_eq!(r, 0);
         assert_eq!(out, "a a\nb b\n");
+    }
+
+    // [GNU] join.c operand_status/add_file_name absorption, probed on WSL
+    // coreutils 9.4 (wave3b wiring matrix, #1488): a third file name
+    // arriving while -o/-j1/-j2 still owe an argument becomes that
+    // argument instead of an extra operand.
+    #[test]
+    fn obsolete_o_argument_absorption() {
+        // -o 1.2 2.2 f1 f2: "2.2" joins the list, files f1 f2.
+        let (r, out, _) = run_files(&[(F1, F1C), (F2, F2C)], &["-o", "1.2", "2.2", F1, F2], "");
+        assert_eq!(r, 0);
+        assert_eq!(out, "1 X\n2 Y\n");
+
+        // chained absorption: "abc" decodes as a spec and dies.
+        let (r, _, err) = run_files(
+            &[(F1, F1C), (F2, F2C)],
+            &["-o", "1.2", "2.2", "abc", F1, F2],
+            "",
+        );
+        assert_eq!(r, 1);
+        assert!(err.contains("invalid file number in field spec: 'abc'"), "{err}");
+
+        // operand before -o: the THIRD name resolves as the -o argument.
+        let (r, _, err) = run_files(&[(F1, F1C), (F2, F2C)], &["X", "-o", "1.2", F1, F2], "");
+        assert_eq!(r, 1);
+        assert!(err.contains("invalid file number in field spec: 'f1'"), "{err}");
+
+        // repeated -o still works (option-time adds, no absorption).
+        let (r, out, _) = run_files(
+            &[(F1, F1C), (F2, F2C)],
+            &["-o", "1.2", "-o", "2.2", F1, F2],
+            "",
+        );
+        assert_eq!(r, 0);
+        assert_eq!(out, "1 X\n2 Y\n");
+
+        // plain extra operand is unchanged.
+        let (r, _, err) = run_files(&[(F1, F1C), (F2, F2C)], &[F1, F2, "f3"], "");
+        assert_eq!(r, 1);
+        assert!(err.contains("extra operand 'f3'"), "{err}");
+
+        // -o auto keeps MUST_BE_OPERAND status: no absorption.
+        let (r, _, err) = run_files(
+            &[(F1, F1C), (F2, F2C)],
+            &["-o", "auto", "x", F1, F2],
+            "",
+        );
+        assert_eq!(r, 1);
+        assert!(err.contains("extra operand 'f2'"), "{err}");
+    }
+
+    #[test]
+    fn obsolete_j1_j2_argument_absorption() {
+        // -j1 2: field 1 of file 1 is 2; f1.field2 (1/2) never matches
+        // f2.field1 (a/b) -> empty output rc 0.
+        let (r, out, _) = run_files(&[(F1, F1C), (F2, F2C)], &["-j1", "2", F1, F2], "");
+        assert_eq!(r, 0);
+        assert_eq!(out, "");
+
+        // -j2 1: field 2 of file 2 is 1 -> ordinary field-1 join.
+        let (r, out, _) = run_files(&[(F1, F1C), (F2, F2C)], &["-j2", "1", F1, F2], "");
+        assert_eq!(r, 0);
+        assert_eq!(out, "a 1 X\nb 2 Y\n");
+
+        // -j1 without a separate argument falls back to -j 1.
+        let (r, out, _) = run_files(&[(F1, F1C), (F2, F2C)], &["-j1", F1, F2], "");
+        assert_eq!(r, 0);
+        assert_eq!(out, "a 1 X\nb 2 Y\n");
     }
 }
