@@ -18,7 +18,7 @@ hn15-file-invalid	exit	printf -- '-bad\n' > hf2			-F	hf2
 hn16-file-operand	win	printf myhost\n > hf3			-F	hf3	extra
 hn17-file-comments	exit	printf '# only\n' > hf4			-F	hf4
 hn18-file-too-long	exit	printf '%s\n' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa > hf5			-F	hf5
-hn19-help	strict				--help
-hn20-version	strict				--version
+hn19-help	win				--help
+hn20-version	win				--version
 hn21-all-fqdns	win				-A
 hn22-all-ips	win				-I

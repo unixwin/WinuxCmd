@@ -8,9 +8,12 @@
 //!   `extra operand 'X'` rc 1 (GNU hostname.c:91 probed).
 //! * The net-tools option set (-b -i -I -s -f -a -A -d -y -n and their
 //!   long forms) is REJECTED the way coreutils hostname rejects it
-//!   (`unknown option -- s` / `unrecognized option '--short'` + try-help,
-//!   rc 1). The WSL `hostname` binary is Debian's and ACCEPTS these, so
-//!   those cases gate `win` (Rust rc vs C++ rc) — recorded, not GNU-gated.
+//!   (`unknown option -- s` + try-help, rc 1). The dispatcher
+//!   canonicalizes a registered long spelling (--short) to its short
+//!   form, so the short-form message fires for both spellings (wiring
+//!   gate c, matrix row --short). The WSL `hostname` binary is Debian's
+//!   and ACCEPTS these, so those cases gate `win` (Rust rc vs C++ rc) —
+//!   recorded, not GNU-gated.
 //! * `-F/--file FILE` (#1526): read the file (wide paths fine), take the
 //!   first line that is neither empty nor a `#` comment, trim ASCII
 //!   whitespace, validate with RFC 1035 check_name (alnum first/last,
@@ -162,9 +165,14 @@ pub fn hostname_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
 
     // Reject the net-tools option set like the C++ applet (coreutils
     // hostname wording; rc 1). This mirrors build_config's unsupported[]
-    // scan on main. Values consumed by -F/--file are skipped, exactly as
-    // the C++ option table consumes them before the scan runs.
+    // scan on main, INCLUDING the dispatcher canonicalization: a registered
+    // long spelling (--short) sets ctx.has("-s") too, and the C++ scan
+    // checks each table entry's short form first, so --short reports the
+    // short-form message ("unknown option -- s"). Values consumed by
+    // -F/--file are skipped, exactly as the C++ option table consumes them
+    // before the scan runs.
     let mut skip_next = false;
+    let mut present: Vec<char> = Vec::new();
     for arg in args.iter() {
         let s = arg.to_string_lossy().into_owned();
         if skip_next {
@@ -185,21 +193,21 @@ pub fn hostname_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 }
                 continue;
             }
-            if OPTS[1..].iter().any(|o| o.long == name) {
-                let msg = format!("unrecognized option '--{name}'");
-                let _ = usage_error(io, "hostname", &msg);
-                return Ok(1);
+            // canonicalize a registered long spelling to its short letter
+            if let Some(o) = OPTS[1..].iter().find(|o| o.long == name) {
+                if let Some(c) = o.short {
+                    if !present.contains(&c) {
+                        present.push(c);
+                    }
+                }
             }
         } else if s.len() > 1 && s.starts_with('-') {
             let body = &s[1..];
             match body.find('F') {
                 Some(fpos) => {
-                    // only the chars before the F are scanned for rejection
                     for c in body[..fpos].chars() {
-                        if REJECTED_SHORT_FORM.contains(&c) {
-                            let msg = format!("unknown option -- {c}");
-                            let _ = usage_error(io, "hostname", &msg);
-                            return Ok(1);
+                        if REJECTED_SHORT_FORM.contains(&c) && !present.contains(&c) {
+                            present.push(c);
                         }
                     }
                     // -FFILE has an inline value; bare -F consumes the next arg
@@ -209,14 +217,20 @@ pub fn hostname_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 }
                 None => {
                     for c in body.chars() {
-                        if REJECTED_SHORT_FORM.contains(&c) {
-                            let msg = format!("unknown option -- {c}");
-                            let _ = usage_error(io, "hostname", &msg);
-                            return Ok(1);
+                        if REJECTED_SHORT_FORM.contains(&c) && !present.contains(&c) {
+                            present.push(c);
                         }
                     }
                 }
             }
+        }
+    }
+    // Scan the unsupported table in the C++ array order, short form first.
+    for c in ['b', 'i', 'I', 's', 'f', 'a', 'A', 'd', 'y', 'n'] {
+        if present.contains(&c) {
+            let msg = format!("unknown option -- {c}");
+            let _ = usage_error(io, "hostname", &msg);
+            return Ok(1);
         }
     }
 

@@ -69,6 +69,10 @@ setup_fixture() {
     # expected to follow GNU there, an explained r=c:no class.
     unlink)
       rm -f mxu1 mxu2 w1 w2; printf x > mxu1; printf x > w1 w2 ;;
+    hostname)
+      rm -f hnfile hnmissing hnbad
+      printf 'myhost\n' > hnfile
+      printf -- '-badname\n' > hnbad ;;
     *) : ;;
   esac
 }
@@ -546,6 +550,39 @@ TABLE
 15|||abc
 16|||0.001:xyz
 17|||0.001m:0.001h
+TABLE
+      ;;
+    hostname)
+      cat <<'TABLE'
+01|||
+02|||newname
+03|||a:b
+04|||--help
+05|||--version
+06|||-h
+07|||-V
+08|||--bogus
+09|||--short
+10|||-s
+11|||-i
+12|||-f
+13|||-d
+14|||-I
+15|||-y
+16|||-n
+17|||-a
+18|||-A
+19|||-b
+20|||-F:hnfile
+21|||--file:hnfile
+22|||--file=hnfile
+23|||-F:hnmissing
+24|||-F:hnbad
+25|||-F:hnbad:x
+26|||--version:x
+27|||--
+28|||-F
+29|||-sF:hnfile
 TABLE
       ;;
     *)
