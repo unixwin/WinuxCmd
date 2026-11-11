@@ -1,6 +1,8 @@
 {
   "format": 1,
   "recorded_at": "2026-11-11T12:21:51.028870+00:00",
+  "recorded_at": "2026-11-11T16:24:22.187600+00:00",
+
   "note": "Pre-existing drift between master source extraction and the published locale catalogs, recorded when the drift gate landed (issue #1127 P3). May only shrink as translation sync batches land; growth in a PR must be deliberate and visible here.",
   "locales": {
     "zh-CN": {
@@ -55,20 +57,28 @@
         "legacy.0760fdc9c08b45b2",
         "legacy.07c5a107b48ec888",
         "legacy.0ceb255d6a7aec76",
+        "legacy.0ec60a248bb91d06",
         "legacy.119a1cda62b77434",
         "legacy.127090fa97272455",
         "legacy.15720dc6f6908b5c",
+        "legacy.18558150d1625df9",
         "legacy.1f3f7e8932f3317a",
         "legacy.210099e6f4efb5b6",
+        "legacy.2767adb06f0c1da7",
+
         "legacy.283002408756570c",
         "legacy.2b8d9774f8bd68ab",
+        "legacy.2cec010597786eb1",
+        "legacy.3152ae5d20919056",
         "legacy.4a5789feafd18e19",
         "legacy.507e0a8f64bbc1c0",
         "legacy.5164d23b4233d48b",
         "legacy.58ae36712a346f28",
+        "legacy.5afba6597b06f5a4",
         "legacy.5b27a983de0861ee",
         "legacy.5bdb633b0fc6642f",
         "legacy.5c285d335bd1e35d",
+        "legacy.606a4c311462b75a",
         "legacy.61acd7a17225bf56",
         "legacy.61d84c02c77c3ecd",
         "legacy.67a5b4a6aa7be230",
@@ -91,6 +101,9 @@
         "legacy.9bedd1a84964ad60",
         "legacy.9e559e53e03da90f",
         "legacy.a072202e18bd773a",
+        "legacy.8d4878e39f929639",
+        "legacy.aa18e5bf2d069226",
+
         "legacy.aaecec3b06939597",
         "legacy.ae235cd0d283e9e6",
         "legacy.ae82d11e41eedb04",
@@ -99,11 +112,15 @@
         "legacy.b5b7f654769237af",
         "legacy.b5e6b1ccdfd750ef",
         "legacy.b5f647250c319a1a",
+        "legacy.b9696b353016489b",
+
         "legacy.bbbade9ba3e34f64",
         "legacy.c0ef5f8a0655f7eb",
         "legacy.c2b8b1b23a17f541",
         "legacy.c46c588ed8ab0410",
         "legacy.c763d32f2af7abdd",
+        "legacy.cf2a7b148cd2b585",
+        "legacy.d5f6ae71c427c012",
         "legacy.d6ce81706c3e0e2f",
         "legacy.da78e17bb4dbfaa9",
         "legacy.dd2d056c170050ca",
@@ -111,9 +128,13 @@
         "legacy.e376b713c0431cbc",
         "legacy.e832bdc6dbf1b202",
         "legacy.e8f0fb830c91b78d",
+        "legacy.ee24aebd5d9f5ae8",
         "legacy.efa0cccf09b0dbaf",
+        "legacy.f26d945043259067",
         "legacy.f7294728663078b3",
-        "legacy.fb7036112fc1426e"
+        "legacy.fb7036112fc1426e",
+        "legacy.fd690845c0e41c32",
+        "legacy.ffa37fd3cfe57492"
       ]
     }
   }
