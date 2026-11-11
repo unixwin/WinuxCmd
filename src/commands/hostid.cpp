@@ -3,7 +3,7 @@
 /// @contributors:
 ///   - caomengxuan666 <2507560089@qq.com>
 /// @Description: Implementation for hostid command.
-/// @Version: 0.1.0
+/// @Version: 0.2.0
 /// @License: MIT
 /// @Copyright: Copyright © 2026 WinuxCmd
 
@@ -13,7 +13,7 @@
 import std;
 import core;
 import utils;
-import container;
+import rust2_bridge;
 
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
@@ -25,43 +25,6 @@ using cmd::meta::OptionType;
 auto constexpr HOSTID_OPTIONS =
     // [DIFFERS]
     std::array{OPTION("", "", "print machine identifier", STRING_TYPE)};
-
-// ======================================================
-// Helper functions
-// ======================================================
-
-namespace {
-// Get machine GUID from registry
-std::string get_machine_guid() {
-  HKEY hKey;
-  if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Cryptography", 0,
-                    KEY_READ, &hKey) != ERROR_SUCCESS) {
-    return "0";
-  }
-
-  wchar_t buffer[256];
-  DWORD size = sizeof(buffer);
-  if (RegGetValueW(hKey, nullptr, L"MachineGuid", RRF_RT_REG_SZ, nullptr,
-                   buffer, &size) != ERROR_SUCCESS) {
-    RegCloseKey(hKey);
-    return "0";
-  }
-
-  RegCloseKey(hKey);
-
-  // Convert GUID to numeric ID
-  std::string guid = wstring_to_utf8(buffer);
-  std::hash<std::string> hasher;
-  size_t hash = hasher(guid);
-
-  // Take lower 32 bits and convert to hex string
-  unsigned int id = static_cast<unsigned int>(hash & 0xFFFFFFFF);
-  char hex[16];
-  sprintf_s(hex, sizeof(hex), "%08x", id);
-
-  return hex;
-}
-}  // namespace
 
 // ======================================================
 // Main command implementation
@@ -82,18 +45,12 @@ REGISTER_COMMAND(
     /* author */ "WinuxCmd",
     /* copyright */ "Copyright © 2026 WinuxCmd",
     /* options */ HOSTID_OPTIONS) {
-  namespace cp = core::pipeline;
-
-  // [GNU] hostid takes no operands: coreutils hostid.c reports
-  // "extra operand 'X'" and exits 1 rather than printing the host id
-  // (WinuxCmd #1215).
-  if (!ctx.positionals.empty()) {
-    return cp::report_extra_operand("hostid", ctx.positionals.front());
-  }
-
-  std::string hex_id = get_machine_guid();
-
-  safePrintLn(hex_id);
-
-  return 0;
+  // #1488 mechanical replacement: the semantics live in the rust2 library
+  // (rust2/crates/winux-cmds/src/hostid.rs, hostid_cmd); the C++ side keeps
+  // only this registration — the MachineGuid registry read and the hash
+  // are deleted. The Windows value model follows the rust2 library (stable
+  // per-machine id over the machine identity the environment carries), so
+  // the printed id may differ from the 1.x exe while staying stable and
+  // GNU-shaped; the known 1.x divergences (hash input) are not inherited.
+  return winux::rust2::run_command("hostid", ctx.raw_args);
 }

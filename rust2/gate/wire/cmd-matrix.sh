@@ -315,6 +315,29 @@ TABLE
 19|||-d
 TABLE
       ;;
+    hostid)
+      # #1488 wiring wave3b: hostid takes no operands (GNU hostid.c reports
+      # "extra operand" rc 1). The printed id is the platform value model
+      # (win): old exe hashed MachineGuid, new exe follows the rust2 model —
+      # the id VALUE differs by design and the ledger records it.
+      cat <<'TABLE'
+01|||
+02|||--help
+03|||--version
+04|||-
+05|||--bogus
+06|||-h
+07|||x
+08|||x:y
+09|||--
+10|||-x
+11|||--help:x
+12|||--version:x
+13|||/dev/null
+14|||.:.
+15|||a:b:c
+TABLE
+      ;;
     *)
       echo "cmd-matrix.sh: no case table for $CMD" >&2
       exit 2
