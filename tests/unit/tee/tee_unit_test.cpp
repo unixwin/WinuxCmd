@@ -108,8 +108,13 @@ TEST(tee, tee_open_failure_still_writes_stdout_and_other_outputs) {
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_EQ_TEXT(r.stdout_text, "hello\n");
   EXPECT_EQ(tmp.read("good.txt"), "hello\n");
-  EXPECT_TRUE(r.stderr_text.find("tee: 'missing-dir\\output.txt'") !=
-              std::string::npos);
+  // GNU probed (coreutils 9.4, 2026-11-11): fail_output quotes with
+  // quotef, which leaves a plain name unquoted: "tee: missing-dir/
+  // output.txt: No such file or directory". The 1.x always-quoted
+  // spelling was the divergence; the separator is the operand's own
+  // spelling on Windows.
+  EXPECT_TRUE(r.stderr_text.find("tee: missing-dir\\output.txt: No such "
+                                 "file or directory") != std::string::npos);
 }
 
 TEST(tee, tee_invalid_output_error_mode_is_rejected) {
