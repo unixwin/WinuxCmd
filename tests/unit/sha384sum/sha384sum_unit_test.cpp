@@ -372,9 +372,14 @@ TEST(sha384sum, sha384sum_wildcard) {
   p.add(L"sha384sum.exe", {L"*.txt"});
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.find("a.txt") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("b.txt") != std::string::npos);
+  // [GNU] File operands are literal — the shell globs, the program does
+  // not (unlink.c:94 precedent; `sha384sum '*.txt'` under WSL coreutils
+  // 9.4 reports the quotef-quoted ENOENT). The 1.x body glob-expanded.
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find(
+                  "sha384sum: '*.txt': No such file or directory") !=
+              std::string::npos);
 }
 
 TEST(sha384sum, sha384sum_short_zero_alias_uses_nul_terminator) {

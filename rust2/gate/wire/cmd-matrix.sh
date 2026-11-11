@@ -20,6 +20,13 @@ mkdir -p "$OUT"
 LEDGER="$OUT/ledger.tsv"
 : > "$LEDGER"
 
+# Fixture scratch: setup_fixture runs in the script's cwd, and some cases
+# CREATE files the table calls "missing" (truncate -s on a fresh name), so
+# the cwd is state, not neutral ground. Run each side in its own scratch
+# dir under $OUT so sides never see each other's leftovers.
+mkdir -p "$OUT/scratch"
+cd "$OUT/scratch"
+
 run_case() {
   local cname="$1" id="$2" envspec="$3" stdin_data="$4"; shift 4
   local o="$OUT/$cname-$id.out" e="$OUT/$cname-$id.err" rc
@@ -98,6 +105,38 @@ setup_fixture() {
       rm -rf fpara fpre
       printf 'This is the first paragraph of the sample text used by the fmt matrix. It has enough words to wrap around several times when the width is small.\n\nThis is the second paragraph.\n' > fpara
       printf '  indented line one\n  indented line two\n' > fpre ;;
+    # unlink rows 19/20 exercise wildcard operands against real matches:
+    # GNU unlink.c treats argv literally (ENOENT), the 1.x C++ body
+    # glob-expanded (extra operand when 2+ matches) — the new exe is
+    # expected to follow GNU there, an explained r=c:no class.
+    unlink)
+      rm -f mxu1 mxu2 w1 w2; printf x > mxu1; printf x > w1 w2 ;;
+    hostname)
+      rm -f hnfile hnmissing hnbad
+      printf 'myhost\n' > hnfile
+      printf -- '-badname\n' > hnbad ;;
+    base64|base32)
+      rm -f mf mdec; printf foobar > mf; printf Zm9vYmFy > mdec ;;
+    b2sum)
+      # 'abc' BLAKE2b-512 from the gate tables; check rows reuse it.
+      rm -f mf ck ck.bad ck.missing ck.garbage; printf abc > mf;
+      printf 'ba80a53f981c4d0d6a2797b69f12f6e94c212f14685ac4b74b12bb6fdbffa2d17d87c5392aab792dc252d5de4533cc9518d38aa8dbf1925ab92386edd4009923  mf\n' > ck
+      printf '00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000  mf\n' > ck.bad
+      printf 'ba80a53f981c4d0d6a2797b69f12f6e94c212f14685ac4b74b12bb6fdbffa2d17d87c5392aab792dc252d5de4533cc9518d38aa8dbf1925ab92386edd4009923  no-such-file-xyz\n' > ck.missing
+      printf 'not a checksum line at all\n' > ck.garbage ;;
+    sha224sum)
+      printf '23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7  mf\n' > ck
+      printf '0000000000000000000000000000000000000000000000000000000000  mf\n' > ck.bad
+      printf '23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7  no-such-file-xyz\n' > ck.missing
+    sha384sum)
+      printf 'cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7  mf\n' > ck
+      printf '000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000  mf\n' > ck.bad
+      printf 'cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7  no-such-file-xyz\n' > ck.missing
+    tac)
+      rm -f tf; printf 'a\nb\nc\n' > tf ;;
+    truncate)
+      rm -f trf; printf 0123456789ABCDEF > trf ;;
+
     *) : ;;
   esac
 }
@@ -486,6 +525,435 @@ TABLE
 18|||0.1s:true
 19|||-s:BOGUS:1:true
 20|||--:1:true
+    base64)
+      cat <<'TABLE'
+01|||
+02||abc||
+03||abc|-d
+04||Zm9vYmFy|-d
+05||Zm9vYmFy|-d:-i
+06||Zm9v |-d
+07|||-w:2:mf
+08|||-w:0:mf
+09|||--wrap=2:mf
+10|||-w2:mf
+11|||-w:bogus:mf
+12|||-w:-1:mf
+13|||missing-file-xyz
+14|||mf:mf
+15|||--help
+16|||--version
+17|||--help:x
+18|||--bogus
+19|||-z
+20|||--:mf
+21|||-
+22||Zm9vYmFy|-d:-
+23|||mdec
+24|||-i
+25||YWJj|-d
+26|||-w:bogus:missing-file-xyz
+27|||-d:-w:bogus:mf
+28|||-w:bogus:mf:extra
+TABLE
+      ;;
+    base32)
+      cat <<'TABLE'
+01|||
+02||abc||
+03||MFRGG===|-d
+04||MZXW6YTBOI======|-d
+05||MZXW6YTBOI======|-d:-i
+06||MZXW6YTBOI|-d
+07||MZ|-d
+08|||-w:4:mf
+09|||-w:0:mf
+10|||--wrap=4:mf
+11|||-w4:mf
+12|||-w:bogus:mf
+13|||-w:-1:mf
+14|||missing-file-xyz
+15|||mf:mf
+16|||--help
+17|||--version
+18|||--help:x
+19|||--bogus
+20|||-z
+21|||--:mf
+22|||-
+23|||mdec
+24||ME======|-d
+25||ME======|-d:-i
+26|||-w:bogus:missing-file-xyz
+27|||-d:-w:bogus:mf
+28|||-w:bogus:mf:extra
+TABLE
+      ;;
+    b2sum)
+      cat <<'TABLE'
+01|||
+02||abc||
+03|||mf
+04|||-b:mf
+05|||-t:mf
+06|||-z:mf
+07|||--tag:mf
+08|||-l:128:mf
+09|||-l:512:mf
+10|||-l:bogus:mf
+11|||-l:520:mf
+12|||--check:ck
+13|||--check:ck.bad
+14|||--check:ck.missing
+15|||--check:ck.garbage
+16|||-w:--check:ck.garbage
+17|||--quiet:--check:ck.bad
+18|||--status:--check:ck.bad
+19|||--strict:--check:ck.garbage
+20|||--ignore-missing:--check:ck.missing
+21||ba80a53f981c4d0d6a2797b69f12f6e94c212f14685ac4b74b12bb6fdbffa2d17d87c5392aab792dc252d5de4533cc9518d38aa8dbf1925ab92386edd4009923  mf|-c
+22|||--tag:mf:-c
+23|||-b:-c:ck
+24|||--zero:--check:ck
+25|||--quiet
+26|||--help
+27|||--version
+28|||--bogus
+29|||-q
+30|||mf:mf
+31|||--:mf
+32|||-
+33|||--tag:--check:-l:bogus
+34|||-l:bogus:missing-file-xyz
+TABLE
+      ;;
+    sha224sum)
+      cat <<'TABLE'
+01|||
+02||abc||
+03|||mf
+04|||-b:mf
+05|||-t:mf
+06|||-z:mf
+07|||--tag:mf
+08|||--check:ck
+09|||--check:ck.bad
+10|||--check:ck.missing
+11|||--check:ck.garbage
+12|||-w:--check:ck.garbage
+13|||--quiet:--check:ck.bad
+14|||--status:--check:ck.bad
+15|||--strict:--check:ck.garbage
+16|||--ignore-missing:--check:ck.missing
+17||23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7  mf|-c
+18|||-l:224:mf
+19|||-b:mf:-c
+20|||--quiet
+21|||--help
+22|||--version
+23|||--bogus
+24|||-q
+25|||mf:mf
+26|||--:mf
+27|||-
+TABLE
+      ;;
+    sha384sum)
+      cat <<'TABLE'
+01|||
+02||abc||
+03|||mf
+04|||-b:mf
+05|||-t:mf
+06|||-z:mf
+07|||--tag:mf
+08|||--check:ck
+09|||--check:ck.bad
+10|||--check:ck.missing
+11|||--check:ck.garbage
+12|||-w:--check:ck.garbage
+13|||--quiet:--check:ck.bad
+14|||--status:--check:ck.bad
+15|||--strict:--check:ck.garbage
+16|||--ignore-missing:--check:ck.missing
+17||cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7  mf|-c
+18|||-l:384:mf
+19|||-b:mf:-c
+20|||--quiet
+21|||--help
+22|||--version
+23|||--bogus
+24|||-q
+25|||mf:mf
+26|||--:mf
+27|||-
+TABLE
+      ;;
+    tac)
+      cat <<'TABLE'
+01||abc||
+02||abc|-b
+03||abc|-r
+04||abc|-s:x
+05||a1b2|-s:1
+06|||tf
+07|||-b:tf
+08|||-r:tf
+09|||-s:c:tf
+10|||-r:-s:[a-c]:tf
+11|||-r:-s:x*:tf
+12|||-s:@EMPTY@:tf
+13|||missing-file-xyz
+14|||tf:tf
+15|||-r:-s:[:tf
+16|||-r:-s:@EMPTY@:tf
+17|||--help
+18|||--version
+19|||--bogus
+20|||--:tf
+21|||-
+22||a1b2c|-r:-s:[0-9]
+23||a1b2c|-r:-b:-s:[0-9]
+24||x|-s:@EMPTY@
+TABLE
+      ;;
+    truncate)
+      cat <<'TABLE'
+01|||-s:10:trf
+02|||--size=5:trf
+03|||-s:+2:trf
+04|||-s:-2:trf
+05|||-s:%5:trf
+06|||-s:/5:trf
+07|||-s:>10:trf
+08|||-s:<20:trf
+09|||-s:1K:trf
+10|||-s:1KiB:trf
+11|||-s:1kB:trf
+12|||-s:@EMPTY@:trf
+13|||
+14|||-s:5
+15|||-s:bogus:trf
+16|||-r:trf:trf
+17|||-r:missing-file-xyz:-s:5:trf
+18|||-c:-s:5:missing-file-xyz
+19|||-s:5:missing-file-xyz
+20|||-o:-s:1K:trf
+21|||--help
+22|||--version
+23|||--bogus
+24|||-x
+25|||--:trf
+26|||-c:-s:10:trf
+TABLE
+      ;;
+    whoami)
+      cat <<'TABLE'
+01|||
+02|||extra
+03|||a:b
+04|||-h
+05|||--help
+06|||--version
+07|||--help:x
+08|||--bogus
+09|||-z
+10|||--
+11|||@EMPTY@
+12|||-
+13|||--:extra
+14|||--Help
+15|||--no-such-option
+16|||WINUXSH_USER=
+TABLE
+      ;;
+    nproc)
+      cat <<'TABLE'
+01|||
+02|||--all
+03|||-a
+04|||--ignore=2
+05|||--ignore=0
+06|||--ignore=+1
+07|||--ignore:2
+08|||--ignore
+09|||--ignore=bad
+10|||--ignore=-1
+11|||extra
+12|||-h
+13|||--help
+14|||--version
+15|||--help:x
+16|||--bogus
+17|||-z
+18|||--
+19|||@EMPTY@
+TABLE
+      ;;
+    unlink)
+      cat <<'TABLE'
+01|||mxu1
+02|||missing-file-xyz
+03|||-x:mxu1
+04|||--help
+05|||--version
+06|||--help:x
+07|||--bogus
+08|||-h
+09|||
+10|||mxu1:mxu2
+11|||--
+12|||--:mxu1
+13|||@EMPTY@
+14|||-
+15|||.
+16|||..
+17|||mxu1//
+18|||w1
+19|||w*
+20|||w?1
+21|||reg//
+TABLE
+      ;;
+    sleep)
+      cat <<'TABLE'
+01|||0
+02|||0.001
+03|||1
+04|||0:0
+05|||0.001s:0.001s
+06|||1x
+07|||--help
+08|||--version
+09|||--help:x
+10|||-h
+11|||--bogus
+12|||-1
+13|||
+14|||--
+15|||abc
+16|||0.001:xyz
+17|||0.001m:0.001h
+TABLE
+      ;;
+    hostname)
+      cat <<'TABLE'
+01|||
+02|||newname
+03|||a:b
+04|||--help
+05|||--version
+06|||-h
+07|||-V
+08|||--bogus
+09|||--short
+10|||-s
+11|||-i
+12|||-f
+13|||-d
+14|||-I
+15|||-y
+16|||-n
+17|||-a
+18|||-A
+19|||-b
+20|||-F:hnfile
+21|||--file:hnfile
+22|||--file=hnfile
+23|||-F:hnmissing
+24|||-F:hnbad
+25|||-F:hnbad:x
+26|||--version:x
+27|||--
+28|||-F
+29|||-sF:hnfile
+TABLE
+      ;;
+    uname)
+      cat <<'TABLE'
+01|||
+02|||-a
+03|||-s
+04|||-n
+05|||-r
+06|||-v
+07|||-m
+08|||-p
+09|||-i
+10|||-o
+11|||-s:-n:-r
+12|||--all
+13|||--kernel-name
+14|||--sysname
+15|||--release
+16|||--help
+17|||--version
+18|||--help:x
+19|||-h
+20|||--bogus
+21|||extra-operand
+22|||-a:extra
+23|||--
+24|||-snrvm
+TABLE
+      ;;
+    id)
+      cat <<'TABLE'
+01|||
+02|||-u
+03|||-g
+04|||-G
+05|||-n
+06|||-un
+07|||-gn
+08|||-Gn
+09|||-ur
+10|||-a
+11|||-Z
+12|||-z
+13|||--zero
+14|||--help
+15|||--version
+16|||--help:x
+17|||-h
+18|||--bogus
+19|||--:extra
+20|||cmx
+21|||nosuchuser
+22|||-u:nosuchuser
+23|||-ug
+24|||-nr
+25|||-az
+TABLE
+      ;;
+    getconf)
+      cat <<'TABLE'
+01|||PATH_MAX
+02|||ARG_MAX
+03|||NAME_MAX
+04|||_POSIX_PATH_MAX
+05|||pagesize
+06|||PAGESIZE
+07|||NPROCESSORS_ONLN
+08|||_NPROCESSORS_CONF
+09|||PHYS_PAGES
+10|||avphys_pages
+11|||NOSUCHVAR
+12|||-a
+13|||--all
+14|||-v:POSIX-V6-ilp32-off32:PATH_MAX
+15|||--help
+16|||--version
+17|||--help:x
+18|||-h
+19|||--bogus
+20|||
+21|||PATH_MAX:.
+22|||NAME_MAX:nosuchdir
+23|||ARG_MAX:.
+24|||PATH_MAX:.:extra
+25|||path_max:.
+26|||--
 TABLE
       ;;
     # wave3a wiring matrices (#1488). Row shape: id|env|stdin|args

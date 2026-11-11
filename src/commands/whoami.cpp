@@ -3,21 +3,18 @@
 /// @contributors:
 ///   - caomengxuan666 <2507560089@qq.com>
 /// @Description: Implementation for whoami.
-/// @Version: 0.1.0
+/// @Version: 0.2.0
 /// @License: MIT
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
 // include other header after pch.h
-#include <lmcons.h>
-#include <windows.h>
-
 #include "core/command_macros.h"
 
 import std;
 import core;
 import utils;
-import container;
+import rust2_bridge;
 
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
@@ -37,36 +34,6 @@ auto constexpr WHOAMI_OPTIONS = std::array{
     // -u, --users (not implemented - print logged in users)
 };
 
-namespace whoami_pipeline {
-namespace cp = core::pipeline;
-
-struct Config {
-  // No configuration needed for basic whoami
-};
-
-auto build_config(const CommandContext<WHOAMI_OPTIONS.size()>& ctx)
-    -> cp::Result<Config> {
-  Config cfg;
-  return cfg;
-}
-
-auto run(const Config& cfg) -> int {
-  // Get current username
-  char username[UNLEN + 1];
-  DWORD username_size = UNLEN + 1;
-
-  if (!GetUserNameA(username, &username_size)) {
-    cp::Result<int> result = std::unexpected("failed to get username");
-    cp::report_error(result, L"whoami");
-    return 1;
-  }
-
-  safePrintLn(username);
-  return 0;
-}
-
-}  // namespace whoami_pipeline
-
 REGISTER_COMMAND(
     whoami, "whoami", "whoami [OPTION]",
     "Print effective userid.\n"
@@ -80,19 +47,10 @@ REGISTER_COMMAND(
     "  id -un",
     "id(1), logname(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd",
     WHOAMI_OPTIONS) {
-  using namespace whoami_pipeline;
-
-  // [GNU] whoami takes no operands: coreutils reports "extra operand 'X'"
-  // and exits 1 rather than printing the effective user (WinuxCmd #1215).
-  if (!ctx.positionals.empty()) {
-    return cp::report_extra_operand("whoami", ctx.positionals.front());
-  }
-
-  auto cfg_result = build_config(ctx);
-  if (!cfg_result) {
-    cp::report_error(cfg_result, L"whoami");
-    return 1;
-  }
-
-  return run(*cfg_result);
+  // #1488 mechanical replacement: the semantics live in the rust2 library
+  // (rust2/crates/winux-cmds/src/whoami.rs, whoami_cmd); the C++ side keeps
+  // only this registration. ctx.raw_args passes the operands verbatim
+  // because GNU whoami.c parses its own argv: any operand is
+  // "extra operand" rc 1 and the user name itself is platform data.
+  return winux::rust2::run_command("whoami", ctx.raw_args);
 }

@@ -189,9 +189,12 @@ TEST(base64, base64_missing_input_reports_no_such_file) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
+  // [GNU] basenc.c reports the bare operand path with strerror (probed
+  // `base64 missing.txt` under WSL coreutils 9.4); the 1.x body's
+  // "cannot open 'X' for reading" wording was a 1.x gap.
   EXPECT_TRUE(r.stderr_text.find(
-                  "base64: cannot open 'missing.txt' for reading: No such "
-                  "file or directory") != std::string::npos);
+                  "base64: missing.txt: No such file or directory") !=
+              std::string::npos);
 }
 
 TEST(base64, base64_directory_input_reports_is_a_directory) {
@@ -205,8 +208,10 @@ TEST(base64, base64_directory_input_reports_is_a_directory) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stderr_text.find(
-                  "base64: cannot open 'indir' for reading: Is a directory") !=
+  // [GNU] basenc opens the operand then reads it, so a directory dies at
+  // the read with the shared no-operand read-error site (`base64: read
+  // error: Is a directory`, probed WSL 9.4 + MSYS byte-identical).
+  EXPECT_TRUE(r.stderr_text.find("base64: read error: Is a directory") !=
               std::string::npos);
 }
 

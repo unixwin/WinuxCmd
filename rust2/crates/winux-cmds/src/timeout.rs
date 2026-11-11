@@ -28,7 +28,7 @@ use std::os::windows::process::CommandExt;
 use std::time::{Duration, Instant};
 
 use crate::argopt::{self, OptSpec};
-use winux_core::{CmdResult, Ctx, Io};
+use winux_core::{win32_env_get, CmdResult, Ctx, Io};
 
 const OPTS: &[OptSpec] = &[
     OptSpec {
@@ -440,9 +440,7 @@ fn normalize_path_entries(raw: &str) -> Vec<String> {
 /// PATHEXT candidates for extensionless operands (lowercased, dot-prefixed),
 /// falling back to .com/.exe/.bat/.cmd when unset or empty.
 fn pathext_candidates(ctx: &Ctx) -> Vec<String> {
-    let mut exts: Vec<String> = ctx
-        .env
-        .get("PATHEXT")
+    let mut exts: Vec<String> = win32_env_get(ctx.env, "PATHEXT")
         .map(|v| v.to_string_lossy().into_owned())
         .unwrap_or_default()
         .split(';')
@@ -456,7 +454,10 @@ fn pathext_candidates(ctx: &Ctx) -> Vec<String> {
         })
         .collect();
     if exts.is_empty() {
-        exts = [".com", ".exe", ".bat", ".cmd"].iter().map(|s| s.to_string()).collect();
+        exts = [".com", ".exe", ".bat", ".cmd"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
     }
     exts
 }
@@ -470,7 +471,9 @@ fn lowercase_extension(path: &str) -> String {
 }
 
 fn is_regular_file(path: &str) -> bool {
-    std::fs::metadata(path).map(|m| m.is_file()).unwrap_or(false)
+    std::fs::metadata(path)
+        .map(|m| m.is_file())
+        .unwrap_or(false)
 }
 
 /// Scans one base path (dir + name, or an explicit operand) for the first
@@ -518,23 +521,30 @@ fn resolve_child(name: &str, ctx: &Ctx) -> ChildResolve {
         if name.ends_with('/') || name.ends_with('\\') {
             let stripped = name.trim_end_matches(['/', '\\']);
             if !stripped.is_empty()
-                && std::fs::metadata(stripped).map(|m| m.is_dir()).unwrap_or(false)
+                && std::fs::metadata(stripped)
+                    .map(|m| m.is_dir())
+                    .unwrap_or(false)
             {
                 return ChildResolve::NotADirectory;
             }
             return ChildResolve::NotFound;
         }
         let explicit_extension = !lowercase_extension(name).is_empty();
-        return scan_candidates(&normalize_entry(name), explicit_extension, ctx, &mut fallback);
+        return scan_candidates(
+            &normalize_entry(name),
+            explicit_extension,
+            ctx,
+            &mut fallback,
+        );
     }
 
-    // bare name: PATH-only search with the Windows PE preference the
-    // pre-wiring resolver documented ("how Windows actually executes"):
-    // extension-bearing candidates across every entry are tried BEFORE the
-    // bare name -- CreateProcess cannot run an extensionless POSIX script,
-    // so `timeout 10 cmd /c exit 3` with a shadowing text file named `cmd`
-    // still resolves cmd.exe (gate case tm02: GNU rc 3, probed).
-    let entries = match ctx.env.get("PATH") {
+    // bare name: PATH search with the Windows PE preference the pre-wiring
+    // resolver documented ("how Windows actually executes"): extension-bearing
+    // candidates across every entry are tried BEFORE the bare name --
+    // CreateProcess cannot run an extensionless POSIX script, so `timeout 10
+    // cmd /c exit 3` with a shadowing text file named `cmd` still resolves
+    // cmd.exe (gate case tm02: GNU rc 3, probed).
+    let mut entries = match win32_env_get(ctx.env, "PATH") {
         Some(v) => normalize_path_entries(&v.to_string_lossy()),
         None => {
             // execvp consults a system default path when PATH is unset;
@@ -543,6 +553,31 @@ fn resolve_child(name: &str, ctx: &Ctx) -> ChildResolve {
             vec![format!("{root}\\System32"), root]
         }
     };
+    // Same-package sibling fallback (the WinuxCmd /usr/bin analog). GNU
+    // timeout execvp's the wrapped command through PATH, and on POSIX the
+    // package prefix IS on PATH by construction (/usr/bin), so a GNU timeout
+    // can always exec its own siblings. A Windows multicall package is the
+    // analog: every entry image (timeout.exe, echo.exe, sleep.exe, ...) is
+    // one directory, and Windows' own loader treats that directory as an
+    // implicit search entry -- the CreateProcess legacy search consults "the
+    // directory from which the application loaded" (Microsoft Learn, CreateProcess
+    // search order, entry 1). PATH stays authoritative: the image directory is
+    // consulted only after every PATH entry missed, so PATH shadowing and the
+    // execvp diagnostics above keep their GNU shapes; the fallback only
+    // rescues same-package siblings when the package bin dir is not on PATH
+    // (portable runs, test rigs, clean machines -- #1567 wiring regression).
+    // std::env::current_exe reads the process image path, which is process
+    // state outside the Ctx contract, but it is exactly the state CreateProcess's
+    // own loaded-directory rule consumes; the alternative (ABI plumb-through)
+    // would widen the v1 surface for a value every Windows host derives the
+    // same way.
+    if let Ok(image) = std::env::current_exe() {
+        if let Some(dir) = image.parent() {
+            if !dir.as_os_str().is_empty() {
+                entries.push(dir.to_string_lossy().into_owned());
+            }
+        }
+    }
     let explicit_extension = !lowercase_extension(name).is_empty();
     let mut dir_hit = false;
     // pass 1: extension candidates (PATHEXT order when extensionless)
@@ -594,9 +629,7 @@ fn resolve_child(name: &str, ctx: &Ctx) -> ChildResolve {
 
 /// Canonical Win32 command-line quoting for one argument.
 fn quote_windows_arg(arg: &str) -> String {
-    if !arg.is_empty()
-        && !arg.contains([' ', '\t', '\n', '"'])
-    {
+    if !arg.is_empty() && !arg.contains([' ', '\t', '\n', '"']) {
         return arg.to_string();
     }
     let mut out = String::with_capacity(arg.len() + 2);
@@ -755,9 +788,7 @@ pub fn timeout_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 // [GNU] CreateProcess cannot launch a batch file directly:
                 // route through COMSPEC as the childproc helper does
                 // (`cmd /d /s /c "<script> <args...>"`).
-                let comspec = ctx
-                    .env
-                    .get("COMSPEC")
+                let comspec = win32_env_get(ctx.env, "COMSPEC")
                     .map(|v| v.to_string_lossy().into_owned())
                     .filter(|v| !v.is_empty())
                     .unwrap_or_else(|| "cmd.exe".to_string());
@@ -1066,5 +1097,28 @@ mod tests {
         let (r, out, _) = run(&["10", "cmd", "/c", "exit", "0"]);
         assert_eq!(r, 0);
         assert!(out.is_empty());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn path_env_casing_does_not_break_child_resolution() {
+        // #1567 wiring regression: the ABI snapshot mirrors a Win32 block
+        // whose PATH entry is spelled however the parent wrote it ("Path"
+        // from a PowerShell/cmd parent). A case-sensitive lookup missed it,
+        // the resolver invented the System32 default, and every wrapped
+        // sibling (echo.exe/sleep.exe) 127'd on clean machines.
+        let sc = scratch("timeout-pathkey");
+        let script = sc.dir.join("wmarker.cmd");
+        std::fs::write(&script, "@echo off\r\nexit /b 0\r\n").unwrap();
+        let mut env = MapEnv::new();
+        env.set("Path", &sc.dir.to_string_lossy());
+        let ctx = Ctx {
+            cwd: sc.dir.clone(),
+            env: &env,
+        };
+        let mut io = MemIo::new("");
+        let owned: Vec<OsString> = ["5", "wmarker"].iter().map(Into::into).collect();
+        let r = super::timeout_cmd(&owned, &mut io.split(), &ctx).unwrap();
+        assert_eq!(r, 0, "err={}", io.err());
     }
 }

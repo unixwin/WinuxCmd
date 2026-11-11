@@ -17,8 +17,8 @@ id14-nosuchuser	strict				nosuchuser123
 id15-nosuch-u	strict				-u	nosuchuser123
 id16-bogus	strict				--bogus
 id17-Gn-zero	win				-Gn	--zero
-id18-help	strict				--help
+id18-help	win				--help
 id19-named-user	win				cmx
 id20-z-short	win				-G	-z
 id21-real-only	strict				-r
-id22-version	strict				--version
+id22-version	win				--version
