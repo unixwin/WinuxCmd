@@ -408,6 +408,12 @@ pub mod imp {
 
     pub fn api_path(base: &Path, operand: &str) -> String {
         let operand = map_device(operand);
+        // A DOS device name keeps its device magic only WITHOUT the \\?\
+        // prefix ("\\?\D:\dir\NUL" is a literal file named NUL, not the
+        // null device), so the mapped form passes through verbatim.
+        if operand == "NUL" {
+            return "NUL".to_string();
+        }
         let posix_folded = fold_posix_drive_prefix(operand);
         let operand: &str = posix_folded.as_deref().unwrap_or(operand);
         let dialect_folded = fold_drive_dialect(operand);
