@@ -155,6 +155,7 @@ pub mod imp {
             size: DWORD,
         ) -> i32;
         fn GetStdHandle(which: DWORD) -> Handle;
+        fn DeleteFileW(name: *const u16) -> i32;
         fn SetFileTime(
             h: Handle,
             ctime: *const FileTime,
@@ -284,8 +285,81 @@ pub mod imp {
         Some(out)
     }
 
+    /// MSYS drive dialect (#1145; 1.x native_path.cppm
+    /// fold_posix_drive_prefix_w + fold_drive_dialect_w): "/cygdrive/d/..."
+    /// and the WSL interop prefix "/mnt/d/..." fold onto the MSYS spelling
+    /// "/d/...", which then folds to "D:\\..." — every POSIX drive form
+    /// names the same file as the native spelling. Returns nullopt for any
+    /// other spelling. Ported at the one operand boundary so every rust2
+    /// applet resolves the spellings the 1.x build unified there.
+    fn fold_posix_drive_prefix(normalized: &str) -> Option<String> {
+        let b = normalized.as_bytes();
+        // both separators are accepted inside the prefix
+        let is_sep = |c: u8| c == b'/' || c == b'\\';
+        let strip_prefix_of = |word: &str| -> Option<&str> {
+            let wb = word.as_bytes();
+            if b.len() > wb.len()
+                && b[..wb.len()]
+                    .iter()
+                    .zip(wb)
+                    .all(|(x, y)| x.eq_ignore_ascii_case(y))
+            {
+                Some(&normalized[wb.len()..])
+            } else {
+                None
+            }
+        };
+        // /cygdrive/<d>/...
+        if let Some(rest) = strip_prefix_of("/cygdrive/") {
+            if rest.len() >= 2
+                && rest.as_bytes()[0].is_ascii_alphabetic()
+                && is_sep(rest.as_bytes()[1])
+            {
+                return Some(format!("/{}{}", &rest[..1], &rest[2..]));
+            }
+            return None;
+        }
+        // /mnt/<d>/... (WSL interop; #1172)
+        if let Some(rest) = strip_prefix_of("/mnt/") {
+            if rest.len() >= 2
+                && rest.as_bytes()[0].is_ascii_alphabetic()
+                && is_sep(rest.as_bytes()[1])
+            {
+                return Some(format!("/{}{}", &rest[..1], &rest[2..]));
+            }
+            return None;
+        }
+        None
+    }
+
+    /// "/d/..." -> "D:\\..." (1.x fold_drive_dialect_w: a leading
+    /// separator followed by a single drive letter and a separator is the
+    /// MSYS drive spelling; anything else stays untouched).
+    fn fold_drive_dialect(normalized: &str) -> Option<String> {
+        let b = normalized.as_bytes();
+        if b.len() < 3 || b[0] != b'/' || !b[1].is_ascii_alphabetic() || b[2] != b'/' {
+            return None;
+        }
+        // guard against a 2-component prefix that is really a directory
+        // named "x" (the 1.x is_drive_form also excludes drive-relative
+        // colliders like "/d/x" only by shape; shape is the contract here)
+        let drive = b[1].to_ascii_uppercase() as char;
+        let mut out = String::with_capacity(normalized.len() + 1);
+        out.push(drive);
+        out.push(':');
+        out.push('\\');
+        if normalized.len() > 3 {
+            out.push_str(&normalized[3..]);
+        }
+        Some(out.replace('/', "\\"))
+    }
+
     pub fn api_path(base: &Path, operand: &str) -> String {
         let operand = map_device(operand);
+        let posix_folded = fold_posix_drive_prefix(operand);
+        let operand: &str = posix_folded.as_deref().unwrap_or(operand);
+        let dialect_folded = fold_drive_dialect(operand);
+        let operand: &str = dialect_folded.as_deref().unwrap_or(operand);
         let folded = fold_carrier_colons(operand);
         let operand: &str = folded.as_deref().unwrap_or(operand);
         let p = if Path::new(operand).is_absolute() {
@@ -294,6 +368,22 @@ pub mod imp {
             base.join(operand)
         };
         let s = p.to_string_lossy().replace('/', "\\");
+        // Collapse "." components lexically: the \\?\ prefix gets no
+        // normalization from the NT loader, so a caller-spelled
+        // ".\name" joined against the cwd would reach CreateFileW /
+        // CreateHardLinkW as "...\.\name" and fail with
+        // ERROR_INVALID_PARAMETER (1.x native_path normalized the same
+        // segments at the operand boundary). ".." components are left
+        // alone: collapsing them needs component math the 1.x kept out of
+        // this path too.
+        let mut s = s;
+        while let Some(pos) = s.find(r"\.\") {
+            s.replace_range(pos..pos + 3, r"\");
+        }
+        while s.ends_with(r"\.") {
+            s.truncate(s.len() - 2);
+        }
+        let s = s;
         if let Some(rest) = s.strip_prefix(r"\\?\") {
             return format!(r"\\?\{rest}");
         }
@@ -589,6 +679,21 @@ pub mod imp {
         FileTime { low: 0, high: 0 }
     }
 
+    /// Remove a file through DeleteFileW directly (1.x remove semantics):
+    /// the NT delete fails on a read-only file with ERROR_ACCESS_DENIED,
+    /// which is the GNU-on-Windows/MSYS "failed to remove 'X': Permission
+    /// denied" shape the ln -f corpus pins. std::fs::remove_file is NOT
+    /// usable here — it silently clears the read-only attribute first.
+    pub fn delete_file(base: &Path, operand: &str) -> Result<(), u32> {
+        let w = wide(&api_path(base, operand));
+        let rc = unsafe { DeleteFileW(w.as_ptr()) };
+        if rc == 0 {
+            Err(kernel32_last_error())
+        } else {
+            Ok(())
+        }
+    }
+
     /// Retime the process's standard output handle — the POSIX `touch -`
     /// operand (GNU touch.c:127-128 retimes stdout instead of naming a
     /// literal file). Returns the Win32 error on failure (pipes and other
@@ -820,6 +925,9 @@ pub mod imp {
         _atime: Option<FileTime>,
         _mtime: Option<FileTime>,
     ) -> Result<(), u32> {
+        Err(1)
+    }
+    pub fn delete_file(_base: &Path, _operand: &str) -> Result<(), u32> {
         Err(1)
     }
     pub fn create_file(_base: &Path, _operand: &str) -> Result<(), u32> {

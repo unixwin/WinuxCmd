@@ -341,11 +341,13 @@ pub fn ln_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
 }
 
 fn resolve(ctx: &Ctx, p: &str) -> std::path::PathBuf {
-    if std::path::Path::new(p).is_absolute() {
-        std::path::PathBuf::from(p)
-    } else {
-        ctx.cwd.join(p)
-    }
+    // Route every operand through the one boundary (fs_win::api_path):
+    // POSIX drive dialect folds, the #1283 carrier-colon fold, the
+    // dot-segment collapse and the \\?\ extension all happen there, so
+    // "C:/...", "/c/...", "C:name" and relative spellings all reach the
+    // OS as the same file the 1.x build resolved (the diagnostic layer
+    // keeps the user's spelling; this layer keeps the resolution).
+    std::path::PathBuf::from(fs_win::api_path(&ctx.cwd, p))
 }
 
 fn is_existing_dir(ctx: &Ctx, p: &str) -> bool {
@@ -358,19 +360,26 @@ fn is_existing_dir(ctx: &Ctx, p: &str) -> bool {
 }
 
 fn basename_of(p: &str) -> String {
-    let t = p.trim_end_matches('/');
-    match t.rsplit_once('/') {
+    // Windows operands arrive in both spellings ("sub/source.txt" and
+    // "sub\\source.txt"); the basename splits on both separators and the
+    // trailing-separator strip covers both too (the 1.x operand boundary
+    // normalized before this split).
+    let t = p.trim_end_matches(['/', '\\']);
+    match t.rsplit_once(['/', '\\']) {
         Some((_, b)) => b.to_string(),
         None => t.to_string(),
     }
 }
 
 fn join_lex(dir: &str, name: &str) -> String {
-    let d = dir.trim_end_matches('/');
+    let d = dir.trim_end_matches(['/', '\\']);
     if d.is_empty() {
         format!("/{name}")
     } else {
-        format!("{d}/{name}")
+        // native separator shape: the verbose line and diagnostics spell
+        // derived destinations like the 1.x build ("dest\\a.txt", the
+        // byte-parity shape the corpus pins)
+        format!("{d}\\{name}")
     }
 }
 
@@ -447,6 +456,9 @@ enum RemoveOutcome {
     Gone,
     Declined,
     Refused,
+    /// -f/-i confirmed the removal but the OS refused (readonly dest):
+    /// carries the GNU reason text for "failed to remove 'X': <reason>".
+    RemoveFailed(String),
 }
 
 /// Remove an existing destination per -f/-i. GNU: an interactive 'n'
@@ -466,10 +478,22 @@ fn remove_existing(io: &mut Io, ctx: &Ctx, opts: &LnOpts, dst: &str) -> RemoveOu
     } else if !opts.force {
         return RemoveOutcome::Refused;
     }
-    if std::fs::remove_file(&full).is_ok() {
+    // DeleteFileW, not std::fs::remove_file: the std helper clears the
+    // read-only attribute before deleting, which would silently unlink
+    // the exact case the corpus pins (readonly dest -> "failed to remove
+    // 'link.txt': Permission denied", the GNU-on-Windows/MSYS shape)
+    if fs_win::delete_file(&ctx.cwd, dst).is_ok() {
         RemoveOutcome::Gone
     } else {
-        RemoveOutcome::Refused
+        // a remove that was ATTEMPTED and failed (readonly destination ->
+        // ERROR_ACCESS_DENIED) reports the removal failure, not File
+        // exists (GNU ln -f on an unremovable dest: "failed to remove
+        // 'X': <reason>"; probed coreutils 9.4 + the 1.x corpus test)
+        let reason = fs_win::delete_file(&ctx.cwd, dst)
+            .err()
+            .map(fs_win::win32_reason)
+            .unwrap_or("Permission denied");
+        RemoveOutcome::RemoveFailed(reason.to_string())
     }
 }
 
@@ -560,6 +584,14 @@ fn link_one(
                     *ok = false;
                     return false;
                 }
+                RemoveOutcome::RemoveFailed(reason) => {
+                    let _ = writeln!(
+                        io.stderr,
+                        "ln: failed to remove '{dst}': {reason}"
+                    );
+                    *ok = false;
+                    return false;
+                }
             }
         }
     }
@@ -588,6 +620,30 @@ fn link_one(
             true
         }
         Err(e) => {
+            // [#1491] opt-in copy downgrade for hosts without the symlink
+            // privilege (the 1.x build's contract): WINUX_LN_FALLBACK=copy
+            // downgrades a failed -s creation to a silent plain-file copy.
+            // Only a regular-file source can be downgraded; a dangling or
+            // directory source keeps the GNU-style refusal (the 1.x
+            // checked the same attribute classes). The copy is SILENT:
+            // bats-core asserts byte-exact TAP streams, so a notice here
+            // breaks the ecosystem the opt-in exists to unblock.
+            if opts.symbolic
+                && (e == 1314 || e == 1)
+                && std::env::var_os("WINUX_LN_FALLBACK")
+                    .map(|v| v.to_string_lossy().eq_ignore_ascii_case("copy"))
+                    .unwrap_or(false)
+            {
+                if let Ok(m) = fs_win::file_meta(&ctx.cwd, src, true) {
+                    if !m.is_dir && !m.is_symlink {
+                        let from = resolve(ctx, src);
+                        let to = resolve(ctx, dst);
+                        if std::fs::copy(&from, &to).is_ok() {
+                            return true;
+                        }
+                    }
+                }
+            }
             let kind = if opts.symbolic {
                 "symbolic link"
             } else {
