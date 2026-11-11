@@ -65,11 +65,11 @@ impl FileTime {
     /// Unix epoch seconds (may be negative) and the 100ns remainder.
     pub fn to_epoch(&self) -> (i64, i64) {
         let ticks = self.as_u64() as i64;
-        let delta = ticks - 11_644_473_600_000_000i64;
+        let delta = ticks - 116_444_736_000_000_000i64;
         (delta.div_euclid(10_000_000), delta.rem_euclid(10_000_000))
     }
     pub fn from_epoch(secs: i64, nanos: u32) -> Self {
-        let ticks = secs * 10_000_000 + (nanos / 100) as i64 + 11_644_473_600_000_000i64;
+        let ticks = secs * 10_000_000 + (nanos / 100) as i64 + 116_444_736_000_000_000i64;
         FileTime::from_u64(ticks as u64)
     }
 }
@@ -161,7 +161,12 @@ pub mod imp {
             mtime: *const FileTime,
         ) -> i32;
         fn CreateHardLinkW(link: *const u16, existing: *const u16, security: *mut c_void) -> i32;
-        fn CreateSymbolicLinkW(link: *const u16, target: *const u16, flags: DWORD) -> i32;
+        // CreateSymbolicLinkW returns BOOLEAN (winnt.h: UCHAR), NOT BOOL
+        // (windef.h: int, like every `-> i32` above). Declaring the 1-byte
+        // return as i32 reads the full EAX whose upper bits are undefined
+        // for a sub-register return on x64 — a refusal (AL = 0) could
+        // masquerade as success. This declaration is the wave3a ln -s fix.
+        fn CreateSymbolicLinkW(link: *const u16, target: *const u16, flags: DWORD) -> u8;
         fn SystemTimeToFileTime(st: *const SystemTime, ft: *mut FileTime) -> i32;
         fn FileTimeToSystemTime(ft: *const FileTime, st: *mut SystemTime) -> i32;
         fn SystemTimeToTzSpecificLocalTime(
