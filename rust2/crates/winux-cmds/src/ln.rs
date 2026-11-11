@@ -585,10 +585,7 @@ fn link_one(
                     return false;
                 }
                 RemoveOutcome::RemoveFailed(reason) => {
-                    let _ = writeln!(
-                        io.stderr,
-                        "ln: failed to remove '{dst}': {reason}"
-                    );
+                    let _ = writeln!(io.stderr, "ln: failed to remove '{dst}': {reason}");
                     *ok = false;
                     return false;
                 }
