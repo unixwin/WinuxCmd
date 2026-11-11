@@ -423,9 +423,13 @@ TEST(b2sum, b2sum_wildcard) {
   p.add(L"b2sum.exe", {L"*.txt"});
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.find("a.txt") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("b.txt") != std::string::npos);
+  // [GNU] File operands are literal — the shell globs, the program does
+  // not (unlink.c:94 precedent; `b2sum '*.txt'` under WSL coreutils 9.4
+  // reports the quotef-quoted ENOENT). The 1.x body glob-expanded.
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("b2sum: '*.txt': No such file or directory") !=
+              std::string::npos);
 }
 
 // [#1200] stdin must be read in binary mode: the CRT's default text mode
