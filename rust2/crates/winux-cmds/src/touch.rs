@@ -7,17 +7,31 @@
 //! with neither, both follow the reference time (which is the current
 //! time for a plain `touch FILE`).
 //!
-//! Time sources (last of -d/-t/-r wins):
+//! Time sources — GNU order measured against coreutils 9.4 (WSL probes,
+//! 2026-11-11, rust2/target/gate/w3a/probe/touch-precedence*.sh):
 //! * `-d`/`--date` — a GNU parse-datetime subset, probed against coreutils
-//!   9.4: ISO 8601 "YYYY-MM-DD[ T]HH:MM[:SS[.frac]]", date-only, time-only
+//!   9.4: ISO 8601 "YYYY-MM-DD[ T]HH[:MM[:SS[.frac]]]", date-only, time-only
 //!   (today), "@SECONDS" epoch, optional trailing timezone
 //!   (+HHMM / +HH:MM / Z / UTC / GMT). Relative forms ("next monday",
 //!   "1 day ago") are NOT part of the subset and report GNU's
-//!   `invalid date format 'X'` (documented divergence).
+//!   `invalid date format 'X'` (documented divergence: no "Try" line, as
+//!   the 1.x C++ build also printed).
 //! * `-t` — [[CC]YY]MMDDhhmm[.ss] fixed format; YY 69-99 -> 19xx,
 //!   00-68 -> 20xx; .ss is exactly two digits 0-60 (probed: .99 rejected).
-//! * `-r`/`--reference` — copy both times from the reference file
-//!   (`failed to get attributes of 'X': ...` on failure).
+//!   Parsed INLINE at its argv position: a bad stamp errors immediately,
+//!   before later args are examined (probed: `-t garbage --bogus` reports
+//!   the stamp, not the option).
+//! * `-r`/`--reference` — both times from the reference file; stat'd
+//!   post-getopt, before the -d parse and before the missing-operand check
+//!   (probed: `-r missing -d garbage` reports the stat failure; a missing
+//!   reference with no operands reports the stat failure too).
+//! * GNU precedence (probed): `-t` with any other source (-d or -r) is
+//!   `cannot specify times from more than one source` (checked before the
+//!   reference stat); `-d` + `-r` is LEGAL with the -d time applied to both
+//!   fields; the missing-operand check runs after the -d parse
+//!   (`-d garbage` with no operands reports the date, `-d ok` reports the
+//!   operand).
+//! * `-f` is a silently ignored BSD-compat option (probed: rc 0).
 //!
 //! -c/--create... no: -c/--no-create reports nothing and creates nothing
 //! for missing operands; without it missing files are created (rc 1 on
@@ -55,6 +69,7 @@ pub fn touch_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         time_word: None,
     };
     let mut operands: Vec<String> = Vec::new();
+    let mut stamp_time: Option<FileTime> = None;
     let mut idx = 0usize;
     while idx < args.len() {
         let arg = args[idx].to_string_lossy().into_owned();
@@ -157,6 +172,9 @@ pub fn touch_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 }
                 'c' => opts.no_create = true,
                 'h' => opts.no_dereference = true,
+                // [GNU] -f is a silently ignored BSD-compat option (probed:
+                // `touch -f FILE` and `touch -af FILE` succeed quietly).
+                'f' => {}
                 'd' => {
                     let rest: String = chars[ci + 1..].iter().collect();
                     if !rest.is_empty() {
@@ -196,7 +214,20 @@ pub fn touch_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                             }
                         }
                     };
-                    opts.stamp = Some(v);
+                    // [GNU] -t parses INLINE at its argv position: a bad
+                    // stamp errors before later args are examined (probed:
+                    // `-t garbage --bogus` reports the stamp, not --bogus;
+                    // `-d garbage -t garbage` reports the stamp too).
+                    match parse_stamp(&v) {
+                        Some(ft) => {
+                            opts.stamp = Some(v);
+                            stamp_time = Some(ft);
+                        }
+                        None => {
+                            let _ = writeln!(io.stderr, "touch: invalid date format '{v}'");
+                            return Ok(1);
+                        }
+                    }
                 }
                 'r' => {
                     let rest: String = chars[ci + 1..].iter().collect();
@@ -228,11 +259,6 @@ pub fn touch_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         }
         idx += if consumed_next { 2 } else { 1 };
     }
-    if operands.is_empty() {
-        let _ = usage_error(io, "touch", "missing file operand");
-        return Ok(1);
-    }
-    // Reference time resolution (also validates -r early, like GNU).
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
@@ -240,12 +266,25 @@ pub fn touch_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let mut ref_atime: Option<FileTime> = None;
     let mut ref_mtime: Option<FileTime> = None;
     let mut new_time: Option<FileTime> = None;
+    // [GNU] -t combined with any other time source is rejected before the
+    // reference stat (probed: `-r missing -t ok` reports "more than one
+    // source", not the stat failure). -d + -r is legal; the -d time wins.
+    if opts.stamp.is_some() && (opts.date.is_some() || opts.reference.is_some()) {
+        let _ = writeln!(
+            io.stderr,
+            "touch: cannot specify times from more than one source\nTry 'touch --help' for more information."
+        );
+        return Ok(1);
+    }
+    // Reference stat (also validates -r): GNU stats the reference before
+    // the -d parse and before the missing-operand check (probed:
+    // `-r missing -d garbage` and `-r missing` with no operands both
+    // report the stat failure).
     if let Some(r) = &opts.reference {
         match fs_win::file_meta(&ctx.cwd, r, true) {
             Ok(m) => {
                 ref_atime = Some(m.atime);
                 ref_mtime = Some(m.mtime);
-                new_time = Some(m.mtime);
             }
             Err(e) => {
                 let _ = writeln!(
@@ -266,25 +305,28 @@ pub fn touch_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             }
         }
     }
-    if let Some(t) = &opts.stamp {
-        match parse_stamp(t) {
-            Some(ft) => new_time = Some(ft),
-            None => {
-                let _ = writeln!(io.stderr, "touch: invalid date format '{t}'");
-                return Ok(1);
-            }
-        }
+    if opts.stamp.is_some() {
+        new_time = stamp_time;
+    }
+    // [GNU] the missing-operand check follows time-source resolution
+    // (probed: `-d garbage` with no operands reports the date;
+    // `-d ok` with no operands reports the operand).
+    if operands.is_empty() {
+        let _ = usage_error(io, "touch", "missing file operand");
+        return Ok(1);
     }
     let mut ok = true;
     for op in &operands {
-        // GNU: -r copies BOTH times from the reference; -d/-t (or nothing)
-        // sets both times to the one value; -a/-m then select which of the
-        // two actually gets written (the other is left untouched).
-        let (want_atime, want_mtime) = if opts.reference.is_some() {
+        // GNU: an explicit -d/-t time wins over -r (probed: -d + -r succeeds
+        // with the -d time applied); -r alone copies BOTH times from the
+        // reference; with neither, both get the current time. -a/-m then
+        // select which of the two actually gets written.
+        let (want_atime, want_mtime) = if let Some(t) = new_time {
+            (Some(t), Some(t))
+        } else if opts.reference.is_some() {
             (ref_atime, ref_mtime)
         } else {
-            let t = new_time.unwrap_or(now_ft);
-            (Some(t), Some(t))
+            (Some(now_ft), Some(now_ft))
         };
         let atime = match (opts.change_atime, opts.change_mtime) {
             (true, _) => want_atime,
@@ -553,6 +595,9 @@ fn parse_hms(s: &str) -> Option<(u32, u32, u32, u32)> {
     };
     let parts: Vec<&str> = hms.split(':').collect();
     let (h, m, sec) = match parts.len() {
+        // bare hour ("2026-05-06 07") is valid GNU parse-datetime:
+        // probed coreutils 9.4 `touch -d '2026-05-06 07' f` -> rc 0 (07:00)
+        1 => (parts[0], "0", "0"),
         2 => (parts[0], parts[1], "0"),
         3 => (parts[0], parts[1], parts[2]),
         _ => return None,
