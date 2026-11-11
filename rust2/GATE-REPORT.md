@@ -75,6 +75,37 @@ counts) are the documented 1.x behavior the Rust side follows.
 
 **Wave2 total cases: 348; GNU-gated + win-gated: all GREEN; C++ parity: 320/348.**
 
+## Wave2b wiring refresh (#1488, second-batch wiring)
+
+The seven wave2 Rust applets (base64 base32 b2sum sha224sum sha384sum tac
+truncate) are wired into the product (handlers are one
+`winux::rust2::run_command[_with_stdin]` call; the C++ bodies are deleted).
+The rows below supersede the Wave2 rows for these commands: sole
+`--help`/`--version` moved strict -> win (the dispatcher's branded
+interception owns them, nproc np10/np21 precedent) and cross-shape rows were
+added (bogus `-w`/`-l` vs missing file / extra operand / decode mode; bogus
+`-l` vs `--tag --check`) locking the getopt-position validation order probed
+on WSL 9.4. The C++ parity column compares the rust2 DRIVER against the 1.x
+dispatcher, so the win help/version rows show r=c:no on stdout text (GNU text
+vs WinuxCmd branding); product-level old-vs-new byte equality is carried by
+`gate/wire/cmd-matrix.sh` ledgers under
+`target/issue-suites/results/wire-wave2b/` (rc+stdout 100%, four explained
+stderr/rc rows where the 1.x body itself deviated from GNU: basenc
+missing-file wording, truncate `-s 1kB` grammar, b2sum `-t/-b` last-wins,
+tac directory-open wording).
+
+| command | cases | strict | exit | win | note | GNU-gated result | C++ parity (rc+stdout) |
+|---|---|---|---|---|---|---|---|
+| base64 | 30 | 28 | 0 | 2 | 0 | GREEN | 28/30 |
+| base32 | 24 | 22 | 0 | 2 | 0 | GREEN | 22/24 |
+| b2sum | 34 | 31 | 1 | 2 | 0 | GREEN | 32/34 |
+| sha224sum | 50 | 47 | 1 | 2 | 0 | GREEN | 48/50 |
+| sha384sum | 28 | 25 | 1 | 2 | 0 | GREEN | 26/28 |
+| tac | 27 | 25 | 0 | 2 | 0 | GREEN | 25/27 |
+| truncate | 30 | 30 | 0 | 0 | 0 | GREEN | 30/30 |
+
+**Wave2b refresh: 223 cases; GNU-gated + win-gated: all GREEN.**
+
 
 ## Wave3a (#1488, third batch)
 
