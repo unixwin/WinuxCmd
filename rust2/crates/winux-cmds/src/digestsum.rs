@@ -57,6 +57,7 @@ use std::ffi::OsString;
 use crate::argopt::{self, OptSpec};
 use crate::digest::{blake2b, hex, sha224, sha384};
 use crate::fsutil::resolve;
+use crate::gnuhelp;
 use winux_core::{CmdResult, Ctx, Io};
 
 const OPTS: &[OptSpec] = &[
@@ -189,6 +190,134 @@ pub fn sha384sum_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     run(Algo::Sha384, false, "sha384sum", args, io, ctx)
 }
 
+/// Authors line of the GNU `--version` block (probed coreutils 9.4).
+fn authors(prog: &str) -> &'static str {
+    match prog {
+        "b2sum" => "P\u{00e1}draig Brady and Samuel Neves",
+        // sha224sum / sha384sum
+        _ => "Ulrich Drepper, Scott Miller, and David Madore",
+    }
+}
+
+/// The texinfo node of the `--help` footer: the sha2 family shares the
+/// `sha2 utilities` node; b2sum has its own.
+fn info_node(prog: &str) -> &'static str {
+    if prog == "b2sum" {
+        "b2sum invocation"
+    } else {
+        "sha2 utilities"
+    }
+}
+
+// `--help` bodies verbatim from `env <cmd> --help` under WSL coreutils
+// 9.4, minus the shared gnuhelp::footer tail (verified byte-for-byte by
+// the strict gate rows b2a19/b2a23, s224a12/s224a19, s384a12/s384a19).
+
+const B2SUM_HELP_BODY: &str = r#"Usage: b2sum [OPTION]... [FILE]...
+Print or check BLAKE2b (512-bit) checksums.
+
+With no FILE, or when FILE is -, read standard input.
+
+Mandatory arguments to long options are mandatory for short options too.
+  -b, --binary          read in binary mode
+  -c, --check           read checksums from the FILEs and check them
+  -l, --length=BITS     digest length in bits; must not exceed the max for
+                          the blake2 algorithm and must be a multiple of 8
+      --tag             create a BSD-style checksum
+  -t, --text            read in text mode (default)
+  -z, --zero            end each output line with NUL, not newline,
+                          and disable file name escaping
+
+The following five options are useful only when verifying checksums:
+      --ignore-missing  don't fail or report status for missing files
+      --quiet           don't print OK for each successfully verified file
+      --status          don't output anything, status code shows success
+      --strict          exit non-zero for improperly formatted checksum lines
+  -w, --warn            warn about improperly formatted checksum lines
+
+      --help        display this help and exit
+      --version     output version information and exit
+
+The sums are computed as described in RFC 7693.
+When checking, the input should be a former output of this program.
+The default mode is to print a line with: checksum, a space,
+a character indicating input mode ('*' for binary, ' ' for text
+or where binary is insignificant), and name for each FILE.
+
+Note: There is no difference between binary mode and text mode on GNU systems.
+
+"#;
+
+const SHA224_HELP_BODY: &str = r#"Usage: sha224sum [OPTION]... [FILE]...
+Print or check SHA224 (224-bit) checksums.
+
+With no FILE, or when FILE is -, read standard input.
+  -b, --binary          read in binary mode
+  -c, --check           read checksums from the FILEs and check them
+      --tag             create a BSD-style checksum
+  -t, --text            read in text mode (default)
+  -z, --zero            end each output line with NUL, not newline,
+                          and disable file name escaping
+
+The following five options are useful only when verifying checksums:
+      --ignore-missing  don't fail or report status for missing files
+      --quiet           don't print OK for each successfully verified file
+      --status          don't output anything, status code shows success
+      --strict          exit non-zero for improperly formatted checksum lines
+  -w, --warn            warn about improperly formatted checksum lines
+
+      --help        display this help and exit
+      --version     output version information and exit
+
+The sums are computed as described in RFC 3874.
+When checking, the input should be a former output of this program.
+The default mode is to print a line with: checksum, a space,
+a character indicating input mode ('*' for binary, ' ' for text
+or where binary is insignificant), and name for each FILE.
+
+Note: There is no difference between binary mode and text mode on GNU systems.
+
+"#;
+
+const SHA384_HELP_BODY: &str = r#"Usage: sha384sum [OPTION]... [FILE]...
+Print or check SHA384 (384-bit) checksums.
+
+With no FILE, or when FILE is -, read standard input.
+  -b, --binary          read in binary mode
+  -c, --check           read checksums from the FILEs and check them
+      --tag             create a BSD-style checksum
+  -t, --text            read in text mode (default)
+  -z, --zero            end each output line with NUL, not newline,
+                          and disable file name escaping
+
+The following five options are useful only when verifying checksums:
+      --ignore-missing  don't fail or report status for missing files
+      --quiet           don't print OK for each successfully verified file
+      --status          don't output anything, status code shows success
+      --strict          exit non-zero for improperly formatted checksum lines
+  -w, --warn            warn about improperly formatted checksum lines
+
+      --help        display this help and exit
+      --version     output version information and exit
+
+The sums are computed as described in FIPS-180-2.
+When checking, the input should be a former output of this program.
+The default mode is to print a line with: checksum, a space,
+a character indicating input mode ('*' for binary, ' ' for text
+or where binary is insignificant), and name for each FILE.
+
+Note: There is no difference between binary mode and text mode on GNU systems.
+
+"#;
+
+fn help_text(algo: Algo) -> &'static str {
+    match algo {
+        Algo::Blake2b => B2SUM_HELP_BODY,
+        Algo::Sha224 => SHA224_HELP_BODY,
+        Algo::Sha384 => SHA384_HELP_BODY,
+    }
+}
+
 fn run(
     algo: Algo,
     allows_length: bool,
@@ -201,8 +330,32 @@ fn run(
         Ok(p) => p,
         Err(s) => return Ok(s),
     };
-    if p.has("help") || p.has("version") {
-        return Ok(0);
+    // GNU exits at the first --help/--version getopt_long encounters; the
+    // ordered find reproduces that for `--version --help` (version wins).
+    if let Some(which) = p
+        .flags
+        .iter()
+        .find(|f| f.as_str() == argopt::HELP || f.as_str() == argopt::VERSION)
+    {
+        return Ok(match which.as_str() {
+            "help" => {
+                write!(
+                    io.stdout,
+                    "{}{}",
+                    help_text(algo),
+                    gnuhelp::footer(prog, info_node(prog))
+                )?;
+                0
+            }
+            _ => {
+                write!(
+                    io.stdout,
+                    "{}",
+                    gnuhelp::coreutils_version(prog, authors(prog))
+                )?;
+                0
+            }
+        });
     }
     // -b / -t: last wins; --tag overrides the mode marker entirely.
     // None = neither given (GNU's binary == -1).
@@ -894,6 +1047,47 @@ fn check_file(
 
 #[cfg(test)]
 mod tests {
+    // [GNU] `--help`/`--version` print the probed coreutils text and exit 0
+    // (strict gate rows b2a19/b2a23, s224a12/s224a19, s384a12/s384a19).
+    #[test]
+    fn gnu_help_version_surface() {
+        for prog in ["b2sum", "sha224sum", "sha384sum"] {
+            let (r, out, err) = run(prog, &["--help"], "");
+            assert_eq!(r, 0, "{prog} --help");
+            assert!(err.is_empty());
+            assert!(
+                out.starts_with(&format!("Usage: {prog} [OPTION]... [FILE]...\n")),
+                "{prog} usage line"
+            );
+            assert!(out.contains("GNU coreutils online help:"));
+            let (r, out, _) = run(prog, &["--version"], "");
+            assert_eq!(r, 0, "{prog} --version");
+            assert!(
+                out.starts_with(&format!("{prog} (GNU coreutils) 9.4\n")),
+                "{prog} version line"
+            );
+            assert!(out.ends_with("\n"));
+            // GNU getopt order: the first flag seen wins.
+            let (r, out, _) = run(prog, &["--version", "--help"], "");
+            assert_eq!(r, 0);
+            assert!(out.starts_with(&format!("{prog} (GNU coreutils) 9.4\n")));
+        }
+        // per-program authors lines
+        let (_, out, _) = run("b2sum", &["--version"], "");
+        assert!(out.ends_with("Written by P\u{e1}draig Brady and Samuel Neves.\n"));
+        let (_, out, _) = run("sha224sum", &["--version"], "");
+        assert!(out.ends_with("Written by Ulrich Drepper, Scott Miller, and David Madore.\n"));
+        // b2sum help carries the -l block and RFC 7693; sha384 names FIPS-180-2
+        let (_, out, _) = run("b2sum", &["--help"], "");
+        assert!(out.contains("-l, --length=BITS"));
+        assert!(out.contains("The sums are computed as described in RFC 7693."));
+        assert!(out.ends_with("info '(coreutils) b2sum invocation'\n"));
+        let (_, out, _) = run("sha384sum", &["--help"], "");
+        assert!(!out.contains("-l, --length=BITS"));
+        assert!(out.contains("The sums are computed as described in FIPS-180-2."));
+        assert!(out.ends_with("info '(coreutils) sha2 utilities'\n"));
+    }
+
     use std::ffi::OsString;
     use winux_core::test_support::{MemIo, ScratchCtx};
 

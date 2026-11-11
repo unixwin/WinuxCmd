@@ -18,6 +18,7 @@ use std::ffi::OsString;
 use crate::argopt::{self, OptSpec};
 use crate::b64core;
 use crate::fsutil::resolve;
+use crate::gnuhelp;
 use winux_core::{usage_error, CmdResult, Ctx, Io};
 
 const OPTS: &[OptSpec] = &[
@@ -38,13 +39,86 @@ const OPTS: &[OptSpec] = &[
     },
 ];
 
+// `--help` body verbatim from `env base64 --help` under WSL coreutils 9.4,
+// minus the shared gnuhelp::footer tail.
+const BASE64_HELP_BODY: &str = r#"Usage: base64 [OPTION]... [FILE]
+Base64 encode or decode FILE, or standard input, to standard output.
+
+With no FILE, or when FILE is -, read standard input.
+
+Mandatory arguments to long options are mandatory for short options too.
+  -d, --decode          decode data
+  -i, --ignore-garbage  when decoding, ignore non-alphabet characters
+  -w, --wrap=COLS       wrap encoded lines after COLS character (default 76).
+                          Use 0 to disable line wrapping
+      --help        display this help and exit
+      --version     output version information and exit
+
+The data are encoded as described for the base64 alphabet in RFC 4648.
+When decoding, the input may contain newlines in addition to the bytes of
+the formal base64 alphabet.  Use --ignore-garbage to attempt to recover
+from any other non-alphabet bytes in the encoded stream.
+
+"#;
+
+// `--help` body verbatim from `env base32 --help` under WSL coreutils 9.4,
+// minus the shared gnuhelp::footer tail.
+const BASE32_HELP_BODY: &str = r#"Usage: base32 [OPTION]... [FILE]
+Base32 encode or decode FILE, or standard input, to standard output.
+
+With no FILE, or when FILE is -, read standard input.
+
+Mandatory arguments to long options are mandatory for short options too.
+  -d, --decode          decode data
+  -i, --ignore-garbage  when decoding, ignore non-alphabet characters
+  -w, --wrap=COLS       wrap encoded lines after COLS character (default 76).
+                          Use 0 to disable line wrapping
+      --help        display this help and exit
+      --version     output version information and exit
+
+The data are encoded as described for the base32 alphabet in RFC 4648.
+When decoding, the input may contain newlines in addition to the bytes of
+the formal base32 alphabet.  Use --ignore-garbage to attempt to recover
+from any other non-alphabet bytes in the encoded stream.
+
+"#;
+
 fn run(name: &str, codec: &b64core::Codec, args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let p = match argopt::parse(name, args, OPTS, io, ctx, 1) {
         Ok(p) => p,
         Err(s) => return Ok(s),
     };
-    if p.has("help") || p.has("version") {
-        return Ok(0);
+    // GNU exits at the first --help/--version getopt_long encounters; the
+    // ordered find reproduces that for `--version --help` (version wins).
+    if let Some(which) = p
+        .flags
+        .iter()
+        .find(|f| f.as_str() == argopt::HELP || f.as_str() == argopt::VERSION)
+    {
+        return Ok(match which.as_str() {
+            "help" => {
+                let body = if name == "base64" {
+                    BASE64_HELP_BODY
+                } else {
+                    BASE32_HELP_BODY
+                };
+                write!(
+                    io.stdout,
+                    "{}{}",
+                    body,
+                    gnuhelp::footer(name, &format!("{name} invocation"))
+                )?;
+                0
+            }
+            _ => {
+                write!(
+                    io.stdout,
+                    "{}",
+                    gnuhelp::coreutils_version(name, "Simon Josefsson")
+                )?;
+                0
+            }
+        });
     }
     if p.positionals.len() > 1 {
         let shown = p.positionals[1].to_string_lossy().into_owned();
@@ -121,6 +195,43 @@ pub fn base32_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
 
 #[cfg(test)]
 mod tests {
+    // [GNU] `--help`/`--version` print the probed coreutils text, rc 0
+    // (strict rows b64a28/b64a29, b32a23/b32a24).
+    #[test]
+    fn gnu_help_version_surface() {
+        for prog in ["base64", "base32"] {
+            let mut io = MemIo::new("");
+            let sc = ScratchCtx::new("basenc-hv");
+            let ctx = sc.ctx();
+            let args: Vec<OsString> = vec!["--help".into()];
+            let r = if prog == "base64" {
+                super::base64_cmd(&args, &mut io.split(), &ctx).unwrap()
+            } else {
+                super::base32_cmd(&args, &mut io.split(), &ctx).unwrap()
+            };
+            assert_eq!(r, 0);
+            assert!(io
+                .out()
+                .starts_with(&format!("Usage: {prog} [OPTION]... [FILE]\n")));
+            assert!(io.out().contains("RFC 4648"));
+            assert!(io
+                .out()
+                .ends_with(&format!("info '(coreutils) {prog} invocation'\n")));
+            let mut io = MemIo::new("");
+            let args: Vec<OsString> = vec!["--version".into()];
+            let r = if prog == "base64" {
+                super::base64_cmd(&args, &mut io.split(), &ctx).unwrap()
+            } else {
+                super::base32_cmd(&args, &mut io.split(), &ctx).unwrap()
+            };
+            assert_eq!(r, 0);
+            assert!(io
+                .out()
+                .starts_with(&format!("{prog} (GNU coreutils) 9.4\n")));
+            assert!(io.out().ends_with("Written by Simon Josefsson.\n"));
+        }
+    }
+
     use winux_core::test_support::{MemIo, ScratchCtx};
 
     fn run64(args: &[&str], stdin: &str) -> (u32, String, String) {

@@ -22,6 +22,7 @@ pub mod fold;
 pub mod fs_win;
 pub mod fsutil;
 pub mod getconf;
+pub mod gnuhelp;
 pub mod hostname;
 pub mod id;
 pub mod ln;
@@ -37,11 +38,11 @@ pub mod rmdir;
 pub mod seq;
 pub mod sleep;
 pub mod stat;
+pub mod sync;
 pub mod tac;
 pub mod tee;
 pub mod test_cmd;
 pub mod touch;
-pub mod sync;
 
 pub mod truefalse;
 pub mod truncate;
@@ -79,6 +80,13 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("base32", basenc::base32_cmd),
         ("whoami", whoami::whoami_cmd),
         ("nproc", nproc::nproc_cmd),
+        // wave2 completion (#1488 help-surface wave): these four modules
+        // shipped unregistered on main — their gate tables ran 22 FAIL
+        // (driver rc 127 vs cpp rc 0) because dispatch could not find them.
+        ("getconf", getconf::getconf_cmd),
+        ("hostname", hostname::hostname_cmd),
+        ("id", id::id_cmd),
+        ("uname", uname::uname_cmd),
         ("unlink", unlink::unlink_cmd),
         ("sleep", sleep::sleep_cmd),
         ("tac", tac::tac_cmd),

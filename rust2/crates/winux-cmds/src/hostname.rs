@@ -20,6 +20,9 @@
 //!   success complete with rc 0 WITHOUT changing the host (the documented
 //!   Windows [DIFFERS] of the C++ applet). An operand together with -F is
 //!   usage-on-stderr + exit 255 (GNU hostname.c main order).
+//! * `--help`/`-h` print the Debian usage block (DEBIAN_USAGE) on stdout
+//!   and exit 255; `--version`/`-V` prints `hostname 3.23` — the probed
+//!   oracle bytes (the WSL `hostname` is Debian's 3.23, rc 0).
 //!
 //! Gate classification follows the C++ side; rc-only cases (missing file,
 //! invalid name, extra operand) match GNU and gate strictly.
@@ -90,6 +93,10 @@ const OPTS: &[OptSpec] = &[
     },
 ];
 
+/// The Debian `hostname --version` line (probed rc 0; the WSL oracle
+/// is hostname 3.23, not a coreutils applet).
+const VERSION_LINE: &str = "hostname 3.23\n";
+
 /// Net-tools short options the C++ applet rejects with the short form.
 const REJECTED_SHORT_FORM: &[char] = &['b', 'i', 'I', 's', 'f', 'a', 'A', 'd', 'y', 'n'];
 
@@ -132,8 +139,25 @@ pub fn hostname_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         Ok(p) => p,
         Err(s) => return Ok(s),
     };
-    if p.has("help") || p.has("version") {
-        return Ok(0);
+    // Debian hostname exits at the first -h/--help or -V/--version; the
+    // ordered find reproduces that for `--version --help` (version wins).
+    if let Some(which) = p
+        .flags
+        .iter()
+        .find(|f| f.as_str() == argopt::HELP || f.as_str() == argopt::VERSION)
+    {
+        return Ok(match which.as_str() {
+            "help" => {
+                // The Debian oracle (hostname 3.23) prints this block on
+                // stdout and exits 255 for --help/-h (probed rc 255).
+                write!(io.stdout, "{}", DEBIAN_USAGE)?;
+                255
+            }
+            _ => {
+                write!(io.stdout, "{}", VERSION_LINE)?;
+                0
+            }
+        });
     }
 
     // Reject the net-tools option set like the C++ applet (coreutils
@@ -267,6 +291,25 @@ pub fn hostname_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
 
 #[cfg(test)]
 mod tests {
+    // [GNU] Debian hostname 3.23: --help prints the usage block on stdout
+    // and exits 255; --version prints `hostname 3.23` and exits 0
+    // (strict rows hn19/hn20).
+    #[test]
+    fn gnu_help_version_surface() {
+        let sc = ScratchCtx::new("hostname-hv");
+        let (r, out, err) = run(&sc, &["--help"]);
+        assert_eq!(r, 255);
+        assert!(err.is_empty());
+        assert_eq!(out, super::DEBIAN_USAGE);
+        let (r, out, _) = run(&sc, &["--version"]);
+        assert_eq!(r, 0);
+        assert_eq!(out, "hostname 3.23\n");
+        // -h behaves like --help on the Debian oracle (rc 255).
+        let (r, out, _) = run(&sc, &["-h"]);
+        assert_eq!(r, 255);
+        assert_eq!(out, super::DEBIAN_USAGE);
+    }
+
     use std::ffi::OsString;
     use winux_core::test_support::{MemIo, ScratchCtx};
 
@@ -310,8 +353,10 @@ mod tests {
         assert_eq!(r, 1);
         let (r, _, _) = run(&sc, &["--bogus"]);
         assert_eq!(r, 1);
+        // --help is the Debian usage-on-stdout + exit 255 (see
+        // gnu_help_version_surface), not the old silent rc 0 stub.
         let (r, _, _) = run(&sc, &["--help"]);
-        assert_eq!(r, 0);
+        assert_eq!(r, 255);
     }
 
     #[test]

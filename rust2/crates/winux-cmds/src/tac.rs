@@ -33,6 +33,7 @@ use std::io::{Read, Write};
 use crate::argopt::{self, OptSpec};
 use crate::bre::Regex;
 use crate::fsutil::resolve;
+use crate::gnuhelp;
 use winux_core::{CmdResult, Ctx, Io};
 
 const OPTS: &[OptSpec] = &[
@@ -144,13 +145,53 @@ fn tac_regex(
     }
 }
 
+// `--help` body verbatim from `env tac --help` under WSL coreutils 9.4,
+// minus the shared gnuhelp::footer tail.
+const TAC_HELP_BODY: &str = r#"Usage: tac [OPTION]... [FILE]...
+Write each FILE to standard output, last line first.
+
+With no FILE, or when FILE is -, read standard input.
+
+Mandatory arguments to long options are mandatory for short options too.
+  -b, --before             attach the separator before instead of after
+  -r, --regex              interpret the separator as a regular expression
+  -s, --separator=STRING   use STRING as the separator instead of newline
+      --help        display this help and exit
+      --version     output version information and exit
+
+"#;
+
 pub fn tac_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let p = match argopt::parse("tac", args, OPTS, io, ctx, 1) {
         Ok(p) => p,
         Err(s) => return Ok(s),
     };
-    if p.has("help") || p.has("version") {
-        return Ok(0);
+    // GNU exits at the first --help/--version getopt_long encounters; the
+    // ordered find reproduces that for `--version --help` (version wins).
+    if let Some(which) = p
+        .flags
+        .iter()
+        .find(|f| f.as_str() == argopt::HELP || f.as_str() == argopt::VERSION)
+    {
+        return Ok(match which.as_str() {
+            "help" => {
+                write!(
+                    io.stdout,
+                    "{}{}",
+                    TAC_HELP_BODY,
+                    gnuhelp::footer("tac", "tac invocation")
+                )?;
+                0
+            }
+            _ => {
+                write!(
+                    io.stdout,
+                    "{}",
+                    gnuhelp::coreutils_version("tac", "Jay Lepreau and David MacKenzie")
+                )?;
+                0
+            }
+        });
     }
     let separator = p.value_of("separator").unwrap_or("\n").to_string();
     let regex_mode = p.has("regex");
@@ -233,6 +274,21 @@ pub fn tac_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
 
 #[cfg(test)]
 mod tests {
+    // [GNU] `--help`/`--version` print the probed coreutils text and exit 0
+    // (strict rows ta24/ta27).
+    #[test]
+    fn gnu_help_version_surface() {
+        let (r, out, err) = run(&["--help"], "");
+        assert_eq!(r, 0);
+        assert!(err.is_empty());
+        assert!(out.starts_with("Usage: tac [OPTION]... [FILE]...\n"));
+        assert!(out.ends_with("info '(coreutils) tac invocation'\n"));
+        let (r, out, _) = run(&["--version"], "");
+        assert_eq!(r, 0);
+        assert!(out.starts_with("tac (GNU coreutils) 9.4\n"));
+        assert!(out.ends_with("Written by Jay Lepreau and David MacKenzie.\n"));
+    }
+
     use std::ffi::OsString;
     use winux_core::test_support::{MemIo, ScratchCtx};
 
