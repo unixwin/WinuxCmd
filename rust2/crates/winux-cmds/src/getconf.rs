@@ -76,13 +76,49 @@ fn unrecognized(io: &mut Io, typed: &str) {
     let _ = writeln!(io.stderr, "getconf: Unrecognized variable `{typed}'");
 }
 
+// glibc getconf --help, verbatim from the WSL oracle (Ubuntu GLIBC
+// 2.39-0ubuntu8.9, including its own bug-report footer).
+const GETCONF_HELP: &str = r#"Usage: getconf [-v SPEC] VAR
+  or:  getconf [-v SPEC] PATH_VAR PATH
+
+Get the configuration value for variable VAR, or for variable PATH_VAR
+for path PATH.  If SPEC is given, give values for compilation
+environment SPEC.
+
+For bug reporting instructions, please see:
+<https://bugs.launchpad.net/ubuntu/+source/glibc/+bugs>.
+"#;
+
+// glibc getconf --version, verbatim from the WSL oracle.
+const GETCONF_VERSION: &str = r#"getconf (Ubuntu GLIBC 2.39-0ubuntu8.9) 2.39
+Copyright (C) 2024 Free Software Foundation, Inc.
+This is free software; see the source for copying conditions.  There is NO
+warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+Written by Roland McGrath.
+"#;
+
 pub fn getconf_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let p = match argopt::parse("getconf", args, OPTS, io, ctx, 1) {
         Ok(p) => p,
         Err(s) => return Ok(s),
     };
-    if p.has("help") || p.has("version") {
-        return Ok(0);
+    // GNU exits at the first --help/--version getopt_long encounters; the
+    // ordered find reproduces that for `--version --help` (version wins).
+    if let Some(which) = p
+        .flags
+        .iter()
+        .find(|f| f.as_str() == argopt::HELP || f.as_str() == argopt::VERSION)
+    {
+        return Ok(match which.as_str() {
+            "help" => {
+                write!(io.stdout, "{}", GETCONF_HELP)?;
+                0
+            }
+            _ => {
+                write!(io.stdout, "{}", GETCONF_VERSION)?;
+                0
+            }
+        });
     }
     let all = p.has("all");
     // -v SPEC: accepted, ignored (not applicable on Windows).
@@ -157,6 +193,24 @@ pub fn getconf_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
 
 #[cfg(test)]
 mod tests {
+    // [GNU] glibc getconf help/version, verbatim from the WSL oracle
+    // (strict rows gc19/gc23).
+    #[test]
+    fn gnu_help_version_surface() {
+        let (r, out, err) = run(&["--help"]);
+        assert_eq!(r, 0);
+        assert!(err.is_empty());
+        assert!(out.starts_with("Usage: getconf [-v SPEC] VAR\n"));
+        assert!(out.ends_with("<https://bugs.launchpad.net/ubuntu/+source/glibc/+bugs>.\n"));
+        let (r, out, _) = run(&["--version"]);
+        assert_eq!(r, 0);
+        assert!(
+            out.starts_with("getconf (Ubuntu GLIBC 2.39-0ubuntu8.9) 2.39\n"),
+            "got {out}"
+        );
+        assert!(out.ends_with("Written by Roland McGrath.\n"));
+    }
+
     use std::ffi::OsString;
     use winux_core::test_support::{MemIo, ScratchCtx};
 

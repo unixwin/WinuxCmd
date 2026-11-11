@@ -425,7 +425,8 @@ fn is_fifo_marker(ctx: &Ctx, name: &str) -> bool {
         return false;
     }
     let mut head = [0u8; 7];
-    match std::fs::File::open(&path).and_then(|mut f| std::io::Read::read_exact(&mut f, &mut head)) {
+    match std::fs::File::open(&path).and_then(|mut f| std::io::Read::read_exact(&mut f, &mut head))
+    {
         Ok(()) => head == *b"!<fifo>",
         Err(_) => false,
     }
@@ -596,8 +597,7 @@ mod two_arg_tests {
     use winux_core::test_support::{MemIo, ScratchCtx};
 
     fn run(args: &[&str]) -> (u32, String, String) {
-        let owned: Vec<std::ffi::OsString> =
-            args.iter().map(std::ffi::OsString::from).collect();
+        let owned: Vec<std::ffi::OsString> = args.iter().map(std::ffi::OsString::from).collect();
         let mut io = MemIo::new("");
         let sc = ScratchCtx::new("test2");
         let ctx = sc.ctx();
@@ -649,7 +649,8 @@ mod fifo_marker_tests {
             let mut perms = std::fs::metadata(sc.path("pipe1")).unwrap().permissions();
             perms.set_readonly(false);
             perms
-        }).unwrap();
+        })
+        .unwrap();
         let _ = attrs;
         // set the SYSTEM attribute via the win32 call the C++ suite uses
         #[link(name = "kernel32")]

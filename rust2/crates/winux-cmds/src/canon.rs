@@ -71,10 +71,7 @@ fn fold_posix_drive_prefix(s: &str) -> String {
             .zip(cygdrive)
             .all(|(ch, want)| ch.to_ascii_lowercase() == *want);
         let drive = b[10];
-        if name_match
-            && is_sep(b[9])
-            && is_drive_letter(drive)
-            && (b.len() == 11 || is_sep(b[11]))
+        if name_match && is_sep(b[9]) && is_drive_letter(drive) && (b.len() == 11 || is_sep(b[11]))
         {
             let mut out = String::from("/");
             out.push_str(&s[10..]);
@@ -344,7 +341,9 @@ pub fn canonicalize_operand(
 
 #[cfg(test)]
 mod tests {
-    use super::{fold_carrier_colons, fold_drive_dialect, fold_posix_drive_prefix, prepare_operand};
+    use super::{
+        fold_carrier_colons, fold_drive_dialect, fold_posix_drive_prefix, prepare_operand,
+    };
 
     #[test]
     fn drive_prefix_folds_match_the_cxx_boundary() {

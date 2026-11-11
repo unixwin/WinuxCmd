@@ -273,6 +273,10 @@ dirname_rows = [
     ("dn22-many", "strict", "", "", "", ["p/q/r", "s/t"]),
 ]
 
+    # --help/--version rows are strict: the rust2 driver prints the probed
+    # WSL-oracle help/version bytes byte-for-byte (#1488 help-surface wave;
+    # see crates/winux-cmds/src/gnuhelp.rs), so the rows gate the text
+    # against GNU instead of only comparing rc with the branded C++ text.
 printenv_rows = [
     ("pe01-found", "strict", "", "GFoo=bar", "", ["GFoo"]),
     ("pe02-found-plus-missing", "strict", "", "GFoo=bar", "", ["GFoo", "NOPE"]),
@@ -294,6 +298,10 @@ printenv_rows = [
     ("pe18-found-missing-mix", "strict", "", "A=1,B=2", "", ["A", "NOPE", "B"]),
     ("pe19-help-flag", "win", "", "", "", ["--help"]),
     ("pe20-dash-alone", "exit", "", "GFoo=bar", "", ["-"]),
+    # printenv is a WIRED command: the product exe shows the branded
+    # dispatcher text for the sole flag (true/false "version" precedent),
+    # so these rows stay rc-parity (win), not byte-strict.
+    ("pe21-version", "win", "", "", "", ["--version"]),
 ]
 
 pwd_rows = [
@@ -457,22 +465,52 @@ chown_rows = [
     ("cw16-high-ids", "strict", "touch f", "", "", ["99999:99999", "f"]),
 ]
 
+# ---------------------------------------------------------------------------
+# df rows transcribed from the wave1-deepening df.tsv (the generator and
+# the committed table had drifted; this restores generator-backedness).
+# Value model: GNU prints device names over mounts; Windows prints drive
+# letters / UNC roots and has no inode counts — no-operand listings stay
+# `win`. Operand rows are strict: GNU df stats each operand as given
+# (df.c), so drive-letter forms take the quotef'd missing-path branch
+# (rc 1, empty stdout) — see df.rs `is_drive_letter_form`.
+# NOTE rows (df24/df33) are documented in gate/note-registry.tsv.
 df_rows = [
-    ("df01-missing-path", "strict", "", "", "", ["/definitely-missing-xyz"]),
-    ("df02-two-missing", "strict", "", "", "", ["/definitely-missing-xyz", "/also-missing-abc"]),
-    ("df03-bad-option", "strict", "", "", "", ["--bogus"]),
-    ("df04-listing", "win", "", "", "", []),
-    ("df05-human", "win", "", "", "", ["-h"]),
-    ("df06-posix", "win", "", "", "", ["-P"]),
-    ("df07-c-drive", "win", "", "", "", ["C:\\"]),
-    ("df08-dot", "exit", "", "", "", ["."]),
-    ("df09-h-drive", "win", "", "", "", ["-h", "C:\\"]),
-    ("df10-si", "win", "", "", "", ["-H"]),
-    ("df11-all-flag", "win", "", "", "", ["-a"]),
-    ("df12-output-subset", "note", "", "", "", ["--output=source", "C:\\"]),
-    ("df13-drive-path", "note", "", "", "", ["C:\\Windows"]),
-    ("df14-relative-deep", "exit", "mkdir -p sub/deep", "", "", ["sub/deep"]),
-    ("df15-block-size-k", "win", "", "", "", ["-k", "C:\\"]),
+    ('df01-missing-path', 'strict', '', '', '', ['/definitely-missing-xyz']),
+    ('df02-two-missing', 'strict', '', '', '', ['/definitely-missing-xyz', '/also-missing-abc']),
+    ('df03-bad-option', 'strict', '', '', '', ['--bogus']),
+    ('df04-listing', 'win', '', '', '', []),
+    ('df05-human', 'win', '', '', '', ['-h']),
+    ('df06-posix', 'win', '', '', '', ['-P']),
+    ('df07-c-drive', 'strict', '', '', '', ['C:\\']),
+    ('df08-dot', 'exit', '', '', '', ['.']),
+    ('df09-h-drive', 'strict', '', '', '', ['-h', 'C:\\']),
+    ('df10-si', 'win', '', '', '', ['-H']),
+    ('df11-all-flag', 'win', '', '', '', ['-a']),
+    ('df12-output-all-columns', 'win', '', '', '', ['--output']),
+    ('df13-drive-path', 'strict', '', '', '', ['C:\\Windows']),
+    ('df14-relative-deep', 'exit', 'mkdir -p sub/deep', '', '', ['sub/deep']),
+    ('df15-block-size-k', 'strict', '', '', '', ['-k', 'C:\\']),
+    ('df16-output-unknown-field', 'strict', '', '', '', ['--output=bogus']),
+    ('df17-output-dup-field', 'strict', '', '', '', ['--output=source,source']),
+    ('df18-output-empty-list', 'strict', '', '', '', ['--output=']),
+    ('df19-i-with-output', 'strict', '', '', '', ['-i', '--output=source']),
+    ('df20-P-with-output', 'strict', '', '', '', ['-P', '--output=source']),
+    ('df21-total', 'exit', '', '', '', ['--total', '.']),
+    ('df22-t-no-match', 'strict', '', '', '', ['-t', 'bogusfs', '.']),
+    ('df23-t-gnu-fstype', 'win', '', '', '', ['-t', 'ext4', '.']),
+    ('df24-x-case-sensitive', 'note', '', '', '', ['-x', 'ntfs', '.']),
+    ('df25-B-invalid-suffix', 'strict', '', '', '', ['-B', 'c', '.']),
+    ('df26-file-operand', 'exit', 'touch f', '', '', ['f']),
+    ('df27-two-same-fs-dedup', 'exit', 'touch f', '', '', ['f', '.']),
+    ('df28-output-fields', 'exit', '', '', '', ['--output=source,fstype', '.']),
+    ('df29-target-and-file', 'exit', '', '', '', ['--output=target,file', '.']),
+    ('df30-B-2048', 'win', '', '', '', ['-B', '2048', '.']),
+    ('df31-i-view', 'win', '', '', '', ['-i', '.']),
+    ('df32-mixed-missing', 'exit', '', '', '', ['/nope-xyz', '.']),
+    ('df33-symlink-operand', 'note', 'ln -s . l', '', '', ['l']),
+    ('df34-kP-combined', 'exit', '', '', '', ['-kP', '.']),
+    ('df35-output-total', 'exit', '', '', '', ['--output=size,used,avail,pcent', '--total', '.']),
+    ("df36-output-source-drive", "strict", "", "", "", ["--output=source", 'C:\\']),
 ]
 
 # ---------------------------------------------------------------------------
@@ -515,8 +553,8 @@ whoami_rows = [
     ("wa02-extra", "exit", "", "", "", ["extra"]),
     ("wa03-bogus", "win", "", "", "", ["--bogus"]),
     ("wa04-dashdash", "win", "", "", "", ["--"]),
-    ("wa05-help", "win", "", "", "", ["--help"]),
-    ("wa06-version", "win", "", "", "", ["--version"]),
+    ("wa05-help", "strict", "", "", "", ["--help"]),
+    ("wa06-version", "strict", "", "", "", ["--version"]),
     ("wa07-stdin-ignored", "win", "", "", "hello-data", []),
     ("wa08-two-operands", "exit", "", "", "", ["a", "b"]),
     ("wa09-dashdash-extra", "exit", "", "", "", ["--", "extra"]),
@@ -543,7 +581,7 @@ nproc_rows = [
     ("np07-ignore-bad", "exit", "", "", "", ["--ignore", "bad"]),
     ("np08-extra", "exit", "", "", "", ["extra"]),
     ("np09-bogus", "exit", "", "", "", ["--bogus"]),
-    ("np10-help", "win", "", "", "", ["--help"]),
+    ("np10-help", "strict", "", "", "", ["--help"]),
     ("np11-omp3", "strict", "", "OMP_NUM_THREADS=3", "", []),
     ("np12-omp-huge", "strict", "", "OMP_NUM_THREADS=99999", "", []),
     ("np13-omp3-ignore1", "strict", "", "OMP_NUM_THREADS=3", "", ["--ignore=1"]),
@@ -554,7 +592,7 @@ nproc_rows = [
     ("np18-omp-bad", "win", "", "OMP_NUM_THREADS=bad", "", []),
     ("np19-omp-zero", "win", "", "OMP_NUM_THREADS=0", "", []),
     ("np20-omp3-all", "win", "", "OMP_NUM_THREADS=3", "", ["--all"]),
-    ("np21-version", "win", "", "", "", ["--version"]),
+    ("np21-version", "strict", "", "", "", ["--version"]),
     ("np22-ignore-missing-val", "exit", "", "", "", ["--ignore"]),
 ]
 
@@ -638,8 +676,8 @@ base64_rows = [
     ("b64a25-missing-file", "strict", "", "", "", ["nosuchfile"]),
     ("b64a26-encode-file", "strict", "printf foobar > b3", "", "", ["b3"]),
     ("b64a27-decode-file", "strict", "printf Zm9vYmFy > b4", "", "", ["-d", "b4"]),
-    ("b64a28-help", "win", "", "", "", ["--help"]),
-    ("b64a29-version", "win", "", "", "", ["--version"]),
+    ("b64a28-help", "strict", "", "", "", ["--help"]),
+    ("b64a29-version", "strict", "", "", "", ["--version"]),
     ("b64a30-binary", "strict", "", "", "Zm9vYmFy", ["-d"]),
 ]
 
@@ -666,8 +704,8 @@ base32_rows = [
     ("b32a20-missing-file", "strict", "", "", "", ["nosuchfile"]),
     ("b32a21-encode-file", "strict", "printf foobar > c3", "", "", ["c3"]),
     ("b32a22-decode-file", "strict", "printf MZXW6YTBOI====== > c4", "", "", ["-d", "c4"]),
-    ("b32a23-help", "win", "", "", "", ["--help"]),
-    ("b32a24-version", "win", "", "", "", ["--version"]),
+    ("b32a23-help", "strict", "", "", "", ["--help"]),
+    ("b32a24-version", "strict", "", "", "", ["--version"]),
 ]
 
 b2sum_rows = [
@@ -689,10 +727,11 @@ b2sum_rows = [
     ("b2a16-two-files", "strict", "printf abc > d3; printf de > d4", "", "", ["d3", "d4"]),
     ("b2a17-file", "strict", "printf abc > d5", "", "", ["d5"]),
     ("b2a18-bogus", "exit", "", "", "", ["--bogus"]),
-    ("b2a19-help", "win", "", "", "", ["--help"]),
+    ("b2a19-help", "strict", "", "", "", ["--help"]),
     ("b2a20-len328", "strict", "", "", "abc", ["-l", "328"]),
     ("b2a21-text", "strict", "", "", "abc", ["-t"]),
     ("b2a22-dash-operand", "strict", "", "", "abc", ["-"]),
+    ("b2a23-version", "strict", "", "", "", ["--version"]),
     # --check machinery (#1488 wave2 follow-up; digests are fixed constants
     # so both sides see byte-identical check files)
     ("b2c01-ok", "strict",
@@ -742,14 +781,14 @@ sha224_rows = [
     ("s224a09-zero", "strict", "", "", "abc", ["-z"]),
     ("s224a10-text", "strict", "", "", "abc", ["-t"]),
     ("s224a11-bogus", "exit", "", "", "", ["--bogus"]),
-    ("s224a12-help", "win", "", "", "", ["--help"]),
+    ("s224a12-help", "strict", "", "", "", ["--help"]),
     ("s224a13-dash", "strict", "", "", "abc", ["-"]),
     ("s224a14-multi-with-missing", "strict", "printf abc > e5", "", "", ["missing", "e5"]),
     ("s224a15-binary-file", "strict", "printf abc > e6", "", "", ["-b", "e6"]),
     ("s224a16-tag-file", "strict", "printf abc > e7", "", "", ["--tag", "e7"]),
     ("s224a17-longer-input", "strict", "", "", "The quick brown fox jumps over the lazy dog", []),
     ("s224a18-stdb-then-t", "strict", "", "", "abc", ["-b", "-t"]),
-    ("s224a19-version", "win", "", "", "", ["--version"]),
+    ("s224a19-version", "strict", "", "", "", ["--version"]),
     ("s224a20-empty-file", "strict", "printf '' > e8", "", "", ["e8"]),
     # --check machinery (#1488 wave2 follow-up)
     ("s224c01-ok", "strict",
@@ -856,14 +895,14 @@ sha384_rows = [
     ("s384a09-zero", "strict", "", "", "abc", ["-z"]),
     ("s384a10-text", "strict", "", "", "abc", ["-t"]),
     ("s384a11-bogus", "exit", "", "", "", ["--bogus"]),
-    ("s384a12-help", "win", "", "", "", ["--help"]),
+    ("s384a12-help", "strict", "", "", "", ["--help"]),
     ("s384a13-dash", "strict", "", "", "abc", ["-"]),
     ("s384a14-multi-with-missing", "strict", "printf abc > g5", "", "", ["missing", "g5"]),
     ("s384a15-binary-file", "strict", "printf abc > g6", "", "", ["-b", "g6"]),
     ("s384a16-tag-file", "strict", "printf abc > g7", "", "", ["--tag", "g7"]),
     ("s384a17-longer-input", "strict", "", "", "The quick brown fox jumps over the lazy dog", []),
     ("s384a18-stdb-then-t", "strict", "", "", "abc", ["-b", "-t"]),
-    ("s384a19-version", "win", "", "", "", ["--version"]),
+    ("s384a19-version", "strict", "", "", "", ["--version"]),
     ("s384a20-empty-file", "strict", "printf '' > g8", "", "", ["g8"]),
     # --check machinery (#1488 wave2 follow-up)
     ("s384c01-ok", "strict",
@@ -916,9 +955,10 @@ tac_rows = [
     ("ta21-missing-file", "strict", "printf q\\n > t6", "", "", ["missing", "t6"]),
     ("ta22-regex-empty-sep", "strict", "", "", "abc", ["-r", "-s", ""]),
     ("ta23-bad-regex", "strict", "printf abc > t7", "", "", ["-r", "-s", "[a", "t7"]),
-    ("ta24-help", "win", "", "", "", ["--help"]),
+    ("ta24-help", "strict", "", "", "", ["--help"]),
     ("ta25-two-files", "strict", "printf '1\\n2\\n' > t8; printf '3\\n4\\n' > t9", "", "", ["t8", "t9"]),
     ("ta26-regex-anchor", "strict", "printf abcbc > ta", "", "", ["-r", "-s", "^b", "ta"]),
+    ("ta27-version", "strict", "", "", "", ["--version"]),
 ]
 
 truncate_rows = [
@@ -971,8 +1011,8 @@ uname_rows = [
     ("un14-sysname", "win", "", "", "", ["--sysname"]),
     ("un15-release", "win", "", "", "", ["--release"]),
     ("un16-sn", "win", "", "", "", ["-s", "-n"]),
-    ("un17-help", "win", "", "", "", ["--help"]),
-    ("un18-version", "win", "", "", "", ["--version"]),
+    ("un17-help", "strict", "", "", "", ["--help"]),
+    ("un18-version", "strict", "", "", "", ["--version"]),
     ("un19-cluster", "win", "", "", "", ["-srvm"]),
     ("un20-flag-operand", "exit", "", "", "", ["-s", "extra"]),
     ("un21-kernel-name-long", "win", "", "", "", ["--kernel-name"]),
@@ -997,11 +1037,11 @@ id_rows = [
     ("id15-nosuch-u", "strict", "", "", "", ["-u", "nosuchuser123"]),
     ("id16-bogus", "strict", "", "", "", ["--bogus"]),
     ("id17-Gn-zero", "win", "", "", "", ["-Gn", "--zero"]),
-    ("id18-help", "win", "", "", "", ["--help"]),
+    ("id18-help", "strict", "", "", "", ["--help"]),
     ("id19-named-user", "win", "", "", "", ["cmx"]),
     ("id20-z-short", "win", "", "", "", ["-G", "-z"]),
     ("id21-real-only", "strict", "", "", "", ["-r"]),
-    ("id22-version", "win", "", "", "", ["--version"]),
+    ("id22-version", "strict", "", "", "", ["--version"]),
 ]
 
 hostname_rows = [
@@ -1023,8 +1063,8 @@ hostname_rows = [
     ("hn16-file-operand", "win", "printf myhost\\n > hf3", "", "", ["-F", "hf3", "extra"]),
     ("hn17-file-comments", "exit", "printf '# only\\n' > hf4", "", "", ["-F", "hf4"]),
     ("hn18-file-too-long", "exit", "printf '%s\\n' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa > hf5", "", "", ["-F", "hf5"]),
-    ("hn19-help", "win", "", "", "", ["--help"]),
-    ("hn20-version", "win", "", "", "", ["--version"]),
+    ("hn19-help", "strict", "", "", "", ["--help"]),
+    ("hn20-version", "strict", "", "", "", ["--version"]),
     ("hn21-all-fqdns", "win", "", "", "", ["-A"]),
     ("hn22-all-ips", "win", "", "", "", ["-I"]),
 ]
@@ -1048,10 +1088,11 @@ getconf_rows = [
     ("gc16-argmax-nonpath", "strict", "", "", "", ["ARG_MAX", "nosuchpathxyz"]),
     ("gc17-two-unknown", "strict", "", "", "", ["FOO", "BAR"]),
     ("gc18-bogus", "win", "", "", "", ["--bogus"]),
-    ("gc19-help", "win", "", "", "", ["--help"]),
+    ("gc19-help", "strict", "", "", "", ["--help"]),
     ("gc20-underscore", "win", "", "", "", ["_POSIX_PATH_MAX"]),
     ("gc21-name-max-path", "win", "", "", "", ["NAME_MAX", "."]),
     ("gc22-avphys", "win", "", "", "", ["AVPHYS_PAGES"]),
+    ("gc23-version", "strict", "", "", "", ["--version"]),
 ]
 
 seq_rows = [

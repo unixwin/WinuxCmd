@@ -13,7 +13,42 @@
 
 use std::ffi::OsString;
 
+use crate::gnuhelp;
 use winux_core::{usage_error, CmdResult, Ctx, Io};
+
+// `--help` body verbatim from `env printenv --help` under WSL coreutils 9.4,
+// minus the shared gnuhelp::footer tail.
+const PRINTENV_HELP_BODY: &str = r#"Usage: printenv [OPTION]... [VARIABLE]...
+Print the values of the specified environment VARIABLE(s).
+If no VARIABLE is specified, print name and value pairs for them all.
+
+  -0, --null     end each output line with NUL, not newline
+      --help        display this help and exit
+      --version     output version information and exit
+
+NOTE: your shell may have its own version of printenv, which usually supersedes
+the version described here.  Please refer to your shell's documentation
+for details about the options it supports.
+
+"#;
+
+fn gnu_help_version(which: &str, io: &mut Io) -> CmdResult {
+    if which == "--help" {
+        write!(
+            io.stdout,
+            "{}{}",
+            PRINTENV_HELP_BODY,
+            gnuhelp::footer("printenv", "printenv invocation")
+        )?;
+    } else {
+        write!(
+            io.stdout,
+            "{}",
+            gnuhelp::coreutils_version("printenv", "David MacKenzie and Richard Mlynarik")
+        )?;
+    }
+    Ok(0)
+}
 
 pub fn printenv_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let mut null_separator = false;
@@ -32,10 +67,12 @@ pub fn printenv_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             continue;
         }
         if s == "--help" || s == "--version" {
-            // Wording-bound: the product's dispatcher prints the branded
-            // help/version for an option-position --help/--version before
-            // this handler runs; the exit status is what gates.
-            return Ok(0);
+            // GNU printenv.c prints the probed coreutils help/version text
+            // for an option-position flag and exits 0 (after the first NAME
+            // the token is a variable lookup, handled above). The wired
+            // product exe shows the branded dispatcher text instead; this
+            // driver/FFI surface carries the differential oracle bytes.
+            return gnu_help_version(&s, io);
         }
         if s == "-0" || s == "--null" {
             null_separator = true;
@@ -83,6 +120,40 @@ pub fn printenv_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
 
 #[cfg(test)]
 mod tests {
+    // [GNU] an option-position --help/--version prints the probed
+    // coreutils text and exits 0; after a NAME it stays a variable lookup
+    // (win rows pe19/pe21 — the wired product exe shows branded text).
+    #[test]
+    fn gnu_help_version_surface() {
+        let mut io = MemIo::new("");
+        let sc = ScratchCtx::new("printenv-hv");
+        let ctx = sc.ctx();
+        let args = ["--help".into()];
+        assert_eq!(
+            super::printenv_cmd(&args, &mut io.split(), &ctx).unwrap(),
+            0
+        );
+        assert!(io
+            .out()
+            .starts_with("Usage: printenv [OPTION]... [VARIABLE]...\n"));
+        assert!(io
+            .out()
+            .contains("NOTE: your shell may have its own version of printenv"));
+        assert!(io
+            .out()
+            .ends_with("info '(coreutils) printenv invocation'\n"));
+        let mut io = MemIo::new("");
+        let args = ["--version".into()];
+        assert_eq!(
+            super::printenv_cmd(&args, &mut io.split(), &ctx).unwrap(),
+            0
+        );
+        assert!(io.out().starts_with("printenv (GNU coreutils) 9.4\n"));
+        assert!(io
+            .out()
+            .ends_with("Written by David MacKenzie and Richard Mlynarik.\n"));
+    }
+
     use winux_core::test_support::{MemIo, ScratchCtx};
 
     #[test]

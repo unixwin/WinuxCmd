@@ -11,14 +11,14 @@ s224a08-binary	strict			abc	-b
 s224a09-zero	strict			abc	-z
 s224a10-text	strict			abc	-t
 s224a11-bogus	exit				--bogus
-s224a12-help	win				--help
+s224a12-help	strict				--help
 s224a13-dash	strict			abc	-
 s224a14-multi-with-missing	strict	printf abc > e5			missing	e5
 s224a15-binary-file	strict	printf abc > e6			-b	e6
 s224a16-tag-file	strict	printf abc > e7			--tag	e7
 s224a17-longer-input	strict			The quick brown fox jumps over the lazy dog
 s224a18-stdb-then-t	strict			abc	-b	-t
-s224a19-version	win				--version
+s224a19-version	strict				--version
 s224a20-empty-file	strict	printf '' > e8			e8
 s224c01-ok	strict	printf abc > f; printf '23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7  f\n' > ck			-c	ck
 s224c02-fail	strict	printf de > g; printf '23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7  g\n' > ck			-c	ck

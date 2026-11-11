@@ -2,5 +2,5 @@
 # Columns: cmd <TAB> case-id <TAB> expected deviation (free text, no tabs).
 # Every note-mode row in gate/cases/*.tsv must have an entry here; missing
 # entries are reported as UNDOCUMENTED by gate/qc_note_audit.py.
-df	df12-output-subset	GNU df supports --output but rejects the Windows drive path under WSL (rc 1, empty stdout); the 1.x C++ applet prints a table (rc 0). Rust pilot documents the C++ drive-path model.
-df	df13-drive-path	Operand C:\Windows is a Windows drive path: GNU under WSL sees no such file and exits 1; the 1.x C++ applet resolves the drive and prints a filesystem table (rc 0), which the Rust pilot follows.
+df	df24-x-case-sensitive	-x filters on the exact fstype (probed 9.4): GNU under WSL sits on ext4, so -x ntfs excludes nothing and prints the mount table rc 0; the Windows sides see NTFS (also case-distinct from ntfs) and print their volume table rc 0 — rc parity holds, stdout is the platform-inherent listing (value model), recorded not compared.
+df	df33-symlink-operand	The `ln -s . l` operand needs Windows Developer Mode; without it the symlink does not exist and df reports l missing (rc 1), while GNU resolves the symlink to its mount and prints the table (rc 0). Platform-bound symlink creation, recorded not gated.

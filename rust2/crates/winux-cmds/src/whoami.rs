@@ -13,10 +13,22 @@
 use std::ffi::OsString;
 
 use crate::argopt::{self, OptSpec};
+use crate::gnuhelp;
 use crate::winsys;
 use winux_core::{usage_error, CmdResult, Ctx, Io};
 
 const OPTS: &[OptSpec] = &[];
+
+// `--help` body verbatim from `env whoami --help` under WSL coreutils 9.4,
+// minus the shared gnuhelp::footer tail.
+const WHOAMI_HELP_BODY: &str = r#"Usage: whoami [OPTION]...
+Print the user name associated with the current effective user ID.
+Same as id -un.
+
+      --help        display this help and exit
+      --version     output version information and exit
+
+"#;
 
 pub fn whoami_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     // GNU whoami registers no -h short option, so a bare `-h` is
@@ -29,8 +41,32 @@ pub fn whoami_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         Ok(p) => p,
         Err(s) => return Ok(s),
     };
-    if p.has("help") || p.has("version") {
-        return Ok(0);
+    // GNU exits at the first --help/--version getopt_long encounters; the
+    // ordered find reproduces that for `--version --help` (version wins).
+    if let Some(which) = p
+        .flags
+        .iter()
+        .find(|f| f.as_str() == argopt::HELP || f.as_str() == argopt::VERSION)
+    {
+        return Ok(match which.as_str() {
+            "help" => {
+                write!(
+                    io.stdout,
+                    "{}{}",
+                    WHOAMI_HELP_BODY,
+                    gnuhelp::footer("whoami", "whoami invocation")
+                )?;
+                0
+            }
+            _ => {
+                write!(
+                    io.stdout,
+                    "{}",
+                    gnuhelp::coreutils_version("whoami", "Richard Mlynarik")
+                )?;
+                0
+            }
+        });
     }
     if let Some(first) = p.positionals.first() {
         let shown = first.to_string_lossy().into_owned();
@@ -51,6 +87,24 @@ pub fn whoami_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
 
 #[cfg(test)]
 mod tests {
+    // [GNU] `--help`/`--version` print the probed coreutils text, rc 0
+    // (strict rows wa05/wa06).
+    #[test]
+    fn gnu_help_version_surface() {
+        let mut io = MemIo::new("");
+        let sc = ScratchCtx::new("whoami-hv");
+        let ctx = sc.ctx();
+        let args = ["--help".into()];
+        assert_eq!(super::whoami_cmd(&args, &mut io.split(), &ctx).unwrap(), 0);
+        assert!(io.out().starts_with("Usage: whoami [OPTION]...\n"));
+        assert!(io.out().ends_with("info '(coreutils) whoami invocation'\n"));
+        let mut io = MemIo::new("");
+        let args = ["--version".into()];
+        assert_eq!(super::whoami_cmd(&args, &mut io.split(), &ctx).unwrap(), 0);
+        assert!(io.out().starts_with("whoami (GNU coreutils) 9.4\n"));
+        assert!(io.out().ends_with("Written by Richard Mlynarik.\n"));
+    }
+
     use std::ffi::OsString;
     use winux_core::test_support::{MemIo, ScratchCtx};
 

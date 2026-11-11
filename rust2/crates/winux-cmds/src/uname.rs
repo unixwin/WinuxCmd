@@ -21,6 +21,7 @@
 use std::ffi::OsString;
 
 use crate::argopt::{self, OptSpec};
+use crate::gnuhelp;
 use crate::winsys;
 use winux_core::{usage_error, CmdResult, Ctx, Io};
 
@@ -83,13 +84,57 @@ const OPTS: &[OptSpec] = &[
     },
 ];
 
+// `--help` body verbatim from `env uname --help` under WSL coreutils 9.4,
+// minus the shared gnuhelp::footer tail.
+const UNAME_HELP_BODY: &str = r#"Usage: uname [OPTION]...
+Print certain system information.  With no OPTION, same as -s.
+
+  -a, --all                print all information, in the following order,
+                             except omit -p and -i if unknown:
+  -s, --kernel-name        print the kernel name
+  -n, --nodename           print the network node hostname
+  -r, --kernel-release     print the kernel release
+  -v, --kernel-version     print the kernel version
+  -m, --machine            print the machine hardware name
+  -p, --processor          print the processor type (non-portable)
+  -i, --hardware-platform  print the hardware platform (non-portable)
+  -o, --operating-system   print the operating system
+      --help        display this help and exit
+      --version     output version information and exit
+
+"#;
+
 pub fn uname_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let p = match argopt::parse("uname", args, OPTS, io, ctx, 1) {
         Ok(p) => p,
         Err(s) => return Ok(s),
     };
-    if p.has("help") || p.has("version") {
-        return Ok(0);
+    // GNU exits at the first --help/--version getopt_long encounters; the
+    // ordered find reproduces that for `--version --help` (version wins).
+    if let Some(which) = p
+        .flags
+        .iter()
+        .find(|f| f.as_str() == argopt::HELP || f.as_str() == argopt::VERSION)
+    {
+        return Ok(match which.as_str() {
+            "help" => {
+                write!(
+                    io.stdout,
+                    "{}{}",
+                    UNAME_HELP_BODY,
+                    gnuhelp::footer("uname", "uname invocation")
+                )?;
+                0
+            }
+            _ => {
+                write!(
+                    io.stdout,
+                    "{}",
+                    gnuhelp::coreutils_version("uname", "David MacKenzie")
+                )?;
+                0
+            }
+        });
     }
     if let Some(first) = p.positionals.first() {
         let shown = first.to_string_lossy().into_owned();
@@ -150,6 +195,22 @@ pub fn uname_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
 
 #[cfg(test)]
 mod tests {
+    // [GNU] `--help`/`--version` print the probed coreutils text, rc 0
+    // (strict rows un17/un18).
+    #[test]
+    fn gnu_help_version_surface() {
+        let (r, out, err) = run(&["--help"]);
+        assert_eq!(r, 0);
+        assert!(err.is_empty());
+        assert!(out.starts_with("Usage: uname [OPTION]...\n"));
+        assert!(out.contains("-i, --hardware-platform  print the hardware platform (non-portable)"));
+        assert!(out.ends_with("info '(coreutils) uname invocation'\n"));
+        let (r, out, _) = run(&["--version"]);
+        assert_eq!(r, 0);
+        assert!(out.starts_with("uname (GNU coreutils) 9.4\n"));
+        assert!(out.ends_with("Written by David MacKenzie.\n"));
+    }
+
     use std::ffi::OsString;
     use winux_core::test_support::{MemIo, ScratchCtx};
 

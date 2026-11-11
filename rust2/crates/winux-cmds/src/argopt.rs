@@ -272,8 +272,7 @@ mod tests {
     }
 
     fn run(args: &[&str]) -> Result<super::Parsed, u32> {
-        let owned: Vec<std::ffi::OsString> =
-            args.iter().map(std::ffi::OsString::from).collect();
+        let owned: Vec<std::ffi::OsString> = args.iter().map(std::ffi::OsString::from).collect();
         let mut io = MemIo::new("");
         let sc = winux_core::test_support::ScratchCtx::new("argopt");
         parse("prog", &owned, &opts(), &mut io.split(), &sc.ctx(), 1)

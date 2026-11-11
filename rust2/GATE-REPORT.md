@@ -28,7 +28,7 @@ with `bash gate/make-report.sh`.
 | bracket | 26 | 25 | 0 | 1 | 0 | GREEN | 26/26 |
 | basename | 30 | 30 | 0 | 0 | 0 | GREEN | 30/30 |
 | dirname | 22 | 22 | 0 | 0 | 0 | GREEN | 22/22 |
-| printenv | 20 | 15 | 3 | 2 | 0 | GREEN | 16/20 |
+| printenv | 21 | 15 | 3 | 3 | 0 | GREEN | 17/21 |
 | pwd | 12 | 0 | 2 | 10 | 0 | GREEN | 1/12 |
 | mkdir | 22 | 22 | 0 | 0 | 0 | GREEN | 22/22 |
 | rmdir | 22 | 22 | 0 | 0 | 0 | GREEN | 21/22 |
@@ -36,7 +36,7 @@ with `bash gate/make-report.sh`.
 | realpath | 22 | 6 | 15 | 1 | 0 | GREEN | 9/22 |
 | chmod | 45 | 41 | 4 | 0 | 0 | GREEN | 43/45 |
 | chown | 37 | 22 | 6 | 5 | 4 | GREEN | 22/37 |
-| df | 35 | 10 | 10 | 13 | 2 | GREEN | 11/35 |
+| df | 36 | 15 | 10 | 9 | 2 | GREEN | 13/36 |
 
 **Total cases: 402. GNU-gated (strict+exit): all GREEN; win-only: all GREEN; notes: 6 (chown 4, df 2).**
 
@@ -52,21 +52,21 @@ counts) are the documented 1.x behavior the Rust side follows.
 
 | command | cases | strict | exit | win | note | GNU-gated result | C++ parity (rc+stdout) |
 |---|---|---|---|---|---|---|---|
-| whoami | 20 | 0 | 6 | 14 | 0 | GREEN | 18/20 |
-| nproc | 22 | 6 | 4 | 12 | 0 | GREEN | 20/22 |
+| whoami | 20 | 2 | 6 | 12 | 0 | GREEN | 18/20 |
+| nproc | 22 | 8 | 4 | 10 | 0 | GREEN | 20/22 |
 | unlink | 22 | 22 | 0 | 0 | 0 | GREEN | 22/22 |
 | sleep | 24 | 12 | 12 | 0 | 0 | GREEN | 24/24 |
-| base64 | 30 | 28 | 0 | 2 | 0 | GREEN | 28/30 |
-| base32 | 24 | 22 | 0 | 2 | 0 | GREEN | 22/24 |
-| b2sum | 22 | 20 | 1 | 1 | 0 | GREEN | 21/22 |
-| sha224sum | 20 | 17 | 1 | 2 | 0 | GREEN | 18/20 |
-| sha384sum | 20 | 17 | 1 | 2 | 0 | GREEN | 18/20 |
-| tac | 26 | 25 | 0 | 1 | 0 | GREEN | 21/26 |
+| base64 | 30 | 30 | 0 | 0 | 0 | GREEN | 28/30 |
+| base32 | 24 | 24 | 0 | 0 | 0 | GREEN | 22/24 |
+| b2sum | 34 | 33 | 1 | 0 | 0 | GREEN | 32/34 |
+| sha224sum | 50 | 49 | 1 | 0 | 0 | GREEN | 48/50 |
+| sha384sum | 28 | 27 | 1 | 0 | 0 | GREEN | 26/28 |
+| tac | 27 | 27 | 0 | 0 | 0 | GREEN | 21/27 |
 | truncate | 30 | 30 | 0 | 0 | 0 | GREEN | 29/30 |
-| uname | 22 | 0 | 4 | 18 | 0 | GREEN | 20/22 |
-| id | 22 | 8 | 0 | 14 | 0 | GREEN | 20/22 |
-| hostname | 22 | 0 | 5 | 17 | 0 | GREEN | 20/22 |
-| getconf | 22 | 5 | 0 | 17 | 0 | GREEN | 19/22 |
+| uname | 22 | 2 | 4 | 16 | 0 | GREEN | 20/22 |
+| id | 22 | 10 | 0 | 12 | 0 | GREEN | 20/22 |
+| hostname | 22 | 2 | 5 | 15 | 0 | GREEN | 20/22 |
+| getconf | 23 | 7 | 0 | 16 | 0 | GREEN | 19/23 |
 
 **Wave2 total cases: 348; GNU-gated + win-gated: all GREEN; C++ parity: 320/348.**
 
@@ -201,3 +201,25 @@ r=c parity holds — the dispatcher contract the 1.x applet shipped).
 sync.tsv added (22 cases). Matrix rows added for the wave in
 gate/wire/cmd-matrix.sh (one deliberate stdout divergence recorded per
 command where the 1.x applet stripped '\' and GNU treats it as data).
+
+**Refresh (#1488 help-surface wave, 2026-11-11):** the 13 driver-surface
+commands printed nothing for `--help`/`--version` (the QC win audit's
+structural black hole, WIN-AUDIT.md from PR #1555). Each now prints the
+probed WSL-oracle text byte-for-byte — coreutils 9.4 for b2sum base32
+base64 sha224sum sha384sum id nproc printenv tac uname whoami, glibc
+2.39 for getconf, Debian hostname 3.23 (whose `--help` exits 255) — via
+the shared gnuhelp.rs footer/version builders; the first flag in argv
+wins, like getopt_long. Their help/version rows were promoted win ->
+strict (printenv keeps win: the wired product exe shows the branded
+dispatcher text — true/false precedent), with new version rows for
+b2sum/tac/getconf/printenv. The four wave2 modules that shipped
+unregistered on main (getconf/hostname/id/uname — the "88 rows rc=127"
+gap noted above) are now in registry(). df operands the oracle cannot
+stat — Windows drive-letter forms (`C:\`, `C:\Windows` are not POSIX
+paths; df.c stats each operand as given) — take the GNU missing-path
+branch: quotef'd stderr, empty stdout, rc 1 (quotef shared from
+digestsum). df07/df09/df13/df15 and the audited df12 scenario (new row
+df36) gate strict; the stale df12-output-subset/df13-drive-path note
+rows (ids that predate the wave1-deepening table) are gone and the
+remaining df notes df24/df33 are documented in note-registry.tsv. Full
+gate re-run: 932 GNU-gated + 134 win cases, all green.

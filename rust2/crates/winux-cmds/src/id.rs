@@ -23,6 +23,7 @@
 use std::ffi::OsString;
 
 use crate::argopt::{self, OptSpec};
+use crate::gnuhelp;
 use crate::winsys;
 use winux_core::{CmdResult, Ctx, Io};
 
@@ -100,13 +101,59 @@ fn fmt_full(id: &str, name: &str) -> String {
     out
 }
 
+// `--help` body verbatim from `env id --help` under WSL coreutils 9.4,
+// minus the shared gnuhelp::footer tail.
+const ID_HELP_BODY: &str = r#"Usage: id [OPTION]... [USER]...
+Print user and group information for each specified USER,
+or (when USER omitted) for the current process.
+
+  -a             ignore, for compatibility with other versions
+  -Z, --context  print only the security context of the process
+  -g, --group    print only the effective group ID
+  -G, --groups   print all group IDs
+  -n, --name     print a name instead of a number, for -ugG
+  -r, --real     print the real ID instead of the effective ID, with -ugG
+  -u, --user     print only the effective user ID
+  -z, --zero     delimit entries with NUL characters, not whitespace;
+                   not permitted in default format
+      --help        display this help and exit
+      --version     output version information and exit
+
+Without any OPTION, print some useful set of identified information.
+
+"#;
+
 pub fn id_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let p = match argopt::parse("id", args, OPTS, io, ctx, 1) {
         Ok(p) => p,
         Err(s) => return Ok(s),
     };
-    if p.has("help") || p.has("version") {
-        return Ok(0);
+    // GNU exits at the first --help/--version getopt_long encounters; the
+    // ordered find reproduces that for `--version --help` (version wins).
+    if let Some(which) = p
+        .flags
+        .iter()
+        .find(|f| f.as_str() == argopt::HELP || f.as_str() == argopt::VERSION)
+    {
+        return Ok(match which.as_str() {
+            "help" => {
+                write!(
+                    io.stdout,
+                    "{}{}",
+                    ID_HELP_BODY,
+                    gnuhelp::footer("id", "id invocation")
+                )?;
+                0
+            }
+            _ => {
+                write!(
+                    io.stdout,
+                    "{}",
+                    gnuhelp::coreutils_version("id", "Arnold Robbins and David MacKenzie")
+                )?;
+                0
+            }
+        });
     }
     let print_group = p.has("group");
     let print_groups = p.has("groups");
@@ -268,6 +315,21 @@ fn print_identity(
 
 #[cfg(test)]
 mod tests {
+    // [GNU] `--help`/`--version` print the probed coreutils text, rc 0
+    // (strict rows id18/id22).
+    #[test]
+    fn gnu_help_version_surface() {
+        let (r, out, err) = run(&["--help"]);
+        assert_eq!(r, 0);
+        assert!(err.is_empty());
+        assert!(out.starts_with("Usage: id [OPTION]... [USER]...\n"));
+        assert!(out.ends_with("info '(coreutils) id invocation'\n"));
+        let (r, out, _) = run(&["--version"]);
+        assert_eq!(r, 0);
+        assert!(out.starts_with("id (GNU coreutils) 9.4\n"));
+        assert!(out.ends_with("Written by Arnold Robbins and David MacKenzie.\n"));
+    }
+
     use std::ffi::OsString;
     use winux_core::test_support::{MemIo, ScratchCtx};
 
