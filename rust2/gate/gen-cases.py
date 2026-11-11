@@ -1471,9 +1471,15 @@ ln_rows = [
     ("ln19-no-operand", "strict", "", "", "", []),
     ("ln20-bogus", "exit", ln_setup, "", "", ["--bogus"]),
     ("ln21-help", "win", "", "", "", ["--help"]),
-    # symlink paths: GNU succeeds, the Windows sides need Developer Mode
+    # symlink paths: GNU succeeds, the Windows sides need Developer Mode.
+    # Rust matches GNU rc+bytes where the capability exists (probed on the
+    # wave3a wiring, 2026-11-11); the 1.x C++ refusal is the recorded
+    # deviation. ln23-sf-replace was re-derived win -> note at wiring time
+    # (recipe §4: promote/re-derive once the premise is gone — its -sf
+    # replace is itself a symlink creation, so without Developer Mode even
+    # the wired exe fails and only C++ parity gated it before).
     ("ln22-s", "note", ln_setup, "", "", ["-s", "tgt", "sl"]),
-    ("ln23-sf-replace", "win",
+    ("ln23-sf-replace", "note",
      r"printf 'A1' > t2; ln -s t2 pre 2>/dev/null || ln -f t2 pre", "", "",
      ["-sf", "tgt", "pre"]),
     ("ln24-s-dir", "note", ln_setup, "", "", ["-s", "dd", "sldd"]),

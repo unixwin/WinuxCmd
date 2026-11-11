@@ -20,7 +20,9 @@
 //! non-superuser message, which on Windows is every user.
 //!
 //! A missing SOURCE operand reports `failed to access 'X': ...` and the
-//! remaining operands are still processed; rc is 1 if anything failed.
+//! remaining operands are still processed; with -s the symlink is created
+//! dangling instead (GNU creates it without touching SOURCE). rc is 1 if
+//! anything failed.
 
 use std::ffi::OsString;
 
@@ -34,6 +36,7 @@ struct LnOpts {
     verbose: bool,
     no_dereference: bool,
     directory: bool,
+    relative: bool,
     target_dir: Option<String>,
     no_target_dir: bool,
     backup: bool,
@@ -75,6 +78,7 @@ pub fn ln_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         verbose: false,
         no_dereference: false,
         directory: false,
+        relative: false,
         target_dir: None,
         no_target_dir: false,
         backup: false,
@@ -139,6 +143,7 @@ pub fn ln_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     }
                 },
                 "no-target-directory" => opts.no_target_dir = true,
+                "relative" => opts.relative = true,
                 "help" | "version" => return Ok(0),
                 _ => {
                     let _ = usage_error(io, "ln", &format!("unrecognized option '{arg}'"));
@@ -202,6 +207,7 @@ pub fn ln_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     opts.target_dir = Some(v);
                 }
                 'T' => opts.no_target_dir = true,
+                'r' => opts.relative = true,
                 c => {
                     let _ = usage_error(io, "ln", &format!("invalid option -- '{c}'"));
                     return Ok(1);
@@ -210,6 +216,17 @@ pub fn ln_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             ci += 1;
         }
         idx += if consumed_next { 2 } else { 1 };
+    }
+    // [GNU] --relative requires --symbolic; checked right after the option
+    // walk, before the missing-operand validation (probed in the
+    // differential harness against coreutils 9.4: the command fails with
+    // the bare `ln: cannot do --relative without --symbolic` line — no
+    // "Try" hint — creating nothing; issue #1462 audit, ln.c:571-572, and
+    // the 1.x C++ build prints the same shape, which the corpus case
+    // corpus/ln/36-relative-without-symbolic pins).
+    if opts.relative && !opts.symbolic {
+        let _ = writeln!(io.stderr, "ln: cannot do --relative without --symbolic");
+        return Ok(1);
     }
     // resolve the destination directory
     let dir_mode: Option<String> = if opts.no_target_dir {
@@ -236,7 +253,7 @@ pub fn ln_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         }
         for src in &operands {
             let name = basename_of(src);
-            if !link_one(io, ctx, &opts, src, &join_lex(&dir, &name), &mut ok) {
+            if !link_one(io, ctx, &opts, src, &join_lex(&dir, &name), true, &mut ok) {
                 ok = false;
             }
         }
@@ -256,9 +273,19 @@ pub fn ln_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 );
                 return Ok(1);
             }
-            // link into "."
+            // link into ".": GNU joins the "." directory with the
+            // basename; the 1.x C++ build joined natively and byte-parity
+            // keeps that shape ("\\aln" in the EEXIST diagnostic).
             let name = basename_of(&operands[0]);
-            if !link_one(io, ctx, &opts, &operands[0], &name, &mut ok) {
+            if !link_one(
+                io,
+                ctx,
+                &opts,
+                &operands[0],
+                &format!(".\\{name}"),
+                true,
+                &mut ok,
+            ) {
                 ok = false;
             }
             Ok(if ok { 0 } else { 1 })
@@ -266,7 +293,7 @@ pub fn ln_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         2 => {
             if opts.no_target_dir || !is_existing_dir(ctx, &operands[1]) {
                 let dst = &operands[1];
-                if !link_one(io, ctx, &opts, &operands[0], dst, &mut ok) {
+                if !link_one(io, ctx, &opts, &operands[0], dst, false, &mut ok) {
                     ok = false;
                 }
                 Ok(if ok { 0 } else { 1 })
@@ -279,6 +306,7 @@ pub fn ln_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     &opts,
                     &operands[0],
                     &join_lex(&operands[1], &name),
+                    true,
                     &mut ok,
                 ) {
                     ok = false;
@@ -303,7 +331,7 @@ pub fn ln_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             }
             for src in &operands[..operands.len() - 1] {
                 let name = basename_of(src);
-                if !link_one(io, ctx, &opts, src, &join_lex(last, &name), &mut ok) {
+                if !link_one(io, ctx, &opts, src, &join_lex(last, &name), true, &mut ok) {
                     ok = false;
                 }
             }
@@ -445,17 +473,36 @@ fn remove_existing(io: &mut Io, ctx: &Ctx, opts: &LnOpts, dst: &str) -> RemoveOu
     }
 }
 
-/// Link one source to one destination. Returns true on success.
-fn link_one(io: &mut Io, ctx: &Ctx, opts: &LnOpts, src: &str, dst: &str, ok: &mut bool) -> bool {
-    // source must exist (GNU: failed to access 'X')
+/// Link one source to one destination. `dst_inferred` marks destinations
+/// GNU derives by joining a directory (dir target, -t, or the one-operand
+/// "." rule): GNU attempts the link there and reports the OS failure
+/// instead of running its same-file pre-check (probed coreutils 9.4:
+/// `ln f` reports "failed to create hard link '.\\f': File exists", while
+/// `ln f f` reports "'f' and 'f' are the same file").
+fn link_one(
+    io: &mut Io,
+    ctx: &Ctx,
+    opts: &LnOpts,
+    src: &str,
+    dst: &str,
+    dst_inferred: bool,
+    ok: &mut bool,
+) -> bool {
+    // source must exist for hard links (GNU: failed to access 'X'); a
+    // symbolic link may dangle — GNU creates it without touching SOURCE
+    // (probed: `ln -s missing sl` succeeds silently, rc 0)
     let src_meta = std::fs::symlink_metadata(resolve(ctx, src));
     if src_meta.is_err() {
-        let _ = writeln!(
-            io.stderr,
-            "ln: failed to access '{src}': No such file or directory"
-        );
-        *ok = false;
-        return false;
+        if opts.symbolic {
+            // dangling symlink: fall through to creation
+        } else {
+            let _ = writeln!(
+                io.stderr,
+                "ln: failed to access '{src}': No such file or directory"
+            );
+            *ok = false;
+            return false;
+        }
     }
     let src_is_dir = src_meta.map(|m| m.is_dir()).unwrap_or(false);
     if opts.symbolic && src_is_dir {
@@ -480,7 +527,10 @@ fn link_one(io: &mut Io, ctx: &Ctx, opts: &LnOpts, src: &str, dst: &str, ok: &mu
             *ok = false;
             return false;
         }
-        let same = dst_full.exists() && src_full_exists(ctx, src) && same_file(ctx, src, dst);
+        let same = !dst_inferred
+            && dst_full.exists()
+            && src_full_exists(ctx, src)
+            && same_file(ctx, src, dst);
         if same {
             let _ = writeln!(io.stderr, "ln: '{src}' and '{dst}' are the same file");
             *ok = false;
@@ -515,7 +565,12 @@ fn link_one(io: &mut Io, ctx: &Ctx, opts: &LnOpts, src: &str, dst: &str, ok: &mu
     }
     let rc = if opts.symbolic {
         let dir_flag = src_is_dir;
-        fs_win::create_symlink(&ctx.cwd, src, dst, dir_flag)
+        let link_target = if opts.relative {
+            relative_target(ctx, src, dst)
+        } else {
+            src.to_string()
+        };
+        fs_win::create_symlink(&ctx.cwd, &link_target, dst, dir_flag)
     } else {
         fs_win::hard_link(&ctx.cwd, src, dst)
     };
@@ -523,7 +578,12 @@ fn link_one(io: &mut Io, ctx: &Ctx, opts: &LnOpts, src: &str, dst: &str, ok: &mu
         Ok(()) => {
             if opts.verbose {
                 let arrow = if opts.symbolic { "->" } else { "=>" };
-                let _ = writeln!(io.stdout, "'{dst}' {arrow} '{src}'");
+                let shown = if opts.symbolic && opts.relative {
+                    relative_target(ctx, src, dst)
+                } else {
+                    src.to_string()
+                };
+                let _ = writeln!(io.stdout, "'{dst}' {arrow} '{shown}'");
             }
             true
         }
@@ -546,6 +606,43 @@ fn link_one(io: &mut Io, ctx: &Ctx, opts: &LnOpts, src: &str, dst: &str, ok: &mu
 
 fn src_full_exists(ctx: &Ctx, src: &str) -> bool {
     resolve(ctx, src).exists()
+}
+
+/// [GNU] -r/--relative rewrites the symlink target into a path relative to
+/// the destination's directory (`ln -rs a.txt b.txt` links b.txt -> a.txt;
+/// cross-directory sources get the `../` walk). Lexical, no symlink
+/// resolution; differing roots fall back to the absolute source.
+fn relative_target(ctx: &Ctx, src: &str, dst: &str) -> String {
+    fn components(p: &std::path::Path) -> Vec<String> {
+        p.components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect()
+    }
+    let src_abs = resolve(ctx, src);
+    let dst_dir = resolve(ctx, dst)
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| resolve(ctx, dst));
+    let mut sc = components(&src_abs);
+    let mut dc = components(&dst_dir);
+    if sc.first() != dc.first() {
+        // different roots (drive letters): GNU cannot make it relative either
+        return src_abs.to_string_lossy().into_owned();
+    }
+    let mut i = 0usize;
+    while i < sc.len() && i < dc.len() && sc[i] == dc[i] {
+        i += 1;
+    }
+    let mut out: Vec<String> = Vec::new();
+    for _ in i..dc.len() {
+        out.push("..".to_string());
+    }
+    out.extend(sc[i..].to_vec());
+    if out.is_empty() {
+        ".".to_string()
+    } else {
+        out.join("\\")
+    }
 }
 
 fn same_file(ctx: &Ctx, a: &str, b: &str) -> bool {
@@ -634,12 +731,15 @@ mod tests {
         let (r, _, e) = run_sc(&sc, &["-T", "a", "dd"], "");
         assert_eq!(r, 1);
         assert!(e.contains("cannot overwrite directory"));
-        // 1 operand links into .: the target is the same file (GNU rc 1)
+        // 1 operand links into .: GNU attempts the link and reports the OS
+        // failure with the joined path (probed: `ln solo` -> "failed to
+        // create hard link '.\solo': File exists", rc 1); byte-parity keeps
+        // the 1.x native-separator shape
         let sc2 = ScratchCtx::new("ln-one");
         std::fs::write(sc2.path("solo"), "x").unwrap();
         let (r, _, e) = run_sc(&sc2, &["solo"], "");
         assert_eq!(r, 1);
-        assert!(e.contains("are the same file"));
+        assert!(e.contains(r"failed to create hard link '.\solo': File exists"));
     }
 
     #[test]
@@ -759,5 +859,38 @@ mod tests {
         let (r, _, _) = run_sc(&sc2, &["--", "tgt", "afterdash"], "");
         assert_eq!(r, 0);
         assert!(sc2.path("afterdash").exists());
+    }
+
+    #[test]
+    fn relative_requires_symbolic() {
+        let sc = setup("ln-rel");
+        // -r without -s: bare GNU error line (no "Try" hint), rc 1, no link
+        let (r, _, e) = run_sc(&sc, &["-r", "tgt", "nope"], "");
+        assert_eq!(r, 1);
+        assert!(e.contains("cannot do --relative without --symbolic"));
+        assert!(!e.contains("Try"));
+        assert!(!sc.path("nope").exists());
+        // --relative long form behaves the same
+        let (r, _, e) = run_sc(&sc, &["--relative", "tgt", "nope2"], "");
+        assert_eq!(r, 1);
+        assert!(e.contains("cannot do --relative without --symbolic"));
+        // the check precedes the missing-operand validation (GNU order)
+        let (r, _, e) = run_sc(&sc, &["-r"], "");
+        assert_eq!(r, 1);
+        assert!(e.contains("cannot do --relative without --symbolic"));
+        // -rs creates a symlink whose target is relative to the dst dir.
+        // Like symlink_mode: symlink creation needs Developer Mode; skip
+        // softly where the privilege is absent (rc 1 + the OS reason).
+        let (r, out, _) = run_sc(&sc, &["-rs", "-v", "tgt", "rel1"], "");
+        if r == 0 {
+            assert!(sc.path("rel1").exists());
+            assert!(out.contains("-> 'tgt'"));
+        } else {
+            assert!(out.is_empty());
+            assert!(
+                !sc.path("rel1").exists(),
+                "a failed -rs must not leave a link"
+            );
+        }
     }
 }

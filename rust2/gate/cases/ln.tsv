@@ -22,6 +22,6 @@ ln19-no-operand	strict
 ln20-bogus	exit	printf 'A1' > tgt; printf 'x' > f; printf 'a' > a; printf 'b' > b; mkdir dd			--bogus
 ln21-help	win				--help
 ln22-s	note	printf 'A1' > tgt; printf 'x' > f; printf 'a' > a; printf 'b' > b; mkdir dd			-s	tgt	sl
-ln23-sf-replace	win	printf 'A1' > t2; ln -s t2 pre 2>/dev/null || ln -f t2 pre			-sf	tgt	pre
+ln23-sf-replace	note	printf 'A1' > t2; ln -s t2 pre 2>/dev/null || ln -f t2 pre			-sf	tgt	pre
 ln24-s-dir	note	printf 'A1' > tgt; printf 'x' > f; printf 'a' > a; printf 'b' > b; mkdir dd			-s	dd	sldd
 ln25-b-s	note	printf 'A1' > tgt; printf 'x' > f; printf 'a' > a; printf 'b' > b; mkdir dd			-b	-s	tgt	bt
