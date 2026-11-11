@@ -83,6 +83,9 @@ setup_fixture() {
       printf abc > sreg; mkdir -p sdir; ln -f sreg shard 2>/dev/null
       touch -d '2026-01-02 03:04:05' sreg sdir shard 2>/dev/null ;;
     seq) : ;;
+    tee)
+      rm -rf tpre tout1 tout2 tok
+      printf 'seed\n' > tpre ;;
     *) : ;;
   esac
 }
@@ -597,6 +600,29 @@ TABLE
 23|||--bogus
 24|||
 25|||-.5:.5
+TABLE
+      ;;
+    tee)
+      cat <<'TABLE'
+01||abc|
+02||hello|tout1
+03||xy|tout1:tok
+04||zz|-a:tpre
+05||zz|-a:tpre:tok
+06||z|tout1:-
+07||q|--:tout1
+08||q|-i:tok
+09||q|-p:tok
+10||q|--output-error=warn:tok
+11||q|tdir-missing/out:tok
+12||q|--bogus
+13||q|--help
+14||q|--version
+15||cc|-ap:tpre
+16|||tok
+17||q|tout1:tok:tpre
+18||q|-
+19||q|-a:tdir-missing/out
 TABLE
       ;;
     *)
