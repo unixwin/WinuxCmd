@@ -1703,6 +1703,7 @@ unexpand_rows = [
     ("ue24-digit-junk", "exit", "", "", "", ["-4x"]),
     ("ue25-bogus-long", "exit", "", "", "", ["--bogus"]),
     ("ue26-mid-default", "strict", "", "", "ab      cd\\n", []),
+    ("ue27-digit-form-not-all", "strict", "", "", "a        b\\n", ["-4"]),
 ]
 numfmt_rows = [
     ("nf01-to-si", "strict", "", "", "1000\\n", ["--to=si"]),
