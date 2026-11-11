@@ -5,9 +5,15 @@
 //! existing final non-directory is `File exists`. `-v` prints
 //! `mkdir: created directory 'X'` **to stdout** (straight quotes,
 //! byte-gated) for every directory it actually creates. `-m` accepts octal
-//! and symbolic modes; the Windows pilot maps the owner-write bit to the
-//! NTFS read-only attribute (documented deviation, gate compares stdout/rc
-//! only). Failures are reported per operand and the aggregate status is 1.
+//! and symbolic modes and applies the compiled mode EXACTLY, bypassing the
+//! process umask ([GNU] coreutils src/mkdir.c main: `options.mode =
+//! mode_adjust (S_IRWXUGO, true, umask_value, change, ...)`; numeric modes
+//! go through mode_compile verbatim; gnulib lib/mkdir-p.c make_dir_parents
+//! ends in an explicit `dirchownmod` of the leaf, so the umask can never
+//! leak into the -m result). The Windows pilot persists the owner-write bit
+//! as the NTFS read-only attribute on the created leaf directory too
+//! (modemap::apply_mode_dir; the attribute gates directory deletion).
+//! Failures are reported per operand and the aggregate status is 1.
 
 use std::ffi::OsString;
 use std::io::{self};
@@ -131,7 +137,7 @@ fn create_one(
     match std::fs::create_dir(&path) {
         Ok(()) => {
             if let Some(m) = mode {
-                let _ = modemap::apply_mode(&path, m);
+                let _ = modemap::apply_mode_dir(&path, m);
             }
             if verbose {
                 verbose_created(io, shown);
@@ -185,7 +191,10 @@ fn create_parents(
             io,
         );
     }
-    let fs_comps: Vec<String> = split_slashes(fs_name).into_iter().map(String::from).collect();
+    let fs_comps: Vec<String> = split_slashes(fs_name)
+        .into_iter()
+        .map(String::from)
+        .collect();
     let mut acc = if fs_name.starts_with('/') {
         Path::new("/").to_path_buf()
     } else {
@@ -242,10 +251,12 @@ fn create_parents_walk(
             Err(_) => match std::fs::create_dir(&acc) {
                 Ok(()) => {
                     // [GNU] mkdir -p -m MODE applies MODE to the leaf only;
-                    // ancestors get the default mode (mkdir.c make_ancestor).
+                    // ancestors get the default mode (mkdir.c make_ancestor:
+                    // mkdir(component, S_IRWXUGO) under umask_ancestor =
+                    // umask & ~(S_IWUSR | S_IXUSR), never options.mode).
                     if i + 1 == fs_comps.len() {
                         if let Some(m) = mode {
-                            let _ = modemap::apply_mode(&acc, m);
+                            let _ = modemap::apply_mode_dir(&acc, m);
                         }
                     }
                     if verbose {
@@ -333,5 +344,130 @@ mod tests {
         let r = super::mkdir_cmd(&args, &mut io.split(), &ctx).unwrap();
         assert_eq!(r, 0);
         assert!(sc.path("n1").is_dir() && sc.path("n2").is_dir());
+    }
+
+    // ===== -m persistence: owner-write bit -> NTFS read-only attribute =====
+
+    #[cfg(windows)]
+    fn unset_readonly(p: &std::path::Path) {
+        let md = std::fs::symlink_metadata(p).unwrap();
+        let mut perms = md.permissions();
+        if perms.readonly() {
+            perms.set_readonly(false);
+            std::fs::set_permissions(p, perms).unwrap();
+        }
+    }
+
+    // Thin runner: mkdir_cmd with str args; tests clear any readonly leaves
+    // themselves so the scratch tree stays cleanable.
+    #[cfg(windows)]
+    fn run_mkdir(sc: &ScratchCtx, args: &[&str]) -> u32 {
+        let owned: Vec<std::ffi::OsString> = args.iter().map(std::ffi::OsString::from).collect();
+        let mut io = MemIo::new("");
+        super::mkdir_cmd(&owned, &mut io.split(), &sc.ctx()).unwrap()
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn mode_persists_readonly_attribute_on_leaf() {
+        let sc = ScratchCtx::new("mkdir5");
+        // 555: owner-write absent -> FILE_ATTRIBUTE_READONLY (ctest pins the
+        // same shape: mkdir_mode_readonly_sets_windows_attribute).
+        assert_eq!(run_mkdir(&sc, &["-m", "555", "ro"]), 0);
+        assert!(std::fs::symlink_metadata(sc.path("ro"))
+            .unwrap()
+            .permissions()
+            .readonly());
+        // 755 keeps owner-write -> attribute stays clear
+        assert_eq!(run_mkdir(&sc, &["-m", "755", "rw"]), 0);
+        assert!(!std::fs::symlink_metadata(sc.path("rw"))
+            .unwrap()
+            .permissions()
+            .readonly());
+        // symbolic: a-w strips owner-write (1330 class), u+rwx keeps it
+        assert_eq!(run_mkdir(&sc, &["-m", "a-w", "sym555"]), 0);
+        assert!(std::fs::symlink_metadata(sc.path("sym555"))
+            .unwrap()
+            .permissions()
+            .readonly());
+        assert_eq!(run_mkdir(&sc, &["-m", "u+rwx", "sym777"]), 0);
+        assert!(!std::fs::symlink_metadata(sc.path("sym777"))
+            .unwrap()
+            .permissions()
+            .readonly());
+        unset_readonly(&sc.path("ro"));
+        unset_readonly(&sc.path("sym555"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn parents_mode_applies_to_leaf_only_readonly() {
+        let sc = ScratchCtx::new("mkdir6");
+        assert_eq!(run_mkdir(&sc, &["-p", "-m", "555", "par/leaf"]), 0);
+        // [GNU] mkdir.c make_ancestor: ancestors get the default creation
+        // mode, never options.mode -> parent stays writable, leaf readonly.
+        assert!(!std::fs::symlink_metadata(sc.path("par"))
+            .unwrap()
+            .permissions()
+            .readonly());
+        assert!(std::fs::symlink_metadata(sc.path("par").join("leaf"))
+            .unwrap()
+            .permissions()
+            .readonly());
+        unset_readonly(&sc.path("par").join("leaf"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn explicit_mode_ignores_process_umask() {
+        // [GNU] coreutils mkdir.c main(): umask only shapes the raw mkdir()
+        // call (options.umask_self = umask & ~options.mode) and gnulib
+        // mkdir-p.c finishes the leaf with an explicit dirchownmod, so the
+        // compiled -m mode lands exactly. WSL coreutils 9.4 oracle under
+        // `umask 077`: -m 644 -> 644, -m 555 -> 555, -m =r -> 400,
+        // -m =w -> 200, -m +w -> 777. The read-only attribute mirrors the
+        // owner-write bit of those modes.
+        extern "C" {
+            fn _umask(newmask: i32) -> i32;
+        }
+        // Tight window discipline: the process-wide CRT umask is flipped to
+        // 077 only around the mkdir calls; every spec exercised here is
+        // either numeric or who-specified, so concurrent tests that read the
+        // umask through who-omitted symbolic paths would be the only
+        // exposure (none exist today).
+        let old = unsafe { _umask(0o077) };
+        let sc = ScratchCtx::new("mkdir7");
+        // numeric: exact 644 despite umask 077 -> owner-write present
+        assert_eq!(run_mkdir(&sc, &["-m", "644", "u1"]), 0);
+        assert!(!std::fs::symlink_metadata(sc.path("u1"))
+            .unwrap()
+            .permissions()
+            .readonly());
+        // numeric: exact 555 -> owner-write absent
+        assert_eq!(run_mkdir(&sc, &["-m", "555", "u2"]), 0);
+        assert!(std::fs::symlink_metadata(sc.path("u2"))
+            .unwrap()
+            .permissions()
+            .readonly());
+        // symbolic who-omitted: umask-gated (=r -> 0400, =w -> 0200,
+        // +w -> 0777 under umask 077)
+        assert_eq!(run_mkdir(&sc, &["-m", "=r", "u3"]), 0);
+        assert!(std::fs::symlink_metadata(sc.path("u3"))
+            .unwrap()
+            .permissions()
+            .readonly());
+        assert_eq!(run_mkdir(&sc, &["-m", "=w", "u4"]), 0);
+        assert!(!std::fs::symlink_metadata(sc.path("u4"))
+            .unwrap()
+            .permissions()
+            .readonly());
+        assert_eq!(run_mkdir(&sc, &["-m", "+w", "u5"]), 0);
+        assert!(!std::fs::symlink_metadata(sc.path("u5"))
+            .unwrap()
+            .permissions()
+            .readonly());
+        unsafe { _umask(old) };
+        unset_readonly(&sc.path("u2"));
+        unset_readonly(&sc.path("u3"));
     }
 }

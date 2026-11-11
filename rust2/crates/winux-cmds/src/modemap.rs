@@ -19,20 +19,28 @@
 //!   sets it, `a=st` sets exactly suid+sgid+sticky — verified).
 //! * who omitted: rwx applies to `a` but bits set in the process umask are
 //!   not affected (`=w` on 044 under umask 022 -> 0200, `+w` -> 0244,
-//!   `-r` on 777 -> 0333, verified). Special bits are not umask-gated
-//!   (`+st` sets all three under umask 022, verified).
+//!   `-r` on 777 -> 0333, verified). For `=` the umask-masked bits are
+//!   CLEARED, not preserved — `=r` on 777 under umask 077 -> 0400, verified
+//!   (modechange.c mode_adjust: preserved = 0 when who is omitted).
+//!   Special bits are not umask-gated (`+st` sets all three under umask
+//!   022, verified).
 //! * default who for a bare `+x` also honours the umask (verified
 //!   `+x` on 0644 -> 0755 under umask 022).
 //!
 //! Windows persistence is the documented subset: the NTFS read-only
 //! attribute tracks the owner-write bit (drvfs/WSL mapping: owner-w on ->
-//! writable, owner-w off -> FILE_ATTRIBUTE_READONLY); directories never get
-//! the read-only attribute (Windows ignores it for dirs); setuid/setgid/
+//! writable, owner-w off -> FILE_ATTRIBUTE_READONLY); setuid/setgid/
 //! sticky bits are evaluated in the in-memory model (so `-v` wording and
 //! multi-clause arithmetic match GNU) but are not persisted — NTFS has no
 //! representation and Cygwin/MSYS-style sidecar SIDs are out of scope.
 //! Execute bits are model-only; a file's current mode is reconstructed from
 //! the read-only attribute plus the executable-extension heuristic.
+//!
+//! Two persistence flavors: [`apply_mode`] is the chmod flavor and leaves
+//! directories untouched; [`apply_mode_dir`] is the mkdir -m flavor and
+//! persists the attribute on the leaf directory too (GNU explicitly chmods
+//! the created directory: coreutils src/mkdir.c main -> mode_adjust, gnulib
+//! lib/mkdir-p.c make_dir_parents -> dirchownmod).
 
 use std::path::Path;
 
@@ -265,7 +273,14 @@ pub fn eval_clauses(current: u32, is_dir: bool, clauses: &[Clause], umask: u32) 
                 Op::Sub => m & !set,
                 Op::Eq => {
                     // rwx portion: exactly `set` within the affected mask.
-                    m = (m & !affected_rwx) | set;
+                    // [GNU] modechange.c mode_adjust '=' branch: preserved =
+                    // (affected ? ~affected : 0) | omit_change — a
+                    // who-specified '=' keeps bits outside `affected`, but a
+                    // who-omitted '=' keeps NOTHING ("Otherwise, clear all
+                    // the bits"): `=r` under umask 077 lands at 0400, not
+                    // 0477 (WSL coreutils 9.4 oracle, chmod and mkdir -m).
+                    let preserved = if omitted { 0 } else { !affected_rwx };
+                    m = (m & preserved) | set;
                     // special bits owned by the affected who are replaced:
                     // kept only when s/t is present (verified u=rw clears
                     // setuid, u=rwxs sets it, a=st sets exactly all three).
@@ -347,6 +362,18 @@ fn is_regular_or_any_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Persist the owner-write mapping: `readonly` true iff the owner-write bit
+/// is absent. Shared by both persistence flavors.
+fn set_readonly(path: &Path, readonly: bool) -> std::io::Result<()> {
+    let md = std::fs::symlink_metadata(path)?;
+    let mut perms = md.permissions();
+    if perms.readonly() != readonly {
+        perms.set_readonly(readonly);
+        std::fs::set_permissions(path, perms)?;
+    }
+    Ok(())
+}
+
 /// Windows-subset persistence: owner-write bit drives the read-only
 /// attribute on files (drvfs mapping); directories are left untouched
 /// (Windows ignores read-only on dirs). Special and execute bits have no
@@ -354,15 +381,23 @@ fn is_regular_or_any_file(path: &Path) -> bool {
 /// Returns Ok(()) even when NTFS cannot represent the change; Err on fs error.
 pub fn apply_mode(path: &Path, bits: u32) -> std::io::Result<()> {
     if is_regular_or_any_file(path) {
-        let readonly = bits & 0o200 == 0;
-        let md = std::fs::symlink_metadata(path)?;
-        let mut perms = md.permissions();
-        if perms.readonly() != readonly {
-            perms.set_readonly(readonly);
-            std::fs::set_permissions(path, perms)?;
-        }
+        set_readonly(path, bits & 0o200 == 0)?;
     }
     Ok(())
+}
+
+/// mkdir -m persistence flavor: same owner-write mapping as [`apply_mode`]
+/// but ALSO applied to directories. [GNU] mkdir applies the compiled mode
+/// to the created leaf DIRECTORY itself — src/mkdir.c main() compiles
+/// `options.mode = mode_adjust (S_IRWXUGO, true, umask_value, change, ...)`
+/// and gnulib lib/mkdir-p.c:88 `make_dir_parents` ends with
+/// `dirchownmod (..., mode, mode_bits)`, an explicit chmod of the leaf
+/// after the raw mkdir. The Windows representation of an owner-unwritable
+/// directory is FILE_ATTRIBUTE_READONLY (it gates directory deletion), so
+/// `mkdir -m 555 d` must land the attribute on `d`, exactly like the
+/// pre-wiring C++ pilot did (apply_directory_mode, 3a8e0f9f).
+pub fn apply_mode_dir(path: &Path, bits: u32) -> std::io::Result<()> {
+    set_readonly(path, bits & 0o200 == 0)
 }
 
 /// Apply a mode spec (octal or symbolic) against a path's current mode.
@@ -593,5 +628,26 @@ mod tests {
         // CRT default is 0 unless the host shell set one; either way it
         // must be a valid mask.
         assert!(process_umask() <= 0o777);
+    }
+
+    #[test]
+    fn eq_omitted_who_clears_umask_masked_bits() {
+        // [GNU] modechange.c mode_adjust '=' branch: preserved =
+        // (affected ? ~affected : 0) | omit_change — a who-omitted '='
+        // keeps NOTHING outside `value`, so the umask-masked base bits are
+        // cleared too. WSL coreutils 9.4 oracle under `umask 077`:
+        // `mkdir -m =r d` -> 400, `mkdir -m =w d` -> 200,
+        // `chmod =r f` (on 666) -> 400, `chmod =w f` -> 200.
+        let um = 0o077;
+        assert_eq!(sym(0o777, true, "=r", um), 0o400);
+        assert_eq!(sym(0o777, true, "=w", um), 0o200);
+        assert_eq!(sym(0o644, false, "=r", um), 0o400);
+        assert_eq!(sym(0o644, false, "=w", um), 0o200);
+        // who-specified '=' keeps the bits outside its affected mask
+        // (unchanged class behavior: =r under umask on g/o stays)
+        assert_eq!(sym(0o644, false, "u=r", um), 0o444);
+        // +w stays umask-gated on the omitted who
+        assert_eq!(sym(0o777, true, "+w", um), 0o777);
+        assert_eq!(sym(0o444, false, "+w", um), 0o644);
     }
 }
