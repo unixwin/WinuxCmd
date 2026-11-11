@@ -11,7 +11,12 @@
 //! two operands are usage errors rc 1 (`missing operand` / `extra operand
 //! 'b'`); unknown options rc 1. A missing file is
 //! `cannot unlink 'X': No such file or directory`, rc 1. stdout is always
-//! empty, so GNU-side cases gate strictly on rc.
+//! empty, so GNU-side cases gate strictly on rc. Removal goes through
+//! `remove_unlink_target`: a directory symlink unlinks the link itself
+//! (RemoveDirectoryW on the reparse point, like unlink(2)), and a
+//! read-only file is pre-cleared because DeleteFileW refuses what
+//! unlink(2) accepts (both mirroring the 1.x `remove_unlink_target`,
+//! src/commands/unlink.cpp:48).
 
 use std::ffi::OsString;
 use std::io;
@@ -25,6 +30,51 @@ const OPTS: &[OptSpec] = &[];
 
 #[cfg(windows)]
 const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
+
+/// Windows removal path, mirroring the 1.x C++ `remove_unlink_target`
+/// (src/commands/unlink.cpp:48) so the wired body keeps both the POSIX
+/// unlink(2) rule and the old exe's behavior:
+/// - a directory symlink (reparse point with the directory bit) is
+///   unlinked with RemoveDirectoryW, which deletes the link entry
+///   without following it — unlink(2) on a symlink removes the link
+///   itself, never the target; DeleteFileW refuses a directory reparse
+///   point, so the Rust remove_file default regressed the
+///   `unlink dir-link` case (CI unit test
+///   unlink_directory_symlink_removes_link_only_if_available);
+/// - a read-only regular file has the attribute cleared first because
+///   DeleteFileW refuses it while unlink(2) never consults the file's
+///   own write permission, only the containing directory's (the 1.x
+///   body cited coreutils unlink.c:82-83 and made the same rm-mirroring
+///   pre-clear);
+/// - everything else is DeleteFileW (remove_file).
+#[cfg(windows)]
+fn remove_unlink_target(resolved: &Path) -> io::Result<()> {
+    use std::os::windows::fs::MetadataExt;
+
+    const FILE_ATTRIBUTE_READONLY: u32 = 0x1;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+
+    if let Ok(md) = std::fs::symlink_metadata(&probe_path(resolved)) {
+        let attrs = md.file_attributes();
+        if attrs & FILE_ATTRIBUTE_REPARSE_POINT != 0 && attrs & FILE_ATTRIBUTE_DIRECTORY != 0 {
+            return std::fs::remove_dir(resolved);
+        }
+        if attrs & FILE_ATTRIBUTE_READONLY != 0 && attrs & FILE_ATTRIBUTE_DIRECTORY == 0 {
+            if let Ok(mut perms) = std::fs::metadata(resolved).map(|m| m.permissions()) {
+                perms.set_readonly(false);
+                let _ = std::fs::set_permissions(resolved, perms);
+            }
+        }
+    }
+    std::fs::remove_file(resolved)
+}
+
+/// Non-Windows remove_file *is* unlink(2): a symlink operand unlinks the
+/// link itself and a read-only file unlinks when the directory permits.
+#[cfg(not(windows))]
+fn remove_unlink_target(resolved: &Path) -> io::Result<()> {
+    std::fs::remove_file(resolved)
+}
 
 /// Trailing-separator-stripped probe path: the 1.x body stripped the
 /// separators before every attribute probe (`operand_target_attributes_w`,
@@ -120,7 +170,7 @@ pub fn unlink_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             }
         }
     }
-    match std::fs::remove_file(&resolved) {
+    match remove_unlink_target(&resolved) {
         Ok(()) => Ok(0),
         Err(e) => {
             let why = describe_unlink_failure(&resolved, &name, &e);
@@ -181,6 +231,51 @@ mod tests {
         assert_eq!(r, 1);
         // 1.x/GNU byte-equal: a directory target is refused as EISDIR
         assert!(err.contains("cannot unlink 'd': Is a directory"));
+    }
+
+    #[test]
+    fn directory_symlink_unlinks_the_link_itself() {
+        // CI regression gate (unlink_directory_symlink_removes_link_only_
+        // if_available): unlink(2) removes the symlink entry, never the
+        // target. The 1.x body used RemoveDirectoryW on the reparse
+        // point; remove_unlink_target keeps that. Skipped when the
+        // process lacks symlink-creation privilege.
+        let sc = ScratchCtx::new("unlink6");
+        std::fs::create_dir_all(sc.path("target-dir")).unwrap();
+        std::fs::write(sc.path("target-dir").join("payload.txt"), "p").unwrap();
+        #[cfg(windows)]
+        let created =
+            std::os::windows::fs::symlink_dir(sc.path("target-dir"), sc.path("dir-link")).is_ok();
+        #[cfg(not(windows))]
+        let created =
+            std::os::unix::fs::symlink(sc.path("target-dir"), sc.path("dir-link")).is_ok();
+        if !created {
+            println!("skipped: symlink creation unavailable");
+            return;
+        }
+        let (r, _, err) = run(&sc, &["dir-link"]);
+        assert_eq!(r, 0, "stderr: {err}");
+        assert!(err.is_empty());
+        assert!(!sc.path("dir-link").exists(), "link must be gone");
+        assert!(sc.path("target-dir").exists());
+        assert!(sc.path("target-dir").join("payload.txt").exists());
+    }
+
+    #[test]
+    fn read_only_file_unlinks_like_gnu() {
+        // [GNU] unlink(2) never consults the file's own write permission
+        // (unlink.c:82-83); the 1.x body pre-cleared FILE_ATTRIBUTE_
+        // READONLY so DeleteFileW would accept it. The wired body keeps
+        // the pre-clear.
+        let sc = ScratchCtx::new("unlink7");
+        let f = sc.path("ro.txt");
+        std::fs::write(&f, "x").unwrap();
+        let mut perms = std::fs::metadata(&f).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&f, perms).unwrap();
+        let (r, _, err) = run(&sc, &["ro.txt"]);
+        assert_eq!(r, 0, "stderr: {err}");
+        assert!(!f.exists());
     }
 
     #[test]
