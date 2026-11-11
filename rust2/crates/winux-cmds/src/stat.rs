@@ -17,9 +17,31 @@
 //! same). -f reports the containing volume in GNU's shape (NTFS values).
 //! Any operand failure prints `cannot statx 'X': ...` and continues; rc 1
 //! if anything failed.
+//!
+//! rdev directives print plain integers, never `?`: [GNU] stat.c:1584-1600
+//! formats `%r` (dec), `%R`/`%t`/`%T` (hex) straight out of st_rdev with
+//! no "?" fallback, and on Linux a regular file's st_rdev is 0 — probed
+//! coreutils 9.4: `stat -c '%R|%r|%t|%T'` on a regular file -> `0|0|0|0`,
+//! `%Hr %Lr` -> `0 0`. Windows has no device number, so the value is 0
+//! (the same platform-inherent choice as the volume-serial %d/%D).
+//! The `%H`/`%L` prefix is a modifier ONLY before `d` or `r`
+//! (stat.c:1176-1190: otherwise the H/L itself is the directive -> `?`
+//! and the next byte renders literally — probed `%Hx` -> `?x`);
+//! `%Hd`/`%Ld` are major/minor of st_dev (stat.c:1535-1537), also not
+//! representable on Windows -> 0.
+//!
+//! Backslash escapes are GNU print_it's shared interpreter
+//! (stat.c:1199-1242 + print_esc_char stat.c:1075-1112), applied per
+//! operand render and only when --printf set interpret_backslash_escapes:
+//! -c/-t keep backslashes verbatim and never warn. Escaped values go out
+//! as raw bytes (putchar truncation: `\400` -> 0x00). An unrecognized
+//! escape DROPS the backslash, echoes the character, and warns
+//! `stat: warning: unrecognized escape '\X'` on stderr — probed 9.4:
+//! `--printf '[\xZZ]'` -> stdout `[xZZ]` + that warning; `\'` warns,
+//! `\"`/`\e` are recognized; a trailing lone `\` warns
+//! `warning: backslash at end of format` and echoes the `\`.
 
 use std::ffi::OsString;
-use std::path::Path;
 
 use crate::glob::{contains_wildcard, glob_expand_in};
 use std::io::Write;
@@ -216,12 +238,15 @@ fn group_display(name: &str) -> String {
     }
 }
 
-/// Compute the field for a directive letter. `ctx_failed` flips when the
+/// Compute the field for a directive letter. `modifier` is GNU print_it's
+/// mod_char ('H' or 'L', only ever paired with 'd' or 'r' — resolved by
+/// render_format per stat.c:1176-1190). `ctx_failed` flips when the
 /// requested field cannot be produced (GNU %C: rc 1 per GNU stat -c %C on
 /// a volume without security contexts — probed coreutils 9.4, rc 1 with
 /// '?' on stdout and the "failed to get security context" note).
 fn field_for(
     letter: char,
+    modifier: char,
     entry: &StatEntry,
     follow: bool,
     ctx: &Ctx,
@@ -252,10 +277,25 @@ fn field_for(
         'o' => return Field::Dec(4096),
         'i' => return Field::Dec(m.index),
         'h' => return Field::Dec(m.links),
-        'd' => return Field::Dec(m.volume_serial as u64),
+        'd' => {
+            // [GNU] stat.c:1533-1539: %d is st_dev, %Hd/%Ld are
+            // major(st_dev)/minor(st_dev) in decimal. Windows exposes the
+            // device only as the volume serial with no major/minor split,
+            // so the split fields report 0 (see module doc).
+            if modifier == 'H' || modifier == 'L' {
+                return Field::Dec(0);
+            }
+            return Field::Dec(m.volume_serial as u64);
+        }
         'D' => return Field::Hex(m.volume_serial as u64),
-        't' => return Field::Dec(0),
-        'T' => return Field::Dec(0),
+        // [GNU] stat.c:1584-1600 — rdev renders as plain integers, no "?"
+        // fallback; a Linux regular file's st_rdev is 0 (probed 9.4:
+        // `%R|%r|%t|%T` -> `0|0|0|0`, `%Hr %Lr` -> `0 0`). Windows has no
+        // device number: 0. %r dec, %R/%t/%T hex (out_uint_x).
+        'r' => return Field::Dec(0),
+        'R' => return Field::Hex(0),
+        't' => return Field::Hex(0),
+        'T' => return Field::Hex(0),
         'u' => return Field::Num(entry.owner.0.parse::<i64>().unwrap_or(0)),
         'g' => return Field::Num(entry.group.0.parse::<i64>().unwrap_or(0)),
         'U' => {
@@ -338,7 +378,11 @@ fn render_format(
     while i < bytes.len() {
         let c = bytes[i];
         if c != b'%' {
-            out.write_all(&[c])?;
+            if c == b'\\' {
+                process_backslash(bytes, &mut i, process_escapes, stderr, out)?;
+            } else {
+                out.write_all(&[c])?;
+            }
             i += 1;
             continue;
         }
@@ -384,95 +428,135 @@ fn render_format(
             out.write_all(b"?")?;
             break;
         }
-        let letter = bytes[i] as char;
+        let mut letter = bytes[i];
         i += 1;
-        let field = field_for(letter, entry, follow, ctx, stderr, &mut ctx_failed);
-        let rendered = field.render(&spec);
-        if process_escapes && letter.is_ascii_alphabetic() {
-            out.write_all(rendered.as_bytes())?;
-        } else {
-            out.write_all(rendered.as_bytes())?;
+        // [GNU] print_it stat.c:1176-1190: an H/L prefix is a modifier only
+        // when immediately followed by 'd' or 'r' (print_stat directives);
+        // otherwise H/L itself is the directive ('?' via field_for's
+        // default — probed 9.4: `%Hx` -> `?x`, `%H` -> `?`) and the next
+        // byte renders as a literal.
+        let mut modifier = 0u8;
+        if (letter == b'H' || letter == b'L')
+            && i < bytes.len()
+            && (bytes[i] == b'd' || bytes[i] == b'r')
+        {
+            modifier = letter;
+            letter = bytes[i];
+            i += 1;
         }
+        let field = field_for(
+            letter as char,
+            modifier as char,
+            entry,
+            follow,
+            ctx,
+            stderr,
+            &mut ctx_failed,
+        );
+        let rendered = field.render(&spec);
+        out.write_all(rendered.as_bytes())?;
     }
     Ok(ctx_failed)
 }
 
-/// Process backslash escapes for --printf.
-fn unescape(fmt: &str) -> String {
-    let mut out = String::with_capacity(fmt.len());
-    let mut chars = fmt.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c != '\\' {
-            out.push(c);
-            continue;
+/// [GNU] print_it's backslash branch (stat.c:1199-1242) and
+/// print_esc_char (stat.c:1075-1112), byte-faithful. `bytes[*i]` is the
+/// leading `\`; on return `*i` indexes the last byte consumed. When
+/// `enabled` is false (GNU interpret_backslash_escapes: -c/-t/default, not
+/// --printf) the backslash is emitted verbatim and nothing else happens
+/// (stat.c:1200-1204 — probed 9.4: `-c '\z'` -> `\z`, no warning).
+/// Otherwise: \NNN is 1-3 octal digits, \xHH one or TWO hex digits
+/// (stat.c:1218-1230); values go out as RAW bytes — putchar truncation,
+/// probed `\400` -> 0x00, `\xff` -> 0xFF. An escape that is not octal,
+/// not \x<hex>, and not at end-of-format goes through print_esc_char:
+/// the table a b e f n r t v " \ maps to control bytes; anything else
+/// DROPS the backslash, echoes the character, and warns
+/// `stat: warning: unrecognized escape '\X'` (probed `[\xZZ]` -> `xZZ`
+/// + warning for the `\x`, `[\']` -> `'` + warning — ' is NOT in the
+/// table). A `\` at end of format warns
+/// `stat: warning: backslash at end of format` and echoes the `\`
+/// (stat.c:1231-1237).
+fn process_backslash(
+    bytes: &[u8],
+    i: &mut usize,
+    enabled: bool,
+    stderr: &mut dyn Write,
+    out: &mut dyn Write,
+) -> std::io::Result<()> {
+    if !enabled {
+        out.write_all(b"\\")?;
+        return Ok(());
+    }
+    *i += 1;
+    if *i >= bytes.len() {
+        let _ = writeln!(stderr, "stat: warning: backslash at end of format");
+        out.write_all(b"\\")?;
+        return Ok(());
+    }
+    let c = bytes[*i];
+    if matches!(c, b'0'..=b'7') {
+        // stat.c:1206-1217: 1-3 octal digits.
+        let mut value = (c - b'0') as u32;
+        let mut taken = 1;
+        while taken < 3 {
+            match bytes.get(*i + 1) {
+                Some(n) if matches!(*n, b'0'..=b'7') => {
+                    value = value * 8 + (*n - b'0') as u32;
+                    *i += 1;
+                    taken += 1;
+                }
+                _ => break,
+            }
         }
-        match chars.next() {
-            Some('n') => out.push('\n'),
-            Some('t') => out.push('\t'),
-            Some('r') => out.push('\r'),
-            Some('\\') => out.push('\\'),
-            Some('v') => out.push('\x0b'),
-            Some('f') => out.push('\x0c'),
-            // [GNU] printf escapes (probed coreutils 9.4: `--printf
-            // '%n\t\011\010\x41'` -> name, tab, tab, backspace, 'A'):
-            // \NNN is 1-3 OCTAL digits, \xHH hex
-            Some(c) if c.is_ascii_digit() && c != '8' && c != '9' => {
-                let mut value = c.to_digit(8).unwrap();
-                let mut taken = 1;
-                while taken < 3 {
-                    match chars.peek() {
-                        Some(n) if (*n).is_ascii_digit() && *n != '8' && *n != '9' => {
-                            value = value * 8 + (*n).to_digit(8).unwrap();
-                            chars.next();
-                            taken += 1;
-                        }
-                        _ => break,
-                    }
-                }
-                let _ = taken;
-                match char::from_u32(value) {
-                    Some(ch) => out.push(ch),
-                    None => {
-                        out.push('\\');
-                        out.push(c);
-                    }
-                }
+        out.write_all(&[(value & 0xFF) as u8])?;
+        return Ok(());
+    }
+    if c == b'x' && bytes.get(*i + 1).is_some_and(|n| n.is_ascii_hexdigit()) {
+        // stat.c:1218-1230: \xhh, 1 or 2 hex digits (fromhex table).
+        let hex_val = |b: u8| -> u32 {
+            match b {
+                b'0'..=b'9' => (b - b'0') as u32,
+                b'a'..=b'f' => (b - b'a' + 10) as u32,
+                _ => (b - b'A' + 10) as u32,
             }
-            Some('x') => {
-                let mut value = 0u32;
-                let mut taken = 0;
-                while taken < 2 {
-                    match chars.peek().and_then(|n| n.to_digit(16)) {
-                        Some(d) => {
-                            value = value.saturating_mul(16).saturating_add(d);
-                            chars.next();
-                            taken += 1;
-                        }
-                        None => break,
-                    }
-                }
-                if taken == 0 {
-                    out.push('\\');
-                    out.push('x');
-                } else {
-                    match char::from_u32(value) {
-                        Some(ch) => out.push(ch),
-                        None => {
-                            out.push('\\');
-                            out.push('x');
-                        }
-                    }
-                }
+        };
+        let mut value = hex_val(bytes[*i + 1]);
+        *i += 1;
+        if let Some(n) = bytes.get(*i + 1) {
+            if n.is_ascii_hexdigit() {
+                value = value * 16 + hex_val(*n);
+                *i += 1;
             }
-            Some('\'') => out.push('\''),
-            Some(other) => {
-                out.push('\\');
-                out.push(other);
-            }
-            None => out.push('\\'),
+        }
+        out.write_all(&[(value & 0xFF) as u8])?;
+        return Ok(());
+    }
+    // print_esc_char (stat.c:1075-1112).
+    let mapped: Option<u8> = match c {
+        b'a' => Some(0x07),
+        b'b' => Some(0x08),
+        b'e' => Some(0x1B),
+        b'f' => Some(0x0C),
+        b'n' => Some(b'\n'),
+        b'r' => Some(b'\r'),
+        b't' => Some(b'\t'),
+        b'v' => Some(0x0B),
+        b'"' | b'\\' => Some(c),
+        _ => None,
+    };
+    match mapped {
+        Some(b) => out.write_all(&[b])?,
+        None => {
+            // warning: unrecognized escape '\<raw byte>' — keep the byte
+            // verbatim in the message like GNU's error() formatting.
+            let mut msg = b"stat: warning: unrecognized escape '\\".to_vec();
+            msg.push(c);
+            msg.extend_from_slice(b"'\n");
+            stderr.write_all(&msg)?;
+            out.write_all(&[c])?;
         }
     }
-    out
+    Ok(())
 }
 
 /// Filesystem facts for -f (volume query), shared by the default fs shape
@@ -608,51 +692,56 @@ fn render_fs_default(name: &str, info: &FsInfo, out: &mut dyn Write) -> std::io:
 /// GNU stat -f with an explicit format/printf/-t: the FS directive table
 /// (coreutils stat.c fs_use_format fields). %c/%d report 0 (Windows volumes
 /// expose no inode counts); %t is the fs-type magic, 0 on Windows.
+/// Backslash escapes go through the SAME print_it interpreter as the file
+/// side (stat.c:1199-1242 is shared by print_stat and print_fs; probed
+/// 9.4: `-f --printf '%n\x41\n'` -> `f.txtA\n`, `[\z]` warns).
 fn render_fs_format(
     fmt: &str,
     name: &str,
     info: &FsInfo,
     process_escapes: bool,
+    stderr: &mut dyn Write,
     out: &mut dyn Write,
 ) -> std::io::Result<()> {
-    let rendered = fmt
-        .chars()
-        .flat_map(|c| std::iter::once(c))
-        .collect::<Vec<char>>();
+    let bytes = fmt.as_bytes();
     let mut i = 0usize;
-    let mut body = String::new();
-    while i < rendered.len() {
-        let c = rendered[i];
-        if c != '%' {
-            body.push(c);
+    let mut body: Vec<u8> = Vec::new();
+    while i < bytes.len() {
+        let c = bytes[i];
+        if c != b'%' {
+            if c == b'\\' {
+                process_backslash(bytes, &mut i, process_escapes, stderr, &mut body)?;
+            } else {
+                body.push(c);
+            }
             i += 1;
             continue;
         }
         i += 1;
-        if i >= rendered.len() {
-            body.push('%');
+        if i >= bytes.len() {
+            body.push(b'%');
             break;
         }
-        let letter = rendered[i];
+        let letter = bytes[i];
         i += 1;
-        match letter {
-            '%' => body.push('%'),
-            'n' => body.push_str(name),
-            'i' => body.push_str(&format!("{:08x}", info.id_hex)),
-            'l' => body.push_str(&info.namelen.to_string()),
-            't' => body.push('0'),
-            'T' => body.push_str(&info.fs_type),
-            's' => body.push_str(&info.block.to_string()),
-            'S' => body.push_str(&info.fblock.to_string()),
-            'b' => body.push_str(&info.total.to_string()),
-            'f' => body.push_str(&info.free.to_string()),
-            'a' => body.push_str(&info.avail.to_string()),
-            'c' | 'd' => body.push('0'),
-            _ => body.push('?'),
-        }
+        let text: String = match letter {
+            b'%' => "%".to_string(),
+            b'n' => name.to_string(),
+            b'i' => format!("{:08x}", info.id_hex),
+            b'l' => info.namelen.to_string(),
+            b't' => "0".to_string(),
+            b'T' => info.fs_type.clone(),
+            b's' => info.block.to_string(),
+            b'S' => info.fblock.to_string(),
+            b'b' => info.total.to_string(),
+            b'f' => info.free.to_string(),
+            b'a' => info.avail.to_string(),
+            b'c' | b'd' => "0".to_string(),
+            _ => "?".to_string(),
+        };
+        body.extend_from_slice(text.as_bytes());
     }
-    let _ = process_escapes;
-    out.write_all(body.as_bytes())?;
+    out.write_all(&body)?;
     Ok(())
 }
 
@@ -782,7 +871,12 @@ pub fn stat_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                                 }
                             }
                         };
-                        format = Some(unescape(&v));
+                        // [GNU] --printf sets interpret_backslash_escapes;
+                        // the format stays RAW here — print_it interprets
+                        // backslashes per operand render (stat.c:1149-1248),
+                        // so warnings repeat once per operand (probed 9.4:
+                        // `--printf '[\z%n]' a b` -> two warnings).
+                        format = Some(v);
                         printf_escapes = true;
                     }
                 },
@@ -912,7 +1006,14 @@ pub fn stat_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                             Some(f) => (f.clone(), printf_escapes, !printf_escapes),
                             None => (FS_TERSE_FORMAT.to_string(), false, true),
                         };
-                        render_fs_format(&fmt, &entry.name, info, process_escapes, io.stdout)?;
+                        render_fs_format(
+                            &fmt,
+                            &entry.name,
+                            info,
+                            process_escapes,
+                            io.stderr,
+                            io.stdout,
+                        )?;
                         if append_nl {
                             io.stdout.write_all(b"\n")?;
                         }
@@ -1009,6 +1110,22 @@ mod tests {
         // %t/%T zero
         let (_, out, _) = run_sc(&sc, &["-c", "%t|%T", "reg"]);
         assert_eq!(out, "0|0\n");
+        // rdev directives: plain integers, never '?' — GNU stat.c:1584-1600
+        // renders st_rdev directly (0 on Linux regular files; probed 9.4)
+        let (_, out, _) = run_sc(&sc, &["-c", "%R|%r|%Hr %Lr", "reg"]);
+        assert_eq!(out, "0|0|0 0\n");
+        // H/L modifier applies to %d too (major/minor st_dev, stat.c:1535-1537;
+        // not representable on Windows -> 0)
+        let (_, out, _) = run_sc(&sc, &["-c", "%Hd|%Ld", "reg"]);
+        assert_eq!(out, "0|0\n");
+        // width still applies (probed 9.4: `%4R|%-4R` -> `   0|0   `)
+        let (_, out, _) = run_sc(&sc, &["-c", "%4R|%-4R|", "reg"]);
+        assert_eq!(out, "   0|0   |\n");
+        // modifier only before d/r (stat.c:1176-1190; probed `%Hx` -> `?x`)
+        let (_, out, _) = run_sc(&sc, &["-c", "%Hx", "reg"]);
+        assert_eq!(out, "?x\n");
+        let (_, out, _) = run_sc(&sc, &["-c", "%H", "reg"]);
+        assert_eq!(out, "?\n");
         // times
         let (_, out, _) = run_sc(&sc, &["-c", "%X|%Y|%Z|%W", "reg"]);
         for t in out.trim_end().split('|') {
@@ -1127,6 +1244,90 @@ mod tests {
         // -c adds one
         let (_, out, _) = run_sc(&sc, &["-c", "%n", "reg"]);
         assert_eq!(out, "reg\n");
+    }
+
+    #[test]
+    fn printf_escapes_gnu_print_it() {
+        // Byte-faithful print_it backslash branch (stat.c:1199-1242),
+        // probed coreutils 9.4; corpus regressions/58 is the pinned case.
+        let sc = setup("stat-esc");
+        // recognized: hex (1-2 digits), octal (1-3), the esc_char table
+        let (r, out, err) = run_sc(
+            &sc,
+            &["--printf", "[\\x41][\\x4][\\x414][\\011][\\e][\\\"]", "reg"],
+        );
+        assert_eq!(r, 0);
+        assert_eq!(err, "");
+        assert_eq!(out, "[A][\x04][A4][\t][\x1b][\"]");
+        // \xZZ: backslash dropped, 'x' echoed, warning on stderr
+        let (r, out, err) = run_sc(&sc, &["--printf", "[\\xZZ]", "reg"]);
+        assert_eq!(r, 0);
+        assert_eq!(out, "[xZZ]");
+        assert_eq!(err, "stat: warning: unrecognized escape '\\x'\n");
+        // unrecognized escape letter: backslash dropped + warning ('\' is
+        // NOT in the table; probed `[\']` -> `'` + warning)
+        let (_, out, err) = run_sc(&sc, &["--printf", "[\\z][\\']", "reg"]);
+        assert_eq!(out, "[z][']");
+        assert_eq!(
+            err,
+            "stat: warning: unrecognized escape '\\z'\nstat: warning: unrecognized escape '\\''\n"
+        );
+        // putchar truncation: raw bytes (\400 -> 0x00, \xff -> 0xFF;
+        // probed 9.4 od: both are 3-byte outputs). Byte-exact assertion —
+        // MemIo::out() is lossy, so read the output Vec<u8> directly.
+        let mut io = MemIo::new("");
+        let owned: Vec<OsString> = ["--printf", "[\\400][\\xff]", "reg"]
+            .iter()
+            .map(Into::into)
+            .collect();
+        stat_cmd(&owned, &mut io.split(), &sc.ctx()).unwrap();
+        assert_eq!(io.output, b"[\x00][\xff]".to_vec());
+        // trailing lone backslash: warning + backslash echoed
+        let (_, out, err) = run_sc(&sc, &["--printf", "[a\\", "reg"]);
+        assert_eq!(out, "[a\\");
+        assert_eq!(err, "stat: warning: backslash at end of format\n");
+        // -c keeps backslashes verbatim, never warns (stat.c:1200-1204)
+        let (_, out, err) = run_sc(&sc, &["-c", "%n\\n\\z", "reg"]);
+        assert_eq!(out, "reg\\n\\z\n");
+        assert_eq!(err, "");
+        // warnings repeat per operand render (print_it runs per file)
+        let (_, out, err) = run_sc(&sc, &["--printf", "[\\z%n]", "reg", "dir"]);
+        assert_eq!(out, "[zreg][zdir]");
+        assert_eq!(err.matches("unrecognized escape '\\z'").count(), 2);
+    }
+
+    #[test]
+    fn fs_printf_escapes() {
+        // print_it is shared by the fs path (probed 9.4: `-f --printf
+        // '%n\x41\n'` -> `f.txtA\n`; `[\z]` warns there too).
+        let sc = setup("stat-fs-esc");
+        let info = FsInfo {
+            id_hex: 0x1234ABCD,
+            namelen: 255,
+            fs_type: "NTFS".to_string(),
+            block: 4096,
+            fblock: 4096,
+            total: 1,
+            free: 2,
+            avail: 3,
+        };
+        let mut out: Vec<u8> = Vec::new();
+        let mut err: Vec<u8> = Vec::new();
+        render_fs_format("%n\\x41\\n", "f.txt", &info, true, &mut err, &mut out).unwrap();
+        assert_eq!(out, b"f.txtA\n");
+        assert_eq!(err, b"");
+        // -c (process_escapes=false): backslashes verbatim
+        let mut out: Vec<u8> = Vec::new();
+        let mut err: Vec<u8> = Vec::new();
+        render_fs_format("%n\\n", "f.txt", &info, false, &mut err, &mut out).unwrap();
+        assert_eq!(out, b"f.txt\\n");
+        assert_eq!(err, b"");
+        // unrecognized escape warns on the fs path as well
+        let mut out: Vec<u8> = Vec::new();
+        let mut err: Vec<u8> = Vec::new();
+        render_fs_format("[\\z]", "f.txt", &info, true, &mut err, &mut out).unwrap();
+        assert_eq!(out, b"[z]");
+        assert_eq!(err, b"stat: warning: unrecognized escape '\\z'\n");
     }
 
     #[test]
