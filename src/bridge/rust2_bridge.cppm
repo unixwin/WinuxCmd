@@ -70,17 +70,37 @@ auto current_directory_utf8() -> std::string {
 // (winux_core::ABI_FAILURE_STATUS).
 constexpr int kAbiFailureStatus = 125;
 
+// rust2 commands whose library implementation reads fd 0 (winux_core::Io's
+// stdin). For exactly these names the bridge forwards stdin through the
+// v1 whole-buffer ABI (winuxcmd_run's stdin_buf), slurped with
+// file_io::read_all_stdin. Every other rust2 command keeps the
+// pass-nothing contract — their fd 0 stays untouched, so later consumers
+// in the same pipeline stage keep unread bytes and spawned children
+// (timeout's wrapped command) inherit the live handle. The set is declared
+// here, not probed, because the v1 entry cannot ask the library; the
+// streaming v2 ABI (winuxcmd_run_stream) is the long-term replacement
+// (rust2/REPLACEMENT-RECIPE.md §5). Wave3b (#1488): numfmt reads stdin
+// only in its no-operand form; the slurp happens before that is known,
+// which is the accepted whole-buffer cost.
+constexpr std::array<std::string_view, 5> kRust2StdinCommands{
+    "expand", "join", "numfmt", "tsort", "unexpand"};
+
+auto rust2_reads_stdin(const char* name) -> bool {
+  const std::string_view view(name);
+  return std::find(kRust2StdinCommands.begin(), kRust2StdinCommands.end(),
+                   view) != kRust2StdinCommands.end();
+}
+
 }  // namespace
 
 export namespace winux::rust2 {
 
 /// Run rust2 library command `name` with the dispatcher's operands.
 ///
-/// stdin is NOT forwarded: ABI v1 carries stdin as a whole buffer, which
-/// would turn a streaming read into slurp-then-run. Only commands that never
-/// read stdin may be wired through this entry (wave inventory io_idiom
-/// `none` / output-only); stdin readers need a streaming ABI first (see
-/// rust2/REPLACEMENT-RECIPE.md).
+/// stdin is forwarded ONLY for the declared stdin readers (see
+/// kRust2StdinCommands), as the v1 whole buffer: slurp-then-run. All other
+/// commands keep the pass-nothing contract, which keeps fd 0 live for
+/// pipeline consumers and spawned children.
 int run_command(const char* name, std::span<std::string_view> args) noexcept {
   if (winuxcmd_abi_version() != WINUXCMD_RUST2_ABI_VERSION) {
     safeErrorPrintLn(std::string(name) +
@@ -102,11 +122,27 @@ int run_command(const char* name, std::span<std::string_view> args) noexcept {
 
   const std::string cwd = current_directory_utf8();
 
+  // stdin: whole-buffer forwarding for the declared stdin readers only.
+  // A slurp error (closed fd 0) hands the command empty stdin — the v1
+  // buffer ABI cannot carry the error, so the EOF shape is the closest the
+  // boundary can express (GNU's own "Bad file descriptor" wording stays
+  // with the streaming v2 ABI).
+  std::string stdin_storage;
+  const unsigned char* stdin_ptr = nullptr;
+  size_t stdin_len = 0;
+  if (rust2_reads_stdin(name)) {
+    if (auto content = file_io::read_all_stdin()) {
+      stdin_storage = std::move(*content);
+    }
+    stdin_ptr = reinterpret_cast<const unsigned char*>(stdin_storage.data());
+    stdin_len = stdin_storage.size();
+  }
+
   winuxcmd_cbuf out{nullptr, 0, 0};
   winuxcmd_cbuf err{nullptr, 0, 0};
   const int status = winuxcmd_run(
       name, static_cast<int>(argv.size()), argv.empty() ? nullptr : argv.data(),
-      envp.data(), cwd.c_str(), nullptr, 0, &out, &err);
+      envp.data(), cwd.c_str(), stdin_ptr, stdin_len, &out, &err);
 
   // stdout before stderr: the Rust side buffered both, so their relative
   // interleaving is not observable anyway; GNU's order for the commands
