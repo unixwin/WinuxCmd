@@ -86,6 +86,10 @@ setup_fixture() {
     tee)
       rm -rf tpre tout1 tout2 tok
       printf 'seed\n' > tpre ;;
+    paste)
+      rm -rf pf1 pf2 pf3 pqin
+      printf 'a\nb\nc\n' > pf1; printf '1\n2\n3\n4\n' > pf2
+      printf 'only\n' > pf3; printf 'q\nr\n' > pqin ;;
     *) : ;;
   esac
 }
@@ -623,6 +627,31 @@ TABLE
 17||q|tout1:tok:tpre
 18||q|-
 19||q|-a:tdir-missing/out
+TABLE
+      ;;
+    paste)
+      cat <<'TABLE'
+01|||pf1:pf2
+02|||pf1
+03|||-s:pf1
+04|||-s:pf1:pf2
+05|||-d:,:pf1:pf2
+06|||-d:\n:pf1:pf2
+07||x\ny|-:-:pqin
+08||x\ny|pf1:-
+09|||-z:pf1
+10|||pf1:pf2:pf3
+11|||
+12||-s
+13|||pmissing
+14|||--help
+15|||--version
+16|||--bogus
+17|||--:pf1
+18|||-d:@:pf1:pf2
+19|||-d:|:pf1:pf2
+20|||-s:-d:,:pf1:pf2
+21|||-d,:pf1:pf2
 TABLE
       ;;
     *)
