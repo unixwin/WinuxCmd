@@ -283,11 +283,9 @@ pub fn fold_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 continue;
             }
             let name = crate::fs_win::map_device(&name);
-            let path = if std::path::Path::new(&name).is_absolute() {
-                std::path::PathBuf::from(&name)
-            } else {
-                ctx.cwd.join(&name)
-            };
+            // the one operand boundary (drive dialect, carrier colons,
+            // shell tree — the 1.x native_path layer)
+            let path = std::path::PathBuf::from(crate::fs_win::api_path(&ctx.cwd, &name));
             match std::fs::File::open(&path) {
                 Ok(mut f) => {
                     if fold_file(&mut f, io.stdout, width, break_spaces, count_bytes).is_err() {
@@ -296,7 +294,21 @@ pub fn fold_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     }
                 }
                 Err(e) => {
-                    let _ = writeln!(io.stderr, "fold: {name}: {}", reason_str(&e));
+                    // [GNU] a directory operand reads EISDIR (probed
+                    // coreutils 9.4: `fold indir` -> "fold: indir: Is a
+                    // directory" rc 1); Windows fails the OPEN with
+                    // ERROR_ACCESS_DENIED, so the directory attribute
+                    // supplies the POSIX shape
+                    let reason = if e.kind() == std::io::ErrorKind::PermissionDenied
+                        && crate::fs_win::file_meta(&ctx.cwd, &name, true)
+                            .map(|m| m.is_dir)
+                            .unwrap_or(false)
+                    {
+                        "Is a directory"
+                    } else {
+                        reason_str(&e)
+                    };
+                    let _ = writeln!(io.stderr, "fold: {name}: {reason}");
                     ok = false;
                 }
             }
