@@ -23,7 +23,7 @@ ta20-regex-before	strict			a1b22c333	-r	-b	-s	[0-9]+
 ta21-missing-file	strict	printf q\n > t6			missing	t6
 ta22-regex-empty-sep	strict			abc	-r	-s	
 ta23-bad-regex	strict	printf abc > t7			-r	-s	[a	t7
-ta24-help	strict				--help
+ta24-help	win				--help
 ta25-two-files	strict	printf '1\n2\n' > t8; printf '3\n4\n' > t9			t8	t9
 ta26-regex-anchor	strict	printf abcbc > ta			-r	-s	^b	ta
-ta27-version	strict				--version
+ta27-version	win				--version

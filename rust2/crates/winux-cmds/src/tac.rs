@@ -62,10 +62,15 @@ fn tac_literal(
     out: &mut dyn Write,
 ) -> std::io::Result<()> {
     let sep = separator.as_bytes();
-    // An empty separator uses the NUL-sentinel rule of tac.c: first_char
-    // = '\0' never occurs, so every scan reaches the front unchanged.
-    let sep_len = if sep.is_empty() { 1 } else { sep.len() };
-    let first_char = if sep.is_empty() { 0u8 } else { sep[0] };
+    // An empty separator uses the NUL-sentinel rule of tac.c:540:
+    // match_length = *separator ? strlen(separator) : 1, the one separator
+    // byte being NUL — so NUL-terminated records reverse like any others
+    // (`printf 'a\0b\0c\0' | tac -s ''` prints c\0b\0a\0, probed GNU 9.4).
+    // The scan must compare against the NUL byte, not against the empty
+    // separator string.
+    let sep_bytes: &[u8] = if sep.is_empty() { &[0u8] } else { sep };
+    let sep_len = sep_bytes.len();
+    let first_char = sep_bytes[0];
     let mut past_end = buf.len();
     // tac.c: initial match_start = past_end - (match_length - 1)
     let mut match_start = past_end as isize - (sep_len as isize - 1);
@@ -76,7 +81,7 @@ fn tac_literal(
         let mut p = match_start - 1;
         while p >= 0 {
             let at = p as usize;
-            if buf[at] == first_char && &buf[at..at + sep_len] == sep {
+            if buf[at] == first_char && &buf[at..at + sep_len] == sep_bytes {
                 found = Some(at);
                 break;
             }
@@ -202,12 +207,15 @@ pub fn tac_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         return Ok(1);
     }
     // Compile once up front so an invalid regex fails before any file is
-    // read, like GNU (re_compile_pattern runs before processing).
+    // read, like GNU (re_compile_pattern runs before processing). GNU's
+    // tac.c prints the generic "Invalid regular expression" wording for
+    // every re_compile_pattern failure, not the engine's specific
+    // diagnostic — the 1.x body said the same.
     let compiled = if regex_mode {
         match Regex::compile(&separator) {
             Ok(re) => Some(re),
-            Err(e) => {
-                let _ = writeln!(io.stderr, "tac: {e}");
+            Err(_) => {
+                let _ = writeln!(io.stderr, "tac: Invalid regular expression");
                 return Ok(1);
             }
         }
@@ -245,10 +253,26 @@ pub fn tac_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     }
                     buf
                 }
-                Err(_) => {
+                Err(e) => {
+                    // GNU tac opens the operand then reads it: a directory
+                    // dies at read (`tac: indir: read error: Is a
+                    // directory`), an invalid-name operand (literal `*.txt`,
+                    // trailing `/`) dies at open with ENOENT/ENOTDIR —
+                    // probed byte-identical on WSL 9.4 + MSYS. Windows
+                    // fails at open instead, so recover GNU's shapes via
+                    // metadata + the shared reason helper.
+                    if std::fs::metadata(resolve(ctx, file))
+                        .map(|m| m.is_dir())
+                        .unwrap_or(false)
+                    {
+                        let _ = writeln!(io.stderr, "tac: {file}: read error: Is a directory");
+                        failed = true;
+                        continue;
+                    }
+                    let reason = crate::fsutil::gnu_open_reason(ctx, file, &e, false);
                     let _ = writeln!(
                         io.stderr,
-                        "tac: failed to open '{file}' for reading: No such file or directory"
+                        "tac: failed to open '{file}' for reading: {reason}"
                     );
                     failed = true;
                     continue;
@@ -265,7 +289,11 @@ pub fn tac_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         } else {
             tac_literal(&bytes, &separator, sep_ends_record, io.stdout)
         };
-        if result.is_err() {
+        if let Err(e) = result {
+            // GNU tac exits through its stdout close/write checks
+            // (tac.c: `error (0, errno, _("write error"))`), so a failed
+            // record write is reported, not swallowed.
+            let _ = writeln!(io.stderr, "tac: write error: {}", crate::fsutil::reason(&e));
             failed = true;
         }
     }

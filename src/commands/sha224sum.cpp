@@ -3,18 +3,18 @@
 /// @contributors:
 ///   - caomengxuan666 <2507560089@qq.com>
 /// @Description: Implementation for sha224sum.
-/// @Version: 0.1.0
+/// @Version: 0.2.0
 /// @License: MIT
 /// @Copyright: Copyright © 2026 WinuxCmd
-// *** SIMPLIFIED IMPLEMENTATION - Some features may not be fully supported ***
 
-#include "core/command_macros.h"
 #include "pch/pch.h"
+// include other header after pch.h
+#include "core/command_macros.h"
 
 import std;
 import core;
 import utils;
-import container;
+import rust2_bridge;
 
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
@@ -48,184 +48,6 @@ auto constexpr SHA224SUM_OPTIONS = std::array{
     OPTION("", "--strict", "with --check, exit non-zero for any invalid input",
            BOOL_TYPE)};
 
-namespace sha224sum_pipeline {
-namespace cp = core::pipeline;
-
-struct Config {
-  bool binary_mode = true;
-  bool check_mode = false;
-  bool text_mode = false;
-  bool quiet = false;
-  bool status = false;
-  bool warn = false;
-  bool tag = false;
-  bool zero = false;
-  bool strict = false;
-  bool ignore_missing = false;
-  SmallVector<std::string, 64> files;
-};
-
-auto input_open_error(std::string_view path) -> std::string {
-  return std::string(path) + ": " + portable_digest::open_error_reason(path);
-}
-
-auto build_config(const CommandContext<SHA224SUM_OPTIONS.size()>& ctx)
-    -> cp::Result<Config> {
-  Config cfg;
-  // [GNU] the text marker ("  ") is the default; -b/--binary selects the
-  // "*" marker and the last of -b/-t wins, mirroring cksum.c.  Only the
-  // marker changes -- the bytes hashed are always raw.
-  cfg.binary_mode = false;
-  cfg.text_mode = false;
-  for (const auto& occurrence : ctx.options.occurrences()) {
-    const auto& meta = (*ctx.metas)[occurrence.index];
-    if (meta.short_name == "-b" || meta.long_name == "--binary") {
-      cfg.binary_mode = true;
-      cfg.text_mode = false;
-    } else if (meta.short_name == "-t" || meta.long_name == "--text") {
-      cfg.binary_mode = false;
-      cfg.text_mode = true;
-    }
-  }
-  cfg.check_mode =
-      ctx.get<bool>("--check", false) || ctx.get<bool>("-c", false);
-  cfg.tag = ctx.get<bool>("--tag", false);
-  cfg.zero = ctx.get<bool>("--zero", false) || ctx.get<bool>("-z", false);
-  cfg.strict = ctx.get<bool>("--strict", false);
-  cfg.ignore_missing = ctx.get<bool>("--ignore-missing", false);
-
-  // [GNU] the last of --status/--warn/--quiet wins and resets the other two
-  // (getopt cases STATUS_OPTION/'w'/QUIET_OPTION in src/cksum.c).
-  for (const auto& occurrence : ctx.options.occurrences()) {
-    const auto& meta = (*ctx.metas)[occurrence.index];
-    if (meta.long_name == "--status") {
-      cfg.status = true;
-      cfg.warn = false;
-      cfg.quiet = false;
-    } else if (meta.long_name == "--warn") {
-      cfg.status = false;
-      cfg.warn = true;
-      cfg.quiet = false;
-    } else if (meta.long_name == "--quiet") {
-      cfg.status = false;
-      cfg.warn = false;
-      cfg.quiet = true;
-    }
-  }
-
-  // [GNU] option-conflict checks, in src/cksum.c main() order.
-  const bool mode_seen = ctx.has("-b") || ctx.has("--binary") ||
-                         ctx.has("-t") || ctx.has("--text");
-  if (cfg.zero && cfg.check_mode) {
-    return std::unexpected(
-        "the --zero option is not supported when verifying checksums");
-  }
-  if (cfg.tag && cfg.check_mode) {
-    return std::unexpected(
-        "the --tag option is meaningless when verifying checksums");
-  }
-  if (mode_seen && cfg.check_mode) {
-    return std::unexpected(
-        "the --binary and --text options are meaningless when verifying "
-        "checksums");
-  }
-  if (cfg.ignore_missing && !cfg.check_mode) {
-    return std::unexpected(
-        "the --ignore-missing option is meaningful only when verifying "
-        "checksums");
-  }
-  if (cfg.status && !cfg.check_mode) {
-    return std::unexpected(
-        "the --status option is meaningful only when verifying checksums");
-  }
-  if (cfg.warn && !cfg.check_mode) {
-    return std::unexpected(
-        "the --warn option is meaningful only when verifying checksums");
-  }
-  if (cfg.quiet && !cfg.check_mode) {
-    return std::unexpected(
-        "the --quiet option is meaningful only when verifying checksums");
-  }
-  if (cfg.strict && !cfg.check_mode) {
-    return std::unexpected(
-        "the --strict option is meaningful only when verifying checksums");
-  }
-  if (cfg.tag && cfg.text_mode) {
-    return std::unexpected("--tag does not support --text mode");
-  }
-
-  for (auto arg : ctx.positionals) {
-    std::string file_arg(arg);
-    if (contains_wildcard(file_arg)) {
-      auto glob_result = glob_expand(file_arg);
-      if (glob_result.expanded) {
-        for (const auto& file : glob_result.files) {
-          cfg.files.push_back(wstring_to_utf8(file));
-        }
-        continue;
-      }
-    }
-    cfg.files.push_back(file_arg);
-  }
-
-  if (cfg.files.empty()) {
-    cfg.files.push_back("-");
-  }
-
-  return cfg;
-}
-
-auto calculate_sha224(const std::string& filename, bool text_mode = false)
-    -> cp::Result<std::string> {
-  return portable_digest::hash_file_hex(portable_digest::HashAlgorithm::Sha224,
-                                        filename, text_mode);
-}
-
-auto run(const Config& cfg) -> int {
-  if (cfg.check_mode) {
-    // [GNU] digest_check() over every check FILE operand ("-" = stdin).
-    portable_digest::SumCheckFlags flags{
-        .status_only = cfg.status,
-        .quiet = cfg.quiet,
-        .warn = cfg.warn,
-        .strict = cfg.strict,
-        .ignore_missing = cfg.ignore_missing,
-    };
-    auto hash_fn = [](const std::string& filename, size_t) {
-      return calculate_sha224(filename, false);
-    };
-    return portable_digest::sum_check_main(
-        "sha224sum", "SHA224", 56, flags,
-        std::span<const std::string>(cfg.files.data(), cfg.files.size()),
-        hash_fn);
-  }
-
-  bool all_ok = true;
-
-  for (const auto& file : cfg.files) {
-    auto hash_result = calculate_sha224(file, cfg.text_mode);
-    if (!hash_result) {
-      cp::report_error(hash_result, L"sha224sum");
-      all_ok = false;
-      continue;
-    }
-
-    // GNU/MSYS defaults to binary marker on Windows; --text uses a space.
-    std::string output;
-    if (cfg.tag) {
-      output = "SHA224 (" + file + ") = " + *hash_result;
-    } else {
-      output = *hash_result + (cfg.binary_mode ? " *" : "  ") + file;
-    }
-    output.push_back(cfg.zero ? '\0' : '\n');
-    safePrint(output);
-  }
-
-  return all_ok ? 0 : 1;
-}
-
-}  // namespace sha224sum_pipeline
-
 REGISTER_COMMAND(sha224sum, "sha224sum", "sha224sum [OPTION]... [FILE]...",
                  "Compute and check SHA224 message digest.\n"
                  "\n"
@@ -240,14 +62,22 @@ REGISTER_COMMAND(sha224sum, "sha224sum", "sha224sum [OPTION]... [FILE]...",
                  "  sha224sum *.txt > checksums.sha224",
                  "md5sum(1), sha1sum(1), sha256sum(1), sha512sum(1)",
                  "WinuxCmd", "Copyright © 2026 WinuxCmd", SHA224SUM_OPTIONS) {
-  using namespace sha224sum_pipeline;
-
-  auto cfg_result = build_config(ctx);
-  if (!cfg_result) {
-    cp::report_error(cfg_result, L"sha224sum");
-    safeErrorPrintLn("Try 'sha224sum --help' for more information.");
-    return 1;
+  // #1488 mechanical replacement: the semantics live in the rust2 library
+  // (rust2/crates/winux-cmds/src/digestsum.rs, sha224sum_cmd — digest.c
+  // output shapes plus the full --check machinery); the C++ side keeps only
+  // this registration. ctx.raw_args passes the operands verbatim because GNU
+  // digest.c parses its own getopt run.
+  //
+  // stdin mode (ABI v1 whole-buffer): GNU digest.c reads fd 0 when no FILE
+  // operand stands, and "-" as a per-operand stdin marker, so the bridge
+  // slurps fd 0 exactly for those shapes (echo "abc" | sha224sum, and the
+  // `-c` checkfile from stdin via "-").
+  bool stdin_is_input = ctx.positionals.empty();
+  for (auto arg : ctx.positionals) {
+    if (arg == "-") stdin_is_input = true;
   }
-
-  return run(*cfg_result);
+  if (stdin_is_input) {
+    return winux::rust2::run_command_with_stdin("sha224sum", ctx.raw_args);
+  }
+  return winux::rust2::run_command("sha224sum", ctx.raw_args);
 }

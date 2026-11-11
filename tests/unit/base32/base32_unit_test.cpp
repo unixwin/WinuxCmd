@@ -125,9 +125,11 @@ TEST(base32, base32_missing_input_reports_no_such_file) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
+  // [GNU] basenc.c reports the bare operand path with strerror (probed
+  // WSL coreutils 9.4); "cannot open 'X' for reading" was 1.x wording.
   EXPECT_TRUE(r.stderr_text.find(
-                  "base32: cannot open 'missing.txt' for reading: No such "
-                  "file or directory") != std::string::npos);
+                  "base32: missing.txt: No such file or directory") !=
+              std::string::npos);
 }
 
 TEST(base32, base32_directory_input_reports_is_a_directory) {
@@ -141,12 +143,19 @@ TEST(base32, base32_directory_input_reports_is_a_directory) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stderr_text.find(
-                  "base32: cannot open 'indir' for reading: Is a directory") !=
+  // [GNU] basenc opens the operand then reads it, so a directory dies at
+  // the read with the shared no-operand read-error site (probed WSL 9.4
+  // + MSYS byte-identical).
+  EXPECT_TRUE(r.stderr_text.find("base32: read error: Is a directory") !=
               std::string::npos);
 }
 
-TEST(base32, base32_file_operand_glob_expands_single_match) {
+// [GNU] File operands are literal: the shell globs, the program does not
+// (unlink.c:94 precedent, WSL coreutils 9.4 probed). A literal `*.txt`
+// cannot be opened, so basenc reports it with quotef quoting; on Windows
+// the name is an invalid CreateFile name and the failure is recovered to
+// GNU's ENOENT text.
+TEST(base32, base32_file_operand_glob_is_literal) {
   TempDir tmp;
   tmp.write("one.txt", "hello");
 
@@ -156,8 +165,11 @@ TEST(base32, base32_file_operand_glob_expands_single_match) {
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "NBSWY3DP\n");
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find(
+                  "base32: '*.txt': No such file or directory") !=
+              std::string::npos);
 }
 
 TEST(base32, base32_rejects_wildcard_that_expands_to_multiple_files) {
@@ -171,8 +183,9 @@ TEST(base32, base32_rejects_wildcard_that_expands_to_multiple_files) {
 
   auto r = p.run();
 
+  // [GNU] same literal-operand rule with several potential matches: the
+  // program never expands, so the single literal operand fails to open.
   EXPECT_NE(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stderr_text,
-                 "base32: extra operand 'two.txt'\n"
-                 "Try 'base32 --help' for more information.\n");
+  EXPECT_TRUE(r.stderr_text.find("'*.txt': No such file or directory") !=
+              std::string::npos);
 }

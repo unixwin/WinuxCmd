@@ -27,6 +27,6 @@ b64a24-extra-operand	strict	printf foobar > b1; printf xy > b2			b1	b2
 b64a25-missing-file	strict				nosuchfile
 b64a26-encode-file	strict	printf foobar > b3			b3
 b64a27-decode-file	strict	printf Zm9vYmFy > b4			-d	b4
-b64a28-help	strict				--help
-b64a29-version	strict				--version
+b64a28-help	win				--help
+b64a29-version	win				--version
 b64a30-binary	strict			Zm9vYmFy	-d
