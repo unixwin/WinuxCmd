@@ -63,6 +63,12 @@ setup_fixture() {
       printf 'K V\na 1\n' > jh1
       printf 'K W\na Q\n' > jh2
       printf 'b 2\na 1\n' > juns ;;
+    # unlink rows 19/20 exercise wildcard operands against real matches:
+    # GNU unlink.c treats argv literally (ENOENT), the 1.x C++ body
+    # glob-expanded (extra operand when 2+ matches) — the new exe is
+    # expected to follow GNU there, an explained r=c:no class.
+    unlink)
+      rm -f mxu1 mxu2 w1 w2; printf x > mxu1; printf x > w1 w2 ;;
     *) : ;;
   esac
 }
@@ -494,6 +500,52 @@ TABLE
 17|||-z
 18|||--
 19|||@EMPTY@
+TABLE
+      ;;
+    unlink)
+      cat <<'TABLE'
+01|||mxu1
+02|||missing-file-xyz
+03|||-x:mxu1
+04|||--help
+05|||--version
+06|||--help:x
+07|||--bogus
+08|||-h
+09|||
+10|||mxu1:mxu2
+11|||--
+12|||--:mxu1
+13|||@EMPTY@
+14|||-
+15|||.
+16|||..
+17|||mxu1//
+18|||w1
+19|||w*
+20|||w?1
+21|||reg//
+TABLE
+      ;;
+    sleep)
+      cat <<'TABLE'
+01|||0
+02|||0.001
+03|||1
+04|||0:0
+05|||0.001s:0.001s
+06|||1x
+07|||--help
+08|||--version
+09|||--help:x
+10|||-h
+11|||--bogus
+12|||-1
+13|||
+14|||--
+15|||abc
+16|||0.001:xyz
+17|||0.001m:0.001h
 TABLE
       ;;
     *)
