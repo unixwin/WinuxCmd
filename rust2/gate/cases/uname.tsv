@@ -16,8 +16,8 @@ un13-invalid-short	exit				-Z
 un14-sysname	win				--sysname
 un15-release	win				--release
 un16-sn	win				-s	-n
-un17-help	win				--help
-un18-version	win				--version
+un17-help	strict				--help
+un18-version	strict				--version
 un19-cluster	win				-srvm
 un20-flag-operand	exit				-s	extra
 un21-kernel-name-long	win				--kernel-name

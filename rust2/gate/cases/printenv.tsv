@@ -20,3 +20,4 @@ pe17-order	strict		A=1,B=2,C=3		C	A
 pe18-found-missing-mix	strict		A=1,B=2		A	NOPE	B
 pe19-help-flag	win				--help
 pe20-dash-alone	exit		GFoo=bar		-
+pe21-version	win				--version
