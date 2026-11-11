@@ -869,7 +869,7 @@ pub fn fmt_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                         std::io::ErrorKind::PermissionDenied => "Permission denied",
                         _ => "Invalid argument",
                     };
-                    let _ = writeln!(io.stderr, "fmt: cannot open {op} for reading: {reason}");
+                    let _ = writeln!(io.stderr, "fmt: cannot open '{op}' for reading: {reason}");
                     ok = false;
                 }
             }
@@ -1091,6 +1091,6 @@ mod tests {
         let owned: Vec<OsString> = ["missing"].iter().map(Into::into).collect();
         let r = fmt_cmd(&owned, &mut io.split(), &ctx).unwrap();
         assert_eq!(r, 1);
-        assert!(io.err().contains("cannot open missing for reading"));
+        assert!(io.err().contains("cannot open 'missing' for reading"));
     }
 }
