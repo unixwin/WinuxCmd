@@ -22,5 +22,5 @@ b32a19-extra-operand	strict	printf foobar > c1; printf xy > c2			c1	c2
 b32a20-missing-file	strict				nosuchfile
 b32a21-encode-file	strict	printf foobar > c3			c3
 b32a22-decode-file	strict	printf MZXW6YTBOI====== > c4			-d	c4
-b32a23-help	strict				--help
-b32a24-version	strict				--version
+b32a23-help	win				--help
+b32a24-version	win				--version
