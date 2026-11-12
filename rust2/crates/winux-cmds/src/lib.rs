@@ -14,8 +14,8 @@ pub mod canon;
 pub mod childproc;
 pub mod chmod;
 pub mod chown;
-pub mod cut;
 pub mod csplit;
+pub mod cut;
 
 pub mod df;
 pub mod digest;
@@ -31,8 +31,8 @@ pub mod fsutil;
 pub mod getconf;
 pub mod glob;
 pub mod gnuhelp;
-pub mod head;
 pub mod groups;
+pub mod head;
 
 pub mod hostid;
 pub mod hostname;
@@ -71,7 +71,6 @@ pub mod test_cmd;
 pub mod timeout;
 pub mod touch;
 pub mod tr;
-
 
 pub mod truefalse;
 pub mod truncate;
@@ -156,7 +155,6 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("nice", nice::nice_cmd),
         // wave4b (#1488)
         ("factor", factor::factor_cmd),
-
         ("pathchk", pathchk::pathchk_cmd),
         ("csplit", csplit::csplit_cmd),
         ("shuf", shuf::shuf_cmd),
