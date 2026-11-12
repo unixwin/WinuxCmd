@@ -44,6 +44,7 @@ pub mod numfmt;
 pub mod od;
 
 pub mod paste;
+pub mod pathchk;
 pub mod printenv;
 pub mod pwd;
 pub mod readlink;
@@ -147,6 +148,7 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         // wave4b (#1488)
         ("factor", factor::factor_cmd),
 
+        ("pathchk", pathchk::pathchk_cmd),
     ]
 }
 

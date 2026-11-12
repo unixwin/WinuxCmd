@@ -2365,6 +2365,10 @@ nohup_rows = [
     ("nh22-posixly-empty", "strict", "", "POSIXLY_CORRECT=", "", []),
     ("nh23-short-h-with-cmd", "strict", "", "", "", ["-h", "true"]),
     ("nh24-version-then-help", "strict", "", "", "", ["--version", "--help"]),
+# pathchk: stdout always empty; most rows gate GNU rc strictly. The
+# Windows-subject rows (reserved names, invalid chars) diverge from GNU's
+# ext4 verdicts by design (C++ value model) -> win.
+PK_SETUP_REG = "touch regfile; mkdir -p missingdir/inner"
 pathchk_rows = [
     ("pk01-ok", "strict", "", "", "", ["ok.txt"]),
     ("pk02-missing-chain", "strict", "", "", "", ["nosuch/name.txt"]),
@@ -2514,6 +2518,8 @@ who_rows = [
     ("wh24-message-alias", "win", "", "", "", ["--message"]),
     ("wh25-heading-count", "win", "", "", "", ["-H", "-q"]),
     ("wh26-heading-missing-file", "win", "", "", "", ["-H", "who-nosuch-utmp"]),
+]
+
 def collect():
     """All case tables as (cmd, rows) pairs, in emit order."""
     return [
@@ -2542,6 +2548,7 @@ def collect():
         ("sort", sort_rows),
         ("factor", factor_rows),
 
+        ("pathchk", pathchk_rows),
     ]
 
 
