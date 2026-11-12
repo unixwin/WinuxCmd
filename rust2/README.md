@@ -169,7 +169,7 @@ Two shapes were on the table; the pull callback is the one implemented.
    thread) — no ABI change required, which is exactly why the simpler
    shape goes first.
 
-### Signature (C form, for the future `rust2_abi.h` adoption commit)
+### Signature (C form, adopted into `rust2_abi.h` by the v2 bridge adoption)
 
 ```c
 /* Fill buf (cap bytes, cap >= 1) with the next stdin bytes. Returns:
@@ -198,14 +198,19 @@ Rust mirror: `winux_core::stream::StreamReadFn` (the fn-pointer type),
 `winux_core::stream::StreamReader` (the `impl Read` wrapper), and the
 `winuxcmd_run_stream` export in `winuxcmd-ffi`.
 
-**Additive, not a bump.** `winuxcmd_abi_version()` stays `1`: v1 symbols
-and semantics are byte-for-byte unchanged, and the C++ bridge
-(`rust2_bridge.cppm`) refuses on a version mismatch, so bumping from the
-Rust side alone would break wired commands. The version goes to `2` in the
-same commit that adopts `winuxcmd_run_stream` on the C++ side (header +
-bridge + `WINUXCMD_RUST2_ABI_VERSION`, per the header's own rule). Hosts
-detect v2 support by symbol presence (`winuxcmd_run_stream` in
-`dumpbin /LINKERMEMBER:1 winuxcmd_ffi.lib`).
+**Additive, then one bump at adoption.** While v2 was additive,
+`winuxcmd_abi_version()` stayed `1`: v1 symbols and semantics are
+byte-for-byte unchanged, and the C++ bridge (`rust2_bridge.cppm`) refuses
+on a version mismatch, so bumping from the Rust side alone would break
+wired commands. The version went to `2` in the same commit that adopted
+`winuxcmd_run_stream` on the C++ side (#1488 v2 bridge adoption: header +
+bridge + `WINUXCMD_RUST2_ABI_VERSION` together, per the header's own
+rule). The C++ host entry is the bridge's streaming convenience call
+(`run_command_with_stdin_streaming`, real fd 0 through the `file_io` read
+path) plus the generic `run_command_with_stdin_source` /
+`run_command_with_stdin_bytes`; no wired command uses v2 yet. Hosts detect
+v2 support by symbol presence
+(`winuxcmd_run_stream` in `dumpbin /LINKERMEMBER:1 winuxcmd_ffi.lib`).
 
 ### Callback contract
 
