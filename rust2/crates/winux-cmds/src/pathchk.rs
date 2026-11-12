@@ -56,6 +56,8 @@ const OPTS: &[OptSpec] = &[
         long: "portability",
         takes_value: false,
     },
+    // GNU pathchk has no -h: reject it like getopt_long does.
+    argopt::H_REJECT_SPEC,
 ];
 
 const PATHCHK_HELP_BODY: &str = r#"Usage: pathchk [OPTION]... NAME...
@@ -235,6 +237,9 @@ pub fn pathchk_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         Ok(p) => p,
         Err(s) => return Ok(s),
     };
+    if let Some(status) = argopt::rejected_short_h(io, "pathchk", &p, 1) {
+        return Ok(status);
+    }
     if let Some(which) = p
         .flags
         .iter()
