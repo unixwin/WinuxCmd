@@ -2010,6 +2010,45 @@ sum_rows = [
     ("sm20-newlines", "strict", "printf '1\\n2\\n3\\n4\\n5\\n' > f", "", "", ["f"]),
 ]
 
+mktemp_rows = [
+    ("mk01-create-file", "exit", "", "", "", ["tpl.XXXXXX"]),
+    ("mk02-create-dir", "exit", "", "", "", ["-d", "dir.XXXXXX"]),
+    ("mk03-suffix", "exit", "", "", "", ["--suffix=.txt", "tpXXXXXX"]),
+    ("mk04-suffix-slash", "strict", "", "", "", ["--suffix=/x", "tpXXXXXX"]),
+    ("mk05-tail-slash", "strict", "", "", "", ["XXXXXX/a"]),
+    ("mk06-few-x-one", "strict", "", "", "", ["X"]),
+    ("mk07-few-x-lower", "strict", "", "", "", ["xxx"]),
+    ("mk08-four-x", "exit", "", "", "", ["XXXX"]),
+    ("mk09-three-x", "exit", "", "", "", ["XXX"]),
+    ("mk10-two-x", "strict", "", "", "", ["XX"]),
+    ("mk11-no-x", "strict", "", "", "", ["abc"]),
+    ("mk12-suffix-x", "exit", "", "", "", ["--suffix=X", "tpXXXXXX"]),
+    ("mk13-suffix-empty-bad", "strict", "", "", "", ["--suffix=", "XXXXXX."]),
+    ("mk14-suffix-empty-ok", "exit", "", "", "", ["--suffix=", "XXXXXX"]),
+    ("mk15-two-templates", "strict", "", "", "", ["a.XXXXXX", "b.XXXXXX"]),
+    ("mk16-p-dir", "exit", "", "", "", ["-p", "/tmp", "mkp.XXXXXX"]),
+    ("mk17-tmpdir-flag", "exit", "", "", "", ["--tmpdir", "mkt.XXXXXX"]),
+    ("mk18-p-absolute", "strict", "", "", "", ["-p", "/tmp", "/abs.XXXXXX"]),
+    ("mk19-default-template", "exit", "", "", "", []),
+    ("mk20-dry-run", "exit", "", "", "", ["-u", "u.XXXXXX"]),
+    ("mk21-quiet-bad-dir", "strict", "", "", "", ["-q", "nosuchdir/xXXXXXX"]),
+    ("mk22-bad-dir", "strict", "", "", "", ["nosuchdir/xXXXXXX"]),
+    ("mk23-dir-quiet", "exit", "", "", "", ["-d", "-q", "d.XXXXXX"]),
+    ("mk24-tmpdir-env", "exit", "TMPDIR=/tmp", "", "", ["--tmpdir", "mte.XXXXXX"]),
+    ("mk25-bogus-long", "strict", "", "", "", ["--bogus"]),
+    ("mk26-help", "strict", "", "", "", ["--help"]),
+    ("mk27-version", "strict", "", "", "", ["--version"]),
+]
+
+NICE_CHILD_SETUP = (
+    "printf '#!/bin/sh\\nexit 3\\n' > cmd; chmod +x cmd; "
+    "export PATH=\"$PWD:$PATH\""
+)
+NICE_CHILD_OK_SETUP = (
+    "printf '#!/bin/sh\\nexit 0\\n' > cmd; chmod +x cmd; "
+    "export PATH=\"$PWD:$PATH\""
+)
+
 def collect():
     """All case tables as (cmd, rows) pairs, in emit order."""
     return [
@@ -2034,6 +2073,7 @@ def collect():
         # wave4a (#1488)
         ("head", head_rows), ("tail", tail_rows), ("cut", cut_rows),
         ("tr", tr_rows), ("od", od_rows), ("sum", sum_rows),
+        ("mktemp", mktemp_rows),
     ]
 
 

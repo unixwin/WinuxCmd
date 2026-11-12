@@ -33,6 +33,7 @@ pub mod id;
 pub mod join;
 pub mod ln;
 pub mod mkdir;
+pub mod mktemp;
 pub mod modemap;
 pub mod nproc;
 pub mod numfmt;
@@ -133,6 +134,7 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("tr", tr::tr_cmd),
         ("od", od::od_cmd),
         ("sum", sum::sum_cmd),
+        ("mktemp", mktemp::mktemp_cmd),
     ]
 }
 
