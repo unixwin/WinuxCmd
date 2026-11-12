@@ -5,6 +5,16 @@
 //! values (`-sVAL`) and detached values (`-s VAL`); long options accept
 //! `--long=VAL` and `--long VAL`. Unknown options produce the GNU-style
 //! usage diagnostic and the command's usage status (1, or 2 for printenv).
+//!
+//! Sequential contract (#1573): getopt_long returns one option per call,
+//! and coreutils' main loop exits the process at the moment it receives
+//! the help/version value (`case_GETOPT_HELP_CHAR` -> usage(EXIT_SUCCESS),
+//! `case_GETOPT_VERSION_CHAR` -> version_etc + exit). Options after the
+//! first help/version in argv order are therefore never validated: the
+//! parser records the flag and returns at that position, so
+//! `<cmd> --help --bogus` is help-exit rc 0 while `<cmd> --bogus --help`
+//! still fails as unrecognized (rc 1), and `--help --version` keeps the
+//! first-flag-wins order.
 
 use std::ffi::OsString;
 
@@ -201,7 +211,24 @@ pub fn parse(
                     let _ = usage_error(io, prog, &msg);
                     return Err(usage_status);
                 }
-                out.flags.push(record_key);
+                out.flags.push(record_key.clone());
+                // #1573: the sequential getopt_long contract. help/version
+                // reach this point only through option-table resolution
+                // (exact match or unique abbreviation — the same shapes the
+                // virtual entries hold in coreutils' longopts tables), and
+                // the bare `-h` mapping below records the same key. In GNU
+                // the option is returned to main() here and
+                // case_GETOPT_HELP_CHAR / case_GETOPT_VERSION_CHAR exit
+                // immediately, so the rest of argv is never validated.
+                // Stopping the scan at the record site keeps every earlier
+                // option in `out` (they were parsed in order) and every
+                // later token unchecked; a help/version consumed as the
+                // VALUE of a preceding value option never lands in flags,
+                // so it is not short-circuited (getopt hands it to the
+                // command as optarg).
+                if record_key == HELP || record_key == VERSION {
+                    return Ok(out);
+                }
             }
             i += 1;
             continue;
@@ -214,10 +241,11 @@ pub fn parse(
             while ci < chars.len() {
                 let c = chars[ci];
                 if c == 'h' && !short_by_char(opts, 'h').is_some() && chars.len() == 1 {
-                    // `-h` alone maps to --help unless the command defines -h
+                    // `-h` alone maps to --help unless the command defines -h.
+                    // Same #1573 sequential contract as the long form: the
+                    // help value terminates the scan in argv order.
                     out.flags.push(HELP.to_string());
-                    ci += 1;
-                    continue;
+                    return Ok(out);
                 }
                 match short_by_char(opts, c) {
                     Some(spec) if spec.takes_value => {
@@ -341,5 +369,108 @@ mod tests {
         // GNU canonicalizes the spelling in the diagnostic (probed 9.4:
         // "option '--suffix' requires an argument").
         assert!(io.err().contains("option '--suffix' requires an argument"));
+    }
+
+    // ===== #1573: the sequential getopt_long contract =====
+    //
+    // getopt_long returns one option per call and coreutils' main exits at
+    // the help/version value (`case_GETOPT_HELP_CHAR` -> usage(EXIT_SUCCESS)),
+    // so options after the first help/version are never validated. Each pin
+    // below mirrors a probe row from the issue against WSL coreutils 9.4.
+
+    #[test]
+    fn help_short_circuits_later_unknown_options() {
+        // `basename --help --bogus` -> usage, rc 0.
+        let p = run(&["--help", "--bogus"]).unwrap();
+        assert!(p.has("help"));
+        assert!(!p.has("version"));
+    }
+
+    #[test]
+    fn version_short_circuits_later_unknown_options() {
+        // `basename --version --bogus` -> version block, rc 0.
+        let p = run(&["--version", "--bogus"]).unwrap();
+        assert!(p.has("version"));
+        assert!(!p.has("help"));
+    }
+
+    #[test]
+    fn bare_h_short_circuits_later_unknown_options() {
+        // The bare `-h` -> help mapping keeps the same order contract as the
+        // long form (the mapping itself is argopt's own extension; GNU 9.4
+        // rejects a bare -h where the command does not define it — a
+        // separate pre-existing divergence, out of #1573's scope).
+        let p = run(&["-h", "--bogus"]).unwrap();
+        assert!(p.has("help"));
+    }
+
+    #[test]
+    fn unknown_option_before_help_still_fails() {
+        // `basename --bogus --help` -> unrecognized rc 1: getopt hits
+        // --bogus first and the usage error leaves main before help is read.
+        let owned: Vec<std::ffi::OsString> = vec!["--bogus".into(), "--help".into()];
+        let mut io = MemIo::new("");
+        let sc = winux_core::test_support::ScratchCtx::new("argopt-order-rev");
+        let r = parse("prog", &owned, &opts(), &mut io.split(), &sc.ctx(), 1);
+        assert_eq!(r.unwrap_err(), 1);
+        assert!(io.err().contains("unrecognized option '--bogus'"));
+    }
+
+    #[test]
+    fn first_help_or_version_flag_wins() {
+        // `basename --help --version` -> help; `--version --help` -> version.
+        let p = run(&["--help", "--version"]).unwrap();
+        assert!(p.has("help"));
+        assert!(!p.has("version"));
+
+        let p = run(&["--version", "--help"]).unwrap();
+        assert!(p.has("version"));
+        assert!(!p.has("help"));
+    }
+
+    #[test]
+    fn options_before_help_are_kept() {
+        // Options earlier in argv were processed by getopt before main saw
+        // help; the short-circuit must not drop them.
+        let p = run(&["-z", "--suf", "x", "--help", "--bogus"]).unwrap();
+        assert!(p.has("zero"));
+        assert_eq!(p.value_of("suffix"), Some("x"));
+        assert!(p.has("help"));
+    }
+
+    #[test]
+    fn help_as_a_value_argument_is_not_short_circuited() {
+        // `mkdir --mode --help` in GNU: getopt hands "--help" to the command
+        // as optarg; it is a value, not the help exit.
+        let p = run(&["--suffix", "--help", "extra"]).unwrap();
+        assert!(!p.has("help"));
+        assert_eq!(p.value_of("suffix"), Some("--help"));
+        assert_eq!(p.positionals, ["extra"]);
+    }
+
+    #[test]
+    fn attached_value_on_help_is_still_a_usage_error() {
+        // `--help=x` keeps the getopt_long "doesn't allow an argument"
+        // diagnostic even though help would otherwise short-circuit.
+        let owned: Vec<std::ffi::OsString> = vec!["--help=x".into()];
+        let mut io = MemIo::new("");
+        let sc = winux_core::test_support::ScratchCtx::new("argopt-helpval");
+        let r = parse("prog", &owned, &opts(), &mut io.split(), &sc.ctx(), 1);
+        assert_eq!(r.unwrap_err(), 1);
+        assert!(io
+            .err()
+            .contains("option '--help' doesn't allow an argument"));
+    }
+
+    #[test]
+    fn operand_before_help_permutes_into_positionals() {
+        // GNU permutes operands: `mkdir x --help --bogus` exits with help
+        // rc 0 and the operand stays an operand.
+        let owned: Vec<std::ffi::OsString> = vec!["x".into(), "--help".into(), "--bogus".into()];
+        let mut io = MemIo::new("");
+        let sc = winux_core::test_support::ScratchCtx::new("argopt-perm");
+        let p = parse("prog", &owned, &opts(), &mut io.split(), &sc.ctx(), 1).unwrap();
+        assert!(p.has("help"));
+        assert_eq!(p.positionals, ["x"]);
     }
 }
