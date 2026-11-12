@@ -118,13 +118,11 @@ The corpus above exercises Windows-form/relative operands only, but the
 product contract is that rubash hands applets POSIX spellings **verbatim**
 (niubash#346; resolved by `native_path.cppm:shell_tree_map_w`, being ported
 to `winux-core/path.rs`). The posix round covers that boundary:
-
 ```sh
 bash gate/run-gate.sh --posix-mode              # cases-posix/, pending-tolerant ledger
 POSIX_STRICT=1 bash gate/run-gate.sh --posix-mode   # hard-gate (after the port lands)
 python gate/qc_posix_gap.py --fixture-run       # corpus census + fixture-inertness leg
 ```
-
 `--posix-mode` runs the hand-written skeletons in `gate/cases-posix/` under
 the shell-namespace fixture (`__RUBASH_SHELL_ROOT`/`TMPDIR`/`HOME`) with the
 Windows sides driven through **PowerShell** — the agent bash on this host is
@@ -134,6 +132,29 @@ PENDING, not FAIL, until the port lands; a landing-leak detector keeps the
 literal `D:\tmp` landfall from ever scoring as ok. `qc_posix_gap.py` pins
 the POSIX-variant backlog in `gate/POSIX-GAP.md` — the acceptance baseline
 for the P lane.
+## Wave4b (#1488): factor pathchk ptx shuf csplit nohup groups who
+The next 8 library-form commands landed with the same shape contract and a
+226-case differential gate. Byte-strict GNU paths worth knowing:
+* `shuf --random-source` is deterministic on the GNU side — the
+  entropy-recycling randint port reproduces coreutils 9.4 permutations
+  byte-for-byte (37/40 strict rows), and an exhausted source under a
+  shuffle continues with identity draws (probed) while the repeat path
+  errors with "end of file".
+* `csplit` streams segment files exactly like GNU (sizes to stdout,
+  in-progress-file flush rules on the error paths, -k keeps them).
+* `nohup` parses LEADING options only (nohup.c optstring "+"): `nohup
+  true --bogus` runs true, `nohup --bogus true` dies with usage 125.
+  The terminal faces (nohup.out append, /dev/null stdin) are deferred to
+  the wiring wave — a console probe cannot come through injected IO.
+* `factor` carries a std-only biguint (trial division + Pollard-Brent +
+  Miller-Rabin over 16 prime bases); operands whose smallest factor
+  approaches 2^65 are a documented performance boundary.
+* `ptx` implements the C++ subset data flow; the circular-context default
+  grid of GNU ptx is the documented divergence behind its win rows.
+* argopt gained `H_REJECT_SPEC`/`rejected_short_h` for commands where
+  GNU has no -h (getopt_long matches --help only as a long option);
+  timeout's childproc resolver was extracted to `childproc.rs` so nohup
+  shares one execvp-shaped search.
 
 ## Mechanical replacement recipe (next command)
 

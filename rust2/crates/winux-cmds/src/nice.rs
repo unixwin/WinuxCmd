@@ -31,8 +31,8 @@
 use std::ffi::OsString;
 
 use crate::argopt::{self, OptSpec};
+use crate::childproc::{quote_windows_arg, resolve_child, ChildResolve};
 use crate::gnuhelp;
-use crate::timeout::{quote_windows_arg, resolve_child, ChildResolve};
 use winux_core::{CmdResult, Ctx, Io};
 
 const OPTS: &[OptSpec] = &[OptSpec {

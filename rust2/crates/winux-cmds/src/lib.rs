@@ -11,14 +11,19 @@ pub mod basename;
 pub mod basenc;
 pub mod bre;
 pub mod canon;
+pub mod childproc;
 pub mod chmod;
 pub mod chown;
+pub mod csplit;
 pub mod cut;
+
 pub mod df;
 pub mod digest;
 pub mod digestsum;
 pub mod dirname;
 pub mod expand;
+pub mod factor;
+
 pub mod fmt;
 pub mod fold;
 pub mod fs_win;
@@ -26,7 +31,9 @@ pub mod fsutil;
 pub mod getconf;
 pub mod glob;
 pub mod gnuhelp;
+pub mod groups;
 pub mod head;
+
 pub mod hostid;
 pub mod hostname;
 pub mod id;
@@ -36,17 +43,22 @@ pub mod mkdir;
 pub mod mktemp;
 pub mod modemap;
 pub mod nice;
+pub mod nohup;
+
 pub mod nproc;
 pub mod numfmt;
 pub mod od;
 
 pub mod paste;
+pub mod pathchk;
 pub mod printenv;
+pub mod ptx;
 pub mod pwd;
 pub mod readlink;
 pub mod realpath;
 pub mod rmdir;
 pub mod seq;
+pub mod shuf;
 pub mod sleep;
 pub mod sort;
 pub mod stat;
@@ -67,6 +79,7 @@ pub mod uname;
 pub mod unexpand;
 pub mod unlink;
 pub mod users;
+pub mod who;
 pub mod whoami;
 pub mod winsys;
 
@@ -140,6 +153,15 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("sum", sum::sum_cmd),
         ("mktemp", mktemp::mktemp_cmd),
         ("nice", nice::nice_cmd),
+        // wave4b (#1488)
+        ("factor", factor::factor_cmd),
+        ("pathchk", pathchk::pathchk_cmd),
+        ("csplit", csplit::csplit_cmd),
+        ("shuf", shuf::shuf_cmd),
+        ("ptx", ptx::ptx_cmd),
+        ("nohup", nohup::nohup_cmd),
+        ("groups", groups::groups_cmd),
+        ("who", who::who_cmd),
     ]
 }
 

@@ -674,7 +674,12 @@ if(WINUXCMD_ENABLE_RUST2)
     # update this list if a rust2 change makes the link fail with LNK2019.
     set_target_properties(winuxcmd-rust2-lib PROPERTIES
             IMPORTED_LOCATION "${WINUXCMD_RUST2_LIB}"
-            INTERFACE_LINK_LIBRARIES "advapi32;kernel32;ntdll;userenv;ws2_32;dbghelp")
+            # rustc strips #[link] directives from staticlib outputs, so the
+            # Windows libs the command cores bind via extern blocks (WTS
+            # sessions for who, NetUserGetGroups for groups) must be linked
+            # by the consumer. Interface propagates to both winuxcmd.exe and
+            # the stream driver.
+            INTERFACE_LINK_LIBRARIES "advapi32;kernel32;ntdll;userenv;ws2_32;dbghelp;wtsapi32;netapi32")
     add_dependencies(winuxcmd-commands winuxcmd-rust2)
     target_link_libraries(winuxcmd-commands PRIVATE winuxcmd-rust2-lib)
     message(STATUS "rust2 command library: ON (${WINUXCMD_RUST2_COMMANDS}) via ${WINUXCMD_CARGO_EXECUTABLE}")

@@ -29,6 +29,31 @@ pub struct OptSpec {
 pub const HELP: &str = "help";
 pub const VERSION: &str = "version";
 
+/// Internal long name for the marker spec a command registers under short
+/// 'h' when GNU has NO -h option: getopt_long matches --help only as a
+/// long option there, so a bare -h is "invalid option -- 'h'" (probed GNU
+/// 9.4: shuf/csplit/pathchk/groups/who/nohup all reject it). Registering
+/// the marker keeps the shared parser from hijacking -h into --help for
+/// those commands; call [`rejected_short_h`] after parse.
+pub const H_REJECT_MARKER: &str = "winux-h-reject";
+
+/// Spec to append to a command's option table when GNU has no -h.
+pub const H_REJECT_SPEC: OptSpec = OptSpec {
+    short: Some('h'),
+    long: H_REJECT_MARKER,
+    takes_value: false,
+};
+
+/// GNU diagnostic for the marker: `<prog>: invalid option -- 'h'` plus the
+/// try-help line, with the command's usage status.
+pub fn rejected_short_h(io: &mut Io, prog: &str, p: &Parsed, usage_status: u32) -> Option<u32> {
+    if p.flags.iter().any(|f| f == H_REJECT_MARKER) {
+        let _ = usage_error(io, prog, "invalid option -- 'h'");
+        return Some(usage_status);
+    }
+    None
+}
+
 #[derive(Default, Debug)]
 pub struct Parsed {
     pub flags: Vec<String>,

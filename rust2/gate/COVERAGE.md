@@ -148,7 +148,6 @@ own the shell tree") also hands its applets POSIX spellings verbatim
 (/tmp, /var/tmp, /home, /mnt/X, the bare "/" tree, /dev/*), and before
 the wave3b port those operands landed on the current drive's bare
 resolution (`mkdir -p /tmp/x` created `D:\tmp\x`).
-
 The mode configures a fresh shell root (WINUXSH_ROOT, higher aliases
 cleared, TMPDIR pinned to `<root>/tmp`, HOME inside the root), feeds
 POSIX-spelled operands through in-process argv (the agent shell's
@@ -158,23 +157,33 @@ the LANDING on the Windows filesystem. 102 cases: every wired command
 with path-class operands gets >= 3 variants (tmp view, bare/device
 name, /mnt drive path) plus root-tree spellings and the NUL.txt stem
 trap.
-
 Per-command shell-namespace coverage:
-
 | commands (3+ POSIX variants each) | n |
 |---|---|
 | mkdir rmdir unlink touch truncate tac tee ln chmod chown stat readlink realpath df sync base64 base32 b2sum sha224sum sha384sum join tsort paste fold fmt expand unexpand test basename dirname getconf | 31 |
-
 Commands WITHOUT path-class operands are N/A by construction (they
 accept no path operands to spell POSIXly): true false pwd printenv seq
 sleep whoami nproc hostname id uname hostid users timeout numfmt.
 `[` is covered through the test rows.
-
 rc pins for bare devices are the Windows-inherent outcomes (C++ 1.x
 parity), not GNU/WSL values: NUL answers no attribute write
 (ACCESS_DENIED -> touch/truncate/sync rc 1), no volume query
 (df rc 1), and no ownership change path (chown root rc 1). `mkdir NUL`
 pins 0 — WSL GNU also creates a literal NUL directory there.
-
 Artifacts: `target/gate/shellns-ledger.tsv` (per-case PASS/FAIL +
 landing notes).
+## Wave4b addendum (#1488, fourth batch — table not merged into the stale
+## total above; wave3b rows are likewise pending regeneration)
+| command | cases | strict | exit | win | note | GNU direct | C++ parity | gate | vacuous |
+|---|---|---|---|---|---|---|---|---|---|
+| factor | 26 | 25 | 0 | 1 | 0 | 96% | 24/26 | GREEN | 0 |
+| pathchk | 30 | 27 | 0 | 3 | 0 | 90% | 28/30 | GREEN | 0 |
+| ptx | 28 | 19 | 0 | 9 | 0 | 68% | 26/28 | GREEN | 0 |
+| shuf | 40 | 37 | 1 | 2 | 0 | 95% | 37/40 | GREEN | 0 |
+| csplit | 32 | 32 | 0 | 0 | 0 | 100% | 32/32 | GREEN | 0 |
+| nohup | 24 | 18 | 0 | 6 | 0 | 75% | 19/24 | GREEN | 0 |
+| groups | 20 | 16 | 0 | 4 | 0 | 80% | 16/20 | GREEN | 0 |
+| who | 26 | 6 | 0 | 20 | 0 | 23% | 24/26 | GREEN | 0 |
+**Wave4b total: 226 cases, all GREEN; C++ parity 206/226 (gaps are the
+documented GNU-branded help/version surface, nohup children without
+standalone Windows images, and the ptx subset-vs-GNU layout deviations).**
