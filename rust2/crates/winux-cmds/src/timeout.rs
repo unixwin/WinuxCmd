@@ -28,6 +28,7 @@ use std::os::windows::process::CommandExt;
 use std::time::{Duration, Instant};
 
 use crate::argopt::{self, OptSpec};
+use crate::childproc::{quote_windows_arg, resolve_child, ChildResolve};
 use winux_core::{win32_env_get, CmdResult, Ctx, Io};
 
 const OPTS: &[OptSpec] = &[

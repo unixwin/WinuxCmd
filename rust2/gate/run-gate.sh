@@ -365,7 +365,6 @@ run_case() {
                 printf 'echo $? > .rc\n'
             } > "$sdir/run.sh"
             ( cd "$sdir" && bash run.sh >/dev/null 2>&1 )
-        done
     fi
 
     # ---------- landing-leak check (posix mode) ----------
@@ -377,7 +376,6 @@ run_case() {
     # the first component is a leak -> pending (never ok), and is removed so
     # reruns start clean.
     local landing="ok"
-    if [ "$POSIX_MODE" -eq 1 ]; then
         local drive="${TREE:0:2}"
         local a tail zone cand leak_zone=""
         local -a operands=("${args[@]}")
@@ -385,7 +383,6 @@ run_case() {
             # tokenize the setup so `touch /tmp/x` contributes the spelling
             local w
             for w in $setup; do operands+=("$w"); done
-        fi
         for a in "${operands[@]}"; do
             case "$a" in
                 /tmp/*) tail="${a#/tmp/}"; zone="$drive/tmp" ;;
@@ -406,8 +403,18 @@ run_case() {
                     # landfall root; removing it clears deeper leftovers too
                     leak_zone="$cand"
                     landing="leak"
-                fi
                 cand="${cand%/*}"
+        # MSYS2 path conversion rewrites POSIX-looking arguments (/a/b/,
+        # /dev/null, ...) for native children, which would corrupt pattern
+        # and path operands before the gate compares them. The library
+        # contract handles POSIX drive spellings itself (fs_win::api_path
+        # folds /d/... forms), so the gate measures raw argv both sides.
+        # The C++ package bin dir joins PATH for both Windows sides: it is
+        # the WinuxCmd /usr/bin analog, and child-spawning commands (nohup,
+        # timeout, env, xargs) exec their siblings through it exactly the
+        # way a POSIX /usr/bin package resolves them.
+            printf 'export MSYS_NO_PATHCONV=1\n'
+            printf 'export PATH="$PATH:%s"\n' "$(dirname "$CPP_BIN")"
             done
             if [ "$landing" = "leak" ] && [ -n "$leak_zone" ]; then
                 rm -rf "$leak_zone"

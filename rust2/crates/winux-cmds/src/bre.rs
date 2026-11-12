@@ -202,6 +202,24 @@ impl Regex {
         }
         None
     }
+
+    /// Leftmost-longest match anywhere in `buf` (re_search semantics for
+    /// csplit's /regexp/ line patterns): the first start offset that
+    /// matches, with the longest end at that offset. Empty-match capable.
+    pub fn search_forward(&self, buf: &[u8]) -> Option<(usize, usize)> {
+        for s in 0..=buf.len() {
+            if let Some(end) = match_node(&self.root, buf, s, buf.len()) {
+                return Some((s, end));
+            }
+        }
+        None
+    }
+
+    /// True when the pattern matches somewhere in `buf` (non-empty match
+    /// or empty match; an empty match still counts, like regexec).
+    pub fn matches_anywhere(&self, buf: &[u8]) -> bool {
+        self.search_forward(buf).is_some()
+    }
 }
 
 /// Longest match of one full pattern node against buf[..limit] starting at
