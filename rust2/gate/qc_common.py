@@ -33,10 +33,32 @@ GATE_DIR = os.path.dirname(os.path.abspath(__file__))
 RUST2_DIR = os.path.dirname(GATE_DIR)
 TREE_DIR = os.path.dirname(RUST2_DIR)
 CASES_DIR = os.path.join(GATE_DIR, "cases")
+CASES_POSIX_DIR = os.path.join(GATE_DIR, "cases-posix")
 QC_ART = os.path.join(RUST2_DIR, "target", "gate-qc")
 GNU_REMOTE_ROOT = "/tmp/winuxcmd-gate-qc"
 GNU_MIRROR = os.path.join(QC_ART, "gnu")
 SIDE_TIMEOUT = 10
+
+
+def posix_fixture():
+    """Shell-namespace fixture env for POSIX-spelling cases (#1488 gate posix
+    round), mirroring run-gate.sh --posix-mode: __RUBASH_SHELL_ROOT (highest
+    root priority in native_path.cppm shell_tree_map_w, so no host NIU_ROOT
+    can shadow it), TMPDIR (/tmp and /var/tmp), HOME (/home maps to HOME's
+    parent). All under target/gate-qc/posix/, created on demand. Python
+    subprocess passes argv verbatim, so no conversion-layer detour is needed
+    (see PROBE-METHODOLOGY.md)."""
+    art = os.path.join(QC_ART, "posix")
+    root = os.path.join(art, "root")
+    tmp = os.path.join(art, "tmp")
+    home = os.path.join(art, "home", "u")
+    for d in (root, os.path.join(root, "usr", "bin"), tmp, os.path.dirname(home)):
+        os.makedirs(d, exist_ok=True)
+    return {
+        "__RUBASH_SHELL_ROOT": root,
+        "TMPDIR": tmp,
+        "HOME": home,
+    }
 
 
 def tree_mnt():
@@ -133,9 +155,9 @@ def parse_env(s):
     return out
 
 
-def parse_cases(cmd):
+def parse_cases(cmd, cases_dir=None):
     """Parse gate/cases/<cmd>.tsv into Case objects (skips # comments)."""
-    path = os.path.join(CASES_DIR, cmd + ".tsv")
+    path = os.path.join(cases_dir or CASES_DIR, cmd + ".tsv")
     cases = []
     with open(path, "r", encoding="utf-8") as fh:
         for line in fh:
@@ -152,10 +174,18 @@ def parse_cases(cmd):
     return cases
 
 
-def list_commands():
-    return sorted(
-        f[:-4] for f in os.listdir(CASES_DIR) if f.endswith(".tsv")
-    )
+def list_commands(cases_dir=None):
+    d = cases_dir or CASES_DIR
+    return sorted(f[:-4] for f in os.listdir(d) if f.endswith(".tsv"))
+
+
+def list_posix_commands():
+    """Commands with a shell-namespace (POSIX-spelling) skeleton table."""
+    return list_commands(CASES_POSIX_DIR)
+
+
+def parse_posix_cases(cmd):
+    return parse_cases(cmd, CASES_POSIX_DIR)
 
 
 def qsh(s):
