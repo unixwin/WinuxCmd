@@ -495,3 +495,112 @@ TEST(mkdir, mkdir_long_verbose_reports_created_directory_issue1298) {
   EXPECT_TRUE(r.stderr_text.empty());
   EXPECT_TRUE(std::filesystem::is_directory(tmp.path / "newdir"));
 }
+
+// #1581: GNU getopt_long is streaming -- the first terminating event in
+// argv order wins. An illegal option before --help/--version is an
+// error (rc 1), not usage/version on stdout; --help before --version
+// prints help (first flag wins); a value-taking option still swallows
+// the next token (mkdir --mode --help stays rc 1 missing operand).
+TEST(mkdir, mkdir_bogus_before_help_is_error_issue1581) {
+  Pipeline p;
+  p.add(L"mkdir.exe", {L"--bogus", L"--help"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("unrecognized option '--bogus'") !=
+              std::string::npos);
+}
+
+TEST(mkdir, mkdir_invalid_short_before_help_is_error_issue1581) {
+  Pipeline p;
+  p.add(L"mkdir.exe", {L"-q", L"--help"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("invalid option -- 'q'") !=
+              std::string::npos);
+}
+
+TEST(mkdir, mkdir_bogus_before_abbreviated_help_is_error_issue1581) {
+  Pipeline p;
+  p.add(L"mkdir.exe", {L"--bogus", L"--hel"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("unrecognized option '--bogus'") !=
+              std::string::npos);
+}
+
+TEST(mkdir, mkdir_bogus_before_version_is_error_issue1581) {
+  Pipeline p;
+  p.add(L"mkdir.exe", {L"--bogus", L"--version"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("unrecognized option '--bogus'") !=
+              std::string::npos);
+}
+
+TEST(mkdir, mkdir_help_before_version_prints_help_issue1581) {
+  Pipeline p;
+  p.add(L"mkdir.exe", {L"--help", L"--version"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("Usage: mkdir") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.rfind("WinuxCmd ", 0) != 0);
+}
+
+TEST(mkdir, mkdir_help_before_bogus_prints_help_issue1581) {
+  Pipeline p;
+  p.add(L"mkdir.exe", {L"--help", L"--bogus"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("Usage: mkdir") != std::string::npos);
+}
+
+TEST(mkdir, mkdir_mode_swallows_help_still_missing_operand_issue1581) {
+  Pipeline p;
+  p.add(L"mkdir.exe", {L"--mode", L"--help"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("missing operand") != std::string::npos);
+}
+
+TEST(mkdir, mkdir_mode_value_before_help_still_prints_help_issue1581) {
+  Pipeline p;
+  p.add(L"mkdir.exe", {L"--mode", L"755", L"--help"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("Usage: mkdir") != std::string::npos);
+}
+
+TEST(mkdir, mkdir_flag_value_before_help_is_error_issue1581) {
+  Pipeline p;
+  p.add(L"mkdir.exe", {L"--parents=x", L"--help"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("doesn't allow an argument") !=
+              std::string::npos);
+}
+
+TEST(mkdir, mkdir_bogus_before_help_equals_is_error_issue1581) {
+  Pipeline p;
+  p.add(L"mkdir.exe", {L"--bogus", L"--help=x"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("unrecognized option '--bogus'") !=
+              std::string::npos);
+}

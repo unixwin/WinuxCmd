@@ -5,6 +5,7 @@ export module core:dispatcher;
 import std;
 import :cmd_meta;
 import :command_context;
+import :opt;
 import utils;
 import version;
 
@@ -1337,6 +1338,70 @@ auto classify_args_for_dispatch(
   return roles;
 }
 
+// #1581: GNU getopt_long is streaming: the first terminating event in
+// argv order (an option error, or --help/--version) decides the outcome,
+// so a --help/--version token only intercepts when every option token
+// before it parses clean. Run the argv prefix before the token through
+// the real parser -- the same parse_command_runtime make_context uses,
+// with the command's own policy -- instead of re-implementing option
+// validity in the dispatcher: an unknown long/short option, a flag
+// carrying "=value", or a missing value in the prefix all make it fail,
+// and the handler's own parse then reports the first error in order.
+// Value swallowing is already settled by classify_args_for_dispatch, so
+// a prefix judged at a help/version token never ends mid-value: an
+// option that takes a value has swallowed the help/version token itself
+// (mkdir --mode --help stays rc 1 missing operand, and grep --label
+// --help still searches).
+auto argv_prefix_has_parse_error(
+    std::string_view cmd_name, std::span<std::string_view> prefix,
+    std::span<const cmd::meta::OptionMeta> options) -> bool {
+  if (prefix.empty()) return false;
+  const auto parsed = parse_command_runtime(
+      prefix, options, option_policy_for_command(cmd_name));
+  return !parsed.ok;
+}
+
+// #1581: abbreviation candidates for a "--" token, over the same set the
+// abbreviation pass in run() uses: the command's declared long options
+// plus the implicit --help/--version. Only proper prefixes count; an
+// exact name is not an abbreviation of itself.
+auto abbreviation_matches(
+    std::string_view name,
+    std::span<const cmd::meta::OptionMeta> options)
+    -> std::vector<std::string_view> {
+  std::vector<std::string_view> matches;
+  if (!name.starts_with("--") || name.size() <= 2) return matches;
+  auto consider = [&matches](std::string_view candidate,
+                             std::string_view prefix) {
+    if (candidate.size() > prefix.size() &&
+        candidate.starts_with(prefix) &&
+        std::ranges::find(matches, candidate) == matches.end()) {
+      matches.push_back(candidate);
+    }
+  };
+  for (const auto &m : options) consider(m.long_name, name);
+  consider(std::string_view("--help"), name);
+  consider(std::string_view("--version"), name);
+  return matches;
+}
+
+// #1581: true when `name` is the unique abbreviation of `target` among
+// the abbreviation candidates above.
+auto is_unambiguous_abbreviation(
+    std::string_view name, std::string_view target,
+    std::span<const cmd::meta::OptionMeta> options) -> bool {
+  const auto matches = abbreviation_matches(name, options);
+  return matches.size() == 1 && matches[0] == target;
+}
+
+// #1581: true when `name` abbreviates more than one candidate, so GNU
+// reports it ambiguous before any later token is reached.
+auto is_ambiguous_abbreviation(
+    std::string_view name,
+    std::span<const cmd::meta::OptionMeta> options) -> bool {
+  return abbreviation_matches(name, options).size() > 1;
+}
+
 // #1305: GNU prints a usage tail after an option error for some
 // commands: grep gets its one-line Usage before the Try line, sed
 // gets its full help instead of the Try line. Returns false when the
@@ -1584,6 +1649,14 @@ class RegistryImpl {
     // `test --help x` is an expression error, not help. Commands that
     // opt out of standard interception (e.g. nohup, whose options end
     // at the wrapped command) skip the scan entirely.
+    // #1581: the first terminating event in argv order wins -- an
+    // option error before the help/version token suppresses the
+    // interception entirely (mkdir --bogus --help is rc 1, not usage
+    // on stdout; mkdir -q --help is rc 1, not usage). The prefix
+    // before the event token is judged with
+    // argv_prefix_has_parse_error, and only at an event token: judging
+    // it at an ordinary option would misread a value that is simply
+    // the next token (mkdir --mode -p --help must still print help).
     bool wants_help = false;
     bool wants_version = false;
     std::string_view no_argument_option;
@@ -1599,33 +1672,48 @@ class RegistryImpl {
         for (size_t i = 0; i < effective_args.size(); ++i) {
           if (roles[i] != ArgRole::Option) continue;
           const std::string_view arg = effective_args[i];
+          enum class Event { None, Help, Version, NoArgHelp, NoArgVersion };
+          Event event = Event::None;
           if (arg == "--help") {
-            wants_help = true;
+            event = Event::Help;
+          } else if (arg.starts_with("--help=")) {
+            event = Event::NoArgHelp;
+          } else if (arg == "--version") {
+            event = Event::Version;
+          } else if (arg.starts_with("--version=")) {
+            event = Event::NoArgVersion;
+          } else if (arg == "-v" &&
+                     command_declares_version_short(options, "-v")) {
+            event = Event::Version;
+          } else if (arg == "-V" &&
+                     (!command_declares_option(options, arg) ||
+                      command_declares_version_short(options, arg))) {
+            event = Event::Version;
+          }
+          if (event == Event::None) continue;
+          if (argv_prefix_has_parse_error(cmdName, effective_args.first(i),
+                                          options)) {
+            // An earlier option already terminates the parse with an
+            // error: no interception, the handler reports it.
             break;
           }
-          if (arg.starts_with("--help=")) {
-            no_argument_option = "--help";
-            break;
-          }
-          if (arg == "--version") {
-            wants_version = true;
-            break;
-          }
-          if (arg.starts_with("--version=")) {
-            no_argument_option = "--version";
-            break;
-          }
-          if (arg == "-v" && command_declares_version_short(options, "-v")) {
-            wants_version = true;
-            break;
-          }
-          if (arg == "-V") {
-            if (!command_declares_option(options, arg) ||
-                command_declares_version_short(options, arg)) {
+          switch (event) {
+            case Event::Help:
+              wants_help = true;
+              break;
+            case Event::Version:
               wants_version = true;
               break;
-            }
+            case Event::NoArgHelp:
+              no_argument_option = "--help";
+              break;
+            case Event::NoArgVersion:
+              no_argument_option = "--version";
+              break;
+            case Event::None:
+              break;
           }
+          break;
         }
       }
     }
@@ -1716,6 +1804,10 @@ class RegistryImpl {
   // product-path defect, since the default edition reaches env/kill/...
   // only through the verb form. One source of truth with run(), so
   // main.cpp keeps no hand-copied table (WinuxCmd #1215).
+  // #1581: and only when it is the first terminating event in argv
+  // order: a --help before it means the command's help wins
+  // (mkdir --help --version), and an option error before it means the
+  // handler's diagnostic wins (mkdir --bogus --version).
   bool verb_form_wants_version(std::string_view cmdName,
                                std::span<std::string_view> args) {
     if (is_literal_arg_command(cmdName)) return false;
@@ -1726,10 +1818,47 @@ class RegistryImpl {
     if (behavior.help_version_only_when_sole_argument) {
       return args.size() == 1 && args[0] == "--version";
     }
+    // #1581: the verb-form --version pre-scan obeys the same argv-order
+    // termination contract as run(): the first terminating event wins.
+    // A --help token (exact, or an unambiguous abbreviation of it)
+    // before --version means the command's help wins, not the top-level
+    // banner (mkdir --help --version); an ambiguous abbreviation
+    // (mkdir --v --version) or an option error before --version
+    // (mkdir --bogus --version) means the handler's diagnostic wins.
+    // The args here are raw -- run() has not expanded abbreviations
+    // yet -- so help/version abbreviations are recognised here, and
+    // the prefix before a --version token is judged with the real
+    // parser, exactly as run() judges it.
     const std::vector<ArgRole> roles =
         classify_args_for_dispatch(cmdName, args, it->second.options);
     for (size_t i = 0; i < args.size(); ++i) {
-      if (roles[i] == ArgRole::Option && args[i] == "--version") return true;
+      if (roles[i] != ArgRole::Option) continue;
+      const std::string_view arg = args[i];
+      std::string_view name = arg;
+      bool has_inline_value = false;
+      if (auto eq = arg.find('='); eq != std::string_view::npos) {
+        name = arg.substr(0, eq);
+        has_inline_value = true;
+      }
+      // "--help=x" / "--version=x" is itself the first terminating
+      // event: the no-argument error, not the banner.
+      if (has_inline_value && (name == "--help" || name == "--version")) {
+        return false;
+      }
+      if (name == "--help" ||
+          is_unambiguous_abbreviation(name, "--help",
+                                      it->second.options)) {
+        return false;
+      }
+      if (name == "--version" ||
+          is_unambiguous_abbreviation(name, "--version",
+                                      it->second.options)) {
+        return !argv_prefix_has_parse_error(cmdName, args.first(i),
+                                            it->second.options);
+      }
+      if (is_ambiguous_abbreviation(name, it->second.options)) {
+        return false;
+      }
     }
     return false;
   }

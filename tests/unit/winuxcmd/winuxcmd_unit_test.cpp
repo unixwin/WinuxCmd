@@ -1136,3 +1136,64 @@ TEST(winuxcmd, winuxcmd_ls_version_option_prints_toplevel_banner_issue1438) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.rfind("WinuxCmd ", 0) == 0);
 }
+
+// #1581: the verb-form --version pre-scan obeys the same argv-order
+// termination contract as the dispatcher's interception scan: the first
+// terminating event wins. --help before --version prints the command's
+// help, not the top-level banner; an option error (or an ambiguous
+// abbreviation) before --version is the handler's diagnostic, not the
+// banner; --version before --help still prints the banner.
+TEST(winuxcmd, winuxcmd_mkdir_help_before_version_prints_help_issue1581) {
+  Pipeline p;
+  p.add(L"winuxcmd.exe", {L"mkdir", L"--help", L"--version"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("Usage: mkdir") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.rfind("WinuxCmd ", 0) != 0);
+}
+
+TEST(winuxcmd, winuxcmd_mkdir_bogus_before_version_is_error_issue1581) {
+  Pipeline p;
+  p.add(L"winuxcmd.exe", {L"mkdir", L"--bogus", L"--version"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("unrecognized option '--bogus'") !=
+              std::string::npos);
+}
+
+TEST(winuxcmd, winuxcmd_mkdir_version_before_help_prints_banner_issue1581) {
+  Pipeline p;
+  p.add(L"winuxcmd.exe", {L"mkdir", L"--version", L"--help"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.rfind("WinuxCmd ", 0) == 0);
+}
+
+TEST(winuxcmd, winuxcmd_mkdir_abbreviated_help_before_version_issue1581) {
+  Pipeline p;
+  p.add(L"winuxcmd.exe", {L"mkdir", L"--hel", L"--version"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("Usage: mkdir") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.rfind("WinuxCmd ", 0) != 0);
+}
+
+TEST(winuxcmd, winuxcmd_mkdir_ambiguous_abbrev_before_version_issue1581) {
+  Pipeline p;
+  p.add(L"winuxcmd.exe", {L"mkdir", L"--v", L"--version"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("is ambiguous") != std::string::npos);
+}
