@@ -179,6 +179,7 @@ mod ffi {
     }
 
     #[link(name = "wtsapi32")]
+    #[link(name = "wtsapi32")]
     extern "system" {
         pub fn WTSEnumerateSessionsW(
             server: isize,
@@ -198,6 +199,7 @@ mod ffi {
     }
 
     #[link(name = "kernel32")]
+    #[link(name = "wtsapi32")]
     extern "system" {
         pub fn WTSGetActiveConsoleSessionId() -> u32;
         pub fn ProcessIdToSessionId(pid: u32, session_id: *mut u32) -> i32;

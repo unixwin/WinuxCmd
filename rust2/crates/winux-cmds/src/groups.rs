@@ -54,6 +54,7 @@ mod ffi {
     }
 
     #[link(name = "netapi32")]
+    #[link(name = "netapi32")]
     extern "system" {
         pub fn NetUserGetGroups(
             servername: *const u16,
@@ -68,6 +69,7 @@ mod ffi {
     }
 
     #[link(name = "advapi32")]
+    #[link(name = "netapi32")]
     extern "system" {
         pub fn LookupAccountNameW(
             systemname: *const u16,
