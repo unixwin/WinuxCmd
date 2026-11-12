@@ -2560,6 +2560,69 @@ csplit_rows = [
      ["w.txt", "/--/"]),
 ]
 
+# shuf: --random-source is the deterministic byte gate (GNU randint
+# entropy recycling, verified byte-for-byte on all rs* rows). Default-RNG
+# content is platform-random -> exit rows; --random-seed is a WinuxCmd
+# extension (GNU rejects it) -> win rows.
+SHUF_SETUP = ("printf 'a\\nb\\nc\\nd\\ne\\n' > f5.txt; "
+    "printf '1\\n2\\n3\\n4\\n5\\n6\\n7\\n8\\n9\\n10\\n11\\n12\\n13\\n14\\n15\\n16\\n17\\n18\\n19\\n20\\n' > n20.txt; "
+    "printf '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' > seed.bin")
+shuf_rows = [
+    ("su01-rs-file", "strict", SHUF_SETUP, "", "", ["--random-source=seed.bin", "f5.txt"]),
+    ("su02-rs-head", "strict", SHUF_SETUP, "", "", ["--random-source=seed.bin", "-n", "5", "n20.txt"]),
+    ("su03-rs-range", "strict", SHUF_SETUP, "", "", ["--random-source=seed.bin", "-i", "1-10"]),
+    ("su04-rs-range-head", "strict", SHUF_SETUP, "", "", ["--random-source=seed.bin", "-i", "0-9", "-n", "3"]),
+    ("su05-rs-repeat-echo", "strict", SHUF_SETUP, "", "",
+     ["--random-source=seed.bin", "-r", "-n", "6", "-e", "a", "b", "c"]),
+    ("su06-rs-zero-term", "strict", SHUF_SETUP, "", "", ["--random-source=seed.bin", "-z", "-i", "1-5"]),
+    ("su07-rs-output-file", "strict", SHUF_SETUP, "", "", ["--random-source=seed.bin", "-o", "out.txt", "-i", "1-5"]),
+    ("su08-rs-head-over-pop", "strict", SHUF_SETUP, "", "", ["--random-source=seed.bin", "-n", "100", "-i", "1-3"]),
+    ("su09-rs-head-over-lines", "strict", SHUF_SETUP, "", "", ["--random-source=seed.bin", "-n", "10", "f5.txt"]),
+    ("su10-rs-dup-records", "strict",
+     "printf 'a\\na\\nb\\n' > d.txt; printf 'abc' > seed.bin", "", "",
+     ["--random-source=seed.bin", "d.txt"]),
+    ("su11-rs-head-two", "strict", SHUF_SETUP, "", "", ["--random-source=seed.bin", "-n", "2", "f5.txt"]),
+    ("su12-empty-file", "strict", "printf '' > empty.txt; printf 'x' > seed.bin", "", "",
+     ["--random-source=seed.bin", "empty.txt"]),
+    ("su13-repeat-empty", "strict", "printf '' > empty.txt", "", "", ["-r", "-n", "2", "empty.txt"]),
+    ("su14-missing-file", "strict", "", "", "", ["nosuch-shuf-file"]),
+    ("su15-range-reversed", "strict", "", "", "", ["-i", "5-1"]),
+    ("su16-range-alpha", "strict", "", "", "", ["-i", "abc"]),
+    ("su17-range-overflow", "strict", "", "", "", ["-i", "1-99999999999999999999999"]),
+    ("su18-echo-with-range", "strict", "", "", "", ["-e", "-i", "1-3"]),
+    ("su19-range-extra", "strict", "", "", "", ["-i", "1-3", "extra"]),
+    ("su20-two-files", "strict", "printf 'a\\n' > f1", "", "", ["f1", "f1"]),
+    ("su21-count-bad", "strict", "", "", "", ["-n", "xyz", "-i", "1-5"]),
+    ("su22-count-zero", "strict", "", "", "", ["-n", "0", "-i", "1-5"]),
+    ("su23-count-zero-output", "strict", "", "", "", ["-n", "0", "-o", "o.txt", "-i", "1-5"]),
+    ("su24-multiple-ranges", "strict", "", "", "", ["-i", "1-2", "-i", "3-4"]),
+    ("su25-output-same-twice", "strict", "", "", "", ["-o", "o1", "-o", "o1", "-i", "1-2"]),
+    ("su26-output-diff", "strict", "", "", "", ["-o", "a", "-o", "b", "-i", "1-2"]),
+    # WinuxCmd --random-seed extension: GNU rejects the option, C++ accepts
+    ("su27-seed-ext", "win", "", "", "", ["--random-seed", "x", "-i", "1-5"]),
+    # seed+source mutual exclusion: GNU dies on --random-seed unrecognized
+    # (rc 1, empty stdout) = Rust/C++ rc -> strict
+    ("su28-seed-source-exclusive", "strict",
+     "printf 'abc' > seed.bin", "", "",
+     ["--random-seed", "x", "--random-source=seed.bin", "-i", "1-2"]),
+    ("su29-short-h-rejected", "strict", "", "", "", ["-h"]),
+    ("su30-help", "strict", "", "", "", ["--help"]),
+    ("su31-version", "strict", "", "", "", ["--version"]),
+    # GNU xstrtoumax tolerates the space; the C++/Rust value model rejects
+    ("su32-range-space", "win", "", "", "", ["-i", " 1-3"]),
+    ("su33-rs-stdin-dash", "strict", SHUF_SETUP, "", "p\\nq\\n", ["--random-source=seed.bin", "-"]),
+    ("su34-rs-no-trailing-nl", "strict", SHUF_SETUP, "", "x\\ny", ["--random-source=seed.bin", "-"]),
+    ("su35-rs-exhausted-shuffle", "strict",
+     "printf '\\001' > one.bin; printf '1\\n2\\n3\\n4\\n' > 4l.txt", "", "",
+     ["--random-source=one.bin", "4l.txt"]),
+    ("su36-echo-empty-arg", "strict", "", "", "", ["-e", ""]),
+    # default-RNG order is nondeterministic on both sides -> exit
+    ("su37-zero-term-echo", "exit", "", "", "", ["-z", "-e", "a", "b"]),
+    ("su38-dir-operand", "strict", "mkdir d1", "", "", ["d1"]),
+    ("su39-source-missing", "strict", "", "", "", ["--random-source=nosuch.bin", "-i", "1-3"]),
+    ("su40-unknown-long", "strict", "", "", "", ["--bogus", "-i", "1-2"]),
+]
+
 def collect():
     """All case tables as (cmd, rows) pairs, in emit order."""
     return [
@@ -2590,6 +2653,7 @@ def collect():
 
         ("pathchk", pathchk_rows),
         ("csplit", csplit_rows),
+        ("shuf", shuf_rows),
     ]
 
 

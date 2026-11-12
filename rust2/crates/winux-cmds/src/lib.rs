@@ -53,6 +53,7 @@ pub mod readlink;
 pub mod realpath;
 pub mod rmdir;
 pub mod seq;
+pub mod shuf;
 pub mod sleep;
 pub mod sort;
 pub mod stat;
@@ -152,6 +153,7 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
 
         ("pathchk", pathchk::pathchk_cmd),
         ("csplit", csplit::csplit_cmd),
+        ("shuf", shuf::shuf_cmd),
     ]
 }
 
