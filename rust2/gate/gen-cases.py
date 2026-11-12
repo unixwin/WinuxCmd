@@ -2520,6 +2520,46 @@ who_rows = [
     ("wh26-heading-missing-file", "win", "", "", "", ["-H", "who-nosuch-utmp"]),
 ]
 
+CSPLIT_F = "printf 'a\\nb\\n--\\nc\\nd\\n--\\ne\\n' > f.txt"
+CSPLIT_G = "printf 'Header\\nl1\\nl2\\nFooter\\nl3\\nHeader\\nl4\\n' > g.txt"
+csplit_rows = [
+    ("cs01-regex-split", "strict", CSPLIT_F, "", "", ["f.txt", "/--/"]),
+    ("cs02-line-splits", "strict", CSPLIT_F, "", "", ["f.txt", "2", "4"]),
+    ("cs03-regex-empty-first", "strict", CSPLIT_G, "", "", ["g.txt", "/Header/"]),
+    ("cs04-percent-skip", "strict", CSPLIT_G, "", "", ["g.txt", "%Header%"]),
+    ("cs05-repeat-star", "strict", CSPLIT_G, "", "", ["g.txt", "/Header/", "{*}"]),
+    ("cs06-repeat-one", "strict", CSPLIT_F, "", "", ["f.txt", "/--/", "{1}"]),
+    ("cs07-suppress-matched", "strict", CSPLIT_G, "", "",
+     ["--suppress-matched", "g.txt", "/Header/"]),
+    ("cs08-elide-nomatch", "strict", CSPLIT_G, "", "", ["-z", "g.txt", "/nomatch/", "/Header/"]),
+    ("cs09-prefix-digits-quiet", "strict", CSPLIT_F, "", "", ["-f", "ch", "-n", "3", "-s", "f.txt", "/--/"]),
+    ("cs10-suffix-d02d", "strict", CSPLIT_F, "", "", ["-b", "%02d", "f.txt", "/--/"]),
+    ("cs11-suffix-octal", "strict", CSPLIT_F, "", "", ["-b", "%03o", "-s", "f.txt", "/--/"]),
+    ("cs12-offset-plus", "strict", CSPLIT_G, "", "", ["g.txt", "/l1/", "/Header/+1"]),
+    ("cs13-offset-minus", "strict", CSPLIT_G, "", "", ["g.txt", "/l1/", "/Header/-1"]),
+    ("cs14-match-not-found", "strict", CSPLIT_F, "", "", ["f.txt", "/zzz/"]),
+    ("cs15-out-of-range", "strict", CSPLIT_F, "", "", ["f.txt", "99"]),
+    ("cs16-line-zero", "strict", CSPLIT_F, "", "", ["f.txt", "0"]),
+    ("cs17-decreasing-lines", "strict", CSPLIT_F, "", "", ["f.txt", "4", "2"]),
+    ("cs18-equal-lines", "strict", CSPLIT_F, "", "", ["f.txt", "2", "2"]),
+    ("cs19-repeat-bad-brace", "strict", CSPLIT_F, "", "", ["f.txt", "/--/", "{1"]),
+    ("cs20-invalid-regex", "strict", CSPLIT_F, "", "", ["f.txt", "/[a/"]),
+    ("cs21-no-operands", "strict", "", "", "", []),
+    ("cs22-no-pattern", "strict", CSPLIT_F, "", "", ["f.txt"]),
+    ("cs23-missing-file", "strict", "", "", "", ["nosuch.txt", "1"]),
+    ("cs24-empty-pattern", "strict", CSPLIT_F, "", "", ["f.txt", ""]),
+    ("cs25-escaped-slash-regex", "strict", CSPLIT_F, "", "", ["f.txt", "/ab\\/cd/"]),
+    ("cs26-suppress-offset", "strict", CSPLIT_G, "", "",
+     ["--suppress-matched", "g.txt", "/l1/", "/Header/+1"]),
+    ("cs27-keep-files", "strict", CSPLIT_F, "", "", ["-k", "f.txt", "/zzz/"]),
+    ("cs28-quiet", "strict", CSPLIT_F, "", "", ["-q", "f.txt", "/--/"]),
+    ("cs29-stdin-input", "strict", CSPLIT_F, "", "a\\nb\\n--\\nc\\nd\\n--\\ne\\n", ["-", "/--/"]),
+    ("cs30-digits-3", "strict", CSPLIT_F, "", "", ["-n", "3", "f.txt", "/--/"]),
+    ("cs31-empty-prefix", "strict", CSPLIT_F, "", "", ["-f", "", "f.txt", "/--/"]),
+    ("cs32-crlf-bytes", "strict", "printf 'x\\r\\n--\\r\\ny\\r\\n' > w.txt", "", "",
+     ["w.txt", "/--/"]),
+]
+
 def collect():
     """All case tables as (cmd, rows) pairs, in emit order."""
     return [
@@ -2549,6 +2589,7 @@ def collect():
         ("factor", factor_rows),
 
         ("pathchk", pathchk_rows),
+        ("csplit", csplit_rows),
     ]
 
 

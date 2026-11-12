@@ -15,6 +15,8 @@ pub mod childproc;
 pub mod chmod;
 pub mod chown;
 pub mod cut;
+pub mod csplit;
+
 pub mod df;
 pub mod digest;
 pub mod digestsum;
@@ -149,6 +151,7 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("factor", factor::factor_cmd),
 
         ("pathchk", pathchk::pathchk_cmd),
+        ("csplit", csplit::csplit_cmd),
     ]
 }
 
