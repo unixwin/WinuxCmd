@@ -31,8 +31,8 @@
 use std::ffi::OsString;
 
 use crate::argopt::{self, OptSpec};
+use crate::childproc::{build_child_command, resolve_child, ChildResolve};
 use crate::gnuhelp;
-use crate::timeout::{quote_windows_arg, resolve_child, ChildResolve};
 use winux_core::{CmdResult, Ctx, Io};
 
 const OPTS: &[OptSpec] = &[OptSpec {
@@ -270,47 +270,25 @@ pub fn nice_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
 
-    // resolve and spawn the child (process stdio inherited; documented)
-    let resolved = resolve_child(&command, ctx);
-    let mut cmd = match &resolved {
-        ChildResolve::Found { path, batch } => {
-            if *batch {
-                let comspec = winux_core::win32_env_get(ctx.env, "COMSPEC")
-                    .map(|v| v.to_string_lossy().into_owned())
-                    .filter(|v| !v.is_empty())
-                    .unwrap_or_else(|| "cmd.exe".to_string());
-                let mut inner = quote_windows_arg(path);
-                for a in &cmd_args {
-                    inner.push(' ');
-                    inner.push_str(&quote_windows_arg(a));
-                }
-                let mut c = std::process::Command::new(&comspec);
-                c.raw_arg("/d").raw_arg("/s").raw_arg("/c");
-                c.raw_arg(format!("\"{inner}\""));
-                c
-            } else {
-                let mut c = std::process::Command::new(path);
-                c.args(&cmd_args);
-                c
-            }
-        }
+    // resolve and spawn the child (process stdio inherited; documented).
+    // The shared childproc chain (extracted from timeout, #1587) now
+    // classifies the launch; nice needs the pre-spawn Command form so the
+    // CREATE_SUSPENDED flag can be applied first.
+    let mut cmd = match resolve_child(&command, ctx) {
+        ChildResolve::Found(launch) => build_child_command(&launch, &cmd_args, ctx),
         ChildResolve::NotFound => {
             let _ = writeln!(io.stderr, "nice: '{command}': No such file or directory");
             return Ok(127);
+        }
+        ChildResolve::BadFormat => {
+            let _ = writeln!(io.stderr, "nice: '{command}': Exec format error");
+            return Ok(126);
         }
         ChildResolve::NotExecutable | ChildResolve::NotADirectory => {
             let _ = writeln!(io.stderr, "nice: '{command}': Permission denied");
             return Ok(126);
         }
     };
-    cmd.envs(
-        ctx.env
-            .entries()
-            .iter()
-            .filter(|(k, _)| !k.is_empty() && !k.to_string_lossy().starts_with('='))
-            .map(|(k, v)| (k.clone(), v.clone())),
-    );
-    cmd.current_dir(&ctx.cwd);
     // CREATE_SUSPENDED so the priority class is observable before the
     // child runs any code (#1359)
     const CREATE_SUSPENDED: u32 = 0x4;
