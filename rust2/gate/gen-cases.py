@@ -2623,6 +2623,48 @@ shuf_rows = [
     ("su40-unknown-long", "strict", "", "", "", ["--bogus", "-i", "1-2"]),
 ]
 
+# ptx: the C++ subset model. Byte-strict where GNU matches the subset
+# (single-line short inputs, error rows, roff/tex, macro renames);
+# win/note where GNU's circular-context grid or traditional format shows.
+PTX_SETUP_HW = "printf 'hello world\\n' > hw.txt; printf 'one\\n' > o.txt"
+ptx_rows = [
+    ("px01-dumb-two-words", "strict", PTX_SETUP_HW, "", "", ["hw.txt"]),
+    ("px02-dumb-one-word", "strict", PTX_SETUP_HW, "", "", ["o.txt"]),
+    ("px03-roff", "strict", PTX_SETUP_HW, "", "", ["-O", "hw.txt"]),
+    ("px04-tex", "strict", PTX_SETUP_HW, "", "", ["-T", "hw.txt"]),
+    ("px05-macro-rename", "strict", PTX_SETUP_HW, "", "", ["-M", "zz", "-O", "hw.txt"]),
+    ("px06-format-r-abbrev", "strict", PTX_SETUP_HW, "", "", ["--format=r", "hw.txt"]),
+    ("px07-format-t-abbrev", "strict", PTX_SETUP_HW, "", "", ["--format=t", "hw.txt"]),
+    ("px08-format-bad", "strict", PTX_SETUP_HW, "", "", ["--format=bad", "hw.txt"]),
+    ("px09-width-bad", "strict", PTX_SETUP_HW, "", "", ["-w", "xyz", "hw.txt"]),
+    ("px10-gap-zero", "strict", PTX_SETUP_HW, "", "", ["-g", "0", "hw.txt"]),
+    ("px11-empty-input", "strict", "printf '' > empty.txt", "", "", ["empty.txt"]),
+    ("px12-missing-file", "strict", "", "", "", ["nofile.txt"]),
+    ("px13-dir-operand", "strict", "", "", "", ["."]),
+    ("px14-stdin", "strict", "", "", "x y\\n", []),
+    ("px15-auto-ref", "win", PTX_SETUP_HW, "", "", ["-A", "o.txt"]),
+    ("px16-right-refs", "win", PTX_SETUP_HW, "", "", ["-R", "-A", "hw.txt"]),
+    ("px17-traditional-format", "win", PTX_SETUP_HW, "", "", ["-G", "hw.txt"]),
+    ("px18-multiline-wrap", "win",
+     "printf 'The quick brown fox\\njumps over the lazy dog\\n' > t1.txt", "", "", ["t1.txt"]),
+    ("px19-narrow-grid", "win",
+     "printf 'aaa bbb ccc ddd\\n' > ab.txt", "", "", ["-w", "40", "ab.txt"]),
+    ("px20-ignore-case-plain", "strict", PTX_SETUP_HW, "", "", ["-f", "hw.txt"]),
+    # WinuxCmd -C extension: GNU rejects, C++ prints banner rc 0 -> win
+    ("px21-copyright-ext", "win", "", "", "", ["-C"]),
+    ("px22-help", "strict", "", "", "", ["--help"]),
+    ("px23-version", "strict", "", "", "", ["--version"]),
+    ("px24-ignore-file", "strict",
+     PTX_SETUP_HW + "; printf 'hello' > ig.txt", "", "", ["-i", "ig.txt", "hw.txt"]),
+    ("px25-only-file", "strict",
+     PTX_SETUP_HW + "; printf 'hello' > on.txt", "", "", ["-o", "on.txt", "hw.txt"]),
+    ("px26-trunc-flag-narrow", "win",
+     "printf 'aaa bbb ccc ddd\\n' > ab.txt", "", "", ["-F", "...", "-w", "20", "ab.txt"]),
+    ("px27-gap-one-narrow", "win",
+     "printf 'aaa bbb ccc ddd\\n' > ab.txt", "", "", ["-g", "1", "-w", "40", "ab.txt"]),
+    ("px28-two-files", "win", PTX_SETUP_HW, "", "", ["o.txt", "hw.txt"]),
+]
+
 def collect():
     """All case tables as (cmd, rows) pairs, in emit order."""
     return [
@@ -2654,6 +2696,7 @@ def collect():
         ("pathchk", pathchk_rows),
         ("csplit", csplit_rows),
         ("shuf", shuf_rows),
+        ("ptx", ptx_rows),
     ]
 
 

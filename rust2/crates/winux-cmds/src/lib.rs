@@ -48,6 +48,7 @@ pub mod od;
 pub mod paste;
 pub mod pathchk;
 pub mod printenv;
+pub mod ptx;
 pub mod pwd;
 pub mod readlink;
 pub mod realpath;
@@ -154,6 +155,7 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("pathchk", pathchk::pathchk_cmd),
         ("csplit", csplit::csplit_cmd),
         ("shuf", shuf::shuf_cmd),
+        ("ptx", ptx::ptx_cmd),
     ]
 }
 
