@@ -2144,6 +2144,113 @@ nice_rows = [
      "", "", ["cmd", "/c", "exit", "1"]),
 ]
 
+# ---------------------------------------------------------------------------
+# wave4b (#1488): sort — GNU sort.c (coreutils 9.4) semantics. The C shape
+# contract is enforced by pinning LC_ALL=C in every row's env column (the
+# GNU oracle side otherwise runs under the host locale). Multi-line inputs
+# come from setup-created files (the stdin column cannot carry newlines);
+# stdin rows are single-line only. The -R row is `win`: GNU shuffles with a
+# per-run seeded MD5, the Rust side uses a fixed FNV-1a-64, so the ORDER
+# differs from GNU by design while identical keys stay grouped (documented
+# deviation in sort.rs); rc parity with the 1.x dispatcher is the gate.
+# Every strict row mirrors a probed WSL oracle case
+# (rust2/target/sort-probe/p1..p6.sh).
+sort_rows = [
+    ("so01-plain", "strict", "printf 'b\\na  c\\nab\\n' > s1", "LC_ALL=C", "", ["s1"]),
+    ("so02-numeric-mixed", "strict",
+     "printf '10\\n9\\n100\\n-1\\n+5\\n 7\\n  3x\\n\\nabc\\n' > s2", "LC_ALL=C", "", ["-n", "s2"]),
+    ("so03-numeric-blanks", "strict", "printf ' 7\\n3\\n' > s3", "LC_ALL=C", "", ["-n", "s3"]),
+    ("so04-numeric-decimals", "strict", "printf '1.5\\n1.\\n.5\\n-.5\\n' > s4", "LC_ALL=C", "", ["-n", "s4"]),
+    ("so05-numeric-sci", "strict", "printf '1e2\\n99\\n' > s5", "LC_ALL=C", "", ["-n", "s5"]),
+    ("so06-numeric-hex", "strict", "printf '0x10\\n2\\n' > s6", "LC_ALL=C", "", ["-n", "s6"]),
+    ("so07-g-nan-inf", "strict", "printf 'NaN\\n1\\nnan\\n-inf\\ninf\\n' > s7", "LC_ALL=C", "", ["-g", "s7"]),
+    ("so08-g-conv-error", "strict", "printf 'abc\\n2\\n' > s8", "LC_ALL=C", "", ["-g", "s8"]),
+    ("so09-g-hex", "strict", "printf '0x10\\n2\\n' > s9", "LC_ALL=C", "", ["-g", "s9"]),
+    ("so10-h-units", "strict",
+     "printf '1K\\n2000\\n999M\\n1G\\n1023K\\n-1M\\n1R\\n1Q\\n1Y\\n' > s10", "LC_ALL=C", "", ["-h", "s10"]),
+    ("so11-h-blanks-frac", "strict", "printf ' 2K\\n1.5M\\n' > s11", "LC_ALL=C", "", ["-h", "s11"]),
+    ("so12-month-unknown", "strict",
+     "printf 'dec\\nJan\\nJANX\\napril\\nmar\\nfoooo\\n\\nmar\\n' > s12", "LC_ALL=C", "", ["-M", "s12"]),
+    ("so13-month-full", "strict", "printf 'JUNE\\nmay\\njuly\\n' > s13", "LC_ALL=C", "", ["-M", "s13"]),
+    ("so14-dictionary", "strict", "printf 'a1\\nA2\\nB!\\nb\\n' > s14", "LC_ALL=C", "", ["-d", "s14"]),
+    ("so15-fold", "strict", "printf 'b\\nA\\na\\nB\\n' > s15", "LC_ALL=C", "", ["-f", "s15"]),
+    ("so16-nonprinting", "strict", "printf 'ab\\x01\\naab\\n' > s16", "LC_ALL=C", "", ["-i", "s16"]),
+    ("so17-df", "strict", "printf 'A!\\na\\n' > s17", "LC_ALL=C", "", ["-df", "s17"]),
+    ("so18-unique-lines", "strict", "printf 'b\\na\\nB\\na\\nc\\n' > s18", "LC_ALL=C", "", ["-u", "s18"]),
+    ("so19-unique-fold", "strict", "printf 'b\\na\\nB\\na\\nc\\n' > s19", "LC_ALL=C", "", ["-u", "-f", "s19"]),
+    ("so20-stable-key", "strict", "printf 'b 2\\na 2\\na 1\\n' > s20", "LC_ALL=C", "", ["-k1,1", "-s", "s20"]),
+    ("so21-last-resort", "strict", "printf 'a 2\\nb 1\\na 1\\n' > s21", "LC_ALL=C", "", ["-k1,1", "s21"]),
+    ("so22-reverse-key-inherit", "strict", "printf 'a 2\\nb 1\\na 1\\n' > s22", "LC_ALL=C", "", ["-k1,1", "-r", "s22"]),
+    ("so23-reverse-global", "strict", "printf 'a 2\\nb 1\\na 1\\n' > s23", "LC_ALL=C", "", ["-r", "s23"]),
+    ("so24-k2", "strict", "printf 'a b\\na  c\\nab\\n' > s24", "LC_ALL=C", "", ["-k2", "s24"]),
+    ("so25-k2-comma", "strict", "printf 'a b\\na  c\\nab\\n' > s25", "LC_ALL=C", "", ["-k2,2", "s25"]),
+    ("so26-k2b", "strict", "printf 'a b\\na  c\\nab\\n' > s26", "LC_ALL=C", "", ["-k2b,2b", "s26"]),
+    ("so27-k-char", "strict", "printf 'ab\\naa\\n' > s27", "LC_ALL=C", "", ["-k1.2", "s27"]),
+    ("so28-k1-blanks", "strict", "printf '  x y\\nz w\\n q  r\\n' > s28", "LC_ALL=C", "", ["-k1", "s28"]),
+    ("so29-k1b", "strict", "printf '  x y\\nz w\\n q  r\\n' > s29", "LC_ALL=C", "", ["-k1b", "s29"]),
+    ("so30-tab-numeric", "strict", "printf 'a:2\\na:10\\nb:1\\n' > s30", "LC_ALL=C", "", ["-t:", "-k2n", "s30"]),
+    ("so31-tab-byte", "strict", "printf 'a:2\\na:10\\nb:1\\n' > s31", "LC_ALL=C", "", ["-t:", "-k2,2", "s31"]),
+    ("so32-tab-empty-field", "strict", "printf '::a\\nb::c\\n' > s32", "LC_ALL=C", "", ["-t:", "-k1", "s32"]),
+    ("so33-multi-key", "strict", "printf 'b a 1\\na b 0\\n' > s33", "LC_ALL=C", "", ["-k1,1", "-k3", "s33"]),
+    ("so34-z", "strict", "printf 'b\\0a\\0' > s34", "LC_ALL=C", "", ["-z", "s34"]),
+    ("so35-merge", "strict", "printf '1\\n3\\n5\\n' > m1; printf '2\\n4\\n6\\n' > m2", "LC_ALL=C", "",
+     ["-m", "m1", "m2"]),
+    ("so36-merge-u", "strict", "printf '1\\n1\\n3\\n' > m1; printf '1\\n2\\n' > m2", "LC_ALL=C", "",
+     ["-m", "-u", "m1", "m2"]),
+    ("so37-check-ok", "strict", "printf 'a\\nb\\nc\\n' > ck", "LC_ALL=C", "", ["-c", "ck"]),
+    ("so38-check-disorder", "strict", "printf 'a\\nc\\nb\\n' > ck", "LC_ALL=C", "", ["-c", "ck"]),
+    ("so39-check-quiet", "strict", "printf 'a\\nc\\nb\\n' > ck", "LC_ALL=C", "", ["-C", "ck"]),
+    ("so40-check-u-dup", "strict", "printf 'a\\na\\n' > ck", "LC_ALL=C", "", ["-c", "-u", "ck"]),
+    ("so41-check-reverse", "strict", "printf 'c\\na\\nb\\n' > ck", "LC_ALL=C", "", ["-c", "-r", "ck"]),
+    ("so42-check-stable", "strict", "printf 'a 2\\na 1\\nb\\n' > ck", "LC_ALL=C", "",
+     ["-c", "-s", "-k1,1", "ck"]),
+    ("so43-check-two-files", "strict", "printf 'a\\n' > c1; printf 'a\\n' > c2", "LC_ALL=C", "",
+     ["-c", "c1", "c2"]),
+    ("so44-check-with-o", "strict", "printf 'a\\n' > ck", "LC_ALL=C", "", ["-c", "-o", "out", "ck"]),
+    ("so45-check-cC", "strict", "", "LC_ALL=C", "", ["-cC"]),
+    ("so46-o-inplace", "strict", "printf 'b\\na\\n' > io1", "LC_ALL=C", "", ["-o", "io1", "io1"]),
+    ("so47-o-missing-dir", "strict", "printf 'a\\n' > oin", "LC_ALL=C", "", ["-o", "nodirxx/out", "oin"]),
+    ("so48-missing-file", "strict", "", "LC_ALL=C", "", ["nosuchfile"]),
+    ("so49-dir-operand", "strict", "mkdir -p sdir", "LC_ALL=C", "", ["sdir"]),
+    ("so50-two-files", "strict", "printf 'b\\n' > f1; printf 'a\\n' > f2", "LC_ALL=C", "", ["f1", "f2"]),
+    ("so51-noeol", "strict", "printf 'b\\na' > s51", "LC_ALL=C", "", ["s51"]),
+    ("so52-k-missing-field", "strict", "printf 'a\\nb\\n' > s52", "LC_ALL=C", "", ["-k9,9", "s52"]),
+    ("so53-pluspos", "strict", "printf '5\\n3\\n' > s53", "LC_ALL=C", "", ["+0", "s53"]),
+    ("so54-pluspos-n", "strict", "printf 'x10\\nx9\\n' > s54", "LC_ALL=C", "", ["+0n", "s54"]),
+    ("so55-pluspos-end", "strict", "printf '5 6\\n3 4\\n7\\n' > s55", "LC_ALL=C", "", ["+1", "-1", "s55"]),
+    ("so56-pluspos-invalid-file", "strict", "", "LC_ALL=C", "", ["+0x"]),
+    ("so57-k0-error", "strict", "", "LC_ALL=C", "", ["-k0"]),
+    ("so58-kchar0-error", "strict", "", "LC_ALL=C", "", ["-k1.0"]),
+    ("so59-kcomma0-error", "strict", "", "LC_ALL=C", "", ["-k1,0"]),
+    ("so60-tab-empty-error", "strict", "", "LC_ALL=C", "", ["-t", "@EMPTY@"]),
+    ("so61-tab-multi-error", "strict", "", "LC_ALL=C", "", ["-txx"]),
+    ("so62-nd-error", "strict", "", "LC_ALL=C", "", ["-nd"]),
+    ("so63-per-key-ok", "strict", "printf 'a b\\n' > s63", "LC_ALL=C", "", ["-k1n", "-k2M", "s63"]),
+    ("so64-sort-word", "strict", "printf '10\\n9\\n' > s64", "LC_ALL=C", "", ["--sort=numeric", "s64"]),
+    ("so65-sort-word-bad", "strict", "", "LC_ALL=C", "", ["--sort=bogus"]),
+    ("so66-check-word-bad", "strict", "", "LC_ALL=C", "", ["--check=bogus"]),
+    ("so67-V", "strict", "printf 'a5\\na1\\na10\\na2\\n' > s67", "LC_ALL=C", "", ["-V", "s67"]),
+    ("so68-V-tilde", "strict", "printf '1.0~\\n1.0\\n' > s68", "LC_ALL=C", "", ["-V", "s68"]),
+    ("so69-S-valid", "strict", "printf 'b\\na\\n' > s69", "LC_ALL=C", "", ["-S100k", "s69"]),
+    ("so70-S-bad-suffix", "strict", "", "LC_ALL=C", "", ["-S1X"]),
+    ("so71-parallel-zero", "strict", "", "LC_ALL=C", "", ["--parallel=0"]),
+    ("so72-batch-size-zero", "strict", "", "LC_ALL=C", "", ["--batch-size=0"]),
+    ("so73-y-detached-file", "strict", "", "LC_ALL=C", "", ["-y", "zz"]),
+    ("so74-y-attached", "strict", "printf 'b\\na\\n' > s74", "LC_ALL=C", "", ["-y100", "s74"]),
+    ("so75-debug-with-c", "strict", "printf 'a\\n' > ck", "LC_ALL=C", "", ["--debug", "-c", "ck"]),
+    ("so76-random-source-missing", "strict", "printf 'b\\na\\n' > s76", "LC_ALL=C", "",
+     ["-R", "--random-source=nope-rs", "s76"]),
+    ("so77-tab-nul", "strict", "printf 'a\\0z\\nb\\0y\\n' > s77", "LC_ALL=C", "",
+     ["-t", "\\0", "-k2", "s77"]),
+    ("so78-key-empty-error", "strict", "", "LC_ALL=C", "", ["--key="]),
+    ("so79-check-stdin-sorted", "strict", "", "LC_ALL=C", "", ["-c"]),
+    ("so80-random", "win", "printf 'b\\na\\na\\nc\\n' > s80", "LC_ALL=C", "", ["-R", "s80"]),
+    ("so81-help", "strict", "", "LC_ALL=C", "", ["--help"]),
+    ("so82-version", "strict", "", "LC_ALL=C", "", ["--version"]),
+    ("so83-unknown-opt", "strict", "", "LC_ALL=C", "", ["--bogus"]),
+    ("so84-stdin-ignored-flag", "strict", "", "LC_ALL=C", "zz", ["--parallel=2"]),
+]
+
 def collect():
     """All case tables as (cmd, rows) pairs, in emit order."""
     return [
@@ -2169,6 +2276,7 @@ def collect():
         ("head", head_rows), ("tail", tail_rows), ("cut", cut_rows),
         ("tr", tr_rows), ("od", od_rows), ("sum", sum_rows),
         ("mktemp", mktemp_rows), ("nice", nice_rows),
+        ("sort", sort_rows),
     ]
 
 
