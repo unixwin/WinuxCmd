@@ -23,7 +23,7 @@ df20-P-with-output	strict				-P	--output=source
 df21-total	exit				--total	.
 df22-t-no-match	strict				-t	bogusfs	.
 df23-t-gnu-fstype	win				-t	ext4	.
-df24-x-case-sensitive	note				-x	ntfs	.
+df24-x-case-sensitive	exit				-x	ntfs	.
 df25-B-invalid-suffix	strict				-B	c	.
 df26-file-operand	exit	touch f			f
 df27-two-same-fs-dedup	exit	touch f			f	.
