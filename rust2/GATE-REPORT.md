@@ -373,7 +373,6 @@ byte-identical). GNU rc oracle holds every row except the documented
 Windows-value-model classes (hostname net-tools/set-operand [DIFFERS],
 id USER operand, getconf Windows table + pathconf existence check).
 
-<<<<<<< HEAD
 ## Wave4a (#1488, fourth batch)
 
 8 commands: `head tail cut tr od sum mktemp nice`. Ledger (full run
@@ -408,7 +407,6 @@ Documented subsets: tail -f/-F/--retry do not follow (dumps then rc 1);
 od --traditional/-S and fL are rejected; nice children inherit process
 stdio (same shape as timeout.rs). mktemp creations and nice child runs
 gate on exit status only (names and niceness are platform-bound).
-=======
 ## Borrow-algo: seq exact decimal + numfmt field reassembly (#1488, uutils audit action items)
 
 Two "borrow uutils algorithms" items from `DOCS/2.0-uutils-audit.md`
@@ -504,4 +502,79 @@ produce wrong GREENs (both sides see identical bytes), but those rows
 exercise the error path instead of the conversion. Suggested follow-up:
 decode `\n` in run_case stdin (or `%b`), then re-audit the affected
 rows' expected outputs before trusting their strict columns.
->>>>>>> 810f637d (docs(gate): borrow-algo section — seq exact decimal + numfmt field reassembly (#1488))
+
+## Wave4b: sort — library-form GNU sort.c port (#1488)
+
+`crates/winux-cmds/src/sort.rs`: a direct port of GNU sort.c (coreutils 9.4,
+vendored spec copy under `rust2/target/sort-spec/` together with the gnulib
+helpers it delegates to: `strnumcmp-in.h` for -n and `filevercmp.c` for -V),
+probed case-by-case against the WSL coreutils 9.4 oracle
+(`rust2/target/sort-probe/p1..p6.sh`) before coding.
+
+| section | status |
+|---|---|
+| core sort (byte order, -b/-d/-f/-i/-M/-h/-n/-R/-r/-u/-s, +POS1[-POS2] obsolescent keys, --sort=WORD, global-flag inheritance incl. the no-inheritance-when-key-has-flags rule) | done, GNU-exact |
+| field syntax (-k F[.C][OPTS][,F[.C][OPTS]] full grammar, per-key b/d/f/g/h/i/M/n/R/r/V, -t byte separator incl. `-t '\0'`, begfield/limfield literal port, missing-field/empty-key rules, keyparse errors byte-exact) | done, GNU-exact |
+| numeric family (-n gnulib strnumcmp byte algorithm, -g strtold-shaped incl. hex float + inf/nan ordering, -h unit_order K..Q then strnumcmp, -M 3-letter month prefix table) | done, GNU-exact |
+| merge & output (-m stable k-way with -u first-of-run, multiple inputs concatenated, -z, -o incl. input-is-output safety, missing-eol supply per file) | done, GNU-exact |
+| check (-c/-C rc 1 semantics, first-disorder diagnostic `sort: FILE:LINE: disorder: LINE`, -u strict ordering, -r/-s/-k participation, -c -m checks, -c two-operands/-o rc 2) | done, GNU-exact |
+| diagnostics (cannot read / open failed / read failed / write failed, rc 2; empty tab, multi-character tab, incompatible tabs, field-spec wording, argmatch invalid/ambiguous rc 1, -S/-–batch-size/--parallel validation) | done, GNU-exact |
+| performance (64 MiB three-way below) | beats 1.x C++ 12x plain / 2.1x -n |
+
+Gate: `bash gate/run-gate.sh sort` — **84 cases (83 strict + 1 win), all
+GREEN on the first run**; zero vacuous rows. C++ parity 78/84; the 6
+divergences are inherited 1.x gaps the Rust side does not follow (1.x
+rejects `+1 -1`, `-S100k`, `-y100` which GNU accepts, prints branded
+help/version text, and -R output order is per-run random there): recorded
+per row in `target/gate/ledger.tsv`, not gated.
+
+### 64 MiB timing (three-way)
+
+口径: fixture `t64m.txt` 67,108,885 bytes / 1,359,683 lines, md5-identical
+on NTFS (`rust2/target/sort-perf/`) and WSL ext4 (`/tmp/sortperf/`),
+`md5 4b980acf…`; LC_ALL=C everywhere; each side writes its output to a
+local file (`-o`) — Rust and 1.x C++ on NTFS, GNU on ext4, so GNU's
+column is platform-inclusive (NTFS+Defender vs ext4+parallel external
+merge is the same caveat PERF-BASELINE.md records for the 72x family).
+1 warmup + 5 timed runs per side, median wall clock (`TIMEFORMAT=%R`).
+Correctness anchor: the 64 MiB outputs are md5-identical across all three
+engines for BOTH workloads (plain `488aa0ed…`, `-n` `60d89287…`).
+
+| workload | rust2 sort (Release, NTFS) | 1.x C++ sort (Release, NTFS) | GNU sort 9.4 (WSL, ext4) |
+|---|---|---|---|
+| plain | **1.648 s** | 19.759 s | 0.425 s |
+| -n | **2.179 s** | 4.484 s | 0.549 s |
+
+Rust vs 1.x C++ (like-for-like NTFS): **12.0x faster plain, 2.1x faster
+-n**. vs GNU: 0.26x plain / 0.40x — GNU's parallel external merge on ext4
+stays ahead, the accepted platform gap (single-threaded in-memory v1;
+`--parallel` is accepted-and-ignored). The first measurement iteration
+exposed an unbuffered per-line output write (1.36M `write_all` syscalls);
+wrapping the sink in a 1 MiB BufWriter took rust-plain 5.03 -> 1.65 s —
+GNU's stdio buffering enjoys the same, which is why the fix is semantic
+parity, not tuning.
+
+### Documented deviations (diff ledger)
+
+- `-R`: GNU shuffles per run with an MD5 of random-source bytes; rust2
+  sorts by a fixed FNV-1a-64 of the (filtered) key — deterministic across
+  runs, identical keys stay grouped, but the ORDER differs from GNU by
+  design (gate `win` row so80; `--random-source` is still validated
+  eagerly like GNU). Any hash-collision tie falls back to byte compare.
+- `-g` uses f64, not x87 long double (ordering identical for ordinary
+  magnitudes; extreme-tail precision may differ).
+- `--parallel`/`--batch-size`/`-S`/`-T`/`--compress-program`/`-y` are
+  accepted-and-ignored (validated where GNU validates: 0-parallel,
+  batch-size < 2, -S suffix grammar); the in-memory pipeline has no temp
+  files to compress or size-limit.
+- `--files0-from` is not implemented (absent from the option table ->
+  GNU's unrecognized-option usage error, rc 2); `--debug` is accepted but
+  prints no key annotation (and stays incompatible with -c/-o like GNU).
+- POSIX2_VERSION / POSIXLY_CORRECT parsing variants are out of scope
+  (traditional +POS1 keys are always on, matching the default host).
+
+cargo test winux-cmds: 454 passed / 0 failed (43 new sort tests). gate
+harness note: the sort corpus is immune to the known stdin-column
+`\n` limitation — every multi-line row ships its input through the setup
+column; the four --dup-check WARNs are pre-existing (test/whoami/base64/
+numfmt), none from sort.
