@@ -1,6 +1,6 @@
-//! `b2sum`, `sha224sum`, `sha384sum` — GNU coreutils digest printing
-//! (probed against coreutils 9.4; the digests themselves live in
-//! digest.rs with NIST / RFC 7693 vectors).
+//! `md5sum`, `sha1sum`, `sha224sum`, `sha256sum`, `sha384sum`, `sha512sum`,
+//! `b2sum` — GNU coreutils digest printing (probed against coreutils 9.4;
+//! the digests themselves live in digest.rs with NIST / RFC 7693 vectors).
 //!
 //! Default output per FILE is `<lowercase hex><flag><name>` where the
 //! flag is two spaces in text mode and ` *` in binary mode (`-b`), the
@@ -57,7 +57,7 @@
 use std::ffi::OsString;
 
 use crate::argopt::{self, OptSpec};
-use crate::digest::{blake2b, hex, sha224, sha384};
+use crate::digest::{blake2b, hex, md5, sha1, sha224, sha256, sha384, sha512};
 use crate::fsutil::resolve;
 use crate::gnuhelp;
 use winux_core::{CmdResult, Ctx, Io};
@@ -122,33 +122,49 @@ const OPTS: &[OptSpec] = &[
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Algo {
-    Blake2b,
+    Md5,
+    Sha1,
     Sha224,
+    Sha256,
     Sha384,
+    Sha512,
+    Blake2b,
 }
 
 impl Algo {
     fn name(self) -> &'static str {
         match self {
+            Algo::Md5 => "MD5",
+            Algo::Sha1 => "SHA1",
             Algo::Blake2b => "BLAKE2b",
             Algo::Sha224 => "SHA224",
+            Algo::Sha256 => "SHA256",
             Algo::Sha384 => "SHA384",
+            Algo::Sha512 => "SHA512",
         }
     }
 
     fn digest(self, data: &[u8], bits: usize) -> Vec<u8> {
         match self {
+            Algo::Md5 => md5(data).to_vec(),
+            Algo::Sha1 => sha1(data).to_vec(),
             Algo::Blake2b => blake2b(data, bits / 8),
             Algo::Sha224 => sha224(data).to_vec(),
+            Algo::Sha256 => sha256(data).to_vec(),
             Algo::Sha384 => sha384(data).to_vec(),
+            Algo::Sha512 => sha512(data).to_vec(),
         }
     }
 
     fn default_bits(self) -> usize {
         match self {
+            Algo::Md5 => 128,
+            Algo::Sha1 => 160,
             Algo::Blake2b => 512,
             Algo::Sha224 => 224,
+            Algo::Sha256 => 256,
             Algo::Sha384 => 384,
+            Algo::Sha512 => 512,
         }
     }
 
@@ -161,9 +177,13 @@ impl Algo {
     /// default — regular check lines override it by auto-length.
     fn hex_bytes(self) -> usize {
         match self {
+            Algo::Md5 => 32,
+            Algo::Sha1 => 40,
             Algo::Blake2b => 128,
             Algo::Sha224 => 56,
+            Algo::Sha256 => 64,
             Algo::Sha384 => 96,
+            Algo::Sha512 => 128,
         }
     }
 
@@ -173,9 +193,13 @@ impl Algo {
     /// cannot.
     fn min_line_len(self) -> usize {
         match self {
+            Algo::Md5 => 34,
+            Algo::Sha1 => 42,
             Algo::Blake2b => 4,
             Algo::Sha224 => 58,
+            Algo::Sha256 => 66,
             Algo::Sha384 => 98,
+            Algo::Sha512 => 130,
         }
     }
 }
@@ -192,6 +216,22 @@ pub fn sha384sum_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     run(Algo::Sha384, false, "sha384sum", args, io, ctx)
 }
 
+pub fn md5sum_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
+    run(Algo::Md5, false, "md5sum", args, io, ctx)
+}
+
+pub fn sha1sum_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
+    run(Algo::Sha1, false, "sha1sum", args, io, ctx)
+}
+
+pub fn sha256sum_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
+    run(Algo::Sha256, false, "sha256sum", args, io, ctx)
+}
+
+pub fn sha512sum_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
+    run(Algo::Sha512, false, "sha512sum", args, io, ctx)
+}
+
 /// Authors line of the GNU `--version` block (probed coreutils 9.4).
 fn authors(prog: &str) -> &'static str {
     match prog {
@@ -202,12 +242,14 @@ fn authors(prog: &str) -> &'static str {
 }
 
 /// The texinfo node of the `--help` footer: the sha2 family shares the
-/// `sha2 utilities` node; b2sum has its own.
+/// `sha2 utilities` node; b2sum/md5sum/sha1sum have their own (probed
+/// coreutils 9.4 tails).
 fn info_node(prog: &str) -> &'static str {
-    if prog == "b2sum" {
-        "b2sum invocation"
-    } else {
-        "sha2 utilities"
+    match prog {
+        "b2sum" => "b2sum invocation",
+        "md5sum" => "md5sum invocation",
+        "sha1sum" => "sha1sum invocation",
+        _ => "sha2 utilities",
     }
 }
 
@@ -312,11 +354,139 @@ Note: There is no difference between binary mode and text mode on GNU systems.
 
 "#;
 
+const MD5_HELP_BODY: &str = r#"Usage: md5sum [OPTION]... [FILE]...
+Print or check MD5 (128-bit) checksums.
+
+With no FILE, or when FILE is -, read standard input.
+  -b, --binary          read in binary mode
+  -c, --check           read checksums from the FILEs and check them
+      --tag             create a BSD-style checksum
+  -t, --text            read in text mode (default)
+  -z, --zero            end each output line with NUL, not newline,
+                          and disable file name escaping
+
+The following five options are useful only when verifying checksums:
+      --ignore-missing  don't fail or report status for missing files
+      --quiet           don't print OK for each successfully verified file
+      --status          don't output anything, status code shows success
+      --strict          exit non-zero for improperly formatted checksum lines
+  -w, --warn            warn about improperly formatted checksum lines
+
+      --help        display this help and exit
+      --version     output version information and exit
+
+The sums are computed as described in RFC 1321.
+When checking, the input should be a former output of this program.
+The default mode is to print a line with: checksum, a space,
+a character indicating input mode ('*' for binary, ' ' for text
+or where binary is insignificant), and name for each FILE.
+
+Note: There is no difference between binary mode and text mode on GNU systems.
+
+"#;
+
+const SHA1_HELP_BODY: &str = r#"Usage: sha1sum [OPTION]... [FILE]...
+Print or check SHA1 (160-bit) checksums.
+
+With no FILE, or when FILE is -, read standard input.
+  -b, --binary          read in binary mode
+  -c, --check           read checksums from the FILEs and check them
+      --tag             create a BSD-style checksum
+  -t, --text            read in text mode (default)
+  -z, --zero            end each output line with NUL, not newline,
+                          and disable file name escaping
+
+The following five options are useful only when verifying checksums:
+      --ignore-missing  don't fail or report status for missing files
+      --quiet           don't print OK for each successfully verified file
+      --status          don't output anything, status code shows success
+      --strict          exit non-zero for improperly formatted checksum lines
+  -w, --warn            warn about improperly formatted checksum lines
+
+      --help        display this help and exit
+      --version     output version information and exit
+
+The sums are computed as described in FIPS-180-1.
+When checking, the input should be a former output of this program.
+The default mode is to print a line with: checksum, a space,
+a character indicating input mode ('*' for binary, ' ' for text
+or where binary is insignificant), and name for each FILE.
+
+Note: There is no difference between binary mode and text mode on GNU systems.
+
+"#;
+
+const SHA256_HELP_BODY: &str = r#"Usage: sha256sum [OPTION]... [FILE]...
+Print or check SHA256 (256-bit) checksums.
+
+With no FILE, or when FILE is -, read standard input.
+  -b, --binary          read in binary mode
+  -c, --check           read checksums from the FILEs and check them
+      --tag             create a BSD-style checksum
+  -t, --text            read in text mode (default)
+  -z, --zero            end each output line with NUL, not newline,
+                          and disable file name escaping
+
+The following five options are useful only when verifying checksums:
+      --ignore-missing  don't fail or report status for missing files
+      --quiet           don't print OK for each successfully verified file
+      --status          don't output anything, status code shows success
+      --strict          exit non-zero for improperly formatted checksum lines
+  -w, --warn            warn about improperly formatted checksum lines
+
+      --help        display this help and exit
+      --version     output version information and exit
+
+The sums are computed as described in FIPS-180-2.
+When checking, the input should be a former output of this program.
+The default mode is to print a line with: checksum, a space,
+a character indicating input mode ('*' for binary, ' ' for text
+or where binary is insignificant), and name for each FILE.
+
+Note: There is no difference between binary mode and text mode on GNU systems.
+
+"#;
+
+const SHA512_HELP_BODY: &str = r#"Usage: sha512sum [OPTION]... [FILE]...
+Print or check SHA512 (512-bit) checksums.
+
+With no FILE, or when FILE is -, read standard input.
+  -b, --binary          read in binary mode
+  -c, --check           read checksums from the FILEs and check them
+      --tag             create a BSD-style checksum
+  -t, --text            read in text mode (default)
+  -z, --zero            end each output line with NUL, not newline,
+                          and disable file name escaping
+
+The following five options are useful only when verifying checksums:
+      --ignore-missing  don't fail or report status for missing files
+      --quiet           don't print OK for each successfully verified file
+      --status          don't output anything, status code shows success
+      --strict          exit non-zero for improperly formatted checksum lines
+  -w, --warn            warn about improperly formatted checksum lines
+
+      --help        display this help and exit
+      --version     output version information and exit
+
+The sums are computed as described in FIPS-180-2.
+When checking, the input should be a former output of this program.
+The default mode is to print a line with: checksum, a space,
+a character indicating input mode ('*' for binary, ' ' for text
+or where binary is insignificant), and name for each FILE.
+
+Note: There is no difference between binary mode and text mode on GNU systems.
+
+"#;
+
 fn help_text(algo: Algo) -> &'static str {
     match algo {
         Algo::Blake2b => B2SUM_HELP_BODY,
+        Algo::Md5 => MD5_HELP_BODY,
+        Algo::Sha1 => SHA1_HELP_BODY,
         Algo::Sha224 => SHA224_HELP_BODY,
+        Algo::Sha256 => SHA256_HELP_BODY,
         Algo::Sha384 => SHA384_HELP_BODY,
+        Algo::Sha512 => SHA512_HELP_BODY,
     }
 }
 
@@ -1099,6 +1269,171 @@ mod tests {
         assert!(out.ends_with("info '(coreutils) sha2 utilities'\n"));
     }
 
+    // ---- wave6 (#1488): md5sum / sha1sum / sha256sum / sha512sum ----
+    // All expected strings are WSL coreutils 9.4 probed values
+    // (probe 2026-11-12); digest inputs are fixed bytes so GNU and Rust
+    // hash identical data.
+
+    #[test]
+    fn wave6_default_format_values() {
+        // stdin: `printf abc | <cmd>`
+        let (r, out, _) = run("md5sum", &[], "abc");
+        assert_eq!(r, 0);
+        assert_eq!(out, "900150983cd24fb0d6963f7d28e17f72  -\n");
+        let (r, out, _) = run("sha1sum", &[], "abc");
+        assert_eq!(r, 0);
+        assert_eq!(out, "a9993e364706816aba3e25717850c26c9cd0d89d  -\n");
+        let (r, out, _) = run("sha256sum", &[], "abc");
+        assert_eq!(r, 0);
+        assert_eq!(
+            out,
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  -\n"
+        );
+        let (r, out, _) = run("sha512sum", &[], "abc");
+        assert_eq!(r, 0);
+        assert_eq!(
+            out,
+            concat!(
+                "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a",
+                "2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f  -\n"
+            )
+        );
+        // empty input
+        let (r, out, _) = run("md5sum", &[], "");
+        assert_eq!(out, "d41d8cd98f00b204e9800998ecf8427e  -\n");
+        let (r, out, _) = run("sha512sum", &[], "");
+        assert_eq!(r, 0);
+        assert_eq!(
+            out,
+            concat!(
+                "cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce",
+                "47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e  -\n"
+            )
+        );
+    }
+
+    #[test]
+    fn wave6_file_binary_tag_zero() {
+        let sc = ScratchCtx::new("w6file");
+        std::fs::write(sc.path("f"), b"abc").unwrap();
+        // file operand prints the operand name
+        let mut io = MemIo::new("");
+        let ctx = sc.ctx();
+        let owned: Vec<OsString> = vec!["f".into()];
+        let r = super::md5sum_cmd(&owned, &mut io.split(), &ctx).unwrap();
+        assert_eq!(r, 0);
+        assert_eq!(io.out(), "900150983cd24fb0d6963f7d28e17f72  f\n");
+        // binary marker ` *`
+        let mut io = MemIo::new("");
+        let owned: Vec<OsString> = vec!["-b".into(), "f".into()];
+        let r = super::md5sum_cmd(&owned, &mut io.split(), &ctx).unwrap();
+        assert_eq!(r, 0);
+        assert_eq!(io.out(), "900150983cd24fb0d6963f7d28e17f72 *f\n");
+        // text after binary: last wins (two spaces again)
+        let mut io = MemIo::new("");
+        let owned: Vec<OsString> = vec!["-b".into(), "-t".into(), "f".into()];
+        let r = super::md5sum_cmd(&owned, &mut io.split(), &ctx).unwrap();
+        assert_eq!(r, 0);
+        assert_eq!(io.out(), "900150983cd24fb0d6963f7d28e17f72  f\n");
+        // --tag form per algorithm (probed)
+        let mut io = MemIo::new("");
+        let owned: Vec<OsString> = vec!["--tag".into(), "f".into()];
+        let r = super::sha1sum_cmd(&owned, &mut io.split(), &ctx).unwrap();
+        assert_eq!(r, 0);
+        assert_eq!(
+            io.out(),
+            "SHA1 (f) = a9993e364706816aba3e25717850c26c9cd0d89d\n"
+        );
+        let mut io = MemIo::new("");
+        let owned: Vec<OsString> = vec!["--tag".into(), "f".into()];
+        let r = super::sha512sum_cmd(&owned, &mut io.split(), &ctx).unwrap();
+        assert_eq!(r, 0);
+        let s512 = "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a\
+                    2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f"
+            .replace(char::is_whitespace, "");
+        assert_eq!(io.out(), format!("SHA512 (f) = {s512}\n"));
+        // -z terminator with the name NUL-terminated
+        let mut io = MemIo::new("");
+        let owned: Vec<OsString> = vec!["-z".into(), "f".into()];
+        let r = super::md5sum_cmd(&owned, &mut io.split(), &ctx).unwrap();
+        assert_eq!(r, 0);
+        assert_eq!(io.out(), "900150983cd24fb0d6963f7d28e17f72  f\0");
+    }
+
+    #[test]
+    fn wave6_missing_and_directory() {
+        // missing file: GNU stderr reason, rc 1
+        let (r, out, err) = run("md5sum", &["nosuchfile"], "");
+        assert_eq!(r, 1);
+        assert_eq!(out, "");
+        assert!(err.contains("md5sum: nosuchfile:"), "got {err}");
+        // directory operand: `Is a directory` (GNU hash-mode open recovery)
+        let sc = ScratchCtx::new("w6dir");
+        std::fs::create_dir(sc.path("d")).unwrap();
+        let mut io = MemIo::new("");
+        let ctx = sc.ctx();
+        let owned: Vec<OsString> = vec!["d".into()];
+        let r = super::sha1sum_cmd(&owned, &mut io.split(), &ctx).unwrap();
+        assert_eq!(r, 1);
+        assert!(io.err().contains("Is a directory"), "got {}", io.err());
+    }
+
+    #[test]
+    fn wave6_check_machinery() {
+        // OK / quiet / FAILED
+        let ok = "900150983cd24fb0d6963f7d28e17f72  f\n";
+        let files2 = [("f", &b"abc"[..]), ("ck", ok.as_bytes())];
+        let (r, out, _) = check_run("md5sum", &["-c", "ck"], "", &files2);
+        assert_eq!(r, 0);
+        assert_eq!(out, "f: OK\n");
+        // quiet suppresses OK lines
+        let (r, out, _) = check_run("md5sum", &["-c", "--quiet", "ck"], "", &files2);
+        assert_eq!(r, 0);
+        assert_eq!(out, "");
+        // mismatch: a valid sha1 line whose digest is sha1(abc) but the
+        // file content differs -> `f: FAILED`, rc 1
+        let bad = "a9993e364706816aba3e25717850c26c9cd0d89d  f\n";
+        let files3 = [("f", &b"xyz"[..]), ("ck", bad.as_bytes())];
+        let (r, out, _) = check_run("sha1sum", &["-c", "ck"], "", &files3);
+        assert_eq!(r, 1);
+        assert_eq!(out, "f: FAILED\n");
+        // BSD-reversed single-space line parses (bsd_split latch)
+        let rev = "900150983cd24fb0d6963f7d28e17f72 f\n";
+        let files4 = [("f", &b"abc"[..]), ("ck", rev.as_bytes())];
+        let (r, out, _) = check_run("md5sum", &["-c", "ck"], "", &files4);
+        assert_eq!(r, 0);
+        assert_eq!(out, "f: OK\n");
+    }
+
+    #[test]
+    fn wave6_check_sha256_tag_and_uppercase() {
+        let tag = "SHA256 (f) = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\n";
+        let files = [("f", &b"abc"[..]), ("ck", tag.as_bytes())];
+        let (r, out, _) = check_run("sha256sum", &["-c", "ck"], "", &files);
+        assert_eq!(r, 0);
+        assert_eq!(out, "f: OK\n");
+        // uppercase hex accepted (hex_equal is case-insensitive)
+        let upper = "BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD  f\n";
+        let files = [("f", &b"abc"[..]), ("ck", upper.as_bytes())];
+        let (r, out, _) = check_run("sha256sum", &["-c", "ck"], "", &files);
+        assert_eq!(r, 0);
+        assert_eq!(out, "f: OK\n");
+        // too-short line: no properly formatted checksum lines
+        let files = [("f", &b"abc"[..]), ("ck", &b"ba78  f\n"[..])];
+        let (r, out, err) = check_run("sha256sum", &["-c", "ck"], "", &files);
+        assert_eq!(r, 1);
+        assert_eq!(out, "");
+        assert!(err.contains("no properly formatted checksum lines found"));
+        // min line length: sha512 needs 130 chars before the name side; a
+        // 64-hex-digit line is invalid for sha512
+        let s256 = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  f\n";
+        let files = [("f", &b"abc"[..]), ("ck", s256.as_bytes())];
+        let (r, out, err) = check_run("sha512sum", &["-c", "ck"], "", &files);
+        assert_eq!(r, 1);
+        assert!(err.contains("no properly formatted"));
+        let _ = out;
+    }
+
     use std::ffi::OsString;
     use winux_core::test_support::{MemIo, ScratchCtx};
 
@@ -1109,8 +1444,12 @@ mod tests {
         let owned: Vec<OsString> = args.iter().map(Into::into).collect();
         let r = match prog {
             "b2sum" => super::b2sum_cmd(&owned, &mut io.split(), &ctx).unwrap(),
+            "md5sum" => super::md5sum_cmd(&owned, &mut io.split(), &ctx).unwrap(),
+            "sha1sum" => super::sha1sum_cmd(&owned, &mut io.split(), &ctx).unwrap(),
             "sha224sum" => super::sha224sum_cmd(&owned, &mut io.split(), &ctx).unwrap(),
-            _ => super::sha384sum_cmd(&owned, &mut io.split(), &ctx).unwrap(),
+            "sha256sum" => super::sha256sum_cmd(&owned, &mut io.split(), &ctx).unwrap(),
+            "sha384sum" => super::sha384sum_cmd(&owned, &mut io.split(), &ctx).unwrap(),
+            _ => super::sha512sum_cmd(&owned, &mut io.split(), &ctx).unwrap(),
         };
         (r, io.out(), io.err())
     }
@@ -1534,8 +1873,12 @@ mod tests {
         let owned: Vec<OsString> = args.iter().map(Into::into).collect();
         let r = match prog {
             "b2sum" => super::b2sum_cmd(&owned, &mut io.split(), &ctx).unwrap(),
+            "md5sum" => super::md5sum_cmd(&owned, &mut io.split(), &ctx).unwrap(),
+            "sha1sum" => super::sha1sum_cmd(&owned, &mut io.split(), &ctx).unwrap(),
             "sha224sum" => super::sha224sum_cmd(&owned, &mut io.split(), &ctx).unwrap(),
-            _ => super::sha384sum_cmd(&owned, &mut io.split(), &ctx).unwrap(),
+            "sha256sum" => super::sha256sum_cmd(&owned, &mut io.split(), &ctx).unwrap(),
+            "sha384sum" => super::sha384sum_cmd(&owned, &mut io.split(), &ctx).unwrap(),
+            _ => super::sha512sum_cmd(&owned, &mut io.split(), &ctx).unwrap(),
         };
         (r, io.out(), io.err())
     }

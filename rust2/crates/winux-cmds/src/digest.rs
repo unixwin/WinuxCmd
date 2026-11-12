@@ -510,6 +510,262 @@ pub fn blake2b(data: &[u8], out_len: usize) -> Vec<u8> {
     b.finish()
 }
 
+// ---------------------------------------------------------------------------
+// MD5 (RFC 1321) — used by `md5sum`. The round-constant table is the RFC
+// definition T[i] = floor(2^32 * |sin(i+1)|), generated once with awk from
+// that formula and embedded (a hand-typed table had two wrong entries
+// before the generation step caught them); the unit tests pin RFC 1321
+// appendix vectors plus WSL coreutils 9.4 digests for multi-block and
+// padding-edge inputs.
+// ---------------------------------------------------------------------------
+
+const MD5_S: [u32; 64] = [
+    7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9,
+    14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10, 15,
+    21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
+];
+
+const MD5_K: [u32; 64] = [
+    0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,
+    0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be, 0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821,
+    0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa, 0xd62f105d, 0x02441453, 0xd8a1e681, 0xe7d3fbc8,
+    0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed, 0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a,
+    0xfffa3942, 0x8771f681, 0x6d9d6122, 0xfde5380c, 0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70,
+    0x289b7ec6, 0xeaa127fa, 0xd4ef3085, 0x04881d05, 0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665,
+    0xf4292244, 0x432aff97, 0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
+    0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1, 0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391,
+];
+
+pub struct Md5 {
+    state: [u32; 4],
+    buf: [u8; 64],
+    buf_len: usize,
+    total: u64,
+}
+
+impl Default for Md5 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Md5 {
+    pub fn new() -> Self {
+        Md5 {
+            state: [0x6745_2301, 0xefcd_ab89, 0x98ba_dcfe, 0x1032_5476],
+            buf: [0; 64],
+            buf_len: 0,
+            total: 0,
+        }
+    }
+
+    fn compress(&mut self, block: &[u8]) {
+        let mut m = [0u32; 16];
+        for (i, slot) in m.iter_mut().enumerate() {
+            *slot = u32::from_le_bytes([
+                block[4 * i],
+                block[4 * i + 1],
+                block[4 * i + 2],
+                block[4 * i + 3],
+            ]);
+        }
+        let [mut a, mut b, mut c, mut d] = self.state;
+        for i in 0..64 {
+            let (f, g) = match i / 16 {
+                0 => ((b & c) | ((!b) & d), i),                // F, i
+                1 => ((b & d) | ((!d) & c), (5 * i + 1) % 16), // G, 5i+1
+                2 => (b ^ c ^ d, (3 * i + 5) % 16),            // H, 3i+5
+                _ => (c ^ (b | (!d)), (7 * i) % 16),           // I, 7i
+            };
+            let tmp = d;
+            d = c;
+            c = b;
+            let sum = a.wrapping_add(f).wrapping_add(MD5_K[i]).wrapping_add(m[g]);
+            b = b.wrapping_add(sum.rotate_left(MD5_S[i]));
+            a = tmp;
+        }
+        self.state[0] = self.state[0].wrapping_add(a);
+        self.state[1] = self.state[1].wrapping_add(b);
+        self.state[2] = self.state[2].wrapping_add(c);
+        self.state[3] = self.state[3].wrapping_add(d);
+    }
+
+    pub fn update(&mut self, mut data: &[u8]) {
+        self.total = self.total.wrapping_add(data.len() as u64);
+        if self.buf_len > 0 {
+            let take = std::cmp::min(64 - self.buf_len, data.len());
+            self.buf[self.buf_len..self.buf_len + take].copy_from_slice(&data[..take]);
+            self.buf_len += take;
+            data = &data[take..];
+            if self.buf_len == 64 {
+                let block = self.buf;
+                self.compress(&block);
+                self.buf_len = 0;
+            }
+        }
+        while data.len() >= 64 {
+            let (block, rest) = data.split_at(64);
+            self.compress(block);
+            data = rest;
+        }
+        if !data.is_empty() {
+            self.buf[..data.len()].copy_from_slice(data);
+            self.buf_len = data.len();
+        }
+    }
+
+    pub fn finish(mut self) -> [u8; 16] {
+        // `total` counts every byte update() received, including the ones
+        // still buffered, so the bit length is final right here.
+        let bits = self.total.wrapping_mul(8);
+        let mut pad = Vec::with_capacity(72);
+        pad.push(0x80u8);
+        while (self.buf_len as usize + pad.len()) % 64 != 56 {
+            pad.push(0u8);
+        }
+        pad.extend_from_slice(&bits.to_le_bytes());
+        self.update(&pad);
+        debug_assert_eq!(self.buf_len, 0);
+        let mut out = [0u8; 16];
+        for (i, w) in self.state.iter().enumerate() {
+            out[4 * i..4 * i + 4].copy_from_slice(&w.to_le_bytes());
+        }
+        out
+    }
+}
+
+pub fn md5(data: &[u8]) -> [u8; 16] {
+    let mut h = Md5::new();
+    h.update(data);
+    h.finish()
+}
+
+// ---------------------------------------------------------------------------
+// SHA-1 (FIPS 180-1) — used by `sha1sum`. Streaming like the SHA-2 cores
+// above; big-endian state/output.
+// ---------------------------------------------------------------------------
+
+const SHA1_K: [u32; 4] = [0x5a82_7999, 0x6ed9_eba1, 0x8f1b_bcdc, 0xca62_c1d6];
+
+pub struct Sha1 {
+    state: [u32; 5],
+    buf: [u8; 64],
+    buf_len: usize,
+    total: u64,
+}
+
+impl Default for Sha1 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Sha1 {
+    pub fn new() -> Self {
+        Sha1 {
+            state: [
+                0x6745_2301,
+                0xefcd_ab89,
+                0x98ba_dcfe,
+                0x1032_5476,
+                0xc3d2_e1f0,
+            ],
+            buf: [0; 64],
+            buf_len: 0,
+            total: 0,
+        }
+    }
+
+    fn compress(&mut self, block: &[u8]) {
+        let mut w = [0u32; 80];
+        for i in 0..16 {
+            w[i] = u32::from_be_bytes([
+                block[4 * i],
+                block[4 * i + 1],
+                block[4 * i + 2],
+                block[4 * i + 3],
+            ]);
+        }
+        for i in 16..80 {
+            let v = w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16];
+            w[i] = v.rotate_left(1);
+        }
+        let [mut a, mut b, mut c, mut d, mut e] = self.state;
+        for (i, k) in SHA1_K
+            .iter()
+            .enumerate()
+            .flat_map(|(r, k)| (0..20).map(move |j| (r * 20 + j, *k)))
+        {
+            let (f, kk) = match i / 20 {
+                0 => ((b & c) | ((!b) & d), k),        // Ch
+                1 => (b ^ c ^ d, k),                   // Parity
+                2 => ((b & c) | (b & d) | (c & d), k), // Maj
+                _ => (b ^ c ^ d, k),                   // Parity
+            };
+            let tmp = a
+                .rotate_left(5)
+                .wrapping_add(f)
+                .wrapping_add(e)
+                .wrapping_add(kk)
+                .wrapping_add(w[i]);
+            e = d;
+            d = c;
+            c = b.rotate_left(30);
+            b = a;
+            a = tmp;
+        }
+        for (slot, v) in self.state.iter_mut().zip([a, b, c, d, e]) {
+            *slot = slot.wrapping_add(v);
+        }
+    }
+
+    pub fn update(&mut self, mut data: &[u8]) {
+        self.total = self.total.wrapping_add(data.len() as u64);
+        if self.buf_len > 0 {
+            let take = std::cmp::min(64 - self.buf_len, data.len());
+            self.buf[self.buf_len..self.buf_len + take].copy_from_slice(&data[..take]);
+            self.buf_len += take;
+            data = &data[take..];
+            if self.buf_len == 64 {
+                let block = self.buf;
+                self.compress(&block);
+                self.buf_len = 0;
+            }
+        }
+        while data.len() >= 64 {
+            let (block, rest) = data.split_at(64);
+            self.compress(block);
+            data = rest;
+        }
+        if !data.is_empty() {
+            self.buf[..data.len()].copy_from_slice(data);
+            self.buf_len = data.len();
+        }
+    }
+
+    pub fn finish(mut self) -> [u8; 20] {
+        let bits = self.total.wrapping_mul(8);
+        let mut pad = Vec::with_capacity(72);
+        pad.push(0x80u8);
+        while (self.buf_len as usize + pad.len()) % 64 != 56 {
+            pad.push(0u8);
+        }
+        pad.extend_from_slice(&bits.to_be_bytes());
+        self.update(&pad);
+        let mut out = [0u8; 20];
+        for (i, w) in self.state.iter().enumerate() {
+            out[4 * i..4 * i + 4].copy_from_slice(&w.to_be_bytes());
+        }
+        out
+    }
+}
+
+pub fn sha1(data: &[u8]) -> [u8; 20] {
+    let mut h = Sha1::new();
+    h.update(data);
+    h.finish()
+}
+
 pub fn hex(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(bytes.len() * 2);
     for b in bytes {
@@ -699,6 +955,94 @@ mod tests {
                 b.update(part);
             }
             assert_eq!(hx(&b.finish()), hx(&blake2b(&data, 64)), "blake2b {chunk}");
+
+            let mut m = Md5::new();
+            for part in data.chunks(chunk) {
+                m.update(part);
+            }
+            assert_eq!(hx(&m.finish()), hx(&md5(&data)), "md5 {chunk}");
+
+            let mut s1 = Sha1::new();
+            for part in data.chunks(chunk) {
+                s1.update(part);
+            }
+            assert_eq!(hx(&s1.finish()), hx(&sha1(&data)), "sha1 {chunk}");
         }
+    }
+
+    // ---- RFC 1321 (MD5) appendix vectors, plus WSL coreutils 9.4
+    // cross-checks for multi-block and padding-edge inputs ----
+
+    #[test]
+    fn md5_vectors() {
+        assert_eq!(hx(&md5(b"")), "d41d8cd98f00b204e9800998ecf8427e");
+        assert_eq!(hx(&md5(b"a")), "0cc175b9c0f1b6a831c399e269772661");
+        assert_eq!(hx(&md5(b"abc")), "900150983cd24fb0d6963f7d28e17f72");
+        assert_eq!(
+            hx(&md5(b"message digest")),
+            "f96b697d7cb7938d525a2f31aaf161d0"
+        );
+        assert_eq!(
+            hx(&md5(b"abcdefghijklmnopqrstuvwxyz")),
+            "c3fcd3d76192e4007dfb496cca67e13b"
+        );
+        assert_eq!(
+            hx(&md5(
+                b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+            )),
+            "d174ab98d277d9f5a5611c2c9f419d9f"
+        );
+        assert_eq!(
+            hx(&md5(
+                b"12345678901234567890123456789012345678901234567890123456789012345678901234567890"
+            )),
+            "57edf4a22be3c955ac49da2e2107b67a"
+        );
+        // Cross-checked against WSL coreutils 9.4 (probe 2026-11-12):
+        // 100 zero bytes (two blocks), 119 zero bytes (padding boundary
+        // 55+64), 2000000 zero bytes (bit length carries past 2^24),
+        // and a binary input with CR, LF and NUL bytes.
+        let zeros = |n: usize| vec![0u8; n];
+        assert_eq!(hx(&md5(&zeros(100))), "6d0bb00954ceb7fbee436bb55a8397a9");
+        assert_eq!(hx(&md5(&zeros(119))), "8271cb2e6a546123b43096a2efce39d2");
+        assert_eq!(
+            hx(&md5(&zeros(2_000_000))),
+            "6bde2aa6394fde37e21748bc0578113b"
+        );
+        assert_eq!(hx(&md5(b"a\rb\nc\0d")), "eca55d090f73256b40c08b36415ffa96");
+    }
+
+    // ---- FIPS 180-1 (SHA-1) vectors, plus the same WSL cross-checks ----
+
+    #[test]
+    fn sha1_vectors() {
+        assert_eq!(hx(&sha1(b"")), "da39a3ee5e6b4b0d3255bfef95601890afd80709");
+        assert_eq!(
+            hx(&sha1(b"abc")),
+            "a9993e364706816aba3e25717850c26c9cd0d89d"
+        );
+        assert_eq!(
+            hx(&sha1(
+                b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
+            )),
+            "84983e441c3bd26ebaae4aa1f95129e5e54670f1"
+        );
+        assert_eq!(
+            hx(&sha1(
+                b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+            )),
+            "761c457bf73b14d27e9e9265c46f4b4dda11f940"
+        );
+        // WSL coreutils 9.4 cross-checks for the two-block and binary
+        // inputs (probe 2026-11-12).
+        let zeros = |n: usize| vec![0u8; n];
+        assert_eq!(
+            hx(&sha1(&zeros(100))),
+            "ed4a77d1b56a118938788fc53037759b6c501e3d"
+        );
+        assert_eq!(
+            hx(&sha1(b"a\rb\nc\0d")),
+            "44f5594c6fb57e68968aa5f17072ac1077cfb192"
+        );
     }
 }

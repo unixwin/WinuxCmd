@@ -127,6 +127,13 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("b2sum", digestsum::b2sum_cmd),
         ("sha224sum", digestsum::sha224sum_cmd),
         ("sha384sum", digestsum::sha384sum_cmd),
+        // wave6 (#1488): completes the *sum digest family (md5sum/sha1sum
+        // via the new digest.rs primitives; sha256sum/sha512sum reuse the
+        // wave2 SHA-2 cores).
+        ("md5sum", digestsum::md5sum_cmd),
+        ("sha1sum", digestsum::sha1sum_cmd),
+        ("sha256sum", digestsum::sha256sum_cmd),
+        ("sha512sum", digestsum::sha512sum_cmd),
         // wave3a (#1488): alphabetical insertions
         ("fmt", fmt::fmt_cmd),
         ("fold", fold::fold_cmd),

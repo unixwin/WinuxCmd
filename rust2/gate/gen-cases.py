@@ -2144,6 +2144,99 @@ NICE_CHILD_SETUP = (
     "printf '#!/bin/sh\\nexit 3\\n' > cmd; chmod +x cmd; "
     "export PATH=\"$PWD:$PATH\""
 )
+
+# ---------------------------------------------------------------------------
+# wave6 (#1488): md5sum sha1sum sha256sum sha512sum echo rev factor arch
+# groups. Digest values below are the probed coreutils 9.4 digests of the
+# fixed input `abc` (all four algorithms probed 2026-11-12), so check-file
+# rows construct OK/FAILED/uppercase/tag variants from one verified value
+# per algorithm. The --check machinery's deep rows (bsd_reversed latch,
+# --ignore-missing, invalid-tag variants) are gated on sha224sum/b2sum in
+# wave2; these tables cover the algorithm-specific surface.
+# ---------------------------------------------------------------------------
+
+MD5_ABC = "900150983cd24fb0d6963f7d28e17f72"
+SHA1_ABC = "a9993e364706816aba3e25717850c26c9cd0d89d"
+SHA256_ABC = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+SHA512_ABC = (
+    "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a"
+    "2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f"
+)
+
+
+def digest_rows(prefix, prog, hex_abc, tag):
+    """Shared per-algorithm table. `tag` is the --tag header (MD5/SHA1/...)."""
+    short = prefix
+    ck_setup = f"printf abc > f; printf '{hex_abc}  f\\n' > ck"
+    rows = [
+        (f"{short}a01-stdin", "strict", "", "", "abc", []),
+        (f"{short}a02-empty-stdin", "strict", "", "", "", []),
+        (f"{short}a03-file", "strict", "printf abc > f1", "", "", ["f1"]),
+        (f"{short}a04-two-files", "strict",
+         "printf abc > f2; printf de > f3", "", "", ["f2", "f3"]),
+        (f"{short}a05-missing", "strict", "printf abc > f4", "", "", ["missing"]),
+        (f"{short}a06-directory", "strict", "mkdir d1", "", "", ["d1"]),
+        (f"{short}a07-tag", "strict", "", "", "abc", ["--tag"]),
+        (f"{short}a08-binary", "strict", "", "", "abc", ["-b"]),
+        (f"{short}a09-text", "strict", "", "", "abc", ["-t"]),
+        (f"{short}a10-b-then-t", "strict", "", "", "abc", ["-b", "-t"]),
+        (f"{short}a11-zero", "strict", "", "", "abc", ["-z"]),
+        (f"{short}a12-tag-file", "strict", "printf abc > f5", "", "",
+         ["--tag", "f5"]),
+        (f"{short}a13-binary-file", "strict", "printf abc > f6", "", "",
+         ["-b", "f6"]),
+        (f"{short}a14-dash-operand", "strict", "", "", "abc", ["-"]),
+        (f"{short}a15-mixed-missing", "strict", "printf abc > f7", "", "",
+         ["missing", "f7"]),
+        (f"{short}a16-bogus-short", "exit", "", "", "", ["-q"]),
+        (f"{short}a17-bogus-long", "exit", "", "", "", ["--bogus"]),
+        (f"{short}a18-help", "strict", "", "", "", ["--help"]),
+        (f"{short}a19-version", "strict", "", "", "", ["--version"]),
+        (f"{short}a20-multi-stdin", "strict", "", "",
+         "The quick brown fox jumps over the lazy dog", []),
+        (f"{short}c01-ok", "strict", ck_setup, "", "", ["-c", "ck"]),
+        (f"{short}c02-fail", "strict",
+         f"printf de > g; printf '{hex_abc}  g\\n' > ck", "", "",
+         ["-c", "ck"]),
+        (f"{short}c03-missing-target", "strict",
+         f"printf '{hex_abc}  nope\\n' > ck", "", "", ["-c", "ck"]),
+        (f"{short}c04-tag-ok", "strict",
+         f"printf abc > f; printf '{tag} (f) = {hex_abc}\\n' > ck", "", "",
+         ["-c", "ck"]),
+        (f"{short}c05-uppercase", "strict",
+         f"printf abc > f; printf '{hex_abc.upper()}  f\\n' > ck", "", "",
+         ["-c", "ck"]),
+        (f"{short}c06-binary-star", "strict",
+         f"printf abc > f; printf '{hex_abc} *f\\n' > ck", "", "",
+         ["-c", "ck"]),
+        (f"{short}c07-crlf", "strict",
+         f"printf abc > f; printf '{hex_abc}  f\\r\\n' > ck", "", "",
+         ["-c", "ck"]),
+        (f"{short}c08-bsd-reversed", "strict",
+         f"printf abc > f; printf '{hex_abc} f\\n' > ck", "", "",
+         ["-c", "ck"]),
+        (f"{short}c09-badlength", "strict",
+         f"printf abc > f; printf '{hex_abc[:-2]}  f\\n' > ck", "", "",
+         ["-c", "ck"]),
+        (f"{short}c10-quiet-fail", "strict",
+         f"printf de > g; printf '{hex_abc}  g\\n' > ck", "", "",
+         ["-c", "--quiet", "ck"]),
+        (f"{short}c11-status-ok", "strict", ck_setup, "", "",
+         ["-c", "--status", "ck"]),
+        (f"{short}c12-warn-garbage", "strict",
+         "printf 'garbage\\n' > ck", "", "", ["-c", "-w", "ck"]),
+        (f"{short}c13-empty-checkfile", "strict",
+         "printf '' > ck", "", "", ["-c", "ck"]),
+    ]
+    return rows
+
+
+md5sum_rows = digest_rows("m5", "md5sum", MD5_ABC, "MD5")
+sha1sum_rows = digest_rows("s1", "sha1sum", SHA1_ABC, "SHA1")
+sha256sum_rows = digest_rows("s256", "sha256sum", SHA256_ABC, "SHA256")
+sha512sum_rows = digest_rows("s512", "sha512sum", SHA512_ABC, "SHA512")
+
+
 NICE_CHILD_OK_SETUP = (
     "printf '#!/bin/sh\\nexit 0\\n' > cmd; chmod +x cmd; "
     "export PATH=\"$PWD:$PATH\""
@@ -2885,6 +2978,9 @@ def collect():
         ("factor", factor_rows), ("pathchk", pathchk_rows), ("ptx", ptx_rows),
         ("shuf", shuf_rows), ("csplit", csplit_rows), ("nohup", nohup_rows),
         ("groups", groups_rows), ("who", who_rows),
+        # wave6 (#1488)
+        ("md5sum", md5sum_rows), ("sha1sum", sha1sum_rows),
+        ("sha256sum", sha256sum_rows), ("sha512sum", sha512sum_rows),
     ]
 
 
