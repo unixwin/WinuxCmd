@@ -98,7 +98,7 @@ libtest capture deadlock on this host.
 ## Differential gate
 
 ```sh
-bash gate/run-gate.sh              # all 15 commands, 338 cases
+bash gate/run-gate.sh              # all 55 commands (1595 generated cases)
 bash gate/run-gate.sh basename     # one command
 bash gate/make-report.sh           # regenerate GATE-REPORT.md
 ```
@@ -111,6 +111,29 @@ plus WSL with coreutils 9.4. Case tables are **generated** — edit
 silently; the generator exists because that happened).
 
 Gate rules and the full result table live in `GATE-REPORT.md`.
+
+### Shell-namespace round (gate/cases-posix/, #1488 gate posix round)
+
+The corpus above exercises Windows-form/relative operands only, but the
+product contract is that rubash hands applets POSIX spellings **verbatim**
+(niubash#346; resolved by `native_path.cppm:shell_tree_map_w`, being ported
+to `winux-core/path.rs`). The posix round covers that boundary:
+
+```sh
+bash gate/run-gate.sh --posix-mode              # cases-posix/, pending-tolerant ledger
+POSIX_STRICT=1 bash gate/run-gate.sh --posix-mode   # hard-gate (after the port lands)
+python gate/qc_posix_gap.py --fixture-run       # corpus census + fixture-inertness leg
+```
+
+`--posix-mode` runs the hand-written skeletons in `gate/cases-posix/` under
+the shell-namespace fixture (`__RUBASH_SHELL_ROOT`/`TMPDIR`/`HOME`) with the
+Windows sides driven through **PowerShell** — the agent bash on this host is
+niubash-family and rewrites POSIX args (measured, with the reproductions:
+`gate/PROBE-METHODOLOGY.md`). `posix`/`posix-exit` row modes count as
+PENDING, not FAIL, until the port lands; a landing-leak detector keeps the
+literal `D:\tmp` landfall from ever scoring as ok. `qc_posix_gap.py` pins
+the POSIX-variant backlog in `gate/POSIX-GAP.md` — the acceptance baseline
+for the P lane.
 
 ## Mechanical replacement recipe (next command)
 
