@@ -27,6 +27,12 @@
 //                        [applets-csv]
 //        (sequence mode: same-process multi-call liveness rotations, no
 //        spawn fallback — see run_sequence below.)
+//        ffi-harness.exe redirect <install-root> <scratch-dir>
+//        (redirect mode: #1487-A regression — one process, ctx std
+//        handles that change between calls; see run_redirect below.)
+//        ffi-harness.exe cancel <install-root> <scratch-dir>
+//        (cancel mode: #1487-B regression — sort of a 3M-line file with a
+//        cancel callback firing 300ms in; see run_cancel below.)
 // Exit:  the command's exit code; 64 for harness usage errors; 65 when
 //        neither the FFI path nor the spawn target could run.
 
@@ -606,11 +612,509 @@ int run_sequence(int argc, wchar_t *argv[]) {
   return 0;
 }
 
+// --- shared load path for the DLL-face test modes --------------------------
+// Same discovery, pin, load and init rules as the single-call path, but
+// with no tiering and no spawn fallback: a failure here fails the mode
+// outright. `mode` is the failure-line tag ("REDIRECT" / "CANCEL").
+bool load_test_dll(const std::wstring &root, const char *mode,
+                   HMODULE &dll_out, FnCall &fn_call_out) {
+  auto fail = [&](const std::string &stage, const std::string &reason) {
+    seq_out(std::string(mode) + " FAIL stage=" + stage + " reason=" +
+            reason + "\n");
+    return false;
+  };
+  std::wstring dll_path, ver_dir;
+  const wchar_t *override_path = _wgetenv(L"NIU_WINUXCMD_FFI_DLL");
+  if (override_path && *override_path) {
+    if (!is_absolute_wpath(override_path)) {
+      return fail("discovery", "override-not-absolute");
+    }
+    dll_path = override_path;
+    const size_t slash = dll_path.find_last_of(L"\\/");
+    ver_dir = slash == std::wstring::npos ? L"" : dll_path.substr(0, slash);
+  } else {
+    std::wstring pointer;
+    if (!read_file_text(root + L"\\usr\\bin\\ffi\\current.txt", pointer)) {
+      return fail("discovery", "pointer-missing");
+    }
+    const std::wstring ver = trim(pointer);
+    if (ver.empty() || ver.find_first_of(L"\\/:") != std::wstring::npos) {
+      return fail("discovery", "pointer-invalid");
+    }
+    ver_dir = root + L"\\usr\\bin\\ffi\\" + ver;
+    dll_path = ver_dir + L"\\winuxcore.dll";
+  }
+  if (!file_exists(dll_path)) return fail("discovery", "dll-missing");
+  const std::string pinned = pinned_hash(ver_dir + L"\\winuxcore.sha256");
+  std::string actual;
+  if (pinned.size() != 64 || !sha256_file_hex(dll_path, actual) ||
+      actual != pinned) {
+    return fail("integrity", "pin-mismatch");
+  }
+  HMODULE dll = LoadLibraryExW(
+      dll_path.c_str(), nullptr,
+      LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+  if (!dll) return fail("load", "load-failed");
+  const auto fn_abi = reinterpret_cast<FnAbiVersion>(
+      GetProcAddress(dll, "winux_ffi_abi_version"));
+  const auto fn_init =
+      reinterpret_cast<FnInit>(GetProcAddress(dll, "winux_ffi_init"));
+  const auto fn_call =
+      reinterpret_cast<FnCall>(GetProcAddress(dll, "winux_ffi_call"));
+  if (!fn_abi || !fn_init || !fn_call || fn_abi() != kExpectedAbi) {
+    return fail("load", "symbols-or-abi");
+  }
+  const std::wstring stamp = locale_stamp();
+  FfiInitArgs init{};
+  init.struct_size = sizeof(init);
+  init.abi_version = kExpectedAbi;
+  init.install_root = root.c_str();
+  init.locale_stamp = stamp.empty() ? nullptr : stamp.c_str();
+  if (fn_init(&init) != 0) return fail("init", "init-failed");
+  dll_out = dll;
+  fn_call_out = fn_call;
+  return true;
+}
+
+bool write_file_bytes(const std::wstring &path, const std::string &data) {
+  HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr,
+                         CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h == INVALID_HANDLE_VALUE) return false;
+  DWORD written = 0;
+  const BOOL ok = WriteFile(h, data.data(), static_cast<DWORD>(data.size()),
+                            &written, nullptr) &&
+                  written == data.size();
+  CloseHandle(h);
+  return ok != 0;
+}
+
+bool read_file_bytes(const std::wstring &path, std::string &out) {
+  HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                         OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h == INVALID_HANDLE_VALUE) return false;
+  char buf[65536];
+  DWORD got = 0;
+  out.clear();
+  while (ReadFile(h, buf, sizeof(buf), &got, nullptr) && got > 0) {
+    out.append(buf, got);
+  }
+  CloseHandle(h);
+  return true;
+}
+
+HANDLE open_write(const std::wstring &path) {
+  return CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+                     CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+}
+
+HANDLE open_read(const std::wstring &path) {
+  return CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                     OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+}
+
+uint64_t file_size(const std::wstring &path) {
+  HANDLE h = open_read(path);
+  if (h == INVALID_HANDLE_VALUE) return 0;
+  LARGE_INTEGER sz{};
+  GetFileSizeEx(h, &sz);
+  CloseHandle(h);
+  return static_cast<uint64_t>(sz.QuadPart);
+}
+
+// --- redirect mode -----------------------------------------------------------
+//   ffi-harness.exe redirect <install-root> <scratch-dir>
+//
+// #1487 defect A regression: one process, several FFI calls whose ctx std
+// handles CHANGE between calls. The one-call-per-process smoke cases
+// cannot see the bug: the DLL's console-layer cache is cold and already
+// points at the redirect, and the CRT fds are never exercised across a
+// handle change. This mode poisons the cache first (call 1 writes through
+// a file handle) and then requires later calls to follow the handles
+// passed in ctx:
+//   1. cat words.txt             -> stdout = poison.out (primes the cache)
+//   2. sort words.txt            -> stdout = srt.out (must land here)
+//   3. wc -l                    -> stdin = words.txt, stdout = wc.out (must read 7)
+//   4. sort words.txt words.txt -> stdout = mrg.out (external sort, std::cout)
+//   5. sort (no operands)        -> stdin = words.txt, stdout = sin.out
+//   6. sort ext.txt (12MB)        -> stdout = ext.out (multi-run merge,
+//      the shape of the 36MB evidence case)
+// Tiering is bypassed deliberately (DLL-face test, like sequence mode):
+// sort/wc are conditional-tier, and the point here is stdio binding, not
+// tier policy.
+int run_redirect(int argc, wchar_t *argv[]) {
+  if (argc < 4) {
+    diag(L"usage: ffi-harness.exe redirect <install-root> <scratch-dir>");
+    return 64;
+  }
+  const std::wstring root = argv[2];
+  const std::wstring scratch = argv[3];
+  if (!is_absolute_wpath(scratch)) {
+    seq_out("REDIRECT FAIL stage=args reason=scratch-must-be-absolute\n");
+    return 1;
+  }
+  HMODULE dll = nullptr;
+  FnCall fn_call = nullptr;
+  if (!load_test_dll(root, "REDIRECT", dll, fn_call)) return 1;
+  CreateDirectoryW(scratch.c_str(), nullptr);
+  const std::wstring words = scratch + L"\\words.txt";
+  const std::string words_data = "banana\napple\ncherry\ndate\nelderberry\nfig\ngrape\n";
+  const std::string sorted_data = "apple\nbanana\ncherry\ndate\nelderberry\nfig\ngrape\n";
+  const std::string sorted2_data =
+      "apple\napple\nbanana\nbanana\ncherry\ncherry\ndate\ndate\nelderberry\n"
+      "elderberry\nfig\nfig\ngrape\ngrape\n";
+  if (!write_file_bytes(words, words_data)) {
+    seq_out("REDIRECT FAIL stage=prime reason=words-unwritable\n");
+    return 1;
+  }
+  LPWCH env_block = GetEnvironmentStringsW();
+  auto fail = [&](const std::string &detail) {
+    seq_out("REDIRECT FAIL " + detail + "\n");
+    if (env_block) FreeEnvironmentStringsW(env_block);
+    return 1;
+  };
+  auto call = [&](const wchar_t *applet,
+                  const std::vector<std::wstring> &args, HANDLE in,
+                  HANDLE out, HANDLE err, int &rc_out) {
+    std::vector<const wchar_t *> argv_ptrs;
+    for (const auto &a : args) argv_ptrs.push_back(a.c_str());
+    FfiContext ctx{};
+    ctx.struct_size = sizeof(ctx);
+    ctx.abi_version = kExpectedAbi;
+    ctx.applet = applet;
+    ctx.argc = static_cast<int32_t>(argv_ptrs.size());
+    ctx.argv = argv_ptrs.empty() ? nullptr : argv_ptrs.data();
+    ctx.env_block = env_block;
+    ctx.cwd = scratch.c_str();
+    ctx.stdin_handle = in;
+    ctx.stdout_handle = out;
+    ctx.stderr_handle = err;
+    ctx.cancel_check = nullptr;
+    ctx.cancel_user_data = nullptr;
+    rc_out = fn_call(&ctx);
+  };
+  int rc = 0;
+  std::string content;
+  // 1. poison: cat through the first handle.
+  const std::wstring poison = scratch + L"\\poison.out";
+  {
+    HANDLE h = open_write(poison);
+    if (h == INVALID_HANDLE_VALUE) {
+      return fail("stage=call1 reason=poison-unwritable");
+    }
+    call(L"cat", {L"words.txt"}, nullptr, h, nullptr, rc);
+    CloseHandle(h);
+    if (rc <= kFfiErrFloor) {
+      return fail("stage=call1 reason=ffi-layer rc=" + std::to_string(rc));
+    }
+    if (rc != 0) {
+      return fail("stage=call1 reason=applet-rc rc=" + std::to_string(rc));
+    }
+    if (!read_file_bytes(poison, content) || content != words_data) {
+      return fail("stage=call1 reason=poison-content-mismatch");
+    }
+  }
+  // 2. stdout must follow the NEW handle, not the poisoned cache.
+  const std::wstring srt = scratch + L"\\srt.out";
+  {
+    HANDLE h = open_write(srt);
+    if (h == INVALID_HANDLE_VALUE) {
+      return fail("stage=call2 reason=srt-unwritable");
+    }
+    call(L"sort", {L"words.txt"}, nullptr, h, nullptr, rc);
+    CloseHandle(h);
+    if (rc <= kFfiErrFloor) {
+      return fail("stage=call2 reason=ffi-layer rc=" + std::to_string(rc));
+    }
+    if (rc != 0) {
+      return fail("stage=call2 reason=applet-rc rc=" + std::to_string(rc));
+    }
+    if (!read_file_bytes(srt, content) || content != sorted_data) {
+      return fail("stage=call2 reason=srt-content-mismatch");
+    }
+    if (!read_file_bytes(poison, content) || content != words_data) {
+      return fail("stage=call2 reason=poison-grew (stale cached stdout)");
+    }
+  }
+  // 3. stdin must follow the ctx handle (CRT fd 0 rebind).
+  const std::wstring wcout = scratch + L"\\wc.out";
+  {
+    HANDLE in = open_read(words);
+    HANDLE out = open_write(wcout);
+    if (in == INVALID_HANDLE_VALUE || out == INVALID_HANDLE_VALUE) {
+      return fail("stage=call3 reason=handles-unopenable");
+    }
+    call(L"wc", {L"-l"}, in, out, nullptr, rc);
+    CloseHandle(in);
+    CloseHandle(out);
+    if (rc <= kFfiErrFloor) {
+      return fail("stage=call3 reason=ffi-layer rc=" + std::to_string(rc));
+    }
+    if (rc != 0) {
+      return fail("stage=call3 reason=applet-rc rc=" + std::to_string(rc));
+    }
+    if (!read_file_bytes(wcout, content)) {
+      return fail("stage=call3 reason=wc-unreadable");
+    }
+    // wc -l from stdin prints the count (possibly padded, no filename).
+    const size_t p = content.find_first_not_of(" \t\r\n");
+    if (p == std::string::npos || content.compare(p, 1, "7") != 0) {
+      return fail("stage=call3 reason=wc-count-mismatch got=[" + content +
+                  "]");
+    }
+  }
+  // 4. two files -> external sort, which writes via std::cout (CRT fd 1).
+  const std::wstring mrg = scratch + L"\\mrg.out";
+  {
+    HANDLE h = open_write(mrg);
+    if (h == INVALID_HANDLE_VALUE) {
+      return fail("stage=call4 reason=mrg-unwritable");
+    }
+    call(L"sort", {L"words.txt", L"words.txt"}, nullptr, h, nullptr, rc);
+    CloseHandle(h);
+    if (rc <= kFfiErrFloor) {
+      return fail("stage=call4 reason=ffi-layer rc=" + std::to_string(rc));
+    }
+    if (rc != 0) {
+      return fail("stage=call4 reason=applet-rc rc=" + std::to_string(rc));
+    }
+    if (!read_file_bytes(mrg, content) || content != sorted2_data) {
+      return fail("stage=call4 reason=mrg-content-mismatch");
+    }
+  }
+  // 5. sort reading stdin (no operands).
+  const std::wstring sinout = scratch + L"\\sin.out";
+  {
+    HANDLE in = open_read(words);
+    HANDLE out = open_write(sinout);
+    if (in == INVALID_HANDLE_VALUE || out == INVALID_HANDLE_VALUE) {
+      return fail("stage=call5 reason=handles-unopenable");
+    }
+    call(L"sort", {}, in, out, nullptr, rc);
+    CloseHandle(in);
+    CloseHandle(out);
+    if (rc <= kFfiErrFloor) {
+      return fail("stage=call5 reason=ffi-layer rc=" + std::to_string(rc));
+    }
+    if (rc != 0) {
+      return fail("stage=call5 reason=applet-rc rc=" + std::to_string(rc));
+    }
+    if (!read_file_bytes(sinout, content) || content != sorted_data) {
+      return fail("stage=call5 reason=sin-content-mismatch");
+    }
+  }
+  // 6. sort a >8MB file: external_sort makes >= 2 runs and the merge
+  //    phase writes via std::cout — the shape of the 36MB evidence case
+  //    (sort big.txt > redirect sprayed 36MB to the terminal).
+  const std::wstring ext = scratch + L"\\ext.txt";
+  const std::wstring extout = scratch + L"\\ext.out";
+  {
+    HANDLE h = CreateFileW(ext.c_str(), GENERIC_WRITE, 0, nullptr,
+                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+      return fail("stage=call6 reason=ext-unwritable");
+    }
+    std::string chunk;
+    chunk.reserve(65536);
+    const int kExtLines = 1000000;
+    for (int i = kExtLines - 1; i >= 0; --i) {
+      char line[16];
+      const int n = snprintf(line, sizeof(line), "line-%07d\n", i);
+      chunk.append(line, static_cast<size_t>(n));
+      if (chunk.size() >= 65536) {
+        DWORD written = 0;
+        WriteFile(h, chunk.data(), static_cast<DWORD>(chunk.size()), &written,
+                  nullptr);
+        chunk.clear();
+      }
+    }
+    if (!chunk.empty()) {
+      DWORD written = 0;
+      WriteFile(h, chunk.data(), static_cast<DWORD>(chunk.size()), &written,
+                nullptr);
+    }
+    CloseHandle(h);
+  }
+  {
+    HANDLE h = open_write(extout);
+    if (h == INVALID_HANDLE_VALUE) {
+      return fail("stage=call6 reason=extout-unwritable");
+    }
+    call(L"sort", {L"ext.txt"}, nullptr, h, nullptr, rc);
+    CloseHandle(h);
+    if (rc <= kFfiErrFloor) {
+      return fail("stage=call6 reason=ffi-layer rc=" + std::to_string(rc));
+    }
+    if (rc != 0) {
+      return fail("stage=call6 reason=applet-rc rc=" + std::to_string(rc));
+    }
+    std::string want;
+    want.reserve(static_cast<size_t>(1000000) * 12);
+    for (int i = 0; i < 1000000; ++i) {
+      char line[16];
+      const int n = snprintf(line, sizeof(line), "line-%07d\n", i);
+      want.append(line, static_cast<size_t>(n));
+    }
+    if (!read_file_bytes(extout, content) || content != want) {
+      return fail("stage=call6 reason=ext-content-mismatch");
+    }
+  }
+  if (env_block) FreeEnvironmentStringsW(env_block);
+  seq_out("REDIRECT OK calls=6\n");
+  return 0;
+}
+
+ULONGLONG g_cancel_deadline_ms = 0;
+int cancel_after_deadline(void *) {
+  return GetTickCount64() >= g_cancel_deadline_ms ? 1 : 0;
+}
+
+// --- cancel mode -------------------------------------------------------------
+//   ffi-harness.exe cancel <install-root> <scratch-dir>
+//
+// #1487 defect B regression: sort of a 3M-line file (~39MB, the evidence
+// size) with a cancel callback that fires 300ms in. The call must report
+// WINUX_FFI_ERR_CANCELLED (-1006) well before the uncancelled run
+// finishes, and the output file must be short (the write phase never
+// completed). Tiering is bypassed (DLL-face test, like sequence mode).
+int run_cancel(int argc, wchar_t *argv[]) {
+  if (argc < 4) {
+    diag(L"usage: ffi-harness.exe cancel <install-root> <scratch-dir>");
+    return 64;
+  }
+  const std::wstring root = argv[2];
+  const std::wstring scratch = argv[3];
+  if (!is_absolute_wpath(scratch)) {
+    seq_out("CANCEL FAIL stage=args reason=scratch-must-be-absolute\n");
+    return 1;
+  }
+  HMODULE dll = nullptr;
+  FnCall fn_call = nullptr;
+  if (!load_test_dll(root, "CANCEL", dll, fn_call)) return 1;
+  CreateDirectoryW(scratch.c_str(), nullptr);
+  const std::wstring big = scratch + L"\\big.txt";
+  {
+    HANDLE h = CreateFileW(big.c_str(), GENERIC_WRITE, 0, nullptr,
+                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+      seq_out("CANCEL FAIL stage=prime reason=big-unwritable\n");
+      return 1;
+    }
+    std::string chunk;
+    chunk.reserve(65536);
+    const int kLines = 3000000;
+    for (int i = kLines - 1; i >= 0; --i) {
+      char line[16];
+      const int n = snprintf(line, sizeof(line), "line-%07d\n", i);
+      chunk.append(line, static_cast<size_t>(n));
+      if (chunk.size() >= 65536) {
+        DWORD written = 0;
+        WriteFile(h, chunk.data(), static_cast<DWORD>(chunk.size()), &written,
+                  nullptr);
+        chunk.clear();
+      }
+    }
+    if (!chunk.empty()) {
+      DWORD written = 0;
+      WriteFile(h, chunk.data(), static_cast<DWORD>(chunk.size()), &written,
+                nullptr);
+    }
+    CloseHandle(h);
+  }
+  LPWCH env_block = GetEnvironmentStringsW();
+  auto run_sort = [&](const std::wstring &out_path, bool with_cancel,
+                      ULONGLONG &elapsed_ms, int &rc_out) {
+    HANDLE out = open_write(out_path);
+    if (out == INVALID_HANDLE_VALUE) return false;
+    const std::wstring arg = L"big.txt";
+    std::vector<const wchar_t *> argv_ptrs{arg.c_str()};
+    FfiContext ctx{};
+    ctx.struct_size = sizeof(ctx);
+    ctx.abi_version = kExpectedAbi;
+    ctx.applet = L"sort";
+    ctx.argc = 1;
+    ctx.argv = argv_ptrs.data();
+    ctx.env_block = env_block;
+    ctx.cwd = scratch.c_str();
+    ctx.stdin_handle = nullptr;
+    ctx.stdout_handle = out;
+    ctx.stderr_handle = nullptr;
+    if (with_cancel) {
+      g_cancel_deadline_ms = GetTickCount64() + 300;
+      ctx.cancel_check = cancel_after_deadline;
+      ctx.cancel_user_data = nullptr;
+    } else {
+      ctx.cancel_check = nullptr;
+      ctx.cancel_user_data = nullptr;
+    }
+    const ULONGLONG t0 = GetTickCount64();
+    rc_out = fn_call(&ctx);
+    elapsed_ms = GetTickCount64() - t0;
+    CloseHandle(out);
+    return true;
+  };
+  const std::wstring full_out = scratch + L"\\full.out";
+  const std::wstring cancel_out = scratch + L"\\cancel.out";
+  ULONGLONG full_ms = 0, cancel_ms = 0;
+  int rc_full = 0, rc_cancel = 0;
+  if (!run_sort(full_out, false, full_ms, rc_full)) {
+    seq_out("CANCEL FAIL stage=full reason=out-unwritable\n");
+    return 1;
+  }
+  if (rc_full != 0) {
+    seq_out("CANCEL FAIL stage=full reason=applet-rc rc=" +
+            std::to_string(rc_full) + "\n");
+    return 1;
+  }
+  if (full_ms < 1000) {
+    // Too fast to exercise the gate on this machine; report a skip
+    // rather than a false failure.
+    seq_out("CANCEL SKIP full_ms=" + std::to_string(full_ms) +
+            " (machine too fast to gate)\n");
+    if (env_block) FreeEnvironmentStringsW(env_block);
+    return 0;
+  }
+  if (!run_sort(cancel_out, true, cancel_ms, rc_cancel)) {
+    seq_out("CANCEL FAIL stage=cancel reason=out-unwritable\n");
+    return 1;
+  }
+  const uint64_t full_size = file_size(full_out);
+  const uint64_t cancel_size = file_size(cancel_out);
+  if (env_block) FreeEnvironmentStringsW(env_block);
+  if (rc_cancel != -1006) {
+    seq_out("CANCEL FAIL stage=cancel reason=rc-not-cancelled rc=" +
+            std::to_string(rc_cancel) +
+            " full_ms=" + std::to_string(full_ms) +
+            " cancel_ms=" + std::to_string(cancel_ms) + "\n");
+    return 1;
+  }
+  if (cancel_ms * 4 >= full_ms * 3) {
+    seq_out("CANCEL FAIL stage=cancel reason=too-slow full_ms=" +
+            std::to_string(full_ms) +
+            " cancel_ms=" + std::to_string(cancel_ms) + "\n");
+    return 1;
+  }
+  if (cancel_size >= full_size) {
+    seq_out("CANCEL FAIL stage=cancel reason=output-complete cancel_size=" +
+            std::to_string(cancel_size) +
+            " full_size=" + std::to_string(full_size) + "\n");
+    return 1;
+  }
+  seq_out("CANCEL OK full_ms=" + std::to_string(full_ms) +
+          " cancel_ms=" + std::to_string(cancel_ms) + "\n");
+  return 0;
+}
+
 }  // namespace
 
 int wmain(int argc, wchar_t *argv[]) {
   if (argc >= 2 && std::wstring(argv[1]) == L"sequence") {
     return run_sequence(argc, argv);
+  }
+  if (argc >= 2 && std::wstring(argv[1]) == L"redirect") {
+    return run_redirect(argc, argv);
+  }
+  if (argc >= 2 && std::wstring(argv[1]) == L"cancel") {
+    return run_cancel(argc, argv);
   }
   if (argc < 3) {
     diag(L"usage: ffi-harness.exe <install-root> <applet> [args...] | "

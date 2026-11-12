@@ -38,11 +38,20 @@
  *  - cwd is a required, absolute, non-NULL wide path; the DLL borrows it as
  *    the process current directory for the duration of the call.
  *  - stdin/stdout/stderr are raw OS HANDLEs borrowed from the host. There is
- *    no capture layer, no intermediate pipe, and no copy-back: applets read
- *    and write the host's already-resolved handles directly.
+ *    no capture layer, no intermediate pipe, and no copy-back: the DLL
+ *    installs them as the process std handles AND rebinds its CRT std fds
+ *    to them (#1487-A), so applets read and write the host's
+ *    already-resolved handles directly. On return the Win32 std slot may
+ *    hold a duplicate of the previous handle (same object, different
+ *    value): the host must re-query std handles via GetStdHandle after
+ *    each call and never cache a raw HANDLE value across calls.
  *  - a cancellation callback lets the host report Ctrl+C-style intent;
  *    applets are only admitted to the FFI tiers when they are short-lived
  *    and interruptible by shape (see tiers.tsv), so this is cooperative.
+ *    The callback is polled by a DLL helper thread while dispatch runs,
+ *    so it must be thread-safe, non-blocking, and must not call back into
+ *    the DLL; a call cancelled mid-dispatch reports
+ *    WINUX_FFI_ERR_CANCELLED.
  *
  * Ownership: every pointer in the context structs is borrowed. The host must
  * keep them alive and unmodified for the duration of the call. The DLL never
@@ -76,7 +85,7 @@ typedef wchar_t WCHAR;
 #define WINUX_FFI_ERR_ABI_MISMATCH (-1003)
 #define WINUX_FFI_ERR_UNKNOWN_APPLET (-1004)
 #define WINUX_FFI_ERR_EXCEPTION (-1005) /* exception caught at the boundary */
-#define WINUX_FFI_ERR_CANCELLED (-1006) /* cancel callback already set */
+#define WINUX_FFI_ERR_CANCELLED (-1006) /* cancel requested, pre- or mid-call */
 
 #ifdef __cplusplus
 extern "C" {
@@ -85,7 +94,10 @@ extern "C" {
 /* Cancellation query callback supplied by the host.
  * Returns non-zero when the host wants the in-flight call to stop at the
  * next cooperative checkpoint. user_data is the opaque pointer from the
- * context. May be NULL (no cancellation source). */
+ * context. May be NULL (no cancellation source). The DLL calls it once
+ * before dispatch on the calling thread, and — while dispatch runs —
+ * repeatedly from a helper thread, so it must be thread-safe and
+ * non-blocking and must not call back into the DLL. */
 typedef int (*winux_ffi_cancel_fn)(void *user_data);
 
 typedef struct winux_ffi_init_args {
