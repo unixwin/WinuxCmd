@@ -14,6 +14,13 @@
 //! * Exit statuses: abort stops at the first bad value (2), fail reports
 //!   each and still exits 2, warn/ignore exit 0. Option/value validation
 //!   errors exit 1; --field errors carry the try-help line.
+//! * Field reassembly (uutils-borrowed, #1488 borrow-algo): under
+//!   auto-padding the converted field is padded back to the original
+//!   field width (numfmt.c process_suffixed_number: `text < p || 1 <
+//!   field ? mbswidth (text) : 0`), so aligned columns survive
+//!   conversion; without auto-padding (--padding, or --delimiter) the
+//!   collapsed join is GNU's own behavior (probed byte-for-byte against
+//!   WSL coreutils 9.4).
 //! * 9.4 differences from the 1.x C++ applet (Rust follows GNU, recorded
 //!   by the gate): no --unit-separator option, no -M/-l shorts, --unit
 //!   sizes accept only K/M/G/T/P/E (+"Ki"), grouping is locale-driven (the
@@ -1033,10 +1040,24 @@ impl<'a> Processor<'a> {
             return Some(true);
         }
         // [GNU] auto-padding reuses the input field width when the number
-        // carried leading blanks.
+        // carried leading blanks, and for every field past the first
+        // (numfmt.c process_suffixed_number, line 1360:
+        // padding_width = text < p || 1 < field ? mbswidth (text) : 0).
+        // The converted number is padded back out to that width, so the
+        // fields after it keep their original columns instead of the line
+        // collapsing to single spaces (audit gap: `plain 1048576 line`
+        // with --field 2 --to=iec keeps `plain    1.0M line`). mbswidth
+        // counts display columns; we use the byte length, which agrees
+        // for ASCII (the gate domain) and matches GNU's strlen fallback
+        // for unprintable bytes; wide multibyte input is a documented
+        // divergence.
         let mut pad_w = self.padding_width;
         if self.auto_padding {
-            pad_w = if nb > 0 { text.len() as i64 } else { 0 };
+            pad_w = if nb > 0 || field > 1 {
+                text.len() as i64
+            } else {
+                0
+            };
         }
         let pi = parse_human(number_text, self.from_unit);
         if !pi.ok {
@@ -1407,6 +1428,77 @@ mod tests {
         let (r, _, err) = run(&["-d", "ab"], "a 1000\n");
         assert_eq!(r, 1);
         assert!(err.contains("the delimiter must be a single character"));
+    }
+
+    #[test]
+    fn field_alignment_preserved() {
+        // GNU probed (WSL coreutils 9.4): under auto-padding the converted
+        // field is padded back to its original field width (numfmt.c
+        // process_suffixed_number: text < p || 1 < field ? mbswidth : 0),
+        // so trailing fields keep their columns
+        expect(
+            &["--field", "2", "--to=iec"],
+            "plain 1048576 line\n",
+            "plain    1.0M line\n",
+        );
+        expect(
+            &["--field", "3", "--to=iec"],
+            "1 2 1048576\n",
+            "1 2    1.0M\n",
+        );
+        expect(
+            &["--field", "2-3", "--to=iec"],
+            "x 1000000 2097152 y\n",
+            "x    977K    2.0M y\n",
+        );
+        expect(&["--field", "2", "--to=si"], "a 999999 b\n", "a   1.0M b\n");
+        expect(
+            &["--field", "-", "--to=iec"],
+            "1048576 2000000 3000000\n",
+            "1.0M    2.0M    2.9M\n",
+        );
+        expect(
+            &["--field", "4", "--invalid=warn", "--to=iec"],
+            "plain 1048576 xyz 3000000\n",
+            "plain 1048576 xyz    2.9M\n",
+        );
+        // output wider than the field overflows it (no pad, no truncation)
+        expect(&["--field", "2", "--from=si"], "a 1K b\n", "a 1000 b\n");
+        // field 1 without leading blanks is never auto-padded
+        expect(
+            &["--field", "1", "--to=iec"],
+            "1048576 2000000\n",
+            "1.0M 2000000\n",
+        );
+        // a tab run between fields collapses to one space, the converted
+        // field keeps its width (GNU probed)
+        expect(
+            &["--field", "2", "--to=iec"],
+            "a\t1048576\tb\n",
+            "a    1.0M b\n",
+        );
+        // explicit --padding or --delimiter disable auto-padding (GNU too)
+        expect(
+            &["-d", " ", "--field", "2", "--to=iec"],
+            "plain 1048576 line\n",
+            "plain 1.0M line\n",
+        );
+        expect(
+            &["--padding=10", "--field", "2", "--to=iec"],
+            "plain 1048576 line\n",
+            "plain       1.0M line\n",
+        );
+        // --suffix / format suffix ride inside the padded width
+        expect(
+            &["--field", "2", "--to=iec", "--suffix=B"],
+            "x 1048576 y\n",
+            "x   1.0MB y\n",
+        );
+        expect(
+            &["--field", "2", "--format", "%.2f|", "--to=iec"],
+            "a 1048576 b\n",
+            "a   1.00M| b\n",
+        );
     }
 
     #[test]
