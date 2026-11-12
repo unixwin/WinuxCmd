@@ -36,6 +36,7 @@ pub mod mkdir;
 pub mod modemap;
 pub mod nproc;
 pub mod numfmt;
+pub mod od;
 pub mod paste;
 pub mod printenv;
 pub mod pwd;
@@ -129,6 +130,7 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("tail", tail::tail_cmd),
         ("cut", cut::cut_cmd),
         ("tr", tr::tr_cmd),
+        ("od", od::od_cmd),
     ]
 }
 
