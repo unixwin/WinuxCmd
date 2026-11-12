@@ -1857,10 +1857,8 @@ numfmt_rows = [
 # Line-oriented inputs go through setup files (the stdin column carries a
 # single line only); random-output commands (mktemp creations, nice child
 # runs) use exit/win rows so only statuses gate.
-# ---------------------------------------------------------------------------
 
 HEAD_TAIL_FILE = "printf '1\\n2\\n3\\n4\\n5\\n' > f"
-
 head_rows = [
     ("hd01-default", "strict", "", "", "abc", []),
     ("hd02-n2", "strict", HEAD_TAIL_FILE, "", "", ["-n", "2", "f"]),
@@ -1895,7 +1893,6 @@ head_rows = [
     ("hd28-help", "strict", "", "", "", ["--help"]),
     ("hd29-version", "strict", "", "", "", ["--version"]),
 ]
-
 tail_rows = [
     ("tl01-default", "strict", "", "", "abc", []),
     ("tl02-n2", "strict", HEAD_TAIL_FILE, "", "", ["-n", "2", "f"]),
@@ -1918,7 +1915,6 @@ tail_rows = [
     ("tl18-dir-operand", "strict", "mkdir d", "", "", ["d"]),
     ("tl19-n-x", "strict", HEAD_TAIL_FILE, "", "", ["-n", "x", "f"]),
     ("tl20-zero-terminated", "strict", "printf 'a\\0b\\0c\\0' > f", "", "",
-     ["-z", "-n", "2", "f"]),
     ("tl21-obsolescent-2", "strict", HEAD_TAIL_FILE, "", "", ["-2", "f"]),
     ("tl22-single-line", "strict", "", "", "onlyone", []),
     ("tl23-n-plus-1", "strict", HEAD_TAIL_FILE, "", "", ["-n", "+1", "f"]),
@@ -1926,8 +1922,6 @@ tail_rows = [
     ("tl25-bogus-long", "strict", "", "", "", ["--bogus"]),
     ("tl26-help", "strict", "", "", "", ["--help"]),
     ("tl27-version", "strict", "", "", "", ["--version"]),
-]
-
 cut_rows = [
     ("ct01-f2", "strict", "", "", "1:2:3:4:5", ["-d", ":", "-f", "2"]),
     ("ct02-f1-3", "strict", "", "", "1:2:3:4:5", ["-d", ":", "-f", "1,3"]),
@@ -1965,8 +1959,6 @@ cut_rows = [
     ("ct31-overlap", "strict", "", "", "a:b", ["-c", "1-2,1"]),
     ("ct32-help", "strict", "", "", "", ["--help"]),
     ("ct33-version", "strict", "", "", "", ["--version"]),
-]
-
 tr_rows = [
     ("tr01-lower-upper", "strict", "", "", "hello", ["a-z", "A-Z"]),
     ("tr02-upper-lower", "strict", "", "", "HELLO", ["A-Z", "a-z"]),
@@ -2005,8 +1997,6 @@ tr_rows = [
     ("tr35-range-partial", "strict", "", "", "a[b", ["a-", "XY"]),
     ("tr36-help", "strict", "", "", "", ["--help"]),
     ("tr37-version", "strict", "", "", "", ["--version"]),
-]
-
 od_rows = [
     ("od01-default", "strict", "", "", "abc", []),
     ("od02-char", "strict", "", "", "abc", ["-c"]),
@@ -2045,8 +2035,6 @@ od_rows = [
     ("od34-dir-operand", "strict", "mkdir d", "", "", ["-An", "-c", "d"]),
     ("od35-help", "strict", "", "", "", ["--help"]),
     ("od36-version", "strict", "", "", "", ["--version"]),
-]
-
 sum_rows = [
     ("sm01-default-file", "strict", "printf 'abcdef' > f", "", "", ["f"]),
     ("sm02-r-file", "strict", "printf 'abcdef' > f", "", "", ["-r", "f"]),
@@ -2072,8 +2060,6 @@ sum_rows = [
     ("sm18-help", "strict", "", "", "", ["--help"]),
     ("sm19-version", "strict", "", "", "", ["--version"]),
     ("sm20-newlines", "strict", "printf '1\\n2\\n3\\n4\\n5\\n' > f", "", "", ["f"]),
-]
-
 mktemp_rows = [
     ("mk01-create-file", "exit", "", "", "", ["tpl.XXXXXX"]),
     ("mk02-create-dir", "exit", "", "", "", ["-d", "dir.XXXXXX"]),
@@ -2102,17 +2088,12 @@ mktemp_rows = [
     ("mk25-bogus-long", "strict", "", "", "", ["--bogus"]),
     ("mk26-help", "strict", "", "", "", ["--help"]),
     ("mk27-version", "strict", "", "", "", ["--version"]),
-]
-
 NICE_CHILD_SETUP = (
     "printf '#!/bin/sh\\nexit 3\\n' > cmd; chmod +x cmd; "
     "export PATH=\"$PWD:$PATH\""
 )
 NICE_CHILD_OK_SETUP = (
     "printf '#!/bin/sh\\nexit 0\\n' > cmd; chmod +x cmd; "
-    "export PATH=\"$PWD:$PATH\""
-)
-
 nice_rows = [
     ("nc01-bare", "strict", "", "", "", []),
     ("nc02-n-no-command", "strict", "", "", "", ["-n", "2"]),
@@ -2142,9 +2123,6 @@ nice_rows = [
     ("nc20-version", "strict", "", "", "", ["--version"]),
     ("nc21-child-eq1", "exit", "printf '#!/bin/sh\\nexit 1\\n' > cmd; chmod +x cmd; export PATH=\"$PWD:$PATH\"",
      "", "", ["cmd", "/c", "exit", "1"]),
-]
-
-# ---------------------------------------------------------------------------
 # wave4b (#1488): sort — GNU sort.c (coreutils 9.4) semantics. The C shape
 # contract is enforced by pinning LC_ALL=C in every row's env column (the
 # GNU oracle side otherwise runs under the host locale). Multi-line inputs
@@ -2249,21 +2227,13 @@ sort_rows = [
     ("so82-version", "strict", "", "LC_ALL=C", "", ["--version"]),
     ("so83-unknown-opt", "strict", "", "LC_ALL=C", "", ["--bogus"]),
     ("so84-stdin-ignored-flag", "strict", "", "LC_ALL=C", "zz", ["--parallel=2"]),
-]
-
 CSPLIT_F = "printf 'a\\nb\\n--\\nc\\nd\\n--\\ne\\n' > f.txt"
-
 CSPLIT_G = "printf 'Header\\nl1\\nl2\\nFooter\\nl3\\nHeader\\nl4\\n' > g.txt"
-
 PK_SETUP_REG = "touch regfile; mkdir -p missingdir/inner"
-
 PTX_SETUP_HW = "printf 'hello world\\n' > hw.txt; printf 'one\\n' > o.txt"
-
 SHUF_SETUP = ("printf 'a\\nb\\nc\\nd\\ne\\n' > f5.txt; "
     "printf '1\\n2\\n3\\n4\\n5\\n6\\n7\\n8\\n9\\n10\\n11\\n12\\n13\\n14\\n15\\n16\\n17\\n18\\n19\\n20\\n' > n20.txt; "
     "printf '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' > seed.bin")
-
-
 csplit_rows = [
     ("cs01-regex-split", "strict", CSPLIT_F, "", "", ["f.txt", "/--/"]),
     ("cs02-line-splits", "strict", CSPLIT_F, "", "", ["f.txt", "2", "4"]),
@@ -2300,7 +2270,12 @@ csplit_rows = [
     ("cs31-empty-prefix", "strict", CSPLIT_F, "", "", ["-f", "", "f.txt", "/--/"]),
     ("cs32-crlf-bytes", "strict", "printf 'x\\r\\n--\\r\\ny\\r\\n' > w.txt", "", "",
      ["w.txt", "/--/"]),
-]
+# wave4b (#1488): factor pathchk ptx shuf csplit nohup groups who.
+# Probe base: WSL coreutils 9.4, target/probe/{f1,f2,p1,pk1,pt2,s1,s2,c1,
+# g1,nh2}.sh. Modes follow the run-gate header: strict = GNU rc+stdout
+# byte gate; exit = GNU rc only (platform-form stdout); win = Rust vs C++
+# rc only (platform-inherent content); note rows must be registered in
+# note-registry.tsv and never gate.
 
 factor_rows = [
     ("fa01-small", "strict", "", "", "", ["12"]),
@@ -2390,8 +2365,6 @@ nohup_rows = [
     ("nh22-posixly-empty", "strict", "", "POSIXLY_CORRECT=", "", []),
     ("nh23-short-h-with-cmd", "strict", "", "", "", ["-h", "true"]),
     ("nh24-version-then-help", "strict", "", "", "", ["--version", "--help"]),
-]
-
 pathchk_rows = [
     ("pk01-ok", "strict", "", "", "", ["ok.txt"]),
     ("pk02-missing-chain", "strict", "", "", "", ["nosuch/name.txt"]),
@@ -2423,8 +2396,6 @@ pathchk_rows = [
     ("pk28-version", "strict", "", "", "", ["--version"]),
     ("pk29-two-one-bad", "strict", PK_SETUP_REG, "", "", ["okname", "regfile/file"]),
     ("pk30-reserved-stem", "win", "", "", "", ["con.txt"]),
-]
-
 ptx_rows = [
     ("px01-dumb-two-words", "strict", PTX_SETUP_HW, "", "", ["hw.txt"]),
     ("px02-dumb-one-word", "strict", PTX_SETUP_HW, "", "", ["o.txt"]),
@@ -2461,8 +2432,6 @@ ptx_rows = [
     ("px27-gap-one-narrow", "win",
      "printf 'aaa bbb ccc ddd\\n' > ab.txt", "", "", ["-g", "1", "-w", "40", "ab.txt"]),
     ("px28-two-files", "win", PTX_SETUP_HW, "", "", ["o.txt", "hw.txt"]),
-]
-
 shuf_rows = [
     ("su01-rs-file", "strict", SHUF_SETUP, "", "", ["--random-source=seed.bin", "f5.txt"]),
     ("su02-rs-head", "strict", SHUF_SETUP, "", "", ["--random-source=seed.bin", "-n", "5", "n20.txt"]),
@@ -2517,8 +2486,6 @@ shuf_rows = [
     ("su38-dir-operand", "strict", "mkdir d1", "", "", ["d1"]),
     ("su39-source-missing", "strict", "", "", "", ["--random-source=nosuch.bin", "-i", "1-3"]),
     ("su40-unknown-long", "strict", "", "", "", ["--bogus", "-i", "1-2"]),
-]
-
 who_rows = [
     # session content is the Windows WTS value model
     ("wh01-current", "win", "", "", "", []),
@@ -2547,7 +2514,6 @@ who_rows = [
     ("wh24-message-alias", "win", "", "", "", ["--message"]),
     ("wh25-heading-count", "win", "", "", "", ["-H", "-q"]),
     ("wh26-heading-missing-file", "win", "", "", "", ["-H", "who-nosuch-utmp"]),
-]
 def collect():
     """All case tables as (cmd, rows) pairs, in emit order."""
     return [
@@ -2574,6 +2540,8 @@ def collect():
         ("tr", tr_rows), ("od", od_rows), ("sum", sum_rows),
         ("mktemp", mktemp_rows), ("nice", nice_rows),
         ("sort", sort_rows),
+        ("factor", factor_rows),
+
     ]
 
 

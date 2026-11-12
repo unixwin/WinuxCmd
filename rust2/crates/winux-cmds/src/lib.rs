@@ -11,6 +11,7 @@ pub mod basename;
 pub mod basenc;
 pub mod bre;
 pub mod canon;
+pub mod childproc;
 pub mod chmod;
 pub mod chown;
 pub mod cut;
@@ -19,6 +20,8 @@ pub mod digest;
 pub mod digestsum;
 pub mod dirname;
 pub mod expand;
+pub mod factor;
+
 pub mod fmt;
 pub mod fold;
 pub mod fs_win;
@@ -59,6 +62,7 @@ pub mod test_cmd;
 pub mod timeout;
 pub mod touch;
 pub mod tr;
+
 
 pub mod truefalse;
 pub mod truncate;
@@ -140,6 +144,9 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("sum", sum::sum_cmd),
         ("mktemp", mktemp::mktemp_cmd),
         ("nice", nice::nice_cmd),
+        // wave4b (#1488)
+        ("factor", factor::factor_cmd),
+
     ]
 }
 
