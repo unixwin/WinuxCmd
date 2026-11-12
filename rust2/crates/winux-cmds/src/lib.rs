@@ -57,6 +57,7 @@ pub mod ptx;
 pub mod pwd;
 pub mod readlink;
 pub mod realpath;
+pub mod rev;
 pub mod rmdir;
 pub mod seq;
 pub mod shuf;
@@ -137,6 +138,7 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("sha512sum", digestsum::sha512sum_cmd),
         // wave6 (#1488): simple text/applet family
         ("echo", echo::echo_cmd),
+        ("rev", rev::rev_cmd),
         // wave3a (#1488): alphabetical insertions
         ("fmt", fmt::fmt_cmd),
         ("fold", fold::fold_cmd),

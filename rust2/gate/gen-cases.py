@@ -2293,6 +2293,51 @@ echo_rows = [
      ["a\\tb"]),
 ]
 
+# `rev` — util-linux rev (the WSL oracle), not coreutils. UTF-8 rows pin
+# LC_ALL because the Windows side has no inherited locale and the Rust
+# implementation reads LC_ALL/LC_CTYPE/LANG like setlocale(). NUL-separated
+# records need a setup file (stdin cannot carry NUL through the harness).
+# GNU rev 2.39.3 HANGS on invalid byte sequences and directory operands
+# (probed rc 124 under timeout) — no gate rows can cover those honestly;
+# the Rust byte-fallback is unit-tested instead.
+REV_Z_SETUP = "printf 'ab\\0cd\\0' > rec"
+REV_Z_NOMID_SETUP = "printf 'ab\\0cd' > rec2"
+rev_rows = [
+    ("rv01-multiline", "strict",
+     "printf 'abc\\n\\nxy z\\n' > r0", "", "", ["r0"]),
+    ("rv02-empty-stdin", "strict", "", "", "", []),
+    ("rv03-no-trailing-nl", "strict", "printf 'ab' > r0b", "", "", ["r0b"]),
+    ("rv04-file", "strict", "printf 'hello\\n' > r1", "", "", ["r1"]),
+    ("rv05-two-files", "strict",
+     "printf 'aa\\n' > r2; printf 'bb\\n' > r3", "", "", ["r2", "r3"]),
+    ("rv06-missing", "strict", "printf 'aa\\n' > r4", "", "", ["missing"]),
+    ("rv07-mixed-missing", "strict",
+     "printf 'aa\\n' > r5", "", "", ["missing", "r5"]),
+    ("rv08-dash-operand", "strict", "printf 'aa\\n' > r6", "", "", ["-", "r6"]),
+    ("rv09-crlf", "strict", "printf 'ab\\r\\n' > r7", "", "", ["r7"]),
+    ("rv10-zero-sep", "strict", REV_Z_SETUP, "", "", ["-0", "rec"]),
+    ("rv11-zero-long", "strict", REV_Z_SETUP, "", "", ["--zero", "rec"]),
+    ("rv12-zero-nomid", "strict", REV_Z_NOMID_SETUP, "", "",
+     ["-0", "rec2"]),
+    ("rv13-help", "strict", "", "", "", ["--help"]),
+    ("rv14-help-short", "strict", "", "", "", ["-h"]),
+    ("rv15-version", "strict", "", "", "", ["--version"]),
+    ("rv16-version-short", "strict", "", "", "", ["-V"]),
+    ("rv17-version-extra", "strict", "", "", "", ["-V", "extra"]),
+    ("rv18-help-extra", "strict", "", "", "", ["--help", "extra"]),
+    ("rv19-bogus-short", "exit", "", "", "", ["-q"]),
+    ("rv20-bogus-long", "exit", "", "", "", ["--bogus"]),
+    ("rv21-dashdash", "strict", "printf 'zz\\n' > r8", "", "", ["--", "r8"]),
+    ("rv22-locale-c-ascii", "strict", "printf 'ab\\n' > r9",
+     "LC_ALL=C", "", ["r9"]),
+    ("rv23-locale-utf8", "strict", "printf 'ab\\xc3\\xa9\\n' > r10",
+     "LC_ALL=C.UTF-8", "", ["r10"]),
+    ("rv24-locale-lc-ctype", "strict", "printf 'ab\\n' > r11",
+     "LC_CTYPE=C", "", ["r11"]),
+    ("rv25-default-ascii", "strict", "printf 'xyz\\n' > r12", "", "",
+     ["r12"]),
+]
+
 
 NICE_CHILD_OK_SETUP = (
     "printf '#!/bin/sh\\nexit 0\\n' > cmd; chmod +x cmd; "
@@ -3039,6 +3084,7 @@ def collect():
         ("md5sum", md5sum_rows), ("sha1sum", sha1sum_rows),
         ("sha256sum", sha256sum_rows), ("sha512sum", sha512sum_rows),
         ("echo", echo_rows),
+        ("rev", rev_rows),
     ]
 
 
