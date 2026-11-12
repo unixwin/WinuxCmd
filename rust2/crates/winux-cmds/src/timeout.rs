@@ -18,18 +18,22 @@
 //! * Exit statuses: child status on normal exit; 127 when the command
 //!   cannot be found, 126 when it cannot be invoked; 125 when timeout
 //!   itself fails. Missing COMMAND prints ONLY the try-help line (no
-//!   "missing operand" diagnostic) and exits 125 (GNU probed).
-//! * The child is resolved PATH-only (execvp semantics) with the caller's
-//!   environment and inherited stdio handles.
+//!   "missing operand" diagnostic) and exits 125 (GNU probed). A found
+//!   but unrunnable file (no image magic, no `#!` line — a plain text
+//!   or .js file) reports the GNU ENOEXEC strerror "Exec format error"
+//!   (#1587: it used to exit 126 silently); a shebang script launches
+//!   through its interpreter like binfmt_script.c.
+//! * The child is resolved PATH-only (execvp semantics, the shared
+//!   [`crate::childproc`] chain) with the caller's environment and
+//!   inherited stdio handles.
 
 use std::ffi::OsString;
 use std::io::Write;
-use std::os::windows::process::CommandExt;
 use std::time::{Duration, Instant};
 
 use crate::argopt::{self, OptSpec};
-use crate::childproc::{quote_windows_arg, resolve_child, ChildResolve};
-use winux_core::{win32_env_get, CmdResult, Ctx, Io};
+use crate::childproc::{resolve_child, spawn_child, ChildResolve};
+use winux_core::{CmdResult, Ctx, Io};
 
 const OPTS: &[OptSpec] = &[
     OptSpec {
@@ -463,37 +467,26 @@ pub fn timeout_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
 
     // Resolve the child the way the product's shared childproc helper does
     // (PATH-only over normalized entries, PATHEXT completion, batch
-    // scripts through the command interpreter), then spawn it with
-    // inherited stdio.
-    let resolved = resolve_child(&command, ctx);
-    let mut cmd = match &resolved {
-        ChildResolve::Found { path, batch } => {
-            if *batch {
-                // [GNU] CreateProcess cannot launch a batch file directly:
-                // route through COMSPEC as the childproc helper does
-                // (`cmd /d /s /c "<script> <args...>"`).
-                let comspec = win32_env_get(ctx.env, "COMSPEC")
-                    .map(|v| v.to_string_lossy().into_owned())
-                    .filter(|v| !v.is_empty())
-                    .unwrap_or_else(|| "cmd.exe".to_string());
-                let mut inner = quote_windows_arg(path);
-                for a in &cmd_args {
-                    inner.push(' ');
-                    inner.push_str(&quote_windows_arg(a));
-                }
-                let mut c = std::process::Command::new(&comspec);
-                c.raw_arg("/d").raw_arg("/s").raw_arg("/c");
-                c.raw_arg(format!("\"{inner}\""));
-                c
-            } else {
-                // native image: spawn the resolved path; argv[0] is the
-                // resolved path itself (std has no Windows argv0 control,
-                // and the pre-wiring resolver did the same).
-                let mut c = std::process::Command::new(path);
-                c.args(&cmd_args);
-                c
+    // scripts through the command interpreter, shebang scripts through
+    // their interpreter — #1587), then spawn it with inherited stdio.
+    // Diagnostics follow GNU timeout.c's execvp failure path in the C
+    // locale (probed WSL coreutils 9.4): 127 "No such file or directory"
+    // for a missing command AND for a missing shebang interpreter (the
+    // kernel's ENOENT), 126 "Exec format error" for a file no format in
+    // the chain can run, 126 "Permission denied" for a directory or an
+    // unspawnable resolution.
+    let mut child = match resolve_child(&command, ctx) {
+        ChildResolve::Found(launch) => match spawn_child(&launch, &cmd_args, ctx) {
+            Ok(c) => c,
+            Err(_) => {
+                // found but not invokable (or another spawn failure)
+                let _ = writeln!(
+                    io.stderr,
+                    "timeout: failed to run command '{command}': Permission denied"
+                );
+                return Ok(126);
             }
-        }
+        },
         ChildResolve::NotFound => {
             let _ = writeln!(
                 io.stderr,
@@ -501,28 +494,14 @@ pub fn timeout_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             );
             return Ok(127);
         }
-        ChildResolve::NotExecutable | ChildResolve::NotADirectory => {
+        ChildResolve::BadFormat => {
             let _ = writeln!(
                 io.stderr,
-                "timeout: failed to run command '{command}': Permission denied"
+                "timeout: failed to run command '{command}': Exec format error"
             );
             return Ok(126);
         }
-    };
-    // GetEnvironmentStringsW carries "=C:" style pseudo-vars that
-    // Command::envs rejects; skip them (the winuxcmd ABI does the same).
-    cmd.envs(
-        ctx.env
-            .entries()
-            .iter()
-            .filter(|(k, _)| !k.is_empty() && !k.to_string_lossy().starts_with('='))
-            .map(|(k, v)| (k.clone(), v.clone())),
-    );
-    cmd.current_dir(&ctx.cwd);
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(_) => {
-            // found but not invokable (or another spawn failure)
+        ChildResolve::NotExecutable | ChildResolve::NotADirectory => {
             let _ = writeln!(
                 io.stderr,
                 "timeout: failed to run command '{command}': Permission denied"
@@ -714,6 +693,54 @@ mod tests {
         let (r, _, err) = run_env(&env, &["10", "nosuchcmd123"]);
         assert_eq!(r, 127);
         assert!(err.contains("failed to run command 'nosuchcmd123': No such file or directory"));
+    }
+
+    #[test]
+    fn non_pe_children_report_gnu_wording() {
+        // #1587: a found but unrunnable file used to exit 126 silently;
+        // the chain now classifies it and reports the GNU ENOEXEC strerror.
+        let sc = scratch("timeout-badformat");
+        let txt = sc.dir.join("plain.txt");
+        std::fs::write(&txt, "just text\n").unwrap();
+        let operand = txt.to_string_lossy().into_owned();
+        let (r, _, err) = run(&["5", &operand]);
+        assert_eq!(r, 126);
+        assert!(err.contains(&format!(
+            "failed to run command '{operand}': Exec format error"
+        )));
+        // a shebang script whose interpreter misses: the kernel's ENOENT
+        // (probed GNU: rc 127 "No such file or directory")
+        let bad = sc.dir.join("bad.sh");
+        std::fs::write(&bad, "#!/bin/no-such-interp-xyz\necho never\n").unwrap();
+        let operand = bad.to_string_lossy().into_owned();
+        let (r, _, err) = run(&["5", &operand]);
+        assert_eq!(r, 127);
+        assert!(err.contains(&format!(
+            "failed to run command '{operand}': No such file or directory"
+        )));
+        // a directory operand: EACCES -> 126 Permission denied (probed GNU)
+        let (r, _, err) = run(&["5", &sc.dir.to_string_lossy()]);
+        assert_eq!(r, 126);
+        assert!(err.contains(": Permission denied"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn shebang_child_launches() {
+        // #1587: `timeout 5 ./hi.sh` runs the script through its
+        // interpreter (rc 0) instead of dying with a silent 126. The
+        // interpreter "/bin/sh" resolves through the install-root mapper
+        // or PATH, like the wired product environment.
+        let sc = scratch("timeout-shebang");
+        let hi = sc.dir.join("hi.sh");
+        std::fs::write(&hi, "#!/bin/sh\nexit 0\n").unwrap();
+        let operand = hi.to_string_lossy().into_owned();
+        let (r, _, err) = run(&["5", &operand]);
+        assert_eq!(r, 0, "err={err}");
+        // the script's exit status propagates through the interpreter
+        std::fs::write(&hi, "#!/bin/sh\nexit 4\n").unwrap();
+        let (r, _, _) = run(&["5", &operand]);
+        assert_eq!(r, 4);
     }
 
     #[test]

@@ -153,6 +153,8 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("sum", sum::sum_cmd),
         ("mktemp", mktemp::mktemp_cmd),
         ("nice", nice::nice_cmd),
+        // #1587: nohup lands with its spawn family — it shares the
+        // childproc resolver with timeout (same non-PE child surface).
         // wave4b (#1488)
         ("factor", factor::factor_cmd),
         ("pathchk", pathchk::pathchk_cmd),

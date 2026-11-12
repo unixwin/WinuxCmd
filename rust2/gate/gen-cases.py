@@ -1652,6 +1652,15 @@ users_rows = [
     ("us20-upper-operand", "exit", "", "", "", ["UTMP"]),
 ]
 TM_CHILD3_SETUP = "printf '#!/bin/sh\\nexit 3\\n' > cmd; chmod +x cmd; export PATH=\"$PWD:$PATH\""
+TM_SHEBANG_SETUP = "printf '#!/bin/sh\\nexit 3\\n' > hi.sh; chmod +x hi.sh"
+TM_SHEBANG_ECHO_SETUP = "printf '#!/bin/sh\\necho hi\\n' > hi.sh; chmod +x hi.sh"
+TM_SHEBANG_USR_SETUP = "printf '#!/usr/bin/sh\\nexit 4\\n' > hi.sh; chmod +x hi.sh"
+TM_SHEBANG_BAD_INTERP_SETUP = "printf '#!/bin/no-such-interp-xyz\\necho never\\n' > bad.sh; chmod +x bad.sh"
+TM_PRECHO_SETUP = "printf '#!/bin/echo\\n' > precho.sh; chmod +x precho.sh"
+TM_PRECHON_SETUP = "printf '#!/bin/echo -n\\n' > prechon.sh; chmod +x prechon.sh"
+TM_PLAIN_SETUP = "printf 'not a script\\n' > plain.txt; chmod +x plain.txt"
+TM_EMPTY_SETUP = ": > empty.bin; chmod +x empty.bin"
+TM_CMDSHIM_SETUP = "printf '@echo off\\r\\necho shim-cmd\\r\\n' > agent-browser.cmd; export PATH=\"$PWD:$PATH\""
 timeout_rows = [
     # children resolve on both platforms natively: sleep exists as a GNU
     # external and as the winuxcmd sleep.exe; the child-status case uses a
@@ -1687,6 +1696,33 @@ timeout_rows = [
     ("tm28-upper-suffix", "exit", "", "", "", ["5S", "sleep", "0"]),
     ("tm29-duration-0", "exit", "", "", "", ["0", "sleep", "0"]),
     ("tm30-negative-option", "exit", "", "", "", ["-5", "sleep", "0"]),
+    # ---- #1587: non-PE child resolution (shebang / no-magic files) ----
+    # A shebang script child launches through its interpreter like
+    # binfmt_script.c (it used to exit 126 silently). stdout is empty on
+    # both sides here, so strict gates the status byte-for-byte.
+    ("tm31-shebang-exit", "strict", TM_SHEBANG_SETUP, "", "", ["5", "./hi.sh"]),
+    ("tm32-shebang-echo", "strict", TM_SHEBANG_ECHO_SETUP, "", "", ["5", "./hi.sh"]),
+    # a POSIX-prefix interpreter (/usr/bin/sh) resolves through the
+    # shell-namespace mapper on a root host, or the leaf name on PATH
+    ("tm33-shebang-posix-prefix", "strict", TM_SHEBANG_USR_SETUP, "", "", ["5", "./hi.sh"]),
+    # a MISSING shebang interpreter is the kernel's ENOENT: GNU reports
+    # 127 "No such file or directory" against the script operand (probed)
+    ("tm34-shebang-missing-interp", "strict", TM_SHEBANG_BAD_INTERP_SETUP, "", "", ["5", "./bad.sh"]),
+    # binfmt_script argv shape [interp, arg?, script]: /bin/echo prints the
+    # script path — platform-spelled, so only the status gates (rc 0)
+    ("tm35-shebang-echo-interp", "exit", TM_PRECHO_SETUP, "", "", ["5", "./precho.sh"]),
+    ("tm36-shebang-echo-arg", "exit", TM_PRECHON_SETUP, "", "", ["5", "./prechon.sh"]),
+    # a found file with no image magic and no #! is the ENOEXEC analog:
+    # 126 "Exec format error" (win mode — glibc execvp would sh-fallback)
+    ("tm37-nonpe-badformat", "win", TM_PLAIN_SETUP, "", "", ["5", "./plain.txt"]),
+    ("tm38-nonpe-empty", "win", TM_EMPTY_SETUP, "", "", ["5", "./empty.bin"]),
+    # a directory operand is EACCES: 126 "Permission denied" (probed GNU)
+    ("tm39-dir-operand", "strict", "", "", "", ["5", "."]),
+    # an absolute POSIX-spelled child resolves through the mapper/leaf
+    ("tm40-absolute-posix-child", "exit", "", "", "", ["5", "/bin/echo", "abs-hi"]),
+    # the issue's bare-name-PATH-.cmd shape: PATHEXT completion launches the
+    # batch shim (win mode: GNU would sh-fallback the ENOEXEC file)
+    ("tm41-bare-name-cmd-shim", "win", TM_CMDSHIM_SETUP, "", "", ["5", "agent-browser"]),
 ]
 expand_rows = [
     ("ex01-default", "strict", "", "", "a\\tb\\n", []),
@@ -2360,6 +2396,9 @@ groups_rows = [
     ("gr20-mixed-known-unknown", "win", "", "", "", ["root", "nosuch-b-2"]),
 ]
 
+NH_SHEBANG_SETUP = "printf '#!/bin/sh\\nexit 6\\n' > hi.sh; chmod +x hi.sh"
+NH_SHEBANG_BAD_INTERP_SETUP = "printf '#!/bin/no-such-interp-xyz\\necho never\\n' > bad.sh; chmod +x bad.sh"
+NH_PLAIN_SETUP = "printf 'not a script\\n' > plain.txt; chmod +x plain.txt"
 nohup_rows = [
     # Windows has no standalone true.exe image for a child spawn;
     # GNU rc 0, Rust/C++ 127 (parity) -> win
@@ -2390,6 +2429,17 @@ nohup_rows = [
     ("nh22-posixly-empty", "strict", "", "POSIXLY_CORRECT=", "", []),
     ("nh23-short-h-with-cmd", "strict", "", "", "", ["-h", "true"]),
     ("nh24-version-then-help", "strict", "", "", "", ["--version", "--help"]),
+    # ---- #1587: non-PE child resolution (same spawn family as timeout) ----
+    # a shebang script child launches through its interpreter (strict:
+    # empty stdout both sides, the status gates)
+    ("nh25-shebang-exit", "strict", NH_SHEBANG_SETUP, "", "", ["./hi.sh"]),
+    # a missing shebang interpreter is the kernel's ENOENT -> 127 wording
+    ("nh26-shebang-missing-interp", "strict", NH_SHEBANG_BAD_INTERP_SETUP, "", "", ["./bad.sh"]),
+    # a found file with no image magic and no #! is the ENOEXEC analog:
+    # 126 "Exec format error" (win mode: glibc execvp would sh-fallback)
+    ("nh27-nonpe-badformat", "win", NH_PLAIN_SETUP, "", "", ["./plain.txt"]),
+    # a directory operand is EACCES: 126 "Permission denied" (probed GNU)
+    ("nh28-dir-operand", "strict", "", "", "", ["."]),
 ]
 
 pathchk_rows = [
@@ -2644,38 +2694,6 @@ groups_rows = [
     ("gr20-mixed-known-unknown", "win", "", "", "", ["root", "nosuch-b-2"]),
 ]
 
-nohup_rows = [
-    # Windows has no standalone true.exe image for a child spawn;
-    # GNU rc 0, Rust/C++ 127 (parity) -> win
-    ("nh01-run-true", "win", "", "", "", ["true"]),
-    ("nh02-run-false", "win", "", "", "", ["false"]),
-    ("nh03-run-echo", "strict", "", "", "", ["echo", "hi"]),
-    ("nh04-not-found", "strict", "", "", "", ["nosuchcmd123"]),
-    ("nh05-missing-operand", "strict", "", "", "", []),
-    ("nh06-posixly-correct", "strict", "", "POSIXLY_CORRECT=1", "", []),
-    ("nh07-empty-command", "strict", "", "", "", [""]),
-    ("nh08-child-rc-seven", "strict", "", "", "", ["sh", "-c", "exit 7"]),
-    ("nh09-help", "strict", "", "", "", ["--help"]),
-    ("nh10-version", "strict", "", "", "", ["--version"]),
-    ("nh11-short-h", "strict", "", "", "", ["-h"]),
-    # GNU nohup parses LEADING options only (optstring "+"): --bogus after
-    # the command is the child's argument. The C++ dispatcher's option
-    # grammar may differ -> win (rc parity with the product exe).
-    ("nh12-unknown-long", "strict", "", "", "", ["--bogus", "true"]),
-    ("nh13-child-cmd-exe", "win", "", "", "", ["cmd", "/c", "exit", "5"]),
-    ("nh14-extra-child-args", "win", "", "", "", ["true", "extra", "args"]),
-    ("nh15-dashdash-consumed", "win", "", "", "", ["--", "true"]),
-    ("nh16-dashdash-only", "strict", "", "", "", ["--"]),
-    ("nh17-invalid-short", "strict", "", "", "", ["-5", "true"]),
-    ("nh18-lead-version-extra", "strict", "", "", "", ["--version", "extra"]),
-    ("nh19-child-exit-zero", "strict", "", "", "", ["sh", "-c", "exit 0"]),
-    ("nh20-child-echo-abc", "strict", "", "", "", ["sh", "-c", "echo abc"]),
-    ("nh21-child-dashdash-arg", "win", "", "", "", ["true", "--", "x"]),
-    ("nh22-posixly-empty", "strict", "", "POSIXLY_CORRECT=", "", []),
-    ("nh23-short-h-with-cmd", "strict", "", "", "", ["-h", "true"]),
-    ("nh24-version-then-help", "strict", "", "", "", ["--version", "--help"]),
-]
-
 pathchk_rows = [
     ("pk01-ok", "strict", "", "", "", ["ok.txt"]),
     ("pk02-missing-chain", "strict", "", "", "", ["nosuch/name.txt"]),
@@ -2860,6 +2878,8 @@ def collect():
         ("head", head_rows), ("tail", tail_rows), ("cut", cut_rows),
         ("tr", tr_rows), ("od", od_rows), ("sum", sum_rows),
         ("mktemp", mktemp_rows), ("nice", nice_rows),
+        # #1587: nohup rides the shared childproc spawner family
+        ("nohup", nohup_rows),
         ("sort", sort_rows),
         # wave4b (#1488)
         ("factor", factor_rows), ("pathchk", pathchk_rows), ("ptx", ptx_rows),
