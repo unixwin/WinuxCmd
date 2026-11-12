@@ -48,6 +48,7 @@ pub mod realpath;
 pub mod rmdir;
 pub mod seq;
 pub mod sleep;
+pub mod sort;
 pub mod stat;
 pub mod sum;
 pub mod sync;
@@ -58,7 +59,6 @@ pub mod test_cmd;
 pub mod timeout;
 pub mod touch;
 pub mod tr;
-
 
 pub mod truefalse;
 pub mod truncate;
@@ -108,6 +108,7 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("uname", uname::uname_cmd),
         ("unlink", unlink::unlink_cmd),
         ("sleep", sleep::sleep_cmd),
+        ("sort", sort::sort_cmd),
         ("tac", tac::tac_cmd),
         ("truncate", truncate::truncate_cmd),
         ("b2sum", digestsum::b2sum_cmd),
