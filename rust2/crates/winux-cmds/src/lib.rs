@@ -35,6 +35,7 @@ pub mod ln;
 pub mod mkdir;
 pub mod mktemp;
 pub mod modemap;
+pub mod nice;
 pub mod nproc;
 pub mod numfmt;
 pub mod od;
@@ -135,6 +136,7 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("od", od::od_cmd),
         ("sum", sum::sum_cmd),
         ("mktemp", mktemp::mktemp_cmd),
+        ("nice", nice::nice_cmd),
     ]
 }
 

@@ -2049,6 +2049,37 @@ NICE_CHILD_OK_SETUP = (
     "export PATH=\"$PWD:$PATH\""
 )
 
+nice_rows = [
+    ("nc01-bare", "strict", "", "", "", []),
+    ("nc02-n-no-command", "strict", "", "", "", ["-n", "2"]),
+    ("nc03-n-empty-child", "strict", "", "", "", ["-n", "", "true"]),
+    ("nc04-n-abc-child", "strict", "", "", "", ["-n", "abc", "true"]),
+    ("nc05-n-x-child", "strict", "", "", "", ["-n", "x", "true"]),
+    ("nc06-not-found", "strict", "", "", "", ["nosuchcmd123"]),
+    ("nc07-not-found-adjusted", "strict", "", "", "", ["-n", "3", "nosuchcmd123"]),
+    ("nc08-adjustment-long", "strict", "", "", "", ["--adjustment=5"]),
+    ("nc09-child-exit3", "exit", NICE_CHILD_SETUP, "", "",
+     ["-n", "5", "cmd", "/c", "exit", "3"]),
+    ("nc10-child-plain", "exit", NICE_CHILD_OK_SETUP, "", "",
+     ["cmd", "/c", "exit", "0"]),
+    ("nc11-child-negative", "exit", NICE_CHILD_OK_SETUP, "", "",
+     ["-n", "-5", "cmd", "/c", "exit", "0"]),
+    ("nc12-child-clamped", "exit", NICE_CHILD_OK_SETUP, "", "",
+     ["-n", "999", "cmd", "/c", "exit", "0"]),
+    ("nc13-child-dashdash", "exit", NICE_CHILD_OK_SETUP, "", "",
+     ["--", "cmd", "/c", "exit", "0"]),
+    ("nc14-child-exit7", "exit", "printf '#!/bin/sh\\nexit 7\\n' > cmd; chmod +x cmd; export PATH=\"$PWD:$PATH\"",
+     "", "", ["cmd", "/c", "exit", "7"]),
+    ("nc15-bogus-long", "strict", "", "", "", ["--bogus"]),
+    ("nc16-n-50", "strict", "", "", "", ["-n", "50"]),
+    ("nc17-n-minus-50", "strict", "", "", "", ["-n", "-50"]),
+    ("nc18-n-plus", "strict", "", "", "", ["-n", "+3"]),
+    ("nc19-help", "strict", "", "", "", ["--help"]),
+    ("nc20-version", "strict", "", "", "", ["--version"]),
+    ("nc21-child-eq1", "exit", "printf '#!/bin/sh\\nexit 1\\n' > cmd; chmod +x cmd; export PATH=\"$PWD:$PATH\"",
+     "", "", ["cmd", "/c", "exit", "1"]),
+]
+
 def collect():
     """All case tables as (cmd, rows) pairs, in emit order."""
     return [
@@ -2073,7 +2104,7 @@ def collect():
         # wave4a (#1488)
         ("head", head_rows), ("tail", tail_rows), ("cut", cut_rows),
         ("tr", tr_rows), ("od", od_rows), ("sum", sum_rows),
-        ("mktemp", mktemp_rows),
+        ("mktemp", mktemp_rows), ("nice", nice_rows),
     ]
 
 
