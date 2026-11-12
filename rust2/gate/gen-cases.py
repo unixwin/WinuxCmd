@@ -2236,6 +2236,63 @@ sha1sum_rows = digest_rows("s1", "sha1sum", SHA1_ABC, "SHA1")
 sha256sum_rows = digest_rows("s256", "sha256sum", SHA256_ABC, "SHA256")
 sha512sum_rows = digest_rows("s512", "sha512sum", SHA512_ABC, "SHA512")
 
+# `echo` — GNU hand-rolled option scan (no getopt): leading args of only
+# n/e/E chars are flags; `--` is an OPERAND; sole --help/--version only in
+# GNU mode. POSIXLY_CORRECT rows (env column) pin the System V surface:
+# escapes default on, only an exact leading `-n` enables options at all.
+# Operand texts carry literal backslashes, matching the shell
+# single-quoted probes.
+echo_rows = [
+    ("ec01-plain", "strict", "", "", "ignored", ["hello"]),
+    ("ec02-two-args", "strict", "", "", "", ["a", "b"]),
+    ("ec03-empty-operand", "strict", "", "", "", ["@EMPTY@", "x"]),
+    ("ec04-noargs", "strict", "", "", "", []),
+    ("ec05-n", "strict", "", "", "", ["-n", "hello"]),
+    ("ec06-n-alone", "strict", "", "", "", ["-n"]),
+    ("ec07-dashdash", "strict", "", "", "", ["--", "-n", "x"]),
+    ("ec08-dash", "strict", "", "", "", ["-"]),
+    ("ec09-dash-0", "strict", "", "", "", ["-0", "x"]),
+    ("ec10-nn-n", "strict", "", "", "", ["-nn", "-n", "z"]),
+    ("ec11-e-decodes", "strict", "", "", "", ["-e", "a\\tb"]),
+    ("ec12-eE-literal", "strict", "", "", "", ["-eE", "a\\tb"]),
+    ("ec13-Ee-decodes", "strict", "", "", "", ["-Ee", "a\\tb"]),
+    ("ec14-E-literal", "strict", "", "", "", ["-E", "a\\tb"]),
+    ("ec15-escapes-table", "strict", "", "", "",
+     ["-e", "\\a\\b\\e\\f\\n\\r\\t\\v\\\\"]),
+    ("ec16-octal-0101", "strict", "", "", "", ["-e", "\\0101"]),
+    ("ec17-octal-0777", "strict", "", "", "", ["-e", "\\0777"]),
+    ("ec18-octal-08", "strict", "", "", "", ["-e", "\\08"]),
+    ("ec19-octal-410", "strict", "", "", "", ["-e", "\\410"]),
+    ("ec20-octal-123", "strict", "", "", "", ["-e", "\\123"]),
+    ("ec21-hex", "strict", "", "", "", ["-e", "\\x41\\x42"]),
+    ("ec22-hex-short", "strict", "", "", "", ["-e", "a\\xb"]),
+    ("ec23-hex-nodigit", "strict", "", "", "", ["-e", "\\xZ"]),
+    ("ec24-unknown-escape", "strict", "", "", "", ["-e", "a\\qb"]),
+    ("ec25-trailing-bslash", "strict", "", "", "", ["-e", "a\\"]),
+    ("ec26-c-stops", "strict", "", "", "", ["-e", "abc\\c"]),
+    ("ec27-c-later-operands", "strict", "", "", "", ["-e", "a\\cb", "more"]),
+    ("ec28-u-not-escape", "strict", "", "", "", ["-e", "\\u0041"]),
+    ("ec29-help", "strict", "", "", "", ["--help"]),
+    ("ec30-version", "strict", "", "", "", ["--version"]),
+    ("ec31-help-extra", "strict", "", "", "", ["--help", "extra"]),
+    ("ec32-n-version", "strict", "", "", "", ["-n", "--version"]),
+    ("ec33-n-then-nonflag", "strict", "", "", "", ["-n-", "x"]),
+    ("ec34-posix-decodes-by-default", "strict", "", "POSIXLY_CORRECT=1", "",
+     ["a\\tb"]),
+    ("ec35-posix-nn-verbatim", "strict", "", "POSIXLY_CORRECT=1", "",
+     ["-nn", "-n", "x"]),
+    ("ec36-posix-eE-operand", "strict", "", "POSIXLY_CORRECT=1", "",
+     ["-e", "-E", "a\\tb"]),
+    ("ec37-posix-n-enables-options", "strict", "", "POSIXLY_CORRECT=1", "",
+     ["-n", "-e", "q\\tr"]),
+    ("ec38-posix-help-operand", "strict", "", "POSIXLY_CORRECT=1", "",
+     ["--help"]),
+    ("ec39-posix-version-operand", "strict", "", "POSIXLY_CORRECT=1", "",
+     ["--version"]),
+    ("ec40-posix-empty-value", "strict", "", "POSIXLY_CORRECT=", "",
+     ["a\\tb"]),
+]
+
 
 NICE_CHILD_OK_SETUP = (
     "printf '#!/bin/sh\\nexit 0\\n' > cmd; chmod +x cmd; "
@@ -2981,6 +3038,7 @@ def collect():
         # wave6 (#1488)
         ("md5sum", md5sum_rows), ("sha1sum", sha1sum_rows),
         ("sha256sum", sha256sum_rows), ("sha512sum", sha512sum_rows),
+        ("echo", echo_rows),
     ]
 
 

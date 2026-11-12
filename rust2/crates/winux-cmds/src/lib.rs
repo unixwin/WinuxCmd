@@ -21,6 +21,7 @@ pub mod df;
 pub mod digest;
 pub mod digestsum;
 pub mod dirname;
+pub mod echo;
 pub mod expand;
 pub mod factor;
 
@@ -134,6 +135,8 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("sha1sum", digestsum::sha1sum_cmd),
         ("sha256sum", digestsum::sha256sum_cmd),
         ("sha512sum", digestsum::sha512sum_cmd),
+        // wave6 (#1488): simple text/applet family
+        ("echo", echo::echo_cmd),
         // wave3a (#1488): alphabetical insertions
         ("fmt", fmt::fmt_cmd),
         ("fold", fold::fold_cmd),
