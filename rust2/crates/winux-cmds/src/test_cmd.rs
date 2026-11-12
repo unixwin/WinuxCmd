@@ -8,7 +8,12 @@
 //!
 //! File-test mapping on Windows is the documented pilot subset
 //! (`-r`/`-w` = exists, matching the WSL-root oracle; `-x` = directory or
-//! executable extension; Unix-only bits `-u -g -k` = false).
+//! executable extension; Unix-only bits `-u -g -k` = false). DOS device
+//! operands (/dev/null, the 24 reserved names, `\\.\` spellings) take the
+//! winux-core device probe — the stat #1570/#1579 boundary — instead of
+//! the std::fs snapshot that rejects device names: GNU /dev/null is a 666
+//! character special (-e/-r/-w/-c true; -b/-s false; device identity
+//! decides -ef).
 
 use std::ffi::OsString;
 
@@ -329,6 +334,17 @@ fn mtime_of(ctx: &Ctx, path: &str) -> Option<std::time::SystemTime> {
 }
 
 fn same_file(ctx: &Ctx, a: &str, b: &str) -> bool {
+    // DOS device operands (GNU probed 9.4: `/dev/null -ef /dev/null` -> 0,
+    // `-ef /dev/zero` -> 1): device identity IS the canonical device name
+    // — std::fs::canonicalize cannot answer for a device, whose handle
+    // answers no GetFinalPathNameByHandleW.
+    let (da, db) = (
+        winux_core::path::resolve_pseudo_device(a),
+        winux_core::path::resolve_pseudo_device(b),
+    );
+    if da.is_some() || db.is_some() {
+        return da.is_some() && da == db;
+    }
     match (
         std::fs::canonicalize(resolve(ctx, std::path::Path::new(a))),
         std::fs::canonicalize(resolve(ctx, std::path::Path::new(b))),
@@ -342,11 +358,25 @@ fn unary_operator(op: &str, arg: &str, ctx: &Ctx) -> Result<bool, TestError> {
     match op {
         "-n" => Ok(!arg.is_empty()),
         "-z" => Ok(arg.is_empty()),
+        "-t" => {
+            let fd = parse_integer(arg)?; // GNU: `test -t x` -> invalid integer
+            Ok(is_console_fd(fd))
+        }
+        // DOS device operands (winux-core device probing, the stat
+        // #1570/#1579 precedent, 1.x native_path.cppm #276): /dev/null,
+        // the 24 reserved names and the \\.\ device-namespace spellings
+        // never answer the std::fs::metadata snapshot (it goes through
+        // GetFileAttributesW, which rejects device names outright), so
+        // the file tests take the synthesized device record instead.
+        // Probed GNU 9.4 (WSL /usr/bin/test + bash builtin): /dev/null is
+        // a 666 character special — -e/-r/-w/-c/-O/-G true, -f/-d/-s/-x/
+        // -L/-h/-b/-p/-S/-u/-g/-k/-N false.
+        _ if is_dos_device_operand(arg) => Ok(dos_device_file_test(op, arg)),
         "-e" => Ok(metadata_of(ctx, arg, false).is_some()),
         // [WinuxCmd] the kFifoMarker emulation is NOT a regular file to
         // the shell layer: -f is false for a marker FIFO (1.x parser).
-        "-f" => Ok(!is_dos_char_device(arg)
-            && !is_fifo_marker(ctx, arg)
+        // Device operands left above; this arm only sees ordinary paths.
+        "-f" => Ok(!is_fifo_marker(ctx, arg)
             && metadata_of(ctx, arg, true)
                 .map(|m| m.is_file())
                 .unwrap_or(false)),
@@ -376,26 +406,58 @@ fn unary_operator(op: &str, arg: &str, ctx: &Ctx) -> Result<bool, TestError> {
         "-L" | "-h" => Ok(metadata_of(ctx, arg, false)
             .map(|m| m.file_type().is_symlink())
             .unwrap_or(false)),
-        "-t" => {
-            let fd = parse_integer(arg)?; // GNU: `test -t x` -> invalid integer
-            Ok(is_console_fd(fd))
-        }
         // Unix permission bits do not exist on Windows
         "-u" | "-g" | "-k" => Ok(false),
         // device types: NTFS has no block devices/sockets; FIFOs exist only
         // as the WinuxCmd kFifoMarker emulation (mkfifo/mknod write
         // "!<fifo>" + FILE_ATTRIBUTE_SYSTEM), which -p must recognize
-        // (the 1.x parser did; the mkfifo/mknod unit rows pin it). Char
-        // devices are the DOS reserved device names (NUL, CON, PRN, AUX,
-        // COM1-9, LPT1-9).
-        "-b" | "-S" => Ok(false),
+        // (the 1.x parser did; the mkfifo/mknod unit rows pin it). Real
+        // character devices are the DOS reserved device names, handled by
+        // the dos_device_file_test branch above — this arm only sees
+        // ordinary paths, which are never character/block specials.
+        "-b" | "-c" | "-S" => Ok(false),
         "-p" => Ok(is_fifo_marker(ctx, arg)),
-        "-c" => Ok(is_dos_char_device(arg)),
         // ownership checks approximate the WSL-root oracle (everything the
         // harness can see is owned by root/euid)
         "-O" | "-G" => Ok(metadata_of(ctx, arg, true).is_some()),
         "-N" => Ok(false),
         _ => Err(err(format!("{}: unary operator expected", q(op)))),
+    }
+}
+
+/// Whole-operand DOS-device recognition for the file tests — the
+/// winux-core device table is the single source (1.x native_path.cppm
+/// resolve_pseudo_device_w + is_dos_device_name_w; stat's dos_device_meta
+/// consumes the same predicates): POSIX pseudo-device spellings
+/// (/dev/null -> NUL, /dev/tty -> CONIN$, the std streams), the 24
+/// reserved names case-insensitively, and explicit `\\.\` device-namespace
+/// spellings. Whole operand only: "dir/NUL" names an ordinary file.
+fn is_dos_device_operand(arg: &str) -> bool {
+    winux_core::path::resolve_pseudo_device(arg).is_some()
+        || winux_core::path::is_dos_device_name(arg)
+}
+
+/// CreateFileW open-probe for a device operand (winux-core
+/// imp::probe_dos_device, the existence gate that replaces the
+/// CRT/GetFileAttributesW path — both reject device names outright; the
+/// probe is shared with stat's dos_device_meta).
+fn dos_device_exists(arg: &str) -> bool {
+    let probe = winux_core::path::resolve_pseudo_device(arg).unwrap_or(arg);
+    winux_core::path::imp::probe_dos_device(probe)
+}
+
+/// The synthesized device record for the file-test family (GNU probed
+/// 9.4: /dev/null is a 666 character special — exists, readable, writable;
+/// `-c` true; `-b`/`-s` false because it reads empty; `-f`/`-d`/`-x`/
+/// `-L`/`-p`/`-S` and the Unix permission bits all false; `-O`/`-G`
+/// follow the same exists-approximation the ordinary operands use).
+fn dos_device_file_test(op: &str, arg: &str) -> bool {
+    let exists = dos_device_exists(arg);
+    match op {
+        "-e" | "-r" | "-w" | "-c" | "-O" | "-G" => exists,
+        "-f" | "-d" | "-s" | "-x" | "-L" | "-h" | "-b" | "-p" | "-S" | "-u" | "-g" | "-k"
+        | "-N" => false,
+        _ => false,
     }
 }
 
@@ -430,32 +492,6 @@ fn is_fifo_marker(ctx: &Ctx, name: &str) -> bool {
         Ok(()) => head == *b"!<fifo>",
         Err(_) => false,
     }
-}
-
-fn is_dos_char_device(name: &str) -> bool {
-    // POSIX-spelled null device maps onto NUL (the 1.x C++ applet does the
-    // same, which is what the win-mode gate compares against)
-    let lowered = name.to_ascii_lowercase();
-    if lowered == "/dev/null" || lowered == r"\dev\null" || lowered == r"\\.\nul" {
-        return true;
-    }
-    let base = name
-        .rsplit(['\\', '/'])
-        .next()
-        .unwrap_or(name)
-        .trim_end_matches(':')
-        .to_ascii_uppercase();
-    matches!(base.as_str(), "NUL" | "CON" | "PRN" | "AUX")
-        || (base.starts_with("COM")
-            && base[3..]
-                .parse::<u8>()
-                .map(|n| (1..=9).contains(&n))
-                .unwrap_or(false))
-        || (base.starts_with("LPT")
-            && base[3..]
-                .parse::<u8>()
-                .map(|n| (1..=9).contains(&n))
-                .unwrap_or(false))
 }
 
 fn is_console_fd(fd: i128) -> bool {
@@ -675,5 +711,101 @@ mod fifo_marker_tests {
         let args = ["-f".into(), "pipe1".into()];
         let r = super::test_cmd(&args, &mut io.split(), &ctx).unwrap();
         assert_eq!(r, 1);
+    }
+}
+
+// The DOS-device file-test matrix (probe_dos_device is Windows FFI).
+#[cfg(windows)]
+mod dev_null_device_tests {
+    use winux_core::test_support::{MemIo, ScratchCtx};
+
+    /// Run `test` and return its rc for the given argv.
+    fn rc(args: &[&str]) -> u32 {
+        let owned: Vec<std::ffi::OsString> = args.iter().map(std::ffi::OsString::from).collect();
+        let mut io = MemIo::new("");
+        let sc = ScratchCtx::new("test-devnull");
+        let ctx = sc.ctx();
+        super::test_cmd(&owned, &mut io.split(), &ctx).unwrap()
+    }
+
+    /// GNU matrix, probed coreutils 9.4 `test` + bash builtin `[` on WSL
+    /// (target/probe/gnu-test-devnull.sh): /dev/null is a 666 character
+    /// special. Both spellings the product receives — the POSIX spelling
+    /// (rubash hands /dev/null verbatim, niubash#346) and the MSYS-rewritten
+    /// bare device name (nul/NUL) — must answer identically; the winux-core
+    /// device table (winux_core::path, the stat #1570/#1579 boundary) maps
+    /// them onto the same NUL record.
+    #[test]
+    fn gnu_dev_null_matrix() {
+        let true_ops = ["-e", "-r", "-w", "-c", "-O", "-G"];
+        let false_ops = [
+            "-f", "-d", "-s", "-x", "-L", "-h", "-b", "-p", "-S", "-u", "-g", "-k", "-N",
+        ];
+        for operand in ["/dev/null", "NUL", "nul"] {
+            for op in true_ops {
+                assert_eq!(rc(&[op, operand]), 0, "{op} {operand} must be true");
+            }
+            for op in false_ops {
+                assert_eq!(rc(&[op, operand]), 1, "{op} {operand} must be false");
+            }
+        }
+    }
+
+    /// The bracket form takes the same operand path.
+    #[test]
+    fn bracket_form_dev_null() {
+        let owned: Vec<std::ffi::OsString> = ["-e", "/dev/null", "]"]
+            .iter()
+            .map(std::ffi::OsString::from)
+            .collect();
+        let mut io = MemIo::new("");
+        let sc = ScratchCtx::new("test-devnull-br");
+        let ctx = sc.ctx();
+        let r = super::bracket_cmd(&owned, &mut io.split(), &ctx).unwrap();
+        assert_eq!(r, 0);
+    }
+
+    /// -ef device identity (GNU: /dev/null -ef /dev/null -> 0, -ef
+    /// /dev/zero -> 1; corpus test 12-ef-distinct-devices / 13-ef-same-device).
+    #[test]
+    fn ef_device_identity() {
+        assert_eq!(rc(&["NUL", "-ef", "NUL"]), 0);
+        assert_eq!(rc(&["nul", "-ef", "NUL"]), 0);
+        assert_eq!(rc(&["NUL", "-ef", "CON"]), 1);
+        assert_eq!(rc(&["NUL", "-ef", "LPT1"]), 1);
+        // device vs ordinary operand is never the same file
+        let sc = ScratchCtx::new("test-devnull-ef");
+        std::fs::write(sc.path("f"), "x").unwrap();
+        assert_eq!(rc2(&sc, &["NUL", "-ef", "f"]), 1);
+        assert_eq!(rc2(&sc, &["f", "-ef", "NUL"]), 1);
+    }
+
+    /// rc against an explicit scratch dir (shared with the -ef file rows).
+    fn rc2(sc: &ScratchCtx, args: &[&str]) -> u32 {
+        let owned: Vec<std::ffi::OsString> = args.iter().map(std::ffi::OsString::from).collect();
+        let mut io = MemIo::new("");
+        let ctx = sc.ctx();
+        super::test_cmd(&owned, &mut io.split(), &ctx).unwrap()
+    }
+
+    /// Whole-operand rule: a device name under a directory is an ordinary
+    /// (missing) file (1.x is_dos_device_name_w), and a device-stem leaf
+    /// with an extension is an on-disk name (#1333), never the device.
+    #[test]
+    fn device_lookalikes_stay_ordinary_files() {
+        assert_eq!(rc(&["-e", "dir/NUL"]), 1);
+        assert_eq!(rc(&["-c", "dir/NUL"]), 1);
+        assert_eq!(rc(&["-e", "NUL.txt"]), 1);
+        assert_eq!(rc(&["-e", "NULX"]), 1);
+        assert_eq!(rc(&["-e", "COM0"]), 1);
+        assert_eq!(rc(&["-e", "COM10"]), 1);
+    }
+
+    /// -t never takes the device branch: its argument is an fd number
+    /// (GNU: `test -t COM1` -> invalid integer, rc 2).
+    #[test]
+    fn t_test_stays_fd_test() {
+        assert_eq!(rc(&["-t", "NUL"]), 2);
+        assert_eq!(rc(&["-t", "99"]), 1);
     }
 }
