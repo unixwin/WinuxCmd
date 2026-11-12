@@ -17,24 +17,25 @@ pub mod df;
 pub mod digest;
 pub mod digestsum;
 pub mod dirname;
+pub mod expand;
 pub mod fmt;
 pub mod fold;
 pub mod fs_win;
-pub mod expand;
 pub mod fsutil;
-pub mod glob;
 pub mod getconf;
+pub mod glob;
 pub mod gnuhelp;
+pub mod head;
 pub mod hostid;
 pub mod hostname;
 pub mod id;
+pub mod join;
 pub mod ln;
 pub mod mkdir;
 pub mod modemap;
 pub mod nproc;
-pub mod paste;
-pub mod join;
 pub mod numfmt;
+pub mod paste;
 pub mod printenv;
 pub mod pwd;
 pub mod readlink;
@@ -47,8 +48,8 @@ pub mod sync;
 pub mod tac;
 pub mod tee;
 pub mod test_cmd;
-pub mod touch;
 pub mod timeout;
+pub mod touch;
 
 pub mod truefalse;
 pub mod truncate;
@@ -120,6 +121,8 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("expand", expand::expand_cmd),
         ("unexpand", unexpand::unexpand_cmd),
         ("numfmt", numfmt::numfmt_cmd),
+        // wave4a (#1488): alphabetical insertions
+        ("head", head::head_cmd),
     ]
 }
 

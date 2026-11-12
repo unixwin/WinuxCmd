@@ -1788,6 +1788,50 @@ numfmt_rows = [
     ("nf74-pad-conflicts-format", "strict", "", "", "42\\n", ["--format", "%6f", "--padding=3"]),
 ]
 
+# ---------------------------------------------------------------------------
+# wave4a (#1488): head / tail / cut / tr / od / sum / mktemp / nice.
+# Line-oriented inputs go through setup files (the stdin column carries a
+# single line only); random-output commands (mktemp creations, nice child
+# runs) use exit/win rows so only statuses gate.
+# ---------------------------------------------------------------------------
+
+HEAD_TAIL_FILE = "printf '1\\n2\\n3\\n4\\n5\\n' > f"
+
+head_rows = [
+    ("hd01-default", "strict", "", "", "abc", []),
+    ("hd02-n2", "strict", HEAD_TAIL_FILE, "", "", ["-n", "2", "f"]),
+    ("hd03-n-minus-2", "strict", HEAD_TAIL_FILE, "", "", ["-n", "-2", "f"]),
+    ("hd04-n-plus-2", "strict", HEAD_TAIL_FILE, "", "", ["-n", "+2", "f"]),
+    ("hd05-n-0", "strict", HEAD_TAIL_FILE, "", "", ["-n", "0", "f"]),
+    ("hd06-n-99", "strict", HEAD_TAIL_FILE, "", "", ["-n", "99", "f"]),
+    ("hd07-c2", "strict", "", "", "abcde", ["-c", "2"]),
+    ("hd08-c-minus-2", "strict", "", "", "abcde", ["-c", "-2"]),
+    ("hd09-c-plus-2", "strict", "", "", "abcde", ["-c", "+2"]),
+    ("hd10-c-0", "strict", "", "", "abcde", ["-c", "0"]),
+    ("hd11-c-1b", "strict", "", "", "abcde", ["-c", "1b"]),
+    ("hd12-n-1b", "strict", HEAD_TAIL_FILE, "", "", ["-n", "1b", "f"]),
+    ("hd13-v-stdin", "strict", "", "", "x", ["-v"]),
+    ("hd14-q-two-files", "strict", HEAD_TAIL_FILE, "", "", ["-q", "f", "f"]),
+    ("hd15-two-files", "strict", HEAD_TAIL_FILE, "", "", ["f", "f"]),
+    ("hd16-v-single", "strict", HEAD_TAIL_FILE, "", "", ["-v", "f"]),
+    ("hd17-missing-then-file", "strict", "printf 'b\\n' > f2", "", "",
+     ["missing", "f2"]),
+    ("hd18-dir-operand", "strict", "mkdir d", "", "", ["d"]),
+    ("hd19-n-x", "strict", HEAD_TAIL_FILE, "", "", ["-n", "x", "f"]),
+    ("hd20-c-x", "strict", "", "", "abc", ["-c", "x"]),
+    ("hd21-zero-terminated", "strict", "printf 'a\\0b\\0c\\0' > f", "", "",
+     ["-z", "-n", "2", "f"]),
+    ("hd22-obsolescent-3", "strict", HEAD_TAIL_FILE, "", "", ["-3", "f"]),
+    ("hd23-dashdash", "strict", HEAD_TAIL_FILE, "", "", ["--", "f"]),
+    ("hd24-neg-zero", "strict", HEAD_TAIL_FILE, "", "", ["-n", "-0", "f"]),
+    ("hd25-c-neg-zero", "strict", "", "", "ab", ["-c", "-0"]),
+    ("hd26-bogus-long", "strict", "", "", "", ["--bogus"]),
+    ("hd27-mixed-stdin-last", "strict", "printf 'f1a\\nf1b\\n' > f1", "", "s",
+     ["-q", "f1", "-"]),
+    ("hd28-help", "strict", "", "", "", ["--help"]),
+    ("hd29-version", "strict", "", "", "", ["--version"]),
+]
+
 def collect():
     """All case tables as (cmd, rows) pairs, in emit order."""
     return [
@@ -1809,6 +1853,8 @@ def collect():
         ("users", users_rows), ("timeout", timeout_rows),
         ("expand", expand_rows), ("unexpand", unexpand_rows),
         ("numfmt", numfmt_rows),
+        # wave4a (#1488)
+        ("head", head_rows),
     ]
 
 
