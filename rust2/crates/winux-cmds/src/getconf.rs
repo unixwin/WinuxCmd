@@ -158,7 +158,14 @@ pub fn getconf_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             unrecognized(io, &var);
             return Ok(2);
         }
-        if !crate::fsutil::resolve(ctx, &path).exists() {
+        if !crate::fsutil::resolve(ctx, &path).exists()
+            // a DOS device operand ("NUL", /dev/null) answers no metadata
+            // query on this host but names a real device: GNU getconf
+            // PATH_VAR /dev/null succeeds (the 1.x attribute probes saw
+            // the device too)
+            && winux_core::path::resolve_pseudo_device(&path).is_none()
+            && !winux_core::path::is_dos_device_name(&path)
+        {
             let _ = writeln!(io.stderr, "getconf: {path}: No such file or directory");
             return Ok(1);
         }

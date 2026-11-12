@@ -841,7 +841,7 @@ pub fn fmt_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             }
             // the one operand boundary (drive dialect, carrier colons,
             // shell tree — the 1.x native_path layer)
-            let path = std::path::PathBuf::from(crate::fs_win::api_path(&ctx.cwd, op));
+            let path = std::path::PathBuf::from(crate::fs_win::api_path(ctx, op));
             match std::fs::read(&path) {
                 Ok(data) => {
                     let mut f = make_fmt(
@@ -871,7 +871,7 @@ pub fn fmt_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     // routes to the GNU shape here. A missing file keeps
                     // the probed cannot-open shape.
                     let reason = if e.kind() == std::io::ErrorKind::PermissionDenied
-                        && crate::fs_win::file_meta(&ctx.cwd, op, true)
+                        && crate::fs_win::file_meta(ctx, op, true)
                             .map(|m| m.is_dir)
                             .unwrap_or(false)
                     {

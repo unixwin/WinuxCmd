@@ -75,12 +75,10 @@ fn tee_files(
     });
     let mut ok = true;
     for name in files {
-        let name = crate::fs_win::map_device(name);
-        let path = if std::path::Path::new(name).is_absolute() {
-            std::path::PathBuf::from(name)
-        } else {
-            ctx.cwd.join(name)
-        };
+        // the one operand boundary (fs_win::api_path): devices resolve
+        // verbatim (tee > NUL discards), POSIX spellings map through the
+        // shell tree (#1488); the reported name keeps the operand text
+        let path = std::path::PathBuf::from(crate::fs_win::api_path(ctx, name));
         match std::fs::OpenOptions::new()
             .write(true)
             .create(true)

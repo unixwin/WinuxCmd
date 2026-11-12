@@ -92,13 +92,58 @@ pub fn join_lex(base: &Path, comp: &str) -> PathBuf {
 }
 
 /// Absolute (ctx.cwd-anchored) path of a possibly relative operand.
+///
+/// The shell-namespace boundary (#1488 wave3b, the winux-core port of 1.x
+/// native_path.cppm normalize_api_operand_w): POSIX spellings the shell
+/// hands its own applets verbatim (/dev/*, /tmp, /var/tmp, /home, /mnt/X,
+/// the MSYS /X drive form, and everything under the configured root) map
+/// to their native paths here; relative and already-native operands keep
+/// the ctx.cwd join exactly as before.
 pub fn resolve(ctx: &Ctx, operand: impl AsRef<Path>) -> PathBuf {
     let p = operand.as_ref();
+    if let Some(s) = p.to_str() {
+        let mapped = winux_core::path::normalize_operand(ctx.env, &ctx.cwd, s);
+        // only a claimed spelling changes the resolution — and only when
+        // the result stands on its own (an absolute native path, or a
+        // device name Win32 resolves cwd-independently). Relative
+        // operands keep the ctx.cwd join so the OS-level trailing-
+        // separator semantics GNU relies on stay intact.
+        if mapped != s
+            && (Path::new(&mapped).is_absolute()
+                || winux_core::path::resolve_pseudo_device(s).is_some())
+        {
+            return PathBuf::from(mapped);
+        }
+    }
     if p.is_absolute() {
         p.to_path_buf()
     } else {
-        ctx.cwd.join(p)
+        let joined = ctx.cwd.join(p);
+        // the NUL.txt trap (#1333): a leaf whose stem is a DOS device name
+        // ("NUL.txt") resolves onto the DEVICE namespace through the plain
+        // Win32 open ("NUL.txt" answers a stat!), while GNU and the 1.x
+        // applets (native_path.cppm to_extended_path_preserving, the
+        // has_device_stem_with_extension_w branch) treat it as a literal
+        // on-disk name. Probes and opens go through the \\?\ extended
+        // spelling, which disables the device-stem resolution.
+        let text = joined.to_string_lossy().into_owned();
+        if winux_core::path::has_device_stem_with_extension(&text) {
+            return extended_literal(&text);
+        }
+        joined
     }
+}
+
+/// The \\?\ literal spelling of a native absolute path (UNC through the
+/// \\?\UNC\ form) — the #1333 device-stem trap needs it.
+fn extended_literal(native_abs: &str) -> PathBuf {
+    if let Some(rest) = native_abs.strip_prefix(r"\\?\") {
+        return PathBuf::from(format!(r"\\?\{rest}"));
+    }
+    if let Some(rest) = native_abs.strip_prefix(r"\\") {
+        return PathBuf::from(format!(r"\\?\UNC\{rest}"));
+    }
+    PathBuf::from(format!(r"\\?\{native_abs}"))
 }
 
 /// Lexical normalization used by the `-m` (no existence check) modes:

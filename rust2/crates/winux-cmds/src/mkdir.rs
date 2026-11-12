@@ -87,7 +87,7 @@ pub fn mkdir_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             trimmed.to_string()
         };
         let applied_mode: Option<u32> = mode.and_then(|m| modemap::parse_mode(m).ok());
-        let folded = mkdir_fold(&effective);
+        let folded = mkdir_fold(ctx, &effective);
         // [GNU] the verbose message and diagnostics keep the operand
         // spelling; the filesystem walk uses the fold.
         let fs_name = folded.as_deref().unwrap_or(&effective);
@@ -105,10 +105,12 @@ pub fn mkdir_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
 
 /// Fold the operand for the filesystem walk: the #1231 drive dialect
 /// ("/e/Data") must land on the operand's drive, not the cwd's — the 1.x
-/// applet folds the same spelling at its operand boundary. The displayed
-/// spelling stays the original operand text.
-fn mkdir_fold(effective: &str) -> Option<String> {
-    let folded = crate::canon::prepare_operand(effective);
+/// applet folds the same spelling at its operand boundary. The wave3b
+/// shell-namespace leg (#1488) claims the remaining POSIX spellings
+/// (/tmp, /home, /mnt/X, the root tree). The displayed spelling stays the
+/// original operand text.
+fn mkdir_fold(ctx: &Ctx, effective: &str) -> Option<String> {
+    let folded = crate::canon::prepare_operand(ctx, effective);
     if folded != effective {
         Some(folded)
     } else {

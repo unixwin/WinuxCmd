@@ -22,6 +22,7 @@ use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
+pub mod path;
 pub mod stream;
 
 /// Explicit IO bundle injected by the caller.

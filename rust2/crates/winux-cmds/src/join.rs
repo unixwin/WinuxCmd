@@ -530,11 +530,7 @@ fn scan_order_sensitive(
                     i += 1;
                 }
                 Some(c) => {
-                    let rest: String = tok
-                        .splitn(2, c)
-                        .nth(1)
-                        .unwrap_or("")
-                        .to_string();
+                    let rest: String = tok.splitn(2, c).nth(1).unwrap_or("").to_string();
                     let attached = !rest.is_empty();
                     let val = if attached {
                         rest
@@ -572,9 +568,7 @@ fn scan_order_sensitive(
                                 }
                             };
                             if let Err(e) = apply_field(1, field, cfg, field1_seen, field2_seen)
-                                .and_then(|_| {
-                                    apply_field(2, field, cfg, field1_seen, field2_seen)
-                                })
+                                .and_then(|_| apply_field(2, field, cfg, field1_seen, field2_seen))
                             {
                                 let _ = writeln!(io.stderr, "join: {e}");
                                 return Err(());
@@ -590,8 +584,7 @@ fn scan_order_sensitive(
                                 }
                             };
                             let which = if c == '1' { 1 } else { 2 };
-                            if let Err(e) =
-                                apply_field(which, field, cfg, field1_seen, field2_seen)
+                            if let Err(e) = apply_field(which, field, cfg, field1_seen, field2_seen)
                             {
                                 let _ = writeln!(io.stderr, "join: {e}");
                                 return Err(());
@@ -710,16 +703,11 @@ pub fn join_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     // reports the already-set value first.
     let mut field1_seen = false;
     let mut field2_seen = false;
-    let (real_lists, saw_auto, file_names, _jcount) = match scan_order_sensitive(
-        args,
-        io,
-        &mut cfg,
-        &mut field1_seen,
-        &mut field2_seen,
-    ) {
-        Ok(x) => x,
-        Err(()) => return Ok(1),
-    };
+    let (real_lists, saw_auto, file_names, _jcount) =
+        match scan_order_sensitive(args, io, &mut cfg, &mut field1_seen, &mut field2_seen) {
+            Ok(x) => x,
+            Err(()) => return Ok(1),
+        };
 
     // -t: one byte; '' means '\n' (whole-line), "\0" spelling means NUL.
     let mut tab_seen = false;
@@ -1506,12 +1494,18 @@ mod tests {
             "",
         );
         assert_eq!(r, 1);
-        assert!(err.contains("invalid file number in field spec: 'abc'"), "{err}");
+        assert!(
+            err.contains("invalid file number in field spec: 'abc'"),
+            "{err}"
+        );
 
         // operand before -o: the THIRD name resolves as the -o argument.
         let (r, _, err) = run_files(&[(F1, F1C), (F2, F2C)], &["X", "-o", "1.2", F1, F2], "");
         assert_eq!(r, 1);
-        assert!(err.contains("invalid file number in field spec: 'f1'"), "{err}");
+        assert!(
+            err.contains("invalid file number in field spec: 'f1'"),
+            "{err}"
+        );
 
         // repeated -o still works (option-time adds, no absorption).
         let (r, out, _) = run_files(
@@ -1528,11 +1522,7 @@ mod tests {
         assert!(err.contains("extra operand 'f3'"), "{err}");
 
         // -o auto keeps MUST_BE_OPERAND status: no absorption.
-        let (r, _, err) = run_files(
-            &[(F1, F1C), (F2, F2C)],
-            &["-o", "auto", "x", F1, F2],
-            "",
-        );
+        let (r, _, err) = run_files(&[(F1, F1C), (F2, F2C)], &["-o", "auto", "x", F1, F2], "");
         assert_eq!(r, 1);
         assert!(err.contains("extra operand 'f2'"), "{err}");
     }

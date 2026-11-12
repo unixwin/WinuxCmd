@@ -75,6 +75,54 @@ Columns:
 | mktemp | 27 | 14 | 13 | 0 | 0 | 100% | 11/27 | GREEN | 0 |
 | nice | 21 | 14 | 7 | 0 | 0 | 100% | 12/21 | GREEN | 2 |
 | **total** | **1529** | | | | 10 | **90%** | 1329/1529 | GREEN | 3 |
+| true | 20 | 19 | 0 | 1 | 0 | 95% | - | - | - |
+| false | 20 | 19 | 0 | 1 | 0 | 95% | - | - | - |
+| test | 45 | 42 | 0 | 2 | 1 | 93% | - | - | - |
+| bracket | 26 | 25 | 0 | 1 | 0 | 96% | - | - | - |
+| basename | 30 | 30 | 0 | 0 | 0 | 100% | - | - | - |
+| dirname | 22 | 22 | 0 | 0 | 0 | 100% | - | - | - |
+| printenv | 21 | 15 | 3 | 3 | 0 | 86% | - | - | - |
+| pwd | 12 | 0 | 2 | 10 | 0 | 17% | - | - | - |
+| mkdir | 22 | 22 | 0 | 0 | 0 | 100% | - | - | - |
+| rmdir | 22 | 22 | 0 | 0 | 0 | 100% | - | - | - |
+| readlink | 24 | 8 | 16 | 0 | 0 | 100% | - | - | - |
+| realpath | 22 | 6 | 15 | 1 | 0 | 95% | - | - | - |
+| chmod | 22 | 21 | 1 | 0 | 0 | 100% | - | - | - |
+| chown | 16 | 12 | 0 | 4 | 0 | 75% | - | - | - |
+| df | 36 | 15 | 10 | 9 | 2 | 69% | - | - | - |
+| whoami | 20 | 2 | 6 | 12 | 0 | 40% | - | - | - |
+| nproc | 22 | 8 | 4 | 10 | 0 | 55% | - | - | - |
+| unlink | 22 | 22 | 0 | 0 | 0 | 100% | - | - | - |
+| sleep | 24 | 12 | 12 | 0 | 0 | 100% | - | - | - |
+| base64 | 30 | 30 | 0 | 0 | 0 | 100% | - | - | - |
+| base32 | 24 | 24 | 0 | 0 | 0 | 100% | - | - | - |
+| b2sum | 34 | 33 | 1 | 0 | 0 | 100% | - | - | - |
+| sha224sum | 50 | 49 | 1 | 0 | 0 | 100% | - | - | - |
+| sha384sum | 28 | 27 | 1 | 0 | 0 | 100% | - | - | - |
+| tac | 27 | 27 | 0 | 0 | 0 | 100% | - | - | - |
+| truncate | 30 | 30 | 0 | 0 | 0 | 100% | - | - | - |
+| uname | 22 | 2 | 4 | 16 | 0 | 27% | - | - | - |
+| id | 22 | 10 | 0 | 12 | 0 | 45% | - | - | - |
+| hostname | 22 | 2 | 5 | 15 | 0 | 32% | - | - | - |
+| getconf | 23 | 7 | 0 | 16 | 0 | 30% | - | - | - |
+| seq | 50 | 50 | 0 | 0 | 0 | 100% | - | - | - |
+| fold | 26 | 26 | 0 | 0 | 0 | 100% | - | - | - |
+| paste | 38 | 37 | 0 | 1 | 0 | 97% | - | - | - |
+| tee | 24 | 21 | 1 | 2 | 0 | 92% | - | - | - |
+| fmt | 26 | 25 | 0 | 1 | 0 | 96% | - | - | - |
+| touch | 29 | 28 | 0 | 1 | 0 | 97% | - | - | - |
+| ln | 25 | 19 | 1 | 1 | 4 | 80% | - | - | - |
+| sync | 22 | 0 | 20 | 2 | 0 | 91% | - | - | - |
+| join | 51 | 36 | 15 | 0 | 0 | 100% | - | - | - |
+| tsort | 25 | 17 | 6 | 2 | 0 | 92% | - | - | - |
+| hostid | 20 | 0 | 12 | 7 | 1 | 60% | - | - | - |
+| users | 20 | 0 | 15 | 4 | 1 | 75% | - | - | - |
+| timeout | 30 | 0 | 30 | 0 | 0 | 100% | - | - | - |
+| expand | 30 | 19 | 11 | 0 | 0 | 100% | - | - | - |
+| unexpand | 27 | 22 | 5 | 0 | 0 | 100% | - | - | - |
+| numfmt | 74 | 49 | 25 | 0 | 0 | 100% | - | - | - |
+| **total** | **1299** | | | | 10 | **88%** | 17/22 | GREEN | 0 |
+
 
 ## Worst 5 by GNU-direct ratio
 
@@ -91,3 +139,42 @@ direction is GNU-direct falling on byte-platform-independent
 commands (digests, encoders) — that is where a dropped `strict`
 hides.
 
+## Shell-namespace mode (wave3b, #1488)
+
+`gate/shellns_gate.py` + `gate/shellns-cases.tsv` add the mode the
+three-way gate cannot see: the SHELL NAMESPACE. run-gate.sh feeds
+platform-neutral spellings; the bundled shell (niubash#346 "coreutils
+own the shell tree") also hands its applets POSIX spellings verbatim
+(/tmp, /var/tmp, /home, /mnt/X, the bare "/" tree, /dev/*), and before
+the wave3b port those operands landed on the current drive's bare
+resolution (`mkdir -p /tmp/x` created `D:\tmp\x`).
+
+The mode configures a fresh shell root (WINUXSH_ROOT, higher aliases
+cleared, TMPDIR pinned to `<root>/tmp`, HOME inside the root), feeds
+POSIX-spelled operands through in-process argv (the agent shell's
+conversion layer rewrites POSIX-looking argv for native children —
+MSYS_NO_PATHCONV does not disable it; probed 2026-11-12), and asserts
+the LANDING on the Windows filesystem. 102 cases: every wired command
+with path-class operands gets >= 3 variants (tmp view, bare/device
+name, /mnt drive path) plus root-tree spellings and the NUL.txt stem
+trap.
+
+Per-command shell-namespace coverage:
+
+| commands (3+ POSIX variants each) | n |
+|---|---|
+| mkdir rmdir unlink touch truncate tac tee ln chmod chown stat readlink realpath df sync base64 base32 b2sum sha224sum sha384sum join tsort paste fold fmt expand unexpand test basename dirname getconf | 31 |
+
+Commands WITHOUT path-class operands are N/A by construction (they
+accept no path operands to spell POSIXly): true false pwd printenv seq
+sleep whoami nproc hostname id uname hostid users timeout numfmt.
+`[` is covered through the test rows.
+
+rc pins for bare devices are the Windows-inherent outcomes (C++ 1.x
+parity), not GNU/WSL values: NUL answers no attribute write
+(ACCESS_DENIED -> touch/truncate/sync rc 1), no volume query
+(df rc 1), and no ownership change path (chown root rc 1). `mkdir NUL`
+pins 0 — WSL GNU also creates a literal NUL directory there.
+
+Artifacts: `target/gate/shellns-ledger.tsv` (per-case PASS/FAIL +
+landing notes).

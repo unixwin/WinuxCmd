@@ -282,10 +282,9 @@ pub fn fold_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 }
                 continue;
             }
-            let name = crate::fs_win::map_device(&name);
             // the one operand boundary (drive dialect, carrier colons,
             // shell tree — the 1.x native_path layer)
-            let path = std::path::PathBuf::from(crate::fs_win::api_path(&ctx.cwd, &name));
+            let path = std::path::PathBuf::from(crate::fs_win::api_path(ctx, &name));
             match std::fs::File::open(&path) {
                 Ok(mut f) => {
                     if fold_file(&mut f, io.stdout, width, break_spaces, count_bytes).is_err() {
@@ -300,7 +299,7 @@ pub fn fold_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     // ERROR_ACCESS_DENIED, so the directory attribute
                     // supplies the POSIX shape
                     let reason = if e.kind() == std::io::ErrorKind::PermissionDenied
-                        && crate::fs_win::file_meta(&ctx.cwd, &name, true)
+                        && crate::fs_win::file_meta(ctx, &name, true)
                             .map(|m| m.is_dir)
                             .unwrap_or(false)
                     {

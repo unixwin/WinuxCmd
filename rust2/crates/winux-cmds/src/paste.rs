@@ -380,10 +380,9 @@ pub fn paste_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 closed: false,
             });
         } else {
-            let op = crate::fs_win::map_device(op);
             // the one operand boundary (drive dialect, carrier colons,
             // shell tree — the 1.x native_path layer)
-            let path = std::path::PathBuf::from(crate::fs_win::api_path(&ctx.cwd, op));
+            let path = std::path::PathBuf::from(crate::fs_win::api_path(ctx, op));
             match std::fs::File::open(&path) {
                 Ok(f) => sources.push(Slot {
                     src: Rc::new(RefCell::new(Some(Box::new(f)))),
@@ -396,7 +395,7 @@ pub fn paste_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     // ERROR_ACCESS_DENIED before any read, so the
                     // directory attribute supplies the POSIX shape
                     let reason = if e.kind() == std::io::ErrorKind::PermissionDenied
-                        && crate::fs_win::file_meta(&ctx.cwd, op, true)
+                        && crate::fs_win::file_meta(ctx, op, true)
                             .map(|m| m.is_dir)
                             .unwrap_or(false)
                     {

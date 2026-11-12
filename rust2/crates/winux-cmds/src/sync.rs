@@ -103,14 +103,7 @@ fn open_and_flush(ctx: &Ctx, operand: &str) -> std::io::Result<()> {
 
     const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
 
-    let path = {
-        let p = std::path::Path::new(operand);
-        if p.is_absolute() {
-            p.to_path_buf()
-        } else {
-            ctx.cwd.join(p)
-        }
-    };
+    let path = crate::fsutil::resolve(ctx, operand);
     let is_dir = std::fs::metadata(&path)
         .map(|m| m.is_dir())
         .unwrap_or(false);
@@ -131,14 +124,7 @@ fn open_and_flush(ctx: &Ctx, operand: &str) -> std::io::Result<()> {
 
 #[cfg(not(windows))]
 fn open_and_flush(ctx: &Ctx, operand: &str) -> std::io::Result<()> {
-    let path = {
-        let p = std::path::Path::new(operand);
-        if p.is_absolute() {
-            p.to_path_buf()
-        } else {
-            ctx.cwd.join(p)
-        }
-    };
+    let path = crate::fsutil::resolve(ctx, operand);
     let file = std::fs::File::open(&path)?;
     file.sync_all()
 }

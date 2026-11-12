@@ -1,0 +1,154 @@
+# shellns gate cases (#1488 wave3b) — POSIX-spelled operands through the
+# shell namespace. Columns (TAB-separated, see shellns_gate.py):
+#   id | cmd | setup | stdin | expect_rc | args (SPACE-split, one field) | landing
+# landings: semicolon-separated; /tmp /var/tmp /home /mnt/X /<root> resolve
+# like the shell namespace; '!'-prefixed paths must NOT exist; bare native
+# (D:/...) and relative (scratch-anchored) spellings pass through.
+# Variants per path-operanding wired command: tmp view, bare/device name,
+# /mnt drive path. Commands without path-class operands are recorded N/A in
+# gate/COVERAGE.md.
+# rc pins for bare devices are the Windows-inherent outcomes (C++ 1.x
+# parity), NOT GNU/WSL values: NUL opens read-only at best, refuses
+# attribute writes (ACCESS_DENIED), and answers no mount/volume query.
+
+# ===== mkdir =====
+sn-mkdir-tmp	mkdir		echo /tmp/sn/mkdir/x	0	-p /tmp/sn/mkdir/x	/tmp/sn/mkdir/x;!C:/mnt/d/tmp/sn/mkdir/x
+sn-mkdir-dev	mkdir			0	NUL
+sn-mkdir-mnt	mkdir			0	-p /mnt/d/tmp/shellns-mnt/sn-mkdir	/mnt/d/tmp/shellns-mnt/sn-mkdir;!C:/mnt/d/tmp/shellns-mnt/sn-mkdir
+
+# ===== rmdir =====
+sn-rmdir-tmp	rmdir	mkdir -p "$TMPDIR/sn/r1"		0	/tmp/sn/r1	!/tmp/sn/r1
+sn-rmdir-dev	rmdir			1	/dev/null
+sn-rmdir-mnt	rmdir	mkdir -p "D:/tmp/shellns-mnt/r-m"		0	/mnt/d/tmp/shellns-mnt/r-m	!/mnt/d/tmp/shellns-mnt/r-m
+
+# ===== unlink =====
+sn-unlink-tmp	unlink	printf x > "$TMPDIR/sn/u1"		0	/tmp/sn/u1	!/tmp/sn/u1
+sn-unlink-dev	unlink			1	NUL
+sn-unlink-mnt	unlink	printf x > "D:/tmp/shellns-mnt/u-m"		0	/mnt/d/tmp/shellns-mnt/u-m	!/mnt/d/tmp/shellns-mnt/u-m
+
+# ===== touch =====
+sn-touch-tmp	touch			0	/tmp/sn/t1	/tmp/sn/t1
+sn-touch-dev	touch			1	/dev/null
+sn-touch-trap	touch			0	NUL.txt	NUL.txt
+sn-touch-mnt	touch			0	/mnt/d/tmp/shellns-mnt/t-m	/mnt/d/tmp/shellns-mnt/t-m
+
+# ===== truncate =====
+sn-trunc-tmp	truncate			0	-s 5 /tmp/sn/tr1	/tmp/sn/tr1
+sn-trunc-dev	truncate			1	-s 0 /dev/null
+sn-trunc-trap	truncate			0	-s 3 NUL.txt	NUL.txt
+sn-trunc-mnt	truncate			0	-s 2 /mnt/d/tmp/shellns-mnt/tr-m	/mnt/d/tmp/shellns-mnt/tr-m
+
+# ===== tac =====
+sn-tac-tmp	tac	printf 'ab\n' > "$TMPDIR/sn/tac1"		0	/tmp/sn/tac1
+sn-tac-dev	tac			0	/dev/null
+sn-tac-mnt	tac	printf 'ab\n' > "D:/tmp/shellns-mnt/tac-m"		0	/mnt/d/tmp/shellns-mnt/tac-m
+
+# ===== tee =====
+sn-tee-tmp	tee		hello	0	/tmp/sn/tee1	/tmp/sn/tee1
+sn-tee-dev	tee		hello	0	/dev/null
+sn-tee-trap	tee		hello	0	NUL.txt	NUL.txt
+sn-tee-mnt	tee		hello	0	/mnt/d/tmp/shellns-mnt/tee-m	/mnt/d/tmp/shellns-mnt/tee-m
+
+# ===== ln =====
+sn-ln-tmp	ln	printf x > "$TMPDIR/sn/ln-src"		0	/tmp/sn/ln-src /tmp/sn/ln-dst	/tmp/sn/ln-dst
+sn-ln-dev	ln			1	NUL.txt nl-dst
+sn-ln-mnt	ln	printf x > "D:/tmp/shellns-mnt/ln-m-src"		0	/mnt/d/tmp/shellns-mnt/ln-m-src /mnt/d/tmp/shellns-mnt/ln-m-dst	/mnt/d/tmp/shellns-mnt/ln-m-dst
+
+# ===== chmod =====
+sn-chmod-tmp	chmod	mkdir -p "$TMPDIR/sn/cd1"		0	755 /tmp/sn/cd1
+sn-chmod-dev	chmod			1	644 /dev/null
+sn-chmod-mnt	chmod	printf x > "D:/tmp/shellns-mnt/c-m"		0	644 /mnt/d/tmp/shellns-mnt/c-m
+
+# ===== chown =====
+sn-chown-tmp	chown	printf x > "$TMPDIR/sn/ow1"		0	cmx /tmp/sn/ow1
+sn-chown-dev	chown			1	root /dev/null
+sn-chown-mnt	chown	printf x > "D:/tmp/shellns-mnt/ow-m"		1	cmx /mnt/d/tmp/shellns-mnt/ow-m
+
+# ===== stat =====
+sn-stat-tmp	stat	printf x > "$TMPDIR/sn/st1"		0	-c %n /tmp/sn/st1
+sn-stat-dev	stat			0	-c %F /dev/null
+sn-stat-trap	stat			1	-c %F NUL.txt
+sn-stat-mnt	stat	printf x > "D:/tmp/shellns-mnt/st-m"		0	-c %n /mnt/d/tmp/shellns-mnt/st-m
+
+# ===== readlink / realpath =====
+sn-readlink-tmp	readlink			0	-f /tmp/sn/rf1
+sn-readlink-dev	readlink			1	-f /dev/null
+sn-readlink-mnt	readlink			0	-f /mnt/d/tmp/shellns-mnt/rf-m
+sn-realpath-tmp	realpath			0	-m /tmp/sn/rp1/x
+sn-realpath-dev	realpath			1	/dev/null
+sn-realpath-mnt	realpath			0	-m /mnt/d/tmp/shellns-mnt/rp-m
+
+# ===== df =====
+sn-df-tmp	df	printf x > "$TMPDIR/sn/df1"		0	/tmp/sn/df1
+sn-df-dev	df			1	/dev/null
+sn-df-mnt	df	printf x > "D:/tmp/shellns-mnt/df-m"		0	/mnt/d/tmp/shellns-mnt/df-m
+
+# ===== sync =====
+sn-sync-tmp	sync	printf x > "$TMPDIR/sn/sy1"		0	/tmp/sn/sy1
+sn-sync-dev	sync			1	/dev/null
+sn-sync-mnt	sync	printf x > "D:/tmp/shellns-mnt/sy-m"		0	/mnt/d/tmp/shellns-mnt/sy-m
+
+# ===== basenc / digestsum =====
+sn-b64-tmp	base64	printf hi > "$TMPDIR/sn/b64"		0	/tmp/sn/b64
+sn-b64-dev	base64			0	/dev/null
+sn-b64-mnt	base64	printf hi > "D:/tmp/shellns-mnt/b64-m"		0	/mnt/d/tmp/shellns-mnt/b64-m
+sn-b32-tmp	base32	printf hi > "$TMPDIR/sn/b32"		0	/tmp/sn/b32
+sn-b32-dev	base32			0	/dev/null
+sn-b32-mnt	base32	printf hi > "D:/tmp/shellns-mnt/b32-m"		0	/mnt/d/tmp/shellns-mnt/b32-m
+sn-b2-tmp	b2sum	printf hi > "$TMPDIR/sn/b2"		0	/tmp/sn/b2
+sn-b2-dev	b2sum			0	/dev/null
+sn-b2-mnt	b2sum	printf hi > "D:/tmp/shellns-mnt/b2-m"		0	/mnt/d/tmp/shellns-mnt/b2-m
+sn-s224-tmp	sha224sum	printf hi > "$TMPDIR/sn/s224"		0	/tmp/sn/s224
+sn-s224-dev	sha224sum			0	/dev/null
+sn-s224-mnt	sha224sum	printf hi > "D:/tmp/shellns-mnt/s224-m"		0	/mnt/d/tmp/shellns-mnt/s224-m
+sn-s384-tmp	sha384sum	printf hi > "$TMPDIR/sn/s384"		0	/tmp/sn/s384
+sn-s384-dev	sha384sum			0	/dev/null
+sn-s384-mnt	sha384sum	printf hi > "D:/tmp/shellns-mnt/s384-m"		0	/mnt/d/tmp/shellns-mnt/s384-m
+
+# ===== join / tsort / paste / fold / fmt / expand / unexpand =====
+sn-join-tmp	join	printf 'a 1\n' > "$TMPDIR/sn/j1"; printf 'a 2\n' > "$TMPDIR/sn/j2"		0	/tmp/sn/j1 /tmp/sn/j2
+sn-join-dev	join			0	/dev/null /dev/null
+sn-join-mnt	join	printf 'a 1\n' > "D:/tmp/shellns-mnt/j1"; printf 'a 2\n' > "D:/tmp/shellns-mnt/j2"		0	/mnt/d/tmp/shellns-mnt/j1 /mnt/d/tmp/shellns-mnt/j2
+sn-tsort-tmp	tsort	printf 'a b\n' > "$TMPDIR/sn/ts"		0	/tmp/sn/ts
+sn-tsort-dev	tsort			0	/dev/null
+sn-tsort-mnt	tsort	printf 'a b\n' > "D:/tmp/shellns-mnt/ts-m"		0	/mnt/d/tmp/shellns-mnt/ts-m
+sn-paste-tmp	paste	printf '1\n' > "$TMPDIR/sn/p1"		0	/tmp/sn/p1 /tmp/sn/p1
+sn-paste-dev	paste			0	/dev/null /dev/null
+sn-paste-mnt	paste	printf '1\n' > "D:/tmp/shellns-mnt/p-m"		0	/mnt/d/tmp/shellns-mnt/p-m /mnt/d/tmp/shellns-mnt/p-m
+sn-fold-tmp	fold	printf 'abcdefgh\n' > "$TMPDIR/sn/fold"		0	-w 3 /tmp/sn/fold
+sn-fold-dev	fold			0	/dev/null
+sn-fold-mnt	fold	printf 'abcdefgh\n' > "D:/tmp/shellns-mnt/fold-m"		0	-w 3 /mnt/d/tmp/shellns-mnt/fold-m
+sn-fmt-tmp	fmt	printf 'a a a\n' > "$TMPDIR/sn/fmt"		0	/tmp/sn/fmt
+sn-fmt-dev	fmt			0	/dev/null
+sn-fmt-mnt	fmt	printf 'a a a\n' > "D:/tmp/shellns-mnt/fmt-m"		0	/mnt/d/tmp/shellns-mnt/fmt-m
+sn-expand-tmp	expand	printf 'a\tb\n' > "$TMPDIR/sn/ex"		0	/tmp/sn/ex
+sn-expand-dev	expand			0	/dev/null
+sn-expand-mnt	expand	printf 'a\tb\n' > "D:/tmp/shellns-mnt/ex-m"		0	/mnt/d/tmp/shellns-mnt/ex-m
+sn-unexpand-tmp	unexpand	printf '    a\n' > "$TMPDIR/sn/ue"		0	/tmp/sn/ue
+sn-unexpand-dev	unexpand			0	/dev/null
+sn-unexpand-mnt	unexpand	printf '    a\n' > "D:/tmp/shellns-mnt/ue-m"		0	/mnt/d/tmp/shellns-mnt/ue-m
+
+# ===== test =====
+sn-test-tmp	test	mkdir -p "$TMPDIR/sn/tstd"		0	-d /tmp/sn/tstd
+sn-test-dev	test			0	-c /dev/null
+sn-test-trap	test			1	-f NUL.txt
+sn-test-mnt	test	printf x > "D:/tmp/shellns-mnt/tst-m"		0	-f /mnt/d/tmp/shellns-mnt/tst-m
+
+# ===== basename / dirname (lexical POSIX spellings) =====
+sn-basename-tmp	basename			0	/tmp/sn/b1/f
+sn-basename-dev	basename			0	NUL.txt
+sn-basename-mnt	basename			0	/mnt/d/x/y
+sn-dirname-tmp	dirname			0	/tmp/sn/b1/f
+sn-dirname-dev	dirname			0	/dev/null/name
+sn-dirname-mnt	dirname			0	/mnt/d/x/y
+
+# ===== getconf (path argument) =====
+sn-getconf-tmp	getconf			0	PATH_MAX /tmp
+sn-getconf-dev	getconf			0	PATH_MAX /dev/null
+sn-getconf-mnt	getconf			0	PATH_MAX /mnt/d/tmp
+
+# ===== root-tree spellings (the bare "/" family) =====
+sn-root-mkdir	mkdir			0	-p /sn-root-dir	/sn-root-dir
+sn-root-tac	tac	printf 'r\n' > "@ROOT@/rootfile"		0	/rootfile
+sn-root-stat	stat	printf x > "@ROOT@/rootstat"		0	-c %n /rootstat
+sn-root-exe	stat	mkdir -p "@ROOT@/usr/bin"; printf x > "@ROOT@/usr/bin/seq.exe"		0	-c %F /usr/bin/seq
