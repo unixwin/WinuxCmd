@@ -94,15 +94,19 @@ def rust_bin():
 
 
 def cpp_bin():
-    return _bin("CPP_BIN", os.path.join("build-vs", "usr", "bin", "winuxcmd.exe"))
+    # build-vs lives at the TREE root (sibling of rust2/), not under rust2/;
+    # the round-2 sweep (2026-11-12) found the default resolving into
+    # rust2/build-vs and silently degrading every cpp side to
+    # "missing exe" -> rc None. Env override CPP_BIN still wins.
+    return _bin("CPP_BIN", os.path.join(
+        os.pardir, "build-vs", "usr", "bin", "winuxcmd.exe"))
 
 
-# Wave2 commands (#1488 second batch): their Rust implementations live on the
-# wave2 lanes (rust2/check-mechanism and successors), NOT on main yet — the
-# main-built driver exits 127 for them. QC tools run wave2 commands through
-# the wave2 lane driver (RUST_BIN_W2 env) and wave1 commands through the
-# main-built driver (RUST_BIN, which carries the truefalse sole-argument fix
-# the wave2 driver predates). Disclosed in every QC report header.
+# Commands whose implementations were once flight-tested on a separate lane
+# driver via RUST_BIN_W2 (#1488 wave2). All of them are wired to main since
+# #1566/#1568/#1570, so the single main-built driver (RUST_BIN) covers every
+# table and the QC split is retired; RUST_BIN_W2 is kept only as an override
+# for a future lane split. Disclosed in every QC report header.
 WAVE2_COMMANDS = frozenset(
     ["whoami", "nproc", "unlink", "sleep", "base64", "base32", "b2sum",
      "sha224sum", "sha384sum", "tac", "truncate", "uname", "id", "hostname",
@@ -113,12 +117,8 @@ WAVE2_COMMANDS = frozenset(
 def rust_bin_for(cmd):
     if cmd in WAVE2_COMMANDS:
         v = os.environ.get("RUST_BIN_W2")
-        if not v:
-            raise SystemExit(
-                "RUST_BIN_W2 not set: wave2 commands (%s...) need the wave2 "
-                "lane driver; export RUST_BIN_W2=/path/to/winuxcmd-driver.exe "
-                "from a wave2 worktree" % sorted(WAVE2_COMMANDS)[0])
-        return _native(v.replace("\\", "/"))
+        if v:
+            return _native(v.replace("\\", "/"))
     return rust_bin()
 
 
@@ -255,6 +255,14 @@ def run_win_side(side, case):
         return SideResult(None, b"", b"", "exec timeout")
 
 
+def to_mnt(win_path):
+    """WSL view of a Windows path under this tree (/mnt/<drive>/...)."""
+    mnt = tree_mnt()
+    fwd = win_path.replace("\\", "/")
+    tree_fwd = TREE_DIR.replace("\\", "/")
+    return mnt + fwd[len(tree_fwd):] if fwd.startswith(tree_fwd) else fwd
+
+
 def run_gnu_side(case):
     """Run a case under WSL GNU coreutils (native ext4 scratch).
 
@@ -285,12 +293,7 @@ def run_gnu_side(case):
         fh.write("cp .out .err .rc %s%s/%s/%s/\n"
                  % (tree_mnt(), GNU_MIRROR.replace("\\", "/")[len(TREE_DIR.replace("\\", "/")):],
                     case.cmd, case.cid))
-    mnt = tree_mnt()
-    script_fwd = script.replace("\\", "/")
-    tree_fwd = TREE_DIR.replace("\\", "/")
-    script_mnt = (
-        mnt + script_fwd[len(tree_fwd):] if script_fwd.startswith(tree_fwd) else script_fwd
-    )
+    script_mnt = to_mnt(script)
     subprocess.run(
         ["wsl", "bash", script_mnt],
         stdout=subprocess.DEVNULL,
@@ -332,12 +335,10 @@ def run_side(side, case):
 def provenance():
     """One-line disclosure of which binaries this QC run used."""
     r = rust_bin()
-    try:
-        rw2 = rust_bin_for("uname")
-    except SystemExit:
-        rw2 = "(RUST_BIN_W2 unset)"
+    rw2 = rust_bin_for("uname")
+    split = "" if rw2 == r else "; rust(wave2)=%s" % rw2
     return (
-        "drivers: rust(main)=%s; rust(wave2)=%s; cpp=%s; bash(setup)=%s; "
+        "drivers: rust=%s%s; cpp=%s; bash(setup)=%s; "
         "gnu=WSL /usr/bin coreutils"
-        % (r, rw2, cpp_bin(), setup_bash())
+        % (r, split, cpp_bin(), setup_bash())
     )
