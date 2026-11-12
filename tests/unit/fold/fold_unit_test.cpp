@@ -88,18 +88,28 @@ TEST(fold, fold_columns_account_for_backspace) {
   EXPECT_EQ_TEXT(r.stdout_text, "ab\bcd\n");
 }
 
-TEST(fold, fold_characters_option) {
+// GNU fold has NO -c option (fold --help: -b/-s/-w only; probed coreutils
+// 9.4 2026-11-11: `fold -c -w 2` -> "fold: invalid option -- 'c'" + Try
+// line, rc 1). The 1.x -c characters mode was a WinuxCmd invention the 2.0
+// replacement does not inherit (wave3a wiring; the cmd-matrix -c row gates
+// the GNU refusal).
+TEST(fold, fold_rejects_c_option_like_gnu) {
   Pipeline p;
   p.set_stdin("abcd\n");
   p.add(L"fold.exe", {L"-c", L"-w", L"2"});
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "ab\ncd\n");
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("fold: invalid option -- 'c'") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("Try 'fold --help'") != std::string::npos);
 }
 
-TEST(fold, fold_characters_option_counts_utf8_codepoints_without_splitting) {
+// GNU folds BYTES (fold.c byte loop); the -c codepoint mode was the 1.x
+// extension and is not inherited. The UTF-8 byte folding contract itself
+// is pinned by fold_default_mode_counts_bytes_for_utf8_input.
+TEST(fold, fold_rejects_c_option_with_file_operand) {
   TempDir tmp;
   tmp.write_bytes("utf8.txt", {static_cast<char>(0xE4), static_cast<char>(0xB8),
                                static_cast<char>(0xAD), 'a',
@@ -112,11 +122,9 @@ TEST(fold, fold_characters_option_counts_utf8_codepoints_without_splitting) {
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, std::string("\xE4\xB8\xAD"
-                                            "a\n"
-                                            "\xE6\x96\x87"
-                                            "b\n"));
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("invalid option -- 'c'") !=
+              std::string::npos);
 }
 
 TEST(fold, fold_default_mode_counts_bytes_for_utf8_input) {

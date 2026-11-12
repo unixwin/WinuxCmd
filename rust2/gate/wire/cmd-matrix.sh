@@ -70,6 +70,41 @@ setup_fixture() {
       printf 'K V\na 1\n' > jh1
       printf 'K W\na Q\n' > jh2
       printf 'b 2\na 1\n' > juns ;;
+    # wave3a wiring (#1488): fixed-clock fixtures so timestamp/verbose
+    # output stays byte-stable across the old and new exe runs. `touch -d`
+    # below is the SIDE'S OWN touch (MSYS GNU touch on the exe sides, GNU
+    # coreutils on the WSL side) so both write identical atime/mtime.
+    touch)
+      rm -rf tref ta tb; printf seed > tref; printf seed > ta; printf seed > tb
+      touch -d '2026-01-02 03:04:05' tref ta tb ;;
+    ln)
+      # sl1..sl4 are the -s destinations and ln1/lfresh/lv1 the hard-link
+      # destinations; without them in the rm list both sides leak them
+      # across runs (the WSL side and the wired exe CAN create symlinks on
+      # DrvFs here), and the later rows report "File exists"/the -i prompt
+      # instead of the canonical clean-state result.
+      rm -rf aln bln dln sln fresh blbak sl1 sl2 sl3 sl4 ln1 lfresh lv1
+      printf A1 > aln; printf xx > bln; mkdir -p dln ;;
+    stat)
+      rm -rf sreg sdir shard
+      printf abc > sreg; mkdir -p sdir; ln -f sreg shard 2>/dev/null
+      touch -d '2026-01-02 03:04:05' sreg sdir shard 2>/dev/null ;;
+    seq) : ;;
+    tee)
+      rm -rf tpre tout1 tout2 tok
+      printf 'seed\n' > tpre ;;
+    paste)
+      rm -rf pf1 pf2 pf3 pqin
+      printf 'a\nb\nc\n' > pf1; printf '1\n2\n3\n4\n' > pf2
+      printf 'only\n' > pf3; printf 'q\nr\n' > pqin ;;
+    fold)
+      rm -rf flong fwords
+      printf 'The quick brown fox jumps over the lazy dog again and again.\n' > flong
+      printf 'supercalifragilisticexpialidocious antidisestablishmentarianism word\n' > fwords ;;
+    fmt)
+      rm -rf fpara fpre
+      printf 'This is the first paragraph of the sample text used by the fmt matrix. It has enough words to wrap around several times when the width is small.\n\nThis is the second paragraph.\n' > fpara
+      printf '  indented line one\n  indented line two\n' > fpre ;;
     # unlink rows 19/20 exercise wildcard operands against real matches:
     # GNU unlink.c treats argv literally (ENOENT), the 1.x C++ body
     # glob-expanded (extra operand when 2+ matches) — the new exe is
@@ -919,6 +954,230 @@ TABLE
 24|||PATH_MAX:.:extra
 25|||path_max:.
 26|||--
+TABLE
+      ;;
+    # wave3a wiring matrices (#1488). Row shape: id|env|stdin|args
+    # (args ':'-joined). exes run in one shared cwd per side; the GNU side
+    # is the rc oracle (stdout/stderr shapes are platform-bound where noted).
+    touch)
+      cat <<'TABLE'
+01|||ta
+02|||-c:tmissing
+03|||-c:ta
+04|||-a:ta
+05|||-m:ta
+06|||-c:-a:tmissing
+07|||-d:2026-05-06 07:08:09:td1
+08|||-d:@1767225600:td2
+09|||-d:2026-05-06:td3
+10|||-t:202605060708.09:tt1
+11|||-t:05060708:tt2
+12|||-t:2605060708.09:tt3
+13|||-r:tref:tr1
+14|||-r:tmissing:tr2
+15|||-d:2026-05-06 07:08:09:-t:202605060708.09:tmix
+16|||-a:-m:ta
+17|||--no-create:tmissing2
+18|||--date=2026-05-06 07:08:09:td4
+19|||-f:ta
+20|||ta:tb
+21|||--:ta
+22|||--help
+23|||--version
+24|||--help:x
+25|||--bogus
+26|||
+TABLE
+      ;;
+    ln)
+      cat <<'TABLE'
+01|||aln:ln1
+02|||aln:bln
+03|||-f:aln:bln
+04||n|-i:aln:bln
+05||y|-i:aln:bln
+06|||-i:aln:lfresh
+07|||-s:aln:sl1
+08|||-s:lmissing:sl2
+09|||-s:-f:aln:sl1
+10|||-v:aln:lv1
+11|||-t:dln:aln
+12|||-T:aln:bln
+13|||-b:aln:bln
+14|||-b:-S:~b:aln:bln
+15|||--backup:aln:bln
+16|||aln:bln:dln
+17|||-s:dln:sldd
+18|||-v:-s:aln:sl3
+19|||--help
+20|||--version
+21|||--bogus
+22|||
+23|||aln
+24|||--:bln
+25|||-s:-i:aln:sl4
+TABLE
+      ;;
+    stat)
+      # stdout shapes are platform-bound (device/inode numbers, NTFS vs
+      # ext4): the GNU ledger is the rc oracle; old-vs-new must be byte-equal
+      # on the shared NTFS fixture (fixed atime/mtime via the side's touch).
+      cat <<'TABLE'
+01|||sreg
+02|||-t:sreg
+03|||-c:%n:sreg
+04|||-c:%s:sreg
+05|||-c:%A:sreg
+06|||-c:%a:sreg
+07|||-c:%F:sreg
+08|||-c:%h:sreg
+09|||-c:%y:sreg
+10|||-c:%Y:sreg
+11|||-c:%x:sreg
+12|||-c:%X:sreg
+13|||-c:%n %s %A:sreg
+14|||--printf=%s\\n:sreg
+15|||-c:%F:sdir
+16|||-c:%n:smissing
+17|||-c:%n:sreg:sdir
+18|||-c:%b:sreg
+19|||-c:%o:sreg
+20|||-c:%D:sreg
+21|||-c:%C:sreg
+22|||-c:%!:sreg
+23|||--help
+24|||--version
+25|||--bogus
+26|||
+27|||-c:%n
+28|||-f:-c:%n:sreg
+TABLE
+      ;;
+    seq)
+      cat <<'TABLE'
+01|||5
+02|||1:5
+03|||1:2:9
+04|||-w:1:10
+05|||-w:08:10
+06|||-s:,:1:3
+07|||-s: :1:3
+08|||-f:%.2f:1:3
+09|||-f:%05.1f:1.5:2:7
+10|||1.5:2
+11|||-0.5:0.25:0.5
+12|||5:1
+13|||-w:-1:1
+14|||1e2:1e2
+15|||--:-1:1
+16|||-s:@EMPTY@:1:3
+17|||abc
+18|||1:2:3:4
+19|||-f:%!d:1:3
+20|||-w:1.0:2.0
+21|||--help
+22|||--version
+23|||--bogus
+24|||
+25|||-.5:.5
+TABLE
+      ;;
+    tee)
+      cat <<'TABLE'
+01||abc|
+02||hello|tout1
+03||xy|tout1:tok
+04||zz|-a:tpre
+05||zz|-a:tpre:tok
+06||z|tout1:-
+07||q|--:tout1
+08||q|-i:tok
+09||q|-p:tok
+10||q|--output-error=warn:tok
+11||q|tdir-missing/out:tok
+12||q|--bogus
+13||q|--help
+14||q|--version
+15||cc|-ap:tpre
+16|||tok
+17||q|tout1:tok:tpre
+18||q|-
+19||q|-a:tdir-missing/out
+TABLE
+      ;;
+    paste)
+      cat <<'TABLE'
+01|||pf1:pf2
+02|||pf1
+03|||-s:pf1
+04|||-s:pf1:pf2
+05|||-d:,:pf1:pf2
+06|||-d:\n:pf1:pf2
+07||x\ny|-:-:pqin
+08||x\ny|pf1:-
+09|||-z:pf1
+10|||pf1:pf2:pf3
+11|||
+12||-s
+13|||pmissing
+14|||--help
+15|||--version
+16|||--bogus
+17|||--:pf1
+18|||-d:@:pf1:pf2
+19|||-d:|:pf1:pf2
+20|||-s:-d:,:pf1:pf2
+21|||-d,:pf1:pf2
+TABLE
+      ;;
+    fold)
+      cat <<'TABLE'
+01|||flong
+02|||-w:10:flong
+03|||-w10:flong
+04|||--width=10:flong
+05|||-s:-w:14:flong
+06|||-b:-w:5:flong
+07|||-w:3:fwords
+08||The quick brown fox jumps over the lazy dog.|
+09||abcdefghij|-w:4:-
+10|||-w:5:flong:fwords
+11|||fmissing
+12|||-w:0:flong
+13|||-w:-3:flong
+14|||-10:flong
+15|||--help
+16|||--version
+17|||--bogus
+18|||-w
+19|||--:flong
+20|||-c:-w:10:flong
+TABLE
+      ;;
+    fmt)
+      cat <<'TABLE'
+01|||fpara
+02|||-w:30:fpara
+03|||--width=40:fpara
+04|||-s:fpara
+05|||-u:fpara
+06|||-c:fpre
+07|||-t:fpre
+08|||-g:20:fpara
+09|||-p:  :fpre
+10||This is the first paragraph of the sample text used by the fmt matrix. It has enough words to wrap around several times when the width is small.|
+11||This is the first paragraph of the sample text used by the fmt matrix. It has enough words to wrap around several times when the width is small.|-w:30
+12|||fmissing
+13|||fpara:fpre
+14|||-w:5:fpara
+15|||-w:1000000:fpara
+16|||--help
+17|||--version
+18|||--bogus
+19|||
+20|||-w
+21|||-w:30:fpara:fpre:fpara
+22|||-d
 TABLE
       ;;
     *)

@@ -65,11 +65,11 @@ impl FileTime {
     /// Unix epoch seconds (may be negative) and the 100ns remainder.
     pub fn to_epoch(&self) -> (i64, i64) {
         let ticks = self.as_u64() as i64;
-        let delta = ticks - 11_644_473_600_000_000i64;
+        let delta = ticks - 116_444_736_000_000_000i64;
         (delta.div_euclid(10_000_000), delta.rem_euclid(10_000_000))
     }
     pub fn from_epoch(secs: i64, nanos: u32) -> Self {
-        let ticks = secs * 10_000_000 + (nanos / 100) as i64 + 11_644_473_600_000_000i64;
+        let ticks = secs * 10_000_000 + (nanos / 100) as i64 + 116_444_736_000_000_000i64;
         FileTime::from_u64(ticks as u64)
     }
 }
@@ -154,6 +154,8 @@ pub mod imp {
             info: *mut c_void,
             size: DWORD,
         ) -> i32;
+        fn GetStdHandle(which: DWORD) -> Handle;
+        fn DeleteFileW(name: *const u16) -> i32;
         fn SetFileTime(
             h: Handle,
             ctime: *const FileTime,
@@ -161,7 +163,12 @@ pub mod imp {
             mtime: *const FileTime,
         ) -> i32;
         fn CreateHardLinkW(link: *const u16, existing: *const u16, security: *mut c_void) -> i32;
-        fn CreateSymbolicLinkW(link: *const u16, target: *const u16, flags: DWORD) -> i32;
+        // CreateSymbolicLinkW returns BOOLEAN (winnt.h: UCHAR), NOT BOOL
+        // (windef.h: int, like every `-> i32` above). Declaring the 1-byte
+        // return as i32 reads the full EAX whose upper bits are undefined
+        // for a sub-register return on x64 — a refusal (AL = 0) could
+        // masquerade as success. This declaration is the wave3a ln -s fix.
+        fn CreateSymbolicLinkW(link: *const u16, target: *const u16, flags: DWORD) -> u8;
         fn SystemTimeToFileTime(st: *const SystemTime, ft: *mut FileTime) -> i32;
         fn FileTimeToSystemTime(ft: *const FileTime, st: *mut SystemTime) -> i32;
         fn SystemTimeToTzSpecificLocalTime(
@@ -230,23 +237,286 @@ pub mod imp {
     /// are absolutized against `base` first. Forward slashes are folded to
     /// backslashes because \\?\-prefixed paths get no normalization.
     /// Map the POSIX device paths the 1.x C++ applets honor onto their
-    /// Windows DOS devices (native_path::file_attribute_data_w family).
+    /// Windows DOS devices (native_path::resolve_pseudo_device_w family).
     pub fn map_device(operand: &str) -> &str {
-        match operand {
-            "/dev/null" => "NUL",
-            "/dev/zero" => "NUL",
-            _ => operand,
+        match dos_device_canonical(operand) {
+            Some(dev) => dev,
+            None => operand,
         }
+    }
+
+    /// Whole-operand DOS device recognition (1.x native_path.cppm
+    /// resolve_pseudo_device_w + is_dos_device_name_w, the #276 boundary):
+    /// POSIX pseudo-device spellings fold onto their Windows devices
+    /// (/dev/null -> NUL, /dev/tty -> CONIN$) and the bare reserved names
+    /// are recognized case-insensitively (MSYS rewrites /dev/null to "nul"
+    /// in native argv). A device name only resolves when it is the WHOLE
+    /// operand — "dir\\NUL" names an ordinary file, and so does
+    /// "\\\\?\\C:\\dir\\NUL". Returns the canonical Windows device name.
+    fn dos_device_canonical(operand: &str) -> Option<&'static str> {
+        match operand {
+            "/dev/null" | "/dev/zero" => return Some("NUL"),
+            "/dev/tty" => return Some("CONIN$"),
+            _ => {}
+        }
+        if operand.contains('/') || operand.contains('\\') {
+            return None;
+        }
+        const DOS_DEVICES: [&str; 24] = [
+            "NUL", "CON", "PRN", "AUX", "CONIN$", "CONOUT$", "COM1", "COM2", "COM3", "COM4",
+            "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6",
+            "LPT7", "LPT8", "LPT9",
+        ];
+        let upper = operand.to_ascii_uppercase();
+        DOS_DEVICES.into_iter().find(|d| *d == upper)
+    }
+
+    /// CreateFileW open-probe for a DOS device name — the existence gate
+    /// that replaces the CRT stat / GetFileAttributesExW path, both of
+    /// which reject device names outright (1.x native_path
+    /// file_attribute_data_w). Plain GENERIC_READ without
+    /// FILE_READ_ATTRIBUTES: the null device answers a read open but
+    /// refuses attribute-only access with ACCESS_DENIED (probed kernel32:
+    /// CreateFileW("NUL", GENERIC_READ|0x800000) -> gle 5, GENERIC_READ ->
+    /// a valid handle). Returns whether the device opened.
+    pub fn probe_dos_device(name: &str) -> bool {
+        let w = wide(name);
+        let handle = unsafe {
+            CreateFileW(
+                w.as_ptr(),
+                GENERIC_READ,
+                FILE_SHARE_ALL,
+                std::ptr::null_mut(),
+                OPEN_EXISTING,
+                0,
+                std::ptr::null_mut(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE || handle.is_null() {
+            return false;
+        }
+        unsafe { CloseHandle(handle) };
+        true
+    }
+
+    /// Metadata for a DOS device operand: the attribute record is
+    /// synthesized (zeroed times/size, one link, character_device flag)
+    /// because the device handle answers no GetFileInformationByHandle
+    /// (ERROR_INVALID_FUNCTION) and cannot feed the ordinary snapshot.
+    /// GNU reports /dev/null as a character special file of size 0
+    /// (#276); %n keeps the operand text at the caller.
+    fn dos_device_meta(dev: &'static str) -> Result<FileMeta, u32> {
+        if !probe_dos_device(dev) && raw_attributes(dev).is_none() {
+            // neither an open nor an attribute answer: report the probe
+            // error (raw_attributes was the last failing call)
+            return Err(kernel32_last_error());
+        }
+        Ok(FileMeta {
+            links: 1,
+            character_device: true,
+            ..FileMeta::default()
+        })
+    }
+
+    /// Fold literal colons in the operand's final component onto the
+    /// private-use carrier U+F03A (#1283; 1.x native_path.cppm
+    /// fold_carrier_colons_w). A ':' in a final component is never a drive
+    /// colon (those live in earlier components) and Win32 reads it as an
+    /// alternate-data-stream separator, while the shell's own path layer
+    /// stores such names on disk with ':' encoded as U+F03A — the spelling
+    /// redirects actually create and MSYS resolves. The bare drive ("D:")
+    /// keeps its drive meaning, and verbatim/device spellings ("\\?\\",
+    /// "\\\\.\\") pass through untouched (they are checked by the caller
+    /// before the fold here, since api_path adds the \\?\ prefix only
+    /// after this fold).
+    fn fold_carrier_colons(normalized: &str) -> Option<String> {
+        if normalized.starts_with(r"\\?\") || normalized.starts_with(r"\\.\") {
+            return None;
+        }
+        let sep = normalized.rfind(['\\', '/']);
+        let tail = match sep {
+            Some(i) => &normalized[i + 1..],
+            None => normalized,
+        };
+        if !tail.contains(':') {
+            return None;
+        }
+        // bare "D:" — the drive itself, not a file name
+        if sep.is_none() && normalized.chars().count() == 2 {
+            return None;
+        }
+        let tail_begin = sep.map(|i| i + 1).unwrap_or(0);
+        let mut out = String::with_capacity(normalized.len());
+        for (i, ch) in normalized.char_indices() {
+            if i >= tail_begin && ch == ':' {
+                out.push('\u{F03A}');
+            } else {
+                out.push(ch);
+            }
+        }
+        Some(out)
+    }
+
+    /// MSYS drive dialect (#1145; 1.x native_path.cppm
+    /// fold_posix_drive_prefix_w + fold_drive_dialect_w): "/cygdrive/d/..."
+    /// and the WSL interop prefix "/mnt/d/..." fold onto the MSYS spelling
+    /// "/d/...", which then folds to "D:\\..." — every POSIX drive form
+    /// names the same file as the native spelling. Returns nullopt for any
+    /// other spelling. Ported at the one operand boundary so every rust2
+    /// applet resolves the spellings the 1.x build unified there.
+    fn fold_posix_drive_prefix(normalized: &str) -> Option<String> {
+        let b = normalized.as_bytes();
+        // both separators are accepted inside the prefix
+        let is_sep = |c: u8| c == b'/' || c == b'\\';
+        let strip_prefix_of = |word: &str| -> Option<&str> {
+            let wb = word.as_bytes();
+            if b.len() > wb.len()
+                && b[..wb.len()]
+                    .iter()
+                    .zip(wb)
+                    .all(|(x, y)| x.eq_ignore_ascii_case(y))
+            {
+                Some(&normalized[wb.len()..])
+            } else {
+                None
+            }
+        };
+        // /cygdrive/<d>/...
+        if let Some(rest) = strip_prefix_of("/cygdrive/") {
+            if rest.len() >= 2
+                && rest.as_bytes()[0].is_ascii_alphabetic()
+                && is_sep(rest.as_bytes()[1])
+            {
+                // rest IS "<d>/<tail>" — the MSYS spelling just needs
+                // the leading slash back
+                return Some(format!("/{rest}"));
+            }
+            return None;
+        }
+        // /mnt/<d>/... (WSL interop; #1172)
+        if let Some(rest) = strip_prefix_of("/mnt/") {
+            if rest.len() >= 2
+                && rest.as_bytes()[0].is_ascii_alphabetic()
+                && is_sep(rest.as_bytes()[1])
+            {
+                return Some(format!("/{rest}"));
+            }
+            return None;
+        }
+        None
+    }
+
+    /// "/d/..." -> "D:\\..." (1.x fold_drive_dialect_w: a leading
+    /// separator followed by a single drive letter and a separator is the
+    /// MSYS drive spelling; anything else stays untouched).
+    fn fold_drive_dialect(normalized: &str) -> Option<String> {
+        let b = normalized.as_bytes();
+        if b.len() < 3 || b[0] != b'/' || !b[1].is_ascii_alphabetic() || b[2] != b'/' {
+            return None;
+        }
+        // guard against a 2-component prefix that is really a directory
+        // named "x" (the 1.x is_drive_form also excludes drive-relative
+        // colliders like "/d/x" only by shape; shape is the contract here)
+        let drive = b[1].to_ascii_uppercase() as char;
+        let mut out = String::with_capacity(normalized.len() + 1);
+        out.push(drive);
+        out.push(':');
+        out.push('\\');
+        if normalized.len() > 3 {
+            out.push_str(&normalized[3..]);
+        }
+        Some(out.replace('/', "\\"))
+    }
+
+    /// The configured shell install root (1.x shell_ns::root): the
+    /// environment names the winuxsh/rubash tree the remaining
+    /// "/"-prefixed operands resolve through.
+    fn shell_root_env() -> Option<String> {
+        for name in [
+            "__RUBASH_SHELL_ROOT",
+            "NIU_ROOT",
+            "WINUXSH_ROOT",
+            "RUBASH_ROOT",
+        ] {
+            if let Some(v) = std::env::var_os(name) {
+                let v = v.to_string_lossy().into_owned();
+                if !v.is_empty() {
+                    return Some(v);
+                }
+            }
+        }
+        None
+    }
+
+    /// [1.x shell_tree_to_native_w] a remaining "/"-prefixed operand (the
+    /// drive-dialect folds claimed "/d/..." already) resolves through the
+    /// shell tree: root + tail, with the MSYS open order's ".exe" leaf
+    /// retry ("/usr/bin/seq" -> root/usr/bin/seq.exe when only the .exe
+    /// exists). No root configured -> unchanged.
+    fn fold_shell_tree(operand: &str) -> Option<String> {
+        if operand.is_empty() || !operand.starts_with('/') {
+            return None;
+        }
+        let root = shell_root_env()?;
+        let base = root.replace('/', "\\");
+        let base = base.trim_end_matches('\\').to_string();
+        let tail = operand[1..].replace('/', "\\");
+        let mut mapped = if tail.is_empty() {
+            base
+        } else {
+            format!("{base}\\{tail}")
+        };
+        if !mapped.is_empty() && !mapped.ends_with('\\') {
+            let missing = file_meta(Path::new(""), &mapped, true).is_err();
+            if missing {
+                let exe = format!("{mapped}.exe");
+                if file_meta(Path::new(""), &exe, true).is_ok() {
+                    mapped = exe;
+                }
+            }
+        }
+        Some(mapped)
     }
 
     pub fn api_path(base: &Path, operand: &str) -> String {
         let operand = map_device(operand);
+        // A DOS device name keeps its device magic only WITHOUT the \\?\
+        // prefix ("\\?\D:\dir\NUL" is a literal file named NUL, not the
+        // null device), so the canonical device name passes through
+        // verbatim (any reserved name: NUL, CON, COM4, ...).
+        if dos_device_canonical(operand).is_some() {
+            return operand.to_string();
+        }
+        let posix_folded = fold_posix_drive_prefix(operand);
+        let operand: &str = posix_folded.as_deref().unwrap_or(operand);
+        let dialect_folded = fold_drive_dialect(operand);
+        let operand: &str = dialect_folded.as_deref().unwrap_or(operand);
+        let folded = fold_carrier_colons(operand);
+        let operand: &str = folded.as_deref().unwrap_or(operand);
+        let shell_mapped = fold_shell_tree(operand);
+        let operand: &str = shell_mapped.as_deref().unwrap_or(operand);
         let p = if Path::new(operand).is_absolute() {
             std::path::PathBuf::from(operand)
         } else {
             base.join(operand)
         };
         let s = p.to_string_lossy().replace('/', "\\");
+        // Collapse "." components lexically: the \\?\ prefix gets no
+        // normalization from the NT loader, so a caller-spelled
+        // ".\name" joined against the cwd would reach CreateFileW /
+        // CreateHardLinkW as "...\.\name" and fail with
+        // ERROR_INVALID_PARAMETER (1.x native_path normalized the same
+        // segments at the operand boundary). ".." components are left
+        // alone: collapsing them needs component math the 1.x kept out of
+        // this path too.
+        let mut s = s;
+        while let Some(pos) = s.find(r"\.\") {
+            s.replace_range(pos..pos + 3, r"\");
+        }
+        while s.ends_with(r"\.") {
+            s.truncate(s.len() - 2);
+        }
+        let s = s;
         if let Some(rest) = s.strip_prefix(r"\\?\") {
             return format!(r"\\?\{rest}");
         }
@@ -329,6 +599,12 @@ pub mod imp {
     /// Open the path and snapshot its metadata. `lstat` keeps reparse
     /// points unopened (symlink operands report the link itself).
     pub fn file_meta(base: &Path, operand: &str, lstat: bool) -> Result<FileMeta, u32> {
+        // DOS device operands take the synthesized device record before the
+        // ordinary handle snapshot (see dos_device_meta): the C++ 1.x stat
+        // applet took the same attribute-record path (#276).
+        if let Some(dev) = dos_device_canonical(operand) {
+            return dos_device_meta(dev);
+        }
         let extended = api_path(base, operand);
         let mut meta = FileMeta::default();
         // symlink check first: affects both open flags and reporting
@@ -542,6 +818,45 @@ pub mod imp {
         FileTime { low: 0, high: 0 }
     }
 
+    /// Remove a file through DeleteFileW directly (1.x remove semantics):
+    /// the NT delete fails on a read-only file with ERROR_ACCESS_DENIED,
+    /// which is the GNU-on-Windows/MSYS "failed to remove 'X': Permission
+    /// denied" shape the ln -f corpus pins. std::fs::remove_file is NOT
+    /// usable here — it silently clears the read-only attribute first.
+    pub fn delete_file(base: &Path, operand: &str) -> Result<(), u32> {
+        let w = wide(&api_path(base, operand));
+        let rc = unsafe { DeleteFileW(w.as_ptr()) };
+        if rc == 0 {
+            Err(kernel32_last_error())
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Retime the process's standard output handle — the POSIX `touch -`
+    /// operand (GNU touch.c:127-128 retimes stdout instead of naming a
+    /// literal file). Returns the Win32 error on failure (pipes and other
+    /// untimable handles reject SetFileTime, the same EINVAL shape GNU
+    /// reports under a redirected-pipe consumer).
+    pub fn set_stdout_file_times(
+        atime: Option<FileTime>,
+        mtime: Option<FileTime>,
+    ) -> Result<(), u32> {
+        const STD_OUTPUT_HANDLE: DWORD = (-11i32) as u32; // (DWORD)-11
+        let handle = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
+        if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+            return Err(6); // ERROR_INVALID_HANDLE
+        }
+        let a = atime.unwrap_or_else(zero_ft);
+        let m = mtime.unwrap_or_else(zero_ft);
+        let rc = unsafe { SetFileTime(handle, std::ptr::null(), &a, &m) };
+        if rc == 0 {
+            Err(kernel32_last_error())
+        } else {
+            Ok(())
+        }
+    }
+
     /// Create the file if missing and set both times (GNU touch default).
     pub fn create_file(base: &Path, operand: &str) -> Result<(), u32> {
         let extended = api_path(base, operand);
@@ -745,6 +1060,15 @@ pub mod imp {
     ) -> Result<(), u32> {
         Err(1)
     }
+    pub fn set_stdout_file_times(
+        _atime: Option<FileTime>,
+        _mtime: Option<FileTime>,
+    ) -> Result<(), u32> {
+        Err(1)
+    }
+    pub fn delete_file(_base: &Path, _operand: &str) -> Result<(), u32> {
+        Err(1)
+    }
     pub fn create_file(_base: &Path, _operand: &str) -> Result<(), u32> {
         Err(1)
     }
@@ -782,16 +1106,83 @@ pub use imp::*;
 /// 1.x C++ applets use; 1314 is the documented no-Developer-Mode case).
 pub fn win32_reason(err: u32) -> &'static str {
     match err {
-        2 => "No such file or directory",    // ERROR_FILE_NOT_FOUND
-        3 => "No such file or directory",    // ERROR_PATH_NOT_FOUND
-        5 => "Permission denied",            // ERROR_ACCESS_DENIED
-        80 => "File exists",                 // ERROR_FILE_EXISTS
-        183 => "File exists",                // ERROR_ALREADY_EXISTS
-        206 => "File name too long",         // ERROR_FILENAME_EXCED_RANGE
+        2 => "No such file or directory", // ERROR_FILE_NOT_FOUND
+        3 => "No such file or directory", // ERROR_PATH_NOT_FOUND
+        5 => "Permission denied",         // ERROR_ACCESS_DENIED
+        80 => "File exists",              // ERROR_FILE_EXISTS
+        183 => "File exists",             // ERROR_ALREADY_EXISTS
+        206 => "File name too long",      // ERROR_FILENAME_EXCED_RANGE
+        267 => "Not a directory",         // ERROR_DIRECTORY (ENOTDIR shape;
+        // touch's trailing-separator operand reports GNU's exact wording
+        // with it: probed `touch f.txt/` -> "setting times of 'f.txt/':
+        // Not a directory")
         2062 => "No such file or directory", // ERROR_CANT_ACCESS_FILE alt
         1314 => "Operation not permitted",   // ERROR_PRIVILEGE_NOT_HELD
         1 => "Operation not permitted",      // ERROR_INVALID_FUNCTION
         1920 => "No such file or directory", // ERROR_CANT_ACCESS_FILE
         _ => "Invalid argument",
+    }
+}
+
+#[cfg(test)]
+mod api_path_probes {
+    use super::*;
+
+    #[test]
+    fn probe_drive_folds() {
+        #[cfg(windows)]
+        {
+            let out = imp::api_path(Path::new(r"D:\wd"), "/cygdrive/d/repo/x/f.txt");
+            assert_eq!(out, r"\\?\D:\repo\x\f.txt", "cygdrive fold");
+            let out = imp::api_path(Path::new(r"D:\wd"), "/mnt/d/repo/x/f.txt");
+            assert_eq!(out, r"\\?\D:\repo\x\f.txt", "mnt fold");
+            let out = imp::api_path(Path::new(r"D:\wd"), "/d/repo/x/f.txt");
+            assert_eq!(out, r"\\?\D:\repo\x\f.txt", "dialect fold");
+        }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn dos_device_names_resolve() {
+        // POSIX pseudo-devices and bare reserved names (1.x
+        // resolve_pseudo_device_w / is_dos_device_name_w)
+        assert_eq!(imp::map_device("/dev/null"), "NUL");
+        assert_eq!(imp::map_device("/dev/zero"), "NUL");
+        assert_eq!(imp::map_device("/dev/tty"), "CONIN$");
+        assert_eq!(imp::map_device("nul"), "NUL");
+        assert_eq!(imp::map_device("ConIN$"), "CONIN$");
+        assert_eq!(imp::map_device("com4"), "COM4");
+        assert_eq!(imp::map_device("LPT7"), "LPT7");
+        // whole operand only: a separator or extension names an ordinary file
+        assert_eq!(imp::map_device("dir/NUL"), "dir/NUL");
+        assert_eq!(imp::map_device("dir\\NUL"), "dir\\NUL");
+        assert_eq!(imp::map_device("nul.txt"), "nul.txt");
+        assert_eq!(imp::map_device("NULX"), "NULX");
+        assert_eq!(imp::map_device("COM0"), "COM0");
+        assert_eq!(imp::map_device("COM10"), "COM10");
+        // the device name passes through api_path verbatim (no \\?\ prefix)
+        assert_eq!(imp::api_path(Path::new("wd"), "/dev/null"), "NUL");
+        assert_eq!(imp::api_path(Path::new("wd"), "con"), "CON");
+        // api_path("/dev/tty") under the cwd tree... device, so verbatim too
+        assert_eq!(imp::api_path(Path::new("wd"), "/dev/tty"), "CONIN$");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn nul_device_probe_and_meta() {
+        // the CI-safe device assertion: CreateFileW opens NUL
+        assert!(imp::probe_dos_device("NUL"));
+        // file_meta synthesizes a character-device record (GNU %F
+        // "character special file", size 0) instead of the CRT stat
+        // EINVAL/EPERM refusal (#276)
+        let m = imp::file_meta(Path::new("wd"), "/dev/null", true).expect("/dev/null meta");
+        assert!(m.character_device);
+        assert!(!m.is_dir && !m.is_symlink);
+        assert_eq!(m.size, 0);
+        assert_eq!(m.links, 1);
+        let m = imp::file_meta(Path::new("wd"), "NUL", false).expect("NUL meta");
+        assert!(m.character_device);
+        // a device name with a separator is an ordinary (missing) file
+        assert!(imp::file_meta(Path::new("wd"), "dir/NUL", true).is_err());
     }
 }

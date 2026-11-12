@@ -13,7 +13,12 @@
 //! warn-nopipe / exit-nopipe / warn / exit. stdin read errors report
 //! "read error" and set rc 1. `-` is NOT special (POSIX; it names a file
 //! literally, as GNU documents). -i is accepted and ignored (SIGINT
-//! handling does not apply on Windows).
+//! handling does not apply on Windows). --output-error=MODE resolves MODE
+//! through GNU argmatch (argmatch.c): exact match, else a unique prefix
+//! (`warn-n` -> warn-nopipe); ambiguous prefixes report "ambiguous
+//! argument" and unknown values "invalid argument", both followed by the
+//! Valid-arguments list and rc 1. An open failure under the exit modes
+//! dies before stdin is read (later operands are never opened).
 //!
 //! Exit rc 1 only when a reportable open/write/close error occurred.
 
@@ -89,6 +94,17 @@ fn tee_files(
             }),
             Err(e) => {
                 let _ = writeln!(io.stderr, "tee: {name}: {}", reason_str(&e));
+                // tee.c tee_files(): the open-loop error carries a nonzero
+                // status under the exit modes (error(exit || exit_nopipe,
+                // errno, ...)), which EXITS right there — later operands are
+                // never opened and stdin is never read. probed WSL GNU
+                // coreutils 9.4 with `--output-error=exit no/dir/f good.txt`:
+                // empty stdout, good.txt not created, rc 1 (same under
+                // exit-nopipe); the non-exit modes keep the remaining
+                // outputs flowing.
+                if matches!(output_error, OutputError::Exit | OutputError::ExitNopipe) {
+                    return Ok(1);
+                }
                 ok = false;
                 dests.push(Dest {
                     name: name.to_string(),
@@ -150,6 +166,60 @@ fn reason_str(e: &std::io::Error) -> &'static str {
     }
 }
 
+/// GNU argmatch over tee.c's output_error_args table (tee.c:69-73, in this
+/// order: "warn", "warn-nopipe", "exit", "exit-nopipe"). argmatch.c
+/// argmatch(): an exact match wins immediately; otherwise the operand is a
+/// prefix of an element when the first `arglen` bytes agree, the first such
+/// element is remembered, and a second prefix match over a DIFFERENT value
+/// is a real ambiguity (all four enum values here are distinct). Case
+/// sensitive (strncmp), and the empty string is a prefix of everything, so
+/// `--output-error=` reports ambiguous. Probed WSL coreutils 9.4:
+/// `warn-n`/`warn-` -> warn-nopipe rc 0; `warn` exact rc 0; `w`/`ex`/`` ->
+/// "ambiguous argument"; `WAR`/`bogus` -> "invalid argument"; rc 1 both.
+fn argmatch_output_error(arg: &str) -> Result<usize, bool> {
+    const ARGS: [&str; 4] = ["warn", "warn-nopipe", "exit", "exit-nopipe"];
+    let arglen = arg.len();
+    let mut matchind: isize = -1;
+    let mut ambiguous = false;
+    for (i, el) in ARGS.iter().enumerate() {
+        if el.len() >= arglen && &el.as_bytes()[..arglen] == arg.as_bytes() {
+            if el.len() == arglen {
+                return Ok(i);
+            } else if matchind == -1 {
+                matchind = i as isize;
+            } else {
+                ambiguous = true;
+            }
+        }
+    }
+    if ambiguous {
+        Err(true)
+    } else if matchind == -1 {
+        Err(false)
+    } else {
+        Ok(matchind as usize)
+    }
+}
+
+/// __xargmatch_internal failure path: argmatch_invalid names the problem,
+/// argmatch_valid lists the alternatives one per line (the values are all
+/// distinct so no synonyms share a line), and XARGMATCH dies through
+/// usage(EXIT_FAILURE) -> emit_try_help. probed byte-shape on WSL GNU
+/// coreutils 9.4 (quoting normalized to ASCII like the 1.x applet).
+fn output_error_argfail(io: &mut Io, arg: &str, ambiguous: bool) -> CmdResult {
+    let verdict = if ambiguous { "ambiguous" } else { "invalid" };
+    let _ = writeln!(
+        io.stderr,
+        "tee: {verdict} argument '{arg}' for '--output-error'"
+    );
+    let _ = writeln!(io.stderr, "Valid arguments are:");
+    for a in ["warn", "warn-nopipe", "exit", "exit-nopipe"] {
+        let _ = writeln!(io.stderr, "  - '{a}'");
+    }
+    let _ = writeln!(io.stderr, "Try 'tee --help' for more information.");
+    Ok(1)
+}
+
 pub fn tee_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let mut append = false;
     let mut output_error = OutputError::Sigpipe;
@@ -187,19 +257,16 @@ pub fn tee_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                             continue;
                         }
                     };
-                    match v.as_str() {
-                        "warn-nopipe" => output_error = OutputError::WarnNopipe,
-                        "exit-nopipe" => output_error = OutputError::ExitNopipe,
-                        "warn" => output_error = OutputError::Warn,
-                        "exit" => output_error = OutputError::Exit,
-                        _ => {
-                            let _ = usage_error(
-                                io,
-                                "tee",
-                                &format!("invalid argument '{v}' for '--output-error'"),
-                            );
-                            return Ok(1);
+                    match argmatch_output_error(&v) {
+                        Ok(i) => {
+                            output_error = match i {
+                                0 => OutputError::Warn,
+                                1 => OutputError::WarnNopipe,
+                                2 => OutputError::Exit,
+                                _ => OutputError::ExitNopipe,
+                            };
                         }
+                        Err(ambiguous) => return output_error_argfail(io, &v, ambiguous),
                     }
                 }
                 "help" | "version" => return Ok(0),
@@ -353,6 +420,115 @@ mod tests {
         assert_eq!(read_sc(&sc, "ok1"), "q\n");
         assert_eq!(run(&["--bogus"], "x\n").0, 1);
         assert_eq!(run(&["--help"], "").0, 0);
+    }
+
+    #[test]
+    fn argmatch_abbreviates_output_error() {
+        // unambiguous prefixes resolve to the full mode (GNU XARGMATCH);
+        // probed WSL coreutils 9.4: `warn-n`/`warn-` -> warn-nopipe, rc 0.
+        for v in ["warn-n", "warn-", "warn-nopip"] {
+            let sc = ScratchCtx::new("tee-abbrev");
+            let (r, out, err) = {
+                let mut io = MemIo::new("d\n");
+                let ctx = sc.ctx();
+                let owned: Vec<OsString> = [format!("--output-error={v}").as_str(), "o1"]
+                    .iter()
+                    .map(Into::into)
+                    .collect();
+                let r = tee_cmd(&owned, &mut io.split(), &ctx).unwrap();
+                (r, io.out(), io.err())
+            };
+            assert_eq!(r, 0, "{v} rc");
+            assert_eq!(err, "", "{v} stderr");
+            assert_eq!(out, "d\n");
+            assert_eq!(read_sc(&sc, "o1"), "d\n");
+        }
+        // exact full names still work
+        for v in ["warn", "warn-nopipe", "exit", "exit-nopipe"] {
+            let (r, _, err) = run(&[format!("--output-error={v}").as_str(), "-"], "");
+            assert_eq!(r, 0, "{v} rc");
+            assert_eq!(err, "", "{v} stderr");
+        }
+    }
+
+    #[test]
+    fn argmatch_rejects_ambiguous_and_invalid() {
+        // probed WSL coreutils 9.4: `w`/`ex`/`` ambiguous, `WAR`/`bogus`
+        // invalid; both print the Valid-arguments list and the Try line.
+        let cases = [
+            ("w", "ambiguous"),
+            ("ex", "ambiguous"),
+            ("", "ambiguous"),
+            ("WAR", "invalid"),
+            ("bogus", "invalid"),
+        ];
+        for (v, verdict) in cases {
+            let (r, _, err) = run(&[format!("--output-error={v}").as_str()], "x\n");
+            assert_eq!(r, 1, "{v} rc");
+            let first = err.lines().next().unwrap_or_default();
+            assert_eq!(
+                first,
+                format!("tee: {verdict} argument '{v}' for '--output-error'"),
+                "{v} first line"
+            );
+            assert!(err.contains("Valid arguments are:"), "{v} list");
+            for name in ["warn", "warn-nopipe", "exit", "exit-nopipe"] {
+                assert!(err.contains(&format!("  - '{name}'")), "{v} entry {name}");
+            }
+            assert!(
+                err.contains("Try 'tee --help' for more information."),
+                "{v} try"
+            );
+        }
+    }
+
+    #[test]
+    fn exit_mode_open_failure_is_fatal() {
+        // probed WSL coreutils 9.4 `--output-error=exit no/dir/f good.txt`:
+        // the open-loop error exits before stdin is read — empty stdout,
+        // the later operand never created, rc 1; exit-nopipe likewise.
+        for mode in ["exit", "exit-nopipe"] {
+            let sc = ScratchCtx::new("tee-exitmode");
+            let (r, out, err) = {
+                let mut io = MemIo::new("data\n");
+                let ctx = sc.ctx();
+                let owned: Vec<OsString> = [
+                    format!("--output-error={mode}").as_str(),
+                    "no/dir/f",
+                    "good.txt",
+                ]
+                .iter()
+                .map(Into::into)
+                .collect();
+                let r = tee_cmd(&owned, &mut io.split(), &ctx).unwrap();
+                (r, io.out(), io.err())
+            };
+            assert_eq!(r, 1, "{mode} rc");
+            assert_eq!(out, "", "{mode} must not copy stdin");
+            assert!(
+                err.contains("tee: no/dir/f: No such file or directory"),
+                "{mode} stderr"
+            );
+            assert!(
+                !sc.path("good.txt").exists(),
+                "{mode} later operand must stay unopened"
+            );
+        }
+        // warn (non-exit) keeps the remaining outputs flowing, rc 1
+        let sc = ScratchCtx::new("tee-warnmode");
+        let (r, out) = {
+            let mut io = MemIo::new("data\n");
+            let ctx = sc.ctx();
+            let owned: Vec<OsString> = ["--output-error=warn", "no/dir/f", "good.txt"]
+                .iter()
+                .map(Into::into)
+                .collect();
+            let r = tee_cmd(&owned, &mut io.split(), &ctx).unwrap();
+            (r, io.out())
+        };
+        assert_eq!(r, 1);
+        assert_eq!(out, "data\n");
+        assert_eq!(read_sc(&sc, "good.txt"), "data\n");
     }
 
     #[test]
