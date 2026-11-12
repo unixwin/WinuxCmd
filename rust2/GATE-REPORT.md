@@ -379,7 +379,6 @@ id USER operand, getconf Windows table + pathconf existence check).
 2026-11-12): 1529 cases total across all 55 commands — GNU-gated 1384
 PASS / 0 FAIL, win-gated 145 PASS / 0 FAIL. Per-command rows for this
 batch (strict/exit/win/note, GNU-direct %, C++ parity):
-
 | command | cases | strict | exit | win | note | GNU direct | C++ parity | gate |
 |---|---|---|---|---|---|---|---|---|
 | head | 29 | 29 | 0 | 0 | 0 | 100% | 27/29 | GREEN |
@@ -390,7 +389,6 @@ batch (strict/exit/win/note, GNU-direct %, C++ parity):
 | sum | 20 | 20 | 0 | 0 | 0 | 100% | 18/20 | GREEN |
 | mktemp | 27 | 14 | 13 | 0 | 0 | 52% | 11/27 | GREEN |
 | nice | 21 | 14 | 7 | 0 | 0 | 67% | 12/21 | GREEN |
-
 Probed semantics locked by this batch: head/tail count grammar (+K/-K
 asymmetry, `-n -0` everything-vs-nothing, b/kB/K suffixes), cut's
 strtol-list parser ("1 3" selects two specs) and the unconditional
@@ -402,22 +400,18 @@ and the `-tx1z` ascii column at 16*(w+1)+2, sum's SysV 16-bit fold
 --suffix must-end-in-X) and the silent -q create-failure path, nice's
 xstrtol adjustment (rc 125, no try-tail) and the suspended-child
 priority mapping (#1359).
-
 Documented subsets: tail -f/-F/--retry do not follow (dumps then rc 1);
 od --traditional/-S and fL are rejected; nice children inherit process
 stdio (same shape as timeout.rs). mktemp creations and nice child runs
 gate on exit status only (names and niceness are platform-bound).
 ## Borrow-algo: seq exact decimal + numfmt field reassembly (#1488, uutils audit action items)
-
 Two "borrow uutils algorithms" items from `DOCS/2.0-uutils-audit.md`
 (PR #1562 audit): seq float-path precision and numfmt --field line
 reassembly. Both root causes are cited to the GNU C source and were
 probed byte-for-byte against WSL GNU coreutils 9.4 before the fix
 (evidence: `rust2/target/borrow-algo/{seq,numfmt}-probe{,.before,.after}.txt`,
 33 seq cases + 21 numfmt cases, GNU-vs-RUST paired).
-
 ### seq — exact fixed-point stepping (was: f64 long-decimal drift)
-
 - Root cause: the generation path past the integer fast paths computed
   `first + i*step` in f64 (GNU uses 80-bit long double, seq.c print_numbers
   lines 300-364), so >17-significant-digit decimal operands rounded at
@@ -452,9 +446,7 @@ probed byte-for-byte against WSL GNU coreutils 9.4 before the fix
   2.0000000000000000005` duplicates lines, `seq -1.5 0.9999999999999999999 1.5`
   drifts a final ulp — we now print exact decimals there (uutils-equivalent
   behavior); those shapes are outside the gate.
-
 ### numfmt — --field reassembly keeps the original field width
-
 - Root cause: under auto-padding, the per-field pad width ignored GNU's
   `1 < field` rule (numfmt.c process_suffixed_number line 1360:
   `padding_width = text < p || 1 < field ? mbswidth (text) : 0`), so a
@@ -478,9 +470,7 @@ probed byte-for-byte against WSL GNU coreutils 9.4 before the fix
   stepping (was an infinite loop), 1e23 endpoints, 1000-step no-drift,
   18/19-digit grids, negative zero, and both long-double boundary
   shapes.
-
 ### Before/after (same case tables, same harness)
-
 - gate seq numfmt before: **134/146 pass, 12 fail** — seq sq51 sq52
   sq53 sq54 (audit case x2, sub-ulp hang, 1e23) + numfmt nf75 nf76
   nf77 nf78 nf79 nf80 nf85 nf86 (field-width collapse family).
@@ -489,9 +479,7 @@ probed byte-for-byte against WSL GNU coreutils 9.4 before the fix
 - cargo test winux-cmds: 358 passed / 0 failed (3 new tests:
   exact_decimal_long_fractions, exact_decimal_no_drift,
   field_alignment_preserved). rustfmt clean on both files.
-
 ### Gate harness finding (flagged, not fixed here)
-
 The case tables' stdin column is fed with `printf %s` (run-gate.sh
 run_case) — the `\n` escape is NOT decoded, so the literal two bytes
 `\` `n` land in the input. Any case whose included field is the last
@@ -502,15 +490,12 @@ produce wrong GREENs (both sides see identical bytes), but those rows
 exercise the error path instead of the conversion. Suggested follow-up:
 decode `\n` in run_case stdin (or `%b`), then re-audit the affected
 rows' expected outputs before trusting their strict columns.
-
 ## Wave4b: sort — library-form GNU sort.c port (#1488)
-
 `crates/winux-cmds/src/sort.rs`: a direct port of GNU sort.c (coreutils 9.4,
 vendored spec copy under `rust2/target/sort-spec/` together with the gnulib
 helpers it delegates to: `strnumcmp-in.h` for -n and `filevercmp.c` for -V),
 probed case-by-case against the WSL coreutils 9.4 oracle
 (`rust2/target/sort-probe/p1..p6.sh`) before coding.
-
 | section | status |
 |---|---|
 | core sort (byte order, -b/-d/-f/-i/-M/-h/-n/-R/-r/-u/-s, +POS1[-POS2] obsolescent keys, --sort=WORD, global-flag inheritance incl. the no-inheritance-when-key-has-flags rule) | done, GNU-exact |
@@ -520,16 +505,13 @@ probed case-by-case against the WSL coreutils 9.4 oracle
 | check (-c/-C rc 1 semantics, first-disorder diagnostic `sort: FILE:LINE: disorder: LINE`, -u strict ordering, -r/-s/-k participation, -c -m checks, -c two-operands/-o rc 2) | done, GNU-exact |
 | diagnostics (cannot read / open failed / read failed / write failed, rc 2; empty tab, multi-character tab, incompatible tabs, field-spec wording, argmatch invalid/ambiguous rc 1, -S/-–batch-size/--parallel validation) | done, GNU-exact |
 | performance (64 MiB three-way below) | beats 1.x C++ 12x plain / 2.1x -n |
-
 Gate: `bash gate/run-gate.sh sort` — **84 cases (83 strict + 1 win), all
 GREEN on the first run**; zero vacuous rows. C++ parity 78/84; the 6
 divergences are inherited 1.x gaps the Rust side does not follow (1.x
 rejects `+1 -1`, `-S100k`, `-y100` which GNU accepts, prints branded
 help/version text, and -R output order is per-run random there): recorded
 per row in `target/gate/ledger.tsv`, not gated.
-
 ### 64 MiB timing (three-way)
-
 口径: fixture `t64m.txt` 67,108,885 bytes / 1,359,683 lines, md5-identical
 on NTFS (`rust2/target/sort-perf/`) and WSL ext4 (`/tmp/sortperf/`),
 `md5 4b980acf…`; LC_ALL=C everywhere; each side writes its output to a
@@ -539,12 +521,10 @@ merge is the same caveat PERF-BASELINE.md records for the 72x family).
 1 warmup + 5 timed runs per side, median wall clock (`TIMEFORMAT=%R`).
 Correctness anchor: the 64 MiB outputs are md5-identical across all three
 engines for BOTH workloads (plain `488aa0ed…`, `-n` `60d89287…`).
-
 | workload | rust2 sort (Release, NTFS) | 1.x C++ sort (Release, NTFS) | GNU sort 9.4 (WSL, ext4) |
 |---|---|---|---|
 | plain | **1.648 s** | 19.759 s | 0.425 s |
 | -n | **2.179 s** | 4.484 s | 0.549 s |
-
 Rust vs 1.x C++ (like-for-like NTFS): **12.0x faster plain, 2.1x faster
 -n**. vs GNU: 0.26x plain / 0.40x — GNU's parallel external merge on ext4
 stays ahead, the accepted platform gap (single-threaded in-memory v1;
@@ -553,9 +533,7 @@ exposed an unbuffered per-line output write (1.36M `write_all` syscalls);
 wrapping the sink in a 1 MiB BufWriter took rust-plain 5.03 -> 1.65 s —
 GNU's stdio buffering enjoys the same, which is why the fix is semantic
 parity, not tuning.
-
 ### Documented deviations (diff ledger)
-
 - `-R`: GNU shuffles per run with an MD5 of random-source bytes; rust2
   sorts by a fixed FNV-1a-64 of the (filtered) key — deterministic across
   runs, identical keys stay grouped, but the ORDER differs from GNU by
@@ -572,9 +550,63 @@ parity, not tuning.
   prints no key annotation (and stays incompatible with -c/-o like GNU).
 - POSIX2_VERSION / POSIXLY_CORRECT parsing variants are out of scope
   (traditional +POS1 keys are always on, matching the default host).
-
 cargo test winux-cmds: 454 passed / 0 failed (43 new sort tests). gate
 harness note: the sort corpus is immune to the known stdin-column
 `\n` limitation — every multi-line row ships its input through the setup
 column; the four --dup-check WARNs are pre-existing (test/whoami/base64/
 numfmt), none from sort.
+## Wave4b (#1488, fourth batch)
+8 commands: `factor pathchk ptx shuf csplit nohup groups who`. factor and
+csplit gate byte-for-byte against GNU on stdout+rc (strict, 100%);
+shuf's `--random-source` rows are GNU-strict through the entropy-recycling
+randint port (37/40 strict — the deterministic path reproduces GNU 9.4's
+permutations byte-for-byte, probed then gated); pathchk gates GNU rc
+strictly on every POSIX-check row, with the Windows subject-side rules
+(reserved device names, invalid characters) win-classified against the
+C++ value model. ptx implements the C++ subset data flow: default/roff/tex
+formats, macro renames and error paths are GNU-strict for single-line
+short inputs; GNU's circular-context grid, -G traditional layout, -w
+narrow grids and the -C extension are win/note-classified divergences
+documented in the module. nohup resolves children through the extracted
+childproc module (PATH-only + PATHEXT + COMSPEC batches) and reproduces
+GNU's `+` optstring (leading-options-only parsing, probed); the terminal
+faces (nohup.out append, /dev/null stdin) are a documented deferral — the
+library cannot observe console-ness through injected IO, and the gate
+harness runs both sides under pipes where GNU takes the same no-redirect
+path. groups/who carry the Windows value models (NetUserGetGroups / WTS
+sessions) and gate `win` against the C++ Debug exe, with every GNU-shaped
+rc error strict-gated.
+Harness changes this wave (run-gate.sh): `MSYS_NO_PATHCONV=1` and the C++
+package bin dir (`$(dirname $CPP_BIN)`, the /usr/bin analog) are exported
+inside both Windows-side run.sh scripts, so pattern operands reach the
+library raw and child-spawning commands resolve the same siblings on
+both sides. The full 55-table suite re-ran green after the change
+(1335 GNU-gated + 190 win-gated, 0 fail).
+| command | cases | strict | exit | win | note | GNU-gated result | C++ parity (rc+stdout) |
+|---|---|---|---|---|---|---|---|
+| factor | 26 | 25 | 0 | 1 | 0 | GREEN | 24/26 |
+| pathchk | 30 | 27 | 0 | 3 | 0 | GREEN | 28/30 |
+| ptx | 28 | 19 | 0 | 9 | 0 | GREEN | 26/28 |
+| shuf | 40 | 37 | 1 | 2 | 0 | GREEN | 37/40 |
+| csplit | 32 | 32 | 0 | 0 | 0 | GREEN | 32/32 |
+| nohup | 24 | 18 | 0 | 6 | 0 | GREEN | 19/24 |
+| groups | 20 | 16 | 0 | 4 | 0 | GREEN | 16/20 |
+| who | 26 | 6 | 0 | 20 | 0 | GREEN | 24/26 |
+**Wave4b total cases: 226; GNU-gated + win-gated: all GREEN; C++ parity:
+206/226.** Parity gaps are the documented surfaces: factor/pathchk/who
+--help/--version rows carry the GNU-branded text the driver prints (the
+1.x dispatcher prints WinuxCmd branding); nohup's strict rows run children
+GNU resolves on Linux (`true`/`false` have no standalone Windows images,
+so the Windows sides share rc 127 and stdout-parity drops out); ptx's win
+rows are the subset-vs-GNU layout deviations above.
+Deferred / documented for the wiring wave:
+- nohup terminal faces — must come from a driver-side console probe
+  (REPLACEMENT-RECIPE follow-up); the injected-IO library cannot see them.
+- factor operand size — rho needs ~sqrt(p) iterations; operands whose
+  smallest prime factor approaches 2^65 (Fermat F7) exceed the gate's
+  10 s envelope (GNU's optimized MP factors them instantly).
+- ptx circular-context default grid, -G traditional output format,
+  -S/-W regexp word/sentence delimiting — subset deviations carried from
+  the C++ value model, win/note rows pin them.
+- shuf infinite -r output without -n — untestable in the bounded harness;
+  the 256-record chunk loop matches GNU/C++ behavior by construction.
