@@ -2724,6 +2724,36 @@ groups_rows = [
     ("gr20-mixed-known-unknown", "win", "", "", "", ["root", "nosuch-b-2"]),
 ]
 
+who_rows = [
+    # session content is the Windows WTS value model
+    ("wh01-current", "win", "", "", "", []),
+    ("wh02-missing-file-silent", "strict", "", "", "", ["who-nosuch-utmp"]),
+    ("wh03-count", "win", "", "", "", ["-q"]),
+    ("wh04-heading", "win", "", "", "", ["-H"]),
+    ("wh05-heading-long", "win", "", "", "", ["-H", "-u"]),
+    ("wh06-users-long", "win", "", "", "", ["-u"]),
+    ("wh07-mesg-w", "win", "", "", "", ["-w"]),
+    ("wh08-mesg-T", "win", "", "", "", ["-T"]),
+    ("wh09-am-i", "win", "", "", "", ["am", "i"]),
+    ("wh10-m-flag", "win", "", "", "", ["-m"]),
+    ("wh11-extra-operand", "strict", "", "", "", ["a", "b", "c"]),
+    ("wh12-unknown-long", "strict", "", "", "", ["--bogus"]),
+    ("wh13-all-view", "win", "", "", "", ["-a"]),
+    ("wh14-all-long", "win", "", "", "", ["--all"]),
+    ("wh15-boot-view", "win", "", "", "", ["-b"]),
+    ("wh16-runlevel-view", "win", "", "", "", ["--runlevel"]),
+    ("wh17-writable-view", "win", "", "", "", ["--writable"]),
+    ("wh18-lookup-view", "win", "", "", "", ["--lookup"]),
+    ("wh19-short-h", "strict", "", "", "", ["-h"]),
+    ("wh20-help", "strict", "", "", "", ["--help"]),
+    ("wh21-version", "strict", "", "", "", ["--version"]),
+    ("wh22-existing-file-operand", "win", "printf 'garbage' > utmp.file", "", "", ["utmp.file"]),
+    ("wh23-short-flag", "win", "", "", "", ["-s"]),
+    ("wh24-message-alias", "win", "", "", "", ["--message"]),
+    ("wh25-heading-count", "win", "", "", "", ["-H", "-q"]),
+    ("wh26-heading-missing-file", "win", "", "", "", ["-H", "who-nosuch-utmp"]),
+]
+
 def collect():
     """All case tables as (cmd, rows) pairs, in emit order."""
     return [
@@ -2758,6 +2788,7 @@ def collect():
         ("ptx", ptx_rows),
         ("nohup", nohup_rows),
         ("groups", groups_rows),
+        ("who", who_rows),
     ]
 
 

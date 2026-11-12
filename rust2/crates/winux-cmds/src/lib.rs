@@ -80,6 +80,7 @@ pub mod uname;
 pub mod unexpand;
 pub mod unlink;
 pub mod users;
+pub mod who;
 pub mod whoami;
 pub mod winsys;
 
@@ -162,6 +163,7 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("ptx", ptx::ptx_cmd),
         ("nohup", nohup::nohup_cmd),
         ("groups", groups::groups_cmd),
+        ("who", who::who_cmd),
     ]
 }
 
