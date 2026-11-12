@@ -164,8 +164,13 @@ fn probe_existence(ctx: &Ctx, name: &str) -> ProbeOutcome {
     // answers existence directly. The subject-side reserved-name check
     // still fires on the same name afterwards, exactly like the C++
     // probe whose \\?\ path makes the name merely literal-not-found.
-    let api = crate::fs_win::api_path(&ctx.cwd, name);
-    if crate::fs_win::probe_dos_device(&api) {
+    let api = crate::fs_win::api_path(ctx, name);
+    // The device-open probe lives in winux_core::path::imp since the
+    // wave3b shell-namespace port (#1488) moved it out of fs_win; the
+    // api_path operand passes through verbatim (bare device name or
+    // \\?\ path), so this is the same CreateFileW probe the wave4b
+    // pathchk was written against.
+    if winux_core::path::imp::probe_dos_device(&api) {
         return ProbeOutcome::Exists;
     }
     // \\?\-prefixed paths get no loader normalization: trailing separators
