@@ -2665,6 +2665,39 @@ ptx_rows = [
     ("px28-two-files", "win", PTX_SETUP_HW, "", "", ["o.txt", "hw.txt"]),
 ]
 
+NOHUP_SETUP = ""  # no setup needed
+nohup_rows = [
+    # Windows has no standalone true.exe image for a child spawn;
+    # GNU rc 0, Rust/C++ 127 (parity) -> win
+    ("nh01-run-true", "win", "", "", "", ["true"]),
+    ("nh02-run-false", "win", "", "", "", ["false"]),
+    ("nh03-run-echo", "strict", "", "", "", ["echo", "hi"]),
+    ("nh04-not-found", "strict", "", "", "", ["nosuchcmd123"]),
+    ("nh05-missing-operand", "strict", "", "", "", []),
+    ("nh06-posixly-correct", "strict", "", "POSIXLY_CORRECT=1", "", []),
+    ("nh07-empty-command", "strict", "", "", "", [""]),
+    ("nh08-child-rc-seven", "strict", "", "", "", ["sh", "-c", "exit 7"]),
+    ("nh09-help", "strict", "", "", "", ["--help"]),
+    ("nh10-version", "strict", "", "", "", ["--version"]),
+    ("nh11-short-h", "strict", "", "", "", ["-h"]),
+    # GNU nohup parses LEADING options only (optstring "+"): --bogus after
+    # the command is the child's argument. The C++ dispatcher's option
+    # grammar may differ -> win (rc parity with the product exe).
+    ("nh12-unknown-long", "strict", "", "", "", ["--bogus", "true"]),
+    ("nh13-child-cmd-exe", "win", "", "", "", ["cmd", "/c", "exit", "5"]),
+    ("nh14-extra-child-args", "win", "", "", "", ["true", "extra", "args"]),
+    ("nh15-dashdash-consumed", "win", "", "", "", ["--", "true"]),
+    ("nh16-dashdash-only", "strict", "", "", "", ["--"]),
+    ("nh17-invalid-short", "strict", "", "", "", ["-5", "true"]),
+    ("nh18-lead-version-extra", "strict", "", "", "", ["--version", "extra"]),
+    ("nh19-child-exit-zero", "strict", "", "", "", ["sh", "-c", "exit 0"]),
+    ("nh20-child-echo-abc", "strict", "", "", "", ["sh", "-c", "echo abc"]),
+    ("nh21-child-dashdash-arg", "win", "", "", "", ["true", "--", "x"]),
+    ("nh22-posixly-empty", "strict", "", "POSIXLY_CORRECT=", "", []),
+    ("nh23-short-h-with-cmd", "strict", "", "", "", ["-h", "true"]),
+    ("nh24-version-then-help", "strict", "", "", "", ["--version", "--help"]),
+]
+
 def collect():
     """All case tables as (cmd, rows) pairs, in emit order."""
     return [
@@ -2697,6 +2730,7 @@ def collect():
         ("csplit", csplit_rows),
         ("shuf", shuf_rows),
         ("ptx", ptx_rows),
+        ("nohup", nohup_rows),
     ]
 
 

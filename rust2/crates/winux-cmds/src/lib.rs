@@ -41,6 +41,8 @@ pub mod mkdir;
 pub mod mktemp;
 pub mod modemap;
 pub mod nice;
+pub mod nohup;
+
 pub mod nproc;
 pub mod numfmt;
 pub mod od;
@@ -156,6 +158,7 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("csplit", csplit::csplit_cmd),
         ("shuf", shuf::shuf_cmd),
         ("ptx", ptx::ptx_cmd),
+        ("nohup", nohup::nohup_cmd),
     ]
 }
 
