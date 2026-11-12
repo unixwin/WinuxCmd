@@ -24,28 +24,27 @@ with `bash gate/make-report.sh`.
 |---|---|---|---|---|---|---|---|
 | true | 20 | 19 | 0 | 1 | 0 | GREEN | 19/20 |
 | false | 20 | 19 | 0 | 1 | 0 | GREEN | 19/20 |
-| test | 45 | 43 | 0 | 2 | 0 | GREEN | 42/45 |
+| test | 45 | 42 | 0 | 2 | 1 | GREEN | 44/45 |
 | bracket | 26 | 25 | 0 | 1 | 0 | GREEN | 26/26 |
 | basename | 30 | 30 | 0 | 0 | 0 | GREEN | 30/30 |
 | dirname | 22 | 22 | 0 | 0 | 0 | GREEN | 22/22 |
 | printenv | 21 | 15 | 3 | 3 | 0 | GREEN | 17/21 |
 | pwd | 12 | 0 | 2 | 10 | 0 | GREEN | 1/12 |
 | mkdir | 22 | 22 | 0 | 0 | 0 | GREEN | 22/22 |
-| rmdir | 22 | 22 | 0 | 0 | 0 | GREEN | 21/22 |
+| rmdir | 22 | 22 | 0 | 0 | 0 | GREEN | 22/22 |
 | readlink | 24 | 8 | 16 | 0 | 0 | GREEN | 10/24 |
 | realpath | 22 | 6 | 15 | 1 | 0 | GREEN | 9/22 |
-| chmod | 45 | 41 | 4 | 0 | 0 | GREEN | 43/45 |
-| chown | 37 | 22 | 6 | 5 | 4 | GREEN | 22/37 |
+| chmod | 22 | 21 | 1 | 0 | 0 | GREEN | 22/22 |
+| chown | 16 | 12 | 0 | 4 | 0 | GREEN | 9/16 |
 | df | 36 | 15 | 10 | 9 | 2 | GREEN | 13/36 |
 
-**Total cases: 854 — wave1 338, wave3a 240, wave3b 276 (below). GNU-gated (strict+exit): all GREEN; win-only: all GREEN; notes: 3.**
+**Wave1 table scope: 360 cases (regenerated from the committed generator). Whole-ledger totals (all 55 commands, full run 2026-11-12): 1529 cases — GNU-gated 1384 PASS / 0 FAIL; win-only 145 PASS / 0 FAIL.**
 
-C++ 1.x parity summary: 270/338 cases byte/rc-equal to the Rust pilot;
-68 diverge (path forms, verbose message prefixes, false --help/--version
+C++ 1.x parity summary: 285/360 cases byte/rc-equal to the Rust pilot;
+75 diverge (path forms, verbose message prefixes, false --help/--version
 handling, rmdir -p trailing slash, chmod --reference behavior, df drive paths).
 These are recorded per case in `target/gate/ledger.tsv` (column `r=c:no`) and
 are inherited 1.x behaviors the 2.0 replacement intentionally re-derives from GNU.
-
 ## Wave2 (#1488, second batch)
 
 15 commands: `whoami nproc unlink sleep base64 base32 b2sum sha224sum sha384sum tac truncate uname id hostname getconf`. Digest bytes are platform-independent
@@ -373,3 +372,38 @@ volatile; the old exe drifts the same way; all other table lines
 byte-identical). GNU rc oracle holds every row except the documented
 Windows-value-model classes (hostname net-tools/set-operand [DIFFERS],
 id USER operand, getconf Windows table + pathconf existence check).
+
+## Wave4a (#1488, fourth batch)
+
+8 commands: `head tail cut tr od sum mktemp nice`. Ledger (full run
+2026-11-12): 1529 cases total across all 55 commands — GNU-gated 1384
+PASS / 0 FAIL, win-gated 145 PASS / 0 FAIL. Per-command rows for this
+batch (strict/exit/win/note, GNU-direct %, C++ parity):
+
+| command | cases | strict | exit | win | note | GNU direct | C++ parity | gate |
+|---|---|---|---|---|---|---|---|---|
+| head | 29 | 29 | 0 | 0 | 0 | 100% | 27/29 | GREEN |
+| tail | 27 | 27 | 0 | 0 | 0 | 100% | 25/27 | GREEN |
+| cut | 33 | 33 | 0 | 0 | 0 | 100% | 31/33 | GREEN |
+| tr | 37 | 37 | 0 | 0 | 0 | 100% | 33/37 | GREEN |
+| od | 36 | 36 | 0 | 0 | 0 | 100% | 33/36 | GREEN |
+| sum | 20 | 20 | 0 | 0 | 0 | 100% | 18/20 | GREEN |
+| mktemp | 27 | 14 | 13 | 0 | 0 | 52% | 11/27 | GREEN |
+| nice | 21 | 14 | 7 | 0 | 0 | 67% | 12/21 | GREEN |
+
+Probed semantics locked by this batch: head/tail count grammar (+K/-K
+asymmetry, `-n -0` everything-vs-nothing, b/kB/K suffixes), cut's
+strtol-list parser ("1 3" selects two specs) and the unconditional
+output-record terminator, tr's byte-set grammar (class byte order
+A-Za-z, `[c*n]` octal counts, `-c` translate -> SET2 last char) with
+C-locale byte tables, od's shortest-round-trip float display (`4.8e-322`)
+and the `-tx1z` ascii column at 16*(w+1)+2, sum's SysV 16-bit fold
+(1500 'b' -> 15930), mktemp's X-run rules (min run 3, case-sensitive,
+--suffix must-end-in-X) and the silent -q create-failure path, nice's
+xstrtol adjustment (rc 125, no try-tail) and the suspended-child
+priority mapping (#1359).
+
+Documented subsets: tail -f/-F/--retry do not follow (dumps then rc 1);
+od --traditional/-S and fL are rejected; nice children inherit process
+stdio (same shape as timeout.rs). mktemp creations and nice child runs
+gate on exit status only (names and niceness are platform-bound).

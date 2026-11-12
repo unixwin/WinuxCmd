@@ -9,7 +9,7 @@ np06-ignore-plus	win				--ignore=+1
 np07-ignore-bad	exit				--ignore	bad
 np08-extra	exit				extra
 np09-bogus	exit				--bogus
-np10-help	win				--help
+np10-help	strict				--help
 np11-omp3	strict		OMP_NUM_THREADS=3	
 np12-omp-huge	strict		OMP_NUM_THREADS=99999	
 np13-omp3-ignore1	strict		OMP_NUM_THREADS=3		--ignore=1
@@ -20,5 +20,5 @@ np17-omp-limit-only	win		OMP_THREAD_LIMIT=2
 np18-omp-bad	win		OMP_NUM_THREADS=bad	
 np19-omp-zero	win		OMP_NUM_THREADS=0	
 np20-omp3-all	win		OMP_NUM_THREADS=3		--all
-np21-version	win				--version
+np21-version	strict				--version
 np22-ignore-missing-val	exit				--ignore

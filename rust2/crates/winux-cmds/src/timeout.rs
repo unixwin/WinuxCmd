@@ -358,7 +358,7 @@ fn parse_strtod_prefix(t: &str) -> Option<(f64, &str)> {
 ///   (PATHEXT completion only when it carries no extension); a trailing
 ///   separator over a directory is NotADirectory (126), not ENOENT.
 #[derive(Debug, PartialEq)]
-enum ChildResolve {
+pub(crate) enum ChildResolve {
     Found { path: String, batch: bool },
     NotFound,
     NotExecutable,
@@ -510,7 +510,7 @@ fn scan_candidates(
     std::mem::replace(fallback, ChildResolve::NotFound)
 }
 
-fn resolve_child(name: &str, ctx: &Ctx) -> ChildResolve {
+pub(crate) fn resolve_child(name: &str, ctx: &Ctx) -> ChildResolve {
     if name.is_empty() {
         return ChildResolve::NotFound;
     }
@@ -628,7 +628,7 @@ fn resolve_child(name: &str, ctx: &Ctx) -> ChildResolve {
 }
 
 /// Canonical Win32 command-line quoting for one argument.
-fn quote_windows_arg(arg: &str) -> String {
+pub(crate) fn quote_windows_arg(arg: &str) -> String {
     if !arg.is_empty() && !arg.contains([' ', '\t', '\n', '"']) {
         return arg.to_string();
     }
