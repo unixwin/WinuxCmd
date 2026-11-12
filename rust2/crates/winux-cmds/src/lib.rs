@@ -52,6 +52,7 @@ pub mod tee;
 pub mod test_cmd;
 pub mod timeout;
 pub mod touch;
+pub mod tr;
 
 pub mod truefalse;
 pub mod truncate;
@@ -127,6 +128,7 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("head", head::head_cmd),
         ("tail", tail::tail_cmd),
         ("cut", cut::cut_cmd),
+        ("tr", tr::tr_cmd),
     ]
 }
 

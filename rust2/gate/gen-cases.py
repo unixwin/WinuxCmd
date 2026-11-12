@@ -1903,6 +1903,46 @@ cut_rows = [
     ("ct33-version", "strict", "", "", "", ["--version"]),
 ]
 
+tr_rows = [
+    ("tr01-lower-upper", "strict", "", "", "hello", ["a-z", "A-Z"]),
+    ("tr02-upper-lower", "strict", "", "", "HELLO", ["A-Z", "a-z"]),
+    ("tr03-delete", "strict", "", "", "hello world", ["-d", "l"]),
+    ("tr04-squeeze-one", "strict", "", "", "aaabbb", ["-s", "a"]),
+    ("tr05-squeeze-two", "strict", "", "", "aabbcc", ["-s", "ab"]),
+    ("tr06-delete-complement", "strict", "", "", "abcabc", ["-dc", "a"]),
+    ("tr07-complement-translate", "strict", "", "", "abc", ["-c", "a", "x"]),
+    ("tr08-complement-squeeze", "strict", "", "", "abc", ["-cs", "a", "xy"]),
+    ("tr09-truncate", "strict", "", "", "abc", ["-t", "abc", "xy"]),
+    ("tr10-truncate-single", "strict", "", "", "aaa", ["-t", "a", "x"]),
+    ("tr11-repeat", "strict", "", "", "abc", ["a", "[b*3]"]),
+    ("tr12-repeat-fill", "strict", "", "", "abcde", ["[a-c]", "[x*]"]),
+    ("tr13-repeat-zero", "strict", "", "", "abcd", ["a", "[b*0]"]),
+    ("tr14-repeat-octal", "strict", "", "", "abc", ["a", "[b*04]"]),
+    ("tr15-classes", "strict", "", "", "hello", ["[:lower:]", "[:upper:]"]),
+    ("tr16-class-delete", "strict", "", "", "a1b2", ["-d", "[:digit:]"]),
+    ("tr17-blank-class", "strict", "", "", "a b c", ["[:blank:]", "_"]),
+    ("tr18-alpha-digit-set1", "strict", "", "", "abc", ["[:alpha:][:digit:]", "aXY"]),
+    ("tr19-equivalence", "strict", "", "", "ab", ["[=a=]", "X"]),
+    ("tr20-backslash-escape", "strict", "", "", "a\\b", ["\\\\", "-"]),
+    ("tr21-octal-escape", "strict", "", "", "aAb", ["\\101", "Z"]),
+    ("tr22-bad-class", "strict", "", "", "abc", ["[:bogus:]", "X"]),
+    ("tr23-bad-repeat", "strict", "", "", "abc", ["[a*b]", "X"]),
+    ("tr24-class-set2", "strict", "", "", "ABC", ["a-z", "[:digit:]"]),
+    ("tr25-misaligned", "strict", "", "", "ab", ["a-z", "[:upper:]"]),
+    ("tr26-one-operand", "strict", "", "", "a", ["a"]),
+    ("tr27-no-operand", "strict", "", "", "a", []),
+    ("tr28-complement-last", "strict", "", "", "abcde", ["-c", "a", "xyz"]),
+    ("tr29-delete-squeeze", "strict", "", "", "ab", ["-ds", "a", "b"]),
+    ("tr30-delete-squeeze-1op", "strict", "", "", "a", ["-ds", "a"]),
+    ("tr31-bracket-range", "strict", "", "", "abc", ["[a-c]", "[B-D]"]),
+    ("tr32-unknown-escape", "strict", "", "", "z", ["\\z", "X"]),
+    ("tr33-d-without-s-2ops", "strict", "", "", "ab", ["-d", "a", "b"]),
+    ("tr34-plain-range", "strict", "", "", "abcd", ["a-d", "1234"]),
+    ("tr35-range-partial", "strict", "", "", "a[b", ["a-", "XY"]),
+    ("tr36-help", "strict", "", "", "", ["--help"]),
+    ("tr37-version", "strict", "", "", "", ["--version"]),
+]
+
 def collect():
     """All case tables as (cmd, rows) pairs, in emit order."""
     return [
@@ -1926,6 +1966,7 @@ def collect():
         ("numfmt", numfmt_rows),
         # wave4a (#1488)
         ("head", head_rows), ("tail", tail_rows), ("cut", cut_rows),
+        ("tr", tr_rows),
     ]
 
 
