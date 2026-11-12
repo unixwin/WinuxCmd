@@ -1857,8 +1857,10 @@ numfmt_rows = [
 # Line-oriented inputs go through setup files (the stdin column carries a
 # single line only); random-output commands (mktemp creations, nice child
 # runs) use exit/win rows so only statuses gate.
+# ---------------------------------------------------------------------------
 
 HEAD_TAIL_FILE = "printf '1\\n2\\n3\\n4\\n5\\n' > f"
+
 head_rows = [
     ("hd01-default", "strict", "", "", "abc", []),
     ("hd02-n2", "strict", HEAD_TAIL_FILE, "", "", ["-n", "2", "f"]),
@@ -1893,6 +1895,7 @@ head_rows = [
     ("hd28-help", "strict", "", "", "", ["--help"]),
     ("hd29-version", "strict", "", "", "", ["--version"]),
 ]
+
 tail_rows = [
     ("tl01-default", "strict", "", "", "abc", []),
     ("tl02-n2", "strict", HEAD_TAIL_FILE, "", "", ["-n", "2", "f"]),
@@ -1915,6 +1918,7 @@ tail_rows = [
     ("tl18-dir-operand", "strict", "mkdir d", "", "", ["d"]),
     ("tl19-n-x", "strict", HEAD_TAIL_FILE, "", "", ["-n", "x", "f"]),
     ("tl20-zero-terminated", "strict", "printf 'a\\0b\\0c\\0' > f", "", "",
+     ["-z", "-n", "2", "f"]),
     ("tl21-obsolescent-2", "strict", HEAD_TAIL_FILE, "", "", ["-2", "f"]),
     ("tl22-single-line", "strict", "", "", "onlyone", []),
     ("tl23-n-plus-1", "strict", HEAD_TAIL_FILE, "", "", ["-n", "+1", "f"]),
@@ -1922,6 +1926,8 @@ tail_rows = [
     ("tl25-bogus-long", "strict", "", "", "", ["--bogus"]),
     ("tl26-help", "strict", "", "", "", ["--help"]),
     ("tl27-version", "strict", "", "", "", ["--version"]),
+]
+
 cut_rows = [
     ("ct01-f2", "strict", "", "", "1:2:3:4:5", ["-d", ":", "-f", "2"]),
     ("ct02-f1-3", "strict", "", "", "1:2:3:4:5", ["-d", ":", "-f", "1,3"]),
@@ -1959,6 +1965,8 @@ cut_rows = [
     ("ct31-overlap", "strict", "", "", "a:b", ["-c", "1-2,1"]),
     ("ct32-help", "strict", "", "", "", ["--help"]),
     ("ct33-version", "strict", "", "", "", ["--version"]),
+]
+
 tr_rows = [
     ("tr01-lower-upper", "strict", "", "", "hello", ["a-z", "A-Z"]),
     ("tr02-upper-lower", "strict", "", "", "HELLO", ["A-Z", "a-z"]),
@@ -1997,6 +2005,8 @@ tr_rows = [
     ("tr35-range-partial", "strict", "", "", "a[b", ["a-", "XY"]),
     ("tr36-help", "strict", "", "", "", ["--help"]),
     ("tr37-version", "strict", "", "", "", ["--version"]),
+]
+
 od_rows = [
     ("od01-default", "strict", "", "", "abc", []),
     ("od02-char", "strict", "", "", "abc", ["-c"]),
@@ -2035,6 +2045,8 @@ od_rows = [
     ("od34-dir-operand", "strict", "mkdir d", "", "", ["-An", "-c", "d"]),
     ("od35-help", "strict", "", "", "", ["--help"]),
     ("od36-version", "strict", "", "", "", ["--version"]),
+]
+
 sum_rows = [
     ("sm01-default-file", "strict", "printf 'abcdef' > f", "", "", ["f"]),
     ("sm02-r-file", "strict", "printf 'abcdef' > f", "", "", ["-r", "f"]),
@@ -2060,6 +2072,8 @@ sum_rows = [
     ("sm18-help", "strict", "", "", "", ["--help"]),
     ("sm19-version", "strict", "", "", "", ["--version"]),
     ("sm20-newlines", "strict", "printf '1\\n2\\n3\\n4\\n5\\n' > f", "", "", ["f"]),
+]
+
 mktemp_rows = [
     ("mk01-create-file", "exit", "", "", "", ["tpl.XXXXXX"]),
     ("mk02-create-dir", "exit", "", "", "", ["-d", "dir.XXXXXX"]),
@@ -2088,12 +2102,17 @@ mktemp_rows = [
     ("mk25-bogus-long", "strict", "", "", "", ["--bogus"]),
     ("mk26-help", "strict", "", "", "", ["--help"]),
     ("mk27-version", "strict", "", "", "", ["--version"]),
+]
+
 NICE_CHILD_SETUP = (
     "printf '#!/bin/sh\\nexit 3\\n' > cmd; chmod +x cmd; "
     "export PATH=\"$PWD:$PATH\""
 )
 NICE_CHILD_OK_SETUP = (
     "printf '#!/bin/sh\\nexit 0\\n' > cmd; chmod +x cmd; "
+    "export PATH=\"$PWD:$PATH\""
+)
+
 nice_rows = [
     ("nc01-bare", "strict", "", "", "", []),
     ("nc02-n-no-command", "strict", "", "", "", ["-n", "2"]),
@@ -2123,6 +2142,9 @@ nice_rows = [
     ("nc20-version", "strict", "", "", "", ["--version"]),
     ("nc21-child-eq1", "exit", "printf '#!/bin/sh\\nexit 1\\n' > cmd; chmod +x cmd; export PATH=\"$PWD:$PATH\"",
      "", "", ["cmd", "/c", "exit", "1"]),
+]
+
+# ---------------------------------------------------------------------------
 # wave4b (#1488): sort — GNU sort.c (coreutils 9.4) semantics. The C shape
 # contract is enforced by pinning LC_ALL=C in every row's env column (the
 # GNU oracle side otherwise runs under the host locale). Multi-line inputs
@@ -2227,13 +2249,21 @@ sort_rows = [
     ("so82-version", "strict", "", "LC_ALL=C", "", ["--version"]),
     ("so83-unknown-opt", "strict", "", "LC_ALL=C", "", ["--bogus"]),
     ("so84-stdin-ignored-flag", "strict", "", "LC_ALL=C", "zz", ["--parallel=2"]),
+]
+
 CSPLIT_F = "printf 'a\\nb\\n--\\nc\\nd\\n--\\ne\\n' > f.txt"
+
 CSPLIT_G = "printf 'Header\\nl1\\nl2\\nFooter\\nl3\\nHeader\\nl4\\n' > g.txt"
+
 PK_SETUP_REG = "touch regfile; mkdir -p missingdir/inner"
+
 PTX_SETUP_HW = "printf 'hello world\\n' > hw.txt; printf 'one\\n' > o.txt"
+
 SHUF_SETUP = ("printf 'a\\nb\\nc\\nd\\ne\\n' > f5.txt; "
     "printf '1\\n2\\n3\\n4\\n5\\n6\\n7\\n8\\n9\\n10\\n11\\n12\\n13\\n14\\n15\\n16\\n17\\n18\\n19\\n20\\n' > n20.txt; "
     "printf '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' > seed.bin")
+
+
 csplit_rows = [
     ("cs01-regex-split", "strict", CSPLIT_F, "", "", ["f.txt", "/--/"]),
     ("cs02-line-splits", "strict", CSPLIT_F, "", "", ["f.txt", "2", "4"]),
@@ -2270,12 +2300,7 @@ csplit_rows = [
     ("cs31-empty-prefix", "strict", CSPLIT_F, "", "", ["-f", "", "f.txt", "/--/"]),
     ("cs32-crlf-bytes", "strict", "printf 'x\\r\\n--\\r\\ny\\r\\n' > w.txt", "", "",
      ["w.txt", "/--/"]),
-# wave4b (#1488): factor pathchk ptx shuf csplit nohup groups who.
-# Probe base: WSL coreutils 9.4, target/probe/{f1,f2,p1,pk1,pt2,s1,s2,c1,
-# g1,nh2}.sh. Modes follow the run-gate header: strict = GNU rc+stdout
-# byte gate; exit = GNU rc only (platform-form stdout); win = Rust vs C++
-# rc only (platform-inherent content); note rows must be registered in
-# note-registry.tsv and never gate.
+]
 
 factor_rows = [
     ("fa01-small", "strict", "", "", "", ["12"]),
@@ -2365,10 +2390,8 @@ nohup_rows = [
     ("nh22-posixly-empty", "strict", "", "POSIXLY_CORRECT=", "", []),
     ("nh23-short-h-with-cmd", "strict", "", "", "", ["-h", "true"]),
     ("nh24-version-then-help", "strict", "", "", "", ["--version", "--help"]),
-# pathchk: stdout always empty; most rows gate GNU rc strictly. The
-# Windows-subject rows (reserved names, invalid chars) diverge from GNU's
-# ext4 verdicts by design (C++ value model) -> win.
-PK_SETUP_REG = "touch regfile; mkdir -p missingdir/inner"
+]
+
 pathchk_rows = [
     ("pk01-ok", "strict", "", "", "", ["ok.txt"]),
     ("pk02-missing-chain", "strict", "", "", "", ["nosuch/name.txt"]),
@@ -2400,6 +2423,8 @@ pathchk_rows = [
     ("pk28-version", "strict", "", "", "", ["--version"]),
     ("pk29-two-one-bad", "strict", PK_SETUP_REG, "", "", ["okname", "regfile/file"]),
     ("pk30-reserved-stem", "win", "", "", "", ["con.txt"]),
+]
+
 ptx_rows = [
     ("px01-dumb-two-words", "strict", PTX_SETUP_HW, "", "", ["hw.txt"]),
     ("px02-dumb-one-word", "strict", PTX_SETUP_HW, "", "", ["o.txt"]),
@@ -2436,6 +2461,8 @@ ptx_rows = [
     ("px27-gap-one-narrow", "win",
      "printf 'aaa bbb ccc ddd\\n' > ab.txt", "", "", ["-g", "1", "-w", "40", "ab.txt"]),
     ("px28-two-files", "win", PTX_SETUP_HW, "", "", ["o.txt", "hw.txt"]),
+]
+
 shuf_rows = [
     ("su01-rs-file", "strict", SHUF_SETUP, "", "", ["--random-source=seed.bin", "f5.txt"]),
     ("su02-rs-head", "strict", SHUF_SETUP, "", "", ["--random-source=seed.bin", "-n", "5", "n20.txt"]),
@@ -2490,6 +2517,8 @@ shuf_rows = [
     ("su38-dir-operand", "strict", "mkdir d1", "", "", ["d1"]),
     ("su39-source-missing", "strict", "", "", "", ["--random-source=nosuch.bin", "-i", "1-3"]),
     ("su40-unknown-long", "strict", "", "", "", ["--bogus", "-i", "1-2"]),
+]
+
 who_rows = [
     # session content is the Windows WTS value model
     ("wh01-current", "win", "", "", "", []),
@@ -2519,51 +2548,6 @@ who_rows = [
     ("wh25-heading-count", "win", "", "", "", ["-H", "-q"]),
     ("wh26-heading-missing-file", "win", "", "", "", ["-H", "who-nosuch-utmp"]),
 ]
-
-# ptx: the C++ subset model. Byte-strict where GNU matches the subset
-# (single-line short inputs, error rows, roff/tex, macro renames);
-# win/note where GNU's circular-context grid or traditional format shows.
-PTX_SETUP_HW = "printf 'hello world\\n' > hw.txt; printf 'one\\n' > o.txt"
-ptx_rows = [
-    ("px01-dumb-two-words", "strict", PTX_SETUP_HW, "", "", ["hw.txt"]),
-    ("px02-dumb-one-word", "strict", PTX_SETUP_HW, "", "", ["o.txt"]),
-    ("px03-roff", "strict", PTX_SETUP_HW, "", "", ["-O", "hw.txt"]),
-    ("px04-tex", "strict", PTX_SETUP_HW, "", "", ["-T", "hw.txt"]),
-    ("px05-macro-rename", "strict", PTX_SETUP_HW, "", "", ["-M", "zz", "-O", "hw.txt"]),
-    ("px06-format-r-abbrev", "strict", PTX_SETUP_HW, "", "", ["--format=r", "hw.txt"]),
-    ("px07-format-t-abbrev", "strict", PTX_SETUP_HW, "", "", ["--format=t", "hw.txt"]),
-    ("px08-format-bad", "strict", PTX_SETUP_HW, "", "", ["--format=bad", "hw.txt"]),
-    ("px09-width-bad", "strict", PTX_SETUP_HW, "", "", ["-w", "xyz", "hw.txt"]),
-    ("px10-gap-zero", "strict", PTX_SETUP_HW, "", "", ["-g", "0", "hw.txt"]),
-    ("px11-empty-input", "strict", "printf '' > empty.txt", "", "", ["empty.txt"]),
-    ("px12-missing-file", "strict", "", "", "", ["nofile.txt"]),
-    ("px13-dir-operand", "strict", "", "", "", ["."]),
-    ("px14-stdin", "strict", "", "", "x y\\n", []),
-    ("px15-auto-ref", "win", PTX_SETUP_HW, "", "", ["-A", "o.txt"]),
-    ("px16-right-refs", "win", PTX_SETUP_HW, "", "", ["-R", "-A", "hw.txt"]),
-    ("px17-traditional-format", "win", PTX_SETUP_HW, "", "", ["-G", "hw.txt"]),
-    ("px18-multiline-wrap", "win",
-     "printf 'The quick brown fox\\njumps over the lazy dog\\n' > t1.txt", "", "", ["t1.txt"]),
-    ("px19-narrow-grid", "win",
-     "printf 'aaa bbb ccc ddd\\n' > ab.txt", "", "", ["-w", "40", "ab.txt"]),
-    ("px20-ignore-case-plain", "strict", PTX_SETUP_HW, "", "", ["-f", "hw.txt"]),
-    # WinuxCmd -C extension: GNU rejects, C++ prints banner rc 0 -> win
-    ("px21-copyright-ext", "win", "", "", "", ["-C"]),
-    ("px22-help", "strict", "", "", "", ["--help"]),
-    ("px23-version", "strict", "", "", "", ["--version"]),
-    ("px24-ignore-file", "strict",
-     PTX_SETUP_HW + "; printf 'hello' > ig.txt", "", "", ["-i", "ig.txt", "hw.txt"]),
-    ("px25-only-file", "strict",
-     PTX_SETUP_HW + "; printf 'hello' > on.txt", "", "", ["-o", "on.txt", "hw.txt"]),
-    ("px26-trunc-flag-narrow", "win",
-     "printf 'aaa bbb ccc ddd\\n' > ab.txt", "", "", ["-F", "...", "-w", "20", "ab.txt"]),
-    ("px27-gap-one-narrow", "win",
-     "printf 'aaa bbb ccc ddd\\n' > ab.txt", "", "", ["-g", "1", "-w", "40", "ab.txt"]),
-    ("px28-two-files", "win", PTX_SETUP_HW, "", "", ["o.txt", "hw.txt"]),
-]
-
-CSPLIT_F = "printf 'a\\nb\\n--\\nc\\nd\\n--\\ne\\n' > f.txt"
-CSPLIT_G = "printf 'Header\\nl1\\nl2\\nFooter\\nl3\\nHeader\\nl4\\n' > g.txt"
 csplit_rows = [
     ("cs01-regex-split", "strict", CSPLIT_F, "", "", ["f.txt", "/--/"]),
     ("cs02-line-splits", "strict", CSPLIT_F, "", "", ["f.txt", "2", "4"]),
@@ -2602,13 +2586,167 @@ csplit_rows = [
      ["w.txt", "/--/"]),
 ]
 
-# shuf: --random-source is the deterministic byte gate (GNU randint
-# entropy recycling, verified byte-for-byte on all rs* rows). Default-RNG
-# content is platform-random -> exit rows; --random-seed is a WinuxCmd
-# extension (GNU rejects it) -> win rows.
-SHUF_SETUP = ("printf 'a\\nb\\nc\\nd\\ne\\n' > f5.txt; "
-    "printf '1\\n2\\n3\\n4\\n5\\n6\\n7\\n8\\n9\\n10\\n11\\n12\\n13\\n14\\n15\\n16\\n17\\n18\\n19\\n20\\n' > n20.txt; "
-    "printf '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' > seed.bin")
+factor_rows = [
+    ("fa01-small", "strict", "", "", "", ["12"]),
+    ("fa02-one", "strict", "", "", "", ["1"]),
+    ("fa03-zero", "strict", "", "", "", ["0"]),
+    ("fa04-prime", "strict", "", "", "", ["97"]),
+    ("fa05-squares", "strict", "", "", "", ["100"]),
+    ("fa06-two", "strict", "", "", "", ["2"]),
+    ("fa07-exp-short", "strict", "", "", "", ["-h", "72"]),
+    ("fa08-exp-long", "strict", "", "", "", ["--exponents", "72"]),
+    ("fa09-exp-squarefree", "strict", "", "", "", ["-h", "17"]),
+    ("fa10-help", "strict", "", "", "", ["--help"]),
+    # driver --version prints the GNU-branded block; C++ product branding
+    # differs (recorded), GNU-gated bytes are strict like id22.
+    ("fa11-version", "strict", "", "", "", ["--version"]),
+    ("fa12-plus-sign", "strict", "", "", "", ["+5"]),
+    ("fa13-leading-space", "strict", "", "", "", [" 5"]),
+    ("fa14-trailing-space", "strict", "", "", "", ["5 "]),
+    # WinuxCmd -e extension: GNU rejects, C++ accepts -> win (rc parity)
+    ("fa15-e-ext", "win", "", "", "", ["-e", "72"]),
+    ("fa16-bad-token", "strict", "", "", "", ["abc"]),
+    ("fa17-negative-after-dd", "strict", "", "", "", ["--", "-5"]),
+    ("fa18-empty", "strict", "", "", "", [""]),
+    ("fa19-two-bad", "strict", "", "", "", ["abc", "def"]),
+    ("fa20-bad-option", "strict", "", "", "", ["-x", "5"]),
+    ("fa21-u64-semiprime", "strict", "", "", "", ["18446744073709551615"]),
+    ("fa22-25digit", "strict", "", "", "", ["10000000019390000000741"]),
+    ("fa23-m127-prime", "strict", "", "", "", ["170141183460469231731687303715884105727"]),
+    ("fa24-stdin-mixed", "strict", "", "", "6 7\\nabc 8\\n", []),
+    ("fa25-big-composite", "strict", "", "", "", ["99999999999999999999999999"]),
+    ("fa26-stdin-cr-token", "strict", "", "", "6\\t7\\r\\n", []),
+]
+
+groups_rows = [
+    # current-user content is the Windows value model (NetUserGetGroups)
+    ("gr01-current-user", "win", "", "", "", []),
+    ("gr02-unknown-user", "strict", "", "", "", ["nosuchuser123"]),
+    ("gr03-two-unknown", "strict", "", "", "", ["nosuch-a-1", "nosuch-b-2"]),
+    ("gr04-help", "strict", "", "", "", ["--help"]),
+    ("gr05-version", "strict", "", "", "", ["--version"]),
+    ("gr06-short-h", "strict", "", "", "", ["-h"]),
+    ("gr07-short-x", "strict", "", "", "", ["-x"]),
+    # platform account (no Windows "root"): rc parity with the C++ exe
+    ("gr08-root-operand", "win", "", "", "", ["root"]),
+    ("gr09-unknown-long", "strict", "", "", "", ["--bogus"]),
+    ("gr10-empty-user", "strict", "", "", "", [""]),
+    ("gr11-invalid-short-g", "strict", "", "", "", ["-g"]),
+    ("gr12-zero-long", "strict", "", "", "", ["--zero"]),
+    ("gr13-help-permuted", "strict", "", "", "", ["nosuchuser123", "--help"]),
+    ("gr14-help-extra", "strict", "", "", "", ["--help", "extra"]),
+    ("gr15-invalid-short-n", "strict", "", "", "", ["-n", "root"]),
+    ("gr16-unknown-user-long", "strict", "", "", "", ["--user", "x"]),
+    ("gr17-invalid-short-r", "strict", "", "", "", ["-r"]),
+    # current-user content again (platform value model), via explicit --
+    ("gr18-dashdash-current", "win", "", "", "", ["--"]),
+    ("gr19-dash-operand", "strict", "", "", "", ["-"]),
+    ("gr20-mixed-known-unknown", "win", "", "", "", ["root", "nosuch-b-2"]),
+]
+
+nohup_rows = [
+    # Windows has no standalone true.exe image for a child spawn;
+    # GNU rc 0, Rust/C++ 127 (parity) -> win
+    ("nh01-run-true", "win", "", "", "", ["true"]),
+    ("nh02-run-false", "win", "", "", "", ["false"]),
+    ("nh03-run-echo", "strict", "", "", "", ["echo", "hi"]),
+    ("nh04-not-found", "strict", "", "", "", ["nosuchcmd123"]),
+    ("nh05-missing-operand", "strict", "", "", "", []),
+    ("nh06-posixly-correct", "strict", "", "POSIXLY_CORRECT=1", "", []),
+    ("nh07-empty-command", "strict", "", "", "", [""]),
+    ("nh08-child-rc-seven", "strict", "", "", "", ["sh", "-c", "exit 7"]),
+    ("nh09-help", "strict", "", "", "", ["--help"]),
+    ("nh10-version", "strict", "", "", "", ["--version"]),
+    ("nh11-short-h", "strict", "", "", "", ["-h"]),
+    # GNU nohup parses LEADING options only (optstring "+"): --bogus after
+    # the command is the child's argument. The C++ dispatcher's option
+    # grammar may differ -> win (rc parity with the product exe).
+    ("nh12-unknown-long", "strict", "", "", "", ["--bogus", "true"]),
+    ("nh13-child-cmd-exe", "win", "", "", "", ["cmd", "/c", "exit", "5"]),
+    ("nh14-extra-child-args", "win", "", "", "", ["true", "extra", "args"]),
+    ("nh15-dashdash-consumed", "win", "", "", "", ["--", "true"]),
+    ("nh16-dashdash-only", "strict", "", "", "", ["--"]),
+    ("nh17-invalid-short", "strict", "", "", "", ["-5", "true"]),
+    ("nh18-lead-version-extra", "strict", "", "", "", ["--version", "extra"]),
+    ("nh19-child-exit-zero", "strict", "", "", "", ["sh", "-c", "exit 0"]),
+    ("nh20-child-echo-abc", "strict", "", "", "", ["sh", "-c", "echo abc"]),
+    ("nh21-child-dashdash-arg", "win", "", "", "", ["true", "--", "x"]),
+    ("nh22-posixly-empty", "strict", "", "POSIXLY_CORRECT=", "", []),
+    ("nh23-short-h-with-cmd", "strict", "", "", "", ["-h", "true"]),
+    ("nh24-version-then-help", "strict", "", "", "", ["--version", "--help"]),
+]
+
+pathchk_rows = [
+    ("pk01-ok", "strict", "", "", "", ["ok.txt"]),
+    ("pk02-missing-chain", "strict", "", "", "", ["nosuch/name.txt"]),
+    ("pk03-enotdir", "strict", PK_SETUP_REG, "", "", ["regfile/file"]),
+    ("pk04-missing-dir-ok", "strict", PK_SETUP_REG, "", "", ["missingdir/inner/x"]),
+    ("pk05-empty-default", "strict", "", "", "", [""]),
+    ("pk06-empty-p", "strict", "", "", "", ["-p", ""]),
+    ("pk07-empty-P", "strict", "", "", "", ["-P", ""]),
+    ("pk08-dash-start", "strict", "", "", "", ["-P", "--", "-x"]),
+    ("pk09-dash-mid", "strict", "", "", "", ["-P", "a/-b"]),
+    ("pk10-256-comp", "strict", "", "", "", ["a" * 256]),
+    ("pk11-255-comp", "strict", "", "", "", ["a" * 255]),
+    ("pk12-p-255", "strict", "", "", "", ["-p", "a" * 255]),
+    ("pk13-p-14-ok", "strict", "", "", "", ["-p", "a" * 14]),
+    ("pk14-p-15", "strict", "", "", "", ["-p", "a" * 15]),
+    ("pk15-p-space", "strict", "", "", "", ["-p", "a b"]),
+    ("pk16-p-colon", "strict", "", "", "", ["-p", "a:b"]),
+    ("pk17-p-portable-set", "strict", "", "", "", ["-p", "a9._-b/c"]),
+    ("pk18-no-operand", "strict", "", "", "", []),
+    ("pk19-reserved-con", "win", "", "", "", ["CON"]),
+    ("pk20-p-con-posix", "strict", "", "", "", ["-p", "CON"]),
+    ("pk21-star-char", "win", "", "", "", ["a*b"]),
+    ("pk22-portability-two", "strict", "", "", "", ["--portability", "x?", ""]),
+    ("pk23-trailing-slash", "strict", "", "", "", ["a/b/"]),
+    ("pk24-dot", "strict", "", "", "", ["."]),
+    ("pk25-dotdot", "strict", "", "", "", [".."]),
+    ("pk26-P-dash-only", "strict", "", "", "", ["-P", "-"]),
+    ("pk27-help", "strict", "", "", "", ["--help"]),
+    ("pk28-version", "strict", "", "", "", ["--version"]),
+    ("pk29-two-one-bad", "strict", PK_SETUP_REG, "", "", ["okname", "regfile/file"]),
+    ("pk30-reserved-stem", "win", "", "", "", ["con.txt"]),
+]
+
+ptx_rows = [
+    ("px01-dumb-two-words", "strict", PTX_SETUP_HW, "", "", ["hw.txt"]),
+    ("px02-dumb-one-word", "strict", PTX_SETUP_HW, "", "", ["o.txt"]),
+    ("px03-roff", "strict", PTX_SETUP_HW, "", "", ["-O", "hw.txt"]),
+    ("px04-tex", "strict", PTX_SETUP_HW, "", "", ["-T", "hw.txt"]),
+    ("px05-macro-rename", "strict", PTX_SETUP_HW, "", "", ["-M", "zz", "-O", "hw.txt"]),
+    ("px06-format-r-abbrev", "strict", PTX_SETUP_HW, "", "", ["--format=r", "hw.txt"]),
+    ("px07-format-t-abbrev", "strict", PTX_SETUP_HW, "", "", ["--format=t", "hw.txt"]),
+    ("px08-format-bad", "strict", PTX_SETUP_HW, "", "", ["--format=bad", "hw.txt"]),
+    ("px09-width-bad", "strict", PTX_SETUP_HW, "", "", ["-w", "xyz", "hw.txt"]),
+    ("px10-gap-zero", "strict", PTX_SETUP_HW, "", "", ["-g", "0", "hw.txt"]),
+    ("px11-empty-input", "strict", "printf '' > empty.txt", "", "", ["empty.txt"]),
+    ("px12-missing-file", "strict", "", "", "", ["nofile.txt"]),
+    ("px13-dir-operand", "strict", "", "", "", ["."]),
+    ("px14-stdin", "strict", "", "", "x y\\n", []),
+    ("px15-auto-ref", "win", PTX_SETUP_HW, "", "", ["-A", "o.txt"]),
+    ("px16-right-refs", "win", PTX_SETUP_HW, "", "", ["-R", "-A", "hw.txt"]),
+    ("px17-traditional-format", "win", PTX_SETUP_HW, "", "", ["-G", "hw.txt"]),
+    ("px18-multiline-wrap", "win",
+     "printf 'The quick brown fox\\njumps over the lazy dog\\n' > t1.txt", "", "", ["t1.txt"]),
+    ("px19-narrow-grid", "win",
+     "printf 'aaa bbb ccc ddd\\n' > ab.txt", "", "", ["-w", "40", "ab.txt"]),
+    ("px20-ignore-case-plain", "strict", PTX_SETUP_HW, "", "", ["-f", "hw.txt"]),
+    # WinuxCmd -C extension: GNU rejects, C++ prints banner rc 0 -> win
+    ("px21-copyright-ext", "win", "", "", "", ["-C"]),
+    ("px22-help", "strict", "", "", "", ["--help"]),
+    ("px23-version", "strict", "", "", "", ["--version"]),
+    ("px24-ignore-file", "strict",
+     PTX_SETUP_HW + "; printf 'hello' > ig.txt", "", "", ["-i", "ig.txt", "hw.txt"]),
+    ("px25-only-file", "strict",
+     PTX_SETUP_HW + "; printf 'hello' > on.txt", "", "", ["-o", "on.txt", "hw.txt"]),
+    ("px26-trunc-flag-narrow", "win",
+     "printf 'aaa bbb ccc ddd\\n' > ab.txt", "", "", ["-F", "...", "-w", "20", "ab.txt"]),
+    ("px27-gap-one-narrow", "win",
+     "printf 'aaa bbb ccc ddd\\n' > ab.txt", "", "", ["-g", "1", "-w", "40", "ab.txt"]),
+    ("px28-two-files", "win", PTX_SETUP_HW, "", "", ["o.txt", "hw.txt"]),
+]
+
 shuf_rows = [
     ("su01-rs-file", "strict", SHUF_SETUP, "", "", ["--random-source=seed.bin", "f5.txt"]),
     ("su02-rs-head", "strict", SHUF_SETUP, "", "", ["--random-source=seed.bin", "-n", "5", "n20.txt"]),
@@ -2665,65 +2803,6 @@ shuf_rows = [
     ("su40-unknown-long", "strict", "", "", "", ["--bogus", "-i", "1-2"]),
 ]
 
-NOHUP_SETUP = ""  # no setup needed
-nohup_rows = [
-    # Windows has no standalone true.exe image for a child spawn;
-    # GNU rc 0, Rust/C++ 127 (parity) -> win
-    ("nh01-run-true", "win", "", "", "", ["true"]),
-    ("nh02-run-false", "win", "", "", "", ["false"]),
-    ("nh03-run-echo", "strict", "", "", "", ["echo", "hi"]),
-    ("nh04-not-found", "strict", "", "", "", ["nosuchcmd123"]),
-    ("nh05-missing-operand", "strict", "", "", "", []),
-    ("nh06-posixly-correct", "strict", "", "POSIXLY_CORRECT=1", "", []),
-    ("nh07-empty-command", "strict", "", "", "", [""]),
-    ("nh08-child-rc-seven", "strict", "", "", "", ["sh", "-c", "exit 7"]),
-    ("nh09-help", "strict", "", "", "", ["--help"]),
-    ("nh10-version", "strict", "", "", "", ["--version"]),
-    ("nh11-short-h", "strict", "", "", "", ["-h"]),
-    # GNU nohup parses LEADING options only (optstring "+"): --bogus after
-    # the command is the child's argument. The C++ dispatcher's option
-    # grammar may differ -> win (rc parity with the product exe).
-    ("nh12-unknown-long", "strict", "", "", "", ["--bogus", "true"]),
-    ("nh13-child-cmd-exe", "win", "", "", "", ["cmd", "/c", "exit", "5"]),
-    ("nh14-extra-child-args", "win", "", "", "", ["true", "extra", "args"]),
-    ("nh15-dashdash-consumed", "win", "", "", "", ["--", "true"]),
-    ("nh16-dashdash-only", "strict", "", "", "", ["--"]),
-    ("nh17-invalid-short", "strict", "", "", "", ["-5", "true"]),
-    ("nh18-lead-version-extra", "strict", "", "", "", ["--version", "extra"]),
-    ("nh19-child-exit-zero", "strict", "", "", "", ["sh", "-c", "exit 0"]),
-    ("nh20-child-echo-abc", "strict", "", "", "", ["sh", "-c", "echo abc"]),
-    ("nh21-child-dashdash-arg", "win", "", "", "", ["true", "--", "x"]),
-    ("nh22-posixly-empty", "strict", "", "POSIXLY_CORRECT=", "", []),
-    ("nh23-short-h-with-cmd", "strict", "", "", "", ["-h", "true"]),
-    ("nh24-version-then-help", "strict", "", "", "", ["--version", "--help"]),
-]
-
-groups_rows = [
-    # current-user content is the Windows value model (NetUserGetGroups)
-    ("gr01-current-user", "win", "", "", "", []),
-    ("gr02-unknown-user", "strict", "", "", "", ["nosuchuser123"]),
-    ("gr03-two-unknown", "strict", "", "", "", ["nosuch-a-1", "nosuch-b-2"]),
-    ("gr04-help", "strict", "", "", "", ["--help"]),
-    ("gr05-version", "strict", "", "", "", ["--version"]),
-    ("gr06-short-h", "strict", "", "", "", ["-h"]),
-    ("gr07-short-x", "strict", "", "", "", ["-x"]),
-    # platform account (no Windows "root"): rc parity with the C++ exe
-    ("gr08-root-operand", "win", "", "", "", ["root"]),
-    ("gr09-unknown-long", "strict", "", "", "", ["--bogus"]),
-    ("gr10-empty-user", "strict", "", "", "", [""]),
-    ("gr11-invalid-short-g", "strict", "", "", "", ["-g"]),
-    ("gr12-zero-long", "strict", "", "", "", ["--zero"]),
-    ("gr13-help-permuted", "strict", "", "", "", ["nosuchuser123", "--help"]),
-    ("gr14-help-extra", "strict", "", "", "", ["--help", "extra"]),
-    ("gr15-invalid-short-n", "strict", "", "", "", ["-n", "root"]),
-    ("gr16-unknown-user-long", "strict", "", "", "", ["--user", "x"]),
-    ("gr17-invalid-short-r", "strict", "", "", "", ["-r"]),
-    # current-user content again (platform value model), via explicit --
-    ("gr18-dashdash-current", "win", "", "", "", ["--"]),
-    ("gr19-dash-operand", "strict", "", "", "", ["-"]),
-    ("gr20-mixed-known-unknown", "win", "", "", "", ["root", "nosuch-b-2"]),
-]
-
 who_rows = [
     # session content is the Windows WTS value model
     ("wh01-current", "win", "", "", "", []),
@@ -2754,6 +2833,8 @@ who_rows = [
     ("wh26-heading-missing-file", "win", "", "", "", ["-H", "who-nosuch-utmp"]),
 ]
 
+
+
 def collect():
     """All case tables as (cmd, rows) pairs, in emit order."""
     return [
@@ -2780,18 +2861,10 @@ def collect():
         ("tr", tr_rows), ("od", od_rows), ("sum", sum_rows),
         ("mktemp", mktemp_rows), ("nice", nice_rows),
         ("sort", sort_rows),
-        ("factor", factor_rows),
-
-        ("pathchk", pathchk_rows),
-        ("csplit", csplit_rows),
-        ("shuf", shuf_rows),
-        ("ptx", ptx_rows),
-        ("nohup", nohup_rows),
-        ("groups", groups_rows),
-        ("who", who_rows),
-        ("factor", factor_rows), ("pathchk", pathchk_rows),
-        ("ptx", ptx_rows), ("shuf", shuf_rows), ("csplit", csplit_rows),
-        ("nohup", nohup_rows), ("groups", groups_rows), ("who", who_rows),
+        # wave4b (#1488)
+        ("factor", factor_rows), ("pathchk", pathchk_rows), ("ptx", ptx_rows),
+        ("shuf", shuf_rows), ("csplit", csplit_rows), ("nohup", nohup_rows),
+        ("groups", groups_rows), ("who", who_rows),
     ]
 
 
