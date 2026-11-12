@@ -1866,9 +1866,9 @@ auto external_sort(const Config& cfg) -> cp::Result<int> {
   // end; the guard removes the chunk files on every exit path instead.
   // On the normal path the files are already gone, so this is a no-op.
   struct TempCleanup {
-    std::vector<std::filesystem::path> *paths;
+    std::vector<std::filesystem::path>* paths;
     ~TempCleanup() {
-      for (const auto &p : *paths) {
+      for (const auto& p : *paths) {
         std::error_code ec;
         std::filesystem::remove(p, ec);
       }

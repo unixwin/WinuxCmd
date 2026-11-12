@@ -85,7 +85,7 @@ typedef wchar_t WCHAR;
 #define WINUX_FFI_ERR_ABI_MISMATCH (-1003)
 #define WINUX_FFI_ERR_UNKNOWN_APPLET (-1004)
 #define WINUX_FFI_ERR_EXCEPTION (-1005) /* exception caught at the boundary */
-#define WINUX_FFI_ERR_CANCELLED (-1006) /* cancel requested, pre- or mid-call */
+#define WINUX_FFI_ERR_CANCELLED (-1006) /* cancel requested pre- or mid-call */
 
 #ifdef __cplusplus
 extern "C" {

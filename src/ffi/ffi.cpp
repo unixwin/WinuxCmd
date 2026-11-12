@@ -289,7 +289,7 @@ struct StdBorrow {
   struct Slot {
     DWORD which;
     int fd;
-    int open_flags;  // flags for _open_osfhandle on this fd
+    int open_flags;                 // flags for _open_osfhandle on this fd
     HANDLE saved_handle = nullptr;  // Win32 slot value before the call
     bool handle_swapped = false;
     // True when the Win32 slot value was the fd's own OS handle at apply
@@ -307,12 +307,10 @@ struct StdBorrow {
     // or a restore-time duplicate of the original).
     bool fd_rebound = false;
   };
-  Slot slots[3] = {{STD_INPUT_HANDLE, 0, _O_RDONLY | _O_BINARY, nullptr,
-                    false, false, -1},
-                   {STD_OUTPUT_HANDLE, 1, _O_WRONLY | _O_BINARY, nullptr,
-                    false, false, -1},
-                   {STD_ERROR_HANDLE, 2, _O_WRONLY | _O_BINARY, nullptr,
-                    false, false, -1}};
+  Slot slots[3] = {
+      {STD_INPUT_HANDLE, 0, _O_RDONLY | _O_BINARY, nullptr, false, false, -1},
+      {STD_OUTPUT_HANDLE, 1, _O_WRONLY | _O_BINARY, nullptr, false, false, -1},
+      {STD_ERROR_HANDLE, 2, _O_WRONLY | _O_BINARY, nullptr, false, false, -1}};
 
   // Bind the fd to a fresh duplicate of the original object (best effort,
   // used when the rebind to `want` fails after the fd was closed). The fd
@@ -424,8 +422,7 @@ struct StdBorrow {
         restore_slot = s.saved_os_dup;
       }
       const bool slot_needs_restore =
-          s.handle_swapped ||
-          (s.fd_rebound && s.win32_slot_is_fd_handle);
+          s.handle_swapped || (s.fd_rebound && s.win32_slot_is_fd_handle);
       if (s.fd_rebound) {
         // _close also closes the duplicate the fd owned (wanted_dup, or
         // a restore-time duplicate of the original); that value is dead

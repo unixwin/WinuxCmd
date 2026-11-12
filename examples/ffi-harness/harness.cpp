@@ -616,11 +616,11 @@ int run_sequence(int argc, wchar_t *argv[]) {
 // Same discovery, pin, load and init rules as the single-call path, but
 // with no tiering and no spawn fallback: a failure here fails the mode
 // outright. `mode` is the failure-line tag ("REDIRECT" / "CANCEL").
-bool load_test_dll(const std::wstring &root, const char *mode,
-                   HMODULE &dll_out, FnCall &fn_call_out) {
+bool load_test_dll(const std::wstring &root, const char *mode, HMODULE &dll_out,
+                   FnCall &fn_call_out) {
   auto fail = [&](const std::string &stage, const std::string &reason) {
-    seq_out(std::string(mode) + " FAIL stage=" + stage + " reason=" +
-            reason + "\n");
+    seq_out(std::string(mode) + " FAIL stage=" + stage + " reason=" + reason +
+            "\n");
     return false;
   };
   std::wstring dll_path, ver_dir;
@@ -677,8 +677,8 @@ bool load_test_dll(const std::wstring &root, const char *mode,
 }
 
 bool write_file_bytes(const std::wstring &path, const std::string &data) {
-  HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr,
-                         CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                         FILE_ATTRIBUTE_NORMAL, nullptr);
   if (h == INVALID_HANDLE_VALUE) return false;
   DWORD written = 0;
   const BOOL ok = WriteFile(h, data.data(), static_cast<DWORD>(data.size()),
@@ -733,7 +733,8 @@ uint64_t file_size(const std::wstring &path) {
 // passed in ctx:
 //   1. cat words.txt             -> stdout = poison.out (primes the cache)
 //   2. sort words.txt            -> stdout = srt.out (must land here)
-//   3. wc -l                    -> stdin = words.txt, stdout = wc.out (must read 7)
+//   3. wc -l                    -> stdin = words.txt, stdout = wc.out (must
+//   read 7)
 //   4. sort words.txt words.txt -> stdout = mrg.out (external sort, std::cout)
 //   5. sort (no operands)        -> stdin = words.txt, stdout = sin.out
 //   6. sort ext.txt (12MB)        -> stdout = ext.out (multi-run merge,
@@ -757,8 +758,10 @@ int run_redirect(int argc, wchar_t *argv[]) {
   if (!load_test_dll(root, "REDIRECT", dll, fn_call)) return 1;
   CreateDirectoryW(scratch.c_str(), nullptr);
   const std::wstring words = scratch + L"\\words.txt";
-  const std::string words_data = "banana\napple\ncherry\ndate\nelderberry\nfig\ngrape\n";
-  const std::string sorted_data = "apple\nbanana\ncherry\ndate\nelderberry\nfig\ngrape\n";
+  const std::string words_data =
+      "banana\napple\ncherry\ndate\nelderberry\nfig\ngrape\n";
+  const std::string sorted_data =
+      "apple\nbanana\ncherry\ndate\nelderberry\nfig\ngrape\n";
   const std::string sorted2_data =
       "apple\napple\nbanana\nbanana\ncherry\ncherry\ndate\ndate\nelderberry\n"
       "elderberry\nfig\nfig\ngrape\ngrape\n";
@@ -772,9 +775,8 @@ int run_redirect(int argc, wchar_t *argv[]) {
     if (env_block) FreeEnvironmentStringsW(env_block);
     return 1;
   };
-  auto call = [&](const wchar_t *applet,
-                  const std::vector<std::wstring> &args, HANDLE in,
-                  HANDLE out, HANDLE err, int &rc_out) {
+  auto call = [&](const wchar_t *applet, const std::vector<std::wstring> &args,
+                  HANDLE in, HANDLE out, HANDLE err, int &rc_out) {
     std::vector<const wchar_t *> argv_ptrs;
     for (const auto &a : args) argv_ptrs.push_back(a.c_str());
     FfiContext ctx{};
@@ -858,8 +860,7 @@ int run_redirect(int argc, wchar_t *argv[]) {
     // wc -l from stdin prints the count (possibly padded, no filename).
     const size_t p = content.find_first_not_of(" \t\r\n");
     if (p == std::string::npos || content.compare(p, 1, "7") != 0) {
-      return fail("stage=call3 reason=wc-count-mismatch got=[" + content +
-                  "]");
+      return fail("stage=call3 reason=wc-count-mismatch got=[" + content + "]");
     }
   }
   // 4. two files -> external sort, which writes via std::cout (CRT fd 1).
@@ -1082,8 +1083,7 @@ int run_cancel(int argc, wchar_t *argv[]) {
   if (env_block) FreeEnvironmentStringsW(env_block);
   if (rc_cancel != -1006) {
     seq_out("CANCEL FAIL stage=cancel reason=rc-not-cancelled rc=" +
-            std::to_string(rc_cancel) +
-            " full_ms=" + std::to_string(full_ms) +
+            std::to_string(rc_cancel) + " full_ms=" + std::to_string(full_ms) +
             " cancel_ms=" + std::to_string(cancel_ms) + "\n");
     return 1;
   }
