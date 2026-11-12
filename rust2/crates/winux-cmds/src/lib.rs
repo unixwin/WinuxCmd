@@ -46,6 +46,7 @@ pub mod rmdir;
 pub mod seq;
 pub mod sleep;
 pub mod stat;
+pub mod sum;
 pub mod sync;
 pub mod tac;
 pub mod tail;
@@ -131,6 +132,7 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("cut", cut::cut_cmd),
         ("tr", tr::tr_cmd),
         ("od", od::od_cmd),
+        ("sum", sum::sum_cmd),
     ]
 }
 
