@@ -74,3 +74,15 @@ nf71-21-digits	exit			999999999999999999999\n
 nf72-bogus-option	exit				--bogus
 nf73-suffix-without-from	exit			1K\n
 nf74-pad-conflicts-format	strict			42\n	--format	%6f	--padding=3
+nf75-field-align-audit	strict			plain 1048576 line\n	--field	2	--to=iec
+nf76-field-align-f3	strict			1 2 1048576	--field	3	--to=iec
+nf77-field-align-range	strict			x 1000000 2097152 y\n	--field	2-3	--to=iec
+nf78-field-align-narrow	strict			a 999999 b\n	--field	2	--to=si
+nf79-field-align-all	strict			1048576 2000000 3000000	--field	-	--to=iec
+nf80-field-align-warn	strict			plain 1048576 xyz 3000000	--field	4	--invalid=warn	--to=iec
+nf81-field-align-wider	strict			a 1K b\n	--field	2	--from=si
+nf82-field1-nopad	strict			1048576 2000000\n	--field	1	--to=iec
+nf83-field-align-delimiter	strict			plain 1048576 line\n	-d	 	--field	2	--to=iec
+nf84-field-align-padding	strict			plain 1048576 line\n	--padding=10	--field	2	--to=iec
+nf85-field-align-suffix	strict			x 1048576 y\n	--field	2	--to=iec	--suffix=B
+nf86-field-align-format	strict			a 1048576 b\n	--field	2	--format	%.2f|	--to=iec

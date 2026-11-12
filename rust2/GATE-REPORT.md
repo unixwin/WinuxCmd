@@ -373,6 +373,7 @@ byte-identical). GNU rc oracle holds every row except the documented
 Windows-value-model classes (hostname net-tools/set-operand [DIFFERS],
 id USER operand, getconf Windows table + pathconf existence check).
 
+<<<<<<< HEAD
 ## Wave4a (#1488, fourth batch)
 
 8 commands: `head tail cut tr od sum mktemp nice`. Ledger (full run
@@ -407,3 +408,100 @@ Documented subsets: tail -f/-F/--retry do not follow (dumps then rc 1);
 od --traditional/-S and fL are rejected; nice children inherit process
 stdio (same shape as timeout.rs). mktemp creations and nice child runs
 gate on exit status only (names and niceness are platform-bound).
+=======
+## Borrow-algo: seq exact decimal + numfmt field reassembly (#1488, uutils audit action items)
+
+Two "borrow uutils algorithms" items from `DOCS/2.0-uutils-audit.md`
+(PR #1562 audit): seq float-path precision and numfmt --field line
+reassembly. Both root causes are cited to the GNU C source and were
+probed byte-for-byte against WSL GNU coreutils 9.4 before the fix
+(evidence: `rust2/target/borrow-algo/{seq,numfmt}-probe{,.before,.after}.txt`,
+33 seq cases + 21 numfmt cases, GNU-vs-RUST paired).
+
+### seq — exact fixed-point stepping (was: f64 long-decimal drift)
+
+- Root cause: the generation path past the integer fast paths computed
+  `first + i*step` in f64 (GNU uses 80-bit long double, seq.c print_numbers
+  lines 300-364), so >17-significant-digit decimal operands rounded at
+  parse and sub-f64-ulp steps made the loop never terminate
+  (`seq 0.9999999999999999999 0.0000000000000000001 1.0000000000000000002`
+  printed `1.0000000000000000000` forever; audit case
+  `seq 0.9999999999999999999 1.0000000000000000002` printed
+  `1.0000000000000000000` instead of GNU's `0.9999999999999999999`).
+- Fix (`seq.rs`): uutils-borrowed exact-decimal path, std-only. When no
+  -f was given and every operand is a finite fixed-point decimal,
+  operands parse as (i128 mantissa, decimal scale) pairs
+  (`parse_exact_decimal`), the loop steps on the common 10^-scale grid
+  (`ExactRun::print` mirrors print_numbers' structure; the seq.c
+  rounding fixup at lines 340-356 is dead here — the value just past
+  LAST sits on the 10^-prec grid so its exact rendering never reparses
+  to LAST), and output formats from the scaled integers only
+  (`render_exact`, digits sliced from the decimal string, %0<w>.<prec>f
+  zero-pad rules preserved). The default-format derivation
+  (get_default_format, seq.c lines 373-406) and scan_arg width/precision
+  are reused unchanged. A parity guard admits only magnitudes below the
+  long-double 64-bit-mantissa grid (< 2^64 units of 10^-prec over
+  first/last/|last-first|): probed boundary —
+  `0.9999999999999999999` (9.99e18 units) is in,
+  `0.99999999999999999999` (9.99e19 units, GNU long double parses to 1.0)
+  stays on the float path so those bytes keep matching. The scientific
+  integer fast attempt renders endpoints from the exact mantissa instead
+  of `{:.0}` of f64 (GNU prints "%0.Lf" of the long double, seq.c lines
+  686-695; `seq 1e23 1e23` was `99999999999999991611392`, now
+  `100000000000000000000000`).
+- Residual (documented in the module comment): past the long-double
+  mantissa GNU itself prints float artifacts — `seq 2 1e-19
+  2.0000000000000000005` duplicates lines, `seq -1.5 0.9999999999999999999 1.5`
+  drifts a final ulp — we now print exact decimals there (uutils-equivalent
+  behavior); those shapes are outside the gate.
+
+### numfmt — --field reassembly keeps the original field width
+
+- Root cause: under auto-padding, the per-field pad width ignored GNU's
+  `1 < field` rule (numfmt.c process_suffixed_number line 1360:
+  `padding_width = text < p || 1 < field ? mbswidth (text) : 0`), so a
+  converted field past the first was emitted at its new width and the
+  line collapsed to single spaces:
+  `echo 'plain 1048576 line' | numfmt --field 2 --to=iec` gave
+  `plain 1.0M line` instead of GNU's `plain    1.0M line`.
+- Fix (`numfmt.rs`): one invariant correction — auto-padding now uses
+  the full field-text width whenever the field carries leading blanks
+  or is past the first, so the converted number is padded back to the
+  original field width and trailing fields keep their columns. Byte
+  length stands in for mbswidth (ASCII = gate domain agrees; wide
+  multibyte display width is a documented divergence, matching GNU's
+  strlen fallback for unprintable bytes). Explicit --padding and
+  --delimiter still disable auto-padding (GNU: `auto_padding =
+  padding_width == 0 && delimiter == NULL`, numfmt.c line 1687).
+- Gate cases added (all strict): nf75-nf86 cover --field 1/2/3/-/2-3/1,3/4
+  over aligned multi-space lines, tab separators, invalid=warn, wider
+  output (no pad), delimiter/padding opt-outs, suffix/format-suffix
+  width interaction. sq51-sq60 cover the audit case + -w, sub-ulp
+  stepping (was an infinite loop), 1e23 endpoints, 1000-step no-drift,
+  18/19-digit grids, negative zero, and both long-double boundary
+  shapes.
+
+### Before/after (same case tables, same harness)
+
+- gate seq numfmt before: **134/146 pass, 12 fail** — seq sq51 sq52
+  sq53 sq54 (audit case x2, sub-ulp hang, 1e23) + numfmt nf75 nf76
+  nf77 nf78 nf79 nf80 nf85 nf86 (field-width collapse family).
+- gate seq numfmt after: **146/146 pass, 0 fail** (C++ parity recorded,
+  not gated; unchanged rows keep their recorded C++ columns).
+- cargo test winux-cmds: 358 passed / 0 failed (3 new tests:
+  exact_decimal_long_fractions, exact_decimal_no_drift,
+  field_alignment_preserved). rustfmt clean on both files.
+
+### Gate harness finding (flagged, not fixed here)
+
+The case tables' stdin column is fed with `printf %s` (run-gate.sh
+run_case) — the `\n` escape is NOT decoded, so the literal two bytes
+`\` `n` land in the input. Any case whose included field is the last
+one therefore converts nothing on either side: both GNU and Rust report
+`invalid suffix` (rc 2) and the row passes vacuously. This predates the
+wave (single-value rows nf01-nf28 are all in this class); it does not
+produce wrong GREENs (both sides see identical bytes), but those rows
+exercise the error path instead of the conversion. Suggested follow-up:
+decode `\n` in run_case stdin (or `%b`), then re-audit the affected
+rows' expected outputs before trusting their strict columns.
+>>>>>>> 810f637d (docs(gate): borrow-algo section — seq exact decimal + numfmt field reassembly (#1488))

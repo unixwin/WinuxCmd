@@ -13,6 +13,24 @@
 //!   then falls through to the long-double path, which also prints
 //!   nothing). `inf` as the end value loops forever (GNU does too; SIGPIPE
 //!   ends it there, a write error ends it here).
+//! * Exact-decimal path (borrowed from the uutils seq algorithm, #1488
+//!   borrow-algo): when no -f was given and every operand is a finite
+//!   fixed-point decimal, operands parse as (integer mantissa, decimal
+//!   scale) pairs and the loop steps in the scaled-integer domain
+//!   (std-only, i128, checked — anything that does not fit falls back to
+//!   the float path). The default format there is `%.<prec>f` / `%0<w>.<prec>f`
+//!   (`seq.c get_default_format`, lines 373-406), and an exact decimal
+//!   rendered at prec digits is the byte-identical printf output while the
+//!   scaled values stay inside GNU's long-double mantissa (WSL GNU 9.4
+//!   probed: the audit case `0.9999999999999999999 1.0000000000000000002`
+//!   and the sub-ulp `0.9999999999999999999 1e-19 1.0000000000000000002`).
+//!   GNU's rounding fixup (print_numbers lines 340-356) only repairs long
+//!   double rounding and is dead here: the value just past LAST sits on the
+//!   10^-prec grid, so its exact rendering never reparses to LAST. Past the
+//!   long-double mantissa GNU itself prints float artifacts (probed:
+//!   `2 1e-19 2.0000000000000000005` duplicates lines; `-1.5 0.9999999999999999999
+//!   1.5` drifts a final ulp) — those shapes keep exact output, a
+//!   documented divergence from GNU's broken bytes.
 //! * Long-double path: operands parsed as floats (f64 here; GNU uses
 //!   80-bit long double, so >16-significant-digit float inputs may round
 //!   differently — documented divergence). Default format is `%.<prec>f`
@@ -563,6 +581,284 @@ fn default_format(first: &Operand, step: &Operand, last: &Operand, equal_width: 
     "%g".to_string()
 }
 
+/// Exact fixed-point decimal (uutils-borrowed): value = mant * 10^-scale.
+/// std-only — i128 with checked arithmetic; anything that does not fit
+/// sends the case back to the float path (documented divergence there).
+struct ExactDec {
+    mant: i128,
+    scale: u32,
+    /// The text carried a signed zero ("-0", "-0.0"); printf shows the
+    /// sign on the rendered zero, so it must survive normalization.
+    neg_zero: bool,
+}
+
+/// Fraction-digit cap for the exact domain. 64 covers every value whose
+/// scaled mantissa could still fit i128 headroom; beyond it the widen()
+/// step would bail anyway, and huge-scale tiny-magnitude inputs would
+/// render gigabyte fraction strings.
+const EXACT_MAX_SCALE: u32 = 64;
+
+/// Parse a finite fixed-point decimal: [ws][sign]digits[.digits][eE[sign]digits],
+/// the whole string consumed. Hex floats / inf / nan return None (those
+/// are not fixed-point and keep the float path).
+fn parse_exact_decimal(s: &str) -> Option<ExactDec> {
+    let t = s.trim_start_matches(|c: char| c.is_ascii_whitespace());
+    let neg = t.starts_with('-');
+    let rest = t.strip_prefix(['+', '-']).unwrap_or(t);
+    if rest.is_empty() {
+        return None;
+    }
+    let low = rest.to_ascii_lowercase();
+    if low.starts_with("0x")
+        || low == "inf"
+        || low == "infinity"
+        || low == "nan"
+        || low.starts_with("nan(")
+    {
+        return None;
+    }
+    let (mant_str, exp) = match low.split_once('e') {
+        Some((m, e)) => (m, e.parse::<i32>().ok()?),
+        None => (low.as_str(), 0i32),
+    };
+    let (int_part, frac_part) = match mant_str.split_once('.') {
+        Some((i, f)) => (i, f),
+        None => (mant_str, ""),
+    };
+    if (int_part.is_empty() && frac_part.is_empty())
+        || !int_part.bytes().all(|b| b.is_ascii_digit())
+        || !frac_part.bytes().all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    let mut mag: u128 = 0;
+    for b in int_part.bytes().chain(frac_part.bytes()) {
+        mag = mag.checked_mul(10)?.checked_add(u128::from(b - b'0'))?;
+    }
+    let n = exp - frac_part.len() as i32;
+    let mut scale: u32 = if n < 0 {
+        u32::try_from(-n).ok()?
+    } else {
+        for _ in 0..n {
+            mag = mag.checked_mul(10)?;
+        }
+        0
+    };
+    if scale > EXACT_MAX_SCALE {
+        return None;
+    }
+    // drop redundant trailing zeros so the common-scale widen stays small
+    while scale > 0 && mag % 10 == 0 {
+        mag /= 10;
+        scale -= 1;
+    }
+    if mag > i128::MAX as u128 {
+        return None;
+    }
+    let mant = if neg { -(mag as i128) } else { mag as i128 };
+    Some(ExactDec {
+        mant,
+        scale,
+        neg_zero: neg && mag == 0,
+    })
+}
+
+/// One prepared exact sequence: first/step/last on the common 10^-prec
+/// rendering grid, with -w width lifted from the default format.
+struct ExactRun {
+    first: i128,
+    step: i128,
+    last: i128,
+    prec: usize,
+    zero_width: usize,
+    first_neg_zero: bool,
+}
+
+/// Build the exact run when the case qualifies: default format only, all
+/// three operands fixed-point decimals whose common-scale mantissas fit.
+fn try_exact_run(
+    texts: (&str, &str, &str),
+    first_scan: &Operand,
+    step_scan: &Operand,
+    last_scan: &Operand,
+    equal_width: bool,
+) -> Option<ExactRun> {
+    // The default format is %.<prec>f / %0<w>.<prec>f only when every
+    // operand is fixed point (get_default_format); otherwise it is %g and
+    // the float path keeps the case.
+    if first_scan.precision == NOT_FIXED
+        || step_scan.precision == NOT_FIXED
+        || last_scan.precision == NOT_FIXED
+    {
+        return None;
+    }
+    let f = parse_exact_decimal(texts.0)?;
+    let s = parse_exact_decimal(texts.1)?;
+    let l = parse_exact_decimal(texts.2)?;
+    let prec = first_scan.precision.max(step_scan.precision);
+    // exact rendering: first and step must lie on the 10^-prec grid
+    if f.scale as usize > prec || s.scale as usize > prec {
+        return None;
+    }
+    let t = f.scale.max(s.scale).max(l.scale);
+    let widen = |d: &ExactDec| -> Option<i128> {
+        let mut m = d.mant;
+        for _ in 0..(t - d.scale) {
+            m = m.checked_mul(10)?;
+        }
+        Some(m)
+    };
+    let fm = widen(&f)?;
+    let sm = widen(&s)?;
+    let lm = widen(&l)?;
+    // Parity guard: GNU renders the long-double values (seq.c print_numbers),
+    // so the exact digits stay byte-identical only while every magnitude the
+    // long-double arithmetic touches stays below the 64-bit mantissa grid —
+    // < 2^64 units of 10^-prec (~19 significant digits). Probed boundary
+    // (WSL GNU 9.4): 0.9999999999999999999 (9.99e18 units) is exact, but
+    // 0.99999999999999999999 (9.99e19 units) parses in long double to 1.0
+    // and GNU prints 1.00000000000000000000 — that shape keeps the float
+    // path, which rounds the same way.
+    let grid = 18_446_744_073_709_551_616u128; // 2^64
+                                               // magnitude measured in 10^-prec units (a normalized zero has scale 0
+                                               // while its scan precision keeps the fraction digits, so prec > t is
+                                               // possible and scales magnitudes up instead of down)
+    let in_prec_units = |m: u128| -> Option<u128> {
+        if t >= prec as u32 {
+            Some(m / u128::checked_pow(10, t - prec as u32)?)
+        } else {
+            m.checked_mul(u128::checked_pow(10, prec as u32 - t)?)
+        }
+    };
+    let in_ld_grid = |m: u128| -> bool { in_prec_units(m).map_or(false, |v| v <= grid) };
+    if !in_ld_grid(fm.unsigned_abs())
+        || !in_ld_grid(lm.unsigned_abs())
+        || !in_ld_grid(fm.abs_diff(lm))
+    {
+        return None;
+    }
+    // lift first/step/last onto the rendering grid (prec) so every value
+    // the loop touches carries exactly the digits render_exact prints
+    // (e.g. `seq 0.0 3`: all integers, scan precision 1 -> 10, 30 on the
+    // 10^-1 grid)
+    let mut fm = fm;
+    let mut sm = sm;
+    let mut lm = lm;
+    if t < prec as u32 {
+        let Some(up) = i128::checked_pow(10, prec as u32 - t) else {
+            return None;
+        };
+        fm = fm.checked_mul(up)?;
+        sm = sm.checked_mul(up)?;
+        lm = lm.checked_mul(up)?;
+    }
+    let zero_width = if equal_width {
+        // same width derivation as get_default_format via the scanned
+        // operand texts; the emitted default is %0<w>.<prec>f
+        let fmt = default_format(first_scan, step_scan, last_scan, true);
+        let (_, spec, conv, _) = parse_format(&fmt).ok()?;
+        if conv != 'f' {
+            return None;
+        }
+        if spec.zero_pad {
+            spec.width
+        } else {
+            0
+        }
+    } else {
+        0
+    };
+    Some(ExactRun {
+        first: fm,
+        step: sm,
+        last: lm,
+        prec,
+        zero_width,
+        first_neg_zero: f.neg_zero,
+    })
+}
+
+/// Render a value already on the 10^-prec grid: exact decimal digits (the
+/// printf %.<prec>f output for that value), zero-padded like %0<w>.<prec>f
+/// with the zeros inserted after the sign.
+fn render_exact(mag: u128, neg: bool, prec: usize, zero_width: usize) -> String {
+    let digits = mag.to_string();
+    let mut body = String::new();
+    if neg {
+        body.push('-');
+    }
+    if digits.len() > prec {
+        body.push_str(&digits[..digits.len() - prec]);
+        if prec > 0 {
+            body.push('.');
+            body.push_str(&digits[digits.len() - prec..]);
+        }
+    } else {
+        body.push('0');
+        if prec > 0 {
+            body.push('.');
+            body.push_str(&"0".repeat(prec - digits.len()));
+            body.push_str(&digits);
+        }
+    }
+    if body.len() < zero_width {
+        let zeros = "0".repeat(zero_width - body.len());
+        if neg {
+            body.insert_str(1, &zeros);
+        } else {
+            body.insert_str(0, &zeros);
+        }
+    }
+    body
+}
+
+impl ExactRun {
+    /// print_numbers() in the exact domain (seq.c lines 300-364): print
+    /// while first + i*step <= LAST, nothing at all when LAST is behind
+    /// FIRST. The rounding fixup (lines 340-356) repairs long-double
+    /// rounding and is dead here — see the module comment.
+    fn print(&self, io: &mut Io, separator: &str) -> std::io::Result<()> {
+        let neg_step = self.step < 0;
+        let mut out_of_range = if neg_step {
+            self.first < self.last
+        } else {
+            self.last < self.first
+        };
+        if out_of_range {
+            return Ok(());
+        }
+        let neg_first = self.first < 0 || (self.first == 0 && self.first_neg_zero);
+        let mut cur = self.first;
+        let mut at_first = true;
+        loop {
+            let neg = if at_first { neg_first } else { cur < 0 };
+            let body = render_exact(cur.unsigned_abs(), neg, self.prec, self.zero_width);
+            io.stdout.write_all(body.as_bytes())?;
+            if out_of_range {
+                break;
+            }
+            // cur + step beyond i128 is beyond LAST too (LAST fits), so the
+            // loop ends there exactly as the range check would
+            let next = match cur.checked_add(self.step) {
+                Some(v) => v,
+                None => break,
+            };
+            out_of_range = if neg_step {
+                next < self.last
+            } else {
+                next > self.last
+            };
+            if out_of_range {
+                break;
+            }
+            io.stdout.write_all(separator.as_bytes())?;
+            cur = next;
+            at_first = false;
+        }
+        io.stdout.write_all(b"\n")
+    }
+}
+
 /// print_numbers(): the long-double generation loop (seq.c lines 291-359).
 fn print_numbers(
     io: &mut Io,
@@ -887,6 +1183,37 @@ pub fn seq_cmd(args: &[OsString], io: &mut Io, _ctx: &Ctx) -> CmdResult {
         }
     }
     // ---- second fast attempt: scientific-notation integers, inf end ----
+    // Endpoints render through the exact decimal when possible: GNU prints
+    // "%0.Lf" of the long double (seq.c lines 686-695), which is the plain
+    // integer digits for these, while f64 loses them past its mantissa
+    // (probed: `seq 1e23 1e23` — GNU 100000000000000000000000, f64
+    // 99999999999999991611392).
+    let op_texts: Vec<&str> = strs[idx..].iter().map(|s| s.as_str()).collect();
+    let exact_ops: [Option<ExactDec>; 3] = match op_texts.len() {
+        1 => [
+            parse_exact_decimal("1"),
+            parse_exact_decimal("1"),
+            parse_exact_decimal(&op_texts[0]),
+        ],
+        2 => [
+            parse_exact_decimal(&op_texts[0]),
+            parse_exact_decimal("1"),
+            parse_exact_decimal(&op_texts[1]),
+        ],
+        _ => [
+            parse_exact_decimal(&op_texts[0]),
+            parse_exact_decimal(&op_texts[1]),
+            parse_exact_decimal(&op_texts[2]),
+        ],
+    };
+    let exact_str = |d: &Option<ExactDec>| -> Option<String> {
+        let d = d.as_ref()?;
+        Some(if d.neg_zero {
+            "-0".to_string()
+        } else {
+            d.mant.to_string()
+        })
+    };
     if first.precision == 0
         && step.precision == 0
         && last.precision == 0
@@ -899,9 +1226,9 @@ pub fn seq_cmd(args: &[OsString], io: &mut Io, _ctx: &Ctx) -> CmdResult {
         && format.is_none()
         && separator.len() == 1
     {
-        let s1 = format!("{:.0}", first.value);
+        let s1 = exact_str(&exact_ops[0]).unwrap_or_else(|| format!("{:.0}", first.value));
         let s2 = if last.value.is_finite() {
-            format!("{:.0}", last.value)
+            exact_str(&exact_ops[2]).unwrap_or_else(|| format!("{:.0}", last.value))
         } else {
             "inf".to_string()
         };
@@ -909,6 +1236,18 @@ pub fn seq_cmd(args: &[OsString], io: &mut Io, _ctx: &Ctx) -> CmdResult {
             if seq_fast(io, &s1, &s2, step.value as u64, &separator)? {
                 return Ok(0);
             }
+        }
+    }
+    // ---- exact decimal generation (uutils-borrowed fixed-point stepping) ----
+    if format.is_none() {
+        let (ft, st, lt) = match op_texts.len() {
+            1 => ("1", "1", op_texts[0]),
+            2 => (op_texts[0], "1", op_texts[1]),
+            _ => (op_texts[0], op_texts[1], op_texts[2]),
+        };
+        if let Some(run) = try_exact_run((ft, st, lt), &first, &step, &last, equal_width) {
+            run.print(io, &separator)?;
+            return Ok(0);
         }
     }
     // ---- format resolution and printing ----
@@ -1052,6 +1391,107 @@ mod tests {
         assert_eq!(
             run(&["0", "0.000001", "0.000003"], "").1,
             "0.000000\n0.000001\n0.000002\n0.000003\n"
+        );
+    }
+
+    #[test]
+    fn exact_decimal_long_fractions() {
+        // audit case (PR #1562 case5, DOCS/2.0-uutils-audit.md §4.1): the
+        // f64 engine rounded the 19-digit first operand to 1.0
+        assert_eq!(
+            run(&["0.9999999999999999999", "1.0000000000000000002"], "").1,
+            "0.9999999999999999999\n"
+        );
+        assert_eq!(
+            run(
+                &["-w", "0.9999999999999999999", "1.0000000000000000002"],
+                ""
+            )
+            .1,
+            "0.9999999999999999999\n"
+        );
+        // GNU 9.4 probed 4 lines; f64 stepped below its ulp and looped
+        // forever printing 1.0000000000000000000
+        assert_eq!(
+            run(
+                &[
+                    "0.9999999999999999999",
+                    "0.0000000000000000001",
+                    "1.0000000000000000002"
+                ],
+                ""
+            )
+            .1,
+            "0.9999999999999999999\n1.0000000000000000000\n1.0000000000000000001\n1.0000000000000000002\n"
+        );
+        // 20 significant digits: GNU long double parses to 1.0, so the
+        // parity guard hands the shape back to the float path (probed)
+        assert_eq!(
+            run(&["0.99999999999999999999", "2"], "").1,
+            "1.00000000000000000000\n2.00000000000000000000\n"
+        );
+    }
+
+    #[test]
+    fn exact_decimal_no_drift() {
+        // 1000 steps of 0.001: every line is the exact decimal
+        let (_, out, _) = run(&["0", "0.001", "1"], "");
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 1001);
+        assert_eq!(lines[0], "0.000");
+        assert_eq!(lines[1], "0.001");
+        assert_eq!(lines[999], "0.999");
+        assert_eq!(lines[1000], "1.000");
+        // 18-digit grid, 10 steps (GNU probed byte-for-byte)
+        assert_eq!(
+            run(
+                &[
+                    "0.000000000000000001",
+                    "0.000000000000000001",
+                    "0.00000000000000001"
+                ],
+                ""
+            )
+            .1,
+            "0.000000000000000001\n0.000000000000000002\n0.000000000000000003\n0.000000000000000004\n0.000000000000000005\n0.000000000000000006\n0.000000000000000007\n0.000000000000000008\n0.000000000000000009\n0.000000000000000010\n"
+        );
+        // 19-digit grid across an integer boundary (sub-f64-ulp steps used
+        // to loop forever printing 0.0000000000000000000)
+        assert_eq!(
+            run(
+                &["0", "0.0000000000000000001", "0.0000000000000000003"],
+                ""
+            )
+            .1,
+            "0.0000000000000000000\n0.0000000000000000001\n0.0000000000000000002\n0.0000000000000000003\n"
+        );
+        // scientific integers beyond the f64 mantissa (GNU %0.Lf probed)
+        assert_eq!(run(&["1e23", "1e23"], "").1, "100000000000000000000000\n");
+        assert_eq!(run(&["1e19", "1e19"], "").1, "10000000000000000000\n");
+        // negative zero survives normalization (GNU probed)
+        assert_eq!(run(&["-0.0", "0.2", "0.4"], "").1, "-0.0\n0.2\n0.4\n");
+        assert_eq!(run(&["-0", "0"], "").1, "-0\n");
+        // exact path keeps -w and custom separators
+        assert_eq!(
+            run(
+                &["-w", "0.9999999999999999999", "1.0000000000000000002"],
+                ""
+            )
+            .1,
+            "0.9999999999999999999\n"
+        );
+        assert_eq!(
+            run(
+                &[
+                    "-s,",
+                    "0",
+                    "0.0000000000000000001",
+                    "0.0000000000000000003"
+                ],
+                ""
+            )
+            .1,
+            "0.0000000000000000000,0.0000000000000000001,0.0000000000000000002,0.0000000000000000003\n"
         );
     }
 
