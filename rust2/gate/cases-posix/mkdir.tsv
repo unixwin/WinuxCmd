@@ -1,0 +1,8 @@
+# mkdir — shell-namespace landing cases (#1488 gate posix round, skeleton)
+# /tmp + /var/tmp + /home spellings; GNU lands in its own prefix sandbox,
+# Windows sides land via TMPDIR / TMPDIR\var\tmp / HOME-parent mapping.
+# id<TAB>mode<TAB>setup<TAB>env<TAB>stdin<TAB>args... (@EMPTY@ = empty arg)
+mkp01-tmp	posix			mkdir	/tmp/winuxcmd-gate-posix/mk01
+mkp02-tmp-deep	posix			mkdir	-p	/tmp/winuxcmd-gate-posix/mk02/deep
+mkp03-vartmp	posix			mkdir	-p	/var/tmp/winuxcmd-gate-posix/mk03
+mkp04-home	posix			mkdir	-p	/home/winuxcmd-gate/mk04

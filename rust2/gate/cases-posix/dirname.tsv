@@ -1,0 +1,4 @@
+# STRICT control group (see basename.tsv) (#1488 gate posix round)
+# id<TAB>mode<TAB>setup<TAB>env<TAB>stdin<TAB>args... (@EMPTY@ = empty arg)
+dsp01-tmp-string	strict				/tmp/winuxcmd-gate-posix/f.txt
+dsp02-usr-bin	strict				/usr/bin/seq

@@ -1,0 +1,11 @@
+# test — read-only shell-namespace probes (#1488 gate posix round)
+# rc-only observable, so failures here are pure mapping failures:
+# /tmp fixture dir, /mnt/c drive form, /usr/bin exe-fold, bare-/ root,
+# /dev/null pseudo-device, and the missing-file negative control.
+# id<TAB>mode<TAB>setup<TAB>env<TAB>stdin<TAB>args... (@EMPTY@ = empty arg)
+tsp01-tmp-dir	posix				-e	/tmp/winuxcmd-gate-posix
+tsp02-mnt-c-drive	posix				-d	/mnt/c/Windows
+tsp03-usr-bin-seq	posix				-e	/usr/bin/seq
+tsp04-root-usr	posix				-d	/usr
+tsp05-dev-null	posix				-e	/dev/null
+tsp06-tmp-missing	posix				-e	/tmp/winuxcmd-gate-posix/definitely-missing
