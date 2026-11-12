@@ -127,14 +127,26 @@ must pass on both old and new exe.
 ## 5. One-time work still required before some waves
 
 - **Streaming stdin (ABI v2).** ~~v1 passes stdin as a whole buffer; the
-  bridge forwards none.~~ **Available now, additive:** `winuxcmd_run_stream`
-  (pull callback `winuxcmd_stream_read_fn` + user_data -> `impl Read`;
-  host-stops-feeding convention is status 124). The C++ side has NOT adopted
-  it yet — the bridge still forwards no stdin — so wiring the first stdin
-  reader (`cat`, `tr`, `sort`, ...) is a bridge+header+v2 adoption commit
-  (`winuxcmd_abi_version` 1 -> 2 together with `rust2_abi.h`), not a plain
-  mechanical replacement. Contract, ownership and thread model:
-  [README.md](README.md) "Streaming stdin ABI (v2)".
+  bridge forwards none.~~ **Adopted (additive), #1488 v2 bridge adoption:**
+  `winuxcmd_run_stream` (pull callback `winuxcmd_stream_read_fn` + user_data
+  -> `impl Read`; host-stops-feeding convention is status 124; `-2` is the
+  host read-failure channel). The C++ bridge exposes it as
+  `winux::rust2::run_command_with_stdin_streaming(name, args)`
+  (`src/bridge/rust2_bridge.cppm`; real fd 0 read in chunks through the
+  same `file_io` read path as the v1 slurp — binary mode, cooked-console
+  ^D records, broken-pipe EOF — so no whole-buffer input residency), plus
+  the generic forms `run_command_with_stdin_source` (host-supplied
+  callback, NULL = empty stdin) and `run_command_with_stdin_bytes` (v1
+  whole buffer from bytes) for tests and A/B comparisons.
+  `winuxcmd_abi_version` is 2 since that adoption. **No wired command uses
+  v2 yet** — the v1 behaviors (`run_command`, `run_command_with_stdin`,
+  the `kRust2StdinCommands` slurp) stay untouched for stability; the next
+  wave wires the first genuinely-streaming stdin reader (`cat`, `tr`,
+  `sort`, ...) by switching its handler to `run_command_with_stdin_streaming`,
+  which is now a plain mechanical replacement. Regression net: the
+  `rust2-stream-driver` ctest lanes (`rust2-stream-segments/-errors/
+  -stdin/-mem`, `tests/bridge/stream_abi_driver.cpp`). Contract, ownership
+  and thread model: [README.md](README.md) "Streaming stdin ABI (v2)".
 - **Raw output path.** The bridge drains Rust stdout through `safePrint`,
   which applies the i18n legacy catalog lookup (`translate_legacy`) to the
   whole string when a catalog is loaded. Harmless for true/false (no output)

@@ -13,6 +13,13 @@
 /// console layer (safePrint / safeErrorPrint) so redirected and captured
 /// output keeps going through the same exit as every C++ applet.
 ///
+/// ABI surface: v1 whole-buffer stdin (winuxcmd_run) and, since the
+/// #1556 adoption, the additive v2 streaming stdin (winuxcmd_run_stream,
+/// host pull callback) — run_command_with_stdin_streaming reads fd 0 in
+/// chunks through the same file_io read path as the v1 slurp. No wired
+/// command uses v2 yet; the stream-ABI driver and the next wiring wave
+/// are its callers.
+///
 /// Compiled only when CMake option WINUXCMD_ENABLE_RUST2 is ON (the source
 /// is filtered out otherwise, together with the replaced commands).
 module;
@@ -104,48 +111,57 @@ auto slurp_stdin_binary() -> std::string {
   return {};
 }
 
-// Shared ABI body: turn the dispatcher's operands, the environment snapshot
-// and the cwd into the explicit v1 buffers and drain the result. `stdin_buf`
-// is the v1 whole-buffer stdin (NULL/0 = empty stdin); the host slurped it
-// before the call and owns the bytes for the duration of the run.
-auto run_with_stdin_bytes(const char* name, std::span<std::string_view> args,
-                          const unsigned char* stdin_buf,
-                          size_t stdin_len) noexcept -> int {
+// Shared ABI-call setup: owned copies of everything the explicit-handle
+// ABI needs (#1488 "ABI 面只传显式句柄/缓冲，不传环境状态") — argv as
+// NUL-terminated UTF-8 copies (string_view is not terminated), the env
+// snapshot as a NULL-terminated `name=value` array, and the cwd. Lives for
+// the duration of one bridge call; both ABI entries share it.
+struct HostCall {
+  std::vector<std::string> arg_storage;
+  std::vector<const char*> argv;
+  std::vector<std::string> env_storage;
+  std::vector<const char*> envp;
+  std::string cwd;
+
+  explicit HostCall(std::span<std::string_view> args) {
+    arg_storage.assign(args.begin(), args.end());
+    argv.reserve(arg_storage.size());
+    for (const auto& a : arg_storage) argv.push_back(a.c_str());
+
+    env_storage = snapshot_environment();
+    envp.reserve(env_storage.size() + 1);
+    for (const auto& kv : env_storage) envp.push_back(kv.c_str());
+    envp.push_back(nullptr);
+
+    cwd = current_directory_utf8();
+  }
+};
+
+// The bridge refuses to run on an ABI surface mismatch (the header and
+// lib.rs bump together; see WINUXCMD_RUST2_ABI_VERSION).
+auto abi_version_ok(const char* name) -> bool {
   if (winuxcmd_abi_version() != WINUXCMD_RUST2_ABI_VERSION) {
     safeErrorPrintLn(std::string(name) +
                      ": rust2 command library ABI version mismatch");
-    return kAbiFailureStatus;
+    return false;
   }
+  return true;
+}
 
-  // argv: owned NUL-terminated copies (string_view is not terminated).
-  std::vector<std::string> arg_storage(args.begin(), args.end());
-  std::vector<const char*> argv;
-  argv.reserve(arg_storage.size());
-  for (const auto& a : arg_storage) argv.push_back(a.c_str());
-
-  const std::vector<std::string> env_storage = snapshot_environment();
-  std::vector<const char*> envp;
-  envp.reserve(env_storage.size() + 1);
-  for (const auto& kv : env_storage) envp.push_back(kv.c_str());
-  envp.push_back(nullptr);
-
-  const std::string cwd = current_directory_utf8();
-
-  winuxcmd_cbuf out{nullptr, 0, 0};
-  winuxcmd_cbuf err{nullptr, 0, 0};
-  const int status = winuxcmd_run(name, static_cast<int>(argv.size()),
-                                  argv.empty() ? nullptr : argv.data(),
-                                  envp.data(), cwd.c_str(), stdin_buf,
-                                  stdin_len, &out, &err);
-
+// Shared drain for both ABI entries: the closed-stdout contract, the raw
+// writers, and the buffer release. `status` is whatever the ABI entry
+// returned (v2 may hand back the 124 host-stopped-feeding status here).
+auto drain_result(const char* name, int status, winuxcmd_cbuf& out,
+                  winuxcmd_cbuf& err) noexcept -> int {
   // [GNU] close_stdout contract for the closed-fd shape (issue #1368,
   // probed coreutils 9.4): a command that PRODUCED stdout bytes against a
   // closed fd 1 reports "<name>: write error: Bad file descriptor" and
   // fails (rc 1); a command that wrote nothing stays silent with its own
-  // status (`true >&-` rc 0). The v1 ABI buffers stdout, so the write
+  // status (`true >&-` rc 0). Both ABIs buffer stdout, so the write
   // failure surfaces here at the drain instead of inside the library —
   // the same place GNU's global close_stdout hook reports it. Broken-pipe
-  // write failures stay with the streaming v2 ABI (recipe §5).
+  // write failures stay with a future streaming write callback (README
+  // "Output side").
   if (out.ptr != nullptr && out.len > 0 && _fileno(stdout) < 0) {
     safeErrorPrintLn(std::string(name) + ": write error: Bad file descriptor");
     winuxcmd_free_buf(&out);
@@ -173,6 +189,103 @@ auto run_with_stdin_bytes(const char* name, std::span<std::string_view> args,
   winuxcmd_free_buf(&out);
   winuxcmd_free_buf(&err);
   return status;
+}
+
+// Shared v1 body: turn the dispatcher's operands, the environment snapshot
+// and the cwd into the explicit v1 buffers and drain the result. `stdin_buf`
+// is the v1 whole-buffer stdin (NULL/0 = empty stdin); the host slurped it
+// before the call and owns the bytes for the duration of the run.
+auto run_with_stdin_bytes(const char* name, std::span<std::string_view> args,
+                          const unsigned char* stdin_buf,
+                          size_t stdin_len) noexcept -> int {
+  if (!abi_version_ok(name)) return kAbiFailureStatus;
+
+  HostCall call(args);
+  winuxcmd_cbuf out{nullptr, 0, 0};
+  winuxcmd_cbuf err{nullptr, 0, 0};
+  const int status = winuxcmd_run(name, static_cast<int>(call.argv.size()),
+                                  call.argv.empty() ? nullptr : call.argv.data(),
+                                  call.envp.data(), call.cwd.c_str(), stdin_buf,
+                                  stdin_len, &out, &err);
+  return drain_result(name, status, out, err);
+}
+
+// ---- ABI v2 streaming stdin (#1556 stream-ABI adoption, #1488) ----
+
+// Per-run host state for the real-stdin pull callback. The callback fires
+// synchronously on the caller's thread in the order the command reads
+// (README "Threading model": single-threaded, no locks), so plain members
+// are enough.
+struct StdinFeedState {
+  HANDLE handle = nullptr;
+  bool prepared = false;
+};
+
+// The host pull callback (winuxcmd_stream_read_fn): fill up to `cap` bytes
+// from the process's real stdin (console face / pipe / redirected file).
+//
+// Read-path parity with the v1 slurp (file_io::read_all_stdin): binary mode
+// once before the first read (file_io::set_stdin_binary — the text-mode CRT
+// translator would otherwise stop at a 0x1A byte and collapse CRLF), then
+// file_io::read_stdin_record for every fill, which carries the
+// winux#1450 cooked-console VEOF contract: ^D at line start ends the
+// stream (0), a mid-line ^D flushes the pending prefix as its own partial
+// fill (the segmentation boundary), and the unread tail of the console
+// record stays queued for the next reader. ^Z (0x1A) is NOT an EOF on this
+// path: in binary mode it is ordinary data on every face — console
+// records, pipes, redirected files — exactly as in the v1 slurp; the
+// DOS text-mode ^Z EOF belongs to the CRT translator this path bypasses.
+//
+// ReadFile failure mapping, same as read_all_stdin: the broken-pipe EOF
+// family (ERROR_BROKEN_PIPE / ERROR_NO_DATA / ERROR_HANDLE_EOF) is
+// end-of-stream (0); anything else is -2, the ABI v2 host read failure —
+// the channel v1 lacked, so the command now reports the #973-family
+// closed/bad-stdin diagnostics in its own GNU wording.
+auto stdin_feed_read(void* user_data, unsigned char* buf, size_t cap)
+    -> long long {
+  if (cap == 0) return 0;  // defensive; the boundary never asks for 0
+  auto* state = static_cast<StdinFeedState*>(user_data);
+  if (!state->prepared) {
+    state->prepared = true;
+    file_io::set_stdin_binary();
+    state->handle = GetStdHandle(STD_INPUT_HANDLE);
+  }
+  DWORD got = 0;
+  const DWORD want = static_cast<DWORD>(
+      std::min<size_t>(cap, std::numeric_limits<DWORD>::max()));
+  if (!file_io::read_stdin_record(state->handle,
+                                  reinterpret_cast<char*>(buf), want, &got)) {
+    const DWORD err = GetLastError();
+    if (err == ERROR_BROKEN_PIPE || err == ERROR_NO_DATA ||
+        err == ERROR_HANDLE_EOF) {
+      return 0;
+    }
+    return -2;
+  }
+  return static_cast<long long>(got);
+}
+
+// Shared v2 body: same host-side setup and drain as v1, stdin through the
+// host pull callback. `stdin_read` may be NULL (empty stdin, same as
+// `stdin_buf == NULL` in v1). Status contract per the header: the command's
+// own status; 124 when the host reported -1 (timeout convention) even if
+// the command swallowed the read error; the command's own read-error rc on
+// -2 (e.g. tac exits 1 with its GNU diagnostic — #973 family, now flowing
+// through the command instead of a host-side pre-check).
+auto run_with_stdin_source(const char* name, std::span<std::string_view> args,
+                           winuxcmd_stream_read_fn* stdin_read,
+                           void* stdin_user_data) noexcept -> int {
+  if (!abi_version_ok(name)) return kAbiFailureStatus;
+
+  HostCall call(args);
+  winuxcmd_cbuf out{nullptr, 0, 0};
+  winuxcmd_cbuf err{nullptr, 0, 0};
+  const int status =
+      winuxcmd_run_stream(name, static_cast<int>(call.argv.size()),
+                          call.argv.empty() ? nullptr : call.argv.data(),
+                          call.envp.data(), call.cwd.c_str(), stdin_read,
+                          stdin_user_data, &out, &err);
+  return drain_result(name, status, out, err);
 }
 
 }  // namespace
@@ -224,11 +337,7 @@ int run_command(const char* name, std::span<std::string_view> args) noexcept {
 /// documented v1 price, revisited by the streaming wave.
 int run_command_with_stdin(const char* name,
                            std::span<std::string_view> args) noexcept {
-  if (winuxcmd_abi_version() != WINUXCMD_RUST2_ABI_VERSION) {
-    safeErrorPrintLn(std::string(name) +
-                     ": rust2 command library ABI version mismatch");
-    return kAbiFailureStatus;
-  }
+  if (!abi_version_ok(name)) return kAbiFailureStatus;
 
   auto content = file_io::read_all_stdin();
   if (!content) {
@@ -241,6 +350,55 @@ int run_command_with_stdin(const char* name,
       bytes.empty() ? nullptr
                     : reinterpret_cast<const unsigned char*>(bytes.data()),
       bytes.size());
+}
+
+/// Run rust2 library command `name` with an explicit stdin BYTE BUFFER
+/// through ABI v1: the generic form of run_command_with_stdin for hosts
+/// that already hold the bytes (tests, the stream-ABI driver, the next
+/// wiring wave's A/B comparisons). No fd 0 is touched.
+int run_command_with_stdin_bytes(
+    const char* name, std::span<std::string_view> args,
+    std::span<const unsigned char> stdin_bytes) noexcept {
+  return run_with_stdin_bytes(name, args, stdin_bytes.data(),
+                              stdin_bytes.size());
+}
+
+/// Run rust2 library command `name` with stdin arriving through a host
+/// pull callback (ABI v2, #1556): the generic streaming form. `stdin_read`
+/// may be NULL (empty stdin). The callback contract, the 124
+/// host-stops-feeding status and the -2 read-failure channel are specified
+/// in src/shared/rust2_abi.h and rust2/README.md "Streaming stdin ABI".
+/// Output stays v1-shaped: returned buffers drained by drain_result.
+int run_command_with_stdin_source(
+    const char* name, std::span<std::string_view> args,
+    winuxcmd_stream_read_fn* stdin_read, void* stdin_user_data) noexcept {
+  return run_with_stdin_source(name, args, stdin_read, stdin_user_data);
+}
+
+/// Run rust2 library command `name` with the dispatcher's operands and
+/// ABI v2 STREAMING stdin: fd 0 is read in chunks through a host pull
+/// callback (the same file_io read path as the v1 slurp — binary mode,
+/// cooked-console VEOF ^D records and flush boundaries, broken-pipe EOF —
+/// but handed to the command segment by segment, so no whole-buffer input
+/// residency: a 64 MiB input no longer costs the slurp plus the ABI's
+/// `stdin_buf -> Vec` copy).
+///
+/// THIS ENTRY IS NOT WIRED TO ANY COMMAND YET (#1488 stream-ABI adoption
+/// wave): the v1 behaviors of run_command / run_command_with_stdin and the
+/// kRust2StdinCommands slurp are deliberately left untouched for stability.
+/// The next wiring wave picks this entry for commands whose GNU shape is
+/// genuinely streaming (see REPLACEMENT-RECIPE.md §Streaming stdin); the
+/// stream-ABI driver (rust2-stream-driver) and its ctest lanes are the
+/// first callers.
+///
+/// Unlike the v1 whole-buffer entry, a closed or bad fd 0 is NOT
+/// pre-screened here: the callback reports -2 and the command emits its own
+/// GNU read-error diagnostic (#973 family) — the channel v1 could not
+/// express.
+int run_command_with_stdin_streaming(
+    const char* name, std::span<std::string_view> args) noexcept {
+  StdinFeedState state;
+  return run_with_stdin_source(name, args, &stdin_feed_read, &state);
 }
 
 }  // namespace winux::rust2

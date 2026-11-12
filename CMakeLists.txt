@@ -694,6 +694,30 @@ if(MSVC)
 endif()
 
 # ====================================================
+# rust2 stream-ABI driver (v2 bridge adoption harness, #1488)
+# ====================================================
+# Bridge-level test harness for the streaming stdin entry
+# (run_command_with_stdin_streaming): segmentation matrix vs the v1
+# whole-buffer entry, the 124 / -2 status paths, real-stdin byte equality
+# (pipe + redirected file), and the 64 MiB memory ledger. Defined in the
+# TOP-LEVEL tree — NOT tests/ — because tests/CMakeLists.txt re-enables
+# /EHsc while the bridge module world compiles without exceptions: a
+# consumer of the bridge/module BMIs must share the producing target's ABI
+# flags (no exceptions, static CRT, RTTI off).
+if(WINUXCMD_ENABLE_RUST2)
+    add_executable(rust2-stream-driver
+            "${CMAKE_SOURCE_DIR}/tests/bridge/stream_abi_driver.cpp")
+    target_link_libraries(rust2-stream-driver
+            PRIVATE winuxcmd-commands winuxcmd-rust2-lib winuxcmd-modules)
+    target_include_directories(rust2-stream-driver
+            PRIVATE "${SRC_DIR}" "${CMAKE_BINARY_DIR}")
+    if(MSVC)
+        target_compile_options(rust2-stream-driver PRIVATE /std:c++latest)
+    endif()
+    add_dependencies(rust2-stream-driver winuxcmd-rust2)
+endif()
+
+# ====================================================
 # Main executable modules and configuration
 # ====================================================
 
@@ -861,6 +885,22 @@ if (ENABLE_TESTS)
     # This prevents the links script from running before winuxcmd.exe is built
     if(TARGET create-test-links)
         add_dependencies(create-test-links winuxcmd)
+    endif()
+
+    # rust2 stream-ABI driver lanes (v2 bridge adoption, #1488); the driver
+    # target exists only with WINUXCMD_ENABLE_RUST2.
+    if(TARGET rust2-stream-driver)
+        add_test(NAME rust2-stream-segments
+                COMMAND rust2-stream-driver segments)
+        add_test(NAME rust2-stream-errors
+                COMMAND rust2-stream-driver errors)
+        add_test(NAME rust2-stream-stdin
+                COMMAND rust2-stream-driver stdin)
+        add_test(NAME rust2-stream-mem
+                COMMAND rust2-stream-driver mem)
+        set_tests_properties(rust2-stream-segments rust2-stream-errors
+                rust2-stream-stdin PROPERTIES TIMEOUT 180)
+        set_tests_properties(rust2-stream-mem PROPERTIES TIMEOUT 600)
     endif()
 endif ()
 

@@ -17,10 +17,10 @@
 //! host injected a broken handle); panic -> 125; v2 host-stops-feeding ->
 //! 124 (`winux_core::stream::STREAM_TIMEOUT_STATUS`).
 //!
-//! Versioning: `winuxcmd_abi_version()` stays 1 while v2 is additive —
-//! the C++ bridge refuses on a version mismatch, so the bump to 2 happens
-//! in the commit that adopts `winuxcmd_run_stream` on the C++ side
-//! (rust2_abi.h + rust2_bridge.cppm together). See rust2/README.md.
+//! Versioning: `winuxcmd_abi_version()` stayed 1 while v2 was additive; it
+//! is 2 since the C++ bridge adopted `winuxcmd_run_stream` (#1488 streaming
+//! ABI v2 bridge adoption) — rust2_abi.h + rust2_bridge.cppm bumped in the
+//! same commit, per the header's own rule. See rust2/README.md.
 
 use std::ffi::{c_char, c_int, CStr};
 use std::io::Read;
@@ -73,11 +73,11 @@ struct HostInputs {
     cwd: PathBuf,
 }
 
-/// ABI surface version, bumped on signature changes. 1 while
-/// `winuxcmd_run_stream` is additive (see the module docs).
+/// ABI surface version, bumped on signature changes. 2 since the C++ side
+/// adopted `winuxcmd_run_stream` (see the module docs).
 #[no_mangle]
 pub extern "C" fn winuxcmd_abi_version() -> c_int {
-    1
+    2
 }
 
 /// Parse the explicit host strings into owned Rust data. `Err(())` on a
