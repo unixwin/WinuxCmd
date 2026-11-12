@@ -28,3 +28,4 @@ px25-only-file	strict	printf 'hello world\n' > hw.txt; printf 'one\n' > o.txt; p
 px26-trunc-flag-narrow	win	printf 'aaa bbb ccc ddd\n' > ab.txt			-F	...	-w	20	ab.txt
 px27-gap-one-narrow	win	printf 'aaa bbb ccc ddd\n' > ab.txt			-g	1	-w	40	ab.txt
 px28-two-files	win	printf 'hello world\n' > hw.txt; printf 'one\n' > o.txt			o.txt	hw.txt
+px29-short-h-rejected	strict				-h

@@ -2300,6 +2300,7 @@ csplit_rows = [
     ("cs31-empty-prefix", "strict", CSPLIT_F, "", "", ["-f", "", "f.txt", "/--/"]),
     ("cs32-crlf-bytes", "strict", "printf 'x\\r\\n--\\r\\ny\\r\\n' > w.txt", "", "",
      ["w.txt", "/--/"]),
+    ("cs33-short-h-rejected", "strict", "", "", "", ["-h"]),
 ]
 
 factor_rows = [
@@ -2423,6 +2424,7 @@ pathchk_rows = [
     ("pk28-version", "strict", "", "", "", ["--version"]),
     ("pk29-two-one-bad", "strict", PK_SETUP_REG, "", "", ["okname", "regfile/file"]),
     ("pk30-reserved-stem", "win", "", "", "", ["con.txt"]),
+    ("pk31-short-h-rejected", "strict", "", "", "", ["-h"]),
 ]
 
 ptx_rows = [
@@ -2461,6 +2463,7 @@ ptx_rows = [
     ("px27-gap-one-narrow", "win",
      "printf 'aaa bbb ccc ddd\\n' > ab.txt", "", "", ["-g", "1", "-w", "40", "ab.txt"]),
     ("px28-two-files", "win", PTX_SETUP_HW, "", "", ["o.txt", "hw.txt"]),
+    ("px29-short-h-rejected", "strict", "", "", "", ["-h"]),
 ]
 
 shuf_rows = [
@@ -2584,6 +2587,7 @@ csplit_rows = [
     ("cs31-empty-prefix", "strict", CSPLIT_F, "", "", ["-f", "", "f.txt", "/--/"]),
     ("cs32-crlf-bytes", "strict", "printf 'x\\r\\n--\\r\\ny\\r\\n' > w.txt", "", "",
      ["w.txt", "/--/"]),
+    ("cs33-short-h-rejected", "strict", "", "", "", ["-h"]),
 ]
 
 factor_rows = [
@@ -2707,6 +2711,7 @@ pathchk_rows = [
     ("pk28-version", "strict", "", "", "", ["--version"]),
     ("pk29-two-one-bad", "strict", PK_SETUP_REG, "", "", ["okname", "regfile/file"]),
     ("pk30-reserved-stem", "win", "", "", "", ["con.txt"]),
+    ("pk31-short-h-rejected", "strict", "", "", "", ["-h"]),
 ]
 
 ptx_rows = [
@@ -2745,6 +2750,7 @@ ptx_rows = [
     ("px27-gap-one-narrow", "win",
      "printf 'aaa bbb ccc ddd\\n' > ab.txt", "", "", ["-g", "1", "-w", "40", "ab.txt"]),
     ("px28-two-files", "win", PTX_SETUP_HW, "", "", ["o.txt", "hw.txt"]),
+    ("px29-short-h-rejected", "strict", "", "", "", ["-h"]),
 ]
 
 shuf_rows = [

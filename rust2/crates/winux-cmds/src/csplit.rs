@@ -23,6 +23,8 @@
 //!   lines too). Line-number patterns must be non-decreasing (equal only
 //!   warns). The LAST delimiter closes a regexp (`/a/b/` searches "a/b").
 //! * Exit status 1 on any failure, 0 otherwise.
+//! * GNU has no -h short option (getopt_long matches --help only long):
+//!   `-h` is "invalid option -- 'h'" rc 1 (argopt H_REJECT_MARKER).
 //!
 //! Windows value model / documented subset:
 //! * Regexps use the shared BRE engine (`crate::bre`, the gnulib
@@ -92,6 +94,8 @@ const OPTS: &[OptSpec] = &[
         long: "suppress-matched",
         takes_value: false,
     },
+    // GNU csplit has no -h: reject it like getopt_long does.
+    argopt::H_REJECT_SPEC,
 ];
 
 const CSPLIT_HELP_BODY: &str = r#"Usage: csplit [OPTION]... FILE PATTERN...
@@ -619,6 +623,9 @@ pub fn csplit_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         Ok(p) => p,
         Err(s) => return Ok(s),
     };
+    if let Some(status) = argopt::rejected_short_h(io, "csplit", &p, 1) {
+        return Ok(status);
+    }
     if let Some(which) = p
         .flags
         .iter()
@@ -1217,5 +1224,17 @@ mod tests {
         assert_eq!(r.out, "3\n7\n");
         assert_eq!(file(&r.dir, "xx00"), "x\r\n");
         assert_eq!(file(&r.dir, "xx01"), "--\r\ny\r\n");
+    }
+
+    #[test]
+    fn short_h_is_rejected_like_gnu() {
+        // GNU coreutils 9.4 probed: `-h` is "invalid option -- 'h'" rc 1.
+        let r = run(&[], &["-h"]);
+        assert_eq!(r.rc, 1);
+        assert_eq!(r.out, "");
+        assert_eq!(
+            r.err,
+            "csplit: invalid option -- 'h'\nTry 'csplit --help' for more information.\n"
+        );
     }
 }
