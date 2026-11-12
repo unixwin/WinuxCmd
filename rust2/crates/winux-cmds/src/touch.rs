@@ -302,7 +302,7 @@ pub fn touch_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     // `-r missing -d garbage` and `-r missing` with no operands both
     // report the stat failure).
     if let Some(r) = &opts.reference {
-        match fs_win::file_meta(&ctx.cwd, r, true) {
+        match fs_win::file_meta(ctx, r, true) {
             Ok(m) => {
                 ref_atime = Some(m.atime);
                 ref_mtime = Some(m.mtime);
@@ -400,11 +400,11 @@ pub fn touch_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         // silent like the plain missing case.
         if op.ends_with('/') || op.ends_with('\\') {
             let stripped = op.trim_end_matches(['/', '\\']);
-            match fs_win::file_meta(&ctx.cwd, stripped, true) {
+            match fs_win::file_meta(ctx, stripped, true) {
                 Ok(m) if m.is_dir => {
                     // touch the directory through the stripped spelling
                     if let Err(e) = fs_win::set_file_times(
-                        &ctx.cwd,
+                        ctx,
                         stripped,
                         None,
                         atime,
@@ -452,15 +452,15 @@ pub fn touch_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         // pattern stays literal (the GNU glob default), so GNU's
         // creates-a-literal-'*'-file diagnostic keeps a shape.
         let expanded = if contains_wildcard(op) {
-            glob_expand_in(&ctx.cwd, op)
+            glob_expand_in(ctx, op)
         } else {
             None
         };
         for f in expanded.unwrap_or_else(|| vec![op.clone()]) {
             // missing file: create unless -c
-            let missing = fs_win::file_meta(&ctx.cwd, &f, true).is_err();
+            let missing = fs_win::file_meta(ctx, &f, true).is_err();
             if missing && !opts.no_create {
-                if let Err(e) = fs_win::create_file(&ctx.cwd, &f) {
+                if let Err(e) = fs_win::create_file(ctx, &f) {
                     let _ = writeln!(
                         io.stderr,
                         "touch: cannot touch '{f}': {}",
@@ -470,18 +470,10 @@ pub fn touch_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     continue;
                 }
             }
-            let is_dir = fs_win::file_meta(&ctx.cwd, &f, true)
+            let is_dir = fs_win::file_meta(ctx, &f, true)
                 .map(|m| m.is_dir)
                 .unwrap_or(false);
-            match fs_win::set_file_times(
-                &ctx.cwd,
-                &f,
-                None,
-                atime,
-                mtime,
-                is_dir,
-                opts.no_dereference,
-            ) {
+            match fs_win::set_file_times(ctx, &f, None, atime, mtime, is_dir, opts.no_dereference) {
                 Ok(()) => {}
                 Err(e) => {
                     if missing && opts.no_create {
@@ -1325,7 +1317,7 @@ mod tests {
     }
 
     fn mtime_epoch(sc: &ScratchCtx, name: &str) -> i64 {
-        let m = fs_win::file_meta(&sc.dir, name, true).unwrap();
+        let m = fs_win::file_meta(&sc.ctx(), name, true).unwrap();
         m.mtime.to_epoch().0
     }
 
@@ -1369,7 +1361,7 @@ mod tests {
         assert_eq!((r, e.as_str()), (0, ""));
         // local +0800 epoch (probed GNU: 1078042902); the wall time itself
         // is zone independent: 16:21:42 local
-        let m = fs_win::file_meta(&sc.dir, "reg", true).unwrap();
+        let m = fs_win::file_meta(&sc.ctx(), "reg", true).unwrap();
         let (secs, _) = m.mtime.to_epoch();
         let local = fs_win::to_local(m.mtime.as_u64() as i64).unwrap().0;
         assert_eq!(
@@ -1387,7 +1379,7 @@ mod tests {
         // explicit offset +0100: 16:21:42+01 == 15:21:42 UTC
         let (r, _) = set(&["-d", "2004-02-29 16:21:42 +0100", "reg"]);
         assert_eq!(r, 0);
-        let m = fs_win::file_meta(&sc.dir, "reg", true).unwrap();
+        let m = fs_win::file_meta(&sc.ctx(), "reg", true).unwrap();
         let (secs, _) = m.mtime.to_epoch();
         assert_eq!(secs, 1078068102);
         // @epoch
@@ -1398,7 +1390,7 @@ mod tests {
         let (r, _) = set(&["-d", "2004-02-29T16:21:42", "reg"]);
         assert_eq!(r, 0);
         let local = fs_win::to_local(
-            fs_win::file_meta(&sc.dir, "reg", true)
+            fs_win::file_meta(&sc.ctx(), "reg", true)
                 .unwrap()
                 .mtime
                 .as_u64() as i64,
@@ -1410,7 +1402,7 @@ mod tests {
         let (r, _) = set(&["-d", "2004-02-29", "reg"]);
         assert_eq!(r, 0);
         let local = fs_win::to_local(
-            fs_win::file_meta(&sc.dir, "reg", true)
+            fs_win::file_meta(&sc.ctx(), "reg", true)
                 .unwrap()
                 .mtime
                 .as_u64() as i64,
@@ -1426,7 +1418,7 @@ mod tests {
         let (r, e) = set(&["-d", "", "reg"]);
         assert_eq!((r, e.as_str()), (0, ""));
         let local = fs_win::to_local(
-            fs_win::file_meta(&sc.dir, "reg", true)
+            fs_win::file_meta(&sc.ctx(), "reg", true)
                 .unwrap()
                 .mtime
                 .as_u64() as i64,
@@ -1458,7 +1450,7 @@ mod tests {
         };
         let (r, e) = set(&["-t", "200402291621", "reg"]);
         assert_eq!((r, e.as_str()), (0, ""));
-        let m = fs_win::file_meta(&sc.dir, "reg", true).unwrap();
+        let m = fs_win::file_meta(&sc.ctx(), "reg", true).unwrap();
         let (secs, _) = m.mtime.to_epoch();
         // probed GNU local +0800 value; wall-clock check is zone independent
         assert_eq!(secs % 60, 0);
@@ -1467,7 +1459,7 @@ mod tests {
         let (r, _) = set(&["-t", "200402291621.30", "reg"]);
         assert_eq!(r, 0);
         let local = fs_win::to_local(
-            fs_win::file_meta(&sc.dir, "reg", true)
+            fs_win::file_meta(&sc.ctx(), "reg", true)
                 .unwrap()
                 .mtime
                 .as_u64() as i64,
@@ -1492,7 +1484,7 @@ mod tests {
         let (r, _) = set(&["-t", "9904291621", "reg"]);
         assert_eq!(r, 0);
         let local = fs_win::to_local(
-            fs_win::file_meta(&sc.dir, "reg", true)
+            fs_win::file_meta(&sc.ctx(), "reg", true)
                 .unwrap()
                 .mtime
                 .as_u64() as i64,
@@ -1504,7 +1496,7 @@ mod tests {
         let (r, _) = set(&["-t", "990402291621", "reg"]);
         assert_eq!(r, 0);
         let local = fs_win::to_local(
-            fs_win::file_meta(&sc.dir, "reg", true)
+            fs_win::file_meta(&sc.ctx(), "reg", true)
                 .unwrap()
                 .mtime
                 .as_u64() as i64,
@@ -1591,7 +1583,7 @@ mod tests {
             assert_eq!(r, 0);
         }
         let local = fs_win::to_local(
-            fs_win::file_meta(&sc.dir, "clamped", true)
+            fs_win::file_meta(&sc.ctx(), "clamped", true)
                 .unwrap()
                 .mtime
                 .as_u64() as i64,

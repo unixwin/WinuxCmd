@@ -9,6 +9,7 @@
 use std::path::Path;
 
 use crate::fs_win;
+use winux_core::Ctx;
 
 pub fn contains_wildcard(s: &str) -> bool {
     s.contains('*') || s.contains('?') || s.contains('[')
@@ -87,22 +88,29 @@ fn wildcard_match(pat: &str, name: &str) -> bool {
 /// glob default: unmatched patterns stay literal so diagnostics stay
 /// useful). A literal existing path with no '[' is NOT globbed (the 1.x
 /// literal-first rule).
-pub fn glob_expand_in(base: &Path, pattern: &str) -> Option<Vec<String>> {
+pub fn glob_expand_in(ctx: &Ctx, pattern: &str) -> Option<Vec<String>> {
     if !contains_wildcard(pattern) {
         return None;
     }
     let has_class = pattern.contains('[');
-    if !has_class && std::path::Path::new(&fs_win::api_path(base, pattern)).exists() {
+    if !has_class && std::path::Path::new(&fs_win::api_path(ctx, pattern)).exists() {
         return None; // literal path wins
     }
     let (dir_part, leaf) = match pattern.rfind(['/', '\\']) {
         Some(i) => (&pattern[..i], &pattern[i + 1..]),
         None => ("", pattern),
     };
+    // the directory prefix resolves through the shell-namespace boundary
+    // like any operand (a "/tmp/*.txt" pattern globs the shell tmp view)
+    let dir_mapped = winux_core::path::normalize_operand(ctx.env, &ctx.cwd, dir_part);
     let dir_path = if dir_part.is_empty() {
-        base.to_path_buf()
+        ctx.cwd.to_path_buf()
+    } else if dir_mapped != dir_part {
+        std::path::PathBuf::from(dir_mapped)
+    } else if Path::new(dir_part).is_absolute() {
+        std::path::PathBuf::from(dir_part)
     } else {
-        base.join(dir_part)
+        ctx.cwd.join(dir_part)
     };
     let mut out = Vec::new();
     let entries = std::fs::read_dir(&dir_path).ok()?;

@@ -24,6 +24,8 @@
 use std::ffi::c_void;
 use std::path::Path;
 
+use winux_core::Ctx;
+
 #[allow(clippy::upper_case_acronyms)]
 pub type DWORD = u32;
 #[allow(clippy::upper_case_acronyms)]
@@ -233,80 +235,14 @@ pub mod imp {
             .collect()
     }
 
-    /// Build an extended-length (\\?\) path for API calls; relative paths
-    /// are absolutized against `base` first. Forward slashes are folded to
-    /// backslashes because \\?\-prefixed paths get no normalization.
-    /// Map the POSIX device paths the 1.x C++ applets honor onto their
-    /// Windows DOS devices (native_path::resolve_pseudo_device_w family).
-    pub fn map_device(operand: &str) -> &str {
-        match dos_device_canonical(operand) {
-            Some(dev) => dev,
-            None => operand,
-        }
-    }
-
-    /// Whole-operand DOS device recognition (1.x native_path.cppm
-    /// resolve_pseudo_device_w + is_dos_device_name_w, the #276 boundary):
-    /// POSIX pseudo-device spellings fold onto their Windows devices
-    /// (/dev/null -> NUL, /dev/tty -> CONIN$) and the bare reserved names
-    /// are recognized case-insensitively (MSYS rewrites /dev/null to "nul"
-    /// in native argv). A device name only resolves when it is the WHOLE
-    /// operand — "dir\\NUL" names an ordinary file, and so does
-    /// "\\\\?\\C:\\dir\\NUL". Returns the canonical Windows device name.
-    fn dos_device_canonical(operand: &str) -> Option<&'static str> {
-        match operand {
-            "/dev/null" | "/dev/zero" => return Some("NUL"),
-            "/dev/tty" => return Some("CONIN$"),
-            _ => {}
-        }
-        if operand.contains('/') || operand.contains('\\') {
-            return None;
-        }
-        const DOS_DEVICES: [&str; 24] = [
-            "NUL", "CON", "PRN", "AUX", "CONIN$", "CONOUT$", "COM1", "COM2", "COM3", "COM4",
-            "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6",
-            "LPT7", "LPT8", "LPT9",
-        ];
-        let upper = operand.to_ascii_uppercase();
-        DOS_DEVICES.into_iter().find(|d| *d == upper)
-    }
-
-    /// CreateFileW open-probe for a DOS device name — the existence gate
-    /// that replaces the CRT stat / GetFileAttributesExW path, both of
-    /// which reject device names outright (1.x native_path
-    /// file_attribute_data_w). Plain GENERIC_READ without
-    /// FILE_READ_ATTRIBUTES: the null device answers a read open but
-    /// refuses attribute-only access with ACCESS_DENIED (probed kernel32:
-    /// CreateFileW("NUL", GENERIC_READ|0x800000) -> gle 5, GENERIC_READ ->
-    /// a valid handle). Returns whether the device opened.
-    pub fn probe_dos_device(name: &str) -> bool {
-        let w = wide(name);
-        let handle = unsafe {
-            CreateFileW(
-                w.as_ptr(),
-                GENERIC_READ,
-                FILE_SHARE_ALL,
-                std::ptr::null_mut(),
-                OPEN_EXISTING,
-                0,
-                std::ptr::null_mut(),
-            )
-        };
-        if handle == INVALID_HANDLE_VALUE || handle.is_null() {
-            return false;
-        }
-        unsafe { CloseHandle(handle) };
-        true
-    }
-
-    /// Metadata for a DOS device operand: the attribute record is
-    /// synthesized (zeroed times/size, one link, character_device flag)
-    /// because the device handle answers no GetFileInformationByHandle
-    /// (ERROR_INVALID_FUNCTION) and cannot feed the ordinary snapshot.
-    /// GNU reports /dev/null as a character special file of size 0
-    /// (#276); %n keeps the operand text at the caller.
+    /// Whole-operand DOS device probe — the existence gate that replaces
+    /// the CRT stat / GetFileAttributesExW path, both of which reject
+    /// device names outright (1.x native_path file_attribute_data_w). The
+    /// probe itself lives in winux_core::path::imp since the wave3b
+    /// shell-namespace port (#1488): one table, one probe, shared by every
+    /// crate.
     fn dos_device_meta(dev: &'static str) -> Result<FileMeta, u32> {
-        if !probe_dos_device(dev) && raw_attributes(dev).is_none() {
+        if !winux_core::path::imp::probe_dos_device(dev) && raw_attributes(dev).is_none() {
             // neither an open nor an attribute answer: report the probe
             // error (raw_attributes was the last failing call)
             return Err(kernel32_last_error());
@@ -318,187 +254,32 @@ pub mod imp {
         })
     }
 
-    /// Fold literal colons in the operand's final component onto the
-    /// private-use carrier U+F03A (#1283; 1.x native_path.cppm
-    /// fold_carrier_colons_w). A ':' in a final component is never a drive
-    /// colon (those live in earlier components) and Win32 reads it as an
-    /// alternate-data-stream separator, while the shell's own path layer
-    /// stores such names on disk with ':' encoded as U+F03A — the spelling
-    /// redirects actually create and MSYS resolves. The bare drive ("D:")
-    /// keeps its drive meaning, and verbatim/device spellings ("\\?\\",
-    /// "\\\\.\\") pass through untouched (they are checked by the caller
-    /// before the fold here, since api_path adds the \\?\ prefix only
-    /// after this fold).
-    fn fold_carrier_colons(normalized: &str) -> Option<String> {
-        if normalized.starts_with(r"\\?\") || normalized.starts_with(r"\\.\") {
-            return None;
-        }
-        let sep = normalized.rfind(['\\', '/']);
-        let tail = match sep {
-            Some(i) => &normalized[i + 1..],
-            None => normalized,
-        };
-        if !tail.contains(':') {
-            return None;
-        }
-        // bare "D:" — the drive itself, not a file name
-        if sep.is_none() && normalized.chars().count() == 2 {
-            return None;
-        }
-        let tail_begin = sep.map(|i| i + 1).unwrap_or(0);
-        let mut out = String::with_capacity(normalized.len());
-        for (i, ch) in normalized.char_indices() {
-            if i >= tail_begin && ch == ':' {
-                out.push('\u{F03A}');
-            } else {
-                out.push(ch);
-            }
-        }
-        Some(out)
-    }
-
-    /// MSYS drive dialect (#1145; 1.x native_path.cppm
-    /// fold_posix_drive_prefix_w + fold_drive_dialect_w): "/cygdrive/d/..."
-    /// and the WSL interop prefix "/mnt/d/..." fold onto the MSYS spelling
-    /// "/d/...", which then folds to "D:\\..." — every POSIX drive form
-    /// names the same file as the native spelling. Returns nullopt for any
-    /// other spelling. Ported at the one operand boundary so every rust2
-    /// applet resolves the spellings the 1.x build unified there.
-    fn fold_posix_drive_prefix(normalized: &str) -> Option<String> {
-        let b = normalized.as_bytes();
-        // both separators are accepted inside the prefix
-        let is_sep = |c: u8| c == b'/' || c == b'\\';
-        let strip_prefix_of = |word: &str| -> Option<&str> {
-            let wb = word.as_bytes();
-            if b.len() > wb.len()
-                && b[..wb.len()]
-                    .iter()
-                    .zip(wb)
-                    .all(|(x, y)| x.eq_ignore_ascii_case(y))
-            {
-                Some(&normalized[wb.len()..])
-            } else {
-                None
-            }
-        };
-        // /cygdrive/<d>/...
-        if let Some(rest) = strip_prefix_of("/cygdrive/") {
-            if rest.len() >= 2
-                && rest.as_bytes()[0].is_ascii_alphabetic()
-                && is_sep(rest.as_bytes()[1])
-            {
-                // rest IS "<d>/<tail>" — the MSYS spelling just needs
-                // the leading slash back
-                return Some(format!("/{rest}"));
-            }
-            return None;
-        }
-        // /mnt/<d>/... (WSL interop; #1172)
-        if let Some(rest) = strip_prefix_of("/mnt/") {
-            if rest.len() >= 2
-                && rest.as_bytes()[0].is_ascii_alphabetic()
-                && is_sep(rest.as_bytes()[1])
-            {
-                return Some(format!("/{rest}"));
-            }
-            return None;
-        }
-        None
-    }
-
-    /// "/d/..." -> "D:\\..." (1.x fold_drive_dialect_w: a leading
-    /// separator followed by a single drive letter and a separator is the
-    /// MSYS drive spelling; anything else stays untouched).
-    fn fold_drive_dialect(normalized: &str) -> Option<String> {
-        let b = normalized.as_bytes();
-        if b.len() < 3 || b[0] != b'/' || !b[1].is_ascii_alphabetic() || b[2] != b'/' {
-            return None;
-        }
-        // guard against a 2-component prefix that is really a directory
-        // named "x" (the 1.x is_drive_form also excludes drive-relative
-        // colliders like "/d/x" only by shape; shape is the contract here)
-        let drive = b[1].to_ascii_uppercase() as char;
-        let mut out = String::with_capacity(normalized.len() + 1);
-        out.push(drive);
-        out.push(':');
-        out.push('\\');
-        if normalized.len() > 3 {
-            out.push_str(&normalized[3..]);
-        }
-        Some(out.replace('/', "\\"))
-    }
-
-    /// The configured shell install root (1.x shell_ns::root): the
-    /// environment names the winuxsh/rubash tree the remaining
-    /// "/"-prefixed operands resolve through.
-    fn shell_root_env() -> Option<String> {
-        for name in [
-            "__RUBASH_SHELL_ROOT",
-            "NIU_ROOT",
-            "WINUXSH_ROOT",
-            "RUBASH_ROOT",
-        ] {
-            if let Some(v) = std::env::var_os(name) {
-                let v = v.to_string_lossy().into_owned();
-                if !v.is_empty() {
-                    return Some(v);
-                }
-            }
-        }
-        None
-    }
-
-    /// [1.x shell_tree_to_native_w] a remaining "/"-prefixed operand (the
-    /// drive-dialect folds claimed "/d/..." already) resolves through the
-    /// shell tree: root + tail, with the MSYS open order's ".exe" leaf
-    /// retry ("/usr/bin/seq" -> root/usr/bin/seq.exe when only the .exe
-    /// exists). No root configured -> unchanged.
-    fn fold_shell_tree(operand: &str) -> Option<String> {
-        if operand.is_empty() || !operand.starts_with('/') {
-            return None;
-        }
-        let root = shell_root_env()?;
-        let base = root.replace('/', "\\");
-        let base = base.trim_end_matches('\\').to_string();
-        let tail = operand[1..].replace('/', "\\");
-        let mut mapped = if tail.is_empty() {
-            base
-        } else {
-            format!("{base}\\{tail}")
-        };
-        if !mapped.is_empty() && !mapped.ends_with('\\') {
-            let missing = file_meta(Path::new(""), &mapped, true).is_err();
-            if missing {
-                let exe = format!("{mapped}.exe");
-                if file_meta(Path::new(""), &exe, true).is_ok() {
-                    mapped = exe;
-                }
-            }
-        }
-        Some(mapped)
-    }
-
-    pub fn api_path(base: &Path, operand: &str) -> String {
-        let operand = map_device(operand);
+    /// Build an extended-length (\\?\) path for API calls; relative paths
+    /// are absolutized against `ctx.cwd` first. Forward slashes are folded
+    /// to backslashes because \\?\-prefixed paths get no normalization.
+    ///
+    /// This is THE operand boundary (1.x native_path.cppm
+    /// make_api_path_operand_w + normalize_api_operand_w, routed through
+    /// the winux-core port in wave3b #1488): pseudo-devices resolve to
+    /// their Windows device names, the /cygdrive/X and /mnt/X prefixes
+    /// fold onto the MSYS /X spelling, /X folds onto X:\, carrier colons
+    /// fold onto U+F03A, and the remaining POSIX spellings (/tmp, /home,
+    /// /usr/..., the bare "/") map through the configured shell tree.
+    pub fn api_path(ctx: &Ctx, operand: &str) -> String {
         // A DOS device name keeps its device magic only WITHOUT the \\?\
         // prefix ("\\?\D:\dir\NUL" is a literal file named NUL, not the
         // null device), so the canonical device name passes through
-        // verbatim (any reserved name: NUL, CON, COM4, ...).
-        if dos_device_canonical(operand).is_some() {
-            return operand.to_string();
+        // verbatim (any reserved name: NUL, CON, COM4, ...;
+        // make_api_path_operand_w keeps it in both normalized and
+        // extended).
+        if let Some(dev) = winux_core::path::resolve_pseudo_device(operand) {
+            return dev.to_string();
         }
-        let posix_folded = fold_posix_drive_prefix(operand);
-        let operand: &str = posix_folded.as_deref().unwrap_or(operand);
-        let dialect_folded = fold_drive_dialect(operand);
-        let operand: &str = dialect_folded.as_deref().unwrap_or(operand);
-        let folded = fold_carrier_colons(operand);
-        let operand: &str = folded.as_deref().unwrap_or(operand);
-        let shell_mapped = fold_shell_tree(operand);
-        let operand: &str = shell_mapped.as_deref().unwrap_or(operand);
-        let p = if Path::new(operand).is_absolute() {
-            std::path::PathBuf::from(operand)
+        let operand = winux_core::path::normalize_operand(ctx.env, &ctx.cwd, operand);
+        let p = if Path::new(&operand).is_absolute() {
+            std::path::PathBuf::from(&operand)
         } else {
-            base.join(operand)
+            ctx.cwd.join(&operand)
         };
         let s = p.to_string_lossy().replace('/', "\\");
         // Collapse "." components lexically: the \\?\ prefix gets no
@@ -598,14 +379,14 @@ pub mod imp {
 
     /// Open the path and snapshot its metadata. `lstat` keeps reparse
     /// points unopened (symlink operands report the link itself).
-    pub fn file_meta(base: &Path, operand: &str, lstat: bool) -> Result<FileMeta, u32> {
+    pub fn file_meta(ctx: &Ctx, operand: &str, lstat: bool) -> Result<FileMeta, u32> {
         // DOS device operands take the synthesized device record before the
         // ordinary handle snapshot (see dos_device_meta): the C++ 1.x stat
         // applet took the same attribute-record path (#276).
-        if let Some(dev) = dos_device_canonical(operand) {
+        if let Some(dev) = winux_core::path::resolve_pseudo_device(operand) {
             return dos_device_meta(dev);
         }
-        let extended = api_path(base, operand);
+        let extended = api_path(ctx, operand);
         let mut meta = FileMeta::default();
         // symlink check first: affects both open flags and reporting
         let attrs = raw_attributes(&extended);
@@ -630,7 +411,7 @@ pub mod imp {
             // Dangling symlink with lstat: FindFirstFileW gives the link's
             // own metadata (the C++ lstat path does the same).
             if lstat {
-                return find_first_meta(base, &extended);
+                return find_first_meta(ctx, &extended);
             }
             return Err(kernel32_last_error());
         }
@@ -676,9 +457,9 @@ pub mod imp {
         Ok(meta)
     }
 
-    fn find_first_meta(base: &Path, extended: &str) -> Result<FileMeta, u32> {
+    fn find_first_meta(ctx: &Ctx, extended: &str) -> Result<FileMeta, u32> {
         // FindFirstFileW on the \\?\ path's parent + name
-        let full = api_path(base, &strip_extended(extended));
+        let full = api_path(ctx, &strip_extended(extended));
         let w = wide(&full);
         let mut meta = FileMeta::default();
         #[repr(C)]
@@ -766,7 +547,7 @@ pub mod imp {
     /// SetFileTime on the path; None fields keep their current value.
     /// `no_dereference` opens reparse points directly (touch -h).
     pub fn set_file_times(
-        base: &Path,
+        ctx: &Ctx,
         operand: &str,
         ctime: Option<FileTime>,
         atime: Option<FileTime>,
@@ -774,7 +555,7 @@ pub mod imp {
         is_dir_hint: bool,
         no_dereference: bool,
     ) -> Result<(), u32> {
-        let extended = api_path(base, operand);
+        let extended = api_path(ctx, operand);
         let mut flags = FILE_FLAG_BACKUP_SEMANTICS;
         if no_dereference {
             flags |= FILE_FLAG_OPEN_REPARSE_POINT;
@@ -794,7 +575,7 @@ pub mod imp {
         if handle == INVALID_HANDLE_VALUE || handle.is_null() {
             // directory operands may need the backup-semantics open only
             if is_dir_hint && no_dereference {
-                return set_file_times(base, operand, ctime, atime, mtime, is_dir_hint, false);
+                return set_file_times(ctx, operand, ctime, atime, mtime, is_dir_hint, false);
             }
             return Err(kernel32_last_error());
         }
@@ -823,8 +604,8 @@ pub mod imp {
     /// which is the GNU-on-Windows/MSYS "failed to remove 'X': Permission
     /// denied" shape the ln -f corpus pins. std::fs::remove_file is NOT
     /// usable here — it silently clears the read-only attribute first.
-    pub fn delete_file(base: &Path, operand: &str) -> Result<(), u32> {
-        let w = wide(&api_path(base, operand));
+    pub fn delete_file(ctx: &Ctx, operand: &str) -> Result<(), u32> {
+        let w = wide(&api_path(ctx, operand));
         let rc = unsafe { DeleteFileW(w.as_ptr()) };
         if rc == 0 {
             Err(kernel32_last_error())
@@ -858,8 +639,8 @@ pub mod imp {
     }
 
     /// Create the file if missing and set both times (GNU touch default).
-    pub fn create_file(base: &Path, operand: &str) -> Result<(), u32> {
-        let extended = api_path(base, operand);
+    pub fn create_file(ctx: &Ctx, operand: &str) -> Result<(), u32> {
+        let extended = api_path(ctx, operand);
         let w = wide(&extended);
         const CREATE_ALWAYS: DWORD = 2;
         const GENERIC_WRITE: DWORD = 0x4000_0000;
@@ -881,9 +662,9 @@ pub mod imp {
         Ok(())
     }
 
-    pub fn hard_link(base: &Path, existing: &str, link: &str) -> Result<(), u32> {
-        let e = wide(&api_path(base, existing));
-        let l = wide(&api_path(base, link));
+    pub fn hard_link(ctx: &Ctx, existing: &str, link: &str) -> Result<(), u32> {
+        let e = wide(&api_path(ctx, existing));
+        let l = wide(&api_path(ctx, link));
         let rc = unsafe { CreateHardLinkW(l.as_ptr(), e.as_ptr(), std::ptr::null_mut()) };
         if rc == 0 {
             Err(kernel32_last_error())
@@ -892,9 +673,9 @@ pub mod imp {
         }
     }
 
-    pub fn create_symlink(base: &Path, target: &str, link: &str, dir: bool) -> Result<(), u32> {
-        let t = wide(&api_path(base, target));
-        let l = wide(&api_path(base, link));
+    pub fn create_symlink(ctx: &Ctx, target: &str, link: &str, dir: bool) -> Result<(), u32> {
+        let t = wide(&api_path(ctx, target));
+        let l = wide(&api_path(ctx, link));
         let mut flags = if dir {
             SYMBOLIC_LINK_FLAG_DIRECTORY
         } else {
@@ -930,8 +711,8 @@ pub mod imp {
 
     /// Owner/group account of a path: (name, numeric id) per side, using
     /// the 1.x id formula (src/utils/win32.cppm win32_account_id_from_sid).
-    pub fn file_accounts(base: &Path, operand: &str) -> ((String, String), (String, String)) {
-        let extended = api_path(base, operand);
+    pub fn file_accounts(ctx: &Ctx, operand: &str) -> ((String, String), (String, String)) {
+        let extended = api_path(ctx, operand);
         let w = wide(&extended);
         let mut owner: *mut c_void = std::ptr::null_mut();
         let mut group: *mut c_void = std::ptr::null_mut();
@@ -1046,11 +827,11 @@ pub mod imp {
 pub mod imp {
     use super::*;
 
-    pub fn file_meta(_base: &Path, _operand: &str, _lstat: bool) -> Result<FileMeta, u32> {
+    pub fn file_meta(_ctx: &Ctx, _operand: &str, _lstat: bool) -> Result<FileMeta, u32> {
         Err(2)
     }
     pub fn set_file_times(
-        _base: &Path,
+        _ctx: &Ctx,
         _operand: &str,
         _ctime: Option<FileTime>,
         _atime: Option<FileTime>,
@@ -1066,19 +847,19 @@ pub mod imp {
     ) -> Result<(), u32> {
         Err(1)
     }
-    pub fn delete_file(_base: &Path, _operand: &str) -> Result<(), u32> {
+    pub fn delete_file(_ctx: &Ctx, _operand: &str) -> Result<(), u32> {
         Err(1)
     }
-    pub fn create_file(_base: &Path, _operand: &str) -> Result<(), u32> {
+    pub fn create_file(_ctx: &Ctx, _operand: &str) -> Result<(), u32> {
         Err(1)
     }
-    pub fn hard_link(_base: &Path, _e: &str, _l: &str) -> Result<(), u32> {
+    pub fn hard_link(_ctx: &Ctx, _e: &str, _l: &str) -> Result<(), u32> {
         Err(1)
     }
-    pub fn create_symlink(_base: &Path, _t: &str, _l: &str, _d: bool) -> Result<(), u32> {
+    pub fn create_symlink(_ctx: &Ctx, _t: &str, _l: &str, _d: bool) -> Result<(), u32> {
         Err(1)
     }
-    pub fn file_accounts(_base: &Path, _operand: &str) -> ((String, String), (String, String)) {
+    pub fn file_accounts(_ctx: &Ctx, _operand: &str) -> ((String, String), (String, String)) {
         (
             ("0".to_string(), String::new()),
             ("0".to_string(), String::new()),
@@ -1090,16 +871,16 @@ pub mod imp {
     pub fn from_local(_st: &SystemTime) -> Option<FileTime> {
         None
     }
-    pub fn api_path(base: &Path, operand: &str) -> String {
-        if Path::new(operand).is_absolute() {
-            operand.to_string()
+    pub fn api_path(ctx: &Ctx, operand: &str) -> String {
+        let mapped = winux_core::path::normalize_operand(ctx.env, &ctx.cwd, operand);
+        if Path::new(&mapped).is_absolute() {
+            mapped
         } else {
-            base.join(operand).to_string_lossy().into_owned()
+            ctx.cwd.join(&mapped).to_string_lossy().into_owned()
         }
     }
 }
 
-pub use imp::map_device;
 pub use imp::*;
 
 /// Win32 error -> GNU strerror-style reason string (the same mapping the
@@ -1127,62 +908,117 @@ pub fn win32_reason(err: u32) -> &'static str {
 #[cfg(test)]
 mod api_path_probes {
     use super::*;
+    use winux_core::MapEnv;
+
+    /// A Ctx with cwd = base and no environment (no shell root: the
+    /// shell-namespace legs stay inert and the drive folds run bare).
+    #[cfg(windows)]
+    fn plain_ctx(base: &Path) -> Ctx<'static> {
+        let env: &'static MapEnv = Box::leak(Box::new(MapEnv::new()));
+        Ctx {
+            cwd: base.to_path_buf(),
+            env,
+        }
+    }
 
     #[test]
     fn probe_drive_folds() {
         #[cfg(windows)]
         {
-            let out = imp::api_path(Path::new(r"D:\wd"), "/cygdrive/d/repo/x/f.txt");
+            let ctx = plain_ctx(Path::new(r"D:\wd"));
+            let out = imp::api_path(&ctx, "/cygdrive/d/repo/x/f.txt");
             assert_eq!(out, r"\\?\D:\repo\x\f.txt", "cygdrive fold");
-            let out = imp::api_path(Path::new(r"D:\wd"), "/mnt/d/repo/x/f.txt");
+            let out = imp::api_path(&ctx, "/mnt/d/repo/x/f.txt");
             assert_eq!(out, r"\\?\D:\repo\x\f.txt", "mnt fold");
-            let out = imp::api_path(Path::new(r"D:\wd"), "/d/repo/x/f.txt");
+            let out = imp::api_path(&ctx, "/d/repo/x/f.txt");
             assert_eq!(out, r"\\?\D:\repo\x\f.txt", "dialect fold");
         }
     }
 
     #[test]
-    #[cfg(windows)]
     fn dos_device_names_resolve() {
         // POSIX pseudo-devices and bare reserved names (1.x
-        // resolve_pseudo_device_w / is_dos_device_name_w)
-        assert_eq!(imp::map_device("/dev/null"), "NUL");
-        assert_eq!(imp::map_device("/dev/zero"), "NUL");
-        assert_eq!(imp::map_device("/dev/tty"), "CONIN$");
-        assert_eq!(imp::map_device("nul"), "NUL");
-        assert_eq!(imp::map_device("ConIN$"), "CONIN$");
-        assert_eq!(imp::map_device("com4"), "COM4");
-        assert_eq!(imp::map_device("LPT7"), "LPT7");
+        // resolve_pseudo_device_w / is_dos_device_name_w; the table moved
+        // to winux_core::path in the wave3b port — C++ table verbatim,
+        // which has no /dev/zero entry)
+        assert_eq!(
+            winux_core::path::resolve_pseudo_device("/dev/null"),
+            Some("NUL")
+        );
+        assert_eq!(
+            winux_core::path::resolve_pseudo_device("/dev/tty"),
+            Some("CONIN$")
+        );
+        assert_eq!(winux_core::path::resolve_pseudo_device("nul"), Some("NUL"));
+        assert_eq!(
+            winux_core::path::resolve_pseudo_device("ConIN$"),
+            Some("CONIN$")
+        );
+        assert_eq!(
+            winux_core::path::resolve_pseudo_device("com4"),
+            Some("COM4")
+        );
+        assert_eq!(
+            winux_core::path::resolve_pseudo_device("LPT7"),
+            Some("LPT7")
+        );
         // whole operand only: a separator or extension names an ordinary file
-        assert_eq!(imp::map_device("dir/NUL"), "dir/NUL");
-        assert_eq!(imp::map_device("dir\\NUL"), "dir\\NUL");
-        assert_eq!(imp::map_device("nul.txt"), "nul.txt");
-        assert_eq!(imp::map_device("NULX"), "NULX");
-        assert_eq!(imp::map_device("COM0"), "COM0");
-        assert_eq!(imp::map_device("COM10"), "COM10");
-        // the device name passes through api_path verbatim (no \\?\ prefix)
-        assert_eq!(imp::api_path(Path::new("wd"), "/dev/null"), "NUL");
-        assert_eq!(imp::api_path(Path::new("wd"), "con"), "CON");
-        // api_path("/dev/tty") under the cwd tree... device, so verbatim too
-        assert_eq!(imp::api_path(Path::new("wd"), "/dev/tty"), "CONIN$");
+        assert_eq!(winux_core::path::resolve_pseudo_device("dir/NUL"), None);
+        assert_eq!(winux_core::path::resolve_pseudo_device("dir\\NUL"), None);
+        assert_eq!(winux_core::path::resolve_pseudo_device("nul.txt"), None);
+        assert_eq!(winux_core::path::resolve_pseudo_device("NULX"), None);
+        assert_eq!(winux_core::path::resolve_pseudo_device("COM0"), None);
+        assert_eq!(winux_core::path::resolve_pseudo_device("COM10"), None);
     }
 
     #[test]
     #[cfg(windows)]
     fn nul_device_probe_and_meta() {
         // the CI-safe device assertion: CreateFileW opens NUL
-        assert!(imp::probe_dos_device("NUL"));
+        assert!(winux_core::path::imp::probe_dos_device("NUL"));
         // file_meta synthesizes a character-device record (GNU %F
         // "character special file", size 0) instead of the CRT stat
         // EINVAL/EPERM refusal (#276)
-        let m = imp::file_meta(Path::new("wd"), "/dev/null", true).expect("/dev/null meta");
+        let ctx = plain_ctx(Path::new("wd"));
+        let m = imp::file_meta(&ctx, "/dev/null", true).expect("/dev/null meta");
         assert!(m.character_device);
         assert!(!m.is_dir && !m.is_symlink);
         assert_eq!(m.size, 0);
         assert_eq!(m.links, 1);
-        let m = imp::file_meta(Path::new("wd"), "NUL", false).expect("NUL meta");
+        let m = imp::file_meta(&ctx, "NUL", false).expect("NUL meta");
         assert!(m.character_device);
         // a device name with a separator is an ordinary (missing) file
-        assert!(imp::file_meta(Path::new("wd"), "dir/NUL", true).is_err());
+        assert!(imp::file_meta(&ctx, "dir/NUL", true).is_err());
+        // the device name passes through api_path verbatim (no \\?\ prefix)
+        assert_eq!(imp::api_path(&ctx, "/dev/null"), "NUL");
+        assert_eq!(imp::api_path(&ctx, "con"), "CON");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn shell_tree_maps_through_winux_core() {
+        // wave3b: with a shell root configured, the "/"-prefixed spellings
+        // resolve through the tree; /tmp pins to TMPDIR (the per-user temp
+        // namespace, niubash#94).
+        let env: &'static MapEnv = Box::leak(Box::new({
+            let mut e = MapEnv::new();
+            e.set("WINUXSH_ROOT", r"D:\shellroot");
+            e.set("TMPDIR", r"C:\tmproot");
+            e
+        }));
+        let ctx = Ctx {
+            cwd: std::path::PathBuf::from(r"D:\wd"),
+            env,
+        };
+        assert_eq!(imp::api_path(&ctx, "/"), r"\\?\D:\shellroot");
+        assert_eq!(
+            imp::api_path(&ctx, "/tmp/probe/dir"),
+            r"\\?\C:\tmproot\probe\dir"
+        );
+        assert_eq!(
+            imp::api_path(&ctx, "/etc/passwd"),
+            r"\\?\D:\shellroot\etc\passwd"
+        );
+        assert_eq!(imp::api_path(&ctx, "/mnt/d/x"), r"\\?\D:\x");
     }
 }

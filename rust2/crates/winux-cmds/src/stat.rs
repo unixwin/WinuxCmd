@@ -333,7 +333,7 @@ fn field_for(
 fn mount_point(ctx: &Ctx, name: &str) -> String {
     #[cfg(windows)]
     {
-        let full = fs_win::imp::api_path(&ctx.cwd, name);
+        let full = fs_win::imp::api_path(ctx, name);
         #[link(name = "kernel32")]
         extern "system" {
             fn GetVolumePathNameW(path: *const u16, volume: *mut u16, len: u32) -> i32;
@@ -356,9 +356,10 @@ fn mount_point(ctx: &Ctx, name: &str) -> String {
 
 fn resolve(ctx: &Ctx, p: &str) -> std::path::PathBuf {
     // the one operand boundary (fs_win::api_path): drive-dialect folds,
-    // the carrier-colon fold, dot-segment collapse and the shell-tree
-    // mapping all happen there, exactly like the 1.x operand layer
-    std::path::PathBuf::from(fs_win::api_path(&ctx.cwd, p))
+    // the carrier-colon fold, dot-segment collapse, the pseudo-device
+    // names and the shell-tree mapping all happen there, exactly like the
+    // 1.x operand layer (native_path.cppm make_api_path_operand_w)
+    std::path::PathBuf::from(fs_win::api_path(ctx, p))
 }
 
 /// Expand one -c/--printf format for one entry. Returns whether a field
@@ -968,12 +969,12 @@ pub fn stat_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         // shared module carries the rules): wildcard operands expand over
         // the named directory, unmatched patterns stay literal
         let expanded = if contains_wildcard(op) {
-            glob_expand_in(&ctx.cwd, op)
+            glob_expand_in(ctx, op)
         } else {
             None
         };
         for op in expanded.unwrap_or_else(|| vec![op.clone()]) {
-            let meta = match fs_win::file_meta(&ctx.cwd, &op, !follow) {
+            let meta = match fs_win::file_meta(ctx, &op, !follow) {
                 Ok(m) => m,
                 Err(e) => {
                     let _ = writeln!(
@@ -985,7 +986,7 @@ pub fn stat_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     continue;
                 }
             };
-            let (owner, group) = fs_win::file_accounts(&ctx.cwd, &op);
+            let (owner, group) = fs_win::file_accounts(ctx, &op);
             let entry = StatEntry {
                 name: op.clone(),
                 meta,

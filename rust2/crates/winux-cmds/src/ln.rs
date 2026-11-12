@@ -347,7 +347,7 @@ fn resolve(ctx: &Ctx, p: &str) -> std::path::PathBuf {
     // "C:/...", "/c/...", "C:name" and relative spellings all reach the
     // OS as the same file the 1.x build resolved (the diagnostic layer
     // keeps the user's spelling; this layer keeps the resolution).
-    std::path::PathBuf::from(fs_win::api_path(&ctx.cwd, p))
+    std::path::PathBuf::from(fs_win::api_path(ctx, p))
 }
 
 fn is_existing_dir(ctx: &Ctx, p: &str) -> bool {
@@ -482,14 +482,14 @@ fn remove_existing(io: &mut Io, ctx: &Ctx, opts: &LnOpts, dst: &str) -> RemoveOu
     // read-only attribute before deleting, which would silently unlink
     // the exact case the corpus pins (readonly dest -> "failed to remove
     // 'link.txt': Permission denied", the GNU-on-Windows/MSYS shape)
-    if fs_win::delete_file(&ctx.cwd, dst).is_ok() {
+    if fs_win::delete_file(ctx, dst).is_ok() {
         RemoveOutcome::Gone
     } else {
         // a remove that was ATTEMPTED and failed (readonly destination ->
         // ERROR_ACCESS_DENIED) reports the removal failure, not File
         // exists (GNU ln -f on an unremovable dest: "failed to remove
         // 'X': <reason>"; probed coreutils 9.4 + the 1.x corpus test)
-        let reason = fs_win::delete_file(&ctx.cwd, dst)
+        let reason = fs_win::delete_file(ctx, dst)
             .err()
             .map(fs_win::win32_reason)
             .unwrap_or("Permission denied");
@@ -599,9 +599,9 @@ fn link_one(
         } else {
             src.to_string()
         };
-        fs_win::create_symlink(&ctx.cwd, &link_target, dst, dir_flag)
+        fs_win::create_symlink(ctx, &link_target, dst, dir_flag)
     } else {
-        fs_win::hard_link(&ctx.cwd, src, dst)
+        fs_win::hard_link(ctx, src, dst)
     };
     match rc {
         Ok(()) => {
@@ -631,7 +631,7 @@ fn link_one(
                     .map(|v| v.to_string_lossy().eq_ignore_ascii_case("copy"))
                     .unwrap_or(false)
             {
-                if let Ok(m) = fs_win::file_meta(&ctx.cwd, src, true) {
+                if let Ok(m) = fs_win::file_meta(ctx, src, true) {
                     if !m.is_dir && !m.is_symlink {
                         let from = resolve(ctx, src);
                         let to = resolve(ctx, dst);
@@ -700,8 +700,8 @@ fn relative_target(ctx: &Ctx, src: &str, dst: &str) -> String {
 
 fn same_file(ctx: &Ctx, a: &str, b: &str) -> bool {
     match (
-        fs_win::file_meta(&ctx.cwd, a, false),
-        fs_win::file_meta(&ctx.cwd, b, false),
+        fs_win::file_meta(ctx, a, false),
+        fs_win::file_meta(ctx, b, false),
     ) {
         (Ok(x), Ok(y)) => x.index == y.index && x.volume_serial == y.volume_serial,
         _ => false,

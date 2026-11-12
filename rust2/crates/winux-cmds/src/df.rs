@@ -718,6 +718,18 @@ pub fn df_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 failed = true;
                 continue;
             }
+            // the shell-namespace boundary (#1488): a POSIX spelling
+            // (/tmp/x, /mnt/d/x, ...) names its native path; the reported
+            // name keeps the operand text like GNU's df_file
+            let name = match winux_core::path::normalize_operand(ctx.env, &ctx.cwd, &name) {
+                m if m != name
+                    && (Path::new(&m).is_absolute()
+                        || winux_core::path::resolve_pseudo_device(&m).is_some()) =>
+                {
+                    m
+                }
+                _ => name,
+            };
             let path = Path::new(&name);
             let path_abs = if path.is_absolute() {
                 path.to_string_lossy().into_owned()
