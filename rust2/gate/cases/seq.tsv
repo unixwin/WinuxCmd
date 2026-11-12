@@ -50,3 +50,13 @@ sq47-suffix-space	strict				-f	%g 	1	2
 sq48-d-dot	strict				1.	2
 sq49-dot-lead	strict				.5	2
 sq50-plus-signs	strict				+2	+1	+6
+sq51-exact-audit	strict				0.9999999999999999999	1.0000000000000000002
+sq52-exact-audit-w	strict				-w	0.9999999999999999999	1.0000000000000000002
+sq53-exact-subulp	strict				0.9999999999999999999	0.0000000000000000001	1.0000000000000000002
+sq54-exact-sci23	strict				1e23	1e23
+sq55-exact-drift1k	strict				0	0.001	1
+sq56-exact-18grid	strict				0.000000000000000001	0.00000000000000001
+sq57-exact-19grid	strict				0	0.0000000000000000001	0.0000000000000000003
+sq58-exact-negzero	strict				-0.0	0.2	0.4
+sq59-exact-ld-boundary	strict				0.99999999999999999999	2
+sq60-exact-boundary2	strict				2	2.0000000000000000001	2.0000000000000000005
