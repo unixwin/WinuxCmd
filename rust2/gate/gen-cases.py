@@ -2338,6 +2338,55 @@ rev_rows = [
      ["r12"]),
 ]
 
+# `factor` — operand grammar and u64 factorizations (all values probed
+# against WSL coreutils 9.4). Multi-line stdin cannot pass through the
+# case harness (stdin column is a single printf %s token), so stdin rows
+# are single-line and the multi-line rules (blank-line skip, CR invalid,
+# junk-continue) are pinned by unit tests; operand rows cover the rest.
+factor_rows = [
+    ("fa01-12", "strict", "", "", "", ["12"]),
+    ("fa02-zero", "strict", "", "", "", ["0"]),
+    ("fa03-one", "strict", "", "", "", ["1"]),
+    ("fa04-prime", "strict", "", "", "", ["1000003"]),
+    ("fa05-two-primes", "strict", "", "", "", ["2147483647", "4294967291"]),
+    ("fa06-u64max", "strict", "", "", "", ["18446744073709551615"]),
+    ("fa07-mixed", "strict", "", "", "", ["123456789012345678"]),
+    ("fa08-4611", "strict", "", "", "", ["4611686018427387905"]),
+    ("fa09-semiprime", "strict", "", "", "", ["4295109041"]),
+    ("fa10-square", "strict", "", "", "", ["1000006000009"]),
+    ("fa11-two-args", "strict", "", "", "", ["6", "10"]),
+    ("fa12-combined", "strict", "", "", "", ["12", "0", "1", "49"]),
+    ("fa13-dashdash-num", "strict", "", "", "", ["--", "12"]),
+    ("fa14-dashdash-negative", "exit", "", "", "", ["--", "-5"]),
+    ("fa15-junk", "strict", "", "", "", ["xyz"]),
+    ("fa16-junk-continue", "strict", "", "", "", ["xyz", "6"]),
+    ("fa17-empty-operand", "strict", "", "", "", ["@EMPTY@"]),
+    ("fa18-trailing-junk", "strict", "", "", "", ["12x"]),
+    ("fa19-trailing-space", "strict", "", "", "", ["12 "]),
+    ("fa20-leading-space", "strict", "", "", "", [" 12"]),
+    ("fa21-plus", "strict", "", "", "", ["+12"]),
+    ("fa22-leading-zero", "strict", "", "", "", ["010"]),
+    ("fa23-leading-tab", "strict", "", "", "", ["\t12"]),
+    # beyond u64::MAX: GNU factors it via GMP (rc 0, big-int output); the
+    # rust2 subset rejects with rc 1 — the documented deviation, so this
+    # row is record-only (`note`), never gating.
+    ("fa24-beyond-u64", "note", "", "", "", ["18446744073709551616"]),
+    ("fa25-exponents", "strict", "", "", "", ["-h", "12"]),
+    ("fa26-exponents-long", "strict", "", "", "", ["--exponents", "8"]),
+    ("fa27-exponents-prime", "strict", "", "", "", ["-h", "7"]),
+    ("fa28-exponents-two", "strict", "", "", "", ["-h", "4", "9"]),
+    ("fa29-stdin-one-line", "strict", "", "", "18", ["-h"]),
+    ("fa30-stdin-plain", "strict", "", "", "8", []),
+    ("fa31-help", "strict", "", "", "", ["--help"]),
+    ("fa32-version", "strict", "", "", "", ["--version"]),
+    ("fa33-help-extra", "strict", "", "", "", ["--help", "extra"]),
+    ("fa34-version-extra", "strict", "", "", "", ["--version", "extra"]),
+    ("fa35-exponents-inline-value", "exit", "", "", "",
+     ["--exponents=8", "12"]),
+    ("fa36-bogus-short", "exit", "", "", "", ["-q", "12"]),
+    ("fa37-bogus-long", "exit", "", "", "", ["--bogus", "12"]),
+]
+
 
 NICE_CHILD_OK_SETUP = (
     "printf '#!/bin/sh\\nexit 0\\n' > cmd; chmod +x cmd; "
@@ -2533,37 +2582,6 @@ csplit_rows = [
      ["w.txt", "/--/"]),
 ]
 
-factor_rows = [
-    ("fa01-small", "strict", "", "", "", ["12"]),
-    ("fa02-one", "strict", "", "", "", ["1"]),
-    ("fa03-zero", "strict", "", "", "", ["0"]),
-    ("fa04-prime", "strict", "", "", "", ["97"]),
-    ("fa05-squares", "strict", "", "", "", ["100"]),
-    ("fa06-two", "strict", "", "", "", ["2"]),
-    ("fa07-exp-short", "strict", "", "", "", ["-h", "72"]),
-    ("fa08-exp-long", "strict", "", "", "", ["--exponents", "72"]),
-    ("fa09-exp-squarefree", "strict", "", "", "", ["-h", "17"]),
-    ("fa10-help", "strict", "", "", "", ["--help"]),
-    # driver --version prints the GNU-branded block; C++ product branding
-    # differs (recorded), GNU-gated bytes are strict like id22.
-    ("fa11-version", "strict", "", "", "", ["--version"]),
-    ("fa12-plus-sign", "strict", "", "", "", ["+5"]),
-    ("fa13-leading-space", "strict", "", "", "", [" 5"]),
-    ("fa14-trailing-space", "strict", "", "", "", ["5 "]),
-    # WinuxCmd -e extension: GNU rejects, C++ accepts -> win (rc parity)
-    ("fa15-e-ext", "win", "", "", "", ["-e", "72"]),
-    ("fa16-bad-token", "strict", "", "", "", ["abc"]),
-    ("fa17-negative-after-dd", "strict", "", "", "", ["--", "-5"]),
-    ("fa18-empty", "strict", "", "", "", [""]),
-    ("fa19-two-bad", "strict", "", "", "", ["abc", "def"]),
-    ("fa20-bad-option", "strict", "", "", "", ["-x", "5"]),
-    ("fa21-u64-semiprime", "strict", "", "", "", ["18446744073709551615"]),
-    ("fa22-25digit", "strict", "", "", "", ["10000000019390000000741"]),
-    ("fa23-m127-prime", "strict", "", "", "", ["170141183460469231731687303715884105727"]),
-    ("fa24-stdin-mixed", "strict", "", "", "6 7\\nabc 8\\n", []),
-    ("fa25-big-composite", "strict", "", "", "", ["99999999999999999999999999"]),
-    ("fa26-stdin-cr-token", "strict", "", "", "6\\t7\\r\\n", []),
-]
 
 groups_rows = [
     # current-user content is the Windows value model (NetUserGetGroups)
@@ -2831,37 +2849,6 @@ csplit_rows = [
      ["w.txt", "/--/"]),
 ]
 
-factor_rows = [
-    ("fa01-small", "strict", "", "", "", ["12"]),
-    ("fa02-one", "strict", "", "", "", ["1"]),
-    ("fa03-zero", "strict", "", "", "", ["0"]),
-    ("fa04-prime", "strict", "", "", "", ["97"]),
-    ("fa05-squares", "strict", "", "", "", ["100"]),
-    ("fa06-two", "strict", "", "", "", ["2"]),
-    ("fa07-exp-short", "strict", "", "", "", ["-h", "72"]),
-    ("fa08-exp-long", "strict", "", "", "", ["--exponents", "72"]),
-    ("fa09-exp-squarefree", "strict", "", "", "", ["-h", "17"]),
-    ("fa10-help", "strict", "", "", "", ["--help"]),
-    # driver --version prints the GNU-branded block; C++ product branding
-    # differs (recorded), GNU-gated bytes are strict like id22.
-    ("fa11-version", "strict", "", "", "", ["--version"]),
-    ("fa12-plus-sign", "strict", "", "", "", ["+5"]),
-    ("fa13-leading-space", "strict", "", "", "", [" 5"]),
-    ("fa14-trailing-space", "strict", "", "", "", ["5 "]),
-    # WinuxCmd -e extension: GNU rejects, C++ accepts -> win (rc parity)
-    ("fa15-e-ext", "win", "", "", "", ["-e", "72"]),
-    ("fa16-bad-token", "strict", "", "", "", ["abc"]),
-    ("fa17-negative-after-dd", "strict", "", "", "", ["--", "-5"]),
-    ("fa18-empty", "strict", "", "", "", [""]),
-    ("fa19-two-bad", "strict", "", "", "", ["abc", "def"]),
-    ("fa20-bad-option", "strict", "", "", "", ["-x", "5"]),
-    ("fa21-u64-semiprime", "strict", "", "", "", ["18446744073709551615"]),
-    ("fa22-25digit", "strict", "", "", "", ["10000000019390000000741"]),
-    ("fa23-m127-prime", "strict", "", "", "", ["170141183460469231731687303715884105727"]),
-    ("fa24-stdin-mixed", "strict", "", "", "6 7\\nabc 8\\n", []),
-    ("fa25-big-composite", "strict", "", "", "", ["99999999999999999999999999"]),
-    ("fa26-stdin-cr-token", "strict", "", "", "6\\t7\\r\\n", []),
-]
 
 groups_rows = [
     # current-user content is the Windows value model (NetUserGetGroups)
@@ -3085,6 +3072,7 @@ def collect():
         ("sha256sum", sha256sum_rows), ("sha512sum", sha512sum_rows),
         ("echo", echo_rows),
         ("rev", rev_rows),
+        ("factor", factor_rows),
     ]
 
 

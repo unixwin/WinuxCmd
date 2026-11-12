@@ -139,6 +139,7 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         // wave6 (#1488): simple text/applet family
         ("echo", echo::echo_cmd),
         ("rev", rev::rev_cmd),
+        ("factor", factor::factor_cmd),
         // wave3a (#1488): alphabetical insertions
         ("fmt", fmt::fmt_cmd),
         ("fold", fold::fold_cmd),
