@@ -5,6 +5,7 @@
 //! globals, status code returned instead of exit(). `dispatch` is the
 //! registry both the CLI driver and the cdylib ABI use.
 
+pub mod arch;
 pub mod argopt;
 pub mod b64core;
 pub mod basename;
@@ -140,6 +141,7 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("echo", echo::echo_cmd),
         ("rev", rev::rev_cmd),
         ("factor", factor::factor_cmd),
+        ("arch", arch::arch_cmd),
         // wave3a (#1488): alphabetical insertions
         ("fmt", fmt::fmt_cmd),
         ("fold", fold::fold_cmd),

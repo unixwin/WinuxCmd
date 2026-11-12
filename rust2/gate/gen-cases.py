@@ -2387,6 +2387,33 @@ factor_rows = [
     ("fa37-bogus-long", "exit", "", "", "", ["--bogus", "12"]),
 ]
 
+# `arch` — value rows are win (the machine name is platform-inherent);
+# rc-only grammar rows are exit; help/version are strict GNU text.
+arch_rows = [
+    ("ar01-plain", "win", "", "", "", []),
+    ("ar02-help", "strict", "", "", "", ["--help"]),
+    ("ar03-version", "strict", "", "", "", ["--version"]),
+    ("ar04-abbrev", "strict", "", "", "", ["--ver"]),
+    ("ar05-abbrev-hel", "strict", "", "", "", ["--hel"]),
+    ("ar06-extra-operand", "exit", "", "", "", ["foo"]),
+    ("ar07-two-operands", "exit", "", "", "", ["a", "b"]),
+    ("ar08-operand-then-help", "strict", "", "", "", ["foo", "--help"]),
+    ("ar09-bogus-short", "exit", "", "", "", ["-x"]),
+    ("ar10-h-invalid", "note", "", "", "", ["-h"]),
+    ("ar11-V-invalid", "note", "", "", "", ["-V"]),
+    ("ar12-bogus-long", "exit", "", "", "", ["--bogus"]),
+    ("ar13-dashdash", "win", "", "", "", ["--"]),
+    ("ar14-dashdash-help", "exit", "", "", "", ["--", "--help"]),
+    ("ar15-dashdash-operand", "exit", "", "", "", ["--", "foo"]),
+    ("ar16-dash-operand", "exit", "", "", "", ["-"]),
+    ("ar17-empty-operand", "exit", "", "", "", ["@EMPTY@"]),
+    ("ar18-bogus-eq", "exit", "", "", "", ["--bogus=1"]),
+    ("ar19-version-extra", "strict", "", "", "", ["--version", "extra"]),
+    ("ar20-help-extra", "strict", "", "", "", ["--help", "extra"]),
+    ("ar21-help-version", "strict", "", "", "", ["--help", "--version"]),
+    ("ar22-version-help", "strict", "", "", "", ["--version", "--help"]),
+]
+
 
 NICE_CHILD_OK_SETUP = (
     "printf '#!/bin/sh\\nexit 0\\n' > cmd; chmod +x cmd; "
@@ -3073,6 +3100,7 @@ def collect():
         ("echo", echo_rows),
         ("rev", rev_rows),
         ("factor", factor_rows),
+        ("arch", arch_rows),
     ]
 
 
