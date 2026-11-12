@@ -3747,3 +3747,78 @@ TEST(ls, ls_minus_m_columns_env_wraps_issue1504) {
                  "file_24, file_3, file_4, file_5, file_6,\n"
                  "file_7, file_8, file_9\n");
 }
+
+// ===== #1572 bare-name `.exe` transparency =====
+//
+// The engine's `test -e/-x` and the child-process PATHEXT completion answer
+// `bin/java` when only `bin/java.exe` is on disk; ls must answer the same
+// file instead of `cannot access ... No such file or directory` (Git Bash
+// resolves it transparently in every tool). The display keeps the operand
+// as typed: `ls bin/java` prints `java`, never `java.exe`.
+
+TEST(ls, ls_bare_exe_operand_lists_file) {
+  TempDir tmp;
+  tmp.write("bin/java.exe", "MZ");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ls.exe", {L"bin/java"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.empty());
+  EXPECT_TRUE(r.stdout_text.find("java") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("java.exe") == std::string::npos);
+}
+
+TEST(ls, ls_bare_exe_operand_long_format) {
+  TempDir tmp;
+  tmp.write("bin/java.exe", "MZ");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ls.exe", {L"-l", L"bin/java"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.empty());
+  EXPECT_TRUE(r.stdout_text.find("java") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("java.exe") == std::string::npos);
+  // The resolved file's metadata is shown (2-byte regular file).
+  EXPECT_TRUE(r.stdout_text.find(" 2 ") != std::string::npos);
+}
+
+TEST(ls, ls_bare_exe_operand_directory_flag) {
+  TempDir tmp;
+  tmp.write("bin/java.exe", "MZ");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ls.exe", {L"-d", L"bin/java"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.empty());
+  EXPECT_TRUE(r.stdout_text.find("java") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("java.exe") == std::string::npos);
+}
+
+TEST(ls, ls_bare_exe_operand_explicit_extension_not_completed) {
+  TempDir tmp;
+  tmp.write("bin/java.exe", "MZ");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ls.exe", {L"bin/java.txt"});
+
+  auto r = p.run();
+
+  // An explicit extension is never completed: `java.txt` must not resolve
+  // to `java.txt.exe` (which does not exist either) or to `java.exe`.
+  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_TRUE(r.stderr_text.find("ls: cannot access 'bin/java.txt': No such "
+                                 "file or directory") != std::string::npos);
+}

@@ -128,6 +128,11 @@ struct DirSpec {
 
 struct StatEntry {
     name: String,
+    /// The operand actually statted: the typed name, or the `+ ".exe"`
+    /// candidate when the bare name resolved through it (#1572). Display
+    /// (%n, `File:`) keeps `name`; re-probes (owner/group, symlink target,
+    /// mount point) use `resolved`.
+    resolved: String,
     meta: fs_win::FileMeta,
     owner: (String, String),
     group: (String, String),
@@ -260,7 +265,7 @@ fn field_for(
         'N' => {
             let mut s = quote_name(&entry.name);
             if m.is_symlink && !follow {
-                if let Ok(target) = std::fs::read_link(resolve(ctx, &entry.name)) {
+                if let Ok(target) = std::fs::read_link(resolve(ctx, &entry.resolved)) {
                     s.push_str(" -> ");
                     s.push_str(&quote_name(&target.to_string_lossy()));
                 }
@@ -323,7 +328,7 @@ fn field_for(
             *ctx_failed = true;
             "?".to_string()
         }
-        'm' => mount_point(ctx, &entry.name),
+        'm' => mount_point(ctx, &entry.resolved),
         'c' => return Field::Dec(255),
         'S' => return Field::Dec(4096),
         _ => "?".to_string(),
@@ -601,7 +606,7 @@ fn collect_fs_info(entry: &StatEntry, ctx: &Ctx) -> Option<FsInfo> {
                 cwd: ctx.cwd.clone(),
                 env: ctx.env,
             },
-            &entry.name,
+            &entry.resolved,
         );
         if !volume_root.ends_with('\\') {
             volume_root.push('\\');
@@ -762,7 +767,7 @@ fn render_default(
     //   File: <name>[ -> <target>]  (unquoted: 1.x and coreutils 9.4 shape)
     write!(out, "  File: {}", entry.name)?;
     if m.is_symlink && !follow {
-        if let Ok(target) = std::fs::read_link(resolve(ctx, &entry.name)) {
+        if let Ok(target) = std::fs::read_link(resolve(ctx, &entry.resolved)) {
             write!(out, " -> {}", target.to_string_lossy())?;
         }
     }
@@ -974,8 +979,8 @@ pub fn stat_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             None
         };
         for op in expanded.unwrap_or_else(|| vec![op.clone()]) {
-            let meta = match fs_win::file_meta(ctx, &op, !follow) {
-                Ok(m) => m,
+            let (meta, resolved) = match fs_win::file_meta_exe(ctx, &op, !follow) {
+                Ok((m, resolved)) => (m, resolved),
                 Err(e) => {
                     let _ = writeln!(
                         io.stderr,
@@ -986,9 +991,10 @@ pub fn stat_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     continue;
                 }
             };
-            let (owner, group) = fs_win::file_accounts(ctx, &op);
+            let (owner, group) = fs_win::file_accounts(ctx, &resolved);
             let entry = StatEntry {
                 name: op.clone(),
+                resolved,
                 meta,
                 owner,
                 group,
@@ -1209,6 +1215,39 @@ mod tests {
         assert_eq!(run_sc(&sc, &["--bogus"]).0, 1);
         assert_eq!(run_sc(&sc, &["--help"]).0, 0);
         assert_eq!(run_sc(&sc, &["--version"]).0, 0);
+    }
+
+    #[test]
+    fn bare_exe_operand_resolves() {
+        // #1572: a bare name whose only on-disk form is `<name>.exe` stats
+        // like the engine's `test -e/-x` already answers it; the display
+        // keeps the operand as typed (GNU %n / `File:` echo the operand).
+        let sc = setup("stat-bare-exe");
+        std::fs::write(sc.path("java.exe"), "MZ").unwrap();
+        let (r, out, err) = run_sc(&sc, &["-c", "%n|%F", "java"]);
+        assert_eq!(r, 0, "rc: {err}");
+        assert_eq!(out, "java|regular file\n");
+        assert_eq!(err, "");
+        // -L follows the same resolved file (regular file: same metadata)
+        let (r, out, _) = run_sc(&sc, &["-L", "-c", "%n|%F", "java"]);
+        assert_eq!(r, 0);
+        assert_eq!(out, "java|regular file\n");
+        // default rendering: `File:` echoes the typed name, size is the
+        // .exe's (2 bytes), and the type is a regular file
+        let (r, out, _) = run_sc(&sc, &["java"]);
+        assert_eq!(r, 0);
+        assert!(out.starts_with("  File: java\n"), "{out}");
+        assert!(out.contains("Size: 2"));
+        assert!(out.contains("regular file"));
+        // negative controls: a bare name with no .exe sibling still fails
+        // with the typed name in the message, and an explicit extension is
+        // never completed (java.txt must not resolve to java.txt.exe)
+        let (r, _, err) = run_sc(&sc, &["-c", "%n", "gone"]);
+        assert_eq!(r, 1);
+        assert!(err.contains("cannot statx 'gone': No such file or directory"));
+        let (r, _, err) = run_sc(&sc, &["-c", "%n", "java.txt"]);
+        assert_eq!(r, 1);
+        assert!(err.contains("cannot statx 'java.txt': No such file or directory"));
     }
 
     #[test]
