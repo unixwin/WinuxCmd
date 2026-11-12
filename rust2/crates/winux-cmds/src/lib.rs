@@ -46,6 +46,7 @@ pub mod sleep;
 pub mod stat;
 pub mod sync;
 pub mod tac;
+pub mod tail;
 pub mod tee;
 pub mod test_cmd;
 pub mod timeout;
@@ -123,6 +124,7 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("numfmt", numfmt::numfmt_cmd),
         // wave4a (#1488): alphabetical insertions
         ("head", head::head_cmd),
+        ("tail", tail::tail_cmd),
     ]
 }
 

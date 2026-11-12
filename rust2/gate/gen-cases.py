@@ -1832,6 +1832,38 @@ head_rows = [
     ("hd29-version", "strict", "", "", "", ["--version"]),
 ]
 
+tail_rows = [
+    ("tl01-default", "strict", "", "", "abc", []),
+    ("tl02-n2", "strict", HEAD_TAIL_FILE, "", "", ["-n", "2", "f"]),
+    ("tl03-n-minus-2", "strict", HEAD_TAIL_FILE, "", "", ["-n", "-2", "f"]),
+    ("tl04-n-plus-2", "strict", HEAD_TAIL_FILE, "", "", ["-n", "+2", "f"]),
+    ("tl05-n-plus-0", "strict", HEAD_TAIL_FILE, "", "", ["-n", "+0", "f"]),
+    ("tl06-n-minus-0", "strict", HEAD_TAIL_FILE, "", "", ["-n", "-0", "f"]),
+    ("tl07-n-0", "strict", HEAD_TAIL_FILE, "", "", ["-n", "0", "f"]),
+    ("tl08-c2", "strict", "", "", "abcde", ["-c", "2"]),
+    ("tl09-c-plus-2", "strict", "", "", "abcde", ["-c", "+2"]),
+    ("tl10-c-minus-0", "strict", "", "", "abcde", ["-c", "-0"]),
+    ("tl11-c-plus-0", "strict", "", "", "abcde", ["-c", "+0"]),
+    ("tl12-c-plus-99", "strict", "", "", "ab", ["-c", "+99"]),
+    ("tl13-two-files", "strict", HEAD_TAIL_FILE, "", "", ["f", "f"]),
+    ("tl14-q-two-files", "strict", HEAD_TAIL_FILE, "", "", ["-q", "f", "f"]),
+    ("tl15-v-single", "strict", HEAD_TAIL_FILE, "", "", ["-v", "f"]),
+    ("tl16-v-dash", "strict", "", "", "x", ["-v", "-"]),
+    ("tl17-missing-mixed", "strict", "printf '1\\n2\\n3\\n' > f1; printf '4\\n5\\n' > f2", "", "",
+     ["f1", "missing", "f2"]),
+    ("tl18-dir-operand", "strict", "mkdir d", "", "", ["d"]),
+    ("tl19-n-x", "strict", HEAD_TAIL_FILE, "", "", ["-n", "x", "f"]),
+    ("tl20-zero-terminated", "strict", "printf 'a\\0b\\0c\\0' > f", "", "",
+     ["-z", "-n", "2", "f"]),
+    ("tl21-obsolescent-2", "strict", HEAD_TAIL_FILE, "", "", ["-2", "f"]),
+    ("tl22-single-line", "strict", "", "", "onlyone", []),
+    ("tl23-n-plus-1", "strict", HEAD_TAIL_FILE, "", "", ["-n", "+1", "f"]),
+    ("tl24-c-1b", "strict", "printf 'abcdefghij' > f", "", "", ["-c", "1b", "f"]),
+    ("tl25-bogus-long", "strict", "", "", "", ["--bogus"]),
+    ("tl26-help", "strict", "", "", "", ["--help"]),
+    ("tl27-version", "strict", "", "", "", ["--version"]),
+]
+
 def collect():
     """All case tables as (cmd, rows) pairs, in emit order."""
     return [
@@ -1854,7 +1886,7 @@ def collect():
         ("expand", expand_rows), ("unexpand", unexpand_rows),
         ("numfmt", numfmt_rows),
         # wave4a (#1488)
-        ("head", head_rows),
+        ("head", head_rows), ("tail", tail_rows),
     ]
 
 
