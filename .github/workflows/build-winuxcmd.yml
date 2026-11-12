@@ -59,6 +59,15 @@ jobs:
         with:
           fetch-depth: 1
 
+      # winx#1590: run-gate.sh was a syntax error on master (missing `done`,
+      # POSIX_MODE guard dropped) and no workflow ever executed it, so the
+      # defect lurked. Parse-check the gate script on every leg so a future
+      # bad restore fails CI instead of silently shipping an unrunnable gate.
+      - name: Check gate shell scripts parse
+        shell: bash
+        run: |
+          bash -n rust2/gate/run-gate.sh
+
       - name: Extract Version
         id: extract_version
         shell: pwsh
