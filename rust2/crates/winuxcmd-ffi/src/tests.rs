@@ -72,8 +72,10 @@ fn run_case(name: &str, args: &[&str], env: &[&str], cwd: &str) -> (i32, Vec<u8>
 }
 
 #[test]
-fn abi_version_is_one() {
-    assert_eq!(winuxcmd_abi_version(), 1);
+fn abi_version_is_two() {
+    // 2 since the C++ bridge adopted winuxcmd_run_stream (#1488); v1 and v2
+    // symbols stay, so the surface is additive.
+    assert_eq!(winuxcmd_abi_version(), 2);
 }
 
 #[test]

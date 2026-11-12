@@ -41,7 +41,36 @@ int winuxcmd_run(const char* name, int argc, const char* const* argv,
                  const unsigned char* stdin_buf, size_t stdin_len,
                  winuxcmd_cbuf* stdout_buf, winuxcmd_cbuf* stderr_buf);
 
-// Release a buffer handed out by winuxcmd_run (safe on an empty buffer).
+// Host-side "fill this buffer" stdin pull callback (ABI v2, #1556; the
+// Rust mirror is winux_core::stream::StreamReadFn). The boundary calls it
+// synchronously on the caller's thread whenever the command asks for more
+// input; `user_data` is passed through opaquely and never dereferenced by
+// Rust. `buf` is host-owned and borrowed for the duration of ONE call.
+// Returns:
+//   > 0   bytes filled (must be <= cap; partial reads are legal, no minimum)
+//   0     end of stream
+//  -1     host stopped feeding: timeout / interrupt (the run returns 124)
+//  -2     host read failure (any other negative is reserved, same as -2)
+typedef long long winuxcmd_stream_read_fn(void* user_data, unsigned char* buf,
+                                          size_t cap);
+
+// Like winuxcmd_run, but stdin arrives through the host pull callback
+// (ABI v2, additive over v1). `stdin_read` may be NULL: empty stdin, same
+// as `stdin_buf == NULL` in v1. stdout/stderr keep the v1 shape: Rust-owned
+// buffers freed with winuxcmd_free_buf. Returns the command's status; 124
+// when the host reported -1 at any point (GNU timeout(1) convention, even
+// if the command swallowed the read error); 125 on panic / handle IO error
+// / unknown command. A -2 propagates per the command's own contract (e.g.
+// tac reports the read error and exits 1). Rust never touches a CRT fd or
+// process stdio: the host reads its own console/pipe/file (#1487 red line).
+int winuxcmd_run_stream(const char* name, int argc, const char* const* argv,
+                        const char* const* envp, const char* cwd,
+                        winuxcmd_stream_read_fn* stdin_read,
+                        void* stdin_user_data, winuxcmd_cbuf* stdout_buf,
+                        winuxcmd_cbuf* stderr_buf);
+
+// Release a buffer handed out by winuxcmd_run / winuxcmd_run_stream (safe
+// on an empty buffer).
 void winuxcmd_free_buf(winuxcmd_cbuf* buf);
 
 // 1 when `name` is in the rust2 registry, else 0.
@@ -49,4 +78,6 @@ int winuxcmd_has_command(const char* name);
 }
 
 // Version of the ABI this header describes (lib.rs winuxcmd_abi_version()).
-#define WINUXCMD_RUST2_ABI_VERSION 1
+// 2 since the C++ bridge adopted winuxcmd_run_stream (#1556 stream-ABI
+// adoption, #1488): v1 symbols and semantics are unchanged, v2 is additive.
+#define WINUXCMD_RUST2_ABI_VERSION 2
