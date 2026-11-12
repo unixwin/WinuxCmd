@@ -16,3 +16,14 @@ corpus/printf/02-rounding-f.case	oracle: same newlib rounding defect as 01; Winu
 corpus/printf/04-rounding-negative.case	oracle: same newlib rounding defect as 01 (-2.455 -> -2.46 correct)
 
 regressions/41-stdbuf-line-mode.case	platform: Git Bash oracle stdbuf itself fails (libstdbuf.dll not found, rc=125); WinuxCmd succeeds natively (rc=0)
+
+# Measured 2026-11-12 against the Git Bash MSYS2 oracle (D:/Git/usr/bin,
+# coreutils test.exe): bare "NUL" does not stat under its newlib runtime —
+# the same oracle answers -e NUL and -c NUL false — so its -ef verdict for
+# two identical device operands is false. The subject's device identity is
+# the pinned semantics, not a gap: GNU 9.4 probed /dev/null -ef /dev/null
+# -> 0 (WSL, target/probe/gnu-test-devnull.sh), the 1.x golden case
+# (commit 459352a3 "test: -ef identity for devices"), and the winux-core
+# device table that stat already shares (#1570/#1579). Distinct devices
+# (corpus/test/12) compare true-false on both sides and stay unexcused.
+corpus/test/13-ef-same-device.case	platform: MSYS2/Git Bash newlib stat does not resolve the bare DOS device NUL, so the oracle reports -ef false for identical device operands; the subject answers the GNU-probed /dev/null -ef /dev/null -> 0 via the shared device table.
