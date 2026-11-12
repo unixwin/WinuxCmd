@@ -11,14 +11,14 @@ s384a08-binary	strict			abc	-b
 s384a09-zero	strict			abc	-z
 s384a10-text	strict			abc	-t
 s384a11-bogus	exit				--bogus
-s384a12-help	win				--help
+s384a12-help	strict				--help
 s384a13-dash	strict			abc	-
 s384a14-multi-with-missing	strict	printf abc > g5			missing	g5
 s384a15-binary-file	strict	printf abc > g6			-b	g6
 s384a16-tag-file	strict	printf abc > g7			--tag	g7
 s384a17-longer-input	strict			The quick brown fox jumps over the lazy dog
 s384a18-stdb-then-t	strict			abc	-b	-t
-s384a19-version	win				--version
+s384a19-version	strict				--version
 s384a20-empty-file	strict	printf '' > g8			g8
 s384c01-ok	strict	printf abc > f; printf 'cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7  f\n' > ck			-c	ck
 s384c02-fail	strict	printf de > g; printf 'cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7  g\n' > ck			-c	ck

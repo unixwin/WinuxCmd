@@ -18,8 +18,8 @@ gc15-argmax-path	strict				ARG_MAX	.
 gc16-argmax-nonpath	strict				ARG_MAX	nosuchpathxyz
 gc17-two-unknown	strict				FOO	BAR
 gc18-bogus	win				--bogus
-gc19-help	win				--help
+gc19-help	strict				--help
 gc20-underscore	win				_POSIX_PATH_MAX
 gc21-name-max-path	win				NAME_MAX	.
 gc22-avphys	win				AVPHYS_PAGES
-gc23-version	win				--version
+gc23-version	strict				--version
