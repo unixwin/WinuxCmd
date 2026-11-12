@@ -1,0 +1,6 @@
+# STRICT control group: string-only POSIX spellings — no filesystem
+# access, must pass byte-for-byte TODAY. A failure here is a harness bug,
+# not a port-pending case (#1488 gate posix round)
+# id<TAB>mode<TAB>setup<TAB>env<TAB>stdin<TAB>args... (@EMPTY@ = empty arg)
+bsp01-usr-bin	strict				/usr/bin/seq
+bsp02-tmp-string	strict				/tmp/winuxcmd-gate-posix/f.txt

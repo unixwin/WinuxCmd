@@ -1,0 +1,3 @@
+# rmdir — remove dir through the mapper (#1488 gate posix round)
+# id<TAB>mode<TAB>setup<TAB>env<TAB>stdin<TAB>args... (@EMPTY@ = empty arg)
+rdp01-tmp	posix	mkdir /tmp/winuxcmd-gate-posix/rd01			/tmp/winuxcmd-gate-posix/rd01

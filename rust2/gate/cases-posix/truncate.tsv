@@ -1,0 +1,3 @@
+# truncate -s through the mapper (#1488 gate posix round)
+# id<TAB>mode<TAB>setup<TAB>env<TAB>stdin<TAB>args... (@EMPTY@ = empty arg)
+trp01-tmp-s4	posix	touch /tmp/winuxcmd-gate-posix/tr01			-s	4	/tmp/winuxcmd-gate-posix/tr01

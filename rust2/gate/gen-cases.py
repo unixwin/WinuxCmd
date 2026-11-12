@@ -2207,6 +2207,16 @@ def _ledger_verdict(lr):
         ok = lr["r_rc"] == lr["g_rc"]
     elif lr["mode"] == "win":
         ok = lr["r_rc"] == lr["c_rc"]
+    elif lr["mode"] in ("posix", "posix-exit"):
+        # shell-namespace rows (cases-posix/, ledger-posix.tsv): strict/exit
+        # comparisons whose failures are expected-pending until the
+        # native_path Rust port lands. Only reached when a posix ledger is
+        # fed in; the default ledger.tsv never carries these modes.
+        ok = lr["g_out_eq"] and lr["r_rc"] == lr["g_rc"]
+        if lr["mode"] == "posix-exit":
+            ok = lr["r_rc"] == lr["g_rc"]
+        if not ok and "posix-pending" in lr.get("note", ""):
+            ok = True  # pending rows never gate (run-gate.sh posix semantics)
     else:  # note / bad-mode
         ok = lr["mode"] == "note"
     return "ok" if ok else "FAIL"

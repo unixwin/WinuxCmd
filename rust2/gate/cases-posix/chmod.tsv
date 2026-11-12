@@ -1,0 +1,5 @@
+# chmod — POSIX-spelled file operand through the mapper (#1488 gate posix
+# round). Setup touches the file THROUGH THE DRIVER (mapper under test);
+# pre-port the setup fails and the chmod errs — the pending signal.
+# id<TAB>mode<TAB>setup<TAB>env<TAB>stdin<TAB>args... (@EMPTY@ = empty arg)
+chp01-tmp-644	posix	touch /tmp/winuxcmd-gate-posix/chmod01			644	/tmp/winuxcmd-gate-posix/chmod01

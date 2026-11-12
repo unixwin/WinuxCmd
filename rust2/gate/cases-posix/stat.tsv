@@ -1,0 +1,3 @@
+# stat -c %s — size through the mapper, byte-comparable stdout (#1488)
+# id<TAB>mode<TAB>setup<TAB>env<TAB>stdin<TAB>args... (@EMPTY@ = empty arg)
+stp01-tmp-size	posix	touch /tmp/winuxcmd-gate-posix/st01			-c	%s	/tmp/winuxcmd-gate-posix/st01

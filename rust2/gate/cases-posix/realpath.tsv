@@ -1,0 +1,12 @@
+# realpath — landing recorder (#1488 gate posix round)
+# stdout is the resolved ABSOLUTE path: platform-form-bound forever, so
+# these are posix-exit (rc only). The recorded stdout IS the landing
+# evidence: pre-port the Rust side prints the literal spelling resolved
+# against the cwd drive (the D:/tmp landfall), post-port the fixture path.
+# id<TAB>mode<TAB>setup<TAB>env<TAB>stdin<TAB>args... (@EMPTY@ = empty arg)
+rpp01-tmp	posix-exit				/tmp/winuxcmd-gate-posix
+rpp02-var-tmp	posix-exit				/var/tmp/winuxcmd-gate-posix
+rpp03-home	posix-exit				/home/winuxcmd-gate
+rpp04-mnt-c	posix-exit				/mnt/c/Windows
+rpp05-usr-bin-seq	posix-exit				/usr/bin/seq
+rpp06-root-usr	posix-exit				/usr

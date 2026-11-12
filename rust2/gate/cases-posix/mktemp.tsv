@@ -1,0 +1,4 @@
+# mktemp — template under /tmp; stdout is absolute (platform-form-bound),
+# so rc-only. GNU cleans its prefix after the case (#1488 gate posix round)
+# id<TAB>mode<TAB>setup<TAB>env<TAB>stdin<TAB>args... (@EMPTY@ = empty arg)
+mtp01-tmp-template	posix-exit				/tmp/winuxcmd-gate-posix/tXXXXXX

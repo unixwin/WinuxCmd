@@ -1,0 +1,3 @@
+# unlink — remove through the mapper (#1488 gate posix round)
+# id<TAB>mode<TAB>setup<TAB>env<TAB>stdin<TAB>args... (@EMPTY@ = empty arg)
+ulp01-tmp	posix	touch /tmp/winuxcmd-gate-posix/u01			/tmp/winuxcmd-gate-posix/u01

@@ -1,0 +1,4 @@
+# readlink on a POSIX-spelled missing path: rc parity only (the negative
+# control for the spelling reaching the mapper at all, #1488)
+# id<TAB>mode<TAB>setup<TAB>env<TAB>stdin<TAB>args... (@EMPTY@ = empty arg)
+rlp01-tmp-missing	posix-exit				/tmp/winuxcmd-gate-posix/missing-link
