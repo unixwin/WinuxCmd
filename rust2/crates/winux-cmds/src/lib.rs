@@ -13,6 +13,7 @@ pub mod bre;
 pub mod canon;
 pub mod chmod;
 pub mod chown;
+pub mod cut;
 pub mod df;
 pub mod digest;
 pub mod digestsum;
@@ -125,6 +126,7 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         // wave4a (#1488): alphabetical insertions
         ("head", head::head_cmd),
         ("tail", tail::tail_cmd),
+        ("cut", cut::cut_cmd),
     ]
 }
 

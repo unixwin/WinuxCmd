@@ -1864,6 +1864,45 @@ tail_rows = [
     ("tl27-version", "strict", "", "", "", ["--version"]),
 ]
 
+cut_rows = [
+    ("ct01-f2", "strict", "", "", "1:2:3:4:5", ["-d", ":", "-f", "2"]),
+    ("ct02-f1-3", "strict", "", "", "1:2:3:4:5", ["-d", ":", "-f", "1,3"]),
+    ("ct03-f3-open", "strict", "", "", "1:2:3:4:5", ["-d", ":", "-f", "3-"]),
+    ("ct04-f-to-3", "strict", "", "", "1:2:3:4:5", ["-d", ":", "-f", "-3"]),
+    ("ct05-f2-4", "strict", "", "", "1:2:3:4:5", ["-d", ":", "-f", "2-4"]),
+    ("ct06-f-dup", "strict", "", "", "1:2:3", ["-d", ":", "-f", "2,2,2"]),
+    ("ct07-c2", "strict", "", "", "abcde", ["-c", "2"]),
+    ("ct08-c2-4", "strict", "", "", "abcde", ["-c", "2-4"]),
+    ("ct09-c2-open", "strict", "", "", "abcde", ["-c", "2-"]),
+    ("ct10-c-to-3", "strict", "", "", "abcde", ["-c", "-3"]),
+    ("ct11-c-past-end", "strict", "", "", "abc", ["-c", "99"]),
+    ("ct12-b-sparse", "strict", "", "", "abcdef", ["-b", "2,5"]),
+    ("ct13-tab-field", "strict", "printf 'a\\tb\\tc\\n' > f", "", "", ["-f", "2", "f"]),
+    ("ct14-nodelim", "strict", "", "", "abc", ["-f", "2"]),
+    ("ct15-nodelim-s", "strict", "", "", "abc", ["-f", "2", "-s"]),
+    ("ct16-mixed-s", "strict", "printf 'a:b\\nx\\ny:z\\n' > f", "", "",
+     ["-d", ":", "-f", "2", "-s", "f"]),
+    ("ct17-complement-f", "strict", "", "", "a:b:c", ["-d", ":", "-f", "1,3", "--complement"]),
+    ("ct18-complement-c", "strict", "", "", "abcdef", ["-c", "2-3", "--complement"]),
+    ("ct19-outdelim", "strict", "", "", "a:b:c", ["-d", ":", "-f", "1-2", "--output-delimiter=XY"]),
+    ("ct20-nul-delimiter", "strict", "printf 'a\\0b\\0c\\n' > f", "", "",
+     ["-d", "", "-f", "2", "f"]),
+    ("ct21-d-multibyte", "strict", "", "", "abc", ["-d", "ab", "-f", "1"]),
+    ("ct22-f0", "strict", "", "", "1:2", ["-d", ":", "-f", "0"]),
+    ("ct23-decreasing", "strict", "", "", "1:2", ["-d", ":", "-f", "2-1"]),
+    ("ct24-n-ignored", "strict", "", "", "ab", ["-n", "-c", "1"]),
+    ("ct25-list-space", "strict", "", "", "abc", ["-c", "1 3"]),
+    ("ct26-two-lists", "strict", "", "", "a", ["-f", "1", "-c", "1"]),
+    ("ct27-no-list", "strict", "", "", "a", ["-d", ":"]),
+    ("ct28-zero-terminated", "strict", "printf 'a:b\\0c:d\\0' > f", "", "",
+     ["-d", ":", "-f", "1", "-z", "f"]),
+    ("ct29-missing-file", "strict", "", "", "", ["-c", "1", "nosuch"]),
+    ("ct30-bytes-utf8", "strict", "", "", "\u00fcnxc", ["-b", "2"]),
+    ("ct31-overlap", "strict", "", "", "a:b", ["-c", "1-2,1"]),
+    ("ct32-help", "strict", "", "", "", ["--help"]),
+    ("ct33-version", "strict", "", "", "", ["--version"]),
+]
+
 def collect():
     """All case tables as (cmd, rows) pairs, in emit order."""
     return [
@@ -1886,7 +1925,7 @@ def collect():
         ("expand", expand_rows), ("unexpand", unexpand_rows),
         ("numfmt", numfmt_rows),
         # wave4a (#1488)
-        ("head", head_rows), ("tail", tail_rows),
+        ("head", head_rows), ("tail", tail_rows), ("cut", cut_rows),
     ]
 
 
