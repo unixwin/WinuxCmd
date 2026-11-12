@@ -2414,6 +2414,9 @@ arch_rows = [
     ("ar22-version-help", "strict", "", "", "", ["--version", "--help"]),
 ]
 
+# `groups` — membership content is platform-inherent (NetUserGetGroups on
+# both Windows sides), so value rows are win; unknown-user rows are exit
+# (GNU rc 1 with matching wording on stderr); help/version are strict.
 
 NICE_CHILD_OK_SETUP = (
     "printf '#!/bin/sh\\nexit 0\\n' > cmd; chmod +x cmd; "
@@ -2877,31 +2880,6 @@ csplit_rows = [
 ]
 
 
-groups_rows = [
-    # current-user content is the Windows value model (NetUserGetGroups)
-    ("gr01-current-user", "win", "", "", "", []),
-    ("gr02-unknown-user", "strict", "", "", "", ["nosuchuser123"]),
-    ("gr03-two-unknown", "strict", "", "", "", ["nosuch-a-1", "nosuch-b-2"]),
-    ("gr04-help", "strict", "", "", "", ["--help"]),
-    ("gr05-version", "strict", "", "", "", ["--version"]),
-    ("gr06-short-h", "strict", "", "", "", ["-h"]),
-    ("gr07-short-x", "strict", "", "", "", ["-x"]),
-    # platform account (no Windows "root"): rc parity with the C++ exe
-    ("gr08-root-operand", "win", "", "", "", ["root"]),
-    ("gr09-unknown-long", "strict", "", "", "", ["--bogus"]),
-    ("gr10-empty-user", "strict", "", "", "", [""]),
-    ("gr11-invalid-short-g", "strict", "", "", "", ["-g"]),
-    ("gr12-zero-long", "strict", "", "", "", ["--zero"]),
-    ("gr13-help-permuted", "strict", "", "", "", ["nosuchuser123", "--help"]),
-    ("gr14-help-extra", "strict", "", "", "", ["--help", "extra"]),
-    ("gr15-invalid-short-n", "strict", "", "", "", ["-n", "root"]),
-    ("gr16-unknown-user-long", "strict", "", "", "", ["--user", "x"]),
-    ("gr17-invalid-short-r", "strict", "", "", "", ["-r"]),
-    # current-user content again (platform value model), via explicit --
-    ("gr18-dashdash-current", "win", "", "", "", ["--"]),
-    ("gr19-dash-operand", "strict", "", "", "", ["-"]),
-    ("gr20-mixed-known-unknown", "win", "", "", "", ["root", "nosuch-b-2"]),
-]
 
 pathchk_rows = [
     ("pk01-ok", "strict", "", "", "", ["ok.txt"]),
@@ -3101,6 +3079,7 @@ def collect():
         ("rev", rev_rows),
         ("factor", factor_rows),
         ("arch", arch_rows),
+        ("groups", groups_rows),
     ]
 
 

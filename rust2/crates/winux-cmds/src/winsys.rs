@@ -116,7 +116,41 @@ pub mod imp {
             domain_size: *mut DWORD,
             use_kind: *mut DWORD,
         ) -> i32;
+        fn LookupAccountNameW(
+            system_name: *const WCHAR,
+            account_name: *const WCHAR,
+            sid: *mut c_void,
+            cb_sid: *mut DWORD,
+            referenced_domain: *mut WCHAR,
+            cb_domain: *mut DWORD,
+            use_kind: *mut DWORD,
+        ) -> i32;
     }
+
+    #[link(name = "netapi32")]
+    extern "system" {
+        fn NetUserGetGroups(
+            servername: *const WCHAR,
+            username: *const WCHAR,
+            level: DWORD,
+            bufptr: *mut *mut u8,
+            prefmaxlen: DWORD,
+            entriesread: *mut DWORD,
+            totalentries: *mut DWORD,
+        ) -> u32;
+        fn NetApiBufferFree(buffer: *mut u8) -> u32;
+    }
+
+    /// GROUP_USERS_INFO_0 layout (level 0 of NetUserGetGroups).
+    #[repr(C)]
+    struct GroupUsersInfo0 {
+        name: *const WCHAR,
+    }
+
+    /// NERR_UserNotFound (lmerr.h): the groups no-such-user condition.
+    pub const NERR_USER_NOT_FOUND: u32 = 2221;
+    /// MAX_PREFERRED_LENGTH: let NetUserGetGroups size its own buffer.
+    const MAX_PREFERRED_LENGTH: DWORD = u32::MAX;
 
     const TOKEN_QUERY: u32 = 0x8;
     const TOKEN_USER: u32 = 1;
@@ -390,6 +424,95 @@ pub mod imp {
         }
         Some((user, primary, groups))
     }
+
+    /// Global-group names of a NAMED user via NetUserGetGroups (level 0),
+    /// the same data source as the C++ groups_pipeline::collect_user_groups.
+    /// `Err(code)` is the raw NERR status (NERR_USER_NOT_FOUND for unknown
+    /// users; other codes are network/system failures).
+    pub fn group_names_of_user(user: &str) -> Result<Vec<String>, u32> {
+        let mut wuser: Vec<WCHAR> = user.encode_utf16().collect();
+        wuser.push(0);
+        unsafe {
+            let mut buf: *mut u8 = std::ptr::null_mut();
+            let mut entries = 0u32;
+            let mut total = 0u32;
+            let status = NetUserGetGroups(
+                std::ptr::null(),
+                wuser.as_ptr(),
+                0,
+                &mut buf,
+                MAX_PREFERRED_LENGTH,
+                &mut entries,
+                &mut total,
+            );
+            if status != 0 {
+                return Err(status);
+            }
+            let mut names = Vec::new();
+            if !buf.is_null() {
+                let groups = buf as *const GroupUsersInfo0;
+                for i in 0..entries as usize {
+                    let wname = (*groups.add(i)).name;
+                    let name = if wname.is_null() {
+                        String::new()
+                    } else {
+                        let mut len = 0usize;
+                        while *wname.add(len) != 0 {
+                            len += 1;
+                        }
+                        String::from_utf16_lossy(std::slice::from_raw_parts(wname, len))
+                    };
+                    if !name.is_empty() {
+                        names.push(name);
+                    }
+                }
+                NetApiBufferFree(buf);
+            }
+            Ok(names)
+        }
+    }
+
+    /// Numeric account id (the SID-remap model of `sid_to_account`) for a
+    /// NAMED account via LookupAccountNameW. `groups` uses this for the
+    /// Windows well-known "None" group (#1024): the C++ applet prints its
+    /// numeric id like an unresolvable gid.
+    pub fn account_id_from_name(name: &str) -> Option<String> {
+        let mut wname: Vec<WCHAR> = name.encode_utf16().collect();
+        wname.push(0);
+        unsafe {
+            let mut sid_len = 0u32;
+            let mut domain_len = 0u32;
+            let mut kind = 0u32;
+            let _ = LookupAccountNameW(
+                std::ptr::null(),
+                wname.as_ptr(),
+                std::ptr::null_mut(),
+                &mut sid_len,
+                std::ptr::null_mut(),
+                &mut domain_len,
+                &mut kind,
+            );
+            if sid_len == 0 {
+                return None;
+            }
+            let mut sid = vec![0u8; sid_len as usize];
+            let mut domain = [0u16; 256];
+            domain_len = domain.len() as u32;
+            let ok = LookupAccountNameW(
+                std::ptr::null(),
+                wname.as_ptr(),
+                sid.as_mut_ptr() as *mut c_void,
+                &mut sid_len,
+                domain.as_mut_ptr(),
+                &mut domain_len,
+                &mut kind,
+            );
+            if ok == 0 {
+                return None;
+            }
+            Some(sid_to_account(sid.as_mut_ptr() as *mut c_void).id)
+        }
+    }
 }
 
 #[cfg(not(windows))]
@@ -442,4 +565,14 @@ pub mod imp {
         };
         Some((acc.clone(), acc.clone(), vec![acc]))
     }
+
+    pub fn group_names_of_user(_user: &str) -> Result<Vec<String>, u32> {
+        Err(NERR_USER_NOT_FOUND)
+    }
+
+    pub fn account_id_from_name(_name: &str) -> Option<String> {
+        None
+    }
+
+    pub const NERR_USER_NOT_FOUND: u32 = 2221;
 }

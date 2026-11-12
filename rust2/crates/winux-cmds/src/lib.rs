@@ -142,6 +142,7 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("rev", rev::rev_cmd),
         ("factor", factor::factor_cmd),
         ("arch", arch::arch_cmd),
+        ("groups", groups::groups_cmd),
         // wave3a (#1488): alphabetical insertions
         ("fmt", fmt::fmt_cmd),
         ("fold", fold::fold_cmd),
