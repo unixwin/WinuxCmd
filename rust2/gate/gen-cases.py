@@ -2698,6 +2698,32 @@ nohup_rows = [
     ("nh24-version-then-help", "strict", "", "", "", ["--version", "--help"]),
 ]
 
+groups_rows = [
+    # current-user content is the Windows value model (NetUserGetGroups)
+    ("gr01-current-user", "win", "", "", "", []),
+    ("gr02-unknown-user", "strict", "", "", "", ["nosuchuser123"]),
+    ("gr03-two-unknown", "strict", "", "", "", ["nosuch-a-1", "nosuch-b-2"]),
+    ("gr04-help", "strict", "", "", "", ["--help"]),
+    ("gr05-version", "strict", "", "", "", ["--version"]),
+    ("gr06-short-h", "strict", "", "", "", ["-h"]),
+    ("gr07-short-x", "strict", "", "", "", ["-x"]),
+    # platform account (no Windows "root"): rc parity with the C++ exe
+    ("gr08-root-operand", "win", "", "", "", ["root"]),
+    ("gr09-unknown-long", "strict", "", "", "", ["--bogus"]),
+    ("gr10-empty-user", "strict", "", "", "", [""]),
+    ("gr11-invalid-short-g", "strict", "", "", "", ["-g"]),
+    ("gr12-zero-long", "strict", "", "", "", ["--zero"]),
+    ("gr13-help-permuted", "strict", "", "", "", ["nosuchuser123", "--help"]),
+    ("gr14-help-extra", "strict", "", "", "", ["--help", "extra"]),
+    ("gr15-invalid-short-n", "strict", "", "", "", ["-n", "root"]),
+    ("gr16-unknown-user-long", "strict", "", "", "", ["--user", "x"]),
+    ("gr17-invalid-short-r", "strict", "", "", "", ["-r"]),
+    # current-user content again (platform value model), via explicit --
+    ("gr18-dashdash-current", "win", "", "", "", ["--"]),
+    ("gr19-dash-operand", "strict", "", "", "", ["-"]),
+    ("gr20-mixed-known-unknown", "win", "", "", "", ["root", "nosuch-b-2"]),
+]
+
 def collect():
     """All case tables as (cmd, rows) pairs, in emit order."""
     return [
@@ -2731,6 +2757,7 @@ def collect():
         ("shuf", shuf_rows),
         ("ptx", ptx_rows),
         ("nohup", nohup_rows),
+        ("groups", groups_rows),
     ]
 
 

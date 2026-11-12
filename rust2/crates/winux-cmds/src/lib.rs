@@ -32,6 +32,8 @@ pub mod getconf;
 pub mod glob;
 pub mod gnuhelp;
 pub mod head;
+pub mod groups;
+
 pub mod hostid;
 pub mod hostname;
 pub mod id;
@@ -159,6 +161,7 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("shuf", shuf::shuf_cmd),
         ("ptx", ptx::ptx_cmd),
         ("nohup", nohup::nohup_cmd),
+        ("groups", groups::groups_cmd),
     ]
 }
 
