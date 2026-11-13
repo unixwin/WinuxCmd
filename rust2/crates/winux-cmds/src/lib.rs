@@ -76,6 +76,7 @@ pub mod touch;
 pub mod tr;
 
 pub mod truefalse;
+pub mod tty;
 pub mod truncate;
 pub mod tsort;
 pub mod uname;
@@ -180,6 +181,8 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("nohup", nohup::nohup_cmd),
         ("groups", groups::groups_cmd),
         ("who", who::who_cmd),
+        // wave5 (#1488)
+        ("tty", tty::tty_cmd),
     ]
 }
 
