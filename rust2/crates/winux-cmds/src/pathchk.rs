@@ -20,6 +20,8 @@
 //!   every operand is still checked (probed: two bad operands print two
 //!   diagnostics) and the run exits 1 if any failed; stdout is always
 //!   empty, so gate rows compare rc against GNU (`strict`).
+//! * GNU has no -h short option (getopt_long matches --help only long):
+//!   `-h` is "invalid option -- 'h'" rc 1 (argopt H_REJECT_MARKER).
 //!
 //! Windows value model (documented deviations):
 //! * The default/"current filesystem" checks are the Windows filesystem's
@@ -543,5 +545,17 @@ mod tests {
         let (r, _, err) = run_in(&sc, &["okname", "regfile/file"]);
         assert_eq!(r, 1);
         assert!(err.contains("Not a directory"));
+    }
+
+    #[test]
+    fn short_h_is_rejected_like_gnu() {
+        // GNU coreutils 9.4 probed: `-h` is "invalid option -- 'h'" rc 1.
+        let (r, out, err) = run(&["-h"]);
+        assert_eq!(r, 1);
+        assert_eq!(out, "");
+        assert_eq!(
+            err,
+            "pathchk: invalid option -- 'h'\nTry 'pathchk --help' for more information.\n"
+        );
     }
 }
