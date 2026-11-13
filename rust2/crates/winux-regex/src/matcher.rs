@@ -157,6 +157,52 @@ fn fold_ascii(b: u8) -> u8 {
     b.to_ascii_lowercase()
 }
 
+/// The engine's literal comparison rule (`chars_equal`): folds ASCII under
+/// ignore_case. Free function so the fast-path analysis in `fastpath.rs`
+/// reuses the single copy of the rule.
+pub(crate) fn chars_equal(ignore_case: bool, lhs: u8, rhs: u8) -> bool {
+    if !ignore_case {
+        lhs == rhs
+    } else {
+        fold_ascii(lhs) == fold_ascii(rhs)
+    }
+}
+
+/// The engine's bracket-expression rule (`class_matches`): folds the byte
+/// under ignore_case, tests atoms in order, negates at the end. POSIX
+/// classes test the ORIGINAL byte and only the case classes cross-fold
+/// under -i (GNU grep -i [[:upper:]] matches lowercase and vice versa).
+/// Free function so the fast-path analysis reuses the single copy.
+pub(crate) fn class_matches(ignore_case: bool, negated: bool, atoms: &[ClassAtom], b: u8) -> bool {
+    let folded = if ignore_case { fold_ascii(b) } else { b };
+    let mut matched = false;
+    for atom in atoms {
+        matched = match atom {
+            ClassAtom::Literal(c) => folded == *c,
+            ClassAtom::Range(lo, hi) => folded >= *lo && folded <= *hi,
+            ClassAtom::Posix(class) => {
+                let mut hit = class.matches(b);
+                if !hit && ignore_case {
+                    hit = match class {
+                        PosixClass::Lower => (b as char).is_ascii_uppercase(),
+                        PosixClass::Upper => (b as char).is_ascii_lowercase(),
+                        _ => false,
+                    };
+                }
+                hit
+            }
+        };
+        if matched {
+            break;
+        }
+    }
+    if negated {
+        !matched
+    } else {
+        matched
+    }
+}
+
 fn work_limit() -> Error {
     Error::new(
         ErrorKind::WorkLimit,
@@ -267,6 +313,85 @@ impl Regex {
             return Ok(None);
         }
         let mut budget = StepBudget::new();
+
+        if self.fast.anchored {
+            // Every possible match begins at absolute position 0, and state
+            // positions are absolute: only the attempt at start == 0 can
+            // succeed, and no attempt at all can when start > 0 (regex.cppm
+            // find_first anchored branch).
+            if start > 0 {
+                return Ok(None);
+            }
+            let m = self.local_attempt(text, 0, &mut budget);
+            if budget.exceeded {
+                return Err(work_limit());
+            }
+            return Ok(m);
+        }
+
+        if self.fast.pure_literal {
+            // The whole pattern is a literal run: a prefix candidate IS the
+            // match, no interpreter attempt needed (regex.cppm pure_literal
+            // branch). This is byte-identical to local_attempt's result for
+            // a literal-only tree (spans and group 0; capture_count == 0).
+            if let Some(pos) = self.find_prefix_candidate(text, start) {
+                let end = pos + self.fast.prefix.len();
+                return Ok(Some(Match {
+                    begin: pos,
+                    end,
+                    captures: vec![Submatch {
+                        begin: pos,
+                        end,
+                        matched: true,
+                    }],
+                }));
+            }
+            return Ok(None);
+        }
+
+        if !self.fast.prefix.is_empty() {
+            // Jump between the positions the required literal prefix rules
+            // in, instead of attempting the interpreter everywhere
+            // (regex.cppm prefix branch). Candidates sit on legacy attempt
+            // positions (see fastpath.rs), so results are unchanged; only
+            // the futile attempts disappear.
+            let mut cursor = start;
+            while cursor <= text.len() {
+                let Some(pos) = self.find_prefix_candidate(text, cursor) else {
+                    return Ok(None);
+                };
+                let attempt = self.local_attempt(text, pos, &mut budget);
+                if budget.exceeded {
+                    return Err(work_limit());
+                }
+                if attempt.is_some() {
+                    return Ok(attempt);
+                }
+                cursor = pos + 1;
+            }
+            return Ok(None);
+        }
+
+        if !self.fast.first_any {
+            // Same traversal as the legacy loop below, but the interpreter
+            // runs only where the first consumed byte may satisfy the
+            // pattern (regex.cppm first branch). scan_positions keeps the
+            // legacy advance rule; only the (futile) attempts are skipped.
+            for cursor in scan_positions(text, start) {
+                if cursor < text.len() && !self.fast.first[text[cursor] as usize] {
+                    continue;
+                }
+                let attempt = self.local_attempt(text, cursor, &mut budget);
+                if budget.exceeded {
+                    return Err(work_limit());
+                }
+                if attempt.is_some() {
+                    return Ok(attempt);
+                }
+            }
+            return Ok(None);
+        }
+
         for cursor in scan_positions(text, start) {
             let states = self.match_node(&self.root, text, self.initial_state(cursor), &mut budget);
             if budget.exceeded {
@@ -309,6 +434,15 @@ impl Regex {
         if start > text.len() {
             return Ok(None);
         }
+        // Necessary conditions for a match anchored at `start`; when they
+        // fail up front the interpreter attempt cannot succeed either
+        // (regex.cppm match_at fast_ rejection).
+        if self.fast.anchored && start > 0 {
+            return Ok(None);
+        }
+        if !self.fast.prefix.is_empty() && !self.prefix_matches_at(text, start) {
+            return Ok(None);
+        }
         let mut budget = StepBudget::new();
         let states = self.match_node(&self.root, text, self.initial_state(start), &mut budget);
         if budget.exceeded {
@@ -324,6 +458,11 @@ impl Regex {
 
     /// Whole-text match (C++ `matches_entire`; find `-regex` semantics).
     pub fn matches_entire_bytes(&self, text: &[u8]) -> bool {
+        // A full match must begin with the required literal prefix
+        // (regex.cppm matches_entire fast_ rejection).
+        if !self.fast.prefix.is_empty() && !self.prefix_matches_at(text, 0) {
+            return false;
+        }
         let mut budget = StepBudget::new();
         let states = self.match_node(&self.root, text, self.initial_state(0), &mut budget);
         if budget.exceeded {
@@ -371,6 +510,17 @@ impl Regex {
         }
     }
 
+    /// One interpreter attempt anchored at `pos` — the exact body of the
+    /// legacy find loop iteration (regex.cppm `local_attempt`). The fast
+    /// paths funnel every candidate through here unchanged.
+    fn local_attempt(&self, text: &[u8], pos: usize, budget: &mut StepBudget) -> Option<Match> {
+        let states = self.match_node(&self.root, text, self.initial_state(pos), budget);
+        if budget.exceeded {
+            return None;
+        }
+        best_state(states).map(|best| self.make_match(pos, best))
+    }
+
     fn make_match(&self, begin: usize, mut state: State) -> Match {
         state.captures[0] = Submatch {
             begin,
@@ -381,47 +531,6 @@ impl Regex {
             begin,
             end: state.pos,
             captures: state.captures,
-        }
-    }
-
-    fn chars_equal(&self, lhs: u8, rhs: u8) -> bool {
-        if !self.ignore_case {
-            lhs == rhs
-        } else {
-            fold_ascii(lhs) == fold_ascii(rhs)
-        }
-    }
-
-    fn class_matches(&self, negated: bool, atoms: &[ClassAtom], b: u8) -> bool {
-        let folded = if self.ignore_case { fold_ascii(b) } else { b };
-        let mut matched = false;
-        for atom in atoms {
-            matched = match atom {
-                ClassAtom::Literal(c) => folded == *c,
-                ClassAtom::Range(lo, hi) => folded >= *lo && folded <= *hi,
-                ClassAtom::Posix(class) => {
-                    // POSIX classes test the ORIGINAL byte; -i cross-folds
-                    // only the case classes (GNU grep -i [[:upper:]]
-                    // matches lowercase and vice versa).
-                    let mut hit = class.matches(b);
-                    if !hit && self.ignore_case {
-                        hit = match class {
-                            PosixClass::Lower => (b as char).is_ascii_uppercase(),
-                            PosixClass::Upper => (b as char).is_ascii_lowercase(),
-                            _ => false,
-                        };
-                    }
-                    hit
-                }
-            };
-            if matched {
-                break;
-            }
-        }
-        if negated {
-            !matched
-        } else {
-            matched
         }
     }
 
@@ -439,7 +548,7 @@ impl Regex {
         match node {
             Node::Empty => vec![state],
             Node::Literal(b) => {
-                if state.pos < text.len() && self.chars_equal(text[state.pos], *b) {
+                if state.pos < text.len() && chars_equal(self.ignore_case, text[state.pos], *b) {
                     vec![advance(state, 1)]
                 } else {
                     Vec::new()
@@ -496,7 +605,9 @@ impl Regex {
                 }
             }
             Node::CharClass { negated, atoms } => {
-                if state.pos < text.len() && self.class_matches(*negated, atoms, text[state.pos]) {
+                if state.pos < text.len()
+                    && class_matches(self.ignore_case, *negated, atoms, text[state.pos])
+                {
                     vec![advance(state, 1)]
                 } else {
                     Vec::new()
@@ -569,7 +680,11 @@ impl Regex {
             return Vec::new();
         }
         for i in 0..len {
-            if !self.chars_equal(text[state.pos + i], text[capture.begin + i]) {
+            if !chars_equal(
+                self.ignore_case,
+                text[state.pos + i],
+                text[capture.begin + i],
+            ) {
                 return Vec::new();
             }
         }

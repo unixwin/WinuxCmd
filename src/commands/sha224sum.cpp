@@ -68,16 +68,20 @@ REGISTER_COMMAND(sha224sum, "sha224sum", "sha224sum [OPTION]... [FILE]...",
   // this registration. ctx.raw_args passes the operands verbatim because GNU
   // digest.c parses its own getopt run.
   //
-  // stdin mode (ABI v1 whole-buffer): GNU digest.c reads fd 0 when no FILE
-  // operand stands, and "-" as a per-operand stdin marker, so the bridge
-  // slurps fd 0 exactly for those shapes (echo "abc" | sha224sum, and the
-  // `-c` checkfile from stdin via "-").
+  // stdin mode (ABI v2 streaming, #1488 digest-family adoption): GNU
+  // digest.c reads fd 0 when no FILE operand stands, and "-" as a
+  // per-operand stdin marker, so the bridge reads fd 0 in chunks exactly
+  // for those shapes (echo "abc" | sha224sum, and the `-c` checkfile from
+  // stdin via "-") — no whole-buffer slurp residency; a host read failure
+  // flows through the command's own read-error rc (silent rc 1,
+  // GNU-exact for the "-" input) instead of a host-side pre-check.
   bool stdin_is_input = ctx.positionals.empty();
   for (auto arg : ctx.positionals) {
     if (arg == "-") stdin_is_input = true;
   }
   if (stdin_is_input) {
-    return winux::rust2::run_command_with_stdin("sha224sum", ctx.raw_args);
+    return winux::rust2::run_command_with_stdin_streaming("sha224sum",
+                                                          ctx.raw_args);
   }
   return winux::rust2::run_command("sha224sum", ctx.raw_args);
 }

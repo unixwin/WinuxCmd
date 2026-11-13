@@ -138,15 +138,33 @@ must pass on both old and new exe.
   the generic forms `run_command_with_stdin_source` (host-supplied
   callback, NULL = empty stdin) and `run_command_with_stdin_bytes` (v1
   whole buffer from bytes) for tests and A/B comparisons.
-  `winuxcmd_abi_version` is 2 since that adoption. **No wired command uses
-  v2 yet** — the v1 behaviors (`run_command`, `run_command_with_stdin`,
-  the `kRust2StdinCommands` slurp) stay untouched for stability; the next
-  wave wires the first genuinely-streaming stdin reader (`cat`, `tr`,
-  `sort`, ...) by switching its handler to `run_command_with_stdin_streaming`,
-  which is now a plain mechanical replacement. Regression net: the
+  `winuxcmd_abi_version` is 2 since that adoption. **First wired commands
+  (#1488 digest-family stream adoption): `b2sum`, `sha224sum`,
+  `sha384sum`, `tac`** — each routes its stdin shape (no FILE operand, or
+  a `-` operand) through `run_command_with_stdin_streaming`, a
+  signature-identical one-line swap from `run_command_with_stdin` in the
+  command's C++ registration
+  (`src/commands/{b2sum,sha224sum,sha384sum,tac}.cpp`); zero Rust command
+  changes (`Io.stdin: &mut dyn Read` already consumes streams). The
+  switch also moves the closed-stdin error channel from the v1 host slurp
+  pre-check (`name: error reading 'standard input': Bad file descriptor`,
+  wording GNU does not use) to the command's own rc — silent rc 1, probed
+  GNU-exact for sha224sum/sha384sum/tac on coreutils 9.4 (known remaining
+  gap: GNU `b2sum` prints `b2sum: -: Bad file descriptor`; that
+  diagnostic belongs to digestsum.rs's read-error branch, a command-impl
+  item, not the bridge). The v1 behaviors (`run_command`,
+  `run_command_with_stdin`, the `kRust2StdinCommands` slurp) stay
+  untouched for the remaining v1 consumers; later waves wire
+  genuinely-streaming stdin readers (`cat`, `tr`, `sort`, ...) the same
+  mechanical way. **How to switch a command:** change the handler's
+  `run_command_with_stdin(name, args)` call to
+  `run_command_with_stdin_streaming(name, args)` (identical signature,
+  same args span), update the registration comment, and extend the
+  `rust2-stream-driver` lanes to cover the command. Regression net: the
   `rust2-stream-driver` ctest lanes (`rust2-stream-segments/-errors/
-  -stdin/-mem`, `tests/bridge/stream_abi_driver.cpp`). Contract, ownership
-  and thread model: [README.md](README.md) "Streaming stdin ABI (v2)".
+  -stdin/-mem`, `tests/bridge/stream_abi_driver.cpp`) — 189 checks across
+  tac/base64/b2sum/sha224sum/sha384sum. Contract, ownership and thread
+  model: [README.md](README.md) "Streaming stdin ABI (v2)".
 - **Raw output path.** The bridge drains Rust stdout through `safePrint`,
   which applies the i18n legacy catalog lookup (`translate_legacy`) to the
   whole string when a catalog is loaded. Harmless for true/false (no output)
