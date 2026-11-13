@@ -788,25 +788,69 @@ fn try_exact_run(
 /// down to prec is exact, not rounding.
 fn render_exact(mag: u128, neg: bool, scale: usize, prec: usize, zero_width: usize) -> String {
     let digits = mag.to_string();
-    let mut body = String::new();
+    // capacity: digits + '-' + '.' + padding headroom — no per-value
+    // reallocation churn on the billion-iteration streaming shape
+    let mut body = String::with_capacity(digits.len() + zero_width + 8);
     if neg {
         body.push('-');
     }
-    // the value's own %.scale-f rendering first
-    let mut frac = if digits.len() > scale {
-        body.push_str(&digits[..digits.len() - scale]);
-        digits[digits.len() - scale..].to_string()
+    if scale > prec {
+        // The value grid exceeds the print precision (last carried more
+        // fraction digits): render on the grid and keep the FIRST `prec`
+        // fraction digits, dropping the rest. Exact, not rounding: first
+        // and step lie on the 10^-prec grid, so every generated value's
+        // dropped tail is zeros (debug-asserted). Slices only — no
+        // per-value intermediate String; the billion-iteration streaming
+        // shape lives on this loop's allocation budget.
+        let (int_part, lead, frac): (&str, usize, &str) = if digits.len() > scale {
+            (
+                &digits[..digits.len() - scale],
+                0,
+                &digits[digits.len() - scale..],
+            )
+        } else {
+            ("", scale - digits.len(), digits.as_str())
+        };
+        if int_part.is_empty() {
+            body.push('0');
+        } else {
+            body.push_str(int_part);
+        }
+        if prec > lead {
+            // kept fraction: `lead` zeros then the first (prec - lead)
+            // digits of the value
+            debug_assert!(frac.as_bytes()[prec - lead..].iter().all(|&b| b == b'0'));
+            body.push('.');
+            for _ in 0..lead {
+                body.push('0');
+            }
+            body.push_str(&frac[..prec - lead]);
+        } else if prec > 0 {
+            // every fraction digit falls below prec: kept zeros only
+            debug_assert!(frac.as_bytes().iter().all(|&b| b == b'0'));
+            body.push('.');
+            for _ in 0..prec {
+                body.push('0');
+            }
+        }
     } else {
-        body.push('0');
-        format!("{}{}", "0".repeat(scale - digits.len()), digits)
-    };
-    // then the %.<prec>f trim: drop the fraction digits below prec
-    while frac.len() > prec && frac.ends_with('0') {
-        frac.pop();
-    }
-    if !frac.is_empty() {
-        body.push('.');
-        body.push_str(&frac);
+        // scale == prec (the common case): the point goes `prec` digits
+        // from the right, straight out of `digits` — no intermediate
+        // copies.
+        if digits.len() > prec {
+            body.push_str(&digits[..digits.len() - prec]);
+            if prec > 0 {
+                body.push('.');
+                body.push_str(&digits[digits.len() - prec..]);
+            }
+        } else {
+            body.push('0');
+            if prec > 0 {
+                body.push('.');
+                body.push_str(&"0".repeat(prec - digits.len()));
+                body.push_str(&digits);
+            }
+        }
     }
     if body.len() < zero_width {
         let zeros = "0".repeat(zero_width - body.len());
@@ -930,14 +974,80 @@ fn print_numbers(
 /// seq_fast(): decimal string increment from a to b inclusive, step n.
 /// `inf` end loops forever. Returns Ok(false) when b < a (GNU falls
 /// through to the long-double path, which also prints nothing there).
+///
+/// Both ends parsing as u64 take the counter core: a flat `v += step`
+/// loop with one 1 MiB chunk buffer, flushed as it fills. The chunks keep
+/// the resident buffer small so the output streams progressively instead
+/// of accumulating the whole range before the first write — the
+/// billion-iteration pin (`seq 1000000001 | head -3`, issue #1376) spends
+/// its entire ctest budget building ~9 GB in memory on the v1 ABI,
+/// and the 120 s CI timeout lands on runner-speed variance. Byte stream
+/// is identical to the digit-string walk either way.
 fn seq_fast(io: &mut Io, a: &str, b: &str, step: u64, separator: &str) -> std::io::Result<bool> {
+    let (start, end) = match (a.parse::<u64>(), b.parse::<u64>()) {
+        (Ok(s), Ok(e)) => (s, e),
+        _ => return seq_fast_digits(io, a, b, step, separator),
+    };
+    if end < start {
+        return Ok(false);
+    }
+    const CHUNK: usize = 1 << 20;
+    let mut out: Vec<u8> = Vec::with_capacity(CHUNK);
+    let mut v = start;
+    loop {
+        push_decimal(&mut out, v);
+        // the first value past END terminates (GNU seq.c: the item loop
+        // bails once first + i*step exceeds LAST — a step that skips over
+        // END never lands on it exactly)
+        match v.checked_add(step) {
+            Some(next) if next <= end => {
+                out.extend_from_slice(separator.as_bytes());
+                v = next;
+                if out.len() >= CHUNK {
+                    io.stdout.write_all(&out)?;
+                    out.clear();
+                }
+            }
+            _ => break,
+        }
+    }
+    out.push(b'\n');
+    io.stdout.write_all(&out)?;
+    Ok(true)
+}
+
+/// Append `v` in decimal to the buffer (no intermediate allocation).
+fn push_decimal(out: &mut Vec<u8>, mut v: u64) {
+    let mut tmp = [0u8; 20];
+    let mut i = tmp.len();
+    loop {
+        i -= 1;
+        tmp[i] = b'0' + (v % 10) as u8;
+        v /= 10;
+        if v == 0 {
+            break;
+        }
+    }
+    out.extend_from_slice(&tmp[i..]);
+}
+
+/// Digit-string walk for operands beyond u64 or the `inf` end: in-place
+/// `incr()` per step, chunked 1 MiB flushes in both the finite and the
+/// infinite branch so neither accumulates the range in memory.
+fn seq_fast_digits(
+    io: &mut Io,
+    a: &str,
+    b: &str,
+    step: u64,
+    separator: &str,
+) -> std::io::Result<bool> {
     let inf = b == "inf";
     let mut num = trim_leading_zeros(a).as_bytes().to_vec();
     let end = trim_leading_zeros(b).as_bytes().to_vec();
     if !inf && cmp_digits(&num, &end) == std::cmp::Ordering::Greater {
         return Ok(false);
     }
-    let mut out = Vec::new();
+    let mut out: Vec<u8> = Vec::with_capacity(1 << 20);
     out.extend_from_slice(&num);
     loop {
         for _ in 0..step {
@@ -948,7 +1058,7 @@ fn seq_fast(io: &mut Io, a: &str, b: &str, step: u64, separator: &str) -> std::i
         }
         out.extend_from_slice(separator.as_bytes());
         out.extend_from_slice(&num);
-        if inf && out.len() >= 1 << 20 {
+        if out.len() >= 1 << 20 {
             io.stdout.write_all(&out)?;
             out.clear();
         }

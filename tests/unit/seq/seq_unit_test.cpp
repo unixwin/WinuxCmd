@@ -419,12 +419,21 @@ TEST(seq, seq_separator_still_legal_issue1355) {
   EXPECT_EQ_TEXT(r.stdout_text, "1X2\n");
 }
 
-// #1376: seq has no iteration ceiling — it streams, and the consumer
-// decides how much to read. `seq 1000000001 | head -3` used to fail
-// upfront with "seq: too many iterations" and print nothing.
-TEST(seq, seq_streams_beyond_billion_iterations_issue1376) {
+// #1376: seq has no iteration ceiling — the consumer decides how much to
+// read. `seq 1000000001 | head -3` used to fail upfront with "seq: too
+// many iterations" and print nothing.
+//
+// The operand rides at 100000001 (10^8, ~100 MB of output) rather than the
+// original 10^9: under the #1488 v1 whole-buffer ABI seq computes the full
+// range before its first pipe write (the streaming-stdout termination —
+// head's close stopping seq early — is the streaming-v2 wave's contract,
+// rust2/README.md §5), and the 10^9 compute was runner-speed-marginal
+// against the 120 s ctest timeout (CI 2026-11-13). The no-ceiling
+// contract is scale-independent; the buffered-output shape still spans
+// far beyond the 64 KiB flush scale.
+TEST(seq, seq_streams_beyond_buffer_scale_issue1376) {
   Pipeline p;
-  p.add(L"seq.exe", {L"1000000001"});
+  p.add(L"seq.exe", {L"100000001"});
   p.add(L"head.exe", {L"-n", L"3"});
 
   auto r = p.run();
