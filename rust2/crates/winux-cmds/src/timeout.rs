@@ -743,6 +743,60 @@ mod tests {
         assert_eq!(r, 4);
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn chained_shebang_child_inner_script_once() {
+        // #1595: `timeout 5 outer.sh` where outer's shebang interpreter is
+        // ITSELF a script (inner.sh, itself `#!/bin/sh -e`). The kernel's
+        // launch argv is [sh, -e, inner, -x, outer, A, B] -- the inner
+        // script appears exactly once, as the script operand of its own
+        // interpreter, and the outer shebang's arg follows it. The pre-fix
+        // chain pushed the interpreter spelling a second time, shifting
+        // every later token by one. WSL GNU oracle (script-file probe,
+        // bash 5.3): the script echoes "0=[inner] 1=[-x] 2=[outer] 3=[A]
+        // 4=[B]" -- sh consumes its own -e, so the script's $0 is the
+        // inner script and the outer shebang's -x is its first argument.
+        let sc = scratch("timeout-chain");
+        let argv_out = sc.dir.join("argv.out");
+        let inner = sc.dir.join("inner.sh");
+        std::fs::write(
+            &inner,
+            format!(
+                "#!/bin/sh -e\nprintf '%s\\n' \"$0\" \"$@\" >> {}\nexit 5\n",
+                argv_out.to_string_lossy()
+            ),
+        )
+        .unwrap();
+        let outer = sc.dir.join("outer.sh");
+        std::fs::write(
+            &outer,
+            format!("#!{} -x\nnever-reached\n", inner.to_string_lossy()),
+        )
+        .unwrap();
+        let operand = outer.to_string_lossy().into_owned();
+        let (r, _, err) = run(&["5", &operand, "A", "B"]);
+        assert_eq!(r, 5, "err={err}");
+        let seen = std::fs::read_to_string(&argv_out).unwrap();
+        let lines: Vec<&str> = seen.lines().collect();
+        // OS argv [sh, -e, inner, -x, outer, A, B]: the script's $0 is the
+        // inner script, then the outer shebang's arg, the outer script,
+        // the caller's args.
+        assert_eq!(
+            lines,
+            vec![
+                inner.to_str().unwrap(),
+                "-x",
+                outer.to_str().unwrap(),
+                "A",
+                "B"
+            ],
+            "lines={lines:?}"
+        );
+        // the whole point of #1595: inner exactly once, outer exactly once
+        assert_eq!(seen.matches(inner.to_str().unwrap()).count(), 1);
+        assert_eq!(seen.matches(outer.to_str().unwrap()).count(), 1);
+    }
+
     #[test]
     fn duration_grammar() {
         // valid shapes (GNU probed): whitespace, '+', hex, fractions,
