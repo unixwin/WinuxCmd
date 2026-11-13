@@ -663,12 +663,17 @@ fn parse_exact_decimal(s: &str) -> Option<ExactDec> {
     })
 }
 
-/// One prepared exact sequence: first/step/last on the common 10^-prec
-/// rendering grid, with -w width lifted from the default format.
+/// One prepared exact sequence: first/step on the 10^-prec rendering
+/// grid, last as the exact loop bound (multiplied by `bound_mul` for
+/// comparison when the last operand's scale is finer than prec), with -w
+/// width lifted from the default format.
 struct ExactRun {
     first: i128,
     step: i128,
     last: i128,
+    /// Scale-up factor for bound comparisons against `last` (1 when last
+    /// sits on the same 10^-prec grid as first/step).
+    bound_mul: i128,
     prec: usize,
     zero_width: usize,
     first_neg_zero: bool,
@@ -752,6 +757,31 @@ fn try_exact_run(
         sm = sm.checked_mul(up)?;
         lm = lm.checked_mul(up)?;
     }
+    // [t > prec] the last operand may carry finer fraction digits than
+    // the rendering precision (prec = max(first, step) per GNU
+    // get_default_format). first and step stay exactly on the 10^-prec
+    // grid — their widen to the common scale only appended zeros — so
+    // drop them onto it and keep last on its native 10^-t grid, scaling
+    // the bound comparisons back up by 10^(t-prec). Rendering the t-grid
+    // mantissas on the prec grid instead printed every value 10^(t-prec)
+    // times its real size (`seq 0.5 1.55` printed "5.0\n15.0" where GNU
+    // prints "0.5\n1.5"; found by seq.seq_precision_ignores_last_operand,
+    // the #1575 borrow-algo wiring).
+    let bound_mul: i128 = if t > prec as u32 {
+        let Some(m) = i128::checked_pow(10, t - prec as u32) else {
+            return None;
+        };
+        let mu = m.unsigned_abs();
+        let drop = |v: i128| -> Option<i128> {
+            // exact by construction: widen appended these zeros
+            (v.unsigned_abs() % mu == 0).then(|| v / m)
+        };
+        fm = drop(fm)?;
+        sm = drop(sm)?;
+        m
+    } else {
+        1
+    };
     let zero_width = if equal_width {
         // same width derivation as get_default_format via the scanned
         // operand texts; the emitted default is %0<w>.<prec>f
@@ -772,6 +802,7 @@ fn try_exact_run(
         first: fm,
         step: sm,
         last: lm,
+        bound_mul,
         prec,
         zero_width,
         first_neg_zero: f.neg_zero,
@@ -820,9 +851,9 @@ impl ExactRun {
     fn print(&self, io: &mut Io, separator: &str) -> std::io::Result<()> {
         let neg_step = self.step < 0;
         let mut out_of_range = if neg_step {
-            self.first < self.last
+            self.first.saturating_mul(self.bound_mul) < self.last
         } else {
-            self.last < self.first
+            self.last < self.first.saturating_mul(self.bound_mul)
         };
         if out_of_range {
             return Ok(());
@@ -843,10 +874,14 @@ impl ExactRun {
                 Some(v) => v,
                 None => break,
             };
+            // saturating: the true product never lands between the
+            // saturated i128 extreme and the bound, so every comparison
+            // resolves the way the real value would
+            let scaled = next.saturating_mul(self.bound_mul);
             out_of_range = if neg_step {
-                next < self.last
+                scaled < self.last
             } else {
-                next > self.last
+                scaled > self.last
             };
             if out_of_range {
                 break;

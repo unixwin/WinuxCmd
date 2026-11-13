@@ -1167,6 +1167,13 @@ seq_rows = [
      ["0.99999999999999999999", "2"]),
     ("sq60-exact-boundary2", "strict", "", "", "",
      ["2", "2.0000000000000000001", "2.0000000000000000005"]),
+    # t>prec: last operand carries finer fraction digits than max(first,
+    # step) precision — the rendering grid must drop to prec, not stay on
+    # the common scale (the #1575 regression shape: "5.0\n15.0" for
+    # GNU's "0.5\n1.5")
+    ("sq61-last-finer-scale", "strict", "", "", "", ["0.5", "1.55"]),
+    ("sq62-last-finer-negstep", "strict", "", "", "",
+     ["1.5", "-0.5", "-1.55"]),
 ]
 
 
@@ -1259,6 +1266,13 @@ seq_rows = [
      ["0.99999999999999999999", "2"]),
     ("sq60-exact-boundary2", "strict", "", "", "",
      ["2", "2.0000000000000000001", "2.0000000000000000005"]),
+    # t>prec: last operand carries finer fraction digits than max(first,
+    # step) precision — the rendering grid must drop to prec, not stay on
+    # the common scale (the #1575 regression shape: "5.0\n15.0" for
+    # GNU's "0.5\n1.5")
+    ("sq61-last-finer-scale", "strict", "", "", "", ["0.5", "1.55"]),
+    ("sq62-last-finer-negstep", "strict", "", "", "",
+     ["1.5", "-0.5", "-1.55"]),
 ]
 
 fold_rows = [

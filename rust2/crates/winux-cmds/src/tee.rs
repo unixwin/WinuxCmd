@@ -75,20 +75,34 @@ fn tee_files(
     });
     let mut ok = true;
     for name in files {
-        // the one operand boundary (fs_win::api_path): devices resolve
-        // verbatim (tee > NUL discards), POSIX spellings map through the
-        // shell tree (#1488); the reported name keeps the operand text
-        let path = std::path::PathBuf::from(crate::fs_win::api_path(ctx, name));
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .append(append)
-            .truncate(!append)
-            .open(&path)
-        {
-            Ok(f) => dests.push(Dest {
+        // [GNU] a fifo operand opens the pipe endpoint with O_WRONLY
+        // blocking semantics (tee.c opens it like any file; on Windows
+        // the #1038 marker emulation bridges it). The wave3a port
+        // OpenOptions-truncated the marker file itself here, which
+        // destroyed the emulation header and left every C++ FIFO reader
+        // (head issue1442 family) waiting on an endpoint no writer ever
+        // joined. The fifo arm never touches the marker on disk.
+        let dest: std::io::Result<Box<dyn Write>> = if crate::fs_win::is_winux_fifo(ctx, name) {
+            crate::fs_win::open_fifo_write(ctx, name)
+                .map(|f| Box::new(f) as Box<dyn Write>)
+                .map_err(|e| std::io::Error::from_raw_os_error(e as i32))
+        } else {
+            // the one operand boundary (fs_win::api_path): devices resolve
+            // verbatim (tee > NUL discards), POSIX spellings map through the
+            // shell tree (#1488); the reported name keeps the operand text
+            let path = std::path::PathBuf::from(crate::fs_win::api_path(ctx, name));
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .append(append)
+                .truncate(!append)
+                .open(&path)
+                .map(|f| Box::new(f) as Box<dyn Write>)
+        };
+        match dest {
+            Ok(h) => dests.push(Dest {
                 name: name.to_string(),
-                handle: Some(Box::new(f)),
+                handle: Some(h),
             }),
             Err(e) => {
                 let _ = writeln!(io.stderr, "tee: {name}: {}", reason_str(&e));
@@ -131,19 +145,29 @@ fn tee_files(
             match handle.write_all(&buf[..n]).and_then(|()| handle.flush()) {
                 Ok(()) => {}
                 Err(e) => {
-                    let fail = !epipe_like(&e)
-                        || matches!(
-                            output_error,
-                            OutputError::Exit | OutputError::Warn | OutputError::ExitNopipe
-                        );
+                    // tee.c's mode table: EVERY write error marks the run
+                    // failed (GNU's default sigpipe mode dies by signal,
+                    // rc 141 — the Windows emulation reports that as a
+                    // silent rc 1; warn-nopipe/exit-nopipe mark EPIPE
+                    // silently, warn/exit diagnose everything). The modes
+                    // differ only in loudness and immediacy, never in the
+                    // final status. The wave3a port treated epipe-like
+                    // errors in sigpipe/warn-nopipe/exit-nopipe modes as
+                    // non-failures (rc 0), so a writer whose reader
+                    // closed early exited clean — head's
+                    // stops_at_delimiter FIFO test pins the writer break.
+                    let epipe = epipe_like(&e);
+                    let loud =
+                        !epipe || matches!(output_error, OutputError::Exit | OutputError::Warn);
                     // exit_* modes stop the command right away (GNU calls
-                    // error() with a nonzero status, which exits)
-                    let exit_now =
-                        matches!(output_error, OutputError::Exit | OutputError::ExitNopipe);
-                    if fail {
+                    // error() with a nonzero status, which exits);
+                    // exit-nopipe exempts the epipe shape
+                    let exit_now = matches!(output_error, OutputError::Exit)
+                        || (matches!(output_error, OutputError::ExitNopipe) && !epipe);
+                    if loud {
                         let _ = writeln!(io.stderr, "tee: {}: {}", d.name, reason_str(&e));
-                        ok = false;
                     }
+                    ok = false;
                     d.handle = None;
                     if exit_now {
                         return Ok(1);

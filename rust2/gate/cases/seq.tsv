@@ -60,3 +60,5 @@ sq57-exact-19grid	strict				0	0.0000000000000000001	0.0000000000000000003
 sq58-exact-negzero	strict				-0.0	0.2	0.4
 sq59-exact-ld-boundary	strict				0.99999999999999999999	2
 sq60-exact-boundary2	strict				2	2.0000000000000000001	2.0000000000000000005
+sq61-last-finer-scale	strict				0.5	1.55
+sq62-last-finer-negstep	strict				1.5	-0.5	-1.55

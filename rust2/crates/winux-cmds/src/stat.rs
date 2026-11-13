@@ -267,7 +267,6 @@ fn field_for(
             }
             s
         }
-        'F' => file_type_name(m),
         'A' => access_string(m),
         'a' => return Field::Oct(mw & 0o7777),
         'f' => format!("{:04x}", mw),
@@ -324,10 +323,26 @@ fn field_for(
             "?".to_string()
         }
         'm' => mount_point(ctx, &entry.name),
-        'c' => return Field::Dec(255),
-        'S' => return Field::Dec(4096),
+        // %c and %S are not GNU stat directives (9.4 probed: both print
+        // '?' like any unknown sequence, rc 0). The wave3a port rendered
+        // 255 / 4096 for them, breaking stat_format_directives. Drop both
+        // arms so they fall through to the '?' unknown-directive rule.
+        'F' => fifo_type_name(ctx, &entry, m),
         _ => "?".to_string(),
     })
+}
+
+/// %F (file_type, gnulib file-type.c): a WinuxCmd fifo marker (#1038)
+/// classifies as "fifo (named pipe)" — the same rule the 1.x file/stat
+/// layer applies (src/commands/file.cpp:538). The wave3a port read the
+/// marker's regular-file shape, so mkfifo_marker_is_seen_as_fifo lost
+/// its classification.
+fn fifo_type_name(ctx: &Ctx, entry: &StatEntry, meta: &fs_win::FileMeta) -> String {
+    if !meta.is_symlink && !meta.is_dir && fs_win::is_winux_fifo(ctx, &entry.name) {
+        "fifo (named pipe)".to_string()
+    } else {
+        file_type_name(meta)
+    }
 }
 
 fn mount_point(ctx: &Ctx, name: &str) -> String {
@@ -906,6 +921,47 @@ pub fn stat_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 },
                 "terse" => {
                     terse = true;
+                }
+                "cached" => {
+                    // [GNU] --cached=WHEN (argmatch, stat.c): accepted as a
+                    // no-op — this Windows port never caches the probed
+                    // attributes. The wave3a wiring dropped the option, so
+                    // every --cached= invocation died in usage (rc 1, empty
+                    // stdout) where GNU accepts it (probed coreutils 9.4:
+                    // --cached=never|always|default -> rc 0, normal output).
+                    let v = match inline {
+                        Some(v) => v,
+                        None => {
+                            idx += 1;
+                            match args.get(idx) {
+                                Some(v) => v.to_string_lossy().into_owned(),
+                                None => {
+                                    let _ = usage_error(
+                                        io,
+                                        "stat",
+                                        "option '--cached' requires an argument",
+                                    );
+                                    return Ok(1);
+                                }
+                            }
+                        }
+                    };
+                    match v.as_str() {
+                        "default" | "never" | "always" => {}
+                        _ => {
+                            // argmatch_invalid + usage shape (argmatch.c
+                            // argmatch_invalid; probed coreutils 9.4
+                            // `--cached=bogus` -> that diagnostic, rc 1)
+                            let _ =
+                                writeln!(io.stderr, "stat: invalid argument '{v}' for '--cached'");
+                            let _ = writeln!(io.stderr, "Valid arguments are:");
+                            for w in ["default", "never", "always"] {
+                                let _ = writeln!(io.stderr, "  - '{w}'");
+                            }
+                            let _ = writeln!(io.stderr, "Try 'stat --help' for more information.");
+                            return Ok(1);
+                        }
+                    }
                 }
                 "file-system" => fs_mode = true,
                 "help" | "version" => return Ok(0),

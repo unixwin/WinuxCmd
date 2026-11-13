@@ -380,10 +380,25 @@ pub fn paste_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 closed: false,
             });
         } else {
-            // the one operand boundary (drive dialect, carrier colons,
-            // shell tree — the 1.x native_path layer)
-            let path = std::path::PathBuf::from(crate::fs_win::api_path(ctx, op));
-            match std::fs::File::open(&path) {
+            // [GNU] a fifo operand opens the pipe endpoint with O_RDONLY
+            // blocking semantics (paste.c opens it like any file; on
+            // Windows the #1038 marker emulation bridges it — the reader
+            // creates the endpoint and blocks until the writer arrives).
+            // The wave3a port opened the marker file itself, so the
+            // rendezvous never happened and mkfifo.paste_joins_two_fifos
+            // failed against its tee writers. The fifo arm never opens
+            // the marker on disk.
+            let opened: std::io::Result<Box<dyn Read>> = if crate::fs_win::is_winux_fifo(ctx, op) {
+                crate::fs_win::open_fifo_read(ctx, op)
+                    .map(|f| Box::new(f) as Box<dyn Read>)
+                    .map_err(|e| std::io::Error::from_raw_os_error(e as i32))
+            } else {
+                // the one operand boundary (drive dialect, carrier colons,
+                // shell tree — the 1.x native_path layer)
+                let path = std::path::PathBuf::from(crate::fs_win::api_path(ctx, op));
+                std::fs::File::open(&path).map(|f| Box::new(f) as Box<dyn Read>)
+            };
+            match opened {
                 Ok(f) => sources.push(Slot {
                     src: Rc::new(RefCell::new(Some(Box::new(f)))),
                     closed: false,
