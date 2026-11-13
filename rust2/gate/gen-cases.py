@@ -3422,8 +3422,17 @@ date_rows = [
      ["--date=2020-01-02 03:04:05", "+%F"]),
     ("dt37-tz-est-winter-zone-suffix", "strict", "", "TZ=EST5EDT", "",
      ["-d", "2020-01-02 03:04:05 UTC", "+%F_%T_%z"]),
-    ("dt38-set-refused", "strict", "", "", "", ["-s", "2020-01-02 03:04:05"]),
-    ("dt39-ref-file", "strict", "touch -t 202001010000 ref", "TZ=UTC", "",
+    # -s refuses on the Windows sides (product boundary: a compat layer must
+    # not mutate the machine clock; the 1.x C++ applet refuses too, rc 1).
+    # The WSL oracle host runs as root, so GNU ACCEPTS and sets its clock —
+    # the strict premise only holds on a non-root oracle host, so this row
+    # is a recorded note, never gated.
+    ("dt38-set-refused", "note", "", "", "", ["-s", "2020-01-02 03:04:05"]),
+    # Fixture via absolute epoch seconds: GNU `touch -t` reads the stamp in
+    # local time while the C++ 1.x touch reads UTC, so a -t fixture lands
+    # 8h apart across sides on this host and poisons the row. @seconds is
+    # TZ-independent, leaving date -r + TZ conversion as the only variable.
+    ("dt39-ref-file", "strict", "touch -d @1577836800 ref", "TZ=UTC", "",
      ["-r", "ref", "+%F_%T"]),
     ("dt40-help", "strict", "", "", "", ["--help"]),
     ("dt41-version", "strict", "", "", "", ["--version"]),
