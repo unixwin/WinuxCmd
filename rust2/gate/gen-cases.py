@@ -2614,29 +2614,28 @@ csplit_rows = [
 
 
 groups_rows = [
-    # current-user content is the Windows value model (NetUserGetGroups)
-    ("gr01-current-user", "win", "", "", "", []),
-    ("gr02-unknown-user", "strict", "", "", "", ["nosuchuser123"]),
-    ("gr03-two-unknown", "strict", "", "", "", ["nosuch-a-1", "nosuch-b-2"]),
-    ("gr04-help", "strict", "", "", "", ["--help"]),
-    ("gr05-version", "strict", "", "", "", ["--version"]),
-    ("gr06-short-h", "strict", "", "", "", ["-h"]),
-    ("gr07-short-x", "strict", "", "", "", ["-x"]),
-    # platform account (no Windows "root"): rc parity with the C++ exe
-    ("gr08-root-operand", "win", "", "", "", ["root"]),
-    ("gr09-unknown-long", "strict", "", "", "", ["--bogus"]),
-    ("gr10-empty-user", "strict", "", "", "", [""]),
-    ("gr11-invalid-short-g", "strict", "", "", "", ["-g"]),
-    ("gr12-zero-long", "strict", "", "", "", ["--zero"]),
-    ("gr13-help-permuted", "strict", "", "", "", ["nosuchuser123", "--help"]),
-    ("gr14-help-extra", "strict", "", "", "", ["--help", "extra"]),
-    ("gr15-invalid-short-n", "strict", "", "", "", ["-n", "root"]),
-    ("gr16-unknown-user-long", "strict", "", "", "", ["--user", "x"]),
-    ("gr17-invalid-short-r", "strict", "", "", "", ["-r"]),
-    # current-user content again (platform value model), via explicit --
-    ("gr18-dashdash-current", "win", "", "", "", ["--"]),
-    ("gr19-dash-operand", "strict", "", "", "", ["-"]),
-    ("gr20-mixed-known-unknown", "win", "", "", "", ["root", "nosuch-b-2"]),
+    ("gr01-self", "win", "", "", "", []),
+    ("gr02-dashdash-self", "win", "", "", "", ["--"]),
+    ("gr03-named-missing", "exit", "", "", "", ["nosuchuser123"]),
+    ("gr04-empty-named", "exit", "", "", "", ["@EMPTY@"]),
+    ("gr05-two-missing", "exit", "", "", "", ["nosuch1", "nosuch2"]),
+    ("gr06-named-win-parity", "win", "", "", "", ["Administrator"]),
+    ("gr07-named-win-two", "win", "", "", "", ["Administrator", "cmx"]),
+    ("gr08-help", "strict", "", "", "", ["--help"]),
+    ("gr09-version", "strict", "", "", "", ["--version"]),
+    ("gr10-version-help", "strict", "", "", "", ["--version", "--help"]),
+    ("gr11-bogus-short", "exit", "", "", "", ["-x"]),
+    ("gr12-h-note", "note", "", "", "", ["-h"]),
+    ("gr13-bogus-long", "exit", "", "", "", ["--bogus"]),
+    ("gr14-dashdash-named", "exit", "", "", "", ["--", "nosuch123"]),
+    ("gr15-bogus-eq", "exit", "", "", "", ["--bogus=1"]),
+    ("gr16-dash-operand", "exit", "", "", "", ["-"]),
+    ("gr17-mixed-first-ok", "win", "", "", "", ["cmx", "nosuch123"]),
+    ("gr18-upper-operand", "exit", "", "", "", ["NOSUCH123"]),
+    ("gr19-self-extra-env", "win", "", "", "", []),
+    ("gr20-help-extra", "strict", "", "", "", ["--help", "x"]),
+    ("gr21-version-extra", "strict", "", "", "", ["--version", "x"]),
+    ("gr22-numeric-operand", "exit", "", "", "", ["12345"]),
 ]
 
 NH_SHEBANG_SETUP = "printf '#!/bin/sh\\nexit 6\\n' > hi.sh; chmod +x hi.sh"
@@ -3072,14 +3071,14 @@ def collect():
         ("factor", factor_rows), ("pathchk", pathchk_rows), ("ptx", ptx_rows),
         ("shuf", shuf_rows), ("csplit", csplit_rows), ("nohup", nohup_rows),
         ("groups", groups_rows), ("who", who_rows),
-        # wave6 (#1488)
+        # wave6 (#1488) — factor/groups rows ride the wave4b entries above
+        # (one table definition per name; duplicate emit entries would
+        # double-count the coverage total)
         ("md5sum", md5sum_rows), ("sha1sum", sha1sum_rows),
         ("sha256sum", sha256sum_rows), ("sha512sum", sha512sum_rows),
         ("echo", echo_rows),
         ("rev", rev_rows),
-        ("factor", factor_rows),
         ("arch", arch_rows),
-        ("groups", groups_rows),
     ]
 
 
