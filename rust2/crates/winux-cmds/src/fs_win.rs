@@ -458,7 +458,8 @@ pub mod imp {
                 // find_size_bytes: "target-path length on this platform");
                 // a reparse-point-opened handle reports 0/allocated bytes,
                 // so the size comes from the stored target like the
-                // find_first_meta fallback path below.
+                // find_first_meta fallback path below (#1611 — the CreateFileW
+                // main path; the fallback already had the fixup).
                 if let Ok(t) = std::fs::read_link(&extended) {
                     meta.size = t.to_string_lossy().len() as u64;
                 }
