@@ -27,13 +27,17 @@
 //! ```
 //! use winux_regex::{Regex, Syntax};
 //!
-//! let re = Regex::compile(Syntax::Basic, r"\(a\|ab\)+").unwrap();
+//! let re = Regex::compile(Syntax::Basic, r"\(a\|ab\)\+").unwrap();
 //! assert_eq!(re.capture_count(), 1);
+//! // POSIX leftmost-longest: the whole "ab" wins, not the prefix "a".
+//! let m = re.find_at("ab", 0).unwrap();
+//! assert_eq!(m.slice_of(b"ab"), b"ab");
 //! // GNU rejects `\1` without a group:
 //! assert!(Regex::compile(Syntax::Basic, r"\1").is_err());
 //! ```
 
 pub mod ast;
+pub mod matcher;
 pub mod parser;
 
 use std::fmt;
@@ -120,6 +124,41 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+/// One capture span: `text[begin..end]` when `matched`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Submatch {
+    pub begin: usize,
+    pub end: usize,
+    pub matched: bool,
+}
+
+/// A successful match: overall span plus the capture-group spans.
+/// `captures` always has `capture_count + 1` entries; index 0 is the whole
+/// match and is always set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Match {
+    pub begin: usize,
+    pub end: usize,
+    pub captures: Vec<Submatch>,
+}
+
+impl Match {
+    /// Span of capture `index` (0 = whole match); unset or unmatched -> None.
+    pub fn group(&self, index: usize) -> Option<(usize, usize)> {
+        let sub = self.captures.get(index)?;
+        if sub.matched {
+            Some((sub.begin, sub.end))
+        } else {
+            None
+        }
+    }
+
+    /// The matched bytes of `text`.
+    pub fn slice_of<'a>(&self, text: &'a [u8]) -> &'a [u8] {
+        &text[self.begin..self.end]
+    }
+}
+
 /// A compiled regex.
 #[derive(Debug, Clone)]
 pub struct Regex {
@@ -150,7 +189,7 @@ impl Regex {
         pattern: &[u8],
         ignore_case: bool,
     ) -> Result<Regex, Error> {
-        let p = parser::Parser::new(syntax, pattern);
+        let p = parser::Parser::new(syntax, pattern, ignore_case);
         let (root, capture_count) = p.parse()?;
         let regex = Regex {
             root,

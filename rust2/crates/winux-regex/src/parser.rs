@@ -44,6 +44,7 @@ const MAX_DEPTH: usize = 200;
 pub struct Parser<'a> {
     syntax: Syntax,
     pattern: &'a [u8],
+    ignore_case: bool,
     pos: usize,
     capture_count: usize,
     depth: usize,
@@ -64,10 +65,11 @@ const BRANCH_START: PosCtx = PosCtx {
 };
 
 impl<'a> Parser<'a> {
-    pub fn new(syntax: Syntax, pattern: &'a [u8]) -> Parser<'a> {
+    pub fn new(syntax: Syntax, pattern: &'a [u8], ignore_case: bool) -> Parser<'a> {
         Parser {
             syntax,
             pattern,
+            ignore_case,
             pos: 0,
             capture_count: 0,
             depth: 0,
@@ -160,7 +162,7 @@ impl<'a> Parser<'a> {
         let mut pieces: Vec<Node> = Vec::new();
         let mut ctx = pos;
         while self.pos < self.pattern.len() {
-            if self.depth > 0 && self.is_group_end_at_current() {
+            if self.is_alt_at_current() || (self.depth > 0 && self.is_group_end_at_current()) {
                 break;
             }
             let piece = self.parse_piece(ctx)?;
@@ -572,6 +574,10 @@ impl<'a> Parser<'a> {
             if is_range {
                 self.pos += 1; // `-`
                 let end = self.bump().expect("peek(1) existed");
+                // GNU checks the RAW endpoints first: `[z-a]` and even
+                // `grep -i '[Z-A]'` / `grep -i '[a-Z]'` all error
+                // ("Invalid range end", probed). The C++ engine swapped
+                // instead of erroring — a silent divergence fixed here.
                 if start > end {
                     return Err(Error::new(
                         ErrorKind::InvalidRangeEnd,
@@ -579,9 +585,20 @@ impl<'a> Parser<'a> {
                         "invalid range end",
                     ));
                 }
-                atoms.push(ClassAtom::Range(start, end));
+                // -i folds the endpoints afterwards; the matcher folds the
+                // input byte, so `[A-Z]` caseless covers both cases.
+                let (lo, hi) = if self.ignore_case {
+                    (start.to_ascii_lowercase(), end.to_ascii_lowercase())
+                } else {
+                    (start, end)
+                };
+                atoms.push(ClassAtom::Range(lo, hi));
             } else {
-                atoms.push(ClassAtom::Literal(start));
+                atoms.push(ClassAtom::Literal(if self.ignore_case {
+                    start.to_ascii_lowercase()
+                } else {
+                    start
+                }));
             }
             first_member = false;
         }
