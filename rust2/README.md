@@ -252,7 +252,10 @@ bridge + `WINUXCMD_RUST2_ABI_VERSION` together, per the header's own
 rule). The C++ host entry is the bridge's streaming convenience call
 (`run_command_with_stdin_streaming`, real fd 0 through the `file_io` read
 path) plus the generic `run_command_with_stdin_source` /
-`run_command_with_stdin_bytes`; no wired command uses v2 yet. Hosts detect
+`run_command_with_stdin_bytes`. **Wired commands** (#1488 digest-family
+stream adoption): `b2sum`, `sha224sum`, `sha384sum` and `tac` route their
+stdin shapes through the streaming entry; every other rust2 command keeps
+its v1 behavior. Hosts detect
 v2 support by symbol presence
 (`winuxcmd_run_stream` in `dumpbin /LINKERMEMBER:1 winuxcmd_ffi.lib`).
 
@@ -353,11 +356,53 @@ stdin. The 64 MiB end-to-end ledger (three input kinds, `cmp` equality,
   `bash rust2/gate/stream-check.sh` (artifacts under
   `rust2/target/stream-check/`, gitignored).
 
+**Digest-family adoption ledger (2026-11-13, `rust2-stream-driver all`
+after wiring `b2sum`/`sha224sum`/`sha384sum`/`tac` through
+`run_command_with_stdin_streaming`, 64 MiB inputs, `cargo test` 634/634
+green — the 16 `stream_tests` included):**
+
+* Driver lanes: 189 checks PASS — the segmentation matrix now runs
+  {`tac`, `base64`, `b2sum`, `sha224sum`, `sha384sum`} x 5 payloads x
+  {1 B, 7 B, 997 B, 65537 B, full-fill} chunks; `-1` host-stop returns 124
+  for all five commands; `-2` read failure maps to each command's own rc
+  (tac and the digest family: silent rc 1 — the GNU-exact closed-stdin
+  shape for sha224sum/sha384sum/tac; base64: 125); real-stdin v1-vs-v2
+  byte equality on pipe AND redirected-file faces for tac + the digest
+  family.
+* GNU byte equality (WSL coreutils 9.4): 24/24 PASS — the four wired
+  commands x {text, empty, no-trailing-newline, embedded-NUL, 8 MiB
+  random, 64 MiB random} stdin inputs, stdout AND stderr AND rc
+  `cmp`-identical through the wired `winuxcmd.exe` routing; `-c -`
+  checkfile-from-stdin shapes behave like GNU (`OK` / `FAILED open or
+  read` paths and rc).
+* Memory peaks (driver `mem` lane, `GetProcessMemoryInfo`, 64 MiB input,
+  stable across 3 runs):
+
+  | command | v1 peak_pagefile | v2 peak_pagefile | v1 workingset | v2 workingset |
+  |---|---|---|---|---|
+  | `tac` | 396.6 MiB | 312.7 MiB | 320.8 MiB | 193.3 MiB |
+  | `sha224sum` | 213.7 MiB | 194.4 MiB | 199.4 MiB | 134.3 MiB |
+  | `b2sum` | 213.7 MiB | 194.4 MiB | 199.4 MiB | 134.3 MiB |
+
+  The digest rows show the whole-buffer removal as a ~1x-input WORKINGSET
+  gap (65 MiB = the host slurp + the ABI copy), while the commit-charge
+  gap is only ~0.3x input: the digest command's own `io::copy` Vec still
+  holds the whole input (unchanged command code), and under v1
+  `io::copy`'s Vec-writer path lands in `Cursor::read_to_end`, which
+  `try_reserve()`s the input EXACTLY (std 1.95 `cursor.rs`), while the v2
+  unknown-length stream takes the default `read_to_end` probe loop whose
+  amortized doubling transiently commits ~1.5x input (std `copy.rs`:
+  `BufferedWriterSpec for Vec<u8>` -> `read_to_end`). Making the digest
+  peak flat (hash incrementally over the stream) is a command-impl item,
+  not a bridge one.
+
 ## Out of scope for this pilot
 
 * No `chmod`/`chown`/`df` full POSIX semantics. (Wiring into the dispatcher
   started with the replacement wave; see the recipe.)
 * Symlink-creating setups need Developer Mode; without it the gate runs
   link-sensitive cases in `win`/`exit` classification only.
-* No command is *wired* through the streaming ABI yet (that is the next
-  replacement wave; this change is pure ABI/core/driver support).
+* The digest family (`b2sum`, `sha224sum`, `sha384sum`) and `tac` ARE
+  wired through the streaming ABI since the #1488 digest-family adoption;
+  the remaining v1 stdin consumers (`base64`, `base32`, `fmt`, `fold`,
+  `paste`, ...) stay on `run_command_with_stdin` until their wave.
