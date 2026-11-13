@@ -715,17 +715,31 @@ pub mod imp {
         }
     }
 
-    pub fn create_symlink(_ctx: &Ctx, target: &str, link: &str, dir: bool) -> Result<(), u32> {
-        // GNU ln -s stores the link TEXT verbatim (symlink(2) takes the
-        // string as-is; readlink returns the operand spelling, "-r"
-        // aside). The wave3a port api_path-ed the target too, which
-        // absolutized relative targets onto the \\?\ cwd spelling and
-        // made every `ln -s t d` store "t" as an absolute path (ln
-        // issue1367 unit tests). Only the LINK path is an operand — the
-        // target goes to CreateSymbolicLinkW untouched (Windows stores
-        // it literally; no validation, dangling is fine).
-        let t = wide(target);
-        let l = wide(&api_path(_ctx, link));
+    /// The link TEXT CreateSymbolicLinkW stores for a symlink target.
+    /// GNU symlink(2) takes the operand string verbatim (readlink returns
+    /// the spelling as given), so a relative target stays relative — the
+    /// wave3a port api_path-ed the target too, which absolutized it onto
+    /// the cwd spelling and broke every `ln -s t d` readback (ln
+    /// issue1367). The 1.x contract the #1101/#1234 unit pins encode
+    /// (ln.cpp:733 folded both operands, then win32_normalize_symlink_
+    /// target) keeps two Windows adaptations on the reparse text, neither
+    /// absolutizing:
+    /// 1. normalize_operand's fold chain: the POSIX drive dialect
+    ///    "/e/..." folds to "E:\..." so the link lands on the operand
+    ///    drive (#1234), shell-tree "/..." spellings resolve like every
+    ///    other operand boundary; relative and already-native operands
+    ///    pass through unchanged (identity);
+    /// 2. '/' -> '\\' (win32.cppm:112 win32_normalize_symlink_target):
+    ///    NT resolves reparse-point text with the Win32 path parser,
+    ///    which only accepts backslash separators — "./src" or
+    ///    "dir/file" resolve as ERROR_INVALID_NAME (#1101).
+    pub fn symlink_target_text(ctx: &Ctx, target: &str) -> String {
+        winux_core::path::normalize_operand(ctx.env, &ctx.cwd, target).replace('/', "\\")
+    }
+
+    pub fn create_symlink(ctx: &Ctx, target: &str, link: &str, dir: bool) -> Result<(), u32> {
+        let t = wide(&imp::symlink_target_text(ctx, target));
+        let l = wide(&api_path(ctx, link));
         let mut flags = if dir {
             SYMBOLIC_LINK_FLAG_DIRECTORY
         } else {
@@ -1327,5 +1341,41 @@ mod api_path_probes {
             r"\\?\D:\shellroot\etc\passwd"
         );
         assert_eq!(imp::api_path(&ctx, "/mnt/d/x"), r"\\?\D:\x");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn symlink_target_text_pins() {
+        // The text CreateSymbolicLinkW stores, pinned to the shapes the
+        // ln unit tests assert (issue1367 verbatim relative, #1101
+        // backslash-only, #1234 drive-dialect landing) — no absolutize:
+        // symlink(2) takes the operand text verbatim, so `ln -s t d`
+        // readback equals "t".
+        let ctx = plain_ctx(Path::new(r"D:\wd"));
+        // relative plain: identity (issue1367)
+        assert_eq!(imp::symlink_target_text(&ctx, "t"), "t");
+        assert_eq!(imp::symlink_target_text(&ctx, "missing"), "missing");
+        // dot-slash / forward-slash relative: backslash-normalized,
+        // still relative (#1101 — "./src" and "dir/file" die with
+        // ERROR_INVALID_NAME as reparse text)
+        assert_eq!(
+            imp::symlink_target_text(&ctx, "./original.txt"),
+            r".\original.txt"
+        );
+        assert_eq!(
+            imp::symlink_target_text(&ctx, "sub/original.txt"),
+            r"sub\original.txt"
+        );
+        // already-native: untouched
+        assert_eq!(
+            imp::symlink_target_text(&ctx, r"C:\native\path"),
+            r"C:\native\path"
+        );
+        // POSIX drive dialect folds onto the operand drive (#1234)
+        assert_eq!(
+            imp::symlink_target_text(&ctx, "/e/Data/src"),
+            r"E:\Data\src"
+        );
+        assert_eq!(imp::symlink_target_text(&ctx, "/cygdrive/e/f"), r"E:\f");
     }
 }
