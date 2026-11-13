@@ -53,7 +53,10 @@ pub enum PosixClass {
 impl PosixClass {
     /// Parse the name of `[:name:]`. Unknown names are a compile error in
     /// GNU grep ("Invalid character class name"); the C++ engine accepted
-    /// them and never matched, which diverges from GNU.
+    /// them and never matched, which diverges from GNU. NOTE: `word` is
+    /// deliberately absent — GNU grep 3.11 rejects `[[:word:]]` ("Invalid
+    /// character class name", probed); the word class exists only through
+    /// the `\w` shorthand, which maps to [`PosixClass::Word`] directly.
     pub fn from_name(name: &[u8]) -> Option<PosixClass> {
         Some(match name {
             b"alnum" => PosixClass::Alnum,
@@ -68,7 +71,6 @@ impl PosixClass {
             b"space" => PosixClass::Space,
             b"upper" => PosixClass::Upper,
             b"xdigit" => PosixClass::XDigit,
-            b"word" => PosixClass::Word,
             _ => return None,
         })
     }
