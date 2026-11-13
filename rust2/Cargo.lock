@@ -14,6 +14,10 @@ name = "winux-core"
 version = "0.1.0"
 
 [[package]]
+name = "winux-regex"
+version = "0.1.0"
+
+[[package]]
 name = "winuxcmd-driver"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,414 @@
+##ROW 0
+abc
+abc
+##ROW 1
+a
+a
+a
+a
+a
+a
+a
+##ROW 2
+##ROW 3
+a
+b
+a
+b
+a
+a
+a
+b
+a
+b
+a
+##ROW 4
+a
+b
+c
+a
+b
+c
+a
+a
+a
+b
+a
+b
+a
+##ROW 5
+abcabc
+##ROW 6
+aa
+##ROW 7
+abab
+##ROW 8
+aaa
+##ROW 9
+aa
+##ROW 10
+aaa
+##ROW 11
+a
+##ROW 12
+ab
+ab
+##ROW 13
+123
+4567
+##ROW 14
+abc
+abc
+xxy
+aaa
+##ROW 15
+123
+456
+7
+##ROW 16
+ 
+ 
+ 
+ 
+##ROW 17
+b
+c
+b
+c
+ 
+x
+x
+y
+y
+ 
+b
+ 
+b
+ 
+z
+{
+}
+ 
+[
+]
+ 
+(
+x
+)
+ 
+n
+##ROW 18
+Z
+1
+2
+##ROW 19
+a
+]
+##ROW 20
+-
+a
+##ROW 21
+-
+a
+##ROW 22
+\
+]
+^
+_
+`
+a
+b
+c
+z
+##ROW 23
+\
+a
+b
+c
+z
+##ROW 24
+\]
+##ROW 25
+\]
+##ROW 26
+\
+##ROW 27
+a
+\
+b
+##ROW 28
+ 
+##ROW 29
+x
+x
+##ROW 30
+abc
+##ROW 31
+ab
+ab
+##ROW 32
+x
+##ROW 33
+x
+##ROW 34
+a
+b
+c
+a
+b
+c
+x
+x
+y
+y
+a
+a
+a
+b
+a
+b
+z
+a
+x
+n
+##ROW 35
+ a
+ a
+##ROW 36
+abc
+123
+de4
+567
+##ROW 37
+abc
+##ROW 38
+c
+##ROW 39
+a^b
+##ROW 40
+a$b
+##ROW 41
+##ROW 42
+b
+##ROW 43
+ab
+ab
+##ROW 44
+abab
+##ROW 45
+abab
+ab
+##ROW 46
+x
+##ROW 47
+y
+##ROW 48
+b
+##ROW 49
+aa
+##ROW 50
+x{2,3
+##ROW 51
+{a}
+##ROW 52
+##ROW 53
+}
+##ROW 54
+aaa
+##ROW 55
+a
+a
+a
+##ROW 56
+.
+##ROW 57
+*
+##ROW 58
+\
+##ROW 59
+abc
+abx
+##ROW 60
+abc
+abc
+##ROW 61
+aab
+##ROW 62
+##ROW 63
+()x
+##ROW 64
+(a)
+(a)
+##ROW 65
+a
+b
+a
+b
+a
+a
+a
+b
+a
+b
+a
+##ROW 66
+ab
+ab
+##ROW 67
+abcd
+##ROW 68
+aabb
+##ROW 69
+ab
+ab
+##ROW 70
+aba
+bab
+##ROW 71
+abab
+##ROW 72
+aaa
+##ROW 73
+aa
+##ROW 74
+aaa
+##ROW 75
+b
+aab
+##ROW 76
+aaa
+##ROW 77
+aaa
+##ROW 78
+aaa
+##ROW 79
+aaa
+##ROW 80
+x
+##ROW 81
+xz
+xyz
+##ROW 82
+ac
+abc
+##ROW 83
+abba
+##ROW 84
+xxxx
+##ROW 85
+xxxx
+##ROW 86
+aaa
+##ROW 87
+aaab
+##ROW 88
+##ROW 89
+aaa
+##ROW 90
+aa
+##ROW 91
+aaaa
+##ROW 92
+a
+##ROW 93
+a
+n
+##ROW 94
+abc
+##ROW 95
+abc
+##ROW 96
+##ROW 97
+##ROW 98
+a)b
+##ROW 99
+)
+##ROW 100
+]
+##ROW 101
+x{2,3
+##ROW 102
+##ROW 103
+x{a}
+##ROW 104
+##ROW 105
+aaaaaa
+##ROW 106
+##ROW 107
+##ROW 108
+x
+x
+##ROW 109
+abcabc
+xxyy
+aaab
+ab
+z
+a
+x
+n
+##ROW 110
+  
+##ROW 111
+abcabc
+xxyy
+aaab
+ab
+z
+a
+x
+n
+##ROW 112
+123
+4567
+##ROW 113
+deAdaB
+##ROW 114
+_a1
+##ROW 115
+Z
+1
+2
+##ROW 116
+ab
+##ROW 117
+123
+456
+##ROW 118
+a
+b
+##ROW 119
+a
+]
+##ROW 120
+\]
+##ROW 121
+\
+##ROW 122
+.
+##ROW 123
+*
+##ROW 124
+{2}
+##ROW 125
+##ROW 126
+##ROW 127
+##ROW 128
+##ROW 129
+abc
+##ROW 130
+abcabc
+##ROW 131
+abc
+##ROW 132
+ab
+cd
+##ROW 133
+abba
+##ROW 134
+  
+##ROW 135
+aabbb
+##ROW 136
+n
+##ROW 137
