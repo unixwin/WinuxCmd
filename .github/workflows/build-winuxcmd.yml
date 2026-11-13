@@ -357,6 +357,57 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+  # Rust unit tests (#1602): no workflow ever ran `cargo test`, so the
+  # winux-cmds suite (529 tests, verified on X299) and the #1597
+  # short_h_is_rejected_like_gnu nails once re-added had no CI guard —
+  # ctest only ever ran the C++ gtest names. This job runs alongside the
+  # ctest leg; its failure name-set is adjudicated separately from the
+  # ctest baseline cluster.
+  rust-tests:
+    runs-on: windows-2025
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      # Same pin as build-windows (RUST2_TOOLCHAIN 1.99.1): the test
+      # binaries link against the MSVC host toolchain, so the suite must
+      # run on exactly the toolchain the product ships.
+      - name: Cache pinned rust2 toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/.rustup/toolchains/1.99.1-x86_64-pc-windows-msvc
+          key: rustup-toolchain-${{ runner.os }}-${{ env.RUST2_TOOLCHAIN }}-msvc
+
+      - name: Set up pinned Rust toolchain (rust2)
+        shell: cmd
+        run: |
+          "%USERPROFILE%\.cargo\bin\rustup.exe" toolchain install %RUST2_TOOLCHAIN% --profile minimal --no-self-update
+          "%USERPROFILE%\.cargo\bin\rustup.exe" default %RUST2_TOOLCHAIN%
+          "%USERPROFILE%\.cargo\bin\rustup.exe" show
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-rust2-${{ runner.os }}-${{ env.RUST2_TOOLCHAIN }}-${{ hashFiles('rust2/Cargo.lock', 'rust2/crates/*/Cargo.toml') }}
+
+      # The verified set only: `cargo test -p winux-cmds` (529 tests on
+      # X299, #1597). The workspace's other crates are not run here until
+      # their suites are verified green the same way. run-gate.sh is NOT
+      # wired in: its GNU side needs WSL and its CPP side needs a Debug
+      # build-vs tree, neither of which exists on hosted runners (see
+      # REPORT); the `bash -n` parse check above stays as the guard.
+      # --no-fail-fast so a red run reports the full failure name-set.
+      - name: Run Rust unit tests (cargo test)
+        shell: cmd
+        working-directory: rust2
+        run: |
+          "%USERPROFILE%\.cargo\bin\cargo.exe" test --locked --no-fail-fast -p winux-cmds
+
   # Cross-arch Rust surface consistency (#1488): the x64 and arm64 legs
   # must carry the SAME rust2 command library. The arm64 binary cannot be
   # executed on the x64 runner (Windows does not emulate ARM64 on x64), so
