@@ -259,7 +259,7 @@ fn parse_shebang_line(head: &[u8]) -> Option<(String, Option<String>)> {
     // skip the "#!" magic: the kernel splits the line that FOLLOWS it
     let body = &head[2..];
     let line_end = body.iter().position(|&b| b == b'\n').unwrap_or(body.len());
-    if line_end >= HEAD_BYTES {
+    if line_end == body.len() && head.len() == HEAD_BYTES {
         return None; // no newline inside the kernel's buffer
     }
     let trimmed: &[u8] = {
@@ -347,11 +347,11 @@ fn resolve_shebang_script(script: &str, head: &[u8], ctx: &Ctx, depth: u32) -> C
                 ChildResolve::Found(ChildLaunch::Script { argv })
             }
             ChildLaunch::Script { argv: inner } => {
-                // script-chain interpreter: the OS argv is the inner
-                // interpreter's launch followed by the outer script's
-                // [interpreter, arg?, script] tokens, then the caller's.
+                // script-chain interpreter: `inner` is already the inner
+                // script's complete launch argv [interp, arg?, inner-script];
+                // append only the outer shebang's [arg?, script] tokens --
+                // the inner script must appear exactly once (#1595).
                 let mut argv = inner;
-                argv.push(interpreter);
                 if let Some(a) = arg {
                     argv.push(a);
                 }
@@ -847,6 +847,53 @@ mod tests {
             super::resolve_child(b.to_str().unwrap(), &ctx),
             super::ChildResolve::NotFound
         );
+    }
+
+    #[test]
+    fn shebang_chain_argv_inner_script_once() {
+        // #1595: a shebang interpreter that is itself a script -- the
+        // kernel's argv is [sh, -e, inner, -x, outer]: the inner script
+        // appears exactly once (as the script argument to its own
+        // interpreter), and the outer shebang's arg follows it.
+        let mut sc = scratch("shebang-chain");
+        let sh = root_with_sh(&mut sc);
+        let ctx = sc.ctx();
+        let inner = sc.path("inner.sh");
+        write(&inner, b"#!/bin/sh -e\necho inner\n");
+        let inner_spelling = inner.to_string_lossy().into_owned();
+        let outer = sc.path("outer.sh");
+        let outer_line = format!("#!{inner_spelling} -x\necho outer\n");
+        write(&outer, outer_line.as_bytes());
+        let outer_spelling = outer.to_string_lossy().into_owned();
+        assert_eq!(
+            super::resolve_child(&outer_spelling, &ctx),
+            super::ChildResolve::Found(super::ChildLaunch::Script {
+                argv: vec![sh, "-e".into(), inner_spelling, "-x".into(), outer_spelling],
+            })
+        );
+    }
+
+    #[test]
+    fn shebang_overlong_first_line_is_not_a_script() {
+        // #1595: a first line that fills the 256-byte kernel buffer with
+        // no newline is ENOEXEC, not a shebang -- the old
+        // `line_end >= HEAD_BYTES` guard could never fire (body <= 254).
+        let mut head = vec![b'#', b'!'];
+        head.extend(std::iter::repeat(b'x').take(254));
+        assert_eq!(head.len(), 256);
+        assert_eq!(super::parse_shebang_line(&head), None);
+        // A short file with no newline still parses: the line ends at
+        // EOF inside the buffer.
+        assert_eq!(
+            super::parse_shebang_line(b"#!/bin/sh"),
+            Some(("/bin/sh".to_string(), None))
+        );
+        // A newline at the last buffer byte still fits: the line parses.
+        let mut fitting = vec![b'#', b'!'];
+        fitting.extend(std::iter::repeat(b'x').take(253));
+        fitting.push(b'\n');
+        assert_eq!(fitting.len(), 256);
+        assert!(super::parse_shebang_line(&fitting).is_some());
     }
 
     #[test]
