@@ -153,6 +153,29 @@ export void invalidateCachedHandles() {
   g_console_checked = false;
 }
 
+// --- FFI cooperative cancellation (#1487 defect B) ------------------------
+// Process-wide flag set by the FFI shell's watchdog thread when the host's
+// cancel callback fires mid-dispatch; long-running applets read it at
+// loop boundaries and stop their work early (returning normally — the
+// dispatch chain is noexcept, so checkpoints never throw). The FFI shell
+// clears the flag at the start of each call and translates a set flag
+// into WINUX_FFI_ERR_CANCELLED after dispatch; applets never clear it.
+// Never set in the exe form (no watchdog exists there), so the checks are
+// dead code outside FFI calls.
+std::atomic<bool> g_ffi_cancel_requested{false};
+
+export void request_ffi_cancel() noexcept {
+  g_ffi_cancel_requested.store(true, std::memory_order_relaxed);
+}
+
+export bool ffi_cancel_requested() noexcept {
+  return g_ffi_cancel_requested.load(std::memory_order_relaxed);
+}
+
+export void clear_ffi_cancel() noexcept {
+  g_ffi_cancel_requested.store(false, std::memory_order_relaxed);
+}
+
 export bool is_stdout_pipe_closed() { return g_stdout_pipe_closed; }
 
 export bool is_stderr_pipe_closed() { return g_stderr_pipe_closed; }

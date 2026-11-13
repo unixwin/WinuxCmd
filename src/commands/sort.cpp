@@ -1664,6 +1664,9 @@ auto write_records_to_file(std::ostream& out,
   for (const auto& rec : records) {
     if (output.size() + rec.size() + 1 > output.capacity()) {
       flush();
+      // FFI cooperative cancellation (#1487-B): stop emitting output;
+      // the caller reports the cancel, so no error is produced here.
+      if (ffi_cancel_requested()) return;
     }
     output.append(rec);
     output.push_back(delimiter);
@@ -1687,6 +1690,9 @@ auto write_records_to_stdout(const std::vector<std::string>& records,
     if (output.size() + rec.size() + 1 > output.capacity()) {
       flush();
       if (is_stdout_pipe_closed()) return;
+      // FFI cooperative cancellation (#1487-B): stop emitting output;
+      // the caller reports the cancel, so no error is produced here.
+      if (ffi_cancel_requested()) return;
     }
     output.append(rec);
     output.push_back(delimiter);
@@ -1856,6 +1862,19 @@ auto external_sort(const Config& cfg) -> cp::Result<int> {
   std::vector<ExternalRun> runs;
   size_t run_number = 0;
 
+  // A cancelled run bails out below without reaching the cleanup at the
+  // end; the guard removes the chunk files on every exit path instead.
+  // On the normal path the files are already gone, so this is a no-op.
+  struct TempCleanup {
+    std::vector<std::filesystem::path>* paths;
+    ~TempCleanup() {
+      for (const auto& p : *paths) {
+        std::error_code ec;
+        std::filesystem::remove(p, ec);
+      }
+    }
+  } temp_cleanup{&temporary_paths};
+
   std::filesystem::path temp_dir =
       cfg.temporary_directory_hint.empty()
           ? std::filesystem::temp_directory_path()
@@ -1895,12 +1914,23 @@ auto external_sort(const Config& cfg) -> cp::Result<int> {
 
   std::vector<std::string> records;
   size_t bytes = 0;
+  size_t lines_since_cancel_check = 0;
   auto consume = [&](std::istream& input) -> cp::Result<bool> {
     std::string record;
     while (std::getline(input, record, cfg.delimiter)) {
       bytes += record.size() + 1;
       records.push_back(std::move(record));
       record.clear();
+      // FFI cooperative cancellation (#1487-B): the host's cancel
+      // callback fires while this loop reads; the chunk sort below is
+      // bounded by kChunkBytes, so this check bounds the response to
+      // one chunk plus the read of 4096 lines.
+      if (++lines_since_cancel_check >= 4096) {
+        lines_since_cancel_check = 0;
+        if (ffi_cancel_requested()) {
+          return std::unexpected("cancelled");
+        }
+      }
       if (bytes >= kChunkBytes) {
         auto result = make_run(records);
         if (!result) return std::unexpected(result.error());
@@ -1917,7 +1947,12 @@ auto external_sort(const Config& cfg) -> cp::Result<int> {
       if (!stdin_content) return std::unexpected(stdin_content.error());
       std::istringstream decoded_input(*stdin_content);
       auto result = consume(decoded_input);
-      if (!result) return std::unexpected(result.error());
+      // A cancel is not an error: stop silently (the FFI shell reports
+      // WINUX_FFI_ERR_CANCELLED); a real read error still propagates.
+      if (!result) {
+        if (ffi_cancel_requested()) return 0;
+        return std::unexpected(result.error());
+      }
     } else {
       auto input = file_io::open_binary_file(filename);
       if (!input.is_open()) {
@@ -1925,11 +1960,15 @@ auto external_sort(const Config& cfg) -> cp::Result<int> {
                                describe_input_open_failure(filename));
       }
       auto result = consume(input);
-      if (!result) return std::unexpected(result.error());
+      if (!result) {
+        if (ffi_cancel_requested()) return 0;
+        return std::unexpected(result.error());
+      }
     }
   }
   auto final_run = make_run(records);
   if (!final_run) return std::unexpected(final_run.error());
+  if (ffi_cancel_requested()) return 0;
 
   std::ofstream output_file;
   std::ostream* output = &std::cout;
@@ -1964,6 +2003,9 @@ auto external_sort(const Config& cfg) -> cp::Result<int> {
   std::string previous;
   bool have_previous = false;
   while (!queue.empty()) {
+    // FFI cooperative cancellation (#1487-B): stop emitting output; the
+    // FFI shell reports the cancel, so this returns success silently.
+    if (ffi_cancel_requested()) return 0;
     const size_t index = queue.top();
     queue.pop();
     auto& run = runs[index];
@@ -2022,6 +2064,9 @@ auto run(const Config& cfg) -> int {
   if (cfg.merge) {
     auto merged = merge_record_chunks(cfg);
     if (!merged) {
+      // A cancel is not an error: stop silently (the FFI shell reports
+      // WINUX_FFI_ERR_CANCELLED); a real error still propagates.
+      if (ffi_cancel_requested()) return 0;
       cp::report_custom_error(L"sort", utf8_to_wstring(merged.error()));
       return 2;
     }
@@ -2030,11 +2075,15 @@ auto run(const Config& cfg) -> int {
     // External runs keep ordinary sorts bounded by a fixed memory chunk.
     auto external = external_sort(cfg);
     if (!external) {
+      if (ffi_cancel_requested()) return 0;
       cp::report_custom_error(L"sort", utf8_to_wstring(external.error()));
       return 2;
     }
     return *external;
   }
+
+  // A cancel that fired while merging must not emit the merged output.
+  if (ffi_cancel_requested()) return 0;
 
   if (cfg.unique) {
     std::vector<std::string> unique_records;

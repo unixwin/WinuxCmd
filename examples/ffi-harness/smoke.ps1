@@ -111,6 +111,52 @@ $seqOutOk = ($null -ne $seqText) -and ($seqText -match "SEQUENCE OK")
 $seqErrOk = [string]::IsNullOrEmpty($seqErrText) -or ($seqErrText -notmatch "exception at DLL boundary")
 Report "sequence-multi-call" ($seqExitOk -and $seqOutOk -and $seqErrOk) "exit=$seqCode exitOk=$seqExitOk outOk=$seqOutOk errOk=$seqErrOk out: $seqText err: $seqErrText"
 
+# 3c. stdio redirect binding (#1487 defect A). One process, ctx std
+# handles that change between calls: the first call primes the DLL's
+# cached std handles, later calls must follow the handles passed in ctx.
+# The one-call-per-process cases above cannot see this — their cache is
+# cold and already points at the redirect. Real-DLL matrix only: the
+# demo doubles implement cat/cp/rm only, and sort/wc are real applets.
+# The harness stdin is an empty file so the OLD dll reads EOF (wc prints
+# 0) instead of blocking on a console.
+if ($VersionLabel -ne "v0.0.0-demo") {
+    $redirDir = Join-Path $WorkDir "redirdata"
+    New-Item -ItemType Directory -Force -Path $redirDir | Out-Null
+    $emptyStdin = Join-Path $WorkDir "empty.stdin"
+    Set-Content -Path $emptyStdin -Value $null -Encoding ascii -NoNewline
+    $redirOut = Join-Path $WorkDir "redir.out"
+    $redirErr = Join-Path $WorkDir "redir.err"
+    $p = Start-Process -FilePath $HarnessExe -ArgumentList @("redirect", $root, $redirDir) `
+        -RedirectStandardOutput $redirOut -RedirectStandardError $redirErr `
+        -RedirectStandardInput $emptyStdin `
+        -Wait -PassThru -NoNewWindow
+    $null = $p.Handle
+    $p.WaitForExit()
+    $redirText = Get-Content $redirOut -Raw
+    Report "redirect-multi-call" ($p.ExitCode -eq 0 -and $redirText -match "REDIRECT OK") "exit=$($p.ExitCode) out: $redirText err: $(Get-Content $redirErr -Raw)"
+}
+
+# 3d. mid-dispatch cancellation (#1487 defect B). sort of a 3M-line file
+# with a cancel callback firing 300ms in must report -1006 well before
+# the uncancelled run finishes. Real-DLL matrix only (sort is a real
+# applet, not a demo double).
+if ($VersionLabel -ne "v0.0.0-demo") {
+    $cancelDir = Join-Path $WorkDir "canceldata"
+    New-Item -ItemType Directory -Force -Path $cancelDir | Out-Null
+    $emptyStdin = Join-Path $WorkDir "empty.stdin"
+    Set-Content -Path $emptyStdin -Value $null -Encoding ascii -NoNewline
+    $cancelOut = Join-Path $WorkDir "cancel.out"
+    $cancelErr = Join-Path $WorkDir "cancel.err"
+    $p = Start-Process -FilePath $HarnessExe -ArgumentList @("cancel", $root, $cancelDir) `
+        -RedirectStandardOutput $cancelOut -RedirectStandardError $cancelErr `
+        -RedirectStandardInput $emptyStdin `
+        -Wait -PassThru -NoNewWindow
+    $null = $p.Handle
+    $p.WaitForExit()
+    $cancelText = Get-Content $cancelOut -Raw
+    Report "cancel-mid-dispatch" ($p.ExitCode -eq 0 -and ($cancelText -match "CANCEL OK" -or $cancelText -match "CANCEL SKIP")) "exit=$($p.ExitCode) out: $cancelText err: $(Get-Content $cancelErr -Raw)"
+}
+
 # 4. tampered DLL -> hash-mismatch, spawn fallback still works
 Add-Content -Path (Join-Path $verDir "winuxcore.dll") -Value "x" -Encoding ascii -NoNewline
 $r = Run-Harness "1" ($rootArg + @("cat", (Join-Path $data "payload.bin"))) "tamper"

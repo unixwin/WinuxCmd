@@ -41,6 +41,26 @@ Behaviour:
   `spawn-failed` when even the fallback cannot run. Diagnostics never go
   to stdout, so command output stays byte-comparable between routes.
 
+## DLL-face test modes (`sequence`, `redirect`, `cancel`)
+
+```
+ffi-harness.exe sequence <install-root> <scratch-dir> [reps] [applets-csv]
+ffi-harness.exe redirect <install-root> <scratch-dir>
+ffi-harness.exe cancel <install-root> <scratch-dir>
+```
+
+These modes measure the DLL face itself: no tiering, no spawn fallback.
+`sequence` runs N rotations of in-process calls in one process (a fault
+that leaves the serialization lock held is invisible to the
+one-call-per-process form). `redirect` (#1487-A) runs six calls in one
+process whose ctx std handles change between calls — the first call
+primes the DLL's cached handles, later calls must follow the handles
+passed in ctx. `cancel` (#1487-B) sorts a 3M-line file with a cancel
+callback firing 300ms in and requires `WINUX_FFI_ERR_CANCELLED` well
+before the uncancelled run finishes. `redirect` and `cancel` need real
+applets (sort/wc), so `smoke.ps1` runs them in the real-DLL matrix only,
+not against the demo doubles.
+
 ## Demo doubles (`demo/`, `-DBUILD_FFI_HARNESS_DEMO=ON`)
 
 `demo/` builds two test doubles over one shared applet implementation
