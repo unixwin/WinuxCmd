@@ -29,6 +29,8 @@
 //!   roff/tex abbreviations; anything else is GNU's "invalid argument"
 //!   block rc 1. `-w xyz` dies "invalid line width: 'xyz'"; a -g below 1
 //!   dies "invalid gap width: 'V'".
+//! * GNU has no -h short option (getopt_long matches --help only long):
+//!   `-h` is "invalid option -- 'h'" rc 1 (argopt H_REJECT_MARKER).
 //!
 //! Documented deviations (kept out of `strict` gate rows; the C++ subset
 //! carries the same gaps, so `win` rows hold byte parity with the product):
@@ -987,5 +989,17 @@ mod tests {
         assert!(keys.contains(&"hello") && keys.contains(&"one") && keys.contains(&"world"));
         // GNU's default multi-file output wraps context across the file
         // boundary (probed divergence) -> classification win, rc-only there.
+    }
+
+    #[test]
+    fn short_h_is_rejected_like_gnu() {
+        // GNU coreutils 9.4 probed: `-h` is "invalid option -- 'h'" rc 1.
+        let r = run(&[], "", &["-h"]);
+        assert_eq!(r.rc, 1);
+        assert_eq!(r.out, "");
+        assert_eq!(
+            r.err,
+            "ptx: invalid option -- 'h'\nTry 'ptx --help' for more information.\n"
+        );
     }
 }
