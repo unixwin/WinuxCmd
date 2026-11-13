@@ -173,6 +173,29 @@ pub mod imp {
         fn CreateSymbolicLinkW(link: *const u16, target: *const u16, flags: DWORD) -> u8;
         fn SystemTimeToFileTime(st: *const SystemTime, ft: *mut FileTime) -> i32;
         fn FileTimeToSystemTime(ft: *const FileTime, st: *mut SystemTime) -> i32;
+        // fifo-bridge endpoint plumbing (#1038 port; 1.x file_io.cppm
+        // open_fifo_read/write_handle): the reader creates the server end
+        // and blocks in ConnectNamedPipe, the writer polls CreateFileW.
+        fn ReadFile(
+            h: Handle,
+            buf: *mut c_void,
+            to_read: DWORD,
+            read: *mut DWORD,
+            overlapped: Handle,
+        ) -> i32;
+        fn CreateNamedPipeW(
+            name: *const u16,
+            open_mode: DWORD,
+            pipe_mode: DWORD,
+            max_instances: DWORD,
+            out_size: DWORD,
+            in_size: DWORD,
+            default_timeout: DWORD,
+            security: *mut c_void,
+        ) -> Handle;
+        fn ConnectNamedPipe(pipe: Handle, overlapped: Handle) -> i32;
+        fn WaitNamedPipeW(name: *const u16, timeout: DWORD) -> i32;
+        fn Sleep(ms: DWORD);
         fn SystemTimeToTzSpecificLocalTime(
             tz: *mut c_void,
             utc: *const SystemTime,
@@ -227,6 +250,19 @@ pub mod imp {
     const FILE_ATTRIBUTE_REPARSE_POINT: DWORD = 0x400;
     const FILE_ATTRIBUTE_DEVICE: DWORD = 0x40;
     const FILE_ATTRIBUTE_NORMAL: DWORD = 0x80;
+    const FILE_ATTRIBUTE_SYSTEM: DWORD = 0x4;
+
+    // Named-pipe open modes / error codes for the fifo bridge (1.x
+    // file_io.cppm used the same literals).
+    const PIPE_ACCESS_INBOUND: DWORD = 0x1;
+    const PIPE_TYPE_BYTE: DWORD = 0x0;
+    const PIPE_READMODE_BYTE: DWORD = 0x0;
+    const PIPE_WAIT: DWORD = 0x0;
+    const PIPE_UNLIMITED_INSTANCES: DWORD = 0xff;
+    const NMPWAIT_WAIT_FOREVER: DWORD = 0xffff_ffff;
+    const ERROR_FILE_NOT_FOUND: DWORD = 2;
+    const ERROR_PIPE_BUSY: DWORD = 231;
+    const ERROR_PIPE_CONNECTED: DWORD = 539;
 
     pub fn wide(s: &str) -> Vec<u16> {
         OsStr::new(s)
@@ -649,6 +685,179 @@ pub mod imp {
         }
     }
 
+    // ------------------------------------------------------------------
+    // The #1038 fifo-marker bridge (rust2 port of 1.x file_io.cppm
+    // open_fifo_read_handle/open_fifo_write_handle and native_path.cppm
+    // is_winux_fifo_w / winux_fifo_pipe_name_w). An on-disk `!<fifo>`
+    // marker (FILE_ATTRIBUTE_SYSTEM regular file, mkfifo's product) is
+    // bridged to a \\.\pipe\winuxcmd-fifo-<hash> endpoint with POSIX
+    // open() semantics: a reader creates the server end and blocks in
+    // ConnectNamedPipe until a writer arrives; a writer polls CreateFileW
+    // until a reader has created the endpoint. The 16-hex hash key is
+    // FNV-1a over the UTF-16LE bytes of the lowercased, backslash-folded
+    // canonical path — byte-identical to the C++ derivation so the two
+    // sides rendezvous on the same endpoint. rust2 commands that touch
+    // operand files (tee writes, paste reads, stat classifies) MUST go
+    // through these helpers for markers; a plain std::fs open would clobber
+    // the marker / read its 7 bytes (the wave3a CI regression family).
+    // ------------------------------------------------------------------
+
+    const FIFO_MARKER: &[u8; 7] = b"!<fifo>";
+
+    /// \\.\pipe endpoint name for a fifo marker (native_path.cppm
+    /// winux_fifo_pipe_name_w port). The C++ side derives the name from its
+    /// canonicalized path; callers here pass the api_path() spelling, so
+    /// the \\?\ and \\?\UNC\ prefixes are stripped first to recover the
+    /// same plain path shape, then the identical fold (lowercase,
+    /// '/'->'\\') and FNV-1a hash run.
+    fn winux_fifo_pipe_name(extended: &str) -> String {
+        let plain = if let Some(rest) = extended.strip_prefix(r"\\?\UNC\") {
+            format!(r"\\{rest}")
+        } else if let Some(rest) = extended.strip_prefix(r"\\?\") {
+            rest.to_string()
+        } else {
+            extended.to_string()
+        };
+        let mut canon: Vec<u16> = plain
+            .chars()
+            .map(|ch| {
+                let ch = if ch == '/' { '\\' } else { ch };
+                let ch = if ch.is_ascii_uppercase() {
+                    ch.to_ascii_lowercase()
+                } else {
+                    ch
+                };
+                ch as u16
+            })
+            .collect();
+        let mut hash: u64 = 14_695_981_039_346_656_037; // FNV-1a 64-bit offset
+        for ch in canon.drain(..) {
+            for byte in [ch & 0xFF, ch >> 8] {
+                hash = (hash ^ u64::from(byte)).wrapping_mul(1_099_511_628_211);
+            }
+        }
+        format!(r"\\.\pipe\winuxcmd-fifo-{hash:016x}")
+    }
+
+    /// Does `extended` name a fifo marker? (native_path.cppm
+    /// is_winux_fifo_w port: SYSTEM attribute, non-directory, content is
+    /// exactly the 7-byte marker.)
+    pub fn is_winux_fifo(extended: &str) -> bool {
+        // strip trailing separators like the C++ probe (1.x
+        // strip_trailing_separators); api_path output rarely carries one.
+        let path = extended.trim_end_matches(['\\', '/']);
+        if path.is_empty() {
+            return false;
+        }
+        let attrs = match raw_attributes(path) {
+            Some(a) => a,
+            None => return false,
+        };
+        if attrs & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_SYSTEM) != FILE_ATTRIBUTE_SYSTEM {
+            return false;
+        }
+        let w = wide(path);
+        let handle = unsafe {
+            CreateFileW(
+                w.as_ptr(),
+                GENERIC_READ,
+                FILE_SHARE_ALL,
+                std::ptr::null_mut(),
+                OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL,
+                std::ptr::null_mut(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE || handle.is_null() {
+            return false;
+        }
+        let mut buffer = [0u8; FIFO_MARKER.len()];
+        let mut read: DWORD = 0;
+        let ok = unsafe {
+            ReadFile(
+                handle,
+                buffer.as_mut_ptr().cast(),
+                buffer.len() as DWORD,
+                &mut read,
+                std::ptr::null_mut(),
+            )
+        };
+        unsafe { CloseHandle(handle) };
+        ok != 0 && read == buffer.len() as DWORD && buffer.as_slice() == FIFO_MARKER
+    }
+
+    /// Reader side of the bridge (file_io.cppm open_fifo_read_handle port):
+    /// create the endpoint server and block in ConnectNamedPipe until a
+    /// writer connects. Returns a std::fs::File owning the pipe handle so
+    /// reads stream and the handle closes on drop.
+    pub fn open_fifo_read(extended: &str) -> std::io::Result<std::fs::File> {
+        use std::os::windows::io::FromRawHandle;
+        let name = winux_fifo_pipe_name(extended);
+        let w = wide(&name);
+        let pipe = unsafe {
+            CreateNamedPipeW(
+                w.as_ptr(),
+                PIPE_ACCESS_INBOUND,
+                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+                PIPE_UNLIMITED_INSTANCES,
+                64 * 1024,
+                64 * 1024,
+                0,
+                std::ptr::null_mut(),
+            )
+        };
+        if pipe == INVALID_HANDLE_VALUE || pipe.is_null() {
+            return Err(std::io::Error::from_raw_os_error(
+                kernel32_last_error() as i32
+            ));
+        }
+        let connected = unsafe { ConnectNamedPipe(pipe, std::ptr::null_mut()) };
+        if connected == 0 && kernel32_last_error() != ERROR_PIPE_CONNECTED {
+            unsafe { CloseHandle(pipe) };
+            return Err(std::io::Error::from_raw_os_error(
+                kernel32_last_error() as i32
+            ));
+        }
+        Ok(unsafe { std::fs::File::from_raw_handle(pipe as _) })
+    }
+
+    /// Writer side of the bridge (file_io.cppm open_fifo_write_handle
+    /// port): poll CreateFileW until the reader's endpoint appears —
+    /// ERROR_PIPE_BUSY waits via WaitNamedPipeW, ERROR_FILE_NOT_FOUND
+    /// sleeps 1ms and retries, exactly like the C++ loop. GNU O_WRONLY on
+    /// a fifo blocks until a reader opens; the marker file itself is never
+    /// opened for writing, so its content stays intact.
+    pub fn open_fifo_write(extended: &str) -> std::io::Result<std::fs::File> {
+        use std::os::windows::io::FromRawHandle;
+        let name = winux_fifo_pipe_name(extended);
+        let w = wide(&name);
+        loop {
+            let pipe = unsafe {
+                CreateFileW(
+                    w.as_ptr(),
+                    0x4000_0000, // GENERIC_WRITE
+                    0,
+                    std::ptr::null_mut(),
+                    OPEN_EXISTING,
+                    FILE_ATTRIBUTE_NORMAL,
+                    std::ptr::null_mut(),
+                )
+            };
+            if pipe != INVALID_HANDLE_VALUE && !pipe.is_null() {
+                return Ok(unsafe { std::fs::File::from_raw_handle(pipe as _) });
+            }
+            match kernel32_last_error() {
+                ERROR_PIPE_BUSY => {
+                    unsafe { WaitNamedPipeW(w.as_ptr(), NMPWAIT_WAIT_FOREVER) };
+                }
+                ERROR_FILE_NOT_FOUND => unsafe { Sleep(1) },
+                err => {
+                    return Err(std::io::Error::from_raw_os_error(err as i32));
+                }
+            }
+        }
+    }
+
     /// Create the file if missing and set both times (GNU touch default).
     pub fn create_file(ctx: &Ctx, operand: &str) -> Result<(), u32> {
         let extended = api_path(ctx, operand);
@@ -976,6 +1185,89 @@ pub fn win32_reason(err: u32) -> &'static str {
         1920 => "No such file or directory", // ERROR_CANT_ACCESS_FILE
         _ => "Invalid argument",
     }
+}
+
+/// Reader end of the #1038 fifo bridge (`open_fifo_read`): a std File
+/// over the named-pipe handle whose EOF contract matches the C++
+/// read_handle_to_string rule — once the writer closes, ReadFile fails
+/// with ERROR_BROKEN_PIPE / ERROR_NO_DATA; that is clean EOF (GNU
+/// read(2) returns 0), not an error, so buffered bytes survive.
+pub struct FifoRead(std::fs::File);
+
+impl std::io::Read for FifoRead {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self.0.read(buf) {
+            Ok(n) => Ok(n),
+            Err(e)
+                if e.kind() == std::io::ErrorKind::BrokenPipe
+                    || e.raw_os_error() == Some(232) /* ERROR_NO_DATA */ =>
+            {
+                Ok(0)
+            }
+            Err(e) => Err(e),
+        }
+    }
+}
+
+/// Writer end of the #1038 fifo bridge (`open_fifo_write`): a std File
+/// over the named-pipe handle whose flush is a no-op. GNU tee writes a
+/// fifo through unbuffered write(2) and closes — there is no flushable
+/// user-space layer; Win32's FlushFileBuffers on a pipe handle instead
+/// blocks until the reader consumes every buffered byte, which deadlocks
+/// against line-interleaving readers (paste over two fifos) and reports
+/// failure shapes GNU never produces.
+pub struct FifoWrite(std::fs::File);
+
+impl std::io::Write for FifoWrite {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.write(buf)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Does `path` (api_path spelling) name a fifo marker? Non-Windows builds
+/// have no markers (the marker is a WinuxCmd-on-Windows convention), so
+/// the answer is always false there.
+#[cfg(windows)]
+pub fn is_winux_fifo_path(path: &str) -> bool {
+    imp::is_winux_fifo(path)
+}
+
+#[cfg(not(windows))]
+pub fn is_winux_fifo_path(_path: &str) -> bool {
+    false
+}
+
+/// Blocking read open of a fifo operand (#1038). Non-Windows builds have
+/// no bridge (see `is_winux_fifo_path`).
+#[cfg(windows)]
+pub fn open_fifo_read(path: &str) -> std::io::Result<FifoRead> {
+    imp::open_fifo_read(path).map(FifoRead)
+}
+
+#[cfg(not(windows))]
+pub fn open_fifo_read(_path: &str) -> std::io::Result<FifoRead> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "no fifo bridge on this platform",
+    ))
+}
+
+/// Blocking write open of a fifo operand (#1038). Non-Windows builds have
+/// no bridge (see `is_winux_fifo_path`).
+#[cfg(windows)]
+pub fn open_fifo_write(path: &str) -> std::io::Result<FifoWrite> {
+    imp::open_fifo_write(path).map(FifoWrite)
+}
+
+#[cfg(not(windows))]
+pub fn open_fifo_write(_path: &str) -> std::io::Result<FifoWrite> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "no fifo bridge on this platform",
+    ))
 }
 
 #[cfg(test)]

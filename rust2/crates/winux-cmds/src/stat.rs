@@ -134,15 +134,25 @@ struct StatEntry {
     /// mount point) use `resolved`.
     resolved: String,
     meta: fs_win::FileMeta,
+    /// #1038 fifo marker (GNU lstat() S_IFIFO shape: type "fifo", mode
+    /// 0o10644/0o10444, st_size 0 — 1.x stat.cpp:438-446).
+    fifo: bool,
     owner: (String, String),
     group: (String, String),
 }
 
-fn mode_word(meta: &fs_win::FileMeta) -> u32 {
+fn mode_word(meta: &fs_win::FileMeta, fifo: bool) -> u32 {
     // 1.x Windows value model: regular 0644 (0444 when read-only),
-    // directories 0755, symlinks 0777 (GNU's a1ff).
+    // directories 0755, symlinks 0777 (GNU's a1ff). A fifo marker reports
+    // the GNU lstat() shape: S_IFIFO | 0644 (0444 when read-only) —
+    // `stat -c %f -` on a GNU pipe prints 11b4's regular-file sibling
+    // 11a4 (1.x st_mode_bits, stat.cpp:299-305).
     if meta.is_symlink {
         return 0o120777; // S_IFLNK | 0777
+    }
+    if fifo {
+        // S_IFIFO | 0644 (read-only marker: 0444)
+        return 0o010000 | if meta.read_only { 0o444 } else { 0o644 };
     }
     let type_bits = if meta.is_dir {
         0o040000 // S_IFDIR
@@ -161,8 +171,8 @@ fn mode_word(meta: &fs_win::FileMeta) -> u32 {
     type_bits | perms
 }
 
-fn access_string(meta: &fs_win::FileMeta) -> String {
-    let m = mode_word(meta);
+fn access_string(meta: &fs_win::FileMeta, fifo: bool) -> String {
+    let m = mode_word(meta, fifo);
     let type_char = match m & 0o170000 {
         0o140000 => 's',
         0o120000 => 'l',
@@ -183,8 +193,12 @@ fn access_string(meta: &fs_win::FileMeta) -> String {
     s
 }
 
-fn file_type_name(meta: &fs_win::FileMeta) -> String {
-    if meta.is_symlink {
+fn file_type_name(meta: &fs_win::FileMeta, fifo: bool) -> String {
+    if fifo {
+        // [GNU] `stat -c %F fifo` reports "fifo" (st_mode S_IFIFO; the
+        // 1.x file_type_name, stat.cpp:277-278).
+        "fifo".to_string()
+    } else if meta.is_symlink {
         "symbolic link".to_string()
     } else if meta.is_dir {
         "directory".to_string()
@@ -259,7 +273,7 @@ fn field_for(
     ctx_failed: &mut bool,
 ) -> Field {
     let m = &entry.meta;
-    let mw = mode_word(m);
+    let mw = mode_word(m, entry.fifo);
     Field::Str(match letter {
         'n' => entry.name.clone(),
         'N' => {
@@ -272,8 +286,8 @@ fn field_for(
             }
             s
         }
-        'F' => file_type_name(m),
-        'A' => access_string(m),
+        'F' => file_type_name(m, entry.fifo),
+        'A' => access_string(m, entry.fifo),
         'a' => return Field::Oct(mw & 0o7777),
         'f' => format!("{:04x}", mw),
         's' => return Field::Dec(m.size),
@@ -329,7 +343,10 @@ fn field_for(
             "?".to_string()
         }
         'm' => mount_point(ctx, &entry.resolved),
-        'c' => return Field::Dec(255),
+        // [GNU] %c: SELinux security context string; none on Windows, so
+        // the literal "?" with rc 0 (probed coreutils 9.4: `stat -c %c`
+        // -> "?"; 1.x stat.cpp:840-843). %C is the failing sibling below.
+        'c' => "?".to_string(),
         'S' => return Field::Dec(4096),
         _ => "?".to_string(),
     })
@@ -778,7 +795,7 @@ fn render_default(
         pad_right(m.size.to_string(), 10),
         pad_right(m.size.div_ceil(512).to_string(), 10),
         pad_right("4096".to_string(), 6),
-        file_type_name(m)
+        file_type_name(m, entry.fifo)
     )?;
     // [GNU] "Device: <dev>,<sub>": Windows exposes the volume serial as the
     // device with subunit 0 (1.x comment, stat.cpp:1283).
@@ -807,8 +824,8 @@ fn render_default(
     writeln!(
         out,
         "Access: ({:04o}/{})  Uid: ({}/{})   Gid: ({}/{})",
-        mode_word(m) & 0o7777,
-        access_string(m),
+        mode_word(m, entry.fifo) & 0o7777,
+        access_string(m, entry.fifo),
         pad_left(uid.to_string(), 5),
         pad_left(owner_name, 8),
         pad_left(gid.to_string(), 5),
@@ -913,6 +930,44 @@ pub fn stat_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     terse = true;
                 }
                 "file-system" => fs_mode = true,
+                // [GNU] --cached=WHEN is a required-argument caching hint
+                // (#1069): 'never'/'always'/'default' are accepted as a
+                // no-op (Windows always queries fresh attributes); any
+                // other value is GNU argmatch's invalid-argument usage
+                // error, rc 1 (probed coreutils 9.4; 1.x stat.cpp:140-153).
+                "cached" => {
+                    let when = match inline {
+                        Some(v) => v,
+                        None => {
+                            idx += 1;
+                            match args.get(idx) {
+                                Some(v) => v.to_string_lossy().into_owned(),
+                                None => {
+                                    let _ = usage_error(
+                                        io,
+                                        "stat",
+                                        "option '--cached' requires an argument",
+                                    );
+                                    return Ok(1);
+                                }
+                            }
+                        }
+                    };
+                    if when != "never" && when != "always" && when != "default" {
+                        let _ = usage_error(
+                            io,
+                            "stat",
+                            &format!(
+                                "invalid argument '{when}' for '--cached'\n\
+                                 Valid arguments are:\n\
+                                 \x20 - 'default'\n\
+                                 \x20 - 'never'\n\
+                                 \x20 - 'always'"
+                            ),
+                        );
+                        return Ok(1);
+                    }
+                }
                 "help" | "version" => return Ok(0),
                 _ => {
                     let _ = usage_error(io, "stat", &format!("unrecognized option '{arg}'"));
@@ -992,10 +1047,24 @@ pub fn stat_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 }
             };
             let (owner, group) = fs_win::file_accounts(ctx, &resolved);
+            // #1038 fifo marker (1.x stat.cpp:438-446): a non-device,
+            // non-directory, non-reparse operand whose on-disk content is
+            // the `!<fifo>` marker reports the GNU lstat() FIFO shape —
+            // type "fifo", S_IFIFO mode bits, st_size 0. The probe needs
+            // the API-path spelling; `resolved` is the typed operand.
+            let mut meta = meta;
+            let fifo = !meta.character_device
+                && !meta.is_dir
+                && !meta.is_symlink
+                && fs_win::is_winux_fifo_path(&fs_win::api_path(ctx, &resolved));
+            if fifo {
+                meta.size = 0;
+            }
             let entry = StatEntry {
                 name: op.clone(),
                 resolved,
                 meta,
+                fifo,
                 owner,
                 group,
             };

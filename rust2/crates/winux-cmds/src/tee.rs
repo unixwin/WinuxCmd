@@ -6,11 +6,13 @@
 //! reports the error and that output is dropped while the others run.
 //! Output is copied in chunks; a failed write drops that output (the
 //! remaining outputs still receive the data). Failure semantics follow
-//! tee.c fail_output() with the default output-error=sigpipe: an EPIPE
-//! class failure is SILENT and does not fail the command (SIGPIPE is
-//! ignored, the pipe output is just dropped); any other write error is
-//! reported and sets rc 1. -p/--output-error selects the POSIX modes:
-//! warn-nopipe / exit-nopipe / warn / exit. stdin read errors report
+//! tee.c fail_output() with the default output-error=sigpipe: SIGPIPE
+//! stays at its DEFAULT disposition (tee.c:172-173 ignores it only under
+//! -p/--output-error), so a broken-pipe write KILLS tee by signal — the
+//! Windows emulation fails the run right there, silent, rc 1; any other
+//! write error is reported and sets rc 1. -p/--output-error selects the
+//! POSIX modes: warn-nopipe / exit-nopipe / warn / exit (SIGPIPE ignored
+//! there, EPIPE silent per fail_output). stdin read errors report
 //! "read error" and set rc 1. `-` is NOT special (POSIX; it names a file
 //! literally, as GNU documents). -i is accepted and ignored (SIGINT
 //! handling does not apply on Windows). --output-error=MODE resolves MODE
@@ -19,6 +21,11 @@
 //! argument" and unknown values "invalid argument", both followed by the
 //! Valid-arguments list and rc 1. An open failure under the exit modes
 //! dies before stdin is read (later operands are never opened).
+//!
+//! A `!<fifo>` marker operand (#1038) opens through the named-pipe
+//! rendezvous (fs_win::open_fifo_write) — GNU tee.c's O_WRONLY open on a
+//! fifo blocks until a reader arrives, and the marker file itself is
+//! never created/truncated.
 //!
 //! Exit rc 1 only when a reportable open/write/close error occurred.
 
@@ -78,17 +85,29 @@ fn tee_files(
         // the one operand boundary (fs_win::api_path): devices resolve
         // verbatim (tee > NUL discards), POSIX spellings map through the
         // shell tree (#1488); the reported name keeps the operand text
-        let path = std::path::PathBuf::from(crate::fs_win::api_path(ctx, name));
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .append(append)
-            .truncate(!append)
-            .open(&path)
-        {
+        let path = crate::fs_win::api_path(ctx, name);
+        // #1038 fifo bridge: a `!<fifo>` marker operand is a named pipe
+        // behind an on-disk file — GNU tee opens it O_WRONLY (blocking
+        // until a reader arrives, create/truncate never apply) through the
+        // rendezvous, NOT through the plain open below, which would clobber
+        // the marker and strand every POSIX-blocking reader (the wave3a CI
+        // regression; the mkfifo/head rendezvous pins spawn `tee <fifo>` as
+        // the writer). Mirrors 1.x create_binary_file's marker branch.
+        let opened: std::io::Result<Box<dyn Write>> = if crate::fs_win::is_winux_fifo_path(&path) {
+            crate::fs_win::open_fifo_write(&path).map(|f| Box::new(f) as Box<dyn Write>)
+        } else {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .append(append)
+                .truncate(!append)
+                .open(&path)
+                .map(|f| Box::new(f) as Box<dyn Write>)
+        };
+        match opened {
             Ok(f) => dests.push(Dest {
                 name: name.to_string(),
-                handle: Some(Box::new(f)),
+                handle: Some(f),
             }),
             Err(e) => {
                 let _ = writeln!(io.stderr, "tee: {name}: {}", reason_str(&e));
@@ -131,6 +150,18 @@ fn tee_files(
             match handle.write_all(&buf[..n]).and_then(|()| handle.flush()) {
                 Ok(()) => {}
                 Err(e) => {
+                    // GNU's DEFAULT (sigpipe) output-error mode does NOT
+                    // install SIG_IGN — tee.c:172-173 ignores SIGPIPE only
+                    // under -p/--output-error, so in the default mode the
+                    // first broken-pipe write kills tee by signal (probed
+                    // WSL GNU 9.4: `tee fifo` with a reader that stops
+                    // early exits 141). Windows has no signal delivery;
+                    // the emulation fails the run right there — silent,
+                    // rc 1 (the 1.x C++ tee shape, and the contract the
+                    // head_fifo writer-rc pins adjudicate).
+                    if epipe_like(&e) && matches!(output_error, OutputError::Sigpipe) {
+                        return Ok(1);
+                    }
                     let fail = !epipe_like(&e)
                         || matches!(
                             output_error,

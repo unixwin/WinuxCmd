@@ -363,16 +363,14 @@ TEST(tac, tac_file_with_trailing_separator_reports_not_directory) {
 // ---------------------------------------------------------------------------
 // Issue #1368: tac.c's full_write() failure reaches write_error()
 // (system.h:960): one "tac: write error: <strerror>" diagnostic, exit 1.
-// Under the #1488 rust2 wiring the in-process command buffers its stdout
-// (ABI v1 whole-buffer output): fd-1 validity is only observed later by
-// the host's output drain, so a closed stdout cannot reach tac's write
-// path. GNU's write-error diagnostic is deferred to the streaming ABI
-// (v2) wave — the wired exit status is 0 with an empty stderr here, and
-// the in-process write-error reporting (a failed record write sets
-// rc 1 with "tac: write error: ...") keeps the tac.c:474 semantics for
-// errors the command itself can observe.
+// With stdout closed (`>&-`) the child has no std-output handle, so the
+// host's ABI v1 output drain observes the failure (rust2_bridge.cppm's
+// close-stdout contract) and reports it on tac's behalf, exactly the GNU
+// shape — probed coreutils 9.4 via `tac input.txt >&-`: stderr
+// "tac: write error: Bad file descriptor", rc 1. Same contract as the
+// seq pins below (issue1368_closed_stdout_reports_write_error_and_stops).
 // ---------------------------------------------------------------------------
-TEST(tac, issue1368_closed_stdout_is_drained_by_the_host_under_abi_v1) {
+TEST(tac, issue1368_closed_stdout_reports_write_error) {
   TempDir tmp;
   tmp.write("input.txt", "line1\nline2\nline3\n");
   const std::wstring operand = (tmp.path / L"input.txt").wstring();
@@ -380,6 +378,8 @@ TEST(tac, issue1368_closed_stdout_is_drained_by_the_host_under_abi_v1) {
   auto r =
       run_command_closed_stdout(ProjectPaths::exe(L"tac.exe"), {operand});
 
-  EXPECT_EXIT_CODE(r, 0);
-  EXPECT_TRUE(r.stderr_text.empty());
+  EXPECT_EXIT_CODE(r, 1);
+  EXPECT_CONTAINS(r.stderr_text, "tac: write error: ");
+  EXPECT_CONTAINS(r.stderr_text, "Bad file descriptor");
+  EXPECT_TRUE(r.stdout_text.empty());
 }
