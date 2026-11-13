@@ -30,3 +30,14 @@ tm27-nan	exit				nan	sleep	0
 tm28-upper-suffix	exit				5S	sleep	0
 tm29-duration-0	exit				0	sleep	0
 tm30-negative-option	exit				-5	sleep	0
+tm31-shebang-exit	strict	printf '#!/bin/sh\nexit 3\n' > hi.sh; chmod +x hi.sh			5	./hi.sh
+tm32-shebang-echo	strict	printf '#!/bin/sh\necho hi\n' > hi.sh; chmod +x hi.sh			5	./hi.sh
+tm33-shebang-posix-prefix	strict	printf '#!/usr/bin/sh\nexit 4\n' > hi.sh; chmod +x hi.sh			5	./hi.sh
+tm34-shebang-missing-interp	strict	printf '#!/bin/no-such-interp-xyz\necho never\n' > bad.sh; chmod +x bad.sh			5	./bad.sh
+tm35-shebang-echo-interp	exit	printf '#!/bin/echo\n' > precho.sh; chmod +x precho.sh			5	./precho.sh
+tm36-shebang-echo-arg	exit	printf '#!/bin/echo -n\n' > prechon.sh; chmod +x prechon.sh			5	./prechon.sh
+tm37-nonpe-badformat	win	printf 'not a script\n' > plain.txt; chmod +x plain.txt			5	./plain.txt
+tm38-nonpe-empty	win	: > empty.bin; chmod +x empty.bin			5	./empty.bin
+tm39-dir-operand	strict				5	.
+tm40-absolute-posix-child	exit				5	/bin/echo	abs-hi
+tm41-bare-name-cmd-shim	win	printf '@echo off\r\necho shim-cmd\r\n' > agent-browser.cmd; export PATH="$PWD:$PATH"			5	agent-browser

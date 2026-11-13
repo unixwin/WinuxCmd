@@ -1,6 +1,6 @@
 //! `nohup` — GNU coreutils nohup semantics on the Windows process model
-//! (probe base: coreutils 9.4, target/probe/g1.sh; C++ value model:
-//! `src/commands/nohup.cpp` on main).
+//! (probe base: coreutils 9.4, target/probe/g1.sh + #1587 probes; C++
+//! value model: `src/commands/nohup.cpp` on main).
 //!
 //! GNU contract (nohup.c:115-199):
 //! * `nohup COMMAND [ARG]...`; a missing operand prints "nohup: missing
@@ -8,16 +8,20 @@
 //!   POSIXLY_CORRECT is set non-empty (probed; C++ nohup_usage_error_
 //!   exit_code).
 //! * The child is resolved execvp-style (PATH-only, PATHEXT completion,
-//!   batch files through COMSPEC — the shared [`crate::childproc`]
-//!   resolver, extracted from timeout.rs) and spawned with inherited
-//!   stdio, the caller's environment and cwd. Failure to resolve:
-//!   "nohup: failed to run command 'C': No such file or directory" rc 127
-//!   (probed GNU-equal wording); other spawn failures are rc 126.
+//!   batch files through COMSPEC, `#!` scripts through their interpreter
+//!   — the shared [`crate::childproc`] resolver) and spawned with
+//!   inherited stdio, the caller's environment and cwd. Failure to
+//!   resolve: "nohup: failed to run command 'C': No such file or
+//!   directory" rc 127 (probed GNU-equal wording); a found file no
+//!   format in the chain can run is 126 "Exec format error" (#1587: it
+//!   used to be a silent 126, same as timeout); other spawn failures
+//!   are rc 126.
 //! * The child's exit status is the run's status; a child killed without
 //!   a code maps to 125.
-//! * GNU has no -h short option: `-h` is "invalid option -- 'h'" rc 1
-//!   (argopt H_REJECT_MARKER); --help/--version print the probed GNU
-//!   text.
+//! * GNU has no -h short option: `-h` is "invalid option -- 'h'" rc 125
+//!   (probed; argopt's bare `-h` -> help mapping is argopt's own
+//!   extension, so nohup rejects the lone form itself); --help/--version
+//!   print the probed GNU text.
 //!
 //! Windows value model / documented deferral:
 //! * The terminal faces (stdin -> /dev/null, stdout -> append nohup.out
@@ -36,18 +40,16 @@
 //!   same deferred faces.
 
 use std::ffi::OsString;
-use std::io::Write as _;
-use std::os::windows::process::CommandExt;
 
 use crate::argopt::{self, OptSpec};
-use crate::childproc::{quote_windows_arg, resolve_child, ChildResolve};
+use crate::childproc::{resolve_child, spawn_child, ChildResolve};
 use crate::gnuhelp;
-use winux_core::{win32_env_get, CmdResult, Ctx, Io};
+use winux_core::{CmdResult, Ctx, Io};
 
 const OPTS: &[OptSpec] = &[
-    // GNU nohup has no options at all besides --help/--version; -h is
-    // rejected like getopt_long does.
-    argopt::H_REJECT_SPEC,
+    // GNU nohup has no options at all besides --help/--version; a lone
+    // `-h` is rejected below (GNU probed rc 125) before argopt's bare
+    // `-h` -> help mapping can claim it.
 ];
 
 const NOHUP_HELP_BODY: &str = r#"Usage: nohup COMMAND [ARG]...
@@ -112,13 +114,20 @@ pub fn nohup_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         let operands_from = if consumed_dashdash { split + 1 } else { split };
         (args[..split].to_vec(), args[operands_from..].to_vec())
     };
+    // GNU nohup has no -h short option (probed: "invalid option -- 'h'",
+    // rc = usage exit). argopt maps a lone `-h` to help as its own
+    // extension, so nohup rejects that form before argopt sees it; the
+    // cluster forms keep argopt's getopt-order diagnostics (`-hx` ->
+    // "invalid option -- 'h'", `-xh` -> "invalid option -- 'x'").
+    if leading.iter().any(|a| a.to_string_lossy() == "-h") {
+        let _ = writeln!(io.stderr, "nohup: invalid option -- 'h'");
+        let _ = writeln!(io.stderr, "Try 'nohup --help' for more information.");
+        return Ok(usage_exit_status(ctx));
+    }
     let p = match argopt::parse("nohup", &leading, OPTS, io, ctx, usage_exit_status(ctx)) {
         Ok(p) => p,
         Err(s) => return Ok(s),
     };
-    if let Some(status) = argopt::rejected_short_h(io, "nohup", &p, usage_exit_status(ctx)) {
-        return Ok(status);
-    }
     if let Some(which) = p
         .flags
         .iter()
@@ -157,30 +166,21 @@ pub fn nohup_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
 
-    let mut cmd = match resolve_child(&command, ctx) {
-        ChildResolve::Found { path, batch } => {
-            if batch {
-                // CreateProcess cannot launch a batch file directly: route
-                // through COMSPEC like the childproc helper does.
-                let comspec = win32_env_get(ctx.env, "COMSPEC")
-                    .map(|v| v.to_string_lossy().into_owned())
-                    .filter(|v| !v.is_empty())
-                    .unwrap_or_else(|| "cmd.exe".to_string());
-                let mut inner = quote_windows_arg(&path);
-                for a in &cmd_args {
-                    inner.push(' ');
-                    inner.push_str(&quote_windows_arg(a));
-                }
-                let mut c = std::process::Command::new(&comspec);
-                c.raw_arg("/d").raw_arg("/s").raw_arg("/c");
-                c.raw_arg(format!("\"{inner}\""));
-                c
-            } else {
-                let mut c = std::process::Command::new(&path);
-                c.args(&cmd_args);
-                c
+    // Resolve and spawn through the shared childproc chain (PATH-only,
+    // PATHEXT completion, COMSPEC batch routing, #1587 shebang launch).
+    // Diagnostics follow GNU nohup.c's execvp failure path in the C
+    // locale (probed WSL coreutils 9.4), the same shapes timeout reports.
+    let mut child = match resolve_child(&command, ctx) {
+        ChildResolve::Found(launch) => match spawn_child(&launch, &cmd_args, ctx) {
+            Ok(c) => c,
+            Err(_) => {
+                let _ = writeln!(
+                    io.stderr,
+                    "nohup: failed to run command '{command}': Permission denied"
+                );
+                return Ok(126);
             }
-        }
+        },
         ChildResolve::NotFound => {
             let _ = writeln!(
                 io.stderr,
@@ -188,29 +188,14 @@ pub fn nohup_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             );
             return Ok(127);
         }
-        ChildResolve::NotExecutable | ChildResolve::NotADirectory => {
+        ChildResolve::BadFormat => {
             let _ = writeln!(
                 io.stderr,
-                "nohup: failed to run command '{command}': Permission denied"
+                "nohup: failed to run command '{command}': Exec format error"
             );
             return Ok(126);
         }
-    };
-
-    // GetEnvironmentStringsW carries "=C:" style pseudo-vars that
-    // Command::envs rejects; skip them (the timeout port does the same).
-    cmd.envs(
-        ctx.env
-            .entries()
-            .iter()
-            .filter(|(k, _)| !k.is_empty() && !k.to_string_lossy().starts_with('='))
-            .map(|(k, v)| (k.clone(), v.clone())),
-    );
-    cmd.current_dir(&ctx.cwd);
-
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(_) => {
+        ChildResolve::NotExecutable | ChildResolve::NotADirectory => {
             let _ = writeln!(
                 io.stderr,
                 "nohup: failed to run command '{command}': Permission denied"
@@ -243,7 +228,12 @@ mod tests {
     }
 
     fn run(args: &[&str]) -> (u32, String, String) {
-        run_with(&MapEnv::new(), args)
+        // inherit the real process env so PATH-based child resolution works
+        let mut env = MapEnv::new();
+        for (k, v) in std::env::vars_os() {
+            env.set(&k.to_string_lossy(), &v.to_string_lossy());
+        }
+        run_with(&env, args)
     }
 
     #[test]
@@ -291,9 +281,47 @@ mod tests {
             "nohup: failed to run command 'nosuchcmd123-xyz': No such file or directory"
         ));
         // a directory operand: 126 NotADirectory -> Permission denied
+        // (GNU probed: nohup ./somedir -> 126 "Permission denied")
         let (r, _, err) = run(&["C:\\\\"]);
         assert_eq!(r, 126);
         assert!(err.contains("failed to run command"));
+    }
+
+    #[test]
+    fn non_pe_children_report_gnu_wording() {
+        // #1587: a found but unrunnable file used to exit 126 silently;
+        // the chain now reports the GNU ENOEXEC strerror.
+        let sc = ScratchCtx::new("nohup-badformat");
+        let txt = sc.dir.join("plain.txt");
+        std::fs::write(&txt, "just text\n").unwrap();
+        let operand = txt.to_string_lossy().into_owned();
+        let (r, _, err) = run(&[&operand]);
+        assert_eq!(r, 126);
+        assert!(err.contains(&format!(
+            "failed to run command '{operand}': Exec format error"
+        )));
+        // a shebang script whose interpreter misses: the kernel's ENOENT
+        let bad = sc.dir.join("bad.sh");
+        std::fs::write(&bad, "#!/bin/no-such-interp-xyz\necho never\n").unwrap();
+        let operand = bad.to_string_lossy().into_owned();
+        let (r, _, err) = run(&[&operand]);
+        assert_eq!(r, 127);
+        assert!(err.contains(&format!(
+            "failed to run command '{operand}': No such file or directory"
+        )));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn shebang_child_launches() {
+        // #1587: `nohup ./hi.sh` runs the script through its interpreter
+        // (rc 0) instead of dying with a silent 126.
+        let sc = ScratchCtx::new("nohup-shebang");
+        let hi = sc.dir.join("hi.sh");
+        std::fs::write(&hi, "#!/bin/sh\nexit 3\n").unwrap();
+        let operand = hi.to_string_lossy().into_owned();
+        let (r, _, err) = run(&[&operand]);
+        assert_eq!(r, 3, "err={err}");
     }
 
     #[test]
@@ -336,9 +364,10 @@ mod tests {
         assert!(out.starts_with("nohup (GNU coreutils) 9.4\n"));
         assert!(out.ends_with("Written by Jim Meyering.\n"));
         // GNU nohup has no -h; the usage exit is 125 like other option
-        // errors (nohup.c usage() -> USED_EXIT_STATUS)
+        // errors (nohup.c usage() -> exit(usage_exit_status))
         let (r, _, err) = run(&["-h"]);
         assert_eq!(r, 125);
         assert!(err.contains("invalid option -- 'h'"));
+        assert!(err.contains("Try 'nohup --help' for more information."));
     }
 }
