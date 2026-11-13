@@ -105,16 +105,19 @@ const OPTS: &[OptSpec] = &[
 const CHCON_HELP_BODY: &str = r#"Usage: chcon [OPTION]... CONTEXT FILE...
   or:  chcon [OPTION]... [-u USER] [-r ROLE] [-l RANGE] [-t TYPE] FILE...
   or:  chcon [OPTION]... --reference=RFILE FILE...
-Change the SELinux security context of each FILE.
+Change the SELinux security context of each FILE to CONTEXT.
+With --reference, change the security context of each FILE to that of RFILE.
 
 Mandatory arguments to long options are mandatory for short options too.
       --dereference      affect the referent of each symbolic link (this is
                          the default), rather than the symbolic link itself
-  -h, --no-dereference   affect each symbolic link instead of any referenced
-                         file (useful only on systems that can change the
-                         type of a symbolic link)
+  -h, --no-dereference   affect symbolic links instead of any referenced file
+  -u, --user=USER        set user USER in the target security context
+  -r, --role=ROLE        set role ROLE in the target security context
+  -t, --type=TYPE        set type TYPE in the target security context
+  -l, --range=RANGE      set range RANGE in the target security context
+      --no-preserve-root  do not treat '/' specially (the default)
       --preserve-root    fail to operate recursively on '/'
-      --no-preserve-root do not treat '/' specially (the default)
       --reference=RFILE  use RFILE's security context rather than specifying
                          a CONTEXT value
   -R, --recursive        operate on files and directories recursively
@@ -124,9 +127,14 @@ The following options modify how a hierarchy is traversed when the -R
 option is also specified.  If more than one is specified, only the final
 one takes effect.
 
-  -H   if a command line argument is a symbolic link to a directory, traverse it
-  -L   traverse every symbolic link to a directory encountered
-  -P   do not traverse any symbolic links (default)
+  -H                     if a command line argument is a symbolic link
+                         to a directory, traverse it
+  -L                     traverse every symbolic link to a directory
+                         encountered
+  -P                     do not traverse any symbolic links (default)
+
+      --help        display this help and exit
+      --version     output version information and exit
 
 "#;
 
