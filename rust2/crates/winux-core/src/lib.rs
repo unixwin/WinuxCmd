@@ -255,13 +255,24 @@ pub mod test_support {
 
     impl ScratchCtx {
         pub fn new(tag: &str) -> Self {
+            // Uniqueness = process id + a per-process counter. The clock
+            // alone is NOT unique: Windows SystemTime advances in coarse
+            // ticks (up to ~15.6 ms granularity), so parallel test threads
+            // that build scratch dirs back-to-back can observe the SAME
+            // timestamp — two ScratchCtx instances then share one
+            // directory, and whichever test finishes first deletes the
+            // other's files mid-run (remove_dir_all in Drop). The CI
+            // `csplit::tests::prefix_digits_suffix_format` rc-1 flake was
+            // exactly that shape: the successor run's ENOENT surfaced as a
+            // nonzero command status. pid separates concurrent cargo test
+            // processes; the counter separates threads within one.
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static SCRATCH_SEQ: AtomicU64 = AtomicU64::new(0);
             let dir = std::env::temp_dir().join(format!(
-                "winux-cmds-test-{}-{}",
+                "winux-cmds-test-{}-{}-{}",
                 tag,
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
+                std::process::id(),
+                SCRATCH_SEQ.fetch_add(1, Ordering::Relaxed),
             ));
             std::fs::create_dir_all(&dir).unwrap();
             ScratchCtx {
