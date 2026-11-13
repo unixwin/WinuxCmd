@@ -92,6 +92,8 @@ const OPTS: &[OptSpec] = &[
         long: "suppress-matched",
         takes_value: false,
     },
+    // GNU csplit has no -h: reject it like getopt_long does.
+    argopt::H_REJECT_SPEC,
 ];
 
 const CSPLIT_HELP_BODY: &str = r#"Usage: csplit [OPTION]... FILE PATTERN...
@@ -619,6 +621,9 @@ pub fn csplit_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         Ok(p) => p,
         Err(s) => return Ok(s),
     };
+    if let Some(status) = argopt::rejected_short_h(io, "csplit", &p, 1) {
+        return Ok(status);
+    }
     if let Some(which) = p
         .flags
         .iter()

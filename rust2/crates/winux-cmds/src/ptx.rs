@@ -156,6 +156,8 @@ const OPTS: &[OptSpec] = &[
         long: "width",
         takes_value: true,
     },
+    // GNU ptx has no -h: reject it like getopt_long does.
+    argopt::H_REJECT_SPEC,
 ];
 
 const PTX_HELP_BODY: &str = r#"Usage: ptx [OPTION]... [INPUT]...   (without -G)
@@ -348,6 +350,9 @@ pub fn ptx_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         Ok(p) => p,
         Err(s) => return Ok(s),
     };
+    if let Some(status) = argopt::rejected_short_h(io, "ptx", &p, 1) {
+        return Ok(status);
+    }
     if let Some(which) = p
         .flags
         .iter()

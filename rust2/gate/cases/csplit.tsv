@@ -32,3 +32,4 @@ cs29-stdin-input	strict	printf 'a\nb\n--\nc\nd\n--\ne\n' > f.txt		a\nb\n--\nc\nd
 cs30-digits-3	strict	printf 'a\nb\n--\nc\nd\n--\ne\n' > f.txt			-n	3	f.txt	/--/
 cs31-empty-prefix	strict	printf 'a\nb\n--\nc\nd\n--\ne\n' > f.txt			-f		f.txt	/--/
 cs32-crlf-bytes	strict	printf 'x\r\n--\r\ny\r\n' > w.txt			w.txt	/--/
+cs33-short-h-rejected	strict				-h
