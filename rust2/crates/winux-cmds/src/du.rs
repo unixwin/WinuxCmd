@@ -145,6 +145,11 @@ const OPTS: &[OptSpec] = &[
     },
     OptSpec {
         short: None,
+        long: "files0-from",
+        takes_value: true,
+    },
+    OptSpec {
+        short: None,
         long: "exclude",
         takes_value: true,
     },
@@ -162,65 +167,63 @@ const OPTS: &[OptSpec] = &[
 
 // `--help` body verbatim from `env du --help` under WSL coreutils 9.4.
 const DU_HELP_BODY: &str = r#"Usage: du [OPTION]... [FILE]...
-Summarize device usage of each FILE, recursively for directories.
+  or:  du [OPTION]... --files0-from=F
+Summarize device usage of the set of FILEs, recursively for directories.
 
 Mandatory arguments to long options are mandatory for short options too.
   -0, --null            end each output line with NUL, not newline
   -a, --all             write counts for all files, not just directories
-      --apparent-size   print apparent sizes, rather than disk usage; although
+      --apparent-size   print apparent sizes rather than device usage; although
                           the apparent size is usually smaller, it may be
                           larger due to holes in ('sparse') files, internal
                           fragmentation, indirect blocks, and the like
   -B, --block-size=SIZE  scale sizes by SIZE before printing them; e.g.,
-                          '-BM' prints sizes in units of 1,048,576 bytes;
-                          see SIZE format below
+                           '-BM' prints sizes in units of 1,048,576 bytes;
+                           see SIZE format below
   -b, --bytes           equivalent to '--apparent-size --block-size=1'
   -c, --total           produce a grand total
-  -D, --dereference-args  dereference only symlinks that are command-line
-                          arguments
+  -D, --dereference-args  dereference only symlinks that are listed on the
+                          command line
   -d, --max-depth=N     print the total for a directory (or file, with --all)
                           only if it is N or fewer levels below the command
                           line argument;  --max-depth=0 is the same as
                           --summarize
-      --files0-from=F   summarize device usage of the NUL-terminated file names
-                          specified in file F
+      --files0-from=F   summarize device usage of the
+                          NUL-terminated file names specified in file F;
+                          if F is -, then read names from standard input
   -H                    equivalent to --dereference-args (-D)
-  -h, --human-readable  print sizes in powers of 1024 (e.g., 1023M)
+  -h, --human-readable  print sizes in human readable format (e.g., 1K 234M 2G)
       --inodes          list inode usage information instead of block usage
-                          like --block-size=1
   -k                    like --block-size=1K
   -L, --dereference     dereference all symbolic links
-  -l, --count-links     count hard links multiple times
+  -l, --count-links     count sizes many times if hard linked
   -m                    like --block-size=1M
   -P, --no-dereference  don't follow any symbolic links (this is the default)
-  -S, --separate-dirs   for directories do not include the size of
-                          subdirectories
+  -S, --separate-dirs   for directories do not include size of subdirectories
       --si              like -h, but use powers of 1000 not 1024
-  -s, --summarize       display only a total for each file argument
+  -s, --summarize       display only a total for each argument
   -t, --threshold=SIZE  exclude entries smaller than SIZE if positive,
-                          entries greater than SIZE if negative
+                          or entries greater than SIZE if negative
       --time            show time of the last modification of any file in the
                           directory, or any of its subdirectories
       --time=WORD       show time as WORD instead of modification time:
-                          atime, access, use, ctime, or status; use
-                          specified time as sort key if --sort=time
+                          atime, access, use, ctime or status
       --time-style=STYLE  show times using STYLE, which can be:
-                            full-iso, long-iso, iso, +FORMAT
+                            full-iso, long-iso, iso, or +FORMAT;
                             FORMAT is interpreted like in 'date'
   -X, --exclude-from=FILE  exclude files that match any pattern in FILE
       --exclude=PATTERN    exclude files that match PATTERN
   -x, --one-file-system    skip directories on different file systems
-  -v, --verbose         (ignored)
       --help        display this help and exit
       --version     output version information and exit
 
 Display values are in units of the first available SIZE from --block-size,
-and the DU_BLOCK_SIZE, BLOCK_SIZE and POSIXLY_CORRECT environment variables.
-Otherwise, units default to 1024 bytes (or 512 when POSIXLY_CORRECT is set).
+and the DU_BLOCK_SIZE, BLOCK_SIZE and BLOCKSIZE environment variables.
+Otherwise, units default to 1024 bytes (or 512 if POSIXLY_CORRECT is set).
 
-SIZE is an integer and optional unit (example: 10M is 10*1024*1024).  Units
-are K, M, G, T, P, E, Z, Y, R, Q (powers of 1024) or KB, MB, GB, ... (powers
-of 1000).  Binary prefixes can be used, too: KiB=K, MiB=M, and so on.
+The SIZE argument is an integer and optional unit (example: 10K is 10*1024).
+Units are K,M,G,T,P,E,Z,Y,R,Q (powers of 1024) or KB,MB,... (powers of 1000).
+Binary prefixes can be used, too: KiB=K, MiB=M, and so on.
 
 "#;
 
@@ -353,10 +356,27 @@ mod imp {
     /// (volume serial, file index) for the hardlink dedupe (du's st_dev/
     /// st_ino pairing); None when the open fails (device names, etc.).
     pub fn file_handle(path: &Path) -> Option<(u64, u64)> {
+        // BY_HANDLE_FILE_INFORMATION's exact layout: dwFileAttributes, three
+        // FILETIMEs, dwVolumeSerialNumber, nFileSizeHigh/Low, nNumberOfLinks,
+        // nFileIndexHigh/Low. (The wave5 first session mis-declared this as
+        // serial+4-pad+index and read the WRITE TIME as the index — files
+        // written in the same tick collided and the cross-operand skip ate
+        // distinct operands, caught by the du11 gate row.)
+        #[repr(C)]
+        struct Filetime {
+            low: u32,
+            high: u32,
+        }
         #[repr(C)]
         struct Info {
+            attrs: u32,
+            creation: Filetime,
+            access: Filetime,
+            write: Filetime,
             serial: u32,
-            max_component: [u32; 4],
+            size_high: u32,
+            size_low: u32,
+            nlinks: u32,
             index_high: u32,
             index_low: u32,
         }
@@ -687,6 +707,14 @@ fn walk(
                         .unwrap_or(false)
                 });
             if child_is_dir {
+                // [GNU] every counted directory enters the already-counted
+                // hash so a later operand nested inside it is skipped whole
+                // (du.c hash_ins on each visited directory).
+                if !cfg.count_links {
+                    if let Some(k) = file_handle(&child) {
+                        seen_handles.insert(k);
+                    }
+                }
                 let sub = walk(
                     cfg,
                     &child_rel,
@@ -716,7 +744,9 @@ fn walk(
                     }
                     let sz = imp::allocated(&child);
                     if let Some(k) = key {
-                        if sz > 0 && !seen_handles.insert(k) {
+                        // zero-size files enter the hash too: the dedupe
+                        // gates a later OPERAND, not just the size addend.
+                        if !seen_handles.insert(k) {
                             0
                         } else {
                             sz
@@ -870,7 +900,11 @@ fn parse_block_size(raw: &str) -> Option<u64> {
 }
 
 pub fn du_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
-    let p = match argopt::parse("du", args, OPTS, io, ctx, 1) {
+    // --time[=WORD] is GNU optional_argument: strip the value-carrying
+    // spelling before argopt (argopt::extract_optional_long_values), the
+    // bare --time flag stays in OPTS.
+    let (time_values, rest) = argopt::extract_optional_long_values(args, "time", "time");
+    let p = match argopt::parse("du", &rest, OPTS, io, ctx, 1) {
         Ok(p) => p,
         Err(s) => return Ok(s),
     };
@@ -893,7 +927,10 @@ pub fn du_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 write!(
                     io.stdout,
                     "{}",
-                    gnuhelp::coreutils_version("du", "Torbjorn Granlund, David MacKenzie, Larry McVoy, Paul Eggert and Jim Meyering")
+                    gnuhelp::coreutils_version(
+                        "du",
+                        "Torbj\u{f6}rn Granlund, David MacKenzie, Paul Eggert,\nand Jim Meyering"
+                    )
                 )?;
                 0
             }
@@ -913,11 +950,7 @@ pub fn du_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         count_links: p.has("count-links"),
         one_fs: p.has("one-file-system"),
         threshold: None,
-        time_mode: if p.has("time") {
-            Some("mtime".to_string())
-        } else {
-            None
-        },
+        time_mode: None,
         time_style: "long-iso".to_string(),
         excludes: Vec::new(),
         nul: p.has("null"),
@@ -970,8 +1003,12 @@ pub fn du_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     if let Some(style) = p.value_of("time-style") {
         cfg.time_style = style.to_string();
     }
-    if let Some(word) = p.value_of("time") {
-        cfg.time_mode = Some(word.to_string());
+    // The --time WORD arrives through the optional-argument extractor (argv
+    // order; the last spelling wins the way getopt's assignments do).
+    if let Some(word) = time_values.iter().rev().find(|(k, _)| k == "time") {
+        cfg.time_mode = Some(word.1.clone());
+    } else if p.has("time") {
+        cfg.time_mode = Some("mtime".to_string());
     }
     for pat in &p.values {
         if pat.0 == "exclude" {
@@ -997,17 +1034,92 @@ pub fn du_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     }
 
     let zone = effective_zone(false, ctx.env);
-    let operands: Vec<String> = if p.positionals.is_empty() {
-        vec![".".to_string()]
-    } else {
-        p.positionals
-            .iter()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect()
-    };
+    let mut failed = false;
+    let mut operands: Vec<String> = p
+        .positionals
+        .iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    if let Some(list) = p.value_of("files0-from") {
+        // [GNU] du.c --files0-from (the shared gnulib read-file-names shape,
+        // probed under WSL 9.4): the operand list is replaced by the
+        // NUL-separated names in F ('-' = stdin). A trailing separator does
+        // not produce a name; any other zero-length name reports
+        // "F:N: invalid zero-length file name" (1-based ordinal) on stderr
+        // and processing CONTINUES, with final status 1. File operands
+        // cannot be combined ("extra operand", rc 1); an open failure reads
+        // "cannot open 'F' for reading: <reason>", rc 1. An EMPTY list
+        // summarizes nothing and exits 0 — it does NOT fall back to ".".
+        if !operands.is_empty() {
+            let _ = writeln!(io.stderr, "du: extra operand '{}'", operands[0]);
+            let _ = writeln!(
+                io.stderr,
+                "file operands cannot be combined with --files0-from"
+            );
+            let _ = writeln!(io.stderr, "Try 'du --help' for more information.");
+            return Ok(1);
+        }
+        let data = if list == "-" {
+            let mut buf = Vec::new();
+            if io.stdin.read_to_end(&mut buf).is_err() {
+                let _ = writeln!(io.stderr, "du: -: read error");
+                return Ok(1);
+            }
+            String::from_utf8_lossy(&buf).into_owned()
+        } else {
+            let path = resolve(ctx, list);
+            match std::fs::read(&path) {
+                Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+                Err(e) => {
+                    let reason = crate::fsutil::reason(&e);
+                    let _ = writeln!(io.stderr, "du: cannot open '{list}' for reading: {reason}");
+                    return Ok(1);
+                }
+            }
+        };
+        // An empty file holds NO names (probed: rc 0, silent); a non-empty
+        // body splits on NUL and a trailing separator adds no name.
+        let mut names: Vec<&str> = if data.is_empty() {
+            Vec::new()
+        } else {
+            data.split('\0').collect()
+        };
+        if data.ends_with('\0') {
+            names.pop();
+        }
+        // GNU keeps processing the valid names and exits 1 at the end
+        // (probed: bad.nul -> rows for a and b, the diagnostic, rc 1);
+        // the access-error flag below carries the status.
+        let mut bad_names = false;
+        operands = Vec::new();
+        for (i, name) in names.iter().enumerate() {
+            if name.is_empty() {
+                let _ = writeln!(
+                    io.stderr,
+                    "du: {list}:{}: invalid zero-length file name",
+                    i + 1
+                );
+                bad_names = true;
+                continue;
+            }
+            operands.push((*name).to_string());
+        }
+        if bad_names {
+            failed = true;
+        }
+    } else if operands.is_empty() {
+        operands = vec![".".to_string()];
+    }
 
     let mut summaries = Summary { grand: 0 };
-    let mut failed = false;
+    // [GNU] one process-wide already-counted hash (du.c hash_ins/seen_file):
+    // every counted entry — files AND directories, zero-size included — is
+    // recorded, and an OPERAND whose inode is already counted is skipped
+    // silently (`du a a` prints one row; `du a a/sub` prints the subtree
+    // rows from the first walk and drops the nested operand; probed WSL
+    // 9.4). -l/--count-links bypasses the hash entirely: repeated operands
+    // are re-counted and re-printed.
+    let mut seen = HashSet::new();
     for operand in &operands {
         let path = resolve(ctx, operand);
         if std::fs::symlink_metadata(&path).is_err() {
@@ -1018,8 +1130,19 @@ pub fn du_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             failed = true;
             continue;
         }
+        if !cfg.count_links {
+            match file_handle(&path) {
+                Some(k) => {
+                    if !seen.insert(k) {
+                        continue;
+                    }
+                }
+                None => {
+                    let _ = seen.insert((0, 0));
+                }
+            }
+        }
         let mut volume_root = None;
-        let mut seen = HashSet::new();
         let mut sink = |size: u64,
                         tail: &str,
                         nul: bool,
@@ -1245,6 +1368,115 @@ mod tests {
         let (r, out, _) = run_in(&sc, &["--version"]);
         assert_eq!(r, 0);
         assert!(out.starts_with("du (GNU coreutils) 9.4\n"));
-        assert!(out.ends_with("Written by Torbjorn Granlund, David MacKenzie, Larry McVoy, Paul Eggert and Jim Meyering.\n"));
+        assert!(out.ends_with(
+            "Written by Torbj\u{f6}rn Granlund, David MacKenzie, Paul Eggert,\nand Jim Meyering.\n"
+        ));
+    }
+}
+
+#[cfg(test)]
+mod files0_from_tests {
+    use super::*;
+    use winux_core::test_support::{MemIo, ScratchCtx};
+
+    fn run(sc: &ScratchCtx, args: &[&str]) -> (u32, String, String) {
+        let mut io = MemIo::new("");
+        let ctx = sc.ctx();
+        let owned: Vec<OsString> = args.iter().map(Into::into).collect();
+        let r = du_cmd(&owned, &mut io.split(), &ctx).unwrap();
+        (r, io.out(), io.err())
+    }
+
+    fn fixture(sc: &ScratchCtx) {
+        std::fs::create_dir_all(sc.path("a")).unwrap();
+        std::fs::write(sc.path("a/f"), "xy").unwrap();
+        std::fs::write(sc.path("b-ignored"), "z").unwrap();
+        std::fs::write(sc.path("list.nul"), "a\0b-ignored\0").unwrap();
+        std::fs::write(sc.path("bad.nul"), "a\0\0b\0").unwrap();
+        std::fs::write(sc.path("empty.nul"), "").unwrap();
+    }
+
+    #[test]
+    fn files0_from_replaces_operands() {
+        // Probed GNU 9.4: names come from the NUL list, one row per name.
+        let sc = ScratchCtx::new("du-f0f");
+        fixture(&sc);
+        let (r, out, err) = run(&sc, &["--files0-from=list.nul", "-b"]);
+        assert_eq!(r, 0);
+        assert!(err.is_empty());
+        assert!(out.contains("\ta\n"));
+        assert!(out.contains("\tb-ignored\n"));
+        assert!(!out.contains("b-ignored\t"));
+    }
+
+    #[test]
+    fn files0_from_missing_list() {
+        // Probed: "du: cannot open 'nosuch.nul' for reading: No such file
+        // or directory", rc 1, empty stdout.
+        let sc = ScratchCtx::new("du-f0f-miss");
+        fixture(&sc);
+        let (r, out, err) = run(&sc, &["--files0-from=nosuch.nul", "-b"]);
+        assert_eq!(r, 1);
+        assert!(out.is_empty());
+        assert!(err.contains("du: cannot open 'nosuch.nul' for reading:"));
+    }
+
+    #[test]
+    fn files0_from_empty_list_is_silent_success() {
+        // Probed: empty list -> no output, rc 0 — it does NOT default to ".".
+        let sc = ScratchCtx::new("du-f0f-empty");
+        fixture(&sc);
+        let (r, out, err) = run(&sc, &["--files0-from=empty.nul", "-b"]);
+        assert_eq!(r, 0);
+        assert!(out.is_empty());
+        assert!(err.is_empty());
+    }
+
+    #[test]
+    fn files0_from_zero_length_name_reports_and_exits_one() {
+        // Probed: "du: bad.nul:2: invalid zero-length file name", the valid
+        // names still process, final rc 1. The trailing separator does not
+        // produce a name (list.nul case is clean).
+        let sc = ScratchCtx::new("du-f0f-bad");
+        fixture(&sc);
+        let (r, out, err) = run(&sc, &["--files0-from=bad.nul", "-b"]);
+        assert_eq!(r, 1);
+        assert!(out.contains("\ta\n"));
+        assert!(err.contains("du: bad.nul:2: invalid zero-length file name"));
+    }
+
+    #[test]
+    fn repeated_operands_dedupe_across_one_process() {
+        // Probed GNU 9.4 (probe-du-dedupe.sh): one process-wide
+        // already-counted hash; a repeated operand is skipped silently and
+        // -l/--count-links bypasses it.
+        let sc = ScratchCtx::new("du-dedupe");
+        std::fs::create_dir_all(sc.path("d1/d2")).unwrap();
+        std::fs::write(sc.path("d1/f"), "x").unwrap();
+        let (r, out, _) = run(&sc, &["-b", "d1", "d1"]);
+        assert_eq!(r, 0);
+        assert_eq!(out.matches("\td1\n").count(), 1);
+        assert!(out.contains("\td1/d2\n"));
+        let (r, out, _) = run(&sc, &["-lb", "d1", "d1"]);
+        assert_eq!(r, 0);
+        assert_eq!(out.matches("\td1\n").count(), 2);
+        // A nested operand already counted inside the first walk is dropped.
+        let (r, out, _) = run(&sc, &["-b", "d1", "d1/d2"]);
+        assert_eq!(r, 0);
+        assert_eq!(out.matches("\td1/d2\n").count(), 1);
+        assert!(out.ends_with("\td1\n"));
+    }
+
+    #[test]
+    fn files0_from_rejects_file_operands() {
+        // Probed: "extra operand", the combine rule, try-help, rc 1.
+        let sc = ScratchCtx::new("du-f0f-combine");
+        fixture(&sc);
+        let (r, out, err) = run(&sc, &["--files0-from=list.nul", "-b", "c"]);
+        assert_eq!(r, 1);
+        assert!(out.is_empty());
+        assert!(err.contains("du: extra operand 'c'"));
+        assert!(err.contains("file operands cannot be combined with --files0-from"));
+        assert!(err.contains("Try 'du --help' for more information."));
     }
 }

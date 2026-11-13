@@ -54,6 +54,40 @@ pub fn rejected_short_h(io: &mut Io, prog: &str, p: &Parsed, usage_status: u32) 
     None
 }
 
+/// GNU getopt `optional_argument` long options (`du --time[=WORD]`,
+/// `mkfifo --context[=CTX]`): only `--long=VAL` carries a value, bare
+/// `--long` never consumes the next token, and the short form never takes
+/// one (probed GNU 9.4: du.c declares --time with optional_argument,
+/// mkfifo.c optstring is "m:Z"; `du --time=atime f` works, bare
+/// `du --time f` is mtime and does not eat f). The shared OptSpec cannot
+/// express value-optional without growing the struct at all 379 literal
+/// sites, so the command strips the value-carrying spelling BEFORE parse
+/// with this helper and argopt never sees it (the mkfifo-local
+/// split_context_tokens is the same pattern from the wave5 first session).
+///
+/// Returns the extracted `(key, value)` pairs in argv order and the
+/// remaining stream with those tokens removed; everything else (bundled
+/// shorts, `--`, operands) passes through untouched, so the sequential
+/// help/version contract keeps working on the residual stream.
+pub fn extract_optional_long_values(
+    args: &[OsString],
+    long: &str,
+    key: &str,
+) -> (Vec<(String, String)>, Vec<OsString>) {
+    let mut values = Vec::new();
+    let mut rest = Vec::new();
+    let prefix = format!("--{long}=");
+    for arg in args {
+        let s = arg.to_string_lossy();
+        if let Some(v) = s.strip_prefix(&prefix) {
+            values.push((key.to_string(), v.to_string()));
+        } else {
+            rest.push(arg.clone());
+        }
+    }
+    (values, rest)
+}
+
 #[derive(Default, Debug)]
 pub struct Parsed {
     pub flags: Vec<String>,
