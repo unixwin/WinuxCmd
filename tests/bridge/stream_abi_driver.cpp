@@ -11,20 +11,25 @@
 ///             and a NULL-callback empty run) must be byte-identical to
 ///             the v1 whole-buffer entry across {ASCII, multi-byte UTF-8
 ///             split mid-character, no trailing newline, embedded NUL,
-///             empty} x {tac, base64} — the README "Validation" matrix,
-///             replayed at the C++ bridge layer.
+///             empty} x {tac, base64, b2sum, sha224sum, sha384sum} — the
+///             README "Validation" matrix, replayed at the C++ bridge
+///             layer (digest commands wired through the streaming entry
+///             by the #1488 digest-family adoption).
 ///   errors    host-stops-feeding (-1) => status 124 (GNU timeout(1)
 ///             convention); host read failure (-2) => the command's own
-///             read-error rc (tac: 1); NULL callback => empty stdin.
+///             read-error rc (tac: 1 silent; digests: 1 silent — the
+///             GNU-exact closed-stdin shape for sha224sum/sha384sum/tac);
+///             NULL callback => empty stdin.
 ///   stdin     the REAL-stdin entry (run_command_with_stdin_streaming)
 ///             against the v1 real-stdin entry (run_command_with_stdin):
 ///             byte-identical stdout/stderr/rc when fd 0 is an anonymous
-///             pipe and when it is a redirected file.
+///             pipe and when it is a redirected file, for {tac, b2sum,
+///             sha224sum, sha384sum}.
 ///   mem       64 MiB ledger: peak commit charge sampled with
 ///             GetProcessMemoryInfo in self-children; the streaming run
 ///             must not hold the whole input the v1 slurp + ABI copy hold
 ///             (Rust-side ledger: ~2x input for tac, README "Measured
-///             ledger").
+///             ledger"), for {tac, sha224sum, b2sum}.
 ///
 ///   The parent mode spawns THIS executable as `--child ...` so every run
 ///   is captured at the process boundary through the same console drain
@@ -443,11 +448,17 @@ auto child_main(const std::vector<std::string>& args) -> int {
 
 // ---- parent lanes --------------------------------------------------------
 
+// The commands covered by the lanes: tac + base64 (the #1556 matrix) and
+// the digest family wired through the streaming entry by the #1488
+// digest-family adoption.
+constexpr std::array<std::string_view, 5> kStreamCmds{
+    "tac", "base64", "b2sum", "sha224sum", "sha384sum"};
+
 // The child argv slices passed to run_child; argv[0] (this exe) is added
 // by run_child itself.
 auto lane_segments() -> void {
   const auto payloads = make_payloads();
-  const std::array<std::string_view, 2> cmds{"tac", "base64"};
+  const auto& cmds = kStreamCmds;
   const std::array<unsigned long long, 4> seg_sizes{1, 7, 997, 65537};
   for (const auto cmd : cmds) {
     for (const auto& p : payloads) {
@@ -485,7 +496,7 @@ auto lane_errors() -> void {
   // Host stops feeding: 124 regardless of the command's own status (the
   // flag is tracked at the StreamReader wrapper, not inferred from the
   // status — README "Timeout convention").
-  for (const auto cmd : {"tac", "base64"}) {
+  for (const auto cmd : kStreamCmds) {
     const ChildRun stopped = run_child({"--child", "stop", std::string(cmd)},
                                        "unused-by-child");
     record(stopped.spawned && stopped.exit_code == 124,
@@ -494,13 +505,19 @@ auto lane_errors() -> void {
   // Host read failure (-2) propagates per each command's own contract
   // (README callback table; rust2 stream_tests host_io_error_surfaces_as_
   // command_rc): tac maps the stdin read error to rc 1 with no output and
-  // no wording for the "-" input (io::copy err -> failed flag); base64
-  // propagates through `?`, which the boundary maps to 125.
-  const ChildRun tac_err =
-      run_child({"--child", "ioerr", "tac"}, "unused-by-child");
-  record(tac_err.exit_code == 1 && tac_err.out.empty() && tac_err.err.empty(),
-         "errors tac read-failure (-2) => rc " +
-             std::to_string(tac_err.exit_code) + ", no output/wording");
+  // no wording for the "-" input (io::copy err -> failed flag) — and the
+  // digestsum family does the same, which is GNU-exact for
+  // sha224sum/sha384sum/tac on a closed stdin (probed coreutils 9.4:
+  // silent rc 1) and a known missing-diagnostic gap for b2sum (GNU prints
+  // "b2sum: -: Bad file descriptor"; command-side wording, out of bridge
+  // scope); base64 propagates through `?`, which the boundary maps to 125.
+  for (const auto cmd : {"tac", "b2sum", "sha224sum", "sha384sum"}) {
+    const ChildRun err =
+        run_child({"--child", "ioerr", std::string(cmd)}, "unused-by-child");
+    record(err.exit_code == 1 && err.out.empty() && err.err.empty(),
+           "errors " + std::string(cmd) + " read-failure (-2) => rc " +
+               std::to_string(err.exit_code) + ", no output/wording");
+  }
   const ChildRun b64_err =
       run_child({"--child", "ioerr", "base64"}, "unused-by-child");
   record(b64_err.exit_code == 125,
@@ -511,62 +528,96 @@ auto lane_errors() -> void {
 auto lane_stdin() -> void {
   const auto payloads = make_payloads();
   for (const auto& p : payloads) {
-    // Pipe face.
-    const ChildRun v1 =
-        run_child({"--child", "real", "v1", "tac"}, p.bytes, false);
-    const ChildRun v2 =
-        run_child({"--child", "real", "v2", "tac"}, p.bytes, false);
-    compare_children(
-        "stdin pipe tac " + std::string(p.name) + " streaming vs v1", v1, v2);
-    // Redirected-file face.
-    const ChildRun v1f =
-        run_child({"--child", "real", "v1", "tac"}, p.bytes, true);
-    const ChildRun v2f =
-        run_child({"--child", "real", "v2", "tac"}, p.bytes, true);
-    compare_children(
-        "stdin file tac " + std::string(p.name) + " streaming vs v1", v1f,
-        v2f);
+    for (const auto cmd : {"tac", "b2sum", "sha224sum", "sha384sum"}) {
+      // Pipe face.
+      const ChildRun v1 =
+          run_child({"--child", "real", "v1", std::string(cmd)}, p.bytes,
+                    false);
+      const ChildRun v2 =
+          run_child({"--child", "real", "v2", std::string(cmd)}, p.bytes,
+                    false);
+      compare_children("stdin pipe " + std::string(cmd) + " " +
+                           std::string(p.name) + " streaming vs v1",
+                       v1, v2);
+      // Redirected-file face.
+      const ChildRun v1f =
+          run_child({"--child", "real", "v1", std::string(cmd)}, p.bytes,
+                    true);
+      const ChildRun v2f =
+          run_child({"--child", "real", "v2", std::string(cmd)}, p.bytes,
+                    true);
+      compare_children("stdin file " + std::string(cmd) + " " +
+                           std::string(p.name) + " streaming vs v1",
+                       v1f, v2f);
+    }
   }
 }
 
 auto lane_mem(size_t mib) -> void {
   const std::string payload = make_big_payload(mib);
-  const auto report_v1 = make_temp_path("mem-v1");
-  const auto report_v2 = make_temp_path("mem-v2");
-  const ChildRun c1 = run_child({"--child", "memprobe", "v1", "tac",
-                                 report_v1.string()},
-                                payload);
-  const ChildRun c2 = run_child({"--child", "memprobe", "v2", "tac",
-                                 report_v2.string()},
-                                payload);
-  record(c1.spawned && c1.exit_code == 0,
-         "mem v1 tac " + std::to_string(mib) + "MiB run (exit " +
-             std::to_string(c1.exit_code) + ")");
-  record(c2.spawned && c2.exit_code == 0,
-         "mem v2 tac " + std::to_string(mib) + "MiB run (exit " +
-             std::to_string(c2.exit_code) + ")");
-  const MemPeak p1 = read_mem_report(report_v1);
-  const MemPeak p2 = read_mem_report(report_v2);
+  const unsigned long long margin =
+      static_cast<unsigned long long>(mib) * 1024 * 1024;
   const auto mib_of = [](unsigned long long b) {
     return static_cast<double>(b) / (1024.0 * 1024.0);
   };
-  std::fprintf(stderr,
-               "INFO mem ledger %zuMiB input, tac: v1 peak_pagefile=%.1f "
-               "MiB, v2=%.1f MiB, gap=%.1f MiB (workingset v1=%.1f, "
-               "v2=%.1f)\n",
-               mib, mib_of(p1.pagefile), mib_of(p2.pagefile),
-               mib_of(p1.pagefile - p2.pagefile), mib_of(p1.workingset),
-               mib_of(p2.workingset));
-  // Rough residency check ("v2 should not hold whole blocks"): the v1 run
-  // holds the slurp + the ABI stdin copy + the command buffers; v2 drops
-  // the first two (the Rust ledger measured ~2x input for tac). Enforce a
-  // conservative 1x-input margin so a regression that reintroduces
-  // whole-input residency fails this lane.
-  const unsigned long long margin =
-      static_cast<unsigned long long>(mib) * 1024 * 1024;
-  record(c1.exit_code == 0 && c2.exit_code == 0 &&
-             p1.pagefile > p2.pagefile + margin,
-         "mem v2 peak_pagefile below v1 by >= 1x input");
+  for (std::string_view cmd : {"tac", "sha224sum", "b2sum"}) {
+    const auto report_v1 = make_temp_path("mem-v1");
+    const auto report_v2 = make_temp_path("mem-v2");
+    const ChildRun c1 = run_child({"--child", "memprobe", "v1",
+                                   std::string(cmd), report_v1.string()},
+                                  payload);
+    const ChildRun c2 = run_child({"--child", "memprobe", "v2",
+                                   std::string(cmd), report_v2.string()},
+                                  payload);
+    record(c1.spawned && c1.exit_code == 0,
+           "mem v1 " + std::string(cmd) + " " + std::to_string(mib) +
+               "MiB run (exit " + std::to_string(c1.exit_code) + ")");
+    record(c2.spawned && c2.exit_code == 0,
+           "mem v2 " + std::string(cmd) + " " + std::to_string(mib) +
+               "MiB run (exit " + std::to_string(c2.exit_code) + ")");
+    const MemPeak p1 = read_mem_report(report_v1);
+    const MemPeak p2 = read_mem_report(report_v2);
+    std::fprintf(stderr,
+                 "INFO mem ledger %zuMiB input, %.*s: v1 "
+                 "peak_pagefile=%.1f MiB, v2=%.1f MiB, gap=%.1f MiB "
+                 "(workingset v1=%.1f, v2=%.1f)\n",
+                 mib, static_cast<int>(cmd.size()), cmd.data(),
+                 mib_of(p1.pagefile), mib_of(p2.pagefile),
+                 mib_of(p1.pagefile > p2.pagefile ? p1.pagefile - p2.pagefile
+                                                  : 0),
+                 mib_of(p1.workingset), mib_of(p2.workingset));
+    // Residency gate, per command family. The v1 run holds the slurp + the
+    // ABI stdin copy + the command buffers; v2 drops the first two.
+    // * tac (buffers ~2x input across its input + reversed-output Vecs):
+    //   the removed slurp+ABI stay visible at the commit-charge peak
+    //   (measured gap 82-84 MiB, ~1.3x input) — assert >= 1x input on
+    //   pagefile.
+    // * digest family (digestsum io::copy holds one whole-input Vec in
+    //   BOTH entries — command code unchanged): measured 64 MiB ledger,
+    //   3 runs, v1 213.7 -> v2 194.4 pagefile (gap 19.2 MiB, ~0.3x input)
+    //   but v1 199.4 -> v2 134.3 workingset (gap ~65 MiB, ~1x input = the
+    //   removed slurp+ABI). The small pagefile gap is the command Vec's
+    //   own growth: under v1, io::copy routes to Cursor::read_to_end,
+    //   which try_reserve()s the input EXACTLY (std 1.95 cursor.rs
+    //   read_to_end), while under v2 the unknown-length stream takes the
+    //   default read_to_end probe loop and the Vec's amortized doubling
+    //   transiently commits ~1.5x input (std copy.rs: BufferedWriterSpec
+    //   for Vec<u8> -> read_to_end). The residency win is real (workingset)
+    //   and the commit-charge peak still moves down; assert both facts so
+    //   a regression that reintroduces whole-buffer residency fails the
+    //   lane.
+    const bool tac_margin = p1.pagefile > p2.pagefile + margin;
+    const bool digest_margin =
+        p1.pagefile > p2.pagefile &&
+        p1.workingset > p2.workingset + margin / 2;
+    const bool is_tac = cmd == "tac";
+    record(c1.exit_code == 0 && c2.exit_code == 0 &&
+               (is_tac ? tac_margin : digest_margin),
+           "mem v2 " + std::string(cmd) + " below v1 by " +
+               (is_tac ? ">= 1x input (pagefile)"
+                       : ">= 0.5x input (workingset; pagefile strictly "
+                         "below)"));
+  }
 }
 
 }  // namespace
