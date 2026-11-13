@@ -452,6 +452,17 @@ pub mod imp {
                     meta.mtime = FileTime::from_u64(basic.last_write_time as u64);
                 }
             }
+            if lstat && meta.is_symlink {
+                // GNU lstat: a symlink's st_size is the target-path byte
+                // length (platform contract #1310, src/commands/find.cpp
+                // find_size_bytes: "target-path length on this platform");
+                // a reparse-point-opened handle reports 0/allocated bytes,
+                // so the size comes from the stored target like the
+                // find_first_meta fallback path below.
+                if let Ok(t) = std::fs::read_link(&extended) {
+                    meta.size = t.to_string_lossy().len() as u64;
+                }
+            }
             CloseHandle(handle);
         }
         Ok(meta)
@@ -674,7 +685,15 @@ pub mod imp {
     }
 
     pub fn create_symlink(ctx: &Ctx, target: &str, link: &str, dir: bool) -> Result<(), u32> {
-        let t = wide(&api_path(ctx, target));
+        // GNU symlink(2) stores the target string verbatim and readlink
+        // prints it back unchanged; the 1.x pipeline fed CreateSymbolicLinkW
+        // the raw text with only '/' folded to '\' (src/utils/win32.cppm
+        // win32_normalize_symlink_target: "store the user-visible link text
+        // unchanged, but normalize what goes into the reparse point").
+        // api_path would absolutize a relative target against ctx.cwd and
+        // bake an absolute path into the reparse point, so the LINK operand
+        // keeps api_path while the TARGET goes through verbatim.
+        let t = wide(&target.replace('/', "\\"));
         let l = wide(&api_path(ctx, link));
         let mut flags = if dir {
             SYMBOLIC_LINK_FLAG_DIRECTORY
