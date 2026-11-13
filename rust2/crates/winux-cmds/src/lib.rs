@@ -60,6 +60,7 @@ pub mod od;
 
 pub mod paste;
 pub mod pathchk;
+pub mod pinky;
 pub mod printenv;
 pub mod ptx;
 pub mod pwd;
@@ -199,6 +200,7 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("cksum", cksum::cksum_cmd),
         ("date", date::date_cmd),
         ("du", du::du_cmd),
+        ("pinky", pinky::pinky_cmd),
     ]
 }
 
