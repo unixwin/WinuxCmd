@@ -11,7 +11,7 @@ normalizing brand/path/line-ending/whitespace — demote-to-note
 candidates for the command lane), **structural** (normalized bodies
 still differ — human review), **probe-fail** (harness error).
 
-Driver provenance: `drivers: rust(main)=D:/repo/wc-helpfix/rust2/target/debug/winuxcmd-driver.exe; rust(wave2)=D:/repo/wc-helpfix/rust2/target/debug/winuxcmd-driver.exe; cpp=D:/repo/wc-helpfix/build-vs/usr/bin/winuxcmd.exe; bash(setup)=C:\Users\cmx\AppData\Local\Programs\Niubash\winuxcmd\usr\bin\bash.EXE; gnu=WSL /usr/bin coreutils`
+Driver provenance: `drivers: rust=D:\repo\wc-20inv\rust2\target\debug\winuxcmd-driver.exe; cpp=D:\repo\wc-20inv\rust2\..\build-vs\usr\bin\winuxcmd.exe; bash(setup)=C:\Users\cmx\AppData\Local\Programs\Niubash\winuxcmd\usr\bin\bash.EXE; gnu=WSL /usr/bin coreutils`
 
 ## Per-command summary
 
@@ -23,23 +23,26 @@ Driver provenance: `drivers: rust(main)=D:/repo/wc-helpfix/rust2/target/debug/wi
 | false | 1 | 0 | 0 | 1 | 0 |
 | fmt | 1 | 0 | 0 | 1 | 0 |
 | getconf | 16 | 14 | 0 | 2 | 0 |
+| hostid | 7 | 2 | 0 | 5 | 0 |
 | hostname | 15 | 15 | 0 | 0 | 0 |
 | id | 12 | 12 | 0 | 0 | 0 |
-| ln | 2 | 1 | 0 | 1 | 0 |
+| ln | 1 | 0 | 0 | 1 | 0 |
 | nproc | 10 | 10 | 0 | 0 | 0 |
 | paste | 1 | 1 | 0 | 0 | 0 |
 | printenv | 3 | 1 | 0 | 2 | 0 |
 | pwd | 10 | 0 | 0 | 10 | 0 |
 | realpath | 1 | 0 | 0 | 1 | 0 |
-| stat | 11 | 4 | 0 | 7 | 0 |
+| stat | 11 | 6 | 0 | 5 | 0 |
 | sync | 2 | 0 | 0 | 2 | 0 |
 | tee | 2 | 0 | 0 | 2 | 0 |
 | test | 2 | 2 | 0 | 0 | 0 |
 | touch | 1 | 0 | 0 | 1 | 0 |
 | true | 1 | 0 | 0 | 1 | 0 |
+| tsort | 2 | 0 | 0 | 2 | 0 |
 | uname | 16 | 16 | 0 | 0 | 0 |
+| users | 4 | 1 | 0 | 3 | 0 |
 | whoami | 12 | 12 | 0 | 0 | 0 |
-| **total** | **134** | **95** | **0** | **39** | **0** |
+| **total** | **146** | **99** | **0** | **47** | **0** |
 
 ## Wording-only differences (structure equal, text differs)
 
@@ -55,90 +58,90 @@ decisions belong to the command lane.
   - `--- cpp`
   - `+++ rust`
   - `@@ -2,7 +2,7 @@`
-  - `-c:/ 230611856 188950480 41661376 82% c:/`
-  - `-d:/ 745443324 592194168 153249156 80% d:/`
+  - `-c:/ 230611856 197563092 33048764 86% c:/`
+  - `-d:/ 745443324 623063144 122380180 84% d:/`
   - `-e:/ 3906885628 2198727868 1708157760 57% e:/`
   - `-f:/ 239650684 98664084 140986600 42% f:/`
   - `-j:/ 242040720 204028408 38012312 85% j:/`
-  - `-k:/ 734015484 482561468 251454016 66% k:/`
-  - `-l:/ 2930248700 654904052 2275344648 23% l:/`
-  - `+C: 230611856 188950480 41661376 82% C:`
-  - `+D: 745443324 592194168 153249156 80% D:`
+  - `-k:/ 734015484 482561600 251453884 66% k:/`
+  - `-l:/ 2930248700 655957848 2274290852 23% l:/`
+  - `+C: 230611856 197563088 33048768 86% C:`
+  - `+D: 745443324 623063144 122380180 84% D:`
   - `+E: 3906885628 2198727868 1708157760 57% E:`
   - `+F: 239650684 98664084 140986600 42% F:`
 - **df/df05-human** — 8 vs 8 normalized lines
   - `--- cpp`
   - `+++ rust`
   - `@@ -2,7 +2,7 @@`
-  - `-c:/ 220G 181G 40G 82% c:/`
-  - `-d:/ 711G 565G 147G 80% d:/`
+  - `-c:/ 220G 189G 32G 86% c:/`
+  - `-d:/ 711G 595G 117G 84% d:/`
   - `-e:/ 3.7T 2.1T 1.6T 57% e:/`
   - `-f:/ 229G 95G 135G 42% f:/`
   - `-j:/ 231G 195G 37G 85% j:/`
   - `-k:/ 701G 461G 240G 66% k:/`
-  - `-l:/ 2.8T 625G 2.2T 23% l:/`
-  - `+C: 220G 180G 40G 82% C:`
-  - `+D: 711G 565G 146G 80% D:`
+  - `-l:/ 2.8T 626G 2.2T 23% l:/`
+  - `+C: 220G 188G 32G 86% C:`
+  - `+D: 711G 594G 117G 84% D:`
   - `+E: 3.6T 2.0T 1.6T 57% E:`
   - `+F: 229G 94G 134G 42% F:`
 - **df/df06-posix** — 8 vs 8 normalized lines
   - `--- cpp`
   - `+++ rust`
   - `@@ -2,7 +2,7 @@`
-  - `-c:/ 230611856 188950480 41661376 82% c:/`
-  - `-d:/ 745443324 592194168 153249156 80% d:/`
+  - `-c:/ 230611856 197563088 33048768 86% c:/`
+  - `-d:/ 745443324 623063032 122380292 84% d:/`
   - `-e:/ 3906885628 2198727868 1708157760 57% e:/`
   - `-f:/ 239650684 98664084 140986600 42% f:/`
   - `-j:/ 242040720 204028408 38012312 85% j:/`
-  - `-k:/ 734015484 482561468 251454016 66% k:/`
-  - `-l:/ 2930248700 654904052 2275344648 23% l:/`
-  - `+C: 230611856 188950480 41661376 82% C:`
-  - `+D: 745443324 592194168 153249156 80% D:`
+  - `-k:/ 734015484 482561600 251453884 66% k:/`
+  - `-l:/ 2930248700 655957848 2274290852 23% l:/`
+  - `+C: 230611856 197563092 33048764 86% C:`
+  - `+D: 745443324 623063032 122380292 84% D:`
   - `+E: 3906885628 2198727868 1708157760 57% E:`
   - `+F: 239650684 98664084 140986600 42% F:`
 - **df/df10-si** — 8 vs 8 normalized lines
   - `--- cpp`
   - `+++ rust`
   - `@@ -2,7 +2,7 @@`
-  - `-c:/ 237G 194G 43G 82% c:/`
-  - `-d:/ 764G 607G 157G 80% d:/`
+  - `-c:/ 237G 203G 34G 86% c:/`
+  - `-d:/ 764G 639G 126G 84% d:/`
   - `-e:/ 4.1T 2.3T 1.8T 57% e:/`
   - `-f:/ 246G 102G 145G 42% f:/`
   - `-j:/ 248G 209G 39G 85% j:/`
   - `-k:/ 752G 495G 258G 66% k:/`
-  - `-l:/ 3.1T 671G 2.4T 23% l:/`
-  - `+C: 236G 193G 43G 82% C:`
-  - `+D: 763G 606G 157G 80% D:`
+  - `-l:/ 3.1T 672G 2.4T 23% l:/`
+  - `+C: 236G 202G 34G 86% C:`
+  - `+D: 763G 638G 125G 84% D:`
   - `+E: 4.0T 2.3T 1.7T 57% E:`
   - `+F: 245G 101G 144G 42% F:`
 - **df/df11-all-flag** — 8 vs 8 normalized lines
   - `--- cpp`
   - `+++ rust`
   - `@@ -2,7 +2,7 @@`
-  - `-c:/ 230611856 188950480 41661376 82% c:/`
-  - `-d:/ 745443324 592194172 153249152 80% d:/`
+  - `-c:/ 230611856 197563092 33048764 86% c:/`
+  - `-d:/ 745443324 623063024 122380300 84% d:/`
   - `-e:/ 3906885628 2198727868 1708157760 57% e:/`
   - `-f:/ 239650684 98664084 140986600 42% f:/`
   - `-j:/ 242040720 204028408 38012312 85% j:/`
-  - `-k:/ 734015484 482561468 251454016 66% k:/`
-  - `-l:/ 2930248700 654904052 2275344648 23% l:/`
-  - `+C: 230611856 188950480 41661376 82% C:`
-  - `+D: 745443324 592194172 153249152 80% D:`
+  - `-k:/ 734015484 482561600 251453884 66% k:/`
+  - `-l:/ 2930248700 655957848 2274290852 23% l:/`
+  - `+C: 230611856 197563092 33048764 86% C:`
+  - `+D: 745443324 623063036 122380288 84% D:`
   - `+E: 3906885628 2198727868 1708157760 57% E:`
   - `+F: 239650684 98664084 140986600 42% F:`
 - **df/df12-output-all-columns** — 8 vs 8 normalized lines
   - `--- cpp`
   - `+++ rust`
   - `@@ -2,7 +2,7 @@`
-  - `-c:/ NTFS - - - - 230611856 188950480 41661376 82% - c:/`
-  - `-d:/ NTFS - - - - 745443324 592194172 153249152 80% - d:/`
+  - `-c:/ NTFS - - - - 230611856 197563092 33048764 86% - c:/`
+  - `-d:/ NTFS - - - - 745443324 623064652 122378672 84% - d:/`
   - `-e:/ NTFS - - - - 3906885628 2198727868 1708157760 57% - e:/`
   - `-f:/ NTFS - - - - 239650684 98664084 140986600 42% - f:/`
   - `-j:/ NTFS - - - - 242040720 204028408 38012312 85% - j:/`
-  - `-k:/ NTFS - - - - 734015484 482561468 251454016 66% - k:/`
-  - `-l:/ NTFS - - - - 2930248700 654904052 2275344648 23% - l:/`
-  - `+C: NTFS 0 0 0 - 230611856 188950480 41661376 82% C:`
-  - `+D: NTFS 0 0 0 - 745443324 592194172 153249152 80% D:`
+  - `-k:/ NTFS - - - - 734015484 482561600 251453884 66% - k:/`
+  - `-l:/ NTFS - - - - 2930248700 655958104 2274290596 23% - l:/`
+  - `+C: NTFS 0 0 0 - 230611856 197563092 33048764 86% C:`
+  - `+D: NTFS 0 0 0 - 745443324 623063024 122380300 84% D:`
   - `+E: NTFS 0 0 0 - 3906885628 2198727868 1708157760 57% E:`
   - `+F: NTFS 0 0 0 - 239650684 98664084 140986600 42% F:`
 - **df/df30-B-2048** — 2 vs 2 normalized lines
@@ -146,15 +149,15 @@ decisions belong to the command lane.
   - `+++ rust`
   - `@@ -1,2 +1,2 @@`
   - `-Filesystem 2048B-blocks Used Available Use% Mounted on`
-  - `-d:/ 372721662 296097086 76624576 80% d:/`
+  - `-d:/ 372721662 311536530 61185132 84% d:/`
   - `+Filesystem 2K-blocks Used Available Use% Mounted on`
-  - `+D: 372721662 296097086 76624576 80% d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/rust/df/df30-B-2048`
+  - `+D: 372721662 311532328 61189334 84% d:/repo/wc-20inv/rust2/target/gate-qc/scratch/rust/df/df30-B-2048`
 - **df/df31-i-view** — 2 vs 2 normalized lines
   - `--- cpp`
   - `+++ rust`
   - `@@ -2 +2 @@`
   - `-d:/ - - - - d:/`
-  - `+D: 0 0 0 - d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/rust/df/df31-i-view`
+  - `+D: 0 0 0 - d:/repo/wc-20inv/rust2/target/gate-qc/scratch/rust/df/df31-i-view`
 - **false/f07-version** — 1 vs 7 normalized lines
   - `--- cpp`
   - `+++ rust`
@@ -186,14 +189,65 @@ decisions belong to the command lane.
   - `--- cpp`
   - `+++ rust`
   - `@@ -10 +10 @@`
-  - `-AVPHYS_PAGES 8532151`
-  - `+AVPHYS_PAGES 8533114`
+  - `-AVPHYS_PAGES 6899591`
+  - `+AVPHYS_PAGES 6909130`
 - **getconf/gc22-avphys** — 1 vs 1 normalized lines
   - `--- cpp`
   - `+++ rust`
   - `@@ -1 +1 @@`
-  - `-8532333`
-  - `+8533548`
+  - `-7014941`
+  - `+6991224`
+- **hostid/ho05-help** — 1 vs 18 normalized lines
+  - `--- cpp`
+  - `+++ rust`
+  - `@@ -1,18 +0,0 @@`
+  - `-Usage: hostid [OPTION]`
+  - `-`
+  - `-Print the numeric identifier of the current host.`
+  - `-Print a 32-bit identifier, in hexadecimal, for the current host.`
+  - `-On Windows, this is derived from the machine GUID.`
+  - `-`
+  - `-OPTIONS:`
+  - `- print machine identifier`
+  - `- --help display this help and exit`
+  - `- -V, --version output version information and exit`
+  - `-`
+- **hostid/ho06-version** — 1 vs 1 normalized lines
+  - `--- cpp`
+  - `+++ rust`
+  - `@@ -1 +0,0 @@`
+  - `-1.2.1`
+- **hostid/ho09-help-extra** — 1 vs 18 normalized lines
+  - `--- cpp`
+  - `+++ rust`
+  - `@@ -1,18 +0,0 @@`
+  - `-Usage: hostid [OPTION]`
+  - `-`
+  - `-Print the numeric identifier of the current host.`
+  - `-Print a 32-bit identifier, in hexadecimal, for the current host.`
+  - `-On Windows, this is derived from the machine GUID.`
+  - `-`
+  - `-OPTIONS:`
+  - `- print machine identifier`
+  - `- --help display this help and exit`
+  - `- -V, --version output version information and exit`
+  - `-`
+- **hostid/ho10-version-extra** — 1 vs 1 normalized lines
+  - `--- cpp`
+  - `+++ rust`
+  - `@@ -1 +0,0 @@`
+  - `-1.2.1`
+- **hostid/ho13-short-version** — 1 vs 7 normalized lines
+  - `--- cpp`
+  - `+++ rust`
+  - `@@ -1,7 +0,0 @@`
+  - `-hostid 1.2.1`
+  - `-Copyright (C) 2026`
+  - `-License MIT <https://opensource.org/license/mit>.`
+  - `-This is free software: you are free to change and redistribute it.`
+  - `-There is NO WARRANTY, to the extent permitted by law.`
+  - `-`
+  - `-Written by contributors.`
 - **ln/ln21-help** — 1 vs 44 normalized lines
   - `--- cpp`
   - `+++ rust`
@@ -240,128 +294,116 @@ decisions belong to the command lane.
   - `--- cpp`
   - `+++ rust`
   - `@@ -1 +1 @@`
-  - `-d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/cpp/pwd/pw01-plain`
-  - `+d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/rust/pwd/pw01-plain`
+  - `-d:/repo/wc-20inv/rust2/target/gate-qc/scratch/cpp/pwd/pw01-plain`
+  - `+d:/repo/wc-20inv/rust2/target/gate-qc/scratch/rust/pwd/pw01-plain`
 - **pwd/pw02-physical** — 1 vs 1 normalized lines
   - `--- cpp`
   - `+++ rust`
   - `@@ -1 +1 @@`
-  - `-d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/cpp/pwd/pw02-physical`
-  - `+d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/rust/pwd/pw02-physical`
+  - `-d:/repo/wc-20inv/rust2/target/gate-qc/scratch/cpp/pwd/pw02-physical`
+  - `+d:/repo/wc-20inv/rust2/target/gate-qc/scratch/rust/pwd/pw02-physical`
 - **pwd/pw03-logical** — 1 vs 1 normalized lines
   - `--- cpp`
   - `+++ rust`
   - `@@ -1 +1 @@`
-  - `-d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/cpp/pwd/pw03-logical`
-  - `+d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/rust/pwd/pw03-logical`
+  - `-d:/repo/wc-20inv/rust2/target/gate-qc/scratch/cpp/pwd/pw03-logical`
+  - `+d:/repo/wc-20inv/rust2/target/gate-qc/scratch/rust/pwd/pw03-logical`
 - **pwd/pw04-l-with-pwd** — 1 vs 1 normalized lines
   - `--- cpp`
   - `+++ rust`
   - `@@ -1 +1 @@`
-  - `-d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/cpp/pwd/pw04-l-with-pwd`
-  - `+d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/rust/pwd/pw04-l-with-pwd`
+  - `-d:/repo/wc-20inv/rust2/target/gate-qc/scratch/cpp/pwd/pw04-l-with-pwd`
+  - `+d:/repo/wc-20inv/rust2/target/gate-qc/scratch/rust/pwd/pw04-l-with-pwd`
 - **pwd/pw05-l-bad-pwd** — 1 vs 1 normalized lines
   - `--- cpp`
   - `+++ rust`
   - `@@ -1 +1 @@`
-  - `-d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/cpp/pwd/pw05-l-bad-pwd`
-  - `+d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/rust/pwd/pw05-l-bad-pwd`
+  - `-d:/repo/wc-20inv/rust2/target/gate-qc/scratch/cpp/pwd/pw05-l-bad-pwd`
+  - `+d:/repo/wc-20inv/rust2/target/gate-qc/scratch/rust/pwd/pw05-l-bad-pwd`
 - **pwd/pw06-posixly-physical** — 1 vs 1 normalized lines
   - `--- cpp`
   - `+++ rust`
   - `@@ -1 +1 @@`
-  - `-d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/cpp/pwd/pw06-posixly-physical`
-  - `+d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/rust/pwd/pw06-posixly-physical`
+  - `-d:/repo/wc-20inv/rust2/target/gate-qc/scratch/cpp/pwd/pw06-posixly-physical`
+  - `+d:/repo/wc-20inv/rust2/target/gate-qc/scratch/rust/pwd/pw06-posixly-physical`
 - **pwd/pw07-posixly-default** — 1 vs 1 normalized lines
   - `--- cpp`
   - `+++ rust`
   - `@@ -1 +1 @@`
-  - `-d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/cpp/pwd/pw07-posixly-default`
-  - `+d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/rust/pwd/pw07-posixly-default`
+  - `-d:/repo/wc-20inv/rust2/target/gate-qc/scratch/cpp/pwd/pw07-posixly-default`
+  - `+d:/repo/wc-20inv/rust2/target/gate-qc/scratch/rust/pwd/pw07-posixly-default`
 - **pwd/pw10-both-last-p** — 1 vs 1 normalized lines
   - `--- cpp`
   - `+++ rust`
   - `@@ -1 +1 @@`
-  - `-d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/cpp/pwd/pw10-both-last-p`
-  - `+d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/rust/pwd/pw10-both-last-p`
+  - `-d:/repo/wc-20inv/rust2/target/gate-qc/scratch/cpp/pwd/pw10-both-last-p`
+  - `+d:/repo/wc-20inv/rust2/target/gate-qc/scratch/rust/pwd/pw10-both-last-p`
 - **pwd/pw11-both-last-l** — 1 vs 1 normalized lines
   - `--- cpp`
   - `+++ rust`
   - `@@ -1 +1 @@`
-  - `-d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/cpp/pwd/pw11-both-last-l`
-  - `+d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/rust/pwd/pw11-both-last-l`
+  - `-d:/repo/wc-20inv/rust2/target/gate-qc/scratch/cpp/pwd/pw11-both-last-l`
+  - `+d:/repo/wc-20inv/rust2/target/gate-qc/scratch/rust/pwd/pw11-both-last-l`
 - **pwd/pw12-posixly-no-pwd** — 1 vs 1 normalized lines
   - `--- cpp`
   - `+++ rust`
   - `@@ -1 +1 @@`
-  - `-d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/cpp/pwd/pw12-posixly-no-pwd`
-  - `+d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/rust/pwd/pw12-posixly-no-pwd`
+  - `-d:/repo/wc-20inv/rust2/target/gate-qc/scratch/cpp/pwd/pw12-posixly-no-pwd`
+  - `+d:/repo/wc-20inv/rust2/target/gate-qc/scratch/rust/pwd/pw12-posixly-no-pwd`
 - **realpath/rp16-symlink** — 1 vs 1 normalized lines
   - `--- cpp`
   - `+++ rust`
   - `@@ -1 +1 @@`
-  - `-d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/cpp/realpath/rp16-symlink/flink`
-  - `+d:/repo/wc-helpfix/rust2/target/gate-qc/scratch/rust/realpath/rp16-symlink/flink`
+  - `-d:/repo/wc-20inv/rust2/target/gate-qc/scratch/cpp/realpath/rp16-symlink/flink`
+  - `+d:/repo/wc-20inv/rust2/target/gate-qc/scratch/rust/realpath/rp16-symlink/flink`
 - **stat/st01-default-reg** — 8 vs 8 normalized lines
   - `--- cpp`
   - `+++ rust`
-  - `@@ -1 +1 @@`
-  - `-File: reg`
-  - `+File: 'reg'`
-  - `@@ -3,6 +3,6 @@`
-  - `-Device: 18467,0 Inode: 3377699722106724 Links: 2`
-  - `-Access: (0644/-rw-r--r--) Uid: (197609/ cmx) Gid: (197121/ UNKNOWN)`
-  - `-Access: 2026-11-11 08:06:53.146382500 +0800`
-  - `-Modify: 2026-11-11 08:06:53.146382500 +0800`
-  - `-Change: 2026-11-11 08:06:53.164386400 +0800`
-  - `- Birth: 2026-11-11 08:06:53.146382500 +0800`
-  - `+Device: 4823h/18467d Inode: 3377699722106412 Links: 2`
-  - `+Access: (0644/-rw-r--r--) Uid: (197609/ cmx) Gid: (197121/ None)`
+  - `@@ -3 +3 @@`
+  - `-Device: 18467,0 Inode: 1407374885279320 Links: 2`
+  - `+Device: 18467,0 Inode: 1688849861988853 Links: 2`
+  - `@@ -5,4 +5,4 @@`
+  - `-Access: 2026-11-12 10:08:26.068697100 +0800`
+  - `-Modify: 2026-11-12 10:08:26.068697100 +0800`
+  - `-Change: 2026-11-12 10:08:26.083698700 +0800`
+  - `- Birth: 2026-11-12 10:08:26.068697100 +0800`
+  - `+Access: 2026-11-12 10:08:26.004700200 +0800`
+  - `+Modify: 2026-11-12 10:08:26.004700200 +0800`
+  - `+Change: 2026-11-12 10:08:26.019697300 +0800`
+  - `+ Birth: 2026-11-12 10:08:26.003698500 +0800`
 - **stat/st02-default-dir** — 8 vs 8 normalized lines
   - `--- cpp`
   - `+++ rust`
-  - `@@ -1 +1 @@`
-  - `-File: dir`
-  - `+File: 'dir'`
-  - `@@ -3,6 +3,6 @@`
-  - `-Device: 18467,0 Inode: 3659174698817384 Links: 1`
-  - `-Access: (0755/drwxr-xr-x) Uid: (197609/ cmx) Gid: (197121/ UNKNOWN)`
-  - `-Access: 2026-11-11 08:06:53.313394600 +0800`
-  - `-Modify: 2026-11-11 08:06:53.313394600 +0800`
-  - `-Change: 2026-11-11 08:06:53.313394600 +0800`
-  - `- Birth: 2026-11-11 08:06:53.313394600 +0800`
-  - `+Device: 4823h/18467d Inode: 3377699722106416 Links: 1`
-  - `+Access: (0755/drwxr-xr-x) Uid: (197609/ cmx) Gid: (197121/ None)`
-- **stat/st06-c-ug** — 1 vs 1 normalized lines
-  - `--- cpp`
-  - `+++ rust`
-  - `@@ -1 +1 @@`
-  - `-197609|197121|cmx|UNKNOWN`
-  - `+197609|197121|cmx|None`
+  - `@@ -3 +3 @@`
+  - `-Device: 18467,0 Inode: 1688849861988873 Links: 1`
+  - `+Device: 18467,0 Inode: 1688849861988856 Links: 1`
+  - `@@ -5,4 +5,4 @@`
+  - `-Access: 2026-11-12 10:08:26.197785200 +0800`
+  - `-Modify: 2026-11-12 10:08:26.197785200 +0800`
+  - `-Change: 2026-11-12 10:08:26.197785200 +0800`
+  - `- Birth: 2026-11-12 10:08:26.197785200 +0800`
+  - `+Access: 2026-11-12 10:08:26.142783000 +0800`
+  - `+Modify: 2026-11-12 10:08:26.142783000 +0800`
+  - `+Change: 2026-11-12 10:08:26.142783000 +0800`
+  - `+ Birth: 2026-11-12 10:08:26.142783000 +0800`
 - **stat/st07-c-dev** — 1 vs 1 normalized lines
   - `--- cpp`
   - `+++ rust`
   - `@@ -1 +1 @@`
-  - `-4823|18467|3659174698817398|2`
-  - `+4823|18467|3377699722106430|2`
-- **stat/st08-c-times-epoch** — 1 vs 1 normalized lines
-  - `--- cpp`
-  - `+++ rust`
-  - `@@ -1 +1 @@`
-  - `-1794355614|1794355614|1794355614|1794355614`
-  - `+12274381854|12274381854|12274381854|12274381827`
+  - `-4823|18467|1125899908568737|2`
+  - `+4823|18467|1688849861988912|2`
 - **stat/st09-c-times-str** — 1 vs 1 normalized lines
   - `--- cpp`
   - `+++ rust`
   - `@@ -1 +1 @@`
-  - `-2026-11-11 08:06:54.568503000 +0800|2026-11-11 08:06:54.568503000 +0800|2026-11-11 08:06:54.586504300 +0800|2026-11-11 08:06:54.568503000 +0800`
-  - `+2026-11-11 08:06:54.478909500 +0800|2026-11-11 08:06:54.478909500 +0800|2026-11-11 08:06:54.478909500 +0800|2026-11-11 08:06:27.660487400 +0800`
+  - `-2026-11-12 10:08:27.083127900 +0800|2026-11-12 10:08:27.083127900 +0800|2026-11-12 10:08:27.097174900 +0800|2026-11-12 10:08:27.083127900 +0800`
+  - `+2026-11-12 10:08:27.022821500 +0800|2026-11-12 10:08:27.022821500 +0800|2026-11-12 10:08:27.035972700 +0800|2026-11-12 10:08:27.021821700 +0800`
 - **stat/st11-terse** — 1 vs 1 normalized lines
   - `--- cpp`
   - `+++ rust`
   - `@@ -1 +1 @@`
-  - `-reg 3 1 81a4 197609 197121 4823 3377699722106751 2 0 0 1794355614 1794355614 1794355614 1794355614 4096`
-  - `+reg 3 1 81a4 197609 197121 4823 3659174698817095 2 0 0 12274381854 12274381854 12274381854 12274381827 4096`
+  - `-reg 3 1 81a4 197609 197121 4823 1125899908568761 2 0 0 1794449307 1794449307 1794449307 1794449307 4096`
+  - `+reg 3 1 81a4 197609 197121 4823 1125899908568757 2 0 0 1794449307 1794449307 1794449307 1794449307 4096`
 - **sync/sy11-help** — 1 vs 24 normalized lines
   - `--- cpp`
   - `+++ rust`
@@ -429,12 +471,66 @@ decisions belong to the command lane.
   - `-`
   - `-Written by contributors.`
   - `+true 0.1.0`
+- **tsort/ts21-help** — 1 vs 16 normalized lines
+  - `--- cpp`
+  - `+++ rust`
+  - `@@ -1,16 +0,0 @@`
+  - `-Usage: tsort [FILE]`
+  - `-`
+  - `-Perform topological sort.`
+  - `-`
+  - `-OPTIONS:`
+  - `- topological sort`
+  - `- --help display this help and exit`
+  - `- -V, --version output version information and exit`
+  - `-`
+  - `-EXIT STATUS:`
+  - `- 0 if OK,`
+- **tsort/ts22-version** — 1 vs 1 normalized lines
+  - `--- cpp`
+  - `+++ rust`
+  - `@@ -1 +0,0 @@`
+  - `-1.2.1`
+- **users/us04-help** — 1 vs 16 normalized lines
+  - `--- cpp`
+  - `+++ rust`
+  - `@@ -1,16 +0,0 @@`
+  - `-Usage: users [OPTION]...`
+  - `-`
+  - `-Print the user names of users currently logged in to the current host.`
+  - `-`
+  - `-OPTIONS:`
+  - `- print who is currently logged in`
+  - `- --help display this help and exit`
+  - `- -V, --version output version information and exit`
+  - `-`
+  - `-EXIT STATUS:`
+  - `- 0 if OK,`
+- **users/us05-version** — 1 vs 1 normalized lines
+  - `--- cpp`
+  - `+++ rust`
+  - `@@ -1 +0,0 @@`
+  - `-1.2.1`
+- **users/us10-help-extra** — 1 vs 16 normalized lines
+  - `--- cpp`
+  - `+++ rust`
+  - `@@ -1,16 +0,0 @@`
+  - `-Usage: users [OPTION]...`
+  - `-`
+  - `-Print the user names of users currently logged in to the current host.`
+  - `-`
+  - `-OPTIONS:`
+  - `- print who is currently logged in`
+  - `- --help display this help and exit`
+  - `- -V, --version output version information and exit`
+  - `-`
+  - `-EXIT STATUS:`
+  - `- 0 if OK,`
 
 ## Re-run
 
 ```sh
-RUST_BIN=.../main/winuxcmd-driver.exe \
-RUST_BIN_W2=.../wave2/winuxcmd-driver.exe \
-CPP_BIN=.../winuxcmd.exe \
-  python gate/qc_win_audit.py   # regenerates gate/WIN-AUDIT.md
+# RUST_BIN/CPP_BIN default to this worktree's builds; the wave2
+# RUST_BIN_W2 split is retired (everything is wired to main).
+python gate/qc_win_audit.py   # regenerates gate/WIN-AUDIT.md
 ```

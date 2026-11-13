@@ -159,10 +159,9 @@ def main():
 
         w("\n## Re-run\n\n")
         w("```sh\n")
-        w("RUST_BIN=.../main/winuxcmd-driver.exe \\\n")
-        w("RUST_BIN_W2=.../wave2/winuxcmd-driver.exe \\\n")
-        w("CPP_BIN=.../winuxcmd.exe \\\n")
-        w("  python gate/qc_win_audit.py   # regenerates gate/WIN-AUDIT.md\n")
+        w("# RUST_BIN/CPP_BIN default to this worktree's builds; the wave2\n")
+        w("# RUST_BIN_W2 split is retired (everything is wired to main).\n")
+        w("python gate/qc_win_audit.py   # regenerates gate/WIN-AUDIT.md\n")
         w("```\n")
 
     print("\nwrote %s" % OUT)
