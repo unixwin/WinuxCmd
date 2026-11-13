@@ -24,7 +24,10 @@
 //! no delimiter is output). A trailing unescaped backslash is
 //! `delimiter list ends with an unescaped backslash: 'X'`, rc 1.
 //! -z makes NUL the input/output line delimiter. No operands = one stdin
-//! operand. Exit rc 1 if any open/read/close failed.
+//! operand. A `!<fifo>` marker operand (#1038) reads through the
+//! named-pipe rendezvous (fs_win::open_fifo_read), the same O_RDONLY
+//! blocking open GNU paste.c performs; the 7 marker bytes are never
+//! content. Exit rc 1 if any open/read/close failed.
 
 use std::cell::RefCell;
 use std::ffi::OsString;
@@ -382,10 +385,22 @@ pub fn paste_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         } else {
             // the one operand boundary (drive dialect, carrier colons,
             // shell tree — the 1.x native_path layer)
-            let path = std::path::PathBuf::from(crate::fs_win::api_path(ctx, op));
-            match std::fs::File::open(&path) {
+            let path = crate::fs_win::api_path(ctx, op);
+            // #1038 fifo bridge: a `!<fifo>` marker operand is a named
+            // pipe behind an on-disk file — GNU paste opens it O_RDONLY
+            // (blocking until a writer arrives) through the rendezvous,
+            // NOT through the plain open below, which would read the 7
+            // marker bytes as content (the wave3a CI regression; 1.x
+            // open_binary_file took the same marker branch, 442d65bb).
+            let opened: std::io::Result<Box<dyn Read>> = if crate::fs_win::is_winux_fifo_path(&path)
+            {
+                crate::fs_win::open_fifo_read(&path).map(|r| Box::new(r) as Box<dyn Read>)
+            } else {
+                std::fs::File::open(&path).map(|f| Box::new(f) as Box<dyn Read>)
+            };
+            match opened {
                 Ok(f) => sources.push(Slot {
-                    src: Rc::new(RefCell::new(Some(Box::new(f)))),
+                    src: Rc::new(RefCell::new(Some(f))),
                     closed: false,
                 }),
                 Err(e) => {
