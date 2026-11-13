@@ -51,15 +51,19 @@ REGISTER_COMMAND(
   // only this registration. ctx.raw_args passes the operands verbatim
   // because GNU tac.c parses its own getopt run.
   //
-  // stdin mode (ABI v1 whole-buffer): GNU tac.c reads fd 0 when no FILE
-  // operand stands, and "-" as a per-operand stdin marker, so the bridge
-  // slurps fd 0 exactly for those shapes (echo "a\nb" | tac, `tac -`).
+  // stdin mode (ABI v2 streaming, #1488 digest-family adoption): GNU
+  // tac.c reads fd 0 when no FILE operand stands, and "-" as a per-operand
+  // stdin marker, so the bridge reads fd 0 in chunks exactly for those
+  // shapes (echo "a\nb" | tac, `tac -`) — no whole-buffer slurp residency
+  // and no ABI v1 stdin_buf copy; a host read failure flows through the
+  // command's own read-error rc (tac: silent rc 1, GNU-exact for the "-"
+  // input) instead of a host-side pre-check.
   bool stdin_is_input = ctx.positionals.empty();
   for (auto arg : ctx.positionals) {
     if (arg == "-") stdin_is_input = true;
   }
   if (stdin_is_input) {
-    return winux::rust2::run_command_with_stdin("tac", ctx.raw_args);
+    return winux::rust2::run_command_with_stdin_streaming("tac", ctx.raw_args);
   }
   return winux::rust2::run_command("tac", ctx.raw_args);
 }
