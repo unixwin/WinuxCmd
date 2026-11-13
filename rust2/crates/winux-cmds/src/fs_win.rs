@@ -494,7 +494,8 @@ pub mod imp {
                 // find_size_bytes: "target-path length on this platform");
                 // a reparse-point-opened handle reports 0/allocated bytes,
                 // so the size comes from the stored target like the
-                // find_first_meta fallback path below.
+                // find_first_meta fallback path below (#1611 — the CreateFileW
+                // main path; the fallback already had the fixup).
                 if let Ok(t) = std::fs::read_link(&extended) {
                     meta.size = t.to_string_lossy().len() as u64;
                 }
@@ -906,7 +907,8 @@ pub mod imp {
         // normalize_operand is identity for relative and already-native
         // spellings, so those keep the verbatim text — api_path would have
         // absolutized a relative target against ctx.cwd, baking an absolute
-        // path into the reparse point. The LINK operand keeps api_path.
+        // path into the reparse point (#1609). The LINK operand keeps
+        // api_path.
         let t = wide(
             &winux_core::path::normalize_operand(ctx.env, &ctx.cwd, target).replace('/', "\\"),
         );

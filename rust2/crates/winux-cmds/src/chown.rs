@@ -1051,8 +1051,8 @@ mod tests {
         let (r, _, _) = run(&["--from", bare.as_str(), "1234", "f"], &sc);
         assert_eq!(r, 0);
         // from=other named account -> no match -> silent skip, rc 0. The
-        // "other" name is picked against the actual owner: elevated hosts
-        // (e.g. the CI runner) create files owned by the Administrators
+        // "other" name is picked against the actual owner (#1608): elevated
+        // hosts (e.g. the CI runner) create files owned by the Administrators
         // group, so a hardcoded 'Administrators' would MATCH and -v would
         // print instead of skipping.
         let other = if bare.eq_ignore_ascii_case("Administrators") {

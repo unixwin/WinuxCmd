@@ -307,8 +307,8 @@ mod dangling_tests {
                 r.ends_with("z_absent_tgt"),
                 "mode={mode:?} must resolve the dangling leaf to its target, got {r}"
             );
-            // the link name must not survive as a path component; checked
-            // per-component because the scratch dir itself is named
+            // the link name must not survive as a path component (#1607);
+            // checked per-component because the scratch dir itself is named
             // canon-dang-* (a plain contains("dang") matches it and would
             // fail on symlink-capable hosts like the CI runner)
             assert!(
