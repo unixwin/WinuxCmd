@@ -42,6 +42,7 @@ pub mod id;
 pub mod join;
 pub mod ln;
 pub mod mkdir;
+pub mod mkfifo;
 pub mod mktemp;
 pub mod modemap;
 pub mod nice;
@@ -183,6 +184,7 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("who", who::who_cmd),
         // wave5 (#1488)
         ("tty", tty::tty_cmd),
+        ("mkfifo", mkfifo::mkfifo_cmd),
     ]
 }
 
