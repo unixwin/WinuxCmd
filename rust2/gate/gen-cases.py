@@ -3304,7 +3304,11 @@ chgrp_rows = [
     ("cg19-named-group-verbose", "win", "printf x > f", "", "",
      ["-v", "Everyone", "f"]),
     ("cg20-named-group-silent", "win", "printf x > f", "", "", ["Everyone", "f"]),
-    ("cg21-numeric-verbose", "win", "printf x > f", "", "", ["-v", "1", "f"]),
+    # Numeric group: GNU accepts a gid operand; the 1.x C++ applet rejects
+    # it outright ("invalid group"), the rust2 port accepts with the
+    # documented mapped-SID no-op face ("retained as <rid>"). The C++
+    # deviation is inherited-not-fixed -> record-only note.
+    ("cg21-numeric-verbose", "note", "printf x > f", "", "", ["-v", "1", "f"]),
     ("cg22-help", "strict", "", "", "", ["--help"]),
     ("cg23-version", "strict", "", "", "", ["--version"]),
     ("cg24-numeric-two-files", "strict", "printf x > a; printf x > b", "", "",

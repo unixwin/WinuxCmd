@@ -324,9 +324,37 @@ pub fn chgrp_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
 
 /// The '--' operand: GNU compares the resolved path against '/'.
 fn is_root_operand(ctx: &Ctx, file: &str) -> bool {
+    // GNU keys the failsafe on the operand being the root itself
+    // (chgrp.c passes the name through the same protect-line as du's):
+    // the POSIX spelling "/" IS the namespace root whatever native path
+    // the mapper resolves it into. "//" is deliberately excluded — POSIX
+    // makes exactly-two-slashes implementation-defined and GNU does not
+    // refuse it.
+    if file == "/" {
+        return true;
+    }
     let native = resolve(ctx, file).to_string_lossy().into_owned();
     let stripped = native.trim_end_matches(['\\', '/']);
-    stripped.is_empty() || Path::new(&native).parent().is_none() && native.len() <= 3
+    if stripped.is_empty() {
+        // POSIX "/" resolving to a bare slash root.
+        return true;
+    }
+    // A volume/share root survives trimming: "D:\", "D:", a UNC share root
+    // ("\\srv\share"). Anything deeper has a normal component below the
+    // root. (The first session's parent().is_none() test never fired for a
+    // resolved drive root — Path::parent("D:\") is Some(""), not None — so
+    // cg15 silently walked the operand instead of refusing.)
+    use std::path::Component;
+    match Path::new(&native)
+        .components()
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
+        [Component::Prefix(_)] => true,
+        [Component::RootDir] => true,
+        [Component::Prefix(_), Component::RootDir] => true,
+        _ => false,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
