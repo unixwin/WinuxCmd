@@ -690,10 +690,17 @@ pub mod imp {
         // the raw text with only '/' folded to '\' (src/utils/win32.cppm
         // win32_normalize_symlink_target: "store the user-visible link text
         // unchanged, but normalize what goes into the reparse point").
-        // api_path would absolutize a relative target against ctx.cwd and
-        // bake an absolute path into the reparse point, so the LINK operand
-        // keeps api_path while the TARGET goes through verbatim.
-        let t = wide(&target.replace('/', "\\"));
+        // The operand-boundary folds (normalize_operand) stay applied to the
+        // TARGET because a POSIX-absolute spelling cannot resolve natively
+        // from a reparse point: "/c/x" must land on drive C (the drive
+        // dialect fold, ctest ln_symlink_drive_dialect_lands_on_operand_drive).
+        // normalize_operand is identity for relative and already-native
+        // spellings, so those keep the verbatim text — api_path would have
+        // absolutized a relative target against ctx.cwd, baking an absolute
+        // path into the reparse point. The LINK operand keeps api_path.
+        let t = wide(
+            &winux_core::path::normalize_operand(ctx.env, &ctx.cwd, target).replace('/', "\\"),
+        );
         let l = wide(&api_path(ctx, link));
         let mut flags = if dir {
             SYMBOLIC_LINK_FLAG_DIRECTORY
