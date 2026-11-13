@@ -62,9 +62,10 @@ const MKFIFO_HELP_BODY: &str = r#"Usage: mkfifo [OPTION]... NAME...
 Create named pipes (FIFOs) with the given NAMEs.
 
 Mandatory arguments to long options are mandatory for short options too.
-  -m, --mode=MODE   file permissions (as in chmod), not a & umask - 0777
-  -Z, --context[=CTX]  set the SELinux security context of each created
-                          FIFO to CTX; with no CTX, set a default value
+  -m, --mode=MODE    set file permission bits to MODE, not a=rw - umask
+  -Z                   set the SELinux security context to default type
+      --context[=CTX]  like -Z, or if CTX is specified then set the SELinux
+                         or SMACK security context to CTX
       --help        display this help and exit
       --version     output version information and exit
 
@@ -199,12 +200,15 @@ pub fn evaluate_mode(mode: &str) -> Result<u32, &'static str> {
 }
 
 #[cfg(windows)]
-mod imp {
+pub(crate) mod imp {
     use super::*;
 
     fn wide(s: &str) -> Vec<u16> {
         use std::os::windows::ffi::OsStrExt;
-        std::ffi::OsStr::new(s).encode_wide().chain(Some(0)).collect()
+        std::ffi::OsStr::new(s)
+            .encode_wide()
+            .chain(Some(0))
+            .collect()
     }
 
     #[link(name = "kernel32")]
@@ -307,7 +311,7 @@ mod imp {
 }
 
 #[cfg(not(windows))]
-mod imp {
+pub(crate) mod imp {
     pub fn attributes(_path: &str) -> Option<u32> {
         None
     }
@@ -320,15 +324,15 @@ mod imp {
 /// marker create (mkfifo.cpp run): ERROR_FILE_EXISTS reads "File exists",
 /// invalid names read as missing (win32_posix_error_text's
 /// invalid_name_as_missing), everything else its generic text.
-fn create_error_text(err: u32) -> &'static str {
+pub(crate) fn create_error_text(err: u32) -> &'static str {
     match err {
-        80 => "File exists",      // ERROR_FILE_EXISTS
-        183 => "File exists",     // ERROR_ALREADY_EXISTS
-        2 => "No such file or directory", // ERROR_FILE_NOT_FOUND (invalid_name_as_missing)
-        3 => "No such file or directory", // ERROR_PATH_NOT_FOUND
+        80 => "File exists",                // ERROR_FILE_EXISTS
+        183 => "File exists",               // ERROR_ALREADY_EXISTS
+        2 => "No such file or directory",   // ERROR_FILE_NOT_FOUND (invalid_name_as_missing)
+        3 => "No such file or directory",   // ERROR_PATH_NOT_FOUND
         123 => "No such file or directory", // ERROR_INVALID_NAME
-        206 => "File name too long", // ERROR_FILENAME_EXCED_RANGE
-        5 => "Permission denied", // ERROR_ACCESS_DENIED
+        206 => "File name too long",        // ERROR_FILENAME_EXCED_RANGE
+        5 => "Permission denied",           // ERROR_ACCESS_DENIED
         _ => "Invalid argument",
     }
 }
@@ -338,8 +342,9 @@ fn create_error_text(err: u32) -> &'static str {
 /// The scan stops at `--` (a post-`--` `--context=x` is a fifo NAME, not
 /// the option — probed GNU getopt shape). `-Z` stays in the token stream
 /// for argopt so the bundled-invalid form `-Zctx2` keeps its GNU
-/// diagnostic ("invalid option -- 'c'", rc 1, nothing created).
-fn split_context_tokens(args: &[OsString]) -> (Option<String>, Vec<OsString>) {
+/// diagnostic ("invalid option -- 'c'", rc 1, nothing created). Shared
+/// with mknod, whose --context[=CTX] option has the same getopt shape.
+pub fn split_context_tokens(args: &[OsString]) -> (Option<String>, Vec<OsString>) {
     let mut value = None;
     let mut rest = Vec::new();
     let mut no_more_options = false;
@@ -493,7 +498,7 @@ mod tests {
         assert_eq!(evaluate_mode("8"), Err("invalid mode")); // not octal, not symbolic
         assert_eq!(evaluate_mode("u"), Err("invalid mode")); // who without op
         assert_eq!(evaluate_mode("u+"), Ok(0o666)); // empty perms, op present
-        // g=u copy
+                                                    // g=u copy
         assert_eq!(evaluate_mode("g=u"), Ok(0o666));
         // u-rw strips user bits
         assert_eq!(evaluate_mode("u-rw"), Ok(0o066));

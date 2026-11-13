@@ -108,7 +108,7 @@ pub fn runcon_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 write!(
                     io.stdout,
                     "{}",
-                    gnuhelp::coreutils_version("runcon", "Russell Coker and Jim Meyering")
+                    gnuhelp::coreutils_version("runcon", "Russell Coker")
                 )?;
                 0
             }
@@ -232,7 +232,7 @@ mod tests {
         let (r, out, _) = run(&["--version"]);
         assert_eq!(r, 0);
         assert!(out.starts_with("runcon (GNU coreutils) 9.4\n"));
-        assert!(out.ends_with("Written by Russell Coker and Jim Meyering.\n"));
+        assert!(out.ends_with("Written by Russell Coker.\n"));
     }
 
     #[test]

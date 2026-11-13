@@ -110,10 +110,7 @@ pub fn tty_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         let _ = winux_core::usage_error(
             io,
             "tty",
-            &format!(
-                "extra operand '{}'",
-                extra.to_string_lossy()
-            ),
+            &format!("extra operand '{}'", extra.to_string_lossy()),
         );
         return Ok(2);
     }
@@ -212,7 +209,9 @@ mod tests {
         assert_eq!(r, 0);
         assert!(err.is_empty());
         assert!(out.starts_with("Usage: tty [OPTION]...\n"));
-        assert!(out.contains("  -s, --silent, --quiet   print nothing, only return an exit status\n"));
+        assert!(
+            out.contains("  -s, --silent, --quiet   print nothing, only return an exit status\n")
+        );
         assert!(out.ends_with("info '(coreutils) tty invocation'\n"));
         let (r, out, _) = run(&["--version"], "");
         assert_eq!(r, 0);

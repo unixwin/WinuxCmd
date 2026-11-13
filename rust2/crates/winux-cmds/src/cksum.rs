@@ -143,6 +143,7 @@ The following five options are useful only when verifying checksums:
       --strict          exit non-zero for improperly formatted checksum lines
   -w, --warn            warn about improperly formatted checksum lines
 
+      --debug           indicate which implementation used
       --help        display this help and exit
       --version     output version information and exit
 
@@ -158,6 +159,9 @@ DIGEST determines the digest algorithm and default output format:
   sha512    (equivalent to sha512sum)
   blake2b   (equivalent to b2sum)
   sm3       (only available through cksum)
+
+When checking, the input should be a former output of this program,
+or equivalent standalone program.
 
 "#;
 
