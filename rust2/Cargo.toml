@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/winux-core",
     "crates/winux-cmds",
+    "crates/winux-regex",
     "crates/winuxcmd-ffi",
     "crates/winuxcmd-driver",
 ]
