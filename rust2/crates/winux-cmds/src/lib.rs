@@ -26,6 +26,7 @@ pub mod df;
 pub mod digest;
 pub mod digestsum;
 pub mod dirname;
+pub mod du;
 pub mod echo;
 pub mod expand;
 pub mod factor;
@@ -197,6 +198,7 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("runcon", runcon::runcon_cmd),
         ("cksum", cksum::cksum_cmd),
         ("date", date::date_cmd),
+        ("du", du::du_cmd),
     ]
 }
 
