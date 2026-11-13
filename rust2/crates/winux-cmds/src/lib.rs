@@ -5,6 +5,7 @@
 //! globals, status code returned instead of exit(). `dispatch` is the
 //! registry both the CLI driver and the cdylib ABI use.
 
+pub mod arch;
 pub mod argopt;
 pub mod b64core;
 pub mod basename;
@@ -21,6 +22,7 @@ pub mod df;
 pub mod digest;
 pub mod digestsum;
 pub mod dirname;
+pub mod echo;
 pub mod expand;
 pub mod factor;
 
@@ -56,6 +58,7 @@ pub mod ptx;
 pub mod pwd;
 pub mod readlink;
 pub mod realpath;
+pub mod rev;
 pub mod rmdir;
 pub mod seq;
 pub mod shuf;
@@ -127,6 +130,19 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("b2sum", digestsum::b2sum_cmd),
         ("sha224sum", digestsum::sha224sum_cmd),
         ("sha384sum", digestsum::sha384sum_cmd),
+        // wave6 (#1488): completes the *sum digest family (md5sum/sha1sum
+        // via the new digest.rs primitives; sha256sum/sha512sum reuse the
+        // wave2 SHA-2 cores).
+        ("md5sum", digestsum::md5sum_cmd),
+        ("sha1sum", digestsum::sha1sum_cmd),
+        ("sha256sum", digestsum::sha256sum_cmd),
+        ("sha512sum", digestsum::sha512sum_cmd),
+        // wave6 (#1488): simple text/applet family
+        ("echo", echo::echo_cmd),
+        ("rev", rev::rev_cmd),
+        ("factor", factor::factor_cmd),
+        ("arch", arch::arch_cmd),
+        ("groups", groups::groups_cmd),
         // wave3a (#1488): alphabetical insertions
         ("fmt", fmt::fmt_cmd),
         ("fold", fold::fold_cmd),

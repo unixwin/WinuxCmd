@@ -2144,6 +2144,280 @@ NICE_CHILD_SETUP = (
     "printf '#!/bin/sh\\nexit 3\\n' > cmd; chmod +x cmd; "
     "export PATH=\"$PWD:$PATH\""
 )
+
+# ---------------------------------------------------------------------------
+# wave6 (#1488): md5sum sha1sum sha256sum sha512sum echo rev factor arch
+# groups. Digest values below are the probed coreutils 9.4 digests of the
+# fixed input `abc` (all four algorithms probed 2026-11-12), so check-file
+# rows construct OK/FAILED/uppercase/tag variants from one verified value
+# per algorithm. The --check machinery's deep rows (bsd_reversed latch,
+# --ignore-missing, invalid-tag variants) are gated on sha224sum/b2sum in
+# wave2; these tables cover the algorithm-specific surface.
+# ---------------------------------------------------------------------------
+
+MD5_ABC = "900150983cd24fb0d6963f7d28e17f72"
+SHA1_ABC = "a9993e364706816aba3e25717850c26c9cd0d89d"
+SHA256_ABC = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+SHA512_ABC = (
+    "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a"
+    "2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f"
+)
+
+
+def digest_rows(prefix, prog, hex_abc, tag):
+    """Shared per-algorithm table. `tag` is the --tag header (MD5/SHA1/...)."""
+    short = prefix
+    ck_setup = f"printf abc > f; printf '{hex_abc}  f\\n' > ck"
+    rows = [
+        (f"{short}a01-stdin", "strict", "", "", "abc", []),
+        (f"{short}a02-empty-stdin", "strict", "", "", "", []),
+        (f"{short}a03-file", "strict", "printf abc > f1", "", "", ["f1"]),
+        (f"{short}a04-two-files", "strict",
+         "printf abc > f2; printf de > f3", "", "", ["f2", "f3"]),
+        (f"{short}a05-missing", "strict", "printf abc > f4", "", "", ["missing"]),
+        (f"{short}a06-directory", "strict", "mkdir d1", "", "", ["d1"]),
+        (f"{short}a07-tag", "strict", "", "", "abc", ["--tag"]),
+        (f"{short}a08-binary", "strict", "", "", "abc", ["-b"]),
+        (f"{short}a09-text", "strict", "", "", "abc", ["-t"]),
+        (f"{short}a10-b-then-t", "strict", "", "", "abc", ["-b", "-t"]),
+        (f"{short}a11-zero", "strict", "", "", "abc", ["-z"]),
+        (f"{short}a12-tag-file", "strict", "printf abc > f5", "", "",
+         ["--tag", "f5"]),
+        (f"{short}a13-binary-file", "strict", "printf abc > f6", "", "",
+         ["-b", "f6"]),
+        (f"{short}a14-dash-operand", "strict", "", "", "abc", ["-"]),
+        (f"{short}a15-mixed-missing", "strict", "printf abc > f7", "", "",
+         ["missing", "f7"]),
+        (f"{short}a16-bogus-short", "exit", "", "", "", ["-q"]),
+        (f"{short}a17-bogus-long", "exit", "", "", "", ["--bogus"]),
+        (f"{short}a18-help", "strict", "", "", "", ["--help"]),
+        (f"{short}a19-version", "strict", "", "", "", ["--version"]),
+        (f"{short}a20-multi-stdin", "strict", "", "",
+         "The quick brown fox jumps over the lazy dog", []),
+        (f"{short}c01-ok", "strict", ck_setup, "", "", ["-c", "ck"]),
+        (f"{short}c02-fail", "strict",
+         f"printf de > g; printf '{hex_abc}  g\\n' > ck", "", "",
+         ["-c", "ck"]),
+        (f"{short}c03-missing-target", "strict",
+         f"printf '{hex_abc}  nope\\n' > ck", "", "", ["-c", "ck"]),
+        (f"{short}c04-tag-ok", "strict",
+         f"printf abc > f; printf '{tag} (f) = {hex_abc}\\n' > ck", "", "",
+         ["-c", "ck"]),
+        (f"{short}c05-uppercase", "strict",
+         f"printf abc > f; printf '{hex_abc.upper()}  f\\n' > ck", "", "",
+         ["-c", "ck"]),
+        (f"{short}c06-binary-star", "strict",
+         f"printf abc > f; printf '{hex_abc} *f\\n' > ck", "", "",
+         ["-c", "ck"]),
+        (f"{short}c07-crlf", "strict",
+         f"printf abc > f; printf '{hex_abc}  f\\r\\n' > ck", "", "",
+         ["-c", "ck"]),
+        (f"{short}c08-bsd-reversed", "strict",
+         f"printf abc > f; printf '{hex_abc} f\\n' > ck", "", "",
+         ["-c", "ck"]),
+        (f"{short}c09-badlength", "strict",
+         f"printf abc > f; printf '{hex_abc[:-2]}  f\\n' > ck", "", "",
+         ["-c", "ck"]),
+        (f"{short}c10-quiet-fail", "strict",
+         f"printf de > g; printf '{hex_abc}  g\\n' > ck", "", "",
+         ["-c", "--quiet", "ck"]),
+        (f"{short}c11-status-ok", "strict", ck_setup, "", "",
+         ["-c", "--status", "ck"]),
+        (f"{short}c12-warn-garbage", "strict",
+         "printf 'garbage\\n' > ck", "", "", ["-c", "-w", "ck"]),
+        (f"{short}c13-empty-checkfile", "strict",
+         "printf '' > ck", "", "", ["-c", "ck"]),
+    ]
+    return rows
+
+
+md5sum_rows = digest_rows("m5", "md5sum", MD5_ABC, "MD5")
+sha1sum_rows = digest_rows("s1", "sha1sum", SHA1_ABC, "SHA1")
+sha256sum_rows = digest_rows("s256", "sha256sum", SHA256_ABC, "SHA256")
+sha512sum_rows = digest_rows("s512", "sha512sum", SHA512_ABC, "SHA512")
+
+# `echo` — GNU hand-rolled option scan (no getopt): leading args of only
+# n/e/E chars are flags; `--` is an OPERAND; sole --help/--version only in
+# GNU mode. POSIXLY_CORRECT rows (env column) pin the System V surface:
+# escapes default on, only an exact leading `-n` enables options at all.
+# Operand texts carry literal backslashes, matching the shell
+# single-quoted probes.
+echo_rows = [
+    ("ec01-plain", "strict", "", "", "ignored", ["hello"]),
+    ("ec02-two-args", "strict", "", "", "", ["a", "b"]),
+    ("ec03-empty-operand", "strict", "", "", "", ["@EMPTY@", "x"]),
+    ("ec04-noargs", "strict", "", "", "", []),
+    ("ec05-n", "strict", "", "", "", ["-n", "hello"]),
+    ("ec06-n-alone", "strict", "", "", "", ["-n"]),
+    ("ec07-dashdash", "strict", "", "", "", ["--", "-n", "x"]),
+    ("ec08-dash", "strict", "", "", "", ["-"]),
+    ("ec09-dash-0", "strict", "", "", "", ["-0", "x"]),
+    ("ec10-nn-n", "strict", "", "", "", ["-nn", "-n", "z"]),
+    ("ec11-e-decodes", "strict", "", "", "", ["-e", "a\\tb"]),
+    ("ec12-eE-literal", "strict", "", "", "", ["-eE", "a\\tb"]),
+    ("ec13-Ee-decodes", "strict", "", "", "", ["-Ee", "a\\tb"]),
+    ("ec14-E-literal", "strict", "", "", "", ["-E", "a\\tb"]),
+    ("ec15-escapes-table", "strict", "", "", "",
+     ["-e", "\\a\\b\\e\\f\\n\\r\\t\\v\\\\"]),
+    ("ec16-octal-0101", "strict", "", "", "", ["-e", "\\0101"]),
+    ("ec17-octal-0777", "strict", "", "", "", ["-e", "\\0777"]),
+    ("ec18-octal-08", "strict", "", "", "", ["-e", "\\08"]),
+    ("ec19-octal-410", "strict", "", "", "", ["-e", "\\410"]),
+    ("ec20-octal-123", "strict", "", "", "", ["-e", "\\123"]),
+    ("ec21-hex", "strict", "", "", "", ["-e", "\\x41\\x42"]),
+    ("ec22-hex-short", "strict", "", "", "", ["-e", "a\\xb"]),
+    ("ec23-hex-nodigit", "strict", "", "", "", ["-e", "\\xZ"]),
+    ("ec24-unknown-escape", "strict", "", "", "", ["-e", "a\\qb"]),
+    ("ec25-trailing-bslash", "strict", "", "", "", ["-e", "a\\"]),
+    ("ec26-c-stops", "strict", "", "", "", ["-e", "abc\\c"]),
+    ("ec27-c-later-operands", "strict", "", "", "", ["-e", "a\\cb", "more"]),
+    ("ec28-u-not-escape", "strict", "", "", "", ["-e", "\\u0041"]),
+    ("ec29-help", "strict", "", "", "", ["--help"]),
+    ("ec30-version", "strict", "", "", "", ["--version"]),
+    ("ec31-help-extra", "strict", "", "", "", ["--help", "extra"]),
+    ("ec32-n-version", "strict", "", "", "", ["-n", "--version"]),
+    ("ec33-n-then-nonflag", "strict", "", "", "", ["-n-", "x"]),
+    ("ec34-posix-decodes-by-default", "strict", "", "POSIXLY_CORRECT=1", "",
+     ["a\\tb"]),
+    ("ec35-posix-nn-verbatim", "strict", "", "POSIXLY_CORRECT=1", "",
+     ["-nn", "-n", "x"]),
+    ("ec36-posix-eE-operand", "strict", "", "POSIXLY_CORRECT=1", "",
+     ["-e", "-E", "a\\tb"]),
+    ("ec37-posix-n-enables-options", "strict", "", "POSIXLY_CORRECT=1", "",
+     ["-n", "-e", "q\\tr"]),
+    ("ec38-posix-help-operand", "strict", "", "POSIXLY_CORRECT=1", "",
+     ["--help"]),
+    ("ec39-posix-version-operand", "strict", "", "POSIXLY_CORRECT=1", "",
+     ["--version"]),
+    ("ec40-posix-empty-value", "strict", "", "POSIXLY_CORRECT=", "",
+     ["a\\tb"]),
+]
+
+# `rev` — util-linux rev (the WSL oracle), not coreutils. UTF-8 rows pin
+# LC_ALL because the Windows side has no inherited locale and the Rust
+# implementation reads LC_ALL/LC_CTYPE/LANG like setlocale(). NUL-separated
+# records need a setup file (stdin cannot carry NUL through the harness).
+# GNU rev 2.39.3 HANGS on invalid byte sequences and directory operands
+# (probed rc 124 under timeout) — no gate rows can cover those honestly;
+# the Rust byte-fallback is unit-tested instead.
+REV_Z_SETUP = "printf 'ab\\0cd\\0' > rec"
+REV_Z_NOMID_SETUP = "printf 'ab\\0cd' > rec2"
+rev_rows = [
+    ("rv01-multiline", "strict",
+     "printf 'abc\\n\\nxy z\\n' > r0", "", "", ["r0"]),
+    ("rv02-empty-stdin", "strict", "", "", "", []),
+    ("rv03-no-trailing-nl", "strict", "printf 'ab' > r0b", "", "", ["r0b"]),
+    ("rv04-file", "strict", "printf 'hello\\n' > r1", "", "", ["r1"]),
+    ("rv05-two-files", "strict",
+     "printf 'aa\\n' > r2; printf 'bb\\n' > r3", "", "", ["r2", "r3"]),
+    ("rv06-missing", "strict", "printf 'aa\\n' > r4", "", "", ["missing"]),
+    ("rv07-mixed-missing", "strict",
+     "printf 'aa\\n' > r5", "", "", ["missing", "r5"]),
+    ("rv08-dash-operand", "strict", "printf 'aa\\n' > r6", "", "", ["-", "r6"]),
+    ("rv09-crlf", "strict", "printf 'ab\\r\\n' > r7", "", "", ["r7"]),
+    ("rv10-zero-sep", "strict", REV_Z_SETUP, "", "", ["-0", "rec"]),
+    ("rv11-zero-long", "strict", REV_Z_SETUP, "", "", ["--zero", "rec"]),
+    ("rv12-zero-nomid", "strict", REV_Z_NOMID_SETUP, "", "",
+     ["-0", "rec2"]),
+    ("rv13-help", "strict", "", "", "", ["--help"]),
+    ("rv14-help-short", "strict", "", "", "", ["-h"]),
+    ("rv15-version", "strict", "", "", "", ["--version"]),
+    ("rv16-version-short", "strict", "", "", "", ["-V"]),
+    ("rv17-version-extra", "strict", "", "", "", ["-V", "extra"]),
+    ("rv18-help-extra", "strict", "", "", "", ["--help", "extra"]),
+    ("rv19-bogus-short", "exit", "", "", "", ["-q"]),
+    ("rv20-bogus-long", "exit", "", "", "", ["--bogus"]),
+    ("rv21-dashdash", "strict", "printf 'zz\\n' > r8", "", "", ["--", "r8"]),
+    ("rv22-locale-c-ascii", "strict", "printf 'ab\\n' > r9",
+     "LC_ALL=C", "", ["r9"]),
+    ("rv23-locale-utf8", "strict", "printf 'ab\\xc3\\xa9\\n' > r10",
+     "LC_ALL=C.UTF-8", "", ["r10"]),
+    ("rv24-locale-lc-ctype", "strict", "printf 'ab\\n' > r11",
+     "LC_CTYPE=C", "", ["r11"]),
+    ("rv25-default-ascii", "strict", "printf 'xyz\\n' > r12", "", "",
+     ["r12"]),
+]
+
+# `factor` — operand grammar and u64 factorizations (all values probed
+# against WSL coreutils 9.4). Multi-line stdin cannot pass through the
+# case harness (stdin column is a single printf %s token), so stdin rows
+# are single-line and the multi-line rules (blank-line skip, CR invalid,
+# junk-continue) are pinned by unit tests; operand rows cover the rest.
+factor_rows = [
+    ("fa01-12", "strict", "", "", "", ["12"]),
+    ("fa02-zero", "strict", "", "", "", ["0"]),
+    ("fa03-one", "strict", "", "", "", ["1"]),
+    ("fa04-prime", "strict", "", "", "", ["1000003"]),
+    ("fa05-two-primes", "strict", "", "", "", ["2147483647", "4294967291"]),
+    ("fa06-u64max", "strict", "", "", "", ["18446744073709551615"]),
+    ("fa07-mixed", "strict", "", "", "", ["123456789012345678"]),
+    ("fa08-4611", "strict", "", "", "", ["4611686018427387905"]),
+    ("fa09-semiprime", "strict", "", "", "", ["4295109041"]),
+    ("fa10-square", "strict", "", "", "", ["1000006000009"]),
+    ("fa11-two-args", "strict", "", "", "", ["6", "10"]),
+    ("fa12-combined", "strict", "", "", "", ["12", "0", "1", "49"]),
+    ("fa13-dashdash-num", "strict", "", "", "", ["--", "12"]),
+    ("fa14-dashdash-negative", "exit", "", "", "", ["--", "-5"]),
+    ("fa15-junk", "strict", "", "", "", ["xyz"]),
+    ("fa16-junk-continue", "strict", "", "", "", ["xyz", "6"]),
+    ("fa17-empty-operand", "strict", "", "", "", ["@EMPTY@"]),
+    ("fa18-trailing-junk", "strict", "", "", "", ["12x"]),
+    ("fa19-trailing-space", "strict", "", "", "", ["12 "]),
+    ("fa20-leading-space", "strict", "", "", "", [" 12"]),
+    ("fa21-plus", "strict", "", "", "", ["+12"]),
+    ("fa22-leading-zero", "strict", "", "", "", ["010"]),
+    ("fa23-leading-tab", "strict", "", "", "", ["\t12"]),
+    # beyond u64::MAX: GNU factors it via GMP (rc 0, big-int output); the
+    # rust2 subset rejects with rc 1 — the documented deviation, so this
+    # row is record-only (`note`), never gating.
+    ("fa24-beyond-u64", "note", "", "", "", ["18446744073709551616"]),
+    ("fa25-exponents", "strict", "", "", "", ["-h", "12"]),
+    ("fa26-exponents-long", "strict", "", "", "", ["--exponents", "8"]),
+    ("fa27-exponents-prime", "strict", "", "", "", ["-h", "7"]),
+    ("fa28-exponents-two", "strict", "", "", "", ["-h", "4", "9"]),
+    ("fa29-stdin-one-line", "strict", "", "", "18", ["-h"]),
+    ("fa30-stdin-plain", "strict", "", "", "8", []),
+    ("fa31-help", "strict", "", "", "", ["--help"]),
+    ("fa32-version", "strict", "", "", "", ["--version"]),
+    ("fa33-help-extra", "strict", "", "", "", ["--help", "extra"]),
+    ("fa34-version-extra", "strict", "", "", "", ["--version", "extra"]),
+    ("fa35-exponents-inline-value", "exit", "", "", "",
+     ["--exponents=8", "12"]),
+    ("fa36-bogus-short", "exit", "", "", "", ["-q", "12"]),
+    ("fa37-bogus-long", "exit", "", "", "", ["--bogus", "12"]),
+]
+
+# `arch` — value rows are win (the machine name is platform-inherent);
+# rc-only grammar rows are exit; help/version are strict GNU text.
+arch_rows = [
+    ("ar01-plain", "win", "", "", "", []),
+    ("ar02-help", "strict", "", "", "", ["--help"]),
+    ("ar03-version", "strict", "", "", "", ["--version"]),
+    ("ar04-abbrev", "strict", "", "", "", ["--ver"]),
+    ("ar05-abbrev-hel", "strict", "", "", "", ["--hel"]),
+    ("ar06-extra-operand", "exit", "", "", "", ["foo"]),
+    ("ar07-two-operands", "exit", "", "", "", ["a", "b"]),
+    ("ar08-operand-then-help", "strict", "", "", "", ["foo", "--help"]),
+    ("ar09-bogus-short", "exit", "", "", "", ["-x"]),
+    ("ar10-h-invalid", "note", "", "", "", ["-h"]),
+    ("ar11-V-invalid", "note", "", "", "", ["-V"]),
+    ("ar12-bogus-long", "exit", "", "", "", ["--bogus"]),
+    ("ar13-dashdash", "win", "", "", "", ["--"]),
+    ("ar14-dashdash-help", "exit", "", "", "", ["--", "--help"]),
+    ("ar15-dashdash-operand", "exit", "", "", "", ["--", "foo"]),
+    ("ar16-dash-operand", "exit", "", "", "", ["-"]),
+    ("ar17-empty-operand", "exit", "", "", "", ["@EMPTY@"]),
+    ("ar18-bogus-eq", "exit", "", "", "", ["--bogus=1"]),
+    ("ar19-version-extra", "strict", "", "", "", ["--version", "extra"]),
+    ("ar20-help-extra", "strict", "", "", "", ["--help", "extra"]),
+    ("ar21-help-version", "strict", "", "", "", ["--help", "--version"]),
+    ("ar22-version-help", "strict", "", "", "", ["--version", "--help"]),
+]
+
+# `groups` — membership content is platform-inherent (NetUserGetGroups on
+# both Windows sides), so value rows are win; unknown-user rows are exit
+# (GNU rc 1 with matching wording on stderr); help/version are strict.
+
 NICE_CHILD_OK_SETUP = (
     "printf '#!/bin/sh\\nexit 0\\n' > cmd; chmod +x cmd; "
     "export PATH=\"$PWD:$PATH\""
@@ -2339,62 +2613,30 @@ csplit_rows = [
     ("cs33-short-h-rejected", "strict", "", "", "", ["-h"]),
 ]
 
-factor_rows = [
-    ("fa01-small", "strict", "", "", "", ["12"]),
-    ("fa02-one", "strict", "", "", "", ["1"]),
-    ("fa03-zero", "strict", "", "", "", ["0"]),
-    ("fa04-prime", "strict", "", "", "", ["97"]),
-    ("fa05-squares", "strict", "", "", "", ["100"]),
-    ("fa06-two", "strict", "", "", "", ["2"]),
-    ("fa07-exp-short", "strict", "", "", "", ["-h", "72"]),
-    ("fa08-exp-long", "strict", "", "", "", ["--exponents", "72"]),
-    ("fa09-exp-squarefree", "strict", "", "", "", ["-h", "17"]),
-    ("fa10-help", "strict", "", "", "", ["--help"]),
-    # driver --version prints the GNU-branded block; C++ product branding
-    # differs (recorded), GNU-gated bytes are strict like id22.
-    ("fa11-version", "strict", "", "", "", ["--version"]),
-    ("fa12-plus-sign", "strict", "", "", "", ["+5"]),
-    ("fa13-leading-space", "strict", "", "", "", [" 5"]),
-    ("fa14-trailing-space", "strict", "", "", "", ["5 "]),
-    # WinuxCmd -e extension: GNU rejects, C++ accepts -> win (rc parity)
-    ("fa15-e-ext", "win", "", "", "", ["-e", "72"]),
-    ("fa16-bad-token", "strict", "", "", "", ["abc"]),
-    ("fa17-negative-after-dd", "strict", "", "", "", ["--", "-5"]),
-    ("fa18-empty", "strict", "", "", "", [""]),
-    ("fa19-two-bad", "strict", "", "", "", ["abc", "def"]),
-    ("fa20-bad-option", "strict", "", "", "", ["-x", "5"]),
-    ("fa21-u64-semiprime", "strict", "", "", "", ["18446744073709551615"]),
-    ("fa22-25digit", "strict", "", "", "", ["10000000019390000000741"]),
-    ("fa23-m127-prime", "strict", "", "", "", ["170141183460469231731687303715884105727"]),
-    ("fa24-stdin-mixed", "strict", "", "", "6 7\\nabc 8\\n", []),
-    ("fa25-big-composite", "strict", "", "", "", ["99999999999999999999999999"]),
-    ("fa26-stdin-cr-token", "strict", "", "", "6\\t7\\r\\n", []),
-]
 
 groups_rows = [
-    # current-user content is the Windows value model (NetUserGetGroups)
-    ("gr01-current-user", "win", "", "", "", []),
-    ("gr02-unknown-user", "strict", "", "", "", ["nosuchuser123"]),
-    ("gr03-two-unknown", "strict", "", "", "", ["nosuch-a-1", "nosuch-b-2"]),
-    ("gr04-help", "strict", "", "", "", ["--help"]),
-    ("gr05-version", "strict", "", "", "", ["--version"]),
-    ("gr06-short-h", "strict", "", "", "", ["-h"]),
-    ("gr07-short-x", "strict", "", "", "", ["-x"]),
-    # platform account (no Windows "root"): rc parity with the C++ exe
-    ("gr08-root-operand", "win", "", "", "", ["root"]),
-    ("gr09-unknown-long", "strict", "", "", "", ["--bogus"]),
-    ("gr10-empty-user", "strict", "", "", "", [""]),
-    ("gr11-invalid-short-g", "strict", "", "", "", ["-g"]),
-    ("gr12-zero-long", "strict", "", "", "", ["--zero"]),
-    ("gr13-help-permuted", "strict", "", "", "", ["nosuchuser123", "--help"]),
-    ("gr14-help-extra", "strict", "", "", "", ["--help", "extra"]),
-    ("gr15-invalid-short-n", "strict", "", "", "", ["-n", "root"]),
-    ("gr16-unknown-user-long", "strict", "", "", "", ["--user", "x"]),
-    ("gr17-invalid-short-r", "strict", "", "", "", ["-r"]),
-    # current-user content again (platform value model), via explicit --
-    ("gr18-dashdash-current", "win", "", "", "", ["--"]),
-    ("gr19-dash-operand", "strict", "", "", "", ["-"]),
-    ("gr20-mixed-known-unknown", "win", "", "", "", ["root", "nosuch-b-2"]),
+    ("gr01-self", "win", "", "", "", []),
+    ("gr02-dashdash-self", "win", "", "", "", ["--"]),
+    ("gr03-named-missing", "exit", "", "", "", ["nosuchuser123"]),
+    ("gr04-empty-named", "exit", "", "", "", ["@EMPTY@"]),
+    ("gr05-two-missing", "exit", "", "", "", ["nosuch1", "nosuch2"]),
+    ("gr06-named-win-parity", "win", "", "", "", ["Administrator"]),
+    ("gr07-named-win-two", "win", "", "", "", ["Administrator", "cmx"]),
+    ("gr08-help", "strict", "", "", "", ["--help"]),
+    ("gr09-version", "strict", "", "", "", ["--version"]),
+    ("gr10-version-help", "strict", "", "", "", ["--version", "--help"]),
+    ("gr11-bogus-short", "exit", "", "", "", ["-x"]),
+    ("gr12-h-note", "note", "", "", "", ["-h"]),
+    ("gr13-bogus-long", "exit", "", "", "", ["--bogus"]),
+    ("gr14-dashdash-named", "exit", "", "", "", ["--", "nosuch123"]),
+    ("gr15-bogus-eq", "exit", "", "", "", ["--bogus=1"]),
+    ("gr16-dash-operand", "exit", "", "", "", ["-"]),
+    ("gr17-mixed-first-ok", "win", "", "", "", ["cmx", "nosuch123"]),
+    ("gr18-upper-operand", "exit", "", "", "", ["NOSUCH123"]),
+    ("gr19-self-extra-env", "win", "", "", "", []),
+    ("gr20-help-extra", "strict", "", "", "", ["--help", "x"]),
+    ("gr21-version-extra", "strict", "", "", "", ["--version", "x"]),
+    ("gr22-numeric-operand", "exit", "", "", "", ["12345"]),
 ]
 
 NH_SHEBANG_SETUP = "printf '#!/bin/sh\\nexit 6\\n' > hi.sh; chmod +x hi.sh"
@@ -2640,63 +2882,7 @@ csplit_rows = [
     ("cs33-short-h-rejected", "strict", "", "", "", ["-h"]),
 ]
 
-factor_rows = [
-    ("fa01-small", "strict", "", "", "", ["12"]),
-    ("fa02-one", "strict", "", "", "", ["1"]),
-    ("fa03-zero", "strict", "", "", "", ["0"]),
-    ("fa04-prime", "strict", "", "", "", ["97"]),
-    ("fa05-squares", "strict", "", "", "", ["100"]),
-    ("fa06-two", "strict", "", "", "", ["2"]),
-    ("fa07-exp-short", "strict", "", "", "", ["-h", "72"]),
-    ("fa08-exp-long", "strict", "", "", "", ["--exponents", "72"]),
-    ("fa09-exp-squarefree", "strict", "", "", "", ["-h", "17"]),
-    ("fa10-help", "strict", "", "", "", ["--help"]),
-    # driver --version prints the GNU-branded block; C++ product branding
-    # differs (recorded), GNU-gated bytes are strict like id22.
-    ("fa11-version", "strict", "", "", "", ["--version"]),
-    ("fa12-plus-sign", "strict", "", "", "", ["+5"]),
-    ("fa13-leading-space", "strict", "", "", "", [" 5"]),
-    ("fa14-trailing-space", "strict", "", "", "", ["5 "]),
-    # WinuxCmd -e extension: GNU rejects, C++ accepts -> win (rc parity)
-    ("fa15-e-ext", "win", "", "", "", ["-e", "72"]),
-    ("fa16-bad-token", "strict", "", "", "", ["abc"]),
-    ("fa17-negative-after-dd", "strict", "", "", "", ["--", "-5"]),
-    ("fa18-empty", "strict", "", "", "", [""]),
-    ("fa19-two-bad", "strict", "", "", "", ["abc", "def"]),
-    ("fa20-bad-option", "strict", "", "", "", ["-x", "5"]),
-    ("fa21-u64-semiprime", "strict", "", "", "", ["18446744073709551615"]),
-    ("fa22-25digit", "strict", "", "", "", ["10000000019390000000741"]),
-    ("fa23-m127-prime", "strict", "", "", "", ["170141183460469231731687303715884105727"]),
-    ("fa24-stdin-mixed", "strict", "", "", "6 7\\nabc 8\\n", []),
-    ("fa25-big-composite", "strict", "", "", "", ["99999999999999999999999999"]),
-    ("fa26-stdin-cr-token", "strict", "", "", "6\\t7\\r\\n", []),
-]
 
-groups_rows = [
-    # current-user content is the Windows value model (NetUserGetGroups)
-    ("gr01-current-user", "win", "", "", "", []),
-    ("gr02-unknown-user", "strict", "", "", "", ["nosuchuser123"]),
-    ("gr03-two-unknown", "strict", "", "", "", ["nosuch-a-1", "nosuch-b-2"]),
-    ("gr04-help", "strict", "", "", "", ["--help"]),
-    ("gr05-version", "strict", "", "", "", ["--version"]),
-    ("gr06-short-h", "strict", "", "", "", ["-h"]),
-    ("gr07-short-x", "strict", "", "", "", ["-x"]),
-    # platform account (no Windows "root"): rc parity with the C++ exe
-    ("gr08-root-operand", "win", "", "", "", ["root"]),
-    ("gr09-unknown-long", "strict", "", "", "", ["--bogus"]),
-    ("gr10-empty-user", "strict", "", "", "", [""]),
-    ("gr11-invalid-short-g", "strict", "", "", "", ["-g"]),
-    ("gr12-zero-long", "strict", "", "", "", ["--zero"]),
-    ("gr13-help-permuted", "strict", "", "", "", ["nosuchuser123", "--help"]),
-    ("gr14-help-extra", "strict", "", "", "", ["--help", "extra"]),
-    ("gr15-invalid-short-n", "strict", "", "", "", ["-n", "root"]),
-    ("gr16-unknown-user-long", "strict", "", "", "", ["--user", "x"]),
-    ("gr17-invalid-short-r", "strict", "", "", "", ["-r"]),
-    # current-user content again (platform value model), via explicit --
-    ("gr18-dashdash-current", "win", "", "", "", ["--"]),
-    ("gr19-dash-operand", "strict", "", "", "", ["-"]),
-    ("gr20-mixed-known-unknown", "win", "", "", "", ["root", "nosuch-b-2"]),
-]
 
 pathchk_rows = [
     ("pk01-ok", "strict", "", "", "", ["ok.txt"]),
@@ -2891,6 +3077,14 @@ def collect():
         ("factor", factor_rows), ("pathchk", pathchk_rows), ("ptx", ptx_rows),
         ("shuf", shuf_rows), ("csplit", csplit_rows), ("nohup", nohup_rows),
         ("groups", groups_rows), ("who", who_rows),
+        # wave6 (#1488) — factor/groups rows ride the wave4b entries above
+        # (one table definition per name; duplicate emit entries would
+        # double-count the coverage total)
+        ("md5sum", md5sum_rows), ("sha1sum", sha1sum_rows),
+        ("sha256sum", sha256sum_rows), ("sha512sum", sha512sum_rows),
+        ("echo", echo_rows),
+        ("rev", rev_rows),
+        ("arch", arch_rows),
     ]
 
 

@@ -610,3 +610,35 @@ Deferred / documented for the wiring wave:
   the C++ value model, win/note rows pin them.
 - shuf infinite -r output without -n — untestable in the bounded harness;
   the 256-record chunk loop matches GNU/C++ behavior by construction.
+
+## Wave6 (#1488, sixth batch)
+
+9 commands: `md5sum sha1sum sha256sum sha512sum echo rev factor arch groups`.
+The four digest applets complete the `*sum` family on the wave2 digestsum
+machinery; md5 (RFC 1321) and sha1 (FIPS 180-1) are new in-tree streaming
+primitives with every unit vector cross-checked against WSL coreutils 9.4.
+echo is a port of coreutils src/echo.c's hand-rolled option scan (the
+POSIXLY_CORRECT allow_options rule is echo.c's exact `argv[1] == "-n"`
+match, probed); rev ports util-linux rev 2.39.3 (the WSL oracle — `-0` is
+accepted though undocumented, `-` is not stdin, locale decides byte vs
+UTF-8 unit reversal through the injected env). factor is exact for
+0..=u64::MAX (trial division + deterministic Miller-Rabin + Pollard-Brent
+rho; probed GNU worst cases match); arch/groups carry the 1.x C++ value
+model (win rows) with GNU rc-gated grammar rows.
+| command | cases | strict | exit | win | note | GNU-gated result | C++ parity (rc+stdout) |
+
+|---|---|---|---|---|---|---|---|
+| md5sum | 33 | 31 | 2 | 0 | 0 | GREEN | 31/33 |
+| sha1sum | 33 | 31 | 2 | 0 | 0 | GREEN | 31/33 |
+| sha256sum | 33 | 31 | 2 | 0 | 0 | GREEN | 31/33 |
+| sha512sum | 33 | 31 | 2 | 0 | 0 | GREEN | 31/33 |
+| echo | 40 | 40 | 0 | 0 | 0 | GREEN | 38/40 |
+| rev | 25 | 23 | 2 | 0 | 0 | GREEN | 19/25 |
+| factor | 37 | 32 | 4 | 0 | 1 | GREEN | 32/37 |
+| arch | 22 | 9 | 9 | 2 | 2 | GREEN | 11/22 |
+| groups | 22 | 5 | 10 | 6 | 1 | GREEN | 16/22 |
+
+
+**Wave6 total cases: 278; GNU-gated 270 PASS / 0 FAIL, win-gated 8 PASS /
+0 FAIL (full 64-command run 2026-11-12: GNU-gated 1676 PASS / 0 FAIL,
+win-only 153 PASS / 0 FAIL, 1829 cases).**
