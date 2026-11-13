@@ -99,6 +99,8 @@ libtest capture deadlock on this host.
 
 ```sh
 bash gate/run-gate.sh              # all 55 commands (1595 generated cases)
+bash gate/run-gate.sh              # all 47 commands, 1343 cases
+
 bash gate/run-gate.sh basename     # one command
 bash gate/make-report.sh           # regenerate GATE-REPORT.md
 ```
@@ -108,7 +110,10 @@ C++ Debug dispatcher at `build-vs/usr/bin/winuxcmd.exe`
 (`powershell -ExecutionPolicy Bypass -File scripts/build-with-vs.ps1 -Target winuxcmd`),
 plus WSL with coreutils 9.4. Case tables are **generated** — edit
 `gate/gen-cases.py`, never the TSVs (hand-edited tab columns mis-align
-silently; the generator exists because that happened).
+silently; the generator exists because that happened — twice: the df
+transcription in #1563 and the chmod/chown/wave2 transcription in the
+QC round-2 sweep both restored generator-backedness after lanes edited
+TSVs or regenerated with a stale generator copy).
 
 Gate rules and the full result table live in `GATE-REPORT.md`.
 
@@ -155,6 +160,18 @@ The next 8 library-form commands landed with the same shape contract and a
   GNU has no -h (getopt_long matches --help only as a long option);
   timeout's childproc resolver was extracted to `childproc.rs` so nohup
   shares one execvp-shaped search.
+### QC tool layer (gate/qc_*.py, #1488)
+The gate never gates what it cannot compare — the QC scripts audit those
+blind classes against the same three sides:
+python gate/gen-cases.py --coverage   # COVERAGE.md (needs a ledger run)
+python gate/gen-cases.py --dup-check  # duplicate-case detector (exit 1 = findings)
+python gate/qc_note_audit.py          # NOTE-QC.md: note rows vs GNU + registry check
+python gate/qc_win_audit.py           # WIN-AUDIT.md: win-class stdout diff
+python gate/qc_help_surface.py        # HELP-SURFACE.md: help/version/invalid-arg sweep
+Every note-mode row must have an expected-deviation entry in
+`gate/note-registry.tsv` (undocumented notes are themselves a finding);
+UPGRADE-*/MASKED-DIVERGENCE verdicts re-probe each note against GNU so a
+note can never silently hide a live divergence (the #1550 class).
 
 ## Mechanical replacement recipe (next command)
 
@@ -173,7 +190,10 @@ The next 8 library-form commands landed with the same shape contract and a
 5. `cargo fmt`, `cargo t` green, update `GATE-REPORT.md`, then wire it into
    winuxcmd.exe and drop the C++ body following
    [`REPLACEMENT-RECIPE.md`](REPLACEMENT-RECIPE.md) (never dual-track in the
-   same tree). Wired so far: `true`, `false`.
+   same tree). Wired so far: 44 commands via
+   `WINUXCMD_RUST2_COMMANDS` in the root `CMakeLists.txt`
+   (waves 1, 2a, 2b, 3a, 3b); `chmod`, `chown`, `df` still carry their
+   1.x C++ bodies.
 
 ## Streaming stdin ABI (v2, additive; #1488, #1550 follow-up)
 
