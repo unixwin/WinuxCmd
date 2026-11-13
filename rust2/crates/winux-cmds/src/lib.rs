@@ -21,6 +21,7 @@ pub mod cksum;
 pub mod csplit;
 pub mod cut;
 
+pub mod date;
 pub mod df;
 pub mod digest;
 pub mod digestsum;
@@ -195,6 +196,7 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("chcon", chcon::chcon_cmd),
         ("runcon", runcon::runcon_cmd),
         ("cksum", cksum::cksum_cmd),
+        ("date", date::date_cmd),
     ]
 }
 
