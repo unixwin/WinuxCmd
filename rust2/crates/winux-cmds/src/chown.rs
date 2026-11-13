@@ -305,7 +305,7 @@ pub(crate) fn lookup_sid_name(_sid: &[u8]) -> Option<String> {
 
 /// Read the current owner and group SIDs of a file.
 #[cfg(windows)]
-fn get_owner_group(path: &Path) -> Result<(Option<Vec<u8>>, Option<Vec<u8>>), u32> {
+pub(crate) fn get_owner_group(path: &Path) -> Result<(Option<Vec<u8>>, Option<Vec<u8>>), u32> {
     unsafe {
         let wpath = wide(&path.to_string_lossy());
         let mut powner: *mut u8 = std::ptr::null_mut();
@@ -343,13 +343,17 @@ fn get_owner_group(path: &Path) -> Result<(Option<Vec<u8>>, Option<Vec<u8>>), u3
 }
 
 #[cfg(not(windows))]
-fn get_owner_group(_path: &Path) -> Result<(Option<Vec<u8>>, Option<Vec<u8>>), u32> {
+pub(crate) fn get_owner_group(_path: &Path) -> Result<(Option<Vec<u8>>, Option<Vec<u8>>), u32> {
     Err(1)
 }
 
 /// Apply owner and/or group SIDs to a file. Returns the Win32 error code.
 #[cfg(windows)]
-fn set_owner_group(path: &Path, owner: Option<&[u8]>, group: Option<&[u8]>) -> Result<(), u32> {
+pub(crate) fn set_owner_group(
+    path: &Path,
+    owner: Option<&[u8]>,
+    group: Option<&[u8]>,
+) -> Result<(), u32> {
     unsafe {
         let wpath = wide(&path.to_string_lossy());
         let mut info = 0u32;
@@ -381,7 +385,11 @@ fn set_owner_group(path: &Path, owner: Option<&[u8]>, group: Option<&[u8]>) -> R
 }
 
 #[cfg(not(windows))]
-fn set_owner_group(_path: &Path, _owner: Option<&[u8]>, _group: Option<&[u8]>) -> Result<(), u32> {
+pub(crate) fn set_owner_group(
+    _path: &Path,
+    _owner: Option<&[u8]>,
+    _group: Option<&[u8]>,
+) -> Result<(), u32> {
     Err(1)
 }
 

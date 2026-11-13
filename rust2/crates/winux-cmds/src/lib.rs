@@ -13,6 +13,7 @@ pub mod basenc;
 pub mod bre;
 pub mod canon;
 pub mod chcon;
+pub mod chgrp;
 pub mod childproc;
 pub mod chmod;
 pub mod chown;
@@ -190,6 +191,7 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("tty", tty::tty_cmd),
         ("mkfifo", mkfifo::mkfifo_cmd),
         ("mknod", mknod::mknod_cmd),
+        ("chgrp", chgrp::chgrp_cmd),
         ("chcon", chcon::chcon_cmd),
         ("runcon", runcon::runcon_cmd),
         ("cksum", cksum::cksum_cmd),
