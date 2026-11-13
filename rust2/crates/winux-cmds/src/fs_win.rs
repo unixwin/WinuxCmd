@@ -909,6 +909,53 @@ pub mod imp {
 
 pub use imp::*;
 
+/// Bare-name `.exe` transparency for the stat family (unixwin/WinuxCmd#1572):
+/// `file_meta` on an extensionless operand that does not exist retries with
+/// `.exe` appended, so `stat`/`ls` answer the same bare name the engine's
+/// `test -e/-x` and the child-process PATHEXT resolution already answer.
+///
+/// The retry is deliberately narrow and stat-family-only: it lives in this
+/// wrapper (used by `stat.rs` only), NOT in `file_meta`/`api_path`, so
+/// create/open callers (`touch`, `ln`, `cp`, ...) keep creating exactly the
+/// name they were given. Only `.exe` is tried (the issue's `java.exe` case
+/// and the MSYS/Cygwin stat rule); `.com`/`.bat`/`.cmd` stay exec-only.
+/// An explicit extension suppresses the retry (the childproc PATHEXT rule),
+/// as does a trailing separator (a directory operand must stay a directory
+/// probe). On retry failure the ORIGINAL error is returned, so the message
+/// still names the operand as typed.
+fn exe_retry_candidate(operand: &str) -> Option<String> {
+    if operand.is_empty() || operand.ends_with('/') || operand.ends_with('\\') {
+        return None;
+    }
+    // A dot in the final component means the caller named the extension
+    // (mirrors childproc::lowercase_extension).
+    let slash = operand.rfind(['/', '\\']);
+    if let Some(dot) = operand.rfind('.') {
+        if slash.is_none_or(|s| dot > s) {
+            return None;
+        }
+    }
+    Some(format!("{operand}.exe"))
+}
+
+/// `file_meta` plus the bare-name `.exe` retry above. Returns the metadata
+/// and the operand actually statted (the typed name, or the `+ ".exe"`
+/// candidate); callers that re-probe the path (owner/group, symlink target)
+/// must use the returned name, while display keeps the typed name.
+pub fn file_meta_exe(ctx: &Ctx, operand: &str, lstat: bool) -> Result<(FileMeta, String), u32> {
+    match file_meta(ctx, operand, lstat) {
+        Ok(m) => Ok((m, operand.to_string())),
+        Err(e) if e == 2 || e == 3 => match exe_retry_candidate(operand) {
+            Some(candidate) => match file_meta(ctx, &candidate, lstat) {
+                Ok(m) => Ok((m, candidate)),
+                Err(_) => Err(e),
+            },
+            None => Err(e),
+        },
+        Err(e) => Err(e),
+    }
+}
+
 /// Win32 error -> GNU strerror-style reason string (the same mapping the
 /// 1.x C++ applets use; 1314 is the documented no-Developer-Mode case).
 pub fn win32_reason(err: u32) -> &'static str {
@@ -1018,6 +1065,33 @@ mod api_path_probes {
         // the device name passes through api_path verbatim (no \\?\ prefix)
         assert_eq!(imp::api_path(&ctx, "/dev/null"), "NUL");
         assert_eq!(imp::api_path(&ctx, "con"), "CON");
+    }
+
+    #[test]
+    fn exe_retry_candidate_rules() {
+        // #1572: bare names retry with ".exe"; anything that already names
+        // an extension, or a directory probe, does not.
+        assert_eq!(
+            super::exe_retry_candidate("java"),
+            Some("java.exe".to_string())
+        );
+        assert_eq!(
+            super::exe_retry_candidate(r"bin\java"),
+            Some(r"bin\java.exe".to_string())
+        );
+        assert_eq!(
+            super::exe_retry_candidate("bin/java"),
+            Some("bin/java.exe".to_string())
+        );
+        assert_eq!(super::exe_retry_candidate("java.exe"), None);
+        assert_eq!(super::exe_retry_candidate("java.txt"), None);
+        assert_eq!(
+            super::exe_retry_candidate("dir.with.dots/java"),
+            Some("dir.with.dots/java.exe".to_string())
+        );
+        assert_eq!(super::exe_retry_candidate("java/"), None);
+        assert_eq!(super::exe_retry_candidate(r"java\"), None);
+        assert_eq!(super::exe_retry_candidate(""), None);
     }
 
     #[test]

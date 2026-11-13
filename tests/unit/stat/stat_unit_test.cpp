@@ -557,3 +557,57 @@ TEST(stat, issue_1283_drive_colon_operand_stats_carrier_file) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_NE(r.stdout_text.find("wux.txt"), std::string::npos);
 }
+
+// ===== #1572 bare-name `.exe` transparency =====
+//
+// The engine's `test -e/-x` and the child-process PATHEXT completion answer
+// `bin/java` when only `bin/java.exe` is on disk; stat must answer the same
+// file instead of `cannot statx ... No such file or directory` (Git Bash
+// resolves it transparently in every tool). The display keeps the operand
+// as typed: %n / `File:` print `java`, never `java.exe`.
+
+TEST(stat, stat_bare_exe_operand_resolves) {
+  TempDir tmp;
+  tmp.write("bin/java.exe", "MZ");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"stat.exe", {L"-c", L"%n|%F", L"bin/java"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "bin/java|regular file\n");
+  EXPECT_EQ_TEXT(r.stderr_text, "");
+}
+
+TEST(stat, stat_bare_exe_operand_default_rendering) {
+  TempDir tmp;
+  tmp.write("bin/java.exe", "MZ");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"stat.exe", {L"bin/java"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("  File: bin/java\n") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("Size: 2") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("regular file") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("java.exe") == std::string::npos);
+}
+
+TEST(stat, stat_bare_exe_operand_explicit_extension_not_completed) {
+  TempDir tmp;
+  tmp.write("bin/java.exe", "MZ");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"stat.exe", {L"-c", L"%n", L"bin/java.txt"});
+  auto r = p.run();
+
+  // An explicit extension is never completed: `java.txt` must not resolve
+  // to `java.txt.exe` (which does not exist either) or to `java.exe`.
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("stat: cannot statx 'bin/java.txt': No such "
+                                 "file or directory") != std::string::npos);
+}

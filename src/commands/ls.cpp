@@ -450,9 +450,62 @@ auto normalize_lookup_path(const std::wstring &path) -> std::wstring {
   return normalized;
 }
 
+// [exe-transparency] (unixwin/WinuxCmd#1572) Resolve a bare-name operand to
+// its `.exe` sibling: the engine's `test -e/-x` and the child-process PATHEXT
+// completion already answer `bin/java` when only `bin/java.exe` is on disk,
+// and the shell-tree funnel (`shell_tree_to_native_w` in native_path.cppm)
+// does the same for `/usr/bin/X` spellings — but native-path operands never
+// got the retry, so `ls`/`stat` reported ENOENT for the same file. Only
+// `.exe` is tried, only when the final component names no extension (the
+// childproc PATHEXT rule: an explicit extension is never completed), and
+// only when the operand itself does not exist; the typed spelling is
+// returned unchanged otherwise, so display keeps the operand as typed and
+// directory operands, trailing-separator probes and pseudo-devices are
+// untouched. This is intentionally ls-local, not a change to the shared
+// operand boundary: completing names there would also rewrite create/open
+// callers (`touch`, `cp`, ...) that must create exactly the name given.
+auto resolve_bare_exe_operand_w(const std::wstring &path) -> std::wstring {
+  if (path.empty()) return path;
+  if (path.back() == L'/' || path.back() == L'\\') return path;
+  if (native_path::resolve_pseudo_device_w(path)) return path;
+  const size_t slash = path.find_last_of(L"/\\");
+  const size_t dot = path.find_last_of(L'.');
+  if (dot != std::wstring::npos &&
+      (slash == std::wstring::npos || dot > slash)) {
+    return path;  // explicit extension: never completed
+  }
+  // The dual probe mirrors probe_path below: attributes alone can miss a
+  // path FindFirstFileW still answers for.
+  auto exists_at_boundary = [](const std::wstring &candidate) {
+    const auto operand = native_path::make_api_path_operand_w(candidate);
+    if (native_path::attributes_w(operand.extended) !=
+        INVALID_FILE_ATTRIBUTES) {
+      return true;
+    }
+    WIN32_FIND_DATAW data{};
+    HANDLE hfind = FindFirstFileW(operand.extended.c_str(), &data);
+    if (hfind != INVALID_HANDLE_VALUE) {
+      FindClose(hfind);
+      return true;
+    }
+    return false;
+  };
+  if (exists_at_boundary(path)) return path;
+  const std::wstring candidate = path + L".exe";
+  if (exists_at_boundary(candidate)) return candidate;
+  return path;
+}
+
 auto probe_path(const std::wstring &path) -> PathProbe {
   PathProbe probe{};
-  const std::wstring lookup_path = normalize_lookup_path(path);
+  // [exe-transparency] (#1572) A bare-name operand resolves to its `.exe`
+  // sibling for the probe, so `ls bin/java` answers the same file the
+  // engine's `test -e/-x` and the child-process PATHEXT completion already
+  // answer. The typed spelling is preserved by the callers (display keeps
+  // the operand as typed); only the existence/metadata probe sees the
+  // resolved name.
+  const std::wstring lookup_path =
+      resolve_bare_exe_operand_w(normalize_lookup_path(path));
   const auto operand = native_path::make_api_path_operand_w(lookup_path);
 
   probe.attributes = native_path::attributes_w(operand.extended);
@@ -3342,8 +3395,12 @@ auto list_directory(const std::string &path,
                     const std::wstring &lookup_override = {})
     -> cp::Result<bool> {
   std::wstring wpath = utf8_to_wstring(path);
-  const std::wstring lookup_wpath =
-      normalize_lookup_path(lookup_override.empty() ? wpath : lookup_override);
+  // #1572: a bare-name operand resolves to its `.exe` sibling here too, so
+  // `ls -d bin/java` answers instead of failing at the FindFirstFileW
+  // below; the display name stays the typed operand (list_file's
+  // operand_display_name).
+  const std::wstring lookup_wpath = resolve_bare_exe_operand_w(
+      normalize_lookup_path(lookup_override.empty() ? wpath : lookup_override));
   const auto lookup_operand =
       native_path::make_api_path_operand_w(lookup_wpath);
 
@@ -3791,8 +3848,13 @@ auto list_file(const std::string &path,
     -> cp::Result<bool> {
   std::wstring wpath = utf8_to_wstring(path);
   const std::wstring lookup_wpath = normalize_lookup_path(wpath);
+  // #1572: metadata lookups go through the resolved (`.exe`) spelling;
+  // the display name stays the typed operand (operand_display_name below),
+  // matching GNU, which echoes the operand as typed.
+  const std::wstring resolved_lookup_wpath =
+      resolve_bare_exe_operand_w(lookup_wpath);
   const std::wstring metadata_probe_wpath =
-      normalize_metadata_probe_path(lookup_wpath);
+      normalize_metadata_probe_path(resolved_lookup_wpath);
   const auto metadata_operand =
       native_path::make_api_path_operand_w(metadata_probe_wpath);
   const std::wstring operand_display_name = wpath;
@@ -3806,7 +3868,7 @@ auto list_file(const std::string &path,
     // directory that no FindFirstFileW pattern can express; stat it through
     // the boundary and synthesize the metadata record instead of reporting
     // ENOENT (#1145).
-    if (!native_path::resolve_pseudo_device_w(lookup_wpath)) {
+    if (!native_path::resolve_pseudo_device_w(resolved_lookup_wpath)) {
       WIN32_FILE_ATTRIBUTE_DATA root_data{};
       const std::wstring &normalized = metadata_operand.normalized;
       const bool is_drive_root =
@@ -3851,8 +3913,8 @@ auto list_file(const std::string &path,
 
   WIN32_FIND_DATAW display_find_data = find_data;
   std::wstring metadata_name = filename;
-  if (auto dereferenced =
-          try_get_dereferenced_find_data(lookup_wpath, find_data, ctx, true)) {
+  if (auto dereferenced = try_get_dereferenced_find_data(
+          resolved_lookup_wpath, find_data, ctx, true)) {
     display_find_data = dereferenced->first;
     metadata_name = dereferenced->second;
     wcsncpy_s(display_find_data.cFileName, metadata_name.c_str(), _TRUNCATE);
@@ -3903,22 +3965,22 @@ auto list_file(const std::string &path,
     auto perms = get_permissions_string(display_find_data);
     if (perms[0] == '-' &&
         (display_find_data.dwFileAttributes & FILE_ATTRIBUTE_SYSTEM) != 0 &&
-        native_path::is_winux_fifo_w(lookup_wpath)) {
+        native_path::is_winux_fifo_w(resolved_lookup_wpath)) {
       perms[0] = 'p';
     }
     auto inode = show_inode
-                     ? get_file_index_string(lookup_wpath, find_data, ctx, true)
+                     ? get_file_index_string(resolved_lookup_wpath, find_data, ctx, true)
                      : "";
     auto blocks = show_blocks ? get_allocated_blocks_string(
-                                    lookup_wpath, display_find_data, size_cfg)
+                                    resolved_lookup_wpath, display_find_data, size_cfg)
                               : "";
     auto link_count =
-        std::to_string(get_link_count(lookup_wpath, find_data, ctx, true));
-    auto size = get_file_size_string(lookup_wpath, display_find_data, find_data,
+        std::to_string(get_link_count(resolved_lookup_wpath, find_data, ctx, true));
+    auto size = get_file_size_string(resolved_lookup_wpath, display_find_data, find_data,
                                      ctx, size_cfg, true);
     auto mtime =
         get_time_string(display_find_data, time_mode, *time_style_selection);
-    auto [owner, group] = get_file_owner_and_group(lookup_wpath, use_numeric);
+    auto [owner, group] = get_file_owner_and_group(resolved_lookup_wpath, use_numeric);
 
     if (!inode.empty()) {
       safePrint(std::string_view(inode));
@@ -3964,12 +4026,12 @@ auto list_file(const std::string &path,
     safePrint(" ");
 
     bool color_enabled = resolve_color_enabled(ctx);
-    print_display_name(operand_display_name, lookup_wpath, display_find_data,
+    print_display_name(operand_display_name, resolved_lookup_wpath, display_find_data,
                        ctx, color_enabled, true);
     print_record_terminator(ctx);
   } else {
     auto rendered = render_inline_entry(
-        {operand_display_name, lookup_wpath, find_data, true}, ctx,
+        {operand_display_name, resolved_lookup_wpath, find_data, true}, ctx,
         resolve_color_enabled(ctx));
     if (dired_requested(ctx)) {
       dired_note_text_entry(rendered.name_offset, rendered.name_length);

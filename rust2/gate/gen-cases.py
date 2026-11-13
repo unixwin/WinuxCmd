@@ -1530,6 +1530,17 @@ stat_rows = [
     ("st21-c-h-links", "strict", r"printf 'abc' > reg2; ln reg2 h2", "", "",
      ["-c", "%h", "reg2"]),
     ("st22-missing-f", "strict", stat_setup, "", "", ["-c", "%n", "gone"]),
+    # #1572: a bare name whose only on-disk form is `<name>.exe` stats like
+    # the engine's `test -e/-x` already answers it (Git Bash resolves it
+    # transparently); the display keeps the operand as typed.
+    ("st23-bare-exe", "strict", r"printf 'x' > java.exe", "", "",
+     ["-c", "%n|%F", "java"]),
+    ("st24-bare-exe-L", "strict", r"printf 'x' > java.exe", "", "",
+     ["-L", "-c", "%n|%F", "java"]),
+    # An explicit extension is never completed: `java.txt` must not resolve
+    # to `java.txt.exe` or to `java.exe`.
+    ("st25-bare-exe-explicit-ext", "strict", r"printf 'x' > java.exe", "", "",
+     ["-c", "%n", "java.txt"]),
 ]
 
 touch_rows = [
