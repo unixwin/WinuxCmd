@@ -259,7 +259,7 @@ fn parse_shebang_line(head: &[u8]) -> Option<(String, Option<String>)> {
     // skip the "#!" magic: the kernel splits the line that FOLLOWS it
     let body = &head[2..];
     let line_end = body.iter().position(|&b| b == b'\n').unwrap_or(body.len());
-    if line_end >= HEAD_BYTES {
+    if line_end == body.len() && head.len() == HEAD_BYTES {
         return None; // no newline inside the kernel's buffer
     }
     let trimmed: &[u8] = {
@@ -347,11 +347,11 @@ fn resolve_shebang_script(script: &str, head: &[u8], ctx: &Ctx, depth: u32) -> C
                 ChildResolve::Found(ChildLaunch::Script { argv })
             }
             ChildLaunch::Script { argv: inner } => {
-                // script-chain interpreter: the OS argv is the inner
-                // interpreter's launch followed by the outer script's
-                // [interpreter, arg?, script] tokens, then the caller's.
+                // script-chain interpreter: `inner` is already the inner
+                // script's complete launch argv [interp, arg?, inner-script];
+                // append only the outer shebang's [arg?, script] tokens --
+                // the inner script must appear exactly once (#1595).
                 let mut argv = inner;
-                argv.push(interpreter);
                 if let Some(a) = arg {
                     argv.push(a);
                 }
