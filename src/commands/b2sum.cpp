@@ -70,16 +70,22 @@ REGISTER_COMMAND(
   // side keeps only this registration. ctx.raw_args passes the operands
   // verbatim because GNU digest.c parses its own getopt run.
   //
-  // stdin mode (ABI v1 whole-buffer): GNU digest.c reads fd 0 when no FILE
-  // operand stands, and "-" as a per-operand stdin marker, so the bridge
-  // slurps fd 0 exactly for those shapes (echo "abc" | b2sum, and the `-c`
-  // checkfile from stdin via "-").
+  // stdin mode (ABI v2 streaming, #1488 digest-family adoption): GNU
+  // digest.c reads fd 0 when no FILE operand stands, and "-" as a
+  // per-operand stdin marker, so the bridge reads fd 0 in chunks exactly
+  // for those shapes (echo "abc" | b2sum, and the `-c` checkfile from
+  // stdin via "-") — no whole-buffer slurp residency; a host read failure
+  // flows through the command's own read-error rc instead of a host-side
+  // pre-check. The digest command still accumulates its input internally
+  // (digestsum.rs io::copy), so the streaming win here is the host slurp
+  // plus the ABI v1 stdin_buf copy, not the command's own buffer.
   bool stdin_is_input = ctx.positionals.empty();
   for (auto arg : ctx.positionals) {
     if (arg == "-") stdin_is_input = true;
   }
   if (stdin_is_input) {
-    return winux::rust2::run_command_with_stdin("b2sum", ctx.raw_args);
+    return winux::rust2::run_command_with_stdin_streaming("b2sum",
+                                                          ctx.raw_args);
   }
   return winux::rust2::run_command("b2sum", ctx.raw_args);
 }

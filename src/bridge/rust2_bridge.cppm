@@ -16,9 +16,10 @@
 /// ABI surface: v1 whole-buffer stdin (winuxcmd_run) and, since the
 /// #1556 adoption, the additive v2 streaming stdin (winuxcmd_run_stream,
 /// host pull callback) — run_command_with_stdin_streaming reads fd 0 in
-/// chunks through the same file_io read path as the v1 slurp. No wired
-/// command uses v2 yet; the stream-ABI driver and the next wiring wave
-/// are its callers.
+/// chunks through the same file_io read path as the v1 slurp. First
+/// wired commands (#1488 stream adoption): the digest family b2sum /
+/// sha224sum / sha384sum and tac; the stream-ABI driver remains the
+/// bridge-level regression net for the entry itself.
 ///
 /// Compiled only when CMake option WINUXCMD_ENABLE_RUST2 is ON (the source
 /// is filtered out otherwise, together with the replaced commands).
@@ -383,13 +384,18 @@ int run_command_with_stdin_source(
 /// residency: a 64 MiB input no longer costs the slurp plus the ABI's
 /// `stdin_buf -> Vec` copy).
 ///
-/// THIS ENTRY IS NOT WIRED TO ANY COMMAND YET (#1488 stream-ABI adoption
-/// wave): the v1 behaviors of run_command / run_command_with_stdin and the
-/// kRust2StdinCommands slurp are deliberately left untouched for stability.
-/// The next wiring wave picks this entry for commands whose GNU shape is
-/// genuinely streaming (see REPLACEMENT-RECIPE.md §Streaming stdin); the
-/// stream-ABI driver (rust2-stream-driver) and its ctest lanes are the
-/// first callers.
+/// WIRED COMMANDS (#1488 stream adoption): the digest family — b2sum,
+/// sha224sum, sha384sum — and tac route their stdin shapes through this
+/// entry; their v1 bodies had a host-side slurp pre-check whose wording
+/// GNU does not use (sha224sum/sha384sum/tac are silent rc 1 on a closed
+/// stdin, probed coreutils 9.4), so the streaming entry is also the
+/// GNU-exact error shape for them. The remaining v1 behaviors of
+/// run_command / run_command_with_stdin and the kRust2StdinCommands
+/// slurp are deliberately left untouched; later wiring waves pick this
+/// entry for commands whose GNU shape is genuinely streaming (see
+/// REPLACEMENT-RECIPE.md §5). The stream-ABI driver
+/// (rust2-stream-driver) and its ctest lanes stay the bridge-level
+/// regression net for the entry.
 ///
 /// Unlike the v1 whole-buffer entry, a closed or bad fd 0 is NOT
 /// pre-screened here: the callback reports -2 and the command emits its own
