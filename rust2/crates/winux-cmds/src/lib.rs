@@ -43,6 +43,7 @@ pub mod join;
 pub mod ln;
 pub mod mkdir;
 pub mod mkfifo;
+pub mod mknod;
 pub mod mktemp;
 pub mod modemap;
 pub mod nice;
@@ -77,9 +78,9 @@ pub mod touch;
 pub mod tr;
 
 pub mod truefalse;
-pub mod tty;
 pub mod truncate;
 pub mod tsort;
+pub mod tty;
 pub mod uname;
 pub mod unexpand;
 pub mod unlink;
@@ -185,6 +186,7 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         // wave5 (#1488)
         ("tty", tty::tty_cmd),
         ("mkfifo", mkfifo::mkfifo_cmd),
+        ("mknod", mknod::mknod_cmd),
     ]
 }
 
