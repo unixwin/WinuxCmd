@@ -452,7 +452,20 @@ impl<'a> Parser<'a> {
             return Ok(IntervalScan::Literal); // `x{2,3` -> literal braces
         }
         if min.is_none() && !comma {
-            return Ok(IntervalScan::Literal); // `x{}` / leading `{}` -> literal
+            // GNU: `x{}` is a compile error ("Invalid content of \{\}",
+            // probed). At an EXPRESSION start glibc instead consumes `{}`
+            // zero-width and matches the tail ("{}" over "x{}y" matched
+            // "}"): one of the pathological leading-brace corners this
+            // engine documents rather than emulates (see the matrix report)
+            // — here we fall back to literal braces.
+            if after_atom {
+                return Err(Error::new(
+                    ErrorKind::InvalidInterval,
+                    cursor + 1,
+                    "invalid content of \\{\\}",
+                ));
+            }
+            return Ok(IntervalScan::Literal);
         }
         let min = min.unwrap_or(0);
         if let Some(n) = max {

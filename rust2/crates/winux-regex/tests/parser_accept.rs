@@ -245,8 +245,8 @@ fn ere_accept_reject_matrix() {
         ("x{a}", true, ""),
         ("x{ }", true, ""),
         ("x{2,a}", true, ""),
-        ("x{}", true, ""),
-        ("x{2}{3}", true, ""), // stacking
+        ("x{}", false, "invalid content of {}"), // GNU errors (probed)
+        ("x{2}{3}", true, ""),                   // stacking
         ("a{1,2}{3}", true, ""),
         ("*a", true, ""), // leading quantifiers repeat the empty expr
         ("+a", true, ""),
