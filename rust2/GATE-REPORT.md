@@ -642,3 +642,56 @@ model (win rows) with GNU rc-gated grammar rows.
 **Wave6 total cases: 278; GNU-gated 270 PASS / 0 FAIL, win-gated 8 PASS /
 0 FAIL (full 64-command run 2026-11-12: GNU-gated 1676 PASS / 0 FAIL,
 win-only 153 PASS / 0 FAIL, 1829 cases).**
+
+## Wave5 (#1488, fifth batch)
+
+10 commands: `tty mkfifo mknod chcon runcon cksum chgrp du date pinky`.
+
+Provenance note (2026-11-13): the first session's eight commits (tty,
+mkfifo, mknod, chcon/runcon, cksum, chgrp, date, du) were orphaned by a
+branch reset to origin/main and recovered verbatim by cherry-pick; the
+"wave5 first-session partial" stash was verified against WSL coreutils
+9.4 probes (target/issue-suites/results/wave5/gnu-help.txt) and applied
+on top. The interrupted session had left four unfinished faces, finished
+in this wave: date/chcon/du help-version bodies moved to the GNU 9.4
+oracle verbatim; du gained --files0-from (probed probe-du-f0f*.sh),
+optional-argument --time (new argopt::extract_optional_long_values — the
+mkfifo --context pre-scan promoted to the shared parser), and the
+process-wide already-counted hash with the corrected
+BY_HANDLE_FILE_INFORMATION layout (the first session read the write time
+as the file index, so same-tick files collided); chgrp's
+--preserve-root failsafe now actually fires on '/' and volume roots.
+pinky is the new port (GNU pinky.c 9.4, no long options — argopt
+short-only specs), over the who/users WTS session model; `link` is
+absent from the WinuxCmd inventory and the C++ tree, so there is no
+three-way anchor for it and it stays out. mkfifo/mknod keep the #1038
+`!<fifo>` marker contract (Rust-created markers carry SYSTEM|ARCHIVE and
+are bridged by the 1.x file_io layer — cross-checked by driving the C++
+readers against a Rust-created marker); gate rows never read a fifo
+operand. Documented boundaries: chgrp numeric-group mapped-SID no-op
+(cg21 note — the 1.x applet rejects numeric, GNU accepts), date -s
+refusal on the Windows sides vs the root WSL oracle accepting it (dt38
+note), du directory own-allocation on NTFS (win rows), pinky heading
+When-width 12 (C++ C-locale face) vs the oracle host's hard-locale
+width-16 ISO (win rows), SELinux surfaces for chcon/runcon (win rows).
+Fixtures for time-bearing rows use absolute-epoch `touch -d @seconds`:
+GNU touch -t reads local time and the 1.x touch UTC, so a -t fixture
+lands 8h apart across sides (dt39, du25/du26).
+
+| command | cases | strict | exit | win | note | GNU-gated result | C++ parity (rc+stdout) |
+|---|---|---|---|---|---|---|---|
+| tty | 22 | 22 | 0 | 0 | 0 | GREEN | 18/22 |
+| mkfifo | 24 | 24 | 0 | 0 | 0 | GREEN | 21/24 |
+| mknod | 24 | 19 | 0 | 5 | 0 | GREEN | 22/24 |
+| chcon | 22 | 20 | 0 | 2 | 0 | GREEN | 17/22 |
+| runcon | 22 | 20 | 0 | 2 | 0 | GREEN | 5/22 |
+| cksum | 46 | 45 | 1 | 0 | 0 | GREEN | 42/46 |
+| chgrp | 24 | 21 | 0 | 2 | 1 | GREEN | 17/24 |
+| du | 43 | 39 | 1 | 3 | 0 | GREEN | 36/43 |
+| date | 43 | 42 | 0 | 0 | 1 | GREEN | 36/43 |
+| pinky | 35 | 24 | 1 | 10 | 0 | GREEN | 26/35 |
+
+
+**Wave5 total cases: 305; GNU-gated 281 PASS / 0 FAIL, win-gated 24 PASS /
+0 FAIL (final full-wave5 run 2026-11-13, ledger
+target/gate/ledger.tsv; 82-command coverage 2444 cases).**

@@ -54,6 +54,40 @@ pub fn rejected_short_h(io: &mut Io, prog: &str, p: &Parsed, usage_status: u32) 
     None
 }
 
+/// GNU getopt `optional_argument` long options (`du --time[=WORD]`,
+/// `mkfifo --context[=CTX]`): only `--long=VAL` carries a value, bare
+/// `--long` never consumes the next token, and the short form never takes
+/// one (probed GNU 9.4: du.c declares --time with optional_argument,
+/// mkfifo.c optstring is "m:Z"; `du --time=atime f` works, bare
+/// `du --time f` is mtime and does not eat f). The shared OptSpec cannot
+/// express value-optional without growing the struct at all 379 literal
+/// sites, so the command strips the value-carrying spelling BEFORE parse
+/// with this helper and argopt never sees it (the mkfifo-local
+/// split_context_tokens is the same pattern from the wave5 first session).
+///
+/// Returns the extracted `(key, value)` pairs in argv order and the
+/// remaining stream with those tokens removed; everything else (bundled
+/// shorts, `--`, operands) passes through untouched, so the sequential
+/// help/version contract keeps working on the residual stream.
+pub fn extract_optional_long_values(
+    args: &[OsString],
+    long: &str,
+    key: &str,
+) -> (Vec<(String, String)>, Vec<OsString>) {
+    let mut values = Vec::new();
+    let mut rest = Vec::new();
+    let prefix = format!("--{long}=");
+    for arg in args {
+        let s = arg.to_string_lossy();
+        if let Some(v) = s.strip_prefix(&prefix) {
+            values.push((key.to_string(), v.to_string()));
+        } else {
+            rest.push(arg.clone());
+        }
+    }
+    (values, rest)
+}
+
 #[derive(Default, Debug)]
 pub struct Parsed {
     pub flags: Vec<String>,
@@ -76,8 +110,16 @@ impl Parsed {
     }
 }
 
+/// A spec with an EMPTY `long` name is short-only: it has no long form at
+/// all, so no `--token` may reach it. This preserves the getopt_long shape
+/// of commands whose option string declares only short letters — GNU 9.4
+/// pinky is the wave5 instance (`pinky.c:532`, `"sfwiqbhlp"`, `longopts`
+/// holds only the built-in help/version): every non-help/version long token
+/// is "unrecognized option". Registering an invented long name would make a
+/// spelled-out form GNU rejects, so short-only options record their flag
+/// under the short character as the key (`p.has("l")`).
 fn long_by_name<'a>(opts: &'a [OptSpec], name: &str) -> Option<&'a OptSpec> {
-    opts.iter().find(|o| o.long == name)
+    opts.iter().find(|o| !o.long.is_empty() && o.long == name)
 }
 
 /// Resolution of a `--name` token against the command's option table.
@@ -115,7 +157,7 @@ fn match_long<'a>(opts: &'a [OptSpec], name: &str) -> LongMatch<'a> {
     // last, as coreutils places them last in its longopts tables.
     let mut candidates: Vec<&str> = opts
         .iter()
-        .filter(|o| o.long.starts_with(name))
+        .filter(|o| !o.long.is_empty() && o.long.starts_with(name))
         .map(|o| o.long)
         .collect();
     if HELP.starts_with(name) {
@@ -187,13 +229,15 @@ pub fn parse(
                         // An empty abbreviation ("--=v") is not a lookup;
                         // report the token verbatim.
                         format!("unrecognized option '--{rest}'")
-                    } else if opts.iter().any(|o| o.long.starts_with(&name))
+                    } else if opts
+                        .iter()
+                        .any(|o| !o.long.is_empty() && o.long.starts_with(&name))
                         || HELP.starts_with(&name)
                         || VERSION.starts_with(&name)
                     {
                         let mut candidates: Vec<String> = opts
                             .iter()
-                            .filter(|o| o.long.starts_with(&name))
+                            .filter(|o| !o.long.is_empty() && o.long.starts_with(&name))
                             .map(|o| format!("'--{}'", o.long))
                             .collect();
                         if HELP.starts_with(&name) {
@@ -293,7 +337,14 @@ pub fn parse(
                         ci = chars.len();
                     }
                     Some(spec) => {
-                        out.flags.push(spec.long.to_string());
+                        // A short-only spec (empty long name) records under
+                        // the short character; see long_by_name.
+                        let key = if spec.long.is_empty() {
+                            c.to_string()
+                        } else {
+                            spec.long.to_string()
+                        };
+                        out.flags.push(key);
                         ci += 1;
                     }
                     None => {
@@ -471,6 +522,30 @@ mod tests {
         assert!(!p.has("help"));
         assert_eq!(p.value_of("suffix"), Some("--help"));
         assert_eq!(p.positionals, ["extra"]);
+    }
+
+    #[test]
+    fn short_only_spec_has_no_long_form() {
+        // GNU pinky declares "sfwiqbhlp" with no longopts (pinky.c:532):
+        // an empty long name must stay unreachable from --tokens, and the
+        // flag records under the short character. Probed 9.4:
+        // `pinky --lookup` -> "unrecognized option '--lookup'", rc 1.
+        let opts = [OptSpec {
+            short: Some('l'),
+            long: "",
+            takes_value: false,
+        }];
+        let owned: Vec<std::ffi::OsString> = vec!["-l".into()];
+        let mut io = MemIo::new("");
+        let sc = winux_core::test_support::ScratchCtx::new("argopt-shortonly");
+        let p = parse("prog", &owned, &opts, &mut io.split(), &sc.ctx(), 1).unwrap();
+        assert!(p.has("l"));
+
+        let owned: Vec<std::ffi::OsString> = vec!["--l".into()];
+        let mut io = MemIo::new("");
+        let r = parse("prog", &owned, &opts, &mut io.split(), &sc.ctx(), 1);
+        assert_eq!(r.unwrap_err(), 1);
+        assert!(io.err().contains("unrecognized option '--l'"));
     }
 
     #[test]

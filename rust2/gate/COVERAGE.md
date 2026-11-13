@@ -19,79 +19,97 @@ Columns:
 
 | command | cases | strict | exit | win | note | GNU direct | C++ parity | gate | vacuous |
 |---|---|---|---|---|---|---|---|---|---|
-| true | 20 | 19 | 0 | 1 | 0 | 95% | 19/20 | GREEN | 0 |
-| false | 20 | 19 | 0 | 1 | 0 | 95% | 19/20 | GREEN | 0 |
-| test | 45 | 42 | 0 | 2 | 1 | 93% | 44/45 | GREEN | 0 |
-| bracket | 26 | 25 | 0 | 1 | 0 | 96% | 26/26 | GREEN | 0 |
-| basename | 30 | 30 | 0 | 0 | 0 | 100% | 30/30 | GREEN | 0 |
-| dirname | 22 | 22 | 0 | 0 | 0 | 100% | 22/22 | GREEN | 0 |
-| printenv | 21 | 15 | 3 | 3 | 0 | 86% | 17/21 | GREEN | 0 |
-| pwd | 12 | 0 | 2 | 10 | 0 | 17% | 1/12 | GREEN | 0 |
-| mkdir | 22 | 22 | 0 | 0 | 0 | 100% | 22/22 | GREEN | 0 |
-| rmdir | 22 | 22 | 0 | 0 | 0 | 100% | 22/22 | GREEN | 0 |
-| readlink | 24 | 8 | 16 | 0 | 0 | 100% | 10/24 | GREEN | 0 |
-| realpath | 22 | 6 | 15 | 1 | 0 | 95% | 9/22 | GREEN | 0 |
-| chmod | 22 | 21 | 1 | 0 | 0 | 100% | 22/22 | GREEN | 0 |
-| chown | 16 | 12 | 0 | 4 | 0 | 75% | 9/16 | GREEN | 0 |
-| df | 36 | 15 | 10 | 9 | 2 | 69% | 13/36 | GREEN | 0 |
-| whoami | 20 | 2 | 6 | 12 | 0 | 40% | 18/20 | GREEN | 0 |
-| nproc | 22 | 8 | 4 | 10 | 0 | 55% | 20/22 | GREEN | 0 |
-| unlink | 22 | 22 | 0 | 0 | 0 | 100% | 22/22 | GREEN | 0 |
-| sleep | 24 | 12 | 12 | 0 | 0 | 100% | 24/24 | GREEN | 0 |
-| base64 | 30 | 30 | 0 | 0 | 0 | 100% | 28/30 | GREEN | 0 |
-| base32 | 24 | 24 | 0 | 0 | 0 | 100% | 22/24 | GREEN | 0 |
-| b2sum | 34 | 33 | 1 | 0 | 0 | 100% | 32/34 | GREEN | 0 |
-| sha224sum | 50 | 49 | 1 | 0 | 0 | 100% | 48/50 | GREEN | 0 |
-| sha384sum | 28 | 27 | 1 | 0 | 0 | 100% | 26/28 | GREEN | 0 |
-| tac | 27 | 27 | 0 | 0 | 0 | 100% | 25/27 | GREEN | 0 |
-| truncate | 30 | 30 | 0 | 0 | 0 | 100% | 30/30 | GREEN | 0 |
-| uname | 22 | 2 | 4 | 16 | 0 | 27% | 20/22 | GREEN | 0 |
-| id | 22 | 10 | 0 | 12 | 0 | 45% | 20/22 | GREEN | 0 |
-| hostname | 22 | 2 | 5 | 15 | 0 | 32% | 20/22 | GREEN | 0 |
-| getconf | 23 | 7 | 0 | 16 | 0 | 30% | 19/23 | GREEN | 0 |
-| seq | 60 | 60 | 0 | 0 | 0 | 100% | 52/60 | GREEN | 0 |
-| fold | 26 | 26 | 0 | 0 | 0 | 100% | 26/26 | GREEN | 0 |
-| paste | 38 | 37 | 0 | 1 | 0 | 97% | 38/38 | GREEN | 0 |
-| tee | 24 | 21 | 1 | 2 | 0 | 92% | 22/24 | GREEN | 0 |
-| fmt | 26 | 25 | 0 | 1 | 0 | 96% | 25/26 | GREEN | 0 |
-| stat | 22 | 9 | 1 | 11 | 1 | 45% | 17/22 | GREEN | 0 |
-| touch | 29 | 28 | 0 | 1 | 0 | 97% | 27/29 | GREEN | 0 |
-| ln | 25 | 19 | 1 | 1 | 4 | 80% | 24/25 | GREEN | 0 |
-| sync | 22 | 0 | 20 | 2 | 0 | 91% | 19/22 | GREEN | 0 |
-| join | 51 | 36 | 15 | 0 | 0 | 100% | 51/51 | GREEN | 0 |
-| tsort | 25 | 17 | 6 | 2 | 0 | 92% | 23/25 | GREEN | 0 |
-| hostid | 20 | 0 | 12 | 7 | 1 | 60% | 14/20 | GREEN | 0 |
-| users | 20 | 0 | 15 | 4 | 1 | 75% | 16/20 | GREEN | 0 |
-| timeout | 30 | 0 | 30 | 0 | 0 | 100% | 30/30 | GREEN | 1 |
-| expand | 30 | 19 | 11 | 0 | 0 | 100% | 30/30 | GREEN | 0 |
-| unexpand | 27 | 22 | 5 | 0 | 0 | 100% | 27/27 | GREEN | 0 |
-| numfmt | 86 | 61 | 25 | 0 | 0 | 100% | 78/86 | GREEN | 0 |
-| head | 29 | 29 | 0 | 0 | 0 | 100% | 27/29 | GREEN | 0 |
-| tail | 27 | 27 | 0 | 0 | 0 | 100% | 25/27 | GREEN | 0 |
-| cut | 33 | 33 | 0 | 0 | 0 | 100% | 31/33 | GREEN | 0 |
-| tr | 37 | 37 | 0 | 0 | 0 | 100% | 33/37 | GREEN | 0 |
-| od | 36 | 36 | 0 | 0 | 0 | 100% | 33/36 | GREEN | 0 |
-| sum | 20 | 20 | 0 | 0 | 0 | 100% | 18/20 | GREEN | 0 |
-| mktemp | 27 | 14 | 13 | 0 | 0 | 100% | 11/27 | GREEN | 0 |
-| nice | 21 | 14 | 7 | 0 | 0 | 100% | 12/21 | GREEN | 2 |
-| md5sum | 33 | 31 | 2 | 0 | 0 | 100% | 31/33 | GREEN | 0 |
-| sha1sum | 33 | 31 | 2 | 0 | 0 | 100% | 31/33 | GREEN | 0 |
-| sha256sum | 33 | 31 | 2 | 0 | 0 | 100% | 31/33 | GREEN | 0 |
-| sha512sum | 33 | 31 | 2 | 0 | 0 | 100% | 31/33 | GREEN | 0 |
-| echo | 40 | 40 | 0 | 0 | 0 | 100% | 38/40 | GREEN | 0 |
-| rev | 25 | 23 | 2 | 0 | 0 | 100% | 19/25 | GREEN | 0 |
-| factor | 37 | 32 | 4 | 0 | 1 | 97% | 32/37 | GREEN | 0 |
-| arch | 22 | 9 | 9 | 2 | 2 | 82% | 11/22 | GREEN | 0 |
-| groups | 22 | 5 | 10 | 6 | 1 | 68% | 16/22 | GREEN | 0 |
-| **total** | **1829** | | | | 14 | **91%** | 1608/1829 | GREEN | 3 |
+| true | 20 | 19 | 0 | 1 | 0 | 95% | - | - | - |
+| false | 20 | 19 | 0 | 1 | 0 | 95% | - | - | - |
+| test | 45 | 42 | 0 | 2 | 1 | 93% | - | - | - |
+| bracket | 26 | 25 | 0 | 1 | 0 | 96% | - | - | - |
+| basename | 30 | 30 | 0 | 0 | 0 | 100% | - | - | - |
+| dirname | 22 | 22 | 0 | 0 | 0 | 100% | - | - | - |
+| printenv | 21 | 15 | 3 | 3 | 0 | 86% | - | - | - |
+| pwd | 12 | 0 | 2 | 10 | 0 | 17% | - | - | - |
+| mkdir | 22 | 22 | 0 | 0 | 0 | 100% | - | - | - |
+| rmdir | 22 | 22 | 0 | 0 | 0 | 100% | - | - | - |
+| readlink | 24 | 8 | 16 | 0 | 0 | 100% | - | - | - |
+| realpath | 22 | 6 | 15 | 1 | 0 | 95% | - | - | - |
+| chmod | 22 | 21 | 1 | 0 | 0 | 100% | - | - | - |
+| chown | 16 | 12 | 0 | 4 | 0 | 75% | - | - | - |
+| df | 36 | 15 | 10 | 9 | 2 | 69% | - | - | - |
+| whoami | 20 | 2 | 6 | 12 | 0 | 40% | - | - | - |
+| nproc | 22 | 8 | 4 | 10 | 0 | 55% | - | - | - |
+| unlink | 22 | 22 | 0 | 0 | 0 | 100% | - | - | - |
+| sleep | 24 | 12 | 12 | 0 | 0 | 100% | - | - | - |
+| base64 | 30 | 30 | 0 | 0 | 0 | 100% | - | - | - |
+| base32 | 24 | 24 | 0 | 0 | 0 | 100% | - | - | - |
+| b2sum | 34 | 33 | 1 | 0 | 0 | 100% | - | - | - |
+| sha224sum | 50 | 49 | 1 | 0 | 0 | 100% | - | - | - |
+| sha384sum | 28 | 27 | 1 | 0 | 0 | 100% | - | - | - |
+| tac | 27 | 27 | 0 | 0 | 0 | 100% | - | - | - |
+| truncate | 30 | 30 | 0 | 0 | 0 | 100% | - | - | - |
+| uname | 22 | 2 | 4 | 16 | 0 | 27% | - | - | - |
+| id | 22 | 10 | 0 | 12 | 0 | 45% | - | - | - |
+| hostname | 22 | 2 | 5 | 15 | 0 | 32% | - | - | - |
+| getconf | 23 | 7 | 0 | 16 | 0 | 30% | - | - | - |
+| seq | 60 | 60 | 0 | 0 | 0 | 100% | - | - | - |
+| fold | 26 | 26 | 0 | 0 | 0 | 100% | - | - | - |
+| paste | 38 | 37 | 0 | 1 | 0 | 97% | - | - | - |
+| tee | 24 | 21 | 1 | 2 | 0 | 92% | - | - | - |
+| fmt | 26 | 25 | 0 | 1 | 0 | 96% | - | - | - |
+| stat | 22 | 9 | 1 | 11 | 1 | 45% | - | - | - |
+| touch | 29 | 28 | 0 | 1 | 0 | 97% | - | - | - |
+| ln | 25 | 19 | 1 | 1 | 4 | 80% | - | - | - |
+| sync | 22 | 0 | 20 | 2 | 0 | 91% | - | - | - |
+| join | 51 | 36 | 15 | 0 | 0 | 100% | - | - | - |
+| tsort | 25 | 17 | 6 | 2 | 0 | 92% | - | - | - |
+| hostid | 20 | 0 | 12 | 7 | 1 | 60% | - | - | - |
+| users | 20 | 0 | 15 | 4 | 1 | 75% | - | - | - |
+| timeout | 41 | 5 | 33 | 3 | 0 | 93% | - | - | - |
+| expand | 30 | 19 | 11 | 0 | 0 | 100% | - | - | - |
+| unexpand | 27 | 22 | 5 | 0 | 0 | 100% | - | - | - |
+| numfmt | 86 | 61 | 25 | 0 | 0 | 100% | - | - | - |
+| head | 29 | 29 | 0 | 0 | 0 | 100% | - | - | - |
+| tail | 27 | 27 | 0 | 0 | 0 | 100% | - | - | - |
+| cut | 33 | 33 | 0 | 0 | 0 | 100% | - | - | - |
+| tr | 37 | 37 | 0 | 0 | 0 | 100% | - | - | - |
+| od | 36 | 36 | 0 | 0 | 0 | 100% | - | - | - |
+| sum | 20 | 20 | 0 | 0 | 0 | 100% | - | - | - |
+| mktemp | 27 | 14 | 13 | 0 | 0 | 100% | - | - | - |
+| nice | 21 | 14 | 7 | 0 | 0 | 100% | - | - | - |
+| nohup | 28 | 21 | 0 | 7 | 0 | 75% | - | - | - |
+| sort | 84 | 83 | 0 | 1 | 0 | 99% | - | - | - |
+| factor | 37 | 32 | 4 | 0 | 1 | 97% | - | - | - |
+| pathchk | 31 | 28 | 0 | 3 | 0 | 90% | - | - | - |
+| ptx | 29 | 20 | 0 | 9 | 0 | 69% | - | - | - |
+| shuf | 40 | 37 | 1 | 2 | 0 | 95% | - | - | - |
+| csplit | 33 | 33 | 0 | 0 | 0 | 100% | - | - | - |
+| nohup | 28 | 21 | 0 | 7 | 0 | 75% | - | - | - |
+| groups | 22 | 5 | 10 | 6 | 1 | 68% | - | - | - |
+| who | 26 | 6 | 0 | 20 | 0 | 23% | - | - | - |
+| md5sum | 33 | 31 | 2 | 0 | 0 | 100% | - | - | - |
+| sha1sum | 33 | 31 | 2 | 0 | 0 | 100% | - | - | - |
+| sha256sum | 33 | 31 | 2 | 0 | 0 | 100% | - | - | - |
+| sha512sum | 33 | 31 | 2 | 0 | 0 | 100% | - | - | - |
+| echo | 40 | 40 | 0 | 0 | 0 | 100% | - | - | - |
+| rev | 25 | 23 | 2 | 0 | 0 | 100% | - | - | - |
+| arch | 22 | 9 | 9 | 2 | 2 | 82% | - | - | - |
+| tty | 22 | 22 | 0 | 0 | 0 | 100% | 18/22 | GREEN | 0 |
+| mkfifo | 24 | 24 | 0 | 0 | 0 | 100% | 21/24 | GREEN | 0 |
+| mknod | 24 | 19 | 0 | 5 | 0 | 79% | 22/24 | GREEN | 0 |
+| chcon | 22 | 20 | 0 | 2 | 0 | 91% | 17/22 | GREEN | 0 |
+| runcon | 22 | 20 | 0 | 2 | 0 | 91% | 5/22 | GREEN | 0 |
+| cksum | 46 | 45 | 1 | 0 | 0 | 100% | 42/46 | GREEN | 0 |
+| chgrp | 24 | 21 | 0 | 2 | 1 | 88% | 17/24 | GREEN | 0 |
+| du | 43 | 39 | 1 | 3 | 0 | 93% | 36/43 | GREEN | 0 |
+| date | 43 | 42 | 0 | 0 | 1 | 98% | 36/43 | GREEN | 0 |
+| pinky | 35 | 24 | 1 | 10 | 0 | 71% | 26/35 | GREEN | 0 |
+| **total** | **2444** | | | | 16 | **90%** | 240/305 | GREEN | 0 |
 
 ## Worst 5 by GNU-direct ratio
 
 - **pwd** — 17% GNU-direct (2/12; win-heavy value-model command)
+- **who** — 23% GNU-direct (6/26; win-heavy value-model command)
 - **uname** — 27% GNU-direct (6/22; win-heavy value-model command)
 - **getconf** — 30% GNU-direct (7/23; win-heavy value-model command)
 - **hostname** — 32% GNU-direct (7/22; win-heavy value-model command)
-- **whoami** — 40% GNU-direct (8/20; win-heavy value-model command)
 
 GNU-direct is expected low for Windows value-model commands
 (whoami/uname/id/hostname/getconf/pwd/df): their success output is
@@ -100,51 +118,3 @@ direction is GNU-direct falling on byte-platform-independent
 commands (digests, encoders) — that is where a dropped `strict`
 hides.
 
-## Shell-namespace mode (wave3b, #1488)
-
-`gate/shellns_gate.py` + `gate/shellns-cases.tsv` add the mode the
-three-way gate cannot see: the SHELL NAMESPACE. run-gate.sh feeds
-platform-neutral spellings; the bundled shell (niubash#346 "coreutils
-own the shell tree") also hands its applets POSIX spellings verbatim
-(/tmp, /var/tmp, /home, /mnt/X, the bare "/" tree, /dev/*), and before
-the wave3b port those operands landed on the current drive's bare
-resolution (`mkdir -p /tmp/x` created `D:\tmp\x`).
-The mode configures a fresh shell root (WINUXSH_ROOT, higher aliases
-cleared, TMPDIR pinned to `<root>/tmp`, HOME inside the root), feeds
-POSIX-spelled operands through in-process argv (the agent shell's
-conversion layer rewrites POSIX-looking argv for native children —
-MSYS_NO_PATHCONV does not disable it; probed 2026-11-12), and asserts
-the LANDING on the Windows filesystem. 102 cases: every wired command
-with path-class operands gets >= 3 variants (tmp view, bare/device
-name, /mnt drive path) plus root-tree spellings and the NUL.txt stem
-trap.
-Per-command shell-namespace coverage:
-| commands (3+ POSIX variants each) | n |
-|---|---|
-| mkdir rmdir unlink touch truncate tac tee ln chmod chown stat readlink realpath df sync base64 base32 b2sum sha224sum sha384sum join tsort paste fold fmt expand unexpand test basename dirname getconf | 31 |
-Commands WITHOUT path-class operands are N/A by construction (they
-accept no path operands to spell POSIXly): true false pwd printenv seq
-sleep whoami nproc hostname id uname hostid users timeout numfmt.
-`[` is covered through the test rows.
-rc pins for bare devices are the Windows-inherent outcomes (C++ 1.x
-parity), not GNU/WSL values: NUL answers no attribute write
-(ACCESS_DENIED -> touch/truncate/sync rc 1), no volume query
-(df rc 1), and no ownership change path (chown root rc 1). `mkdir NUL`
-pins 0 — WSL GNU also creates a literal NUL directory there.
-Artifacts: `target/gate/shellns-ledger.tsv` (per-case PASS/FAIL +
-landing notes).
-## Wave4b addendum (#1488, fourth batch — table not merged into the stale
-## total above; wave3b rows are likewise pending regeneration)
-| command | cases | strict | exit | win | note | GNU direct | C++ parity | gate | vacuous |
-|---|---|---|---|---|---|---|---|---|---|
-| factor | 26 | 25 | 0 | 1 | 0 | 96% | 24/26 | GREEN | 0 |
-| pathchk | 30 | 27 | 0 | 3 | 0 | 90% | 28/30 | GREEN | 0 |
-| ptx | 28 | 19 | 0 | 9 | 0 | 68% | 26/28 | GREEN | 0 |
-| shuf | 40 | 37 | 1 | 2 | 0 | 95% | 37/40 | GREEN | 0 |
-| csplit | 32 | 32 | 0 | 0 | 0 | 100% | 32/32 | GREEN | 0 |
-| nohup | 24 | 18 | 0 | 6 | 0 | 75% | 19/24 | GREEN | 0 |
-| groups | 20 | 16 | 0 | 4 | 0 | 80% | 16/20 | GREEN | 0 |
-| who | 26 | 6 | 0 | 20 | 0 | 23% | 24/26 | GREEN | 0 |
-**Wave4b total: 226 cases, all GREEN; C++ parity 206/226 (gaps are the
-documented GNU-branded help/version surface, nohup children without
-standalone Windows images, and the ptx subset-vs-GNU layout deviations).**

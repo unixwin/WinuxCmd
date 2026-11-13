@@ -12,16 +12,21 @@ pub mod basename;
 pub mod basenc;
 pub mod bre;
 pub mod canon;
+pub mod chcon;
+pub mod chgrp;
 pub mod childproc;
 pub mod chmod;
 pub mod chown;
+pub mod cksum;
 pub mod csplit;
 pub mod cut;
 
+pub mod date;
 pub mod df;
 pub mod digest;
 pub mod digestsum;
 pub mod dirname;
+pub mod du;
 pub mod echo;
 pub mod expand;
 pub mod factor;
@@ -42,6 +47,8 @@ pub mod id;
 pub mod join;
 pub mod ln;
 pub mod mkdir;
+pub mod mkfifo;
+pub mod mknod;
 pub mod mktemp;
 pub mod modemap;
 pub mod nice;
@@ -53,6 +60,7 @@ pub mod od;
 
 pub mod paste;
 pub mod pathchk;
+pub mod pinky;
 pub mod printenv;
 pub mod ptx;
 pub mod pwd;
@@ -60,6 +68,7 @@ pub mod readlink;
 pub mod realpath;
 pub mod rev;
 pub mod rmdir;
+pub mod runcon;
 pub mod seq;
 pub mod shuf;
 pub mod sleep;
@@ -78,6 +87,7 @@ pub mod tr;
 pub mod truefalse;
 pub mod truncate;
 pub mod tsort;
+pub mod tty;
 pub mod uname;
 pub mod unexpand;
 pub mod unlink;
@@ -180,6 +190,17 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("nohup", nohup::nohup_cmd),
         ("groups", groups::groups_cmd),
         ("who", who::who_cmd),
+        // wave5 (#1488)
+        ("tty", tty::tty_cmd),
+        ("mkfifo", mkfifo::mkfifo_cmd),
+        ("mknod", mknod::mknod_cmd),
+        ("chgrp", chgrp::chgrp_cmd),
+        ("chcon", chcon::chcon_cmd),
+        ("runcon", runcon::runcon_cmd),
+        ("cksum", cksum::cksum_cmd),
+        ("date", date::date_cmd),
+        ("du", du::du_cmd),
+        ("pinky", pinky::pinky_cmd),
     ]
 }
 
