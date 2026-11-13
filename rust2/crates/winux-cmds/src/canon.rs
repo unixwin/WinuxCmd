@@ -307,7 +307,14 @@ mod dangling_tests {
                 r.ends_with("z_absent_tgt"),
                 "mode={mode:?} must resolve the dangling leaf to its target, got {r}"
             );
-            assert!(!r.contains("dang"), "mode={mode:?} got {r}");
+            // the link name must not survive as a path component; checked
+            // per-component because the scratch dir itself is named
+            // canon-dang-* (a plain contains("dang") matches it and would
+            // fail on symlink-capable hosts like the CI runner)
+            assert!(
+                !r.split(['\\', '/']).any(|c| c == "dang"),
+                "mode={mode:?} got {r}"
+            );
         }
         // -e still fails on the dangling link (all components must exist)
         let r = canonicalize_operand(&ctx, "dang", CanonMode::AllMustExist);

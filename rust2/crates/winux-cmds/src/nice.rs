@@ -405,7 +405,13 @@ mod tests {
 
     #[test]
     fn no_command_prints_niceness() {
-        // the test process runs at NORMAL: 0, same as GNU's getpriority
+        // the test process runs at NORMAL: 0, same as GNU's getpriority.
+        // Hosted CI runners spawn processes at BELOW_NORMAL and children
+        // inherit the class (actions/runner-images#7663), so normalize the
+        // own process class first to keep that premise true on CI too.
+        unsafe {
+            SetPriorityClass(GetCurrentProcess(), NORMAL_PRIORITY_CLASS);
+        }
         let (r, out, err) = run(&[]);
         assert_eq!(r, 0);
         assert_eq!(out, "0\n");

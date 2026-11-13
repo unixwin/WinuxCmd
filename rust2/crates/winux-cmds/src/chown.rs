@@ -1050,10 +1050,19 @@ mod tests {
         // from=self -> match -> change to self -> retained rc 0
         let (r, _, _) = run(&["--from", bare.as_str(), "1234", "f"], &sc);
         assert_eq!(r, 0);
-        // from=other named account -> no match -> silent skip, rc 0
-        let (r, out, _) = run(&["-v", "--from", "Administrators", "1234", "f"], &sc);
+        // from=other named account -> no match -> silent skip, rc 0. The
+        // "other" name is picked against the actual owner: elevated hosts
+        // (e.g. the CI runner) create files owned by the Administrators
+        // group, so a hardcoded 'Administrators' would MATCH and -v would
+        // print instead of skipping.
+        let other = if bare.eq_ignore_ascii_case("Administrators") {
+            "Users"
+        } else {
+            "Administrators"
+        };
+        let (r, out, _) = run(&["-v", "--from", other, "1234", "f"], &sc);
         assert_eq!(r, 0);
-        assert!(out.is_empty());
+        assert!(out.is_empty(), "out: {out}");
         // numeric from-parts cannot match on Windows (documented)
         let (r, out, _) = run(&["-v", "--from", "0", "1234", "f"], &sc);
         assert_eq!(r, 0);
