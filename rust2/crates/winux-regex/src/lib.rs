@@ -37,10 +37,13 @@
 //! ```
 
 pub mod ast;
+pub(crate) mod fastpath;
 pub mod matcher;
 pub mod parser;
 
 use std::fmt;
+
+use fastpath::FastPath;
 
 /// Regex flavor. GNU extensions are enabled in both.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,6 +168,10 @@ pub struct Regex {
     root: ast::Node,
     capture_count: usize,
     ignore_case: bool,
+    /// Compile-time literal pre-filters (see [`fastpath`]); a necessary
+    /// condition only — every candidate still runs through the unmodified
+    /// interpreter. Neutral under `disable_fast_path` / no-default-features.
+    fast: FastPath,
 }
 
 impl Regex {
@@ -191,10 +198,16 @@ impl Regex {
     ) -> Result<Regex, Error> {
         let p = parser::Parser::new(syntax, pattern, ignore_case);
         let (root, capture_count) = p.parse()?;
+        let fast = if cfg!(feature = "fast-path") {
+            FastPath::build(&root, capture_count, ignore_case)
+        } else {
+            FastPath::disabled()
+        };
         let regex = Regex {
             root,
             capture_count,
             ignore_case,
+            fast,
         };
         // GNU: `\1` with no open group is "Invalid back reference".
         if let Some(bad) = max_back_reference(&regex.root) {
@@ -221,6 +234,16 @@ impl Regex {
 
     pub fn ignore_case(&self) -> bool {
         self.ignore_case
+    }
+
+    /// Force the pure-interpreter scan for this regex: every compile-time
+    /// pre-filter is dropped and all entry points run the exact legacy
+    /// loop. A/B differential testing only (`#[doc(hidden)]`, not part of
+    /// the stable API); the differential suite requires the two modes to
+    /// agree byte-for-byte.
+    #[doc(hidden)]
+    pub fn disable_fast_path(&mut self) {
+        self.fast = FastPath::disabled();
     }
 }
 

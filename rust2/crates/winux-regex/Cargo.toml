@@ -6,3 +6,10 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+
+[features]
+default = ["fast-path"]
+# Compile-time literal pre-filters (anchored / prefix / first-byte /
+# pure-literal; see src/fastpath.rs, WinuxCmd #1531). Turn off for A/B
+# diffing against the pure interpreter — results must stay byte-identical.
+fast-path = []
