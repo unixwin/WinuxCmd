@@ -697,7 +697,8 @@ pub mod imp {
         // normalize_operand is identity for relative and already-native
         // spellings, so those keep the verbatim text — api_path would have
         // absolutized a relative target against ctx.cwd, baking an absolute
-        // path into the reparse point. The LINK operand keeps api_path.
+        // path into the reparse point (#1609). The LINK operand keeps
+        // api_path.
         let t = wide(
             &winux_core::path::normalize_operand(ctx.env, &ctx.cwd, target).replace('/', "\\"),
         );
