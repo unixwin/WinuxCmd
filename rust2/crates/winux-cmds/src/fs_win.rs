@@ -186,6 +186,34 @@ pub mod imp {
         fn GetFileAttributesW(name: *const u16) -> DWORD;
         #[allow(dead_code)]
         fn SetFileAttributesW(name: *const u16, attrs: DWORD) -> i32;
+        fn ReadFile(
+            h: Handle,
+            buffer: *mut c_void,
+            to_read: DWORD,
+            read: *mut DWORD,
+            overlapped: *mut c_void,
+        ) -> i32;
+        fn WriteFile(
+            h: Handle,
+            buffer: *const c_void,
+            to_write: DWORD,
+            written: *mut DWORD,
+            overlapped: *mut c_void,
+        ) -> i32;
+        fn CreateNamedPipeW(
+            name: *const u16,
+            open_mode: DWORD,
+            pipe_mode: DWORD,
+            instances: DWORD,
+            out_size: DWORD,
+            in_size: DWORD,
+            default_timeout: DWORD,
+            security: *mut c_void,
+        ) -> Handle;
+        fn ConnectNamedPipe(pipe: Handle, overlapped: *mut c_void) -> i32;
+        fn WaitNamedPipeW(name: *const u16, timeout: DWORD) -> i32;
+        fn FlushFileBuffers(h: Handle) -> i32;
+        fn Sleep(ms: DWORD);
     }
 
     #[link(name = "advapi32")]
@@ -220,13 +248,27 @@ pub mod imp {
     const OWNER_SECURITY_INFORMATION: DWORD = 0x1;
     const GROUP_SECURITY_INFORMATION: DWORD = 0x2;
     const GENERIC_READ: DWORD = 0x8000_0000;
+    const GENERIC_WRITE: DWORD = 0x4000_0000;
     const FILE_SHARE_ALL: DWORD = 0x7;
     const OPEN_EXISTING: DWORD = 3;
     const FILE_ATTRIBUTE_READONLY: DWORD = 0x1;
+    const FILE_ATTRIBUTE_SYSTEM: DWORD = 0x4;
     const FILE_ATTRIBUTE_DIRECTORY: DWORD = 0x10;
     const FILE_ATTRIBUTE_REPARSE_POINT: DWORD = 0x400;
     const FILE_ATTRIBUTE_DEVICE: DWORD = 0x40;
     const FILE_ATTRIBUTE_NORMAL: DWORD = 0x80;
+    const ERROR_FILE_NOT_FOUND: DWORD = 2;
+    const ERROR_PIPE_BUSY: DWORD = 231;
+    const ERROR_PIPE_CONNECTED: DWORD = 535;
+    const ERROR_BROKEN_PIPE: DWORD = 109;
+    const ERROR_NO_DATA: DWORD = 232;
+    const ERROR_HANDLE_EOF: DWORD = 38;
+    const PIPE_ACCESS_INBOUND: DWORD = 0x1;
+    const PIPE_TYPE_BYTE: DWORD = 0x0;
+    const PIPE_READMODE_BYTE: DWORD = 0x0;
+    const PIPE_WAIT: DWORD = 0x0;
+    const PIPE_UNLIMITED_INSTANCES: DWORD = 255;
+    const NMPWAIT_WAIT_FOREVER: DWORD = 0xFFFF_FFFF;
 
     pub fn wide(s: &str) -> Vec<u16> {
         OsStr::new(s)
@@ -673,8 +715,30 @@ pub mod imp {
         }
     }
 
+    /// The link TEXT CreateSymbolicLinkW stores for a symlink target.
+    /// GNU symlink(2) takes the operand string verbatim (readlink returns
+    /// the spelling as given), so a relative target stays relative — the
+    /// wave3a port api_path-ed the target too, which absolutized it onto
+    /// the cwd spelling and broke every `ln -s t d` readback (ln
+    /// issue1367). The 1.x contract the #1101/#1234 unit pins encode
+    /// (ln.cpp:733 folded both operands, then win32_normalize_symlink_
+    /// target) keeps two Windows adaptations on the reparse text, neither
+    /// absolutizing:
+    /// 1. normalize_operand's fold chain: the POSIX drive dialect
+    ///    "/e/..." folds to "E:\..." so the link lands on the operand
+    ///    drive (#1234), shell-tree "/..." spellings resolve like every
+    ///    other operand boundary; relative and already-native operands
+    ///    pass through unchanged (identity);
+    /// 2. '/' -> '\\' (win32.cppm:112 win32_normalize_symlink_target):
+    ///    NT resolves reparse-point text with the Win32 path parser,
+    ///    which only accepts backslash separators — "./src" or
+    ///    "dir/file" resolve as ERROR_INVALID_NAME (#1101).
+    pub fn symlink_target_text(ctx: &Ctx, target: &str) -> String {
+        winux_core::path::normalize_operand(ctx.env, &ctx.cwd, target).replace('/', "\\")
+    }
+
     pub fn create_symlink(ctx: &Ctx, target: &str, link: &str, dir: bool) -> Result<(), u32> {
-        let t = wide(&api_path(ctx, target));
+        let t = wide(&imp::symlink_target_text(ctx, target));
         let l = wide(&api_path(ctx, link));
         let mut flags = if dir {
             SYMBOLIC_LINK_FLAG_DIRECTORY
@@ -821,11 +885,268 @@ pub mod imp {
             String::from_utf16_lossy(&name[..len])
         }
     }
+
+    // ---- winux FIFO marker bridge (the #1038 emulation) ----------------
+    //
+    // mkfifo/mknod create a regular file whose first bytes are "!<fifo>"
+    // carrying FILE_ATTRIBUTE_SYSTEM (native_path.cppm kFifoMarker).
+    // Readers and writers bridge that marker to a deterministic
+    // \\.\pipe\winuxcmd-fifo-<hash> endpoint so opens get POSIX blocking
+    // semantics: the reader creates the endpoint (CreateNamedPipeW) and
+    // blocks in ConnectNamedPipe until a writer arrives; the writer polls
+    // CreateFileW until the endpoint exists (ERROR_FILE_NOT_FOUND) or a
+    // slot frees up (ERROR_PIPE_BUSY). This is the file_io.cppm
+    // open_fifo_read_handle / open_fifo_write_handle port (the wave3a
+    // wiring lost it for the rust2 commands, which hung every C++ FIFO
+    // reader against a rust2 tee/paste writer).
+    //
+    // The pipe name hashes the canonical path (lowercased, backslash
+    // separators) with FNV-1a over UTF-16LE code units — byte-parallel to
+    // native_path.cppm:1112 winux_fifo_pipe_name_w so the C++ and rust2
+    // sides rendezvous on the same endpoint. The canonical spelling is
+    // api_path minus the \\?\ prefix: the C++ resolver
+    // (canonicalize_path_w) yields the plain native path, and the hash
+    // must see identical bytes on both sides.
+
+    pub fn is_winux_fifo(ctx: &Ctx, operand: &str) -> bool {
+        let extended = api_path(ctx, operand);
+        let Some(attrs) = raw_attributes(&extended) else {
+            return false;
+        };
+        if attrs & FILE_ATTRIBUTE_DIRECTORY != 0 || attrs & FILE_ATTRIBUTE_SYSTEM == 0 {
+            return false;
+        }
+        let w = wide(&extended);
+        unsafe {
+            let h = CreateFileW(
+                w.as_ptr(),
+                GENERIC_READ,
+                FILE_SHARE_ALL,
+                std::ptr::null_mut(),
+                OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL,
+                std::ptr::null_mut(),
+            );
+            if h == INVALID_HANDLE_VALUE {
+                return false;
+            }
+            let mut buf = [0u8; 7];
+            let mut read: DWORD = 0;
+            let ok = ReadFile(
+                h,
+                buf.as_mut_ptr() as *mut c_void,
+                buf.len() as DWORD,
+                &mut read,
+                std::ptr::null_mut(),
+            ) != 0
+                && read == buf.len() as DWORD
+                && buf == *b"!<fifo>";
+            CloseHandle(h);
+            ok
+        }
+    }
+
+    pub fn fifo_pipe_name(ctx: &Ctx, operand: &str) -> String {
+        let extended = api_path(ctx, operand);
+        let canon = if let Some(rest) = extended.strip_prefix(r"\\?\UNC\") {
+            format!(r"\\{rest}")
+        } else if let Some(rest) = extended.strip_prefix(r"\\?\") {
+            rest.to_string()
+        } else {
+            extended
+        };
+        let canon = canon.replace('/', "\\").to_ascii_lowercase();
+        let mut hash: u64 = 14695981039346656037;
+        for unit in canon.encode_utf16() {
+            for byte in [unit as u8, (unit >> 8) as u8] {
+                hash ^= byte as u64;
+                hash = hash.wrapping_mul(1099511628211);
+            }
+        }
+        format!(r"\\.\pipe\winuxcmd-fifo-{hash:016x}")
+    }
+
+    /// Reader side: create the endpoint and block until a writer opens
+    /// (file_io.cppm open_fifo_read_handle). ERROR_PIPE_CONNECTED means
+    /// a writer connected between create and wait — that handle is good.
+    pub fn open_fifo_read(ctx: &Ctx, operand: &str) -> Result<FifoFile, u32> {
+        let name = wide(&fifo_pipe_name(ctx, operand));
+        let pipe = unsafe {
+            CreateNamedPipeW(
+                name.as_ptr(),
+                PIPE_ACCESS_INBOUND,
+                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+                PIPE_UNLIMITED_INSTANCES,
+                64 * 1024,
+                64 * 1024,
+                0,
+                std::ptr::null_mut(),
+            )
+        };
+        if pipe == INVALID_HANDLE_VALUE {
+            return Err(kernel32_last_error());
+        }
+        if unsafe { ConnectNamedPipe(pipe, std::ptr::null_mut()) } == 0 {
+            let err = kernel32_last_error();
+            if err != ERROR_PIPE_CONNECTED {
+                unsafe { CloseHandle(pipe) };
+                return Err(err);
+            }
+        }
+        Ok(FifoFile { handle: pipe })
+    }
+
+    /// Writer side: poll until the reader's endpoint exists
+    /// (file_io.cppm open_fifo_write_handle). The marker file itself is
+    /// never opened, so the emulation header survives.
+    pub fn open_fifo_write(ctx: &Ctx, operand: &str) -> Result<FifoFile, u32> {
+        let name = wide(&fifo_pipe_name(ctx, operand));
+        loop {
+            let pipe = unsafe {
+                CreateFileW(
+                    name.as_ptr(),
+                    GENERIC_WRITE,
+                    0,
+                    std::ptr::null_mut(),
+                    OPEN_EXISTING,
+                    FILE_ATTRIBUTE_NORMAL,
+                    std::ptr::null_mut(),
+                )
+            };
+            if pipe != INVALID_HANDLE_VALUE {
+                return Ok(FifoFile { handle: pipe });
+            }
+            let err = kernel32_last_error();
+            if err == ERROR_PIPE_BUSY {
+                // O_WRONLY on a fifo blocks until a reader opens the pipe.
+                unsafe { WaitNamedPipeW(name.as_ptr(), NMPWAIT_WAIT_FOREVER) };
+                continue;
+            }
+            if err == ERROR_FILE_NOT_FOUND {
+                // No reader has created the endpoint yet; keep waiting.
+                unsafe { Sleep(1) };
+                continue;
+            }
+            return Err(err);
+        }
+    }
+
+    /// A raw Win32 handle with Read/Write — the fifo-bridge endpoints. A
+    /// read past the writer's close ends like a POSIX read(2) 0 (the
+    /// ERROR_BROKEN_PIPE / ERROR_NO_DATA / ERROR_HANDLE_EOF set; the same
+    /// rule file_io.cppm read_handle_to_string applies), so plain
+    /// `Read`-based loops see a clean EOF.
+    pub struct FifoFile {
+        pub(crate) handle: Handle,
+    }
+
+    impl std::io::Read for FifoFile {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if buf.is_empty() {
+                return Ok(0);
+            }
+            let mut read: DWORD = 0;
+            let ok = unsafe {
+                ReadFile(
+                    self.handle,
+                    buf.as_mut_ptr() as *mut c_void,
+                    buf.len() as DWORD,
+                    &mut read,
+                    std::ptr::null_mut(),
+                )
+            };
+            if ok != 0 {
+                return Ok(read as usize);
+            }
+            let err = kernel32_last_error();
+            if err == ERROR_BROKEN_PIPE || err == ERROR_NO_DATA || err == ERROR_HANDLE_EOF {
+                return Ok(0);
+            }
+            Err(std::io::Error::from_raw_os_error(err as i32))
+        }
+    }
+
+    impl std::io::Write for FifoFile {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            let mut written: DWORD = 0;
+            let ok = unsafe {
+                WriteFile(
+                    self.handle,
+                    buf.as_ptr() as *const c_void,
+                    buf.len() as DWORD,
+                    &mut written,
+                    std::ptr::null_mut(),
+                )
+            };
+            if ok != 0 {
+                Ok(written as usize)
+            } else {
+                Err(std::io::Error::from_raw_os_error(
+                    kernel32_last_error() as i32
+                ))
+            }
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            if unsafe { FlushFileBuffers(self.handle) } == 0 {
+                // A closed reader side reports ERROR_NO_DATA on flush — the
+                // write() above already surfaced the broken pipe, so an
+                // empty flush must not invent a second error (tee's
+                // write_all+flush loop treats flush errors as write errors).
+                let err = kernel32_last_error();
+                if err == ERROR_NO_DATA || err == ERROR_BROKEN_PIPE {
+                    return Ok(());
+                }
+                return Err(std::io::Error::from_raw_os_error(err as i32));
+            }
+            Ok(())
+        }
+    }
+
+    impl Drop for FifoFile {
+        fn drop(&mut self) {
+            unsafe {
+                FlushFileBuffers(self.handle);
+                CloseHandle(self.handle);
+            }
+        }
+    }
 }
 
 #[cfg(not(windows))]
 pub mod imp {
     use super::*;
+
+    /// Non-Windows stub: the fifo bridge has no emulation to service
+    /// (POSIX fifos are real there).
+    pub struct FifoFile;
+
+    pub fn is_winux_fifo(_ctx: &Ctx, _operand: &str) -> bool {
+        false
+    }
+    pub fn fifo_pipe_name(_ctx: &Ctx, _operand: &str) -> String {
+        String::new()
+    }
+    pub fn open_fifo_read(_ctx: &Ctx, _operand: &str) -> Result<FifoFile, u32> {
+        Err(1)
+    }
+    pub fn open_fifo_write(_ctx: &Ctx, _operand: &str) -> Result<FifoFile, u32> {
+        Err(1)
+    }
+
+    impl std::io::Read for FifoFile {
+        fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::from_raw_os_error(1))
+        }
+    }
+    impl std::io::Write for FifoFile {
+        fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::from_raw_os_error(1))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Err(std::io::Error::from_raw_os_error(1))
+        }
+    }
 
     pub fn file_meta(_ctx: &Ctx, _operand: &str, _lstat: bool) -> Result<FileMeta, u32> {
         Err(2)
@@ -1020,5 +1341,41 @@ mod api_path_probes {
             r"\\?\D:\shellroot\etc\passwd"
         );
         assert_eq!(imp::api_path(&ctx, "/mnt/d/x"), r"\\?\D:\x");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn symlink_target_text_pins() {
+        // The text CreateSymbolicLinkW stores, pinned to the shapes the
+        // ln unit tests assert (issue1367 verbatim relative, #1101
+        // backslash-only, #1234 drive-dialect landing) — no absolutize:
+        // symlink(2) takes the operand text verbatim, so `ln -s t d`
+        // readback equals "t".
+        let ctx = plain_ctx(Path::new(r"D:\wd"));
+        // relative plain: identity (issue1367)
+        assert_eq!(imp::symlink_target_text(&ctx, "t"), "t");
+        assert_eq!(imp::symlink_target_text(&ctx, "missing"), "missing");
+        // dot-slash / forward-slash relative: backslash-normalized,
+        // still relative (#1101 — "./src" and "dir/file" die with
+        // ERROR_INVALID_NAME as reparse text)
+        assert_eq!(
+            imp::symlink_target_text(&ctx, "./original.txt"),
+            r".\original.txt"
+        );
+        assert_eq!(
+            imp::symlink_target_text(&ctx, "sub/original.txt"),
+            r"sub\original.txt"
+        );
+        // already-native: untouched
+        assert_eq!(
+            imp::symlink_target_text(&ctx, r"C:\native\path"),
+            r"C:\native\path"
+        );
+        // POSIX drive dialect folds onto the operand drive (#1234)
+        assert_eq!(
+            imp::symlink_target_text(&ctx, "/e/Data/src"),
+            r"E:\Data\src"
+        );
+        assert_eq!(imp::symlink_target_text(&ctx, "/cygdrive/e/f"), r"E:\f");
     }
 }

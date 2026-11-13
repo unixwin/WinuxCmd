@@ -363,16 +363,14 @@ TEST(tac, tac_file_with_trailing_separator_reports_not_directory) {
 // ---------------------------------------------------------------------------
 // Issue #1368: tac.c's full_write() failure reaches write_error()
 // (system.h:960): one "tac: write error: <strerror>" diagnostic, exit 1.
-// Under the #1488 rust2 wiring the in-process command buffers its stdout
-// (ABI v1 whole-buffer output): fd-1 validity is only observed later by
-// the host's output drain, so a closed stdout cannot reach tac's write
-// path. GNU's write-error diagnostic is deferred to the streaming ABI
-// (v2) wave — the wired exit status is 0 with an empty stderr here, and
-// the in-process write-error reporting (a failed record write sets
-// rc 1 with "tac: write error: ...") keeps the tac.c:474 semantics for
-// errors the command itself can observe.
+// Closed stdout under the v1 ABI reports at the boundary drain — the same
+// place GNU's global close_stdout hook reports it (wave3a bridge commit
+// b1cf94c4, probed coreutils 9.4: `tac file >&-` -> rc 1 with "tac: write
+// error: Bad file descriptor"). This test originally pinned the interim
+// "host drains silently, rc 0" contract; the bridge decision (and the cat
+// issue1368 unit test, which pins the identical GNU shape) superseded it.
 // ---------------------------------------------------------------------------
-TEST(tac, issue1368_closed_stdout_is_drained_by_the_host_under_abi_v1) {
+TEST(tac, issue1368_closed_stdout_reports_write_error) {
   TempDir tmp;
   tmp.write("input.txt", "line1\nline2\nline3\n");
   const std::wstring operand = (tmp.path / L"input.txt").wstring();
@@ -380,6 +378,7 @@ TEST(tac, issue1368_closed_stdout_is_drained_by_the_host_under_abi_v1) {
   auto r =
       run_command_closed_stdout(ProjectPaths::exe(L"tac.exe"), {operand});
 
-  EXPECT_EXIT_CODE(r, 0);
-  EXPECT_TRUE(r.stderr_text.empty());
+  EXPECT_EXIT_CODE(r, 1);
+  EXPECT_CONTAINS(r.stderr_text, "tac: write error: ");
+  EXPECT_CONTAINS(r.stderr_text, "Bad file descriptor");
 }
