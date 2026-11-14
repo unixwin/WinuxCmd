@@ -66,6 +66,17 @@ invocation_name() {
     esac
 }
 
+# A setup column that needs a REAL symlink on the Windows sides. Windows
+# hosts without SeCreateSymbolicLinkPrivilege (no Developer Mode, no
+# elevation) refuse `ln -s` with EPERM, so the fixture the row wants never
+# exists. Detected by pattern because the setup is an opaque sh snippet.
+setup_needs_symlink() {
+    case "$1" in
+        *'ln -s'*|*'ln --symbolic'*|*'mklink'*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 GATE_DIR="$(cd "$(dirname "$0")" && pwd)"
 RUST2="$(cd "$GATE_DIR/.." && pwd)"
 TREE="$(cd "$RUST2/.." && pwd)"
@@ -89,6 +100,9 @@ done
 POSIX_STRICT="${POSIX_STRICT:-0}"
 CASES_DIR="$GATE_DIR/cases"
 LEDGER="$ART/ledger.tsv"
+# Per-command wall clock, consumed by the CI matrix planner (docs in the
+# workflow's rust2-gate header): command<TAB>rows<TAB>elapsed_ms.
+TIMING="$ART/timing.tsv"
 # POSIX spellings the posix corpus may write to, and their GNU-side sandbox
 # prefixes (cleaned after each GNU case; the Windows sides land inside the
 # fixture dirs under target/gate/posix/, owned by this harness).
@@ -139,11 +153,30 @@ fi
 
 mkdir -p "$ART/scratch" "$GNU_MIRROR"
 
+# ---- symlink capability probe (SKIP accounting, prompt 19) ----
+# Case setups build symlink fixtures with `ln -s`. On a Windows host without
+# SeCreateSymbolicLinkPrivilege the Windows sides get EPERM and run against a
+# missing operand, so such a row measures the host, not the command. Probe
+# once with the same `ln` the setup uses, keep the verdict in the artifact
+# dir (parallel shards must not share it), and label affected rows skipped.
+SYMLINK_CAP=0
+_symprobe="$ART/.symlink-probe"
+rm -rf "$_symprobe"; mkdir -p "$_symprobe"
+printf 'x' > "$_symprobe/target"
+if ( cd "$_symprobe" && ln -s target link ) 2>/dev/null && [ -L "$_symprobe/link" ]; then
+    SYMLINK_CAP=1
+fi
+rm -rf "$_symprobe"
+printf 'symlink-capability: %s\n' \
+    "$([ "$SYMLINK_CAP" -eq 1 ] && echo yes || echo no)" \
+    > "$ART/symlink-capability.txt"
+
 if command -v timeout >/dev/null 2>&1; then WIN_TIMEOUT="timeout 10"; else WIN_TIMEOUT=""; fi
 
 pass=0; fail=0; winpass=0; winfail=0
-posixpass=0; posixpending=0
+posixpass=0; posixpending=0; skipped=0; missing_tables=0
 FAILED_CASES=()
+SKIPPED_CASES=()
 
 # quote a word for single-quoted shell embedding on both sides
 qsh() {
@@ -550,7 +583,21 @@ run_case() {
         } >> "$ART/gnu-stderr-samples.txt"
     fi
 
-    if [ "$mode" = win ]; then
+    # ---- SKIP: the host cannot build this row's symlink fixture ----
+    # Never score it: a pass would be vacuous (both Windows sides see the
+    # same missing operand) and a fail would red the gate on a host privilege.
+    # Keep the row in the ledger with the reason so the dashboard shows it.
+    local skip=0
+    if [ "$SYMLINK_CAP" -ne 1 ] && setup_needs_symlink "$setup"; then
+        skip=1
+        ok=0
+        note="skipped(no-symlink-privilege)"
+    fi
+
+    if [ $skip -eq 1 ]; then
+        skipped=$((skipped+1))
+        SKIPPED_CASES+=("$cmd/$id($mode)")
+    elif [ "$mode" = win ]; then
         if [ $ok -eq 1 ]; then
             winpass=$((winpass+1))
         else
@@ -595,8 +642,13 @@ run_command() {
     local file="$CASES_DIR/$cmd.tsv"
     if [ ! -f "$file" ]; then
         echo "no case table for $cmd ($file)" >&2
+        missing_tables=$((missing_tables+1))
         return
     fi
+    local t0 rows t1
+    t0=$(date +%s%3N)
+    rows=$(grep -vc '^#\|^$' "$file" 2>/dev/null)
+    case "$rows" in ''|*[!0-9]*) rows=0 ;; esac
     while IFS= read -r line <&3; do
         [ -z "$line" ] && continue
         case "$line" in '#'*) continue ;; esac
@@ -619,9 +671,13 @@ run_command() {
         done
         run_case "$cmd" "$id" "$mode" "$setup" "$envstr" "$stdin" "${args[@]}"
     done 3< "$file"
+    t1=$(date +%s%3N)
+    printf '%s\t%s\t%s\n' "$cmd" "$rows" "$((t1 - t0))" >> "$TIMING"
 }
 
 : > "$LEDGER"
+: > "$TIMING"
+printf '# command\trows\telapsed_ms\n' >> "$TIMING"
 : > "$ART/gnu-stderr-samples.txt"
 
 if [ "${#COMMANDS[@]}" -gt 0 ]; then
@@ -639,10 +695,19 @@ echo "win-only cases:   pass=$winpass fail=$winfail"
 if [ "$POSIX_MODE" -eq 1 ]; then
     echo "posix cases:      pass=$posixpass pending=$posixpending$([ "$POSIX_STRICT" = 1 ] && printf ' (POSIX_STRICT: pending counts as FAIL)')"
 fi
+echo "skipped cases:    $skipped (host cannot build the symlink fixture; symlink-capability=$([ "$SYMLINK_CAP" -eq 1 ] && echo yes || echo no))"
 if [ ${#FAILED_CASES[@]} -gt 0 ]; then
     echo "FAILED:"
     for f in "${FAILED_CASES[@]}"; do echo "  $f"; done
 fi
+if [ ${#SKIPPED_CASES[@]} -gt 0 ]; then
+    echo "SKIPPED:"
+    for s in "${SKIPPED_CASES[@]}"; do echo "  $s"; done
+fi
+echo "timing:             $TIMING"
 echo "ledger:             $LEDGER"
 echo "gnu stderr samples: $ART/gnu-stderr-samples.txt"
-[ "$fail" -eq 0 ] && [ "$winfail" -eq 0 ]
+if [ "$missing_tables" -ne 0 ]; then
+    echo "ERROR: $missing_tables requested command(s) had no case table" >&2
+fi
+[ "$fail" -eq 0 ] && [ "$winfail" -eq 0 ] && [ "$missing_tables" -eq 0 ]
