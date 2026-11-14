@@ -75,6 +75,18 @@ void winuxcmd_free_buf(winuxcmd_cbuf* buf);
 
 // 1 when `name` is in the rust2 registry, else 0.
 int winuxcmd_has_command(const char* name);
+
+// Routing query for the grep wire (WinuxCmd #1488 grep lane): 1 when this
+// grep/egrep/fgrep argument vector selects the Perl matcher (`-P`,
+// --perl-regexp or -X perl as options, judged with grep's own getopt_long
+// grammar), else 0. The C++ grep handler routes such invocations to its
+// PCRE2 face; everything else reaches the rust2 library. `posixly_correct`
+// is the host's POSIXLY_CORRECT presence (the same flag the library derives
+// from the injected env), because getopt stops at the first operand under
+// it. Returns 0 on a NULL argv slot. Additive export: the version below
+// stays 2 (no run-contract change).
+int winuxcmd_grep_uses_perl(int argc, const char* const* argv,
+                            int posixly_correct);
 }
 
 // Version of the ABI this header describes (lib.rs winuxcmd_abi_version()).
