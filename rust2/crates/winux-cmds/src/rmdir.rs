@@ -47,7 +47,7 @@ pub fn rmdir_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         return Ok(0);
     }
     if p.positionals.is_empty() {
-        let _ = usage_error(io, "rmdir", "missing operand");
+        let _ = usage_error(ctx, io, "rmdir", &crate::messages::missing_operand(ctx));
         return Ok(1);
     }
     let parents = p.has("parents") || p.has("path");

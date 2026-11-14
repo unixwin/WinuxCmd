@@ -1051,12 +1051,16 @@ pub fn du_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         // "cannot open 'F' for reading: <reason>", rc 1. An EMPTY list
         // summarizes nothing and exits 0 — it does NOT fall back to ".".
         if !operands.is_empty() {
-            let _ = writeln!(io.stderr, "du: extra operand '{}'", operands[0]);
+            let _ = writeln!(
+                io.stderr,
+                "du: {}",
+                crate::messages::extra_operand(ctx, &operands[0])
+            );
             let _ = writeln!(
                 io.stderr,
                 "file operands cannot be combined with --files0-from"
             );
-            let _ = writeln!(io.stderr, "Try 'du --help' for more information.");
+            let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "du"));
             return Ok(1);
         }
         let data = if list == "-" {

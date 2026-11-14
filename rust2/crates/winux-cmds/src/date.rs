@@ -1179,7 +1179,7 @@ pub fn date_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 "date: the argument '{}' lacks a leading '+';\nwhen using an option to specify date(s), any non-option\nargument must be a format string beginning with '+'",
                 f
             );
-            let _ = writeln!(io.stderr, "Try 'date --help' for more information.");
+            let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "date"));
             return Ok(1);
         }
         strftime(&dt, &f[1..])

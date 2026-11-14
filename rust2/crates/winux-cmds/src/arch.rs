@@ -72,6 +72,7 @@ pub fn arch_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         let name = first.to_string_lossy();
         // [GNU] arch.c: extra operand + usage, rc 1 (WinuxCmd #1215 parity).
         let _ = usage_error(
+            ctx,
             io,
             "arch",
             &tr!(

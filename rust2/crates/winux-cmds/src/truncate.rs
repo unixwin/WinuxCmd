@@ -211,7 +211,7 @@ pub fn truncate_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 return Ok(1);
             }
             Err(SizeError::MultipleModifiers) => {
-                let _ = usage_error(io, "truncate", "multiple relative modifiers specified");
+                let _ = usage_error(ctx, io, "truncate", "multiple relative modifiers specified");
                 return Ok(1);
             }
         },
@@ -220,6 +220,7 @@ pub fn truncate_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     // Cross-option validation in GNU truncate.c:291-313 order.
     if reference.is_none() && parsed.is_none() {
         let _ = usage_error(
+            ctx,
             io,
             "truncate",
             "you must specify either '--size' or '--reference'",
@@ -229,6 +230,7 @@ pub fn truncate_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     if let Some(spec) = &parsed {
         if reference.is_some() && spec.modifier == Modifier::Absolute {
             let _ = usage_error(
+                ctx,
                 io,
                 "truncate",
                 "you must specify a relative '--size' with '--reference'",
@@ -238,6 +240,7 @@ pub fn truncate_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     }
     if io_blocks && parsed.is_none() {
         let _ = usage_error(
+            ctx,
             io,
             "truncate",
             "'--io-blocks' was specified but '--size' was not",
@@ -245,7 +248,12 @@ pub fn truncate_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         return Ok(1);
     }
     if p.positionals.is_empty() {
-        let _ = usage_error(io, "truncate", "missing file operand");
+        let _ = usage_error(
+            ctx,
+            io,
+            "truncate",
+            &crate::messages::missing_file_operand(ctx),
+        );
         return Ok(1);
     }
     // The reference is statted once, before any operand is touched

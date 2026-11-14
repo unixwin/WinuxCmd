@@ -45,9 +45,10 @@ pub fn users_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let args: Vec<OsString> = p.positionals.clone();
     if args.len() > 1 {
         let _ = usage_error(
+            ctx,
             io,
             "users",
-            &format!("extra operand '{}'", args[1].to_string_lossy()),
+            &crate::messages::extra_operand(ctx, &args[1].to_string_lossy()),
         );
         return Ok(1);
     }

@@ -7,3 +7,4 @@ authors.workspace = true
 
 [dependencies]
 winux-core = { path = "../winux-core" }
+winux-regex = { path = "../winux-regex" }

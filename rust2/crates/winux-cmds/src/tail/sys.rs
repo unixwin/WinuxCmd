@@ -382,14 +382,41 @@ mod imp {
         false
     }
 
-    pub struct Pid;
+    pub struct Pid {
+        pid: u32,
+    }
 
     impl Pid {
-        pub fn new(_pid: u32) -> Pid {
-            Pid
+        pub fn new(pid: u32) -> Pid {
+            Pid { pid }
         }
+        /// GNU `kill(pid, 0)`: the process is alive when the probe
+        /// succeeds or fails with EPERM (exists but unsignalable);
+        /// any other failure means it is dead. This is the same rule
+        /// the Windows arm documents (`ERROR_ACCESS_DENIED` is its
+        /// EPERM), so `--pid` terminates the follow loop on every
+        /// platform once the writer is gone. `--pid` is capped at
+        /// i32::MAX by the argument parser, so the cast cannot wrap.
+        /// Raw declaration, zero crates, in the `isatty` style of
+        /// `test_cmd.rs` (no libc dependency).
         pub fn dead(&mut self) -> bool {
-            false
+            #[cfg(unix)]
+            {
+                extern "C" {
+                    fn kill(pid: i32, sig: i32) -> i32;
+                }
+                /// Operation not permitted (POSIX; 1 on Linux/macOS/BSD).
+                const EPERM: i32 = 1;
+                if unsafe { kill(self.pid as i32, 0) } == 0 {
+                    return false;
+                }
+                std::io::Error::last_os_error().raw_os_error() != Some(EPERM)
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = self.pid;
+                false
+            }
         }
     }
 
@@ -425,5 +452,25 @@ pub fn interval(secs: f64) -> Option<Duration> {
         Some(Duration::from_secs_f64(secs))
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pid_dead_for_nonexistent_pid() {
+        // i32::MAX can never be a live pid (the --pid parser caps
+        // there, and the follow test uses the same value as DEAD):
+        // the follow loop's only exit once the writer is gone.
+        // Before the fix the non-Windows stub returned false here
+        // and `follow_with_dead_writer_terminates_like_gnu` hung.
+        assert!(Pid::new(2_147_483_647).dead());
+    }
+
+    #[test]
+    fn pid_alive_for_own_pid() {
+        assert!(!Pid::new(std::process::id()).dead());
     }
 }

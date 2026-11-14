@@ -14,6 +14,7 @@
 //! a literal "st*" reports "error opening 'st*'" — the 1.x applet's glob
 //! expansion is a documented deviation the library does not inherit.
 
+use crate::argopt;
 use std::ffi::OsString;
 use std::io::Write;
 
@@ -50,12 +51,12 @@ pub fn sync_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         }
         if s.starts_with('-') && s.len() > 1 {
             let msg = if let Some(rest) = s.strip_prefix("--") {
-                format!("unrecognized option '--{rest}'")
+                argopt::unrecognized_option(ctx, &format!("--{rest}"))
             } else {
                 let c = s.chars().nth(1).unwrap();
-                format!("invalid option -- '{c}'")
+                argopt::invalid_option(ctx, &c.to_string())
             };
-            let _ = usage_error(io, "sync", &msg);
+            let _ = usage_error(ctx, io, "sync", &msg);
             return Ok(1);
         }
         operands.push(s);

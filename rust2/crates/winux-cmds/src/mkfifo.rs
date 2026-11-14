@@ -404,7 +404,7 @@ pub fn mkfifo_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
 
     // mkfifo.c:133: the missing-operand check precedes mode compilation.
     if p.positionals.is_empty() {
-        let _ = winux_core::usage_error(io, "mkfifo", "missing operand");
+        let _ = winux_core::usage_error(ctx, io, "mkfifo", &crate::messages::missing_operand(ctx));
         return Ok(1);
     }
 

@@ -230,6 +230,13 @@ export struct OptionParsePolicy {
   // digit option anywhere else is diagnosed by fmt.c itself as
   //   invalid option -- N; -WIDTH is recognized only when it is the first
   bool obsolete_numeric_width_hint = false;
+  // Commands whose own parser owns the entire argv grammar (sed.c
+  // reconstructs its getopt_long run in the wired rust2 body): no token is
+  // consumed or rejected by the generic parser, so every raw argument
+  // reaches the handler as a positional. The dispatcher's abbreviation and
+  // --help/--version pre-passes see no option tokens either; the command
+  // prints its own GNU-shaped usage/version text.
+  bool all_args_are_positionals = false;
   // [GNU] expand/unexpand own the grammar inside a digit-led short token:
   // expand.c:48 builds its optstring as "it:0::1::...9::" (digits take
   // OPTIONAL arguments) and expand.c:204-215 hands `optarg - 1` — the
@@ -393,6 +400,12 @@ export ParseResultRuntime parse_command_runtime(
 
   for (size_t i = 0; i < args.size(); ++i) {
     std::string_view arg = args[i];
+
+    // ---------- command-owned argv: every token is an operand ----------
+    if (policy.all_args_are_positionals) {
+      push_positional(arg);
+      continue;
+    }
 
     // ---------- "--" : end of options ----------
     if (!end_of_options && policy.recognize_double_dash && arg == "--") {

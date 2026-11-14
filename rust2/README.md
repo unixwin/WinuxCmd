@@ -1,6 +1,14 @@
-# rust2 — WinuxCmd 2.0 wave1 library-form commands (#1488 pilot)
+# rust2 — WinuxCmd 2.0 command library (#1488)
 
-This directory is the **Rust pilot** for the 2.0 "命令库化" track: commands
+> **Status note (2026-11-14):** this file keeps the pilot's shape-contract
+> and streaming documentation. The current per-command state (wired /
+> gate-green / still 1.x) is authoritative only in
+> [`DOCS/2.0-inventory.tsv`](../DOCS/2.0-inventory.tsv); the wiring contract
+> is [`REPLACEMENT-RECIPE.md`](REPLACEMENT-RECIPE.md). Historical wave counts
+> below are the record of when each command was measured, not the current
+> total.
+
+This directory is the **Rust command library** for the 2.0 "命令库化" track: commands
 implemented as library functions with explicitly injected IO, explicit
 env/cwd, no process-global state, and a returned status code instead of
 `exit()`. Wave1 covers the 15 inventory wave-1 applets:
@@ -213,10 +221,10 @@ for the P lane.
 5. `cargo fmt`, `cargo t` green, update `GATE-REPORT.md`, then wire it into
    winuxcmd.exe and drop the C++ body following
    [`REPLACEMENT-RECIPE.md`](REPLACEMENT-RECIPE.md) (never dual-track in the
-   same tree). Wired so far: 44 commands via
+   same tree). Wired so far: 50 commands via
    `WINUXCMD_RUST2_COMMANDS` in the root `CMakeLists.txt`
-   (waves 1, 2a, 2b, 3a, 3b); `chmod`, `chown`, `df` still carry their
-   1.x C++ bodies.
+   (waves 1, 2a, 2b, 3a, 3b, 6); 32 more have a green library gate and are
+   queued for the wiring waves.
 
 ## Streaming stdin ABI (v2, additive; #1488, #1550 follow-up)
 
@@ -351,6 +359,28 @@ the only place process stdio is touched is the CLI driver, whose adapter
 exists precisely to convert process handles into the explicit-buffer
 protocol (the #1487/#727 root cause was exactly a load-time CRT stdio
 binding across the boundary; the streaming ABI adds no new binding).
+
+`isatty` facts and the stdout-retime face follow the same rule:
+
+* `winux-core::StdioMeta { tty: [bool; 3] }` is the injected `isatty` of
+  fd 0/1/2. `tty_with_meta` (`tty`) and `test_with_meta` /
+  `bracket_with_meta` (`test -t FD`) consume it; the registry entries use
+  `StdioMeta::pipe()` (an ABI stdin/stdout/stderr buffer is never a
+  terminal), and the gate driver composes the real classes from the
+  process handles. No `GetStdHandle`/`GetConsoleMode` remains in the
+  library.
+* `touch -` retimes stdout (GNU touch.c:127-128). The library takes an
+  injected `touch::StdoutTimes` capability instead of `GetStdHandle`;
+  `touch_cmd`'s `None` is the ABI shape (a capture buffer has no settable
+  times -> GNU's `setting times of '-': Invalid argument`, rc 1) and the
+  driver supplies the real stdout handle. Unit tests pin the injected
+  console/capability classes; the differential gate's redirected stdio
+  keeps every gate row on the not-a-tty/untimable face, matching GNU.
+
+Process-self facts that are not IO (a child's inherited stdio, `nice`'s
+priority class, `nproc`'s affinity mask, the `--pid` liveness handle) are
+the command's own process/handles created from explicit arguments, not
+caller-stdio queries; they stay documented per command.
 
 ### Output side
 

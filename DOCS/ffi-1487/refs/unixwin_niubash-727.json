@@ -1,0 +1,76 @@
+{
+  "body": "## 承接自 #567（该票的设计与实现已全数落地、随 1.5.0 以默认关实验形态出货，本票只承接「翻默认开」一件事）\n\n现状基线（已验）：宿主接线在 niubash master（`crates/niubash-runtime/src/ffi/`，PR #708 合入）：开关族 `NIU_WINUXCMD_FFI*`、`DEFAULT_ENABLED = false`、绝对路径发现 + 版本指针、ABI v2 取消回调已接线、路由普查钉 `tests/ffi_route_census.rs` 在仓。DLL 侧 ABI v2 原型与 tiers.tsv 构建期生成在 WinuxCmd（PR #1426 为原型参照，草稿件 v1.1.21 已发）。性能两轮已测：15.4–23.9×（Windows 同机），可复现性已确认（pkg-ffi-perf2）。\n\n## 翻默认开的剩余门（全过才翻 `DEFAULT_ENABLED`，任一不过维持默认关，不拖版本——2026-10-29 裁定原样承接）\n\n1. **门① 产品路径二轮扩测**（须在 1.5.0 出货构建 + 随包 DLL 上跑，非原型 harness）：Tier-2 抽样逐字节三方一致（FFI/spawn/GNU 或基线）；回退健壮性实证（DLL 缺失/版本不符/位数不符/ABI 区间外 → 静默回 spawn）；长稳（10k 调用/并发/反复加载）无红项。\n2. **门③ 产品路径长任务 Ctrl-C 实证**：原型 harness 已量化旧缺口（cancel 为空时 ^C 无效、宿主阻塞剩余时长但存活）；产品已接真实取消回调，须在产品路径复测：长跑 FFI 调用期间注入 ^C，断言宿主及时响应、状态不腐、后续调用正常。\n3. **门④ 回退无感实证**：与门①回退格合并执行——DLL 不可用时无弹窗、无挂死、用户无感；状态面如实显示「不可用」（可发现性三面已随 #708 落地）。\n4. **签名门**：DLL 正式启用须经 SignPath release 批准（现为 test-only 授权；#511 已关，批准为 SignPath 侧待批事项，非本仓动作）。未批前即使①③全过，也只维持实验形态。\n5. **翻转动作清单**：改 `config::DEFAULT_ENABLED` 一处常量 → niu 全量门 → 发布说明明示（默认开 + 一键关停开关 `NIU_WINUXCMD_FFI=0` 常驻）→ Tier-1 十命令仍按其自身差分门另行跟进，不在本票捆绑。\n\n归宿：1.5.0 发布后执行（需出货构建与签名线），故标 deferred；执行者 = 主会话派簇 + Windows 真机格由用户侧 agent 配合（同 pkg11 模式）。\n",
+  "comments": [
+    {
+      "id": "IC_kwDORzNhM88AAAABhbIUrw",
+      "author": {
+        "login": "caomengxuan666"
+      },
+      "authorAssociation": "MEMBER",
+      "body": "解冻（用户 2026-10-31 指令：长冻 deferred 集全开，与本波残差一并修）。已移除 deferred 标签。\n\n归宿：门证据簇——① 产品路径扩测 + ③ Ctrl-C 实证先行交付；签名腿为用户侧 SignPath 事项，不在本簇；翻转裁定待门齐后由主会话出。\n",
+      "createdAt": "2026-10-31T02:48:46Z",
+      "includesCreatedEdit": false,
+      "isMinimized": false,
+      "minimizedReason": "",
+      "reactionGroups": [],
+      "url": "https://github.com/unixwin/niubash/issues/727#issuecomment-6538007727",
+      "viewerDidAuthor": true
+    },
+    {
+      "id": "IC_kwDORzNhM88AAAABhuI6zw",
+      "author": {
+        "login": "caomengxuan666"
+      },
+      "authorAssociation": "MEMBER",
+      "body": "## 门①/门③ 产品路径实证结果（2026-11-01，Windows 真机）\n\n**结论先行：门① FAIL、门③ FAIL。旧缺口「^C 终止不掉」仍在；另发现一族更重的缺陷：FFI 路径不应用 shell 重定向（数据丢失级）。默认关维持正确，本版本不具备翻转条件。**\n\n### 环境\n\n- Windows 10.0.19045 x64 真机；niubash master `b7cb8f6` + ruline pin `8351932`（PR #788，readline-abi Windows 移植后首个可构建 master）+ rubash `1c93ea87`（[patch] 本地路径，含 pin 1fec8621）。\n- 测试基座 = **真实安装树**（编译版覆盖安装版）：`C:\\Users\\cmx\\AppData\\Local\\Programs\\Niubash\\niu.exe`，FFI 树按标准发现布局装入 `winuxcmd\\usr\\bin\\ffi\\v1.1.20\\{winuxcore.dll, tiers.tsv}` + `current.txt`，`NIU_WINUXCMD_FFI=1 niu doctor` 报 `ready — winuxcmd 1.1.20, ABI 2`。\n- DLL = feat/ffi-prototype @ d589562f 构建（FFI 源码不在 main）。**注：随 DLL 的 tiers.tsv tier2 行为空，产品当前 0 认领；为测门①，tiers.tsv 临时扩行（conditional 8 + 文本工具 10 → tier2，另加 zz727probe 负控），测后已恢复原版**——扩行是数据层、产品代码零改动，但也说明：**不扩行则门①在出货形态下无从测起**（0 认领面）。\n- 两态对照 = 同一安装树 `NIU_WINUXCMD_FFI=1/0`，路由日志（`NIU_WINUXCMD_FFI_LOG=1`）逐 case 存证认领状态。\n\n### 门① 产品路径等价性（29 case 矩阵）\n\n23 例 FFI/spawn 输出逐字节一致（含 sort/uniq/wc/head/tail/seq/od/nl/tac/cut/paste/split/dd/expr/xxd/stdbuf 文件与管道形态、`NIU_WINUXCMD_FFI_EXCLUDE` 排除负控、未注册名负控、GNU 三方对照——GNU vs spawn 仅 dd 计时行非确定，等价）。回退格三格全过：DLL 缺失静默回 spawn、`NIU_WINUXCMD_FFI=0` 强关全 spawn、shipped tsv（无 tier2）零认领。\n\n**6 例 STDOUT-DIFF，全部发生在 FFI 实际认领的格**：\n\n| 缺陷族 | 案例 | 现象 |\n|---|---|---|\n| **FFI 路径不应用 shell 重定向（数据丢失级）** | `sort < words.txt > srt.out` | srt.out 为空，7 行结果丢失 |\n| 同上 | `sort words.txt > o.txt` | 结果喷到终端，o.txt 空 |\n| 同上 | `wc -l < words.txt` | 输出 0（stdin 重定向未达 applet） |\n| 同上 | `tee t.out < words.txt` | 文件与 stdout 双双缺内容 |\n| 同上 | `tr 'a-z' 'A-Z' < words.txt` | 输出全丢 |\n| 可见性标注（非缺陷，设计内） | `type sort` | FFI 态多一段 `— winuxcmd FFI (in-process via winuxcore.dll)` |\n\n**灾难放大形态**（同族缺陷在交互路径的后果，转写 2.9MB）：`sort big.txt > /dev/null`（36MB/300 万行）基线 0.33s；同命令重跑 + ^C 注入后，`/dev/null` 未生效 → 36MB 排序结果直接刷进终端，**^C 到提示符 180.01 秒**；其后所有命令饿死（echo/wc/复排 rc 全 None），会话实质挂死，`exit` 后进程仍存活。\n\n### 门③ 长任务 Ctrl-C（ConPTY 注入，三断言）\n\n`sort big.txt`（36MB/300 万行，FFI 认领）：\n\n- **(a) 可提前取消：FAIL** —— 基线 12.61s；^C 注入后调用未提前终止，又运行 9.01s 至自然结束（总 12.96s ≈ 基线），行边界以 130 收。与代码判定一致：宿主恒装取消回调、入口已挂起会拒跑（provider.rs:356-359），但 DLL 仅在 dispatch 前查一次取消标志（ffi.cpp:327-329），dispatch 期间不轮询。\n- **(b) 宿主存活：PASS** —— ^C 后宿主 shell 存活，提示符恢复。\n- **(c) 状态干净：PASS** —— 后续命令正常（wc 3000000 行 rc=0、重排 rc=0），输出与基线逐字节相同（cmp 双零），退出码干净。\n\n### 判定\n\n门① 的重定向族缺陷是 **stdio 接线级**问题（FFI 调用的 stdout/stdin 未接宿主的重定向/管道语义），不是个别命令 bug，波及全部被认领命令的重定向/管道形态；门③ 的取消轮询缺口叠加其上产生 180 秒终端洪泛 + 会话挂死。两门皆红，`DEFAULT_ENABLED=false` 维持；**在重定向接线与 dispatch 期取消轮询修复并过扩大的门之前，FFI 不应在本版本复活**。缺陷细节与原始工件：`D:\\repo\\nbbuild\\evidence\\727\\result\\{m1,m3}\\`（本机）；WinuxCmd 侧缺陷案将另立并链回。\n",
+      "createdAt": "2026-11-01T12:27:54Z",
+      "includesCreatedEdit": false,
+      "isMinimized": false,
+      "minimizedReason": "",
+      "reactionGroups": [],
+      "url": "https://github.com/unixwin/niubash/issues/727#issuecomment-6557940431",
+      "viewerDidAuthor": true
+    },
+    {
+      "id": "IC_kwDORzNhM88AAAABhuKbng",
+      "author": {
+        "login": "caomengxuan666"
+      },
+      "authorAssociation": "MEMBER",
+      "body": "WinuxCmd 侧缺陷案已立：unixwin/WinuxCmd#1487（缺陷 A 重定向接线 / 缺陷 B 取消轮询 / 事实 C 出货认领面为空）。加大门（18 可认领命令 × 10 种重定向/管道/捕获形态波及面矩阵）与 WinuxCmd 视角可修性评估并行进行中，结论回帖。",
+      "createdAt": "2026-11-01T12:30:17Z",
+      "includesCreatedEdit": false,
+      "isMinimized": false,
+      "minimizedReason": "",
+      "reactionGroups": [],
+      "url": "https://github.com/unixwin/niubash/issues/727#issuecomment-6557965214",
+      "viewerDidAuthor": true
+    },
+    {
+      "id": "IC_kwDORzNhM88AAAABhuf6zw",
+      "author": {
+        "login": "caomengxuan666"
+      },
+      "authorAssociation": "MEMBER",
+      "body": "## FFI 总裁决（2026-11-01，Windows 真机，门①加大矩阵 + WinuxCmd 视角可修性评估均已完成）\n\n**裁决：FFI 不在 1.5.0 复活。** 维持 `DEFAULT_ENABLED=false`（niubash `config.rs:28`）、`TIER1_FFI_CLAIMABLE=false`（`route.rs:33`）与出货 tiers.tsv 的 tier2 空清单——即产品路径 0 认领的安全态，与既版行为完全一致。两个核心缺陷都**可修且无需 ABI v3**，但诚实修复面是 DLL 核心接线 + ~69 个命令文件 IO 习语收敛 + 扩大差分门，量级数周，不属于本发版窗口。\n\n### 一、加大门结果（18 可认领命令 × 10 形态，204 有效格，工件 `evidence\\727\\result\\gate1-ext\\`）\n\n**56 格损坏，100% 落在 FFI 认领格（155 格），未认领格 0 损坏。** 损坏命令 15/18（仅 seq/dd/expr 全绿），损坏形态 9/10（仅管道全绿——因为路由器对管道形态一律不认领）。\n\n| 族 | 波及 | 实证 |\n|---|---|---|\n| **F1 stdin 重定向丢失** | `< file` 14/15、heredoc 11/12 | applet 读不到重定向的 stdin：sort/uniq/cut/nl/tac/paste/tr/xxd/tee 输出全空，`wc -l` 打 0，od 只出空 header，split 不产 part_*。唯一例外 dd（GetStdHandle 直读）。 |\n| **F2 stdout 重定向泄漏/丢失** | sort / uniq / stdbuf 三命令（`> f`、`>> f`、`> /dev/null`、`> f 2>&1`、子 shell、函数内） | 结果喷终端、文件空。**其余 13 命令的 stdout 重定向全部正确**——是 std::cout/CRT 直写的 per-applet 面，不是全体。 |\n| **F3 stdbuf EBADF（新）** | stdbuf + 任意 stdout 重定向 | `seq: write error: Bad file descriptor`，rc=1，硬失败。 |\n| **F4 跨调用状态污染（新）** | 同进程多次认领 | 单命令干净；第 4 次认领的 seq 把 `> /dev/null` 甩成终端泄漏，第 5 次 dispatch 直接 EBADF——失败依赖前置 applet 序列，随调用次数累积劣化。 |\n| **F5 `$()` 捕获同族** | 被认领的命令替换格（tr/tee） | 捕获为空 + 字节喷终端（可修性报告独立推出、矩阵实证）。 |\n\n阴性（对 FFI 有利，如实记录）：`2> err` 18/18 全对；错误传播 rc/stderr 逐字节对；cwd/env/文件树零污染；管道形态天然等价。\n\n路由新事实：认领判定基于**命令文本形态**（文件实参或 `<`/`>` 记号），不是执行语义——`v=$(tr a-z A-Z < f)` 因含 `<` 被认领，管道一律不认领。\n\n### 二、根因（WinuxCmd 视角，file:line 见 unixwin/WinuxCmd#1487 评论全文）\n\n**宿主（rubash 引擎 + niubash provider）无辜**：重定向后的真实句柄一路传到了 ABI context（`external_redirects.rs:1380 realize_route_stdio` → `external_setup.rs:1006 route_stdin_handle` → `external_inner.rs:1597-1618` → `mod.rs:216-228` → `backend.rs:266-284`），无重定向的 23 例逐字节等价反证宿主传参正确。\n\n**DLL 侧两处半成品**：\n1. `ffi.cpp:179-213 StdBorrow::apply` 只做了 `SetStdHandle` 这一半——**没有重绑 DLL 自身静态 CRT 的 fd 0/1/2**（`/MT`，fd 在装载时绑死进程原始 stdin/stdout）。applet 的读写几乎全架在 CRT fd 上：stdin 侧 58 文件 `std::cin` + 41 文件 `read_all_stdin` + 21 文件 `_fileno(stdin)`（`file_io.cppm:247-290`）→ 读到宿主原始 stdin（矩阵里是 `/dev/null`）→ 输出全空 / wc 得 0；stdout 侧 `sort.cpp:1935`/uniq 直写 `std::cout`、9 文件 CRT stdio（`tr.cpp:580`）→ 写进进程原始 stdout = 控制台 → 喷终端。\n2. `console.cppm:48-50` thread_local 句柄缓存，`console.cppm:151` **导出了专为 FFI 设计的失效函数（注释写明 \"call after SetStdHandle\"），ffi.cpp 从不调用，全树 0 调用者**——170 个走 console 层的命令在同线程首次调用后全部看不到换入的新句柄。F4 的累积劣化、F3 的 EBADF 正是缓存句柄与 StdBorrow 还回去的句柄错位叠加的结果。\n\n**取消缺陷**：`ffi.cpp:327-329` 是唯一一次 `cancel_check`，在 `dispatch` 之前；`dispatcher.cppm:1573` 的 dispatch 签名无每调用上下文，applet 拿不到回调；console/file_io 的读写原语无检查点。宿主侧回调恒装、入口拒跑、Cancelled → 130 链路现成（`provider.rs:356-395`、`external_inner.rs:1679-1696`）。\n\nWinuxCmd 自己的 `tiers-manifest.tsv:22-27` 早把 sort/uniq 标成 \"writes std::cout directly\"、dd \"GetStdHandle usage needs per-site review\"、tee \"SIGINT disposition never restored\"——审计看到了症状但定性为逐命令个例，本次证据证明是 StdBorrow 接线级的全类缺陷。\n\n### 三、可修性\n\n| 缺陷 | 修法（DLL-only，ABI v2 不动） | 改动面 | 工作量 | 1.5.0 内可靠完成？ |\n|---|---|---|---|---|\n| 重定向接线 | ① StdBorrow 后调 `invalidateCachedHandles()`；② `_open_osfhandle/_dup2` 借还 CRT fd 0/1/2 + flush/`cin.clear` 纪律；③ `read_all_stdin` 改句柄直读（消灭 cin 预读缓冲跨调用串染���—进程内必须显式复刻\"子进程死掉字节消失\"语义）；④ 58+9+2 文件 IO 习语收敛到共享层 | ffi.cpp + console.cppm + file_io.cppm（核心 1–2 人日）+ **~69 命令文件** + tiers 重审 | 数周 | **否** |\n| 取消轮询 | 执行锁期把回调存 DLL 全局；console/file_io 读写原语埋检查点；新增取消错误码（宿主已映 Cancelled） | 3 文件 + 热点循环抽查 | 1–3 人日 | 是，但单独修无意义（数据丢失仍在）；纯计算阶段固有不可取消，只能靠 tier 形状准入 |\n\n风险区（CRT fd 重绑、cin 缓冲语义、CRT 双缓冲交错）恰是本仓\"green matrix 不算证据\"红线覆盖的领域。\n\n### 四、顺手审出的其他问题（详见 #1487 评论 §4，15 条）\n\n高：pipe-closed/write-error 标志 thread_local 跨调用污染（`console.cppm:48-56`，`clear_pipe_closed_flags` 存在但 ffi.cpp 不调，18 消费点）；`$()` 捕获同族。中：locale 目录不重载（`ffi.cpp:356-361` 自认 follow-up）；exe 入口等价缺口（`setupConsoleForUnicode`/`applyInheritedStdbuf` FFI 壳不做）；EnvBorrow 对 `=C:` 类 PEB 条目不可恢复；SIGPIPE 等价只覆盖 console 层。低：tiers 生成 Python 缺失回退 copy manifest 致 tier 语义失真；`hasCommand` O(N)；exit/abort 契约无强制（现 0 处，建议 CI 扫描）。正面确认：错误传播健康、内存无跨界分配器混用、cwd/env/argv 借还完整。\n\n### 五、复活前置条件（供下周期排期，按序）\n\n1. WinuxCmd：StdBorrow 补缓存失效 + CRT fd 借还 + flush/cin 纪律（ffi.cpp / console.cppm / file_io.cppm）\n2. WinuxCmd：`read_all_stdin` 句柄直读；58+9+2 文件 IO 习语收敛\n3. WinuxCmd：每调用复位 pipe-closed/write-error 标志\n4. WinuxCmd：取消全局 + 读写检查点 + 取消错误码贯通\n5. WinuxCmd：tiers-manifest 重审，产出非空且可辩护的 tier2 集（长任务/无界输出/纯计算留 spawn）\n6. 门：tier2 全集 × {重定向、stdin、heredoc、`$()` 捕获、`/dev/null`、多次认领序列、ConPTY 交互} + 门③重跑；**在出货 tiers.tsv 上测**，不再靠临时扩行\n7. niubash/rubash：零必改\n\n### 六、1.5.0 发布说明建议\n\n- FFI 加速通道（winuxcore.dll ABI v2）维持实验性、默认关闭（`NIU_WINUXCMD_FFI` 未设即关），出货 tier 表无 tier2 条目；产品路径下所有 winuxcmd 命令仍走 PATH spawn / 模拟层，行为与既版一致。\n- 已知问题（强制开启并自行扩表时）：重定向与命令替换捕获形态存在数据丢失级缺陷（`sort < f > out` 输出丢失、`sort f > out` 喷终端、`wc -l < f` 得 0），长任务无法以 Ctrl+C 提前终止（实测 36MB 输出洪泛交互会话 180 秒）。**不要在生产环境开启。**\n- 后续版本将在 stdio 接线与取消轮询修复并通过扩大等价门后重新评估启用。\n\n跟踪：unixwin/WinuxCmd#1487（缺陷与可修性报告全文）。附带发现（与 FFI 无关）：niu/rubash 词法层 `head -n 3 <<X` 吞参数 → rubash#2467 / niubash#791。\n",
+      "createdAt": "2026-11-01T13:03:31Z",
+      "includesCreatedEdit": false,
+      "isMinimized": false,
+      "minimizedReason": "",
+      "reactionGroups": [],
+      "url": "https://github.com/unixwin/niubash/issues/727#issuecomment-6558317263",
+      "viewerDidAuthor": true
+    }
+  ],
+  "labels": [
+    {
+      "id": "LA_kwDORzNhM88AAAACm2YejA",
+      "name": "feature",
+      "description": "",
+      "color": "7cf97e"
+    }
+  ],
+  "number": 727,
+  "state": "CLOSED",
+  "title": "[ffi] 默认启用翻转门：产品路径扩测① + Ctrl-C 实证③ + 签名（#567 承接）"
+}
