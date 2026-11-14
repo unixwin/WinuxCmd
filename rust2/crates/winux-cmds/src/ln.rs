@@ -598,9 +598,16 @@ fn link_one(
             && src_full_exists(ctx, src)
             && same_file(ctx, src, dst);
         if same {
-            let _ = writeln!(io.stderr, "ln: '{src}' and '{dst}' are the same file");
-            *ok = false;
-            return false;
+            // [GNU] ln.c same-file check: a forced link between two
+            // different directory entries of the same inode removes the
+            // destination and relinks; `ln -f a a` still refuses.
+            let force_relink =
+                opts.force && resolve(ctx, src) != resolve(ctx, dst);
+            if !force_relink {
+                let _ = writeln!(io.stderr, "ln: '{src}' and '{dst}' are the same file");
+                *ok = false;
+                return false;
+            }
         }
         // [GNU] ln.c:277-283 (prompt) precedes ln.c:286+ (backup): with
         // -b and -i, GNU asks `replace 'dst'?` FIRST and only backs the
@@ -1179,5 +1186,20 @@ mod tests {
                 "a failed -rs must not leave a link"
             );
         }
+    }
+
+    #[test]
+    fn force_relinks_same_inode_under_a_different_name() {
+        // GNU: `ln -f a b` where b is the same inode as a succeeds by
+        // removing b and relinking; `ln -f a a` still refuses.
+        let sc = setup("ln-force-same");
+        std::fs::remove_file(sc.path("b")).unwrap();
+        std::fs::hard_link(sc.path("a"), sc.path("b")).unwrap();
+        let (r, _, e) = run_sc(&sc, &["-f", "a", "b"], "");
+        assert_eq!(r, 0, "err={e}");
+        assert!(e.is_empty());
+        let (r, _, e) = run_sc(&sc, &["-f", "a", "a"], "");
+        assert_eq!(r, 1);
+        assert!(e.contains("are the same file"));
     }
 }
