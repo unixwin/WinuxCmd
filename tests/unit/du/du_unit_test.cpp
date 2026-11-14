@@ -1130,6 +1130,121 @@ TEST(du, du_dangling_operand_without_dereference_lists_link) {
   EXPECT_TRUE(r.stdout_text.find("dangling") != std::string::npos);
 }
 
+TEST(du, du_dereference_directory_symlink_operand) {
+  // [GNU] "du -L dirlink" follows a directory-symlink operand (#1656):
+  // the target's allocation prints under the operand spelling, rc 0.
+  // The old -L gate probed with std::filesystem::status(), which reports
+  // an error for a directory-symlink operand even when its target exists,
+  // so the live link was misread as dangling ("cannot access", rc 1).
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "dir");
+  tmp.write("dir/f.txt", "x");
+
+  std::filesystem::path link = tmp.path / "dirlink";
+  if (!du_test_create_symlink(link, std::filesystem::path(L"dir"), true)) {
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"du.exe", {L"-L", L"-s", L"dirlink"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.empty());
+  const auto usage = usage_for_path(r.stdout_text, "dirlink");
+  EXPECT_TRUE(usage.has_value());
+  if (!usage.has_value()) return;
+  EXPECT_EQ(*usage, expected_blocks(1, 1024, tmp.path));
+}
+
+TEST(du, du_dereference_args_directory_symlink_operand) {
+  // [GNU] -H follows a directory-symlink operand exactly like -L
+  // (#1656: the same gate guards both spellings).
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "dir");
+  tmp.write("dir/f.txt", "x");
+
+  std::filesystem::path link = tmp.path / "dirlink";
+  if (!du_test_create_symlink(link, std::filesystem::path(L"dir"), true)) {
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"du.exe", {L"-H", L"-s", L"dirlink"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.empty());
+  const auto usage = usage_for_path(r.stdout_text, "dirlink");
+  EXPECT_TRUE(usage.has_value());
+  if (!usage.has_value()) return;
+  EXPECT_EQ(*usage, expected_blocks(1, 1024, tmp.path));
+}
+
+TEST(du, du_dereference_file_symlink_operand) {
+  // Lock: -L already follows file-symlink operands; the gate change
+  // must not regress them (#1656: "文件链接 ... 正常").
+  TempDir tmp;
+  tmp.write("f.txt", "x");
+
+  std::filesystem::path link = tmp.path / "filelink";
+  if (!du_test_create_symlink(link, std::filesystem::path(L"f.txt"))) {
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"du.exe", {L"-L", L"-s", L"filelink"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  const auto usage = usage_for_path(r.stdout_text, "filelink");
+  EXPECT_TRUE(usage.has_value());
+  if (!usage.has_value()) return;
+  EXPECT_EQ(*usage, expected_blocks(1, 1024, tmp.path));
+}
+
+TEST(du, du_dereference_dangling_operand_prints_no_reason) {
+  // [GNU] "du -L dangling" prints the access error with NO errno text
+  // (probed coreutils 9.4); the missing-path arm keeps ": No such file
+  // or directory". Pins the #1059 arm's exact shape, so the "error line
+  // lacks the reason" half of #1656 is answered by the misclassification
+  // fix, not by adding a reason to the dangling arm.
+  TempDir tmp;
+  tmp.write("gone.txt", "x");
+
+  std::filesystem::path link = tmp.path / "dangling";
+  if (!du_test_create_symlink(link, std::filesystem::path(L"gone.txt"))) {
+    return;
+  }
+  std::filesystem::remove(tmp.path / "gone.txt");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"du.exe", {L"-L", L"dangling"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ(r.stderr_text, "du: cannot access 'dangling'\n");
+}
+
+TEST(du, du_dereference_missing_operand_reports_reason) {
+  // [GNU] "du -L missing" keeps ": No such file or directory" (#1656).
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"du.exe", {L"-L", L"missing"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "du: cannot access 'missing': No such file or directory") !=
+              std::string::npos);
+}
+
 TEST(du, du_block_size_env_is_honored) {
   TempDir tmp;
   tmp.write("file.bin", std::string(2048, 'x'));

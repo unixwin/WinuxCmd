@@ -1543,10 +1543,17 @@ auto print_disk_usage(const CommandContext<DU_OPTIONS.size()>& ctx)
     // [GNU] Under -L/-H a symlink operand that does not resolve (dangling
     // link) is reported and the run fails; GNU prints no errno text for the
     // dangling case but "No such file or directory" for a missing path.
+    // (#1656: the gate used std::filesystem::status() here, which reports
+    // an error for a directory-symlink operand even when its target
+    // exists, so a live directory link was misread as dangling and
+    // reported as "cannot access" with no reason, rc 1. Probe through
+    // native_path::attributes_w instead: GetFileAttributesW follows the
+    // link (DU-1 below), and ls routes its operand probes through the
+    // same helper rather than std::filesystem::status (#1145). The
+    // dangling-vs-missing distinction below is unchanged: a dangling
+    // link still prints no errno text, exactly like GNU.)
     if (cfg.dereference || cfg.dereference_args) {
-      std::error_code ec;
-      (void)std::filesystem::status(std::filesystem::path(wpath), ec);
-      if (ec) {
+      if (native_path::attributes_w(wpath) == INVALID_FILE_ATTRIBUTES) {
         std::error_code lec;
         const bool operand_exists = std::filesystem::exists(
             std::filesystem::symlink_status(std::filesystem::path(wpath), lec));
