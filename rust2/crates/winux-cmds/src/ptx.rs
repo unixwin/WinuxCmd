@@ -59,7 +59,7 @@ use std::io::{Read as _, Write as _};
 use crate::argopt::{self, OptSpec};
 use crate::fsutil;
 use crate::gnuhelp;
-use winux_core::{CmdError, CmdResult, Ctx, Io};
+use winux_core::{tr, CmdError, CmdResult, Ctx, Io};
 
 const OPTS: &[OptSpec] = &[
     OptSpec {
@@ -336,8 +336,11 @@ fn read_input_bytes(
         let full = fsutil::resolve(ctx, file);
         match std::fs::read(&full) {
             Ok(d) => Ok(d),
-            Err(_) => Err(Ok(format!(
-                "cannot open '{file}' for reading: No such file or directory"
+            Err(_) => Err(Ok(tr!(
+                ctx,
+                "command.ptx.error.cannot_open",
+                "cannot open '{name}' for reading: No such file or directory",
+                name = file
             ))),
         }
     }
@@ -417,8 +420,15 @@ pub fn ptx_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         } else {
             let _ = writeln!(
                 io.stderr,
-                "ptx: invalid argument '{value}' for '--format'\nValid arguments are:\n  - 'roff'\n  - 'tex'\nTry 'ptx --help' for more information."
+                "ptx: {}",
+                tr!(
+                    ctx,
+                    "command.ptx.error.invalid_format_arg",
+                    "invalid argument '{value}' for '--format'\nValid arguments are:\n  - 'roff'\n  - 'tex'",
+                    value = value
+                )
             );
+            let _ = writeln!(io.stderr, "Try 'ptx --help' for more information.");
             return Ok(1);
         }
     }
@@ -431,14 +441,32 @@ pub fn ptx_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         Some(text) => match text.parse::<usize>() {
             Ok(v) => v,
             Err(_) => {
-                let _ = writeln!(io.stderr, "ptx: invalid gap width: '{text}'");
+                let _ = writeln!(
+                    io.stderr,
+                    "ptx: {}",
+                    tr!(
+                        ctx,
+                        "command.ptx.error.invalid_gap_width",
+                        "invalid gap width: '{value}'",
+                        value = text
+                    )
+                );
                 return Ok(1);
             }
         },
     };
     if gap_size < 1 {
         let raw = gap_raw.unwrap_or("0").to_string();
-        let _ = writeln!(io.stderr, "ptx: invalid gap width: '{raw}'");
+        let _ = writeln!(
+            io.stderr,
+            "ptx: {}",
+            tr!(
+                ctx,
+                "command.ptx.error.invalid_gap_width",
+                "invalid gap width: '{value}'",
+                value = raw
+            )
+        );
         return Ok(1);
     }
     let width = match p.value_of("width") {
@@ -446,7 +474,16 @@ pub fn ptx_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         Some(text) => match text.parse::<usize>() {
             Ok(v) => v,
             Err(_) => {
-                let _ = writeln!(io.stderr, "ptx: invalid line width: '{text}'");
+                let _ = writeln!(
+                    io.stderr,
+                    "ptx: {}",
+                    tr!(
+                        ctx,
+                        "command.ptx.error.invalid_line_width",
+                        "invalid line width: '{value}'",
+                        value = text
+                    )
+                );
                 return Ok(1);
             }
         },
@@ -504,7 +541,16 @@ pub fn ptx_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 // A directory is reported GNU-style before the open error.
                 let full = fsutil::resolve(ctx, file);
                 if full.is_dir() {
-                    let _ = writeln!(io.stderr, "ptx: {file}: Is a directory");
+                    let _ = writeln!(
+                        io.stderr,
+                        "ptx: {}",
+                        tr!(
+                            ctx,
+                            "command.ptx.error.is_a_directory",
+                            "{name}: Is a directory",
+                            name = file
+                        )
+                    );
                     return Ok(1);
                 }
                 let _ = writeln!(io.stderr, "ptx: {message}");

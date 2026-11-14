@@ -40,7 +40,7 @@ use std::path::{Path, PathBuf};
 
 use crate::argopt::{self, OptSpec};
 use crate::gnuhelp;
-use winux_core::{CmdResult, Ctx, Io};
+use winux_core::{tr, CmdResult, Ctx, Io};
 
 const OPTS: &[OptSpec] = &[
     OptSpec {
@@ -149,6 +149,16 @@ fn windows_path_error(path: &str) -> Option<&'static str> {
     None
 }
 
+/// [GNU] pathchk.c quotef(): plain names print bare, the empty name prints
+/// as '' (the only name that needs quoting).
+fn quote_plain(name: &str) -> String {
+    if name.is_empty() {
+        "''".to_string()
+    } else {
+        name.to_string()
+    }
+}
+
 enum ProbeOutcome {
     Exists,
     NotThere,
@@ -183,10 +193,18 @@ fn probe_existence(ctx: &Ctx, name: &str) -> ProbeOutcome {
     let lex = if Path::new(name).is_absolute() {
         api
     } else {
-        format!(
-            r"\\?\{}",
-            crate::fsutil::normalize_lex(ctx, name).replace('/', "\\")
-        )
+        let lexed = crate::fsutil::normalize_lex(ctx, name).replace('/', "\\");
+        // The absolute form can itself be UNC when the invocation cwd is a
+        // UNC directory (the differential harness runs the Windows exe from
+        // a WSL share: \\wsl.localhost\Ubuntu\...). `\\?\\\server\share` is
+        // an INVALID_NAME, not an extended path; the UNC spelling needs the
+        // `\\?\UNC\server\share` form (fs_win::api_path applies the same
+        // rule).
+        if let Some(rest) = lexed.strip_prefix(r"\\") {
+            format!(r"\\?\UNC\{rest}")
+        } else {
+            format!(r"\\?\{lexed}")
+        }
     };
     let api_path = PathBuf::from(lex);
     match std::fs::symlink_metadata(&api_path) {
@@ -198,6 +216,14 @@ fn probe_existence(ctx: &Ctx, name: &str) -> ProbeOutcome {
             return ProbeOutcome::NotThere;
         }
         Err(e) => {
+            // A name the Win32 layer refuses outright (wildcards etc.) is
+            // the same subject-side invalid-name verdict the C++ body
+            // reported after a permissive attribute probe; report the fixed
+            // wording instead of the localized OS text ("... (os error
+            // 123)").
+            if let Some(reason) = windows_path_error(name) {
+                return ProbeOutcome::Error(reason.to_string());
+            }
             let text = match e.kind() {
                 std::io::ErrorKind::NotADirectory => "Not a directory".to_string(),
                 _ => e.to_string(),
@@ -275,7 +301,15 @@ pub fn pathchk_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let check_extra = p.has("extra-portability") || p.has("portability");
 
     if p.positionals.is_empty() {
-        let _ = writeln!(io.stderr, "pathchk: missing operand");
+        let _ = writeln!(
+            io.stderr,
+            "pathchk: {}",
+            tr!(
+                ctx,
+                "command.pathchk.error.missing_operand",
+                "missing operand"
+            )
+        );
         let _ = writeln!(io.stderr, "Try 'pathchk --help' for more information.");
         return Ok(1);
     }
@@ -284,24 +318,32 @@ pub fn pathchk_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     for operand in &p.positionals {
         let name = operand.to_string_lossy().into_owned();
         if let Some(message) = check_name(&name, check_basic, check_extra, ctx) {
-            let _ = writeln!(io.stderr, "{message}");
+            let _ = writeln!(io.stderr, "pathchk: {message}");
             exit_code = 1;
         }
     }
     Ok(exit_code)
 }
 
-/// All checks for one NAME; returns the diagnostic line when it fails.
+/// All checks for one NAME; returns the diagnostic BODY (GNU error()'s
+/// inner wording, program prefix added by the caller) when it fails.
 fn check_name(name: &str, check_basic: bool, check_extra: bool, ctx: &Ctx) -> Option<String> {
     // GNU pathchk.c:270-272: the leading-dash check runs first.
     if check_extra && has_leading_dash_component(name) {
-        return Some(format!(
-            "pathchk: leading '-' in a component of file name '{name}'"
+        return Some(tr!(
+            ctx,
+            "command.pathchk.error.leading_dash",
+            "leading '-' in a component of file name '{name}'",
+            name = name
         ));
     }
     // pathchk.c:274-285: portable modes reject the empty name.
     if (check_basic || check_extra) && name.is_empty() {
-        return Some("pathchk: empty file name".to_string());
+        return Some(tr!(
+            ctx,
+            "command.pathchk.error.empty_name",
+            "empty file name"
+        ));
     }
 
     let mut file_exists = false;
@@ -312,9 +354,12 @@ fn check_name(name: &str, check_basic: bool, check_extra: bool, ctx: &Ctx) -> Op
             let portable =
                 c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-' || c == '/';
             if !portable {
-                return Some(format!(
-                    "pathchk: non-portable character '{}' in file name '{name}'",
-                    c
+                return Some(tr!(
+                    ctx,
+                    "command.pathchk.error.non_portable_character",
+                    "non-portable character '{character}' in file name '{name}'",
+                    character = c,
+                    name = name
                 ));
             }
         }
@@ -331,10 +376,22 @@ fn check_name(name: &str, check_basic: bool, check_extra: bool, ctx: &Ctx) -> Op
         match probe {
             ProbeOutcome::Exists => file_exists = true,
             ProbeOutcome::Error(text) => {
-                return Some(format!("pathchk: '{name}': {text}"));
+                return Some(tr!(
+                    ctx,
+                    "command.pathchk.error.name_reason",
+                    "{name}: {reason}",
+                    name = quote_plain(name),
+                    reason = text
+                ));
             }
             ProbeOutcome::NotThere if name.is_empty() => {
-                return Some(format!("pathchk: '{name}': No such file or directory"));
+                return Some(tr!(
+                    ctx,
+                    "command.pathchk.error.name_reason",
+                    "{name}: {reason}",
+                    name = quote_plain(name),
+                    reason = "No such file or directory"
+                ));
             }
             ProbeOutcome::NotThere => {}
         }
@@ -344,16 +401,24 @@ fn check_name(name: &str, check_basic: bool, check_extra: bool, ctx: &Ctx) -> Op
     if check_basic {
         let limit = POSIX_PATH_MAX - 1;
         if name.len() > limit {
-            return Some(format!(
-                "pathchk: limit {limit} exceeded by length {} of file name '{name}'",
-                name.len()
+            return Some(tr!(
+                ctx,
+                "command.pathchk.error.limit_length_name",
+                "limit {limit} exceeded by length {length} of file name '{name}'",
+                limit = limit,
+                length = name.len(),
+                name = name
             ));
         }
     } else if !file_exists && name.len() >= HOST_PATH_MAX {
         let limit = HOST_PATH_MAX - 1;
-        return Some(format!(
-            "pathchk: limit {limit} exceeded by length {} of file name '{name}'",
-            name.len()
+        return Some(tr!(
+            ctx,
+            "command.pathchk.error.limit_length_name",
+            "limit {limit} exceeded by length {length} of file name '{name}'",
+            limit = limit,
+            length = name.len(),
+            name = name
         ));
     }
 
@@ -371,9 +436,13 @@ fn check_name(name: &str, check_basic: bool, check_extra: bool, ctx: &Ctx) -> Op
     if let Some(limit) = component_limit {
         for comp in split_components(name, false) {
             if comp.len() > limit {
-                return Some(format!(
-                    "pathchk: limit {limit} exceeded by length {} of file name component '{comp}'",
-                    comp.len()
+                return Some(tr!(
+                    ctx,
+                    "command.pathchk.error.limit_length_component",
+                    "limit {limit} exceeded by length {length} of file name component '{component}'",
+                    limit = limit,
+                    length = comp.len(),
+                    component = comp
                 ));
             }
         }
@@ -385,7 +454,13 @@ fn check_name(name: &str, check_basic: bool, check_extra: bool, ctx: &Ctx) -> Op
     // (probed: `pathchk -p CON` passes).
     if !check_basic {
         if let Some(reason) = windows_path_error(name) {
-            return Some(format!("pathchk: '{name}': {reason}"));
+            return Some(tr!(
+                ctx,
+                "command.pathchk.error.name_reason",
+                "{name}: {reason}",
+                name = quote_plain(name),
+                reason = reason
+            ));
         }
     }
     None

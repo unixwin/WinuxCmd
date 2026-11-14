@@ -11,11 +11,11 @@
 //!   negative operand. An invalid operand reports
 //!   `factor: '<x>' is not a valid positive integer` on stderr, rc 1,
 //!   and processing CONTINUES with the remaining operands/stdin lines.
-//! * Stdin lines are trimmed of spaces and tabs on both ends before the
-//!   same parse; a line that trims empty is skipped without error, while
-//!   other junk fails that line and processing continues (probed:
-//!   `'\n5\n'` -> `5: 5` rc 0; `'6\r\n'` -> invalid '6\r' rc 1;
-//!   `'  5  \n'` -> 5). `\r` is NOT trimmed (probed invalid).
+//! * Stdin is a token stream: `\n`, `\t` and ` ` delimit tokens anywhere
+//!   (factor.c DELIM), so one line may carry several numbers; other junk
+//!   fails that token and processing continues (probed: `'\n5\n'` -> `5:
+//!   5` rc 0; `'6\r\n'` -> invalid '6\r' rc 1; `'  5  \n'` -> 5). `\r` is
+//!   NOT a delimiter (probed invalid).
 //! * Documented subset: GNU links GMP and factors arbitrary-precision
 //!   operands (`factor 18446744073709551616` prints 64 twos, rc 0;
 //!   `factor 99999999999999999999999` = 3 x 11111111111111111111111,
@@ -30,7 +30,7 @@ use std::ffi::OsString;
 
 use crate::argopt::{self, OptSpec};
 use crate::gnuhelp;
-use winux_core::{CmdResult, Ctx, Io};
+use winux_core::{tr, CmdResult, Ctx, Io};
 
 const OPTS: &[OptSpec] = &[OptSpec {
     short: Some('h'),
@@ -90,35 +90,25 @@ pub fn factor_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     if p.positionals.is_empty() {
         let mut data = Vec::new();
         if std::io::copy(&mut io.stdin, &mut data).is_err() {
-            let _ = writeln!(io.stderr, "factor: read error");
+            let _ = writeln!(
+                io.stderr,
+                "factor: {}",
+                tr!(ctx, "command.factor.error.read_error", "read error")
+            );
             return Ok(1);
         }
         let err = &mut *io.stderr;
-        for line in data.split(|&b| b == b'\n') {
-            // trim spaces and tabs on both ends; empty lines are skipped
-            let trimmed: &[u8] = {
-                let mut s = line;
-                while let Some((&first, rest)) = s.split_first() {
-                    if first == b' ' || first == b'\t' {
-                        s = rest;
-                    } else {
-                        break;
-                    }
-                }
-                while let Some((&last, rest)) = s.split_last() {
-                    if last == b' ' || last == b'\t' {
-                        s = rest;
-                    } else {
-                        break;
-                    }
-                }
-                s
-            };
-            if trimmed.is_empty() {
+        // [GNU] factor.c:125 sets DELIM to "\n\t " for readtoken(): space,
+        // tab and newline delimit tokens ANYWHERE in the stream, so one
+        // line may carry several numbers ("12 18" -> both factored, probed
+        // coreutils 9.4). Any other byte (notably '\r') stays inside the
+        // token and makes it an invalid operand.
+        for token in data.split(|&b| b == b'\n' || b == b'\t' || b == b' ') {
+            if token.is_empty() {
                 continue;
             }
-            let text = String::from_utf8_lossy(trimmed).into_owned();
-            if !print_factors(out, err, &text, exponents) {
+            let text = String::from_utf8_lossy(token).into_owned();
+            if !print_factors(ctx, out, err, &text, exponents) {
                 failed = true;
             }
         }
@@ -126,7 +116,7 @@ pub fn factor_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         let err = &mut *io.stderr;
         for operand in &p.positionals {
             let text = operand.to_string_lossy().into_owned();
-            if !print_factors(out, err, &text, exponents) {
+            if !print_factors(ctx, out, err, &text, exponents) {
                 failed = true;
             }
         }
@@ -135,15 +125,26 @@ pub fn factor_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
 }
 
 /// Parse and print one NUMBER operand; false on invalid input (the GNU
-/// diagnostic goes to stderr, processing continues).
+/// diagnostic goes to stderr, processing continues). The program prefix
+/// stays in code; the error() inner wording is the tr! key.
 fn print_factors(
+    ctx: &Ctx,
     out: &mut dyn std::io::Write,
     err: &mut dyn std::io::Write,
     text: &str,
     exponents: bool,
 ) -> bool {
     let Some(n) = parse_operand(text) else {
-        let _ = writeln!(err, "factor: '{text}' is not a valid positive integer");
+        let _ = writeln!(
+            err,
+            "factor: {}",
+            tr!(
+                ctx,
+                "command.factor.error.invalid_positive_integer",
+                "'{number}' is not a valid positive integer",
+                number = text
+            )
+        );
         return false;
     };
     let mut factors = factorize(n);
@@ -495,6 +496,14 @@ mod tests {
         let (r, out, _) = run(&[], "\t\n8\n");
         assert_eq!(r, 0);
         assert_eq!(out, "8: 2 2 2\n");
+        // ONE line may carry several space/tab-delimited tokens (factor.c
+        // DELIM "\\n\\t "), probed: "12 18" -> both factored.
+        let (r, out, _) = run(&[], "12 18");
+        assert_eq!(r, 0);
+        assert_eq!(out, "12: 2 2 3\n18: 2 3 3\n");
+        let (r, out, _) = run(&["-h"], "  24\t36 xyz 48  ");
+        assert_eq!(r, 1);
+        assert_eq!(out, "24: 2^3 3\n36: 2^2 3^2\n48: 2^4 3\n");
     }
 
     #[test]

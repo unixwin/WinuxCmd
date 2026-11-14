@@ -45,7 +45,7 @@ use std::ffi::OsString;
 
 use crate::argopt::{self, OptSpec};
 use crate::gnuhelp;
-use winux_core::{usage_error, CmdResult, Ctx, Io};
+use winux_core::{tr, usage_error, CmdResult, Ctx, Io};
 
 /// Short-only specs (empty long name): pinky.c:532 `"sfwiqbhlp"` has no
 /// longopts besides the built-in help/version.
@@ -520,12 +520,15 @@ pub fn pinky_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
 
     if !flags.short_format && users.is_empty() {
         // pinky.c main(): error(0, 0, ...) + usage(EXIT_FAILURE) — the
-        // try-help tail goes to stderr and the status is 1 (probed).
-        let _ = usage_error(
-            io,
-            "pinky",
-            "no username specified; at least one must be specified when using -l",
+        // try-help tail goes to stderr and the status is 1 (probed). The
+        // program prefix and the shared try-help tail stay in code; the
+        // usage diagnostic body is the tr! key.
+        let message = tr!(
+            ctx,
+            "command.pinky.error.no_username_for_long",
+            "no username specified; at least one must be specified when using -l"
         );
+        let _ = usage_error(io, "pinky", &message);
         return Ok(1);
     }
 

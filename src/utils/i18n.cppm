@@ -303,25 +303,11 @@ export std::string translate_error(std::string_view error) {
     return ::winux::i18n::format("common.error.unary_operator",
                                  "'{}': unary operator expected", value);
   }
-  // "'<pattern>': line number out of range" (csplit) — the pattern precedes
-  // the quote-suffix.
-  constexpr std::string_view kLineRangeSuffix = "': line number out of range";
-  if (error.size() > kLineRangeSuffix.size() && error.starts_with('\'') &&
-      error.ends_with(kLineRangeSuffix)) {
-    const auto value =
-        error.substr(1, error.size() - 1 - kLineRangeSuffix.size());
-    return ::winux::i18n::format("command.csplit.error.line_out_of_range",
-                                 "'{}': line number out of range", value);
-  }
-  // "'<pattern>': match not found" (csplit).
-  constexpr std::string_view kMatchNotFoundSuffix = "': match not found";
-  if (error.size() > kMatchNotFoundSuffix.size() && error.starts_with('\'') &&
-      error.ends_with(kMatchNotFoundSuffix)) {
-    const auto value =
-        error.substr(1, error.size() - 1 - kMatchNotFoundSuffix.size());
-    return ::winux::i18n::format("command.csplit.error.match_not_found",
-                                 "'{}': match not found", value);
-  }
+  // "'<pattern>': line number out of range" and "'<pattern>': match not
+  // found" (csplit) no longer need reverse mapping: csplit is wired to the
+  // rust2 body (#1488 wave-W1), and its diagnostics are emitted through
+  // tr! with the same catalog keys
+  // (command.csplit.error.line_out_of_range / .match_not_found).
   // "'<spec>': invalid signal" / "'<spec>': multiple signals specified"
   // (kill; [GNU] operand2sig wording, uutils #14177) — the spec precedes
   // the quote-suffix.

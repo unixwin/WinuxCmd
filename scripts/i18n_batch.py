@@ -356,8 +356,9 @@ MANUAL_MESSAGES = {
     "command.tr.error.string1_repeat": "the [c*] repeat construct may not appear in string1",
     "command.tr.error.one_repeat_string2": "only one [c*] repeat construct may appear in string2",
     "command.tr.error.repeat_only_translate": "the [c*] construct may appear in string2 only when translating",
-    "command.csplit.error.line_out_of_range": "'{}': line number out of range",
-    "command.csplit.error.match_not_found": "'{}': match not found",
+    # csplit's two pipeline-wording keys moved to the rust2 body's tr! keys
+    # with the #1488 wave-W1 wiring (named placeholders); the C++ reverse
+    # mapper entries are gone with the C++ body.
     "command.tail.replaced": "tail: '{}' has been replaced;  following new file\n",
     "command.tail.follow.inaccessible": "tail: '{}' has become inaccessible: {}\n",
     "command.tail.follow.appeared": "tail: '{}' has appeared;  following new file\n",

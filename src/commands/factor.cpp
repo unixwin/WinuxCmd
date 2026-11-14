@@ -3,144 +3,28 @@
 /// @contributors:
 ///   - caomengxuan666 <2507560089@qq.com>
 /// @Description: Implementation for factor command.
-/// @Version: 0.2.0
+/// @Version: 0.3.0
 /// @License: MIT
 /// @Copyright: Copyright © 2026 WinuxCmd
 
 #include "pch/pch.h"
 // include other header after pch.h
 #include "core/command_macros.h"
+
 import std;
 import core;
 import utils;
+import rust2_bridge;
 
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
-using winux::bignum::UInt;
 
 auto constexpr FACTOR_OPTIONS = std::array{
-    // [GNU] -h is the GNU spelling of --exponents; -e is a documented
-    // WinuxCmd alias (GNU factor 9.x rejects -e).
-    OPTION("-e", "--exponents",
-           "print repeated factors in form p^e unless e is 1"),
+    // [GNU] -h is the GNU spelling of --exponents. The 1.x `-e` alias is
+    // RETIRED with this wiring: GNU factor 9.x has no -e (it is an invalid
+    // option, rc 1), and the rust2 body implements the GNU grammar only.
     OPTION("-h", "--exponents",
            "print repeated factors in form p^e unless e is 1")};
-
-namespace {
-
-// [GNU] factor.c print_factors() skips leading SPACE characters (only
-// ' ', not all whitespace: a leading tab makes the operand invalid) and
-// one leading '+' sign, but allows no trailing characters.  Negative
-// numbers are rejected.
-auto parse_factor_operand(std::string_view text) -> std::optional<UInt> {
-  size_t pos = 0;
-  while (pos < text.size() && text[pos] == ' ') {
-    ++pos;
-  }
-  if (pos < text.size() && text[pos] == '+') {
-    ++pos;
-  }
-  const size_t digits_begin = pos;
-  while (pos < text.size() &&
-         std::isdigit(static_cast<unsigned char>(text[pos]))) {
-    ++pos;
-  }
-  if (pos == digits_begin || pos != text.size()) {
-    return std::nullopt;
-  }
-  return UInt::from_decimal(text.substr(digits_begin));
-}
-
-auto report_invalid_operand(std::string_view text) -> void {
-  safeErrorPrintLn(winux::i18n::format(
-      "command.factor.error.invalid_positive_integer",
-      "factor: '{}' is not a valid positive integer", std::string(text)));
-}
-
-auto small_primes() -> const std::vector<std::uint64_t>& {
-  static const std::vector<std::uint64_t> primes = [] {
-    std::vector<std::uint64_t> result;
-    for (std::uint64_t candidate = 2; candidate < 1000; ++candidate) {
-      bool prime = true;
-      for (std::uint64_t p : result) {
-        if (p * p > candidate) break;
-        if (candidate % p == 0) {
-          prime = false;
-          break;
-        }
-      }
-      if (prime) result.push_back(candidate);
-    }
-    return result;
-  }();
-  return primes;
-}
-
-// Appends all prime factors of n (n >= 2) to out, unordered.
-auto factor_into(UInt n, std::vector<UInt>& out) -> void {
-  for (const std::uint64_t p : small_primes()) {
-    while (true) {
-      auto [q, r] = divmod_u64(n, p);
-      if (r != 0) break;
-      out.emplace_back(p);
-      n = std::move(q);
-    }
-    if (n.is_one()) return;
-  }
-
-  std::vector<UInt> stack;
-  stack.push_back(std::move(n));
-  while (!stack.empty()) {
-    UInt x = std::move(stack.back());
-    stack.pop_back();
-    if (winux::bignum::is_probable_prime(x)) {
-      out.push_back(std::move(x));
-      continue;
-    }
-    // pollard_rho retries with fresh seeds until it finds a nontrivial
-    // factor, so x is always split into two smaller parts here.
-    UInt d = winux::bignum::pollard_rho(x);
-    stack.push_back(d);
-    stack.push_back(divmod(x, d).first);
-  }
-}
-
-auto factorize(const UInt& n) -> std::vector<UInt> {
-  std::vector<UInt> factors;
-  if (n < UInt{2}) {
-    return factors;  // [GNU] 0 and 1 print with no factors
-  }
-  factor_into(n, factors);
-  std::ranges::sort(factors,
-                    [](const UInt& a, const UInt& b) { return a < b; });
-  return factors;
-}
-
-auto print_factors(const UInt& n, bool exponents) -> void {
-  auto factors = factorize(n);
-  safePrint(n.to_decimal() + ":");
-  if (exponents) {
-    // [GNU] group repeated factors: 2 2 2 3 -> 2^3 3
-    for (size_t i = 0; i < factors.size();) {
-      size_t count = 1;
-      while (i + count < factors.size() && factors[i + count] == factors[i]) {
-        ++count;
-      }
-      safePrint(" " + factors[i].to_decimal());
-      if (count > 1) {
-        safePrint("^" + std::to_string(count));
-      }
-      i += count;
-    }
-  } else {
-    for (const auto& f : factors) {
-      safePrint(" " + f.to_decimal());
-    }
-  }
-  safePrintLn("");
-}
-
-}  // namespace
 
 REGISTER_COMMAND(factor_cmd,
                  /* name */
@@ -154,7 +38,6 @@ REGISTER_COMMAND(factor_cmd,
                  "\n"
                  "  -h, --exponents   print repeated factors in form p^e "
                  "unless e is 1\n"
-                 "  -e                same as --exponents\n"
                  "      --help        display this help and exit\n"
                  "      --version     output version information and exit",
                  "  factor 12\n"
@@ -166,46 +49,17 @@ REGISTER_COMMAND(factor_cmd,
                  /* see also */
                  "primes(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd",
                  FACTOR_OPTIONS) {
-  bool had_error = false;
-  bool exponents = ctx.count({"-e", "-h", "--exponents"}) > 0;
-
-  if (ctx.positionals.empty()) {
-    file_io::set_stdin_binary();
-    // [GNU] read tokens from standard input; factor.c:125 sets DELIM to
-    // "\n\t " for readtoken(), so only space, tab and newline separate
-    // tokens -- any other byte (e.g. '\r') stays inside the token and
-    // makes it an invalid operand.
-    std::string line;
-    while (std::getline(std::cin, line)) {
-      size_t pos = 0;
-      while (pos < line.size()) {
-        while (pos < line.size() && (line[pos] == ' ' || line[pos] == '\t')) {
-          ++pos;
-        }
-        const size_t begin = pos;
-        while (pos < line.size() && line[pos] != ' ' && line[pos] != '\t') {
-          ++pos;
-        }
-        if (begin == pos) break;
-        const std::string_view token(line.data() + begin, pos - begin);
-        if (auto value = parse_factor_operand(token)) {
-          print_factors(*value, exponents);
-        } else {
-          report_invalid_operand(token);
-          had_error = true;
-        }
-      }
-    }
-  } else {
-    for (const auto& arg : ctx.positionals) {
-      if (auto value = parse_factor_operand(arg)) {
-        print_factors(*value, exponents);
-      } else {
-        report_invalid_operand(arg);
-        had_error = true;
-      }
-    }
-  }
-
-  return had_error ? 1 : 0;
+  // #1488 mechanical replacement: the semantics live in the rust2 library
+  // (rust2/crates/winux-cmds/src/factor.rs, factor_cmd — the probed
+  // coreutils 9.4 operand grammar, Miller-Rabin + Pollard-Brent for the
+  // 0..=u64::MAX range, the documented beyond-u64 subset). The C++ side
+  // keeps only this registration.
+  //
+  // stdin shape: GNU factor reads fd 0 only when NO operand stands (a "-"
+  // operand is an invalid operand, not stdin). The entry is chosen
+  // unconditionally because the v2 streaming form is a lazy PULL callback:
+  // when the command never reads, fd 0 stays untouched for the next
+  // pipeline stage, so the operand shape needs no branch — and the command
+  // keeps its own GNU read-error shape instead of the v1 slurp pre-check.
+  return winux::rust2::run_command_with_stdin_streaming("factor", ctx.raw_args);
 }

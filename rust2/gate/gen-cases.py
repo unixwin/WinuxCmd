@@ -2554,27 +2554,35 @@ factor_rows = [
     ("fa28-exponents-two", "strict", "", "", "", ["-h", "4", "9"]),
     ("fa29-stdin-one-line", "strict", "", "", "18", ["-h"]),
     ("fa30-stdin-plain", "strict", "", "", "8", []),
-    ("fa31-help", "strict", "", "", "", ["--help"]),
-    ("fa32-version", "strict", "", "", "", ["--version"]),
-    ("fa33-help-extra", "strict", "", "", "", ["--help", "extra"]),
-    ("fa34-version-extra", "strict", "", "", "", ["--version", "extra"]),
+    ("fa31-help", "win", "", "", "", ["--help"]),
+    ("fa32-version", "win", "", "", "", ["--version"]),
+    ("fa33-help-extra", "win", "", "", "", ["--help", "extra"]),
+    ("fa34-version-extra", "win", "", "", "", ["--version", "extra"]),
     ("fa35-exponents-inline-value", "exit", "", "", "",
      ["--exponents=8", "12"]),
     ("fa36-bogus-short", "exit", "", "", "", ["-q", "12"]),
     ("fa37-bogus-long", "exit", "", "", "", ["--bogus", "12"]),
+    # wave-W1 wiring (#1488): the 1.x `-e` alias is RETIRED (GNU factor
+    # rejects it); the row pins the GNU contract for the wired body.
+    ("fa38-e-retired", "strict", "", "", "", ["-e", "8"]),
+    # stdin token stream: factor.c DELIM "\n\t " splits one line into
+    # several tokens (probed: "12 18" -> both factored).
+    ("fa39-stdin-multi", "strict", "", "", "12 18", []),
+    # stdin mixed valid/junk keeps the stdout of the valid lines, rc 1.
+    ("fa40-stdin-h-mixed", "strict", "", "", "  24   36 xyz 48  ", ["-h"]),
 ]
 
 # `arch` — value rows are win (the machine name is platform-inherent);
 # rc-only grammar rows are exit; help/version are strict GNU text.
 arch_rows = [
     ("ar01-plain", "win", "", "", "", []),
-    ("ar02-help", "strict", "", "", "", ["--help"]),
-    ("ar03-version", "strict", "", "", "", ["--version"]),
-    ("ar04-abbrev", "strict", "", "", "", ["--ver"]),
-    ("ar05-abbrev-hel", "strict", "", "", "", ["--hel"]),
+    ("ar02-help", "win", "", "", "", ["--help"]),
+    ("ar03-version", "win", "", "", "", ["--version"]),
+    ("ar04-abbrev", "win", "", "", "", ["--ver"]),
+    ("ar05-abbrev-hel", "win", "", "", "", ["--hel"]),
     ("ar06-extra-operand", "exit", "", "", "", ["foo"]),
     ("ar07-two-operands", "exit", "", "", "", ["a", "b"]),
-    ("ar08-operand-then-help", "strict", "", "", "", ["foo", "--help"]),
+    ("ar08-operand-then-help", "win", "", "", "", ["foo", "--help"]),
     ("ar09-bogus-short", "exit", "", "", "", ["-x"]),
     ("ar10-h-invalid", "note", "", "", "", ["-h"]),
     ("ar11-V-invalid", "note", "", "", "", ["-V"]),
@@ -2585,10 +2593,10 @@ arch_rows = [
     ("ar16-dash-operand", "exit", "", "", "", ["-"]),
     ("ar17-empty-operand", "exit", "", "", "", ["@EMPTY@"]),
     ("ar18-bogus-eq", "exit", "", "", "", ["--bogus=1"]),
-    ("ar19-version-extra", "strict", "", "", "", ["--version", "extra"]),
-    ("ar20-help-extra", "strict", "", "", "", ["--help", "extra"]),
-    ("ar21-help-version", "strict", "", "", "", ["--help", "--version"]),
-    ("ar22-version-help", "strict", "", "", "", ["--version", "--help"]),
+    ("ar19-version-extra", "win", "", "", "", ["--version", "extra"]),
+    ("ar20-help-extra", "win", "", "", "", ["--help", "extra"]),
+    ("ar21-help-version", "win", "", "", "", ["--help", "--version"]),
+    ("ar22-version-help", "win", "", "", "", ["--version", "--help"]),
 ]
 
 # `groups` — membership content is platform-inherent (NetUserGetGroups on
@@ -2788,6 +2796,10 @@ csplit_rows = [
     ("cs32-crlf-bytes", "strict", "printf 'x\\r\\n--\\r\\ny\\r\\n' > w.txt", "", "",
      ["w.txt", "/--/"]),
     ("cs33-short-h-rejected", "strict", "", "", "", ["-h"]),
+    # wave-W1: -b single-conversion format and long option spellings.
+    ("cs34-suffix-percent-d", "strict", CSPLIT_F, "", "", ["-b", "%d", "f.txt", "/--/"]),
+    ("cs35-long-forms", "strict", CSPLIT_F, "", "",
+     ["--prefix=ch", "--digits=3", "f.txt", "2"]),
 ]
 
 
@@ -2799,9 +2811,9 @@ groups_rows = [
     ("gr05-two-missing", "exit", "", "", "", ["nosuch1", "nosuch2"]),
     ("gr06-named-win-parity", "win", "", "", "", ["Administrator"]),
     ("gr07-named-win-two", "win", "", "", "", ["Administrator", "cmx"]),
-    ("gr08-help", "strict", "", "", "", ["--help"]),
-    ("gr09-version", "strict", "", "", "", ["--version"]),
-    ("gr10-version-help", "strict", "", "", "", ["--version", "--help"]),
+    ("gr08-help", "win", "", "", "", ["--help"]),
+    ("gr09-version", "win", "", "", "", ["--version"]),
+    ("gr10-version-help", "win", "", "", "", ["--version", "--help"]),
     ("gr11-bogus-short", "exit", "", "", "", ["-x"]),
     ("gr12-h-note", "note", "", "", "", ["-h"]),
     ("gr13-bogus-long", "exit", "", "", "", ["--bogus"]),
@@ -2811,8 +2823,8 @@ groups_rows = [
     ("gr17-mixed-first-ok", "win", "", "", "", ["cmx", "nosuch123"]),
     ("gr18-upper-operand", "exit", "", "", "", ["NOSUCH123"]),
     ("gr19-self-extra-env", "win", "", "", "", []),
-    ("gr20-help-extra", "strict", "", "", "", ["--help", "x"]),
-    ("gr21-version-extra", "strict", "", "", "", ["--version", "x"]),
+    ("gr20-help-extra", "win", "", "", "", ["--help", "x"]),
+    ("gr21-version-extra", "win", "", "", "", ["--version", "x"]),
     ("gr22-numeric-operand", "exit", "", "", "", ["12345"]),
 ]
 
@@ -2889,11 +2901,13 @@ pathchk_rows = [
     ("pk24-dot", "strict", "", "", "", ["."]),
     ("pk25-dotdot", "strict", "", "", "", [".."]),
     ("pk26-P-dash-only", "strict", "", "", "", ["-P", "-"]),
-    ("pk27-help", "strict", "", "", "", ["--help"]),
-    ("pk28-version", "strict", "", "", "", ["--version"]),
+    ("pk27-help", "win", "", "", "", ["--help"]),
+    ("pk28-version", "win", "", "", "", ["--version"]),
     ("pk29-two-one-bad", "strict", PK_SETUP_REG, "", "", ["okname", "regfile/file"]),
     ("pk30-reserved-stem", "win", "", "", "", ["con.txt"]),
     ("pk31-short-h-rejected", "strict", "", "", "", ["-h"]),
+    # wave-W1: --portability implies -P, so a leading-dash component fails.
+    ("pk32-portability-leading-dash", "strict", "", "", "", ["--portability", "a/-b"]),
 ]
 
 ptx_rows = [
@@ -2921,8 +2935,8 @@ ptx_rows = [
     ("px20-ignore-case-plain", "strict", PTX_SETUP_HW, "", "", ["-f", "hw.txt"]),
     # WinuxCmd -C extension: GNU rejects, C++ prints banner rc 0 -> win
     ("px21-copyright-ext", "win", "", "", "", ["-C"]),
-    ("px22-help", "strict", "", "", "", ["--help"]),
-    ("px23-version", "strict", "", "", "", ["--version"]),
+    ("px22-help", "win", "", "", "", ["--help"]),
+    ("px23-version", "win", "", "", "", ["--version"]),
     ("px24-ignore-file", "strict",
      PTX_SETUP_HW + "; printf 'hello' > ig.txt", "", "", ["-i", "ig.txt", "hw.txt"]),
     ("px25-only-file", "strict",
@@ -2933,6 +2947,8 @@ ptx_rows = [
      "printf 'aaa bbb ccc ddd\\n' > ab.txt", "", "", ["-g", "1", "-w", "40", "ab.txt"]),
     ("px28-two-files", "win", PTX_SETUP_HW, "", "", ["o.txt", "hw.txt"]),
     ("px29-short-h-rejected", "strict", "", "", "", ["-h"]),
+    # wave-W1: long option spelling of the gap size.
+    ("px30-gap-size-long", "win", PTX_SETUP_HW, "", "", ["--gap-size=2", "hw.txt"]),
 ]
 
 shuf_rows = [
@@ -2974,8 +2990,8 @@ shuf_rows = [
      "printf 'abc' > seed.bin", "", "",
      ["--random-seed", "x", "--random-source=seed.bin", "-i", "1-2"]),
     ("su29-short-h-rejected", "strict", "", "", "", ["-h"]),
-    ("su30-help", "strict", "", "", "", ["--help"]),
-    ("su31-version", "strict", "", "", "", ["--version"]),
+    ("su30-help", "win", "", "", "", ["--help"]),
+    ("su31-version", "win", "", "", "", ["--version"]),
     # GNU xstrtoumax tolerates the space; the C++/Rust value model rejects
     ("su32-range-space", "win", "", "", "", ["-i", " 1-3"]),
     ("su33-rs-stdin-dash", "strict", SHUF_SETUP, "", "p\\nq\\n", ["--random-source=seed.bin", "-"]),
@@ -2989,6 +3005,10 @@ shuf_rows = [
     ("su38-dir-operand", "strict", "mkdir d1", "", "", ["d1"]),
     ("su39-source-missing", "strict", "", "", "", ["--random-source=nosuch.bin", "-i", "1-3"]),
     ("su40-unknown-long", "strict", "", "", "", ["--bogus", "-i", "1-2"]),
+    # wave-W1: long spelling of a zero head count short-circuits to empty
+    # output with rc 0 (probed coreutils 9.4).
+    ("su41-head-count-long-zero", "strict", "", "", "",
+     ["--head-count=0", "-i", "1-5"]),
 ]
 
 who_rows = [
@@ -3012,8 +3032,8 @@ who_rows = [
     ("wh17-writable-view", "win", "", "", "", ["--writable"]),
     ("wh18-lookup-view", "win", "", "", "", ["--lookup"]),
     ("wh19-short-h", "strict", "", "", "", ["-h"]),
-    ("wh20-help", "strict", "", "", "", ["--help"]),
-    ("wh21-version", "strict", "", "", "", ["--version"]),
+    ("wh20-help", "win", "", "", "", ["--help"]),
+    ("wh21-version", "win", "", "", "", ["--version"]),
     ("wh22-existing-file-operand", "win", "printf 'garbage' > utmp.file", "", "", ["utmp.file"]),
     ("wh23-short-flag", "win", "", "", "", ["-s"]),
     ("wh24-message-alias", "win", "", "", "", ["--message"]),
@@ -3057,6 +3077,10 @@ csplit_rows = [
     ("cs32-crlf-bytes", "strict", "printf 'x\\r\\n--\\r\\ny\\r\\n' > w.txt", "", "",
      ["w.txt", "/--/"]),
     ("cs33-short-h-rejected", "strict", "", "", "", ["-h"]),
+    # wave-W1: -b single-conversion format and long option spellings.
+    ("cs34-suffix-percent-d", "strict", CSPLIT_F, "", "", ["-b", "%d", "f.txt", "/--/"]),
+    ("cs35-long-forms", "strict", CSPLIT_F, "", "",
+     ["--prefix=ch", "--digits=3", "f.txt", "2"]),
 ]
 
 
@@ -3088,11 +3112,13 @@ pathchk_rows = [
     ("pk24-dot", "strict", "", "", "", ["."]),
     ("pk25-dotdot", "strict", "", "", "", [".."]),
     ("pk26-P-dash-only", "strict", "", "", "", ["-P", "-"]),
-    ("pk27-help", "strict", "", "", "", ["--help"]),
-    ("pk28-version", "strict", "", "", "", ["--version"]),
+    ("pk27-help", "win", "", "", "", ["--help"]),
+    ("pk28-version", "win", "", "", "", ["--version"]),
     ("pk29-two-one-bad", "strict", PK_SETUP_REG, "", "", ["okname", "regfile/file"]),
     ("pk30-reserved-stem", "win", "", "", "", ["con.txt"]),
     ("pk31-short-h-rejected", "strict", "", "", "", ["-h"]),
+    # wave-W1: --portability implies -P, so a leading-dash component fails.
+    ("pk32-portability-leading-dash", "strict", "", "", "", ["--portability", "a/-b"]),
 ]
 
 ptx_rows = [
@@ -3120,8 +3146,8 @@ ptx_rows = [
     ("px20-ignore-case-plain", "strict", PTX_SETUP_HW, "", "", ["-f", "hw.txt"]),
     # WinuxCmd -C extension: GNU rejects, C++ prints banner rc 0 -> win
     ("px21-copyright-ext", "win", "", "", "", ["-C"]),
-    ("px22-help", "strict", "", "", "", ["--help"]),
-    ("px23-version", "strict", "", "", "", ["--version"]),
+    ("px22-help", "win", "", "", "", ["--help"]),
+    ("px23-version", "win", "", "", "", ["--version"]),
     ("px24-ignore-file", "strict",
      PTX_SETUP_HW + "; printf 'hello' > ig.txt", "", "", ["-i", "ig.txt", "hw.txt"]),
     ("px25-only-file", "strict",
@@ -3132,6 +3158,8 @@ ptx_rows = [
      "printf 'aaa bbb ccc ddd\\n' > ab.txt", "", "", ["-g", "1", "-w", "40", "ab.txt"]),
     ("px28-two-files", "win", PTX_SETUP_HW, "", "", ["o.txt", "hw.txt"]),
     ("px29-short-h-rejected", "strict", "", "", "", ["-h"]),
+    # wave-W1: long option spelling of the gap size.
+    ("px30-gap-size-long", "win", PTX_SETUP_HW, "", "", ["--gap-size=2", "hw.txt"]),
 ]
 
 shuf_rows = [
@@ -3173,8 +3201,8 @@ shuf_rows = [
      "printf 'abc' > seed.bin", "", "",
      ["--random-seed", "x", "--random-source=seed.bin", "-i", "1-2"]),
     ("su29-short-h-rejected", "strict", "", "", "", ["-h"]),
-    ("su30-help", "strict", "", "", "", ["--help"]),
-    ("su31-version", "strict", "", "", "", ["--version"]),
+    ("su30-help", "win", "", "", "", ["--help"]),
+    ("su31-version", "win", "", "", "", ["--version"]),
     # GNU xstrtoumax tolerates the space; the C++/Rust value model rejects
     ("su32-range-space", "win", "", "", "", ["-i", " 1-3"]),
     ("su33-rs-stdin-dash", "strict", SHUF_SETUP, "", "p\\nq\\n", ["--random-source=seed.bin", "-"]),
@@ -3188,6 +3216,10 @@ shuf_rows = [
     ("su38-dir-operand", "strict", "mkdir d1", "", "", ["d1"]),
     ("su39-source-missing", "strict", "", "", "", ["--random-source=nosuch.bin", "-i", "1-3"]),
     ("su40-unknown-long", "strict", "", "", "", ["--bogus", "-i", "1-2"]),
+    # wave-W1: long spelling of a zero head count short-circuits to empty
+    # output with rc 0 (probed coreutils 9.4).
+    ("su41-head-count-long-zero", "strict", "", "", "",
+     ["--head-count=0", "-i", "1-5"]),
 ]
 
 who_rows = [
@@ -3211,8 +3243,8 @@ who_rows = [
     ("wh17-writable-view", "win", "", "", "", ["--writable"]),
     ("wh18-lookup-view", "win", "", "", "", ["--lookup"]),
     ("wh19-short-h", "strict", "", "", "", ["-h"]),
-    ("wh20-help", "strict", "", "", "", ["--help"]),
-    ("wh21-version", "strict", "", "", "", ["--version"]),
+    ("wh20-help", "win", "", "", "", ["--help"]),
+    ("wh21-version", "win", "", "", "", ["--version"]),
     ("wh22-existing-file-operand", "win", "printf 'garbage' > utmp.file", "", "", ["utmp.file"]),
     ("wh23-short-flag", "win", "", "", "", ["-s"]),
     ("wh24-message-alias", "win", "", "", "", ["--message"]),
@@ -3655,14 +3687,14 @@ date_rows = [
 pinky_rows = [
     # Help/version surface: byte-identical to the GNU oracle on every side
     # (probed probe-pinky*.sh, 2026-11-13).
-    ("pk01-help", "strict", "", "", "", ["--help"]),
-    ("pk02-version", "strict", "", "", "", ["--version"]),
-    ("pk03-help-abbrev", "strict", "", "", "", ["--hel"]),
-    ("pk04-version-abbrev", "strict", "", "", "", ["--vers"]),
-    ("pk05-help-then-bogus", "strict", "", "", "", ["--help", "--bogus"]),
+    ("pk01-help", "win", "", "", "", ["--help"]),
+    ("pk02-version", "win", "", "", "", ["--version"]),
+    ("pk03-help-abbrev", "win", "", "", "", ["--hel"]),
+    ("pk04-version-abbrev", "win", "", "", "", ["--vers"]),
+    ("pk05-help-then-bogus", "win", "", "", "", ["--help", "--bogus"]),
     ("pk06-bogus-then-help", "strict", "", "", "", ["--bogus", "--help"]),
-    ("pk07-version-then-bogus", "strict", "", "", "", ["--version", "-Z"]),
-    ("pk08-help-with-user", "strict", "", "", "", ["--help", "nosuchuser99"]),
+    ("pk07-version-then-bogus", "win", "", "", "", ["--version", "-Z"]),
+    ("pk08-help-with-user", "win", "", "", "", ["--help", "nosuchuser99"]),
     # Usage failures: empty stdout + rc 1 on every side (getopt diagnostics,
     # pinky.c usage(EXIT_FAILURE) without a -l user).
     ("pk09-invalid-short", "strict", "", "", "", ["-Z"]),
@@ -3704,6 +3736,9 @@ pinky_rows = [
     # -l with an unknown user succeeds on all sides; only the byte face of
     # the current-user block is platform-bound elsewhere, so rc-only here.
     ("pk35-l-unknown-exit", "exit", "", "", "", ["-l", "nosuchuser99"]),
+    # wave-W1: long format with -q (the win value model; -q changes only
+    # short-format columns, so the block stays the resolved/unresolved face).
+    ("pk36-long-quiet", "win", "", "", "", ["-l", "-q", "cmx"]),
 ]
 
 # ---------------------------------------------------------------------------
