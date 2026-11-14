@@ -860,3 +860,24 @@ TEST(realpath, issue_1283_drive_colon_operand_resolves_carrier_file) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_NE(r.stdout_text.find("wux.txt"), std::string::npos);
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1726: an explicit empty operand is a path, never the cwd. The
+// Rust canonicalizer (canon.rs) already errors on "" in every mode; this
+// pin locks the -m shape (GNU 9.4: `realpath -m ""` -> "realpath: '':
+// No such file or directory", rc 1).
+// ---------------------------------------------------------------------------
+TEST(realpath, issue1726_empty_operand_missing_mode) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"realpath.exe", {L"-m", L""});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "realpath: '': No such file or directory\n");
+}

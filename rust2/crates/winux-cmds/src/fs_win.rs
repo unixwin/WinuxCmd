@@ -339,6 +339,12 @@ pub mod imp {
     /// fold onto U+F03A, and the remaining POSIX spellings (/tmp, /home,
     /// /usr/..., the bare "/") map through the configured shell tree.
     pub fn api_path(ctx: &Ctx, operand: &str) -> String {
+        // #1726: an explicit empty operand is a path, never the cwd —
+        // pass it through so every consumer stats "" and reports ENOENT
+        // like GNU (the cwd join below used to absolutize "" onto ctx.cwd).
+        if operand.is_empty() {
+            return String::new();
+        }
         // A DOS device name keeps its device magic only WITHOUT the \\?\
         // prefix ("\\?\D:\dir\NUL" is a literal file named NUL, not the
         // null device), so the canonical device name passes through
@@ -1306,6 +1312,12 @@ pub mod imp {
         None
     }
     pub fn api_path(ctx: &Ctx, operand: &str) -> String {
+        // #1726: an explicit empty operand is a path, never the cwd —
+        // pass it through so every consumer stats "" and reports ENOENT
+        // like GNU (the cwd join below used to absolutize "" onto ctx.cwd).
+        if operand.is_empty() {
+            return String::new();
+        }
         let mapped = winux_core::path::normalize_operand(ctx.env, &ctx.cwd, operand);
         if Path::new(&mapped).is_absolute() {
             mapped
@@ -1481,6 +1493,16 @@ mod api_path_probes {
     fn plain_ctx(base: &Path) -> Ctx<'static> {
         let env: &'static MapEnv = Box::leak(Box::new(MapEnv::new()));
         Ctx::new(base.to_path_buf(), env)
+    }
+
+    #[test]
+    fn issue1726_empty_operand_is_not_the_cwd() {
+        // The operand boundary used to absolutize "" onto the cwd, so
+        // every consumer statted the cwd for an empty operand (GNU:
+        // open("") is ENOENT, never the cwd).
+        let env: &'static MapEnv = Box::leak(Box::new(MapEnv::new()));
+        let ctx = Ctx::new(Path::new(r"D:\wd").to_path_buf(), env);
+        assert_eq!(imp::api_path(&ctx, ""), "");
     }
 
     #[test]

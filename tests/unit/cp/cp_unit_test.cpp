@@ -1950,3 +1950,27 @@ TEST(cp, issue1693_lx_directory_link_follows_with_H) {
       std::filesystem::symlink_status(tmp.path / "dstH")));
   EXPECT_EQ(tmp.read("dstH/f.txt"), "F\n");
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1726: an explicit empty operand is a path, never the cwd. The
+// Rust cp face already guards "" in Copier::api; this pin locks the
+// command-level behavior (GNU 9.4: `cp "" dst` -> "cannot stat '': No
+// such file or directory", rc 1) against a shared-layer regression.
+// ---------------------------------------------------------------------------
+TEST(cp, issue1726_empty_source_cannot_stat) {
+  TempDir tmp;
+  tmp.write("keep.txt", "keep");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"", L"dst.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "cp: cannot stat '': No such file or directory\n");
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "keep.txt"));
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "dst.txt"));
+}

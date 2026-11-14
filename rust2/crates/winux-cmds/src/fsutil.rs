@@ -115,6 +115,11 @@ pub fn join_lex(base: &Path, comp: &str) -> PathBuf {
 /// the ctx.cwd join exactly as before.
 pub fn resolve(ctx: &Ctx, operand: impl AsRef<Path>) -> PathBuf {
     let p = operand.as_ref();
+    // #1726: an explicit empty operand is a path, never the cwd (GNU:
+    // open("") is ENOENT); the cwd join below used to resolve "" to ctx.cwd.
+    if p.as_os_str().is_empty() {
+        return PathBuf::new();
+    }
     if let Some(s) = p.to_str() {
         let mapped = winux_core::path::normalize_operand(ctx.env, &ctx.cwd, s);
         // only a claimed spelling changes the resolution — and only when
@@ -605,6 +610,17 @@ mod tests {
             normalize_lex(&ctx, "a/./b//c"),
             format!("{}/a/b/c", sc.dir.to_string_lossy())
         );
+    }
+
+    #[test]
+    fn issue1726_resolve_empty_operand_is_empty() {
+        // The shared operand boundary used to join "" onto the cwd, so
+        // every fsutil::resolve consumer statted the cwd for an empty
+        // operand (GNU: open("") is ENOENT, never the cwd).
+        let sc = ScratchCtx::new("fsutil-empty");
+        let ctx = sc.ctx();
+        assert!(super::resolve(&ctx, "").as_os_str().is_empty());
+        assert!(!super::resolve(&ctx, "").exists());
     }
 
     /// The shared preserve-root guard, fed synthetic ctx/env and an
