@@ -1,3 +1,115 @@
+# Oracle 审计看板（#1462 全命令面行为契约核验）— WP-K 下一波
+
+- 本批命令：`chmod, chown, readlink, touch, dd, split, cksum, uniq, comm, join`（10 条）
+- 上一波：`ls, cp, mv, rm, ln, stat, du, df`（`D:/repo/wc-oracle`，248 行 / 19 issues）
+- 基线：`origin/main = f0cf6b17`；审计工作树 `D:/repo/wc-auditnext`（detached，未 commit / 未 push / 未改代码）
+- 二进制：`build-vs/winuxcmd.exe`，`WinuxCmd 1.2.1`（Release，`WINUXCMD_ENABLE_RUST2=ON`；readlink/touch/join 走 rust2，其余为 C++ applet）
+- GNU oracle：WSL2 GNU **coreutils 9.4**（`cksum (GNU coreutils) 9.4`），命令一律经脚本文件（`wsl bash <file>`）
+- 上游权威：coreutils 9.4 源码（`src/*.c` + gnulib `parse-datetime.y`/`canonicalize.c`/`userspec.c`），每条差异标注 owning 函数与行号
+- 环境：`LC_ALL=C`、`TZ=UTC`、`TERM=dumb`；两侧均显式注入（`win-run.ps1` 的 `EnvironmentVariables`，修掉了上一波“WSL interop 继承控制台/TZ 丢失”的通道伪影）
+- 判定口径：compat-gap = 行为/退出码/字节输出不一致；wording = 语义一致但诊断/排版文字不同；noise-platform / noise-locale = Windows 文件系统、身份模型、reparse 链接、locale 导致的不可比噪声
+
+## 一、总看板
+
+| 命令 | 契约行 | 一致 | compat-gap | wording | noise-platform | noise-locale | 未覆盖 | 新 issue |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| chmod | 36 | 31 | 0 | 2 | 3 | 0 | 0 | 0 |
+| chown | 32 | 8 | 9 | 9 | 5 | 1 | 0 | 3 |
+| readlink | 26 | 15 | 1 | 1 | 9 | 0 | 0 | 0（`-V` 并入全局） |
+| touch | 30 | 19 | 8 | 2 | 1 | 0 | 0 | 3（TZ 并入 #1655） |
+| dd | 31 | 22 | 6 | 2 | 1 | 0 | 0 | 2 |
+| split | 33 | 30 | 1 | 1 | 1 | 0 | 0 | 1 |
+| cksum | 35 | 28 | 4 | 3 | 0 | 0 | 0 | 2（`-V` 并入全局） |
+| uniq | 32 | 27 | 1 | 3 | 0 | 0 | 1 | 0（`-V` 并入全局） |
+| comm | 27 | 24 | 2 | 1 | 0 | 0 | 0 | 1（`-V` 并入全局） |
+| join | 32 | 29 | 2 | 1 | 0 | 0 | 0 | 1（`-V` 并入全局） |
+| **合计** | **314** | **233** | **34** | **25** | **20** | **1** | **1** | **14** |
+
+> gap 行 34 ≠ issue 14：同一根因跨多行合并（chown 无变化 6 行 → 1 单；touch TZ 5 行 → #1655；dd conv 3 行 → 1 单；全局 `-V` 5 行 → 1 单）。表中 per-command 新 issue 合计 13，另加 1 张不归属单命令的 dispatcher `-V` issue（#1714）。
+
+## 二、本批立案（14 张新 issue，全部 `compat-gap`）
+
+| # | 命令 | 摘要 | 严重度 |
+|---|---|---|---|
+| 1701 | chown | 无变化 chown（chown $USER / `owner:` / `:` / `--reference` / `-h` / `-R`）返 rc1 `Operation not permitted`，GNU rc0 | 高 |
+| 1702 | chown | `-v` 报告写 stderr；`-c` 无变化仍打印 retained（GNU stdout、`-c` 静默） | 中 |
+| 1703 | chown | 空 user spec `''` 被拒，GNU 视为不改、rc0 | 低 |
+| 1704 | touch | `-a -m` 同时给出只改 mtime，atime 丢失 | 中 |
+| 1705 | touch | `-d/-t` 日期语法残差：裸 `fortnight`、`a fortnight`、`EST`、闰秒 `.60`、年 0000 被拒（#1382 残差） | 中低 |
+| 1706 | touch | 空操作数 `''` 被误报 `missing file operand` | 低 |
+| 1707 | dd | 统计缺 `FULL+PARTIAL` 形状与 `秒, kB/s` 尾段 | 中 |
+| 1708 | dd | `conv=ascii/ebcdic/ibm/block/unblock/ucase/lcase/swab` 全部被拒（纯字节变换，无平台理由） | 高 |
+| 1709 | cksum | `-c` 接受 CRC/untagged-CRC 校验行，GNU 9.4 报 no properly formatted（过度接受） | 中低 |
+| 1710 | cksum | `-a crc32b` 被接受，GNU 9.4 无该算法（需裁定扩展） | 低 |
+| 1711 | split | `-a` 溢出诊断丢实参与 ERANGE 后缀（#1524 残差） | 低 |
+| 1712 | comm | `comm - -` rc0 无诊断，GNU rc1 `Bad file descriptor`（#429 残差） | 低 |
+| 1713 | join | `-z` 仍按换行切记录，GNU 只认 NUL（#1008 残差） | 低 |
+| 1714 | dispatcher | 全局把 `-V` 当 `--version`；GNU coreutils 对 cksum/readlink/uniq/comm/join 等报 invalid option | 低 |
+
+### 并入既存 issue
+
+- **#1655（OPEN，TZ 被忽略）**：追加 touch 复现与代码线索（`https://github.com/unixwin/WinuxCmd/issues/1655#issuecomment-6875870912`）。`TZ=UTC touch -d '2020-01-02 03:04:05'` 得 1577905445（+0800），GNU 1577934245；`touch.rs` 的 `finish_fixed()` 直接 `fs_win::from_local`。
+
+## 三、回归核对（已关闭 issue 是否被重新打破）
+
+通过（本轮实测仍符合 GNU）：
+
+- chmod：#1331（`u+rw-x`/`g=u`/`a=`）、#987（`-v` changed/retained）、#347/#327（诊断与递归错误文本主面）
+- readlink：#1491（`-f` 反斜杠路径）、#1231（`/d/` 裸盘符折叠）、#1246（`/cygdrive`、`/mnt` 折叠）——四种拼写均折叠为 `D:/repo/...`
+- touch：#1382 的 empty / `@epoch.frac` / `next Monday` / `2 days ago` 面、#612（`2026-6-27 13:12`）、#823（多字节 `-t` 不 panic）、#431（闰秒输入不 panic，但拒绝而非接受 → #1705）
+- dd：#364（skip 越界诊断）、#1195 同族（Ctrl-Z 不截断在 cksum 验证）、#1374（环境相关，未复测）
+- split：#289（非法 chunks）、#1081（过时 `-NUMBER` 与 `---io-blksize`）、#356（空输入不产生空片）、#1306（`-dl` 打包短选项）
+- cksum：#1362（`-b/-t` last-wins）、#1195（Ctrl-Z 不截断，`2049426561 9`）、#1084（`-b/-t` 接受）、#1033（md5/sha*/blake2b/sm3 面）、#1411（`-q/-s` 伪选项拒绝）、#1214（`--raw` 不 CRLF 注入）
+- uniq：#1341（`-w -1`）、#1010（`--group=both` 单空行）、#1306（`-Dc` 打包；错误文案仍缺 Try → wording）
+- comm：#1009（`--check-order` 保留断点前输出）、#1354（CRLF 不再剥离）、#1045（missing operand after FILE）
+- join：#1432（行尾反斜杠按数据保留）、#1007（乱序诊断/合并）、#1070/#1411（`-k`/`--empty` 拒绝）、#1045、#1212（Ctrl-Z 不截断）
+
+**发现回归 / 未完全修复**（已在本批新 issue 或看板注明）：
+
+- touch #1382：裸 `fortnight`、`a fortnight` 仍拒绝 → #1705
+- touch #355：具名时区 `EST` 仍拒绝 → #1705
+- split #1524：`-a` 溢出消息仍缺实参/ERANGE → #1711
+- comm #429：不再死锁，但 rc/诊断仍不同 → #1712
+- join #1008：NUL 输入已正确，换行输入仍被切 → #1713
+- chown #534（upstream-closed）：本仓产品路径仍复现 `-v` 走 stderr → #1702
+- dd #366（bytes copied 已显示）：形状/速率仍缺 → #1707
+
+## 四、方法学备注
+
+1. **TZ 注入修正**：首轮 `drive.py` 只把 `COMMON_ENV` 传给 GNU，未传给产品，导致 touch 的 `-d/-t` 假阳性；修正后重跑确认“TZ 被忽略”仍成立（`TZ=UTC` 显式注入产品进程后 epoch 仍 +8h）。所有命令的最终数字来自修正后的 `*-final.txt`。
+2. **符号链接通道**：本机无 `SeCreateSymbolicLinkPrivilege`，WSL 在 DrvFs 上 `ln -s` 创建的是 WSL 私有 reparse tag，Windows 自身也不解析；readlink 的默认/`-f/-e/-m` 在这些对象上按 noise-platform 计。用 `mklink /J` 建 junction 复核：默认/`-f`/`-e`/`-z`/多操作数全部正确。
+3. **字节捕获**：产品侧 `win-run.ps1` 用 .NET `Process` 重定向原始字节（`StandardOutput.BaseStream.CopyToAsync`），避免 PowerShell UTF-16 转码；GNU 侧 `subprocess` 直接 bytes。
+4. **fixture 时间固定**：全树 mtime/atime 固定为 `2020-01-02 03:04:05 UTC`；比较快照时剔除 1s 级 mtime（Windows 文件时间粒度），只比路径/类型/size/hash/链接组。
+5. **安全边界**：未执行 `chmod -R /`、`chown -R /` 或任何真实根递归；`--preserve-root` 只在普通文件/相对目录探测。未跑未隔离全量 ctest，未改主仓 `D:/repo/unixwin-winuxcmd`。
+6. **病态输入插曲**：手工探针 `split -n 18446744073709551616` 会让 GNU 与产品都进入长循环创建空片（5s 内 364k/1M+ 文件）；已用 `rd /s /q` 清理并重建 fixture，随后停止该类探针。两侧行为同病态，不计 gap。
+
+## 五、复现资产（本地，未提交）
+
+- `DOCS/oracle-audit/<cmd>.md`：10 张契约表（含 file:line、字节级 expected/actual）
+- `DOCS/oracle-audit/work/`：
+  - `drive.py`（支持 `gnu_args`/`win_args`、`probe`、`modes`、`rate` 掩码）、`specs/<cmd>.json`（304 例定义）、`fixtures.py`（双树 fixture）
+  - `win-run.ps1`（原始字节 + 显式环境注入）、`mkbin.ps1`（硬链接 applet）
+  - `out/<cmd>-final.txt`（最终原始比对）、`fx/`（双树 fixture 现场）
+  - `issue-bodies/`（14 张 issue 正文留档）
+- GNU 9.4 源码只存在 WSL `/tmp/cu94/coreutils-9.4`（未入库，避免 GPL 源码进入本仓）
+
+## 六、未完成项
+
+- chmod：setuid/setgid/sticky 在 Windows 无对应物，只核了“解析 + 报告面”，未核真实位持久化；`--preserve-root` 的根递归门未实测（安全红线）。
+- chown：ACL 实际效果（Get-Acl）未逐项核，仅核 rc/报告/诊断；需要管理员令牌的“真正改 owner”路径未覆盖。
+- readlink：原生 NTFS 文件符号链接无法创建（无特权），只覆盖 junction；`-f` 多级链接链未覆盖。
+- touch：GNU `parse-datetime` 全语法未穷举（抽样约 20 种形式）；`-d 'now'` 的纳秒级“现在”判定未钉。
+- dd：`oflag=direct/nocache`、`conv=noerror` 读错误路径、`SIGUSR1` 进度、`bs` 超大值未覆盖。
+- split：`--filter` 的 shell 兼容面（引号/`$FILE` 注入）只测了 `cat > out-$FILE`；CRLF 过滤未测。
+- cksum：check 模式的 `--ignore-missing/--quiet/--status/--strict/-w` 组合未系统覆盖；`--debug` 输出、sm3 边界未测。
+- uniq：#1523 的计数钳位未构造出可复现输入（需 2^64 行）。
+- comm/join：仅 `LC_ALL=C`；其它 locale 的 collation 未覆盖。
+- 全批：跨盘符（`D:`↔`E:`）、`>MAX_PATH`、非 C locale、无特权 token 的差异未纳入。
+
+---
+
+# 附录：batch-1 看板（ls/cp/mv/rm/ln/stat/du/df）
+
 # Oracle 审计看板（#1462 全命令面行为契约核验）
 
 - 本批命令：`ls, cp, mv, rm, ln, stat, du, df`（8 条）
