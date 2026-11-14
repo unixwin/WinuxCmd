@@ -156,6 +156,19 @@ export auto option_policy_for_command(std::string_view command)
     // "invalid option -- ','" — so the token passes whole to the body.
     policy.digit_led_short_tokens_as_positionals = true;
   }
+  // [GNU] echo.c also never calls getopt (its hand-rolled scan consumes
+  // only leading [-neE]-only tokens and treats everything else — "-0",
+  // "-x", "--upper", a non-sole "--help" — as data). The wired rust2 body
+  // (echo.rs, #1488) owns that scan off ctx.raw_args, so the generic
+  // parser stays permissive: unknown short tokens and every long token
+  // pass through as operands and no echo argv is rejected here. The
+  // declared -n/-e/-E (and the retired -u/-r extension spellings) still
+  // parse for option-occurrence bookkeeping only; the handler never reads
+  // them.
+  if (command == "echo") {
+    policy.allow_long_options = false;
+    policy.allow_unknown_short_options_as_positionals = true;
+  }
   // [GNU] coreutils truefalse.c never calls getopt: every operand is
   // ignored ("true -x -q --whatever" exits with the plain status and no
   // diagnostics), and --help/--version are honored only as the sole
