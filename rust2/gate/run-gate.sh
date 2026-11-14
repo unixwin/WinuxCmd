@@ -248,7 +248,13 @@ posix_setup_is_applet_list() {
 run_posix_win_side() {
     local side="$1" scase="$2" prog="$3" setup="$4" envstr="$5" stdin="$6"
     shift 6
-    local args=("$@")
+    # NOT `local args=("$@")`: the agent-side bash (niubash 5.3.20, MSYS)
+    # re-runs quote removal on a compound assignment given to `local`,
+    # silently stripping every backslash from the arguments (`s/b/\&/`
+    # reached both Windows AND GNU sides as `s/b/&/`; measured #1488 sed
+    # lane). Declare first, assign after.
+    local -a args
+    args=("$@")
     local sdir="$scase.$side"
     mkdir -p "$sdir"
     local exe
@@ -330,7 +336,13 @@ run_posix_win_side() {
 run_case() {
     local cmd="$1" id="$2" mode="$3" setup="$4" envstr="$5" stdin="$6"
     shift 6
-    local args=("$@")
+    # NOT `local args=("$@")`: the agent-side bash (niubash 5.3.20, MSYS)
+    # re-runs quote removal on a compound assignment given to `local`,
+    # silently stripping every backslash from the arguments (`s/b/\&/`
+    # reached both Windows AND GNU sides as `s/b/&/`; measured #1488 sed
+    # lane). Declare first, assign after.
+    local -a args
+    args=("$@")
 
     local scase="$ART/scratch/$id"
     rm -rf "$scase" "$scase.rust" "$scase.cpp" "$scase.gnu.sh" "$GNU_MIRROR/$id"

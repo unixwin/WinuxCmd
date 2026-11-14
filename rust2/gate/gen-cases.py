@@ -3972,11 +3972,11 @@ sed_rows = [
     ('sd517-posix-alt-literal', 'strict', '', '', 'a|b', ['--posix', 's/a\\|b/X/']),
     ('sd518-posix-w-literal', 'strict', '', '', 'aw b', ['--posix', 's/\\w/X/']),
     ('sd519-posixly-correct-paren', 'strict', '', 'POSIXLY_CORRECT=1', 'a)b', ['-E', 's/)/X/']),
-    ('sd520-range-regex-equals', 'strict', SED_F5, '', '', ['-n', '/one/,/t/{=}', 'f']),
+    ('sd520-range-regex-equals', 'strict', SED_F5, '', '', ['-n', ' /one/,/t/{=}', 'f']),
     ('sd521-N-join-D', 'strict', SED_F5, '', '', ['$!N;s/\\n/ /;D', 'f']),
     ('sd522-D-no-newline', 'strict', SED_F5, '', '', ['D', 'f']),
     ('sd523-i-n-w-stdout', 'strict', SED_F5, '', '', ['-i', 'n;w /dev/stdout', 'f']),
-    ('sd524-debug-y-utf8-c', 'strict', SED_F5, '', '', ['--debug', '-n', '2{y/éa/eb/;c\\\nC\n}', 'f']),
+    ('sd524-debug-y-utf8-c', 'strict', SED_F5, '', '', ['--debug', '-n', '-e', '2{y/éa/eb/;c\\', '-e', 'C', '-e', '}', 'f']),
     ('sd525-s-w-in-block', 'strict', SED_F5, '', '', ['-n', '2{s/w/W/w /dev/stdout\n}', 'f']),
     ('sd526-s-newline-P-D', 'strict', '', '', 'x', ['s/x/a\\\nb/;P;D']),
     ('sd527-G-G-l-chomp', 'strict', '', '', 'x', ['G;G;l']),
@@ -3985,10 +3985,10 @@ sed_rows = [
     ('sd530-alt-unmatched-group', 'strict', '', '', 'abc', ['s/\\(a\\)\\|b/[\\1]/g']),
     ('sd531-a-classic-escaped-space', 'strict', '', '', 'x', ['a\\\n\\  sp']),
     ('sd532-i-classic-multi', 'strict', '', '', 'x', ['i\\\n  multi\\\n  line']),
-    ('sd533-$!d-a', 'strict', '', '', 'x', ['$!d;a end']),
+    ('sd533-not-last-d-a', 'strict', '', '', 'x', ['$!d;a end']),
     ('sd534-c-backslash-empty', 'strict', '', '', 'x', ['c\\']),
     ('sd535-empty-regex-after-s', 'strict', '', '', 'x', ['s/x/&&/;s//y/']),
-    ('sd536-empty-regex-negated', 'strict', SED_F5, '', '', ['-n', '/t/{//!p}', 'f']),
+    ('sd536-empty-regex-negated', 'strict', SED_F5, '', '', ['-n', ' /t/{//!p}', 'f']),
     ('sd537-s-nth-dot', 'strict', '', '', 'a.b.c', ['s/\\./-/2']),
     ('sd538-s-newline-l', 'strict', '', '', 'abc', ['s/\\(b\\)/\\n\\1\\n/;l']),
     ('sd539-s-nth-beyond', 'strict', '', '', 'aaa', ['s/a/b/4']),
@@ -4025,7 +4025,7 @@ sed_rows = [
     ('sd570-s-w-missing-filename', 'strict', '', '', 'x', ['s/x/y/w']),
     ('sd571-step-bang', 'strict', '', '', 'x', ['1~2!p']),
     ('sd572-step-zero-first-last', 'strict', 'seq 12 > f', '', '', ['-n', '0~4p;$p', 'f']),
-    ('sd573-regex-tilde-range', 'strict', 'seq 12 > f', '', '', ['-n', '/1/,~5p', 'f']),
+    ('sd573-regex-tilde-range', 'strict', 'seq 12 > f', '', '', ['-n', ' /1/,~5p', 'f']),
     ('sd574-reversed-and-plus', 'strict', 'seq 12 > f', '', '', ['-n', '5,3p;8,+1p', 'f']),
     ('sd575-nested-ranges', 'strict', 'seq 12 > f', '', '', ['2,4{4,6p}', 'f']),
     ('sd576-nested-range-equals', 'strict', 'seq 5 > f', '', '', ['-n', '2,4{=;4,5p}', 'f']),
@@ -4041,7 +4041,26 @@ sed_rows = [
     ('sd586-debug-mixed', 'strict', 'seq 3 > f', '', '', ['--debug', '-n', '1~2{l 2;=};$!{n};2q;3Q 2;R f', 'f']),
     ('sd587-debug-s-flags', 'strict', 'seq 3 > f', '', '', ['--debug', '-n', 's/1/x/2gpw /dev/stdout\ns/2/\\U&\\l\\E\\u&/i', 'f']),
     ('sd588-debug-escapes', 'strict', '', '', 'x', ['--debug', 's/x/[\\t\\n\\\\]/;a\\\n\\tq']),
-    ('sd589-debug-addr-flags', 'strict', '', '', 'x', ['--debug', '/x/I,/y/M!{$b};\\,a,d;:a']),
+    ('sd589-debug-addr-flags', 'strict', '', '', 'x', ['--debug', ' /x/I,/y/M!{$b};\\,a,d;:a']),
+    # --- #1496/#1495 capture family (main WIP 4961285a differential matrix;
+    # wc-sed2 winux-regex must match GNU opening-order numbering + glibc
+    # empty-iteration accounting byte-for-byte) ---
+    ('sd590-cap-nest-star-bre', 'strict', '', '', 'xxxx', ['s/^\\(\\(x\\)*\\)*$/[\\1|[\\2]]/']),
+    ('sd591-cap-nest-star-ere', 'strict', '', '', 'xxxx', ['-E', 's/^((x)*)*$/[\\1|\\2]/']),
+    ('sd592-cap-triple-nest', 'strict', '', '', 'xxxx', ['s/^\\(\\(\\(x\\)*\\)*\\)*$/[\\1|[\\2]|[\\3]]/']),
+    ('sd593-cap-repeat-last-iter', 'strict', '', '', 'abab', ['s/^\\(a\\(b\\)*\\)*$/[\\1|[\\2]]/']),
+    ('sd594-interval-min-empty', 'strict', '', '', 'abcabc', ['s/^\\(.*\\)\\{2,\\}$/[\\1]/']),
+    ('sd595-interval-empty-line', 'strict', "printf '\\n' > f", '', '', ['-n', 's/^\\(.*\\)\\{2,\\}$/[\\1]/p', 'f']),
+    ('sd596-interval-exact-empty', 'strict', '', '', 'aaa', ['s/^\\(a*\\)\\{2\\}$/[\\1]/']),
+    ('sd597-interval-bounded-restore', 'strict', '', '', 'aaa', ['s/^\\(a*\\)\\{2,3\\}$/[\\1]/']),
+    ('sd598-posix-alternation-pick', 'strict', '', '', 'abcd', ['-E', 's/(a|ab)(c|bcd)(d*)/[\\1][\\2][\\3]/']),
+    # --- probed edge divergences / rc paths ---
+    # KNOWN DIVERGENCE while unfixed: GNU panics "couldn't readlink nosuch"
+    # (rc 4) under --follow-symlinks; rust2 currently falls through to
+    # "can't read" (rc 2). This row is the ledger pin for that gap.
+    ('sd599-follow-symlinks-missing', 'strict', '', '', 'x', ['--follow-symlinks', '-e', 'p', 'nosuch']),
+    ('sd600-q-n-exit-stdin', 'strict', "printf 'one\\ntwo\\nthree\\nfour\\nfive\\n' > f", '', '', ['-n', '2q3', 'f']),
+    ('sd601-v-too-new', 'strict', '', '', 'x', ['v9.0']),
 ]
 
 

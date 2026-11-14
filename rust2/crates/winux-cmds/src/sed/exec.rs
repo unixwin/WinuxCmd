@@ -589,19 +589,36 @@ impl<'a> Exec<'a> {
 
     /// follow_symlink: resolve a symlink chain textually (GNU uses the
     /// final target's name for editing and for `F`).
-    fn follow_symlink(&self, name: &str) -> String {
+    ///
+    /// [GNU sed 4.9 utils.c follow_symlinks] readlink on a chain element
+    /// is benign only when it answers EINVAL ("not a symlink"). Every
+    /// other failure — above all ENOENT on a missing operand — is a
+    /// `couldn't readlink` panic with status 4 (sd599 oracle probe:
+    /// `sed --follow-symlinks -e p nosuch`).
+    fn follow_symlink(&self, name: &str) -> Result<String, Fatal> {
         let mut cur = name.to_string();
         for _ in 0..40 {
             let p = fsutil::resolve(self.ctx, &cur);
-            let is_link = std::fs::symlink_metadata(&p)
-                .map(|m| m.file_type().is_symlink())
-                .unwrap_or(false);
+            let is_link = match std::fs::symlink_metadata(&p) {
+                Ok(m) => m.file_type().is_symlink(),
+                Err(e) => {
+                    return Err(Fatal {
+                        msg: format!("sed: couldn't readlink {cur}: {}", fsutil::reason(&e)),
+                        status: 4,
+                    });
+                }
+            };
             if !is_link {
                 break;
             }
             let target = match std::fs::read_link(&p) {
                 Ok(t) => t.to_string_lossy().into_owned(),
-                Err(_) => break,
+                Err(e) => {
+                    return Err(Fatal {
+                        msg: format!("sed: couldn't readlink {cur}: {}", fsutil::reason(&e)),
+                        status: 4,
+                    });
+                }
             };
             let target = target
                 .strip_prefix(r"\\?\")
@@ -617,7 +634,7 @@ impl<'a> Exec<'a> {
                 }
             };
         }
-        cur
+        Ok(cur)
     }
 
     fn open_next_file(&mut self, name: &str) -> Result<(), Fatal> {
@@ -628,7 +645,7 @@ impl<'a> Exec<'a> {
         }
         let mut name = name.to_string();
         if self.s.follow_symlinks {
-            name = self.follow_symlink(&name);
+            name = self.follow_symlink(&name)?;
             self.in_file_name = name.clone();
         }
         let path = fsutil::resolve(self.ctx, &name);
