@@ -20,6 +20,9 @@ retry_missing_multi        rc 0/0  out:=  err:=  PASS
 desc_retry_missing         rc 1/1  out:=  err:=  PASS
 pid_exit                   rc 0/0  out:=  err:=  PASS
 stdin_file                 rc 0/0  out:=  err:=  PASS
+stdin_file_truncate        rc 0/0  out:=  err:=  PASS
+stdin_file_c99             rc 0/0  out:=  err:=  PASS
+stdin_file_plus_files      rc 0/0  out:=  err:=  PASS
 stdin_pipe                 rc 0/0  out:=  err:=  PASS
 stdin_pipe_plus_file       rc 0/0  out:=  err:=  PASS
 bytes_from                 rc 0/0  out:=  err:=  PASS
@@ -27,7 +30,7 @@ lines_zero                 rc 0/0  out:=  err:=  PASS
 zero_term                  rc 0/0  out:=  err:=  PASS
 sleep_fraction             rc 0/0  out:=  err:=  PASS
 broken_pipe                rc pipe-death/pipe-death  out:=  err:=  PASS
-# totals: pass=27 fail=0 known-deviation=0
+# totals: pass=30 fail=0 known-deviation=0
 
 # ---- GNU transcripts (stdout via cat -A, then stderr) ----
 == append (rc 0)
@@ -174,6 +177,44 @@ a$
 b$
 c$
 d$
+-- stderr
+== stdin_file_truncate (rc 0)
+1$
+2$
+3$
+new$
+more$
+-- stderr
+tail: 'standard input': file truncated
+== stdin_file_c99 (rc 0)
+ab$
+x$
+-- stderr
+tail: 'standard input': file truncated
+== stdin_file_plus_files (rc 0)
+==> standard input <==$
+s1$
+$
+==> f2 <==$
+s1$
+$
+==> q <==$
+q$
+$
+==> standard input <==$
+s2$
+$
+==> f2 <==$
+s2$
+$
+==> q <==$
+q2$
+$
+==> standard input <==$
+s3$
+$
+==> f2 <==$
+s3$
 -- stderr
 == stdin_pipe (rc 0)
 p$

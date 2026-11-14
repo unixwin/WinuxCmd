@@ -255,6 +255,43 @@ sc_stdin_file() {
     fin
 }
 
+sc_stdin_file_truncate() {
+    # truncating a followed regular-file stdin: GNU (p2, polling path)
+    # prints `tail: 'standard input': file truncated` and re-dumps from 0
+    printf '1\n2\n3\n' > f
+    life 2.6
+    $TAIL -f -s 0.1 --pid=$P < f > out 2> err & TP=$!
+    st; : > f
+    st; echo new >> f
+    st; echo more >> f
+    fin
+}
+
+sc_stdin_file_c99() {
+    # -c +99 lseeks stdin past EOF (3-byte file): the first follow check
+    # reports the truncation and re-dumps from 0 (GNU p3)
+    printf 'ab\n' > f
+    life 2.1
+    $TAIL -f -c +99 -s 0.1 --pid=$P < f > out 2> err & TP=$!
+    st; echo x >> f
+    fin
+}
+
+sc_stdin_file_plus_files() {
+    # a Disk stdin among named operands (GNU p5): stdin is followed by
+    # descriptor and header switching covers all three inputs — the same
+    # file listed twice is followed by two independent specs, exactly like
+    # GNU (each appended line appears under both "standard input" and f2)
+    printf 's1\n' > f2
+    printf 'q\n' > q
+    life 3.1
+    $TAIL -f -s 0.1 --pid=$P - f2 q < f2 > out 2> err & TP=$!
+    st; echo s2 >> f2
+    st; echo q2 >> q
+    st; echo s3 >> f2
+    fin
+}
+
 sc_stdin_pipe() {
     # -f on a pipe stdin: read to EOF, print, exit (POSIX: -f ignored)
     life 0.1
@@ -329,7 +366,8 @@ SCENARIOS="append append_default_interval multi_headers multi_quiet
 verbose_single truncate truncate_rewrite desc_rename desc_delete
 name_rotate name_replace retry_delete name_noretry_delete name_noretry_multi_reappear
 name_noretry_rename_last retry_missing
-retry_missing_multi desc_retry_missing pid_exit stdin_file stdin_pipe
+retry_missing_multi desc_retry_missing pid_exit stdin_file stdin_file_truncate
+stdin_file_c99 stdin_file_plus_files stdin_pipe
 stdin_pipe_plus_file bytes_from lines_zero zero_term sleep_fraction
 broken_pipe"
 

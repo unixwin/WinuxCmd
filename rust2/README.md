@@ -467,23 +467,36 @@ Highlights:
   truncate, rename-away, delete all work while followed).
 * Output is flushed after every chunk; a stdout write error ends the run
   (broken pipe -> `Err(CmdError::Io)`, host status 141).
-* Handle red line: the library QUERIES the process stdin handle for
-  `-f` on `-` (GetFileType / GetConsoleMode / GetFinalPathNameByHandleW /
-  current position — the tty.rs tier) and opens the file by path with
-  its own handle; it never reads, duplicates or moves the host's handle.
+* Handle red line: stdin classification and follow target are INJECTED
+  (`tail::StdinMeta`) — the library never touches a process handle (no
+  `GetStdHandle` anywhere in the library). The registry entry defaults
+  to the pipe class (an ABI-injected stdin is a finite byte stream: `-f`
+  on it is ignored, POSIX ignore_fifo_and_pipe; the driver-run
+  `-c +99`-past-EOF truncation on a disk stdin is reproduced through the
+  injected path). The gate driver composes the real class + follow path
+  from the process handles (the sanctioned process-IO tier,
+  `tail_stdin_meta`); the ABI metadata channel for other hosts is the
+  wiring wave's input-metadata item. A Disk stdin without an injected
+  follow path keeps GNU's duration semantics — the run stays live until
+  `--pid` death with nothing to read. Named-operand handles, directory
+  change notifications and the `--pid` process handle are the command's
+  own, created from explicit arguments.
 
 Gates: 45 terminating follow rows in `gate/cases/tail.tsv` (dead
 `--pid`, "no files remaining", option errors), and the live scenario
 harness
 
 ```sh
-bash gate/wire/tail-follow.sh          # 27 scenarios, GNU (WSL, ext4) vs Rust driver
+bash gate/wire/tail-follow.sh          # 30 scenarios, GNU (WSL, ext4) vs Rust driver
 ```
 
 which records `gate/wire/tail-follow.out` (append, partial lines,
-multi-file headers, -q/-v, truncation, descriptor rename/delete, -F
+multi-file headers, -q/-v, truncation — named file and followed
+regular-file stdin with GNU's quoted `'standard input': file truncated`
+wording, `-c +99` past-EOF on a disk stdin, descriptor rename/delete, -F
 rotate/replace, --retry delete/missing, --follow=name without retry,
---pid exit, stdin file/pipe, -c/-n +N, -n 0, -z, -s 0.1, broken pipe).
+--pid exit, stdin file/pipe/multi-operand, -c/-n +N, -n 0, -z, -s 0.1,
+broken pipe).
 
 ## Out of scope for this pilot
 

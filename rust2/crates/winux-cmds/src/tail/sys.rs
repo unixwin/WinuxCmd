@@ -1,13 +1,20 @@
 //! Win32 surface for `tail` follow mode (#1488): handle/path identity,
-//! the stdin kind probe, the `--pid` liveness handle, and the directory
-//! change notifications that wake the follow loop.
+//! the `--pid` liveness handle, and the directory change notifications
+//! that wake the follow loop.
+//!
+//! Every handle here is the command's OWN, created from explicit
+//! arguments (operand paths, the `--pid` value): opened files, directory
+//! change notifications, the opened process. The process stdin handle is
+//! never touched — its class and follow target arrive injected
+//! (`tail::StdinMeta`; the gate driver composes them from the process
+//! side, which is the only sanctioned process-IO tier).
 //!
 //! Zero crates — raw kernel32 declarations in the fs_win.rs/winsys.rs
 //! style. Non-Windows builds get std-only fallbacks so the workspace still
 //! compiles (pure polling, no pid tracking).
 
 use std::fs::File;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 /// What `fstat` would say about an open file (or a path), reduced to the
@@ -42,7 +49,7 @@ pub enum StdinKind {
 
 #[cfg(windows)]
 mod imp {
-    use super::{Stat, StdinKind};
+    use super::Stat;
     use std::ffi::c_void;
     use std::fs::File;
     use std::os::windows::ffi::OsStrExt;
@@ -72,9 +79,6 @@ mod imp {
     extern "system" {
         fn GetFileInformationByHandle(h: Handle, info: *mut c_void) -> i32;
         fn GetFileType(h: Handle) -> u32;
-        fn GetStdHandle(which: u32) -> Handle;
-        fn GetConsoleMode(h: Handle, mode: *mut u32) -> i32;
-        fn SetFilePointerEx(h: Handle, distance: i64, new_pos: *mut i64, method: u32) -> i32;
         fn CreateFileW(
             name: *const u16,
             access: u32,
@@ -91,7 +95,6 @@ mod imp {
         fn FindFirstChangeNotificationW(dir: *const u16, subtree: i32, filter: u32) -> Handle;
         fn FindNextChangeNotification(h: Handle) -> i32;
         fn FindCloseChangeNotification(h: Handle) -> i32;
-        fn GetFinalPathNameByHandleW(h: Handle, buf: *mut u16, cap: u32, flags: u32) -> u32;
         fn GetLastError() -> u32;
         fn OpenFileById(
             hint: Handle,
@@ -108,8 +111,6 @@ mod imp {
     const FILE_TYPE_DISK: u32 = 1;
     const FILE_TYPE_CHAR: u32 = 2;
     const FILE_TYPE_PIPE: u32 = 3;
-    const STD_INPUT_HANDLE: u32 = -10i32 as u32;
-    const FILE_CURRENT: u32 = 1;
     const FILE_READ_ATTRIBUTES: u32 = 0x80;
     const SHARE_ALL: u32 = 0x1 | 0x2 | 0x4;
     const OPEN_EXISTING: u32 = 3;
@@ -235,61 +236,6 @@ mod imp {
         true
     }
 
-    fn std_input() -> Option<Handle> {
-        let h = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
-        if h.is_null() || h == INVALID_HANDLE_VALUE {
-            None
-        } else {
-            Some(h)
-        }
-    }
-
-    pub fn stdin_kind() -> StdinKind {
-        let Some(h) = std_input() else {
-            return StdinKind::Unknown;
-        };
-        match unsafe { GetFileType(h) } {
-            FILE_TYPE_DISK => StdinKind::Disk,
-            FILE_TYPE_PIPE => StdinKind::Pipe,
-            FILE_TYPE_CHAR => {
-                let mut mode = 0u32;
-                if unsafe { GetConsoleMode(h, &mut mode) } != 0 {
-                    StdinKind::Console
-                } else {
-                    StdinKind::CharDev
-                }
-            }
-            _ => StdinKind::Unknown,
-        }
-    }
-
-    /// Follow target for a regular-file stdin (tail.c follows fd 0 when
-    /// fstat says S_ISREG). The process stdin handle is only QUERIED —
-    /// its final path and current position, the tty.rs query tier — and
-    /// never read, duplicated or moved: the follower opens the file by
-    /// that path with its own handle and resumes at the queried position
-    /// (where the host's reads of the injected stdin stopped). Returns
-    /// the file, the position and the containing directory.
-    pub fn stdin_follow_target() -> Option<(File, u64, PathBuf)> {
-        let h = std_input()?;
-        if unsafe { GetFileType(h) } != FILE_TYPE_DISK {
-            return None;
-        }
-        let mut buf = vec![0u16; 32768];
-        let n = unsafe { GetFinalPathNameByHandleW(h, buf.as_mut_ptr(), 32768, 0) };
-        if n == 0 || n as usize >= buf.len() {
-            return None;
-        }
-        let path = PathBuf::from(String::from_utf16_lossy(&buf[..n as usize]));
-        let mut pos: i64 = 0;
-        if unsafe { SetFilePointerEx(h, 0, &mut pos, FILE_CURRENT) } == 0 {
-            return None;
-        }
-        let f = File::open(&path).ok()?;
-        let dir = path.parent()?.to_path_buf();
-        Some((f, pos.max(0) as u64, dir))
-    }
-
     /// `--pid` liveness: a SYNCHRONIZE handle when the process can be
     /// opened (signaled == dead). GNU's kill(pid, 0) treats EPERM as
     /// alive; ERROR_ACCESS_DENIED is that case here and is re-probed
@@ -403,7 +349,7 @@ mod imp {
 
 #[cfg(not(windows))]
 mod imp {
-    use super::{Stat, StdinKind};
+    use super::Stat;
     use std::fs::File;
     use std::path::{Path, PathBuf};
 
@@ -430,14 +376,6 @@ mod imp {
 
     pub fn path_stat(p: &Path) -> std::io::Result<Stat> {
         std::fs::metadata(p).map(from_meta)
-    }
-
-    pub fn stdin_kind() -> StdinKind {
-        StdinKind::Unknown
-    }
-
-    pub fn stdin_follow_target() -> Option<(File, u64, PathBuf)> {
-        None
     }
 
     pub fn exists_by_id(_dir: &Path, _id: (u32, u64)) -> bool {
@@ -475,14 +413,6 @@ pub fn handle_stat(f: &File) -> std::io::Result<Stat> {
 
 pub fn path_stat(p: &Path) -> std::io::Result<Stat> {
     imp::path_stat(p)
-}
-
-pub fn stdin_kind() -> StdinKind {
-    imp::stdin_kind()
-}
-
-pub fn stdin_follow_target() -> Option<(File, u64, PathBuf)> {
-    imp::stdin_follow_target()
 }
 
 pub fn exists_by_id(dir: &Path, id: (u32, u64)) -> bool {

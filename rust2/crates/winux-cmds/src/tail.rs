@@ -39,7 +39,7 @@ mod follow;
 mod sys;
 
 use follow::{Errnum, FollowMode, FollowOpts, Headers, Spec};
-use sys::StdinKind;
+pub use sys::StdinKind;
 
 const OPTS: &[OptSpec] = &[
     OptSpec {
@@ -611,19 +611,54 @@ named file in a way that accommodates renaming, removal and creation.
 
 "#;
 
-pub fn tail_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
-    tail_with(args, io, ctx, &sys::stdin_kind)
+/// What GNU learns from `fstat(0)` and the stdin fd itself, injected.
+///
+/// The library never touches the process stdin handle (the shape
+/// contract's red line: no `GetStdHandle`, no fd 0 in the library): the
+/// HOST classifies the source and, for a redirected regular file, hands
+/// the follow target's path. The consumed offset is NOT part of the
+/// metadata — it is what the command's own injected reads consumed
+/// (`read_to_end` of `io.stdin`), mirroring GNU's fd position after the
+/// initial dump.
+///
+/// `StdinMeta::pipe_stream()` is the registry default and the honest
+/// description of an ABI-injected stdin: a finite byte stream (v1 hands
+/// one whole buffer; the v2 callback reaches the end of the host's feed),
+/// which is GNU's pipe/FIFO class — POSIX `ignore_fifo_and_pipe` drops it
+/// from a follow set, so `tail -f` on it dumps and exits exactly like
+/// `printf x | tail -f`. A host that knows more injects the real class:
+/// the gate driver composes it from the process handles (the one
+/// sanctioned process-IO tier, `tail_stdin_meta` in the driver); the ABI
+/// metadata channel for other hosts is the wiring wave's input-metadata
+/// item (#1488, handover follow-up 2).
+#[derive(Clone, Debug)]
+pub struct StdinMeta {
+    pub kind: StdinKind,
+    /// Regular-file stdin: the file the host's stdin reads from, so `-f -`
+    /// can follow it by descriptor (tail.c follows fd 0 when fstat says
+    /// S_ISREG). None = the source is not followable under injection; the
+    /// run then treats it as consumed input that cannot grow.
+    pub follow_path: Option<std::path::PathBuf>,
 }
 
-/// `tail_cmd` with the stdin-kind probe injected (unit tests pin it; the
-/// product asks the process stdin handle — the one piece of state a
-/// `dyn Read` cannot carry, same tier as tty.rs).
-fn tail_with(
-    args: &[OsString],
-    io: &mut Io,
-    ctx: &Ctx,
-    stdin_probe: &dyn Fn() -> StdinKind,
-) -> CmdResult {
+impl StdinMeta {
+    /// The hostless default: an injected finite stream (pipe class).
+    pub fn pipe_stream() -> StdinMeta {
+        StdinMeta {
+            kind: StdinKind::Pipe,
+            follow_path: None,
+        }
+    }
+}
+
+pub fn tail_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
+    tail_with_meta(args, io, ctx, &StdinMeta::pipe_stream())
+}
+
+/// `tail_cmd` with the stdin classification injected. Unit tests and the
+/// gate driver call this to pin the stdin class GNU would read from
+/// `fstat(0)`; the library itself never asks the process.
+pub fn tail_with_meta(args: &[OsString], io: &mut Io, ctx: &Ctx, stdin: &StdinMeta) -> CmdResult {
     // obsolescent -NUM folds into --lines (tail -5 == tail -n 5), but an
     // argument consumed as an option value passes through untouched
     let mut norm: Vec<OsString> = Vec::with_capacity(args.len());
@@ -811,7 +846,7 @@ fn tail_with(
         return Ok(1);
     }
     let stdin_kind = if found_hyphen {
-        stdin_probe()
+        stdin.kind
     } else {
         StdinKind::Unknown
     };
@@ -859,14 +894,42 @@ fn tail_with(
             }
             spec.stdin = Some(stdin_kind);
             if forever && stdin_kind == StdinKind::Disk {
-                if let Some((f, pos, dir)) = sys::stdin_follow_target() {
-                    spec.size = pos;
-                    if let Ok(st) = sys::handle_stat(&f) {
-                        spec.id = st.id;
-                        spec.regular = st.regular;
+                // GNU holds fd 0 open for the whole run; when the host
+                // cannot name the file the injected run keeps GNU's
+                // duration semantics — live until --pid death, nothing to
+                // read — via the "logically open" parked state.
+                let mut held = false;
+                if let Some(target) = stdin.follow_path.as_ref() {
+                    if let Ok(mut f) = File::open(target) {
+                        // The follow resumes at what the injected reads
+                        // consumed, in dump_regular's read_pos terms:
+                        // bytes FromStart(k) is reached by lseek(k-1) on
+                        // GNU's fd, so a skip past EOF leaves the offset
+                        // ABOVE the size and the first follow check
+                        // reports the truncation (probed, WSL 9.4:
+                        // `tail -f -c +99 < tiny` prints
+                        // `'standard input': file truncated` and re-dumps
+                        // from 0; every other shape consumes the whole
+                        // input, probed p1/p2).
+                        spec.size = match &count {
+                            TailCount::FromStart(k) if bytes_mode => {
+                                // dump_regular's skip clamp: k-1, seekable
+                                let skip = k.saturating_sub(1).min(i64::MAX as u128) as u64;
+                                skip.max(buf.len() as u64)
+                            }
+                            _ => buf.len() as u64,
+                        };
+                        if let Ok(st) = sys::handle_stat(&f) {
+                            spec.id = st.id;
+                            spec.regular = st.regular;
+                        }
+                        spec.watch_dir = target.parent().map(|d| d.to_path_buf());
+                        spec.fd = Some(f);
+                        held = true;
                     }
-                    spec.watch_dir = Some(dir);
-                    spec.fd = Some(f);
+                }
+                if !held {
+                    spec.parked = true;
                 }
             }
             specs.push(spec);
@@ -1017,7 +1080,7 @@ mod tests {
         let mut io = MemIo::new(stdin);
         let ctx = sc.ctx();
         let owned: Vec<OsString> = args.iter().map(Into::into).collect();
-        let r = tail_with(&owned, &mut io.split(), &ctx, &|| StdinKind::Pipe).unwrap();
+        let r = tail_with_meta(&owned, &mut io.split(), &ctx, &StdinMeta::pipe_stream()).unwrap();
         (r, io.out(), io.err())
     }
 
@@ -1146,7 +1209,22 @@ mod tests {
         let mut io = MemIo::new("");
         let ctx = sc.ctx();
         let owned: Vec<OsString> = args.iter().map(Into::into).collect();
-        let r = tail_with(&owned, &mut io.split(), &ctx, &|| StdinKind::Pipe).unwrap();
+        let r = tail_with_meta(&owned, &mut io.split(), &ctx, &StdinMeta::pipe_stream()).unwrap();
+        (r, io.out(), io.err())
+    }
+
+    /// Like `run_in`, but with explicit stdin metadata and stdin bytes
+    /// (the injected Disk-stdin shapes).
+    fn run_meta(
+        sc: &ScratchCtx,
+        stdin: &str,
+        meta: &StdinMeta,
+        args: &[&str],
+    ) -> (u32, String, String) {
+        let mut io = MemIo::new(stdin);
+        let ctx = sc.ctx();
+        let owned: Vec<OsString> = args.iter().map(Into::into).collect();
+        let r = tail_with_meta(&owned, &mut io.split(), &ctx, meta).unwrap();
         (r, io.out(), io.err())
     }
 
@@ -1341,5 +1419,122 @@ mod tests {
         assert_eq!(r, 0);
         assert_eq!(o, "a\nb\nnew\n");
         assert_eq!(e, "tail: f: file truncated\n");
+    }
+
+    #[test]
+    fn stdin_follow_target_is_injected() {
+        // The Disk-stdin follow runs entirely on injected IO: MemIo stdin
+        // plus an injected follow path (no process handle anywhere — the
+        // command reopens the host-named file with its own handle).
+        let sc = ScratchCtx::new("tail-stdinmeta");
+        let f = sc.path("in");
+        std::fs::write(&f, "a\nb\n").unwrap();
+        let meta = StdinMeta {
+            kind: StdinKind::Disk,
+            follow_path: Some(f.clone()),
+        };
+        // GNU follows fd 0 by descriptor: dump, idle until the writer
+        // (dead pid) ends the run.
+        let (r, o, e) = run_meta(&sc, "a\nb\n", &meta, &["-f", DEAD, "-"]);
+        assert_eq!(r, 0);
+        assert_eq!(o, "a\nb\n");
+        assert_eq!(e, "");
+        // Disk class but no follow path: consumed input cannot grow, dump
+        // only — same terminating shape.
+        let meta = StdinMeta {
+            kind: StdinKind::Disk,
+            follow_path: None,
+        };
+        let (r, o, e) = run_meta(&sc, "a\nb\n", &meta, &["-f", DEAD, "-"]);
+        assert_eq!(r, 0);
+        assert_eq!(o, "a\nb\n");
+        assert_eq!(e, "");
+        // The registry default (pipe class) ignores -f like GNU's
+        // `printf x | tail -f` (POSIX ignore_fifo_and_pipe).
+        let (r, o, e) = run_meta(&sc, "a\nb\n", &StdinMeta::pipe_stream(), &["-f", "-"]);
+        assert_eq!(r, 0);
+        assert_eq!(o, "a\nb\n");
+        assert_eq!(e, "");
+    }
+
+    #[test]
+    fn stdin_follow_from_start_bytes_reports_truncation_like_gnu() {
+        // Probed (p3, WSL 9.4): `-f -c +99` lseeks fd 0 to 98, past the
+        // 3-byte file; the first follow check sees size < consumed and
+        // prints `'standard input': file truncated`, re-dumping from 0.
+        // GNU quotes "standard input" because quotef quotes names with
+        // shell-special characters — the space here (tail.c tail_forever).
+        let sc = ScratchCtx::new("tail-stdin-c99");
+        let f = sc.path("in");
+        std::fs::write(&f, "ab\n").unwrap();
+        let meta = StdinMeta {
+            kind: StdinKind::Disk,
+            follow_path: Some(f),
+        };
+        let (r, o, e) = run_meta(&sc, "ab\n", &meta, &["-f", "-c", "+99", DEAD, "-"]);
+        assert_eq!(r, 0);
+        assert_eq!(o, "ab\n");
+        assert_eq!(e, "tail: 'standard input': file truncated\n");
+    }
+
+    #[test]
+    fn stdin_follow_truncate_wording_matches_gnu() {
+        // Probed (p2, WSL 9.4): truncating a followed regular-file stdin
+        // prints `tail: 'standard input': file truncated` (quoted by
+        // quotef, the space) and re-dumps from 0.
+        let sc = ScratchCtx::new("tail-stdin-trunc");
+        let f = sc.path("in");
+        std::fs::write(&f, "1\n2\n3\n").unwrap();
+        let meta = StdinMeta {
+            kind: StdinKind::Disk,
+            follow_path: Some(f.clone()),
+        };
+        std::fs::write(&f, "").unwrap();
+        let (r, o, e) = run_meta(&sc, "1\n2\n3\n", &meta, &["-f", DEAD, "-"]);
+        assert_eq!(r, 0);
+        assert_eq!(o, "1\n2\n3\n");
+        assert_eq!(e, "tail: 'standard input': file truncated\n");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn follow_stdin_disk_injected_live_append() {
+        // The follow runtime proof under injection: MemIo stdin + an
+        // injected follow path, a real writer thread appending to that
+        // file while the loop polls (GNU p1: appended lines appear).
+        let sc = ScratchCtx::new("tail-stdin-live");
+        let f = sc.path("in");
+        std::fs::write(&f, "a\nb\n").unwrap();
+        let mut child = std::process::Command::new("cmd")
+            .args(["/c", "ping -n 3 127.0.0.1 >nul"])
+            .spawn()
+            .unwrap();
+        let pid = format!("--pid={}", child.id());
+        let path = f.clone();
+        let writer = std::thread::spawn(move || {
+            use std::io::Write as _;
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            let mut h = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap();
+            h.write_all(b"c\n").unwrap();
+        });
+        let meta = StdinMeta {
+            kind: StdinKind::Disk,
+            follow_path: Some(f),
+        };
+        let mut io = MemIo::new("a\nb\n");
+        let ctx = sc.ctx();
+        let owned: Vec<OsString> = ["-f", "-s", "0.1", &pid, "-"]
+            .iter()
+            .map(Into::into)
+            .collect();
+        let r = tail_with_meta(&owned, &mut io.split(), &ctx, &meta).unwrap();
+        writer.join().unwrap();
+        let _ = child.wait();
+        assert_eq!(r, 0);
+        assert_eq!(io.out(), "a\nb\nc\n");
+        assert_eq!(io.err(), "");
     }
 }
