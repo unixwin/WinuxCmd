@@ -162,14 +162,36 @@ TEST(od, od_read_bytes) {
   EXPECT_FALSE(r.stdout_text.empty());
 }
 
+// [#1488 wave-W2 wire] RE-PINNED to GNU 9.4: -w carries an OPTIONAL
+// argument that only counts when ATTACHED (getopt "w::"), so `od -w 4`
+// means width 32 plus the FILE operand "4" (probed: "od: 4: No such file
+// or directory", rc 1). The 1.x body accepted the separated form as a
+// WinuxCmd extension; the wired product follows GNU, so the width is
+// exercised in its attached spelling.
 TEST(od, od_width) {
+  Pipeline p;
+  p.set_stdin("hello world");
+  p.add(L"od.exe", {L"-w4"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text,
+                 "0000000 062550 066154\n"
+                 "0000004 020157 067567\n"
+                 "0000010 066162 000144\n"
+                 "0000013\n");
+}
+
+// The retired separated spelling now reports GNU's missing-file error.
+TEST(od, od_width_separated_argument_is_a_file_operand) {
   Pipeline p;
   p.set_stdin("hello world");
   p.add(L"od.exe", {L"-w", L"4"});
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_FALSE(r.stdout_text.empty());
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("od: 4: No such file or directory") !=
+              std::string::npos);
 }
 
 TEST(od, od_long_aliases_match_short_options) {

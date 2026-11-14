@@ -183,7 +183,7 @@ TEST(cksum,
   tmp.write("good.txt", "hello");
   tmp.write("check.txt",
             "bad-line\n"
-            "3287646509 5 good.txt\n");
+            "MD5 (good.txt) = 5d41402abc4b2a76b9719d911017c592\n");
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
@@ -206,7 +206,7 @@ TEST(cksum, cksum_check_warn_reports_malformed_line_location_and_summary) {
   tmp.write("good.txt", "hello");
   tmp.write("check.txt",
             "bad-line\n"
-            "3287646509 5 good.txt\n");
+            "MD5 (good.txt) = 5d41402abc4b2a76b9719d911017c592\n");
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
@@ -231,7 +231,7 @@ TEST(cksum, cksum_check_strict_fails_when_any_line_is_malformed) {
   tmp.write("good.txt", "hello");
   tmp.write("check.txt",
             "bad-line\n"
-            "3287646509 5 good.txt\n");
+            "MD5 (good.txt) = 5d41402abc4b2a76b9719d911017c592\n");
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
@@ -250,7 +250,8 @@ TEST(cksum, cksum_check_strict_fails_when_any_line_is_malformed) {
 
 TEST(cksum, cksum_check_reports_unreadable_listed_files) {
   TempDir tmp;
-  tmp.write("check.txt", "0 0 missing.txt\n");
+  tmp.write("check.txt",
+            "MD5 (missing.txt) = d41d8cd98f00b204e9800998ecf8427e\n");
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
@@ -271,7 +272,8 @@ TEST(cksum, cksum_check_reports_unreadable_listed_files) {
 
 TEST(cksum, cksum_check_ignore_missing_skips_missing_files) {
   TempDir tmp;
-  tmp.write("check.txt", "0 0 missing.txt\n");
+  tmp.write("check.txt",
+            "MD5 (missing.txt) = d41d8cd98f00b204e9800998ecf8427e\n");
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
@@ -291,8 +293,8 @@ TEST(cksum, cksum_check_mismatch_summary_counts_only_computed_records) {
   TempDir tmp;
   tmp.write("good.txt", "hello");
   tmp.write("check.txt",
-            "0 0 missing.txt\n"
-            "0 5 good.txt\n");
+            "MD5 (missing.txt) = d41d8cd98f00b204e9800998ecf8427e\n"
+            "MD5 (good.txt) = 00000000000000000000000000000000\n");
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
@@ -311,10 +313,11 @@ TEST(cksum, cksum_check_mismatch_summary_counts_only_computed_records) {
               std::string::npos);
 }
 
-TEST(cksum, cksum_check_validates_size_field_in_untagged_records) {
+TEST(cksum, cksum_check_mismatched_digest_reports_failed_and_warning) {
   TempDir tmp;
   tmp.write("good.txt", "hello");
-  tmp.write("check.txt", "3287646509 4 good.txt\n");
+  tmp.write("check.txt",
+            "MD5 (good.txt) = 00000000000000000000000000000000\n");
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
@@ -332,7 +335,8 @@ TEST(cksum, cksum_check_validates_size_field_in_untagged_records) {
 TEST(cksum, cksum_check_status_suppresses_output) {
   TempDir tmp;
   tmp.write("good.txt", "hello");
-  tmp.write("check.txt", "3287646509 5 good.txt\n");
+  tmp.write("check.txt",
+            "MD5 (good.txt) = 5d41402abc4b2a76b9719d911017c592\n");
 
   Pipeline good;
   good.set_cwd(tmp.wpath());
@@ -343,7 +347,8 @@ TEST(cksum, cksum_check_status_suppresses_output) {
   EXPECT_EQ_TEXT(good_result.stdout_text, "");
   EXPECT_EQ_TEXT(good_result.stderr_text, "");
 
-  tmp.write("check.txt", "0 5 good.txt\n");
+  tmp.write("check.txt",
+            "MD5 (good.txt) = 00000000000000000000000000000000\n");
 
   Pipeline bad;
   bad.set_cwd(tmp.wpath());
@@ -358,7 +363,8 @@ TEST(cksum, cksum_check_status_suppresses_output) {
 TEST(cksum, cksum_check_quiet_suppresses_ok_lines_only) {
   TempDir tmp;
   tmp.write("good.txt", "hello");
-  tmp.write("check.txt", "3287646509 5 good.txt\n");
+  tmp.write("check.txt",
+            "MD5 (good.txt) = 5d41402abc4b2a76b9719d911017c592\n");
 
   Pipeline good;
   good.set_cwd(tmp.wpath());
@@ -369,7 +375,8 @@ TEST(cksum, cksum_check_quiet_suppresses_ok_lines_only) {
   EXPECT_EQ_TEXT(good_result.stdout_text, "");
   EXPECT_EQ_TEXT(good_result.stderr_text, "");
 
-  tmp.write("check.txt", "0 5 good.txt\n");
+  tmp.write("check.txt",
+            "MD5 (good.txt) = 00000000000000000000000000000000\n");
 
   Pipeline bad;
   bad.set_cwd(tmp.wpath());
@@ -527,7 +534,9 @@ TEST(cksum, issue_1288_ignore_missing_verifies_target_past_max_path) {
 
   Pipeline gen;
   gen.set_cwd(tmp.wpath());
-  gen.add(L"cksum.exe", {target});
+  // [GNU] -c accepts tagged digest records only; the default CRC output
+  // is not a check line (#1709), so the list is generated with -a md5.
+  gen.add(L"cksum.exe", {L"-a", L"md5", target});
   auto rg = gen.run();
   ASSERT_EQ(rg.exit_code, 0);
   tmp.write("list.cksum", rg.stdout_text);
@@ -662,4 +671,56 @@ TEST(cksum, cksum_quiet_status_untagged_still_legal_issue1411) {
   EXPECT_EXIT_CODE(rq, 0);
   EXPECT_EQ_TEXT(rq.stdout_text,
                  "6137cde4893c59f76f005a8123d8e8e6  f\n");
+}
+
+TEST(cksum, cksum_check_rejects_default_crc_lines_issue1709) {
+  // [GNU] cksum.c split_3 (digest.c:783-791): without -a only lines
+  // tagged with a member of algorithm_tags are formatted; cksum's own
+  // "<sum> <size> <file>" CRC output is not accepted (#1709).
+  TempDir tmp;
+  tmp.write("f", "hello");
+  tmp.write("sums.txt", "3287646509 5 f\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cksum.exe", {L"-c", L"sums.txt"});
+  auto r = p.run();
+
+  EXPECT_EXIT_CODE(r, 1);
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "cksum: sums.txt: no properly formatted checksum lines "
+                 "found\n");
+
+  // --untagged only changes how digest lines may be spelled; the CRC
+  // record is still not a check line.
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.add(L"cksum.exe", {L"-c", L"--untagged", L"sums.txt"});
+  auto r2 = p2.run();
+
+  EXPECT_EXIT_CODE(r2, 1);
+  EXPECT_EQ_TEXT(r2.stderr_text,
+                 "cksum: sums.txt: no properly formatted checksum lines "
+                 "found\n");
+}
+
+TEST(cksum, cksum_crc32b_algorithm_rejected_issue1710) {
+  // [GNU] cksum.c:1380-1381 xdecta... the algorithm argument is looked
+  // up in algorithm_args[]/algorithm_tags[]; GNU 9.4 ships no "crc32b"
+  // entry so it dies with the argmatch diagnostic (#1710).
+  TempDir tmp;
+  tmp.write("f", "data\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cksum.exe", {L"-a", L"crc32b", L"f"});
+  auto r = p.run();
+
+  EXPECT_EXIT_CODE(r, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("invalid argument 'crc32b' for "
+                                 "'--algorithm'") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("Valid arguments are:") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("'crc'") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("  - 'crc32b'") == std::string::npos);
 }

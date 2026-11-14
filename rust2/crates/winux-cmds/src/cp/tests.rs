@@ -496,6 +496,19 @@ fn empty_operands_are_paths_not_missing_operands() {
 }
 
 #[test]
+fn issue1726_empty_target_directory_is_not_the_cwd() {
+    // fsutil::resolve used to join "" onto the cwd, so `cp -t "" a`
+    // silently copied into the cwd (GNU 9.4: "target directory '':
+    // No such file or directory", rc 1).
+    let sc = ScratchCtx::new("cp-empty-target");
+    fs::write(sc.path("a"), b"A").unwrap();
+    let (rc, _, err) = run(&sc, &["-t", "", "a"]);
+    assert_eq!(rc, 1);
+    assert!(err.contains("target directory '': No such file or directory"));
+    assert_eq!(fs::read(sc.path("a")).unwrap(), b"A");
+}
+
+#[test]
 fn directory_source_onto_non_directory_is_refused() {
     let sc = ScratchCtx::new("cp-dir-over-file");
     fs::create_dir(sc.path("s")).unwrap();
@@ -723,3 +736,284 @@ fn api(sc: &ScratchCtx, name: &str) -> String {
 }
 
 use super::winfs;
+
+// ---------------------------------------------------------------------------
+// #1700 / #1732 regressions on the Rust path: dangling link sources, the
+// destination-inside-ancestors guard through a directory link, and the WSL
+// LX tag (0xA000001D) whose target Win32 cannot traverse.
+// ---------------------------------------------------------------------------
+
+#[cfg(windows)]
+fn create_lx_symlink(link: &std::path::Path, target: &str) -> bool {
+    use std::ffi::c_void;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateFileW(
+            name: *const u16,
+            access: u32,
+            share: u32,
+            security: *mut c_void,
+            disposition: u32,
+            flags: u32,
+            template: *mut c_void,
+        ) -> *mut c_void;
+        fn DeviceIoControl(
+            handle: *mut c_void,
+            code: u32,
+            in_buf: *mut c_void,
+            in_size: u32,
+            out_buf: *mut c_void,
+            out_size: u32,
+            returned: *mut u32,
+            overlapped: *mut c_void,
+        ) -> i32;
+        fn CloseHandle(handle: *mut c_void) -> i32;
+    }
+    const GENERIC_WRITE: u32 = 0x4000_0000;
+    const SHARE_ALL: u32 = 0x7;
+    const CREATE_NEW: u32 = 1;
+    const BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    const OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    const FSCTL_SET_REPARSE_POINT: u32 = 0x0009_00A4;
+    const TAG: u32 = 0xA000_001D;
+    let wide: Vec<u16> = link
+        .to_string_lossy()
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            GENERIC_WRITE,
+            SHARE_ALL,
+            std::ptr::null_mut(),
+            CREATE_NEW,
+            BACKUP_SEMANTICS | OPEN_REPARSE_POINT,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle as isize == -1 || handle.is_null() {
+        return false;
+    }
+    let data_len = 4 + target.len();
+    let mut buffer = vec![0u8; 8 + data_len];
+    buffer[0..4].copy_from_slice(&TAG.to_le_bytes());
+    buffer[4..6].copy_from_slice(&(data_len as u16).to_le_bytes());
+    buffer[8..12].copy_from_slice(&2u32.to_le_bytes());
+    buffer[12..].copy_from_slice(target.as_bytes());
+    let mut returned: u32 = 0;
+    let ok = unsafe {
+        DeviceIoControl(
+            handle,
+            FSCTL_SET_REPARSE_POINT,
+            buffer.as_mut_ptr() as *mut c_void,
+            buffer.len() as u32,
+            std::ptr::null_mut(),
+            0,
+            &mut returned,
+            std::ptr::null_mut(),
+        )
+    };
+    unsafe { CloseHandle(handle) };
+    ok != 0
+}
+
+#[cfg(windows)]
+fn create_junction(link: &std::path::Path, target: &std::path::Path) -> bool {
+    std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(link)
+        .arg(target)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+#[test]
+fn lx_symlink_source_dereferences_and_relative_targets_resolve() {
+    let sc = ScratchCtx::new("cp-lx-follow");
+    fs::write(sc.path("a"), b"A\n").unwrap();
+    if !create_lx_symlink(&sc.path("l"), "a") {
+        return;
+    }
+    let (rc, _, err) = run(&sc, &["l", "out"]);
+    assert_eq!(rc, 0, "{err}");
+    assert_eq!(fs::read(sc.path("out")).unwrap(), b"A\n");
+    assert!(!winfs::meta(&api(&sc, "out"), false).unwrap().is_link());
+
+    let (rc, _, err) = run(&sc, &["-L", "l", "outL"]);
+    assert_eq!(rc, 0, "{err}");
+    assert_eq!(fs::read(sc.path("outL")).unwrap(), b"A\n");
+
+    // A relative LX target resolves against the LINK's directory.
+    fs::create_dir(sc.path("dir")).unwrap();
+    fs::write(sc.path("dir/a"), b"D\n").unwrap();
+    if create_lx_symlink(&sc.path("dir/l"), "a") {
+        let (rc, _, err) = run(&sc, &["dir/l", "outD"]);
+        assert_eq!(rc, 0, "{err}");
+        assert_eq!(fs::read(sc.path("outD")).unwrap(), b"D\n");
+    }
+}
+
+#[test]
+fn lx_dangling_source_is_cannot_stat() {
+    let sc = ScratchCtx::new("cp-lx-dangling");
+    if !create_lx_symlink(&sc.path("dang"), "missing-target") {
+        return;
+    }
+    let (rc, _, err) = run(&sc, &["dang", "out"]);
+    assert_eq!(rc, 1);
+    assert!(
+        err.contains("cannot stat 'dang': No such file or directory"),
+        "{err}"
+    );
+    assert!(!sc.path("out").exists());
+}
+
+#[test]
+fn lx_directory_link_follows_with_H() {
+    let sc = ScratchCtx::new("cp-lx-H");
+    fs::create_dir(sc.path("dir")).unwrap();
+    fs::write(sc.path("dir/f"), b"F\n").unwrap();
+    if !create_lx_symlink(&sc.path("linkdir"), "dir") {
+        return;
+    }
+    let (rc, _, err) = run(&sc, &["-r", "-H", "linkdir", "dstH"]);
+    assert_eq!(rc, 0, "{err}");
+    assert!(sc.path("dstH").is_dir());
+    assert_eq!(fs::read(sc.path("dstH/f")).unwrap(), b"F\n");
+
+    // Plain -r keeps the command-line link a link (recreated here, or the
+    // unprivileged host reports GNU's cannot-create diagnostic).
+    let (rc, _, err) = run(&sc, &["-r", "linkdir", "dstR"]);
+    if rc == 0 {
+        assert!(winfs::meta(&api(&sc, "dstR"), false).unwrap().is_link());
+    } else {
+        assert!(
+            err.contains("cannot create symbolic link 'dstR' to 'linkdir'"),
+            "{err}"
+        );
+    }
+}
+
+#[test]
+fn destination_link_into_source_is_refused() {
+    let sc = ScratchCtx::new("cp-dirlink-self");
+    fs::create_dir(sc.path("dir")).unwrap();
+    fs::write(sc.path("dir/f"), b"F").unwrap();
+    if !create_junction(&sc.path("dirlink"), &sc.path("dir")) {
+        return;
+    }
+    let (rc, _, err) = run(&sc, &["-r", "dir", "dirlink"]);
+    assert_eq!(rc, 1);
+    assert!(err.contains("into itself"), "{err}");
+    assert!(!sc.path("dir/dir").exists(), "no nesting was created");
+}
+
+#[test]
+fn dangling_directory_link_source_is_cannot_stat() {
+    let sc = ScratchCtx::new("cp-dirlink-dangling");
+    if !create_junction(&sc.path("gone"), &sc.path("nowhere")) {
+        return;
+    }
+    let (rc, _, err) = run(&sc, &["gone", "out"]);
+    assert_eq!(rc, 1);
+    assert!(
+        err.contains("cannot stat 'gone': No such file or directory"),
+        "{err}"
+    );
+}
+
+#[test]
+fn recursive_H_follows_a_command_line_junction_only() {
+    let sc = ScratchCtx::new("cp-junction-H");
+    fs::create_dir(sc.path("real")).unwrap();
+    fs::write(sc.path("real/f"), b"A").unwrap();
+    if !create_junction(&sc.path("l"), &sc.path("real")) {
+        return;
+    }
+    let (rc, _, err) = run(&sc, &["-rH", "l", "out"]);
+    assert_eq!(rc, 0, "{err}");
+    assert!(!winfs::meta(&api(&sc, "out"), false).unwrap().is_link());
+    assert_eq!(fs::read(sc.path("out/f")).unwrap(), b"A");
+}
+
+// ---------------------------------------------------------------------------
+// ctest-surface repairs the wiring exposed (the product path runs these):
+// 1.x extensions retired to the GNU contract and library bugs the 1.x body
+// had hidden.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn wildcard_operands_stay_literal() {
+    let sc = ScratchCtx::new("cp-literal-glob");
+    fs::write(sc.path("a.txt"), b"alpha").unwrap();
+    fs::create_dir(sc.path("d")).unwrap();
+    let (rc, out, err) = run(&sc, &["*.txt", "d"]);
+    assert_eq!(rc, 1);
+    assert!(out.is_empty());
+    assert!(
+        err.contains("cannot stat '*.txt': No such file or directory"),
+        "{err}"
+    );
+    assert!(!sc.path("d/a.txt").exists());
+}
+
+#[test]
+fn force_backup_of_self_keeps_both_names() {
+    let sc = ScratchCtx::new("cp-self-backup");
+    fs::write(sc.path("a"), b"content").unwrap();
+    let (rc, _, err) = run(&sc, &["--force", "--backup", "a", "a"]);
+    assert_eq!(rc, 0, "{err}");
+    assert_eq!(fs::read(sc.path("a")).unwrap(), b"content");
+    assert_eq!(fs::read(sc.path("a~")).unwrap(), b"content");
+}
+
+#[test]
+fn dev_null_source_and_destination() {
+    let sc = ScratchCtx::new("cp-devnull");
+    fs::write(sc.path("a"), b"payload").unwrap();
+    let (rc, _, err) = run(&sc, &["--copy-contents", "/dev/null", "empty"]);
+    assert_eq!(rc, 0, "{err}");
+    assert_eq!(fs::read(sc.path("empty")).unwrap(), b"");
+    let (rc, _, err) = run(&sc, &["a", "NUL"]);
+    assert_eq!(rc, 0, "{err}");
+}
+
+#[test]
+fn relative_symbolic_link_outside_cwd_is_refused() {
+    let sc = ScratchCtx::new("cp-s-rel");
+    fs::write(sc.path("a"), b"A").unwrap();
+    fs::create_dir(sc.path("sub")).unwrap();
+    let (rc, _, err) = run(&sc, &["-s", "a", "sub/c"]);
+    assert_eq!(rc, 1);
+    assert!(
+        err.contains("can make relative symbolic links only in current directory"),
+        "{err}"
+    );
+    assert!(!sc.path("sub/c").exists());
+}
+
+#[test]
+fn reflink_always_with_default_sparse_fails_like_gnu() {
+    let sc = ScratchCtx::new("cp-reflink-default");
+    fs::write(sc.path("a"), b"payload").unwrap();
+    let (rc, _, err) = run(&sc, &["--reflink=always", "a", "b"]);
+    assert_eq!(rc, 1);
+    assert!(err.contains("failed to clone 'b' from 'a'"), "{err}");
+    assert!(!sc.path("b").exists());
+}
+
+#[test]
+fn long_source_path_copies_through_the_verbatim_form() {
+    let sc = ScratchCtx::new("cp-longpath");
+    let name = format!("{}.txt", "n".repeat(230));
+    let full = winfs::extended_path(&api(&sc, &name));
+    fs::write(&full, b"LONG").unwrap();
+    // The relative operand alone exceeds MAX_PATH once joined to the cwd.
+    let (rc, _, err) = run(&sc, &[&name, "out"]);
+    assert_eq!(rc, 0, "{err}");
+    assert_eq!(fs::read(sc.path("out")).unwrap(), b"LONG");
+}

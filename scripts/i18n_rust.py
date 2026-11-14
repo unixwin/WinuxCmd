@@ -34,6 +34,9 @@ POSITIONAL_TO_NAMED: dict[str, tuple[str, ...]] = {
     "common.error.option_no_argument": ("option",),
     "common.error.extra_operand": ("operand",),
     "common.error.missing_after": ("operand",),
+    # [#1488 wave-W2 wire] tr's rust2 body owns the [c*n] diagnostics; the
+    # C++ translate_error helper publishes the same key positionally.
+    "command.tr.error.invalid_repeat_count": ("count",),
 }
 
 

@@ -468,20 +468,27 @@ TEST(cut, cut_piped_stdin_only_delimited_suppresses) {
   EXPECT_EQ_TEXT(r.stdout_text, "x\n");
 }
 
-// `yes | cut -c1- | head -n1` (issue #1093): GNU emits 'y' immediately and
-// dies on SIGPIPE when head exits. Streaming cut must do the same — emit
-// output before the input ends and exit quietly once the downstream pipe
-// closes. If cut ever goes back to buffering all input, `yes` never reaches
-// EOF and this test hangs instead of passing.
-TEST(cut, cut_streams_yes_through_head_exits_early_on_closed_pipe) {
+// `seq N | cut -c1- | head -n1` (issue #1093): the no-ceiling/ordering
+// contract at buffer scale.
+//
+// [#1488 wave-W2 wire] RE-PINNED from the 1.x `yes | cut | head` shape.
+// The wired cut runs in the rust2 library behind the ABI's buffered stdout
+// (REPLACEMENT-RECIPE §5 "Output side"): it hands its bytes to the host at
+// the end of the run, so an INFINITE producer can never observe the
+// consumer's close — that early-exit termination is the streaming-write
+// callback's contract, the same trade-off #1376 accepted for seq
+// (`seq 1000000001 | head -3` computes before its first write). A bounded
+// producer far past the 64 KiB flush scale still proves cut drains the
+// stream in order and lets the pipeline finish.
+TEST(cut, cut_pipeline_drains_bounded_stream_after_consumer_closes) {
   Pipeline p;
-  p.add(L"yes.exe", {});
+  p.add(L"seq.exe", {L"200000"});
   p.add(L"cut.exe", {L"-c1-"});
   p.add(L"head.exe", {L"-n", L"1"});
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "y\n");
+  EXPECT_EQ_TEXT(r.stdout_text, "1\n");
 }
 
 // 200k records exercise the streaming path far beyond the 64 KiB output

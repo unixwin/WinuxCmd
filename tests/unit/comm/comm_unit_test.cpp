@@ -351,3 +351,35 @@ TEST(comm, comm_stdin_ctrlz_not_truncated_issue1212) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.find('\x1a') != std::string::npos);
 }
+
+TEST(comm, comm_both_stdin_dies_ebadf_after_merge_issue1712) {
+  // [GNU] comm.c:292 maps both "-" operands to the same stdin FILE*;
+  // reads interleave through the merge, then the fclose loop
+  // (comm.c:390-391) closes stdin twice and the second fclose fails
+  // EBADF: output already emitted is kept, --total and the
+  // "input is not in sorted order" summary are never reached (#1712).
+  Pipeline p;
+  p.set_stdin("a\nb\n");
+  p.add(L"comm.exe", {L"-", L"-"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ_TEXT(r.stdout_text, "a\n\tb\n");
+  EXPECT_EQ_TEXT(r.stderr_text, "comm: -: Bad file descriptor\n");
+
+  Pipeline total;
+  total.set_stdin("a\nb\nc\n");
+  total.add(L"comm.exe", {L"--total", L"-", L"-"});
+  auto rt = total.run();
+  EXPECT_EQ(rt.exit_code, 1);
+  EXPECT_EQ_TEXT(rt.stdout_text, "a\n\tb\nc\n");
+  EXPECT_EQ_TEXT(rt.stderr_text, "comm: -: Bad file descriptor\n");
+
+  Pipeline empty;
+  empty.set_stdin("");
+  empty.add(L"comm.exe", {L"-", L"-"});
+  auto re = empty.run();
+  EXPECT_EQ(re.exit_code, 1);
+  EXPECT_TRUE(re.stdout_text.empty());
+  EXPECT_EQ_TEXT(re.stderr_text, "comm: -: Bad file descriptor\n");
+}

@@ -1119,6 +1119,211 @@ Rust recognition in the extractor) — that infra belongs to the
 unmerged stream-abi lane; Rust output drains through the bridge's raw
 writers without catalog lookup. Recorded as a dependency, not skipped.
 
+---
+
+## wave-W2 wire — `cut`, `tr`, `od`, `sum` (#1488, worktree `D:/repo/wc-w2`)
+
+Four text-surface applets replaced by their rust2 library bodies; the 1.x
+record/expansion/format pipelines are deleted, `REGISTER_COMMAND` keeps the
+help/man metadata, and each handler is one ABI v2 **streaming** call
+(`run_command_with_stdin_streaming`) so fd 0 stays untouched for
+file-operand shapes and stdin arrives in segments.
+
+### Library work the wire required (probed against WSL coreutils 9.4)
+
+`cut`
+- the LIST selector: a second list in ANY combination
+  (`-b 1 -c 1`, `-f 1 -f 2`) is "only one list may be specified"; an empty
+  LIST element (`1,,2`, `,2`, `''`) is GNU's numbered-from-1 fatal.
+- `--output-delimiter` is legal in byte/character mode and marks each
+  range start (`cut -b 1-2,3 --output-delimiter='|'` -> `ab|c`); set-fields
+  merges only OVERLAPPING ranges, so adjacent specs stay separate.
+- `--output-delimiter=` means NUL.
+- the `-z -d ''` shape (field delimiter == record delimiter) implements
+  cut.c `cut_fields` (#1511): the input is one record, a trailing delimiter
+  terminates it, `-s` suppresses undelimited input.
+
+`tr`
+- `-A` is GNU's undocumented no-op (was rejected by the library).
+- reverse ranges print `range-endpoints of 'z-a' are in reverse collating
+  sequence order` with tr.c `make_printable_char` endpoints (`'\200-@'`).
+- an escaped range endpoint forms a range (`\200-\100`).
+- unquote warnings restored: `an unescaped backslash at end of string is
+  not portable`, and the ambiguous-octal note (`\400` -> `\040` + `0`,
+  third digit NOT consumed).
+- `[=c=]` in string2 while translating is the tr.c validate() fatal.
+
+`od`
+- `-j/-N` print addresses in the combined-input coordinate space (the
+  library printed 0-based).
+- `-S/--strings` (bare `--strings` = 3, `-S` requires a value, `-N` bound,
+  spelling-carrying diagnostics) and the old-style operand form
+  `[FILE] [[+]OFFSET[.] [b]] [[+]LABEL]` with the parenthesised
+  pseudo-address column and the `-A n` bare-paren address.
+- obsolescent `CASE_OLD_ARG` letters `D e F H I L O B h X` plus clusters
+  (`-bc`, `-D -e -H -O`); multi-spec fields use od.c's width_per_block/pad
+  distribution, and the `z` trailer belongs to the spec it is spelled on.
+- a dump with NO openable operand prints nothing (od.c main() skips dump()).
+- `-S` with a type is the "no type may be specified" fatal.
+
+`sum`
+- the LAST of `-r/-s` wins in any spelling (`-sr` = BSD, `-rs` = SysV) —
+  the library used mere presence.
+- operand opens route through the #1038 `!<fifo>` marker bridge
+  (fsutil::open_read_operand; cut/od/sum), so `mkfifo` rendezvous rows read
+  the payload, not the marker.
+
+### Gates
+
+- **gate a (GNU oracle, RUST_BIN = wired `build-vs/winuxcmd.exe`)**
+  `bash gate/run-gate.sh cut tr od sum`: **170/170 GNU rows PASS, 8/8 win**
+  (the 8 = the four `--help`/`--version` rows, `win` because the
+  dispatcher keeps the WinuxCmd-branded interception). Tables grew from
+  33+37+36+20 to 48+46+56+28 rows (cut ct34-48, tr tr38-46, od od37-56,
+  sum sm21-28), every row GNU-probed first. Oracle: Ubuntu 24.04.4 LTS /
+  coreutils 9.4 / C.UTF-8.
+- **gate b (ctest, full run, `--timeout 200 -j8`)**: failing set identical
+  to the pre-wire baseline (26 = 22 pre-existing + 4 `rust2-stream-*`
+  "Not Run" that the default target does not build). The one test the
+  wire invalidates was re-pinned to the GNU/ABI contract:
+  `cut.cut_streams_yes_through_head_exits_early_on_closed_pipe` ->
+  `cut.cut_pipeline_drains_bounded_stream_after_consumer_closes` (see the
+  ABI note below); `od.od_width` re-pinned to GNU's attached `-w4` plus a
+  new separated-`-w 4` pin; three `tr` quote/wording pins moved to GNU
+  9.4's curly-quoted text.
+- **gate c (old vs new exe, `wire/cmd-matrix.sh` + `compare.sh`, 30/30/33/30
+  rows)**: cut 30/30 rc + 30/30 stdout (2 stderr diffs = GNU alignment:
+  curly-quoted list diagnostics, the two-line `-s` refusal); tr 30/30/30;
+  sum 30/30/30; od 29/33 rc (the 4 rc diffs are 1.x deviations now
+  GNU-aligned: `-j` past end, `of 2`/`--traditional 2 of` old-style
+  operands) and 29/33 stdout (same rows). New-vs-GNU rc on the same
+  matrices: cut 30/30, od 33/33.
+- **differential corpus** (`WINUXCMD_BIN=build-vs/usr/bin runner.sh`):
+  cut 6/6, tr 7/7, sum 1/1, od 4/5 + 1 pre-existing `KNOWN_DIFF`
+  (`corpus/od/01-invalid-utf8-operand`, whitelisted).
+
+### ABI note (streaming stdin, buffered stdout)
+
+All four use the v2 streaming **input** entry. Output stays the ABI's
+buffered `CBuf` drained after the call (REPLACEMENT-RECIPE §5 "Output
+side"), so an INFINITE producer cannot observe a consumer's close: that is
+the same trade #1376 accepted for `seq`. cut's `yes | cut | head` test is
+re-pinned to a bounded producer past the 64 KiB flush scale; the
+early-exit termination returns with a streaming-write callback.
+
+### I18N
+
+48 new stable keys (`command.cut.error.*` 16, `command.od.error.*` 19,
+`command.tr.error/warn.*` 11, `command.sum.error.*` 2) with GNU's
+`error()` wording as the English fallback (curly quotes where GNU quotes).
+`scripts/i18n_batch.py extract` -> 3835 keys; the retired C++ bodies drop
+9 `legacy.*` digests (plus pre-existing catalog drift from other lanes).
+`command.tr.error.invalid_repeat_count` keeps its C++ key with the corrected
+curly spelling (annotation added to `scripts/i18n_rust.py`).
+`validate` passes against the merged zh-CN file; the patch + delta live in
+`catalog/` (`zh-CN-w2-patch.json`, `w2-delta.json`, `w2-new-keys.txt`) and
+the shared I18N repository needs its `VERSION` bump (0.6.42 -> 0.6.43).
+## Wave-W4 wiring — mkfifo / mknod, the device/FIFO family (#1488, 2026-11-14)
+
+Both applets are wired to the rust2 staticlib (`src/commands/<cmd>.cpp` is
+the `REGISTER_COMMAND` shell + one `winux::rust2::run_command` call; the
+C++ mode evaluator, `--context` pre-scan, MAJOR/MINOR parse, quotef helper
+and `create_winux_fifo_w` pipeline are deleted). CMake union gained
+`mkfifo;mknod`.
+
+Oracle: WSL coreutils 9.4, probed from a script file
+(`rust2/target/probe/w4-mkfifo-mknod.sh`, 685 lines of rc/stdout/stderr+
+on-disk node type). The GNU side runs as root on ext4 and creates REAL
+fifos and device nodes (`stat` rdev=1:3 et al.); the Windows sides create
+the #1038 `!<fifo>` marker or report EPERM for device types — that is why
+the device rows are `win`, never `strict`.
+
+| command | cases | strict | exit | win | note | GNU-gated result | C++ parity (rc+stdout) |
+|---|---|---|---|---|---|---|---|
+| mkfifo | 33 | 31 | 0 | 2 | 0 | GREEN (59 GNU-gated rows both tables) | 32/33 |
+| mknod | 38 | 28 | 0 | 10 | 0 | GREEN | 37/38 |
+
+Table growth (24 -> 33/38) is all probed: empty NAME (ENOENT, not "the
+cwd"), `--context=` (empty PRESENT optarg warns) vs bare `--context`
+(silent), getopt_long abbreviation `--con=`/`--c`, `-m` last-wins,
+`--mode=`, combined symbolic mode, empty `-m` value, empty MAJOR/MINOR
+(`invalid ... ''`), `+1`/`0x1`/`0o` device numbers, exists-directory,
+TYPE-first-character (`pz`/`pp` fifo, `bz` block) and the operand-count
+before TYPE-validation order.
+`mf20/mf21`/`mn20/mn21` are `win` because the wired product answers sole
+`--help`/`--version` with the WinuxCmd-branded dispatcher surface (wave6
+convention); the GNU help bodies stay pinned by the rust2 unit test
+`help_version_surface`.
+
+**Gate a** (`RUST_BIN=build-vs/winuxcmd.exe`, CPP_BIN=pre-wire exe): 59
+GNU-gated rows PASS / 0 FAIL, 12 win rows PASS. Ledger `r=c:no`: one row,
+`mf17-Z-attached-invalid` (1.x accepted `-Zctx2` silently rc 0; GNU and
+the wired body answer `invalid option -- 'c'` rc 1) — the inherited 1.x
+deviation the wire fixes.
+
+**Gate c** (old exe vs new exe, rc+stdout+stderr; `gate/wire/cmd-matrix.sh`
+blocks added for both commands): mkfifo 33 rows — rc 32/33, stdout 33/33,
+stderr 31/33; mknod 36 rows — rc 36/36, stdout 36/36, stderr 26/36.
+Every delta is the new side moving to GNU, none regress:
+
+* mkfifo `--context=` — 1.x silent, GNU/new warn (and still create).
+* mkfifo `-Zctx2` — 1.x rc 0 silent, GNU/new `invalid option -- 'c'` rc 1.
+* mkfifo `-m 1777`/`4755`/bogus and empty NAME — byte-equal already.
+* mknod `nodir/x p`, device types `c/b/u/0x/0o`/`bz` — 1.x wrapped the
+  name in quotes unconditionally; GNU quotef leaves plain names unquoted
+  (`mknod: w4c1: Operation not permitted`); new matches GNU's shape.
+* mknod empty MAJOR/MINOR — 1.x `missing major device number`; GNU/new
+  `invalid major device number ''` (xstrtoumax on "" fails, it is not a
+  missing operand).
+* mknod two-operand bogus TYPE (`mknod w4t2 x`) — 1.x validated the type
+  first (`invalid device type 'x'`); GNU checks the operand count first
+  (`missing operand after 'x'` + special-files note); new matches GNU.
+  The same check order means TYPE is classified by its FIRST character
+  (`pz`/`pp` are fifos, `bz`/`cx`/`uz` special files) — the wave5 Rust
+  port's exact-match was a regression against both GNU and the 1.x body,
+  fixed in this wire.
+* The matrix GNU side runs on DrvFs (device rows answer ENOTSUP there);
+  GNU's root-creation semantics come from the ext4 run-gate oracle, which
+  is why those rows are win.
+
+**Gate b**: full ctest failing set is IDENTICAL to the pre-wire baseline
+(26 = 22 Failed + 4 rust2-stream Not Run); the 35 C++ mkfifo/mknod unit
+tests pass (23 mkfifo + 12 mknod), including the #1038 bridge family
+(`md5sum_hashes_writer_bytes`, `reader_without_writer_blocks_like_gnu`,
+`wc_c_counts_bridged_bytes_not_marker_size`, `paste_joins_two_fifos`,
+`od_reads_fifo_payload_not_marker_bytes`, `hexdump_dumps_fifo_payload`)
+and the #1235 drive-dialect rows. One ctest was **re-pinned** to the GNU
+contract: `mknod.mknod_invalid_type_fails` used the two-operand shape
+(`mknod node1 x`), where GNU reports "missing operand after 'x'" first;
+it now uses NAME TYPE MAJOR MINOR, and
+`mknod_bogus_type_two_operands_is_missing_operand` +
+`mknod_type_trailing_characters_are_ignored` pin the probed order and
+first-character rule. Differential runner: mkfifo 3/3 PASS, mknod 2/2
+PASS.
+
+**#1038 bridge status (honest).** The marker format is unchanged and
+byte/attr-compatible. The bridge exists in TWO places: the C++ `file_io`
+layer (all 1.x applets) and `rust2/crates/winux-cmds/src/fs_win.rs`
+(`open_fifo_read`/`open_fifo_write`, the wired commands that open operand
+files: digestsum, paste, tee, stat, find). Cross-side rendezvous was
+measured in all four directions (`bash gate/wire/fifo-bridge-check.sh`,
+4/4 PASS with `CPP_BIN` = the pre-wire exe; 4/4 PASS again with both sides
+on the local build-vs tree): Rust-created marker -> C++ reader/writer,
+C++-created marker -> Rust md5sum reader + Rust tee writer, Rust/Rust,
+C++ reader + Rust writer.
+Remaining gap, explicit: there is no transparent interception below the
+command layer, so any NEW wired command that opens operand files must call
+the fs_win helpers (a plain `std::fs` open reads the 7 marker bytes and
+strands the writer); non-WinuxCmd tools always see a 7-byte marker file,
+not a pipe. mkfifo/mknod themselves only create.
+
+**I18N**: 15 new stable keys (mkfifo 4, mknod 11: `error.*` + `warning.*`),
+12 orphan `legacy.<fnv>` keys from the deleted C++ bodies; patch in
+`catalog/w4-mkfifo-mknod-*.json`, `i18n_batch.py validate` = `valid`
+(placeholders equal, option tokens untouched). Registration
+description/option/synopsis keys are unchanged.
+
+Builds: default and full editions build clean (see the wiring report).
 ## wave-W3 — wiring wave: du, mktemp, nice (#1488 wire-W3, 2026-11-14)
 
 Lane scope: `date du mktemp nice nohup`. **Wired in this wave: `du`,
@@ -1319,3 +1524,90 @@ Four `lsof.*` ctest rows hang indefinitely on this host (they passed in the
 baseline run; the applet source is untouched by this wave). The full re-run
 was therefore made with `ctest -E '^lsof\.'`; every other row ran, and the
 lsof family is excluded from the comparison, not from the product.
+
+## cp wire — GNU coreutils 9.4 semantics on the product path (#1488, 2026-11-14)
+
+Lane scope: `cp`. **Wired:** the 1.x C++ copy pipeline is deleted
+(`src/commands/cp.cpp` 2449 -> 207 lines; only `REGISTER_COMMAND`, help and
+the option table stay); the handler is
+`run_command_with_stdin_streaming("cp", ctx.raw_args)` so `-i` reads stdin
+on demand while non-interactive runs never touch fd 0. `cp` joins
+`WINUXCMD_RUST2_COMMANDS` (the effective union at CMakeLists.txt:81).
+
+The #1700/#1732 C++ fixes are carried in the Rust library before wiring
+(own commit on this branch): destination-inside-ancestors through a
+directory link, dangling link sources as `cannot stat`, WSL/LX reparse-tag
+dereference (`0xA000001D`, relative targets resolved against the link
+directory), `-r -H` command-line-only dereference, the >MAX_PATH `\\?\`
+verbatim path form, `-i` decline/EOF rc 1, and the GNU-shaped self-copy
+diagnostic.
+
+### Gate a/c (run-gate.sh, RUST_BIN = wired exe, CPP_BIN = pre-wiring exe)
+
+Case table 98 -> **107** rows (`cp99-cp107`): dangling junction deref,
+junction into itself, `-rH` command-line/nested/verbose, and four genuine
+LX rows built with `wsl.exe ln -s` on the exe side. The harness
+`setup_needs_symlink()` now recognises that `mklink /J` and `wsl.exe ln -s`
+need no `SeCreateSymbolicLinkPrivilege`, so cp81-cp87/cp98 (junction rows,
+previously SKIP on this host) and the LX rows actually gate: total
+**105 GNU-gated PASS / 0 FAIL**, 2 skipped (cp88/cp89 file symlinks need
+Developer Mode), 0 win/note failures.
+
+`r=c:no` = **27/105**; every one has `r=g:yes` (the wired exe equals GNU
+and the pre-wiring exe is the side that diverges):
+
+| class | rows | pre-wiring C++ behavior / GNU + rust |
+|---|---|---|
+| verbose path shape | cp05/23/24/25/28/65/77/80/81/82/84/102/103 | C++ joined with `\` and printed only leaf files; GNU prints `/` and announces directories (`cp24`: `'s' -> 't'` + `'s/f' -> 't/f'`) |
+| junction recreation without privilege | cp19/20/36/81/82/85/86/87 | C++ used `CreateSymbolicLinkW` (rc 1, "required privilege"); rust recreates junctions with `FSCTL_SET_REPARSE_POINT` (rc 0 = GNU) |
+| retired 1.x parser quirks | cp45 (`--backup=bogus`), cp53 (`--preserve=`), cp93 (`--sparse=n`), cp97 (`-t` twice), cp69 (trailing slash) | C++ accepted `--sparse=n`, multiple `-t`, and stripped `file/`; GNU rejects them (rust = GNU) |
+| `-u` / `-n` state | cp36/37 (`-u` rc 0, C++ rc 1), cp39 (`-n --update=all` copies) | rust follows the argv-order state machine |
+| verbose extras | cp42 (`(backup: 'b~')`), cp75 (`(attributes only)` suffix) | GNU 9.4 prints the backup note and no attributes suffix; rust = GNU |
+| diagnostics | cp76 (just-created), cp98 (cyclic rc), cp33 (positions include `a directory`) | rust uses GNU copy.c wording and exit status |
+
+### Gate c matrix (60 rows, old vs new vs GNU)
+
+`gate/wire/cmd-matrix.sh` gained a cp block (60 cases: `-i n/y/EOF`, `-n`,
+`-u`, `-r/-a/-L/-H/-P`, `-b/-S/--backup=`, `-l`, `-t/-T/--parents`,
+dangling junction/LX, LX `-d`/`-L`, self-copy, junction-into-itself,
+`>MAX_PATH` 310-char source, `/dev/null`, `NUL`, reflink/sparse/attributes,
+three-operand and last-wins rows). Ledgers under `target/wire-cp/`.
+
+* rc: new vs GNU **60/60**; old vs new **56/60** (old differs on
+  cp19/20/36 junction recreation and cp30 `--strip-trailing-slashes`).
+* stdout old vs new 55/60; stderr 52/60. The 13 differing rows are exactly
+  the verbose path-shape / backup-note / attributes-suffix / diagnostic
+  classes above; each new-side output was compared with the GNU ledger
+  (`target/wire-cp/gnu`). No unexplained row.
+
+### Gate b
+
+`ctest -R '^cp\.'` = **83/83 PASS** with the wired exe; the full suite
+(excluding the host-hanging `lsof.*` family, see the wave-W3 note) has the
+same 25-row failing set as the pre-wiring baseline. Two `tail --follow` rows
+appeared once under parallel load and passed on re-run (timing flake, not
+cp). Three 1.x pins were
+re-pinned to the GNU contract (`cp_wildcard_sources_expand`,
+`cp_strip_trailing_slashes_allows_file_source_with_trailing_separator`, and
+the LX tree diagnostic separator); no test was deleted. The library gained
+tests for every repair (60 cp Rust tests, up from 54): LX deref/dangling/
+`-H`, destination-link self-copy, dangling junction, `-rH`, literal
+wildcards, self `--force --backup`, `/dev/null`/`NUL`, `-s` relative rule,
+default-sparse reflink, long path.
+
+### Editions
+
+`WINUXCMD_PACKAGE_EDITION=default` and `=full` both build
+(`build-vs`, `build-vs-full`) with cp on the rust2 union. The full-edition
+exe re-ran the 60-row matrix: 60/60 rc, stdout, stderr identical to the
+default wired exe, and `run-gate.sh cp` full-edition = **105 PASS / 0 FAIL,
+2 skipped** — the edition only changes which entry links are materialized.
+
+### I18N
+
+47 runtime keys (`command.cp.error.*` 44, `prompt.*` 1, `warning.*` 2);
+the wiring wave added one (`relative_symlink_outside_cwd`), the other 46
+came with #1715. `scripts/i18n_batch.py extract` (3806 keys) and
+`catalog/make-cp-patch.py` -> `validate` = `valid`; patch, filtered base
+and the key list live under `catalog/`. The shared
+`unixwin/winuxcmd-i18n` repository was not touched by this lane.

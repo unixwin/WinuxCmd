@@ -266,6 +266,10 @@ TEST(cp, cp_target_directory_and_no_target_directory_conflict) {
   EXPECT_NE(r.exit_code, 0);
 }
 
+// #1488 rust2 wiring: GNU 9.4 rejects a trailing separator on a regular
+// file even with --strip-trailing-slashes (`cp: cannot stat 'source.txt/':
+// Not a directory`, rc 1 — probed in WSL); the 1.x body stripped the
+// separator before the stat and copied. Re-pinned to the GNU contract.
 TEST(cp, cp_strip_trailing_slashes_allows_file_source_with_trailing_separator) {
   TempDir tmp;
   tmp.write("source.txt", "content");
@@ -276,8 +280,10 @@ TEST(cp, cp_strip_trailing_slashes_allows_file_source_with_trailing_separator) {
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ(tmp.read("dest.txt"), "content");
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("cannot stat 'source.txt/'") !=
+              std::string::npos);
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "dest.txt"));
 }
 
 TEST(cp,
@@ -495,6 +501,11 @@ TEST(cp, cp_update_overwrites_older_destination) {
   EXPECT_EQ(tmp.read("dest.txt"), "newer source");
 }
 
+// #1488 rust2 wiring: file operands stay LITERAL — the shell globs, the
+// program does not (the wc-w6 echo/digest precedent, e7ddc432). GNU cp
+// receives shell-expanded operands; `cp '*.txt' dest` is a stat failure.
+// The 1.x body expanded wildcards itself, a GNU deviation the rust2 port
+// does not carry.
 TEST(cp, cp_wildcard_sources_expand) {
   TempDir tmp;
   tmp.write("a.txt", "alpha");
@@ -507,9 +518,11 @@ TEST(cp, cp_wildcard_sources_expand) {
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ(tmp.read("dest_dir/a.txt"), "alpha");
-  EXPECT_EQ(tmp.read("dest_dir/b.txt"), "beta");
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("cp: cannot stat '*.txt': No such file or "
+                                 "directory") != std::string::npos);
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "dest_dir" / "a.txt"));
 }
 
 TEST(cp, cp_attributes_only_creates_missing_destination) {
@@ -1771,7 +1784,10 @@ TEST(cp, issue1647_lx_recursive_tree_L_dereferences_links) {
 
   // GNU copies the live links, then fails the dangling one (rc=1).
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stderr_text.find("cannot stat 'tree\\lnk_dang'") !=
+  // The child is spelled by joining the operand with '/', the same GNU
+  // shape the rust2 gate records; the 1.x body joined with '\'.
+  EXPECT_TRUE(r.stderr_text.find("cannot stat 'tree") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("lnk_dang': No such file or directory") !=
               std::string::npos);
   EXPECT_EQ(tmp.read("dst/lnk_file"), "A\n");
   EXPECT_TRUE(std::filesystem::is_directory(tmp.path / "dst" / "lnk_dir"));
@@ -1933,4 +1949,28 @@ TEST(cp, issue1693_lx_directory_link_follows_with_H) {
   EXPECT_FALSE(std::filesystem::is_symlink(
       std::filesystem::symlink_status(tmp.path / "dstH")));
   EXPECT_EQ(tmp.read("dstH/f.txt"), "F\n");
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1726: an explicit empty operand is a path, never the cwd. The
+// Rust cp face already guards "" in Copier::api; this pin locks the
+// command-level behavior (GNU 9.4: `cp "" dst` -> "cannot stat '': No
+// such file or directory", rc 1) against a shared-layer regression.
+// ---------------------------------------------------------------------------
+TEST(cp, issue1726_empty_source_cannot_stat) {
+  TempDir tmp;
+  tmp.write("keep.txt", "keep");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"", L"dst.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "cp: cannot stat '': No such file or directory\n");
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "keep.txt"));
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "dst.txt"));
 }

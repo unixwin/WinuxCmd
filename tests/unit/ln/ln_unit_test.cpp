@@ -878,3 +878,76 @@ TEST(ln, ln_s_copy_fallback_directory_source_keeps_gnu_error) {
   EXPECT_FALSE(std::filesystem::exists(tmp.path / "link"));
   EXPECT_CONTAINS(r.stderr_text, "failed to create symbolic link 'link'");
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1726: an explicit empty operand is a path, never the cwd. The
+// Rust operand boundary (fs_win::api_path) used to absolutize "" onto
+// the cwd, so `ln "" x2` statted the cwd as a directory, `ln -s "" x`
+// created a link to nothing meaningful, and `ln a ""` / `ln -t "" a`
+// resolved the destination onto the cwd. GNU 9.4: ENOENT, rc 1, in all
+// four shapes.
+// ---------------------------------------------------------------------------
+TEST(ln, issue1726_empty_source_hard_link_fails) {
+  TempDir tmp;
+  tmp.write("a.txt", "A");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ln.exe", {L"", L"x2"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_CONTAINS(r.stderr_text,
+                  "ln: failed to access '': No such file or directory");
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "x2"));
+}
+
+TEST(ln, issue1726_empty_source_symlink_fails) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ln.exe", {L"-s", L"", L"x"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_CONTAINS(r.stderr_text, "failed to create symbolic link 'x'");
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "x"));
+  EXPECT_FALSE(std::filesystem::is_symlink(tmp.path / "x"));
+}
+
+TEST(ln, issue1726_empty_destination_fails) {
+  TempDir tmp;
+  tmp.write("a.txt", "A");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ln.exe", {L"a.txt", L""});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_CONTAINS(r.stderr_text, "failed to create hard link ''");
+  EXPECT_EQ(tmp.read("a.txt"), "A");
+}
+
+TEST(ln, issue1726_empty_target_directory_fails) {
+  TempDir tmp;
+  tmp.write("a.txt", "A");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ln.exe", {L"-t", L"", L"a.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_CONTAINS(r.stderr_text, "target ''");
+  EXPECT_EQ(tmp.read("a.txt"), "A");
+}
