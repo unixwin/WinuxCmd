@@ -405,6 +405,81 @@ TEST(ls, ls_long_format_command_line_dangling_symlink_operand_is_listed) {
       std::regex(R"(lrwxrwxrwx\s+\d+\s+.*dangling\.txt -> target\.txt)")));
 }
 
+TEST(ls, ls_long_format_absolute_operand_symlink_shows_target_and_size) {
+  TempDir tmp;
+  tmp.write("a.txt", "aaa\n");
+
+  std::filesystem::path link = tmp.path / "link";
+  if (!create_symlink_or_skip(link, std::filesystem::path(L"a.txt"))) {
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  // Issue shape: a single absolute-path operand naming a live symlink
+  // (mklink-style repro, `ls -l <abs>\link`).
+  p.add(L"ls.exe", {L"-l", link.wstring()});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // [GNU] ls.c:3714 (get_link_name) + ls.c:4496 (print_long_format): the
+  // line shows "link -> a.txt" and the size column is the byte length of
+  // the stored target string ("a.txt" -> 5). #1639: 1.2.1 printed no
+  // target and size 0 for this exact shape.
+  EXPECT_TRUE(std::regex_search(
+      r.stdout_text,
+      std::regex(
+          R"(lrwxrwxrwx\s+\d+\s+\S+\s+\S+\s+5\s+.*link -> a\.txt)")));
+}
+
+TEST(ls, ls_long_format_directory_listing_symlink_size_is_target_length) {
+  TempDir tmp;
+  tmp.write("a.txt", "aaa\n");
+
+  std::filesystem::path link = tmp.path / "link";
+  if (!create_symlink_or_skip(link, std::filesystem::path(L"a.txt"))) {
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ls.exe", {L"-la"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // Same GNU rule as above, directory-listing path: size is the target
+  // string length, not 0.
+  EXPECT_TRUE(std::regex_search(
+      r.stdout_text,
+      std::regex(
+          R"(lrwxrwxrwx\s+\d+\s+\S+\s+\S+\s+5\s+.*link -> a\.txt)")));
+}
+
+TEST(ls, ls_long_format_absolute_target_symlink_shows_target) {
+  TempDir tmp;
+  tmp.write("a.txt", "aaa\n");
+
+  std::filesystem::path link = tmp.path / "link";
+  const std::filesystem::path target = tmp.path / "a.txt";
+  if (!create_symlink_or_skip(link, target)) {
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ls.exe", {L"-l", link.wstring()});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // Presence only: the stored target is absolute here, so the displayed
+  // spelling (verbatim absolute vs same-parent relative) is a separate
+  // question; this cell pins that a target is shown at all (#1639).
+  EXPECT_TRUE(r.stdout_text.find("link -> ") != std::string::npos);
+}
+
 TEST(ls, ls_long_format_shows_directory_symlink_as_link) {
   TempDir tmp;
   std::filesystem::create_directory(tmp.path / "targetdir");
