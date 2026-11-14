@@ -17,8 +17,8 @@ s256a14-dash-operand	strict			abc	-
 s256a15-mixed-missing	strict	printf abc > f7			missing	f7
 s256a16-bogus-short	exit				-q
 s256a17-bogus-long	exit				--bogus
-s256a18-help	strict				--help
-s256a19-version	strict				--version
+s256a18-help	win				--help
+s256a19-version	win				--version
 s256a20-multi-stdin	strict			The quick brown fox jumps over the lazy dog
 s256c01-ok	strict	printf abc > f; printf 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  f\n' > ck			-c	ck
 s256c02-fail	strict	printf de > g; printf 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  g\n' > ck			-c	ck

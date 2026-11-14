@@ -2283,8 +2283,14 @@ def digest_rows(prefix, prog, hex_abc, tag):
          ["missing", "f7"]),
         (f"{short}a16-bogus-short", "exit", "", "", "", ["-q"]),
         (f"{short}a17-bogus-long", "exit", "", "", "", ["--bogus"]),
-        (f"{short}a18-help", "strict", "", "", "", ["--help"]),
-        (f"{short}a19-version", "strict", "", "", "", ["--version"]),
+        # #1488 wiring wave6: the wired product intercepts sole
+        # --help/--version at the dispatcher with the WinuxCmd-branded
+        # metadata text (the suite-wide help surface), so the GNU bytes
+        # leave the gate and the rows pin new-vs-old rc parity instead
+        # (win); the driver (library) rows that gated the GNU help bytes
+        # were green pre-wiring (ledger 2026-11-14).
+        (f"{short}a18-help", "win", "", "", "", ["--help"]),
+        (f"{short}a19-version", "win", "", "", "", ["--version"]),
         (f"{short}a20-multi-stdin", "strict", "", "",
          "The quick brown fox jumps over the lazy dog", []),
         (f"{short}c01-ok", "strict", ck_setup, "", "", ["-c", "ck"]),
