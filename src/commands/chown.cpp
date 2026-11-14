@@ -75,7 +75,8 @@ struct Config {
   std::string owner;
   std::string group;
   std::string reference_file;
-  std::string reference_owner_display;
+  std::string reference_owner_name;
+  std::string reference_group_name;
   std::vector<std::byte> reference_owner_sid;
   std::vector<std::byte> reference_group_sid;
   std::string from_spec;
@@ -197,6 +198,13 @@ auto copy_sid_bytes(PSID sid) -> std::vector<std::byte> {
     return {};
   }
   return buffer;
+}
+
+auto sids_equal(const std::vector<std::byte>& a,
+                const std::vector<std::byte>& b) -> bool {
+  if (a.empty() || b.empty()) return false;
+  return EqualSid(const_cast<std::byte*>(a.data()),
+                  const_cast<std::byte*>(b.data())) != FALSE;
 }
 
 // Fetch owner/group SIDs of the link itself via an OPEN_REPARSE_POINT
@@ -419,44 +427,6 @@ auto format_chown_error(const std::string& verb, const std::string& path,
   return message;
 }
 
-auto get_owner_group_display_for_path(const std::string& path) -> std::string {
-  // #1241: fold the drive dialect before the security lookup (see
-  // get_sids_for_path).
-  std::wstring wpath =
-      utf8_to_wstring(native_path::normalize_api_operand(path));
-  PSECURITY_DESCRIPTOR security_desc = nullptr;
-  PSID owner_sid = nullptr;
-  PSID group_sid = nullptr;
-
-  const DWORD status = GetNamedSecurityInfoW(
-      const_cast<wchar_t*>(wpath.c_str()), SE_FILE_OBJECT,
-      OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION, &owner_sid,
-      &group_sid, nullptr, nullptr, &security_desc);
-  if (status != ERROR_SUCCESS) {
-    if (security_desc != nullptr) {
-      LocalFree(security_desc);
-    }
-    return {};
-  }
-
-  std::string owner_name = lookup_account_name_from_sid(owner_sid);
-  std::string group_name = lookup_account_name_from_sid(group_sid);
-  if (security_desc != nullptr) {
-    LocalFree(security_desc);
-  }
-
-  if (!owner_name.empty() && !group_name.empty()) {
-    return owner_name + ":" + group_name;
-  }
-  if (!owner_name.empty()) {
-    return owner_name;
-  }
-  if (!group_name.empty()) {
-    return ":" + group_name;
-  }
-  return {};
-}
-
 auto get_ownership_info_for_path(const std::string& path) -> OwnershipInfo {
   // #1241: fold the drive dialect before the security lookup (see
   // get_sids_for_path).
@@ -487,19 +457,6 @@ auto get_ownership_info_for_path(const std::string& path) -> OwnershipInfo {
   return info;
 }
 
-auto format_ownership_display(const OwnershipInfo& info) -> std::string {
-  if (!info.owner_name.empty() && !info.group_name.empty()) {
-    return info.owner_name + ":" + info.group_name;
-  }
-  if (!info.owner_name.empty()) {
-    return info.owner_name;
-  }
-  if (!info.group_name.empty()) {
-    return ":" + info.group_name;
-  }
-  return {};
-}
-
 auto matches_from_spec(const OwnerGroupSpec& from,
                        const OwnershipInfo& current_ownership) -> bool {
   if (!from.owner.empty()) {
@@ -521,30 +478,121 @@ auto matches_from_spec(const OwnerGroupSpec& from,
   return true;
 }
 
-auto matches_requested_ownership(const Config& cfg,
-                                 const OwnershipInfo& current_ownership)
-    -> bool {
-  if (!cfg.owner.empty()) {
-    const bool owner_matches = win32_account_matches(
-        cfg.owner, current_ownership.owner_name, current_ownership.owner_id);
-    if (!owner_matches) {
-      return false;
-    }
-  }
+// Which ownership fields the spec covers — the field mask GNU derives
+// from user_name/group_name (src/chown.c:285-313): a user field exists
+// whenever anything was named (":g" leaves it empty), a group field when
+// a group applies, including the "u:" login-group fill.  "" and ":" leave
+// uid/gid at -1 so neither field exists (userspec.c:116-133) and the
+// chown call is a no-op.
+struct SpecFields {
+  bool owner = false;
+  bool group = false;
+};
 
-  if (cfg.has_group) {
+auto spec_fields(const Config& cfg) -> SpecFields {
+  if (cfg.has_reference) {
+    return {.owner = true, .group = true};
+  }
+  return {.owner = !cfg.owner.empty() || !cfg.group.empty(),
+          .group = !cfg.group.empty() || (cfg.has_group && !cfg.owner.empty())};
+}
+
+auto ownership_name_or_id(const std::string& name, const std::string& id)
+    -> std::string {
+  return !name.empty() ? name : id;
+}
+
+// The old-spec text GNU splices into describe_change (user_group_str on
+// the pre-change ids, src/chown-core.c:122-145 + 168-169): only the
+// requested fields, ':'-joined; std::nullopt when the spec names no field
+// at all ('' or ':'), which selects the "retained" form without "as".
+auto old_spec_display(const OwnershipInfo& info, const SpecFields& fields)
+    -> std::optional<std::string> {
+  if (!fields.owner && !fields.group) {
+    return std::nullopt;
+  }
+  std::string spec;
+  if (fields.owner) {
+    spec = ownership_name_or_id(info.owner_name, info.owner_id);
+  }
+  if (fields.group) {
+    spec += ":" + ownership_name_or_id(info.group_name, info.group_id);
+  }
+  return spec;
+}
+
+// The new-spec text GNU shows in describe_change (user_name/group_name
+// parse outputs or --reference names): the typed owner, ':' plus the
+// typed/resolved group when a group field exists.
+auto new_spec_display(const Config& cfg, const SpecFields& fields)
+    -> std::string {
+  if (cfg.has_reference) {
+    return cfg.reference_owner_name + ":" + cfg.reference_group_name;
+  }
+  std::string spec = cfg.owner;
+  if (fields.group) {
+    spec += ":";
     if (!cfg.group.empty()) {
-      const bool group_matches = win32_account_matches(
-          cfg.group, current_ownership.group_name, current_ownership.group_id);
-      if (!group_matches) {
-        return false;
-      }
-    } else if (cfg.owner.empty()) {
-      return true;
+      spec += cfg.group;
+    } else {
+      // "u:" picks the owner's login group; the closest Windows
+      // equivalent is the caller's primary group.
+      const auto primary = current_token_sid(TokenPrimaryGroup);
+      const PSID psid =
+          primary.empty()
+              ? nullptr
+              : reinterpret_cast<PSID>(const_cast<std::byte*>(primary.data()));
+      spec += ownership_name_or_id(lookup_account_name_from_sid(psid),
+                                   lookup_account_id_from_sid(psid));
     }
   }
+  return spec;
+}
 
-  return !cfg.owner.empty() || cfg.has_group;
+enum class OwnershipChange { retained, changed, failed };
+
+// GNU describe_change (src/chown-core.c:151-208): the reports go to
+// stdout via printf and carry no program-name prefix.  -v (V_high)
+// prints every outcome, -c (V_changes_only) only real changes — call
+// sites gate on the verbosity flags, this helper only formats.
+auto describe_change(const std::string& path, OwnershipChange change,
+                     const std::optional<std::string>& old_spec,
+                     const std::string& new_spec) -> void {
+  switch (change) {
+    case OwnershipChange::retained:
+      if (old_spec.has_value()) {
+        safePrintLn(winux::i18n::format("command.chown.report.retained_as",
+                                        "ownership of '{}' retained as {}",
+                                        path, *old_spec));
+      } else {
+        safePrintLn(winux::i18n::format("command.chown.report.retained",
+                                        "ownership of '{}' retained", path));
+      }
+      break;
+    case OwnershipChange::changed:
+      safePrintLn(winux::i18n::format("command.chown.report.changed",
+                                      "changed ownership of '{}' from {} to {}",
+                                      path, old_spec.value_or(std::string{}),
+                                      new_spec));
+      break;
+    case OwnershipChange::failed:
+      if (new_spec.empty()) {
+        // '' or ':' names no field — GNU prints the bare form.
+        safePrintLn(winux::i18n::format("command.chown.report.failed",
+                                        "failed to change ownership of '{}'",
+                                        path));
+      } else if (old_spec.has_value()) {
+        safePrintLn(winux::i18n::format(
+            "command.chown.report.failed_from_to",
+            "failed to change ownership of '{}' from {} to {}", path, *old_spec,
+            new_spec));
+      } else {
+        safePrintLn(winux::i18n::format(
+            "command.chown.report.failed_to",
+            "failed to change ownership of '{}' to {}", path, new_spec));
+      }
+      break;
+  }
 }
 
 auto normalize_path_for_root_compare(std::wstring path) -> std::wstring {
@@ -803,11 +851,23 @@ auto build_config(const CommandContext<CHOWN_OPTIONS.size()>& ctx)
       return std::unexpected(
           format_missing_reference_error(cfg.reference_file, GetLastError()));
     }
-    cfg.reference_owner_display =
-        get_owner_group_display_for_path(cfg.reference_file);
     const auto ref_sids = get_sids_for_path(wref);
     cfg.reference_owner_sid = ref_sids.owner;
     cfg.reference_group_sid = ref_sids.group;
+    const PSID ref_owner_psid =
+        ref_sids.owner.empty() ? nullptr
+                               : reinterpret_cast<PSID>(const_cast<std::byte*>(
+                                     ref_sids.owner.data()));
+    const PSID ref_group_psid =
+        ref_sids.group.empty() ? nullptr
+                               : reinterpret_cast<PSID>(const_cast<std::byte*>(
+                                     ref_sids.group.data()));
+    cfg.reference_owner_name =
+        ownership_name_or_id(lookup_account_name_from_sid(ref_owner_psid),
+                             lookup_account_id_from_sid(ref_owner_psid));
+    cfg.reference_group_name =
+        ownership_name_or_id(lookup_account_name_from_sid(ref_group_psid),
+                             lookup_account_id_from_sid(ref_group_psid));
     add_file_args(cfg, std::span<const std::string_view>(
                            ctx.positionals.data(), ctx.positionals.size()));
   } else {
@@ -855,12 +915,32 @@ auto process_file(const std::string& path, const Config& cfg, bool no_deref)
   const auto operand = native_path::make_api_path_operand(path);
   const std::wstring& wpath = operand.extended;
 
+  const SpecFields fields = spec_fields(cfg);
+  // '' and ':' name no field at all (userspec.c:116-133 leaves uid/gid
+  // -1), so the operation is a no-op the kernel performs for any caller.
+  const bool desired_owner = cfg.has_reference || !cfg.owner.empty();
+  const bool desired_group = cfg.has_reference || fields.group;
+  const std::string new_spec = new_spec_display(cfg, fields);
+
+  // -v reports a failed change on stdout too (GNU describe_change with
+  // CH_FAILED, src/chown-core.c:181-193); the old spec exists only when
+  // the pre-change ids could be read.
+  auto describe_failed = [&](const OwnershipInfo* info) {
+    if (cfg.verbose) {
+      describe_change(
+          path, OwnershipChange::failed,
+          info != nullptr ? old_spec_display(*info, fields) : std::nullopt,
+          new_spec);
+    }
+  };
+
   DWORD attr = GetFileAttributesW(wpath.c_str());
   if (attr == INVALID_FILE_ATTRIBUTES) {
     if (!cfg.quiet) {
       safeErrorPrintLn(
           format_chown_error("cannot access", path, GetLastError()));
     }
+    describe_failed(nullptr);
     return 1;
   }
 
@@ -883,6 +963,21 @@ auto process_file(const std::string& path, const Config& cfg, bool no_deref)
           safeErrorPrintLn(format_chown_error("cannot access", path, error));
         }
       }
+      // GNU's CH_FAILED line shows the link's own (lstat) ids.
+      const auto link_sids = get_sids_for_link(operand.normalized);
+      OwnershipInfo link_ownership;
+      if (link_sids.ok) {
+        const PSID link_owner = reinterpret_cast<PSID>(
+            const_cast<std::byte*>(link_sids.owner.data()));
+        const PSID link_group = reinterpret_cast<PSID>(
+            const_cast<std::byte*>(link_sids.group.data()));
+        link_ownership = OwnershipInfo{
+            .owner_name = lookup_account_name_from_sid(link_owner),
+            .owner_id = lookup_account_id_from_sid(link_owner),
+            .group_name = lookup_account_name_from_sid(link_group),
+            .group_id = lookup_account_id_from_sid(link_group)};
+      }
+      describe_failed(link_sids.ok ? &link_ownership : nullptr);
       return 1;
     }
     CloseHandle(probe);
@@ -914,37 +1009,16 @@ auto process_file(const std::string& path, const Config& cfg, bool no_deref)
   if (cfg.has_from_spec &&
       !matches_from_spec(cfg.from_owner_group, current_ownership)) {
     if (cfg.verbose) {
-      safeErrorPrint("chown: ownership of '");
-      safeErrorPrint(path);
-      safeErrorPrint("' retained as ");
-      safeErrorPrintLn(format_ownership_display(current_ownership).empty()
-                           ? std::string("unknown")
-                           : format_ownership_display(current_ownership));
+      describe_change(path, OwnershipChange::retained,
+                      old_spec_display(current_ownership, fields), new_spec);
     }
     return 0;
   }
 
-  if (cfg.has_reference) {
-    const std::string current_display =
-        format_ownership_display(current_ownership);
-    if (!cfg.reference_owner_display.empty() &&
-        current_display == cfg.reference_owner_display) {
-      if (cfg.verbose || cfg.changes) {
-        safeErrorPrint("chown: ownership of '");
-        safeErrorPrint(path);
-        safeErrorPrint("' retained as ");
-        safeErrorPrintLn(cfg.reference_owner_display);
-      }
-      return 0;
+  if (!desired_owner && !desired_group) {
+    if (cfg.verbose) {
+      describe_change(path, OwnershipChange::retained, std::nullopt, {});
     }
-  } else if ((cfg.verbose || cfg.changes) &&
-             matches_requested_ownership(cfg, current_ownership)) {
-    safeErrorPrint("chown: ownership of '");
-    safeErrorPrint(path);
-    safeErrorPrint("' retained as ");
-    safeErrorPrintLn(format_ownership_display(current_ownership).empty()
-                         ? std::string("unknown")
-                         : format_ownership_display(current_ownership));
     return 0;
   }
 
@@ -955,7 +1029,7 @@ auto process_file(const std::string& path, const Config& cfg, bool no_deref)
     owner_sid = cfg.reference_owner_sid;
     group_sid = cfg.reference_group_sid;
   } else {
-    if (!cfg.owner.empty()) {
+    if (desired_owner) {
       owner_sid = resolve_account_sid(
           cfg.owner, path_sids.owner.empty()
                          ? nullptr
@@ -968,7 +1042,7 @@ auto process_file(const std::string& path, const Config& cfg, bool no_deref)
         return 1;
       }
     }
-    if (cfg.has_group) {
+    if (desired_group) {
       if (cfg.group.empty()) {
         // "chown owner:" assigns the owner's login group; the closest
         // Windows equivalent is the caller's primary group.
@@ -989,11 +1063,24 @@ auto process_file(const std::string& path, const Config& cfg, bool no_deref)
     }
   }
 
-  if (owner_sid.empty() && group_sid.empty()) {
-    if (!cfg.quiet) {
-      safeErrorPrintLn("chown: invalid spec for '" + path + "'");
+  // chown_ok/chgrp_ok let the file's owner run a change onto the current
+  // uid/gid without privilege; anyone else gets EPERM.  Skip the
+  // privileged write only when every requested field already matches and
+  // the caller IS the file owner — a matching request from a different
+  // account still has to take the failing path below.
+  const bool unchanged =
+      path_sids.ok &&
+      (!desired_owner || sids_equal(owner_sid, path_sids.owner)) &&
+      (!desired_group || sids_equal(group_sid, path_sids.group));
+  if (unchanged) {
+    const auto token_user = current_token_sid(TokenUser);
+    if (!token_user.empty() && sids_equal(token_user, path_sids.owner)) {
+      if (cfg.verbose) {
+        describe_change(path, OwnershipChange::retained,
+                        old_spec_display(current_ownership, fields), new_spec);
+      }
+      return 0;
     }
-    return 1;
   }
 
   // Elevated privileges let administrators reassign ownership to arbitrary
@@ -1010,11 +1097,15 @@ auto process_file(const std::string& path, const Config& cfg, bool no_deref)
       CreateFileW(wpath.c_str(), WRITE_OWNER | READ_CONTROL,
                   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                   nullptr, OPEN_EXISTING, open_flags, nullptr);
+  // GNU chown-core.c:481-486 reports the failed change, not an access
+  // probe — "changing group of" when only a group was requested.
+  const char* change_verb =
+      desired_owner ? "changing ownership of" : "changing group of";
   if (object == INVALID_HANDLE_VALUE) {
     if (!cfg.quiet) {
-      safeErrorPrintLn(
-          format_chown_error("cannot access", path, GetLastError()));
+      safeErrorPrintLn(format_chown_error(change_verb, path, GetLastError()));
     }
+    describe_failed(path_sids.ok ? &current_ownership : nullptr);
     return 1;
   }
 
@@ -1029,25 +1120,22 @@ auto process_file(const std::string& path, const Config& cfg, bool no_deref)
 
   if (status != ERROR_SUCCESS) {
     if (!cfg.quiet) {
-      safeErrorPrintLn(
-          format_chown_error("changing ownership of", path, status));
+      safeErrorPrintLn(format_chown_error(change_verb, path, status));
     }
+    describe_failed(path_sids.ok ? &current_ownership : nullptr);
     return 1;
   }
 
-  if (cfg.verbose || cfg.changes) {
-    const std::string from = format_ownership_display(current_ownership);
-    std::string to;
-    if (cfg.has_reference) {
-      to = cfg.reference_owner_display;
-    } else if (cfg.has_group) {
-      to = cfg.owner + ":" + cfg.group;
-    } else {
-      to = cfg.owner;
+  if (unchanged) {
+    // A privileged caller ran the no-op for a file it does not own; GNU
+    // still counts it as CH_NO_CHANGE_REQUESTED (-v only).
+    if (cfg.verbose) {
+      describe_change(path, OwnershipChange::retained,
+                      old_spec_display(current_ownership, fields), new_spec);
     }
-    safePrint("changed ownership of '" + path + "' from " +
-              (from.empty() ? std::string("unknown") : from) + " to " +
-              (to.empty() ? std::string("unknown") : to) + "\n");
+  } else if (cfg.verbose || cfg.changes) {
+    describe_change(path, OwnershipChange::changed,
+                    old_spec_display(current_ownership, fields), new_spec);
   }
   return 0;
 }
