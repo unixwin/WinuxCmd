@@ -762,3 +762,54 @@ lands 8h apart across sides (dt39, du25/du26).
 **Wave5 total cases: 305; GNU-gated 281 PASS / 0 FAIL, win-gated 24 PASS /
 0 FAIL (final full-wave5 run 2026-11-13, ledger
 target/gate/ledger.tsv; 82-command coverage 2444 cases).**
+
+## sed wiring (#1488, sed lane wired to the product)
+
+`sed` moved from the C++ body to `rust2/crates/winux-cmds/src/sed.rs`
+(the GNU sed 4.9 port with `sed/compile.rs` + `sed/exec.rs`) with the
+mechanical-replacement recipe: the handler is one
+`winux::rust2::run_command_with_stdin_streaming("sed", ctx.raw_args)` call
+(ABI v2: the pull callback stays lazy, so file-operand invocations never
+touch fd 0), `src/commands/sed.cpp` keeps only `REGISTER_COMMAND`
+metadata, and `WINUXCMD_RUST2_COMMANDS` carries `sed`.
+
+Argument language: `option_policy_for_command("sed")` sets the new
+`OptionParsePolicy::all_args_are_positionals`, so the generic parser,
+dispatcher abbreviation pass and the `--help`/`--version` interceptors
+all stand down: sed.c's own getopt_long run (in the library) owns
+`-e`/`-f` order, `-i[SUF]`, `--posix`, unknown/ambiguous long options and
+`-e` with no argument. Consequence: `sed --help` / `sed --version` print
+the GNU sed 4.9 blocks (not the WinuxCmd metadata/banner); the argv[0] is
+`sed` through the multicall entry, matching the GNU program name.
+
+Gate (2026-11-14, `RUST_BIN=build-vs/winuxcmd.exe`,
+`CPP_BIN=<09df368d baseline copy>`, WSL sed 4.9):
+**379 rows — GNU-gated 378 PASS / 0 FAIL, win 1 PASS / 0 FAIL**
+(`sd055-help` stays strict because the library prints the GNU usage
+block).
+
+Byte-equality matrix (`gate/wire/sed-matrix.sh`, 28 groups: read/print,
+`-n`, address ranges, hold space, `-e` multi-script, `-f`, `-i`/`-i.bak`,
+`-s`, `-z`, `-E`, `-l`, `N`, `y`, `b`, `w /dev/stdout`, `r`, `-u`,
+`--posix`, stdin shapes, `--`):
+* GNU vs wired exe: **28/28 rows equal in rc + stdout + stderr + file-tree
+  hash**.
+* pre-wiring exe vs wired exe: **27/28**; the one difference is
+  `s///w /dev/stdout`, where the 1.x body lost the `w` copy (GNU and the
+  wired exe both emit it).
+
+Rust-side fixes carried by the wiring (GNU parity found by the C++ unit
+suite): `q`/`Q` status masked to 8 bits (`2q300` -> 44), and
+`fsutil::resolve` now routes literal trailing-dot/space components
+through the `\\?\` spelling (#1282/#1332) for every wired command that
+shares the resolver.
+
+ctest (isolated sed slice, `ctest -R "^sed\.|^integration\.sed_"`, 144
+tests): baseline failing set and wired failing set are the same single
+pre-existing case, `sed.nul_txt_reads_file_issue1333` (the TempDir helper
+cannot create the `NUL.txt` on-disk name). The other 18 former failures
+either pinned 1.x deviations the GNU port removes (wildcard expansion,
+`r`/`R` missing-file diagnostics, `--debug` annotation, `s///e`
+execution, sandbox/POSIX error wording, `w`-failure status 2 -> 4) or were
+test-side math on the `-z` text terminators; all were re-pinned to the
+WSL sed 4.9 behaviour.

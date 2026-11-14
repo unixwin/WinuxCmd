@@ -38,7 +38,7 @@ mod exec;
 
 use std::ffi::OsString;
 
-use winux_core::{CmdResult, Ctx, Io};
+use winux_core::{i18n, tr, CmdResult, Ctx, Io};
 
 use compile::{Compiler, Posix};
 
@@ -182,18 +182,23 @@ enum Opt {
     Operand(String),
 }
 
-fn usage_error(io: &mut Io, msg: Option<String>) -> CmdResult {
+fn usage_error(ctx: &Ctx, io: &mut Io, msg: Option<String>) -> CmdResult {
     if let Some(m) = msg {
         let _ = writeln!(io.stderr, "{m}");
     }
-    let _ = io.stderr.write_all(USAGE.as_bytes());
+    let usage = i18n::text(ctx, "command.sed.usage", USAGE);
+    let _ = io.stderr.write_all(usage.as_bytes());
     Ok(1)
 }
 
 /// getopt_long over argv with GNU permutation (stops at the first operand
 /// when POSIXLY_CORRECT is set). Returns the ordered option events and
 /// operands, or a usage diagnostic.
-fn getopt(args: &[String], posixly_correct: bool) -> Result<Vec<Opt>, String> {
+///
+/// Diagnostics go through the [`tr!`] seam: the stable
+/// `command.sed.error.*` key wins when the host supplies a catalog,
+/// otherwise the GNU 4.9 English wording is emitted byte-for-byte.
+fn getopt(args: &[String], posixly_correct: bool, ctx: &Ctx) -> Result<Vec<Opt>, String> {
     let mut out = Vec::new();
     let mut i = 0;
     let mut only_operands = false;
@@ -225,19 +230,27 @@ fn getopt(args: &[String], posixly_correct: bool) -> Result<Vec<Opt>, String> {
                         .filter(|(n, _, _)| n.starts_with(name))
                         .collect();
                     if cands.is_empty() {
-                        return Err(format!("sed: unrecognized option '{a}'"));
+                        return Err(tr!(
+                            ctx,
+                            "command.sed.error.unrecognized_option",
+                            "sed: unrecognized option '{option}'",
+                            option = a
+                        ));
                     }
                     let first = cands[0];
                     let ambiguous = cands.iter().any(|c| c.1 != first.1 || c.2 != first.2);
                     if ambiguous {
-                        let mut m = format!(
-                            "sed: option '{}' is ambiguous; possibilities:",
-                            a.split('=').next().unwrap_or(a)
-                        );
+                        let mut m = String::new();
                         for c in &cands {
                             m.push_str(&format!(" '--{}'", c.0));
                         }
-                        return Err(m);
+                        return Err(tr!(
+                            ctx,
+                            "command.sed.error.option_ambiguous",
+                            "sed: option '{option}' is ambiguous; possibilities:{possibilities}",
+                            option = a.split('=').next().unwrap_or(a),
+                            possibilities = m
+                        ));
                     }
                     *first
                 }
@@ -246,7 +259,12 @@ fn getopt(args: &[String], posixly_correct: bool) -> Result<Vec<Opt>, String> {
             match has_arg {
                 0 => {
                     if val.is_some() {
-                        return Err(format!("sed: option '--{lname}' doesn't allow an argument"));
+                        return Err(tr!(
+                            ctx,
+                            "command.sed.error.option_no_argument",
+                            "sed: option '--{option}' doesn't allow an argument",
+                            option = lname
+                        ));
                     }
                     out.push(Opt::Flag(code, None));
                 }
@@ -258,8 +276,11 @@ fn getopt(args: &[String], posixly_correct: bool) -> Result<Vec<Opt>, String> {
                                 i += 1;
                                 args[i - 1].clone()
                             } else {
-                                return Err(format!(
-                                    "sed: option '--{lname}' requires an argument"
+                                return Err(tr!(
+                                    ctx,
+                                    "command.sed.error.option_requires_argument",
+                                    "sed: option '--{option}' requires an argument",
+                                    option = lname
                                 ));
                             }
                         }
@@ -277,7 +298,14 @@ fn getopt(args: &[String], posixly_correct: bool) -> Result<Vec<Opt>, String> {
             let c = chars[k];
             k += 1;
             match short_arg(c) {
-                None => return Err(format!("sed: invalid option -- '{c}'")),
+                None => {
+                    return Err(tr!(
+                        ctx,
+                        "command.sed.error.invalid_option",
+                        "sed: invalid option -- '{option}'",
+                        option = c
+                    ))
+                }
                 Some(0) => out.push(Opt::Flag(c, None)),
                 Some(1) => {
                     let rest: String = chars[k..].iter().collect();
@@ -287,7 +315,12 @@ fn getopt(args: &[String], posixly_correct: bool) -> Result<Vec<Opt>, String> {
                         i += 1;
                         args[i - 1].clone()
                     } else {
-                        return Err(format!("sed: option requires an argument -- '{c}'"));
+                        return Err(tr!(
+                            ctx,
+                            "command.sed.error.short_option_requires_argument",
+                            "sed: option requires an argument -- '{option}'",
+                            option = c
+                        ));
                     };
                     out.push(Opt::Flag(c, Some(v)));
                     break;
@@ -312,9 +345,9 @@ pub fn sed_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
     let posixly_correct = ctx.env.get("POSIXLY_CORRECT").is_some();
-    let opts = match getopt(&args, posixly_correct) {
+    let opts = match getopt(&args, posixly_correct, ctx) {
         Ok(o) => o,
-        Err(m) => return usage_error(io, Some(m)),
+        Err(m) => return usage_error(ctx, io, Some(m)),
     };
     let utf8 = utf8_locale(ctx);
     let mut comp = Compiler::new(
@@ -388,11 +421,13 @@ pub fn sed_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     return Ok(0);
                 }
                 'h' => {
-                    io.stdout.write_all(USAGE.as_bytes())?;
-                    io.stdout.write_all(BUG_LINE.as_bytes())?;
+                    let usage = i18n::text(ctx, "command.sed.usage", USAGE);
+                    io.stdout.write_all(usage.as_bytes())?;
+                    let bug_line = i18n::text(ctx, "command.sed.bug_reports", BUG_LINE);
+                    io.stdout.write_all(bug_line.as_bytes())?;
                     return Ok(0);
                 }
-                _ => return usage_error(io, None),
+                _ => return usage_error(ctx, io, None),
             },
         }
     }
@@ -404,7 +439,7 @@ pub fn sed_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     fatal!(f);
                 }
             }
-            None => return usage_error(io, None),
+            None => return usage_error(ctx, io, None),
         }
     }
     if let Err(f) = comp.check_final_program() {
@@ -421,7 +456,8 @@ pub fn sed_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     }
     if files.is_empty() {
         if in_place.is_some() {
-            let _ = writeln!(io.stderr, "sed: no input files");
+            let msg = tr!(ctx, "command.sed.error.no_input_files", "sed: no input files");
+            let _ = writeln!(io.stderr, "{msg}");
             return Ok(4);
         }
         files.push("-".to_string());

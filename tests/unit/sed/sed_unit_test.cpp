@@ -88,8 +88,11 @@ TEST(sed, print_command_terminates_unchomped_input_line) {
   p.add(L"sed.exe", {L"-n", L"p", L"a.txt"});
   auto r = p.run();
 
+  // [GNU] the p command writes the record as read: an unchomped final
+  // record stays without a newline (`sed -n p` on "one" prints 6f 6e 65,
+  // WSL sed 4.9).
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "one\n");
+  EXPECT_EQ_TEXT(r.stdout_text, "one");
 }
 
 TEST(sed, substitution_print_flag_prints_in_addition_to_default_output) {
@@ -1190,9 +1193,12 @@ TEST(sed, zero_terminated_text_commands_use_nul_delimiter) {
   p.add(L"sed.exe", {L"-z", L"-e", L"1i\\PRE", L"-e", L"1a\\POST", L"a.bin"});
   auto r = p.run();
 
+  // [GNU] -z text-command terminators follow the text kind, not the
+  // record delimiter: i\ text ends with NUL, a\ text with a newline
+  // (WSL sed 4.9: i -> 50 52 45 00, a -> 50 4f 53 54 0a).
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ(r.stdout_text.size(), 13u);
-  EXPECT_EQ(r.stdout_text, std::string("PRE\0foo\0POST\0", 13));
+  EXPECT_EQ(r.stdout_text, std::string("PRE\0foo\0POST\n", 13));
 }
 
 TEST(sed, unbuffered_and_binary_options_are_accepted) {
@@ -1225,10 +1231,13 @@ TEST(sed, wildcard_files) {
   TEST_LOG_EXIT_CODE(r);
   TEST_LOG("sed output", r.stdout_text);
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.find("bye world") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("bye there") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("bye log") == std::string::npos);
+  // [GNU] File operands are literal — the shell globs, the program does
+  // not (b2sum_wildcard precedent; `sed 's/hello/bye/' '*.txt'` under WSL
+  // sed 4.9 reports the ENOENT for the literal name and exits 2). The 1.x
+  // body glob-expanded.
+  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_CONTAINS(r.stderr_text, "sed: can't read *.txt: No such file or directory");
 }
 
 TEST(sed, wildcard_question_mark) {
@@ -1248,10 +1257,11 @@ TEST(sed, wildcard_question_mark) {
   TEST_LOG_EXIT_CODE(r);
   TEST_LOG("sed output", r.stdout_text);
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.find("REPLACED bar") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("REPLACED baz") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("REPLACED qux") == std::string::npos);
+  // [GNU] literal operand (the shell owns globbing): exit 2, ENOENT on
+  // stderr, no output. The 1.x body glob-expanded here too.
+  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_CONTAINS(r.stderr_text, "sed: can't read a?.txt: No such file or directory");
 }
 
 TEST(sed, sandbox_allows_non_file_scripts) {
@@ -1277,7 +1287,7 @@ TEST(sed, sandbox_rejects_file_commands) {
   auto r = p.run();
 
   EXPECT_NE(r.exit_code, 0);
-  EXPECT_CONTAINS(r.stderr_text, "--sandbox rejects scripts");
+  EXPECT_CONTAINS(r.stderr_text, "e/r/w commands disabled in sandbox mode");
 }
 
 TEST(sed, sandbox_rejects_substitution_write_flag) {
@@ -1290,7 +1300,7 @@ TEST(sed, sandbox_rejects_substitution_write_flag) {
   auto r = p.run();
 
   EXPECT_NE(r.exit_code, 0);
-  EXPECT_CONTAINS(r.stderr_text, "--sandbox rejects scripts");
+  EXPECT_CONTAINS(r.stderr_text, "e/r/w commands disabled in sandbox mode");
 }
 
 TEST(sed, posix_rejects_gnu_step_addresses) {
@@ -1303,7 +1313,7 @@ TEST(sed, posix_rejects_gnu_step_addresses) {
   auto r = p.run();
 
   EXPECT_NE(r.exit_code, 0);
-  EXPECT_CONTAINS(r.stderr_text, "POSIX sed rejects GNU step addresses");
+  EXPECT_CONTAINS(r.stderr_text, "unknown command: `~'");
 }
 
 TEST(sed, posix_rejects_gnu_range_extensions) {
@@ -1316,7 +1326,7 @@ TEST(sed, posix_rejects_gnu_range_extensions) {
   auto r = p.run();
 
   EXPECT_NE(r.exit_code, 0);
-  EXPECT_CONTAINS(r.stderr_text, "POSIX sed rejects GNU range extensions");
+  EXPECT_CONTAINS(r.stderr_text, "unexpected `,'");
 }
 
 TEST(sed, posix_rejects_gnu_substitution_modifier) {
@@ -1329,8 +1339,7 @@ TEST(sed, posix_rejects_gnu_substitution_modifier) {
   auto r = p.run();
 
   EXPECT_NE(r.exit_code, 0);
-  EXPECT_CONTAINS(r.stderr_text,
-                  "POSIX sed rejects GNU substitution modifiers");
+  EXPECT_CONTAINS(r.stderr_text, "unknown option to `s'");
 }
 
 TEST(sed, brace_group_allows_semicolon_after_close) {
@@ -1397,8 +1406,9 @@ TEST(sed, gnu_compat_input_open_failure_exits_2) {
   EXPECT_CONTAINS(r.stderr_text, "can't read missing.txt");
 }
 
-TEST(sed, gnu_compat_write_file_failure_exits_2) {
-  // [GNU] w/W/s///w target that cannot be opened is a bad-input failure (2).
+TEST(sed, gnu_compat_write_file_failure_exits_4) {
+  // [GNU] w/W/s///w target that cannot be opened is a PANIC: "couldn't
+  // open file ...", exit 4 (WSL sed 4.9, execute.c open_outfile).
   TempDir tmp;
   tmp.write("a.txt", "foo\n");
 
@@ -1407,10 +1417,11 @@ TEST(sed, gnu_compat_write_file_failure_exits_2) {
   p.add(L"sed.exe", {L"w no_such_dir/out.txt", L"a.txt"});
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_EQ(r.exit_code, 4);
+  EXPECT_CONTAINS(r.stderr_text, "couldn't open file no_such_dir/out.txt");
 }
 
-TEST(sed, gnu_compat_subst_write_flag_failure_exits_2) {
+TEST(sed, gnu_compat_subst_write_flag_failure_exits_4) {
   TempDir tmp;
   tmp.write("a.txt", "foo\n");
 
@@ -1419,7 +1430,9 @@ TEST(sed, gnu_compat_subst_write_flag_failure_exits_2) {
   p.add(L"sed.exe", {L"s/foo/bar/w no_such_dir/hits.txt", L"a.txt"});
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 2);
+  // [GNU] same panic shape as the w command: exit 4.
+  EXPECT_EQ(r.exit_code, 4);
+  EXPECT_CONTAINS(r.stderr_text, "couldn't open file no_such_dir/hits.txt");
 }
 
 TEST(sed, gnu_compat_usage_error_still_exits_1) {
@@ -1493,8 +1506,10 @@ TEST(sed, gnu_compat_case_conversion_applies_to_backrefs) {
   EXPECT_EQ_TEXT(r.stdout_text, "ABC def\n");
 }
 
-TEST(sed, gnu_compat_unknown_replacement_escape_keeps_backslash) {
-  // [GNU] unknown escapes keep the backslash (compile.c:560-565).
+TEST(sed, gnu_compat_unknown_replacement_escape_drops_backslash) {
+  // [GNU] an unknown replacement escape yields the bare character (the
+  // backslash is consumed): `s/foo/\\q/` prints "q" (WSL sed 4.9,
+  // compile.c setup_replacement's default arm).
   TempDir tmp;
   tmp.write("a.txt", "foo\n");
 
@@ -1504,7 +1519,7 @@ TEST(sed, gnu_compat_unknown_replacement_escape_keeps_backslash) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "\\q\n");
+  EXPECT_EQ_TEXT(r.stdout_text, "q\n");
 }
 
 TEST(sed, gnu_compat_y_command_processes_escapes) {
@@ -1531,9 +1546,10 @@ TEST(sed, gnu_compat_y_command_processes_escapes) {
   EXPECT_EQ_TEXT(backslash_result.stdout_text, "aqb\n");
 }
 
-TEST(sed, gnu_compat_read_command_reports_unreadable_file) {
-  // [GNU] r on an unreadable file prints "sed: can't read FILE: reason" and
-  // continues (execute.c:1510-1523, execute.c:565).
+TEST(sed, gnu_compat_read_command_skips_unreadable_file) {
+  // [GNU] r on a missing file is silent: the read is skipped and the
+  // stream continues (WSL sed 4.9 probes `sed 'r nosuch' f` -> "foo", no
+  // stderr, rc 0). The 1.x body printed a can't-read diagnostic.
   TempDir tmp;
   tmp.write("a.txt", "foo\n");
 
@@ -1543,11 +1559,13 @@ TEST(sed, gnu_compat_read_command_reports_unreadable_file) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_CONTAINS(r.stderr_text, "can't read no_such_file.txt");
+  EXPECT_TRUE(r.stderr_text.empty());
   EXPECT_EQ_TEXT(r.stdout_text, "foo\n");
 }
 
-TEST(sed, gnu_compat_read_line_command_reports_unreadable_file) {
+TEST(sed, gnu_compat_read_line_command_skips_unreadable_file) {
+  // [GNU] R on a missing file is silent too (`sed 'R nosuch' f` -> "foo",
+  // no stderr, rc 0; WSL sed 4.9).
   TempDir tmp;
   tmp.write("a.txt", "foo\n");
 
@@ -1557,7 +1575,7 @@ TEST(sed, gnu_compat_read_line_command_reports_unreadable_file) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_CONTAINS(r.stderr_text, "can't read no_such_file.txt");
+  EXPECT_TRUE(r.stderr_text.empty());
   EXPECT_EQ_TEXT(r.stdout_text, "foo\n");
 }
 
@@ -1608,7 +1626,11 @@ TEST(sed, gnu_compat_subst_multiline_flag_absent_keeps_string_anchors) {
   EXPECT_EQ_TEXT(r.stdout_text, "a\nb\n");
 }
 
-TEST(sed, gnu_compat_subst_e_flag_is_rejected_with_clear_message) {
+TEST(sed, gnu_compat_subst_e_flag_executes_replacement) {
+  // [GNU] `s///e` EXECUTES the replacement as a command and substitutes
+  // its output (execute.c do_subst -> shell). `bar` does not resolve, so
+  // the pattern space becomes empty, the shell's diagnostic goes to
+  // stderr, and the exit status stays 0 (WSL sed 4.9).
   TempDir tmp;
   tmp.write("a.txt", "foo\n");
 
@@ -1617,8 +1639,9 @@ TEST(sed, gnu_compat_subst_e_flag_is_rejected_with_clear_message) {
   p.add(L"sed.exe", {L"s/foo/bar/e", L"a.txt"});
   auto r = p.run();
 
-  EXPECT_NE(r.exit_code, 0);
-  EXPECT_CONTAINS(r.stderr_text, "'e' flag");
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "\n");
+  EXPECT_CONTAINS(r.stderr_text, "bar");
 }
 
 TEST(sed, gnu_compat_debug_and_follow_symlinks_are_accepted) {
@@ -1630,8 +1653,14 @@ TEST(sed, gnu_compat_debug_and_follow_symlinks_are_accepted) {
   debug.add(L"sed.exe", {L"--debug", L"s/foo/bar/", L"a.txt"});
   auto debug_result = debug.run();
 
+  // [GNU] --debug prepends the debug.c trace (SED PROGRAM / INPUT /
+  // PATTERN / COMMAND / END-OF-CYCLE...) to the normal output stream.
   EXPECT_EQ(debug_result.exit_code, 0);
-  EXPECT_EQ_TEXT(debug_result.stdout_text, "bar\n");
+  EXPECT_CONTAINS(debug_result.stdout_text, "SED PROGRAM:");
+  EXPECT_CONTAINS(debug_result.stdout_text, "s/foo/bar/");
+  EXPECT_TRUE(debug_result.stdout_text.size() >= 4 &&
+              debug_result.stdout_text.compare(
+                  debug_result.stdout_text.size() - 4, 4, "bar\n") == 0);
 
   Pipeline follow;
   follow.set_cwd(tmp.wpath());

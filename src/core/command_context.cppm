@@ -156,6 +156,18 @@ export auto option_policy_for_command(std::string_view command)
     // "invalid option -- ','" — so the token passes whole to the body.
     policy.digit_led_short_tokens_as_positionals = true;
   }
+  // [GNU] sed.c owns its whole argument language: its getopt_long run
+  // (option/operand permutation, -e/-f in-order compilation, -i[SUF]
+  // expansion, --posix) lives in the wired rust2 body
+  // (rust2/crates/winux-cmds/src/sed.rs, #1488), which also emits the GNU
+  // getopt diagnostics and the full GNU usage block. The generic parser
+  // must not consume or reject any token ahead of it (sed -e with no
+  // argument, sed -l abc, unknown/ambiguous long options all reach the
+  // library verbatim), and the dispatcher's abbreviation/help/version
+  // pre-passes stand down with the same flag.
+  if (command == "sed") {
+    policy.all_args_are_positionals = true;
+  }
   // [GNU] echo.c also never calls getopt (its hand-rolled scan consumes
   // only leading [-neE]-only tokens and treats everything else — "-0",
   // "-x", "--upper", a non-sole "--help" — as data). The wired rust2 body

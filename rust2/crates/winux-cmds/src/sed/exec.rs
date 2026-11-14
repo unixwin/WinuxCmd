@@ -11,7 +11,7 @@
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Read, Seek, Write};
 
-use winux_core::Ctx;
+use winux_core::{tr, Ctx};
 use winux_regex::Match;
 
 use crate::fsutil;
@@ -94,9 +94,15 @@ pub(crate) struct Exec<'a> {
     block_level: usize,
 }
 
-fn io_fatal(what: &str, e: &std::io::Error) -> Fatal {
+fn io_fatal(ctx: &Ctx, what: &str, e: &std::io::Error) -> Fatal {
     Fatal {
-        msg: format!("sed: couldn't write items to {what}: {}", fsutil::reason(e)),
+        msg: tr!(
+            ctx,
+            "command.sed.error.couldnt_write_items",
+            "sed: couldn't write items to {what}: {reason}",
+            what = what,
+            reason = fsutil::reason(e)
+        ),
         status: 4,
     }
 }
@@ -335,12 +341,12 @@ impl<'a> Exec<'a> {
         for f in self.prog.wfiles.iter_mut() {
             if let OutKind::File(Some(w)) = &mut f.kind {
                 if let Err(e) = w.flush() {
-                    first_err.get_or_insert(io_fatal(&String::from_utf8_lossy(&f.name), &e));
+                    first_err.get_or_insert(io_fatal(self.ctx, &String::from_utf8_lossy(&f.name), &e));
                 }
             }
         }
         if let Err(e) = self.stdout.flush() {
-            first_err.get_or_insert(io_fatal("stdout", &e));
+            first_err.get_or_insert(io_fatal(self.ctx, "stdout", &e));
         }
         match first_err {
             Some(e) => Err(e),
@@ -356,25 +362,25 @@ impl<'a> Exec<'a> {
                 if let Some(ip) = self.inplace.as_mut() {
                     ip.out
                         .write_all(data)
-                        .map_err(|e| io_fatal(&ip.target.to_string_lossy(), &e))
+                        .map_err(|e| io_fatal(self.ctx, &ip.target.to_string_lossy(), &e))
                 } else {
                     self.stdout
                         .write_all(data)
-                        .map_err(|e| io_fatal("stdout", &e))
+                        .map_err(|e| io_fatal(self.ctx, "stdout", &e))
                 }
             }
             Target::W(i) => match &mut self.prog.wfiles[i].kind {
                 OutKind::Stdout => self
                     .stdout
                     .write_all(data)
-                    .map_err(|e| io_fatal("stdout", &e)),
+                    .map_err(|e| io_fatal(self.ctx, "stdout", &e)),
                 OutKind::Stderr => {
                     let _ = self.stdout.flush();
                     self.stderr
                         .write_all(data)
-                        .map_err(|e| io_fatal("stderr", &e))
+                        .map_err(|e| io_fatal(self.ctx, "stderr", &e))
                 }
-                OutKind::File(Some(w)) => w.write_all(data).map_err(|e| io_fatal("file", &e)),
+                OutKind::File(Some(w)) => w.write_all(data).map_err(|e| io_fatal(self.ctx, "file", &e)),
                 OutKind::File(None) => Ok(()),
             },
         }
@@ -396,7 +402,7 @@ impl<'a> Exec<'a> {
                 OutKind::File(None) => Ok(()),
             },
         };
-        r.map_err(|e| io_fatal("stdout", &e))
+        r.map_err(|e| io_fatal(self.ctx, "stdout", &e))
     }
 
     fn missing_flag(&mut self, t: Target) -> &mut bool {
@@ -500,10 +506,12 @@ impl<'a> Exec<'a> {
                 Ok(true)
             }
             Err(e) => Err(Fatal {
-                msg: format!(
-                    "sed: read error on {}: {}",
-                    self.read_name(),
-                    fsutil::reason(&e)
+                msg: tr!(
+                    self.ctx,
+                    "command.sed.error.read_error",
+                    "sed: read error on {file}: {reason}",
+                    file = self.read_name(),
+                    reason = fsutil::reason(&e)
                 ),
                 status: 4,
             }),
@@ -603,7 +611,13 @@ impl<'a> Exec<'a> {
                 Ok(m) => m.file_type().is_symlink(),
                 Err(e) => {
                     return Err(Fatal {
-                        msg: format!("sed: couldn't readlink {cur}: {}", fsutil::reason(&e)),
+                        msg: tr!(
+                            self.ctx,
+                            "command.sed.error.couldnt_readlink",
+                            "sed: couldn't readlink {file}: {reason}",
+                            file = cur,
+                            reason = fsutil::reason(&e)
+                        ),
                         status: 4,
                     });
                 }
@@ -615,7 +629,13 @@ impl<'a> Exec<'a> {
                 Ok(t) => t.to_string_lossy().into_owned(),
                 Err(e) => {
                     return Err(Fatal {
-                        msg: format!("sed: couldn't readlink {cur}: {}", fsutil::reason(&e)),
+                        msg: tr!(
+                            self.ctx,
+                            "command.sed.error.couldnt_readlink",
+                            "sed: couldn't readlink {file}: {reason}",
+                            file = cur,
+                            reason = fsutil::reason(&e)
+                        ),
                         status: 4,
                     });
                 }
@@ -654,12 +674,22 @@ impl<'a> Exec<'a> {
             if m.is_dir() {
                 if self.s.in_place.is_some() {
                     return Err(Fatal {
-                        msg: format!("sed: couldn't edit {name}: not a regular file"),
+                        msg: tr!(
+                            self.ctx,
+                            "command.sed.error.not_regular_file",
+                            "sed: couldn't edit {file}: not a regular file",
+                            file = name
+                        ),
                         status: 4,
                     });
                 }
                 return Err(Fatal {
-                    msg: format!("sed: read error on {name}: Is a directory"),
+                    msg: tr!(
+                        self.ctx,
+                        "command.sed.error.is_a_directory",
+                        "sed: read error on {file}: Is a directory",
+                        file = name
+                    ),
                     status: 4,
                 });
             }
@@ -669,7 +699,14 @@ impl<'a> Exec<'a> {
             Err(e) => {
                 let reason = fsutil::gnu_open_reason(self.ctx, &name, &e, false);
                 let _ = self.stdout.flush();
-                let _ = writeln!(self.stderr, "sed: can't read {name}: {reason}");
+                let msg = tr!(
+                    self.ctx,
+                    "command.sed.error.cant_read",
+                    "sed: can't read {file}: {reason}",
+                    file = name,
+                    reason = reason
+                );
+                let _ = writeln!(self.stderr, "{msg}");
                 self.bad_count += 1;
                 self.cur = None;
                 return Ok(());
@@ -682,7 +719,12 @@ impl<'a> Exec<'a> {
                 && winux_core::path::resolve_pseudo_device(&name).is_none();
             if !regular {
                 return Err(Fatal {
-                    msg: format!("sed: couldn't edit {name}: not a regular file"),
+                    msg: tr!(
+                        self.ctx,
+                        "command.sed.error.not_regular_file",
+                        "sed: couldn't edit {file}: not a regular file",
+                        file = name
+                    ),
                     status: 4,
                 });
             }
@@ -691,10 +733,12 @@ impl<'a> Exec<'a> {
                 _ => self.ctx.cwd.clone(),
             };
             let (temp, out) = create_temp(&dir).map_err(|e| Fatal {
-                msg: format!(
-                    "sed: couldn't open temporary file {}/sedXXXXXX: {}",
-                    dir.display(),
-                    fsutil::reason(&e)
+                msg: tr!(
+                    self.ctx,
+                    "command.sed.error.couldnt_open_temp",
+                    "sed: couldn't open temporary file {dir}/sedXXXXXX: {reason}",
+                    dir = dir.display(),
+                    reason = fsutil::reason(&e)
                 ),
                 status: 4,
             })?;
@@ -717,7 +761,7 @@ impl<'a> Exec<'a> {
         if let Some(mut ip) = self.inplace.take() {
             if let Err(e) = ip.out.flush() {
                 let _ = std::fs::remove_file(&ip.temp);
-                return Err(io_fatal(&ip.temp.to_string_lossy(), &e));
+                return Err(io_fatal(self.ctx, &ip.temp.to_string_lossy(), &e));
             }
             drop(ip.out);
             let ext = self.s.in_place.clone().unwrap_or_default();
@@ -727,10 +771,12 @@ impl<'a> Exec<'a> {
                 if let Err(e) = std::fs::rename(&ip.target, &bpath) {
                     let _ = std::fs::remove_file(&ip.temp);
                     return Err(Fatal {
-                        msg: format!(
-                            "sed: cannot rename {}: {}",
-                            self.in_file_name,
-                            fsutil::reason(&e)
+                        msg: tr!(
+                            self.ctx,
+                            "command.sed.error.cannot_rename",
+                            "sed: cannot rename {file}: {reason}",
+                            file = self.in_file_name,
+                            reason = fsutil::reason(&e)
                         ),
                         status: 4,
                     });
@@ -744,10 +790,12 @@ impl<'a> Exec<'a> {
             if let Err(e) = std::fs::rename(&ip.temp, &ip.target) {
                 let _ = std::fs::remove_file(&ip.temp);
                 return Err(Fatal {
-                    msg: format!(
-                        "sed: cannot rename {}: {}",
-                        ip.temp.display(),
-                        fsutil::reason(&e)
+                    msg: tr!(
+                        self.ctx,
+                        "command.sed.error.cannot_rename",
+                        "sed: cannot rename {file}: {reason}",
+                        file = ip.temp.display(),
+                        reason = fsutil::reason(&e)
                     ),
                     status: 4,
                 });
@@ -1019,7 +1067,10 @@ impl<'a> Exec<'a> {
                             CmdX::Int(n) => n,
                             _ => -1,
                         };
-                        return Ok(if n == -1 { 0 } else { n });
+                        // [GNU] sed.c exits with the q/Q status; a POSIX
+                        // process status is 8 bits, so `2q300` reports 44
+                        // (300 & 0xff) to the shell, exactly like GNU.
+                        return Ok(if n == -1 { 0 } else { n & 0xff });
                     }
                     b'r' => {
                         if let CmdX::Read { fname, append } = &self.prog.cmds[pc].x {
@@ -1121,7 +1172,12 @@ impl<'a> Exec<'a> {
                     }
                     other => {
                         return Err(Fatal {
-                            msg: format!("sed: INTERNAL ERROR: Bad cmd {}", other as char),
+                            msg: tr!(
+                                self.ctx,
+                                "command.sed.error.internal_bad_command",
+                                "sed: INTERNAL ERROR: Bad cmd {command}",
+                                command = other as char
+                            ),
                             status: 4,
                         })
                     }
@@ -1353,7 +1409,7 @@ impl<'a> Exec<'a> {
     // ---- --debug -------------------------------------------------------------------------
 
     fn dbg(&mut self, b: &[u8]) -> Result<(), Fatal> {
-        self.stdout.write_all(b).map_err(|e| io_fatal("stdout", &e))
+        self.stdout.write_all(b).map_err(|e| io_fatal(self.ctx, "stdout", &e))
     }
 
     fn debug_input(&mut self) -> Result<(), Fatal> {
@@ -1681,7 +1737,11 @@ fn run_shell(ctx: &Ctx, cmd: &[u8], stderr: &mut dyn Write) -> Result<Vec<u8>, F
             Ok(o.stdout)
         }
         Err(_) => Err(Fatal {
-            msg: "sed: error in subprocess".to_string(),
+            msg: tr!(
+                ctx,
+                "command.sed.error.subprocess",
+                "sed: error in subprocess"
+            ),
             status: 4,
         }),
     }
