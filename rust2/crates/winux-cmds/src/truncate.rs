@@ -32,7 +32,7 @@ use std::ffi::OsString;
 
 use crate::argopt::{self, OptSpec};
 use crate::fsutil::{reason, resolve};
-use winux_core::{usage_error, CmdResult, Ctx, Io};
+use winux_core::{tr, usage_error, CmdResult, Ctx, Io};
 
 const OPTS: &[OptSpec] = &[
     OptSpec {
@@ -207,11 +207,29 @@ pub fn truncate_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         Some(raw) => match parse_size(raw) {
             Ok(spec) => Some(spec),
             Err(SizeError::Invalid(token)) => {
-                let _ = writeln!(io.stderr, "truncate: Invalid number: '{token}'");
+                let _ = writeln!(
+                    io.stderr,
+                    "truncate: {}",
+                    tr!(
+                        ctx,
+                        "command.truncate.error.invalid_number",
+                        "Invalid number: '{token}'",
+                        token = token
+                    )
+                );
                 return Ok(1);
             }
             Err(SizeError::MultipleModifiers) => {
-                let _ = usage_error(ctx, io, "truncate", "multiple relative modifiers specified");
+                let _ = usage_error(
+                    ctx,
+                    io,
+                    "truncate",
+                    &tr!(
+                        ctx,
+                        "command.truncate.error.multiple_modifiers",
+                        "multiple relative modifiers specified"
+                    ),
+                );
                 return Ok(1);
             }
         },
@@ -223,7 +241,11 @@ pub fn truncate_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             ctx,
             io,
             "truncate",
-            "you must specify either '--size' or '--reference'",
+            &tr!(
+                ctx,
+                "common.error.size_or_reference",
+                "you must specify either '--size' or '--reference'"
+            ),
         );
         return Ok(1);
     }
@@ -233,7 +255,11 @@ pub fn truncate_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 ctx,
                 io,
                 "truncate",
-                "you must specify a relative '--size' with '--reference'",
+                &tr!(
+                    ctx,
+                    "command.truncate.error.relative_size_required",
+                    "you must specify a relative '--size' with '--reference'"
+                ),
             );
             return Ok(1);
         }
@@ -243,7 +269,11 @@ pub fn truncate_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             ctx,
             io,
             "truncate",
-            "'--io-blocks' was specified but '--size' was not",
+            &tr!(
+                ctx,
+                "command.truncate.error.io_blocks_needs_size",
+                "'--io-blocks' was specified but '--size' was not"
+            ),
         );
         return Ok(1);
     }
@@ -265,7 +295,13 @@ pub fn truncate_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             Err(_) => {
                 let _ = writeln!(
                     io.stderr,
-                    "truncate: cannot stat '{r}': No such file or directory"
+                    "truncate: {}",
+                    tr!(
+                        ctx,
+                        "command.truncate.error.cannot_stat",
+                        "cannot stat '{file}': No such file or directory",
+                        file = r
+                    )
                 );
                 return Ok(1);
             }
@@ -306,8 +342,15 @@ pub fn truncate_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 None => {
                     let _ = writeln!(
                         io.stderr,
-                        "truncate: overflow in {} * {} byte blocks for file '{name}'",
-                        spec.value, block
+                        "truncate: {}",
+                        tr!(
+                            ctx,
+                            "command.truncate.error.overflow_blocks",
+                            "overflow in {value} * {block} byte blocks for file '{file}'",
+                            value = spec.value,
+                            block = block,
+                            file = name
+                        )
                     );
                     failed = true;
                     continue;
@@ -319,14 +362,28 @@ pub fn truncate_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         let target = match apply_size(spec.modifier, base, value) {
             Ok(t) => t,
             Err(ApplyError::DivZero) => {
-                let _ = writeln!(io.stderr, "truncate: division by zero");
+                let _ = writeln!(
+                    io.stderr,
+                    "truncate: {}",
+                    tr!(
+                        ctx,
+                        "command.truncate.error.division_by_zero",
+                        "division by zero"
+                    )
+                );
                 failed = true;
                 continue;
             }
             Err(ApplyError::Overflow) => {
                 let _ = writeln!(
                     io.stderr,
-                    "truncate: overflow extending size of file '{name}'"
+                    "truncate: {}",
+                    tr!(
+                        ctx,
+                        "command.truncate.error.overflow_extending",
+                        "overflow extending size of file '{file}'",
+                        file = name
+                    )
                 );
                 failed = true;
                 continue;
@@ -369,7 +426,14 @@ fn size_file(
             let reason = crate::fsutil::gnu_open_reason(ctx, name, &e, true);
             let _ = writeln!(
                 io.stderr,
-                "truncate: cannot open '{name}' for writing: {reason}"
+                "truncate: {}",
+                tr!(
+                    ctx,
+                    "command.truncate.error.open_writing",
+                    "cannot open '{file}' for writing: {reason}",
+                    file = name,
+                    reason = reason
+                )
             );
             return false;
         }
@@ -377,7 +441,13 @@ fn size_file(
     if file.set_len(target).is_err() {
         let _ = writeln!(
             io.stderr,
-            "truncate: cannot open '{name}' for writing: Invalid argument"
+            "truncate: {}",
+            tr!(
+                ctx,
+                "command.truncate.error.open_writing_invalid",
+                "cannot open '{file}' for writing: Invalid argument",
+                file = name
+            )
         );
         return false;
     }

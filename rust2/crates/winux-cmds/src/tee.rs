@@ -34,7 +34,7 @@ use std::ffi::OsString;
 use std::io::{ErrorKind, Write};
 
 use crate::argopt;
-use winux_core::{usage_error, CmdResult, Ctx, Io};
+use winux_core::{tr, usage_error, CmdResult, Ctx, Io};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum OutputError {
@@ -111,7 +111,17 @@ fn tee_files(
                 handle: Some(f),
             }),
             Err(e) => {
-                let _ = writeln!(io.stderr, "tee: {name}: {}", reason_str(&e));
+                let _ = writeln!(
+                    io.stderr,
+                    "tee: {}",
+                    tr!(
+                        ctx,
+                        "command.tee.error.open_failed",
+                        "{file}: {reason}",
+                        file = name,
+                        reason = reason_str(&e)
+                    )
+                );
                 // tee.c tee_files(): the open-loop error carries a nonzero
                 // status under the exit modes (error(exit || exit_nopipe,
                 // errno, ...)), which EXITS right there — later operands are
@@ -139,7 +149,11 @@ fn tee_files(
             Ok(n) => n,
             Err(e) if e.kind() == ErrorKind::Interrupted => continue,
             Err(_) => {
-                let _ = writeln!(io.stderr, "tee: read error");
+                let _ = writeln!(
+                    io.stderr,
+                    "tee: {}",
+                    tr!(ctx, "command.tee.error.read_error", "read error")
+                );
                 ok = false;
                 break;
             }
@@ -173,7 +187,17 @@ fn tee_files(
                     let exit_now =
                         matches!(output_error, OutputError::Exit | OutputError::ExitNopipe);
                     if fail {
-                        let _ = writeln!(io.stderr, "tee: {}: {}", d.name, reason_str(&e));
+                        let _ = writeln!(
+                            io.stderr,
+                            "tee: {}",
+                            tr!(
+                                ctx,
+                                "command.tee.error.write_error",
+                                "{file}: {reason}",
+                                file = d.name,
+                                reason = reason_str(&e)
+                            )
+                        );
                         ok = false;
                     }
                     d.handle = None;
@@ -237,14 +261,47 @@ fn argmatch_output_error(arg: &str) -> Result<usize, bool> {
 /// usage(EXIT_FAILURE) -> emit_try_help. probed byte-shape on WSL GNU
 /// coreutils 9.4 (quoting normalized to ASCII like the 1.x applet).
 fn output_error_argfail(ctx: &Ctx, io: &mut Io, arg: &str, ambiguous: bool) -> CmdResult {
-    let verdict = if ambiguous { "ambiguous" } else { "invalid" };
     let _ = writeln!(
         io.stderr,
-        "tee: {verdict} argument '{arg}' for '--output-error'"
+        "tee: {}",
+        if ambiguous {
+            tr!(
+                ctx,
+                "command.tee.error.ambiguous_argument",
+                "ambiguous argument '{value}' for '{option}'",
+                value = arg,
+                option = "--output-error"
+            )
+        } else {
+            tr!(
+                ctx,
+                "command.tee.error.invalid_argument",
+                "invalid argument '{value}' for '{option}'",
+                value = arg,
+                option = "--output-error"
+            )
+        }
     );
-    let _ = writeln!(io.stderr, "Valid arguments are:");
+    let _ = writeln!(
+        io.stderr,
+        "{}",
+        tr!(
+            ctx,
+            "command.tee.error.valid_arguments",
+            "Valid arguments are:"
+        )
+    );
     for a in ["warn", "warn-nopipe", "exit", "exit-nopipe"] {
-        let _ = writeln!(io.stderr, "  - '{a}'");
+        let _ = writeln!(
+            io.stderr,
+            "{}",
+            tr!(
+                ctx,
+                "command.tee.error.valid_argument_item",
+                "  - '{value}'",
+                value = a
+            )
+        );
     }
     let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "tee"));
     Ok(1)

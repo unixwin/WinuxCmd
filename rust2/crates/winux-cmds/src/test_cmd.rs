@@ -48,6 +48,113 @@ fn err(msg: String) -> TestError {
     TestError { msg }
 }
 
+/// Per-command stable keys for the shared test/`[` diagnostics — each
+/// prog gets its own `command.<cmd>.*` keys (the batch-3 convention).
+mod tmsg {
+    use winux_core::{tr, Ctx};
+
+    pub(super) fn missing_bracket(ctx: &Ctx) -> String {
+        tr!(
+            ctx,
+            "command.test_bracket.error.missing_bracket",
+            "missing ']'"
+        )
+    }
+
+    pub(super) fn extra_argument(ctx: &Ctx, operand: &str) -> String {
+        tr!(
+            ctx,
+            "command.test_bracket.error.extra_argument",
+            "extra argument {operand}",
+            operand = operand
+        )
+    }
+
+    pub(super) fn binary_operator_expected(ctx: &Ctx, bracket: bool, operand: &str) -> String {
+        if bracket {
+            tr!(
+                ctx,
+                "command.test_bracket.error.binary_operator_expected",
+                "{operand}: binary operator expected",
+                operand = operand
+            )
+        } else {
+            tr!(
+                ctx,
+                "command.test.error.binary_operator_expected",
+                "{operand}: binary operator expected",
+                operand = operand
+            )
+        }
+    }
+
+    pub(super) fn missing_argument_after(ctx: &Ctx, bracket: bool, operand: &str) -> String {
+        if bracket {
+            tr!(
+                ctx,
+                "command.test_bracket.error.missing_argument_after",
+                "missing argument after {operand}",
+                operand = operand
+            )
+        } else {
+            tr!(
+                ctx,
+                "command.test.error.missing_argument_after",
+                "missing argument after {operand}",
+                operand = operand
+            )
+        }
+    }
+
+    pub(super) fn unary_operator_expected(ctx: &Ctx, bracket: bool, operand: &str) -> String {
+        if bracket {
+            tr!(
+                ctx,
+                "command.test_bracket.error.unary_operator_expected",
+                "{operand}: unary operator expected",
+                operand = operand
+            )
+        } else {
+            tr!(
+                ctx,
+                "command.test.error.unary_operator_expected",
+                "{operand}: unary operator expected",
+                operand = operand
+            )
+        }
+    }
+
+    pub(super) fn paren_expected(ctx: &Ctx, bracket: bool) -> String {
+        if bracket {
+            tr!(
+                ctx,
+                "command.test_bracket.error.paren_expected",
+                "')' expected"
+            )
+        } else {
+            tr!(ctx, "command.test.error.paren_expected", "')' expected")
+        }
+    }
+
+    pub(super) fn invalid_integer(ctx: &Ctx, bracket: bool, operand: &str) -> String {
+        if bracket {
+            tr!(
+                ctx,
+                "command.test_bracket.error.invalid_integer",
+                "invalid integer {operand}",
+                operand = operand
+            )
+        } else {
+            tr!(
+                ctx,
+                "command.test.error.invalid_integer",
+                "invalid integer {operand}",
+                operand = operand
+            )
+        }
+    }
+}
+
 pub fn test_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     eval_args(args, false, io, ctx, &StdioMeta::pipe())
 }
@@ -87,7 +194,7 @@ fn eval_args(
         match argv.pop() {
             Some(ref s) if s == "]" => {}
             _ => {
-                let _ = writeln!(io.stderr, "[: missing ']'");
+                let _ = writeln!(io.stderr, "[: {}", tmsg::missing_bracket(ctx));
                 return Ok(2);
             }
         }
@@ -120,18 +227,19 @@ fn posix_test(
     match n {
         0 => Ok(false),
         1 => Ok(!argv[0].is_empty()),
-        2 => two_arguments(argv, ctx, stdio),
-        3 => three_arguments(argv, ctx, stdio),
+        2 => two_arguments(argv, ctx, bracket, stdio),
+        3 => three_arguments(argv, ctx, bracket, stdio),
         _ => {
-            let mut parser = Parser::new(argv, ctx, stdio);
+            let mut parser = Parser::new(argv, ctx, bracket, stdio);
             let v = parser.parse_expr()?;
             if parser.pos < argv.len() {
                 if bracket {
-                    Err(err(format!("extra argument {}", q(&argv[parser.pos]))))
+                    Err(err(tmsg::extra_argument(ctx, &q(&argv[parser.pos]))))
                 } else {
-                    Err(err(format!(
-                        "{}: binary operator expected",
-                        q(&argv[parser.pos])
+                    Err(err(tmsg::binary_operator_expected(
+                        ctx,
+                        bracket,
+                        &q(&argv[parser.pos]),
                     )))
                 }
             } else {
@@ -145,16 +253,25 @@ fn q(s: &str) -> String {
     format!("'{s}'")
 }
 
-fn two_arguments(argv: &[String], ctx: &Ctx, stdio: &StdioMeta) -> Result<bool, TestError> {
+fn two_arguments(
+    argv: &[String],
+    ctx: &Ctx,
+    bracket: bool,
+    stdio: &StdioMeta,
+) -> Result<bool, TestError> {
     if argv[0] == "!" {
         return Ok(!one_argument(&argv[1]));
     }
     if is_unop(&argv[0]) {
-        return unary_operator(&argv[0], &argv[1], ctx, stdio);
+        return unary_operator(&argv[0], &argv[1], ctx, bracket, stdio);
     }
     if is_binop(&argv[1]) {
         // e.g. `test 1 =` -> missing rhs
-        return Err(err(format!("missing argument after {}", q(&argv[1]))));
+        return Err(err(tmsg::missing_argument_after(
+            ctx,
+            bracket,
+            &q(&argv[1]),
+        )));
     }
     // [GNU] probed 9.4, posixtest case 2: the AND/OR operators "-a"/"-o"
     // in the operator position report "'-a': unary operator expected"
@@ -163,26 +280,43 @@ fn two_arguments(argv: &[String], ctx: &Ctx, stdio: &StdioMeta) -> Result<bool, 
     // argument after 'x'" for `test --help x`, "--version x", "-eq x",
     // "-nt x", "-zz x" and the bare `test 1 2`.
     if argv[0] == "-a" || argv[0] == "-o" {
-        return Err(err(format!("{}: unary operator expected", q(&argv[0]))));
+        return Err(err(tmsg::unary_operator_expected(
+            ctx,
+            bracket,
+            &q(&argv[0]),
+        )));
     }
-    Err(err(format!("missing argument after {}", q(&argv[1]))))
+    Err(err(tmsg::missing_argument_after(
+        ctx,
+        bracket,
+        &q(&argv[1]),
+    )))
 }
 
-fn three_arguments(argv: &[String], ctx: &Ctx, stdio: &StdioMeta) -> Result<bool, TestError> {
+fn three_arguments(
+    argv: &[String],
+    ctx: &Ctx,
+    bracket: bool,
+    stdio: &StdioMeta,
+) -> Result<bool, TestError> {
     if is_binop(&argv[1]) {
-        return binary_operator(&argv[0], &argv[1], &argv[2], ctx);
+        return binary_operator(&argv[0], &argv[1], &argv[2], ctx, bracket);
     }
     if argv[0] == "(" && argv[2] == ")" {
         return one_argument_value(&argv[1], ctx);
     }
     if argv[0] == "!" {
         // `test ! -z ''` -> negate the two-argument form (GNU probes)
-        return Ok(!two_arguments(&argv[1..], ctx, stdio)?);
+        return Ok(!two_arguments(&argv[1..], ctx, bracket, stdio)?);
     }
     if is_unop(&argv[0]) {
-        return unary_operator(&argv[0], &argv[1], ctx, stdio);
+        return unary_operator(&argv[0], &argv[1], ctx, bracket, stdio);
     }
-    Err(err(format!("{}: binary operator expected", q(&argv[1]))))
+    Err(err(tmsg::binary_operator_expected(
+        ctx,
+        bracket,
+        &q(&argv[1]),
+    )))
 }
 
 fn one_argument(s: &str) -> bool {
@@ -208,15 +342,17 @@ struct Parser<'a> {
     argv: &'a [String],
     pos: usize,
     ctx: &'a Ctx<'a>,
+    bracket: bool,
     stdio: &'a StdioMeta,
 }
 
 impl<'a> Parser<'a> {
-    fn new(argv: &'a [String], ctx: &'a Ctx<'a>, stdio: &'a StdioMeta) -> Self {
+    fn new(argv: &'a [String], ctx: &'a Ctx<'a>, bracket: bool, stdio: &'a StdioMeta) -> Self {
         Parser {
             argv,
             pos: 0,
             ctx,
+            bracket,
             stdio,
         }
     }
@@ -260,7 +396,7 @@ impl<'a> Parser<'a> {
             self.pos += 1;
             let v = self.parse_expr()?;
             if self.cur() != Some(")") {
-                return Err(err("')' expected".to_string()));
+                return Err(err(tmsg::paren_expected(self.ctx, self.bracket)));
             }
             self.pos += 1;
             return Ok(v);
@@ -273,9 +409,15 @@ impl<'a> Parser<'a> {
             if is_binop(next) && next != "-a" && next != "-o" {
                 let rhs = match self.argv.get(self.pos + 2) {
                     Some(r) => r.clone(),
-                    None => return Err(err(format!("missing argument after {}", q(next)))),
+                    None => {
+                        return Err(err(tmsg::missing_argument_after(
+                            self.ctx,
+                            self.bracket,
+                            &q(next),
+                        )))
+                    }
                 };
-                let v = binary_operator(&tok, next, &rhs, self.ctx)?;
+                let v = binary_operator(&tok, next, &rhs, self.ctx, self.bracket)?;
                 self.pos += 3;
                 return Ok(v);
             }
@@ -283,9 +425,15 @@ impl<'a> Parser<'a> {
         if is_unop(&tok) {
             let arg = match self.argv.get(self.pos + 1) {
                 Some(a) => a.clone(),
-                None => return Err(err(format!("missing argument after {}", q(&tok)))),
+                None => {
+                    return Err(err(tmsg::missing_argument_after(
+                        self.ctx,
+                        self.bracket,
+                        &q(&tok),
+                    )))
+                }
             };
-            let v = unary_operator(&tok, &arg, self.ctx, self.stdio)?;
+            let v = unary_operator(&tok, &arg, self.ctx, self.bracket, self.stdio)?;
             self.pos += 2;
             return Ok(v);
         }
@@ -300,7 +448,13 @@ impl<'a> Parser<'a> {
 
 // ---------- operators ----------
 
-fn binary_operator(lhs: &str, op: &str, rhs: &str, ctx: &Ctx) -> Result<bool, TestError> {
+fn binary_operator(
+    lhs: &str,
+    op: &str,
+    rhs: &str,
+    ctx: &Ctx,
+    bracket: bool,
+) -> Result<bool, TestError> {
     match op {
         "=" | "==" => Ok(lhs == rhs),
         "!=" => Ok(lhs != rhs),
@@ -310,8 +464,8 @@ fn binary_operator(lhs: &str, op: &str, rhs: &str, ctx: &Ctx) -> Result<bool, Te
         "<" => Ok(lhs < rhs),
         ">" => Ok(lhs > rhs),
         "-eq" | "-ne" | "-lt" | "-le" | "-gt" | "-ge" => {
-            let a = parse_integer(lhs)?;
-            let b = parse_integer(rhs)?;
+            let a = parse_integer(ctx, bracket, lhs)?;
+            let b = parse_integer(ctx, bracket, rhs)?;
             Ok(match op {
                 "-eq" => a == b,
                 "-ne" => a != b,
@@ -325,13 +479,13 @@ fn binary_operator(lhs: &str, op: &str, rhs: &str, ctx: &Ctx) -> Result<bool, Te
         "-nt" => Ok(mtime_of(ctx, lhs) > mtime_of(ctx, rhs)),
         "-ot" => Ok(mtime_of(ctx, lhs) < mtime_of(ctx, rhs)),
         "-ef" => Ok(same_file(ctx, lhs, rhs)),
-        _ => Err(err(format!("missing argument after {}", q(op)))),
+        _ => Err(err(tmsg::missing_argument_after(ctx, bracket, &q(op)))),
     }
 }
 
 /// GNU integer syntax: optional leading whitespace, optional sign, digits
 /// (probed: ' 1', '+1', '01' all valid; '1x' is `invalid integer`).
-fn parse_integer(s: &str) -> Result<i128, TestError> {
+fn parse_integer(ctx: &Ctx, bracket: bool, s: &str) -> Result<i128, TestError> {
     let t = s.trim_start();
     let mut chars = t.chars();
     let mut cleaned = String::new();
@@ -348,13 +502,13 @@ fn parse_integer(s: &str) -> Result<i128, TestError> {
         None => (1i128, cleaned.strip_prefix('+').unwrap_or(&cleaned)),
     };
     if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
-        return Err(err(format!("invalid integer {}", q(s))));
+        return Err(err(tmsg::invalid_integer(ctx, bracket, &q(s))));
     }
     let mut v: i128 = 0;
     for c in digits.chars() {
         v = v * 10 + (c as i128 - '0' as i128);
         if v > i64::MAX as i128 + 1 {
-            return Err(err(format!("invalid integer {}", q(s))));
+            return Err(err(tmsg::invalid_integer(ctx, bracket, &q(s))));
         }
     }
     Ok(sign * v)
@@ -394,12 +548,18 @@ fn same_file(ctx: &Ctx, a: &str, b: &str) -> bool {
     }
 }
 
-fn unary_operator(op: &str, arg: &str, ctx: &Ctx, stdio: &StdioMeta) -> Result<bool, TestError> {
+fn unary_operator(
+    op: &str,
+    arg: &str,
+    ctx: &Ctx,
+    bracket: bool,
+    stdio: &StdioMeta,
+) -> Result<bool, TestError> {
     match op {
         "-n" => Ok(!arg.is_empty()),
         "-z" => Ok(arg.is_empty()),
         "-t" => {
-            let fd = parse_integer(arg)?; // GNU: `test -t x` -> invalid integer
+            let fd = parse_integer(ctx, bracket, arg)?; // GNU: `test -t x` -> invalid integer
             Ok(stdio.is_tty(fd))
         }
         // DOS device operands (winux-core device probing, the stat
@@ -461,7 +621,7 @@ fn unary_operator(op: &str, arg: &str, ctx: &Ctx, stdio: &StdioMeta) -> Result<b
         // harness can see is owned by root/euid)
         "-O" | "-G" => Ok(metadata_of(ctx, arg, true).is_some()),
         "-N" => Ok(false),
-        _ => Err(err(format!("{}: unary operator expected", q(op)))),
+        _ => Err(err(tmsg::unary_operator_expected(ctx, bracket, &q(op)))),
     }
 }
 

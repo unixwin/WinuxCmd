@@ -33,7 +33,7 @@ use std::time::{Duration, Instant};
 
 use crate::argopt::{self, OptSpec};
 use crate::childproc::{resolve_child, spawn_child, ChildResolve};
-use winux_core::{CmdResult, Ctx, Io};
+use winux_core::{tr, CmdResult, Ctx, Io};
 
 const OPTS: &[OptSpec] = &[
     OptSpec {
@@ -421,7 +421,16 @@ pub fn timeout_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         match signal_number(s) {
             Some(v) => signal = v,
             None => {
-                let _ = writeln!(io.stderr, "timeout: '{s}': invalid signal");
+                let _ = writeln!(
+                    io.stderr,
+                    "timeout: {}",
+                    tr!(
+                        ctx,
+                        "command.timeout.error.invalid_signal",
+                        "'{signal}': invalid signal",
+                        signal = s
+                    )
+                );
                 let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "timeout"));
                 return Ok(125);
             }
@@ -432,7 +441,16 @@ pub fn timeout_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         match parse_duration(k) {
             Ok(v) => kill_after_ms = v,
             Err(()) => {
-                let _ = writeln!(io.stderr, "timeout: invalid time interval '{k}'");
+                let _ = writeln!(
+                    io.stderr,
+                    "timeout: {}",
+                    tr!(
+                        ctx,
+                        "command.timeout.error.invalid_time_interval",
+                        "invalid time interval '{value}'",
+                        value = k
+                    )
+                );
                 let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "timeout"));
                 return Ok(125);
             }
@@ -453,7 +471,13 @@ pub fn timeout_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         Err(()) => {
             let _ = writeln!(
                 io.stderr,
-                "timeout: invalid time interval '{duration_text}'"
+                "timeout: {}",
+                tr!(
+                    ctx,
+                    "command.timeout.error.invalid_time_interval",
+                    "invalid time interval '{value}'",
+                    value = duration_text
+                )
             );
             let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "timeout"));
             return Ok(125);
@@ -482,7 +506,13 @@ pub fn timeout_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 // found but not invokable (or another spawn failure)
                 let _ = writeln!(
                     io.stderr,
-                    "timeout: failed to run command '{command}': Permission denied"
+                    "timeout: {}",
+                    tr!(
+                        ctx,
+                        "command.timeout.error.run_permission_denied",
+                        "failed to run command '{command}': Permission denied",
+                        command = command
+                    )
                 );
                 return Ok(126);
             }
@@ -490,21 +520,39 @@ pub fn timeout_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         ChildResolve::NotFound => {
             let _ = writeln!(
                 io.stderr,
-                "timeout: failed to run command '{command}': No such file or directory"
+                "timeout: {}",
+                tr!(
+                    ctx,
+                    "command.timeout.error.run_no_such_file",
+                    "failed to run command '{command}': No such file or directory",
+                    command = command
+                )
             );
             return Ok(127);
         }
         ChildResolve::BadFormat => {
             let _ = writeln!(
                 io.stderr,
-                "timeout: failed to run command '{command}': Exec format error"
+                "timeout: {}",
+                tr!(
+                    ctx,
+                    "command.timeout.error.run_exec_format",
+                    "failed to run command '{command}': Exec format error",
+                    command = command
+                )
             );
             return Ok(126);
         }
         ChildResolve::NotExecutable | ChildResolve::NotADirectory => {
             let _ = writeln!(
                 io.stderr,
-                "timeout: failed to run command '{command}': Permission denied"
+                "timeout: {}",
+                tr!(
+                    ctx,
+                    "command.timeout.error.run_permission_denied",
+                    "failed to run command '{command}': Permission denied",
+                    command = command
+                )
             );
             return Ok(126);
         }
@@ -550,9 +598,14 @@ pub fn timeout_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     if verbose {
         let _ = writeln!(
             io.stderr,
-            "timeout: sending signal {} to command '{}'",
-            signal_name(signal),
-            command
+            "timeout: {}",
+            tr!(
+                ctx,
+                "command.timeout.status.sending_signal",
+                "sending signal {signal} to command '{command}'",
+                signal = signal_name(signal),
+                command = command
+            )
         );
     }
     // GNU signal 0 is a liveness probe: with plain -s0 the Windows
@@ -578,7 +631,14 @@ pub fn timeout_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 if verbose {
                     let _ = writeln!(
                         io.stderr,
-                        "timeout: sending signal KILL to command '{command}'"
+                        "timeout: {}",
+                        tr!(
+                            ctx,
+                            "command.timeout.status.sending_signal",
+                            "sending signal {signal} to command '{command}'",
+                            signal = "KILL",
+                            command = command
+                        )
                     );
                 }
                 let _ = child.kill();
