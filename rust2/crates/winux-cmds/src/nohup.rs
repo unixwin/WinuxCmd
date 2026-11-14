@@ -120,8 +120,7 @@ pub fn nohup_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     // cluster forms keep argopt's getopt-order diagnostics (`-hx` ->
     // "invalid option -- 'h'", `-xh` -> "invalid option -- 'x'").
     if leading.iter().any(|a| a.to_string_lossy() == "-h") {
-        let _ = writeln!(io.stderr, "nohup: invalid option -- 'h'");
-        let _ = writeln!(io.stderr, "Try 'nohup --help' for more information.");
+        let _ = winux_core::usage_error(ctx, io, "nohup", &argopt::invalid_option(ctx, "h"));
         return Ok(usage_exit_status(ctx));
     }
     let p = match argopt::parse("nohup", &leading, OPTS, io, ctx, usage_exit_status(ctx)) {
@@ -155,8 +154,7 @@ pub fn nohup_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     }
 
     if command_args.is_empty() {
-        let _ = writeln!(io.stderr, "nohup: missing operand");
-        let _ = writeln!(io.stderr, "Try 'nohup --help' for more information.");
+        let _ = winux_core::usage_error(ctx, io, "nohup", &crate::messages::missing_operand(ctx));
         return Ok(usage_exit_status(ctx));
     }
 

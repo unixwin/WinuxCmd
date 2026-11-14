@@ -1074,6 +1074,10 @@ TEST(grep, grep_only_matching_extended_prefixed_class_repeat) {
   EXPECT_EQ_TEXT(r.stdout_text, "needle_123\nNEEDLE_45\nneedle_7\n");
 }
 
+// #1488 rust2 wiring: GNU grep treats a UTF-8 BOM as ordinary data — the
+// first line is "\xEF\xBB\xBFhello", so `-x hello` selects nothing (WSL
+// GNU grep 3.11 probe 2026-11-14: rc 1, no output). The 1.x body decoded
+// the BOM away, a Windows accommodation the GNU-exact port does not carry.
 TEST(grep, grep_strips_utf8_bom) {
   TempDir tmp;
   tmp.write("a.txt", "\xEF\xBB\xBFhello\n");
@@ -1083,10 +1087,15 @@ TEST(grep, grep_strips_utf8_bom) {
   p.add(L"grep.exe", {L"-x", L"hello", L"a.txt"});
 
   auto r = p.run();
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "hello\n");
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ_TEXT(r.stdout_text, "");
 }
 
+// #1488 rust2 wiring: GNU grep reads bytes, not Windows text encodings —
+// UTF-16LE bytes carry interleaved NULs and no "hello" byte sequence, so
+// the binary file selects nothing (WSL GNU grep 3.11 probe 2026-11-14:
+// rc 1, no output). The 1.x body decoded UTF-16LE input, an accommodation
+// the GNU-exact port does not carry.
 TEST(grep, grep_decodes_utf16le_input) {
   TempDir tmp;
   tmp.write_bytes("a.txt",
@@ -1098,8 +1107,8 @@ TEST(grep, grep_decodes_utf16le_input) {
   p.add(L"grep.exe", {L"hello", L"a.txt"});
 
   auto r = p.run();
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "hello\n");
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ_TEXT(r.stdout_text, "");
 }
 
 TEST(grep, grep_only_matching_silently_ignores_context) {
@@ -1267,6 +1276,12 @@ TEST(grep, grep_devices_rejects_invalid_action) {
               std::string::npos);
 }
 
+// #1488 rust2 wiring: file operands stay LITERAL — the shell globs, the
+// program does not (GNU grep receives shell-expanded operands; the
+// md5sum_wildcard pin carries the same contract). WSL GNU grep 3.11
+// probe 2026-11-14: `grep hello '*.txt'` reports
+// "grep: *.txt: No such file or directory" and exits 2. The 1.x body
+// glob-expanded operands, a GNU deviation the port does not carry.
 TEST(grep, grep_wildcard_files) {
   TempDir tmp;
   tmp.write("file1.txt", "hello world\n");
@@ -1284,12 +1299,16 @@ TEST(grep, grep_wildcard_files) {
   TEST_LOG_EXIT_CODE(r);
   TEST_LOG("grep.exe hello *.txt output", r.stdout_text);
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.find("file1.txt:hello world") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("file2.txt:hello again") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("other.log") == std::string::npos);
+  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("grep: *.txt: No such file or "
+                                 "directory") != std::string::npos);
 }
 
+// #1488 rust2 wiring: `d[12]\*.txt` is a literal operand — no shell ran
+// to expand it, so GNU grep reports the ENOENT and exits 2 (WSL GNU grep
+// 3.11 probe 2026-11-14, same contract as grep_wildcard_files). The 1.x
+// body glob-expanded the char-class operand.
 TEST(grep, grep_wildcard_char_class_in_parent_directory_segment) {
   TempDir tmp;
   std::filesystem::create_directories(tmp.path / "d1");
@@ -1305,12 +1324,17 @@ TEST(grep, grep_wildcard_char_class_in_parent_directory_segment) {
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.find("d1\\a.txt:needle one") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("d2\\b.txt:needle two") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("d3\\c.txt") == std::string::npos);
+  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("grep: d[12]\\*.txt: No such file or "
+                                 "directory") != std::string::npos);
 }
 
+// #1488 rust2 wiring: `[ab].txt` is a literal operand naming the one file
+// spelled exactly that way — GNU grep searches it (no "real" match inside)
+// and exits 1 (WSL GNU grep 3.11 probe 2026-11-14: rc 1, no output). The
+// 1.x body preferred glob-expanding the spelling to the sibling a.txt/
+// b.txt files; the GNU-exact port does not glob.
 TEST(grep, grep_char_class_prefers_glob_over_same_spelling_literal_path) {
   TempDir tmp;
   tmp.write("[ab].txt", "literal match\n");
@@ -1323,13 +1347,14 @@ TEST(grep, grep_char_class_prefers_glob_over_same_spelling_literal_path) {
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.find("a.txt:real alpha") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("b.txt:real beta") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("[ab].txt:literal match") ==
-              std::string::npos);
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ_TEXT(r.stdout_text, "");
 }
 
+// #1488 rust2 wiring: `root\*` is a literal operand — no shell expanded
+// it, so GNU grep -r reports the ENOENT and exits 2 (WSL GNU grep 3.11
+// probe 2026-11-14: "grep: root\*: No such file or directory"). The 1.x
+// body glob-expanded recursive directory operands.
 TEST(grep, grep_recursive_wildcard_directory_operands_recurse) {
   TempDir tmp;
   std::filesystem::create_directories(tmp.path / "root" / "sub");
@@ -1342,10 +1367,10 @@ TEST(grep, grep_recursive_wildcard_directory_operands_recurse) {
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.find("sub") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("a.txt") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("needle") != std::string::npos);
+  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("grep: root\\*: No such file or "
+                                 "directory") != std::string::npos);
 }
 
 TEST(grep, grep_pattern_operand_is_literal_not_glob) {
@@ -1363,6 +1388,9 @@ TEST(grep, grep_pattern_operand_is_literal_not_glob) {
   EXPECT_EQ_TEXT(r.stdout_text, "hello\n");
 }
 
+// #1488 rust2 wiring: `*.cpp` is a literal operand (the shell globs, the
+// program does not) — GNU grep reports the ENOENT and exits 2 (WSL GNU
+// grep 3.11 probe 2026-11-14). The 1.x body glob-expanded it.
 TEST(grep, grep_wildcard_pattern) {
   TempDir tmp;
   tmp.write("test.cpp", "#include <iostream>\n");
@@ -1380,12 +1408,16 @@ TEST(grep, grep_wildcard_pattern) {
   TEST_LOG_EXIT_CODE(r);
   TEST_LOG("grep output", r.stdout_text);
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.find("#include <iostream>") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("#pragma once") == std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("just text") == std::string::npos);
+  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("grep: *.cpp: No such file or "
+                                 "directory") != std::string::npos);
 }
 
+// #1488 rust2 wiring: `*.txt`/`*.log` stay literal operands — GNU grep
+// parses --exclude-from, then reports the two ENOENTs and exits 2 (WSL
+// GNU grep 3.11 probe 2026-11-14). The 1.x body glob-expanded the
+// operands, so the exclude list never came into play on them.
 TEST(grep, grep_exclude_from_file) {
   TempDir tmp;
   tmp.write("keep.txt", "needle\n");
@@ -1400,10 +1432,12 @@ TEST(grep, grep_exclude_from_file) {
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.find("keep.txt") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("keep2.txt") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("skip.log") == std::string::npos);
+  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("grep: *.txt: No such file or "
+                                 "directory") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("grep: *.log: No such file or "
+                                 "directory") != std::string::npos);
 }
 
 TEST(grep, grep_include_filters_recursive_files) {
@@ -1484,6 +1518,10 @@ TEST(grep, grep_include_exclude_match_command_line_name_suffixes) {
   EXPECT_TRUE(r.stdout_text.find("needle-readme") == std::string::npos);
 }
 
+// #1488 rust2 wiring: both --exclude-from occurrences parse, but the
+// `*.txt`/`*.log` operands stay literal — GNU grep reports the two ENOENTs
+// and exits 2 (WSL GNU grep 3.11 probe 2026-11-14, same contract as
+// grep_exclude_from_file). The 1.x body glob-expanded the operands.
 TEST(grep, grep_repeated_exclude_from_files_all_apply) {
   TempDir tmp;
   tmp.write("keep.txt", "needle-keep\n");
@@ -1499,10 +1537,12 @@ TEST(grep, grep_repeated_exclude_from_files_all_apply) {
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.find("needle-keep") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("needle-skip1") == std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("needle-skip2") == std::string::npos);
+  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("grep: *.txt: No such file or "
+                                 "directory") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("grep: *.log: No such file or "
+                                 "directory") != std::string::npos);
 }
 
 TEST(grep, grep_repeated_exclude_dir_patterns_all_apply) {
@@ -1751,7 +1791,13 @@ TEST(grep, grep_R_warns_and_terminates_on_junction_cycle) {
   // the hit found and a diagnostic for the skipped cycle.
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_NE(r.stdout_text.find("real.txt"), std::string::npos);
-  EXPECT_NE(r.stderr_text.find("cyclic"), std::string::npos);
+  // [GNU] wording, not the 1.x "cyclic": GNU grep 3.11 (WSL oracle probe,
+  // ln -s to self under the walked root) emits
+  //   "grep: j/loop: warning: recursive directory loop"
+  // — the same line the rust2 walk.rs FTS_DC detection emits. This test
+  // only really runs on hosts with symlink privilege (the helper skips
+  // otherwise), which is why the wording mismatch only surfaced on CI.
+  EXPECT_NE(r.stderr_text.find("recursive directory loop"), std::string::npos);
 }
 
 // [#1212] fd 0 is text mode by default, so a pipe stopped at the first 0x1A

@@ -25,9 +25,10 @@
 use std::ffi::{c_char, c_int, c_void, CString};
 use std::io::{Read, Write};
 
+use winux_cmds::fs_win::FileTime;
 use winux_cmds::tail::{StdinKind, StdinMeta};
 use winux_core::stream::StreamReadFn;
-use winux_core::{Ctx, EnvSource, Io, ProcessEnv};
+use winux_core::{Ctx, EnvSource, Io, ProcessEnv, StdioMeta};
 use winuxcmd_ffi::{winuxcmd_free_buf, winuxcmd_run, winuxcmd_run_stream, CBuf};
 
 /// tail's stdin classification, composed from the process stdin handle.
@@ -98,6 +99,93 @@ fn tail_stdin_meta() -> StdinMeta {
 #[cfg(not(windows))]
 fn tail_stdin_meta() -> StdinMeta {
     StdinMeta::pipe_stream()
+}
+
+/// The process's fd 0/1/2 terminal classes, injected into commands that
+/// need `isatty` (`tty`, `test -t`).
+///
+/// The driver is the sanctioned process-IO tier: it reads the process
+/// handles and the library sees only the resulting [`StdioMeta`] (the
+/// `tail_stdin_meta` precedent). GetConsoleMode decides console-ness for
+/// the three real handles; a null/unavailable handle is not a terminal.
+#[cfg(windows)]
+fn stdio_meta() -> StdioMeta {
+    use std::os::windows::io::AsRawHandle;
+    type Handle = *mut c_void;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetConsoleMode(h: Handle, mode: *mut u32) -> i32;
+    }
+    fn is_tty(h: Handle) -> bool {
+        if h.is_null() {
+            return false;
+        }
+        let mut mode = 0u32;
+        unsafe { GetConsoleMode(h, &mut mode) != 0 }
+    }
+    StdioMeta::with_tty([
+        is_tty(std::io::stdin().as_raw_handle() as Handle),
+        is_tty(std::io::stdout().as_raw_handle() as Handle),
+        is_tty(std::io::stderr().as_raw_handle() as Handle),
+    ])
+}
+
+#[cfg(not(windows))]
+fn stdio_meta() -> StdioMeta {
+    extern "C" {
+        fn isatty(fd: i32) -> i32;
+    }
+    let mut tty = [false; 3];
+    for (fd, slot) in tty.iter_mut().enumerate() {
+        *slot = unsafe { isatty(fd as i32) } == 1;
+    }
+    StdioMeta::with_tty(tty)
+}
+
+/// The POSIX `touch -` face of the driver's real stdout handle.
+///
+/// `touch -` retimes fd 1 (GNU touch.c:127-128). The command receives
+/// this capability instead of reaching for `GetStdHandle`; `None` fields
+/// keep the corresponding timestamp untouched (SetFileTime's NULL).
+struct ProcessStdoutTimes;
+
+#[cfg(windows)]
+impl winux_cmds::touch::StdoutTimes for ProcessStdoutTimes {
+    fn set_times(&mut self, atime: Option<FileTime>, mtime: Option<FileTime>) -> Result<(), u32> {
+        use std::os::windows::io::AsRawHandle;
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn SetFileTime(
+                h: *mut c_void,
+                creation: *const FileTime,
+                access: *const FileTime,
+                write: *const FileTime,
+            ) -> i32;
+        }
+        let h = std::io::stdout().as_raw_handle() as *mut c_void;
+        if h.is_null() {
+            return Err(6); // ERROR_INVALID_HANDLE
+        }
+        let pa = atime
+            .as_ref()
+            .map_or(std::ptr::null(), |t| t as *const FileTime);
+        let pm = mtime
+            .as_ref()
+            .map_or(std::ptr::null(), |t| t as *const FileTime);
+        let rc = unsafe { SetFileTime(h, std::ptr::null(), pa, pm) };
+        if rc == 0 {
+            Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(1) as u32)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[cfg(not(windows))]
+impl winux_cmds::touch::StdoutTimes for ProcessStdoutTimes {
+    fn set_times(&mut self, _atime: Option<FileTime>, _mtime: Option<FileTime>) -> Result<(), u32> {
+        Err(1)
+    }
 }
 
 fn main() {
@@ -193,25 +281,54 @@ fn run_direct(argv: &[std::ffi::OsString]) -> i32 {
         stderr: &mut stderr_lock,
     };
 
-    let status = if name == "tail" {
-        // tail's stdin class is input metadata (GNU's fstat(0) facts):
-        // composed above from the process handle, injected into the
-        // library. Every other command shapes stdin through the Io
-        // handles alone.
-        let meta = tail_stdin_meta();
-        match winux_cmds::tail::tail_with_meta(&args, &mut io, &ctx, &meta) {
-            Ok(s) => s as i32,
-            Err(_) => winux_core::ABI_FAILURE_STATUS as i32,
+    let status = match name.as_str() {
+        "tail" => {
+            // tail's stdin class is input metadata (GNU's fstat(0) facts):
+            // composed from the process handle, injected into the library.
+            let meta = tail_stdin_meta();
+            match winux_cmds::tail::tail_with_meta(&args, &mut io, &ctx, &meta) {
+                Ok(s) => s as i32,
+                Err(_) => winux_core::ABI_FAILURE_STATUS as i32,
+            }
         }
-    } else {
-        match winux_cmds::dispatch(&name, &args, &mut io, &ctx) {
+        // `isatty` facts and the stdout retime face are process-IO tier:
+        // the driver composes them, the library receives metadata.
+        "tty" => {
+            let meta = stdio_meta();
+            match winux_cmds::tty::tty_with_meta(&args, &mut io, &ctx, &meta) {
+                Ok(s) => s as i32,
+                Err(_) => winux_core::ABI_FAILURE_STATUS as i32,
+            }
+        }
+        "test" => {
+            let meta = stdio_meta();
+            match winux_cmds::test_cmd::test_with_meta(&args, &mut io, &ctx, &meta) {
+                Ok(s) => s as i32,
+                Err(_) => winux_core::ABI_FAILURE_STATUS as i32,
+            }
+        }
+        "[" => {
+            let meta = stdio_meta();
+            match winux_cmds::test_cmd::bracket_with_meta(&args, &mut io, &ctx, &meta) {
+                Ok(s) => s as i32,
+                Err(_) => winux_core::ABI_FAILURE_STATUS as i32,
+            }
+        }
+        "touch" => {
+            let mut host = ProcessStdoutTimes;
+            match winux_cmds::touch::touch_with_stdout(&args, &mut io, &ctx, Some(&mut host)) {
+                Ok(s) => s as i32,
+                Err(_) => winux_core::ABI_FAILURE_STATUS as i32,
+            }
+        }
+        _ => match winux_cmds::dispatch(&name, &args, &mut io, &ctx) {
             Some(Ok(s)) => s as i32,
             Some(Err(_)) => winux_core::ABI_FAILURE_STATUS as i32,
             None => {
                 let _ = writeln!(stderr_lock, "winuxcmd-driver: unknown command: {}", name);
                 127
             }
-        }
+        },
     };
     let _ = stdout_lock.flush();
     let _ = stderr_lock.flush();

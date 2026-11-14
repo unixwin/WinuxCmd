@@ -18,6 +18,16 @@ param(
     [string]$Configuration = "Release",
     [int]$Jobs = 0,
     [int]$TimeoutSeconds = 120,
+    # The serial pass exists to separate a #1260 fail-fast flake from a real
+    # failure, not to give a hang a second full minute budget. A test that
+    # hits the parallel --timeout has already burned 120 s; re-running it
+    # with the same budget amplifies a bad runner into a 30+ minute step
+    # (measured: 22 failed tests, 1441-1801 s serial retry, at most 4
+    # "recovered" and the gate still red).
+    # 30 s is far above every test's healthy runtime here (the whole 3862
+    # test suite finishes in ~95 s) and stays fail-closed: a genuine hang
+    # still fails the gate, it just fails sooner.
+    [int]$SerialRetryTimeoutSeconds = 30,
     [int]$SerialRetries = 1,
     [string]$ExtraArgs
 )
@@ -87,8 +97,15 @@ try {
     }
 
     for ($attempt = 1; $attempt -le $SerialRetries; $attempt++) {
-        Write-Gate "serial retry $attempt/$SerialRetries of $($failedTests.Count) failed test(s)"
-        & ctest @ctestArgs --rerun-failed -j 1
+        # Same selection, tighter per-test ceiling (see the
+        # SerialRetryTimeoutSeconds comment above).
+        $retryArgs = $ctestArgs.Clone()
+        $timeoutIndex = [Array]::IndexOf($retryArgs, "--timeout")
+        if ($timeoutIndex -ge 0 -and $timeoutIndex + 1 -lt $retryArgs.Count) {
+            $retryArgs[$timeoutIndex + 1] = "$SerialRetryTimeoutSeconds"
+        }
+        Write-Gate "serial retry $attempt/$SerialRetries of $($failedTests.Count) failed test(s), --timeout $SerialRetryTimeoutSeconds"
+        & ctest @retryArgs --rerun-failed -j 1
         if ($LASTEXITCODE -eq 0) {
             Write-GateAnnotation "warning" `
                 "$($failedTests.Count) test(s) recovered on serial retry (parallel-run flake, #1260): $($failedTests -join ', ')"

@@ -569,11 +569,21 @@ pub fn df_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
 
     // mutually exclusive pairs (GNU verified wordings)
     if posix && p.has("output") {
-        let _ = usage_error(io, "df", "options -P and --output are mutually exclusive");
+        let _ = usage_error(
+            ctx,
+            io,
+            "df",
+            "options -P and --output are mutually exclusive",
+        );
         return Ok(1);
     }
     if inodes && p.has("output") {
-        let _ = usage_error(io, "df", "options -i and --output are mutually exclusive");
+        let _ = usage_error(
+            ctx,
+            io,
+            "df",
+            "options -i and --output are mutually exclusive",
+        );
         return Ok(1);
     }
 
@@ -592,7 +602,7 @@ pub fn df_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             Some((sz, _suffix)) => block_size = sz,
             None => {
                 let msg = format!("invalid {spell} argument {}", winux_core::q(arg));
-                let _ = usage_error(io, "df", &msg);
+                let _ = usage_error(ctx, io, "df", &msg);
                 return Ok(1);
             }
         }
@@ -615,14 +625,14 @@ pub fn df_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                             "option --output: field {} used more than once",
                             winux_core::q(name)
                         );
-                        let _ = usage_error(io, "df", &msg);
+                        let _ = usage_error(ctx, io, "df", &msg);
                         return Ok(1);
                     }
                     seen.push(f);
                 }
                 None => {
                     let msg = format!("option --output: field {} unknown", winux_core::q(name));
-                    let _ = usage_error(io, "df", &msg);
+                    let _ = usage_error(ctx, io, "df", &msg);
                     return Ok(1);
                 }
             }

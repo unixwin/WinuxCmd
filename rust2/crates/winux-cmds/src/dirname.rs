@@ -47,7 +47,7 @@ pub fn dirname_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     }
     let zero = p.has("zero");
     if p.positionals.is_empty() {
-        let _ = usage_error(io, "dirname", "missing operand");
+        let _ = usage_error(ctx, io, "dirname", &crate::messages::missing_operand(ctx));
         return Ok(1);
     }
     let sep = if zero { '\0' } else { '\n' };

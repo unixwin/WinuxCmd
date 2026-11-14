@@ -18,6 +18,7 @@ pub mod childproc;
 pub mod chmod;
 pub mod chown;
 pub mod cksum;
+pub mod cp;
 pub mod csplit;
 pub mod cut;
 
@@ -30,6 +31,7 @@ pub mod du;
 pub mod echo;
 pub mod expand;
 pub mod factor;
+pub mod find;
 
 pub mod fmt;
 pub mod fold;
@@ -38,6 +40,7 @@ pub mod fsutil;
 pub mod getconf;
 pub mod glob;
 pub mod gnuhelp;
+pub mod grep;
 pub mod groups;
 pub mod head;
 
@@ -46,6 +49,7 @@ pub mod hostname;
 pub mod id;
 pub mod join;
 pub mod ln;
+pub mod messages;
 pub mod mkdir;
 pub mod mkfifo;
 pub mod mknod;
@@ -69,6 +73,7 @@ pub mod realpath;
 pub mod rev;
 pub mod rmdir;
 pub mod runcon;
+pub mod sed;
 pub mod seq;
 pub mod shuf;
 pub mod sleep;
@@ -121,6 +126,7 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("realpath", realpath::realpath_cmd),
         ("chmod", chmod::chmod_cmd),
         ("chown", chown::chown_cmd),
+        ("cp", cp::cp_cmd),
         ("df", df::df_cmd),
         ("base64", basenc::base64_cmd),
         ("base32", basenc::base32_cmd),
@@ -202,8 +208,19 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("date", date::date_cmd),
         ("du", du::du_cmd),
         ("pinky", pinky::pinky_cmd),
+        // #1488 find lane: GNU findutils 4.9 find
+        ("find", find::find_cmd),
         // #1488: GNU findutils 4.9 xargs (shared childproc spawner family)
         ("xargs", xargs::xargs_cmd),
+        // sed lane (#1488): GNU sed 4.9 on winux-regex
+        ("sed", sed::sed_cmd),
+        // #1488: GNU findutils 4.9 xargs (shared childproc spawner family)
+        ("xargs", xargs::xargs_cmd),
+        // #1488 grep wave: BRE/ERE via winux-regex; -P stays on the C++
+        // PCRE2 path (the wired dispatcher routes it before this library).
+        ("grep", grep::grep_cmd),
+        ("egrep", grep::egrep_cmd),
+        ("fgrep", grep::fgrep_cmd),
     ]
 }
 
