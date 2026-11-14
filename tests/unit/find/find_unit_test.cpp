@@ -4117,6 +4117,76 @@ TEST(find, issue_1380_unknown_predicates_are_answered_by_find) {
   EXPECT_TRUE(br.stderr_text.find("invalid option") == std::string::npos);
 }
 
+// #1718: -context must not be pre-parsed by the generic option parser.
+// It is a predicate judged by find's own expression parser, so an
+// unknown predicate before it errors first (GNU parse order), a bare
+// -context reports GNU's "missing argument to `-context'", and a
+// -context with an operand reports the SELinux-disabled rejection.
+TEST(find, issue_1718_unknown_predicate_before_bare_context_errors_first) {
+  TempDir tmp;
+  tmp.write("a.txt", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L".", L"-foo", L"-context"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("unknown predicate `-foo'") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("option requires an argument") ==
+              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("SELinux") == std::string::npos);
+}
+
+TEST(find, issue_1718_bare_context_reports_gnu_missing_argument) {
+  TempDir tmp;
+  tmp.write("a.txt", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L".", L"-context"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("missing argument to `-context'") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("option requires an argument") ==
+              std::string::npos);
+}
+
+TEST(find, issue_1718_context_with_operand_reports_selinux_disabled) {
+  TempDir tmp;
+  tmp.write("a.txt", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L".", L"-context", L"foo"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "invalid predicate -context: SELinux is not enabled.") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stdout_text.empty());
+}
+
+TEST(find, issue_1718_context_consumes_dash_operand_before_selinux_error) {
+  TempDir tmp;
+  tmp.write("a.txt", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L".", L"-context", L"-foo"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "invalid predicate -context: SELinux is not enabled.") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("unknown predicate") == std::string::npos);
+}
+
 TEST(find, issue_1380_global_options_reach_their_start_point) {
   TempDir tmp;
   std::filesystem::create_directories(tmp.path / "sub");

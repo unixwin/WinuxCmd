@@ -22,6 +22,7 @@
         "legacy.cf964c601bdedf9b"
       ],
       "extra": [
+        "command.find.option.context",
         "command.numfmt.error.delimiter_single_character",
         "command.numfmt.error.field_decreasing",
         "command.numfmt.error.field_numbered_from_1",
