@@ -51,6 +51,39 @@ impl<'a> Io<'a> {
     }
 }
 
+/// The host's standard-stream classification, injected alongside [`Io`].
+///
+/// A `dyn Read`/`dyn Write` carries no handle identity, and the shape
+/// contract forbids a command from asking the process for its stdio
+/// handles (the #1487 red line), so the `isatty` facts GNU reads from
+/// fd 0/1/2 arrive as metadata — the same injection tier as
+/// `tail::StdinMeta`. The default is "no console": an ABI-injected stdin
+/// is a finite byte buffer and the captured stdout/stderr are buffers,
+/// neither of which can be a terminal.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StdioMeta {
+    /// `isatty(fd)` for fds 0, 1, 2 in that order.
+    pub tty: [bool; 3],
+}
+
+impl StdioMeta {
+    /// The ABI/library default: no fd is a terminal.
+    pub const fn pipe() -> Self {
+        StdioMeta { tty: [false; 3] }
+    }
+
+    /// Explicit per-fd terminal facts (host composition).
+    pub const fn with_tty(tty: [bool; 3]) -> Self {
+        StdioMeta { tty }
+    }
+
+    /// `isatty(fd)` for the only descriptors POSIX can ask about; any
+    /// other number (including negatives) is not a terminal.
+    pub fn is_tty(&self, fd: i128) -> bool {
+        (0..=2).contains(&fd) && self.tty[fd as usize]
+    }
+}
+
 /// Explicit environment access. `entries()` returns the environ in the
 /// order the caller provides (GNU iterates `environ[]` order, not sorted).
 pub trait EnvSource {

@@ -156,7 +156,6 @@ pub mod imp {
             info: *mut c_void,
             size: DWORD,
         ) -> i32;
-        fn GetStdHandle(which: DWORD) -> Handle;
         fn DeleteFileW(name: *const u16) -> i32;
         fn SetFileTime(
             h: Handle,
@@ -662,30 +661,6 @@ pub mod imp {
         }
     }
 
-    /// Retime the process's standard output handle — the POSIX `touch -`
-    /// operand (GNU touch.c:127-128 retimes stdout instead of naming a
-    /// literal file). Returns the Win32 error on failure (pipes and other
-    /// untimable handles reject SetFileTime, the same EINVAL shape GNU
-    /// reports under a redirected-pipe consumer).
-    pub fn set_stdout_file_times(
-        atime: Option<FileTime>,
-        mtime: Option<FileTime>,
-    ) -> Result<(), u32> {
-        const STD_OUTPUT_HANDLE: DWORD = (-11i32) as u32; // (DWORD)-11
-        let handle = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
-        if handle.is_null() || handle == INVALID_HANDLE_VALUE {
-            return Err(6); // ERROR_INVALID_HANDLE
-        }
-        let a = atime.unwrap_or_else(zero_ft);
-        let m = mtime.unwrap_or_else(zero_ft);
-        let rc = unsafe { SetFileTime(handle, std::ptr::null(), &a, &m) };
-        if rc == 0 {
-            Err(kernel32_last_error())
-        } else {
-            Ok(())
-        }
-    }
-
     // ------------------------------------------------------------------
     // The #1038 fifo-marker bridge (rust2 port of 1.x file_io.cppm
     // open_fifo_read_handle/open_fifo_write_handle and native_path.cppm
@@ -1075,12 +1050,6 @@ pub mod imp {
         _mtime: Option<FileTime>,
         _is_dir_hint: bool,
         _no_dereference: bool,
-    ) -> Result<(), u32> {
-        Err(1)
-    }
-    pub fn set_stdout_file_times(
-        _atime: Option<FileTime>,
-        _mtime: Option<FileTime>,
     ) -> Result<(), u32> {
         Err(1)
     }
