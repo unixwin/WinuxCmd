@@ -400,6 +400,7 @@ MANUAL_MESSAGES = {
     "common.error.invalid_type": "invalid type '{}'",
     "common.error.invalid_device_type": "invalid device type '{}'",
     "common.error.invalid_suffix": "invalid suffix '{}'",
+    "common.error.invalid_suffix_length": "invalid suffix length: '{}'",
     "common.error.invalid_time_interval": "invalid time interval '{}'",
     "common.error.invalid_char_class": "invalid character class '{}'",
     "common.error.unknown_registry_root": "unknown registry root '{}'",

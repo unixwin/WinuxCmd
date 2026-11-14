@@ -1,0 +1,7 @@
+cmd: split
+args: -n 700 -a 2 input.txt
+timeout: 60
+setup: |
+  seq 1 1000 > input.txt
+source: github.com/unixwin/WinuxCmd/issues/1711
+tags: issue-1711 suffix-length -n
