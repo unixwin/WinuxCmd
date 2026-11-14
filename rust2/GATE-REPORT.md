@@ -643,6 +643,73 @@ model (win rows) with GNU rc-gated grammar rows.
 0 FAIL (full 64-command run 2026-11-12: GNU-gated 1676 PASS / 0 FAIL,
 win-only 153 PASS / 0 FAIL, 1829 cases).**
 
+## Wave6 wiring (#1488, sixth batch wired to the product)
+
+6 commands wired to the rust2 staticlib: `md5sum sha1sum sha256sum
+sha512sum echo rev`. The digest family keeps the digestsum --check
+machinery on the ABI v1 whole-buffer stdin entry (the streaming v2 swap
+the b2sum/sha224sum/sha384sum adoption made stays a later optimization);
+the stdin shape (no FILE operand, or a `-` operand) is detected by the
+registration exactly like fold's, and every other shape keeps the
+pass-nothing contract. rev's stdin shape is the no-operand invocation
+only (`-` is opened literally, not stdin).
+
+Rust component fixes gate b surfaced during the wiring (own commit):
+- digestsum: `!<fifo>` marker operands rendezvous through the fs_win
+  #1038 named-pipe bridge (the paste.rs precedent; a plain open read the
+  marker's 7 bytes and stranded the tee writer —
+  mkfifo.md5sum_hashes_writer_bytes pins it).
+- File operands stay LITERAL (the b2sum_wildcard digest-family pin):
+  the wired product does not glob — the shell does (GNU digest.c /
+  util-linux rev receive shell-expanded operands). The 1.x md5sum and
+  rev bodies glob-expanded, a GNU deviation the port does not carry, so
+  the 1.x-pinned ctests (md5sum.md5sum_wildcard,
+  sha512sum.sha512sum_wildcard, rev.rev_expands_wildcard_file_operands,
+  integration.md5sum_wildcard_pipe_sort) moved to the literal-operand
+  contract in the wiring commits, exactly like b2sum's stream-wave
+  update.
+
+Dispatcher-side plumbing retired with the 1.x echo body (echo.c never
+calls getopt): the rewrite hook that guarded data-looking tokens behind
+a "--" is gone, echo's --help/--version interception narrowed to the
+sole-argument rule the library implements (echo.c argc == 2), and the
+generic parser turned permissive for echo (unknown shorts and every
+long token pass through as data; the declared -n/-e/-E still parse for
+occurrence bookkeeping the handler never reads). The -u/--upper and
+-r/--repeat spellings retire with the C++ body — GNU echo treats them
+as data, and the rust2 body is GNU-exact. rev got the permissive
+unknown-shorts policy so `-h`/`-V` reach the util-linux-shaped body.
+
+Three gates (build-vs exe vs the pre-wiring baseline exe vs WSL
+coreutils 9.4 / util-linux 2.39.3, 2026-11-14):
+- gate a, run-gate.sh tables with RUST_BIN=the wired product: 184
+  GNU-gated rows GREEN (digest 4x33, echo 40, rev 25 minus the flips
+  below) + 13 win rows GREEN. The dispatcher-intercepted help/version
+  shapes flipped to win in gen-cases.py (the product prints the
+  WinuxCmd-branded metadata text, the suite-wide help surface); rev
+  `-h`/`-V` stayed strict — the permissive-shorts policy classifies
+  them as operands, the body prints the probed util-linux bytes
+  (ledger r=c:no there records the 1.x parse-error deviation).
+- gate c byte matrix (target/issue-suites/results/wave6-wiring/
+  matrix.sh, 157 rows over rc+stdout+stderr): 147 byte-equal old vs
+  new; 10 rows move to GNU — 4x digest empty-operand quoting
+  (`md5sum: '': No such file or directory`), 3x echo retired
+  -u/--upper/-r extensions printed as data, 3x rev `-h`/`-V` util-linux
+  text where the 1.x exe answered a C++ parse error (rc 1) / the
+  WinuxCmd version block. GNU rc parity 156/157 (the one miss,
+  `echo -r x`, is the declared-retired -r corner where the 1.x exe
+  returned the same rc 1 — parse still rejects value-carrying -r
+  spellings ahead of the handler).
+- gate b: full ctest failing set == the pre-wiring baseline set (the
+  24 environment-bound rows incl. the 4 rust2-stream Not-Run lanes);
+  two ctest updates pin the replaced contracts (echo -u/-r retired
+  extensions; rev locale-model default-C byte reversal).
+
+Deferred: the digest family's streaming-stdin swap (the v1 slurp is the
+documented whole-buffer price). Pre-wave6 wiring predates the
+product-exe help-row convention: sha224sum/sha384sum/b2sum/tac still
+carry strict driver-era --help rows in their tables.
+
 ## Wave5 (#1488, fifth batch)
 
 10 commands: `tty mkfifo mknod chcon runcon cksum chgrp du date pinky`.
