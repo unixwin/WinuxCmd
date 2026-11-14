@@ -67,7 +67,7 @@ mod walk;
 use std::ffi::OsString;
 use std::io::Read;
 
-use winux_core::{CmdResult, Ctx, EnvSource, Io};
+use winux_core::{tr, CmdResult, Ctx, EnvSource, Io};
 
 use opts::{Event, Key};
 use pattern::{MatchFlags, RawPattern};
@@ -166,9 +166,19 @@ pub fn grep_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
 /// Upstream grep 3.11 `egrep` script: warn on stderr, then
 /// `exec grep -E "$@"` (so `egrep -F` is a matcher conflict).
 pub fn egrep_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
+    // The "egrep: " prefix is the wrapper script's own $0 frame; the
+    // translatable unit is the warning body.
     let _ = std::io::Write::write_all(
         io.stderr,
-        b"egrep: warning: egrep is obsolescent; using grep -E\n",
+        format!(
+            "egrep: {}\n",
+            tr!(
+                ctx,
+                "command.egrep.warning.obsolescent",
+                "warning: egrep is obsolescent; using grep -E"
+            )
+        )
+        .as_bytes(),
     );
     let mut v = vec![OsString::from("-E")];
     v.extend_from_slice(args);
@@ -179,7 +189,15 @@ pub fn egrep_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
 pub fn fgrep_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let _ = std::io::Write::write_all(
         io.stderr,
-        b"fgrep: warning: fgrep is obsolescent; using grep -F\n",
+        format!(
+            "fgrep: {}\n",
+            tr!(
+                ctx,
+                "command.fgrep.warning.obsolescent",
+                "warning: fgrep is obsolescent; using grep -F"
+            )
+        )
+        .as_bytes(),
     );
     let mut v = vec![OsString::from("-F")];
     v.extend_from_slice(args);
@@ -339,6 +357,18 @@ fn parse_grep_colors(c: &mut Colors, user_sm: &mut bool, user_cm: &mut bool, spe
     }
 }
 
+/// [GNU] grep.c context_length_arg: "%s: invalid context length
+/// argument" — the raw digits are the %s payload, the wording is the
+/// translatable unit.
+fn invalid_context_length(ctx: &Ctx, value: &str) -> String {
+    tr!(
+        ctx,
+        "command.grep.error.invalid_context_length",
+        "{value}: invalid context length argument",
+        value = value
+    )
+}
+
 fn run(args: &[OsString], io: &mut Io, ctx: &Ctx) -> u32 {
     let stdin: &mut dyn Read = &mut *io.stdin;
     let mut ui = Ui::new(&mut *io.stdout, &mut *io.stderr);
@@ -349,7 +379,16 @@ fn run(args: &[OsString], io: &mut Io, ctx: &Ctx) -> u32 {
         let reason = crate::fsutil::reason(&e);
         let _ = std::io::Write::write_all(
             ui.stderr,
-            format!("grep: write error: {reason}\n").as_bytes(),
+            format!(
+                "grep: {}\n",
+                tr!(
+                    ctx,
+                    "command.grep.error.write_error",
+                    "write error: {reason}",
+                    reason = reason
+                )
+            )
+            .as_bytes(),
         );
         return 2;
     }
@@ -408,8 +447,8 @@ fn run_inner(args: &[OsString], stdin: &mut dyn Read, ui: &mut Ui, ctx: &Ctx) ->
                 *ctxv = n;
                 true
             }
-            Err(msg) => {
-                ui.error(&msg);
+            Err(_) => {
+                ui.error(&invalid_context_length(ctx, &d));
                 false
             }
         }
@@ -444,7 +483,11 @@ fn run_inner(args: &[OsString], stdin: &mut dyn Read, ui: &mut Ui, ctx: &Ctx) ->
         let mut setmatcher = |m: Matcher, ui: &mut Ui| -> bool {
             if let Some(prev) = matcher {
                 if prev != m {
-                    ui.error("conflicting matchers specified");
+                    ui.error(&tr!(
+                        ctx,
+                        "command.grep.error.conflicting_matchers",
+                        "conflicting matchers specified"
+                    ));
                     return false;
                 }
             }
@@ -454,22 +497,22 @@ fn run_inner(args: &[OsString], stdin: &mut dyn Read, ui: &mut Ui, ctx: &Ctx) ->
         match key {
             Key::Short(b'A') => match opts::context_length(&v()) {
                 Ok(n) => out_after = n,
-                Err(m) => {
-                    ui.error(&m);
+                Err(_) => {
+                    ui.error(&invalid_context_length(ctx, &v()));
                     return 2;
                 }
             },
             Key::Short(b'B') => match opts::context_length(&v()) {
                 Ok(n) => out_before = n,
-                Err(m) => {
-                    ui.error(&m);
+                Err(_) => {
+                    ui.error(&invalid_context_length(ctx, &v()));
                     return 2;
                 }
             },
             Key::Short(b'C') => match opts::context_length(&v()) {
                 Ok(n) => default_context = n,
-                Err(m) => {
-                    ui.error(&m);
+                Err(_) => {
+                    ui.error(&invalid_context_length(ctx, &v()));
                     return 2;
                 }
             },
@@ -477,7 +520,11 @@ fn run_inner(args: &[OsString], stdin: &mut dyn Read, ui: &mut Ui, ctx: &Ctx) ->
                 "read" => devices = Devices::Read,
                 "skip" => devices = Devices::Skip,
                 _ => {
-                    ui.error("unknown devices method");
+                    ui.error(&tr!(
+                        ctx,
+                        "command.grep.error.unknown_devices_method",
+                        "unknown devices method"
+                    ));
                     return 2;
                 }
             },
@@ -497,7 +544,11 @@ fn run_inner(args: &[OsString], stdin: &mut dyn Read, ui: &mut Ui, ctx: &Ctx) ->
                 }
             }
             Key::Short(b'P') => {
-                ui.error("Perl matching not supported in a --disable-perl-regexp build");
+                ui.error(&tr!(
+                    ctx,
+                    "command.grep.error.perl_not_supported",
+                    "Perl matching not supported in a --disable-perl-regexp build"
+                ));
                 return 2;
             }
             Key::Short(b'X') => {
@@ -509,11 +560,21 @@ fn run_inner(args: &[OsString], stdin: &mut dyn Read, ui: &mut Ui, ctx: &Ctx) ->
                     "gawk" => Matcher::Awk(1),
                     "posixawk" => Matcher::Awk(2),
                     "perl" => {
-                        ui.error("Perl matching not supported in a --disable-perl-regexp build");
+                        ui.error(&tr!(
+                            ctx,
+                            "command.grep.error.perl_not_supported",
+                            "Perl matching not supported in a --disable-perl-regexp build"
+                        ));
                         return 2;
                     }
                     other => {
-                        ui.error(&format!("invalid matcher {other}"));
+                        let shown = other.to_string();
+                        ui.error(&tr!(
+                            ctx,
+                            "command.grep.error.invalid_matcher",
+                            "invalid matcher {matcher}",
+                            matcher = shown
+                        ));
                         return 2;
                     }
                 };
@@ -525,7 +586,11 @@ fn run_inner(args: &[OsString], stdin: &mut dyn Read, ui: &mut Ui, ctx: &Ctx) ->
             Key::Short(b'I') => binary_files = BinaryFiles::WithoutMatch,
             Key::Short(b'T') => align_tabs = true,
             Key::Short(b'U') => {}
-            Key::Short(b'u') => ui.error("warning: --unix-byte-offsets (-u) is obsolete"),
+            Key::Short(b'u') => ui.error(&tr!(
+                ctx,
+                "command.grep.warning.unix_byte_offsets_obsolete",
+                "warning: --unix-byte-offsets (-u) is obsolete"
+            )),
             Key::Short(b'V') => show_version = true,
             Key::Short(b'a') => binary_files = BinaryFiles::Text,
             Key::Short(b'b') => out_byte = true,
@@ -540,7 +605,7 @@ fn run_inner(args: &[OsString], stdin: &mut dyn Read, ui: &mut Ui, ctx: &Ctx) ->
                     }
                     Ok(_) => directories = Directories::Skip,
                     Err(ambiguous) => {
-                        opts::argmatch_failure(ui, &arg, ambiguous, utf8);
+                        opts::argmatch_failure(ui, ctx, &arg, ambiguous, utf8);
                         ui.usage_lines();
                         return 1;
                     }
@@ -587,7 +652,11 @@ fn run_inner(args: &[OsString], stdin: &mut dyn Read, ui: &mut Ui, ctx: &Ctx) ->
             Key::Short(b'm') => match opts::xstrtoimax(&v()) {
                 Some(n) => max_count = n,
                 None => {
-                    ui.error("invalid max count");
+                    ui.error(&tr!(
+                        ctx,
+                        "command.grep.error.invalid_max_count",
+                        "invalid max count"
+                    ));
                     return 2;
                 }
             },
@@ -614,7 +683,11 @@ fn run_inner(args: &[OsString], stdin: &mut dyn Read, ui: &mut Ui, ctx: &Ctx) ->
                 "text" => binary_files = BinaryFiles::Text,
                 "without-match" => binary_files = BinaryFiles::WithoutMatch,
                 _ => {
-                    ui.error("unknown binary-files type");
+                    ui.error(&tr!(
+                        ctx,
+                        "command.grep.error.unknown_binary_files_type",
+                        "unknown binary-files type"
+                    ));
                     return 2;
                 }
             },
@@ -778,8 +851,11 @@ fn run_inner(args: &[OsString], stdin: &mut dyn Read, ui: &mut Ui, ctx: &Ctx) ->
             }
         }
         if user_sm || user_cm {
-            ui.error(&format!(
-                "warning: GREP_COLOR='{userval}' is deprecated; use GREP_COLORS='mt={userval}'"
+            ui.error(&tr!(
+                ctx,
+                "command.grep.warning.grep_color_deprecated",
+                "warning: GREP_COLOR='{value}' is deprecated; use GREP_COLORS='mt={value}'",
+                value = userval
             ));
         }
         Some(c)
@@ -798,7 +874,7 @@ fn run_inner(args: &[OsString], stdin: &mut dyn Read, ui: &mut Ui, ctx: &Ctx) ->
         utf8,
         eol,
     };
-    let compiled = match pattern::compile(matcher, &patterns, flags, ui) {
+    let compiled = match pattern::compile(matcher, &patterns, flags, ui, ctx) {
         Ok(c) => c,
         Err(()) => return 2,
     };

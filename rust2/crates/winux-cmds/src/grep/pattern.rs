@@ -23,6 +23,7 @@ use winux_regex::{ErrorKind, Regex, Syntax};
 use super::bytes::{memchr, memrchr, Finder};
 use super::text::Ui;
 use super::Matcher;
+use winux_core::{tr, Ctx};
 
 /// One pattern line plus where it came from (for `FILE:LINENO:` error
 /// prefixes, dfasearch.c regex_compile).
@@ -540,19 +541,43 @@ fn wordchars_size(line: &[u8], pos: usize, utf8: bool) -> usize {
 // --- compilation ----------------------------------------------------------
 
 /// glibc regerror text for a winux-regex compile error (the messages GNU
-/// grep prints come from re_compile_pattern, probed per class).
-fn gnu_regex_message(e: &winux_regex::Error, pattern: &[u8]) -> &'static str {
+/// grep prints come from re_compile_pattern, probed per class). Each arm
+/// is its own stable key: the texts are the error() bodies GNU emits
+/// verbatim, so the English fallbacks are the pinned gate bytes.
+fn gnu_regex_message(ctx: &Ctx, e: &winux_regex::Error, pattern: &[u8]) -> String {
     match e.kind() {
-        ErrorKind::TrailingBackslash => "Trailing backslash",
-        ErrorKind::UnmatchedOpen => "Unmatched ( or \\(",
-        ErrorKind::UnmatchedClose => "Unmatched ) or \\)",
+        ErrorKind::TrailingBackslash => {
+            tr!(
+                ctx,
+                "command.grep.error.trailing_backslash",
+                "Trailing backslash"
+            )
+        }
+        ErrorKind::UnmatchedOpen => tr!(
+            ctx,
+            "command.grep.error.unmatched_open",
+            "Unmatched ( or \\("
+        ),
+        ErrorKind::UnmatchedClose => tr!(
+            ctx,
+            "command.grep.error.unmatched_close",
+            "Unmatched ) or \\)"
+        ),
         ErrorKind::UnmatchedBracket => {
             // glibc parse_bracket_exp: END_OF_RE right after `[` / `[^`
             // is REG_BADPAT; later ends are REG_EBRACK.
             if unterminated_bracket_is_bare(pattern) {
-                "Invalid regular expression"
+                tr!(
+                    ctx,
+                    "command.grep.error.invalid_regex",
+                    "Invalid regular expression"
+                )
             } else {
-                "Unmatched [, [^, [:, [., or [="
+                tr!(
+                    ctx,
+                    "command.grep.error.unmatched_bracket",
+                    "Unmatched [, [^, [:, [., or [="
+                )
             }
         }
         ErrorKind::InvalidInterval => {
@@ -562,17 +587,47 @@ fn gnu_regex_message(e: &winux_regex::Error, pattern: &[u8]) -> &'static str {
                 .windows(2)
                 .any(|w| w == b"\\}");
             if e.message().starts_with("unmatched") && !closed {
-                "Unmatched \\{"
+                tr!(ctx, "command.grep.error.unmatched_brace", "Unmatched \\{{")
             } else {
-                "Invalid content of \\{\\}"
+                tr!(
+                    ctx,
+                    "command.grep.error.invalid_brace_content",
+                    "Invalid content of \\{{\\}}"
+                )
             }
         }
-        ErrorKind::IntervalTooBig | ErrorKind::TooComplex => "Regular expression too big",
-        ErrorKind::InvalidBackReference => "Invalid back reference",
-        ErrorKind::InvalidClassName => "Invalid character class name",
-        ErrorKind::InvalidCollation => "Invalid collation character",
-        ErrorKind::InvalidRangeEnd => "Invalid range end",
-        ErrorKind::WorkLimit => "Memory exhausted",
+        ErrorKind::IntervalTooBig | ErrorKind::TooComplex => tr!(
+            ctx,
+            "command.grep.error.regex_too_big",
+            "Regular expression too big"
+        ),
+        ErrorKind::InvalidBackReference => tr!(
+            ctx,
+            "command.grep.error.invalid_back_reference",
+            "Invalid back reference"
+        ),
+        ErrorKind::InvalidClassName => tr!(
+            ctx,
+            "command.grep.error.invalid_character_class_name",
+            "Invalid character class name"
+        ),
+        ErrorKind::InvalidCollation => tr!(
+            ctx,
+            "command.grep.error.invalid_collation_character",
+            "Invalid collation character"
+        ),
+        ErrorKind::InvalidRangeEnd => tr!(
+            ctx,
+            "command.grep.error.invalid_range_end",
+            "Invalid range end"
+        ),
+        ErrorKind::WorkLimit => {
+            tr!(
+                ctx,
+                "command.grep.error.memory_exhausted",
+                "Memory exhausted"
+            )
+        }
     }
 }
 
@@ -611,7 +666,7 @@ fn is_plain_literal(m: Matcher, p: &[u8]) -> bool {
 /// dfa.c lexer pass after a successful regex compile: ERE "X at start of
 /// expression" warnings and the confusing-bracket error, in pattern order.
 /// Returns false after printing the fatal confusing-bracket error.
-fn dfa_lex_pass(m: Matcher, patterns: &[&[u8]], ui: &mut Ui) -> bool {
+fn dfa_lex_pass(m: Matcher, patterns: &[&[u8]], ui: &mut Ui, ctx: &Ctx) -> bool {
     let ere = m == Matcher::Extended;
     for p in patterns {
         let mut laststart = true;
@@ -639,7 +694,11 @@ fn dfa_lex_pass(m: Matcher, patterns: &[&[u8]], ui: &mut Ui) -> bool {
                 b'[' => {
                     let (end, confusing, _) = scan_bracket(p, i);
                     if confusing {
-                        ui.error("character class syntax is [[:space:]], not [:space:]");
+                        ui.error(&tr!(
+                            ctx,
+                            "command.grep.warning.character_class_syntax",
+                            "character class syntax is [[:space:]], not [:space:]"
+                        ));
                         return false;
                     }
                     i = end;
@@ -647,9 +706,21 @@ fn dfa_lex_pass(m: Matcher, patterns: &[&[u8]], ui: &mut Ui) -> bool {
                     continue;
                 }
                 b'(' | b'|' if ere => laststart = true,
-                b'*' if ere && laststart => ui.error("warning: * at start of expression"),
-                b'+' if ere && laststart => ui.error("warning: + at start of expression"),
-                b'?' if ere && laststart => ui.error("warning: ? at start of expression"),
+                b'*' if ere && laststart => ui.error(&tr!(
+                    ctx,
+                    "command.grep.warning.star_at_start",
+                    "warning: * at start of expression"
+                )),
+                b'+' if ere && laststart => ui.error(&tr!(
+                    ctx,
+                    "command.grep.warning.plus_at_start",
+                    "warning: + at start of expression"
+                )),
+                b'?' if ere && laststart => ui.error(&tr!(
+                    ctx,
+                    "command.grep.warning.question_at_start",
+                    "warning: ? at start of expression"
+                )),
                 b'*' | b'+' | b'?' if ere => {}
                 b'*' => {
                     if !laststart {
@@ -662,7 +733,11 @@ fn dfa_lex_pass(m: Matcher, patterns: &[&[u8]], ui: &mut Ui) -> bool {
                 b'{' if ere => match interval_len(p, i + 1, false) {
                     Some(len) => {
                         if laststart {
-                            ui.error("warning: {...} at start of expression");
+                            ui.error(&tr!(
+                                ctx,
+                                "command.grep.warning.brace_at_start",
+                                "warning: {{...}} at start of expression"
+                            ));
                         }
                         laststart = false;
                         i += 1 + len;
@@ -770,6 +845,7 @@ pub fn compile(
     raw: &[RawPattern],
     f: MatchFlags,
     ui: &mut Ui,
+    ctx: &Ctx,
 ) -> Result<PatternMatcher, ()> {
     let lines: Vec<&[u8]> = raw.iter().map(|r| r.bytes.as_slice()).collect();
     let literal = matcher == Matcher::Fixed || lines.iter().all(|p| is_plain_literal(matcher, p));
@@ -791,10 +867,10 @@ pub fn compile(
                 Ok(re) => res.push(re),
                 Err(e) => {
                     failed = true;
-                    let msg = gnu_regex_message(&e, &r.bytes);
+                    let msg = gnu_regex_message(ctx, &e, &r.bytes);
                     match &r.origin {
                         Some((file, n)) => ui.error(&format!("{file}:{n}: {msg}")),
-                        None => ui.error(msg),
+                        None => ui.error(&msg),
                     }
                 }
             }
@@ -802,12 +878,12 @@ pub fn compile(
         if failed {
             return Err(());
         }
-        if !dfa_lex_pass(matcher, &lines, ui) {
+        if !dfa_lex_pass(matcher, &lines, ui, ctx) {
             return Err(());
         }
         Pats::Res(res)
     };
-    if literal && matcher != Matcher::Fixed && !dfa_lex_pass(matcher, &lines, ui) {
+    if literal && matcher != Matcher::Fixed && !dfa_lex_pass(matcher, &lines, ui, ctx) {
         return Err(());
     }
 

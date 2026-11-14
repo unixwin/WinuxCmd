@@ -11,6 +11,7 @@
 use std::ffi::OsString;
 
 use super::text::{argmatch_quote, Ui};
+use winux_core::{tr, Ctx};
 
 pub const SHORT_WITH_ARG: &[u8] = b"ABCDXdefm";
 pub const SHORT_FLAGS: &[u8] = b"EFGHIPTUVabchiLlnoqRrsuvwxyZz";
@@ -331,14 +332,24 @@ pub fn argmatch(arg: &str, valid: &[&str]) -> Result<usize, bool> {
 
 /// The XARGMATCH failure text for `--directories` (argmatch_die ->
 /// usage(EXIT_FAILURE): rc 1, probed).
-pub fn argmatch_failure(diag: &mut Ui, arg: &str, ambiguous: bool, utf8: bool) {
+pub fn argmatch_failure(diag: &mut Ui, ctx: &Ctx, arg: &str, ambiguous: bool, utf8: bool) {
     let kind = if ambiguous { "ambiguous" } else { "invalid" };
-    diag.error(&format!(
-        "{kind} argument {} for {}",
-        argmatch_quote(arg, utf8),
-        argmatch_quote("--directories", utf8)
+    diag.error(&tr!(
+        ctx,
+        "command.grep.error.invalid_directories_argument",
+        "{kind} argument {arg} for {opt}",
+        kind = kind,
+        arg = argmatch_quote(arg, utf8),
+        opt = argmatch_quote("--directories", utf8)
     ));
-    let mut text = String::from("Valid arguments are:\n");
+    let mut text = format!(
+        "{}\n",
+        tr!(
+            ctx,
+            "command.grep.error.valid_arguments_header",
+            "Valid arguments are:"
+        )
+    );
     for v in ["read", "recurse", "skip"] {
         text.push_str(&format!("  - {}\n", argmatch_quote(v, utf8)));
     }

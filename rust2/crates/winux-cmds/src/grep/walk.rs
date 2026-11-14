@@ -30,7 +30,7 @@ use super::pattern::PatternMatcher;
 use super::scan::{grep_input, print_filename, print_sep_plain, RunState, Stop};
 use super::text::Ui;
 use super::{Config, Devices, Directories, ListFiles};
-use winux_core::Ctx;
+use winux_core::{tr, Ctx};
 
 /// One include/exclude option list (gnulib struct exclude, segments in
 /// option order).
@@ -283,6 +283,7 @@ impl<'r, 'a, 'e> Runner<'r, 'a, 'e> {
         let count = grep_input(
             self.cfg,
             self.ui,
+            self.ctx,
             &mut self.run,
             &mut self.matcher,
             self.stdin,
@@ -362,6 +363,7 @@ impl<'r, 'a, 'e> Runner<'r, 'a, 'e> {
             let count = grep_input(
                 cfg,
                 self.ui,
+                self.ctx,
                 &mut self.run,
                 &mut self.matcher,
                 &mut file,
@@ -424,6 +426,7 @@ impl<'r, 'a, 'e> Runner<'r, 'a, 'e> {
         let count = grep_input(
             cfg,
             self.ui,
+            self.ctx,
             &mut self.run,
             &mut self.matcher,
             &mut file,
@@ -464,8 +467,16 @@ impl<'r, 'a, 'e> Runner<'r, 'a, 'e> {
             if self.ancestors.iter().any(|a| a == r) {
                 if !self.cfg.suppress_errors {
                     let shown = self.shown(display);
-                    self.ui
-                        .error(&format!("{shown}: warning: recursive directory loop"));
+                    // [GNU] FTS_DC warning; "grep: <name>: " is the error()
+                    // frame, the loop warning is the translatable unit.
+                    self.ui.error(&format!(
+                        "{shown}: {}",
+                        tr!(
+                            self.ctx,
+                            "command.grep.warning.recursive_directory_loop",
+                            "warning: recursive directory loop"
+                        )
+                    ));
                 }
                 return Ok(true);
             }
@@ -561,6 +572,7 @@ impl<'r, 'a, 'e> Runner<'r, 'a, 'e> {
             let count = grep_input(
                 self.cfg,
                 self.ui,
+                self.ctx,
                 &mut self.run,
                 &mut self.matcher,
                 &mut file,

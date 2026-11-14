@@ -24,6 +24,7 @@ use super::bytes::{count, memchr, memrchr};
 use super::pattern::PatternMatcher;
 use super::text::Ui;
 use super::{BinaryFiles, Colors, Config};
+use winux_core::{tr, Ctx};
 
 const PAGE: usize = 4096;
 const UWORD: usize = 8;
@@ -164,9 +165,10 @@ struct FileState {
     bufbeg: usize,
 }
 
-struct Printer<'p, 'a> {
+struct Printer<'p, 'a, 'e> {
     cfg: &'p Config,
     ui: &'p mut Ui<'a>,
+    ctx: &'p Ctx<'e>,
     run_used: &'p mut bool,
     out_file: bool,
     matcher: &'p mut PatternMatcher,
@@ -180,6 +182,7 @@ struct Printer<'p, 'a> {
 pub fn grep_input(
     cfg: &Config,
     ui: &mut Ui,
+    ctx: &Ctx,
     run: &mut RunState,
     matcher: &mut PatternMatcher,
     src: &mut dyn Read,
@@ -192,6 +195,7 @@ pub fn grep_input(
     let mut p = Printer {
         cfg,
         ui,
+        ctx,
         run_used: &mut run.used,
         out_file: run.out_file,
         matcher,
@@ -371,7 +375,16 @@ fn scan(
         && (p.fs.encoding_error_output || (0 <= nlines_first_null && nlines_first_null < nlines))
     {
         let name = String::from_utf8_lossy(p.filename).into_owned();
-        p.ui.error(&format!("{name}: binary file matches"));
+        // [GNU] grep.c "binary file matches" — the file name is the %s
+        // frame, the notice is the translatable unit.
+        p.ui.error(&format!(
+            "{name}: {}",
+            tr!(
+                p.ctx,
+                "command.grep.error.binary_file_matches",
+                "binary file matches"
+            )
+        ));
     }
     Ok(nlines)
 }
