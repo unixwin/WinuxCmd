@@ -225,13 +225,6 @@ auto has_option(std::span<const OptionMeta> options, std::string_view long_name)
   });
 }
 
-auto has_short_option(std::span<const OptionMeta> options,
-                      std::string_view short_name) -> bool {
-  return std::ranges::any_of(options, [short_name](const OptionMeta& opt) {
-    return opt.short_name == short_name;
-  });
-}
-
 auto synopsis_looks_like_usage(std::string_view name, std::string_view synopsis)
     -> bool {
   synopsis = trim_left_ascii(synopsis);
@@ -286,9 +279,15 @@ auto format_help_text(std::string_view name, std::string_view synopsis,
                                  OptionType::Bool);
   }
   if (!has_option(options, "--version")) {
-    display_options.emplace_back(
-        has_short_option(options, "-V") ? "" : "-V", "--version",
-        "output version information and exit", OptionType::Bool);
+    // [GNU] --help shows only "--version": -V is a version request
+    // only where the applet declares it as its version short option,
+    // and those applets already carry their own "-V, --version"
+    // OPTION entry, so no synthetic entry is added for them. The old
+    // code advertised "-V, --version" for every applet without -V
+    // (#1714).
+    display_options.emplace_back("", "--version",
+                                 "output version information and exit",
+                                 OptionType::Bool);
   }
 
   if (!display_options.empty()) {

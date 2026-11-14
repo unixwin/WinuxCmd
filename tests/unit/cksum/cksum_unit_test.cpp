@@ -724,3 +724,39 @@ TEST(cksum, cksum_crc32b_algorithm_rejected_issue1710) {
   EXPECT_TRUE(r.stderr_text.find("'crc'") != std::string::npos);
   EXPECT_TRUE(r.stderr_text.find("  - 'crc32b'") == std::string::npos);
 }
+TEST(cksum, cksum_dash_v_is_invalid_option_issue1714) {
+  // [GNU] cksum has no -V: only --version. The dispatcher must not
+  // intercept -V as --version (#1714).
+  TempDir tmp;
+  tmp.write("f", "data\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cksum.exe", {L"-V", L"f"});
+  auto r = p.run();
+
+  EXPECT_EXIT_CODE(r, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("invalid option -- 'V'") != std::string::npos);
+}
+
+TEST(cksum, cksum_dash_dash_version_still_works_issue1714) {
+  Pipeline p;
+  p.add(L"cksum.exe", {L"--version"});
+  auto r = p.run();
+
+  EXPECT_EXIT_CODE(r, 0);
+  EXPECT_TRUE(r.stdout_text.find("cksum (WinuxCmd)") != std::string::npos);
+}
+
+
+TEST(cksum, cksum_help_does_not_advertise_dash_v_issue1714) {
+  // [GNU] --help shows only "--version": -V is not an option here.
+  Pipeline p;
+  p.add(L"cksum.exe", {L"--help"});
+  auto r = p.run();
+
+  EXPECT_EXIT_CODE(r, 0);
+  EXPECT_TRUE(r.stdout_text.find("-V, --version") == std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("--version") != std::string::npos);
+}
