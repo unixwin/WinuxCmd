@@ -885,6 +885,41 @@ auto move_single_path(const std::string& src_path, const std::string& dest_path,
   if (!backup_result) return std::unexpected(backup_result.error());
   const std::optional<std::string> made_backup = *backup_result;
 
+  // [GNU] copy.c:2441-2463 (directory onto a non-directory) and
+  // :2479-2504 (non-directory onto a directory), coreutils 9.4: a
+  // type-mismatched overwrite is refused unless backups are in effect.
+  // The check must run before MoveFileExW, which would otherwise silently
+  // replace a regular file with a directory (WinuxCmd#1649: data loss,
+  // rc=0).
+  // Backups carve out: when one was just made the destination is
+  // already moved aside, so made_backup set means "backups in effect"
+  // here — an existing destination with backups engaged always yields
+  // a backup (or an error above). --backup=none resolves to no
+  // backups (mv_make_backups returns nullopt), so the gate applies.
+  // GetFileAttributesW follows symlinks, like GNU's stat: a link to
+  // a file counts as a non-directory, a link to a directory as one.
+  if (dest_exists && !made_backup) {
+    const DWORD src_attrs = GetFileAttributesW(wsrc_path.c_str());
+    const DWORD dst_attrs = GetFileAttributesW(wdest_path.c_str());
+    if (src_attrs != INVALID_FILE_ATTRIBUTES &&
+        dst_attrs != INVALID_FILE_ATTRIBUTES) {
+      const bool src_is_dir =
+          (src_attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
+      const bool dst_is_dir =
+          (dst_attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
+      if (src_is_dir && !dst_is_dir) {
+        return std::unexpected("cannot overwrite non-directory " +
+                               quote_operand(dest_path) +
+                               " with directory " + quote_operand(src_path));
+      }
+      if (!src_is_dir && dst_is_dir) {
+        return std::unexpected("cannot overwrite directory " +
+                               quote_operand(dest_path) +
+                               " with non-directory");
+      }
+    }
+  }
+
   if (dest_exists) {
     DWORD attrs = GetFileAttributesW(wdest_path.c_str());
     if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_READONLY))
