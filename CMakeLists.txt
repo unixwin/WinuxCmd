@@ -823,6 +823,7 @@ macro(create_command_executable CMD)
             src/utils/childproc.cppm
             src/utils/json.cppm
             src/utils/i18n.cppm
+            src/utils/locale_db.cppm
             src/utils/file_io.cppm
             src/utils/cppbar.cppm
             src/utils/encoding.cppm
