@@ -892,8 +892,9 @@ if (ENABLE_TESTS)
         add_dependencies(create-test-links winuxcmd)
     endif()
 
-    # rust2 stream-ABI driver lanes (v2 bridge adoption, #1488); the driver
-    # target exists only with WINUXCMD_ENABLE_RUST2.
+    # rust2 stream-ABI driver lanes (v2 bridge adoption + v3 streaming
+    # output, #1488); the driver target exists only with
+    # WINUXCMD_ENABLE_RUST2.
     if(TARGET rust2-stream-driver)
         add_test(NAME rust2-stream-segments
                 COMMAND rust2-stream-driver segments)
@@ -903,8 +904,12 @@ if (ENABLE_TESTS)
                 COMMAND rust2-stream-driver stdin)
         add_test(NAME rust2-stream-mem
                 COMMAND rust2-stream-driver mem)
+        # Streaming output ABI v3 (winuxcmd_run_io): chunking, stderr
+        # order, broken pipe -> 141, the #1368 closed-stdout contract.
+        add_test(NAME rust2-stream-output
+                COMMAND rust2-stream-driver output)
         set_tests_properties(rust2-stream-segments rust2-stream-errors
-                rust2-stream-stdin PROPERTIES TIMEOUT 180)
+                rust2-stream-stdin rust2-stream-output PROPERTIES TIMEOUT 180)
         set_tests_properties(rust2-stream-mem PROPERTIES TIMEOUT 600)
     endif()
 endif ()

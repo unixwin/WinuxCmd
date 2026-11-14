@@ -36,6 +36,8 @@ use winux_core::stream::{HostWriter, StreamReadFn, StreamReader, StreamWriteFn};
 use winux_core::{Ctx, Io, MapEnv};
 
 #[cfg(test)]
+mod io_tests;
+#[cfg(test)]
 mod stream_tests;
 #[cfg(test)]
 mod tests;
