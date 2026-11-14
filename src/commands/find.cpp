@@ -375,11 +375,17 @@ auto constexpr FIND_OPTIONS = std::array{
     // other predicate-style option.
     OPTION("-help", "", "display this help and exit"),
     // [GNU]
-    OPTION("-version", "", "output version information and exit"),
-    // [GNU] SELinux context predicate: on a system without SELinux GNU
-    // find reports "invalid predicate -context: SELinux is not enabled."
-    OPTION("-context", "", "file matches SELinux security context CTX",
-           STRING_TYPE)};
+    OPTION("-version", "", "output version information and exit")};
+    // [GNU] -context is deliberately NOT declared here: it is a predicate
+    // judged by find's own expression parser (rust2 find/parse.rs
+    // "context" arm), not a generic option. Declaring it STRING_TYPE let
+    // make_context consume its operand -- or fail on a bare -context with
+    // "option requires an argument -- 'c'" -- before the parser could
+    // judge an earlier unknown predicate (#1718). Undeclared, the token
+    // passes through as a positional (find policy) and the parser
+    // reports GNU's own diagnostics: "missing argument to `-context'"
+    // when bare, "invalid predicate -context: SELinux is not enabled."
+    // otherwise. Do NOT re-add this OPTION.
 
 REGISTER_COMMAND(find, "find", "find [path...] [expression]",
                  "Search for files in a directory hierarchy.\n"

@@ -35,6 +35,7 @@
         "command.df.error.output_field_duplicate",
         "command.df.error.output_field_unknown",
         "command.df.error.type_conflict",
+        "command.find.option.context",
         "command.ls.error.ambiguous_argument",
         "command.ls.error.ambiguous_option",
         "command.ls.error.cannot_access",
