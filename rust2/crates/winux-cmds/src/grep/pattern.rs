@@ -351,7 +351,8 @@ impl PatternMatcher {
                     let hit = if self.f.words {
                         self.re_word_find(re, line, cur)
                     } else {
-                        re.find_at_bytes(line, cur).map(|m| (m.begin, m.end - m.begin))
+                        re.find_at_bytes(line, cur)
+                            .map(|m| (m.begin, m.end - m.begin))
                     };
                     if let Some((s, l)) = hit {
                         best = match best {
@@ -773,7 +774,10 @@ pub fn compile(
     let lines: Vec<&[u8]> = raw.iter().map(|r| r.bytes.as_slice()).collect();
     let literal = matcher == Matcher::Fixed || lines.iter().all(|p| is_plain_literal(matcher, p));
     let pats = if literal {
-        Pats::Lits(LitSet::new(lines.iter().map(|p| p.to_vec()).collect(), f.ignore_case))
+        Pats::Lits(LitSet::new(
+            lines.iter().map(|p| p.to_vec()).collect(),
+            f.ignore_case,
+        ))
     } else {
         let syntax = if matcher == Matcher::Extended {
             Syntax::Extended
@@ -822,7 +826,10 @@ pub fn compile(
         fast_exact = !f.words;
         match &pats {
             Pats::Lits(set) => {
-                if set.lits.len() == 1 && !f.ignore_case && !f.lines && !set.lits[0].contains(&f.eol)
+                if set.lits.len() == 1
+                    && !f.ignore_case
+                    && !f.lines
+                    && !set.lits[0].contains(&f.eol)
                 {
                     finder = Some(Finder::new(&set.lits[0]));
                 } else if let Some(node) = set.trie() {

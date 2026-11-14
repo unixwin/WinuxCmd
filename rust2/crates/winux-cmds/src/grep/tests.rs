@@ -64,7 +64,10 @@ fn run_trickle(args: &[&str], data: &[u8], n: usize) -> (u32, Vec<u8>, usize, us
 
 #[test]
 fn basic_selection_and_status() {
-    assert_eq!(g(&["foo"], "foo bar\nbaz\nfoofoo\n"), (0, "foo bar\nfoofoo\n".into(), "".into()));
+    assert_eq!(
+        g(&["foo"], "foo bar\nbaz\nfoofoo\n"),
+        (0, "foo bar\nfoofoo\n".into(), "".into())
+    );
     assert_eq!(g(&["zzz"], "foo\n").0, 1);
     assert_eq!(g(&["-v", "foo"], "foo\nbar\n").1, "bar\n");
     assert_eq!(g(&["-c", "o"], "foo\nbar\nxo\n").1, "2\n");
@@ -86,23 +89,39 @@ fn regex_literal_and_fixed_paths_agree() {
 
 #[test]
 fn only_matching_is_leftmost_longest_over_the_set() {
-    assert_eq!(g(&["-o", "-e", "foo", "-e", "foobar"], "foobar here\n").1, "foobar\n");
-    assert_eq!(g(&["-o", "-b", "o"], "foo bar\nbaz\nfoofoo\n").1, "1:o\n2:o\n13:o\n14:o\n16:o\n17:o\n");
+    assert_eq!(
+        g(&["-o", "-e", "foo", "-e", "foobar"], "foobar here\n").1,
+        "foobar\n"
+    );
+    assert_eq!(
+        g(&["-o", "-b", "o"], "foo bar\nbaz\nfoofoo\n").1,
+        "1:o\n2:o\n13:o\n14:o\n16:o\n17:o\n"
+    );
     // empty matches advance one character, nothing printed for them
     assert_eq!(g(&["-o", "b*"], "abc\n").1, "b\n");
 }
 
 #[test]
 fn word_and_line_modes() {
-    assert_eq!(g(&["-o", "-w", "fox"], "fox foxes firefox afox\n").1, "fox\n");
+    assert_eq!(
+        g(&["-o", "-w", "fox"], "fox foxes firefox afox\n").1,
+        "fox\n"
+    );
     assert_eq!(g(&["-w", "-c", ""], "a  b\n").1, "1\n");
     assert_eq!(g(&["-w", "-c", ""], "a b\n").1, "0\n");
     assert_eq!(g(&["-w", r"\(-\|\)"], "a -b\n").0, 1); // GNU regex walk
-    assert_eq!(g(&["-x", "-E", "foo|baz"], "foo\nfoo bar\nbaz\n").1, "foo\nbaz\n");
+    assert_eq!(
+        g(&["-x", "-E", "foo|baz"], "foo\nfoo bar\nbaz\n").1,
+        "foo\nbaz\n"
+    );
     assert_eq!(g(&["-c", "-x", ""], "a\n\nb\n").1, "1\n");
     // Unicode word constituents in the UTF-8 model
     assert_eq!(g(&["-o", "-w", "foo"], "éfoo foo\n").1, "foo\n");
-    let (_, out, _) = run_with(&["-o", "-w", "foo"], "éfoo\n".as_bytes(), &[("LC_ALL", "C")]);
+    let (_, out, _) = run_with(
+        &["-o", "-w", "foo"],
+        "éfoo\n".as_bytes(),
+        &[("LC_ALL", "C")],
+    );
     assert_eq!(out, b"foo\n");
 }
 
@@ -110,16 +129,35 @@ fn word_and_line_modes() {
 fn context_groups_and_max_count() {
     let c = "l1 no\nl2 fox\nl3 no\nl4 no\nl5 fox\nl6 no\n";
     assert_eq!(g(&["-A0", "fox"], c).1, "l2 fox\n--\nl5 fox\n");
-    assert_eq!(g(&["-C1", "fox"], c).1, "l1 no\nl2 fox\nl3 no\nl4 no\nl5 fox\nl6 no\n");
-    assert_eq!(g(&["-n1", "fox"], c).1, "1-l1 no\n2:l2 fox\n3-l3 no\n4-l4 no\n5:l5 fox\n6-l6 no\n");
+    assert_eq!(
+        g(&["-C1", "fox"], c).1,
+        "l1 no\nl2 fox\nl3 no\nl4 no\nl5 fox\nl6 no\n"
+    );
+    assert_eq!(
+        g(&["-n1", "fox"], c).1,
+        "1-l1 no\n2:l2 fox\n3-l3 no\n4-l4 no\n5:l5 fox\n6-l6 no\n"
+    );
     assert_eq!(
         g(&["-A1", "--group-separator=XX", "fox"], c).1,
         "l2 fox\nl3 no\nXX\nl5 fox\nl6 no\n"
     );
-    assert_eq!(g(&["-A0", "--group-separator=XX", "--no-group-separator", "fox"], c).1, "l2 fox\nl5 fox\n");
+    assert_eq!(
+        g(
+            &["-A0", "--group-separator=XX", "--no-group-separator", "fox"],
+            c
+        )
+        .1,
+        "l2 fox\nl5 fox\n"
+    );
     // -m stops selection; trailing context still prints later matches
-    assert_eq!(g(&["-m1", "-A2", "fox"], "fox\nfox\nx\nfox\ny\n").1, "fox\nfox\nx\n");
-    assert_eq!(g(&["-m1", "-c", "-v", "fox"], "fox\nfox\nx\nfox\ny\n").1, "1\n");
+    assert_eq!(
+        g(&["-m1", "-A2", "fox"], "fox\nfox\nx\nfox\ny\n").1,
+        "fox\nfox\nx\n"
+    );
+    assert_eq!(
+        g(&["-m1", "-c", "-v", "fox"], "fox\nfox\nx\nfox\ny\n").1,
+        "1\n"
+    );
     assert_eq!(g(&["-m", "-1", "a"], "a\na\n").1, "a\na\n");
     assert_eq!(g(&["-v", "-m", "-1", "zz"], "a\n").0, 1);
 }
@@ -130,7 +168,10 @@ fn binary_files_and_encoding_errors() {
     assert_eq!((rc, out.as_slice()), (0, &b""[..]));
     assert_eq!(err, "grep: (standard input): binary file matches\n");
     assert_eq!(run_with(&["-c", "a"], b"a\0a\n", &[]).1, b"2\n"); // NUL zapped to eol
-    assert_eq!(run_with(&["-a", "-n", "a"], b"a\0a\nfox\n", &[]).1, b"1:a\0a\n");
+    assert_eq!(
+        run_with(&["-a", "-n", "a"], b"a\0a\nfox\n", &[]).1,
+        b"1:a\0a\n"
+    );
     let (rc, out, _) = run_with(&["-I", "-c", "z"], b"z\nx\0y\nz\n", &[]);
     assert_eq!((rc, out), (1, b"0\n".to_vec()));
     // UTF-8 model: an output line with an encoding error is suppressed
@@ -146,36 +187,72 @@ fn binary_files_and_encoding_errors() {
 
 #[test]
 fn color_sgr_shape_and_grep_color_warning() {
-    let (_, out, err) = run_with(&["--color=always", "foo"], b"foo bar\n", &[("GREP_COLOR", "1")]);
+    let (_, out, err) = run_with(
+        &["--color=always", "foo"],
+        b"foo bar\n",
+        &[("GREP_COLOR", "1")],
+    );
     assert_eq!(out, b"\x1b[1m\x1b[Kfoo\x1b[m\x1b[K bar\n");
-    assert_eq!(err, "grep: warning: GREP_COLOR='1' is deprecated; use GREP_COLORS='mt=1'\n");
+    assert_eq!(
+        err,
+        "grep: warning: GREP_COLOR='1' is deprecated; use GREP_COLORS='mt=1'\n"
+    );
     let (_, _, err) = run_with(
         &["--color=always", "foo"],
         b"foo\n",
         &[("GREP_COLOR", "1"), ("GREP_COLORS", "mt=32")],
     );
     assert_eq!(err, "");
-    let (_, out, _) = run_with(&["--color=always", "foo"], b"foo bar\r\n", &[("GREP_COLORS", "sl=1")]);
-    assert_eq!(out, b"\x1b[1m\x1b[K\x1b[01;31m\x1b[Kfoo\x1b[m\x1b[K\x1b[1m\x1b[K bar\x1b[m\x1b[K\r\n");
+    let (_, out, _) = run_with(
+        &["--color=always", "foo"],
+        b"foo bar\r\n",
+        &[("GREP_COLORS", "sl=1")],
+    );
+    assert_eq!(
+        out,
+        b"\x1b[1m\x1b[K\x1b[01;31m\x1b[Kfoo\x1b[m\x1b[K\x1b[1m\x1b[K bar\x1b[m\x1b[K\r\n"
+    );
     assert_eq!(g(&["--color=auto", "foo"], "foo\n").1, "foo\n");
 }
 
 #[test]
 fn diagnostics_and_option_order() {
-    assert_eq!(g(&["["], "x\n"), (2, "".into(), "grep: Invalid regular expression\n".into()));
-    assert_eq!(g(&["[a"], "x\n").2, "grep: Unmatched [, [^, [:, [., or [=\n");
-    assert_eq!(g(&["[:alpha:]"], "x\n").2, "grep: character class syntax is [[:space:]], not [:space:]\n");
-    assert_eq!(g(&["-E", "*a"], "a\n").2, "grep: warning: * at start of expression\n");
+    assert_eq!(
+        g(&["["], "x\n"),
+        (2, "".into(), "grep: Invalid regular expression\n".into())
+    );
+    assert_eq!(
+        g(&["[a"], "x\n").2,
+        "grep: Unmatched [, [^, [:, [., or [=\n"
+    );
+    assert_eq!(
+        g(&["[:alpha:]"], "x\n").2,
+        "grep: character class syntax is [[:space:]], not [:space:]\n"
+    );
+    assert_eq!(
+        g(&["-E", "*a"], "a\n").2,
+        "grep: warning: * at start of expression\n"
+    );
     assert_eq!(g(&["--help", "--bogus"], "").0, 2);
     assert_eq!(g(&["-V", "-m", "x"], "").2, "grep: invalid max count\n");
-    assert_eq!(g(&["-1234567890123456789012", "x"], "").2, "grep: 123456789012345678901...: invalid context length argument\n");
+    assert_eq!(
+        g(&["-1234567890123456789012", "x"], "").2,
+        "grep: 123456789012345678901...: invalid context length argument\n"
+    );
     assert_eq!(g(&["-d", "re", "a"], "").0, 1);
     assert_eq!(g(&["--ex=a", "x"], "").2.lines().next().unwrap(),
         "grep: option '--ex=a' is ambiguous; possibilities: '--extended-regexp' '--exclude' '--exclude-from' '--exclude-dir'");
-    assert_eq!(g(&["-E", "-F", "x"], "").2, "grep: conflicting matchers specified\n");
+    assert_eq!(
+        g(&["-E", "-F", "x"], "").2,
+        "grep: conflicting matchers specified\n"
+    );
     assert_eq!(g(&[], "").0, 2);
-    assert!(g(&["--version"], "").1.starts_with("grep (GNU grep) 3.11\n"));
-    assert!(g(&["--color=bogus"], "").1.starts_with("Usage: grep [OPTION]... PATTERNS [FILE]...\n"));
+    assert!(g(&["--version"], "")
+        .1
+        .starts_with("grep (GNU grep) 3.11\n"));
+    assert!(g(&["--color=bogus"], "")
+        .1
+        .starts_with("Usage: grep [OPTION]... PATTERNS [FILE]...\n"));
 }
 
 #[test]
@@ -191,7 +268,10 @@ fn perl_is_routed_not_implemented() {
     assert!(!uses_perl_with(&os(&["x", "f", "-P"]), true));
     let (rc, out, err) = g(&["-P", "foo"], "foo\n");
     assert_eq!((rc, out.as_str()), (2, ""));
-    assert_eq!(err, "grep: Perl matching not supported in a --disable-perl-regexp build\n");
+    assert_eq!(
+        err,
+        "grep: Perl matching not supported in a --disable-perl-regexp build\n"
+    );
 }
 
 #[test]
@@ -200,7 +280,10 @@ fn egrep_fgrep_wrappers() {
     let mut m = MemIo::new("fo\nfoo\n");
     let rc = egrep_cmd(&os(&["fo+$"]), &mut m.split(), &sc.ctx()).unwrap();
     assert_eq!((rc, m.out()), (0, "fo\nfoo\n".to_string()));
-    assert_eq!(m.err(), "egrep: warning: egrep is obsolescent; using grep -E\n");
+    assert_eq!(
+        m.err(),
+        "egrep: warning: egrep is obsolescent; using grep -E\n"
+    );
     let mut m = MemIo::new("a+\n");
     let rc = fgrep_cmd(&os(&["a+"]), &mut m.split(), &sc.ctx()).unwrap();
     assert_eq!((rc, m.out()), (0, "a+\n".to_string()));
@@ -222,11 +305,17 @@ fn pattern_sources() {
         (rc, m.out(), m.err())
     };
     assert_eq!(run(&["-f", "p", "t"], "").0, 2);
-    assert_eq!(run(&["-f", "p", "t"], "").2, "grep: p:2: Invalid regular expression\ngrep: p:3: Unmatched ( or \\(\n");
+    assert_eq!(
+        run(&["-f", "p", "t"], "").2,
+        "grep: p:2: Invalid regular expression\ngrep: p:3: Unmatched ( or \\(\n"
+    );
     assert_eq!(run(&["-f", "e", "t"], "").0, 1);
     assert_eq!(run(&["-v", "-f", "e", "t"], "").1, "foo\nbar\n");
     assert_eq!(run(&["-f", "-", "t"], "bar\n").1, "bar\n");
-    assert_eq!(run(&["-f", "missing", "t"], "").2, "grep: missing: No such file or directory\n");
+    assert_eq!(
+        run(&["-f", "missing", "t"], "").2,
+        "grep: missing: No such file or directory\n"
+    );
 }
 
 #[test]
@@ -242,18 +331,30 @@ fn files_recursion_and_selection_rules() {
     };
     let (_, out, _) = run(&["-r", "--include=*.c", "fox", "d"]);
     assert_eq!(out, "d/sub/a.c:fox c\n");
-    assert_eq!(run(&["-r", "--exclude-dir=sub", "fox", "d"]).1, "d/b.log:fox log\n");
+    assert_eq!(
+        run(&["-r", "--exclude-dir=sub", "fox", "d"]).1,
+        "d/b.log:fox log\n"
+    );
     assert_eq!(run(&["-r", "--exclude-dir=d", "fox", "d"]).0, 1);
     assert_eq!(run(&["--exclude=a.c", "fox", "d/sub/a.c"]).0, 1); // unanchored suffix
     assert_eq!(run(&["fox", "d"]).2, "grep: d: Is a directory\n");
     assert_eq!(run(&["-s", "fox", "d"]), (2, String::new(), String::new()));
     assert_eq!(run(&["-d", "skip", "fox", "d"]).0, 1);
-    assert_eq!(run(&["fox", "nope", "d/b.log"]).2, "grep: nope: No such file or directory\n");
+    assert_eq!(
+        run(&["fox", "nope", "d/b.log"]).2,
+        "grep: nope: No such file or directory\n"
+    );
     assert_eq!(run(&["-q", "fox", "nope", "d/b.log"]).0, 0);
     assert_eq!(run(&["-q", "zzz", "nope", "d/b.log"]).0, 2);
-    assert_eq!(run(&["-L", "zzz", "d/b.log"]), (1, "d/b.log\n".into(), "".into()));
+    assert_eq!(
+        run(&["-L", "zzz", "d/b.log"]),
+        (1, "d/b.log\n".into(), "".into())
+    );
     assert_eq!(run(&["-l", "-Z", "fox", "d/b.log"]).1, "d/b.log\0");
-    assert_eq!(run(&["-c", "fox", "d/b.log", "d/sub/a.c"]).1, "d/b.log:1\nd/sub/a.c:1\n");
+    assert_eq!(
+        run(&["-c", "fox", "d/b.log", "d/sub/a.c"]).1,
+        "d/b.log:1\nd/sub/a.c:1\n"
+    );
     assert_eq!(run(&["-r", "fox", "d/b.log"]).1, "fox log\n"); // -r on a file: no name
 }
 
@@ -320,7 +421,11 @@ fn early_stop_reads_only_what_it_needs() {
     for args in [&["-q", "hit"][..], &["-l", "hit"], &["-m1", "hit"]] {
         let (rc, _, consumed, _) = run_trickle(args, &data, 65536);
         assert_eq!(rc, 0, "{args:?}");
-        assert!(consumed < 200_000, "{args:?} read {consumed} of {}", data.len());
+        assert!(
+            consumed < 200_000,
+            "{args:?} read {consumed} of {}",
+            data.len()
+        );
     }
 }
 
@@ -389,7 +494,10 @@ fn write_error_is_reported() {
 fn null_data_mode() {
     assert_eq!(run_with(&["-z", "a"], b"a\nx\0b\0", &[]).1, b"a\nx\0");
     assert_eq!(run_with(&["-z", "-c", "a"], b"a\0b\0", &[]).1, b"1\n");
-    assert_eq!(run_with(&["-z", "-n", "b"], b"a\nb\0c\0", &[]).1, b"1:a\nb\0");
+    assert_eq!(
+        run_with(&["-z", "-n", "b"], b"a\nb\0c\0", &[]).1,
+        b"1:a\nb\0"
+    );
 }
 
 #[test]

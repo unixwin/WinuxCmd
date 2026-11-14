@@ -453,10 +453,7 @@ fn prtext(p: &mut Printer, data: &[u8], beg: usize, lim: usize) -> Result<(), St
             }
             i += 1;
         }
-        if (cfg.out_before >= 0 || cfg.out_after >= 0)
-            && *p.run_used
-            && Some(pos) != p.fs.lastout
-        {
+        if (cfg.out_before >= 0 || cfg.out_after >= 0) && *p.run_used && Some(pos) != p.fs.lastout {
             if let Some(sep) = &cfg.group_separator {
                 let color = cfg.colors.as_ref().map(|c| c.sep.clone());
                 sgr_start_if(p, color.as_deref());
@@ -514,7 +511,11 @@ fn sgr_start(p: &mut Printer, s: &str) {
 fn sgr_end(p: &mut Printer, s: &str) {
     if !s.is_empty() {
         let ne = p.cfg.colors.as_ref().map_or(false, |c| c.ne);
-        p.ui.out.extend_from_slice(if ne { b"\x1b[m" as &[u8] } else { b"\x1b[m\x1b[K" });
+        p.ui.out.extend_from_slice(if ne {
+            b"\x1b[m" as &[u8]
+        } else {
+            b"\x1b[m\x1b[K"
+        });
     }
 }
 
@@ -555,9 +556,14 @@ pub fn print_filename(ui: &mut Ui, cfg: &Config, name: &[u8]) {
         Some(c) if !c.filename.is_empty() => {
             ui.out.extend_from_slice(b"\x1b[");
             ui.out.extend_from_slice(c.filename.as_bytes());
-            ui.out.extend_from_slice(if c.ne { b"m" as &[u8] } else { b"m\x1b[K" });
+            ui.out
+                .extend_from_slice(if c.ne { b"m" as &[u8] } else { b"m\x1b[K" });
             ui.out.extend_from_slice(name);
-            ui.out.extend_from_slice(if c.ne { b"\x1b[m" as &[u8] } else { b"\x1b[m\x1b[K" });
+            ui.out.extend_from_slice(if c.ne {
+                b"\x1b[m" as &[u8]
+            } else {
+                b"\x1b[m\x1b[K"
+            });
         }
         _ => ui.out.extend_from_slice(name),
     }
@@ -569,9 +575,14 @@ pub fn print_sep_plain(ui: &mut Ui, cfg: &Config, sep: u8) {
         Some(c) if !c.sep.is_empty() => {
             ui.out.extend_from_slice(b"\x1b[");
             ui.out.extend_from_slice(c.sep.as_bytes());
-            ui.out.extend_from_slice(if c.ne { b"m" as &[u8] } else { b"m\x1b[K" });
+            ui.out
+                .extend_from_slice(if c.ne { b"m" as &[u8] } else { b"m\x1b[K" });
             ui.out.push(sep);
-            ui.out.extend_from_slice(if c.ne { b"\x1b[m" as &[u8] } else { b"\x1b[m\x1b[K" });
+            ui.out.extend_from_slice(if c.ne {
+                b"\x1b[m" as &[u8]
+            } else {
+                b"\x1b[m\x1b[K"
+            });
         }
         _ => ui.out.push(sep),
     }
@@ -582,7 +593,14 @@ fn has_encoding_errors(cfg: &Config, bytes: &[u8]) -> bool {
 }
 
 /// print_line_head: false when the output was suppressed (encoding error).
-fn print_line_head(p: &mut Printer, data: &[u8], beg: usize, len: usize, lim: usize, sep: u8) -> bool {
+fn print_line_head(
+    p: &mut Printer,
+    data: &[u8],
+    beg: usize,
+    len: usize,
+    lim: usize,
+    sep: u8,
+) -> bool {
     let cfg = p.cfg;
     if has_encoding_errors(cfg, &data[beg..beg + len]) {
         p.fs.encoding_error_output = true;
@@ -678,7 +696,13 @@ fn print_line_middle(
     Some(cur)
 }
 
-fn print_line_tail(p: &mut Printer, data: &[u8], beg: usize, lim: usize, line_color: &str) -> usize {
+fn print_line_tail(
+    p: &mut Printer,
+    data: &[u8],
+    beg: usize,
+    lim: usize,
+    line_color: &str,
+) -> usize {
     let eol = p.cfg.eol;
     let mut eol_size = (lim > beg && data[lim - 1] == eol) as usize;
     if lim - eol_size > beg && data[lim - 1 - eol_size] == b'\r' {
@@ -722,8 +746,14 @@ fn prline(p: &mut Printer, data: &[u8], beg: usize, lim: usize, sep: u8) -> Resu
     let mc_set = match_color.as_deref().map_or(false, |s| !s.is_empty());
     if (cfg.only_matching && matching) || (cfg.colors.is_some() && (lc_set || mc_set)) {
         if matching && (cfg.only_matching || mc_set) {
-            match print_line_middle(p, data, beg, lim, line_color.as_deref(), match_color.as_deref())
-            {
+            match print_line_middle(
+                p,
+                data,
+                beg,
+                lim,
+                line_color.as_deref(),
+                match_color.as_deref(),
+            ) {
                 Some(c) => beg = c,
                 None => return Ok(()),
             }

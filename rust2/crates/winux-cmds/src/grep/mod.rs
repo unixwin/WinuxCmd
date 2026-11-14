@@ -548,7 +548,10 @@ fn run_inner(args: &[OsString], stdin: &mut dyn Read, ui: &mut Ui, ctx: &Ctx) ->
             }
             Key::Short(b'e') => {
                 let k = keys.get_or_insert_with(Vec::new);
-                let raw = val.as_ref().map(|s| s.as_bytes().to_vec()).unwrap_or_default();
+                let raw = val
+                    .as_ref()
+                    .map(|s| s.as_bytes().to_vec())
+                    .unwrap_or_default();
                 let mut buf = raw;
                 buf.push(b'\n');
                 split_keys(&buf, None, k);
@@ -655,7 +658,11 @@ fn run_inner(args: &[OsString], stdin: &mut dyn Read, ui: &mut Ui, ctx: &Ctx) ->
             Key::ExcludeDir => {
                 let a = v();
                 let t = a.trim_end_matches('/');
-                let t = if t.is_empty() && !a.is_empty() { "/" } else { t };
+                let t = if t.is_empty() && !a.is_empty() {
+                    "/"
+                } else {
+                    t
+                };
                 exclude_dirs.add(t, false);
             }
             Key::GroupSeparator => group_separator = Some(v().into_bytes()),

@@ -304,7 +304,9 @@ impl<'r, 'a, 'e> Runner<'r, 'a, 'e> {
                     self.ui.out.push(0);
                 }
             }
-            self.ui.out.extend_from_slice(format!("{count}\n").as_bytes());
+            self.ui
+                .out
+                .extend_from_slice(format!("{count}\n").as_bytes());
             if cfg.line_buffered {
                 self.ui.flush_out();
             }
@@ -591,7 +593,10 @@ fn resolve_operand(ctx: &Ctx, operand: &str) -> PathBuf {
     if bytes.len() >= 2
         && bytes[0].is_ascii_alphabetic()
         && bytes[1] == b':'
-        && !bytes.get(2).map(|b| *b == b'\\' || *b == b'/').unwrap_or(false)
+        && !bytes
+            .get(2)
+            .map(|b| *b == b'\\' || *b == b'/')
+            .unwrap_or(false)
     {
         let drive = (bytes[0] as char).to_ascii_lowercase();
         let cwd_drive = ctx

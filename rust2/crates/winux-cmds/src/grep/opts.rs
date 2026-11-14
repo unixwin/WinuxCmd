@@ -199,7 +199,10 @@ pub fn getopt(args: &[OsString], posixly_correct: bool) -> Scanned {
                         return Scanned {
                             events,
                             operands,
-                            error: Some(format!("option '--{}' doesn't allow an argument", opt.name)),
+                            error: Some(format!(
+                                "option '--{}' doesn't allow an argument",
+                                opt.name
+                            )),
                         };
                     }
                     None

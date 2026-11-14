@@ -262,7 +262,9 @@ mod tests {
     use super::*;
 
     fn lcg(seed: &mut u64) -> u64 {
-        *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        *seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         *seed >> 33
     }
 
@@ -270,11 +272,19 @@ mod tests {
     fn primitives_match_scalar_reference() {
         let mut seed = 7u64;
         for len in 0..300usize {
-            let hay: Vec<u8> = (0..len).map(|_| b"abc\nx"[(lcg(&mut seed) % 5) as usize]).collect();
+            let hay: Vec<u8> = (0..len)
+                .map(|_| b"abc\nx"[(lcg(&mut seed) % 5) as usize])
+                .collect();
             for needle in [b'a', b'\n', b'z'] {
                 assert_eq!(memchr(needle, &hay), hay.iter().position(|&b| b == needle));
-                assert_eq!(memrchr(needle, &hay), hay.iter().rposition(|&b| b == needle));
-                assert_eq!(count(needle, &hay), hay.iter().filter(|&&b| b == needle).count());
+                assert_eq!(
+                    memrchr(needle, &hay),
+                    hay.iter().rposition(|&b| b == needle)
+                );
+                assert_eq!(
+                    count(needle, &hay),
+                    hay.iter().filter(|&&b| b == needle).count()
+                );
             }
             for pat in [&b"ab"[..], b"abc", b"x\na", b"cc", b"abcabcab", b"q"] {
                 let f = Finder::new(pat);

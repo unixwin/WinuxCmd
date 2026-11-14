@@ -9,7 +9,6 @@
 
 use std::io::Write;
 
-
 pub const USAGE_LINE: &str = "Usage: grep [OPTION]... PATTERNS [FILE]...";
 pub const TRY_HELP_LINE: &str = "Try 'grep --help' for more information.";
 
