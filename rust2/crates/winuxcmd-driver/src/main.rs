@@ -142,6 +142,16 @@ fn stdio_meta() -> StdioMeta {
     StdioMeta::with_tty(tty)
 }
 
+/// rm's stdin tty classification (rm_option_init's isatty(STDIN_FILENO)):
+/// the console-attached check GNU uses to decide whether the default
+/// RMI_SOMETIMES mode prompts for write-protected entries. Reads the same
+/// injected console facts as [`stdio_meta`].
+fn rm_stdin_meta() -> winux_cmds::rm::RmMeta {
+    winux_cmds::rm::RmMeta {
+        stdin_tty: stdio_meta().tty[0],
+    }
+}
+
 /// The POSIX `touch -` face of the driver's real stdout handle.
 ///
 /// `touch -` retimes fd 1 (GNU touch.c:127-128). The command receives
@@ -291,6 +301,16 @@ fn run_direct(argv: &[std::ffi::OsString]) -> i32 {
                 Err(_) => winux_core::ABI_FAILURE_STATUS as i32,
             }
         }
+    } else if name == "rm" {
+        // rm's tty flag is input metadata (GNU's isatty(0)) for the same
+        // reason: the library only sees the injected Io handles.
+        let meta = rm_stdin_meta();
+        match winux_cmds::rm::rm_with_meta(&args, &mut io, &ctx, &meta) {
+            Ok(s) => s as i32,
+            Err(_) => winux_core::ABI_FAILURE_STATUS as i32,
+        }
+    } else {
+        match winux_cmds::dispatch(&name, &args, &mut io, &ctx) {
         // `isatty` facts and the stdout retime face are process-IO tier:
         // the driver composes them, the library receives metadata.
         "tty" => {
