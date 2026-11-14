@@ -1457,4 +1457,35 @@ mod tests {
             assert_eq!(out.trim_end(), "symbolic link");
         }
     }
+
+    #[test]
+    fn dereference_absolute_target() {
+        // #1652: `stat -L` on a link whose stored target is absolute
+        // (the mklink shape: `mklink $d\lnk $d\a.txt`) reported
+        // `cannot statx 'lnk': No such file or directory` although the
+        // target exists; GNU follows it (stat.c:1384-1387 / :1476-1478).
+        // The relative-target shape already passed (symlink_lstat); the
+        // absolute-target shape is the failing one.
+        let sc = setup("stat-deref-abs");
+        let target = sc.path("a.txt");
+        std::fs::write(&target, "hello\n").unwrap(); // 6 bytes, GNU %s
+        let link = sc.path("lnk");
+        let ok = std::os::windows::fs::symlink_file(&target, &link).is_ok();
+        if !ok {
+            return;
+        }
+        // absolute operand + absolute target (the issue shape)
+        let link_s = link.to_string_lossy().into_owned();
+        let (r, out, err) = run_sc(&sc, &["-L", "-c", "%n|%F|%s", &link_s]);
+        assert_eq!(r, 0, "rc: {err}");
+        assert_eq!(out, format!("{link_s}|regular file|6\n"));
+        // relative operand + absolute target
+        let (r, out, err) = run_sc(&sc, &["-L", "-c", "%n|%F|%s", "lnk"]);
+        assert_eq!(r, 0, "rc: {err}");
+        assert_eq!(out, "lnk|regular file|6\n");
+        // control: without -L the link itself still reports (lstat path)
+        let (r, out, _) = run_sc(&sc, &["-c", "%n|%F", "lnk"]);
+        assert_eq!(r, 0);
+        assert_eq!(out, "lnk|symbolic link\n");
+    }
 }

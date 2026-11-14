@@ -449,7 +449,29 @@ pub mod imp {
             if lstat {
                 return find_first_meta(ctx, &extended);
             }
-            return Err(kernel32_last_error());
+            // #1652: dereference fallback. GNU stat.c:1384-1387 (statx
+            // without AT_SYMLINK_NOFOLLOW) / :1476-1478 (stat, not
+            // lstat) follows the link; the implicit follow of the
+            // `\\?\` open above reports ENOENT for links whose stored
+            // target the kernel does not resolve here (mklink shape:
+            // absolute target), even though the target exists. When the
+            // open fails with file/path-not-found AND the operand is
+            // itself a reparse point, resolve the target explicitly
+            // (chains included, `..` collapsed lexically — the `\\?\`
+            // prefix interprets neither `.` nor `..`) and open that
+            // instead. The fallback only runs after the direct open
+            // already failed, so the passing shapes keep their exact
+            // path; a dangling link or a plain missing file keeps the
+            // original error (resolution fails or the retry fails).
+            let err = kernel32_last_error();
+            if (err == 2 || err == 3) && is_reparse == Some(true) {
+                if let Some(resolved) = resolve_symlink_chain(&extended) {
+                    if let Ok(m) = file_meta(ctx, &resolved, false) {
+                        return Ok(m);
+                    }
+                }
+            }
+            return Err(err);
         }
         unsafe {
             let mut info = ByHandleFileInformation::default();
@@ -582,6 +604,59 @@ pub mod imp {
         } else {
             p.to_string()
         }
+    }
+
+    /// Collapse `.` and `..` lexically (component stack, prefix kept).
+    /// The `\\?\` prefix interprets neither, so a resolved target that
+    /// spells `..` (a link stored as `../shared/x`) must be normalized
+    /// before it is handed back to `api_path`.
+    fn lexical_normalize(p: &Path) -> std::path::PathBuf {
+        use std::path::{Component, PathBuf as PB};
+        let absolute = p.is_absolute();
+        let mut out = PB::new();
+        for c in p.components() {
+            match c {
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    // Never pop past an absolute root: the kernel clamps
+                    // `C:\..\x` to `C:\x`. A leading `..` on a relative
+                    // path has no root to clamp against and is kept.
+                    if !out.pop() && !absolute {
+                        out.push("..");
+                    }
+                }
+                _ => out.push(c.as_os_str()),
+            }
+        }
+        out
+    }
+
+    /// Resolve a symlink chain to its ultimate target (#1652 fallback).
+    /// `extended` is the `\\?\`-prefixed link path; the returned path is
+    /// a plain absolute path (no `\\?\` prefix — `file_meta` re-adds it).
+    /// Relative targets resolve against the link's parent directory.
+    /// Returns `None` when any hop cannot be read, when a hop is not a
+    /// plain path, or when the chain exceeds 40 links (GNU's ELOOP
+    /// bound, stat.c); the caller then keeps the original open error.
+    fn resolve_symlink_chain(extended: &str) -> Option<String> {
+        let mut current = strip_extended(extended);
+        for _ in 0..40 {
+            let target = std::fs::read_link(&current).ok()?;
+            let next = if Path::new(&target).is_absolute() {
+                target.to_string_lossy().into_owned()
+            } else {
+                let parent = Path::new(&current).parent()?.to_path_buf();
+                lexical_normalize(&parent.join(&target))
+                    .to_string_lossy()
+                    .into_owned()
+            };
+            // The endpoint is whatever is not itself a reparse point.
+            if raw_attributes(&next).map(|a| a & FILE_ATTRIBUTE_REPARSE_POINT != 0) != Some(true) {
+                return Some(next);
+            }
+            current = next;
+        }
+        None
     }
 
     pub fn kernel32_last_error() -> u32 {
