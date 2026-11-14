@@ -65,6 +65,25 @@ TABLE_NOTES = {
         "# sum gate cases (#1488 wave4a + wave-W2 wire)",
         "# sm18/sm19 --help/--version are win: brand interception stays C++",
     ],
+    "mkfifo": [
+        "# mkfifo gate cases (wave-W4 wiring, #1488) — TAB-separated",
+        "# Probed against WSL coreutils 9.4 with",
+        "# rust2/target/probe/w4-mkfifo-mknod.sh (GNU side creates REAL fifos;",
+        "# the Windows sides create the #1038 !<fifo> marker, so stdout/rc are",
+        "# comparable but the on-disk node type is checked by the unit tests).",
+        "# mf20/mf21 are win: the wired product answers the sole",
+        "# --help/--version with the WinuxCmd-branded dispatcher surface",
+        "# (suite-wide help convention, wave6 precedent), not GNU text.",
+    ],
+    "mknod": [
+        "# mknod gate cases (wave-W4 wiring, #1488) — TAB-separated",
+        "# Probed against WSL coreutils 9.4 (rust2/target/probe/w4-mkfifo-mknod.sh).",
+        "# Device-node rows are win because the WSL oracle runs as ROOT and",
+        "# really creates block/char nodes (probed rdev=1:3 etc.); Windows has",
+        "# no device-node type, so both Windows sides report EPERM and only",
+        "# Rust-vs-C++ can be compared. mn20/mn21 are win for the sole",
+        "# --help/--version branded product surface (mkfifo precedent).",
+    ],
 }
 
 
@@ -2405,8 +2424,8 @@ mktemp_rows = [
     ("mk23-dir-quiet", "exit", "", "", "", ["-d", "-q", "d.XXXXXX"]),
     ("mk24-tmpdir-env", "exit", "TMPDIR=/tmp", "", "", ["--tmpdir", "mte.XXXXXX"]),
     ("mk25-bogus-long", "strict", "", "", "", ["--bogus"]),
-    ("mk26-help", "strict", "", "", "", ["--help"]),
-    ("mk27-version", "strict", "", "", "", ["--version"]),
+    ("mk26-help", "win", "", "", "", ["--help"]),
+    ("mk27-version", "win", "", "", "", ["--version"]),
 ]
 
 NICE_CHILD_SETUP = (
@@ -3064,8 +3083,8 @@ nice_rows = [
     ("nc16-n-50", "strict", "", "", "", ["-n", "50"]),
     ("nc17-n-minus-50", "strict", "", "", "", ["-n", "-50"]),
     ("nc18-n-plus", "strict", "", "", "", ["-n", "+3"]),
-    ("nc19-help", "strict", "", "", "", ["--help"]),
-    ("nc20-version", "strict", "", "", "", ["--version"]),
+    ("nc19-help", "win", "", "", "", ["--help"]),
+    ("nc20-version", "win", "", "", "", ["--version"]),
     ("nc21-child-eq1", "exit", "printf '#!/bin/sh\\nexit 1\\n' > cmd; chmod +x cmd; export PATH=\"$PWD:$PATH\"",
      "", "", ["cmd", "/c", "exit", "1"]),
 ]
@@ -3717,11 +3736,28 @@ mkfifo_rows = [
     ("mf17-Z-attached-invalid", "strict", "", "", "", ["-Zctx2", "pz2"]),
     ("mf18-context-after-dashdash", "strict", "", "", "", ["--", "--context=x"]),
     ("mf19-two-names", "strict", "", "", "", ["pa", "pb"]),
-    ("mf20-help", "strict", "", "", "", ["--help"]),
-    ("mf21-version", "strict", "", "", "", ["--version"]),
+    # sole --help/--version are the product's branded dispatcher surface
+    # (wave6 convention); the GNU help body is pinned by the rust2 unit
+    # test help_version_surface instead.
+    ("mf20-help", "win", "", "", "", ["--help"]),
+    ("mf21-version", "win", "", "", "", ["--version"]),
     ("mf22-mixed-failure", "strict", "", "", "", ["ok", "nodir/bad", "ok2"]),
     ("mf23-missing-value", "strict", "", "", "", ["-m"]),
     ("mf24-bogus-long", "strict", "", "", "", ["--bogus"]),
+    # wave-W4 additions (probed w4-mkfifo-mknod.sh)
+    ("mf25-mode-long-eq", "strict", "", "", "", ["--mode=644", "p"]),
+    ("mf26-mode-last-wins", "strict", "", "", "", ["-m", "600", "-m", "640", "p"]),
+    ("mf27-mode-empty-value", "strict", "", "", "", ["-m", "", "p"]),
+    ("mf28-mode-combined", "strict", "", "", "", ["-m", "u=rw,go=r", "p"]),
+    # --context= (empty PRESENT value) warns; bare --context does not
+    ("mf29-context-empty-value", "strict", "", "", "", ["--context=", "pz5"]),
+    # getopt_long unambiguous abbreviation, expanded by the dispatcher and
+    # accepted by the library scan alike
+    ("mf30-context-abbrev", "strict", "", "", "", ["--con=cval", "pz6"]),
+    ("mf31-context-abbrev-bare", "strict", "", "", "", ["--c", "pz7"]),
+    ("mf32-dashdash-operand", "strict", "", "", "", ["--", "-m"]),
+    # empty NAME is ENOENT, not "the cwd" (probed GNU 9.4)
+    ("mf33-empty-name", "strict", "", "", "", ["@EMPTY@"]),
 ]
 
 mknod_rows = [
@@ -3746,11 +3782,35 @@ mknod_rows = [
     ("mn17-context-warn-fifo", "strict", "", "", "", ["--context=c", "pf", "p"]),
     ("mn18-Z-bare-fifo", "strict", "", "", "", ["-Z", "pz", "p"]),
     ("mn19-missing-parent", "strict", "", "", "", ["nodir/x", "p"]),
-    ("mn20-help", "strict", "", "", "", ["--help"]),
-    ("mn21-version", "strict", "", "", "", ["--version"]),
+    # sole --help/--version: branded product surface (mkfifo mf20/mf21)
+    ("mn20-help", "win", "", "", "", ["--help"]),
+    ("mn21-version", "win", "", "", "", ["--version"]),
     ("mn22-mode-rejected-before-operands", "strict", "", "", "", ["-m", "bogus", "n", "p"]),
     ("mn23-missing-mode-value", "strict", "", "", "", ["-m"]),
     ("mn24-bogus-long", "strict", "", "", "", ["--bogus"]),
+    # wave-W4 additions (probed w4-mkfifo-mknod.sh): an EMPTY device
+    # number is "invalid ... ''" in GNU, never "missing"
+    ("mn25-empty-major", "strict", "", "", "", ["n", "c", "", "3"]),
+    ("mn26-empty-minor", "strict", "", "", "", ["n", "c", "1", ""]),
+    # strtoumax accepts '+' and 0x/0-prefixed numbers; device creation is
+    # root-only on the oracle, so these stay win (Rust vs C++ status)
+    ("mn27-plus-major", "win", "", "", "", ["mp", "c", "+1", "3"]),
+    ("mn28-dev-zero", "win", "", "", "", ["mz", "c", "0", "0"]),
+    ("mn29-fifo-mode-empty", "strict", "", "", "", ["-m", "", "n2", "p"]),
+    # --context= (empty present value) warns; bare --context is silent
+    ("mn30-context-empty", "strict", "", "", "", ["--context=", "pe", "p"]),
+    ("mn31-context-abbrev", "strict", "", "", "", ["--con=c", "pf2", "p"]),
+    ("mn32-context-abbrev-bare", "strict", "", "", "", ["--c", "pb2", "p"]),
+    ("mn33-exists-dir", "strict", "mkdir dd", "", "", ["dd", "p"]),
+    # empty NAME: GNU quotes it and reports ENOENT (probed)
+    ("mn34-empty-name", "strict", "", "", "", ["@EMPTY@", "p"]),
+    # TYPE is classified by its FIRST character (probed: pz/pp are fifos,
+    # bz/cx/uz block/char); trailing junk is ignored like GNU
+    ("mn35-type-suffix-fifo", "strict", "", "", "", ["mzs", "pz"]),
+    ("mn36-type-suffix-block", "win", "", "", "", ["mzb", "bz", "1", "2"]),
+    # operand-count errors precede TYPE validation (probed shape)
+    ("mn37-two-operand-bogus-type", "strict", "", "", "", ["xo", "x"]),
+    ("mn38-bad-type-before-minor", "strict", "", "", "", ["xo2", "x", "1", "zz"]),
 ]
 
 chcon_rows = [
@@ -4013,12 +4073,50 @@ du_rows = [
     ("du39-nested-operand", "strict", "mkdir -p d1/d2; echo x > d1/f", "", "",
      ["-b", "d1", "d1/d2"]),
     ("du40-repeated-zero-size", "strict", ": > f0", "", "", ["-b", "f0", "f0"]),
-    ("du28-help", "strict", "", "", "", ["--help"]),
-    ("du29-version", "strict", "", "", "", ["--version"]),
+    ("du28-help", "win", "", "", "", ["--help"]),
+    ("du29-version", "win", "", "", "", ["--version"]),
     ("du30-noargs", "win", "mkdir -p d; printf a > d/x", "", "", ["-b"]),
     ("du31-block-size-bogus", "strict", "printf a > a", "", "",
      ["--block-size=bogus", "a"]),
     ("du32-d0-file", "strict", "printf a > a", "", "", ["-b", "-d", "0", "a"]),
+    # -L/-H operand liveness (#1656, old-exe parity rows for the 1.x fix
+    # landed in d6614d2f): a LIVE directory link is walked under the OPERAND
+    # spelling; a DANGLING link reports "cannot access" with no errno text
+    # and rc 1. `-b` keeps the value platform-free (apparent bytes: dir 0,
+    # file content only). Symlink fixtures need SeCreateSymbolicLinkPrivilege
+    # on the Windows sides, so a host without it reports these SKIPped.
+    ("du41-deref-all-link-bytes", "strict",
+     "mkdir -p d1; printf ab > d1/f; ln -s d1 dlink", "", "",
+     ["-L", "-b", "dlink"]),
+    ("du42-deref-args-link-bytes", "strict",
+     "mkdir -p d1; printf ab > d1/f; ln -s d1 dlink", "", "",
+     ["-H", "-b", "dlink"]),
+    ("du43-deref-long-form-link-bytes", "strict",
+     "mkdir -p d1; printf ab > d1/f; ln -s d1 dlink", "", "",
+     ["--dereference", "-b", "--summarize", "dlink"]),
+    ("du44-deref-dangling-link", "exit",
+     "printf x > gone; ln -s gone dangle; rm gone", "", "", ["-L", "dangle"]),
+    ("du45-deref-args-dangling-link", "exit",
+     "printf x > gone; ln -s gone dangle; rm gone", "", "", ["-H", "dangle"]),
+    # Without -L/-H du lstats the link; the VALUE is platform-bound (ext4
+    # stores short link targets inline at 0 blocks, NTFS/junction records
+    # differ), so the row is win-mode: Rust vs C++ status only.
+    ("du46-noderef-link-value", "win",
+     "mkdir -p d1; printf ab > d1/f; ln -s d1 dlink", "", "",
+     ["-b", "dlink"]),
+    # #1670 (PR #1730) followed-operand identity: GNU hashes `-L` entries by
+    # (st_dev, st_ino), so the same file reached through a link spelling and
+    # its real name counts once, under the spelling that arrived first; -l
+    # disables the dedup. File links keep the row strict-comparable (dir
+    # totals carry the platform's own directory allocation). Symlink
+    # fixtures need SeCreateSymbolicLinkPrivilege on the Windows sides ->
+    # SKIPped on hosts without it, exercised on CI.
+    ("du47-deref-file-operand-dedup", "strict",
+     "printf ab > f; ln -s f flink", "", "", ["-L", "-s", "flink", "f"]),
+    ("du48-deref-file-operand-dedup-reversed", "strict",
+     "printf ab > f; ln -s f flink", "", "", ["-L", "-s", "f", "flink"]),
+    ("du49-deref-args-count-links-keeps-both", "strict",
+     "printf ab > f; ln -s f flink", "", "", ["-L", "-l", "-s", "flink", "f"]),
 ]
 
 date_rows = [

@@ -1,0 +1,41 @@
+{
+  "added": [
+    "command.du.error.cannot_access_dangling",
+    "command.du.error.cannot_access_missing",
+    "command.du.error.cannot_open",
+    "command.du.error.exclude_from_open",
+    "command.du.error.files0_with_operands",
+    "command.du.error.invalid_block_size",
+    "command.du.error.invalid_max_depth",
+    "command.du.error.invalid_threshold",
+    "command.du.error.stdin_read",
+    "command.du.error.zero_length_name",
+    "command.mktemp.error.create_failed_directory",
+    "command.mktemp.error.create_failed_file",
+    "command.mktemp.error.suffix_has_separator",
+    "command.mktemp.error.tail_has_separator",
+    "command.mktemp.error.template_absolute_with_tmpdir",
+    "command.mktemp.error.template_has_separator",
+    "command.mktemp.error.template_must_end_in_x",
+    "command.mktemp.error.too_few_xs",
+    "command.mktemp.error.too_few_xs_with_suffix",
+    "command.mktemp.error.too_many_templates",
+    "command.nice.error.cannot_set_niceness",
+    "command.nice.error.command_required",
+    "command.nice.error.exec_format",
+    "command.nice.error.invalid_adjustment",
+    "command.nice.error.no_such_file",
+    "command.nice.error.permission_denied"
+  ],
+  "removed": [
+    "command.mktemp.error.failed_create_directory_template",
+    "command.mktemp.error.failed_create_file_template",
+    "legacy.177036c5f5ddc89f",
+    "legacy.1bd84c66f46e36a8",
+    "legacy.23a435e82c998ff3",
+    "legacy.7b680212460719e2",
+    "legacy.84e57f36ac69fe1f",
+    "legacy.cecd0b4d3574a864",
+    "legacy.cff02b59984ff5cd"
+  ]
+}

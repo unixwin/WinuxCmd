@@ -33,7 +33,7 @@ use std::ffi::OsString;
 use crate::argopt::{self, OptSpec};
 use crate::fsutil::resolve;
 use crate::gnuhelp;
-use winux_core::{CmdResult, Ctx, Io};
+use winux_core::{tr, CmdResult, Ctx, Io};
 
 const OPTS: &[OptSpec] = &[
     OptSpec {
@@ -105,6 +105,31 @@ fn count_trailing_xs(s: &str) -> usize {
     s.bytes().rev().take_while(|&b| b == b'X').count()
 }
 
+/// The LAST run of at least three consecutive 'X's in the final template
+/// component. GNU mktemp replaces that run wherever it sits, so a template
+/// may carry a suffix after it (`file-XXXX.txt` -> `file-gxP8.txt`,
+/// probed coreutils 9.4); the run is never appended when the template has
+/// no such run (GNU reports "too few X's" instead).
+fn last_x_run(s: &str) -> Option<(usize, usize)> {
+    let bytes = s.as_bytes();
+    let mut end = bytes.len();
+    while end > 0 {
+        if bytes[end - 1] != b'X' {
+            end -= 1;
+            continue;
+        }
+        let mut start = end;
+        while start > 0 && bytes[start - 1] == b'X' {
+            start -= 1;
+        }
+        if end - start >= 3 {
+            return Some((start, end - start));
+        }
+        end = start;
+    }
+    None
+}
+
 // `--help` body verbatim from `env mktemp --help` under WSL coreutils
 // 9.4, minus the shared gnuhelp::footer tail.
 const MKTEMP_HELP_BODY: &str = r#"Usage: mktemp [OPTION]... [TEMPLATE]
@@ -135,6 +160,37 @@ fn looks_absolute(t: &str) -> bool {
     t.starts_with('/') || t.starts_with('\\') || {
         let b = t.as_bytes();
         b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':'
+    }
+}
+
+/// WinuxCmd's printed path convention: forward slashes on every native
+/// spelling (the 1.x applet printed `C:/...`; the environment's `TEMP`
+/// carries backslashes and every other applet prints `/`).
+fn display_native(text: &str) -> String {
+    text.replace('\\', "/")
+}
+
+/// The printed form of a directory source (TMPDIR/TEMP/TMP or the cwd):
+/// an absolute or POSIX-drive spelling prints the native forward-slash path
+/// it resolves to (the 1.x getenv_path/normalize_win_shell_path contract),
+/// a relative one keeps its spelling.
+fn display_source_dir(ctx: &Ctx, value: &str) -> String {
+    if looks_absolute(value) {
+        display_native(&resolve(ctx, value).to_string_lossy())
+    } else {
+        display_native(value)
+    }
+}
+
+/// Join a display directory and a name without doubling a trailing
+/// separator (a POSIX root directory prints `/name`).
+fn display_join(dir: &str, name: &str) -> String {
+    if dir.is_empty() {
+        name.to_string()
+    } else if dir.ends_with('/') {
+        format!("{dir}{name}")
+    } else {
+        format!("{dir}/{name}")
     }
 }
 
@@ -196,7 +252,15 @@ pub fn mktemp_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
 
     // more than one template operand dies before suffix/template validation
     if p.positionals.len() > 1 {
-        let _ = writeln!(io.stderr, "mktemp: too many templates");
+        let _ = writeln!(
+            io.stderr,
+            "mktemp: {}",
+            tr!(
+                ctx,
+                "command.mktemp.error.too_many_templates",
+                "too many templates"
+            )
+        );
         let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "mktemp"));
         return Ok(1);
     }
@@ -215,10 +279,18 @@ pub fn mktemp_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 .map(|v| v.to_string_lossy().into_owned())
                 .filter(|s| !s.is_empty());
             if let Some(d) = hit {
-                return (std::path::PathBuf::from(&d), d);
+                // Every default-directory source prints the NATIVE
+                // forward-slash form: the 1.x getenv_path applied
+                // normalize_win_shell_path (a POSIX TMPDIR=/c/... printed
+                // C:/...) and GetTempPathW already returns a native path.
+                let _ = key;
+                return (resolve(ctx, &d), display_source_dir(ctx, &d));
             }
         }
-        (ctx.cwd.clone(), ctx.cwd.display().to_string())
+        (
+            ctx.cwd.clone(),
+            display_native(&ctx.cwd.display().to_string()),
+        )
     };
 
     // destination-directory mode: --tmpdir/-p, or implied by the default
@@ -233,12 +305,9 @@ pub fn mktemp_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     .map(|v| v.to_string_lossy().into_owned())
                     .filter(|s| !s.is_empty());
                 match env_hit {
-                    Some(d) => (std::path::PathBuf::from(&d), d),
+                    Some(d) => (resolve(ctx, &d), display_source_dir(ctx, &d)),
                     None => match tmpdir_value.clone() {
-                        Some(v) if !v.is_empty() => {
-                            let shown = v.clone();
-                            (std::path::PathBuf::from(v), shown)
-                        }
+                        Some(v) if !v.is_empty() => (resolve(ctx, &v), v),
                         _ => default_dir(),
                     },
                 }
@@ -246,8 +315,10 @@ pub fn mktemp_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 default_dir()
             }
         } else {
-            let shown = explicit.clone();
-            (std::path::PathBuf::from(explicit), shown)
+            // #1141: -p/--tmpdir echoes the caller's dialect (/d/...,
+            // /cygdrive/d/..., D:/...) while creation uses the resolved
+            // native path.
+            (resolve(ctx, &explicit), explicit)
         };
         dir_display = shown;
         Some(dir)
@@ -261,21 +332,40 @@ pub fn mktemp_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         if template.is_empty() || !template.ends_with('X') {
             let _ = writeln!(
                 io.stderr,
-                "mktemp: with --suffix, template '{template}' must end in X"
+                "mktemp: {}",
+                tr!(
+                    ctx,
+                    "command.mktemp.error.template_must_end_in_x",
+                    "with --suffix, template '{template}' must end in X",
+                    template = template
+                )
             );
             return Ok(1);
         }
         if suffix.contains('/') || suffix.contains('\\') {
             let _ = writeln!(
                 io.stderr,
-                "mktemp: invalid suffix '{suffix}', contains directory separator"
+                "mktemp: {}",
+                tr!(
+                    ctx,
+                    "command.mktemp.error.suffix_has_separator",
+                    "invalid suffix '{suffix}', contains directory separator",
+                    suffix = suffix
+                )
             );
             return Ok(1);
         }
         if count_trailing_xs(&template) < 3 {
             let _ = writeln!(
                 io.stderr,
-                "mktemp: too few X's in template '{template}{suffix}'"
+                "mktemp: {}",
+                tr!(
+                    ctx,
+                    "command.mktemp.error.too_few_xs_with_suffix",
+                    "too few X's in template '{template}{suffix}'",
+                    template = template,
+                    suffix = suffix
+                )
             );
             return Ok(1);
         }
@@ -287,7 +377,13 @@ pub fn mktemp_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         if tail.contains('/') || tail.contains('\\') {
             let _ = writeln!(
                 io.stderr,
-                "mktemp: invalid suffix '{tail}', contains directory separator"
+                "mktemp: {}",
+                tr!(
+                    ctx,
+                    "command.mktemp.error.tail_has_separator",
+                    "invalid suffix '{suffix}', contains directory separator",
+                    suffix = tail
+                )
             );
             return Ok(1);
         }
@@ -296,7 +392,16 @@ pub fn mktemp_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             None => "",
         };
         if count_trailing_xs(head) < 3 {
-            let _ = writeln!(io.stderr, "mktemp: too few X's in template '{template}'");
+            let _ = writeln!(
+                io.stderr,
+                "mktemp: {}",
+                tr!(
+                    ctx,
+                    "command.mktemp.error.too_few_xs",
+                    "too few X's in template '{template}'",
+                    template = template
+                )
+            );
             return Ok(1);
         }
     }
@@ -308,14 +413,26 @@ pub fn mktemp_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             if looks_absolute(&template) {
                 let _ = writeln!(
                     io.stderr,
-                    "mktemp: invalid template, '{template}'; with --tmpdir, it may not be absolute"
+                    "mktemp: {}",
+                    tr!(
+                        ctx,
+                        "command.mktemp.error.template_absolute_with_tmpdir",
+                        "invalid template, '{template}'; with --tmpdir, it may not be absolute",
+                        template = template
+                    )
                 );
                 return Ok(1);
             }
             if use_t && (template.contains('/') || template.contains('\\')) {
                 let _ = writeln!(
                     io.stderr,
-                    "mktemp: invalid template, '{template}', contains directory separator"
+                    "mktemp: {}",
+                    tr!(
+                        ctx,
+                        "command.mktemp.error.template_has_separator",
+                        "invalid template, '{template}', contains directory separator",
+                        template = template
+                    )
                 );
                 return Ok(1);
             }
@@ -327,27 +444,44 @@ pub fn mktemp_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 Some(0) => {
                     component = template[1..].to_string();
                     dir_display = "/".to_string();
-                    std::path::PathBuf::from("/")
+                    resolve(ctx, "/")
                 }
                 Some(i) => {
                     component = template[i + 1..].to_string();
-                    dir_display = template[..i].to_string();
-                    resolve(ctx, &template[..i])
+                    let dir_part = &template[..i];
+                    let resolved = resolve(ctx, dir_part);
+                    // A POSIX-drive or absolute template spelling prints the
+                    // native path (the 1.x contract); a relative directory
+                    // part stays relative.
+                    dir_display = if dir_part.starts_with('/') || looks_absolute(dir_part) {
+                        display_native(&resolved.to_string_lossy())
+                    } else {
+                        display_native(dir_part)
+                    };
+                    resolved
                 }
                 None => ctx.cwd.clone(),
             }
         }
     };
 
-    // find the trailing X-run in the final component
+    // replace the LAST X-run of the final component (GNU gen_tempname: the
+    // run is not required to be at the very end -- `file-XXXX.txt` is legal)
     let mut template_str = component.clone();
-    let (run_start, run_len) = {
-        let run = count_trailing_xs(&component);
-        if run >= 3 {
-            (component.len() - run, run)
-        } else {
-            template_str.push_str("XXXXXX");
-            (template_str.len() - 6, 6)
+    let (run_start, run_len) = match last_x_run(&component) {
+        Some(run) => run,
+        None => {
+            let _ = writeln!(
+                io.stderr,
+                "mktemp: {}",
+                tr!(
+                    ctx,
+                    "command.mktemp.error.too_few_xs",
+                    "too few X's in template '{template}'",
+                    template = template
+                )
+            );
+            return Ok(1);
         }
     };
     template_str.push_str(&suffix);
@@ -355,11 +489,15 @@ pub fn mktemp_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     // GNU prints the full destination path, but a bare template in the
     // current directory prints as the plain template (mktemp.c's
     // file_name_concat with an empty dest_dir)
-    let bare_cwd = dest_dir.is_none() && !component.contains(['/', '\\']);
+    // A template that carries its own directory part must print that part:
+    // the pre-wiring test looked at the stripped COMPONENT, so an absolute
+    // or subdirectory template printed a bare name that the caller cannot
+    // resolve (`mktemp /tmp/abs.XXXXXX` printed `abs.123456`).
+    let bare_cwd = dest_dir.is_none() && !template.contains(['/', '\\']);
     let dest_template_display = if bare_cwd {
         template_str.clone()
     } else {
-        format!("{dir_display}/{template_str}")
+        display_join(&dir_display, &template_str)
     };
 
     let mut rng = Rand::new();
@@ -373,7 +511,7 @@ pub fn mktemp_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         let display = if bare_cwd {
             name.clone()
         } else {
-            format!("{dir_display}/{name}")
+            display_join(&dir_display, &name)
         };
 
         if dry_run {
@@ -395,24 +533,50 @@ pub fn mktemp_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(e) => {
-                let kind_word = if make_dir { "directory" } else { "file" };
                 if !quiet {
                     let reason = crate::fsutil::reason(&e);
-                    let _ = writeln!(
-                        io.stderr,
-                        "mktemp: failed to create {kind_word} via template '{dest_template_display}': {reason}"
-                    );
+                    let msg = if make_dir {
+                        tr!(
+                            ctx,
+                            "command.mktemp.error.create_failed_directory",
+                            "failed to create directory via template '{template}': {reason}",
+                            template = dest_template_display,
+                            reason = reason
+                        )
+                    } else {
+                        tr!(
+                            ctx,
+                            "command.mktemp.error.create_failed_file",
+                            "failed to create file via template '{template}': {reason}",
+                            template = dest_template_display,
+                            reason = reason
+                        )
+                    };
+                    let _ = writeln!(io.stderr, "mktemp: {msg}");
                 }
                 return Ok(1);
             }
         }
     }
-    let kind_word = if make_dir { "directory" } else { "file" };
     if !quiet {
-        let _ = writeln!(
-            io.stderr,
-            "mktemp: failed to create {kind_word} via template '{dest_template_display}': File exists"
-        );
+        let msg = if make_dir {
+            tr!(
+                ctx,
+                "command.mktemp.error.create_failed_directory",
+                "failed to create directory via template '{template}': {reason}",
+                template = dest_template_display,
+                reason = "File exists"
+            )
+        } else {
+            tr!(
+                ctx,
+                "command.mktemp.error.create_failed_file",
+                "failed to create file via template '{template}': {reason}",
+                template = dest_template_display,
+                reason = "File exists"
+            )
+        };
+        let _ = writeln!(io.stderr, "mktemp: {msg}");
     }
     Ok(1)
 }
@@ -525,6 +689,8 @@ mod tests {
         let sc = ScratchCtx::new("mktemp-p");
         let subdir = sc.path("sub");
         std::fs::create_dir(&subdir).unwrap();
+        // -p echoes the operand verbatim (the #1141 dialect rule): a native
+        // backslash spelling prints backslashes back.
         let sub_str = subdir.display().to_string();
         let mut io = MemIo::new("");
         let ctx = sc.ctx();

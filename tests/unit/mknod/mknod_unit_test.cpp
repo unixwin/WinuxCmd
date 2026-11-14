@@ -11,13 +11,52 @@ TEST(mknod, mknod_missing_operand) {
 }
 
 TEST(mknod, mknod_invalid_type_fails) {
+  // Re-pinned to the GNU contract at the wave-W4 rust2 wire (#1488). GNU
+  // mknod.c classifies TYPE by its first character AND checks the operand
+  // count first: `mknod node1 x` (two operands) is
+  //   "mknod: missing operand after 'x'" + the special-files note,
+  // not an invalid type (probed GNU 9.4). The invalid-TYPE diagnostic
+  // needs the full NAME TYPE MAJOR MINOR shape.
+  Pipeline p;
+  p.add(L"mknod.exe", {L"node1", L"x", L"1", L"3"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_NE(r.stderr_text.find("invalid device type"), std::string::npos);
+}
+
+TEST(mknod, mknod_bogus_type_two_operands_is_missing_operand) {
+  // Probed GNU 9.4: `mknod node1 x` -> missing operand after 'x' plus
+  // "Special files require major and minor device numbers."; the 1.x body
+  // validated the type first and printed "invalid device type 'x'".
   Pipeline p;
   p.add(L"mknod.exe", {L"node1", L"x"});
 
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_NE(r.stderr_text.find("invalid device type"), std::string::npos);
+  EXPECT_NE(r.stderr_text.find("missing operand after 'x'"),
+            std::string::npos);
+  EXPECT_NE(r.stderr_text.find("require major and minor device numbers"),
+            std::string::npos);
+  EXPECT_EQ(r.stderr_text.find("invalid device type"), std::string::npos);
+}
+
+TEST(mknod, mknod_type_trailing_characters_are_ignored) {
+  // Probed GNU 9.4: TYPE is matched on its first character only; `pz`
+  // creates a FIFO (the 1.x body did the same, the wave5 Rust port did
+  // not — fixed in the wave-W4 wire).
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"mknod.exe", {L"node1", L"pz"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(tmp.read("node1"), "!<fifo>");
 }
 
 TEST(mknod, mknod_block_requires_major_minor) {
