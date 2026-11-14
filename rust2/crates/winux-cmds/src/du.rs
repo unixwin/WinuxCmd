@@ -233,6 +233,7 @@ Binary prefixes can be used, too: KiB=K, MiB=M, and so on.
 
 #[cfg(windows)]
 mod imp {
+    use crate::fs_win::ByHandleFileInformation;
     use std::path::Path;
 
     fn wide(s: &str) -> Vec<u16> {
@@ -356,30 +357,14 @@ mod imp {
     /// (volume serial, file index) for the hardlink dedupe (du's st_dev/
     /// st_ino pairing); None when the open fails (device names, etc.).
     pub fn file_handle(path: &Path) -> Option<(u64, u64)> {
-        // BY_HANDLE_FILE_INFORMATION's exact layout: dwFileAttributes, three
-        // FILETIMEs, dwVolumeSerialNumber, nFileSizeHigh/Low, nNumberOfLinks,
-        // nFileIndexHigh/Low. (The wave5 first session mis-declared this as
-        // serial+4-pad+index and read the WRITE TIME as the index — files
-        // written in the same tick collided and the cross-operand skip ate
-        // distinct operands, caught by the du11 gate row.)
-        #[repr(C)]
-        struct Filetime {
-            low: u32,
-            high: u32,
-        }
-        #[repr(C)]
-        struct Info {
-            attrs: u32,
-            creation: Filetime,
-            access: Filetime,
-            write: Filetime,
-            serial: u32,
-            size_high: u32,
-            size_low: u32,
-            nlinks: u32,
-            index_high: u32,
-            index_low: u32,
-        }
+        // The info struct is fs_win's shared ByHandleFileInformation
+        // (winuxcmd#1638): one signature for GetFileInformationByHandle
+        // across fs_win/du/tail. Its layout is BY_HANDLE_FILE_INFORMATION's
+        // exact field order (dwFileAttributes, three FILETIMEs,
+        // dwVolumeSerialNumber, nFileSizeHigh/Low, nNumberOfLinks,
+        // nFileIndexHigh/Low) — the wave5 first session mis-declared this
+        // as serial+4-pad+index and read the WRITE TIME as the index,
+        // caught by the du11 gate row.
         #[link(name = "kernel32")]
         extern "system" {
             fn CreateFileW(
@@ -391,7 +376,10 @@ mod imp {
                 flags: u32,
                 template: *mut core::ffi::c_void,
             ) -> *mut core::ffi::c_void;
-            fn GetFileInformationByHandle(handle: *mut core::ffi::c_void, info: *mut Info) -> i32;
+            fn GetFileInformationByHandle(
+                handle: *mut core::ffi::c_void,
+                info: *mut ByHandleFileInformation,
+            ) -> i32;
             fn CloseHandle(handle: *mut core::ffi::c_void) -> i32;
         }
         const GENERIC_READ: u32 = 0x8000_0000;
@@ -414,14 +402,14 @@ mod imp {
         if handle as isize == -1 || handle.is_null() {
             return None;
         }
-        let mut info: Info = unsafe { std::mem::zeroed() };
+        let mut info = ByHandleFileInformation::default();
         let ok = unsafe { GetFileInformationByHandle(handle, &mut info) };
         unsafe { CloseHandle(handle) };
         if ok == 0 {
             return None;
         }
         Some((
-            u64::from(info.serial),
+            u64::from(info.volume_serial),
             (u64::from(info.index_high) << 32) | u64::from(info.index_low),
         ))
     }
