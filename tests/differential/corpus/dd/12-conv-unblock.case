@@ -1,0 +1,8 @@
+cmd: dd
+args: if=f.bin of=out conv=unblock cbs=4
+timeout: 10
+setup: |
+  printf 'a   b   c   ' > f.bin
+files: out
+source: github.com/unixwin/WinuxCmd
+tags: corpus-expansion issue-1708
