@@ -183,6 +183,13 @@ impl Nfa {
         let eol = self.eol;
         let id = match node {
             Node::Empty => next,
+            // sed-dialect nodes are not modeled by the grep line DFA; decline
+            // so the caller keeps the interpreter path.
+            Node::LineStart(_)
+            | Node::LineEnd(_)
+            | Node::BufferStart
+            | Node::BufferEnd
+            | Node::DotRestricted { .. } => return None,
             Node::Literal(c) => {
                 let c = *c;
                 self.bytes(ByteSet::from_fn(eol, |b| chars_equal(ic, b, c)), next)
@@ -307,8 +314,12 @@ fn nullable(node: &Node) -> bool {
         | Node::WordStart
         | Node::WordEnd
         | Node::WordBoundary
-        | Node::NotWordBoundary => true,
-        Node::Literal(_) | Node::Dot | Node::CharClass { .. } => false,
+        | Node::NotWordBoundary
+        | Node::LineStart(_)
+        | Node::LineEnd(_)
+        | Node::BufferStart
+        | Node::BufferEnd => true,
+        Node::Literal(_) | Node::Dot | Node::CharClass { .. } | Node::DotRestricted { .. } => false,
         Node::BackReference(_) => true,
         Node::Sequence(c) => c.iter().all(nullable),
         Node::Alternation(c) => c.iter().any(nullable),

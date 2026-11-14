@@ -8,13 +8,17 @@
 #
 # Case table: gate/cases/<cmd>.tsv, TAB-separated columns:
 #   id | mode | setup | env | stdin | arg1 | arg2 | ...
-#   mode : strict | exit | win | posix | posix-exit   (see below)
+#   mode : strict | sorted | exit | win | posix | posix-exit   (see below)
 #   setup: POSIX sh snippet run inside the per-side scratch dir (may be empty)
 #   env  : comma-separated K=V assignments (may be empty)
 #   stdin: literal bytes for stdin (no newlines in cases; may be empty)
 #
 # Modes:
 #   strict     : stdout bytes AND exit status must equal GNU; C++ equality recorded
+#   sorted     : strict, but stdout LINES compare after LC_ALL=C sort on both
+#                sides — for directory walks whose order is the filesystem's
+#                enumeration order (GNU find prints ext4 readdir/hash order,
+#                NTFS enumerates in B-tree order; #1488 find lane)
 #   exit       : exit status must equal GNU; stdout is platform-form-bound (recorded)
 #   win        : no GNU comparison (platform-inherent output); Rust vs C++ status
 #   posix      : strict comparison, but a failure counts as PENDING, not FAIL —
@@ -548,6 +552,8 @@ run_case() {
     local ok=0 note=""
     case "$mode" in
         strict)     [ "$gnu_out_match" = yes ] && [ "$r_rc" = "$g_rc" ] && ok=1 ;;
+        sorted)     [ "$(printf '%s' "$r_out" | LC_ALL=C sort)" = "$(printf '%s' "$g_out" | LC_ALL=C sort)" ] \
+                        && [ "$r_rc" = "$g_rc" ] && ok=1 ;;
         exit)       [ "$r_rc" = "$g_rc" ] && ok=1 ;;
         win)        [ "$r_rc" = "$c_rc" ] && ok=1 ;;
         posix)      [ "$gnu_out_match" = yes ] && [ "$r_rc" = "$g_rc" ] && ok=1 ;;

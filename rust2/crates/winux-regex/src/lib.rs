@@ -37,6 +37,7 @@
 //! ```
 
 pub mod ast;
+pub mod dialect;
 pub mod dfa;
 pub(crate) mod fastpath;
 pub mod matcher;

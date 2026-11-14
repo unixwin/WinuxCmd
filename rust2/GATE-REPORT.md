@@ -763,6 +763,107 @@ lands 8h apart across sides (dt39, du25/du26).
 0 FAIL (final full-wave5 run 2026-11-13, ledger
 target/gate/ledger.tsv; 82-command coverage 2444 cases).**
 
+## find — GNU findutils 4.9 (#1488 find lane)
+
+Oracle: WSL `find (GNU findutils) 4.9.0` (native ext4 scratch, runs as
+root). Table: `gate/gen-cases.py` `find_rows` -> `gate/cases/find.tsv`.
+New harness mode **`sorted`**: strict on rc AND stdout, but stdout lines
+are compared after `LC_ALL=C sort` on both sides — GNU prints readdir
+order (ext4 hash order), NTFS enumerates in case-insensitive B-tree
+order, so every multi-entry walk is order-insensitive by construction
+(the walk itself, pre/post-order, is pinned by single-chain strict rows
+fd094/fd095/fd099 and unit tests). Junction rows: the GNU side makes a
+symlink, the Windows sides a directory junction (`New-Item -ItemType
+Junction`; the gate host has no symlink privilege) — both are `-type l`
+links. Fixture names avoid `?`, `|` and case-only twins (not
+representable on NTFS).
+
+| command | cases | strict | sorted | exit | win | note | GNU-gated result | C++ parity (rc+stdout) |
+|---|---|---|---|---|---|---|---|---|
+| find | 317 | 183 | 119 | 4 | 10 | 1 | GREEN (307/0) | — |
+
+**find: GNU-gated 307 PASS / 0 FAIL, win-gated 10 PASS / 0 FAIL
+(2026-11-14 review round; ledger copy `target/gate/ledger-find.tsv`).**
+
+Review round additions (fd350–fd363, +13 rows over the 304 shipped
+earlier): the dangling-link family — GNU symlink to a missing target vs
+Windows junction via `cmd /c mklink /J` (PowerShell `New-Item
+-ItemType Junction` refuses a missing target, measured) — pins the
+lstat-fallback visits `-H/-L dang`, `-L . -type l`, `%y %Y` = `l N`,
+and `-delete` on the link itself; plus `-path` matching the start
+point, `-iname` bracket casefold, `-perm -000`, uppercase-Y `-ok`
+reply, `-exec {} +` with no matches, multi-root `-quit`, and
+`-type l,f`. All 13 measured GREEN against WSL GNU 4.9. A 14th probe
+row (`-fprint /dev/stdout`) was dropped: the gate host's niubash bash
+rewrites the literal `/dev/stdout` operand to `CONOUT$` in native-child
+argv (MSYS_NO_PATHCONV ineffective, measured), so the spelling can not
+be transported by this harness; pin it with a unit test instead.
+
+Harness fix shipped with this lane: `run_case` read its arguments with
+`local args=("$@")`, and the gate host's msys bash 5.3 strips
+backslashes inside a compound `local` assignment (measured `a\*b` ->
+`a*b`) — every backslash-bearing argument of every table reached all
+three sides already rewritten (find's `\n` printf escapes arrived as
+`n`, `-name '\*'` as `-name '*'`). Now `local -a args; args=("$@")`.
+The other tables that carry backslash arguments were re-run under the
+fix (see the per-command line below).
+
+### r=c:no rows (Rust == GNU, the 1.x C++ applet differs)
+
+All 53 are rows where the Rust side matches GNU (strict/sorted/exit
+verdict green) or a `win` row whose stdout is platform-inherent:
+
+* help/version/debug surface (fd001-fd006): C++ has no `--help`/
+  `--version` predicate (dispatcher-only), a branded `-version`, no
+  `-D help`;
+* option parsing the C++ applet skips or accepts (fd015 `--` ends the
+  leading options, fd030 duplicate `-type` letter, fd039 empty `-user`,
+  fd044/fd045 `%` / `%{` format errors, fd047 two `{}` with `+`, fd071
+  posix-extended leading `*`, fd144/fd153 posix-basic `a**`, fd336 `-ok
+  ... +`, fd342 zero-length -files0-from name is an error);
+* path text: C++ normalizes the starting point (`t/` -> `t`, `t//` ->
+  `t`) where GNU keeps it verbatim (fd082, fd084, fd119, fd251), and
+  prints nothing for the `/dev/null` operand (fd347); fd254 is the GNU
+  `%h` one-character-dirname quirk (`a/` -> `a`);
+* regex dialects: C++ translates emacs syntax to ERE incompletely
+  (`+` literal, `\+` operator, char classes accepted: fd131, fd132,
+  fd135, fd146, fd152) and has no posix-minimal-basic (fd151);
+* glob classes `[[:digit:]]` (fd120), `-L -type l` (fd167: GNU/Rust
+  report no links when following), `-cnewer` / `-used` / `-perm /a+X`
+  value models (fd202, fd220, fd239), `-newermt '... UTC'` (fd216, C++
+  cannot parse), `-quit -print` (fd312: C++ prints before quitting),
+  `.` with `-delete` (fd316: GNU never deletes `.`), `-nogroup` (fd291);
+* printf: `%#m` (fd257), `%5%` and other unknown directives (fd259,
+  fd266), the strftime-style `%Tk` family and `%T+` (fd261, fd262), TZ
+  honored for `%t %a %TH` (fd263, fd265 — C++ uses the system zone),
+  `%Z` (fd293: GNU prints empty + exit 1 with SELinux off);
+* `win` rows (platform-inherent, rc gated): uid/gid numbers use the
+  shared SID formula of rust2 `id`/`stat` (0x30000+RID) where the C++
+  find used the bare RID (fd280); file index / allocation / `%S`
+  differ per fixture instance (fd281, fd282, fd285, fd286); `-ls` uses
+  the GNU listfile.c column widths (fd284); `%l` of a junction strips
+  the `\??\` NT prefix (fd287).
+
+### Benchmark (200,000 files + 2,201 dirs; NTFS vs ext4)
+
+`rust2-driver` = release `winuxcmd-driver find`, `C++` = release 1.x
+`winuxcmd find` (`scripts/build-with-vs.ps1 -Configuration Release`),
+both `hyperfine -N --warmup 2 --runs 7` on the same NTFS tree; `GNU` =
+WSL find 4.9 on the equivalent ext4 tree (mean of 5).
+
+| expression | rust2 | C++ 1.x | GNU (ext4) |
+|---|---|---|---|
+| `-name '*.rs'` | 293 ms | 527 ms | 144 ms |
+| `-type f -size +10k` | 266 ms | 7042 ms | 392 ms |
+| `-printf '%s %p\n'` | 366 ms | 5017 ms | 451 ms |
+| `-regex '.*/f0[0-4][0-9]\.rs'` | 916 ms | 5699 ms | 313 ms |
+| `-regex 'tree/d00.*\.rs'` | 556 ms | 635 ms | 116 ms |
+
+The walk enumerates with `FindFirstFileExW(FindExInfoBasic,
+LARGE_FETCH)` and answers `-type/-size/-mtime/-newer/%s/%t` from the
+enumeration record (the C++ applet opens every file for size/time);
+`-regex` splits a leading `.*` into first-byte-filtered suffix
+attempts (7.77 s before the split).
 ## sed wiring (#1488, sed lane wired to the product)
 
 `sed` moved from the C++ body to `rust2/crates/winux-cmds/src/sed.rs`
