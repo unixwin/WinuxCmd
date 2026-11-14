@@ -439,6 +439,65 @@ green — the 16 `stream_tests` included):**
   peak flat (hash incrementally over the stream) is a command-impl item,
   not a bridge one.
 
+## tail follow mode (#1488)
+
+`tail -f/-F/--follow[=descriptor|name]/--retry/-s/--pid/--max-unchanged-stats`
+implement GNU coreutils 9.4 follow semantics in the library
+(`crates/winux-cmds/src/tail/follow.rs`; module doc = the rule list).
+Highlights:
+
+* Wording and exit status match GNU, including the double-spaced
+  `'X' has appeared;  following new file` / `has been replaced;
+  following new file`, `has become inaccessible: <reason>`,
+  `X: file truncated`, `no files remaining`. GNU's exit status differs
+  between its inotify path and its polling fallback (e.g. `-F --pid=P
+  missing f` exits 0, `-f --pid=P missing f` exits 1); the port
+  reproduces GNU's path choice for the status.
+* Headers switch only when output switches files, and only with data;
+  the "previous file" starts as the last operand (probed).
+* `-f` ignores a pipe stdin (`printf x | tail -f` exits 0); a
+  regular-file stdin is followed by descriptor.
+* Wake-up is event-driven: FindFirstChangeNotificationW on the parent
+  directories plus the `--pid` process handle in one
+  WaitForMultipleObjects; a 100 ms re-stat tick (<= 64 files) covers
+  writers that keep the file open (directory notifications only fire on
+  close). Idle CPU measured 0.
+* Name mode holds no handle between wakes, so rotation by rename-over
+  works; descriptor mode holds the handle with full sharing (append,
+  truncate, rename-away, delete all work while followed).
+* Output is flushed after every chunk; a stdout write error ends the run
+  (broken pipe -> `Err(CmdError::Io)`, host status 141).
+* Handle red line: stdin classification and follow target are INJECTED
+  (`tail::StdinMeta`) — the library never touches a process handle (no
+  `GetStdHandle` anywhere in the library). The registry entry defaults
+  to the pipe class (an ABI-injected stdin is a finite byte stream: `-f`
+  on it is ignored, POSIX ignore_fifo_and_pipe; the driver-run
+  `-c +99`-past-EOF truncation on a disk stdin is reproduced through the
+  injected path). The gate driver composes the real class + follow path
+  from the process handles (the sanctioned process-IO tier,
+  `tail_stdin_meta`); the ABI metadata channel for other hosts is the
+  wiring wave's input-metadata item. A Disk stdin without an injected
+  follow path keeps GNU's duration semantics — the run stays live until
+  `--pid` death with nothing to read. Named-operand handles, directory
+  change notifications and the `--pid` process handle are the command's
+  own, created from explicit arguments.
+
+Gates: 45 terminating follow rows in `gate/cases/tail.tsv` (dead
+`--pid`, "no files remaining", option errors), and the live scenario
+harness
+
+```sh
+bash gate/wire/tail-follow.sh          # 30 scenarios, GNU (WSL, ext4) vs Rust driver
+```
+
+which records `gate/wire/tail-follow.out` (append, partial lines,
+multi-file headers, -q/-v, truncation — named file and followed
+regular-file stdin with GNU's quoted `'standard input': file truncated`
+wording, `-c +99` past-EOF on a disk stdin, descriptor rename/delete, -F
+rotate/replace, --retry delete/missing, --follow=name without retry,
+--pid exit, stdin file/pipe/multi-operand, -c/-n +N, -n 0, -z, -s 0.1,
+broken pipe).
+
 ## Out of scope for this pilot
 
 * No `chmod`/`chown`/`df` full POSIX semantics. (Wiring into the dispatcher

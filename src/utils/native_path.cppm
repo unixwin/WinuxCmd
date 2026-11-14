@@ -297,7 +297,9 @@ auto shell_tree_map_w(std::wstring_view normalized)
 // `/usr/bin/X` spelling. Without this, `ls /usr/bin/seq`, `test -f
 // /usr/bin/seq` and `head -1 /usr/bin/seq` (only `seq.exe` on disk) would
 // regress once rubash stops translating the spelling for the coreutils class.
-auto shell_tree_to_native_w(std::wstring_view normalized)
+// Exported for the childproc shebang resolver (#1623) as well: a `#!`
+// interpreter spelling is a POSIX-rooted path like any other.
+export auto shell_tree_to_native_w(std::wstring_view normalized)
     -> std::optional<std::wstring> {
   auto mapped = shell_tree_map_w(normalized);
   if (!mapped) return std::nullopt;

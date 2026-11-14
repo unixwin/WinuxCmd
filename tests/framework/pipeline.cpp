@@ -229,8 +229,8 @@ CommandResult Pipeline::run() {
     if (exe_dir_ && exe.find(L'\\') == std::wstring::npos &&
         exe.find(L'/') == std::wstring::npos) {
       std::wstring candidate = *exe_dir_ + L"\\" + exe;
-      // #1438: the default edition materializes no entry for the seven
-      // host-semantics names (kill test [ true false env time); the applet
+      // #1438: the default edition materializes no entry for the six
+      // host-semantics names (kill test [ true false time); the applet
       // stays reachable through the multicall verb. A missing entry is
       // routed as `winuxcmd.exe <verb>` instead of failing CreateProcessW,
       // so the unit suite runs against the shipped default tree.

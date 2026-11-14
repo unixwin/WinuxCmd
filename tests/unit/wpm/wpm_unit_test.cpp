@@ -554,6 +554,34 @@ TEST(wpm, wpm_links_rebuild_creates_internal_tool_hardlink) {
   EXPECT_TRUE(same_file(root_exe, wpm_exe));
 }
 
+TEST(wpm, wpm_links_rebuild_creates_env_hardlink_in_default_edition) {
+  // #1622: env is not a bash builtin (no $BUILTIN env in bash's
+  // builtins/*.def), so the default edition must ship env.exe like any
+  // other command. The six genuine builtin/reserved names stay absent.
+  TempDir tmp;
+  auto root_exe = canonical_exe(tmp.path, L"winuxcmd.exe");
+  std::filesystem::create_directories(root_exe.parent_path());
+  std::filesystem::copy_file(build_winuxcmd_path(), root_exe,
+                             std::filesystem::copy_options::overwrite_existing);
+
+  Pipeline p;
+  p.add(L"winuxcmd.exe",
+        {L"wpm", L"links", L"rebuild", L"--root", tmp.wpath()});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  auto env_exe = canonical_exe(tmp.path, L"env.exe");
+  EXPECT_TRUE(std::filesystem::exists(env_exe));
+  EXPECT_TRUE(same_file(root_exe, env_exe));
+  EXPECT_FALSE(std::filesystem::exists(canonical_exe(tmp.path, L"[.exe")));
+  EXPECT_FALSE(
+      std::filesystem::exists(canonical_exe(tmp.path, L"false.exe")));
+  EXPECT_FALSE(std::filesystem::exists(canonical_exe(tmp.path, L"kill.exe")));
+  EXPECT_FALSE(std::filesystem::exists(canonical_exe(tmp.path, L"test.exe")));
+  EXPECT_FALSE(std::filesystem::exists(canonical_exe(tmp.path, L"time.exe")));
+  EXPECT_FALSE(std::filesystem::exists(canonical_exe(tmp.path, L"true.exe")));
+}
+
 TEST(wpm, wpm_links_rebuild_removes_legacy_jq_hardlink) {
   TempDir tmp;
   auto root_exe = canonical_exe(tmp.path, L"winuxcmd.exe");

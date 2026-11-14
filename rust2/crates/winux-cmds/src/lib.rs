@@ -96,6 +96,7 @@ pub mod users;
 pub mod who;
 pub mod whoami;
 pub mod winsys;
+pub mod xargs;
 
 use std::ffi::OsString;
 
@@ -204,6 +205,8 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("pinky", pinky::pinky_cmd),
         // sed lane (#1488): GNU sed 4.9 on winux-regex
         ("sed", sed::sed_cmd),
+        // #1488: GNU findutils 4.9 xargs (shared childproc spawner family)
+        ("xargs", xargs::xargs_cmd),
     ]
 }
 

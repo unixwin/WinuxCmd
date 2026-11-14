@@ -58,8 +58,8 @@ struct ProjectPaths {
   /**
    * @brief Source file for a command entry a test wants to copy elsewhere.
    *
-   * #1438: the default edition materializes no entry for the seven
-   * host-semantics names (kill test [ true false env time). A copy of the
+   * #1438: the default edition materializes no entry for the six
+   * host-semantics names (kill test [ true false time). A copy of the
    * multicall binary under the entry name dispatches by argv[0] exactly
    * like the hardlinked entry, so tests that stage `env.exe` into a temp
    * dir keep working on the shipped default tree.

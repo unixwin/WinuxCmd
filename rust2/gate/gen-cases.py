@@ -2055,6 +2055,68 @@ tail_rows = [
     ("tl25-bogus-long", "strict", "", "", "", ["--bogus"]),
     ("tl26-help", "strict", "", "", "", ["--help"]),
     ("tl27-version", "strict", "", "", "", ["--version"]),
+    # follow mode (#1488 tail-follow lane): rows that TERMINATE on their
+    # own — a dead --pid (2147483647: ESRCH on Linux, no such process on
+    # Windows) ends the follow after one re-read, "no files remaining" and
+    # option errors end it before. The live scenarios (append, truncate,
+    # rotate, --retry, headers) are gate/wire/tail-follow.sh.
+    ("tl28-f-pid-dead", "strict", HEAD_TAIL_FILE, "", "", ["-f", "--pid=2147483647", "f"]),
+    ("tl29-f-pid-dead-two", "strict", "printf 'a\\nb\\n' > f; printf 'x\\n' > g", "", "",
+     ["-f", "--pid=2147483647", "f", "g"]),
+    ("tl30-f-missing-no-files", "strict", "", "", "", ["-f", "missing"]),
+    ("tl31-f-missing-plus-file", "strict", HEAD_TAIL_FILE, "", "",
+     ["-f", "--pid=2147483647", "missing", "f"]),
+    ("tl32-F-missing-plus-file", "strict", HEAD_TAIL_FILE, "", "",
+     ["-F", "--pid=2147483647", "missing", "f"]),
+    ("tl33-F-missing-only", "strict", "", "", "", ["-F", "--pid=2147483647", "missing"]),
+    ("tl34-follow-name-missing-plus-file", "strict", HEAD_TAIL_FILE, "", "",
+     ["--follow=name", "--pid=2147483647", "missing", "f"]),
+    ("tl35-f-retry-descriptor", "strict", HEAD_TAIL_FILE, "", "",
+     ["-f", "--retry", "--pid=2147483647", "missing", "f"]),
+    ("tl36-retry-without-follow", "strict", HEAD_TAIL_FILE, "", "", ["--retry", "f"]),
+    ("tl37-pid-without-follow", "strict", HEAD_TAIL_FILE, "", "", ["--pid=5", "f"]),
+    ("tl38-f-dir", "strict", "mkdir d", "", "", ["-f", "--pid=2147483647", "d"]),
+    ("tl39-F-dir-plus-file", "strict", "mkdir d; " + HEAD_TAIL_FILE, "", "",
+     ["-F", "--pid=2147483647", "d", "f"]),
+    ("tl40-f-dir-plus-file", "strict", "mkdir d; " + HEAD_TAIL_FILE, "", "",
+     ["-f", "--pid=2147483647", "d", "f"]),
+    ("tl41-F-dash", "strict", "", "", "x", ["-F", "-"]),
+    ("tl42-follow-name-dash", "strict", HEAD_TAIL_FILE, "", "x", ["--follow=name", "f", "-"]),
+    ("tl43-f-stdin-file", "strict", "", "", "stdin-bytes", ["-f", "--pid=2147483647"]),
+    ("tl44-f-stdin-dash-file", "strict", "", "", "stdin-bytes", ["-f", "--pid=2147483647", "-"]),
+    ("tl45-f-v-single", "strict", HEAD_TAIL_FILE, "", "", ["-f", "-v", "--pid=2147483647", "f"]),
+    ("tl46-f-q-two", "strict", HEAD_TAIL_FILE, "", "", ["-f", "-q", "--pid=2147483647", "f", "f"]),
+    ("tl47-f-n-plus-2", "strict", HEAD_TAIL_FILE, "", "", ["-f", "-n", "+2", "--pid=2147483647", "f"]),
+    ("tl48-f-c-plus-2", "strict", HEAD_TAIL_FILE, "", "", ["-f", "-c", "+2", "--pid=2147483647", "f"]),
+    ("tl49-f-c-plus-99-truncated", "strict", HEAD_TAIL_FILE, "", "",
+     ["-f", "-c", "+99", "--pid=2147483647", "f"]),
+    ("tl50-f-n-0", "strict", HEAD_TAIL_FILE, "", "", ["-f", "-n", "0", "--pid=2147483647", "f"]),
+    ("tl51-n-0-missing-no-open", "strict", "", "", "", ["-n", "0", "missing"]),
+    ("tl52-f-n-0-missing", "strict", "", "", "", ["-f", "-n", "0", "--pid=2147483647", "missing"]),
+    ("tl53-follow-bogus", "strict", HEAD_TAIL_FILE, "", "", ["--follow=bogus", "f"]),
+    ("tl54-follow-empty-ambiguous", "strict", HEAD_TAIL_FILE, "", "", ["--follow=", "f"]),
+    ("tl55-follow-abbrev-n", "strict", HEAD_TAIL_FILE, "", "", ["--follow=n", "--pid=2147483647", "f"]),
+    ("tl56-follow-abbrev-d", "strict", HEAD_TAIL_FILE, "", "", ["--follow=d", "--pid=2147483647", "f"]),
+    ("tl57-follow-bare-no-value", "strict", HEAD_TAIL_FILE, "", "", ["--follow", "--pid=2147483647", "f"]),
+    ("tl58-s-invalid", "strict", HEAD_TAIL_FILE, "", "", ["-f", "-s", "x", "f"]),
+    ("tl59-s-negative", "strict", HEAD_TAIL_FILE, "", "", ["-f", "-s", "-1", "f"]),
+    ("tl60-s-nan", "strict", HEAD_TAIL_FILE, "", "", ["-f", "-s", "nan", "f"]),
+    ("tl61-s-hex", "strict", HEAD_TAIL_FILE, "", "", ["-f", "-s", "0x1", "--pid=2147483647", "f"]),
+    ("tl62-s-fraction", "strict", HEAD_TAIL_FILE, "", "", ["-f", "-s", "0.1", "--pid=2147483647", "f"]),
+    ("tl63-pid-invalid", "strict", HEAD_TAIL_FILE, "", "", ["-f", "--pid=x", "f"]),
+    ("tl64-pid-negative", "strict", HEAD_TAIL_FILE, "", "", ["-f", "--pid=-1", "f"]),
+    ("tl65-pid-overflow", "strict", HEAD_TAIL_FILE, "", "", ["-f", "--pid=99999999999", "f"]),
+    ("tl66-pid-zero-then-dead", "strict", HEAD_TAIL_FILE, "", "",
+     ["-f", "--pid=0", "--pid=2147483647", "f"]),
+    ("tl67-max-unchanged-invalid", "strict", HEAD_TAIL_FILE, "", "",
+     ["-f", "--max-unchanged-stats=x", "f"]),
+    ("tl68-max-unchanged-ok", "strict", HEAD_TAIL_FILE, "", "",
+     ["-F", "--max-unchanged-stats=3", "--pid=2147483647", "f"]),
+    ("tl69-F-then-f-warns", "strict", HEAD_TAIL_FILE, "", "", ["-F", "-f", "--pid=2147483647", "f"]),
+    ("tl70-f-zero-terminated", "strict", "printf 'a\\0b\\0c\\0' > f", "", "",
+     ["-z", "-n", "2", "-f", "--pid=2147483647", "f"]),
+    ("tl71-partial-last-line", "strict", "printf 'a\\nb' > p", "", "", ["-n", "1", "p"]),
+    ("tl72-dir-header-no-follow", "strict", "mkdir d; " + HEAD_TAIL_FILE, "", "", ["d", "f"]),
 ]
 
 cut_rows = [
@@ -4099,6 +4161,180 @@ def _sed_multiline(rows):
 sed_rows = _sed_multiline(sed_rows)
 
 
+# #1488: xargs — GNU findutils 4.9.0 oracle. Multi-line inputs come from
+# setup-created files read with -a (the stdin column carries one line, no
+# newline). Child commands follow the nohup/timeout convention: the default
+# command (GNU /bin/echo; rust2 runs the library echo in-process), `echo` /
+# `printf` (WinuxCmd images on the Windows PATH) and `sh -c` (niubash sh on
+# Windows, dash on WSL) for exit statuses. -p rows only use paths that never
+# prompt: the gate gives GNU a controlling tty, a prompt would hang.
+XA_IN = lambda body: f"printf '{body}' > in"
+xargs_rows = [
+    # ---- default-mode parsing (strict: stdout bytes + rc) ----
+    ("xa01-basic", "strict", "", "", "a b c", []),
+    ("xa02-empty-runs-once", "strict", "", "", "", []),
+    ("xa03-r-empty", "strict", "", "", "", ["-r"]),
+    ("xa04-multiline", "strict", XA_IN("a b c\\nd e\\n"), "", "", ["-a", "in"]),
+    ("xa05-single-quotes", "strict", "", "", "a 'b c' d", ["-n1"]),
+    ("xa06-double-quotes", "strict", "", "", 'a "b c" d', ["-n1"]),
+    ("xa07-unmatched-single", "strict", "", "", "a 'b c", []),
+    ("xa08-unmatched-double", "strict", "", "", 'a "b c', []),
+    ("xa09-quote-across-newline", "strict", XA_IN("a \\047b\\nc\\047\\n"), "", "", ["-a", "in"]),
+    ("xa10-backslash-escapes", "strict", "", "", "a\\ b c\\\\d", ["-n1"]),
+    ("xa11-backslash-newline", "strict", XA_IN("a\\\\\\nb\\n"), "", "", ["-a", "in", "-n1"]),
+    ("xa12-trailing-backslash", "strict", "", "", "a\\", []),
+    ("xa13-empty-quotes", "strict", "", "", "'' \"\" x", []),
+    ("xa14-empty-quote-at-eof", "strict", "", "", "''", ["-n1"]),
+    ("xa15-lone-quote-at-eof", "strict", "", "", "a '", []),
+    ("xa16-nul-warning", "strict", XA_IN("ab\\0cd e\\n"), "", "", ["-a", "in"]),
+    ("xa17-cr-literal", "strict", XA_IN("a\\r\\nb\\r\\n"), "", "", ["-a", "in", "-n1"]),
+    ("xa18-leading-ff-vt-cr", "strict", XA_IN("\\f\\v\\ra\\n"), "", "", ["-a", "in"]),
+    ("xa19-n2", "strict", "", "", "a b c d e", ["-n2"]),
+    ("xa20-n2-exact", "strict", "", "", "a b c d", ["-n2"]),
+    ("xa21-L1", "strict", XA_IN("a b\\nc\\nd e f\\n"), "", "", ["-a", "in", "-L1"]),
+    ("xa22-L2", "strict", XA_IN("a b\\nc\\nd e f\\n"), "", "", ["-a", "in", "-L2"]),
+    ("xa23-L1-trailing-blank", "strict", XA_IN("a b \\nc\\nd\\n"), "", "", ["-a", "in", "-L1"]),
+    ("xa24-L1-blank-lines", "strict", XA_IN("a\\n\\nb\\n"), "", "", ["-a", "in", "-L1"]),
+    ("xa25-L1-trailing-tab", "strict", XA_IN("a\\t\\nb\\nc\\n"), "", "", ["-a", "in", "-L1"]),
+    ("xa26-l-bare", "strict", XA_IN("a\\nb\\n"), "", "", ["-a", "in", "-l"]),
+    ("xa27-l2-attached", "strict", XA_IN("a\\nb\\nc\\n"), "", "", ["-a", "in", "-l2"]),
+    ("xa28-max-lines-bare", "strict", XA_IN("a\\nb\\n"), "", "", ["-a", "in", "--max-lines"]),
+    ("xa29-max-lines-eq", "strict", XA_IN("a\\nb\\nc\\n"), "", "", ["-a", "in", "--max-lines=2"]),
+    # ---- logical EOF ----
+    ("xa30-E-line", "strict", XA_IN("a b\\nEND\\nc\\n"), "", "", ["-a", "in", "-E", "END"]),
+    ("xa31-E-mid-line", "strict", XA_IN("a END b\\nc\\n"), "", "", ["-a", "in", "-E", "END"]),
+    ("xa32-E-first", "strict", XA_IN("END\\nb\\n"), "", "", ["-a", "in", "-E", "END"]),
+    ("xa33-e-attached", "strict", XA_IN("a b\\nEND\\nc\\n"), "", "", ["-a", "in", "-eEND"]),
+    ("xa34-e-bare-disables", "strict", XA_IN("a b\\nEND\\nc\\n"), "", "", ["-a", "in", "-e"]),
+    ("xa35-eof-long", "strict", XA_IN("a b\\nEND\\nc\\n"), "", "", ["-a", "in", "--eof=END"]),
+    ("xa36-E-quoted", "strict", "", "", "a 'END' b", ["-E", "END"]),
+    ("xa37-E-last-item-no-eol", "strict", "", "", "a END", ["-E", "END"]),
+    # ---- -0 / -d ----
+    ("xa38-null", "strict", XA_IN("a b\\0c\\0\\0d"), "", "", ["-0", "-a", "in"]),
+    ("xa39-null-trailing", "strict", XA_IN("a\\0b\\0"), "", "", ["-0", "-a", "in"]),
+    ("xa40-null-E-warns", "strict", XA_IN("a\\0b\\0END\\0"), "", "", ["-0", "-E", "END", "-a", "in"]),
+    ("xa41-d-comma", "strict", "", "", "a,b,,c", ["-d,"]),
+    ("xa42-d-newline-escape", "strict", XA_IN("a b\\nc\\n"), "", "", ["-a", "in", "-d", "\\n"]),
+    ("xa43-d-tab-escape", "strict", XA_IN("a\\tb"), "", "", ["-a", "in", "-d", "\\t"]),
+    ("xa44-d-hex", "strict", "", "", "aAbAc", ["-d", "\\x41"]),
+    ("xa45-d-octal", "strict", XA_IN("a\\nb"), "", "", ["-a", "in", "-d", "\\012"]),
+    ("xa46-d-hex-empty-is-nul", "strict", XA_IN("a\\0b"), "", "", ["-a", "in", "-d", "\\x"]),
+    ("xa47-d-two-chars", "strict", "", "", "a", ["-d", "ab"]),
+    ("xa48-d-bad-escape", "strict", "", "", "a", ["-d", "\\q"]),
+    ("xa49-d-hex-trailing", "strict", "", "", "a", ["-d", "\\xZZ"]),
+    ("xa50-d-octal-range", "strict", "", "", "a", ["-d", "\\777"]),
+    ("xa51-d-empty", "strict", "", "", "a", ["-d", "@EMPTY@"]),
+    ("xa52-d-last-wins", "strict", "", "", "a,b:c", ["-d,", "-d:"]),
+    ("xa53-null-after-d-wins", "strict", XA_IN("a,b\\0c"), "", "", ["-a", "in", "-d,", "-0"]),
+    ("xa54-L1-d", "strict", "", "", "a,b,c", ["-L1", "-d,"]),
+    # ---- -I / -i / --replace ----
+    ("xa55-I-lines", "strict", XA_IN("a\\n  b c \\nd\\n"), "", "", ["-a", "in", "-I{}", "echo", "[{}]"]),
+    ("xa56-I-multi", "strict", "", "", "x", ["-I", "XX", "echo", "XX-XX", "XX"]),
+    ("xa57-i-default", "strict", XA_IN("a\\nb\\n"), "", "", ["-a", "in", "-i", "echo", "[{}]"]),
+    ("xa58-i-attached", "strict", XA_IN("a\\nb\\n"), "", "", ["-a", "in", "-i%", "echo", "[%]"]),
+    ("xa59-replace-eq", "strict", "", "", "a", ["--replace=Q", "echo", "[Q]"]),
+    ("xa60-I-no-items", "strict", "", "", "", ["-I{}", "echo", "[{}]"]),
+    ("xa61-I-blank-lines", "strict", XA_IN("\\n\\n  \\n"), "", "", ["-a", "in", "-I{}", "echo", "[{}]"]),
+    ("xa62-I-null", "strict", XA_IN("a b\\0c\\0"), "", "", ["-a", "in", "-0", "-I{}", "echo", "[{}]"]),
+    ("xa63-I-d-keeps-blanks", "strict", "", "", "  a,b", ["-d,", "-I{}", "echo", "[{}]"]),
+    ("xa64-I-no-command", "strict", XA_IN("a\\nb\\n"), "", "", ["-a", "in", "-I{}"]),
+    ("xa65-I-empty-pattern", "strict", "", "", "a b", ["-I", "@EMPTY@", "echo", "x"]),
+    ("xa66-I-command-not-substituted", "strict", "", "", "echo", ["-I{}", "{}", "x"]),
+    # ---- size limits ----
+    ("xa67-s10-split", "strict", "", "", "aa bb cc dd ee", ["-s10"]),
+    ("xa68-s11-exact", "strict", "", "", "aa bb", ["-s", "11"]),
+    ("xa69-s-x-n-too-long", "strict", "", "", "aa bb cc dd ee", ["-s10", "-x", "-n2"]),
+    ("xa70-s5-line-too-long", "strict", "", "", "a", ["-s5"]),
+    ("xa71-s1-cannot-fit", "strict", "", "", "a", ["-s1"]),
+    ("xa72-s-initial-args", "strict", "", "", "a", ["-s", "6", "printf", "x"]),
+    ("xa73-s0-clamps-then-fails", "strict", "", "", "a", ["-s0"]),
+    # GNU clamps to its ARG_MAX-derived maximum, the Windows side to 30719:
+    # only the warning text differs (stderr), stdout/rc are gated
+    ("xa74-s-huge-clamps", "strict", "", "", "a", ["-s", "99999999999"]),
+    ("xa75-L-implies-x", "strict", "", "", "aaa bbb ccc", ["-L1", "-s", "10"]),
+    ("xa76-I-command-too-long", "strict", "", "", "aaaaaaaaa", ["-s", "10", "-I{}", "echo", "{}"]),
+    ("xa77-I-arg-list-too-long", "strict", "", "", "aaaaaaaa", ["-s", "10", "-I{}", "echo", "{}"]),
+    ("xa78-pending-then-line-too-long", "strict", "", "", "a bbbbbbbbbbbbbbbbbbb c", ["-s", "12"]),
+    ("xa79-s-batches-seq", "strict", "seq 1 300 > in", "", "", ["-a", "in", "-s", "100"]),
+    ("xa80-n-batches-seq", "strict", "seq 1 20000 > in", "", "", ["-a", "in", "-n", "1000"]),
+    # ---- option grammar ----
+    ("xa81-n0", "strict", "", "", "a", ["-n0"]),
+    ("xa82-n-invalid", "strict", "", "", "a", ["-n", "x"]),
+    ("xa83-n-trailing-space", "strict", "", "", "a b", ["-n", "1 "]),
+    ("xa84-n-plus-sign", "strict", "", "", "a b", ["-n", "+1"]),
+    ("xa85-n-saturates", "strict", "", "", "a b", ["-n", "99999999999999999999"]),
+    ("xa86-L0", "strict", "", "", "a", ["-L0"]),
+    ("xa87-P-negative", "strict", "", "", "a", ["-P", "-1"]),
+    ("xa88-P-too-big", "strict", "", "", "a", ["-P", "99999999999"]),
+    ("xa89-short-h-invalid", "strict", "", "", "", ["-h"]),
+    ("xa90-bogus-long", "strict", "", "", "", ["--bogus"]),
+    ("xa91-n-missing-arg", "strict", "", "", "", ["-n"]),
+    ("xa92-ambiguous-max", "strict", "", "", "", ["--max"]),
+    ("xa93-abbrev-max-args", "strict", "", "", "a b", ["--max-a=1"]),
+    ("xa94-null-with-arg", "strict", "", "", "", ["--null=x"]),
+    ("xa95-slot-var-equals", "strict", "", "", "a", ["--process-slot-var=A=B"]),
+    ("xa96-help", "strict", "", "", "", ["--help"]),
+    ("xa97-version", "strict", "", "", "", ["--version"]),
+    ("xa98-help-then-bogus", "strict", "", "", "", ["--help", "--bogus"]),
+    ("xa99-dashdash", "strict", "", "", "a", ["--", "echo", "x"]),
+    ("xa100-options-stop-at-command", "strict", "", "", "a", ["echo", "-n"]),
+    # ---- -n / -L / -I exclusion warnings (stderr), last one wins ----
+    ("xa101-n-then-L", "strict", XA_IN("a b\\nc\\n"), "", "", ["-a", "in", "-n1", "-L1"]),
+    ("xa102-L-then-n", "strict", XA_IN("a b\\nc\\n"), "", "", ["-a", "in", "-L1", "-n1"]),
+    ("xa103-I-then-n1-kept", "strict", XA_IN("a b\\nc\\n"), "", "", ["-a", "in", "-I{}", "-n1", "echo", "{}"]),
+    ("xa104-I-then-n2-drops-I", "strict", XA_IN("a b\\nc\\n"), "", "", ["-a", "in", "-I{}", "-n2", "echo", "{}"]),
+    ("xa105-n2-then-I", "strict", XA_IN("a b\\nc\\n"), "", "", ["-a", "in", "-n2", "-I{}", "echo", "{}"]),
+    # ---- execution and exit statuses ----
+    ("xa106-child-fails-123", "strict", "", "", "a b", ["-n1", "sh", "-c", "exit 3"]),
+    ("xa107-child-255-aborts", "strict", "", "", "a b c", ["-n1", "sh", "-c", "echo $0; exit 255"]),
+    ("xa108-not-found-127", "strict", "", "", "a b", ["-n1", "nosuchcmd123"]),
+    ("xa109-not-found-r-empty", "strict", "", "", "", ["-r", "nosuchcmd123"]),
+    ("xa110-directory-126", "strict", "mkdir adir", "", "a", ["./adir"]),
+    ("xa111-empty-command-127", "strict", "", "", "a", ["@EMPTY@"]),
+    ("xa112-fail-then-continue", "strict", "", "", "a b", ["-n1", "sh", "-c", "test $0 = a && exit 3; echo $0"]),
+    ("xa113-child-127-is-123", "strict", "", "", "a", ["sh", "-c", "exit 127"]),
+    ("xa114-child-125-is-123", "strict", "", "", "a", ["sh", "-c", "exit 125"]),
+    ("xa115-P3", "exit", "", "", "a b c d e f", ["-n2", "-P3", "sh", "-c", "exit 0"]),
+    ("xa116-P2-one-fails", "exit", "", "", "a b c d", ["-n1", "-P2", "sh", "-c", "test $0 = b && exit 3; exit 0"]),
+    ("xa117-P0-unlimited", "exit", "", "", "a b c d", ["-n1", "-P0", "sh", "-c", "exit 0"]),
+    ("xa118-slot-var-P1", "strict", "", "", "a b", ["--process-slot-var=SLOT", "-n1", "sh", "-c", "echo $SLOT $0"]),
+    ("xa119-child-stdin-is-null", "strict", "", "", "x y", ["sh", "-c", "cat; echo got \"$@\"", "sh"]),
+    ("xa120-arg-file-frees-stdin", "strict", XA_IN("f1 f2\\nf3\\n"), "", "from-stdin", ["-a", "in", "sh", "-c", "cat; echo \"$@\"", "sh"]),
+    ("xa121-arg-file-missing", "strict", "", "", "", ["-a", "nosuch.txt"]),
+    ("xa122-arg-file-last-wins", "strict", XA_IN("f1 f2\\n"), "", "", ["-a", "nosuch.txt", "-a", "in"]),
+    ("xa123-arg-file-dash", "strict", "", "", "q r", ["-a", "-"]),
+    ("xa124-arg-file-directory", "strict", "mkdir d1", "", "", ["-a", "d1"]),
+    ("xa125-t-verbose", "strict", "", "", "a b", ["-t", "echo", "x"]),
+    ("xa126-t-n1", "strict", "", "", "a b", ["-t", "-n1"]),
+    ("xa127-p-r-no-prompt", "strict", "", "", "", ["-p", "-r"]),
+    ("xa128-o-r-no-child", "strict", "", "", "", ["-o", "-r"]),
+    ("xa129-show-limits-r", "strict", "", "", "", ["--show-limits", "-r"]),
+    ("xa130-show-limits-runs", "strict", "", "", "a", ["--show-limits"]),
+    ("xa131-x-alone", "strict", "", "", "a b", ["-x"]),
+    ("xa132-E-empty-string", "strict", XA_IN("a\\n\\nb\\n"), "", "", ["-a", "in", "-E", "@EMPTY@"]),
+    ("xa133-printf-child", "strict", "", "", "a b", ["printf", "%s|"]),
+    ("xa134-I-seq", "strict", "seq 1 30 > in", "", "", ["-a", "in", "-I{}", "printf", "<%s>", "{}"]),
+    ("xa135-n1-explicit-echo", "strict", "", "", "a b c", ["-n1", "echo"]),
+    ("xa136-I-explicit-sh", "strict", XA_IN("one\\ntwo\\n"), "", "", ["-a", "in", "-I{}", "sh", "-c", "echo [$0]", "{}"]),
+    # a signal death has no Windows analog for an MSYS `kill -9 $$`
+    # (TerminateProcess with a plain exit code): GNU 125, Windows sides
+    # both see a failed child -> rc parity with the C++ applet only
+    ("xa137-signal-death", "win", "", "", "a", ["sh", "-c", "kill -9 $$"]),
+    # ---- Windows launch chain (shared childproc resolver) ----
+    # a #! script child runs through its interpreter on both platforms
+    ("xa138-shebang-child", "strict", "printf '#!/bin/sh\\necho \"[$*]\"\\n' > hi.sh; chmod +x hi.sh", "", "a b", ["./hi.sh", "x"]),
+    # a file no launch format accepts: GNU's glibc execvp retries it via
+    # /bin/sh, the Windows chain reports 126 "Exec format error" (childproc.rs
+    # documented boundary) -> rc parity with the C++ applet
+    ("xa139-nonpe-badformat", "win", "printf 'not a script\\n' > plain.txt; chmod +x plain.txt", "", "a", ["./plain.txt"]),
+    # batching boundary: GNU fills 128 KiB per command, the Windows budget
+    # 30719 bytes / 32767 UTF-16 units, so the batch COUNT is platform-bound
+    # (stdout recorded) while every item still runs exactly once (rc gated)
+    ("xa140-large-input-batches", "exit", "seq 1 40000 > in", "", "", ["-a", "in", "echo"]),
+    ("xa141-large-input-default", "exit", "seq 1 40000 > in", "", "", ["-a", "in"]),
+]
+
+
 def collect():
     """All case tables as (cmd, rows) pairs, in emit order."""
     return [
@@ -4146,6 +4382,8 @@ def collect():
         ("pinky", pinky_rows),
         # sed lane (#1488)
         ("sed", sed_rows),
+        # #1488: xargs (findutils 4.9 oracle)
+        ("xargs", xargs_rows),
     ]
 
 
