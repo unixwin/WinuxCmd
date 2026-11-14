@@ -100,6 +100,28 @@ fn tail_stdin_meta() -> StdinMeta {
     StdinMeta::pipe_stream()
 }
 
+/// rm's stdin tty classification (rm_option_init's isatty(STDIN_FILENO)):
+/// the console-attached check GNU uses to decide whether the default
+/// RMI_SOMETIMES mode prompts for write-protected entries.
+#[cfg(windows)]
+fn rm_stdin_meta() -> winux_cmds::rm::RmMeta {
+    use std::os::windows::io::AsRawHandle;
+    type Handle = *mut c_void;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetConsoleMode(h: Handle, mode: *mut u32) -> i32;
+    }
+    let h = std::io::stdin().as_raw_handle() as Handle;
+    let mut mode = 0u32;
+    let tty = !h.is_null() && unsafe { GetConsoleMode(h, &mut mode) } != 0;
+    winux_cmds::rm::RmMeta { stdin_tty: tty }
+}
+
+#[cfg(not(windows))]
+fn rm_stdin_meta() -> winux_cmds::rm::RmMeta {
+    winux_cmds::rm::RmMeta::no_tty()
+}
+
 fn main() {
     let mut argv: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     if argv.is_empty() {
@@ -200,6 +222,14 @@ fn run_direct(argv: &[std::ffi::OsString]) -> i32 {
         // handles alone.
         let meta = tail_stdin_meta();
         match winux_cmds::tail::tail_with_meta(&args, &mut io, &ctx, &meta) {
+            Ok(s) => s as i32,
+            Err(_) => winux_core::ABI_FAILURE_STATUS as i32,
+        }
+    } else if name == "rm" {
+        // rm's tty flag is input metadata (GNU's isatty(0)) for the same
+        // reason: the library only sees the injected Io handles.
+        let meta = rm_stdin_meta();
+        match winux_cmds::rm::rm_with_meta(&args, &mut io, &ctx, &meta) {
             Ok(s) => s as i32,
             Err(_) => winux_core::ABI_FAILURE_STATUS as i32,
         }

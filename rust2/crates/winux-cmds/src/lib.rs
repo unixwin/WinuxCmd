@@ -67,6 +67,7 @@ pub mod pwd;
 pub mod readlink;
 pub mod realpath;
 pub mod rev;
+pub mod rm;
 pub mod rmdir;
 pub mod runcon;
 pub mod seq;
@@ -116,6 +117,7 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("printenv", printenv::printenv_cmd),
         ("pwd", pwd::pwd_cmd),
         ("mkdir", mkdir::mkdir_cmd),
+        ("rm", rm::rm_cmd),
         ("rmdir", rmdir::rmdir_cmd),
         ("readlink", readlink::readlink_cmd),
         ("realpath", realpath::realpath_cmd),
