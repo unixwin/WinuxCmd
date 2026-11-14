@@ -271,6 +271,10 @@ export std::string translate_error(std::string_view error) {
            translate("common.error.value_too_large", kOverflowSuffix);
   }
   // "invalid repeat count '<digits>' in [c*n] construct" (tr).
+  // [#1488 wave-W2 wire] The keys are now produced by the rust2 tr body
+  // (rust2/crates/winux-cmds/src/tr.rs), whose fallback uses GNU 9.4's
+  // curly quotes; the matcher below keeps the 1.x straight-quote shape
+  // only so an old caller would still translate.
   constexpr std::string_view kRepeatCountPrefix = "invalid repeat count '";
   constexpr std::string_view kRepeatCountSuffix = "' in [c*n] construct";
   if (error.size() > kRepeatCountPrefix.size() + kRepeatCountSuffix.size() &&
@@ -280,7 +284,7 @@ export std::string translate_error(std::string_view error) {
         kRepeatCountPrefix.size(),
         error.size() - kRepeatCountPrefix.size() - kRepeatCountSuffix.size());
     return ::winux::i18n::format("command.tr.error.invalid_repeat_count",
-                                 "invalid repeat count '{}' in [c*n] construct",
+                                 "invalid repeat count \u2018{}\u2019 in [c*n] construct",
                                  value);
   }
   // Static tr [c*] repeat-construct diagnostics.
