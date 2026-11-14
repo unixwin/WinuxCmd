@@ -13,7 +13,9 @@
 //! (checking symlink_status so a symlink-to-dir is still removed);
 //! -i prompts `ln: replace 'X'? ` on stdin (any leading y replaces);
 //! -b/--backup[=CONTROL] and -S rename the old dst first (simple `~`,
-//! numbered `.~N~`, existing = numbered-if-present-else-simple).
+//! numbered `.~N~`, existing = numbered-if-present-else-simple); with -i
+//! the `replace 'X'?` prompt precedes the backup (GNU ln.c:273-288) and a
+//! 'n' answer makes no backup at all.
 //! -v reports on stdout: hard `'dst' => 'src'`, symlink `'dst' -> 'src'`
 //! (GNU probed). `-` is a plain name (POSIX). Directory hard links are
 //! refused with `X: hard link not allowed for directory` (rc 1) — the
@@ -580,7 +582,21 @@ fn link_one(
             *ok = false;
             return false;
         }
+        // [GNU] ln.c:273-283 (prompt) precedes ln.c:285+ (backup): with
+        // -b and -i, GNU asks `replace 'dst'?` FIRST and only backs the
+        // old dst up after a yes; 'n' declines with no backup made and
+        // rc 1 (issue #1675). The backup branch used to rename first and
+        // never prompt at all.
         if opts.backup {
+            if opts.interactive {
+                match prompt_replace(io, dst) {
+                    Ok(true) => {}
+                    _ => {
+                        *ok = false;
+                        return false;
+                    }
+                }
+            }
             make_backup(ctx, opts, dst);
         } else {
             match remove_existing(io, ctx, opts, dst) {
@@ -964,6 +980,98 @@ mod tests {
         if r == 0 {
             assert!(sc4.path("bt~").symlink_metadata().is_err());
         }
+    }
+
+    #[test]
+    fn backup_interactive_prompt_first() {
+        // WinuxCmd #1675 / GNU ln.c:273-283 (prompt) then :285+ (backup):
+        // with -b and -i the prompt precedes the backup; 'n' declines
+        // with NO backup made and rc 1, 'y' backs up then links. Each
+        // cell gets a fresh scratch dir so dst/backup contents are
+        // independent witnesses.
+        // -b -i, answer n: prompt shown, declined, rc 1, no backup.
+        let sc = setup("ln-bi-1");
+        let (r, _, e) = run_sc(&sc, &["-b", "-i", "a", "b"], "n");
+        assert_eq!(r, 1);
+        assert!(e.contains("ln: replace 'b'? "));
+        assert_eq!(std::fs::read_to_string(sc.path("b")).unwrap(), "bbb");
+        assert!(sc.path("b~").symlink_metadata().is_err());
+        // -b -i, answer y: prompt shown, backed up, linked, rc 0.
+        let sc = setup("ln-bi-2");
+        let (r, _, e) = run_sc(&sc, &["-b", "-i", "a", "b"], "y\n");
+        assert_eq!(r, 0);
+        assert!(e.contains("ln: replace 'b'? "));
+        assert_eq!(std::fs::read_to_string(sc.path("b")).unwrap(), "aaa");
+        assert_eq!(std::fs::read_to_string(sc.path("b~")).unwrap(), "bbb");
+        // Short clusters walk char by char: -bi prompts, -ib prompts.
+        let sc = setup("ln-bi-3");
+        let (r, _, e) = run_sc(&sc, &["-bi", "a", "b"], "n");
+        assert_eq!(r, 1);
+        assert!(e.contains("ln: replace 'b'? "));
+        assert!(sc.path("b~").symlink_metadata().is_err());
+        let sc = setup("ln-bi-4");
+        let (r, _, e) = run_sc(&sc, &["-ib", "a", "b"], "y\n");
+        assert_eq!(r, 0);
+        assert!(e.contains("ln: replace 'b'? "));
+        assert_eq!(std::fs::read_to_string(sc.path("b~")).unwrap(), "bbb");
+        // Long forms behave the same.
+        let sc = setup("ln-bi-5");
+        let (r, _, e) = run_sc(&sc, &["--backup", "--interactive", "a", "b"], "n");
+        assert_eq!(r, 1);
+        assert!(e.contains("ln: replace 'b'? "));
+        assert!(sc.path("b~").symlink_metadata().is_err());
+        // --backup=numbered with -i, answer y: numbered backup after yes.
+        let sc = setup("ln-bi-6");
+        let (r, _, e) = run_sc(&sc, &["--backup=numbered", "-i", "a", "b"], "y\n");
+        assert_eq!(r, 0);
+        assert!(e.contains("ln: replace 'b'? "));
+        assert_eq!(std::fs::read_to_string(sc.path("b.~1~")).unwrap(), "bbb");
+        assert!(sc.path("b~").symlink_metadata().is_err());
+        // Symlink mode, answer n: prompt, no backup, dst untouched (the
+        // n-path creates nothing, so no symlink privilege is needed).
+        let sc = setup("ln-bi-7");
+        let (r, _, e) = run_sc(&sc, &["-b", "-i", "-s", "a", "b"], "n");
+        assert_eq!(r, 1);
+        assert!(e.contains("ln: replace 'b'? "));
+        assert_eq!(std::fs::read_to_string(sc.path("b")).unwrap(), "bbb");
+        assert!(sc.path("b~").symlink_metadata().is_err());
+        // -b -i with no existing dst: no prompt, no backup, link made.
+        let sc = setup("ln-bi-8");
+        let (r, _, e) = run_sc(&sc, &["-b", "-i", "a", "fresh"], "");
+        assert_eq!(r, 0);
+        assert!(e.is_empty());
+        assert!(sc.path("fresh").exists());
+        assert!(sc.path("fresh~").symlink_metadata().is_err());
+        // Same-file check precedes the prompt (GNU ln.c:255-270 before
+        // :273): no prompt, no backup, rc 1.
+        let sc = setup("ln-bi-9");
+        let (r, _, e) = run_sc(&sc, &["-b", "-i", "b", "b"], "y\n");
+        assert_eq!(r, 1);
+        assert!(e.contains("are the same file"));
+        assert!(!e.contains("replace"));
+        assert!(sc.path("b~").symlink_metadata().is_err());
+        // Multi-dest into a directory: the fresh dest links silently,
+        // the existing one prompts (derived-dest spelling `dd\b`); 'n'
+        // declines that one only, rc 1, no backup for it.
+        let sc = setup("ln-bi-10");
+        let (r, _, e) = run_sc(&sc, &["-b", "-i", "a", "b", "dd"], "n\n");
+        assert_eq!(r, 1);
+        assert!(e.contains(r"ln: replace 'dd\b'? "));
+        assert!(sc.path("dd/a").exists());
+        assert_eq!(std::fs::read_to_string(sc.path("dd/b")).unwrap(), "ccc");
+        assert!(sc.path("dd/b~").symlink_metadata().is_err());
+        // Last-wins composes with backup: -b -i -f forces (no prompt,
+        // backup made, rc 0); -b -f -i prompts (decline, no backup).
+        let sc = setup("ln-bi-11");
+        let (r, _, e) = run_sc(&sc, &["-b", "-i", "-f", "a", "b"], "n");
+        assert_eq!(r, 0);
+        assert!(e.is_empty());
+        assert_eq!(std::fs::read_to_string(sc.path("b~")).unwrap(), "bbb");
+        let sc = setup("ln-bi-12");
+        let (r, _, e) = run_sc(&sc, &["-b", "-f", "-i", "a", "b"], "n");
+        assert_eq!(r, 1);
+        assert!(e.contains("ln: replace 'b'? "));
+        assert!(sc.path("b~").symlink_metadata().is_err());
     }
 
     #[test]
