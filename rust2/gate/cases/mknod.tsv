@@ -19,8 +19,8 @@ mn16-octal-dev	win				mo	c	01	03
 mn17-context-warn-fifo	strict				--context=c	pf	p
 mn18-Z-bare-fifo	strict				-Z	pz	p
 mn19-missing-parent	strict				nodir/x	p
-mn20-help	strict				--help
-mn21-version	strict				--version
+mn20-help	win				--help
+mn21-version	win				--version
 mn22-mode-rejected-before-operands	strict				-m	bogus	n	p
 mn23-missing-mode-value	strict				-m
 mn24-bogus-long	strict				--bogus

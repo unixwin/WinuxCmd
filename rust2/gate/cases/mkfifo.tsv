@@ -19,8 +19,8 @@ mf16-context-bare	strict				--context	pz4
 mf17-Z-attached-invalid	strict				-Zctx2	pz2
 mf18-context-after-dashdash	strict				--	--context=x
 mf19-two-names	strict				pa	pb
-mf20-help	strict				--help
-mf21-version	strict				--version
+mf20-help	win				--help
+mf21-version	win				--version
 mf22-mixed-failure	strict				ok	nodir/bad	ok2
 mf23-missing-value	strict				-m
 mf24-bogus-long	strict				--bogus

@@ -28,13 +28,28 @@ use std::ffi::OsString;
 use std::path::Path;
 
 use crate::argopt::{self, OptSpec};
-use crate::fsutil::resolve;
+use crate::fsutil::{
+    is_native_root_operand, is_preserve_root_operand, link_target_is_root,
+    preserve_root_refusal_lines, resolve,
+};
 use crate::modemap::{
     apply_mode, current_mode, eval_spec, mode_string, parse_mode_spec, process_umask, ModeSpec,
 };
 use winux_core::{usage_error, CmdResult, Ctx, Io};
 
+/// Registration order mirrors the upstream chmod.c long_options table —
+/// ambiguity listings print candidates in table order (probed d8: `--=v`
+/// lists changes, recursive, no-preserve-root, preserve-root, quiet,
+/// reference, silent, verbose, help, version in exactly that order). The
+/// 1.x shorthand longs (--rec/--verb/--cha/--sil) are gone: GNU resolves
+/// them as unambiguous abbreviations, and registering them as canonical
+/// names polluted the possibility lists (m4-rust d3 listed '--rec').
 const OPTS: &[OptSpec] = &[
+    OptSpec {
+        short: Some('c'),
+        long: "changes",
+        takes_value: false,
+    },
     OptSpec {
         short: Some('R'),
         long: "recursive",
@@ -42,27 +57,12 @@ const OPTS: &[OptSpec] = &[
     },
     OptSpec {
         short: None,
-        long: "rec",
-        takes_value: false,
-    },
-    OptSpec {
-        short: Some('v'),
-        long: "verbose",
+        long: "no-preserve-root",
         takes_value: false,
     },
     OptSpec {
         short: None,
-        long: "verb",
-        takes_value: false,
-    },
-    OptSpec {
-        short: Some('c'),
-        long: "changes",
-        takes_value: false,
-    },
-    OptSpec {
-        short: None,
-        long: "cha",
+        long: "preserve-root",
         takes_value: false,
     },
     OptSpec {
@@ -72,46 +72,66 @@ const OPTS: &[OptSpec] = &[
     },
     OptSpec {
         short: None,
-        long: "sil",
-        takes_value: false,
-    },
-    OptSpec {
-        short: None,
         long: "reference",
         takes_value: true,
     },
     OptSpec {
         short: None,
-        long: "preserve-root",
+        long: "silent",
         takes_value: false,
     },
     OptSpec {
-        short: None,
-        long: "no-preserve-root",
+        short: Some('v'),
+        long: "verbose",
         takes_value: false,
     },
 ];
 
-/// True for a filesystem root: plain root, drive root (`C:`), or UNC share
-/// root (`\\srv\share`) — the Windows analogs of GNU's root-dev check
-/// (chmod.c: operand whose parent is itself).
-pub(crate) fn is_fs_root(p: &Path) -> bool {
-    let s = winux_core::strip_verbatim(p.to_path_buf())
-        .to_string_lossy()
-        .into_owned();
-    let t = s.trim_end_matches(['/', '\\']);
-    if t.is_empty() {
-        return true;
+/// The mode letters GNU chmod.c declares as optional-argument short
+/// options (`"Rcfvr::w::x::X::s::t::u::g::o::a::,::+::=::0::1::2::3::4::
+/// 5::6::7::"`). A single-dash token whose first non-{v,c,f,R} character
+/// is one of these becomes the MODE word — the whole token, exactly like
+/// upstream taking `argv[optind - 1]` (probed Q1/Q5/Q6: `chmod -X 755 f`
+/// modes only `f`, and `chmod 755 -X f` demotes `755` to a file operand).
+const MODE_OPTION_LETTERS: &[char] = &[
+    'r', 'w', 'x', 'X', 's', 't', 'u', 'g', 'o', 'a', ',', '+', '=', '0', '1', '2', '3', '4', '5',
+    '6', '7',
+];
+
+/// Split GNU dash-mode tokens out of `args` before generic option parsing.
+/// Tokens after a bare `--` are literal operands. A token like `-Q` (an
+/// invalid short before any mode letter) stays in the stream so argopt
+/// still prints `invalid option -- 'Q'` (probed Q2-Q4).
+fn split_dash_modes(args: &[OsString]) -> (Vec<String>, Vec<OsString>) {
+    let mut modes = Vec::new();
+    let mut rest = Vec::new();
+    let mut no_more_options = false;
+    for arg in args {
+        let text = arg.to_string_lossy().into_owned();
+        if no_more_options || !text.starts_with('-') || text.len() < 2 || text.starts_with("--") {
+            if text == "--" {
+                no_more_options = true;
+            }
+            rest.push(arg.clone());
+            continue;
+        }
+        let mut is_mode = false;
+        for c in text[1..].chars() {
+            if MODE_OPTION_LETTERS.contains(&c) {
+                is_mode = true;
+                break;
+            }
+            if !matches!(c, 'v' | 'c' | 'f' | 'R') {
+                break;
+            }
+        }
+        if is_mode {
+            modes.push(text);
+        } else {
+            rest.push(arg.clone());
+        }
     }
-    let b = t.as_bytes();
-    if b.len() == 2 && b[1] == b':' && b[0].is_ascii_alphabetic() {
-        return true;
-    }
-    if let Some(rest) = t.strip_prefix(r"\\") {
-        // \\server\share is the root of a Windows network file system
-        return !rest.is_empty() && rest.matches(['\\', '/']).count() <= 1;
-    }
-    false
+    (modes, rest)
 }
 
 struct Apply<'i, 'o> {
@@ -181,7 +201,11 @@ impl Apply<'_, '_> {
 }
 
 pub fn chmod_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
-    let p = match argopt::parse("chmod", args, OPTS, io, ctx, 1) {
+    // GNU dash-mode tokens ("-w", "-X", "-wX", "-R755") are mode words, not
+    // options (chmod.c optional-argument short letters); extract them before
+    // generic parsing so `-X` is not misread as an invalid option.
+    let (dash_modes, rest_args) = split_dash_modes(args);
+    let p = match argopt::parse("chmod", &rest_args, OPTS, io, ctx, 1) {
         Ok(p) => p,
         Err(s) => return Ok(s),
     };
@@ -191,8 +215,11 @@ pub fn chmod_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let recursive = p.has("recursive");
     let verbose = p.has("verbose");
     let changes_only = p.has("changes") && !verbose;
-    let quiet = p.has("quiet");
-    let no_preserve_root = p.has("no-preserve-root");
+    let quiet = p.has("quiet") || p.has("silent");
+    // GNU getopt assignment order: the LAST of --preserve-root /
+    // --no-preserve-root wins (probed P15/P16).
+    let preserve_root =
+        p.flag_last(&["preserve-root", "no-preserve-root"]) == Some("preserve-root");
     let reference = p.value_of("reference").map(|s| s.to_string());
 
     // GNU grammar: with --reference=RFILE there is NO mode operand; every
@@ -216,19 +243,36 @@ pub fn chmod_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         None => None,
     };
 
+    // Mode operand: dash-mode tokens win the mode slot outright and demote
+    // every positional to a file operand (probed Q5); otherwise the first
+    // positional is the mode.
+    let mode_word: Option<String> = if reference.is_some() {
+        None
+    } else if !dash_modes.is_empty() {
+        Some(dash_modes.join(","))
+    } else {
+        None
+    };
+
     let spec: Option<ModeSpec> = if reference.is_some() {
         None
     } else {
-        if p.positionals.is_empty() {
-            let _ = usage_error(io, "chmod", "missing operand");
-            return Ok(1);
-        }
-        let mode = p.positionals[0].to_string_lossy().into_owned();
-        if p.positionals.len() == 1 {
-            let msg = format!("missing operand after {}", winux_core::q(&mode));
-            let _ = usage_error(io, "chmod", &msg);
-            return Ok(1);
-        }
+        let mode = match &mode_word {
+            Some(m) => m.clone(),
+            None => {
+                if p.positionals.is_empty() {
+                    let _ = usage_error(io, "chmod", "missing operand");
+                    return Ok(1);
+                }
+                let m = p.positionals[0].to_string_lossy().into_owned();
+                if p.positionals.len() == 1 {
+                    let msg = format!("missing operand after {}", winux_core::q(&m));
+                    let _ = usage_error(io, "chmod", &msg);
+                    return Ok(1);
+                }
+                m
+            }
+        };
         // validate BEFORE touching files (GNU aborts up front)
         match parse_mode_spec(&mode) {
             Ok(s) => Some(s),
@@ -240,7 +284,7 @@ pub fn chmod_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         }
     };
 
-    let files: Vec<String> = if reference.is_some() {
+    let files: Vec<String> = if reference.is_some() || mode_word.is_some() {
         p.positionals
             .iter()
             .map(|a| a.to_string_lossy().into_owned())
@@ -264,6 +308,31 @@ pub fn chmod_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
 
     for name in &files {
         let path = resolve(ctx, Path::new(name));
+        // Explicit GNU failsafe (upstream fires per-traversed-directory via
+        // ROOT_DEV_INO_CHECK; refusal order is operand order — probed g7).
+        if recursive && preserve_root && is_preserve_root_operand(ctx, name, &path) {
+            for line in preserve_root_refusal_lines("chmod", name) {
+                let _ = writeln!(ap.io.stderr, "{line}");
+            }
+            ap.failed = true;
+            continue;
+        }
+        // Default-walk safety floor (A1 adjudication): a real native volume
+        // root, a raw separator spelling, or a reparse point resolving onto
+        // one is refused even without --preserve-root. GNU would walk here;
+        // a Windows volume walk is unrecoverable. Flag-independent.
+        let link_carries_root = recursive
+            && std::fs::symlink_metadata(&path)
+                .map(|m| m.file_type().is_symlink())
+                .unwrap_or(false)
+            && link_target_is_root(ctx, &path);
+        if recursive && (is_native_root_operand(ctx, name, &path) || link_carries_root) {
+            for line in preserve_root_refusal_lines("chmod", name) {
+                let _ = writeln!(ap.io.stderr, "{line}");
+            }
+            ap.failed = true;
+            continue;
+        }
         if !path.exists() {
             if !quiet {
                 let _ = writeln!(
@@ -273,19 +342,6 @@ pub fn chmod_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     "No such file or directory"
                 );
             }
-            ap.failed = true;
-            continue;
-        }
-        if recursive && !no_preserve_root && is_fs_root(&path) {
-            let _ = writeln!(
-                ap.io.stderr,
-                "chmod: it is dangerous to operate recursively on {}",
-                winux_core::q(name)
-            );
-            let _ = writeln!(
-                ap.io.stderr,
-                "chmod: use --no-preserve-root to override this failsafe"
-            );
             ap.failed = true;
             continue;
         }
@@ -323,14 +379,22 @@ fn walk_chmod(ap: &mut Apply, display: &str, dir: &Path) {
             Ok(t) => t,
             Err(_) => continue,
         };
-        if ft.is_symlink() {
-            continue;
-        }
         let child_display = format!(
             "{}/{}",
             display.trim_end_matches('/'),
             entry.file_name().to_string_lossy()
         );
+        if ft.is_symlink() {
+            // GNU FTS_PHYSICAL: symlink entries are never chmodded during
+            // traversal; -v prints the skip diagnostic (probed C1).
+            if ap.verbose {
+                let _ = writeln!(
+                    *ap.io.stdout,
+                    "neither symbolic link '{child_display}' nor referent has been changed"
+                );
+            }
+            continue;
+        }
         if ft.is_dir() {
             walk_chmod(ap, &child_display, &p);
         } else {
@@ -524,23 +588,206 @@ mod tests {
 
     #[test]
     fn preserve_root_refusal() {
-        let sc = ScratchCtx::new("chmod9");
-        // a real drive root refused under -R (Windows analog of GNU '/')
-        let root = sc
-            .dir
-            .components()
-            .next()
-            .map(|c| c.as_os_str().to_string_lossy().into_owned())
-            .unwrap();
-        let (r, _, e) = run(&["-R", "755", &root], &sc);
+        // GNU coreutils 9.4 refusal is OPT-IN: `bool preserve_root = false`
+        // in main (chmod.c), the two-line ROOT_DEV_INO_WARN fires only with
+        // explicit --preserve-root (probed M1 A/B cells, M2 P-cells), the
+        // last of --preserve-root/--no-preserve-root wins (P15/P16), and a
+        // non-"/" spelling prints the "(same as '/')" suffix (P3-P5). The
+        // sandbox shell root is the namespace "/" and stays walkable by
+        // default exactly like GNU.
+        let mut sc = ScratchCtx::new("chmod9");
+        sc.env.set("__RUBASH_SHELL_ROOT", &sc.dir.to_string_lossy());
+        std::fs::write(sc.path("f"), "x").unwrap();
+        // default: GNU walks "/" (M1 B1) — the sandbox walk succeeds
+        assert_eq!(run(&["-R", "755", "."], &sc).0, 0);
+        // explicit --preserve-root refuses with the suffix form (P4 `/.`)
+        let (r, _, e) = run(&["-R", "--preserve-root", "755", "."], &sc);
         assert_eq!(r, 1);
-        assert!(e.contains("it is dangerous to operate recursively on"));
-        assert!(e.contains("use --no-preserve-root to override this failsafe"));
-        // explicit --preserve-root also refuses
-        let (r, _, _) = run(&["-R", "--preserve-root", "755", &root], &sc);
+        assert!(
+            e.contains("chmod: it is dangerous to operate recursively on '.' (same as '/')"),
+            "{e}"
+        );
+        assert!(e.contains("chmod: use --no-preserve-root to override this failsafe"));
+        // last flag wins (P15: --preserve-root --no-preserve-root walks)
+        assert_eq!(
+            run(
+                &["-R", "--preserve-root", "--no-preserve-root", "755", "."],
+                &sc
+            )
+            .0,
+            0
+        );
+        let (r, _, e) = run(
+            &["-R", "--no-preserve-root", "--preserve-root", "755", "."],
+            &sc,
+        );
         assert_eq!(r, 1);
-        // deep operand is fine
+        assert!(e.contains("it is dangerous to operate recursively on '.'"));
+        // the failsafe is recursion-scoped: non-recursive on the root is
+        // GNU E1/E3 (no refusal)
+        assert_eq!(run(&["755", "."], &sc).0, 0);
+        // per-operand order: the refusal fires at the operand's position,
+        // later operands still processed (g7)
+        std::fs::create_dir_all(sc.path("sub")).unwrap();
+        std::fs::write(sc.path("sub/x"), "x").unwrap();
+        let (r, _, e) = run(&["-R", "--preserve-root", "755", "nosuch", "."], &sc);
+        assert_eq!(r, 1);
+        assert!(e.contains("cannot access 'nosuch'"));
+        // deep operand is fine under explicit --preserve-root
+        let (r, out, _) = run(&["-R", "--preserve-root", "755", "sub"], &sc);
+        assert_eq!(r, 0, "{out}");
+    }
+
+    #[test]
+    fn native_root_floor_refusal() {
+        // A1 adjudication (blocker 1 matrix): GNU walks "/" by default, but
+        // a recursive walk of a REAL native volume root is refused even
+        // without --preserve-root and even with --no-preserve-root. The
+        // end-to-end cells below use only spellings that are lexically
+        // volume roots but NOT real walkable trees on this host, so a
+        // guard regression fails the test without touching anything; the
+        // real-root identities are covered by the pure-predicate unit
+        // (is_native_root_operand) in fsutil, which never touches the
+        // filesystem by contract.
+        let sc = ScratchCtx::new("chmod-floor");
+        for op in ["Q:\\", "Q:/", "//nosuchsrv-accept/share"] {
+            let (r, _, e) = run(&["-R", "755", op], &sc);
+            assert_eq!(r, 1, "floor {op}: {e}");
+            assert!(
+                e.contains("it is dangerous to operate recursively on"),
+                "floor {op}: {e}"
+            );
+            // flag-independent: the floor survives --no-preserve-root
+            let (r, _, e) = run(
+                &["-R", "--no-preserve-root", "--preserve-root", "755", op],
+                &sc,
+            );
+            assert_eq!(r, 1, "floor+flag {op}");
+            assert!(e.contains("it is dangerous to operate recursively on"));
+        }
+        // non-recursive on a root spelling is not the failsafe's business
+        // (GNU E1/E3): plain access failure, no refusal
+        let (r, _, e) = run(&["755", "Q:\\nosuch"], &sc);
+        assert_eq!(r, 1);
+        assert!(e.contains("cannot access"));
+        assert!(!e.contains("dangerous"));
+    }
+
+    #[test]
+    fn dash_mode_words() {
+        // GNU chmod.c optstring declares the mode letters as optional-
+        // argument short options; a dash token whose first non-{v,c,f,R}
+        // char is a mode letter is the MODE word (probed Q1/Q2/Q5/Q6).
+        let sc = ScratchCtx::new("chmod-dash");
+        std::fs::write(sc.path("f"), "x").unwrap();
+        // `-X` modes the file (Q1: rc 0, silent)
+        assert_eq!(run(&["-X", "f"], &sc).0, 0);
+        // `-wX 755 f` -> mode "-wX", "755" demoted to a file operand (Q6)
+        let (r, _, e) = run(&["-wX", "755", "f"], &sc);
+        assert_eq!(r, 1);
+        assert!(e.contains("cannot access '755'"), "{e}");
+        // `755 -X f` same demotion (Q5)
+        let (r, _, e) = run(&["755", "-X", "f"], &sc);
+        assert_eq!(r, 1);
+        assert!(e.contains("cannot access '755'"), "{e}");
+        // `-Q` is still an invalid option (Q2)
+        let (r, _, e) = run(&["-Q", "755", "f"], &sc);
+        assert_eq!(r, 1);
+        assert!(e.contains("invalid option -- 'Q'"));
+        assert!(e.contains("Try 'chmod --help' for more information."));
+        // `-q` too (Q3)
+        let (r, _, e) = run(&["-q", "755", "f"], &sc);
+        assert_eq!(r, 1);
+        assert!(e.contains("invalid option -- 'q'"));
+        // `-R755` becomes the invalid mode "-R755" (getopt grabs the token)
+        let (r, _, e) = run(&["-R755", "f"], &sc);
+        assert_eq!(r, 1);
+        assert!(e.contains("invalid mode: '-R755'"), "{e}");
+        // real dash modes apply: -r clears every read bit
+        assert_eq!(run(&["-r", "f"], &sc).0, 0);
+        assert!(mode_of(&sc, "f") & 0o200 == 0);
+        // adding w back goes through the positional mode word ("+w" is a
+        // non-dash token -> plain mode operand, GNU `chmod +w f`)
+        assert_eq!(run(&["+w", "f"], &sc).0, 0);
+        assert!(mode_of(&sc, "f") & 0o200 != 0);
+    }
+
+    #[test]
+    fn junction_to_volume_root_is_refused() {
+        // Blocker 3 e2e: a junction whose TARGET is a volume root carries
+        // the root identity through the link (GNU refuses
+        // `chmod -RH --preserve-root <symlink-to-root>` via stat(dev,ino);
+        // the Windows analog refuses before any traversal). The refusal is
+        // lexical (read_link + normalize), so nothing is walked even if
+        // the guard were broken is impossible here: the refusal precedes
+        // every filesystem call. Junctions need no privilege (mklink /J).
+        let sc = ScratchCtx::new("chmod-junc");
+        let out = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(sc.path("junc-root"))
+            .arg("C:\\")
+            .output()
+            .expect("mklink /J");
+        if !out.status.success() {
+            // junction creation unavailable on this host: skip safely
+            return;
+        }
+        for flags in [vec!["-R", "755"], vec!["-R", "--preserve-root", "755"]] {
+            let mut argv = flags;
+            argv.push("junc-root");
+            let (r, _, e) = run(&argv, &sc);
+            assert_eq!(r, 1, "junction refusal: {e}");
+            assert!(
+                e.contains("it is dangerous to operate recursively on"),
+                "{e}"
+            );
+            assert!(e.contains("use --no-preserve-root to override this failsafe"));
+        }
+        // a junction onto a SUBDIRECTORY of the sandbox is not a root:
+        // GNU COMFOLLOW traverses the referent (probed C3)
         std::fs::create_dir_all(sc.path("sub/deep")).unwrap();
-        assert_eq!(run(&["-R", "755", "sub"], &sc).0, 0);
+        std::fs::write(sc.path("sub/deep/x"), "x").unwrap();
+        let out = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(sc.path("junc-sub"))
+            .arg(sc.path("sub"))
+            .output()
+            .expect("mklink /J");
+        if out.status.success() {
+            let (r, _, e) = run(&["-R", "755", "junc-sub"], &sc);
+            assert_eq!(r, 0, "{e}");
+        }
+    }
+
+    #[test]
+    fn traversal_skips_symlinks_with_verbose_line() {
+        // GNU FTS_PHYSICAL: -R never chmods symlink entries; -v prints the
+        // skip line with the entry path (probed C1), non-verbose is silent.
+        let sc = ScratchCtx::new("chmod-sym");
+        std::fs::create_dir(sc.path("dir")).unwrap();
+        std::fs::write(sc.path("dir/f"), "x").unwrap();
+        let target = sc.path("dir/f");
+        let link = sc.path("dir/lf");
+        #[cfg(windows)]
+        {
+            // symlinks need privilege; a plain file stand-in would not be
+            // a symlink — only assert when creation succeeds
+            if std::os::windows::fs::symlink_file(&target, &link).is_err() {
+                return;
+            }
+        }
+        let (r, out, _) = run(&["-vR", "700", "dir"], &sc);
+        assert_eq!(r, 0);
+        assert!(
+            out.contains("neither symbolic link 'dir/lf' nor referent has been changed"),
+            "{out}"
+        );
+        // target untouched by the skip
+        assert!(mode_of(&sc, "dir/f") & 0o200 != 0);
+        // non-verbose: silent skip
+        std::fs::write(sc.path("dir/g"), "x").unwrap();
+        let (r, out, _) = run(&["-R", "700", "dir"], &sc);
+        assert_eq!(r, 0);
+        assert!(!out.contains("neither symbolic link"), "{out}");
     }
 }

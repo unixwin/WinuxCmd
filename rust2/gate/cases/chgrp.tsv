@@ -21,6 +21,6 @@ cg18-from-unrecognized	strict	printf x > f			--from=bad	root	f
 cg19-named-group-verbose	win	printf x > f			-v	Everyone	f
 cg20-named-group-silent	win	printf x > f			Everyone	f
 cg21-numeric-verbose	note	printf x > f			-v	1	f
-cg22-help	strict				--help
-cg23-version	strict				--version
+cg22-help	win				--help
+cg23-version	win				--version
 cg24-numeric-two-files	strict	printf x > a; printf x > b			0	a	b

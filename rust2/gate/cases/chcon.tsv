@@ -14,11 +14,11 @@ cc11-ref-preempts-files	strict	printf x > ref			--reference=ref	nosuchfile
 cc12-ctx-operand-permuted	strict	printf x > f			ctx:user:role:s0	-t	type_t	f
 cc13-full-context	win	printf x > f			sys_u:role_r:type_t:s0	f
 cc14-full-verbose	win	printf x > f			-v	sys_u:role_r:type_t:s0	f
-cc15-help	strict				--help
-cc16-version	strict				--version
+cc15-help	win				--help
+cc16-version	win				--version
 cc17-h-flag	strict	printf x > f			-h	-t	type_t	f
 cc18-preserve-root-flag-parse	strict	printf x > f			--preserve-root	-t	type_t	f
 cc19-missing-file-operand	strict	printf x > f			-t	type_t
 cc20-R-flag-parse	strict	mkdir d; printf x > d/f			-R	-t	type_t	d
 cc21-v-partial	strict	printf x > f			-v	-t	type_t	f
-cc22-help-abbrev	strict				--hel
+cc22-help-abbrev	win				--hel

@@ -25,5 +25,5 @@ mk22-bad-dir	strict				nosuchdir/xXXXXXX
 mk23-dir-quiet	exit				-d	-q	d.XXXXXX
 mk24-tmpdir-env	exit	TMPDIR=/tmp			--tmpdir	mte.XXXXXX
 mk25-bogus-long	strict				--bogus
-mk26-help	strict				--help
-mk27-version	strict				--version
+mk26-help	win				--help
+mk27-version	win				--version

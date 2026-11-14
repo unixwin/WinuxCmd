@@ -29,38 +29,38 @@
 //! and error paths match GNU byte-shape on stderr-ignored rc.
 
 use std::ffi::OsString;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::argopt::{self, OptSpec};
-use crate::chown::{get_owner_group, lookup_account, lookup_sid_name, set_owner_group};
-use crate::fsutil::resolve;
+use crate::chown::{
+    get_owner_group, lookup_account, lookup_sid_name, set_owner_group, BitMode, DerefMachine,
+};
+use crate::fsutil::{
+    is_native_root_operand, is_preserve_root_operand, link_target_is_root,
+    preserve_root_refusal_lines, resolve,
+};
 use crate::gnuhelp;
 use winux_core::{CmdResult, Ctx, Io};
 
+/// Registration order mirrors upstream chgrp.c's long_options table
+/// (fetched 9.4 source: recursive, changes, dereference, no-dereference,
+/// no-preserve-root, preserve-root, quiet, silent, reference, verbose) so
+/// ambiguity listings match GNU's candidate order. -H/-L/-P are short-only
+/// upstream; --from does not exist in chgrp (probed e5: unrecognized).
 const OPTS: &[OptSpec] = &[
+    OptSpec {
+        short: Some('R'),
+        long: "recursive",
+        takes_value: false,
+    },
     OptSpec {
         short: Some('c'),
         long: "changes",
         takes_value: false,
     },
     OptSpec {
-        short: Some('f'),
-        long: "silent",
-        takes_value: false,
-    },
-    OptSpec {
         short: None,
-        long: "quiet",
-        takes_value: false,
-    },
-    OptSpec {
-        short: Some('v'),
-        long: "verbose",
-        takes_value: false,
-    },
-    OptSpec {
-        short: Some('R'),
-        long: "recursive",
+        long: "dereference",
         takes_value: false,
     },
     OptSpec {
@@ -70,7 +70,32 @@ const OPTS: &[OptSpec] = &[
     },
     OptSpec {
         short: None,
-        long: "dereference",
+        long: "no-preserve-root",
+        takes_value: false,
+    },
+    OptSpec {
+        short: None,
+        long: "preserve-root",
+        takes_value: false,
+    },
+    OptSpec {
+        short: Some('f'),
+        long: "quiet",
+        takes_value: false,
+    },
+    OptSpec {
+        short: None,
+        long: "silent",
+        takes_value: false,
+    },
+    OptSpec {
+        short: None,
+        long: "reference",
+        takes_value: true,
+    },
+    OptSpec {
+        short: Some('v'),
+        long: "verbose",
         takes_value: false,
     },
     OptSpec {
@@ -86,21 +111,6 @@ const OPTS: &[OptSpec] = &[
     OptSpec {
         short: Some('P'),
         long: "",
-        takes_value: false,
-    },
-    OptSpec {
-        short: None,
-        long: "reference",
-        takes_value: true,
-    },
-    OptSpec {
-        short: None,
-        long: "preserve-root",
-        takes_value: false,
-    },
-    OptSpec {
-        short: None,
-        long: "no-preserve-root",
         takes_value: false,
     },
 ];
@@ -206,17 +216,18 @@ pub fn chgrp_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let verbose = p.has("verbose");
     let changes_only = p.has("changes");
     let silent = p.has("silent") || p.has("quiet");
-    let recursive = p.has("recursive");
-    let preserve_root = p.has("preserve-root");
+    // GNU getopt assignment order: the LAST of --preserve-root /
+    // --no-preserve-root wins (probed P15/P16).
+    let preserve_root =
+        p.flag_last(&["preserve-root", "no-preserve-root"]) == Some("preserve-root");
 
-    // probed G11: `-R --dereference` without -H/-L is a hard error
-    if recursive && p.has("dereference") && !p.has("H") && !p.has("L") {
-        let _ = writeln!(
-            io.stderr,
-            "chgrp: -R --dereference requires either -H or -L"
-        );
+    // upstream dereference/traversal machine (see DerefMachine)
+    let deref = DerefMachine::parse(&p);
+    if let Some(msg) = deref.combo_error() {
+        let _ = writeln!(io.stderr, "chgrp: {msg}");
         return Ok(1);
     }
+    let recursive = deref.recursive;
 
     // Operand split (probed): GROUP first, files after; --reference makes
     // every positional a file.
@@ -287,34 +298,44 @@ pub fn chgrp_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         };
     }
 
-    // --preserve-root + -R on the root (probed case 12 wording)
-    if recursive && preserve_root {
-        for f in &files {
-            if is_root_operand(ctx, f) {
-                let _ = writeln!(
-                    io.stderr,
-                    "chgrp: it is dangerous to operate recursively on '/'"
-                );
-                let _ = writeln!(
-                    io.stderr,
-                    "chgrp: use --no-preserve-root to override this failsafe"
-                );
-                return Ok(1);
-            }
-        }
-    }
-
+    // GNU fires the failsafe per traversed operand in argv order (probed
+    // g7: a missing operand BEFORE the root is reported first), and keeps
+    // going after the warn (upstream `ok &= change_file_owner`).
     let mut failed = false;
     for file in &files {
+        let resolved = resolve(ctx, file);
+        if recursive && preserve_root && is_preserve_root_operand(ctx, file, &resolved) {
+            for line in preserve_root_refusal_lines("chgrp", file) {
+                let _ = writeln!(io.stderr, "{line}");
+            }
+            failed = true;
+            continue;
+        }
+        // Default-walk safety floor (A1 adjudication): real native volume
+        // roots and reparse points resolving onto roots are refused even
+        // without --preserve-root; the shell-namespace sandbox stays
+        // walkable exactly like GNU "/". Flag-independent.
+        let is_link = std::fs::symlink_metadata(&resolved)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false);
+        let link_carries_root = recursive && is_link && link_target_is_root(ctx, &resolved);
+        if recursive && (is_native_root_operand(ctx, file, &resolved) || link_carries_root) {
+            for line in preserve_root_refusal_lines("chgrp", file) {
+                let _ = writeln!(io.stderr, "{line}");
+            }
+            failed = true;
+            continue;
+        }
         if !process_file(
             io,
             ctx,
             file,
+            &resolved,
             &target,
             verbose,
             changes_only,
             silent,
-            recursive,
+            &deref,
         ) {
             failed = true;
         }
@@ -322,54 +343,72 @@ pub fn chgrp_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     Ok(if failed { 1 } else { 0 })
 }
 
-/// The '--' operand: GNU compares the resolved path against '/'.
-fn is_root_operand(ctx: &Ctx, file: &str) -> bool {
-    // GNU keys the failsafe on the operand being the root itself
-    // (chgrp.c passes the name through the same protect-line as du's):
-    // the POSIX spelling "/" IS the namespace root whatever native path
-    // the mapper resolves it into. "//" is deliberately excluded — POSIX
-    // makes exactly-two-slashes implementation-defined and GNU does not
-    // refuse it.
-    if file == "/" {
-        return true;
-    }
-    let native = resolve(ctx, file).to_string_lossy().into_owned();
-    let stripped = native.trim_end_matches(['\\', '/']);
-    if stripped.is_empty() {
-        // POSIX "/" resolving to a bare slash root.
-        return true;
-    }
-    // A volume/share root survives trimming: "D:\", "D:", a UNC share root
-    // ("\\srv\share"). Anything deeper has a normal component below the
-    // root. (The first session's parent().is_none() test never fired for a
-    // resolved drive root — Path::parent("D:\") is Some(""), not None — so
-    // cg15 silently walked the operand instead of refusing.)
-    use std::path::Component;
-    match Path::new(&native)
-        .components()
-        .collect::<Vec<_>>()
-        .as_slice()
-    {
-        [Component::Prefix(_)] => true,
-        [Component::RootDir] => true,
-        [Component::Prefix(_), Component::RootDir] => true,
-        _ => false,
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 fn process_file(
     io: &mut Io,
     ctx: &Ctx,
     file: &str,
+    resolved: &Path,
     target: &GroupTarget,
     verbose: bool,
     changes_only: bool,
     silent: bool,
-    recursive: bool,
+    deref: &DerefMachine,
 ) -> bool {
-    let path = resolve(ctx, file);
-    let meta = match path.metadata() {
+    // Existence and identity come from the metadata that matches the
+    // dereference policy: GNU non-recursive dereferences command-line
+    // links (probed G13/G15), -h acts on the link itself (G14), and -R
+    // with -H/-L follows links to directories (G17/G18).
+    let is_link = std::fs::symlink_metadata(resolved)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false);
+    if is_link {
+        if deref.recursive && deref.bit == BitMode::Physical {
+            // GNU default -P recursion lchowns the link itself and never
+            // descends (probed G16). Windows NamedSecurityInfo calls follow
+            // reparse points, so the link's own group is not touchable —
+            // mapped through upstream's lchown EOPNOTSUPP rule (chown-core.c
+            // ignores EOPNOTSUPP on links): silent, successful, no output.
+            return true;
+        }
+        if deref.recursive || deref.affect_symlink_referent() {
+            // dereference: command-line links act on the referent (-H/-L
+            // also traverse it when it is a directory).
+            let meta = match resolved.metadata() {
+                Ok(m) => m,
+                Err(_) => {
+                    if !silent {
+                        let _ = writeln!(
+                            io.stderr,
+                            "chgrp: cannot access '{file}': No such file or directory"
+                        );
+                    }
+                    return false;
+                }
+            };
+            let mut ok = apply_group(io, resolved, file, target, verbose, changes_only, silent);
+            if deref.recursive && meta.is_dir() {
+                let mut visited = std::collections::HashSet::new();
+                ok &= walk_dir(
+                    io,
+                    ctx,
+                    resolved,
+                    file,
+                    target,
+                    verbose,
+                    changes_only,
+                    silent,
+                    deref,
+                    &mut visited,
+                );
+            }
+            return ok;
+        }
+        // non-recursive -h: GNU lchowns the link; Windows cannot — same
+        // EOPNOTSUPP mapping as above: silent success.
+        return true;
+    }
+    let meta = match resolved.metadata() {
         Ok(m) => m,
         Err(_) => {
             if !silent {
@@ -381,12 +420,32 @@ fn process_file(
             return false;
         }
     };
-    if meta.is_dir() && recursive {
-        return walk_dir(io, ctx, &path, file, target, verbose, changes_only, silent);
+    if meta.is_dir() && deref.recursive {
+        let mut visited = std::collections::HashSet::new();
+        return walk_dir(
+            io,
+            ctx,
+            resolved,
+            file,
+            target,
+            verbose,
+            changes_only,
+            silent,
+            deref,
+            &mut visited,
+        );
     }
-    apply_group(io, &path, file, target, verbose, changes_only, silent)
+    apply_group(io, resolved, file, target, verbose, changes_only, silent)
 }
 
+/// Physical traversal with the upstream link policy: -P/default leaves
+/// symlink entries untouched on Windows (upstream lchowns the link itself;
+/// NamedSecurityInfo follows reparse points, so the link's own group is
+/// unreachable here — the EOPNOTSUPP-ignored mapping), while -H/-L
+/// dereference link entries and -L additionally descends through
+/// link-to-directory entries with a cycle guard (fts FTS_LOGICAL; the M2
+/// G22 loop cell shows upstream silently refusing to re-descend).
+#[allow(clippy::too_many_arguments)]
 fn walk_dir(
     io: &mut Io,
     ctx: &Ctx,
@@ -396,8 +455,16 @@ fn walk_dir(
     verbose: bool,
     changes_only: bool,
     silent: bool,
+    deref: &DerefMachine,
+    visited: &mut std::collections::HashSet<PathBuf>,
 ) -> bool {
     let mut ok = apply_group(io, dir, display, target, verbose, changes_only, silent);
+    // shared cycle guard: -L descends through links, so a link-to-ancestor
+    // must not re-enter a visited directory (fts FTS_DC skips silently).
+    let key = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    if !visited.insert(key) {
+        return ok;
+    }
     let read = match std::fs::read_dir(dir) {
         Ok(r) => r,
         Err(_) => return ok,
@@ -405,8 +472,58 @@ fn walk_dir(
     for entry in read.flatten() {
         let child = entry.path();
         let child_display = format!("{display}/{}", entry.file_name().to_string_lossy());
-        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
-        if is_dir {
+        let ft = match entry.file_type() {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        if ft.is_symlink() {
+            if !deref.affect_symlink_referent() {
+                // upstream lchowns the link itself; unreachable on Windows
+                // (NamedSecurityInfo follows) — EOPNOTSUPP mapping: silent.
+                continue;
+            }
+            // dereference the entry (upstream -H/-L behavior, probed G3/G4):
+            // a link resolving onto a filesystem/namespace root carries the
+            // root identity through the link (upstream stat(dev,ino)
+            // refuses it mid-traversal, probed P12) — print the failsafe
+            // with the ENCOUNTERED path and skip the entry.
+            if link_target_is_root(ctx, &child) {
+                for line in preserve_root_refusal_lines("chgrp", &child_display) {
+                    let _ = writeln!(io.stderr, "{line}");
+                }
+                ok = false;
+                continue;
+            }
+            ok &= apply_group(
+                io,
+                &child,
+                &child_display,
+                target,
+                verbose,
+                changes_only,
+                silent,
+            );
+            let follows_dir = deref.bit == BitMode::Logical
+                && std::fs::metadata(&child)
+                    .map(|m| m.is_dir())
+                    .unwrap_or(false);
+            if follows_dir {
+                ok &= walk_dir(
+                    io,
+                    ctx,
+                    &child,
+                    &child_display,
+                    target,
+                    verbose,
+                    changes_only,
+                    silent,
+                    deref,
+                    visited,
+                );
+            }
+            continue;
+        }
+        if ft.is_dir() {
             ok &= walk_dir(
                 io,
                 ctx,
@@ -416,6 +533,8 @@ fn walk_dir(
                 verbose,
                 changes_only,
                 silent,
+                deref,
+                visited,
             );
         } else {
             ok &= apply_group(
@@ -596,16 +715,72 @@ mod tests {
 
     #[test]
     fn recursive_combo_and_preserve_root() {
-        // probed G11 and case 12
-        let sc = ScratchCtx::new("chgrp-rec");
+        // probed G11/case 12 + the dereference machine cells (e9/e10/H6/H7)
+        // and the opt-in refusal (M1 A/B, M2 P-cells).
+        let mut sc = ScratchCtx::new("chgrp-rec");
+        // sandbox shell root: the refused operand never names a real root
+        sc.env.set("__RUBASH_SHELL_ROOT", &sc.dir.to_string_lossy());
         std::fs::write(sc.path("f"), "x").unwrap();
         let (r, _, err) = run_in(&sc, &["-R", "--dereference", "0", "f"]);
         assert_eq!(r, 1);
-        assert!(err.contains("-R --dereference requires either -H or -L"));
-        let (r, _, err) = run_in(&sc, &["--preserve-root", "-R", "0", "/"]);
+        assert!(err.contains("chgrp: -R --dereference requires either -H or -L"));
+        // bare error() shape — no Try line (probed G5)
+        assert!(!err.contains("Try 'chgrp --help'"));
+        // -h AFTER --dereference resets it (probed e10: rc 0)
+        assert_eq!(run_in(&sc, &["--dereference", "-h", "-R", "0", "f"]).0, 0);
+        // -h BEFORE --dereference leaves dereference on (probed e9)
+        let (r, _, err) = run_in(&sc, &["-h", "--dereference", "-R", "0", "f"]);
         assert_eq!(r, 1);
-        assert!(err.contains("it is dangerous to operate recursively on '/'"));
-        assert!(err.contains("use --no-preserve-root to override this failsafe"));
+        assert!(err.contains("-R --dereference requires either -H or -L"));
+        // -H implies dereference: accepted (probed G6)
+        assert_eq!(run_in(&sc, &["-R", "--dereference", "-H", "0", "f"]).0, 0);
+        // -P with --dereference still errors (probed G8/H6)
+        let (r, _, err) = run_in(&sc, &["-R", "-P", "--dereference", "0", "f"]);
+        assert_eq!(r, 1);
+        assert!(err.contains("-R --dereference requires either -H or -L"));
+
+        // refusal is opt-in: the sandbox namespace root walks by default
+        // (GNU M1 B2) and refuses with the suffix form under the explicit
+        // flag (probed P4 `/.`)
+        let (r, _, err) = run_in(&sc, &["-R", "0", "."]);
+        assert_eq!(r, 0);
+        let (r, _, err) = run_in(&sc, &["--preserve-root", "-R", "0", "."]);
+        assert_eq!(r, 1);
+        assert!(
+            err.contains("chgrp: it is dangerous to operate recursively on '.' (same as '/')"),
+            "{err}"
+        );
+        assert!(err.contains("chgrp: use --no-preserve-root to override this failsafe"));
+        // last flag wins (probed P15/P16)
+        assert_eq!(
+            run_in(
+                &sc,
+                &["-R", "--preserve-root", "--no-preserve-root", "0", "."]
+            )
+            .0,
+            0
+        );
+        let (r, _, err) = run_in(
+            &sc,
+            &["-R", "--no-preserve-root", "--preserve-root", "0", "."],
+        );
+        assert_eq!(r, 1);
+        assert!(err.contains("it is dangerous to operate recursively on '.'"));
+        // native-root floor is flag-independent (A1 adjudication)
+        for op in ["C:\\", "/e/.."] {
+            let (r, _, err) = run_in(&sc, &["-R", "0", op]);
+            assert_eq!(r, 1, "floor {op}");
+            assert!(
+                err.contains("it is dangerous to operate recursively on"),
+                "{err}"
+            );
+        }
+        // per-operand order: an earlier missing operand is reported first,
+        // and traversal continues after the warn (probed g7/P14)
+        let (r, _, err) = run_in(&sc, &["-R", "--preserve-root", "0", "nosuch", "."]);
+        assert_eq!(r, 1);
+        assert!(err.contains("cannot access 'nosuch'"));
+        assert!(err.contains("it is dangerous to operate recursively on '.'"));
     }
 
     #[test]
@@ -637,12 +812,17 @@ mod tests {
 
     #[test]
     fn gnu_has_no_from_option() {
-        // probed case 1/2: --from is unrecognized (chown-only option)
+        // probed case 1/2 + e5: --from is unrecognized (chown-only option);
+        // the message carries the inline value ("--from=1" upstream)
         let sc = ScratchCtx::new("chgrp-from");
         std::fs::write(sc.path("f"), "x").unwrap();
         let (r, _, err) = run_in(&sc, &["--from=badgrp", "root", "f"]);
         assert_eq!(r, 1);
-        assert!(err.contains("unrecognized option '--from'"));
+        assert!(err.contains("unrecognized option '--from=badgrp'"), "{err}");
+        // plain unknown longs keep the bare token (probed e1)
+        let (r, _, err) = run_in(&sc, &["--badopt", "0", "f"]);
+        assert_eq!(r, 1);
+        assert!(err.contains("unrecognized option '--badopt'"));
     }
 
     #[test]

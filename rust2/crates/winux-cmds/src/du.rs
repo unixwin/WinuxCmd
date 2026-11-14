@@ -699,13 +699,14 @@ fn walk(
                 Err(_) => continue,
             };
             let child_is_symlink = child_meta.file_type().is_symlink();
-            let child_is_dir = child_meta.is_dir()
-                && !child_is_symlink
-                && !(cfg.deref_all && {
-                    std::fs::metadata(&child)
+            // GNU -L: real directories always descend; a symlink counts as a
+            // directory only when --dereference follows it to one.
+            let child_is_dir = (child_meta.is_dir() && !child_is_symlink)
+                || (cfg.deref_all
+                    && child_is_symlink
+                    && std::fs::metadata(&child)
                         .map(|m| m.is_dir())
-                        .unwrap_or(false)
-                });
+                        .unwrap_or(false));
             if child_is_dir {
                 // [GNU] every counted directory enters the already-counted
                 // hash so a later operand nested inside it is skipped whole

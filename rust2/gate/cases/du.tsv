@@ -38,8 +38,8 @@ du37-repeated-file	strict	printf '12345' > f5			-b	f5	f5
 du38-repeated-file-l	strict	printf '12345' > f5			-lb	f5	f5
 du39-nested-operand	strict	mkdir -p d1/d2; echo x > d1/f			-b	d1	d1/d2
 du40-repeated-zero-size	strict	: > f0			-b	f0	f0
-du28-help	strict				--help
-du29-version	strict				--version
+du28-help	win				--help
+du29-version	win				--version
 du30-noargs	win	mkdir -p d; printf a > d/x			-b
 du31-block-size-bogus	strict	printf a > a			--block-size=bogus	a
 du32-d0-file	strict	printf a > a			-b	-d	0	a

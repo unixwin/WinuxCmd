@@ -42,31 +42,28 @@
 //! current user, and never assign ownership to a different account.
 
 use std::ffi::OsString;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::argopt::{self, OptSpec};
-use crate::fsutil::resolve;
+use crate::fsutil::{
+    is_native_root_operand, is_preserve_root_operand, link_target_is_root,
+    preserve_root_refusal_lines, resolve,
+};
 use winux_core::{usage_error, CmdResult, Ctx, Io};
 
+/// Registration order mirrors upstream chown.c's long_options table
+/// (fetched 9.4 source: recursive, changes, dereference, from,
+/// no-dereference, no-preserve-root, preserve-root, quiet, silent,
+/// reference, verbose). -H/-L/-P are short-only upstream. The 1.x
+/// invented longs were wrong on three counts: -L is not --dereference
+/// (a standalone GNU option), -P is not --no-dereference (that is -h's
+/// long form), and -H had no long at all — the invented names also broke
+/// abbreviation (probed f4: `--no-d` resolves to --no-dereference
+/// upstream, and the old table made it ambiguous).
 const OPTS: &[OptSpec] = &[
     OptSpec {
         short: Some('R'),
         long: "recursive",
-        takes_value: false,
-    },
-    OptSpec {
-        short: None,
-        long: "rec",
-        takes_value: false,
-    },
-    OptSpec {
-        short: Some('v'),
-        long: "verbose",
-        takes_value: false,
-    },
-    OptSpec {
-        short: None,
-        long: "verb",
         takes_value: false,
     },
     OptSpec {
@@ -76,7 +73,27 @@ const OPTS: &[OptSpec] = &[
     },
     OptSpec {
         short: None,
-        long: "cha",
+        long: "dereference",
+        takes_value: false,
+    },
+    OptSpec {
+        short: None,
+        long: "from",
+        takes_value: true,
+    },
+    OptSpec {
+        short: Some('h'),
+        long: "no-dereference",
+        takes_value: false,
+    },
+    OptSpec {
+        short: None,
+        long: "no-preserve-root",
+        takes_value: false,
+    },
+    OptSpec {
+        short: None,
+        long: "preserve-root",
         takes_value: false,
     },
     OptSpec {
@@ -86,27 +103,7 @@ const OPTS: &[OptSpec] = &[
     },
     OptSpec {
         short: None,
-        long: "sil",
-        takes_value: false,
-    },
-    OptSpec {
-        short: Some('H'),
-        long: "dereference-args",
-        takes_value: false,
-    },
-    OptSpec {
-        short: Some('L'),
-        long: "dereference",
-        takes_value: false,
-    },
-    OptSpec {
-        short: Some('P'),
-        long: "no-dereference",
-        takes_value: false,
-    },
-    OptSpec {
-        short: Some('h'),
-        long: "no-dereference-short",
+        long: "silent",
         takes_value: false,
     },
     OptSpec {
@@ -115,21 +112,101 @@ const OPTS: &[OptSpec] = &[
         takes_value: true,
     },
     OptSpec {
-        short: None,
-        long: "from",
-        takes_value: true,
-    },
-    OptSpec {
-        short: None,
-        long: "preserve-root",
+        short: Some('v'),
+        long: "verbose",
         takes_value: false,
     },
     OptSpec {
-        short: None,
-        long: "no-preserve-root",
+        short: Some('H'),
+        long: "",
+        takes_value: false,
+    },
+    OptSpec {
+        short: Some('L'),
+        long: "",
+        takes_value: false,
+    },
+    OptSpec {
+        short: Some('P'),
+        long: "",
         takes_value: false,
     },
 ];
+
+/// The upstream dereference state machine (chown.c 9.4; shared with
+/// chgrp.rs). `-H`/`-L` imply dereference-on; `-P` forces the physical
+/// bit; `--dereference`/`-h` set dereference directly; a `-R` seen while
+/// dereference is still unspecified pins it to off. The `-R --dereference
+/// requires either -H or -L` error is decided after the full parse when
+/// the traversal bit is still physical and dereference is on (probed
+/// H7: `-P -R --dereference` still errors; e9/e10 fix the order).
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum BitMode {
+    Physical,
+    Comfollow,
+    Logical,
+}
+
+pub(crate) struct DerefMachine {
+    pub bit: BitMode,
+    deref: i32,
+    pub recursive: bool,
+}
+
+impl DerefMachine {
+    pub fn new() -> Self {
+        Self {
+            bit: BitMode::Physical,
+            deref: -1,
+            recursive: false,
+        }
+    }
+
+    pub fn feed(&mut self, key: &str) {
+        match key {
+            "H" => {
+                self.bit = BitMode::Comfollow;
+                self.deref = 1;
+            }
+            "L" => {
+                self.bit = BitMode::Logical;
+                self.deref = 1;
+            }
+            "P" => self.bit = BitMode::Physical,
+            "dereference" => self.deref = 1,
+            "no-dereference" => self.deref = 0,
+            "recursive" => {
+                self.recursive = true;
+                if self.deref == -1 {
+                    self.deref = 0;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub fn parse(p: &argopt::Parsed) -> Self {
+        let mut m = Self::new();
+        for f in &p.flags {
+            m.feed(f);
+        }
+        m
+    }
+
+    /// Upstream error, decided post-parse. rc 1, no Try line (error(),
+    /// not usage() — probed G5/O5).
+    pub fn combo_error(&self) -> Option<&'static str> {
+        if self.recursive && self.bit == BitMode::Physical && self.deref == 1 {
+            Some("-R --dereference requires either -H or -L")
+        } else {
+            None
+        }
+    }
+
+    pub fn affect_symlink_referent(&self) -> bool {
+        self.deref != 0
+    }
+}
 
 /// One resolved spec part: absent, numeric (no Windows model), or a
 /// resolved SID with a display name.
@@ -144,10 +221,13 @@ enum Part {
 struct Spec {
     owner: Part,
     group: Part,
-    /// spec contained `:` (drives the `owner:group` wording shape)
+    /// spec contained `:` (or the deprecated `.` alias — both drive the
+    /// `owner:group` wording shape)
     colon: bool,
     /// nothing was requested at all (`""` or `":"`) — bare `retained`
     noop: bool,
+    /// deprecated BSD dot form was used (drives the should-be-':' warning)
+    dot: bool,
 }
 
 // ---------------------------------------------------------------- FFI
@@ -450,20 +530,44 @@ fn split_spec(spec: &str) -> Option<(String, Option<String>)> {
 
 /// Parse and validate a spec against the Windows account database.
 /// `Err(msg)` carries the GNU-shaped diagnostic message.
-fn parse_spec(spec: &str) -> Result<Spec, String> {
-    let (owner_s, group_s) = match split_spec(spec) {
-        Some(pg) => pg,
-        None => return Err(format!("invalid user: {}", winux_core::q(spec))),
+/// Parse an OWNER[:GROUP] spec. Errors carry the bare GNU wording (no
+/// "Try" line — upstream emits them via error(), not usage(); probed
+/// f6/f7/f11). The deprecated BSD dot form `owner.group` is accepted with
+/// the upstream warning when no colon is present (probed O15/O16/O18:
+/// `chown -v 0.0 f` warns and applies 0:0); a second dot makes the whole
+/// spec an invalid user (probed f11 `1.1.2`), and a colon present puts
+/// the dot back into the owner name (probed O17 `1.1:0` -> invalid user).
+/// `dot` reports that the deprecated form was used so the caller emits
+/// `chown: warning: '.' should be ':': '<spec>'` once per dot spec.
+fn parse_spec(spec: &str) -> Result<(Spec, bool), String> {
+    let dot_form = !spec.contains(':') && spec.contains('.');
+    let (owner_s, group_s) = if dot_form {
+        let (o, g) = spec.split_once('.').expect("dot_form implies a dot");
+        if g.contains('.') {
+            return Err(format!("invalid user: {}", winux_core::q(spec)));
+        }
+        (o.to_string(), Some(g.to_string()))
+    } else {
+        match split_spec(spec) {
+            // more than one colon: upstream classifies by the GROUP side
+            // (probed f6 `1:1:2` -> invalid group, whole spec)
+            None => return Err(format!("invalid group: {}", winux_core::q(spec))),
+            Some(pg) => pg,
+        }
     };
     let colon = group_s.is_some();
     if owner_s.is_empty() && group_s.as_ref().map(|g| g.is_empty()).unwrap_or(true) && colon {
         // bare ":" — no-change no-op
-        return Ok(Spec {
-            owner: Part::Absent,
-            group: Part::Absent,
-            colon,
-            noop: true,
-        });
+        return Ok((
+            Spec {
+                owner: Part::Absent,
+                group: Part::Absent,
+                colon,
+                noop: true,
+                dot: dot_form,
+            },
+            dot_form,
+        ));
     }
     // GNU validates user first, then group (verified error order)
     let owner = if owner_s.is_empty() {
@@ -481,32 +585,36 @@ fn parse_spec(spec: &str) -> Result<Spec, String> {
         if is_numeric(&owner_s) {
             return Err(format!("invalid spec: {}", winux_core::q(spec)));
         }
-        return Ok(Spec {
-            owner,
-            group: Part::Absent,
-            colon,
-            noop: false,
-        });
+        return Ok((
+            Spec {
+                owner,
+                group: Part::Absent,
+                colon,
+                noop: false,
+                dot: dot_form,
+            },
+            dot_form,
+        ));
     }
     let group = match group_s.as_deref() {
         None => Part::Absent,
         Some("") => Part::Absent,
         Some(g) => match resolve_part(g) {
             Some(p) => p,
-            None => {
-                return Err(format!(
-                    "invalid group: {}",
-                    winux_core::q(&format!(":{g}"))
-                ))
-            }
+            // upstream prints the WHOLE spec here (probed f6)
+            None => return Err(format!("invalid group: {}", winux_core::q(spec))),
         },
     };
-    Ok(Spec {
-        owner,
-        group,
-        colon,
-        noop: false,
-    })
+    Ok((
+        Spec {
+            owner,
+            group,
+            colon,
+            noop: false,
+            dot: dot_form,
+        },
+        dot_form,
+    ))
 }
 
 // -------------------------------------------------------------- driver
@@ -582,6 +690,15 @@ impl ChState<'_, '_> {
                 "ownership of {} retained",
                 winux_core::q(name)
             );
+        } else if matches!(spec.owner, Part::Absent) {
+            // group-only spec retained (upstream describe_change; probed
+            // f8 `:1`: "group of 'f' retained as <group>")
+            let _ = writeln!(
+                *self.io.stdout,
+                "group of {} retained as {}",
+                winux_core::q(name),
+                old_group
+            );
         } else {
             let shown = if spec.colon {
                 format!("{old_owner}:{old_group}")
@@ -599,8 +716,7 @@ impl ChState<'_, '_> {
         }
     }
 
-    fn process_file(&mut self, name: &str, path: &Path, spec: &Spec, deref: bool) {
-        let _ = deref;
+    fn process_file(&mut self, name: &str, path: &Path, spec: &Spec) {
         if !path.exists() {
             if !self.quiet {
                 let _ = writeln!(
@@ -740,9 +856,20 @@ pub fn chown_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     }
     let verbose = p.has("verbose");
     let changes_only = p.has("changes") && !verbose;
-    let quiet = p.has("quiet");
-    let recursive = p.has("recursive");
-    let no_preserve_root = p.has("no-preserve-root");
+    let quiet = p.has("quiet") || p.has("silent");
+
+    // upstream dereference/traversal machine (see DerefMachine); the combo
+    // error prints bare — rc 1, no Try line (probed O5).
+    let deref = DerefMachine::parse(&p);
+    if let Some(msg) = deref.combo_error() {
+        let _ = writeln!(io.stderr, "chown: {msg}");
+        return Ok(1);
+    }
+    let recursive = deref.recursive;
+    // GNU getopt assignment order: the LAST of --preserve-root /
+    // --no-preserve-root wins (probed P15/P16).
+    let preserve_root =
+        p.flag_last(&["preserve-root", "no-preserve-root"]) == Some("preserve-root");
 
     let reference = p.value_of("reference").map(|s| s.to_string());
     // --reference: every positional is a FILE operand (GNU verified).
@@ -782,6 +909,7 @@ pub fn chown_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             group: Part::Sid(g.clone(), lookup_sid_name(g).unwrap_or_else(|| "?".into())),
             colon: true,
             noop: false,
+            dot: false,
         },
         None => {
             let spec = p.positionals[0].to_string_lossy().into_owned();
@@ -791,9 +919,20 @@ pub fn chown_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 return Ok(1);
             }
             match parse_spec(&spec) {
-                Ok(s) => s,
+                Ok((s, dot)) => {
+                    if dot {
+                        // probed O15/O16 wording, emitted at parse time
+                        let _ = writeln!(
+                            io.stderr,
+                            "chown: warning: '.' should be ':': {}",
+                            winux_core::q(&spec)
+                        );
+                    }
+                    s
+                }
                 Err(msg) => {
-                    let _ = usage_error(io, "chown", &msg);
+                    // bare error() shape — no Try line (probed f6/f7/f11)
+                    let _ = writeln!(io.stderr, "chown: {msg}");
                     return Ok(1);
                 }
             }
@@ -802,9 +941,19 @@ pub fn chown_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
 
     let from = match p.value_of("from") {
         Some(f) => match parse_spec(f) {
-            Ok(s) => Some(s),
+            Ok((s, dot)) => {
+                if dot {
+                    // probed O18: --from=0.0 warns the same way
+                    let _ = writeln!(
+                        io.stderr,
+                        "chown: warning: '.' should be ':': {}",
+                        winux_core::q(f)
+                    );
+                }
+                Some(s)
+            }
             Err(msg) => {
-                let _ = usage_error(io, "chown", &msg);
+                let _ = writeln!(io.stderr, "chown: {msg}");
                 return Ok(1);
             }
         },
@@ -834,32 +983,96 @@ pub fn chown_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
 
     for name in &files {
         let path = resolve(ctx, Path::new(name));
-        if recursive && !no_preserve_root && path.exists() && crate::chmod::is_fs_root(&path) {
-            let _ = writeln!(
-                st.io.stderr,
-                "chown: it is dangerous to operate recursively on {}",
-                winux_core::q(name)
-            );
-            let _ = writeln!(
-                st.io.stderr,
-                "chown: use --no-preserve-root to override this failsafe"
-            );
+        // Explicit GNU failsafe, per traversed operand in argv order
+        // (upstream fires at FTS_D via ROOT_DEV_INO_CHECK; probed g7).
+        if recursive && preserve_root && is_preserve_root_operand(ctx, name, &path) {
+            for line in preserve_root_refusal_lines("chown", name) {
+                let _ = writeln!(st.io.stderr, "{line}");
+            }
             st.failed = true;
             continue;
         }
+        // Default-walk safety floor (A1 adjudication; see chmod). Native
+        // volume roots and reparse points resolving onto roots are refused
+        // even without --preserve-root; the namespace sandbox stays
+        // walkable like GNU "/". Flag-independent.
+        let is_link = std::fs::symlink_metadata(&path)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false);
+        let link_carries_root = recursive && is_link && link_target_is_root(ctx, &path);
+        if recursive && (is_native_root_operand(ctx, name, &path) || link_carries_root) {
+            for line in preserve_root_refusal_lines("chown", name) {
+                let _ = writeln!(st.io.stderr, "{line}");
+            }
+            st.failed = true;
+            continue;
+        }
+        if is_link {
+            if recursive && deref.bit == BitMode::Physical {
+                // upstream -P recursion lchowns the link itself and never
+                // descends (probed O12/G16). NamedSecurityInfo follows
+                // reparse points, so the link's own owner is unreachable —
+                // upstream's lchown EOPNOTSUPP-ignored rule maps this to a
+                // silent success.
+                continue;
+            }
+            if recursive || deref.affect_symlink_referent() {
+                // dereference the command-line link (-H/-L also traverse a
+                // directory referent; probed O13/O14/G17/G18).
+                let meta = match path.metadata() {
+                    Ok(m) => m,
+                    Err(_) => {
+                        if !quiet {
+                            let _ = writeln!(
+                                st.io.stderr,
+                                "chown: cannot access {}: No such file or directory",
+                                winux_core::q(name)
+                            );
+                        }
+                        st.failed = true;
+                        continue;
+                    }
+                };
+                st.process_file(name, &path, &spec);
+                if recursive && meta.is_dir() {
+                    let mut visited = std::collections::HashSet::new();
+                    walk_chown(ctx, &mut st, name, &path, &spec, &deref, &mut visited);
+                }
+                continue;
+            }
+            // non-recursive -h: upstream lchowns the link; unreachable on
+            // Windows — EOPNOTSUPP mapping: silent success.
+            continue;
+        }
         if recursive && path.is_dir() {
-            walk_chown(&mut st, name, &path, &spec);
+            let mut visited = std::collections::HashSet::new();
+            walk_chown(ctx, &mut st, name, &path, &spec, &deref, &mut visited);
         } else {
-            st.process_file(name, &path, &spec, true);
+            st.process_file(name, &path, &spec);
         }
     }
     Ok(if st.failed { 1 } else { 0 })
 }
 
-/// GNU fts preorder: directory first, then entries; symlink entries are
-/// not followed during traversal (default -P behavior).
-fn walk_chown(st: &mut ChState, display: &str, dir: &Path, spec: &Spec) {
-    st.process_file(display, dir, spec, false);
+/// GNU fts preorder with the upstream link policy (see the chgrp walker):
+/// -P/default leaves traversal links untouched on Windows (upstream
+/// lchowns them), -H/-L dereference link entries, and -L additionally
+/// descends through link-to-directory entries with a cycle guard.
+fn walk_chown(
+    ctx: &Ctx,
+    st: &mut ChState,
+    display: &str,
+    dir: &Path,
+    spec: &Spec,
+    deref: &DerefMachine,
+    visited: &mut std::collections::HashSet<PathBuf>,
+) {
+    st.process_file(display, dir, spec);
+    // shared cycle guard for -L link descents (fts FTS_DC skips silently)
+    let key = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    if !visited.insert(key) {
+        return;
+    }
     let rd = match std::fs::read_dir(dir) {
         Ok(r) => r,
         Err(_) => {
@@ -880,18 +1093,39 @@ fn walk_chown(st: &mut ChState, display: &str, dir: &Path, spec: &Spec) {
             Ok(t) => t,
             Err(_) => continue,
         };
-        if ft.is_symlink() {
-            continue;
-        }
         let child_display = format!(
             "{}/{}",
             display.trim_end_matches('/'),
             entry.file_name().to_string_lossy()
         );
+        if ft.is_symlink() {
+            if !deref.affect_symlink_referent() {
+                // upstream lchowns the link itself; unreachable on Windows
+                continue;
+            }
+            // a traversal link resolving onto a filesystem/namespace root
+            // carries the root identity through the link (upstream
+            // FTSENT_IS_DIRECTORY failsafe, probed P12) — refuse with the
+            // encountered path and skip.
+            if link_target_is_root(ctx, &p) {
+                for line in preserve_root_refusal_lines("chown", &child_display) {
+                    let _ = writeln!(st.io.stderr, "{line}");
+                }
+                st.failed = true;
+                continue;
+            }
+            st.process_file(&child_display, &p, spec);
+            let follows_dir = deref.bit == BitMode::Logical
+                && std::fs::metadata(&p).map(|m| m.is_dir()).unwrap_or(false);
+            if follows_dir {
+                walk_chown(ctx, st, &child_display, &p, spec, deref, visited);
+            }
+            continue;
+        }
         if ft.is_dir() {
-            walk_chown(st, &child_display, &p, spec);
+            walk_chown(ctx, st, &child_display, &p, spec, deref, visited);
         } else {
-            st.process_file(&child_display, &p, spec, false);
+            st.process_file(&child_display, &p, spec);
         }
     }
 }
@@ -953,10 +1187,12 @@ mod tests {
         let (r, _, e) = run(&[":nosuchgroup", "f"], &sc);
         assert_eq!(r, 1);
         assert!(e.contains("invalid group: ':nosuchgroup'"));
-        // two colons -> invalid user with the whole spec (GNU verified)
+        // two colons -> invalid GROUP with the whole spec, bare, no Try
+        // line (probed f6)
         let (r, _, e) = run(&["a:b:c", "f"], &sc);
         assert_eq!(r, 1);
-        assert!(e.contains("invalid user: 'a:b:c'"));
+        assert!(e.contains("invalid group: 'a:b:c'"), "{e}");
+        assert!(!e.contains("Try 'chown --help'"));
         // alphanumeric garbage -> invalid user (GNU verified 1234x)
         let (r, _, e) = run(&["1234x", "f"], &sc);
         assert_eq!(r, 1);
@@ -1098,16 +1334,96 @@ mod tests {
         let (r, _, e) = run(&["-f", "1234", "missing"], &sc);
         assert_eq!(r, 1);
         assert!(e.is_empty());
-        // preserve-root refusal under -R (drive root)
-        let root = sc
-            .dir
-            .components()
-            .next()
-            .map(|c| c.as_os_str().to_string_lossy().into_owned())
-            .unwrap();
-        let (r, _, e) = run(&["-R", "1234", &root], &sc);
+    }
+
+    #[test]
+    fn preserve_root() {
+        // GNU 9.4: refusal is opt-in (bool preserve_root = false in
+        // chown.c/chgrp.c main), last flag wins, and non-"/" spellings get
+        // the "(same as '/')" suffix (M1/M2/P-cells). The sandbox shell
+        // root is the namespace "/" and walks by default like GNU.
+        let mut sc = ScratchCtx::new("chown-root");
+        sc.env.set("__RUBASH_SHELL_ROOT", &sc.dir.to_string_lossy());
+        std::fs::write(sc.path("f"), "x").unwrap();
+        // default: GNU walks "/" (M1 B3)
+        assert_eq!(run(&["-R", "1234", "."], &sc).0, 0);
+        // explicit --preserve-root refuses (suffix form, probed P4)
+        let (r, _, e) = run(&["-R", "--preserve-root", "1234", "."], &sc);
         assert_eq!(r, 1);
-        assert!(e.contains("it is dangerous to operate recursively on"));
+        assert!(
+            e.contains("chown: it is dangerous to operate recursively on '.' (same as '/')"),
+            "{e}"
+        );
+        assert!(e.contains("chown: use --no-preserve-root to override this failsafe"));
+        // last flag wins (P15/P16)
+        assert_eq!(
+            run(
+                &["-R", "--preserve-root", "--no-preserve-root", "1234", "."],
+                &sc
+            )
+            .0,
+            0
+        );
+        // recursion-scoped: non-recursive is GNU E2 (no refusal)
+        assert_eq!(run(&["1234", "."], &sc).0, 0);
+        // native-root safety floor: flag-independent (A1 adjudication).
+        // "/" with the namespace configured maps onto the sandbox and is
+        // floor-exempt (it walked above); native volume roots refuse.
+        for op in ["C:\\", "/e/.."] {
+            let (r, _, e) = run(&["-R", "1234", op], &sc);
+            assert_eq!(r, 1, "floor {op}");
+            assert!(e.contains("it is dangerous to operate recursively on"));
+        }
+        // the -R --dereference combo error: bare wording, no Try line
+        // (probed O5), and -h resets it (probed e10/f9)
+        let (r, _, e) = run(&["-R", "--dereference", "1234", "f"], &sc);
+        assert_eq!(r, 1);
+        assert!(e.contains("chown: -R --dereference requires either -H or -L"));
+        assert!(!e.contains("Try 'chown --help'"));
+        assert_eq!(run(&["--dereference", "-h", "-R", "1234", "f"], &sc).0, 0);
+        // --no-d is an unambiguous --no-dereference abbreviation (probed f4;
+        // the old invented long table made it ambiguous)
+        assert_eq!(run(&["--no-d", "-v", "1234", "f"], &sc).0, 0);
+        // -H/-L imply dereference: -RH --dereference is accepted (probed G6)
+        assert_eq!(run(&["-RH", "--dereference", "1234", "f"], &sc).0, 0);
+    }
+
+    #[test]
+    fn dot_spec_alias_and_warning() {
+        // probed O15/O16/O17/O18/f11: `owner.group` applies as owner:group
+        // with `chown: warning: '.' should be ':': '<spec>'` on stderr;
+        // a second dot is an invalid user; a colon keeps the dot literal.
+        let sc = ScratchCtx::new("chown-dot");
+        std::fs::write(sc.path("f"), "x").unwrap();
+        let (r, out, e) = run(&["-v", "0.0", "f"], &sc);
+        assert_eq!(r, 0, "{e}");
+        assert!(
+            e.contains("chown: warning: '.' should be ':': '0.0'"),
+            "{e}"
+        );
+        assert!(!out.is_empty()); // retained/change line still printed
+                                  // numeric spec is a no-op here, so -v prints the retained line in
+                                  // the ownership shape (dot form shows owner:group wording)
+        assert!(out.contains("ownership of 'f' retained as"), "{out}");
+        // invalid user keeps the whole spec, no Try line (probed f11)
+        let (r, _, e) = run(&["1.1.2", "f"], &sc);
+        assert_eq!(r, 1);
+        assert!(e.contains("chown: invalid user: '1.1.2'"), "{e}");
+        assert!(!e.contains("Try 'chown --help'"));
+        // colon present: the dot stays in the owner name (probed O17)
+        let (r, _, e) = run(&["1.1:0", "f"], &sc);
+        assert_eq!(r, 1);
+        assert!(e.contains("chown: invalid user: '1.1:0'"), "{e}");
+        // multi-colon spec is an invalid GROUP with the whole spec
+        // (probed f6), bare, no Try line
+        let (r, _, e) = run(&["1:1:2", "f"], &sc);
+        assert_eq!(r, 1);
+        assert!(e.contains("chown: invalid group: '1:1:2'"), "{e}");
+        assert!(!e.contains("Try 'chown --help'"));
+        // group-only retained wording (probed f8 shape)
+        let (r, out, _) = run(&["-v", ":5678", "f"], &sc);
+        assert_eq!(r, 0);
+        assert!(out.contains("group of 'f' retained as"), "{out}");
     }
 
     #[test]

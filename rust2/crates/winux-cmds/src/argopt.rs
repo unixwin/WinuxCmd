@@ -101,6 +101,21 @@ impl Parsed {
         self.flags.iter().any(|f| f == long) || self.values.iter().any(|(k, _)| k == long)
     }
 
+    /// Which of `names` appeared LAST in argv (flags record in arrival
+    /// order). GNU getopt_long processes mutually-exclusive pairs by
+    /// assignment order, so `--preserve-root --no-preserve-root` ends up
+    /// with no-preserve-root and the reverse with preserve-root (probed
+    /// M2 P15/P16 on coreutils 9.4); None when neither appeared.
+    pub fn flag_last(&self, names: &[&str]) -> Option<&str> {
+        let mut last = None;
+        for f in &self.flags {
+            if names.contains(&f.as_str()) {
+                last = Some(f.as_str());
+            }
+        }
+        last
+    }
+
     pub fn value_of(&self, long: &str) -> Option<&str> {
         self.values
             .iter()
@@ -226,9 +241,22 @@ pub fn parse(
                 LongMatch::Version => (VERSION.to_string(), false),
                 LongMatch::Unknown => {
                     let msg = if name.is_empty() {
-                        // An empty abbreviation ("--=v") is not a lookup;
-                        // report the token verbatim.
-                        format!("unrecognized option '--{rest}'")
+                        // GNU d8 cell (probed 9.4, m4-gnu-diag): "--=v" is an
+                        // empty long name, and the empty prefix matches every
+                        // registered long — getopt_long reports the whole
+                        // token as ambiguous over the full table, not
+                        // "unrecognized".
+                        let mut candidates: Vec<String> = opts
+                            .iter()
+                            .filter(|o| !o.long.is_empty())
+                            .map(|o| format!("'--{}'", o.long))
+                            .collect();
+                        candidates.push(format!("'--{HELP}'"));
+                        candidates.push(format!("'--{VERSION}'"));
+                        format!(
+                            "option '--{rest}' is ambiguous; possibilities: {}",
+                            candidates.join(" ")
+                        )
                     } else if opts
                         .iter()
                         .any(|o| !o.long.is_empty() && o.long.starts_with(&name))
@@ -251,7 +279,9 @@ pub fn parse(
                             candidates.join(" ")
                         )
                     } else {
-                        format!("unrecognized option '--{name}'")
+                        // GNU includes an inline =value in the unrecognized
+                        // token (probed e5: "--from=1" names the full token).
+                        format!("unrecognized option '--{rest}'")
                     };
                     let _ = usage_error(io, prog, &msg);
                     return Err(usage_status);
@@ -490,6 +520,76 @@ mod tests {
         let r = parse("prog", &owned, &opts(), &mut io.split(), &sc.ctx(), 1);
         assert_eq!(r.unwrap_err(), 1);
         assert!(io.err().contains("unrecognized option '--bogus'"));
+    }
+
+    #[test]
+    fn unknown_with_inline_value_names_the_whole_token() {
+        // GNU d8/e5 cells (coreutils 9.4 m4 matrix): an unrecognized long
+        // with an inline =value names the FULL token ("--from=1").
+        let owned: Vec<std::ffi::OsString> = vec!["--bogus=2".into()];
+        let mut io = MemIo::new("");
+        let sc = winux_core::test_support::ScratchCtx::new("argopt-eqval");
+        let r = parse("prog", &owned, &opts(), &mut io.split(), &sc.ctx(), 1);
+        assert_eq!(r.unwrap_err(), 1);
+        assert!(
+            io.err().contains("unrecognized option '--bogus=2'"),
+            "{}",
+            io.err()
+        );
+    }
+
+    #[test]
+    fn empty_long_name_is_ambiguous_over_everything() {
+        // GNU d8: "--=v" has an empty long name, and the empty prefix
+        // matches every registered long — getopt_long reports the whole
+        // token as ambiguous over the full table (help/version last).
+        let owned: Vec<std::ffi::OsString> = vec!["--=v".into()];
+        let mut io = MemIo::new("");
+        let sc = winux_core::test_support::ScratchCtx::new("argopt-emptyname");
+        let r = parse("prog", &owned, &opts(), &mut io.split(), &sc.ctx(), 1);
+        assert_eq!(r.unwrap_err(), 1);
+        let e = io.err();
+        assert!(e.contains("option '--=v' is ambiguous"), "{e}");
+        assert!(
+            e.contains("possibilities: '--zero' '--suffix' '--help' '--version'"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn flag_last_reports_the_final_occurrence() {
+        // GNU assignment-order semantics for mutually exclusive flags
+        // (probed P15/P16 on --preserve-root/--no-preserve-root).
+        let table = vec![
+            OptSpec {
+                short: None,
+                long: "preserve-root",
+                takes_value: false,
+            },
+            OptSpec {
+                short: None,
+                long: "no-preserve-root",
+                takes_value: false,
+            },
+        ];
+        let run2 = |args: &[&str]| {
+            let owned: Vec<std::ffi::OsString> =
+                args.iter().map(std::ffi::OsString::from).collect();
+            let mut io = MemIo::new("");
+            let sc = winux_core::test_support::ScratchCtx::new("argopt-flaglast");
+            parse("prog", &owned, &table, &mut io.split(), &sc.ctx(), 1).unwrap()
+        };
+        let p = run2(&["--preserve-root", "--no-preserve-root"]);
+        assert_eq!(
+            p.flag_last(&["preserve-root", "no-preserve-root"]),
+            Some("no-preserve-root")
+        );
+        let p = run2(&["--no-preserve-root", "--preserve-root"]);
+        assert_eq!(
+            p.flag_last(&["preserve-root", "no-preserve-root"]),
+            Some("preserve-root")
+        );
+        assert_eq!(run2(&[]).flag_last(&["preserve-root"]), None);
     }
 
     #[test]
