@@ -4186,3 +4186,47 @@ TEST(find, issue1368_closed_stdout_reports_write_error_and_exits_1) {
   EXPECT_CONTAINS(r.stderr_text, "find: write error: ");
   EXPECT_CONTAINS(r.stderr_text, "Bad file descriptor");
 }
+
+// #1617: GNU findutils registers BOTH spellings with the same parser
+// (--help is the synonym of -help, --version of -version), so the
+// double-dash forms act where they appear: usage/version to stdout,
+// rc 0 (probed GNU findutils 4.9: `find --help`, `find . --version`,
+// rc 0). The 1.x dispatcher only matched the single-dash forms and
+// answered `unknown predicate` with rc 1.
+TEST(find, issue_1617_double_dash_help_version_are_synonyms) {
+  TempDir tmp;
+  tmp.write("a.txt", "x");
+
+  Pipeline p_help;
+  p_help.set_cwd(tmp.wpath());
+  p_help.add(L"find.exe", {L"--help"});
+  auto help = p_help.run();
+  EXPECT_EQ(help.exit_code, 0);
+  EXPECT_TRUE(help.stderr_text.empty());
+  EXPECT_TRUE(help.stdout_text.find("Usage:") != std::string::npos);
+
+  // Synonym: the double-dash spelling prints exactly the single-dash text.
+  Pipeline p_help_short;
+  p_help_short.set_cwd(tmp.wpath());
+  p_help_short.add(L"find.exe", {L"-help"});
+  auto help_short = p_help_short.run();
+  EXPECT_EQ(help_short.exit_code, 0);
+  EXPECT_EQ_TEXT(help.stdout_text, help_short.stdout_text);
+
+  // Acts where it appears: after a start point it is still
+  // version-then-exit, not a walk with an unknown predicate.
+  Pipeline p_version;
+  p_version.set_cwd(tmp.wpath());
+  p_version.add(L"find.exe", {L".", L"--version"});
+  auto version = p_version.run();
+  EXPECT_EQ(version.exit_code, 0);
+  EXPECT_TRUE(version.stderr_text.empty());
+  EXPECT_TRUE(version.stdout_text.find("find (WinuxCmd)") != std::string::npos);
+
+  Pipeline p_version_short;
+  p_version_short.set_cwd(tmp.wpath());
+  p_version_short.add(L"find.exe", {L"-version"});
+  auto version_short = p_version_short.run();
+  EXPECT_EQ(version_short.exit_code, 0);
+  EXPECT_EQ_TEXT(version.stdout_text, version_short.stdout_text);
+}

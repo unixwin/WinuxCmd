@@ -763,6 +763,7 @@ lands 8h apart across sides (dt39, du25/du26).
 0 FAIL (final full-wave5 run 2026-11-13, ledger
 target/gate/ledger.tsv; 82-command coverage 2444 cases).**
 
+<<<<<<< HEAD
 ## find — GNU findutils 4.9 (#1488 find lane)
 
 Oracle: WSL `find (GNU findutils) 4.9.0` (native ext4 scratch, runs as
@@ -864,3 +865,97 @@ LARGE_FETCH)` and answers `-type/-size/-mtime/-newer/%s/%t` from the
 enumeration record (the C++ applet opens every file for size/time);
 `-regex` splits a leading `.*` into first-byte-filtered suffix
 attempts (7.77 s before the split).
+=======
+## xargs (#1488, GNU findutils 4.9 port)
+
+`xargs` lands as a library-form port of findutils 4.9.0 `xargs.c` /
+`buildcmd.c` (`crates/winux-cmds/src/xargs.rs`), gated against WSL
+`xargs (GNU findutils) 4.9.0` (C.UTF-8). It reuses the shared
+`childproc.rs` resolver/spawner chain (PATH-only execvp shape, PATHEXT,
+`.cmd`/`.bat` through COMSPEC, `#!` scripts through their interpreter) —
+no childproc changes were needed. Input is read lazily (a 16 KiB getc
+buffer; `-n`/`-L` batches exec as soon as they are full), the default
+command (no COMMAND) runs the library `echo` in-process through
+`io.stdout`, and the Windows command-line budget (32767 UTF-16 units,
+8191 for the cmd.exe route) splits batches independently of the GNU
+`-s` byte accounting. The C++ side of this run was the
+`wc-pa1/build-vs` Debug dispatcher (`CPP_BIN=`), which carries the 1.x
+xargs applet unchanged.
+
+| command | cases | strict | exit | win | note | GNU-gated result | C++ parity (rc+stdout) |
+|---|---|---|---|---|---|---|---|
+| xargs | 141 | 134 | 5 | 2 | 0 | GREEN | 115/141 |
+
+**xargs: GNU-gated 139 PASS / 0 FAIL, win-gated 2 PASS / 0 FAIL
+(`bash gate/run-gate.sh xargs`, 2026-11-14).** Three strict rows compare
+rc 127 on both sides on purpose (xa66, xa108, xa111 — the command under
+test is xargs, which runs and reports "xargs: CMD: No such file or
+directory"; the Rust stderr was checked, these are not dispatch misses).
+
+Child-command convention (as timeout/nohup): the default command, `echo`
+and `printf` (WinuxCmd images on the Windows PATH, coreutils on WSL) and
+`sh -c` (niubash sh / dash) for exit statuses. Multi-line inputs come from
+setup files read with `-a`. `-p` rows are limited to paths that never
+prompt: the harness gives the GNU side a controlling tty, so a real
+prompt would block both sides; prompting is covered by unit tests with a
+scripted tty.
+
+Non-strict rows:
+
+- xa115-xa117 (`exit`): `-P` runs; output order is scheduling-dependent
+  on both platforms, rc gated.
+- xa140/xa141 (`exit`): 40000 items; GNU fills 128 KiB per command,
+  Windows 30719 bytes (the CreateProcess-derived maximum), so the batch
+  COUNT differs (8 vs 2 lines) while every item runs once (verified:
+  40000 tokens on the Rust side).
+- xa137 (`win`): `sh -c 'kill -9 $$'` — GNU 125 "terminated by signal 9";
+  an MSYS self-kill ends with a plain exit code on Windows (no signals),
+  so Rust and C++ both report a failed child (123).
+- xa139 (`win`): a text file with no launch format — glibc execvp retries
+  it through /bin/sh (GNU 123 from the shell), the Windows chain reports
+  126 "Exec format error" (childproc.rs documented boundary), equal to the
+  C++ applet.
+
+`r=c:no` rows (26; every one is the 1.x C++ applet diverging from GNU —
+the Rust side matches GNU byte-for-byte on all of them):
+
+| rows | 1.x C++ behavior (GNU in parentheses) |
+|---|---|
+| xa07, xa08, xa09 | slurps and parses all input before running anything, so an unmatched quote prints nothing (GNU runs the batch gathered so far: `a`) |
+| xa15 | errors on a lone quote at EOF (GNU drops it silently, rc 0) |
+| xa16 | passes a NUL byte through into the argument (GNU warns and truncates at the NUL) |
+| xa18 | keeps leading `\f\v\r` in the first item (GNU skips leading isspace) |
+| xa31, xa36 | checks the EOF string against whole lines only (GNU checks every item, quotes removed) |
+| xa46 | `-d '\x'` is not NUL (GNU strtoul of an empty hex run = 0) |
+| xa54 | ignores -L under -d (GNU counts each delimiter as a line) |
+| xa64 | `-I{}` with no command echoes the item (GNU runs `echo` with no args: empty lines) |
+| xa65 | `-I ''` substitutes nothing and runs (GNU: "command too long", rc 1) |
+| xa69, xa75 | splits instead of failing under -x / the -x implied by -L (GNU: "argument list too long", rc 1) |
+| xa73 | `-s0` runs (GNU clamps to 1, then "cannot fit single argument", rc 1) |
+| xa84, xa85 | rejects `+1` and saturating values for -n (GNU strtol accepts both) |
+| xa88 | accepts `-P 99999999999` (GNU: should be <= 2147483647, rc 1) |
+| xa96, xa97, xa98 | WinuxCmd-branded --help/--version text (GNU findutils text) |
+| xa123 | `-a -` opens a file named `-` (GNU reads stdin) |
+| xa124 | `-a DIR` fails "Is a directory" (GNU reads it as empty input, rc 0) |
+| xa138 | a `#!/bin/sh` script child is 126 (GNU and the shared childproc chain run it through its interpreter) |
+| xa140, xa141 | 40000-item input exceeds the 10 s harness timeout (rc 124) |
+
+Documented gaps (module doc of xargs.rs): no SIGUSR1/SIGUSR2 -P resizing
+(no Windows signal to listen to); `--show-limits` omits GNU's "Execution
+of xargs will continue now..." notice (it needs isatty(stdin), and the
+library never touches process stdio); `-p`/`-o` open `CONIN$`
+unconditionally like GNU opens /dev/tty (an unattended console blocks
+like an unattended pty); `-o` without a console prints GNU's child
+diagnostic and counts as a failed child (GNU 4.9 also trips an assertion
+in the forked child, signal 6); NTSTATUS-shaped child exit codes map to
+the POSIX signal of the same class for the 125 diagnostic; a spawned
+child writing into a closed pipe exits with a plain failure code on
+Windows (no SIGPIPE), so only the in-process default echo reproduces
+GNU's 125 stop; arguments reach `cmd /c` children with std's Win32
+quoting (the 1.x applet's caret escaping of `cmd /C` tails is not
+reproduced); non-UTF-8 input bytes reach children through lossy
+conversion (CreateProcessW is UTF-16). Evidence: probe scripts and
+transcripts `rust2/target/probes/xargs/p1.sh`..`p8.sh`, ledger
+`rust2/target/gate/ledger.tsv`, run log `rust2/target/gate-xargs.log`
+(gitignored artifacts).
+>>>>>>> origin/main

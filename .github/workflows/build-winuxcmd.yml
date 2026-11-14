@@ -397,16 +397,134 @@ jobs:
 
       # The verified set only: `cargo test -p winux-cmds` (529 tests on
       # X299, #1597). The workspace's other crates are not run here until
-      # their suites are verified green the same way. run-gate.sh is NOT
-      # wired in: its GNU side needs WSL and its CPP side needs a Debug
-      # build-vs tree, neither of which exists on hosted runners (see
-      # REPORT); the `bash -n` parse check above stays as the guard.
+      # their suites are verified green the same way. The differential
+      # gate (run-gate.sh) is wired in separately, in the rust2-gate job
+      # below (#1616); the `bash -n` parse check above stays as the
+      # build-leg syntax guard.
       # --no-fail-fast so a red run reports the full failure name-set.
       - name: Run Rust unit tests (cargo test)
         shell: cmd
         working-directory: rust2
         run: |
           "%USERPROFILE%\.cargo\bin\cargo.exe" test --locked --no-fail-fast -p winux-cmds
+
+  # Differential gate execution (#1616): no workflow ever ran
+  # rust2/gate/run-gate.sh, so the gate TSV rows — notably the
+  # csplit/pathchk/ptx corpus PR #1613 left out of the ctest port — had
+  # no CI execution path at all. This job runs the affected-command
+  # subset on a hosted Windows runner (93 rows, measured ~1 min on X299):
+  #   * GNU leg: WSL Ubuntu installed here — the windows-2025 image only
+  #     ENABLES the WSL feature but ships no distro
+  #     (actions/runner-images#11265); the job fails loudly if the distro
+  #     never comes up rather than scoring vacuous MISSING-vs-MISSING
+  #     green.
+  #   * Rust leg: winuxcmd-driver built from the pinned toolchain
+  #     (RUST_BIN default path rust2/target/debug/winuxcmd-driver.exe).
+  #   * CPP leg: the Release dispatcher extracted from the build-windows
+  #     x64 runtime package (job dependency below) — the same value model
+  #     the local build-vs/usr/bin Debug exe serves; the edition split
+  #     only materializes entry links, not the dispatcher, so the
+  #     non-full package is used.
+  # The full 1335+190 corpus stays a local/X299 tool; this slice is the
+  # CI-sized affected subset the issue asks to gate.
+  rust2-gate:
+    runs-on: windows-2025
+    needs: build-windows
+    timeout-minutes: 45
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Download x64 runtime package (CPP gate side)
+        uses: actions/download-artifact@v8
+        with:
+          pattern: WinuxCmd-*-x64
+          path: pkgs
+
+      - name: Locate CPP dispatcher exe
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem pkgs -Recurse -Filter *-win-x64.zip |
+            Where-Object { $_.Name -notmatch '-full' } |
+            Select-Object -First 1
+          if (-not $zip) { throw 'x64 runtime package zip not found' }
+          Expand-Archive $zip.FullName -DestinationPath cppside
+          $exe = Get-ChildItem cppside -Recurse -Filter winuxcmd.exe |
+            Select-Object -First 1
+          if (-not $exe) { throw 'winuxcmd.exe not found in package' }
+          "CPP_BIN=$($exe.FullName)" >> $env:GITHUB_ENV
+
+      # Same pin as rust-tests (RUST2_TOOLCHAIN 1.99.1): the driver must
+      # exercise the library semantics the shipped product carries.
+      - name: Cache pinned rust2 toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/.rustup/toolchains/1.99.1-x86_64-pc-windows-msvc
+          key: rustup-toolchain-${{ runner.os }}-${{ env.RUST2_TOOLCHAIN }}-msvc
+
+      - name: Set up pinned Rust toolchain (rust2)
+        shell: cmd
+        run: |
+          "%USERPROFILE%\.cargo\bin\rustup.exe" toolchain install %RUST2_TOOLCHAIN% --profile minimal --no-self-update
+          "%USERPROFILE%\.cargo\bin\rustup.exe" default %RUST2_TOOLCHAIN%
+          "%USERPROFILE%\.cargo\bin\rustup.exe" show
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-rust2-${{ runner.os }}-${{ env.RUST2_TOOLCHAIN }}-${{ hashFiles('rust2/Cargo.lock', 'rust2/crates/*/Cargo.toml') }}
+
+      - name: Build gate Rust side (winuxcmd-driver)
+        shell: cmd
+        working-directory: rust2
+        run: |
+          "%USERPROFILE%\.cargo\bin\cargo.exe" build --locked -p winuxcmd-driver
+
+      # The image ships the WSL feature without a distro; install Ubuntu
+      # (the gate's GNU oracle is the distro's coreutils) and wait for
+      # first-launch registration to settle. `wsl --update` has been
+      # observed to 403 on hosted runners (actions/runner-images#10563),
+      # so a failed update is non-fatal as long as the distro itself
+      # comes up.
+      - name: Install WSL Ubuntu (GNU gate side)
+        shell: pwsh
+        run: |
+          wsl --set-default-version 2
+          wsl --update
+          if ($LASTEXITCODE -ne 0) { Write-Host 'wsl --update failed (non-fatal); continuing' }
+          wsl --install -d Ubuntu --no-launch
+          if ($LASTEXITCODE -ne 0) { throw "wsl --install -d Ubuntu failed ($LASTEXITCODE)" }
+          $ok = $false
+          foreach ($i in 1..5) {
+            wsl -d Ubuntu -u root -- sh -c 'echo wsl-ready'
+            if ($LASTEXITCODE -eq 0) { $ok = $true; break }
+            Write-Host "WSL not ready (attempt $i); retrying in 15s"
+            Start-Sleep -Seconds 15
+          }
+          if (-not $ok) { throw 'WSL Ubuntu did not come up after 5 attempts' }
+
+      - name: Run differential gate (csplit pathchk ptx)
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p rust2/target/gate
+          bash rust2/gate/run-gate.sh csplit pathchk ptx | tee rust2/target/gate/summary.txt
+
+      - name: Upload gate ledger
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: rust2-gate-ledger
+          path: |
+            rust2/target/gate/ledger.tsv
+            rust2/target/gate/summary.txt
+          retention-days: 1
+          if-no-files-found: warn
 
   # Cross-arch Rust surface consistency (#1488): the x64 and arm64 legs
   # must carry the SAME rust2 command library. The arm64 binary cannot be

@@ -96,6 +96,7 @@ pub mod users;
 pub mod who;
 pub mod whoami;
 pub mod winsys;
+pub mod xargs;
 
 use std::ffi::OsString;
 
@@ -202,8 +203,13 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("date", date::date_cmd),
         ("du", du::du_cmd),
         ("pinky", pinky::pinky_cmd),
+<<<<<<< HEAD
         // #1488 find lane: GNU findutils 4.9 find
         ("find", find::find_cmd),
+=======
+        // #1488: GNU findutils 4.9 xargs (shared childproc spawner family)
+        ("xargs", xargs::xargs_cmd),
+>>>>>>> origin/main
     ]
 }
 

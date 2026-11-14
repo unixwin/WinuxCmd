@@ -1394,7 +1394,10 @@ export bool is_literal_arg_command(std::string_view cmd_name) noexcept {
 // builtin actually owns, and the exe form cannot be reconciled with the
 // builtin mechanism. `echo`, `printf` and `pwd` deliberately stay in the
 // default edition: they have real file-form work under rubash#2147's
-// literal-file gate. The FULL edition materializes every registered entry.
+// literal-file gate. "env" is deliberately NOT in this list (#1622): env
+// is not a bash builtin (no $BUILTIN env in bash's builtins/*.def), so the
+// default edition ships env.exe like any other command. The FULL edition
+// materializes every registered entry.
 //
 // Build wiring: the CMake option WINUXCMD_PACKAGE_EDITION (`default` or
 // `full`) defines WINUXCMD_PACKAGE_EDITION_FULL for the winuxcmd-commands
@@ -1405,7 +1408,7 @@ export bool is_literal_arg_command(std::string_view cmd_name) noexcept {
 // array) is the defect class #1438 rules out.
 export namespace winux_edition {
 inline constexpr std::string_view kFullOnlyCommandNames[] = {
-    "[", "env", "false", "kill", "test", "time", "true"};
+    "[", "false", "kill", "test", "time", "true"};
 
 // True when this build ships the full entry set.
 consteval bool ships_full_entries() noexcept {

@@ -446,7 +446,9 @@ MANUAL_MESSAGES = {
     "common.error.result_out_of_range": ": Numerical result out of range",
     "command.stdbuf.error.invalid_mode": "invalid mode '{}'",
     "command.stdbuf.error.mode_required": "you must specify a buffering mode option",
-    "command.nproc.error.invalid_number": "invalid number: '{}'",
+    # command.nproc.error.invalid_number moved to the rust2 nproc.rs tr! call
+    # (wave2a deleted the C++ body; extraction now owns the key with the
+    # named placeholder {raw}).
     "common.error.tab_ascending": "tab sizes must be ascending",
     "common.error.tab_repeat_last": "repeat tab stop must be last",
     "common.error.tab_value_too_large": "tab stop value is too large",
