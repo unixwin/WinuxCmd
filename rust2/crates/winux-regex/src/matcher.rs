@@ -451,6 +451,33 @@ impl Regex {
         Ok(best_state(states).map(|best| self.make_match(start, best)))
     }
 
+    /// Every end position of a match anchored at `start`, longest first
+    /// (deduplicated). This is the "try a shorter match at the same place"
+    /// walk of GNU grep `-w` (EGexecute re-runs `re_match` with a shrinking
+    /// limit); an empty result means no match starts at `start`. A tripped
+    /// work budget yields the conservative empty answer, like
+    /// [`Regex::match_at_bytes`].
+    pub fn match_ends_at_bytes(&self, text: &[u8], start: usize) -> Vec<usize> {
+        if start > text.len() {
+            return Vec::new();
+        }
+        if self.fast.anchored && start > 0 {
+            return Vec::new();
+        }
+        if !self.fast.prefix.is_empty() && !self.prefix_matches_at(text, start) {
+            return Vec::new();
+        }
+        let mut budget = StepBudget::new();
+        let states = self.match_node(&self.root, text, self.initial_state(start), &mut budget);
+        if budget.exceeded {
+            return Vec::new();
+        }
+        let mut ends: Vec<usize> = states.iter().map(|st| st.pos).collect();
+        ends.sort_unstable_by(|a, b| b.cmp(a));
+        ends.dedup();
+        ends
+    }
+
     /// [`Regex::checked_match_at_bytes`] over `&str`.
     pub fn checked_match_at(&self, text: &str, start: usize) -> Result<Option<Match>, Error> {
         self.checked_match_at_bytes(text.as_bytes(), start)
