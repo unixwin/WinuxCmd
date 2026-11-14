@@ -120,9 +120,9 @@ gp117-f-stdin	strict	printf 'plain\n' > n.txt			-f	-	n.txt
 gp118-utf8-dot	strict	printf 'caf\xc3\xa9 next\ncafe next\n' > u.txt			-o	.	u.txt
 gp119-crlf-match	strict	printf 'bar\r\nfoo\n' > cr.txt			bar	cr.txt
 gp120-crlf-anchor	strict	printf 'bar\r\nfoo\n' > cr.txt			-c	bar$	cr.txt
-gp121-help	strict	printf 'foo bar\nbaz\nfoofoo\n' > t.txt			--help
-gp122-version	strict	printf 'foo bar\nbaz\nfoofoo\n' > t.txt			--version
-gp123-V	strict	printf 'foo bar\nbaz\nfoofoo\n' > t.txt			-V
+gp121-help	win	printf 'foo bar\nbaz\nfoofoo\n' > t.txt			--help
+gp122-version	win	printf 'foo bar\nbaz\nfoofoo\n' > t.txt			--version
+gp123-V	win	printf 'foo bar\nbaz\nfoofoo\n' > t.txt			-V
 gp124-y-alias	strict	printf 'FOO\n' > t.txt			-y	foo	t.txt
 gp125-regexp-long	strict	printf 'foo bar\nbaz\nfoofoo\n' > t.txt			--regexp=foo	t.txt
 gp126-max-count-long	strict	printf 'foo\nbar\nfoo\n' > m2.txt			--max-count=2	foo	m2.txt

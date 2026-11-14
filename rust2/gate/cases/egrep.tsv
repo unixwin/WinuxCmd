@@ -4,8 +4,8 @@ eg01-default-ere	strict	printf 'foo bar\nbaz\nfoofoo\n' > t.txt			foo|baz	t.txt
 eg02-P-conflict	exit	printf 'foo bar\nbaz\nfoofoo\n' > t.txt			-P	f.o	t.txt
 eg03-E-ok	strict	printf 'foo bar\nbaz\nfoofoo\n' > t.txt			-E	foo|baz	t.txt
 eg04-G-conflict	exit	printf 'foo bar\nbaz\nfoofoo\n' > t.txt			-G	foo	t.txt
-eg05-help	strict	printf 'foo bar\nbaz\nfoofoo\n' > t.txt			--help
-eg06-version	strict	printf 'foo bar\nbaz\nfoofoo\n' > t.txt			--version
+eg05-help	win	printf 'foo bar\nbaz\nfoofoo\n' > t.txt			--help
+eg06-version	win	printf 'foo bar\nbaz\nfoofoo\n' > t.txt			--version
 eg07-no-pattern	strict	printf 'foo bar\nbaz\nfoofoo\n' > t.txt		
 eg08-c	strict	printf 'foo bar\nbaz\nfoofoo\n' > t.txt			-c	foo	t.txt
 eg09-o-leftmost	strict	printf 'foo bar\nbaz\nfoofoo\n' > t.txt			-o	foo(bar)?|foo	t.txt
