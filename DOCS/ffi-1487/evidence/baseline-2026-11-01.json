@@ -1,0 +1,76 @@
+{
+  "issue": "unixwin/WinuxCmd#1487",
+  "upstream_gate_issue": "unixwin/niubash#727",
+  "captured_at": "2026-11-01",
+  "host": {
+    "os": "Windows 10.0.19045 x64",
+    "niu": "niubash master b7cb8f6 + ruline pin 8351932",
+    "rubash": "1c93ea87 (patch, pin 1fec8621)",
+    "install_root": "C:\\Users\\cmx\\AppData\\Local\\Programs\\Niubash",
+    "ffi_tree": "winuxcmd\\usr\\bin\\ffi\\v1.1.20\\{winuxcore.dll,tiers.tsv} + current.txt",
+    "dll": "feat/ffi-prototype @ d589562f (ABI v2, WinuxCmd v1.1.20)",
+    "doctor": "ready - winuxcmd 1.1.20, ABI 2",
+    "tiers_note": "shipped tiers.tsv has no tier2 rows (0 product claims); gate 1 was measured with a temporary test-only expansion that was restored afterwards"
+  },
+  "gate1": {
+    "source": "D:\\repo\\nbbuild\\evidence\\727\\result\\m1",
+    "cases_total": 29,
+    "stdout_diff": 6,
+    "stdout_diff_real": 5,
+    "no_redirect_equivalent": 23,
+    "expected": {
+      "sort_stdin_redirect": { "file_bytes": 44, "lines": 7 },
+      "sort_stdout_redirect": { "file_bytes": 44, "terminal_bytes": 0 },
+      "wc_l_stdin": { "value": 7 },
+      "tee_stdin": { "file_bytes": 44, "terminal_bytes": 44 },
+      "tr_stdin": { "stdout_bytes": 44 }
+    },
+    "actual_broken": {
+      "sort_stdin_redirect": { "srt_out_bytes": 0, "lost_lines": 7, "rc": 0 },
+      "sort_stdout_redirect": { "o_txt_bytes": 0, "terminal_lines": 7, "rc": 0 },
+      "wc_l_stdin": { "value": 0, "rc": 0 },
+      "tee_stdin": { "t_out_bytes": 0, "terminal_bytes": 0, "rc": 0 },
+      "tr_stdin": { "first_form_stdout_bytes": 0, "rc": 0 },
+      "type_sort_annotation": "extra 'winuxcmd FFI (in-process via winuxcore.dll)' (by design)"
+    },
+    "flood": {
+      "command": "sort big.txt > /dev/null",
+      "input_bytes": 36000000,
+      "input_lines": 3000000,
+      "baseline_seconds": 0.33,
+      "ctrl_c_to_prompt_seconds": 180.01,
+      "post_cancel_rc": null,
+      "exit_left_process_alive": true,
+      "source": "D:\\repo\\nbbuild\\evidence\\727\\result\\m3\\timeline.devnull-flood.txt"
+    }
+  },
+  "gate3": {
+    "source": "D:\\repo\\nbbuild\\evidence\\727\\result\\m3\\gate3-summary.json",
+    "command": "sort -o sC.tmp big.txt",
+    "input_bytes": 36000000,
+    "input_lines": 3000000,
+    "warm_rc": 0,
+    "baseline_seconds": 12.605659499997273,
+    "baseline_rc": 0,
+    "ctrl_c_injected_after_seconds": 3.0,
+    "file_complete_after_ctrl_c_seconds": 9.006195300025865,
+    "case_total_seconds": 12.96340050001163,
+    "early_cancel": false,
+    "inline_rc": null,
+    "host_alive_rc": 130,
+    "wc_lines_after": 3000000,
+    "wc_rc_after": 0,
+    "resort_rc_after": 0,
+    "cmp_baseline_vs_cancelled": 0,
+    "cmp_baseline_vs_resort": 0,
+    "exit_left_process_alive": false
+  },
+  "evidence_paths": {
+    "m1_matrix_driver": "D:\\repo\\nbbuild\\evidence\\727\\m1\\run_matrix.sh",
+    "m1_diff_summary": "D:\\repo\\nbbuild\\evidence\\727\\result\\m1\\diff-summary.txt",
+    "m3_driver": "D:\\repo\\nbbuild\\evidence\\727\\m3\\gate3_final.py",
+    "m3_pty_helper": "D:\\repo\\nbbuild\\evidence\\727\\m3\\pty_shim.py",
+    "fixability_report": "D:\\repo\\nbbuild\\evidence\\727\\ffi-fixability-report.md",
+    "verdict": "D:\\repo\\nbbuild\\evidence\\727\\verdict-727.md"
+  }
+}

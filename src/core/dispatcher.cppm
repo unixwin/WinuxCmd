@@ -977,7 +977,12 @@ auto behavior_for(std::string_view name) -> CommandBehavior {
 
   // These commands own structured help output and translate it themselves.
   // Let their handlers receive --help instead of the generic metadata path.
-  if (name == "top" || name == "mpicalc" || name == "tzset") {
+  // find joins them in the #1488 wiring: GNU findutils owns --help,
+  // --version and the single-dash -help/-version predicates, and the rust2
+  // body prints the probed 4.9 blocks byte-for-byte (gate rows fd001-fd005
+  // are strict against the GNU oracle).
+  if (name == "top" || name == "mpicalc" || name == "tzset" ||
+      name == "find") {
     behavior.standard_interception_enabled =
         command_owned_help_interception_disabled;
   }
@@ -1016,6 +1021,10 @@ auto classify_args_for_dispatch(
     std::span<const cmd::meta::OptionMeta> options) -> std::vector<ArgRole> {
   const auto policy = option_policy_for_command(cmd_name);
   std::vector<ArgRole> roles(args.size(), ArgRole::Data);
+  // A command that parses its own argv (sed) has no option token the
+  // pre-passes may act on: no abbreviation expansion, no --help/--version
+  // interception -- the handler owns them.
+  if (policy.all_args_are_positionals) return roles;
 
   bool end_of_options = false;
   size_t positionals = 0;

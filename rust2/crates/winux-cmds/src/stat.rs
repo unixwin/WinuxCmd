@@ -47,7 +47,7 @@ use crate::glob::{contains_wildcard, glob_expand_in};
 use std::io::Write;
 
 use crate::fs_win::{self, FileTime};
-use winux_core::{usage_error, CmdResult, Ctx, Io};
+use winux_core::{tr, usage_error, CmdResult, Ctx, Io};
 
 /// GNU stat.c default layout, byte-aligned with the 1.x C++ renderer it
 /// replaces (git HEAD src/commands/stat.cpp print_stat): the File line is
@@ -211,35 +211,35 @@ fn file_type_name(meta: &fs_win::FileMeta, fifo: bool) -> String {
     }
 }
 
-/// Format a FILETIME like GNU: "2026-11-10 20:00:04.297388421 +0800".
-fn format_filetime(ft: &FileTime) -> String {
-    let (secs, _remainder) = ft.to_epoch();
-    match fs_win::to_local(ft.as_u64() as i64) {
-        Some((local, offset_min)) => {
-            // reconstruct the sub-second part from the ticks
-            let frac_ticks = ft.as_u64() as i64 % 10_000_000;
-            let nanos = frac_ticks * 100;
-            let sign = if offset_min < 0 { '-' } else { '+' };
-            let off = offset_min.abs();
-            format!(
-                "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:09} {}{:02}{:02}",
-                local.year,
-                local.month,
-                local.day,
-                local.hour,
-                local.minute,
-                local.second,
-                nanos,
-                sign,
-                off / 60,
-                off % 60
-            )
-        }
-        None => {
-            let _ = secs;
-            "*".to_string()
-        }
-    }
+/// Format a FILETIME the way GNU stat's `human_time` does:
+/// "2026-11-10 20:00:04.297388421 +0800". The zone is the process's
+/// effective TZ (`TZ=UTC` -> `+0000`), read through the shared POSIX-TZ
+/// engine that date/du --time use, NOT the Windows system zone: GNU's
+/// `%z` comes from localtime_r, so `TZ` must win (#1655; stat.c
+/// human_time / out_epoch_sec).
+fn format_filetime(ft: &FileTime, ctx: &Ctx) -> String {
+    let (secs, rem) = ft.to_epoch();
+    let zone = crate::date::effective_zone(false, ctx.env);
+    let (off, name) = zone.at(secs);
+    let dt = crate::date::DateTime::from_epoch(secs, off, name);
+    // GNU prints nine nanosecond digits from tv_nsec; FILETIME keeps
+    // 100 ns ticks, so the last two digits are always 0.
+    let nanos = rem * 100;
+    let sign = if dt.utc_offset < 0 { '-' } else { '+' };
+    let total = dt.utc_offset.abs();
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:09} {}{:02}{:02}",
+        dt.year,
+        dt.month,
+        dt.day,
+        dt.hour,
+        dt.minute,
+        dt.second,
+        nanos,
+        sign,
+        total / 3600,
+        (total % 3600) / 60
+    )
 }
 
 fn quote_name(s: &str) -> String {
@@ -279,9 +279,14 @@ fn field_for(
         'N' => {
             let mut s = quote_name(&entry.name);
             if m.is_symlink && !follow {
-                if let Ok(target) = std::fs::read_link(resolve(ctx, &entry.resolved)) {
+                // [GNU] stat.c %N prints the stored target verbatim (no
+                // resolution); the reader also decodes WSL DrvFs LX links,
+                // which std::fs::read_link rejects (#1654).
+                if let Some(target) =
+                    fs_win::read_symlink_target(&resolve(ctx, &entry.resolved).to_string_lossy())
+                {
                     s.push_str(" -> ");
-                    s.push_str(&quote_name(&target.to_string_lossy()));
+                    s.push_str(&quote_name(&target));
                 }
             }
             s
@@ -291,7 +296,17 @@ fn field_for(
         'a' => return Field::Oct(mw & 0o7777),
         'f' => format!("{:04x}", mw),
         's' => return Field::Dec(m.size),
-        'b' => return Field::Dec(m.size.div_ceil(512)),
+        'b' => {
+            // [GNU] %b is st_blocks, the entry's OWN allocation: a
+            // symbolic link stores only its target string and charges no
+            // block, so it reports 0 even though %s (the target-string
+            // length) is nonzero (#1654 follow-on; probed 9.4 on DrvFs:
+            // `stat -c '%s|%b' lnk` -> `5|0`).
+            if m.is_symlink {
+                return Field::Dec(0);
+            }
+            return Field::Dec(m.size.div_ceil(512));
+        }
         'B' => return Field::Dec(512),
         'o' => return Field::Dec(4096),
         'i' => return Field::Dec(m.index),
@@ -329,10 +344,10 @@ fn field_for(
         'Y' => return Field::Num(m.mtime.to_epoch().0),
         'Z' => return Field::Num(m.ctime.to_epoch().0),
         'W' => return Field::Num(m.btime.to_epoch().0),
-        'x' => format_filetime(&m.atime),
-        'y' => format_filetime(&m.mtime),
-        'z' => format_filetime(&m.ctime),
-        'w' => format_filetime(&m.btime),
+        'x' => format_filetime(&m.atime, ctx),
+        'y' => format_filetime(&m.mtime, ctx),
+        'z' => format_filetime(&m.ctime, ctx),
+        'w' => format_filetime(&m.btime, ctx),
         'C' => {
             let _ = writeln!(
                 stderr,
@@ -778,8 +793,10 @@ fn render_default(
     //   File: <name>[ -> <target>]  (unquoted: 1.x and coreutils 9.4 shape)
     write!(out, "  File: {}", entry.name)?;
     if m.is_symlink && !follow {
-        if let Ok(target) = std::fs::read_link(resolve(ctx, &entry.resolved)) {
-            write!(out, " -> {}", target.to_string_lossy())?;
+        if let Some(target) =
+            fs_win::read_symlink_target(&resolve(ctx, &entry.resolved).to_string_lossy())
+        {
+            write!(out, " -> {}", target)?;
         }
     }
     writeln!(out)?;
@@ -787,7 +804,18 @@ fn render_default(
         out,
         "  Size: {}\tBlocks: {} IO Block: {} {}",
         pad_right(m.size.to_string(), 10),
-        pad_right(m.size.div_ceil(512).to_string(), 10),
+        // [GNU] st_blocks is the entry's own allocation: a symbolic link
+        // (or an LX link) stores only its target string, so it reports 0
+        // even though %s/Size is the target-string length (#1654).
+        pad_right(
+            (if m.is_symlink {
+                0
+            } else {
+                m.size.div_ceil(512)
+            })
+            .to_string(),
+            10
+        ),
         pad_right("4096".to_string(), 6),
         file_type_name(m, entry.fifo)
     )?;
@@ -825,10 +853,10 @@ fn render_default(
         pad_left(gid.to_string(), 5),
         pad_left(group_display(&entry.group.1), 8)
     )?;
-    writeln!(out, "Access: {}", format_filetime(&m.atime))?;
-    writeln!(out, "Modify: {}", format_filetime(&m.mtime))?;
-    writeln!(out, "Change: {}", format_filetime(&m.ctime))?;
-    writeln!(out, " Birth: {}", format_filetime(&m.btime))?;
+    writeln!(out, "Access: {}", format_filetime(&m.atime, ctx))?;
+    writeln!(out, "Modify: {}", format_filetime(&m.mtime, ctx))?;
+    writeln!(out, "Change: {}", format_filetime(&m.ctime, ctx))?;
+    writeln!(out, " Birth: {}", format_filetime(&m.btime, ctx))?;
     Ok(false)
 }
 
@@ -1028,29 +1056,77 @@ pub fn stat_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             None
         };
         for op in expanded.unwrap_or_else(|| vec![op.clone()]) {
-            let (meta, resolved) = match fs_win::file_meta_exe(ctx, &op, !follow) {
-                Ok((m, resolved)) => (m, resolved),
-                Err(e) => {
+            // [GNU] stat.c: a bare "-" names the open standard input
+            // descriptor, not a file called "-" (regression #1089, #1653):
+            // `... | stat -c %F -` reports the FIFO shape of the pipe.
+            // Filesystem mode cannot name a descriptor at all.
+            let (meta, resolved, stdin_fifo) = if op == "-" {
+                if fs_mode {
                     let _ = writeln!(
                         io.stderr,
-                        "stat: cannot statx '{op}': {}",
-                        fs_win::win32_reason(e)
+                        "stat: {}",
+                        tr!(
+                            ctx,
+                            "command.stat.error.stdin_in_fs_mode",
+                            "using '-' to denote standard input does not work in file system mode"
+                        )
                     );
                     ok = false;
                     continue;
                 }
+                match fs_win::stdin_meta() {
+                    Ok(stdin) => (stdin.meta, "-".to_string(), stdin.fifo),
+                    Err(e) => {
+                        let _ = writeln!(
+                            io.stderr,
+                            "stat: {}: {}",
+                            tr!(
+                                ctx,
+                                "command.stat.error.cannot_stat_stdin",
+                                "cannot stat standard input"
+                            ),
+                            fs_win::win32_reason(e)
+                        );
+                        ok = false;
+                        continue;
+                    }
+                }
+            } else {
+                match fs_win::file_meta_exe(ctx, &op, !follow) {
+                    Ok((m, resolved)) => (m, resolved, false),
+                    Err(e) => {
+                        let _ = writeln!(
+                            io.stderr,
+                            "stat: cannot statx '{op}': {}",
+                            fs_win::win32_reason(e)
+                        );
+                        ok = false;
+                        continue;
+                    }
+                }
             };
-            let (owner, group) = fs_win::file_accounts(ctx, &resolved);
+            // The descriptor has no path to query a security descriptor
+            // from; the 1.x Windows value model falls back to the same
+            // "0 / no name" account pair file_accounts uses on failure.
+            let (owner, group) = if op == "-" {
+                (
+                    ("0".to_string(), String::new()),
+                    ("0".to_string(), String::new()),
+                )
+            } else {
+                fs_win::file_accounts(ctx, &resolved)
+            };
             // #1038 fifo marker (1.x stat.cpp:438-446): a non-device,
             // non-directory, non-reparse operand whose on-disk content is
             // the `!<fifo>` marker reports the GNU lstat() FIFO shape —
             // type "fifo", S_IFIFO mode bits, st_size 0. The probe needs
             // the API-path spelling; `resolved` is the typed operand.
             let mut meta = meta;
-            let fifo = !meta.character_device
-                && !meta.is_dir
-                && !meta.is_symlink
-                && fs_win::is_winux_fifo_path(&fs_win::api_path(ctx, &resolved));
+            let fifo = stdin_fifo
+                || (!meta.character_device
+                    && !meta.is_dir
+                    && !meta.is_symlink
+                    && fs_win::is_winux_fifo_path(&fs_win::api_path(ctx, &resolved)));
             if fifo {
                 meta.size = 0;
             }
@@ -1445,16 +1521,66 @@ mod tests {
         let (r, out, _) = run_sc(&sc, &["-c", "%n|%F|%s|%N", "sym"]);
         assert_eq!(r, 0);
         assert_eq!(out, "sym|symbolic link|3|'sym' -> 'reg'\n");
+        // [GNU] %b is the link's own allocation, never %s/512 (probed 9.4)
+        let (_, out, _) = run_sc(&sc, &["-c", "%s|%b", "sym"]);
+        assert_eq!(out, "3|0\n");
+        // the default header carries the same " -> target" suffix
+        let (_, out, _) = run_sc(&sc, &["sym"]);
+        assert!(out.starts_with("  File: sym -> reg\n"), "{out}");
         // -L follows
         let (r, out, _) = run_sc(&sc, &["-L", "-c", "%n|%F|%s", "sym"]);
         assert_eq!(r, 0);
         assert_eq!(out, "sym|regular file|3\n");
-        // dangling link still stats (lstat)
+        // -L names the link, never the resolved target
+        let (_, out, _) = run_sc(&sc, &["-L", "-c", "%N", "sym"]);
+        assert_eq!(out, "'sym'\n");
+        // dangling link still stats (lstat) and prints its target
         std::os::windows::fs::symlink_file("nowhere", sc.path("dang")).ok();
         if sc.path("dang").symlink_metadata().is_ok() {
-            let (r, out, _) = run_sc(&sc, &["-c", "%F", "dang"]);
+            let (r, out, _) = run_sc(&sc, &["-c", "%F|%s|%N", "dang"]);
             assert_eq!(r, 0);
-            assert_eq!(out.trim_end(), "symbolic link");
+            assert_eq!(out, "symbolic link|7|'dang' -> 'nowhere'\n");
+            // ... while -L on it is ENOENT, exactly like GNU
+            let (r, out, err) = run_sc(&sc, &["-L", "-c", "%F", "dang"]);
+            assert_eq!(r, 1);
+            assert_eq!(out, "");
+            assert_eq!(
+                err,
+                "stat: cannot statx 'dang': No such file or directory\n"
+            );
         }
+    }
+
+    #[test]
+    fn timestamps_follow_the_tz_environment() {
+        // #1655: human_time renders through localtime_r, so TZ decides both
+        // the wall clock and the %z offset (stat.c human_time).
+        let mut sc = setup("stat-tz");
+        let epoch = 1_577_934_245; // 2020-01-02T03:04:05Z
+        {
+            let ctx = sc.ctx();
+            fs_win::set_file_times(
+                &ctx,
+                "reg",
+                None,
+                None,
+                Some(FileTime::from_epoch(epoch, 0)),
+                false,
+                false,
+            )
+            .unwrap();
+        }
+        sc.env.set("TZ", "UTC");
+        let (r, out, _) = run_sc(&sc, &["-c", "%y", "reg"]);
+        assert_eq!(r, 0);
+        assert_eq!(out, "2020-01-02 03:04:05.000000000 +0000\n");
+        // every timestamp directive uses the same zone (atime here)
+        let (_, out, _) = run_sc(&sc, &["-c", "%x", "reg"]);
+        assert!(out.ends_with(" +0000\n"), "{out}");
+        // POSIX west-of-UTC offsets invert the sign in %z: TZ=UTC+5 is five
+        // hours WEST of Greenwich (glibc parses the sign this way).
+        sc.env.set("TZ", "UTC+5");
+        let (_, out, _) = run_sc(&sc, &["-c", "%y", "reg"]);
+        assert_eq!(out, "2020-01-01 22:04:05.000000000 -0500\n");
     }
 }

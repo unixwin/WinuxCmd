@@ -508,7 +508,7 @@ fn take_val(inline: Option<String>, args: &[OsString], idx: &mut usize) -> Optio
 /// combined. `base` anchors relative items (the -r reference time when
 /// one is given, else now; probed touch.c:354-360 behavior). Returns a
 /// UTC FILETIME.
-fn parse_datetime(s: &str, base: FileTime) -> Option<FileTime> {
+pub(crate) fn parse_datetime(s: &str, base: FileTime) -> Option<FileTime> {
     let s = s.trim();
     // GNU probed: an empty date is today at local midnight (rc 0)
     if s.is_empty() {

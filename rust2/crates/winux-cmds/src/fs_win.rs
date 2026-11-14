@@ -40,6 +40,25 @@ pub const FILE_FLAG_OPEN_REPARSE_POINT: DWORD = 0x0020_0000;
 pub const FILE_READ_ATTRIBUTES: DWORD = 0x0080;
 pub const ERROR_PRIVILEGE_NOT_HELD: DWORD = 1314;
 pub const ERROR_CANT_ACCESS_FILE: DWORD = 1920;
+/// ERROR_INVALID_HANDLE: the closed-stdin shape `stat -` reports as GNU's
+/// EBADF ("Bad file descriptor").
+pub const ERROR_INVALID_HANDLE: DWORD = 6;
+
+/// POSIX MAXSYMLINKS: the resolve budget for a chain of links the object
+/// manager does not follow by itself (#1652).
+pub const MAX_SYMLINK_FOLLOW: u32 = 40;
+
+/// WSL DrvFs POSIX symlink reparse tag (ntifs.h
+/// IO_REPARSE_TAG_LX_SYMLINK). Windows' object manager does not resolve
+/// these links, so any GNU-style dereference has to read the stored POSIX
+/// target and resolve it in user space.
+pub const IO_REPARSE_TAG_LX_SYMLINK: DWORD = 0xA000_001D;
+pub const FSCTL_GET_REPARSE_POINT: DWORD = 0x0009_00A8;
+
+pub const STD_INPUT_HANDLE: DWORD = -10i32 as DWORD;
+pub const FILE_TYPE_DISK: DWORD = 0x0001;
+pub const FILE_TYPE_CHAR: DWORD = 0x0002;
+pub const FILE_TYPE_PIPE: DWORD = 0x0003;
 
 pub const SYMBOLIC_LINK_FLAG_FILE: DWORD = 0;
 pub const SYMBOLIC_LINK_FLAG_DIRECTORY: DWORD = 0x1;
@@ -131,6 +150,14 @@ pub struct FileMeta {
     pub character_device: bool,
 }
 
+/// `fstat(0)` shape for `stat -` (#1653): GNU's FIFO / character-special /
+/// regular-file distinction comes from the HANDLE's file type, not from a
+/// path's attributes.
+pub struct StdinMeta {
+    pub meta: FileMeta,
+    pub fifo: bool,
+}
+
 #[cfg(windows)]
 pub mod imp {
     use super::*;
@@ -207,6 +234,17 @@ pub mod imp {
             utc: *mut SystemTime,
         ) -> i32;
         fn GetFileAttributesW(name: *const u16) -> DWORD;
+        fn GetFileType(h: Handle) -> DWORD;
+        fn DeviceIoControl(
+            h: Handle,
+            code: DWORD,
+            in_buf: *mut c_void,
+            in_size: DWORD,
+            out_buf: *mut c_void,
+            out_size: DWORD,
+            returned: *mut DWORD,
+            overlapped: *mut c_void,
+        ) -> i32;
         #[allow(dead_code)]
         fn SetFileAttributesW(name: *const u16, attrs: DWORD) -> i32;
     }
@@ -416,6 +454,99 @@ pub mod imp {
     /// Open the path and snapshot its metadata. `lstat` keeps reparse
     /// points unopened (symlink operands report the link itself).
     pub fn file_meta(ctx: &Ctx, operand: &str, lstat: bool) -> Result<FileMeta, u32> {
+        file_meta_depth(ctx, operand, lstat, 0)
+    }
+
+    /// The stored target of a symbolic link in the spelling the link
+    /// records — exactly what GNU prints in `%N` / `File:` (a relative LX
+    /// target stays relative). Native NTFS symlinks and junctions go
+    /// through std; WSL DrvFs POSIX links carry a tag Win32 has no reader
+    /// for, so `std::fs::read_link` fails on them and the raw reparse
+    /// buffer is decoded here (#1654).
+    pub fn read_symlink_target(api_path: &str) -> Option<String> {
+        if let Ok(target) = std::fs::read_link(api_path) {
+            return Some(target.to_string_lossy().into_owned());
+        }
+        read_lx_symlink_target(api_path)
+    }
+
+    /// IO_REPARSE_TAG_LX_SYMLINK payload: `u32 version` followed by the
+    /// link's POSIX target bytes (no NUL). WSL writes these for every
+    /// `ln -s` on a DrvFs mount; Windows itself cannot traverse them.
+    pub fn read_lx_symlink_target(api_path: &str) -> Option<String> {
+        let w = wide(api_path);
+        let handle = unsafe {
+            CreateFileW(
+                w.as_ptr(),
+                0, // no data access: the reparse point is all we read
+                FILE_SHARE_ALL,
+                std::ptr::null_mut(),
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                std::ptr::null_mut(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE || handle.is_null() {
+            return None;
+        }
+        let mut buf = vec![0u8; 16 * 1024];
+        let mut returned: DWORD = 0;
+        let ok = unsafe {
+            DeviceIoControl(
+                handle,
+                FSCTL_GET_REPARSE_POINT,
+                std::ptr::null_mut(),
+                0,
+                buf.as_mut_ptr() as *mut c_void,
+                buf.len() as DWORD,
+                &mut returned,
+                std::ptr::null_mut(),
+            )
+        };
+        unsafe { CloseHandle(handle) };
+        if ok == 0 {
+            return None;
+        }
+        let len = (returned as usize).min(buf.len());
+        // REPARSE_DATA_BUFFER: ReparseTag u32, ReparseDataLength u16,
+        // Reserved u16, then the tag-specific payload at offset 8.
+        if len < 12 {
+            return None;
+        }
+        let tag = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
+        if tag != IO_REPARSE_TAG_LX_SYMLINK {
+            return None;
+        }
+        let data_len = u16::from_le_bytes([buf[4], buf[5]]) as usize;
+        if data_len < 4 || 8 + data_len > len {
+            return None;
+        }
+        let raw = &buf[12..8 + data_len];
+        let target = String::from_utf8_lossy(raw);
+        let target = target.trim_end_matches('\0');
+        if target.is_empty() {
+            None
+        } else {
+            Some(target.to_string())
+        }
+    }
+
+    /// Resolve a link's stored target against the link's own directory the
+    /// way the object manager would: POSIX-drive spellings ("/mnt/d/x",
+    /// "/d/x") and the shell tree fold through the shared operand layer,
+    /// everything else is relative to the link (#1652).
+    pub fn resolve_symlink_target(ctx: &Ctx, link_api_path: &str, target: &str) -> String {
+        let folded = winux_core::path::normalize_operand(ctx.env, &ctx.cwd, target);
+        if Path::new(&folded).is_absolute() {
+            return folded;
+        }
+        match Path::new(link_api_path).parent() {
+            Some(dir) => dir.join(&folded).to_string_lossy().into_owned(),
+            None => folded,
+        }
+    }
+
+    fn file_meta_depth(ctx: &Ctx, operand: &str, lstat: bool, depth: u32) -> Result<FileMeta, u32> {
         // DOS device operands take the synthesized device record before the
         // ordinary handle snapshot (see dos_device_meta): the C++ 1.x stat
         // applet took the same attribute-record path (#276).
@@ -448,6 +579,18 @@ pub mod imp {
             // own metadata (the C++ lstat path does the same).
             if lstat {
                 return find_first_meta(ctx, &extended);
+            }
+            // [GNU] -L on a link the object manager cannot traverse: WSL
+            // DrvFs LX symlinks store a POSIX target that Win32 leaves
+            // unresolved, so CreateFileW on the link fails with
+            // ERROR_CANT_ACCESS_FILE although the target exists (#1652).
+            // GNU's dereference reads the stored target and stats it; do
+            // the same in user space, bounded like MAXSYMLINKS.
+            if depth < MAX_SYMLINK_FOLLOW {
+                if let Some(target) = read_symlink_target(&extended) {
+                    let next = resolve_symlink_target(ctx, &extended, &target);
+                    return file_meta_depth(ctx, &next, lstat, depth + 1);
+                }
             }
             return Err(kernel32_last_error());
         }
@@ -495,9 +638,11 @@ pub mod imp {
                 // a reparse-point-opened handle reports 0/allocated bytes,
                 // so the size comes from the stored target like the
                 // find_first_meta fallback path below (#1611 — the CreateFileW
-                // main path; the fallback already had the fixup).
-                if let Ok(t) = std::fs::read_link(&extended) {
-                    meta.size = t.to_string_lossy().len() as u64;
+                // main path; the fallback already had the fixup). The
+                // reader also decodes WSL DrvFs LX links, whose tag
+                // std::fs::read_link rejects (#1654).
+                if let Some(t) = read_symlink_target(&extended) {
+                    meta.size = t.len() as u64;
                 }
             }
             CloseHandle(handle);
@@ -567,8 +712,8 @@ pub mod imp {
         }
         // lstat of a symlink reports the target name length as the size
         if meta.is_symlink {
-            if let Ok(target) = std::fs::read_link(strip_extended(&full)) {
-                meta.size = target.to_string_lossy().len() as u64;
+            if let Some(target) = read_symlink_target(&full) {
+                meta.size = target.len() as u64;
             }
         }
         Ok(meta)
@@ -581,6 +726,65 @@ pub mod imp {
             rest.to_string()
         } else {
             p.to_string()
+        }
+    }
+
+    /// `fstat(0)` for the `-` operand (#1653): GNU's type name comes from
+    /// the open descriptor's kind — a pipe is a FIFO, a console a
+    /// character special file, a redirected file the file itself. A
+    /// closed/invalid stdin is EBADF ("Bad file descriptor").
+    pub fn stdin_meta() -> Result<StdinMeta, u32> {
+        // [GNU] '-' is fstat(fd 0): a closed descriptor is EBADF. The CRT
+        // sentinel is the same one the 1.x file_io::stdin_is_bad used
+        // (_lseek(0) == -1 && errno == EBADF).
+        extern "C" {
+            fn _get_osfhandle(fd: i32) -> isize;
+        }
+        if unsafe { _get_osfhandle(0) } == -1 {
+            return Err(ERROR_INVALID_HANDLE);
+        }
+        let handle = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+        if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+            return Err(ERROR_INVALID_HANDLE);
+        }
+        let kind = unsafe { GetFileType(handle) };
+        let mut meta = FileMeta::default();
+        // GNU's lstat of a pipe/console reports one link; Windows has no
+        // per-descriptor inode or volume, so those stay 0 (platform form).
+        meta.links = 1;
+        let now = now_filetime();
+        meta.atime = now;
+        meta.mtime = now;
+        meta.ctime = now;
+        meta.btime = now;
+        match kind {
+            FILE_TYPE_PIPE => Ok(StdinMeta { meta, fifo: true }),
+            FILE_TYPE_CHAR => {
+                meta.character_device = true;
+                Ok(StdinMeta { meta, fifo: false })
+            }
+            FILE_TYPE_DISK => {
+                let mut info = ByHandleFileInformation::default();
+                if unsafe { GetFileInformationByHandle(handle, &mut info) } != 0 {
+                    meta.is_symlink = info.attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0;
+                    meta.is_dir = info.attributes & FILE_ATTRIBUTE_DIRECTORY != 0;
+                    meta.read_only = info.attributes & FILE_ATTRIBUTE_READONLY != 0;
+                    meta.character_device = info.attributes & FILE_ATTRIBUTE_DEVICE != 0;
+                    meta.size = (info.size_high as u64) << 32 | info.size_low as u64;
+                    meta.links = info.links as u64;
+                    meta.volume_serial = info.volume_serial;
+                    meta.index = (info.index_high as u64) << 32 | info.index_low as u64;
+                    meta.btime = info.creation_time;
+                    meta.atime = info.last_access_time;
+                    meta.mtime = info.last_write_time;
+                    meta.ctime = info.last_write_time;
+                }
+                Ok(StdinMeta { meta, fifo: false })
+            }
+            _ => {
+                let err = kernel32_last_error();
+                Err(if err == 0 { ERROR_INVALID_HANDLE } else { err })
+            }
         }
     }
 
@@ -1067,6 +1271,27 @@ pub mod imp {
     pub fn file_meta(_ctx: &Ctx, _operand: &str, _lstat: bool) -> Result<FileMeta, u32> {
         Err(2)
     }
+    pub fn read_symlink_target(api_path: &str) -> Option<String> {
+        std::fs::read_link(api_path)
+            .ok()
+            .map(|t| t.to_string_lossy().into_owned())
+    }
+    pub fn read_lx_symlink_target(_api_path: &str) -> Option<String> {
+        None
+    }
+    pub fn resolve_symlink_target(ctx: &Ctx, link_api_path: &str, target: &str) -> String {
+        let folded = winux_core::path::normalize_operand(ctx.env, &ctx.cwd, target);
+        if std::path::Path::new(&folded).is_absolute() {
+            return folded;
+        }
+        match std::path::Path::new(link_api_path).parent() {
+            Some(dir) => dir.join(&folded).to_string_lossy().into_owned(),
+            None => folded,
+        }
+    }
+    pub fn stdin_meta() -> Result<StdinMeta, u32> {
+        Err(ERROR_INVALID_HANDLE)
+    }
     pub fn set_file_times(
         _ctx: &Ctx,
         _operand: &str,
@@ -1174,6 +1399,7 @@ pub fn win32_reason(err: u32) -> &'static str {
         2 => "No such file or directory", // ERROR_FILE_NOT_FOUND
         3 => "No such file or directory", // ERROR_PATH_NOT_FOUND
         5 => "Permission denied",         // ERROR_ACCESS_DENIED
+        6 => "Bad file descriptor",       // ERROR_INVALID_HANDLE (stat - on closed stdin)
         80 => "File exists",              // ERROR_FILE_EXISTS
         183 => "File exists",             // ERROR_ALREADY_EXISTS
         206 => "File name too long",      // ERROR_FILENAME_EXCED_RANGE
