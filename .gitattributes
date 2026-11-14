@@ -13,3 +13,12 @@
 *.gif binary
 *.ico binary
 *.zip binary
+
+# Explicit suffix pins for script/data files that gate tooling rewrites
+# byte-for-byte (gen-cases.py emit() writes newline="\n"). `* text=auto
+# eol=lf` above already covers them; these lines make the intent explicit and
+# keep LF even if auto-detection ever misreads a file as binary.
+*.py text eol=lf
+*.json text eol=lf
+*.tsv text eol=lf
+*.sh text eol=lf
