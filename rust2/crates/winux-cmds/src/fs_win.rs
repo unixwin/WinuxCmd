@@ -739,10 +739,13 @@ pub mod imp {
         extern "C" {
             fn _get_osfhandle(fd: i32) -> isize;
         }
-        if unsafe { _get_osfhandle(0) } == -1 {
+        let raw = unsafe { _get_osfhandle(0) };
+        if raw == -1 {
             return Err(ERROR_INVALID_HANDLE);
         }
-        let handle = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+        // The red line forbids GetStdHandle in the library: the CRT's
+        // descriptor-to-handle mapping is the one explicit fact we use.
+        let handle = raw as Handle;
         if handle.is_null() || handle == INVALID_HANDLE_VALUE {
             return Err(ERROR_INVALID_HANDLE);
         }

@@ -455,7 +455,7 @@ pub fn touch_with_stdout(
         if op == "-" {
             let r = match stdout_times.as_mut() {
                 Some(t) => t.set_times(atime, mtime),
-                None => Err(6), // ERROR_INVALID_HANDLE
+                None => Err(87), // ERROR_INVALID_PARAMETER -> EINVAL
             };
             if let Err(e) = r {
                 let _ = writeln!(
