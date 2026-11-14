@@ -102,6 +102,11 @@ pub fn join_lex(base: &Path, comp: &str) -> PathBuf {
 /// the ctx.cwd join exactly as before.
 pub fn resolve(ctx: &Ctx, operand: impl AsRef<Path>) -> PathBuf {
     let p = operand.as_ref();
+    // #1726: an explicit empty operand is a path, never the cwd (GNU:
+    // open("") is ENOENT); the cwd join below used to resolve "" to ctx.cwd.
+    if p.as_os_str().is_empty() {
+        return PathBuf::new();
+    }
     if let Some(s) = p.to_str() {
         let mapped = winux_core::path::normalize_operand(ctx.env, &ctx.cwd, s);
         // only a claimed spelling changes the resolution — and only when

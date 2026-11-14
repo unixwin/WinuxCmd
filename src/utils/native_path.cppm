@@ -640,6 +640,11 @@ auto split_absolute_components_w(std::wstring_view abs,
 // what the \\?\ namespace stores. GetFullPathNameW cannot be used for these
 // spellings because it rewrites the leaf name (#1283).
 auto to_extended_path_preserving(std::wstring_view native) -> std::wstring {
+  // #1726: an explicit empty operand is a path, never the cwd. Without
+  // this guard the fallthrough below absolutizes "" onto the current
+  // directory — and the `native[0]` read in the rooted branch is an
+  // out-of-bounds read on an empty view. GNU reports open("") as ENOENT.
+  if (native.empty()) return {};
   std::wstring base;
   std::wstring_view tail;
   if (native.size() >= 2 && is_separator(native[0]) &&
@@ -750,6 +755,10 @@ auto has_device_stem_with_extension_w(std::wstring_view native) -> bool {
 }
 
 export auto to_extended_path(std::wstring_view path) -> std::wstring {
+  // #1726: an explicit empty operand is a path, never the cwd — pass it
+  // through so every consumer stats "" and reports ENOENT like GNU
+  // (GetFullPathNameW("") would return the cwd).
+  if (path.empty()) return {};
   if (path.size() >= 4 && path.compare(0, 4, L"\\\\?\\") == 0) {
     return std::wstring(path);
   }
@@ -1344,6 +1353,10 @@ export auto canonicalize_path_w(std::wstring_view path, CanonMode mode,
                                 bool expand_symlinks = true,
                                 bool logical = false)
     -> std::expected<std::wstring, int> {
+  // #1726: an explicit empty operand is a path, never the cwd — GNU
+  // errors ENOENT in every mode (realpath -m "" included); without this
+  // the empty component walk below returns the cwd.
+  if (path.empty()) return std::unexpected(ENOENT);
   // niubash#346: the shell hands its own applets POSIX spellings verbatim
   // (/usr/bin, /etc, /tmp, /home, /mnt/x). Resolve the operand through the
   // shell tree first, and re-express the result in the shell spelling when
