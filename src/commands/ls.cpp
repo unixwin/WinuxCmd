@@ -84,7 +84,7 @@ using cmd::meta::OptionType;
  * - @a -w, @a --width: Set output width to COLS. 0 means no limit [IMPLEMENTED]
  * - @a -x: List entries by lines instead of by columns [IMPLEMENTED]
  * - @a -X: Sort alphabetically by entry extension [IMPLEMENTED]
- * - @a -Z, @a --context: Print any security context of each file [DIFFERS]
+ * - @a -Z, @a --context: Print any security context of each file [IMPLEMENTED]
  * - @a -1: List one file per line [IMPLEMENTED]
  */
 auto constexpr LS_OPTIONS = std::array{
@@ -419,6 +419,15 @@ auto is_reparse_link(const WIN32_FIND_DATAW &find_data) -> bool {
   return (find_data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
 }
 
+// WSL stores its links on a Windows volume with this private tag instead of
+// IO_REPARSE_TAG_SYMLINK; Win32's readlink interface does not understand it,
+// but the payload is still a plain UTF-8 target string (#1639).
+constexpr DWORD kReparseTagLxSymlink = 0xA000001D;
+
+// FSCTL_GET_REPARSE_POINT lives in winioctl.h, which the pch does not pull
+// in; CTL_CODE(FILE_DEVICE_FILE_SYSTEM, 42, METHOD_BUFFERED, FILE_ANY_ACCESS).
+constexpr DWORD kFctlGetReparsePoint = 0x000900A8;
+
 auto normalize_lookup_path(const std::wstring &path) -> std::wstring {
   if (path.empty()) {
     return path;
@@ -558,7 +567,8 @@ auto normalize_metadata_probe_path(const std::wstring &path) -> std::wstring {
 
 auto is_symbolic_reparse_link(const WIN32_FIND_DATAW &find_data) -> bool {
   return is_reparse_link(find_data) &&
-         find_data.dwReserved0 == IO_REPARSE_TAG_SYMLINK;
+         (find_data.dwReserved0 == IO_REPARSE_TAG_SYMLINK ||
+          find_data.dwReserved0 == kReparseTagLxSymlink);
 }
 
 auto is_plain_directory(const WIN32_FIND_DATAW &find_data) -> bool {
@@ -723,16 +733,83 @@ auto get_indicator_suffix(const std::wstring &name,
   return {};
 }
 
+// [GNU] quotearg.c escape_quoting_style (-b): a C string without the
+// surrounding double quotes.  Unlike c_quoting_style it leaves '"' and '\''
+// alone, and ls additionally registers the space with set_char_quoting
+// (ls.c:2359-2360) so every blank becomes "\ " (#1646).  Non-ASCII names are
+// escaped byte by byte in octal ("\303\251"), which is what the C locale
+// oracle prints.
+auto append_octal_byte(std::wstring &rendered, unsigned char byte) {
+  static constexpr wchar_t digits[] = L"01234567";
+  rendered.push_back(L'\\');
+  rendered.push_back(digits[(byte >> 6) & 0x7]);
+  rendered.push_back(digits[(byte >> 3) & 0x7]);
+  rendered.push_back(digits[byte & 0x7]);
+}
+
+auto escape_style_display_name(const std::wstring &name) -> std::wstring {
+  std::wstring rendered;
+  rendered.reserve(name.size() * 2);
+
+  auto append_utf8_octal = [&](wchar_t ch) {
+    std::string utf8 = wstring_to_utf8(std::wstring(1, ch));
+    for (unsigned char byte : utf8) {
+      append_octal_byte(rendered, byte);
+    }
+  };
+
+  for (wchar_t ch : name) {
+    switch (ch) {
+      case L'\a':
+        rendered += L"\\a";
+        break;
+      case L'\b':
+        rendered += L"\\b";
+        break;
+      case L'\t':
+        rendered += L"\\t";
+        break;
+      case L'\n':
+        rendered += L"\\n";
+        break;
+      case L'\v':
+        rendered += L"\\v";
+        break;
+      case L'\f':
+        rendered += L"\\f";
+        break;
+      case L'\r':
+        rendered += L"\\r";
+        break;
+      case L'\\':
+        rendered += L"\\\\";
+        break;
+      case L' ':
+        rendered += L"\\ ";
+        break;
+      default:
+        if (ch >= 0x20 && ch < 0x7f) {
+          rendered.push_back(ch);
+        } else if (ch > 0x7f) {
+          append_utf8_octal(ch);
+        } else {
+          append_octal_byte(rendered, static_cast<unsigned char>(ch));
+        }
+        break;
+    }
+  }
+
+  return rendered;
+}
+
 auto escape_display_name(const std::wstring &name) -> std::wstring {
   std::wstring rendered;
   rendered.reserve(name.size() * 2);
 
-  auto append_hex = [&](unsigned int value, int width, wchar_t prefix) {
-    static constexpr wchar_t digits[] = L"0123456789abcdef";
-    rendered.push_back(L'\\');
-    rendered.push_back(prefix);
-    for (int shift = (width - 1) * 4; shift >= 0; shift -= 4) {
-      rendered.push_back(digits[(value >> shift) & 0xF]);
+  auto append_utf8_octal = [&](wchar_t ch) {
+    std::string utf8 = wstring_to_utf8(std::wstring(1, ch));
+    for (unsigned char byte : utf8) {
+      append_octal_byte(rendered, byte);
     }
   };
 
@@ -763,20 +840,19 @@ auto escape_display_name(const std::wstring &name) -> std::wstring {
         rendered += L"\\\\";
         break;
       case L'"':
+        // c_quoting_style escapes the quote; escape_quoting_style (-b) does
+        // not and uses escape_style_display_name instead.
         rendered += L"\\\"";
         break;
       default:
-        // [GNU] quotearg's escape styles pass PRINTABLE characters
-        // through raw, whatever their range; the old hard-coded
-        // ASCII window mangled names like "€.txt" into € form.
-        if (std::iswprint(static_cast<wint_t>(ch))) {
+        if (ch >= 0x20 && ch < 0x7f) {
           rendered.push_back(ch);
-        } else if (ch <= 0xFF) {
-          append_hex(static_cast<unsigned int>(ch), 2, L'x');
-        } else if (ch <= 0xFFFF) {
-          append_hex(static_cast<unsigned int>(ch), 4, L'u');
+        } else if (ch > 0x7f) {
+          // [GNU] In the C locale a multibyte character is not printable, so
+          // quotearg emits one octal escape per UTF-8 byte ("\303\251").
+          append_utf8_octal(ch);
         } else {
-          append_hex(static_cast<unsigned int>(ch), 8, L'U');
+          append_octal_byte(rendered, static_cast<unsigned char>(ch));
         }
         break;
     }
@@ -912,44 +988,98 @@ auto resolve_quoting_mode(const CommandContext<LS_OPTIONS.size()> &ctx)
   return mode;
 }
 
-auto needs_shell_quote(wchar_t ch) -> bool {
-  if (std::iswspace(static_cast<wint_t>(ch)) != 0) return true;
+// [GNU] quotearg.c shell quoting: a shell special character forces outer
+// quotes.  '#' and '~' only count in the first position and '{'/'}' only when
+// the whole name is one character; ']' is not special.  Quoting is normally
+// single quotes, but when the name holds an apostrophe and every character
+// is simultaneously safe for C and shell quoting, GNU re-renders it as a C
+// string ("it's.txt"), which is shorter than 'it'\''s.txt' (#1646).
+auto shell_special_at(wchar_t ch, size_t index, size_t length) -> bool {
+  if (ch == L'#' || ch == L'~') return index == 0;
+  if (ch == L'{' || ch == L'}') return length == 1;
   switch (ch) {
+    case L' ':
+    case L'\t':
+    case L'\n':
+    case L'\v':
+    case L'\f':
+    case L'\r':
     case L'\'':
     case L'"':
-    case L'\\':
     case L'$':
     case L'&':
-    case L';':
     case L'(':
     case L')':
-    case L'<':
-    case L'>':
-    case L'|':
     case L'*':
-    case L'?':
+    case L';':
+    case L'<':
+    case L'=':
+    case L'>':
     case L'[':
-    case L']':
-    case L'{':
-    case L'}':
-    case L'~':
-    case L'#':
+    case L'^':
+    case L'`':
+    case L'|':
+    case L'!':
+    case L'\\':
       return true;
     default:
-      return !std::iswprint(static_cast<wint_t>(ch));
+      return std::iswprint(static_cast<wint_t>(ch)) == 0;
+  }
+}
+
+auto shell_and_c_compatible(wchar_t ch) -> bool {
+  switch (ch) {
+    case L'!':
+    case L'"':
+    case L'$':
+    case L'&':
+    case L'(':
+    case L')':
+    case L'*':
+    case L';':
+    case L'<':
+    case L'=':
+    case L'>':
+    case L'[':
+    case L'^':
+    case L'`':
+    case L'|':
+    case L'\\':
+      return false;
+    default:
+      return std::iswprint(static_cast<wint_t>(ch)) != 0;
   }
 }
 
 auto shell_quote_display_name(const std::wstring &name, bool always)
     -> std::wstring {
   bool quote = always;
-  for (wchar_t ch : name) {
-    if (needs_shell_quote(ch)) {
-      quote = true;
-      break;
+  if (!quote) {
+    for (size_t i = 0; i < name.size(); ++i) {
+      if (shell_special_at(name[i], i, name.size())) {
+        quote = true;
+        break;
+      }
     }
   }
   if (!quote) return name;
+
+  const bool has_single_quote = name.find(L'\'') != std::wstring::npos;
+  bool all_compatible = true;
+  if (has_single_quote) {
+    for (wchar_t ch : name) {
+      if (!shell_and_c_compatible(ch)) {
+        all_compatible = false;
+        break;
+      }
+    }
+    if (all_compatible) {
+      // quotearg.c's encountered_single_quote fallback: re-render with
+      // c_quoting_style.  Every character is printable and free of '"' and
+      // '\', so the C form is just the double-quoted name.
+      return L"\"" + name + L"\"";
+    }
+  }
 
   std::wstring rendered;
   rendered.reserve(name.size() + 2);
@@ -973,7 +1103,7 @@ auto apply_quoting_mode(const std::wstring &value, QuotingMode quoting)
     case QuotingMode::Literal:
       break;
     case QuotingMode::Escape:
-      rendered = escape_display_name(rendered);
+      rendered = escape_style_display_name(rendered);
       break;
     case QuotingMode::HideControl:
       for (auto &ch : rendered) {
@@ -1015,6 +1145,128 @@ auto should_dereference_metadata(const WIN32_FIND_DATAW &find_data,
                                            find_data, command_line_operand);
 }
 
+// [GNU] ls.c:3713-3722 get_link_name() -> areadlink_with_size(): the target
+// string is read back from the filesystem entry itself, never inferred from
+// the entry's own metadata.  std::filesystem::read_symlink() answers only
+// IO_REPARSE_TAG_SYMLINK and IO_REPARSE_TAG_MOUNT_POINT, and every other
+// shape (a WSL-created link, tag 0xA000001D, is what a link checked out under
+// /mnt/c looks like to Win32) degrades to "no readlink at all".  #1639 was
+// exactly that silent degradation: the row printed no " -> target" and the
+// size column fell back to the link's own (zero) nFileSize.  Read the
+// reparse payload directly so the stored target always reaches the caller.
+auto reparse_name_at(const std::vector<BYTE> &buffer, size_t offset,
+                     size_t length) -> std::wstring {
+  if (offset + length > buffer.size() || length % sizeof(wchar_t) != 0) {
+    return {};
+  }
+  std::wstring name(length / sizeof(wchar_t), L'\0');
+  std::memcpy(name.data(), buffer.data() + offset, length);
+  // The stored lengths may or may not include the terminator; a trailing
+  // NUL would poison the std::filesystem::path built from the target.
+  while (!name.empty() && name.back() == L'\0') {
+    name.pop_back();
+  }
+  return name;
+}
+
+auto strip_nt_namespace_prefix(std::wstring value) -> std::wstring {
+  auto strip = [](std::wstring &text, std::wstring_view prefix) {
+    if (text.rfind(prefix, 0) != 0) return false;
+    text.erase(0, prefix.size());
+    return true;
+  };
+  if (strip(value, LR"(\\?\UNC\)")) {
+    return L"\\\\" + value;
+  }
+  if (strip(value, LR"(\??\UNC\)")) {
+    return L"\\\\" + value;
+  }
+  strip(value, LR"(\\?\)");
+  strip(value, LR"(\??\)");
+  return value;
+}
+
+auto read_reparse_target_w(const std::wstring &full_path)
+    -> std::optional<std::wstring> {
+  const auto operand = native_path::make_api_path_operand_w(full_path);
+  HANDLE handle = CreateFileW(
+      operand.extended.c_str(), FILE_READ_EA,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+      OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
+      nullptr);
+  if (handle == INVALID_HANDLE_VALUE) {
+    return std::nullopt;
+  }
+
+  // 16 KiB covers the largest reparse payload Windows documents.
+  std::vector<BYTE> buffer(16 * 1024, 0);
+  DWORD returned = 0;
+  const BOOL read_ok =
+      DeviceIoControl(handle, kFctlGetReparsePoint, nullptr, 0,
+                      buffer.data(), static_cast<DWORD>(buffer.size()),
+                      &returned, nullptr);
+  CloseHandle(handle);
+  if (!read_ok || returned < 8) {
+    return std::nullopt;
+  }
+
+  const DWORD tag = *reinterpret_cast<const DWORD *>(buffer.data());
+  // The payload starts after ReparseTag (4), ReparseDataLength (2) and
+  // Reserved (2).
+  constexpr size_t kPayload = 8;
+
+  if (tag == IO_REPARSE_TAG_SYMLINK && returned >= kPayload + 20) {
+    uint16_t substitute_offset = 0;
+    uint16_t print_offset = 0;
+    std::memcpy(&substitute_offset, buffer.data() + kPayload, 2);
+    std::memcpy(&print_offset, buffer.data() + kPayload + 4, 2);
+    // Prefer the printable name: it is the spelling the link was created
+    // with, which is what GNU's readlink() reports.
+    std::wstring print_name = reparse_name_at(
+        buffer, kPayload + 12 + print_offset,
+        *reinterpret_cast<const uint16_t *>(buffer.data() + kPayload + 6));
+    if (!print_name.empty()) {
+      return strip_nt_namespace_prefix(std::move(print_name));
+    }
+    uint16_t substitute_length = 0;
+    std::memcpy(&substitute_length, buffer.data() + kPayload + 2, 2);
+    std::wstring substitute_name =
+        reparse_name_at(buffer, kPayload + 12 + substitute_offset,
+                        substitute_length);
+    if (!substitute_name.empty()) {
+      return strip_nt_namespace_prefix(std::move(substitute_name));
+    }
+    return std::nullopt;
+  }
+
+  if (tag == kReparseTagLxSymlink && returned >= kPayload + 4) {
+    // WSL stores "version (u32) + UTF-8 target, no terminator".
+    const char *chars =
+        reinterpret_cast<const char *>(buffer.data() + kPayload + 4);
+    size_t length = returned - kPayload - 4;
+    while (length > 0 && chars[length - 1] == '\0') {
+      --length;
+    }
+    return utf8_to_wstring(std::string_view(chars, length));
+  }
+
+  if (tag == IO_REPARSE_TAG_MOUNT_POINT && returned >= kPayload + 16) {
+    uint16_t substitute_offset = 0;
+    uint16_t substitute_length = 0;
+    std::memcpy(&substitute_offset, buffer.data() + kPayload, 2);
+    std::memcpy(&substitute_length, buffer.data() + kPayload + 2, 2);
+    std::wstring substitute_name =
+        reparse_name_at(buffer, kPayload + 8 + substitute_offset,
+                        substitute_length);
+    if (!substitute_name.empty()) {
+      return strip_nt_namespace_prefix(std::move(substitute_name));
+    }
+    return std::nullopt;
+  }
+
+  return std::nullopt;
+}
+
 auto read_symlink_display_target(const std::wstring &full_path,
                                  const WIN32_FIND_DATAW &find_data,
                                  const CommandContext<LS_OPTIONS.size()> &ctx,
@@ -1030,10 +1282,15 @@ auto read_symlink_display_target(const std::wstring &full_path,
   }
 
   std::error_code ec;
-  std::filesystem::path target =
-      std::filesystem::read_symlink(std::filesystem::path(full_path), ec);
-  if (ec) {
-    return std::nullopt;
+  std::filesystem::path target;
+  if (auto direct = read_reparse_target_w(full_path)) {
+    target = std::filesystem::path(std::move(*direct));
+  } else {
+    target =
+        std::filesystem::read_symlink(std::filesystem::path(full_path), ec);
+    if (ec) {
+      return std::nullopt;
+    }
   }
 
   std::filesystem::path resolved_target = target;
@@ -1439,29 +1696,29 @@ auto compare_extensions(const EntryInfo &a, const EntryInfo &b) -> bool {
 }
 
 auto parse_sort_mode(std::string_view value) -> std::optional<SortMode> {
-  if (value.empty() || value == "name") return SortMode::Name;
-  if (value == "size") return SortMode::Size;
-  if (value == "time") return SortMode::Time;
-  if (value == "version") return SortMode::Version;
-  if (value == "extension") return SortMode::Extension;
-  if (value == "type") return SortMode::Type;
-  if (value == "width") return SortMode::Width;
   if (value == "none") return SortMode::None;
+  if (value == "time") return SortMode::Time;
+  if (value == "size") return SortMode::Size;
+  if (value == "extension") return SortMode::Extension;
+  if (value == "version") return SortMode::Version;
+  if (value == "width") return SortMode::Width;
   return std::nullopt;
 }
 
-// [GNU] --sort values are matched exactly, then by unique prefix
-// (argmatch): several prefix matches are ambiguous, none is invalid.
-// The valid set is this command's superset of GNU's (GNU has no name or
-// type value), so "n" and "t" stay ambiguous here although GNU resolves
-// them to none and time.
+// [GNU] ls.c:911-919 (9.4) sort_args/sort_types: none, time, size, extension,
+// version, width.  Values are matched exactly, then by unique prefix
+// (argmatch); several prefix matches are ambiguous, none is invalid.  The
+// table carries neither "name" (added upstream in 9.5) nor an invented
+// "type", and an empty value is ambiguous, exactly like GNU (#1645).  The
+// bundled 9.4 oracle is the contract here, so the candidate list below must
+// stay byte-identical to its argmatch output.
 auto resolve_sort_mode_value(std::string_view value) -> cp::Result<SortMode> {
   if (auto parsed = parse_sort_mode(value)) return *parsed;
   static constexpr std::string_view kNames[] = {
-      "name", "size", "time", "version", "extension", "type", "width", "none",
+      "none", "time", "size", "extension", "version", "width",
   };
   int matches = 0;
-  SortMode matched = SortMode::Name;
+  SortMode matched = SortMode::None;
   for (std::string_view name : kNames) {
     if (name.starts_with(value)) {
       ++matches;
@@ -1475,14 +1732,12 @@ auto resolve_sort_mode_value(std::string_view value) -> cp::Result<SortMode> {
   message +=
       "' for '--sort'\n"
       "Valid arguments are:\n"
-      "  - 'name'\n"
-      "  - 'size'\n"
-      "  - 'time'\n"
-      "  - 'version'\n"
-      "  - 'extension'\n"
-      "  - 'type'\n"
-      "  - 'width'\n"
       "  - 'none'\n"
+      "  - 'time'\n"
+      "  - 'size'\n"
+      "  - 'extension'\n"
+      "  - 'version'\n"
+      "  - 'width'\n"
       "Try 'ls --help' for more information.";
   return std::unexpected(message);
 }
@@ -2274,6 +2529,16 @@ auto print_record_terminator(const CommandContext<LS_OPTIONS.size()> &ctx)
   }
 }
 
+// [GNU] ls.c:2223-2225 sets print_scontext for -Z/--context.  On a platform without
+// SELinux support getfilecon() fails and GNU keeps the "?" stand-in for every
+// entry instead of rejecting the option, so both the frills prefix
+// (print_file_name_and_frills, ls.c:4887) and the long-format column
+// (print_long_format, ls.c:4406) print a single "?" (scontext_width == 1).
+auto security_context_requested(const CommandContext<LS_OPTIONS.size()> &ctx)
+    -> bool {
+  return ctx.has("-Z") || ctx.has("--context");
+}
+
 struct RenderedEntry {
   std::string text;
   size_t visible_width = 0;
@@ -2808,30 +3073,13 @@ auto configure_sizes(const CommandContext<LS_OPTIONS.size()> &ctx)
   return cfg;
 }
 
+// [GNU] lib/human.c via utils:human_size: ceiling rounding in tenths of the
+// selected unit; --si (1000-based) uses the lowercase "k" suffix while -h
+// uses "K" (#1644).
 auto format_human_size(uint64_t size, bool si) -> std::string {
-  const char *units = si ? "BKMGTPE" : "BKMGTP";
-  const double base = si ? 1000.0 : 1024.0;
-  int unit_index = 0;
-  double value = static_cast<double>(size);
-
-  while (value >= base && unit_index < 6) {
-    value /= base;
-    ++unit_index;
-  }
-
-  char buf[32];
-  if (unit_index == 0) {
-    snprintf(buf, sizeof(buf), "%.0f", value);
-  } else if (value < 10.0) {
-    snprintf(buf, sizeof(buf), "%.1f%c", value, units[unit_index]);
-  } else if (std::round(value) >= base && unit_index < 6) {
-    // [GNU] human.c: a value that ROUNDS UP to the base promotes to
-    // 1.0 of the next unit (1048575 bytes is "1.0M", not "1024K").
-    snprintf(buf, sizeof(buf), "%.1f%c", 1.0, units[unit_index + 1]);
-  } else {
-    snprintf(buf, sizeof(buf), "%.0f%c", value, units[unit_index]);
-  }
-  return std::string(buf);
+  return winux::human::size(
+      size, si ? winux::human::UnitBase::decimal
+               : winux::human::UnitBase::binary);
 }
 
 auto format_scaled_size(uint64_t size, SizeMode mode, uint64_t block_size)
@@ -3109,6 +3357,10 @@ auto build_listing_prefix(const std::wstring &path,
   if (print_block_size_enabled(ctx)) {
     prefix += get_allocated_blocks_string(path, find_data, size_cfg);
     prefix.push_back(' ');
+  }
+  if (security_context_requested(ctx)) {
+    // [GNU] print_file_name_and_frills: inode, blocks, scontext, name.
+    prefix += "? ";
   }
   return prefix;
 }
@@ -3784,6 +4036,13 @@ auto list_directory(const std::string &path,
         safePrint(" ");
       }
 
+      if (security_context_requested(ctx)) {
+        // [GNU] print_long_format (ls.c:4406) prints scontext with the same
+        // left-aligned user/group shape, between group/author and size.
+        safePrint("?");
+        safePrint(" ");
+      }
+
       // 5. File size (right-aligned)
       int size_padding = static_cast<int>(max_size_len) -
                          static_cast<int>(file_info.size.length());
@@ -4012,6 +4271,13 @@ auto list_file(const std::string &path,
     if (show_group) {
       // 4. Group (left-aligned)
       safePrint(std::string_view(group));
+      safePrint(" ");
+    }
+
+    if (security_context_requested(ctx)) {
+      // [GNU] print_long_format (ls.c:4406): the context column follows
+      // group/author and precedes the size column.
+      safePrint("?");
       safePrint(" ");
     }
 
@@ -4512,15 +4778,26 @@ REGISTER_COMMAND(
     safeErrorPrintLn("ls: " + *style_error);
     return 2;
   }
+  // [GNU] --sort goes through XARGMATCH during the option scan (ls.c:2135):
+  // an invalid or ambiguous WORD dies before any operand is examined, even
+  // when a later -U/-S would override the sort, and argmatch_die exits 1.
+  // Validating here also covers the single-file operand path, which never
+  // reaches the directory sorter (#1645).
+  if (ctx.has("--sort")) {
+    if (auto sort_selection = ls_pipeline::resolve_sort_mode(ctx);
+        !sort_selection) {
+      safeErrorPrintLn("ls: " + sort_selection.error());
+      return 1;
+    }
+  }
   set_stdout_byte_counting(ls_pipeline::dired_requested(ctx));
 
-  // [DIFFERS] -Z/--context: SELinux security context not applicable on Windows
-  if (ctx.has("-Z") || ctx.has("--context")) {
-    safeErrorPrintLn(
-        winux::i18n::translate("command.ls.error.context-unsupported",
-                               "ls: --context is not supported on Windows"));
-    return 1;
-  }
+  // [DIFFERS] -Z/--context: SELinux security contexts do not exist on
+  // Windows.  GNU still accepts the option everywhere and prints its
+  // "unsupported" stand-in, a single "?" (#1643): each one-per-line record
+  // gains a "? " prefix and the long format gains a one-character context
+  // column between group/author and size.  Refusing the option broke every
+  // cross-platform script that had a working `ls -Z` on the Linux side.
 
   auto result = process_command(ctx);
   if (ls_pipeline::dired_requested(ctx)) {

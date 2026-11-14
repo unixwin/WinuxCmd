@@ -45,7 +45,7 @@ auto expected_blocks(uint64_t logical, uint64_t block,
 
 // Mirrors src/commands/du.cpp format_size(): ceiling to tenths of the unit.
 auto format_size_for_test(uint64_t size, bool si) -> std::string {
-  const char* units = si ? "BKMGTPE" : "BKMGTP";
+  const char* units = si ? "BkMGTPE" : "BKMGTP";
   const uint64_t base = si ? 1000 : 1024;
   if (size < base) {
     return std::to_string(size);
@@ -510,6 +510,30 @@ TEST(du, du_si_is_long_option_only) {
   EXPECT_NE(r.stdout_text.find(
                 format_size_for_test(allocated_size(1500, tmp.path), true)),
             std::string::npos);
+}
+
+TEST(du, du_si_uses_decimal_units_and_lowercase_kilo) {
+  TempDir tmp;
+  tmp.write("file.txt", std::string(20000, 'x'));
+
+  Pipeline si;
+  si.set_cwd(tmp.wpath());
+  si.add(L"du.exe", {L"--si", L"-s", L"--apparent-size", L"file.txt"});
+  auto si_result = si.run();
+
+  EXPECT_EQ(si_result.exit_code, 0);
+  // [GNU] lib/human.c: 20000 bytes is "20k" in --si (1000-based, lowercase
+  // kilo), not "20K" (#1644).
+  EXPECT_NE(si_result.stdout_text.find("20k"), std::string::npos);
+  EXPECT_EQ(si_result.stdout_text.find("20K"), std::string::npos);
+
+  Pipeline human;
+  human.set_cwd(tmp.wpath());
+  human.add(L"du.exe", {L"-h", L"-s", L"--apparent-size", L"file.txt"});
+  auto human_result = human.run();
+
+  EXPECT_EQ(human_result.exit_code, 0);
+  EXPECT_NE(human_result.stdout_text.find("20K"), std::string::npos);
 }
 
 TEST(du, du_block_size_one_reports_bytes) {
