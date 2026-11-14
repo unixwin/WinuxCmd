@@ -42,6 +42,25 @@ TABLE_NOTES = {
         "# GNU side runs as root: numeric specs really change; named POSIX accounts",
         "# do not exist on Windows, so named-account cases are win/value-model.",
     ],
+    "mkfifo": [
+        "# mkfifo gate cases (wave-W4 wiring, #1488) — TAB-separated",
+        "# Probed against WSL coreutils 9.4 with",
+        "# rust2/target/probe/w4-mkfifo-mknod.sh (GNU side creates REAL fifos;",
+        "# the Windows sides create the #1038 !<fifo> marker, so stdout/rc are",
+        "# comparable but the on-disk node type is checked by the unit tests).",
+        "# mf20/mf21 are win: the wired product answers the sole",
+        "# --help/--version with the WinuxCmd-branded dispatcher surface",
+        "# (suite-wide help convention, wave6 precedent), not GNU text.",
+    ],
+    "mknod": [
+        "# mknod gate cases (wave-W4 wiring, #1488) — TAB-separated",
+        "# Probed against WSL coreutils 9.4 (rust2/target/probe/w4-mkfifo-mknod.sh).",
+        "# Device-node rows are win because the WSL oracle runs as ROOT and",
+        "# really creates block/char nodes (probed rdev=1:3 etc.); Windows has",
+        "# no device-node type, so both Windows sides report EPERM and only",
+        "# Rust-vs-C++ can be compared. mn20/mn21 are win for the sole",
+        "# --help/--version branded product surface (mkfifo precedent).",
+    ],
 }
 
 
@@ -3589,11 +3608,28 @@ mkfifo_rows = [
     ("mf17-Z-attached-invalid", "strict", "", "", "", ["-Zctx2", "pz2"]),
     ("mf18-context-after-dashdash", "strict", "", "", "", ["--", "--context=x"]),
     ("mf19-two-names", "strict", "", "", "", ["pa", "pb"]),
-    ("mf20-help", "strict", "", "", "", ["--help"]),
-    ("mf21-version", "strict", "", "", "", ["--version"]),
+    # sole --help/--version are the product's branded dispatcher surface
+    # (wave6 convention); the GNU help body is pinned by the rust2 unit
+    # test help_version_surface instead.
+    ("mf20-help", "win", "", "", "", ["--help"]),
+    ("mf21-version", "win", "", "", "", ["--version"]),
     ("mf22-mixed-failure", "strict", "", "", "", ["ok", "nodir/bad", "ok2"]),
     ("mf23-missing-value", "strict", "", "", "", ["-m"]),
     ("mf24-bogus-long", "strict", "", "", "", ["--bogus"]),
+    # wave-W4 additions (probed w4-mkfifo-mknod.sh)
+    ("mf25-mode-long-eq", "strict", "", "", "", ["--mode=644", "p"]),
+    ("mf26-mode-last-wins", "strict", "", "", "", ["-m", "600", "-m", "640", "p"]),
+    ("mf27-mode-empty-value", "strict", "", "", "", ["-m", "", "p"]),
+    ("mf28-mode-combined", "strict", "", "", "", ["-m", "u=rw,go=r", "p"]),
+    # --context= (empty PRESENT value) warns; bare --context does not
+    ("mf29-context-empty-value", "strict", "", "", "", ["--context=", "pz5"]),
+    # getopt_long unambiguous abbreviation, expanded by the dispatcher and
+    # accepted by the library scan alike
+    ("mf30-context-abbrev", "strict", "", "", "", ["--con=cval", "pz6"]),
+    ("mf31-context-abbrev-bare", "strict", "", "", "", ["--c", "pz7"]),
+    ("mf32-dashdash-operand", "strict", "", "", "", ["--", "-m"]),
+    # empty NAME is ENOENT, not "the cwd" (probed GNU 9.4)
+    ("mf33-empty-name", "strict", "", "", "", ["@EMPTY@"]),
 ]
 
 mknod_rows = [
@@ -3618,11 +3654,35 @@ mknod_rows = [
     ("mn17-context-warn-fifo", "strict", "", "", "", ["--context=c", "pf", "p"]),
     ("mn18-Z-bare-fifo", "strict", "", "", "", ["-Z", "pz", "p"]),
     ("mn19-missing-parent", "strict", "", "", "", ["nodir/x", "p"]),
-    ("mn20-help", "strict", "", "", "", ["--help"]),
-    ("mn21-version", "strict", "", "", "", ["--version"]),
+    # sole --help/--version: branded product surface (mkfifo mf20/mf21)
+    ("mn20-help", "win", "", "", "", ["--help"]),
+    ("mn21-version", "win", "", "", "", ["--version"]),
     ("mn22-mode-rejected-before-operands", "strict", "", "", "", ["-m", "bogus", "n", "p"]),
     ("mn23-missing-mode-value", "strict", "", "", "", ["-m"]),
     ("mn24-bogus-long", "strict", "", "", "", ["--bogus"]),
+    # wave-W4 additions (probed w4-mkfifo-mknod.sh): an EMPTY device
+    # number is "invalid ... ''" in GNU, never "missing"
+    ("mn25-empty-major", "strict", "", "", "", ["n", "c", "", "3"]),
+    ("mn26-empty-minor", "strict", "", "", "", ["n", "c", "1", ""]),
+    # strtoumax accepts '+' and 0x/0-prefixed numbers; device creation is
+    # root-only on the oracle, so these stay win (Rust vs C++ status)
+    ("mn27-plus-major", "win", "", "", "", ["mp", "c", "+1", "3"]),
+    ("mn28-dev-zero", "win", "", "", "", ["mz", "c", "0", "0"]),
+    ("mn29-fifo-mode-empty", "strict", "", "", "", ["-m", "", "n2", "p"]),
+    # --context= (empty present value) warns; bare --context is silent
+    ("mn30-context-empty", "strict", "", "", "", ["--context=", "pe", "p"]),
+    ("mn31-context-abbrev", "strict", "", "", "", ["--con=c", "pf2", "p"]),
+    ("mn32-context-abbrev-bare", "strict", "", "", "", ["--c", "pb2", "p"]),
+    ("mn33-exists-dir", "strict", "mkdir dd", "", "", ["dd", "p"]),
+    # empty NAME: GNU quotes it and reports ENOENT (probed)
+    ("mn34-empty-name", "strict", "", "", "", ["@EMPTY@", "p"]),
+    # TYPE is classified by its FIRST character (probed: pz/pp are fifos,
+    # bz/cx/uz block/char); trailing junk is ignored like GNU
+    ("mn35-type-suffix-fifo", "strict", "", "", "", ["mzs", "pz"]),
+    ("mn36-type-suffix-block", "win", "", "", "", ["mzb", "bz", "1", "2"]),
+    # operand-count errors precede TYPE validation (probed shape)
+    ("mn37-two-operand-bogus-type", "strict", "", "", "", ["xo", "x"]),
+    ("mn38-bad-type-before-minor", "strict", "", "", "", ["xo2", "x", "1", "zz"]),
 ]
 
 chcon_rows = [
