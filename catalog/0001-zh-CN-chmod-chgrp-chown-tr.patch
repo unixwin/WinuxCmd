@@ -1,0 +1,66 @@
+diff --git a/VERSION b/VERSION
+index ce6d21d..8330d9e 100644
+--- a/VERSION
++++ b/VERSION
+@@ -1 +1 @@
+-0.6.35
++0.6.36
+diff --git a/catalogs/zh-CN/catalog.json b/catalogs/zh-CN/catalog.json
+index 61c71a6..c850ff5 100644
+--- a/catalogs/zh-CN/catalog.json
++++ b/catalogs/zh-CN/catalog.json
+@@ -90,6 +90,16 @@
+     "command.chcon.option.verbose": "为处理的每个文件输出诊断信息",
+     "command.chcon.synopsis": "chcon [OPTION]... CONTEXT FILE...\n  或：  chcon [OPTION]... [-u USER] [-r ROLE] [-l RANGE] [-t TYPE] FILE...\n  或：  chcon [OPTION]... --reference=RFILE FILE...",
+     "command.chgrp.description": "将每个文件(FILE)的组更改为 GROUP。\n\n长选项的必需参数对短选项同样是必需的。\n\n  -c, --changes          类似 verbose，但仅在发生更改时报告\n  -f, --silent           抑制大多数错误消息\n  -f, --quiet            抑制大多数错误消息\n  -v, --verbose          为处理的每个文件输出诊断信息\n  -R, --recursive        递归操作文件和目录\n  -h, --no-dereference   作用于符号链接，而不是其引用的任何文件\n      --dereference      作用于每个符号链接所指向的对象（默认）\n  -H                     跟随命令行符号链接\n  -L                     跟随间接符号链接\n  -P                     不跟随符号链接（默认）\n      --from=GROUP       仅当当前组为 GROUP 时才更改\n      --reference=RFILE  使用 RFILE 的组，而不是指定 GROUP\n      --preserve-root    递归操作 '/' 时失败\n      --no-preserve-root 不将 '/' 特殊处理（默认）\n\n注意：在 Windows 上，此操作需要管理员权限。\nGROUP 必须是有效的 Windows 组名。",
++    "command.chgrp.error.cannot_access": "无法访问 '{file}'",
++    "command.chgrp.error.changing_group": "更改 '{file}' 的属组",
++    "command.chgrp.error.dangerous_recursive": "对 '{operand}' 进行递归操作很危险",
++    "command.chgrp.error.dangerous_recursive_root": "对 '{operand}' 进行递归操作很危险（与 '/' 相同）",
++    "command.chgrp.error.dereference_requires": "-R --dereference 需要 -H 或 -L",
++    "command.chgrp.error.failed_get_attributes": "无法获取 {file} 的属性",
++    "command.chgrp.error.invalid_group": "无效的组：'{group}'",
++    "command.chgrp.error.missing_operand": "缺少操作数",
++    "command.chgrp.error.missing_operand_after": "在 '{operand}' 后缺少操作数",
++    "command.chgrp.error.preserve_root_hint": "请使用 --no-preserve-root 覆盖此保护机制",
+     "command.chgrp.option.H": "跟随命令行符号链接",
+     "command.chgrp.option.L": "跟随间接符号链接",
+     "command.chgrp.option.P": "不跟随符号链接（默认）",
+@@ -106,6 +116,16 @@
+     "command.chgrp.option.verbose": "为处理的每个文件输出诊断信息",
+     "command.chgrp.synopsis": "chgrp [OPTION]... GROUP FILE...",
+     "command.chmod.description": "将每个 FILE 的模式更改为 MODE。\n\n每个 MODE 的格式为“[ugoa]*([-+=]([rwxXst]*|[ugo]))+”。\n\n  -H  遍历命令行中的目录符号链接\n  -L  遍历指向目录的每个符号链接\n  -P  不遍历任何符号链接（默认）\n\n注意：在 Windows 上，此命令使用文件属性模拟 Unix 权限。\n写入权限映射为只读属性。",
++    "command.chmod.error.cannot_access": "无法访问 {file}",
++    "command.chmod.error.cannot_read_directory": "无法读取目录 {file}",
++    "command.chmod.error.changing_permissions": "更改 {file} 的权限",
++    "command.chmod.error.dangerous_recursive": "对 {operand} 进行递归操作很危险",
++    "command.chmod.error.dangerous_recursive_root": "对 {operand} 进行递归操作很危险（与 '/' 相同）",
++    "command.chmod.error.failed_get_attributes": "无法获取 {file} 的属性",
++    "command.chmod.error.invalid_mode": "无效的模式：{mode}",
++    "command.chmod.error.missing_operand": "缺少操作数",
++    "command.chmod.error.missing_operand_after": "在 {operand} 后缺少操作数",
++    "command.chmod.error.preserve_root_hint": "请使用 --no-preserve-root 覆盖此保护机制",
+     "command.chmod.option.H": "遍历命令行中的目录符号链接",
+     "command.chmod.option.L": "遍历指向目录的每个符号链接",
+     "command.chmod.option.P": "不遍历任何符号链接（默认）",
+@@ -121,6 +141,20 @@
+     "command.chmod.option.verbose": "为处理的每个文件输出诊断信息",
+     "command.chmod.synopsis": "更改文件模式位",
+     "command.chown.description": "更改每个 FILE 的所有者和/或组。\n\n注意：在 Windows 上，更改所有权需要\nSeTakeOwnership/SeRestore 特权，通常需要提升权限的 shell。\n使用 -h 可修改符号链接本身，包括悬空链接。",
++    "command.chown.error.cannot_access": "无法访问 {file}",
++    "command.chown.error.cannot_read_directory": "无法读取目录 {file}",
++    "command.chown.error.changing_group": "更改 {file} 的属组",
++    "command.chown.error.changing_ownership": "更改 {file} 的所有者",
++    "command.chown.error.dangerous_recursive": "对 {operand} 进行递归操作很危险",
++    "command.chown.error.dangerous_recursive_root": "对 {operand} 进行递归操作很危险（与 '/' 相同）",
++    "command.chown.error.dereference_requires": "-R --dereference 需要 -H 或 -L",
++    "command.chown.error.dot_separator_warning": "警告：'.' 应为 ':'：{spec}",
++    "command.chown.error.failed_get_attributes": "无法获取 {file} 的属性",
++    "command.chown.error.invalid_spec": "无效的规格：{spec}",
++    "command.chown.error.invalid_user": "无效的用户：{spec}",
++    "command.chown.error.missing_operand": "缺少操作数",
++    "command.chown.error.missing_operand_after": "在 {operand} 后缺少操作数",
++    "command.chown.error.preserve_root_hint": "请使用 --no-preserve-root 覆盖此保护机制",
+     "command.chown.error.unsupported_ownership": "chown：Windows 上不支持更改所有权",
+     "command.chown.option.H": "遍历命令行中的目录符号链接",
+     "command.chown.option.L": "遍历指向目录的每个符号链接",
