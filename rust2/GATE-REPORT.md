@@ -1524,3 +1524,90 @@ Four `lsof.*` ctest rows hang indefinitely on this host (they passed in the
 baseline run; the applet source is untouched by this wave). The full re-run
 was therefore made with `ctest -E '^lsof\.'`; every other row ran, and the
 lsof family is excluded from the comparison, not from the product.
+
+## cp wire — GNU coreutils 9.4 semantics on the product path (#1488, 2026-11-14)
+
+Lane scope: `cp`. **Wired:** the 1.x C++ copy pipeline is deleted
+(`src/commands/cp.cpp` 2449 -> 207 lines; only `REGISTER_COMMAND`, help and
+the option table stay); the handler is
+`run_command_with_stdin_streaming("cp", ctx.raw_args)` so `-i` reads stdin
+on demand while non-interactive runs never touch fd 0. `cp` joins
+`WINUXCMD_RUST2_COMMANDS` (the effective union at CMakeLists.txt:81).
+
+The #1700/#1732 C++ fixes are carried in the Rust library before wiring
+(own commit on this branch): destination-inside-ancestors through a
+directory link, dangling link sources as `cannot stat`, WSL/LX reparse-tag
+dereference (`0xA000001D`, relative targets resolved against the link
+directory), `-r -H` command-line-only dereference, the >MAX_PATH `\\?\`
+verbatim path form, `-i` decline/EOF rc 1, and the GNU-shaped self-copy
+diagnostic.
+
+### Gate a/c (run-gate.sh, RUST_BIN = wired exe, CPP_BIN = pre-wiring exe)
+
+Case table 98 -> **107** rows (`cp99-cp107`): dangling junction deref,
+junction into itself, `-rH` command-line/nested/verbose, and four genuine
+LX rows built with `wsl.exe ln -s` on the exe side. The harness
+`setup_needs_symlink()` now recognises that `mklink /J` and `wsl.exe ln -s`
+need no `SeCreateSymbolicLinkPrivilege`, so cp81-cp87/cp98 (junction rows,
+previously SKIP on this host) and the LX rows actually gate: total
+**105 GNU-gated PASS / 0 FAIL**, 2 skipped (cp88/cp89 file symlinks need
+Developer Mode), 0 win/note failures.
+
+`r=c:no` = **27/105**; every one has `r=g:yes` (the wired exe equals GNU
+and the pre-wiring exe is the side that diverges):
+
+| class | rows | pre-wiring C++ behavior / GNU + rust |
+|---|---|---|
+| verbose path shape | cp05/23/24/25/28/65/77/80/81/82/84/102/103 | C++ joined with `\` and printed only leaf files; GNU prints `/` and announces directories (`cp24`: `'s' -> 't'` + `'s/f' -> 't/f'`) |
+| junction recreation without privilege | cp19/20/36/81/82/85/86/87 | C++ used `CreateSymbolicLinkW` (rc 1, "required privilege"); rust recreates junctions with `FSCTL_SET_REPARSE_POINT` (rc 0 = GNU) |
+| retired 1.x parser quirks | cp45 (`--backup=bogus`), cp53 (`--preserve=`), cp93 (`--sparse=n`), cp97 (`-t` twice), cp69 (trailing slash) | C++ accepted `--sparse=n`, multiple `-t`, and stripped `file/`; GNU rejects them (rust = GNU) |
+| `-u` / `-n` state | cp36/37 (`-u` rc 0, C++ rc 1), cp39 (`-n --update=all` copies) | rust follows the argv-order state machine |
+| verbose extras | cp42 (`(backup: 'b~')`), cp75 (`(attributes only)` suffix) | GNU 9.4 prints the backup note and no attributes suffix; rust = GNU |
+| diagnostics | cp76 (just-created), cp98 (cyclic rc), cp33 (positions include `a directory`) | rust uses GNU copy.c wording and exit status |
+
+### Gate c matrix (60 rows, old vs new vs GNU)
+
+`gate/wire/cmd-matrix.sh` gained a cp block (60 cases: `-i n/y/EOF`, `-n`,
+`-u`, `-r/-a/-L/-H/-P`, `-b/-S/--backup=`, `-l`, `-t/-T/--parents`,
+dangling junction/LX, LX `-d`/`-L`, self-copy, junction-into-itself,
+`>MAX_PATH` 310-char source, `/dev/null`, `NUL`, reflink/sparse/attributes,
+three-operand and last-wins rows). Ledgers under `target/wire-cp/`.
+
+* rc: new vs GNU **60/60**; old vs new **56/60** (old differs on
+  cp19/20/36 junction recreation and cp30 `--strip-trailing-slashes`).
+* stdout old vs new 55/60; stderr 52/60. The 13 differing rows are exactly
+  the verbose path-shape / backup-note / attributes-suffix / diagnostic
+  classes above; each new-side output was compared with the GNU ledger
+  (`target/wire-cp/gnu`). No unexplained row.
+
+### Gate b
+
+`ctest -R '^cp\.'` = **83/83 PASS** with the wired exe; the full suite
+(excluding the host-hanging `lsof.*` family, see the wave-W3 note) has the
+same 25-row failing set as the pre-wiring baseline. Two `tail --follow` rows
+appeared once under parallel load and passed on re-run (timing flake, not
+cp). Three 1.x pins were
+re-pinned to the GNU contract (`cp_wildcard_sources_expand`,
+`cp_strip_trailing_slashes_allows_file_source_with_trailing_separator`, and
+the LX tree diagnostic separator); no test was deleted. The library gained
+tests for every repair (60 cp Rust tests, up from 54): LX deref/dangling/
+`-H`, destination-link self-copy, dangling junction, `-rH`, literal
+wildcards, self `--force --backup`, `/dev/null`/`NUL`, `-s` relative rule,
+default-sparse reflink, long path.
+
+### Editions
+
+`WINUXCMD_PACKAGE_EDITION=default` and `=full` both build
+(`build-vs`, `build-vs-full`) with cp on the rust2 union. The full-edition
+exe re-ran the 60-row matrix: 60/60 rc, stdout, stderr identical to the
+default wired exe, and `run-gate.sh cp` full-edition = **105 PASS / 0 FAIL,
+2 skipped** — the edition only changes which entry links are materialized.
+
+### I18N
+
+47 runtime keys (`command.cp.error.*` 44, `prompt.*` 1, `warning.*` 2);
+the wiring wave added one (`relative_symlink_outside_cwd`), the other 46
+came with #1715. `scripts/i18n_batch.py extract` (3806 keys) and
+`catalog/make-cp-patch.py` -> `validate` = `valid`; patch, filtered base
+and the key list live under `catalog/`. The shared
+`unixwin/winuxcmd-i18n` repository was not touched by this lane.

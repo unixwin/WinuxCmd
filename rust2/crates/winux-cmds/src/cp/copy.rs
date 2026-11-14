@@ -103,13 +103,31 @@ impl<'a, 'b, 'c> Copier<'a, 'b, 'c> {
             // open("") is ENOENT on GNU; never fold it onto the cwd.
             return String::new();
         }
-        fsutil::resolve(self.ctx, name)
-            .to_string_lossy()
-            .into_owned()
+        if let Some(dev) = winux_core::path::resolve_pseudo_device(name) {
+            return dev.to_string();
+        }
+        winfs::extended_path(&fsutil::resolve(self.ctx, name).to_string_lossy())
     }
 
     pub fn meta(&self, name: &str, follow: bool) -> Result<Meta, u32> {
-        winfs::meta(&self.api(name), follow)
+        if follow {
+            winfs::meta_follow(self.ctx, &self.api(name))
+        } else {
+            winfs::meta(&winfs::expand_lx_parent(self.ctx, &self.api(name)), false)
+        }
+    }
+
+    /// API path for reading/opening SOURCE-side entries: the LX chain is
+    /// expanded because Win32 cannot traverse the tag (GNU stat/open do).
+    pub fn api_read(&self, name: &str) -> String {
+        winfs::expand_lx(self.ctx, &self.api(name))
+    }
+
+    /// API path for creating/writing DESTINATION-side entries.  A valid LX
+    /// destination link is written through (GNU follows the operand); a
+    /// dangling one is refused earlier by the not-writing-through guard.
+    pub fn api_write(&self, name: &str) -> String {
+        winfs::expand_lx(self.ctx, &self.api(name))
     }
 
     pub fn lexists(&self, name: &str) -> bool {
@@ -233,7 +251,11 @@ impl<'a, 'b, 'c> Copier<'a, 'b, 'c> {
                                 self.fail(&m);
                                 return false;
                             }
-                            return self.copy_regular(src, &b, &src_meta, None, true);
+                            // GNU then copies FROM the backup name TO the
+                            // original destination (the source name is gone
+                            // after the rename): `a~` keeps the old bytes and
+                            // `a` receives the fresh copy.
+                            return self.copy_regular(&b, dst, &src_meta, None, true);
                         }
                     }
                     let m = tr!(
@@ -421,6 +443,30 @@ impl<'a, 'b, 'c> Copier<'a, 'b, 'c> {
                 }
                 let _ = winfs::delete(&self.api(dst), false);
             }
+            // [GNU] cp.c symbolic_link: a RELATIVE source may only be
+            // linked from the current directory; anywhere else the stored
+            // target would resolve against the wrong base.
+            let src_absolute = src.starts_with(['/', '\\']) || src.as_bytes().get(1) == Some(&b':');
+            let in_cwd = std::path::Path::new(&self.api(dst))
+                .parent()
+                .map(|parent| {
+                    let parent = parent.to_string_lossy();
+                    let cwd = self.ctx.cwd.to_string_lossy();
+                    parent
+                        .trim_end_matches(['/', '\\'])
+                        .eq_ignore_ascii_case(cwd.trim_end_matches(['/', '\\']))
+                })
+                .unwrap_or(false);
+            if !src_absolute && !in_cwd {
+                let m = tr!(
+                    self.ctx,
+                    "command.cp.error.relative_symlink_outside_cwd",
+                    "{dst}: can make relative symbolic links only in current directory",
+                    dst = dst
+                );
+                self.fail(&m);
+                return false;
+            }
             let target = winux_core::path::normalize_operand(self.ctx.env, &self.ctx.cwd, src);
             let is_dir = self.meta(src, true).map(|m| m.is_dir()).unwrap_or(false);
             if let Err(e) = winfs::create_symlink(&self.api(dst), &target, is_dir) {
@@ -454,7 +500,7 @@ impl<'a, 'b, 'c> Copier<'a, 'b, 'c> {
                 preserve.timestamps = true;
             }
             self.verbose(src, dst, backup_name.as_deref());
-            if let Err(e) = winfs::open_write(&self.api(dst)) {
+            if let Err(e) = winfs::open_write(&self.api_write(dst)) {
                 let m = tr!(
                     self.ctx,
                     "command.cp.error.cannot_create_regular",
@@ -514,7 +560,7 @@ impl<'a, 'b, 'c> Copier<'a, 'b, 'c> {
                     let dir = self.dst_is_dir_lstat(dst);
                     let _ = winfs::delete(&self.api(dst), dir);
                 }
-                if winfs::hard_link(&self.api(&first), &self.api(dst)).is_ok() {
+                if winfs::hard_link(&self.api_read(&first), &self.api_write(dst)).is_ok() {
                     self.created.insert(dst.to_string(), src_meta.id());
                     return true;
                 }
@@ -594,7 +640,7 @@ impl<'a, 'b, 'c> Copier<'a, 'b, 'c> {
             if let Some(first) = self.hardlinks.get(&meta.id()).cloned() {
                 let dir = self.dst_is_dir_lstat(dst);
                 let _ = winfs::delete(&self.api(dst), dir);
-                let _ = winfs::hard_link(&self.api(&first), &self.api(dst));
+                let _ = winfs::hard_link(&self.api_read(&first), &self.api_write(dst));
             }
         }
     }
@@ -702,6 +748,24 @@ impl<'a, 'b, 'c> Copier<'a, 'b, 'c> {
             ancestors.pop();
             return false;
         }
+        // The lexical key cannot see through a link in the DESTINATION:
+        // "cp -r dir dirlink" spells the target "dirlink/dir", lexically
+        // outside "dir" but physically inside it.  GNU detects the relation
+        // through stat identities while it walks (copy.c:2694, #1647
+        // family); the deepest EXISTING ancestor decides (#1700, the C++
+        // destination_inside_ancestors rule).
+        if self.destination_inside_ancestors(dst, ancestors) {
+            let m = tr!(
+                self.ctx,
+                "command.cp.error.copy_into_itself",
+                "cannot copy a directory, {src}, into itself, {dst}",
+                src = q(src),
+                dst = q(dst)
+            );
+            self.fail(&m);
+            ancestors.pop();
+            return false;
+        }
 
         // dir-vs-non-dir: destination exists as a non-directory.
         if let Ok(dm) = self.meta(dst, false) {
@@ -724,7 +788,7 @@ impl<'a, 'b, 'c> Copier<'a, 'b, 'c> {
         // create the destination directory if needed (copy.c:2930).
         let existed = self.meta(dst, true).map(|m| m.is_dir()).unwrap_or(false);
         if !existed {
-            if let Err(e) = winfs::ensure_dir(&self.api(dst)) {
+            if let Err(e) = winfs::ensure_dir(&self.api_write(dst)) {
                 let m = tr!(
                     self.ctx,
                     "command.cp.error.cannot_create_directory",
@@ -741,7 +805,7 @@ impl<'a, 'b, 'c> Copier<'a, 'b, 'c> {
             }
         }
 
-        let entries = match winfs::read_dir(&self.api(src)) {
+        let entries = match winfs::read_dir(&self.api_read(src)) {
             Ok(v) => v,
             Err(e) => {
                 let m = tr!(
@@ -808,6 +872,28 @@ impl<'a, 'b, 'c> Copier<'a, 'b, 'c> {
         self.meta(dst, true).map(|m| m.is_dir()).unwrap_or(false)
     }
 
+    /// Is DEST physically inside one of the source directories on the
+    /// active descent chain?  Walk to the deepest existing ancestor and
+    /// compare stat identities (a link in the path resolves through
+    /// `meta(..., true)`), so `cp -r dir dirlink` is refused before the
+    /// destination is created (#1700).
+    fn destination_inside_ancestors(&self, dst: &str, ancestors: &[(u32, u64)]) -> bool {
+        let mut current = std::path::PathBuf::from(self.api(dst));
+        for _ in 0..128 {
+            let shown = current.to_string_lossy().into_owned();
+            if winfs::attributes(&shown).is_some() {
+                return winfs::meta_follow(self.ctx, &shown)
+                    .map(|m| ancestors.contains(&m.id()))
+                    .unwrap_or(false);
+            }
+            match current.parent() {
+                Some(parent) if parent != current => current = parent.to_path_buf(),
+                _ => return false,
+            }
+        }
+        false
+    }
+
     /// child copy through copy_internal with command_line_arg=false.
     fn copy_file_child(&mut self, src: &str, dst: &str) -> bool {
         self.copy_file(src, dst, false)
@@ -835,13 +921,13 @@ impl<'a, 'b, 'c> Copier<'a, 'b, 'c> {
     // ------------------------------------------------------------------
 
     fn copy_bytes(&mut self, src: &str, dst: &str) -> Result<(), CopyError> {
-        let mut infile = winfs::open_read(&self.api(src)).map_err(CopyError::OpenRead)?;
-        let mut outfile = match winfs::open_write(&self.api(dst)) {
+        let mut infile = winfs::open_read(&self.api_read(src)).map_err(CopyError::OpenRead)?;
+        let mut outfile = match winfs::open_write(&self.api_write(dst)) {
             Ok(f) => f,
             Err(_) if self.opts.force => {
                 // copy.c:1455: -f unlinks the destination and retries.
                 let _ = winfs::delete(&self.api(dst), false);
-                winfs::open_write(&self.api(dst)).map_err(CopyError::Create)?
+                winfs::open_write(&self.api_write(dst)).map_err(CopyError::Create)?
             }
             Err(e) => return Err(CopyError::Create(e)),
         };
@@ -881,7 +967,7 @@ impl<'a, 'b, 'c> Copier<'a, 'b, 'c> {
     ) -> Result<(), ()> {
         if p.timestamps {
             let _ = winfs::set_times(
-                &self.api(dst),
+                &self.api_write(dst),
                 src_meta.btime,
                 src_meta.atime,
                 src_meta.mtime,
@@ -891,7 +977,7 @@ impl<'a, 'b, 'c> Copier<'a, 'b, 'c> {
             // mode value model: the shared modemap bits decide the write
             // bits; the read-only attribute is the Windows carrier.
             let ro = src_meta.is_read_only()
-                || modemap::current_mode(std::path::Path::new(&self.api(src))) & 0o222 == 0;
+                || modemap::current_mode(std::path::Path::new(&self.api_read(src))) & 0o222 == 0;
             let _ = winfs::set_read_only(&self.api(dst), ro);
         }
         Ok(())
@@ -1085,5 +1171,12 @@ fn identity_key(path: &str) -> String {
 
 /// Absolute native path of an operand through the shared boundary.
 pub fn api_for(ctx: &Ctx, name: &str) -> String {
-    fsutil::resolve(ctx, name).to_string_lossy().into_owned()
+    if let Some(dev) = winux_core::path::resolve_pseudo_device(name) {
+        // /dev/null (and the DOS device spellings) are Win32 device names:
+        // resolving the spelling through the cwd would turn them into a
+        // literal file path ("D:\...\nul") and cp would report ENOENT
+        // where GNU opens the device.
+        return dev.to_string();
+    }
+    winfs::extended_path(&fsutil::resolve(ctx, name).to_string_lossy())
 }

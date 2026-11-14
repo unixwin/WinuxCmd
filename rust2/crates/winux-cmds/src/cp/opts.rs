@@ -170,7 +170,7 @@ impl Default for Options {
             data_copy_required: true,
             backup: Backup::None,
             suffix: "~".to_string(),
-            sparse: Sparse::Never,
+            sparse: Sparse::Auto,
             reflink: Reflink::Never,
             strip_trailing_slashes: false,
             target_directory: None,

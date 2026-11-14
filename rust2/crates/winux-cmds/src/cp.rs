@@ -160,7 +160,7 @@ fn plan(
             );
             return Err(usage_tail(msg));
         }
-        let m = winfs::meta(&copy::api_for(ctx, target), true);
+        let m = winfs::meta_follow(ctx, &copy::api_for(ctx, target));
         match m {
             Err(e) => {
                 let msg = tr!(
@@ -226,7 +226,7 @@ fn plan(
     // target_directory_operand open(O_DIRECTORY): follows a link to a dir.
     let dest_is_dir = !opts.no_target_directory
         && !dest.is_empty()
-        && winfs::meta(&copy::api_for(ctx, &dest), true)
+        && winfs::meta_follow(ctx, &copy::api_for(ctx, &dest))
             .map(|m| m.is_dir())
             .unwrap_or(false);
 
@@ -236,6 +236,9 @@ fn plan(
         } else {
             "No such file or directory"
         };
+        // GNU prints this target diagnostic without the usage tail
+        // (cp.c's target_directory_operand failure), unlike the operand
+        // grammar errors above.
         let msg = tr!(
             ctx,
             "command.cp.error.target",
@@ -243,7 +246,7 @@ fn plan(
             operand = opts::q(&dest),
             reason = reason
         );
-        return Err(usage_tail(msg));
+        return Err(UsageError(msg));
     }
 
     if opts.parents && !dest_is_dir {
@@ -285,7 +288,7 @@ fn process_source(c: &mut Copier, src: &str, dst: &str) {
         // as typed; --strip-trailing-slashes only applies in the
         // target-directory form, cp.c:655).
         let mapped = copy::api_for(c.ctx, src);
-        let is_dir = winfs::meta(&mapped, true)
+        let is_dir = winfs::meta_follow(c.ctx, &mapped)
             .map(|m| m.is_dir())
             .unwrap_or(false);
         if !is_dir {
@@ -347,7 +350,7 @@ fn make_parents(c: &mut Copier, target: &str, _src: &str, graft: &str) {
         if c.lexists(&dir) {
             continue;
         }
-        if crate::cp::winfs::ensure_dir(&c.api(&dir)).is_ok() {
+        if crate::cp::winfs::ensure_dir(&c.api_write(&dir)).is_ok() {
             if c.opts.verbose {
                 let _ = writeln!(c.io.stdout, "{prefix} -> {dir}");
             }
