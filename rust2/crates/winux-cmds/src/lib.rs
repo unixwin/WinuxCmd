@@ -38,6 +38,7 @@ pub mod fsutil;
 pub mod getconf;
 pub mod glob;
 pub mod gnuhelp;
+pub mod grep;
 pub mod groups;
 pub mod head;
 
@@ -201,6 +202,11 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("date", date::date_cmd),
         ("du", du::du_cmd),
         ("pinky", pinky::pinky_cmd),
+        // #1488 grep wave: BRE/ERE via winux-regex; -P stays on the C++
+        // PCRE2 path (the wired dispatcher routes it before this library).
+        ("grep", grep::grep_cmd),
+        ("egrep", grep::egrep_cmd),
+        ("fgrep", grep::fgrep_cmd),
     ]
 }
 
