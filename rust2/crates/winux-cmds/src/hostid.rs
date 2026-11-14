@@ -17,7 +17,7 @@ use std::ffi::OsString;
 use std::io::Write;
 
 use crate::argopt;
-use winux_core::{usage_error, CmdResult, Ctx, Io};
+use winux_core::{tr, usage_error, CmdResult, Ctx, Io};
 
 /// FNV-1a 64 over the machine name; lower 32 bits are the host id.
 fn machine_id_hex(ctx: &Ctx) -> String {
@@ -57,10 +57,16 @@ pub fn hostid_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         return Ok(0);
     }
     if !p.positionals.is_empty() {
+        // [GNU] hostid.c: any operand is rejected with the try-help frame.
         let _ = usage_error(
             io,
             "hostid",
-            &format!("extra operand '{}'", p.positionals[0].to_string_lossy()),
+            &tr!(
+                ctx,
+                "command.hostid.error.extra_operand",
+                "extra operand '{operand}'",
+                operand = p.positionals[0].to_string_lossy()
+            ),
         );
         return Ok(1);
     }
@@ -124,20 +130,14 @@ mod tests {
         let sc = scratch("hostid-env");
         let mut env = MapEnv::new();
         env.set("COMPUTERNAME", "box-a");
-        let ctx = Ctx {
-            cwd: sc.dir.clone(),
-            env: &env,
-        };
+        let ctx = Ctx::new(sc.dir.clone(), &env);
         let r = super::hostid_cmd(&[], &mut io.split(), &ctx).unwrap();
         assert_eq!(r, 0);
         let a = io.out();
         let mut io = MemIo::new("");
         let mut env = MapEnv::new();
         env.set("COMPUTERNAME", "box-b");
-        let ctx = Ctx {
-            cwd: sc.dir.clone(),
-            env: &env,
-        };
+        let ctx = Ctx::new(sc.dir.clone(), &env);
         let _ = super::hostid_cmd(&[], &mut io.split(), &ctx).unwrap();
         assert_ne!(a, io.out());
         assert_eq!(a.len(), 9);

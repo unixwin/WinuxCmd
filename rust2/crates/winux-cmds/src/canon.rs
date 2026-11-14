@@ -234,10 +234,7 @@ mod tests {
         // (#1145/#1172/#1231/#1246/#1283) — now via the winux-core port:
         let p = |operand: &str, vars: &[(&str, &str)]| {
             prepare_operand(
-                &winux_core::Ctx {
-                    cwd: std::path::PathBuf::from("wd"),
-                    env: &env(vars),
-                },
+                &winux_core::Ctx::new(std::path::PathBuf::from("wd"), &env(vars)),
                 operand,
             )
         };

@@ -1,36 +1,45 @@
 //! `tail` — GNU coreutils tail.c (9.4) semantics, probed byte-for-byte
-//! against WSL coreutils 9.4 (rust2/target/probe/p-tail.sh, o-tail.txt).
+//! against WSL coreutils 9.4 (rust2/target/probe/p-tail.sh, o-tail.txt;
+//! follow mode: rust2/gate/wire/tail-follow.sh, tail-follow.out).
 //!
 //! Count argument grammar (tail.c's parse): a leading `+` means start at
 //! record K (1-based; `+0` prints everything, probed), a leading `-` is
 //! stripped (`-n -K` == `-n K` — unlike head, probed: `-n -0` prints
 //! NOTHING), bare K means the last K records. Suffixes match head
 //! (b 512, kB 1000, K 1024, MB/M 1024^2, ...). `-n -0` / `-c -0` print
-//! nothing. Records are lines, or NUL-delimited chunks with -z. Inputs
-//! are read whole; files are processed sequentially with the header
-//! written before each (first header has no leading blank, later headers
-//! are preceded by a blank line; `-` prints `standard input`). Headers
-//! appear when more than one input is read or -v is given; -q never.
+//! nothing; without --follow a zero last-count exits 0 before opening
+//! anything (tail.c main). Records are lines, or NUL-delimited chunks
+//! with -z. Regular files are read from the end (seek + backward scan,
+//! so `tail -f big.log` never reads the whole log); stdin and devices are
+//! read whole. The header is written before each input (first header has
+//! no leading blank, later headers are preceded by a blank line; `-`
+//! prints `standard input`). Headers appear when more than one input is
+//! read or -v is given; -q never.
 //!
 //! Errors (rc 1, later files still processed): `cannot open 'X' for
-//! reading: <reason>`; a directory operand dies at the read with
-//! `error reading 'X': Is a directory` (recovered from a metadata probe,
-//! like GNU's open-then-read order).
+//! reading: <reason>`; a directory operand gets its header and dies at
+//! the read with `error reading 'X': Is a directory` (Linux opens a
+//! directory and fails the read; recovered from a metadata probe).
 //!
-//! Windows subset (documented deviation): `-f`/`-F`/`--retry` do NOT
-//! follow (interactive long-line territory). The option is accepted, the
-//! tail output is emitted, then `tail: cannot follow end of file: not
-//! supported` goes to stderr and the status is 1; GNU (and the 1.x C++
-//! applet) would keep running instead. Gate rows never exercise it.
+//! Follow mode (`-f`, `--follow[=descriptor|name]`, `-F`, `--retry`,
+//! `-s`, `--pid`, `--max-unchanged-stats`) lives in `tail/follow.rs`;
+//! its module doc lists the GNU rules and the Windows mechanics.
 
 use std::ffi::OsString;
-use std::io::{Read, Write};
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom, Write};
 
 use crate::argopt::{self, OptSpec};
-use crate::fsutil::{gnu_open_reason, resolve};
+use crate::fsutil::{gnu_open_reason, quotef, resolve};
 use crate::gnuhelp;
 use crate::head::{parse_count, Count};
-use winux_core::{CmdResult, Ctx, Io};
+use winux_core::{CmdError, CmdResult, Ctx, Io};
+
+mod follow;
+mod sys;
+
+use follow::{Errnum, FollowMode, FollowOpts, Headers, Spec};
+pub use sys::StdinKind;
 
 const OPTS: &[OptSpec] = &[
     OptSpec {
@@ -38,13 +47,19 @@ const OPTS: &[OptSpec] = &[
         long: "bytes",
         takes_value: true,
     },
-    // GNU's -f takes an OPTIONAL argument ([=name|=descriptor]); the
-    // follow modes themselves are an unsupported subset, so a plain flag
-    // keeps `-f -n 1` parsing correct (getopt optional args never steal
-    // the next argv word)
+    // GNU's --follow takes an OPTIONAL argument ([=name|=descriptor]) and
+    // -f none: scan_follow() strips the `=VALUE` spelling before argopt
+    // sees it, so a plain flag keeps `-f -n 1` / `--follow f` parsing
+    // correct (getopt optional args never steal the next argv word)
     OptSpec {
         short: Some('f'),
         long: "follow",
+        takes_value: false,
+    },
+    // -F has no long form (tail.c optstring "c:n:fFqs:vz0123456789")
+    OptSpec {
+        short: Some('F'),
+        long: "",
         takes_value: false,
     },
     OptSpec {
@@ -117,6 +132,28 @@ fn parse_tail_count(text: &str) -> Option<TailCount> {
     }
 }
 
+/// Offset where the last `k` records of `data` start (tail.c file_lines
+/// on one buffer): a trailing partial record counts as a record.
+fn last_records_start(data: &[u8], k: u128, delim: u8) -> usize {
+    let mut lines = k;
+    if lines == 0 {
+        return data.len();
+    }
+    if data.last().is_some_and(|&b| b != delim) {
+        lines -= 1;
+    }
+    for i in (1..=data.len()).rev() {
+        if data[i - 1] != delim {
+            continue;
+        }
+        if lines == 0 {
+            return i;
+        }
+        lines -= 1;
+    }
+    0
+}
+
 /// Emit the last `k` records (k == 0 prints nothing).
 fn emit_last(
     input: &[u8],
@@ -128,12 +165,11 @@ fn emit_last(
     if k == 0 {
         return Ok(());
     }
-    let bounds = crate::head::record_bounds(input, delim, bytes_mode);
-    let count = bounds.len() as u128;
-    if count < k {
-        return out.write_all(input);
-    }
-    let start = bounds[(count - k - 1) as usize];
+    let start = if bytes_mode {
+        input.len() - (k.min(input.len() as u128) as usize)
+    } else {
+        last_records_start(input, k, delim)
+    };
     out.write_all(&input[start..])
 }
 
@@ -155,6 +191,375 @@ fn emit_from(
     }
     let start = bounds[(k - 2) as usize];
     out.write_all(&input[start..])
+}
+
+/// A dump failure: reading the input or writing stdout.
+enum DumpErr {
+    Read(std::io::Error),
+    Write(std::io::Error),
+}
+
+const CHUNK: usize = 64 * 1024;
+
+/// Copy `f` from its current position to EOF; returns the bytes copied.
+fn copy_to_eof(f: &mut File, out: &mut dyn Write) -> Result<u64, DumpErr> {
+    let mut buf = vec![0u8; CHUNK];
+    let mut total = 0u64;
+    loop {
+        let n = match f.read(&mut buf) {
+            Ok(0) => return Ok(total),
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(DumpErr::Read(e)),
+        };
+        out.write_all(&buf[..n]).map_err(DumpErr::Write)?;
+        total += n as u64;
+    }
+}
+
+/// tail.c file_lines over a seekable file: scan backward in CHUNK
+/// blocks for the start of the last `k` records.
+fn file_last_lines_start(f: &mut File, len: u64, k: u128, delim: u8) -> std::io::Result<u64> {
+    let mut lines = k;
+    let mut pos = len;
+    let mut buf = vec![0u8; CHUNK];
+    let mut first = true;
+    while pos > 0 {
+        let start = pos.saturating_sub(CHUNK as u64);
+        let n = (pos - start) as usize;
+        f.seek(SeekFrom::Start(start))?;
+        f.read_exact(&mut buf[..n])?;
+        if first {
+            first = false;
+            if buf[n - 1] != delim {
+                lines -= 1;
+            }
+        }
+        for i in (1..=n).rev() {
+            if buf[i - 1] != delim {
+                continue;
+            }
+            if lines == 0 {
+                return Ok(start + i as u64);
+            }
+            lines -= 1;
+        }
+        pos = start;
+    }
+    Ok(0)
+}
+
+/// Initial dump of a regular file; returns GNU's `read_pos` (the offset
+/// following starts from).
+fn dump_regular(
+    f: &mut File,
+    count: &TailCount,
+    delim: u8,
+    bytes_mode: bool,
+    out: &mut dyn Write,
+) -> Result<u64, DumpErr> {
+    let len = f.seek(SeekFrom::End(0)).map_err(DumpErr::Read)?;
+    match *count {
+        TailCount::Last(0) => Ok(len),
+        TailCount::Last(k) => {
+            let start = if bytes_mode {
+                len - (k.min(len as u128) as u64)
+            } else {
+                file_last_lines_start(f, len, k, delim).map_err(DumpErr::Read)?
+            };
+            f.seek(SeekFrom::Start(start)).map_err(DumpErr::Read)?;
+            Ok(start + copy_to_eof(f, out)?)
+        }
+        TailCount::FromStart(k) if bytes_mode => {
+            // tail.c lseeks N-1 bytes in (even past EOF: read_pos then
+            // exceeds the size and the first follow check reports a
+            // truncation, like GNU)
+            let skip = k.saturating_sub(1).min(i64::MAX as u128) as u64;
+            f.seek(SeekFrom::Start(skip)).map_err(DumpErr::Read)?;
+            Ok(skip + copy_to_eof(f, out)?)
+        }
+        TailCount::FromStart(k) => {
+            f.seek(SeekFrom::Start(0)).map_err(DumpErr::Read)?;
+            let mut skip = k.saturating_sub(1);
+            let mut pos = 0u64;
+            let mut buf = vec![0u8; CHUNK];
+            while skip > 0 {
+                let n = match f.read(&mut buf) {
+                    Ok(0) => return Ok(pos),
+                    Ok(n) => n,
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(e) => return Err(DumpErr::Read(e)),
+                };
+                pos += n as u64;
+                let mut rest = None;
+                for (i, &b) in buf[..n].iter().enumerate() {
+                    if b == delim {
+                        skip -= 1;
+                        if skip == 0 {
+                            rest = Some(i + 1);
+                            break;
+                        }
+                    }
+                }
+                if let Some(r) = rest {
+                    out.write_all(&buf[r..n]).map_err(DumpErr::Write)?;
+                }
+            }
+            Ok(pos + copy_to_eof(f, out)?)
+        }
+    }
+}
+
+/// Dump an in-memory input (stdin, character devices).
+fn dump_bytes(
+    bytes: &[u8],
+    count: &TailCount,
+    delim: u8,
+    bytes_mode: bool,
+    out: &mut dyn Write,
+) -> std::io::Result<()> {
+    match *count {
+        TailCount::Last(k) => emit_last(bytes, k, delim, bytes_mode, out),
+        TailCount::FromStart(k) => emit_from(bytes, k, delim, bytes_mode, out),
+    }
+}
+
+/// Broken-pipe class write errors (ERROR_NO_DATA / ERROR_BROKEN_PIPE are
+/// what Windows pipes report; tee.rs epipe_like).
+pub(crate) fn epipe_like(e: &std::io::Error) -> bool {
+    e.kind() == std::io::ErrorKind::BrokenPipe || matches!(e.raw_os_error(), Some(232) | Some(109))
+}
+
+/// A stdout write failure ends the command: a broken pipe is returned as
+/// the IO error (the host maps it to GNU's SIGPIPE status 141), anything
+/// else is GNU's `tail: write error` with status 1.
+fn write_failure(io: &mut Io, e: std::io::Error) -> CmdResult {
+    if epipe_like(&e) {
+        return Err(CmdError::Io(e));
+    }
+    let _ = writeln!(
+        io.stderr,
+        "tail: write error: {}",
+        crate::fsutil::reason(&e)
+    );
+    Ok(1)
+}
+
+/// tail.c's long option names (for resolving abbreviations in the
+/// follow pre-scan) and whether each takes a value.
+const LONGS: &[(&str, bool)] = &[
+    ("bytes", true),
+    ("follow", false),
+    ("lines", true),
+    ("max-unchanged-stats", true),
+    ("pid", true),
+    ("quiet", false),
+    ("retry", false),
+    ("silent", false),
+    ("sleep-interval", true),
+    ("verbose", false),
+    ("zero-terminated", false),
+    ("help", false),
+    ("version", false),
+];
+
+fn resolve_long(name: &str) -> Option<(&'static str, bool)> {
+    if let Some(&(n, v)) = LONGS.iter().find(|(n, _)| *n == name) {
+        return Some((n, v));
+    }
+    let mut cands = LONGS
+        .iter()
+        .filter(|(n, _)| !name.is_empty() && n.starts_with(name));
+    match (cands.next(), cands.next()) {
+        (Some(&(n, v)), None) => Some((n, v)),
+        _ => None,
+    }
+}
+
+/// The follow selection in argv order (tail.c parse_options): every
+/// -f/--follow ASSIGNS the mode (bare = descriptor), -F is
+/// `--follow=name` plus `--retry`.
+#[derive(Debug, Default, PartialEq)]
+struct FollowScan {
+    forever: bool,
+    by_name: bool,
+    retry_from_f: bool,
+}
+
+/// argmatch over {descriptor, name}: exact or unique-prefix match.
+fn follow_argmatch(v: &str) -> Result<bool, String> {
+    let d = "descriptor".starts_with(v);
+    let n = "name".starts_with(v);
+    match (v.is_empty(), d, n) {
+        (false, true, false) => Ok(false),
+        (false, false, true) => Ok(true),
+        _ => Err(format!(
+            "tail: {} argument \u{2018}{v}\u{2019} for \u{2018}--follow\u{2019}\nValid arguments are:\n  - \u{2018}descriptor\u{2019}\n  - \u{2018}name\u{2019}\nTry 'tail --help' for more information.",
+            if d && n { "ambiguous" } else { "invalid" }
+        )),
+    }
+}
+
+/// Walk argv like getopt to record the follow selection, rewriting
+/// `--follow=VALUE` (any abbreviation) to a bare `--follow` for argopt.
+fn scan_follow(args: &[OsString]) -> Result<(FollowScan, Vec<OsString>), String> {
+    let mut scan = FollowScan::default();
+    let mut out = Vec::with_capacity(args.len());
+    let mut i = 0;
+    while i < args.len() {
+        let s = args[i].to_string_lossy().into_owned();
+        if s == "--" {
+            out.extend(args[i..].iter().cloned());
+            break;
+        }
+        if let Some(rest) = s.strip_prefix("--") {
+            let (name, val) = match rest.split_once('=') {
+                Some((n, v)) => (n, Some(v)),
+                None => (rest, None),
+            };
+            match resolve_long(name) {
+                Some(("follow", _)) => {
+                    scan.forever = true;
+                    scan.by_name = match val {
+                        Some(v) => follow_argmatch(v)?,
+                        None => false,
+                    };
+                    out.push(OsString::from("--follow"));
+                    i += 1;
+                    continue;
+                }
+                Some((_, true)) if val.is_none() => {
+                    out.push(args[i].clone());
+                    if let Some(v) = args.get(i + 1) {
+                        out.push(v.clone());
+                    }
+                    i += 2;
+                    continue;
+                }
+                _ => {}
+            }
+        } else if s.len() > 1 && s.starts_with('-') {
+            let chars: Vec<char> = s.chars().skip(1).collect();
+            let mut takes_next = false;
+            for (ci, c) in chars.iter().enumerate() {
+                match c {
+                    'f' => {
+                        scan.forever = true;
+                        scan.by_name = false;
+                    }
+                    'F' => {
+                        scan.forever = true;
+                        scan.by_name = true;
+                        scan.retry_from_f = true;
+                    }
+                    'c' | 'n' | 's' => {
+                        takes_next = ci + 1 == chars.len();
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            out.push(args[i].clone());
+            if takes_next {
+                if let Some(v) = args.get(i + 1) {
+                    out.push(v.clone());
+                }
+                i += 2;
+            } else {
+                i += 1;
+            }
+            continue;
+        }
+        out.push(args[i].clone());
+        i += 1;
+    }
+    Ok((scan, out))
+}
+
+/// xdectoumax over [0, max] with no suffixes (--pid,
+/// --max-unchanged-stats): optional leading blanks and '+', digits to
+/// the end; a value beyond `max` is EOVERFLOW.
+fn parse_dec_max(text: &str, max: u128) -> Result<u128, bool> {
+    let t = text.trim_start_matches([' ', '\t', '\n', '\x0b', '\x0c', '\r']);
+    let t = t.strip_prefix('+').unwrap_or(t);
+    if t.is_empty() || !t.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(false);
+    }
+    let mut v: u128 = 0;
+    for b in t.bytes() {
+        v = match v
+            .checked_mul(10)
+            .and_then(|v| v.checked_add((b - b'0') as u128))
+        {
+            Some(v) if v <= u64::MAX as u128 => v,
+            _ => return Err(true),
+        };
+    }
+    if v > max {
+        return Err(true);
+    }
+    Ok(v)
+}
+
+/// xstrtod with cl_strtod (C locale strtod, whole string): leading
+/// blanks, sign, decimal or hex mantissa, exponent, inf/infinity, nan.
+fn parse_seconds(text: &str) -> Option<f64> {
+    let t = text.trim_start_matches([' ', '\t', '\n', '\x0b', '\x0c', '\r']);
+    let (neg, body) = match t.as_bytes().first() {
+        Some(b'-') => (true, &t[1..]),
+        Some(b'+') => (false, &t[1..]),
+        _ => (false, t),
+    };
+    let lower = body.to_ascii_lowercase();
+    let v = if lower == "inf" || lower == "infinity" {
+        f64::INFINITY
+    } else if lower == "nan" || (lower.starts_with("nan(") && lower.ends_with(')')) {
+        f64::NAN
+    } else if let Some(hex) = lower.strip_prefix("0x") {
+        parse_hex_float(hex)?
+    } else {
+        let ok = !body.is_empty()
+            && body
+                .bytes()
+                .all(|b| b.is_ascii_digit() || matches!(b, b'.' | b'e' | b'E' | b'+' | b'-'))
+            && body
+                .bytes()
+                .next()
+                .is_some_and(|b| b.is_ascii_digit() || b == b'.');
+        if !ok {
+            return None;
+        }
+        body.parse::<f64>().ok()?
+    };
+    Some(if neg { -v } else { v })
+}
+
+fn parse_hex_float(h: &str) -> Option<f64> {
+    let (mant, exp) = match h.split_once('p') {
+        Some((m, e)) => (m, Some(e)),
+        None => (h, None),
+    };
+    let (ip, fp) = match mant.split_once('.') {
+        Some((a, b)) => (a, b),
+        None => (mant, ""),
+    };
+    if ip.is_empty() && fp.is_empty() {
+        return None;
+    }
+    let mut v = 0f64;
+    for c in ip.chars() {
+        v = v * 16.0 + c.to_digit(16)? as f64;
+    }
+    let mut scale = 1.0 / 16.0;
+    for c in fp.chars() {
+        v += c.to_digit(16)? as f64 * scale;
+        scale /= 16.0;
+    }
+    if let Some(e) = exp {
+        let e: i32 = e.parse().ok()?;
+        v *= 2f64.powi(e);
+    }
+    Some(v)
 }
 
 // `--help` body verbatim from `env tail --help` under WSL coreutils 9.4,
@@ -206,7 +611,54 @@ named file in a way that accommodates renaming, removal and creation.
 
 "#;
 
+/// What GNU learns from `fstat(0)` and the stdin fd itself, injected.
+///
+/// The library never touches the process stdin handle (the shape
+/// contract's red line: no `GetStdHandle`, no fd 0 in the library): the
+/// HOST classifies the source and, for a redirected regular file, hands
+/// the follow target's path. The consumed offset is NOT part of the
+/// metadata — it is what the command's own injected reads consumed
+/// (`read_to_end` of `io.stdin`), mirroring GNU's fd position after the
+/// initial dump.
+///
+/// `StdinMeta::pipe_stream()` is the registry default and the honest
+/// description of an ABI-injected stdin: a finite byte stream (v1 hands
+/// one whole buffer; the v2 callback reaches the end of the host's feed),
+/// which is GNU's pipe/FIFO class — POSIX `ignore_fifo_and_pipe` drops it
+/// from a follow set, so `tail -f` on it dumps and exits exactly like
+/// `printf x | tail -f`. A host that knows more injects the real class:
+/// the gate driver composes it from the process handles (the one
+/// sanctioned process-IO tier, `tail_stdin_meta` in the driver); the ABI
+/// metadata channel for other hosts is the wiring wave's input-metadata
+/// item (#1488, handover follow-up 2).
+#[derive(Clone, Debug)]
+pub struct StdinMeta {
+    pub kind: StdinKind,
+    /// Regular-file stdin: the file the host's stdin reads from, so `-f -`
+    /// can follow it by descriptor (tail.c follows fd 0 when fstat says
+    /// S_ISREG). None = the source is not followable under injection; the
+    /// run then treats it as consumed input that cannot grow.
+    pub follow_path: Option<std::path::PathBuf>,
+}
+
+impl StdinMeta {
+    /// The hostless default: an injected finite stream (pipe class).
+    pub fn pipe_stream() -> StdinMeta {
+        StdinMeta {
+            kind: StdinKind::Pipe,
+            follow_path: None,
+        }
+    }
+}
+
 pub fn tail_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
+    tail_with_meta(args, io, ctx, &StdinMeta::pipe_stream())
+}
+
+/// `tail_cmd` with the stdin classification injected. Unit tests and the
+/// gate driver call this to pin the stdin class GNU would read from
+/// `fstat(0)`; the library itself never asks the process.
+pub fn tail_with_meta(args: &[OsString], io: &mut Io, ctx: &Ctx, stdin: &StdinMeta) -> CmdResult {
     // obsolescent -NUM folds into --lines (tail -5 == tail -n 5), but an
     // argument consumed as an option value passes through untouched
     let mut norm: Vec<OsString> = Vec::with_capacity(args.len());
@@ -223,14 +675,14 @@ pub fn tail_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             norm.push(OsString::from(format!("--lines={}", &s[1..])));
             continue;
         }
+        // (-f/--follow take no detached value: `-f -s -1` keeps -1 as
+        // the -s value, not an obsolescent count)
         if matches!(
             s.as_str(),
             "-c" | "-n"
-                | "-f"
                 | "-s"
                 | "--bytes"
                 | "--lines"
-                | "--follow"
                 | "--pid"
                 | "--sleep-interval"
                 | "--max-unchanged-stats"
@@ -238,12 +690,19 @@ pub fn tail_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             skip_next_value = true;
         } else if s.len() > 1 && s.starts_with('-') && !s.starts_with("--") {
             let last = s.chars().last();
-            if matches!(last, Some('c') | Some('n') | Some('f') | Some('s')) {
+            if matches!(last, Some('c') | Some('n') | Some('s')) {
                 skip_next_value = true;
             }
         }
         norm.push(a.clone());
     }
+    let (scan, norm) = match scan_follow(&norm) {
+        Ok(v) => v,
+        Err(msg) => {
+            let _ = writeln!(io.stderr, "{msg}");
+            return Ok(1);
+        }
+    };
     let p = match argopt::parse("tail", &norm, OPTS, io, ctx, 1) {
         Ok(p) => p,
         Err(s) => return Ok(s),
@@ -278,13 +737,9 @@ pub fn tail_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     }
 
     let bytes_mode = p.has("bytes");
-    let mut count = if bytes_mode {
-        TailCount::Last(10)
-    } else {
-        TailCount::Last(10)
-    };
+    let mut count = TailCount::Last(10);
     if let Some(v) = p.value_of("bytes").or_else(|| p.value_of("lines")) {
-        match parse_tail_count(&v) {
+        match parse_tail_count(v) {
             Some(c) => count = c,
             None => {
                 let word = if bytes_mode { "bytes" } else { "lines" };
@@ -297,10 +752,84 @@ pub fn tail_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             }
         }
     }
+    // the follow-tuning values, validated in argv order like
+    // parse_options (the first bad one dies); the last occurrence wins
+    let mut pid: u128 = 0;
+    let mut sleep_secs = 1.0f64;
+    let mut max_unchanged: u128 = 5;
+    for (k, v) in &p.values {
+        let q = |v: &str| format!("\u{2018}{v}\u{2019}");
+        match k.as_str() {
+            "pid" => match parse_dec_max(v, i32::MAX as u128) {
+                Ok(n) => pid = n,
+                Err(overflow) => {
+                    let tail = if overflow {
+                        ": Value too large for defined data type"
+                    } else {
+                        ""
+                    };
+                    let _ = writeln!(io.stderr, "tail: invalid PID: {}{tail}", q(v));
+                    return Ok(1);
+                }
+            },
+            "max-unchanged-stats" => match parse_dec_max(v, u64::MAX as u128) {
+                Ok(n) => max_unchanged = n,
+                Err(overflow) => {
+                    let tail = if overflow {
+                        ": Value too large for defined data type"
+                    } else {
+                        ""
+                    };
+                    let _ = writeln!(
+                        io.stderr,
+                        "tail: invalid maximum number of unchanged stats between opens: {}{tail}",
+                        q(v)
+                    );
+                    return Ok(1);
+                }
+            },
+            "sleep-interval" => match parse_seconds(v) {
+                Some(s) if s >= 0.0 => sleep_secs = s,
+                _ => {
+                    let _ = writeln!(io.stderr, "tail: invalid number of seconds: {}", q(v));
+                    return Ok(1);
+                }
+            },
+            _ => {}
+        }
+    }
     let quiet = p.has("quiet") || p.has("silent");
     let verbose = p.has("verbose");
-    let follow = p.has("follow");
+    let forever = scan.forever;
+    let mode = if scan.by_name {
+        FollowMode::Name
+    } else {
+        FollowMode::Descriptor
+    };
+    let mut retry = p.has("retry") || scan.retry_from_f;
     let delim: u8 = if p.has("zero-terminated") { 0 } else { b'\n' };
+
+    // parse_options' closing warnings
+    if retry {
+        if !forever {
+            retry = false;
+            let _ = writeln!(
+                io.stderr,
+                "tail: warning: --retry ignored; --retry is useful only when following"
+            );
+        } else if mode == FollowMode::Descriptor {
+            let _ = writeln!(
+                io.stderr,
+                "tail: warning: --retry only effective for the initial open"
+            );
+        }
+    }
+    if pid != 0 && !forever {
+        let _ = writeln!(
+            io.stderr,
+            "tail: warning: PID ignored; --pid=PID is useful only when following"
+        );
+    }
 
     let files: Vec<String> = if p.positionals.is_empty() {
         vec!["-".to_string()]
@@ -310,92 +839,235 @@ pub fn tail_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             .map(|a| a.to_string_lossy().into_owned())
             .collect()
     };
-    let print_headers = (files.len() > 1 || verbose) && !quiet;
-
-    let mut first_header = true;
-    let mut failed = false;
-    for file in &files {
-        let bytes = if file == "-" {
-            let mut buf = Vec::new();
-            match io.stdin.read_to_end(&mut buf) {
-                Ok(_) => buf,
-                Err(_) => {
-                    let _ = writeln!(
-                        io.stderr,
-                        "tail: error reading 'standard input': Is a directory"
-                    );
-                    failed = true;
-                    continue;
-                }
-            }
-        } else {
-            match std::fs::File::open(resolve(ctx, file)) {
-                Ok(mut f) => {
-                    let mut buf = Vec::new();
-                    match f.read_to_end(&mut buf) {
-                        Ok(_) => buf,
-                        Err(_) => {
-                            let reason = if std::fs::metadata(resolve(ctx, file))
-                                .map(|m| m.is_dir())
-                                .unwrap_or(false)
-                            {
-                                "Is a directory".to_string()
-                            } else {
-                                "read error".to_string()
-                            };
-                            let _ = writeln!(io.stderr, "tail: error reading '{file}': {reason}");
-                            failed = true;
-                            continue;
-                        }
-                    }
-                }
-                Err(e) => {
-                    if std::fs::metadata(resolve(ctx, file))
-                        .map(|m| m.is_dir())
-                        .unwrap_or(false)
-                    {
-                        let _ = writeln!(io.stderr, "tail: error reading '{file}': Is a directory");
-                        failed = true;
-                        continue;
-                    }
-                    let reason = gnu_open_reason(ctx, file, &e, false);
-                    let _ = writeln!(
-                        io.stderr,
-                        "tail: cannot open '{file}' for reading: {reason}"
-                    );
-                    failed = true;
-                    continue;
-                }
-            }
-        };
-        if print_headers {
-            if first_header {
-                first_header = false;
-            } else {
-                let _ = write!(io.stdout, "\n");
-            }
-            let name = if file == "-" {
-                "standard input"
-            } else {
-                file.as_str()
-            };
-            let _ = writeln!(io.stdout, "==> {name} <==");
-        }
-        let r = match count {
-            TailCount::Last(k) => emit_last(&bytes, k, delim, bytes_mode, io.stdout),
-            TailCount::FromStart(k) => emit_from(&bytes, k, delim, bytes_mode, io.stdout),
-        };
-        if r.is_err() {
-            let _ = writeln!(io.stderr, "tail: write error");
-            failed = true;
-        }
-    }
-    // documented Windows subset: no following (see module docs)
-    if follow {
-        let _ = writeln!(io.stderr, "tail: cannot follow end of file: not supported");
+    let found_hyphen = files.iter().any(|f| f == "-");
+    // when following by name there must be a name
+    if found_hyphen && forever && mode == FollowMode::Name {
+        let _ = writeln!(io.stderr, "tail: cannot follow '-' by name");
         return Ok(1);
     }
-    Ok(if failed { 1 } else { 0 })
+    let stdin_kind = if found_hyphen {
+        stdin.kind
+    } else {
+        StdinKind::Unknown
+    };
+    if forever && found_hyphen {
+        let blocking_stdin = pid == 0
+            && mode == FollowMode::Descriptor
+            && files.len() == 1
+            && stdin_kind != StdinKind::Disk;
+        if !blocking_stdin && stdin_kind == StdinKind::Console {
+            let _ = writeln!(
+                io.stderr,
+                "tail: warning: following standard input indefinitely is ineffective"
+            );
+        }
+    }
+    // don't read anything if nothing will ever be output
+    if count == TailCount::Last(0) && !forever {
+        return Ok(0);
+    }
+    let print_headers = (files.len() > 1 || verbose) && !quiet;
+    let mut headers = Headers::new(print_headers, files.len());
+
+    let mut ok = true;
+    let mut specs: Vec<Spec> = Vec::new();
+    for file in &files {
+        let mut spec = Spec::new(file);
+        if file == "-" {
+            headers
+                .write_initial(io.stdout, "standard input")
+                .map_err(CmdError::Io)?;
+            let mut buf = Vec::new();
+            if io.stdin.read_to_end(&mut buf).is_err() {
+                let _ = writeln!(
+                    io.stderr,
+                    "tail: error reading 'standard input': Is a directory"
+                );
+                ok = false;
+                spec.ignore = !retry;
+                spec.errnum = Errnum::Err("Is a directory".into());
+                specs.push(spec);
+                continue;
+            }
+            if let Err(e) = dump_bytes(&buf, &count, delim, bytes_mode, io.stdout) {
+                return write_failure(io, e);
+            }
+            spec.stdin = Some(stdin_kind);
+            if forever && stdin_kind == StdinKind::Disk {
+                // GNU holds fd 0 open for the whole run; when the host
+                // cannot name the file the injected run keeps GNU's
+                // duration semantics — live until --pid death, nothing to
+                // read — via the "logically open" parked state.
+                let mut held = false;
+                if let Some(target) = stdin.follow_path.as_ref() {
+                    if let Ok(mut f) = File::open(target) {
+                        // The follow resumes at what the injected reads
+                        // consumed, in dump_regular's read_pos terms:
+                        // bytes FromStart(k) is reached by lseek(k-1) on
+                        // GNU's fd, so a skip past EOF leaves the offset
+                        // ABOVE the size and the first follow check
+                        // reports the truncation (probed, WSL 9.4:
+                        // `tail -f -c +99 < tiny` prints
+                        // `'standard input': file truncated` and re-dumps
+                        // from 0; every other shape consumes the whole
+                        // input, probed p1/p2).
+                        spec.size = match &count {
+                            TailCount::FromStart(k) if bytes_mode => {
+                                // dump_regular's skip clamp: k-1, seekable
+                                let skip = k.saturating_sub(1).min(i64::MAX as u128) as u64;
+                                skip.max(buf.len() as u64)
+                            }
+                            _ => buf.len() as u64,
+                        };
+                        if let Ok(st) = sys::handle_stat(&f) {
+                            spec.id = st.id;
+                            spec.regular = st.regular;
+                        }
+                        spec.watch_dir = target.parent().map(|d| d.to_path_buf());
+                        spec.fd = Some(f);
+                        held = true;
+                    }
+                }
+                if !held {
+                    spec.parked = true;
+                }
+            }
+            specs.push(spec);
+            continue;
+        }
+        let path = resolve(ctx, file);
+        spec.path = Some(path.clone());
+        spec.symlink = std::fs::symlink_metadata(&path)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false);
+        let is_dir = || {
+            std::fs::metadata(&path)
+                .map(|m| m.is_dir())
+                .unwrap_or(false)
+        };
+        match File::open(&path) {
+            Ok(mut f) => {
+                let st = sys::handle_stat(&f).ok();
+                if st.is_some_and(|s| s.is_dir) {
+                    // a directory: Linux opens it, prints the header and
+                    // fails the read
+                    headers
+                        .write_initial(io.stdout, file)
+                        .map_err(CmdError::Io)?;
+                    dir_failure(io, &mut spec, file, forever, retry, mode);
+                    ok = false;
+                    specs.push(spec);
+                    continue;
+                }
+                headers
+                    .write_initial(io.stdout, file)
+                    .map_err(CmdError::Io)?;
+                let regular = st.is_some_and(|s| s.regular);
+                let dumped = if regular {
+                    dump_regular(&mut f, &count, delim, bytes_mode, io.stdout)
+                } else {
+                    let mut buf = Vec::new();
+                    match f.read_to_end(&mut buf) {
+                        Ok(_) => dump_bytes(&buf, &count, delim, bytes_mode, io.stdout)
+                            .map(|()| buf.len() as u64)
+                            .map_err(DumpErr::Write),
+                        Err(e) => Err(DumpErr::Read(e)),
+                    }
+                };
+                match dumped {
+                    Ok(pos) => {
+                        if forever {
+                            spec.size = pos;
+                            if let Some(st) = st {
+                                spec.id = st.id;
+                                spec.regular = st.regular;
+                            }
+                            spec.watch_dir = path.parent().map(|d| d.to_path_buf());
+                            spec.fd = Some(f);
+                        }
+                    }
+                    Err(DumpErr::Write(e)) => return write_failure(io, e),
+                    Err(DumpErr::Read(e)) => {
+                        let _ = writeln!(
+                            io.stderr,
+                            "tail: error reading '{file}': {}",
+                            crate::fsutil::reason(&e)
+                        );
+                        ok = false;
+                        spec.ignore = !retry;
+                        spec.errnum = Errnum::Err(crate::fsutil::reason(&e).to_string());
+                    }
+                }
+            }
+            Err(e) => {
+                if is_dir() {
+                    headers
+                        .write_initial(io.stdout, file)
+                        .map_err(CmdError::Io)?;
+                    dir_failure(io, &mut spec, file, forever, retry, mode);
+                    ok = false;
+                    specs.push(spec);
+                    continue;
+                }
+                let reason = gnu_open_reason(ctx, file, &e, false);
+                let _ = writeln!(
+                    io.stderr,
+                    "tail: cannot open '{file}' for reading: {reason}"
+                );
+                ok = false;
+                spec.tailable = !retry;
+                spec.ignore = !retry;
+                spec.errnum = Errnum::Err(reason);
+                spec.watch_dir = path.parent().map(|d| d.to_path_buf());
+            }
+        }
+        specs.push(spec);
+    }
+
+    if forever && follow::viable(&mut specs) > 0 {
+        if let Err(e) = io.stdout.flush() {
+            return write_failure(io, e);
+        }
+        let opts = FollowOpts {
+            mode,
+            retry,
+            sleep_secs,
+            pid: if pid == 0 { None } else { Some(pid as u32) },
+            max_unchanged: max_unchanged as u64,
+        };
+        return follow::follow(&mut specs, &opts, &mut headers, ok, io, ctx);
+    }
+    Ok(if ok { 0 } else { 1 })
+}
+
+/// tail_file's directory leg: the read error, then (following) the
+/// untailable-type diagnostic and the give-up decision.
+fn dir_failure(
+    io: &mut Io,
+    spec: &mut Spec,
+    file: &str,
+    forever: bool,
+    retry: bool,
+    mode: FollowMode,
+) {
+    let _ = writeln!(io.stderr, "tail: error reading '{file}': Is a directory");
+    if forever {
+        let give_up = !(retry && mode == FollowMode::Name);
+        let _ = writeln!(
+            io.stderr,
+            "tail: {}: cannot follow end of this type of file{}",
+            quotef(file),
+            if give_up {
+                "; giving up on this name"
+            } else {
+                ""
+            }
+        );
+        spec.tailable = false;
+        spec.errnum = Errnum::Untailable;
+    }
+    // tail_file: a failed input is given up unless --retry
+    spec.ignore = !retry;
 }
 
 #[cfg(test)]
@@ -408,7 +1080,7 @@ mod tests {
         let mut io = MemIo::new(stdin);
         let ctx = sc.ctx();
         let owned: Vec<OsString> = args.iter().map(Into::into).collect();
-        let r = tail_cmd(&owned, &mut io.split(), &ctx).unwrap();
+        let r = tail_with_meta(&owned, &mut io.split(), &ctx, &StdinMeta::pipe_stream()).unwrap();
         (r, io.out(), io.err())
     }
 
@@ -525,11 +1197,344 @@ mod tests {
         assert!(io
             .err()
             .contains("tail: error reading 'adir': Is a directory"));
-        // documented subset: -f dumps then refuses with rc 1
+        // -f on a pipe stdin: POSIX ignores -f, dump and exit 0
         let (r, out, err) = run(&["-f", "-n", "1"], "a\nb\n");
-        assert_eq!(r, 1);
+        assert_eq!(r, 0);
         assert_eq!(out, "b\n");
-        assert!(err.contains("cannot follow end of file"));
+        assert!(err.is_empty());
         assert_eq!(run(&["--bogus"], "x\n").0, 1);
+    }
+
+    fn run_in(sc: &ScratchCtx, args: &[&str]) -> (u32, String, String) {
+        let mut io = MemIo::new("");
+        let ctx = sc.ctx();
+        let owned: Vec<OsString> = args.iter().map(Into::into).collect();
+        let r = tail_with_meta(&owned, &mut io.split(), &ctx, &StdinMeta::pipe_stream()).unwrap();
+        (r, io.out(), io.err())
+    }
+
+    /// Like `run_in`, but with explicit stdin metadata and stdin bytes
+    /// (the injected Disk-stdin shapes).
+    fn run_meta(
+        sc: &ScratchCtx,
+        stdin: &str,
+        meta: &StdinMeta,
+        args: &[&str],
+    ) -> (u32, String, String) {
+        let mut io = MemIo::new(stdin);
+        let ctx = sc.ctx();
+        let owned: Vec<OsString> = args.iter().map(Into::into).collect();
+        let r = tail_with_meta(&owned, &mut io.split(), &ctx, meta).unwrap();
+        (r, io.out(), io.err())
+    }
+
+    #[test]
+    fn partial_last_record_counts() {
+        // regression: the whole-buffer path indexed bounds[-1] (panic)
+        assert_eq!(run(&["-n", "1"], "a\nb").1, "b");
+        assert_eq!(run(&["-n", "2"], "a\nb\n").1, "a\nb\n");
+        assert_eq!(run(&["-n", "2"], "a\nb").1, "a\nb");
+        assert_eq!(run(&["-n", "1"], "abc").1, "abc");
+        assert_eq!(last_records_start(b"a\nb\nc\n", 2, b'\n'), 2);
+        assert_eq!(last_records_start(b"a\nb\nc", 2, b'\n'), 2);
+        assert_eq!(last_records_start(b"\n\n", 1, b'\n'), 1);
+    }
+
+    #[test]
+    fn regular_file_dump_seeks_from_the_end() {
+        let sc = ScratchCtx::new("tail-seek");
+        // > one 64 KiB chunk so the backward scan crosses a boundary
+        let body: String = (0..20000).map(|i| format!("line{i}\n")).collect();
+        std::fs::write(sc.path("big"), &body).unwrap();
+        std::fs::write(sc.path("p"), "x\ny\nzz").unwrap();
+        assert_eq!(run_in(&sc, &["-n", "2", "big"]).1, "line19998\nline19999\n");
+        let tail3: String = body
+            .lines()
+            .skip(20000 - 9000)
+            .map(|l| format!("{l}\n"))
+            .collect();
+        assert_eq!(run_in(&sc, &["-n", "9000", "big"]).1, tail3);
+        assert_eq!(run_in(&sc, &["-c", "4", "big"]).1, "999\n");
+        assert_eq!(
+            run_in(&sc, &["-n", "+19999", "big"]).1,
+            "line19998\nline19999\n"
+        );
+        assert_eq!(run_in(&sc, &["-n", "1", "p"]).1, "zz");
+        assert_eq!(run_in(&sc, &["-n", "+2", "p"]).1, "y\nzz");
+        assert_eq!(run_in(&sc, &["-c", "+3", "p"]).1, "y\nzz");
+        assert_eq!(run_in(&sc, &["-c", "+99", "p"]).1, "");
+        assert_eq!(run_in(&sc, &["-c", "99", "p"]).1, "x\ny\nzz");
+    }
+
+    #[test]
+    fn follow_scan_order_and_rewrite() {
+        let os = |v: &[&str]| v.iter().map(OsString::from).collect::<Vec<_>>();
+        let (s, out) = scan_follow(&os(&["--follow=name", "f"])).unwrap();
+        assert_eq!(
+            s,
+            FollowScan {
+                forever: true,
+                by_name: true,
+                retry_from_f: false
+            }
+        );
+        assert_eq!(out, os(&["--follow", "f"]));
+        // a later -f re-assigns descriptor mode, -F's retry sticks
+        let (s, _) = scan_follow(&os(&["-F", "-f"])).unwrap();
+        assert!(s.forever && !s.by_name && s.retry_from_f);
+        let (s, out) = scan_follow(&os(&["--fo=n", "-qF"])).unwrap();
+        assert!(s.by_name);
+        assert_eq!(out, os(&["--follow", "-qF"]));
+        // option values are not options; `--` ends the scan
+        let (s, _) = scan_follow(&os(&["-n", "-f", "-s", "-F"])).unwrap();
+        assert!(!s.forever);
+        let (s, _) = scan_follow(&os(&["--", "-f"])).unwrap();
+        assert!(!s.forever);
+        let (s, _) = scan_follow(&os(&["--follow", "name"])).unwrap();
+        assert!(s.forever && !s.by_name);
+        assert!(scan_follow(&os(&["--follow=x"])).unwrap_err().starts_with(
+            "tail: invalid argument \u{2018}x\u{2019} for \u{2018}--follow\u{2019}\n"
+        ));
+        assert!(scan_follow(&os(&["--follow="]))
+            .unwrap_err()
+            .starts_with("tail: ambiguous argument"));
+    }
+
+    #[test]
+    fn value_parsers() {
+        assert_eq!(parse_seconds("0.1"), Some(0.1));
+        assert_eq!(parse_seconds(" 0.5"), Some(0.5));
+        assert_eq!(parse_seconds("1e-1"), Some(0.1));
+        assert_eq!(parse_seconds("0x10"), Some(16.0));
+        assert_eq!(parse_seconds("0x1.8p1"), Some(3.0));
+        assert_eq!(parse_seconds("inf"), Some(f64::INFINITY));
+        assert_eq!(parse_seconds(".5"), Some(0.5));
+        assert!(parse_seconds("nan").unwrap().is_nan());
+        assert_eq!(parse_seconds("-1"), Some(-1.0));
+        for bad in ["", "x", "0.1x", "1 ", "e5", "1e"] {
+            assert_eq!(parse_seconds(bad), None, "{bad:?}");
+        }
+        assert_eq!(parse_dec_max("5", 10), Ok(5));
+        assert_eq!(parse_dec_max(" +5", 10), Ok(5));
+        assert_eq!(parse_dec_max("-1", 10), Err(false));
+        assert_eq!(parse_dec_max("x", 10), Err(false));
+        assert_eq!(parse_dec_max("11", 10), Err(true));
+        assert_eq!(
+            parse_dec_max("99999999999999999999999", u64::MAX as u128),
+            Err(true)
+        );
+    }
+
+    #[test]
+    fn follow_option_diagnostics() {
+        let sc = ScratchCtx::new("tail-fopt");
+        std::fs::write(sc.path("f"), "a\n").unwrap();
+        let (r, _, e) = run_in(&sc, &["-f", "-s", "x", "f"]);
+        assert_eq!(
+            (r, e.as_str()),
+            (1, "tail: invalid number of seconds: \u{2018}x\u{2019}\n")
+        );
+        let (r, _, e) = run_in(&sc, &["-f", "--pid=99999999999", "f"]);
+        assert_eq!(r, 1);
+        assert!(e.ends_with(": Value too large for defined data type\n"));
+        let (r, _, e) = run_in(&sc, &["-F", "-"]);
+        assert_eq!((r, e.as_str()), (1, "tail: cannot follow '-' by name\n"));
+        let (r, o, e) = run_in(&sc, &["--retry", "f"]);
+        assert_eq!((r, o.as_str()), (0, "a\n"));
+        assert!(e.contains("--retry ignored"));
+        let (r, _, e) = run_in(&sc, &["--pid=5", "f"]);
+        assert_eq!(r, 0);
+        assert!(e.contains("PID ignored"));
+        // zero count, no follow: nothing is opened
+        assert_eq!(
+            run_in(&sc, &["-n", "0", "missing"]),
+            (0, String::new(), String::new())
+        );
+    }
+
+    const DEAD: &str = "--pid=2147483647";
+
+    #[test]
+    fn follow_with_dead_writer_terminates_like_gnu() {
+        let sc = ScratchCtx::new("tail-dead");
+        std::fs::write(sc.path("f"), "a\nb\n").unwrap();
+        std::fs::write(sc.path("g"), "x\n").unwrap();
+        std::fs::create_dir(sc.path("dd")).unwrap();
+        assert_eq!(
+            run_in(&sc, &["-f", DEAD, "f"]),
+            (0, "a\nb\n".into(), String::new())
+        );
+        let (r, o, _) = run_in(&sc, &["-f", DEAD, "f", "g"]);
+        assert_eq!((r, o.as_str()), (0, "==> f <==\na\nb\n\n==> g <==\nx\n"));
+        let (r, _, e) = run_in(&sc, &["-f", "missing"]);
+        assert_eq!(r, 1);
+        assert!(e.ends_with("tail: no files remaining\n"));
+        // the exit status follows GNU's inotify/polling choice (p1.sh)
+        assert_eq!(run_in(&sc, &["-f", DEAD, "missing", "f"]).0, 1);
+        assert_eq!(run_in(&sc, &["-F", DEAD, "missing", "f"]).0, 0);
+        assert_eq!(run_in(&sc, &["-F", DEAD, "missing"]).0, 1);
+        let (r, o, e) = run_in(&sc, &["-F", DEAD, "dd", "f"]);
+        assert_eq!((r, o.as_str()), (0, "==> dd <==\n\n==> f <==\na\nb\n"));
+        assert!(e.ends_with("tail: dd: cannot follow end of this type of file\n"));
+        let (r, _, e) = run_in(&sc, &["-f", DEAD, "dd"]);
+        assert_eq!(r, 1);
+        assert!(e.contains("; giving up on this name\ntail: no files remaining\n"));
+        // -c +N past EOF leaves the offset past the size: GNU reports a
+        // truncation at the first follow check
+        let (r, o, e) = run_in(&sc, &["-f", "-c", "+99", DEAD, "f"]);
+        assert_eq!((r, o.as_str()), (0, "a\nb\n"));
+        assert_eq!(e, "tail: f: file truncated\n");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn follow_live_append_truncate_and_pid_exit() {
+        let sc = ScratchCtx::new("tail-live");
+        let f = sc.path("f");
+        std::fs::write(&f, "a\n").unwrap();
+        // the writer stand-in: a child that lives ~2 s
+        let mut child = std::process::Command::new("cmd")
+            .args(["/c", "ping -n 3 127.0.0.1 >nul"])
+            .spawn()
+            .unwrap();
+        let pid = format!("--pid={}", child.id());
+        let path = f.clone();
+        let writer = std::thread::spawn(move || {
+            use std::io::Write as _;
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            let mut h = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap();
+            h.write_all(b"b\n").unwrap();
+            drop(h);
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            std::fs::write(&path, "").unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            std::fs::write(&path, "new\n").unwrap();
+        });
+        let (r, o, e) = run_in(&sc, &["-f", "-s", "0.1", &pid, "f"]);
+        writer.join().unwrap();
+        let _ = child.wait();
+        assert_eq!(r, 0);
+        assert_eq!(o, "a\nb\nnew\n");
+        assert_eq!(e, "tail: f: file truncated\n");
+    }
+
+    #[test]
+    fn stdin_follow_target_is_injected() {
+        // The Disk-stdin follow runs entirely on injected IO: MemIo stdin
+        // plus an injected follow path (no process handle anywhere — the
+        // command reopens the host-named file with its own handle).
+        let sc = ScratchCtx::new("tail-stdinmeta");
+        let f = sc.path("in");
+        std::fs::write(&f, "a\nb\n").unwrap();
+        let meta = StdinMeta {
+            kind: StdinKind::Disk,
+            follow_path: Some(f.clone()),
+        };
+        // GNU follows fd 0 by descriptor: dump, idle until the writer
+        // (dead pid) ends the run.
+        let (r, o, e) = run_meta(&sc, "a\nb\n", &meta, &["-f", DEAD, "-"]);
+        assert_eq!(r, 0);
+        assert_eq!(o, "a\nb\n");
+        assert_eq!(e, "");
+        // Disk class but no follow path: consumed input cannot grow, dump
+        // only — same terminating shape.
+        let meta = StdinMeta {
+            kind: StdinKind::Disk,
+            follow_path: None,
+        };
+        let (r, o, e) = run_meta(&sc, "a\nb\n", &meta, &["-f", DEAD, "-"]);
+        assert_eq!(r, 0);
+        assert_eq!(o, "a\nb\n");
+        assert_eq!(e, "");
+        // The registry default (pipe class) ignores -f like GNU's
+        // `printf x | tail -f` (POSIX ignore_fifo_and_pipe).
+        let (r, o, e) = run_meta(&sc, "a\nb\n", &StdinMeta::pipe_stream(), &["-f", "-"]);
+        assert_eq!(r, 0);
+        assert_eq!(o, "a\nb\n");
+        assert_eq!(e, "");
+    }
+
+    #[test]
+    fn stdin_follow_from_start_bytes_reports_truncation_like_gnu() {
+        // Probed (p3, WSL 9.4): `-f -c +99` lseeks fd 0 to 98, past the
+        // 3-byte file; the first follow check sees size < consumed and
+        // prints `'standard input': file truncated`, re-dumping from 0.
+        // GNU quotes "standard input" because quotef quotes names with
+        // shell-special characters — the space here (tail.c tail_forever).
+        let sc = ScratchCtx::new("tail-stdin-c99");
+        let f = sc.path("in");
+        std::fs::write(&f, "ab\n").unwrap();
+        let meta = StdinMeta {
+            kind: StdinKind::Disk,
+            follow_path: Some(f),
+        };
+        let (r, o, e) = run_meta(&sc, "ab\n", &meta, &["-f", "-c", "+99", DEAD, "-"]);
+        assert_eq!(r, 0);
+        assert_eq!(o, "ab\n");
+        assert_eq!(e, "tail: 'standard input': file truncated\n");
+    }
+
+    #[test]
+    fn stdin_follow_truncate_wording_matches_gnu() {
+        // Probed (p2, WSL 9.4): truncating a followed regular-file stdin
+        // prints `tail: 'standard input': file truncated` (quoted by
+        // quotef, the space) and re-dumps from 0.
+        let sc = ScratchCtx::new("tail-stdin-trunc");
+        let f = sc.path("in");
+        std::fs::write(&f, "1\n2\n3\n").unwrap();
+        let meta = StdinMeta {
+            kind: StdinKind::Disk,
+            follow_path: Some(f.clone()),
+        };
+        std::fs::write(&f, "").unwrap();
+        let (r, o, e) = run_meta(&sc, "1\n2\n3\n", &meta, &["-f", DEAD, "-"]);
+        assert_eq!(r, 0);
+        assert_eq!(o, "1\n2\n3\n");
+        assert_eq!(e, "tail: 'standard input': file truncated\n");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn follow_stdin_disk_injected_live_append() {
+        // The follow runtime proof under injection: MemIo stdin + an
+        // injected follow path, a real writer thread appending to that
+        // file while the loop polls (GNU p1: appended lines appear).
+        let sc = ScratchCtx::new("tail-stdin-live");
+        let f = sc.path("in");
+        std::fs::write(&f, "a\nb\n").unwrap();
+        let mut child = std::process::Command::new("cmd")
+            .args(["/c", "ping -n 3 127.0.0.1 >nul"])
+            .spawn()
+            .unwrap();
+        let pid = format!("--pid={}", child.id());
+        let path = f.clone();
+        let writer = std::thread::spawn(move || {
+            use std::io::Write as _;
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            let mut h = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap();
+            h.write_all(b"c\n").unwrap();
+        });
+        let meta = StdinMeta {
+            kind: StdinKind::Disk,
+            follow_path: Some(f),
+        };
+        let mut io = MemIo::new("a\nb\n");
+        let ctx = sc.ctx();
+        let owned: Vec<OsString> = ["-f", "-s", "0.1", &pid, "-"]
+            .iter()
+            .map(Into::into)
+            .collect();
+        let r = tail_with_meta(&owned, &mut io.split(), &ctx, &meta).unwrap();
+        writer.join().unwrap();
+        let _ = child.wait();
+        assert_eq!(r, 0);
+        assert_eq!(io.out(), "a\nb\nc\n");
+        assert_eq!(io.err(), "");
     }
 }

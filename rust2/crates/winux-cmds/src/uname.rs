@@ -23,7 +23,7 @@ use std::ffi::OsString;
 use crate::argopt::{self, OptSpec};
 use crate::gnuhelp;
 use crate::winsys;
-use winux_core::{usage_error, CmdResult, Ctx, Io};
+use winux_core::{tr, usage_error, CmdResult, Ctx, Io};
 
 const OPTS: &[OptSpec] = &[
     OptSpec {
@@ -138,7 +138,17 @@ pub fn uname_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     }
     if let Some(first) = p.positionals.first() {
         let shown = first.to_string_lossy().into_owned();
-        let _ = usage_error(io, "uname", &format!("extra operand '{shown}'"));
+        // [GNU] uname.c: uname takes no operands (#1215 parity).
+        let _ = usage_error(
+            io,
+            "uname",
+            &tr!(
+                ctx,
+                "command.uname.error.extra_operand",
+                "extra operand '{operand}'",
+                operand = shown
+            ),
+        );
         return Ok(1);
     }
 

@@ -25,9 +25,80 @@
 use std::ffi::{c_char, c_int, c_void, CString};
 use std::io::{Read, Write};
 
+use winux_cmds::tail::{StdinKind, StdinMeta};
 use winux_core::stream::StreamReadFn;
 use winux_core::{Ctx, EnvSource, Io, ProcessEnv};
 use winuxcmd_ffi::{winuxcmd_free_buf, winuxcmd_run, winuxcmd_run_stream, CBuf};
+
+/// tail's stdin classification, composed from the process stdin handle.
+///
+/// The driver is the only place process state is read (the shape
+/// contract's sanctioned process-IO tier): the library receives the
+/// result as injected `tail::StdinMeta` — GNU learns the same facts from
+/// `fstat(0)` — and never touches the process handle itself. A redirected
+/// regular file also yields its final path so `tail -f -` can follow the
+/// file by descriptor like GNU's fd 0; the consumed offset is not part of
+/// the metadata (the command derives it from its own injected reads).
+#[cfg(windows)]
+fn tail_stdin_meta() -> StdinMeta {
+    use std::os::windows::io::AsRawHandle;
+    type Handle = *mut c_void;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetFileType(h: Handle) -> u32;
+        fn GetConsoleMode(h: Handle, mode: *mut u32) -> i32;
+        fn GetFinalPathNameByHandleW(h: Handle, buf: *mut u16, cap: u32, flags: u32) -> u32;
+    }
+    const FILE_TYPE_DISK: u32 = 1;
+    const FILE_TYPE_CHAR: u32 = 2;
+    const FILE_TYPE_PIPE: u32 = 3;
+    let h = std::io::stdin().as_raw_handle() as Handle;
+    if h.is_null() {
+        return StdinMeta {
+            kind: StdinKind::Unknown,
+            follow_path: None,
+        };
+    }
+    match unsafe { GetFileType(h) } {
+        FILE_TYPE_DISK => {
+            let mut buf = vec![0u16; 32768];
+            let n = unsafe { GetFinalPathNameByHandleW(h, buf.as_mut_ptr(), 32768, 0) };
+            let follow_path = if n != 0 && (n as usize) < buf.len() {
+                Some(std::path::PathBuf::from(String::from_utf16_lossy(
+                    &buf[..n as usize],
+                )))
+            } else {
+                None
+            };
+            StdinMeta {
+                kind: StdinKind::Disk,
+                follow_path,
+            }
+        }
+        FILE_TYPE_PIPE => StdinMeta::pipe_stream(),
+        FILE_TYPE_CHAR => {
+            let mut mode = 0u32;
+            let console = unsafe { GetConsoleMode(h, &mut mode) } != 0;
+            StdinMeta {
+                kind: if console {
+                    StdinKind::Console
+                } else {
+                    StdinKind::CharDev
+                },
+                follow_path: None,
+            }
+        }
+        _ => StdinMeta {
+            kind: StdinKind::Unknown,
+            follow_path: None,
+        },
+    }
+}
+
+#[cfg(not(windows))]
+fn tail_stdin_meta() -> StdinMeta {
+    StdinMeta::pipe_stream()
+}
 
 fn main() {
     let mut argv: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
@@ -108,7 +179,7 @@ fn run_direct(argv: &[std::ffi::OsString]) -> i32 {
 
     let env = ProcessEnv;
     let cwd = std::env::current_dir().unwrap_or_default();
-    let ctx = Ctx { cwd, env: &env };
+    let ctx = Ctx::new(cwd, &env);
 
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
@@ -122,12 +193,24 @@ fn run_direct(argv: &[std::ffi::OsString]) -> i32 {
         stderr: &mut stderr_lock,
     };
 
-    let status = match winux_cmds::dispatch(&name, &args, &mut io, &ctx) {
-        Some(Ok(s)) => s as i32,
-        Some(Err(_)) => winux_core::ABI_FAILURE_STATUS as i32,
-        None => {
-            let _ = writeln!(stderr_lock, "winuxcmd-driver: unknown command: {}", name);
-            127
+    let status = if name == "tail" {
+        // tail's stdin class is input metadata (GNU's fstat(0) facts):
+        // composed above from the process handle, injected into the
+        // library. Every other command shapes stdin through the Io
+        // handles alone.
+        let meta = tail_stdin_meta();
+        match winux_cmds::tail::tail_with_meta(&args, &mut io, &ctx, &meta) {
+            Ok(s) => s as i32,
+            Err(_) => winux_core::ABI_FAILURE_STATUS as i32,
+        }
+    } else {
+        match winux_cmds::dispatch(&name, &args, &mut io, &ctx) {
+            Some(Ok(s)) => s as i32,
+            Some(Err(_)) => winux_core::ABI_FAILURE_STATUS as i32,
+            None => {
+                let _ = writeln!(stderr_lock, "winuxcmd-driver: unknown command: {}", name);
+                127
+            }
         }
     };
     let _ = stdout_lock.flush();

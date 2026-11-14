@@ -107,8 +107,19 @@ pub fn ln_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 None => (long.to_string(), None),
             };
             match name.as_str() {
-                "force" => opts.force = true,
-                "interactive" => opts.interactive = true,
+                // [GNU] ln.c:506-513: -f and -i are last-wins on the
+                // same two flags — -f sets remove_existing_files and
+                // clears interactive, -i clears remove_existing_files
+                // and sets interactive. getopt_long processes argv in
+                // order, so whichever appears last governs the prompt.
+                "force" => {
+                    opts.force = true;
+                    opts.interactive = false;
+                }
+                "interactive" => {
+                    opts.force = false;
+                    opts.interactive = true;
+                }
                 "symbolic" => opts.symbolic = true,
                 "verbose" => opts.verbose = true,
                 "no-dereference" => opts.no_dereference = true,
@@ -159,8 +170,17 @@ pub fn ln_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         while ci < chars.len() {
             let c = chars[ci];
             match c {
-                'f' => opts.force = true,
-                'i' => opts.interactive = true,
+                // [GNU] ln.c:506-513: same last-wins pair as the long
+                // forms above; short clusters are walked char by char
+                // in order, so -if forces and -fi prompts.
+                'f' => {
+                    opts.force = true;
+                    opts.interactive = false;
+                }
+                'i' => {
+                    opts.force = false;
+                    opts.interactive = true;
+                }
                 's' => opts.symbolic = true,
                 'v' => opts.verbose = true,
                 'n' => opts.no_dereference = true,
@@ -461,8 +481,9 @@ enum RemoveOutcome {
     RemoveFailed(String),
 }
 
-/// Remove an existing destination per -f/-i. GNU: an interactive 'n'
-/// declines SILENTLY (rc stays 0); a plain existing dst without -f is the
+/// Remove an existing destination per -f/-i. GNU ln.c:273-284: an
+/// interactive 'n' declines SILENTLY and fails the command (`if (!yesno ())
+/// return false;` -> rc 1); a plain existing dst without -f is the
 /// File-exists error.
 fn remove_existing(io: &mut Io, ctx: &Ctx, opts: &LnOpts, dst: &str) -> RemoveOutcome {
     let full = resolve(ctx, dst);
@@ -861,6 +882,62 @@ mod tests {
         assert_eq!(r, 0);
         assert!(out.is_empty());
         assert!(sc.path("fresh").exists());
+    }
+
+    #[test]
+    fn interactive_force_last_wins() {
+        // rubash#1651 / GNU ln.c:506-513: -f clears interactive, -i
+        // clears remove_existing_files; getopt order makes the last
+        // of the pair govern. Each cell gets a fresh scratch dir so
+        // the dst content is an independent witness.
+        // -i -f, answer n: force wins — no prompt, replaced, rc 0.
+        let sc = setup("ln-if-1");
+        let (r, out, e) = run_sc(&sc, &["-i", "-f", "a", "b"], "n");
+        assert_eq!(r, 0);
+        assert!(out.is_empty());
+        assert!(e.is_empty());
+        assert_eq!(std::fs::read_to_string(sc.path("b")).unwrap(), "aaa");
+        // -f -i, answer n: interactive wins — prompt, declined, rc 1.
+        let sc = setup("ln-if-2");
+        let (r, out, e) = run_sc(&sc, &["-f", "-i", "a", "b"], "n");
+        assert_eq!(r, 1);
+        assert!(out.is_empty());
+        assert!(e.contains("ln: replace 'b'? "));
+        assert_eq!(std::fs::read_to_string(sc.path("b")).unwrap(), "bbb");
+        // -f -i, answer y: prompt shown, replaced, rc 0.
+        let sc = setup("ln-if-3");
+        let (r, _, e) = run_sc(&sc, &["-f", "-i", "a", "b"], "y\n");
+        assert_eq!(r, 0);
+        assert!(e.contains("ln: replace 'b'? "));
+        assert_eq!(std::fs::read_to_string(sc.path("b")).unwrap(), "aaa");
+        // -i -f, answer y: no prompt (force wins), replaced, rc 0.
+        let sc = setup("ln-if-4");
+        let (r, _, e) = run_sc(&sc, &["-i", "-f", "a", "b"], "y\n");
+        assert_eq!(r, 0);
+        assert!(e.is_empty());
+        assert_eq!(std::fs::read_to_string(sc.path("b")).unwrap(), "aaa");
+        // Short clusters walk char by char: -if forces, -fi prompts.
+        let sc = setup("ln-if-5");
+        let (r, _, e) = run_sc(&sc, &["-if", "a", "b"], "n");
+        assert_eq!(r, 0);
+        assert!(e.is_empty());
+        assert_eq!(std::fs::read_to_string(sc.path("b")).unwrap(), "aaa");
+        let sc = setup("ln-if-6");
+        let (r, _, e) = run_sc(&sc, &["-fi", "a", "b"], "n");
+        assert_eq!(r, 1);
+        assert!(e.contains("ln: replace 'b'? "));
+        assert_eq!(std::fs::read_to_string(sc.path("b")).unwrap(), "bbb");
+        // Long forms follow the same order.
+        let sc = setup("ln-if-7");
+        let (r, _, e) = run_sc(&sc, &["--interactive", "--force", "a", "b"], "n");
+        assert_eq!(r, 0);
+        assert!(e.is_empty());
+        assert_eq!(std::fs::read_to_string(sc.path("b")).unwrap(), "aaa");
+        let sc = setup("ln-if-8");
+        let (r, _, e) = run_sc(&sc, &["--force", "--interactive", "a", "b"], "n");
+        assert_eq!(r, 1);
+        assert!(e.contains("ln: replace 'b'? "));
+        assert_eq!(std::fs::read_to_string(sc.path("b")).unwrap(), "bbb");
     }
 
     #[test]

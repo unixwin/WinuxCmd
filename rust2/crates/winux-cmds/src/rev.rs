@@ -424,9 +424,6 @@ mod tests {
             me.set(k, v);
         }
         let leaked: &'static winux_core::MapEnv = Box::leak(Box::new(me));
-        Ctx {
-            cwd: std::path::PathBuf::from("."),
-            env: leaked,
-        }
+        Ctx::new(std::path::PathBuf::from("."), leaked)
     }
 }

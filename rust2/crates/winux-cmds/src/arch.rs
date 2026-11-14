@@ -20,7 +20,7 @@ use std::ffi::OsString;
 use crate::argopt;
 use crate::gnuhelp;
 use crate::winsys;
-use winux_core::{usage_error, CmdResult, Ctx, Io};
+use winux_core::{tr, usage_error, CmdResult, Ctx, Io};
 
 // No entries: GNU arch's getopt table has only the virtual --help/--version
 // long options (no short options at all — `-h` is invalid there).
@@ -70,7 +70,17 @@ pub fn arch_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     // operand -> error + usage, rc 1 (WinuxCmd #1215 parity).
     if let Some(first) = p.positionals.first() {
         let name = first.to_string_lossy();
-        let _ = usage_error(io, "arch", &format!("extra operand '{}'", name));
+        // [GNU] arch.c: extra operand + usage, rc 1 (WinuxCmd #1215 parity).
+        let _ = usage_error(
+            io,
+            "arch",
+            &tr!(
+                ctx,
+                "command.arch.error.extra_operand",
+                "extra operand '{operand}'",
+                operand = name
+            ),
+        );
         return Ok(1);
     }
     writeln!(io.stdout, "{}", winsys::imp::machine_arch())?;

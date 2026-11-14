@@ -15,7 +15,7 @@ use std::ffi::OsString;
 use crate::argopt::{self, OptSpec};
 use crate::gnuhelp;
 use crate::winsys;
-use winux_core::{usage_error, CmdResult, Ctx, Io};
+use winux_core::{tr, usage_error, CmdResult, Ctx, Io};
 
 const OPTS: &[OptSpec] = &[];
 
@@ -34,7 +34,18 @@ pub fn whoami_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     // GNU whoami registers no -h short option, so a bare `-h` is
     // "invalid option -- 'h'" rc 1 (not --help); --help stays valid.
     if args.iter().any(|a| a.to_string_lossy() == "-h") {
-        let _ = usage_error(io, "whoami", "invalid option -- 'h'");
+        // [GNU] whoami registers no -h short option; the wording is the
+        // shared getopt diagnostic, keyed per command (whoami.c:317 error()).
+        let _ = usage_error(
+            io,
+            "whoami",
+            &tr!(
+                ctx,
+                "command.whoami.error.invalid_option",
+                "invalid option -- '{opt}'",
+                opt = 'h'
+            ),
+        );
         return Ok(1);
     }
     let p = match argopt::parse("whoami", args, OPTS, io, ctx, 1) {
@@ -70,7 +81,16 @@ pub fn whoami_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     }
     if let Some(first) = p.positionals.first() {
         let shown = first.to_string_lossy().into_owned();
-        let _ = usage_error(io, "whoami", &format!("extra operand '{shown}'"));
+        let _ = usage_error(
+            io,
+            "whoami",
+            &tr!(
+                ctx,
+                "command.whoami.error.extra_operand",
+                "extra operand '{operand}'",
+                operand = shown
+            ),
+        );
         return Ok(1);
     }
     match winsys::imp::user_name() {
@@ -79,7 +99,18 @@ pub fn whoami_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             Ok(0)
         }
         None => {
-            let _ = writeln!(io.stderr, "whoami: cannot find name of user ID");
+            // [GNU] whoami.c: error(1, 0, "cannot find name of user ID") —
+            // the program prefix is the error() frame, the inner wording is
+            // the translatable unit.
+            let _ = writeln!(
+                io.stderr,
+                "whoami: {}",
+                tr!(
+                    ctx,
+                    "command.whoami.error.cannot_find_name",
+                    "cannot find name of user ID"
+                )
+            );
             Ok(1)
         }
     }
@@ -147,5 +178,28 @@ mod tests {
         let args: Vec<OsString> = vec!["--help".into()];
         let r = super::whoami_cmd(&args, &mut io.split(), &ctx).unwrap();
         assert_eq!(r, 0);
+    }
+
+    // The tr! seam end to end: with a host catalog injected the catalog text
+    // (including the named {operand} placeholder) wins; with the default
+    // empty host the compiled English fallback keeps the gate-recorded bytes.
+    #[test]
+    fn catalog_injection_translates_extra_operand() {
+        use winux_core::host::MapHost;
+        use winux_core::{Ctx, MapEnv};
+
+        let sc = ScratchCtx::new("whoami-i18n");
+        let mut host = MapHost::default();
+        host.messages.insert(
+            "command.whoami.error.extra_operand".to_string(),
+            "多余的参数 '{operand}'".to_string(),
+        );
+        let env = MapEnv::new();
+        let ctx = Ctx::with_host(sc.dir.clone(), &env, &host);
+        let args: Vec<OsString> = vec!["extra".into()];
+        let mut io = MemIo::new("");
+        let r = super::whoami_cmd(&args, &mut io.split(), &ctx).unwrap();
+        assert_eq!(r, 1);
+        assert!(io.err().contains("多余的参数 'extra'"), "got {}", io.err());
     }
 }

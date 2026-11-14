@@ -1,0 +1,77 @@
+command.find.error.binary_operator_without_left	"invalid expression; you have used a binary operator '{operator}' with nothing before it."
+command.find.error.cannot_delete	"find: cannot delete '{path}': {reason}"
+command.find.error.cannot_open	"find: cannot open '{file}' for reading: {reason}"
+command.find.error.context_selinux_disabled	'invalid predicate -context: SELinux is not enabled.'
+command.find.error.delete_prune_depth	'The -delete action automatically turns on -depth, but -prune does nothing when -depth is in effect.  If you want to carry on anyway, just explicitly use the -depth option.'
+command.find.error.empty_parentheses	'invalid expression; empty parentheses are not allowed.'
+command.find.error.empty_start_point	"find: '': No such file or directory"
+command.find.error.exec_bad_format	'Exec format error'
+command.find.error.exec_brace_not_alone	"In '-exec{suffix} ... {{}} +' the '{{}}' must appear by itself, but you specified '{brace_arg}'"
+command.find.error.exec_multiple_braces	'Only one instance of {{}} is supported with -exec{suffix} ... +'
+command.find.error.exec_no_such_file	'No such file or directory'
+command.find.error.exec_not_a_directory	'Not a directory'
+command.find.error.exec_permission_denied	'Permission denied'
+command.find.error.exec_spawn	"find: '{command}': {reason}"
+command.find.error.expected_positive_integer	"Expected a positive decimal integer argument to {option}, but got '{value}'"
+command.find.error.expression_after	"expected an expression after '{operator}'"
+command.find.error.expression_before_close_paren	"invalid expression: expected expression before closing parentheses '{paren}'."
+command.find.error.expression_between	"expected an expression between '{operator}' and ')'"
+command.find.error.extra_operand	"extra operand '{operand}'"
+command.find.error.file_system_loop	"find: File system loop detected; '{path}' is part of the same file system loop as '{other}'."
+command.find.error.files0_with_operands	'file operands cannot be combined with -files0-from'
+command.find.error.format_directive_reserved	"find: error: the format directive `%{directive}' is reserved for future use"
+command.find.error.getfilecon_failed	"find: getfilecon failed: '{path}': Operation not supported"
+command.find.error.group_empty	'argument to -group is empty, but should be a group name'
+command.find.error.invalid_argument	"invalid argument `{argument}' to `{predicate}'"
+command.find.error.invalid_expression	'invalid expression'
+command.find.error.invalid_expression_too_many_close_parens	"invalid expression; you have too many ')'"
+command.find.error.invalid_mode	"invalid mode '{mode}'"
+command.find.error.invalid_predicate	"invalid predicate `{predicate}'"
+command.find.error.missing_argument	"missing argument to `{predicate}'"
+command.find.error.missing_close_paren	"invalid expression; I was expecting to find a ')' somewhere but did not see one."
+command.find.error.missing_close_paren_after_predicate	"invalid expression; expected to find a ')' but didn't see one. Perhaps you need an extra predicate after '{operator}'"
+command.find.error.missing_debug_argument	'Missing argument after the -D option.'
+command.find.error.open_file	"'{file}': {reason}"
+command.find.error.optimisation_missing_level	'The -O option must be immediately followed by a decimal integer'
+command.find.error.optimisation_not_decimal	'Please specify a decimal number immediately after -O'
+command.find.error.paths_must_precede	"paths must precede expression: `{operand}'"
+command.find.error.percent_at_end	'find: error: % at end of format string'
+command.find.error.possible_unquoted_pattern	"possible unquoted pattern after predicate `{predicate}'?"
+command.find.error.read_directory	"find: '{path}': {reason}"
+command.find.error.reference_stat	"'{file}': {reason}"
+command.find.error.regex_compile	"failed to compile regular expression '{pattern}': {reason}"
+command.find.error.size_invalid_argument	"Invalid argument `{argument}' to -size"
+command.find.error.size_invalid_type	"invalid -size type `{suffix}'"
+command.find.error.size_null_argument	'invalid null argument to -size'
+command.find.error.start_point_not_a_directory	"find: '{path}': Not a directory"
+command.find.error.start_point_stat	"find: '{path}': {reason}"
+command.find.error.test_needs_argument	"The '{predicate}' test needs an argument"
+command.find.error.too_many_close_parens	"you have too many ')'"
+command.find.error.try_help	"Try 'find --help' for more information."
+command.find.error.type_door_unsupported	'{predicate} {letter} is not supported because Solaris doors are not supported on the platform find was compiled on.'
+command.find.error.type_duplicate	"Duplicate file type '{letter}' in the argument list to {predicate}."
+command.find.error.type_missing_comma	"Must separate multiple arguments to {predicate} using: ','"
+command.find.error.type_needs_letter	'Arguments to {predicate} should contain at least one letter'
+command.find.error.type_trailing_comma	"Last file type in list argument to {predicate} is missing, i.e., list is ending on: ','"
+command.find.error.type_unknown_argument	'Unknown argument to {predicate}: {argument}'
+command.find.error.unexpected_extra_predicate	"unexpected extra predicate '{predicate}'"
+command.find.error.unknown_group	"'{name}' is not the name of an existing group"
+command.find.error.unknown_group_suffix	"'{name}' is not the name of an existing group and it does not look like a numeric group ID because it has the unexpected suffix '{suffix}'"
+command.find.error.unknown_predicate	"unknown predicate `{predicate}'"
+command.find.error.unknown_regextype	"Unknown regular expression type '{kind}'; valid types are {types}."
+command.find.error.unknown_user	"'{name}' is not the name of a known user"
+command.find.error.unparsable_date	"I cannot figure out how to interpret '{value}' as a date or time"
+command.find.error.user_empty	'The argument to -user should not be empty'
+command.find.error.walk	"find: '{path}': {reason}"
+command.find.error.zero_length_filename	'find: invalid zero-length file name'
+command.find.prompt.ok	'< {command} ... {path} > ? '
+command.find.warning.deprecated_d	'the -d option is deprecated; please use -depth instead, because the latter is a POSIX-compliant feature.'
+command.find.warning.escape_at_end	"find: warning: escape `\\' followed by nothing at all"
+command.find.warning.format_directive_needs_char	"find: warning: format directive `%{directive}' should be followed by another character"
+command.find.warning.global_option_after_argument	'you have specified the global option {option} after the argument {argument}, but global options are not positional, i.e., {option} affects tests specified before it as well as those specified after it.  Please specify global options before other arguments.'
+command.find.warning.name_with_slash	"'{predicate}' matches against basenames only, but the given pattern contains a directory separator ('/'), thus the expression will evaluate to false all the time.  Did you mean '{alternative}'?"
+command.find.warning.pattern_ends_with_slash	'-{predicate} {pattern} will not match anything because it ends with /.'
+command.find.warning.perm_zero_mode	'you have specified a mode pattern {mode} (which is equivalent to /000). The meaning of -perm /000 has now been changed to be consistent with -perm -000; that is, while it used to match no files, it now matches all files.'
+command.find.warning.unknown_debug_flag	"Ignoring unrecognised debug flag '{flag}'"
+command.find.warning.unrecognised_escape	"find: warning: unrecognized escape `\\{escape}'"
+command.find.warning.unrecognised_format_directive	"find: warning: unrecognized format directive `%{directive}'"

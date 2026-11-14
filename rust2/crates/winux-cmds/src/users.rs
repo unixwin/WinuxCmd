@@ -85,10 +85,7 @@ mod tests {
     fn run_with(env: &MapEnv, args: &[&str]) -> (u32, String, String) {
         let mut io = MemIo::new("");
         let sc = scratch("users");
-        let ctx = Ctx {
-            cwd: sc.dir.clone(),
-            env,
-        };
+        let ctx = Ctx::new(sc.dir.clone(), env);
         let owned: Vec<OsString> = args.iter().map(Into::into).collect();
         let r = super::users_cmd(&owned, &mut io.split(), &ctx).unwrap();
         (r, io.out(), io.err())
