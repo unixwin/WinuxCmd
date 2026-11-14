@@ -3318,6 +3318,27 @@ nohup_rows = [
     ("nh27-nonpe-badformat", "win", NH_PLAIN_SETUP, "", "", ["./plain.txt"]),
     # a directory operand is EACCES: 126 "Permission denied" (probed GNU)
     ("nh28-dir-operand", "strict", "", "", "", ["."]),
+    # ---- terminal faces (StdioMeta injection lane) ----
+    # The harness always redirects all three streams (< .stdin > .out
+    # 2> .err), so no pty exists on ANY side and GNU takes the same
+    # no-redirect path: the classification probes are strict. The
+    # face-dependent shapes stay `note` records — the host cannot
+    # allocate a pty in-harness; real console evidence is the ConPTY
+    # probe (rust2/gate/conpty-nohup.py) mirrored by WSL `script`
+    # typescripts (target/probe/nohup-tty.sh).
+    ("nh29-tty-class-probe", "strict", "", "", "",
+     ["sh", "-c",
+      "for f in 0 1 2; do [ -t $f ] && echo \"$f tty\" || echo \"$f notty\"; done"]),
+    ("nh30-nohup-out-absent", "strict", "", "", "",
+     ["sh", "-c", "ls nohup.out 2>/dev/null || echo absent"]),
+    # under a real console GNU feeds the child /dev/null: the read sees
+    # EOF instead of the piped "zz" bytes — record-only here.
+    ("nh31-stdin-read-record", "note", "", "", "zz",
+     ["sh", "-c", "read x; echo \"read=$x\""]),
+    # under a real console stdout is a tty: GNU appends to nohup.out and
+    # notices on stderr instead of passing "hi" through — record-only.
+    ("nh32-append-face-record", "note", "", "", "",
+     ["sh", "-c", "echo hi"]),
 ]
 
 pathchk_rows = [
