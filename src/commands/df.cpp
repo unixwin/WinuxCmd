@@ -370,6 +370,33 @@ auto output_field_align_right(OutputField field) -> bool {
   }
 }
 
+auto output_field_min_width(OutputField field) -> size_t {
+  // [GNU] Every field carries a minimum column width (df.c field_data,
+  // coreutils 9.4): source 14, fstype 4, size/used/avail/itotal/iused/
+  // iavail 5, pcent/ipcent 4, target/file 0. Widths only grow from
+  // there, to the widest cell (df.c:642/:1256).
+  switch (field) {
+    case OutputField::Source:
+      return 14;
+    case OutputField::FsType:
+      return 4;
+    case OutputField::Size:
+    case OutputField::Used:
+    case OutputField::Avail:
+    case OutputField::ITotal:
+    case OutputField::IUsed:
+    case OutputField::IAvail:
+      return 5;
+    case OutputField::Pcent:
+    case OutputField::IPcent:
+      return 4;
+    case OutputField::Target:
+    case OutputField::File:
+      return 0;
+  }
+  return 0;
+}
+
 auto append_output_fields(std::vector<OutputField>& fields,
                           std::string_view csv) -> cp::Result<bool> {
   size_t start = 0;
@@ -850,27 +877,44 @@ auto total_output_cell(OutputField field, uint64_t total, uint64_t used,
 auto print_custom_output_table(
     const std::vector<OutputColumn>& columns,
     const std::vector<std::vector<std::string>>& rows) -> void {
+  // [GNU] Column width = max(field minimum, header width, widest cell),
+  // measured in display columns (df.c field_data, :642/:1256); columns
+  // are separated by one space and the last column is never right-padded
+  // (df.c print_table, MBA_NO_RIGHT_PAD) — so neither data rows nor the
+  // header carry trailing blanks (#1657).
+  auto width_of = [](const std::string& text) -> size_t {
+    return utf8_to_wstring(text).size();
+  };
+
   std::vector<size_t> widths;
   widths.reserve(columns.size());
   for (const auto& column : columns) {
-    widths.push_back(column.header.size());
+    widths.push_back(std::max(output_field_min_width(column.field),
+                              width_of(column.header)));
   }
 
   for (const auto& row : rows) {
     for (size_t i = 0; i < row.size() && i < widths.size(); ++i) {
-      widths[i] = std::max(widths[i], row[i].size());
+      widths[i] = std::max(widths[i], width_of(row[i]));
     }
   }
 
   auto print_row = [&](const std::vector<std::string>& cells) {
     std::ostringstream line;
+    const size_t last = cells.empty() ? 0 : cells.size() - 1;
     for (size_t i = 0; i < cells.size(); ++i) {
       if (i > 0) line << ' ';
+      const size_t pad = widths[i] - width_of(cells[i]);
       if (columns[i].align_right) {
-        line << std::right << std::setw(static_cast<int>(widths[i]))
-             << cells[i];
+        // [GNU] Right-aligned cells keep their left padding even in
+        // the last column (df.c:397-400: MBA_NO_RIGHT_PAD only
+        // suppresses padding on the right).
+        line << std::string(pad, ' ') << cells[i];
+      } else if (i == last) {
+        // [GNU] A left-aligned last column prints bare (df.c:397-400).
+        line << cells[i];
       } else {
-        line << std::left << std::setw(static_cast<int>(widths[i])) << cells[i];
+        line << cells[i] << std::string(pad, ' ');
       }
     }
     safePrintLn(line.str());

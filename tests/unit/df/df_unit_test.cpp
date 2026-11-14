@@ -550,3 +550,105 @@ TEST(df, df_trailing_slash_drive_root_operand_reports_named_volume) {
   expected += ":\\";
   EXPECT_NE(r.stdout_text.find(expected), std::string::npos);
 }
+
+// #1657: GNU prints --output columns at max(field minimum, header,
+// widest cell) and never pads the last column (df.c field_data,
+// print_table MBA_NO_RIGHT_PAD). The old table printer padded every
+// column to the byte width, so data rows ended in blanks and the
+// header sat one space off the data columns (the source minimum is
+// 14, the header alone is 10).
+TEST(df, df_output_no_trailing_blanks_and_header_uses_min_width) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"df.exe", {L"--output=source,target", L"."});
+
+  TEST_LOG_CMD_LIST("df.exe", L"--output=source,target", L".");
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("df.exe --output=source,target output", r.stdout_text);
+
+  EXPECT_EQ(r.exit_code, 0);
+  std::vector<std::string> lines;
+  {
+    std::string rest = r.stdout_text;
+    while (!rest.empty()) {
+      size_t nl = rest.find('\n');
+      std::string line = rest.substr(0, nl);
+      if (!line.empty() && line.back() == '\r') line.pop_back();
+      lines.push_back(line);
+      if (nl == std::string::npos) break;
+      rest.erase(0, nl + 1);
+    }
+  }
+  ASSERT_GE(lines.size(), 2u);
+  // No line ends in a blank: the last column is never padded.
+  for (const auto& line : lines) {
+    EXPECT_TRUE(line.empty() || line.back() != ' ')
+        << "trailing blank in: [" << line << "]";
+  }
+  // The source column honors GNU's minimum width of 14, so the header
+  // is "Filesystem" + 4 spaces + " " + "Mounted on".
+  EXPECT_EQ(lines[0], "Filesystem     Mounted on");
+  // Every data row's target starts exactly under "Mounted on".
+  const size_t target_col = lines[0].find("Mounted on");
+  ASSERT_NE(target_col, std::string::npos);
+  for (size_t i = 1; i < lines.size(); ++i) {
+    ASSERT_GT(lines[i].size(), target_col);
+    EXPECT_NE(lines[i][target_col], ' ');
+    EXPECT_EQ(lines[i][target_col - 1], ' ');
+  }
+}
+
+// #1657: when a last-column cell is wider than its header, the header
+// must still print bare — the old printer padded it to the column
+// width, leaving trailing blanks on the header line itself.
+TEST(df, df_output_last_column_header_not_padded) {
+  TempDir tmp;
+  const std::filesystem::path deep =
+      tmp.path / "a" / "very" / "long" / "operand" / "path";
+  std::error_code ec;
+  std::filesystem::create_directories(deep, ec);
+  ASSERT_FALSE(ec);
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"df.exe", {L"--output=source,file", deep.wstring()});
+
+  TEST_LOG_CMD_LIST("df.exe", L"--output=source,file", deep.wstring());
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("df.exe --output=source,file output", r.stdout_text);
+
+  EXPECT_EQ(r.exit_code, 0);
+  std::vector<std::string> lines;
+  {
+    std::string rest = r.stdout_text;
+    while (!rest.empty()) {
+      size_t nl = rest.find('\n');
+      std::string line = rest.substr(0, nl);
+      if (!line.empty() && line.back() == '\r') line.pop_back();
+      lines.push_back(line);
+      if (nl == std::string::npos) break;
+      rest.erase(0, nl + 1);
+    }
+  }
+  ASSERT_GE(lines.size(), 2u);
+  // Header: "Filesystem" padded to the 14-wide source column, then the
+  // bare "File" header — no trailing blank even though the file cell
+  // below is far wider than its header.
+  EXPECT_EQ(lines[0], "Filesystem     File");
+  for (const auto& line : lines) {
+    EXPECT_TRUE(line.empty() || line.back() != ' ')
+        << "trailing blank in: [" << line << "]";
+  }
+  // The data row carries the operand path itself, unpadded.
+  ASSERT_GT(lines[1].size(), 10u);
+  EXPECT_NE(lines[1].find("very\\long\\operand\\path"), std::string::npos);
+  EXPECT_EQ(lines[1].substr(lines[1].size() - 4), "path");
+}
