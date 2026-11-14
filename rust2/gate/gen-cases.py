@@ -697,6 +697,109 @@ df_rows = [
     ('df34-kP-combined', 'exit', '', '', '', ['-kP', '.']),
     ('df35-output-total', 'exit', '', '', '', ['--output=size,used,avail,pcent', '--total', '.']),
     ("df36-output-source-drive", "strict", "", "", "", ["--output=source", 'C:\\']),
+    # ---- wave: option-depth + #1657 byte-shape rows (probed on WSL
+    # GNU coreutils 9.4, 2026-11; df-9.4.c + probes 6-9) ----
+    # #1657 byte shape: --output=file is the ONLY df output byte-stable
+    # across platforms — the file column echoes the operand verbatim and
+    # the left-aligned last column must emit UNPADDED bytes (df.c:397
+    # MBA_NO_RIGHT_PAD). Any trailing pad on File/target fails strict.
+    ('df37-output-file-shape', 'strict', '', '', '', ['--output=file', '.']),
+    # no operand dedup: `df . .` -> two identical rows (probed) — gates
+    # the dedup-removal fix, byte-exact
+    ('df38-output-file-two-rows', 'strict', '', '', '', ['--output=file', '.', '.']),
+    ('df39-output-file-total', 'strict', '', '', '', ['--output=file', '--total', '.']),
+    ('df40-output-file-three', 'strict', 'touch f; mkdir -p d', '', '', ['--output=file', 'f', 'd', '.']),
+    # a missing operand still prints the valid row + rc 1, byte-exact
+    ('df41-output-file-missing', 'strict', '', '', '', ['--output=file', '/nope-xyz', '.']),
+    ('df42-output-file-missing-last', 'strict', '', '', '', ['--output=file', '.', '/nope-xyz']),
+    # -i/-P/-T vs --output mutex: named pair is argv-order dependent
+    # (probed all directions; GNU checks -i then -P then -T at --output)
+    ('df43-mutex-i-P-order', 'strict', '', '', '', ['-i', '-P', '--output=source']),
+    ('df44-mutex-P-i-order', 'strict', '', '', '', ['-P', '-i', '--output=source']),
+    ('df45-mutex-T-P-order', 'strict', '', '', '', ['-T', '-P', '--output=source']),
+    ('df46-mutex-i-T-order', 'strict', '', '', '', ['-i', '-T', '--output=source']),
+    ('df47-mutex-out-first-i', 'strict', '', '', '', ['--output=source', '-i']),
+    ('df48-mutex-out-first-P', 'strict', '', '', '', ['--output=source', '-P']),
+    ('df49-mutex-out-first-T', 'strict', '', '', '', ['--output=source', '-T']),
+    # mutex fires before --help is reached (probed rc 1)
+    ('df50-mutex-before-help', 'strict', '', '', '', ['-i', '--output=source', '--help']),
+    # -t/-x same type: hard error before statting (df.c:1749-1767)
+    ('df51-type-sel-excl', 'strict', '', '', '', ['-t', 'ext4', '-x', 'ext4']),
+    ('df52-type-excl-sel', 'strict', '', '', '', ['-x', 'ext4', '-t', 'ext4']),
+    # -F is the -t synonym; "ntfs" never matches a live fstype on either
+    # side (case-sensitive) -> both report no file systems processed
+    ('df53-F-ntfs-nomatch', 'strict', '', '', '', ['-F', 'ntfs', '.']),
+    ('df54-t-ntfs-nomatch', 'strict', '', '', '', ['-t', 'ntfs', '.']),
+    ('df55-B-empty', 'strict', '', '', '', ['-B', '@EMPTY@']),
+    ('df56-B-1X-suffix', 'strict', '', '', '', ['-B', '1X']),
+    # field names are case-sensitive (probed 'SOURCE' -> unknown)
+    ('df57-output-field-case', 'strict', '', '', '', ['--output=SOURCE']),
+    ('df58-output-trailing-comma', 'strict', '', '', '', ['--output=source,']),
+    # field decode happens at the --output argv position AFTER the mutex
+    # check: bogus-first names the field, i-first names the pair
+    # (probed; both produce empty stdout + rc 1 either way)
+    ('df59-output-bogus-then-i', 'strict', '', '', '', ['--output=bogus', '-i']),
+    ('df60-i-then-output-bogus', 'strict', '', '', '', ['-i', '--output=bogus']),
+    # -t values are NOT comma-split: "ext4,ext4" is one bogus type
+    ('df61-t-comma-type', 'strict', '', '', '', ['-t', 'ext4,ext4', '.']),
+    ('df62-output-empty-field-first', 'strict', '', '', '', ['--output=,source']),
+    # --- rc-parity rows for the newly covered option surface (values
+    # are machine-bound; every probe ran on WSL GNU 9.4) ---
+    ('df63-m-flag', 'exit', '', '', '', ['-m', '.']),
+    ('df64-mP-combined', 'exit', '', '', '', ['-mP', '.']),
+    ('df65-T-print-type', 'exit', '', '', '', ['-T', '.']),
+    ('df66-Ti-combined', 'exit', '', '', '', ['-Ti', '.']),
+    ('df67-TP-combined', 'exit', '', '', '', ['-TP', '.']),
+    ('df68-l-local', 'exit', '', '', '', ['-l']),
+    ('df69-l-operand', 'exit', '', '', '', ['-l', '.']),
+    ('df70-v-ignored', 'exit', '', '', '', ['-v', '.']),
+    ('df71-sync', 'exit', '', '', '', ['--sync', '.']),
+    ('df72-no-sync', 'exit', '', '', '', ['--no-sync', '.']),
+    ('df73-sync-then-nosync', 'exit', '', '', '', ['--sync', '--no-sync', '.']),
+    # last size option wins, either direction (probed)
+    ('df74-order-h-B', 'exit', '', '', '', ['-h', '-B', '2048', '.']),
+    ('df75-order-B-h', 'exit', '', '', '', ['-B', '2048', '-h', '.']),
+    ('df76-order-k-m', 'exit', '', '', '', ['-k', '-m', '.']),
+    ('df77-order-h-k', 'exit', '', '', '', ['-h', '-k', '.']),
+    # suffix-only -B specs suffix the data cells (probed K/KiB/kB)
+    ('df78-B-suffix-K', 'exit', '', '', '', ['-B', 'K', '.']),
+    ('df79-B-suffix-KiB', 'exit', '', '', '', ['-B', 'KiB', '.']),
+    ('df80-B-suffix-kB', 'exit', '', '', '', ['-B', 'kB', '.']),
+    ('df81-B-digit-1KiB', 'exit', '', '', '', ['-B', '1KiB', '.']),
+    ('df82-B-human-readable', 'exit', '', '', '', ['-B', 'human-readable', '.']),
+    ('df83-B-si', 'exit', '', '', '', ['-B', 'si', '.']),
+    ('df84-B-hex', 'exit', '', '', '', ['-B', '0x400', '.']),
+    # env: POSIXLY_CORRECT defaults 512 even without -P; DF_BLOCK_SIZE /
+    # BLOCK_SIZE chain; -P ignores the env specs (all probed)
+    ('df85-posixly', 'exit', '', 'POSIXLY_CORRECT=1', '', ['.']),
+    ('df86-posixly-P', 'exit', '', 'POSIXLY_CORRECT=1', '', ['-P', '.']),
+    ('df87-dfblocksize', 'exit', '', 'DF_BLOCK_SIZE=1M', '', ['.']),
+    ('df88-dfblocksize-bad', 'exit', '', 'DF_BLOCK_SIZE=bad', '', ['.']),
+    ('df89-dfblocksize-human', 'exit', '', 'DF_BLOCK_SIZE=human-readable', '', ['.']),
+    ('df90-P-ignores-env', 'exit', '', 'DF_BLOCK_SIZE=1M', '', ['-P', '.']),
+    ('df91-blocksize-env', 'exit', '', 'BLOCK_SIZE=1M', '', ['.']),
+    ('df92-dfb-wins-over-blocksize', 'exit', '', 'DF_BLOCK_SIZE=1K,BLOCK_SIZE=1M', '', ['.']),
+    # --output: bare + list accumulate; bare contributes nothing; last
+    # --output does NOT win (probed --output --output=target -> Mounted on)
+    ('df93-output-abbrev', 'exit', '', '', '', ['--out=source', '.']),
+    ('df94-output-accum', 'exit', '', '', '', ['--output=source', '--output=target', '.']),
+    ('df95-output-bare-plus-list', 'exit', '', '', '', ['--output', '--output=target', '.']),
+    ('df96-output-file-target', 'exit', 'touch f', '', '', ['--output=file,target', 'f']),
+    ('df97-output-ipcent', 'exit', '', '', '', ['--output=ipcent', '.']),
+    ('df98-iP-combined', 'exit', '', '', '', ['-iP', '.']),
+    ('df99-ih-combined', 'exit', '', '', '', ['-ih', '.']),
+    ('df100-i-BK', 'exit', '', '', '', ['-i', '-B', 'K', '.']),
+    ('df101-x-bogus', 'exit', '', '', '', ['-x', 'bogusfs', '.']),
+    ('df102-help-then-mutex', 'exit', '', '', '', ['--help', '-T', '--output=source']),
+    ('df103-total-T', 'exit', '', '', '', ['--total', '-T', '.']),
+    ('df104-sync-i', 'exit', '', '', '', ['--sync', '-i', '.']),
+    ('df105-two-dots', 'exit', '', '', '', ['.', '.']),
+    # fstype-positive rows can only be C++-parity: the GNU scratch is
+    # ext4/9p while Windows volumes are NTFS/FAT32 — both sides of `win`
+    # agree only on "type not selected -> rc 1"
+    ('df106-F-ext4', 'win', '', '', '', ['-F', 'ext4', '.']),
+    ('df107-t-ext4-vfat', 'win', '', '', '', ['-t', 'ext4', '-t', 'vfat', '.']),
+    ('df108-hT-combined', 'win', '', '', '', ['-hT', '.']),
 ]
 
 # ---------------------------------------------------------------------------
