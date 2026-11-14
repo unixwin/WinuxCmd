@@ -631,6 +631,10 @@ fn run(
     let files: Vec<String> = if p.positionals.is_empty() {
         vec!["-".to_string()]
     } else {
+        // Operands stay LITERAL (the b2sum_wildcard contract): GNU digest.c
+        // receives shell-expanded operands and `digest '*.txt'` reports the
+        // quotef-quoted ENOENT; the 1.x md5sum body glob-expanded, a GNU
+        // deviation the rust2 port does not carry.
         p.positionals
             .iter()
             .map(|a| a.to_string_lossy().into_owned())
@@ -667,7 +671,7 @@ fn run(
             }
             buf
         } else {
-            match std::fs::File::open(resolve(ctx, file)) {
+            match open_operand(ctx, file) {
                 Ok(mut f) => {
                     let mut buf = Vec::new();
                     if std::io::copy(&mut f, &mut buf).is_err() {
@@ -1017,6 +1021,20 @@ fn target_open_reason(e: &std::io::Error, name: &str, ctx: &Ctx) -> String {
     }
 }
 
+/// Open a file operand for reading. A `!<fifo>` marker rendezvous through
+/// the #1038 named-pipe bridge (the paste.rs precedent; the 1.x
+/// file_io::open_binary_file branch the wave5 mkfifo cross-checks pin — a
+/// plain open would read the marker's 7 bytes and strand the writer),
+/// everything else is a plain open.
+fn open_operand(ctx: &Ctx, name: &str) -> std::io::Result<Box<dyn std::io::Read>> {
+    let path = resolve(ctx, name);
+    let text = path.to_string_lossy().into_owned();
+    if crate::fs_win::is_winux_fifo_path(&text) {
+        return crate::fs_win::open_fifo_read(&text).map(|r| Box::new(r) as Box<dyn std::io::Read>);
+    }
+    std::fs::File::open(path).map(|f| Box::new(f) as Box<dyn std::io::Read>)
+}
+
 /// Read one check file (operand, `-` = stdin) and verify each of its
 /// lines; returns the `digest_check` success value.
 fn check_file(
@@ -1041,7 +1059,7 @@ fn check_file(
             }
         }
     } else {
-        match std::fs::File::open(resolve(ctx, operand)) {
+        match open_operand(ctx, operand) {
             Ok(mut f) => {
                 let mut buf = Vec::new();
                 match std::io::copy(&mut f, &mut buf) {

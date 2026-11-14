@@ -28,8 +28,8 @@ ec25-trailing-bslash	strict				-e	a\
 ec26-c-stops	strict				-e	abc\c
 ec27-c-later-operands	strict				-e	a\cb	more
 ec28-u-not-escape	strict				-e	\u0041
-ec29-help	strict				--help
-ec30-version	strict				--version
+ec29-help	win				--help
+ec30-version	win				--version
 ec31-help-extra	strict				--help	extra
 ec32-n-version	strict				-n	--version
 ec33-n-then-nonflag	strict				-n-	x

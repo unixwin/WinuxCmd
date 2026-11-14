@@ -17,8 +17,8 @@ s1a14-dash-operand	strict			abc	-
 s1a15-mixed-missing	strict	printf abc > f7			missing	f7
 s1a16-bogus-short	exit				-q
 s1a17-bogus-long	exit				--bogus
-s1a18-help	strict				--help
-s1a19-version	strict				--version
+s1a18-help	win				--help
+s1a19-version	win				--version
 s1a20-multi-stdin	strict			The quick brown fox jumps over the lazy dog
 s1c01-ok	strict	printf abc > f; printf 'a9993e364706816aba3e25717850c26c9cd0d89d  f\n' > ck			-c	ck
 s1c02-fail	strict	printf de > g; printf 'a9993e364706816aba3e25717850c26c9cd0d89d  g\n' > ck			-c	ck

@@ -2283,8 +2283,14 @@ def digest_rows(prefix, prog, hex_abc, tag):
          ["missing", "f7"]),
         (f"{short}a16-bogus-short", "exit", "", "", "", ["-q"]),
         (f"{short}a17-bogus-long", "exit", "", "", "", ["--bogus"]),
-        (f"{short}a18-help", "strict", "", "", "", ["--help"]),
-        (f"{short}a19-version", "strict", "", "", "", ["--version"]),
+        # #1488 wiring wave6: the wired product intercepts sole
+        # --help/--version at the dispatcher with the WinuxCmd-branded
+        # metadata text (the suite-wide help surface), so the GNU bytes
+        # leave the gate and the rows pin new-vs-old rc parity instead
+        # (win); the driver (library) rows that gated the GNU help bytes
+        # were green pre-wiring (ledger 2026-11-14).
+        (f"{short}a18-help", "win", "", "", "", ["--help"]),
+        (f"{short}a19-version", "win", "", "", "", ["--version"]),
         (f"{short}a20-multi-stdin", "strict", "", "",
          "The quick brown fox jumps over the lazy dog", []),
         (f"{short}c01-ok", "strict", ck_setup, "", "", ["-c", "ck"]),
@@ -2365,8 +2371,13 @@ echo_rows = [
     ("ec26-c-stops", "strict", "", "", "", ["-e", "abc\\c"]),
     ("ec27-c-later-operands", "strict", "", "", "", ["-e", "a\\cb", "more"]),
     ("ec28-u-not-escape", "strict", "", "", "", ["-e", "\\u0041"]),
-    ("ec29-help", "strict", "", "", "", ["--help"]),
-    ("ec30-version", "strict", "", "", "", ["--version"]),
+    # #1488 wiring wave6: sole --help/--version are intercepted by the
+    # wired product's dispatcher (WinuxCmd-branded metadata, the suite-wide
+    # help surface; POSIX literal mode keeps them data) — win rows pin
+    # new-vs-old rc parity; the GNU bytes were green on the driver
+    # pre-wiring (ledger 2026-11-14).
+    ("ec29-help", "win", "", "", "", ["--help"]),
+    ("ec30-version", "win", "", "", "", ["--version"]),
     ("ec31-help-extra", "strict", "", "", "", ["--help", "extra"]),
     ("ec32-n-version", "strict", "", "", "", ["-n", "--version"]),
     ("ec33-n-then-nonflag", "strict", "", "", "", ["-n-", "x"]),
@@ -2412,12 +2423,23 @@ rev_rows = [
     ("rv11-zero-long", "strict", REV_Z_SETUP, "", "", ["--zero", "rec"]),
     ("rv12-zero-nomid", "strict", REV_Z_NOMID_SETUP, "", "",
      ["-0", "rec2"]),
-    ("rv13-help", "strict", "", "", "", ["--help"]),
+    # #1488 wiring wave6: --help/--version LONG tokens (sole or first) go
+    # through the wired product's dispatcher interception (WinuxCmd-branded
+    # metadata) instead of the util-linux text the library prints, so those
+    # rows become win (new-vs-old rc parity; GNU bytes were green on the
+    # driver pre-wiring, ledger 2026-11-14). The SHORT spellings stay
+    # strict: rev's permissive-unknown-shorts option policy (#1488 wiring,
+    # command_context.cppm) classifies them as operands, so `-h`/`-V`
+    # reach the wired body and print the probed util-linux bytes — GNU-exact
+    # (rv16/rv17 ledger r=g:yes; rv14 also fixes a 1.x deviation, where the
+    # old exe answered a C++ "invalid option -- 'h'" parse error, rc 1,
+    # recorded by the ledger's r=c:no and never gated).
+    ("rv13-help", "win", "", "", "", ["--help"]),
     ("rv14-help-short", "strict", "", "", "", ["-h"]),
-    ("rv15-version", "strict", "", "", "", ["--version"]),
+    ("rv15-version", "win", "", "", "", ["--version"]),
     ("rv16-version-short", "strict", "", "", "", ["-V"]),
     ("rv17-version-extra", "strict", "", "", "", ["-V", "extra"]),
-    ("rv18-help-extra", "strict", "", "", "", ["--help", "extra"]),
+    ("rv18-help-extra", "win", "", "", "", ["--help", "extra"]),
     ("rv19-bogus-short", "exit", "", "", "", ["-q"]),
     ("rv20-bogus-long", "exit", "", "", "", ["--bogus"]),
     ("rv21-dashdash", "strict", "printf 'zz\\n' > r8", "", "", ["--", "r8"]),

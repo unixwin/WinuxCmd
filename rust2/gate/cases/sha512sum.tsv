@@ -17,8 +17,8 @@ s512a14-dash-operand	strict			abc	-
 s512a15-mixed-missing	strict	printf abc > f7			missing	f7
 s512a16-bogus-short	exit				-q
 s512a17-bogus-long	exit				--bogus
-s512a18-help	strict				--help
-s512a19-version	strict				--version
+s512a18-help	win				--help
+s512a19-version	win				--version
 s512a20-multi-stdin	strict			The quick brown fox jumps over the lazy dog
 s512c01-ok	strict	printf abc > f; printf 'ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f  f\n' > ck			-c	ck
 s512c02-fail	strict	printf de > g; printf 'ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f  g\n' > ck			-c	ck

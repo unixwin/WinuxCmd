@@ -41,7 +41,11 @@ TEST(echo, echo_no_newline) {
   EXPECT_EQ_TEXT(r.stdout_text, "hello world");
 }
 
-TEST(echo, echo_uppercase) {
+// #1488 rust2 wiring: -u/--upper and -r/--repeat were WinuxCmd-only
+// extensions carried by the 1.x C++ body; GNU coreutils echo treats them
+// as ordinary data (they are not in the [-neE] flag set), and the wired
+// rust2 body is GNU-exact, so the extensions retired with the replacement.
+TEST(echo, echo_uppercase_extension_retired_is_data) {
   Pipeline p;
   p.add(L"echo.exe", {L"-u", L"hello", L"world"});
 
@@ -52,10 +56,10 @@ TEST(echo, echo_uppercase) {
   TEST_LOG_EXIT_CODE(r);
   TEST_LOG("Output", r.stdout_text);
 
-  EXPECT_EQ_TEXT(r.stdout_text, "HELLO WORLD\n");
+  EXPECT_EQ_TEXT(r.stdout_text, "-u hello world\n");
 }
 
-TEST(echo, echo_repeat) {
+TEST(echo, echo_repeat_extension_retired_is_data) {
   Pipeline p;
   p.add(L"echo.exe", {L"--repeat", L"3", L"test"});
 
@@ -66,7 +70,7 @@ TEST(echo, echo_repeat) {
   TEST_LOG_EXIT_CODE(r);
   TEST_LOG("Output", r.stdout_text);
 
-  EXPECT_EQ_TEXT(r.stdout_text, "test\ntest\ntest\n");
+  EXPECT_EQ_TEXT(r.stdout_text, "--repeat 3 test\n");
 }
 
 TEST(echo, echo_escapes) {

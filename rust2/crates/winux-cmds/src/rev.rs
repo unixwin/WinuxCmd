@@ -103,6 +103,10 @@ pub fn rev_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         reverse_into(&data, separator, utf8, &mut *io.stdout)?;
     } else {
         let out = &mut *io.stdout;
+        // Operands stay LITERAL (the b2sum_wildcard digest-family contract):
+        // util-linux rev receives shell-expanded operands and `rev '*.txt'`
+        // reports `cannot open *.txt`; the 1.x body glob-expanded, a GNU
+        // deviation the rust2 port does not carry.
         for operand in &p.positionals {
             let name = operand.to_string_lossy().into_owned();
             let mut data = Vec::new();

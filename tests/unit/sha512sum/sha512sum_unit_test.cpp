@@ -367,6 +367,9 @@ TEST(sha512sum, sha512sum_check_strict_rejects_malformed_lines) {
   EXPECT_TRUE(r.stdout_text.find("check.txt: OK") != std::string::npos);
 }
 
+// #1488 rust2 wiring: file operands stay LITERAL (the b2sum_wildcard
+// digest-family pin; GNU digest.c receives shell-expanded operands). The
+// 1.x body glob-expanded, a GNU deviation the rust2 port does not carry.
 TEST(sha512sum, sha512sum_wildcard) {
   TempDir tmp;
   tmp.write("a.txt", "hello");
@@ -377,9 +380,10 @@ TEST(sha512sum, sha512sum_wildcard) {
   p.add(L"sha512sum.exe", {L"*.txt"});
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.find("a.txt") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("b.txt") != std::string::npos);
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("sha512sum: '*.txt': No such file or "
+                                 "directory") != std::string::npos);
 }
 
 TEST(sha512sum, sha512sum_short_zero_alias_uses_nul_terminator) {

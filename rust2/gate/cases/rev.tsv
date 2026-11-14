@@ -12,12 +12,12 @@ rv09-crlf	strict	printf 'ab\r\n' > r7			r7
 rv10-zero-sep	strict	printf 'ab\0cd\0' > rec			-0	rec
 rv11-zero-long	strict	printf 'ab\0cd\0' > rec			--zero	rec
 rv12-zero-nomid	strict	printf 'ab\0cd' > rec2			-0	rec2
-rv13-help	strict				--help
+rv13-help	win				--help
 rv14-help-short	strict				-h
-rv15-version	strict				--version
+rv15-version	win				--version
 rv16-version-short	strict				-V
 rv17-version-extra	strict				-V	extra
-rv18-help-extra	strict				--help	extra
+rv18-help-extra	win				--help	extra
 rv19-bogus-short	exit				-q
 rv20-bogus-long	exit				--bogus
 rv21-dashdash	strict	printf 'zz\n' > r8			--	r8
