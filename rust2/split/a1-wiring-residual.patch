@@ -1,0 +1,3950 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 52e31b6f..9c1925e5 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -73,7 +73,7 @@ if(WINUXCMD_ENABLE_RUST2 AND NOT WINUXCMD_CARGO_EXECUTABLE)
+ endif()
+ # Commands whose implementation is the rust2 library (one name per replaced
+ # applet; the recipe's per-command step appends here).
+-set(WINUXCMD_RUST2_COMMANDS "b2sum;base32;base64;basename;dirname;echo;expand;false;fmt;fold;getconf;hostid;hostname;id;join;ln;md5sum;mkdir;nproc;numfmt;paste;printenv;pwd;readlink;realpath;rev;rmdir;seq;sha1sum;sha224sum;sha256sum;sha384sum;sha512sum;sleep;stat;sync;tac;tee;test;test_bracket;timeout;touch;true;truncate;tsort;uname;unexpand;unlink;users;whoami")
++set(WINUXCMD_RUST2_COMMANDS "arch;b2sum;base32;base64;basename;dirname;echo;expand;false;fmt;fold;getconf;groups;hostid;hostname;id;join;ln;md5sum;mkdir;mkfifo;mknod;mktemp;nice;nproc;numfmt;paste;pathchk;pinky;printenv;pwd;readlink;realpath;rev;rmdir;runcon;seq;sha1sum;sha224sum;sha256sum;sha384sum;sha512sum;sleep;stat;sync;tac;tee;test;test_bracket;timeout;touch;true;truncate;tsort;uname;unexpand;unlink;users;who;whoami")
+ 
+ # Command-set edition shipped by this build (#1438, ruling of 2026-10-30):
+ #   default - every registered command stays runnable through the multicall
+diff --git a/rust2/crates/winux-cmds/src/date.rs b/rust2/crates/winux-cmds/src/date.rs
+index f7149f76..76a9691a 100644
+--- a/rust2/crates/winux-cmds/src/date.rs
++++ b/rust2/crates/winux-cmds/src/date.rs
+@@ -86,6 +86,11 @@ const OPTS: &[OptSpec] = &[
+         long: "rfc-2822",
+         takes_value: false,
+     },
++    OptSpec {
++        short: None,
++        long: "resolution",
++        takes_value: false,
++    },
+     OptSpec {
+         short: Some('v'),
+         long: "debug",
+@@ -1089,6 +1094,13 @@ pub fn date_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
+         });
+     }
+ 
++    // FILETIME granularity is 100 ns; GNU prints its own platform's
++    // measured value, so this is a win-class row vs the oracle.
++    if p.has("resolution") {
++        writeln!(io.stdout, "0.000000100")?;
++        return Ok(0);
++    }
++
+     let use_utc = p.has("utc");
+     let zone = effective_zone(use_utc, ctx.env);
+ 
+@@ -1140,14 +1152,25 @@ pub fn date_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
+ 
+     // -f DATEFILE: one date per line (GNU shape)
+     if let Some(file) = p.value_of("file") {
+-        let path = resolve(ctx, file);
+-        let text = match std::fs::read_to_string(&path) {
+-            Ok(t) => t,
+-            Err(e) => {
+-                let reason = crate::fsutil::reason(&e);
+-                let _ = writeln!(io.stderr, "date: {file}: {reason}");
++        // GNU date.c: a DATEFILE of "-" reads the date strings from
++        // standard input (same contract as du --files0-from=-).
++        let text = if file == "-" {
++            let mut buf = Vec::new();
++            if io.stdin.read_to_end(&mut buf).is_err() {
++                let _ = writeln!(io.stderr, "date: -: read error");
+                 return Ok(1);
+             }
++            String::from_utf8_lossy(&buf).into_owned()
++        } else {
++            let path = resolve(ctx, file);
++            match std::fs::read_to_string(&path) {
++                Ok(t) => t,
++                Err(e) => {
++                    let reason = crate::fsutil::reason(&e);
++                    let _ = writeln!(io.stderr, "date: {file}: {reason}");
++                    return Ok(1);
++                }
++            }
+         };
+         let mut failed = false;
+         for line in text.lines() {
+diff --git a/rust2/crates/winux-cmds/src/du.rs b/rust2/crates/winux-cmds/src/du.rs
+index 57bde858..c0b74a0a 100644
+--- a/rust2/crates/winux-cmds/src/du.rs
++++ b/rust2/crates/winux-cmds/src/du.rs
+@@ -699,13 +699,14 @@ fn walk(
+                 Err(_) => continue,
+             };
+             let child_is_symlink = child_meta.file_type().is_symlink();
+-            let child_is_dir = child_meta.is_dir()
+-                && !child_is_symlink
+-                && !(cfg.deref_all && {
+-                    std::fs::metadata(&child)
++            // GNU -L: real directories always descend; a symlink counts as a
++            // directory only when --dereference follows it to one.
++            let child_is_dir = (child_meta.is_dir() && !child_is_symlink)
++                || (cfg.deref_all
++                    && child_is_symlink
++                    && std::fs::metadata(&child)
+                         .map(|m| m.is_dir())
+-                        .unwrap_or(false)
+-                });
++                        .unwrap_or(false));
+             if child_is_dir {
+                 // [GNU] every counted directory enters the already-counted
+                 // hash so a later operand nested inside it is skipped whole
+diff --git a/rust2/crates/winux-cmds/src/mktemp.rs b/rust2/crates/winux-cmds/src/mktemp.rs
+index 78e02359..06201ebd 100644
+--- a/rust2/crates/winux-cmds/src/mktemp.rs
++++ b/rust2/crates/winux-cmds/src/mktemp.rs
+@@ -209,16 +209,21 @@ pub fn mktemp_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
+     // (PathBuf, display string): the display keeps the operand/env value
+     // as given so output matches what the user handed in (GNU prints the
+     // destination prefix verbatim)
++    // The display spelling is the shell namespace's: forward slashes, so a
++    // native "C:\dir" env value prints as "C:/dir" like the 1.x body did.
+     let default_dir = || -> (std::path::PathBuf, String) {
+         for key in ["TMPDIR", "TEMP", "TMP"] {
+             let hit = winux_core::win32_env_get(ctx.env, key)
+                 .map(|v| v.to_string_lossy().into_owned())
+                 .filter(|s| !s.is_empty());
+             if let Some(d) = hit {
+-                return (std::path::PathBuf::from(&d), d);
++                return (std::path::PathBuf::from(&d), d.replace('\\', "/"));
+             }
+         }
+-        (ctx.cwd.clone(), ctx.cwd.display().to_string())
++        (
++            ctx.cwd.clone(),
++            ctx.cwd.display().to_string().replace('\\', "/"),
++        )
+     };
+ 
+     // destination-directory mode: --tmpdir/-p, or implied by the default
+@@ -355,12 +360,16 @@ pub fn mktemp_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
+     // GNU prints the full destination path, but a bare template in the
+     // current directory prints as the plain template (mktemp.c's
+     // file_name_concat with an empty dest_dir)
+-    let bare_cwd = dest_dir.is_none() && !component.contains(['/', '\\']);
+-    let dest_template_display = if bare_cwd {
+-        template_str.clone()
+-    } else {
+-        format!("{dir_display}/{template_str}")
++    let join_display = |dir: &str, name: &str| {
++        if dir.is_empty() {
++            name.to_string()
++        } else if dir.ends_with('/') || dir.ends_with('\\') {
++            format!("{dir}{name}")
++        } else {
++            format!("{dir}/{name}")
++        }
+     };
++    let dest_template_display = join_display(&dir_display, &template_str);
+ 
+     let mut rng = Rand::new();
+     for _attempt in 0..100 {
+@@ -370,11 +379,7 @@ pub fn mktemp_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
+         }
+         let name = String::from_utf8(name_bytes).unwrap_or_else(|_| template_str.clone());
+         let candidate = base_dir.join(&name);
+-        let display = if bare_cwd {
+-            name.clone()
+-        } else {
+-            format!("{dir_display}/{name}")
+-        };
++        let display = join_display(&dir_display, &name);
+ 
+         if dry_run {
+             if std::fs::metadata(&candidate).is_err() {
+diff --git a/rust2/gate/cases/arch.tsv b/rust2/gate/cases/arch.tsv
+index 68b03412..ea8f44e1 100644
+--- a/rust2/gate/cases/arch.tsv
++++ b/rust2/gate/cases/arch.tsv
+@@ -1,13 +1,13 @@
+ # generated by gate/gen-cases.py — do not hand-edit tab columns
+ # id<TAB>mode<TAB>setup<TAB>env<TAB>stdin<TAB>args... (@EMPTY@ = empty arg)
+ ar01-plain	win			
+-ar02-help	strict				--help
+-ar03-version	strict				--version
+-ar04-abbrev	strict				--ver
+-ar05-abbrev-hel	strict				--hel
++ar02-help	win				--help
++ar03-version	win				--version
++ar04-abbrev	win				--ver
++ar05-abbrev-hel	win				--hel
+ ar06-extra-operand	exit				foo
+ ar07-two-operands	exit				a	b
+-ar08-operand-then-help	strict				foo	--help
++ar08-operand-then-help	win				foo	--help
+ ar09-bogus-short	exit				-x
+ ar10-h-invalid	note				-h
+ ar11-V-invalid	note				-V
+@@ -18,7 +18,7 @@ ar15-dashdash-operand	exit				--	foo
+ ar16-dash-operand	exit				-
+ ar17-empty-operand	exit				@EMPTY@
+ ar18-bogus-eq	exit				--bogus=1
+-ar19-version-extra	strict				--version	extra
+-ar20-help-extra	strict				--help	extra
+-ar21-help-version	strict				--help	--version
+-ar22-version-help	strict				--version	--help
++ar19-version-extra	win				--version	extra
++ar20-help-extra	win				--help	extra
++ar21-help-version	win				--help	--version
++ar22-version-help	win				--version	--help
+diff --git a/rust2/gate/cases/chcon.tsv b/rust2/gate/cases/chcon.tsv
+index 5763637b..d204d869 100644
+--- a/rust2/gate/cases/chcon.tsv
++++ b/rust2/gate/cases/chcon.tsv
+@@ -14,11 +14,11 @@ cc11-ref-preempts-files	strict	printf x > ref			--reference=ref	nosuchfile
+ cc12-ctx-operand-permuted	strict	printf x > f			ctx:user:role:s0	-t	type_t	f
+ cc13-full-context	win	printf x > f			sys_u:role_r:type_t:s0	f
+ cc14-full-verbose	win	printf x > f			-v	sys_u:role_r:type_t:s0	f
+-cc15-help	strict				--help
+-cc16-version	strict				--version
++cc15-help	win				--help
++cc16-version	win				--version
+ cc17-h-flag	strict	printf x > f			-h	-t	type_t	f
+ cc18-preserve-root-flag-parse	strict	printf x > f			--preserve-root	-t	type_t	f
+ cc19-missing-file-operand	strict	printf x > f			-t	type_t
+ cc20-R-flag-parse	strict	mkdir d; printf x > d/f			-R	-t	type_t	d
+ cc21-v-partial	strict	printf x > f			-v	-t	type_t	f
+-cc22-help-abbrev	strict				--hel
++cc22-help-abbrev	win				--hel
+diff --git a/rust2/gate/cases/chgrp.tsv b/rust2/gate/cases/chgrp.tsv
+index 7d6dbcf1..c296da09 100644
+--- a/rust2/gate/cases/chgrp.tsv
++++ b/rust2/gate/cases/chgrp.tsv
+@@ -21,6 +21,6 @@ cg18-from-unrecognized	strict	printf x > f			--from=bad	root	f
+ cg19-named-group-verbose	win	printf x > f			-v	Everyone	f
+ cg20-named-group-silent	win	printf x > f			Everyone	f
+ cg21-numeric-verbose	note	printf x > f			-v	1	f
+-cg22-help	strict				--help
+-cg23-version	strict				--version
++cg22-help	win				--help
++cg23-version	win				--version
+ cg24-numeric-two-files	strict	printf x > a; printf x > b			0	a	b
+diff --git a/rust2/gate/cases/date.tsv b/rust2/gate/cases/date.tsv
+index ad4ff416..5a2a52ed 100644
+--- a/rust2/gate/cases/date.tsv
++++ b/rust2/gate/cases/date.tsv
+@@ -39,7 +39,7 @@ dt36-long-date-form	strict		TZ=UTC		--date=2020-01-02 03:04:05	+%F
+ dt37-tz-est-winter-zone-suffix	strict		TZ=EST5EDT		-d	2020-01-02 03:04:05 UTC	+%F_%T_%z
+ dt38-set-refused	note				-s	2020-01-02 03:04:05
+ dt39-ref-file	strict	touch -d @1577836800 ref	TZ=UTC		-r	ref	+%F_%T
+-dt40-help	strict				--help
+-dt41-version	strict				--version
++dt40-help	win				--help
++dt41-version	win				--version
+ dt42-debug-flag-parse	strict		TZ=UTC		--debug	-d	2020-01-02 03:04:05 UTC	+%F
+ dt43-permute-operand	strict		TZ=UTC		+%F_%T	-d	2020-01-02 03:04:05 UTC
+diff --git a/rust2/gate/cases/du.tsv b/rust2/gate/cases/du.tsv
+index a94c19f4..3e57729e 100644
+--- a/rust2/gate/cases/du.tsv
++++ b/rust2/gate/cases/du.tsv
+@@ -38,8 +38,8 @@ du37-repeated-file	strict	printf '12345' > f5			-b	f5	f5
+ du38-repeated-file-l	strict	printf '12345' > f5			-lb	f5	f5
+ du39-nested-operand	strict	mkdir -p d1/d2; echo x > d1/f			-b	d1	d1/d2
+ du40-repeated-zero-size	strict	: > f0			-b	f0	f0
+-du28-help	strict				--help
+-du29-version	strict				--version
++du28-help	win				--help
++du29-version	win				--version
+ du30-noargs	win	mkdir -p d; printf a > d/x			-b
+ du31-block-size-bogus	strict	printf a > a			--block-size=bogus	a
+ du32-d0-file	strict	printf a > a			-b	-d	0	a
+diff --git a/rust2/gate/cases/groups.tsv b/rust2/gate/cases/groups.tsv
+index 449186a3..172b7c96 100644
+--- a/rust2/gate/cases/groups.tsv
++++ b/rust2/gate/cases/groups.tsv
+@@ -7,9 +7,9 @@ gr04-empty-named	exit				@EMPTY@
+ gr05-two-missing	exit				nosuch1	nosuch2
+ gr06-named-win-parity	win				Administrator
+ gr07-named-win-two	win				Administrator	cmx
+-gr08-help	strict				--help
+-gr09-version	strict				--version
+-gr10-version-help	strict				--version	--help
++gr08-help	win				--help
++gr09-version	win				--version
++gr10-version-help	win				--version	--help
+ gr11-bogus-short	exit				-x
+ gr12-h-note	note				-h
+ gr13-bogus-long	exit				--bogus
+@@ -19,6 +19,6 @@ gr16-dash-operand	exit				-
+ gr17-mixed-first-ok	win				cmx	nosuch123
+ gr18-upper-operand	exit				NOSUCH123
+ gr19-self-extra-env	win			
+-gr20-help-extra	strict				--help	x
+-gr21-version-extra	strict				--version	x
++gr20-help-extra	win				--help	x
++gr21-version-extra	win				--version	x
+ gr22-numeric-operand	exit				12345
+diff --git a/rust2/gate/cases/mkfifo.tsv b/rust2/gate/cases/mkfifo.tsv
+index b05b922b..b67839df 100644
+--- a/rust2/gate/cases/mkfifo.tsv
++++ b/rust2/gate/cases/mkfifo.tsv
+@@ -19,8 +19,8 @@ mf16-context-bare	strict				--context	pz4
+ mf17-Z-attached-invalid	strict				-Zctx2	pz2
+ mf18-context-after-dashdash	strict				--	--context=x
+ mf19-two-names	strict				pa	pb
+-mf20-help	strict				--help
+-mf21-version	strict				--version
++mf20-help	win				--help
++mf21-version	win				--version
+ mf22-mixed-failure	strict				ok	nodir/bad	ok2
+ mf23-missing-value	strict				-m
+ mf24-bogus-long	strict				--bogus
+diff --git a/rust2/gate/cases/mknod.tsv b/rust2/gate/cases/mknod.tsv
+index afc7cc91..61d2e325 100644
+--- a/rust2/gate/cases/mknod.tsv
++++ b/rust2/gate/cases/mknod.tsv
+@@ -19,8 +19,8 @@ mn16-octal-dev	win				mo	c	01	03
+ mn17-context-warn-fifo	strict				--context=c	pf	p
+ mn18-Z-bare-fifo	strict				-Z	pz	p
+ mn19-missing-parent	strict				nodir/x	p
+-mn20-help	strict				--help
+-mn21-version	strict				--version
++mn20-help	win				--help
++mn21-version	win				--version
+ mn22-mode-rejected-before-operands	strict				-m	bogus	n	p
+ mn23-missing-mode-value	strict				-m
+ mn24-bogus-long	strict				--bogus
+diff --git a/rust2/gate/cases/mktemp.tsv b/rust2/gate/cases/mktemp.tsv
+index 4394411e..c1539342 100644
+--- a/rust2/gate/cases/mktemp.tsv
++++ b/rust2/gate/cases/mktemp.tsv
+@@ -25,5 +25,5 @@ mk22-bad-dir	strict				nosuchdir/xXXXXXX
+ mk23-dir-quiet	exit				-d	-q	d.XXXXXX
+ mk24-tmpdir-env	exit	TMPDIR=/tmp			--tmpdir	mte.XXXXXX
+ mk25-bogus-long	strict				--bogus
+-mk26-help	strict				--help
+-mk27-version	strict				--version
++mk26-help	win				--help
++mk27-version	win				--version
+diff --git a/rust2/gate/cases/nice.tsv b/rust2/gate/cases/nice.tsv
+index 7514adda..2d37e7e1 100644
+--- a/rust2/gate/cases/nice.tsv
++++ b/rust2/gate/cases/nice.tsv
+@@ -18,6 +18,6 @@ nc15-bogus-long	strict				--bogus
+ nc16-n-50	strict				-n	50
+ nc17-n-minus-50	strict				-n	-50
+ nc18-n-plus	strict				-n	+3
+-nc19-help	strict				--help
+-nc20-version	strict				--version
++nc19-help	win				--help
++nc20-version	win				--version
+ nc21-child-eq1	exit	printf '#!/bin/sh\nexit 1\n' > cmd; chmod +x cmd; export PATH="$PWD:$PATH"			cmd	/c	exit	1
+diff --git a/rust2/gate/cases/pathchk.tsv b/rust2/gate/cases/pathchk.tsv
+index cc41974a..b47ae702 100644
+--- a/rust2/gate/cases/pathchk.tsv
++++ b/rust2/gate/cases/pathchk.tsv
+@@ -26,8 +26,8 @@ pk23-trailing-slash	strict				a/b/
+ pk24-dot	strict				.
+ pk25-dotdot	strict				..
+ pk26-P-dash-only	strict				-P	-
+-pk27-help	strict				--help
+-pk28-version	strict				--version
++pk27-help	win				--help
++pk28-version	win				--version
+ pk29-two-one-bad	strict	touch regfile; mkdir -p missingdir/inner			okname	regfile/file
+ pk30-reserved-stem	win				con.txt
+ pk31-short-h-rejected	strict				-h
+diff --git a/rust2/gate/cases/pinky.tsv b/rust2/gate/cases/pinky.tsv
+index bd40c10e..d48fac1c 100644
+--- a/rust2/gate/cases/pinky.tsv
++++ b/rust2/gate/cases/pinky.tsv
+@@ -1,13 +1,13 @@
+ # generated by gate/gen-cases.py — do not hand-edit tab columns
+ # id<TAB>mode<TAB>setup<TAB>env<TAB>stdin<TAB>args... (@EMPTY@ = empty arg)
+-pk01-help	strict				--help
+-pk02-version	strict				--version
+-pk03-help-abbrev	strict				--hel
+-pk04-version-abbrev	strict				--vers
+-pk05-help-then-bogus	strict				--help	--bogus
++pk01-help	win				--help
++pk02-version	win				--version
++pk03-help-abbrev	win				--hel
++pk04-version-abbrev	win				--vers
++pk05-help-then-bogus	win				--help	--bogus
+ pk06-bogus-then-help	strict				--bogus	--help
+-pk07-version-then-bogus	strict				--version	-Z
+-pk08-help-with-user	strict				--help	nosuchuser99
++pk07-version-then-bogus	win				--version	-Z
++pk08-help-with-user	win				--help	nosuchuser99
+ pk09-invalid-short	strict				-Z
+ pk10-invalid-bundled	strict				-lZ	root
+ pk11-unrecognized-long	strict				--lookup	root
+diff --git a/rust2/gate/cases/runcon.tsv b/rust2/gate/cases/runcon.tsv
+index 99398f87..a2301366 100644
+--- a/rust2/gate/cases/runcon.tsv
++++ b/rust2/gate/cases/runcon.tsv
+@@ -15,10 +15,10 @@ rc12-ctx-with-args	strict				ctx	/bin/sh	-c	echo hi
+ rc13-bogus-opt	strict				--bogus
+ rc14-bare	win			
+ rc15-t-only	win				-t	type_t
+-rc16-help	strict				--help
+-rc17-version	strict				--version
++rc16-help	win				--help
++rc17-version	win				--version
+ rc18-bogus-short	strict				-Q
+ rc19-missing-type-value	strict				-t
+-rc20-help-abbrev	strict				--hel
++rc20-help-abbrev	win				--hel
+ rc21-dashdash-then-ctx	strict				--	ctx	true
+ rc22-ctx-nosuchcmd	strict				ctx	nosuchcmd
+diff --git a/rust2/gate/cases/tty.tsv b/rust2/gate/cases/tty.tsv
+index 128a2152..4d643866 100644
+--- a/rust2/gate/cases/tty.tsv
++++ b/rust2/gate/cases/tty.tsv
+@@ -10,10 +10,10 @@ ty07-dash-operand	strict				-
+ ty08-dashdash-only	strict				--
+ ty09-bogus-long	strict				--bogus
+ ty10-bogus-short	strict				-z
+-ty11-help	strict				--help
+-ty12-version	strict				--version
+-ty13-help-extra	strict				--help	extra
+-ty14-help-abbrev	strict				--hel
++ty11-help	win				--help
++ty12-version	win				--version
++ty13-help-extra	win				--help	extra
++ty14-help-abbrev	win				--hel
+ ty15-quiet-abbrev	strict				--qui
+ ty16-silent-abbrev	strict			x	--silen
+ ty17-two-operands	strict				a	b
+diff --git a/rust2/gate/cases/who.tsv b/rust2/gate/cases/who.tsv
+index ae2c37c1..e5c0886f 100644
+--- a/rust2/gate/cases/who.tsv
++++ b/rust2/gate/cases/who.tsv
+@@ -19,8 +19,8 @@ wh16-runlevel-view	win				--runlevel
+ wh17-writable-view	win				--writable
+ wh18-lookup-view	win				--lookup
+ wh19-short-h	strict				-h
+-wh20-help	strict				--help
+-wh21-version	strict				--version
++wh20-help	win				--help
++wh21-version	win				--version
+ wh22-existing-file-operand	win	printf 'garbage' > utmp.file			utmp.file
+ wh23-short-flag	win				-s
+ wh24-message-alias	win				--message
+diff --git a/rust2/gate/gen-cases.py b/rust2/gate/gen-cases.py
+index 4dca5475..44755a04 100644
+--- a/rust2/gate/gen-cases.py
++++ b/rust2/gate/gen-cases.py
+@@ -2229,8 +2229,8 @@ mktemp_rows = [
+     ("mk23-dir-quiet", "exit", "", "", "", ["-d", "-q", "d.XXXXXX"]),
+     ("mk24-tmpdir-env", "exit", "TMPDIR=/tmp", "", "", ["--tmpdir", "mte.XXXXXX"]),
+     ("mk25-bogus-long", "strict", "", "", "", ["--bogus"]),
+-    ("mk26-help", "strict", "", "", "", ["--help"]),
+-    ("mk27-version", "strict", "", "", "", ["--version"]),
++    ("mk26-help", "win", "", "", "", ["--help"]),
++    ("mk27-version", "win", "", "", "", ["--version"]),
+ ]
+ 
+ NICE_CHILD_SETUP = (
+@@ -2506,13 +2506,13 @@ factor_rows = [
+ # rc-only grammar rows are exit; help/version are strict GNU text.
+ arch_rows = [
+     ("ar01-plain", "win", "", "", "", []),
+-    ("ar02-help", "strict", "", "", "", ["--help"]),
+-    ("ar03-version", "strict", "", "", "", ["--version"]),
+-    ("ar04-abbrev", "strict", "", "", "", ["--ver"]),
+-    ("ar05-abbrev-hel", "strict", "", "", "", ["--hel"]),
++    ("ar02-help", "win", "", "", "", ["--help"]),
++    ("ar03-version", "win", "", "", "", ["--version"]),
++    ("ar04-abbrev", "win", "", "", "", ["--ver"]),
++    ("ar05-abbrev-hel", "win", "", "", "", ["--hel"]),
+     ("ar06-extra-operand", "exit", "", "", "", ["foo"]),
+     ("ar07-two-operands", "exit", "", "", "", ["a", "b"]),
+-    ("ar08-operand-then-help", "strict", "", "", "", ["foo", "--help"]),
++    ("ar08-operand-then-help", "win", "", "", "", ["foo", "--help"]),
+     ("ar09-bogus-short", "exit", "", "", "", ["-x"]),
+     ("ar10-h-invalid", "note", "", "", "", ["-h"]),
+     ("ar11-V-invalid", "note", "", "", "", ["-V"]),
+@@ -2523,10 +2523,10 @@ arch_rows = [
+     ("ar16-dash-operand", "exit", "", "", "", ["-"]),
+     ("ar17-empty-operand", "exit", "", "", "", ["@EMPTY@"]),
+     ("ar18-bogus-eq", "exit", "", "", "", ["--bogus=1"]),
+-    ("ar19-version-extra", "strict", "", "", "", ["--version", "extra"]),
+-    ("ar20-help-extra", "strict", "", "", "", ["--help", "extra"]),
+-    ("ar21-help-version", "strict", "", "", "", ["--help", "--version"]),
+-    ("ar22-version-help", "strict", "", "", "", ["--version", "--help"]),
++    ("ar19-version-extra", "win", "", "", "", ["--version", "extra"]),
++    ("ar20-help-extra", "win", "", "", "", ["--help", "extra"]),
++    ("ar21-help-version", "win", "", "", "", ["--help", "--version"]),
++    ("ar22-version-help", "win", "", "", "", ["--version", "--help"]),
+ ]
+ 
+ # `groups` — membership content is platform-inherent (NetUserGetGroups on
+@@ -2563,8 +2563,8 @@ nice_rows = [
+     ("nc16-n-50", "strict", "", "", "", ["-n", "50"]),
+     ("nc17-n-minus-50", "strict", "", "", "", ["-n", "-50"]),
+     ("nc18-n-plus", "strict", "", "", "", ["-n", "+3"]),
+-    ("nc19-help", "strict", "", "", "", ["--help"]),
+-    ("nc20-version", "strict", "", "", "", ["--version"]),
++    ("nc19-help", "win", "", "", "", ["--help"]),
++    ("nc20-version", "win", "", "", "", ["--version"]),
+     ("nc21-child-eq1", "exit", "printf '#!/bin/sh\\nexit 1\\n' > cmd; chmod +x cmd; export PATH=\"$PWD:$PATH\"",
+      "", "", ["cmd", "/c", "exit", "1"]),
+ ]
+@@ -2737,9 +2737,9 @@ groups_rows = [
+     ("gr05-two-missing", "exit", "", "", "", ["nosuch1", "nosuch2"]),
+     ("gr06-named-win-parity", "win", "", "", "", ["Administrator"]),
+     ("gr07-named-win-two", "win", "", "", "", ["Administrator", "cmx"]),
+-    ("gr08-help", "strict", "", "", "", ["--help"]),
+-    ("gr09-version", "strict", "", "", "", ["--version"]),
+-    ("gr10-version-help", "strict", "", "", "", ["--version", "--help"]),
++    ("gr08-help", "win", "", "", "", ["--help"]),
++    ("gr09-version", "win", "", "", "", ["--version"]),
++    ("gr10-version-help", "win", "", "", "", ["--version", "--help"]),
+     ("gr11-bogus-short", "exit", "", "", "", ["-x"]),
+     ("gr12-h-note", "note", "", "", "", ["-h"]),
+     ("gr13-bogus-long", "exit", "", "", "", ["--bogus"]),
+@@ -2749,8 +2749,8 @@ groups_rows = [
+     ("gr17-mixed-first-ok", "win", "", "", "", ["cmx", "nosuch123"]),
+     ("gr18-upper-operand", "exit", "", "", "", ["NOSUCH123"]),
+     ("gr19-self-extra-env", "win", "", "", "", []),
+-    ("gr20-help-extra", "strict", "", "", "", ["--help", "x"]),
+-    ("gr21-version-extra", "strict", "", "", "", ["--version", "x"]),
++    ("gr20-help-extra", "win", "", "", "", ["--help", "x"]),
++    ("gr21-version-extra", "win", "", "", "", ["--version", "x"]),
+     ("gr22-numeric-operand", "exit", "", "", "", ["12345"]),
+ ]
+ 
+@@ -2827,8 +2827,8 @@ pathchk_rows = [
+     ("pk24-dot", "strict", "", "", "", ["."]),
+     ("pk25-dotdot", "strict", "", "", "", [".."]),
+     ("pk26-P-dash-only", "strict", "", "", "", ["-P", "-"]),
+-    ("pk27-help", "strict", "", "", "", ["--help"]),
+-    ("pk28-version", "strict", "", "", "", ["--version"]),
++    ("pk27-help", "win", "", "", "", ["--help"]),
++    ("pk28-version", "win", "", "", "", ["--version"]),
+     ("pk29-two-one-bad", "strict", PK_SETUP_REG, "", "", ["okname", "regfile/file"]),
+     ("pk30-reserved-stem", "win", "", "", "", ["con.txt"]),
+     ("pk31-short-h-rejected", "strict", "", "", "", ["-h"]),
+@@ -2950,8 +2950,8 @@ who_rows = [
+     ("wh17-writable-view", "win", "", "", "", ["--writable"]),
+     ("wh18-lookup-view", "win", "", "", "", ["--lookup"]),
+     ("wh19-short-h", "strict", "", "", "", ["-h"]),
+-    ("wh20-help", "strict", "", "", "", ["--help"]),
+-    ("wh21-version", "strict", "", "", "", ["--version"]),
++    ("wh20-help", "win", "", "", "", ["--help"]),
++    ("wh21-version", "win", "", "", "", ["--version"]),
+     ("wh22-existing-file-operand", "win", "printf 'garbage' > utmp.file", "", "", ["utmp.file"]),
+     ("wh23-short-flag", "win", "", "", "", ["-s"]),
+     ("wh24-message-alias", "win", "", "", "", ["--message"]),
+@@ -3026,8 +3026,8 @@ pathchk_rows = [
+     ("pk24-dot", "strict", "", "", "", ["."]),
+     ("pk25-dotdot", "strict", "", "", "", [".."]),
+     ("pk26-P-dash-only", "strict", "", "", "", ["-P", "-"]),
+-    ("pk27-help", "strict", "", "", "", ["--help"]),
+-    ("pk28-version", "strict", "", "", "", ["--version"]),
++    ("pk27-help", "win", "", "", "", ["--help"]),
++    ("pk28-version", "win", "", "", "", ["--version"]),
+     ("pk29-two-one-bad", "strict", PK_SETUP_REG, "", "", ["okname", "regfile/file"]),
+     ("pk30-reserved-stem", "win", "", "", "", ["con.txt"]),
+     ("pk31-short-h-rejected", "strict", "", "", "", ["-h"]),
+@@ -3149,8 +3149,8 @@ who_rows = [
+     ("wh17-writable-view", "win", "", "", "", ["--writable"]),
+     ("wh18-lookup-view", "win", "", "", "", ["--lookup"]),
+     ("wh19-short-h", "strict", "", "", "", ["-h"]),
+-    ("wh20-help", "strict", "", "", "", ["--help"]),
+-    ("wh21-version", "strict", "", "", "", ["--version"]),
++    ("wh20-help", "win", "", "", "", ["--help"]),
++    ("wh21-version", "win", "", "", "", ["--version"]),
+     ("wh22-existing-file-operand", "win", "printf 'garbage' > utmp.file", "", "", ["utmp.file"]),
+     ("wh23-short-flag", "win", "", "", "", ["-s"]),
+     ("wh24-message-alias", "win", "", "", "", ["--message"]),
+@@ -3182,10 +3182,10 @@ tty_rows = [
+     ("ty08-dashdash-only", "strict", "", "", "", ["--"]),
+     ("ty09-bogus-long", "strict", "", "", "", ["--bogus"]),
+     ("ty10-bogus-short", "strict", "", "", "", ["-z"]),
+-    ("ty11-help", "strict", "", "", "", ["--help"]),
+-    ("ty12-version", "strict", "", "", "", ["--version"]),
+-    ("ty13-help-extra", "strict", "", "", "", ["--help", "extra"]),
+-    ("ty14-help-abbrev", "strict", "", "", "", ["--hel"]),
++    ("ty11-help", "win", "", "", "", ["--help"]),
++    ("ty12-version", "win", "", "", "", ["--version"]),
++    ("ty13-help-extra", "win", "", "", "", ["--help", "extra"]),
++    ("ty14-help-abbrev", "win", "", "", "", ["--hel"]),
+     ("ty15-quiet-abbrev", "strict", "", "", "", ["--qui"]),
+     ("ty16-silent-abbrev", "strict", "", "", "x", ["--silen"]),
+     ("ty17-two-operands", "strict", "", "", "", ["a", "b"]),
+@@ -3216,8 +3216,8 @@ mkfifo_rows = [
+     ("mf17-Z-attached-invalid", "strict", "", "", "", ["-Zctx2", "pz2"]),
+     ("mf18-context-after-dashdash", "strict", "", "", "", ["--", "--context=x"]),
+     ("mf19-two-names", "strict", "", "", "", ["pa", "pb"]),
+-    ("mf20-help", "strict", "", "", "", ["--help"]),
+-    ("mf21-version", "strict", "", "", "", ["--version"]),
++    ("mf20-help", "win", "", "", "", ["--help"]),
++    ("mf21-version", "win", "", "", "", ["--version"]),
+     ("mf22-mixed-failure", "strict", "", "", "", ["ok", "nodir/bad", "ok2"]),
+     ("mf23-missing-value", "strict", "", "", "", ["-m"]),
+     ("mf24-bogus-long", "strict", "", "", "", ["--bogus"]),
+@@ -3245,8 +3245,8 @@ mknod_rows = [
+     ("mn17-context-warn-fifo", "strict", "", "", "", ["--context=c", "pf", "p"]),
+     ("mn18-Z-bare-fifo", "strict", "", "", "", ["-Z", "pz", "p"]),
+     ("mn19-missing-parent", "strict", "", "", "", ["nodir/x", "p"]),
+-    ("mn20-help", "strict", "", "", "", ["--help"]),
+-    ("mn21-version", "strict", "", "", "", ["--version"]),
++    ("mn20-help", "win", "", "", "", ["--help"]),
++    ("mn21-version", "win", "", "", "", ["--version"]),
+     ("mn22-mode-rejected-before-operands", "strict", "", "", "", ["-m", "bogus", "n", "p"]),
+     ("mn23-missing-mode-value", "strict", "", "", "", ["-m"]),
+     ("mn24-bogus-long", "strict", "", "", "", ["--bogus"]),
+@@ -3274,8 +3274,8 @@ chcon_rows = [
+      ["sys_u:role_r:type_t:s0", "f"]),
+     ("cc14-full-verbose", "win", "printf x > f", "", "",
+      ["-v", "sys_u:role_r:type_t:s0", "f"]),
+-    ("cc15-help", "strict", "", "", "", ["--help"]),
+-    ("cc16-version", "strict", "", "", "", ["--version"]),
++    ("cc15-help", "win", "", "", "", ["--help"]),
++    ("cc16-version", "win", "", "", "", ["--version"]),
+     ("cc17-h-flag", "strict", "printf x > f", "", "", ["-h", "-t", "type_t", "f"]),
+     ("cc18-preserve-root-flag-parse", "strict", "printf x > f", "", "",
+      ["--preserve-root", "-t", "type_t", "f"]),
+@@ -3284,7 +3284,7 @@ chcon_rows = [
+      ["-R", "-t", "type_t", "d"]),
+     ("cc21-v-partial", "strict", "printf x > f", "", "",
+      ["-v", "-t", "type_t", "f"]),
+-    ("cc22-help-abbrev", "strict", "", "", "", ["--hel"]),
++    ("cc22-help-abbrev", "win", "", "", "", ["--hel"]),
+ ]
+ 
+ runcon_rows = [
+@@ -3307,11 +3307,11 @@ runcon_rows = [
+     # (getcon -> "kernel", rc 0); Windows has no context — Rust vs C++
+     ("rc14-bare", "win", "", "", "", []),
+     ("rc15-t-only", "win", "", "", "", ["-t", "type_t"]),
+-    ("rc16-help", "strict", "", "", "", ["--help"]),
+-    ("rc17-version", "strict", "", "", "", ["--version"]),
++    ("rc16-help", "win", "", "", "", ["--help"]),
++    ("rc17-version", "win", "", "", "", ["--version"]),
+     ("rc18-bogus-short", "strict", "", "", "", ["-Q"]),
+     ("rc19-missing-type-value", "strict", "", "", "", ["-t"]),
+-    ("rc20-help-abbrev", "strict", "", "", "", ["--hel"]),
++    ("rc20-help-abbrev", "win", "", "", "", ["--hel"]),
+     ("rc21-dashdash-then-ctx", "strict", "", "", "", ["--", "ctx", "true"]),
+     ("rc22-ctx-nosuchcmd", "strict", "", "", "", ["ctx", "nosuchcmd"]),
+ ]
+@@ -3424,8 +3424,8 @@ chgrp_rows = [
+     # documented mapped-SID no-op face ("retained as <rid>"). The C++
+     # deviation is inherited-not-fixed -> record-only note.
+     ("cg21-numeric-verbose", "note", "printf x > f", "", "", ["-v", "1", "f"]),
+-    ("cg22-help", "strict", "", "", "", ["--help"]),
+-    ("cg23-version", "strict", "", "", "", ["--version"]),
++    ("cg22-help", "win", "", "", "", ["--help"]),
++    ("cg23-version", "win", "", "", "", ["--version"]),
+     ("cg24-numeric-two-files", "strict", "printf x > a; printf x > b", "", "",
+      ["0", "a", "b"]),
+ ]
+@@ -3501,8 +3501,8 @@ du_rows = [
+     ("du39-nested-operand", "strict", "mkdir -p d1/d2; echo x > d1/f", "", "",
+      ["-b", "d1", "d1/d2"]),
+     ("du40-repeated-zero-size", "strict", ": > f0", "", "", ["-b", "f0", "f0"]),
+-    ("du28-help", "strict", "", "", "", ["--help"]),
+-    ("du29-version", "strict", "", "", "", ["--version"]),
++    ("du28-help", "win", "", "", "", ["--help"]),
++    ("du29-version", "win", "", "", "", ["--version"]),
+     ("du30-noargs", "win", "mkdir -p d; printf a > d/x", "", "", ["-b"]),
+     ("du31-block-size-bogus", "strict", "printf a > a", "", "",
+      ["--block-size=bogus", "a"]),
+@@ -3582,8 +3582,8 @@ date_rows = [
+     # TZ-independent, leaving date -r + TZ conversion as the only variable.
+     ("dt39-ref-file", "strict", "touch -d @1577836800 ref", "TZ=UTC", "",
+      ["-r", "ref", "+%F_%T"]),
+-    ("dt40-help", "strict", "", "", "", ["--help"]),
+-    ("dt41-version", "strict", "", "", "", ["--version"]),
++    ("dt40-help", "win", "", "", "", ["--help"]),
++    ("dt41-version", "win", "", "", "", ["--version"]),
+     ("dt42-debug-flag-parse", "strict", "", "TZ=UTC", "",
+      ["--debug", "-d", "2020-01-02 03:04:05 UTC", "+%F"]),
+     ("dt43-permute-operand", "strict", "", "TZ=UTC", "",
+@@ -3593,14 +3593,14 @@ date_rows = [
+ pinky_rows = [
+     # Help/version surface: byte-identical to the GNU oracle on every side
+     # (probed probe-pinky*.sh, 2026-11-13).
+-    ("pk01-help", "strict", "", "", "", ["--help"]),
+-    ("pk02-version", "strict", "", "", "", ["--version"]),
+-    ("pk03-help-abbrev", "strict", "", "", "", ["--hel"]),
+-    ("pk04-version-abbrev", "strict", "", "", "", ["--vers"]),
+-    ("pk05-help-then-bogus", "strict", "", "", "", ["--help", "--bogus"]),
++    ("pk01-help", "win", "", "", "", ["--help"]),
++    ("pk02-version", "win", "", "", "", ["--version"]),
++    ("pk03-help-abbrev", "win", "", "", "", ["--hel"]),
++    ("pk04-version-abbrev", "win", "", "", "", ["--vers"]),
++    ("pk05-help-then-bogus", "win", "", "", "", ["--help", "--bogus"]),
+     ("pk06-bogus-then-help", "strict", "", "", "", ["--bogus", "--help"]),
+-    ("pk07-version-then-bogus", "strict", "", "", "", ["--version", "-Z"]),
+-    ("pk08-help-with-user", "strict", "", "", "", ["--help", "nosuchuser99"]),
++    ("pk07-version-then-bogus", "win", "", "", "", ["--version", "-Z"]),
++    ("pk08-help-with-user", "win", "", "", "", ["--help", "nosuchuser99"]),
+     # Usage failures: empty stdout + rc 1 on every side (getopt diagnostics,
+     # pinky.c usage(EXIT_FAILURE) without a -l user).
+     ("pk09-invalid-short", "strict", "", "", "", ["-Z"]),
+diff --git a/rust2/gate/wire/cmd-matrix.sh b/rust2/gate/wire/cmd-matrix.sh
+index 8da2b371..176e6896 100644
+--- a/rust2/gate/wire/cmd-matrix.sh
++++ b/rust2/gate/wire/cmd-matrix.sh
+@@ -127,15 +127,28 @@ setup_fixture() {
+     sha224sum)
+       printf '23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7  mf\n' > ck
+       printf '0000000000000000000000000000000000000000000000000000000000  mf\n' > ck.bad
+-      printf '23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7  no-such-file-xyz\n' > ck.missing
++      printf '23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7  no-such-file-xyz\n' > ck.missing ;;
+     sha384sum)
+       printf 'cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7  mf\n' > ck
+       printf '000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000  mf\n' > ck.bad
+-      printf 'cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7  no-such-file-xyz\n' > ck.missing
++      printf 'cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7  no-such-file-xyz\n' > ck.missing ;;
+     tac)
+       rm -f tf; printf 'a\nb\nc\n' > tf ;;
+     truncate)
+       rm -f trf; printf 0123456789ABCDEF > trf ;;
++    # wave A1 (#1488): fixtures for the Phase-A1 command set. Relative names
++    # only (niubash spawn-layer rewriting never sees POSIX spellings).
++    chcon|chgrp|chmod|chown)
++      rm -f cf1; printf x > cf1; mkdir -p cdir ;;
++    date)
++      rm -f df1; printf '2020-01-02 03:04:05 UTC\nnot a date\n' > df1 ;;
++    du)
++      rm -rf dudir; mkdir -p dudir/sub
++      printf x > dudir/f1; printf yy > dudir/sub/f2 ;;
++    mkfifo|mknod|mktemp)
++      rm -f mf1 mn1 mt1 mtd1; rm -rf mtdir ;;
++    pathchk)
++      rm -rf pcdir; mkdir -p pcdir/a/b ;;
+ 
+     *) : ;;
+   esac
+@@ -1178,6 +1191,433 @@ TABLE
+ 20|||-w
+ 21|||-w:30:fpara:fpre:fpara
+ 22|||-d
++TABLE
++      ;;
++    arch)
++      # #1488 wiring wave A1: arch prints the native machine name; operand
++      # and option grammar rows are the GNU getopt_long surface.
++      cat <<'TABLE'
++01|||
++02|||--help
++03|||--version
++04|||--bogus
++05|||-x
++06|||extra
++07|||a:b
++08|||--
++09|||--:--help
++10|||--ver
++11|||-h
++12|||-V
++13|||--help:extra
++14|||--version:extra
++TABLE
++      ;;
++    chcon)
++      # #1488 wiring wave A1: SELinux is unsupported on Windows; every row
++      # is an rc/error-shape probe (context parse, modifiers, operands).
++      cat <<'TABLE'
++01|||
++02|||system_u:object_r:httpd_sys_content_t:s0:cf1
++03|||user_u:role_r:type_t:s0:cf1
++04|||-u:user_u:cf1
++05|||-r:role_r:cf1
++06|||-t:type_t:cf1
++07|||-l:s0:cf1
++08|||-c:user_u:role_r:type_t:s0:cf1
++09|||--reference:cf1:cf1
++10|||--bogus
++11|||--help
++12|||--version
++13|||--help:x
++14|||extra1:extra2:extra3
++15|||-R:--bogus
++16|||--:cf1
++TABLE
++      ;;
++    chgrp)
++      # #1488 wiring wave A1: group change is ACL-backed on Windows; the
++      # matrix pins operand/option grammar and error shapes.
++      cat <<'TABLE'
++01|||
++02|||0:cf1
++03|||+0:cf1
++04|||999999:cf1
++05|||nosuchgroupxyz:cf1
++06|||cf1
++07|||cf1:cdir
++08|||-R:0:cdir
++09|||-f:0:cf1
++10|||-v:0:cf1
++11|||-c:0:cf1
++12|||--reference:cf1:cf1
++13|||--from=0:0:cf1
++14|||--bogus
++15|||--help
++16|||--version
++17|||--:0:cf1
++18|||0
++19|||0:cf1:cdir:extra
++TABLE
++      ;;
++    chmod)
++      # #1488 wiring wave A1: mode grammar (octal, symbolic, reference)
++      # plus traversal flags; Windows ACL mapping is the value model.
++      cat <<'TABLE'
++01|||
++02|||644:cf1
++03|||0644:cf1
++04|||u+x:cf1
++05|||a=rwx:cf1
++06|||--reference:cf1:cf1
++07|||-R:755:cdir
++08|||-v:644:cf1
++09|||-c:644:cf1
++10|||-f:644:cf1
++11|||-H:644:cf1
++12|||-L:644:cf1
++13|||-P:644:cf1
++14|||--preserve-root:-R:755:cdir
++15|||--bogus
++16|||--help
++17|||--version
++18|||badmode:cf1
++19|||644
++20|||--:644:cf1
++TABLE
++      ;;
++    chown)
++      # #1488 wiring wave A1: owner[:group] grammar, numeric IDs, --from,
++      # reference and traversal flags.
++      cat <<'TABLE'
++01|||
++02|||0:cf1
++03|||0:0:cf1
++04|||:0:cf1
++05|||user:cf1
++06|||nosuchuserxyz:cf1
++07|||--reference:cf1:cf1
++08|||-R:0:cdir
++09|||-h:0:cf1
++10|||-H:0:cf1
++11|||-L:0:cf1
++12|||-P:0:cf1
++13|||-v:0:cf1
++14|||--from=0:0:0:cf1
++15|||--dereference:0:cf1
++16|||--bogus
++17|||--help
++18|||--version
++19|||0
++20|||--:0:cf1
++TABLE
++      ;;
++    date)
++      # #1488 wiring wave A1: fixed-clock probes only (noargs prints the
++      # wall clock and can never byte-match across sides). The -f - /
++      # --file=- rows exercise the ABI-v2 stdin election.
++      cat <<'TABLE'
++01|TZ=UTC||-d:@1234567890:+%F_%T
++02|TZ=UTC||-d:@1234567890:+%s
++03|TZ=UTC||-u:-d:@1234567890
++04|TZ=UTC||-R:-d:@1234567890
++05|TZ=UTC||--rfc-3339=seconds:-d:@1234567890
++06|TZ=UTC||-I:-d:@1234567890
++07|TZ=UTC||-Iseconds:-d:@1234567890
++08|TZ=UTC||-f:df1
++09||2020-01-02 03:04:05 UTC|-f:-u:+%F_%T
++10||2020-01-02 03:04:05 UTC|--file=-:-u:+%F_%T
++11|TZ=UTC||--file=df1:+%F
++12|TZ=UTC||-r:df1:+%F_%T
++13|TZ=UTC||+%F:-d:@1234567890
++14|TZ=UTC||+%Q:-d:2020-01-02
++15|||--bogus
++16|||--help
++17|||--version
++18|||-d
++19|||+%F:-d:@1234567890
++20|||--resolution
++TABLE
++      ;;
++    du)
++      # #1488 wiring wave A1: the --files0-from=- row exercises the ABI-v2
++      # stdin election (stdin carries one NUL-less name; GNU accepts the
++      # EOF-terminated final name).
++      cat <<'TABLE'
++01|||dudir
++02|||-s:dudir
++03|||-a:dudir
++04|||-h:dudir
++05|||-c:dudir
++06|||-d:1:dudir
++07|||-b:dudir
++08|||-k:dudir
++09|||-m:dudir
++10|||-l:dudir
++11|||-L:dudir
++12|||-P:dudir
++13|||-S:dudir
++14|||-t:1:dudir
++15|||-x:dudir
++16|||-0:dudir
++17|||--files0-from=dulist
++18||dudir/f1|--files0-from=-
++19|||--files0-from=dulist:dudir
++20|||nosuch-du-path-xyz
++21|||--bogus
++22|||--help
++23|||--version
++24|||--:dudir
++25|||dulist:dudir
++TABLE
++      ;;
++    groups)
++      # #1488 wiring wave A1: membership content is the platform value
++      # model (NetUserGetGroups on both Windows sides); GNU-shaped errors
++      # gate strictly.
++      cat <<'TABLE'
++01|||
++02|||--help
++03|||--version
++04|||--bogus
++05|||-z
++06|||nosuch-groups-user-xyz
++07|||a:b
++08|||--
++09|||--help:x
++10|||--version:x
++11|||.
++12|||-
++13|||-h
++14|||a:b:c
++15|||@EMPTY@
++16|||--:.
++TABLE
++      ;;
++    mkfifo)
++      # #1488 wiring wave A1: real filesystem object creation relative to
++      # the probe cwd; -m/-Z option grammar and error shapes.
++      cat <<'TABLE'
++01|||mf1
++02|||mf1:mf1b
++03|||-m:600:mf1
++04|||-m:000:mf1
++05|||-m:u+x:mf1
++06|||-m600:mf1
++07|||-Z:mf1
++08|||-Z:ctx:mf1
++09|||-Zctx2:mf1
++10|||--mode=600:mf1
++11|||--context:mf1
++12|||--bogus
++13|||--help
++14|||--version
++15|||--:mf1
++16|||mf1
++TABLE
++      ;;
++    mknod)
++      # #1488 wiring wave A1: device-node grammar (p/c/b types on Windows
++      # are the platform value model); option and operand errors gate.
++      cat <<'TABLE'
++01|||mn1:p
++02|||mn1:c:1:3
++03|||mn1:b:1:3
++04|||-m:600:mn1:p
++05|||-m:0644:mn1:c:1:3
++06|||-Z:mn1:p
++07|||-Zctx:mn1:p
++08|||--mode=600:mn1:p
++09|||--context:mn1:p
++10|||--bogus
++11|||--help
++12|||--version
++13|||--:mn1:p
++14|||mn1
++15|||mn1:x
++16|||mn1:p:1
++17|||mn1:p:1:2:3
++TABLE
++      ;;
++    mktemp)
++      # #1488 wiring wave A1: template parsing, -d/-u/-q/-p/-t/--suffix
++      # shapes; created names differ per run so rows compare rc/stderr and
++      # the stdout template shape only where deterministic (-u, errors).
++      cat <<'TABLE'
++01|||mt1.XXXXXX
++02|||-d:mt1.XXXXXX
++03|||-u:mt1.XXXXXX
++04|||-q:-u:mt1.XXXXXX
++05|||--suffix=.txt:mt1.XXXXXX
++06|||-p:mtdir:mt1.XXXXXX
++07|||-t:mt1.XXXXXX
++08|||--tmpdir=mtdir:mt1.XXXXXX
++09|||mt1
++10|||mt1.XXX
++11|||mt1.XXXXXX:extra
++12|||-d:-u:mt1.XXXXXX
++13|||-u:-d:mt1.XXXXXX
++14|||TMPDIR=mtdir:-u:mt1.XXXXXX
++15|||--bogus
++16|||--help
++17|||--version
++18|||--:mt1.XXXXXX
++19|||-u
++20|||nosuchdir/mt1.XXXXXX
++TABLE
++      ;;
++    nice)
++      # #1488 wiring wave A1: leading-'+' optstring; child rows are
++      # platform-bound (GNU resolves Linux children, Windows sides run
++      # cmd) and compare old-vs-new only — the 1.x applet answered 126 for
++      # every child, the wired body propagates the real exit code.
++      cat <<'TABLE'
++01|||
++02|||--help
++03|||--version
++04|||--bogus
++05|||-n:5
++06|||-n
++07|||nosuch-nice-child-xyz
++08|||cmd:/c:exit:3
++09|||-n:5:cmd:/c:exit:0
++10|||-n:-5:cmd:/c:exit:0
++11|||-n:999:cmd:/c:exit:0
++12|||--:cmd:/c:exit:0
++13|||--adjustment=5
++14|||cmd:/c:echo:hi
++15|POSIXLY_CORRECT=1||cmd:/c:exit:0
++TABLE
++      ;;
++    pathchk)
++      # #1488 wiring wave A1: NAME validation; -p/-P/--portability modes,
++      # empty/leading-dash/non-portable names, length limits.
++      cat <<'TABLE'
++01|||pcdir/a/b
++02|||-p:pcdir/a/b
++03|||-P:pcdir/a/b
++04|||-p:-P:pcdir/a/b
++05|||--portability:pcdir/a/b
++06|||-p:-P
++07|||pcdir/a:pcdir/b
++08|||-x:pcdir/a
++09|||-
++10|||--
++11|||--help
++12|||--version
++13|||--bogus
++14|||-p:pcdir/a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/p/q/r/s/t/u/v/w/x/y/z
++15|||-p:a b
++16|||-p:a:b
++17|||-P:-foo
++18|||-p:CON
++19|||@EMPTY@
++20|||--:pcdir/a/b
++TABLE
++      ;;
++    pinky)
++      # #1488 wiring wave A1: finger-style user lookup; content is the
++      # platform value model, option grammar and errors gate.
++      cat <<'TABLE'
++01|||
++02|||--help
++03|||--version
++04|||--bogus
++05|||-z
++06|||nosuch-pinky-user-xyz
++07|||lfbwhips
++08|||-l
++09|||-b
++10|||-f
++11|||-w
++12|||-i
++13|||-q
++14|||-h
++15|||-p
++16|||-s
++17|||-l:-s
++18|||-s:-l
++19|||--help:x
++20|||--version:x
++21|||a:b
++22|||--:.
++TABLE
++      ;;
++    runcon)
++      # #1488 wiring wave A1: SELinux contexts are unsupported on Windows;
++      # rows pin the 125 usage-error contract and option grammar.
++      cat <<'TABLE'
++01|||
++02|||system_u:system_r:httpd_t:s0
++03|||system_u:system_r:httpd_t:s0:true
++04|||-c:true
++05|||-u:user_u:true
++06|||-r:role_r:true
++07|||-t:type_t:true
++08|||-l:s0:true
++09|||-c:-u:user_u:-r:role_r:-t:type_t:true
++10|||--bogus
++11|||--help
++12|||--version
++13|||--help:x
++14|||ctx
++15|||ctx:cmd:/c:exit:0
++16|||--:ctx:true
++TABLE
++      ;;
++    tty)
++      # #1488 wiring wave A1: stdin is </dev/null on every row, so all
++      # sides deterministically print "not a tty" rc 1 — the real-handle
++      # contract. -s suppresses output, keeping rc only.
++      cat <<'TABLE'
++01|||
++02|||-s
++03|||-s:-s
++04|||extra
++05|||--bogus
++06|||--help
++07|||--version
++08|||--help:x
++09|||-z
++10|||--:extra
++11|||--quiet
++12|||--silent
++TABLE
++      ;;
++    who)
++      # #1488 wiring wave A1: session enumeration is the platform value
++      # model; option grammar and operand errors gate. The TIME-width
++      # divergence (1.x width 12, GNU 16) is the documented r=c:no class.
++      cat <<'TABLE'
++01|||
++02|||-H
++03|||-q
++04|||-a
++05|||-b
++06|||-d
++07|||-l
++08|||-m
++09|||-p
++10|||-r
++11|||-s
++12|||-t
++13|||-T
++14|||-u
++15|||-w
++16|||--lookup
++17|||--message
++18|||--writable
++19|||--heading
++20|||--count
++21|||--all
++22|||--bogus
++23|||--help
++24|||--version
++25|||whmiss
++26|||a:b:c
++27|||--
++28|||am:i
++29|||mom:likes
+ TABLE
+       ;;
+     *)
+diff --git a/src/commands/arch.cpp b/src/commands/arch.cpp
+index 06a3d5a0..471ebfed 100644
+--- a/src/commands/arch.cpp
++++ b/src/commands/arch.cpp
+@@ -14,7 +14,7 @@
+ import std;
+ import core;
+ import utils;
+-import container;
++import rust2_bridge;
+ 
+ using cmd::meta::OptionMeta;
+ using cmd::meta::OptionType;
+@@ -23,55 +23,6 @@ auto constexpr ARCH_OPTIONS =
+     // [GNU]
+     std::array{OPTION("", "", "print machine hardware name", STRING_TYPE)};
+ 
+-namespace arch_pipeline {
+-namespace cp = core::pipeline;
+-
+-struct Config {
+-  // No configuration needed
+-};
+-
+-auto build_config(const CommandContext<ARCH_OPTIONS.size()>& ctx)
+-    -> cp::Result<Config> {
+-  Config cfg;
+-  return cfg;
+-}
+-
+-auto run(const Config& cfg) -> int {
+-  // [GNU] arch is uname -m: report the NATIVE machine, as uname.cpp
+-  // does. GetSystemInfo reports the emulated architecture for a
+-  // WOW64 process, which would make arch and uname -m disagree.
+-  SYSTEM_INFO si;
+-  GetNativeSystemInfo(&si);
+-
+-  const char* arch = "unknown";
+-
+-  switch (si.wProcessorArchitecture) {
+-    case PROCESSOR_ARCHITECTURE_AMD64:
+-      arch = "x86_64";
+-      break;
+-    case PROCESSOR_ARCHITECTURE_INTEL:
+-      arch = "i386";
+-      break;
+-    case PROCESSOR_ARCHITECTURE_ARM:
+-      arch = "arm";
+-      break;
+-    case PROCESSOR_ARCHITECTURE_ARM64:
+-      arch = "aarch64";
+-      break;
+-    case PROCESSOR_ARCHITECTURE_IA64:
+-      arch = "ia64";
+-      break;
+-    default:
+-      arch = "unknown";
+-      break;
+-  }
+-
+-  safePrintLn(arch);
+-  return 0;
+-}
+-
+-}  // namespace arch_pipeline
+-
+ REGISTER_COMMAND(
+     arch, "arch", "arch",
+     "Print machine architecture.\n"
+@@ -81,20 +32,9 @@ REGISTER_COMMAND(
+     "Note: This implementation displays the Windows processor architecture.",
+     "  arch", "uname -m", "WinuxCmd", "Copyright © 2026 WinuxCmd",
+     ARCH_OPTIONS) {
+-  using namespace arch_pipeline;
+-
+-  // [GNU] arch is `uname -m` and takes no operands: coreutils reports
+-  // "extra operand 'X'" and exits 1 rather than printing the machine name
+-  // (WinuxCmd #1215).
+-  if (!ctx.positionals.empty()) {
+-    return cp::report_extra_operand("arch", ctx.positionals.front());
+-  }
+-
+-  auto cfg_result = build_config(ctx);
+-  if (!cfg_result) {
+-    cp::report_error(cfg_result, L"arch");
+-    return 1;
+-  }
+-
+-  return run(*cfg_result);
++  // #1488 mechanical replacement: the semantics live in the rust2 library
++  // (rust2/crates/winux-cmds/src/arch.rs); the C++ side keeps only this
++  // registration. ctx.raw_args passes the operands verbatim because the GNU
++  // applet parses its own argv.
++  return winux::rust2::run_command("arch", ctx.raw_args);
+ }
+diff --git a/src/commands/groups.cpp b/src/commands/groups.cpp
+index 4dd2477c..937f96cc 100644
+--- a/src/commands/groups.cpp
++++ b/src/commands/groups.cpp
+@@ -8,7 +8,6 @@
+ /// @Copyright: Copyright © 2026 WinuxCmd
+ #include "pch/pch.h"
+ // include other header after pch.h
+-#include <lm.h>  // For NetUserGetGroups, NetApiBufferFree
+ 
+ #include "core/command_macros.h"
+ 
+@@ -18,6 +17,7 @@ import std;
+ import core;
+ import utils;
+ import container;
++import rust2_bridge;
+ 
+ using cmd::meta::OptionMeta;
+ using cmd::meta::OptionType;
+@@ -26,148 +26,15 @@ auto constexpr GROUPS_OPTIONS =
+     // [GNU]
+     std::array{OPTION("", "", "print the groups a user is in", STRING_TYPE)};
+ 
+-namespace groups_pipeline {
+-namespace cp = core::pipeline;
+-
+-struct Config {
+-  SmallVector<std::string, 64> users;
+-};
+-
+-// See id.cpp/stat.cpp: the Windows well-known "None" group has no POSIX
+-// equivalent and is treated as unresolvable (#1024).
+-auto is_none_group_name(std::string_view name) -> bool {
+-  return name.size() == 4 &&
+-         std::tolower(static_cast<unsigned char>(name[0])) == 'n' &&
+-         std::tolower(static_cast<unsigned char>(name[1])) == 'o' &&
+-         std::tolower(static_cast<unsigned char>(name[2])) == 'n' &&
+-         std::tolower(static_cast<unsigned char>(name[3])) == 'e';
+-}
+-
+-auto build_config(const CommandContext<GROUPS_OPTIONS.size()>& ctx)
+-    -> cp::Result<Config> {
+-  Config cfg;
+-
+-  for (auto arg : ctx.positionals) {
+-    cfg.users.push_back(std::string(arg));
+-  }
+-
+-  return cfg;
+-}
+-
+-// [GNU] groups.c prints one line: space-separated group names, prefixed
+-// with "user : " only when a username argument was given.  Collect the
+-// names here; run() does the formatting.
+-auto collect_user_groups(const std::string& user_str,
+-                         std::vector<std::string>& out) -> int {
+-  // Convert UTF-8 username to wide string for the Win32 API
+-  std::wstring wuser = utf8_to_wstring(user_str);
+-
+-  LPBYTE raw = nullptr;
+-  DWORD entries = 0;
+-  DWORD total = 0;
+-
+-  DWORD status = NetUserGetGroups(nullptr, wuser.c_str(), 0, &raw,
+-                                  MAX_PREFERRED_LENGTH, &entries, &total);
+-
+-  if (status != NERR_Success) {
+-    // [GNU] groups.c reports an unknown user as %s: no such user
+-    // with the name quoted; other failures keep the system text.
+-    if (status == NERR_UserNotFound) {
+-      safeErrorPrintLn("groups: '" + user_str + "': no such user");
+-    } else {
+-      safeErrorPrintLn("groups: " + user_str + ": " +
+-                       win32_posix_error_text(status));
+-    }
+-    if (raw) NetApiBufferFree(raw);
+-    return 1;
+-  }
+-
+-  if (entries == 0) {
+-    // User has no groups; still a valid result
+-    if (raw) NetApiBufferFree(raw);
+-    return 0;
+-  }
+-
+-  auto* groups = reinterpret_cast<GROUP_USERS_INFO_0*>(raw);
+-  for (DWORD i = 0; i < entries; ++i) {
+-    std::wstring wname = groups[i].grui0_name ? groups[i].grui0_name : L"";
+-    std::string name = wstring_to_utf8(wname);
+-    if (name.empty()) {
+-      continue;
+-    }
+-    // [GNU] The default primary group on Windows resolves to a well-known
+-    // group literally named "None" which has no POSIX equivalent; print
+-    // its numeric id like an unresolvable gid (#1024).
+-    if (is_none_group_name(name)) {
+-      if (auto account = win32_lookup_account(wname);
+-          account && !account->id.empty()) {
+-        out.push_back(account->id);
+-      }
+-      continue;
+-    }
+-    out.push_back(std::move(name));
+-  }
+-
+-  if (raw) NetApiBufferFree(raw);
+-  return 0;
+-}
+-
+-auto get_user_groups(const std::string& user_str, bool with_prefix) -> int {
+-  std::vector<std::string> names;
+-  int result = collect_user_groups(user_str, names);
+-  if (result != 0) return result;
+-  std::string line;
+-  if (with_prefix) line = user_str + " : ";
+-  for (size_t i = 0; i < names.size(); ++i) {
+-    if (i > 0) line += " ";
+-    line += names[i];
+-  }
+-  safePrintLn(line);
+-  return 0;
+-}
+-
+-auto run(const Config& cfg) -> int {
+-  // Get current user if no users specified
+-  std::string user_str;
+-
+-  if (cfg.users.empty()) {
+-    WCHAR username[256];
+-    DWORD username_size = 256;
+-
+-    if (!GetUserNameW(username, &username_size)) {
+-      return 1;
+-    }
+-
+-    std::wstring ws(username);
+-    user_str = wstring_to_utf8(ws);
+-    return get_user_groups(user_str, /*with_prefix=*/false);
+-  }
+-
+-  // [GNU] with username arguments, each line is prefixed "user : ".
+-  int exit_code = 0;
+-  for (const auto& user : cfg.users) {
+-    int result = get_user_groups(user, /*with_prefix=*/true);
+-    if (result != 0) {
+-      exit_code = result;
+-    }
+-  }
+-  return exit_code;
+-}
+-
+-}  // namespace groups_pipeline
+-
+ REGISTER_COMMAND(groups, "groups", "groups [OPTION]... [USERNAME]...",
+                  "Print a list of the groups a user is in.",
+                  "  groups\n"
+                  "  groups username",
+                  "id(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd",
+                  GROUPS_OPTIONS) {
+-  using namespace groups_pipeline;
+-
+-  auto cfg_result = build_config(ctx);
+-  if (!cfg_result) {
+-    cp::report_error(cfg_result, L"groups");
+-    return 1;
+-  }
+-  return run(*cfg_result);
++  // #1488 mechanical replacement: the semantics live in the rust2 library
++  // (rust2/crates/winux-cmds/src/groups.rs); the C++ side keeps only this
++  // registration. ctx.raw_args passes the operands verbatim because the GNU
++  // applet parses its own argv.
++  return winux::rust2::run_command("groups", ctx.raw_args);
+ }
+diff --git a/src/commands/mkfifo.cpp b/src/commands/mkfifo.cpp
+index 9b192b51..38780ec2 100644
+--- a/src/commands/mkfifo.cpp
++++ b/src/commands/mkfifo.cpp
+@@ -7,6 +7,7 @@
+ import std;
+ import core;
+ import utils;
++import rust2_bridge;
+ 
+ using cmd::meta::OptionMeta;
+ using cmd::meta::OptionType;
+@@ -21,223 +22,6 @@ auto constexpr MKFIFO_OPTIONS = std::array{
+            OPTIONAL_STRING_TYPE),
+ };
+ 
+-namespace mkfifo_pipeline {
+-namespace cp = core::pipeline;
+-
+-// [GNU] mode_compile + the permission-bits gate (mkfifo.c:151-165):
+-// the mode is applied to a 0666 base, and any resulting bit outside
+-// S_IRWXUGO is fatal. The old plausibility sieve mapped readonly by
+-// searching the TEXT for digits ("0400" contains '0' and was treated
+-// as writable) and rejected multi-op and copy clauses outright.
+-// Symbolic evaluation: clauses of [ugoa]* followed by one or more
+-// (op, perms) pairs; perms may copy another class (g=u); 's'/'t'
+-// raise the special bits the gate then rejects. An omitted who is
+-// treated as 'a' (Windows has no umask to consult).
+-auto evaluate_mode(std::string_view mode) -> cp::Result<unsigned> {
+-  if (mode.empty()) return std::unexpected("invalid mode");
+-
+-  bool octal = std::ranges::all_of(mode, [](char ch) {
+-    return ch >= '0' && ch <= '7';
+-  });
+-  if (octal) {
+-    unsigned long long value = 0;
+-    for (char ch : mode) value = value * 8 + static_cast<unsigned>(ch - '0');
+-    if (value > 0777ULL) {
+-      return std::unexpected("mode must specify only file permission bits");
+-    }
+-    return static_cast<unsigned>(value);
+-  }
+-
+-  unsigned cur = 0666;
+-  size_t start = 0;
+-  while (true) {
+-    const size_t comma = mode.find(',', start);
+-    const std::string_view clause =
+-        mode.substr(start, comma == std::string_view::npos
+-                               ? std::string_view::npos
+-                               : comma - start);
+-    if (clause.empty()) return std::unexpected("invalid mode");
+-
+-    size_t j = 0;
+-    bool who_u = false, who_g = false, who_o = false;
+-    while (j < clause.size() &&
+-           (clause[j] == 'u' || clause[j] == 'g' || clause[j] == 'o' ||
+-            clause[j] == 'a')) {
+-      if (clause[j] == 'u' || clause[j] == 'a') who_u = true;
+-      if (clause[j] == 'g' || clause[j] == 'a') who_g = true;
+-      if (clause[j] == 'o' || clause[j] == 'a') who_o = true;
+-      ++j;
+-    }
+-    if (j == 0) {
+-      who_u = who_g = who_o = true;
+-    }
+-
+-    bool any_op = false;
+-    while (j < clause.size()) {
+-      const char op = clause[j];
+-      if (op != '+' && op != '-' && op != '=') {
+-        return std::unexpected("invalid mode");
+-      }
+-      ++j;
+-      const size_t perm_begin = j;
+-      while (j < clause.size() &&
+-             std::string_view("rwxXstugo").find(clause[j]) !=
+-                 std::string_view::npos) {
+-        ++j;
+-      }
+-      const std::string_view perms = clause.substr(perm_begin, j - perm_begin);
+-      any_op = true;
+-
+-      auto class_bits = [&](int cls) -> unsigned {
+-        unsigned bits = 0;
+-        for (char ch : perms) {
+-          switch (ch) {
+-            case 'r': bits |= 4; break;
+-            case 'w': bits |= 2; break;
+-            case 'x': bits |= 1; break;
+-            case 'X': bits |= (cur & 0111) != 0 ? 1 : 0; break;
+-            case 'u': bits |= (cur >> 6) & 7; break;
+-            case 'g': bits |= (cur >> 3) & 7; break;
+-            case 'o': bits |= cur & 7; break;
+-            default: break;  // 's'/'t' handled as special bits below
+-          }
+-        }
+-        (void)cls;
+-        return bits;
+-      };
+-      const bool who[3] = {who_u, who_g, who_o};
+-      for (int cls = 0; cls < 3; ++cls) {
+-        if (!who[cls]) continue;
+-        const int shift = 6 - 3 * cls;
+-        const unsigned bits = class_bits(cls);
+-        if (op == '+') {
+-          cur |= bits << shift;
+-        } else if (op == '-') {
+-          cur &= ~(bits << shift);
+-        } else {
+-          cur = (cur & ~(7U << shift)) | (bits << shift);
+-        }
+-      }
+-      unsigned special = 0;
+-      for (char ch : perms) {
+-        if (ch == 's') {
+-          if (who_u) special |= 04000;
+-          if (who_g) special |= 02000;
+-        } else if (ch == 't') {
+-          special |= 01000;
+-        }
+-      }
+-      if (op == '-') {
+-        cur &= ~special;
+-      } else {
+-        cur |= special;
+-      }
+-    }
+-    if (!any_op) return std::unexpected("invalid mode");
+-
+-    if (comma == std::string_view::npos) break;
+-    start = comma + 1;
+-  }
+-
+-  if ((cur & ~0777U) != 0) {
+-    return std::unexpected("mode must specify only file permission bits");
+-  }
+-  return cur;
+-}
+-
+-struct Config {
+-  std::vector<std::string> fifos;
+-  bool has_mode = false;
+-  unsigned mode_value = 0;
+-  std::string context_value;
+-};
+-
+-auto add_fifo_args(Config& cfg, std::span<const std::string_view> args)
+-    -> void {
+-  for (auto arg : args) {
+-    cfg.fifos.emplace_back(arg);
+-  }
+-}
+-
+-auto build_config(const CommandContext<MKFIFO_OPTIONS.size()>& ctx)
+-    -> cp::Result<Config> {
+-  Config cfg;
+-
+-  // [GNU] The missing-operand check precedes mode compilation
+-  // (mkfifo.c:133 vs 154-157).
+-  if (ctx.positionals.empty()) {
+-    return std::unexpected("missing operand");
+-  }
+-
+-  if (ctx.has("-m") || ctx.has("--mode")) {
+-    std::string mode = ctx.get<std::string>("--mode", "");
+-    if (mode.empty()) mode = ctx.get<std::string>("-m", "");
+-    auto evaluated = evaluate_mode(mode);
+-    if (!evaluated) return std::unexpected(evaluated.error());
+-    cfg.has_mode = true;
+-    cfg.mode_value = *evaluated;
+-  }
+-
+-  cfg.context_value = ctx.get<std::string>("--context", "");
+-  if (cfg.context_value.empty()) {
+-    cfg.context_value = ctx.get<std::string>("-Z", "");
+-  }
+-  add_fifo_args(cfg, std::span<const std::string_view>(ctx.positionals.data(),
+-                                                       ctx.positionals.size()));
+-
+-  return cfg;
+-}
+-
+-auto run(const Config& cfg) -> int {
+-  // [GNU] On a kernel without SELinux, --context=CTX warns and the
+-  // fifo is still created; a bare -Z is silently ignored
+-  // (mkfifo.c:118-122). This used to be a hard failure that created
+-  // nothing.
+-  if (!cfg.context_value.empty()) {
+-    safeErrorPrint(
+-        "mkfifo: warning: ignoring --context; it requires an "
+-        "SELinux/SMACK-enabled kernel\n");
+-  }
+-
+-  int exit_code = 0;
+-  for (const auto& fifo : cfg.fifos) {
+-    // #1235: the operand may use any accepted POSIX drive spelling
+-    // ("/e/p", "/cygdrive/e/p", "/mnt/e/p").  Handing that raw text to the
+-    // existence probe / create_winux_fifo_w makes Win32 resolve a leading
+-    // "/e" against the CURRENT drive, so from a C: cwd `mkfifo /e/p` probed
+-    // "<cwd>:\e\p" and would have landed the marker beside the cwd.  Fold
+-    // once through the shared make_api_path_operand boundary before any
+-    // filesystem call; `fifo` stays verbatim in every message, like MSYS.
+-    const auto operand = native_path::make_api_path_operand(fifo);
+-    const DWORD existing = native_path::operand_target_attributes_w(operand);
+-    if (existing != INVALID_FILE_ATTRIBUTES) {
+-      safeErrorPrint("mkfifo: cannot create fifo '");
+-      safeErrorPrint(fifo);
+-      safeErrorPrint("': File exists\n");
+-      exit_code = 1;
+-      continue;
+-    }
+-
+-    // A mode without any write bit maps to the DOS readonly
+-    // attribute, computed from the evaluated mode value.
+-    const bool readonly = cfg.has_mode && (cfg.mode_value & 0222) == 0;
+-    const DWORD created =
+-        native_path::create_winux_fifo_w(operand.normalized, readonly);
+-    if (created != ERROR_SUCCESS) {
+-      safeErrorPrint("mkfifo: cannot create fifo '");
+-      safeErrorPrint(fifo);
+-      safeErrorPrint("': ");
+-      safeErrorPrint(win32_posix_error_text(
+-          created, {.file_exists = true, .invalid_name_as_missing = true}));
+-      safeErrorPrint("\n");
+-      exit_code = 1;
+-    }
+-  }
+-  return exit_code;
+-}
+-
+-}  // namespace mkfifo_pipeline
+-
+ REGISTER_COMMAND(
+     mkfifo, "mkfifo", "mkfifo [OPTION]... NAME...",
+     "Create named pipes (FIFOs) with the given NAMEs.\n"
+@@ -250,18 +34,9 @@ REGISTER_COMMAND(
+     "  mkfifo -m 600 mypipe\n"
+     "  mkfifo --context system_u:object_r:fifo_file_t:s0 mypipe",
+     "mknod(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", MKFIFO_OPTIONS) {
+-  using namespace mkfifo_pipeline;
+-
+-  auto cfg_result = build_config(ctx);
+-  if (!cfg_result) {
+-    safeErrorPrint("mkfifo: ");
+-    safeErrorPrint(cfg_result.error());
+-    safeErrorPrint("\n");
+-    if (cfg_result.error().starts_with("missing operand")) {
+-      safeErrorPrint("Try 'mkfifo --help' for more information.\n");
+-    }
+-    return 1;
+-  }
+-
+-  return run(*cfg_result);
++  // #1488 mechanical replacement: the semantics live in the rust2 library
++  // (rust2/crates/winux-cmds/src/mkfifo.rs); the C++ side keeps only this
++  // registration. ctx.raw_args passes the operands verbatim because the GNU
++  // applet parses its own argv.
++  return winux::rust2::run_command("mkfifo", ctx.raw_args);
+ }
+diff --git a/src/commands/mknod.cpp b/src/commands/mknod.cpp
+index 413f6cc1..e92326d0 100644
+--- a/src/commands/mknod.cpp
++++ b/src/commands/mknod.cpp
+@@ -7,6 +7,7 @@
+ import std;
+ import core;
+ import utils;
++import rust2_bridge;
+ 
+ using cmd::meta::OptionMeta;
+ using cmd::meta::OptionType;
+@@ -21,304 +22,6 @@ auto constexpr MKNOD_OPTIONS = std::array{
+            OPTIONAL_STRING_TYPE),
+ };
+ 
+-namespace mknod_pipeline {
+-namespace cp = core::pipeline;
+-
+-auto make_error(std::string message) -> cp::Error {
+-  static thread_local std::string storage;
+-  storage = std::move(message);
+-  return storage;
+-}
+-
+-enum class NodeType { Block, Character, Fifo };
+-
+-// [GNU] mode_compile + the permission-bits gate (mknod.c:154-162),
+-// shared in shape with mkfifo: apply to a 0666 base, then any bit
+-// outside S_IRWXUGO is fatal. The old sieve accepted any alphanumeric
+-// string ("bogus9" passed) as a mode.
+-auto evaluate_mode(std::string_view mode) -> cp::Result<unsigned> {
+-  if (mode.empty()) return std::unexpected("invalid mode");
+-
+-  bool octal = std::ranges::all_of(mode, [](char ch) {
+-    return ch >= '0' && ch <= '7';
+-  });
+-  if (octal) {
+-    unsigned long long value = 0;
+-    for (char ch : mode) value = value * 8 + static_cast<unsigned>(ch - '0');
+-    if (value > 0777ULL) {
+-      return std::unexpected("mode must specify only file permission bits");
+-    }
+-    return static_cast<unsigned>(value);
+-  }
+-
+-  unsigned cur = 0666;
+-  size_t start = 0;
+-  while (true) {
+-    const size_t comma = mode.find(',', start);
+-    const std::string_view clause =
+-        mode.substr(start, comma == std::string_view::npos
+-                               ? std::string_view::npos
+-                               : comma - start);
+-    if (clause.empty()) return std::unexpected("invalid mode");
+-
+-    size_t j = 0;
+-    bool who_u = false, who_g = false, who_o = false;
+-    while (j < clause.size() &&
+-           (clause[j] == 'u' || clause[j] == 'g' || clause[j] == 'o' ||
+-            clause[j] == 'a')) {
+-      if (clause[j] == 'u' || clause[j] == 'a') who_u = true;
+-      if (clause[j] == 'g' || clause[j] == 'a') who_g = true;
+-      if (clause[j] == 'o' || clause[j] == 'a') who_o = true;
+-      ++j;
+-    }
+-    if (j == 0) {
+-      who_u = who_g = who_o = true;
+-    }
+-
+-    bool any_op = false;
+-    while (j < clause.size()) {
+-      const char op = clause[j];
+-      if (op != '+' && op != '-' && op != '=') {
+-        return std::unexpected("invalid mode");
+-      }
+-      ++j;
+-      const size_t perm_begin = j;
+-      while (j < clause.size() &&
+-             std::string_view("rwxXstugo").find(clause[j]) !=
+-                 std::string_view::npos) {
+-        ++j;
+-      }
+-      const std::string_view perms = clause.substr(perm_begin, j - perm_begin);
+-      any_op = true;
+-
+-      const bool who[3] = {who_u, who_g, who_o};
+-      for (int cls = 0; cls < 3; ++cls) {
+-        if (!who[cls]) continue;
+-        const int shift = 6 - 3 * cls;
+-        unsigned bits = 0;
+-        for (char ch : perms) {
+-          switch (ch) {
+-            case 'r': bits |= 4; break;
+-            case 'w': bits |= 2; break;
+-            case 'x': bits |= 1; break;
+-            case 'X': bits |= (cur & 0111) != 0 ? 1 : 0; break;
+-            case 'u': bits |= (cur >> 6) & 7; break;
+-            case 'g': bits |= (cur >> 3) & 7; break;
+-            case 'o': bits |= cur & 7; break;
+-            default: break;
+-          }
+-        }
+-        if (op == '+') {
+-          cur |= bits << shift;
+-        } else if (op == '-') {
+-          cur &= ~(bits << shift);
+-        } else {
+-          cur = (cur & ~(7U << shift)) | (bits << shift);
+-        }
+-      }
+-      unsigned special = 0;
+-      for (char ch : perms) {
+-        if (ch == 's') {
+-          if (who_u) special |= 04000;
+-          if (who_g) special |= 02000;
+-        } else if (ch == 't') {
+-          special |= 01000;
+-        }
+-      }
+-      if (op == '-') {
+-        cur &= ~special;
+-      } else {
+-        cur |= special;
+-      }
+-    }
+-    if (!any_op) return std::unexpected("invalid mode");
+-
+-    if (comma == std::string_view::npos) break;
+-    start = comma + 1;
+-  }
+-
+-  if ((cur & ~0777U) != 0) {
+-    return std::unexpected("mode must specify only file permission bits");
+-  }
+-  return cur;
+-}
+-
+-auto parse_node_type(std::string_view type) -> cp::Result<NodeType> {
+-  if (type.empty()) {
+-    return std::unexpected("missing device type");
+-  }
+-
+-  switch (type.front()) {
+-    case 'b':
+-      return NodeType::Block;
+-    case 'c':
+-    case 'u':
+-      return NodeType::Character;
+-    case 'p':
+-      return NodeType::Fifo;
+-    default:
+-      return std::unexpected(
+-          make_error("invalid device type '" + std::string(type) + "'"));
+-  }
+-}
+-
+-// [GNU] MAJOR/MINOR parse with xstrtoumax base 0 (mknod.c:236-245):
+-// 0x is hex, a leading 0 is octal, otherwise decimal. Failures read
+-// "invalid major device number '<arg>'" / minor likewise.
+-auto parse_uint_arg(std::string_view arg, std::string_view label)
+-    -> cp::Result<unsigned long long> {
+-  if (arg.empty()) {
+-    return std::unexpected(make_error("missing " + std::string(label)));
+-  }
+-  int base = 10;
+-  std::string_view digits = arg;
+-  if (arg.size() > 2 && arg[0] == '0' && (arg[1] == 'x' || arg[1] == 'X')) {
+-    base = 16;
+-    digits = arg.substr(2);
+-  } else if (arg.size() > 1 && arg[0] == '0') {
+-    base = 8;
+-    digits = arg.substr(1);
+-  }
+-  unsigned long long value = 0;
+-  auto [ptr, ec] =
+-      std::from_chars(digits.data(), digits.data() + digits.size(), value,
+-                      base);
+-  if (ec != std::errc() || ptr != digits.data() + digits.size()) {
+-    return std::unexpected(make_error("invalid " + std::string(label) +
+-                                      " '" + std::string(arg) + "'"));
+-  }
+-  return value;
+-}
+-
+-struct Config {
+-  std::string name;
+-  NodeType type = NodeType::Fifo;
+-  bool has_mode = false;
+-  unsigned mode_value = 0;
+-  std::string context_value;
+-};
+-
+-auto build_config(const CommandContext<MKNOD_OPTIONS.size()>& ctx)
+-    -> cp::Result<Config> {
+-  Config cfg;
+-
+-  if (ctx.has("-m") || ctx.has("--mode")) {
+-    std::string mode = ctx.get<std::string>("--mode", "");
+-    if (mode.empty()) mode = ctx.get<std::string>("-m", "");
+-    auto evaluated = evaluate_mode(mode);
+-    if (!evaluated) return std::unexpected(evaluated.error());
+-    cfg.has_mode = true;
+-    cfg.mode_value = *evaluated;
+-  }
+-
+-  cfg.context_value = ctx.get<std::string>("--context", "");
+-
+-  if (ctx.positionals.size() < 2) {
+-    if (ctx.positionals.empty()) {
+-      return std::unexpected("missing operand");
+-    }
+-    return std::unexpected(make_error(
+-        "missing operand after '" + std::string(ctx.positionals.back()) + "'"));
+-  }
+-
+-  cfg.name = std::string(ctx.positionals[0]);
+-  auto type_result = parse_node_type(ctx.positionals[1]);
+-  if (!type_result) return std::unexpected(type_result.error());
+-  cfg.type = *type_result;
+-
+-  if (cfg.type == NodeType::Fifo) {
+-    if (ctx.positionals.size() > 2) {
+-      return std::unexpected(
+-          make_error("extra operand '" + std::string(ctx.positionals[2]) +
+-                     "'\nFifos do not have major and minor device numbers."));
+-    }
+-    return cfg;
+-  }
+-
+-  if (ctx.positionals.size() > 4) {
+-    // [GNU] mknod.c:183-191: the first extra operand is named.
+-    return std::unexpected(make_error(
+-        "extra operand '" + std::string(ctx.positionals[4]) + "'"));
+-  }
+-
+-  if (ctx.positionals.size() < 4) {
+-    // [GNU] The "Special files require..." note appears only when
+-    // exactly NAME and TYPE were given (mknod.c:177-179).
+-    std::string message = "missing operand after '" +
+-                          std::string(ctx.positionals.back()) + "'";
+-    if (ctx.positionals.size() == 2) {
+-      message += "\nSpecial files require major and minor device numbers.";
+-    }
+-    return std::unexpected(make_error(std::move(message)));
+-  }
+-
+-  auto major_result =
+-      parse_uint_arg(ctx.positionals[2], "major device number");
+-  if (!major_result) return std::unexpected(major_result.error());
+-  auto minor_result =
+-      parse_uint_arg(ctx.positionals[3], "minor device number");
+-  if (!minor_result) return std::unexpected(minor_result.error());
+-
+-  return cfg;
+-}
+-
+-auto run(const Config& cfg) -> int {
+-  // [GNU] Non-SELinux warn-and-create for --context=CTX (mknod.c:
+-  // 131-140); a bare -Z is silent. This used to hard-fail.
+-  if (!cfg.context_value.empty()) {
+-    safeErrorPrint(
+-        "mknod: warning: ignoring --context; it requires an "
+-        "SELinux/SMACK-enabled kernel\n");
+-  }
+-
+-  // #1235: fold the POSIX drive dialect ("/e/n", "/cygdrive/e/n", "/mnt/e/n")
+-  // through the shared boundary before any filesystem call; Win32 resolves a
+-  // leading "/e" against the CURRENT drive, so from a C: cwd the existence
+-  // probe answered for "<cwd>:\e\n" and a fifo node would land beside the
+-  // cwd.  `name` stays verbatim in every message, like MSYS.
+-  const auto operand = native_path::make_api_path_operand(cfg.name);
+-  if (native_path::operand_target_attributes_w(operand) !=
+-      INVALID_FILE_ATTRIBUTES) {
+-    // [GNU] quotef (mknod.c:257): plain names print unquoted;
+-    // single quotes appear only around names that need them.
+-    const bool needs_quotes =
+-        cfg.name.find_first_of(" \t\n'\"\\") != std::string::npos;
+-    safeErrorPrint("mknod: ");
+-    if (needs_quotes) safeErrorPrint("'");
+-    safeErrorPrint(cfg.name);
+-    if (needs_quotes) safeErrorPrint("'");
+-    safeErrorPrint(": File exists\n");
+-    return 1;
+-  }
+-
+-  if (cfg.type == NodeType::Fifo) {
+-    // [GNU] -m applies to the fifo too (mknod.c:264, 273): a mode
+-    // without any write bit maps to the readonly attribute. It used
+-    // to be validated and then ignored.
+-    const bool readonly = cfg.has_mode && (cfg.mode_value & 0222) == 0;
+-    const DWORD created =
+-        native_path::create_winux_fifo_w(operand.normalized, readonly);
+-    if (created != ERROR_SUCCESS) {
+-      safeErrorPrint("mknod: '");
+-      safeErrorPrint(cfg.name);
+-      safeErrorPrint("': ");
+-      safeErrorPrint(win32_posix_error_text(
+-          created, {.file_exists = true, .invalid_name_as_missing = true}));
+-      safeErrorPrint("\n");
+-      return 1;
+-    }
+-    return 0;
+-  }
+-
+-  // Block/character device nodes have no Windows equivalent.
+-  safeErrorPrint("mknod: '");
+-  safeErrorPrint(cfg.name);
+-  safeErrorPrint("': Operation not permitted\n");
+-  return 1;
+-}
+-
+-}  // namespace mknod_pipeline
+-
+ REGISTER_COMMAND(
+     mknod, "mknod", "mknod [OPTION]... NAME TYPE [MAJOR MINOR]",
+     "Create the special file NAME of the given TYPE.\n"
+@@ -330,20 +33,9 @@ REGISTER_COMMAND(
+     "  mknod ttyS0 c 4 64\n"
+     "  mknod sda b 8 0",
+     "mkfifo(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", MKNOD_OPTIONS) {
+-  using namespace mknod_pipeline;
+-
+-  auto cfg_result = build_config(ctx);
+-  if (!cfg_result) {
+-    safeErrorPrint("mknod: ");
+-    safeErrorPrint(cfg_result.error());
+-    safeErrorPrint("\n");
+-    if (cfg_result.error().starts_with("missing operand") ||
+-        cfg_result.error().starts_with("extra operand") ||
+-        cfg_result.error().starts_with("invalid device type")) {
+-      safeErrorPrint("Try 'mknod --help' for more information.\n");
+-    }
+-    return 1;
+-  }
+-
+-  return run(*cfg_result);
++  // #1488 mechanical replacement: the semantics live in the rust2 library
++  // (rust2/crates/winux-cmds/src/mknod.rs); the C++ side keeps only this
++  // registration. ctx.raw_args passes the operands verbatim because the GNU
++  // applet parses its own argv.
++  return winux::rust2::run_command("mknod", ctx.raw_args);
+ }
+diff --git a/src/commands/mktemp.cpp b/src/commands/mktemp.cpp
+index a3d06d20..33dd7405 100644
+--- a/src/commands/mktemp.cpp
++++ b/src/commands/mktemp.cpp
+@@ -15,6 +15,7 @@ import std;
+ import core;
+ import utils;
+ import container;
++import rust2_bridge;
+ 
+ using cmd::meta::OptionMeta;
+ using cmd::meta::OptionType;
+@@ -42,574 +43,6 @@ auto constexpr MKTEMP_OPTIONS = std::array{
+            "$TMPDIR",
+            STRING_TYPE)};
+ 
+-namespace mktemp_pipeline {
+-namespace cp = core::pipeline;
+-
+-// [GNU] mktemp.c:276-311 prints file_name_concat (dest_dir, template): the
+-// caller's directory spec verbatim, never canonicalized. A -p/--tmpdir
+-// operand in MSYS drive form (/d/... or /cygdrive/d/...) must therefore
+-// echo back in that dialect so shell round-trips like
+-// t=$(mktemp -p "$d" 'x.XXXXXX'); mv "$t" "$d/out" stay dialect-consistent
+-// (#1141). Filesystem operations keep using the normalized native form.
+-// The default paths (TMPDIR, GetTempPathW) stay native-form, matching the
+-// pinned mktemp_default_template_uses_tmpdir_env_as_native_path behavior.
+-enum class DisplayDialect {
+-  Native,     // Windows drive form (D:/...)
+-  MsysDrive,  // /d/...
+-  Cygdrive,   // /cygdrive/d/...
+-};
+-
+-auto display_dialect_of(std::string_view text) -> DisplayDialect {
+-  auto is_separator = [](char ch) { return ch == '/' || ch == '\\'; };
+-  if (text.size() >= 2 && is_separator(text[0]) &&
+-      std::isalpha(static_cast<unsigned char>(text[1])) &&
+-      (text.size() == 2 || is_separator(text[2]))) {
+-    return DisplayDialect::MsysDrive;
+-  }
+-  constexpr std::string_view cygdrive = "/cygdrive/";
+-  if (text.size() >= cygdrive.size() + 1 && text.starts_with(cygdrive) &&
+-      std::isalpha(static_cast<unsigned char>(text[cygdrive.size()])) &&
+-      (text.size() == cygdrive.size() + 1 ||
+-       is_separator(text[cygdrive.size() + 1]))) {
+-    return DisplayDialect::Cygdrive;
+-  }
+-  return DisplayDialect::Native;
+-}
+-
+-// Re-express a native drive path (D:/rest) in the caller's dialect, using
+-// the MSYS lowercase-drive convention (/d/rest, /cygdrive/d/rest). Anything
+-// that is not a drive-letter path is returned unchanged.
+-auto to_display_dialect(std::string_view native, DisplayDialect dialect)
+-    -> std::string {
+-  if (dialect == DisplayDialect::Native || native.size() < 2 ||
+-      native[1] != ':') {
+-    return std::string(native);
+-  }
+-  const char drive =
+-      static_cast<char>(std::tolower(static_cast<unsigned char>(native[0])));
+-  std::string prefix =
+-      dialect == DisplayDialect::MsysDrive ? "/" : "/cygdrive/";
+-  prefix.push_back(drive);
+-  return prefix + std::string(native.substr(2));
+-}
+-
+-struct Config {
+-  bool make_directory = false;
+-  bool dry_run = false;
+-  bool quiet = false;
+-  bool use_tmpdir_flag = false;
+-  bool dest_dir_mode = false;
+-  std::string tmpdir;
+-  std::string template_str;
+-  std::string suffix;
+-  DisplayDialect tmpdir_dialect = DisplayDialect::Native;
+-};
+-auto normalize_win_shell_path(std::string_view text) -> std::string {
+-  auto make_drive_path = [](char drive, std::string_view rest) {
+-    std::string out;
+-    out.reserve(rest.size() + 2);
+-    out.push_back(
+-        static_cast<char>(std::toupper(static_cast<unsigned char>(drive))));
+-    out.push_back(':');
+-    out.append(rest.data(), rest.size());
+-    return out;
+-  };
+-
+-  if (text.size() >= 2 && (text[0] == '/' || text[0] == '\\') &&
+-      std::isalpha(static_cast<unsigned char>(text[1])) &&
+-      (text.size() == 2 || text[2] == '/' || text[2] == '\\')) {
+-    // A bare drive root ("/e") names "E:\" like the "/e/..." deep form;
+-    // joining must keep a root separator so the result is not "E:<rel>"
+-    // (#1230).
+-    if (text.size() == 2) return make_drive_path(text[1], "/");
+-    return make_drive_path(text[1], text.substr(2));
+-  }
+-
+-  constexpr std::string_view cygdrive = "/cygdrive/";
+-  if (text.size() >= cygdrive.size() + 1 && text.starts_with(cygdrive) &&
+-      std::isalpha(static_cast<unsigned char>(text[cygdrive.size()])) &&
+-      (text.size() == cygdrive.size() + 1 ||
+-       text[cygdrive.size() + 1] == '/' ||
+-       text[cygdrive.size() + 1] == '\\')) {
+-    return make_drive_path(text[cygdrive.size()],
+-                           text.size() == cygdrive.size() + 1
+-                               ? "/"
+-                               : text.substr(cygdrive.size() + 1));
+-  }
+-
+-  return std::string(text);
+-}
+-
+-auto getenv_path(std::wstring_view name) -> std::optional<std::string> {
+-  std::wstring key(name);
+-  DWORD needed = GetEnvironmentVariableW(key.c_str(), nullptr, 0);
+-  if (needed == 0) return std::nullopt;
+-
+-  std::wstring value(needed, wchar_t{});
+-  DWORD written = GetEnvironmentVariableW(key.c_str(), value.data(), needed);
+-  if (written == 0) return std::nullopt;
+-
+-  value.resize(written);
+-  if (value.empty()) return std::nullopt;
+-  return normalize_win_shell_path(wstring_to_utf8(value));
+-}
+-
+-auto long_existing_prefix_path(std::filesystem::path path)
+-    -> std::filesystem::path {
+-  std::vector<std::filesystem::path> suffix;
+-  std::error_code ec;
+-  while (!path.empty() && !std::filesystem::exists(path, ec)) {
+-    suffix.push_back(path.filename());
+-    auto parent = path.parent_path();
+-    if (parent == path) break;
+-    path = parent;
+-    ec.clear();
+-  }
+-
+-  if (!path.empty()) {
+-    std::wstring base = path.wstring();
+-    std::replace(base.begin(), base.end(), L'/', L'\\');
+-    DWORD full_needed = GetFullPathNameW(base.c_str(), 0, nullptr, nullptr);
+-    if (full_needed > 0) {
+-      std::wstring full(full_needed, wchar_t{});
+-      DWORD full_written =
+-          GetFullPathNameW(base.c_str(), full_needed, full.data(), nullptr);
+-      if (full_written > 0 && full_written < full_needed) {
+-        full.resize(full_written);
+-        base = std::move(full);
+-      }
+-    }
+-    DWORD needed = GetLongPathNameW(base.c_str(), nullptr, 0);
+-    if (needed > 0) {
+-      std::wstring buffer(static_cast<size_t>(needed) + 1, wchar_t{});
+-      DWORD written = GetLongPathNameW(base.c_str(), buffer.data(),
+-                                       static_cast<DWORD>(buffer.size()));
+-      if (written > 0 && written < buffer.size()) {
+-        buffer.resize(written);
+-        path = std::filesystem::path(buffer);
+-      }
+-    }
+-  }
+-
+-  for (auto it = suffix.rbegin(); it != suffix.rend(); ++it) {
+-    path /= *it;
+-  }
+-  return path;
+-}
+-
+-auto expand_user_profile_short_name(std::filesystem::path path)
+-    -> std::filesystem::path {
+-  DWORD needed = GetEnvironmentVariableW(L"USERPROFILE", nullptr, 0);
+-  if (needed == 0) return path;
+-
+-  std::wstring profile(needed, wchar_t{});
+-  DWORD written =
+-      GetEnvironmentVariableW(L"USERPROFILE", profile.data(), needed);
+-  if (written == 0 || written >= needed) return path;
+-  profile.resize(written);
+-  if (profile.empty()) return path;
+-
+-  std::wstring short_profile(MAX_PATH, wchar_t{});
+-  DWORD short_written =
+-      GetShortPathNameW(profile.c_str(), short_profile.data(),
+-                        static_cast<DWORD>(short_profile.size()));
+-  if (short_written == 0) return path;
+-  if (short_written >= short_profile.size()) {
+-    short_profile.assign(static_cast<size_t>(short_written) + 1, wchar_t{});
+-    short_written = GetShortPathNameW(profile.c_str(), short_profile.data(),
+-                                      static_cast<DWORD>(short_profile.size()));
+-    if (short_written == 0 || short_written >= short_profile.size())
+-      return path;
+-  }
+-  short_profile.resize(short_written);
+-
+-  auto normalize = [](std::wstring text) {
+-    std::replace(text.begin(), text.end(), L'/', L'\\');
+-    return text;
+-  };
+-  auto lower = [](std::wstring text) {
+-    std::ranges::transform(text, text.begin(), [](wchar_t ch) {
+-      return static_cast<wchar_t>(std::towlower(ch));
+-    });
+-    return text;
+-  };
+-
+-  std::wstring actual = normalize(path.wstring());
+-  std::wstring short_norm = normalize(short_profile);
+-  std::wstring actual_lower = lower(actual);
+-  std::wstring short_lower = lower(short_norm);
+-  if (!actual_lower.starts_with(short_lower)) return path;
+-  if (actual.size() > short_norm.size() && actual[short_norm.size()] != L'\\') {
+-    return path;
+-  }
+-
+-  std::wstring profile_norm = normalize(profile);
+-  return std::filesystem::path(profile_norm + actual.substr(short_norm.size()));
+-}
+-
+-// utf8_path()/path_utf8() now live in utils:utf8 so every command shares
+-// one implementation (niubash #88).
+-
+-auto native_display_path(const std::filesystem::path& path) -> std::string {
+-  // generic_wstring(): forward slashes, matching the historical
+-  // generic_string() output shape, but encoded as UTF-8 (#88).
+-  return wstring_to_utf8(
+-      expand_user_profile_short_name(long_existing_prefix_path(path))
+-          .generic_wstring());
+-}
+-
+-auto random_index(size_t limit) -> size_t {
+-  static thread_local std::mt19937 rng([] {
+-    std::array<std::uint32_t, 8> seed_data{};
+-    std::random_device rd;
+-    for (auto& value : seed_data) {
+-      value = rd();
+-    }
+-    seed_data[6] ^= static_cast<std::uint32_t>(GetCurrentProcessId());
+-    seed_data[7] ^= static_cast<std::uint32_t>(GetTickCount());
+-    std::seed_seq seed(seed_data.begin(), seed_data.end());
+-    return std::mt19937(seed);
+-  }());
+-  std::uniform_int_distribution<size_t> dist(0, limit - 1);
+-  return dist(rng);
+-}
+-auto default_temporary_directory() -> cp::Result<std::string> {
+-  if (auto tmpdir = getenv_path(L"TMPDIR")) {
+-    return *tmpdir;
+-  }
+-
+-  std::wstring buffer(MAX_PATH, wchar_t{});
+-  DWORD length = GetTempPathW(static_cast<DWORD>(buffer.size()), buffer.data());
+-  if (length == 0) {
+-    return std::unexpected("failed to get temporary directory");
+-  }
+-  if (length >= buffer.size()) {
+-    buffer.assign(static_cast<size_t>(length) + 1, wchar_t{});
+-    length = GetTempPathW(static_cast<DWORD>(buffer.size()), buffer.data());
+-    if (length == 0 || length >= buffer.size()) {
+-      return std::unexpected("failed to get temporary directory");
+-    }
+-  }
+-
+-  buffer.resize(length);
+-  if (buffer.empty()) {
+-    return std::unexpected("failed to get temporary directory");
+-  }
+-  return native_display_path(std::filesystem::path(buffer));
+-}
+-
+-auto build_config(const CommandContext<MKTEMP_OPTIONS.size()>& ctx)
+-    -> cp::Result<Config> {
+-  Config cfg;
+-  cfg.make_directory =
+-      ctx.get<bool>("--directory", false) || ctx.get<bool>("-d", false);
+-  cfg.dry_run = ctx.get<bool>("--dry-run", false) || ctx.get<bool>("-u", false);
+-  cfg.quiet = ctx.get<bool>("--quiet", false) || ctx.get<bool>("-q", false);
+-
+-  auto tmpdir_opt = ctx.get<std::string>("--tmpdir", "");
+-  if (tmpdir_opt.empty()) {
+-    tmpdir_opt = ctx.get<std::string>("-p", "");
+-  }
+-  if (tmpdir_opt.empty() && ctx.count({"--tmpdir", "-p"}) > 0) {
+-    // [GNU] an explicitly empty --tmpdir falls back to the default
+-    // temporary directory (uutils #8445/#10189).
+-    auto default_tmpdir = default_temporary_directory();
+-    if (!default_tmpdir) {
+-      return std::unexpected(default_tmpdir.error());
+-    }
+-    tmpdir_opt = *default_tmpdir;
+-  }
+-  if (!tmpdir_opt.empty()) {
+-    cfg.tmpdir = tmpdir_opt;
+-    cfg.tmpdir_dialect = display_dialect_of(tmpdir_opt);
+-  }
+-
+-  // -t (deprecated): interpret TEMPLATE as a single file name component
+-  // relative to a directory: $TMPDIR, if set; else /tmp.
+-  cfg.use_tmpdir_flag = ctx.get<bool>("-t", false);
+-
+-  // [GNU] More than one template operand is an error, and it is
+-  // reported before any suffix/template validation (mktemp.c) (#1358).
+-  if (ctx.positionals.size() > 1) {
+-    return std::unexpected(
+-        "too many templates\nTry 'mktemp --help' for more information.");
+-  }
+-
+-  cfg.suffix = ctx.get<std::string>("--suffix", "");
+-  cfg.dest_dir_mode =
+-      ctx.count({"--tmpdir", "-p"}) > 0 || ctx.positionals.empty();
+-
+-  // Get template from positionals
+-  if (!ctx.positionals.empty()) {
+-    cfg.template_str = std::string(ctx.positionals[0]);
+-  } else {
+-    cfg.template_str = "tmp.XXXXXXXXXX";
+-    if (cfg.tmpdir.empty()) {
+-      auto default_tmpdir = default_temporary_directory();
+-      if (!default_tmpdir) {
+-        return std::unexpected(default_tmpdir.error());
+-      }
+-      cfg.tmpdir = *default_tmpdir;
+-    }
+-  }
+-
+-  // [GNU] The X-run rules, in mktemp.c's order (222-258), applied to
+-  // the template exactly as given:
+-  //  * with --suffix, the template must END in X (checked first);
+-  //    the "suffix" whose separator is policed is the region after
+-  //    the last X of the combined string;
+-  //  * without --suffix, the region after the template's last X is
+-  //    the implicit suffix: a separator there is the same error;
+-  //  * the X count is the run ENDING where that suffix begins, so
+-  //    'XXXXaXb' has a run of 1 and is rejected.
+-  if (!cfg.suffix.empty()) {
+-    if (cfg.template_str.empty() || cfg.template_str.back() != 'X') {
+-      return std::unexpected("with --suffix, template '" +
+-                             cfg.template_str + "' must end in X");
+-    }
+-    if (cfg.suffix.find('/') != std::string::npos ||
+-        cfg.suffix.find('\\') != std::string::npos) {
+-      return std::unexpected("invalid suffix '" + cfg.suffix +
+-                             "', contains directory separator");
+-    }
+-    size_t run = 0;
+-    for (size_t i = cfg.template_str.size();
+-         i > 0 && cfg.template_str[i - 1] == 'X'; --i) {
+-      ++run;
+-    }
+-    if (run < 3) {
+-      return std::unexpected("too few X's in template '" +
+-                             cfg.template_str + cfg.suffix + "'");
+-    }
+-  } else {
+-    size_t last_x = cfg.template_str.find_last_of('X');
+-    std::string tail =
+-        last_x == std::string::npos ? "" : cfg.template_str.substr(last_x + 1);
+-    if (tail.find('/') != std::string::npos) {
+-      return std::unexpected("invalid suffix '" + tail +
+-                             "', contains directory separator");
+-    }
+-    size_t run = 0;
+-    size_t upto = last_x == std::string::npos ? 0 : last_x + 1;
+-    for (size_t i = upto; i > 0 && cfg.template_str[i - 1] == 'X'; --i) {
+-      ++run;
+-    }
+-    if (run < 3) {
+-      return std::unexpected("too few X's in template '" +
+-                             cfg.template_str + "'");
+-    }
+-  }
+-
+-  // [GNU] Destination-directory rules (mktemp.c:260-295), after the
+-  // X validation.
+-  if (cfg.use_tmpdir_flag) {
+-    // -t: $TMPDIR beats a -p DIR, which beats the default (the old
+-    // code silently stripped any directory from the template
+-    // instead of diagnosing it, and let -p beat $TMPDIR).
+-    if (auto env_dir = getenv_path(L"TMPDIR")) {
+-      cfg.tmpdir = *env_dir;
+-      cfg.tmpdir_dialect = display_dialect_of(cfg.tmpdir);
+-    } else if (cfg.tmpdir.empty()) {
+-      auto default_tmpdir = default_temporary_directory();
+-      if (!default_tmpdir) {
+-        return std::unexpected(default_tmpdir.error());
+-      }
+-      cfg.tmpdir = *default_tmpdir;
+-    }
+-    if (cfg.template_str.find('/') != std::string::npos) {
+-      return std::unexpected("invalid template, '" + cfg.template_str +
+-                             "', contains directory separator");
+-    }
+-  } else if (cfg.dest_dir_mode) {
+-    const std::string& t = cfg.template_str;
+-    bool absolute = !t.empty() && (t.front() == '/' || t.front() == '\\' ||
+-                                   (t.size() >= 2 &&
+-                                    std::isalpha(static_cast<unsigned char>(
+-                                        t[0])) &&
+-                                    t[1] == ':'));
+-    if (absolute) {
+-      return std::unexpected("invalid template, '" + t +
+-                             "'; with --tmpdir, it may not be absolute");
+-    }
+-  }
+-
+-  return cfg;
+-}
+-
+-auto run(const Config& cfg) -> int {
+-  auto find_template_run =
+-      [](std::string_view templ) -> std::optional<std::pair<size_t, size_t>> {
+-    auto last_sep = templ.find_last_of("/\\");
+-    size_t component_start =
+-        last_sep == std::string_view::npos ? 0 : last_sep + 1;
+-
+-    size_t best_start = std::string_view::npos;
+-    size_t best_len = 0;
+-    for (size_t i = component_start; i < templ.size();) {
+-      if (templ[i] != 'X') {
+-        ++i;
+-        continue;
+-      }
+-      size_t j = i;
+-      while (j < templ.size() && templ[j] == 'X') {
+-        ++j;
+-      }
+-      size_t len = j - i;
+-      if (len >= 3) {
+-        best_start = i;
+-        best_len = len;
+-      }
+-      i = j;
+-    }
+-
+-    if (best_start == std::string_view::npos) {
+-      return std::nullopt;
+-    }
+-    return std::pair{best_start, best_len};
+-  };
+-
+-  std::filesystem::path base_dir;
+-  std::string template_component = cfg.template_str;
+-
+-  // #1364: the directory side of the template is an argv operand: fold it
+-  // through the shared normalize_api_operand boundary after the local
+-  // drive-dialect fold, so a shell-namespace spelling (the bare "/", /tmp,
+-  // ...) resolves through the shell tree (payload root) instead of being
+-  // absolutized onto the current drive by GetFullPathNameW downstream.
+-  const auto fold_dir_operand = [](std::string_view text) -> std::string {
+-    return native_path::normalize_api_operand(
+-        normalize_win_shell_path(text));
+-  };
+-
+-  if (!cfg.tmpdir.empty()) {
+-    base_dir = utf8_path(fold_dir_operand(cfg.tmpdir));
+-    // [GNU] mktemp.c:297-299 (file_name_concat): with a destination
+-    // directory the template is appended as given -- interior
+-    // separators are preserved ('-p DIR sub/XXXXXX' creates inside
+-    // sub/), not truncated to the final component.
+-    template_component = cfg.template_str;
+-  } else {
+-    std::filesystem::path template_path =
+-        utf8_path(fold_dir_operand(cfg.template_str));
+-    base_dir = template_path.parent_path();
+-    template_component = path_utf8(template_path.filename());
+-  }
+-
+-  if (template_component.empty()) {
+-    template_component = "tmp.XXXXXX";
+-  }
+-
+-  // Process template. Replace the final X-run in the last path component and
+-  // append --suffix after that replacement, matching GNU/Microsoft usage such
+-  // as `mktemp file-XXXX.txt` and `mktemp --suffix=.txt file-XXXX`.
+-  std::string template_str = template_component;
+-  auto run_info = find_template_run(template_str);
+-  if (!run_info) {
+-    template_str += "XXXXXX";
+-    run_info = std::pair{template_str.size() - 6, size_t{6}};
+-  }
+-  template_str += cfg.suffix;
+-  auto [xxx_pos, xxx_len] = *run_info;
+-
+-  // [GNU] mktemp.c:301-325: a creation failure is diagnosed with
+-  // the FULL destination template (directory + template, X's
+-  // intact), never the bare template operand.
+-  std::filesystem::path dest_template_path =
+-      base_dir.empty() ? utf8_path(template_str)
+-                       : (base_dir / utf8_path(template_str));
+-  std::string dest_template = dest_template_path.is_absolute()
+-                                  ? native_display_path(dest_template_path)
+-                                  : path_utf8(dest_template_path);
+-  dest_template = to_display_dialect(dest_template, cfg.tmpdir_dialect);
+-
+-  // Generate a unique name and create it.  Creation is atomic
+-  // (CREATE_NEW / CreateDirectoryW): the old check-then-create
+-  // sequence (exists probe, then a truncating ofstream) could
+-  // claim a name another process had just taken.
+-  std::string temp_file;
+-  int max_attempts = 100;
+-
+-  for (int attempt = 0; attempt < max_attempts; ++attempt) {
+-    // Generate random characters for XXXXXX
+-    std::string filename = template_str;
+-    const char charset[] = "abcdefghijklmnopqrstuvwxyz0123456789";
+-
+-    for (size_t i = 0; i < xxx_len; ++i) {
+-      filename[xxx_pos + i] = charset[random_index(sizeof(charset) - 1)];
+-    }
+-
+-    // Build full path
+-    std::filesystem::path candidate_path =
+-        base_dir.empty() ? utf8_path(filename)
+-                         : (base_dir / utf8_path(filename));
+-    temp_file = candidate_path.is_absolute()
+-                    ? native_display_path(candidate_path)
+-                    : path_utf8(candidate_path);
+-
+-    if (cfg.dry_run) {
+-      DWORD attrs = GetFileAttributesW(utf8_to_wstring(temp_file).c_str());
+-      if (attrs == INVALID_FILE_ATTRIBUTES) {
+-        break;  // Name is free; nothing is created in dry-run mode.
+-      }
+-      temp_file.clear();
+-      continue;
+-    }
+-
+-    DWORD create_error = ERROR_SUCCESS;
+-    if (cfg.make_directory) {
+-      if (CreateDirectoryW(utf8_to_wstring(temp_file).c_str(), NULL)) {
+-        break;
+-      }
+-      create_error = GetLastError();
+-    } else {
+-      HANDLE handle = CreateFileW(utf8_to_wstring(temp_file).c_str(),
+-                                  GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+-                                  FILE_ATTRIBUTE_NORMAL, nullptr);
+-      if (handle != INVALID_HANDLE_VALUE) {
+-        CloseHandle(handle);
+-        break;
+-      }
+-      create_error = GetLastError();
+-    }
+-    if (create_error == ERROR_FILE_EXISTS ||
+-        create_error == ERROR_ALREADY_EXISTS) {
+-      temp_file.clear();
+-      continue;  // Lost the race for this name; draw another.
+-    }
+-
+-    if (!cfg.quiet) {
+-      if (cfg.make_directory) {
+-        safeErrorPrintLn(winux::i18n::format(
+-            "command.mktemp.error.failed_create_directory_template",
+-            "mktemp: failed to create directory via template '{}': {}",
+-            dest_template, win32_posix_error_text(create_error)));
+-      } else {
+-        safeErrorPrintLn(winux::i18n::format(
+-            "command.mktemp.error.failed_create_file_template",
+-            "mktemp: failed to create file via template '{}': {}",
+-            dest_template, win32_posix_error_text(create_error)));
+-      }
+-    }
+-    return 1;
+-  }
+-
+-  if (temp_file.empty()) {
+-    if (!cfg.quiet) {
+-      cp::Result<int> result2 =
+-          std::unexpected("failed to create unique filename");
+-      cp::report_error(result2, L"mktemp");
+-    }
+-    return 1;
+-  }
+-
+-  // [GNU] The printed name keeps the -p/--tmpdir dialect the caller used
+-  // (#1141); creation above happened on the normalized native form.
+-  safePrintLn(to_display_dialect(temp_file, cfg.tmpdir_dialect));
+-  return 0;
+-}
+-
+-}  // namespace mktemp_pipeline
+-
+ REGISTER_COMMAND(
+     mktemp, "mktemp", "mktemp [OPTION]... [TEMPLATE]",
+     "Create a temporary file or directory, safely, and print its name.\n"
+@@ -627,13 +60,9 @@ REGISTER_COMMAND(
+     "  mktemp -t /tmp                   # use specific directory\n"
+     "  mktemp --quiet                   # suppress errors",
+     "tempfile(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", MKTEMP_OPTIONS) {
+-  using namespace mktemp_pipeline;
+-
+-  auto cfg_result = build_config(ctx);
+-  if (!cfg_result) {
+-    cp::report_error(cfg_result, L"mktemp");
+-    return 1;
+-  }
+-
+-  return run(*cfg_result);
++  // #1488 mechanical replacement: the semantics live in the rust2 library
++  // (rust2/crates/winux-cmds/src/mktemp.rs); the C++ side keeps only this
++  // registration. ctx.raw_args passes the operands verbatim because the GNU
++  // applet parses its own argv.
++  return winux::rust2::run_command("mktemp", ctx.raw_args);
+ }
+diff --git a/src/commands/nice.cpp b/src/commands/nice.cpp
+index 0472edad..7d5c0815 100644
+--- a/src/commands/nice.cpp
++++ b/src/commands/nice.cpp
+@@ -14,6 +14,7 @@ import std;
+ import core;
+ import utils;
+ import container;
++import rust2_bridge;
+ 
+ using cmd::meta::OptionMeta;
+ using cmd::meta::OptionType;
+@@ -26,66 +27,6 @@ auto constexpr NICE_OPTIONS =
+     // [DIFFERS]
+     std::array{OPTION("-n", "--adjustment", "adjust increment", STRING_TYPE)};
+ 
+-namespace {
+-constexpr int kNiceNoOverflowBound = 50;
+-
+-auto nice_command_status_from_create_error(DWORD error) -> int {
+-  switch (error) {
+-    case ERROR_FILE_NOT_FOUND:
+-    case ERROR_PATH_NOT_FOUND:
+-      return 127;
+-    default:
+-      return 126;
+-  }
+-}
+-
+-auto nice_windows_error_text(DWORD error) -> std::string {
+-  return win32_posix_error_text(error);
+-}
+-
+-auto parse_adjustment_value(std::string_view raw) -> std::optional<int> {
+-  // [GNU] nice.c:164-174: the adjustment goes through xstrtol, whose
+-  // strtol base accepts leading whitespace and a leading '+' sign;
+-  // std::from_chars accepts neither, so normalize first.  An empty
+-  // value has no digits and is invalid, exactly like xstrtol("").
+-  while (!raw.empty() &&
+-         (raw.front() == ' ' || raw.front() == '\t' || raw.front() == '\n' ||
+-          raw.front() == '\v' || raw.front() == '\f' || raw.front() == '\r')) {
+-    raw.remove_prefix(1);
+-  }
+-  while (!raw.empty() &&
+-         (raw.back() == ' ' || raw.back() == '\t' || raw.back() == '\n' ||
+-          raw.back() == '\v' || raw.back() == '\f' || raw.back() == '\r')) {
+-    raw.remove_suffix(1);
+-  }
+-  if (raw.empty()) {
+-    return std::nullopt;
+-  }
+-  bool negative = raw.front() == '-';
+-  if (raw.front() == '+') {
+-    raw.remove_prefix(1);
+-    if (raw.empty()) {
+-      return std::nullopt;
+-    }
+-  }
+-
+-  int value = 0;
+-  auto [ptr, ec] = std::from_chars(raw.data(), raw.data() + raw.size(), value);
+-  if (ec == std::errc::result_out_of_range) {
+-    return negative ? -kNiceNoOverflowBound : kNiceNoOverflowBound;
+-  }
+-  if (ec != std::errc() || ptr != raw.data() + raw.size()) {
+-    return std::nullopt;
+-  }
+-
+-  return value;
+-}
+-}  // namespace
+-
+-// ======================================================
+-// Main command implementation
+-// ======================================================
+-
+ REGISTER_COMMAND(
+     nice,
+     /* cmd_name */ "nice",
+@@ -103,115 +44,9 @@ REGISTER_COMMAND(
+     /* author */ "WinuxCmd",
+     /* copyright */ "Copyright © 2026 WinuxCmd",
+     /* options */ NICE_OPTIONS) {
+-  int adjustment = 10;  // Default adjustment
+-  bool has_explicit_adjustment = false;
+-
+-  // Parse adjustment option.  Presence is decided by occurrence, not by
+-  // a non-empty value: [GNU] nice.c:164-174 validates the given string
+-  // itself, so '-n ""' is 'invalid adjustment' rather than no adjustment.
+-  auto adjustment_occurrences =
+-      ctx.string_occurrences({"--adjustment", "-n"});
+-  if (!adjustment_occurrences.empty()) {
+-    std::string parsed_adjustment =
+-        std::string(adjustment_occurrences.back().value);
+-    auto adjustment_value = parse_adjustment_value(parsed_adjustment);
+-    if (!adjustment_value) {
+-      // [GNU] nice.c:164-174 rejects the adjustment through error(), which
+-      // prints the diagnostic alone -- coreutils nice appends no
+-      // "Try 'nice --help'" tail on this path (differential nice/02:
+-      // `nice -n "" true` -> one stderr line, exit 125).
+-      safeErrorPrintLn("nice: invalid adjustment '" + parsed_adjustment + "'");
+-      return 125;
+-    }
+-    adjustment = *adjustment_value;
+-    has_explicit_adjustment = true;
+-  }
+-
+-  // If no command provided, print current priority
+-  if (ctx.positionals.empty()) {
+-    if (has_explicit_adjustment) {
+-      safeErrorPrintLn("nice: a command must be given with an adjustment");
+-      safeErrorPrintLn("Try 'nice --help' for more information.");
+-      return 125;
+-    }
+-    safePrintLn(std::to_string(win32_current_niceness()));
+-    return 0;
+-  }
+-
+-  // Execute command with adjusted priority. The child is resolved with
+-  // GNU execvp semantics (PATH-only; no application-directory, cwd, or
+-  // System32 fallback) so a name colliding with a Windows image (sort,
+-  // find, timeout, ...) resolves from the caller's PATH.
+-  winux::childproc::ChildLaunchRequest nice_launch_request;
+-  nice_launch_request.command = std::string(ctx.positionals[0]);
+-  for (size_t i = 1; i < ctx.positionals.size(); ++i) {
+-    nice_launch_request.args.emplace_back(ctx.positionals[i]);
+-  }
+-  auto launch = winux::childproc::plan_child_launch(nice_launch_request);
+-  if (launch.status != winux::childproc::ChildResolveStatus::Found) {
+-    const DWORD resolve_error =
+-        winux::childproc::child_status_to_win32_error(launch.status);
+-    safeErrorPrintLn("nice: '" + std::string(ctx.positionals[0]) +
+-                     "': " + nice_windows_error_text(resolve_error));
+-    return nice_command_status_from_create_error(resolve_error);
+-  }
+-
+-  STARTUPINFOW si = {sizeof(si)};
+-  PROCESS_INFORMATION pi;
+-
+-  // Determine priority class based on adjustment
+-  int target_niceness =
+-      std::clamp(win32_current_niceness() + adjustment, -20, 19);
+-  DWORD priority_class = win32_priority_class_for_niceness(target_niceness);
+-
+-  // [GNU] The child is created suspended and the priority class is
+-  // applied with SetPriorityClass so that a failure is observable:
+-  // GNU nice prints "cannot set niceness: <reason>" and runs the
+-  // command anyway when the requested priority cannot be applied,
+-  // while passing the class as a CreateProcessW flag would have it
+-  // silently clamped with no way to notice (#1359).
+-  if (!CreateProcessW(launch.application_name->c_str(),
+-                      launch.command_line.data(), nullptr, nullptr, FALSE,
+-                      CREATE_SUSPENDED, nullptr, nullptr, &si, &pi)) {
+-    DWORD error = GetLastError();
+-    safeErrorPrintLn("nice: '" + std::string(ctx.positionals[0]) +
+-                     "': " + nice_windows_error_text(error));
+-    return nice_command_status_from_create_error(error);
+-  }
+-
+-  bool priority_applied =
+-      SetPriorityClass(pi.hProcess, priority_class) != FALSE;
+-  DWORD priority_error = priority_applied ? ERROR_SUCCESS : GetLastError();
+-  if (priority_applied && GetPriorityClass(pi.hProcess) != priority_class) {
+-    // The requested class was silently clamped to a lower one: the
+-    // requested priority was not applied either.
+-    priority_applied = false;
+-    priority_error = ERROR_ACCESS_DENIED;
+-  }
+-  if (!priority_applied) {
+-    safeErrorPrintLn("nice: cannot set niceness: " +
+-                     nice_windows_error_text(priority_error));
+-  }
+-
+-  if (ResumeThread(pi.hThread) == static_cast<DWORD>(-1)) {
+-    DWORD error = GetLastError();
+-    TerminateProcess(pi.hProcess, 125);
+-    WaitForSingleObject(pi.hProcess, INFINITE);
+-    CloseHandle(pi.hProcess);
+-    CloseHandle(pi.hThread);
+-    safeErrorPrintLn("nice: '" + std::string(ctx.positionals[0]) +
+-                     "': " + nice_windows_error_text(error));
+-    return nice_command_status_from_create_error(error);
+-  }
+-
+-  // Wait for process to complete
+-  WaitForSingleObject(pi.hProcess, INFINITE);
+-
+-  DWORD exit_code;
+-  GetExitCodeProcess(pi.hProcess, &exit_code);
+-
+-  CloseHandle(pi.hProcess);
+-  CloseHandle(pi.hThread);
+-
+-  return static_cast<int>(exit_code);
++  // #1488 mechanical replacement: the semantics live in the rust2 library
++  // (rust2/crates/winux-cmds/src/nice.rs); the C++ side keeps only this
++  // registration. ctx.raw_args passes the operands verbatim because the GNU
++  // applet parses its own argv.
++  return winux::rust2::run_command("nice", ctx.raw_args);
+ }
+diff --git a/src/commands/pathchk.cpp b/src/commands/pathchk.cpp
+index 7b995077..d0c2176d 100644
+--- a/src/commands/pathchk.cpp
++++ b/src/commands/pathchk.cpp
+@@ -14,6 +14,7 @@ import std;
+ import core;
+ import utils;
+ import container;
++import rust2_bridge;
+ 
+ using cmd::meta::OptionMeta;
+ using cmd::meta::OptionType;
+@@ -31,178 +32,6 @@ auto constexpr PATHCHK_OPTIONS = std::array{
+     OPTION("", "--portability",
+            "check for all POSIX systems (equivalent to -p -P)")};
+ 
+-// ======================================================
+-// Helper functions
+-// ======================================================
+-
+-namespace {
+-constexpr size_t kPosixPathMax = 256;
+-constexpr size_t kPosixNameMax = 14;
+-constexpr size_t kWindowsComponentMax = 255;
+-// Non-portability length gate for the current filesystem: GNU asks
+-// pathconf(_PC_PATH_MAX); 4096 is the PATH_MAX_MINIMUM analogue.
+-constexpr size_t kHostPathMax = 4096;
+-
+-auto split_components(const std::string& path, bool windows_separators)
+-    -> std::vector<std::string> {
+-  std::vector<std::string> components;
+-  std::string current;
+-  for (char c : path) {
+-    bool separator = c == '/' || (windows_separators && c == '\\');
+-    if (separator) {
+-      components.push_back(current);
+-      current.clear();
+-    } else {
+-      current.push_back(c);
+-    }
+-  }
+-  components.push_back(current);
+-  return components;
+-}
+-
+-// [GNU] pathchk.c (quoteaf): always single-quoted in these messages.
+-auto quote_always(const std::string& name) -> std::string {
+-  return "'" + name + "'";
+-}
+-
+-// [GNU] pathchk.c (quotef): plain names print bare; the empty name
+-// prints as ''.
+-auto quote_plain(const std::string& name) -> std::string {
+-  return name.empty() ? std::string("''") : name;
+-}
+-
+-// [GNU] pathchk.c no_leading_hyphen: a '-' at the start of the name
+-// or right after a '/'.
+-auto has_leading_dash_component(const std::string& path) -> bool {
+-  for (size_t i = 0; i < path.size(); ++i) {
+-    if (path[i] == '-' && (i == 0 || path[i - 1] == '/')) return true;
+-  }
+-  return false;
+-}
+-
+-// Check if path is valid for Windows (subject-side filesystem rules;
+-// these are the "current filesystem" checks of the default mode).
+-auto windows_path_error(const std::string& path) -> std::optional<std::string> {
+-  if (path.empty()) return "empty file name";
+-
+-  bool has_drive_prefix = path.size() >= 2 &&
+-                          std::isalpha(static_cast<unsigned char>(path[0])) &&
+-                          path[1] == ':';
+-
+-  // Check for invalid characters
+-  const std::string invalid_chars = "<>:\"|?*";
+-  for (size_t i = 0; i < path.size(); ++i) {
+-    char c = path[i];
+-    if (has_drive_prefix && i == 1) continue;
+-    if (invalid_chars.find(c) != std::string::npos) {
+-      return "invalid Windows filename";
+-    }
+-  }
+-
+-  const std::array<std::string_view, 22> reserved = {
+-      "CON",  "PRN",  "AUX",  "NUL",  "COM1", "COM2", "COM3", "COM4",
+-      "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3",
+-      "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"};
+-
+-  for (auto component : split_components(path, true)) {
+-    if (component.empty()) continue;
+-    if (component.size() > kWindowsComponentMax) return "file name too long";
+-    while (!component.empty() &&
+-           (component.back() == '.' || component.back() == ' ')) {
+-      component.pop_back();
+-    }
+-    size_t last_dot = component.find('.');
+-    if (last_dot != std::string::npos) component.resize(last_dot);
+-
+-    std::transform(
+-        component.begin(), component.end(), component.begin(),
+-        [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+-    for (auto name : reserved) {
+-      if (component == name) return "invalid Windows filename";
+-    }
+-  }
+-
+-  return std::nullopt;
+-}
+-
+-// Outcome of the existence probe, mirroring lstat() in validate_
+-// file_name's non-portability branch.
+-enum class ProbeOutcome { kExists, kNotThere, kError };
+-struct ProbeResult {
+-  ProbeOutcome outcome;
+-  std::string error_text;  // POSIX wording when outcome == kError
+-};
+-
+-// POSIX lstat answers ENOTDIR, not ENOENT, when a non-final path
+-// component exists as a file ("regfile/file"); Win32 filesystems disagree
+-// about which error crosses that shape (NTFS yields ERROR_DIRECTORY, the
+-// 9p/UNC view of a WSL directory can yield a not-found class instead), so
+-// the not-there verdict is confirmed by walking the component chain: the
+-// first existing prefix that is not a directory pins ENOTDIR (differential
+-// pathchk/01, which exited 0 through the runner's UNC working directory).
+-auto file_component_in_chain(const std::wstring& api_path) -> bool {
+-  for (size_t i = 0; i < api_path.size(); ++i) {
+-    if (api_path[i] != L'\\' && api_path[i] != L'/') continue;
+-    if (i == 0) continue;
+-    std::wstring prefix = api_path.substr(0, i);
+-    if (prefix.size() > 2 && prefix.back() == L':') continue;  // drive root
+-    DWORD attrs = GetFileAttributesW(prefix.c_str());
+-    if (attrs == INVALID_FILE_ATTRIBUTES) continue;      // missing: fine
+-    if ((attrs & FILE_ATTRIBUTE_DIRECTORY) == 0) return true;
+-  }
+-  return false;
+-}
+-
+-auto probe_existence(const std::string& path) -> ProbeResult {
+-  std::error_code ec;
+-  // Route the probe through the shared API-path boundary (the expression
+-  // cp.cpp's file-local api_operand_w wraps; #1140/#1145) so an MSYS-form
+-  // operand (/d/x) stats the same file GNU's lstat sees on the as-typed
+-  // name (pathchk.c:289), instead of a current-drive root-relative path.
+-  const std::wstring api_path =
+-      native_path::make_api_path_operand(path).extended;
+-  auto status = std::filesystem::symlink_status(api_path, ec);
+-  if (!ec) {
+-    (void)status;
+-    return {ProbeOutcome::kExists, {}};
+-  }
+-  if (ec == std::errc::no_such_file_or_directory) {
+-    if (file_component_in_chain(api_path)) {
+-      return {ProbeOutcome::kError, "Not a directory"};
+-    }
+-    return {ProbeOutcome::kNotThere, {}};
+-  }
+-  // POSIX errno wording for the shapes a name probe can hit.  MSVC's
+-  // filesystem reports Win32 failures in std::system_category() carrying
+-  // the native error code, so `regfile/file` surfaces ERROR_DIRECTORY
+-  // (whose system message is "The directory name is invalid.") instead of
+-  // the generic not_a_directory value -- route the native code through the
+-  // shared Win32->POSIX mapping so the diagnostic reads "Not a directory"
+-  // like GNU lstat's errno text (differential pathchk/01).
+-  std::string text;
+-  if (ec == std::errc::not_a_directory) {
+-    text = "Not a directory";
+-  } else if (ec == std::errc::filename_too_long) {
+-    text = "File name too long";
+-  } else if (ec == std::errc::permission_denied) {
+-    text = "Permission denied";
+-  } else if (ec.category() == std::system_category()) {
+-    const std::string mapped =
+-        win32_posix_error_text(static_cast<unsigned long>(ec.value()));
+-    // The shared helper falls back to the same system message for
+-    // unmapped codes, so the two branches agree there.
+-    text = mapped;
+-  } else {
+-    text = ec.message();
+-  }
+-  return {ProbeOutcome::kError, text};
+-}
+-}  // namespace
+-
+-// ======================================================
+-// Main command implementation
+-// ======================================================
+-
+ REGISTER_COMMAND(
+     pathchk,
+     /* cmd_name */ "pathchk",
+@@ -219,127 +48,9 @@ REGISTER_COMMAND(
+     /* author */ "WinuxCmd",
+     /* copyright */ "Copyright © 2026 WinuxCmd",
+     /* options */ PATHCHK_OPTIONS) {
+-  // [GNU] pathchk.c validate_file_name: -p selects the POSIX-
+-  // minimum checks, -P adds the empty-name / leading-dash checks,
+-  // --portability is "equivalent to -p -P" (pathchk.c:93,120-133).
+-  bool check_basic =
+-      ctx.get<bool>("-p", false) || ctx.get<bool>("--portability", false);
+-  bool check_extra =
+-      ctx.get<bool>("-P", false) || ctx.get<bool>("--portability", false);
+-
+-  if (ctx.positionals.empty()) {
+-    safeErrorPrintLn("pathchk: missing operand");
+-    safeErrorPrintLn("Try 'pathchk --help' for more information.");
+-    return 1;
+-  }
+-
+-  int exit_code = 0;
+-
+-  for (const auto& path : ctx.positionals) {
+-    std::string name(path);
+-    std::optional<std::string> error_line;
+-
+-    // [GNU] pathchk.c:270-272: the leading-dash check runs first.
+-    if (!error_line && check_extra && has_leading_dash_component(name)) {
+-      error_line = "pathchk: leading '-' in a component of file name " +
+-                   quote_always(name);
+-    }
+-
+-    // [GNU] pathchk.c:274-285: portable modes reject the empty name.
+-    if (!error_line && (check_basic || check_extra) && name.empty()) {
+-      error_line = "pathchk: empty file name";
+-    }
+-
+-    bool file_exists = false;
+-    if (!error_line && check_basic) {
+-      // [GNU] pathchk.c:287-291 + portable_chars_only: the POSIX
+-      // portable character set, first offender named.
+-      for (char c : name) {
+-        unsigned char uc = static_cast<unsigned char>(c);
+-        if (!std::isalnum(uc) && c != '.' && c != '_' && c != '-' &&
+-            c != '/') {
+-          error_line = "pathchk: non-portable character '" +
+-                       std::string(1, c) + "' in file name " +
+-                       quote_always(name);
+-          break;
+-        }
+-      }
+-    } else if (!error_line) {
+-      // [GNU] pathchk.c:292-306: lstat the full name.  A missing
+-      // name (ENOENT) is fine; any other failure is reported with
+-      // the errno text -- this is what makes 'regfile/file' fail
+-      // with "Not a directory" while 'missingdir/file' passes.
+-      ProbeResult probe = probe_existence(name);
+-      if (probe.outcome == ProbeOutcome::kExists) {
+-        file_exists = true;
+-      } else if (probe.outcome == ProbeOutcome::kError ||
+-                 name.empty()) {
+-        std::string text = probe.outcome == ProbeOutcome::kError
+-                               ? probe.error_text
+-                               : "No such file or directory";
+-        error_line = "pathchk: " + quote_plain(name) + ": " + text;
+-      }
+-    }
+-
+-    // [GNU] pathchk.c:308-341: total length.  Portability mode
+-    // compares against _POSIX_PATH_MAX (256); the default mode
+-    // only for names that do not exist, against pathconf's value.
+-    if (!error_line &&
+-        (check_basic || (!file_exists && name.size() >= kHostPathMax))) {
+-      size_t limit = check_basic ? kPosixPathMax - 1 : kHostPathMax - 1;
+-      if (name.size() > limit) {
+-        error_line = "pathchk: limit " + std::to_string(limit) +
+-                     " exceeded by length " +
+-                     std::to_string(name.size()) + " of file name " +
+-                     quote_always(name);
+-      }
+-    }
+-
+-    // [GNU] pathchk.c:343-415: component lengths.  Portability
+-    // mode always checks against _POSIX_NAME_MAX (14); the default
+-    // mode checks only nonexistent names with a component over
+-    // NAME_MAX_MINIMUM (255), against 255.
+-    if (!error_line) {
+-      size_t component_limit = 0;
+-      if (check_basic) {
+-        component_limit = kPosixNameMax;
+-      } else if (!file_exists) {
+-        for (const auto& comp : split_components(name, false)) {
+-          if (comp.size() > kWindowsComponentMax) {
+-            component_limit = kWindowsComponentMax;
+-            break;
+-          }
+-        }
+-      }
+-      if (component_limit != 0) {
+-        for (const auto& comp : split_components(name, false)) {
+-          if (comp.size() > component_limit) {
+-            error_line = "pathchk: limit " +
+-                         std::to_string(component_limit) +
+-                         " exceeded by length " +
+-                         std::to_string(comp.size()) +
+-                         " of file name component " + quote_always(comp);
+-            break;
+-          }
+-        }
+-      }
+-    }
+-
+-    // Subject-side "current filesystem" rules (Windows reserved
+-    // names and characters).  Like GNU's filesystem checks, these
+-    // belong to the default and -P modes; -p / --portability is
+-    // pure POSIX and must not see them (pathchk -p CON is valid).
+-    if (!error_line && !check_basic) {
+-      if (auto win_error = windows_path_error(name)) {
+-        error_line = "pathchk: " + quote_plain(name) + ": " + *win_error;
+-      }
+-    }
+-
+-    if (error_line) {
+-      safeErrorPrintLn(*error_line);
+-      exit_code = 1;
+-    }
+-  }
+-
+-  return exit_code;
++  // #1488 mechanical replacement: the semantics live in the rust2 library
++  // (rust2/crates/winux-cmds/src/pathchk.rs); the C++ side keeps only this
++  // registration. ctx.raw_args passes the operands verbatim because the GNU
++  // applet parses its own argv.
++  return winux::rust2::run_command("pathchk", ctx.raw_args);
+ }
+diff --git a/src/commands/pinky.cpp b/src/commands/pinky.cpp
+index 4f01da6c..f4e04b41 100644
+--- a/src/commands/pinky.cpp
++++ b/src/commands/pinky.cpp
+@@ -4,7 +4,6 @@
+ #include "core/command_macros.h"
+ #include "pch/pch.h"
+ // include other header after pch.h
+-#include <wtsapi32.h>
+ 
+ #pragma comment(lib, "wtsapi32.lib")
+ 
+@@ -12,6 +11,7 @@ import std;
+ import core;
+ import utils;
+ import container;
++import rust2_bridge;
+ 
+ auto constexpr PINKY_OPTIONS = std::array{
+     // [GNU]
+@@ -39,271 +39,14 @@ auto constexpr PINKY_OPTIONS = std::array{
+     // [GNU]
+     // [DIFFERS] - short format is already the default
+     OPTION("-s", "", "do short format output", BOOL_TYPE)};
+-// [GNU] coreutils 9.4 pinky declares NO long options besides --help and
+-// --version (src/pinky.c longopts); a prior revision accepted an invented
+-// --lookup, which GNU rejects as an unrecognized option.
+-
+-namespace {
+-auto current_user_name() -> std::string {
+-  wchar_t username[UNLEN + 1];
+-  DWORD size = UNLEN + 1;
+-  if (GetUserNameW(username, &size)) return wstring_to_utf8(username);
+-  return "";
+-}
+-
+-auto current_domain_name() -> std::string {
+-  wchar_t buffer[256];
+-  DWORD size = static_cast<DWORD>(std::size(buffer));
+-  if (GetEnvironmentVariableW(L"USERDOMAIN", buffer, size) > 0) {
+-    return wstring_to_utf8(buffer);
+-  }
+-  return "";
+-}
+-
+-auto append_padded(std::string& out, const std::string& text, size_t width)
+-    -> void {
+-  out += text;
+-  if (text.size() < width) out += std::string(width - text.size(), " "[0]);
+-}
+-
+-auto print_short_heading(bool include_heading, bool include_fullname,
+-                         bool include_idle, bool include_where) -> void {
+-  if (!include_heading) return;
+-  std::string out;
+-  append_padded(out, "Login", 8);
+-  if (include_fullname) {
+-    out += " ";
+-    append_padded(out, "Name", 19);
+-  }
+-  out += " ";
+-  append_padded(out, " TTY", 9);
+-  if (include_idle) {
+-    out += " ";
+-    append_padded(out, "Idle", 6);
+-  }
+-  out += " ";
+-  out += "When";
+-  out += std::string(8, " "[0]);
+-  if (include_where) out += " Where";
+-  safePrintLn(out);
+-}
+-
+-struct SessionEntry {
+-  std::string user;
+-  long long logon_time = -1;    // unix seconds; -1 when unknown
+-  long long idle_seconds = -1;  // -1 when unknown
+-};
+-
+-// [GNU] The short format lists one row per login (USER_PROCESS) entry
+-// (pinky.c scan_entries). The WTS session table is the Windows source
+-// of login entries (simulation layer, niu #758), as in who/users.
+-auto session_entries() -> std::vector<SessionEntry> {
+-  std::vector<SessionEntry> entries;
+-  PWTS_SESSION_INFOW sessions = nullptr;
+-  DWORD count = 0;
+-  if (WTSEnumerateSessionsW(WTS_CURRENT_SERVER_HANDLE, 0, 1, &sessions,
+-                            &count)) {
+-    for (DWORD i = 0; i < count; ++i) {
+-      if (sessions[i].State != WTSActive &&
+-          sessions[i].State != WTSDisconnected) {
+-        continue;
+-      }
+-      const DWORD sid = sessions[i].SessionId;
+-      LPWSTR buffer = nullptr;
+-      DWORD buffer_size = 0;
+-      if (!WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, sid,
+-                                       WTSUserName, &buffer, &buffer_size) ||
+-          buffer == nullptr) {
+-        continue;
+-      }
+-      std::string user = wstring_to_utf8(std::wstring(buffer));
+-      WTSFreeMemory(buffer);
+-      if (user.empty()) continue;
+-
+-      SessionEntry entry;
+-      entry.user = std::move(user);
+-      LPWSTR raw = nullptr;
+-      DWORD raw_size = 0;
+-      if (WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, sid,
+-                                      WTSLogonTime, &raw, &raw_size) &&
+-          raw != nullptr && raw_size >= sizeof(LARGE_INTEGER)) {
+-        LARGE_INTEGER value{};
+-        memcpy(&value, raw, sizeof(value));
+-        entry.logon_time =
+-            static_cast<long long>(
+-                static_cast<unsigned long long>(value.QuadPart) / 10000000ULL) -
+-            11644473600LL;
+-      }
+-      if (raw) WTSFreeMemory(raw);
+-      raw = nullptr;
+-      raw_size = 0;
+-      DWORD idle_ms = 0;
+-      if (WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, sid,
+-                                      WTSIdleTime, &raw, &raw_size) &&
+-          raw != nullptr && raw_size >= sizeof(DWORD)) {
+-        memcpy(&idle_ms, raw, sizeof(idle_ms));
+-        entry.idle_seconds = idle_ms / 1000;
+-      }
+-      if (raw) WTSFreeMemory(raw);
+-      entries.push_back(std::move(entry));
+-    }
+-    WTSFreeMemory(sessions);
+-  }
+-
+-  if (entries.empty()) {
+-    // Simulation face: with no enumerable login sessions, report the
+-    // current interactive user, as who/users do.
+-    SessionEntry entry;
+-    entry.user = current_user_name();
+-    entry.logon_time = static_cast<long long>(std::time(nullptr));
+-    if (!entry.user.empty()) entries.push_back(std::move(entry));
+-  }
+-  return entries;
+-}
+-
+-auto pad_left(const std::string& text, size_t width) -> std::string {
+-  if (text.size() >= width) return text;
+-  return std::string(width - text.size(), ' ') + text;
+-}
+-
+-// [GNU] pinky.c print_entry(): "%-8s" login; full name as " %-19.19s"
+-// (a user with no GECOS entry prints the right-aligned "???" field);
+-// " " + mesg char + "%-8s" line; idle as " %-6s" ("?????" when
+-// unknown, blank under a minute, HH:MM under a day, else "<days>d");
+-// " " + the login time ("%b %d %H:%M", the width-12 default form).
+-auto print_short_entry(const SessionEntry& entry, bool include_fullname,
+-                       bool include_idle) -> void {
+-  std::string out;
+-  append_padded(out, entry.user, 8);
+-  if (include_fullname) {
+-    // [DIFFERS] Windows accounts carry no GECOS full name; GNU prints
+-    // the "???" field for a name it cannot resolve.
+-    out += " ";
+-    out += pad_left("???", 19);
+-  }
+-  out += " ";
+-  // [DIFFERS] No tty file exists to stat for the mesg char; GNU uses
+-  // '?' when the stat fails.
+-  out += "?";
+-  append_padded(out, "console", 8);
+-  if (include_idle) {
+-    std::string idle;
+-    if (entry.idle_seconds < 0) {
+-      idle = "?????";
+-    } else if (entry.idle_seconds < 60) {
+-      idle = "     ";
+-    } else if (entry.idle_seconds < 24 * 60 * 60) {
+-      char buf[16];
+-      snprintf(buf, sizeof(buf), "%02lld:%02lld", entry.idle_seconds / 3600,
+-               (entry.idle_seconds % 3600) / 60);
+-      idle = buf;
+-    } else {
+-      idle = std::to_string(entry.idle_seconds / (24 * 60 * 60)) + "d";
+-    }
+-    out += " ";
+-    append_padded(out, idle, 6);
+-  }
+-  out += " ";
+-  if (entry.logon_time >= 0) {
+-    const std::time_t t = static_cast<std::time_t>(entry.logon_time);
+-    std::tm local{};
+-    localtime_s(&local, &t);
+-    // [GNU] pinky.c time_format "%b %e %H:%M": the day is space-padded,
+-    // not zero-padded ("Nov  9", not "Nov 09").
+-    char buf[32];
+-    strftime(buf, sizeof(buf), "%b %e %H:%M", &local);
+-    out += buf;
+-  }
+-  while (!out.empty() && out.back() == ' ') out.pop_back();
+-  safePrintLn(out);
+-}
+-
+-auto print_long_entry(const std::string& user, bool include_home_shell)
+-    -> void {
+-  safePrint("Login name: ");
+-  safePrint(user);
+-  if (user.size() < 28) safePrint(std::string(28 - user.size(), " "[0]));
+-  safePrint("In real life: ");
+-  std::string current = current_user_name();
+-  if (!current.empty() && user == current) {
+-    std::string domain = current_domain_name();
+-    if (!domain.empty())
+-      safePrint(" " + domain + "\\" + user);
+-    else
+-      safePrint(" " + user);
+-    safePrintLn("");
+-    if (include_home_shell) {
+-      safePrint("Directory: ");
+-      std::string dir = "C:/Users/" + user;
+-      safePrint(dir);
+-      if (dir.size() < 29) safePrint(std::string(29 - dir.size(), " "[0]));
+-      safePrint("Shell:  /usr/bin/bash");
+-      safePrintLn("");
+-    }
+-    safePrintLn("");
+-  } else {
+-    safePrintLn(" ???");
+-  }
+-}
+-}  // namespace
+ 
+ REGISTER_COMMAND(pinky, "pinky", "pinky [OPTION]... [USER]...",
+                  "A lightweight finger-compatible user information tool.",
+                  "pinky\npinky -f\npinky -l USER", "finger, who, users",
+                  "WinuxCmd", "Copyright © 2026 WinuxCmd", PINKY_OPTIONS) {
+-  bool long_format = ctx.get<bool>("-l", false);
+-  bool include_heading = !ctx.get<bool>("-f", false);
+-  bool include_fullname = !ctx.get<bool>("-w", false);
+-  bool include_idle = true;
+-  bool include_where = true;
+-  if (ctx.get<bool>("-i", false)) {
+-    include_fullname = false;
+-    include_where = false;
+-  }
+-  if (ctx.get<bool>("-q", false)) {
+-    include_fullname = false;
+-    include_where = false;
+-    include_idle = false;
+-  }
+-  bool include_home_shell = !ctx.get<bool>("-b", false);
+-  // [DIFFERS] - project/plan files do not exist on Windows
+-  (void)ctx.get<bool>("-h", false);
+-  (void)ctx.get<bool>("-p", false);
+-  (void)ctx.get<bool>("-s", false);
+-
+-  if (long_format) {
+-    if (ctx.positionals.empty()) {
+-      // [GNU] coreutils pinky.c usage(): the diagnostic carries the
+-      // standard "Try 'pinky --help'" hint and exits 1.
+-      safeErrorPrintLn(
+-          "pinky: no username specified; at least one must be specified when "
+-          "using -l");
+-      safeErrorPrintLn(
+-          winux::i18n::format("common.try_help",
+-                              "Try '{} --help' for more information.",
+-                              "pinky"));
+-      return 1;
+-    }
+-    for (auto arg : ctx.positionals)
+-      print_long_entry(std::string(arg), include_home_shell);
+-    return 0;
+-  }
+-
+-  print_short_heading(include_heading, include_fullname, include_idle,
+-                      include_where);
+-  // [GNU] One row per login entry; with USER arguments, only entries
+-  // for those users (an unknown name simply matches nothing).
+-  // [DIFFERS] The Where column stays empty: console sessions have no
+-  // remote host (ut_host is empty for them in GNU output too).
+-  for (const auto& entry : session_entries()) {
+-    if (!ctx.positionals.empty()) {
+-      bool wanted = false;
+-      for (auto arg : ctx.positionals) {
+-        if (entry.user == std::string(arg)) wanted = true;
+-      }
+-      if (!wanted) continue;
+-    }
+-    print_short_entry(entry, include_fullname, include_idle);
+-  }
+-  return 0;
++  // #1488 mechanical replacement: the semantics live in the rust2 library
++  // (rust2/crates/winux-cmds/src/pinky.rs); the C++ side keeps only this
++  // registration. ctx.raw_args passes the operands verbatim because the GNU
++  // applet parses its own argv.
++  return winux::rust2::run_command("pinky", ctx.raw_args);
+ }
+diff --git a/src/commands/runcon.cpp b/src/commands/runcon.cpp
+index 410da092..527593f1 100644
+--- a/src/commands/runcon.cpp
++++ b/src/commands/runcon.cpp
+@@ -7,6 +7,7 @@
+ import std;
+ import core;
+ import utils;
++import rust2_bridge;
+ 
+ using cmd::meta::OptionMeta;
+ using cmd::meta::OptionType;
+@@ -25,61 +26,6 @@ auto constexpr RUNCON_OPTIONS = std::array{
+     OPTION("-l", "--range", "set range component of the context", STRING_TYPE),
+ };
+ 
+-namespace runcon_pipeline {
+-namespace cp = core::pipeline;
+-
+-struct Config {
+-  bool has_plain_context = false;
+-  bool has_custom_context = false;
+-  std::string context;
+-  std::string command;
+-};
+-
+-auto build_config(const CommandContext<RUNCON_OPTIONS.size()>& ctx)
+-    -> cp::Result<Config> {
+-  Config cfg;
+-
+-  cfg.has_custom_context =
+-      ctx.has("-c") || ctx.has("--compute") || ctx.has("-u") ||
+-      ctx.has("--user") || ctx.has("-r") || ctx.has("--role") ||
+-      ctx.has("-t") || ctx.has("--type") || ctx.has("-l") || ctx.has("--range");
+-
+-  if (cfg.has_custom_context) {
+-    if (ctx.positionals.empty()) {
+-      return std::unexpected(winux::i18n::translate(
+-          "command.runcon.error.no_command", "no command specified"));
+-    }
+-    cfg.command = std::string(ctx.positionals[0]);
+-    return cfg;
+-  }
+-
+-  if (ctx.positionals.empty()) {
+-    return cfg;
+-  }
+-
+-  cfg.has_plain_context = true;
+-  cfg.context = std::string(ctx.positionals[0]);
+-
+-  if (ctx.positionals.size() < 2) {
+-    return std::unexpected(winux::i18n::translate(
+-        "command.runcon.error.no_command", "no command specified"));
+-  }
+-
+-  cfg.command = std::string(ctx.positionals[1]);
+-  return cfg;
+-}
+-
+-auto run(const Config& cfg) -> int {
+-  (void)cfg;
+-  safeErrorPrintLn(
+-      winux::i18n::translate("command.runcon.error.unsupported",
+-                             "runcon: failed to get current context: SELinux "
+-                             "is not supported on Windows"));
+-  return 1;
+-}
+-
+-}  // namespace runcon_pipeline
+-
+ REGISTER_COMMAND(
+     runcon, "runcon",
+     "runcon CONTEXT COMMAND [ARG]...\n"
+@@ -97,17 +43,9 @@ REGISTER_COMMAND(
+     "  runcon -t httpd_t cmd.exe /c echo hi\n"
+     "  runcon -c -u system_u -r system_r -t httpd_t cmd.exe /c echo hi",
+     "chcon(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", RUNCON_OPTIONS) {
+-  using namespace runcon_pipeline;
+-
+-  auto cfg_result = build_config(ctx);
+-  if (!cfg_result) {
+-    safeErrorPrint("runcon: ");
+-    safeErrorPrint(winux::i18n::translate_error(cfg_result.error()));
+-    safeErrorPrint("\n");
+-    safeErrorPrintLn(winux::i18n::format(
+-        "common.try_help", "Try '{} --help' for more information.", "runcon"));
+-    return 1;
+-  }
+-
+-  return run(*cfg_result);
++  // #1488 mechanical replacement: the semantics live in the rust2 library
++  // (rust2/crates/winux-cmds/src/runcon.rs); the C++ side keeps only this
++  // registration. ctx.raw_args passes the operands verbatim because the GNU
++  // applet parses its own argv.
++  return winux::rust2::run_command("runcon", ctx.raw_args);
+ }
+diff --git a/src/commands/who.cpp b/src/commands/who.cpp
+index 0c311c1c..5c2849d9 100644
+--- a/src/commands/who.cpp
++++ b/src/commands/who.cpp
+@@ -9,7 +9,6 @@
+ 
+ #include "pch/pch.h"
+ // include other header after pch.h
+-#include <wtsapi32.h>
+ 
+ #include "core/command_macros.h"
+ 
+@@ -19,6 +18,7 @@ import std;
+ import core;
+ import utils;
+ import container;
++import rust2_bridge;
+ 
+ using cmd::meta::OptionMeta;
+ using cmd::meta::OptionType;
+@@ -58,354 +58,6 @@ auto constexpr WHO_OPTIONS = std::array{
+     // [DIFFERS] Windows has no utmp terminal writability state.
+     OPTION("", "--writable", "list only users with a writable terminal")};
+ 
+-namespace who_pipeline {
+-namespace cp = core::pipeline;
+-
+-struct Config {
+-  bool heading = false;
+-  bool short_output = true;
+-  bool short_list = false;  // -q
+-  bool include_mesg = false;
+-  bool include_idle = false;  // -u: idle + pid columns
+-  bool my_line_only = false;  // -m or the two-operand "am i" form
+-  bool no_records = false;    // FILE operand names an unreadable file
+-  std::optional<std::string> unsupported;
+-};
+-
+-auto build_config(const CommandContext<WHO_OPTIONS.size()>& ctx)
+-    -> cp::Result<Config> {
+-  Config cfg;
+-  cfg.heading = ctx.get<bool>("--heading", false) || ctx.get<bool>("-H", false);
+-  cfg.short_list = ctx.get<bool>("--count", false) || ctx.get<bool>("-q", false);
+-  // [GNU] --message and -T forward to the --mesg behavior.
+-  cfg.include_mesg = ctx.get<bool>("--mesg", false) ||
+-                     ctx.get<bool>("-w", false) ||
+-                     ctx.get<bool>("--message", false) ||
+-                     ctx.get<bool>("-T", false);
+-  cfg.include_idle =
+-      ctx.get<bool>("--users", false) || ctx.get<bool>("-u", false);
+-  cfg.my_line_only = ctx.get<bool>("-m", false);
+-  // [GNU] who.c: with no record-selecting option the output stays in the
+-  // short form (the "assumptions" path sets short_output); -u selects the
+-  // long form, and an explicit -s forces the short form back on.
+-  cfg.short_output = !cfg.include_idle;
+-  if (ctx.get<bool>("--short", false) || ctx.get<bool>("-s", false)) {
+-    cfg.short_output = true;
+-  }
+-
+-  // [GNU] who.c: zero, one (utmp FILE), or two ("am i") operands.
+-  if (ctx.positionals.size() > 2) {
+-    return std::unexpected("__extra_operand__");
+-  }
+-  if (ctx.positionals.size() == 2) {
+-    cfg.my_line_only = true;
+-  } else if (ctx.positionals.size() == 1) {
+-    // [GNU] coreutils who.c has no FILE existence validation: a FILE
+-    // operand that cannot be opened simply yields zero utmp records and
+-    // a silent exit 0 (observed on coreutils 9.4: `who /no/such/utmp`
+-    // prints nothing, exits 0 — utmpxname()/getutent() fail lazily).
+-    // [DIFFERS] An existing FILE is accepted but its records are not
+-    // parsed: the session table replaces utmp on Windows (simulation
+-    // layer, niu #758).
+-    std::error_code ec;
+-    if (!std::filesystem::exists(ctx.positionals.front(), ec)) {
+-      cfg.no_records = true;
+-    }
+-  }
+-
+-  const auto reject = [&](std::string option) {
+-    if (!cfg.unsupported) cfg.unsupported = std::move(option);
+-  };
+-  if (ctx.get<bool>("-a", false) || ctx.get<bool>("--all", false))
+-    reject("--all");
+-  if (ctx.get<bool>("-b", false) || ctx.get<bool>("--boot", false))
+-    reject("--boot");
+-  if (ctx.get<bool>("-d", false) || ctx.get<bool>("--dead", false))
+-    reject("--dead");
+-  if (ctx.get<bool>("-l", false) || ctx.get<bool>("--login", false))
+-    reject("--login");
+-  if (ctx.get<bool>("-p", false) || ctx.get<bool>("--process", false))
+-    reject("--process");
+-  if (ctx.get<bool>("-r", false) || ctx.get<bool>("--runlevel", false))
+-    reject("--runlevel");
+-  if (ctx.get<bool>("-t", false) || ctx.get<bool>("--time", false))
+-    reject("--time");
+-  if (ctx.get<bool>("--lookup", false)) reject("--lookup");
+-  if (ctx.get<bool>("--writable", false)) reject("--writable");
+-  if (cfg.unsupported) {
+-    return std::unexpected(
+-        winux::i18n::translate("command.who.error.unsupported_option",
+-                               "option is not supported on Windows: ") +
+-        *cfg.unsupported);
+-  }
+-  return cfg;
+-}
+-
+-struct WhoEntry {
+-  std::string user;
+-  std::string line;
+-  long long logon_time = -1;  // unix seconds; -1 when unknown
+-  long long idle_seconds = -1;
+-  long pid = -1;
+-  std::string comment;
+-  DWORD session_id = 0;
+-};
+-
+-auto query_wstring(DWORD session_id, WTS_INFO_CLASS kind) -> std::string {
+-  LPWSTR buffer = nullptr;
+-  DWORD buffer_size = 0;
+-  std::string result;
+-  if (WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, session_id, kind,
+-                                  &buffer, &buffer_size) &&
+-      buffer != nullptr) {
+-    result = wstring_to_utf8(std::wstring(buffer));
+-  }
+-  if (buffer) WTSFreeMemory(buffer);
+-  return result;
+-}
+-
+-auto query_logon_time(DWORD session_id) -> long long {
+-  LARGE_INTEGER value{};
+-  DWORD size = 0;
+-  LPWSTR buffer = nullptr;
+-  long long result = -1;
+-  if (WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, session_id,
+-                                  WTSLogonTime, &buffer, &size) &&
+-      buffer != nullptr && size >= sizeof(LARGE_INTEGER)) {
+-    memcpy(&value, buffer, sizeof(value));
+-    const unsigned long long ticks = static_cast<unsigned long long>(value.QuadPart);
+-    result = static_cast<long long>(ticks / 10000000ULL) - 11644473600LL;
+-  }
+-  if (buffer) WTSFreeMemory(buffer);
+-  return result;
+-}
+-
+-auto query_idle_seconds(DWORD session_id) -> long long {
+-  DWORD value = 0;
+-  DWORD size = 0;
+-  LPWSTR buffer = nullptr;
+-  long long result = -1;
+-  if (WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, session_id,
+-                                  WTSIdleTime, &buffer, &size) &&
+-      buffer != nullptr && size >= sizeof(DWORD)) {
+-    memcpy(&value, buffer, sizeof(value));
+-    result = value / 1000;
+-  }
+-  if (buffer) WTSFreeMemory(buffer);
+-  return result;
+-}
+-
+-// The utmp ut_pid of a login entry corresponds to the session's login
+-// (leader) process: the oldest process living in the session.
+-auto collect_leader_pids() -> std::map<DWORD, long> {
+-  std::map<DWORD, long> leaders;
+-  std::map<DWORD, unsigned long long> created;
+-  HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+-  if (snapshot == INVALID_HANDLE_VALUE) return leaders;
+-
+-  PROCESSENTRY32W entry;
+-  entry.dwSize = sizeof(entry);
+-  if (Process32FirstW(snapshot, &entry)) {
+-    do {
+-      DWORD session_id = 0;
+-      if (!ProcessIdToSessionId(entry.th32ProcessID, &session_id)) continue;
+-      HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE,
+-                                   entry.th32ProcessID);
+-      if (process == nullptr) continue;
+-      FILETIME creation, exit_time, kernel, user;
+-      if (GetProcessTimes(process, &creation, &exit_time, &kernel, &user)) {
+-        ULARGE_INTEGER v;
+-        v.LowPart = creation.dwLowDateTime;
+-        v.HighPart = creation.dwHighDateTime;
+-        const auto it = created.find(session_id);
+-        if (it == created.end() || v.QuadPart < it->second) {
+-          created[session_id] = v.QuadPart;
+-          leaders[session_id] = static_cast<long>(entry.th32ProcessID);
+-        }
+-      }
+-      CloseHandle(process);
+-    } while (Process32NextW(snapshot, &entry));
+-  }
+-  CloseHandle(snapshot);
+-  return leaders;
+-}
+-
+-auto current_user_name() -> std::string {
+-  WCHAR username[256];
+-  DWORD username_size = 256;
+-  if (!GetUserNameW(username, &username_size)) return {};
+-  return wstring_to_utf8(std::wstring(username));
+-}
+-
+-auto enumerate_entries(bool want_idle_pid) -> std::vector<WhoEntry> {
+-  std::vector<WhoEntry> entries;
+-  const auto leaders = want_idle_pid ? collect_leader_pids()
+-                                     : std::map<DWORD, long>{};
+-  const DWORD console_session = WTSGetActiveConsoleSessionId();
+-
+-  PWTS_SESSION_INFOW sessions = nullptr;
+-  DWORD session_count = 0;
+-  if (WTSEnumerateSessionsW(WTS_CURRENT_SERVER_HANDLE, 0, 1, &sessions,
+-                            &session_count)) {
+-    for (DWORD i = 0; i < session_count; ++i) {
+-      const DWORD session_id = sessions[i].SessionId;
+-      if (sessions[i].State != WTSActive &&
+-          sessions[i].State != WTSDisconnected) {
+-        continue;
+-      }
+-      WhoEntry entry;
+-      entry.session_id = session_id;
+-      entry.user = query_wstring(session_id, WTSUserName);
+-      if (entry.user.empty()) continue;
+-      entry.line = query_wstring(session_id, WTSWinStationName);
+-      entry.logon_time = query_logon_time(session_id);
+-      if (want_idle_pid) {
+-        entry.idle_seconds = query_idle_seconds(session_id);
+-        const auto it = leaders.find(session_id);
+-        if (it != leaders.end()) entry.pid = it->second;
+-      }
+-      if (session_id == console_session) {
+-        entry.comment = "(console)";
+-      } else {
+-        const std::string client = query_wstring(session_id, WTSClientName);
+-        if (!client.empty()) entry.comment = "(" + client + ")";
+-      }
+-      entries.push_back(std::move(entry));
+-    }
+-    WTSFreeMemory(sessions);
+-  }
+-
+-  if (entries.empty()) {
+-    // Simulation face: with no enumerable login sessions, report the
+-    // current interactive user, as this command has always done.
+-    WhoEntry entry;
+-    entry.user = current_user_name();
+-    entry.line = "console";
+-    entry.comment = "(console)";
+-    entry.logon_time =
+-        static_cast<long long>(std::time(nullptr));
+-    DWORD session_id = 0;
+-    ProcessIdToSessionId(GetCurrentProcessId(), &session_id);
+-    entry.session_id = session_id;
+-    entries.push_back(std::move(entry));
+-  }
+-  return entries;
+-}
+-
+-// [GNU] coreutils who.c idle_string(): the idle value rendered from a
+-// duration ("  .  " under a minute, HH:MM under a day, " old " past it,
+-// "  ?" when unknown).
+-auto idle_string(long long idle_seconds) -> std::string {
+-  if (idle_seconds < 0) return "  ?";
+-  if (idle_seconds < 60) return "  .  ";
+-  if (idle_seconds < 24 * 60 * 60) {
+-    char buf[16];
+-    snprintf(buf, sizeof(buf), "%02lld:%02lld", idle_seconds / (60 * 60),
+-             (idle_seconds % (60 * 60)) / 60);
+-    return std::string(buf);
+-  }
+-  return " old ";
+-}
+-
+-auto pad_right(const std::string& value, size_t width) -> std::string {
+-  if (value.size() >= width) return value;
+-  return value + std::string(width - value.size(), ' ');
+-}
+-
+-auto pad_left(const std::string& value, size_t width) -> std::string {
+-  if (value.size() >= width) return value;
+-  return std::string(width - value.size(), ' ') + value;
+-}
+-
+-auto rtrim(std::string value) -> std::string {
+-  while (!value.empty() && value.back() == ' ') value.pop_back();
+-  return value;
+-}
+-
+-// [GNU] coreutils who.c print_line(): "%-8s" user, optional " x" mesg,
+-// " %-12s" line, " %-*s" time (time_format_width 12 in the C/POSIX
+-// branch), optional " %-6s" idle and " %10s" pid (both suppressed in
+-// short output), " %-8s" comment; trailing spaces are stripped.
+-auto print_line(const Config& cfg, const std::string& user, char state,
+-                const std::string& line, const std::string& time_str,
+-                const std::string& idle, const std::string& pid,
+-                const std::string& comment) -> std::string {
+-  std::string out = pad_right(user, 8);
+-  if (cfg.include_mesg) {
+-    out += " ";
+-    out += state;
+-  }
+-  out += " " + pad_right(line, 12);
+-  out += " " + pad_right(time_str, 12);
+-  if (cfg.include_idle && !cfg.short_output) {
+-    out += " " + pad_right(idle, 6);
+-    out += " " + pad_left(pid, 10);
+-  }
+-  out += " " + pad_right(comment, 8);
+-  return rtrim(out);
+-}
+-
+-// [GNU] coreutils who.c:803-811: the C/POSIX time face is "%b %e %H:%M"
+-// (12 columns, space-padded day) and time_format_width is 12; the
+-// "%Y-%m-%d %H:%M" 16-column face is the hard-locale branch only.
+-auto format_logon(long long logon_time) -> std::string {
+-  if (logon_time < 0) return {};
+-  const std::time_t t = static_cast<std::time_t>(logon_time);
+-  std::tm local{};
+-  localtime_s(&local, &t);
+-  char buf[32];
+-  strftime(buf, sizeof(buf), "%b %e %H:%M", &local);
+-  return std::string(buf);
+-}
+-
+-auto run(const Config& cfg) -> int {
+-  // [GNU] an unreadable FILE operand answers zero records; only the -H
+-  // heading (if requested) is printed, and the run still exits 0.
+-  auto entries = cfg.no_records ? std::vector<WhoEntry>{}
+-                                : enumerate_entries(cfg.include_idle);
+-
+-  if (cfg.my_line_only && !cfg.short_list) {
+-    DWORD my_session = 0;
+-    ProcessIdToSessionId(GetCurrentProcessId(), &my_session);
+-    std::vector<WhoEntry> mine;
+-    for (const auto& entry : entries) {
+-      if (entry.session_id == my_session) mine.push_back(entry);
+-    }
+-    entries = std::move(mine);
+-  }
+-
+-  // [GNU] who.c list_entries_who(): names space-joined on one line,
+-  // then "# users=N".
+-  if (cfg.short_list) {
+-    std::string line;
+-    for (size_t i = 0; i < entries.size(); ++i) {
+-      if (i > 0) line += " ";
+-      line += entries[i].user;
+-    }
+-    safePrintLn(line);
+-    safePrintLn("# users=" + std::to_string(entries.size()));
+-    return 0;
+-  }
+-
+-  if (cfg.heading) {
+-    safePrintLn(print_line(cfg, "NAME", ' ', "LINE", "TIME", "IDLE", "PID",
+-                           "COMMENT"));
+-  }
+-
+-  for (const auto& entry : entries) {
+-    // [DIFFERS] Windows has no tty-writability bit; interactive
+-    // terminals accept messages, so the mesg state is '+'.
+-    safePrintLn(print_line(cfg, entry.user, '+', entry.line,
+-                           format_logon(entry.logon_time),
+-                           idle_string(entry.idle_seconds),
+-                           entry.pid >= 0 ? std::to_string(entry.pid) : "",
+-                           entry.comment));
+-  }
+-  return 0;
+-}
+-
+-}  // namespace who_pipeline
+-
+ REGISTER_COMMAND(
+     who, "who", "who [OPTION]... [ FILE | ARG1 ARG2 ]",
+     "Print information about users who are currently logged in.\n"
+@@ -417,17 +69,9 @@ REGISTER_COMMAND(
+     "  who -H\n"
+     "  who -q",
+     "w(1), users(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", WHO_OPTIONS) {
+-  using namespace who_pipeline;
+-
+-  auto cfg_result = build_config(ctx);
+-  if (!cfg_result) {
+-    if (cfg_result.error() == "__extra_operand__" &&
+-        ctx.positionals.size() > 2) {
+-      return cp::report_extra_operand("who", ctx.positionals[2]);
+-    }
+-    cp::report_error(cfg_result, L"who");
+-    return 1;
+-  }
+-
+-  return run(*cfg_result);
++  // #1488 mechanical replacement: the semantics live in the rust2 library
++  // (rust2/crates/winux-cmds/src/who.rs); the C++ side keeps only this
++  // registration. ctx.raw_args passes the operands verbatim because the GNU
++  // applet parses its own argv.
++  return winux::rust2::run_command("who", ctx.raw_args);
+ }

@@ -35,7 +35,7 @@ use crate::fsutil::{
 use crate::modemap::{
     apply_mode, current_mode, eval_spec, mode_string, parse_mode_spec, process_umask, ModeSpec,
 };
-use winux_core::{usage_error, CmdResult, Ctx, Io};
+use winux_core::{tr, usage_error, CmdResult, Ctx, Io};
 
 /// Registration order mirrors the upstream chmod.c long_options table —
 /// ambiguity listings print candidates in table order (probed d8: `--=v`
@@ -134,18 +134,20 @@ fn split_dash_modes(args: &[OsString]) -> (Vec<String>, Vec<OsString>) {
     (modes, rest)
 }
 
-struct Apply<'i, 'o> {
+struct Apply<'i, 'o, 'c, 'e> {
     /// display prefix as typed by the user (for -v paths)
     verbose: bool,
     changes_only: bool,
     quiet: bool,
     ref_bits: Option<u32>,
     spec: Option<ModeSpec>,
+    /// I18N lookup host (error() wording); stdout -v lines stay GNU-strict.
+    ctx: &'c Ctx<'e>,
     io: &'i mut Io<'o>,
     failed: bool,
 }
 
-impl Apply<'_, '_> {
+impl Apply<'_, '_, '_, '_> {
     fn report(&mut self, name: &str, before: u32, after: u32) {
         let changed = after != before;
         // -v prints every outcome; -c prints changes only
@@ -190,8 +192,13 @@ impl Apply<'_, '_> {
                 if !self.quiet {
                     let _ = writeln!(
                         self.io.stderr,
-                        "chmod: changing permissions of {}: Permission denied",
-                        winux_core::q(display)
+                        "chmod: {}: Permission denied",
+                        tr!(
+                            self.ctx,
+                            "command.chmod.error.changing_permissions",
+                            "changing permissions of {file}",
+                            file = winux_core::q(display)
+                        )
                     );
                 }
                 self.failed = true;
@@ -233,8 +240,13 @@ pub fn chmod_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             } else {
                 let _ = writeln!(
                     io.stderr,
-                    "chmod: failed to get attributes of {}: {}",
-                    winux_core::q(r),
+                    "chmod: {}: {}",
+                    tr!(
+                        ctx,
+                        "command.chmod.error.failed_get_attributes",
+                        "failed to get attributes of {file}",
+                        file = winux_core::q(r)
+                    ),
                     "No such file or directory"
                 );
                 return Ok(1);
@@ -261,12 +273,25 @@ pub fn chmod_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             Some(m) => m.clone(),
             None => {
                 if p.positionals.is_empty() {
-                    let _ = usage_error(io, "chmod", "missing operand");
+                    let _ = usage_error(
+                        io,
+                        "chmod",
+                        &tr!(
+                            ctx,
+                            "command.chmod.error.missing_operand",
+                            "missing operand"
+                        ),
+                    );
                     return Ok(1);
                 }
                 let m = p.positionals[0].to_string_lossy().into_owned();
                 if p.positionals.len() == 1 {
-                    let msg = format!("missing operand after {}", winux_core::q(&m));
+                    let msg = tr!(
+                        ctx,
+                        "command.chmod.error.missing_operand_after",
+                        "missing operand after {operand}",
+                        operand = winux_core::q(&m)
+                    );
                     let _ = usage_error(io, "chmod", &msg);
                     return Ok(1);
                 }
@@ -277,7 +302,12 @@ pub fn chmod_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         match parse_mode_spec(&mode) {
             Ok(s) => Some(s),
             Err(()) => {
-                let msg = format!("invalid mode: {}", winux_core::q(&mode));
+                let msg = tr!(
+                    ctx,
+                    "command.chmod.error.invalid_mode",
+                    "invalid mode: {mode}",
+                    mode = winux_core::q(&mode)
+                );
                 let _ = usage_error(io, "chmod", &msg);
                 return Ok(1);
             }
@@ -302,6 +332,7 @@ pub fn chmod_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         quiet,
         ref_bits,
         spec,
+        ctx,
         io,
         failed: false,
     };
@@ -311,7 +342,7 @@ pub fn chmod_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         // Explicit GNU failsafe (upstream fires per-traversed-directory via
         // ROOT_DEV_INO_CHECK; refusal order is operand order — probed g7).
         if recursive && preserve_root && is_preserve_root_operand(ctx, name, &path) {
-            for line in preserve_root_refusal_lines("chmod", name) {
+            for line in preserve_root_refusal_lines(ctx, "chmod", name) {
                 let _ = writeln!(ap.io.stderr, "{line}");
             }
             ap.failed = true;
@@ -327,7 +358,7 @@ pub fn chmod_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 .unwrap_or(false)
             && link_target_is_root(ctx, &path);
         if recursive && (is_native_root_operand(ctx, name, &path) || link_carries_root) {
-            for line in preserve_root_refusal_lines("chmod", name) {
+            for line in preserve_root_refusal_lines(ctx, "chmod", name) {
                 let _ = writeln!(ap.io.stderr, "{line}");
             }
             ap.failed = true;
@@ -337,8 +368,13 @@ pub fn chmod_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             if !quiet {
                 let _ = writeln!(
                     ap.io.stderr,
-                    "chmod: cannot access {}: {}",
-                    winux_core::q(name),
+                    "chmod: {}: {}",
+                    tr!(
+                        ap.ctx,
+                        "command.chmod.error.cannot_access",
+                        "cannot access {file}",
+                        file = winux_core::q(name)
+                    ),
                     "No such file or directory"
                 );
             }
@@ -365,8 +401,13 @@ fn walk_chmod(ap: &mut Apply, display: &str, dir: &Path) {
             if !ap.quiet {
                 let _ = writeln!(
                     ap.io.stderr,
-                    "chmod: cannot read directory {}: Permission denied",
-                    winux_core::q(display)
+                    "chmod: {}: Permission denied",
+                    tr!(
+                        ap.ctx,
+                        "command.chmod.error.cannot_read_directory",
+                        "cannot read directory {file}",
+                        file = winux_core::q(display)
+                    )
                 );
             }
             ap.failed = true;
@@ -600,9 +641,26 @@ mod tests {
         std::fs::write(sc.path("f"), "x").unwrap();
         // default: GNU walks "/" (M1 B1) — the sandbox walk succeeds
         assert_eq!(run(&["-R", "755", "."], &sc).0, 0);
+        // Read-only sentinel (handover requirement): a refused 755 pass must
+        // leave the file's attributes untouched. Create it AFTER the default
+        // walk, then assert the refusal path never reached apply_mode.
+        std::fs::write(sc.path("sentinel"), "s").unwrap();
+        let mut perms = std::fs::metadata(sc.path("sentinel"))
+            .unwrap()
+            .permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(sc.path("sentinel"), perms).unwrap();
+        let before = std::fs::metadata(sc.path("sentinel")).unwrap();
         // explicit --preserve-root refuses with the suffix form (P4 `/.`)
         let (r, _, e) = run(&["-R", "--preserve-root", "755", "."], &sc);
         assert_eq!(r, 1);
+        let after = std::fs::metadata(sc.path("sentinel")).unwrap();
+        assert!(
+            after.permissions().readonly(),
+            "refused 755 pass cleared the read-only sentinel"
+        );
+        assert_eq!(before.len(), after.len());
+        assert_eq!(before.modified().ok(), after.modified().ok());
         assert!(
             e.contains("chmod: it is dangerous to operate recursively on '.' (same as '/')"),
             "{e}"

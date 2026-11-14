@@ -26,7 +26,7 @@ use std::ffi::OsString;
 use crate::argopt::{self, OptSpec};
 use crate::gnuhelp;
 use crate::winsys;
-use winux_core::{usage_error, CmdResult, Ctx, Io};
+use winux_core::{tr, usage_error, CmdResult, Ctx, Io};
 
 const OPTS: &[OptSpec] = &[
     OptSpec {
@@ -122,7 +122,17 @@ pub fn nproc_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     }
     if let Some(first) = p.positionals.first() {
         let shown = first.to_string_lossy().into_owned();
-        let _ = usage_error(io, "nproc", &format!("extra operand '{shown}'"));
+        // [GNU] nproc.c: any operand is rejected with the try-help frame.
+        let _ = usage_error(
+            io,
+            "nproc",
+            &tr!(
+                ctx,
+                "command.nproc.error.extra_operand",
+                "extra operand '{operand}'",
+                operand = shown
+            ),
+        );
         return Ok(1);
     }
 
@@ -130,7 +140,18 @@ pub fn nproc_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         Some(raw) => match parse_ignore(raw) {
             Some(v) => Some(v),
             None => {
-                let _ = writeln!(io.stderr, "nproc: invalid number: '{raw}'");
+                // [GNU] nproc.c xnumtoumax failure wording; the raw value is
+                // the only dynamic part.
+                let _ = writeln!(
+                    io.stderr,
+                    "nproc: {}",
+                    tr!(
+                        ctx,
+                        "command.nproc.error.invalid_number",
+                        "invalid number: '{raw}'",
+                        raw = raw
+                    )
+                );
                 return Ok(1);
             }
         },

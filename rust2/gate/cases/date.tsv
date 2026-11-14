@@ -39,7 +39,7 @@ dt36-long-date-form	strict		TZ=UTC		--date=2020-01-02 03:04:05	+%F
 dt37-tz-est-winter-zone-suffix	strict		TZ=EST5EDT		-d	2020-01-02 03:04:05 UTC	+%F_%T_%z
 dt38-set-refused	note				-s	2020-01-02 03:04:05
 dt39-ref-file	strict	touch -d @1577836800 ref	TZ=UTC		-r	ref	+%F_%T
-dt40-help	win				--help
-dt41-version	win				--version
+dt40-help	strict				--help
+dt41-version	strict				--version
 dt42-debug-flag-parse	strict		TZ=UTC		--debug	-d	2020-01-02 03:04:05 UTC	+%F
 dt43-permute-operand	strict		TZ=UTC		+%F_%T	-d	2020-01-02 03:04:05 UTC

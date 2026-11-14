@@ -7,7 +7,7 @@ use std::ffi::OsStr;
 use std::io;
 use std::path::{Component, Path, PathBuf, Prefix};
 
-use winux_core::Ctx;
+use winux_core::{tr, Ctx};
 
 /// Map an io error to the GNU strerror-style reason string.
 pub fn reason(e: &io::Error) -> &'static str {
@@ -247,13 +247,88 @@ pub(crate) fn preserve_root_display(operand: &str) -> (String, bool) {
 /// The GNU two-line failsafe for `cmd` on `operand` (probed byte shape:
 /// `cmd: it is dangerous to operate recursively on 'X'[ (same as '/')]
 /// cmd: use --no-preserve-root to override this failsafe`, rc 1).
-pub(crate) fn preserve_root_refusal_lines(cmd: &str, operand: &str) -> [String; 2] {
+///
+/// Both lines are I18N-keyed per command (`command.<cmd>.error.*`); the
+/// English fallbacks are GNU `error()`'s INNER wording and the `cmd: `
+/// prefix stays in code, so a catalog template never has to repeat the
+/// program name. The operand is a binding, not template text — a brace in
+/// a user path is substituted once and never re-scanned.
+pub(crate) fn preserve_root_refusal_lines(ctx: &Ctx, cmd: &str, operand: &str) -> [String; 2] {
     let (display, suffix) = preserve_root_display(operand);
-    let tail = if suffix { " (same as '/')" } else { "" };
-    [
-        format!("{cmd}: it is dangerous to operate recursively on '{display}'{tail}"),
-        format!("{cmd}: use --no-preserve-root to override this failsafe"),
-    ]
+    // The "(same as '/')" suffix is part of the sentence, not a data
+    // binding: a trailing English fragment glued to a translated clause
+    // cannot be localized, so the suffix and non-suffix shapes are distinct
+    // keys (GNU prints the operand verbatim either way). tr! needs literal
+    // keys, hence the per-command spelling.
+    let (danger, hint) = match cmd {
+        "chmod" => (
+            if suffix {
+                tr!(
+                    ctx,
+                    "command.chmod.error.dangerous_recursive_root",
+                    "it is dangerous to operate recursively on '{operand}' (same as '/')",
+                    operand = display
+                )
+            } else {
+                tr!(
+                    ctx,
+                    "command.chmod.error.dangerous_recursive",
+                    "it is dangerous to operate recursively on '{operand}'",
+                    operand = display
+                )
+            },
+            tr!(
+                ctx,
+                "command.chmod.error.preserve_root_hint",
+                "use --no-preserve-root to override this failsafe"
+            ),
+        ),
+        "chgrp" => (
+            if suffix {
+                tr!(
+                    ctx,
+                    "command.chgrp.error.dangerous_recursive_root",
+                    "it is dangerous to operate recursively on '{operand}' (same as '/')",
+                    operand = display
+                )
+            } else {
+                tr!(
+                    ctx,
+                    "command.chgrp.error.dangerous_recursive",
+                    "it is dangerous to operate recursively on '{operand}'",
+                    operand = display
+                )
+            },
+            tr!(
+                ctx,
+                "command.chgrp.error.preserve_root_hint",
+                "use --no-preserve-root to override this failsafe"
+            ),
+        ),
+        _ => (
+            if suffix {
+                tr!(
+                    ctx,
+                    "command.chown.error.dangerous_recursive_root",
+                    "it is dangerous to operate recursively on '{operand}' (same as '/')",
+                    operand = display
+                )
+            } else {
+                tr!(
+                    ctx,
+                    "command.chown.error.dangerous_recursive",
+                    "it is dangerous to operate recursively on '{operand}'",
+                    operand = display
+                )
+            },
+            tr!(
+                ctx,
+                "command.chown.error.preserve_root_hint",
+                "use --no-preserve-root to override this failsafe"
+            ),
+        ),
+    };
+    [format!("{cmd}: {danger}"), format!("{cmd}: {hint}")]
 }
 
 /// Reparse-point identity (blocker 3 mapping): a junction/symlink whose
@@ -469,10 +544,7 @@ mod tests {
         // no shell root configured: the namespace fallback is the cwd's
         // own volume root (C:\), so nothing below C:\work matches.
         let env = MapEnv::new();
-        let ctx = Ctx {
-            cwd: PathBuf::from(r"C:\work"),
-            env: &env,
-        };
+        let ctx = Ctx::new(PathBuf::from(r"C:\work"), &env);
         // raw all-separator and rooted dot-fold spellings
         for (op, resolved) in [
             ("/", "/"),
@@ -530,6 +602,8 @@ mod tests {
         // 3+-separator spellings print plain; "//" and every other root
         // identity print verbatim with the "(same as '/')" suffix.
         use super::preserve_root_display;
+        let env = MapEnv::new();
+        let ctx = Ctx::new(PathBuf::from("wd"), &env);
         assert_eq!(preserve_root_display("/"), ("/".to_string(), false));
         assert_eq!(preserve_root_display("///"), ("/".to_string(), false));
         assert_eq!(preserve_root_display("////"), ("/".to_string(), false));
@@ -543,7 +617,7 @@ mod tests {
             preserve_root_display("/proc/self/root"),
             ("/proc/self/root".to_string(), true)
         );
-        let lines = super::preserve_root_refusal_lines("chown", "/tmp/..");
+        let lines = super::preserve_root_refusal_lines(&ctx, "chown", "/tmp/..");
         assert_eq!(
             lines[0],
             "chown: it is dangerous to operate recursively on '/tmp/..' (same as '/')"
@@ -552,7 +626,7 @@ mod tests {
             lines[1],
             "chown: use --no-preserve-root to override this failsafe"
         );
-        let lines = super::preserve_root_refusal_lines("chmod", "////");
+        let lines = super::preserve_root_refusal_lines(&ctx, "chmod", "////");
         assert_eq!(
             lines[0],
             "chmod: it is dangerous to operate recursively on '/'"
@@ -567,10 +641,7 @@ mod tests {
         // the first floor test walk the real C: drive — fixed 2026-11-14).
         use super::is_native_root_operand;
         let env = MapEnv::new();
-        let ctx = Ctx {
-            cwd: PathBuf::from(r"C:\\work"),
-            env: &env,
-        };
+        let ctx = Ctx::new(PathBuf::from(r"C:\\work"), &env);
         assert!(is_native_root_operand(&ctx, r"C:\\", Path::new(r"C:\\")));
         assert!(is_native_root_operand(&ctx, "/", Path::new("/")));
         assert!(is_native_root_operand(&ctx, "/e/..", Path::new(r"E:\\")));
@@ -578,10 +649,7 @@ mod tests {
         // configured shell root: the sandbox namespace "/" is exempt
         let mut env2 = MapEnv::new();
         env2.set("__RUBASH_SHELL_ROOT", r"T:\\sandbox\\root");
-        let ctx2 = Ctx {
-            cwd: PathBuf::from(r"T:\\sandbox\\root"),
-            env: &env2,
-        };
+        let ctx2 = Ctx::new(PathBuf::from(r"T:\\sandbox\\root"), &env2);
         assert!(!is_native_root_operand(
             &ctx2,
             "/",
@@ -607,10 +675,7 @@ mod tests {
         // configured shell root T:\sandbox\root; cwd sits ON the root.
         let mut env = MapEnv::new();
         env.set("__RUBASH_SHELL_ROOT", r"T:\sandbox\root");
-        let ctx = Ctx {
-            cwd: PathBuf::from(r"T:\sandbox\root"),
-            env: &env,
-        };
+        let ctx = Ctx::new(PathBuf::from(r"T:\sandbox\root"), &env);
         for (op, resolved) in [
             (".", r"T:\sandbox\root"),
             ("./", r"T:\sandbox\root\."),
@@ -630,10 +695,7 @@ mod tests {
             assert!(!guard(&ctx, op, resolved), "below root {op:?}");
         }
         // cwd one level below: '..' and 'sub\..' fold back onto the root
-        let ctx_sub = Ctx {
-            cwd: PathBuf::from(r"T:\sandbox\root\sub"),
-            env: &env,
-        };
+        let ctx_sub = Ctx::new(PathBuf::from(r"T:\sandbox\root\sub"), &env);
         assert!(guard(&ctx_sub, "..", r"T:\sandbox\root\sub\.."));
         assert!(guard(&ctx_sub, "sub\\..", r"T:\sandbox\root\sub\.."));
         // but '.' from below the root is just a subdirectory
@@ -641,18 +703,12 @@ mod tests {
         // a different injected root changes the verdict — no process state
         let mut env2 = MapEnv::new();
         env2.set("__RUBASH_SHELL_ROOT", r"X:\elsewhere");
-        let ctx2 = Ctx {
-            cwd: PathBuf::from(r"T:\sandbox\root"),
-            env: &env2,
-        };
+        let ctx2 = Ctx::new(PathBuf::from(r"T:\sandbox\root"), &env2);
         assert!(!guard(&ctx2, ".", r"T:\sandbox\root"));
         // UNC-configured namespace root is not a volume root itself
         let mut env3 = MapEnv::new();
         env3.set("__RUBASH_SHELL_ROOT", r"\\srv\share\payload");
-        let ctx3 = Ctx {
-            cwd: PathBuf::from(r"\\srv\share\payload"),
-            env: &env3,
-        };
+        let ctx3 = Ctx::new(PathBuf::from(r"\\srv\share\payload"), &env3);
         assert!(guard(&ctx3, "/", r"\\srv\share\payload"));
         assert!(guard(&ctx3, ".", r"\\srv\share\payload"));
         assert!(!guard(&ctx3, "d", r"\\srv\share\payload\d"));

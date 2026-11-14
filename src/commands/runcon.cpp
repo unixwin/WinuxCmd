@@ -7,7 +7,6 @@
 import std;
 import core;
 import utils;
-import rust2_bridge;
 
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
@@ -26,6 +25,61 @@ auto constexpr RUNCON_OPTIONS = std::array{
     OPTION("-l", "--range", "set range component of the context", STRING_TYPE),
 };
 
+namespace runcon_pipeline {
+namespace cp = core::pipeline;
+
+struct Config {
+  bool has_plain_context = false;
+  bool has_custom_context = false;
+  std::string context;
+  std::string command;
+};
+
+auto build_config(const CommandContext<RUNCON_OPTIONS.size()>& ctx)
+    -> cp::Result<Config> {
+  Config cfg;
+
+  cfg.has_custom_context =
+      ctx.has("-c") || ctx.has("--compute") || ctx.has("-u") ||
+      ctx.has("--user") || ctx.has("-r") || ctx.has("--role") ||
+      ctx.has("-t") || ctx.has("--type") || ctx.has("-l") || ctx.has("--range");
+
+  if (cfg.has_custom_context) {
+    if (ctx.positionals.empty()) {
+      return std::unexpected(winux::i18n::translate(
+          "command.runcon.error.no_command", "no command specified"));
+    }
+    cfg.command = std::string(ctx.positionals[0]);
+    return cfg;
+  }
+
+  if (ctx.positionals.empty()) {
+    return cfg;
+  }
+
+  cfg.has_plain_context = true;
+  cfg.context = std::string(ctx.positionals[0]);
+
+  if (ctx.positionals.size() < 2) {
+    return std::unexpected(winux::i18n::translate(
+        "command.runcon.error.no_command", "no command specified"));
+  }
+
+  cfg.command = std::string(ctx.positionals[1]);
+  return cfg;
+}
+
+auto run(const Config& cfg) -> int {
+  (void)cfg;
+  safeErrorPrintLn(
+      winux::i18n::translate("command.runcon.error.unsupported",
+                             "runcon: failed to get current context: SELinux "
+                             "is not supported on Windows"));
+  return 1;
+}
+
+}  // namespace runcon_pipeline
+
 REGISTER_COMMAND(
     runcon, "runcon",
     "runcon CONTEXT COMMAND [ARG]...\n"
@@ -43,9 +97,17 @@ REGISTER_COMMAND(
     "  runcon -t httpd_t cmd.exe /c echo hi\n"
     "  runcon -c -u system_u -r system_r -t httpd_t cmd.exe /c echo hi",
     "chcon(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", RUNCON_OPTIONS) {
-  // #1488 mechanical replacement: the semantics live in the rust2 library
-  // (rust2/crates/winux-cmds/src/runcon.rs); the C++ side keeps only this
-  // registration. ctx.raw_args passes the operands verbatim because the GNU
-  // applet parses its own argv.
-  return winux::rust2::run_command("runcon", ctx.raw_args);
+  using namespace runcon_pipeline;
+
+  auto cfg_result = build_config(ctx);
+  if (!cfg_result) {
+    safeErrorPrint("runcon: ");
+    safeErrorPrint(winux::i18n::translate_error(cfg_result.error()));
+    safeErrorPrint("\n");
+    safeErrorPrintLn(winux::i18n::format(
+        "common.try_help", "Try '{} --help' for more information.", "runcon"));
+    return 1;
+  }
+
+  return run(*cfg_result);
 }

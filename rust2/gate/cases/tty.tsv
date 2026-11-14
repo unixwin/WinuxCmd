@@ -10,10 +10,10 @@ ty07-dash-operand	strict				-
 ty08-dashdash-only	strict				--
 ty09-bogus-long	strict				--bogus
 ty10-bogus-short	strict				-z
-ty11-help	win				--help
-ty12-version	win				--version
-ty13-help-extra	win				--help	extra
-ty14-help-abbrev	win				--hel
+ty11-help	strict				--help
+ty12-version	strict				--version
+ty13-help-extra	strict				--help	extra
+ty14-help-abbrev	strict				--hel
 ty15-quiet-abbrev	strict				--qui
 ty16-silent-abbrev	strict			x	--silen
 ty17-two-operands	strict				a	b

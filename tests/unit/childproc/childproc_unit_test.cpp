@@ -276,3 +276,197 @@ TEST(childproc, nice_batch_script_from_path_routes_through_interpreter) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.find(kMarker) != std::string::npos);
 }
+
+// --- shebang scripts (#1623) ----------------------------------------------
+//
+// A resolved file with a `#!` line launches through its interpreter (the
+// binfmt_script value model). The interpreter is staged as a copy of the
+// multicall binary under its own dispatch name (`winuxcmd.exe`): the
+// multicall dispatches on the exe stem only -- an unknown stem goes to
+// "command not found" (127) with no busybox-style argv[1] verb fallback --
+// so the `winuxcmd <verb>` mode is the only staged shape that can run
+// `echo` as the optional shebang argument and print the script path plus
+// the caller's arguments, proving the whole [interpreter, arg, script,
+// argv...] order. Scripts are addressed cwd-relative (`./s1.sh`) so no
+// TempDir spelling with a space can truncate the shebang token.
+
+TEST(childproc, env_shebang_script_launches_through_interpreter) {
+  FakeBin fake;
+  std::filesystem::copy_file(ProjectPaths::entry_binary(L"winuxcmd.exe"),
+                             fake.dir.path / L"winuxcmd.exe");
+  fake.dir.write("s1.sh", "#!./winuxcmd.exe echo\n");
+  Pipeline p;
+  p.set_env(L"PATH", fake.windows_form());
+  p.set_cwd(fake.dir.wpath());
+  p.add(L"env.exe", {L"./s1.sh", L"WINUXCMD-SPAWN-RESOLVED"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find(kMarker) != std::string::npos);
+}
+
+TEST(childproc,
+     env_shebang_script_with_posix_interpreter_resolves_via_shell_root) {
+  FakeBin fake;
+  // The #1002 hook shape: `#!/usr/bin/env echo` -- the interpreter is a
+  // POSIX-rooted spelling that only the shell-namespace mapper can place.
+  TempDir root;
+  std::filesystem::create_directories(root.path / L"usr" / L"bin");
+  std::filesystem::copy_file(ProjectPaths::entry_binary(L"winuxcmd.exe"),
+                             root.path / L"usr" / L"bin" / L"env.exe");
+  std::filesystem::copy_file(ProjectPaths::entry_binary(L"winuxcmd.exe"),
+                             fake.dir.path / L"echo.exe");
+  fake.dir.write("s3.sh", "#!/usr/bin/env echo\n");
+  Pipeline p;
+  p.set_env(L"PATH", fake.windows_form());
+  p.set_env(L"NIU_ROOT", root.wpath());
+  p.set_cwd(fake.dir.wpath());
+  p.add(L"env.exe", {L"./s3.sh", L"WINUXCMD-SPAWN-RESOLVED"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find(kMarker) != std::string::npos);
+}
+
+TEST(childproc, env_shebang_script_missing_interpreter_reports_127) {
+  FakeBin fake;
+  fake.dir.write("s1.sh", "#!./no-such-interp\n");
+  Pipeline p;
+  p.set_env(L"PATH", fake.windows_form());
+  p.set_cwd(fake.dir.wpath());
+  p.add(L"env.exe", {L"./s1.sh"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 127);
+  EXPECT_TRUE(r.stderr_text.find("s1.sh") != std::string::npos);
+}
+
+TEST(childproc, env_shebang_script_crlf_line_misses_interpreter_reports_127) {
+  FakeBin fake;
+  std::filesystem::copy_file(ProjectPaths::entry_binary(L"winuxcmd.exe"),
+                             fake.dir.path / L"interp.exe");
+  // CRLF: the kernel keeps the CR, so the interpreter is named
+  // "./interp.exe\r" and misses -- probed ENOENT (127).
+  fake.dir.write("s1.sh", "#!./interp.exe\r\n");
+  Pipeline p;
+  p.set_env(L"PATH", fake.windows_form());
+  p.set_cwd(fake.dir.wpath());
+  p.add(L"env.exe", {L"./s1.sh"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 127);
+}
+
+TEST(childproc, env_shebang_script_chain_appends_outer_tokens_once) {
+  FakeBin fake;
+  std::filesystem::copy_file(ProjectPaths::entry_binary(L"winuxcmd.exe"),
+                             fake.dir.path / L"winuxcmd.exe");
+  fake.dir.write("inner.sh", "#!./winuxcmd.exe echo\n");
+  fake.dir.write("outer.sh", "#!./inner.sh\n");
+  Pipeline p;
+  p.set_env(L"PATH", fake.windows_form());
+  p.set_cwd(fake.dir.wpath());
+  p.add(L"env.exe", {L"./outer.sh", L"WINUXCMD-SPAWN-RESOLVED"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find(kMarker) != std::string::npos);
+  // The inner script appears exactly once in the assembled argv (#1595).
+  const size_t first = r.stdout_text.find("inner.sh");
+  EXPECT_TRUE(first != std::string::npos);
+  EXPECT_EQ(r.stdout_text.find("inner.sh", first + 1), std::string::npos);
+}
+
+TEST(childproc,
+     env_shebang_script_with_batch_interpreter_routes_through_comspec) {
+  FakeBin fake;
+  // A .cmd interpreter keeps the COMSPEC route (it is still a batch file
+  // to CreateProcess); %* receives the script path plus the caller's args.
+  fake.dir.write("interp.cmd", "@echo off\r\necho %*\r\n");
+  fake.dir.write("s1.sh", "#!./interp.cmd\n");
+  Pipeline p;
+  p.set_env(L"PATH", fake.windows_form());
+  p.set_cwd(fake.dir.wpath());
+  p.add(L"env.exe", {L"./s1.sh", L"WINUXCMD-SPAWN-RESOLVED"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find(kMarker) != std::string::npos);
+}
+
+TEST(childproc, env_shebang_script_bare_hashbang_reports_126) {
+  FakeBin fake;
+  // Product BadFormat boundary: GNU `env` reaches 0 on a bare `#!` only via
+  // the libc execvp /bin/sh fallback (raw exec gets ENOEXEC), which is out
+  // of contract here.
+  fake.dir.write("s1.sh", "#!\n");
+  Pipeline p;
+  p.set_env(L"PATH", fake.windows_form());
+  p.set_cwd(fake.dir.wpath());
+  p.add(L"env.exe", {L"./s1.sh"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 126);
+}
+
+TEST(childproc, env_shebang_script_overlong_line_still_launches) {
+  FakeBin fake;
+  // The kernel truncates an overlong shebang line at its BINPRM_BUF_SIZE - 1
+  // window and still launches it (probed WSL GNU 6.18: `#!/bin/echo ` + 300
+  // x's runs /bin/echo with a 243-byte argument) -- not a 126. A .cmd
+  // interpreter keeps %* observable, so the truncated optional argument,
+  // the script path, and the caller's argument all show up in stdout.
+  fake.dir.write("interp.cmd", "@echo off\r\necho %*\r\n");
+  std::string content("#!./interp.cmd ");
+  content.append(300, 'x');
+  content.push_back('\n');
+  fake.dir.write("s1.sh", content);
+  Pipeline p;
+  p.set_env(L"PATH", fake.windows_form());
+  p.set_cwd(fake.dir.wpath());
+  p.add(L"env.exe", {L"./s1.sh", L"WINUXCMD-SPAWN-RESOLVED"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find(kMarker) != std::string::npos);
+  // The script path reached the interpreter, and the optional argument kept
+  // exactly the bytes inside the 255-byte window: "#!./interp.cmd " is 15
+  // bytes, so 240 x's survive -- and a 256-byte window would leak a 241st.
+  EXPECT_TRUE(r.stdout_text.find("s1.sh") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find(std::string(240, 'x')) != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find(std::string(241, 'x')) == std::string::npos);
+}
+
+TEST(childproc,
+     env_shebang_script_overlong_line_missing_interpreter_reports_127) {
+  FakeBin fake;
+  // Truncating the line does not excuse a missing interpreter: the token is
+  // still read and resolved, and a miss is ENOENT (probed GNU 127).
+  std::string content("#!./no-such-interp ");
+  content.append(300, 'x');
+  content.push_back('\n');
+  fake.dir.write("s1.sh", content);
+  Pipeline p;
+  p.set_env(L"PATH", fake.windows_form());
+  p.set_cwd(fake.dir.wpath());
+  p.add(L"env.exe", {L"./s1.sh"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 127);
+  EXPECT_TRUE(r.stderr_text.find("s1.sh") != std::string::npos);
+}
+
+TEST(childproc, timeout_shebang_script_launches_through_interpreter) {
+  FakeBin fake;
+  std::filesystem::copy_file(ProjectPaths::entry_binary(L"winuxcmd.exe"),
+                             fake.dir.path / L"winuxcmd.exe");
+  fake.dir.write("s1.sh", "#!./winuxcmd.exe echo\n");
+  Pipeline p;
+  p.set_env(L"PATH", fake.windows_form());
+  p.set_cwd(fake.dir.wpath());
+  p.add(L"timeout.exe", {L"5", L"./s1.sh", L"WINUXCMD-SPAWN-RESOLVED"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find(kMarker) != std::string::npos);
+}

@@ -49,7 +49,7 @@ use crate::fsutil::{
     is_native_root_operand, is_preserve_root_operand, link_target_is_root,
     preserve_root_refusal_lines, resolve,
 };
-use winux_core::{usage_error, CmdResult, Ctx, Io};
+use winux_core::{tr, usage_error, CmdResult, Ctx, Io};
 
 /// Registration order mirrors upstream chown.c's long_options table
 /// (fetched 9.4 source: recursive, changes, dereference, from,
@@ -194,13 +194,10 @@ impl DerefMachine {
     }
 
     /// Upstream error, decided post-parse. rc 1, no Try line (error(),
-    /// not usage() — probed G5/O5).
-    pub fn combo_error(&self) -> Option<&'static str> {
-        if self.recursive && self.bit == BitMode::Physical && self.deref == 1 {
-            Some("-R --dereference requires either -H or -L")
-        } else {
-            None
-        }
+    /// not usage() — probed G5/O5). The wording lives at the call site as
+    /// an I18N fallback (`command.<cmd>.error.dereference_requires`).
+    pub fn has_combo_error(&self) -> bool {
+        self.recursive && self.bit == BitMode::Physical && self.deref == 1
     }
 
     pub fn affect_symlink_referent(&self) -> bool {
@@ -539,12 +536,17 @@ fn split_spec(spec: &str) -> Option<(String, Option<String>)> {
 /// the dot back into the owner name (probed O17 `1.1:0` -> invalid user).
 /// `dot` reports that the deprecated form was used so the caller emits
 /// `chown: warning: '.' should be ':': '<spec>'` once per dot spec.
-fn parse_spec(spec: &str) -> Result<(Spec, bool), String> {
+fn parse_spec(ctx: &Ctx, spec: &str) -> Result<(Spec, bool), String> {
     let dot_form = !spec.contains(':') && spec.contains('.');
     let (owner_s, group_s) = if dot_form {
         let (o, g) = spec.split_once('.').expect("dot_form implies a dot");
         if g.contains('.') {
-            return Err(format!("invalid user: {}", winux_core::q(spec)));
+            return Err(tr!(
+                ctx,
+                "command.chown.error.invalid_user",
+                "invalid user: {spec}",
+                spec = winux_core::q(spec)
+            ));
         }
         (o.to_string(), Some(g.to_string()))
     } else {
@@ -583,7 +585,12 @@ fn parse_spec(spec: &str) -> Result<(Spec, bool), String> {
     // resolve (verified `root:`); on Windows the group part is skipped.
     if colon && matches!(&group_s, Some(g) if g.is_empty()) && !owner_s.is_empty() {
         if is_numeric(&owner_s) {
-            return Err(format!("invalid spec: {}", winux_core::q(spec)));
+            return Err(tr!(
+                ctx,
+                "command.chown.error.invalid_spec",
+                "invalid spec: {spec}",
+                spec = winux_core::q(spec)
+            ));
         }
         return Ok((
             Spec {
@@ -619,16 +626,18 @@ fn parse_spec(spec: &str) -> Result<(Spec, bool), String> {
 
 // -------------------------------------------------------------- driver
 
-struct ChState<'i, 'o> {
+struct ChState<'i, 'o, 'c, 'e> {
     verbose: bool,
     changes_only: bool,
     quiet: bool,
     from: Option<Spec>,
+    /// I18N lookup host (error() wording); stdout change lines stay strict.
+    ctx: &'c Ctx<'e>,
     io: &'i mut Io<'o>,
     failed: bool,
 }
 
-impl ChState<'_, '_> {
+impl ChState<'_, '_, '_, '_> {
     /// GNU describe_change shapes (verified):
     /// * owner(+group) change: `changed ownership of 'f' from A:B to C:D`
     /// * group-only change:    `changed group of 'f' from A to B`
@@ -721,8 +730,13 @@ impl ChState<'_, '_> {
             if !self.quiet {
                 let _ = writeln!(
                     self.io.stderr,
-                    "chown: cannot access {}: {}",
-                    winux_core::q(name),
+                    "chown: {}: {}",
+                    tr!(
+                        self.ctx,
+                        "command.chown.error.cannot_access",
+                        "cannot access {file}",
+                        file = winux_core::q(name)
+                    ),
                     "No such file or directory"
                 );
             }
@@ -738,8 +752,13 @@ impl ChState<'_, '_> {
                     if !self.quiet {
                         let _ = writeln!(
                             self.io.stderr,
-                            "chown: cannot access {}: {}",
-                            winux_core::q(name),
+                            "chown: {}: {}",
+                            tr!(
+                                self.ctx,
+                                "command.chown.error.cannot_access",
+                                "cannot access {file}",
+                                file = winux_core::q(name)
+                            ),
                             "No such file or directory"
                         );
                     }
@@ -825,16 +844,25 @@ impl ChState<'_, '_> {
             }
             Err(_) => {
                 if !self.quiet {
-                    let what = if matches!(spec.owner, Part::Absent) {
-                        "group"
+                    // Upstream chown.c error() shape: `changing
+                    // ownership of 'f'` / `changing group of 'f'`, then the
+                    // errno suffix. Two keys so the noun is translatable.
+                    let msg = if matches!(spec.owner, Part::Absent) {
+                        tr!(
+                            self.ctx,
+                            "command.chown.error.changing_group",
+                            "changing group of {file}",
+                            file = winux_core::q(name)
+                        )
                     } else {
-                        "ownership"
+                        tr!(
+                            self.ctx,
+                            "command.chown.error.changing_ownership",
+                            "changing ownership of {file}",
+                            file = winux_core::q(name)
+                        )
                     };
-                    let _ = writeln!(
-                        self.io.stderr,
-                        "chown: changing {what} of {}: Operation not permitted",
-                        winux_core::q(name)
-                    );
+                    let _ = writeln!(self.io.stderr, "chown: {msg}: Operation not permitted");
                 }
                 self.failed = true;
             }
@@ -851,7 +879,15 @@ pub fn chown_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         return Ok(0);
     }
     if p.positionals.is_empty() {
-        let _ = usage_error(io, "chown", "missing operand");
+        let _ = usage_error(
+            io,
+            "chown",
+            &tr!(
+                ctx,
+                "command.chown.error.missing_operand",
+                "missing operand"
+            ),
+        );
         return Ok(1);
     }
     let verbose = p.has("verbose");
@@ -861,8 +897,16 @@ pub fn chown_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     // upstream dereference/traversal machine (see DerefMachine); the combo
     // error prints bare — rc 1, no Try line (probed O5).
     let deref = DerefMachine::parse(&p);
-    if let Some(msg) = deref.combo_error() {
-        let _ = writeln!(io.stderr, "chown: {msg}");
+    if deref.has_combo_error() {
+        let _ = writeln!(
+            io.stderr,
+            "chown: {}",
+            tr!(
+                ctx,
+                "command.chown.error.dereference_requires",
+                "-R --dereference requires either -H or -L"
+            )
+        );
         return Ok(1);
     }
     let recursive = deref.recursive;
@@ -882,8 +926,13 @@ pub fn chown_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     _ => {
                         let _ = writeln!(
                             io.stderr,
-                            "chown: failed to get attributes of {}: {}",
-                            winux_core::q(r),
+                            "chown: {}: {}",
+                            tr!(
+                                ctx,
+                                "command.chown.error.failed_get_attributes",
+                                "failed to get attributes of {file}",
+                                file = winux_core::q(r)
+                            ),
                             "No such file or directory"
                         );
                         return Ok(1);
@@ -892,8 +941,13 @@ pub fn chown_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 _ => {
                     let _ = writeln!(
                         io.stderr,
-                        "chown: failed to get attributes of {}: {}",
-                        winux_core::q(r),
+                        "chown: {}: {}",
+                        tr!(
+                            ctx,
+                            "command.chown.error.failed_get_attributes",
+                            "failed to get attributes of {file}",
+                            file = winux_core::q(r)
+                        ),
                         "No such file or directory"
                     );
                     return Ok(1);
@@ -914,18 +968,28 @@ pub fn chown_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         None => {
             let spec = p.positionals[0].to_string_lossy().into_owned();
             if p.positionals.len() == 1 {
-                let msg = format!("missing operand after {}", winux_core::q(&spec));
+                let msg = tr!(
+                    ctx,
+                    "command.chown.error.missing_operand_after",
+                    "missing operand after {operand}",
+                    operand = winux_core::q(&spec)
+                );
                 let _ = usage_error(io, "chown", &msg);
                 return Ok(1);
             }
-            match parse_spec(&spec) {
+            match parse_spec(ctx, &spec) {
                 Ok((s, dot)) => {
                     if dot {
                         // probed O15/O16 wording, emitted at parse time
                         let _ = writeln!(
                             io.stderr,
-                            "chown: warning: '.' should be ':': {}",
-                            winux_core::q(&spec)
+                            "chown: {}",
+                            tr!(
+                                ctx,
+                                "command.chown.error.dot_separator_warning",
+                                "warning: '.' should be ':': {spec}",
+                                spec = winux_core::q(&spec)
+                            )
                         );
                     }
                     s
@@ -940,14 +1004,19 @@ pub fn chown_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     };
 
     let from = match p.value_of("from") {
-        Some(f) => match parse_spec(f) {
+        Some(f) => match parse_spec(ctx, f) {
             Ok((s, dot)) => {
                 if dot {
                     // probed O18: --from=0.0 warns the same way
                     let _ = writeln!(
                         io.stderr,
-                        "chown: warning: '.' should be ':': {}",
-                        winux_core::q(f)
+                        "chown: {}",
+                        tr!(
+                            ctx,
+                            "command.chown.error.dot_separator_warning",
+                            "warning: '.' should be ':': {spec}",
+                            spec = winux_core::q(f)
+                        )
                     );
                 }
                 Some(s)
@@ -977,6 +1046,7 @@ pub fn chown_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         changes_only,
         quiet,
         from,
+        ctx,
         io,
         failed: false,
     };
@@ -986,7 +1056,7 @@ pub fn chown_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         // Explicit GNU failsafe, per traversed operand in argv order
         // (upstream fires at FTS_D via ROOT_DEV_INO_CHECK; probed g7).
         if recursive && preserve_root && is_preserve_root_operand(ctx, name, &path) {
-            for line in preserve_root_refusal_lines("chown", name) {
+            for line in preserve_root_refusal_lines(ctx, "chown", name) {
                 let _ = writeln!(st.io.stderr, "{line}");
             }
             st.failed = true;
@@ -1001,7 +1071,7 @@ pub fn chown_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             .unwrap_or(false);
         let link_carries_root = recursive && is_link && link_target_is_root(ctx, &path);
         if recursive && (is_native_root_operand(ctx, name, &path) || link_carries_root) {
-            for line in preserve_root_refusal_lines("chown", name) {
+            for line in preserve_root_refusal_lines(ctx, "chown", name) {
                 let _ = writeln!(st.io.stderr, "{line}");
             }
             st.failed = true;
@@ -1025,8 +1095,13 @@ pub fn chown_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                         if !quiet {
                             let _ = writeln!(
                                 st.io.stderr,
-                                "chown: cannot access {}: No such file or directory",
-                                winux_core::q(name)
+                                "chown: {}: No such file or directory",
+                                tr!(
+                                    ctx,
+                                    "command.chown.error.cannot_access",
+                                    "cannot access {file}",
+                                    file = winux_core::q(name)
+                                )
                             );
                         }
                         st.failed = true;
@@ -1079,8 +1154,13 @@ fn walk_chown(
             if !st.quiet {
                 let _ = writeln!(
                     st.io.stderr,
-                    "chown: cannot read directory {}: Permission denied",
-                    winux_core::q(display)
+                    "chown: {}: Permission denied",
+                    tr!(
+                        ctx,
+                        "command.chown.error.cannot_read_directory",
+                        "cannot read directory {file}",
+                        file = winux_core::q(display)
+                    )
                 );
             }
             st.failed = true;
@@ -1108,7 +1188,7 @@ fn walk_chown(
             // FTSENT_IS_DIRECTORY failsafe, probed P12) — refuse with the
             // encountered path and skip.
             if link_target_is_root(ctx, &p) {
-                for line in preserve_root_refusal_lines("chown", &child_display) {
+                for line in preserve_root_refusal_lines(ctx, "chown", &child_display) {
                     let _ = writeln!(st.io.stderr, "{line}");
                 }
                 st.failed = true;
@@ -1347,9 +1427,23 @@ mod tests {
         std::fs::write(sc.path("f"), "x").unwrap();
         // default: GNU walks "/" (M1 B3)
         assert_eq!(run(&["-R", "1234", "."], &sc).0, 0);
+        // read-only sentinel: the refused pass must not touch attributes
+        std::fs::write(sc.path("sentinel"), "s").unwrap();
+        let mut perms = std::fs::metadata(sc.path("sentinel"))
+            .unwrap()
+            .permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(sc.path("sentinel"), perms).unwrap();
         // explicit --preserve-root refuses (suffix form, probed P4)
         let (r, _, e) = run(&["-R", "--preserve-root", "1234", "."], &sc);
         assert_eq!(r, 1);
+        assert!(
+            std::fs::metadata(sc.path("sentinel"))
+                .unwrap()
+                .permissions()
+                .readonly(),
+            "refused pass cleared the read-only sentinel"
+        );
         assert!(
             e.contains("chown: it is dangerous to operate recursively on '.' (same as '/')"),
             "{e}"

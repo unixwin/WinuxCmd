@@ -209,21 +209,16 @@ pub fn mktemp_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     // (PathBuf, display string): the display keeps the operand/env value
     // as given so output matches what the user handed in (GNU prints the
     // destination prefix verbatim)
-    // The display spelling is the shell namespace's: forward slashes, so a
-    // native "C:\dir" env value prints as "C:/dir" like the 1.x body did.
     let default_dir = || -> (std::path::PathBuf, String) {
         for key in ["TMPDIR", "TEMP", "TMP"] {
             let hit = winux_core::win32_env_get(ctx.env, key)
                 .map(|v| v.to_string_lossy().into_owned())
                 .filter(|s| !s.is_empty());
             if let Some(d) = hit {
-                return (std::path::PathBuf::from(&d), d.replace('\\', "/"));
+                return (std::path::PathBuf::from(&d), d);
             }
         }
-        (
-            ctx.cwd.clone(),
-            ctx.cwd.display().to_string().replace('\\', "/"),
-        )
+        (ctx.cwd.clone(), ctx.cwd.display().to_string())
     };
 
     // destination-directory mode: --tmpdir/-p, or implied by the default
@@ -360,16 +355,12 @@ pub fn mktemp_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     // GNU prints the full destination path, but a bare template in the
     // current directory prints as the plain template (mktemp.c's
     // file_name_concat with an empty dest_dir)
-    let join_display = |dir: &str, name: &str| {
-        if dir.is_empty() {
-            name.to_string()
-        } else if dir.ends_with('/') || dir.ends_with('\\') {
-            format!("{dir}{name}")
-        } else {
-            format!("{dir}/{name}")
-        }
+    let bare_cwd = dest_dir.is_none() && !component.contains(['/', '\\']);
+    let dest_template_display = if bare_cwd {
+        template_str.clone()
+    } else {
+        format!("{dir_display}/{template_str}")
     };
-    let dest_template_display = join_display(&dir_display, &template_str);
 
     let mut rng = Rand::new();
     for _attempt in 0..100 {
@@ -379,7 +370,11 @@ pub fn mktemp_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         }
         let name = String::from_utf8(name_bytes).unwrap_or_else(|_| template_str.clone());
         let candidate = base_dir.join(&name);
-        let display = join_display(&dir_display, &name);
+        let display = if bare_cwd {
+            name.clone()
+        } else {
+            format!("{dir_display}/{name}")
+        };
 
         if dry_run {
             if std::fs::metadata(&candidate).is_err() {

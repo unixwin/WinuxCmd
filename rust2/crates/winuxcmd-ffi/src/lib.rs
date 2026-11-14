@@ -138,10 +138,7 @@ fn dispatch_and_collect(
     stdout_buf: *mut CBuf,
     stderr_buf: *mut CBuf,
 ) -> Result<u32, ()> {
-    let ctx = Ctx {
-        cwd: h.cwd.clone(),
-        env: &h.env,
-    };
+    let ctx = Ctx::new(h.cwd.clone(), &h.env);
     let mut out: Vec<u8> = Vec::new();
     let mut err_out: Vec<u8> = Vec::new();
     let status = {

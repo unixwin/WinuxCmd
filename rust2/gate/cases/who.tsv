@@ -19,8 +19,8 @@ wh16-runlevel-view	win				--runlevel
 wh17-writable-view	win				--writable
 wh18-lookup-view	win				--lookup
 wh19-short-h	strict				-h
-wh20-help	win				--help
-wh21-version	win				--version
+wh20-help	strict				--help
+wh21-version	strict				--version
 wh22-existing-file-operand	win	printf 'garbage' > utmp.file			utmp.file
 wh23-short-flag	win				-s
 wh24-message-alias	win				--message

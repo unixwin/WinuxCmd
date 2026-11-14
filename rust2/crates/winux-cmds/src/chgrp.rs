@@ -40,7 +40,7 @@ use crate::fsutil::{
     preserve_root_refusal_lines, resolve,
 };
 use crate::gnuhelp;
-use winux_core::{CmdResult, Ctx, Io};
+use winux_core::{tr, CmdResult, Ctx, Io};
 
 /// Registration order mirrors upstream chgrp.c's long_options table
 /// (fetched 9.4 source: recursive, changes, dereference, no-dereference,
@@ -223,8 +223,17 @@ pub fn chgrp_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
 
     // upstream dereference/traversal machine (see DerefMachine)
     let deref = DerefMachine::parse(&p);
-    if let Some(msg) = deref.combo_error() {
-        let _ = writeln!(io.stderr, "chgrp: {msg}");
+    if deref.has_combo_error() {
+        // GNU chgrp.c error() inner wording; the program prefix stays here.
+        let _ = writeln!(
+            io.stderr,
+            "chgrp: {}",
+            tr!(
+                ctx,
+                "command.chgrp.error.dereference_requires",
+                "-R --dereference requires either -H or -L"
+            )
+        );
         return Ok(1);
     }
     let recursive = deref.recursive;
@@ -242,7 +251,14 @@ pub fn chgrp_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 if !silent {
                     let _ = writeln!(
                         io.stderr,
-                        "chgrp: failed to get attributes of '{rfile}': No such file or directory"
+                        "chgrp: {}: {}",
+                        tr!(
+                            ctx,
+                            "command.chgrp.error.failed_get_attributes",
+                            "failed to get attributes of {file}",
+                            file = winux_core::q(rfile)
+                        ),
+                        "No such file or directory"
                     );
                 }
                 return Ok(1);
@@ -254,7 +270,14 @@ pub fn chgrp_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             if !silent {
                 let _ = writeln!(
                     io.stderr,
-                    "chgrp: failed to get attributes of '{rfile}': No such file or directory"
+                    "chgrp: {}: {}",
+                    tr!(
+                        ctx,
+                        "command.chgrp.error.failed_get_attributes",
+                        "failed to get attributes of {file}",
+                        file = winux_core::q(rfile)
+                    ),
+                    "No such file or directory"
                 );
             }
             return Ok(1);
@@ -274,7 +297,15 @@ pub fn chgrp_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             .collect();
     } else {
         if p.positionals.is_empty() {
-            let _ = winux_core::usage_error(io, "chgrp", "missing operand");
+            let _ = winux_core::usage_error(
+                io,
+                "chgrp",
+                &tr!(
+                    ctx,
+                    "command.chgrp.error.missing_operand",
+                    "missing operand"
+                ),
+            );
             return Ok(1);
         }
         let spec = p.positionals[0].to_string_lossy().into_owned();
@@ -284,15 +315,29 @@ pub fn chgrp_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             .collect();
         // probed G8: the operand-count check precedes spec validation
         if files.is_empty() {
-            let _ =
-                winux_core::usage_error(io, "chgrp", &format!("missing operand after '{spec}'"));
+            let msg = tr!(
+                ctx,
+                "command.chgrp.error.missing_operand_after",
+                "missing operand after '{operand}'",
+                operand = spec
+            );
+            let _ = winux_core::usage_error(io, "chgrp", &msg);
             return Ok(1);
         }
         target = match parse_group_spec(&spec) {
             Ok(t) => t,
             Err(bad) => {
                 // spec errors print even under -f (probed case 15)
-                let _ = writeln!(io.stderr, "chgrp: invalid group: '{bad}'");
+                let _ = writeln!(
+                    io.stderr,
+                    "chgrp: {}",
+                    tr!(
+                        ctx,
+                        "command.chgrp.error.invalid_group",
+                        "invalid group: '{group}'",
+                        group = bad
+                    )
+                );
                 return Ok(1);
             }
         };
@@ -305,7 +350,7 @@ pub fn chgrp_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     for file in &files {
         let resolved = resolve(ctx, file);
         if recursive && preserve_root && is_preserve_root_operand(ctx, file, &resolved) {
-            for line in preserve_root_refusal_lines("chgrp", file) {
+            for line in preserve_root_refusal_lines(ctx, "chgrp", file) {
                 let _ = writeln!(io.stderr, "{line}");
             }
             failed = true;
@@ -320,7 +365,7 @@ pub fn chgrp_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             .unwrap_or(false);
         let link_carries_root = recursive && is_link && link_target_is_root(ctx, &resolved);
         if recursive && (is_native_root_operand(ctx, file, &resolved) || link_carries_root) {
-            for line in preserve_root_refusal_lines("chgrp", file) {
+            for line in preserve_root_refusal_lines(ctx, "chgrp", file) {
                 let _ = writeln!(io.stderr, "{line}");
             }
             failed = true;
@@ -380,13 +425,28 @@ fn process_file(
                     if !silent {
                         let _ = writeln!(
                             io.stderr,
-                            "chgrp: cannot access '{file}': No such file or directory"
+                            "chgrp: {}: No such file or directory",
+                            tr!(
+                                ctx,
+                                "command.chgrp.error.cannot_access",
+                                "cannot access '{file}'",
+                                file = file
+                            )
                         );
                     }
                     return false;
                 }
             };
-            let mut ok = apply_group(io, resolved, file, target, verbose, changes_only, silent);
+            let mut ok = apply_group(
+                io,
+                ctx,
+                resolved,
+                file,
+                target,
+                verbose,
+                changes_only,
+                silent,
+            );
             if deref.recursive && meta.is_dir() {
                 let mut visited = std::collections::HashSet::new();
                 ok &= walk_dir(
@@ -414,7 +474,13 @@ fn process_file(
             if !silent {
                 let _ = writeln!(
                     io.stderr,
-                    "chgrp: cannot access '{file}': No such file or directory"
+                    "chgrp: {}: No such file or directory",
+                    tr!(
+                        ctx,
+                        "command.chgrp.error.cannot_access",
+                        "cannot access '{file}'",
+                        file = file
+                    )
                 );
             }
             return false;
@@ -435,7 +501,16 @@ fn process_file(
             &mut visited,
         );
     }
-    apply_group(io, resolved, file, target, verbose, changes_only, silent)
+    apply_group(
+        io,
+        ctx,
+        resolved,
+        file,
+        target,
+        verbose,
+        changes_only,
+        silent,
+    )
 }
 
 /// Physical traversal with the upstream link policy: -P/default leaves
@@ -458,7 +533,7 @@ fn walk_dir(
     deref: &DerefMachine,
     visited: &mut std::collections::HashSet<PathBuf>,
 ) -> bool {
-    let mut ok = apply_group(io, dir, display, target, verbose, changes_only, silent);
+    let mut ok = apply_group(io, ctx, dir, display, target, verbose, changes_only, silent);
     // shared cycle guard: -L descends through links, so a link-to-ancestor
     // must not re-enter a visited directory (fts FTS_DC skips silently).
     let key = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
@@ -488,7 +563,7 @@ fn walk_dir(
             // refuses it mid-traversal, probed P12) — print the failsafe
             // with the ENCOUNTERED path and skip the entry.
             if link_target_is_root(ctx, &child) {
-                for line in preserve_root_refusal_lines("chgrp", &child_display) {
+                for line in preserve_root_refusal_lines(ctx, "chgrp", &child_display) {
                     let _ = writeln!(io.stderr, "{line}");
                 }
                 ok = false;
@@ -496,6 +571,7 @@ fn walk_dir(
             }
             ok &= apply_group(
                 io,
+                ctx,
                 &child,
                 &child_display,
                 target,
@@ -539,6 +615,7 @@ fn walk_dir(
         } else {
             ok &= apply_group(
                 io,
+                ctx,
                 &child,
                 &child_display,
                 target,
@@ -554,8 +631,10 @@ fn walk_dir(
 /// One file's group change with GNU verbose wording (probed: changed ->
 /// `changed group of 'X' from A to B`; retained -> `group of 'X'
 /// retained as B`; both on stdout, name always quoted).
+#[allow(clippy::too_many_arguments)]
 fn apply_group(
     io: &mut Io,
+    ctx: &Ctx,
     path: &Path,
     display: &str,
     target: &GroupTarget,
@@ -574,7 +653,16 @@ fn apply_group(
                 } else {
                     "Invalid argument"
                 };
-                let _ = writeln!(io.stderr, "chgrp: cannot access '{display}': {reason}");
+                let _ = writeln!(
+                    io.stderr,
+                    "chgrp: {}: {reason}",
+                    tr!(
+                        ctx,
+                        "command.chgrp.error.cannot_access",
+                        "cannot access '{file}'",
+                        file = display
+                    )
+                );
             }
             return false;
         }
@@ -618,8 +706,16 @@ fn apply_group(
                         } else {
                             "Unknown error"
                         };
-                        let _ =
-                            writeln!(io.stderr, "chgrp: changing group of '{display}': {reason}");
+                        let _ = writeln!(
+                            io.stderr,
+                            "chgrp: {}: {reason}",
+                            tr!(
+                                ctx,
+                                "command.chgrp.error.changing_group",
+                                "changing group of '{file}'",
+                                file = display
+                            )
+                        );
                     }
                     false
                 }
@@ -744,8 +840,22 @@ mod tests {
         // flag (probed P4 `/.`)
         let (r, _, err) = run_in(&sc, &["-R", "0", "."]);
         assert_eq!(r, 0);
+        // read-only sentinel: the refused pass must not touch attributes
+        std::fs::write(sc.path("sentinel"), "s").unwrap();
+        let mut perms = std::fs::metadata(sc.path("sentinel"))
+            .unwrap()
+            .permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(sc.path("sentinel"), perms).unwrap();
         let (r, _, err) = run_in(&sc, &["--preserve-root", "-R", "0", "."]);
         assert_eq!(r, 1);
+        assert!(
+            std::fs::metadata(sc.path("sentinel"))
+                .unwrap()
+                .permissions()
+                .readonly(),
+            "refused pass cleared the read-only sentinel"
+        );
         assert!(
             err.contains("chgrp: it is dangerous to operate recursively on '.' (same as '/')"),
             "{err}"

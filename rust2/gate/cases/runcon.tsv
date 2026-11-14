@@ -15,10 +15,10 @@ rc12-ctx-with-args	strict				ctx	/bin/sh	-c	echo hi
 rc13-bogus-opt	strict				--bogus
 rc14-bare	win			
 rc15-t-only	win				-t	type_t
-rc16-help	win				--help
-rc17-version	win				--version
+rc16-help	strict				--help
+rc17-version	strict				--version
 rc18-bogus-short	strict				-Q
 rc19-missing-type-value	strict				-t
-rc20-help-abbrev	win				--hel
+rc20-help-abbrev	strict				--hel
 rc21-dashdash-then-ctx	strict				--	ctx	true
 rc22-ctx-nosuchcmd	strict				ctx	nosuchcmd

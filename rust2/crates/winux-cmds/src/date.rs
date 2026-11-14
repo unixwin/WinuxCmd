@@ -87,11 +87,6 @@ const OPTS: &[OptSpec] = &[
         takes_value: false,
     },
     OptSpec {
-        short: None,
-        long: "resolution",
-        takes_value: false,
-    },
-    OptSpec {
         short: Some('v'),
         long: "debug",
         takes_value: false,
@@ -1094,13 +1089,6 @@ pub fn date_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         });
     }
 
-    // FILETIME granularity is 100 ns; GNU prints its own platform's
-    // measured value, so this is a win-class row vs the oracle.
-    if p.has("resolution") {
-        writeln!(io.stdout, "0.000000100")?;
-        return Ok(0);
-    }
-
     let use_utc = p.has("utc");
     let zone = effective_zone(use_utc, ctx.env);
 
@@ -1152,24 +1140,13 @@ pub fn date_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
 
     // -f DATEFILE: one date per line (GNU shape)
     if let Some(file) = p.value_of("file") {
-        // GNU date.c: a DATEFILE of "-" reads the date strings from
-        // standard input (same contract as du --files0-from=-).
-        let text = if file == "-" {
-            let mut buf = Vec::new();
-            if io.stdin.read_to_end(&mut buf).is_err() {
-                let _ = writeln!(io.stderr, "date: -: read error");
+        let path = resolve(ctx, file);
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) => {
+                let reason = crate::fsutil::reason(&e);
+                let _ = writeln!(io.stderr, "date: {file}: {reason}");
                 return Ok(1);
-            }
-            String::from_utf8_lossy(&buf).into_owned()
-        } else {
-            let path = resolve(ctx, file);
-            match std::fs::read_to_string(&path) {
-                Ok(t) => t,
-                Err(e) => {
-                    let reason = crate::fsutil::reason(&e);
-                    let _ = writeln!(io.stderr, "date: {file}: {reason}");
-                    return Ok(1);
-                }
             }
         };
         let mut failed = false;

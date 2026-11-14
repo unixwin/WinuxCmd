@@ -18,6 +18,6 @@ nc15-bogus-long	strict				--bogus
 nc16-n-50	strict				-n	50
 nc17-n-minus-50	strict				-n	-50
 nc18-n-plus	strict				-n	+3
-nc19-help	win				--help
-nc20-version	win				--version
+nc19-help	strict				--help
+nc20-version	strict				--version
 nc21-child-eq1	exit	printf '#!/bin/sh\nexit 1\n' > cmd; chmod +x cmd; export PATH="$PWD:$PATH"			cmd	/c	exit	1
