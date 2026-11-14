@@ -150,7 +150,7 @@ impl<'a> Parser<'a> {
     fn is_alt_at_current(&self) -> bool {
         match self.syntax {
             Syntax::Extended => self.at(0, b'|'),
-            Syntax::Basic => self.at_backslash(0, b'|'),
+            Syntax::Basic => !self.opts.no_gnu_ops && self.at_backslash(0, b'|'),
         }
     }
 
@@ -329,10 +329,10 @@ impl<'a> Parser<'a> {
                 Syntax::Basic => {
                     if self.eat(b'*') {
                         (0, None)
-                    } else if self.at_backslash(0, b'+') {
+                    } else if !self.opts.no_gnu_ops && self.at_backslash(0, b'+') {
                         self.pos += 2;
                         (1, None)
-                    } else if self.at_backslash(0, b'?') {
+                    } else if !self.opts.no_gnu_ops && self.at_backslash(0, b'?') {
                         self.pos += 2;
                         (0, Some(1))
                     } else if self.at_backslash(0, b'{') {
@@ -542,7 +542,7 @@ impl<'a> Parser<'a> {
             }
             b'(' if self.syntax == Syntax::Extended => self.parse_group(),
             b')' if self.syntax == Syntax::Extended && self.depth == 0 => {
-                if self.opts.posix_strict {
+                if self.opts.posix_strict && !self.opts.unmatched_right_paren_ord {
                     // GNU sed clears RE_UNMATCHED_RIGHT_PAREN_ORD: a stray
                     // `)` is "Unmatched ) or \)" (probed sed 4.9).
                     return Err(Error::new(
@@ -608,6 +608,21 @@ impl<'a> Parser<'a> {
                 ))
             }
         };
+        if self.opts.no_gnu_ops
+            && matches!(
+                escaped,
+                b'<' | b'>' | b'b' | b'B' | b'`' | b'\'' | b's' | b'S' | b'w' | b'W'
+            )
+        {
+            return Ok(Node::Literal(escaped));
+        }
+        if escaped == b')'
+            && self.syntax == Syntax::Basic
+            && self.depth == 0
+            && self.opts.unmatched_right_paren_ord
+        {
+            return Ok(Node::Literal(b')'));
+        }
         match escaped {
             b'<' => Ok(Node::WordStart),
             b'>' => Ok(Node::WordEnd),

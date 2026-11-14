@@ -79,6 +79,14 @@ pub struct CompileOptions {
     /// `.` rejects bytes that do not start a well-formed UTF-8 sequence
     /// (glibc multibyte-locale behavior).
     pub strict_utf8_dot: bool,
+    /// glibc RE_NO_GNU_OPS (sed `--posix`): `\w \W \s \S \b \B \< \>`
+    /// and the buffer anchors are plain literals; in BRE also
+    /// RE_LIMITED_OPS — `\+ \? \|` are literals.
+    pub no_gnu_ops: bool,
+    /// glibc RE_UNMATCHED_RIGHT_PAREN_ORD (sed under POSIXLY_CORRECT or
+    /// `--posix`): a stray ERE `)` / BRE `\)` is a literal `)` even under
+    /// [`CompileOptions::posix_strict`].
+    pub unmatched_right_paren_ord: bool,
 }
 
 impl Default for CompileOptions {
@@ -90,6 +98,8 @@ impl Default for CompileOptions {
             buffer_anchors: false,
             posix_strict: false,
             strict_utf8_dot: false,
+            no_gnu_ops: false,
+            unmatched_right_paren_ord: false,
         }
     }
 }
@@ -105,6 +115,8 @@ impl CompileOptions {
             buffer_anchors: true,
             posix_strict: true,
             strict_utf8_dot: true,
+            no_gnu_ops: false,
+            unmatched_right_paren_ord: false,
         }
     }
 }

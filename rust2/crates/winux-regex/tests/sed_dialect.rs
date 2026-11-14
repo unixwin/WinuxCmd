@@ -225,3 +225,20 @@ fn default_dialect_is_unchanged() {
     let re = Regex::compile(Syntax::Basic, r"\`").unwrap();
     assert!(re.find_at("x`", 0).is_some());
 }
+
+#[test]
+fn posix_mode_ops_and_paren_ord() {
+    // sed --posix (RE_NO_GNU_OPS | RE_LIMITED_OPS), probed sed 4.9.
+    let mut o = CompileOptions::sed(false, false);
+    o.no_gnu_ops = true;
+    o.unmatched_right_paren_ord = true;
+    let c = |s: Syntax, p: &str| Regex::compile_with(s, p.as_bytes(), o).unwrap();
+    assert_eq!(subst(&c(Syntax::Basic, r"a\+"), "aa+"), "aX");
+    assert_eq!(subst(&c(Syntax::Basic, r"a\|b"), "a|b"), "X");
+    assert_eq!(subst(&c(Syntax::Basic, r"\w"), "aw b"), "aX b");
+    // POSIXLY_CORRECT alone: stray `)` is literal.
+    let mut p = CompileOptions::sed(false, false);
+    p.unmatched_right_paren_ord = true;
+    let re = Regex::compile_with(Syntax::Extended, b")", p).unwrap();
+    assert_eq!(subst(&re, "a)b"), "aXb");
+}
