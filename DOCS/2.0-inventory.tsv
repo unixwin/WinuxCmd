@@ -1,177 +1,177 @@
-applet	loc	io_idiom	global_state	exit_usage	oracle_status	test_coverage	replace_wave
-arch	100	win32-console	none	none	unreviewed	unit+differential:1	2
-b2sum	305	win32-console	errno	none	audited:clean	unit+differential:5	2
-base32	180	win32-console	errno	none	audited:clean	unit+differential:2	2
-base64	184	win32-console	errno	none	audited:clean	unit+differential:5	2
-basename	176	win32-console	none	none	audited:clean	unit+differential:4	1
-basenc	550	win32-console	errno	none	audited:notes	unit+differential:5	2
-cal	425	win32-console	none	none	audited:deviates	unit+differential:10	2
-cat	655	mixed(crt-stdio+iostream+win32-console+win32-direct)	locale/setmode,errno	none	audited:clean	unit+differential:4	3
-chattr	203	win32-console	none	none	audited:notes	unit	2
-chcon	204	win32-console	thread_local,static-mutable	none	audited:notes	unit	3
-chgrp	679	win32-console	none	none	audited:deviates	unit	2
-chmod	981	win32-console	none	none	audited:deviates	unit+differential:2	1
-chown	1168	win32-console	none	none	audited:notes	unit	1
-chroot	96	win32-console	thread_local,static-mutable	none	audited:notes	unit	3
-cksum	1105	mixed(crt-stdio+iostream+win32-console)	locale/setmode	none	audited:notes	unit+differential:2	3
-clear	64	win32-console	none	none	audited:notes	unit	2
-cmp	690	mixed(iostream+win32-console)	none	none	audited:notes	unit+differential:5	3
-col	522	mixed(iostream+win32-console)	none	none	audited:deviates	unit+differential:15	3
-column	1038	mixed(iostream+win32-console)	none	none	audited:deviates	unit+differential:18	3
-comm	590	mixed(iostream+win32-console)	none	none	audited:clean	unit+differential:2	3
-cp	2190	mixed(iostream+win32-console+win32-direct)	errno	none	audited:clean	unit+differential:3	2
-cpio	1127	mixed(iostream+win32-console+win32-direct)	none	none	audited:deviates	unit	4
-csplit	786	mixed(iostream+win32-console)	none	none	audited:clean	unit	3
-cut	679	mixed(crt-stdio+iostream+win32-console)	locale/setmode	none	audited:notes	unit+differential:3	3
-cygpath	601	mixed(iostream+win32-console)	none	none	no-oracle(doc-audited)	unit	4
-d2u	131	mixed(iostream+win32-console)	none	none	no-oracle(doc-audited)	unit	4
-date	2673	mixed(iostream+win32-console)	errno	none	audited:clean	unit+differential:34	2
-dd	1287	mixed(win32-console+win32-direct)	static-mutable	none	audited:notes	unit+differential:2	3
-df	1417	win32-console	none	none	audited:clean	unit+differential:3	1
-diff	2409	mixed(crt-stdio+win32-console)	locale/setmode	none	audited:notes	unit	3
-diff3	1204	mixed(crt-stdio+win32-console+win32-direct)	locale/setmode	none	audited:notes	unit+differential:27	3
-dir	273	win32-console	none	none	audited:notes	unit	2
-dircolors	694	mixed(iostream+win32-console)	none	none	audited:clean	unit+differential:3	3
-dirname	181	win32-console	none	none	audited:clean	unit+differential:4	1
-dos2unix	137	mixed(iostream+win32-console)	none	none	no-oracle(doc-audited)	unit	4
-du	1830	mixed(iostream+win32-console)	static-mutable	none	audited:notes	unit+differential:7	2
-echo	450	mixed(crt-stdio+win32-console)	none	none	audited:clean	unit+differential:3	3
-env	882	mixed(win32-console+win32-direct)	none	none	audited:clean	unit+differential:3	3
-envsubst	174	mixed(read-all-stdin+win32-console)	none	none	audited:notes	unit+differential:1	4
-expand	474	mixed(iostream+win32-console)	none	none	audited:notes	unit+differential:1	3
-expr	527	win32-console	static-mutable	none	audited:notes	unit+differential:5	2
-factor	211	mixed(iostream+win32-console)	none	none	audited:clean	unit+differential:1	3
-false	50	none	none	none	audited:clean	unit+differential:2	1
-file	791	win32-console	none	none	audited:notes	unit+differential:2	2
-find	5578	mixed(crt-stdio+iostream+win32-console)	static-mutable	none	audited:deviates	unit+differential:6	4
-fmt	1101	mixed(iostream+win32-console)	none	none	audited:notes	unit	3
-fold	377	mixed(iostream+win32-console)	none	none	audited:notes	unit+differential:3	3
-free	396	win32-console	none	none	audited:deviates	unit	2
-getconf	183	win32-console	none	none	audited:notes	unit+differential:1	2
-getfacl	212	win32-console	none	none	audited:deviates	unit	2
-getopt	594	win32-console	none	none	audited:deviates	unit+differential:2	2
-grep	3096	mixed(crt-stdio+iostream+win32-console+win32-direct)	static-mutable	none	audited:deviates	unit+differential:15	4
-groups	173	win32-console	none	none	audited:notes	unit	2
-head	967	mixed(iostream+win32-console+win32-direct)	none	none	audited:notes	unit+differential:4	3
-hexdump	1198	mixed(iostream+win32-console)	none	none	audited:deviates	unit+differential:12	3
-hmac256	126	mixed(iostream+win32-console)	none	none	audited:notes	unit	4
-hostid	99	win32-console	none	none	audited:notes	unit	2
-hostname	405	win32-console	none	none	audited:notes	unit	2
-id	281	win32-console	none	none	audited:clean	unit	2
-infocmp	226	win32-console	none	none	audited:notes	unit	2
-install	1146	mixed(win32-console+win32-direct)	none	none	audited:clean	unit+differential:6	4
-join	890	mixed(iostream+win32-console)	none	none	audited:clean	unit+differential:2	3
-kill	686	win32-console	none	TerminateProcess	audited:notes	unit+differential:12	3
-killall	401	mixed(iostream+win32-console)	none	none	audited:notes	unit	4
-ldd	267	win32-console	none	none	audited:notes	unit	2
-less	1187	mixed(iostream+win32-console+win32-direct)	none	none	audited:notes	unit	4
-ln	912	mixed(iostream+win32-console)	none	none	audited:clean	unit+differential:5	3
-locale	381	win32-console	locale/setmode	none	unreviewed	unit	3
-locate	472	mixed(iostream+win32-console+win32-direct)	none	none	audited:deviates	unit+differential:2	4
-logger	561	mixed(iostream+win32-console)	none	none	audited:deviates	unit	4
-logname	63	win32-console	none	none	audited:notes	unit	2
-look	279	mixed(win32-console+win32-direct)	none	none	audited:notes	unit+differential:4	4
-ls	4513	mixed(crt-stdio+win32-console+win32-direct)	static-mutable,errno,global-buf	none	audited:notes	unit+differential:5	3
-lsattr	205	win32-console	none	none	audited:deviates	unit	2
-lsof	969	win32-console	none	none	audited:deviates	unit	2
-man	296	win32-console	none	none	audited:notes	unit	2
-md5sum	346	mixed(crt-stdio+win32-console)	locale/setmode	none	audited:notes	unit+differential:1	3
-mkdir	561	win32-console	none	none	audited:clean	unit+differential:4	1
-mkfifo	267	win32-console	none	none	audited:notes	unit+differential:3	2
-mkgroup	112	win32-console	none	none	audited:notes	unit	2
-mknod	349	win32-console	thread_local,static-mutable	none	audited:notes	unit+differential:2	3
-mkpasswd	160	win32-console	none	none	audited:notes	unit	2
-mktemp	639	win32-console	thread_local,static-mutable	none	audited:clean	unit+differential:8	2
-more	789	mixed(iostream+win32-console)	none	none	audited:notes	unit+differential:7	4
-mpicalc	584	mixed(iostream+win32-console)	static-mutable	none	audited:notes	unit	3
-mv	1304	mixed(crt-stdio+iostream+win32-console)	none	none	audited:clean	unit+differential:12	3
-namei	373	win32-console	none	none	audited:deviates	unit+differential:2	2
-nice	217	win32-console	none	TerminateProcess	audited:clean	unit+differential:5	3
-nl	572	mixed(iostream+win32-console)	none	none	audited:notes	unit+differential:2	3
-nohup	226	mixed(crt-stdio+win32-console+win32-direct)	none	none	audited:clean	unit	3
-nproc	175	win32-console	none	none	audited:clean	unit	2
-numfmt	1130	mixed(crt-stdio+iostream+win32-console)	errno	none	audited:clean	unit+differential:5	2
-od	1028	mixed(crt-stdio+iostream+win32-console)	locale/setmode	none	audited:clean	unit+differential:3	3
-paste	417	mixed(iostream+win32-console)	none	none	audited:notes	unit+differential:3	3
-patch	2366	mixed(iostream+win32-console+win32-direct)	none	none	audited:deviates	unit	3
-pathchk	345	win32-console	none	none	audited:notes	unit+differential:9	2
-pgrep	299	win32-console	none	none	audited:deviates	unit	2
-pidof	76	win32-console	none	none	audited:deviates	unit	2
-pinky	302	win32-console	none	none	unreviewed	unit	2
-pkill	304	win32-console	none	none	audited:deviates	unit	2
-pldd	60	win32-console	none	none	audited:notes	unit	2
-pr	1668	mixed(iostream+win32-console)	none	none	audited:deviates	unit	4
-printenv	114	win32-console	none	none	audited:clean	unit+differential:4	1
-printf	734	mixed(crt-stdio+win32-console)	errno	none	audited:notes	unit+differential:13	2
-ps	927	win32-console	none	none	audited:deviates	unit	4
-ptx	570	mixed(iostream+win32-console)	thread_local,static-mutable	none	audited:notes	unit	4
-pwd	263	win32-console	none	none	unreviewed	unit+differential:1	1
-readlink	388	win32-console	none	none	audited:clean	unit+differential:4	1
-realpath	431	win32-console	none	none	audited:clean	unit+differential:3	1
-regtool	327	win32-console	none	none	no-oracle(doc-audited)	unit	2
-renice	161	win32-console	none	none	audited:notes	unit+differential:2	2
-reset	143	win32-console	none	none	audited:notes	unit	2
-rev	166	mixed(crt-stdio+iostream+win32-console)	locale/setmode	none	audited:notes	unit+differential:5	3
-rm	1072	mixed(iostream+win32-console+win32-direct)	none	none	audited:clean	unit+differential:3	3
-rmdir	266	win32-console	none	none	audited:clean	unit+differential:3	1
-runcon	113	win32-console	none	none	audited:notes	unit	2
-sdiff	827	mixed(crt-stdio+iostream+win32-console+win32-direct)	static-mutable,locale/setmode	none	audited:notes	unit+differential:29	3
-sed	2802	mixed(iostream+win32-console+win32-direct)	errno	none	audited:deviates	unit+differential:5	4
-seq	764	mixed(crt-stdio+win32-console)	locale/setmode,errno	none	audited:clean	unit+differential:9	3
-sha1sum	356	mixed(crt-stdio+win32-console)	locale/setmode	none	audited:notes	unit+differential:1	3
-sha224sum	253	win32-console	none	none	audited:clean	unit	2
-sha256sum	352	mixed(crt-stdio+win32-console)	locale/setmode	none	audited:notes	unit+differential:2	3
-sha384sum	253	win32-console	none	none	audited:clean	unit	2
-sha512sum	355	mixed(crt-stdio+win32-console)	locale/setmode	none	audited:notes	unit+differential:1	3
-shred	764	mixed(win32-console+win32-direct)	none	none	audited:clean	unit+differential:5	4
-shuf	943	mixed(iostream+win32-console)	static-mutable	none	audited:notes	unit+differential:1	2
-sleep	220	mixed(crt-stdio+win32-console)	errno	none	audited:clean	unit+differential:4	2
-sort	2625	mixed(crt-stdio+iostream+win32-console)	locale/setmode,errno	none	audited:clean	unit+differential:6	3
-split	1249	mixed(crt-stdio+iostream+win32-console)	locale/setmode	none	audited:notes	unit+differential:2	3
-stat	1448	mixed(crt-stdio+win32-console+win32-direct)	none	none	audited:notes	unit+differential:8	3
-stdbuf	394	mixed(crt-stdio+win32-console)	none	none	unreviewed	unit+differential:5	3
-strings	420	mixed(iostream+win32-console)	none	none	audited:notes	unit	3
-stty	901	mixed(win32-console+win32-direct)	none	none	audited:deviates	unit+differential:6	4
-sum	227	mixed(crt-stdio+iostream+win32-console)	locale/setmode	none	audited:clean	unit+differential:1	3
-sync	164	none	none	none	audited:clean	unit+differential:1	2
-tac	299	win32-console	none	none	audited:notes	unit+differential:2	2
-tail	1392	mixed(iostream+win32-console+win32-direct)	errno	none	audited:notes	unit+differential:5	2
-tee	315	mixed(crt-stdio+iostream+win32-console)	locale/setmode,errno	none	audited:notes	unit+differential:7	3
-test	175	win32-console	none	none	audited:clean	unit+differential:13	1
-[	166	win32-console	none	none	audited:clean	unit	1
-tic	66	win32-console	none	none	audited:notes	unit	2
-time	497	mixed(win32-console+win32-direct)	none	none	audited:deviates	unit	4
-timeout	503	mixed(win32-console+win32-direct)	none	TerminateProcess	audited:clean	unit+differential:4	3
-toe	59	win32-console	none	none	audited:notes	unit	2
-top	1551	mixed(crt-stdio+win32-console+win32-direct)	static-mutable	TerminateProcess	audited:notes	unit	4
-touch	1243	mixed(win32-console+win32-direct)	none	none	audited:clean	unit+differential:8	3
-tput	236	mixed(win32-console+win32-direct)	none	none	audited:notes	unit	4
-tr	948	mixed(crt-stdio+win32-console)	thread_local,static-mutable,locale/setmode,global-buf	none	audited:clean	unit+differential:5	3
-tree	681	win32-console	none	none	audited:notes	unit	2
-true	48	none	none	none	audited:clean	unit+differential:2	1
-truncate	557	win32-console	none	none	audited:clean	unit+differential:2	2
-tsort	207	mixed(iostream+win32-console+win32-direct)	none	none	audited:clean	unit	3
-tty	86	mixed(win32-console+win32-direct)	none	none	audited:notes	unit	3
-tzset	134	win32-console	none	none	audited:deviates	unit	2
-u2d	151	mixed(iostream+win32-console)	none	none	no-oracle(doc-audited)	unit	4
-uname	224	win32-console	none	none	audited:notes	unit	2
-unexpand	523	mixed(iostream+win32-console)	none	none	audited:notes	unit+differential:1	3
-uniq	596	mixed(crt-stdio+iostream)	locale/setmode	none	audited:clean	unit+differential:2	3
-unix2dos	140	mixed(iostream+win32-console)	none	none	no-oracle(doc-audited)	unit	4
-unlink	142	win32-console	none	none	audited:notes	unit+differential:1	2
-updatedb	347	mixed(win32-console+win32-direct)	none	none	audited:deviates	unit+differential:1	4
-uptime	217	win32-console	none	none	audited:notes	unit	2
-users	135	win32-console	none	none	audited:notes	unit	2
-vdir	279	win32-console	none	none	audited:notes	unit	2
-vmstat	967	mixed(win32-console+win32-direct)	static-mutable	none	audited:deviates	unit	3
-w	470	win32-console	none	none	audited:deviates	none	2
-watch	490	mixed(crt-stdio+win32-console+win32-direct)	none	none	audited:deviates	unit	4
-wc	1131	mixed(crt-stdio+iostream+win32-console+win32-direct)	locale/setmode	none	audited:clean	unit+differential:7	3
-whereis	504	win32-console	none	none	audited:deviates	differential:3	2
-which	501	mixed(crt-stdio+win32-console)	none	none	audited:notes	unit+differential:1	3
-who	423	win32-console	none	none	unreviewed	unit	2
-whoami	98	win32-console	none	none	audited:clean	unit	2
-wpm	6331	mixed(iostream+win32-console+win32-direct)	none	none	no-oracle(doc-audited:deviates)	unit	4
-xargs	2012	mixed(iostream+win32-console+win32-direct)	none	none	audited:deviates	unit	3
-xxd	440	mixed(iostream+win32-console+win32-direct)	none	none	audited:notes	unit+differential:2	3
-yes	161	mixed(crt-stdio+win32-console)	locale/setmode,errno	none	audited:notes	unit	3
+applet	loc	io_idiom	global_state	exit_usage	oracle_status	test_coverage	replace_wave	state
+arch	100	win32-console	none	none	unreviewed	unit+differential:1	2	rust-ready
+b2sum	305	win32-console	errno	none	audited:clean	unit+differential:5	2	wired
+base32	180	win32-console	errno	none	audited:clean	unit+differential:2	2	wired
+base64	184	win32-console	errno	none	audited:clean	unit+differential:5	2	wired
+basename	176	win32-console	none	none	audited:clean	unit+differential:4	1	wired
+basenc	550	win32-console	errno	none	audited:notes	unit+differential:5	2	c++-only
+cal	425	win32-console	none	none	audited:deviates	unit+differential:10	2	c++-only
+cat	655	mixed(crt-stdio+iostream+win32-console+win32-direct)	locale/setmode,errno	none	audited:clean	unit+differential:4	3	c++-only
+chattr	203	win32-console	none	none	audited:notes	unit	2	c++-only
+chcon	204	win32-console	thread_local,static-mutable	none	audited:notes	unit	3	rust-ready
+chgrp	679	win32-console	none	none	audited:deviates	unit	2	rust-ready
+chmod	981	win32-console	none	none	audited:deviates	unit+differential:2	1	rust-ready
+chown	1168	win32-console	none	none	audited:notes	unit	1	rust-ready
+chroot	96	win32-console	thread_local,static-mutable	none	audited:notes	unit	3	c++-only
+cksum	1105	mixed(crt-stdio+iostream+win32-console)	locale/setmode	none	audited:notes	unit+differential:2	3	rust-ready
+clear	64	win32-console	none	none	audited:notes	unit	2	c++-only
+cmp	690	mixed(iostream+win32-console)	none	none	audited:notes	unit+differential:5	3	c++-only
+col	522	mixed(iostream+win32-console)	none	none	audited:deviates	unit+differential:15	3	c++-only
+column	1038	mixed(iostream+win32-console)	none	none	audited:deviates	unit+differential:18	3	c++-only
+comm	590	mixed(iostream+win32-console)	none	none	audited:clean	unit+differential:2	3	c++-only
+cp	2190	mixed(iostream+win32-console+win32-direct)	errno	none	audited:clean	unit+differential:3	2	c++-only
+cpio	1127	mixed(iostream+win32-console+win32-direct)	none	none	audited:deviates	unit	4	c++-only
+csplit	786	mixed(iostream+win32-console)	none	none	audited:clean	unit	3	rust-ready
+cut	679	mixed(crt-stdio+iostream+win32-console)	locale/setmode	none	audited:notes	unit+differential:3	3	rust-ready
+cygpath	601	mixed(iostream+win32-console)	none	none	no-oracle(doc-audited)	unit	4	c++-only
+d2u	131	mixed(iostream+win32-console)	none	none	no-oracle(doc-audited)	unit	4	c++-only
+date	2673	mixed(iostream+win32-console)	errno	none	audited:clean	unit+differential:34	2	rust-ready
+dd	1287	mixed(win32-console+win32-direct)	static-mutable	none	audited:notes	unit+differential:2	3	c++-only
+df	1417	win32-console	none	none	audited:clean	unit+differential:3	1	rust-ready
+diff	2409	mixed(crt-stdio+win32-console)	locale/setmode	none	audited:notes	unit	3	c++-only
+diff3	1204	mixed(crt-stdio+win32-console+win32-direct)	locale/setmode	none	audited:notes	unit+differential:27	3	c++-only
+dir	273	win32-console	none	none	audited:notes	unit	2	c++-only
+dircolors	694	mixed(iostream+win32-console)	none	none	audited:clean	unit+differential:3	3	c++-only
+dirname	181	win32-console	none	none	audited:clean	unit+differential:4	1	wired
+dos2unix	137	mixed(iostream+win32-console)	none	none	no-oracle(doc-audited)	unit	4	c++-only
+du	1830	mixed(iostream+win32-console)	static-mutable	none	audited:notes	unit+differential:7	2	rust-ready
+echo	450	mixed(crt-stdio+win32-console)	none	none	audited:clean	unit+differential:3	3	wired
+env	882	mixed(win32-console+win32-direct)	none	none	audited:clean	unit+differential:3	3	c++-only
+envsubst	174	mixed(read-all-stdin+win32-console)	none	none	audited:notes	unit+differential:1	4	c++-only
+expand	474	mixed(iostream+win32-console)	none	none	audited:notes	unit+differential:1	3	wired
+expr	527	win32-console	static-mutable	none	audited:notes	unit+differential:5	2	c++-only
+factor	211	mixed(iostream+win32-console)	none	none	audited:clean	unit+differential:1	3	rust-ready
+false	50	none	none	none	audited:clean	unit+differential:2	1	wired
+file	791	win32-console	none	none	audited:notes	unit+differential:2	2	c++-only
+find	5578	mixed(crt-stdio+iostream+win32-console)	static-mutable	none	audited:deviates	unit+differential:6	4	c++-only
+fmt	1101	mixed(iostream+win32-console)	none	none	audited:notes	unit	3	wired
+fold	377	mixed(iostream+win32-console)	none	none	audited:notes	unit+differential:3	3	wired
+free	396	win32-console	none	none	audited:deviates	unit	2	c++-only
+getconf	183	win32-console	none	none	audited:notes	unit+differential:1	2	wired
+getfacl	212	win32-console	none	none	audited:deviates	unit	2	c++-only
+getopt	594	win32-console	none	none	audited:deviates	unit+differential:2	2	c++-only
+grep	3096	mixed(crt-stdio+iostream+win32-console+win32-direct)	static-mutable	none	audited:deviates	unit+differential:15	4	c++-only
+groups	173	win32-console	none	none	audited:notes	unit	2	rust-ready
+head	967	mixed(iostream+win32-console+win32-direct)	none	none	audited:notes	unit+differential:4	3	rust-ready
+hexdump	1198	mixed(iostream+win32-console)	none	none	audited:deviates	unit+differential:12	3	c++-only
+hmac256	126	mixed(iostream+win32-console)	none	none	audited:notes	unit	4	c++-only
+hostid	99	win32-console	none	none	audited:notes	unit	2	wired
+hostname	405	win32-console	none	none	audited:notes	unit	2	wired
+id	281	win32-console	none	none	audited:clean	unit	2	wired
+infocmp	226	win32-console	none	none	audited:notes	unit	2	c++-only
+install	1146	mixed(win32-console+win32-direct)	none	none	audited:clean	unit+differential:6	4	c++-only
+join	890	mixed(iostream+win32-console)	none	none	audited:clean	unit+differential:2	3	wired
+kill	686	win32-console	none	TerminateProcess	audited:notes	unit+differential:12	3	c++-only
+killall	401	mixed(iostream+win32-console)	none	none	audited:notes	unit	4	c++-only
+ldd	267	win32-console	none	none	audited:notes	unit	2	c++-only
+less	1187	mixed(iostream+win32-console+win32-direct)	none	none	audited:notes	unit	4	c++-only
+ln	912	mixed(iostream+win32-console)	none	none	audited:clean	unit+differential:5	3	wired
+locale	381	win32-console	locale/setmode	none	unreviewed	unit	3	c++-only
+locate	472	mixed(iostream+win32-console+win32-direct)	none	none	audited:deviates	unit+differential:2	4	c++-only
+logger	561	mixed(iostream+win32-console)	none	none	audited:deviates	unit	4	c++-only
+logname	63	win32-console	none	none	audited:notes	unit	2	c++-only
+look	279	mixed(win32-console+win32-direct)	none	none	audited:notes	unit+differential:4	4	c++-only
+ls	4513	mixed(crt-stdio+win32-console+win32-direct)	static-mutable,errno,global-buf	none	audited:notes	unit+differential:5	3	c++-only
+lsattr	205	win32-console	none	none	audited:deviates	unit	2	c++-only
+lsof	969	win32-console	none	none	audited:deviates	unit	2	c++-only
+man	296	win32-console	none	none	audited:notes	unit	2	c++-only
+md5sum	346	mixed(crt-stdio+win32-console)	locale/setmode	none	audited:notes	unit+differential:1	3	wired
+mkdir	561	win32-console	none	none	audited:clean	unit+differential:4	1	wired
+mkfifo	267	win32-console	none	none	audited:notes	unit+differential:3	2	rust-ready
+mkgroup	112	win32-console	none	none	audited:notes	unit	2	c++-only
+mknod	349	win32-console	thread_local,static-mutable	none	audited:notes	unit+differential:2	3	rust-ready
+mkpasswd	160	win32-console	none	none	audited:notes	unit	2	c++-only
+mktemp	639	win32-console	thread_local,static-mutable	none	audited:clean	unit+differential:8	2	rust-ready
+more	789	mixed(iostream+win32-console)	none	none	audited:notes	unit+differential:7	4	c++-only
+mpicalc	584	mixed(iostream+win32-console)	static-mutable	none	audited:notes	unit	3	c++-only
+mv	1304	mixed(crt-stdio+iostream+win32-console)	none	none	audited:clean	unit+differential:12	3	c++-only
+namei	373	win32-console	none	none	audited:deviates	unit+differential:2	2	c++-only
+nice	217	win32-console	none	TerminateProcess	audited:clean	unit+differential:5	3	rust-ready
+nl	572	mixed(iostream+win32-console)	none	none	audited:notes	unit+differential:2	3	c++-only
+nohup	226	mixed(crt-stdio+win32-console+win32-direct)	none	none	audited:clean	unit	3	rust-ready
+nproc	175	win32-console	none	none	audited:clean	unit	2	wired
+numfmt	1130	mixed(crt-stdio+iostream+win32-console)	errno	none	audited:clean	unit+differential:5	2	wired
+od	1028	mixed(crt-stdio+iostream+win32-console)	locale/setmode	none	audited:clean	unit+differential:3	3	rust-ready
+paste	417	mixed(iostream+win32-console)	none	none	audited:notes	unit+differential:3	3	wired
+patch	2366	mixed(iostream+win32-console+win32-direct)	none	none	audited:deviates	unit	3	c++-only
+pathchk	345	win32-console	none	none	audited:notes	unit+differential:9	2	rust-ready
+pgrep	299	win32-console	none	none	audited:deviates	unit	2	c++-only
+pidof	76	win32-console	none	none	audited:deviates	unit	2	c++-only
+pinky	302	win32-console	none	none	unreviewed	unit	2	rust-ready
+pkill	304	win32-console	none	none	audited:deviates	unit	2	c++-only
+pldd	60	win32-console	none	none	audited:notes	unit	2	c++-only
+pr	1668	mixed(iostream+win32-console)	none	none	audited:deviates	unit	4	c++-only
+printenv	114	win32-console	none	none	audited:clean	unit+differential:4	1	wired
+printf	734	mixed(crt-stdio+win32-console)	errno	none	audited:notes	unit+differential:13	2	c++-only
+ps	927	win32-console	none	none	audited:deviates	unit	4	c++-only
+ptx	570	mixed(iostream+win32-console)	thread_local,static-mutable	none	audited:notes	unit	4	rust-ready
+pwd	263	win32-console	none	none	unreviewed	unit+differential:1	1	wired
+readlink	388	win32-console	none	none	audited:clean	unit+differential:4	1	wired
+realpath	431	win32-console	none	none	audited:clean	unit+differential:3	1	wired
+regtool	327	win32-console	none	none	no-oracle(doc-audited)	unit	2	c++-only
+renice	161	win32-console	none	none	audited:notes	unit+differential:2	2	c++-only
+reset	143	win32-console	none	none	audited:notes	unit	2	c++-only
+rev	166	mixed(crt-stdio+iostream+win32-console)	locale/setmode	none	audited:notes	unit+differential:5	3	wired
+rm	1072	mixed(iostream+win32-console+win32-direct)	none	none	audited:clean	unit+differential:3	3	c++-only
+rmdir	266	win32-console	none	none	audited:clean	unit+differential:3	1	wired
+runcon	113	win32-console	none	none	audited:notes	unit	2	rust-ready
+sdiff	827	mixed(crt-stdio+iostream+win32-console+win32-direct)	static-mutable,locale/setmode	none	audited:notes	unit+differential:29	3	c++-only
+sed	2802	mixed(iostream+win32-console+win32-direct)	errno	none	audited:deviates	unit+differential:5	4	c++-only
+seq	764	mixed(crt-stdio+win32-console)	locale/setmode,errno	none	audited:clean	unit+differential:9	3	wired
+sha1sum	356	mixed(crt-stdio+win32-console)	locale/setmode	none	audited:notes	unit+differential:1	3	wired
+sha224sum	253	win32-console	none	none	audited:clean	unit	2	wired
+sha256sum	352	mixed(crt-stdio+win32-console)	locale/setmode	none	audited:notes	unit+differential:2	3	wired
+sha384sum	253	win32-console	none	none	audited:clean	unit	2	wired
+sha512sum	355	mixed(crt-stdio+win32-console)	locale/setmode	none	audited:notes	unit+differential:1	3	wired
+shred	764	mixed(win32-console+win32-direct)	none	none	audited:clean	unit+differential:5	4	c++-only
+shuf	943	mixed(iostream+win32-console)	static-mutable	none	audited:notes	unit+differential:1	2	rust-ready
+sleep	220	mixed(crt-stdio+win32-console)	errno	none	audited:clean	unit+differential:4	2	wired
+sort	2625	mixed(crt-stdio+iostream+win32-console)	locale/setmode,errno	none	audited:clean	unit+differential:6	3	rust-ready
+split	1249	mixed(crt-stdio+iostream+win32-console)	locale/setmode	none	audited:notes	unit+differential:2	3	c++-only
+stat	1448	mixed(crt-stdio+win32-console+win32-direct)	none	none	audited:notes	unit+differential:8	3	wired
+stdbuf	394	mixed(crt-stdio+win32-console)	none	none	unreviewed	unit+differential:5	3	c++-only
+strings	420	mixed(iostream+win32-console)	none	none	audited:notes	unit	3	c++-only
+stty	901	mixed(win32-console+win32-direct)	none	none	audited:deviates	unit+differential:6	4	c++-only
+sum	227	mixed(crt-stdio+iostream+win32-console)	locale/setmode	none	audited:clean	unit+differential:1	3	rust-ready
+sync	164	none	none	none	audited:clean	unit+differential:1	2	wired
+tac	299	win32-console	none	none	audited:notes	unit+differential:2	2	wired
+tail	1392	mixed(iostream+win32-console+win32-direct)	errno	none	audited:notes	unit+differential:5	2	rust-ready
+tee	315	mixed(crt-stdio+iostream+win32-console)	locale/setmode,errno	none	audited:notes	unit+differential:7	3	wired
+test	175	win32-console	none	none	audited:clean	unit+differential:13	1	wired
+[	166	win32-console	none	none	audited:clean	unit	1	wired
+tic	66	win32-console	none	none	audited:notes	unit	2	c++-only
+time	497	mixed(win32-console+win32-direct)	none	none	audited:deviates	unit	4	c++-only
+timeout	503	mixed(win32-console+win32-direct)	none	TerminateProcess	audited:clean	unit+differential:4	3	wired
+toe	59	win32-console	none	none	audited:notes	unit	2	c++-only
+top	1551	mixed(crt-stdio+win32-console+win32-direct)	static-mutable	TerminateProcess	audited:notes	unit	4	c++-only
+touch	1243	mixed(win32-console+win32-direct)	none	none	audited:clean	unit+differential:8	3	wired
+tput	236	mixed(win32-console+win32-direct)	none	none	audited:notes	unit	4	c++-only
+tr	948	mixed(crt-stdio+win32-console)	thread_local,static-mutable,locale/setmode,global-buf	none	audited:clean	unit+differential:5	3	rust-ready
+tree	681	win32-console	none	none	audited:notes	unit	2	c++-only
+true	48	none	none	none	audited:clean	unit+differential:2	1	wired
+truncate	557	win32-console	none	none	audited:clean	unit+differential:2	2	wired
+tsort	207	mixed(iostream+win32-console+win32-direct)	none	none	audited:clean	unit	3	wired
+tty	86	mixed(win32-console+win32-direct)	none	none	audited:notes	unit	3	rust-ready
+tzset	134	win32-console	none	none	audited:deviates	unit	2	c++-only
+u2d	151	mixed(iostream+win32-console)	none	none	no-oracle(doc-audited)	unit	4	c++-only
+uname	224	win32-console	none	none	audited:notes	unit	2	wired
+unexpand	523	mixed(iostream+win32-console)	none	none	audited:notes	unit+differential:1	3	wired
+uniq	596	mixed(crt-stdio+iostream)	locale/setmode	none	audited:clean	unit+differential:2	3	c++-only
+unix2dos	140	mixed(iostream+win32-console)	none	none	no-oracle(doc-audited)	unit	4	c++-only
+unlink	142	win32-console	none	none	audited:notes	unit+differential:1	2	wired
+updatedb	347	mixed(win32-console+win32-direct)	none	none	audited:deviates	unit+differential:1	4	c++-only
+uptime	217	win32-console	none	none	audited:notes	unit	2	c++-only
+users	135	win32-console	none	none	audited:notes	unit	2	wired
+vdir	279	win32-console	none	none	audited:notes	unit	2	c++-only
+vmstat	967	mixed(win32-console+win32-direct)	static-mutable	none	audited:deviates	unit	3	c++-only
+w	470	win32-console	none	none	audited:deviates	none	2	c++-only
+watch	490	mixed(crt-stdio+win32-console+win32-direct)	none	none	audited:deviates	unit	4	c++-only
+wc	1131	mixed(crt-stdio+iostream+win32-console+win32-direct)	locale/setmode	none	audited:clean	unit+differential:7	3	c++-only
+whereis	504	win32-console	none	none	audited:deviates	differential:3	2	c++-only
+which	501	mixed(crt-stdio+win32-console)	none	none	audited:notes	unit+differential:1	3	c++-only
+who	423	win32-console	none	none	unreviewed	unit	2	rust-ready
+whoami	98	win32-console	none	none	audited:clean	unit	2	wired
+wpm	6331	mixed(iostream+win32-console+win32-direct)	none	none	no-oracle(doc-audited:deviates)	unit	4	c++-only
+xargs	2012	mixed(iostream+win32-console+win32-direct)	none	none	audited:deviates	unit	3	rust-ready
+xxd	440	mixed(iostream+win32-console+win32-direct)	none	none	audited:notes	unit+differential:2	3	c++-only
+yes	161	mixed(crt-stdio+win32-console)	locale/setmode,errno	none	audited:notes	unit	3	c++-only
