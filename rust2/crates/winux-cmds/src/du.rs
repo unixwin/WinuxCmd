@@ -2093,15 +2093,26 @@ mod files0_from_tests {
         let sc = ScratchCtx::new("du-deref-dir");
         std::fs::create_dir_all(sc.path("dir")).unwrap();
         std::fs::write(sc.path("dir/f.txt"), "x").unwrap();
+        // A junction is the unprivileged Windows analog of a directory
+        // symlink (mklink /J); the CI runner is admin but developers are
+        // not, so the fixture must not depend on SeCreateSymbolicLink.
         #[cfg(windows)]
-        let linked = std::os::windows::fs::symlink_dir("dir", sc.path("dirlink")).is_ok();
+        let linked = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(sc.path("dirlink"))
+            .arg(sc.path("dir"))
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
         #[cfg(not(windows))]
         let linked = std::os::unix::fs::symlink("dir", sc.path("dirlink")).is_ok();
         if !linked {
             return;
         }
         for flag in ["-L", "-H"] {
-            let (r, out, err) = run(&sc, &["-b", flag, "dirlink"]);
+            // -a is required to see per-file rows (du -b alone prints only
+            // the directory total, probed GNU 9.4).
+            let (r, out, err) = run(&sc, &["-a", "-b", flag, "dirlink"]);
             assert_eq!(r, 0, "{flag}: {err}");
             assert!(err.is_empty(), "{flag}: {err}");
             assert!(out.contains("dirlink/f.txt\n"), "{flag}: {out}");
