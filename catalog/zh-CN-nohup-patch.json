@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "locale": "zh-CN",
+  "messages": {
+    "command.nohup.error.failed_to_run": "无法运行命令 '{command}'：{reason}",
+    "command.nohup.error.open_failed": "无法打开 '{file}'：{reason}",
+    "command.nohup.error.stdin_unusable": "无法使标准输入不可用：{reason}",
+    "command.nohup.warning.appending": "正在将输出追加到 '{file}'",
+    "command.nohup.warning.ignoring_appending": "忽略输入并将输出追加到 '{file}'",
+    "command.nohup.warning.ignoring_input": "忽略输入",
+    "command.nohup.warning.ignoring_redirecting": "忽略输入并将标准错误重定向到标准输出",
+    "command.nohup.warning.redirecting_stderr": "将标准错误重定向到标准输出"
+  }
+}

@@ -314,6 +314,16 @@ fn run_direct(argv: &[std::ffi::OsString]) -> i32 {
                 Err(_) => winux_core::ABI_FAILURE_STATUS as i32,
             }
         }
+        // nohup's terminal faces (stdin->NUL, stdout->nohup.out,
+        // stderr->stdout) key off the same console facts; the ABI path
+        // keeps the pipe default because captured buffers are not ttys.
+        "nohup" => {
+            let meta = stdio_meta();
+            match winux_cmds::nohup::nohup_with_meta(&args, &mut io, &ctx, &meta) {
+                Ok(s) => s as i32,
+                Err(_) => winux_core::ABI_FAILURE_STATUS as i32,
+            }
+        }
         "touch" => {
             let mut host = ProcessStdoutTimes;
             match winux_cmds::touch::touch_with_stdout(&args, &mut io, &ctx, Some(&mut host)) {

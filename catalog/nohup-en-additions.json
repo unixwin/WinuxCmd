@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "locale": "en-US",
+  "messages": {
+    "command.nohup.error.failed_to_run": "failed to run command '{command}': {reason}",
+    "command.nohup.error.open_failed": "failed to open '{file}': {reason}",
+    "command.nohup.error.stdin_unusable": "failed to render standard input unusable: {reason}",
+    "command.nohup.warning.appending": "appending output to '{file}'",
+    "command.nohup.warning.ignoring_appending": "ignoring input and appending output to '{file}'",
+    "command.nohup.warning.ignoring_input": "ignoring input",
+    "command.nohup.warning.ignoring_redirecting": "ignoring input and redirecting stderr to stdout",
+    "command.nohup.warning.redirecting_stderr": "redirecting stderr to stdout"
+  }
+}

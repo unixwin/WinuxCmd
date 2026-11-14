@@ -196,6 +196,8 @@ setup_fixture() {
       rm -rf md; mkdir -p md ;;
     nice)
       : ;;
+    nohup)
+      : ;;
     cp)
       # wave-cp fixture (#1488 cp wire): files/dirs, a live + a dangling
       # junction (unprivileged Windows directory link), WSL/LX links, and a
@@ -1783,6 +1785,35 @@ TABLE
 24|||true:a:b
 25|||cmd:/c:exit:7
 26|||-n:10:cmd:/c:exit:5
+TABLE
+      ;;
+    # nohup wire lane (#1488): the child-spawn family, GNU "+" optstring
+    # shapes, POSIXLY_CORRECT usage exits, and the pipe-mode terminal
+    # faces (the harness redirects all three streams, so both builds
+    # take GNU's no-redirect path — the ConPTY probe covers the real
+    # console faces).
+    nohup)
+      cat <<'TABLE'
+01|||
+02|||cmd:/c:exit:0
+03|||cmd:/c:exit:7
+04|||cmd:/d:/s:/c:echo hi
+05|||nosuchcmd123
+06|POSIXLY_CORRECT=1||
+07|POSIXLY_CORRECT=||
+08|||-h
+09|||--help
+10|||--version
+11|||--bogus:true
+12|||-5:true
+13|||--:cmd:/c:exit:3
+14|||--
+15|||--version:extra
+16|||cmd:/c:exit:0:--bogus
+17|||--version:--help
+18|||@EMPTY@
+19|||cmd:/d:/s:/c:echo out&echo err>&2
+20||zz|cmd:/d:/s:/c:echo hi
 TABLE
       ;;
     *)
