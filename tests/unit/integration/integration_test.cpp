@@ -327,6 +327,10 @@ TEST(integration, cut_wildcard_pipe_sort) {
   EXPECT_TRUE(r.stdout_text.find("4") != std::string::npos);
 }
 
+// #1488 rust2 wiring: md5sum file operands stay LITERAL (the
+// b2sum_wildcard digest-family pin — the shell globs, the program does
+// not). The 1.x body glob-expanded; the pipeline now carries the
+// literal-operand ENOENT diagnostic through to sort.
 TEST(integration, md5sum_wildcard_pipe_sort) {
   TempDir tmp;
   tmp.write("file_a.txt", "aaa");
@@ -340,10 +344,14 @@ TEST(integration, md5sum_wildcard_pipe_sort) {
 
   auto r = p.run();
 
+  // the pipeline's exit code is the last stage's (sort of an empty stream);
+  // md5sum's literal-operand ENOENT diagnostic flows down stderr.
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.find("file_a.txt") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("file_b.txt") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stdout_text.find("file_a.txt") == std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("other.log") == std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("md5sum: '*.txt': No such file or "
+                                 "directory") != std::string::npos);
 }
 
 // ============================================================

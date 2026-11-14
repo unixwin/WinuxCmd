@@ -52,6 +52,11 @@ TEST(md5sum, md5sum_binary) {
   EXPECT_EQ(r.exit_code, 0);
 }
 
+// #1488 rust2 wiring: file operands stay LITERAL — the shell globs, the
+// program does not (GNU digest.c receives shell-expanded operands, the
+// b2sum_wildcard pin; `md5sum '*.txt'` under WSL coreutils 9.4 reports
+// the quotef-quoted ENOENT). The 1.x body glob-expanded, a GNU deviation
+// the rust2 port does not carry.
 TEST(md5sum, md5sum_wildcard) {
   TempDir tmp;
   tmp.write("file1.txt", "hello");
@@ -69,10 +74,10 @@ TEST(md5sum, md5sum_wildcard) {
   TEST_LOG_EXIT_CODE(r);
   TEST_LOG("md5sum wildcard output", r.stdout_text);
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.find("file1.txt") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("file2.txt") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("other.log") == std::string::npos);
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("md5sum: '*.txt': No such file or "
+                                 "directory") != std::string::npos);
 }
 
 TEST(md5sum, md5sum_text_mode) {
