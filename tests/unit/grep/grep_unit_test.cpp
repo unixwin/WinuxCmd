@@ -1791,7 +1791,13 @@ TEST(grep, grep_R_warns_and_terminates_on_junction_cycle) {
   // the hit found and a diagnostic for the skipped cycle.
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_NE(r.stdout_text.find("real.txt"), std::string::npos);
-  EXPECT_NE(r.stderr_text.find("cyclic"), std::string::npos);
+  // [GNU] wording, not the 1.x "cyclic": GNU grep 3.11 (WSL oracle probe,
+  // ln -s to self under the walked root) emits
+  //   "grep: j/loop: warning: recursive directory loop"
+  // — the same line the rust2 walk.rs FTS_DC detection emits. This test
+  // only really runs on hosts with symlink privilege (the helper skips
+  // otherwise), which is why the wording mismatch only surfaced on CI.
+  EXPECT_NE(r.stderr_text.find("recursive directory loop"), std::string::npos);
 }
 
 // [#1212] fd 0 is text mode by default, so a pipe stopped at the first 0x1A
