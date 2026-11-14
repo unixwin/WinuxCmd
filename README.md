@@ -1,22 +1,25 @@
+<!-- 2.0.0 docs draft: verified against origin/main f0cf6b17 (2026-11-14).
+     WP-S must refresh counts, artifact names and links at the release tag. -->
+
 <a id="top"></a>
 
 <div align="center">
 
-<img src=".github/assets/banner.svg" alt="WinuxCmd — Unix commands, native on Windows. 176 commands, 1924 options, 93% differential pass rate (178 cases / 13 tracked platform diffs)." width="100%">
+<img src=".github/assets/banner.svg" alt="WinuxCmd — Unix commands, native on Windows. 176 commands, one native executable, GNU-behavior differential gate." width="100%">
 
-**Real Unix commands. Real Windows paths. One ~3 MB executable.**
+**Real Unix commands. Real Windows paths. One native executable.**
 No WSL · No Cygwin · No MSYS2 · No path-translation pain
-**v1.1.20 stable is out.** 🎉
+**v2.0.0 — the Rust command core is here.** 🎉
 
 **[unixwin.dev](https://unixwin.dev) — Docs & downloads**
 
 [![GitHub release](https://img.shields.io/github/v/release/unixwin/WinuxCmd)](https://github.com/unixwin/WinuxCmd/releases)
 [![GitHub downloads](https://img.shields.io/github/downloads/unixwin/WinuxCmd/total)](https://github.com/unixwin/WinuxCmd/releases)
-[![Stars](https://img.shields.io/github/stars/unixwin/WinuxCmd)](https://github.com/unixwin/WinuxCmd/stargazers)
+[![Stars](https://img.shields.io/github/stars/unixwin/WinuxCmd/stargazers)](https://github.com/unixwin/WinuxCmd/stargazers)
 [![License](https://img.shields.io/github/license/unixwin/WinuxCmd)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-Windows%20x64%20%7C%20ARM64-blue)
 
-[💾 Install](#-install) · [⚡ Demo](#-unix-muscle-memory-on-windows) · [🐂 niubash](#-better-together-the-niubash-shell) · [📦 WPM](#-wpm-package-manager) · [🆚 Compare](#-how-it-compares) · [📚 Docs](#-documentation) · [中文](README-zh.md)
+[💾 Install](#install) · [🚀 What's new in 2.0](#-whats-new-in-20) · [⚡ Quickstart](#-quickstart) · [🔁 1.x → 2.0](#-upgrading-from-1x) · [📚 Docs](#-documentation) · [中文](README-zh.md)
 
 </div>
 
@@ -31,21 +34,62 @@ You're on Windows and you need `grep -rn`, `sed -i`, `find -exec`, `xargs -0` �
 - **GnuWin32** — abandoned in 2012, stuck at 60% compatibility
 - **uutils** — a great Rust project, but ~100 commands and ~600 options
 
-**WinuxCmd skips the compromise.** A single native Win32 executable that speaks GNU syntax on Windows paths: **176 commands, 1,924 options** — with ongoing differential testing against a GNU coreutils 9.7 oracle (178 cases, 165 pass, 13 tracked platform diffs).
+**WinuxCmd skips the compromise.** One native Win32 executable that speaks
+GNU syntax on Windows paths: **176 commands**, no runtime, no VM. 2.0 moves
+the command core to Rust — behavior still measured against a GNU oracle,
+byte for byte.
 
-| | | | | |
-|:---:|:---:|:---:|:---:|:---:|
-| **176** | **1,924** | **178 cases** | **3,659** | **~4 MB** |
-| commands | options¹ | GNU diff · 93% pass | unit tests · 99.6% pass | single binary |
+## 🚀 What's new in 2.0
 
-> ¹ 1,924 = `OPTION(` macro count in `src/commands/`. Command count excludes the internal `wpm` manager and the `[` bracket alias of `test`. Differential corpus: 178 cases across 84 commands (165 pass / 13 known platform diffs, `tests/differential/baseline.json`). See the [GNU comparison report](DOCS/en/gnu_comparison_report.md).
+2.0 is an **implementation** release, not an interface release: the same
+commands, names, options, help surface and multicall binary. What changed is
+what runs underneath.
 
----
+```
+winuxcmd.exe  (one image, one CRT)
+├── C++ front end        registration metadata, dispatcher, option policy,
+│                        help/version interception, wpm, retained faces
+├── rust2_bridge         the only C++ that touches the ABI
+├── winuxcmd_ffi         C ABI v2: winuxcmd_run / winuxcmd_run_stream
+└── winux-cmds           library-form commands
+    └── winux-core       Io / Ctx / HostServices / path / regex seam
+```
 
-## ⚡ Unix muscle memory on Windows
+- **Library-form commands** — every wired applet is a function:
+  `run(args, &mut Io, &Ctx) -> CmdResult`. IO is injected, cwd and
+  environment are explicit, there is no process-global mutable state, and a
+  command returns a status instead of calling `exit()`. A panic becomes
+  status 125 at the ABI boundary; it never unwinds into the dispatcher.
+- **One image** — the Rust side is a **static library** folded into
+  `winuxcmd.exe` by the same MSVC link. No DLL, no load-time CRT boundary,
+  nothing extra to install. This is the fix for the FFI breakage that
+  stalled the first Rust attempt (#1487).
+- **Streaming stdin** — `winuxcmd_run_stream` feeds input through a pull
+  callback, so a command reads incrementally instead of slurping through
+  the ABI. A host-stopped read returns GNU's 124; a read failure maps to the
+  command's own status.
+- **`winux-regex`** — a std-only BRE/ERE engine (GNU extensions,
+  backreferences, POSIX leftmost-longest, glibc capture rules) shared by
+  `grep`/`sed`/`find`/`tac` and friends. `grep -P` keeps the existing pinned
+  PCRE2 face; Perl syntax is not reimplemented.
+- **Translation without globals** — runtime messages carry stable keys and
+  English fallbacks; a translation is injected per invocation from the
+  catalog selected by `WINUX_LANG`. English-only builds are the default.
+- **A stricter gate** — every wired command passes three gates: GNU oracle
+  byte equality, an unchanged ctest failure set, and an old-vs-new exe byte
+  matrix with each divergence explained.
+
+At the 2.0 freeze, **50 applets run the Rust core**, **32 more have a green
+differential gate and are queued** for the 2.0.x wiring waves, and the
+remaining applets keep the 1.x core until their wave. The authoritative
+per-command state is [`DOCS/2.0-inventory.tsv`](DOCS/2.0-inventory.tsv);
+the architecture and wiring contract is
+[`rust2/REPLACEMENT-RECIPE.md`](rust2/REPLACEMENT-RECIPE.md).
+
+## ⚡ Quickstart
 
 ```bash
-# Every GNU flag you know, on real Windows paths
+# Install one of the ways below, then use the commands directly:
 ls -la
 grep -rn "TODO" src/
 sed -i 's/http:/https:/g' config.ini
@@ -55,68 +99,140 @@ find . -name "*.tmp" -exec rm {} \;
 # so there are no prefixes and nothing to configure
 find . -name "*.cpp" -print0 | xargs -0 wc -l
 
-# And when a tool shouldn't be reimplemented, WPM installs the real thing
+# Every applet is reachable through the multicall binary too:
+winuxcmd grep -c ERROR app.log
+winuxcmd --list-all
+
+# Tools that should not be reimplemented install through WPM:
 wpm install jq
 ```
 
-## 💾 Install
+Verify what you are running:
+
+```bash
+winuxcmd --version
+winuxcmd <command> --help
+```
+
+### Install
 
 | | |
 |---|---|
 | **winget** | `winget install WinuxCmd` (ID `caomengxuan666.WinuxCmd`) |
-| **Installer (recommended)** | Grab `WinuxCmd-<version>-x64-setup.exe` (or the ARM64 setup) from [GitHub Releases](https://github.com/unixwin/WinuxCmd/releases/latest) |
+| **Installer (recommended)** | `WinuxCmd-<version>-x64-setup.exe` (or the ARM64 setup) from [GitHub Releases](https://github.com/unixwin/WinuxCmd/releases/latest) |
 | **Portable** | Unzip `WinuxCmd-<version>-win-x64.zip` anywhere and add it to your `PATH` |
-| **Build from source** | VS 2022 + CMake 3.30 + Ninja — see [Building from source](#️-building-from-source) |
+| **Build from source** | VS 2022 + CMake 3.30 + Ninja + Rust — see [Building from source](#️-building-from-source) |
 
-## 🔏 Code signing
+## 🔁 Upgrading from 1.x
 
-Test-release binaries are code-signed via the [SignPath Foundation](https://signpath.org); formal release signing is pending SignPath approval.
+The command set is unchanged. The behavior is GNU-truer where 1.x had
+invented things. Read the full
+**[migration guide](DOCS/2.0-MIGRATION.md)** before upgrading scripts; the
+short version:
 
-## 📦 Editions (1.2.0+)
+| Area | 1.x | 2.0 |
+|---|---|---|
+| Implementation | C++ bodies in `winuxcmd.exe` | Rust library functions in the same image |
+| Command set / names / options | 176 applets | **unchanged** (retired 1.x-only option spellings excepted) |
+| `--help` / `--version` text | WinuxCmd-branded | **unchanged** (same dispatcher surface) |
+| GNU behavior | measured, with tracked deviations | GNU byte-equal on the gated surface; every remaining deviation is classified |
+| `sort` speed | reference | 12x faster plain sort on the 64 MiB NTFS benchmark |
+| Streaming stdin | whole-buffer ABI | incremental pull callback (v2) |
+| Translations | C++ catalog | per-invocation host injection + separate catalog repo |
+| Editions / multicall / WPM | default + full | **unchanged** |
+| Windows subsets | NTFS modes, ownership, symlinks, SELinux, FIFOs | **unchanged, documented** |
+
+**Retired 1.x extensions** (GNU has no such option, or treats it as data):
+`echo -u/--upper`, `echo -r/--repeat`, `fold -c`,
+`fmt -m/-P/-x/-X/-T`, `numfmt --unit-separator/-M/-l` and the `Z/Y/R/Q`
+suffixes as 1.x accepted them. Each has a GNU citation in the migration
+guide §3.
+
+**Not yet changed:** applets still on the 1.x core behave exactly as in
+1.2.1. Their GNU gaps are tracked as `compat-gap` issues (#1639–#1657) and
+will be fixed by their Rust rewrites, not by 2.0.0.
+
+## 🧰 Command coverage
+
+176 applets across GNU coreutils, findutils, grep/sed, util-linux, BSD tools,
+process management, Cygwin/MSYS bridging and WinuxCmd extensions. The
+command surface is unchanged from 1.x; what is changing is the engine
+behind each applet.
+
+| Family | Examples |
+|---|---|
+| File operations | `ls` `cp` `mv` `rm` `ln` `mkdir` `install` `stat` `du` `df` |
+| Text processing | `cat` `head` `tail` `cut` `tr` `sort` `uniq` `fmt` `paste` `pr` |
+| Search & traversal | `find` `xargs` `locate` `updatedb` `whereis` `which` |
+| Digests & encoding | `md5sum` `sha*sum` `b2sum` `cksum` `base64` `base32` `basenc` |
+| Paths & links | `readlink` `realpath` `basename` `dirname` `pathchk` `cygpath` |
+| Process & system | `ps` `top` `kill` `timeout` `nice` `nohup` `free` `uptime` |
+| Permissions | `chmod` `chown` `chgrp` `getfacl` `chcon` `runcon` |
+| Terminal & docs | `tty` `stty` `tput` `clear` `reset` `man` `less` `more` |
+| WinuxCmd extensions | `wpm` `regtool` `mkgroup` `mkpasswd` `d2u` `u2d` |
+
+Per-command support state (Rust-wired / deferred / retained face) and the
+issue anchors live in
+[`DOCS/2.0-inventory.tsv`](DOCS/2.0-inventory.tsv); the summary is
+[`DOCS/2.0-inventory-summary.md`](DOCS/2.0-inventory-summary.md).
+
+## 🧪 Testing and GNU verification
+
+2.0 gates each wired command three ways:
+
+1. **GNU oracle** — the wired product vs WSL GNU (coreutils 9.4, findutils
+   4.9.0, util-linux 2.39.3, Debian hostname 3.23), byte-for-byte on stdout
+   and exit status for `strict` rows.
+2. **Existing tests** — the full `ctest` failure set must equal the
+   pre-wiring baseline.
+3. **Old vs new exe** — an argument matrix compares rc/stdout/stderr; every
+   divergence must be explained as a 1.x deviation the replacement corrects.
+
+Case tables are generated (`rust2/gate/gen-cases.py`); every row is
+`strict`/`exit`/`win`/`note`, and a `note` row without a registry entry is
+itself a finding. The measured narrative is
+[`rust2/GATE-REPORT.md`](rust2/GATE-REPORT.md); the wave5 full run
+(2026-11-13) covered 82 commands / 2,444 cases, and xargs adds 141. The
+release run replaces those numbers.
+
+Windows-value-model rows (`id`, `uname`, `hostname`, `getconf`, `df`,
+`whoami`, `nproc`) gate rc against GNU and stdout against the 1.x value
+model; they are recorded, not skipped.
+
+## 📚 Documentation
+
+| Document | Description |
+|---|---|
+| [Migration guide 1.x → 2.0](DOCS/2.0-MIGRATION.md) | Per-command differences, retired extensions, platform subsets |
+| [Release notes 2.0.0](DOCS/2.0-RELEASE-NOTES.md) | Bilingual release notes (draft until the tag) |
+| [Command inventory](DOCS/2.0-inventory.tsv) | 176 applets, three states, exemption anchors |
+| [Inventory summary](DOCS/2.0-inventory-summary.md) | Method, counts, terminal state |
+| [Regex engine decision](DOCS/2.0-regex-engine-decision.md) | Why `winux-regex` is a port, and the `grep -P` exemption |
+| [Replacement recipe](rust2/REPLACEMENT-RECIPE.md) | How one applet is wired (three gates, split engine, streaming, I18N) |
+| [Gate report](rust2/GATE-REPORT.md) | Per-wave differential results |
+| [Compatibility matrix](DOCS/en/command_compatibility_matrix.md) | 1.x-era per-command support notes |
+| [WPM guide](DOCS/en/wpm_guide.md) | Package manager user guide |
+| [Windows features](DOCS/en/windows_features.md) | Windows-specific behavior |
+
+## 📦 Editions
 
 WinuxCmd ships in two editions built from the same source:
 
 | | **Default edition** | **Full edition** |
 |---|---|---|
 | Assets | `WinuxCmd-<version>-win-<arch>.*` | `WinuxCmd-<version>-win-<arch>-full.*` |
-| Entry links | All commands **except** the full-only names below | All 178 entries |
+| Entry links | All commands **except** the full-only names | All entries |
 | wpm index | yes | **not indexed** — standalone download only |
 
 **Full-only commands:** the default edition does not create entry links for
 **`[`** · **`env`** · **`false`** · **`kill`** · **`test`** · **`time`** ·
-**`true`**. These commands' user-facing semantics are defined by your host
-shell's builtins, so an `kill.exe`-style entry on `PATH` advertises a
-dispatch the builtin actually owns. The commands remain fully implemented in
-the multicall binary — `winuxcmd kill -9 <pid>` works in both editions.
-`echo`, `printf` and `pwd` deliberately keep their entries. The full edition
-materializes every entry link; its asset name always carries the `-full`
-qualifier, and the definition of the split lives in one place
-([`src/core/package_edition.h`](src/core/package_edition.h)).
-
-## 🚀 Why WinuxCmd
-
-- 🪟 **Native, not emulated** — talks to Win32 APIs directly. Understands `C:\`, UNC paths and NTFS ACLs (with `cygpath` and `getfacl` for bridging). No VM, no runtime DLLs, instant startup.
-- 🧠 **GNU where it counts** — `find` alone implements 88 options (full expression parser, `-exec`/`-execdir`/`-ok`, `-printf`); `grep` ships PCRE2; `sed` supports in-place `-i` editing.
-- 📦 **WPM built in** — a package manager for the tools that shouldn't be reimplemented: jq, ripgrep, fd, fzf, bat, make, neovim, curl, wget…
-- 🧪 **Tested like it matters** — 3,659 unit tests, plus a 178-case differential suite byte-compared against authoritative upstream sources (GNU coreutils 9.7, findutils 4.10.0, grep 3.12, sed 4.9, patch 2.7.6, util-linux 2.41, procps-ng 4.0.4). Every command audited line-by-line; reports in `tests/differential/audit-*.md`.
-- ⚡ **Small, fast, PGO-built** — 3.79 MB for 176 commands, statically linked, zero dependencies, ~19 ms cold start. Published x64 binaries are Profile-Guided Optimization builds trained on real workloads (sort −18%, nl −17% vs the same code without PGO). Methodology and data: `DOCS/performance-roadmap.md`.
-
-## 🐂 Better together: the niubash shell
-
-WinuxCmd gives Windows real Unix **commands**. [niubash](https://github.com/unixwin/niubash) gives them a real **bash language** to live in — the same unixwin org, two halves of one workflow:
-
-```bash
-# In niubash (native bash on Windows — no WSL):
-for f in *.log; do
-  grep -c ERROR "$f" | xargs -I{} echo "$f: {} errors"
-done | sort -t: -k2 -rn | head -5
-```
-
-- **Real bash semantics** — `if`/`for`/functions/arrays/pipelines run on [niubash](https://github.com/unixwin/niubash), powered by its [rubash](https://github.com/unixwin/rubash) engine, green across niubash's local GNU Bash upstream gate (86/86).
-- **Agent-friendly** — `niu -c` is quiet and deterministic: no banners, stable stdout/stderr, exact exit codes. The shell your AI tooling already speaks.
-- **Zero glue** — niubash injects WinuxCmd's command links onto the `PATH` at startup, so `grep`, `sed` and `find` above are the real binaries you're looking at right now.
-
-Ship WinuxCmd alone in a 3 MB exe, or drop in [niubash](https://github.com/unixwin/niubash) (v1.4.4) and get the whole bash workflow.
+**`true`**. Their user-facing semantics are defined by your host shell's
+builtins, so a `kill.exe`-style entry on `PATH` advertises a dispatch the
+builtin owns. The commands stay fully implemented in the multicall binary —
+`winuxcmd kill -9 <pid>` works in both editions. `echo`, `printf` and `pwd`
+keep their entries. The definition lives in one place
+([`src/core/dispatcher.cppm`](src/core/dispatcher.cppm)
+`is_full_only_command`).
 
 ## 📦 WPM package manager
 
@@ -127,8 +243,6 @@ wpm install bsdtar      # BSD tar
 wpm install openssh     # SSH client
 wpm install make        # GNU make
 wpm install neovim      # text editor
-wpm install curl        # URL transfer
-wpm install wget        # network downloader
 
 wpm search json         # discover packages
 wpm list --all          # see what's installed
@@ -136,212 +250,81 @@ wpm list --all          # see what's installed
 
 Details in the [WPM User Guide](DOCS/en/wpm_guide.md).
 
-## 🆚 How it compares
+## 🐂 Better together: the niubash shell
 
-| Feature | WinuxCmd | uutils (Rust) | GnuWin32 | Cygwin | busybox |
-|---------|:--------:|:-------------:|:--------:|:------:|:-------:|
-| **Commands** | **176** | ~100 | ~90 | ~200 | ~300 |
-| **Options** | **1,924** | ~600 | ~200 | Full | ~500 |
-| **GNU compat** | **93% diff pass** | 95% | 60% | 99% | 70% |
-| **Native Win32** | ✅ | ❌ | ✅ | ❌ | ❌ |
-| **Package manager** | ✅ WPM | ❌ | ❌ | apt-cyg | ❌ |
-| **Test cases** | **3,659** | ~2,000 | 0 | — | ~100 |
-| **Binary size** | **~3 MB** | ~5 MB | — | 1 GB+ | — |
-| **Startup** | **Instant** | Instant | — | 2–5 s | — |
-| **Maintained** | ✅ 2026 | ✅ | ❌ since 2012 | ✅ | ❌ |
+WinuxCmd gives Windows real Unix **commands**. [niubash](https://github.com/unixwin/niubash)
+gives them a real **bash language** to live in:
 
-<details>
-<summary><b>Detailed comparison: vs uutils / GnuWin32 / Cygwin</b></summary>
+```bash
+for f in *.log; do
+  grep -c ERROR "$f" | xargs -I{} echo "$f: {} errors"
+done | sort -t: -k2 -rn | head -5
+```
 
-### vs uutils/coreutils (Rust)
-
-| Aspect | WinuxCmd | uutils |
-|--------|----------|--------|
-| Language | C++23 | Rust |
-| Commands | 176 | ~100 |
-| Options | 1,924 | ~600 |
-| Binary size | ~3 MB | ~5 MB |
-| Dependencies | None | Rust runtime |
-| Build time | 2 min | 15 min |
-| Package manager | WPM built-in | None |
-
-### vs GnuWin32
-
-| Aspect | WinuxCmd | GnuWin32 |
-|--------|----------|----------|
-| Maintenance | Active | Abandoned |
-| Last update | 2026 | 2012 |
-| Windows support | Win10/11 | WinXP+ |
-| Modern toolchain | C++23, CMake | C, autotools |
-
-### vs Cygwin
-
-| Aspect | WinuxCmd | Cygwin |
-|--------|----------|--------|
-| Install size | ~3 MB | 1 GB+ |
-| Startup time | Instant | 2–5 s |
-| Path handling | Native Windows | Unix emulation |
-| Dependencies | None | MSYS2 runtime |
-| Package manager | WPM | apt-cyg |
-
-</details>
-
-## 🧰 Command coverage
-
-<details>
-<summary><b>176 commands — full coverage table (click to expand)</b></summary>
-
-### GNU Coreutils (83 commands)
-
-| Category | Commands | Differential status |
-|----------|----------|---------------------|
-| File Ops | cp, mv, rm, ln, install, mkdir, rmdir, touch, unlink | ✅ mostly verified; cp has 9+ options rejected on Windows (issue-140) |
-| Text Processing | cat, echo, head, tail, sort, uniq, cut, tr, wc, fold, fmt, join, comm | ✅ diff PASS except **fmt** (OUT_DIFF, issue-140) |
-| Directory Listing | ls, dir, vdir | ✅ ls PASS; `dir` Windows-columnar by design |
-| Search | find, xargs | ✅ |
-| Crypto/Hash | base64, base32, basenc, md5sum, sha1sum, sha256sum, sha384sum, sha512sum, b2sum, cksum, sum | ✅ |
-| Date/Time | date, touch, time, timeout | ✅ |
-| System Info | uname, hostname, id, whoami, users, groups, nproc, uptime, arch | ⚠️ **whoami/users/groups** thin stubs (≤1 declared option each) |
-| Disk | df, du, stat | ⚠️ **stat** deep-path gap (OUT_DIFF, issue-140) |
-| Env/Expr | env, printenv, expr, seq, yes, true, false | ✅ |
-| Text Format | pr, nl, expand, unexpand, column, paste, tsort, ptx | ⚠️ **tsort** and **ptx** output-format gaps (OUT_DIFF, issue-140) |
-| File Info | file, stat, readlink, realpath, dirname, basename, pathchk, sync | ⚠️ **stat** deep-path; **file** no-magic stub |
-| Process | nice, nohup, stdbuf | ⚠️ **nice** thin (1 option); **stdbuf** EXIT_DIFF (issue-140) |
-| Permissions | chmod, chown, chgrp, chroot | ⚠️ Linux ownership/SELinux options rejected on Windows |
-| Other | shred, factor, kill, truncate, fmt, numfmt, mktemp, dircolors, sum, csplit, split | ⚠️ **fmt** OUT_DIFF gap |
-
-### GNU findutils/grep/sed (3 commands)
-
-| Command | Options | Features |
-|---------|---------|----------|
-| **find** | 88 | Full expression parser, -exec/-execdir/-ok, -printf |
-| **grep** | 49 | PCRE2 support, --color, --exclude patterns |
-| **sed** | 17 | In-place editing, extended regex, --posix |
-
-### BSD tools (15 commands)
-
-cal, column, hexdump, logger, tree, less, more, strings, rev, tsort, seq, sleep, nohup, watch, tput
-
-### Process management (13 commands)
-
-ps, top, kill, killall, pgrep, pkill, pidof, pldd, free, uptime, renice, stdbuf, timeout
-
-### Cygwin/MSYS2 (14 commands)
-
-cygpath, dos2unix, unix2dos, d2u, u2d
-
-### System info (16 commands)
-
-hostname, id, who, pinky, stty, infocmp, tic, toe, locale, tput, getconf, getfacl, ldd, lsof, file, man
-
-### Custom extensions (10+ commands)
-
-wpm (package manager), mpicalc, regtool, mkpasswd, mkgroup, mkfifo, mknod, clear, reset, tzset
-
-</details>
-
-## 🏃 Benchmarks
-
-| Test | WinuxCmd | uutils | GNU (WSL2) |
-|------|----------|--------|------------|
-| cat (100 MB) | 0.8 s | 0.9 s | 0.7 s |
-| sort (1M lines) | 2.1 s | 2.3 s | 1.9 s |
-| grep (100 MB) | 1.2 s | 1.1 s | 1.0 s |
-| find (10K files) | 0.3 s | 0.4 s | 0.2 s |
-
-Consistently in the same league as uutils — and within ~10–15% of native GNU running under WSL2, without booting a VM.
-
-*Benchmark environment: Windows 11, Intel i7-13700K, 32 GB RAM, NVMe SSD*
-
-## 🧪 Testing and GNU verification
-
-- **3,659 automated unit tests** — **99.6% pass rate**
-- **Differential corpus**: 178 test cases (131 corpus + 47 regressions, covering **84 commands**), executed against a GNU coreutils 9.7 oracle with identical inputs — **165 pass / 13 tracked diffs (93%)**, machine-checked in `tests/differential/baseline.json`
-- Automated GNU comparison: `scripts/compare_outputs.sh` and `gnu_comparison_tests.sh`; per-case runner: `tests/differential/runner.sh`
-
-| Tracked diffs (13) | Command / case | Reason |
-|-----------|---------|--------|
-| `id -g` | regressions/21-id-group | platform: Windows has no POSIX gid; prints primary-group RID (197121) |
-| `cp -l`, `ln` | regressions/23-cp-link-option, ln/35-hard | environment: hardlinks across `\\wsl.localhost` 9p unsupported in the WSL-side runner; verified on native NTFS |
-| `mkdir` exists | mkdir/30-exists | format: GNU uses locale-dependent curly quotes (U+2018/2019); winuxcmd uses ASCII `'` |
-| dd, envsubst, mktemp, namei, readlink, which, seq | 9 remaining cases | output-format/platform differences; per-case state lives in `tests/differential/baseline.json` |
-
-The eight former issue-140 gaps (dd, diff -u, tsort, fmt, stat, sdiff, ptx, stdbuf) all pass; normal-format `diff` hunk-header, hash-family separator, cksum line-ending, realpath forward-slash, and od -c octal-escaping gaps were all found and fixed in 2026-09.
-
-See the [GNU Comparison Report](DOCS/en/gnu_comparison_report.md).
-
-## 📚 Documentation
-
-| Document | Description |
-|----------|-------------|
-| [Compatibility Matrix](DOCS/en/command_compatibility_matrix.md) | Support status of all 176 commands |
-| [GNU Comparison Report](DOCS/en/gnu_comparison_report.md) | Differential testing vs a GNU coreutils 9.7 oracle |
-| [Windows Features](DOCS/en/windows_features.md) | Windows-specific behavior |
-| [WPM Guide](DOCS/en/wpm_guide.md) | Package manager user guide |
-| [GNU Test Baseline](DOCS/en/gnu_test_baseline.md) | GNU test framework |
+niubash injects WinuxCmd's command links onto `PATH` at startup, so the
+`grep`, `sed` and `find` above are the real binaries.
 
 ## 🛠️ Building from source
 
-**Prerequisites:** Visual Studio 2022+ · CMake 3.30+ · Ninja · Rust toolchain (see below)
+**Prerequisites:** Visual Studio 2022+ · CMake 3.30+ · Ninja · Rust (stable)
+with both MSVC targets.
 
-```bash
-# Build
+```powershell
+# Build (always use the script; it sets up the VS environment)
 ./scripts/build-with-vs.ps1
 
 # Build the full edition (all entry links, "-full" asset names)
 cmake -B build-full -G Ninja -DCMAKE_BUILD_TYPE=Release -DWINUXCMD_PACKAGE_EDITION=full
 
-# Run tests
+# Tests
 ./scripts/build-with-vs.ps1 -Target winuxcmd-tests
 build-vs/tests/winuxcmd-tests.exe
 ```
 
-### Rust toolchain requirements (rust2 command library, #1488)
-
-WinuxCmd 2.0 replaces selected applets with a Rust implementation
-(`rust2/crates/winuxcmd-ffi`), built as a staticlib and folded into
-`winuxcmd.exe` by the same link run — there are no separate Rust
-artifacts to install or distribute.
+### Rust toolchain (rust2 command library, #1488)
 
 - **Install [rustup](https://rustup.rs) (stable) plus both MSVC targets:**
   `rustup target add x86_64-pc-windows-msvc aarch64-pc-windows-msvc`.
-  The `aarch64` target is required even on an x64 host when you
-  cross-build arm64 (`vcvarsall x64_arm64`) — cargo builds the staticlib
-  with `--target` for the C++ target architecture, and the ARM64 std
-  library is not part of a default installation. CI pins the toolchain
-  version (`RUST2_TOOLCHAIN` in `.github/workflows/build-winuxcmd.yml`).
-- **Switch semantics:** the CMake option `WINUXCMD_ENABLE_RUST2` defaults
-  **ON** when cargo is found and **OFF** when it is not; passing
-  `-DWINUXCMD_ENABLE_RUST2=ON` without cargo is a configure-time error.
-- **Degradation without Rust:** there is no C++ fallback. A rust-less
-  build simply omits the replaced commands (currently `true` and
-  `false`) from the applet set — they are never dual-tracked (#1550) —
-  so a Rust-less build has a smaller command surface.
-- **Cross-arch consistency:** CI enforces that the x64 and arm64
-  packages carry the same rust2 surface (`rust2-surface-check` job);
-  a local arm64 build fails at configure/link time without the
-  `aarch64` target installed.
+  The `aarch64` target is required even on an x64 host when you cross-build
+  arm64: cargo builds the staticlib with `--target` for the C++ target
+  architecture. CI pins the toolchain (`RUST2_TOOLCHAIN` in
+  `.github/workflows/build-winuxcmd.yml`).
+- **`WINUXCMD_ENABLE_RUST2`** defaults **ON** when cargo is found and **OFF**
+  when it is not; `-DWINUXCMD_ENABLE_RUST2=ON` without cargo is a
+  configure-time error.
+- **No C++ fallback exists.** A Rust-less build omits every command in
+  `WINUXCMD_RUST2_COMMANDS` (currently 50) from that build; the command is
+  never dual-tracked (#1550). Official builds ship Rust.
+- **Cross-arch consistency:** CI's `rust2-surface-check` requires x64 and
+  arm64 packages to carry the same rust2 surface.
+- **Run the Rust tests:**
+
+  ```bash
+  cd rust2
+  cargo test -p winux-core -p winux-regex -p winux-cmds
+  ```
 
 **Profile-Guided Optimization (x64):** release CI builds the published x64
-binary with PGO automatically — instrumented build, training workloads,
-then an `/USEPROFILE` relink. To reproduce locally:
+binary with PGO. To reproduce locally:
 
-```bash
+```powershell
 ./scripts/build-pgo.ps1          # -> build-pgo/usr/bin/winuxcmd.exe
 ```
 
-Training workloads (`scripts/pgo-train.sh`) are ported from
-uutils/coreutils' `build-pgo.sh`, so profiles stay machine-independent.
-ARM64 builds are not PGO'd: profile collection must run on the target
-architecture.
+Training workloads are in `scripts/pgo-train.sh`; ARM64 builds are not
+PGO'd (profiles must be collected on the target architecture).
 
 ## 🤝 Contributing
 
-Contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
+Contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). For the Rust
+core, read [`rust2/REPLACEMENT-RECIPE.md`](rust2/REPLACEMENT-RECIPE.md)
+first: a replacement is mechanical, deletes the old body in the same change,
+and passes the three gates.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE). PCRE2 is a pinned static dependency
+(pcre2-10.47) and ships its license with the source tree.
 
 ---
 
