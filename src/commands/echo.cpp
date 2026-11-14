@@ -22,13 +22,11 @@ using cmd::meta::OptionType;
 // [GNU] -e: enable backslash escapes
 // [GNU] -E: suppress backslash escapes
 // [EXT] -u, --upper: WinuxCmd extension, not in GNU coreutils
-// [EXT] -r, --repeat: WinuxCmd extension, not in GNU coreutils
 auto constexpr ECHO_OPTIONS =
     std::array{OPTION("-n", "", "do not append a newline"),
                OPTION("-e", "", "enable backslash escapes"),
                OPTION("-E", "", "suppress backslash escapes"),
-               OPTION("-u", "--upper", "convert text to uppercase"),
-               OPTION("-r", "--repeat", "repeat output N times", INT_TYPE)};
+               OPTION("-u", "--upper", "convert text to uppercase")};
 
 REGISTER_COMMAND(
     echo,
@@ -105,11 +103,19 @@ REGISTER_COMMAND(
   // interception narrowed to the same sole-argument rule the library
   // implements (dispatcher.cppm/command_context.cppm, same commit).
   //
-  // The -u/--upper and -r/--repeat spellings were WinuxCmd extensions
-  // carried by the 1.x body; GNU coreutils echo treats them as data
-  // ("-u hello" prints "-u hello"), and the rust2 port is GNU-exact, so
-  // they retire with the C++ implementation (the registration above keeps
-  // spelling them for help/man surface continuity).
+  // The -u/--upper spelling was a WinuxCmd extension carried by the 1.x
+  // body; GNU coreutils echo treats it as data ("-u hello" prints
+  // "-u hello"), and the rust2 port is GNU-exact, so it retired with the
+  // C++ implementation (the registration above keeps spelling it for
+  // help/man surface continuity; as a flag it only ever parses for
+  // occurrence bookkeeping and can never reject an argv).
+  //
+  // The -r/--repeat spelling retired the same way but is no longer
+  // registered at all (#1621): declared INT_TYPE, the dispatcher consumed
+  // and int-validated its value ahead of the handler, so `echo -r x`,
+  // bare `echo -r`, and `echo --repeat x` were all rejected with rc 1
+  // while GNU prints them as data, rc 0. Unregistered, -r/--repeat now
+  // reach the handler verbatim like every other non-[-neE] token.
   //
   // echo never reads stdin: the pass-nothing run_command contract keeps fd
   // 0 live for pipeline consumers.
