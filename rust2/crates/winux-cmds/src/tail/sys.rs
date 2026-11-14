@@ -50,6 +50,7 @@ pub enum StdinKind {
 #[cfg(windows)]
 mod imp {
     use super::Stat;
+    use crate::fs_win::ByHandleFileInformation;
     use std::ffi::c_void;
     use std::fs::File;
     use std::os::windows::ffi::OsStrExt;
@@ -59,25 +60,11 @@ mod imp {
     type Handle = *mut c_void;
     const INVALID_HANDLE_VALUE: Handle = -1isize as Handle;
 
-    #[repr(C)]
-    #[derive(Default)]
-    struct ByHandleInfo {
-        attributes: u32,
-        // FILETIMEs are two DWORDs (4-byte aligned): a u64 here would pad
-        creation: [u32; 2],
-        access: [u32; 2],
-        write: [u32; 2],
-        volume_serial: u32,
-        size_high: u32,
-        size_low: u32,
-        links: u32,
-        index_high: u32,
-        index_low: u32,
-    }
-
     #[link(name = "kernel32")]
     extern "system" {
-        fn GetFileInformationByHandle(h: Handle, info: *mut c_void) -> i32;
+        // `*mut ByHandleFileInformation`: the one signature shared with
+        // fs_win.rs/du.rs (winuxcmd#1638; clashing-extern-declarations).
+        fn GetFileInformationByHandle(h: Handle, info: *mut ByHandleFileInformation) -> i32;
         fn GetFileType(h: Handle) -> u32;
         fn CreateFileW(
             name: *const u16,
@@ -89,7 +76,10 @@ mod imp {
             template: Handle,
         ) -> Handle;
         fn CloseHandle(h: Handle) -> i32;
-        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> Handle;
+        // `isize`, not `Handle`: must match who.rs's declaration exactly
+        // (winuxcmd#1638; clashing-extern-declarations — who.rs's ffi
+        // module is isize-based). Call sites cast back to `Handle`.
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> isize;
         fn WaitForSingleObject(h: Handle, ms: u32) -> u32;
         fn WaitForMultipleObjects(n: u32, hs: *const Handle, all: i32, ms: u32) -> u32;
         fn FindFirstChangeNotificationW(dir: *const u16, subtree: i32, filter: u32) -> Handle;
@@ -129,16 +119,15 @@ mod imp {
     }
 
     fn info_of(h: Handle) -> std::io::Result<Stat> {
-        let mut i = ByHandleInfo::default();
-        if unsafe { GetFileInformationByHandle(h, &mut i as *mut ByHandleInfo as *mut c_void) } == 0
-        {
+        let mut i = ByHandleFileInformation::default();
+        if unsafe { GetFileInformationByHandle(h, &mut i) } == 0 {
             return Err(std::io::Error::last_os_error());
         }
         let regular = unsafe { GetFileType(h) } == FILE_TYPE_DISK;
         let is_dir = i.attributes & FILE_ATTRIBUTE_DIRECTORY != 0;
         Ok(Stat {
             size: ((i.size_high as u64) << 32) | i.size_low as u64,
-            mtime: ((i.write[1] as u64) << 32) | i.write[0] as u64,
+            mtime: ((i.last_write_time.high as u64) << 32) | i.last_write_time.low as u64,
             id: (
                 i.volume_serial,
                 ((i.index_high as u64) << 32) | i.index_low as u64,
@@ -247,7 +236,7 @@ mod imp {
 
     impl Pid {
         pub fn new(pid: u32) -> Pid {
-            let handle = unsafe { OpenProcess(SYNCHRONIZE, 0, pid) };
+            let handle = unsafe { OpenProcess(SYNCHRONIZE, 0, pid) } as Handle;
             Pid { pid, handle }
         }
 
@@ -255,7 +244,7 @@ mod imp {
             if !self.handle.is_null() {
                 return unsafe { WaitForSingleObject(self.handle, 0) } == WAIT_OBJECT_0;
             }
-            let h = unsafe { OpenProcess(SYNCHRONIZE, 0, self.pid) };
+            let h = unsafe { OpenProcess(SYNCHRONIZE, 0, self.pid) } as Handle;
             if !h.is_null() {
                 self.handle = h;
                 return unsafe { WaitForSingleObject(h, 0) } == WAIT_OBJECT_0;
