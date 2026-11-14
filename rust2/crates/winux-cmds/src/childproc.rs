@@ -578,7 +578,7 @@ pub fn resolve_child(name: &str, ctx: &Ctx) -> ChildResolve {
 }
 
 /// Canonical Win32 command-line quoting for one argument.
-fn quote_windows_arg(arg: &str) -> String {
+pub(crate) fn quote_windows_arg(arg: &str) -> String {
     if !arg.is_empty() && !arg.contains([' ', '\t', '\n', '"']) {
         return arg.to_string();
     }
