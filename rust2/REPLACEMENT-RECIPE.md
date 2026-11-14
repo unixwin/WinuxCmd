@@ -152,11 +152,15 @@ must pass on both old and new exe.
   GNU-exact for sha224sum/sha384sum/tac on coreutils 9.4 (known remaining
   gap: GNU `b2sum` prints `b2sum: -: Bad file descriptor`; that
   diagnostic belongs to digestsum.rs's read-error branch, a command-impl
-  item, not the bridge). The v1 behaviors (`run_command`,
-  `run_command_with_stdin`, the `kRust2StdinCommands` slurp) stay
-  untouched for the remaining v1 consumers; later waves wire
-  genuinely-streaming stdin readers (`cat`, `tr`, `sort`, ...) the same
-  mechanical way. **How to switch a command:** change the handler's
+  item, not the bridge). The v3 bridge switch retired the
+  `kRust2StdinCommands` slurp: `expand`, `join`, `numfmt`, `tsort`,
+  `unexpand` register `run_command_with_stdin_streaming` and read fd 0
+  only when the command reads (a closed stdin is now the command's read
+  error, rc 1 like GNU, instead of a silent empty input);
+  `run_command` is pass-nothing for every name, and
+  `run_command_with_stdin` keeps the slurp-then-run shape for the
+  remaining whole-buffer consumers. Later waves wire genuinely-streaming
+  stdin readers (`cat`, `tr`, `sort`, ...) the same mechanical way. **How to switch a command:** change the handler's
   `run_command_with_stdin(name, args)` call to
   `run_command_with_stdin_streaming(name, args)` (identical signature,
   same args span), update the registration comment, and extend the
@@ -165,6 +169,26 @@ must pass on both old and new exe.
   -stdin/-mem`, `tests/bridge/stream_abi_driver.cpp`) — 189 checks across
   tac/base64/b2sum/sha224sum/sha384sum. Contract, ownership and thread
   model: [README.md](README.md) "Streaming stdin ABI (v2)".
+- **Streaming output (ABI v3).** ~~stdout/stderr come back as Rust-owned
+  `CBuf`s drained after the command returns.~~ **Adopted, #1488 v3:**
+  `winuxcmd_run_io` (host write callbacks `winuxcmd_stream_write_fn`,
+  `0` / `-1` broken pipe / `-2` other failure, sticky on the Rust side;
+  stdout line-buffered for an interactive console, else 64 KiB block
+  buffer; stderr unbuffered). Every bridge entry (`run_command`,
+  `run_command_with_stdin`, `run_command_with_stdin_streaming`,
+  `run_command_with_stdin_source`, `run_command_with_stdin_bytes`) runs
+  through ONE body (`run_io` in `src/bridge/rust2_bridge.cppm`), so a
+  newly wired command gets bounded output memory, live output,
+  broken-pipe stop (status **141**, the SIGPIPE-death emulation) and
+  stdout/stderr program order for free — nothing to do per command.
+  What a wiring wave must still check: a command that handles stdout
+  write errors itself (tac, tee) now SEES them for outputs past the
+  64 KiB buffer (tee: always, it flushes per chunk), so its own wording
+  is what the user gets for `>&-`; and a command that ignores SIGPIPE
+  under GNU (`tee -p`) still ends 141. Regression net:
+  `rust2-stream-output` (driver `output` lane) + winuxcmd-ffi
+  `io_tests`. Contract: [README.md](README.md) "Streaming output ABI
+  (v3)".
 - **Raw output path.** The bridge drains Rust stdout through `safePrint`,
   which applies the i18n legacy catalog lookup (`translate_legacy`) to the
   whole string when a catalog is loaded. Harmless for true/false (no output)

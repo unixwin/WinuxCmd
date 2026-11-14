@@ -160,10 +160,7 @@ fn dispatch_io(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> Result<u32, ()> {
-    let ctx = Ctx {
-        cwd: h.cwd.clone(),
-        env: &h.env,
-    };
+    let ctx = Ctx::new(h.cwd.clone(), &h.env);
     let mut io = Io {
         stdin,
         stdout,

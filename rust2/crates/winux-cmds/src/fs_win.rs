@@ -1282,10 +1282,7 @@ mod api_path_probes {
     #[cfg(windows)]
     fn plain_ctx(base: &Path) -> Ctx<'static> {
         let env: &'static MapEnv = Box::leak(Box::new(MapEnv::new()));
-        Ctx {
-            cwd: base.to_path_buf(),
-            env,
-        }
+        Ctx::new(base.to_path_buf(), env)
     }
 
     #[test]
@@ -1400,10 +1397,7 @@ mod api_path_probes {
             e.set("TMPDIR", r"C:\tmproot");
             e
         }));
-        let ctx = Ctx {
-            cwd: std::path::PathBuf::from(r"D:\wd"),
-            env,
-        };
+        let ctx = Ctx::new(std::path::PathBuf::from(r"D:\wd"), env);
         assert_eq!(imp::api_path(&ctx, "/"), r"\\?\D:\shellroot");
         assert_eq!(
             imp::api_path(&ctx, "/tmp/probe/dir"),

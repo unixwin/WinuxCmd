@@ -292,7 +292,10 @@ on a version mismatch, so bumping from the Rust side alone would break
 wired commands. The version went to `2` in the same commit that adopted
 `winuxcmd_run_stream` on the C++ side (#1488 v2 bridge adoption: header +
 bridge + `WINUXCMD_RUST2_ABI_VERSION` together, per the header's own
-rule). The C++ host entry is the bridge's streaming convenience call
+rule); it is `3` since the streaming output entry `winuxcmd_run_io`
+(see "Streaming output ABI (v3)" below — every bridge entry runs through
+it now, with the v2 stdin callback inside the v3 table). The C++ host
+entry is the bridge's streaming convenience call
 (`run_command_with_stdin_streaming`, real fd 0 through the `file_io` read
 path) plus the generic `run_command_with_stdin_source` /
 `run_command_with_stdin_bytes`. **Wired commands** (#1488 digest-family
@@ -354,14 +357,10 @@ binding across the boundary; the streaming ABI adds no new binding).
 
 ### Output side
 
-stdout/stderr keep the v1 shape: Rust-owned `CBuf`s the host drains after
-the call. This is the sanctioned "reuse the existing byte buffer" option:
-output capture is already the v1 contract (a returned buffer, freed by
-`winuxcmd_free_buf`), and its memory cost is the output size, which is
-inherent to capture — the streaming input ABI adds no new copy on top of
-it. A streaming *write* callback can be added later as another additive
-symbol if a host demonstrates the need; until then the buffer is not a
-bottleneck the input path has.
+v2 kept the v1 output shape (Rust-owned `CBuf`s drained after the call).
+That is superseded by the streaming output ABI v3 below: the C++ bridge
+runs every entry through `winuxcmd_run_io`, and `winuxcmd_run_stream`
+stays exported with its v2 semantics for other hosts.
 
 ### Validation
 
@@ -439,6 +438,125 @@ green — the 16 `stream_tests` included):**
   peak flat (hash incrementally over the stream) is a command-impl item,
   not a bridge one.
 
+## Streaming output ABI (v3, additive; #1488)
+
+### The problem
+
+Up to v2 every rust2 command's stdout/stderr were collected into Rust-owned
+`CBuf`s and drained by the bridge only after the command returned. Memory
+grew with the output (`seq 1 20000000 | tail -1`: 268 MiB working set,
+389 MiB commit for the seq process), nothing appeared until exit (no
+`tail -f`, no `tail -f | cut`), a vanished reader never stopped a producer
+(`seq inf | head -1` allocated until the 32 GiB request aborted the
+process), and the relative order of stdout and stderr was lost (stdout was
+always drained first).
+
+### Signature (`src/shared/rust2_abi.h`)
+
+```c
+/* Write len (>= 1) bytes. Returns 0 = all written; -1 = broken pipe (the
+ * reader is gone); -2 = other write failure (the host recorded the Win32
+ * cause; any other non-zero value is reserved, treated as -2). */
+typedef int winuxcmd_stream_write_fn(void* user_data,
+                                     const unsigned char* buf, size_t len);
+
+#define WINUXCMD_IO_STDOUT_LINE_BUFFERED 0x1u
+
+struct winuxcmd_io_v3 {
+  winuxcmd_stream_read_fn* stdin_read;   void* stdin_user_data;
+  winuxcmd_stream_write_fn* stdout_write; void* stdout_user_data;
+  winuxcmd_stream_write_fn* stderr_write; void* stderr_user_data;
+  unsigned flags;
+};
+
+int winuxcmd_run_io(const char* name, int argc, const char* const* argv,
+                    const char* const* envp, const char* cwd,
+                    const struct winuxcmd_io_v3* io);
+```
+
+NULL `stdin_read` = empty stdin (the v2 contract, unchanged); NULL
+`stdout_write`/`stderr_write` = discard; a NULL `io` is an all-NULL table.
+Rust mirror: `winux_core::stream::{StreamWriteFn, HostWriter, LineSplit,
+StdoutWriter, stdout_writer, IO_STDOUT_LINE_BUFFERED,
+STDOUT_BUFFER_CAPACITY}` and `winuxcmd_ffi::{WinuxcmdIoV3,
+winuxcmd_run_io}`. `winuxcmd_abi_version()` and
+`WINUXCMD_RUST2_ABI_VERSION` are 3 (bumped together); v1 `winuxcmd_run`
+and v2 `winuxcmd_run_stream` stay exported with unchanged semantics.
+
+### Contract
+
+| callback return | meaning | the command sees |
+|---|---|---|
+| `0` | all `len` bytes written | `Ok(len)` |
+| `-1` | broken pipe: the reader is gone | `io::ErrorKind::BrokenPipe` |
+| `-2` (and any other non-zero) | other write failure | `io::Error::other` |
+
+* **Sticky failure.** `HostWriter` remembers the first failure; every
+  later write on that stream fails at once with the same kind and **never
+  calls the host again** — an unbounded producer (`seq inf`, a `shuf -r`
+  loop) stops at its next write, whatever it does with the error.
+* **Ownership.** The bytes handed to a write callback are Rust-owned and
+  borrowed for that one call; the host writes or copies them before
+  returning and never stores the pointer. `user_data` is never
+  dereferenced by Rust.
+* **Threading.** Every callback (stdin, stdout, stderr) is invoked
+  synchronously on the caller's thread, in program order; the writers hold
+  raw pointers, so they are `!Send + !Sync` by construction (v2 model).
+* **Windows red line.** Unchanged: Rust never touches a CRT fd, process
+  stdio or a console/pipe HANDLE; the host writes its own handles.
+
+### Buffering policy
+
+* **stdout, `flags & WINUXCMD_IO_STDOUT_LINE_BUFFERED`** (the bridge sets
+  it iff stdout is an interactive console): `std::io::LineWriter`
+  (64 KiB) over `LineSplit`, which hands **each complete line to its own
+  callback** — a multi-line write (seq's chunked output) becomes one
+  callback per line, so a console sees every line the moment it is
+  complete (C stdio `_IOLBF`). A partial line waits for its newline, a
+  full buffer, or the final flush.
+* **stdout otherwise** (pipe, file, NUL, daemon capture): `BufWriter`
+  with 64 KiB capacity; a write larger than the buffer goes straight to
+  the host (no extra copy for seq's 1 MiB chunks).
+* **stderr: unbuffered** — every command write is one callback (GNU
+  stderr), so a diagnostic reaches the host before stdout bytes the block
+  buffer still holds.
+* **Flush.** The boundary flushes stdout after the command returns
+  (inside `catch_unwind`) and, best-effort, after a contained panic.
+
+### Status
+
+`winuxcmd_run_io` returns exactly what v2 returns: the command's own
+status, 124 when the stdin callback reported `-1`, 125 on panic /
+unknown command / `CmdError::Io`. Write failures do **not** change it at
+the ABI — the host saw every callback result and applies its own mapping.
+The C++ bridge (`rust2_bridge.cppm` `run_io`) maps:
+
+* **any stdout `-1` -> 141**, silently, overriding the command's status:
+  GNU dies of SIGPIPE at that write and the shell reports 128 + 13; the
+  product's emulation of that death is 141 (#1142, `yes.cpp`
+  `kSigpipeDeathStatus`). Known consequence: a command that *ignores*
+  SIGPIPE under GNU (`tee -p`, `tee --output-error=warn`) still ends 141
+  here (GNU: 0 / 1) — the boundary has no per-command opt-out.
+* **any stdout `-2` -> the #1368 close_stdout contract**: the command
+  produced stdout bytes against a closed (`>&-`, a closed CRT fd 1 —
+  reported without a write attempt, exactly the old drain's trigger) or
+  failing stdout, so the bridge prints `<name>: write error: <reason>`
+  once and returns 1 (`Bad file descriptor` for the closed fd, else the
+  console layer's `stdout_write_error_text()`). A command that wrote
+  nothing never reaches a callback and keeps its status (`true >&-` rc 0).
+  When the command already reported the failure itself on stderr after
+  the `-2` (tac's and tee's write-error paths), the bridge adds no second
+  diagnostic and keeps the command's failing status (1 if it returned 0).
+* stderr `-1` (stderr pipe gone) never changes the status.
+
+The console face carries a chunk's trailing incomplete UTF-8 sequence into
+the next chunk, so `WriteConsoleW` never converts half a character (pipes
+and files get the bytes unchanged).
+
+### Measured (2026-11-14, old = origin/main 68d2917c exe, new = this branch)
+
+PROBE_TABLE_PLACEHOLDER
+
 ## Out of scope for this pilot
 
 * No `chmod`/`chown`/`df` full POSIX semantics. (Wiring into the dispatcher
@@ -446,6 +564,10 @@ green — the 16 `stream_tests` included):**
 * Symlink-creating setups need Developer Mode; without it the gate runs
   link-sensitive cases in `win`/`exit` classification only.
 * The digest family (`b2sum`, `sha224sum`, `sha384sum`) and `tac` ARE
-  wired through the streaming ABI since the #1488 digest-family adoption;
-  the remaining v1 stdin consumers (`base64`, `base32`, `fmt`, `fold`,
-  `paste`, ...) stay on `run_command_with_stdin` until their wave.
+  wired through streaming stdin since the #1488 digest-family adoption,
+  and `expand`, `join`, `numfmt`, `tsort`, `unexpand` since the v3 bridge
+  switch retired the `kRust2StdinCommands` slurp; the remaining
+  whole-buffer stdin consumers (`base64`, `base32`, `fmt`, `fold`,
+  `paste`, ...) stay on `run_command_with_stdin` (slurp, then served from
+  host memory through the v3 stdin callback) until their wave. Output is
+  streamed for every wired command.
