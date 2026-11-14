@@ -49,3 +49,18 @@ cm42-ref-mode-is-file-operand	strict	touch f; touch rf			644	--reference=rf	f
 cm43-dash-operand	strict	touch f			644	-
 cm44-o-equals	strict	touch f			o=	f
 cm45-g-copy-o	strict	touch f			g=o	f
+cm46-dash-R755-invalid	strict	touch f			-R755	f
+cm47-dash-invalid-short	strict	touch f			-Q	f
+cm48-dash-mode-demotes-operand	strict	touch f			644	-w	f
+cm49-preserve-last-wins	strict	mkdir d			-R	--preserve-root	--no-preserve-root	755	d
+cm50-preserve-reverse-last	strict	mkdir d			-R	--no-preserve-root	--preserve-root	755	d
+cm51-preserve-nonrecursive	strict	mkdir d			--preserve-root	755	d
+cm52-empty-long-ambiguous	strict	touch f			--=v	f
+cm53-f-invalid-mode	strict	touch f			-f	999	f
+cm54-dash-X-noop	strict	touch f			-X	f
+cm55-recursive-symlink-entry	exit	mkdir d; touch d/x; ln -s x d/s			-Rv	600	d
+cm58-recursive-zero	exit	mkdir -p d/s			-R	000	d
+cm59-mode-triple-clause	strict	touch f			u=r,g=w,o=x	f
+cm60-dash-X-dir	strict	mkdir d			-X	d
+cm61-recursive-multi-clause	exit	mkdir -p d/s			-R	u=rwx,go=rx	d
+cm62-symbolic-restrictive	exit	touch f			a-rwx	f
