@@ -1,0 +1,499 @@
+//! Win32 surface for `tail` follow mode (#1488): handle/path identity,
+//! the stdin kind probe, the `--pid` liveness handle, and the directory
+//! change notifications that wake the follow loop.
+//!
+//! Zero crates — raw kernel32 declarations in the fs_win.rs/winsys.rs
+//! style. Non-Windows builds get std-only fallbacks so the workspace still
+//! compiles (pure polling, no pid tracking).
+
+use std::fs::File;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+/// What `fstat` would say about an open file (or a path), reduced to the
+/// fields the follow loop compares.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Stat {
+    pub size: u64,
+    pub mtime: u64,
+    /// (volume serial, file index): GNU's (st_dev, st_ino)
+    pub id: (u32, u64),
+    pub links: u32,
+    pub is_dir: bool,
+    /// a regular disk file (S_ISREG); false for char devices like NUL
+    pub regular: bool,
+}
+
+/// GNU's fstat(STDIN_FILENO) classes, as far as Windows can tell them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StdinKind {
+    /// redirected regular file (S_ISREG): followed by descriptor
+    Disk,
+    /// pipe / FIFO: `-f` is ignored for it (POSIX, tail.c
+    /// ignore_fifo_and_pipe)
+    Pipe,
+    /// an interactive console (isatty)
+    Console,
+    /// other character device (NUL): tailable, never yields data
+    CharDev,
+    /// no usable handle (unit tests inject this): treated like a pipe
+    Unknown,
+}
+
+#[cfg(windows)]
+mod imp {
+    use super::{Stat, StdinKind};
+    use std::ffi::c_void;
+    use std::fs::File;
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::AsRawHandle;
+    use std::path::{Path, PathBuf};
+
+    type Handle = *mut c_void;
+    const INVALID_HANDLE_VALUE: Handle = -1isize as Handle;
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct ByHandleInfo {
+        attributes: u32,
+        // FILETIMEs are two DWORDs (4-byte aligned): a u64 here would pad
+        creation: [u32; 2],
+        access: [u32; 2],
+        write: [u32; 2],
+        volume_serial: u32,
+        size_high: u32,
+        size_low: u32,
+        links: u32,
+        index_high: u32,
+        index_low: u32,
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetFileInformationByHandle(h: Handle, info: *mut c_void) -> i32;
+        fn GetFileType(h: Handle) -> u32;
+        fn GetStdHandle(which: u32) -> Handle;
+        fn GetConsoleMode(h: Handle, mode: *mut u32) -> i32;
+        fn SetFilePointerEx(h: Handle, distance: i64, new_pos: *mut i64, method: u32) -> i32;
+        fn CreateFileW(
+            name: *const u16,
+            access: u32,
+            share: u32,
+            security: *mut c_void,
+            disposition: u32,
+            flags: u32,
+            template: Handle,
+        ) -> Handle;
+        fn CloseHandle(h: Handle) -> i32;
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> Handle;
+        fn WaitForSingleObject(h: Handle, ms: u32) -> u32;
+        fn WaitForMultipleObjects(n: u32, hs: *const Handle, all: i32, ms: u32) -> u32;
+        fn FindFirstChangeNotificationW(dir: *const u16, subtree: i32, filter: u32) -> Handle;
+        fn FindNextChangeNotification(h: Handle) -> i32;
+        fn FindCloseChangeNotification(h: Handle) -> i32;
+        fn GetFinalPathNameByHandleW(h: Handle, buf: *mut u16, cap: u32, flags: u32) -> u32;
+        fn GetLastError() -> u32;
+        fn OpenFileById(
+            hint: Handle,
+            id: *const FileIdDescriptor,
+            access: u32,
+            share: u32,
+            security: *mut c_void,
+            flags: u32,
+        ) -> Handle;
+        fn Sleep(ms: u32);
+    }
+
+    const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
+    const FILE_TYPE_DISK: u32 = 1;
+    const FILE_TYPE_CHAR: u32 = 2;
+    const FILE_TYPE_PIPE: u32 = 3;
+    const STD_INPUT_HANDLE: u32 = -10i32 as u32;
+    const FILE_CURRENT: u32 = 1;
+    const FILE_READ_ATTRIBUTES: u32 = 0x80;
+    const SHARE_ALL: u32 = 0x1 | 0x2 | 0x4;
+    const OPEN_EXISTING: u32 = 3;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    const SYNCHRONIZE: u32 = 0x0010_0000;
+    const WAIT_OBJECT_0: u32 = 0;
+    const WAIT_TIMEOUT: u32 = 0x102;
+    const ERROR_ACCESS_DENIED: u32 = 5;
+    const INFINITE: u32 = 0xFFFF_FFFF;
+    /// FILE_NAME | DIR_NAME | ATTRIBUTES | SIZE | LAST_WRITE
+    const NOTIFY_FILTER: u32 = 0x1 | 0x2 | 0x4 | 0x8 | 0x10;
+    const MAX_WAIT: usize = 64;
+
+    fn wide(p: &Path) -> Vec<u16> {
+        p.as_os_str().encode_wide().chain(Some(0)).collect()
+    }
+
+    fn info_of(h: Handle) -> std::io::Result<Stat> {
+        let mut i = ByHandleInfo::default();
+        if unsafe { GetFileInformationByHandle(h, &mut i as *mut ByHandleInfo as *mut c_void) } == 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        let regular = unsafe { GetFileType(h) } == FILE_TYPE_DISK;
+        let is_dir = i.attributes & FILE_ATTRIBUTE_DIRECTORY != 0;
+        Ok(Stat {
+            size: ((i.size_high as u64) << 32) | i.size_low as u64,
+            mtime: ((i.write[1] as u64) << 32) | i.write[0] as u64,
+            id: (
+                i.volume_serial,
+                ((i.index_high as u64) << 32) | i.index_low as u64,
+            ),
+            links: i.links,
+            is_dir,
+            regular: regular && !is_dir,
+        })
+    }
+
+    pub fn handle_stat(f: &File) -> std::io::Result<Stat> {
+        match info_of(f.as_raw_handle() as Handle) {
+            Ok(s) => Ok(s),
+            // char devices (NUL) have no by-handle information
+            Err(_) if unsafe { GetFileType(f.as_raw_handle() as Handle) } == FILE_TYPE_CHAR => {
+                Ok(Stat::default())
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    pub fn path_stat(p: &Path) -> std::io::Result<Stat> {
+        let w = wide(p);
+        let h = unsafe {
+            CreateFileW(
+                w.as_ptr(),
+                FILE_READ_ATTRIBUTES,
+                SHARE_ALL,
+                std::ptr::null_mut(),
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS,
+                std::ptr::null_mut(),
+            )
+        };
+        if h == INVALID_HANDLE_VALUE {
+            return Err(std::io::Error::last_os_error());
+        }
+        let r = info_of(h);
+        unsafe { CloseHandle(h) };
+        r
+    }
+
+    #[repr(C)]
+    struct FileIdDescriptor {
+        size: u32,
+        kind: u32, // FileIdType
+        // the FILE_ID_128-sized union; FileId (LARGE_INTEGER) is the low half
+        id: [u64; 2],
+    }
+
+    /// Whether the file with this (volume, index) identity still exists
+    /// on the volume holding `dir` (GNU's "the inode is still alive":
+    /// renamed away, or deleted but still held open by a writer).
+    pub fn exists_by_id(dir: &Path, id: (u32, u64)) -> bool {
+        let w = wide(dir);
+        let hint = unsafe {
+            CreateFileW(
+                w.as_ptr(),
+                FILE_READ_ATTRIBUTES,
+                SHARE_ALL,
+                std::ptr::null_mut(),
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS,
+                std::ptr::null_mut(),
+            )
+        };
+        if hint == INVALID_HANDLE_VALUE {
+            return false;
+        }
+        let same_volume = info_of(hint).is_ok_and(|st| st.id.0 == id.0);
+        let desc = FileIdDescriptor {
+            size: std::mem::size_of::<FileIdDescriptor>() as u32,
+            kind: 0,
+            id: [id.1, 0],
+        };
+        let h = if same_volume {
+            unsafe {
+                OpenFileById(
+                    hint,
+                    &desc,
+                    FILE_READ_ATTRIBUTES,
+                    SHARE_ALL,
+                    std::ptr::null_mut(),
+                    FILE_FLAG_BACKUP_SEMANTICS,
+                )
+            }
+        } else {
+            INVALID_HANDLE_VALUE
+        };
+        unsafe { CloseHandle(hint) };
+        if h == INVALID_HANDLE_VALUE {
+            return false;
+        }
+        unsafe { CloseHandle(h) };
+        true
+    }
+
+    fn std_input() -> Option<Handle> {
+        let h = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+        if h.is_null() || h == INVALID_HANDLE_VALUE {
+            None
+        } else {
+            Some(h)
+        }
+    }
+
+    pub fn stdin_kind() -> StdinKind {
+        let Some(h) = std_input() else {
+            return StdinKind::Unknown;
+        };
+        match unsafe { GetFileType(h) } {
+            FILE_TYPE_DISK => StdinKind::Disk,
+            FILE_TYPE_PIPE => StdinKind::Pipe,
+            FILE_TYPE_CHAR => {
+                let mut mode = 0u32;
+                if unsafe { GetConsoleMode(h, &mut mode) } != 0 {
+                    StdinKind::Console
+                } else {
+                    StdinKind::CharDev
+                }
+            }
+            _ => StdinKind::Unknown,
+        }
+    }
+
+    /// Follow target for a regular-file stdin (tail.c follows fd 0 when
+    /// fstat says S_ISREG). The process stdin handle is only QUERIED —
+    /// its final path and current position, the tty.rs query tier — and
+    /// never read, duplicated or moved: the follower opens the file by
+    /// that path with its own handle and resumes at the queried position
+    /// (where the host's reads of the injected stdin stopped). Returns
+    /// the file, the position and the containing directory.
+    pub fn stdin_follow_target() -> Option<(File, u64, PathBuf)> {
+        let h = std_input()?;
+        if unsafe { GetFileType(h) } != FILE_TYPE_DISK {
+            return None;
+        }
+        let mut buf = vec![0u16; 32768];
+        let n = unsafe { GetFinalPathNameByHandleW(h, buf.as_mut_ptr(), 32768, 0) };
+        if n == 0 || n as usize >= buf.len() {
+            return None;
+        }
+        let path = PathBuf::from(String::from_utf16_lossy(&buf[..n as usize]));
+        let mut pos: i64 = 0;
+        if unsafe { SetFilePointerEx(h, 0, &mut pos, FILE_CURRENT) } == 0 {
+            return None;
+        }
+        let f = File::open(&path).ok()?;
+        let dir = path.parent()?.to_path_buf();
+        Some((f, pos.max(0) as u64, dir))
+    }
+
+    /// `--pid` liveness: a SYNCHRONIZE handle when the process can be
+    /// opened (signaled == dead). GNU's kill(pid, 0) treats EPERM as
+    /// alive; ERROR_ACCESS_DENIED is that case here and is re-probed
+    /// every interval.
+    pub struct Pid {
+        pid: u32,
+        handle: Handle,
+    }
+
+    impl Pid {
+        pub fn new(pid: u32) -> Pid {
+            let handle = unsafe { OpenProcess(SYNCHRONIZE, 0, pid) };
+            Pid { pid, handle }
+        }
+
+        pub fn dead(&mut self) -> bool {
+            if !self.handle.is_null() {
+                return unsafe { WaitForSingleObject(self.handle, 0) } == WAIT_OBJECT_0;
+            }
+            let h = unsafe { OpenProcess(SYNCHRONIZE, 0, self.pid) };
+            if !h.is_null() {
+                self.handle = h;
+                return unsafe { WaitForSingleObject(h, 0) } == WAIT_OBJECT_0;
+            }
+            (unsafe { GetLastError() }) != ERROR_ACCESS_DENIED
+        }
+    }
+
+    impl Drop for Pid {
+        fn drop(&mut self) {
+            if !self.handle.is_null() {
+                unsafe { CloseHandle(self.handle) };
+            }
+        }
+    }
+
+    /// Change notifications on the followed files' parent directories plus
+    /// the --pid process handle: one WaitForMultipleObjects with the sleep
+    /// interval as the timeout. A notification only shortens the wait —
+    /// every wake re-stats every file, so missed or coalesced events (and
+    /// network shares that never signal) degrade to interval polling.
+    pub struct Waker {
+        dirs: Vec<Handle>,
+    }
+
+    impl Waker {
+        pub fn new(dirs: &[PathBuf]) -> Waker {
+            let mut hs = Vec::new();
+            for d in dirs.iter().take(MAX_WAIT - 1) {
+                let w = wide(d);
+                let h = unsafe { FindFirstChangeNotificationW(w.as_ptr(), 0, NOTIFY_FILTER) };
+                if h != INVALID_HANDLE_VALUE && !h.is_null() {
+                    hs.push(h);
+                }
+            }
+            Waker { dirs: hs }
+        }
+
+        /// Block until a watched directory changes, the pid exits, or
+        /// `timeout` elapses (`None` = no timeout).
+        pub fn wait(&mut self, timeout: Option<std::time::Duration>, pid: Option<&Pid>) {
+            let ms = match timeout {
+                None => INFINITE,
+                Some(d) => {
+                    let ms = d.as_secs_f64() * 1000.0;
+                    if !ms.is_finite() || ms >= (INFINITE - 1) as f64 {
+                        INFINITE
+                    } else {
+                        // ceil, and never 0: a zero timeout would spin
+                        (ms.ceil() as u32).max(1)
+                    }
+                }
+            };
+            let mut set: Vec<Handle> = self.dirs.clone();
+            if let Some(p) = pid {
+                if !p.handle.is_null() {
+                    set.push(p.handle);
+                }
+            }
+            if set.is_empty() {
+                if ms == INFINITE {
+                    // nothing can wake us and no timeout: GNU sleeps
+                    // forever here too (-s inf); sleep in long slices
+                    unsafe { Sleep(INFINITE - 1) };
+                } else {
+                    unsafe { Sleep(ms) };
+                }
+                return;
+            }
+            let r = unsafe { WaitForMultipleObjects(set.len() as u32, set.as_ptr(), 0, ms) };
+            if r == WAIT_TIMEOUT {
+                return;
+            }
+            // re-arm every signaled directory handle
+            for &h in &self.dirs {
+                if unsafe { WaitForSingleObject(h, 0) } == WAIT_OBJECT_0 {
+                    unsafe { FindNextChangeNotification(h) };
+                }
+            }
+        }
+    }
+
+    impl Drop for Waker {
+        fn drop(&mut self) {
+            for &h in &self.dirs {
+                unsafe { FindCloseChangeNotification(h) };
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+mod imp {
+    use super::{Stat, StdinKind};
+    use std::fs::File;
+    use std::path::{Path, PathBuf};
+
+    fn from_meta(m: std::fs::Metadata) -> Stat {
+        use std::time::UNIX_EPOCH;
+        Stat {
+            size: m.len(),
+            mtime: m
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0),
+            id: (0, 0),
+            links: 1,
+            is_dir: m.is_dir(),
+            regular: m.is_file(),
+        }
+    }
+
+    pub fn handle_stat(f: &File) -> std::io::Result<Stat> {
+        f.metadata().map(from_meta)
+    }
+
+    pub fn path_stat(p: &Path) -> std::io::Result<Stat> {
+        std::fs::metadata(p).map(from_meta)
+    }
+
+    pub fn stdin_kind() -> StdinKind {
+        StdinKind::Unknown
+    }
+
+    pub fn stdin_follow_target() -> Option<(File, u64, PathBuf)> {
+        None
+    }
+
+    pub fn exists_by_id(_dir: &Path, _id: (u32, u64)) -> bool {
+        false
+    }
+
+    pub struct Pid;
+
+    impl Pid {
+        pub fn new(_pid: u32) -> Pid {
+            Pid
+        }
+        pub fn dead(&mut self) -> bool {
+            false
+        }
+    }
+
+    pub struct Waker;
+
+    impl Waker {
+        pub fn new(_dirs: &[PathBuf]) -> Waker {
+            Waker
+        }
+        pub fn wait(&mut self, timeout: Option<std::time::Duration>, _pid: Option<&Pid>) {
+            std::thread::sleep(timeout.unwrap_or(std::time::Duration::from_secs(3600)));
+        }
+    }
+}
+
+pub use imp::{Pid, Waker};
+
+pub fn handle_stat(f: &File) -> std::io::Result<Stat> {
+    imp::handle_stat(f)
+}
+
+pub fn path_stat(p: &Path) -> std::io::Result<Stat> {
+    imp::path_stat(p)
+}
+
+pub fn stdin_kind() -> StdinKind {
+    imp::stdin_kind()
+}
+
+pub fn stdin_follow_target() -> Option<(File, u64, PathBuf)> {
+    imp::stdin_follow_target()
+}
+
+pub fn exists_by_id(dir: &Path, id: (u32, u64)) -> bool {
+    imp::exists_by_id(dir, id)
+}
+
+/// Sleep-interval → wait timeout (`None` for an infinite interval).
+pub fn interval(secs: f64) -> Option<Duration> {
+    if secs.is_finite() && secs < 1e9 {
+        Some(Duration::from_secs_f64(secs))
+    } else {
+        None
+    }
+}
