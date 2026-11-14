@@ -2296,8 +2296,8 @@ mktemp_rows = [
     ("mk23-dir-quiet", "exit", "", "", "", ["-d", "-q", "d.XXXXXX"]),
     ("mk24-tmpdir-env", "exit", "TMPDIR=/tmp", "", "", ["--tmpdir", "mte.XXXXXX"]),
     ("mk25-bogus-long", "strict", "", "", "", ["--bogus"]),
-    ("mk26-help", "strict", "", "", "", ["--help"]),
-    ("mk27-version", "strict", "", "", "", ["--version"]),
+    ("mk26-help", "win", "", "", "", ["--help"]),
+    ("mk27-version", "win", "", "", "", ["--version"]),
 ]
 
 NICE_CHILD_SETUP = (
@@ -2955,8 +2955,8 @@ nice_rows = [
     ("nc16-n-50", "strict", "", "", "", ["-n", "50"]),
     ("nc17-n-minus-50", "strict", "", "", "", ["-n", "-50"]),
     ("nc18-n-plus", "strict", "", "", "", ["-n", "+3"]),
-    ("nc19-help", "strict", "", "", "", ["--help"]),
-    ("nc20-version", "strict", "", "", "", ["--version"]),
+    ("nc19-help", "win", "", "", "", ["--help"]),
+    ("nc20-version", "win", "", "", "", ["--version"]),
     ("nc21-child-eq1", "exit", "printf '#!/bin/sh\\nexit 1\\n' > cmd; chmod +x cmd; export PATH=\"$PWD:$PATH\"",
      "", "", ["cmd", "/c", "exit", "1"]),
 ]
@@ -3945,12 +3945,50 @@ du_rows = [
     ("du39-nested-operand", "strict", "mkdir -p d1/d2; echo x > d1/f", "", "",
      ["-b", "d1", "d1/d2"]),
     ("du40-repeated-zero-size", "strict", ": > f0", "", "", ["-b", "f0", "f0"]),
-    ("du28-help", "strict", "", "", "", ["--help"]),
-    ("du29-version", "strict", "", "", "", ["--version"]),
+    ("du28-help", "win", "", "", "", ["--help"]),
+    ("du29-version", "win", "", "", "", ["--version"]),
     ("du30-noargs", "win", "mkdir -p d; printf a > d/x", "", "", ["-b"]),
     ("du31-block-size-bogus", "strict", "printf a > a", "", "",
      ["--block-size=bogus", "a"]),
     ("du32-d0-file", "strict", "printf a > a", "", "", ["-b", "-d", "0", "a"]),
+    # -L/-H operand liveness (#1656, old-exe parity rows for the 1.x fix
+    # landed in d6614d2f): a LIVE directory link is walked under the OPERAND
+    # spelling; a DANGLING link reports "cannot access" with no errno text
+    # and rc 1. `-b` keeps the value platform-free (apparent bytes: dir 0,
+    # file content only). Symlink fixtures need SeCreateSymbolicLinkPrivilege
+    # on the Windows sides, so a host without it reports these SKIPped.
+    ("du41-deref-all-link-bytes", "strict",
+     "mkdir -p d1; printf ab > d1/f; ln -s d1 dlink", "", "",
+     ["-L", "-b", "dlink"]),
+    ("du42-deref-args-link-bytes", "strict",
+     "mkdir -p d1; printf ab > d1/f; ln -s d1 dlink", "", "",
+     ["-H", "-b", "dlink"]),
+    ("du43-deref-long-form-link-bytes", "strict",
+     "mkdir -p d1; printf ab > d1/f; ln -s d1 dlink", "", "",
+     ["--dereference", "-b", "--summarize", "dlink"]),
+    ("du44-deref-dangling-link", "exit",
+     "printf x > gone; ln -s gone dangle; rm gone", "", "", ["-L", "dangle"]),
+    ("du45-deref-args-dangling-link", "exit",
+     "printf x > gone; ln -s gone dangle; rm gone", "", "", ["-H", "dangle"]),
+    # Without -L/-H du lstats the link; the VALUE is platform-bound (ext4
+    # stores short link targets inline at 0 blocks, NTFS/junction records
+    # differ), so the row is win-mode: Rust vs C++ status only.
+    ("du46-noderef-link-value", "win",
+     "mkdir -p d1; printf ab > d1/f; ln -s d1 dlink", "", "",
+     ["-b", "dlink"]),
+    # #1670 (PR #1730) followed-operand identity: GNU hashes `-L` entries by
+    # (st_dev, st_ino), so the same file reached through a link spelling and
+    # its real name counts once, under the spelling that arrived first; -l
+    # disables the dedup. File links keep the row strict-comparable (dir
+    # totals carry the platform's own directory allocation). Symlink
+    # fixtures need SeCreateSymbolicLinkPrivilege on the Windows sides ->
+    # SKIPped on hosts without it, exercised on CI.
+    ("du47-deref-file-operand-dedup", "strict",
+     "printf ab > f; ln -s f flink", "", "", ["-L", "-s", "flink", "f"]),
+    ("du48-deref-file-operand-dedup-reversed", "strict",
+     "printf ab > f; ln -s f flink", "", "", ["-L", "-s", "f", "flink"]),
+    ("du49-deref-args-count-links-keeps-both", "strict",
+     "printf ab > f; ln -s f flink", "", "", ["-L", "-l", "-s", "flink", "f"]),
 ]
 
 date_rows = [

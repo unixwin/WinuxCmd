@@ -1,0 +1,26 @@
+command.du.error.cannot_access_dangling	"cannot access '{operand}'"
+command.du.error.cannot_access_missing	"cannot access '{operand}': No such file or directory"
+command.du.error.cannot_open	"cannot open '{file}' for reading: {reason}"
+command.du.error.exclude_from_open	'{file}: {reason}'
+command.du.error.files0_with_operands	'file operands cannot be combined with --files0-from'
+command.du.error.invalid_block_size	"invalid --block-size argument '{size}'"
+command.du.error.invalid_max_depth	"invalid maximum depth '{depth}' (expected an integer 0 or larger)"
+command.du.error.invalid_threshold	"invalid --threshold argument '{size}'"
+command.du.error.stdin_read	'-: read error'
+command.du.error.zero_length_name	'{file}:{line}: invalid zero-length file name'
+command.mktemp.error.create_failed_directory	"failed to create directory via template '{template}': {reason}"
+command.mktemp.error.create_failed_file	"failed to create file via template '{template}': {reason}"
+command.mktemp.error.suffix_has_separator	"invalid suffix '{suffix}', contains directory separator"
+command.mktemp.error.tail_has_separator	"invalid suffix '{suffix}', contains directory separator"
+command.mktemp.error.template_absolute_with_tmpdir	"invalid template, '{template}'; with --tmpdir, it may not be absolute"
+command.mktemp.error.template_has_separator	"invalid template, '{template}', contains directory separator"
+command.mktemp.error.template_must_end_in_x	"with --suffix, template '{template}' must end in X"
+command.mktemp.error.too_few_xs	"too few X's in template '{template}'"
+command.mktemp.error.too_few_xs_with_suffix	"too few X's in template '{template}{suffix}'"
+command.mktemp.error.too_many_templates	'too many templates'
+command.nice.error.cannot_set_niceness	'cannot set niceness: Permission denied'
+command.nice.error.command_required	'a command must be given with an adjustment'
+command.nice.error.exec_format	"'{command}': Exec format error"
+command.nice.error.invalid_adjustment	"invalid adjustment '{adjustment}'"
+command.nice.error.no_such_file	"'{command}': No such file or directory"
+command.nice.error.permission_denied	"'{command}': Permission denied"
