@@ -8,7 +8,13 @@ export auto option_policy_for_command(std::string_view command)
   OptionParsePolicy policy;
   policy.allow_unknown_short_options_as_positionals =
       command == "printf" || command == "expr" || command == "test" ||
-      command == "[" || command == "stty" || command == "kill";
+      command == "[" || command == "stty" || command == "kill" ||
+      // #1488 rust2 wiring: util-linux rev owns -h/--help and -V/--version
+      // that the registration metadata does not spell (`rev -h` prints the
+      // util-linux help, rc 0 — rv14 gate row), so unknown short tokens
+      // must reach the wired Rust body for its own getopt-shaped
+      // diagnostics instead of aborting at the generic parser.
+      command == "rev";
   if (command == "kill") {
     // [GNU] procps-ng kill (the differential oracle at /usr/bin/kill) parses
     // argv itself and answers an unknown option with its own
