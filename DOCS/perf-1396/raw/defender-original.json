@@ -1,0 +1,31 @@
+﻿{
+    "capturedUtc":  "2026-11-14T07:29:04.7335784Z",
+    "realTimeProtectionEnabled":  false,
+    "behaviorMonitorEnabled":  false,
+    "ioavProtectionEnabled":  false,
+    "onAccessProtectionEnabled":  false,
+    "disableRealtimeMonitoring":  true,
+    "exclusionPath":  [
+                          "C:\\Users\\cmx\\AppData\\Local\\Programs\\Niubash",
+                          "D:\\repo\\niubash\\target",
+                          "D:\\repo\\rubash\\target",
+                          "D:\\repo\\WinuxCmd",
+                          "D:\\tmp\\devin-fleet",
+                          "D:\\tmp\\msix-payload"
+                      ],
+    "exclusionProcess":  [
+                             "bash.exe",
+                             "devin.exe",
+                             "niu.exe",
+                             "rubash.exe",
+                             "winuxcmd.exe"
+                         ],
+    "mapsReporting":  0,
+    "submitSamplesConsent":  0,
+    "cloudBlockLevel":  0,
+    "signatureVersion":  "1.463.290.0",
+    "engineVersion":  "1.1.26100.4",
+    "registryDisableRtp":  1,
+    "policyDisableRtp":  1,
+    "policyDisableAntiSpyware":  null
+}

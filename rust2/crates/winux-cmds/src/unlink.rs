@@ -136,12 +136,17 @@ pub fn unlink_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         return Ok(0);
     }
     if p.positionals.is_empty() {
-        let _ = usage_error(io, "unlink", "missing operand");
+        let _ = usage_error(ctx, io, "unlink", &crate::messages::missing_operand(ctx));
         return Ok(1);
     }
     if p.positionals.len() > 1 {
         let shown = p.positionals[1].to_string_lossy().into_owned();
-        let _ = usage_error(io, "unlink", &format!("extra operand '{shown}'"));
+        let _ = usage_error(
+            ctx,
+            io,
+            "unlink",
+            &crate::messages::extra_operand(ctx, &shown),
+        );
         return Ok(1);
     }
     let name = p.positionals[0].to_string_lossy().into_owned();

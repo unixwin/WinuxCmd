@@ -623,7 +623,7 @@ pub fn csplit_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         Ok(p) => p,
         Err(s) => return Ok(s),
     };
-    if let Some(status) = argopt::rejected_short_h(io, "csplit", &p, 1) {
+    if let Some(status) = argopt::rejected_short_h(ctx, io, "csplit", &p, 1) {
         return Ok(status);
     }
     if let Some(which) = p
@@ -673,7 +673,7 @@ pub fn csplit_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             Ok(v) if text.trim_end() == text || !text.ends_with(['+', '-']) => v,
             _ => {
                 let _ = writeln!(io.stderr, "csplit: invalid number: '{text}'");
-                let _ = writeln!(io.stderr, "Try 'csplit --help' for more information.");
+                let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "csplit"));
                 return Ok(1);
             }
         },
@@ -681,13 +681,13 @@ pub fn csplit_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
 
     if p.positionals.is_empty() {
         let _ = writeln!(io.stderr, "csplit: missing operand");
-        let _ = writeln!(io.stderr, "Try 'csplit --help' for more information.");
+        let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "csplit"));
         return Ok(1);
     }
     let input_file = p.positionals[0].to_string_lossy().into_owned();
     if input_file.is_empty() {
         let _ = writeln!(io.stderr, "csplit: missing operand");
-        let _ = writeln!(io.stderr, "Try 'csplit --help' for more information.");
+        let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "csplit"));
         return Ok(1);
     }
     let patterns: Vec<String> = p.positionals[1..]
@@ -695,8 +695,12 @@ pub fn csplit_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
     if patterns.is_empty() {
-        let _ = writeln!(io.stderr, "csplit: missing operand after '{input_file}'");
-        let _ = writeln!(io.stderr, "Try 'csplit --help' for more information.");
+        let _ = writeln!(
+            io.stderr,
+            "csplit: {}",
+            crate::messages::missing_after(ctx, &input_file)
+        );
+        let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "csplit"));
         return Ok(1);
     }
 

@@ -25,7 +25,7 @@ use std::ffi::OsString;
 use crate::argopt::{self, OptSpec};
 use crate::gnuhelp;
 use crate::winsys;
-use winux_core::{CmdResult, Ctx, Io};
+use winux_core::{tr, CmdResult, Ctx, Io};
 
 const OPTS: &[OptSpec] = &[
     // -a is a compatibility no-op (GNU id.c); the long names of the short
@@ -168,34 +168,62 @@ pub fn id_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         // GNU id.c: cannot print "only" of more than one choice.
         let _ = writeln!(
             io.stderr,
-            "id: cannot print \"only\" of more than one choice"
+            "id: {}",
+            tr!(
+                ctx,
+                "command.id.error.print_only_conflict",
+                "cannot print \"only\" of more than one choice"
+            )
         );
         return Ok(1);
     }
     if default_format && (print_real(&p) || print_name) {
         let _ = writeln!(
             io.stderr,
-            "id: cannot print only names or real IDs in default format"
+            "id: {}",
+            tr!(
+                ctx,
+                "command.id.error.default_format_conflict",
+                "cannot print only names or real IDs in default format"
+            )
         );
         return Ok(1);
     }
     if default_format && zero {
         let _ = writeln!(
             io.stderr,
-            "id: option --zero not permitted in default format"
+            "id: {}",
+            tr!(
+                ctx,
+                "command.id.error.zero_default_format",
+                "option --zero not permitted in default format"
+            )
         );
         return Ok(1);
     }
     if p.has("context") {
         let _ = writeln!(
             io.stderr,
-            "id: --context (-Z) works only on an SELinux-enabled kernel"
+            "id: {}",
+            tr!(
+                ctx,
+                "command.id.error.context_not_supported",
+                "--context (-Z) works only on an SELinux-enabled kernel"
+            )
         );
         return Ok(1);
     }
 
     let Some((user, primary, groups)) = winsys::imp::process_identity() else {
-        let _ = writeln!(io.stderr, "id: cannot get process identity");
+        let _ = writeln!(
+            io.stderr,
+            "id: {}",
+            tr!(
+                ctx,
+                "command.id.error.cannot_get_identity",
+                "cannot get process identity"
+            )
+        );
         return Ok(1);
     };
 
@@ -206,7 +234,17 @@ pub fn id_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     for operand in &p.positionals {
         let name = operand.to_string_lossy().into_owned();
         if !user.name.is_empty() && name != user.name && name != user.id {
-            let _ = writeln!(io.stderr, "id: '{name}': no such user");
+            // [GNU] id.c: 'X': no such user (operand quoting ASCII here).
+            let _ = writeln!(
+                io.stderr,
+                "id: {}",
+                tr!(
+                    ctx,
+                    "command.id.error.no_such_user",
+                    "'{name}': no such user",
+                    name = name
+                )
+            );
             failed = true;
             continue;
         }

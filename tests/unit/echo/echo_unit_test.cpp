@@ -73,6 +73,59 @@ TEST(echo, echo_repeat_extension_retired_is_data) {
   EXPECT_EQ_TEXT(r.stdout_text, "--repeat 3 test\n");
 }
 
+// #1621: the retired -r/--repeat extension was still declared INT_TYPE,
+// so the dispatcher consumed and int-validated its value ahead of the
+// handler and rejected every non-integer/missing-value spelling with
+// rc 1 while GNU prints them as data, rc 0. Unregistered, all three
+// spellings reach the handler verbatim.
+TEST(echo, echo_repeat_short_noninteger_is_data_issue1621) {
+  Pipeline p;
+  p.add(L"echo.exe", {L"-r", L"x"});
+
+  TEST_LOG_CMD_LIST("echo.exe", L"-r", L"x");
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("Output", r.stdout_text);
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.empty());
+  EXPECT_EQ_TEXT(r.stdout_text, "-r x\n");
+}
+
+TEST(echo, echo_repeat_short_bare_is_data_issue1621) {
+  Pipeline p;
+  p.add(L"echo.exe", {L"-r"});
+
+  TEST_LOG_CMD_LIST("echo.exe", L"-r");
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("Output", r.stdout_text);
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.empty());
+  EXPECT_EQ_TEXT(r.stdout_text, "-r\n");
+}
+
+TEST(echo, echo_repeat_long_noninteger_is_data_issue1621) {
+  Pipeline p;
+  p.add(L"echo.exe", {L"--repeat", L"x"});
+
+  TEST_LOG_CMD_LIST("echo.exe", L"--repeat", L"x");
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("Output", r.stdout_text);
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.empty());
+  EXPECT_EQ_TEXT(r.stdout_text, "--repeat x\n");
+}
+
 TEST(echo, echo_escapes) {
   Pipeline p;
   p.add(L"echo.exe", {L"-e", L"line1\\nline2\\t tabbed"});

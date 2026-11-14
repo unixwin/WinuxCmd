@@ -735,7 +735,7 @@ pub fn chown_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         return Ok(0);
     }
     if p.positionals.is_empty() {
-        let _ = usage_error(io, "chown", "missing operand");
+        let _ = usage_error(ctx, io, "chown", &crate::messages::missing_operand(ctx));
         return Ok(1);
     }
     let verbose = p.has("verbose");
@@ -786,14 +786,14 @@ pub fn chown_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         None => {
             let spec = p.positionals[0].to_string_lossy().into_owned();
             if p.positionals.len() == 1 {
-                let msg = format!("missing operand after {}", winux_core::q(&spec));
-                let _ = usage_error(io, "chown", &msg);
+                let msg = crate::messages::missing_after(ctx, &spec);
+                let _ = usage_error(ctx, io, "chown", &msg);
                 return Ok(1);
             }
             match parse_spec(&spec) {
                 Ok(s) => s,
                 Err(msg) => {
-                    let _ = usage_error(io, "chown", &msg);
+                    let _ = usage_error(ctx, io, "chown", &msg);
                     return Ok(1);
                 }
             }
@@ -804,7 +804,7 @@ pub fn chown_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         Some(f) => match parse_spec(f) {
             Ok(s) => Some(s),
             Err(msg) => {
-                let _ = usage_error(io, "chown", &msg);
+                let _ = usage_error(ctx, io, "chown", &msg);
                 return Ok(1);
             }
         },

@@ -862,3 +862,45 @@ TEST(rm, issue1433_rm_real_directory_still_refused_without_r) {
   EXPECT_CONTAINS(r.stderr_text, "Is a directory");
   EXPECT_EQ(tmp.read("realdir/keep.txt"), "keep");
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1650: an explicit empty operand is a path, not a missing operand.
+// GNU rm 9.4 rm.c:334-347 only reports "missing operand" when no argv element
+// survives; `rm ''` (or `rm -- ''`) reaches the remove path and fails with
+// "cannot remove '': No such file or directory", rc 1. `rm -f ''` then
+// succeeds silently (ENOENT is ignorable). Measured against the 9.4 oracle.
+// ---------------------------------------------------------------------------
+TEST(rm, issue1650_empty_operand_is_a_path) {
+  Pipeline p;
+  p.add(L"rm.exe", {L""});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "rm: cannot remove '': No such file or directory\n");
+  EXPECT_EQ(r.stderr_text.find("missing operand"), std::string::npos);
+}
+
+TEST(rm, issue1650_empty_operand_after_dashdash_is_a_path) {
+  Pipeline p;
+  p.add(L"rm.exe", {L"--", L""});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "rm: cannot remove '': No such file or directory\n");
+  EXPECT_EQ(r.stderr_text.find("Try 'rm --help'"), std::string::npos);
+}
+
+TEST(rm, issue1650_empty_operand_force_is_silent_success) {
+  Pipeline p;
+  p.add(L"rm.exe", {L"-f", L""});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stderr_text, "");
+}

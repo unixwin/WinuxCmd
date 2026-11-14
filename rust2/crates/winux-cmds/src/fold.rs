@@ -28,6 +28,7 @@
 use std::ffi::OsString;
 use std::io::{Read, Write};
 
+use crate::argopt;
 use winux_core::{usage_error, CmdResult, Ctx, Io};
 
 const TAB_WIDTH: usize = 8;
@@ -193,13 +194,18 @@ pub fn fold_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                         WidthArg::None => unreachable!(),
                     },
                     None => {
-                        let _ = usage_error(io, "fold", "option '--width' requires an argument");
+                        let _ = usage_error(
+                            ctx,
+                            io,
+                            "fold",
+                            &argopt::option_requires_argument(ctx, "--width"),
+                        );
                         return Ok(1);
                     }
                 },
                 "help" | "version" => return Ok(0),
                 _ => {
-                    let _ = usage_error(io, "fold", &format!("unrecognized option '{arg}'"));
+                    let _ = usage_error(ctx, io, "fold", &argopt::unrecognized_option(ctx, &arg));
                     return Ok(1);
                 }
             }
@@ -234,8 +240,12 @@ pub fn fold_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                                 v.to_string_lossy().into_owned()
                             }
                             None => {
-                                let _ =
-                                    usage_error(io, "fold", "option requires an argument -- 'w'");
+                                let _ = usage_error(
+                                    ctx,
+                                    io,
+                                    "fold",
+                                    &argopt::short_option_requires_argument(ctx, "w"),
+                                );
                                 return Ok(1);
                             }
                         }
@@ -259,7 +269,12 @@ pub fn fold_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     ci = chars.len();
                 }
                 _ => {
-                    let _ = usage_error(io, "fold", &format!("invalid option -- '{c}'"));
+                    let _ = usage_error(
+                        ctx,
+                        io,
+                        "fold",
+                        &argopt::invalid_option(ctx, &c.to_string()),
+                    );
                     return Ok(1);
                 }
             }

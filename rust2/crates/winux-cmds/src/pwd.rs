@@ -11,6 +11,7 @@
 
 use std::ffi::OsString;
 
+use crate::argopt;
 use winux_core::{abs_path, strip_verbatim, usage_error, CmdResult, Ctx, Io};
 
 pub fn pwd_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
@@ -30,8 +31,8 @@ pub fn pwd_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             "--help" | "--version" => return Ok(0),
             _ => {
                 if s.starts_with('-') && s.len() > 1 {
-                    let msg = format!("unrecognized option '{s}'");
-                    let _ = usage_error(io, "pwd", &msg);
+                    let msg = argopt::unrecognized_option(ctx, &s);
+                    let _ = usage_error(ctx, io, "pwd", &msg);
                     return Ok(1);
                 }
                 extras += 1;
@@ -159,10 +160,7 @@ mod tests {
             let mut sc = ScratchCtx::new("pwd-dot");
             sc.env.set("PWD", pwd.as_ref());
             // The command's cwd must be the dir PWD names, so same_dir holds.
-            let ctx = Ctx {
-                cwd: base.dir.clone(),
-                env: &sc.env,
-            };
+            let ctx = Ctx::new(base.dir.clone(), &sc.env);
             let args = ["-L".into()];
             let r = super::pwd_cmd(&args, &mut io.split(), &ctx).unwrap();
             assert_eq!(r, 0);

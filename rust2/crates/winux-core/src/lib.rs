@@ -22,6 +22,8 @@ use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
+pub mod host;
+pub mod i18n;
 pub mod path;
 pub mod stream;
 
@@ -51,6 +53,39 @@ impl<'a> Io<'a> {
     }
 }
 
+/// The host's standard-stream classification, injected alongside [`Io`].
+///
+/// A `dyn Read`/`dyn Write` carries no handle identity, and the shape
+/// contract forbids a command from asking the process for its stdio
+/// handles (the #1487 red line), so the `isatty` facts GNU reads from
+/// fd 0/1/2 arrive as metadata — the same injection tier as
+/// `tail::StdinMeta`. The default is "no console": an ABI-injected stdin
+/// is a finite byte buffer and the captured stdout/stderr are buffers,
+/// neither of which can be a terminal.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StdioMeta {
+    /// `isatty(fd)` for fds 0, 1, 2 in that order.
+    pub tty: [bool; 3],
+}
+
+impl StdioMeta {
+    /// The ABI/library default: no fd is a terminal.
+    pub const fn pipe() -> Self {
+        StdioMeta { tty: [false; 3] }
+    }
+
+    /// Explicit per-fd terminal facts (host composition).
+    pub const fn with_tty(tty: [bool; 3]) -> Self {
+        StdioMeta { tty }
+    }
+
+    /// `isatty(fd)` for the only descriptors POSIX can ask about; any
+    /// other number (including negatives) is not a terminal.
+    pub fn is_tty(&self, fd: i128) -> bool {
+        (0..=2).contains(&fd) && self.tty[fd as usize]
+    }
+}
+
 /// Explicit environment access. `entries()` returns the environ in the
 /// order the caller provides (GNU iterates `environ[]` order, not sorted).
 pub trait EnvSource {
@@ -63,6 +98,26 @@ pub trait EnvSource {
 pub struct Ctx<'e> {
     pub cwd: PathBuf,
     pub env: &'e dyn EnvSource,
+    /// Per-invocation host services (message catalog lookup). Defaults to
+    /// [`host::DEFAULT_HOST`] — no catalog, English fallbacks everywhere.
+    pub host: &'e dyn host::HostServices,
+}
+
+impl<'e> Ctx<'e> {
+    /// Context with the default (empty) host: every message lookup misses
+    /// and callers use their compiled-in English fallback.
+    pub fn new(cwd: PathBuf, env: &'e dyn EnvSource) -> Self {
+        Self::with_host(cwd, env, &host::DEFAULT_HOST)
+    }
+
+    /// Context with an explicit host (injected catalog / test map).
+    pub fn with_host(
+        cwd: PathBuf,
+        env: &'e dyn EnvSource,
+        host: &'e dyn host::HostServices,
+    ) -> Self {
+        Ctx { cwd, env, host }
+    }
 }
 
 /// Command return type. `Ok(status)` is the GNU exit status.
@@ -88,11 +143,29 @@ pub const ABI_FAILURE_STATUS: u32 = 125;
 /// Write a GNU-style usage diagnostic to stderr:
 /// `<prog>: <msg>\nTry '<prog> --help' for more information.\n`
 ///
+/// `msg` is the caller's already-rendered diagnostic; shared messages go
+/// through [`i18n::tr!`] at the call site. The trailing try-help line is
+/// itself a catalog string (`common.try_help`, the key the C++ side has
+/// always used), so every caller gets the translation for free: the host
+/// lookup wins, otherwise the English line is rendered from `prog`.
+///
 /// Wording is recorded by the gate, not gated byte-for-byte (GNU quotes with
 /// Unicode quotation marks; we use ASCII quotes on stderr).
-pub fn usage_error(io: &mut Io, prog: &str, msg: &str) -> std::io::Result<()> {
+pub fn usage_error(ctx: &Ctx, io: &mut Io, prog: &str, msg: &str) -> std::io::Result<()> {
     writeln!(io.stderr, "{prog}: {msg}")?;
-    writeln!(io.stderr, "Try '{prog} --help' for more information.")
+    writeln!(io.stderr, "{}", try_help(ctx, prog))
+}
+
+/// The `Try '<prog> --help' for more information.` line as the catalog
+/// (`common.try_help`) renders it, or the English line with `prog`
+/// substituted. Shared by [`usage_error`] and the few commands whose
+/// diagnostics print extra lines before the hint (sort's argmatch).
+pub fn try_help(ctx: &Ctx, prog: &str) -> String {
+    i18n::format_with_fallback(
+        ctx.host.message("common.try_help"),
+        format!("Try '{prog} --help' for more information."),
+        &[("prog", prog)],
+    )
 }
 
 /// Quote a word for GNU-style verbose stdout messages (straight quotes,
@@ -282,10 +355,7 @@ pub mod test_support {
         }
 
         pub fn ctx(&self) -> Ctx<'_> {
-            Ctx {
-                cwd: self.dir.clone(),
-                env: &self.env,
-            }
+            Ctx::new(self.dir.clone(), &self.env)
         }
 
         pub fn path(&self, rel: &str) -> PathBuf {
@@ -297,6 +367,32 @@ pub mod test_support {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.dir);
         }
+    }
+
+    #[test]
+    fn usage_error_translates_the_try_help_line() {
+        let env = MapEnv::new();
+        let mut host = host::MapHost::default();
+        host.messages.insert(
+            "common.try_help".to_string(),
+            "尝试运行“{} --help”以获取更多信息。".to_string(),
+        );
+        let ctx = Ctx::with_host(PathBuf::from("wd"), &env, &host);
+        let mut io = MemIo::new("");
+        usage_error(&ctx, &mut io.split(), "sort", "bad option").unwrap();
+        assert_eq!(
+            io.err(),
+            "sort: bad option\n尝试运行“sort --help”以获取更多信息。\n"
+        );
+
+        // The default host keeps today's English bytes.
+        let ctx = Ctx::new(PathBuf::from("wd"), &env);
+        let mut io = MemIo::new("");
+        usage_error(&ctx, &mut io.split(), "sort", "bad option").unwrap();
+        assert_eq!(
+            io.err(),
+            "sort: bad option\nTry 'sort --help' for more information.\n"
+        );
     }
 
     #[test]

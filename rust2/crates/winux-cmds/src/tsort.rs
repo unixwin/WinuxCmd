@@ -49,10 +49,10 @@ pub fn tsort_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     if args.len() > 1 {
         let _ = writeln!(
             io.stderr,
-            "tsort: extra operand '{}'",
-            args[1].to_string_lossy()
+            "tsort: {}",
+            crate::messages::extra_operand(ctx, &args[1].to_string_lossy())
         );
-        let _ = writeln!(io.stderr, "Try 'tsort --help' for more information.");
+        let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "tsort"));
         return Ok(1);
     }
     let operand = args.first().map(|a| a.to_string_lossy().into_owned());

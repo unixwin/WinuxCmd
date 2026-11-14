@@ -18,7 +18,75 @@
 
 use std::ffi::OsString;
 
-use winux_core::{usage_error, Ctx, Io};
+use winux_core::{tr, usage_error, Ctx, Io};
+
+// Shared getopt diagnostics. Every command that parses options - through
+// this module or its own getopt-shaped loop - spells these six messages;
+// they live in one place with one stable key each so a locale translates
+// the wording once. The fallbacks are byte-identical to GNU coreutils 9.4
+// as probed by the gate.
+
+/// `invalid option -- 'x'`
+pub fn invalid_option(ctx: &Ctx, option: &str) -> String {
+    tr!(
+        ctx,
+        "common.error.invalid_option",
+        "invalid option -- '{option}'",
+        option = option
+    )
+}
+
+/// `unrecognized option '--foo'` (the caller passes the whole token).
+pub fn unrecognized_option(ctx: &Ctx, option: &str) -> String {
+    tr!(
+        ctx,
+        "common.error.unrecognized_option",
+        "unrecognized option '{option}'",
+        option = option
+    )
+}
+
+/// `option '--f' is ambiguous; possibilities: '--foo' '--force'`
+pub fn ambiguous_option(ctx: &Ctx, option: &str, possibilities: &str) -> String {
+    tr!(
+        ctx,
+        "common.error.ambiguous_option",
+        "option '{option}' is ambiguous; possibilities: {possibilities}",
+        option = option,
+        possibilities = possibilities
+    )
+}
+
+/// `option '--foo' requires an argument`
+pub fn option_requires_argument(ctx: &Ctx, option: &str) -> String {
+    tr!(
+        ctx,
+        "common.error.option_requires_argument",
+        "option '{option}' requires an argument",
+        option = option
+    )
+}
+
+/// `option requires an argument -- 'x'` (the short-option spelling).
+pub fn short_option_requires_argument(ctx: &Ctx, option: &str) -> String {
+    tr!(
+        ctx,
+        "common.error.short_option_requires_argument",
+        "option requires an argument -- '{option}'",
+        option = option
+    )
+}
+
+/// `option '--foo' doesn't allow an argument` (also the key the C++
+/// dispatcher uses, so the two surfaces share one translation).
+pub fn option_no_argument(ctx: &Ctx, option: &str) -> String {
+    tr!(
+        ctx,
+        "common.error.option_no_argument",
+        "option '{option}' doesn't allow an argument",
+        option = option
+    )
+}
 
 pub struct OptSpec {
     pub short: Option<char>,
@@ -46,9 +114,15 @@ pub const H_REJECT_SPEC: OptSpec = OptSpec {
 
 /// GNU diagnostic for the marker: `<prog>: invalid option -- 'h'` plus the
 /// try-help line, with the command's usage status.
-pub fn rejected_short_h(io: &mut Io, prog: &str, p: &Parsed, usage_status: u32) -> Option<u32> {
+pub fn rejected_short_h(
+    ctx: &Ctx,
+    io: &mut Io,
+    prog: &str,
+    p: &Parsed,
+    usage_status: u32,
+) -> Option<u32> {
     if p.flags.iter().any(|f| f == H_REJECT_MARKER) {
-        let _ = usage_error(io, prog, "invalid option -- 'h'");
+        let _ = usage_error(ctx, io, prog, &invalid_option(ctx, "h"));
         return Some(usage_status);
     }
     None
@@ -195,7 +269,7 @@ pub fn parse(
     args: &[OsString],
     opts: &[OptSpec],
     io: &mut Io,
-    _ctx: &Ctx,
+    ctx: &Ctx,
     usage_status: u32,
 ) -> Result<Parsed, u32> {
     let mut out = Parsed::default();
@@ -228,7 +302,7 @@ pub fn parse(
                     let msg = if name.is_empty() {
                         // An empty abbreviation ("--=v") is not a lookup;
                         // report the token verbatim.
-                        format!("unrecognized option '--{rest}'")
+                        unrecognized_option(ctx, &format!("--{rest}"))
                     } else if opts
                         .iter()
                         .any(|o| !o.long.is_empty() && o.long.starts_with(&name))
@@ -246,14 +320,11 @@ pub fn parse(
                         if VERSION.starts_with(&name) {
                             candidates.push(format!("'--{VERSION}'"));
                         }
-                        format!(
-                            "option '--{name}' is ambiguous; possibilities: {}",
-                            candidates.join(" ")
-                        )
+                        ambiguous_option(ctx, &format!("--{name}"), &candidates.join(" "))
                     } else {
-                        format!("unrecognized option '--{name}'")
+                        unrecognized_option(ctx, &format!("--{name}"))
                     };
-                    let _ = usage_error(io, prog, &msg);
+                    let _ = usage_error(ctx, io, prog, &msg);
                     return Err(usage_status);
                 }
             };
@@ -265,8 +336,8 @@ pub fn parse(
                         match args.get(i) {
                             Some(v) => to_str_lossy(v),
                             None => {
-                                let msg = format!("option '--{record_key}' requires an argument");
-                                let _ = usage_error(io, prog, &msg);
+                                let msg = option_requires_argument(ctx, &format!("--{record_key}"));
+                                let _ = usage_error(ctx, io, prog, &msg);
                                 return Err(usage_status);
                             }
                         }
@@ -276,8 +347,8 @@ pub fn parse(
             } else {
                 // getopt_long rejects an inline argument on a flag
                 if inline_val.is_some() {
-                    let msg = format!("option '--{}' doesn't allow an argument", record_key);
-                    let _ = usage_error(io, prog, &msg);
+                    let msg = option_no_argument(ctx, &format!("--{record_key}"));
+                    let _ = usage_error(ctx, io, prog, &msg);
                     return Err(usage_status);
                 }
                 out.flags.push(record_key.clone());
@@ -327,8 +398,8 @@ pub fn parse(
                             match args.get(i) {
                                 Some(v) => to_str_lossy(v),
                                 None => {
-                                    let msg = format!("option '-{}' requires an argument", c);
-                                    let _ = usage_error(io, prog, &msg);
+                                    let msg = short_option_requires_argument(ctx, &c.to_string());
+                                    let _ = usage_error(ctx, io, prog, &msg);
                                     return Err(usage_status);
                                 }
                             }
@@ -348,8 +419,8 @@ pub fn parse(
                         ci += 1;
                     }
                     None => {
-                        let msg = format!("invalid option -- '{c}'");
-                        let _ = usage_error(io, prog, &msg);
+                        let msg = invalid_option(ctx, &c.to_string());
+                        let _ = usage_error(ctx, io, prog, &msg);
                         return Err(usage_status);
                     }
                 }
@@ -572,5 +643,44 @@ mod tests {
         let p = parse("prog", &owned, &opts(), &mut io.split(), &sc.ctx(), 1).unwrap();
         assert!(p.has("help"));
         assert_eq!(p.positionals, ["x"]);
+    }
+
+    #[test]
+    fn catalog_translates_shared_getopt_diagnostics() {
+        use winux_core::host::MapHost;
+        use winux_core::{Ctx, MapEnv};
+
+        let mut host = MapHost::default();
+        host.messages.insert(
+            "common.error.invalid_option".to_string(),
+            "无效选项 -- '{}'".to_string(),
+        );
+        host.messages.insert(
+            "common.try_help".to_string(),
+            "尝试运行“{} --help”以获取更多信息。".to_string(),
+        );
+        host.messages.insert(
+            "common.error.option_no_argument".to_string(),
+            "选项 '{}' 不允许带参数".to_string(),
+        );
+        let env = MapEnv::new();
+        let ctx = Ctx::with_host(std::path::PathBuf::from("wd"), &env, &host);
+        let owned: Vec<std::ffi::OsString> = vec!["-q".into()];
+        let mut io = MemIo::new("");
+        let r = parse("prog", &owned, &opts(), &mut io.split(), &ctx, 1);
+        assert_eq!(r.unwrap_err(), 1);
+        assert_eq!(
+            io.err(),
+            "prog: 无效选项 -- 'q'\n尝试运行“prog --help”以获取更多信息。\n"
+        );
+
+        let owned: Vec<std::ffi::OsString> = vec!["--zero=1".into()];
+        let mut io = MemIo::new("");
+        let r = parse("prog", &owned, &opts(), &mut io.split(), &ctx, 1);
+        assert_eq!(r.unwrap_err(), 1);
+        assert_eq!(
+            io.err(),
+            "prog: 选项 '--zero' 不允许带参数\n尝试运行“prog --help”以获取更多信息。\n"
+        );
     }
 }

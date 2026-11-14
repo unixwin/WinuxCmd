@@ -27,6 +27,11 @@
 ///      (env -i, emptied environments) execvp falls back to the system
 ///      default path, so the system directories are used as a last resort
 ///      in that case only.
+///   3. a resolved file with a `#!` line launches through its interpreter
+///      (the binfmt_script value model: [interpreter, optional-arg, script,
+///      argv...]), with the interpreter resolved recursively through the
+///      same chain; a POSIX-rooted interpreter spelling is mapped through
+///      the shell namespace first, then its leaf name through PATH (#1623).
 /// Callers pass the resolved path as CreateProcessW's lpApplicationName
 /// (native images) or as the first command-line token (batch scripts,
 /// which CreateProcess routes through the command interpreter), which
@@ -56,6 +61,7 @@ export module utils:childproc;
 import std;
 import :utf8;
 import :win32;
+import :native_path;
 
 namespace winux::childproc {
 
@@ -378,6 +384,313 @@ export auto resolve_child_command_in_path(
   return resolve_in_entries(program, normalize_path_entries(*path_value));
 }
 
+// --- `#!` script support (#1623) ----------------------------------------
+//
+// Mirrors rust2/crates/winux-cmds/src/childproc.rs: a resolved file is
+// classified into its launch shape (batch extension, MZ image, or `#!`
+// script), and a script's interpreter is resolved recursively through the
+// same chain. One deliberate boundary: a file that exists but carries
+// neither MZ magic nor `#!` keeps the historical shape (handed to
+// CreateProcessW as an image, which fails with ERROR_BAD_EXE_FORMAT /
+// 126) instead of the Rust BadFormat "Exec format error" — the non-script
+// path is not this issue's scope.
+namespace {
+
+// binfmt_script.c reads the shebang line from the same first page the image
+// loaders use: exec.c zero-fills a BINPRM_BUF_SIZE (256) buffer and reads
+// only BINPRM_BUF_SIZE - 1 bytes into it, so the line the kernel parses is
+// at most 255 bytes. An overlong line is truncated at that edge and still
+// launches, it is not rejected (probed WSL GNU 6.18: `#!/bin/echo ` + 300
+// x's runs /bin/echo with a 243-byte argument -- 255 bytes minus "#!",
+// "/bin/echo" and the separating space).
+constexpr size_t kShebangHeadBytes = 256;
+constexpr size_t kShebangLineBytes = kShebangHeadBytes - 1;
+// Guard against interpreter cycles (`#!/x` where x is itself `#!...`).
+// The kernel bounds binfmt recursion the same way in spirit; three levels
+// already exceeds every real-world chain.
+constexpr unsigned kShebangRecursionLimit = 3;
+
+enum class LaunchKind { Image, Batch, Script };
+
+struct ClassifiedLaunch {
+  ChildResolveStatus status = ChildResolveStatus::NotFound;
+  LaunchKind kind = LaunchKind::Image;
+  std::wstring path;  // image/batch path, or resolved interpreter path
+  // Script only: the leading argv the OS prepends before the caller's
+  // arguments -- resolved interpreter, optional shebang argument, script,
+  // and (for a script-chain interpreter) the deeper tokens.
+  std::vector<std::wstring> script_argv;
+  bool interpreter_is_batch = false;  // Script only
+};
+
+struct ShebangLine {
+  std::string interpreter;  // UTF-8 bytes as written in the file
+  std::optional<std::string> arg;
+};
+
+auto classify_file(const std::wstring& path,
+                   const std::optional<std::wstring>& path_override,
+                   unsigned depth) -> ClassifiedLaunch;
+auto resolve_interpreter(const std::wstring& spelling,
+                         const std::optional<std::wstring>& path_override,
+                         unsigned depth) -> ClassifiedLaunch;
+
+// The first HEAD_BYTES of a file, short-read tolerant. 256 matches the
+// kernel's BINPRM_BUF_SIZE: the shebang line is parsed within it (truncated,
+// not rejected, when it overflows).
+auto read_file_head(const std::wstring& path) -> std::vector<unsigned char> {
+  std::vector<unsigned char> head(kShebangHeadBytes);
+  HANDLE file = CreateFileW(path.c_str(), GENERIC_READ,
+                            FILE_SHARE_READ | FILE_SHARE_WRITE |
+                                FILE_SHARE_DELETE,
+                            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+                            nullptr);
+  if (file == INVALID_HANDLE_VALUE) return {};
+  DWORD filled = 0;
+  while (filled < head.size()) {
+    DWORD read = 0;
+    if (!ReadFile(file, head.data() + filled,
+                  static_cast<DWORD>(head.size() - filled), &read, nullptr) ||
+        read == 0) {
+      break;
+    }
+    filled += read;
+  }
+  CloseHandle(file);
+  head.resize(filled);
+  return head;
+}
+
+// binfmt_script.c line split of a `#!` head: the interpreter is the first
+// space/tab token of the line (up to LF or the 255-byte kernel window); the
+// remainder after the whitespace run is ONE optional argument, trailing
+// space/tab trimmed (the kernel keeps a CR -- a CRLF shebang names an
+// interpreter with a trailing CR and misses it, probed ENOENT). An overlong
+// line is truncated at the window edge, not rejected: probed WSL GNU
+// launches `#!/bin/echo ` + 300 x's and echoes the 243-byte argument, so the
+// window end is the line end when no LF is present. nullopt only where the
+// kernel gives ENOEXEC: `#!` with no interpreter token. A bare `#!` is a
+// product boundary: GNU `env` reaches 0 through the libc execvp /bin/sh
+// fallback, which is out of contract here.
+auto parse_shebang_line(const std::vector<unsigned char>& head)
+    -> std::optional<ShebangLine> {
+  // Skip the "#!" magic: the kernel splits the line that FOLLOWS it. The
+  // last byte of the kernel's BINPRM_BUF_SIZE buffer stays NUL (exec.c reads
+  // one byte less), so the line is bounded by kShebangLineBytes; no LF
+  // inside that window means the kernel truncates the line and still
+  // launches.
+  const size_t window =
+      head.size() < kShebangLineBytes ? head.size() : kShebangLineBytes;
+  const size_t body_size = window - 2;
+  const unsigned char* body = head.data() + 2;
+  // No LF inside the head: the kernel truncates the line at
+  // BINPRM_BUF_SIZE and still launches, so the buffer end is the line end.
+  size_t line_end = body_size;
+  for (size_t i = 0; i < body_size; ++i) {
+    if (body[i] == '\n') {
+      line_end = i;
+      break;
+    }
+  }
+  size_t end = line_end;
+  while (end > 0 && (body[end - 1] == ' ' || body[end - 1] == '\t')) --end;
+  size_t start = 0;
+  while (start < end && (body[start] == ' ' || body[start] == '\t')) ++start;
+  size_t interp_end = start;
+  while (interp_end < end && body[interp_end] != ' ' &&
+         body[interp_end] != '\t') {
+    ++interp_end;
+  }
+  if (interp_end == start) return std::nullopt;  // "#!" alone
+  ShebangLine out;
+  out.interpreter.assign(
+      reinterpret_cast<const char*>(body + start), interp_end - start);
+  size_t arg_start = interp_end;
+  while (arg_start < end &&
+         (body[arg_start] == ' ' || body[arg_start] == '\t')) {
+    ++arg_start;
+  }
+  if (arg_start < end) {
+    out.arg.emplace(
+        reinterpret_cast<const char*>(body + arg_start), end - arg_start);
+  }
+  return out;
+}
+
+// True when the spelling lives in the POSIX shell namespace (a single
+// leading slash, not a "//x" UNC form and not a "/c/..." drive spelling
+// the native chain already resolves).
+auto is_posix_rooted(std::wstring_view name) -> bool {
+  if (name.empty() || name[0] != L'/') return false;
+  if (name.size() >= 2 && name[1] == L'/') return false;
+  if (name.size() >= 2 && is_drive_letter(name[1]) &&
+      (name.size() == 2 || name[2] == L'/')) {
+    return false;
+  }
+  return true;
+}
+
+auto comspec_path() -> std::wstring {
+  wchar_t comspec[MAX_PATH]{};
+  const DWORD length = GetEnvironmentVariableW(
+      L"COMSPEC", comspec, static_cast<DWORD>(std::size(comspec)));
+  if (length > 0 && length < std::size(comspec)) {
+    return std::wstring(comspec, length);
+  }
+  return L"cmd.exe";
+}
+
+// Launch assembly for a `#!` script: [interpreter, optional-arg, script],
+// with the interpreter resolved through the same chain. Status mapping
+// follows the kernel's errnos (all GNU-probed): a MISSING interpreter is
+// ENOENT (callers report 127 "No such file or directory" against the
+// script operand), an unrunnable interpreter ENOEXEC, a directory EACCES.
+auto resolve_shebang_script(const std::wstring& script,
+                            const std::vector<unsigned char>& head,
+                            const std::optional<std::wstring>& path_override,
+                            unsigned depth) -> ClassifiedLaunch {
+  const std::optional<ShebangLine> parsed = parse_shebang_line(head);
+  if (!parsed.has_value() || depth >= kShebangRecursionLimit) {
+    // A bare `#!` (no interpreter token) or the recursion guard: the
+    // BadFormat analog, which the C++ status set reports as 126. This is a
+    // product boundary for the bare `#!` shape: GNU `env` reaches 0 only
+    // through the libc execvp /bin/sh fallback, which is out of contract.
+    ClassifiedLaunch bad_format;
+    bad_format.status = ChildResolveStatus::NotExecutable;
+    return bad_format;
+  }
+  // binfmt_script opens the interpreter by PATH-lookup-free open(): a bare
+  // interpreter name is a cwd-relative path, never a PATH search (probed
+  // WSL GNU: "#!env sh" -> 127). Route bare names through the explicit-path
+  // branch so the bare-name search stays out of the way.
+  const std::wstring interpreter = utf8_to_wstring(parsed->interpreter);
+  const ClassifiedLaunch inner =
+      resolve_interpreter(interpreter, path_override, depth + 1);
+  if (inner.status != ChildResolveStatus::Found) return inner;
+
+  ClassifiedLaunch script_launch;
+  script_launch.status = ChildResolveStatus::Found;
+  script_launch.kind = LaunchKind::Script;
+  script_launch.path = inner.path;
+  if (inner.kind == LaunchKind::Script) {
+    // Script-chain interpreter: `inner` is already the inner script's
+    // complete launch argv [interp, arg?, inner-script]; append only the
+    // outer shebang's [arg?, script] tokens -- the inner script must
+    // appear exactly once (#1595).
+    script_launch.script_argv = inner.script_argv;
+    script_launch.interpreter_is_batch = inner.interpreter_is_batch;
+  } else {
+    script_launch.script_argv.push_back(inner.path);
+    script_launch.interpreter_is_batch = inner.kind == LaunchKind::Batch;
+  }
+  if (parsed->arg.has_value()) {
+    script_launch.script_argv.push_back(utf8_to_wstring(*parsed->arg));
+  }
+  script_launch.script_argv.push_back(script);
+  return script_launch;
+}
+
+// Full resolution chain for a shebang interpreter spelling. `depth` counts
+// shebang levels only; the namespace passes are namespace translations,
+// not new script levels.
+auto resolve_interpreter(const std::wstring& spelling,
+                         const std::optional<std::wstring>& path_override,
+                         unsigned depth) -> ClassifiedLaunch {
+  std::wstring name(spelling);
+  if (name.find(L'/') == std::wstring::npos &&
+      name.find(L'\\') == std::wstring::npos) {
+    name = L"./" + name;
+  }
+  ChildResolveStatus fallback = ChildResolveStatus::NotFound;
+
+  // Pass A: the native chain, used as given.
+  {
+    const ChildResolveResult native_result = resolve_in_entries(name, {});
+    if (native_result.status == ChildResolveStatus::Found) {
+      return classify_file(native_result.path, path_override, depth);
+    }
+    if (native_result.status != ChildResolveStatus::NotFound) {
+      fallback = native_result.status;
+    }
+  }
+  if (is_posix_rooted(name)) {
+    // Pass B: the product's shell-namespace mapper for POSIX-rooted
+    // spellings ("#!/bin/sh" has no native analog; the file commands
+    // resolve the same spelling through this mapper).
+    if (auto mapped = native_path::shell_tree_to_native_w(name)) {
+      ChildResolveStatus mapped_fallback = ChildResolveStatus::NotFound;
+      const ChildResolveResult mapped_result = scan_candidates(
+          *mapped, !lowercase_extension(*mapped).empty(), mapped_fallback);
+      if (mapped_result.status == ChildResolveStatus::Found) {
+        return classify_file(mapped_result.path, path_override, depth);
+      }
+      if (mapped_fallback != ChildResolveStatus::NotFound) {
+        fallback = mapped_fallback;
+      }
+    }
+    // Pass C: the leaf name through PATH -- a known accommodation, not
+    // kernel parity: the kernel never PATH-searches a shebang interpreter
+    // (probed: "#!/nonexistent/interp" with `interp` on PATH is still
+    // ENOENT/127). This is the last accommodation for a POSIX-rooted
+    // spelling on a host with neither an install root nor the mapped
+    // prefix, but the tool on PATH (a shebang interpreter's "/bin/..."
+    // prefix only exists on POSIX; the leaf is what a Windows host can
+    // actually run).
+    const size_t slash = name.find_last_of(L'/');
+    const std::wstring leaf =
+        slash == std::wstring::npos ? name : name.substr(slash + 1);
+    if (!leaf.empty()) {
+      const ChildResolveResult bare =
+          resolve_child_command_in_path(leaf, path_override);
+      if (bare.status == ChildResolveStatus::Found) {
+        return classify_file(bare.path, path_override, depth);
+      }
+      ClassifiedLaunch missed;
+      missed.status = bare.status;
+      return missed;
+    }
+  }
+  ClassifiedLaunch missed;
+  missed.status = fallback;
+  return missed;
+}
+
+// Classifies one resolved regular file into its launch shape (#1587).
+// Resolution order: the batch extension routes through the command
+// interpreter before any magic read; MZ magic is a native image; `#!`
+// resolves the interpreter line recursively; anything else keeps the
+// historical shape (see the block comment above).
+auto classify_file(const std::wstring& path,
+                   const std::optional<std::wstring>& path_override,
+                   unsigned depth) -> ClassifiedLaunch {
+  const std::wstring ext = lowercase_extension(path);
+  if (ext == L".cmd" || ext == L".bat") {
+    ClassifiedLaunch found;
+    found.status = ChildResolveStatus::Found;
+    found.kind = LaunchKind::Batch;
+    found.path = path;
+    return found;
+  }
+  const std::vector<unsigned char> head = read_file_head(path);
+  if (head.size() >= 2 && head[0] == 'M' && head[1] == 'Z') {
+    ClassifiedLaunch found;
+    found.status = ChildResolveStatus::Found;
+    found.kind = LaunchKind::Image;
+    found.path = path;
+    return found;
+  }
+  if (head.size() >= 2 && head[0] == '#' && head[1] == '!') {
+    return resolve_shebang_script(path, head, path_override, depth);
+  }
+  ClassifiedLaunch found;
+  found.status = ChildResolveStatus::Found;
+  found.kind = LaunchKind::Image;
+  found.path = path;
+  return found;
+}
+
+}  // namespace
+
 // Everything a spawner needs to hand CreateProcessW without falling into
 // the Win32 default search order.
 export struct ChildLaunchRequest {
@@ -398,7 +711,7 @@ export struct ChildLaunchPlan {
   std::optional<std::wstring> application_name;  // image or interpreter
   std::wstring command_line;                     // lpCommandLine, ready-made
   std::wstring resolved_path;                    // diagnostics
-  bool via_interpreter = false;                  // .cmd/.bat routed via cmd
+  bool via_interpreter = false;  // .cmd/.bat or #! script via interpreter
 };
 
 // Resolves the command and builds the (application name, command line)
@@ -407,7 +720,12 @@ export struct ChildLaunchPlan {
 //     the caller's spelling for argv[0] (GNU execvp parity);
 //   - batch script: lpApplicationName = COMSPEC, lpCommandLine =
 //     '/d /s /c "<script> <args...>"' -- cmd.exe does the resolution work
-//     CreateProcessW cannot (it cannot launch a batch file directly).
+//     CreateProcessW cannot (it cannot launch a batch file directly);
+//   - `#!` script: lpApplicationName = resolved interpreter path (or
+//     COMSPEC when the interpreter is itself a batch file), lpCommandLine =
+//     '<interpreter> [<opt-arg>] <script> <args...>' -- the binfmt_script
+//     value model, with the interpreter resolved recursively through the
+//     same chain (#1623).
 // Callers must check status before using the plan; NotFound maps to exit
 // 127 (child_spawn_exit_status / resolve status) like GNU execvp.
 export auto plan_child_launch(const ChildLaunchRequest& request)
@@ -428,20 +746,44 @@ export auto plan_child_launch(const ChildLaunchRequest& request)
   }
 
   if (resolved.batch_script) {
-    wchar_t comspec[MAX_PATH]{};
-    const DWORD length = GetEnvironmentVariableW(
-        L"COMSPEC", comspec, static_cast<DWORD>(std::size(comspec)));
-    std::wstring interpreter;
-    if (length > 0 && length < std::size(comspec)) {
-      interpreter.assign(comspec, length);
-    } else {
-      interpreter = L"cmd.exe";
-    }
     std::wstring inner = quote_windows_command_arg(resolved.path);
     if (!tail.empty()) inner += L' ';
     inner += tail;
-    plan.application_name = std::move(interpreter);
+    plan.application_name = comspec_path();
     plan.command_line = L"/d /s /c \"" + inner + L"\"";
+    plan.via_interpreter = true;
+    return plan;
+  }
+
+  // #1623: a resolved file with a `#!` line launches through its
+  // interpreter (binfmt_script value model, mirroring rust2 childproc.rs).
+  const ClassifiedLaunch classified =
+      classify_file(resolved.path, request.path_override, 0);
+  if (classified.status != ChildResolveStatus::Found) {
+    plan.status = classified.status;
+    return plan;
+  }
+  if (classified.kind == LaunchKind::Script) {
+    // The kernel discards the spawner's argv[0] for a script (the script
+    // path takes its place), so env -a has no effect here; and a
+    // caller-built command line is a native-image affordance (the batch
+    // branch ignores it the same way).
+    std::wstring script_line;
+    for (const auto& token : classified.script_argv) {
+      if (!script_line.empty()) script_line += L' ';
+      script_line += quote_windows_command_arg(token);
+    }
+    if (!tail.empty()) {
+      script_line += L' ';
+      script_line += tail;
+    }
+    if (classified.interpreter_is_batch) {
+      plan.application_name = comspec_path();
+      plan.command_line = L"/d /s /c \"" + script_line + L"\"";
+    } else {
+      plan.application_name = classified.script_argv.front();
+      plan.command_line = std::move(script_line);
+    }
     plan.via_interpreter = true;
     return plan;
   }

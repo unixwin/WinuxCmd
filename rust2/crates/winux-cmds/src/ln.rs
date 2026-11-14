@@ -26,6 +26,7 @@
 
 use std::ffi::OsString;
 
+use crate::argopt;
 use crate::fs_win;
 use winux_core::{usage_error, CmdResult, Ctx, Io};
 
@@ -107,8 +108,19 @@ pub fn ln_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 None => (long.to_string(), None),
             };
             match name.as_str() {
-                "force" => opts.force = true,
-                "interactive" => opts.interactive = true,
+                // [GNU] ln.c:506-513: -f and -i are last-wins on the
+                // same two flags — -f sets remove_existing_files and
+                // clears interactive, -i clears remove_existing_files
+                // and sets interactive. getopt_long processes argv in
+                // order, so whichever appears last governs the prompt.
+                "force" => {
+                    opts.force = true;
+                    opts.interactive = false;
+                }
+                "interactive" => {
+                    opts.force = false;
+                    opts.interactive = true;
+                }
                 "symbolic" => opts.symbolic = true,
                 "verbose" => opts.verbose = true,
                 "no-dereference" => opts.no_dereference = true,
@@ -133,9 +145,10 @@ pub fn ln_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                             Some(v) => opts.target_dir = Some(v.to_string_lossy().into_owned()),
                             None => {
                                 let _ = usage_error(
+                                    ctx,
                                     io,
                                     "ln",
-                                    "option '--target-directory' requires an argument",
+                                    &argopt::option_requires_argument(ctx, "--target-directory"),
                                 );
                                 return Ok(1);
                             }
@@ -146,7 +159,7 @@ pub fn ln_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 "relative" => opts.relative = true,
                 "help" | "version" => return Ok(0),
                 _ => {
-                    let _ = usage_error(io, "ln", &format!("unrecognized option '{arg}'"));
+                    let _ = usage_error(ctx, io, "ln", &argopt::unrecognized_option(ctx, &arg));
                     return Ok(1);
                 }
             }
@@ -159,8 +172,17 @@ pub fn ln_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         while ci < chars.len() {
             let c = chars[ci];
             match c {
-                'f' => opts.force = true,
-                'i' => opts.interactive = true,
+                // [GNU] ln.c:506-513: same last-wins pair as the long
+                // forms above; short clusters are walked char by char
+                // in order, so -if forces and -fi prompts.
+                'f' => {
+                    opts.force = true;
+                    opts.interactive = false;
+                }
+                'i' => {
+                    opts.force = false;
+                    opts.interactive = true;
+                }
                 's' => opts.symbolic = true,
                 'v' => opts.verbose = true,
                 'n' => opts.no_dereference = true,
@@ -180,7 +202,12 @@ pub fn ln_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                                 ci = chars.len();
                             }
                             None => {
-                                let _ = usage_error(io, "ln", "option requires an argument -- 'S'");
+                                let _ = usage_error(
+                                    ctx,
+                                    io,
+                                    "ln",
+                                    &argopt::short_option_requires_argument(ctx, "S"),
+                                );
                                 return Ok(1);
                             }
                         }
@@ -199,7 +226,12 @@ pub fn ln_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                                 v.to_string_lossy().into_owned()
                             }
                             None => {
-                                let _ = usage_error(io, "ln", "option requires an argument -- 't'");
+                                let _ = usage_error(
+                                    ctx,
+                                    io,
+                                    "ln",
+                                    &argopt::short_option_requires_argument(ctx, "t"),
+                                );
                                 return Ok(1);
                             }
                         }
@@ -209,7 +241,8 @@ pub fn ln_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 'T' => opts.no_target_dir = true,
                 'r' => opts.relative = true,
                 c => {
-                    let _ = usage_error(io, "ln", &format!("invalid option -- '{c}'"));
+                    let _ =
+                        usage_error(ctx, io, "ln", &argopt::invalid_option(ctx, &c.to_string()));
                     return Ok(1);
                 }
             }
@@ -240,7 +273,7 @@ pub fn ln_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     if let Some(dir) = &dir_mode {
         // all operands are sources, links go into DIR
         if operands.is_empty() {
-            let _ = usage_error(io, "ln", "missing file operand");
+            let _ = usage_error(ctx, io, "ln", &crate::messages::missing_file_operand(ctx));
             return Ok(1);
         }
         if !std::path::Path::new(&resolve(ctx, dir)).is_dir() {
@@ -261,12 +294,13 @@ pub fn ln_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     }
     match operands.len() {
         0 => {
-            let _ = usage_error(io, "ln", "missing file operand");
+            let _ = usage_error(ctx, io, "ln", &crate::messages::missing_file_operand(ctx));
             Ok(1)
         }
         1 => {
             if opts.no_target_dir {
                 let _ = usage_error(
+                    ctx,
                     io,
                     "ln",
                     &format!("missing destination file operand after '{}'", operands[0]),
@@ -318,7 +352,12 @@ pub fn ln_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             // 3+ operands: the last must be an existing directory
             let last = &operands[operands.len() - 1];
             if opts.no_target_dir {
-                let _ = usage_error(io, "ln", &format!("extra operand '{}'", operands[1]));
+                let _ = usage_error(
+                    ctx,
+                    io,
+                    "ln",
+                    &crate::messages::extra_operand(ctx, &operands[1]),
+                );
                 return Ok(1);
             }
             if !is_existing_dir(ctx, last) {
@@ -461,8 +500,9 @@ enum RemoveOutcome {
     RemoveFailed(String),
 }
 
-/// Remove an existing destination per -f/-i. GNU: an interactive 'n'
-/// declines SILENTLY (rc stays 0); a plain existing dst without -f is the
+/// Remove an existing destination per -f/-i. GNU ln.c:273-284: an
+/// interactive 'n' declines SILENTLY and fails the command (`if (!yesno ())
+/// return false;` -> rc 1); a plain existing dst without -f is the
 /// File-exists error.
 fn remove_existing(io: &mut Io, ctx: &Ctx, opts: &LnOpts, dst: &str) -> RemoveOutcome {
     let full = resolve(ctx, dst);
@@ -861,6 +901,62 @@ mod tests {
         assert_eq!(r, 0);
         assert!(out.is_empty());
         assert!(sc.path("fresh").exists());
+    }
+
+    #[test]
+    fn interactive_force_last_wins() {
+        // rubash#1651 / GNU ln.c:506-513: -f clears interactive, -i
+        // clears remove_existing_files; getopt order makes the last
+        // of the pair govern. Each cell gets a fresh scratch dir so
+        // the dst content is an independent witness.
+        // -i -f, answer n: force wins — no prompt, replaced, rc 0.
+        let sc = setup("ln-if-1");
+        let (r, out, e) = run_sc(&sc, &["-i", "-f", "a", "b"], "n");
+        assert_eq!(r, 0);
+        assert!(out.is_empty());
+        assert!(e.is_empty());
+        assert_eq!(std::fs::read_to_string(sc.path("b")).unwrap(), "aaa");
+        // -f -i, answer n: interactive wins — prompt, declined, rc 1.
+        let sc = setup("ln-if-2");
+        let (r, out, e) = run_sc(&sc, &["-f", "-i", "a", "b"], "n");
+        assert_eq!(r, 1);
+        assert!(out.is_empty());
+        assert!(e.contains("ln: replace 'b'? "));
+        assert_eq!(std::fs::read_to_string(sc.path("b")).unwrap(), "bbb");
+        // -f -i, answer y: prompt shown, replaced, rc 0.
+        let sc = setup("ln-if-3");
+        let (r, _, e) = run_sc(&sc, &["-f", "-i", "a", "b"], "y\n");
+        assert_eq!(r, 0);
+        assert!(e.contains("ln: replace 'b'? "));
+        assert_eq!(std::fs::read_to_string(sc.path("b")).unwrap(), "aaa");
+        // -i -f, answer y: no prompt (force wins), replaced, rc 0.
+        let sc = setup("ln-if-4");
+        let (r, _, e) = run_sc(&sc, &["-i", "-f", "a", "b"], "y\n");
+        assert_eq!(r, 0);
+        assert!(e.is_empty());
+        assert_eq!(std::fs::read_to_string(sc.path("b")).unwrap(), "aaa");
+        // Short clusters walk char by char: -if forces, -fi prompts.
+        let sc = setup("ln-if-5");
+        let (r, _, e) = run_sc(&sc, &["-if", "a", "b"], "n");
+        assert_eq!(r, 0);
+        assert!(e.is_empty());
+        assert_eq!(std::fs::read_to_string(sc.path("b")).unwrap(), "aaa");
+        let sc = setup("ln-if-6");
+        let (r, _, e) = run_sc(&sc, &["-fi", "a", "b"], "n");
+        assert_eq!(r, 1);
+        assert!(e.contains("ln: replace 'b'? "));
+        assert_eq!(std::fs::read_to_string(sc.path("b")).unwrap(), "bbb");
+        // Long forms follow the same order.
+        let sc = setup("ln-if-7");
+        let (r, _, e) = run_sc(&sc, &["--interactive", "--force", "a", "b"], "n");
+        assert_eq!(r, 0);
+        assert!(e.is_empty());
+        assert_eq!(std::fs::read_to_string(sc.path("b")).unwrap(), "aaa");
+        let sc = setup("ln-if-8");
+        let (r, _, e) = run_sc(&sc, &["--force", "--interactive", "a", "b"], "n");
+        assert_eq!(r, 1);
+        assert!(e.contains("ln: replace 'b'? "));
+        assert_eq!(std::fs::read_to_string(sc.path("b")).unwrap(), "bbb");
     }
 
     #[test]
