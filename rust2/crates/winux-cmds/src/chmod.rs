@@ -220,13 +220,13 @@ pub fn chmod_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         None
     } else {
         if p.positionals.is_empty() {
-            let _ = usage_error(io, "chmod", "missing operand");
+            let _ = usage_error(ctx, io, "chmod", &crate::messages::missing_operand(ctx));
             return Ok(1);
         }
         let mode = p.positionals[0].to_string_lossy().into_owned();
         if p.positionals.len() == 1 {
-            let msg = format!("missing operand after {}", winux_core::q(&mode));
-            let _ = usage_error(io, "chmod", &msg);
+            let msg = crate::messages::missing_after(ctx, &mode);
+            let _ = usage_error(ctx, io, "chmod", &msg);
             return Ok(1);
         }
         // validate BEFORE touching files (GNU aborts up front)
@@ -234,7 +234,7 @@ pub fn chmod_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             Ok(s) => Some(s),
             Err(()) => {
                 let msg = format!("invalid mode: {}", winux_core::q(&mode));
-                let _ = usage_error(io, "chmod", &msg);
+                let _ = usage_error(ctx, io, "chmod", &msg);
                 return Ok(1);
             }
         }

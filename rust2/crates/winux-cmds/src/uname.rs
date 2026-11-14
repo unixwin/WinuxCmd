@@ -140,6 +140,7 @@ pub fn uname_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         let shown = first.to_string_lossy().into_owned();
         // [GNU] uname.c: uname takes no operands (#1215 parity).
         let _ = usage_error(
+            ctx,
             io,
             "uname",
             &tr!(

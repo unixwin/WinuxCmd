@@ -565,7 +565,7 @@ pub fn shuf_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         Ok(p) => p,
         Err(s) => return Ok(s),
     };
-    if let Some(status) = argopt::rejected_short_h(io, "shuf", &p, 1) {
+    if let Some(status) = argopt::rejected_short_h(ctx, io, "shuf", &p, 1) {
         return Ok(status);
     }
     if let Some(which) = p
@@ -681,25 +681,25 @@ pub fn shuf_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     // Usage block (GNU: message + Try line, rc 1).
     if echo_mode && range.is_some() {
         let _ = writeln!(io.stderr, "shuf: cannot combine -e and -i options");
-        let _ = writeln!(io.stderr, "Try 'shuf --help' for more information.");
+        let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "shuf"));
         return Ok(1);
     }
     if range.is_some() && !p.positionals.is_empty() {
         let _ = writeln!(
             io.stderr,
-            "shuf: extra operand '{}'",
-            p.positionals[0].to_string_lossy()
+            "shuf: {}",
+            crate::messages::extra_operand(ctx, &p.positionals[0].to_string_lossy())
         );
-        let _ = writeln!(io.stderr, "Try 'shuf --help' for more information.");
+        let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "shuf"));
         return Ok(1);
     }
     if !echo_mode && range.is_none() && p.positionals.len() > 1 {
         let _ = writeln!(
             io.stderr,
-            "shuf: extra operand '{}'",
-            p.positionals[1].to_string_lossy()
+            "shuf: {}",
+            crate::messages::extra_operand(ctx, &p.positionals[1].to_string_lossy())
         );
-        let _ = writeln!(io.stderr, "Try 'shuf --help' for more information.");
+        let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "shuf"));
         return Ok(1);
     }
 

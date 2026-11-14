@@ -47,7 +47,13 @@
 //! Operands keep the direct-invocation contract of the 1.x build (tests/
 //! unit/touch/touch_unit_test.cpp, all GNU-rc-probed where GNU has an
 //! opinion): `-` retimes standard output (POSIX; GNU touch.c:127-128) and
-//! does NOT name a literal file; a wildcard operand (`*?[`) expands over
+//! does NOT name a literal file. Retiming the host's stdout is a
+//! process-handle side effect, so it is INJECTED ([`StdoutTimes`], the
+//! `tail::StdinMeta` precedent): the library never asks for
+//! `STD_OUTPUT_HANDLE` (#1487 red line). The registry default has no host
+//! stdout (an ABI capture buffer is untimable, GNU's EINVAL shape); the
+//! CLI driver supplies the real handle's implementation. A wildcard
+//! operand (`*?[`) expands over
 //! the named directory like the 1.x utils glob (unmatched patterns stay
 //! literal, the GNU glob default); a trailing separator fails with GNU's
 //! "setting times of '<op>': <reason>" on a non-directory and succeeds on
@@ -61,10 +67,22 @@ use std::path::Path;
 
 use crate::glob::{contains_wildcard, glob_expand_in};
 
+use crate::argopt;
 use crate::fs_win::{self, FileTime, SystemTime};
 use winux_core::{usage_error, CmdResult, Ctx, Io};
 
 const OPTS_HELP: &str = "";
+
+/// The host's stdout retiming face (POSIX `touch -`).
+///
+/// GNU calls `utimensat(1, ...)`; the operation belongs to whoever owns
+/// the process handle, so the command receives it as an injected
+/// capability instead of reaching for `GetStdHandle` itself. `Err` is a
+/// Win32 error code, rendered by [`fs_win::win32_reason`] like every other
+/// touch failure.
+pub trait StdoutTimes {
+    fn set_times(&mut self, atime: Option<FileTime>, mtime: Option<FileTime>) -> Result<(), u32>;
+}
 
 struct TouchOpts {
     change_atime: bool,
@@ -78,6 +96,21 @@ struct TouchOpts {
 }
 
 pub fn touch_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
+    touch_with_stdout(args, io, ctx, None)
+}
+
+/// `touch_cmd` with the host's stdout retiming face injected (`-`).
+///
+/// `None` is the ABI/library shape: stdout is a capture buffer with no
+/// settable times, so `touch -` reports the setting-times failure GNU
+/// reports for an untimable handle (rc 1, "Invalid argument"). The CLI
+/// driver passes `Some` and retimes its real stdout handle.
+pub fn touch_with_stdout(
+    args: &[OsString],
+    io: &mut Io,
+    ctx: &Ctx,
+    mut stdout_times: Option<&mut dyn StdoutTimes>,
+) -> CmdResult {
     let mut opts = TouchOpts {
         change_atime: false,
         change_mtime: false,
@@ -125,15 +158,24 @@ pub fn touch_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 "date" => match take_val(inline, args, &mut idx) {
                     Some(v) => opts.date = Some(v),
                     None => {
-                        let _ = usage_error(io, "touch", "option '--date' requires an argument");
+                        let _ = usage_error(
+                            ctx,
+                            io,
+                            "touch",
+                            &argopt::option_requires_argument(ctx, "--date"),
+                        );
                         return Ok(1);
                     }
                 },
                 "reference" => match take_val(inline, args, &mut idx) {
                     Some(v) => opts.reference = Some(v),
                     None => {
-                        let _ =
-                            usage_error(io, "touch", "option '--reference' requires an argument");
+                        let _ = usage_error(
+                            ctx,
+                            io,
+                            "touch",
+                            &argopt::option_requires_argument(ctx, "--reference"),
+                        );
                         return Ok(1);
                     }
                 },
@@ -141,8 +183,12 @@ pub fn touch_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     let v = match take_val(inline, args, &mut idx) {
                         Some(v) => v,
                         None => {
-                            let _ =
-                                usage_error(io, "touch", "option '--time' requires an argument");
+                            let _ = usage_error(
+                                ctx,
+                                io,
+                                "touch",
+                                &argopt::option_requires_argument(ctx, "--time"),
+                            );
                             return Ok(1);
                         }
                     };
@@ -160,7 +206,8 @@ pub fn touch_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                         _ => {
                             let _ = writeln!(
                                 io.stderr,
-                                "touch: invalid argument '{v}' for '--time'\nValid arguments are:\n  - 'atime', 'access', 'use'\n  - 'mtime', 'modify'\nTry 'touch --help' for more information."
+                                "touch: invalid argument '{v}' for '--time'\nValid arguments are:\n  - 'atime', 'access', 'use'\n  - 'mtime', 'modify'\n{}",
+                                winux_core::try_help(ctx, "touch")
                             );
                             return Ok(1);
                         }
@@ -168,7 +215,7 @@ pub fn touch_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 }
                 "help" | "version" => return Ok(0),
                 _ => {
-                    let _ = usage_error(io, "touch", &format!("unrecognized option '{arg}'"));
+                    let _ = usage_error(ctx, io, "touch", &argopt::unrecognized_option(ctx, &arg));
                     return Ok(1);
                 }
             }
@@ -208,8 +255,12 @@ pub fn touch_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                                 ci = chars.len();
                             }
                             None => {
-                                let _ =
-                                    usage_error(io, "touch", "option requires an argument -- 'd'");
+                                let _ = usage_error(
+                                    ctx,
+                                    io,
+                                    "touch",
+                                    &argopt::short_option_requires_argument(ctx, "d"),
+                                );
                                 return Ok(1);
                             }
                         }
@@ -228,8 +279,12 @@ pub fn touch_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                                 v.to_string_lossy().into_owned()
                             }
                             None => {
-                                let _ =
-                                    usage_error(io, "touch", "option requires an argument -- 't'");
+                                let _ = usage_error(
+                                    ctx,
+                                    io,
+                                    "touch",
+                                    &argopt::short_option_requires_argument(ctx, "t"),
+                                );
                                 return Ok(1);
                             }
                         }
@@ -262,8 +317,12 @@ pub fn touch_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                                 v.to_string_lossy().into_owned()
                             }
                             None => {
-                                let _ =
-                                    usage_error(io, "touch", "option requires an argument -- 'r'");
+                                let _ = usage_error(
+                                    ctx,
+                                    io,
+                                    "touch",
+                                    &argopt::short_option_requires_argument(ctx, "r"),
+                                );
                                 return Ok(1);
                             }
                         }
@@ -271,7 +330,12 @@ pub fn touch_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     opts.reference = Some(v);
                 }
                 c => {
-                    let _ = usage_error(io, "touch", &format!("invalid option -- '{c}'"));
+                    let _ = usage_error(
+                        ctx,
+                        io,
+                        "touch",
+                        &argopt::invalid_option(ctx, &c.to_string()),
+                    );
                     return Ok(1);
                 }
             }
@@ -293,7 +357,8 @@ pub fn touch_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     if opts.stamp.is_some() && (opts.date.is_some() || opts.reference.is_some()) {
         let _ = writeln!(
             io.stderr,
-            "touch: cannot specify times from more than one source\nTry 'touch --help' for more information."
+            "touch: cannot specify times from more than one source\n{}",
+            winux_core::try_help(ctx, "touch")
         );
         return Ok(1);
     }
@@ -351,7 +416,12 @@ pub fn touch_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     // (probed: `-d garbage` with no operands reports the date;
     // `-d ok` with no operands reports the operand).
     if operands.is_empty() {
-        let _ = usage_error(io, "touch", "missing file operand");
+        let _ = usage_error(
+            ctx,
+            io,
+            "touch",
+            &crate::messages::missing_file_operand(ctx),
+        );
         return Ok(1);
     }
     let mut ok = true;
@@ -378,10 +448,16 @@ pub fn touch_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             (_, _) => want_mtime,
         };
         // [GNU] touch.c:127-128: the '-' operand retimes standard output
-        // (POSIX) instead of naming a literal file. An untimable stdout
-        // (pipe/console) reports the same setting-times failure GNU does.
+        // (POSIX) instead of naming a literal file. Retiming is the
+        // injected host capability; without one (the ABI capture buffer)
+        // it reports the untimable-handle failure GNU reports for a pipe
+        // or console (ERROR_INVALID_HANDLE renders "Invalid argument").
         if op == "-" {
-            if let Err(e) = fs_win::set_stdout_file_times(atime, mtime) {
+            let r = match stdout_times.as_mut() {
+                Some(t) => t.set_times(atime, mtime),
+                None => Err(87), // ERROR_INVALID_PARAMETER -> EINVAL
+            };
+            if let Err(e) = r {
                 let _ = writeln!(
                     io.stderr,
                     "touch: setting times of '-': {}",
@@ -508,7 +584,7 @@ fn take_val(inline: Option<String>, args: &[OsString], idx: &mut usize) -> Optio
 /// combined. `base` anchors relative items (the -r reference time when
 /// one is given, else now; probed touch.c:354-360 behavior). Returns a
 /// UTC FILETIME.
-fn parse_datetime(s: &str, base: FileTime) -> Option<FileTime> {
+pub(crate) fn parse_datetime(s: &str, base: FileTime) -> Option<FileTime> {
     let s = s.trim();
     // GNU probed: an empty date is today at local midnight (rc 0)
     if s.is_empty() {
@@ -1319,6 +1395,95 @@ mod tests {
     fn mtime_epoch(sc: &ScratchCtx, name: &str) -> i64 {
         let m = fs_win::file_meta(&sc.ctx(), name, true).unwrap();
         m.mtime.to_epoch().0
+    }
+
+    /// Scripted `touch -` host: records each retime call.
+    #[derive(Default)]
+    struct RecordingStdout {
+        calls: Vec<(Option<u64>, Option<u64>)>,
+        result: Option<u32>,
+    }
+
+    impl StdoutTimes for RecordingStdout {
+        fn set_times(
+            &mut self,
+            atime: Option<FileTime>,
+            mtime: Option<FileTime>,
+        ) -> Result<(), u32> {
+            self.calls
+                .push((atime.map(|t| t.as_u64()), mtime.map(|t| t.as_u64())));
+            match self.result {
+                Some(e) => Err(e),
+                None => Ok(()),
+            }
+        }
+    }
+
+    #[test]
+    fn dash_operand_retimes_injected_stdout() {
+        // GNU touch.c:127-128: `-` targets fd 1. The library asks the
+        // injected host face, never GetStdHandle (the #1487 red line).
+        let sc = ScratchCtx::new("touch-dash");
+        let mut host = RecordingStdout::default();
+        let mut io = MemIo::new("");
+        let ctx = sc.ctx();
+        let owned: Vec<OsString> = ["-d", "@1000000000", "-m", "-"]
+            .iter()
+            .map(Into::into)
+            .collect();
+        let r = touch_with_stdout(&owned, &mut io.split(), &ctx, Some(&mut host)).unwrap();
+        assert_eq!(r, 0);
+        assert!(io.out().is_empty());
+        assert!(io.err().is_empty());
+        assert_eq!(host.calls.len(), 1);
+        let (a, m) = host.calls[0];
+        // -m selects only the modification time; the access field is
+        // untouched (None maps to SetFileTime's NULL).
+        assert_eq!(a, None);
+        let want = FileTime::from_epoch(1_000_000_000, 0).as_u64();
+        assert_eq!(m, Some(want));
+        // -a is the mirror image.
+        let mut host = RecordingStdout::default();
+        let mut io = MemIo::new("");
+        let owned: Vec<OsString> = ["-d", "@1000000000", "-a", "-"]
+            .iter()
+            .map(Into::into)
+            .collect();
+        let r = touch_with_stdout(&owned, &mut io.split(), &ctx, Some(&mut host)).unwrap();
+        assert_eq!(r, 0);
+        assert_eq!(host.calls[0].0, Some(want));
+        assert_eq!(host.calls[0].1, None);
+    }
+
+    #[test]
+    fn dash_operand_without_host_stdout_is_einval() {
+        // The ABI capture buffer has no settable times: GNU on a pipe
+        // reports "setting times of '-': Invalid argument", rc 1.
+        let (r, out, err) = run(&["-"]);
+        assert_eq!(r, 1);
+        assert!(out.is_empty());
+        assert!(
+            err.contains("touch: setting times of '-': Invalid argument"),
+            "err={err}"
+        );
+    }
+
+    #[test]
+    fn dash_host_failure_propagates_and_later_operands_run() {
+        let sc = ScratchCtx::new("touch-dash-err");
+        let mut host = RecordingStdout {
+            calls: Vec::new(),
+            result: Some(5), // ERROR_ACCESS_DENIED -> "Permission denied"
+        };
+        let mut io = MemIo::new("");
+        let ctx = sc.ctx();
+        let owned: Vec<OsString> = ["-", "later"].iter().map(Into::into).collect();
+        let r = touch_with_stdout(&owned, &mut io.split(), &ctx, Some(&mut host)).unwrap();
+        assert_eq!(r, 1);
+        assert!(io.err().contains("setting times of '-': Permission denied"));
+        assert_eq!(host.calls.len(), 1);
+        // touch processes every operand (rc is the worst outcome).
+        assert!(sc.path("later").exists());
     }
 
     #[test]

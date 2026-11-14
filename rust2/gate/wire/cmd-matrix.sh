@@ -126,16 +126,34 @@ setup_fixture() {
       printf 'not a checksum line at all\n' > ck.garbage ;;
     sha224sum)
       printf '23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7  mf\n' > ck
-      printf '0000000000000000000000000000000000000000000000000000000000  mf\n' > ck.bad
-      printf '23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7  no-such-file-xyz\n' > ck.missing
+      printf '0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000  mf\n' > ck.bad
+      printf '23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7  no-such-file-xyz\n' > ck.missing ;;
     sha384sum)
       printf 'cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7  mf\n' > ck
-      printf '000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000  mf\n' > ck.bad
-      printf 'cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7  no-such-file-xyz\n' > ck.missing
+      printf '00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000  mf\n' > ck.bad
+      printf 'cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7  no-such-file-xyz\n' > ck.missing ;;
     tac)
       rm -f tf; printf 'a\nb\nc\n' > tf ;;
     truncate)
       rm -f trf; printf 0123456789ABCDEF > trf ;;
+    grep|egrep|fgrep)
+      # Shared grep-family fixture (#1488 wire matrix): text files, a
+      # pattern file, an empty pattern file, a NUL-carrying binary, and a
+      # recursion tree with an excluded dir and a binary inside.
+      rm -rf gt.txt gsub.txt gnone.txt gpat.txt gpempty.txt gz.txt \
+             gbin.txt gdir
+      printf 'foo bar\nbaz\nfoofoo\n' > gt.txt
+      printf 'foo here\nno match\n' > gsub.txt
+      printf 'nothing\n' > gnone.txt
+      printf 'foo\nbar\n' > gpat.txt
+      : > gpempty.txt
+      printf 'foo\0bar\nfoo\n' > gz.txt
+      printf 'abc\000def\nfoo\n' > gbin.txt
+      mkdir -p gdir/gsub2 gdir/gskip
+      printf 'foo deep\n' > gdir/deep.txt
+      printf 'foo sub2\n' > gdir/gsub2/s2.txt
+      printf 'foo skipped\n' > gdir/gskip/s.txt
+      printf 'bin\000foo\n' > gdir/gbin.bin ;;
 
     *) : ;;
   esac
@@ -1178,6 +1196,84 @@ TABLE
 20|||-w
 21|||-w:30:fpara:fpre:fpara
 22|||-d
+TABLE
+      ;;
+    grep|egrep|fgrep)
+      # grep wire matrix (#1488 split-engine wire, gate c): the wired
+      # product vs the 1.x exe, rc + stdout + stderr hashes row by row.
+      # Faces: plain BRE, -E/-F/-G, -o/-v/-c/-l/-L/-q/-n/-b/-H/-h,
+      # -i/-w/-x/-z/-m/-T/-Z/-U/-s/-y/--label, context (-A/-B/-C),
+      # recursion (-r/-R/-d with --include/--exclude/--exclude-dir),
+      # binary modes (default report, -a, -I, --binary-files), stdin
+      # shapes, wrapper (egrep/fgrep) shapes, matcher-conflict exits.
+      # NOT here: `grep -P` (keeps the C++ PCRE2 face on BOTH sides — the
+      # wire report carries its smoke rows), the help/version texts and
+      # the five shapes the gate ledger already pins as r=c:no (gp40
+      # -x-empty, gp98 --color-bogus, gp99 -d-bogus, gp131 -o with -A1,
+      # gp134 -c -Z multifile): the 1.x exe deviated from GNU there and
+      # the rust2 face aligns with the oracle, so old-vs-new bytes differ
+      # by the documented GNU alignment, not by a wire regression.
+      cat <<'TABLE'
+01|||gt.txt
+02|||-c:foo:gt.txt
+03|||-v:foo:gt.txt
+04|||-o:fo+:gt.txt
+05|||-n:foo:gt.txt
+06|||-i:FOO:gt.txt
+07|||-l:foo:gt.txt:gsub.txt:gnone.txt
+08|||-L:foo:gt.txt:gsub.txt:gnone.txt
+09|||-q:foo:gt.txt
+10|||-q:zzz:gt.txt
+11|||-H:foo:gt.txt
+12|||-h:foo:gt.txt:gsub.txt
+13|||-r:foo:gdir
+14|||-R:foo:gdir
+15|||-r:--include=*.txt:foo:gdir
+16|||-r:--exclude=*.bin:foo:gdir
+17|||-r:--exclude-dir=gskip:foo:gdir
+18|||-d:recurse:foo:gdir
+19|||-d:skip:foo:gdir
+20|||-e:foo:-e:bar:gt.txt
+21|||-f:gpat.txt:gt.txt
+22|||-E:f(o)+|baz:gt.txt
+23|||-F:fo+:gt.txt
+24|||-G:fo\+:gt.txt
+25|||-w:foo:gt.txt
+26|||-x:foo bar:gt.txt
+27|||-A:1:foo:gt.txt
+28|||-B:1:baz:gt.txt
+29|||-C:1:baz:gt.txt
+30|||-m:2:oo:gt.txt
+31|||-b:foo:gt.txt
+32|||-T:-n:foo:gt.txt
+33|||-Z:-H:foo:gt.txt
+34|||-o:-v:oo:gt.txt
+35|||--color=always:foo:gt.txt
+36|||-c:-E:o+:gt.txt
+37||The quick brown fox\njumps over the lazy dog\n|foo
+38||The quick brown fox\njumps over the lazy dog\n|-c:fox
+39||The quick brown fox\njumps over the lazy dog\n|-o:o.
+40|||gt.txt
+41|||foo:gmissing.txt
+42|||--bogus
+43|||-c:-v:foo:gt.txt
+44|||gt.txt:@EMPTY@
+45|||-f:gpempty.txt:gt.txt
+46|||-z:foo:gz.txt
+47|||-a:foo:gbin.txt
+48|||-I:foo:gbin.txt
+49|||--binary-files=without-match:foo:gbin.txt
+50|||--binary-files=text:foo:gbin.txt
+51|||foo:gbin.txt
+52|||-c:foo:gbin.txt
+53|||-r:foo:gdir/gbin.bin
+54|||-U:foo:gt.txt
+55|||-s:foo:gmissing.txt
+56|||-E:-F:foo:gt.txt
+57|||-P:-F:foo:gt.txt
+58|||-y:-i:FOO:gt.txt
+59|||-l:-c:foo:gt.txt:gsub.txt
+60|||-r:-l:foo:gdir
 TABLE
       ;;
     *)

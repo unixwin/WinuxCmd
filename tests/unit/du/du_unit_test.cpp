@@ -45,7 +45,7 @@ auto expected_blocks(uint64_t logical, uint64_t block,
 
 // Mirrors src/commands/du.cpp format_size(): ceiling to tenths of the unit.
 auto format_size_for_test(uint64_t size, bool si) -> std::string {
-  const char* units = si ? "BKMGTPE" : "BKMGTP";
+  const char* units = si ? "BkMGTPE" : "BKMGTP";
   const uint64_t base = si ? 1000 : 1024;
   if (size < base) {
     return std::to_string(size);
@@ -510,6 +510,30 @@ TEST(du, du_si_is_long_option_only) {
   EXPECT_NE(r.stdout_text.find(
                 format_size_for_test(allocated_size(1500, tmp.path), true)),
             std::string::npos);
+}
+
+TEST(du, du_si_uses_decimal_units_and_lowercase_kilo) {
+  TempDir tmp;
+  tmp.write("file.txt", std::string(20000, 'x'));
+
+  Pipeline si;
+  si.set_cwd(tmp.wpath());
+  si.add(L"du.exe", {L"--si", L"-s", L"--apparent-size", L"file.txt"});
+  auto si_result = si.run();
+
+  EXPECT_EQ(si_result.exit_code, 0);
+  // [GNU] lib/human.c: 20000 bytes is "20k" in --si (1000-based, lowercase
+  // kilo), not "20K" (#1644).
+  EXPECT_NE(si_result.stdout_text.find("20k"), std::string::npos);
+  EXPECT_EQ(si_result.stdout_text.find("20K"), std::string::npos);
+
+  Pipeline human;
+  human.set_cwd(tmp.wpath());
+  human.add(L"du.exe", {L"-h", L"-s", L"--apparent-size", L"file.txt"});
+  auto human_result = human.run();
+
+  EXPECT_EQ(human_result.exit_code, 0);
+  EXPECT_NE(human_result.stdout_text.find("20K"), std::string::npos);
 }
 
 TEST(du, du_block_size_one_reports_bytes) {
@@ -1130,6 +1154,121 @@ TEST(du, du_dangling_operand_without_dereference_lists_link) {
   EXPECT_TRUE(r.stdout_text.find("dangling") != std::string::npos);
 }
 
+TEST(du, du_dereference_directory_symlink_operand) {
+  // [GNU] "du -L dirlink" follows a directory-symlink operand (#1656):
+  // the target's allocation prints under the operand spelling, rc 0.
+  // The old -L gate probed with std::filesystem::status(), which reports
+  // an error for a directory-symlink operand even when its target exists,
+  // so the live link was misread as dangling ("cannot access", rc 1).
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "dir");
+  tmp.write("dir/f.txt", "x");
+
+  std::filesystem::path link = tmp.path / "dirlink";
+  if (!du_test_create_symlink(link, std::filesystem::path(L"dir"), true)) {
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"du.exe", {L"-L", L"-s", L"dirlink"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.empty());
+  const auto usage = usage_for_path(r.stdout_text, "dirlink");
+  EXPECT_TRUE(usage.has_value());
+  if (!usage.has_value()) return;
+  EXPECT_EQ(*usage, expected_blocks(1, 1024, tmp.path));
+}
+
+TEST(du, du_dereference_args_directory_symlink_operand) {
+  // [GNU] -H follows a directory-symlink operand exactly like -L
+  // (#1656: the same gate guards both spellings).
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "dir");
+  tmp.write("dir/f.txt", "x");
+
+  std::filesystem::path link = tmp.path / "dirlink";
+  if (!du_test_create_symlink(link, std::filesystem::path(L"dir"), true)) {
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"du.exe", {L"-H", L"-s", L"dirlink"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.empty());
+  const auto usage = usage_for_path(r.stdout_text, "dirlink");
+  EXPECT_TRUE(usage.has_value());
+  if (!usage.has_value()) return;
+  EXPECT_EQ(*usage, expected_blocks(1, 1024, tmp.path));
+}
+
+TEST(du, du_dereference_file_symlink_operand) {
+  // Lock: -L already follows file-symlink operands; the gate change
+  // must not regress them (#1656: "文件链接 ... 正常").
+  TempDir tmp;
+  tmp.write("f.txt", "x");
+
+  std::filesystem::path link = tmp.path / "filelink";
+  if (!du_test_create_symlink(link, std::filesystem::path(L"f.txt"))) {
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"du.exe", {L"-L", L"-s", L"filelink"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  const auto usage = usage_for_path(r.stdout_text, "filelink");
+  EXPECT_TRUE(usage.has_value());
+  if (!usage.has_value()) return;
+  EXPECT_EQ(*usage, expected_blocks(1, 1024, tmp.path));
+}
+
+TEST(du, du_dereference_dangling_operand_prints_no_reason) {
+  // [GNU] "du -L dangling" prints the access error with NO errno text
+  // (probed coreutils 9.4); the missing-path arm keeps ": No such file
+  // or directory". Pins the #1059 arm's exact shape, so the "error line
+  // lacks the reason" half of #1656 is answered by the misclassification
+  // fix, not by adding a reason to the dangling arm.
+  TempDir tmp;
+  tmp.write("gone.txt", "x");
+
+  std::filesystem::path link = tmp.path / "dangling";
+  if (!du_test_create_symlink(link, std::filesystem::path(L"gone.txt"))) {
+    return;
+  }
+  std::filesystem::remove(tmp.path / "gone.txt");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"du.exe", {L"-L", L"dangling"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ(r.stderr_text, "du: cannot access 'dangling'\n");
+}
+
+TEST(du, du_dereference_missing_operand_reports_reason) {
+  // [GNU] "du -L missing" keeps ": No such file or directory" (#1656).
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"du.exe", {L"-L", L"missing"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "du: cannot access 'missing': No such file or directory") !=
+              std::string::npos);
+}
+
 TEST(du, du_block_size_env_is_honored) {
   TempDir tmp;
   tmp.write("file.bin", std::string(2048, 'x'));
@@ -1497,4 +1636,84 @@ TEST(du, du_inodes_nested_tree_counts_every_object_issue1372) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "2\td/sub\n4\td\n");
+}
+
+namespace {
+
+// A directory junction needs no SeCreateSymbolicLinkPrivilege, so it is
+// the directory-link fixture every Windows host can build. It is the same
+// reparse gate as `mklink /D` (#1656).
+bool du_test_create_junction(const std::filesystem::path& link,
+                             const std::filesystem::path& target) {
+  std::wstring command = L"cmd /d /c mklink /j \"" + link.wstring() + L"\" \"" +
+                         target.wstring() + L"\" >nul";
+  return _wsystem(command.c_str()) == 0;
+}
+
+}  // namespace
+
+TEST(du, du_dereference_live_directory_junction_operand) {
+  // [GNU] du -L/-H traverses the target of a directory-link operand and
+  // prints the rows under the operand spelling (#1656: std::filesystem::
+  // status() reported the live link as dangling).
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "dir");
+  tmp.write("dir/f.txt", "x");
+  if (!du_test_create_junction(tmp.path / "dirlink", tmp.path / "dir")) {
+    std::cout << "  SKIPPED (mklink /j failed)\n";
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"du.exe", {L"-L", L"-s", L"dirlink"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.empty());
+  const auto usage = usage_for_path(r.stdout_text, "dirlink");
+  ASSERT_TRUE(usage.has_value());
+  EXPECT_EQ(*usage, expected_blocks(1, 1024, tmp.path));
+}
+
+TEST(du, du_dereference_junction_operand_prints_operand_spelling) {
+  // [GNU] Non-summary -L rows descend under the operand name, never the
+  // target's own name (`dirlink/f.txt`, not `dir/f.txt`).
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "dir" / "sub");
+  tmp.write("dir/sub/f.txt", "x");
+  if (!du_test_create_junction(tmp.path / "dirlink", tmp.path / "dir")) {
+    std::cout << "  SKIPPED (mklink /j failed)\n";
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"du.exe", {L"-L", L"-a", L"dirlink"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_NE(r.stdout_text.find("dirlink/sub/f.txt"), std::string::npos);
+  EXPECT_NE(r.stdout_text.find("\tdirlink\n"), std::string::npos);
+}
+
+TEST(du, du_dereference_dangling_junction_keeps_the_access_error) {
+  // [GNU] A link operand whose target does not exist fails the run with
+  // GNU's no-errno-text shape. Probing the link's own attributes instead
+  // would count the dangling link as a live directory and exit 0.
+  TempDir tmp;
+  if (!du_test_create_junction(tmp.path / "dangling",
+                               tmp.path / "z_absent_target")) {
+    std::cout << "  SKIPPED (mklink /j failed)\n";
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"du.exe", {L"-L", L"dangling"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(r.stderr_text, "du: cannot access 'dangling'\n");
 }

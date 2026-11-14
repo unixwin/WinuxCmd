@@ -1,43 +1,39 @@
-# cp lane catalog patch (WP-J)
+# find wire lane — I18N catalog patch (issue #1488)
 
-`winuxcmd-i18n-cp-runtime.patch.json` is the zh-CN translation patch for the
-runtime messages introduced by the Rust `cp` port
-(`rust2/crates/winux-cmds/src/cp.rs`, `cp/opts.rs`, `cp/copy.rs`).
+Prepared by the find wire lane (`rust2/find-wire`, worktree `D:/repo/wc-findwire`).
+The captain lands these files in the separate `unixwin/winuxcmd-i18n`
+repository; nothing here was written into the shared checkout (lane 15 owns
+`D:/repo/winuxcmd-i18n`).
 
-- It contains **only** the new runtime keys: `command.cp.error.*`,
-  `command.cp.prompt.*`, `command.cp.warning.*` (46 keys).
-- `command.cp.option.*`, `command.cp.synopsis` and `command.cp.description`
-  are unchanged: they come from the C++ `REGISTER_COMMAND` metadata, which
-  the port keeps byte-identical (REPLACEMENT-RECIPE.md), and already live in
-  the published catalog.
-- It is deliberately **not** written into the separate
-  `unixwin/winuxcmd-i18n` repository by this lane; the captain owns the
-  cross-repository commit and the `VERSION` bump.
+## What is in this directory
 
-## How it was produced / verified
+| file | meaning |
+|---|---|
+| `en-US.json` | `python scripts/i18n_batch.py extract` output for this tree (3642 keys; 183 `command.find.*`, of which 104 are the unchanged C++ registration options) |
+| `zh-CN-find-patch.json` | the **77** new `command.find.{error,warning,prompt}.*` keys with reviewed zh-CN text (patch payload) |
+| `find-orphan-legacy-keys.json` | the **33** `legacy.<fnv>` keys the deleted 1.x C++ find body produced (drop from the locale catalogs) |
+| `delta.json` | added (77) / removed (33) key delta against the pre-wire tree |
+| `find-new-keys.txt` | flat `key<TAB>repr(english)` list of the 77 new keys |
+| `zh-CN-merged-validate.json` | en-US overlaid with the patch — the file the validator was run against |
 
-```sh
-python scripts/i18n_batch.py extract --output rust2/target/i18n/en-US.json
-python catalog/make-cp-patch.py        # filters + writes + validates
-# -> prints "valid"
-```
+## Numbers
 
-`make-cp-patch.py` writes the filtered English base to
-`rust2/target/i18n/cp-en-US-runtime.json` (ignored, not committed) and runs
-`scripts/i18n_batch.py validate --base <filtered> --translated <patch>`, so
-placeholder/token parity is checked against the real extracted text.
+* new stable keys: **77** — 66 `command.find.error.*`, 10
+  `command.find.warning.*`, 1 `command.find.prompt.ok`.
+* removed keys: **33** orphan `legacy.<fnv>` entries from
+  `src/commands/find.cpp`'s deleted `safePrintLn`/`safeErrorPrintLn` bodies.
+* English fallbacks live in the Rust source (`tr!` calls in
+  `rust2/crates/winux-cmds/src/find*.rs`); extraction discovers them through
+  `scripts/i18n_rust.py` (wired into `scripts/i18n_batch.py`).
+* validation: `python scripts/i18n_batch.py validate --base catalog/en-US.json
+  --translated catalog/zh-CN-merged-validate.json` → `valid` (keys equal,
+  placeholders equal, no option-spelling drift).
+* The program prefix (`find: `) stays inside a few fallbacks because the
+  underlying GNU `error()` frame is part of the probed wording; the rest keep
+  the prefix in code (`fail()`, `Run::error`, `"find: warning: {}"`).
 
-## Applying it
+## Release note
 
-1. Merge `messages` into `catalogs/zh-CN/catalog.json` in
-   `unixwin/winuxcmd-i18n` (keys are stable; do not reorder existing keys).
-2. Bump `VERSION` (at least the patch segment) in the same PR — CI blocks
-   catalog changes without a version bump, and WPM treats an unchanged
-   version as already installed.
-3. Re-run `scripts/i18n_batch.py validate --base <published en-US>
-   --translated catalogs/zh-CN/catalog.json` there.
-
-The English fallbacks live in the `tr!` call sites; the catalog is purely a
-lookup table. An injected/invalid template always degrades to those exact
-English bytes (unit test
-`cp::tests::injected_catalog_renders_without_changing_english_fallback`).
+Every change under `catalogs/` in `unixwin/winuxcmd-i18n` must bump that
+repository's `VERSION` file in the same PR (AGENTS.md). The captain sequences
+that bump with the catalog drop; this lane did not touch the shared repo.

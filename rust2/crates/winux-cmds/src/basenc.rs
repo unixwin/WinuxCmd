@@ -142,7 +142,7 @@ fn run(name: &str, codec: &b64core::Codec, args: &[OsString], io: &mut Io, ctx: 
     };
     if p.positionals.len() > 1 {
         let shown = p.positionals[1].to_string_lossy().into_owned();
-        let _ = usage_error(io, name, &format!("extra operand '{}'", shown));
+        let _ = usage_error(ctx, io, name, &crate::messages::extra_operand(ctx, &shown));
         return Ok(1);
     }
 
