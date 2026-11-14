@@ -22,6 +22,6 @@ st19-printf	strict	printf 'abc' > reg; mkdir dir; ln reg hard			--printf	%n	reg
 st20-printf-nl	strict	printf 'abc' > reg; mkdir dir; ln reg hard			--printf	%n\n	reg
 st21-c-h-links	strict	printf 'abc' > reg2; ln reg2 h2			-c	%h	reg2
 st22-missing-f	strict	printf 'abc' > reg; mkdir dir; ln reg hard			-c	%n	gone
-st23-bare-exe	strict	printf 'x' > java.exe			-c	%n|%F	java
-st24-bare-exe-L	strict	printf 'x' > java.exe			-L	-c	%n|%F	java
+st23-bare-exe	win	printf 'x' > java.exe			-c	%n|%F	java
+st24-bare-exe-L	win	printf 'x' > java.exe			-L	-c	%n|%F	java
 st25-bare-exe-explicit-ext	strict	printf 'x' > java.exe			-c	%n	java.txt

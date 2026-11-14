@@ -398,8 +398,8 @@ jobs:
       # The verified set only: `cargo test -p winux-cmds` (529 tests on
       # X299, #1597). The workspace's other crates are not run here until
       # their suites are verified green the same way. The differential
-      # gate (run-gate.sh) is wired in separately, in the rust2-gate job
-      # below (#1616); the `bash -n` parse check above stays as the
+      # gate (run-gate.sh) is wired in separately, in the rust2-gate-shards
+      # matrix below (#1616); the `bash -n` parse check above stays as the
       # build-leg syntax guard.
       # --no-fail-fast so a red run reports the full failure name-set.
       - name: Run Rust unit tests (cargo test)
@@ -408,29 +408,104 @@ jobs:
         run: |
           "%USERPROFILE%\.cargo\bin\cargo.exe" test --locked --no-fail-fast -p winux-cmds
 
-  # Differential gate execution (#1616): no workflow ever ran
-  # rust2/gate/run-gate.sh, so the gate TSV rows — notably the
-  # csplit/pathchk/ptx corpus PR #1613 left out of the ctest port — had
-  # no CI execution path at all. This job runs the affected-command
-  # subset on a hosted Windows runner (93 rows, measured ~1 min on X299):
+  # Differential gate execution, full corpus (#1616, WP-N): no workflow ever
+  # ran rust2/gate/run-gate.sh, so the gate TSV rows — notably the
+  # csplit/pathchk/ptx corpus PR #1613 left out of the ctest port — had no CI
+  # execution path at all. #1616 wired a 93-row slice on a single job; this
+  # job runs the WHOLE corpus — 2649 rows in 82 tables plus 30 posix-mode
+  # rows — as a matrix sharded by command family, so one slow or hung family
+  # cannot consume the workflow's budget:
+  #   * every shard is sized from MEASURED wall clock, not guesswork:
+  #     `bash rust2/gate/run-gate.sh` (full corpus, X299, 2026-11-14,
+  #     rust2/target/gate-full/timing.tsv) measured 1509 s for all 2649 rows
+  #     across 11 family shards; the slowest shard is sort-num at 211 s
+  #     (3.5 min, 323 rows) and the posix shard at 121 s (30 rows), so even
+  #     a 3x hosted-runner slowdown plus the fixed overhead (artifact
+  #     download, driver build, WSL install) stays inside the 15-minute cap;
+  #   * the aggregate `rust2-gate` job fails the run if a shard artifact is
+  #     missing, a shard job did not succeed, or a case table on disk is not
+  #     claimed by any shard, so the shard list cannot silently rot when a
+  #     new table lands;
   #   * GNU leg: WSL Ubuntu installed here — the windows-2025 image only
   #     ENABLES the WSL feature but ships no distro
-  #     (actions/runner-images#11265); the job fails loudly if the distro
-  #     never comes up rather than scoring vacuous MISSING-vs-MISSING
-  #     green.
+  #     (actions/runner-images#11265). `rust2/gate/preflight-gnu.sh` then
+  #     proves every shard's programs resolve and that the oracle really is
+  #     GNU coreutils/findutils, and the job throws otherwise: a dead distro
+  #     must never score GNU-vs-MISSING vacuous green (#1632);
+  #     `wsl --update` stays non-fatal (actions/runner-images#10563).
   #   * Rust leg: winuxcmd-driver built from the pinned toolchain
-  #     (RUST_BIN default path rust2/target/debug/winuxcmd-driver.exe).
+  #     (RUST_BIN default rust2/target/debug/winuxcmd-driver.exe).
   #   * CPP leg: the Release dispatcher extracted from the build-windows
   #     x64 runtime package (job dependency below) — the same value model
-  #     the local build-vs/usr/bin Debug exe serves; the edition split
-  #     only materializes entry links, not the dispatcher, so the
-  #     non-full package is used.
-  # The full 1335+190 corpus stays a local/X299 tool; this slice is the
-  # CI-sized affected subset the issue asks to gate.
-  rust2-gate:
-    runs-on: windows-2025
+  #     the local build-vs/usr/bin Debug exe serves; the edition split only
+  #     materializes entry links, not the dispatcher, so the non-full
+  #     package is used.
+  #   * symlink rows: a Windows host without SeCreateSymbolicLinkPrivilege
+  #     cannot build a `ln -s` fixture, so run-gate.sh probes the capability
+  #     once and marks those rows `skipped(no-symlink-privilege)` instead of
+  #     scoring a host-dependent fail (or a vacuous pass) — the prompt-19
+  #     SKIP rule.
+  # Sourcing: the corpus is VENDORED in this repo (rust2/gate/cases/*.tsv) and
+  # the job fetches nothing from savannah, so a stale fetch can never shadow
+  # a fresh run (the gate01 lesson). The three-source gnulib vendoring for
+  # gnu-master-differential (prompt 6) is NOT in main yet; when it lands, this
+  # job needs no change — it has no network corpus path to swap.
+  # Artifacts: each shard uploads ledger + summary + timing under
+  # rust2-gate-<shard>; the `rust2-gate` job below merges them into the run
+  # dashboard (step summary + rust2-gate-dashboard artifact).
+  rust2-gate-shards:
+    runs-on: ${{ matrix.runner }}
     needs: build-windows
-    timeout-minutes: 45
+    # The corpus is 1509 s of gate work on the reference host across 11
+    # family shards; the slowest shard is 211 s. The ceiling covers the fixed
+    # overhead (artifact download, driver build, WSL install) on a hosted
+    # runner and still fails a hung shard as a timeout, not a 6-hour job.
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      # Family axis x runner image axis. The image axis is deliberately a
+      # single value today: the product is Windows-only and its oracle is a
+      # WSL distro, so a second image would duplicate the corpus without new
+      # coverage. Keeping the dimension explicit lets a future arm64/2022 leg
+      # be added without restructuring the job.
+      matrix:
+        include:
+          - runner: windows-2025
+            shard: shell-builtins
+            commands: "true false test bracket echo printenv pwd"
+          - runner: windows-2025
+            shard: fs-dirs
+            commands: "mkdir rmdir touch truncate mktemp ln unlink readlink realpath"
+          - runner: windows-2025
+            shard: fs-meta
+            commands: "stat df du pathchk basename dirname"
+          - runner: windows-2025
+            shard: fs-owner
+            commands: "mknod mkfifo chmod chgrp chown chcon runcon"
+          - runner: windows-2025
+            shard: text-lines
+            commands: "head tail cut tr od paste"
+          - runner: windows-2025
+            shard: text-fields
+            commands: "expand unexpand fold fmt tac rev seq csplit ptx"
+          - runner: windows-2025
+            shard: sort-num
+            commands: "sort join tsort shuf factor numfmt"
+          - runner: windows-2025
+            shard: digest
+            commands: "cksum md5sum sha1sum sha224sum sha256sum sha384sum sha512sum b2sum base32 base64 sum"
+          - runner: windows-2025
+            shard: process
+            commands: "xargs timeout nice nohup sleep tee"
+          - runner: windows-2025
+            shard: system-id
+            commands: "uname hostname whoami nproc arch hostid tty"
+          - runner: windows-2025
+            shard: system-accounts
+            commands: "sync users groups id who pinky getconf date"
+          - runner: windows-2025
+            shard: posix
+            commands: "--posix-mode"
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v6
@@ -490,7 +565,8 @@ jobs:
       # first-launch registration to settle. `wsl --update` has been
       # observed to 403 on hosted runners (actions/runner-images#10563),
       # so a failed update is non-fatal as long as the distro itself
-      # comes up.
+      # comes up. A distro that never comes up is fatal: scoring against a
+      # missing oracle is the #1632 vacuous-green class.
       - name: Install WSL Ubuntu (GNU gate side)
         shell: pwsh
         run: |
@@ -508,23 +584,114 @@ jobs:
           }
           if (-not $ok) { throw 'WSL Ubuntu did not come up after 5 attempts' }
 
-      - name: Run differential gate (csplit pathchk ptx)
+      # Fail loud BEFORE any row is scored: every program this shard drives
+      # must resolve in the distro, and the distro's tools must actually be
+      # GNU. The script runs as a FILE inside WSL (the probe-methodology
+      # rule for POSIX spellings) and maps the checkout the same way
+      # run-gate.sh does.
+      - name: Prove the GNU oracle side for this shard
         shell: bash
+        env:
+          GATE_GNU_REMOTE_ROOT: /tmp/winuxcmd-gate-shard-${{ matrix.shard }}
         run: |
           set -o pipefail
-          mkdir -p rust2/target/gate
-          bash rust2/gate/run-gate.sh csplit pathchk ptx | tee rust2/target/gate/summary.txt
+          progs=""
+          for c in ${{ matrix.commands }}; do
+            if [ "$c" != "--posix-mode" ]; then progs="$progs $c"; fi
+          done
+          here=$(pwd)
+          case "$here" in
+            /[a-zA-Z]/*) tree_mnt="/mnt/$(printf %s "${here:1:1}" | tr 'A-Z' 'a-z')${here:2}" ;;
+            *) tree_mnt="$here" ;;
+          esac
+          wsl.exe --exec /bin/bash "$tree_mnt/rust2/gate/preflight-gnu.sh" \
+            "$GATE_GNU_REMOTE_ROOT" $progs
 
-      - name: Upload gate ledger
+      - name: Run differential gate (${{ matrix.shard }})
+        shell: bash
+        env:
+          GATE_GNU_REMOTE_ROOT: /tmp/winuxcmd-gate-shard-${{ matrix.shard }}
+        run: |
+          set -o pipefail
+          # Absolute MSYS-style path: run-gate.sh derives the WSL view of the
+          # artifact dir from an absolute /d/... path (a relative one would be
+          # handed to wsl.exe verbatim and fail). Per-shard dirs also keep
+          # parallel shards from sharing a ledger or a fixture cache, and the
+          # directory is wiped first so a previous run's ledger/fixtures can
+          # never be scored or uploaded (the gate01 stale-result lesson).
+          ART="$(pwd)/rust2/target/gate-${{ matrix.shard }}"
+          export GATE_ARTIFACT_DIR="$ART"
+          rm -rf "$ART"
+          mkdir -p "$ART"
+          bash rust2/gate/run-gate.sh ${{ matrix.commands }} | tee "$ART/summary.txt"
+
+      - name: Upload gate shard artifacts (${{ matrix.shard }})
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: rust2-gate-ledger
+          name: rust2-gate-${{ matrix.shard }}
           path: |
-            rust2/target/gate/ledger.tsv
-            rust2/target/gate/summary.txt
-          retention-days: 1
+            rust2/target/gate-${{ matrix.shard }}/ledger.tsv
+            rust2/target/gate-${{ matrix.shard }}/ledger-posix.tsv
+            rust2/target/gate-${{ matrix.shard }}/summary.txt
+            rust2/target/gate-${{ matrix.shard }}/timing.tsv
+            rust2/target/gate-${{ matrix.shard }}/symlink-capability.txt
+            rust2/target/gate-${{ matrix.shard }}/gnu-stderr-samples.txt
+          retention-days: 3
           if-no-files-found: warn
+
+  # Total dashboard over the matrix shards, and the aggregate status the
+  # branch-protection rule already knows as `rust2-gate`: a matrix carries one
+  # check per shard, so keeping this non-matrix job under the old name means
+  # no required-check rename is needed when the full corpus rolls out.
+  # It runs even when a shard failed so the run always gets one merged view,
+  # and re-derives every verdict from the ledgers (never trusts a summary
+  # text), so it is also the backstop for a missing shard, a cancelled shard
+  # and a case table no shard claims.
+  rust2-gate:
+    needs: rust2-gate-shards
+    # A build-windows failure skips the whole gate matrix; there is nothing to
+    # summarize then. A failed or cancelled shard still gets a dashboard.
+    if: always() && needs.rust2-gate-shards.result != 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Download gate shard artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: rust2-gate-*
+          path: gates
+
+      - name: Merge shard ledgers into the run dashboard
+        shell: bash
+        run: |
+          set -o pipefail
+          python3 rust2/gate/matrix-summary.py gates --out gate-dashboard.md \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload gate dashboard
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: rust2-gate-dashboard
+          path: gate-dashboard.md
+          retention-days: 7
+          if-no-files-found: warn
+
+      # The ledger merge already reds on any FAIL row, an oracle-missing shard
+      # or an uncovered table. This is the last backstop for a shard that was
+      # cancelled or died before writing its artifact.
+      - name: Fail when a shard job did not succeed
+        if: always() && needs.rust2-gate-shards.result != 'success'
+        shell: bash
+        run: |
+          echo "::error::rust2-gate-shards result: ${{ needs.rust2-gate-shards.result }}"
+          exit 1
 
   # Cross-arch Rust surface consistency (#1488): the x64 and arm64 legs
   # must carry the SAME rust2 command library. The arm64 binary cannot be

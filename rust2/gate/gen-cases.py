@@ -1174,7 +1174,13 @@ getconf_rows = [
     ("gc20-underscore", "win", "", "", "", ["_POSIX_PATH_MAX"]),
     ("gc21-name-max-path", "win", "", "", "", ["NAME_MAX", "."]),
     ("gc22-avphys", "win", "", "", "", ["AVPHYS_PAGES"]),
-    ("gc23-version", "strict", "", "", "", ["--version"]),
+    # --version is exit-gated, not byte-gated: getconf echoes the glibc
+    # banner of the oracle it mirrors, which embeds the Ubuntu PACKAGE
+    # revision (2.39-0ubuntu8.9 when the Rust text was captured vs .8.12 on
+    # the current distro). Byte equality would red the gate on a package
+    # bump — the exit status is the stable contract; the text itself is a
+    # product decision tracked separately.
+    ("gc23-version", "exit", "", "", "", ["--version"]),
 ]
 
 seq_rows = [
@@ -1532,10 +1538,13 @@ stat_rows = [
     ("st22-missing-f", "strict", stat_setup, "", "", ["-c", "%n", "gone"]),
     # #1572: a bare name whose only on-disk form is `<name>.exe` stats like
     # the engine's `test -e/-x` already answers it (Git Bash resolves it
-    # transparently); the display keeps the operand as typed.
-    ("st23-bare-exe", "strict", r"printf 'x' > java.exe", "", "",
+    # transparently); the display keeps the operand as typed. win-gated: the
+    # completion is Windows exec resolution, which GNU stat does not do (the
+    # WSL oracle answers ENOENT), and the 1.x dispatcher already behaved this
+    # way — so the row gates Rust-vs-C++ status, not bytes against GNU.
+    ("st23-bare-exe", "win", r"printf 'x' > java.exe", "", "",
      ["-c", "%n|%F", "java"]),
-    ("st24-bare-exe-L", "strict", r"printf 'x' > java.exe", "", "",
+    ("st24-bare-exe-L", "win", r"printf 'x' > java.exe", "", "",
      ["-L", "-c", "%n|%F", "java"]),
     # An explicit extension is never completed: `java.txt` must not resolve
     # to `java.txt.exe` or to `java.exe`.
