@@ -93,16 +93,7 @@ unsafe fn parse_host_inputs(
         return Err(());
     }
     let name = CStr::from_ptr(name).to_string_lossy().into_owned();
-    let mut args: Vec<std::ffi::OsString> = Vec::new();
-    for i in 0..argc as isize {
-        let p = *argv.offset(i);
-        if p.is_null() {
-            return Err(());
-        }
-        args.push(std::ffi::OsString::from(
-            CStr::from_ptr(p).to_string_lossy().into_owned(),
-        ));
-    }
+    let args = host_args(argc, argv)?;
     let mut env = MapEnv::new();
     if !envp.is_null() {
         let mut i: isize = 0;
@@ -138,10 +129,7 @@ fn dispatch_and_collect(
     stdout_buf: *mut CBuf,
     stderr_buf: *mut CBuf,
 ) -> Result<u32, ()> {
-    let ctx = Ctx {
-        cwd: h.cwd.clone(),
-        env: &h.env,
-    };
+    let ctx = Ctx::new(h.cwd.clone(), &h.env);
     let mut out: Vec<u8> = Vec::new();
     let mut err_out: Vec<u8> = Vec::new();
     let status = {
@@ -304,4 +292,57 @@ pub extern "C" fn winuxcmd_has_command(name: *const c_char) -> c_int {
     } else {
         0
     }
+}
+
+/// Host argv span (`argc` NUL-terminated UTF-8 strings, argv[0] NOT
+/// included) as owned OsStrings. `Err(())` on a NULL slot — the same rule
+/// parse_host_inputs applies for the run entries.
+///
+/// # Safety
+/// `argv` must point to `argc` valid NUL-terminated C strings (or be NULL
+/// when `argc` is 0); each slot is only read.
+unsafe fn host_args(
+    argc: c_int,
+    argv: *const *const c_char,
+) -> Result<Vec<std::ffi::OsString>, ()> {
+    let mut args: Vec<std::ffi::OsString> = Vec::new();
+    for i in 0..argc as isize {
+        let p = *argv.offset(i);
+        if p.is_null() {
+            return Err(());
+        }
+        args.push(std::ffi::OsString::from(
+            CStr::from_ptr(p).to_string_lossy().into_owned(),
+        ));
+    }
+    Ok(args)
+}
+
+/// Routing query for the grep wire (WinuxCmd #1488 grep lane): 1 when this
+/// grep/egrep/fgrep argument vector selects the Perl matcher (`-P`,
+/// `--perl-regexp` or `-X perl` as OPTIONS, judged with grep's own
+/// getopt_long grammar — GNU argument permutation, `--` ends options,
+/// POSIXLY_CORRECT stops at the first operand), else 0.
+///
+/// The C++ handler routes such invocations to its PCRE2 face
+/// (DOCS/2.0-regex-engine-decision.md §6 owner point 2: Perl matching
+/// stays C++); every other shape reaches the rust2 library, which
+/// implements the BRE/ERE/-F surface. `posixly_correct` is the host's
+/// POSIXLY_CORRECT presence — the same flag the library derives from the
+/// injected env (grep/mod.rs run), so both engines scan argv identically.
+///
+/// Additive export (no run-contract change): `winuxcmd_abi_version()`
+/// stays 2, mirroring how v2's addition kept it 1 until adoption changed
+/// consumer-visible behavior.
+#[no_mangle]
+pub extern "C" fn winuxcmd_grep_uses_perl(
+    argc: c_int,
+    argv: *const *const c_char,
+    posixly_correct: c_int,
+) -> c_int {
+    let args = match unsafe { host_args(argc, argv) } {
+        Ok(args) => args,
+        Err(()) => return 0,
+    };
+    winux_cmds::grep::uses_perl_with(&args, posixly_correct != 0) as c_int
 }

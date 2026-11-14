@@ -117,6 +117,24 @@ pub enum Node {
     WordBoundary,
     /// `\B`
     NotWordBoundary,
+    /// `^` under [`crate::CompileOptions::multiline`] (glibc REG_NEWLINE
+    /// `newline_anchor`): text start or right after the delimiter byte.
+    LineStart(u8),
+    /// `$` under multiline: text end or right before the delimiter byte.
+    LineEnd(u8),
+    /// GNU `` \` `` — absolute buffer start, also in multiline mode.
+    BufferStart,
+    /// GNU `\'` — absolute buffer end, also in multiline mode.
+    BufferEnd,
+    /// `.` under the sed dialect options: like [`Node::Dot`], but it never
+    /// matches newline when `exclude_newline` (REG_NEWLINE clears
+    /// RE_DOT_NEWLINE) and never matches a byte that does not start a
+    /// well-formed UTF-8 sequence when `reject_invalid_utf8` (glibc under a
+    /// UTF-8 locale: `printf '\377' | sed 's/./X/'` leaves the byte).
+    DotRestricted {
+        exclude_newline: bool,
+        reject_invalid_utf8: bool,
+    },
     /// Bracket expression `[...]`.
     CharClass {
         negated: bool,

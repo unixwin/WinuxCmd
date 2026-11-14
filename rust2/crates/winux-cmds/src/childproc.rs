@@ -98,9 +98,13 @@ pub enum ChildResolve {
 }
 
 /// binfmt_script.c reads the shebang line from the same first page the
-/// image loaders use (BINPRM_BUF_SIZE): a line that overflows it is not a
-/// script.
+/// image loaders use: exec.c zero-fills a `BINPRM_BUF_SIZE` (256) buffer and
+/// reads only `BINPRM_BUF_SIZE - 1` bytes into it, so the parsed line is at
+/// most 255 bytes. An overlong line is truncated there and still launches.
 const HEAD_BYTES: usize = 256;
+/// The kernel's effective shebang window: the last byte of the
+/// `BINPRM_BUF_SIZE` buffer stays NUL.
+const SHEBANG_LINE_BYTES: usize = HEAD_BYTES - 1;
 /// Guard against interpreter cycles (`#!/x` where x is itself `#!...`).
 /// The kernel bounds binfmt recursion the same way in spirit; three
 /// levels already exceeds every real-world chain.
@@ -230,7 +234,8 @@ fn is_regular_file(path: &str) -> bool {
 }
 
 /// The first HEAD_BYTES of a file, short-read tolerant. 256 matches the
-/// kernel's BINPRM_BUF_SIZE: the whole shebang line must fit in it.
+/// kernel's BINPRM_BUF_SIZE: the shebang line is parsed within it
+/// (truncated, not rejected, when it overflows).
 fn read_head(path: &str) -> Vec<u8> {
     let Ok(mut file) = std::fs::File::open(path) else {
         return Vec::new();
@@ -249,19 +254,22 @@ fn read_head(path: &str) -> Vec<u8> {
 }
 
 /// binfmt_script.c line split of a `#!` head: the interpreter is the first
-/// space/tab token of the line (up to LF or the 256-byte cap); the
+/// space/tab token of the line (up to LF or the 255-byte kernel window); the
 /// remainder after the whitespace run is ONE optional argument, trailing
 /// space/tab trimmed (the kernel keeps a CR — a CRLF shebang names an
-/// interpreter with a trailing CR and misses it, probed ENOENT). `None`
-/// where the kernel would give ENOEXEC: `#!` with no interpreter, or a
-/// line that fills the buffer with no newline.
+/// interpreter with a trailing CR and misses it, probed ENOENT). An overlong
+/// line is truncated at the window edge, not rejected: probed WSL GNU
+/// launches `#!/bin/echo ` + 300 x's and echoes the 243-byte argument, so the
+/// window end is the line end when no LF is present. `None` only where the
+/// kernel gives ENOEXEC: `#!` with no interpreter token. A bare `#!` is a
+/// product boundary: GNU `env` reaches 0 through the libc execvp /bin/sh
+/// fallback, which is out of contract here.
 fn parse_shebang_line(head: &[u8]) -> Option<(String, Option<String>)> {
     // skip the "#!" magic: the kernel splits the line that FOLLOWS it
-    let body = &head[2..];
+    let body = &head[2..head.len().min(SHEBANG_LINE_BYTES)];
+    // No LF inside the window: the kernel truncates the line at the window
+    // edge and still launches, so the window end is the line end.
     let line_end = body.iter().position(|&b| b == b'\n').unwrap_or(body.len());
-    if line_end == body.len() && head.len() == HEAD_BYTES {
-        return None; // no newline inside the kernel's buffer
-    }
     let trimmed: &[u8] = {
         let mut end = line_end;
         while end > 0 && (body[end - 1] == b' ' || body[end - 1] == b'\t') {
@@ -578,7 +586,7 @@ pub fn resolve_child(name: &str, ctx: &Ctx) -> ChildResolve {
 }
 
 /// Canonical Win32 command-line quoting for one argument.
-fn quote_windows_arg(arg: &str) -> String {
+pub(crate) fn quote_windows_arg(arg: &str) -> String {
     if !arg.is_empty() && !arg.contains([' ', '\t', '\n', '"']) {
         return arg.to_string();
     }
@@ -874,26 +882,53 @@ mod tests {
     }
 
     #[test]
-    fn shebang_overlong_first_line_is_not_a_script() {
-        // #1595: a first line that fills the 256-byte kernel buffer with
-        // no newline is ENOEXEC, not a shebang -- the old
-        // `line_end >= HEAD_BYTES` guard could never fire (body <= 254).
-        let mut head = vec![b'#', b'!'];
-        head.extend(std::iter::repeat(b'x').take(254));
-        assert_eq!(head.len(), 256);
-        assert_eq!(super::parse_shebang_line(&head), None);
+    fn shebang_overlong_first_line_still_launches() {
+        // #1623: the kernel truncates an overlong first line at the
+        // `BINPRM_BUF_SIZE - 1` window and still launches it (probed WSL GNU
+        // 6.18: `#!/bin/echo ` + 300 x's runs /bin/echo with a 243-byte
+        // argument). The old `line_end >= HEAD_BYTES` rejection was wrong.
+        let mut sc = scratch("shebang-overlong");
+        let sh = root_with_sh(&mut sc);
+        let ctx = sc.ctx();
+        let long = sc.path("long.sh");
+        let mut content = b"#!/bin/sh ".to_vec();
+        content.extend(std::iter::repeat(b'x').take(300));
+        content.push(b'\n');
+        write(&long, &content);
+        let script = long.to_string_lossy().into_owned();
+        // The line ends at the window edge: the optional argument keeps the
+        // bytes that fit ("#!" + "/bin/sh" + one space = 10 bytes).
+        let arg = "x".repeat(super::SHEBANG_LINE_BYTES - 10);
+        assert_eq!(
+            super::resolve_child(&script, &ctx),
+            super::ChildResolve::Found(super::ChildLaunch::Script {
+                argv: vec![sh, arg, script],
+            })
+        );
         // A short file with no newline still parses: the line ends at
         // EOF inside the buffer.
         assert_eq!(
             super::parse_shebang_line(b"#!/bin/sh"),
             Some(("/bin/sh".to_string(), None))
         );
-        // A newline at the last buffer byte still fits: the line parses.
-        let mut fitting = vec![b'#', b'!'];
-        fitting.extend(std::iter::repeat(b'x').take(253));
-        fitting.push(b'\n');
-        assert_eq!(fitting.len(), 256);
-        assert!(super::parse_shebang_line(&fitting).is_some());
+    }
+
+    #[test]
+    fn shebang_overlong_line_missing_interpreter_is_not_found() {
+        // Truncation does not excuse a missing interpreter: the token is
+        // still resolved, and a miss stays ENOENT (probed GNU 127).
+        let mut sc = scratch("shebang-overlong-missing");
+        root_with_sh(&mut sc);
+        let ctx = sc.ctx();
+        let bad = sc.path("bad.sh");
+        let mut content = b"#!/nonexistent/interp ".to_vec();
+        content.extend(std::iter::repeat(b'x').take(300));
+        content.push(b'\n');
+        write(&bad, &content);
+        assert_eq!(
+            super::resolve_child(bad.to_str().unwrap(), &ctx),
+            super::ChildResolve::NotFound
+        );
     }
 
     #[test]

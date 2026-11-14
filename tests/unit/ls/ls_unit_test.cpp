@@ -2,9 +2,13 @@
 // Copyright (c) 2026 caomengxuan666 <caomengxuan666@users.noreply.github.com>
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <regex>
+#include <string_view>
 #include <thread>
+#include <vector>
 
 #include "framework/winuxtest.h"
 
@@ -36,6 +40,53 @@ bool create_directory_junction(const std::filesystem::path& link,
   std::wstring command = L"cmd /d /c mklink /j \"" + link.wstring() + L"\" \"" +
                          target.wstring() + L"\" >nul";
   return _wsystem(command.c_str()) == 0;
+}
+
+// WSL stores a link on a Windows volume as an LX reparse point: tag
+// 0xA000001D with a u32 version followed by the UTF-8 target, no
+// terminator. Windows' readlink interface (and therefore
+// std::filesystem::read_symlink) does not understand the tag, and creating
+// one needs no SeCreateSymbolicLinkPrivilege - so the exact shape #1639
+// degraded on ("no -> target", size 0) is nail-able on an unprivileged
+// machine and in CI alike.
+bool create_wsl_symlink_or_skip(const std::filesystem::path& link,
+                                std::string_view target_utf8) {
+  HANDLE handle = CreateFileW(
+      link.wstring().c_str(), GENERIC_WRITE,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+      CREATE_NEW, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
+      nullptr);
+  if (handle == INVALID_HANDLE_VALUE) {
+    std::cout << "  SKIPPED (LX reparse create failed with error "
+              << GetLastError() << ")\n";
+    return false;
+  }
+
+  const size_t data_len = 4 + target_utf8.size();
+  std::vector<BYTE> buffer(8 + data_len, 0);
+  const DWORD tag = 0xA000001D;
+  std::memcpy(buffer.data(), &tag, sizeof(tag));
+  const uint16_t data_len16 = static_cast<uint16_t>(data_len);
+  std::memcpy(buffer.data() + 4, &data_len16, sizeof(data_len16));
+  const uint32_t version = 2;
+  std::memcpy(buffer.data() + 8, &version, sizeof(version));
+  std::memcpy(buffer.data() + 12, target_utf8.data(), target_utf8.size());
+
+  DWORD returned = 0;
+  // FSCTL_SET_REPARSE_POINT = CTL_CODE(FILE_DEVICE_FILE_SYSTEM, 41,
+  // METHOD_BUFFERED, FILE_ANY_ACCESS).
+  const BOOL ok =
+      DeviceIoControl(handle, 0x000900A4, buffer.data(),
+                      static_cast<DWORD>(buffer.size()), nullptr, 0, &returned,
+                      nullptr);
+  const DWORD error = ok ? ERROR_SUCCESS : GetLastError();
+  CloseHandle(handle);
+  if (!ok) {
+    std::cout << "  SKIPPED (LX reparse ioctl failed with error " << error
+              << ")\n";
+    return false;
+  }
+  return true;
 }
 
 bool set_last_write_time(const std::filesystem::path& path, WORD year,
@@ -403,6 +454,132 @@ TEST(ls, ls_long_format_command_line_dangling_symlink_operand_is_listed) {
   EXPECT_TRUE(std::regex_search(
       r.stdout_text,
       std::regex(R"(lrwxrwxrwx\s+\d+\s+.*dangling\.txt -> target\.txt)")));
+}
+
+TEST(ls, ls_long_format_absolute_operand_symlink_shows_target_and_size) {
+  TempDir tmp;
+  tmp.write("a.txt", "aaa\n");
+
+  std::filesystem::path link = tmp.path / "link";
+  if (!create_symlink_or_skip(link, std::filesystem::path(L"a.txt"))) {
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  // Issue shape: a single absolute-path operand naming a live symlink
+  // (mklink-style repro, `ls -l <abs>\link`).
+  p.add(L"ls.exe", {L"-l", link.wstring()});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // [GNU] ls.c:3714 (get_link_name) + ls.c:4498-4499 (print_long_format): the
+  // line shows "link -> a.txt" and the size column is the byte length of
+  // the stored target string ("a.txt" -> 5). #1639: 1.2.1 printed no
+  // target and size 0 for this exact shape.
+  EXPECT_TRUE(std::regex_search(
+      r.stdout_text,
+      std::regex(
+          R"(lrwxrwxrwx\s+\d+\s+\S+\s+\S+\s+5\s+.*link -> a\.txt)")));
+}
+
+TEST(ls, ls_long_format_directory_listing_symlink_size_is_target_length) {
+  TempDir tmp;
+  tmp.write("a.txt", "aaa\n");
+
+  std::filesystem::path link = tmp.path / "link";
+  if (!create_symlink_or_skip(link, std::filesystem::path(L"a.txt"))) {
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ls.exe", {L"-la"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // Same GNU rule as above, directory-listing path: size is the target
+  // string length, not 0.
+  EXPECT_TRUE(std::regex_search(
+      r.stdout_text,
+      std::regex(
+          R"(lrwxrwxrwx\s+\d+\s+\S+\s+\S+\s+5\s+.*link -> a\.txt)")));
+}
+
+TEST(ls, ls_long_format_absolute_target_symlink_shows_target) {
+  TempDir tmp;
+  tmp.write("a.txt", "aaa\n");
+
+  std::filesystem::path link = tmp.path / "link";
+  const std::filesystem::path target = tmp.path / "a.txt";
+  if (!create_symlink_or_skip(link, target)) {
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ls.exe", {L"-l", link.wstring()});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // Presence only: the stored target is absolute here, so the displayed
+  // spelling (verbatim absolute vs same-parent relative) is a separate
+  // question; this cell pins that a target is shown at all (#1639).
+  EXPECT_TRUE(r.stdout_text.find("link -> ") != std::string::npos);
+}
+
+// The WSL-created shape of the same bug: Win32's readlink rejects tag
+// 0xA000001D, so #1639's "target missing, size 0" happened for every link a
+// Linux checkout dropped on a Windows volume. Both the operand path and the
+// directory path must print the stored target and its byte length.
+TEST(ls, ls_long_format_wsl_symlink_operand_shows_target_and_size) {
+  TempDir tmp;
+  tmp.write("a.txt", "aaa\n");
+
+  std::filesystem::path link = tmp.path / "link";
+  if (!create_wsl_symlink_or_skip(link, "a.txt")) {
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ls.exe", {L"-l", link.wstring()});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // [GNU] ls.c:3714 get_link_name() (readlink) + ls.c:4432/3669: the size
+  // column is the link's st_size, i.e. the length of the stored target
+  // ("a.txt" -> 5), and print_long_format appends " -> target".
+  EXPECT_TRUE(std::regex_search(
+      r.stdout_text,
+      std::regex(
+          R"(lrwxrwxrwx\s+\d+\s+\S+\s+\S+\s+5\s+.*link -> a\.txt)")));
+}
+
+TEST(ls, ls_long_format_wsl_symlink_directory_entry_shows_target_and_size) {
+  TempDir tmp;
+  tmp.write("a.txt", "aaa\n");
+
+  std::filesystem::path link = tmp.path / "link";
+  if (!create_wsl_symlink_or_skip(link, "a.txt")) {
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ls.exe", {L"-la"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(std::regex_search(
+      r.stdout_text,
+      std::regex(
+          R"(lrwxrwxrwx\s+\d+\s+\S+\s+\S+\s+5\s+.*link -> a\.txt)")));
 }
 
 TEST(ls, ls_long_format_shows_directory_symlink_as_link) {
@@ -1615,7 +1792,20 @@ TEST(ls, ls_invalid_sort_and_time_options_fail) {
   bad_sort.add(L"ls.exe", {L"--sort=bad"});
   auto bad_sort_result = bad_sort.run();
 
-  EXPECT_NE(bad_sort_result.exit_code, 0);
+  // [GNU] argmatch_die -> LS_FAILURE on the 9.4 oracle is 1, and the
+  // candidate table is exactly sort_args[] from ls.c:911-919 (#1645).
+  EXPECT_EQ(bad_sort_result.exit_code, 1);
+  EXPECT_EQ_TEXT(bad_sort_result.stderr_text,
+                 "ls: invalid argument 'bad' for '--sort'\n"
+                 "Valid arguments are:\n"
+                 "  - 'none'\n"
+                 "  - 'time'\n"
+                 "  - 'size'\n"
+                 "  - 'extension'\n"
+                 "  - 'version'\n"
+                 "  - 'width'\n"
+                 "Try 'ls --help' for more information.\n");
+  EXPECT_TRUE(bad_sort_result.stdout_text.empty());
 
   Pipeline bad_time;
   bad_time.set_cwd(tmp.wpath());
@@ -1625,23 +1815,129 @@ TEST(ls, ls_invalid_sort_and_time_options_fail) {
   EXPECT_NE(bad_time_result.exit_code, 0);
 }
 
-TEST(ls, ls_context_option_reports_windows_unsupported) {
+TEST(ls, ls_invalid_sort_is_rejected_before_any_operand_is_listed) {
+  TempDir tmp;
+  tmp.write("sample.txt", "sample");
+
+  // A single-file operand never reaches the directory sorter, and a later
+  // -U would override the sort; GNU still rejects the WORD during the
+  // option scan (#1645).
+  for (const auto& argv : std::vector<std::vector<std::wstring>>{
+           {L"--sort=bogus", L"sample.txt"},
+           {L"--sort=bogus", L"-U", L"."},
+           {L"-U", L"--sort=bogus", L"."},
+       }) {
+    Pipeline p;
+    p.set_cwd(tmp.wpath());
+    p.add(L"ls.exe", argv);
+
+    auto r = p.run();
+
+    EXPECT_EQ(r.exit_code, 1);
+    EXPECT_TRUE(r.stdout_text.empty());
+    EXPECT_EQ(r.stderr_text.find("ls: invalid argument 'bogus' for '--sort'"),
+              0u);
+  }
+}
+
+TEST(ls, ls_sort_candidate_table_matches_coreutils_9_4) {
+  TempDir tmp;
+  tmp.write("sample.txt", "sample");
+
+  // "name" and "type" are this port's former inventions: 9.4 knows neither.
+  for (const auto* value : {L"name", L"type", L"na", L"ty"}) {
+    Pipeline p;
+    p.set_cwd(tmp.wpath());
+    p.add(L"ls.exe", {L"--sort", value, L"sample.txt"});
+
+    auto r = p.run();
+
+    EXPECT_EQ(r.exit_code, 1);
+    EXPECT_EQ(r.stderr_text.find("ls: invalid argument '"), 0u);
+  }
+
+  // An empty WORD is a prefix of every candidate -> ambiguous, not "name".
+  Pipeline empty;
+  empty.set_cwd(tmp.wpath());
+  empty.add(L"ls.exe", {L"--sort=", L"sample.txt"});
+  auto empty_result = empty.run();
+
+  EXPECT_EQ(empty_result.exit_code, 1);
+  EXPECT_EQ(empty_result.stderr_text.find(
+                "ls: ambiguous argument '' for '--sort'"),
+            0u);
+
+  // Unique prefixes resolve: 9.4 has no "name", so "n" is unambiguous.
+  for (const auto& [value, expected] :
+       std::vector<std::pair<std::wstring, std::string>>{
+           {L"n", "none"}, {L"t", "time"}, {L"s", "size"},
+           {L"e", "extension"}, {L"v", "version"}, {L"w", "width"}}) {
+    Pipeline p;
+    p.set_cwd(tmp.wpath());
+    p.add(L"ls.exe", {L"-1", L"--sort", value, L"sample.txt"});
+
+    auto r = p.run();
+
+    EXPECT_EQ(r.exit_code, 0);
+    EXPECT_NE(r.stdout_text.find("sample.txt"), std::string::npos);
+  }
+}
+
+// #1643: GNU accepts -Z on a platform without SELinux support and prints the
+// "?" stand-in instead of failing (ls.c:2224 print_scontext; the context is
+// UNKNOWN_SECURITY_CONTEXT -> "?").  Both the one-per-line frills prefix and
+// the long-format column carry it, and the exit status stays 0.
+TEST(ls, ls_context_option_prints_question_stand_in) {
   TempDir tmp;
   tmp.write("sample.txt", "sample");
 
   for (const auto* option : {L"-Z", L"--context"}) {
     Pipeline p;
     p.set_cwd(tmp.wpath());
-    p.add(L"ls.exe", {option, L"sample.txt"});
+    p.add(L"ls.exe", {option, L"-1", L"sample.txt"});
 
     auto r = p.run();
 
-    EXPECT_EQ(r.exit_code, 1);
-    EXPECT_TRUE(r.stdout_text.empty());
-    EXPECT_TRUE(
-        r.stderr_text.find("ls: --context is not supported on Windows") !=
-        std::string::npos);
+    EXPECT_EQ(r.exit_code, 0);
+    EXPECT_TRUE(r.stderr_text.empty());
+    EXPECT_EQ_TEXT(r.stdout_text, "? sample.txt\n");
   }
+}
+
+TEST(ls, ls_context_option_adds_long_format_column_before_size) {
+  TempDir tmp;
+  tmp.write("sample.txt", "sample");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ls.exe", {L"-lZ", L"sample.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.empty());
+  // [GNU] print_long_format (ls.c:4406): mode, nlink, owner, group, "?", size.
+  EXPECT_TRUE(std::regex_search(
+      r.stdout_text,
+      std::regex(
+          R"(-[rwx-]{9}\s+\d+\s+\S+\s+\S+\s+\?\s+\d+\s+.*sample\.txt)")));
+}
+
+TEST(ls, ls_context_option_prefixes_directory_listing) {
+  TempDir tmp;
+  tmp.write("a.txt", "a");
+  tmp.write("b.txt", "b");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ls.exe", {L"-Z", L"-1"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.empty());
+  EXPECT_NE(r.stdout_text.find("? a.txt\n"), std::string::npos);
+  EXPECT_NE(r.stdout_text.find("? b.txt\n"), std::string::npos);
 }
 
 TEST(ls, ls_comma_format) {
@@ -2758,7 +3054,9 @@ TEST(ls, ls_quoting_style_aliases) {
   auto escape_style_result = escape_style.run();
 
   EXPECT_EQ(escape_style_result.exit_code, 0);
-  EXPECT_EQ_TEXT(escape_style_result.stdout_text, "two words.txt\n");
+  // [GNU] ls.c:2359-2360 registers the space with set_char_quoting for the escape
+  // style, so quotearg prints "two\ words.txt" (#1646).
+  EXPECT_EQ_TEXT(escape_style_result.stdout_text, "two\\ words.txt\n");
 
   Pipeline shell_style;
   shell_style.set_cwd(tmp.wpath());
@@ -2767,7 +3065,67 @@ TEST(ls, ls_quoting_style_aliases) {
   auto shell_style_result = shell_style.run();
 
   EXPECT_EQ(shell_style_result.exit_code, 0);
-  EXPECT_EQ_TEXT(shell_style_result.stdout_text, "'quote'\\''s.txt'\n");
+  // [GNU] quotearg.c falls back to c_quoting_style when the only reason to
+  // quote is an apostrophe: "quote's.txt", not 'quote'\''s.txt' (#1646).
+  EXPECT_EQ_TEXT(shell_style_result.stdout_text, "\"quote's.txt\"\n");
+}
+
+// #1646: -b (--quoting-style=escape) is a C string without the double
+// quotes, and ls additionally quotes the space (ls.c:2359-2360).  A C-locale
+// non-ASCII name is escaped one octal byte at a time.
+TEST(ls, ls_escape_style_escapes_spaces_and_non_ascii_bytes) {
+  TempDir tmp;
+  tmp.write("sp ace.txt", "x");
+  std::filesystem::path accent = tmp.path / L"\u00e9t.txt";
+  {
+    std::ofstream out(accent, std::ios::binary);
+    out << "y";
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ls.exe", {L"-b", L"-1"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_NE(r.stdout_text.find("sp\\ ace.txt\n"), std::string::npos);
+  EXPECT_NE(r.stdout_text.find("\\303\\251t.txt\n"), std::string::npos);
+  EXPECT_EQ(r.stdout_text.find("sp ace.txt\n"), std::string::npos);
+}
+
+// #1646: shell quoting only quotes when GNU's quotearg sees a shell special
+// character; '~' counts only at the start, '#' only at the start, '-' never.
+// An apostrophe alone (with every other character C-and-shell compatible)
+// re-renders as a C string in double quotes.
+TEST(ls, ls_shell_quoting_style_matches_gnu_quotearg) {
+  TempDir tmp;
+  tmp.write("bak~", "z");
+  tmp.write("it's.txt", "y");
+  tmp.write("sp ace.txt", "x");
+  tmp.write("a=b", "1");
+  tmp.write("a#b", "2");
+  tmp.write("~user", "3");
+  tmp.write("-dash", "4");
+
+  for (const auto* style :
+       {L"--quoting-style=shell", L"--quoting-style=shell-escape"}) {
+    Pipeline p;
+    p.set_cwd(tmp.wpath());
+    p.add(L"ls.exe", {L"-1", style});
+
+    auto r = p.run();
+
+    EXPECT_EQ(r.exit_code, 0);
+    EXPECT_EQ_TEXT(r.stdout_text,
+                   "-dash\n"
+                   "a#b\n"
+                   "'a=b'\n"
+                   "bak~\n"
+                   "\"it's.txt\"\n"
+                   "'sp ace.txt'\n"
+                   "'~user'\n");
+  }
 }
 
 TEST(ls, ls_quoting_style_last_wins_and_invalid_fails) {
@@ -2926,7 +3284,10 @@ TEST(ls, ls_si_uses_decimal_units_and_last_occurrence_wins) {
   auto si_result = si.run();
 
   EXPECT_EQ(si_result.exit_code, 0);
-  EXPECT_TRUE(si_result.stdout_text.find("1.0K") != std::string::npos);
+  // [GNU] lib/human.c: --si is 1000-based and the kilo suffix is lowercase
+  // ("1.0k"), unlike -h's "1.0K" (#1644).
+  EXPECT_TRUE(si_result.stdout_text.find("1.0k") != std::string::npos);
+  EXPECT_TRUE(si_result.stdout_text.find("1.0K") == std::string::npos);
 
   Pipeline last_wins;
   last_wins.set_cwd(tmp.wpath());
@@ -2936,6 +3297,42 @@ TEST(ls, ls_si_uses_decimal_units_and_last_occurrence_wins) {
   EXPECT_EQ(last_wins_result.exit_code, 0);
   EXPECT_TRUE(last_wins_result.stdout_text.find("1000") != std::string::npos);
   EXPECT_TRUE(last_wins_result.stdout_text.find("1.0K") == std::string::npos);
+}
+
+TEST(ls, ls_si_and_human_round_up_like_gnu_human_readable) {
+  TempDir tmp;
+  tmp.write("below.bin", std::string(999, 'x'));
+  tmp.write("kilo.bin", std::string(1000, 'x'));
+  tmp.write("ceil.bin", std::string(1537, 'x'));
+  tmp.write("tenk.bin", std::string(9999, 'x'));
+  tmp.write("mega.bin", std::string(1048575, 'x'));
+
+  auto size_column = [&](std::initializer_list<std::wstring> args,
+                         const std::wstring& file) {
+    Pipeline p;
+    p.set_cwd(tmp.wpath());
+    std::vector<std::wstring> argv(args);
+    argv.push_back(file);
+    p.add(L"ls.exe", argv);
+    auto r = p.run();
+    EXPECT_EQ(r.exit_code, 0);
+    std::smatch match;
+    if (!std::regex_search(
+            r.stdout_text, match,
+            std::regex(R"(-[rwx-]{9}\s+\d+\s+\S+\s+\S+\s+(\S+)\s+)"))) {
+      return std::string();
+    }
+    return match[1].str();
+  };
+
+  // [GNU] lib/human.c (human_ceiling): 999 stays bytes, 1000 is 1.0k,
+  // 1537 rounds up to 1.6K, 9999 prints as 10k, and a value that rounds to
+  // the next base promotes (1048575 -> 1.0M, never "1024K").
+  EXPECT_EQ(size_column({L"-l", L"--si"}, L"below.bin"), "999");
+  EXPECT_EQ(size_column({L"-l", L"--si"}, L"kilo.bin"), "1.0k");
+  EXPECT_EQ(size_column({L"-lh"}, L"ceil.bin"), "1.6K");
+  EXPECT_EQ(size_column({L"-l", L"--si"}, L"tenk.bin"), "10k");
+  EXPECT_EQ(size_column({L"-lh"}, L"mega.bin"), "1.0M");
 }
 
 TEST(ls, ls_block_size_scales_long_size_column) {

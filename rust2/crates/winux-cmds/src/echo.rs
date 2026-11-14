@@ -71,13 +71,23 @@ which does not have issues outputting option-like strings.
 "#;
 
 pub fn echo_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
+    // OS argv boundary: Windows hands argv over as UTF-16, so the lossy
+    // conversion happens here once. Callers holding raw bytes (xargs'
+    // in-process default echo) go through echo_bytes instead and keep
+    // non-UTF-8 bytes intact.
+    let lossy: Vec<std::borrow::Cow<'_, str>> = args.iter().map(|a| a.to_string_lossy()).collect();
+    let bytes: Vec<&[u8]> = lossy.iter().map(|c| c.as_bytes()).collect();
+    echo_bytes(&bytes, io, ctx)
+}
+
+pub(crate) fn echo_bytes(args: &[&[u8]], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let posixly_correct = ctx.env.get("POSIXLY_CORRECT").is_some();
 
     // echo.c: allow_options = !posixly_correct
     //         || (DEFAULT_ECHO_TO_XPG == false && argc > 1 && argv[1] == "-n")
     // (argv[1] is args[0] here; the exact-match rule is why
     // `POSIXLY_CORRECT=1 echo -nn x` prints `-nn x` verbatim).
-    let allow_options = !posixly_correct || (!args.is_empty() && args[0] == "-n");
+    let allow_options = !posixly_correct || (!args.is_empty() && args[0] == b"-n");
 
     // The GNU build keeps DEFAULT_ECHO_TO_XPG = false: escape decoding
     // runs when do_v9 || posixly_correct, so POSIX mode decodes by default
@@ -89,8 +99,7 @@ pub fn echo_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     if allow_options {
         // Sole --help/--version, no abbreviation, before the flag scan.
         if args.len() == 1 {
-            let sole = args[0].to_string_lossy();
-            if sole == "--help" {
+            if args[0] == b"--help" {
                 write!(
                     io.stdout,
                     "{}{}",
@@ -99,7 +108,7 @@ pub fn echo_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 )?;
                 return Ok(0);
             }
-            if sole == "--version" {
+            if args[0] == b"--version" {
                 write!(
                     io.stdout,
                     "{}",
@@ -112,27 +121,19 @@ pub fn echo_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         // consumed as flags; the first other arg ends the scan and stays
         // the first operand (echo.c `goto just_echo`).
         while first < args.len() {
-            let s = args[first].to_string_lossy();
-            let Some(rest) = s.strip_prefix('-') else {
+            let Some(rest) = args[first].strip_prefix(b"-") else {
                 break;
             };
             if rest.is_empty() {
                 break; // a lone `-` is an operand (echo.c i == 0)
             }
-            let mut is_flags = true;
-            for c in rest.chars() {
-                if c != 'n' && c != 'e' && c != 'E' {
-                    is_flags = false;
-                    break;
-                }
-            }
-            if !is_flags {
+            if !rest.iter().all(|&b| matches!(b, b'n' | b'e' | b'E')) {
                 break; // the arg itself becomes the first operand
             }
-            for c in rest.chars() {
-                match c {
-                    'n' => display_return = false,
-                    'e' => do_v9 = true,
+            for &b in rest {
+                match b {
+                    b'n' => display_return = false,
+                    b'e' => do_v9 = true,
                     _ => do_v9 = false, // 'E'
                 }
             }
@@ -143,20 +144,19 @@ pub fn echo_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let decode = do_v9 || posixly_correct;
 
     let mut out = Vec::new();
-    for (i, arg) in args.iter().enumerate().skip(first) {
+    for (i, &arg) in args.iter().enumerate().skip(first) {
         if i > first {
             out.push(b' ');
         }
-        let s = arg.to_string_lossy();
         if decode {
-            if decode_escapes(s.as_bytes(), &mut out) {
+            if decode_escapes(arg, &mut out) {
                 // \c seen: echo.c `return EXIT_SUCCESS` — no further output
                 // at all (no trailing newline, later operands dropped).
                 io.stdout.write_all(&out)?;
                 return Ok(0);
             }
         } else {
-            out.extend_from_slice(s.as_bytes());
+            out.extend_from_slice(arg);
         }
     }
     if display_return {
@@ -441,5 +441,28 @@ mod tests {
         // multi-byte text passes through byte-identical; escapes still fire
         let (_, out, _) = run(&["-e", "h\u{e9}llo\\tx"]);
         assert_eq!(out, "h\u{e9}llo\tx\n".as_bytes());
+    }
+
+    #[test]
+    fn echo_bytes_preserves_non_utf8() {
+        // xargs' in-process default echo calls this directly with raw
+        // item bytes; 0xff must not become U+FFFD.
+        let mut sc = ScratchCtx::new("echo");
+        let ctx = sc.ctx();
+        let mut io = MemIo::new("");
+        let r = echo_bytes(&[b"\xff\x41".as_slice()], &mut io.split(), &ctx).unwrap();
+        assert_eq!(r, 0);
+        assert_eq!(io.output, vec![0xff, 0x41, b'\n']);
+        // flag scan and escapes still work on bytes
+        let mut io = MemIo::new("");
+        let r = echo_bytes(
+            &[b"-n".as_slice(), b"\\x41".as_slice(), b"\xff".as_slice()],
+            &mut io.split(),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(r, 0);
+        // no -e: the backslash-x-4-1 item prints literally
+        assert_eq!(io.output, b"\\x41 \xff".to_vec());
     }
 }

@@ -1314,3 +1314,193 @@ TEST(cp, issue1435_sibling_copy_still_works) {
   EXPECT_EQ(tmp.read("b/f.txt"), "data");
   EXPECT_EQ(tmp.read("b/sub/g.txt"), "deep");
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1648: a negative answer at the -i prompt (including EOF) makes the
+// copy fail with exit status 1 while the destination is left untouched.
+// GNU coreutils 9.4 copy.c:2421-2431 (`return_val = interactive ==
+// I_ALWAYS_SKIP;` — false for I_ASK_USER) and copy.c:1991-2015 overwrite_ok
+// (yesno() is false on EOF); measured against the 9.4 oracle in WSL:
+// `printf 'n\n' | cp -i a b` -> prompt on stderr, rc 1, b unchanged.
+// ---------------------------------------------------------------------------
+TEST(cp, issue1648_interactive_decline_exits_one) {
+  TempDir tmp;
+  tmp.write("a.txt", "NEW");
+  tmp.write("b.txt", "OLD");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("n\n");
+  p.add(L"cp.exe", {L"-i", L"a.txt", L"b.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("cp: overwrite 'b.txt'? ") !=
+              std::string::npos);
+  EXPECT_EQ(tmp.read("b.txt"), "OLD");
+}
+
+TEST(cp, issue1648_interactive_eof_exits_one) {
+  TempDir tmp;
+  tmp.write("a.txt", "NEW");
+  tmp.write("b.txt", "OLD");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("");
+  p.add(L"cp.exe", {L"-i", L"a.txt", L"b.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("cp: overwrite 'b.txt'? ") !=
+              std::string::npos);
+  EXPECT_EQ(tmp.read("b.txt"), "OLD");
+}
+
+TEST(cp, issue1648_interactive_accept_still_succeeds) {
+  TempDir tmp;
+  tmp.write("a.txt", "NEW");
+  tmp.write("b.txt", "OLD");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("y\n");
+  p.add(L"cp.exe", {L"-i", L"a.txt", L"b.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(tmp.read("b.txt"), "NEW");
+}
+
+TEST(cp, issue1648_recursive_interactive_decline_exits_one) {
+  TempDir tmp;
+  tmp.write("src/f.txt", "NEW");
+  tmp.write("dst/src/f.txt", "OLD");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("n\n");
+  p.add(L"cp.exe", {L"-ri", L"src", L"dst"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ(tmp.read("dst/src/f.txt"), "OLD");
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1647: symbolic-link SOURCES.  The reported repro needs a genuine
+// Windows symlink, which needs SeCreateSymbolicLinkPrivilege (or Developer
+// Mode); the cells print SKIPPED when the host cannot create one.  Oracle:
+// GNU coreutils 9.4 on the same tree (WSL drvfs exposes the NTFS link):
+//   cp link out          -> rc 0, out is a regular file with the target bytes
+//   cp -d link out       -> rc 0, out is a link with the same link text
+//   cp dangling out      -> rc 1, "cannot stat 'dangling': No such file ..."
+// A directory junction is the unprivileged equivalent for the destination
+// case below (GNU copy.c:2170-2189 / dir_list ancestor walk).
+// ---------------------------------------------------------------------------
+namespace {
+
+bool cp_create_file_symlink_or_skip(const std::filesystem::path& link,
+                                    const std::filesystem::path& target) {
+  DWORD flags = 0;
+#ifdef SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE
+  flags |= SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE;
+#endif
+  if (CreateSymbolicLinkW(link.wstring().c_str(), target.wstring().c_str(),
+                          flags)) {
+    return true;
+  }
+  std::cout << "  SKIPPED (CreateSymbolicLinkW failed with error "
+            << GetLastError() << ")\n";
+  return false;
+}
+
+bool cp_create_directory_junction_or_skip(const std::filesystem::path& link,
+                                          const std::filesystem::path& target) {
+  std::wstring command = L"cmd /d /c mklink /j \"" + link.wstring() + L"\" \"" +
+                         target.wstring() + L"\" >nul";
+  if (_wsystem(command.c_str()) == 0) return true;
+  std::cout << "  SKIPPED (mklink /j failed)\n";
+  return false;
+}
+
+}  // namespace
+
+TEST(cp, issue1647_file_symlink_source_dereferences_by_default) {
+  TempDir tmp;
+  tmp.write("a.txt", "A");
+  if (!cp_create_file_symlink_or_skip(tmp.path / "link", tmp.path / "a.txt")) {
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"link", L"out"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(std::filesystem::is_regular_file(tmp.path / "out"));
+  EXPECT_FALSE(std::filesystem::is_symlink(tmp.path / "out"));
+  EXPECT_EQ(tmp.read("out"), "A");
+}
+
+TEST(cp, issue1647_file_symlink_source_no_dereference_recreates_link) {
+  TempDir tmp;
+  tmp.write("a.txt", "A");
+  if (!cp_create_file_symlink_or_skip(tmp.path / "link", tmp.path / "a.txt")) {
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"-d", L"link", L"out"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(std::filesystem::is_symlink(tmp.path / "out"));
+  EXPECT_EQ(tmp.read("out"), "A");
+}
+
+TEST(cp, issue1647_dangling_symlink_source_reports_cannot_stat) {
+  TempDir tmp;
+  if (!cp_create_file_symlink_or_skip(tmp.path / "dangling",
+                                     tmp.path / "missing.txt")) {
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"dangling", L"out"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  // stat(2) follows the link: the diagnostic is cp's stat failure, not an
+  // open failure on the link path.
+  EXPECT_TRUE(r.stderr_text.find("cp: cannot stat 'dangling': No such file "
+                                 "or directory") != std::string::npos);
+  EXPECT_EQ(r.stderr_text.find("cannot open"), std::string::npos);
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "out"));
+}
+
+TEST(cp, issue1647_recursive_copy_through_directory_junction_into_self_refused) {
+  TempDir tmp;
+  tmp.write("dir/f.txt", "F");
+  if (!cp_create_directory_junction_or_skip(tmp.path / "dirlink",
+                                            tmp.path / "dir")) {
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"-r", L"dir", L"dirlink"});
+  auto r = p.run();
+
+  // GNU: "cannot copy a directory, 'dir', into itself, 'dirlink/dir'".
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("into itself") != std::string::npos);
+  // The guard must run before the destination is created: nothing may be
+  // written through the junction (the old behaviour recursed to the depth
+  // cap inside "dir" and still exited 0).
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "dir" / "dir"));
+  EXPECT_EQ(tmp.read("dir/f.txt"), "F");
+}

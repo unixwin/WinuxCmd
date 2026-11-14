@@ -22,6 +22,8 @@ use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
+pub mod host;
+pub mod i18n;
 pub mod path;
 pub mod stream;
 
@@ -63,6 +65,26 @@ pub trait EnvSource {
 pub struct Ctx<'e> {
     pub cwd: PathBuf,
     pub env: &'e dyn EnvSource,
+    /// Per-invocation host services (message catalog lookup). Defaults to
+    /// [`host::DEFAULT_HOST`] — no catalog, English fallbacks everywhere.
+    pub host: &'e dyn host::HostServices,
+}
+
+impl<'e> Ctx<'e> {
+    /// Context with the default (empty) host: every message lookup misses
+    /// and callers use their compiled-in English fallback.
+    pub fn new(cwd: PathBuf, env: &'e dyn EnvSource) -> Self {
+        Self::with_host(cwd, env, &host::DEFAULT_HOST)
+    }
+
+    /// Context with an explicit host (injected catalog / test map).
+    pub fn with_host(
+        cwd: PathBuf,
+        env: &'e dyn EnvSource,
+        host: &'e dyn host::HostServices,
+    ) -> Self {
+        Ctx { cwd, env, host }
+    }
 }
 
 /// Command return type. `Ok(status)` is the GNU exit status.
@@ -282,10 +304,7 @@ pub mod test_support {
         }
 
         pub fn ctx(&self) -> Ctx<'_> {
-            Ctx {
-                cwd: self.dir.clone(),
-                env: &self.env,
-            }
+            Ctx::new(self.dir.clone(), &self.env)
         }
 
         pub fn path(&self, rel: &str) -> PathBuf {

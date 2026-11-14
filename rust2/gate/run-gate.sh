@@ -8,13 +8,17 @@
 #
 # Case table: gate/cases/<cmd>.tsv, TAB-separated columns:
 #   id | mode | setup | env | stdin | arg1 | arg2 | ...
-#   mode : strict | exit | win | posix | posix-exit   (see below)
+#   mode : strict | sorted | exit | win | posix | posix-exit   (see below)
 #   setup: POSIX sh snippet run inside the per-side scratch dir (may be empty)
 #   env  : comma-separated K=V assignments (may be empty)
 #   stdin: literal bytes for stdin (no newlines in cases; may be empty)
 #
 # Modes:
 #   strict     : stdout bytes AND exit status must equal GNU; C++ equality recorded
+#   sorted     : strict, but stdout LINES compare after LC_ALL=C sort on both
+#                sides — for directory walks whose order is the filesystem's
+#                enumeration order (GNU find prints ext4 readdir/hash order,
+#                NTFS enumerates in B-tree order; #1488 find lane)
 #   exit       : exit status must equal GNU; stdout is platform-form-bound (recorded)
 #   win        : no GNU comparison (platform-inherent output); Rust vs C++ status
 #   posix      : strict comparison, but a failure counts as PENDING, not FAIL —
@@ -71,8 +75,9 @@ RUST2="$(cd "$GATE_DIR/.." && pwd)"
 TREE="$(cd "$RUST2/.." && pwd)"
 RUST_BIN="${RUST_BIN:-$RUST2/target/debug/winuxcmd-driver.exe}"
 CPP_BIN="${CPP_BIN:-$TREE/build-vs/usr/bin/winuxcmd.exe}"
-ART="$RUST2/target/gate"
-GNU_REMOTE_ROOT="/tmp/winuxcmd-gate"
+# Isolate new runs without overwriting earlier ledgers or fixture evidence.
+ART="${GATE_ARTIFACT_DIR:-$RUST2/target/gate}"
+GNU_REMOTE_ROOT="${GATE_GNU_REMOTE_ROOT:-/tmp/winuxcmd-gate}"
 GNU_MIRROR="$ART/gnu"
 
 # ---- --posix-mode flag + shell-namespace fixture ----
@@ -125,8 +130,38 @@ if [ -z "${TREE_MNT:-}" ]; then
         *) TREE_MNT="$TREE" ;;
     esac
 fi
+# The artifact directory can be outside the default target/gate tree.
+# Use its WSL view for BOTH script execution and result copies.
+if [ -z "${ART_MNT:-}" ]; then
+    case "$ART" in
+        "$TREE"/*) ART_MNT="$TREE_MNT/${ART#"$TREE"/}" ;;
+        /[a-zA-Z]/*) ART_MNT="/mnt/$(printf %s "${ART:1:1}" | tr 'A-Z' 'a-z')${ART:2}" ;;
+        [a-zA-Z]:/*) ART_MNT="/mnt/$(printf %s "${ART:0:1}" | tr 'A-Z' 'a-z')${ART:2}" ;;
+        *) ART_MNT="$ART" ;;
+    esac
+fi
 
 mkdir -p "$ART/scratch" "$GNU_MIRROR"
+
+# The GNU leg invokes native wsl.exe with leading-slash POSIX argv
+# ("wsl.exe --exec /bin/bash /mnt/<drive>/..."). Git Bash (MSYS2) rewrites
+# such arguments into Windows-native paths before the spawn — measured on
+# the CI runner: /bin/bash arrived as D:/Git/usr/bin/bash and the distro
+# failed execvpe for every case, so the whole GNU side scored MISSING
+# while wsl.exe itself "succeeded" (exit swallowed). MSYS_NO_PATHCONV=1
+# disables that rewriting under Git Bash and is ignored by the niubash
+# family, where this call shape never converted in the first place.
+export MSYS_NO_PATHCONV=1
+
+# Preflight: prove one GNU-side roundtrip through the exact call shape
+# below before spending minutes on the corpus, so a broken invocation
+# fails here in seconds instead of MISSING-ing every row.
+wsl.exe --exec /bin/bash -c "echo ok > '$ART_MNT/gnu-preflight'"
+if [ ! -f "$ART/gnu-preflight" ]; then
+    echo "FATAL: GNU-side WSL roundtrip failed (see the MSYS_NO_PATHCONV note above)" >&2
+    exit 3
+fi
+rm -f "$ART/gnu-preflight"
 
 if command -v timeout >/dev/null 2>&1; then WIN_TIMEOUT="timeout 10"; else WIN_TIMEOUT=""; fi
 
@@ -248,7 +283,13 @@ posix_setup_is_applet_list() {
 run_posix_win_side() {
     local side="$1" scase="$2" prog="$3" setup="$4" envstr="$5" stdin="$6"
     shift 6
-    local args=("$@")
+    # NOT `local args=("$@")`: the agent-side bash (niubash 5.3.20, MSYS)
+    # re-runs quote removal on a compound assignment given to `local`,
+    # silently stripping every backslash from the arguments (`s/b/\&/`
+    # reached both Windows AND GNU sides as `s/b/&/`; measured #1488 sed
+    # lane). Declare first, assign after.
+    local -a args
+    args=("$@")
     local sdir="$scase.$side"
     mkdir -p "$sdir"
     local exe
@@ -330,7 +371,13 @@ run_posix_win_side() {
 run_case() {
     local cmd="$1" id="$2" mode="$3" setup="$4" envstr="$5" stdin="$6"
     shift 6
-    local args=("$@")
+    # NOT `local args=("$@")`: the agent-side bash (niubash 5.3.20, MSYS)
+    # re-runs quote removal on a compound assignment given to `local`,
+    # silently stripping every backslash from the arguments (`s/b/\&/`
+    # reached both Windows AND GNU sides as `s/b/&/`; measured #1488 sed
+    # lane). Declare first, assign after.
+    local -a args
+    args=("$@")
 
     local scase="$ART/scratch/$id"
     rm -rf "$scase" "$scase.rust" "$scase.cpp" "$scase.gnu.sh" "$GNU_MIRROR/$id"
@@ -480,9 +527,9 @@ run_case() {
             done
             printf '\n'
         fi
-        printf 'cp .out .err .rc %s/gnu/%s/\n' "$TREE_MNT/rust2/target/gate" "$id"
+        printf 'cp .out .err .rc %s\n' "$(qsh "$ART_MNT/gnu/$id/")"
     } > "$scase.gnu.sh"
-    MSYS_NO_PATHCONV=1 wsl bash "$TREE_MNT/rust2/target/gate/scratch/$id.gnu.sh" >/dev/null 2>&1
+    wsl.exe --exec /bin/bash "$ART_MNT/scratch/$id.gnu.sh" >/dev/null 2>&1
     # wsl.exe can return before the artifact copy settles
     for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
         [ -f "$GNU_MIRROR/$id/.rc" ] && break
@@ -490,34 +537,51 @@ run_case() {
     done
 
     # ---------- read artifacts ----------
-    local r_out r_rc c_out c_rc g_out g_rc g_err
-    r_out=$(cat "$scase.rust/.out" 2>/dev/null; printf x); r_out="${r_out%x}"
+    local r_rc c_rc g_rc
     r_rc=$(cat "$scase.rust/.rc" 2>/dev/null || echo MISSING)
-    c_out=$(cat "$scase.cpp/.out" 2>/dev/null; printf x); c_out="${c_out%x}"
     c_rc=$(cat "$scase.cpp/.rc" 2>/dev/null || echo MISSING)
-    g_out=$(cat "$GNU_MIRROR/$id/.out" 2>/dev/null; printf x); g_out="${g_out%x}"
     g_rc=$(cat "$GNU_MIRROR/$id/.rc" 2>/dev/null || echo MISSING)
-    g_err=$(cat "$GNU_MIRROR/$id/.err" 2>/dev/null; printf x); g_err="${g_err%x}"
+
+    # Shell variables cannot represent NUL. Compare captured files directly.
+    local cpp_match=no cpp_out_match=no gnu_out_match=no gnu_rc_match=no
+    cmp -s "$scase.rust/.out" "$scase.cpp/.out" && cpp_out_match=yes
+    cmp -s "$scase.rust/.out" "$GNU_MIRROR/$id/.out" && gnu_out_match=yes
+    [ "$r_rc" = "$g_rc" ] && gnu_rc_match=yes
+    { [ "$cpp_out_match" = yes ] && [ "$r_rc" = "$c_rc" ]; } && cpp_match=yes
 
     local ok=0 note=""
     case "$mode" in
-        strict)     [ "$r_out" = "$g_out" ] && [ "$r_rc" = "$g_rc" ] && ok=1 ;;
+        strict)     [ "$gnu_out_match" = yes ] && [ "$r_rc" = "$g_rc" ] && ok=1 ;;
+        sorted)     [ "$(printf '%s' "$r_out" | LC_ALL=C sort)" = "$(printf '%s' "$g_out" | LC_ALL=C sort)" ] \
+                        && [ "$r_rc" = "$g_rc" ] && ok=1 ;;
         exit)       [ "$r_rc" = "$g_rc" ] && ok=1 ;;
         win)        [ "$r_rc" = "$c_rc" ] && ok=1 ;;
-        posix)      [ "$r_out" = "$g_out" ] && [ "$r_rc" = "$g_rc" ] && ok=1 ;;
+        posix)      [ "$gnu_out_match" = yes ] && [ "$r_rc" = "$g_rc" ] && ok=1 ;;
         posix-exit) [ "$r_rc" = "$g_rc" ] && ok=1 ;;
         note)       ok=1; note="record-only" ;;  # documented deviation, never gates
         *)          ok=0; note="bad-mode($mode)" ;;
     esac
+    if [ "$mode" != note ]; then
+        case "$r_rc" in
+            ''|*[!0-9]*) ok=0; note="missing-or-invalid-rust-status" ;;
+        esac
+        if [ "$mode" = win ]; then
+            case "$c_rc" in
+                ''|*[!0-9]*) ok=0; note="missing-or-invalid-cpp-status" ;;
+            esac
+        else
+            case "$g_rc" in
+                ''|*[!0-9]*) ok=0; note="missing-or-invalid-gnu-status" ;;
+            esac
+        fi
+    fi
 
-    local cpp_match=no gnu_out_match=no gnu_rc_match=no
-    { [ "$r_out" = "$c_out" ] && [ "$r_rc" = "$c_rc" ]; } && cpp_match=yes
-    [ "$r_out" = "$g_out" ] && gnu_out_match=yes
-    [ "$r_rc" = "$g_rc" ] && gnu_rc_match=yes
-
-    if [ -n "$g_err" ] && [ "$mode" != win ]; then
-        printf '=== %s (%s) GNU stderr ===\n%s\n' "$id" "$cmd" "$g_err" \
-            >> "$ART/gnu-stderr-samples.txt"
+    if [ -s "$GNU_MIRROR/$id/.err" ] && [ "$mode" != win ]; then
+        {
+            printf '=== %s (%s) GNU stderr ===\n' "$id" "$cmd"
+            cat "$GNU_MIRROR/$id/.err"
+            printf '\n'
+        } >> "$ART/gnu-stderr-samples.txt"
     fi
 
     if [ "$mode" = win ]; then
@@ -540,7 +604,7 @@ run_case() {
         elif [ "$POSIX_STRICT" = "1" ]; then
             fail=$((fail+1))
             note="posix-FAIL"
-            FAILED_CASES+=("$cmd/$id($mode) r_rc=$r_rc g_rc=$g_rc r_out=[${r_out:0:40}] g_out=[${g_out:0:40}]")
+            FAILED_CASES+=("$cmd/$id($mode) r_rc=$r_rc g_rc=$g_rc stdout files: $scase.rust/.out $GNU_MIRROR/$id/.out")
         else
             posixpending=$((posixpending+1))
             note="posix-pending"
@@ -551,7 +615,7 @@ run_case() {
             pass=$((pass+1))
         else
             fail=$((fail+1))
-            FAILED_CASES+=("$cmd/$id($mode) r_rc=$r_rc g_rc=$g_rc r_out=[${r_out:0:40}] g_out=[${g_out:0:40}]")
+            FAILED_CASES+=("$cmd/$id($mode) r_rc=$r_rc g_rc=$g_rc stdout files: $scase.rust/.out $GNU_MIRROR/$id/.out")
         fi
     fi
 

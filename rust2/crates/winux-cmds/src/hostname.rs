@@ -35,7 +35,7 @@ use std::ffi::OsString;
 use crate::argopt::{self, OptSpec};
 use crate::fsutil::resolve;
 use crate::winsys;
-use winux_core::{usage_error, CmdResult, Ctx, Io};
+use winux_core::{tr, usage_error, CmdResult, Ctx, Io};
 
 const OPTS: &[OptSpec] = &[
     OptSpec {
@@ -228,8 +228,19 @@ pub fn hostname_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     // Scan the unsupported table in the C++ array order, short form first.
     for c in ['b', 'i', 'I', 's', 'f', 'a', 'A', 'd', 'y', 'n'] {
         if present.contains(&c) {
-            let msg = format!("unknown option -- {c}");
-            let _ = usage_error(io, "hostname", &msg);
+            // coreutils-hostname wording for the unsupported net-tools set;
+            // the canonicalized short letter is the only dynamic part. The
+            // letter is intentionally UNQUOTED (byte-recorded by the gate).
+            let _ = usage_error(
+                io,
+                "hostname",
+                &tr!(
+                    ctx,
+                    "command.hostname.error.unknown_option",
+                    "unknown option -- {opt}",
+                    opt = c
+                ),
+            );
             return Ok(1);
         }
     }
@@ -245,8 +256,20 @@ pub fn hostname_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         let content = match std::fs::read(&path) {
             Ok(c) => c,
             Err(e) => {
+                // [GNU] main(): the open failure surfaces strerror under the
+                // program prefix; the errno string itself stays platform
+                // wording (fsutil::reason).
                 let reason = crate::fsutil::reason(&e);
-                let _ = writeln!(io.stderr, "hostname: {reason}");
+                let _ = writeln!(
+                    io.stderr,
+                    "hostname: {}",
+                    tr!(
+                        ctx,
+                        "command.hostname.error.read_file",
+                        "{reason}",
+                        reason = reason
+                    )
+                );
                 return Ok(1);
             }
         };
@@ -276,12 +299,25 @@ pub fn hostname_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         let line = line[begin..end].to_vec();
         let as_text = String::from_utf8_lossy(&line).into_owned();
         if !check_name(&as_text) {
-            let _ = writeln!(io.stderr, "hostname: the specified hostname is invalid");
+            // [GNU] set_name(): hostname.c check_name() failure wording.
+            let _ = writeln!(
+                io.stderr,
+                "hostname: {}",
+                tr!(
+                    ctx,
+                    "command.hostname.error.invalid_hostname",
+                    "the specified hostname is invalid"
+                )
+            );
             return Ok(1);
         }
         // sethostname() rejects len > HOST_NAME_MAX (64) with "name too long".
         if line.len() > 64 {
-            let _ = writeln!(io.stderr, "hostname: name too long");
+            let _ = writeln!(
+                io.stderr,
+                "hostname: {}",
+                tr!(ctx, "command.hostname.error.name_too_long", "name too long")
+            );
             return Ok(1);
         }
         // [DIFFERS] GNU calls sethostname() (silent, rc 0); Windows cannot,
@@ -291,12 +327,33 @@ pub fn hostname_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
 
     if p.positionals.len() > 1 {
         let shown = p.positionals[1].to_string_lossy().into_owned();
-        let _ = usage_error(io, "hostname", &format!("extra operand '{shown}'"));
+        // [GNU] hostname.c:91 probed — the SECOND operand is reported.
+        let _ = usage_error(
+            io,
+            "hostname",
+            &tr!(
+                ctx,
+                "command.hostname.error.extra_operand",
+                "extra operand '{operand}'",
+                operand = shown
+            ),
+        );
         return Ok(1);
     }
     if p.positionals.len() == 1 {
         let shown = p.positionals[0].to_string_lossy().into_owned();
-        let _ = writeln!(io.stderr, "hostname: cannot set name to '{shown}'");
+        // Windows cannot sethostname(); the C++ applet wording, GNU set_name
+        // failure shape.
+        let _ = writeln!(
+            io.stderr,
+            "hostname: {}",
+            tr!(
+                ctx,
+                "command.hostname.error.cannot_set_name",
+                "cannot set name to '{name}'",
+                name = shown
+            )
+        );
         return Ok(1);
     }
     writeln!(io.stdout, "{}", winsys::imp::computer_name())?;

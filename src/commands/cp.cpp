@@ -395,8 +395,21 @@ auto path_exists(const std::string& path) -> cp::Result<bool> {
     }
     return true;
   }
-  return native_path::valid_attributes(
-      native_path::attributes_w(api_operand_w(path)));
+  // [GNU] cp's source probe is stat(2) — it FOLLOWS a symbolic link
+  // (copy.c:2247-2256: follow_fstatat() with AT_SYMLINK_NOFOLLOW only under
+  // --no-dereference, then `cannot stat %s` on failure).  A dangling link
+  // must therefore be a stat failure ("cannot stat 'x': No such file or
+  // directory"), not an open failure.  GetFileAttributesW
+  // answers a dangling reparse point with the link's own attributes, so it
+  // reported the operand as existing and the copy died later in
+  // open_binary_file ("cannot open 'x' for reading", a different diagnostic
+  // and a different errno path).  std::filesystem::status is the stat-shaped
+  // probe: it follows reparse points and reports not_found when the target
+  // is missing.
+  std::error_code ec;
+  const auto status = std::filesystem::status(
+      std::filesystem::path(api_operand_w(path)), ec);
+  return !ec && status.type() != std::filesystem::file_type::not_found;
 }
 
 // ----------------------------------------------
@@ -965,6 +978,39 @@ auto directory_file_id(const std::string& path) -> std::optional<DirectoryId> {
           info.nFileIndexLow};
 }
 
+// [GNU] The lexical key above cannot see through a directory link in the
+// DESTINATION: "cp -r dir dirlink" (dirlink -> dir) spells the target
+// "dirlink\dir", which is lexically outside "dir" but physically inside it.
+// GNU detects the same relation through stat(2) identities while it walks
+// ("cannot copy a directory, %s, into itself, %s", copy.c:2694-2702) and
+// stops.  Without this the guard missed and the copy recursed into its own
+// output until the depth cap, growing the source tree by 100 levels (#1647
+// family: symlink/junction destinations).  The deepest EXISTING ancestor of
+// the destination decides:
+// if its (volume, file-index) is one of the source directories on the active
+// chain, the destination is inside the source.
+auto destination_inside_ancestors(const std::string& destPath,
+                                  const std::vector<DirectoryId>& ancestors)
+    -> bool {
+  std::wstring current = api_operand_w(destPath);
+  for (int depth = 0; depth < 128; ++depth) {
+    if (native_path::valid_attributes(native_path::attributes_w(current))) {
+      auto id = directory_file_id(wstring_to_utf8(current));
+      return id && std::ranges::find(ancestors, *id) != ancestors.end();
+    }
+    // Walk the operand up to the nearest existing directory.  parent_path()
+    // keeps ".." lexically; the attribute probe of the next round resolves
+    // it through the OS like GNU's stat walk.
+    const std::filesystem::path parent =
+        std::filesystem::path(current).parent_path();
+    if (parent.empty() || parent.wstring() == current) {
+      return false;
+    }
+    current = parent.wstring();
+  }
+  return false;
+}
+
 // [GNU] An existing destination is removed before a link is created.
 // Directories (real ones) are not silently removed: GNU reports
 // "cannot overwrite directory ... with non-directory" instead.
@@ -1430,12 +1476,19 @@ auto copy_file(const std::string& srcPath, const std::string& destPath,
     // [GNU] Read a whole line: a char-wise read leaves the first answer's
     // newline in the stream, which then auto-answers the next prompt as
     // "no" (#1324).
+    // [GNU] A declined prompt is a failed copy, not a success: copy.c:
+    // 2420-2432 (9.4) sets `skipped = true; return_val = x->interactive ==
+    // I_ALWAYS_SKIP;` for the I_ASK_USER arm, and a negative reply (yesno()
+    // is also false on EOF) therefore reports failure.  That return value is
+    // what cp.c turns into exit status 1 (#1648).  9.7 keeps the same rule
+    // through `return_val = x->update == UPDATE_NONE`; --update=none never
+    // reaches this prompt in either version.
     std::string line;
     if (!std::getline(std::cin, line)) {
-      return true;
+      return false;
     }
     if (line.empty() || (line[0] != 'y' && line[0] != 'Y')) {
-      return true;
+      return false;
     }
   }
 
@@ -1809,6 +1862,16 @@ auto copy_directory_helper(const std::string& srcPath,
     safeErrorPrint("'\n");
     return std::unexpected("cannot copy directory into itself");
   }
+  // The lexical keys see ".", "A"/"a" and drive spellings, but not a link in
+  // the destination that resolves into the source ("cp -r dir dirlink").
+  if (destination_inside_ancestors(destPath, ancestors)) {
+    safeErrorPrint("cp: cannot copy directory '");
+    safeErrorPrint(srcPath);
+    safeErrorPrint("' into itself '");
+    safeErrorPrint(destPath);
+    safeErrorPrint("'\n");
+    return std::unexpected("cannot copy directory into itself");
+  }
 
   // Create destination directory if it doesn't exist
   auto createResult = create_directory_recursive(destPath);
@@ -1888,6 +1951,8 @@ auto copy_directory_helper(const std::string& srcPath,
           safeErrorPrint(fileResult.error());
           safeErrorPrint("\n");
           success = false;
+        } else if (!*fileResult) {
+          success = false;  // -i decline fails the copy (#1648)
         }
       } else if (findData.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
         // [GNU] -L on a dangling directory link is a stat failure, not a
@@ -1904,6 +1969,8 @@ auto copy_directory_helper(const std::string& srcPath,
         safeErrorPrint(fileResult.error());
         safeErrorPrint("\n");
         success = false;
+      } else if (!*fileResult) {
+        success = false;  // -i decline fails the copy (#1648)
       }
     }
   } while (FindNextFileW(hFind, &findData));
@@ -2026,6 +2093,11 @@ auto process_source_paths(
         safeErrorPrint("cp: ");
         safeErrorPrint(fileResult.error());
         safeErrorPrint("\n");
+        success = false;
+      } else if (!*fileResult) {
+        // A false success payload is copy_file's "skipped without copying"
+        // (the -i decline); GNU fails the command while printing nothing
+        // extra, so only the exit status changes (#1648).
         success = false;
       }
     }

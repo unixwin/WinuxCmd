@@ -9,6 +9,8 @@
 
 #include "pch/pch.h"
 // include other header after pch.h
+#include <winioctl.h>  // FSCTL_GET_REPARSE_POINT (WSL DrvFs link targets)
+
 #include "core/command_macros.h"
 
 import std;
@@ -137,45 +139,9 @@ namespace cp = core::pipeline;
  * @return Formatted string
  */
 auto format_size(uint64_t size, bool si) -> std::string {
-  const char* units = si ? "BKMGTPE"  // 1000-based
-                         : "BKMGTP";  // 1024-based
-  const uint64_t base = si ? 1000 : 1024;
-
-  if (size < base) {
-    return std::to_string(size);
-  }
-
-  // Smallest unit index (1 = K) with size in [base^idx, base^(idx+1)).
-  int idx = 0;
-  uint64_t unit = base;
-  while (idx < 6 && size / unit >= base) {
-    unit *= base;
-    ++idx;
-  }
-  ++idx;
-
-  // Ceiling in tenths of the selected unit (exact integer math; the
-  // remainder-based form avoids overflow for exabyte-scale sizes).
-  const uint64_t q = size / unit;
-  const uint64_t r = size % unit;
-  uint64_t tenths = q * 10 + (r * 10 + unit - 1) / unit;
-
-  // Rollover: 1024.0K displays as 1.0M.
-  while (tenths >= base * 10 && idx < 6) {
-    tenths = (tenths + base - 1) / base;
-    ++idx;
-  }
-
-  char buf[32];
-  if (tenths < 100) {  // value < 10 units: one decimal digit
-    snprintf(buf, sizeof(buf), "%llu.%llu%c",
-             static_cast<unsigned long long>(tenths / 10),
-             static_cast<unsigned long long>(tenths % 10), units[idx]);
-  } else {
-    snprintf(buf, sizeof(buf), "%llu%c",
-             static_cast<unsigned long long>((tenths + 9) / 10), units[idx]);
-  }
-  return std::string(buf);
+  return winux::human::size(
+      size, si ? winux::human::UnitBase::decimal
+               : winux::human::UnitBase::binary);
 }
 
 auto pow_u64(uint64_t base, int exponent) -> std::optional<uint64_t> {
@@ -1144,6 +1110,103 @@ auto append_entry_name(const std::wstring& dir, const wchar_t* name)
   return dir + name;
 }
 
+// WSL DrvFs POSIX symlink reparse tag (ntifs.h IO_REPARSE_TAG_LX_SYMLINK).
+// Windows' object manager has no reader for it: CreateFileW on such a link
+// fails and GetFileAttributesW answers the LINK's attributes, so every
+// GNU-style dereference must read the stored target and resolve it in user
+// space (#1656, the DrvFs half the `mklink /D` fixture also needs).
+constexpr DWORD kIoReparseTagLxSymlink = 0xA000001Du;
+
+// The stored target of an LX symlink: reparse payload `u32 version`
+// followed by the UTF-8 POSIX target (no NUL). A native NTFS symlink or
+// junction answers tag 0xA000000C / 0xA0000003 here and is left to the
+// kernel's own traversal.
+auto read_lx_symlink_target(const std::wstring& path, std::wstring* target)
+    -> bool {
+  HANDLE handle = CreateFileW(
+      path.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+      nullptr, OPEN_EXISTING,
+      FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+  if (handle == INVALID_HANDLE_VALUE) {
+    return false;
+  }
+  alignas(8) std::byte buffer[16 * 1024]{};
+  DWORD returned = 0;
+  const BOOL ok = DeviceIoControl(handle, FSCTL_GET_REPARSE_POINT, nullptr, 0,
+                                  buffer, sizeof(buffer), &returned, nullptr);
+  CloseHandle(handle);
+  if (!ok || returned < 12) {
+    return false;
+  }
+  const auto* raw = reinterpret_cast<const unsigned char*>(buffer);
+  const auto read_u16 = [&](size_t off) {
+    return static_cast<unsigned>(raw[off]) | static_cast<unsigned>(raw[off + 1])
+                                                 << 8;
+  };
+  const auto read_u32 = [&](size_t off) {
+    return static_cast<DWORD>(read_u16(off)) |
+           static_cast<DWORD>(read_u16(off + 2)) << 16;
+  };
+  // REPARSE_DATA_BUFFER: ReparseTag, ReparseDataLength, Reserved, payload.
+  const DWORD tag = read_u32(0);
+  const size_t data_len = read_u16(4);
+  if (tag != kIoReparseTagLxSymlink || data_len < 4 ||
+      8 + data_len > returned) {
+    return false;
+  }
+  std::string utf8(reinterpret_cast<const char*>(raw + 12), data_len - 4);
+  while (!utf8.empty() && utf8.back() == '\0') {
+    utf8.pop_back();
+  }
+  if (utf8.empty()) {
+    return false;
+  }
+  *target = utf8_to_wstring(utf8);
+  return true;
+}
+
+// Resolve a stored target against its link: POSIX drive and shell-tree
+// spellings fold through the shared operand boundary ("/mnt/d/x", "/d/x"),
+// everything else is relative to the link's own directory.
+auto resolve_link_target_path(const std::wstring& link_path,
+                              const std::wstring& target) -> std::wstring {
+  const std::wstring folded =
+      native_path::make_api_path_operand_w(target).normalized;
+  if (std::filesystem::path(folded).is_absolute()) {
+    return folded;
+  }
+  return (std::filesystem::path(link_path).parent_path() / folded).wstring();
+}
+
+// [GNU] Does a -L/-H link operand resolve to a live target? The kernel
+// answers for plain paths, native symlinks and junctions (CreateFileW
+// follows reparse points unless FILE_FLAG_OPEN_REPARSE_POINT is set);
+// DrvFs LX links are opaque to it, so their stored target is resolved and
+// probed here — and returned so the walk can traverse it while printing
+// the operand spelling.
+auto operand_target_present(const std::wstring& path, std::wstring* target_path)
+    -> bool {
+  const auto probe = [](const std::wstring& p) {
+    HANDLE handle = CreateFileW(
+        p.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) {
+      return false;
+    }
+    CloseHandle(handle);
+    return true;
+  };
+  if (probe(path)) {
+    return true;
+  }
+  std::wstring target;
+  if (!read_lx_symlink_target(path, &target)) {
+    return false;
+  }
+  *target_path = resolve_link_target_path(path, target);
+  return probe(*target_path);
+}
+
 /**
  * @brief Calculate directory size recursively
  * @param path Directory path
@@ -1540,25 +1603,42 @@ auto print_disk_usage(const CommandContext<DU_OPTIONS.size()>& ctx)
     const std::string operand_display =
         display_path(operand_display_path(resolved_path));
 
-    // [GNU] Under -L/-H a symlink operand that does not resolve (dangling
-    // link) is reported and the run fails; GNU prints no errno text for the
-    // dangling case but "No such file or directory" for a missing path.
+    // [GNU] Under -L/-H a symlink operand must resolve to a LIVE target:
+    // a dangling link is reported and the run fails, with no errno text for
+    // the dangling case but "No such file or directory" for a missing path
+    // (#1059, #1656). The gate cannot be an attribute probe: on this
+    // platform GetFileAttributesW reports the LINK's own attributes for
+    // WSL DrvFs links and the NTFS reparse point for native ones, so it
+    // never proves the target exists — and std::filesystem::status(), which
+    // did follow, errors on a live directory-symlink operand (the #1656
+    // misread). Follow the operand the way the traversal will and probe
+    // the target; an LX link answers with its resolved target.
+    std::wstring walk_path = wpath;
     if (cfg.dereference || cfg.dereference_args) {
-      std::error_code ec;
-      (void)std::filesystem::status(std::filesystem::path(wpath), ec);
-      if (ec) {
+      std::wstring resolved_target;
+      if (!operand_target_present(wpath, &resolved_target)) {
         std::error_code lec;
         const bool operand_exists = std::filesystem::exists(
             std::filesystem::symlink_status(std::filesystem::path(wpath), lec));
+        // An LX link is opaque to std::filesystem::symlink_status as well:
+        // the reparse point itself still proves the link exists.
+        DWORD link_attrs = GetFileAttributesW(wpath.c_str());
+        const bool link_present =
+            (!lec && operand_exists) ||
+            (link_attrs != INVALID_FILE_ATTRIBUTES &&
+             (link_attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0);
         safeErrorPrint("du: cannot access '");
         safeErrorPrint(path);
-        if (!lec && operand_exists) {
+        if (link_present) {
           safeErrorPrint("'\n");
         } else {
           safeErrorPrint("': No such file or directory\n");
         }
         all_ok = false;
         continue;
+      }
+      if (!resolved_target.empty()) {
+        walk_path = resolved_target;
       }
     }
 
@@ -1616,20 +1696,24 @@ auto print_disk_usage(const CommandContext<DU_OPTIONS.size()>& ctx)
       // follows its subtree, so the operand directory prints last
       // (Savannah #13956).
       std::vector<std::wstring> order;
-      // Calculate directory size (-x anchors on the operand volume)
+      // Calculate directory size (-x anchors on the operand volume).
+      // walk_path is the operand itself, or the target of a link the
+      // kernel cannot traverse (a DrvFs LX link): the walk happens on the
+      // real directory while every printed row keeps the operand spelling
+      // below, exactly like GNU's dereference (#1656).
       const uint32_t root_volume =
-          cfg.one_file_system ? volume_serial_of(wpath) : 0;
+          cfg.one_file_system ? volume_serial_of(walk_path) : 0;
       bool operand_error = false;
-      UsageSummary dir_summary = calculate_dir_size(
-          wpath, sizes, times, 0, cfg, seen_inodes, visited_dirs,
-          root_volume, &order, &operand_error);
+      UsageSummary dir_summary =
+          calculate_dir_size(walk_path, sizes, times, 0, cfg, seen_inodes,
+                             visited_dirs, root_volume, &order, &operand_error);
       if (operand_error) {
         all_ok = false;
       }
 
       // Print directory size. [GNU] -c accumulates the FULL total:
       // -S changes printed lines, never what -c sums (DU-3).
-      uint64_t dir_size = sizes[wpath];
+      uint64_t dir_size = sizes[walk_path];
       grand_total += dir_summary.full_size;
 
       auto print_entry = [&](const std::wstring& entry_path, uint64_t size,
@@ -1663,7 +1747,16 @@ auto print_disk_usage(const CommandContext<DU_OPTIONS.size()>& ctx)
           // `src//` also prints `src/`).
           safePrint(operand_display);
         } else {
-          safePrint(display_path(entry_path));
+          // A walk through a resolved link target prints each descendant
+          // under the operand's spelling (GNU `du -L dirlink` prints
+          // `dirlink/f.txt`, never the target's own name).
+          std::wstring shown = entry_path;
+          if (walk_path != wpath && shown.size() >= walk_path.size() &&
+              _wcsnicmp(shown.c_str(), walk_path.c_str(), walk_path.size()) ==
+                  0) {
+            shown = wpath + shown.substr(walk_path.size());
+          }
+          safePrint(display_path(shown));
         }
         print_record_terminator(cfg.null_terminated);
       };
@@ -1671,7 +1764,7 @@ auto print_disk_usage(const CommandContext<DU_OPTIONS.size()>& ctx)
       if (cfg.summarize) {
         // -s: print only the operand total.
         if (passes_threshold(cfg, dir_size)) {
-          print_entry(wpath, dir_size, true);
+          print_entry(walk_path, dir_size, true);
         }
       } else {
         for (const auto& subpath : order) {
@@ -1682,13 +1775,13 @@ auto print_disk_usage(const CommandContext<DU_OPTIONS.size()>& ctx)
           if (!passes_threshold(cfg, size_it->second)) {
             continue;
           }
-          print_entry(subpath, size_it->second, subpath == wpath);
+          print_entry(subpath, size_it->second, subpath == walk_path);
         }
         // Fallback safety: the operand root always prints.
         if (order.empty() ||
-            std::find(order.begin(), order.end(), wpath) == order.end()) {
+            std::find(order.begin(), order.end(), walk_path) == order.end()) {
           if (passes_threshold(cfg, dir_size)) {
-            print_entry(wpath, dir_size, true);
+            print_entry(walk_path, dir_size, true);
           }
         }
       }
@@ -1697,14 +1790,15 @@ auto print_disk_usage(const CommandContext<DU_OPTIONS.size()>& ctx)
       uint64_t file_size = 0;
       if (operand_is_unfollowed_link) {
         WIN32_FIND_DATAW link_data{};
-        const HANDLE hFind =
-            FindFirstFileW(wpath.c_str(), &link_data);
+        const HANDLE hFind = FindFirstFileW(wpath.c_str(), &link_data);
         if (hFind != INVALID_HANDLE_VALUE) {
           file_size = link_entry_size(link_data, wpath, cfg.apparent_size);
           FindClose(hFind);
         }
       } else {
-        file_size = get_file_size(wpath, cfg.apparent_size);
+        // walk_path is the target when a DrvFs link operand was resolved
+        // above; for every other operand it is the operand itself.
+        file_size = get_file_size(walk_path, cfg.apparent_size);
       }
       // [GNU] The seen-inode table spans the whole invocation (#1351):
       // a file operand whose inode was already counted — by an earlier
@@ -1715,7 +1809,7 @@ auto print_disk_usage(const CommandContext<DU_OPTIONS.size()>& ctx)
       if (!cfg.count_links) {
         const std::wstring inode_key = operand_is_unfollowed_link
                                            ? get_link_inode_key(wpath)
-                                           : get_inode_key(wpath);
+                                           : get_inode_key(walk_path);
         if (!inode_key.empty() && !seen_inodes.insert(inode_key).second) {
           continue;
         }
@@ -1742,9 +1836,8 @@ auto print_disk_usage(const CommandContext<DU_OPTIONS.size()>& ctx)
               have_data = true;
               FindClose(hFind);
             }
-          } else if (GetFileAttributesExW(wpath.c_str(),
-                                          GetFileExInfoStandard,
-                                          &file_data)) {
+          } else if (GetFileAttributesExW(walk_path.c_str(),
+                                          GetFileExInfoStandard, &file_data)) {
             have_data = true;
           }
           if (have_data) {

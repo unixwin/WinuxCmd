@@ -4,6 +4,104 @@ All notable changes to WinuxCmd are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow the
 repository release tags.
 
+## [2.0.0] - unreleased (WP-R draft, 2026-11-14)
+
+> Draft for captain review. The wiring waves that land between this snapshot
+> and the tag change the per-command counts; refresh them from
+> `DOCS/2.0-inventory.tsv` and the release gate run before publishing.
+
+**中文摘要**：2.0 把命令核心换成库形态 Rust（显式注入 IO、显式环境/cwd、
+返回状态码、静态链接进同一个 exe），命令集/帮助面/edition/WPM 不变；
+退役 `echo -u/-r`、`fmt -m/-P/-x/-X/-T`、`fold -c`、`numfmt
+--unit-separator/-M/-l` 等 1.x 私有拼写；修正 `ln -s`、`stat -c %C`、
+`rmdir -p`、`touch -d/-t`、digest 操作数、`expand/-4,8`、`seq` 精度等
+记录在案的 1.x 偏差。逐命令差异见 `DOCS/2.0-MIGRATION.md`。
+
+### Added
+
+- **Library-form command core (rust2)**: commands are now plain functions
+  (`run(args, &mut Io, &Ctx) -> CmdResult`) with explicitly injected IO,
+  explicit cwd/env, no process-global mutable state, and a returned status
+  instead of `exit()`. The staticlib is folded into `winuxcmd.exe` by the
+  same MSVC link (one image, one CRT); there is no separate runtime and no
+  C++ fallback body. 50 applets are wired at this snapshot, 32 more have a
+  green differential gate and wait for a wiring wave (`DOCS/2.0-inventory.tsv`).
+- **`winux-regex`**: a std-only BRE/ERE engine (GNU extensions,
+  backreferences, POSIX leftmost-longest, glibc capture/empty-iteration
+  rules) shared by the Rust side; `grep -P` keeps the existing pinned PCRE2
+  face (`DOCS/2.0-regex-engine-decision.md`).
+- **Streaming stdin ABI v2**: `winuxcmd_run_stream` adds a pull callback so
+  a command can read stdin incrementally without a whole-buffer copy; host
+  stop maps to GNU's 124, host read failure to the command's own status.
+  `b2sum`, `sha224sum`, `sha384sum` and `tac` route through it; segmented
+  feeding is byte-identical to the v1 buffer path.
+- **Rust I18N seam**: `tr!` gives every runtime message a stable key, an
+  English fallback, named placeholders and a never-panicking fallback on a
+  broken/partial catalog; translations are injected per invocation through
+  the host, and the zh-CN catalog is published from the separate
+  `unixwin/winuxcmd-i18n` repository.
+- **Gate/QC tooling**: three-way differential gate (Rust driver / GNU WSL
+  oracle / 1.x exe), generated case tables, a note registry, and QC audits
+  for note rows, win rows, help surfaces, POSIX gaps and duplicate cases.
+
+### Changed
+
+- **`sort`** is a GNU `sort.c` port: accepts `+POS1`/`-POS2`, `-S100k` and
+  `-y100`; 64 MiB plain sort measured 12.0x faster than the 1.x C++ sort on
+  NTFS (2.1x with `-n`); `-R` is deterministic (FNV-1a order) by design.
+- **`seq`** uses an exact fixed-point path: no f64 drift past 17 significant
+  digits and no non-terminating sub-ulp steps; error output no longer
+  appends a spurious `Try 'seq --help'`.
+- **`numfmt --field`** preserves the original field width (aligned columns).
+- **`expand`/`unexpand`** accept GNU's obsolescent digit/comma lists
+  (`-4,8`); **`sort`** accepts the traditional key forms; **`hostid`/`users`**
+  accept `-h`; **`ln -s`** creates real symlinks through
+  `ALLOW_UNPRIVILEGED_CREATE` without absolutizing the target.
+- **Digest and `rev` operands are literal**: the product no longer
+  glob-expands operands (the shell does, as with GNU); `rev -h/-V` prints
+  the util-linux text instead of a parse error.
+- **`readlink -f/-e/-m`** print `/`-separated canonical names; **`rmdir -p`**
+  no longer appends a trailing slash; **`tee`** uses GNU's unquoted
+  open-failure name; **`touch`** accepts the space-separated `-d` form and
+  rejects the 1.x `-t .99` stamp.
+- **`stat`** returns 0 for `-c %C` and follows GNU's format-slot last-wins
+  and escape rules; **`ln -i`** decline returns 1.
+
+### Removed
+
+- **`echo -u`/`--upper`** and **`echo -r`/`--repeat`**: GNU `echo.c` treats
+  them as data; 2.0 prints them as data (rc 0) instead of applying an
+  extension or rejecting the int value (#1621).
+- **`fmt -m/--preserve-headers`, `-P/--skip-prefix`, `-x/--exact-prefix`,
+  `-X/--exact-skip-prefix`, `-T/--tab-width`**: not GNU fmt options; 2.0
+  follows GNU's invalid-option path.
+- **`fold -c`/`--characters`**: not a POSIX/GNU fold option.
+- **`numfmt --unit-separator`, `-M`, `-l`**, and the `Z/Y/R/Q` input
+  suffixes as accepted by 1.x: GNU 9.4 rejects them.
+- **PCRE2 SDK tree from release payloads** (1.2.0 change, still in effect):
+  archives carry runtime `usr/bin` plus docs only.
+
+### Fixed
+
+- Corrected 1.x behaviors recorded as `r=c:no` in the gate ledger: GNU
+  quoting in digest errors; digest/`rev` literal operands; `expand`/
+  `unexpand` comma lists; `tee` diagnostics; `rmdir -p`; `touch -d/-t`;
+  `ln -i`/`-s`; `stat -c %C`; `false --help` status; `seq` diagnostics and
+  decimal stepping; `numfmt` field padding; `xargs`' 26 quoting/EOF/batch
+  divergences (library side).
+- The full list is in `DOCS/2.0-MIGRATION.md` §5 with per-row evidence.
+
+### Platform
+
+- Documented Windows subsets unchanged: NTFS mode bits (owner-write ↔
+  read-only attribute), ownership via `SetNamedSecurityInfoW` where the OS
+  grants `WRITE_OWNER`, `df` inode columns 0/`-`, SELinux capability
+  probes, the `!<fifo>` named-pipe bridge, and symlink creation requiring
+  Developer Mode or elevation where the OS refuses.
+- Open `compat-gap` issues at this snapshot (#1639–#1657, #1670, #1672,
+  #1675) are 1.x file-operation bugs tracked for the Rust rewrites, not
+  2.0 regressions.
+
 ## [1.2.1] - 2026-11-02
 
 ### Fixed
