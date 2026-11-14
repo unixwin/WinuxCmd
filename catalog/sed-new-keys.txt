@@ -1,0 +1,61 @@
+command.sed.bug_reports	'E-mail bug reports to: <bug-sed@gnu.org>.\n'
+command.sed.error.ancient_version	'expected newer version of sed'
+command.sed.error.bad_bang	"multiple `!'s"
+command.sed.error.bad_comma	"unexpected `,'"
+command.sed.error.bad_delim	'delimiter character is not a single-byte character'
+command.sed.error.bad_modif	'cannot specify modifiers on empty regexp'
+command.sed.error.bad_step	'invalid usage of +N or ~N as first address'
+command.sed.error.cannot_rename	'sed: cannot rename {file}: {reason}'
+command.sed.error.cant_find_label	"sed: can't find label for jump to `{label}'"
+command.sed.error.cant_read	"sed: can't read {file}: {reason}"
+command.sed.error.character_class_syntax	'sed: character class syntax is [[:space:]], not [:space:]'
+command.sed.error.colon_lacks_label	'":" lacks a label'
+command.sed.error.couldnt_open_file	"sed: couldn't open file {file}: {reason}"
+command.sed.error.couldnt_open_temp	"sed: couldn't open temporary file {dir}/sedXXXXXX: {reason}"
+command.sed.error.couldnt_readlink	"sed: couldn't readlink {file}: {reason}"
+command.sed.error.couldnt_write_items	"sed: couldn't write items to {what}: {reason}"
+command.sed.error.disallowed_cmd	'e/r/w commands disabled in sandbox mode'
+command.sed.error.excess_close_brace	"unexpected `}'"
+command.sed.error.excess_g_opt	"multiple `g' options to `s' command"
+command.sed.error.excess_junk	'extra characters after command'
+command.sed.error.excess_n_opt	"multiple number options to `s' command"
+command.sed.error.excess_open_brace	"unmatched `{'"
+command.sed.error.excess_p_opt	"multiple `p' options to `s' command"
+command.sed.error.expected_slash	"expected \\ after `a', `c' or `i'"
+command.sed.error.expression	'sed: -e expression #{expression}, char {column}: {why}'
+command.sed.error.expression_char_zero	'sed: -e expression #{expression}, char 0: {why}'
+command.sed.error.file_line	'sed: file {file} line {line}: {why}'
+command.sed.error.incomplete_cmd	'incomplete command'
+command.sed.error.internal_bad_command	'sed: INTERNAL ERROR: Bad cmd {command}'
+command.sed.error.invalid_line_0	'invalid usage of line address 0'
+command.sed.error.invalid_option	"sed: invalid option -- '{option}'"
+command.sed.error.invalid_reference	"invalid reference \\{reference} on `s' command's RHS"
+command.sed.error.is_a_directory	'sed: read error on {file}: Is a directory'
+command.sed.error.memory_exhausted	'Memory exhausted'
+command.sed.error.missing_filename	'missing filename in r/R/w/W commands'
+command.sed.error.no_close_brace_addr	"`}' doesn't want any addresses"
+command.sed.error.no_colon_addr	": doesn't want any addresses"
+command.sed.error.no_command	'missing command'
+command.sed.error.no_input_files	'sed: no input files'
+command.sed.error.no_regex	'no previous regular expression'
+command.sed.error.no_sharp_addr	"comments don't accept any addresses"
+command.sed.error.not_regular_file	"sed: couldn't edit {file}: not a regular file"
+command.sed.error.one_addr	'command only uses one address'
+command.sed.error.option_ambiguous	"sed: option '{option}' is ambiguous; possibilities:{possibilities}"
+command.sed.error.option_no_argument	"sed: option '--{option}' doesn't allow an argument"
+command.sed.error.option_requires_argument	"sed: option '--{option}' requires an argument"
+command.sed.error.read_error	'sed: read error on {file}: {reason}'
+command.sed.error.recursive_escape_c	'recursive escaping after \\c not allowed'
+command.sed.error.regex_too_big	'Regular expression too big'
+command.sed.error.short_option_requires_argument	"sed: option requires an argument -- '{option}'"
+command.sed.error.subprocess	'sed: error in subprocess'
+command.sed.error.unknown_command	"unknown command: `{command}'"
+command.sed.error.unknown_s_opt	"unknown option to `s'"
+command.sed.error.unmatched_bracket	'Unmatched [, [^, [:, [., or [='
+command.sed.error.unrecognized_option	"sed: unrecognized option '{option}'"
+command.sed.error.unterm_addr_re	'unterminated address regex'
+command.sed.error.unterm_s_cmd	"unterminated `s' command"
+command.sed.error.unterm_y_cmd	"unterminated `y' command"
+command.sed.error.y_cmd_len	"strings for `y' command are different lengths"
+command.sed.error.zero_n_opt	"number option to `s' command may not be zero"
+command.sed.usage	"Usage: sed [OPTION]... {script-only-if-no-other-script} [input-file]...\n\n  -n, --quiet, --silent\n                 suppress automatic printing of pattern space\n      --debug\n                 annotate program execution\n  -e script, --expression=script\n                 add the script to the commands to be executed\n  -f script-file, --file=script-file\n                 add the contents of script-file to the commands to be executed\n  --follow-symlinks\n                 follow symlinks when processing in place\n  -i[SUFFIX], --in-place[=SUFFIX]\n                 edit files in place (makes backup if SUFFIX supplied)\n  -l N, --line-length=N\n                 specify the desired line-wrap length for the `l' command\n  --posix\n                 disable all GNU extensions.\n  -E, -r, --regexp-extended\n                 use extended regular expressions in the script\n                 (for portability use POSIX -E).\n  -s, --separate\n                 consider files as separate rather than as a single,\n                 continuous long stream.\n      --sandbox\n                 operate in sandbox mode (disable e/r/w commands).\n  -u, --unbuffered\n                 load minimal amounts of data from the input files and flush\n                 the output buffers more often\n  -z, --null-data\n                 separate lines by NUL characters\n      --help     display this help and exit\n      --version  output version information and exit\n\nIf no -e, --expression, -f, or --file option is given, then the first\nnon-option argument is taken as the sed script to interpret.  All\nremaining arguments are names of input files; if no input files are\nspecified, then the standard input is read.\n\nGNU sed home page: <https://www.gnu.org/software/sed/>.\nGeneral help using GNU software: <https://www.gnu.org/gethelp/>.\n"

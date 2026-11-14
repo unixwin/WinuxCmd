@@ -763,7 +763,6 @@ lands 8h apart across sides (dt39, du25/du26).
 0 FAIL (final full-wave5 run 2026-11-13, ledger
 target/gate/ledger.tsv; 82-command coverage 2444 cases).**
 
-<<<<<<< HEAD
 ## find — GNU findutils 4.9 (#1488 find lane)
 
 Oracle: WSL `find (GNU findutils) 4.9.0` (native ext4 scratch, runs as
@@ -865,7 +864,56 @@ LARGE_FETCH)` and answers `-type/-size/-mtime/-newer/%s/%t` from the
 enumeration record (the C++ applet opens every file for size/time);
 `-regex` splits a leading `.*` into first-byte-filtered suffix
 attempts (7.77 s before the split).
-=======
+## sed wiring (#1488, sed lane wired to the product)
+
+`sed` moved from the C++ body to `rust2/crates/winux-cmds/src/sed.rs`
+(the GNU sed 4.9 port with `sed/compile.rs` + `sed/exec.rs`) with the
+mechanical-replacement recipe: the handler is one
+`winux::rust2::run_command_with_stdin_streaming("sed", ctx.raw_args)` call
+(ABI v2: the pull callback stays lazy, so file-operand invocations never
+touch fd 0), `src/commands/sed.cpp` keeps only `REGISTER_COMMAND`
+metadata, and `WINUXCMD_RUST2_COMMANDS` carries `sed`.
+
+Argument language: `option_policy_for_command("sed")` sets the new
+`OptionParsePolicy::all_args_are_positionals`, so the generic parser,
+dispatcher abbreviation pass and the `--help`/`--version` interceptors
+all stand down: sed.c's own getopt_long run (in the library) owns
+`-e`/`-f` order, `-i[SUF]`, `--posix`, unknown/ambiguous long options and
+`-e` with no argument. Consequence: `sed --help` / `sed --version` print
+the GNU sed 4.9 blocks (not the WinuxCmd metadata/banner); the argv[0] is
+`sed` through the multicall entry, matching the GNU program name.
+
+Gate (2026-11-14, `RUST_BIN=build-vs/winuxcmd.exe`,
+`CPP_BIN=<09df368d baseline copy>`, WSL sed 4.9):
+**379 rows — GNU-gated 378 PASS / 0 FAIL, win 1 PASS / 0 FAIL**
+(`sd055-help` stays strict because the library prints the GNU usage
+block).
+
+Byte-equality matrix (`gate/wire/sed-matrix.sh`, 28 groups: read/print,
+`-n`, address ranges, hold space, `-e` multi-script, `-f`, `-i`/`-i.bak`,
+`-s`, `-z`, `-E`, `-l`, `N`, `y`, `b`, `w /dev/stdout`, `r`, `-u`,
+`--posix`, stdin shapes, `--`):
+* GNU vs wired exe: **28/28 rows equal in rc + stdout + stderr + file-tree
+  hash**.
+* pre-wiring exe vs wired exe: **27/28**; the one difference is
+  `s///w /dev/stdout`, where the 1.x body lost the `w` copy (GNU and the
+  wired exe both emit it).
+
+Rust-side fixes carried by the wiring (GNU parity found by the C++ unit
+suite): `q`/`Q` status masked to 8 bits (`2q300` -> 44), and
+`fsutil::resolve` now routes literal trailing-dot/space components
+through the `\\?\` spelling (#1282/#1332) for every wired command that
+shares the resolver.
+
+ctest (isolated sed slice, `ctest -R "^sed\.|^integration\.sed_"`, 144
+tests): baseline failing set and wired failing set are the same single
+pre-existing case, `sed.nul_txt_reads_file_issue1333` (the TempDir helper
+cannot create the `NUL.txt` on-disk name). The other 18 former failures
+either pinned 1.x deviations the GNU port removes (wildcard expansion,
+`r`/`R` missing-file diagnostics, `--debug` annotation, `s///e`
+execution, sandbox/POSIX error wording, `w`-failure status 2 -> 4) or were
+test-side math on the `-z` text terminators; all were re-pinned to the
+WSL sed 4.9 behaviour.
 ## xargs (#1488, GNU findutils 4.9 port)
 
 `xargs` lands as a library-form port of findutils 4.9.0 `xargs.c` /
@@ -958,4 +1006,115 @@ conversion (CreateProcessW is UTF-16). Evidence: probe scripts and
 transcripts `rust2/target/probes/xargs/p1.sh`..`p8.sh`, ledger
 `rust2/target/gate/ledger.tsv`, run log `rust2/target/gate-xargs.log`
 (gitignored artifacts).
->>>>>>> origin/main
+## grep wiring — split-engine wire: rust2 face + retained C++ PCRE2 face (#1488, 2026-11-14)
+
+`grep` / `egrep` / `fgrep` are wired to the product as a split-engine
+replacement (PR #1631's rust2 grep library is the non-Perl face; the
+retained C++ body is the PCRE2 face). The split point lives at dispatch,
+before either body runs: the C++ handlers call
+`winux::rust2::grep_uses_perl(ctx.raw_args)` — the rust2 library's
+getopt-shaped routing query, exported through the additive FFI
+`winuxcmd_grep_uses_perl` (grep/mod.rs `uses_perl_with`; POSIXLY_CORRECT
+presence passed by the bridge from the process env, the same source the
+run entries snapshot into the injected env). `grep -P`/`--perl-regexp`
+shapes keep the C++ face (DOCS/2.0-regex-engine-decision.md §6 owner
+point 2); every other shape is the mechanical replacement:
+`run_command_with_stdin_streaming` — grep is a genuinely-streaming stdin
+reader (REPLACEMENT-RECIPE.md §5), so `-q`/`-m` early stops no longer
+drain a pipeline producer. `egrep`/`fgrep` route UNCONDITIONALLY to the
+library: upstream grep 3.11 ships them as `exec grep -E/-F "$@"`
+wrappers, so `egrep -P` is `grep -E -P` — a fatal "conflicting matchers
+specified", never Perl; the 1.x body ran Perl there (gate row eg02:
+r=g:yes rc 2 after the wire, r=c:no — the 1.x divergence retires).
+egrep_cmd/fgrep_cmd add the obsolescent-warning stderr line (upstream
+script semantics; stdout/status unaffected).
+
+The replaced C++ machinery (~720 lines) is deleted in the same change:
+the -F FixedMatcher Aho-Corasick family, the ERE literal/class fast
+paths, the fixed scan fast path and the BRE/ERE compile branches —
+everything the -P face cannot reach (a -F/-E/-G co-occurrence is a
+matcher conflict build_config rejects before compiling). The retained
+body keeps the full scan/print/color/walk/binary pipeline plus the Perl
+matcher. grep.cpp stays in the build with rust2 ON (three
+REGISTER_COMMANDs, branded help/man surface); CMakeLists adds `grep` to
+WINUXCMD_RUST2_COMMANDS (one set() line; the OFF filter drops all three
+applets with the shared source — no dual track).
+
+Rust/bridge fixes the wiring surfaced (each GNU-probed):
+- grep/scan.rs prtext: the leading-context walk lost grep.c:1612's
+  `beg > bufbeg` bound — a saturating `-B`/`-C` (context_length_arg
+  clamps to INTMAX_MAX, grep.c:826) counted an empty loop 9.2e18 times
+  where gcc dead-loop elimination makes GNU instant. Bounded like the
+  sibling fillbuf-side loop; pinned by grep.saturating_before_context_terminates.
+- rust2_bridge drain_result: the closed-fd-1 write-error status is
+  per-command — grep/egrep/fgrep keep GNU's EXIT_TROUBLE 2 (probed:
+  `grep x a.txt b.txt >&-` → rc 2 + "grep: write error: Bad file
+  descriptor"), the generic drain stays 1 (#1368 family).
+
+Case-table changes from the wired product surface: gp121-help/gp122-
+version/gp123-V/eg05-help/eg06-version/fg04-help/fg05-version demoted
+strict -> win — the dispatcher's branded `--help`/`--version`
+interception runs before the handler and is byte-identical old vs new
+(the hn19/nproc np10 precedent).
+
+Three gates (build-vs wired exe as RUST_BIN, the pre-wiring wc-grep2
+build as CPP_BIN, WSL GNU grep 3.11 oracle, 2026-11-14):
+- gate a: run-gate.sh grep/egrep/fgrep with the wired product —
+  GNU-gated 155 PASS / 0 FAIL + win 7 PASS / 0 FAIL (162 ledger rows;
+  pre-wire driver run was 162/0 with 13 r=c:no rows). r=c:no rows shrink
+  13 -> 8 and every one is carried from the review ledger: 5 rows where
+  the 1.x exe deviated from GNU and the wire aligns (gp40 -x-empty,
+  gp98 --color-bogus, gp99 -d-bogus, gp131 -o with -A1, gp134 -c -Z
+  multifile) + the 3 wrapper matcher-conflict rows (eg02/eg04/fg02,
+  same class as eg05 above). No new r=c:no rows.
+- gate c: rust2/gate/wire/cmd-matrix.sh grep-family tables added (60
+  cases x grep/egrep/fgrep, rc+stdout+stderr hashes, old vs new exe).
+  grep: rc 60/60, stdout 54/60, stderr 59/60. Every diff classified
+  with WSL probes: 6 recursion rows move to readdir/enumeration order
+  (the rust2 walk visits directories in directory order, like fts; the
+  1.x explicit stack processed them LIFO — GNU itself is readdir order,
+  gate rows were order-insensitive), and 1 stderr row moves to GNU
+  (`grep x ''` on an empty operand: GNU "No such file or directory",
+  the rust2 walk reports "Is a directory" — walk.rs operand
+  classification of "" resolves to the cwd; a rust2 walk lane item,
+  recorded here, not a wire regression). egrep/fgrep: rc 58/60 and
+  57/60 (the -E/-F+P/-G/-F conflict rows align with GNU, r=c:no as
+  above), stdout diffs are the recursion order + conflict rows, stderr
+  diffs are the obsolescent warning (upstream wrapper semantics).
+  Harness note: cmd-matrix.sh sha224sum block had lost its `;;` (the
+  digest stream wave) — repaired while adding the grep tables.
+- gate b: grep/egrep/fgrep ctest filter (154 tests, --timeout 90):
+  wired failing set == pre-wiring baseline failing set
+  (grep.nul_txt_reads_file_issue1333, environment-bound, fails on the
+  unmodified rust2/grep-impl build too). Ten ctest pins moved to the
+  replaced GNU contracts in the wiring change (the e7ddc432 style):
+  6 operand-glob pins (grep_wildcard_files,
+  grep_wildcard_char_class_in_parent_directory_segment,
+  grep_char_class_prefers_glob_over_same_spelling_literal_path,
+  grep_recursive_wildcard_directory_operands_recurse,
+  grep_wildcard_pattern, integration.grep_char_class_range,
+  grep_exclude_from_file,
+  grep_repeated_exclude_from_files_all_apply — operands stay literal,
+  the shell globs; each asserted against the probed ENOENT + rc 2) and
+  2 Windows text-encoding pins (grep_strips_utf8_bom,
+  grep_decodes_utf16le_input — GNU reads bytes; probed rc 1 silent).
+  Two product fixes ride the same change (scan.rs bound, bridge
+  write-error status), each with its own probe above.
+- `-P` face: 10/10 smoke cases byte-equal old vs new
+  (PCRE2 backreference `(\d+)-\1`, `(a+)b+\1`, `-o`, `-c`, `-n`, `-v`,
+  `-inP` cluster, invalid-class error) — both sides run the retained
+  C++ body byte-for-byte (target/wire-i18n/psmoke/).
+
+I18N: extraction (scripts/i18n_batch.py extract) is byte-identical
+before/after the wire (3598 keys; the deleted C++ machinery carried no
+extracted literals — its prints were variable-argument; registrations
+stay). The branch's only drift-gate growth vs the published catalogs
+(zh-CN missing command.echo.option.repeat) predates this work: the
+catalog dropped the key with WinuxCmd#1621 while this branch still
+carries the pre-#1624 echo registration — it resolves when the branch
+merges current main. The tr!/i18n::text seam for grep's walk/regerror/
+binary messages is NOT added here: this branch's base (68d2917c) has no
+Rust i18n runtime (no tr! macro, no catalog plumbing in winux-core, no
+Rust recognition in the extractor) — that infra belongs to the
+unmerged stream-abi lane; Rust output drains through the bridge's raw
+writers without catalog lookup. Recorded as a dependency, not skipped.
