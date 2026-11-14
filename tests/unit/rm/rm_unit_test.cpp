@@ -268,6 +268,46 @@ TEST(rm, rm_missing_operand_reports_help_hint_on_stderr) {
                  "Try 'rm --help' for more information.\n");
 }
 
+// #1650: an explicitly passed empty-string operand is an operand, never
+// "missing" (GNU coreutils 9.4 rm.c:331-337: the missing-operand check is
+// a count check; "" flows to rm() and reports ENOENT).
+TEST(rm, issue1650_rm_empty_string_operand_is_not_missing) {
+  Pipeline p;
+  p.add(L"rm.exe", {L""});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "rm: cannot remove '': No such file or directory\n");
+}
+
+TEST(rm, issue1650_rm_double_dash_empty_string_operand_is_not_missing) {
+  Pipeline p;
+  p.add(L"rm.exe", {L"--", L""});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "rm: cannot remove '': No such file or directory\n");
+}
+
+// #1650: -f still ignores the nonexistent empty operand silently (GNU
+// rm.c:330-360: -f ignores the "guaranteed nonexistent" errnos).
+TEST(rm, issue1650_rm_force_empty_string_operand_is_silent_success) {
+  Pipeline p;
+  p.add(L"rm.exe", {L"-f", L""});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(r.stderr_text, "");
+}
+
 TEST(rm, rm_dir_removes_empty_directory) {
   TempDir tmp;
   std::filesystem::create_directory(tmp.path / "empty");

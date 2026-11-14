@@ -552,6 +552,20 @@ auto build_config(const CommandContext<RM_OPTIONS.size()>& ctx)
  * false on error
  */
 auto remove_path(const std::string& path, const RmConfig& cfg) -> bool {
+  // [GNU] An empty-string operand names no file (rm.c:331-337: the
+  // missing-operand check is a count check; "" reaches rm() and fails
+  // ENOENT). Never let the path layer absolutize it onto the current
+  // directory — GetFullPathNameW("") returns the cwd, so without this
+  // guard "" would probe as a directory and report "Is a directory"
+  // (or recurse into the cwd under -r) instead of ENOENT (#1650).
+  if (path.empty()) {
+    if (cfg.force) {
+      return true;
+    }
+    safeErrorPrint("rm: cannot remove '': No such file or directory\n");
+    return false;
+  }
+
   // Use extended-length path to bypass Windows reserved device names
   // (nul, con, prn, aux, com0-9, lpt0-9) which would otherwise redirect
   // file operations to the corresponding device instead of the actual file.
