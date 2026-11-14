@@ -89,6 +89,59 @@ bool create_wsl_symlink_or_skip(const std::filesystem::path& link,
   return true;
 }
 
+bool set_lx_reparse_payload(HANDLE handle, std::string_view target_utf8) {
+  const size_t data_len = 4 + target_utf8.size();
+  std::vector<BYTE> buffer(8 + data_len, 0);
+  const DWORD tag = 0xA000001D;
+  std::memcpy(buffer.data(), &tag, sizeof(tag));
+  const uint16_t data_len16 = static_cast<uint16_t>(data_len);
+  std::memcpy(buffer.data() + 4, &data_len16, sizeof(data_len16));
+  const uint32_t version = 2;
+  std::memcpy(buffer.data() + 8, &version, sizeof(version));
+  std::memcpy(buffer.data() + 12, target_utf8.data(), target_utf8.size());
+
+  DWORD returned = 0;
+  // FSCTL_SET_REPARSE_POINT = CTL_CODE(FILE_DEVICE_FILE_SYSTEM, 41,
+  // METHOD_BUFFERED, FILE_ANY_ACCESS).
+  const BOOL ok = DeviceIoControl(handle, 0x000900A4, buffer.data(),
+                                  static_cast<DWORD>(buffer.size()), nullptr, 0,
+                                  &returned, nullptr);
+  return ok != FALSE;
+}
+
+// The directory shape of the same LX reparse point: an empty directory whose
+// payload names a directory.  Win32 refuses to traverse it as a directory,
+// which is exactly the #1640 "-L directory link is cannot access" case.
+bool create_wsl_directory_symlink_or_skip(const std::filesystem::path& link,
+                                          std::string_view target_utf8) {
+  std::error_code ec;
+  std::filesystem::create_directory(link, ec);
+  if (ec) {
+    std::cout << "  SKIPPED (LX directory create failed)\n";
+    return false;
+  }
+  HANDLE handle = CreateFileW(
+      link.wstring().c_str(), GENERIC_WRITE,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+      OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
+      nullptr);
+  if (handle == INVALID_HANDLE_VALUE) {
+    std::cout << "  SKIPPED (LX directory reparse open failed with error "
+              << GetLastError() << ")\n";
+    return false;
+  }
+  const DWORD error = set_lx_reparse_payload(handle, target_utf8)
+                          ? ERROR_SUCCESS
+                          : GetLastError();
+  CloseHandle(handle);
+  if (error != ERROR_SUCCESS) {
+    std::cout << "  SKIPPED (LX directory reparse ioctl failed with error "
+              << error << ")\n";
+    return false;
+  }
+  return true;
+}
+
 bool set_last_write_time(const std::filesystem::path& path, WORD year,
                          WORD month, WORD day, WORD hour, WORD minute,
                          WORD second) {
@@ -4218,4 +4271,340 @@ TEST(ls, ls_bare_exe_operand_explicit_extension_not_completed) {
   EXPECT_EQ(r.exit_code, 2);
   EXPECT_TRUE(r.stderr_text.find("ls: cannot access 'bin/java.txt': No such "
                                  "file or directory") != std::string::npos);
+}
+
+// ---------------------------------------------------------------------------
+// #1640: -L must dereference symbolic links whose target Win32 will not
+// traverse for them.  GNU ls.c gobble_file (ls.c:3461-3478) stats the
+// operand under DEREF_ALWAYS and reports the target's metadata; the LX
+// reparse point (tag 0xA000001D) is the shape this machine can create
+// without SeCreateSymbolicLinkPrivilege.
+// ---------------------------------------------------------------------------
+TEST(ls, ls_dereference_option_follows_lx_file_link_operand_issue1640) {
+  TempDir tmp;
+  tmp.write("a.txt", "abc");
+
+  std::filesystem::path link = tmp.path / "link";
+  if (!create_wsl_symlink_or_skip(link, "a.txt")) {
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ls.exe", {L"-lL", L"link", L"a.txt"});
+
+  auto r = p.run();
+
+  // GNU 9.4: both rows are regular files; the link operand is NOT reported
+  // as "cannot access" and the size column is the target's 3 bytes.
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stderr_text, "");
+  EXPECT_TRUE(std::regex_search(
+      r.stdout_text,
+      std::regex(R"((^|\n)-[rwx-]{9}\s+\d+\s+.*\s3\s+.*link(\n|$))")));
+}
+
+TEST(ls, ls_dereference_option_follows_lx_file_link_directory_entry_issue1640) {
+  TempDir tmp;
+  tmp.write("a.txt", "abc");
+
+  std::filesystem::path link = tmp.path / "link";
+  if (!create_wsl_symlink_or_skip(link, "a.txt")) {
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ls.exe", {L"-lL", L"."});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stderr_text, "");
+  EXPECT_TRUE(std::regex_search(
+      r.stdout_text,
+      std::regex(R"((^|\n)-[rwx-]{9}\s+\d+\s+.*\s3\s+.*link(\n|$))")));
+  EXPECT_TRUE(r.stdout_text.find("link ->") == std::string::npos);
+}
+
+TEST(ls, ls_directory_operand_lx_directory_link_lists_target_issue1640) {
+  TempDir tmp;
+  tmp.write("targetdir/inner.txt", "x");
+
+  std::filesystem::path link = tmp.path / "dirlink";
+  if (!create_wsl_directory_symlink_or_skip(link, "targetdir")) {
+    return;
+  }
+
+  Pipeline plain;
+  plain.set_cwd(tmp.wpath());
+  plain.add(L"ls.exe", {L"-1", L"dirlink"});
+  auto plain_result = plain.run();
+
+  // GNU 9.4 (default deref = command-line symlink to dir): list the target.
+  EXPECT_EQ(plain_result.exit_code, 0);
+  EXPECT_EQ_TEXT(plain_result.stderr_text, "");
+  EXPECT_EQ_TEXT(plain_result.stdout_text, "inner.txt\n");
+
+  Pipeline long_format;
+  long_format.set_cwd(tmp.wpath());
+  long_format.add(L"ls.exe", {L"-lL", L"dirlink"});
+  auto long_result = long_format.run();
+
+  EXPECT_EQ(long_result.exit_code, 0);
+  EXPECT_EQ_TEXT(long_result.stderr_text, "");
+  EXPECT_TRUE(long_result.stdout_text.find("inner.txt") != std::string::npos);
+}
+
+TEST(ls, ls_dereference_option_lx_directory_link_self_is_directory_issue1640) {
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "targetdir");
+
+  std::filesystem::path link = tmp.path / "dirlink";
+  if (!create_wsl_directory_symlink_or_skip(link, "targetdir")) {
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ls.exe", {L"-lLd", L"dirlink"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stderr_text, "");
+  EXPECT_TRUE(std::regex_search(
+      r.stdout_text,
+      std::regex(R"((^|\n)d[rwx-]{9}\s+\d+\s+.*dirlink(\n|$))")));
+  EXPECT_TRUE(r.stdout_text.find("dirlink ->") == std::string::npos);
+}
+
+TEST(ls, ls_recursive_dereference_lx_directory_link_lists_target_issue1640) {
+  TempDir tmp;
+  tmp.write("targetdir/inner.txt", "x");
+
+  std::filesystem::path link = tmp.path / "dirlink";
+  if (!create_wsl_directory_symlink_or_skip(link, "targetdir")) {
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ls.exe", {L"-R", L"dirlink"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stderr_text, "");
+  EXPECT_EQ_TEXT(r.stdout_text, "dirlink:\ninner.txt\n");
+}
+
+// ---------------------------------------------------------------------------
+// #1641: block-size column width follows GNU ls.c print_file_name_and_frills
+// (ls.c:4882, "%*s" at block_size_width) and grid padding follows
+// calculate_columns/indent with tabsize 0 meaning "spaces only"
+// (ls.c:1683-1689 sets tabsize = 0 for --color).
+// ---------------------------------------------------------------------------
+TEST(ls, ls_block_size_column_is_right_aligned_issue1641) {
+  TempDir tmp;
+  tmp.write("a.txt", std::string(20 * 1024, 'x'));
+  tmp.write("b.txt", std::string(100 * 1024, 'x'));
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ls.exe", {L"-s", L"-1"});
+
+  auto r = p.run();
+
+  // GNU 9.4: 20 blocks and 100 blocks pad to the widest count.
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "total 120\n 20 a.txt\n100 b.txt\n");
+}
+
+TEST(ls, ls_block_size_column_stays_unpadded_for_commas_issue1641) {
+  TempDir tmp;
+  tmp.write("a.txt", std::string(20 * 1024, 'x'));
+  tmp.write("b.txt", std::string(100 * 1024, 'x'));
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ls.exe", {L"-s", L"-m"});
+
+  auto r = p.run();
+
+  // GNU 9.4 passes width 0 for format == with_commas (ls.c:4882).
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "total 120\n20 a.txt, 100 b.txt\n");
+}
+
+TEST(ls, ls_across_tab_padding_matches_gnu_issue1641) {
+  TempDir tmp;
+  tmp.write("a.txt", "aaa");
+  tmp.write("b.txt", "bbbbb");
+  tmp.write("huge.bin", std::string(20 * 1024, 'x'));
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ls.exe", {L"-x", L"-w", L"20"});
+
+  auto r = p.run();
+
+  // GNU 9.4 indent(): the pad from column 5 to 10 emits TAB then two spaces.
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "a.txt\t  b.txt\nhuge.bin\n");
+}
+
+TEST(ls, ls_across_tabsize_zero_pads_with_spaces_issue1641) {
+  TempDir tmp;
+  tmp.write("a.txt", "aaa");
+  tmp.write("b.txt", "bbbbb");
+  tmp.write("huge.bin", std::string(20 * 1024, 'x'));
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ls.exe", {L"-x", L"-w", L"20", L"-T", L"0"});
+
+  auto r = p.run();
+
+  // GNU 9.4 accepts -T 0 (strtoumax) and indent() then never emits TAB.
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "a.txt     b.txt\nhuge.bin\n");
+}
+
+TEST(ls, ls_across_color_disables_tab_padding_issue1641) {
+  TempDir tmp;
+  tmp.write("a.txt", "aaa");
+  tmp.write("b.txt", "bbbbb");
+  tmp.write("huge.bin", std::string(20 * 1024, 'x'));
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ls.exe", {L"--color=always", L"-x", L"-w", L"20"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // [GNU] ls.c:1686-1689: color sets tabsize = 0.
+  EXPECT_TRUE(r.stdout_text.find('\t') == std::string::npos);
+  const std::string stripped =
+      std::regex_replace(r.stdout_text, std::regex("\x1b\\[[0-9;]*m"), "");
+  EXPECT_EQ_TEXT(stripped, "a.txt     b.txt\nhuge.bin\n");
+}
+
+TEST(ls, ls_block_size_prefix_drives_across_column_count_issue1641) {
+  TempDir tmp;
+  tmp.write("a.txt", std::string(20 * 1024, 'x'));
+  tmp.write("b.txt", std::string(100 * 1024, 'x'));
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ls.exe", {L"-s", L"-x", L"-w", L"30"});
+
+  auto r = p.run();
+
+  // [GNU] length_of_file_name_and_frills counts the padded block field, so
+  // two 3-wide counters no longer fit three columns at width 30.
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "total 120\n 20 a.txt  100 b.txt\n");
+}
+
+// ---------------------------------------------------------------------------
+// #1642: --group-directories-first uses GNU is_linked_directory
+// (ls.c:3703): a symlink whose target is a directory groups with the
+// directories, because ls.c:1686-1689 turns on check_symlink_mode and
+// gobble_file records the target mode in linkmode.
+// ---------------------------------------------------------------------------
+TEST(ls, ls_group_directories_first_groups_directory_links_issue1642) {
+  TempDir tmp;
+  tmp.write("a.txt", "x");
+  std::filesystem::create_directories(tmp.path / "dir");
+  std::filesystem::create_directories(tmp.path / "empty");
+
+  std::filesystem::path junction = tmp.path / "junction";
+  if (!create_directory_junction(junction, tmp.path / "dir")) {
+    return;
+  }
+  std::filesystem::path lxlink = tmp.path / "lxlink";
+  if (!create_wsl_symlink_or_skip(lxlink, "a.txt")) {
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ls.exe", {L"--group-directories-first", L"-1"});
+
+  auto r = p.run();
+
+  // GNU 9.4: directory links (junction and symlink-to-dir) sort with dirs.
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "dir\nempty\njunction\na.txt\nlxlink\n");
+}
+
+TEST(ls, ls_group_directories_first_groups_lx_directory_link_issue1642) {
+  TempDir tmp;
+  tmp.write("a.txt", "x");
+  std::filesystem::create_directories(tmp.path / "dir");
+
+  std::filesystem::path link = tmp.path / "dirlink";
+  if (!create_wsl_directory_symlink_or_skip(link, "dir")) {
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ls.exe", {L"--group-directories-first", L"-1L"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "dir\ndirlink\na.txt\n");
+}
+
+TEST(ls, ls_group_directories_first_dangling_link_reports_and_groups_issue1642) {
+  TempDir tmp;
+  tmp.write("a.txt", "x");
+  std::filesystem::create_directories(tmp.path / "dir");
+
+  std::filesystem::path junction = tmp.path / "junction";
+  if (!create_directory_junction(junction, tmp.path / "dir")) {
+    return;
+  }
+  std::filesystem::path dangling = tmp.path / "dangling";
+  if (!create_wsl_symlink_or_skip(dangling, "missing")) {
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ls.exe", {L"--group-directories-first", L"-1L"});
+
+  auto r = p.run();
+
+  // [GNU] check_symlink_mode stats links for grouping; under -L a dangling
+  // one is reported (minor problem, exit 1) and stays in the file group.
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "ls: cannot access 'dangling': No such file or directory\n");
+  EXPECT_EQ_TEXT(r.stdout_text, "dir\njunction\na.txt\ndangling\n");
+}
+
+TEST(ls, ls_dereference_dangling_entry_error_path_elides_dot_issue1640) {
+  TempDir tmp;
+  tmp.write("a.txt", "x");
+
+  std::filesystem::path dangling = tmp.path / "dangling";
+  if (!create_wsl_symlink_or_skip(dangling, "missing")) {
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ls.exe", {L"-lL", L"."});
+
+  auto r = p.run();
+
+  // [GNU] attach() elides a "." dirname in gobble_file's cannot-access path.
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "ls: cannot access 'dangling': No such file or directory\n");
 }
