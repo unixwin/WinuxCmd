@@ -440,12 +440,16 @@ fn prtext(p: &mut Printer, data: &[u8], beg: usize, lim: usize) -> Result<(), St
     if !p.fs.out_quiet {
         let bp = p.fs.lastout.unwrap_or(p.fs.bufbeg);
         let mut i: i64 = 0;
-        while i < cfg.out_before {
-            if pos > bp {
+        // grep.c:1612 prtext bounds this walk with `beg > bufbeg`: once
+        // the cursor reaches the boundary every further iteration is a
+        // no-op, and gcc's dead-loop elimination is what makes huge
+        // out_before values (context_length_arg clamps to INTMAX_MAX,
+        // grep.c:826) instant on the C build. Count them explicitly or a
+        // saturating -B/-C hangs the scan after the buffer is exhausted.
+        while i < cfg.out_before && pos > bp {
+            pos -= 1;
+            while pos > p.fs.bufbeg && data[pos - 1] != eol {
                 pos -= 1;
-                while pos > p.fs.bufbeg && data[pos - 1] != eol {
-                    pos -= 1;
-                }
             }
             i += 1;
         }

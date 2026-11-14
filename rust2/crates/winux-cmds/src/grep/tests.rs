@@ -391,3 +391,30 @@ fn null_data_mode() {
     assert_eq!(run_with(&["-z", "-c", "a"], b"a\0b\0", &[]).1, b"1\n");
     assert_eq!(run_with(&["-z", "-n", "b"], b"a\nb\0c\0", &[]).1, b"1:a\nb\0");
 }
+
+#[test]
+fn saturating_before_context_terminates() {
+    // grep.c:826 context_length_arg silently ceilings an overflowing band
+    // at INTMAX_MAX, and grep.c:1612 prtext bounds the leading-context walk
+    // with `beg > bufbeg` — the C loop only decrements while the cursor can
+    // move, so gcc's dead-loop elimination makes a saturating -B/-C answer
+    // instantly. Counting the empty iterations in Rust hangs the scanner
+    // once the buffer is exhausted: `-B 9223372036854775807` hung the wired
+    // product (ctest grep.grep_context_unsigned_band_issue1521, wire lane
+    // #1488). The loop now carries the same bound.
+    let (rc, out, err) = g(
+        &["-B", "9223372036854775807", "needle"],
+        "one\nneedle\ntwo\nthree\n",
+    );
+    assert_eq!(rc, 0);
+    assert_eq!(out, "one\nneedle\n");
+    assert_eq!(err, "");
+
+    let (rc, out, err) = g(
+        &["-C", "18446744073709551615", "needle"],
+        "one\nneedle\ntwo\nthree\n",
+    );
+    assert_eq!(rc, 0);
+    assert_eq!(out, "one\nneedle\ntwo\nthree\n");
+    assert_eq!(err, "");
+}
