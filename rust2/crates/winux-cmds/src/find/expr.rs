@@ -1,7 +1,5 @@
 //! Expression tree and predicate evaluation (findutils pred.c port).
 
-use winux_regex::Regex;
-
 use super::entry::{Entry, Kind, Ts};
 use super::exec::ExecSpec;
 use super::fnm::fnmatch;
@@ -62,7 +60,7 @@ pub enum Prim {
         pat: Vec<u8>,
         icase: bool,
     },
-    Regex(Box<Regex>),
+    Regex(Box<super::rx::FindRegex>),
     /// letters `bcdpflsD` as a set; `x` = -xtype
     Type {
         set: [bool; 8],
@@ -214,7 +212,7 @@ impl Prim {
                     && e.link_target()
                         .is_some_and(|t| fnmatch(pat, t.as_bytes(), *icase))
             }
-            Prim::Regex(re) => re.matches_entire_bytes(e.path.as_bytes()),
+            Prim::Regex(re) => re.is_match(e.path.as_bytes()),
             Prim::Type { set, x } => {
                 let k = if *x {
                     if e.follow {

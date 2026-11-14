@@ -683,7 +683,7 @@ mod tests {
         fmt_o(&mut o, &spec("%#m"), 0o644);
         fmt_o(&mut o, &spec("%05m"), 0o644);
         fmt_o(&mut o, &spec("%+m"), 0o644);
-        assert_eq!(String::from_utf8(o).unwrap(), "   +000000 064400644644");
+        assert_eq!(String::from_utf8(o).unwrap(), "   +000000 0064400644644");
         let mut o = Vec::new();
         fmt_g(&mut o, &Spec::default(), 819.2);
         o.push(b'|');

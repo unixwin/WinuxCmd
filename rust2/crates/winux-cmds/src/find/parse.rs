@@ -12,7 +12,7 @@
 use std::io::Write;
 
 use winux_core::Ctx;
-use winux_regex::dialect::{self, Dialect, DIALECT_NAMES};
+use winux_regex::dialect::{Dialect, DIALECT_NAMES};
 
 use super::entry::Ts;
 use super::exec::{ExecKind, ExecSpec};
@@ -900,7 +900,7 @@ impl<'x, 'e> P<'x, 'e> {
             "regex" | "iregex" => {
                 self.found(a, ArgType::Other);
                 let rx = self.arg(a)?;
-                match dialect::compile(self.dialect, rx.as_bytes(), name == "iregex") {
+                match super::rx::FindRegex::compile(self.dialect, rx.as_bytes(), name == "iregex") {
                     Ok(re) => self.push_prim(Prim::Regex(Box::new(re)), a, false),
                     Err(e) => {
                         return Err(fail(format!(

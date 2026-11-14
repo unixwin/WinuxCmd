@@ -369,8 +369,9 @@ fn exec_status_and_batches() {
         "",
     );
     assert_eq!(rc, 1);
+    // GNU: an unrunnable `;` command is a false test, rc stays 0
     let (rc, _, err) = run(&sc, &["t/e", "-exec", "nosuchcmd-find-test", ";"], "");
-    assert_eq!(rc, 1);
+    assert_eq!(rc, 0);
     assert!(err.contains("No such file or directory"), "{err}");
 }
 

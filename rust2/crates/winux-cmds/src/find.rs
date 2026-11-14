@@ -41,6 +41,7 @@ pub mod expr;
 pub mod fnm;
 pub mod parse;
 pub mod printf;
+pub mod rx;
 pub mod winfs;
 
 #[cfg(test)]
