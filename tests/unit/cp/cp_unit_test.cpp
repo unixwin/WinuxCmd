@@ -1314,3 +1314,40 @@ TEST(cp, issue1435_sibling_copy_still_works) {
   EXPECT_EQ(tmp.read("b/f.txt"), "data");
   EXPECT_EQ(tmp.read("b/sub/g.txt"), "deep");
 }
+
+// #1693: `cp -r -H <dir-symlink>` must follow the command-line link (GNU
+// cp.c:1239-1245 DEREF_UNDEFINED under recursion is DEREF_NEVER, but -H
+// overrides it to DEREF_COMMAND_LINE_ARGUMENTS; copy.c:843-846 then
+// dereferences command-line arguments only). The plain `-r` half must
+// still recreate the link; both halves are pinned together so neither
+// face can regress silently. Split out of #1647 (PR #1669 F1).
+TEST(cp, issue1693_recursive_H_command_line_dir_link) {
+  TempDir tmp;
+  tmp.write("dir/f.txt", "F\n");
+
+  std::error_code ec;
+  std::filesystem::create_symlink("dir", tmp.path / "linkdir", ec);
+  if (ec) {
+    std::cout
+        << "  SKIPPED (requires administrator privileges for symbolic links)\n";
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"-r", L"linkdir", L"dstLD"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(std::filesystem::is_symlink(
+      std::filesystem::symlink_status(tmp.path / "dstLD", ec)));
+  EXPECT_EQ(std::filesystem::read_symlink(tmp.path / "dstLD", ec),
+            std::filesystem::path("dir"));
+
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.add(L"cp.exe", {L"-r", L"-H", L"linkdir", L"dstH"});
+  auto r2 = p2.run();
+  EXPECT_EQ(r2.exit_code, 0);
+  EXPECT_TRUE(std::filesystem::is_directory(tmp.path / "dstH"));
+  EXPECT_EQ(tmp.read("dstH/f.txt"), "F\n");
+}
