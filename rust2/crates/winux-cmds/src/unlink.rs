@@ -24,7 +24,7 @@ use std::path::Path;
 
 use crate::argopt::{self, OptSpec};
 use crate::fsutil::{reason, resolve};
-use winux_core::{usage_error, CmdResult, Ctx, Io};
+use winux_core::{tr, usage_error, CmdResult, Ctx, Io};
 
 const OPTS: &[OptSpec] = &[];
 
@@ -136,12 +136,29 @@ pub fn unlink_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         return Ok(0);
     }
     if p.positionals.is_empty() {
-        let _ = usage_error(io, "unlink", "missing operand");
+        let _ = usage_error(
+            io,
+            "unlink",
+            &tr!(
+                ctx,
+                "command.unlink.error.missing_operand",
+                "missing operand"
+            ),
+        );
         return Ok(1);
     }
     if p.positionals.len() > 1 {
         let shown = p.positionals[1].to_string_lossy().into_owned();
-        let _ = usage_error(io, "unlink", &format!("extra operand '{shown}'"));
+        let _ = usage_error(
+            io,
+            "unlink",
+            &tr!(
+                ctx,
+                "command.unlink.error.extra_operand",
+                "extra operand '{operand}'",
+                operand = shown
+            ),
+        );
         return Ok(1);
     }
     let name = p.positionals[0].to_string_lossy().into_owned();
@@ -151,7 +168,14 @@ pub fn unlink_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     if name.is_empty() {
         let _ = writeln!(
             io.stderr,
-            "unlink: cannot unlink '': No such file or directory"
+            "unlink: {}",
+            tr!(
+                ctx,
+                "command.unlink.error.cannot_unlink",
+                "cannot unlink '{file}': {reason}",
+                file = "",
+                reason = "No such file or directory"
+            )
         );
         return Ok(1);
     }
@@ -165,7 +189,17 @@ pub fn unlink_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         use std::os::windows::fs::MetadataExt;
         if let Ok(md) = std::fs::symlink_metadata(&probe_path(&resolved)) {
             if md.file_attributes() & FILE_ATTRIBUTE_DIRECTORY == 0 {
-                let _ = writeln!(io.stderr, "unlink: cannot unlink '{name}': Not a directory");
+                let _ = writeln!(
+                    io.stderr,
+                    "unlink: {}",
+                    tr!(
+                        ctx,
+                        "command.unlink.error.cannot_unlink",
+                        "cannot unlink '{file}': {reason}",
+                        file = name,
+                        reason = "Not a directory"
+                    )
+                );
                 return Ok(1);
             }
         }
@@ -174,7 +208,17 @@ pub fn unlink_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         Ok(()) => Ok(0),
         Err(e) => {
             let why = describe_unlink_failure(&resolved, &name, &e);
-            let _ = writeln!(io.stderr, "unlink: cannot unlink '{name}': {why}");
+            let _ = writeln!(
+                io.stderr,
+                "unlink: {}",
+                tr!(
+                    ctx,
+                    "command.unlink.error.cannot_unlink",
+                    "cannot unlink '{file}': {reason}",
+                    file = name,
+                    reason = why
+                )
+            );
             Ok(1)
         }
     }
@@ -317,5 +361,29 @@ mod tests {
         assert_eq!(r, 1);
         let (r, _, _) = run(&sc, &["--help"]);
         assert_eq!(r, 0);
+    }
+
+    #[test]
+    fn catalog_injection_translates_cannot_unlink() {
+        use winux_core::host::MapHost;
+        use winux_core::{Ctx, MapEnv};
+
+        let sc = ScratchCtx::new("unlink-i18n");
+        let mut host = MapHost::default();
+        host.messages.insert(
+            "command.unlink.error.cannot_unlink".to_string(),
+            "无法取消链接 '{file}'：{reason}".to_string(),
+        );
+        let env = MapEnv::new();
+        let ctx = Ctx::with_host(sc.dir.clone(), &env, &host);
+        let mut io = MemIo::new("");
+        let args: Vec<OsString> = vec!["nosuch".into()];
+        let r = super::unlink_cmd(&args, &mut io.split(), &ctx).unwrap();
+        assert_eq!(r, 1);
+        assert!(
+            io.err().contains("无法取消链接 'nosuch'："),
+            "got {}",
+            io.err()
+        );
     }
 }

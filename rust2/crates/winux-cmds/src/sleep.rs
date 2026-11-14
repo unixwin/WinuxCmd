@@ -22,7 +22,7 @@ use std::ffi::OsString;
 use std::time::Duration;
 
 use crate::argopt::{self, OptSpec};
-use winux_core::{usage_error, CmdResult, Ctx, Io};
+use winux_core::{tr, usage_error, CmdResult, Ctx, Io};
 
 const OPTS: &[OptSpec] = &[];
 
@@ -183,7 +183,15 @@ pub fn sleep_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     // [GNU] sleep.c:112-115: the missing-operand test is argc == 1 on the
     // raw argument vector; `sleep --` sleeps 0 and exits 0.
     if p.positionals.is_empty() && args.is_empty() {
-        let _ = usage_error(io, "sleep", "missing operand");
+        let _ = usage_error(
+            io,
+            "sleep",
+            &tr!(
+                ctx,
+                "command.sleep.error.missing_operand",
+                "missing operand"
+            ),
+        );
         return Ok(1);
     }
 
@@ -199,7 +207,16 @@ pub fn sleep_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     if !invalid.is_empty() {
         // GNU reports every invalid operand, then the try-help, rc 1.
         for raw in &invalid {
-            let _ = writeln!(io.stderr, "sleep: invalid time interval '{raw}'");
+            let _ = writeln!(
+                io.stderr,
+                "sleep: {}",
+                tr!(
+                    ctx,
+                    "command.sleep.error.invalid_interval",
+                    "invalid time interval '{raw}'",
+                    raw = raw
+                )
+            );
         }
         let _ = writeln!(io.stderr, "Try 'sleep --help' for more information.");
         return Ok(1);
@@ -308,5 +325,28 @@ mod tests {
         assert_eq!(r, 1);
         let (r, _, _) = run(&["-1"]);
         assert_eq!(r, 1); // getopt: invalid option -- '1'
+    }
+
+    // command.sleep.error.invalid_interval is the one migrated catalog key
+    // in this batch: the C++ body died, zh-CN keeps its reviewed wording
+    // with '{}' rewritten to the named {raw} the tr! renderer requires.
+    #[test]
+    fn catalog_injection_translates_invalid_interval() {
+        use winux_core::host::MapHost;
+        use winux_core::{Ctx, MapEnv};
+
+        let sc = ScratchCtx::new("sleep-i18n");
+        let mut host = MapHost::default();
+        host.messages.insert(
+            "command.sleep.error.invalid_interval".to_string(),
+            "无效的时间间隔 '{raw}'".to_string(),
+        );
+        let env = MapEnv::new();
+        let ctx = Ctx::with_host(sc.dir.clone(), &env, &host);
+        let args: Vec<OsString> = vec!["xx".into()];
+        let mut io = MemIo::new("");
+        let r = super::sleep_cmd(&args, &mut io.split(), &ctx).unwrap();
+        assert_eq!(r, 1);
+        assert!(io.err().contains("无效的时间间隔 'xx'"), "got {}", io.err());
     }
 }

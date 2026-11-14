@@ -14,7 +14,7 @@
 use std::ffi::OsString;
 
 use crate::gnuhelp;
-use winux_core::{usage_error, CmdResult, Ctx, Io};
+use winux_core::{tr, usage_error, CmdResult, Ctx, Io};
 
 // `--help` body verbatim from `env printenv --help` under WSL coreutils 9.4,
 // minus the shared gnuhelp::footer tail.
@@ -79,13 +79,32 @@ pub fn printenv_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             continue;
         }
         if s.starts_with('-') && s.len() > 1 {
-            let msg = if let Some(rest) = s.strip_prefix("--") {
-                format!("unrecognized option '--{rest}'")
+            // [GNU] printenv.c getopt_long("+0") diagnostics; the program
+            // prefix is the usage_error frame, only the wording is keyed.
+            if let Some(rest) = s.strip_prefix("--") {
+                let _ = usage_error(
+                    io,
+                    "printenv",
+                    &tr!(
+                        ctx,
+                        "command.printenv.error.unrecognized_option",
+                        "unrecognized option '--{option}'",
+                        option = rest
+                    ),
+                );
             } else {
                 let c = s.chars().nth(1).unwrap();
-                format!("invalid option -- '{c}'")
-            };
-            let _ = usage_error(io, "printenv", &msg);
+                let _ = usage_error(
+                    io,
+                    "printenv",
+                    &tr!(
+                        ctx,
+                        "command.printenv.error.invalid_option",
+                        "invalid option -- '{option}'",
+                        option = c
+                    ),
+                );
+            }
             return Ok(2);
         }
         names.push(s);
@@ -259,5 +278,40 @@ mod tests {
         let r = super::printenv_cmd(&args, &mut io.split(), &ctx).unwrap();
         assert_eq!(r, 1);
         assert_eq!(io.out(), "hello\n");
+    }
+
+    #[test]
+    fn catalog_injection_translates_option_errors() {
+        use winux_core::host::MapHost;
+        use winux_core::{Ctx, MapEnv};
+
+        let sc = ScratchCtx::new("printenv-i18n");
+        let mut host = MapHost::default();
+        host.messages.insert(
+            "command.printenv.error.unrecognized_option".to_string(),
+            "无法识别的选项 '--{option}'".to_string(),
+        );
+        host.messages.insert(
+            "command.printenv.error.invalid_option".to_string(),
+            "无效选项 -- '{option}'".to_string(),
+        );
+        let env = MapEnv::new();
+        let ctx = Ctx::with_host(sc.dir.clone(), &env, &host);
+
+        let mut io = MemIo::new("");
+        let args = ["--bogus".into()];
+        let r = super::printenv_cmd(&args, &mut io.split(), &ctx).unwrap();
+        assert_eq!(r, 2);
+        assert!(
+            io.err().contains("无法识别的选项 '--bogus'"),
+            "got {}",
+            io.err()
+        );
+
+        let mut io = MemIo::new("");
+        let args = ["-x".into()];
+        let r = super::printenv_cmd(&args, &mut io.split(), &ctx).unwrap();
+        assert_eq!(r, 2);
+        assert!(io.err().contains("无效选项 -- 'x'"), "got {}", io.err());
     }
 }

@@ -17,7 +17,7 @@
 use std::ffi::OsString;
 use std::io::Write;
 
-use winux_core::{usage_error, CmdResult, Ctx, Io};
+use winux_core::{tr, usage_error, CmdResult, Ctx, Io};
 
 pub fn sync_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let mut data = false;
@@ -49,13 +49,32 @@ pub fn sync_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             continue;
         }
         if s.starts_with('-') && s.len() > 1 {
-            let msg = if let Some(rest) = s.strip_prefix("--") {
-                format!("unrecognized option '--{rest}'")
+            // [GNU] sync.c getopt diagnostics; program prefix stays the
+            // usage_error frame, only the wording is keyed.
+            if let Some(rest) = s.strip_prefix("--") {
+                let _ = usage_error(
+                    io,
+                    "sync",
+                    &tr!(
+                        ctx,
+                        "command.sync.error.unrecognized_option",
+                        "unrecognized option '--{option}'",
+                        option = rest
+                    ),
+                );
             } else {
                 let c = s.chars().nth(1).unwrap();
-                format!("invalid option -- '{c}'")
-            };
-            let _ = usage_error(io, "sync", &msg);
+                let _ = usage_error(
+                    io,
+                    "sync",
+                    &tr!(
+                        ctx,
+                        "command.sync.error.invalid_option",
+                        "invalid option -- '{option}'",
+                        option = c
+                    ),
+                );
+            }
             return Ok(1);
         }
         operands.push(s);
@@ -64,14 +83,27 @@ pub fn sync_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     if data && file_system {
         let _ = writeln!(
             io.stderr,
-            "sync: cannot specify both --data and --file-system"
+            "sync: {}",
+            tr!(
+                ctx,
+                "command.sync.error.data_and_file_system",
+                "cannot specify both --data and --file-system"
+            )
         );
         return Ok(1);
     }
     // [GNU] -f alone syncs every filesystem (rc 0); only -d demands an
     // operand (probed 9.4).
     if data && operands.is_empty() {
-        let _ = writeln!(io.stderr, "sync: --data needs at least one argument");
+        let _ = writeln!(
+            io.stderr,
+            "sync: {}",
+            tr!(
+                ctx,
+                "command.sync.error.data_needs_argument",
+                "--data needs at least one argument"
+            )
+        );
         return Ok(1);
     }
     if operands.is_empty() {
@@ -88,7 +120,17 @@ pub fn sync_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             match open_and_flush(ctx, operand) {
                 Ok(()) => {}
                 Err(e) => {
-                    let _ = writeln!(err, "sync: error opening '{}': {}", shown, reason_text(&e));
+                    let _ = writeln!(
+                        err,
+                        "sync: {}",
+                        tr!(
+                            ctx,
+                            "command.sync.error.error_opening",
+                            "error opening '{file}': {reason}",
+                            file = shown,
+                            reason = reason_text(&e)
+                        )
+                    );
                     failed = true;
                 }
             }
@@ -228,5 +270,29 @@ mod tests {
         let r = super::sync_cmd(&args, &mut io.split(), &ctx).unwrap();
         assert_eq!(r, 1);
         assert!(io.err().contains("invalid option -- 'z'"));
+    }
+
+    #[test]
+    fn catalog_injection_translates_data_operand_error() {
+        use winux_core::host::MapHost;
+        use winux_core::{Ctx, MapEnv};
+
+        let sc = ScratchCtx::new("sync-i18n");
+        let mut host = MapHost::default();
+        host.messages.insert(
+            "command.sync.error.data_needs_argument".to_string(),
+            "--data 至少需要一个参数".to_string(),
+        );
+        let env = MapEnv::new();
+        let ctx = Ctx::with_host(sc.dir.clone(), &env, &host);
+        let mut io = MemIo::new("");
+        let args = ["-d".into()];
+        let r = super::sync_cmd(&args, &mut io.split(), &ctx).unwrap();
+        assert_eq!(r, 1);
+        assert!(
+            io.err().contains("--data 至少需要一个参数"),
+            "got {}",
+            io.err()
+        );
     }
 }

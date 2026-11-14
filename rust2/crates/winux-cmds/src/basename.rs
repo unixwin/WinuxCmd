@@ -11,7 +11,7 @@
 use std::ffi::OsString;
 
 use crate::argopt::{self, OptSpec};
-use winux_core::{usage_error, CmdResult, Ctx, Io};
+use winux_core::{tr, usage_error, CmdResult, Ctx, Io};
 
 const OPTS: &[OptSpec] = &[
     OptSpec {
@@ -82,15 +82,34 @@ pub fn basename_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
     if names.is_empty() {
-        let _ = usage_error(io, "basename", "missing operand");
+        // [GNU] basename.c: usage (EXIT_FAILURE) with "missing operand".
+        let _ = usage_error(
+            io,
+            "basename",
+            &tr!(
+                ctx,
+                "command.basename.error.missing_operand",
+                "missing operand"
+            ),
+        );
         return Ok(1);
     }
     if !multiple {
         if names.len() == 2 {
             // classic `basename NAME SUFFIX`
         } else if names.len() > 2 {
-            let msg = format!("extra operand {}", winux_core::q(&names[2]));
-            let _ = usage_error(io, "basename", &msg);
+            // [GNU] basename.c: "extra operand %s" with the third word
+            // quoted by quotef(); q() keeps the quotes outside the string.
+            let _ = usage_error(
+                io,
+                "basename",
+                &tr!(
+                    ctx,
+                    "command.basename.error.extra_operand",
+                    "extra operand {operand}",
+                    operand = winux_core::q(&names[2])
+                ),
+            );
             return Ok(1);
         }
     }
@@ -192,5 +211,26 @@ mod tests {
             assert_eq!(r, 0, "args={args:?}");
             assert_eq!(io.out(), *expected, "args={args:?}");
         }
+    }
+
+    // The tr! seam end to end: an injected catalog entry wins, the compiled
+    // English fallback keeps the gate-recorded bytes when it misses.
+    #[test]
+    fn catalog_injection_translates_missing_operand() {
+        use winux_core::host::MapHost;
+        use winux_core::{Ctx, MapEnv};
+
+        let sc = ScratchCtx::new("basename-i18n");
+        let mut host = MapHost::default();
+        host.messages.insert(
+            "command.basename.error.missing_operand".to_string(),
+            "缺少操作数".to_string(),
+        );
+        let env = MapEnv::new();
+        let ctx = Ctx::with_host(sc.dir.clone(), &env, &host);
+        let mut io = MemIo::new("");
+        let r = super::basename_cmd(&[], &mut io.split(), &ctx).unwrap();
+        assert_eq!(r, 1);
+        assert!(io.err().contains("缺少操作数"), "got {}", io.err());
     }
 }

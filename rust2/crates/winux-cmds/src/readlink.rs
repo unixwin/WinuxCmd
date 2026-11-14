@@ -19,7 +19,7 @@ use std::ffi::OsString;
 
 use crate::argopt::{self, OptSpec};
 use crate::canon::CanonMode;
-use winux_core::{usage_error, CmdResult, Ctx, Io};
+use winux_core::{tr, usage_error, CmdResult, Ctx, Io};
 
 const OPTS: &[OptSpec] = &[
     OptSpec {
@@ -74,7 +74,15 @@ pub fn readlink_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         return Ok(0);
     }
     if p.positionals.is_empty() {
-        let _ = usage_error(io, "readlink", "missing operand");
+        let _ = usage_error(
+            io,
+            "readlink",
+            &tr!(
+                ctx,
+                "command.readlink.error.missing_operand",
+                "missing operand"
+            ),
+        );
         return Ok(1);
     }
     let zero = p.has("zero");
@@ -94,7 +102,12 @@ pub fn readlink_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         // normal terminators are emitted for every operand.
         let _ = writeln!(
             io.stderr,
-            "readlink: ignoring --no-newline with multiple arguments"
+            "readlink: {}",
+            tr!(
+                ctx,
+                "command.readlink.warning.no_newline_multiple_arguments",
+                "ignoring --no-newline with multiple arguments"
+            )
         );
         no_newline = false;
     }
@@ -130,9 +143,14 @@ pub fn readlink_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                         if verbose {
                             let _ = writeln!(
                                 io.stderr,
-                                "readlink: {}: {}",
-                                name,
-                                crate::fsutil::reason(&e)
+                                "readlink: {}",
+                                tr!(
+                                    ctx,
+                                    "command.readlink.error.cannot_read",
+                                    "{file}: {reason}",
+                                    file = name,
+                                    reason = crate::fsutil::reason(&e)
+                                )
                             );
                         }
                         None
@@ -144,9 +162,14 @@ pub fn readlink_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                         if verbose {
                             let _ = writeln!(
                                 io.stderr,
-                                "readlink: {}: {}",
-                                name,
-                                crate::fsutil::reason(&e)
+                                "readlink: {}",
+                                tr!(
+                                    ctx,
+                                    "command.readlink.error.cannot_read",
+                                    "{file}: {reason}",
+                                    file = name,
+                                    reason = crate::fsutil::reason(&e)
+                                )
                             );
                         }
                         None
@@ -360,5 +383,40 @@ mod tests {
         } else {
             Err(())
         }
+    }
+
+    #[test]
+    fn catalog_injection_translates_warning_and_read_failure() {
+        use winux_core::host::MapHost;
+        use winux_core::{Ctx, MapEnv};
+
+        let sc = ScratchCtx::new("readlink-i18n");
+        let mut host = MapHost::default();
+        host.messages.insert(
+            "command.readlink.warning.no_newline_multiple_arguments".to_string(),
+            "多个参数时忽略 --no-newline".to_string(),
+        );
+        host.messages.insert(
+            "command.readlink.error.cannot_read".to_string(),
+            "{file}：{reason}".to_string(),
+        );
+        let env = MapEnv::new();
+        let ctx = Ctx::with_host(sc.dir.clone(), &env, &host);
+
+        let mut io = MemIo::new("");
+        let args = ["-n".into(), "a".into(), "b".into()];
+        let r = super::readlink_cmd(&args, &mut io.split(), &ctx).unwrap();
+        assert_eq!(r, 1);
+        assert!(
+            io.err().contains("多个参数时忽略 --no-newline"),
+            "got {}",
+            io.err()
+        );
+
+        let mut io = MemIo::new("");
+        let args = ["-v".into(), "nosuch".into()];
+        let r = super::readlink_cmd(&args, &mut io.split(), &ctx).unwrap();
+        assert_eq!(r, 1);
+        assert!(io.err().contains("nosuch："), "got {}", io.err());
     }
 }

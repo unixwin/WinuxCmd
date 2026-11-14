@@ -19,7 +19,7 @@ use std::ffi::OsString;
 use std::io::Write;
 
 use crate::argopt;
-use winux_core::{usage_error, CmdResult, Ctx, Io};
+use winux_core::{tr, usage_error, CmdResult, Ctx, Io};
 
 pub fn users_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     // getopt: unknown options are usage errors; --help/--version win.
@@ -44,10 +44,16 @@ pub fn users_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     }
     let args: Vec<OsString> = p.positionals.clone();
     if args.len() > 1 {
+        // [GNU] users.c: "extra operand %s" with the offending word quoted.
         let _ = usage_error(
             io,
             "users",
-            &format!("extra operand '{}'", args[1].to_string_lossy()),
+            &tr!(
+                ctx,
+                "command.users.error.extra_operand",
+                "extra operand '{operand}'",
+                operand = args[1].to_string_lossy()
+            ),
         );
         return Ok(1);
     }
@@ -125,5 +131,24 @@ mod tests {
         assert_eq!(r, 1);
         assert!(err.contains("users: extra operand 'b'"));
         assert!(err.contains("Try 'users --help' for more information."));
+    }
+
+    #[test]
+    fn catalog_injection_translates_extra_operand() {
+        use winux_core::host::MapHost;
+
+        let sc = scratch("users-i18n");
+        let mut host = MapHost::default();
+        host.messages.insert(
+            "command.users.error.extra_operand".to_string(),
+            "多余的参数 '{operand}'".to_string(),
+        );
+        let env = MapEnv::new();
+        let ctx = Ctx::with_host(sc.dir.clone(), &env, &host);
+        let args: Vec<OsString> = vec!["a".into(), "b".into()];
+        let mut io = MemIo::new("");
+        let r = super::users_cmd(&args, &mut io.split(), &ctx).unwrap();
+        assert_eq!(r, 1);
+        assert!(io.err().contains("多余的参数 'b'"), "got {}", io.err());
     }
 }

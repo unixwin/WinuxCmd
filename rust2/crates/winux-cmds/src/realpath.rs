@@ -11,7 +11,7 @@ use std::ffi::OsString;
 
 use crate::argopt::{self, OptSpec};
 use crate::canon::{canonicalize_operand, CanonMode};
-use winux_core::{usage_error, CmdResult, Ctx, Io};
+use winux_core::{tr, usage_error, CmdResult, Ctx, Io};
 
 const OPTS: &[OptSpec] = &[
     OptSpec {
@@ -85,7 +85,15 @@ pub fn realpath_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         return Ok(0);
     }
     if p.positionals.is_empty() {
-        let _ = usage_error(io, "realpath", "missing operand");
+        let _ = usage_error(
+            io,
+            "realpath",
+            &tr!(
+                ctx,
+                "command.realpath.error.missing_operand",
+                "missing operand"
+            ),
+        );
         return Ok(1);
     }
     let quiet = p.has("quiet");
@@ -120,7 +128,15 @@ pub fn realpath_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     // string"; GNU 9.4 fails the base canonicalization instead).
     for value in rel_to.iter().chain(rel_base.iter()) {
         if value.is_empty() {
-            let _ = writeln!(io.stderr, "realpath: invalid operand: empty string");
+            let _ = writeln!(
+                io.stderr,
+                "realpath: {}",
+                tr!(
+                    ctx,
+                    "command.realpath.error.invalid_operand",
+                    "invalid operand: empty string"
+                )
+            );
             return Ok(1);
         }
     }
@@ -133,7 +149,16 @@ pub fn realpath_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         for base in rel_to.iter().chain(rel_base.iter()) {
             if let Ok(m) = std::fs::metadata(ctx.cwd.join(base)) {
                 if !m.is_dir() {
-                    let _ = writeln!(io.stderr, "realpath: {}: Not a directory", base);
+                    let _ = writeln!(
+                        io.stderr,
+                        "realpath: {}",
+                        tr!(
+                            ctx,
+                            "command.realpath.error.not_a_directory",
+                            "{file}: Not a directory",
+                            file = base
+                        )
+                    );
                     return Ok(1);
                 }
             }
@@ -169,9 +194,14 @@ pub fn realpath_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                         };
                         let _ = writeln!(
                             io.stderr,
-                            "realpath: {}: {}",
-                            shown,
-                            crate::fsutil::reason(&e)
+                            "realpath: {}",
+                            tr!(
+                                ctx,
+                                "command.realpath.error.resolve_failed",
+                                "{file}: {reason}",
+                                file = shown,
+                                reason = crate::fsutil::reason(&e)
+                            )
                         );
                     }
                     failed = true;
@@ -336,5 +366,26 @@ mod trailing_tests {
         let args = ["missing/".into()];
         let r = super::realpath_cmd(&args, &mut io.split(), &ctx).unwrap();
         assert_eq!(r, 0);
+    }
+
+    #[test]
+    fn catalog_injection_translates_not_a_directory() {
+        use winux_core::host::MapHost;
+        use winux_core::{Ctx, MapEnv};
+
+        let sc = ScratchCtx::new("realpath-i18n");
+        std::fs::write(sc.path("f.txt"), "x").unwrap();
+        let mut host = MapHost::default();
+        host.messages.insert(
+            "command.realpath.error.not_a_directory".to_string(),
+            "{file}：不是目录".to_string(),
+        );
+        let env = MapEnv::new();
+        let ctx = Ctx::with_host(sc.dir.clone(), &env, &host);
+        let mut io = MemIo::new("");
+        let args = ["-e".into(), "--relative-to=f.txt".into(), "x".into()];
+        let r = super::realpath_cmd(&args, &mut io.split(), &ctx).unwrap();
+        assert_eq!(r, 1);
+        assert!(io.err().contains("f.txt：不是目录"), "got {}", io.err());
     }
 }

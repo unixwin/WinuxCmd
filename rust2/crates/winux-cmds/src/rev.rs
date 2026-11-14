@@ -31,7 +31,7 @@ use std::ffi::OsString;
 
 use crate::argopt::{self, OptSpec};
 use crate::fsutil;
-use winux_core::{CmdResult, Ctx, Io};
+use winux_core::{tr, CmdResult, Ctx, Io};
 
 const OPTS: &[OptSpec] = &[
     OptSpec {
@@ -97,7 +97,11 @@ pub fn rev_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     if p.positionals.is_empty() {
         let mut data = Vec::new();
         if std::io::copy(&mut io.stdin, &mut data).is_err() {
-            let _ = writeln!(io.stderr, "rev: read error");
+            let _ = writeln!(
+                io.stderr,
+                "rev: {}",
+                tr!(ctx, "command.rev.error.read_error", "read error")
+            );
             return Ok(1);
         }
         reverse_into(&data, separator, utf8, &mut *io.stdout)?;
@@ -113,7 +117,16 @@ pub fn rev_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             match std::fs::File::open(fsutil::resolve(ctx, &name)) {
                 Ok(mut f) => {
                     if std::io::copy(&mut f, &mut data).is_err() {
-                        let _ = writeln!(io.stderr, "rev: {name}: read error");
+                        let _ = writeln!(
+                            io.stderr,
+                            "rev: {}",
+                            tr!(
+                                ctx,
+                                "command.rev.error.read_error_file",
+                                "{file}: read error",
+                                file = name
+                            )
+                        );
                         failed = true;
                         continue;
                     }
@@ -121,7 +134,17 @@ pub fn rev_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 Err(e) => {
                     // util-linux wording: `rev: cannot open <name>: <strerror>`
                     let reason = fsutil::gnu_open_reason(ctx, &name, &e, false);
-                    let _ = writeln!(io.stderr, "rev: cannot open {name}: {reason}");
+                    let _ = writeln!(
+                        io.stderr,
+                        "rev: {}",
+                        tr!(
+                            ctx,
+                            "command.rev.error.cannot_open",
+                            "cannot open {file}: {reason}",
+                            file = name,
+                            reason = reason
+                        )
+                    );
                     failed = true;
                     continue;
                 }
@@ -425,5 +448,28 @@ mod tests {
         }
         let leaked: &'static winux_core::MapEnv = Box::leak(Box::new(me));
         Ctx::new(std::path::PathBuf::from("."), leaked)
+    }
+
+    #[test]
+    fn catalog_injection_translates_cannot_open() {
+        use winux_core::host::MapHost;
+
+        let sc = ScratchCtx::new("rev-i18n");
+        let mut host = MapHost::default();
+        host.messages.insert(
+            "command.rev.error.cannot_open".to_string(),
+            "无法打开 {file}：{reason}".to_string(),
+        );
+        let env = winux_core::MapEnv::new();
+        let ctx = Ctx::with_host(sc.dir.clone(), &env, &host);
+        let mut io = MemIo::new("");
+        let args: Vec<OsString> = vec!["nosuchfile".into()];
+        let r = super::rev_cmd(&args, &mut io.split(), &ctx).unwrap();
+        assert_eq!(r, 1);
+        assert!(
+            io.err().contains("无法打开 nosuchfile："),
+            "got {}",
+            io.err()
+        );
     }
 }
