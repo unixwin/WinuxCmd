@@ -137,45 +137,9 @@ namespace cp = core::pipeline;
  * @return Formatted string
  */
 auto format_size(uint64_t size, bool si) -> std::string {
-  const char* units = si ? "BKMGTPE"  // 1000-based
-                         : "BKMGTP";  // 1024-based
-  const uint64_t base = si ? 1000 : 1024;
-
-  if (size < base) {
-    return std::to_string(size);
-  }
-
-  // Smallest unit index (1 = K) with size in [base^idx, base^(idx+1)).
-  int idx = 0;
-  uint64_t unit = base;
-  while (idx < 6 && size / unit >= base) {
-    unit *= base;
-    ++idx;
-  }
-  ++idx;
-
-  // Ceiling in tenths of the selected unit (exact integer math; the
-  // remainder-based form avoids overflow for exabyte-scale sizes).
-  const uint64_t q = size / unit;
-  const uint64_t r = size % unit;
-  uint64_t tenths = q * 10 + (r * 10 + unit - 1) / unit;
-
-  // Rollover: 1024.0K displays as 1.0M.
-  while (tenths >= base * 10 && idx < 6) {
-    tenths = (tenths + base - 1) / base;
-    ++idx;
-  }
-
-  char buf[32];
-  if (tenths < 100) {  // value < 10 units: one decimal digit
-    snprintf(buf, sizeof(buf), "%llu.%llu%c",
-             static_cast<unsigned long long>(tenths / 10),
-             static_cast<unsigned long long>(tenths % 10), units[idx]);
-  } else {
-    snprintf(buf, sizeof(buf), "%llu%c",
-             static_cast<unsigned long long>((tenths + 9) / 10), units[idx]);
-  }
-  return std::string(buf);
+  return winux::human::size(
+      size, si ? winux::human::UnitBase::decimal
+               : winux::human::UnitBase::binary);
 }
 
 auto pow_u64(uint64_t base, int exponent) -> std::optional<uint64_t> {

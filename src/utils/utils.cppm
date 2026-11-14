@@ -22,3 +22,4 @@ export import :pager;
 export import :bigint;
 export import :gnu_float80;
 export import :gnu_quotearg;
+export import :human_size;
