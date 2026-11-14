@@ -13,6 +13,7 @@
 *.gif binary
 *.ico binary
 *.zip binary
+*.tar.gz binary
 
 # Explicit suffix pins for script/data files that gate tooling rewrites
 # byte-for-byte (gen-cases.py emit() writes newline="\n"). `* text=auto
