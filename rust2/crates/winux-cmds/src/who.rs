@@ -576,7 +576,7 @@ pub fn who_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         Ok(p) => p,
         Err(s) => return Ok(s),
     };
-    if let Some(status) = argopt::rejected_short_h(io, "who", &p, 1) {
+    if let Some(status) = argopt::rejected_short_h(ctx, io, "who", &p, 1) {
         return Ok(status);
     }
     if let Some(which) = p
@@ -632,10 +632,10 @@ pub fn who_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     if p.positionals.len() > 2 {
         let _ = writeln!(
             io.stderr,
-            "who: extra operand '{}'",
-            p.positionals[2].to_string_lossy()
+            "who: {}",
+            crate::messages::extra_operand(ctx, &p.positionals[2].to_string_lossy())
         );
-        let _ = writeln!(io.stderr, "Try 'who --help' for more information.");
+        let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "who"));
         return Ok(1);
     }
     if p.positionals.len() == 2 {

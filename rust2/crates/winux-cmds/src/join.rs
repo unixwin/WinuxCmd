@@ -465,6 +465,7 @@ fn apply_field(
 #[allow(clippy::type_complexity)]
 fn scan_order_sensitive(
     args: &[OsString],
+    ctx: &Ctx,
     io: &mut Io,
     cfg: &mut Config,
     field1_seen: &mut bool,
@@ -609,7 +610,8 @@ fn scan_order_sensitive(
             let arg = names[idx].clone();
             match status[idx] {
                 OpStatus::Operand => {
-                    let _ = usage_error(io, "join", &format!("extra operand '{arg}'"));
+                    let _ =
+                        usage_error(ctx, io, "join", &crate::messages::extra_operand(ctx, &arg));
                     return Err(());
                 }
                 OpStatus::J1Arg | OpStatus::J2Arg => {
@@ -704,7 +706,7 @@ pub fn join_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let mut field1_seen = false;
     let mut field2_seen = false;
     let (real_lists, saw_auto, file_names, _jcount) =
-        match scan_order_sensitive(args, io, &mut cfg, &mut field1_seen, &mut field2_seen) {
+        match scan_order_sensitive(args, ctx, io, &mut cfg, &mut field1_seen, &mut field2_seen) {
             Ok(x) => x,
             Err(()) => return Ok(1),
         };
@@ -807,17 +809,17 @@ pub fn join_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     // resolved); GNU reports a missing second operand against g_names[0].
     cfg.files = file_names;
     if cfg.files.is_empty() {
-        let _ = usage_error(io, "join", "missing operand");
+        let _ = usage_error(ctx, io, "join", &crate::messages::missing_operand(ctx));
         return Ok(1);
     }
     if cfg.files.len() < 2 {
-        let msg = format!("missing operand after '{}'", cfg.files[0]);
-        let _ = usage_error(io, "join", &msg);
+        let msg = crate::messages::missing_after(ctx, &cfg.files[0]);
+        let _ = usage_error(ctx, io, "join", &msg);
         return Ok(1);
     }
     if cfg.files.len() > 2 {
-        let msg = format!("extra operand '{}'", cfg.files[2]);
-        let _ = usage_error(io, "join", &msg);
+        let msg = crate::messages::extra_operand(ctx, &cfg.files[2]);
+        let _ = usage_error(ctx, io, "join", &msg);
         return Ok(1);
     }
 

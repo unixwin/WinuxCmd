@@ -110,6 +110,7 @@ use std::io::{Read, Write};
 use std::os::windows::process::CommandExt as _;
 use std::process::{Child, Stdio};
 
+use crate::argopt;
 use crate::childproc::{
     build_child_command, quote_windows_arg, resolve_child, ChildLaunch, ChildResolve,
 };
@@ -594,15 +595,15 @@ fn apply_option(
     Ok(None)
 }
 
-fn usage_fail(err: &mut dyn Write, msg: &str) -> u32 {
+fn usage_fail(ctx: &Ctx, err: &mut dyn Write, msg: &str) -> u32 {
     let _ = writeln!(err, "xargs: {msg}");
-    let _ = writeln!(err, "{TRY_HELP}");
+    let _ = writeln!(err, "{}", winux_core::try_help(ctx, "xargs"));
     1
 }
 
 /// getopt_long("+...") over argv: option processing stops at the first
 /// non-option (`xargs echo -n` hands -n to echo) or after `--`.
-fn parse_args(args: &[OsString], out: &mut dyn Write, err: &mut dyn Write) -> Parsed {
+fn parse_args(ctx: &Ctx, args: &[OsString], out: &mut dyn Write, err: &mut dyn Write) -> Parsed {
     let argv: Vec<String> = args
         .iter()
         .map(|a| a.to_string_lossy().into_owned())
@@ -633,8 +634,9 @@ fn parse_args(args: &[OsString], out: &mut dyn Write, err: &mut dyn Write) -> Pa
                     match cands.len() {
                         0 => {
                             return Parsed::Exit(usage_fail(
+                                ctx,
                                 err,
-                                &format!("unrecognized option '--{body}'"),
+                                &argopt::unrecognized_option(ctx, &format!("--{body}")),
                             ))
                         }
                         1 => *cands[0],
@@ -642,10 +644,12 @@ fn parse_args(args: &[OsString], out: &mut dyn Write, err: &mut dyn Write) -> Pa
                             let list: Vec<String> =
                                 cands.iter().map(|(n, _, _)| format!("'--{n}'")).collect();
                             return Parsed::Exit(usage_fail(
+                                ctx,
                                 err,
-                                &format!(
-                                    "option '--{body}' is ambiguous; possibilities: {}",
-                                    list.join(" ")
+                                &argopt::ambiguous_option(
+                                    ctx,
+                                    &format!("--{body}"),
+                                    &list.join(" "),
                                 ),
                             ));
                         }
@@ -657,8 +661,9 @@ fn parse_args(args: &[OsString], out: &mut dyn Write, err: &mut dyn Write) -> Pa
                 HasArg::No => {
                     if inline.is_some() {
                         return Parsed::Exit(usage_fail(
+                            ctx,
                             err,
-                            &format!("option '--{lname}' doesn't allow an argument"),
+                            &argopt::option_no_argument(ctx, &format!("--{lname}")),
                         ));
                     }
                     None
@@ -672,8 +677,9 @@ fn parse_args(args: &[OsString], out: &mut dyn Write, err: &mut dyn Write) -> Pa
                             Some(v) => Some(v.clone()),
                             None => {
                                 return Parsed::Exit(usage_fail(
+                                    ctx,
                                     err,
-                                    &format!("option '--{lname}' requires an argument"),
+                                    &argopt::option_requires_argument(ctx, &format!("--{lname}")),
                                 ))
                             }
                         }
@@ -694,7 +700,7 @@ fn parse_args(args: &[OsString], out: &mut dyn Write, err: &mut dyn Write) -> Pa
         while ci < chars.len() {
             let c = chars[ci];
             let Some(has_arg) = short_has_arg(c) else {
-                return Parsed::Exit(usage_fail(err, &format!("invalid option -- '{c}'")));
+                return Parsed::Exit(usage_fail(ctx, err, &format!("invalid option -- '{c}'")));
             };
             let rest: String = chars[ci + 1..].iter().collect();
             let (value, done): (Option<String>, bool) = match has_arg {
@@ -709,8 +715,9 @@ fn parse_args(args: &[OsString], out: &mut dyn Write, err: &mut dyn Write) -> Pa
                             Some(v) => (Some(v.clone()), true),
                             None => {
                                 return Parsed::Exit(usage_fail(
+                                    ctx,
                                     err,
-                                    &format!("option requires an argument -- '{c}'"),
+                                    &argopt::short_option_requires_argument(ctx, &c.to_string()),
                                 ))
                             }
                         }
@@ -1883,7 +1890,7 @@ pub(crate) fn run_with_tty(
     tty: &mut dyn Tty,
     inline_echo: bool,
 ) -> CmdResult {
-    let o = match parse_args(args, io.stdout, io.stderr) {
+    let o = match parse_args(ctx, args, io.stdout, io.stderr) {
         Parsed::Run(o) => o,
         Parsed::Exit(s) => return Ok(s),
     };
@@ -2084,6 +2091,7 @@ mod tests {
         let ctx = Ctx {
             cwd: sc.dir.clone(),
             env: &env,
+            host: &winux_core::host::DEFAULT_HOST,
         };
         let mut io = MemIo::new("");
         io.input = std::io::Cursor::new(input.to_vec());
@@ -2113,6 +2121,7 @@ mod tests {
         let ctx = Ctx {
             cwd: dir.to_path_buf(),
             env: &env,
+            host: &winux_core::host::DEFAULT_HOST,
         };
         let mut io = MemIo::new("");
         io.input = std::io::Cursor::new(input.to_vec());
@@ -2609,6 +2618,7 @@ mod tests {
         let ctx = Ctx {
             cwd: sc.dir.clone(),
             env: &env,
+            host: &winux_core::host::DEFAULT_HOST,
         };
         let go = |args: &[&str], input: &str| {
             let mut io = MemIo::new(input);

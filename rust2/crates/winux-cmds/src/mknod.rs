@@ -171,12 +171,16 @@ pub fn mknod_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     //   `mknod mf p 1 3` -> extra operand '1' + fifo note (+try)
     //   `mknod me c 1 3 extra` -> extra operand 'extra' (+try)
     if pos.is_empty() {
-        let _ = winux_core::usage_error(io, "mknod", "missing operand");
+        let _ = winux_core::usage_error(ctx, io, "mknod", &crate::messages::missing_operand(ctx));
         return Ok(1);
     }
     if pos.len() < 2 {
-        let _ =
-            winux_core::usage_error(io, "mknod", &format!("missing operand after '{}'", pos[0]));
+        let _ = winux_core::usage_error(
+            ctx,
+            io,
+            "mknod",
+            &crate::messages::missing_after(ctx, &pos[0]),
+        );
         return Ok(1);
     }
     let name = pos[0].clone();
@@ -185,7 +189,12 @@ pub fn mknod_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         "c" | "u" => NodeType::Character,
         "p" => NodeType::Fifo,
         other => {
-            let _ = winux_core::usage_error(io, "mknod", &format!("invalid device type '{other}'"));
+            let _ = winux_core::usage_error(
+                ctx,
+                io,
+                "mknod",
+                &format!("invalid device type '{other}'"),
+            );
             return Ok(1);
         }
     };
@@ -193,6 +202,7 @@ pub fn mknod_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     if node_type == NodeType::Fifo {
         if pos.len() > 2 {
             let _ = winux_core::usage_error(
+                ctx,
                 io,
                 "mknod",
                 &format!(
@@ -204,15 +214,20 @@ pub fn mknod_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         }
     } else {
         if pos.len() > 4 {
-            let _ = winux_core::usage_error(io, "mknod", &format!("extra operand '{}'", pos[4]));
+            let _ = winux_core::usage_error(
+                ctx,
+                io,
+                "mknod",
+                &crate::messages::extra_operand(ctx, &pos[4]),
+            );
             return Ok(1);
         }
         if pos.len() < 4 {
-            let mut msg = format!("missing operand after '{}'", pos[pos.len() - 1]);
+            let mut msg = crate::messages::missing_after(ctx, &pos[pos.len() - 1]);
             if pos.len() == 2 {
                 msg.push_str("\nSpecial files require major and minor device numbers.");
             }
-            let _ = winux_core::usage_error(io, "mknod", &msg);
+            let _ = winux_core::usage_error(ctx, io, "mknod", &msg);
             return Ok(1);
         }
         if let Err(msg) = parse_uint_arg(&pos[2], "major device number") {

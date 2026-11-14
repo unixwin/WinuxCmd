@@ -4,7 +4,11 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from scripts.i18n_rust import extract_rust_messages
+from scripts.i18n_rust import (
+    POSITIONAL_TO_NAMED,
+    extract_rust_messages,
+    merge_rust_messages,
+)
 
 
 class RustExtractionTests(unittest.TestCase):
@@ -138,6 +142,41 @@ fn run(ctx: &Ctx) { i18n::text(ctx, "valid.key", HELP); }
             self.extract('fn f(ctx: &Ctx) { tr!(ctx, "valid.key", "{{literal}} {path}", path=p); }'),
             {"valid.key": "{{literal}} {path}"},
         )
+
+    def test_annotated_positional_and_named_spellings_merge(self):
+        # The C++ catalog entry stays positioned (std::format), the Rust
+        # fallback names the same field; the annotation is the permission.
+        messages = {
+            "common.try_help": "Try '{} --help' for more information.",
+            "common.error.extra_operand": "extra operand '{}'",
+        }
+        merge_rust_messages(messages, {
+            "common.try_help": "Try '{prog} --help' for more information.",
+            "common.error.extra_operand": "extra operand '{operand}'",
+        })
+        self.assertEqual(messages["common.try_help"],
+                         "Try '{} --help' for more information.")
+        self.assertEqual(messages["common.error.extra_operand"],
+                         "extra operand '{}'")
+        self.assertEqual(POSITIONAL_TO_NAMED["common.try_help"], ("prog",))
+
+    def test_unannotated_fallback_conflicts_still_fail(self):
+        with self.assertRaisesRegex(ValueError, "conflicting"):
+            merge_rust_messages(
+                {"command.sample.error": "one '{}'"},
+                {"command.sample.error": "one '{thing}'"},
+            )
+
+    def test_annotated_spelling_must_match_shape_and_order(self):
+        messages = {"common.try_help": "Try '{} --help' for more information."}
+        for named in (
+            "Try '{wrong} --help' for more information.",  # wrong field name
+            "Try '{prog} --help'!",                        # different literal
+            "Try '{prog}' for more information.",          # different shape
+        ):
+            with self.subTest(named=named), self.assertRaisesRegex(
+                    ValueError, "conflicting"):
+                merge_rust_messages(dict(messages), {"common.try_help": named})
 
     def test_custom_cargo_target_is_rejected(self):
         (self.crate / "Cargo.toml").write_text(

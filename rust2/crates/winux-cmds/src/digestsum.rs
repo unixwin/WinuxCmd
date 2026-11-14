@@ -593,6 +593,7 @@ fn run(
     // each violation is a usage error with status 1.
     if zero && check {
         return usage_fail(
+            ctx,
             prog,
             "the --zero option is not supported when verifying checksums",
             io,
@@ -600,6 +601,7 @@ fn run(
     }
     if tag && check {
         return usage_fail(
+            ctx,
             prog,
             "the --tag option is meaningless when verifying checksums",
             io,
@@ -607,6 +609,7 @@ fn run(
     }
     if mode_flag.is_some() && check {
         return usage_fail(
+            ctx,
             prog,
             "the --binary and --text options are meaningless when verifying checksums",
             io,
@@ -621,6 +624,7 @@ fn run(
     ] {
         if set && !check {
             return usage_fail(
+                ctx,
                 prog,
                 &format!("the {opt} option is meaningful only when verifying checksums"),
                 io,
@@ -759,8 +763,8 @@ struct CheckFlags {
     ignore_missing: bool,
 }
 
-fn usage_fail(prog: &str, msg: &str, io: &mut Io) -> CmdResult {
-    let _ = winux_core::usage_error(io, prog, msg);
+fn usage_fail(ctx: &Ctx, prog: &str, msg: &str, io: &mut Io) -> CmdResult {
+    let _ = winux_core::usage_error(ctx, io, prog, msg);
     Ok(1)
 }
 

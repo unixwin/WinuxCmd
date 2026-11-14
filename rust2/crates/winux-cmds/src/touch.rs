@@ -61,6 +61,7 @@ use std::path::Path;
 
 use crate::glob::{contains_wildcard, glob_expand_in};
 
+use crate::argopt;
 use crate::fs_win::{self, FileTime, SystemTime};
 use winux_core::{usage_error, CmdResult, Ctx, Io};
 
@@ -125,15 +126,24 @@ pub fn touch_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 "date" => match take_val(inline, args, &mut idx) {
                     Some(v) => opts.date = Some(v),
                     None => {
-                        let _ = usage_error(io, "touch", "option '--date' requires an argument");
+                        let _ = usage_error(
+                            ctx,
+                            io,
+                            "touch",
+                            &argopt::option_requires_argument(ctx, "--date"),
+                        );
                         return Ok(1);
                     }
                 },
                 "reference" => match take_val(inline, args, &mut idx) {
                     Some(v) => opts.reference = Some(v),
                     None => {
-                        let _ =
-                            usage_error(io, "touch", "option '--reference' requires an argument");
+                        let _ = usage_error(
+                            ctx,
+                            io,
+                            "touch",
+                            &argopt::option_requires_argument(ctx, "--reference"),
+                        );
                         return Ok(1);
                     }
                 },
@@ -141,8 +151,12 @@ pub fn touch_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     let v = match take_val(inline, args, &mut idx) {
                         Some(v) => v,
                         None => {
-                            let _ =
-                                usage_error(io, "touch", "option '--time' requires an argument");
+                            let _ = usage_error(
+                                ctx,
+                                io,
+                                "touch",
+                                &argopt::option_requires_argument(ctx, "--time"),
+                            );
                             return Ok(1);
                         }
                     };
@@ -160,7 +174,8 @@ pub fn touch_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                         _ => {
                             let _ = writeln!(
                                 io.stderr,
-                                "touch: invalid argument '{v}' for '--time'\nValid arguments are:\n  - 'atime', 'access', 'use'\n  - 'mtime', 'modify'\nTry 'touch --help' for more information."
+                                "touch: invalid argument '{v}' for '--time'\nValid arguments are:\n  - 'atime', 'access', 'use'\n  - 'mtime', 'modify'\n{}",
+                                winux_core::try_help(ctx, "touch")
                             );
                             return Ok(1);
                         }
@@ -168,7 +183,7 @@ pub fn touch_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 }
                 "help" | "version" => return Ok(0),
                 _ => {
-                    let _ = usage_error(io, "touch", &format!("unrecognized option '{arg}'"));
+                    let _ = usage_error(ctx, io, "touch", &argopt::unrecognized_option(ctx, &arg));
                     return Ok(1);
                 }
             }
@@ -208,8 +223,12 @@ pub fn touch_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                                 ci = chars.len();
                             }
                             None => {
-                                let _ =
-                                    usage_error(io, "touch", "option requires an argument -- 'd'");
+                                let _ = usage_error(
+                                    ctx,
+                                    io,
+                                    "touch",
+                                    &argopt::short_option_requires_argument(ctx, "d"),
+                                );
                                 return Ok(1);
                             }
                         }
@@ -228,8 +247,12 @@ pub fn touch_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                                 v.to_string_lossy().into_owned()
                             }
                             None => {
-                                let _ =
-                                    usage_error(io, "touch", "option requires an argument -- 't'");
+                                let _ = usage_error(
+                                    ctx,
+                                    io,
+                                    "touch",
+                                    &argopt::short_option_requires_argument(ctx, "t"),
+                                );
                                 return Ok(1);
                             }
                         }
@@ -262,8 +285,12 @@ pub fn touch_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                                 v.to_string_lossy().into_owned()
                             }
                             None => {
-                                let _ =
-                                    usage_error(io, "touch", "option requires an argument -- 'r'");
+                                let _ = usage_error(
+                                    ctx,
+                                    io,
+                                    "touch",
+                                    &argopt::short_option_requires_argument(ctx, "r"),
+                                );
                                 return Ok(1);
                             }
                         }
@@ -271,7 +298,12 @@ pub fn touch_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     opts.reference = Some(v);
                 }
                 c => {
-                    let _ = usage_error(io, "touch", &format!("invalid option -- '{c}'"));
+                    let _ = usage_error(
+                        ctx,
+                        io,
+                        "touch",
+                        &argopt::invalid_option(ctx, &c.to_string()),
+                    );
                     return Ok(1);
                 }
             }
@@ -293,7 +325,8 @@ pub fn touch_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     if opts.stamp.is_some() && (opts.date.is_some() || opts.reference.is_some()) {
         let _ = writeln!(
             io.stderr,
-            "touch: cannot specify times from more than one source\nTry 'touch --help' for more information."
+            "touch: cannot specify times from more than one source\n{}",
+            winux_core::try_help(ctx, "touch")
         );
         return Ok(1);
     }
@@ -351,7 +384,12 @@ pub fn touch_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     // (probed: `-d garbage` with no operands reports the date;
     // `-d ok` with no operands reports the operand).
     if operands.is_empty() {
-        let _ = usage_error(io, "touch", "missing file operand");
+        let _ = usage_error(
+            ctx,
+            io,
+            "touch",
+            &crate::messages::missing_file_operand(ctx),
+        );
         return Ok(1);
     }
     let mut ok = true;

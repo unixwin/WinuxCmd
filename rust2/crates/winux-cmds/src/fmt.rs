@@ -34,6 +34,7 @@
 use std::ffi::OsString;
 use std::io::Write;
 
+use crate::argopt;
 use winux_core::{usage_error, CmdResult, Ctx, Io};
 
 const WIDTH_DEFAULT: usize = 75;
@@ -619,9 +620,10 @@ pub fn fmt_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                                 Some(v) => v.clone(),
                                 None => {
                                     let _ = usage_error(
+                                        ctx,
                                         io,
                                         "fmt",
-                                        "option '--width' requires an argument",
+                                        &argopt::option_requires_argument(ctx, "--width"),
                                     );
                                     return Ok(1);
                                 }
@@ -648,9 +650,10 @@ pub fn fmt_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                                 Some(v) => v.clone(),
                                 None => {
                                     let _ = usage_error(
+                                        ctx,
                                         io,
                                         "fmt",
-                                        "option '--goal' requires an argument",
+                                        &argopt::option_requires_argument(ctx, "--goal"),
                                     );
                                     return Ok(1);
                                 }
@@ -674,9 +677,10 @@ pub fn fmt_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                                 Some(v) => v.clone(),
                                 None => {
                                     let _ = usage_error(
+                                        ctx,
                                         io,
                                         "fmt",
-                                        "option '--prefix' requires an argument",
+                                        &argopt::option_requires_argument(ctx, "--prefix"),
                                     );
                                     return Ok(1);
                                 }
@@ -686,7 +690,7 @@ pub fn fmt_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 }
                 "help" | "version" => return Ok(0),
                 _ => {
-                    let _ = usage_error(io, "fmt", &format!("unrecognized option '{arg}'"));
+                    let _ = usage_error(ctx, io, "fmt", &argopt::unrecognized_option(ctx, arg));
                     return Ok(1);
                 }
             }
@@ -718,9 +722,10 @@ pub fn fmt_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                             }
                             None => {
                                 let _ = usage_error(
+                                    ctx,
                                     io,
                                     "fmt",
-                                    &format!("option requires an argument -- '{c}'"),
+                                    &argopt::short_option_requires_argument(ctx, &c.to_string()),
                                 );
                                 return Ok(1);
                             }
@@ -749,6 +754,7 @@ pub fn fmt_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 }
                 d if d.is_ascii_digit() => {
                     let _ = usage_error(
+                        ctx,
                         io,
                         "fmt",
                         &format!(
@@ -758,7 +764,8 @@ pub fn fmt_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     return Ok(1);
                 }
                 d => {
-                    let _ = usage_error(io, "fmt", &format!("invalid option -- '{d}'"));
+                    let _ =
+                        usage_error(ctx, io, "fmt", &argopt::invalid_option(ctx, &d.to_string()));
                     return Ok(1);
                 }
             }

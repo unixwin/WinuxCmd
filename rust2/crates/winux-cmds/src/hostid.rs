@@ -59,6 +59,7 @@ pub fn hostid_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     if !p.positionals.is_empty() {
         // [GNU] hostid.c: any operand is rejected with the try-help frame.
         let _ = usage_error(
+            ctx,
             io,
             "hostid",
             &tr!(

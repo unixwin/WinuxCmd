@@ -26,6 +26,7 @@
 
 use std::ffi::OsString;
 
+use crate::argopt;
 use crate::fs_win;
 use winux_core::{usage_error, CmdResult, Ctx, Io};
 
@@ -133,9 +134,10 @@ pub fn ln_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                             Some(v) => opts.target_dir = Some(v.to_string_lossy().into_owned()),
                             None => {
                                 let _ = usage_error(
+                                    ctx,
                                     io,
                                     "ln",
-                                    "option '--target-directory' requires an argument",
+                                    &argopt::option_requires_argument(ctx, "--target-directory"),
                                 );
                                 return Ok(1);
                             }
@@ -146,7 +148,7 @@ pub fn ln_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 "relative" => opts.relative = true,
                 "help" | "version" => return Ok(0),
                 _ => {
-                    let _ = usage_error(io, "ln", &format!("unrecognized option '{arg}'"));
+                    let _ = usage_error(ctx, io, "ln", &argopt::unrecognized_option(ctx, &arg));
                     return Ok(1);
                 }
             }
@@ -180,7 +182,12 @@ pub fn ln_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                                 ci = chars.len();
                             }
                             None => {
-                                let _ = usage_error(io, "ln", "option requires an argument -- 'S'");
+                                let _ = usage_error(
+                                    ctx,
+                                    io,
+                                    "ln",
+                                    &argopt::short_option_requires_argument(ctx, "S"),
+                                );
                                 return Ok(1);
                             }
                         }
@@ -199,7 +206,12 @@ pub fn ln_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                                 v.to_string_lossy().into_owned()
                             }
                             None => {
-                                let _ = usage_error(io, "ln", "option requires an argument -- 't'");
+                                let _ = usage_error(
+                                    ctx,
+                                    io,
+                                    "ln",
+                                    &argopt::short_option_requires_argument(ctx, "t"),
+                                );
                                 return Ok(1);
                             }
                         }
@@ -209,7 +221,8 @@ pub fn ln_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 'T' => opts.no_target_dir = true,
                 'r' => opts.relative = true,
                 c => {
-                    let _ = usage_error(io, "ln", &format!("invalid option -- '{c}'"));
+                    let _ =
+                        usage_error(ctx, io, "ln", &argopt::invalid_option(ctx, &c.to_string()));
                     return Ok(1);
                 }
             }
@@ -240,7 +253,7 @@ pub fn ln_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     if let Some(dir) = &dir_mode {
         // all operands are sources, links go into DIR
         if operands.is_empty() {
-            let _ = usage_error(io, "ln", "missing file operand");
+            let _ = usage_error(ctx, io, "ln", &crate::messages::missing_file_operand(ctx));
             return Ok(1);
         }
         if !std::path::Path::new(&resolve(ctx, dir)).is_dir() {
@@ -261,12 +274,13 @@ pub fn ln_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     }
     match operands.len() {
         0 => {
-            let _ = usage_error(io, "ln", "missing file operand");
+            let _ = usage_error(ctx, io, "ln", &crate::messages::missing_file_operand(ctx));
             Ok(1)
         }
         1 => {
             if opts.no_target_dir {
                 let _ = usage_error(
+                    ctx,
                     io,
                     "ln",
                     &format!("missing destination file operand after '{}'", operands[0]),
@@ -318,7 +332,12 @@ pub fn ln_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             // 3+ operands: the last must be an existing directory
             let last = &operands[operands.len() - 1];
             if opts.no_target_dir {
-                let _ = usage_error(io, "ln", &format!("extra operand '{}'", operands[1]));
+                let _ = usage_error(
+                    ctx,
+                    io,
+                    "ln",
+                    &crate::messages::extra_operand(ctx, &operands[1]),
+                );
                 return Ok(1);
             }
             if !is_existing_dir(ctx, last) {

@@ -34,6 +34,7 @@ use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::rc::Rc;
 
+use crate::argopt;
 use winux_core::{usage_error, CmdResult, Ctx, Io};
 
 const EMPTY_DELIM: u8 = b'\0';
@@ -294,9 +295,10 @@ pub fn paste_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                             Some(v) => delim_arg = v.to_string_lossy().into_owned(),
                             None => {
                                 let _ = usage_error(
+                                    ctx,
                                     io,
                                     "paste",
-                                    "option '--delimiters' requires an argument",
+                                    &argopt::option_requires_argument(ctx, "--delimiters"),
                                 );
                                 return Ok(1);
                             }
@@ -306,7 +308,7 @@ pub fn paste_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 "zero-terminated" => zero_terminated = true,
                 "help" | "version" => return Ok(0),
                 _ => {
-                    let _ = usage_error(io, "paste", &format!("unrecognized option '{arg}'"));
+                    let _ = usage_error(ctx, io, "paste", &argopt::unrecognized_option(ctx, &arg));
                     return Ok(1);
                 }
             }
@@ -339,15 +341,24 @@ pub fn paste_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                                 ci = chars.len();
                             }
                             None => {
-                                let _ =
-                                    usage_error(io, "paste", "option requires an argument -- 'd'");
+                                let _ = usage_error(
+                                    ctx,
+                                    io,
+                                    "paste",
+                                    &argopt::short_option_requires_argument(ctx, "d"),
+                                );
                                 return Ok(1);
                             }
                         }
                     }
                 }
                 c => {
-                    let _ = usage_error(io, "paste", &format!("invalid option -- '{c}'"));
+                    let _ = usage_error(
+                        ctx,
+                        io,
+                        "paste",
+                        &argopt::invalid_option(ctx, &c.to_string()),
+                    );
                     return Ok(1);
                 }
             }

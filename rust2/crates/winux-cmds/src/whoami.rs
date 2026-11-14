@@ -35,17 +35,8 @@ pub fn whoami_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     // "invalid option -- 'h'" rc 1 (not --help); --help stays valid.
     if args.iter().any(|a| a.to_string_lossy() == "-h") {
         // [GNU] whoami registers no -h short option; the wording is the
-        // shared getopt diagnostic, keyed per command (whoami.c:317 error()).
-        let _ = usage_error(
-            io,
-            "whoami",
-            &tr!(
-                ctx,
-                "command.whoami.error.invalid_option",
-                "invalid option -- '{opt}'",
-                opt = 'h'
-            ),
-        );
+        // shared getopt diagnostic (whoami.c:317 error()).
+        let _ = usage_error(ctx, io, "whoami", &argopt::invalid_option(ctx, "h"));
         return Ok(1);
     }
     let p = match argopt::parse("whoami", args, OPTS, io, ctx, 1) {
@@ -82,14 +73,10 @@ pub fn whoami_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     if let Some(first) = p.positionals.first() {
         let shown = first.to_string_lossy().into_owned();
         let _ = usage_error(
+            ctx,
             io,
             "whoami",
-            &tr!(
-                ctx,
-                "command.whoami.error.extra_operand",
-                "extra operand '{operand}'",
-                operand = shown
-            ),
+            &crate::messages::extra_operand(ctx, &shown),
         );
         return Ok(1);
     }
@@ -190,9 +177,11 @@ mod tests {
 
         let sc = ScratchCtx::new("whoami-i18n");
         let mut host = MapHost::default();
+        // The shared key's catalog text stays positioned for the C++ side;
+        // the Rust rendering maps it back onto the named binding.
         host.messages.insert(
-            "command.whoami.error.extra_operand".to_string(),
-            "多余的参数 '{operand}'".to_string(),
+            "common.error.extra_operand".to_string(),
+            "多余的参数 '{}'".to_string(),
         );
         let env = MapEnv::new();
         let ctx = Ctx::with_host(sc.dir.clone(), &env, &host);

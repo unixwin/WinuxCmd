@@ -124,6 +124,7 @@ pub fn nproc_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         let shown = first.to_string_lossy().into_owned();
         // [GNU] nproc.c: any operand is rejected with the try-help frame.
         let _ = usage_error(
+            ctx,
             io,
             "nproc",
             &tr!(

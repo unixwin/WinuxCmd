@@ -61,7 +61,7 @@ pub fn mkdir_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         return Ok(0);
     }
     if p.positionals.is_empty() {
-        let _ = usage_error(io, "mkdir", "missing operand");
+        let _ = usage_error(ctx, io, "mkdir", &crate::messages::missing_operand(ctx));
         return Ok(1);
     }
     let parents = p.has("parents");

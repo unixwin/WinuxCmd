@@ -456,7 +456,7 @@ pub fn tr_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     // operand count diagnostics (probed shapes)
     if operands.is_empty() {
         let _ = writeln!(io.stderr, "tr: missing operand");
-        let _ = writeln!(io.stderr, "Try 'tr --help' for more information.");
+        let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "tr"));
         return Ok(1);
     }
     if operands.len() == 1 && !delete && !squeeze {
@@ -466,7 +466,7 @@ pub fn tr_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             operands[0]
         );
         let _ = writeln!(io.stderr, "Two strings must be given when translating.");
-        let _ = writeln!(io.stderr, "Try 'tr --help' for more information.");
+        let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "tr"));
         return Ok(1);
     }
     if operands.len() == 1 && delete && squeeze {
@@ -479,7 +479,7 @@ pub fn tr_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             io.stderr,
             "Two strings must be given when both deleting and squeezing repeats."
         );
-        let _ = writeln!(io.stderr, "Try 'tr --help' for more information.");
+        let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "tr"));
         return Ok(1);
     }
     if delete && !squeeze && operands.len() >= 2 {
@@ -492,7 +492,7 @@ pub fn tr_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             io.stderr,
             "Only one string may be given when deleting without squeezing repeats."
         );
-        let _ = writeln!(io.stderr, "Try 'tr --help' for more information.");
+        let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "tr"));
         return Ok(1);
     }
 

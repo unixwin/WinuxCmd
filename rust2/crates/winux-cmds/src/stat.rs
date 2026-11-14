@@ -46,6 +46,7 @@ use std::ffi::OsString;
 use crate::glob::{contains_wildcard, glob_expand_in};
 use std::io::Write;
 
+use crate::argopt;
 use crate::fs_win::{self, FileTime};
 use winux_core::{usage_error, CmdResult, Ctx, Io};
 
@@ -879,9 +880,10 @@ pub fn stat_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                                     Some(v) => v.to_string_lossy().into_owned(),
                                     None => {
                                         let _ = usage_error(
+                                            ctx,
                                             io,
                                             "stat",
-                                            "option '--printf' requires an argument",
+                                            &argopt::option_requires_argument(ctx, "--printf"),
                                         );
                                         return Ok(1);
                                     }
@@ -911,9 +913,10 @@ pub fn stat_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                             }
                             None => {
                                 let _ = usage_error(
+                                    ctx,
                                     io,
                                     "stat",
-                                    "option '--format' requires an argument",
+                                    &argopt::option_requires_argument(ctx, "--format"),
                                 );
                                 return Ok(1);
                             }
@@ -938,9 +941,10 @@ pub fn stat_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                                 Some(v) => v.to_string_lossy().into_owned(),
                                 None => {
                                     let _ = usage_error(
+                                        ctx,
                                         io,
                                         "stat",
-                                        "option '--cached' requires an argument",
+                                        &argopt::option_requires_argument(ctx, "--cached"),
                                     );
                                     return Ok(1);
                                 }
@@ -949,6 +953,7 @@ pub fn stat_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     };
                     if when != "never" && when != "always" && when != "default" {
                         let _ = usage_error(
+                            ctx,
                             io,
                             "stat",
                             &format!(
@@ -964,7 +969,7 @@ pub fn stat_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 }
                 "help" | "version" => return Ok(0),
                 _ => {
-                    let _ = usage_error(io, "stat", &format!("unrecognized option '{arg}'"));
+                    let _ = usage_error(ctx, io, "stat", &argopt::unrecognized_option(ctx, &arg));
                     return Ok(1);
                 }
             }
@@ -995,8 +1000,12 @@ pub fn stat_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                                 v.to_string_lossy().into_owned()
                             }
                             None => {
-                                let _ =
-                                    usage_error(io, "stat", "option requires an argument -- 'c'");
+                                let _ = usage_error(
+                                    ctx,
+                                    io,
+                                    "stat",
+                                    &argopt::short_option_requires_argument(ctx, "c"),
+                                );
                                 return Ok(1);
                             }
                         }
@@ -1005,7 +1014,12 @@ pub fn stat_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     printf_escapes = false;
                 }
                 c => {
-                    let _ = usage_error(io, "stat", &format!("invalid option -- '{c}'"));
+                    let _ = usage_error(
+                        ctx,
+                        io,
+                        "stat",
+                        &argopt::invalid_option(ctx, &c.to_string()),
+                    );
                     return Ok(1);
                 }
             }
@@ -1014,7 +1028,7 @@ pub fn stat_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         idx += if consumed_next { 2 } else { 1 };
     }
     if operands.is_empty() {
-        let _ = usage_error(io, "stat", "missing operand");
+        let _ = usage_error(ctx, io, "stat", &crate::messages::missing_operand(ctx));
         return Ok(1);
     }
     let mut ok = true;

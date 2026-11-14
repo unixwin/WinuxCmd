@@ -137,7 +137,7 @@ pub fn runcon_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     }
     if !has_context_modifiers && p.positionals.len() < 2 {
         // the only positional was a CONTEXT: no COMMAND given
-        let _ = winux_core::usage_error(io, "runcon", "no command specified");
+        let _ = winux_core::usage_error(ctx, io, "runcon", "no command specified");
         return Ok(RC_SELINUX_FAIL);
     }
 

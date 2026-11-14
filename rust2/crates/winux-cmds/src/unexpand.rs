@@ -269,9 +269,10 @@ pub fn unexpand_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     }
                     None => {
                         let _ = winux_core::usage_error(
+                            ctx,
                             io,
                             "unexpand",
-                            "option '--tabs' requires an argument",
+                            &argopt::option_requires_argument(ctx, "--tabs"),
                         );
                         return Ok(1);
                     }
@@ -305,8 +306,8 @@ pub fn unexpand_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                         }
                         pending = 0;
                     } else {
-                        let msg = format!("invalid option -- '{ch}'");
-                        let _ = winux_core::usage_error(io, "unexpand", &msg);
+                        let msg = argopt::invalid_option(ctx, &ch.to_string());
+                        let _ = winux_core::usage_error(ctx, io, "unexpand", &msg);
                         return Ok(1);
                     }
                 }
@@ -329,9 +330,10 @@ pub fn unexpand_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                         }
                         None => {
                             let _ = winux_core::usage_error(
+                                ctx,
                                 io,
                                 "unexpand",
-                                "option '-t' requires an argument",
+                                &argopt::option_requires_argument(ctx, "-t"),
                             );
                             return Ok(1);
                         }

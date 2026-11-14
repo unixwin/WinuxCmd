@@ -263,7 +263,8 @@ pub fn chgrp_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             .collect();
     } else {
         if p.positionals.is_empty() {
-            let _ = winux_core::usage_error(io, "chgrp", "missing operand");
+            let _ =
+                winux_core::usage_error(ctx, io, "chgrp", &crate::messages::missing_operand(ctx));
             return Ok(1);
         }
         let spec = p.positionals[0].to_string_lossy().into_owned();
@@ -273,8 +274,12 @@ pub fn chgrp_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             .collect();
         // probed G8: the operand-count check precedes spec validation
         if files.is_empty() {
-            let _ =
-                winux_core::usage_error(io, "chgrp", &format!("missing operand after '{spec}'"));
+            let _ = winux_core::usage_error(
+                ctx,
+                io,
+                "chgrp",
+                &crate::messages::missing_after(ctx, &spec),
+            );
             return Ok(1);
         }
         target = match parse_group_spec(&spec) {

@@ -259,7 +259,7 @@ pub fn nice_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 io.stderr,
                 "nice: a command must be given with an adjustment"
             );
-            let _ = writeln!(io.stderr, "Try 'nice --help' for more information.");
+            let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "nice"));
             return Ok(125);
         }
         writeln!(io.stdout, "{}", current_niceness())?;

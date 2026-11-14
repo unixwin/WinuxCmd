@@ -5,6 +5,14 @@ i18n::text(ctx, "key", FALLBACK). Fallbacks are Rust string literals,
 same-module string constants, or concat! of those forms. Production module
 edges are followed from crate roots; cfg(test) modules are not traversed.
 Unsupported source indirection fails extraction rather than losing messages.
+
+Keys shared with the C++ catalogs are special: `winux::i18n::format` uses
+std::format positioning (`{}`), the Rust `tr!` fallback names the same
+fields, and one English catalog entry must serve both. POSITIONAL_TO_NAMED
+is the explicit migration annotation for exactly those keys; the merge
+accepts the two spellings only when the literal text and the field
+count/order match, and keeps the positioned C++ text as the canonical
+catalog entry. A conflicting fallback without an annotation still fails.
 """
 
 from __future__ import annotations
@@ -13,6 +21,20 @@ from dataclasses import dataclass
 from pathlib import Path
 import re
 from string import Formatter
+
+
+# Migration annotation: catalog keys whose C++ call sites render positioned
+# text while the Rust call site names the same fields. Value = the Rust
+# field names in placeholder order. Add a key here only after migrating it;
+# merging an annotated key verifies the positioned and named spellings are
+# the same message (same literal shape, same field count/order), and any
+# other C++/Rust fallback disagreement stays a hard extraction failure.
+POSITIONAL_TO_NAMED: dict[str, tuple[str, ...]] = {
+    "common.try_help": ("prog",),
+    "common.error.option_no_argument": ("option",),
+    "common.error.extra_operand": ("operand",),
+    "common.error.missing_after": ("operand",),
+}
 
 
 @dataclass(frozen=True)
@@ -374,3 +396,85 @@ def extract_rust_messages(crates_root: Path) -> dict[str, str]:
             if root.is_file():
                 visit(root, root.parent)
     return dict(sorted(messages.items()))
+
+
+def _template_shape(text: str, named: bool):
+    """Split a fallback into literal segments and placeholder fields.
+
+    Returns None for anything the shared-catalog equivalence rule cannot
+    reason about. The C++ side must be positioned (`{}` only); the Rust side
+    must use plain named fields. Escaped `{{`/`}}` stay literal.
+    """
+    literals: list[str] = []
+    fields: list[str] = []
+    literal: list[str] = []
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == "{":
+            if text.startswith("{{", i):
+                literal.append("{")
+                i += 2
+                continue
+            end = text.find("}", i + 1)
+            if end < 0:
+                return None
+            field = text[i + 1:end]
+            if named:
+                if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", field):
+                    return None
+            elif field != "":
+                return None
+            literals.append("".join(literal))
+            literal = []
+            fields.append(field)
+            i = end + 1
+            continue
+        if ch == "}":
+            if text.startswith("}}", i):
+                literal.append("}")
+                i += 2
+                continue
+            return None
+        literal.append(ch)
+        i += 1
+    literals.append("".join(literal))
+    return literals, fields
+
+
+def _same_message(positioned: str, named: str, fields: tuple[str, ...]) -> bool:
+    left = _template_shape(positioned, named=False)
+    right = _template_shape(named, named=True)
+    if left is None or right is None:
+        return False
+    if left[0] != right[0]:
+        return False
+    return (len(left[1]) == len(fields) and len(right[1]) == len(fields)
+            and tuple(right[1]) == fields)
+
+
+def merge_rust_messages(messages: dict[str, str],
+                        rust_messages: dict[str, str]) -> dict[str, str]:
+    """Merge Rust fallbacks into the English catalog in place.
+
+    Identical fallbacks collapse. A differing fallback needs a
+    POSITIONAL_TO_NAMED annotation AND the same literal shape with the
+    annotated named fields in order; the catalog keeps the positioned C++
+    text so `winux::i18n::format` stays valid. Everything else is the same
+    hard "conflicting C++/Rust I18N fallbacks" failure as before.
+    """
+    for key, fallback in rust_messages.items():
+        if key not in messages:
+            messages[key] = fallback
+            continue
+        if messages[key] == fallback:
+            continue
+        fields = POSITIONAL_TO_NAMED.get(key)
+        if fields is None:
+            raise ValueError(f"conflicting C++/Rust I18N fallbacks: {key}")
+        if not _same_message(messages[key], fallback, fields):
+            raise ValueError(
+                f"conflicting C++/Rust I18N fallbacks: {key} "
+                f"(positioned {messages[key]!r} vs named {fallback!r})"
+            )
+    return messages

@@ -90,6 +90,7 @@
 use std::ffi::OsString;
 use std::io::{Read, Write};
 
+use crate::argopt;
 use crate::fsutil;
 use crate::gnuhelp;
 use winux_core::{CmdResult, Ctx, Io};
@@ -326,7 +327,14 @@ fn argmatch(word: &str, table: &[(&str, char)]) -> Result<char, bool> {
     }
 }
 
-fn argmatch_error(io: &mut Io, ctx: &str, word: &str, ambiguous: bool, valid: &str) -> u32 {
+fn argmatch_error(
+    winux_ctx: &Ctx,
+    io: &mut Io,
+    ctx: &str,
+    word: &str,
+    ambiguous: bool,
+    valid: &str,
+) -> u32 {
     let kind = if ambiguous {
         "ambiguous argument"
     } else {
@@ -334,13 +342,13 @@ fn argmatch_error(io: &mut Io, ctx: &str, word: &str, ambiguous: bool, valid: &s
     };
     let _ = writeln!(io.stderr, "sort: {kind} {} for {}", sq(word), sq(ctx));
     let _ = write!(io.stderr, "Valid arguments are:\n{valid}");
-    let _ = writeln!(io.stderr, "Try 'sort --help' for more information.");
+    let _ = writeln!(io.stderr, "{}", winux_core::try_help(winux_ctx, "sort"));
     1 // usage (EXIT_FAILURE), unlike the rc-2 usage errors
 }
 
-fn usage_fail(io: &mut Io, msg: &str) -> u32 {
+fn usage_fail(ctx: &Ctx, io: &mut Io, msg: &str) -> u32 {
     let _ = writeln!(io.stderr, "sort: {msg}");
-    let _ = writeln!(io.stderr, "Try 'sort --help' for more information.");
+    let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "sort"));
     2
 }
 
@@ -381,15 +389,17 @@ fn parse_field_count(s: &str) -> Option<(usize, &str)> {
     Some((val, &s[i..]))
 }
 
-fn bad_field_spec(io: &mut Io, spec: &str, msg: &str) -> u32 {
+fn bad_field_spec(ctx: &Ctx, io: &mut Io, spec: &str, msg: &str) -> u32 {
     usage_fail(
+        ctx,
         io,
         &format!("{}: invalid field specification {}", msg, sq(spec)),
     )
 }
 
-fn invalid_count(io: &mut Io, msg: &str, string: &str) -> u32 {
+fn invalid_count(ctx: &Ctx, io: &mut Io, msg: &str, string: &str) -> u32 {
     usage_fail(
+        ctx,
         io,
         &format!("{}: invalid count at start of {}", msg, sq(string)),
     )
@@ -397,25 +407,32 @@ fn invalid_count(io: &mut Io, msg: &str, string: &str) -> u32 {
 
 /// Parse the full -k keyspec (sort.c 'k' case) into a key appended to
 /// `keys`. Returns Some(status) on a usage failure.
-fn parse_keyspec(io: &mut Io, spec: &str, keys: &mut Vec<KeyField>) -> Option<u32> {
+fn parse_keyspec(ctx: &Ctx, io: &mut Io, spec: &str, keys: &mut Vec<KeyField>) -> Option<u32> {
     let mut key = KeyField::new();
     let (f1, rest) = match parse_field_count(spec) {
         Some(v) => v,
-        None => return Some(invalid_count(io, "invalid number at field start", spec)),
+        None => {
+            return Some(invalid_count(
+                ctx,
+                io,
+                "invalid number at field start",
+                spec,
+            ))
+        }
     };
     key.sword = f1;
     if key.sword == 0 {
-        return Some(bad_field_spec(io, spec, "field number is zero"));
+        return Some(bad_field_spec(ctx, io, spec, "field number is zero"));
     }
     key.sword -= 1;
     let mut rest = rest;
     if let Some(r) = rest.strip_prefix('.') {
         let (c1, r2) = match parse_field_count(r) {
             Some(v) => v,
-            None => return Some(invalid_count(io, "invalid number after '.'", spec)),
+            None => return Some(invalid_count(ctx, io, "invalid number after '.'", spec)),
         };
         if c1 == 0 {
-            return Some(bad_field_spec(io, spec, "character offset is zero"));
+            return Some(bad_field_spec(ctx, io, spec, "character offset is zero"));
         }
         key.schar = c1 - 1;
         rest = r2;
@@ -431,18 +448,18 @@ fn parse_keyspec(io: &mut Io, spec: &str, keys: &mut Vec<KeyField>) -> Option<u3
     } else {
         let (f2, r2) = match parse_field_count(&r[1..]) {
             Some(v) => v,
-            None => return Some(invalid_count(io, "invalid number after ','", spec)),
+            None => return Some(invalid_count(ctx, io, "invalid number after ','", spec)),
         };
         key.eword = f2;
         if key.eword == 0 {
-            return Some(bad_field_spec(io, spec, "field number is zero"));
+            return Some(bad_field_spec(ctx, io, spec, "field number is zero"));
         }
         key.eword -= 1;
         rest = r2;
         if let Some(r3) = rest.strip_prefix('.') {
             let (c2, r4) = match parse_field_count(r3) {
                 Some(v) => v,
-                None => return Some(invalid_count(io, "invalid number after '.'", spec)),
+                None => return Some(invalid_count(ctx, io, "invalid number after '.'", spec)),
             };
             key.echar = c2; // as-is: POS2 .0 is legal (no zero check here)
             rest = r4;
@@ -450,7 +467,12 @@ fn parse_keyspec(io: &mut Io, spec: &str, keys: &mut Vec<KeyField>) -> Option<u3
         r = apply_ordering_chars(rest, &mut key, false, true);
     }
     if !r.is_empty() {
-        return Some(bad_field_spec(io, spec, "stray character in field spec"));
+        return Some(bad_field_spec(
+            ctx,
+            io,
+            spec,
+            "stray character in field spec",
+        ));
     }
     keys.push(key);
     None
@@ -490,18 +512,18 @@ fn parse_obsolete_start(spec: &str) -> Option<KeyField> {
 
 /// Parse the -POS2 partner. Fatal on a bad number (probed p4: "+0 -1x"
 /// -> stray character in field spec '-1x').
-fn parse_obsolete_end(io: &mut Io, arg: &str, key: &mut KeyField) -> Option<u32> {
+fn parse_obsolete_end(ctx: &Ctx, io: &mut Io, arg: &str, key: &mut KeyField) -> Option<u32> {
     let body = &arg[1..];
     let (f2, rest) = match parse_field_count(body) {
         Some(v) => v,
-        None => return Some(invalid_count(io, "invalid number after '-'", arg)),
+        None => return Some(invalid_count(ctx, io, "invalid number after '-'", arg)),
     };
     key.eword = f2;
     let mut rest = rest;
     if let Some(r) = rest.strip_prefix('.') {
         let (c2, r2) = match parse_field_count(r) {
             Some(v) => v,
-            None => return Some(invalid_count(io, "invalid number after '.'", arg)),
+            None => return Some(invalid_count(ctx, io, "invalid number after '.'", arg)),
         };
         key.echar = c2;
         rest = r2;
@@ -513,7 +535,12 @@ fn parse_obsolete_end(io: &mut Io, arg: &str, key: &mut KeyField) -> Option<u32>
     }
     let r = apply_ordering_chars(rest, key, false, true);
     if !r.is_empty() {
-        return Some(bad_field_spec(io, arg, "stray character in field spec"));
+        return Some(bad_field_spec(
+            ctx,
+            io,
+            arg,
+            "stray character in field spec",
+        ));
     }
     None
 }
@@ -630,7 +657,7 @@ native byte values.
 "#;
 
 pub fn sort_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
-    let (mut cfg, gkey) = match parse_args(args, io) {
+    let (mut cfg, gkey) = match parse_args(args, ctx, io) {
         Ok(Some(pair)) => pair,
         Ok(None) => return Ok(0), // --help/--version already printed
         Err(status) => return Ok(status),
@@ -657,7 +684,7 @@ pub fn sort_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     if keys.is_empty() && !gkey.default_compare() {
         keys.push(gkey.clone());
     }
-    if let Some(status) = check_ordering_compatibility(io, &keys) {
+    if let Some(status) = check_ordering_compatibility(ctx, io, &keys) {
         return Ok(status);
     }
     cfg.keys = keys;
@@ -671,6 +698,7 @@ pub fn sort_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             'o'
         };
         return Ok(usage_fail(
+            ctx,
             io,
             &format!("options '-{} --debug' are incompatible", x),
         ));
@@ -708,13 +736,13 @@ pub fn sort_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 sq(&files[1]),
                 ck
             );
-            let _ = writeln!(io.stderr, "Try 'sort --help' for more information.");
+            let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "sort"));
             return Ok(2);
         }
         if cfg.outfile.is_some() {
             let opts = format!("{ck}o");
             let _ = writeln!(io.stderr, "sort: options '-{opts}' are incompatible");
-            let _ = writeln!(io.stderr, "Try 'sort --help' for more information.");
+            let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "sort"));
             return Ok(2);
         }
         return run_check(&cfg, io, ctx);
@@ -726,7 +754,7 @@ pub fn sort_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
 /// option side effects (duplicate -o/-t/-c conflicts fire at the second
 /// occurrence). Ok(None) = --help/--version printed, exit 0. Err(status)
 /// = usage failure (already reported).
-fn parse_args(args: &[OsString], io: &mut Io) -> Result<Option<(Cfg, KeyField)>, u32> {
+fn parse_args(args: &[OsString], ctx: &Ctx, io: &mut Io) -> Result<Option<(Cfg, KeyField)>, u32> {
     let mut cfg = Cfg::new();
     let mut gkey = KeyField::new();
 
@@ -753,7 +781,7 @@ fn parse_args(args: &[OsString], io: &mut Io) -> Result<Option<(Cfg, KeyField)>,
                     if minus_pos_usage {
                         i += 1;
                         let endarg = args[i].to_string_lossy().into_owned();
-                        if let Some(s) = parse_obsolete_end(io, &endarg, &mut key) {
+                        if let Some(s) = parse_obsolete_end(ctx, io, &endarg, &mut key) {
                             return Err(s);
                         }
                     }
@@ -825,24 +853,31 @@ fn parse_args(args: &[OsString], io: &mut Io) -> Result<Option<(Cfg, KeyField)>,
                                 }
                                 None => {
                                     return Err(usage_fail(
+                                        ctx,
                                         io,
-                                        &format!("option '--{canon}' requires an argument"),
+                                        &argopt::option_requires_argument(
+                                            ctx,
+                                            &format!("--{canon}"),
+                                        ),
                                     ));
                                 }
                             },
                         };
-                        if let Some(s) = apply_long_value(io, &mut cfg, &mut gkey, &canon, &value) {
+                        if let Some(s) =
+                            apply_long_value(ctx, io, &mut cfg, &mut gkey, &canon, &value)
+                        {
                             return Err(s);
                         }
                         continue;
                     }
                     if inline.is_some() {
                         return Err(usage_fail(
+                            ctx,
                             io,
-                            &format!("option '--{canon}' doesn't allow an argument"),
+                            &argopt::option_no_argument(ctx, &format!("--{canon}")),
                         ));
                     }
-                    if let Some(s) = apply_long_flag(io, &mut cfg, &mut gkey, &canon) {
+                    if let Some(s) = apply_long_flag(ctx, io, &mut cfg, &mut gkey, &canon) {
                         return Err(s);
                     }
                     i += 1;
@@ -851,15 +886,17 @@ fn parse_args(args: &[OsString], io: &mut Io) -> Result<Option<(Cfg, KeyField)>,
                 _ => {}
             }
             if candidates.is_empty() {
-                return Err(usage_fail(io, &format!("unrecognized option '--{name}'")));
+                return Err(usage_fail(
+                    ctx,
+                    io,
+                    &argopt::unrecognized_option(ctx, &format!("--{name}")),
+                ));
             }
             let list: Vec<String> = candidates.iter().map(|c| sq(&format!("--{c}"))).collect();
             return Err(usage_fail(
+                ctx,
                 io,
-                &format!(
-                    "option '--{name}' is ambiguous; possibilities: {}",
-                    list.join(" ")
-                ),
+                &argopt::ambiguous_option(ctx, &format!("--{name}"), &list.join(" ")),
             ));
         }
 
@@ -883,18 +920,19 @@ fn parse_args(args: &[OsString], io: &mut Io) -> Result<Option<(Cfg, KeyField)>,
                         }
                         None => {
                             return Err(usage_fail(
+                                ctx,
                                 io,
-                                &format!("option requires an argument -- '{c}'"),
+                                &argopt::short_option_requires_argument(ctx, &c.to_string()),
                             ));
                         }
                     }
                 };
-                if let Some(s) = apply_short_value(io, &mut cfg, c, &value, attached) {
+                if let Some(s) = apply_short_value(ctx, io, &mut cfg, c, &value, attached) {
                     return Err(s);
                 }
                 ci = chars.len();
             } else {
-                if let Some(s) = apply_short_flag(io, &mut cfg, &mut gkey, c) {
+                if let Some(s) = apply_short_flag(ctx, io, &mut cfg, &mut gkey, c) {
                     return Err(s);
                 }
                 ci += 1;
@@ -925,6 +963,7 @@ fn write_version(io: &mut Io) -> std::io::Result<()> {
 
 /// Long options with a required value (canonical name).
 fn apply_long_value(
+    ctx: &Ctx,
     io: &mut Io,
     cfg: &mut Cfg,
     gkey: &mut KeyField,
@@ -932,16 +971,16 @@ fn apply_long_value(
     value: &str,
 ) -> Option<u32> {
     match canon {
-        "key" => parse_keyspec(io, value, &mut cfg.keys),
-        "output" => set_output(io, cfg, value),
-        "field-separator" => set_tab(io, cfg, value),
-        "random-source" => set_random_source(io, cfg, value),
-        "compress-program" => set_compress_program(io, cfg, value),
-        "sort" => apply_sort_word(io, gkey, value),
-        "check" => apply_check_word(io, cfg, value),
-        "batch-size" => apply_batch_size(io, value),
-        "buffer-size" => apply_buffer_size(io, "--buffer-size", value),
-        "parallel" => apply_parallel(io, value),
+        "key" => parse_keyspec(ctx, io, value, &mut cfg.keys),
+        "output" => set_output(ctx, io, cfg, value),
+        "field-separator" => set_tab(ctx, io, cfg, value),
+        "random-source" => set_random_source(ctx, io, cfg, value),
+        "compress-program" => set_compress_program(ctx, io, cfg, value),
+        "sort" => apply_sort_word(ctx, io, gkey, value),
+        "check" => apply_check_word(ctx, io, cfg, value),
+        "batch-size" => apply_batch_size(ctx, io, value),
+        "buffer-size" => apply_buffer_size(ctx, io, "--buffer-size", value),
+        "parallel" => apply_parallel(ctx, io, value),
         "temporary-directory" => None, // accepted and ignored (no temp files)
         _ => unreachable!(),
     }
@@ -949,9 +988,15 @@ fn apply_long_value(
 
 /// Long flags (canonical name). --check is optional-argument: the bare
 /// form is 'c' and never consumes the next argv (sort.c CHECK_OPTION).
-fn apply_long_flag(io: &mut Io, cfg: &mut Cfg, gkey: &mut KeyField, canon: &str) -> Option<u32> {
+fn apply_long_flag(
+    ctx: &Ctx,
+    io: &mut Io,
+    cfg: &mut Cfg,
+    gkey: &mut KeyField,
+    canon: &str,
+) -> Option<u32> {
     match canon {
-        "check" => set_check_mode(io, cfg, 'c'),
+        "check" => set_check_mode(ctx, io, cfg, 'c'),
         "debug" => {
             cfg.debug = true;
             None
@@ -993,7 +1038,13 @@ fn apply_long_flag(io: &mut Io, cfg: &mut Cfg, gkey: &mut KeyField, canon: &str)
     }
 }
 
-fn apply_short_flag(io: &mut Io, cfg: &mut Cfg, gkey: &mut KeyField, c: char) -> Option<u32> {
+fn apply_short_flag(
+    ctx: &Ctx,
+    io: &mut Io,
+    cfg: &mut Cfg,
+    gkey: &mut KeyField,
+    c: char,
+) -> Option<u32> {
     match c {
         'b' | 'd' | 'f' | 'g' | 'h' | 'i' | 'M' | 'n' | 'R' | 'r' | 'V' => {
             apply_ordering(gkey, c, true, true);
@@ -1015,12 +1066,13 @@ fn apply_short_flag(io: &mut Io, cfg: &mut Cfg, gkey: &mut KeyField, c: char) ->
             cfg.eol = 0;
             None
         }
-        'c' | 'C' => set_check_mode(io, cfg, c),
-        _ => opt_err(io, &format!("invalid option -- '{c}'")),
+        'c' | 'C' => set_check_mode(ctx, io, cfg, c),
+        _ => opt_err(ctx, io, &argopt::invalid_option(ctx, &c.to_string())),
     }
 }
 
 fn apply_short_value(
+    ctx: &Ctx,
     io: &mut Io,
     cfg: &mut Cfg,
     c: char,
@@ -1028,10 +1080,10 @@ fn apply_short_value(
     attached: bool,
 ) -> Option<u32> {
     match c {
-        'k' => parse_keyspec(io, value, &mut cfg.keys),
-        'o' => set_output(io, cfg, value),
-        't' => set_tab(io, cfg, value),
-        'S' => apply_buffer_size(io, "-S", value),
+        'k' => parse_keyspec(ctx, io, value, &mut cfg.keys),
+        'o' => set_output(ctx, io, cfg, value),
+        't' => set_tab(ctx, io, cfg, value),
+        'S' => apply_buffer_size(ctx, io, "-S", value),
         'T' => None, // accepted and ignored
         'y' => {
             // Solaris -y: an attached value is dropped silently; a detached
@@ -1046,72 +1098,72 @@ fn apply_short_value(
     }
 }
 
-fn opt_err(io: &mut Io, msg: &str) -> Option<u32> {
-    Some(usage_fail(io, msg))
+fn opt_err(ctx: &Ctx, io: &mut Io, msg: &str) -> Option<u32> {
+    Some(usage_fail(ctx, io, msg))
 }
 
-fn set_check_mode(io: &mut Io, cfg: &mut Cfg, c: char) -> Option<u32> {
+fn set_check_mode(ctx: &Ctx, io: &mut Io, cfg: &mut Cfg, c: char) -> Option<u32> {
     if let Some(prev) = cfg.checkonly {
         if prev != c {
             // GNU hardcodes the pair regardless of order (probed p4).
-            return opt_err(io, "options '-cC' are incompatible");
+            return opt_err(ctx, io, "options '-cC' are incompatible");
         }
     }
     cfg.checkonly = Some(c);
     None
 }
 
-fn set_output(io: &mut Io, cfg: &mut Cfg, value: &str) -> Option<u32> {
+fn set_output(ctx: &Ctx, io: &mut Io, cfg: &mut Cfg, value: &str) -> Option<u32> {
     if let Some(prev) = cfg.outfile.clone() {
         if prev != value {
-            return opt_err(io, "multiple output files specified");
+            return opt_err(ctx, io, "multiple output files specified");
         }
     }
     cfg.outfile = Some(value.to_string());
     None
 }
 
-fn set_tab(io: &mut Io, cfg: &mut Cfg, value: &str) -> Option<u32> {
+fn set_tab(ctx: &Ctx, io: &mut Io, cfg: &mut Cfg, value: &str) -> Option<u32> {
     let newtab = match value.as_bytes().first() {
-        None => return opt_err(io, "empty tab"),
+        None => return opt_err(ctx, io, "empty tab"),
         Some(&b'\\') if value == r"\0" => 0u8,
         Some(&first) => {
             if value.as_bytes().len() != 1 {
-                return opt_err(io, &format!("multi-character tab {}", sq(value)));
+                return opt_err(ctx, io, &format!("multi-character tab {}", sq(value)));
             }
             first
         }
     };
     if let Some(old) = cfg.tab {
         if old != newtab {
-            return opt_err(io, "incompatible tabs");
+            return opt_err(ctx, io, "incompatible tabs");
         }
     }
     cfg.tab = Some(newtab);
     None
 }
 
-fn set_random_source(io: &mut Io, cfg: &mut Cfg, value: &str) -> Option<u32> {
+fn set_random_source(ctx: &Ctx, io: &mut Io, cfg: &mut Cfg, value: &str) -> Option<u32> {
     if let Some(prev) = cfg.random_source.clone() {
         if prev != value {
-            return opt_err(io, "multiple random sources specified");
+            return opt_err(ctx, io, "multiple random sources specified");
         }
     }
     cfg.random_source = Some(value.to_string());
     None
 }
 
-fn set_compress_program(io: &mut Io, cfg: &mut Cfg, value: &str) -> Option<u32> {
+fn set_compress_program(ctx: &Ctx, io: &mut Io, cfg: &mut Cfg, value: &str) -> Option<u32> {
     if let Some(prev) = cfg.compress_program.clone() {
         if prev != value {
-            return opt_err(io, "multiple compress programs specified");
+            return opt_err(ctx, io, "multiple compress programs specified");
         }
     }
     cfg.compress_program = Some(value.to_string());
     None
 }
 
-fn apply_sort_word(io: &mut Io, gkey: &mut KeyField, word: &str) -> Option<u32> {
+fn apply_sort_word(ctx: &Ctx, io: &mut Io, gkey: &mut KeyField, word: &str) -> Option<u32> {
     match argmatch(word, SORT_ARGS) {
         Ok(letter) => {
             // --sort=WORD accumulates into gkey exactly like the letter
@@ -1119,40 +1171,60 @@ fn apply_sort_word(io: &mut Io, gkey: &mut KeyField, word: &str) -> Option<u32> 
             apply_ordering(gkey, letter, true, true);
             None
         }
-        Err(ambiguous) => Some(argmatch_error(io, "--sort", word, ambiguous, SORT_VALID)),
+        Err(ambiguous) => Some(argmatch_error(
+            ctx, io, "--sort", word, ambiguous, SORT_VALID,
+        )),
     }
 }
 
-fn apply_check_word(io: &mut Io, cfg: &mut Cfg, word: &str) -> Option<u32> {
+fn apply_check_word(ctx: &Ctx, io: &mut Io, cfg: &mut Cfg, word: &str) -> Option<u32> {
     match argmatch(word, CHECK_ARGS) {
-        Ok(c) => set_check_mode(io, cfg, c),
-        Err(ambiguous) => Some(argmatch_error(io, "--check", word, ambiguous, CHECK_VALID)),
+        Ok(c) => set_check_mode(ctx, io, cfg, c),
+        Err(ambiguous) => Some(argmatch_error(
+            ctx,
+            io,
+            "--check",
+            word,
+            ambiguous,
+            CHECK_VALID,
+        )),
     }
 }
 
 /// xstrtol_fatal-shaped diagnostics for -S/--buffer-size (probed p5:
 /// "-S1X" -> "invalid suffix in -S argument '1X'").
-fn apply_buffer_size(io: &mut Io, optname: &str, value: &str) -> Option<u32> {
+fn apply_buffer_size(ctx: &Ctx, io: &mut Io, optname: &str, value: &str) -> Option<u32> {
     match parse_size_arg(value) {
         Ok(()) => None,
-        Err("invalid") => {
-            Some(opt_err(io, &format!("invalid {optname} argument {}", sq(value))).unwrap())
-        }
+        Err("invalid") => Some(
+            opt_err(
+                ctx,
+                io,
+                &format!("invalid {optname} argument {}", sq(value)),
+            )
+            .unwrap(),
+        ),
         Err("suffix") => Some(
             opt_err(
+                ctx,
                 io,
                 &format!("invalid suffix in {optname} argument {}", sq(value)),
             )
             .unwrap(),
         ),
-        Err(_) => {
-            Some(opt_err(io, &format!("{optname} argument {} too large", sq(value))).unwrap())
-        }
+        Err(_) => Some(
+            opt_err(
+                ctx,
+                io,
+                &format!("{optname} argument {} too large", sq(value)),
+            )
+            .unwrap(),
+        ),
     }
 }
 
 /// specify_nmerge: invalid, minimum-2, or too large (rc 2 each).
-fn apply_batch_size(io: &mut Io, value: &str) -> Option<u32> {
+fn apply_batch_size(ctx: &Ctx, io: &mut Io, value: &str) -> Option<u32> {
     let parsed = parse_field_count(value);
     match parsed {
         Some((n, rest)) if rest.is_empty() => {
@@ -1163,32 +1235,46 @@ fn apply_batch_size(io: &mut Io, value: &str) -> Option<u32> {
                     sq(value)
                 );
                 let _ = writeln!(io.stderr, "sort: minimum --batch-size argument is '2'");
-                let _ = writeln!(io.stderr, "Try 'sort --help' for more information.");
+                let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "sort"));
                 return Some(2);
             }
             None
         }
-        _ => Some(opt_err(io, &format!("invalid --batch-size argument {}", sq(value))).unwrap()),
+        _ => Some(
+            opt_err(
+                ctx,
+                io,
+                &format!("invalid --batch-size argument {}", sq(value)),
+            )
+            .unwrap(),
+        ),
     }
 }
 
 /// specify_nthreads: 0 is rejected with GNU's wording (probed p5).
-fn apply_parallel(io: &mut Io, value: &str) -> Option<u32> {
+fn apply_parallel(ctx: &Ctx, io: &mut Io, value: &str) -> Option<u32> {
     match parse_field_count(value) {
         Some((n, rest)) if rest.is_empty() => {
             if n == 0 {
-                return Some(opt_err(io, "number in parallel must be nonzero").unwrap());
+                return Some(opt_err(ctx, io, "number in parallel must be nonzero").unwrap());
             }
             None
         }
-        _ => Some(opt_err(io, &format!("invalid --parallel argument {}", sq(value))).unwrap()),
+        _ => Some(
+            opt_err(
+                ctx,
+                io,
+                &format!("invalid --parallel argument {}", sq(value)),
+            )
+            .unwrap(),
+        ),
     }
 }
 
 /// sort.c check_ordering_compatibility: more than one ordering type per
 /// key is a usage failure; the rendered letters clear b/r first
 /// (key_to_opts order b d f g h i M n R r V).
-fn check_ordering_compatibility(io: &mut Io, keys: &[KeyField]) -> Option<u32> {
+fn check_ordering_compatibility(ctx: &Ctx, io: &mut Io, keys: &[KeyField]) -> Option<u32> {
     for key in keys {
         let count = key.numeric as u32
             + key.general_numeric as u32
@@ -1224,7 +1310,7 @@ fn check_ordering_compatibility(io: &mut Io, keys: &[KeyField]) -> Option<u32> {
             if key.version {
                 opts.push('V');
             }
-            return Some(opt_err(io, &format!("options '-{opts}' are incompatible")).unwrap());
+            return Some(opt_err(ctx, io, &format!("options '-{opts}' are incompatible")).unwrap());
         }
     }
     None

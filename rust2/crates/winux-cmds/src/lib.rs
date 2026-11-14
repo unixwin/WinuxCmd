@@ -46,6 +46,7 @@ pub mod hostname;
 pub mod id;
 pub mod join;
 pub mod ln;
+pub mod messages;
 pub mod mkdir;
 pub mod mkfifo;
 pub mod mknod;

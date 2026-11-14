@@ -334,7 +334,7 @@ pub fn cut_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     if let Some(v) = bytes_val {
         if mode.is_some() {
             let _ = writeln!(io.stderr, "cut: only one list may be specified");
-            let _ = writeln!(io.stderr, "Try 'cut --help' for more information.");
+            let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "cut"));
             return Ok(1);
         }
         mode = Some(ListMode::Bytes);
@@ -345,14 +345,14 @@ pub fn cut_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             io.stderr,
             "cut: you must specify a list of bytes, characters, or fields"
         );
-        let _ = writeln!(io.stderr, "Try 'cut --help' for more information.");
+        let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "cut"));
         return Ok(1);
     };
     let ranges = match parse_list(&list_text, mode) {
         Ok(r) => r,
         Err(msg) => {
             let _ = writeln!(io.stderr, "cut: {msg}");
-            let _ = writeln!(io.stderr, "Try 'cut --help' for more information.");
+            let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "cut"));
             return Ok(1);
         }
     };
@@ -363,14 +363,14 @@ pub fn cut_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             io.stderr,
             "cut: an input delimiter may be specified only when operating on fields"
         );
-        let _ = writeln!(io.stderr, "Try 'cut --help' for more information.");
+        let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "cut"));
         return Ok(1);
     }
     let delim_str = p.value_of("delimiter").unwrap_or("\t").to_string();
     // probed: `-d ''` selects the NUL delimiter; only a longer string errs
     if delim_str.len() > 1 {
         let _ = writeln!(io.stderr, "cut: the delimiter must be a single character");
-        let _ = writeln!(io.stderr, "Try 'cut --help' for more information.");
+        let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "cut"));
         return Ok(1);
     }
     let delim_str = if delim_str.is_empty() {
@@ -385,7 +385,7 @@ pub fn cut_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             io.stderr,
             "cut: suppressing non-delimited lines makes sense only when operating on fields"
         );
-        let _ = writeln!(io.stderr, "Try 'cut --help' for more information.");
+        let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "cut"));
         return Ok(1);
     }
     let out_delim_given = p.has("output-delimiter");
@@ -394,7 +394,7 @@ pub fn cut_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             io.stderr,
             "cut: an output delimiter may be specified only when operating on fields"
         );
-        let _ = writeln!(io.stderr, "Try 'cut --help' for more information.");
+        let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "cut"));
         return Ok(1);
     }
     let out_delim = p

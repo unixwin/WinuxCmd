@@ -2,12 +2,20 @@
 //!
 //! [`text`] picks the host-supplied catalog string for `key` or the
 //! English `fallback`; [`format_with_fallback`] (used by the [`tr!`]
-//! macro) renders `{name}` placeholders from explicit bindings and
-//! degrades to the already-rendered English fallback on ANY template
-//! problem - it never panics. Catalog templates only support plain named
-//! `{field}` placeholders plus `{{`/`}}` escapes; numeric precision or
-//! width belongs in the argument expression
-//! (`value = format!("{:.2}", x)`), never in the catalog text.
+//! macro) renders placeholders from explicit bindings and degrades to the
+//! already-rendered English fallback on ANY template problem - it never
+//! panics.
+//!
+//! Catalog templates accept two placeholder spellings because they share
+//! one catalog with the C++ side (`winux::i18n::format` uses positioned
+//! text): plain named `{field}` plus Rust's own automatic `{}` and
+//! explicit `{0}` forms (automatic fields consume bindings in declaration
+//! order, explicit digits index them). The extractor only permits a
+//! positional catalog entry to meet a named Rust fallback for keys listed
+//! in its migration annotation - the two spellings must have the same
+//! literal shape and field count/order. Numeric precision or width
+//! belongs in the argument expression (`value = format!("{:.2}", x)`),
+//! never in the catalog text.
 
 use crate::Ctx;
 
@@ -27,13 +35,15 @@ pub fn text(ctx: &Ctx, key: &str, fallback: &str) -> String {
 /// template is missing, empty, or unusable: unbalanced braces, an unknown
 /// or malformed field, a required binding that was not supplied, a
 /// supplied binding the template never uses, a format spec (`{x:>8}`), or
-/// a positional field (`{}`, `{0}`). Never panics.
+/// an out-of-range positional field. Never panics.
 ///
-/// Only plain named `{identifier}` placeholders and `{{`/`}}` escapes are
-/// supported; the template must consume every supplied binding at least
-/// once (repeats and reordering are fine, zero bindings is vacuously
-/// valid). Values are substituted once and never re-scanned, so an
-/// argument containing braces or placeholder-looking text stays literal.
+/// Supported placeholders: plain named `{identifier}`, automatic `{}`
+/// (consumes bindings in declaration order) and explicit `{0}`-style
+/// indexes, plus `{{`/`}}` escapes. The template must consume every
+/// supplied binding at least once (repeats and reordering are fine, zero
+/// bindings is vacuously valid). Values are substituted once and never
+/// re-scanned, so an argument containing braces or placeholder-looking
+/// text stays literal.
 #[doc(hidden)]
 pub fn format_with_fallback(
     selected: Option<&str>,
@@ -48,12 +58,13 @@ pub fn format_with_fallback(
 
 /// `{`-`}` scanner over `template`: literal text is copied verbatim
 /// (UTF-8 safe - braces are ASCII and can never appear inside a multibyte
-/// sequence), `{{`/`}}` collapse to one brace, and each `{name}` is
-/// replaced by its binding exactly once.
+/// sequence), `{{`/`}}` collapse to one brace, and each `{name}`, `{}` or
+/// `{0}` is replaced by one binding.
 fn render_template(template: &str, bindings: &[(&str, &str)]) -> Option<String> {
     let b = template.as_bytes();
     let mut out = String::with_capacity(template.len());
     let mut used = vec![false; bindings.len()];
+    let mut next_auto = 0usize;
     let mut i = 0usize;
     while i < b.len() {
         match b[i] {
@@ -71,10 +82,22 @@ fn render_template(template: &str, bindings: &[(&str, &str)]) -> Option<String> 
                     return None; // unbalanced '{'
                 }
                 let field = &template[i + 1..j];
-                if !is_ascii_ident(field) {
-                    return None; // format spec, positional, or garbage
+                let idx = if field.is_empty() {
+                    // Automatic field: bindings in declaration order.
+                    let idx = next_auto;
+                    next_auto += 1;
+                    idx
+                } else if field.bytes().all(|c| c.is_ascii_digit()) {
+                    // Explicit positional index (std::format style).
+                    field.parse::<usize>().ok()?
+                } else if is_ascii_ident(field) {
+                    bindings.iter().position(|(k, _)| *k == field)?
+                } else {
+                    return None; // format spec or garbage
+                };
+                if idx >= bindings.len() {
+                    return None; // positional field out of range
                 }
-                let idx = bindings.iter().position(|(k, _)| *k == field)?;
                 used[idx] = true;
                 out.push_str(bindings[idx].1);
                 i = j + 1;
@@ -228,8 +251,8 @@ mod tests {
             "hi {missing}", // unknown field
             "hi {a} {b}",   // required binding omitted
             "hi {name:>8}", // format spec
-            "hi {}",        // positional
-            "hi {0}",       // digit field
+            "hi {1}",       // positional index out of range
+            "hi {} {}",     // automatic field beyond the binding count
             "hi {a-b}",     // non-identifier
             "{{ok}} {a",    // escape then unbalanced
         ] {
@@ -245,6 +268,53 @@ mod tests {
         let host = host_with(&[("bad", "hi {name")]);
         let ctx = ctx_with(&env, &host);
         assert_eq!(tr!(&ctx, "bad", "FB {a}", a = "A"), "FB A");
+    }
+
+    #[test]
+    fn positional_catalog_templates_share_the_cpp_catalog() {
+        let env = MapEnv::new();
+        // The C++ catalog carries positioned text ("Try '{} --help'"); the
+        // Rust call site names the same field. Both render identically.
+        let host = host_with(&[
+            ("try", "Try '{} --help' for more information."),
+            ("reorder", "{1} before {0}"),
+            ("explicit", "[{0}] and [{1}]"),
+            ("cn", "尝试运行“{} --help”以获取更多信息。"),
+        ]);
+        let ctx = ctx_with(&env, &host);
+        assert_eq!(
+            tr!(
+                &ctx,
+                "try",
+                "Try '{prog} --help' for more information.",
+                prog = "sort"
+            ),
+            "Try 'sort --help' for more information."
+        );
+        assert_eq!(
+            tr!(&ctx, "reorder", "{a} before {b}", a = "A", b = "B"),
+            "B before A"
+        );
+        // Explicit indexes map onto the same binding order.
+        assert_eq!(
+            tr!(&ctx, "explicit", "{a} and {b}", a = "A", b = "B"),
+            "[A] and [B]"
+        );
+        assert_eq!(
+            tr!(
+                &ctx,
+                "cn",
+                "Try '{prog} --help' for more information.",
+                prog = "sort"
+            ),
+            "尝试运行“sort --help”以获取更多信息。"
+        );
+        // Positional text that would leave a supplied binding unused still
+        // falls back: a translation may not drop a field.
+        assert_eq!(
+            format_with_fallback(Some("only {}"), "EN A B".into(), &[("a", "A"), ("b", "B")]),
+            "EN A B"
+        );
     }
 
     #[test]

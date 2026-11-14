@@ -183,7 +183,7 @@ pub fn sleep_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     // [GNU] sleep.c:112-115: the missing-operand test is argc == 1 on the
     // raw argument vector; `sleep --` sleeps 0 and exits 0.
     if p.positionals.is_empty() && args.is_empty() {
-        let _ = usage_error(io, "sleep", "missing operand");
+        let _ = usage_error(ctx, io, "sleep", &crate::messages::missing_operand(ctx));
         return Ok(1);
     }
 
@@ -201,7 +201,7 @@ pub fn sleep_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         for raw in &invalid {
             let _ = writeln!(io.stderr, "sleep: invalid time interval '{raw}'");
         }
-        let _ = writeln!(io.stderr, "Try 'sleep --help' for more information.");
+        let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "sleep"));
         return Ok(1);
     }
 

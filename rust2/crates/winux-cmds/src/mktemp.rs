@@ -197,7 +197,7 @@ pub fn mktemp_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     // more than one template operand dies before suffix/template validation
     if p.positionals.len() > 1 {
         let _ = writeln!(io.stderr, "mktemp: too many templates");
-        let _ = writeln!(io.stderr, "Try 'mktemp --help' for more information.");
+        let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "mktemp"));
         return Ok(1);
     }
 

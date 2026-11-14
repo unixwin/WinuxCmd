@@ -775,7 +775,7 @@ pub fn od_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             "n" => Radix::None,
             other => {
                 let _ = writeln!(io.stderr, "od: invalid address radix '{other}'");
-                let _ = writeln!(io.stderr, "Try 'od --help' for more information.");
+                let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "od"));
                 return Ok(1);
             }
         },
@@ -818,7 +818,7 @@ pub fn od_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         Some("big") => true,
         Some(other) => {
             let _ = writeln!(io.stderr, "od: invalid bytes to swap '{other}'");
-            let _ = writeln!(io.stderr, "Try 'od --help' for more information.");
+            let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "od"));
             return Ok(1);
         }
     };

@@ -232,6 +232,7 @@ pub fn hostname_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             // the canonicalized short letter is the only dynamic part. The
             // letter is intentionally UNQUOTED (byte-recorded by the gate).
             let _ = usage_error(
+                ctx,
                 io,
                 "hostname",
                 &tr!(
@@ -329,6 +330,7 @@ pub fn hostname_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         let shown = p.positionals[1].to_string_lossy().into_owned();
         // [GNU] hostname.c:91 probed — the SECOND operand is reported.
         let _ = usage_error(
+            ctx,
             io,
             "hostname",
             &tr!(

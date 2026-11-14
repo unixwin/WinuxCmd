@@ -82,15 +82,15 @@ pub fn basename_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
     if names.is_empty() {
-        let _ = usage_error(io, "basename", "missing operand");
+        let _ = usage_error(ctx, io, "basename", &crate::messages::missing_operand(ctx));
         return Ok(1);
     }
     if !multiple {
         if names.len() == 2 {
             // classic `basename NAME SUFFIX`
         } else if names.len() > 2 {
-            let msg = format!("extra operand {}", winux_core::q(&names[2]));
-            let _ = usage_error(io, "basename", &msg);
+            let msg = crate::messages::extra_operand(ctx, &names[2]);
+            let _ = usage_error(ctx, io, "basename", &msg);
             return Ok(1);
         }
     }
