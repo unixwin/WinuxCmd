@@ -9,7 +9,7 @@
 //!   per clause (`u` alone is invalid; `u+`, `+`, `=` are valid no-ops;
 //!   `u+r-w` is one clause with two ops — all verified). Perms are
 //!   `r w x X s t u g o`, where `u g o` in perm position copy that class's
-//!   bits from the file's pre-change mode (`u=g`, `u+g` verified).
+//!   bits from the mode accumulated so far (`g=rx,o=g` sees 050; verified).
 //! * `X` acts only on directories or files where *some* pre-change x bit is
 //!   set (modechange.c seeds it from stat; verified `u+X`, `=X`, `a+X`).
 //! * `s` belongs to u/g (setuid/setgid), `t` belongs to o (sticky);
@@ -222,7 +222,8 @@ fn rwx_of(who: Who) -> u32 {
 
 /// Evaluate symbolic clauses against `current` (pre-change mode), GNU
 /// modechange.c order: clauses left to right, ops within a clause left to
-/// right; `X` and copy forms reference the PRE-CHANGE mode only.
+/// right; `X` references the PRE-CHANGE mode, copy forms read the mode
+/// accumulated so far.
 pub fn eval_clauses(current: u32, is_dir: bool, clauses: &[Clause], umask: u32) -> u32 {
     let mut m = current & ALL_BITS;
     // X and copy forms are decided once from the pre-change state.
@@ -263,7 +264,13 @@ pub fn eval_clauses(current: u32, is_dir: bool, clauses: &[Clause], umask: u32) 
                         }
                     }
                     Perm::Copy(src) => {
-                        let bits = (current >> shift_of(src)) & 7;
+                        // [GNU] coreutils/gnulib modechange.c applies the
+                        // change list left to right against the mode as it
+                        // stands: `g=rx,o=g,u=rwx` on 000 is 0755 (WSL 9.4
+                        // probe), so a copy reads the ACCUMULATED mode, not
+                        // the pre-change snapshot. X keeps the pre-change
+                        // rule (tested above).
+                        let bits = (m >> shift_of(src)) & 7;
                         set |= spread_rwx(who, bits) & affected_rwx;
                     }
                 }

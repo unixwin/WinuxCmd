@@ -1,6 +1,14 @@
-# rust2 — WinuxCmd 2.0 wave1 library-form commands (#1488 pilot)
+# rust2 — WinuxCmd 2.0 command library (#1488)
 
-This directory is the **Rust pilot** for the 2.0 "命令库化" track: commands
+> **Status note (2026-11-14):** this file keeps the pilot's shape-contract
+> and streaming documentation. The current per-command state (wired /
+> gate-green / still 1.x) is authoritative only in
+> [`DOCS/2.0-inventory.tsv`](../DOCS/2.0-inventory.tsv); the wiring contract
+> is [`REPLACEMENT-RECIPE.md`](REPLACEMENT-RECIPE.md). Historical wave counts
+> below are the record of when each command was measured, not the current
+> total.
+
+This directory is the **Rust command library** for the 2.0 "命令库化" track: commands
 implemented as library functions with explicitly injected IO, explicit
 env/cwd, no process-global state, and a returned status code instead of
 `exit()`. Wave1 covers the 15 inventory wave-1 applets:
@@ -213,10 +221,10 @@ for the P lane.
 5. `cargo fmt`, `cargo t` green, update `GATE-REPORT.md`, then wire it into
    winuxcmd.exe and drop the C++ body following
    [`REPLACEMENT-RECIPE.md`](REPLACEMENT-RECIPE.md) (never dual-track in the
-   same tree). Wired so far: 44 commands via
+   same tree). Wired so far: 50 commands via
    `WINUXCMD_RUST2_COMMANDS` in the root `CMakeLists.txt`
-   (waves 1, 2a, 2b, 3a, 3b); `chmod`, `chown`, `df` still carry their
-   1.x C++ bodies.
+   (waves 1, 2a, 2b, 3a, 3b, 6); 32 more have a green library gate and are
+   queued for the wiring waves.
 
 ## Streaming stdin ABI (v2, additive; #1488, #1550 follow-up)
 

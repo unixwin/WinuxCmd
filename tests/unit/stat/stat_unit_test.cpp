@@ -611,3 +611,152 @@ TEST(stat, stat_bare_exe_operand_explicit_extension_not_completed) {
   EXPECT_TRUE(r.stderr_text.find("stat: cannot statx 'bin/java.txt': No such "
                                  "file or directory") != std::string::npos);
 }
+
+namespace {
+
+// A directory junction needs no SeCreateSymbolicLinkPrivilege, so it is the
+// one link fixture every Windows host can build (mklink without /j needs
+// Developer Mode). Both are reparse points; the link reader and the -L
+// dereference must treat them the same.
+bool stat_create_junction(const std::filesystem::path& link,
+                          const std::filesystem::path& target) {
+  std::wstring command = L"cmd /d /c mklink /j \"" + link.wstring() + L"\" \"" +
+                         target.wstring() + L"\" >nul";
+  return _wsystem(command.c_str()) == 0;
+}
+
+// Set an exact UTC last-write time so a TZ assertion can pin byte-level
+// output (the FILETIME is exact to 100ns; a whole second prints
+// .000000000).
+bool stat_set_utc_mtime(const std::filesystem::path& path, WORD year,
+                        WORD month, WORD day, WORD hour, WORD minute,
+                        WORD second) {
+  HANDLE handle =
+      CreateFileW(path.wstring().c_str(), FILE_WRITE_ATTRIBUTES,
+                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                  nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (handle == INVALID_HANDLE_VALUE) {
+    return false;
+  }
+  SYSTEMTIME utc{};
+  utc.wYear = year;
+  utc.wMonth = month;
+  utc.wDay = day;
+  utc.wHour = hour;
+  utc.wMinute = minute;
+  utc.wSecond = second;
+  FILETIME file_time{};
+  if (!SystemTimeToFileTime(&utc, &file_time)) {
+    CloseHandle(handle);
+    return false;
+  }
+  const bool ok = SetFileTime(handle, nullptr, nullptr, &file_time) != FALSE;
+  CloseHandle(handle);
+  return ok;
+}
+
+}  // namespace
+
+TEST(stat, stat_directory_junction_reports_link_target_and_dereferences) {
+  // [GNU] A directory link lstats as "symbolic link" with %s = the stored
+  // target's length and %N = `'name' -> 'target'`; -L dereferences it
+  // (#1652/#1654 plumbing, exercised on the privilege-free fixture).
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "dir");
+  tmp.write("dir/f.txt", "x");
+  std::filesystem::path link = tmp.path / "jlink";
+  if (!stat_create_junction(link, tmp.path / "dir")) {
+    std::cout << "  SKIPPED (mklink /j failed)\n";
+    return;
+  }
+
+  const auto stored = std::filesystem::read_symlink(link);
+  ASSERT_FALSE(stored.empty());
+
+  Pipeline lstat_run;
+  lstat_run.set_cwd(tmp.wpath());
+  lstat_run.add(L"stat.exe", {L"-c", L"%F|%s|%N", L"jlink"});
+  auto lstat = lstat_run.run();
+
+  EXPECT_EQ(lstat.exit_code, 0);
+  EXPECT_NE(
+      lstat.stdout_text.find("symbolic link|" +
+                             std::to_string(stored.wstring().size()) + "|"),
+      std::string::npos);
+  EXPECT_NE(lstat.stdout_text.find("'jlink' -> '"), std::string::npos);
+
+  Pipeline deref_run;
+  deref_run.set_cwd(tmp.wpath());
+  deref_run.add(L"stat.exe", {L"-L", L"-c", L"%F|%n", L"jlink"});
+  auto deref = deref_run.run();
+
+  EXPECT_EQ(deref.exit_code, 0);
+  EXPECT_EQ(deref.stdout_text, "directory|jlink\n");
+}
+
+TEST(stat, stat_dash_operand_stats_standard_input) {
+  // [GNU] stat.c: "-" names the open standard input descriptor, not a file
+  // called "-" (regression #1089, #1653). The harness feeds stdin through
+  // a pipe, so %F is GNU's FIFO shape with %s 0 and %n "-".
+  TempDir tmp;
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("x");
+  p.add(L"stat.exe", {L"-c", L"%F|%s|%n", L"-"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(r.stdout_text, "fifo|0|-\n");
+}
+
+TEST(stat, stat_dash_operand_filesystem_mode_is_rejected) {
+  // [GNU] A descriptor has no file system to report; coreutils 9.4 prints
+  // its own sentence and exits 1 (no usage frame).
+  TempDir tmp;
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_stdin("x");
+  p.add(L"stat.exe", {L"-f", L"-c", L"%T", L"-"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ(r.stdout_text, "");
+  EXPECT_EQ(r.stderr_text,
+            "stat: using '-' to denote standard input does not work in file "
+            "system mode\n");
+}
+
+TEST(stat, stat_timestamps_follow_the_tz_environment) {
+  // [GNU] stat.c human_time renders %y/%x/%z/%w through localtime_r, so
+  // TZ decides both the wall clock and the %z offset (#1655); the probe
+  // pins the same instant under two zones.
+  TempDir tmp;
+  tmp.write("a.txt", "x");
+  ASSERT_TRUE(stat_set_utc_mtime(tmp.path / "a.txt", 2020, 1, 2, 3, 4, 5));
+
+  Pipeline utc_run;
+  utc_run.set_cwd(tmp.wpath());
+  utc_run.set_env(L"TZ", L"UTC");
+  utc_run.add(L"stat.exe", {L"-c", L"%y", L"a.txt"});
+  auto utc = utc_run.run();
+
+  EXPECT_EQ(utc.exit_code, 0);
+  EXPECT_EQ(utc.stdout_text, "2020-01-02 03:04:05.000000000 +0000\n");
+  // every timestamp directive renders in the same zone (atime here)
+  Pipeline atime_run;
+  atime_run.set_cwd(tmp.wpath());
+  atime_run.set_env(L"TZ", L"UTC");
+  atime_run.add(L"stat.exe", {L"-c", L"%x", L"a.txt"});
+  auto atime = atime_run.run();
+  EXPECT_EQ(atime.exit_code, 0);
+  EXPECT_EQ(atime.stdout_text.substr(atime.stdout_text.size() - 7), " +0000\n");
+
+  Pipeline west_run;
+  west_run.set_cwd(tmp.wpath());
+  west_run.set_env(L"TZ", L"UTC+5");
+  west_run.add(L"stat.exe", {L"-c", L"%y", L"a.txt"});
+  auto west = west_run.run();
+
+  EXPECT_EQ(west.exit_code, 0);
+  EXPECT_EQ(west.stdout_text, "2020-01-01 22:04:05.000000000 -0500\n");
+}

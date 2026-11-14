@@ -52,12 +52,16 @@ TEST(locale, locale_charmaps) {
 
 TEST(locale, locale_keyword_values_are_not_full_environment_dump) {
   Pipeline p;
+  // The values come from the locale environment (POSIX precedence); pin it so
+  // the expectation does not depend on the machine's Windows locale.
+  p.set_env(L"LC_ALL", L"C.UTF-8");
   p.add(L"locale.exe", {L"charmap"});
   auto r = p.run();
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "UTF-8\n");
 
   Pipeline days;
+  days.set_env(L"LC_ALL", L"C");
   days.add(L"locale.exe", {L"abday"});
   auto days_result = days.run();
   EXPECT_EQ(days_result.exit_code, 0);
@@ -174,6 +178,7 @@ TEST(locale, locale_unknown_name_wording) {
 // the C-locale value is the ;-joined English month list.
 TEST(locale, locale_mon_keyword) {
   Pipeline p;
+  p.set_env(L"LC_ALL", L"C");
   p.add(L"locale.exe", {L"mon"});
   auto r = p.run();
 
@@ -187,14 +192,83 @@ TEST(locale, locale_mon_keyword) {
 // (quoted), numeric monetary flags unquoted, in argv order.
 TEST(locale, locale_k_mode_quoting) {
   Pipeline charmap;
+  charmap.set_env(L"LC_ALL", L"C");
   charmap.add(L"locale.exe", {L"-k", L"charmap"});
   auto charmap_result = charmap.run();
   EXPECT_EQ(charmap_result.exit_code, 0);
-  EXPECT_CONTAINS(charmap_result.stdout_text, "charmap=\"");
+  EXPECT_EQ_TEXT(charmap_result.stdout_text, "charmap=\"ANSI_X3.4-1968\"\n");
 
   Pipeline both;
+  both.set_env(L"LC_ALL", L"C");
   both.add(L"locale.exe", {L"-k", L"decimal_point", L"frac_digits"});
   auto both_result = both.run();
   EXPECT_EQ(both_result.exit_code, 0);
-  EXPECT_EQ_TEXT(both_result.stdout_text, "decimal_point=\".\"\nfrac_digits=1\n");
+  EXPECT_EQ_TEXT(both_result.stdout_text,
+                 "decimal_point=\".\"\nfrac_digits=-1\n");
+}
+
+// [GNU] The C locale has no monetary data: glibc answers empty strings and
+// -1 flags. The value model must not invent an en-US-shaped table (#1549).
+TEST(locale, locale_c_locale_monetary_is_empty) {
+  Pipeline p;
+  p.set_env(L"LC_ALL", L"C");
+  p.add(L"locale.exe", {L"-k", L"currency_symbol", L"int_curr_symbol",
+                        L"mon_decimal_point", L"mon_thousands_sep",
+                        L"int_frac_digits", L"p_cs_precedes", L"p_sign_posn",
+                        L"grouping", L"mon_grouping", L"yesstr"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text,
+                 "currency_symbol=\"\"\n"
+                 "int_curr_symbol=\"\"\n"
+                 "mon_decimal_point=\"\"\n"
+                 "mon_thousands_sep=\"\"\n"
+                 "int_frac_digits=-1\n"
+                 "p_cs_precedes=-1\n"
+                 "p_sign_posn=-1\n"
+                 "grouping=-1\n"
+                 "mon_grouping=-1\n"
+                 "yesstr=\"\"\n");
+}
+
+// The value model is Windows-NLS-backed: an environment-selected locale other
+// than C answers that locale's data, not a hard-coded table. en_US is used
+// because every Windows installation resolves it, independent of the
+// machine's display language.
+TEST(locale, locale_en_us_values_come_from_the_locale_database) {
+  Pipeline p;
+  p.set_env(L"LC_ALL", L"en_US.UTF-8");
+  p.add(L"locale.exe", {L"-k", L"decimal_point", L"thousands_sep",
+                        L"grouping", L"int_curr_symbol", L"currency_symbol",
+                        L"frac_digits", L"p_cs_precedes", L"p_sep_by_space",
+                        L"d_fmt", L"t_fmt", L"am_pm", L"t_fmt_ampm"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text,
+                 "decimal_point=\".\"\n"
+                 "thousands_sep=\",\"\n"
+                 "grouping=3\n"
+                 "int_curr_symbol=\"USD \"\n"
+                 "currency_symbol=\"$\"\n"
+                 "frac_digits=2\n"
+                 "p_cs_precedes=1\n"
+                 "p_sep_by_space=0\n"
+                 "d_fmt=\"%m/%d/%Y\"\n"
+                 "t_fmt=\"%I:%M:%S %p\"\n"
+                 "am_pm=\"AM;PM\"\n"
+                 "t_fmt_ampm=\"%I:%M:%S %p\"\n");
+}
+
+// A locale code set in the POSIX spelling is the codeset source, even when the
+// name itself is unknown to the Windows NLS database.
+TEST(locale, locale_unknown_name_with_codeset_keeps_its_charmap) {
+  Pipeline p;
+  p.set_env(L"LC_ALL", L"zz_ZZ.UTF-8");
+  p.add(L"locale.exe", {L"charmap"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "UTF-8\n");
 }
