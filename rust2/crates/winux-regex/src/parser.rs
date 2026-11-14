@@ -35,7 +35,7 @@
 //!   `\10` is `\1` followed by a literal `0` (GNU probes).
 
 use crate::ast::{ClassAtom, Max, Node, PosixClass, RE_DUP_MAX};
-use crate::{Error, ErrorKind, Syntax};
+use crate::{CompileOptions, Error, ErrorKind, Syntax};
 
 /// Maximum group nesting / AST depth. glibc has its own internal limits;
 /// this guards the parser and the matcher recursion on hostile patterns.
@@ -45,6 +45,8 @@ pub struct Parser<'a> {
     syntax: Syntax,
     pattern: &'a [u8],
     ignore_case: bool,
+    /// Dialect options beyond the grep defaults (see [`CompileOptions`]).
+    opts: CompileOptions,
     pos: usize,
     capture_count: usize,
     depth: usize,
@@ -57,19 +59,39 @@ struct PosCtx {
     first: bool,
     /// The branch began with a `^` anchor (BRE: a following `*` is literal).
     after_caret: bool,
+    /// [`CompileOptions::posix_strict`] only: the previous piece was an
+    /// anchor. glibc's parse_expression returns right after an ANCHOR
+    /// token, so the next token starts a fresh expression ("^*" is
+    /// `<ANCHOR><CHAR *>` in BRE and REG_BADRPT in ERE).
+    after_anchor: bool,
 }
 
 const BRANCH_START: PosCtx = PosCtx {
     first: true,
     after_caret: false,
+    after_anchor: false,
 };
 
 impl<'a> Parser<'a> {
     pub fn new(syntax: Syntax, pattern: &'a [u8], ignore_case: bool) -> Parser<'a> {
+        Parser::with_options(
+            syntax,
+            pattern,
+            CompileOptions {
+                ignore_case,
+                ..CompileOptions::default()
+            },
+        )
+    }
+
+    /// Parser for an explicit dialect (sed's glibc syntax bits, `M`
+    /// multiline mode, buffer anchors; see [`CompileOptions`]).
+    pub fn with_options(syntax: Syntax, pattern: &'a [u8], opts: CompileOptions) -> Parser<'a> {
         Parser {
             syntax,
             pattern,
-            ignore_case,
+            ignore_case: opts.ignore_case,
+            opts,
             pos: 0,
             capture_count: 0,
             depth: 0,
@@ -170,7 +192,8 @@ impl<'a> Parser<'a> {
             // next piece's literal atom (POSIX "after an initial ^").
             ctx = PosCtx {
                 first: false,
-                after_caret: ctx.first && matches!(piece, Node::AnchorStart),
+                after_caret: ctx.first && matches!(piece, Node::AnchorStart | Node::LineStart(_)),
+                after_anchor: self.opts.posix_strict && is_anchor_node(&piece),
             };
             pieces.push(piece);
         }
@@ -178,6 +201,9 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_piece(&mut self, pos: PosCtx) -> Result<Node, Error> {
+        if self.opts.posix_strict {
+            return self.parse_piece_strict(pos);
+        }
         let mut atom =
             if self.syntax == Syntax::Extended && pos.first && self.starts_ere_empty_repeat()? {
                 // ERE: a quantifier or a well-formed interval at a branch start
@@ -249,6 +275,204 @@ impl<'a> Parser<'a> {
         Ok(atom)
     }
 
+    /// [`CompileOptions::posix_strict`] piece: glibc parse_expression +
+    /// parse_dup_op under GNU sed's syntax bits (RE_SYNTAX_POSIX_BASIC /
+    /// RE_SYNTAX_POSIX_EXTENDED; probed against GNU sed 4.9):
+    ///
+    /// * ERE (RE_CONTEXT_INVALID_OPS): `* + ? {` at an expression start
+    ///   (branch start, after `(` / `|`, after an anchor) is REG_BADRPT.
+    /// * BRE (RE_CONTEXT_INVALID_DUP): `\{` at an expression start is
+    ///   REG_BADRPT; `*` there is a literal, as are `\+` / `\?`; after one
+    ///   repetition operator a following `*` or `\{` is REG_BADRPT
+    ///   (`a**`).
+    /// * anchors take no repetition operator: the next token starts a
+    ///   fresh expression.
+    /// * intervals follow glibc fetch_number exactly (no
+    ///   RE_INVALID_INTERVAL_ORD): malformed specs are errors in both
+    ///   syntaxes, never literal braces.
+    fn parse_piece_strict(&mut self, pos: PosCtx) -> Result<Node, Error> {
+        let expr_start = pos.first || pos.after_anchor;
+        if expr_start {
+            let badrpt = match self.syntax {
+                Syntax::Extended => matches!(self.peek(0), Some(b'*' | b'+' | b'?' | b'{')),
+                Syntax::Basic => self.at_backslash(0, b'{'),
+            };
+            if badrpt {
+                return Err(bad_repeat(self.pos));
+            }
+        }
+        let atom_pos = PosCtx {
+            first: expr_start,
+            ..pos
+        };
+        let mut atom = self.parse_atom(atom_pos)?;
+        if is_anchor_node(&atom) {
+            return Ok(atom);
+        }
+        loop {
+            let (min, max) = match self.syntax {
+                Syntax::Extended => {
+                    if self.eat(b'*') {
+                        (0, None)
+                    } else if self.eat(b'+') {
+                        (1, None)
+                    } else if self.eat(b'?') {
+                        (0, Some(1))
+                    } else if self.at(0, b'{') {
+                        let (min, max, len) = self.glibc_interval(1)?;
+                        self.pos += len;
+                        (min, max)
+                    } else {
+                        break;
+                    }
+                }
+                Syntax::Basic => {
+                    if self.eat(b'*') {
+                        (0, None)
+                    } else if self.at_backslash(0, b'+') {
+                        self.pos += 2;
+                        (1, None)
+                    } else if self.at_backslash(0, b'?') {
+                        self.pos += 2;
+                        (0, Some(1))
+                    } else if self.at_backslash(0, b'{') {
+                        let (min, max, len) = self.glibc_interval(2)?;
+                        self.pos += len;
+                        (min, max)
+                    } else {
+                        break;
+                    }
+                }
+            };
+            atom = self.repeat(atom, min, max);
+            if self.syntax == Syntax::Basic && (self.at(0, b'*') || self.at_backslash(0, b'{')) {
+                return Err(bad_repeat(self.pos));
+            }
+        }
+        Ok(atom)
+    }
+
+    /// glibc parse_dup_op interval scan (cursor at the opener, `open_len`
+    /// = 1 for ERE `{`, 2 for BRE `\{`). fetch_number semantics: no digits
+    /// = -1, a non-digit or the pattern end = -2; `{,m}` is `{0,m}`;
+    /// `-2` at the pattern end is "Unmatched \{", elsewhere "Invalid
+    /// content of \{\}"; reversed bounds or a missing closer are BADBR;
+    /// counts above RE_DUP_MAX are "Regular expression too big".
+    fn glibc_interval(&self, open_len: usize) -> Result<(u32, Max, usize), Error> {
+        let bre = open_len == 2;
+        let len = self.pattern.len();
+        let mut cur = self.pos + open_len;
+        // One fetch_number call. Returns (value, stop) where stop is
+        // Close / Comma / End.
+        #[derive(PartialEq)]
+        enum Stop {
+            Close,
+            Comma,
+            End,
+        }
+        let fetch = |cur: &mut usize| -> (i64, Stop) {
+            let mut num: i64 = -1;
+            loop {
+                if *cur >= len {
+                    return (-2, Stop::End);
+                }
+                let c = self.pattern[*cur];
+                if bre {
+                    if c == b'\\' {
+                        if *cur + 1 >= len {
+                            // trailing backslash inside the interval
+                            *cur += 1;
+                            return (-2, Stop::End);
+                        }
+                        let n = self.pattern[*cur + 1];
+                        *cur += 2;
+                        if n == b'}' {
+                            return (num, Stop::Close);
+                        }
+                        num = -2;
+                        continue;
+                    }
+                } else if c == b'}' {
+                    *cur += 1;
+                    return (num, Stop::Close);
+                }
+                *cur += 1;
+                if c == b',' {
+                    return (num, Stop::Comma);
+                }
+                num = if !c.is_ascii_digit() || num == -2 {
+                    -2
+                } else if num == -1 {
+                    i64::from(c - b'0')
+                } else {
+                    (num * 10 + i64::from(c - b'0')).min(i64::from(RE_DUP_MAX) + 1)
+                };
+            }
+        };
+        let (mut start, stop1) = fetch(&mut cur);
+        let end: i64;
+        let last_stop;
+        if start == -1 {
+            if stop1 == Stop::Comma {
+                start = 0;
+            } else {
+                // `{}`
+                return Err(Error::new(
+                    ErrorKind::InvalidInterval,
+                    cur,
+                    "invalid content of \\{\\}",
+                ));
+            }
+        }
+        if start != -2 {
+            match stop1 {
+                Stop::Close => {
+                    end = start;
+                    last_stop = Stop::Close;
+                }
+                Stop::Comma => {
+                    let (e, st) = fetch(&mut cur);
+                    end = e;
+                    last_stop = st;
+                }
+                Stop::End => {
+                    end = -2;
+                    last_stop = Stop::End;
+                }
+            }
+        } else {
+            end = 0;
+            last_stop = stop1;
+        }
+        if start == -2 || end == -2 {
+            if last_stop == Stop::End {
+                return Err(Error::new(ErrorKind::InvalidInterval, cur, "unmatched \\{"));
+            }
+            return Err(Error::new(
+                ErrorKind::InvalidInterval,
+                cur,
+                "invalid content of \\{\\}",
+            ));
+        }
+        if (end != -1 && start > end) || last_stop != Stop::Close {
+            return Err(Error::new(
+                ErrorKind::InvalidInterval,
+                cur,
+                "invalid content of \\{\\}",
+            ));
+        }
+        let top = if end == -1 { start } else { end };
+        if top > i64::from(RE_DUP_MAX) {
+            return Err(Error::new(
+                ErrorKind::IntervalTooBig,
+                cur,
+                "regular expression too big",
+            ));
+        }
+        let max = if end == -1 { None } else { Some(end as u32) };
+        Ok((start as u32, max, cur - self.pos))
+    }
+
     /// ERE only: does a quantifier / interval start here, at a branch start?
     /// A malformed or reversed `{...}` stays literal and returns false.
     fn starts_ere_empty_repeat(&mut self) -> Result<bool, Error> {
@@ -282,19 +506,34 @@ impl<'a> Parser<'a> {
         match ch {
             b'^' => {
                 if self.syntax == Syntax::Extended || pos.first {
-                    Ok(Node::AnchorStart)
+                    Ok(if self.opts.multiline {
+                        Node::LineStart(self.opts.line_delimiter)
+                    } else {
+                        Node::AnchorStart
+                    })
                 } else {
                     Ok(Node::Literal(b'^'))
                 }
             }
             b'$' => {
                 if self.syntax == Syntax::Extended || self.is_bre_dollar_end() {
-                    Ok(Node::AnchorEnd)
+                    Ok(if self.opts.multiline {
+                        Node::LineEnd(self.opts.line_delimiter)
+                    } else {
+                        Node::AnchorEnd
+                    })
                 } else {
                     Ok(Node::Literal(b'$'))
                 }
             }
-            b'.' => Ok(Node::Dot),
+            b'.' => Ok(if self.opts.multiline || self.opts.strict_utf8_dot {
+                Node::DotRestricted {
+                    exclude_newline: self.opts.multiline,
+                    reject_invalid_utf8: self.opts.strict_utf8_dot,
+                }
+            } else {
+                Node::Dot
+            }),
             b'[' => self.parse_char_class(),
             b'*' if self.syntax == Syntax::Basic && (pos.first || pos.after_caret) => {
                 // POSIX BRE literal `*`: first character of the expression /
@@ -303,6 +542,15 @@ impl<'a> Parser<'a> {
             }
             b'(' if self.syntax == Syntax::Extended => self.parse_group(),
             b')' if self.syntax == Syntax::Extended && self.depth == 0 => {
+                if self.opts.posix_strict {
+                    // GNU sed clears RE_UNMATCHED_RIGHT_PAREN_ORD: a stray
+                    // `)` is "Unmatched ) or \)" (probed sed 4.9).
+                    return Err(Error::new(
+                        ErrorKind::UnmatchedClose,
+                        self.pos,
+                        "unmatched ) or \\)",
+                    ));
+                }
                 // glibc accepts a stray top-level `)` as a literal
                 // (`grep -E ')'` matches `)`); the C++ engine errored.
                 Ok(Node::Literal(b')'))
@@ -365,6 +613,8 @@ impl<'a> Parser<'a> {
             b'>' => Ok(Node::WordEnd),
             b'b' => Ok(Node::WordBoundary),
             b'B' => Ok(Node::NotWordBoundary),
+            b'`' if self.opts.buffer_anchors => Ok(Node::BufferStart),
+            b'\'' if self.opts.buffer_anchors => Ok(Node::BufferEnd),
             b'1'..=b'9' => Ok(Node::BackReference(u32::from(escaped - b'0'))),
             // `\0` is a literal zero digit in GNU (single-digit backrefs
             // only, so `\10` parses as `\1` + literal `0`).
@@ -529,6 +779,12 @@ impl<'a> Parser<'a> {
             };
             if b == b']' && !first_member {
                 self.pos += 1;
+                if negated && self.opts.multiline {
+                    // REG_NEWLINE: RE_HAT_LISTS_NOT_NEWLINE — a non-matching
+                    // list never matches newline (GNU sed `M`, probed; the
+                    // `\W` / `\S` shorthands are unaffected).
+                    atoms.push(ClassAtom::Literal(b'\n'));
+                }
                 return Ok(Node::CharClass { negated, atoms });
             }
 
@@ -696,6 +952,35 @@ fn check_interval_bounds(min: u32, max: Max, at: usize) -> Result<(), Error> {
         }
     }
     Ok(())
+}
+
+/// Zero-width assertion nodes that glibc lexes as ANCHOR tokens (no
+/// repetition operator may follow them under the strict dialect).
+fn is_anchor_node(node: &Node) -> bool {
+    matches!(
+        node,
+        Node::AnchorStart
+            | Node::AnchorEnd
+            | Node::LineStart(_)
+            | Node::LineEnd(_)
+            | Node::BufferStart
+            | Node::BufferEnd
+            | Node::WordStart
+            | Node::WordEnd
+            | Node::WordBoundary
+            | Node::NotWordBoundary
+    )
+}
+
+fn bad_repeat(at: usize) -> Error {
+    // Reuses the interval error kind (no new ErrorKind variant, so
+    // exhaustive matches in other consumers stay valid); the message
+    // carries the glibc REG_BADRPT text.
+    Error::new(
+        ErrorKind::InvalidInterval,
+        at,
+        "invalid preceding regular expression",
+    )
 }
 
 fn shorthand_class(class: PosixClass, negated: bool) -> Node {

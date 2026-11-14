@@ -134,7 +134,7 @@ impl FastPath {
 /// (regex.cppm `analyze_anchored`).
 fn analyze_anchored(node: &Node) -> bool {
     match node {
-        Node::AnchorStart => true,
+        Node::AnchorStart | Node::BufferStart => true,
         Node::Empty => false,
         Node::Capture { child, .. } => analyze_anchored(child),
         Node::Sequence(children) => {
@@ -168,7 +168,11 @@ fn analyze_first(node: &Node, ignore_case: bool) -> FirstInfo {
         | Node::WordStart
         | Node::WordEnd
         | Node::WordBoundary
-        | Node::NotWordBoundary => FirstInfo {
+        | Node::NotWordBoundary
+        | Node::LineStart(_)
+        | Node::LineEnd(_)
+        | Node::BufferStart
+        | Node::BufferEnd => FirstInfo {
             bytes: [false; 256],
             any: false,
             can_be_empty: true,
@@ -178,7 +182,7 @@ fn analyze_first(node: &Node, ignore_case: bool) -> FirstInfo {
             any: false,
             can_be_empty: false,
         },
-        Node::Dot => FirstInfo {
+        Node::Dot | Node::DotRestricted { .. } => FirstInfo {
             bytes: [false; 256],
             any: true,
             can_be_empty: false,
@@ -288,7 +292,11 @@ fn extract_required_prefix(node: &Node, ignore_case: bool, out: &mut Vec<u8>) ->
         | Node::WordStart
         | Node::WordEnd
         | Node::WordBoundary
-        | Node::NotWordBoundary => {
+        | Node::NotWordBoundary
+        | Node::LineStart(_)
+        | Node::LineEnd(_)
+        | Node::BufferStart
+        | Node::BufferEnd => {
             // Zero-width: the bytes before and after stay consecutive.
             true
         }

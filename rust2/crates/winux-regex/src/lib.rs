@@ -56,6 +56,59 @@ pub enum Syntax {
     Extended,
 }
 
+/// Dialect options beyond the grep defaults. `CompileOptions::default()`
+/// reproduces [`Regex::compile_bytes`] exactly; every field is opt-in so
+/// existing consumers keep their behavior (additive API for the sed port,
+/// WinuxCmd #1488).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompileOptions {
+    /// ASCII case folding (grep `-i`, sed `I`).
+    pub ignore_case: bool,
+    /// glibc REG_NEWLINE (sed `M`): `^`/`$` also match around
+    /// [`CompileOptions::line_delimiter`], `.` and non-matching bracket
+    /// lists never match newline.
+    pub multiline: bool,
+    /// Byte the multiline anchors split on (`\n`; NUL under `sed -z`).
+    pub line_delimiter: u8,
+    /// GNU `` \` `` / `\'` buffer anchors (otherwise literal `` ` `` / `'`).
+    pub buffer_anchors: bool,
+    /// GNU sed's glibc syntax bits: RE_CONTEXT_INVALID_DUP (BRE) /
+    /// RE_CONTEXT_INVALID_OPS (ERE), no RE_INVALID_INTERVAL_ORD, and no
+    /// RE_UNMATCHED_RIGHT_PAREN_ORD — see `Parser::parse_piece_strict`.
+    pub posix_strict: bool,
+    /// `.` rejects bytes that do not start a well-formed UTF-8 sequence
+    /// (glibc multibyte-locale behavior).
+    pub strict_utf8_dot: bool,
+}
+
+impl Default for CompileOptions {
+    fn default() -> Self {
+        CompileOptions {
+            ignore_case: false,
+            multiline: false,
+            line_delimiter: b'\n',
+            buffer_anchors: false,
+            posix_strict: false,
+            strict_utf8_dot: false,
+        }
+    }
+}
+
+impl CompileOptions {
+    /// The GNU sed 4.9 dialect: strict glibc syntax bits, buffer anchors
+    /// and the UTF-8 `.` rule, with the per-regex `I`/`M` flags given.
+    pub fn sed(ignore_case: bool, multiline: bool) -> CompileOptions {
+        CompileOptions {
+            ignore_case,
+            multiline,
+            line_delimiter: b'\n',
+            buffer_anchors: true,
+            posix_strict: true,
+            strict_utf8_dot: true,
+        }
+    }
+}
+
 /// Compile / work-limit error.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Error {
@@ -196,7 +249,24 @@ impl Regex {
         pattern: &[u8],
         ignore_case: bool,
     ) -> Result<Regex, Error> {
-        let p = parser::Parser::new(syntax, pattern, ignore_case);
+        Self::compile_with(
+            syntax,
+            pattern,
+            CompileOptions {
+                ignore_case,
+                ..CompileOptions::default()
+            },
+        )
+    }
+
+    /// Compile under explicit dialect options (see [`CompileOptions`]).
+    pub fn compile_with(
+        syntax: Syntax,
+        pattern: &[u8],
+        opts: CompileOptions,
+    ) -> Result<Regex, Error> {
+        let ignore_case = opts.ignore_case;
+        let p = parser::Parser::with_options(syntax, pattern, opts);
         let (root, capture_count) = p.parse()?;
         let fast = if cfg!(feature = "fast-path") {
             FastPath::build(&root, capture_count, ignore_case)
