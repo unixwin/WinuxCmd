@@ -1314,3 +1314,223 @@ TEST(cp, issue1435_sibling_copy_still_works) {
   EXPECT_EQ(tmp.read("b/f.txt"), "data");
   EXPECT_EQ(tmp.read("b/sub/g.txt"), "deep");
 }
+
+// --- Issue #1647 regression coverage ---
+//
+// GNU coreutils 9.4 (cp.c): a symlink source is followed by default (-L,
+// command-line dereference), recreated as a link under -d/-P/-a and under
+// plain -r/-R inside a tree; a dangling link fails the copy. WinuxCmd
+// 1.2.1 failed every dereference shape at the source open with
+// "cannot open 'link' for reading: Invalid argument": the CRT stream open
+// in file_io::open_binary_file rejects a reparse point through the \\?\
+// extended path, while CreateFileW on the same path follows the link.
+// Oracle shapes verified against GNU cp 9.4 (probes/gnu-oracle.sh,
+// run-gnu.sh in the fix workdir).
+
+// [GNU] default dereference: `cp link out` copies the target's contents
+// into a regular file (#1647).
+TEST(cp, issue1647_default_copies_symlink_source) {
+  TempDir tmp;
+  tmp.write("a.txt", "A\n");
+
+  std::error_code ec;
+  std::filesystem::create_symlink(tmp.path / "a.txt", tmp.path / "link", ec);
+  if (ec) {
+    std::cout
+        << "  SKIPPED (requires administrator privileges for symbolic links)\n";
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"link", L"out"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_FALSE(std::filesystem::is_symlink(
+      std::filesystem::symlink_status(tmp.path / "out", ec)));
+  EXPECT_EQ(tmp.read("out"), "A\n");
+}
+
+// [GNU] -L always follows the link (#1647).
+TEST(cp, issue1647_dereference_flag_copies_symlink_source) {
+  TempDir tmp;
+  tmp.write("a.txt", "A\n");
+
+  std::error_code ec;
+  std::filesystem::create_symlink(tmp.path / "a.txt", tmp.path / "link", ec);
+  if (ec) {
+    std::cout
+        << "  SKIPPED (requires administrator privileges for symbolic links)\n";
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"-L", L"link", L"outL"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_FALSE(std::filesystem::is_symlink(
+      std::filesystem::symlink_status(tmp.path / "outL", ec)));
+  EXPECT_EQ(tmp.read("outL"), "A\n");
+}
+
+// [GNU] -d/-P recreate the link instead of copying contents (#1647; lock:
+// the recreate arm never opened the file, so this already worked).
+TEST(cp, issue1647_no_dereference_recreates_symlink_source) {
+  TempDir tmp;
+  tmp.write("a.txt", "A\n");
+
+  std::error_code ec;
+  std::filesystem::create_symlink("a.txt", tmp.path / "link", ec);
+  if (ec) {
+    std::cout
+        << "  SKIPPED (requires administrator privileges for symbolic links)\n";
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"-d", L"link", L"dest_d"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(std::filesystem::is_symlink(
+      std::filesystem::symlink_status(tmp.path / "dest_d", ec)));
+  EXPECT_EQ(std::filesystem::read_symlink(tmp.path / "dest_d", ec),
+            std::filesystem::path("a.txt"));
+
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.add(L"cp.exe", {L"-P", L"link", L"dest_p"});
+  auto r2 = p2.run();
+  EXPECT_EQ(r2.exit_code, 0);
+  EXPECT_TRUE(std::filesystem::is_symlink(
+      std::filesystem::symlink_status(tmp.path / "dest_p", ec)));
+}
+
+// [GNU] inside a tree, a link child is recreated under plain -r and
+// followed (copied as a regular file) under -r -L (#1647).
+TEST(cp, issue1647_recursive_tree_link) {
+  TempDir tmp;
+  tmp.write("a.txt", "A\n");
+  tmp.write("dir/f.txt", "F\n");
+
+  std::error_code ec;
+  std::filesystem::create_symlink("../a.txt", tmp.path / "dir" / "link", ec);
+  if (ec) {
+    std::cout
+        << "  SKIPPED (requires administrator privileges for symbolic links)\n";
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"-r", L"dir", L"dst"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(tmp.read("dst/f.txt"), "F\n");
+  EXPECT_TRUE(std::filesystem::is_symlink(
+      std::filesystem::symlink_status(tmp.path / "dst" / "link", ec)));
+  EXPECT_EQ(std::filesystem::read_symlink(tmp.path / "dst" / "link", ec),
+            std::filesystem::path("../a.txt"));
+
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.add(L"cp.exe", {L"-r", L"-L", L"dir", L"dstL"});
+  auto r2 = p2.run();
+  EXPECT_EQ(r2.exit_code, 0);
+  EXPECT_EQ(tmp.read("dstL/f.txt"), "F\n");
+  EXPECT_FALSE(std::filesystem::is_symlink(
+      std::filesystem::symlink_status(tmp.path / "dstL" / "link", ec)));
+  EXPECT_EQ(tmp.read("dstL/link"), "A\n");
+}
+
+// [GNU] a dangling symlink source fails the copy (default dereference)
+// and creates no destination (#1647; lock: the failure itself predates
+// the fix — only the "cannot open" wording is pinned, not the errno text).
+TEST(cp, issue1647_dangling_symlink_source_fails) {
+  TempDir tmp;
+
+  std::error_code ec;
+  std::filesystem::create_symlink("missing-target", tmp.path / "dangling",
+                                  ec);
+  if (ec) {
+    std::cout
+        << "  SKIPPED (requires administrator privileges for symbolic links)\n";
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"dangling", L"out"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_CONTAINS(r.stderr_text, "cannot open 'dangling' for reading");
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "out"));
+}
+
+// [GNU] writing through a symlink destination truncates the target and
+// leaves the link itself in place (#1647; write-side twin of the read
+// fallback in file_io::create_binary_file).
+TEST(cp, issue1647_write_through_symlink_destination) {
+  TempDir tmp;
+  tmp.write("a.txt", "A\n");
+  tmp.write("b.txt", "B\n");
+
+  std::error_code ec;
+  std::filesystem::create_symlink(tmp.path / "a.txt", tmp.path / "linkdest",
+                                  ec);
+  if (ec) {
+    std::cout
+        << "  SKIPPED (requires administrator privileges for symbolic links)\n";
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"b.txt", L"linkdest"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(std::filesystem::is_symlink(
+      std::filesystem::symlink_status(tmp.path / "linkdest", ec)));
+  EXPECT_EQ(std::filesystem::read_symlink(tmp.path / "linkdest", ec),
+            tmp.path / "a.txt");
+  EXPECT_EQ(tmp.read("a.txt"), "B\n");
+}
+
+// [GNU] a command-line symlink to a directory is recreated as a link
+// under plain -r and followed under -r -H (#1647; lock: the dispatch in
+// process_source_paths already routes this through the recreate arm).
+TEST(cp, issue1647_recursive_command_line_dir_link) {
+  TempDir tmp;
+  tmp.write("dir/f.txt", "F\n");
+
+  std::error_code ec;
+  std::filesystem::create_symlink("dir", tmp.path / "linkdir", ec);
+  if (ec) {
+    std::cout
+        << "  SKIPPED (requires administrator privileges for symbolic links)\n";
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"-r", L"linkdir", L"dstLD"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(std::filesystem::is_symlink(
+      std::filesystem::symlink_status(tmp.path / "dstLD", ec)));
+  EXPECT_EQ(std::filesystem::read_symlink(tmp.path / "dstLD", ec),
+            std::filesystem::path("dir"));
+
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.add(L"cp.exe", {L"-r", L"-H", L"linkdir", L"dstH"});
+  auto r2 = p2.run();
+  EXPECT_EQ(r2.exit_code, 0);
+  EXPECT_TRUE(std::filesystem::is_directory(tmp.path / "dstH"));
+  EXPECT_EQ(tmp.read("dstH/f.txt"), "F\n");
+}

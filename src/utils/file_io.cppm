@@ -217,6 +217,62 @@ auto open_fifo_write_stream(std::wstring_view path) -> std::ofstream {
   return std::ofstream(file);
 }
 
+// [GNU] Fallback open through CreateFileW for paths the CRT stream open
+// cannot handle: opening a reparse point (symlink/junction) through the
+// \\?\ extended path fails in the CRT with EINVAL (#1647: `cp link out`
+// reports "cannot open 'link' for reading: Invalid argument"), while
+// CreateFileW on the same path follows the link (cf. cp.cpp
+// directory_file_id: "CreateFileW follows a junction/symlink"). The
+// handle is wrapped exactly like the fifo streams above
+// (_open_osfhandle + _fdopen), so callers keep a plain std::ifstream.
+// Only reached when the primary open already failed, so working opens are
+// untouched; a failed fallback yields nullopt and the caller restores the
+// primary errno.
+auto open_via_create_file_read(const std::wstring& extended)
+    -> std::optional<std::ifstream> {
+  HANDLE h = CreateFileW(extended.c_str(), GENERIC_READ,
+                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                         nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h == INVALID_HANDLE_VALUE) return std::nullopt;
+  const int fd =
+      _open_osfhandle(reinterpret_cast<intptr_t>(h), _O_RDONLY | _O_BINARY);
+  if (fd == -1) {
+    CloseHandle(h);
+    return std::nullopt;
+  }
+  std::FILE* file = _fdopen(fd, "rb");
+  if (!file) {
+    _close(fd);
+    return std::nullopt;
+  }
+  return std::ifstream(file);
+}
+
+// Write-side twin of the read fallback above: a symlink destination fails
+// the CRT stream create the same way, while CreateFileW follows the link
+// and truncates (or appends to) the target, matching GNU `cp file link`.
+auto open_via_create_file_write(const std::wstring& extended, bool append)
+    -> std::optional<std::ofstream> {
+  HANDLE h = CreateFileW(extended.c_str(), GENERIC_WRITE,
+                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                         nullptr, append ? OPEN_ALWAYS : CREATE_ALWAYS,
+                         FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h == INVALID_HANDLE_VALUE) return std::nullopt;
+  const int fd = _open_osfhandle(
+      reinterpret_cast<intptr_t>(h),
+      _O_WRONLY | _O_BINARY | (append ? _O_APPEND : 0));
+  if (fd == -1) {
+    CloseHandle(h);
+    return std::nullopt;
+  }
+  std::FILE* file = _fdopen(fd, append ? "ab" : "wb");
+  if (!file) {
+    _close(fd);
+    return std::nullopt;
+  }
+  return std::ofstream(file);
+}
+
 auto open_binary_file(std::string_view filename) -> std::ifstream {
   // /dev/stdin-family operands bind to the real fd 0 so piped input works
   // exactly like GNU (and a closed stdin reports failure, #1056/#973).
@@ -238,8 +294,15 @@ auto open_binary_file(std::string_view filename) -> std::ifstream {
   if (native_path::is_winux_fifo_w(operand.normalized)) {
     return open_fifo_read_stream(operand.normalized);
   }
-  return std::ifstream(std::filesystem::path(operand.extended),
+  std::ifstream stream(std::filesystem::path(operand.extended),
                        std::ios::binary);
+  if (stream) return stream;
+  const int first_err = errno;
+  if (auto retry = open_via_create_file_read(operand.extended)) {
+    return std::move(*retry);
+  }
+  errno = first_err;
+  return stream;
 }
 
 auto create_binary_file(std::string_view filename, bool append = false)
@@ -263,9 +326,16 @@ auto create_binary_file(std::string_view filename, bool append = false)
   if (native_path::is_winux_fifo_w(operand.normalized)) {
     return open_fifo_write_stream(operand.normalized);
   }
-  return std::ofstream(
+  std::ofstream stream(
       std::filesystem::path(operand.extended),
       std::ios::binary | (append ? std::ios::app : std::ios::trunc));
+  if (stream) return stream;
+  const int first_err = errno;
+  if (auto retry = open_via_create_file_write(operand.extended, append)) {
+    return std::move(*retry);
+  }
+  errno = first_err;
+  return stream;
 }
 
 // [GNU] A closed standard input (<&-) is a read error, not EOF (#973): the
