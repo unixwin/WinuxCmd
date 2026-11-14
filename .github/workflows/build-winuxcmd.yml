@@ -15,6 +15,17 @@ on:
 permissions:
   contents: write
 
+# PR pushes are high-frequency and every push fans out four matrix legs plus
+# rust-tests. On 2026-11-13 the queue reached ten concurrent runs; each leg's
+# ctest suite then started hitting the 120 s per-test ceiling on the Windows
+# FIFO bridge (see DOCS/ci-x64-leg-timeout-analysis.md), and the serial flake
+# retry re-ran those same tests at 120 s each. Cancelling superseded PR runs
+# removes the self-inflicted contention; tag runs and main pushes keep their
+# own group so a release is never cancelled by a later PR push.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   # Pinned Rust toolchain for the rust2 command library (#1488). Matches the
   # windows-2025 runner image today, so the pin costs no extra download; when
@@ -25,6 +36,13 @@ env:
 jobs:
   build-windows:
     runs-on: windows-2025
+    # A green x64/default leg is ~30 min; a leg whose parallel ctest run trips
+    # the FIFO timeout cluster used to run 58-73 min because the serial flake
+    # retry repeated every 120 s timeout. scripts/ctest-gate.ps1 now caps the
+    # serial pass at 30 s per test; this ceiling sits above the observed worst
+    # case (73 min) and well below the 6 h default, so a hung leg fails as a
+    # timeout instead of occupying a runner for hours.
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -132,19 +150,18 @@ jobs:
           "%USERPROFILE%\.cargo\bin\rustup.exe" target add x86_64-pc-windows-msvc aarch64-pc-windows-msvc
           "%USERPROFILE%\.cargo\bin\rustup.exe" show
 
-      # The rust2 workspace has zero external crates (std only), so the
-      # registry/git cache is pure hygiene (and future-proofs the day a
-      # dependency lands). The per-tree rust2-target dirs are deliberately
-      # NOT cached: a fresh checkout changes source mtimes, so cargo
-      # recompiles the three crates from scratch every run and caching
-      # would only upload dead weight.
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-rust2-${{ runner.os }}-${{ env.RUST2_TOOLCHAIN }}-${{ hashFiles('rust2/Cargo.lock', 'rust2/crates/*/Cargo.toml') }}
+      # No cargo cache, by measurement and by risk. The rust2 workspace has
+      # zero external crates (std only), so ~/.cargo/{registry,git} never
+      # exists and actions/cache emitted "Path Validation Error ... does not
+      # exist, hence no cache is being saved" on every run. Caching the
+      # per-tree rust2-target dirs was evaluated and rejected: the three
+      # rebuilds (build-<arch>, build-x64-pgo-train, the final build) are a
+      # small slice of a leg (a full tests-OFF compile including cargo takes
+      # 1.5 min), cargo fingerprints embed source mtimes that a fresh
+      # checkout invalidates, and a restored object cache can silently supply
+      # stale objects for the binary we ship. Re-add a cache only with a key
+      # that includes github.sha and no restore-keys, and never in the
+      # release/tag job. See DOCS/ci-x64-leg-timeout-analysis.md.
 
       - name: Configure CMake (Release Mode)
         shell: cmd
@@ -275,13 +292,16 @@ jobs:
       # Parallel ctest flakes (0xc0000409 fail-fast / env-sensitive asserts,
       # #1260) are absorbed by re-running only the failed tests serially once
       # via scripts/ctest-gate.ps1; a test that also fails serially still reds.
+      # The serial pass uses a 30 s per-test ceiling instead of 120 s: a hang
+      # is not a #1260 flake and must not buy another full minute (see
+      # DOCS/ci-x64-leg-timeout-analysis.md).
       - name: Run Unit Tests (ctest)
         if: matrix.package_arch == 'x64' && matrix.edition == 'default'
         shell: cmd
         working-directory: build-${{ matrix.package_arch }}
         run: |
           call "${{ steps.locate_vcvars.outputs.vcvars_path }}" ${{ matrix.vcvars_arg }}
-          powershell -NoProfile -ExecutionPolicy Bypass -File ..\scripts\ctest-gate.ps1 -BuildDir . -Configuration Release -TimeoutSeconds 120
+          powershell -NoProfile -ExecutionPolicy Bypass -File ..\scripts\ctest-gate.ps1 -BuildDir . -Configuration Release -TimeoutSeconds 120 -SerialRetryTimeoutSeconds 30
           if errorlevel 1 exit /b 1
 
       - name: Package with CPack (7Z + ZIP + TGZ)
@@ -365,6 +385,7 @@ jobs:
   # ctest baseline cluster.
   rust-tests:
     runs-on: windows-2025
+    timeout-minutes: 30
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v6
@@ -387,13 +408,9 @@ jobs:
           "%USERPROFILE%\.cargo\bin\rustup.exe" default %RUST2_TOOLCHAIN%
           "%USERPROFILE%\.cargo\bin\rustup.exe" show
 
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-rust2-${{ runner.os }}-${{ env.RUST2_TOOLCHAIN }}-${{ hashFiles('rust2/Cargo.lock', 'rust2/crates/*/Cargo.toml') }}
+      # Same no-cache decision as build-windows: the workspace has no
+      # external crates, and the registry path never exists. The toolchain
+      # cache above is the only cache this job needs.
 
       # The verified set only: `cargo test -p winux-cmds` (529 tests on
       # X299, #1597). The workspace's other crates are not run here until
@@ -549,6 +566,11 @@ jobs:
   # replace layer 3's arch asymmetry later without changing the contract.
   rust2-surface-check:
     runs-on: windows-2025
+    # Measured over the last 30 runs: median 7 s, P95 9 s, max 11 s. The
+    # ceiling only exists so a hung artifact download cannot hold the runner;
+    # this job has never timed out, and it is skipped (not timed out) when the
+    # x64/default leg it needs fails.
+    timeout-minutes: 10
     needs: build-windows
     steps:
       - name: Download x64 packages

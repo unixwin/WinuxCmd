@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "comment": "Revision anchor for the GNU master differential oracle. tests/differential/fetch-gnu-master.sh verifies every source against these values and refuses a source that cannot prove them; see DOCS/gate-oracle-policy.md.",
+  "coreutils_revision": "5f6c02d3447ee97c7fa02f5d0d6d6e46a8a1ceef",
+  "coreutils_sources": [
+    "https://github.com/coreutils/coreutils.git",
+    "https://git.savannah.gnu.org/git/coreutils.git"
+  ],
+  "gnulib_revision": "106e9b2384d08a1696fcbd40cbab52237943f208",
+  "gnulib_sources": [
+    "https://git.savannah.gnu.org/git/gnulib.git",
+    "https://github.com/coreutils/gnulib.git",
+    "https://git.savannah.gnu.org/cgit/gnulib.git/snapshot/gnulib-106e9b2384d08a1696fcbd40cbab52237943f208.tar.gz",
+    "rust2/gate/vendor/gnulib-106e9b2384d08a1696fcbd40cbab52237943f208.tar.gz"
+  ],
+  "vendored_archive": "rust2/gate/vendor/gnulib-106e9b2384d08a1696fcbd40cbab52237943f208.tar.gz",
+  "vendored_sha256": "42af2398cde8d60fafe9172b1a8e9af3d18ccf29367a0d5864c4228a9631bfe8",
+  "vendored_size": 9542361,
+  "tree_sha256": "9f88a6a76b0c67f77adec13528f59b14d85c95e17bdb1169479fb370ad0b635c",
+  "retry": {
+    "attempts_per_source": 2,
+    "backoff_seconds": [5, 20],
+    "attempt_timeout_seconds": 180,
+    "network_source_budget_seconds": 600,
+    "note": "Defaults live in tests/differential/fetch-gnu-master.sh; this block is the reviewed contract, not a second configuration source."
+  },
+  "vendored_at": "2026-11-14",
+  "vendored_note": "GitHub archive of the gnulib commit that coreutils 5f6c02d3 pins. Re-vendor only together with a new coreutils revision, and recompute vendored_sha256 and tree_sha256 in the same commit."
+}
