@@ -211,6 +211,11 @@ TEST(integration, cat_char_class_exclude) {
   EXPECT_TRUE(r.stdout_text.find("ccc") == std::string::npos);
 }
 
+// #1488 rust2 wiring: `f[1-2]*.txt` is a literal operand — the shell
+// globs, the program does not (GNU grep receives shell-expanded operands).
+// WSL GNU grep 3.11 probe 2026-11-14: the spelling names no file, so the
+// ENOENT diagnostic is reported and grep exits 2. The 1.x body
+// glob-expanded the operand (same retired extension as grep_wildcard_files).
 TEST(integration, grep_char_class_range) {
   TempDir tmp;
   tmp.write("f1.txt", "hello\n");
@@ -223,10 +228,10 @@ TEST(integration, grep_char_class_range) {
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.find("f1.txt") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("f2.txt") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("f9.txt") == std::string::npos);
+  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("grep: f[1-2]*.txt: No such file or "
+                                 "directory") != std::string::npos);
 }
 
 // ============================================================

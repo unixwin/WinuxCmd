@@ -149,6 +149,18 @@ auto abi_version_ok(const char* name) -> bool {
   return true;
 }
 
+// Write-error status for the closed-fd shape, per command. GNU grep
+// treats every write failure as EXIT_TROUBLE (2): the 1.x body surfaced
+// it as report_stdout_write_error("grep", 2) (#1368), and grep.c's
+// prwrite-failure path dies with EXIT_TROUBLE — so the grep family keeps
+// 2 where the generic drain used 1. Both ABIs buffer stdout, so the
+// failure can only be observed here, at the host drain, per command name.
+auto write_error_status(const char* name) -> int {
+  const std::string_view view(name);
+  if (view == "grep" || view == "egrep" || view == "fgrep") return 2;
+  return 1;
+}
+
 // Shared drain for both ABI entries: the closed-stdout contract, the raw
 // writers, and the buffer release. `status` is whatever the ABI entry
 // returned (v2 may hand back the 124 host-stopped-feeding status here).
@@ -157,17 +169,17 @@ auto drain_result(const char* name, int status, winuxcmd_cbuf& out,
   // [GNU] close_stdout contract for the closed-fd shape (issue #1368,
   // probed coreutils 9.4): a command that PRODUCED stdout bytes against a
   // closed fd 1 reports "<name>: write error: Bad file descriptor" and
-  // fails (rc 1); a command that wrote nothing stays silent with its own
-  // status (`true >&-` rc 0). Both ABIs buffer stdout, so the write
-  // failure surfaces here at the drain instead of inside the library —
-  // the same place GNU's global close_stdout hook reports it. Broken-pipe
-  // write failures stay with a future streaming write callback (README
-  // "Output side").
+  // fails (rc 1; the grep family keeps GNU's EXIT_TROUBLE 2); a command
+  // that wrote nothing stays silent with its own status (`true >&-`
+  // rc 0). Both ABIs buffer stdout, so the write failure surfaces here
+  // at the drain instead of inside the library — the same place GNU's
+  // global close_stdout hook reports it. Broken-pipe write failures stay
+  // with a future streaming write callback (README "Output side").
   if (out.ptr != nullptr && out.len > 0 && _fileno(stdout) < 0) {
     safeErrorPrintLn(std::string(name) + ": write error: Bad file descriptor");
     winuxcmd_free_buf(&out);
     winuxcmd_free_buf(&err);
-    return 1;
+    return write_error_status(name);
   }
 
   // stdout before stderr: the Rust side buffered both, so their relative
@@ -292,6 +304,30 @@ auto run_with_stdin_source(const char* name, std::span<std::string_view> args,
 }  // namespace
 
 export namespace winux::rust2 {
+
+/// Routing query for the grep wire (#1488 grep lane): 1 when this
+/// grep/egrep/fgrep argument vector selects the Perl matcher, judged by
+/// the rust2 library's getopt-shaped [`uses_perl`] grammar over the
+/// dispatcher's operands (winuxcmd_grep_uses_perl in the FFI). The grep
+/// handler splits on this at the dispatch layer: a Perl invocation keeps
+/// the C++ PCRE2 face (DOCS/2.0-regex-engine-decision.md §6 owner point
+/// 2 — the same command, two engines, the split point is HERE, before
+/// either body runs); every other shape is the mechanical rust2
+/// replacement. POSIXLY_CORRECT is read from the process environment —
+/// the same source the run entries snapshot into the injected env — so
+/// both engines apply the same stop-at-first-operand rule.
+int grep_uses_perl(std::span<std::string_view> args) noexcept {
+  std::vector<std::string> storage;
+  storage.assign(args.begin(), args.end());
+  std::vector<const char*> argv;
+  argv.reserve(storage.size());
+  for (const auto& a : storage) argv.push_back(a.c_str());
+  const int posixly =
+      std::getenv("POSIXLY_CORRECT") != nullptr ? 1 : 0;
+  return winuxcmd_grep_uses_perl(
+      static_cast<int>(argv.size()),
+      argv.empty() ? nullptr : argv.data(), posixly);
+}
 
 /// Run rust2 library command `name` with the dispatcher's operands.
 ///
