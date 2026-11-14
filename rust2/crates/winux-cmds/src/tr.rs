@@ -17,7 +17,8 @@
 //! translating / delete-squeeze second line, + try tail), the two-line
 //! `when translating, the only character classes that may appear in
 //! string2 are 'upper' and 'lower'`, `misaligned [:upper:] and/or
-//! [:lower:] construct`, `range endpoints out of order`.
+//! [:lower:] construct`, `range-endpoints of ... are in reverse
+//! collating sequence order` (tr.c append_range).
 //!
 //! Modes: translate (SET2 shorter repeats its last char; `-t` truncates
 //! SET1 to SET2's length first); `-c` translate maps EVERY complement
@@ -33,9 +34,21 @@ use std::ffi::OsString;
 
 use crate::argopt::{self, OptSpec};
 use crate::gnuhelp;
-use winux_core::{CmdResult, Ctx, Io};
+use winux_core::{tr, CmdResult, Ctx, Io};
 
 const OPTS: &[OptSpec] = &[
+    // [GNU] -A: undocumented historical no-op. coreutils tr.c keeps 'A' in
+    // its getopt string purely for BSD compatibility and ignores it
+    // (probed WSL 9.4: `printf abc | tr -A a-z A-Z` -> ABC, rc 0). The 1.x
+    // C++ body modelled it as an accepted flag and
+    // tests/unit/tr/tr_unit_test.cpp pins that contract; the library
+    // rejected it before the wire, so add it here rather than retire a GNU
+    // spelling.
+    OptSpec {
+        short: Some('A'),
+        long: "",
+        takes_value: false,
+    },
     OptSpec {
         short: Some('c'),
         long: "complement",
@@ -62,6 +75,29 @@ const OPTS: &[OptSpec] = &[
         takes_value: false,
     },
 ];
+
+/// tr.c make_printable_char(): a printable byte stands for itself, any
+/// other byte prints as a three-digit octal escape. Used only inside the
+/// reverse-range diagnostic.
+fn printable_char(c: u8) -> String {
+    if (0x20..=0x7e).contains(&c) {
+        (c as char).to_string()
+    } else {
+        format!("\\{c:03o}")
+    }
+}
+
+/// tr.c append_range()'s fatal: the endpoints are printed in their
+/// printable form inside literal single quotes (probed 9.4:
+/// `tr 'z-a' x` -> range-endpoints of 'z-a' are in reverse collating
+/// sequence order; `tr '\\200-\\100' x` -> '\\200-@').
+fn reverse_range_err(lo: u8, hi: u8) -> SetErr {
+    SetErr::Plain(format!(
+        "range-endpoints of '{}-{}' are in reverse collating sequence order",
+        printable_char(lo),
+        printable_char(hi)
+    ))
+}
 
 /// C-locale byte tables for the tr classes, expanded in byte order
 /// ([:alpha:] = A-Za-z, probed).
@@ -98,7 +134,7 @@ struct SetSpec {
     class_anchors: Vec<(usize, String)>,
 }
 
-fn escape_byte(input: &[u8], i: &mut usize) -> u8 {
+fn escape_byte(input: &[u8], i: &mut usize, warnings: &mut Vec<String>, ctx: &Ctx) -> u8 {
     // input[*i] is the char after the backslash
     let c = input[*i];
     let out = match c {
@@ -111,10 +147,32 @@ fn escape_byte(input: &[u8], i: &mut usize) -> u8 {
         b'v' => 0x0b,
         b'\\' => 0x5c,
         b'0'..=b'7' => {
+            // tr.c unquote(): up to three octal digits, but a third digit
+            // that would push the value past 0377 is NOT consumed; GNU
+            // warns and interprets the two-digit value followed by the
+            // literal digit (probed 9.4: `tr '\400' x` warns
+            // "the ambiguous octal escape \400 is being\n\tinterpreted as
+            // the 2-byte sequence \040, 0" and maps space + '0').
             let mut val: u32 = 0;
             let mut n = 0;
             while n < 3 && *i < input.len() && (b'0'..=b'7').contains(&input[*i]) {
-                val = val * 8 + (input[*i] - b'0') as u32;
+                let digit = (input[*i] - b'0') as u32;
+                if n == 2 && val * 8 + digit > 0xff {
+                    let d1 = input[*i - 2] as char;
+                    let d2 = input[*i - 1] as char;
+                    let d3 = input[*i] as char;
+                    warnings.push(tr!(
+                        ctx,
+                        "command.tr.warn.ambiguous_octal",
+                        "tr: warning: the ambiguous octal escape \\{d1}{d2}{d3} is being\n\
+                         \tinterpreted as the 2-byte sequence \\0{d1}{d2}, {d3}",
+                        d1 = d1,
+                        d2 = d2,
+                        d3 = d3
+                    ));
+                    return val as u8;
+                }
+                val = val * 8 + digit;
                 *i += 1;
                 n += 1;
             }
@@ -158,7 +216,13 @@ fn parse_repeat_count(s: &[u8]) -> Option<u64> {
 /// Parse one SET operand into bytes, handling classes, equivalence,
 /// repeats and ranges. `second && translating` enables the SET2 class
 /// restrictions.
-fn parse_set(input: &[u8], second: bool, translating: bool) -> Result<SetSpec, SetErr> {
+fn parse_set(
+    input: &[u8],
+    ctx: &Ctx,
+    second: bool,
+    translating: bool,
+    warnings: &mut Vec<String>,
+) -> Result<SetSpec, SetErr> {
     let mut bytes: Vec<u8> = Vec::new();
     let mut fill_at: Option<(usize, u8)> = None;
     let mut class_anchors: Vec<(usize, String)> = Vec::new();
@@ -167,11 +231,47 @@ fn parse_set(input: &[u8], second: bool, translating: bool) -> Result<SetSpec, S
         let c = input[i];
         if c == b'\\' {
             if i + 1 >= input.len() {
+                // tr.c unquote() case '\0': POSIX is unclear, so warn and
+                // treat the backslash as itself.
+                warnings.push(tr!(
+                    ctx,
+                    "command.tr.warn.trailing_backslash",
+                    "tr: warning: an unescaped backslash at end of string is not portable"
+                ));
                 bytes.push(0x5c);
                 i += 1;
             } else {
                 i += 1;
-                bytes.push(escape_byte(input, &mut i));
+                let lo = escape_byte(input, &mut i, &mut *warnings, ctx);
+                // tr.c build_spec_list() works on the UNQUOTED bytes, so an
+                // escaped endpoint still forms a range when the '-' after it
+                // is unescaped (probed: `tr '\\200-\\100' x` ->
+                // "range-endpoints of '\\200-@' are in reverse collating
+                // sequence order").
+                if i + 1 < input.len() && input[i] == b'-' {
+                    let mut j = i + 1;
+                    let hi = if input[j] == b'\\' && j + 1 < input.len() {
+                        j += 1;
+                        escape_byte(input, &mut j, &mut *warnings, ctx)
+                    } else {
+                        j += 1;
+                        input[i + 1]
+                    };
+                    if hi < lo {
+                        return Err(reverse_range_err(lo, hi));
+                    }
+                    let mut b = lo;
+                    loop {
+                        bytes.push(b);
+                        if b == hi {
+                            break;
+                        }
+                        b += 1;
+                    }
+                    i = j;
+                    continue;
+                }
+                bytes.push(lo);
             }
             continue;
         }
@@ -185,15 +285,21 @@ fn parse_set(input: &[u8], second: bool, translating: bool) -> Result<SetSpec, S
                     if marker == b':' {
                         let name = String::from_utf8_lossy(name_bytes).into_owned();
                         let cb = class_bytes(&name).ok_or_else(|| {
-                            SetErr::Plain(format!("invalid character class \u{2018}{name}\u{2019}"))
+                            SetErr::Plain(tr!(
+                                ctx,
+                                "command.tr.error.invalid_character_class",
+                                "invalid character class \u{2018}{name}\u{2019}",
+                                name = name
+                            ))
                         })?;
                         if second && translating {
                             if name != "upper" && name != "lower" {
-                                return Err(SetErr::Plain(
+                                return Err(SetErr::Plain(tr!(
+                                    ctx,
+                                    "command.tr.error.set2_restricted_class",
                                     "when translating, the only character classes that may \
                                      appear in\nstring2 are 'upper' and 'lower'"
-                                        .to_string(),
-                                ));
+                                )));
                             }
                             class_anchors.push((bytes.len(), name));
                         } else {
@@ -203,6 +309,15 @@ fn parse_set(input: &[u8], second: bool, translating: bool) -> Result<SetSpec, S
                         i = end + 2;
                         continue;
                     } else if name_bytes.len() == 1 {
+                        // tr.c validate(): [=c=] in string2 while
+                        // translating is a fatal (probed 9.4).
+                        if second && translating {
+                            return Err(SetErr::Plain(tr!(
+                                ctx,
+                                "command.tr.error.equiv_in_string2",
+                                "[=c=] expressions may not appear in string2 when translating"
+                            )));
+                        }
                         bytes.push(name_bytes[0]);
                         i = end + 2;
                         continue;
@@ -219,7 +334,7 @@ fn parse_set(input: &[u8], second: bool, translating: bool) -> Result<SetSpec, S
                     let (ch, consumed) =
                         if !char_part.is_empty() && char_part[0] == b'\\' && char_part.len() > 1 {
                             let mut ci = 1usize;
-                            (escape_byte(char_part, &mut ci), ci)
+                            (escape_byte(char_part, &mut ci, &mut *warnings, ctx), ci)
                         } else if !char_part.is_empty() {
                             (char_part[0], 1usize)
                         } else {
@@ -227,9 +342,12 @@ fn parse_set(input: &[u8], second: bool, translating: bool) -> Result<SetSpec, S
                         };
                     if consumed == char_part.len() {
                         if !count_str.is_empty() && !valid_count(count_str) {
-                            return Err(SetErr::Plain(format!(
-                                "invalid repeat count \u{2018}{}\u{2019} in [c*n] construct",
-                                String::from_utf8_lossy(count_str)
+                            let count = String::from_utf8_lossy(count_str).into_owned();
+                            return Err(SetErr::Plain(tr!(
+                                ctx,
+                                "command.tr.error.invalid_repeat_count",
+                                "invalid repeat count \u{2018}{count}\u{2019} in [c*n] construct",
+                                count = count
                             )));
                         }
                         match parse_repeat_count(count_str) {
@@ -253,7 +371,7 @@ fn parse_set(input: &[u8], second: bool, translating: bool) -> Result<SetSpec, S
                 if content.len() >= 3 && content[1] == b'-' {
                     let (lo, hi) = (content[0], content[2]);
                     if hi < lo {
-                        return Err(SetErr::Plain("range endpoints out of order".to_string()));
+                        return Err(reverse_range_err(lo, hi));
                     }
                     let mut b = lo;
                     loop {
@@ -278,14 +396,14 @@ fn parse_set(input: &[u8], second: bool, translating: bool) -> Result<SetSpec, S
             let hi;
             if input[i + 2] == b'\\' && i + 3 < input.len() {
                 let mut j = i + 3;
-                hi = escape_byte(input, &mut j);
+                hi = escape_byte(input, &mut j, &mut *warnings, ctx);
                 i = j;
             } else {
                 hi = input[i + 2];
                 i += 3;
             }
             if hi < lo {
-                return Err(SetErr::Plain("range endpoints out of order".to_string()));
+                return Err(reverse_range_err(lo, hi));
             }
             let mut b = lo;
             loop {
@@ -309,7 +427,7 @@ fn parse_set(input: &[u8], second: bool, translating: bool) -> Result<SetSpec, S
 
 /// Validate the [:upper:]/[:lower:] pairing: every class anchor in SET2
 /// needs the OPPOSITE class anchored at the same element index in SET1.
-fn validate_class_alignment(set1: &SetSpec, set2: &SetSpec) -> Result<(), SetErr> {
+fn validate_class_alignment(set1: &SetSpec, set2: &SetSpec, ctx: &Ctx) -> Result<(), SetErr> {
     for (idx, name) in &set2.class_anchors {
         let want = if name == "upper" { "lower" } else { "upper" };
         let ok = set1
@@ -317,9 +435,11 @@ fn validate_class_alignment(set1: &SetSpec, set2: &SetSpec) -> Result<(), SetErr
             .iter()
             .any(|(i1, n1)| i1 == idx && n1 == want);
         if !ok {
-            return Err(SetErr::Plain(
-                "misaligned [:upper:] and/or [:lower:] construct".to_string(),
-            ));
+            return Err(SetErr::Plain(tr!(
+                ctx,
+                "command.tr.error.misaligned_case_class",
+                "misaligned [:upper:] and/or [:lower:] construct"
+            )));
         }
     }
     Ok(())
@@ -455,29 +575,56 @@ pub fn tr_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
 
     // operand count diagnostics (probed shapes)
     if operands.is_empty() {
-        let _ = writeln!(io.stderr, "tr: missing operand");
+        let _ = writeln!(
+            io.stderr,
+            "tr: {}",
+            tr!(ctx, "common.error.missing_operand", "missing operand")
+        );
         let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "tr"));
         return Ok(1);
     }
     if operands.len() == 1 && !delete && !squeeze {
         let _ = writeln!(
             io.stderr,
-            "tr: missing operand after \u{2018}{}\u{2019}",
-            operands[0]
+            "tr: {}",
+            tr!(
+                ctx,
+                "command.tr.error.missing_after",
+                "missing operand after \u{2018}{operand}\u{2019}",
+                operand = operands[0]
+            )
         );
-        let _ = writeln!(io.stderr, "Two strings must be given when translating.");
+        let _ = writeln!(
+            io.stderr,
+            "{}",
+            tr!(
+                ctx,
+                "command.tr.error.two_strings_translating",
+                "Two strings must be given when translating."
+            )
+        );
         let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "tr"));
         return Ok(1);
     }
     if operands.len() == 1 && delete && squeeze {
         let _ = writeln!(
             io.stderr,
-            "tr: missing operand after \u{2018}{}\u{2019}",
-            operands[0]
+            "tr: {}",
+            tr!(
+                ctx,
+                "command.tr.error.missing_after",
+                "missing operand after \u{2018}{operand}\u{2019}",
+                operand = operands[0]
+            )
         );
         let _ = writeln!(
             io.stderr,
-            "Two strings must be given when both deleting and squeezing repeats."
+            "{}",
+            tr!(
+                ctx,
+                "command.tr.error.two_strings_delete_squeeze",
+                "Two strings must be given when both deleting and squeezing repeats."
+            )
         );
         let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "tr"));
         return Ok(1);
@@ -485,19 +632,42 @@ pub fn tr_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     if delete && !squeeze && operands.len() >= 2 {
         let _ = writeln!(
             io.stderr,
-            "tr: extra operand \u{2018}{}\u{2019}",
-            operands[1]
+            "tr: {}",
+            tr!(
+                ctx,
+                "command.tr.error.extra_operand",
+                "extra operand \u{2018}{operand}\u{2019}",
+                operand = operands[1]
+            )
         );
         let _ = writeln!(
             io.stderr,
-            "Only one string may be given when deleting without squeezing repeats."
+            "{}",
+            tr!(
+                ctx,
+                "command.tr.error.one_string_delete_only",
+                "Only one string may be given when deleting without squeezing repeats."
+            )
         );
         let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "tr"));
         return Ok(1);
     }
 
     let translating = !delete && operands.len() >= 2;
-    let set1 = match parse_set(operands[0].as_bytes(), false, translating) {
+    let mut warnings: Vec<String> = Vec::new();
+    let set1 = parse_set(
+        operands[0].as_bytes(),
+        ctx,
+        false,
+        translating,
+        &mut warnings,
+    );
+    // tr.c unquote() prints its warnings while parsing, so they survive a
+    // later operand's failure.
+    for warning in &warnings {
+        let _ = writeln!(io.stderr, "{warning}");
+    }
+    let set1 = match set1 {
         Ok(s) => s,
         Err(SetErr::Plain(msg)) => {
             let _ = writeln!(io.stderr, "tr: {msg}");
@@ -519,7 +689,12 @@ pub fn tr_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             delete_map[b as usize] = true;
         }
         if squeeze && operands.len() >= 2 {
-            match parse_set(operands[1].as_bytes(), true, false) {
+            let mut warnings: Vec<String> = Vec::new();
+            let parsed = parse_set(operands[1].as_bytes(), ctx, true, false, &mut warnings);
+            for warning in &warnings {
+                let _ = writeln!(io.stderr, "{warning}");
+            }
+            match parsed {
                 Ok(s2) => {
                     for &b in &s2.bytes {
                         squeeze_map[b as usize] = true;
@@ -533,14 +708,19 @@ pub fn tr_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         }
     } else if operands.len() >= 2 {
         // translate
-        let set2 = match parse_set(operands[1].as_bytes(), true, true) {
+        let mut warnings: Vec<String> = Vec::new();
+        let parsed = parse_set(operands[1].as_bytes(), ctx, true, true, &mut warnings);
+        for warning in &warnings {
+            let _ = writeln!(io.stderr, "{warning}");
+        }
+        let set2 = match parsed {
             Ok(s) => s,
             Err(SetErr::Plain(msg)) => {
                 let _ = writeln!(io.stderr, "tr: {msg}");
                 return Ok(1);
             }
         };
-        if let Err(SetErr::Plain(msg)) = validate_class_alignment(&set1, &set2) {
+        if let Err(SetErr::Plain(msg)) = validate_class_alignment(&set1, &set2, ctx) {
             let _ = writeln!(io.stderr, "tr: {msg}");
             return Ok(1);
         }
@@ -600,7 +780,12 @@ pub fn tr_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         }
         if squeeze {
             // squeeze set = SET2 as given (shaped to SET1 length like GNU)
-            let sq = match parse_set(operands[1].as_bytes(), true, false) {
+            let mut warnings: Vec<String> = Vec::new();
+            let parsed_sq = parse_set(operands[1].as_bytes(), ctx, true, false, &mut warnings);
+            for warning in &warnings {
+                let _ = writeln!(io.stderr, "{warning}");
+            }
+            let sq = match parsed_sq {
                 Ok(s) => s.bytes,
                 Err(SetErr::Plain(msg)) => {
                     let _ = writeln!(io.stderr, "tr: {msg}");
@@ -620,7 +805,11 @@ pub fn tr_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
 
     let mut input = Vec::new();
     if io.stdin.read_to_end(&mut input).is_err() {
-        let _ = writeln!(io.stderr, "tr: read error");
+        let _ = writeln!(
+            io.stderr,
+            "tr: {}",
+            tr!(ctx, "command.tr.error.read_error", "read error")
+        );
         return Ok(1);
     }
     let mut out: Vec<u8> = Vec::with_capacity(input.len());
@@ -783,5 +972,86 @@ mod tests {
         let owned: Vec<OsString> = ["é", "X"].iter().map(Into::into).collect();
         tr_cmd(&owned, &mut io.split(), &ctx).unwrap();
         assert_eq!(io.output, [0x61, 0x58, 0x58, 0x62]);
+    }
+
+    #[test]
+    fn unquote_warnings_match_gnu() {
+        // tr.c unquote(): a lone trailing backslash and an ambiguous
+        // three-digit octal escape both warn (probed 9.4).
+        let (r, out, e) = run(&["a\\", "X"], "a\\b");
+        assert_eq!(r, 0);
+        assert_eq!(out, "XXb");
+        assert_eq!(
+            e,
+            "tr: warning: an unescaped backslash at end of string is not portable\n"
+        );
+        let (r, out, e) = run(&["\\400", "XY"], "a 0");
+        assert_eq!(r, 0);
+        // \400 -> the 2-byte sequence \040 (space) + '0'
+        assert_eq!(out, "aXY");
+        assert_eq!(
+            e,
+            "tr: warning: the ambiguous octal escape \\400 is being\n\
+             \tinterpreted as the 2-byte sequence \\040, 0\n"
+        );
+        // \377 is unambiguous
+        let (r, _, e) = run(&["\\377", "Y"], "\u{ff}x");
+        assert_eq!(r, 0);
+        assert_eq!(e, "");
+    }
+
+    #[test]
+    fn equiv_class_in_string2_is_a_fatal_when_translating() {
+        // tr.c validate(): "[=c=] expressions may not appear in string2
+        // when translating" (probed 9.4, differential 103-tr-equiv-string2).
+        let (r, out, e) = run(&["a", "[=a=]"], "aba");
+        assert_eq!(r, 1);
+        assert_eq!(out, "");
+        assert_eq!(
+            e,
+            "tr: [=c=] expressions may not appear in string2 when translating\n"
+        );
+        // [=a=] is fine in string1
+        let (r, out, _) = run(&["[=a=]", "X"], "aba");
+        assert_eq!(r, 0);
+        assert_eq!(out, "XbX");
+    }
+
+    #[test]
+    fn reverse_range_diagnostic_matches_gnu() {
+        // tr.c append_range(): endpoints print via make_printable_char
+        // (printable as itself, else \NNN) inside literal quotes.
+        let (r, _, e) = run(&["z-a", "x"], "a");
+        assert_eq!(r, 1);
+        assert_eq!(
+            e,
+            "tr: range-endpoints of 'z-a' are in reverse collating sequence order\n"
+        );
+        let (r, _, e) = run(&["a-[", "x"], "a");
+        assert_eq!(r, 1);
+        assert_eq!(
+            e,
+            "tr: range-endpoints of 'a-[' are in reverse collating sequence order\n"
+        );
+        let (r, _, e) = run(&["\\200-\\100", "x"], "a");
+        assert_eq!(r, 1);
+        assert_eq!(
+            e,
+            "tr: range-endpoints of '\\200-@' are in reverse collating sequence order\n"
+        );
+        // bracketed range spelling keeps the decoded endpoints too
+        let (r, _, e) = run(&["[a-[]", "x"], "a");
+        assert_eq!(r, 1);
+        assert!(e.contains("range-endpoints of 'a-[' are in reverse"));
+    }
+
+    #[test]
+    fn undocumented_a_flag_is_a_noop() {
+        // [GNU] coreutils tr.c keeps 'A' in its getopt string for BSD
+        // compatibility and ignores it (probed 9.4: `printf abc | tr -A
+        // a-z A-Z` -> ABC, rc 0). The wire must not turn a GNU spelling
+        // into "invalid option".
+        assert_eq!(run(&["-A", "a-z", "A-Z"], "abc").0, 0);
+        assert_eq!(run(&["-A", "a-z", "A-Z"], "abc").1, "ABC");
     }
 }

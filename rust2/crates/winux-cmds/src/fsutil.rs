@@ -45,6 +45,19 @@ pub fn quotef(name: &str) -> String {
     }
 }
 
+/// Open a read operand through the #1038 `!<fifo>` marker bridge when the
+/// path names one (the paste/digestsum precedent): a plain open would read
+/// the 7-byte marker file and strand the rendezvous writer. Every other
+/// operand is a plain binary open.
+pub fn open_read_operand(ctx: &Ctx, operand: &str) -> io::Result<Box<dyn std::io::Read>> {
+    let path = resolve(ctx, operand);
+    let text = path.to_string_lossy().into_owned();
+    if crate::fs_win::is_winux_fifo_path(&text) {
+        return crate::fs_win::open_fifo_read(&text).map(|r| Box::new(r) as Box<dyn std::io::Read>);
+    }
+    std::fs::File::open(path).map(|f| Box::new(f) as Box<dyn std::io::Read>)
+}
+
 /// GNU strerror for a failed open of a literal operand, recovered from the
 /// Windows-native failure: empty names and invalid-name artifacts (literal
 /// `*.txt`, trailing `/`) cannot be opened natively, so the operand string
@@ -164,17 +177,13 @@ fn extended_preserving(native: &str) -> PathBuf {
     let mut parts: Vec<String> = Vec::new();
     for component in Path::new(native).components() {
         match component {
-            Component::Prefix(p) => {
-                prefix = Some(p.as_os_str().to_string_lossy().into_owned())
-            }
+            Component::Prefix(p) => prefix = Some(p.as_os_str().to_string_lossy().into_owned()),
             Component::RootDir => {}
             Component::CurDir => {}
             Component::ParentDir => {
                 parts.pop();
             }
-            Component::Normal(name) => {
-                parts.push(name.to_string_lossy().into_owned())
-            }
+            Component::Normal(name) => parts.push(name.to_string_lossy().into_owned()),
         }
     }
     let body = parts.join("\\");

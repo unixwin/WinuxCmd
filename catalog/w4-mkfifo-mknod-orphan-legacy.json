@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "note": "legacy.<fnv> entries produced only by the deleted src/commands/mkfifo.cpp and src/commands/mknod.cpp bodies; drop them from the locale catalogs",
+  "messages": {
+    "legacy.1dfff6d130b2e314": "mknod: ",
+    "legacy.1fc4b3c73e085827": "Try 'mkfifo --help' for more information.\n",
+    "legacy.2e9e3f8e6d3d8263": "invalid mode",
+    "legacy.2fae10fb899a6002": "': Operation not permitted\n",
+    "legacy.3d3bc13aaedb3e24": "': File exists\n",
+    "legacy.50d6c9c96a4579d1": "mkfifo: ",
+    "legacy.7ed0aec8be485159": "mkfifo: cannot create fifo '",
+    "legacy.acd39875bff80fa9": "mknod: '",
+    "legacy.b994a3e4995f37d8": "Try 'mknod --help' for more information.\n",
+    "legacy.d615bc21611e60c1": "missing device type",
+    "legacy.d84d014fdb818583": ": File exists\n",
+    "legacy.ee06857cdd2a6f25": "mode must specify only file permission bits"
+  }
+}

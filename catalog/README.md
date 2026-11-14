@@ -89,3 +89,38 @@ synopsis / description keys are unchanged: they come from the C++
   with the library port (#1715).
 * The separate `unixwin/winuxcmd-i18n` repository still needs this patch
   applied plus a `VERSION` bump; this lane did not touch it.
+## wave-W4 lane — mkfifo / mknod runtime message face
+
+Prepared by the wave-W4 wiring lane (`rust2/wire-w4`, worktree
+`D:/repo/wc-w4`). The captain lands the `catalogs/` part in
+`unixwin/winuxcmd-i18n`; nothing here is applied to the shared catalog
+checkout.
+
+| file | meaning |
+|---|---|
+| `w4-mkfifo-mknod-en-additions.json` | the **15** new stable keys this wire introduces (english fallbacks as extracted) |
+| `w4-mkfifo-mknod-zh-patch.json` | the **15** reviewed zh-CN translations (patch payload) |
+| `w4-mkfifo-mknod-orphan-legacy.json` | the **12** `legacy.<fnv>` keys produced only by the deleted `src/commands/mkfifo.cpp` / `mknod.cpp` bodies — drop them from the locale catalogs |
+| `w4-mkfifo-mknod-validate.txt` | `python scripts/i18n_batch.py validate` output (`valid`) |
+
+Numbers:
+
+* added: `command.mkfifo.{error.*,warning.*}` = 4 keys,
+  `command.mknod.{error.*,warning.*}` = 11 keys (15 total).
+* removed: 12 orphan legacy keys (the two deleted C++ bodies' `safePrintLn`
+  / `std::unexpected` literals). Keys such as `legacy.7dfe466a8c65ddde`
+  ("missing operand") survive because other C++ applets still emit them.
+* unchanged: every `command.mkfifo.*` / `command.mknod.*`
+  description/option/synopsis key (the `REGISTER_COMMAND` metadata is
+  byte-identical), and no other command's key set moved in this branch.
+* validation: base = the 15-key English subset, translated = the zh patch;
+  `valid` (key sets equal, placeholder sets equal, no option-token drift).
+  The `{}`-positioned shared keys (`common.error.*`) are not touched.
+* The program prefix (`mkfifo: ` / `mknod: `) stays in Rust code; the GNU
+  `errno` reason text (`File exists`, `No such file or directory`) is a
+  `{reason}` binding, exactly like the find/grep `{reason}` convention —
+  platform strerror text is data, not catalog text.
+
+Release note: `VERSION` in `unixwin/winuxcmd-i18n` must be bumped in the
+same PR as any `catalogs/` change (AGENTS.md); this lane did not touch
+that repository.

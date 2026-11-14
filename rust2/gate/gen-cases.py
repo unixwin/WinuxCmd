@@ -42,6 +42,48 @@ TABLE_NOTES = {
         "# GNU side runs as root: numeric specs really change; named POSIX accounts",
         "# do not exist on Windows, so named-account cases are win/value-model.",
     ],
+    # wave-W2 wire (#1488): cut/tr/od/sum. The dispatcher keeps the
+    # WinuxCmd-branded --help/--version interception (REPLACEMENT-RECIPE §1),
+    # so those rows are `win` (Rust vs C++ status only) exactly like
+    # rev/echo/grep; the wired product's bytes for them are covered by the
+    # old-vs-new matrix (gate c), not by the GNU oracle.
+    "cut": [
+        "# cut gate cases (#1488 wave4a + wave-W2 wire)",
+        "# ct32/ct33 --help/--version are win: brand interception stays C++",
+    ],
+    "tr": [
+        "# tr gate cases (#1488 wave4a + wave-W2 wire)",
+        "# tr36/tr37 --help/--version are win: brand interception stays C++",
+    ],
+    "od": [
+        "# od gate cases (#1488 wave4a + wave-W2 wire)",
+        "# od35/od36 --help/--version are win: brand interception stays C++",
+        "# od37+ cover the wire: -j/-N absolute addresses, -S/--strings, the",
+        "# old-style [FILE] [[+]OFFSET] [[+]LABEL] operand form",
+    ],
+    "sum": [
+        "# sum gate cases (#1488 wave4a + wave-W2 wire)",
+        "# sm18/sm19 --help/--version are win: brand interception stays C++",
+    ],
+    "mkfifo": [
+        "# mkfifo gate cases (wave-W4 wiring, #1488) — TAB-separated",
+        "# Probed against WSL coreutils 9.4 with",
+        "# rust2/target/probe/w4-mkfifo-mknod.sh (GNU side creates REAL fifos;",
+        "# the Windows sides create the #1038 !<fifo> marker, so stdout/rc are",
+        "# comparable but the on-disk node type is checked by the unit tests).",
+        "# mf20/mf21 are win: the wired product answers the sole",
+        "# --help/--version with the WinuxCmd-branded dispatcher surface",
+        "# (suite-wide help convention, wave6 precedent), not GNU text.",
+    ],
+    "mknod": [
+        "# mknod gate cases (wave-W4 wiring, #1488) — TAB-separated",
+        "# Probed against WSL coreutils 9.4 (rust2/target/probe/w4-mkfifo-mknod.sh).",
+        "# Device-node rows are win because the WSL oracle runs as ROOT and",
+        "# really creates block/char nodes (probed rdev=1:3 etc.); Windows has",
+        "# no device-node type, so both Windows sides report EPERM and only",
+        "# Rust-vs-C++ can be compared. mn20/mn21 are win for the sole",
+        "# --help/--version branded product surface (mkfifo precedent).",
+    ],
 }
 
 
@@ -522,6 +564,7 @@ chmod_rows = [
     ("cm61-recursive-multi-clause", "exit", "mkdir -p d/s", "", "",
      ["-R", "u=rwx,go=rx", "d"]),
     ("cm62-symbolic-restrictive", "exit", "touch f", "", "", ["a-rwx", "f"]),
+
 ]
 
 chown_rows = [
@@ -900,6 +943,7 @@ b2sum_rows = [
     ("b2c11-missing-target", "strict",
      "printf 'ba80a53f981c4d0d6a2797b69f12f6e94c212f14685ac4b74b12bb6fdbffa2d17d87c5392aab792dc252d5de4533cc9518d38aa8dbf1925ab92386edd4009923  nope\\n' > ck",
      "", "", ["-c", "ck"]),
+
 ]
 
 sha224_rows = [
@@ -2140,8 +2184,38 @@ cut_rows = [
     ("ct29-missing-file", "strict", "", "", "", ["-c", "1", "nosuch"]),
     ("ct30-bytes-utf8", "strict", "", "", "\u00fcnxc", ["-b", "2"]),
     ("ct31-overlap", "strict", "", "", "a:b", ["-c", "1-2,1"]),
-    ("ct32-help", "strict", "", "", "", ["--help"]),
-    ("ct33-version", "strict", "", "", "", ["--version"]),
+    ("ct32-help", "win", "", "", "", ["--help"]),
+    ("ct33-version", "win", "", "", "", ["--version"]),
+
+    # wave-W2 wire (#1488): shapes the wired product must keep byte-exact —
+    # multi/empty output delimiters, list diagnostics, -s/--complement
+    # combinations, an unterminated -z tail.
+    ("ct34-outdelim-multi", "strict", "", "", "a:b:c",
+     ["-d", ":", "-f", "1-2", "--output-delimiter=XY"]),
+    ("ct35-outdelim-empty", "strict", "", "", "a:b:c",
+     ["-d", ":", "-f", "1,3", "--output-delimiter="]),
+    ("ct36-bad-list-x", "strict", "", "", "abc", ["-f", "3x"]),
+    ("ct37-list-bare-dash", "strict", "", "", "abc", ["-f", "-"]),
+    ("ct38-delim-multichar", "strict", "", "", "a:b", ["-d", "ab", "-f", "1"]),
+    ("ct39-s-on-bytes", "strict", "", "", "abc", ["-s", "-c", "1"]),
+    ("ct40-both-lists", "strict", "", "", "abc", ["-b", "1", "-c", "1"]),
+    ("ct41-z-unterminated", "strict", "printf 'a:b\\0c:d' > zt", "", "",
+     ["-z", "-d", ":", "-f", "2", "zt"]),
+    ("ct42-f-past-end", "strict", "", "", "a:b", ["-d", ":", "-f", "5"]),
+    ("ct43-complement-delim", "strict", "", "", "a:b:c",
+     ["-d", ":", "-f", "1,2", "--complement"]),
+    ("ct44-trailing-delim", "strict", "", "", "a:b:", ["-d", ":", "-f", "2"]),
+    ("ct45-open-start-complement", "strict", "", "", "a:b:c",
+     ["-d", ":", "-f", "-2", "--complement"]),
+    # -z with -d '' : field delimiter == record delimiter (cut.c
+    # cut_fields; #1511) — the whole input is one record.
+    ("ct46-zero-empty-delim", "strict", "printf 'a\\0b\\0c\\0' > zn", "", "",
+     ["-z", "-d", "", "-f", "2", "zn"]),
+    ("ct47-zero-empty-delim-complement", "strict",
+     "printf 'a\\0b\\0c\\0' > zn", "", "",
+     ["-z", "--complement", "-d", "", "-f", "2", "zn"]),
+    ("ct48-zero-empty-delim-suppress", "strict", "printf 'abc' > plain", "", "",
+     ["-z", "-s", "-d", "", "-f", "1", "plain"]),
 ]
 
 tr_rows = [
@@ -2180,8 +2254,22 @@ tr_rows = [
     ("tr33-d-without-s-2ops", "strict", "", "", "ab", ["-d", "a", "b"]),
     ("tr34-plain-range", "strict", "", "", "abcd", ["a-d", "1234"]),
     ("tr35-range-partial", "strict", "", "", "a[b", ["a-", "XY"]),
-    ("tr36-help", "strict", "", "", "", ["--help"]),
-    ("tr37-version", "strict", "", "", "", ["--version"]),
+    ("tr36-help", "win", "", "", "", ["--help"]),
+    ("tr37-version", "win", "", "", "", ["--version"]),
+
+    # wave-W2 wire (#1488): -A is GNU's undocumented no-op (the library
+    # rejected it before the wire), plus the clustered/complement forms the
+    # wired body must keep byte-exact.
+    ("tr38-undocumented-A", "strict", "", "", "abc", ["-A", "a-z", "A-Z"]),
+    ("tr39-C-complement", "strict", "", "", "abc", ["-C", "a", "x"]),
+    ("tr40-squeeze-space", "strict", "", "", "a  b   c", ["-s", " "]),
+    ("tr41-cd-digit", "strict", "", "", "a1b2", ["-cd", "[:digit:]"]),
+    ("tr42-ds-two-sets", "strict", "", "", "aabb", ["-ds", "a", "b"]),
+    ("tr43-range-lower", "strict", "", "", "HELLO", ["A-Z", "a-z"]),
+    ("tr44-nested-class", "strict", "", "", "a1b2", ["[[:digit:]]", "x"]),
+    ("tr45-truncate-short", "strict", "", "", "abcd", ["-t", "abcd", "xy"]),
+    # tr.c validate(): [=c=] in string2 while translating is fatal.
+    ("tr46-equiv-string2", "strict", "", "", "aba", ["a", "[=a=]"]),
 ]
 
 od_rows = [
@@ -2220,8 +2308,51 @@ od_rows = [
     ("od32-width3-hex", "strict", "", "", "abcde", ["-An", "-w3", "-tx1"]),
     ("od33-long-forms", "strict", "", "", "abc", ["--format=o2", "--address-radix=d"]),
     ("od34-dir-operand", "strict", "mkdir d", "", "", ["-An", "-c", "d"]),
-    ("od35-help", "strict", "", "", "", ["--help"]),
-    ("od36-version", "strict", "", "", "", ["--version"]),
+    ("od35-help", "win", "", "", "", ["--help"]),
+    ("od36-version", "win", "", "", "", ["--version"]),
+
+    # wave-W2 wire (#1488): -j/-N print addresses in the combined input's
+    # coordinate space, plus the -S/--strings and old-style operand forms
+    # the 1.x body carried (od.c dump_strings / parse_old_offset).
+    ("od37-j-address", "strict", "", "", "abcd", ["-j", "2", "-c"]),
+    ("od38-N-address", "strict", "", "", "abcd", ["-N", "2", "-c"]),
+    ("od39-strings", "strict", "printf 'xxhello\\0world\\n' > s1", "", "",
+     ["-An", "-S5", "s1"]),
+    ("od40-strings-address", "strict", "printf 'xxhello\\0' > s2", "", "",
+     ["-S5", "s2"]),
+    ("od41-strings-type-conflict", "strict", "", "", "abc", ["-S5", "-tx1"]),
+    ("od42-trad-offset", "strict", "", "", "abcdef", ["--traditional", "2"]),
+    ("od43-trad-label", "strict", "", "", "abcdef",
+     ["--traditional", "2", "3"]),
+    ("od44-trad-label-an", "strict", "", "", "abcdef",
+     ["-An", "--traditional", "2", "16"]),
+    ("od45-strings-N", "strict", "printf 'hello\\0wo' > s3", "", "",
+     ["-An", "-S3", "-N8", "s3"]),
+    ("od46-trad-file-offset", "strict", "printf 'abcdefghij' > g1", "", "",
+     ["g1", "2"]),
+    ("od47-trad-two-files", "strict",
+     "printf 'abc' > g1; printf 'def' > g2", "", "",
+     ["--traditional", "g1", "g2"]),
+    ("od48-strings-default", "strict", "printf 'xxhello\\0' > s4", "", "",
+     ["--strings", "s4"]),
+    ("od49-strings-invalid", "strict", "", "", "x", ["-Sabc"]),
+    # od.c main(): every operand failing to open skips dump() entirely.
+    ("od50-missing-file", "strict", "", "", "", ["nosuch"]),
+    # obsolescent CASE_OLD_ARG letters and the multi-spec pad/order rules
+    # (differential regressions 79/80); the `z` trailer belongs to the spec
+    # it is spelled on.
+    ("od51-legacy-letters", "strict", "printf 'abcdefgh' > g5", "", "",
+     ["-D", "-e", "-H", "-O", "g5"]),
+    ("od52-legacy-cluster", "strict", "printf 'abcdefgh' > g5", "", "",
+     ["-bc", "g5"]),
+    ("od53-spec-order", "strict", "printf 'ab' > g6", "", "",
+     ["-t", "x1", "-b", "g6"]),
+    ("od54-z-per-type", "strict", "printf 'ab' > g6", "", "",
+     ["-tx1z", "-to1", "g6"]),
+    ("od55-multi-pad", "strict", "printf 'abcd' > g6", "", "",
+     ["-An", "-t", "x1", "-t", "o1", "g6"]),
+    ("od56-named-char", "strict", "printf 'ab' > g6", "", "",
+     ["-a", "-c", "g6"]),
 ]
 
 sum_rows = [
@@ -2246,9 +2377,25 @@ sum_rows = [
     ("sm15-both-flags", "strict", "", "", "abc", ["-r", "-s"]),
     ("sm16-bogus-long", "strict", "", "", "", ["--bogus"]),
     ("sm17-dir-operand", "strict", "mkdir d", "", "", ["d"]),
-    ("sm18-help", "strict", "", "", "", ["--help"]),
-    ("sm19-version", "strict", "", "", "", ["--version"]),
+    ("sm18-help", "win", "", "", "", ["--help"]),
+    ("sm19-version", "win", "", "", "", ["--version"]),
     ("sm20-newlines", "strict", "printf '1\\n2\\n3\\n4\\n5\\n' > f", "", "", ["f"]),
+
+    # wave-W2 wire (#1488): clustered algorithm flags keep GNU's
+    # last-one-wins, the SysV path past one 512-byte block, and the
+    # stdin/multi-operand shapes the wired body must keep byte-exact.
+    ("sm21-clustered-rs", "strict", "printf 'abcdef' > f", "", "", ["-rs", "f"]),
+    ("sm22-clustered-sr", "strict", "printf 'abcdef' > f", "", "", ["-sr", "f"]),
+    ("sm23-sysv-700", "strict",
+     "i=0; while [ $i -lt 70 ]; do printf 'abcdefghij'; i=$((i+1)); done > f; :",
+     "", "", ["-s", "f"]),
+    ("sm24-two-dash-stdin", "strict", "", "", "ab", ["-", "-"]),
+    ("sm25-sysv-dir", "strict", "mkdir d", "", "", ["-s", "d"]),
+    ("sm26-bsd-1025", "strict",
+     "i=0; while [ $i -lt 102 ]; do printf 'abcdefghij'; i=$((i+1)); done > f; printf 'abcde' >> f",
+     "", "", ["f"]),
+    ("sm27-long-sysv", "strict", "printf 'abcdef' > f", "", "", ["--sysv", "f"]),
+    ("sm28-empty-dash", "strict", "", "", "", ["-"]),
 ]
 
 mktemp_rows = [
@@ -3589,11 +3736,28 @@ mkfifo_rows = [
     ("mf17-Z-attached-invalid", "strict", "", "", "", ["-Zctx2", "pz2"]),
     ("mf18-context-after-dashdash", "strict", "", "", "", ["--", "--context=x"]),
     ("mf19-two-names", "strict", "", "", "", ["pa", "pb"]),
-    ("mf20-help", "strict", "", "", "", ["--help"]),
-    ("mf21-version", "strict", "", "", "", ["--version"]),
+    # sole --help/--version are the product's branded dispatcher surface
+    # (wave6 convention); the GNU help body is pinned by the rust2 unit
+    # test help_version_surface instead.
+    ("mf20-help", "win", "", "", "", ["--help"]),
+    ("mf21-version", "win", "", "", "", ["--version"]),
     ("mf22-mixed-failure", "strict", "", "", "", ["ok", "nodir/bad", "ok2"]),
     ("mf23-missing-value", "strict", "", "", "", ["-m"]),
     ("mf24-bogus-long", "strict", "", "", "", ["--bogus"]),
+    # wave-W4 additions (probed w4-mkfifo-mknod.sh)
+    ("mf25-mode-long-eq", "strict", "", "", "", ["--mode=644", "p"]),
+    ("mf26-mode-last-wins", "strict", "", "", "", ["-m", "600", "-m", "640", "p"]),
+    ("mf27-mode-empty-value", "strict", "", "", "", ["-m", "", "p"]),
+    ("mf28-mode-combined", "strict", "", "", "", ["-m", "u=rw,go=r", "p"]),
+    # --context= (empty PRESENT value) warns; bare --context does not
+    ("mf29-context-empty-value", "strict", "", "", "", ["--context=", "pz5"]),
+    # getopt_long unambiguous abbreviation, expanded by the dispatcher and
+    # accepted by the library scan alike
+    ("mf30-context-abbrev", "strict", "", "", "", ["--con=cval", "pz6"]),
+    ("mf31-context-abbrev-bare", "strict", "", "", "", ["--c", "pz7"]),
+    ("mf32-dashdash-operand", "strict", "", "", "", ["--", "-m"]),
+    # empty NAME is ENOENT, not "the cwd" (probed GNU 9.4)
+    ("mf33-empty-name", "strict", "", "", "", ["@EMPTY@"]),
 ]
 
 mknod_rows = [
@@ -3618,11 +3782,35 @@ mknod_rows = [
     ("mn17-context-warn-fifo", "strict", "", "", "", ["--context=c", "pf", "p"]),
     ("mn18-Z-bare-fifo", "strict", "", "", "", ["-Z", "pz", "p"]),
     ("mn19-missing-parent", "strict", "", "", "", ["nodir/x", "p"]),
-    ("mn20-help", "strict", "", "", "", ["--help"]),
-    ("mn21-version", "strict", "", "", "", ["--version"]),
+    # sole --help/--version: branded product surface (mkfifo mf20/mf21)
+    ("mn20-help", "win", "", "", "", ["--help"]),
+    ("mn21-version", "win", "", "", "", ["--version"]),
     ("mn22-mode-rejected-before-operands", "strict", "", "", "", ["-m", "bogus", "n", "p"]),
     ("mn23-missing-mode-value", "strict", "", "", "", ["-m"]),
     ("mn24-bogus-long", "strict", "", "", "", ["--bogus"]),
+    # wave-W4 additions (probed w4-mkfifo-mknod.sh): an EMPTY device
+    # number is "invalid ... ''" in GNU, never "missing"
+    ("mn25-empty-major", "strict", "", "", "", ["n", "c", "", "3"]),
+    ("mn26-empty-minor", "strict", "", "", "", ["n", "c", "1", ""]),
+    # strtoumax accepts '+' and 0x/0-prefixed numbers; device creation is
+    # root-only on the oracle, so these stay win (Rust vs C++ status)
+    ("mn27-plus-major", "win", "", "", "", ["mp", "c", "+1", "3"]),
+    ("mn28-dev-zero", "win", "", "", "", ["mz", "c", "0", "0"]),
+    ("mn29-fifo-mode-empty", "strict", "", "", "", ["-m", "", "n2", "p"]),
+    # --context= (empty present value) warns; bare --context is silent
+    ("mn30-context-empty", "strict", "", "", "", ["--context=", "pe", "p"]),
+    ("mn31-context-abbrev", "strict", "", "", "", ["--con=c", "pf2", "p"]),
+    ("mn32-context-abbrev-bare", "strict", "", "", "", ["--c", "pb2", "p"]),
+    ("mn33-exists-dir", "strict", "mkdir dd", "", "", ["dd", "p"]),
+    # empty NAME: GNU quotes it and reports ENOENT (probed)
+    ("mn34-empty-name", "strict", "", "", "", ["@EMPTY@", "p"]),
+    # TYPE is classified by its FIRST character (probed: pz/pp are fifos,
+    # bz/cx/uz block/char); trailing junk is ignored like GNU
+    ("mn35-type-suffix-fifo", "strict", "", "", "", ["mzs", "pz"]),
+    ("mn36-type-suffix-block", "win", "", "", "", ["mzb", "bz", "1", "2"]),
+    # operand-count errors precede TYPE validation (probed shape)
+    ("mn37-two-operand-bogus-type", "strict", "", "", "", ["xo", "x"]),
+    ("mn38-bad-type-before-minor", "strict", "", "", "", ["xo2", "x", "1", "zz"]),
 ]
 
 chcon_rows = [
