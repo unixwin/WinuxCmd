@@ -3,7 +3,7 @@
 /// @contributors:
 ///   - caomengxuan666 <2507560089@qq.com>
 /// @Description: Implementation for locale command.
-/// @Version: 0.2.0
+/// @Version: 0.3.0
 /// @License: MIT
 /// @Copyright: Copyright © 2026 WinuxCmd
 
@@ -48,192 +48,85 @@ auto constexpr LOCALE_OPTIONS =
 
 namespace {
 
+using winux::locale_db::CategoryItem;
+using winux::locale_db::ItemKind;
 using winux::locale_db::LocaleValues;
 
-// [GNU] glibc locale(1) answers NAME operands from the item names of
-// categories.def, plus the special name `charmap`. Each item belongs to
-// exactly one category, and glibc answers it from that category's locale -
-// so `LC_TIME=de_DE locale day` reads LC_TIME while `locale currency_symbol`
-// reads LC_MONETARY. `codeset` is not a name (glibc 2.39: `locale codeset`
-// -> `locale: unknown name "codeset"`); `mon` is the LC_TIME full-month item.
-enum class ValueKind {
-  kString,   // printed name="value" in -k mode
-  kNumeric,  // printed name=value (byte/word items)
-  kEra,      // stringlist, printed bare even when empty
-};
-
-struct KeywordEntry {
-  std::string_view name;
-  std::string_view category;
-  ValueKind kind;
-};
-
-auto constexpr KEYWORDS = std::array{
-    KeywordEntry{"charmap", "LC_CTYPE", ValueKind::kString},
-    // LC_NUMERIC
-    KeywordEntry{"decimal_point", "LC_NUMERIC", ValueKind::kString},
-    KeywordEntry{"thousands_sep", "LC_NUMERIC", ValueKind::kString},
-    KeywordEntry{"grouping", "LC_NUMERIC", ValueKind::kNumeric},
-    // LC_MONETARY
-    KeywordEntry{"int_curr_symbol", "LC_MONETARY", ValueKind::kString},
-    KeywordEntry{"currency_symbol", "LC_MONETARY", ValueKind::kString},
-    KeywordEntry{"mon_decimal_point", "LC_MONETARY", ValueKind::kString},
-    KeywordEntry{"mon_thousands_sep", "LC_MONETARY", ValueKind::kString},
-    KeywordEntry{"mon_grouping", "LC_MONETARY", ValueKind::kNumeric},
-    KeywordEntry{"positive_sign", "LC_MONETARY", ValueKind::kString},
-    KeywordEntry{"negative_sign", "LC_MONETARY", ValueKind::kString},
-    KeywordEntry{"int_frac_digits", "LC_MONETARY", ValueKind::kNumeric},
-    KeywordEntry{"frac_digits", "LC_MONETARY", ValueKind::kNumeric},
-    KeywordEntry{"p_cs_precedes", "LC_MONETARY", ValueKind::kNumeric},
-    KeywordEntry{"p_sep_by_space", "LC_MONETARY", ValueKind::kNumeric},
-    KeywordEntry{"n_cs_precedes", "LC_MONETARY", ValueKind::kNumeric},
-    KeywordEntry{"n_sep_by_space", "LC_MONETARY", ValueKind::kNumeric},
-    KeywordEntry{"p_sign_posn", "LC_MONETARY", ValueKind::kNumeric},
-    KeywordEntry{"n_sign_posn", "LC_MONETARY", ValueKind::kNumeric},
-    // LC_MESSAGES
-    KeywordEntry{"yesexpr", "LC_MESSAGES", ValueKind::kString},
-    KeywordEntry{"noexpr", "LC_MESSAGES", ValueKind::kString},
-    KeywordEntry{"yesstr", "LC_MESSAGES", ValueKind::kString},
-    KeywordEntry{"nostr", "LC_MESSAGES", ValueKind::kString},
-    // LC_TIME
-    KeywordEntry{"day", "LC_TIME", ValueKind::kString},
-    KeywordEntry{"abday", "LC_TIME", ValueKind::kString},
-    KeywordEntry{"mon", "LC_TIME", ValueKind::kString},
-    KeywordEntry{"abmon", "LC_TIME", ValueKind::kString},
-    KeywordEntry{"am_pm", "LC_TIME", ValueKind::kString},
-    KeywordEntry{"d_fmt", "LC_TIME", ValueKind::kString},
-    KeywordEntry{"t_fmt", "LC_TIME", ValueKind::kString},
-    KeywordEntry{"d_t_fmt", "LC_TIME", ValueKind::kString},
-    KeywordEntry{"t_fmt_ampm", "LC_TIME", ValueKind::kString},
-    KeywordEntry{"era", "LC_TIME", ValueKind::kEra},
-};
-
-auto find_keyword(std::string_view keyword) -> const KeywordEntry* {
-  for (const auto& entry : KEYWORDS) {
-    if (entry.name == keyword) return &entry;
-  }
-  return nullptr;
+// [GNU] A NAME operand is either a category (dump every item of it) or one
+// glibc item name (answer just that item). Both are answered from the item
+// model in utils:locale_db, which owns the glibc categories.def order and the
+// value projection, so `locale(1)` only renders.
+const LocaleValues& values_for(std::string_view category) {
+  return winux::locale_db::for_category(category);
 }
 
-// glibc's locale(1) renders LC_TIME stringlists as the items joined by ';'
-// (empty items included: de_DE's am_pm is ";").
-template <size_t N>
-auto join_list(const std::array<std::string, N>& items) -> std::string {
-  std::string result;
-  for (size_t i = 0; i < N; ++i) {
-    if (i != 0) result.push_back(';');
-    result += items[i];
-  }
-  return result;
-}
-
-// The value the locale database answers for one keyword, read from the
-// locale of the keyword's own category (POSIX setlocale semantics).
-auto keyword_value(std::string_view keyword) -> std::string {
-  const KeywordEntry* entry = find_keyword(keyword);
-  if (entry == nullptr) return {};
-  const LocaleValues& values = winux::locale_db::for_category(entry->category);
-  if (keyword == "charmap") return values.codeset.charmap;
-  // LC_NUMERIC
-  if (keyword == "decimal_point") return values.numeric.decimal_point;
-  if (keyword == "thousands_sep") return values.numeric.thousands_sep;
-  if (keyword == "grouping") return values.numeric.grouping_text;
-  // LC_MONETARY
-  if (keyword == "int_curr_symbol") return values.monetary.int_curr_symbol;
-  if (keyword == "currency_symbol") return values.monetary.currency_symbol;
-  if (keyword == "mon_decimal_point") return values.monetary.mon_decimal_point;
-  if (keyword == "mon_thousands_sep") return values.monetary.mon_thousands_sep;
-  if (keyword == "mon_grouping") return values.monetary.mon_grouping_text;
-  if (keyword == "positive_sign") return values.monetary.positive_sign;
-  if (keyword == "negative_sign") return values.monetary.negative_sign;
-  if (keyword == "frac_digits") {
-    return std::to_string(values.monetary.frac_digits);
-  }
-  if (keyword == "int_frac_digits")
-    return std::to_string(values.monetary.int_frac_digits);
-  if (keyword == "p_cs_precedes")
-    return std::to_string(values.monetary.p_cs_precedes);
-  if (keyword == "p_sep_by_space")
-    return std::to_string(values.monetary.p_sep_by_space);
-  if (keyword == "n_cs_precedes")
-    return std::to_string(values.monetary.n_cs_precedes);
-  if (keyword == "n_sep_by_space")
-    return std::to_string(values.monetary.n_sep_by_space);
-  if (keyword == "p_sign_posn")
-    return std::to_string(values.monetary.p_sign_posn);
-  if (keyword == "n_sign_posn")
-    return std::to_string(values.monetary.n_sign_posn);
-  // LC_MESSAGES
-  if (keyword == "yesexpr") return values.yesexpr;
-  if (keyword == "noexpr") return values.noexpr;
-  if (keyword == "yesstr") return values.yesstr;
-  if (keyword == "nostr") return values.nostr;
-  // LC_TIME
-  if (keyword == "day") return join_list(values.time.day);
-  if (keyword == "abday") return join_list(values.time.abday);
-  if (keyword == "mon") return join_list(values.time.mon);
-  if (keyword == "abmon") return join_list(values.time.abmon);
-  if (keyword == "am_pm") return values.time.am_pm;
-  if (keyword == "d_fmt") return values.time.d_fmt;
-  if (keyword == "t_fmt") return values.time.t_fmt;
-  if (keyword == "d_t_fmt") return values.time.d_t_fmt;
-  if (keyword == "t_fmt_ampm") return values.time.t_fmt_ampm;
-  if (keyword == "era") return values.time.era;
-  return {};
-}
-
-// [GNU] A NAME operand in the plain or -k mode is either the special
-// charmap or one of the glibc item names; anything else is diagnosed as
-// `locale: unknown name "X"` and exits 1 (glibc locale_special.c).
-auto report_unknown_name(const std::string& name) -> int {
-  safeErrorPrintLn("locale: unknown name \"" + name + "\"");
-  return 1;
-}
-
-// Print one keyword value: bare value in answer mode, `name="value"` in
-// -k mode (strings quoted, numeric flags unquoted, empty era bare).
-void print_keyword(std::string_view keyword, ValueKind kind,
-                   bool keyword_mode) {
-  const std::string value = keyword_value(keyword);
+// [GNU] glibc print_item(): strings and string arrays are quoted as a whole
+// (`charmap="UTF-8"`, `day="Sun;Mon"`), string lists quote every element
+// (`ctype-class-names="upper";"lower"`), bytes/words/arrays stay bare.
+void print_item(const CategoryItem& item, const LocaleValues& values,
+                bool keyword_mode) {
+  const auto value = winux::locale_db::item_value(item.name, values);
   if (!keyword_mode) {
-    safePrintLn(value);
+    safePrintLn(value.text);
     return;
   }
-  if (kind == ValueKind::kNumeric || kind == ValueKind::kEra) {
-    safePrintLn(std::string(keyword) + "=" + value);
-  } else {
-    safePrintLn(std::string(keyword) + "=\"" + value + "\"");
+  switch (item.kind) {
+    case ItemKind::kString:
+    case ItemKind::kStringArray:
+      safePrintLn(std::string(item.name) + "=\"" + value.text + "\"");
+      return;
+    case ItemKind::kStringList: {
+      std::string line(item.name);
+      line += '=';
+      for (size_t i = 0; i < value.elements.size(); ++i) {
+        if (i != 0) line += ';';
+        line += '"';
+        line += value.elements[i];
+        line += '"';
+      }
+      safePrintLn(line);
+      return;
+    }
+    case ItemKind::kByte:
+    case ItemKind::kByteArray:
+    case ItemKind::kWord:
+    case ItemKind::kWordArray:
+      safePrintLn(std::string(item.name) + "=" + value.text);
+      return;
   }
 }
 
-// Get all available locales
-std::vector<std::string> get_available_locales() {
-  std::vector<std::string> locales;
+// [GNU] One category operand: -c writes the category name first, then every
+// item in categories.def order. `locale -k LC_TIME` is the same stream with
+// names and quoting.
+void print_category(std::string_view category, const LocaleValues& values,
+                    bool show_category_name, bool keyword_mode) {
+  if (show_category_name) safePrintLn(std::string(category));
+  for (const auto& item : winux::locale_db::category_items(category)) {
+    print_item(item, values, keyword_mode);
+  }
+}
 
-  // Common locales
-  locales.push_back("C");
-  locales.push_back("C.UTF-8");
-  locales.push_back("POSIX");
-  locales.push_back("en_US.UTF-8");
-  locales.push_back("en_US");
-  locales.push_back("en_GB.UTF-8");
-  locales.push_back("en_GB");
-  locales.push_back("zh_CN.UTF-8");
-  locales.push_back("zh_CN");
-  locales.push_back("zh_TW.UTF-8");
-  locales.push_back("zh_TW");
-  locales.push_back("ja_JP.UTF-8");
-  locales.push_back("ja_JP");
-  locales.push_back("ko_KR.UTF-8");
-  locales.push_back("ko_KR");
-  locales.push_back("fr_FR.UTF-8");
-  locales.push_back("fr_FR");
-  locales.push_back("de_DE.UTF-8");
-  locales.push_back("de_DE");
-  locales.push_back("es_ES.UTF-8");
-  locales.push_back("es_ES");
-
-  return locales;
+// [GNU] The NAME operand answer. glibc show_info() looks categories up first,
+// then item names; anything else is `locale: unknown name "X"` and exit 1
+// (glibc locale_special.c).
+auto print_name(std::string_view name, bool show_category_name,
+                bool keyword_mode) -> int {
+  if (winux::locale_db::is_category(name)) {
+    print_category(name, values_for(name), show_category_name, keyword_mode);
+    return 0;
+  }
+  const std::string_view category = winux::locale_db::item_category(name);
+  if (!category.empty()) {
+    for (const auto& item : winux::locale_db::category_items(category)) {
+      if (item.name != name) continue;
+      if (show_category_name) safePrintLn(std::string(category));
+      print_item(item, values_for(category), keyword_mode);
+      return 0;
+    }
+  }
+  safeErrorPrintLn("locale: unknown name \"" + std::string(name) + "\"");
+  return 1;
 }
 
 // [GNU] The no-argument form reports the locale environment: LANG, LANGUAGE
@@ -245,13 +138,12 @@ std::vector<std::string> get_available_locales() {
 // the report never disagrees with the rendered values.
 void print_locale_categories() {
   safePrintLn("LANG=" + winux::locale_db::environment_variable("LANG"));
-  safePrintLn("LANGUAGE=" +
-              winux::locale_db::environment_variable("LANGUAGE"));
+  safePrintLn("LANGUAGE=" + winux::locale_db::environment_variable("LANGUAGE"));
 
   static constexpr std::array<std::string_view, 12> categories = {
-      "LC_CTYPE",   "LC_NUMERIC",      "LC_TIME",       "LC_COLLATE",
-      "LC_MONETARY", "LC_MESSAGES",    "LC_PAPER",      "LC_NAME",
-      "LC_ADDRESS", "LC_TELEPHONE",   "LC_MEASUREMENT", "LC_IDENTIFICATION"};
+      "LC_CTYPE",    "LC_NUMERIC",   "LC_TIME",        "LC_COLLATE",
+      "LC_MONETARY", "LC_MESSAGES",  "LC_PAPER",       "LC_NAME",
+      "LC_ADDRESS",  "LC_TELEPHONE", "LC_MEASUREMENT", "LC_IDENTIFICATION"};
   for (const auto category : categories) {
     safePrintLn(std::string(category) + "=\"" +
                 winux::locale_db::name_for_category(category) + "\"");
@@ -318,85 +210,38 @@ REGISTER_COMMAND(locale,
   bool show_keyword_names =
       ctx.get<bool>("-k", false) || ctx.get<bool>("--keyword-name", false);
 
-  if (show_charmaps) {
-    // Print available character maps
-    safePrintLn("UTF-8");
-    safePrintLn("ASCII");
-    safePrintLn("ISO-8859-1");
-    safePrintLn("CP1252");
-    return 0;
-  }
-
+  // [GNU] -a wins over -m when both are given (glibc main(): the do_all
+  // branch exits before the do_charmaps branch).
   if (show_all) {
-    // Print all available locales
-    auto locales = get_available_locales();
-    for (const auto& loc : locales) {
-      safePrintLn(loc);
+    for (const auto& locale : winux::locale_db::available_locales()) {
+      safePrintLn(locale);
     }
     return 0;
   }
 
-  // -c/--category-name: print names of defined locale categories.
-  // [GNU] glibc locale(1) writes nothing unless NAME operands are given:
-  // a bare `-c` is silent and exits 0 (glibc 2.39 locale.c main(): only
-  // the "no argument at all" branch dumps the environment, -c/-k feed
-  // the per-NAME loop). The per-category value dump needs the codeset's
-  // character tables (see DOCS/2.0-locale-database-design.md §13), so the
-  // named form keeps answering the category-name list.
-  if (show_category_names) {
-    if (ctx.positionals.empty()) {
-      return 0;
-    }
-    safePrintLn("LC_CTYPE");
-    safePrintLn("LC_NUMERIC");
-    safePrintLn("LC_TIME");
-    safePrintLn("LC_COLLATE");
-    safePrintLn("LC_MONETARY");
-    safePrintLn("LC_MESSAGES");
-    safePrintLn("LC_PAPER");
-    safePrintLn("LC_NAME");
-    safePrintLn("LC_ADDRESS");
-    safePrintLn("LC_TELEPHONE");
-    safePrintLn("LC_MEASUREMENT");
-    safePrintLn("LC_IDENTIFICATION");
-    return 0;
-  }
-
-  // -k/--keyword-name: print keyword names and values.
-  // [GNU] bare -k is silent (see -c above); each NAME operand must be a
-  // known item name, else the "unknown name" error, exit 1.
-  if (show_keyword_names) {
-    if (ctx.positionals.empty()) {
-      return 0;
-    }
-    for (const auto& positional : ctx.positionals) {
-      const KeywordEntry* entry = find_keyword(positional);
-      if (entry == nullptr) {
-        return report_unknown_name(std::string(positional));
-      }
-      print_keyword(entry->name, entry->kind, /*keyword_mode=*/true);
+  if (show_charmaps) {
+    for (const auto& charmap : winux::locale_db::available_charmaps()) {
+      safePrintLn(charmap);
     }
     return 0;
   }
 
+  // [GNU] NAME operands are answered in argv order. -c and -k only modify
+  // rendering; neither is a mode switch (glibc can print `-c -k` together).
   if (!ctx.positionals.empty()) {
-    // [GNU] a NAME operand is answered from the item-name whitelist; an
-    // unknown name is `locale: unknown name "X"`, exit 1 (glibc
-    // locale_special.c, observed on glibc 2.39: `locale codeset` is an
-    // unknown name, `mon` is the LC_TIME full-month item — `month` is
-    // not a name at all). Several NAMEs are answered in argv order.
     for (const auto& positional : ctx.positionals) {
-      const KeywordEntry* entry = find_keyword(positional);
-      if (entry == nullptr) {
-        return report_unknown_name(std::string(positional));
+      if (print_name(positional, show_category_names, show_keyword_names) !=
+          0) {
+        return 1;
       }
-      print_keyword(entry->name, entry->kind, /*keyword_mode=*/false);
     }
     return 0;
   }
 
-  // Print current locale settings
-  print_locale_categories();
+  // [GNU] bare -c / bare -k write nothing and exit 0 (glibc main(): only the
+  // no-argument-at-all branch dumps the environment).
+  if (show_category_names || show_keyword_names) return 0;
 
+  print_locale_categories();
   return 0;
 }

@@ -96,6 +96,16 @@ else()
         DEPENDS winuxcmd-tests
         COMMENT "Running all WinuxCmd unit tests..."
     )
+
+    # Runtime check for the LC_CTYPE projection above 0x7F (#1549). The
+    # executable lives in the top-level tree (module ABI); the unit-test build
+    # carries it so `scripts/build-with-vs.ps1` always produces it, and CTest
+    # runs it next to the process-level tests.
+    if(TARGET locale-ctype-check)
+        add_dependencies(winuxcmd-tests locale-ctype-check)
+        add_test(NAME locale-ctype-runtime
+                COMMAND $<TARGET_FILE:locale-ctype-check>)
+    endif()
     
     add_custom_target(list-tests
         COMMAND $<TARGET_FILE:winuxcmd-tests> --list-tests

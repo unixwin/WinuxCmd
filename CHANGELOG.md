@@ -17,6 +17,17 @@ repository release tags.
   the values (the Windows user locale is the last resort). `-k` additionally
   accepts `grouping`, `mon_grouping`, `am_pm`, `d_fmt`, `t_fmt`, `d_t_fmt`,
   `t_fmt_ampm`, `p_sign_posn` and `n_sign_posn`.
+- **locale inventories and category dumps (#1549 phase 2)**: `locale -a`
+  enumerates `EnumSystemLocalesEx(LOCALE_ALL)` in POSIX spelling with
+  glibc-normalized codeset suffixes (always C/C.utf8/POSIX, sorted,
+  de-duplicated) instead of the fixed representative list, and `locale -m`
+  enumerates the NLS code page catalogue. `locale CATEGORY`,
+  `locale -c CATEGORY` and `locale -k CATEGORY` now dump the glibc
+  categories.def item stream for all twelve categories — C/POSIX is
+  byte-identical to glibc 2.39 — with `LC_MONETARY`'s international
+  `int_*`/`duo_*` block, `date_fmt`, week/calendar items, `measurement`, and
+  the `LC_CTYPE` class/digit tables. `date`'s default output now comes from
+  `date_fmt` (C/POSIX unchanged).
 
 ### Fixed
 

@@ -736,6 +736,20 @@ if(WINUXCMD_ENABLE_RUST2)
     add_dependencies(rust2-stream-driver winuxcmd-rust2)
 endif()
 
+# LC_CTYPE GetStringTypeW projection check (#1549 phase 2, item 5). The ASCII
+# half is pinned by static_asserts inside the module; this harness exercises
+# the >0x7F runtime path through the exported classify() API. Defined in the
+# TOP-LEVEL tree for the same ABI reason as rust2-stream-driver (the module
+# consumer must share the producer's flags).
+add_executable(locale-ctype-check
+        "${CMAKE_SOURCE_DIR}/tests/tools/locale_ctype_check.cpp")
+target_link_libraries(locale-ctype-check PRIVATE winuxcmd-commands winuxcmd-modules)
+target_include_directories(locale-ctype-check
+        PRIVATE "${SRC_DIR}" "${CMAKE_BINARY_DIR}")
+if(MSVC)
+    target_compile_options(locale-ctype-check PRIVATE /std:c++latest)
+endif()
+
 # ====================================================
 # Main executable modules and configuration
 # ====================================================

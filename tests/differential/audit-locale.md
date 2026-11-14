@@ -81,3 +81,21 @@ claimed).
 - Value-model + category-dump rework (locale database face) →
   tracked in the WinuxCmd issue tracker as a simulation-layer item
   (niu #758 dependency), not fixable mechanically in this round.
+
+## Addendum — phase 2 (issue #1549) landed
+
+The value-model follow-up above is implemented in `utils:locale_db`
+(`DOCS/2.0-locale-database-design.md` §11–§13). The faces this audit listed
+as "no database" now exist:
+
+- `-a` enumerates `EnumSystemLocalesEx(LOCALE_ALL)` (POSIX spelling, lowered
+  codeset suffix, sorted/de-duplicated; C/C.utf8/POSIX always present), and
+  `-m` enumerates `EnumSystemCodePagesW(CP_SUPPORTED)`. The bytes still differ
+  from this host's glibc because the inventories are different databases
+  (859 NLS locales / 139 charmaps vs 5 archive entries / 236 charmaps).
+- `locale CATEGORY`, `-c CATEGORY` and `-k CATEGORY` dump the glibc
+  categories.def item stream for all twelve categories; C/POSIX is
+  byte-identical to glibc 2.39 on every face, and `date`'s default output now
+  follows `date_fmt`.
+- `yesstr`/`nostr`/`yesexpr`/`noexpr` remain C values: no Win32 item exists
+  (`winnls.h` has no `LOCALE_SYES`/`LOCALE_SNO`).

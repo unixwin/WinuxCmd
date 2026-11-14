@@ -2435,8 +2435,15 @@ REGISTER_COMMAND(
   }
 
   if (format.empty()) {
-    // [GNU] --resolution defaults to "%s.%N"
-    format = has_resolution ? "%s.%N" : "%a %b %e %H:%M:%S %Z %Y";
+    // [GNU] --resolution defaults to "%s.%N". Otherwise the default output is
+    // the LC_TIME `date_fmt` item (glibc's DEFAULT_TIME_FORMAT); the C record
+    // carries glibc's exact pattern, so C/POSIX stays byte-identical (#1549).
+    if (has_resolution) {
+      format = "%s.%N";
+    } else {
+      format = winux::locale_db::for_category("LC_TIME").time.date_fmt;
+      if (format.empty()) format = "%a %b %e %H:%M:%S %Z %Y";
+    }
   }
 
   const bool debug = ctx.has("--debug");
