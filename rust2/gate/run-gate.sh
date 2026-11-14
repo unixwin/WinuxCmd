@@ -139,6 +139,26 @@ fi
 
 mkdir -p "$ART/scratch" "$GNU_MIRROR"
 
+# The GNU leg invokes native wsl.exe with leading-slash POSIX argv
+# ("wsl.exe --exec /bin/bash /mnt/<drive>/..."). Git Bash (MSYS2) rewrites
+# such arguments into Windows-native paths before the spawn — measured on
+# the CI runner: /bin/bash arrived as D:/Git/usr/bin/bash and the distro
+# failed execvpe for every case, so the whole GNU side scored MISSING
+# while wsl.exe itself "succeeded" (exit swallowed). MSYS_NO_PATHCONV=1
+# disables that rewriting under Git Bash and is ignored by the niubash
+# family, where this call shape never converted in the first place.
+export MSYS_NO_PATHCONV=1
+
+# Preflight: prove one GNU-side roundtrip through the exact call shape
+# below before spending minutes on the corpus, so a broken invocation
+# fails here in seconds instead of MISSING-ing every row.
+wsl.exe --exec /bin/bash -c "echo ok > '$ART_MNT/gnu-preflight'"
+if [ ! -f "$ART/gnu-preflight" ]; then
+    echo "FATAL: GNU-side WSL roundtrip failed (see the MSYS_NO_PATHCONV note above)" >&2
+    exit 3
+fi
+rm -f "$ART/gnu-preflight"
+
 if command -v timeout >/dev/null 2>&1; then WIN_TIMEOUT="timeout 10"; else WIN_TIMEOUT=""; fi
 
 pass=0; fail=0; winpass=0; winfail=0
