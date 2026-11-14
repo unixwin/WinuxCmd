@@ -3,24 +3,30 @@
 
 #include "framework/winuxtest.h"
 
+// Mirror of the recover_read_block contract in src/commands/dd.cpp: on a
+// read error under conv=noerror, seek past the block; conv=sync replaces it
+// with an ibs-sized pad block (' ' under block/unblock) that flows through
+// the normal conversion pipeline, and a failed seek still continues but is
+// reported through recovery_seek_failed.
 namespace dd_pipeline {
-enum class ReadBlockAction { success, recovered, stop };
+enum class ReadBlockAction { success, pad, skip, stop };
 ReadBlockAction recover_read_block(
     std::function<bool(char*, std::size_t, std::size_t&)> read,
     std::function<bool(std::size_t)> seek, bool noerror, bool sync_blocks,
-    std::size_t request, std::vector<char>& output_buffer,
-    std::size_t& input_records, std::vector<char>& input_buffer,
-    std::size_t& bytes_read) {
+    char pad_byte, std::size_t request, std::vector<char>& input_buffer,
+    std::size_t& bytes_read, bool& recovery_seek_failed) {
   bytes_read = 0;
+  recovery_seek_failed = false;
   if (read(input_buffer.data(), request, bytes_read)) {
     return ReadBlockAction::success;
   }
   if (!noerror) return ReadBlockAction::stop;
 
   const bool can_continue = seek(request);
-  if (sync_blocks) output_buffer.insert(output_buffer.end(), request, '\0');
-  ++input_records;
-  return can_continue ? ReadBlockAction::recovered : ReadBlockAction::stop;
+  recovery_seek_failed = !can_continue;
+  if (!sync_blocks) return ReadBlockAction::skip;
+  std::fill(input_buffer.begin(), input_buffer.end(), pad_byte);
+  return ReadBlockAction::pad;
 }
 }  // namespace dd_pipeline
 
@@ -36,7 +42,7 @@ TEST(dd, dd_copies_with_block_size_and_count) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ(tmp.read("out.bin"), "abcdefgh");
-  EXPECT_TRUE(r.stderr_text.find("2 records in") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("2+0 records in") != std::string::npos);
 }
 
 TEST(dd, dd_conv_sync_pads_short_input_blocks) {
@@ -416,10 +422,9 @@ TEST(dd, dd_conv_noerror_is_accepted_with_sync) {
 
 TEST(dd, noerror_recovery_skips_failed_block_and_syncs) {
   std::vector<char> input(4);
-  std::vector<char> output;
-  std::size_t records = 0;
   std::size_t bytes_read = 0;
   bool seek_called = false;
+  bool seek_failed = true;
 
   const auto action = dd_pipeline::recover_read_block(
       [](char*, std::size_t, std::size_t&) { return false; },
@@ -427,15 +432,33 @@ TEST(dd, noerror_recovery_skips_failed_block_and_syncs) {
         seek_called = amount == 4;
         return true;
       },
-      true, true, 4, output, records, input, bytes_read);
+      true, true, '\0', 4, input, bytes_read, seek_failed);
+
+  // [GNU] a noerror+sync recovery emits a full ibs-sized NUL block that
+  // counts as a partial input record.
+  EXPECT_EQ(static_cast<int>(action),
+            static_cast<int>(dd_pipeline::ReadBlockAction::pad));
+  EXPECT_TRUE(seek_called);
+  EXPECT_FALSE(seek_failed);
+  ASSERT_EQ(input.size(), 4u);
+  EXPECT_TRUE(std::all_of(input.begin(), input.end(),
+                          [](char value) { return value == '\0'; }));
+  EXPECT_EQ(bytes_read, 0u);
+}
+
+TEST(dd, noerror_recovery_without_sync_skips_failed_block) {
+  std::vector<char> input(4);
+  std::size_t bytes_read = 0;
+  bool seek_failed = true;
+
+  const auto action = dd_pipeline::recover_read_block(
+      [](char*, std::size_t, std::size_t&) { return false; },
+      [](std::size_t) { return true; }, true, false, '\0', 4, input, bytes_read,
+      seek_failed);
 
   EXPECT_EQ(static_cast<int>(action),
-            static_cast<int>(dd_pipeline::ReadBlockAction::recovered));
-  EXPECT_TRUE(seek_called);
-  EXPECT_EQ(records, 1u);
-  ASSERT_EQ(output.size(), 4u);
-  EXPECT_TRUE(std::all_of(output.begin(), output.end(),
-                          [](char value) { return value == '\0'; }));
+            static_cast<int>(dd_pipeline::ReadBlockAction::skip));
+  EXPECT_FALSE(seek_failed);
   EXPECT_EQ(bytes_read, 0u);
 }
 // #1374: dd expands the if= value in WINUX_SHELL_GLOB=native mode;
@@ -456,7 +479,6 @@ TEST(dd, dd_native_glob_expands_if_value_issue1374) {
                      std::istreambuf_iterator<char>());
   EXPECT_EQ_TEXT(copied, "only\n");
 }
-
 
 // ---- RLIMIT_FSIZE enforcement (issue #1453) -----------------------------
 // Windows has no setrlimit(); the POSIX parent declares the file-size
@@ -527,7 +549,8 @@ TEST(dd, dd_rlimit_fsize_exact_write_succeeds_issue1453) {
   Pipeline p;
   p.set_cwd(tmp.wpath());
   p.set_env(L"WINUXCMD_RLIMIT_FSIZE", L"8");
-  p.add(L"dd.exe", {L"if=in.bin", L"of=out.bin", L"bs=8", L"obs=8", L"count=1"});
+  p.add(L"dd.exe",
+        {L"if=in.bin", L"of=out.bin", L"bs=8", L"obs=8", L"count=1"});
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
@@ -595,4 +618,377 @@ TEST(dd, dd_rlimit_fsize_does_not_apply_to_pipes_issue1453) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, std::string("hello"));
+}
+
+// ---- issue #1707: GNU statistics shape --------------------------------
+
+TEST(dd, dd_stats_use_full_plus_partial_shape_issue1707) {
+  TempDir tmp;
+  tmp.write("input.bin", "abcde");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"dd.exe", {L"if=input.bin", L"of=out.bin", L"bs=2"});
+
+  auto r = p.run();
+
+  // [GNU] "2+1 records in / 2+1 records out" (dd.c:828-830)
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.find("2+1 records in") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("2+1 records out") != std::string::npos);
+}
+
+TEST(dd, dd_stats_line_has_time_and_rate_issue1707) {
+  TempDir tmp;
+  tmp.write("input.bin", "abc");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"dd.exe", {L"if=input.bin", L"of=out.bin"});
+
+  auto r = p.run();
+
+  // [GNU] "3 bytes copied, <secs> s, <rate>/s" (dd.c:780-790)
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.find("3 bytes copied, ") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find(" s, ") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("/s") != std::string::npos);
+}
+
+TEST(dd, dd_stats_singular_byte_copied_issue1707) {
+  TempDir tmp;
+  tmp.write("input.bin", "a");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"dd.exe", {L"if=input.bin", L"of=out.bin", L"bs=1"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.find("1 byte copied") != std::string::npos);
+}
+
+TEST(dd, dd_stats_human_readable_parenthesized_issue1707) {
+  TempDir tmp;
+  tmp.write("input.bin", std::string(1024, 'x'));
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"dd.exe", {L"if=input.bin", L"of=out.bin", L"bs=1024"});
+
+  auto r = p.run();
+
+  // [GNU] "1024 bytes (1.0 kB, 1.0 KiB) copied, <secs> s, <rate>"
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.find("1024 bytes (1.0 kB, 1.0 KiB) copied") !=
+              std::string::npos);
+}
+
+TEST(dd, dd_stats_si_only_parenthesized_issue1707) {
+  TempDir tmp;
+  tmp.write("input.bin", std::string(1000, 'x'));
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"dd.exe", {L"if=input.bin", L"of=out.bin", L"bs=1000"});
+
+  auto r = p.run();
+
+  // [GNU] below 1024 the IEC abbreviation has no prefix: "(1.0 kB)" only
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.find("1000 bytes (1.0 kB) copied") !=
+              std::string::npos);
+}
+
+TEST(dd, dd_status_noxfer_keeps_record_shape_issue1707) {
+  TempDir tmp;
+  tmp.write("input.bin", "abc");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"dd.exe", {L"if=input.bin", L"of=out.bin", L"bs=1", L"status=noxfer"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.find("3+0 records in") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("3+0 records out") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("bytes copied") == std::string::npos);
+}
+
+// ---- issue #1708: conv= transformations --------------------------------
+
+TEST(dd, dd_conv_ucase_lcase_issue1708) {
+  TempDir tmp;
+  tmp.write("input.bin", "aBcD");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"dd.exe", {L"if=input.bin", L"of=out.bin", L"conv=ucase"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(tmp.read("out.bin"), "ABCD");
+}
+
+TEST(dd, dd_conv_lcase_issue1708) {
+  TempDir tmp;
+  tmp.write("input.bin", "aBcD");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"dd.exe", {L"if=input.bin", L"of=out.bin", L"conv=lcase"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(tmp.read("out.bin"), "abcd");
+}
+
+TEST(dd, dd_conv_swab_pairs_issue1708) {
+  TempDir tmp;
+  tmp.write("input.bin", "abcdef");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"dd.exe", {L"if=input.bin", L"of=out.bin", L"conv=swab"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(tmp.read("out.bin"), "badcfe");
+}
+
+TEST(dd, dd_conv_swab_odd_keeps_last_byte_issue1708) {
+  TempDir tmp;
+  tmp.write("input.bin", "abcde");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"dd.exe", {L"if=input.bin", L"of=out.bin", L"conv=swab"});
+
+  auto r = p.run();
+
+  // [GNU] the unpaired byte is written last, unswapped (dd.c:2309-2316)
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(tmp.read("out.bin"), "badce");
+}
+
+TEST(dd, dd_conv_swab_carries_byte_across_blocks_issue1708) {
+  TempDir tmp;
+  tmp.write("input.bin", "abcdefg");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"dd.exe", {L"if=input.bin", L"of=out.bin", L"conv=swab", L"bs=4"});
+
+  auto r = p.run();
+
+  // [GNU] the saved byte pairs with the next block's first byte
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(tmp.read("out.bin"), "badcfeg");
+}
+
+TEST(dd, dd_conv_ebcdic_translates_issue1708) {
+  TempDir tmp;
+  tmp.write("input.bin", "abc");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"dd.exe", {L"if=input.bin", L"of=out.bin", L"conv=ebcdic"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(tmp.read("out.bin"), std::string("\x81\x82\x83", 3));
+}
+
+TEST(dd, dd_conv_ascii_from_ebcdic_issue1708) {
+  TempDir tmp;
+  tmp.write("input.bin", std::string("\x81\x82\x83", 3));
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"dd.exe", {L"if=input.bin", L"of=out.bin", L"conv=ascii"});
+
+  auto r = p.run();
+
+  // [GNU] EBCDIC 0x81-0x83 map back to ASCII 'a'-'c'
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(tmp.read("out.bin"), "abc");
+}
+
+TEST(dd, dd_conv_block_pads_records_issue1708) {
+  TempDir tmp;
+  tmp.write("input.bin", "a\nbc\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"dd.exe", {L"if=input.bin", L"of=out.bin", L"conv=block", L"cbs=4"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(tmp.read("out.bin"), std::string("a   bc  ", 8));
+}
+
+TEST(dd, dd_conv_block_truncates_long_records_issue1708) {
+  TempDir tmp;
+  tmp.write("input.bin", "abcdef");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"dd.exe", {L"if=input.bin", L"of=out.bin", L"conv=block", L"cbs=4"});
+
+  auto r = p.run();
+
+  // [GNU] bytes past cbs are dropped once per overlong record, and the
+  // truncation is reported on its own line
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(tmp.read("out.bin"), "abcd");
+  EXPECT_TRUE(r.stderr_text.find("1 truncated record") != std::string::npos);
+}
+
+TEST(dd, dd_conv_unblock_replaces_trailing_spaces_issue1708) {
+  TempDir tmp;
+  tmp.write("input.bin", "a   b   c   ");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"dd.exe", {L"if=input.bin", L"of=out.bin", L"conv=unblock", L"cbs=4"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(tmp.read("out.bin"), "a\nb\nc\n");
+}
+
+TEST(dd, dd_conv_ebcdic_block_uses_ebcdic_space_issue1708) {
+  TempDir tmp;
+  tmp.write("input.bin", "a\nb\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"dd.exe", {L"if=input.bin", L"of=out.bin", L"conv=ebcdic", L"cbs=4"});
+
+  auto r = p.run();
+
+  // [GNU] the newline/space characters are the EBCDIC 0x25/0x40 after the
+  // charset translation (dd.c:1717-1725)
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(tmp.read("out.bin"),
+            std::string("\x81\x40\x40\x40\x82\x40\x40\x40", 8));
+}
+
+TEST(dd, dd_conv_block_without_cbs_is_a_noop_issue1708) {
+  TempDir tmp;
+  tmp.write("input.bin", "abc");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"dd.exe", {L"if=input.bin", L"of=out.bin", L"conv=block,unblock"});
+
+  auto r = p.run();
+
+  // [GNU] cbs=0 clears block/unblock before the exclusivity check, so the
+  // pair is silently dropped rather than rejected (dd.c:1609-1610)
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(tmp.read("out.bin"), "abc");
+}
+
+TEST(dd, dd_conv_sync_pads_with_spaces_under_block_issue1708) {
+  TempDir tmp;
+  tmp.write("input.bin", "ab\nc");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"dd.exe", {L"if=input.bin", L"of=out.bin", L"conv=sync,block", L"bs=4",
+                    L"cbs=8"});
+
+  auto r = p.run();
+
+  // [GNU] under block the sync pad byte is a space (dd.c:2245-2248)
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(tmp.read("out.bin"), std::string("ab      c       ", 16));
+}
+
+TEST(dd, dd_conv_sync_pads_to_ibs_not_cbs_issue1708) {
+  TempDir tmp;
+  tmp.write("input.bin", "ab");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"dd.exe",
+        {L"if=input.bin", L"of=out.bin", L"conv=sync", L"bs=4", L"cbs=8"});
+
+  auto r = p.run();
+
+  // [GNU] conv=sync pads to ibs, not cbs (dd.c:2242-2248)
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(tmp.read("out.bin"), std::string("ab\0\0", 4));
+}
+
+TEST(dd, dd_conv_combine_charset_error_issue1708) {
+  TempDir tmp;
+  tmp.write("input.bin", "abc");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"dd.exe", {L"if=input.bin", L"of=out.bin", L"conv=ascii,ebcdic"});
+
+  auto r = p.run();
+
+  // [GNU] "dd: cannot combine any two of {ascii,ebcdic,ibm}" (dd.c:1665)
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("cannot combine any two of "
+                                 "{ascii,ebcdic,ibm}") != std::string::npos);
+}
+
+TEST(dd, dd_conv_combine_block_unblock_error_issue1708) {
+  TempDir tmp;
+  tmp.write("input.bin", "abc");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"dd.exe",
+        {L"if=input.bin", L"of=out.bin", L"conv=block,unblock", L"cbs=4"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("cannot combine block and unblock") !=
+              std::string::npos);
+}
+
+TEST(dd, dd_conv_combine_lcase_ucase_error_issue1708) {
+  TempDir tmp;
+  tmp.write("input.bin", "abc");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"dd.exe", {L"if=input.bin", L"of=out.bin", L"conv=ucase,lcase"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("cannot combine lcase and ucase") !=
+              std::string::npos);
+}
+
+TEST(dd, dd_conv_sync_ucase_translates_pad_issue1708) {
+  TempDir tmp;
+  tmp.write("input.bin", "abc");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"dd.exe",
+        {L"if=input.bin", L"of=out.bin", L"conv=sync,ucase", L"bs=4"});
+
+  auto r = p.run();
+
+  // [GNU] the NUL pad goes through the case translation like data
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(tmp.read("out.bin"), std::string("ABC\0", 4));
 }

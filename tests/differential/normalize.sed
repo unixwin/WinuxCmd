@@ -30,21 +30,17 @@
 # --- dd -----------------------------------------------------------------
 #
 # GNU dd ends its stderr summary with ", <elapsed> s, <rate>" - values
-# that change on every run and can never match byte-for-byte - and
-# counts records as "<full>+<partial>". WinuxCmd dd prints neither the
-# timing tail nor a partial count, so the mask drops everything after
-# "bytes copied," (the elapsed/rate tail and the optional human-readable
-# size in parentheses) and canonicalizes a "+0" partial count, leaving
-# the deterministic part of the summary - record totals and byte
-# counts - to be compared exactly.
+# that change on every run and can never match byte-for-byte. The mask
+# drops everything after "bytes copied," (the elapsed/rate tail and the
+# optional human-readable size in parentheses), leaving the
+# deterministic part of the summary - the "<full>+<partial> records
+# in/out" record counts (printed identically by WinuxCmd since #1707)
+# and the byte counts - to be compared exactly. The record lines and
+# the leading byte count are NOT masked, so a genuine counting or
+# formatting divergence still differs.
 #
-# The partial mask is deliberately limited to "+0". A real
-# partial-record difference ("0+1 records in" from GNU vs "1 records
-# in" from WinuxCmd) still differs after normalization, so a genuine
-# record-counting divergence stays visible instead of being normalized
-# away.
-s/^([0-9]+)\+0 records (in|out)$/\1 records \2/
-s/^([0-9]+ bytes)( \([^)]*\))? copied, .*/\1 copied/
+# "bytes?" covers GNU's singular "1 byte copied" as well as the plural.
+s/^([0-9]+ bytes?)( \([^)]*\))? copied, .*/\1 copied/
 #
 # --- Timestamps ---------------------------------------------------------
 #
