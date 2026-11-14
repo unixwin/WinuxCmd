@@ -1,0 +1,7 @@
+cmd: split
+args: -a -1 in.txt
+timeout: 10
+setup: |
+  printf 'abc\n' > in.txt
+source: github.com/unixwin/WinuxCmd/issues/1711
+tags: issue-1711 suffix-length range

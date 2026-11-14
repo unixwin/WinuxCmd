@@ -101,8 +101,12 @@ struct Config {
   std::optional<int64_t> selected_chunk;  // GNU k/N forms, 1-based
   NumberMode number_mode = NumberMode::ApproximateBytes;
   SuffixKind suffix_kind = SuffixKind::Alpha;
-  int suffix_length = 2;
+  int64_t suffix_length = 2;
   bool suffix_length_explicit = false;
+  // [GNU] split.c:79 suffix_auto: widened naming is on only when the
+  // user fixed neither the length (-a/--suffix-length), the start
+  // (--numeric-suffixes/--hex-suffixes=), nor a -n chunk count.
+  bool suffix_auto = true;
   uint64_t suffix_start = 0;
   bool suffix_start_explicit = false;
   std::string additional_suffix;
@@ -135,6 +139,18 @@ auto strip_leading_plus(std::string_view value) -> std::string_view {
   return value;
 }
 
+// [GNU] The errno flavor a number death carries (split.c:1301-1305
+// strtoint_die: error(EXIT_FAILURE, errno == EINVAL ? 0 : errno, ...)).
+// Overflow deaths that route through strtoint_die keep the scan's ERANGE;
+// xdectoimax (the -a path) translates a strtol-level overflow to
+// EOVERFLOW, while a clean scan that merely falls outside [min,max]
+// reports ERANGE. Format failures carry EINVAL and print no suffix.
+enum class NumberErrno {
+  None,
+  Range,     // ERANGE:    ": Numerical result out of range"
+  Overflow,  // EOVERFLOW: ": Value too large for defined data type"
+};
+
 // Mirrors GNU split's strtoint_die: every rejected NUMBER is diagnosed as
 // "<msgid>: '<arg>'" with the offending argument quoted as a whole.
 // [GNU] #1524 family adjudication: strtoint_die (split.c:1301-1305) is
@@ -145,26 +161,20 @@ auto strip_leading_plus(std::string_view value) -> std::string_view {
 // OVERFLOW), or a range death on an overflowed scan (a negative
 // overflow clamped to INTMAX_MIN). Pure-invalid deaths (EINVAL) and
 // semantic range deaths on a clean scan (0, -5) carry errno 0/EINVAL
-// and get no suffix. Callers pass erange=true only for those overflow
-// deaths; "invalid chunk number" never routes through strtoint_die in
-// GNU (it is a plain error(..., 0, ...) at split.c:1340-1342) and
-// never takes the suffix.
+// and get no suffix. Callers pass NumberErrno::Range only for those
+// overflow deaths; "invalid chunk number" never routes through
+// strtoint_die in GNU (it is a plain error(..., 0, ...) at
+// split.c:1340-1342) and never takes the suffix.
 auto quoted_number_error(std::string_view msgid, std::string_view arg,
-                         bool erange = false) -> std::string {
+                         NumberErrno errnum = NumberErrno::None)
+    -> std::string {
   std::string message = std::string(msgid) + ": '" + std::string(arg) + "'";
-  if (erange) message += ": Numerical result out of range";
-  return message;
-}
-
-auto parse_i64_full(std::string_view value) -> cp::Result<int64_t> {
-  value = strip_leading_plus(value);
-  int64_t parsed = 0;
-  auto [ptr, ec] =
-      std::from_chars(value.data(), value.data() + value.size(), parsed);
-  if (ec != std::errc() || ptr != value.data() + value.size()) {
-    return std::unexpected("invalid integer");
+  if (errnum == NumberErrno::Range) {
+    message += ": Numerical result out of range";
+  } else if (errnum == NumberErrno::Overflow) {
+    message += ": Value too large for defined data type";
   }
-  return parsed;
+  return message;
 }
 
 // [GNU] One xstrtoimax scan, as parse_chunk and parse_n_units perform
@@ -226,6 +236,11 @@ auto scan_intmax(std::string_view text) -> IntmaxScan {
 auto number_scan_erange(std::string_view text) -> bool {
   const auto scan = scan_intmax(text);
   return scan.overflow && scan.any_digits;
+}
+
+// [GNU] strtoint_die paths keep ERANGE on an overflowed scan.
+auto strtoint_errno(std::string_view text) -> NumberErrno {
+  return number_scan_erange(text) ? NumberErrno::Range : NumberErrno::None;
 }
 
 // [GNU] parse_n_units with no multipliers (split.c:1317-1325): the
@@ -402,9 +417,8 @@ auto build_config(const CommandContext<SPLIT_OPTIONS.size()>& ctx)
     if (!size_result || *size_result <= 0) {
       // GNU parse_n_units(msgid="invalid number of bytes"): parse failures,
       // bad suffixes, overflow, and non-positive values all quote the arg.
-      return std::unexpected(
-          quoted_number_error("invalid number of bytes", bytes_opt,
-                              number_scan_erange(bytes_opt)));
+      return std::unexpected(quoted_number_error(
+          "invalid number of bytes", bytes_opt, strtoint_errno(bytes_opt)));
     }
     cfg.chunk_size = *size_result;
     cfg.mode = Config::Mode::Bytes;
@@ -416,7 +430,7 @@ auto build_config(const CommandContext<SPLIT_OPTIONS.size()>& ctx)
       // GNU -C reuses the "invalid number of lines" message for line bytes.
       return std::unexpected(
           quoted_number_error("invalid number of lines", line_bytes_opt,
-                              number_scan_erange(line_bytes_opt)));
+                              strtoint_errno(line_bytes_opt)));
     }
     cfg.chunk_size = *size_result;
     cfg.mode = Config::Mode::LineBytes;
@@ -427,9 +441,8 @@ auto build_config(const CommandContext<SPLIT_OPTIONS.size()>& ctx)
     // INTMAX_MAX instead of failing (#289).
     auto lines_result = parse_positive_units(lines_opt);
     if (!lines_result || *lines_result <= 0) {
-      return std::unexpected(
-          quoted_number_error("invalid number of lines", lines_opt,
-                              number_scan_erange(lines_opt)));
+      return std::unexpected(quoted_number_error(
+          "invalid number of lines", lines_opt, strtoint_errno(lines_opt)));
     }
     cfg.chunk_lines = *lines_result;
     cfg.mode = Config::Mode::Lines;
@@ -485,7 +498,7 @@ auto build_config(const CommandContext<SPLIT_OPTIONS.size()>& ctx)
     // argument for a bad head, the N text for a bad N part).
     auto fail_chunks = [&](std::string_view arg) {
       return quoted_number_error("invalid number of chunks", arg,
-                                 number_scan_erange(arg));
+                                 strtoint_errno(arg));
     };
 
     const auto head = scan_intmax(val);
@@ -588,16 +601,64 @@ auto build_config(const CommandContext<SPLIT_OPTIONS.size()>& ctx)
     suffix_opt = ctx.get<std::string>("-a", "");
   }
   if (ctx.has("--suffix-length") || ctx.has("-a")) {
-    auto suffix_length = parse_i64_full(suffix_opt);
-    // [GNU] xdectoimax (optarg, 0, IDX_MAX, ..., "invalid suffix
-    // length"): no 32 cap (audit #1462).
-    if (!suffix_length || *suffix_length < 0 ||
-        *suffix_length > std::numeric_limits<int>::max()) {
-      return std::unexpected("invalid suffix length");
+    // [GNU] xdectoimax(optarg, 0, IDX_MAX, "", "invalid suffix length", 0)
+    // (split.c:1385-1387): the whole argument is quoted; a scan whose
+    // digit run overflowed intmax reports EOVERFLOW, a clean scan below
+    // the 0 minimum reports ERANGE, and a format failure reports EINVAL
+    // with no errno text. The accepted range reaches idx_t (int64);
+    // there is no 32-bit cap (#1524 residual #1711).
+    const auto scan = scan_intmax(suffix_opt);
+    const NumberErrno errnum =
+        scan.overflow
+            ? NumberErrno::Overflow
+            : (!scan.any_digits || scan.consumed != suffix_opt.size()
+                   ? NumberErrno::None
+                   : (scan.value < 0 ? NumberErrno::Range : NumberErrno::None));
+    if (scan.overflow || !scan.any_digits ||
+        scan.consumed != suffix_opt.size() || scan.value < 0) {
+      return std::unexpected(
+          quoted_number_error("invalid suffix length", suffix_opt, errnum));
     }
-    cfg.suffix_length = static_cast<int>(*suffix_length);
+    cfg.suffix_length = scan.value;
     cfg.suffix_length_explicit = cfg.suffix_length != 0;
     if (cfg.suffix_length == 0) cfg.suffix_length = 2;
+  }
+  cfg.suffix_auto = !cfg.suffix_length_explicit && !cfg.suffix_start_explicit &&
+                    cfg.num_chunks == 0;
+
+  // [GNU] set_suffix_length (split.c:164-215): the -n chunk modes
+  // disable suffix_auto and precompute the alphabet digits needed for
+  // n_units names; a user -a below that dies upfront, and an unset -a
+  // takes MAX(DEFAULT_SUFFIX_LENGTH, needed).
+  if (cfg.num_chunks > 0) {
+    const uint64_t alphabet_len =
+        cfg.suffix_kind == Config::SuffixKind::Alpha ? 26
+        : cfg.suffix_kind == Config::SuffixKind::Hex ? 16
+                                                     : 10;
+    int64_t n_units_end = cfg.num_chunks - 1;
+    if (cfg.suffix_start_explicit &&
+        cfg.suffix_start < static_cast<uint64_t>(cfg.num_chunks)) {
+      const uint64_t start = std::min<uint64_t>(
+          cfg.suffix_start, std::numeric_limits<int64_t>::max());
+      const int64_t s = static_cast<int64_t>(start);
+      n_units_end = s > std::numeric_limits<int64_t>::max() - n_units_end
+                        ? std::numeric_limits<int64_t>::max()
+                        : n_units_end + s;
+    }
+    int64_t needed = 0;
+    do {
+      ++needed;
+    } while ((n_units_end /= static_cast<int64_t>(alphabet_len)));
+    if (cfg.suffix_length_explicit) {
+      if (cfg.suffix_length < needed) {
+        return std::unexpected(
+            winux::i18n::format("command.split.error.suffix_length_min",
+                                "the suffix length needs to be at least {}",
+                                std::to_string(needed)));
+      }
+    } else {
+      cfg.suffix_length = std::max<int64_t>(2, needed);
+    }
   }
 
   cfg.additional_suffix = ctx.get<std::string>("--additional-suffix", "");
@@ -613,9 +674,8 @@ auto build_config(const CommandContext<SPLIT_OPTIONS.size()>& ctx)
     auto io_blksize = ctx.get<std::string>("---io-blksize", "");
     auto size_result = parse_size(io_blksize);
     if (!size_result || *size_result <= 0) {
-      return std::unexpected(
-          quoted_number_error("invalid IO block size", io_blksize,
-                              number_scan_erange(io_blksize)));
+      return std::unexpected(quoted_number_error(
+          "invalid IO block size", io_blksize, strtoint_errno(io_blksize)));
     }
   }
 
@@ -680,57 +740,118 @@ auto convert_unsigned(uint64_t value, uint32_t base) -> std::string {
   return result;
 }
 
-auto alpha_suffix(uint64_t value, int length) -> cp::Result<std::string> {
-  uint64_t capacity = 1;
-  for (int i = 0; i < length; ++i) {
-    if (capacity > std::numeric_limits<uint64_t>::max() / 26) {
-      return std::unexpected("output file suffixes exhausted");
-    }
-    capacity *= 26;
-  }
-  if (value >= capacity) {
-    return std::unexpected("output file suffixes exhausted");
-  }
+// [GNU] The alphabet each suffix kind counts in (split.c:79-85
+// suffix_alphabet for the alpha/-d/-x forms).
+constexpr std::string_view kAlphabetAlpha = "abcdefghijklmnopqrstuvwxyz";
+constexpr std::string_view kAlphabetDec = "0123456789";
+constexpr std::string_view kAlphabetHex = "0123456789abcdef";
 
-  std::string result(static_cast<size_t>(length), 'a');
-  for (int i = length - 1; i >= 0; --i) {
+auto suffix_alphabet(const Config& cfg) -> std::string_view {
+  switch (cfg.suffix_kind) {
+    case Config::SuffixKind::Hex:
+      return kAlphabetHex;
+    case Config::SuffixKind::Numeric:
+      return kAlphabetDec;
+    default:
+      return kAlphabetAlpha;
+  }
+}
+
+// Render VALUE as `width` alphabet digits, most significant first.
+// Caller guarantees the value fits.
+auto render_suffix(uint64_t value, std::string_view alphabet, int64_t width)
+    -> std::string {
+  std::string result(static_cast<size_t>(width), alphabet.front());
+  const uint64_t base = static_cast<uint64_t>(alphabet.size());
+  for (int64_t i = width - 1; i >= 0; --i) {
+    result[static_cast<size_t>(i)] = alphabet[value % base];
+    value /= base;
+  }
+  return result;
+}
+
+// [GNU] next_file_name under suffix_auto (split.c:361-470): the suffix
+// is an array of alphabet indexes whose FIRST digit never reaches the
+// last alphabet character -- the increment that would set it widens the
+// name instead: that last character is subsumed into the prefix and the
+// suffix restarts one char longer at all-first. So the alpha names run
+// xaa..xyz then xzaaa, xzaab... (never xza..xzz); under -d x00..x89
+// then x9000, x9001.... A width-W suffix yields (B-1)*B^{W-1} names, so
+// width W covers part_num < B^W - B cumulatively (#1711 residual).
+auto auto_suffix(const Config& cfg, uint64_t part_num)
+    -> cp::Result<std::string> {
+  const std::string_view alphabet = suffix_alphabet(cfg);
+  const uint64_t base = static_cast<uint64_t>(alphabet.size());
+  const int64_t width0 = cfg.suffix_length;
+  int64_t width = width0;
+  uint64_t p = 1;  // base^{width-1}
+  for (int64_t i = 1; i < width; ++i) p *= base;
+  uint64_t lo = 0;  // part_num at which this width starts
+  while (p <= std::numeric_limits<uint64_t>::max() / base &&
+         part_num >= p * base - base) {
+    lo = p * base - base;
+    p *= base;
+    ++width;
+  }
+  const uint64_t offset = part_num - lo;  // < (base-1)*p here
+  const std::string prefix(static_cast<size_t>(width - width0),
+                           alphabet.back());
+  return prefix + render_suffix(offset, alphabet, width);
+}
+
+auto alpha_suffix(uint64_t value, int64_t length) -> cp::Result<std::string> {
+  // [GNU] next_file_name keeps the suffix as an array of alphabet
+  // positions (split.c:362-460): there is no 26^length pre-check, so an
+  // -a beyond ~14 still works. The outfile buffer is allocated first;
+  // an oversized -a dies in xirealloc/xalloc_die (split.c:397-401) with
+  // "split: memory exhausted". Exhaustion is detected only when the
+  // value still carries digits after `length` positions are filled.
+  std::string result;
+  try {
+    result.assign(static_cast<size_t>(length), 'a');
+  } catch (const std::exception&) {
+    return std::unexpected("memory exhausted");
+  }
+  for (int64_t i = length - 1; i >= 0; --i) {
     result[static_cast<size_t>(i)] = static_cast<char>('a' + value % 26);
     value /= 26;
+  }
+  if (value > 0) {
+    return std::unexpected("output file suffixes exhausted");
   }
   return result;
 }
 
 auto generate_suffix(const Config& cfg, uint64_t part_num)
     -> cp::Result<std::string> {
+  if (cfg.suffix_auto) {
+    return auto_suffix(cfg, part_num);
+  }
+
   uint64_t value = cfg.suffix_start + part_num;
   if (value < cfg.suffix_start) {
     return std::unexpected("output file suffixes exhausted");
   }
 
   if (cfg.suffix_kind == Config::SuffixKind::Alpha) {
-    int length = cfg.suffix_length;
-    auto result = alpha_suffix(value, length);
-    while (!result && !cfg.suffix_length_explicit && length < 32) {
-      // [GNU] next_file_name widens by ONE: after xzz comes xaaa,
-      // not a 4-character suffix (audit #1462).
-      length += 1;
-      result = alpha_suffix(value, length);
-    }
-    return result;
+    return alpha_suffix(value, cfg.suffix_length);
   }
 
   uint32_t base = cfg.suffix_kind == Config::SuffixKind::Hex ? 16 : 10;
   std::string suffix = convert_unsigned(value, base);
-  int length = cfg.suffix_length;
-  if (suffix.size() > static_cast<size_t>(length)) {
-    if (cfg.suffix_length_explicit || cfg.suffix_start_explicit) {
-      return std::unexpected("output file suffixes exhausted");
-    }
-    length = static_cast<int>(suffix.size());
+  int64_t length = cfg.suffix_length;
+  if (suffix.size() > static_cast<uint64_t>(length)) {
+    return std::unexpected("output file suffixes exhausted");
   }
-  if (suffix.size() < static_cast<size_t>(length)) {
-    suffix.insert(suffix.begin(), static_cast<size_t>(length) - suffix.size(),
-                  '0');
+  if (suffix.size() < static_cast<uint64_t>(length)) {
+    // [GNU] an oversized -a dies in the outfile buffer allocation
+    // (split.c:397-401 xalloc_die), reported as "memory exhausted".
+    try {
+      suffix.insert(suffix.begin(), static_cast<size_t>(length) - suffix.size(),
+                    '0');
+    } catch (const std::exception&) {
+      return std::unexpected("memory exhausted");
+    }
   }
   return suffix;
 }
