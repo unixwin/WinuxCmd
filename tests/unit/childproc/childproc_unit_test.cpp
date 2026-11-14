@@ -281,17 +281,20 @@ TEST(childproc, nice_batch_script_from_path_routes_through_interpreter) {
 //
 // A resolved file with a `#!` line launches through its interpreter (the
 // binfmt_script value model). The interpreter is staged as a copy of the
-// multicall binary, which dispatches by argv[0]: `echo` as the optional
-// shebang argument prints the script path plus the caller's arguments, so
-// the marker proves the whole [interpreter, arg, script, argv...] order.
-// Scripts are addressed cwd-relative (`./s1.sh`) so no TempDir spelling
-// with a space can truncate the shebang token.
+// multicall binary under its own dispatch name (`winuxcmd.exe`): the
+// multicall dispatches on the exe stem only -- an unknown stem goes to
+// "command not found" (127) with no busybox-style argv[1] verb fallback --
+// so the `winuxcmd <verb>` mode is the only staged shape that can run
+// `echo` as the optional shebang argument and print the script path plus
+// the caller's arguments, proving the whole [interpreter, arg, script,
+// argv...] order. Scripts are addressed cwd-relative (`./s1.sh`) so no
+// TempDir spelling with a space can truncate the shebang token.
 
 TEST(childproc, env_shebang_script_launches_through_interpreter) {
   FakeBin fake;
   std::filesystem::copy_file(ProjectPaths::entry_binary(L"winuxcmd.exe"),
-                             fake.dir.path / L"interp.exe");
-  fake.dir.write("s1.sh", "#!./interp.exe echo\n");
+                             fake.dir.path / L"winuxcmd.exe");
+  fake.dir.write("s1.sh", "#!./winuxcmd.exe echo\n");
   Pipeline p;
   p.set_env(L"PATH", fake.windows_form());
   p.set_cwd(fake.dir.wpath());
@@ -357,8 +360,8 @@ TEST(childproc, env_shebang_script_crlf_line_misses_interpreter_reports_127) {
 TEST(childproc, env_shebang_script_chain_appends_outer_tokens_once) {
   FakeBin fake;
   std::filesystem::copy_file(ProjectPaths::entry_binary(L"winuxcmd.exe"),
-                             fake.dir.path / L"interp.exe");
-  fake.dir.write("inner.sh", "#!./interp.exe echo\n");
+                             fake.dir.path / L"winuxcmd.exe");
+  fake.dir.write("inner.sh", "#!./winuxcmd.exe echo\n");
   fake.dir.write("outer.sh", "#!./inner.sh\n");
   Pipeline p;
   p.set_env(L"PATH", fake.windows_form());
@@ -422,8 +425,8 @@ TEST(childproc, env_shebang_script_overlong_first_line_reports_126) {
 TEST(childproc, timeout_shebang_script_launches_through_interpreter) {
   FakeBin fake;
   std::filesystem::copy_file(ProjectPaths::entry_binary(L"winuxcmd.exe"),
-                             fake.dir.path / L"interp.exe");
-  fake.dir.write("s1.sh", "#!./interp.exe echo\n");
+                             fake.dir.path / L"winuxcmd.exe");
+  fake.dir.write("s1.sh", "#!./winuxcmd.exe echo\n");
   Pipeline p;
   p.set_env(L"PATH", fake.windows_form());
   p.set_cwd(fake.dir.wpath());
