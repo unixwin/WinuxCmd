@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "locale": "zh-CN",
+  "messages": {
+    "command.du.error.cannot_access_dangling": "无法访问 '{operand}'",
+    "command.du.error.cannot_access_missing": "无法访问 '{operand}'：没有那个文件或目录",
+    "command.du.error.cannot_open": "无法打开 '{file}' 读取：{reason}",
+    "command.du.error.exclude_from_open": "{file}：{reason}",
+    "command.du.error.files0_with_operands": "文件操作数不能与 --files0-from 同时使用",
+    "command.du.error.invalid_block_size": "无效的 --block-size 参数 '{size}'",
+    "command.du.error.invalid_max_depth": "无效的最大深度 '{depth}'（应为大于等于 0 的整数）",
+    "command.du.error.invalid_threshold": "无效的 --threshold 参数 '{size}'",
+    "command.du.error.stdin_read": "-：读取错误",
+    "command.du.error.zero_length_name": "{file}:{line}：无效的零长度文件名",
+    "command.mktemp.error.create_failed_directory": "无法通过模板 '{template}' 创建目录：{reason}",
+    "command.mktemp.error.create_failed_file": "无法通过模板 '{template}' 创建文件：{reason}",
+    "command.mktemp.error.suffix_has_separator": "无效的后缀 '{suffix}'，其中包含目录分隔符",
+    "command.mktemp.error.tail_has_separator": "无效的后缀 '{suffix}'，其中包含目录分隔符",
+    "command.mktemp.error.template_absolute_with_tmpdir": "无效的模板 '{template}'；使用 --tmpdir 时它不能是绝对路径",
+    "command.mktemp.error.template_has_separator": "无效的模板 '{template}'，其中包含目录分隔符",
+    "command.mktemp.error.template_must_end_in_x": "使用 --suffix 时，模板 '{template}' 必须以 X 结尾",
+    "command.mktemp.error.too_few_xs": "模板 '{template}' 中的 X 太少",
+    "command.mktemp.error.too_few_xs_with_suffix": "模板 '{template}{suffix}' 中的 X 太少",
+    "command.mktemp.error.too_many_templates": "模板过多",
+    "command.nice.error.cannot_set_niceness": "无法设置 niceness：权限不够",
+    "command.nice.error.command_required": "指定调整值时必须给出命令",
+    "command.nice.error.exec_format": "'{command}'：可执行文件格式错误",
+    "command.nice.error.invalid_adjustment": "无效的调整值 '{adjustment}'",
+    "command.nice.error.no_such_file": "'{command}'：没有那个文件或目录",
+    "command.nice.error.permission_denied": "'{command}'：权限不够"
+  }
+}
