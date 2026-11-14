@@ -55,8 +55,10 @@ REGISTER_COMMAND(
   // #1488 mechanical replacement: the semantics live in the rust2 library
   // (rust2/crates/winux-cmds/src/unexpand.rs, unexpand_cmd); the C++ side
   // keeps only this registration -- the column/tab-stop back-converter is
-  // deleted. stdin is forwarded by the bridge (kRust2StdinCommands
-  // declares unexpand). GNU -t position lists and the leading-blank
+  // deleted. stdin streams through the bridge's fd 0 pull callback
+  // (run_command_with_stdin_streaming), read only when the library
+  // actually reads it. GNU -t position lists and the leading-blank
   // model are re-derived from GNU 9.4 by the library.
-  return winux::rust2::run_command("unexpand", ctx.raw_args);
+  return winux::rust2::run_command_with_stdin_streaming("unexpand",
+                                                        ctx.raw_args);
 }

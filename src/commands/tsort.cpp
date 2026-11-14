@@ -25,9 +25,10 @@ REGISTER_COMMAND(tsort,
   // #1488 mechanical replacement: the semantics live in the rust2 library
   // (rust2/crates/winux-cmds/src/tsort.rs, tsort_cmd); the C++ side keeps
   // only this registration — the token pair reader, the FIFO zero queue,
-  // the loop-break DFS and the file/stdin slurp are deleted. stdin is
-  // forwarded by the bridge (kRust2StdinCommands declares tsort). The 1.x
+  // the loop-break DFS and the file/stdin slurp are deleted. stdin
+  // streams through the bridge's fd 0 pull callback
+  // (run_command_with_stdin_streaming). The 1.x
   // acceptance of -w that GNU 9.4 rejects is not inherited: the rust2
   // side follows GNU.
-  return winux::rust2::run_command("tsort", ctx.raw_args);
+  return winux::rust2::run_command_with_stdin_streaming("tsort", ctx.raw_args);
 }

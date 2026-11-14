@@ -74,8 +74,7 @@ auto constexpr NUMFMT_OPTIONS = std::array{
            OPTIONAL_UINT_TYPE),
     // [GNU]
     OPTION("", "--grouping",
-           "use locale-defined grouping of digits, e.g. 1,000,000",
-           BOOL_TYPE),
+           "use locale-defined grouping of digits, e.g. 1,000,000", BOOL_TYPE),
     // [GNU]
     OPTION("", "--invalid",
            "failure mode for invalid numbers: MODE can be: abort "
@@ -190,10 +189,11 @@ REGISTER_COMMAND(
   // (rust2/crates/winux-cmds/src/numfmt.rs, numfmt_cmd); the C++ side
   // keeps only this registration -- the unit parser, --from/--to
   // converters, --format engine and the padding model are deleted.
-  // stdin is forwarded by the bridge (kRust2StdinCommands declares
-  // numfmt; the no-operand form reads stdin). The 74-case GNU matrix
+  // stdin streams through the bridge's fd 0 pull callback
+  // (run_command_with_stdin_streaming): only the no-operand form reads it,
+  // and fd 0 is untouched otherwise. The 74-case GNU matrix
   // (--from/--to/--format/--padding family) gates the library side.
   // The 1.x acceptances GNU 9.4 rejects (--unit-separator, -M, -l,
   // ZYRQ unit suffixes) are not inherited.
-  return winux::rust2::run_command("numfmt", ctx.raw_args);
+  return winux::rust2::run_command_with_stdin_streaming("numfmt", ctx.raw_args);
 }

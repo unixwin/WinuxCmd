@@ -46,9 +46,10 @@ REGISTER_COMMAND(
   // #1488 mechanical replacement: the semantics live in the rust2 library
   // (rust2/crates/winux-cmds/src/expand.rs, expand_cmd); the C++ side
   // keeps only this registration -- the tab-stop list compiler and the
-  // column walker are deleted. stdin is forwarded by the bridge
-  // (kRust2StdinCommands declares expand). Obsolescent -NUM spelling
+  // column walker are deleted. stdin streams through the bridge's
+  // fd 0 pull callback (run_command_with_stdin_streaming), read only
+  // when the library actually reads it. Obsolescent -NUM spelling
   // and GNU -t position lists are re-derived from GNU 9.4 by the
   // library.
-  return winux::rust2::run_command("expand", ctx.raw_args);
+  return winux::rust2::run_command_with_stdin_streaming("expand", ctx.raw_args);
 }

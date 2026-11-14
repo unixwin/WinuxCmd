@@ -74,10 +74,11 @@ REGISTER_COMMAND(
   // (rust2/crates/winux-cmds/src/join.rs, join_cmd); the C++ side keeps
   // only this registration — the field splitter, -o format compiler,
   // unpairable-line walkers and the operand/file plumbing are deleted.
-  // stdin is forwarded by the bridge (kRust2StdinCommands declares join),
-  // covering the "-" operand and FILE1/FILE2 defaults. The known 1.x
+  // stdin streams through the bridge's fd 0 pull callback
+  // (run_command_with_stdin_streaming) for the "-" operand, read only when
+  // the library actually reads it. The known 1.x
   // divergences the rust2 side re-derives from GNU 9.4 (sort-check
   // diagnostics, -t multi-char rejection, --header auto-disable of the
   // check) are not inherited.
-  return winux::rust2::run_command("join", ctx.raw_args);
+  return winux::rust2::run_command_with_stdin_streaming("join", ctx.raw_args);
 }

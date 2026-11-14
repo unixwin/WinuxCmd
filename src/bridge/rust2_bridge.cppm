@@ -88,27 +88,6 @@ constexpr int kAbiFailureStatus = 125;
 // constant as src/commands/yes.cpp kSigpipeDeathStatus).
 constexpr int kSigpipeDeathStatus = 128 + 13;
 
-// rust2 commands whose library implementation reads fd 0 (winux_core::Io's
-// stdin) in EVERY invocation shape. For exactly these names run_command
-// forwards stdin, slurped with file_io::read_all_stdin and served from
-// host memory through the v3 stdin callback. Every other rust2 command
-// keeps the pass-nothing contract — their fd 0 stays untouched, so later
-// consumers in the same pipeline stage keep unread bytes and spawned
-// children (timeout's wrapped command) inherit the live handle. The set
-// is declared here, not probed, because the boundary cannot ask the
-// library; streaming stdin (run_command_with_stdin_streaming) is the
-// long-term replacement (rust2/REPLACEMENT-RECIPE.md §5). Wave3b (#1488):
-// numfmt reads stdin only in its no-operand form; the slurp happens
-// before that is known, which is the accepted whole-buffer cost.
-constexpr std::array<std::string_view, 5> kRust2StdinCommands{
-    "expand", "join", "numfmt", "tsort", "unexpand"};
-
-auto rust2_reads_stdin(const char* name) -> bool {
-  const std::string_view view(name);
-  return std::find(kRust2StdinCommands.begin(), kRust2StdinCommands.end(),
-                   view) != kRust2StdinCommands.end();
-}
-
 // Shared ABI-call setup: owned copies of everything the explicit-handle
 // ABI needs (#1488 "ABI 面只传显式句柄/缓冲，不传环境状态") — argv as
 // NUL-terminated UTF-8 copies (string_view is not terminated), the env
@@ -413,30 +392,18 @@ auto run_with_stdin_bytes(const char* name, std::span<std::string_view> args,
 
 export namespace winux::rust2 {
 
-/// Run rust2 library command `name` with the dispatcher's operands.
-///
-/// stdin is forwarded ONLY for the declared stdin readers (see
-/// kRust2StdinCommands), as a whole buffer: slurp-then-run. All other
-/// commands keep the pass-nothing contract, which keeps fd 0 live for
-/// pipeline consumers and spawned children. Output streams through the v3
-/// write callbacks (see run_io).
+/// Run rust2 library command `name` with the dispatcher's operands and NO
+/// stdin (pass-nothing contract): fd 0 stays untouched, so later consumers
+/// in the same pipeline stage keep unread bytes and spawned children
+/// (timeout's wrapped command) inherit the live handle. Commands that read
+/// stdin register run_command_with_stdin_streaming (or, for the remaining
+/// whole-buffer shapes, run_command_with_stdin) instead — the v1-era
+/// kRust2StdinCommands slurp allowlist (expand, join, numfmt, tsort,
+/// unexpand) is retired: those five stream fd 0 now and read it only when
+/// the command actually reads. Output streams through the v3 write
+/// callbacks (see run_io).
 int run_command(const char* name, std::span<std::string_view> args) noexcept {
-  // Whole-buffer forwarding for the declared stdin readers only. A slurp
-  // error (closed fd 0) hands the command empty stdin — the whole-buffer
-  // shape cannot carry the error, so the EOF shape is the closest the
-  // boundary can express (GNU's own "Bad file descriptor" wording belongs
-  // to the streaming stdin entry).
-  std::string stdin_storage;
-  const unsigned char* stdin_ptr = nullptr;
-  size_t stdin_len = 0;
-  if (rust2_reads_stdin(name)) {
-    if (auto content = file_io::read_all_stdin()) {
-      stdin_storage = std::move(*content);
-    }
-    stdin_ptr = reinterpret_cast<const unsigned char*>(stdin_storage.data());
-    stdin_len = stdin_storage.size();
-  }
-  return run_with_stdin_bytes(name, args, stdin_ptr, stdin_len);
+  return run_io(name, args, nullptr, nullptr);
 }
 
 /// Run rust2 library command `name` with the dispatcher's operands and
@@ -448,10 +415,10 @@ int run_command(const char* name, std::span<std::string_view> args) noexcept {
 /// the command's own GNU operand rule (basenc/digest/tac read fd 0 when no
 /// FILE operand is present or an operand is "-") and picks this entry, so
 /// `base64 FILE` at an interactive console does not block on a slurp GNU
-/// would never do — and, unlike the kRust2StdinCommands allowlist above, a
-/// non-stdin shape keeps fd 0 live for pipeline consumers and spawned
-/// children. A slurp failure (bad fd) reports `name: <reason>` like the 1.x
-/// bodies did and exits 1 — the command itself never runs.
+/// would never do — and a non-stdin shape keeps fd 0 live for pipeline
+/// consumers and spawned children. A slurp failure (bad fd) reports `name:
+/// <reason>` like the 1.x bodies did and exits 1 — the command itself never
+/// runs.
 ///
 /// This is deliberately NOT streaming stdin: whole-buffer is the shape
 /// this wave wires (recipe §5); a pipe stdin is drained to EOF even for
@@ -514,11 +481,10 @@ int run_command_with_stdin_source(const char* name,
 /// entry; their v1 bodies had a host-side slurp pre-check whose wording
 /// GNU does not use (sha224sum/sha384sum/tac are silent rc 1 on a closed
 /// stdin, probed coreutils 9.4), so the streaming entry is also the
-/// GNU-exact error shape for them. The remaining v1 behaviors of
-/// run_command / run_command_with_stdin and the kRust2StdinCommands
-/// slurp are deliberately left untouched; later wiring waves pick this
-/// entry for commands whose GNU shape is genuinely streaming (see
-/// REPLACEMENT-RECIPE.md §5). The stream-ABI driver
+/// GNU-exact error shape for them. expand, join, numfmt, tsort and
+/// unexpand (the retired kRust2StdinCommands slurp allowlist) use this
+/// entry too; later wiring waves pick it for commands whose GNU shape is
+/// genuinely streaming (see REPLACEMENT-RECIPE.md §5). The stream-ABI driver
 /// (rust2-stream-driver) and its ctest lanes stay the bridge-level
 /// regression net for the entry.
 ///
