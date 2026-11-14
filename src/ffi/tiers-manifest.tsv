@@ -1,0 +1,37 @@
+# WinuxCmd FFI tier manifest — the audited input to tiers.tsv generation.
+# Columns (tab-separated): command <TAB> tier <TAB> fallback_shapes <TAB> note
+#   tier:            tier1 | tier2 | conditional | never
+#   fallback_shapes: comma-separated argument shapes that must fall back to
+#                    the spawn form for this call even when the command is
+#                    FFI-eligible ("-" when none). A shape written as a short
+#                    flag (-i) also matches flag clusters (-ri).
+# Commands absent from this manifest are generated into tiers.tsv as
+# tier=spawn (unclassified; R1-R7 audit pending) by generate_tiers.py.
+# Rules R1-R7: DESIGN (ffi-route) section 6.0. Tier-1 set: section 6.1.
+command	tier	fallback_shapes	note
+cp	tier1	-	Tier-1: simulated-layer retirement surface (DESIGN 6.1)
+rm	tier1	-i,-I	Interactive shapes prompt on the console (R2): spawn form prompts for real; also repairs the simulated layer's silent-delete divergence
+rmdir	tier1	-	Tier-1: simulated-layer retirement surface (DESIGN 6.1)
+mkdir	tier1	-	Tier-1: simulated-layer retirement surface (DESIGN 6.1)
+touch	tier1	-	Tier-1: simulated-layer retirement surface (DESIGN 6.1)
+chmod	tier1	-	Tier-1: simulated-layer retirement surface (DESIGN 6.1)
+cat	tier1	-	Tier-1: simulated-layer retirement surface (DESIGN 6.1)
+sed	tier1	-	Tier-1: simulated-layer retirement surface (DESIGN 6.1)
+mkfifo	tier1	-	Tier-1: both forms honestly return rc 1 on Windows (DESIGN 6.1)
+tty	tier1	-	Tier-1: output becomes the platform-honest form (DESIGN 6.1)
+tee	conditional	-	Blocked: SIGINT disposition is set and never restored (DESIGN 6.4)
+sort	conditional	-	Blocked: writes std::cout directly, bypassing the console layer (DESIGN 6.4)
+uniq	conditional	-	Blocked: writes std::cout directly, bypassing the console layer (DESIGN 6.4)
+split	conditional	-	Blocked: env borrow must be proven under the FFI lock first (DESIGN 6.4)
+stdbuf	conditional	-	Blocked: env borrow must be proven under the FFI lock first (DESIGN 6.4)
+dd	conditional	-	Blocked: GetStdHandle usage needs per-site review (DESIGN 6.4)
+expr	conditional	-	Blocked: exception sites need boundary differential/fuzz proof (DESIGN 6.4)
+xxd	conditional	-	Blocked: exception sites need boundary differential/fuzz proof (DESIGN 6.4)
+wpm	never	-	Manages the tree the DLL lives in; spawns children (DESIGN 6.3)
+stty	never	-	Mutates console mode/codepage (DESIGN 1.4, 6.3)
+less	never	-	Interactive pager (R2)
+more	never	-	Interactive pager (R2)
+top	never	-	Interactive/long-running (R2, R3)
+watch	never	-	Long-running (R3)
+sleep	never	-	Long-running shape (R3)
+yes	never	-	Unbounded output stream (R3)
