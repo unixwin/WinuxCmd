@@ -492,6 +492,13 @@ enum class ExprKind {
   Delete,
   Prune,
   Quit,
+  // [#1633] Parser-recorded act-immediately tokens: -help/--help and
+  // -version/--version act where the expression parser reaches them
+  // (GNU findutils registers them in the predicate table). They are
+  // never evaluated: the command body acts on Config::immediate_action
+  // before any traversal runs.
+  Help,
+  Version,
   Comma,
   And,
   Or,
@@ -582,6 +589,11 @@ struct ExecAction {
   std::vector<std::string> pending_paths;
 };
 
+// [#1633] What the expression parser met first: -help/--help and
+// -version/--version act where they are reached, so the parser records
+// the first one and stops instead of evaluating anything.
+enum class ImmediateAction { None, Help, Version };
+
 struct Config {
   SmallVector<std::string, 64> roots;
   std::string name_pattern;
@@ -625,6 +637,10 @@ struct Config {
   bool stay_on_filesystem = false;
   std::wstring xdev_volume_key;
   std::unique_ptr<ExprNode> expression;
+  // [#1633] Set by the expression parser when it reaches -help/--help
+  // or -version/--version; the command body acts on it before any
+  // traversal runs. None when the expression has no such token.
+  ImmediateAction immediate_action = ImmediateAction::None;
   // [#1402] Non-zero when any predicate reads the entry's own timestamps;
   // the traversal then captures a pre-open EntryTimes snapshot per entry
   // so time-family verdicts use GNU's stat-before-opendir order instead
@@ -1824,10 +1840,18 @@ class ExpressionParser {
 
     auto expr = parse_comma();
     if (!expr) return std::unexpected(expr.error());
+    // [#1633] The parser stopped at -help/--help or -version/--version:
+    // the tokens after it were never judged, so a trailing token is not
+    // an "invalid find expression".
+    if (immediate_action_ != ImmediateAction::None) return expr;
     if (!at_end()) {
       return std::unexpected("invalid find expression");
     }
     return expr;
+  }
+
+  auto immediate_action() const -> ImmediateAction {
+    return immediate_action_;
   }
 
  private:
@@ -1835,6 +1859,12 @@ class ExpressionParser {
   size_t pos_ = 0;
   size_t exec_index_ = 0;
   FindRegexDialect regex_dialect_ = FindRegexDialect::EmacsTranslated;
+  // [#1633] Set when parse_primary reaches -help/--help or
+  // -version/--version; the combinators unwind without judging any
+  // further token, so an unknown predicate before the token errors
+  // first and one after it is never reached.
+  bool stop_parsing_ = false;
+  ImmediateAction immediate_action_ = ImmediateAction::None;
 
   auto at_end() const -> bool { return pos_ >= tokens_.size(); }
 
@@ -1886,7 +1916,14 @@ class ExpressionParser {
            token == "-okdir" || token == "-ls" || token == "-fls" ||
            token == "-L" || token == "-P" || token == "-H" || token == "-D" ||
            token == "--debug" || token == "-nowarn" || token == "-warn" ||
-           token == "-ignore_readdir_race" || token == "-noignore_readdir_race";
+           token == "-ignore_readdir_race" ||
+           token == "-noignore_readdir_race" ||
+           // [#1633] -help/--help and -version/--version are primaries
+           // the parser acts on where it reaches them; -context is
+           // rejected by the parser with the SELinux diagnostic.
+           token == "-help" || token == "--help" ||
+           token == "-version" || token == "--version" ||
+           token == "-context";
   }
 
   auto require_value(std::string_view option) -> cp::Result<std::string> {
@@ -1900,6 +1937,7 @@ class ExpressionParser {
   auto parse_or() -> cp::Result<std::unique_ptr<ExprNode>> {
     auto left = parse_and();
     if (!left) return std::unexpected(left.error());
+    if (stop_parsing_) return left;
 
     while (!at_end() && is_or(peek())) {
       consume();
@@ -1910,6 +1948,7 @@ class ExpressionParser {
       node->left = std::move(*left);
       node->right = std::move(*right);
       left = std::move(node);
+      if (stop_parsing_) return left;
     }
     return left;
   }
@@ -1917,6 +1956,7 @@ class ExpressionParser {
   auto parse_comma() -> cp::Result<std::unique_ptr<ExprNode>> {
     auto left = parse_or();
     if (!left) return std::unexpected(left.error());
+    if (stop_parsing_) return left;
 
     while (!at_end() && peek() == ",") {
       consume();
@@ -1927,6 +1967,7 @@ class ExpressionParser {
       node->left = std::move(*left);
       node->right = std::move(*right);
       left = std::move(node);
+      if (stop_parsing_) return left;
     }
     return left;
   }
@@ -1934,6 +1975,7 @@ class ExpressionParser {
   auto parse_and() -> cp::Result<std::unique_ptr<ExprNode>> {
     auto left = parse_not();
     if (!left) return std::unexpected(left.error());
+    if (stop_parsing_) return left;
 
     while (!at_end() && peek() != ")" && peek() != "," && !is_or(peek())) {
       if (is_and(peek())) {
@@ -1951,6 +1993,7 @@ class ExpressionParser {
       node->left = std::move(*left);
       node->right = std::move(*right);
       left = std::move(node);
+      if (stop_parsing_) return left;
     }
     return left;
   }
@@ -1972,6 +2015,10 @@ class ExpressionParser {
     if (match("(")) {
       auto expr = parse_comma();
       if (!expr) return std::unexpected(expr.error());
+      // [#1633] -help/--help or -version/--version inside parens acts
+      // before the closing paren is required (GNU: `find . \( --help`
+      // prints help with rc 0 despite the missing ")").
+      if (stop_parsing_) return expr;
       if (!match(")")) return std::unexpected("missing closing parenthesis");
       return expr;
     }
@@ -2293,6 +2340,35 @@ class ExpressionParser {
       return make_expr(ExprKind::Always);
     }
 
+    // [#1633] GNU findutils registers -help/--help and -version/--version
+    // in the predicate table: they act where the parser reaches them.
+    // An unknown predicate before them errors first (the combinators
+    // never reach them); a token consumed as another predicate's operand
+    // (e.g. `-name -help`) or inside an -exec body never triggers them,
+    // because the parser consumes those tokens as operands first. The
+    // first such token records the action and stops the parse, so nothing
+    // after it is judged.
+    if (option == "-help" || option == "--help") {
+      immediate_action_ = ImmediateAction::Help;
+      stop_parsing_ = true;
+      return make_expr(ExprKind::Help);
+    }
+
+    if (option == "-version" || option == "--version") {
+      immediate_action_ = ImmediateAction::Version;
+      stop_parsing_ = true;
+      return make_expr(ExprKind::Version);
+    }
+
+    if (option == "-context") {
+      // findutils parser.c: with SELinux support compiled out the
+      // predicate is rejected outright. Same wording as the former
+      // pre-scan; now reached only in predicate position, so an unknown
+      // predicate before it errors first (GNU parse order).
+      return std::unexpected(
+          "invalid predicate -context: SELinux is not enabled.");
+    }
+
     if (is_and(option) || is_or(option)) {
       return std::unexpected("missing expression");
     }
@@ -2321,13 +2397,22 @@ auto initial_regex_syntax(std::span<const std::string_view> raw_args,
   return syntax;
 }
 
+// [#1633] The parsed expression plus the act-immediately token the
+// parser reached first, if any.
+struct ParsedExpression {
+  std::unique_ptr<ExprNode> tree;
+  ImmediateAction immediate_action = ImmediateAction::None;
+};
+
 auto parse_expression(std::span<const std::string_view> raw_args)
-    -> cp::Result<std::unique_ptr<ExprNode>> {
+    -> cp::Result<ParsedExpression> {
   size_t start = expression_start_index(raw_args);
   auto syntax = initial_regex_syntax(raw_args, start);
   if (!syntax) return std::unexpected(syntax.error());
   ExpressionParser parser(raw_args.subspan(start), *syntax);
-  return parser.parse();
+  auto tree = parser.parse();
+  if (!tree) return std::unexpected(tree.error());
+  return ParsedExpression{std::move(*tree), parser.immediate_action()};
 }
 
 auto prepare_find_output_file(Config& cfg, const std::string& path)
@@ -2723,7 +2808,8 @@ auto build_config(const CommandContext<FIND_OPTIONS.size()>& ctx)
   auto expression = parse_expression(std::span<const std::string_view>(
       ctx.raw_args.data(), ctx.raw_args.size()));
   if (!expression) return std::unexpected(expression.error());
-  cfg.expression = std::move(*expression);
+  cfg.expression = std::move(expression->tree);
+  cfg.immediate_action = expression->immediate_action;
 
   if (auto ok = prepare_file_output_actions(*cfg.expression, cfg); !ok) {
     return std::unexpected(ok.error());
@@ -3465,6 +3551,13 @@ auto evaluate_expression(const ExprNode& expr, const std::filesystem::path& p,
       return expr.left &&
              !evaluate_expression(*expr.left, p, e, depth, root, cfg,
                                   pre_open_times);
+
+    case ExprKind::Help:
+    case ExprKind::Version:
+      // [#1633] Unreachable in practice: the command body acts on
+      // Config::immediate_action before any traversal runs. Kept total
+      // so the switch stays exhaustive over ExprKind.
+      return true;
   }
 
   return false;
@@ -5547,31 +5640,25 @@ REGISTER_COMMAND(find, "find", "find [path...] [expression]",
                  FIND_OPTIONS) {
   using namespace find_pipeline;
 
-  // [GNU] -help/-version/-context act where they appear on the command
-  // line, so honor whichever comes first (a "--" ends option processing).
-  for (const auto& arg : ctx.raw_args) {
-    if (arg == "--") break;
-    if (arg == "-help") {
-      cmd::meta::Registry::print_help("find");
-      return 0;
-    }
-    if (arg == "-version") {
-      safePrintLn("find (WinuxCmd) " + std::string(WinuxCmd::VERSION_STRING));
-      return 0;
-    }
-    if (arg == "-context") {
-      // findutils parser.c: with SELinux support compiled out the
-      // predicate is rejected outright.
-      safeErrorPrintLn(
-          "find: invalid predicate -context: SELinux is not enabled.");
-      return 1;
-    }
-  }
-
   auto cfg = build_config(ctx);
   if (!cfg) {
     cp::report_error(cfg, L"find");
     return 1;
+  }
+
+  // [#1633] -help/--help and -version/--version act where the expression
+  // parser reaches them (GNU findutils registers them in the predicate
+  // table): an unknown predicate before them errors first, an operand
+  // occurrence or an -exec body never triggers them. The parser records
+  // the first such token in cfg.immediate_action and stops, so nothing
+  // after it was judged; act on it here before any traversal runs.
+  if (cfg->immediate_action == ImmediateAction::Help) {
+    cmd::meta::Registry::print_help("find");
+    return 0;
+  }
+  if (cfg->immediate_action == ImmediateAction::Version) {
+    safePrintLn("find (WinuxCmd) " + std::string(WinuxCmd::VERSION_STRING));
+    return 0;
   }
 
   return process(*cfg);

@@ -3430,6 +3430,147 @@ TEST(find, find_exec_help_is_not_intercepted) {
   EXPECT_TRUE(r.stdout_text.find("Usage: find") == std::string::npos);
 }
 
+// #1633: GNU findutils registers --help/--version in the predicate
+// table, so an unknown predicate before them errors first. The former
+// pre-scan printed the version/help regardless of position.
+TEST(find, issue_1633_unknown_predicate_before_version_errors) {
+  TempDir tmp;
+  tmp.write("a.txt", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L".", L"-foo", L"--version"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("unknown predicate `-foo'") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("WinuxCmd") == std::string::npos);
+}
+
+TEST(find, issue_1633_version_before_unknown_predicate_prints) {
+  TempDir tmp;
+  tmp.write("a.txt", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L".", L"--version", L"-foo"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("find (WinuxCmd)") != std::string::npos);
+  EXPECT_EQ_TEXT(r.stderr_text, "");
+}
+
+TEST(find, issue_1633_unknown_predicate_before_help_errors) {
+  TempDir tmp;
+  tmp.write("a.txt", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L".", L"-foo", L"--help"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("unknown predicate `-foo'") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("Usage: find") == std::string::npos);
+}
+
+TEST(find, issue_1633_help_before_unknown_predicate_prints) {
+  TempDir tmp;
+  tmp.write("a.txt", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L".", L"--help", L"-foo"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("Usage: find") != std::string::npos);
+  EXPECT_EQ_TEXT(r.stderr_text, "");
+}
+
+// #1633: a help spelling consumed as another predicate's operand is a
+// pattern, not help: `find . -name -help` lists the file named -help.
+TEST(find, issue_1633_name_operand_help_is_pattern) {
+  TempDir tmp;
+  tmp.write("-help", "x");
+  tmp.write("a.txt", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L".", L"-name", L"-help"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("-help") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("Usage: find") == std::string::npos);
+}
+
+// #1633: --help after -o acts (the parser reaches it through the
+// operator), and --version inside parens acts too.
+TEST(find, issue_1633_help_after_or_acts) {
+  TempDir tmp;
+  tmp.write("a.txt", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L".", L"-name", L"x", L"-o", L"--help"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("Usage: find") != std::string::npos);
+  EXPECT_EQ_TEXT(r.stderr_text, "");
+}
+
+TEST(find, issue_1633_version_in_parens_acts) {
+  TempDir tmp;
+  tmp.write("a.txt", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L".", L"(", L"--version", L")"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("find (WinuxCmd)") != std::string::npos);
+  EXPECT_EQ_TEXT(r.stderr_text, "");
+}
+
+// #1633: -context keeps its SELinux rejection, now reached only in
+// predicate position, so an unknown predicate before it errors first.
+TEST(find, issue_1633_context_after_unknown_predicate_errors_first) {
+  TempDir tmp;
+  tmp.write("a.txt", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L".", L"-foo", L"-context"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("unknown predicate `-foo'") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("SELinux") == std::string::npos);
+}
+
+TEST(find, issue_1633_context_rejected) {
+  TempDir tmp;
+  tmp.write("a.txt", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"find.exe", {L".", L"-context"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "invalid predicate -context: SELinux is not enabled.") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stdout_text.empty());
+}
+
 namespace {
 
 // #1283/#1288 shared fixture: a directory chain of `levels` components
