@@ -27,3 +27,48 @@ tl24-c-1b	strict	printf 'abcdefghij' > f			-c	1b	f
 tl25-bogus-long	strict				--bogus
 tl26-help	strict				--help
 tl27-version	strict				--version
+tl28-f-pid-dead	strict	printf '1\n2\n3\n4\n5\n' > f			-f	--pid=2147483647	f
+tl29-f-pid-dead-two	strict	printf 'a\nb\n' > f; printf 'x\n' > g			-f	--pid=2147483647	f	g
+tl30-f-missing-no-files	strict				-f	missing
+tl31-f-missing-plus-file	strict	printf '1\n2\n3\n4\n5\n' > f			-f	--pid=2147483647	missing	f
+tl32-F-missing-plus-file	strict	printf '1\n2\n3\n4\n5\n' > f			-F	--pid=2147483647	missing	f
+tl33-F-missing-only	strict				-F	--pid=2147483647	missing
+tl34-follow-name-missing-plus-file	strict	printf '1\n2\n3\n4\n5\n' > f			--follow=name	--pid=2147483647	missing	f
+tl35-f-retry-descriptor	strict	printf '1\n2\n3\n4\n5\n' > f			-f	--retry	--pid=2147483647	missing	f
+tl36-retry-without-follow	strict	printf '1\n2\n3\n4\n5\n' > f			--retry	f
+tl37-pid-without-follow	strict	printf '1\n2\n3\n4\n5\n' > f			--pid=5	f
+tl38-f-dir	strict	mkdir d			-f	--pid=2147483647	d
+tl39-F-dir-plus-file	strict	mkdir d; printf '1\n2\n3\n4\n5\n' > f			-F	--pid=2147483647	d	f
+tl40-f-dir-plus-file	strict	mkdir d; printf '1\n2\n3\n4\n5\n' > f			-f	--pid=2147483647	d	f
+tl41-F-dash	strict			x	-F	-
+tl42-follow-name-dash	strict	printf '1\n2\n3\n4\n5\n' > f		x	--follow=name	f	-
+tl43-f-stdin-file	strict			stdin-bytes	-f	--pid=2147483647
+tl44-f-stdin-dash-file	strict			stdin-bytes	-f	--pid=2147483647	-
+tl45-f-v-single	strict	printf '1\n2\n3\n4\n5\n' > f			-f	-v	--pid=2147483647	f
+tl46-f-q-two	strict	printf '1\n2\n3\n4\n5\n' > f			-f	-q	--pid=2147483647	f	f
+tl47-f-n-plus-2	strict	printf '1\n2\n3\n4\n5\n' > f			-f	-n	+2	--pid=2147483647	f
+tl48-f-c-plus-2	strict	printf '1\n2\n3\n4\n5\n' > f			-f	-c	+2	--pid=2147483647	f
+tl49-f-c-plus-99-truncated	strict	printf '1\n2\n3\n4\n5\n' > f			-f	-c	+99	--pid=2147483647	f
+tl50-f-n-0	strict	printf '1\n2\n3\n4\n5\n' > f			-f	-n	0	--pid=2147483647	f
+tl51-n-0-missing-no-open	strict				-n	0	missing
+tl52-f-n-0-missing	strict				-f	-n	0	--pid=2147483647	missing
+tl53-follow-bogus	strict	printf '1\n2\n3\n4\n5\n' > f			--follow=bogus	f
+tl54-follow-empty-ambiguous	strict	printf '1\n2\n3\n4\n5\n' > f			--follow=	f
+tl55-follow-abbrev-n	strict	printf '1\n2\n3\n4\n5\n' > f			--follow=n	--pid=2147483647	f
+tl56-follow-abbrev-d	strict	printf '1\n2\n3\n4\n5\n' > f			--follow=d	--pid=2147483647	f
+tl57-follow-bare-no-value	strict	printf '1\n2\n3\n4\n5\n' > f			--follow	--pid=2147483647	f
+tl58-s-invalid	strict	printf '1\n2\n3\n4\n5\n' > f			-f	-s	x	f
+tl59-s-negative	strict	printf '1\n2\n3\n4\n5\n' > f			-f	-s	-1	f
+tl60-s-nan	strict	printf '1\n2\n3\n4\n5\n' > f			-f	-s	nan	f
+tl61-s-hex	strict	printf '1\n2\n3\n4\n5\n' > f			-f	-s	0x1	--pid=2147483647	f
+tl62-s-fraction	strict	printf '1\n2\n3\n4\n5\n' > f			-f	-s	0.1	--pid=2147483647	f
+tl63-pid-invalid	strict	printf '1\n2\n3\n4\n5\n' > f			-f	--pid=x	f
+tl64-pid-negative	strict	printf '1\n2\n3\n4\n5\n' > f			-f	--pid=-1	f
+tl65-pid-overflow	strict	printf '1\n2\n3\n4\n5\n' > f			-f	--pid=99999999999	f
+tl66-pid-zero-then-dead	strict	printf '1\n2\n3\n4\n5\n' > f			-f	--pid=0	--pid=2147483647	f
+tl67-max-unchanged-invalid	strict	printf '1\n2\n3\n4\n5\n' > f			-f	--max-unchanged-stats=x	f
+tl68-max-unchanged-ok	strict	printf '1\n2\n3\n4\n5\n' > f			-F	--max-unchanged-stats=3	--pid=2147483647	f
+tl69-F-then-f-warns	strict	printf '1\n2\n3\n4\n5\n' > f			-F	-f	--pid=2147483647	f
+tl70-f-zero-terminated	strict	printf 'a\0b\0c\0' > f			-z	-n	2	-f	--pid=2147483647	f
+tl71-partial-last-line	strict	printf 'a\nb' > p			-n	1	p
+tl72-dir-header-no-follow	strict	mkdir d; printf '1\n2\n3\n4\n5\n' > f			d	f
