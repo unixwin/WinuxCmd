@@ -587,8 +587,7 @@ TEST(df, df_output_no_trailing_blanks_and_header_uses_min_width) {
   ASSERT_GE(lines.size(), 2u);
   // No line ends in a blank: the last column is never padded.
   for (const auto& line : lines) {
-    EXPECT_TRUE(line.empty() || line.back() != ' ')
-        << "trailing blank in: [" << line << "]";
+    EXPECT_TRUE(line.empty() || line.back() != ' ');
   }
   // The source column honors GNU's minimum width of 14, so the header
   // is "Filesystem" + 4 spaces + " " + "Mounted on".
@@ -597,7 +596,7 @@ TEST(df, df_output_no_trailing_blanks_and_header_uses_min_width) {
   const size_t target_col = lines[0].find("Mounted on");
   ASSERT_NE(target_col, std::string::npos);
   for (size_t i = 1; i < lines.size(); ++i) {
-    ASSERT_GT(lines[i].size(), target_col);
+    ASSERT_TRUE(lines[i].size() > target_col);
     EXPECT_NE(lines[i][target_col], ' ');
     EXPECT_EQ(lines[i][target_col - 1], ' ');
   }
@@ -644,11 +643,10 @@ TEST(df, df_output_last_column_header_not_padded) {
   // below is far wider than its header.
   EXPECT_EQ(lines[0], "Filesystem     File");
   for (const auto& line : lines) {
-    EXPECT_TRUE(line.empty() || line.back() != ' ')
-        << "trailing blank in: [" << line << "]";
+    EXPECT_TRUE(line.empty() || line.back() != ' ');
   }
   // The data row carries the operand path itself, unpadded.
-  ASSERT_GT(lines[1].size(), 10u);
+  ASSERT_TRUE(lines[1].size() > 10u);
   EXPECT_NE(lines[1].find("very\\long\\operand\\path"), std::string::npos);
   EXPECT_EQ(lines[1].substr(lines[1].size() - 4), "path");
 }
