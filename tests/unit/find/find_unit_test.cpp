@@ -3546,7 +3546,11 @@ TEST(find, issue_1633_context_after_unknown_predicate_errors_first) {
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
-  p.add(L"find.exe", {L".", L"-foo", L"-context"});
+  // The operand is present so the generic option parser consumes it as
+  // -context's value and the expression parser judges -foo first (GNU
+  // parse order); the bare form never reaches the parser - see the
+  // missing-argument pin below.
+  p.add(L"find.exe", {L".", L"-foo", L"-context", L"foo"});
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
@@ -3561,7 +3565,10 @@ TEST(find, issue_1633_context_rejected) {
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
-  p.add(L"find.exe", {L".", L"-context"});
+  // The operand is present so the generic option parser consumes it as
+  // -context's value and the expression parser rejects -context itself
+  // (GNU: "invalid predicate -context: SELinux is not enabled.").
+  p.add(L"find.exe", {L".", L"-context", L"foo"});
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
@@ -3569,6 +3576,24 @@ TEST(find, issue_1633_context_rejected) {
                   "invalid predicate -context: SELinux is not enabled.") !=
               std::string::npos);
   EXPECT_TRUE(r.stdout_text.empty());
+}
+
+TEST(find, issue_1633_context_without_operand_reports_missing_argument) {
+  TempDir tmp;
+  tmp.write("a.txt", "x");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  // Bare -context never reaches the expression parser: the generic
+  // option parser rejects the value-taking option with no operand
+  // first (GNU Q1 kind-equivalent: "missing argument to '-context'").
+  p.add(L"find.exe", {L".", L"-context"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("option requires an argument -- 'c'") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("SELinux") == std::string::npos);
 }
 
 namespace {

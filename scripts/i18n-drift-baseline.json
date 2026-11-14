@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "recorded_at": "2026-11-14T01:39:10.714097+00:00",
+  "recorded_at": "2026-11-14T09:10:02.696566+00:00",
   "note": "Pre-existing drift between master source extraction and the published locale catalogs, recorded when the drift gate landed (issue #1127 P3). May only shrink as translation sync batches land; growth in a PR must be deliberate and visible here.",
   "locales": {
     "zh-CN": {
@@ -16,12 +16,31 @@
         "legacy.6e4a636c701a50fd",
         "legacy.7d2d2cf903edeae3",
         "legacy.904ac09da6d4d139",
+        "legacy.a76779789a11f5f9",
         "legacy.af63a44c86018d64",
         "legacy.ba141595cb2fd052",
         "legacy.c93f19032ae6f961",
         "legacy.cf964c601bdedf9b"
       ],
       "extra": [
+        "command.arch.error.extra_operand",
+        "command.getconf.error.no_such_file",
+        "command.getconf.error.no_variable_specified",
+        "command.getconf.error.unrecognized_variable",
+        "command.hostid.error.extra_operand",
+        "command.hostname.error.cannot_set_name",
+        "command.hostname.error.extra_operand",
+        "command.hostname.error.invalid_hostname",
+        "command.hostname.error.name_too_long",
+        "command.hostname.error.read_file",
+        "command.hostname.error.unknown_option",
+        "command.id.error.cannot_get_identity",
+        "command.id.error.context_not_supported",
+        "command.id.error.default_format_conflict",
+        "command.id.error.no_such_user",
+        "command.id.error.print_only_conflict",
+        "command.id.error.zero_default_format",
+        "command.nproc.error.extra_operand",
         "command.numfmt.error.delimiter_single_character",
         "command.numfmt.error.field_decreasing",
         "command.numfmt.error.field_numbered_from_1",
@@ -52,6 +71,10 @@
         "command.readlink.error.file_name_too_long",
         "command.realpath.error.file_name_too_long",
         "command.sleep.error.invalid_interval",
+        "command.uname.error.extra_operand",
+        "command.whoami.error.cannot_find_name",
+        "command.whoami.error.extra_operand",
+        "command.whoami.error.invalid_option",
         "legacy.00536f17f10b2244",
         "legacy.0760fdc9c08b45b2",
         "legacy.07c5a107b48ec888",
@@ -108,6 +131,7 @@
         "legacy.67a5b4a6aa7be230",
         "legacy.6897ee8e4744fcc5",
         "legacy.68f2414a67bea0a8",
+        "legacy.692d98dbdd6f8882",
         "legacy.69f7198afe78ab48",
         "legacy.6b6566a58b35319c",
         "legacy.6d461b58e05a96ff",
@@ -205,6 +229,9 @@
         "legacy.fe27fef42f677b1e",
         "legacy.fed7dc8b2ca2e400",
         "legacy.ffa37fd3cfe57492"
+      ],
+      "placeholder_mismatch": [
+        "command.nproc.error.invalid_number"
       ]
     }
   }
