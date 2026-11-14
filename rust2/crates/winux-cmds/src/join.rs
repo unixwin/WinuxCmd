@@ -1403,6 +1403,35 @@ mod tests {
     }
 
     #[test]
+    fn zero_terminated_newline_input_is_one_record_issue1713() {
+        // [GNU] join -z: records are NUL-delimited, so a newline
+        // inside the input is an ordinary byte, not a record break
+        // (join.c:1107 sets eolchar to NUL; get_line reads to NUL).
+        // The default field separator is blanks (space/tab), and a
+        // newline inside a NUL-delimited record is a field separator
+        // too, so the two newline-separated inputs below are each ONE
+        // record whose fields are split on blanks and newlines. The
+        // expected bytes were probed against GNU coreutils 9.4.
+        let (r, out, _) = run_files(
+            &[(F1, "1 alice A\n2 bob B\n3 carol C"), (F2, "1 red\n3 green\n4 blue")],
+            &["-z", F1, F2],
+            "",
+        );
+        assert_eq!(
+            (r, out.as_str()),
+            (0, "1 alice A 2 bob B 3 carol C red 3 green 4 blue\0")
+        );
+        // NUL-delimited input (the already-correct shape): three
+        // records per file, keys 1 and 3 pair, 2 and 4 are unpaired.
+        let (r, out, _) = run_files(
+            &[(F1, "1 alice A\02 bob B\03 carol C"), (F2, "1 red\03 green\04 blue")],
+            &["-z", F1, F2],
+            "",
+        );
+        assert_eq!((r, out.as_str()), (0, "1 alice A red\03 carol C green\0"));
+    }
+
+    #[test]
     fn operand_errors_and_stdin() {
         let (r, _, err) = run(&[F1], "");
         assert_eq!(r, 1);

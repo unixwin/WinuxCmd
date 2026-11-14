@@ -817,12 +817,6 @@ auto echo_posixly_correct_literal_mode(std::string_view cmdName,
   return args.empty() || args[0] != "-n";
 }
 
-auto command_declares_option(std::span<const cmd::meta::OptionMeta> options,
-                             std::string_view name) -> bool {
-  return std::ranges::any_of(options, [name](const auto &option) {
-    return option.short_name == name || option.long_name == name;
-  });
-}
 auto command_declares_version_short(
     std::span<const cmd::meta::OptionMeta> options, std::string_view name)
     -> bool {
@@ -1634,8 +1628,19 @@ class RegistryImpl {
                      command_declares_version_short(options, "-v")) {
             event = Event::Version;
           } else if (arg == "-V" &&
-                     (!command_declares_option(options, arg) ||
-                      command_declares_version_short(options, arg))) {
+                     command_declares_version_short(options, arg)) {
+            // [GNU] -V is a version request only where the applet
+            // declares it as its version short option (col, column,
+            // getopt, lsattr, tzset: OPTION("-V", "--version")). For
+            // every other applet -V is not an option at all: GNU
+            // coreutils reject it ("invalid option -- 'V'"), so it
+            // must reach the handler instead of being intercepted
+            // here (#1714; the old condition also fired when the
+            // applet did not declare -V at all). Applets that declare
+            // -V for something else (chattr --verbose, cpio --dot,
+            // patch --version-control, sort --version-sort) were
+            // already unaffected: command_declares_version_short is
+            // false for them.
             event = Event::Version;
           }
           if (event == Event::None) continue;

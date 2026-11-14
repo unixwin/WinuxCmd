@@ -130,3 +130,24 @@ TEST(col, col_long_options_and_lines_validation) {
   auto cr = conflict.run();
   EXPECT_EQ(cr.exit_code, 1);
 }
+
+// [#1714] col declares -V as its version short option
+// (OPTION("-V", "--version")), so the dispatcher still intercepts
+// -V as --version for it, and --help still shows "-V, --version".
+TEST(col, col_dash_v_still_prints_version_issue1714) {
+  Pipeline p;
+  p.add(L"col.exe", {L"-V"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("col (WinuxCmd)") != std::string::npos);
+}
+
+TEST(col, col_help_still_advertises_dash_v_issue1714) {
+  Pipeline p;
+  p.add(L"col.exe", {L"--help"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("-V, --version") != std::string::npos);
+}

@@ -383,6 +383,31 @@ auto run_both_stdin(const Config& cfg,
     }
   }
 
+  // [GNU] comm.c:390-392: both operands are stdin, so the first fclose
+  // succeeds and the second fails EBADF; the diagnostic is
+  // "comm: -: Bad file descriptor" and the exit status is 1. The check
+  // runs before the --total summary (GNU prints the total only after
+  // the fclose loop) and before the final disorder report, so a
+  // disordered `comm - -` also exits here. The --check-order fatal
+  // return inside the loop above never reaches this point, matching
+  // GNU's immediate exit on a --check-order disorder. (cat.cpp's #973
+  // probe is the read-side precedent for the same diagnostic shape.)
+#ifdef _WIN32
+  for (int i = 0; i < 2; ++i) {
+    if (_close(_fileno(stdin)) != 0) {
+      safeErrorPrintLn("comm: -: Bad file descriptor");
+      return 1;
+    }
+  }
+#else
+  for (int i = 0; i < 2; ++i) {
+    if (std::fclose(stdin) != 0) {
+      safeErrorPrintLn("comm: -: Bad file descriptor");
+      return 1;
+    }
+  }
+#endif
+
   if (cfg.total) {
     std::string output = std::to_string(count_col1);
     output += cfg.output_delimiter;

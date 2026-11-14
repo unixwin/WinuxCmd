@@ -156,15 +156,14 @@ auto quoted_number_error(std::string_view msgid, std::string_view arg,
   return message;
 }
 
-auto parse_i64_full(std::string_view value) -> cp::Result<int64_t> {
-  value = strip_leading_plus(value);
-  int64_t parsed = 0;
-  auto [ptr, ec] =
-      std::from_chars(value.data(), value.data() + value.size(), parsed);
-  if (ec != std::errc() || ptr != value.data() + value.size()) {
-    return std::unexpected("invalid integer");
-  }
-  return parsed;
+// [GNU] __xnumtoint (lib/xdectoint.c): a digit-run overflow carries the
+// EOVERFLOW text ("Value too large for defined data type"). The literal
+// is the strerror(EOVERFLOW) text, matching tail.cpp's make_error and
+// the translate_error EOVERFLOW-suffix handling.
+auto quoted_number_error_overflow(std::string_view msgid,
+                                  std::string_view arg) -> std::string {
+  return std::string(msgid) + ": '" + std::string(arg) +
+         "': Value too large for defined data type";
 }
 
 // [GNU] One xstrtoimax scan, as parse_chunk and parse_n_units perform
@@ -218,6 +217,43 @@ auto scan_intmax(std::string_view text) -> IntmaxScan {
     scan.value = static_cast<int64_t>(magnitude);
   }
   return scan;
+}
+
+// [GNU] xdectoimax (optarg, 0, IDX_MAX, "", "invalid suffix length", 0)
+// (split.c:1386-1387) via __xnumtoint (lib/xdectoint.c): the argument is
+// quoted whole; a digit-run overflow carries the EOVERFLOW text; a clean
+// scan out of range carries EOVERFLOW past the INT_MAX/2 heuristic (a
+// value below INT_MIN/2 is EOVERFLOW, otherwise ERANGE); an invalid
+// argument (no digits, trailing junk) carries no suffix. The product
+// caps the suffix length at INT_MAX, not GNU's IDX_MAX, as an
+// allocation-safety bound: GNU accepts larger values at parse time and
+// dies later with "memory exhausted" (probed: -a 2147483647 and
+// -a 3000000000), so the cap is a deliberate deviation, and the
+// diagnostic follows __xnumtoint's rules with that cap as the max.
+auto parse_suffix_length(std::string_view arg) -> cp::Result<int> {
+  const auto scan = scan_intmax(arg);
+  if (!scan.any_digits || scan.consumed != arg.size()) {
+    return std::unexpected(
+        quoted_number_error("invalid suffix length", arg));
+  }
+  if (scan.overflow) {
+    return std::unexpected(
+        quoted_number_error_overflow("invalid suffix length", arg));
+  }
+  const int64_t value = scan.value;
+  if (value > std::numeric_limits<int>::max()) {
+    return std::unexpected(
+        quoted_number_error_overflow("invalid suffix length", arg));
+  }
+  if (value < 0) {
+    if (value < std::numeric_limits<int>::min() / 2) {
+      return std::unexpected(
+          quoted_number_error_overflow("invalid suffix length", arg));
+    }
+    return std::unexpected(
+        quoted_number_error("invalid suffix length", arg, true));
+  }
+  return static_cast<int>(value);
 }
 
 // [GNU] #1524: whether a death on TEXT carries the ERANGE suffix --
@@ -588,14 +624,11 @@ auto build_config(const CommandContext<SPLIT_OPTIONS.size()>& ctx)
     suffix_opt = ctx.get<std::string>("-a", "");
   }
   if (ctx.has("--suffix-length") || ctx.has("-a")) {
-    auto suffix_length = parse_i64_full(suffix_opt);
-    // [GNU] xdectoimax (optarg, 0, IDX_MAX, ..., "invalid suffix
-    // length"): no 32 cap (audit #1462).
-    if (!suffix_length || *suffix_length < 0 ||
-        *suffix_length > std::numeric_limits<int>::max()) {
-      return std::unexpected("invalid suffix length");
+    auto suffix_length = parse_suffix_length(suffix_opt);
+    if (!suffix_length) {
+      return std::unexpected(suffix_length.error());
     }
-    cfg.suffix_length = static_cast<int>(*suffix_length);
+    cfg.suffix_length = *suffix_length;
     cfg.suffix_length_explicit = cfg.suffix_length != 0;
     if (cfg.suffix_length == 0) cfg.suffix_length = 2;
   }

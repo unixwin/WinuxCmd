@@ -336,6 +336,90 @@ TEST(split, split_invalid_size_messages_quote_argument) {
   EXPECT_EQ(good.run().exit_code, 0);
 }
 
+TEST(split, split_suffix_length_overflow_diagnostic_issue1711) {
+  TempDir tmp;
+  tmp.write("input.txt", "line1\nline2\n");
+
+  // [GNU] xdectoimax (split.c:1386-1387) via __xnumtoint
+  // (lib/xdectoint.c): the rejected -a argument is quoted whole; a
+  // digit-run overflow carries the EOVERFLOW text, a clean scan out of
+  // range carries EOVERFLOW past the INT_MAX/2 heuristic (a value
+  // below INT_MIN/2 is EOVERFLOW, otherwise ERANGE), and an invalid
+  // argument carries no suffix. Every expected string below was
+  // probed byte-for-byte against GNU coreutils 9.4.
+  const wchar_t* values[] = {
+      L"18446744073709551616", L"99999999999999999999",
+      L"9223372036854775808",  L"-1",
+      L"-2",                   L"-1073741824",
+      L"-2000000000",          L"-1073741825",
+      L"abc",                  L"12abc",
+      L"",                     L"0x10",
+      L"99999999999999999999abc",
+      // Product allocation cap (INT_MAX, not GNU's IDX_MAX): GNU
+      // accepts this at parse time and dies later with "memory
+      // exhausted", so this cell pins the product's documented cap
+      // diagnostic, not a GNU diagnostic.
+      L"3000000000",
+  };
+  const char* expected[] = {
+      "split: invalid suffix length: '18446744073709551616': Value too "
+      "large for defined data type\n",
+      "split: invalid suffix length: '99999999999999999999': Value too "
+      "large for defined data type\n",
+      "split: invalid suffix length: '9223372036854775808': Value too "
+      "large for defined data type\n",
+      "split: invalid suffix length: '-1': Numerical result out of "
+      "range\n",
+      "split: invalid suffix length: '-2': Numerical result out of "
+      "range\n",
+      "split: invalid suffix length: '-1073741824': Numerical result "
+      "out of range\n",
+      "split: invalid suffix length: '-2000000000': Value too large "
+      "for defined data type\n",
+      "split: invalid suffix length: '-1073741825': Value too large "
+      "for defined data type\n",
+      "split: invalid suffix length: 'abc'\n",
+      "split: invalid suffix length: '12abc'\n",
+      "split: invalid suffix length: ''\n",
+      "split: invalid suffix length: '0x10'\n",
+      "split: invalid suffix length: '99999999999999999999abc'\n",
+      "split: invalid suffix length: '3000000000': Value too large "
+      "for defined data type\n",
+  };
+  for (size_t i = 0; i < sizeof(values) / sizeof(values[0]); ++i) {
+    Pipeline p;
+    p.set_cwd(tmp.wpath());
+    p.add(L"split.exe", {L"-a", values[i], L"input.txt", L"part"});
+    auto r = p.run();
+    EXPECT_EQ(r.exit_code, 1);
+    EXPECT_EQ_TEXT(r.stderr_text, expected[i]);
+  }
+
+  // Valid values still split: -a 0 means the default length, -a 5
+  // takes a five-character suffix, and a leading blank / '+' / '-0'
+  // are accepted the way xstrtoimax accepts them.
+  {
+    Pipeline p;
+    p.set_cwd(tmp.wpath());
+    p.add(L"split.exe", {L"-a", L"0", L"input.txt", L"part"});
+    EXPECT_EQ(p.run().exit_code, 0);
+    EXPECT_EQ_TEXT(tmp.read("partaa"), "line1\nline2\n");
+  }
+  {
+    Pipeline p;
+    p.set_cwd(tmp.wpath());
+    p.add(L"split.exe", {L"-a", L"5", L"input.txt", L"part"});
+    EXPECT_EQ(p.run().exit_code, 0);
+    EXPECT_EQ_TEXT(tmp.read("partaaaaa"), "line1\nline2\n");
+  }
+  for (const wchar_t* v : {L" 5", L"+5", L"-0", L"+0"}) {
+    Pipeline p;
+    p.set_cwd(tmp.wpath());
+    p.add(L"split.exe", {L"-a", v, L"input.txt", L"part"});
+    EXPECT_EQ(p.run().exit_code, 0);
+  }
+}
+
 TEST(split, split_stdin) {
   Pipeline p;
   p.set_stdin("line1\nline2\nline3\n");

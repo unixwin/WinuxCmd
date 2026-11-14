@@ -351,3 +351,33 @@ TEST(comm, comm_stdin_ctrlz_not_truncated_issue1212) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.find('\x1a') != std::string::npos);
 }
+
+// [#1712] `comm - -`: both operands are the SAME stdin stream
+// (comm.c:292), so the two fclose calls at the end of main
+// (comm.c:390-392) close it twice: the first succeeds, the second
+// fails EBADF. The diagnostic is "comm: -: Bad file descriptor"
+// and the exit status is 1. The two streams are the odd/even lines
+// of stdin, so "a\nb\n" merges as "a" (column 1) and "\tb"
+// (column 2). The --total summary is printed only after the fclose
+// loop, so it never appears for `comm - -`.
+TEST(comm, comm_both_stdin_reports_bad_file_descriptor_issue1712) {
+  Pipeline p;
+  p.set_stdin("a\nb\n");
+  p.add(L"comm.exe", {L"-", L"-"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ_TEXT(r.stdout_text, "a\n\tb\n");
+  EXPECT_EQ_TEXT(r.stderr_text, "comm: -: Bad file descriptor\n");
+}
+
+TEST(comm, comm_both_stdin_total_suppressed_by_close_error_issue1712) {
+  Pipeline p;
+  p.set_stdin("a\nb\n");
+  p.add(L"comm.exe", {L"--total", L"-", L"-"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ_TEXT(r.stdout_text, "a\n\tb\n");
+  EXPECT_EQ_TEXT(r.stderr_text, "comm: -: Bad file descriptor\n");
+}
