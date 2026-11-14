@@ -968,3 +968,40 @@ TEST(mv, mv_dir_onto_symlink_to_file_refuses_issue1649) {
   EXPECT_EQ(tmp.read("real.txt"), "TGT");
   EXPECT_TRUE(std::filesystem::is_directory(tmp.path / "dir"));
 }
+
+// [GNU] A symlink to a directory moved onto a file renames the link
+// itself (lstat semantics: a symlink is never a directory, whatever
+// its target is). Regression pin for the #1661 review FAIL (F2): the
+// dir-onto-file gate used to follow the link and refuse this shape.
+TEST(mv, mv_symlink_to_dir_onto_file_renames_link_issue1649) {
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "realdir");
+  tmp.write("realdir/f.txt", "F");
+  tmp.write("a.txt", "KEEP");
+  std::error_code ec;
+  std::filesystem::create_directory_symlink("realdir", tmp.path / "lnkdir",
+                                            ec);
+  if (ec) {
+    std::cout << "  SKIPPED (requires administrator privileges for symbolic "
+                 "links)\n";
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"mv.exe", {L"lnkdir", L"a.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  auto a_status = std::filesystem::symlink_status(tmp.path / "a.txt", ec);
+  EXPECT_FALSE(ec);
+  EXPECT_TRUE(std::filesystem::is_symlink(a_status));
+  EXPECT_EQ(std::filesystem::read_symlink(tmp.path / "a.txt", ec),
+            std::filesystem::path("realdir"));
+  std::error_code src_ec;
+  (void)std::filesystem::symlink_status(tmp.path / "lnkdir", src_ec);
+  EXPECT_TRUE(src_ec);  // source link is gone
+  EXPECT_TRUE(std::filesystem::is_directory(tmp.path / "realdir"));
+  EXPECT_EQ(tmp.read("realdir/f.txt"), "F");
+}

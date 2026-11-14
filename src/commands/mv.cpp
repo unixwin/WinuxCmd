@@ -895,15 +895,21 @@ auto move_single_path(const std::string& src_path, const std::string& dest_path,
   // here — an existing destination with backups engaged always yields
   // a backup (or an error above). --backup=none resolves to no
   // backups (mv_make_backups returns nullopt), so the gate applies.
-  // GetFileAttributesW follows symlinks, like GNU's stat: a link to
-  // a file counts as a non-directory, a link to a directory as one.
+  // [GNU] The source is judged by lstat semantics: a symlink is
+  // never a directory, whatever its target is (mv.c do_move lstates
+  // the source; copy.c:2448 checks S_ISDIR on the lstat mode).
+  // GetFileAttributesW follows the link, so a symlink to a directory
+  // reports DIRECTORY — mask it out when REPARSE_POINT is set, or
+  // `mv link-to-dir file` is falsely refused (WinuxCmd#1649
+  // follow-up). The destination side is unchanged.
   if (dest_exists && !made_backup) {
     const DWORD src_attrs = GetFileAttributesW(wsrc_path.c_str());
     const DWORD dst_attrs = GetFileAttributesW(wdest_path.c_str());
     if (src_attrs != INVALID_FILE_ATTRIBUTES &&
         dst_attrs != INVALID_FILE_ATTRIBUTES) {
       const bool src_is_dir =
-          (src_attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
+          (src_attrs & FILE_ATTRIBUTE_DIRECTORY) != 0 &&
+          (src_attrs & FILE_ATTRIBUTE_REPARSE_POINT) == 0;
       const bool dst_is_dir =
           (dst_attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
       if (src_is_dir && !dst_is_dir) {
