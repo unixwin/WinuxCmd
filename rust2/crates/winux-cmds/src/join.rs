@@ -170,30 +170,27 @@ fn split_fields(line: &str, cfg: &Config) -> Vec<String> {
     }
     if !cfg.explicit_separator {
         // blank-delimited fields collapse runs of blanks (also a '\n' when
-        // the NUL delimiter made newline an ordinary byte)
+        // the NUL delimiter made newline an ordinary byte); GNU xfields
+        // emits a trailing empty field when the record ends in a separator
         let mut fields = Vec::new();
         let mut pos = 0usize;
         let bytes = line.as_bytes();
+        let is_sep = |b: u8| b == b' ' || b == b'\t' || (cfg.zero_terminated && b == b'\n');
         while pos < bytes.len() {
-            while pos < bytes.len()
-                && (bytes[pos] == b' '
-                    || bytes[pos] == b'\t'
-                    || (cfg.zero_terminated && bytes[pos] == b'\n'))
-            {
+            while pos < bytes.len() && is_sep(bytes[pos]) {
                 pos += 1;
             }
             if pos >= bytes.len() {
                 break;
             }
             let start = pos;
-            while pos < bytes.len()
-                && bytes[pos] != b' '
-                && bytes[pos] != b'\t'
-                && !(cfg.zero_terminated && bytes[pos] == b'\n')
-            {
+            while pos < bytes.len() && !is_sep(bytes[pos]) {
                 pos += 1;
             }
             fields.push(line[start..pos].to_string());
+        }
+        if !fields.is_empty() && is_sep(bytes[bytes.len() - 1]) {
+            fields.push(String::new());
         }
         return fields;
     }
@@ -1400,6 +1397,21 @@ mod tests {
             "",
         );
         assert_eq!((r, out.as_str()), (0, "h1 h h\0a 1 X\0"));
+    }
+
+    // #1713: -z sets eolchar=NUL (GNU join.c:1106-1107), so a
+    // newline-terminated file reads as ONE record; '\n' is still a
+    // field boundary (GNU system.h:163-166 field_sep) and a record
+    // ending in a separator yields a trailing empty field
+    // (join.c:302-303 final extract_field).
+    #[test]
+    fn zero_terminated_newline_input_is_one_record() {
+        let (r, out, _) = run_files(
+            &[(F1, "a 1\nb 2\n"), (F2, "a X\nb Y\n")],
+            &["-z", F1, F2],
+            "",
+        );
+        assert_eq!((r, out.as_str()), (0, "a 1 b 2  X b Y \0"));
     }
 
     #[test]
