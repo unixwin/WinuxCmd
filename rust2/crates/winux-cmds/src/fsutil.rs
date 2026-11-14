@@ -598,6 +598,17 @@ mod tests {
         );
     }
 
+    #[test]
+    fn issue1726_resolve_empty_operand_is_empty() {
+        // The shared operand boundary used to join "" onto the cwd, so
+        // every fsutil::resolve consumer statted the cwd for an empty
+        // operand (GNU: open("") is ENOENT, never the cwd).
+        let sc = ScratchCtx::new("fsutil-empty");
+        let ctx = sc.ctx();
+        assert!(super::resolve(&ctx, "").as_os_str().is_empty());
+        assert!(!super::resolve(&ctx, "").exists());
+    }
+
     /// The shared preserve-root guard, fed synthetic ctx/env and an
     /// explicit resolved path — never resolve() or touch real paths.
     fn guard(ctx: &Ctx, operand: &str, resolved: &str) -> bool {

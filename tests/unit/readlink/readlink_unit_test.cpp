@@ -671,3 +671,23 @@ TEST(readlink, readlink_f_bats_root_word_arithmetic_works) {
   const std::string suite_root = (tmp.path / "suite").string();
   EXPECT_EQ_TEXT(normalize_path_text(root), normalize_path_text(suite_root));
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1726: an explicit empty operand is a path, never the cwd. GNU
+// 9.4 readlink is quiet by default: `readlink -f ""` prints nothing and
+// exits 1. The Rust canonicalizer (canon.rs) already errors on "" in
+// every mode; this pin locks that shape.
+// ---------------------------------------------------------------------------
+TEST(readlink, issue1726_empty_operand_canonicalize_fails_silently) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"readlink.exe", {L"-f", L""});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.empty());
+}

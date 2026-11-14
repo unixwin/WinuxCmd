@@ -496,6 +496,19 @@ fn empty_operands_are_paths_not_missing_operands() {
 }
 
 #[test]
+fn issue1726_empty_target_directory_is_not_the_cwd() {
+    // fsutil::resolve used to join "" onto the cwd, so `cp -t "" a`
+    // silently copied into the cwd (GNU 9.4: "target directory '':
+    // No such file or directory", rc 1).
+    let sc = ScratchCtx::new("cp-empty-target");
+    fs::write(sc.path("a"), b"A").unwrap();
+    let (rc, _, err) = run(&sc, &["-t", "", "a"]);
+    assert_eq!(rc, 1);
+    assert!(err.contains("target directory '': No such file or directory"));
+    assert_eq!(fs::read(sc.path("a")).unwrap(), b"A");
+}
+
+#[test]
 fn directory_source_onto_non_directory_is_refused() {
     let sc = ScratchCtx::new("cp-dir-over-file");
     fs::create_dir(sc.path("s")).unwrap();

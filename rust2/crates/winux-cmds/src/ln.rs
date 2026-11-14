@@ -822,6 +822,31 @@ mod tests {
     }
 
     #[test]
+    fn issue1726_empty_operands_are_not_the_cwd() {
+        // The shared operand boundary (fs_win::api_path) used to
+        // absolutize "" onto the cwd, so `ln "" x2` statted the cwd as
+        // a directory, `ln -s "" x` created a link to nothing
+        // meaningful, and `ln a ""` / `ln -t "" a` resolved the
+        // destination onto the cwd (GNU 9.4: ENOENT, rc 1, all shapes).
+        let sc = setup("ln-empty");
+        let (r, _, e) = run_sc(&sc, &["", "x2"], "");
+        assert_eq!(r, 1);
+        assert!(e.contains("failed to access '': No such file or directory"));
+        assert!(sc.path("x2").symlink_metadata().is_err());
+        let (r, _, e) = run_sc(&sc, &["-s", "", "x"], "");
+        assert_eq!(r, 1);
+        assert!(e.contains("failed to create symbolic link 'x'"));
+        assert!(sc.path("x").symlink_metadata().is_err());
+        let (r, _, e) = run_sc(&sc, &["a", ""], "");
+        assert_eq!(r, 1);
+        assert!(e.contains("failed to create hard link ''"));
+        assert_eq!(std::fs::read_to_string(sc.path("a")).unwrap(), "aaa");
+        let (r, _, e) = run_sc(&sc, &["-t", "", "a"], "");
+        assert_eq!(r, 1);
+        assert!(e.contains("target ''"));
+    }
+
+    #[test]
     fn link_into_directory() {
         let sc = setup("ln-dir");
         let (r, _, _) = run_sc(&sc, &["tgt", "dd"], "");

@@ -1484,6 +1484,16 @@ mod api_path_probes {
     }
 
     #[test]
+    fn issue1726_empty_operand_is_not_the_cwd() {
+        // The operand boundary used to absolutize "" onto the cwd, so
+        // every consumer statted the cwd for an empty operand (GNU:
+        // open("") is ENOENT, never the cwd).
+        let env: &'static MapEnv = Box::leak(Box::new(MapEnv::new()));
+        let ctx = Ctx::new(Path::new(r"D:\wd").to_path_buf(), env);
+        assert_eq!(imp::api_path(&ctx, ""), "");
+    }
+
+    #[test]
     fn probe_drive_folds() {
         #[cfg(windows)]
         {

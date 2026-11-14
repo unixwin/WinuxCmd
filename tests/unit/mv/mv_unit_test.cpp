@@ -1015,3 +1015,45 @@ TEST(mv, mv_dir_onto_nondirectory_short_backup_allows_issue1649) {
   EXPECT_TRUE(std::filesystem::exists(tmp.path / "b.txt~"));
   EXPECT_EQ(tmp.read("b.txt~"), "K2");
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1726: an explicit empty operand is a path, never the cwd. The
+// shared layer (native_path to_extended_path) used to absolutize "" onto
+// the current directory, so `mv "" dst` statted the cwd as an existing
+// directory and `mv a ""` resolved the destination onto the drive root.
+// GNU 9.4: `mv "" dst` -> "cannot stat '': No such file or directory",
+// rc 1; `mv a ""` fails rc 1 with the file left in place.
+// ---------------------------------------------------------------------------
+TEST(mv, issue1726_empty_source_cannot_stat) {
+  TempDir tmp;
+  tmp.write("keep.txt", "keep");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"mv.exe", {L"", L"dst.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "mv: cannot stat '': No such file or directory\n");
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "keep.txt"));
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "dst.txt"));
+}
+
+TEST(mv, issue1726_empty_destination_fails_without_moving) {
+  TempDir tmp;
+  tmp.write("a.txt", "A");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"mv.exe", {L"a.txt", L""});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_CONTAINS(r.stderr_text, "cannot copy 'a.txt' to ''");
+  EXPECT_EQ(tmp.read("a.txt"), "A");
+}
