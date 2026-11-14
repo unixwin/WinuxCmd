@@ -82,7 +82,6 @@ enum class Algorithm {
   BSD,
   SYSV,
   CRC,
-  CRC32B,
   MD5,
   SHA1,
   SHA224,
@@ -105,7 +104,6 @@ inline constexpr std::array kAlgorithms = {
     AlgorithmEntry{Algorithm::BSD, "bsd", "BSD", 16},
     AlgorithmEntry{Algorithm::SYSV, "sysv", "SYSV", 16},
     AlgorithmEntry{Algorithm::CRC, "crc", "CRC", 32},
-    AlgorithmEntry{Algorithm::CRC32B, "crc32b", "CRC32B", 32},
     AlgorithmEntry{Algorithm::MD5, "md5", "MD5", 128},
     AlgorithmEntry{Algorithm::SHA1, "sha1", "SHA1", 160},
     AlgorithmEntry{Algorithm::SHA224, "sha224", "SHA224", 224},
@@ -117,8 +115,6 @@ inline constexpr std::array kAlgorithms = {
 };
 
 auto is_legacy(Algorithm a) -> bool {
-  // [GNU] CRC32B flows through the digest output machinery, not the
-  // legacy "checksum length" formats.
   return a == Algorithm::BSD || a == Algorithm::SYSV || a == Algorithm::CRC;
 }
 
@@ -131,8 +127,6 @@ auto algorithm_entry(Algorithm a) -> const AlgorithmEntry& {
 
 auto to_hash_algorithm(Algorithm a) -> portable_digest::HashAlgorithm {
   switch (a) {
-    case Algorithm::CRC32B:
-      return portable_digest::HashAlgorithm::Crc32b;
     case Algorithm::MD5:
       return portable_digest::HashAlgorithm::Md5;
     case Algorithm::SHA1:
@@ -661,51 +655,6 @@ auto output_digest_file(const Config& cfg, const AlgorithmEntry& entry,
 // machinery (portable_digest::sum_parse_check_line) for the actual line
 // parsing once the algorithm tag has been identified.
 
-// [WinuxCmd] legacy untagged check record: "<decimal-sum> <size> <file>",
-// the format printed by "cksum FILE" for the default CRC algorithm.  GNU's
-// --check only accepts tagged lines without -a; WinuxCmd additionally
-// verifies its own default output.
-struct LegacyCheckLine {
-  uint64_t sum = 0;
-  uint64_t size = 0;
-  std::string filename;
-};
-
-auto parse_legacy_check_line(std::string_view line)
-    -> std::optional<LegacyCheckLine> {
-  auto take_decimal = [&](size_t& pos, uint64_t& out) {
-    size_t end = pos;
-    while (end < line.size() &&
-           std::isdigit(static_cast<unsigned char>(line[end]))) {
-      ++end;
-    }
-    if (end == pos) return false;
-    auto [ptr, ec] = std::from_chars(line.data() + pos, line.data() + end, out);
-    if (ec != std::errc()) return false;
-    pos = end;
-    return true;
-  };
-  auto skip_blanks = [&](size_t& pos) {
-    if (pos >= line.size() || (line[pos] != ' ' && line[pos] != '\t')) {
-      return false;
-    }
-    while (pos < line.size() && (line[pos] == ' ' || line[pos] == '\t')) {
-      ++pos;
-    }
-    return pos < line.size();
-  };
-
-  size_t pos = 0;
-  if (pos < line.size() && line[pos] == '\\') ++pos;
-  LegacyCheckLine rec;
-  if (!take_decimal(pos, rec.sum)) return std::nullopt;
-  if (!skip_blanks(pos)) return std::nullopt;
-  if (!take_decimal(pos, rec.size)) return std::nullopt;
-  if (!skip_blanks(pos)) return std::nullopt;
-  rec.filename = std::string(line.substr(pos));
-  return rec;
-}
-
 // [GNU] algorithm_from_tag(): the tag is the leading run of characters that
 // is not a blank, '-' or '(' (after blanks and an optional '\' escape
 // marker).
@@ -728,7 +677,7 @@ auto detect_tag_entry(std::string_view line) -> const AlgorithmEntry* {
 }
 
 auto check_one_file(const std::string& checkfile_name, const Config& cfg,
-                    int& bsd_reversed) -> bool {
+                    int& bsd_reversed, Algorithm& current_algorithm) -> bool {
   intmax_t n_misformatted_lines = 0;
   intmax_t n_mismatched_checksums = 0;
   intmax_t n_computed_checksums = 0;
@@ -774,21 +723,20 @@ auto check_one_file(const std::string& checkfile_name, const Config& cfg,
     if (!line.empty() && line.back() == '\r') line.pop_back();
     if (line.empty()) continue;
 
-    // [GNU] split_3(): without -a, only tagged lines are supported and the
-    // tag selects the algorithm; legacy (crc/sysv/bsd) tags are rejected.
+    // [GNU] split_3() (digest.c:783-791): without -a the line must carry a
+    // tag from algorithm_tags and legacy (bsd/sysv/crc) tags are rejected;
+    // every other shape -- including cksum's own "<sum> <size> <file>" CRC
+    // output -- is an improperly formatted line (#1709).
     const AlgorithmEntry* entry = nullptr;
-    std::optional<LegacyCheckLine> legacy;
     if (cfg.algorithm_specified) {
       entry = &algorithm_entry(cfg.algorithm);
     } else {
       const AlgorithmEntry* detected = detect_tag_entry(line);
       if (detected != nullptr && !is_legacy(detected->algo)) {
         entry = detected;
-      } else {
-        // [WinuxCmd] fall back to the default CRC untagged record
-        // "<sum> <size> <file>" so "cksum FILE > list; cksum -c list"
-        // round-trips.
-        legacy = parse_legacy_check_line(line);
+        // [GNU] cksum_algorithm tracks the detected tag across lines and
+        // check files so the -w diagnostic names the type in force.
+        current_algorithm = detected->algo;
       }
     }
 
@@ -800,28 +748,27 @@ auto check_one_file(const std::string& checkfile_name, const Config& cfg,
                                                      hex_bytes, bsd_reversed);
     }
 
-    if ((!parsed && !legacy) ||
-        (parsed && is_stdin && parsed->filename == "-") ||
-        (legacy && is_stdin && legacy->filename == "-")) {
+    if (!parsed || (is_stdin && parsed->filename == "-")) {
       ++n_misformatted_lines;
       if (cfg.warn) {
         // [GNU] digest.c:1205-1212: the diagnostic names the digest
         // type in force (DIGEST_TYPE_STRING = algorithm_tags of the
         // detected or selected algorithm) (audit #1462).
         const std::string type_name =
-            entry != nullptr ? std::string(entry->tag)
-                             : std::string(algorithm_entry(cfg.algorithm).tag);
+            entry != nullptr
+                ? std::string(entry->tag)
+                : std::string(algorithm_entry(current_algorithm).tag);
         safeErrorPrintLn(
             "cksum: " + portable_digest::detail::sum_quotef(display_name) +
-            ": " + std::to_string(line_number) +
-            ": improperly formatted " + type_name + " checksum line");
+            ": " + std::to_string(line_number) + ": improperly formatted " +
+            type_name + " checksum line");
       }
       continue;
     }
 
     properly_formatted_lines = true;
 
-    const std::string& target = legacy ? legacy->filename : parsed->filename;
+    const std::string& target = parsed->filename;
 
     bool missing = false;
     if (cfg.ignore_missing && target != "-") {
@@ -836,15 +783,7 @@ auto check_one_file(const std::string& checkfile_name, const Config& cfg,
 
     bool match = false;
     bool read_ok = false;
-    if (legacy) {
-      // [WinuxCmd] verify "<sum> <size> <file>" against the CRC output.
-      auto crc_result = read_crc_file(target);
-      if (crc_result) {
-        read_ok = true;
-        match = crc_result->checksum == legacy->sum &&
-                crc_result->bytes == legacy->size;
-      }
-    } else {
+    {
       const size_t out_bytes =
           entry->algo == Algorithm::BLAKE2B ? parsed->digest_bytes : 0;
       auto hash_result = portable_digest::hash_file_hex(
@@ -933,9 +872,13 @@ auto check_one_file(const std::string& checkfile_name, const Config& cfg,
 // the list from standard input.
 auto run_check_mode(const Config& cfg) -> int {
   int bsd_reversed = -1;
+  // [GNU] cksum_algorithm is a file-scope static: seeded by -a (or the
+  // crc default) and re-seated by each detected BSD tag, it outlives a
+  // single check file so a later file's -w line names the last tag seen.
+  Algorithm current_algorithm = cfg.algorithm;
   bool ok = true;
   for (const auto& checkfile : cfg.files) {
-    ok = check_one_file(checkfile, cfg, bsd_reversed) && ok;
+    ok = check_one_file(checkfile, cfg, bsd_reversed, current_algorithm) && ok;
   }
   return ok ? 0 : 1;
 }

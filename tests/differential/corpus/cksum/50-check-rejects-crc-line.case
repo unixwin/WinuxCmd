@@ -1,0 +1,8 @@
+cmd: cksum
+args: -c sums.txt
+timeout: 10
+setup: |
+  printf 'x\n' > f.txt
+  printf '12345 6 f.txt\n' > sums.txt
+source: github.com/unixwin/WinuxCmd/issues/1709
+tags: issue-1709 check-format
