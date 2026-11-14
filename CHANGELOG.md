@@ -4,6 +4,27 @@ All notable changes to WinuxCmd are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow the
 repository release tags.
 
+## [Unreleased]
+
+### Changed
+
+- **locale value model (#1549)**: `locale` answers keyword operands from the
+  new `utils:locale_db` layer, which projects the Win32 NLS database
+  (`GetLocaleInfoEx`, `GetCPInfo`, `GetStringTypeW`) onto POSIX `lconv`,
+  `strftime` and codeset semantics instead of the hard-coded
+  `keyword_value()` table. The C/POSIX locale now reports glibc's empty
+  monetary strings and `-1` flags, and `LC_ALL`/`LC_<CATEGORY>`/`LANG` select
+  the values (the Windows user locale is the last resort). `-k` additionally
+  accepts `grouping`, `mon_grouping`, `am_pm`, `d_fmt`, `t_fmt`, `d_t_fmt`,
+  `t_fmt_ampm`, `p_sign_posn` and `n_sign_posn`.
+
+### Fixed
+
+- **date locale formats (#1549)**: `%a/%A/%b/%h/%B/%p/%P/%r/%x/%X/%c` come
+  from the `LC_TIME` value model instead of fixed C-locale literals, and
+  `-R`/`--rfc-email` stays in English as GNU keeps it. `%h` now expands to
+  the abbreviated month (`%b`), not the full month name.
+
 ## [1.2.1] - 2026-11-02
 
 ### Fixed
