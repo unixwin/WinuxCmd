@@ -3653,13 +3653,25 @@ pinky_rows = [
 # `strict`. Junction rows: GNU makes a symlink, the Windows sides a
 # directory junction (no symlink privilege on the gate host) - both are
 # `-type l` links to t/d.
+#
+# Windows fixture rule (#1488 find wire, measured 2026-11-14): create the
+# junction with `cmd /c mklink /J`. PowerShell's
+# `New-Item -ItemType Junction -Value <missing target>` refuses to create a
+# dangling junction, while mklink /J accepts it; using one mechanism for
+# both existing-target and dangling-link rows keeps the fixture honest.
+# Junction creation needs no symlink privilege, so no find row carries a
+# symlink-only SKIP; the symlink-first branch (`ln -s ...`) simply fails on
+# this host and falls through. A host that blocks mklink /J too (policy
+# denying reparse-point creation) must SKIP the FIND_JX/FIND_LOOP/
+# FIND_DANG rows: fd014, fd163, fd165, fd166, fd167, fd168, fd172, fd175,
+# fd176, fd238, fd287, fd350-fd355.
 FIND_FX = ("mkdir -p t/a/b t/d; printf hello > t/a/f5; printf %3000s x > t/a/b/big; "
            ": > t/e; : > t/d/.hid; : > t/a/x.rs; : > t/a/b/y.rs; "
            "touch -d @1577836800 t/a/f5 t/a/b/big")
-FIND_JX = (FIND_FX + "; ln -s ../d t/a/jd 2>/dev/null || powershell -NoProfile -Command "
-           "'New-Item -ItemType Junction -Path t/a/jd -Value (Resolve-Path t/d)' >/dev/null")
-FIND_LOOP = ("mkdir -p loop/x; ln -s .. loop/x/up 2>/dev/null || powershell -NoProfile -Command "
-             "'New-Item -ItemType Junction -Path loop/x/up -Value (Resolve-Path loop)' >/dev/null")
+FIND_JX = (FIND_FX + "; ln -s ../d t/a/jd 2>/dev/null || MSYS_NO_PATHCONV=1 "
+           "cmd /c \"mklink /J t\\a\\jd t\\d\" >/dev/null")
+FIND_LOOP = ("mkdir -p loop/x; ln -s .. loop/x/up 2>/dev/null || MSYS_NO_PATHCONV=1 "
+             "cmd /c \"mklink /J loop\\x\\up %CD%\\loop\" >/dev/null")
 # dangling link: GNU `ln -s missing`; Windows junction via cmd mklink /J,
 # which (unlike PowerShell New-Item -ItemType Junction) accepts a missing
 # target (measured on the gate host, 2026-11-14)

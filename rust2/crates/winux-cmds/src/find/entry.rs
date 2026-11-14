@@ -277,12 +277,23 @@ impl Entry {
         }
     }
 
-    /// Status change time (ctime) — handle level.
-    pub fn ctime(&self) -> Ts {
+    /// Creation (birth) time. The handle snapshot carries the exact
+    /// FILETIME; the enumeration record can be coarser, so prefer the
+    /// handle whenever one was opened (#1488 wire: the 1.x test helper
+    /// reads FileBasicInfo).
+    pub fn btime(&self) -> Ts {
         match self.full() {
-            Some(h) => Ts::from_ticks(h.ctime),
-            None => self.st().mtime,
+            Some(h) => Ts::from_ticks(h.btime),
+            None => self.st().btime,
         }
+    }
+
+    /// Status-change time. On the Windows value model this is the
+    /// creation time (MinGW's st_ctime and the 1.x C++ find both map C
+    /// here; Windows exposes no portable change time that survives
+    /// SetFileTime).
+    pub fn ctime(&self) -> Ts {
+        self.btime()
     }
 
     /// Windows mode model (1.x C++ permission_mode): links 0777,

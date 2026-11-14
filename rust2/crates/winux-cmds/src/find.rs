@@ -26,8 +26,10 @@
 //! read-only attribute clears the write bits; uid/gid via the shared SID
 //! id formula; `%i` file index, `%D` volume serial, `%n` link count, `%b`
 //! / `%k` the allocation size, `%F`/`-fstype` the volume filesystem name
-//! (matched case-insensitively); `-newerB*`/`%B` use the creation time
-//! (Windows has birth time; the GNU oracle build reports it unsupported).
+//! (matched case-insensitively); `-newerB*`/`%B` use the creation time,
+//! and C (`-ctime`, `-cnewer`, `%C`) maps to creation too (MinGW's
+//! st_ctime on Windows; Windows has no portable change time that survives
+//! SetFileTime).
 //!
 //! Documented deviations: warnings default OFF (GNU enables them when
 //! stdin is a terminal; the injected-IO contract cannot see a tty — use
@@ -51,7 +53,7 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io::{BufWriter, Read, Write};
 
-use winux_core::{CmdResult, Ctx, Io};
+use winux_core::{tr, CmdResult, Ctx, Io};
 
 use entry::{Basic, Entry, Kind, Ts};
 use expr::Node;
@@ -334,8 +336,14 @@ fn read_files0(run: &mut Run, src: &str) -> Option<Vec<String>> {
             Ok(d) => data = d,
             Err(e) => {
                 let msg = format!(
-                    "find: cannot open '{src}' for reading: {}\n",
-                    crate::fsutil::reason(&e)
+                    "{}\n",
+                    tr!(
+                        run.ctx,
+                        "command.find.error.cannot_open",
+                        "find: cannot open '{file}' for reading: {reason}",
+                        file = src,
+                        reason = crate::fsutil::reason(&e)
+                    )
                 );
                 run.error(&msg);
                 return None;
@@ -349,7 +357,14 @@ fn read_files0(run: &mut Run, src: &str) -> Option<Vec<String>> {
     }
     for p in parts {
         if p.is_empty() {
-            run.error("find: invalid zero-length file name\n");
+            run.error(&format!(
+                "{}\n",
+                tr!(
+                    run.ctx,
+                    "command.find.error.zero_length_filename",
+                    "find: invalid zero-length file name"
+                )
+            ));
             continue;
         }
         out.push(String::from_utf8_lossy(p).into_owned());
@@ -362,7 +377,14 @@ fn root_entry(run: &mut Run, opts: &Options, r: &str) -> Option<Entry> {
     let display = r.replace('\\', "/");
     let root_len = display.len();
     if r.is_empty() {
-        run.error("find: '': No such file or directory\n");
+        run.error(&format!(
+            "{}\n",
+            tr!(
+                run.ctx,
+                "command.find.error.empty_start_point",
+                "find: '': No such file or directory"
+            )
+        ));
         return None;
     }
     if let Some(dev) = winux_core::path::resolve_pseudo_device(r) {
@@ -401,7 +423,16 @@ fn root_entry(run: &mut Run, opts: &Options, r: &str) -> Option<Entry> {
                 b
             }
             Err(code) => {
-                let msg = format!("find: '{display}': {}\n", winfs::reason(code));
+                let msg = format!(
+                    "{}\n",
+                    tr!(
+                        run.ctx,
+                        "command.find.error.start_point_stat",
+                        "find: '{path}': {reason}",
+                        path = display,
+                        reason = winfs::reason(code)
+                    )
+                );
                 run.error(&msg);
                 return None;
             }
@@ -416,7 +447,15 @@ fn root_entry(run: &mut Run, opts: &Options, r: &str) -> Option<Entry> {
         let followed_dir =
             e.lbasic.kind == Kind::Lnk && e.followed().is_ok_and(|(b, _)| b.kind == Kind::Dir);
         if !followed_dir {
-            let msg = format!("find: '{display}': Not a directory\n");
+            let msg = format!(
+                "{}\n",
+                tr!(
+                    run.ctx,
+                    "command.find.error.start_point_not_a_directory",
+                    "find: '{path}': Not a directory",
+                    path = display
+                )
+            );
             run.error(&msg);
             return None;
         }
@@ -483,8 +522,14 @@ fn visit(
             id = Some((h.dev, h.ino));
             if let Some(anc) = stack.iter().find(|f| f.id == id) {
                 let msg = format!(
-                    "find: File system loop detected; '{}' is part of the same file system loop as '{}'.\n",
-                    e.path, anc.entry.path
+                    "{}\n",
+                    tr!(
+                        run.ctx,
+                        "command.find.error.file_system_loop",
+                        "find: File system loop detected; '{path}' is part of the same file system loop as '{other}'.",
+                        path = e.path,
+                        other = anc.entry.path
+                    )
                 );
                 run.error(&msg);
                 return None;
@@ -513,7 +558,16 @@ fn visit(
         match winfs::DirIter::open(&e.native) {
             Ok(iter) => return Some(Frame { iter, entry: e, id }),
             Err(code) => {
-                let msg = format!("find: '{}': {}\n", e.path, winfs::reason(code));
+                let msg = format!(
+                    "{}\n",
+                    tr!(
+                        run.ctx,
+                        "command.find.error.read_directory",
+                        "find: '{path}': {reason}",
+                        path = e.path,
+                        reason = winfs::reason(code)
+                    )
+                );
                 run.error(&msg);
             }
         }
@@ -575,7 +629,16 @@ fn walk_root(run: &mut Run, opts: &Options, expr: &mut Node, r: &str) {
             }
             Some(Err(code)) => {
                 let f = stack.pop().unwrap();
-                let msg = format!("find: '{}': {}\n", f.entry.path, winfs::reason(code));
+                let msg = format!(
+                    "{}\n",
+                    tr!(
+                        run.ctx,
+                        "command.find.error.walk",
+                        "find: '{path}': {reason}",
+                        path = f.entry.path,
+                        reason = winfs::reason(code)
+                    )
+                );
                 run.error(&msg);
                 if opts.post_order && f.entry.depth >= opts.mindepth {
                     expr.eval(run, &f.entry);

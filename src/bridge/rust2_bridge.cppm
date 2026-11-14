@@ -389,11 +389,15 @@ int run_command_with_stdin_source(
 /// entry; their v1 bodies had a host-side slurp pre-check whose wording
 /// GNU does not use (sha224sum/sha384sum/tac are silent rc 1 on a closed
 /// stdin, probed coreutils 9.4), so the streaming entry is also the
-/// GNU-exact error shape for them. The remaining v1 behaviors of
-/// run_command / run_command_with_stdin and the kRust2StdinCommands
-/// slurp are deliberately left untouched; later wiring waves pick this
-/// entry for commands whose GNU shape is genuinely streaming (see
-/// REPLACEMENT-RECIPE.md §5). The stream-ABI driver
+/// GNU-exact error shape for them. `find` joins the streaming set in the
+/// find wire lane: it reads fd 0 only for `-ok`/`-okdir` prompt replies
+/// and `-files0-from -` (lazily, late), so the pull callback leaves the
+/// handle untouched for a normal traversal and cannot block on an
+/// interactive slurp the way the v1 whole-buffer entry would. The
+/// remaining v1 behaviors of run_command / run_command_with_stdin and the
+/// kRust2StdinCommands slurp are deliberately left untouched; later
+/// wiring waves pick this entry for commands whose GNU shape is genuinely
+/// streaming (see REPLACEMENT-RECIPE.md §5). The stream-ABI driver
 /// (rust2-stream-driver) and its ctest lanes stay the bridge-level
 /// regression net for the entry.
 ///

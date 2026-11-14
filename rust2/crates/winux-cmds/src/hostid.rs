@@ -124,20 +124,14 @@ mod tests {
         let sc = scratch("hostid-env");
         let mut env = MapEnv::new();
         env.set("COMPUTERNAME", "box-a");
-        let ctx = Ctx {
-            cwd: sc.dir.clone(),
-            env: &env,
-        };
+        let ctx = Ctx::new(sc.dir.clone(), &env);
         let r = super::hostid_cmd(&[], &mut io.split(), &ctx).unwrap();
         assert_eq!(r, 0);
         let a = io.out();
         let mut io = MemIo::new("");
         let mut env = MapEnv::new();
         env.set("COMPUTERNAME", "box-b");
-        let ctx = Ctx {
-            cwd: sc.dir.clone(),
-            env: &env,
-        };
+        let ctx = Ctx::new(sc.dir.clone(), &env);
         let _ = super::hostid_cmd(&[], &mut io.split(), &ctx).unwrap();
         assert_ne!(a, io.out());
         assert_eq!(a.len(), 9);

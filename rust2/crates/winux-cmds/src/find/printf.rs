@@ -18,6 +18,8 @@
 
 use std::io::Write;
 
+use winux_core::{tr, Ctx};
+
 use super::entry::{Entry, Kind, Ts};
 use super::Run;
 
@@ -44,7 +46,7 @@ pub enum Seg {
 
 /// Compile a `-printf` format. Warnings go to `warn`; a fatal format
 /// error returns `Err(message)`.
-pub fn compile(fmt: &[u8], warn: &mut dyn Write) -> Result<Vec<Seg>, String> {
+pub fn compile(ctx: &Ctx, fmt: &[u8], warn: &mut dyn Write) -> Result<Vec<Seg>, String> {
     let mut segs: Vec<Seg> = Vec::new();
     let mut lit: Vec<u8> = Vec::new();
     let mut i = 0;
@@ -59,7 +61,12 @@ pub fn compile(fmt: &[u8], warn: &mut dyn Write) -> Result<Vec<Seg>, String> {
             if i + 1 >= fmt.len() {
                 let _ = writeln!(
                     warn,
-                    "find: warning: escape `\\' followed by nothing at all"
+                    "{}",
+                    tr!(
+                        ctx,
+                        "command.find.warning.escape_at_end",
+                        "find: warning: escape `\\' followed by nothing at all"
+                    )
                 );
                 lit.push(b'\\');
                 i += 1;
@@ -94,7 +101,16 @@ pub fn compile(fmt: &[u8], warn: &mut dyn Write) -> Result<Vec<Seg>, String> {
                 _ => 0,
             };
             if v == 0 {
-                let _ = writeln!(warn, "find: warning: unrecognized escape `\\{}'", k as char);
+                let _ = writeln!(
+                    warn,
+                    "{}",
+                    tr!(
+                        ctx,
+                        "command.find.warning.unrecognised_escape",
+                        "find: warning: unrecognized escape `\\{escape}'",
+                        escape = k as char
+                    )
+                );
                 lit.push(b'\\');
                 i += 1;
                 continue;
@@ -110,7 +126,11 @@ pub fn compile(fmt: &[u8], warn: &mut dyn Write) -> Result<Vec<Seg>, String> {
         }
         // directive
         if i + 1 >= fmt.len() {
-            return Err("error: % at end of format string".to_string());
+            return Err(tr!(
+                ctx,
+                "command.find.error.percent_at_end",
+                "find: error: % at end of format string"
+            ));
         }
         let start = i;
         let mut j = i + 1;
@@ -158,7 +178,7 @@ pub fn compile(fmt: &[u8], warn: &mut dyn Write) -> Result<Vec<Seg>, String> {
             i = j + 1;
             continue;
         }
-        if d != 0 && b"abcdDfFgGhHiklmMnpPsStuUyYZ".contains(&d) {
+        if d != 0 && b"abcdDfFgGhHiklmMnopPsStuUyYZ".contains(&d) {
             flush_lit(&mut segs, &mut lit);
             segs.push(Seg::Dir(spec, d));
             i = j + 1;
@@ -173,17 +193,24 @@ pub fn compile(fmt: &[u8], warn: &mut dyn Write) -> Result<Vec<Seg>, String> {
             }
             let _ = writeln!(
                 warn,
-                "find: warning: format directive `%{}' should be followed by another character",
-                d as char
+                "{}",
+                tr!(
+                    ctx,
+                    "command.find.warning.format_directive_needs_char",
+                    "find: warning: format directive `%{directive}' should be followed by another character",
+                    directive = d as char
+                )
             );
             lit.extend_from_slice(&fmt[start..=j]);
             i = j + 1;
             continue;
         }
         if d == 0 || b"{[(".contains(&d) {
-            return Err(format!(
-                "error: the format directive `%{}' is reserved for future use",
-                if d == 0 {
+            return Err(tr!(
+                ctx,
+                "command.find.error.format_directive_reserved",
+                "find: error: the format directive `%{directive}' is reserved for future use",
+                directive = if d == 0 {
                     String::new()
                 } else {
                     (d as char).to_string()
@@ -192,8 +219,13 @@ pub fn compile(fmt: &[u8], warn: &mut dyn Write) -> Result<Vec<Seg>, String> {
         }
         let _ = writeln!(
             warn,
-            "find: warning: unrecognized format directive `%{}'",
-            d as char
+            "{}",
+            tr!(
+                ctx,
+                "command.find.warning.unrecognised_format_directive",
+                "find: warning: unrecognized format directive `%{directive}'",
+                directive = d as char
+            )
         );
         lit.extend_from_slice(&fmt[start..=j]);
         i = j + 1;
@@ -430,9 +462,16 @@ pub fn mode_string(e: &Entry) -> String {
     s
 }
 
-/// 512-byte blocks allocated (GNU ST_NBLOCKS).
+/// 512-byte blocks allocated (GNU ST_NBLOCKS, Windows value model).
+/// NTFS reports resident data with a tiny allocation; the 1.x C++ find
+/// clamped a non-empty file to the 1 KiB minimum allocation it models.
 pub fn blocks512(e: &Entry) -> u64 {
-    e.full().map(|h| h.alloc.div_ceil(512)).unwrap_or(0)
+    let blocks = e.full().map(|h| h.alloc.div_ceil(512)).unwrap_or(0);
+    if e.size() > 0 {
+        blocks.max(2)
+    } else {
+        blocks
+    }
 }
 
 /// `%Y` letter of an entry.
@@ -458,7 +497,7 @@ pub fn render(run: &mut Run, segs: &[Seg], e: &Entry, out: &mut Vec<u8>) -> bool
             Seg::Time(spec, which, k) => {
                 let ts = match which {
                     b'A' => e.st().atime,
-                    b'B' => e.st().btime,
+                    b'B' => e.btime(),
                     b'C' => e.ctime(),
                     _ => e.st().mtime,
                 };
@@ -519,6 +558,15 @@ pub fn render(run: &mut Run, segs: &[Seg], e: &Entry, out: &mut Vec<u8>) -> bool
                         .to_string()
                         .as_bytes(),
                 ),
+                // [GNU] %o is the volume I/O block size (st_blksize); the
+                // Windows value model uses the volume cluster size.
+                b'o' => fmt_s(
+                    out,
+                    spec,
+                    super::winfs::io_block_size(&e.native)
+                        .to_string()
+                        .as_bytes(),
+                ),
                 b'p' => fmt_s(out, spec, e.path.as_bytes()),
                 b'P' => {
                     let rest: &[u8] = if e.depth > 0 {
@@ -532,15 +580,15 @@ pub fn render(run: &mut Run, segs: &[Seg], e: &Entry, out: &mut Vec<u8>) -> bool
                 b's' => fmt_s(out, spec, e.size().to_string().as_bytes()),
                 b'S' => {
                     let size = e.size();
-                    let blocks = blocks512(e);
+                    // Windows value model: the 1.x C++ find reported the
+                    // raw allocation/logical ratio (resident NTFS data
+                    // makes this 8/1, not the 512-byte block ratio the
+                    // GNU block-count formula would give).
+                    let alloc = e.full().map(|h| h.alloc).unwrap_or(0);
                     let v = if size == 0 {
-                        if blocks == 0 {
-                            1.0
-                        } else {
-                            f64::INFINITY
-                        }
+                        1.0
                     } else {
-                        (blocks as f64 * 512.0) / size as f64
+                        alloc as f64 / size as f64
                     };
                     fmt_g(out, spec, v)
                 }
@@ -551,8 +599,13 @@ pub fn render(run: &mut Run, segs: &[Seg], e: &Entry, out: &mut Vec<u8>) -> bool
                     // empty, the run exits 1 (probed: "getfilecon failed")
                     fmt_s(out, spec, b"");
                     let msg = format!(
-                        "find: getfilecon failed: '{}': Operation not supported\n",
-                        e.path
+                        "{}\n",
+                        tr!(
+                            run.ctx,
+                            "command.find.error.getfilecon_failed",
+                            "find: getfilecon failed: '{path}': Operation not supported",
+                            path = e.path
+                        )
                     );
                     run.error(&msg);
                 }
@@ -632,8 +685,10 @@ mod tests {
     use super::*;
 
     fn comp(f: &str) -> (Vec<Seg>, String) {
+        let sc = winux_core::test_support::ScratchCtx::new("find-printf");
+        let ctx = sc.ctx();
         let mut w = Vec::new();
-        let s = compile(f.as_bytes(), &mut w).unwrap();
+        let s = compile(&ctx, f.as_bytes(), &mut w).unwrap();
         (s, String::from_utf8(w).unwrap())
     }
 
@@ -657,8 +712,10 @@ mod tests {
             _ => panic!(),
         }
         let mut w = Vec::new();
-        assert!(compile(b"%", &mut w).is_err());
-        assert!(compile(b"%{", &mut w).is_err());
+        let sc = winux_core::test_support::ScratchCtx::new("find-printf-err");
+        let ctx = sc.ctx();
+        assert!(compile(&ctx, b"%", &mut w).is_err());
+        assert!(compile(&ctx, b"%{", &mut w).is_err());
     }
 
     #[test]

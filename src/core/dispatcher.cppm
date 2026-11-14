@@ -977,7 +977,12 @@ auto behavior_for(std::string_view name) -> CommandBehavior {
 
   // These commands own structured help output and translate it themselves.
   // Let their handlers receive --help instead of the generic metadata path.
-  if (name == "top" || name == "mpicalc" || name == "tzset") {
+  // find joins them in the #1488 wiring: GNU findutils owns --help,
+  // --version and the single-dash -help/-version predicates, and the rust2
+  // body prints the probed 4.9 blocks byte-for-byte (gate rows fd001-fd005
+  // are strict against the GNU oracle).
+  if (name == "top" || name == "mpicalc" || name == "tzset" ||
+      name == "find") {
     behavior.standard_interception_enabled =
         command_owned_help_interception_disabled;
   }

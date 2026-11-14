@@ -150,6 +150,13 @@ extern "system" {
     fn SetFileAttributesW(name: *const u16, attrs: DWORD) -> i32;
     fn GetLastError() -> DWORD;
     fn GetVolumePathNameW(name: *const u16, out: *mut u16, len: DWORD) -> i32;
+    fn GetDiskFreeSpaceW(
+        root: *const u16,
+        sectors: *mut DWORD,
+        bytes_per_sector: *mut DWORD,
+        free: *mut DWORD,
+        total: *mut DWORD,
+    ) -> i32;
     fn GetVolumeInformationW(
         root: *const u16,
         vol_name: *mut u16,
@@ -555,6 +562,37 @@ pub fn fs_type(path: &[u16]) -> String {
         }
         let n = fs.iter().position(|&c| c == 0).unwrap_or(0);
         String::from_utf16_lossy(&fs[..n])
+    }
+}
+
+/// Preferred I/O block size of the volume holding `path` (GNU `%o`,
+/// `st_blksize`). Windows has no per-file st_blksize; the 1.x C++ find
+/// used the volume's cluster size (`GetDiskFreeSpaceW`: sectors per
+/// cluster × bytes per sector), defaulting to 4096 when the query fails.
+pub fn io_block_size(path: &[u16]) -> u64 {
+    let p = z(path);
+    let mut root = [0u16; 1024];
+    let mut sectors = 0u32;
+    let mut bytes = 0u32;
+    let (mut free, mut total) = (0u32, 0u32);
+    unsafe {
+        if GetVolumePathNameW(p.as_ptr(), root.as_mut_ptr(), root.len() as DWORD) == 0
+            || GetDiskFreeSpaceW(
+                root.as_ptr(),
+                &mut sectors,
+                &mut bytes,
+                &mut free,
+                &mut total,
+            ) == 0
+        {
+            return 4096;
+        }
+    }
+    let block = u64::from(sectors) * u64::from(bytes);
+    if block == 0 {
+        4096
+    } else {
+        block
     }
 }
 

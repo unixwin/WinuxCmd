@@ -15,7 +15,7 @@
 use std::io::Write;
 use std::path::PathBuf;
 
-use winux_core::Ctx;
+use winux_core::{tr, Ctx};
 
 use super::entry::Entry;
 use super::printf::base_name;
@@ -161,7 +161,17 @@ fn exec_dir(ctx: &Ctx, e: &Entry) -> PathBuf {
 /// `-ok` prompt on stderr, reply line from stdin ("< cmd ... path > ? ").
 fn confirm(run: &mut Run, cmd: &str, path: &str) -> bool {
     let _ = run.out.flush();
-    let _ = write!(run.err, "< {cmd} ... {path} > ? ");
+    let _ = write!(
+        run.err,
+        "{}",
+        tr!(
+            run.ctx,
+            "command.find.prompt.ok",
+            "< {command} ... {path} > ? ",
+            command = cmd,
+            path = path
+        )
+    );
     let _ = run.err.flush();
     let mut line = Vec::new();
     let mut b = [0u8; 1];
@@ -183,18 +193,39 @@ fn confirm(run: &mut Run, cmd: &str, path: &str) -> bool {
 /// diagnostic is printed GNU-style).
 fn launch(run: &mut Run, args: &[String], dir: Option<PathBuf>, close_stdin: bool) -> Option<i32> {
     let _ = run.out.flush();
-    let child_ctx = Ctx {
-        cwd: dir.unwrap_or_else(|| run.ctx.cwd.clone()),
-        env: run.ctx.env,
-    };
+    let child_ctx = Ctx::with_host(
+        dir.unwrap_or_else(|| run.ctx.cwd.clone()),
+        run.ctx.env,
+        run.ctx.host,
+    );
     let launch = match resolve_child(&args[0], &child_ctx) {
         ChildResolve::Found(l) => l,
         other => {
             let why = match other {
-                ChildResolve::NotFound => "No such file or directory",
-                ChildResolve::NotADirectory => "Not a directory",
-                ChildResolve::BadFormat => "Exec format error",
-                _ => "Permission denied",
+                ChildResolve::NotFound => tr!(
+                    run.ctx,
+                    "command.find.error.exec_no_such_file",
+                    "No such file or directory"
+                ),
+                ChildResolve::NotADirectory => {
+                    tr!(
+                        run.ctx,
+                        "command.find.error.exec_not_a_directory",
+                        "Not a directory"
+                    )
+                }
+                ChildResolve::BadFormat => {
+                    tr!(
+                        run.ctx,
+                        "command.find.error.exec_bad_format",
+                        "Exec format error"
+                    )
+                }
+                _ => tr!(
+                    run.ctx,
+                    "command.find.error.exec_permission_denied",
+                    "Permission denied"
+                ),
             };
             // GNU: the forked child reports the exec failure and exits
             // nonzero; `;` only makes the test false (rc stays 0), a `{} +`
@@ -215,9 +246,14 @@ fn launch(run: &mut Run, args: &[String], dir: Option<PathBuf>, close_stdin: boo
         Err(err) => {
             let _ = writeln!(
                 run.err,
-                "find: '{}': {}",
-                args[0],
-                crate::fsutil::reason(&err)
+                "{}",
+                tr!(
+                    run.ctx,
+                    "command.find.error.exec_spawn",
+                    "find: '{command}': {reason}",
+                    command = args[0],
+                    reason = crate::fsutil::reason(&err)
+                )
             );
             None
         }

@@ -325,6 +325,21 @@ fn help_version_debug() {
 }
 
 #[test]
+fn fprint_dev_stdout_routes_to_stdout() {
+    // fd362 pin (#1488 find wire): the gate harness cannot transport the
+    // literal '/dev/stdout' operand — the host's niubash-family bash rewrites
+    // it to CONOUT$ in native-child argv before the driver sees it
+    // (gate/gen-cases.py fd362 comment, measured 2026-11-14). The find-side
+    // special case (open_file: /dev/stdout => Dest::Stdout, GNU findutils
+    // 4.9) therefore needs this unit pin, not a gate row.
+    let sc = fixture("fprint-stdout");
+    let (rc, out, err) = run(&sc, &["t/a/f5", "-fprint", "/dev/stdout"], "");
+    assert_eq!((rc, out.as_str(), err.as_str()), (0, "t/a/f5\n", ""));
+    let (rc, out, _) = run(&sc, &["t/a/f5", "-fprintf", "/dev/stdout", "%f\\n"], "");
+    assert_eq!((rc, out.as_str()), (0, "f5\n"));
+}
+
+#[test]
 fn files0_from_and_fprint() {
     let sc = fixture("files0");
     std::fs::write(sc.path("list"), b"t/a\0t/e\0").unwrap();

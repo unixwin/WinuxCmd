@@ -11,7 +11,7 @@
 
 use std::io::Write;
 
-use winux_core::Ctx;
+use winux_core::{tr, Ctx};
 use winux_regex::dialect::{Dialect, DIALECT_NAMES};
 
 use super::entry::Ts;
@@ -150,6 +150,7 @@ pub fn parse<'x>(
         ignore_race: false,
     };
     // ---- leading options (util.c process_leading_options) ----
+    let mut leading_dialect: Option<Dialect> = None;
     let mut i = 0;
     while i < args.len() {
         let a = args[i].as_str();
@@ -157,18 +158,75 @@ pub fn parse<'x>(
             "-H" => opts.follow = Follow::Args,
             "-L" => opts.follow = Follow::Always,
             "-P" => opts.follow = Follow::Never,
+            // 1.x find accepted the positional -follow in the leading
+            // option run; GNU 4.9 reads it as an expression token there
+            // ("paths must precede expression"). Kept as a compatibility
+            // extension (#1488 wire: ctest find.find_follow_and_
+            // optimization_flags_are_accepted_before_roots).
+            "-follow" => opts.follow = Follow::Always,
+            // Same compatibility rule for the race toggles (GNU 4.9 only
+            // accepts them inside the expression).
+            "-ignore_readdir_race" => opts.ignore_race = true,
+            "-noignore_readdir_race" => opts.ignore_race = false,
+            // 1.x find also accepted -regextype before the start points
+            // (GNU 4.9 reads it as an expression token there).
+            "-regextype" => {
+                let Some(t) = args.get(i + 1) else {
+                    return Err(fail(tr!(
+                        ctx,
+                        "command.find.error.missing_argument",
+                        "missing argument to `{predicate}'",
+                        predicate = a
+                    )));
+                };
+                match Dialect::from_name(t) {
+                    Some(d) => {
+                        leading_dialect = Some(d);
+                        i += 1;
+                    }
+                    None => {
+                        let list: Vec<String> = DIALECT_NAMES
+                            .iter()
+                            .map(|(n, _)| format!("'{n}'"))
+                            .collect();
+                        return Err(fail(tr!(
+                            ctx,
+                            "command.find.error.unknown_regextype",
+                            "Unknown regular expression type '{kind}'; valid types are {types}.",
+                            kind = t,
+                            types = list.join(", ")
+                        )));
+                    }
+                }
+            }
             "--" => {
                 i += 1;
                 break;
             }
-            "-D" => {
+            // -D and its 1.x --debug alias (WinuxCmd extension; GNU 4.9
+            // has no --debug spelling and reads it as an unknown predicate).
+            "-D" | "--debug" => {
                 if i + 1 >= args.len() {
                     return Err(Fail(vec![
-                        "find: Missing argument after the -D option.".to_string(),
-                        "Try 'find --help' for more information.".to_string(),
+                        format!(
+                            "find: {}",
+                            tr!(
+                                ctx,
+                                "command.find.error.missing_debug_argument",
+                                "Missing argument after the -D option."
+                            )
+                        ),
+                        format!(
+                            "find: {}",
+                            tr!(
+                                ctx,
+                                "command.find.error.try_help",
+                                "Try 'find --help' for more information."
+                            )
+                        ),
                     ]));
                 }
-                if debug_options(&args[i + 1], out, err) {
+                if debug_options(ctx, &args[i + 1], out, err) {
                     return Ok(Parsed::Done);
                 }
                 i += 1;
@@ -176,12 +234,18 @@ pub fn parse<'x>(
             _ if a.starts_with("-O") => {
                 let lvl = &a[2..];
                 if lvl.is_empty() {
-                    return Err(fail(
-                        "The -O option must be immediately followed by a decimal integer",
-                    ));
+                    return Err(fail(tr!(
+                        ctx,
+                        "command.find.error.optimisation_missing_level",
+                        "The -O option must be immediately followed by a decimal integer"
+                    )));
                 }
                 if !lvl.bytes().all(|b| b.is_ascii_digit()) {
-                    return Err(fail("Please specify a decimal number immediately after -O"));
+                    return Err(fail(tr!(
+                        ctx,
+                        "command.find.error.optimisation_not_decimal",
+                        "Please specify a decimal number immediately after -O"
+                    )));
                 }
             }
             _ => break,
@@ -202,7 +266,7 @@ pub fn parse<'x>(
         files: Vec::new(),
         first_nonoption: None,
         warnings: false,
-        dialect: Dialect::Emacs,
+        dialect: leading_dialect.unwrap_or(Dialect::Emacs),
         cur_day_start: start.ns() - DAY_NS,
         full_days: false,
         start,
@@ -226,12 +290,26 @@ pub fn parse<'x>(
     while p.i < args.len() {
         let a = args[p.i].clone();
         if !looks_like_expression(&a, false) {
-            let mut lines = vec![format!("find: paths must precede expression: `{a}'")];
+            let mut lines = vec![format!(
+                "find: {}",
+                tr!(
+                    ctx,
+                    "command.find.error.paths_must_precede",
+                    "paths must precede expression: `{operand}'",
+                    operand = a
+                )
+            )];
             let path = crate::fs_win::imp::api_path(ctx, &a);
             if winfs::attributes(&path.encode_utf16().collect::<Vec<_>>()).is_some() {
                 let last = p.toks.last().map(|t| t.name.clone()).unwrap_or_default();
                 lines.push(format!(
-                    "find: possible unquoted pattern after predicate `{last}'?"
+                    "find: {}",
+                    tr!(
+                        ctx,
+                        "command.find.error.possible_unquoted_pattern",
+                        "possible unquoted pattern after predicate `{predicate}'?",
+                        predicate = last
+                    )
                 ));
             }
             return Err(Fail(lines));
@@ -276,26 +354,49 @@ pub fn parse<'x>(
         p.toks.last_mut().unwrap().artificial = true;
     }
     if p.has_delete && p.has_prune && !p.opts.explicit_depth {
-        return Err(fail(
-            "The -delete action automatically turns on -depth, but -prune does nothing when -depth is in effect.  If you want to carry on anyway, just explicitly use the -depth option.",
-        ));
+        return Err(fail(tr!(
+            ctx,
+            "command.find.error.delete_prune_depth",
+            "The -delete action automatically turns on -depth, but -prune does nothing when -depth is in effect.  If you want to carry on anyway, just explicitly use the -depth option."
+        )));
     }
     let mut toks: Vec<Tok> = std::mem::take(&mut p.toks);
     let mut idx = 0usize;
-    let tree = get_expr(&mut toks, &mut idx, 0, None)?;
+    let tree = get_expr(ctx, &mut toks, &mut idx, 0, None)?;
     if idx < toks.len() {
         if toks[idx].tt == TT::Close {
-            return Err(fail("you have too many ')'"));
+            return Err(fail(tr!(
+                ctx,
+                "command.find.error.too_many_close_parens",
+                "you have too many ')'"
+            )));
         }
-        return Err(fail(format!(
-            "unexpected extra predicate '{}'",
-            toks[idx].name
+        return Err(fail(tr!(
+            ctx,
+            "command.find.error.unexpected_extra_predicate",
+            "unexpected extra predicate '{predicate}'",
+            predicate = toks[idx].name
         )));
     }
     if p.opts.files0_from.is_some() && !p.roots.is_empty() {
         return Err(Fail(vec![
-            format!("find: extra operand '{}'", p.roots[0]),
-            "find: file operands cannot be combined with -files0-from".to_string(),
+            format!(
+                "find: {}",
+                tr!(
+                    ctx,
+                    "command.find.error.extra_operand",
+                    "extra operand '{operand}'",
+                    operand = p.roots[0]
+                )
+            ),
+            format!(
+                "find: {}",
+                tr!(
+                    ctx,
+                    "command.find.error.files0_with_operands",
+                    "file operands cannot be combined with -files0-from"
+                )
+            ),
         ]));
     }
     Ok(Parsed::Run {
@@ -307,7 +408,7 @@ pub fn parse<'x>(
 }
 
 /// `-D` list. Returns true when `help` asked to stop.
-fn debug_options(list: &str, out: &mut dyn Write, err: &mut dyn Write) -> bool {
+fn debug_options(ctx: &Ctx, list: &str, out: &mut dyn Write, err: &mut dyn Write) -> bool {
     let mut help = false;
     for t in list.split(',') {
         match t {
@@ -315,7 +416,16 @@ fn debug_options(list: &str, out: &mut dyn Write, err: &mut dyn Write) -> bool {
             "help" => help = true,
             "" => {}
             other => {
-                let _ = writeln!(err, "find: Ignoring unrecognised debug flag '{other}'");
+                let _ = writeln!(
+                    err,
+                    "find: {}",
+                    tr!(
+                        ctx,
+                        "command.find.warning.unknown_debug_flag",
+                        "Ignoring unrecognised debug flag '{flag}'",
+                        flag = other
+                    )
+                );
             }
         }
     }
@@ -327,44 +437,61 @@ fn debug_options(list: &str, out: &mut dyn Write, err: &mut dyn Write) -> bool {
 
 /// tree.c get_expr.
 fn get_expr(
+    ctx: &Ctx,
     toks: &mut [Tok],
     idx: &mut usize,
     prev_prec: u8,
     prev: Option<usize>,
 ) -> Result<Node, Fail> {
     if *idx >= toks.len() {
-        return Err(fail("invalid expression"));
+        return Err(fail(tr!(
+            ctx,
+            "command.find.error.invalid_expression",
+            "invalid expression"
+        )));
     }
     let this = *idx;
     let node = match toks[this].tt {
         TT::Bi => {
-            return Err(fail(format!(
-                "invalid expression; you have used a binary operator '{}' with nothing before it.",
-                toks[this].name
+            return Err(fail(tr!(
+                ctx,
+                "command.find.error.binary_operator_without_left",
+                "invalid expression; you have used a binary operator '{operator}' with nothing before it.",
+                operator = toks[this].name
             )))
         }
         TT::Close => {
             let pv = match prev {
                 None => {
-                    return Err(fail(format!(
-                        "invalid expression: expected expression before closing parentheses '{}'.",
-                        toks[this].name
+                    return Err(fail(tr!(
+                        ctx,
+                        "command.find.error.expression_before_close_paren",
+                        "invalid expression: expected expression before closing parentheses '{paren}'.",
+                        paren = toks[this].name
                     )))
                 }
                 Some(pv) => pv,
             };
             if matches!(toks[pv].tt, TT::Uni | TT::Bi) && !toks[this].artificial {
-                return Err(fail(format!(
-                    "expected an expression between '{}' and ')'",
-                    toks[pv].name
+                return Err(fail(tr!(
+                    ctx,
+                    "command.find.error.expression_between",
+                    "expected an expression between '{operator}' and ')'",
+                    operator = toks[pv].name
                 )));
             } else if toks[this].artificial {
-                return Err(fail(format!(
-                    "expected an expression after '{}'",
-                    toks[pv].name
+                return Err(fail(tr!(
+                    ctx,
+                    "command.find.error.expression_after",
+                    "expected an expression after '{operator}'",
+                    operator = toks[pv].name
                 )));
             } else {
-                return Err(fail("invalid expression; you have too many ')'"));
+                return Err(fail(tr!(
+                    ctx,
+                    "command.find.error.invalid_expression_too_many_close_parens",
+                    "invalid expression; you have too many ')'"
+                )));
             }
         }
         TT::Primary => {
@@ -373,27 +500,33 @@ fn get_expr(
         }
         TT::Uni => {
             *idx += 1;
-            let child = get_expr(toks, idx, 4, Some(this))?;
+            let child = get_expr(ctx, toks, idx, 4, Some(this))?;
             Node::Not(Box::new(child))
         }
         TT::Open => {
             if this + 1 >= toks.len() || toks[this + 1].artificial {
-                return Err(fail(format!(
-                    "invalid expression; expected to find a ')' but didn't see one. Perhaps you need an extra predicate after '{}'",
-                    toks[this].name
+                return Err(fail(tr!(
+                    ctx,
+                    "command.find.error.missing_close_paren_after_predicate",
+                    "invalid expression; expected to find a ')' but didn't see one. Perhaps you need an extra predicate after '{operator}'",
+                    operator = toks[this].name
                 )));
             }
             *idx += 1;
             if toks[*idx].tt == TT::Close {
-                return Err(fail(
-                    "invalid expression; empty parentheses are not allowed.",
-                ));
+                return Err(fail(tr!(
+                    ctx,
+                    "command.find.error.empty_parentheses",
+                    "invalid expression; empty parentheses are not allowed."
+                )));
             }
-            let inner = get_expr(toks, idx, 0, Some(this))?;
+            let inner = get_expr(ctx, toks, idx, 0, Some(this))?;
             if *idx >= toks.len() || toks[*idx].tt != TT::Close {
-                return Err(fail(
-                    "invalid expression; I was expecting to find a ')' somewhere but did not see one.",
-                ));
+                return Err(fail(tr!(
+                    ctx,
+                    "command.find.error.missing_close_paren",
+                    "invalid expression; I was expecting to find a ')' somewhere but did not see one."
+                )));
             }
             *idx += 1;
             inner
@@ -403,15 +536,25 @@ fn get_expr(
         return Ok(node);
     }
     if toks[*idx].prec > prev_prec {
-        return scan_rest(toks, idx, node, prev_prec);
+        return scan_rest(ctx, toks, idx, node, prev_prec);
     }
     Ok(node)
 }
 
 /// tree.c scan_rest.
-fn scan_rest(toks: &mut [Tok], idx: &mut usize, head: Node, prev_prec: u8) -> Result<Node, Fail> {
+fn scan_rest(
+    ctx: &Ctx,
+    toks: &mut [Tok],
+    idx: &mut usize,
+    head: Node,
+    prev_prec: u8,
+) -> Result<Node, Fail> {
     if *idx >= toks.len() || toks[*idx].tt == TT::Close {
-        return Err(fail("invalid expression"));
+        return Err(fail(tr!(
+            ctx,
+            "command.find.error.invalid_expression",
+            "invalid expression"
+        )));
     }
     let mut tree = head;
     while *idx < toks.len() && toks[*idx].prec > prev_prec {
@@ -419,7 +562,7 @@ fn scan_rest(toks: &mut [Tok], idx: &mut usize, head: Node, prev_prec: u8) -> Re
             TT::Bi => {
                 let op = *idx;
                 *idx += 1;
-                let right = get_expr(toks, idx, toks[op].prec, Some(op))?;
+                let right = get_expr(ctx, toks, idx, toks[op].prec, Some(op))?;
                 tree = match toks[op].bin {
                     b'a' => Node::And(Box::new(tree), Box::new(right)),
                     b'o' => Node::Or(Box::new(tree), Box::new(right)),
@@ -427,7 +570,13 @@ fn scan_rest(toks: &mut [Tok], idx: &mut usize, head: Node, prev_prec: u8) -> Re
                 };
             }
             TT::Close => return Ok(tree),
-            _ => return Err(fail("invalid expression")),
+            _ => {
+                return Err(fail(tr!(
+                    ctx,
+                    "command.find.error.invalid_expression",
+                    "invalid expression"
+                )))
+            }
         }
     }
     Ok(tree)
@@ -502,12 +651,23 @@ impl<'x, 'e> P<'x, 'e> {
                 self.i += 1;
                 Ok(a.clone())
             }
-            None => Err(fail(format!("missing argument to `{pred}'"))),
+            None => Err(fail(tr!(
+                self.ctx,
+                "command.find.error.missing_argument",
+                "missing argument to `{predicate}'",
+                predicate = pred
+            ))),
         }
     }
 
     fn invalid(&self, a: &str, pred: &str) -> Fail {
-        fail(format!("invalid argument `{a}' to `{pred}'"))
+        fail(tr!(
+            self.ctx,
+            "command.find.error.invalid_argument",
+            "invalid argument `{argument}' to `{predicate}'",
+            argument = a,
+            predicate = pred
+        ))
     }
 
     fn found(&mut self, name: &str, ty: ArgType) {
@@ -517,7 +677,14 @@ impl<'x, 'e> P<'x, 'e> {
                 if let Some(first) = &self.first_nonoption {
                     if self.warnings {
                         self.pending_warn = Some(format!(
-                            "find: warning: you have specified the global option {name} after the argument {first}, but global options are not positional, i.e., {name} affects tests specified before it as well as those specified after it.  Please specify global options before other arguments."
+                            "find: warning: {}",
+                            tr!(
+                                self.ctx,
+                                "command.find.warning.global_option_after_argument",
+                                "you have specified the global option {option} after the argument {argument}, but global options are not positional, i.e., {option} affects tests specified before it as well as those specified after it.  Please specify global options before other arguments.",
+                                option = name,
+                                argument = first
+                            )
                         ));
                     }
                 }
@@ -547,7 +714,15 @@ impl<'x, 'e> P<'x, 'e> {
                 Err(e)
             }
         });
-        r.map_err(|e| fail(format!("'{f}': {}", winfs::reason(e))))
+        r.map_err(|e| {
+            fail(tr!(
+                self.ctx,
+                "command.find.error.reference_stat",
+                "'{file}': {reason}",
+                file = f,
+                reason = winfs::reason(e)
+            ))
+        })
     }
 
     fn open_file(&mut self, f: &str) -> Result<Dest, Fail> {
@@ -569,7 +744,13 @@ impl<'x, 'e> P<'x, 'e> {
                 });
                 Ok(Dest::File(self.files.len() - 1))
             }
-            Err(e) => Err(fail(format!("'{f}': {}", crate::fsutil::reason(&e)))),
+            Err(e) => Err(fail(tr!(
+                self.ctx,
+                "command.find.error.open_file",
+                "'{file}': {reason}",
+                file = f,
+                reason = crate::fsutil::reason(&e)
+            ))),
         }
     }
 
@@ -666,11 +847,23 @@ impl<'x, 'e> P<'x, 'e> {
             let x = a.as_bytes()[6];
             let y = a.as_bytes()[7];
             if x == b't' || !b"aBcm".contains(&x) || !b"aBcmt".contains(&y) {
-                return Err(fail(format!("invalid predicate `{a}'")));
+                return Err(fail(tr!(
+                    self.ctx,
+                    "command.find.error.invalid_predicate",
+                    "invalid predicate `{predicate}'",
+                    predicate = a
+                )));
             }
             let v = match self.args.get(self.i) {
                 Some(v) => v.clone(),
-                None => return Err(fail(format!("The '{a}' test needs an argument"))),
+                None => {
+                    return Err(fail(tr!(
+                        self.ctx,
+                        "command.find.error.test_needs_argument",
+                        "The '{predicate}' test needs an argument",
+                        predicate = a
+                    )))
+                }
             };
             self.i += 1;
             let field = match x {
@@ -684,8 +877,11 @@ impl<'x, 'e> P<'x, 'e> {
                 match crate::touch::parse_datetime(&v, base) {
                     Some(ft) => Ts::from_ticks(ft.as_u64() as i64).ns(),
                     None => {
-                        return Err(fail(format!(
-                            "I cannot figure out how to interpret '{v}' as a date or time"
+                        return Err(fail(tr!(
+                            self.ctx,
+                            "command.find.error.unparsable_date",
+                            "I cannot figure out how to interpret '{value}' as a date or time",
+                            value = v
                         )))
                     }
                 }
@@ -742,7 +938,12 @@ impl<'x, 'e> P<'x, 'e> {
                 if name == "d" && self.warnings {
                     let _ = writeln!(
                         err,
-                        "find: warning: the -d option is deprecated; please use -depth instead, because the latter is a POSIX-compliant feature."
+                        "find: warning: {}",
+                        tr!(
+                            self.ctx,
+                            "command.find.warning.deprecated_d",
+                            "the -d option is deprecated; please use -depth instead, because the latter is a POSIX-compliant feature."
+                        )
                     );
                 }
                 self.opts.post_order = true;
@@ -764,8 +965,12 @@ impl<'x, 'e> P<'x, 'e> {
                 self.found(a, ArgType::Option);
                 let v = self.arg(a)?;
                 if !digits_only(&v) {
-                    return Err(fail(format!(
-                        "Expected a positive decimal integer argument to {a}, but got '{v}'"
+                    return Err(fail(tr!(
+                        self.ctx,
+                        "command.find.error.expected_positive_integer",
+                        "Expected a positive decimal integer argument to {option}, but got '{value}'",
+                        option = a,
+                        value = v
                     )));
                 }
                 let n: usize = v.parse().unwrap_or(usize::MAX);
@@ -817,9 +1022,12 @@ impl<'x, 'e> P<'x, 'e> {
                             .iter()
                             .map(|(n, _)| format!("'{n}'"))
                             .collect();
-                        return Err(fail(format!(
-                            "Unknown regular expression type '{t}'; valid types are {}.",
-                            list.join(", ")
+                        return Err(fail(tr!(
+                            self.ctx,
+                            "command.find.error.unknown_regextype",
+                            "Unknown regular expression type '{kind}'; valid types are {types}.",
+                            kind = t,
+                            types = list.join(", ")
                         )));
                     }
                 }
@@ -849,7 +1057,14 @@ impl<'x, 'e> P<'x, 'e> {
                     };
                     let _ = writeln!(
                         err,
-                        "find: warning: '{a}' matches against basenames only, but the given pattern contains a directory separator ('/'), thus the expression will evaluate to false all the time.  Did you mean '{alt}'?"
+                        "find: warning: {}",
+                        tr!(
+                            self.ctx,
+                            "command.find.warning.name_with_slash",
+                            "'{predicate}' matches against basenames only, but the given pattern contains a directory separator ('/'), thus the expression will evaluate to false all the time.  Did you mean '{alternative}'?",
+                            predicate = a,
+                            alternative = alt
+                        )
                     );
                 }
                 self.push_prim(
@@ -873,7 +1088,14 @@ impl<'x, 'e> P<'x, 'e> {
                 {
                     let _ = writeln!(
                         err,
-                        "find: warning: -{name} {pat} will not match anything because it ends with /."
+                        "find: warning: {}",
+                        tr!(
+                            self.ctx,
+                            "command.find.warning.pattern_ends_with_slash",
+                            "-{predicate} {pattern} will not match anything because it ends with /.",
+                            predicate = name,
+                            pattern = pat
+                        )
                     );
                 }
                 self.push_prim(
@@ -903,9 +1125,12 @@ impl<'x, 'e> P<'x, 'e> {
                 match super::rx::FindRegex::compile(self.dialect, rx.as_bytes(), name == "iregex") {
                     Ok(re) => self.push_prim(Prim::Regex(Box::new(re)), a, false),
                     Err(e) => {
-                        return Err(fail(format!(
-                            "failed to compile regular expression '{rx}': {}",
-                            e.glibc_message()
+                        return Err(fail(tr!(
+                            self.ctx,
+                            "command.find.error.regex_compile",
+                            "failed to compile regular expression '{pattern}': {reason}",
+                            pattern = rx,
+                            reason = e.glibc_message()
                         )))
                     }
                 }
@@ -915,8 +1140,11 @@ impl<'x, 'e> P<'x, 'e> {
                 let v = self.arg(a)?;
                 let pred = if name == "xtype" { "-xtype" } else { "-type" };
                 if v.is_empty() {
-                    return Err(fail(format!(
-                        "Arguments to {pred} should contain at least one letter"
+                    return Err(fail(tr!(
+                        self.ctx,
+                        "command.find.error.type_needs_letter",
+                        "Arguments to {predicate} should contain at least one letter",
+                        predicate = pred
                     )));
                 }
                 let mut set = [false; 8];
@@ -926,32 +1154,52 @@ impl<'x, 'e> P<'x, 'e> {
                     let c = b[k];
                     let idx = match type_index(c) {
                         Some(7) => {
-                            return Err(fail(format!(
-                                "{pred} {} is not supported because Solaris doors are not supported on the platform find was compiled on.",
-                                c as char
+                            return Err(fail(tr!(
+                                self.ctx,
+                                "command.find.error.type_door_unsupported",
+                                "{predicate} {letter} is not supported because Solaris doors are not supported on the platform find was compiled on.",
+                                predicate = pred,
+                                letter = c as char
                             )))
                         }
                         Some(ix) => ix,
-                        None => return Err(fail(format!("Unknown argument to {pred}: {}", c as char))),
+                        None => {
+                            return Err(fail(tr!(
+                                self.ctx,
+                                "command.find.error.type_unknown_argument",
+                                "Unknown argument to {predicate}: {argument}",
+                                predicate = pred,
+                                argument = c as char
+                            )))
+                        }
                     };
                     if set[idx] {
-                        return Err(fail(format!(
-                            "Duplicate file type '{}' in the argument list to {pred}.",
-                            c as char
+                        return Err(fail(tr!(
+                            self.ctx,
+                            "command.find.error.type_duplicate",
+                            "Duplicate file type '{letter}' in the argument list to {predicate}.",
+                            letter = c as char,
+                            predicate = pred
                         )));
                     }
                     set[idx] = true;
                     k += 1;
                     if k < b.len() {
                         if b[k] != b',' {
-                            return Err(fail(format!(
-                                "Must separate multiple arguments to {pred} using: ','"
+                            return Err(fail(tr!(
+                                self.ctx,
+                                "command.find.error.type_missing_comma",
+                                "Must separate multiple arguments to {predicate} using: ','",
+                                predicate = pred
                             )));
                         }
                         k += 1;
                         if k >= b.len() {
-                            return Err(fail(format!(
-                                "Last file type in list argument to {pred} is missing, i.e., list is ending on: ','"
+                            return Err(fail(tr!(
+                                self.ctx,
+                                "command.find.error.type_trailing_comma",
+                                "Last file type in list argument to {predicate} is missing, i.e., list is ending on: ','",
+                                predicate = pred
                             )));
                         }
                     }
@@ -969,7 +1217,11 @@ impl<'x, 'e> P<'x, 'e> {
                 self.found(a, ArgType::Other);
                 let v = self.arg(a)?;
                 if v.is_empty() {
-                    return Err(fail("invalid null argument to -size"));
+                    return Err(fail(tr!(
+                        self.ctx,
+                        "command.find.error.size_null_argument",
+                        "invalid null argument to -size"
+                    )));
                 }
                 let last = *v.as_bytes().last().unwrap();
                 let (unit, body) = match last {
@@ -980,7 +1232,14 @@ impl<'x, 'e> P<'x, 'e> {
                     b'G' => (1 << 30, &v[..v.len() - 1]),
                     b'w' => (2, &v[..v.len() - 1]),
                     b'0'..=b'9' => (512, &v[..]),
-                    _ => return Err(fail(format!("invalid -size type `{}'", last as char))),
+                    _ => {
+                        return Err(fail(tr!(
+                            self.ctx,
+                            "command.find.error.size_invalid_type",
+                            "invalid -size type `{suffix}'",
+                            suffix = last as char
+                        )))
+                    }
                 };
                 let nt = match get_num(body) {
                     Some(n) => n,
@@ -990,7 +1249,12 @@ impl<'x, 'e> P<'x, 'e> {
                         } else {
                             (last as char).to_string()
                         };
-                        return Err(fail(format!("Invalid argument `{body}{tail}' to -size")));
+                        return Err(fail(tr!(
+                            self.ctx,
+                            "command.find.error.size_invalid_argument",
+                            "Invalid argument `{argument}' to -size",
+                            argument = format!("{body}{tail}")
+                        )));
                     }
                 };
                 self.push_prim(Prim::Size { t: nt, unit }, a, false);
@@ -1018,24 +1282,8 @@ impl<'x, 'e> P<'x, 'e> {
             "used" => {
                 self.found(a, ArgType::Other);
                 let v = self.arg(a)?;
-                let (user_cmp, num) = match v.as_bytes().first() {
-                    Some(b'+') => (Cmp::Gt, &v[1..]),
-                    Some(b'-') => (Cmp::Lt, &v[1..]),
-                    _ => (Cmp::Eq, &v[..]),
-                };
-                let n = match parse_strtod(num) {
-                    Some(n) => n,
-                    None => return Err(fail(format!("Invalid argument {v} to -used"))),
-                };
-                let reft = -((n * 86_400.0 * 1e9) as i128);
-                self.push_prim(
-                    Prim::Used {
-                        cmp: invert(user_cmp),
-                        reft,
-                    },
-                    a,
-                    false,
-                );
+                let nt = get_num(&v).ok_or_else(|| self.invalid(&v, a))?;
+                self.push_prim(Prim::Used(nt), a, false);
             }
             "newer" | "anewer" | "cnewer" => {
                 self.found(a, ArgType::Other);
@@ -1063,7 +1311,16 @@ impl<'x, 'e> P<'x, 'e> {
                     Some(b'/') => (PermKind::Any, &v[1..]),
                     _ => (PermKind::Exact, &v[..]),
                 };
-                let bad = || fail(format!("invalid mode '{v}'"));
+                let ctx = self.ctx;
+                let mode_arg = v.clone();
+                let bad = move || {
+                    fail(tr!(
+                        ctx,
+                        "command.find.error.invalid_mode",
+                        "invalid mode '{mode}'",
+                        mode = mode_arg
+                    ))
+                };
                 if v.starts_with('+')
                     && v.as_bytes()
                         .get(1)
@@ -1080,7 +1337,13 @@ impl<'x, 'e> P<'x, 'e> {
                 if v.starts_with('/') && val == [0, 0] {
                     let _ = writeln!(
                         err,
-                        "find: warning: you have specified a mode pattern {v} (which is equivalent to /000). The meaning of -perm /000 has now been changed to be consistent with -perm -000; that is, while it used to match no files, it now matches all files."
+                        "find: warning: {}",
+                        tr!(
+                            self.ctx,
+                            "command.find.warning.perm_zero_mode",
+                            "you have specified a mode pattern {mode} (which is equivalent to /000). The meaning of -perm /000 has now been changed to be consistent with -perm -000; that is, while it used to match no files, it now matches all files.",
+                            mode = v
+                        )
                     );
                     kind = PermKind::All;
                 }
@@ -1103,9 +1366,17 @@ impl<'x, 'e> P<'x, 'e> {
                 let v = self.arg(a)?;
                 let id = if v.is_empty() {
                     return Err(fail(if name == "user" {
-                        "The argument to -user should not be empty"
+                        tr!(
+                            self.ctx,
+                            "command.find.error.user_empty",
+                            "The argument to -user should not be empty"
+                        )
                     } else {
-                        "argument to -group is empty, but should be a group name"
+                        tr!(
+                            self.ctx,
+                            "command.find.error.group_empty",
+                            "argument to -group is empty, but should be a group name"
+                        )
                     }));
                 } else if let Some(id) =
                     crate::winsys::imp::account_id_from_name(&v).and_then(|s| s.parse::<u64>().ok())
@@ -1117,20 +1388,39 @@ impl<'x, 'e> P<'x, 'e> {
                         v.parse::<u64>().unwrap_or(u64::MAX)
                     } else if name == "user" {
                         if v.is_empty() {
-                            return Err(fail("The argument to -user should not be empty"));
+                            return Err(fail(tr!(
+                                self.ctx,
+                                "command.find.error.user_empty",
+                                "The argument to -user should not be empty"
+                            )));
                         }
-                        return Err(fail(format!("'{v}' is not the name of a known user")));
+                        return Err(fail(tr!(
+                            self.ctx,
+                            "command.find.error.unknown_user",
+                            "'{name}' is not the name of a known user",
+                            name = v
+                        )));
                     } else if v.is_empty() {
-                        return Err(fail(
-                            "argument to -group is empty, but should be a group name",
-                        ));
+                        return Err(fail(tr!(
+                            self.ctx,
+                            "command.find.error.group_empty",
+                            "argument to -group is empty, but should be a group name"
+                        )));
                     } else if nd > 0 {
-                        return Err(fail(format!(
-                            "'{v}' is not the name of an existing group and it does not look like a numeric group ID because it has the unexpected suffix '{}'",
-                            &v[nd..]
+                        return Err(fail(tr!(
+                            self.ctx,
+                            "command.find.error.unknown_group_suffix",
+                            "'{name}' is not the name of an existing group and it does not look like a numeric group ID because it has the unexpected suffix '{suffix}'",
+                            name = v,
+                            suffix = &v[nd..]
                         )));
                     } else {
-                        return Err(fail(format!("'{v}' is not the name of an existing group")));
+                        return Err(fail(tr!(
+                            self.ctx,
+                            "command.find.error.unknown_group",
+                            "'{name}' is not the name of an existing group",
+                            name = v
+                        )));
                     }
                 };
                 self.push_prim(
@@ -1191,7 +1481,11 @@ impl<'x, 'e> P<'x, 'e> {
             "context" => {
                 self.found(a, ArgType::Other);
                 let _ = self.arg(a)?;
-                return Err(fail("invalid predicate -context: SELinux is not enabled."));
+                return Err(fail(tr!(
+                    self.ctx,
+                    "command.find.error.context_selinux_disabled",
+                    "invalid predicate -context: SELinux is not enabled."
+                )));
             }
             // ---- actions ----
             "print" | "print0" => {
@@ -1223,14 +1517,19 @@ impl<'x, 'e> P<'x, 'e> {
                 let dest = if name == "fprintf" {
                     let f = self.arg(a)?;
                     if self.i >= self.args.len() {
-                        return Err(fail(format!("missing argument to `{a}'")));
+                        return Err(fail(tr!(
+                            self.ctx,
+                            "command.find.error.missing_argument",
+                            "missing argument to `{predicate}'",
+                            predicate = a
+                        )));
                     }
                     self.open_file(&f)?
                 } else {
                     Dest::Stdout
                 };
                 let f = self.arg(a)?;
-                let segs = printf::compile(f.as_bytes(), err).map_err(fail)?;
+                let segs = printf::compile(self.ctx, f.as_bytes(), err).map_err(fail)?;
                 self.push_prim(Prim::Printf { dest, segs }, a, true);
             }
             "ls" | "fls" => {
@@ -1294,18 +1593,30 @@ impl<'x, 'e> P<'x, 'e> {
                     end += 1;
                 }
                 if end == start || end >= self.args.len() {
-                    return Err(fail(format!("missing argument to `{a}'")));
+                    return Err(fail(tr!(
+                        self.ctx,
+                        "command.find.error.missing_argument",
+                        "missing argument to `{predicate}'",
+                        predicate = a
+                    )));
                 }
                 if multi {
                     let suffix = if kind == ExecKind::ExecDir { "dir" } else { "" };
                     if brace_count > 1 {
-                        return Err(fail(format!(
-                            "Only one instance of {{}} is supported with -exec{suffix} ... +"
+                        return Err(fail(tr!(
+                            self.ctx,
+                            "command.find.error.exec_multiple_braces",
+                            "Only one instance of {{}} is supported with -exec{suffix} ... +",
+                            suffix = suffix
                         )));
                     }
                     if brace_arg != "{}" {
-                        return Err(fail(format!(
-                            "In '-exec{suffix} ... {{}} +' the '{{}}' must appear by itself, but you specified '{brace_arg}'"
+                        return Err(fail(tr!(
+                            self.ctx,
+                            "command.find.error.exec_brace_not_alone",
+                            "In '-exec{suffix} ... {{}} +' the '{{}}' must appear by itself, but you specified '{brace_arg}'",
+                            suffix = suffix,
+                            brace_arg = brace_arg
                         )));
                     }
                 }
@@ -1321,7 +1632,14 @@ impl<'x, 'e> P<'x, 'e> {
                     true,
                 );
             }
-            _ => return Err(fail(format!("unknown predicate `{a}'"))),
+            _ => {
+                return Err(fail(tr!(
+                    self.ctx,
+                    "command.find.error.unknown_predicate",
+                    "unknown predicate `{predicate}'",
+                    predicate = a
+                )))
+            }
         }
         Ok(false)
     }

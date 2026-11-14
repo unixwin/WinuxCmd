@@ -1,5 +1,7 @@
 //! Expression tree and predicate evaluation (findutils pred.c port).
 
+use winux_core::tr;
+
 use super::entry::{Entry, Kind, Ts};
 use super::exec::ExecSpec;
 use super::fnm::fnmatch;
@@ -83,10 +85,7 @@ pub enum Prim {
         field: TField,
         t: i128,
     },
-    Used {
-        cmp: Cmp,
-        reft: i128,
-    },
+    Used(NumTest),
     Perm {
         kind: PermKind,
         val: [u32; 2],
@@ -133,7 +132,7 @@ pub enum Node {
 fn field_time(e: &Entry, f: TField) -> Ts {
     match f {
         TField::A => e.st().atime,
-        TField::B => e.st().btime,
+        TField::B => e.btime(),
         TField::C => e.ctime(),
         TField::M => e.st().mtime,
     }
@@ -144,6 +143,15 @@ fn window(delta: i128, cmp: Cmp, win: i128) -> bool {
         Cmp::Gt => delta > 0,
         Cmp::Lt => delta < 0,
         Cmp::Eq => delta >= 0 && delta < win,
+    }
+}
+
+/// Windows "None" placeholder account counts as unresolved for
+/// -nouser/-nogroup (1.x value model).
+fn account_missing(name: Option<String>) -> bool {
+    match name {
+        None => true,
+        Some(n) => n.eq_ignore_ascii_case("none") || n.is_empty(),
     }
 }
 
@@ -244,9 +252,18 @@ impl Prim {
                 window: w,
             } => window(field_time(e, *field).ns() - *reft, *cmp, *w),
             Prim::Newer { field, t } => field_time(e, *field).ns() > *t,
-            Prim::Used { cmp, reft } => {
+            // [GNU] findutils pred.c pred_used: the gap is
+            // (atime - ctime) in whole days (truncating), and a negative
+            // gap (atime before the status change) matches no form. The
+            // test's +100 window needs the true sign, not the old
+            // negative-reference arithmetic.
+            Prim::Used(t) => {
                 let d = e.st().atime.ns() - e.ctime().ns();
-                window(d - *reft, *cmp, 86_400_000_000_000)
+                if d < 0 {
+                    false
+                } else {
+                    t.test((d / 86_400_000_000_000) as u64)
+                }
             }
             Prim::Perm { kind, val } => {
                 let mode = e.mode() & 0o7777;
@@ -259,8 +276,12 @@ impl Prim {
             }
             Prim::Uid(t) => t.test(run.account(e, true).0),
             Prim::Gid(t) => t.test(run.account(e, false).0),
-            Prim::NoUser => run.account(e, true).1.is_none(),
-            Prim::NoGroup => run.account(e, false).1.is_none(),
+            // Windows value model: the placeholder account name "None" is
+            // the 1.x "no such account" spelling (files on volumes without
+            // POSIX owners resolve there), so it satisfies -nouser/-nogroup
+            // exactly like an unresolvable SID.
+            Prim::NoUser => account_missing(run.account(e, true).1),
+            Prim::NoGroup => account_missing(run.account(e, false).1),
             Prim::Readable => e.device || winfs::readable(&e.native, e.kind() == Kind::Dir),
             Prim::Writable => {
                 e.device || winfs::writable(&e.native, e.kind() == Kind::Dir, e.st().attrs)
@@ -320,9 +341,14 @@ impl Prim {
                     Ok(()) => true,
                     Err(code) => {
                         let msg = format!(
-                            "find: cannot delete '{}': {}\n",
-                            e.path,
-                            winfs::reason(code)
+                            "{}\n",
+                            tr!(
+                                run.ctx,
+                                "command.find.error.cannot_delete",
+                                "find: cannot delete '{path}': {reason}",
+                                path = e.path,
+                                reason = winfs::reason(code)
+                            )
                         );
                         run.error(&msg);
                         false
