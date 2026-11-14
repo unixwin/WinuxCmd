@@ -184,6 +184,15 @@ pub struct Parsed {
     /// sequential state machine (`-h/-B/-m/-k/--si` last-wins in du) read
     /// this instead of the orderless `flags`/`values` vectors.
     pub events: Vec<OptEvent>,
+    /// Canonical keys of every option (flag or value) in argv order —
+    /// the same sequence getopt_long would have returned them. GNU's
+    /// sequential contracts need this: last-wins options (`df -h -k`
+    /// renders 1K blocks because -k came second) and first-error checks
+    /// (`df -i --output` reports the pair the moment the second of them
+    /// is parsed) cannot be reconstructed from the split `flags`/`values`
+    /// lists, which lose flag-vs-value interleaving. Recorded for all
+    /// commands; consumers opt in.
+    pub order: Vec<String>,
 }
 
 impl Parsed {
@@ -392,6 +401,7 @@ pub fn parse(
                     token: format!("--{record_key}"),
                     value: Some(val.clone()),
                 });
+                out.order.push(record_key.clone());
                 out.values.push((record_key, val));
             } else {
                 // getopt_long rejects an inline argument on a flag
@@ -405,6 +415,7 @@ pub fn parse(
                     token: format!("--{record_key}"),
                     value: None,
                 });
+                out.order.push(record_key.clone());
                 out.flags.push(record_key.clone());
                 // #1573: the sequential getopt_long contract. help/version
                 // reach this point only through option-table resolution
@@ -438,6 +449,7 @@ pub fn parse(
                     // `-h` alone maps to --help unless the command defines -h.
                     // Same #1573 sequential contract as the long form: the
                     // help value terminates the scan in argv order.
+                    out.order.push(HELP.to_string());
                     out.flags.push(HELP.to_string());
                     return Ok(out);
                 }
@@ -463,6 +475,7 @@ pub fn parse(
                             token: format!("-{c}"),
                             value: Some(val.clone()),
                         });
+                        out.order.push(spec.long.to_string());
                         out.values.push((spec.long.to_string(), val));
                         ci = chars.len();
                     }
@@ -479,6 +492,7 @@ pub fn parse(
                             token: format!("-{c}"),
                             value: None,
                         });
+                        out.order.push(key.clone());
                         out.flags.push(key);
                         ci += 1;
                     }
