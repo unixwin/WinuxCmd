@@ -396,6 +396,9 @@ TEST(childproc,
 
 TEST(childproc, env_shebang_script_bare_hashbang_reports_126) {
   FakeBin fake;
+  // Product BadFormat boundary: GNU `env` reaches 0 on a bare `#!` only via
+  // the libc execvp /bin/sh fallback (raw exec gets ENOEXEC), which is out
+  // of contract here.
   fake.dir.write("s1.sh", "#!\n");
   Pipeline p;
   p.set_env(L"PATH", fake.windows_form());
@@ -406,10 +409,40 @@ TEST(childproc, env_shebang_script_bare_hashbang_reports_126) {
   EXPECT_EQ(r.exit_code, 126);
 }
 
-TEST(childproc, env_shebang_script_overlong_first_line_reports_126) {
+TEST(childproc, env_shebang_script_overlong_line_still_launches) {
   FakeBin fake;
-  // No newline inside the kernel's 256-byte buffer: not a script (126).
-  std::string content("#!./interp.exe ");
+  // The kernel truncates an overlong shebang line at its BINPRM_BUF_SIZE - 1
+  // window and still launches it (probed WSL GNU 6.18: `#!/bin/echo ` + 300
+  // x's runs /bin/echo with a 243-byte argument) -- not a 126. A .cmd
+  // interpreter keeps %* observable, so the truncated optional argument,
+  // the script path, and the caller's argument all show up in stdout.
+  fake.dir.write("interp.cmd", "@echo off\r\necho %*\r\n");
+  std::string content("#!./interp.cmd ");
+  content.append(300, 'x');
+  content.push_back('\n');
+  fake.dir.write("s1.sh", content);
+  Pipeline p;
+  p.set_env(L"PATH", fake.windows_form());
+  p.set_cwd(fake.dir.wpath());
+  p.add(L"env.exe", {L"./s1.sh", L"WINUXCMD-SPAWN-RESOLVED"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find(kMarker) != std::string::npos);
+  // The script path reached the interpreter, and the optional argument kept
+  // exactly the bytes inside the 255-byte window: "#!./interp.cmd " is 15
+  // bytes, so 240 x's survive -- and a 256-byte window would leak a 241st.
+  EXPECT_TRUE(r.stdout_text.find("s1.sh") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find(std::string(240, 'x')) != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find(std::string(241, 'x')) == std::string::npos);
+}
+
+TEST(childproc,
+     env_shebang_script_overlong_line_missing_interpreter_reports_127) {
+  FakeBin fake;
+  // Truncating the line does not excuse a missing interpreter: the token is
+  // still read and resolved, and a miss is ENOENT (probed GNU 127).
+  std::string content("#!./no-such-interp ");
   content.append(300, 'x');
   content.push_back('\n');
   fake.dir.write("s1.sh", content);
@@ -419,7 +452,8 @@ TEST(childproc, env_shebang_script_overlong_first_line_reports_126) {
   p.add(L"env.exe", {L"./s1.sh"});
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 126);
+  EXPECT_EQ(r.exit_code, 127);
+  EXPECT_TRUE(r.stderr_text.find("s1.sh") != std::string::npos);
 }
 
 TEST(childproc, timeout_shebang_script_launches_through_interpreter) {
