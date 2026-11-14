@@ -18,9 +18,9 @@ import urllib.request
 from pathlib import Path
 
 if __package__:
-    from .i18n_rust import extract_rust_messages
+    from .i18n_rust import extract_rust_messages, merge_rust_messages
 else:
-    from i18n_rust import extract_rust_messages
+    from i18n_rust import extract_rust_messages, merge_rust_messages
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_SUFFIXES = {".cpp", ".cppm", ".h", ".hpp"}
@@ -610,10 +610,7 @@ def extract(source_root: Path) -> dict:
                         and fallback):
                     messages.setdefault(key, fallback)
     messages.update(MANUAL_MESSAGES)
-    for key, fallback in extract_rust_messages(ROOT / "rust2" / "crates").items():
-        if key in messages and messages[key] != fallback:
-            raise ValueError(f"conflicting C++/Rust I18N fallbacks: {key}")
-        messages[key] = fallback
+    merge_rust_messages(messages, extract_rust_messages(ROOT / "rust2" / "crates"))
     return {"schema": 1, "locale": "en-US", "messages": dict(sorted(messages.items()))}
 
 

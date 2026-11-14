@@ -13,6 +13,7 @@
 
 use std::ffi::OsString;
 
+use crate::argopt;
 use crate::gnuhelp;
 use winux_core::{usage_error, CmdResult, Ctx, Io};
 
@@ -80,12 +81,12 @@ pub fn printenv_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         }
         if s.starts_with('-') && s.len() > 1 {
             let msg = if let Some(rest) = s.strip_prefix("--") {
-                format!("unrecognized option '--{rest}'")
+                argopt::unrecognized_option(ctx, &format!("--{rest}"))
             } else {
                 let c = s.chars().nth(1).unwrap();
-                format!("invalid option -- '{c}'")
+                argopt::invalid_option(ctx, &c.to_string())
             };
-            let _ = usage_error(io, "printenv", &msg);
+            let _ = usage_error(ctx, io, "printenv", &msg);
             return Ok(2);
         }
         names.push(s);

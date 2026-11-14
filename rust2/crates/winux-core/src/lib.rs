@@ -110,11 +110,29 @@ pub const ABI_FAILURE_STATUS: u32 = 125;
 /// Write a GNU-style usage diagnostic to stderr:
 /// `<prog>: <msg>\nTry '<prog> --help' for more information.\n`
 ///
+/// `msg` is the caller's already-rendered diagnostic; shared messages go
+/// through [`i18n::tr!`] at the call site. The trailing try-help line is
+/// itself a catalog string (`common.try_help`, the key the C++ side has
+/// always used), so every caller gets the translation for free: the host
+/// lookup wins, otherwise the English line is rendered from `prog`.
+///
 /// Wording is recorded by the gate, not gated byte-for-byte (GNU quotes with
 /// Unicode quotation marks; we use ASCII quotes on stderr).
-pub fn usage_error(io: &mut Io, prog: &str, msg: &str) -> std::io::Result<()> {
+pub fn usage_error(ctx: &Ctx, io: &mut Io, prog: &str, msg: &str) -> std::io::Result<()> {
     writeln!(io.stderr, "{prog}: {msg}")?;
-    writeln!(io.stderr, "Try '{prog} --help' for more information.")
+    writeln!(io.stderr, "{}", try_help(ctx, prog))
+}
+
+/// The `Try '<prog> --help' for more information.` line as the catalog
+/// (`common.try_help`) renders it, or the English line with `prog`
+/// substituted. Shared by [`usage_error`] and the few commands whose
+/// diagnostics print extra lines before the hint (sort's argmatch).
+pub fn try_help(ctx: &Ctx, prog: &str) -> String {
+    i18n::format_with_fallback(
+        ctx.host.message("common.try_help"),
+        format!("Try '{prog} --help' for more information."),
+        &[("prog", prog)],
+    )
 }
 
 /// Quote a word for GNU-style verbose stdout messages (straight quotes,
@@ -316,6 +334,32 @@ pub mod test_support {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.dir);
         }
+    }
+
+    #[test]
+    fn usage_error_translates_the_try_help_line() {
+        let env = MapEnv::new();
+        let mut host = host::MapHost::default();
+        host.messages.insert(
+            "common.try_help".to_string(),
+            "尝试运行“{} --help”以获取更多信息。".to_string(),
+        );
+        let ctx = Ctx::with_host(PathBuf::from("wd"), &env, &host);
+        let mut io = MemIo::new("");
+        usage_error(&ctx, &mut io.split(), "sort", "bad option").unwrap();
+        assert_eq!(
+            io.err(),
+            "sort: bad option\n尝试运行“sort --help”以获取更多信息。\n"
+        );
+
+        // The default host keeps today's English bytes.
+        let ctx = Ctx::new(PathBuf::from("wd"), &env);
+        let mut io = MemIo::new("");
+        usage_error(&ctx, &mut io.split(), "sort", "bad option").unwrap();
+        assert_eq!(
+            io.err(),
+            "sort: bad option\nTry 'sort --help' for more information.\n"
+        );
     }
 
     #[test]

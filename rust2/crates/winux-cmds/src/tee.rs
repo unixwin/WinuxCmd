@@ -33,6 +33,7 @@ use std::ffi::OsString;
 
 use std::io::{ErrorKind, Write};
 
+use crate::argopt;
 use winux_core::{usage_error, CmdResult, Ctx, Io};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -235,7 +236,7 @@ fn argmatch_output_error(arg: &str) -> Result<usize, bool> {
 /// distinct so no synonyms share a line), and XARGMATCH dies through
 /// usage(EXIT_FAILURE) -> emit_try_help. probed byte-shape on WSL GNU
 /// coreutils 9.4 (quoting normalized to ASCII like the 1.x applet).
-fn output_error_argfail(io: &mut Io, arg: &str, ambiguous: bool) -> CmdResult {
+fn output_error_argfail(ctx: &Ctx, io: &mut Io, arg: &str, ambiguous: bool) -> CmdResult {
     let verdict = if ambiguous { "ambiguous" } else { "invalid" };
     let _ = writeln!(
         io.stderr,
@@ -245,7 +246,7 @@ fn output_error_argfail(io: &mut Io, arg: &str, ambiguous: bool) -> CmdResult {
     for a in ["warn", "warn-nopipe", "exit", "exit-nopipe"] {
         let _ = writeln!(io.stderr, "  - '{a}'");
     }
-    let _ = writeln!(io.stderr, "Try 'tee --help' for more information.");
+    let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "tee"));
     Ok(1)
 }
 
@@ -295,12 +296,12 @@ pub fn tee_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                                 _ => OutputError::ExitNopipe,
                             };
                         }
-                        Err(ambiguous) => return output_error_argfail(io, &v, ambiguous),
+                        Err(ambiguous) => return output_error_argfail(ctx, io, &v, ambiguous),
                     }
                 }
                 "help" | "version" => return Ok(0),
                 _ => {
-                    let _ = usage_error(io, "tee", &format!("unrecognized option '{arg}'"));
+                    let _ = usage_error(ctx, io, "tee", &argopt::unrecognized_option(ctx, &arg));
                     return Ok(1);
                 }
             }
@@ -318,7 +319,8 @@ pub fn tee_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     output_error = OutputError::WarnNopipe;
                 }
                 c => {
-                    let _ = usage_error(io, "tee", &format!("invalid option -- '{c}'"));
+                    let _ =
+                        usage_error(ctx, io, "tee", &argopt::invalid_option(ctx, &c.to_string()));
                     return Ok(1);
                 }
             }

@@ -108,9 +108,10 @@ pub fn tty_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     // quotes; stderr wording is recorded by the gate, not gated.
     if let Some(extra) = p.positionals.first() {
         let _ = winux_core::usage_error(
+            ctx,
             io,
             "tty",
-            &format!("extra operand '{}'", extra.to_string_lossy()),
+            &crate::messages::extra_operand(ctx, &extra.to_string_lossy()),
         );
         return Ok(2);
     }

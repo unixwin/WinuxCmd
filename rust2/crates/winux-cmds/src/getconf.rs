@@ -137,6 +137,7 @@ pub fn getconf_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     if !all && p.positionals.is_empty() {
         // [GNU] glibc probed rc 1 with its own usage text on stderr.
         let _ = usage_error(
+            ctx,
             io,
             "getconf",
             &tr!(
