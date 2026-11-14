@@ -1070,6 +1070,16 @@ pub fn stat_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             None
         };
         for op in expanded.unwrap_or_else(|| vec![op.clone()]) {
+            // #1672: an empty operand is a literal name, not the cwd. GNU
+            // reports cannot statx '' and keeps going.
+            if op.is_empty() {
+                let _ = writeln!(
+                    io.stderr,
+                    "stat: cannot statx '': No such file or directory"
+                );
+                ok = false;
+                continue;
+            }
             // [GNU] stat.c: a bare "-" names the open standard input
             // descriptor, not a file called "-" (regression #1089, #1653):
             // `... | stat -c %F -` reports the FIFO shape of the pipe.
@@ -1347,6 +1357,14 @@ mod tests {
         assert_eq!(fields[3], "81a4");
         assert_eq!(fields[13], fields[13]); // W
         assert_eq!(fields[15], "4096"); // o
+    }
+
+    #[test]
+    fn empty_operand_is_a_literal_name() {
+        let sc = setup("stat-empty");
+        let (r, _, err) = run_sc(&sc, &["-c", "%n", ""]);
+        assert_eq!(r, 1);
+        assert!(err.contains("cannot statx '': No such file or directory"), "err={err}");
     }
 
     #[test]

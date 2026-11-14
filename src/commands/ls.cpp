@@ -275,13 +275,31 @@ auto long_format_requested(const CommandContext<LS_OPTIONS.size()> &ctx)
     -> bool;
 auto build_listing_prefix(const std::wstring &path,
                           const WIN32_FIND_DATAW &find_data,
-                          const CommandContext<LS_OPTIONS.size()> &ctx)
-    -> std::string;
+                          const CommandContext<LS_OPTIONS.size()> &ctx,
+                          size_t block_size_width = 0) -> std::string;
 auto try_get_dereferenced_find_data(
     const std::wstring &path, const WIN32_FIND_DATAW &original_find_data,
     const CommandContext<LS_OPTIONS.size()> &ctx,
     bool command_line_operand = false)
     -> std::optional<std::pair<WIN32_FIND_DATAW, std::wstring>>;
+auto configure_sizes(const CommandContext<LS_OPTIONS.size()> &ctx)
+    -> cp::Result<SizeConfig>;
+auto get_allocated_blocks_string(const std::wstring &path,
+                                 const WIN32_FIND_DATAW &find_data,
+                                 const SizeConfig &size_cfg) -> std::string;
+
+// Directory-ness of a command-line operand after GNU's dereference decisions.
+// `lookup_target` carries the resolved target path that enumeration must use,
+// because a reparse point (notably the LX tag Win32 never follows) is not
+// traversable through the operand spelling (#1640).
+struct DirectoryOperandProbe {
+  bool target_is_directory = false;
+  bool is_reparse_point = false;
+  std::optional<std::wstring> lookup_target;
+};
+
+auto probe_directory_operand_w(const std::wstring &path)
+    -> DirectoryOperandProbe;
 
 struct EntryInfo {
   std::wstring name;
@@ -1265,6 +1283,53 @@ auto read_reparse_target_w(const std::wstring &full_path)
   }
 
   return std::nullopt;
+}
+
+// [GNU] -L/-H dereference is stat(2): it follows the whole link chain and
+// reports the target's metadata.  Win32 traverses junctions and native
+// symlinks, but an LX reparse point (the shape WSL stores on a Windows
+// volume, tag 0xA000001D) is opaque to CreateFileW/GetFinalPathNameW, so
+// std::filesystem::canonical() fails on exactly the links #1694 taught the
+// readlink path to read.  Fall back to the stored reparse target and probe
+// that path; a target that is itself a link is followed again, bounded by
+// the kernel's ELOOP limit.
+constexpr int kMaxSymlinkDepth = 40;
+
+auto resolve_dereference_target_w(const std::wstring &path, int depth = 0)
+    -> std::optional<std::wstring> {
+  if (depth >= kMaxSymlinkDepth) {
+    return std::nullopt;
+  }
+
+  std::error_code ec;
+  auto canonical = std::filesystem::canonical(
+      native_path::make_api_path_operand_w(path).normalized, ec);
+  if (!ec) {
+    return canonical.wstring();
+  }
+
+  auto stored = read_reparse_target_w(path);
+  if (!stored) {
+    return std::nullopt;
+  }
+
+  std::filesystem::path target(std::move(*stored));
+  if (target.is_relative()) {
+    target = std::filesystem::path(path).parent_path() / target;
+  }
+  target = target.lexically_normal();
+
+  std::wstring native = target.native();
+  const auto operand = native_path::make_api_path_operand_w(native);
+  WIN32_FILE_ATTRIBUTE_DATA attrs{};
+  if (!GetFileAttributesExW(operand.extended.c_str(), GetFileExInfoStandard,
+                            &attrs)) {
+    return std::nullopt;
+  }
+  if ((attrs.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+    return resolve_dereference_target_w(native, depth + 1);
+  }
+  return native;
 }
 
 auto read_symlink_display_target(const std::wstring &full_path,
@@ -2549,13 +2614,14 @@ struct RenderedEntry {
 
 auto render_inline_entry(const EntryInfo &entry,
                          const CommandContext<LS_OPTIONS.size()> &ctx,
-                         bool color_enabled) -> RenderedEntry {
+                         bool color_enabled, size_t block_size_width = 0)
+    -> RenderedEntry {
   auto [display_find_data, metadata_name] = resolve_display_entry(entry, ctx);
   std::wstring display_name =
       render_display_name(entry.name, entry.full_path, display_find_data, ctx,
                           entry.command_line_operand);
-  std::string prefix =
-      build_listing_prefix(entry.full_path, display_find_data, ctx);
+  std::string prefix = build_listing_prefix(entry.full_path, display_find_data,
+                                            ctx, block_size_width);
   std::string text = prefix;
   const std::wstring entry_color(
       get_color_for_entry(metadata_name, display_find_data));
@@ -2575,13 +2641,30 @@ auto render_inline_entry(const EntryInfo &entry,
 }
 
 auto build_rendered_entries(const std::vector<EntryInfo> &entries,
-                            const CommandContext<LS_OPTIONS.size()> &ctx)
+                            const CommandContext<LS_OPTIONS.size()> &ctx,
+                            bool align_block_size)
     -> std::vector<RenderedEntry> {
   const bool color_enabled = resolve_color_enabled(ctx);
+  size_t block_size_width = 0;
+  if (align_block_size && print_block_size_enabled(ctx)) {
+    // [GNU] block_size_width is the widest human_readable() block string in
+    // the current batch (ls.c:3261 clears it, gobble_file grows it).
+    const auto size_cfg = configure_sizes(ctx).value_or(SizeConfig{});
+    for (const auto &entry : entries) {
+      auto [display_find_data, _metadata_name] =
+          resolve_display_entry(entry, ctx);
+      block_size_width =
+          std::max(block_size_width,
+                   get_allocated_blocks_string(entry.full_path,
+                                               display_find_data, size_cfg)
+                       .size());
+    }
+  }
   std::vector<RenderedEntry> rendered;
   rendered.reserve(entries.size());
   for (const auto &entry : entries) {
-    rendered.push_back(render_inline_entry(entry, ctx, color_enabled));
+    rendered.push_back(
+        render_inline_entry(entry, ctx, color_enabled, block_size_width));
   }
   return rendered;
 }
@@ -2613,14 +2696,19 @@ auto print_rendered_entries(const std::vector<RenderedEntry> &entries,
   }
 }
 
+// [GNU] ls.c:1686-1689: --color disables tab alignment outright (tabsize = 0)
+// because some terminals cannot combine tabs with color escapes.  -T 0 means
+// the same thing, so 0 is a valid "never emit TAB" value, not an error.
 auto print_tab_aligned_padding(size_t current_column, size_t target_column,
                                int tab_size) -> void {
   if (target_column <= current_column) {
     return;
   }
 
+  // [GNU] indent(): tabsize == 0 falls through to spaces only.
   if (tab_size <= 0) {
-    tab_size = ls_constants::DEFAULT_TAB_SIZE;
+    safePrint(std::string(target_column - current_column, ' '));
+    return;
   }
 
   // [GNU] indent(): use a TAB instead of two or more spaces, but
@@ -2667,7 +2755,7 @@ auto resolve_tab_size(const CommandContext<LS_OPTIONS.size()> &ctx) -> int {
 
     const auto *value = std::get_if<std::string>(&occurrence.value);
     if (!value) continue;
-    if (auto parsed = parse_tab_size_value(*value); parsed && *parsed > 0) {
+    if (auto parsed = parse_tab_size_value(*value); parsed) {
       tab_size = static_cast<int>(*parsed);
     }
   }
@@ -2680,7 +2768,7 @@ auto print_grid(const std::vector<EntryInfo> &entries,
                 bool across_layout) -> void {
   if (entries.empty()) return;
 
-  const auto rendered = build_rendered_entries(entries, ctx);
+  const auto rendered = build_rendered_entries(entries, ctx, true);
 
   const int width = resolve_output_width(ctx);
 
@@ -2757,6 +2845,11 @@ auto print_grid(const std::vector<EntryInfo> &entries,
   }
 
   int tab_size = resolve_tab_size(ctx);
+  // [GNU] ls.c:1683-1689: color output sets tabsize = 0, so the grid pads
+  // with spaces instead of TABs.
+  if (resolve_color_enabled(ctx)) {
+    tab_size = 0;
+  }
 
   for (int row = 0; row < rows; ++row) {
     size_t current_column = 0;
@@ -2809,16 +2902,16 @@ auto validate_arguments(const CommandContext<LS_OPTIONS.size()> &ctx)
     paths.push_back(".");
   }
 
-  // [GNU] rejects a tab size that is not a positive strtoumax base-0 number
-  // ("invalid tab size: '-1'", "invalid tab size: '=0xff'").
+  // [GNU] rejects a tab size that is not a strtoumax base-0 number
+  // ("invalid tab size: '-1'", "invalid tab size: '=0xff'").  0 is accepted
+  // and means "never emit TAB" (ls.c:1686-1689 semantics).
   for (const auto &occurrence : ctx.options.occurrences()) {
     if (occurrence.index >= LS_OPTIONS.size()) continue;
     const auto &meta = LS_OPTIONS[occurrence.index];
     if (meta.short_name != "-T" && meta.long_name != "--tabsize") continue;
     const auto *value = std::get_if<std::string>(&occurrence.value);
     const std::string raw = value ? *value : std::string();
-    auto parsed = parse_tab_size_value(raw);
-    if (!parsed || *parsed == 0) {
+    if (!parse_tab_size_value(raw)) {
       return std::unexpected("invalid tab size: '" + raw + "'");
     }
   }
@@ -2904,16 +2997,17 @@ auto try_get_dereferenced_find_data(
     return std::nullopt;
   }
 
-  // Canonicalize the dialect-resolved form: std::filesystem::canonical on a
-  // POSIX drive-form operand resolves against the current drive root (#1145).
-  std::error_code ec;
-  const std::filesystem::path target = std::filesystem::canonical(
-      native_path::make_api_path_operand_w(path).normalized, ec);
-  if (ec) {
+  // Resolve the dialect-resolved form through the link chain: a plain
+  // canonicalization resolves against the current drive root on a POSIX
+  // drive-form operand (#1145), and it cannot follow the LX reparse point
+  // Windows never taught its path APIs to traverse (#1640).
+  auto target = resolve_dereference_target_w(
+      native_path::make_api_path_operand_w(path).normalized);
+  if (!target) {
     return std::nullopt;
   }
 
-  auto target_operand = native_path::make_api_path_operand_w(target.wstring());
+  auto target_operand = native_path::make_api_path_operand_w(*target);
   WIN32_FILE_ATTRIBUTE_DATA attrs{};
   if (!GetFileAttributesExW(target_operand.extended.c_str(),
                             GetFileExInfoStandard, &attrs)) {
@@ -2928,7 +3022,8 @@ auto try_get_dereferenced_find_data(
   dereferenced.nFileSizeHigh = attrs.nFileSizeHigh;
   dereferenced.nFileSizeLow = attrs.nFileSizeLow;
 
-  std::wstring target_name = target.filename().native();
+  std::wstring target_name =
+      std::filesystem::path(*target).filename().native();
   if (target_name.empty()) {
     target_name = std::wstring(original_find_data.cFileName);
   }
@@ -3344,8 +3439,8 @@ auto print_directory_total_line(const std::vector<EntryInfo> &entries,
 
 auto build_listing_prefix(const std::wstring &path,
                           const WIN32_FIND_DATAW &find_data,
-                          const CommandContext<LS_OPTIONS.size()> &ctx)
-    -> std::string {
+                          const CommandContext<LS_OPTIONS.size()> &ctx,
+                          size_t block_size_width) -> std::string {
   auto size_cfg = configure_sizes(ctx).value_or(SizeConfig{});
   std::string prefix;
   if (ctx.get<bool>("-i", false) || ctx.get<bool>("--inode", false)) {
@@ -3355,7 +3450,17 @@ auto build_listing_prefix(const std::wstring &path,
     }
   }
   if (print_block_size_enabled(ctx)) {
-    prefix += get_allocated_blocks_string(path, find_data, size_cfg);
+    // [GNU] print_file_name_and_frills (ls.c:4882) prints the block count
+    // with "%*s" at block_size_width (ls.c:3261/3611), so a one-digit count
+    // carries the leading spaces of a wider sibling (" 4 a.txt" beside
+    // "20 huge.bin").  -m passes width 0 (format == with_commas) and keeps
+    // the column unpadded (#1641).
+    const std::string blocks =
+        get_allocated_blocks_string(path, find_data, size_cfg);
+    if (block_size_width > blocks.size()) {
+      prefix.append(block_size_width - blocks.size(), ' ');
+    }
+    prefix += blocks;
     prefix.push_back(' ');
   }
   if (security_context_requested(ctx)) {
@@ -3630,10 +3735,9 @@ auto is_dangling_dereference(const EntryInfo &entry,
                                          entry.command_line_operand)) {
     return false;
   }
-  std::error_code ec;
-  (void)std::filesystem::canonical(
-      native_path::make_api_path_operand_w(entry.full_path).normalized, ec);
-  return static_cast<bool>(ec);
+  return !resolve_dereference_target_w(
+              native_path::make_api_path_operand_w(entry.full_path).normalized)
+              .has_value();
 }
 
 /**
@@ -3830,7 +3934,52 @@ auto list_directory(const std::string &path,
     }
 
     if (ctx.get<bool>("--group-directories-first", false)) {
-      std::stable_partition(entries.begin(), entries.end(), is_directory_entry);
+      // [GNU] ls.c:1686-1689 sets check_symlink_mode when directories_first,
+      // so gobble_file stats every symlink into linkmode and is_linked_directory
+      // (ls.c:3703) groups a link whose target is a directory with real
+      // directories, independent of -L/-H.  Resolve targets the same way,
+      // including LX reparse points Win32 will not follow (#1642).
+      auto is_directory_group = [&](const EntryInfo &entry) {
+        if (is_directory_entry(entry)) {
+          return true;
+        }
+        if (!is_reparse_link(entry.find_data)) {
+          return false;
+        }
+        auto target = resolve_dereference_target_w(entry.full_path);
+        if (!target) {
+          return false;
+        }
+        const auto target_operand =
+            native_path::make_api_path_operand_w(*target);
+        return native_path::attributes_are_directory(
+            native_path::attributes_w(target_operand.extended));
+      };
+      // [GNU] With -L, check_symlink_mode's stat is fatal enough to report
+      // a dangling link even in a non-long format: "ls --group-directories-
+      // first -1L" prints cannot access and exits 1, while plain "-1L" does
+      // not stat the entry at all.  Long format reports it in its own row.
+      if (format_mode != FormatMode::Long &&
+          resolve_dereference_mode(ctx) == DereferenceMode::All) {
+        for (const auto &entry : entries) {
+          if (!is_reparse_link(entry.find_data) ||
+              resolve_dereference_target_w(entry.full_path)) {
+            continue;
+          }
+          const std::string sep =
+              (!path.empty() && path.back() != '/' && path.back() != '\\')
+                  ? "/"
+                  : "";
+          std::wstring error_path =
+              path == "." ? std::wstring{} : utf8_to_wstring(path + sep);
+          error_path += entry.name;
+          safeErrorPrintLn(std::wstring(L"ls: cannot access '") + error_path +
+                           L"': No such file or directory");
+          g_had_minor_errors = true;
+        }
+      }
+      std::stable_partition(entries.begin(), entries.end(),
+                            is_directory_group);
     }
   }
 
@@ -3879,9 +4028,14 @@ auto list_directory(const std::string &path,
         const std::string sep =
             (!path.empty() && path.back() != '/' && path.back() != '\\') ? "/"
                                                                          : "";
-        safeErrorPrintLn(std::wstring(L"ls: cannot access '") +
-                         utf8_to_wstring(path) + utf8_to_wstring(sep) +
-                         entry.name + L"': No such file or directory");
+        // [GNU] attach() elides a "." dirname, so `ls -lL .` reports
+        // "'dangling'", not "'./dangling'"; subdirectory listings keep the
+        // prefix ("dir1/dangling").
+        std::wstring error_path =
+            path == "." ? std::wstring{} : utf8_to_wstring(path + sep);
+        error_path += entry.name;
+        safeErrorPrintLn(std::wstring(L"ls: cannot access '") + error_path +
+                         L"': No such file or directory");
         g_had_minor_errors = true;
         info.perms = "l?????????";
         info.inode = "?";
@@ -4065,7 +4219,7 @@ auto list_directory(const std::string &path,
     if (show_blocks) {
       print_directory_total_line(entries, size_cfg, ctx);
     }
-    auto rendered = build_rendered_entries(entries, ctx);
+    auto rendered = build_rendered_entries(entries, ctx, false);
     const int width = resolve_output_width(ctx);
     print_rendered_entries(rendered, static_cast<size_t>(width), ctx);
     safePrintLn(L"");
@@ -4073,7 +4227,7 @@ auto list_directory(const std::string &path,
     if (show_blocks) {
       print_directory_total_line(entries, size_cfg, ctx);
     }
-    auto rendered = build_rendered_entries(entries, ctx);
+    auto rendered = build_rendered_entries(entries, ctx, true);
     for (const auto &entry : rendered) {
       if (dired_requested(ctx)) {
         dired_note_text_entry(entry.name_offset, entry.name_length);
@@ -4374,11 +4528,24 @@ auto list_directory_recursive(const std::string &path,
       continue;
     }
 
-    const bool recurse_into_entry =
-        is_plain_directory(find_data) ||
-        (follow_directory_symlinks &&
-         (find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0 &&
-         (find_data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0);
+    std::wstring full_path = native_path::join_w(wpath, filename);
+    const std::wstring lookup_full_path =
+        native_path::join_w(lookup_operand.normalized, filename);
+
+    bool recurse_into_entry = is_plain_directory(find_data);
+    std::wstring recurse_lookup = lookup_full_path;
+    if (!recurse_into_entry && follow_directory_symlinks &&
+        is_reparse_link(find_data)) {
+      // [GNU] -RL follows directory symlinks even when Win32 cannot traverse
+      // the reparse point itself; recurse through the resolved target.
+      const auto directory_probe = probe_directory_operand_w(lookup_full_path);
+      if (directory_probe.target_is_directory) {
+        recurse_into_entry = true;
+        if (directory_probe.lookup_target) {
+          recurse_lookup = *directory_probe.lookup_target;
+        }
+      }
+    }
     if (!recurse_into_entry) {
       continue;
     }
@@ -4388,15 +4555,13 @@ auto list_directory_recursive(const std::string &path,
       continue;
     }
 
-    std::wstring full_path = native_path::join_w(wpath, filename);
     std::string subdir_path =
         make_generic_display_path(wstring_to_utf8(full_path));
     // Skip if already visited (symlink loop detection)
     if (visited.count(subdir_path) > 0) {
       continue;
     }
-    subdirs.emplace_back(
-        subdir_path, native_path::join_w(lookup_operand.normalized, filename));
+    subdirs.emplace_back(subdir_path, std::move(recurse_lookup));
   } while (FindNextFileW(hFind, &find_data) != 0);
 
   FindClose(hFind);
@@ -4498,14 +4663,63 @@ auto operand_requires_directory(std::wstring_view path) -> bool {
 
 // [GNU] Trailing-slash/dotted operands follow symlinks: "link-to-dir/" is a
 // directory while "link-to-file/" is ENOTDIR, so directory-ness is tested on
-// the resolved target, not the link itself.
+// the resolved target, not the link itself.  The target probe goes through
+// resolve_dereference_target_w so an LX reparse point (which Win32 cannot
+// traverse) answers like the POSIX stat() GNU performs.
 auto resolved_operand_is_directory(std::wstring_view path) -> bool {
   // Probe through the API-path boundary: std::filesystem::status folds a
   // POSIX drive-form operand against the current drive root and answers for
   // the wrong path (#1145).
   const auto operand = native_path::make_api_path_operand_w(path);
+  const DWORD attributes = native_path::attributes_w(operand.extended);
+  if (native_path::attributes_are_directory(attributes)) {
+    return true;
+  }
+  if ((attributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0) {
+    return false;
+  }
+  auto target = resolve_dereference_target_w(operand.normalized);
+  if (!target) {
+    return false;
+  }
+  const auto target_operand = native_path::make_api_path_operand_w(*target);
   return native_path::attributes_are_directory(
-      native_path::attributes_w(operand.extended));
+      native_path::attributes_w(target_operand.extended));
+}
+
+auto probe_directory_operand_w(const std::wstring &path)
+    -> DirectoryOperandProbe {
+  DirectoryOperandProbe probe;
+  const auto operand = native_path::make_api_path_operand_w(
+      normalize_metadata_probe_path(path));
+  const DWORD attributes = native_path::attributes_w(operand.extended);
+  if (attributes == INVALID_FILE_ATTRIBUTES) {
+    return probe;
+  }
+  probe.is_reparse_point = (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+  if (!probe.is_reparse_point) {
+    if (native_path::attributes_are_directory(attributes)) {
+      probe.target_is_directory = true;
+    }
+    return probe;
+  }
+  // A directory reparse point reports FILE_ATTRIBUTE_DIRECTORY even when
+  // Win32 cannot traverse it (an LX tag reaches here that way), so the
+  // resolved target is the only path enumeration may use for every reparse
+  // point shape.  Junctions and native symlinks resolve too; the operand is
+  // still displayed with its typed spelling.
+  auto target = resolve_dereference_target_w(operand.normalized);
+  if (!target) {
+    return probe;
+  }
+  const auto target_operand = native_path::make_api_path_operand_w(*target);
+  if (!native_path::attributes_are_directory(
+          native_path::attributes_w(target_operand.extended))) {
+    return probe;
+  }
+  probe.target_is_directory = true;
+  probe.lookup_target = std::move(target);
+  return probe;
 }
 
 auto expand_path_operands(const std::vector<std::string> &paths)
@@ -4575,12 +4789,29 @@ auto process_paths(const std::vector<std::string> &paths,
   bool success = expanded.success;
   bool printed_any = false;
   const bool multiple_operands = expanded.logical_operand_count > 1;
+  const bool follow_command_line_directory_symlink =
+      should_follow_command_line_directory_symlink(ctx);
+
+  // [GNU] Operand partitioning and listing use the same dereference decisions
+  // as gobble_file: -d never descends, a directory reached through a symlink
+  // is a directory operand only when the active dereference mode follows
+  // command-line links (default -x/-C, -H, -L).
+  auto is_directory_operand = [&](const std::string &operand_path) {
+    if (directory_only_requested(ctx)) {
+      return false;
+    }
+    const auto directory_probe =
+        probe_directory_operand_w(utf8_to_wstring(operand_path));
+    if (!directory_probe.target_is_directory) {
+      return false;
+    }
+    return !directory_probe.is_reparse_point ||
+           follow_command_line_directory_symlink;
+  };
 
   bool all_file_operands = !expanded_paths.empty();
   for (const auto &path : expanded_paths) {
-    auto probe = probe_path(utf8_to_wstring(path));
-    if (!probe.attributes_valid ||
-        (probe.attributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+    if (is_directory_operand(path)) {
       all_file_operands = false;
       break;
     }
@@ -4598,9 +4829,7 @@ auto process_paths(const std::vector<std::string> &paths,
     std::vector<std::string> file_operands;
     std::vector<std::string> dir_operands;
     for (const auto &path : expanded_paths) {
-      auto probe = probe_path(utf8_to_wstring(path));
-      if (probe.attributes_valid &&
-          (probe.attributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+      if (is_directory_operand(path)) {
         dir_operands.push_back(path);
       } else {
         file_operands.push_back(path);
@@ -4629,21 +4858,12 @@ auto process_paths(const std::vector<std::string> &paths,
       continue;
     }
 
-    const DWORD effective_attributes = probe.attributes_valid
-                                           ? probe.attributes
-                                           : probe.find_data.dwFileAttributes;
-    const bool is_directory =
-        (effective_attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-    const bool is_reparse_point =
-        (effective_attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
-    const bool is_directory_symlink = is_directory && is_reparse_point;
-    const bool follow_command_line_directory_symlink =
-        probe.attributes_valid && is_directory_symlink &&
-        should_follow_command_line_directory_symlink(ctx);
-    const bool treat_as_directory =
-        probe.attributes_valid && is_directory &&
-        !directory_only_requested(ctx) &&
-        (!is_directory_symlink || follow_command_line_directory_symlink);
+    const auto directory_probe = probe_directory_operand_w(wpath);
+    const bool treat_as_directory = is_directory_operand(path);
+    // An LX directory link has no Win32-traversable spelling; enumerate the
+    // resolved target while keeping the operand as the displayed path.
+    const std::wstring lookup_target =
+        directory_probe.lookup_target.value_or(std::wstring{});
 
     if (treat_as_directory) {
       if (printed_any) {
@@ -4652,7 +4872,8 @@ auto process_paths(const std::vector<std::string> &paths,
 
       if (recursive_requested(ctx)) {
         std::set<std::string> visited;
-        auto result = list_directory_recursive(path, ctx, true, visited);
+        auto result = list_directory_recursive(path, ctx, true, visited,
+                                               lookup_target);
         if (!result) {
           print_ls_error(std::string(result.error()));
           success = false;
@@ -4667,7 +4888,7 @@ auto process_paths(const std::vector<std::string> &paths,
           safePrintLn(utf8_to_wstring(path) + L":");
         }
 
-        auto result = list_directory(path, ctx);
+        auto result = list_directory(path, ctx, lookup_target);
         if (!result) {
           print_ls_error(std::string(result.error()));
           success = false;

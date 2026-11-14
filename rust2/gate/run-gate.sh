@@ -513,6 +513,13 @@ run_case() {
     local gdir="$GNU_REMOTE_ROOT/$id"
     {
         echo '#!/bin/bash'
+        # Pin the oracle locale to the one the corpus expectations were
+        # authored against (C.UTF-8 on the 24.04 attestation box). A fresh
+        # distro defaulting to C emits coreutils help/diagnostics with
+        # ASCII quotes where the corpus captured UTF-8 curly quotes, which
+        # is byte skew, not a behavior delta. Override with
+        # GATE_GNU_LOCALE when the distro lacks C.UTF-8.
+        printf 'export LC_ALL=%s\n' "$(qsh "${GATE_GNU_LOCALE:-C.UTF-8}")"
         printf 'rm -rf %s; mkdir -p %s || exit 97\n' "$(qsh "$gdir")" "$(qsh "$gdir")"
         printf 'cd %s || exit 97\n' "$(qsh "$gdir")"
         if [ "$POSIX_MODE" -eq 1 ]; then
@@ -738,6 +745,21 @@ if [ ${#SKIPPED_CASES[@]} -gt 0 ]; then
     for s in "${SKIPPED_CASES[@]}"; do echo "  $s"; done
 fi
 echo "timing:             $TIMING"
+# Oracle identity: the corpus rows are attested against a specific GNU
+# build (the 24.04 / coreutils 9.4 / C.UTF-8 box). An unpinned CI distro
+# can ship different behavior (e.g. -h, brace validation), which shows up
+# as rc/out skew on exactly the version-sensitive rows. Land the identity
+# in the teed summary so every run states which oracle it compared with.
+{
+    echo "oracle identity (per distro query):"
+    for c in "${COMMANDS[@]}"; do
+        v=$(wsl.exe --exec /bin/bash -c \
+            "LC_ALL=C.UTF-8 '$c' --version 2>/dev/null | head -1" 2>/dev/null)
+        [ -n "$v" ] && echo "  $c=$v"
+    done
+    wsl.exe --exec /bin/bash -c \
+        ". /etc/os-release 2>/dev/null && echo \"  distro=\$PRETTY_NAME\"" 2>/dev/null
+}
 echo "ledger:             $LEDGER"
 echo "gnu stderr samples: $ART/gnu-stderr-samples.txt"
 if [ "$missing_tables" -ne 0 ]; then

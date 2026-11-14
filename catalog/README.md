@@ -37,3 +37,33 @@ repository; nothing here was written into the shared checkout (lane 15 owns
 Every change under `catalogs/` in `unixwin/winuxcmd-i18n` must bump that
 repository's `VERSION` file in the same PR (AGENTS.md). The captain sequences
 that bump with the catalog drop; this lane did not touch the shared repo.
+
+---
+
+## A1 lane — chmod / chgrp / chown `tr!` catalog patch
+
+`0001-zh-CN-chmod-chgrp-chown-tr.patch` is the **patch form** of the companion
+catalog update for the A1 preserve-root closure lane. It is intentionally NOT
+applied to `D:/repo/winuxcmd-i18n` from this worktree: the catalog repository
+is shared with the in-flight I18N lanes and the captain sequences catalog
+commits against WinuxCmd PRs.
+
+The patch is a unified diff against `unixwin/winuxcmd-i18n` at `VERSION
+0.6.35` (catalog HEAD `cd9980d`): it adds 34 `catalog.json` keys and bumps
+`VERSION` to `0.6.36`.
+
+The 34 keys (the permission-family `error()` face; program prefixes and
+`errno` suffixes stay in Rust code):
+
+- `command.chmod.error.*` — 10 keys
+- `command.chgrp.error.*` — 10 keys
+- `command.chown.error.*` — 14 keys
+
+The three `dangerous_recursive_root` keys carry GNU's `(same as '/')` suffix
+inside the sentence instead of a `{tail}` binding: the suffix cannot be
+translated independently of the clause, so the two shapes are distinct keys.
+`{operand}`, `{file}`, `{group}`, `{mode}`, `{spec}` are named placeholders;
+CJK text contains no literal braces, so no `{{`/`}}` escaping is required.
+
+Catalog size: 3821 → 3855 messages. `VERSION` **must** be bumped in the same
+commit (`catalogs/` change gate), 0.6.35 → 0.6.36.

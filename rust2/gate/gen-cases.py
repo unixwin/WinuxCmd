@@ -496,6 +496,32 @@ chmod_rows = [
     ("cm43-dash-operand", "strict", "touch f", "", "", ["644", "-"]),
     ("cm44-o-equals", "strict", "touch f", "", "", ["o=", "f"]),
     ("cm45-g-copy-o", "strict", "touch f", "", "", ["g=o", "f"]),
+    # A1 preserve-root closure / dash-mode surfaces (probed WSL coreutils 9.4,
+    # 2026-11-14; rows only where GNU's own umask does not enter the
+    # comparison — the dash-mode "new permissions are ..." warning is a
+    # separate gate gap, see DOCS/2.0-a1-wiring-plan.md).
+    ("cm46-dash-R755-invalid", "strict", "touch f", "", "", ["-R755", "f"]),
+    ("cm47-dash-invalid-short", "strict", "touch f", "", "", ["-Q", "f"]),
+    ("cm48-dash-mode-demotes-operand", "strict", "touch f", "", "",
+     ["644", "-w", "f"]),
+    ("cm49-preserve-last-wins", "strict", "mkdir d", "", "",
+     ["-R", "--preserve-root", "--no-preserve-root", "755", "d"]),
+    ("cm50-preserve-reverse-last", "strict", "mkdir d", "", "",
+     ["-R", "--no-preserve-root", "--preserve-root", "755", "d"]),
+    ("cm51-preserve-nonrecursive", "strict", "mkdir d", "", "",
+     ["--preserve-root", "755", "d"]),
+    ("cm52-empty-long-ambiguous", "strict", "touch f", "", "", ["--=v", "f"]),
+    ("cm53-f-invalid-mode", "strict", "touch f", "", "", ["-f", "999", "f"]),
+    ("cm54-dash-X-noop", "strict", "touch f", "", "", ["-X", "f"]),
+    ("cm55-recursive-symlink-entry", "exit", "mkdir d; touch d/x; ln -s x d/s",
+     "", "", ["-Rv", "600", "d"]),
+    ("cm58-recursive-zero", "exit", "mkdir -p d/s", "", "", ["-R", "000", "d"]),
+    ("cm59-mode-triple-clause", "strict", "touch f", "", "",
+     ["u=r,g=w,o=x", "f"]),
+    ("cm60-dash-X-dir", "strict", "mkdir d", "", "", ["-X", "d"]),
+    ("cm61-recursive-multi-clause", "exit", "mkdir -p d/s", "", "",
+     ["-R", "u=rwx,go=rx", "d"]),
+    ("cm62-symbolic-restrictive", "exit", "touch f", "", "", ["a-rwx", "f"]),
 ]
 
 chown_rows = [
@@ -545,6 +571,26 @@ chown_rows = [
     ("cw36-dereference-long", "exit", "touch f", "", "", ["--dereference", "0", "f"]),
     ("cw25b-from-reference-noapply", "strict", "touch f; touch g", "", "",
      ["--from=1", "--reference=f", "g"]),
+    # A1 preserve-root closure surfaces (probed WSL coreutils 9.4, 2026-11-14):
+    # BSD dot-spec alias, dereference machine, preserve-root parse/order,
+    # reference-vs-positional grammar. Windows ownership changes are no-ops,
+    # so rc-0 mutators stay exit where GNU stdout is root-only.
+    ("cw37-dot-spec-warning", "strict", "touch f", "", "", ["0.0", "f"]),
+    ("cw38-dot-two-invalid", "strict", "touch f", "", "", ["1.1.2", "f"]),
+    ("cw39-deref-combo", "strict", "touch f", "", "",
+     ["-R", "--dereference", "0", "f"]),
+    ("cw40-deref-with-H", "exit", "touch f", "", "",
+     ["-R", "--dereference", "-H", "0", "f"]),
+    ("cw41-preserve-flag", "exit", "mkdir d", "", "",
+     ["-R", "--preserve-root", "0", "d"]),
+    ("cw42-preserve-last-wins", "exit", "mkdir d", "", "",
+     ["-R", "--preserve-root", "--no-preserve-root", "0", "d"]),
+    ("cw43-h-with-R", "exit", "mkdir d; touch d/x", "", "", ["-hR", "0", "d"]),
+    ("cw44-from-dot-spec", "strict", "touch f", "", "",
+     ["--from=0.0", "0", "f"]),
+    ("cw47-ref-makes-spec-operand", "strict", "touch f; touch rf", "", "",
+     ["--reference=rf", "0", "f"]),
+    ("cw48-dot-named-spec", "win", "touch f", "", "", ["root.root", "f"]),
 ]
 
 # ---------------------------------------------------------------------------
@@ -3755,6 +3801,17 @@ chgrp_rows = [
     ("cg23-version", "strict", "", "", "", ["--version"]),
     ("cg24-numeric-two-files", "strict", "printf x > a; printf x > b", "", "",
      ["0", "a", "b"]),
+    # A1 preserve-root closure surfaces (probed WSL coreutils 9.4, 2026-11-14):
+    # dereference state machine, preserve-root parse/order, dot spec refusal.
+    # Named mutators stay exit/note (Windows group database, not GNU gid).
+    ("cg26-deref-with-H", "exit", "printf x > f", "", "",
+     ["-R", "--dereference", "-H", "0", "f"]),
+    ("cg28-preserve-flag", "exit", "mkdir d", "", "",
+     ["-R", "--preserve-root", "0", "d"]),
+    ("cg29-preserve-last-wins", "exit", "mkdir d", "", "",
+     ["-R", "--preserve-root", "--no-preserve-root", "0", "d"]),
+    ("cg32-dot-spec", "strict", "printf x > f", "", "", ["1.2", "f"]),
+    ("cg34-v-retained", "note", "printf x > f", "", "", ["-v", "0", "f"]),
 ]
 
 du_rows = [

@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 caomengxuan666 <caomengxuan666@users.noreply.github.com>
 #include <chrono>
+#include <cstdint>
+#include <cstring>
+#include <string_view>
 
 #include "framework/winuxtest.h"
 
@@ -1503,4 +1506,431 @@ TEST(cp, issue1647_recursive_copy_through_directory_junction_into_self_refused) 
   // cap inside "dir" and still exited 0).
   EXPECT_FALSE(std::filesystem::exists(tmp.path / "dir" / "dir"));
   EXPECT_EQ(tmp.read("dir/f.txt"), "F");
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1647 (WSL DrvFs half) and #1693: link sources Win32 cannot traverse.
+//
+// WSL stores a POSIX symlink on a Windows volume as reparse tag 0xA000001D
+// with a u32 version followed by the UTF-8 target.  Windows has no reader for
+// that tag, so `cp link out` must resolve the stored target itself; the
+// fixture needs no privilege (FSCTL_SET_REPARSE_POINT, the same shape the
+// WSL checkout produces), so these cells run on every host.
+//
+// GNU oracle (coreutils 9.4, LC_ALL=C, on the same /mnt tree):
+//   cp link out        -> rc 0, regular file with the target bytes
+//   cp -L link out     -> rc 0, same
+//   cp -d link out     -> rc 0, new link with the same target text
+//   cp dangling out    -> rc 1, "cannot stat 'dangling': No such file ..."
+//   cp -d dangling out -> rc 0, dangling link recreated
+//   cp -r -H dirlink d -> rc 0, d is a real directory with the tree
+//   cp -r dirlink d    -> rc 0, d is a link with the same target text
+// ---------------------------------------------------------------------------
+namespace {
+
+constexpr DWORD kCpLxSymlinkTag = 0xA000001D;
+constexpr DWORD kCpFctlSetReparsePoint = 0x000900A4;
+
+// Create a genuine LX symlink (tag 0xA000001D) without WSL or privilege.
+// link_is_directory pre-creates the placeholder so the link behaves like a
+// directory entry to Win32 (FILE_ATTRIBUTE_DIRECTORY | REPARSE_POINT).
+bool cp_create_lx_symlink_or_skip(const std::filesystem::path& link,
+                                  std::string_view target_utf8,
+                                  bool link_is_directory = false) {
+  if (link_is_directory) {
+    std::error_code ec;
+    std::filesystem::create_directory(link, ec);
+    if (ec) {
+      std::cout << "  SKIPPED (LX placeholder directory failed)\n";
+      return false;
+    }
+  }
+
+  HANDLE handle = CreateFileW(
+      link.wstring().c_str(), GENERIC_WRITE,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+      link_is_directory ? OPEN_EXISTING : CREATE_NEW,
+      FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+  if (handle == INVALID_HANDLE_VALUE) {
+    std::cout << "  SKIPPED (LX reparse create failed with error "
+              << GetLastError() << ")\n";
+    return false;
+  }
+
+  const size_t data_len = 4 + target_utf8.size();
+  std::vector<BYTE> buffer(8 + data_len, 0);
+  std::memcpy(buffer.data(), &kCpLxSymlinkTag, sizeof(kCpLxSymlinkTag));
+  const uint16_t data_len16 = static_cast<uint16_t>(data_len);
+  std::memcpy(buffer.data() + 4, &data_len16, sizeof(data_len16));
+  const uint32_t version = 2;
+  std::memcpy(buffer.data() + 8, &version, sizeof(version));
+  std::memcpy(buffer.data() + 12, target_utf8.data(), target_utf8.size());
+
+  DWORD returned = 0;
+  const BOOL ok = DeviceIoControl(handle, kCpFctlSetReparsePoint, buffer.data(),
+                                  static_cast<DWORD>(buffer.size()), nullptr, 0,
+                                  &returned, nullptr);
+  const DWORD error = ok ? ERROR_SUCCESS : GetLastError();
+  CloseHandle(handle);
+  if (!ok) {
+    std::cout << "  SKIPPED (LX reparse ioctl failed with error " << error
+              << ")\n";
+    return false;
+  }
+  return true;
+}
+
+// CreateSymbolicLinkW is the only recreation path; a host without
+// SeCreateSymbolicLinkPrivilege (or Developer Mode) must still get GNU's
+// "cannot create symbolic link" diagnostic.  The probe mirrors cp's own
+// flags so the branch matches what the run under test can do.
+bool cp_symlink_recreation_supported(const std::filesystem::path& dir,
+                                     const std::filesystem::path& target) {
+  DWORD flags = 0;
+#ifdef SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE
+  flags |= SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE;
+#endif
+  const std::filesystem::path probe = dir / "capability-probe";
+  if (!CreateSymbolicLinkW(probe.wstring().c_str(), target.wstring().c_str(),
+                           flags)) {
+    return false;
+  }
+  std::error_code ec;
+  std::filesystem::remove(probe, ec);
+  return true;
+}
+
+}  // namespace
+
+TEST(cp, issue1647_lx_symlink_source_dereferences_by_default) {
+  TempDir tmp;
+  tmp.write("a.txt", "A\n");
+  if (!cp_create_lx_symlink_or_skip(tmp.path / "link", "a.txt")) {
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"link", L"out"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(std::filesystem::is_regular_file(tmp.path / "out"));
+  EXPECT_FALSE(std::filesystem::is_symlink(
+      std::filesystem::symlink_status(tmp.path / "out")));
+  EXPECT_EQ(tmp.read("out"), "A\n");
+}
+
+TEST(cp, issue1647_lx_symlink_source_L_dereferences) {
+  TempDir tmp;
+  tmp.write("a.txt", "A\n");
+  if (!cp_create_lx_symlink_or_skip(tmp.path / "link", "a.txt")) {
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"-L", L"link", L"out"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(std::filesystem::is_regular_file(tmp.path / "out"));
+  EXPECT_EQ(tmp.read("out"), "A\n");
+}
+
+// Relative LX targets resolve against the LINK's directory, not cp's cwd.
+TEST(cp, issue1647_lx_relative_target_resolves_against_link_directory) {
+  TempDir tmp;
+  tmp.write("dir/a.txt", "D\n");
+  if (!cp_create_lx_symlink_or_skip(tmp.path / "dir" / "link", "a.txt")) {
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"dir/link", L"out"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(tmp.read("out"), "D\n");
+}
+
+TEST(cp, issue1647_lx_dangling_source_reports_cannot_stat) {
+  TempDir tmp;
+  if (!cp_create_lx_symlink_or_skip(tmp.path / "dangling", "missing-target")) {
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"dangling", L"out"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("cp: cannot stat 'dangling': No such file "
+                                 "or directory") != std::string::npos);
+  EXPECT_EQ(r.stderr_text.find("cannot open"), std::string::npos);
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "out"));
+}
+
+TEST(cp, issue1647_lx_no_dereference_recreates_link_or_reports_gnu_error) {
+  TempDir tmp;
+  tmp.write("a.txt", "A\n");
+  if (!cp_create_lx_symlink_or_skip(tmp.path / "link", "a.txt")) {
+    return;
+  }
+  const bool can_link =
+      cp_symlink_recreation_supported(tmp.path, tmp.path / "a.txt");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"-d", L"link", L"out"});
+  auto r = p.run();
+
+  if (can_link) {
+    EXPECT_EQ(r.exit_code, 0);
+    EXPECT_TRUE(std::filesystem::is_symlink(
+        std::filesystem::symlink_status(tmp.path / "out")));
+    std::error_code ec;
+    EXPECT_EQ(std::filesystem::read_symlink(tmp.path / "out", ec)
+                  .generic_string(),
+              "a.txt");
+    EXPECT_EQ(tmp.read("out"), "A\n");
+  } else {
+    // GNU wording: "cannot create symbolic link 'dst' to 'src': <reason>".
+    EXPECT_EQ(r.exit_code, 1);
+    EXPECT_TRUE(r.stderr_text.find("cannot create symbolic link 'out' to "
+                                   "'link'") != std::string::npos);
+    EXPECT_EQ(r.stderr_text.find("cannot open"), std::string::npos);
+  }
+}
+
+TEST(cp, issue1647_lx_archive_dereference_modes) {
+  TempDir tmp;
+  tmp.write("a.txt", "A\n");
+  if (!cp_create_lx_symlink_or_skip(tmp.path / "link", "a.txt")) {
+    return;
+  }
+  const bool can_link =
+      cp_symlink_recreation_supported(tmp.path, tmp.path / "a.txt");
+
+  // -a implies -d: recreate the link (or report the platform's inability).
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"-a", L"link", L"out"});
+  auto r = p.run();
+  if (can_link) {
+    EXPECT_EQ(r.exit_code, 0);
+    EXPECT_TRUE(std::filesystem::is_symlink(
+        std::filesystem::symlink_status(tmp.path / "out")));
+  } else {
+    EXPECT_EQ(r.exit_code, 1);
+    EXPECT_TRUE(r.stderr_text.find("cannot create symbolic link") !=
+                std::string::npos);
+  }
+
+  // -P is the explicit spelling of the same no-dereference rule.
+  Pipeline p2;
+  p2.set_cwd(tmp.wpath());
+  p2.add(L"cp.exe", {L"-P", L"link", L"out2"});
+  auto r2 = p2.run();
+  if (can_link) {
+    EXPECT_EQ(r2.exit_code, 0);
+    EXPECT_TRUE(std::filesystem::is_symlink(
+        std::filesystem::symlink_status(tmp.path / "out2")));
+  } else {
+    EXPECT_EQ(r2.exit_code, 1);
+    EXPECT_TRUE(r2.stderr_text.find("cannot create symbolic link") !=
+                std::string::npos);
+  }
+}
+
+// -L dereferences every link while walking a tree: files are copied, a
+// directory link becomes a real directory, and a dangling link is the stat
+// failure GNU reports (copy.c:2250-2253).
+TEST(cp, issue1647_lx_recursive_tree_L_dereferences_links) {
+  TempDir tmp;
+  tmp.write("tree/a.txt", "A\n");
+  tmp.write("tree/sub/f.txt", "F\n");
+  if (!cp_create_lx_symlink_or_skip(tmp.path / "tree" / "lnk_file", "a.txt")) {
+    return;
+  }
+  if (!cp_create_lx_symlink_or_skip(tmp.path / "tree" / "lnk_dir", "sub",
+                                    true)) {
+    return;
+  }
+  if (!cp_create_lx_symlink_or_skip(tmp.path / "tree" / "lnk_dang",
+                                    "missing")) {
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"-r", L"-L", L"tree", L"dst"});
+  auto r = p.run();
+
+  // GNU copies the live links, then fails the dangling one (rc=1).
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("cannot stat 'tree\\lnk_dang'") !=
+              std::string::npos);
+  EXPECT_EQ(tmp.read("dst/lnk_file"), "A\n");
+  EXPECT_TRUE(std::filesystem::is_directory(tmp.path / "dst" / "lnk_dir"));
+  EXPECT_FALSE(std::filesystem::is_symlink(
+      std::filesystem::symlink_status(tmp.path / "dst" / "lnk_dir")));
+  EXPECT_EQ(tmp.read("dst/lnk_dir/f.txt"), "F\n");
+  EXPECT_EQ(tmp.read("dst/sub/f.txt"), "F\n");
+}
+
+// -r keeps links as links (GNU DEREF_UNDEFINED -> DEREF_NEVER, cp.c:1239).
+TEST(cp, issue1647_lx_recursive_default_recreates_links) {
+  TempDir tmp;
+  tmp.write("tree/a.txt", "A\n");
+  if (!cp_create_lx_symlink_or_skip(tmp.path / "tree" / "lnk_file", "a.txt")) {
+    return;
+  }
+  const bool can_link =
+      cp_symlink_recreation_supported(tmp.path, tmp.path / "a.txt");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"-r", L"tree", L"dst"});
+  auto r = p.run();
+
+  EXPECT_EQ(tmp.read("dst/a.txt"), "A\n");
+  if (can_link) {
+    EXPECT_EQ(r.exit_code, 0);
+    EXPECT_TRUE(std::filesystem::is_symlink(
+        std::filesystem::symlink_status(tmp.path / "dst" / "lnk_file")));
+  } else {
+    EXPECT_EQ(r.exit_code, 1);
+    EXPECT_TRUE(r.stderr_text.find("cannot create symbolic link") !=
+                std::string::npos);
+    EXPECT_EQ(r.stderr_text.find("cannot open"), std::string::npos);
+  }
+}
+
+// Issue #1693: `cp -r -H <dir-link> dst` follows the command-line link and
+// copies the tree (GNU should_dereference, copy.c:2151-2156; the source stat
+// itself uses AT_SYMLINK_NOFOLLOW only for DEREF_NEVER, copy.c:2250).
+// std::filesystem::create_symlink produces the file-flagged shape whose
+// target is a directory — the exact fixture Windows CI failed on.
+TEST(cp, issue1693_recursive_command_line_dir_symlink_follows_with_H) {
+  TempDir tmp;
+  tmp.write("dir/f.txt", "F\n");
+
+  std::error_code ec;
+  std::filesystem::create_symlink("dir", tmp.path / "linkdir", ec);
+  if (ec) {
+    std::cout
+        << "  SKIPPED (requires administrator privileges for symbolic links)\n";
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"-r", L"-H", L"linkdir", L"dstH"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(std::filesystem::is_directory(tmp.path / "dstH"));
+  EXPECT_FALSE(std::filesystem::is_symlink(
+      std::filesystem::symlink_status(tmp.path / "dstH")));
+  EXPECT_EQ(tmp.read("dstH/f.txt"), "F\n");
+}
+
+// Lock the twin: plain -r keeps the command-line link a link, so a future
+// -H fix cannot leak into the default dispatch.
+TEST(cp, issue1693_recursive_default_keeps_command_line_dir_link) {
+  TempDir tmp;
+  tmp.write("dir/f.txt", "F\n");
+
+  std::error_code ec;
+  std::filesystem::create_symlink("dir", tmp.path / "linkdir", ec);
+  if (ec) {
+    std::cout
+        << "  SKIPPED (requires administrator privileges for symbolic links)\n";
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"-r", L"linkdir", L"dstLD"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(std::filesystem::is_symlink(
+      std::filesystem::symlink_status(tmp.path / "dstLD", ec)));
+  EXPECT_EQ(std::filesystem::read_symlink(tmp.path / "dstLD", ec)
+                .generic_string(),
+            "dir");
+}
+
+// The unprivileged form of the same dispatch: a junction is a directory link
+// Win32 can traverse, so this cell runs locally and pins that -H follows.
+TEST(cp, issue1693_recursive_junction_command_line_link_follows_with_H) {
+  TempDir tmp;
+  tmp.write("dir/f.txt", "F\n");
+  if (!cp_create_directory_junction_or_skip(tmp.path / "linkdir",
+                                            tmp.path / "dir")) {
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"-r", L"-H", L"linkdir", L"dstH"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(std::filesystem::is_directory(tmp.path / "dstH"));
+  EXPECT_EQ(tmp.read("dstH/f.txt"), "F\n");
+}
+
+// Issue #1693 shape without needing symlink privilege: a LINK whose reparse
+// point is file-shaped (no FILE_ATTRIBUTE_DIRECTORY) but whose target is a
+// directory.  That is exactly what --no-dereference sees for a symlink made
+// with std::filesystem::create_symlink("dir", ...); -H must stat the target
+// and recurse, not try to open the link as a file.
+TEST(cp, issue1693_file_shaped_directory_link_follows_with_H) {
+  TempDir tmp;
+  tmp.write("dir/f.txt", "F\n");
+  if (!cp_create_lx_symlink_or_skip(tmp.path / "linkdir", "dir",
+                                    /*link_is_directory=*/false)) {
+    return;
+  }
+  const DWORD link_attrs =
+      GetFileAttributesW((tmp.path / "linkdir").c_str());
+  EXPECT_TRUE(link_attrs != INVALID_FILE_ATTRIBUTES);
+  EXPECT_EQ(link_attrs & FILE_ATTRIBUTE_DIRECTORY, 0u);
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"-r", L"-H", L"linkdir", L"dstH"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(std::filesystem::is_directory(tmp.path / "dstH"));
+  EXPECT_FALSE(std::filesystem::is_symlink(
+      std::filesystem::symlink_status(tmp.path / "dstH")));
+  EXPECT_EQ(tmp.read("dstH/f.txt"), "F\n");
+}
+
+// The LX shape of #1693: Win32 cannot traverse the tag at all, so -H must
+// resolve the command-line link before walking it.
+TEST(cp, issue1693_lx_directory_link_follows_with_H) {
+  TempDir tmp;
+  tmp.write("dir/f.txt", "F\n");
+  if (!cp_create_lx_symlink_or_skip(tmp.path / "linkdir", "dir", true)) {
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cp.exe", {L"-r", L"-H", L"linkdir", L"dstH"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(std::filesystem::is_directory(tmp.path / "dstH"));
+  EXPECT_FALSE(std::filesystem::is_symlink(
+      std::filesystem::symlink_status(tmp.path / "dstH")));
+  EXPECT_EQ(tmp.read("dstH/f.txt"), "F\n");
 }
