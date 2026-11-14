@@ -40,3 +40,13 @@ cw34-v-group-numeric	note	touch f			-v	:5678	f
 cw35-v-numeric	note	touch f			-v	1234	f
 cw36-dereference-long	exit	touch f			--dereference	0	f
 cw25b-from-reference-noapply	strict	touch f; touch g			--from=1	--reference=f	g
+cw37-dot-spec-warning	strict	touch f			0.0	f
+cw38-dot-two-invalid	strict	touch f			1.1.2	f
+cw39-deref-combo	strict	touch f			-R	--dereference	0	f
+cw40-deref-with-H	exit	touch f			-R	--dereference	-H	0	f
+cw41-preserve-flag	exit	mkdir d			-R	--preserve-root	0	d
+cw42-preserve-last-wins	exit	mkdir d			-R	--preserve-root	--no-preserve-root	0	d
+cw43-h-with-R	exit	mkdir d; touch d/x			-hR	0	d
+cw44-from-dot-spec	strict	touch f			--from=0.0	0	f
+cw47-ref-makes-spec-operand	strict	touch f; touch rf			--reference=rf	0	f
+cw48-dot-named-spec	win	touch f			root.root	f
