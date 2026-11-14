@@ -759,11 +759,16 @@ mod tests {
         let sc = scratch("timeout-chain");
         let argv_out = sc.dir.join("argv.out");
         let inner = sc.dir.join("inner.sh");
+        // The redirect target is consumed by /bin/sh, whose ownership we
+        // don't control: MSYS sh (Git for Windows, the CI runner's sh)
+        // treats an unquoted backslash as an escape, so a Windows-spelled
+        // redirect silently lands on a mangled path and argv.out never
+        // appears. Forward slashes are valid for both sh families.
         std::fs::write(
             &inner,
             format!(
                 "#!/bin/sh -e\nprintf '%s\\n' \"$0\" \"$@\" >> {}\nexit 5\n",
-                argv_out.to_string_lossy()
+                argv_out.to_string_lossy().replace('\\', "/")
             ),
         )
         .unwrap();
