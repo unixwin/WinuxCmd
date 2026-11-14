@@ -817,3 +817,154 @@ TEST(mv, mv_verbose_plain_names_keep_simple_quoting_issue374) {
   EXPECT_TRUE(r.stdout_text.find("renamed 'plain name.txt' -> "
                                  "'renamed.txt'") != std::string::npos);
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1649: moving a directory onto an existing non-directory must
+// refuse (GNU copy.c:2448-2463, "cannot overwrite non-directory %s with
+// directory %s") instead of silently replacing the file (data loss);
+// the mirror arm is copy.c:2489-2500. Expectations are the GNU
+// coreutils 9.4 outputs measured for this lane (LC_ALL=C).
+// ---------------------------------------------------------------------------
+TEST(mv, mv_dir_onto_nondirectory_refuses_issue1649) {
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "dir");
+  tmp.write("dir/f.txt", "F");
+  tmp.write("a.txt", "IMPORTANT");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"mv.exe", {L"dir", L"a.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("cannot overwrite non-directory 'a.txt' "
+                                 "with directory 'dir'") !=
+              std::string::npos);
+  // Both operands survive untouched; the file keeps its content.
+  EXPECT_TRUE(std::filesystem::is_regular_file(tmp.path / "a.txt"));
+  EXPECT_EQ(tmp.read("a.txt"), "IMPORTANT");
+  EXPECT_TRUE(std::filesystem::is_directory(tmp.path / "dir"));
+  EXPECT_EQ(tmp.read("dir/f.txt"), "F");
+}
+
+TEST(mv, mv_dir_onto_nondirectory_backup_allows_issue1649) {
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "dir");
+  tmp.write("dir/f.txt", "F");
+  tmp.write("b.txt", "KEEP");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"mv.exe", {L"--backup", L"dir", L"b.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(std::filesystem::is_directory(tmp.path / "b.txt"));
+  EXPECT_EQ(tmp.read("b.txt/f.txt"), "F");
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "b.txt~"));
+  EXPECT_EQ(tmp.read("b.txt~"), "KEEP");
+}
+
+TEST(mv, mv_dir_onto_nondirectory_backup_none_refuses_issue1649) {
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "dir");
+  tmp.write("dir/f.txt", "F");
+  tmp.write("c.txt", "KEEP2");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"mv.exe", {L"--backup=none", L"dir", L"c.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("cannot overwrite non-directory 'c.txt' "
+                                 "with directory 'dir'") !=
+              std::string::npos);
+  EXPECT_TRUE(std::filesystem::is_regular_file(tmp.path / "c.txt"));
+  EXPECT_EQ(tmp.read("c.txt"), "KEEP2");
+  EXPECT_TRUE(std::filesystem::is_directory(tmp.path / "dir"));
+}
+
+TEST(mv, mv_nondirectory_onto_directory_no_target_refuses_issue1649) {
+  TempDir tmp;
+  tmp.write("f1.txt", "F1");
+  std::filesystem::create_directories(tmp.path / "dstdir");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"mv.exe", {L"-T", L"f1.txt", L"dstdir"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("cannot overwrite directory 'dstdir' "
+                                 "with non-directory") != std::string::npos);
+  EXPECT_TRUE(std::filesystem::is_regular_file(tmp.path / "f1.txt"));
+  EXPECT_TRUE(std::filesystem::is_directory(tmp.path / "dstdir"));
+}
+
+TEST(mv, mv_file_into_directory_still_succeeds_issue1649) {
+  TempDir tmp;
+  tmp.write("f2.txt", "F2");
+  std::filesystem::create_directories(tmp.path / "dstdir2");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"mv.exe", {L"f2.txt", L"dstdir2"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "f2.txt"));
+  EXPECT_TRUE(std::filesystem::is_regular_file(tmp.path / "dstdir2/f2.txt"));
+  EXPECT_EQ(tmp.read("dstdir2/f2.txt"), "F2");
+}
+
+TEST(mv, mv_dir_into_directory_still_succeeds_issue1649) {
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "sdir");
+  tmp.write("sdir/s.txt", "S");
+  std::filesystem::create_directories(tmp.path / "tdir");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"mv.exe", {L"sdir", L"tdir"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "sdir"));
+  EXPECT_TRUE(std::filesystem::is_directory(tmp.path / "tdir/sdir"));
+  EXPECT_EQ(tmp.read("tdir/sdir/s.txt"), "S");
+}
+
+TEST(mv, mv_dir_onto_symlink_to_file_refuses_issue1649) {
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "dir");
+  tmp.write("dir/f.txt", "F");
+  tmp.write("real.txt", "TGT");
+  std::error_code ec;
+  std::filesystem::create_symlink("real.txt", tmp.path / "lnkfile", ec);
+  if (ec) {
+    std::cout << "  SKIPPED (requires administrator privileges for symbolic "
+                 "links)\n";
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"mv.exe", {L"dir", L"lnkfile"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("cannot overwrite non-directory 'lnkfile' "
+                                 "with directory 'dir'") !=
+              std::string::npos);
+  EXPECT_TRUE(std::filesystem::is_symlink(tmp.path / "lnkfile"));
+  EXPECT_EQ(tmp.read("real.txt"), "TGT");
+  EXPECT_TRUE(std::filesystem::is_directory(tmp.path / "dir"));
+}
