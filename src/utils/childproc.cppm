@@ -396,10 +396,15 @@ export auto resolve_child_command_in_path(
 // path is not this issue's scope.
 namespace {
 
-// binfmt_script.c reads the shebang line from the same first page the
-// image loaders use (BINPRM_BUF_SIZE): a line that overflows it is not a
-// script.
+// binfmt_script.c reads the shebang line from the same first page the image
+// loaders use: exec.c zero-fills a BINPRM_BUF_SIZE (256) buffer and reads
+// only BINPRM_BUF_SIZE - 1 bytes into it, so the line the kernel parses is
+// at most 255 bytes. An overlong line is truncated at that edge and still
+// launches, it is not rejected (probed WSL GNU 6.18: `#!/bin/echo ` + 300
+// x's runs /bin/echo with a 243-byte argument -- 255 bytes minus "#!",
+// "/bin/echo" and the separating space).
 constexpr size_t kShebangHeadBytes = 256;
+constexpr size_t kShebangLineBytes = kShebangHeadBytes - 1;
 // Guard against interpreter cycles (`#!/x` where x is itself `#!...`).
 // The kernel bounds binfmt recursion the same way in spirit; three levels
 // already exceeds every real-world chain.
@@ -431,7 +436,8 @@ auto resolve_interpreter(const std::wstring& spelling,
                          unsigned depth) -> ClassifiedLaunch;
 
 // The first HEAD_BYTES of a file, short-read tolerant. 256 matches the
-// kernel's BINPRM_BUF_SIZE: the whole shebang line must fit in it.
+// kernel's BINPRM_BUF_SIZE: the shebang line is parsed within it (truncated,
+// not rejected, when it overflows).
 auto read_file_head(const std::wstring& path) -> std::vector<unsigned char> {
   std::vector<unsigned char> head(kShebangHeadBytes);
   HANDLE file = CreateFileW(path.c_str(), GENERIC_READ,
@@ -456,26 +462,35 @@ auto read_file_head(const std::wstring& path) -> std::vector<unsigned char> {
 }
 
 // binfmt_script.c line split of a `#!` head: the interpreter is the first
-// space/tab token of the line (up to LF or the 256-byte cap); the remainder
-// after the whitespace run is ONE optional argument, trailing space/tab
-// trimmed (the kernel keeps a CR -- a CRLF shebang names an interpreter
-// with a trailing CR and misses it, probed ENOENT). nullopt where the
-// kernel would give ENOEXEC: `#!` with no interpreter, or a line that
-// fills the buffer with no newline.
+// space/tab token of the line (up to LF or the 255-byte kernel window); the
+// remainder after the whitespace run is ONE optional argument, trailing
+// space/tab trimmed (the kernel keeps a CR -- a CRLF shebang names an
+// interpreter with a trailing CR and misses it, probed ENOENT). An overlong
+// line is truncated at the window edge, not rejected: probed WSL GNU
+// launches `#!/bin/echo ` + 300 x's and echoes the 243-byte argument, so the
+// window end is the line end when no LF is present. nullopt only where the
+// kernel gives ENOEXEC: `#!` with no interpreter token. A bare `#!` is a
+// product boundary: GNU `env` reaches 0 through the libc execvp /bin/sh
+// fallback, which is out of contract here.
 auto parse_shebang_line(const std::vector<unsigned char>& head)
     -> std::optional<ShebangLine> {
-  // Skip the "#!" magic: the kernel splits the line that FOLLOWS it.
-  const size_t body_size = head.size() - 2;
+  // Skip the "#!" magic: the kernel splits the line that FOLLOWS it. The
+  // last byte of the kernel's BINPRM_BUF_SIZE buffer stays NUL (exec.c reads
+  // one byte less), so the line is bounded by kShebangLineBytes; no LF
+  // inside that window means the kernel truncates the line and still
+  // launches.
+  const size_t window =
+      head.size() < kShebangLineBytes ? head.size() : kShebangLineBytes;
+  const size_t body_size = window - 2;
   const unsigned char* body = head.data() + 2;
+  // No LF inside the head: the kernel truncates the line at
+  // BINPRM_BUF_SIZE and still launches, so the buffer end is the line end.
   size_t line_end = body_size;
   for (size_t i = 0; i < body_size; ++i) {
     if (body[i] == '\n') {
       line_end = i;
       break;
     }
-  }
-  if (line_end == body_size && head.size() == kShebangHeadBytes) {
-    return std::nullopt;  // no newline inside the kernel's buffer
   }
   size_t end = line_end;
   while (end > 0 && (body[end - 1] == ' ' || body[end - 1] == '\t')) --end;
@@ -536,8 +551,10 @@ auto resolve_shebang_script(const std::wstring& script,
                             unsigned depth) -> ClassifiedLaunch {
   const std::optional<ShebangLine> parsed = parse_shebang_line(head);
   if (!parsed.has_value() || depth >= kShebangRecursionLimit) {
-    // Unparseable shebang line, or the recursion guard: the BadFormat
-    // analog, which the C++ status set reports as 126.
+    // A bare `#!` (no interpreter token) or the recursion guard: the
+    // BadFormat analog, which the C++ status set reports as 126. This is a
+    // product boundary for the bare `#!` shape: GNU `env` reaches 0 only
+    // through the libc execvp /bin/sh fallback, which is out of contract.
     ClassifiedLaunch bad_format;
     bad_format.status = ChildResolveStatus::NotExecutable;
     return bad_format;
@@ -611,11 +628,14 @@ auto resolve_interpreter(const std::wstring& spelling,
         fallback = mapped_fallback;
       }
     }
-    // Pass C: the leaf name through PATH -- the last accommodation for a
-    // POSIX-rooted spelling on a host with neither an install root nor the
-    // mapped prefix, but the tool on PATH (a shebang interpreter's
-    // "/bin/..." prefix only exists on POSIX; the leaf is what a Windows
-    // host can actually run).
+    // Pass C: the leaf name through PATH -- a known accommodation, not
+    // kernel parity: the kernel never PATH-searches a shebang interpreter
+    // (probed: "#!/nonexistent/interp" with `interp` on PATH is still
+    // ENOENT/127). This is the last accommodation for a POSIX-rooted
+    // spelling on a host with neither an install root nor the mapped
+    // prefix, but the tool on PATH (a shebang interpreter's "/bin/..."
+    // prefix only exists on POSIX; the leaf is what a Windows host can
+    // actually run).
     const size_t slash = name.find_last_of(L'/');
     const std::wstring leaf =
         slash == std::wstring::npos ? name : name.substr(slash + 1);

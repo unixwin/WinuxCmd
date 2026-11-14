@@ -8,13 +8,17 @@
 #
 # Case table: gate/cases/<cmd>.tsv, TAB-separated columns:
 #   id | mode | setup | env | stdin | arg1 | arg2 | ...
-#   mode : strict | exit | win | posix | posix-exit   (see below)
+#   mode : strict | sorted | exit | win | posix | posix-exit   (see below)
 #   setup: POSIX sh snippet run inside the per-side scratch dir (may be empty)
 #   env  : comma-separated K=V assignments (may be empty)
 #   stdin: literal bytes for stdin (no newlines in cases; may be empty)
 #
 # Modes:
 #   strict     : stdout bytes AND exit status must equal GNU; C++ equality recorded
+#   sorted     : strict, but stdout LINES compare after LC_ALL=C sort on both
+#                sides — for directory walks whose order is the filesystem's
+#                enumeration order (GNU find prints ext4 readdir/hash order,
+#                NTFS enumerates in B-tree order; #1488 find lane)
 #   exit       : exit status must equal GNU; stdout is platform-form-bound (recorded)
 #   win        : no GNU comparison (platform-inherent output); Rust vs C++ status
 #   posix      : strict comparison, but a failure counts as PENDING, not FAIL —
@@ -139,6 +143,26 @@ fi
 
 mkdir -p "$ART/scratch" "$GNU_MIRROR"
 
+# The GNU leg invokes native wsl.exe with leading-slash POSIX argv
+# ("wsl.exe --exec /bin/bash /mnt/<drive>/..."). Git Bash (MSYS2) rewrites
+# such arguments into Windows-native paths before the spawn — measured on
+# the CI runner: /bin/bash arrived as D:/Git/usr/bin/bash and the distro
+# failed execvpe for every case, so the whole GNU side scored MISSING
+# while wsl.exe itself "succeeded" (exit swallowed). MSYS_NO_PATHCONV=1
+# disables that rewriting under Git Bash and is ignored by the niubash
+# family, where this call shape never converted in the first place.
+export MSYS_NO_PATHCONV=1
+
+# Preflight: prove one GNU-side roundtrip through the exact call shape
+# below before spending minutes on the corpus, so a broken invocation
+# fails here in seconds instead of MISSING-ing every row.
+wsl.exe --exec /bin/bash -c "echo ok > '$ART_MNT/gnu-preflight'"
+if [ ! -f "$ART/gnu-preflight" ]; then
+    echo "FATAL: GNU-side WSL roundtrip failed (see the MSYS_NO_PATHCONV note above)" >&2
+    exit 3
+fi
+rm -f "$ART/gnu-preflight"
+
 if command -v timeout >/dev/null 2>&1; then WIN_TIMEOUT="timeout 10"; else WIN_TIMEOUT=""; fi
 
 pass=0; fail=0; winpass=0; winfail=0
@@ -259,6 +283,11 @@ posix_setup_is_applet_list() {
 run_posix_win_side() {
     local side="$1" scase="$2" prog="$3" setup="$4" envstr="$5" stdin="$6"
     shift 6
+    # NOT `local args=("$@")`: the agent-side bash (niubash 5.3.20, MSYS)
+    # re-runs quote removal on a compound assignment given to `local`,
+    # silently stripping every backslash from the arguments (`s/b/\&/`
+    # reached both Windows AND GNU sides as `s/b/&/`; measured #1488 sed
+    # lane). Declare first, assign after.
     local -a args
     args=("$@")
     local sdir="$scase.$side"
@@ -342,8 +371,11 @@ run_posix_win_side() {
 run_case() {
     local cmd="$1" id="$2" mode="$3" setup="$4" envstr="$5" stdin="$6"
     shift 6
-    # Keep declaration separate: compound local arrays lose backslashes
-    # on the current Niubash host (for example, '\x41' becomes 'x41').
+    # NOT `local args=("$@")`: the agent-side bash (niubash 5.3.20, MSYS)
+    # re-runs quote removal on a compound assignment given to `local`,
+    # silently stripping every backslash from the arguments (`s/b/\&/`
+    # reached both Windows AND GNU sides as `s/b/&/`; measured #1488 sed
+    # lane). Declare first, assign after.
     local -a args
     args=("$@")
 
@@ -520,6 +552,8 @@ run_case() {
     local ok=0 note=""
     case "$mode" in
         strict)     [ "$gnu_out_match" = yes ] && [ "$r_rc" = "$g_rc" ] && ok=1 ;;
+        sorted)     [ "$(printf '%s' "$r_out" | LC_ALL=C sort)" = "$(printf '%s' "$g_out" | LC_ALL=C sort)" ] \
+                        && [ "$r_rc" = "$g_rc" ] && ok=1 ;;
         exit)       [ "$r_rc" = "$g_rc" ] && ok=1 ;;
         win)        [ "$r_rc" = "$c_rc" ] && ok=1 ;;
         posix)      [ "$gnu_out_match" = yes ] && [ "$r_rc" = "$g_rc" ] && ok=1 ;;
