@@ -1118,3 +1118,204 @@ Rust i18n runtime (no tr! macro, no catalog plumbing in winux-core, no
 Rust recognition in the extractor) — that infra belongs to the
 unmerged stream-abi lane; Rust output drains through the bridge's raw
 writers without catalog lookup. Recorded as a dependency, not skipped.
+
+## wave-W3 — wiring wave: du, mktemp, nice (#1488 wire-W3, 2026-11-14)
+
+Lane scope: `date du mktemp nice nohup`. **Wired in this wave: `du`,
+`mktemp`, `nice`.** `date` and `nohup` stop at the recipe's precondition
+(see "Blocked" below) — wiring them now would regress 1.x behavior, so the
+C++ bodies stay in place for those two.
+
+### Wired commands
+
+| command | cases | strict | exit | win | note | GNU-gated result | old-vs-new matrix |
+|---|---|---|---|---|---|---|---|
+| du | 52 | 43 | 3 | 6 | 0 | GREEN (38 GNU-gated + 5 win PASS, 0 FAIL; 9 symlink rows SKIP) | 52 rows: rc 52/52, stdout 47/52, stderr 51/52 |
+| mktemp | 27 | 12 | 13 | 2 | 0 | GREEN (25 GNU-gated + 2 win PASS, 0 FAIL) | 28 rows: rc 27/28, stdout 27/28, stderr 27/28 |
+| nice | 21 | 12 | 7 | 2 | 0 | GREEN (19 GNU-gated + 2 win PASS, 0 FAIL) | 26 rows: 26/26/26 |
+
+Gate a (RUST_BIN = wired `build-vs/winuxcmd.exe`, CPP_BIN = pre-wiring
+baseline exe, artifact dir `target/gate-wired`): 82 GNU-gated PASS / 0 FAIL,
+9 win PASS / 0 FAIL, 6 skipped — the new `-L/-H` symlink rows
+(du41–du46, plus the #1670 rows du47–du49) need
+`SeCreateSymbolicLinkPrivilege`, which this host lacks
+(`ln -s` EPERM; the `find` lane made the same measurement in reverse). They
+stay in the table for CI runners that have Developer Mode. Their behavior is
+covered locally by `du`'s Rust unit tests plus a hand-run junction probe
+(`cmd /c mklink /J` needs no privilege): old and new agree on
+`-L/-H` over a live junction (4\tjunc, 4\tjunc/inner.txt with `-a`) and on
+the dangling case (`du: cannot access 'dangle'`, rc 1).
+
+Case-table changes: `mk26/mk27`, `nc19/nc20`, `du28/du29` (--help/--version)
+flipped `strict`→`win` for the product-exe help-row convention (the wired
+exe answers with the WinuxCmd-branded registration text; same precedent as
+the wave6 `hn19/hn20` flip). du gained du41–du46 (see above). No row was
+deleted.
+
+### Library fixes the wiring surfaced (du.rs / mktemp.rs, own commit)
+
+These were latent Rust-port bugs that the product path would have exposed;
+each is pinned by an existing ctest that the wired exe now runs:
+
+- `du -L <dir>` printed ONE row: the child-directory test negated the
+  dereference clause, so every real subdirectory was treated as a file
+  under `-L`. `-H` likewise never descended into a command-line link.
+- `du --time` printed the directory's own stamp instead of the subtree's
+  latest; `--time=access/status` (and their GNU words use/ctime) were
+  rejected; `--block-size=human-readable` / `=si` were not recognized.
+- The size options were applied in a fixed order instead of GNU's
+  sequential state, so `-h -B1` stayed human-readable and `-B1 -m` kept
+  bytes. argopt gained an argv-ordered `events` list (`OptEvent`) for this
+  and future state-machine options.
+- Bare-suffix block sizes printed no unit (`-BM` gave "2", GNU prints
+  "2M"), and the invalid-value diagnostic always said `--block-size` even
+  for `-B`.
+- `human_size` always printed one decimal ("19.6k"); GNU prints an
+  integer once the value reaches 10 units ("20k").
+- `-a -d0` still printed child files.
+- Hardlink dedupe ran only in allocated-size mode, so `--apparent-size`
+  double-counted links; `--inodes` now dedupes too.
+- Operand display: a POSIX drive spelling (`/c/...`) printed as the POSIX
+  text instead of the resolved native path (#1174/#1364 contract), and
+  `src//` printed `src///bin`.
+- `mktemp <dir>/x.XXXXXX` printed a bare name (the join tested the
+  stripped component), `--suffix` on a template whose X-run sits before a
+  suffix appended `XXXXXX` instead of replacing the run, and the default
+  directory printed the environment's backslashes ("C:\...\Temp/tmp.x")
+  where the product prints forward slashes.
+
+### Old-vs-new matrix classifications (gate c)
+
+Harness: `gate/wire/cmd-matrix.sh` + `compare.sh`, ledgers kept in
+`target/wire-w3/`. `mktemp`'s random X-run is normalized in the ledger hash
+only (`normalize_out`; raw `.out` bytes are the evidence) — the recipe's
+"mktemp gates on exit status only" rule, extended to the path SHAPE.
+
+| row | diff | verdict |
+|---|---|---|
+| du 25 `--time` | old 08:00, new 00:00 under TZ=UTC | Rust matches GNU; 1.x `--time` used FileTimeToLocalFileTime and ignored TZ |
+| du 33 `-lb d d` | old printed the tree once | Rust matches GNU (probed: `-l` re-counts and re-prints repeated operands) |
+| du 36 `--block-size=bogus` | stderr wording | Rust matches GNU ("--block-size"); 1.x always said "-B" |
+| du 44 `-b <junction>` | old descended, new prints the link row | platform value model: a junction without -L is a link entry (GNU counts the link, never the target) |
+| mktemp 23 `--tmpdir q.XXXXXX` | old treated the template as --tmpdir's DIR (rc 1) | Rust matches GNU: bare --tmpdir is an optional argument |
+| du 51 `-L -l -s dujunc dud` | old printed one row | Rust matches GNU: `-l` bypasses the visited dedupe (#1670 / PR #1730) |
+| du 52 `-P -s dujunc dud` | old walked the junction as the directory and printed one row | Rust matches GNU: `-P` counts the link entry and the real directory separately (#1670) |
+
+All other rows are byte-identical (rc + stdout + normalized stdout + stderr).
+
+### Gate b
+
+`ctest` (excluding the host-hanging `lsof.*` family, see below) failing set
+== the pre-wiring baseline set; the du/mktemp/nice families specifically
+are 7/7 identical (the pre-existing `du.issue_1288...`,
+`mktemp.mktemp_dash_p_bare_slash...`, two `nice.nice_huge_*` and three
+`nohup.nohup_*` rows). Validation: `build-vs/tests/winuxcmd-tests.exe
+--gtest_filter='du.*:mktemp.*:nice.*:nohup.*'` → 119 tests, 112 passed,
+7 failed = the baseline 7. After the #1670 port the du family is fully
+green: `--gtest_filter='du.*'` → **71 passed / 0 failed** (the pre-existing
+`du.issue_1288_same_deep_directory_two_spellings_counted_once` is fixed by
+the lexical/identity visited set).
+
+### I18N
+
+26 new stable keys — `command.du.error.*` (10) plus
+`command.du.warning.inodes_with_apparent`, `command.mktemp.error.*` (10) and
+`command.nice.error.*` (6); the English fallbacks are the byte-identical
+pre-wiring strings, so the wired output did not move.
+`scripts/i18n_batch.py extract` (3783 keys) / `validate` pass. Catalog
+patch, new-key list, removed-key list and delta live under `catalog/`
+(`zh-CN-w3-patch.json`, `w3-new-keys.txt`, `w3-removed-keys.json`,
+`w3-delta.json`); the shared `unixwin/winuxcmd-i18n` repository was not
+touched by this lane.
+
+### #1670 on the Rust du (same-wave follow-up, PR #1730 parity)
+
+The C++ `du.cpp` fix merged as PR #1730 (`3b2d6e6a`) after this lane started;
+wiring `du` to rust2 would have bypassed it, so the same semantics were
+ported into `du.rs`:
+
+- **Directory identity dedup.** The visited set is keyed by the FOLLOWED
+  target's `(volume serial, file index)` under `-L`/`-H`
+  (`followed_dir_key`) and by the lexical spelling otherwise
+  (`lexical_dir_key`: `.`/`..` folded, separators normalized, case folded,
+  and no filesystem resolution so a link spelling never collapses onto its
+  target). The key is registered before descending for tree children
+  (Savannah #10397) and before walking an operand; a repeated key is skipped
+  entirely, so the row prints once under the spelling that arrived first.
+- **DrvFs LX links.** `CreateFileW` cannot open them, so
+  `followed_dir_key` falls back to `read_lx_symlink_target` +
+  `resolve_symlink_target` and reads the identity of the resolved target.
+  The operand's directory classification also follows the resolved
+  `walk_path` (a live LX directory link is a directory, not a zero-size
+  file), matching #1730's `attrs_path` change.
+- **`-P` keeps link and directory distinct.** An unfollowed link entry is
+  hashed by the LINK's own identity via the new
+  `imp::link_handle` (FILE_FLAG_OPEN_REPARSE_POINT), never by the target's;
+  the operand classification marks such an operand as a link entry so it is
+  counted, not walked.
+- **`-l` bypasses both sets**, exactly GNU's `! opt_count_all` guard
+  (du.c:546-549).
+
+Evidence:
+
+1. **Rust unit tests (4 new, in `du::files0_from_tests`)**: LX link created
+   with `FSCTL_SET_REPARSE_POINT` (tag 0xA000001D, version 2 — the object
+   `ln -s` writes on a Windows volume; no SeCreateSymbolicLinkPrivilege
+   needed) and a junction via `cmd /c mklink /J`. Covered shapes:
+   `-L/-H -s dirlink dir` → one row, first spelling (and reversed);
+   `-P` keeps both; `-l` keeps both. `cargo test -p winux-cmds --lib` →
+   **882 passed / 0 failed** (was 878; +4). Both fixture constructors
+   SUCCEED on this host (no SKIP lines under `--nocapture`).
+2. **The #1730 C++ tests run against the wired exe**: temporarily copied
+   `tests/unit/du/du_unit_test.cpp` from `origin/main` (the only delta is
+   those 160 lines) into the build tree, rebuilt, and ran
+   `--gtest_filter='du.issue1670*'` → **4 passed / 0 failed**; the file was
+   then restored (it is not part of this lane's diff).
+3. **GNU 9.4 oracle** (`/usr/bin/du`, WSL): `du -L -s lxlink lxdir` →
+   `12<TAB>lxlink` (one row) and `du -L -s lxdir lxlink` → `12<TAB>lxdir`;
+   `-H` the same; `-P` → `0<TAB>lxlink` + `12<TAB>lxdir`;
+   `-L -l` → both rows. With file links the same shapes give `4<TAB>flink`
+   / `4<TAB>f` / both under `-l`.
+4. **Same shapes through the wired exe on real WSL LX links**
+   (`rust2/target/wire-w3/lxprobe`, links made by WSL's `ln -s` on DrvFs):
+   old vs new byte-equal for `-L -s flink f`, `-L -s f flink`,
+   `-L -l -s flink f`, `-P -s flink f`, `-H -s flink f` (dedupe one row,
+   first spelling; `-l` two rows; `-P` link + target).
+5. **Gate rows du47–du49** (`-L -s flink f`, reversed, `-L -l -s flink f`)
+   are strict GNU rows; they SKIP on this no-privilege host and run on CI
+   (same class as du41–du46).
+6. **Old-vs-new matrix** gained du49–du53 (junction fixture): du49/du50/
+   du53 byte-equal; du51 (`-L -l`) and du52 (`-P`) now differ because the
+   wired du follows GNU — the pre-wiring exe printed one row in both cases.
+   Full du matrix after this round: **52 rows, rc 52/52, stdout 47/52,
+   stderr 51/52**, every diff classified.
+
+### Blocked: date and nohup (recipe precondition)
+
+**nohup** — the Rust port deliberately runs with the terminal faces OFF
+(`nohup.rs` module head): stdin→NUL, stdout→`nohup.out` and stderr→stdout
+need `isatty` facts for three streams, and the ABI has no channel for them
+(REPLACEMENT-RECIPE §8 "Host metadata channel"; §5.M host_v4 is still
+unruled). The 1.x C++ body implements those faces. Wiring now would drop
+interactive redirection, so the body stays and the inventory row stays
+`rust2-ready`.
+
+**date** — the Rust port is gate-green on the 43-row table but is a strict
+subset of the 1.x body. Missing, probed surfaces (old exe vs library
+driver, 2026-11-14): `--debug` gnulib parse annotations (stderr lines),
+`--resolution` (old prints `0.000000100`), the `--universal`/`--uct`/
+`--rfc-822` aliases (argopt would reject them), `-f -` stdin, `-f` blank
+lines (GNU parses them as "today") and the `read error: Is a directory`
+arm, the mutual-exclusion / multiple-format / extra-operand diagnostics,
+`-s` and the POSIX `MMDDhhmm[[CC]YY][.ss]` set-clock path (old attempts
+`SetSystemTime` and reports "cannot set date: ..."), and `-r`'s
+shell-quote diagnostic. Wiring today would regress all of them, so the C++
+body stays. Follow-up: a `date` library-deepening lane (port the option
+contract + `--resolution` + `-f`, and decide `--debug`), then wire.
+
+### Host note (gate b operational)
+
+Four `lsof.*` ctest rows hang indefinitely on this host (they passed in the
+baseline run; the applet source is untouched by this wave). The full re-run
+was therefore made with `ctest -E '^lsof\.'`; every other row ran, and the
+lsof family is excluded from the comparison, not from the product.

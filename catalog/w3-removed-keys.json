@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "locale": "zh-CN",
+  "keys": {
+    "legacy.1bd84c66f46e36a8": "du: ",
+    "legacy.177036c5f5ddc89f": "du: cannot read directory '",
+    "legacy.7b680212460719e2": "du: cannot access '",
+    "legacy.cff02b59984ff5cd": "failed to get temporary directory",
+    "legacy.84e57f36ac69fe1f": "failed to create unique filename",
+    "legacy.23a435e82c998ff3": "nice: a command must be given with an adjustment",
+    "legacy.cecd0b4d3574a864": "Try 'nice --help' for more information.",
+    "command.mktemp.error.failed_create_directory_template": "mktemp: failed to create directory via template '{}': {}",
+    "command.mktemp.error.failed_create_file_template": "mktemp: failed to create file via template '{}': {}"
+  }
+}

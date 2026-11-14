@@ -162,11 +162,28 @@ pub fn extract_optional_long_values(
     (values, rest)
 }
 
+/// One option-table hit in argv order.
+///
+/// `key` is the record key `Parsed::has`/`value_of` use (the long name, or
+/// the short character for short-only specs); `token` is the spelling the
+/// user wrote (`-B` vs `--block-size`), which GNU echoes verbatim in some
+/// diagnostics; `value` is `Some` for value-taking options.
+#[derive(Debug, Clone)]
+pub struct OptEvent {
+    pub key: String,
+    pub token: String,
+    pub value: Option<String>,
+}
+
 #[derive(Default, Debug)]
 pub struct Parsed {
     pub flags: Vec<String>,
     pub values: Vec<(String, String)>,
     pub positionals: Vec<OsString>,
+    /// Every option-table hit, in argv order. Commands whose options are a
+    /// sequential state machine (`-h/-B/-m/-k/--si` last-wins in du) read
+    /// this instead of the orderless `flags`/`values` vectors.
+    pub events: Vec<OptEvent>,
 }
 
 impl Parsed {
@@ -343,6 +360,11 @@ pub fn parse(
                         }
                     }
                 };
+                out.events.push(OptEvent {
+                    key: record_key.clone(),
+                    token: format!("--{record_key}"),
+                    value: Some(val.clone()),
+                });
                 out.values.push((record_key, val));
             } else {
                 // getopt_long rejects an inline argument on a flag
@@ -351,6 +373,11 @@ pub fn parse(
                     let _ = usage_error(ctx, io, prog, &msg);
                     return Err(usage_status);
                 }
+                out.events.push(OptEvent {
+                    key: record_key.clone(),
+                    token: format!("--{record_key}"),
+                    value: None,
+                });
                 out.flags.push(record_key.clone());
                 // #1573: the sequential getopt_long contract. help/version
                 // reach this point only through option-table resolution
@@ -404,6 +431,11 @@ pub fn parse(
                                 }
                             }
                         };
+                        out.events.push(OptEvent {
+                            key: spec.long.to_string(),
+                            token: format!("-{c}"),
+                            value: Some(val.clone()),
+                        });
                         out.values.push((spec.long.to_string(), val));
                         ci = chars.len();
                     }
@@ -415,6 +447,11 @@ pub fn parse(
                         } else {
                             spec.long.to_string()
                         };
+                        out.events.push(OptEvent {
+                            key: key.clone(),
+                            token: format!("-{c}"),
+                            value: None,
+                        });
                         out.flags.push(key);
                         ci += 1;
                     }

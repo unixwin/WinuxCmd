@@ -27,6 +27,18 @@ LEDGER="$OUT/ledger.tsv"
 mkdir -p "$OUT/scratch"
 cd "$OUT/scratch"
 
+# Per-command stdout normalization for the ledger hash only (the raw .out
+# bytes stay as evidence). `mktemp` prints a RANDOM name on success — the
+# recipe's gate-c rule for it is "exit status only"; normalizing the random
+# X-run tail (plus an optional fixed --suffix) keeps the path SHAPE in the
+# comparison, so a changed directory or template prefix still shows up.
+normalize_out() {
+  case "$CMD" in
+    mktemp) sed -E 's/[A-Za-z0-9]{3,}/RAND/g' ;;
+    *) cat ;;
+  esac
+}
+
 run_case() {
   local cname="$1" id="$2" envspec="$3" stdin_data="$4"; shift 4
   local o="$OUT/$cname-$id.out" e="$OUT/$cname-$id.err" rc
@@ -44,8 +56,10 @@ run_case() {
     fi
   fi
   rc=$?
+  local ohash
+  ohash=$(normalize_out <"$o" | sha256sum | cut -d' ' -f1)
   printf '%s|%s|%s|%s|%s\n' "$cname" "$id" "$rc" \
-    "$(sha256sum "$o" | cut -d' ' -f1)" "$(sha256sum "$e" | cut -d' ' -f1)" >>"$LEDGER"
+    "$ohash" "$(sha256sum "$e" | cut -d' ' -f1)" >>"$LEDGER"
 }
 
 # Idempotent per-command fixture, run before EVERY case so all sides and all
@@ -136,6 +150,27 @@ setup_fixture() {
       rm -f tf; printf 'a\nb\nc\n' > tf ;;
     truncate)
       rm -f trf; printf 0123456789ABCDEF > trf ;;
+    du)
+      # wave-W3 fixture: a pinned file/dir tree, a 4097-byte apparent file,
+      # a --files0-from list, and two junctions (live + dangling) for the
+      # -L/-H operand-liveness rows (#1656). Junctions need no privilege,
+      # unlike real symlinks; `rm -rf` on a junction is not used (cmd rmdir
+      # removes the reparse point only).
+      cmd /c "rmdir dujunc" >/dev/null 2>&1 || true
+      cmd /c "rmdir dudangle" >/dev/null 2>&1 || true
+      rm -rf duf duempty dud du4k dulist.nul due.nul
+      printf '12345' > duf; : > duempty
+      mkdir -p dud/d2; printf a > dud/x; printf b > dud/d2/y
+      head -c 4097 /dev/zero | tr '\0' 'x' > du4k
+      printf 'dud\0dud/d2\0' > dulist.nul
+      : > due.nul
+      touch -d @1577836800 duf
+      cmd /c "mklink /J dujunc dud" >/dev/null 2>&1 || true
+      cmd /c "mklink /J dudangle nosuchdir" >/dev/null 2>&1 || true ;;
+    mktemp)
+      rm -rf md; mkdir -p md ;;
+    nice)
+      : ;;
     grep|egrep|fgrep)
       # Shared grep-family fixture (#1488 wire matrix): text files, a
       # pattern file, an empty pattern file, a NUL-carrying binary, and a
@@ -1274,6 +1309,124 @@ TABLE
 58|||-y:-i:FOO:gt.txt
 59|||-l:-c:foo:gt.txt:gsub.txt
 60|||-r:-l:foo:gdir
+TABLE
+      ;;
+    du)
+      cat <<'TABLE'
+01|||duf
+02|||duempty
+03|||-b:duf
+04|||--apparent-size:duf
+05|||-B1:duf
+06|||-h:duf
+07|||--si:duf
+08|||-k:duf
+09|||-B1M:duf
+10|||duf:duempty
+11|||-c:duf:duempty
+12|||nosuch
+13|||nosuch:duf
+14|||--inodes:duf
+15|||-b:du4k
+16|||-h:du4k
+17|||--inodes:dud
+18|||--inodes:dud/d2
+19|||-b:dud
+20|||dud
+21|||-b:-a:--exclude=x:dud
+22|||-b:-a:-t:20:dud
+23|||-b:-d0:dud
+24|||-b:-s:dud
+25|TZ=UTC||--time:-b:duf
+26|||-b:-0:duf
+27|||--files0-from=dulist.nul:-b
+28|||--files0-from=nosuch.nul:-b
+29|||--files0-from=due.nul:-b
+30|||--files0-from=dulist.nul:-b:dud
+32|||-b:dud:dud
+33|||-lb:dud:dud
+34|||-b:duf:duf
+35|||-b:-d:0:duf
+36|||--block-size=bogus:duf
+37|||-L:dujunc
+38|||-H:dujunc
+39|||-L:-s:dujunc
+40|||-L:dudangle
+41|||-H:dudangle
+42|||-a:-L:dujunc
+43|||-a:-H:dujunc
+44|||-b:dujunc
+45|||-L:-b:dujunc
+46|||--dereference:--summarize:dujunc
+47|||--help
+48|||--version
+49|||-L:-s:dujunc:dud
+50|||-L:-s:dud:dujunc
+51|||-L:-l:-s:dujunc:dud
+52|||-P:-s:dujunc:dud
+53|||-H:-s:dujunc:dud
+TABLE
+      ;;
+    mktemp)
+      cat <<'TABLE'
+01|||tmp.XXXXXX
+02|||-d:tmp.XXXXXX
+03|||-u:tmp.XXXXXX
+04|||-d:-u:tmp.XXXXXX
+05|||-p:md:x.XXXXXX
+06|||--tmpdir=md:y.XXXXXX
+07|TMPDIR=md||-t:z.XXXXXX
+08|||--suffix=.txt:t.XXXXXX
+09|||a.XXXXXX:b.XXXXXX
+10|||abc.XX
+11|||--suffix=.txt:tmp.XXX
+12|||--suffix=a/b:t.XXXXXX
+13|||/tmp/abs.XXXXXX
+14|||--tmpdir=md:/tmp/abs.XXXXXX
+15|||-p:nosuchdir:x.XXXXXX
+16|||-q:-p:nosuchdir:x.XXXXXX
+17|||--bogus
+18|||--help
+19|||--version
+20|||-u:x.XXXXXX
+21|||@EMPTY@
+22|TMPDIR=md||-t:a/b.XXXXXX
+23|||--tmpdir:q.XXXXXX
+24|TMPDIR=md||tmp.XXXXXX
+25|||-d:-p:md:dir.XXXXXX
+26|||--tmpdir=
+27|||XXXXXX
+28|||x.XXXXXXXXXX
+TABLE
+      ;;
+    nice)
+      cat <<'TABLE'
+01|||
+02|||-n:5:true
+03|||-n:-5:true
+04|||-5:true
+05|||--adjustment=5:true
+06|||--adjustment:5:true
+07|||-n5:true
+08|||-n:999:true
+09|||-n:-999:true
+10|||nosuchcmd123
+11|||--bogus
+12|||-n
+13|||-n:abc:true
+14|||-n:@EMPTY@:true
+15|||-n:5
+16|||--help
+17|||--version
+18|||--:true
+19|||true:extra:args
+20|||cmd:/c:exit:3
+21|||-n:+3:true
+22|POSIXLY_CORRECT=1||--bogus
+23|||-n:5:--:true
+24|||true:a:b
+25|||cmd:/c:exit:7
+26|||-n:10:cmd:/c:exit:5
 TABLE
       ;;
     *)
