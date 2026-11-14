@@ -107,9 +107,12 @@
 
 use std::ffi::OsString;
 use std::io::{Read, Write};
+use std::os::windows::process::CommandExt as _;
 use std::process::{Child, Stdio};
 
-use crate::childproc::{build_child_command, resolve_child, ChildLaunch, ChildResolve};
+use crate::childproc::{
+    build_child_command, quote_windows_arg, resolve_child, ChildLaunch, ChildResolve,
+};
 use crate::fsutil;
 use winux_core::{CmdResult, Ctx, Io};
 
@@ -1035,6 +1038,45 @@ fn lossy_arg(arg: &[u8]) -> String {
     String::from_utf8_lossy(&arg[..end]).into_owned()
 }
 
+/// The resolved image is cmd.exe under any spelling (full paths
+/// included): its leaf is `cmd` or `cmd.exe`, case-insensitive. This is
+/// the 1.x body's `is_cmd_shell` check widened to the resolved path.
+fn is_cmd_image(path: &str) -> bool {
+    let leaf = path.rsplit(['\\', '/']).next().unwrap_or("");
+    leaf.eq_ignore_ascii_case("cmd") || leaf.eq_ignore_ascii_case("cmd.exe")
+}
+
+/// cmd's own command-string escaping after /c (the 1.x body's
+/// build_command_line): every space, tab, `^ & | < > ( )` and `"` gains
+/// a `^` prefix so cmd passes the byte through literally.
+fn cmd_escape_arg(arg: &str) -> String {
+    let mut out = String::with_capacity(arg.len());
+    for c in arg.chars() {
+        if matches!(
+            c,
+            ' ' | '\t' | '^' | '&' | '|' | '<' | '>' | '(' | ')' | '"'
+        ) {
+            out.push('^');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// UTF-16 units the caret-escaped argument occupies on the command line.
+fn caret_escaped_len(arg: &str) -> usize {
+    arg.encode_utf16().count()
+        + arg
+            .chars()
+            .filter(|c| {
+                matches!(
+                    c,
+                    ' ' | '\t' | '^' | '&' | '|' | '<' | '>' | '(' | ')' | '"'
+                )
+            })
+            .count()
+}
+
 fn is_batch(path: &str) -> bool {
     let l = path.to_ascii_lowercase();
     l.ends_with(".cmd") || l.ends_with(".bat")
@@ -1045,8 +1087,7 @@ fn launch_budget(launch: &ChildLaunch, ctx: &Ctx) -> (usize, usize) {
     match launch {
         ChildLaunch::Image(p) => {
             // cmd.exe parses its own command string under the 8191 cap
-            let leaf = p.rsplit(['\\', '/']).next().unwrap_or("");
-            let limit = if leaf.eq_ignore_ascii_case("cmd.exe") {
+            let limit = if is_cmd_image(p) {
                 CMD_EXE_MAX - 1
             } else {
                 WIN_CMDLINE_MAX - 1
@@ -1087,9 +1128,14 @@ struct Runner<'a, 'c, 'e> {
     argv: Vec<Vec<u8>>,
     argv_chars: usize,
     win_chars: usize,
+    /// The resolved image is cmd(.exe): arguments after the first /c or
+    /// /C are caret-escaped for cmd's own parser, not Win32-quoted.
+    cmd_image: bool,
+    cmd_tail: bool,
     initial_argc: usize,
     initial_chars: usize,
     initial_win: usize,
+    initial_cmd_tail: bool,
     // read_line state
     eof: bool,
     lineno: u64,
@@ -1131,9 +1177,13 @@ impl<'a, 'c, 'e> Runner<'a, 'c, 'e> {
 
     fn arg_win_cost(&self, arg: &[u8]) -> usize {
         if self.in_process_echo || self.argv.is_empty() {
-            0
+            return 0;
+        }
+        let s = lossy_arg(arg);
+        if self.cmd_tail {
+            1 + caret_escaped_len(&s)
         } else {
-            1 + win_quoted_len(&lossy_arg(arg))
+            1 + win_quoted_len(&s)
         }
     }
 
@@ -1141,6 +1191,7 @@ impl<'a, 'c, 'e> Runner<'a, 'c, 'e> {
         self.argv.truncate(self.initial_argc);
         self.argv_chars = self.initial_chars;
         self.win_chars = self.initial_win;
+        self.cmd_tail = self.initial_cmd_tail;
     }
 
     /// buildcmd.c bc_push_arg (plus the Windows command-line budget).
@@ -1175,6 +1226,11 @@ impl<'a, 'c, 'e> Runner<'a, 'c, 'e> {
         self.argv.push(arg.to_vec());
         self.argv_chars += len;
         self.win_chars += self.arg_win_cost(arg);
+        // /c itself is still quoted-form; every LATER argument is
+        // caret-escaped for cmd's parser (build_command_line's tail).
+        if !self.cmd_tail && self.cmd_image && matches!(lossy_arg(arg).as_str(), "/c" | "/C") {
+            self.cmd_tail = true;
+        }
         if !initial
             && self.o.args_per_exec != 0
             && (self.argv.len() - self.initial_argc) as u64 == self.o.args_per_exec
@@ -1294,9 +1350,15 @@ impl<'a, 'c, 'e> Runner<'a, 'c, 'e> {
 
     /// The default command: coreutils echo semantics through io.stdout.
     fn run_echo(&mut self) -> Result<(), Stop> {
-        let args: Vec<OsString> = self.argv[1..]
+        // Byte-exact argv: the in-process echo must not round-trip
+        // through UTF-8 (lossy_arg turned 0xff into U+FFFD). NUL still
+        // truncates each item, matching the C-string argv model.
+        let args: Vec<&[u8]> = self.argv[1..]
             .iter()
-            .map(|a| OsString::from(lossy_arg(a)))
+            .map(|a| {
+                let end = a.iter().position(|&b| b == 0).unwrap_or(a.len());
+                &a[..end]
+            })
             .collect();
         let mut empty = std::io::empty();
         let r = {
@@ -1305,7 +1367,7 @@ impl<'a, 'c, 'e> Runner<'a, 'c, 'e> {
                 stdout: &mut *self.out,
                 stderr: &mut *self.err,
             };
-            let r = crate::echo::echo_cmd(&args, &mut io, self.ctx);
+            let r = crate::echo::echo_bytes(&args, &mut io, self.ctx);
             match r {
                 Ok(s) => io.stdout.flush().map(|_| s).map_err(Some),
                 Err(winux_core::CmdError::Io(e)) => Err(Some(e)),
@@ -1358,7 +1420,29 @@ impl<'a, 'c, 'e> Runner<'a, 'c, 'e> {
             }
         };
         let args: Vec<String> = self.argv[1..].iter().map(|a| lossy_arg(a)).collect();
-        let mut cmd = build_child_command(launch, &args, self.ctx);
+        let mut cmd = if matches!(launch, ChildLaunch::Image(p) if is_cmd_image(p)) {
+            // cmd /c: everything after the first /c or /C is cmd's own
+            // command string, so each later argument is caret-escaped
+            // for cmd's parser (the 1.x body's build_command_line)
+            // instead of Win32-quoted — quoting let `&` reach cmd as
+            // command syntax. The empty-args build keeps env/cwd; the
+            // serialized tail goes through raw_arg verbatim.
+            let mut c = build_child_command(launch, &[], self.ctx);
+            let mut tail = false;
+            for a in &args {
+                if tail {
+                    c.raw_arg(cmd_escape_arg(a));
+                } else {
+                    c.raw_arg(quote_windows_arg(a));
+                    if matches!(a.as_str(), "/c" | "/C") {
+                        tail = true;
+                    }
+                }
+            }
+            c
+        } else {
+            build_child_command(launch, &args, self.ctx)
+        };
         match self.child_stdin {
             ChildStdin::Null => {
                 cmd.stdin(Stdio::null());
@@ -1673,6 +1757,7 @@ impl<'a, 'c, 'e> Runner<'a, 'c, 'e> {
             self.initial_argc = self.argv.len();
             self.initial_chars = self.argv_chars;
             self.initial_win = self.win_chars;
+            self.initial_cmd_tail = self.cmd_tail;
             while self.read_args(input)? {
                 if self.o.lines_per_exec != 0 && self.lineno >= self.o.lines_per_exec {
                     self.do_exec()?;
@@ -1696,6 +1781,7 @@ impl<'a, 'c, 'e> Runner<'a, 'c, 'e> {
                 self.argv.clear();
                 self.argv_chars = 0;
                 self.win_chars = 0;
+                self.cmd_tail = false;
                 for (i, t) in command.iter().enumerate() {
                     let arg = if i == 0 {
                         t.clone()
@@ -1904,9 +1990,12 @@ pub(crate) fn run_with_tty(
         argv: Vec::new(),
         argv_chars: 0,
         win_chars: 0,
+        cmd_image: false,
+        cmd_tail: false,
         initial_argc: 0,
         initial_chars: 0,
         initial_win: 0,
+        initial_cmd_tail: false,
         eof: false,
         lineno: 0,
         null_warned: false,
@@ -1926,6 +2015,7 @@ pub(crate) fn run_with_tty(
             let (base, limit) = launch_budget(l, ctx);
             runner.win_base = base;
             runner.win_limit = limit;
+            runner.cmd_image = matches!(l, ChildLaunch::Image(p) if is_cmd_image(p));
         }
         runner.resolved = Some(r);
     }
@@ -2009,6 +2099,31 @@ mod tests {
             opened: 0,
         };
         run_tty(input.as_bytes(), args, &mut tty)
+    }
+
+    /// Byte-exact variant of run_tty for non-UTF-8 input/output probes.
+    fn run_bytes(input: &[u8], args: &[&str]) -> (u32, Vec<u8>, Vec<u8>) {
+        let sc = ScratchCtx::new("xargs");
+        run_in(&sc.dir, input, args)
+    }
+
+    /// run_bytes with an explicit cwd (child-side file probes).
+    fn run_in(dir: &std::path::Path, input: &[u8], args: &[&str]) -> (u32, Vec<u8>, Vec<u8>) {
+        let env = real_env();
+        let ctx = Ctx {
+            cwd: dir.to_path_buf(),
+            env: &env,
+        };
+        let mut io = MemIo::new("");
+        io.input = std::io::Cursor::new(input.to_vec());
+        let mut tty = FakeTty {
+            answers: vec![],
+            fail_open: true,
+            opened: 0,
+        };
+        let owned: Vec<OsString> = args.iter().map(Into::into).collect();
+        let r = run_with_tty(&owned, &mut io.split(), &ctx, &mut tty, true).unwrap();
+        (r, io.output.clone(), io.errout.clone())
     }
 
     fn out(input: &str, args: &[&str]) -> String {
@@ -2670,5 +2785,97 @@ mod tests {
         assert_eq!(ntstatus_signal(0xC000_013A), 2);
         assert_eq!(ntstatus_signal(0xC000_0409), 6);
         assert_eq!(ntstatus_signal(0xDEAD_BEEF), 9);
+    }
+
+    #[test]
+    fn default_echo_preserves_non_utf8_bytes() {
+        // Review regression: lossy_arg turned 0xff into U+FFFD before
+        // the in-process echo saw it.
+        let (r, out, _) = run_bytes(&[0xff, 0x00], &["-0"]);
+        assert_eq!((r, out.as_slice()), (0, &[0xff, 0x0a][..]));
+        // a "-n" item is an echo flag: operand printed without newline
+        let mut input = b"-n\0".to_vec();
+        input.extend_from_slice(&[0xff, 0x00]);
+        let (r, out, _) = run_bytes(&input, &["-0"]);
+        assert_eq!((r, out.as_slice()), (0, &[0xff][..]));
+        // "-e" decodes the \x41 escape inside the second item; the 0xff
+        // byte trailing it in the SAME item still passes raw
+        let mut input = b"-e\0\\x41".to_vec();
+        input.extend_from_slice(&[0xff, 0x00]);
+        let (r, out, _) = run_bytes(&input, &["-0"]);
+        assert_eq!((r, out.as_slice()), (0, &[0x41, 0xff, 0x0a][..]));
+    }
+
+    #[test]
+    fn cmd_c_tail_caret_escapes_metacharacters() {
+        // Review regression: `&`/`>` reached cmd as command syntax. The
+        // payload holds no space, so Win32 quoting leaves it bare; only
+        // the caret tail keeps `ver>INJ_MARK` literal. Child stdout is
+        // not captured (children inherit process stdio), so the marker
+        // file is the observable.
+        let sc = ScratchCtx::new("xargs-cmdc");
+        let payload = b"a&ver>INJ_MARK\0".to_vec();
+        for cmd in ["cmd", "CMD", "cmd.exe"] {
+            let (r, _, e) = run_in(&sc.dir, &payload, &["-0", cmd, "/c", "echo"]);
+            assert_eq!(r, 0, "cmd={cmd} err={:?}", String::from_utf8_lossy(&e));
+            assert!(
+                !sc.path("INJ_MARK").exists(),
+                "cmd={cmd} let cmd syntax through"
+            );
+        }
+        // /C uppercase + a full-path cmd (COMSPEC) spelling
+        let comspec = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".into());
+        let argv: Vec<String> = ["-0", comspec.as_str(), "/C", "echo"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let argrefs: Vec<&str> = argv.iter().map(String::as_str).collect();
+        let (r, _, _) = run_in(&sc.dir, &payload, &argrefs);
+        assert_eq!(r, 0);
+        assert!(!sc.path("INJ_MARK").exists(), "fullpath cmd injected");
+        // plain operands through the same tail stay literal too
+        let (r, _, _) = run_in(&sc.dir, b"hello\0", &["-0", "cmd", "/c", "echo"]);
+        assert_eq!(r, 0);
+    }
+
+    #[test]
+    fn cmd_c_budget_counts_caret_escapes() {
+        // 3000 '&' per item: caret-escaped cost is ~6001 UTF-16 units
+        // each, so the 8191 cmd budget fits ONE item per batch -> six
+        // execs under -t; naive quoting (~3001) would fit two.
+        let item = "&".repeat(3000);
+        let mut input = Vec::new();
+        for _ in 0..6 {
+            input.extend_from_slice(item.as_bytes());
+            input.push(0);
+        }
+        let (r, _, e) = run_bytes(&input, &["-t", "-0", "cmd", "/c", "rem"]);
+        assert_eq!(r, 0);
+        let execs = String::from_utf8_lossy(&e).lines().count();
+        assert_eq!(execs, 6, "stderr={}", String::from_utf8_lossy(&e));
+        // a single item whose escaped form exceeds the cap is the
+        // existing "Argument list too long" 126, not a silent overflow
+        let mut input = "&".repeat(9000).into_bytes();
+        input.push(0);
+        let (r, _, e) = run_bytes(&input, &["-0", "cmd", "/c", "echo"]);
+        assert_eq!(r, 126);
+        let e = String::from_utf8_lossy(&e);
+        assert!(e.contains("Argument list too long"), "err={e}");
+    }
+
+    #[test]
+    fn cmd_escape_helpers() {
+        assert!(is_cmd_image("cmd"));
+        assert!(is_cmd_image("CMD.EXE"));
+        assert!(is_cmd_image(r"C:\Windows\System32\cmd.exe"));
+        assert!(is_cmd_image("/usr/bin/cmd"));
+        assert!(!is_cmd_image("cmd.bat"));
+        assert!(!is_cmd_image("mycmd.exe"));
+        assert!(!is_cmd_image("echo"));
+        assert_eq!(cmd_escape_arg("a&b c"), "a^&b^ c");
+        assert_eq!(cmd_escape_arg("a^b\"c"), "a^^b^\"c");
+        assert_eq!(cmd_escape_arg("plain"), "plain");
+        assert_eq!(caret_escaped_len("a&b"), 4);
+        assert_eq!(caret_escaped_len("ab"), 2);
     }
 }
