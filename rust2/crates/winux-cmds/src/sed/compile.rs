@@ -88,6 +88,37 @@ pub(crate) struct SedRegex {
     pub mline: bool,
     /// NFA scratch reused across lines (winux-regex MatchCache).
     pub cache: winux_regex::MatchCache,
+    /// Line DFA used ONLY as a line filter for address selection; captures
+    /// and match spans always come from the interpreter
+    /// (`Regex::find_at_bytes_with`). `None` when the pattern is outside the
+    /// DFA's contract (back-references, `M` anchors, oversized automaton) —
+    /// the address path then keeps the interpreter. See
+    /// `winux_regex::dfa` for the equivalence contract.
+    pub dfa: Option<winux_regex::dfa::LineDfa>,
+    /// End-of-record byte the DFA scanning model assumes (`\n`, `\0` with
+    /// `-z`): a pattern space that contains it (`N`, `G`-joined cycles) is
+    /// routed to the interpreter.
+    pub dfa_eol: u8,
+}
+
+impl SedRegex {
+    /// Does the address regex match `line`? The DFA answers the boolean when
+    /// it is exact on this input; every capture / span query elsewhere still
+    /// goes through `re`.
+    pub fn matches_line(&mut self, line: &[u8]) -> bool {
+        if let Some(d) = self.dfa.as_mut() {
+            use winux_regex::dfa::InputRequirement;
+            let input_ok = match d.input_requirement() {
+                InputRequirement::Any => true,
+                InputRequirement::ValidUtf8 => line.is_ascii() || std::str::from_utf8(line).is_ok(),
+                InputRequirement::Ascii => line.is_ascii(),
+            };
+            if input_ok && !line.contains(&self.dfa_eol) {
+                return d.is_match_line(line);
+            }
+        }
+        self.re.is_match_with(&mut self.cache, line)
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1140,6 +1171,7 @@ impl<'c> Compiler<'c> {
         icase: bool,
         mline: bool,
         needed_sub: usize,
+        line_filter: bool,
     ) -> Result<Option<usize>, Fatal> {
         if b.is_empty() {
             if icase || mline {
@@ -1177,7 +1209,20 @@ impl<'c> Compiler<'c> {
                 status: 4,
             });
         }
+        // The line DFA is an address-selection filter only: substitution
+        // regexes need spans and captures, so they never build one. Patterns
+        // without the Thompson NFA (back-references, oversized intervals) are
+        // decided by the budgeted backtracker, whose exhaustion is a
+        // conservative no-match — the DFA is exact, so those keep the
+        // interpreter to preserve verdicts.
+        let dfa = if line_filter && re.has_nfa() {
+            winux_regex::dfa::LineDfa::new(&[&re], winux_regex::dfa::LineMode::Contains, self.delim)
+        } else {
+            None
+        };
         self.prog.regexes.push(SedRegex {
+            dfa,
+            dfa_eol: self.delim,
             re,
             pattern,
             icase,
@@ -1212,7 +1257,7 @@ impl<'c> Compiler<'c> {
                     mline = true;
                 } else {
                     self.savchar(c);
-                    let idx = self.compile_regex(&b, icase, mline, 0)?;
+                    let idx = self.compile_regex(&b, icase, mline, 0, true)?;
                     addr.kind = AddrType::Regex(idx);
                     return Ok(Some(addr));
                 }
@@ -1501,7 +1546,7 @@ impl<'c> Compiler<'c> {
                     });
                     self.setup_replacement(&b2, &mut sub)?;
                     let (icase, mline) = self.mark_subst_opts(&mut sub)?;
-                    sub.regex = self.compile_regex(&b, icase, mline, sub.max_id + 1)?;
+                    sub.regex = self.compile_regex(&b, icase, mline, sub.max_id + 1, false)?;
                     if sub.eval && self.sandbox {
                         return Err(self.bad_prog(DISALLOWED_CMD));
                     }

@@ -688,6 +688,36 @@ mod tests {
     }
 
     #[test]
+    fn address_regex_dfa_filter_agrees_with_interpreter() {
+        // The address line filter (winux-regex dfa) must never change a
+        // verdict: dot patterns (DFA, ValidUtf8 requirement), anchored /
+        // word / class shapes, backreferences (DFA declines), `-i`, `-z`,
+        // and the pattern spaces the line model cannot express (an `N`-
+        // joined text contains the eol byte; `M` anchors match around it) —
+        // all must still equal GNU sed 4.9.
+        let t1 = "the quick\nno match\nlorem ipsum dolor sit amet\nfox and dog\nlorem x amet\n";
+        assert_eq!(
+            run(&["-n", "/lorem.*amet/p"], t1).1,
+            "lorem ipsum dolor sit amet\nlorem x amet\n"
+        );
+        assert_eq!(run(&["-n", "/^the/p"], t1).1, "the quick\n");
+        assert_eq!(run(&["-n", "/\\<fox\\>/p"], t1).1, "fox and dog\n");
+        assert_eq!(run(&["-n", "/\\(a\\)\\1/p"], "aa\nab\n").1, "aa\n");
+        assert_eq!(run(&["-n", "/ab/Ip"], "AB\nab\n").1, "AB\nab\n");
+        assert_eq!(run(&["-n", "/中./p"], "x\n中a\n中\n").1, "中a\n");
+        assert_eq!(run(&["-n", "/^é.*a$/p"], "é中a\nxx\n").1, "é中a\n");
+        // `-z`: the record delimiter is NUL, so the DFA is built with eol=0.
+        assert_eq!(run(&["-zn", "/b/p"], "a\0b\0c\0").1, "b\0");
+        // `N`-joined pattern space: the text contains the eol byte and must
+        // go to the interpreter.
+        assert_eq!(run(&["-n", "N;/a[^x]b/p"], "a\nb\n").1, "a\nb\n");
+        // `M` anchors are outside the line model (DFA declines).
+        assert_eq!(run(&["-n", "N;/^b/Mp"], "a\nb\n").1, "a\nb\n");
+        assert_eq!(run(&["-n", "N;/b$/Mp"], "a\nb\n").1, "a\nb\n");
+        assert_eq!(run(&["-n", "N;/a.b/Mp"], "a\nb\n").1, "");
+    }
+
+    #[test]
     fn y_and_multibyte() {
         assert_eq!(run(&["y/abc/xyz/"], "aabbcc\n").1, "xxyyzz\n");
         assert_eq!(run(&["y/é/e/"], "héé\n").1, "hee\n");

@@ -37,6 +37,7 @@
 //! ```
 
 pub mod ast;
+pub mod dfa;
 pub(crate) mod fastpath;
 pub mod matcher;
 pub mod parser;
@@ -341,6 +342,17 @@ impl Regex {
     /// Scratch for [`Regex::find_at_bytes_with`] / [`Regex::is_match_with`].
     pub fn new_cache(&self) -> MatchCache {
         MatchCache::new()
+    }
+
+    /// Does this regex have the Thompson NFA used for verified boolean and
+    /// bounds searches? Patterns without one (back-references, an interval
+    /// expansion above the NFA cap) are decided by the backtracker under a
+    /// per-call work budget whose exhaustion is a CONSERVATIVE no-match, so
+    /// a consumer that must not change verdicts — the sed address DFA
+    /// filter, which would otherwise be exact — keeps the interpreter for
+    /// them.
+    pub fn has_nfa(&self) -> bool {
+        self.nfa.is_some()
     }
 
     /// Does `text` contain a match? Uses the Thompson NFA when the pattern

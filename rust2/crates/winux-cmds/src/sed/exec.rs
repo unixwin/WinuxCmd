@@ -800,7 +800,7 @@ impl<'a> Exec<'a> {
             AddrType::Regex(idx) => {
                 let i = self.resolve_regex(idx)?;
                 let r = &mut self.prog.regexes[i];
-                r.re.is_match_with(&mut r.cache, &self.line)
+                r.matches_line(&self.line)
             }
             AddrType::NumMod => {
                 self.line_number >= addr.number
